@@ -1386,6 +1386,7 @@ export function ChatView({
             onResend={handleResend}
             scrollContainerRef={scrollRef}
           />
+          <SessionUsageBar sessionId={sessionId ?? null} />
         </div>
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
@@ -1416,7 +1417,6 @@ export function ChatView({
               contextUsageFallbackTokens={contextUsageFallbackTokens}
               textareaMaxHeight={300}
             />
-            <SessionUsageBar sessionId={sessionId ?? null} />
           </div>
         </div>
 

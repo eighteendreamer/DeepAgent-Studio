@@ -107,7 +107,7 @@ export function SessionUsageBar({ sessionId }: Props) {
       : null;
 
   return (
-    <div className="absolute bottom-0 left-0 right-0 flex items-center justify-center px-6 text-[11px] text-text-secondary opacity-80 tabular-nums" style={{ height: '24px' }}>
+    <div className="mt-4 flex items-center justify-center text-[11px] text-text-secondary opacity-80 tabular-nums" style={{ height: '32px' }}>
       <div className="flex items-center justify-evenly gap-4 max-w-4xl w-full">
         {summary && (
           <>
