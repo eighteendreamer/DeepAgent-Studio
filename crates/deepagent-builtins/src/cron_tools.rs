@@ -331,7 +331,7 @@ mod tests {
             .unwrap();
         assert!(out.ok);
         assert_eq!(out.value["recurring"], false);
-        assert_eq!(backend.created.lock().unwrap()[0].2, false);
+        assert!(!backend.created.lock().unwrap()[0].2);
     }
 
     #[tokio::test]

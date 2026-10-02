@@ -141,6 +141,14 @@ pub struct CostSummary {
     pub currency: String,
     /// Budget config (for display).
     pub budget: BudgetConfig,
+    /// Cumulative input tokens for the current session.
+    pub input_tokens: u64,
+    /// Cumulative output tokens for the current session.
+    pub output_tokens: u64,
+    /// Cumulative cache-hit tokens for the current session.
+    pub cache_hit_tokens: u64,
+    /// Cumulative cache-miss tokens for the current session.
+    pub cache_miss_tokens: u64,
 }
 
 /// Cost tracking service.
@@ -252,6 +260,7 @@ impl CostService {
         let today_cost = store.total_since(today_start)?;
         let month_cost = store.total_since(month_start)?;
         let total_cost = store.total()?;
+        let usage = store.session_usage(session_id)?;
 
         Ok(CostSummary {
             session_cost,
@@ -260,6 +269,10 @@ impl CostService {
             total_cost,
             currency: "CNY".to_string(),
             budget: self.budget(),
+            input_tokens: usage.input_tokens,
+            output_tokens: usage.output_tokens,
+            cache_hit_tokens: usage.cache_hit_tokens,
+            cache_miss_tokens: usage.cache_miss_tokens,
         })
     }
 

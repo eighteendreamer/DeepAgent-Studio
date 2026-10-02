@@ -1148,6 +1148,10 @@ const EMPTY_COST_SUMMARY: CostSummary = {
   total_cost: 0,
   currency: "CNY",
   budget: { daily_limit: null, monthly_limit: null },
+  input_tokens: 0,
+  output_tokens: 0,
+  cache_hit_tokens: 0,
+  cache_miss_tokens: 0,
 };
 
 /** Accumulated cost summary (session / today / month / total + budget). */

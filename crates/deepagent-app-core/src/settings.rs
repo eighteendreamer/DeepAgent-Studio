@@ -1088,24 +1088,17 @@ pub struct AppSettings {
 /// Persisted alongside model discovery so offline runs can bill accurately.
 /// First-stage implementation uses hardcoded official rates (verified 2026-10-02);
 /// future versions may fetch dynamically if DeepSeek provides a pricing API.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct PricingCatalog {
     /// Pricing by model ID (e.g. "deepseek-flash", "deepseek-v4-pro").
+    #[serde(default)]
     pub models: HashMap<String, ModelPricing>,
     /// When this catalog was fetched (Unix ms). 0 means never refreshed.
+    #[serde(default)]
     pub fetched_at: i64,
     /// Source URL (for audit trail).
+    #[serde(default)]
     pub source_url: String,
-}
-
-impl Default for PricingCatalog {
-    fn default() -> Self {
-        Self {
-            models: HashMap::new(),
-            fetched_at: 0,
-            source_url: String::new(),
-        }
-    }
 }
 
 /// Opt-in advanced execution safeguards, all default OFF (自创机制默认从宽:
@@ -2693,7 +2686,7 @@ mod tests {
         let transport: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(body));
         let svc = SettingsService::new(db, transport, secrets);
         // Seed a minimal AppSettings so query_balance can read the base_url.
-        let mut settings = AppSettings {
+        let settings = AppSettings {
             catalog: ModelCatalog::auto_select(
                 deepagent_models::DEEPSEEK_BASE_URL.to_string(),
                 vec![

@@ -177,6 +177,44 @@ impl<'db> CostStore<'db> {
             .map_err(map_sqlite)
         })
     }
+
+    /// Cumulative token totals for a single session, summed across every
+    /// recorded model call. Returns all-zero when the session has no cost
+    /// rows yet (new session, or every call so far failed before accounting).
+    pub fn session_usage(&self, session_id: &str) -> Result<SessionUsageTotals> {
+        self.db.with_conn(|c| {
+            c.query_row(
+                "SELECT COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0), \
+                 COALESCE(SUM(cache_hit_tokens), 0), COALESCE(SUM(cache_miss_tokens), 0) \
+                 FROM costs WHERE session_id = ?1",
+                params![session_id],
+                |row| {
+                    Ok(SessionUsageTotals {
+                        input_tokens: row.get(0)?,
+                        output_tokens: row.get(1)?,
+                        cache_hit_tokens: row.get(2)?,
+                        cache_miss_tokens: row.get(3)?,
+                    })
+                },
+            )
+            .map_err(map_sqlite)
+        })
+    }
+}
+
+/// Cumulative token totals for one session, aggregated over its `costs` rows.
+/// Shares the same ledger as the cost totals, so these numbers and
+/// `session_total` always agree on which calls they cover.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SessionUsageTotals {
+    /// Sum of `input_tokens` (prompt tokens, cache hit + miss) across the session.
+    pub input_tokens: u64,
+    /// Sum of `output_tokens` (completion tokens) across the session.
+    pub output_tokens: u64,
+    /// Sum of `cache_hit_tokens` across the session.
+    pub cache_hit_tokens: u64,
+    /// Sum of `cache_miss_tokens` across the session.
+    pub cache_miss_tokens: u64,
 }
 
 #[cfg(test)]
@@ -244,5 +282,40 @@ mod tests {
 
         assert!((store.total_since(3_000).unwrap() - 0.05).abs() < 1e-9);
         assert!((store.total().unwrap() - 0.06).abs() < 1e-9);
+    }
+
+    #[test]
+    fn session_usage_sums_tokens_across_calls() {
+        let db = Database::open_in_memory().unwrap();
+        db.with_conn(|c| {
+            c.execute(
+                "INSERT INTO sessions (id, title, mode, created_at, updated_at) \
+                 VALUES ('ses_1', 't', 'normal', 0, 0)",
+                [],
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
+        })
+        .unwrap();
+
+        let store = CostStore::new(&db);
+        // entry() fixture: input_tokens=100, output_tokens=50,
+        // cache_hit_tokens=0, cache_miss_tokens=100.
+        store.insert(&entry("ses_1", 1_000, 0.01)).unwrap();
+        store.insert(&entry("ses_1", 2_000, 0.02)).unwrap();
+
+        let usage = store.session_usage("ses_1").unwrap();
+        assert_eq!(usage.input_tokens, 200);
+        assert_eq!(usage.output_tokens, 100);
+        assert_eq!(usage.cache_hit_tokens, 0);
+        assert_eq!(usage.cache_miss_tokens, 200);
+    }
+
+    #[test]
+    fn session_usage_is_zero_for_unknown_session() {
+        let db = Database::open_in_memory().unwrap();
+        let store = CostStore::new(&db);
+        let usage = store.session_usage("ses_missing").unwrap();
+        assert_eq!(usage, SessionUsageTotals::default());
     }
 }

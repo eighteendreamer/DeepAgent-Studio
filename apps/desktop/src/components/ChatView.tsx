@@ -45,6 +45,7 @@ import { usePluginAppCards } from "./plugins/usePluginAppCards";
 import { RightSidebarWorkbench } from "./RightSidebarWorkbench";
 import { ChatTimeline } from "./chat-timeline/ChatTimeline";
 import { usePanelPresence } from "../hooks/usePanelPresence";
+import { SessionUsageBar } from "./SessionUsageBar";
 
 const PROJECT_MAP_OPEN_EVENT = "deepagent:open-project-map";
 const PROJECT_MAP_TAB_ID = "project-map";
@@ -964,6 +965,7 @@ function normalizeBrowserUrl(input: string): string {
 }
 
 export function ChatView({
+  sessionId = null,
   messages,
   onSend,
   onFork,
@@ -1414,6 +1416,7 @@ export function ChatView({
               contextUsageFallbackTokens={contextUsageFallbackTokens}
               textareaMaxHeight={300}
             />
+            <SessionUsageBar sessionId={sessionId ?? null} />
           </div>
         </div>
 

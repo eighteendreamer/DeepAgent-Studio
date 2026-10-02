@@ -262,6 +262,10 @@ export interface CostSummary {
   total_cost: number;
   currency: string;
   budget: BudgetConfig;
+  input_tokens: number;
+  output_tokens: number;
+  cache_hit_tokens: number;
+  cache_miss_tokens: number;
 }
 
 /** One per-currency balance row (mirrors deepagent-app-core::BalanceInfoDto). */
