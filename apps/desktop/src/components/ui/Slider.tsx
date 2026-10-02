@@ -1,5 +1,6 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { cn } from "../shadcn/utils";
 
 /** 方案 E：简单 / 中等 / 深度 对应粒子速度（越大越快） */
@@ -17,6 +18,8 @@ function reasoningMotionAt(index: number, maxIndex: number): number {
 export type SliderStop<T extends string = string> = {
   value: T;
   label: string;
+  /** Optional Font Awesome icon rendered before the stop label. */
+  icon?: readonly unknown[];
 };
 
 type Props<T extends string> = {
@@ -296,10 +299,11 @@ export function Slider<T extends string>({ stops, value, onChange, ariaLabel }: 
               key={stop.value}
               onClick={() => settleAt(stops.findIndex((item) => item.value === stop.value))}
               className={cn(
-                "cursor-pointer bg-transparent p-0 transition-colors duration-150",
+                "inline-flex cursor-pointer items-center gap-1 bg-transparent p-0 transition-colors duration-150",
                 selected ? "font-medium text-text-base" : "text-text-secondary hover:text-text-base",
               )}
             >
+              {stop.icon && <FontAwesomeIcon icon={stop.icon as any} className="text-[9px]" />}
               {stop.label}
             </button>
           );

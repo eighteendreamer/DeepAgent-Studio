@@ -227,7 +227,11 @@ export function ModelThinkingSelector({
 
             <Slider
 
-              stops={thinkingOptions.map((option) => ({ value: option.id, label: option.label }))}
+              stops={thinkingOptions.map((option) => ({
+                value: option.id,
+                label: option.label,
+                icon: option.icon,
+              }))}
 
               value={selectedThinking}
 

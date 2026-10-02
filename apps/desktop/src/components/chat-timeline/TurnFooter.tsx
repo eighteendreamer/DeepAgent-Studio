@@ -35,11 +35,16 @@ export function TurnFooter({
       <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 tabular-nums">
         {usage && (
           <>
-            <span className="font-semibold text-text-base">{formatTokens(usage.totalTokens)} tokens</span>
+            <span className="font-semibold text-text-base">
+              <FontAwesomeIcon icon={["fas", "hashtag"]} className="mr-0.5 text-[9px]" />
+              {formatTokens(usage.totalTokens)} tokens
+            </span>
             <span className="text-text-tertiary">
+              <FontAwesomeIcon icon={["fas", "arrow-down"]} className="mr-0.5 text-[9px]" />
               输入 {formatTokens(usage.promptTokens)}
             </span>
             <span className="text-text-tertiary">
+              <FontAwesomeIcon icon={["fas", "arrow-up"]} className="mr-0.5 text-[9px]" />
               输出 {formatTokens(usage.completionTokens)}
             </span>
             {usage.cacheHitTokens > 0 && (
@@ -50,6 +55,7 @@ export function TurnFooter({
             )}
             {usage.cacheMissTokens > 0 && (
               <span className="text-text-tertiary">
+                <FontAwesomeIcon icon={["fas", "circle-xmark"]} className="mr-0.5 text-[9px]" />
                 缓存未命中 {formatTokens(usage.cacheMissTokens)}
               </span>
             )}

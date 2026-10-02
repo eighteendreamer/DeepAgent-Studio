@@ -350,9 +350,9 @@ export function Composer({
   };
 
   const THINKING_OPTIONS = [
-    { id: "simple", label: "composer.thinkingSimple", icon: ["fas", "bolt"] as const },
+    { id: "simple", label: "composer.thinkingSimple", icon: ["fas", "feather"] as const },
     { id: "medium", label: "composer.thinkingMedium", icon: ["fas", "lightbulb"] as const },
-    { id: "deep", label: "composer.thinkingDeep", icon: ["fas", "magnifying-glass"] as const },
+    { id: "deep", label: "composer.thinkingDeep", icon: ["fas", "brain"] as const },
   ] as const;
 
   const chooseThinking = async (id: "simple" | "medium" | "deep") => {
