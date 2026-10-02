@@ -184,6 +184,7 @@ export interface TokenUsage {
   totalTokens: number;
   cacheHitTokens: number;
   cacheMissTokens: number;
+  /** Cost in CNY/RMB. undefined when pricing unavailable. */
   costYuan?: number;
 }
 

@@ -990,9 +990,11 @@ export function ChatView({
   const { t } = useTranslation();
   const [value, setValue] = useState("");
   const contextUsageFallbackTokens = useMemo(() => {
+    // Scan backwards for the first message with a defined promptTokens value.
+    // Use !== undefined to distinguish a legitimate 0 from missing usage data.
     for (let i = messages.length - 1; i >= 0; i -= 1) {
       const usage = messages[i]?.usage;
-      if (usage?.promptTokens) return usage.promptTokens;
+      if (usage?.promptTokens !== undefined) return usage.promptTokens;
     }
     return 0;
   }, [messages]);

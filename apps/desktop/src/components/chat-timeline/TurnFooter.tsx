@@ -36,16 +36,21 @@ export function TurnFooter({
         {usage && (
           <>
             <span className="font-semibold text-text-base">{formatTokens(usage.totalTokens)} tokens</span>
-            <span>
-              ({formatTokens(usage.promptTokens)}
-              <FontAwesomeIcon icon={["fas", "arrow-down"]} className="mx-0.5 text-[9px]" />
-              {formatTokens(usage.completionTokens)}
-              <FontAwesomeIcon icon={["fas", "arrow-up"]} className="ml-0.5 text-[9px]" />)
+            <span className="text-text-tertiary">
+              输入 {formatTokens(usage.promptTokens)}
+            </span>
+            <span className="text-text-tertiary">
+              输出 {formatTokens(usage.completionTokens)}
             </span>
             {usage.cacheHitTokens > 0 && (
               <span className="font-medium text-green-600">
                 <FontAwesomeIcon icon={["fas", "bolt"]} className="mr-0.5 text-[9px]" />
-                命中缓存 {formatTokens(usage.cacheHitTokens)}
+                缓存命中 {formatTokens(usage.cacheHitTokens)}
+              </span>
+            )}
+            {usage.cacheMissTokens > 0 && (
+              <span className="text-text-tertiary">
+                缓存未命中 {formatTokens(usage.cacheMissTokens)}
               </span>
             )}
             <span>

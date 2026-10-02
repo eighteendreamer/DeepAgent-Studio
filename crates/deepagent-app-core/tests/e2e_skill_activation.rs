@@ -177,6 +177,7 @@ fn settings_default() -> AppSettings {
         )
         .expect("auto_select with both V4 roles produces a valid catalog"),
         discovered_at: 0,
+        pricing_catalog: Default::default(),
         approval_policy: Default::default(),
         sandbox_mode: Default::default(),
         terminal_shell: Default::default(),

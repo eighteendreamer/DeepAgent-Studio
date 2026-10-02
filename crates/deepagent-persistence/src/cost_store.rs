@@ -30,8 +30,31 @@ pub struct CostEntry<'a> {
     pub cache_miss_tokens: u32,
     /// Total tokens reported by the provider.
     pub total_tokens: u32,
-    /// Computed cost in CNY / RMB.
-    pub cost_yuan: f64,
+    /// Computed cost in CNY / RMB. None when pricing unavailable.
+    pub cost_yuan: Option<f64>,
+    /// Pricing snapshot: input cache-hit price per million tokens (RMB).
+    pub input_cache_hit_price: Option<f64>,
+    /// Pricing snapshot: input cache-miss price per million tokens (RMB).
+    pub input_cache_miss_price: Option<f64>,
+    /// Pricing snapshot: output price per million tokens (RMB).
+    pub output_price: Option<f64>,
+    /// Pricing source URL (audit trail).
+    pub pricing_source: Option<&'a str>,
+}
+
+/// A historical cost record retrieved from the database.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoricalCost {
+    /// Computed cost in CNY / RMB. None when pricing unavailable.
+    pub cost_yuan: Option<f64>,
+    /// Pricing snapshot: input cache-hit price per million tokens (RMB).
+    pub input_cache_hit_price: Option<f64>,
+    /// Pricing snapshot: input cache-miss price per million tokens (RMB).
+    pub input_cache_miss_price: Option<f64>,
+    /// Pricing snapshot: output price per million tokens (RMB).
+    pub output_price: Option<f64>,
+    /// Pricing source URL (audit trail).
+    pub pricing_source: Option<String>,
 }
 
 /// Repository over the `costs` table.
@@ -50,8 +73,9 @@ impl<'db> CostStore<'db> {
         self.db.with_conn(|c| {
             c.execute(
                 "INSERT INTO costs (session_id, timestamp, model, input_tokens, output_tokens, \
-                 cache_hit_tokens, cache_miss_tokens, total_tokens, cost_yuan) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                 cache_hit_tokens, cache_miss_tokens, total_tokens, cost_yuan, \
+                 input_cache_hit_price, input_cache_miss_price, output_price, pricing_source) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     entry.session_id,
                     entry.timestamp,
@@ -62,6 +86,10 @@ impl<'db> CostStore<'db> {
                     entry.cache_miss_tokens,
                     entry.total_tokens,
                     entry.cost_yuan,
+                    entry.input_cache_hit_price,
+                    entry.input_cache_miss_price,
+                    entry.output_price,
+                    entry.pricing_source,
                 ],
             )
             .map_err(map_sqlite)?;
@@ -88,7 +116,36 @@ impl<'db> CostStore<'db> {
                 .prepare("SELECT cost_yuan FROM costs WHERE session_id = ?1 ORDER BY id ASC")
                 .map_err(map_sqlite)?;
             let rows = stmt
-                .query_map(params![session_id], |row| row.get::<_, f64>(0))
+                .query_map(params![session_id], |row| row.get::<_, Option<f64>>(0))
+                .map_err(map_sqlite)?;
+            let mut out = Vec::new();
+            for row in rows {
+                out.push(row.map_err(map_sqlite)?.unwrap_or(0.0));
+            }
+            Ok(out)
+        })
+    }
+
+    /// Individual costs with pricing snapshots for a session, in insertion order.
+    pub fn session_costs_detailed(&self, session_id: &str) -> Result<Vec<HistoricalCost>> {
+        self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT cost_yuan, input_cache_hit_price, input_cache_miss_price, \
+                     output_price, pricing_source \
+                     FROM costs WHERE session_id = ?1 ORDER BY id ASC",
+                )
+                .map_err(map_sqlite)?;
+            let rows = stmt
+                .query_map(params![session_id], |row| {
+                    Ok(HistoricalCost {
+                        cost_yuan: row.get(0)?,
+                        input_cache_hit_price: row.get(1)?,
+                        input_cache_miss_price: row.get(2)?,
+                        output_price: row.get(3)?,
+                        pricing_source: row.get(4)?,
+                    })
+                })
                 .map_err(map_sqlite)?;
             let mut out = Vec::new();
             for row in rows {
@@ -136,7 +193,11 @@ mod tests {
             cache_hit_tokens: 0,
             cache_miss_tokens: 100,
             total_tokens: 150,
-            cost_yuan: cost,
+            cost_yuan: Some(cost),
+            input_cache_hit_price: Some(0.02),
+            input_cache_miss_price: Some(1.0),
+            output_price: Some(4.0),
+            pricing_source: Some("https://api-docs.deepseek.com/zh-cn/quick_start/pricing"),
         }
     }
 

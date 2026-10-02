@@ -355,7 +355,7 @@ impl AppService {
             return Err(CoreError::not_found(format!("session {session_id}")));
         }
         let mut recorded_costs = CostStore::new(&self.db)
-            .session_costs(session_id)?
+            .session_costs_detailed(session_id)?
             .into_iter();
 
         let mut messages: Vec<ConversationMessageDto> = Vec::new();
@@ -548,7 +548,7 @@ impl AppService {
                         prompt_cache_miss_tokens: *prompt_cache_miss_tokens,
                         duration_ms: *duration_ms,
                         raw_responses_usage: raw_responses_usage.clone(),
-                        cost_yuan: recorded_costs.next(),
+                        cost_yuan: recorded_costs.next().and_then(|c| c.cost_yuan),
                     });
                 }
                 _ => {}

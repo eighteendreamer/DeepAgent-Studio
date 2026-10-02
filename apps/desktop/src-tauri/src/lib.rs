@@ -1055,10 +1055,22 @@ fn sandboxie_install(state: State<'_, AppState>) -> Result<SandboxieStatusDto, S
 #[tauri::command]
 fn refresh_models(state: State<'_, AppState>) -> Result<SettingsView, String> {
     let settings = state.settings.clone();
-    state
+    let cost = state.cost.clone();
+    let view = state
         .rt
         .block_on(async move { settings.refresh_models().await })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // After successful model refresh, also refresh pricing and update CostService.
+    let settings_for_pricing = state.settings.clone();
+    let cost_for_pricing = cost.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Ok(catalog) = settings_for_pricing.refresh_pricing().await {
+            cost_for_pricing.set_pricing(catalog.models);
+        }
+    });
+
+    Ok(view)
 }
 
 /// Query the user's DeepSeek balance via the official `GET /user/balance`
@@ -6417,8 +6429,24 @@ pub fn run() {
             }
 
             // Cost tracking: records per-run token cost over the shared DB and
-            // enforces optional daily/monthly budget limits.
+            // enforces optional daily/monthly budget limits. Pricing is loaded from
+            // settings; if settings exist, load the pricing catalog immediately.
             let cost = Arc::new(CostService::new(service.shared_database()));
+            if let Ok(Some(settings)) = settings_arc.view() {
+                cost.set_pricing(settings.pricing_catalog.models.clone());
+            }
+
+            // Asynchronously refresh pricing in the background (non-blocking).
+            // If this fails, the startup-loaded pricing from settings remains valid.
+            {
+                let settings_for_pricing = settings_arc.clone();
+                let cost_for_pricing = cost.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(catalog) = settings_for_pricing.refresh_pricing().await {
+                        cost_for_pricing.set_pricing(catalog.models);
+                    }
+                });
+            }
 
             // Archived conversations: app-level visibility index, separate from
             // the append-only event log.

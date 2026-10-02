@@ -196,6 +196,7 @@ mod tests {
             )
             .expect("auto_select with both V4 roles produces a valid catalog"),
             discovered_at: 0,
+            pricing_catalog: Default::default(),
             approval_policy: crate::settings::ApprovalPolicy::default(),
             sandbox_mode: crate::settings::SandboxMode::default(),
             terminal_shell: crate::settings::TerminalShell::default(),

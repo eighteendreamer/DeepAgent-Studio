@@ -151,17 +151,18 @@ pub struct CostService {
 }
 
 impl CostService {
-    /// Build with the shared database, fallback RMB pricing, and no budget.
+    /// Build with the shared database and no initial pricing. Callers must
+    /// load pricing from settings via `set_pricing()` before recording costs.
     pub fn new(db: Arc<Database>) -> Self {
         Self {
             db,
-            pricing: RwLock::new(default_pricing()),
+            pricing: RwLock::new(HashMap::new()),
             budget: RwLock::new(BudgetConfig::default()),
         }
     }
 
-    /// Replace the in-memory pricing catalog. Intended for a future official
-    /// pricing refresh path; calculation callers keep using this service.
+    /// Replace the in-memory pricing catalog with the official catalog from
+    /// settings. Call this after settings initialization or pricing refresh.
     pub fn set_pricing(&self, pricing: HashMap<String, ModelPricing>) {
         *self.pricing.write().unwrap_or_else(|p| p.into_inner()) = pricing;
     }
@@ -181,9 +182,10 @@ impl CostService {
     }
 
     /// Record a cost entry for a completed model call. Returns the calculated
-    /// RMB cost.
-    pub fn record(&self, request: CostRecordRequest) -> Result<f64> {
-        let pricing = self.pricing_for_model(&request.model)?;
+    /// RMB cost when pricing is available, or None when pricing is unavailable.
+    /// Token usage is always saved; cost unavailability is marked explicitly.
+    pub fn record(&self, request: CostRecordRequest) -> Result<Option<f64>> {
+        let pricing_result = self.pricing_for_model(&request.model);
         let effective_cache_miss = if request.cache_miss_tokens > 0 {
             request.cache_miss_tokens
         } else {
@@ -191,13 +193,33 @@ impl CostService {
                 .input_tokens
                 .saturating_sub(request.cache_hit_tokens)
         };
-        let cost = pricing.calculate(
-            request.input_tokens,
-            request.output_tokens,
-            request.cache_hit_tokens,
-            effective_cache_miss,
-        );
         let now = SystemClock.now().as_millis();
+
+        let (cost_yuan, snapshot) = match pricing_result {
+            Ok(pricing) => {
+                let cost = pricing.calculate(
+                    request.input_tokens,
+                    request.output_tokens,
+                    request.cache_hit_tokens,
+                    effective_cache_miss,
+                );
+                (
+                    Some(cost),
+                    Some((
+                        pricing.input_cache_hit_per_million,
+                        pricing.input_cache_miss_per_million,
+                        pricing.output_per_million,
+                    )),
+                )
+            }
+            Err(_) => {
+                tracing::warn!(
+                    model = %request.model,
+                    "no pricing available; saving token usage without cost"
+                );
+                (None, None)
+            }
+        };
 
         CostStore::new(&self.db).insert(&CostEntry {
             session_id: &request.session_id,
@@ -208,9 +230,13 @@ impl CostService {
             cache_hit_tokens: request.cache_hit_tokens,
             cache_miss_tokens: effective_cache_miss,
             total_tokens: request.total_tokens,
-            cost_yuan: cost,
+            cost_yuan,
+            input_cache_hit_price: snapshot.map(|s| s.0),
+            input_cache_miss_price: snapshot.map(|s| s.1),
+            output_price: snapshot.map(|s| s.2),
+            pricing_source: Some("https://api-docs.deepseek.com/zh-cn/quick_start/pricing"),
         })?;
-        Ok(cost)
+        Ok(cost_yuan)
     }
 
     /// Get a cost summary for a session + today + month + total.
@@ -239,30 +265,18 @@ impl CostService {
 
     fn pricing_for_model(&self, model: &str) -> Result<ModelPricing> {
         let pricing = self.pricing.read().unwrap_or_else(|p| p.into_inner());
+
+        // Exact match first (e.g. "deepseek-flash", "deepseek-v4-pro")
         if let Some(p) = pricing.get(model) {
             return Ok(p.clone());
         }
-        let lower = model.to_ascii_lowercase();
-        if lower.contains("v4-flash") || lower.ends_with("-flash") {
-            return pricing
-                .get("deepseek-v4-flash")
-                .cloned()
-                .ok_or_else(|| CoreError::invalid("deepseek-v4-flash pricing is missing"));
-        }
-        if lower.contains("v4-pro") || lower.ends_with("-pro") {
-            return pricing
-                .get("deepseek-v4-pro")
-                .cloned()
-                .ok_or_else(|| CoreError::invalid("deepseek-v4-pro pricing is missing"));
-        }
-        if lower.contains("reasoner") {
-            return pricing
-                .get("deepseek-reasoner")
-                .cloned()
-                .ok_or_else(|| CoreError::invalid("deepseek-reasoner pricing is missing"));
-        }
+
+        // No fuzzy fallback: if the exact model isn't in the official catalog,
+        // billing cannot proceed. This enforces "pricing must come from official
+        // dynamic data, never hardcoded guesses".
         Err(CoreError::invalid(format!(
-            "no DeepSeek pricing configured for model '{model}'"
+            "no official pricing for model '{}'; refresh pricing via settings",
+            model
         )))
     }
 
@@ -342,6 +356,7 @@ mod tests {
     #[test]
     fn record_and_summary() {
         let svc = service();
+        svc.set_pricing(default_pricing());
         let cost = svc
             .record(CostRecordRequest {
                 session_id: "ses_1".to_string(),
@@ -353,6 +368,8 @@ mod tests {
                 total_tokens: 10500,
             })
             .unwrap();
+        assert!(cost.is_some());
+        let cost = cost.unwrap();
         assert!(cost > 0.0);
 
         let summary = svc.summary("ses_1").unwrap();
@@ -364,6 +381,7 @@ mod tests {
     #[test]
     fn budget_enforcement() {
         let svc = service();
+        svc.set_pricing(default_pricing());
         svc.set_budget(BudgetConfig {
             daily_limit: Some(0.001),
             monthly_limit: None,
@@ -390,6 +408,7 @@ mod tests {
     #[test]
     fn deprecated_chat_alias_uses_flash_pricing() {
         let svc = service();
+        svc.set_pricing(default_pricing());
         let cost = svc
             .record(CostRecordRequest {
                 session_id: "ses_1".to_string(),
@@ -401,6 +420,25 @@ mod tests {
                 total_tokens: 2000,
             })
             .unwrap();
-        assert!(cost > 0.0);
+        assert!(cost.is_some());
+        assert!(cost.unwrap() > 0.0);
+    }
+
+    #[test]
+    fn no_pricing_saves_usage_without_cost() {
+        let svc = service();
+        // No pricing set
+        let result = svc
+            .record(CostRecordRequest {
+                session_id: "ses_1".to_string(),
+                model: "unknown-model".to_string(),
+                input_tokens: 1000,
+                output_tokens: 500,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 1000,
+                total_tokens: 1500,
+            })
+            .unwrap();
+        assert!(result.is_none());
     }
 }

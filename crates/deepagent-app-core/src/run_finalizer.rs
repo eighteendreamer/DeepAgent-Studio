@@ -7,7 +7,7 @@ use deepagent_core::error::Result;
 use deepagent_core::event::EventPayload;
 use deepagent_models::ModelClient;
 use deepagent_persistence::Database;
-use deepagent_runtime::{agent::RunUsage, RuntimeEvent, RuntimeEventSink};
+use deepagent_runtime::{agent::RunUsage, RuntimeEventSink};
 use deepagent_session::Session;
 
 use crate::cost_service::{CostRecordRequest, CostService};
@@ -107,7 +107,7 @@ impl AppRunFinalizer {
         session_id: &str,
         model_name: &str,
         usage: Option<RunUsage>,
-        sink: &dyn RuntimeEventSink,
+        _sink: &dyn RuntimeEventSink,
     ) {
         let Some(cost) = &self.cost else {
             return;
@@ -127,18 +127,18 @@ impl AppRunFinalizer {
             cache_miss_tokens: u.prompt_cache_miss_tokens,
             total_tokens: u.total_tokens,
         }) {
-            Ok(cny) => {
+            Ok(Some(cny)) => {
                 tracing::info!(cost_yuan = cny, "recorded run cost");
-                sink.emit(RuntimeEvent::Usage {
-                    prompt_tokens: 0,
-                    completion_tokens: 0,
-                    reasoning_tokens: 0,
-                    total_tokens: 0,
-                    prompt_cache_hit_tokens: 0,
-                    prompt_cache_miss_tokens: 0,
-                    cost_yuan: Some(cny),
-                    raw_responses_usage: None,
-                });
+                // Cost is persisted to the database and will be loaded during
+                // conversation reconstruction. We no longer send a zero-token
+                // Usage event here, as it was overwriting the real usage from
+                // model_agent.rs and causing live UI to display 0 tokens.
+            }
+            Ok(None) => {
+                tracing::warn!(
+                    model = model_name,
+                    "token usage saved but cost unavailable (no pricing for model)"
+                );
             }
             Err(error) => tracing::warn!(error = %error, "failed to record run cost"),
         }

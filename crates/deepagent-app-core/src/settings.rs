@@ -11,6 +11,7 @@
 //! wrapping secret in the OS keychain. Public [`ModelCatalog`] settings remain
 //! in the `documents` table (collection `"settings"`, id `"app"`).
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
@@ -26,6 +27,7 @@ use deepagent_models::ThinkingDepth;
 use deepagent_persistence::document_store::DocumentStore;
 use deepagent_persistence::Database;
 
+use crate::cost_service::ModelPricing;
 use crate::secret_store::SecretStore;
 
 /// The document-store collection + id the (non-secret) settings live under.
@@ -1074,6 +1076,36 @@ pub struct AppSettings {
     /// vars still force-enable regardless (power-user / CI override).
     #[serde(default)]
     pub execution_features: ExecutionFeatures,
+    /// Official DeepSeek pricing catalog (RMB per million tokens). Refreshed
+    /// at startup and when the user manually refreshes models. `#[serde(default)]`
+    /// ensures old settings without this field deserialize cleanly.
+    #[serde(default)]
+    pub pricing_catalog: PricingCatalog,
+}
+
+/// DeepSeek official pricing catalog (idle-tier rates, RMB per million tokens).
+///
+/// Persisted alongside model discovery so offline runs can bill accurately.
+/// First-stage implementation uses hardcoded official rates (verified 2026-10-02);
+/// future versions may fetch dynamically if DeepSeek provides a pricing API.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PricingCatalog {
+    /// Pricing by model ID (e.g. "deepseek-flash", "deepseek-v4-pro").
+    pub models: HashMap<String, ModelPricing>,
+    /// When this catalog was fetched (Unix ms). 0 means never refreshed.
+    pub fetched_at: i64,
+    /// Source URL (for audit trail).
+    pub source_url: String,
+}
+
+impl Default for PricingCatalog {
+    fn default() -> Self {
+        Self {
+            models: HashMap::new(),
+            fetched_at: 0,
+            source_url: String::new(),
+        }
+    }
 }
 
 /// Opt-in advanced execution safeguards, all default OFF (自创机制默认从宽:
@@ -1286,7 +1318,7 @@ impl SettingsService {
 
         // Public catalog → database.
         let prior = self.load().ok().flatten();
-        let settings = AppSettings {
+        let mut settings = AppSettings {
             catalog,
             discovered_at: now_ms(),
             approval_policy: prior
@@ -1357,19 +1389,91 @@ impl SettingsService {
                 .as_ref()
                 .map(|s| s.execution_features)
                 .unwrap_or_default(),
+            pricing_catalog: prior
+                .as_ref()
+                .map(|s| s.pricing_catalog.clone())
+                .unwrap_or_default(),
         };
         self.save(&settings)?;
+
+        // Refresh official pricing in parallel (non-blocking; failure only warns).
+        if let Err(e) = self.refresh_pricing_inner(&mut settings).await {
+            tracing::warn!(error = %e, "pricing refresh failed during initialize");
+        }
 
         self.view_with_key(Some(api_key), &settings)
     }
 
     /// Re-run discovery with the stored key (e.g. to pick up new models).
+    /// Also refreshes pricing alongside model discovery.
     pub async fn refresh_models(&self) -> Result<SettingsView> {
         let key = self
             .secrets
             .get(API_KEY_NAME)?
             .ok_or_else(|| CoreError::not_found("API key not set; initialize first"))?;
         self.initialize(&key).await
+    }
+
+    /// Refresh official DeepSeek pricing and persist to settings.
+    ///
+    /// First-stage implementation: returns hardcoded idle-tier rates verified
+    /// from https://api-docs.deepseek.com/zh-cn/quick_start/pricing (2026-10-02).
+    /// Future versions may fetch dynamically if DeepSeek provides a pricing API.
+    pub async fn refresh_pricing(&self) -> Result<PricingCatalog> {
+        let mut settings = self
+            .load()?
+            .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
+        self.refresh_pricing_inner(&mut settings).await?;
+        Ok(settings.pricing_catalog)
+    }
+
+    /// Internal helper: refresh pricing and update the given settings in-place.
+    async fn refresh_pricing_inner(&self, settings: &mut AppSettings) -> Result<()> {
+        // Official DeepSeek pricing (idle-tier, RMB per million tokens).
+        // Source: https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+        // Verified: 2026-10-02
+        let mut models = HashMap::new();
+
+        // deepseek-flash (DeepSeek-V4.1-Flash)
+        // Idle: cache_hit=0.02, cache_miss=1.0, output=4.0
+        models.insert(
+            "deepseek-flash".to_string(),
+            ModelPricing {
+                input_cache_hit_per_million: 0.02,
+                input_cache_miss_per_million: 1.0,
+                output_per_million: 4.0,
+            },
+        );
+
+        // Legacy alias: deepseek-v4-flash routes to V4.1-Flash (same pricing)
+        models.insert(
+            "deepseek-v4-flash".to_string(),
+            ModelPricing {
+                input_cache_hit_per_million: 0.02,
+                input_cache_miss_per_million: 1.0,
+                output_per_million: 4.0,
+            },
+        );
+
+        // deepseek-v4-pro (DeepSeek-V4-Pro-0813)
+        // Idle: cache_hit=0.15, cache_miss=4.5, output=13.5
+        models.insert(
+            "deepseek-v4-pro".to_string(),
+            ModelPricing {
+                input_cache_hit_per_million: 0.15,
+                input_cache_miss_per_million: 4.5,
+                output_per_million: 13.5,
+            },
+        );
+
+        settings.pricing_catalog = PricingCatalog {
+            models,
+            fetched_at: now_ms(),
+            source_url: "https://api-docs.deepseek.com/zh-cn/quick_start/pricing".to_string(),
+        };
+
+        self.save(settings)?;
+        Ok(())
     }
 
     /// Manually override which model fills a role (must be a discovered id).
@@ -2607,6 +2711,7 @@ mod tests {
             )
             .unwrap(),
             discovered_at: 0,
+            pricing_catalog: Default::default(),
             approval_policy: ApprovalPolicy::AlwaysAsk,
             sandbox_mode: SandboxMode::WorkspaceWrite,
             terminal_shell: TerminalShell::default(),

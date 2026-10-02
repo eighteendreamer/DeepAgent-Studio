@@ -400,6 +400,38 @@ const MIGRATIONS: &[&str] = &[
     r#"
     UPDATE session_search_cursors SET dirty = 1;
     "#,
+    // V21: allow cost_yuan to be NULL when pricing is unavailable, and add
+    // pricing snapshot fields so historical costs remain interpretable when
+    // official rates change. SQLite doesn't support ALTER COLUMN, so recreate
+    // the table. Old rows keep their original cost_yuan but have NULL pricing
+    // fields (audit trail preserved, snapshot unavailable).
+    r#"
+    CREATE TABLE costs_new (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id  TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+        timestamp   INTEGER NOT NULL,
+        model       TEXT NOT NULL,
+        input_tokens    INTEGER NOT NULL DEFAULT 0,
+        output_tokens   INTEGER NOT NULL DEFAULT 0,
+        cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens    INTEGER NOT NULL DEFAULT 0,
+        cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+        cost_yuan       REAL,
+        input_cache_hit_price REAL,
+        input_cache_miss_price REAL,
+        output_price REAL,
+        pricing_source TEXT
+    );
+    INSERT INTO costs_new (id, session_id, timestamp, model, input_tokens, output_tokens,
+                           cache_hit_tokens, total_tokens, cache_miss_tokens, cost_yuan)
+        SELECT id, session_id, timestamp, model, input_tokens, output_tokens,
+               cache_hit_tokens, total_tokens, cache_miss_tokens, cost_yuan
+        FROM costs;
+    DROP TABLE costs;
+    ALTER TABLE costs_new RENAME TO costs;
+    CREATE INDEX idx_costs_session ON costs(session_id);
+    CREATE INDEX idx_costs_timestamp ON costs(timestamp);
+    "#,
 ];
 
 /// The highest schema version defined by this build.
