@@ -107,39 +107,41 @@ export function SessionUsageBar({ sessionId }: Props) {
       : null;
 
   return (
-    <div className="mt-2 flex min-h-7 items-center gap-3 px-6 text-[11.5px] text-text-secondary opacity-80 tabular-nums">
+    <div className="mt-1 flex min-h-5 items-center justify-between gap-3 px-6 text-[11px] text-text-secondary opacity-80 tabular-nums">
       <span className="font-semibold text-text-tertiary">会话统计</span>
-      {summary && (
-        <>
-          <span className="text-text-tertiary">
-            <ArrowDown size={12} className="mr-0.5 inline" />
-            输入 {formatTokens(summary.input_tokens)}
-          </span>
-          <span className="text-text-tertiary">
-            <ArrowUp size={12} className="mr-0.5 inline" />
-            输出 {formatTokens(summary.output_tokens)}
-          </span>
-          {summary.cache_hit_tokens > 0 && (
-            <span className="font-medium text-green-600">
-              <Zap size={12} className="mr-0.5 inline" />
-              缓存命中 {formatTokens(summary.cache_hit_tokens)}
+      <div className="flex flex-1 items-center justify-evenly gap-3">
+        {summary && (
+          <>
+            <span className="text-text-tertiary">
+              <ArrowDown size={11} className="mr-0.5 inline" />
+              输入 {formatTokens(summary.input_tokens)}
             </span>
-          )}
-          {cacheHitRate !== null && (
-            <span className="text-text-tertiary">命中率 {cacheHitRate.toFixed(1)}%</span>
-          )}
-          <span>
-            <Coins size={12} className="mr-0.5 inline" />
-            {formatCny(summary.session_cost)}
+            <span className="text-text-tertiary">
+              <ArrowUp size={11} className="mr-0.5 inline" />
+              输出 {formatTokens(summary.output_tokens)}
+            </span>
+            {summary.cache_hit_tokens > 0 && (
+              <span className="font-medium text-green-600">
+                <Zap size={11} className="mr-0.5 inline" />
+                缓存命中 {formatTokens(summary.cache_hit_tokens)}
+              </span>
+            )}
+            {cacheHitRate !== null && (
+              <span className="text-text-tertiary">命中率 {cacheHitRate.toFixed(1)}%</span>
+            )}
+            <span>
+              <Coins size={11} className="mr-0.5 inline" />
+              {formatCny(summary.session_cost)}
+            </span>
+          </>
+        )}
+        {balance && balance.is_available && balance.infos.length > 0 && (
+          <span className="text-text-tertiary">
+            <Wallet size={11} className="mr-0.5 inline" />
+            余额 ¥{parseFloat(balance.infos[0].total_balance).toFixed(2)}
           </span>
-        </>
-      )}
-      {balance && balance.is_available && balance.infos.length > 0 && (
-        <span className="text-text-tertiary">
-          <Wallet size={12} className="mr-0.5 inline" />
-          余额 ¥{parseFloat(balance.infos[0].total_balance).toFixed(2)}
-        </span>
-      )}
+        )}
+      </div>
     </div>
   );
 }
