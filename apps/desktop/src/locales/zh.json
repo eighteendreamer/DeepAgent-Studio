@@ -218,28 +218,10 @@
       "project": {
         "title": "项目信息",
         "version": "桌面端 v0.0.8",
-        "description": "DeepAgent Studio 不只是聊天应用，而是一个可验证、可回放的 Agent 运行时平台，提供上下文工程、工具执行、权限控制、MCP 扩展与桌面工作流。"
+        "description": "DeepAgent Studio 不只是聊天应用，而是一个可验证、可回放的 Agent 运行时平台，提供上下文工程、工具执行、权限控制、MCP 扩展与桌面工作流。本系统已软著登记。"
       },
       "stack": {
         "title": "技术栈"
-      },
-      "copyright": {
-        "title": "资质与登记",
-        "heading": "计算机软件著作权登记证书",
-        "description": "DeepAgent-Studio 桌面智能体开发平台已完成计算机软件著作权登记，作为项目研发与持续维护的基础资质。",
-        "software": "DeepAgent-Studio 桌面智能体开发平台",
-        "registration": "2026SR0824531",
-        "version": "V0.0.1",
-        "date": "2026年08月11日",
-        "previewCaption": "查看证书原件",
-        "dialogTitle": "软件著作权登记证书",
-        "imageAlt": "DeepAgent-Studio 计算机软件著作权登记证书",
-        "fields": {
-          "software": "软件名称",
-          "registration": "登记号",
-          "version": "版本",
-          "date": "登记日期"
-        }
       },
       "developer": {
         "title": "开发者",
