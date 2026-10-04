@@ -898,6 +898,14 @@
     "approve": "Approve",
     "reject": "Reject"
   },
+  "askUserDialog": {
+    "title": "Needs your answer",
+    "pending": "{{count}} more to answer",
+    "other": "Other (write your own)",
+    "otherPlaceholder": "Type your answer",
+    "submit": "Submit",
+    "skip": "Skip"
+  },
   "automationView": {
     "viewTemplates": "View Templates",
     "createViaChat": "Create via Chat",

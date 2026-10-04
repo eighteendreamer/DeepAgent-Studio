@@ -898,6 +898,14 @@
     "approve": "批准",
     "reject": "拒绝"
   },
+  "askUserDialog": {
+    "title": "需要你确认",
+    "pending": "还有 {{count}} 个问题待回答",
+    "other": "其他（自己填）",
+    "otherPlaceholder": "输入你的答案",
+    "submit": "提交答案",
+    "skip": "跳过"
+  },
   "automationView": {
     "viewTemplates": "查看模板",
     "createViaChat": "通过聊天创建",

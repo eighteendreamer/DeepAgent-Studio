@@ -12,10 +12,12 @@ import type {
   ToolCall,
   TimelineEntry,
   ApprovalRequest,
+  QuestionRequest,
   ProjectMapStatus,
 } from "../types";
 import { Composer } from "./Composer";
 import { ApprovalDialog } from "./ApprovalDialog";
+import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { RenameSessionDialog } from "./RenameSessionDialog";
 import { EnvironmentInfoMenu } from "./EnvironmentInfoMenu";
 import type { OutputItem } from "./EnvironmentInfoMenu";
@@ -91,6 +93,12 @@ interface Props {
   approvalQueueCount?: number;
   /** Resolve the current approval (allow / deny). */
   onApprovalDecision?: (req: ApprovalRequest, approved: boolean) => void;
+  /** Head-of-queue question the run is blocked on (`ask_user_question`). */
+  question?: QuestionRequest | null;
+  /** Total queued questions (including the current one). */
+  questionQueueCount?: number;
+  /** Answer the current question, or pass `null` to skip it. */
+  onQuestionAnswer?: (req: QuestionRequest, answers: Record<string, string> | null) => void;
   /** True while a run is streaming - disables the composer send button. */
   busy?: boolean;
   /** Stop the in-flight run (manual cancel). */
@@ -982,6 +990,9 @@ export function ChatView({
   approval = null,
   approvalQueueCount = 0,
   onApprovalDecision,
+  question = null,
+  questionQueueCount = 0,
+  onQuestionAnswer,
   busy = false,
   onStop,
   planMode = false,
@@ -1392,17 +1403,28 @@ export function ChatView({
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
           <div ref={composerFrameRef} className="w-full max-w-4xl relative">
-            {approval && (
+            {(approval || question) && (
               <div
-                className="absolute left-0 right-0 z-30"
+                className="absolute left-0 right-0 z-30 flex flex-col gap-2"
                 style={{ bottom: "calc(100% - 10px)" }}
               >
-                <ApprovalDialog
-                  request={approval}
-                  queueCount={approvalQueueCount}
-                  onApprove={(req) => onApprovalDecision?.(req, true)}
-                  onReject={(req) => onApprovalDecision?.(req, false)}
-                />
+                {approval && (
+                  <ApprovalDialog
+                    request={approval}
+                    queueCount={approvalQueueCount}
+                    onApprove={(req) => onApprovalDecision?.(req, true)}
+                    onReject={(req) => onApprovalDecision?.(req, false)}
+                  />
+                )}
+                {question && (
+                  <AskUserQuestionCard
+                    key={question.question_id}
+                    request={question}
+                    queueCount={questionQueueCount}
+                    onAnswer={(req, answers) => onQuestionAnswer?.(req, answers)}
+                    onDecline={(req) => onQuestionAnswer?.(req, null)}
+                  />
+                )}
               </div>
             )}
             <Composer

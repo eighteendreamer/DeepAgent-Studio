@@ -28,6 +28,8 @@ import {
   runChat,
   cancelRun,
   resolveApproval,
+  listenQuestions,
+  respondQuestion,
   stopChat,
   getPlanMode,
   setPlanMode as setSessionPlanMode,
@@ -52,6 +54,7 @@ import type {
   MessagePart,
   PersistedAttachment,
   Project,
+  QuestionRequest,
   RunAttachment,
   SessionDetail,
   SessionSummary,
@@ -447,6 +450,10 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // FIFO queue of tool-approval requests awaiting the user's decision.
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  // FIFO queue of `ask_user_question` sets the run is blocked on. The backend
+  // waits for an answer indefinitely, so a card only leaves the queue when the
+  // user answers, skips, or stops the run.
+  const [questions, setQuestions] = useState<QuestionRequest[]>([]);
   // True while an agent run is streaming. Used to gate new submissions (you
   // can't send a new message mid-output) and to show a busy send button. The
   // run itself is async on the backend, so the UI never freezes — approvals,
@@ -1900,6 +1907,9 @@ export function App() {
     } else if (activeId && runningSessionIds.has(activeId)) {
       stopChat(activeId).catch(() => {});
     }
+    // A cancelled run drops its pending questions in the backend, so their
+    // cards have to go too — otherwise a dead card sits over the composer.
+    setQuestions([]);
   }, [runningSessionIds, activeId]);
 
   // Resolve the head-of-queue approval (allow/deny), then dequeue it.
@@ -1907,6 +1917,46 @@ export function App() {
     (request: ApprovalRequest, approved: boolean) => {
       resolveApproval(request.call_id, approved).catch(() => {});
       setApprovals((prev) => prev.filter((a) => a.call_id !== request.call_id));
+    },
+    []
+  );
+
+  // Subscribe once for the whole app: every run entry point can ask a question,
+  // and the listener has to survive switching sessions.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    listenQuestions((request) => {
+      if (disposed) return;
+      setQuestions((prev) =>
+        prev.some((item) => item.question_id === request.question_id)
+          ? prev
+          : [...prev, request]
+      );
+    })
+      .then((fn) => {
+        if (disposed) fn();
+        else unlisten = fn;
+      })
+      .catch(() => {});
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
+  // Answer (or skip) a question, then dequeue it. A failed IPC keeps the card:
+  // the run is still blocked on this exact answer.
+  const onQuestionAnswer = useCallback(
+    async (request: QuestionRequest, answers: Record<string, string> | null) => {
+      try {
+        await respondQuestion(request.question_id, answers ?? undefined);
+      } catch (error) {
+        console.error("respond question failed:", error);
+        message.error("提交失败，运行仍在等待这个答案，请重试。");
+        return;
+      }
+      setQuestions((prev) => prev.filter((q) => q.question_id !== request.question_id));
     },
     []
   );
@@ -2225,6 +2275,9 @@ export function App() {
                   approval={approvals[0] ?? null}
                   approvalQueueCount={approvals.length}
                   onApprovalDecision={onApprovalDecision}
+                  question={questions[0] ?? null}
+                  questionQueueCount={questions.length}
+                  onQuestionAnswer={onQuestionAnswer}
                   busy={activeChatBusy}
                   onStop={onStopRun}
                   planMode={planMode}

@@ -58,6 +58,7 @@ pub mod plugin_service;
 pub mod project_map_service;
 pub mod project_service;
 pub mod prompt_gate;
+pub mod question_bridge;
 pub mod recording_service;
 pub mod run_assembler;
 pub mod run_config;
@@ -120,11 +121,11 @@ pub use dto::{
     GitCommitMessageDraftDto, GitCompareCommitDto, GitDiffDto, GitLogEntryDto,
     GitOperationResultDto, GitProjectStatusDto, GitPushCommitDto, GitPushPreviewDto,
     GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto, GitWorktreeDto, PdfRenderResultDto,
-    PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, RecordingSessionDto,
-    RewindResultDto, RunRecoveryDto, RuntimeProgressDto, RuntimeRootsDto, RuntimeStatusDto,
-    SessionDetailDto, SessionSearchHitDto, SessionStatsDto, SessionSummaryDto, SessionUiPrefsDto,
-    SheetPreviewDto, TerminalResultDto, TimelineEntryDto, TranscriptDto, TranscriptSegmentDto,
-    VisionRecognizeRequestDto, VisionRecognizeResultDto, WorkspaceInfoDto,
+    PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, QuestionRequestDto,
+    RecordingSessionDto, RewindResultDto, RunRecoveryDto, RuntimeProgressDto, RuntimeRootsDto,
+    RuntimeStatusDto, SessionDetailDto, SessionSearchHitDto, SessionStatsDto, SessionSummaryDto,
+    SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto, TranscriptDto,
+    TranscriptSegmentDto, VisionRecognizeRequestDto, VisionRecognizeResultDto, WorkspaceInfoDto,
 };
 pub use file_preview_service::FilePreviewService;
 pub use git_service::GitService;
@@ -153,6 +154,7 @@ pub use project_map_service::{
     ProjectMapRefreshDto, ProjectMapService, ProjectMapStatusDto,
 };
 pub use project_service::{folder_name, ProjectService};
+pub use question_bridge::{ChannelQuestionResponder, PendingQuestions};
 pub use recording_service::{AudioRecorder, RecordingService, UnavailableRecorder};
 pub use run_coordinator::{CoordinatorReadiness, RunCoordinator};
 pub use runtime_service::{

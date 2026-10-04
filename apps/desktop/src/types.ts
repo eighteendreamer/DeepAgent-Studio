@@ -87,6 +87,26 @@ export interface ApprovalRequest {
   run_id?: string;
 }
 
+/** One choice inside a question the model asked mid-run. */
+export interface QuestionOption {
+  label: string;
+  description: string;
+}
+
+/** A single question with its options (`ask_user_question`). */
+export interface AskUserQuestion {
+  question: string;
+  header: string;
+  options: QuestionOption[];
+  multi_select: boolean;
+}
+
+/** A question set the run is blocked on until the user answers it. */
+export interface QuestionRequest {
+  question_id: string;
+  questions: AskUserQuestion[];
+}
+
 export type DiffKind = "context" | "added" | "removed";
 
 export interface DiffLine {

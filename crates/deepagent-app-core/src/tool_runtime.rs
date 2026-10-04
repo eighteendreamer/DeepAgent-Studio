@@ -151,13 +151,17 @@ pub(crate) struct ToolRegistryBuildRequest<'a> {
     pub(crate) project_map: Option<Arc<ProjectMapService>>,
     pub(crate) office: Option<Arc<OfficeService>>,
     pub(crate) remote_ops_factory: Option<RemoteOpsFactory>,
+    /// How `ask_user_question` reaches a human: the desktop question dialog, the
+    /// sub-agent's "take the recommended option" answer, or the headless default
+    /// that declines. Owned by the caller so no run can silently invent one.
+    pub(crate) question_responder: Arc<dyn deepagent_builtins::QuestionResponder>,
 }
 
 pub(crate) fn build_base_tool_registry(
     request: ToolRegistryBuildRequest<'_>,
 ) -> Result<(ToolRegistry, deepagent_builtins::TodoStore)> {
     use deepagent_builtins::{
-        register_builtins, AskUserQuestionTool, BuiltinConfig, DeclineResponder, WorkspaceRoot,
+        register_builtins, AskUserQuestionTool, BuiltinConfig, WorkspaceRoot,
     };
 
     let mut registry = ToolRegistry::new();
@@ -189,7 +193,9 @@ pub(crate) fn build_base_tool_registry(
         request.project,
     )))?;
 
-    registry.register(Arc::new(AskUserQuestionTool::new(DeclineResponder)))?;
+    registry.register(Arc::new(AskUserQuestionTool::new(
+        request.question_responder,
+    )))?;
     register_knowledge_search(&mut registry, request.knowledge);
     register_cron_tools(&mut registry, request.cron);
     // Shared lazy code-index builder: the first code_map_*/codegraph_* call that

@@ -381,6 +381,10 @@ impl<'a> RunAssembler<'a> {
                 matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
             );
             sub_request.project = session_project.clone();
+            // A sub-agent has no human watching its own turn, so it answers
+            // `ask_user_question` from the option the model recommended instead
+            // of competing for the parent run's question dialog.
+            sub_request.question_responder = Arc::new(deepagent_builtins::RecommendedResponder);
             let sub_registry = Arc::new(build_base_tool_registry(sub_request)?.0);
             let runtime_agents = collect_runtime_agent_definitions(
                 [root.clone(), self.workspace.to_path_buf()],
@@ -1562,6 +1566,7 @@ impl<'a> RunAssembler<'a> {
             project_map: self.project_map.clone(),
             office: self.office.clone(),
             remote_ops_factory: self.remote_ops_factory.clone(),
+            question_responder: self.service.question_responder(),
         }
     }
 }

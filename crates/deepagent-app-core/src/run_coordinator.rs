@@ -15,6 +15,7 @@ use deepagent_persistence::Database;
 use serde::Serialize;
 
 use crate::approval_bridge::PendingApprovals;
+use crate::question_bridge::PendingQuestions;
 
 pub(crate) type CancellationMap = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
 
@@ -22,6 +23,7 @@ pub(crate) type CancellationMap = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
 pub struct RunCoordinator {
     db: Arc<Database>,
     pending: PendingApprovals,
+    pending_questions: PendingQuestions,
     cancellations: CancellationMap,
     run_ids: Arc<Mutex<HashMap<String, String>>>,
 }
@@ -48,6 +50,7 @@ impl RunCoordinator {
         Self {
             db,
             pending: PendingApprovals::new(),
+            pending_questions: PendingQuestions::new(),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             run_ids: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -55,6 +58,22 @@ impl RunCoordinator {
 
     pub fn pending(&self) -> PendingApprovals {
         self.pending.clone()
+    }
+
+    /// The shared pending-questions registry. The UI resolves an `ask_user_question`
+    /// dialog through [`RunCoordinator::resolve_question`].
+    pub fn pending_questions(&self) -> PendingQuestions {
+        self.pending_questions.clone()
+    }
+
+    /// Answer a pending question with the user's map, or `None` when they
+    /// declined. Returns `false` when no such question is pending.
+    pub fn resolve_question(
+        &self,
+        question_id: &str,
+        answers: Option<std::collections::BTreeMap<String, String>>,
+    ) -> bool {
+        self.pending_questions.resolve(question_id, answers)
     }
 
     pub fn readiness(&self) -> Result<CoordinatorReadiness> {

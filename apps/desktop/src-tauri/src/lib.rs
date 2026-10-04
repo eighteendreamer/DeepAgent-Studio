@@ -2446,6 +2446,19 @@ fn resolve_approval(
         .map_err(|error| error.to_string())
 }
 
+/// Answer a pending `ask_user_question` dialog. `answers` maps each question
+/// text to the chosen answer; omitting it declines, which unblocks the run with
+/// the same "no answer" contract the headless hosts get. Returns whether a
+/// matching question was still pending.
+#[tauri::command]
+fn respond_question(
+    state: State<'_, AppState>,
+    question_id: String,
+    answers: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<bool, String> {
+    Ok(state.chat.resolve_question(&question_id, answers))
+}
+
 /// Request a manual stop of an in-flight run for `session_id`. The run ends
 /// cleanly at its next step boundary (partial transcript preserved). Returns
 /// whether a matching in-flight run was found.
@@ -6577,6 +6590,12 @@ pub fn run() {
                     .with_runtime_logs(runtime_logs.clone())
                     .with_skills(skills.clone())
                     .with_office(office.clone())
+                    .with_question_notifier({
+                        let emitter = app.handle().clone();
+                        move |question: deepagent_app_core::QuestionRequestDto| {
+                            let _ = emitter.emit("chat://question", question);
+                        }
+                    })
                     .with_tool_results_dir(tool_results_dir.clone()),
                 )
             };
@@ -6835,6 +6854,7 @@ pub fn run() {
             canvas_preference_read,
             canvas_preference_write,
             resolve_approval,
+            respond_question,
             stop_chat,
             cancel_run,
             run_events,

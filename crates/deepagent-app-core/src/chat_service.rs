@@ -192,6 +192,11 @@ pub struct ChatService {
     /// sessions gain probe / push / install tools backed by the active SSH
     /// connection so the model can inspect capabilities before acting.
     remote_ops_factory: Option<RemoteOpsFactory>,
+    /// Host hook that shows an `ask_user_question` dialog. When unset (CLI,
+    /// tests, app-server) the tool keeps the headless decline responder; when
+    /// set, the run blocks on the answer instead. Permission profiles are
+    /// deliberately not consulted — see [`crate::question_bridge`].
+    question_notifier: Option<Arc<dyn Fn(crate::dto::QuestionRequestDto) + Send + Sync>>,
 }
 
 /// Factory that creates a [`CommandExecutor`] for a given connection id.
@@ -267,6 +272,7 @@ impl ChatService {
             sandboxie_executor: None,
             remote_context_factory: None,
             remote_ops_factory: None,
+            question_notifier: None,
         }
     }
 
@@ -590,6 +596,48 @@ impl ChatService {
         self.coordinator.pending()
     }
 
+    /// Attach the host hook that shows an `ask_user_question` dialog. The desktop
+    /// app wires this to a UI event; headless hosts leave it unset so the tool
+    /// keeps declining.
+    pub fn with_question_notifier(
+        mut self,
+        notifier: impl Fn(crate::dto::QuestionRequestDto) + Send + Sync + 'static,
+    ) -> Self {
+        self.question_notifier = Some(Arc::new(notifier));
+        self
+    }
+
+    /// The shared pending-questions registry, mirroring
+    /// [`ChatService::pending_approvals`].
+    pub fn pending_questions(&self) -> crate::question_bridge::PendingQuestions {
+        self.coordinator.pending_questions()
+    }
+
+    /// Answer a pending `ask_user_question` dialog; `answers = None` declines it.
+    /// Returns `false` when no such question is pending.
+    pub fn resolve_question(
+        &self,
+        question_id: &str,
+        answers: Option<std::collections::BTreeMap<String, String>>,
+    ) -> bool {
+        self.coordinator.resolve_question(question_id, answers)
+    }
+
+    /// The responder `ask_user_question` uses on this host: the UI-backed channel
+    /// when a notifier is attached, otherwise the headless decline default. One
+    /// implementation for both the main run and standalone registries; sub-agent
+    /// registries replace it with
+    /// [`RecommendedResponder`](deepagent_builtins::RecommendedResponder).
+    pub(crate) fn question_responder(&self) -> Arc<dyn deepagent_builtins::QuestionResponder> {
+        match &self.question_notifier {
+            Some(notifier) => Arc::new(crate::question_bridge::ChannelQuestionResponder::new(
+                self.coordinator.pending_questions(),
+                notifier.clone(),
+            )),
+            None => Arc::new(deepagent_builtins::DeclineResponder),
+        }
+    }
+
     /// Resolve an approval through the durable control projection before
     /// waking the in-process gate. Repeating the same decision is idempotent.
     pub fn resolve_approval(
@@ -670,7 +718,8 @@ impl ChatService {
 
     /// Build the tool registry with the built-ins confined to `root`.
     ///
-    /// Includes `ask_user_question` (wired to a headless-safe responder), the
+    /// Includes `ask_user_question` (wired to the host's question responder: the
+    /// desktop dialog channel, or headless decline when no notifier is set), the
     /// file/bash/search/todo built-ins, and the network web tools (with the
     /// `web` feature). It deliberately does **not** include the `task`
     /// sub-agent tool — that is added only to the *main* run's registry (see
@@ -766,6 +815,7 @@ impl ChatService {
             project_map: self.project_map.clone(),
             office: self.office.clone(),
             remote_ops_factory: self.remote_ops_factory.clone(),
+            question_responder: self.question_responder(),
         }
     }
 
@@ -1317,6 +1367,69 @@ mod tests {
             !isolated.is_empty(),
             "read-only hook agent should retain safe tools"
         );
+    }
+
+    /// Desktop wiring end to end: the tool reaches the host notifier, the run
+    /// stays blocked (no deadline), and the answer returns through the same
+    /// registry the model called.
+    #[tokio::test]
+    async fn ask_user_question_waits_for_the_desktop_answer() {
+        let (db, settings, dir) = seeded().await;
+        let (notify_tx, mut notify_rx) =
+            tokio::sync::mpsc::unbounded_channel::<crate::dto::QuestionRequestDto>();
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path())
+            .with_question_notifier(move |question| {
+                let _ = notify_tx.send(question);
+            });
+        let (registry, _) = chat
+            .build_registry(
+                dir.path(),
+                deepagent_builtins::FsAccess::Workspace,
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        let pending = chat.pending_questions();
+
+        let arguments = serde_json::json!({"questions": [{
+            "question": "Which city?",
+            "header": "City",
+            "options": [{"label": "Beijing"}, {"label": "Changsha"}],
+        }]});
+        let granted = PermissionSet::developer();
+        let invoke = tokio::spawn(async move {
+            registry
+                .invoke_with_context(
+                    "ask_user_question",
+                    arguments,
+                    &granted,
+                    true,
+                    deepagent_tools::ToolExecutionContext::default(),
+                )
+                .await
+        });
+
+        let request = tokio::time::timeout(std::time::Duration::from_secs(5), notify_rx.recv())
+            .await
+            .expect("the host was asked to show a question")
+            .expect("notifier channel");
+        assert_eq!(request.questions[0].options.len(), 2);
+        assert!(
+            !invoke.is_finished(),
+            "the run must stay blocked on an unanswered question"
+        );
+
+        let mut answers = std::collections::BTreeMap::new();
+        answers.insert("Which city?".to_string(), "Changsha".to_string());
+        assert!(pending.resolve(&request.question_id, Some(answers)));
+
+        let output = invoke.await.unwrap().unwrap();
+        assert!(output.ok);
+        assert_eq!(output.value["answered"], true);
+        assert_eq!(output.value["answers"]["Which city?"], "Changsha");
+        assert_eq!(pending.pending_count(), 0);
     }
 
     #[tokio::test]

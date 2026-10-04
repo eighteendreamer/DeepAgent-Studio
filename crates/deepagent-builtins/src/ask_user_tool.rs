@@ -9,10 +9,14 @@
 //! decline). This mirrors how the approval gate bridges the kernel to the UI.
 
 use async_trait::async_trait;
+use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use deepagent_core::error::Result;
 use deepagent_tools::permission::{PermissionSet, RiskLevel};
-use deepagent_tools::{Tool, ToolDescriptor, ToolOutput};
+use deepagent_tools::{Tool, ToolDescriptor, ToolExecutionContext, ToolOutput};
 
 /// The tool name advertised to the model.
 pub const ASK_USER_QUESTION_TOOL_NAME: &str = "ask_user_question";
@@ -51,10 +55,7 @@ pub struct Question {
 pub trait QuestionResponder: Send + Sync {
     /// Present `questions` to the user and collect answers, or `None` if they
     /// declined.
-    async fn ask(
-        &self,
-        questions: &[Question],
-    ) -> Result<Option<std::collections::BTreeMap<String, String>>>;
+    async fn ask(&self, questions: &[Question]) -> Result<Option<BTreeMap<String, String>>>;
 }
 
 /// A responder that always declines (the safe headless default).
@@ -63,29 +64,59 @@ pub struct DeclineResponder;
 
 #[async_trait]
 impl QuestionResponder for DeclineResponder {
-    async fn ask(
-        &self,
-        _questions: &[Question],
-    ) -> Result<Option<std::collections::BTreeMap<String, String>>> {
+    async fn ask(&self, _questions: &[Question]) -> Result<Option<BTreeMap<String, String>>> {
         Ok(None)
     }
 }
 
-/// The `ask_user_question` tool over a pluggable [`QuestionResponder`].
-pub struct AskUserQuestionTool<R: QuestionResponder> {
-    responder: R,
+/// A responder that answers with the option the model recommended.
+///
+/// Sub-agents have no human watching their own turn, so they get this instead of
+/// the UI channel. The tool schema asks the model to list the recommended choice
+/// first and tag it `"(Recommended)"`; either signal is honoured, and a question
+/// whose options carry no marker falls back to that first option.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RecommendedResponder;
+
+#[async_trait]
+impl QuestionResponder for RecommendedResponder {
+    async fn ask(&self, questions: &[Question]) -> Result<Option<BTreeMap<String, String>>> {
+        let mut answers = BTreeMap::new();
+        for question in questions {
+            let label = recommended_option(question)
+                .map(|option| option.label.clone())
+                .unwrap_or_default();
+            answers.insert(question.question.clone(), label);
+        }
+        Ok(Some(answers))
+    }
 }
 
-impl<R: QuestionResponder> AskUserQuestionTool<R> {
-    /// Build the tool with a responder (the desktop app's dialog bridge, or
-    /// [`DeclineResponder`] for headless).
-    pub fn new(responder: R) -> Self {
+/// The option the model marked as recommended, if any.
+fn recommended_option(question: &Question) -> Option<&QuestionOption> {
+    question
+        .options
+        .iter()
+        .find(|option| option.label.to_ascii_lowercase().contains("recommended"))
+        .or_else(|| question.options.first())
+}
+
+/// The `ask_user_question` tool over a host-supplied [`QuestionResponder`].
+pub struct AskUserQuestionTool {
+    responder: Arc<dyn QuestionResponder>,
+}
+
+impl AskUserQuestionTool {
+    /// Build the tool with a responder (the desktop app's question channel, a
+    /// [`RecommendedResponder`] for sub-agents, or [`DeclineResponder`] for
+    /// headless hosts).
+    pub fn new(responder: Arc<dyn QuestionResponder>) -> Self {
         Self { responder }
     }
 }
 
 #[async_trait]
-impl<R: QuestionResponder> Tool for AskUserQuestionTool<R> {
+impl Tool for AskUserQuestionTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: ASK_USER_QUESTION_TOOL_NAME.into(),
@@ -153,35 +184,78 @@ impl<R: QuestionResponder> Tool for AskUserQuestionTool<R> {
     }
 
     async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
-        let questions: Vec<Question> = match args.get("questions") {
-            Some(v) => match serde_json::from_value(v.clone()) {
-                Ok(q) => q,
-                Err(e) => return Ok(ToolOutput::failure(format!("invalid 'questions': {e}"))),
-            },
-            None => return Ok(ToolOutput::failure("missing 'questions'")),
-        };
-        if questions.is_empty() || questions.len() > 4 {
-            return Ok(ToolOutput::failure("provide 1-4 questions"));
-        }
-        for q in &questions {
-            if q.options.len() < 2 || q.options.len() > 4 {
-                return Ok(ToolOutput::failure(format!(
-                    "question \"{}\" must have 2-4 options",
-                    q.question
-                )));
-            }
-        }
+        self.invoke_with_context(args, ToolExecutionContext::default())
+            .await
+    }
 
-        match self.responder.ask(&questions).await? {
-            Some(answers) => Ok(ToolOutput::success(serde_json::json!({
-                "answered": true,
-                "answers": answers,
-            }))),
-            None => Ok(ToolOutput::success(serde_json::json!({
-                "answered": false,
-                "note": "The user declined to answer. Proceed using your best judgement, or ask again only if truly blocked.",
-            }))),
+    /// Waiting for a human has no deadline, so the run's cancellation flag is
+    /// the only escape besides an answer: without this race, Stop could never
+    /// interrupt a question that is on screen.
+    async fn invoke_with_context(
+        &self,
+        args: serde_json::Value,
+        context: ToolExecutionContext,
+    ) -> Result<ToolOutput> {
+        let questions = match parse_questions(&args) {
+            Ok(questions) => questions,
+            Err(failure) => return Ok(failure),
+        };
+        let cancel = context.cancel_flag();
+        tokio::select! {
+            result = self.responder.ask(&questions) => Ok(match result? {
+                Some(answers) => ToolOutput::success(serde_json::json!({
+                    "answered": true,
+                    "answers": answers,
+                })),
+                None => unanswered_output(DECLINED_NOTE),
+            }),
+            _ = wait_until_cancelled(&cancel) => Ok(unanswered_output(CANCELLED_NOTE)),
         }
+    }
+}
+
+/// Note returned when the user actively declines. Kept as one constant so the
+/// model always sees the same instruction.
+const DECLINED_NOTE: &str = "The user declined to answer. Proceed using your best judgement, \
+    or ask again only if truly blocked.";
+
+/// Note returned when the run was interrupted before an answer arrived.
+const CANCELLED_NOTE: &str = "The run was cancelled before the user answered. Do not assume an \
+    answer; report the pending question instead.";
+
+fn unanswered_output(note: &str) -> ToolOutput {
+    ToolOutput::success(serde_json::json!({
+        "answered": false,
+        "note": note,
+    }))
+}
+
+/// Validate the tool arguments, returning the failure output to report.
+fn parse_questions(args: &serde_json::Value) -> std::result::Result<Vec<Question>, ToolOutput> {
+    let Some(value) = args.get("questions") else {
+        return Err(ToolOutput::failure("missing 'questions'"));
+    };
+    let questions: Vec<Question> = serde_json::from_value(value.clone())
+        .map_err(|e| ToolOutput::failure(format!("invalid 'questions': {e}")))?;
+    if questions.is_empty() || questions.len() > 4 {
+        return Err(ToolOutput::failure("provide 1-4 questions"));
+    }
+    for q in &questions {
+        if q.options.len() < 2 || q.options.len() > 4 {
+            return Err(ToolOutput::failure(format!(
+                "question \"{}\" must have 2-4 options",
+                q.question
+            )));
+        }
+    }
+    Ok(questions)
+}
+
+/// Resolve once `cancel` is set. Polled rather than signalled because the
+/// run-scoped flag is a plain atomic shared with every other tool.
+async fn wait_until_cancelled(cancel: &AtomicBool) {
+    while !cancel.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -219,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn returns_answers_when_user_responds() {
-        let tool = AskUserQuestionTool::new(FixedResponder);
+        let tool = AskUserQuestionTool::new(Arc::new(FixedResponder));
         let out = tool.invoke(sample_args()).await.unwrap();
         assert!(out.ok);
         assert_eq!(out.value["answered"], true);
@@ -231,7 +305,7 @@ mod tests {
 
     #[tokio::test]
     async fn declined_when_responder_declines() {
-        let tool = AskUserQuestionTool::new(DeclineResponder);
+        let tool = AskUserQuestionTool::new(Arc::new(DeclineResponder));
         let out = tool.invoke(sample_args()).await.unwrap();
         assert!(out.ok);
         assert_eq!(out.value["answered"], false);
@@ -239,7 +313,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_bad_option_count() {
-        let tool = AskUserQuestionTool::new(FixedResponder);
+        let tool = AskUserQuestionTool::new(Arc::new(FixedResponder));
         let bad = serde_json::json!({
             "questions": [{
                 "question": "Only one?",
@@ -252,9 +326,78 @@ mod tests {
 
     #[tokio::test]
     async fn descriptor_has_questions_schema() {
-        let tool = AskUserQuestionTool::new(DeclineResponder);
+        let tool = AskUserQuestionTool::new(Arc::new(DeclineResponder));
         let d = tool.descriptor();
         assert_eq!(d.name, ASK_USER_QUESTION_TOOL_NAME);
         assert!(d.parameters["properties"]["questions"].is_object());
+    }
+
+    fn question(options: &[&str]) -> Question {
+        Question {
+            question: "Which route?".into(),
+            header: String::new(),
+            options: options
+                .iter()
+                .map(|label| QuestionOption {
+                    label: (*label).into(),
+                    description: String::new(),
+                })
+                .collect(),
+            multi_select: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn recommended_responder_prefers_the_marked_option() {
+        let answers = RecommendedResponder
+            .ask(&[question(&["Slow route", "Fast route (Recommended)"])])
+            .await
+            .unwrap()
+            .expect("recommended responder always answers");
+        assert_eq!(answers["Which route?"], "Fast route (Recommended)");
+    }
+
+    #[tokio::test]
+    async fn recommended_responder_falls_back_to_the_first_option() {
+        let answers = RecommendedResponder
+            .ask(&[question(&["Alpha", "Beta"])])
+            .await
+            .unwrap()
+            .expect("recommended responder always answers");
+        assert_eq!(answers["Which route?"], "Alpha");
+    }
+
+    /// A responder that never answers proves the only way out of the unbounded
+    /// wait is the run's cancellation flag.
+    struct SilentResponder;
+
+    #[async_trait]
+    impl QuestionResponder for SilentResponder {
+        async fn ask(&self, _questions: &[Question]) -> Result<Option<BTreeMap<String, String>>> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelling_the_run_ends_a_pending_question() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+
+        let cancel = Arc::new(AtomicBool::new(false));
+        let tool = AskUserQuestionTool::new(Arc::new(SilentResponder));
+        let context = ToolExecutionContext::new(cancel.clone());
+        let handle =
+            tokio::spawn(async move { tool.invoke_with_context(sample_args(), context).await });
+
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        assert!(!handle.is_finished(), "a question must stay pending");
+        cancel.store(true, Ordering::Release);
+
+        let output = handle.await.unwrap().unwrap();
+        assert!(output.ok);
+        assert_eq!(output.value["answered"], false);
+        assert!(output.value["note"]
+            .as_str()
+            .is_some_and(|note| note.contains("cancelled")));
     }
 }

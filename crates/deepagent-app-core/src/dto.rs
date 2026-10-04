@@ -554,6 +554,17 @@ pub struct ApprovalRequestDto {
     pub reason: String,
 }
 
+/// A question set `ask_user_question` put in front of the user. The run stays
+/// blocked on it until [`PendingQuestions::resolve`](crate::question_bridge::PendingQuestions::resolve)
+/// answers `question_id`; there is no deadline.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QuestionRequestDto {
+    /// Correlates the answer back to the blocked tool call.
+    pub question_id: String,
+    /// The questions and options exactly as the model supplied them.
+    pub questions: Vec<deepagent_builtins::Question>,
+}
+
 /// Result of forking a session: identifies the new branch and how much of the
 /// source timeline it copied.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

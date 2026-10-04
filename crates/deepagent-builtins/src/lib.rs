@@ -82,7 +82,7 @@ use deepagent_tools::{Tool, ToolRegistry};
 
 pub use ask_user_tool::{
     AskUserQuestionTool, DeclineResponder, Question, QuestionOption, QuestionResponder,
-    ASK_USER_QUESTION_TOOL_NAME,
+    RecommendedResponder, ASK_USER_QUESTION_TOOL_NAME,
 };
 pub use bash_analysis::{analyze, danger_reasons};
 pub use bash_tool::{

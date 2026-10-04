@@ -47,6 +47,7 @@ import type {
   PermissionPresetVisibility,
   PermissionRules,
   PersistedAttachment,
+  QuestionRequest,
   PreparedPluginInstall,
   CreatePluginDraft,
   Plugin,
@@ -1395,6 +1396,33 @@ export async function resolveApproval(
   const invoke = getInvoke();
   if (invoke) return invoke<boolean>("resolve_approval", { callId, approved });
   return true;
+}
+
+/**
+ * Answer a pending `ask_user_question` set. Omitting `answers` declines, which
+ * unblocks the run with the same "no answer" contract headless hosts get.
+ */
+export async function respondQuestion(
+  questionId: string,
+  answers?: Record<string, string>
+): Promise<boolean> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<boolean>("respond_question", { questionId, answers: answers ?? null });
+  return false;
+}
+
+/**
+ * Subscribe to `ask_user_question` requests. Subscribed once for the app rather
+ * than per run, so every run entry point (chat, remote assistant) can ask.
+ * Resolves with an unsubscribe function.
+ */
+export async function listenQuestions(
+  onRequest: (request: QuestionRequest) => void
+): Promise<() => void> {
+  const invoke = getInvoke();
+  if (!invoke) return () => {};
+  const mod = await import("@tauri-apps/api/event");
+  return mod.listen<QuestionRequest>("chat://question", (event) => onRequest(event.payload));
 }
 
 /** Request a manual stop of an in-flight run for `sessionId`. */
