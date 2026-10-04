@@ -1,6 +1,7 @@
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "./shadcn/hover-card";
 import { useMemo, useState, useEffect, useRef } from "react";
 import type { ContextUsageSnapshot } from "../types";
+import { formatTokens } from "./chat-timeline/format";
 import { MOTION } from "./ui/motion";
 
 interface Props {
@@ -18,18 +19,6 @@ interface Props {
   /** Increment to force-close the popover. */
   overlayCloseSignal?: number;
   onPopoverOpenChange?: (open: boolean) => void;
-}
-
-function formatTokens(value: number): string {
-  if (value >= 1_000_000) {
-    const m = value / 1_000_000;
-    return `${Number.isInteger(m) ? m.toFixed(0) : m.toFixed(1)}M`;
-  }
-  if (value >= 1_000) {
-    const k = value / 1_000;
-    return `${Number.isInteger(k) ? k.toFixed(0) : k.toFixed(1)}k`;
-  }
-  return String(Math.max(0, Math.round(value)));
 }
 
 function capacityTone(ratio: number, isEmptySession: boolean): string {

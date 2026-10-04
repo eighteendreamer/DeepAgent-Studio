@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Zap, Coins, Wallet } from "lucide-react";
 import { getCostSummary, getBalance, unwrapRuntimeEvent, SETTINGS_CHANGED_EVENT } from "../api";
+import { formatCny, formatTokens } from "./chat-timeline/format";
 import type { Balance, CostSummary } from "../types";
 
 interface Props {
@@ -26,22 +27,6 @@ const EMPTY_LIVE: LiveUsage = { input: 0, output: 0, cacheHit: 0, cacheMiss: 0, 
 
 function tokenCount(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function formatTokens(value: number): string {
-  if (value >= 1_000_000) {
-    const m = value / 1_000_000;
-    return `${Number.isInteger(m) ? m.toFixed(0) : m.toFixed(1)}M`;
-  }
-  if (value >= 1_000) {
-    const k = value / 1_000;
-    return `${Number.isInteger(k) ? k.toFixed(0) : k.toFixed(1)}k`;
-  }
-  return String(Math.max(0, Math.round(value)));
-}
-
-function formatCny(value: number): string {
-  return `¥${value.toFixed(4)}`;
 }
 
 export function SessionUsageBar({ sessionId, busy = false }: Props) {
@@ -186,7 +171,7 @@ export function SessionUsageBar({ sessionId, busy = false }: Props) {
         {balance && balance.is_available && balance.infos.length > 0 && (
           <span className="text-text-tertiary">
             <Wallet size={11} className="mr-0.5 inline" />
-            余额 ¥{parseFloat(balance.infos[0].total_balance).toFixed(2)}
+            余额 {formatCny(parseFloat(balance.infos[0].total_balance))}
           </span>
         )}
       </div>

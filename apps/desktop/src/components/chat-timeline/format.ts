@@ -9,9 +9,23 @@ export function formatMs(ms: number): string {
   return `${minutes}m${rest}s`;
 }
 
-export function formatTokens(n: number): string {
+/**
+ * The app's one token formatter: the per-turn footer, the session totals bar and
+ * the context-capacity ring all render the same number, so they must not carry
+ * separate rounding rules (they previously disagreed — `16k` vs `15.8k`).
+ */
+export function formatTokens(value: number): string {
+  const n = Math.max(0, Math.round(value));
   if (n < 1000) return `${n}`;
-  return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
+  // 999_500 rounds to "1M" rather than the "1000k" a plain 1e6 cutoff produces.
+  if (n < 999_500) return `${formatUnit(n / 1000)}k`;
+  return `${formatUnit(n / 1_000_000)}M`;
+}
+
+/** One decimal place, without a trailing `.0`. */
+function formatUnit(value: number): string {
+  const rounded = Math.round(value * 10) / 10;
+  return Number.isInteger(rounded) ? String(rounded) : rounded.toFixed(1);
 }
 
 export function formatCny(n: number): string {
