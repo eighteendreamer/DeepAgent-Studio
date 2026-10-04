@@ -1399,32 +1399,33 @@ export function ChatView({
           />
         </div>
 
+        {question && (
+          <div className="absolute inset-x-0 bottom-0 z-40">
+            <AskUserQuestionCard
+              key={question.question_id}
+              request={question}
+              queueCount={questionQueueCount}
+              onAnswer={(req, answers) => onQuestionAnswer?.(req, answers)}
+              onDecline={(req) => onQuestionAnswer?.(req, null)}
+            />
+          </div>
+        )}
+
         <SessionUsageBar sessionId={sessionId ?? null} />
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
           <div ref={composerFrameRef} className="w-full max-w-4xl relative">
-            {(approval || question) && (
+            {approval && (
               <div
-                className="absolute left-0 right-0 z-30 flex flex-col gap-2"
+                className="absolute left-0 right-0 z-30"
                 style={{ bottom: "calc(100% - 10px)" }}
               >
-                {approval && (
-                  <ApprovalDialog
-                    request={approval}
-                    queueCount={approvalQueueCount}
-                    onApprove={(req) => onApprovalDecision?.(req, true)}
-                    onReject={(req) => onApprovalDecision?.(req, false)}
-                  />
-                )}
-                {question && (
-                  <AskUserQuestionCard
-                    key={question.question_id}
-                    request={question}
-                    queueCount={questionQueueCount}
-                    onAnswer={(req, answers) => onQuestionAnswer?.(req, answers)}
-                    onDecline={(req) => onQuestionAnswer?.(req, null)}
-                  />
-                )}
+                <ApprovalDialog
+                  request={approval}
+                  queueCount={approvalQueueCount}
+                  onApprove={(req) => onApprovalDecision?.(req, true)}
+                  onReject={(req) => onApprovalDecision?.(req, false)}
+                />
               </div>
             )}
             <Composer

@@ -899,9 +899,13 @@
     "reject": "Reject"
   },
   "askUserDialog": {
-    "title": "Needs your answer",
+    "of": "{{current}} of {{total}}",
+    "previous": "Previous question",
+    "next": "Next question",
+    "multiHint": "(multi-select)",
+    "recommended": "Recommended",
     "pending": "{{count}} more to answer",
-    "other": "Other (write your own)",
+    "other": "Other",
     "otherPlaceholder": "Type your answer",
     "submit": "Submit",
     "skip": "Skip"

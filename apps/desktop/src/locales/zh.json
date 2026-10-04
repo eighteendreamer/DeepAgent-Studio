@@ -899,9 +899,13 @@
     "reject": "拒绝"
   },
   "askUserDialog": {
-    "title": "需要你确认",
+    "of": "{{current}} / {{total}}",
+    "previous": "上一题",
+    "next": "下一题",
+    "multiHint": "（可多选）",
+    "recommended": "推荐",
     "pending": "还有 {{count}} 个问题待回答",
-    "other": "其他（自己填）",
+    "other": "其他",
     "otherPlaceholder": "输入你的答案",
     "submit": "提交答案",
     "skip": "跳过"
