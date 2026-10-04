@@ -85,7 +85,7 @@ export function AskUserQuestionCard({ request, queueCount = 1, onAnswer, onDecli
   };
 
   return (
-    <div className="w-full max-w-4xl rounded-t-2xl border border-border-theme bg-bg-base px-4 pb-4 pt-3 shadow-[0_-10px_28px_rgba(0,0,0,0.10)]">
+    <div className="w-full max-w-4xl rounded-2xl border border-border-theme bg-bg-base px-4 pb-3.5 pt-3 shadow-[0_14px_34px_rgba(0,0,0,0.12)]">
       <div className="flex flex-col gap-2">
         <div className="flex items-start gap-3">
           <p className="min-w-0 flex-1 text-[13.5px] font-medium leading-6 text-text-base">
