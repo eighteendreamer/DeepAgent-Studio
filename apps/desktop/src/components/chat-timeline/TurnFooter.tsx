@@ -40,11 +40,11 @@ export function TurnFooter({
               {formatTokens(usage.totalTokens)} tokens
             </span>
             <span className="text-text-tertiary">
-              <ArrowDown size={12} className="mr-0.5 inline" />
+              <ArrowUp size={12} className="mr-0.5 inline" />
               输入 {formatTokens(usage.promptTokens)}
             </span>
             <span className="text-text-tertiary">
-              <ArrowUp size={12} className="mr-0.5 inline" />
+              <ArrowDown size={12} className="mr-0.5 inline" />
               输出 {formatTokens(usage.completionTokens)}
             </span>
             {usage.cacheHitTokens > 0 && (

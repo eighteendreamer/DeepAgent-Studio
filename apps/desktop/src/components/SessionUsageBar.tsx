@@ -106,11 +106,11 @@ export function SessionUsageBar({ sessionId }: Props) {
         {summary && (
           <>
             <span className="text-text-tertiary">
-              <ArrowDown size={11} className="mr-0.5 inline" />
+              <ArrowUp size={11} className="mr-0.5 inline" />
               累计输入 {formatTokens(summary.input_tokens)}
             </span>
             <span className="text-text-tertiary">
-              <ArrowUp size={11} className="mr-0.5 inline" />
+              <ArrowDown size={11} className="mr-0.5 inline" />
               累计输出 {formatTokens(summary.output_tokens)}
             </span>
             {sessionCacheHitRate !== null && (
