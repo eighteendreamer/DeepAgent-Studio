@@ -590,6 +590,39 @@ impl ChatService {
         self
     }
 
+    /// Mint the session a new run will use and return its id, without running
+    /// anything.
+    ///
+    /// Identity is decided here — before the run is spawned — so the transcript,
+    /// the cost ledger and UI navigation are all keyed by the real id from the
+    /// first event instead of a temporary placeholder that a later event has to
+    /// backfill. The session stays empty on disk until the run appends to it:
+    /// an addressable identity does not require durable content yet, which is the
+    /// same split Claude Code (`materializeSessionFile` on the first message),
+    /// Codex (`deferred_creation` rollout) and deepseek-harness
+    /// (`registerCreated` pending handle) make.
+    pub fn create_session(&self, env_mode: Option<&str>) -> Result<String> {
+        let clock = deepagent_core::clock::SystemClock;
+        let (_, project) = crate::run_assembler::resolve_run_location(
+            &self.db,
+            self.projects.as_deref(),
+            &self.workspace,
+            None,
+        )?;
+        let mode = match env_mode {
+            Some("remote") => deepagent_core::SessionMode::Remote,
+            _ => deepagent_core::SessionMode::Normal,
+        };
+        let session = deepagent_session::Session::create_in_project(
+            &self.db,
+            &clock,
+            None,
+            mode,
+            project.as_deref(),
+        )?;
+        Ok(session.id().to_string())
+    }
+
     /// The shared pending-approvals registry. The UI calls
     /// [`PendingApprovals::resolve_approved`] on this to answer a dialog.
     pub fn pending_approvals(&self) -> PendingApprovals {
@@ -1430,6 +1463,26 @@ mod tests {
         assert_eq!(output.value["answered"], true);
         assert_eq!(output.value["answers"]["Which city?"], "Changsha");
         assert_eq!(pending.pending_count(), 0);
+    }
+
+    /// The identity a new run needs exists before the run does: the id is minted
+    /// and immediately addressable, with no title and no messages yet. This is
+    /// what lets the UI key transcript, navigation and the cost ledger by the
+    /// real id from the first frame instead of a temporary placeholder.
+    #[tokio::test]
+    async fn create_session_is_addressable_before_the_run() {
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db.clone(), settings, chat_transport(), dir.path());
+
+        let id = chat.create_session(None).unwrap();
+        let parsed = <deepagent_core::id::SessionId as std::str::FromStr>::from_str(&id)
+            .expect("minted session id must parse");
+        let clock = deepagent_core::clock::SystemClock;
+        let session = deepagent_session::Session::recover(&db, &clock, parsed)
+            .expect("a run must be able to continue the session immediately");
+
+        assert_eq!(session.id().to_string(), id);
+        assert!(session.state().title.is_none(), "identity is not content");
     }
 
     #[tokio::test]

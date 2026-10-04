@@ -1916,6 +1916,20 @@ fn start_chat_v2(
     attachments: Option<Vec<deepagent_app_core::InputAttachment>>,
 ) -> Result<StartChatV2Ack, String> {
     let run_id = run_id.unwrap_or_else(|| format!("run_{}", deepagent_core::id::EventId::new()));
+    // Decide the session identity BEFORE the run is spawned. Minting it inside
+    // the task and announcing it later through `session_registered` left the UI
+    // holding the previously selected session as this run's identity for that
+    // window, so a brand-new chat displayed the old session's data and a
+    // navigation in between got yanked to the new session when the event landed.
+    let session_id = match session_id {
+        Some(id) => Some(id),
+        None => Some(
+            state
+                .chat
+                .create_session(env_mode.as_deref())
+                .map_err(|error| error.to_string())?,
+        ),
+    };
     let acknowledgement = StartChatV2Ack {
         run_id: run_id.clone(),
         session_id: session_id.clone(),

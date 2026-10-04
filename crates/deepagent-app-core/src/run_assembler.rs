@@ -1571,7 +1571,10 @@ impl<'a> RunAssembler<'a> {
     }
 }
 
-fn resolve_run_location(
+/// Resolve the workspace root + project a run belongs to. Shared by the run
+/// itself and by [`ChatService::create_session`] so a session minted before the
+/// run starts lands in the same project as the run that continues it.
+pub(crate) fn resolve_run_location(
     db: &Database,
     projects: Option<&ProjectService>,
     workspace: &Path,

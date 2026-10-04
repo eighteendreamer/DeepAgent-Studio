@@ -52,3 +52,47 @@ test("live usage overlay is gated on the visible session running", () => {
   const chat = read("components/ChatView.tsx");
   assert.match(chat, /<SessionUsageBar sessionId=\{sessionId \?\? null\} busy=\{busy\} \/>/);
 });
+
+// A brand-new chat used to inherit the previously selected session as its
+// identity until `session_registered` arrived, which made the usage bar read the
+// wrong ledger and let a late event move the view out from under the user.
+test("a pending chat frame has no session identity", () => {
+  const app = read("App.tsx");
+  assert.match(
+    app,
+    /const chatSessionId =\s*\n?\s*activePendingRunKey !== null && chatFrameKey === `chat:\$\{activePendingRunKey\}`\s*\n\s*\?\s*null\s*\n\s*: activeId;/,
+    "the frame must report null while its session is not decided yet"
+  );
+  assert.match(app, /sessionId=\{chatSessionId\}/, "the chat frame must use the derived id");
+  assert.doesNotMatch(app, /sessionId=\{activeId\}/, "raw activeId must not reach the frame");
+  assert.doesNotMatch(app, /sessionKey=/, "the unused sessionKey prop must not come back");
+});
+
+test("session adoption cannot hijack a view the user navigated away from", () => {
+  const app = read("App.tsx");
+  const adopt = app.slice(app.indexOf("const adoptSession"), app.indexOf("case \"reasoning_delta\""));
+  assert.ok(adopt.length > 400, "adoptSession must exist");
+  assert.match(adopt, /const stillOnSubmittingFrame = activePendingRunKeyRef\.current === pendingKey;/);
+  const moveIndex = adopt.indexOf("stillOnSubmittingFrame)");
+  const setActiveIndex = adopt.indexOf("setActiveId(sid)");
+  assert.ok(moveIndex > -1 && setActiveIndex > moveIndex, "setActiveId must sit behind the guard");
+  assert.match(
+    app,
+    /case "session_registered": \{[\s\S]{0,400}adoptSession\(String\(event\.session_id \?\? ""\)\);/,
+    "the event path must reuse the single adoption implementation"
+  );
+});
+
+test("the backend decides the session before spawning the run", () => {
+  const rust = fs.readFileSync(
+    path.resolve(sourceRoot, "../src-tauri/src/lib.rs"),
+    "utf8"
+  );
+  const command = rust.slice(rust.indexOf("fn start_chat_v2("), rust.indexOf("/// Canvas settings payload"));
+  assert.ok(command.length > 400, "start_chat_v2 must be found");
+  assert.match(command, /\.create_session\(env_mode\.as_deref\(\)\)/, "identity must be minted here");
+  assert.ok(
+    command.indexOf(".create_session(") < command.indexOf("state.rt.spawn"),
+    "the session must exist before the run task starts"
+  );
+});

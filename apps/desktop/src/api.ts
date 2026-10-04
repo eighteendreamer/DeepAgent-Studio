@@ -1337,7 +1337,13 @@ export async function runChat(
   preflightTools: PreflightToolCall[] = [],
   preflightAbortMessage?: string | null,
   initialPlanMode = false,
-  attachments: RunAttachment[] = []
+  attachments: RunAttachment[] = [],
+  /**
+   * Called with the run's session id as soon as the backend has decided it
+   * (before any event streams), so the caller never has to guess or reuse a
+   * stale identity while waiting for `session_registered`.
+   */
+  onSessionReady?: (sessionId: string) => void
 ): Promise<string> {
   const invoke = getInvoke();
   if (invoke) {
@@ -1381,7 +1387,7 @@ export async function runChat(
           })
           .catch(reject);
       });
-      await invoke<StartChatV2Ack>("start_chat_v2", {
+      const ack = await invoke<StartChatV2Ack>("start_chat_v2", {
         prompt,
         sessionId: sessionId ?? null,
         envMode: envMode ?? null,
@@ -1392,6 +1398,7 @@ export async function runChat(
         initialPlanMode,
         attachments,
       });
+      if (ack?.session_id) onSessionReady?.(ack.session_id);
       const nextSessionId = await completion;
       if (promptMayChangeSettings(prompt)) emitSettingsChanged({ reason: "slash_settings" });
       return nextSessionId;

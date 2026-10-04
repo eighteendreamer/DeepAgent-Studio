@@ -1062,6 +1062,55 @@ export function App() {
         setChatFrameKey(`chat:${pendingKey}`);
       }
 
+      // Adopt the run's real session id: move the pending transcript and context
+      // buffers onto it and register it for navigation. The view only follows the
+      // new id while the user is still on the frame that started the run
+      // (`activePendingRunKeyRef` is cleared by navigation), so a late event can
+      // never drag them into a different conversation.
+      const adoptSession = (sid: string) => {
+        if (!sid) return;
+        if (runKey !== sid) {
+          flushTranscriptRender();
+          const buf = liveTranscripts.current.get(runKey);
+          if (buf) {
+            liveTranscripts.current.delete(runKey);
+            liveTranscripts.current.set(sid, buf);
+          }
+          setContextUsageByKey((prev) => {
+            const snapshot = prev.get(runKey);
+            if (!snapshot) return prev;
+            const next = new Map(prev);
+            next.delete(runKey);
+            next.set(sid, snapshot);
+            return next;
+          });
+          runKey = sid;
+          activeRunIdsRef.current.delete(pendingKey);
+          activeRunIdsRef.current.set(sid, runId);
+        }
+        setRunningSessionIds((prev) => {
+          if (prev.has(sid)) return prev;
+          const next = new Set(prev);
+          next.add(sid);
+          return next;
+        });
+        const stillOnSubmittingFrame = activePendingRunKeyRef.current === pendingKey;
+        if (stillOnSubmittingFrame) {
+          activePendingRunKeyRef.current = null;
+          setActivePendingRunKey((current) => (current === pendingKey ? null : current));
+          activeIdRef.current = sid;
+          setActiveId(sid);
+          setNavState((prev) => {
+            const last = prev.history[prev.index];
+            if (last && last.activeId === sid && last.view === "chat") return prev;
+            const newHistory = prev.history.slice(0, prev.index + 1);
+            newHistory.push({ activeId: sid, view: "chat" });
+            return { history: newHistory, index: newHistory.length - 1 };
+          });
+        }
+        refreshSessions();
+      };
+
       // Seed the transcript: continuations append to the existing one; a fresh
       // run starts clean. Stored in the ref so it survives navigation.
       const prior: ChatMessage[] = continueId
@@ -1394,51 +1443,11 @@ export function App() {
             modelAttemptBaseParts = null;
             break;
           case "session_registered": {
-            // The backing session now exists. Migrate the pending transcript to
-            // its real id, register it for navigation, and point future updates
-            // at the real key — so the user can leave & return to the in-flight
-            // chat and still see its live stream.
-            const sid = String(event.session_id ?? "");
-            if (sid) {
-              if (runKey !== sid) {
-                flushTranscriptRender();
-                const buf = liveTranscripts.current.get(runKey);
-                if (buf) {
-                  liveTranscripts.current.delete(runKey);
-                  liveTranscripts.current.set(sid, buf);
-                }
-                setContextUsageByKey((prev) => {
-                  const snapshot = prev.get(runKey);
-                  if (!snapshot) return prev;
-                  const next = new Map(prev);
-                  next.delete(runKey);
-                  next.set(sid, snapshot);
-                  return next;
-                });
-                runKey = sid;
-                activeRunIdsRef.current.delete(pendingKey);
-                activeRunIdsRef.current.set(sid, runId);
-              }
-              activeIdRef.current = sid;
-              if (activePendingRunKeyRef.current === pendingKey) {
-                activePendingRunKeyRef.current = null;
-              }
-              setActivePendingRunKey((current) => (current === pendingKey ? null : current));
-              setRunningSessionIds((prev) => {
-                const next = new Set(prev);
-                next.add(sid);
-                return next;
-              });
-              setActiveId(sid);
-              setNavState((prev) => {
-                const last = prev.history[prev.index];
-                if (last && last.activeId === sid && last.view === "chat") return prev;
-                const newHistory = prev.history.slice(0, prev.index + 1);
-                newHistory.push({ activeId: sid, view: "chat" });
-                return { history: newHistory, index: newHistory.length - 1 };
-              });
-              refreshSessions();
-            }
+            // Reconciliation only: with the session id decided before the run was
+            // spawned, `start_chat_v2`'s acknowledgement already adopted it. This
+            // event still matters for hosts that ignore the ack, and it must not
+            // move a view the user has since navigated away from.
+            adoptSession(String(event.session_id ?? ""));
             break;
           }
           case "reasoning_delta":
@@ -1830,7 +1839,8 @@ export function App() {
         preflightTools,
         preflightAbortMessage,
         !continueId && requestedPlanMode,
-        runAttachments
+        runAttachments,
+        adoptSession
       )
         .then((newSessionId) => {
           // The run created (or continued) a session under the active project;
@@ -2146,6 +2156,15 @@ export function App() {
         ? `settings:${activeSettingsCategory}`
         : view;
 
+  // A chat frame still waiting for its session has no session identity at all:
+  // `activeId` belongs to whatever conversation the user was looking at before
+  // they started this run, so handing it to the frame makes session-scoped
+  // surfaces (the usage bar above all) read the wrong ledger.
+  const chatSessionId =
+    activePendingRunKey !== null && chatFrameKey === `chat:${activePendingRunKey}`
+      ? null
+      : activeId;
+
   return (
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
       <AppContextMenu />
@@ -2253,8 +2272,7 @@ export function App() {
             {view === "chat" && (
               <div key={viewFrameKey} className="view-frame">
                 <ChatView
-                  sessionId={activeId}
-                  sessionKey={activeId ?? activePendingRunKey ?? null}
+                  sessionId={chatSessionId}
                   messages={chatMessages}
                   onSend={onChatSend}
                   onFork={onForkSession}

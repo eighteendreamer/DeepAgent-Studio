@@ -55,8 +55,6 @@ const PROJECT_MAP_TAB_ID = "project-map";
 interface Props {
   /** Active session id for per-session UI persistence. */
   sessionId?: string | null;
-  /** Active chat identity, including pending runs before a real session id exists. */
-  sessionKey?: string | null;
   messages: ChatMessage[];
   onSend: (
     text: string,
