@@ -6,8 +6,7 @@ import type { ChatBlock, ProcessSection, Turn, TurnSections } from "./timelineTy
  * between tool calls (preambles / narration) is NOT the final answer — it stays
  * in the process timeline. The trailing block (nothing after it) is always the
  * live-streaming answer, so it renders OUTSIDE the collapsed timeline and streams
- * token-by-token during a run instead of being hidden inside a collapsed
- * "中间输出" process section (which only auto-expands for reasoning).
+ * token-by-token during a run instead of being buried among the process rows.
  *
  * This satisfies both cases at once:
  *  - a preamble followed by tool calls → stays inside the process timeline

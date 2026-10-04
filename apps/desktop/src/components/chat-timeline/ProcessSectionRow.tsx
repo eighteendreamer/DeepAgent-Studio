@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Brain, MessageSquareText, Terminal, type LucideIcon } from "lucide-react";
+import { Brain, Terminal, type LucideIcon } from "lucide-react";
 import type { ChatBlock, ProcessSection } from "./timelineTypes";
 import { MarkdownText } from "../MarkdownText";
 import { ProcessToolRow } from "./ProcessToolRow";
@@ -15,7 +15,6 @@ function toolLabel(block: Extract<ChatBlock, { kind: "tool" }>): string {
 
 function sectionTitle(section: ProcessSection): string {
   if (section.kind === "reasoning") return "思考";
-  if (section.kind === "output") return "中间输出";
   if (section.blocks.length === 1 && section.blocks[0]?.kind === "tool") {
     return toolLabel(section.blocks[0]);
   }
@@ -24,7 +23,6 @@ function sectionTitle(section: ProcessSection): string {
 
 function sectionIcon(section: ProcessSection): LucideIcon {
   if (section.kind === "reasoning") return Brain;
-  if (section.kind === "output") return MessageSquareText;
   return Terminal;
 }
 
@@ -45,7 +43,19 @@ function ProcessBlockDetail({ block }: { block: ChatBlock }) {
   return null;
 }
 
-export function ProcessSectionRow({
+/** Assistant narration between tool calls reads as prose, so it is laid out
+ * flat instead of behind a collapsible header of its own. */
+function ProcessOutputRow({ section }: { section: ProcessSection }) {
+  return (
+    <div className="flex min-w-0 flex-col gap-1 px-1 py-0.5">
+      {section.blocks.map((block) => (
+        <ProcessBlockDetail key={block.id} block={block} />
+      ))}
+    </div>
+  );
+}
+
+function ProcessCollapsibleRow({
   section,
   processing,
 }: {
@@ -85,4 +95,15 @@ export function ProcessSectionRow({
       </CollapseBlurPanel>
     </div>
   );
+}
+
+export function ProcessSectionRow({
+  section,
+  processing,
+}: {
+  section: ProcessSection;
+  processing: boolean;
+}) {
+  if (section.kind === "output") return <ProcessOutputRow section={section} />;
+  return <ProcessCollapsibleRow section={section} processing={processing} />;
 }
