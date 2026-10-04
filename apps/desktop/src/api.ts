@@ -1223,6 +1223,22 @@ interface RunEventEnvelope<T> {
   payload: T;
 }
 
+/**
+ * Normalize a `chat://event` payload. The desktop publishes a run envelope
+ * (`{run_id, payload}`) and only older builds / the browser preview publish the
+ * bare event, so reading `envelope.type` yields `undefined` and every consumer
+ * has to unwrap first. One implementation so the two shapes cannot drift apart.
+ */
+export function unwrapRuntimeEvent(payload: unknown): RuntimeEvent | null {
+  if (!payload || typeof payload !== "object") return null;
+  const envelope = (payload as RunEventEnvelope<RuntimeEvent>).payload;
+  if (envelope && typeof envelope === "object" && typeof envelope.type === "string") {
+    return envelope;
+  }
+  const bare = payload as RuntimeEvent;
+  return typeof bare.type === "string" ? bare : null;
+}
+
 export async function sandboxieStatus(): Promise<SandboxieStatus> {
   const invoke = getInvoke();
   if (invoke) return invoke<SandboxieStatus>("sandboxie_status");

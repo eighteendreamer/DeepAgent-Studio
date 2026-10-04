@@ -1,10 +1,31 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, Zap, Coins, Wallet } from "lucide-react";
-import { getCostSummary, getBalance, SETTINGS_CHANGED_EVENT } from "../api";
-import type { CostSummary, Balance } from "../types";
+import { getCostSummary, getBalance, unwrapRuntimeEvent, SETTINGS_CHANGED_EVENT } from "../api";
+import type { Balance, CostSummary } from "../types";
 
 interface Props {
   sessionId: string | null;
+  /** A run is streaming in this session, so live usage deltas are meaningful. */
+  busy?: boolean;
+}
+
+/**
+ * Usage seen since the last settled pull. The ledger row is written once per run
+ * at completion while `usage` arrives per model request, so the bar grows from
+ * this overlay and is replaced — not added to — when the authoritative pull lands.
+ */
+interface LiveUsage {
+  input: number;
+  output: number;
+  cacheHit: number;
+  cacheMiss: number;
+  cost: number;
+}
+
+const EMPTY_LIVE: LiveUsage = { input: 0, output: 0, cacheHit: 0, cacheMiss: 0, cost: 0 };
+
+function tokenCount(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function formatTokens(value: number): string {
@@ -23,22 +44,31 @@ function formatCny(value: number): string {
   return `¥${value.toFixed(4)}`;
 }
 
-export function SessionUsageBar({ sessionId }: Props) {
+export function SessionUsageBar({ sessionId, busy = false }: Props) {
   const [summary, setSummary] = useState<CostSummary | null>(null);
+  const [live, setLive] = useState<LiveUsage>(EMPTY_LIVE);
   const [balance, setBalance] = useState<Balance | null>(null);
   const [loading, setLoading] = useState(false);
   const unlistenRef = useRef<(() => void) | null>(null);
+  // Latest-request-wins: a slow reply for a session the user left must not
+  // overwrite the numbers of the session they switched to.
+  const generation = useRef(0);
+  const busyRef = useRef(busy);
+  busyRef.current = busy;
 
   const fetchSummary = useCallback(async () => {
     if (!sessionId) return;
+    const requested = ++generation.current;
     setLoading(true);
     try {
       const data = await getCostSummary(sessionId);
+      if (requested !== generation.current) return;
       setSummary(data);
+      setLive(EMPTY_LIVE);
     } catch (err) {
       console.error("fetch cost summary failed:", err);
     } finally {
-      setLoading(false);
+      if (requested === generation.current) setLoading(false);
     }
   }, [sessionId]);
 
@@ -51,10 +81,23 @@ export function SessionUsageBar({ sessionId }: Props) {
     }
   }, []);
 
+  // Every session has its own ledger: drop the previous session's numbers and
+  // invalidate its in-flight reply instead of painting them until the new pull
+  // resolves.
+  useEffect(() => {
+    generation.current += 1;
+    setSummary(null);
+    setLive(EMPTY_LIVE);
+    setLoading(false);
+  }, [sessionId]);
+
   useEffect(() => {
     fetchSummary();
+  }, [fetchSummary]);
+
+  useEffect(() => {
     fetchBalance();
-  }, [fetchSummary, fetchBalance]);
+  }, [fetchBalance]);
 
   useEffect(() => {
     const handleSettingsChanged = (event: CustomEvent) => {
@@ -73,32 +116,47 @@ export function SessionUsageBar({ sessionId }: Props) {
     const setupListener = async () => {
       try {
         const mod = await import("@tauri-apps/api/event");
-        const unlisten = await mod.listen<{ type: string }>(
-          "chat://event",
-          (event) => {
-            if (event.payload.type === "usage" || event.payload.type === "cost_recorded") {
-              setTimeout(fetchSummary, 300);
-            }
+        const unlisten = await mod.listen<unknown>("chat://event", (message) => {
+          const event = unwrapRuntimeEvent(message.payload);
+          if (!event) return;
+          if (event.type === "cost_recorded") {
+            // The backend writes the ledger row before emitting this event, so
+            // one pull here is authoritative — no polling timer needed.
+            void fetchSummary();
+          } else if (event.type === "usage" && busyRef.current) {
+            setLive((prev) => ({
+              input: prev.input + tokenCount(event.prompt_tokens),
+              output: prev.output + tokenCount(event.completion_tokens),
+              cacheHit: prev.cacheHit + tokenCount(event.prompt_cache_hit_tokens),
+              cacheMiss: prev.cacheMiss + tokenCount(event.prompt_cache_miss_tokens),
+              cost: prev.cost + tokenCount(event.cost_yuan),
+            }));
           }
-        );
+        });
         unlistenRef.current = unlisten;
       } catch (err) {
-        // Browser or non-Tauri environment
+        // Browser preview or non-Tauri environment: the settled pull still works.
       }
     };
     setupListener();
     return () => {
       unlistenRef.current?.();
+      unlistenRef.current = null;
     };
   }, [sessionId, fetchSummary]);
 
   if (!sessionId) return null;
   if (loading && !summary) return null;
 
-  const sessionCacheHitRate =
-    summary && summary.cache_hit_tokens + summary.cache_miss_tokens > 0
-      ? (summary.cache_hit_tokens / (summary.cache_hit_tokens + summary.cache_miss_tokens)) * 100
-      : null;
+  const totals: LiveUsage = {
+    input: (summary?.input_tokens ?? 0) + live.input,
+    output: (summary?.output_tokens ?? 0) + live.output,
+    cacheHit: (summary?.cache_hit_tokens ?? 0) + live.cacheHit,
+    cacheMiss: (summary?.cache_miss_tokens ?? 0) + live.cacheMiss,
+    cost: (summary?.session_cost ?? 0) + live.cost,
+  };
+  const cacheTotal = totals.cacheHit + totals.cacheMiss;
+  const sessionCacheHitRate = cacheTotal > 0 ? (totals.cacheHit / cacheTotal) * 100 : null;
 
   return (
     <div className="absolute bottom-0 left-0 right-0 flex items-center justify-center px-6 text-[11px] text-text-secondary opacity-80 tabular-nums" style={{ height: '24px' }}>
@@ -107,11 +165,11 @@ export function SessionUsageBar({ sessionId }: Props) {
           <>
             <span className="text-text-tertiary">
               <ArrowUp size={11} className="mr-0.5 inline" />
-              累计输入 {formatTokens(summary.input_tokens)}
+              累计输入 {formatTokens(totals.input)}
             </span>
             <span className="text-text-tertiary">
               <ArrowDown size={11} className="mr-0.5 inline" />
-              累计输出 {formatTokens(summary.output_tokens)}
+              累计输出 {formatTokens(totals.output)}
             </span>
             {sessionCacheHitRate !== null && (
               <span className="font-medium text-green-600">
@@ -121,7 +179,7 @@ export function SessionUsageBar({ sessionId }: Props) {
             )}
             <span>
               <Coins size={11} className="mr-0.5 inline" />
-              累计消耗 {formatCny(summary.session_cost)}
+              累计消耗 {formatCny(totals.cost)}
             </span>
           </>
         )}
