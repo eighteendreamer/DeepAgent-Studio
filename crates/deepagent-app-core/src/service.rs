@@ -367,6 +367,12 @@ impl AppService {
         // MessageAppended projection. Replay exact duplicate provider items
         // only once within this user turn, matching the stream accumulator.
         let mut seen_reasoning_items = std::collections::HashSet::new();
+        // Assistant text exists in two shapes for the SAME fact: the provider
+        // item written per model turn, and the `MessageAppended` written once at
+        // completion (`Session::append` additionally projects the message back
+        // into an item). Track the texts already turned into a part this user
+        // turn so neither shape renders twice.
+        let mut seen_assistant_texts = std::collections::HashSet::new();
         let mut native_reasoning_since_tool = String::new();
 
         // Ensure there is a trailing assistant turn to attach tool cards to.
@@ -398,6 +404,7 @@ impl AppService {
                         // tool-card grouping.
                         tool_pos.clear();
                         seen_reasoning_items.clear();
+                        seen_assistant_texts.clear();
                         native_reasoning_since_tool.clear();
                         let attachments = parse_conversation_attachments(&text, session_id);
                         messages.push(ConversationMessageDto {
@@ -429,9 +436,11 @@ impl AppService {
                         }
                         native_reasoning_since_tool.clear();
                         if !content.is_empty() {
-                            messages[idx].parts.push(ConversationPartDto::Text {
-                                text: content.to_string(),
-                            });
+                            if seen_assistant_texts.insert(content.to_string()) {
+                                messages[idx].parts.push(ConversationPartDto::Text {
+                                    text: content.to_string(),
+                                });
+                            }
                             if messages[idx].content.is_empty() {
                                 messages[idx].content = content.to_string();
                             } else {
@@ -465,6 +474,26 @@ impl AppService {
                         text: content.clone(),
                     });
                     native_reasoning_since_tool.push_str(content);
+                }
+                EventPayload::ResponseItemAppended {
+                    item: deepagent_core::response_item::ResponseItem::Message { role, content },
+                } if role == "assistant" && !content.trim().is_empty() => {
+                    // Narration the model emits before or between tool calls is
+                    // ONLY persisted as a provider item — the assistant
+                    // `MessageAppended` is written once, at completion — so
+                    // replay has to project it here or the UI loses its
+                    // intermediate-output rows after a reload. A retried request
+                    // can leave the same item twice, and the final answer exists
+                    // as both an item and a message, hence the shared per-turn
+                    // text set.
+                    let text = content.trim();
+                    if !seen_assistant_texts.insert(text.to_string()) {
+                        continue;
+                    }
+                    let idx = ensure_assistant(&mut messages);
+                    messages[idx].parts.push(ConversationPartDto::Text {
+                        text: text.to_string(),
+                    });
                 }
                 EventPayload::ToolCallRequested { call } => {
                     native_reasoning_since_tool.clear();
@@ -1356,6 +1385,117 @@ mod tests {
                 && status == "ok"
                 && answer == "done"
         ));
+    }
+
+    #[test]
+    fn session_conversation_projects_assistant_narration_between_tool_calls() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::{Message, ToolCall};
+        use deepagent_core::response_item::ResponseItem;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("narration")).unwrap();
+        let sid = session.id().to_string();
+        // `Session::append` also projects this into a provider message item;
+        // that mirror must never open an assistant turn.
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("weather?"),
+            })
+            .unwrap();
+        // Narration before a tool call: persisted ONLY as a provider item.
+        session
+            .append_response_item(ResponseItem::Message {
+                role: "assistant".into(),
+                content: "which city? checking beijing".into(),
+            })
+            .unwrap();
+        session
+            .append_without_response_projection(EventPayload::ToolCallRequested {
+                call: ToolCall {
+                    id: "call_1".into(),
+                    name: "web_search".into(),
+                    arguments: serde_json::json!({"query": "北京 天气"}),
+                },
+            })
+            .unwrap();
+        session
+            .append(EventPayload::ToolCallCompleted {
+                call_id: "call_1".into(),
+                ok: true,
+                output: serde_json::json!({"count": 5}),
+                duration_ms: 9,
+            })
+            .unwrap();
+        session
+            .append_response_item(ResponseItem::Message {
+                role: "assistant".into(),
+                content: "one moment".into(),
+            })
+            .unwrap();
+        // The final answer exists as an item AND as the authoritative message.
+        session
+            .append_response_item(ResponseItem::Message {
+                role: "assistant".into(),
+                content: "cloudy today".into(),
+            })
+            .unwrap();
+        session
+            .append_without_response_projection(EventPayload::MessageAppended {
+                message: Message::assistant("cloudy today"),
+            })
+            .unwrap();
+
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        assert_eq!(conversation.len(), 2, "user turn + one assistant turn");
+        let parts = &conversation[1].parts;
+        assert!(
+            matches!(
+                &parts[..],
+                [
+                    ConversationPartDto::Text { text: before_tool },
+                    ConversationPartDto::Tool { call_id, .. },
+                    ConversationPartDto::Text { text: after_tool },
+                    ConversationPartDto::Text { text: answer },
+                ] if before_tool == "which city? checking beijing"
+                    && call_id == "call_1"
+                    && after_tool == "one moment"
+                    && answer == "cloudy today"
+            ),
+            "parts: {parts:?}"
+        );
+        assert_eq!(conversation[1].content, "cloudy today");
+    }
+
+    #[test]
+    fn session_conversation_projects_assistant_narration_after_a_projected_message() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("legacy order")).unwrap();
+        let sid = session.id().to_string();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("hi"),
+            })
+            .unwrap();
+        // The other write order: `Session::append` projects the message into an
+        // item, so here the item FOLLOWS the message.
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::assistant("final only"),
+            })
+            .unwrap();
+
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        let parts = &conversation[1].parts;
+        assert!(
+            matches!(&parts[..], [ConversationPartDto::Text { text }] if text == "final only"),
+            "parts: {parts:?}"
+        );
     }
 
     #[test]
