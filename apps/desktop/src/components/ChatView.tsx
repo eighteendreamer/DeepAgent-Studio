@@ -1400,7 +1400,7 @@ export function ChatView({
         </div>
 
         {question && (
-          <div className="absolute inset-x-0 bottom-0 z-40">
+          <div className="absolute bottom-0 left-0 z-40 flex w-full justify-center px-6">
             <AskUserQuestionCard
               key={question.question_id}
               request={question}

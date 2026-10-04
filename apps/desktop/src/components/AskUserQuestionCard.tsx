@@ -85,12 +85,12 @@ export function AskUserQuestionCard({ request, queueCount = 1, onAnswer, onDecli
   };
 
   return (
-    <div className="border-t border-border-theme bg-bg-base px-6 pb-4 pt-3 shadow-[0_-10px_28px_rgba(0,0,0,0.10)]">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-2">
+    <div className="w-full max-w-4xl rounded-t-2xl border border-border-theme bg-bg-base px-4 pb-4 pt-3 shadow-[0_-10px_28px_rgba(0,0,0,0.10)]">
+      <div className="flex flex-col gap-2">
         <div className="flex items-start gap-3">
           <p className="min-w-0 flex-1 text-[13.5px] font-medium leading-6 text-text-base">
             {current.question}
-            {current.multi_select && (
+            {current.multi_select && !current.question.includes("多选") && (
               <span className="ml-1.5 text-[11px] font-normal text-text-secondary">
                 {t("askUserDialog.multiHint")}
               </span>
