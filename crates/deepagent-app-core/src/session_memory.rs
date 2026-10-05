@@ -1586,6 +1586,64 @@ mod tests {
         assert!(written.contains("decided: one vault"), "{written}");
     }
 
+    #[tokio::test]
+    async fn the_pinned_write_tool_refuses_off_note_targets_and_writes_nothing() {
+        // The whitelist claim is about the real `edit_file`, not a stand-in: a
+        // hijacked pass must not write anywhere else, whether it names an
+        // absolute sibling, spells a `..` escape, or hides behind a near-miss
+        // filename. A refusal must leave the filesystem byte-for-byte alone.
+        let dir = tempfile::tempdir().unwrap();
+        let note = dir.path().join("session-memory.md");
+        ensure_note(&note).unwrap();
+        let sibling = dir.path().join("secret.md");
+        std::fs::write(&sibling, "leave me alone").unwrap();
+        let escape = dir.path().join("..").join("deepagent-note-pin-escape.md");
+
+        let registry = note_registry(&note, &PermissionSet::developer()).unwrap();
+        let edit = registry
+            .get("edit_file")
+            .expect("edit_file registered")
+            .tool
+            .clone();
+
+        for path in [
+            sibling.clone(),
+            PathBuf::from("..").join("deepagent-note-pin-escape.md"),
+            PathBuf::from("session-memory.md.bak"),
+        ] {
+            let output = edit
+                .invoke(serde_json::json!({
+                    "path": path.to_string_lossy(),
+                    "old": "(nothing recorded yet)",
+                    "new": "pwned",
+                }))
+                .await
+                .unwrap();
+            assert!(!output.ok, "off-note write must be refused: {output:?}");
+            let error = output
+                .value
+                .get("error")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            assert!(
+                error.contains("session-memory.md"),
+                "the refusal must name the one permitted file: {error}"
+            );
+        }
+
+        assert_eq!(
+            std::fs::read_to_string(&sibling).unwrap(),
+            "leave me alone",
+            "a refused edit must not touch the sibling"
+        );
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), NOTE_TEMPLATE);
+        assert!(
+            !escape.exists(),
+            "a refused write must not create its target"
+        );
+        assert!(!dir.path().join("session-memory.md.bak").exists());
+    }
+
     async fn run_pass(
         turns: Vec<Vec<String>>,
         gate: ExtractionGate,
