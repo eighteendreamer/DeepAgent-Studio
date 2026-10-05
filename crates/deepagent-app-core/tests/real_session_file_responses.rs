@@ -374,6 +374,8 @@ async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
         "[real-session] prompt prefix divergence between consecutive requests: {:?}",
         cache_divergence(&bodies.lock().unwrap())
     );
+    // The plan's second live claim: one session must not pay for a fresh summary
+    // on every turn. Counted after the pass is drained, below.
 
     // Live memory line. The note pass is a background kernel run, so draining it
     // is what a one-shot host has to do before exiting — and here it also makes
@@ -384,6 +386,31 @@ async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
     assert!(
         drained,
         "the live session-note pass must finish, not be cancelled at shutdown"
+    );
+
+    // The note pass is the only caller whose request names the note file, so the
+    // count of those requests is the count of rounds the gate actually allowed.
+    // Three turns of a 12k-context session must buy exactly one round: the turns
+    // that follow grow the context by a few hundred tokens, below the gate's
+    // minimum delta, so re-summarizing them would be pure waste.
+    let final_bodies = bodies.lock().unwrap();
+    let note_requests = final_bodies
+        .iter()
+        .filter(|body| body.contains("session-memory.md"))
+        .count();
+    let agent_requests = final_bodies.len() - note_requests;
+    eprintln!(
+        "[real-session] model requests: {agent_requests} agent + {note_requests} note-pass calls"
+    );
+    assert_eq!(
+        note_requests % 3,
+        0,
+        "the pass runs in whole read/edit/answer rounds: {note_requests} calls"
+    );
+    assert!(
+        note_requests <= 6,
+        "three turns must not buy three summaries: {note_requests} note calls across \
+         {agent_requests} non-note calls"
     );
 
     let largest_context = usage.iter().map(|entry| entry.0 as u64).max().unwrap_or(0);
