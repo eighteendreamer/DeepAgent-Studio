@@ -296,6 +296,80 @@ mod tests {
         }
     }
 
+    /// Auto-capture is deliberately fed the FULL durable log, not the
+    /// model-facing view: a compaction boundary changes what the next turn is
+    /// shown, never what happened. Without this fence the lessons from before a
+    /// boundary would stop being captured, silently.
+    #[test]
+    fn a_compaction_boundary_does_not_truncate_capture_input() {
+        let events = vec![
+            ev(
+                0,
+                EventPayload::MessageAppended {
+                    message: Message::user("make the export endpoint stream"),
+                },
+            ),
+            ev(
+                1,
+                EventPayload::ToolCallRequested {
+                    call: tool_call("c1", "edit_file"),
+                },
+            ),
+            ev(
+                2,
+                EventPayload::ToolCallCompleted {
+                    call_id: "c1".to_string(),
+                    ok: false,
+                    output: serde_json::json!({"error": "old_string not unique"}),
+                    duration_ms: 5,
+                },
+            ),
+            ev(
+                3,
+                EventPayload::ContextCompacted {
+                    tokens_before: 120_000,
+                    tokens_after: 40_000,
+                    strategy: "session_memory".to_string(),
+                    summary: Some("earlier attempts folded into the note".to_string()),
+                    first_kept_sequence: Some(4),
+                },
+            ),
+            ev(
+                4,
+                EventPayload::MessageAppended {
+                    message: Message::assistant("streamed it with a unique anchor"),
+                },
+            ),
+            ev(
+                5,
+                EventPayload::TaskStateChanged {
+                    task_id: TaskId::new(),
+                    from: TaskState::Running,
+                    to: TaskState::Completed,
+                },
+            ),
+        ];
+
+        let digest = detect_session_digest(&events);
+        assert!(digest.completed);
+        assert!(digest.had_tool_call);
+        assert_eq!(digest.user_goal, "make the export endpoint stream");
+        assert_eq!(digest.final_answer, "streamed it with a unique anchor");
+        assert!(
+            digest.transcript_digest.contains("edit_file error"),
+            "the pre-boundary failure must still be in the transcript: {}",
+            digest.transcript_digest
+        );
+
+        // The recovery signal, which is what decides whether a lesson is saved.
+        let recovery = detect_recovery(&events);
+        assert!(
+            recovery.had_failure && recovery.failed_tools.contains(&"edit_file".to_string()),
+            "a failure before the boundary must still be capturable: {recovery:?}"
+        );
+        assert!(is_worth_capturing(&recovery));
+    }
+
     #[test]
     fn detects_failure_then_completion() {
         let events = vec![

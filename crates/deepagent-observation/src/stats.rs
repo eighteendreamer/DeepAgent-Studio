@@ -31,6 +31,12 @@ pub struct SessionStats {
     pub tokens_saved: u64,
     /// Tasks created.
     pub tasks_created: u64,
+    /// Memory injections surfaced into the context. Counted even though the UI
+    /// panel shows these rows as timeline markers rather than numbers: an audit
+    /// fold that silently ignored them would under-report what the model saw.
+    pub memory_injections: u64,
+    /// Entries written to the long-term vault by the agent.
+    pub memory_entries_written: u64,
     /// Span of the session in milliseconds (last - first event timestamp).
     pub duration_ms: i64,
 }
@@ -68,6 +74,8 @@ impl SessionStats {
                     s.tokens_saved += tokens_before.saturating_sub(*tokens_after);
                 }
                 EventPayload::TaskCreated { .. } => s.tasks_created += 1,
+                EventPayload::MemoriesInjected { .. } => s.memory_injections += 1,
+                EventPayload::MemoryEntryWritten { .. } => s.memory_entries_written += 1,
                 _ => {}
             }
         }
@@ -160,6 +168,47 @@ mod tests {
         assert_eq!(s.duration_ms, 300);
         assert_eq!(s.tool_success_rate(), Some(0.5));
         assert_eq!(s.avg_tool_ms(), Some(20.0));
+    }
+
+    /// The memory events must be counted, not silently folded away: an audit of
+    /// a session that says "no memories were used" when six were injected is
+    /// worse than no audit at all.
+    #[test]
+    fn memory_events_are_counted() {
+        let stats = SessionStats::from_events(&[
+            event(
+                0,
+                1_000,
+                EventPayload::MemoriesInjected {
+                    ids: vec!["project:a".into()],
+                    count: 1,
+                    latency_ms: 7,
+                    trigger: "prefetch".into(),
+                },
+            ),
+            event(
+                1,
+                1_100,
+                EventPayload::MemoriesInjected {
+                    ids: vec![],
+                    count: 0,
+                    latency_ms: 3,
+                    trigger: "model_request".into(),
+                },
+            ),
+            event(
+                2,
+                1_200,
+                EventPayload::MemoryEntryWritten {
+                    id: "project:b".into(),
+                    tier: "semantic".into(),
+                    scope: "project".into(),
+                    importance: None,
+                },
+            ),
+        ]);
+        assert_eq!(stats.memory_injections, 2);
+        assert_eq!(stats.memory_entries_written, 1);
     }
 
     #[test]
