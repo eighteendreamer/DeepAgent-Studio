@@ -45,7 +45,7 @@ pub use pack::{
     CacheScope, ContextBlock, ContextBlockKind, ContextBlockUsage, ContextPack,
     ContextUsageSnapshot,
 };
-pub use policy::ContextPolicy;
+pub use policy::{CompactionKeepWindow, ContextPolicy};
 pub use prompt::{CompiledPrompt, PromptFragment, PromptSource};
 pub use reminder::{append_to_tool_result, wrap};
 pub use tokenizer::{HeuristicTokenizer, TokenCounter};

@@ -5,7 +5,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use deepagent_context::{ContextManifest, ContextPolicy, HeuristicTokenizer};
+use deepagent_context::{CompactionKeepWindow, ContextManifest, ContextPolicy, HeuristicTokenizer};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::{Event, EventPayload};
 use deepagent_core::id::SessionId;
@@ -27,15 +27,6 @@ use crate::tool_manifest::{deferred_tools_announcement, ToolManifest};
 
 pub(crate) type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
 pub(crate) type RemoteContextFactory = Arc<dyn Fn(String) -> RemoteContextFuture + Send + Sync>;
-
-/// How many recent entries reactive compaction always keeps verbatim.
-///
-/// One number for the committed pass and the speculative prefire pass, and for
-/// both the `Message` view and the response-item view: the prefire note is only
-/// reusable while the two agree on where the verbatim tail starts. This is a
-/// different knob from `CompactionPolicy::keep_recent_turns`, which the
-/// before-the-run proactive compaction uses.
-pub(crate) const REACTIVE_KEEP_RECENT: usize = 8;
 
 pub(crate) struct HookedReactiveContextCompactor {
     client: Arc<ModelClient>,
@@ -193,11 +184,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             .take_while(|message| message.role == deepagent_core::message::Role::System)
             .count();
         let body = &messages[system_end..];
-        if body.len() <= REACTIVE_KEEP_RECENT {
-            return Ok(None);
-        }
-
-        let Some(split) = pairing_safe_compaction_split(body, REACTIVE_KEEP_RECENT) else {
+        let Some(split) = pairing_safe_compaction_split(body) else {
             return Ok(None);
         };
 
@@ -330,12 +317,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             return Ok(None);
         }
 
-        if items.len() <= REACTIVE_KEEP_RECENT {
-            return Ok(None);
-        }
-
-        let Some(split) = pairing_safe_response_item_compaction_split(items, REACTIVE_KEEP_RECENT)
-        else {
+        let Some(split) = pairing_safe_response_item_compaction_split(items) else {
             return Ok(None);
         };
 
@@ -465,10 +447,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             .take_while(|m| m.role == deepagent_core::message::Role::System)
             .count();
         let body = &messages[system_end..];
-        if body.len() <= REACTIVE_KEEP_RECENT {
-            return Ok(None);
-        }
-        let Some(split) = pairing_safe_compaction_split(body, REACTIVE_KEEP_RECENT) else {
+        let Some(split) = pairing_safe_compaction_split(body) else {
             return Ok(None);
         };
         let prefix_end = system_end + split;
@@ -486,11 +465,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         _instructions: Option<&str>,
         items: &[ResponseInputItem],
     ) -> Result<Option<PrefireNote>> {
-        if items.len() <= REACTIVE_KEEP_RECENT {
-            return Ok(None);
-        }
-        let Some(split) = pairing_safe_response_item_compaction_split(items, REACTIVE_KEEP_RECENT)
-        else {
+        let Some(split) = pairing_safe_response_item_compaction_split(items) else {
             return Ok(None);
         };
         let (summary_block, summary_usage) =
@@ -702,17 +677,84 @@ fn micro_compact_tool_results(
     (cleared > 0).then_some((out, cleared))
 }
 
-fn pairing_safe_response_item_compaction_split(
-    items: &[ResponseInputItem],
-    keep_recent: usize,
+/// Choose the compaction cut from the token budget, growing the verbatim tail
+/// backwards from the newest entry.
+///
+/// Claude Code `calculateMessagesToKeepIndex`: keep expanding until the tail
+/// carries `min_tokens` **and** `min_text_block_entries` text-bearing entries,
+/// and stop at `max_tokens` because a bigger tail is the reason the next request
+/// overflows again. `counts` and `text_bearing` measure the same slice entry by
+/// entry, which is what lets the `Message` view and the response-item view share
+/// this single rule -- and the committed pass and its speculative prefire must
+/// share it too, or the prefire note is never reusable and the run pays twice.
+fn budgeted_tail_split(
+    counts: &[usize],
+    text_bearing: &[bool],
+    window: CompactionKeepWindow,
 ) -> Option<usize> {
-    if items.len() <= keep_recent {
-        return None;
+    let mut split = counts.len();
+    let mut tokens = 0usize;
+    let mut blocks = 0usize;
+    while split > 0 {
+        let meets_minimums = tokens >= window.min_tokens && blocks >= window.min_text_block_entries;
+        if meets_minimums || tokens >= window.max_tokens {
+            break;
+        }
+        let next = split - 1;
+        tokens += counts[next];
+        blocks += usize::from(text_bearing[next]);
+        split = next;
     }
-    let mut split = items.len() - keep_recent;
-    while split > 0 && is_tool_output_item(&items[split]) {
+    // A tail that swallows the whole body frees nothing: no compaction to run.
+    (split > 0).then_some(split)
+}
+
+/// Walk the cut back until the retained tail does not start on a tool result;
+/// its requesting assistant turn has to travel with it, or the provider rejects
+/// the request over an orphaned output.
+fn retain_whole_tool_pair(
+    mut split: usize,
+    len: usize,
+    is_output: impl Fn(usize) -> bool,
+) -> usize {
+    while split > 0 && split < len && is_output(split) {
         split -= 1;
     }
+    split
+}
+
+/// Claude Code `hasTextBlocks`: only prose counts toward the retained *thread*.
+/// Tool traffic and reasoning do not, so a tail of tool dumps can never satisfy
+/// the text minimum on its own.
+fn response_item_carries_text(item: &ResponseInputItem) -> bool {
+    match item {
+        ResponseInputItem::Message { role, content }
+        | ResponseInputItem::InputMessage { role, content, .. } => {
+            matches!(role.as_str(), "user" | "assistant") && !content.trim().is_empty()
+        }
+        _ => false,
+    }
+}
+
+fn pairing_safe_response_item_compaction_split(items: &[ResponseInputItem]) -> Option<usize> {
+    let counter = HeuristicTokenizer::new();
+    let counts = items
+        .iter()
+        .map(|item| {
+            deepagent_context::TokenCounter::count(
+                &counter,
+                &render_response_item_for_compaction(item),
+            )
+        })
+        .collect::<Vec<_>>();
+    let text = items
+        .iter()
+        .map(response_item_carries_text)
+        .collect::<Vec<_>>();
+    let split = budgeted_tail_split(&counts, &text, ContextPolicy::KEEP_WINDOW)?;
+    let split = retain_whole_tool_pair(split, items.len(), |index| {
+        is_tool_output_item(&items[index])
+    });
     (split > 0).then_some(split)
 }
 
@@ -1240,19 +1282,33 @@ fn compose_prompt_with_attachments(
     format!("{prefix}\n\n{prompt}")
 }
 
-pub(crate) fn pairing_safe_compaction_split(
-    messages: &[Message],
-    keep_recent: usize,
-) -> Option<usize> {
-    if messages.len() <= keep_recent {
-        return None;
-    }
-    let mut split = messages.len() - keep_recent;
-    // Never start the retained tail with tool results. Walk back through the
-    // complete result group to retain its requesting assistant turn.
-    while split > 0 && messages[split].role == deepagent_core::message::Role::Tool {
-        split -= 1;
-    }
+/// The same budget over the `Message` view (the chat-completions shape).
+fn message_carries_text(message: &Message) -> bool {
+    matches!(
+        message.role,
+        deepagent_core::message::Role::User | deepagent_core::message::Role::Assistant
+    ) && !message.content.trim().is_empty()
+}
+
+pub(crate) fn pairing_safe_compaction_split(messages: &[Message]) -> Option<usize> {
+    let counter = HeuristicTokenizer::new();
+    let counts = messages
+        .iter()
+        .map(|message| {
+            deepagent_context::TokenCounter::count(
+                &counter,
+                &render_message_for_compaction(message),
+            )
+        })
+        .collect::<Vec<_>>();
+    let text = messages
+        .iter()
+        .map(message_carries_text)
+        .collect::<Vec<_>>();
+    let split = budgeted_tail_split(&counts, &text, ContextPolicy::KEEP_WINDOW)?;
+    let split = retain_whole_tool_pair(split, messages.len(), |index| {
+        messages[index].role == deepagent_core::message::Role::Tool
+    });
     (split > 0).then_some(split)
 }
 
@@ -1619,8 +1675,40 @@ mod tests {
     }
 
     #[test]
-    fn response_item_split_keeps_tool_output_with_request() {
-        let items = vec![
+    fn the_cut_grows_to_both_floors_and_stops_at_the_cap() {
+        let window = ContextPolicy::KEEP_WINDOW;
+        assert_eq!(window.min_tokens, 10_000);
+        assert_eq!(window.min_text_block_entries, 5);
+        assert_eq!(window.max_tokens, 40_000);
+
+        // One giant recent entry: the cap is reached on the first step, so only
+        // it is retained. Keeping the eight-entry "recent window" here is what
+        // used to leave the compacted request still over budget.
+        let counts = [vec![500; 7], vec![45_000]].concat();
+        let text = vec![true; counts.len()];
+        assert_eq!(budgeted_tail_split(&counts, &text, window), Some(7));
+
+        // Both minimums gate the cut: ten 1k entries carry enough tokens, but
+        // only the last five are prose, so the tail keeps expanding until five
+        // text entries and 10k tokens are both inside it.
+        let counts = vec![1_000; 12];
+        let mut text = vec![false; 7];
+        text.extend_from_slice(&[true; 5]);
+        let all_text = vec![true; counts.len()];
+        assert_eq!(budgeted_tail_split(&counts, &text, window), Some(2));
+        // Same tokens, prose all the way back: the token floor alone stops it.
+        assert_eq!(budgeted_tail_split(&counts, &all_text, window), Some(2));
+
+        // A body smaller than the floor is not worth compacting: the tail would
+        // swallow everything and free nothing.
+        let counts = vec![1_000; 4];
+        let text = vec![true; 4];
+        assert_eq!(budgeted_tail_split(&counts, &text, window), None);
+    }
+
+    #[test]
+    fn the_cut_never_lands_between_a_tool_request_and_its_result() {
+        let items = [
             ResponseInputItem::Message {
                 role: "user".into(),
                 content: "older".into(),
@@ -1639,11 +1727,19 @@ mod tests {
                 content: "tail".into(),
             },
         ];
+        let is_output = |index: usize| is_tool_output_item(&items[index]);
 
-        assert_eq!(
-            pairing_safe_response_item_compaction_split(&items, 2),
-            Some(1)
-        );
+        // A cut on the result (2) must walk back to the request that made it;
+        // a cut already on a request (1) or on prose (3) stays put.
+        assert_eq!(retain_whole_tool_pair(2, items.len(), is_output), 1);
+        assert_eq!(retain_whole_tool_pair(1, items.len(), is_output), 1);
+        assert_eq!(retain_whole_tool_pair(3, items.len(), is_output), 3);
+
+        // Tool traffic never counts as prose, so a tail of dumps alone cannot
+        // satisfy the text floor.
+        assert!(!response_item_carries_text(&items[1]));
+        assert!(!response_item_carries_text(&items[2]));
+        assert!(response_item_carries_text(&items[3]));
     }
 
     #[test]
@@ -1882,20 +1978,20 @@ mod tests {
                 SessionId::new(),
             ));
 
-        // Long seeded history so the heuristic estimate is well above the low
-        // proactive threshold, forcing a pre-request compaction on step 0.
-        let history: Vec<Message> = (0..40)
+        // Long seeded history: every turn is roughly a kilotoken, so the body
+        // sits well past the keep-window floor and there is a prefix left to
+        // fold once the tail takes its 10k. Under the old eight-entry rule a toy
+        // history compacted; under the token budget only a real overflow-sized
+        // one does, which is the shape this path exists for.
+        let filler = "record the relevant details with file paths and rationale. ".repeat(60usize);
+        let history: Vec<Message> = (0..24)
             .map(|i| {
                 if i % 2 == 0 {
                     Message::user(format!(
-                        "Earlier step {i}: investigate module {i} and report findings with file \
-                         paths and rationale in detail."
+                        "Earlier step {i}: investigate module {i}. {filler}"
                     ))
                 } else {
-                    Message::assistant(format!(
-                        "Step {i}: inspected the module, found several functions, recorded the \
-                         relevant details for later."
-                    ))
+                    Message::assistant(format!("Step {i}: inspected the module. {filler}"))
                 }
             })
             .collect();
@@ -1918,17 +2014,32 @@ mod tests {
             .expect("real DeepSeek think should succeed after proactive compaction");
 
         let events = sink.0.lock().unwrap();
-        let compacted = events.iter().any(|event| {
-            matches!(
-                event,
-                RuntimeEvent::ContextCompacted { strategy, .. }
-                    if strategy == "proactive_threshold" || strategy == "prefire_pass2"
+        let compacted = events.iter().find_map(|event| match event {
+            RuntimeEvent::ContextCompacted {
+                tokens_before,
+                tokens_after,
+                strategy,
+                ..
+            } if strategy == "proactive_threshold" || strategy == "prefire_pass2" => {
+                Some((*tokens_before, *tokens_after))
+            }
+            _ => None,
+        });
+        let (tokens_before, tokens_after) = compacted.unwrap_or_else(|| {
+            panic!(
+                "expected a proactive ContextCompacted event among {} runtime events",
+                events.len()
             )
         });
+        // The budget promise, measured on the provider's own numbers: the run
+        // kept at least the floor of recent thread, and it did free context.
         assert!(
-            compacted,
-            "expected a proactive ContextCompacted event among {} runtime events",
-            events.len()
+            tokens_after >= deepagent_context::ContextPolicy::KEEP_WINDOW.min_tokens as u64,
+            "the retained tail fell under the floor: {tokens_before} -> {tokens_after}"
+        );
+        assert!(
+            tokens_after < tokens_before,
+            "compaction freed nothing: {tokens_before} -> {tokens_after}"
         );
         assert!(matches!(
             decision,
@@ -1940,6 +2051,7 @@ mod tests {
                 | AgentDecision::CallTools(_)
         ));
         eprintln!("[real-model] proactive compaction fired and the run continued OK");
+        eprintln!("[real-model] tokens {tokens_before} -> {tokens_after}");
     }
 
     /// Real-model end-to-end (no mock): validates the DeepSeek contract the

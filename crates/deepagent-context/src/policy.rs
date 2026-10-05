@@ -24,6 +24,32 @@ pub const AUTOCOMPACT_BUFFER_TOKENS: usize = 13_000;
 /// the routine budget makes long tasks balloon before compaction starts.
 pub const DEEPSEEK_STATELESS_CONTEXT_MANAGEMENT_WINDOW_TOKENS: usize = 300_000;
 
+/// How much verbatim tail a compaction must preserve, measured in tokens rather
+/// than entry counts. Aligned with Claude Code
+/// `sessionMemoryCompact.ts::DEFAULT_SM_COMPACT_CONFIG` (minTokens 10_000 /
+/// minTextBlockMessages 5 / maxTokens 40_000).
+///
+/// The two minimums exist because a tail of eight giant tool dumps keeps the
+/// recent *volume* but not the recent *thread*: the model loses the narrative it
+/// was building. `max_tokens` is the hard stop in the other direction: a bigger
+/// retained tail means the compacted request still overflows, which is what makes
+/// compaction loop.
+///
+/// This governs the reactive paths (the overflow pass and its speculative
+/// prefire). The before-the-run proactive compaction keeps its own turn-count
+/// knob, `CompactionPolicy::keep_recent_turns`; they are deliberately not
+/// merged, because one reacts to a provider overflow and the other to a
+/// pre-request token estimate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompactionKeepWindow {
+    /// Least tail worth of tokens before the cut may stop.
+    pub min_tokens: usize,
+    /// Least number of tail entries carrying narrative text (not tool traffic).
+    pub min_text_block_entries: usize,
+    /// Grow no further once the tail reaches this size.
+    pub max_tokens: usize,
+}
+
 /// Budgeting policy derived from a resolved model capability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextPolicy {
@@ -84,6 +110,20 @@ impl ContextPolicy {
     pub const fn compaction_trigger_tokens(&self) -> usize {
         self.auto_compact_at
     }
+
+    /// The verbatim tail budget every compaction path must honour: the reactive
+    /// committed pass, its speculative prefire, and both the `Message` and
+    /// response-item views of each. One definition for all four; a tail chosen
+    /// any other way makes the prefire note unreusable and the run pays twice.
+    ///
+    /// A constant rather than a per-model field on purpose: these are the tail
+    /// *floor* numbers Claude Code runs with, and the provider window is already
+    /// handled by [`ContextPolicy::autocompact_threshold_tokens`].
+    pub const KEEP_WINDOW: CompactionKeepWindow = CompactionKeepWindow {
+        min_tokens: 10_000,
+        min_text_block_entries: 5,
+        max_tokens: 40_000,
+    };
 
     /// The context window minus the output tokens reserved for the compaction
     /// summary. Aligned with Claude Code

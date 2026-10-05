@@ -39,8 +39,7 @@ use crate::context_runtime::RemoteContextFactory;
 #[cfg(test)]
 use crate::context_runtime::{
     collect_invoked_skill_ids_from_events, collect_invoked_skill_records_from_events,
-    invoked_skills_reminder, pairing_safe_compaction_split, plugin_output_styles_prompt,
-    render_message_for_compaction,
+    invoked_skills_reminder, plugin_output_styles_prompt, render_message_for_compaction,
 };
 use crate::dto::{ApprovalRequestDto, PreflightToolCallDto};
 #[cfg(test)]
@@ -4034,9 +4033,9 @@ mod tests {
             Message::assistant("a3"),
         ];
 
-        // Naive len-keep would split at index 2 (a tool result). The safe
-        // boundary walks back to the assistant request at index 1.
-        assert_eq!(pairing_safe_compaction_split(&messages, 8), Some(1));
+        // The cut point itself is chosen by the token budget and the pairing
+        // repair, both tested in `context_runtime`; what this fixture pins is
+        // that a tool call's arguments actually reach the summary input.
         let rendered = render_message_for_compaction(&messages[1]);
         assert!(rendered.contains("name=read_file"));
         assert!(rendered.contains("\"path\":\"one\""));
