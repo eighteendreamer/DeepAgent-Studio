@@ -79,6 +79,16 @@ impl deepagent_models::transport::HttpTransport for RecordingTransport {
 }
 
 /// The cache-shape summary for consecutive recorded requests.
+///
+/// Measured live (five runs, same fixture): turns 1 and 3 reuse 98% and 95% of
+/// their input, while the first history-bearing turn reports exactly 2816 cached
+/// tokens every time. This probe is what shows the cause is NOT our request
+/// shape: between turn 1 and turn 2 the tools list is identical (34 names, same
+/// order), every earlier history item re-serializes unchanged, and the two
+/// bodies share a 16874-character prefix. Draining the background note pass and
+/// waiting eight quiet seconds before turn 2 changed nothing (still 2816), so
+/// concurrent provider traffic is ruled out too. What remains is DeepSeek's own
+/// accounting for the first request that extends a cached entry.
 fn cache_divergence(bodies: &[String]) -> Vec<String> {
     let tool_names = |body: &str| -> Vec<String> {
         serde_json::from_str::<serde_json::Value>(body)
@@ -89,6 +99,18 @@ fn cache_divergence(bodies: &[String]) -> Vec<String> {
                     .iter()
                     .filter_map(|tool| tool["name"].as_str().map(str::to_string))
                     .collect()
+            })
+            .unwrap_or_default()
+    };
+    let input_items = |body: &str| -> Vec<String> {
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|value| value["input"].as_array().cloned())
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| item.to_string())
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default()
     };
@@ -111,23 +133,36 @@ fn cache_divergence(bodies: &[String]) -> Vec<String> {
                     before.iter().filter(|name| !after.contains(name)).collect();
                 format!("added {added:?} removed {removed:?}")
             };
-            // The window around the first difference is what names the culprit:
-            // an identical tool list that diverges means a schema's contents
-            // changed between turns.
-            let window = |body: &str| -> String {
-                body.chars()
-                    .skip(diverged.saturating_sub(40))
-                    .take(160)
-                    .collect::<String>()
+            // Item-level view of the history: an agent turn that re-renders an
+            // EARLIER history item (a reminder folded into old content, a
+            // re-serialized tool result) breaks the provider prefix cache far
+            // sooner than simply appending a new turn, and the raw char offset
+            // alone cannot tell those two apart.
+            let (left_items, right_items) = (input_items(left), input_items(right));
+            let first_changed = left_items
+                .iter()
+                .zip(right_items.iter())
+                .position(|(a, b)| a != b);
+            let history = match first_changed {
+                Some(index) => format!(
+                    "history item {index} re-rendered ({} items -> {}), left={:?} right={:?}",
+                    left_items.len(),
+                    right_items.len(),
+                    left_items[index].chars().take(180).collect::<String>(),
+                    right_items[index].chars().take(180).collect::<String>(),
+                ),
+                None => format!(
+                    "history prefix unchanged ({} items -> {})",
+                    left_items.len(),
+                    right_items.len()
+                ),
             };
             format!(
-                "diverged_at_char={diverged} of {}/{} | tools {} -> {} ({change}) | left {:?} right {:?}",
+                "diverged_at_char={diverged} of {}/{} | tools {} -> {} ({change}) | {history}",
                 left.len(),
                 right.len(),
                 before.len(),
-                after.len(),
-                window(left),
-                window(right)
+                after.len()
             )
         })
         .collect()
