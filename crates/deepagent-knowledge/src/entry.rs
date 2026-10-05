@@ -28,6 +28,10 @@ pub enum EntryKind {
     Config,
     /// A general note.
     Note,
+    /// A cross-session long-term memory written by `memory_write`. Kept in the
+    /// same vault as notes so the retrieval track that injects `relevant
+    /// memories` can actually see it (one store, one truth).
+    Memory,
 }
 
 impl EntryKind {
@@ -39,6 +43,7 @@ impl EntryKind {
             EntryKind::Command => "command",
             EntryKind::Config => "config",
             EntryKind::Note => "note",
+            EntryKind::Memory => "memory",
         }
     }
 
@@ -50,6 +55,7 @@ impl EntryKind {
             "solution" | "fix" | "解决" | "解决方法" => EntryKind::Solution,
             "command" | "cmd" | "命令" => EntryKind::Command,
             "config" | "configuration" | "配置" => EntryKind::Config,
+            "memory" | "记忆" => EntryKind::Memory,
             _ => EntryKind::Note,
         }
     }
@@ -61,7 +67,7 @@ impl EntryKind {
             EntryKind::Pitfall => ObservationType::Failure,
             EntryKind::Solution => ObservationType::BugFix,
             EntryKind::Command | EntryKind::Config => ObservationType::Knowledge,
-            EntryKind::Note => ObservationType::Knowledge,
+            EntryKind::Note | EntryKind::Memory => ObservationType::Knowledge,
         }
     }
 }
@@ -142,6 +148,14 @@ pub struct KnowledgeEntry {
     /// Whether this is a confirmed entry or a pending draft.
     #[serde(default = "default_status")]
     pub status: EntryStatus,
+    /// Memory tier for [`EntryKind::Memory`] entries (`semantic` / `episodic`
+    /// / `procedural` / `workspace` / `failure`). Absent on ordinary notes.
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// Baseline importance in `[0,1]` used by the recall ranking. Absent when
+    /// the writer did not supply one.
+    #[serde(default)]
+    pub importance: Option<f32>,
     /// The Markdown body (everything after the frontmatter).
     pub body: String,
 }
@@ -167,6 +181,14 @@ impl KnowledgeEntry {
         // keeping pre-existing files byte-stable.
         if self.status == EntryStatus::Draft {
             out.push_str("status: draft\n");
+        }
+        // Memory attributes are emitted only when present, so ordinary note
+        // files stay byte-stable across upgrades.
+        if let Some(tier) = &self.tier {
+            out.push_str(&format!("tier: {}\n", yaml_scalar(tier)));
+        }
+        if let Some(importance) = self.importance {
+            out.push_str(&format!("importance: {importance:.3}\n"));
         }
         out.push_str("---\n\n");
         out.push_str(self.body.trim_end());
@@ -209,6 +231,12 @@ impl KnowledgeEntry {
             .map(EntryStatus::parse)
             .unwrap_or(EntryStatus::Active);
 
+        let tier = fm
+            .get("tier")
+            .map(str::to_string)
+            .filter(|s| !s.trim().is_empty());
+        let importance = fm.get("importance").and_then(parse_float);
+
         // When there is no frontmatter at all, `frontmatter::parse` returns the
         // whole input as the body — exactly the tolerant behavior we want.
         let body = fm.body.trim().to_string();
@@ -223,6 +251,8 @@ impl KnowledgeEntry {
             source_session,
             scope,
             status,
+            tier,
+            importance,
             body,
         }
     }
@@ -269,6 +299,16 @@ fn parse_millis(raw: &str) -> Option<i64> {
     raw.trim()
         .trim_matches(|c| c == '"' || c == '\'')
         .parse::<i64>()
+        .ok()
+}
+
+/// Tolerant float parse for the `importance` frontmatter key. A garbled value
+/// yields `None` (recall then falls back to the writer's default) rather than
+/// failing the whole entry, matching the parsing discipline above.
+fn parse_float(raw: &str) -> Option<f32> {
+    raw.trim()
+        .trim_matches(|c| c == '"' || c == '\'')
+        .parse::<f32>()
         .ok()
 }
 
@@ -348,6 +388,8 @@ mod tests {
             source_session: Some("ses_019e7b".into()),
             scope: Scope::Project,
             status: EntryStatus::Active,
+            tier: None,
+            importance: None,
             body: "## 现象\n`cargo test | Select-String` 经常 exit -1。\n\n## 解决\n改用 `> out.txt 2>&1` 重定向。".to_string(),
         }
     }

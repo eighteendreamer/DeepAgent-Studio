@@ -1249,13 +1249,17 @@ export interface ProjectMapRefresh {
 export interface KnowledgeEntry {
   id: string;
   title: string;
-  kind: string; // "pitfall" | "solution" | "command" | "config" | "note"
+  kind: string; // "pitfall" | "solution" | "command" | "config" | "note" | "memory"
   tags: string[];
   scope: string; // "project" | "global"
   created_at: number;
   updated_at: number;
   source_session: string | null;
   body: string;
+  /** Memory tier when `kind === "memory"` (semantic/episodic/procedural/...). */
+  tier?: string | null;
+  /** Baseline importance used by `memory_recall` ranking. */
+  importance?: number | null;
 }
 
 /** A knowledge search hit (mirrors deepagent-app-core::KnowledgeHitDto). */

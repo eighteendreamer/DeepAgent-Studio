@@ -314,6 +314,8 @@ mod tests {
             source_session: None,
             scope: Scope::Project,
             status: crate::entry::EntryStatus::Active,
+            tier: None,
+            importance: None,
             body: body.to_string(),
         }
     }

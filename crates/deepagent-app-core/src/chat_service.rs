@@ -2248,6 +2248,8 @@ mod tests {
             tags: vec![],
             scope: Some("project".into()),
             source_session: None,
+            tier: None,
+            importance: None,
         })
         .unwrap();
         Arc::new(svc)

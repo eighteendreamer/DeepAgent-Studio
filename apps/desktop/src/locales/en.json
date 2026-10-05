@@ -1463,7 +1463,8 @@
       "solution": "Solution",
       "command": "Command",
       "config": "Config",
-      "note": "Note"
+      "note": "Note",
+      "memory": "Memory"
     },
     "scope": {
       "project": "Project",

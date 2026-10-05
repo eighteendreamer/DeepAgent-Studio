@@ -1463,7 +1463,8 @@
       "solution": "解决方法",
       "command": "命令",
       "config": "配置",
-      "note": "笔记"
+      "note": "笔记",
+      "memory": "记忆"
     },
     "scope": {
       "project": "项目",

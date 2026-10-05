@@ -9,6 +9,7 @@ const KIND_COLOR: Record<string, string> = {
   command: "#4b5563", // gray-600
   config: "#2563eb", // blue-600
   note: "#ca8a04", // yellow-600
+  memory: "#7c3aed", // violet-600
 };
 
 const TAG_COLOR = "#94a3b8"; // slate-400

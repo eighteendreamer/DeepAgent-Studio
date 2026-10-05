@@ -35,6 +35,9 @@ pub struct MemoryWriteDraft {
     pub importance: Option<f32>,
     /// Optional tags for filtering.
     pub tags: Vec<String>,
+    /// Target vault scope: `global` (default, shared across projects) or
+    /// `project` (only this workspace). Absent means the backend's default.
+    pub scope: Option<String>,
 }
 
 /// A recalled memory.
@@ -226,6 +229,12 @@ impl<B: MemoryBackend> Tool for MemoryWriteTool<B> {
                         "type": "array",
                         "items": {"type": "string"},
                         "description": "Optional tags for filtering."
+                    },
+                    "scope": {
+                        "type": "string",
+                        "description": "Vault scope: 'global' (default, shared across \
+                            every project) or 'project' (only this workspace).",
+                        "enum": ["global", "project"]
                     }
                 },
                 "required": ["tier", "content"]
@@ -261,6 +270,12 @@ impl<B: MemoryBackend> Tool for MemoryWriteTool<B> {
             content: content.to_string(),
             importance,
             tags: tags_arg(&args),
+            scope: args
+                .get("scope")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|scope| !scope.is_empty())
+                .map(str::to_string),
         };
         match self.backend.write(draft).await {
             Ok(id) => Ok(ToolOutput::success(

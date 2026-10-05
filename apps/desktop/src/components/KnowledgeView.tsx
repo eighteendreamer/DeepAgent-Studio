@@ -23,7 +23,7 @@ import { KnowledgeGraph } from "./KnowledgeGraph";
 import { Button } from "./shadcn/button";
 import { ToggleSwitchRow } from "./ui/ToggleSwitch";
 
-const KINDS = ["pitfall", "solution", "command", "config", "note"] as const;
+const KINDS = ["pitfall", "solution", "command", "config", "note", "memory"] as const;
 type Kind = (typeof KINDS)[number];
 
 // Map an entry kind to an icon + accent color.
@@ -34,6 +34,7 @@ function visualFor(kind: string): { icon: IconProp; bg: string } {
     command: { icon: ["fas", "terminal"], bg: "bg-gray-100 text-gray-700" },
     config: { icon: ["fas", "sliders"], bg: "bg-blue-100 text-blue-600" },
     note: { icon: ["fas", "note-sticky"], bg: "bg-yellow-100 text-yellow-700" },
+    memory: { icon: ["fas", "brain"], bg: "bg-violet-100 text-violet-600" },
   };
   return map[kind] ?? { icon: ["fas", "note-sticky"], bg: "bg-gray-100 text-gray-600" };
 }
@@ -45,6 +46,7 @@ const KIND_DOT: Record<string, string> = {
   command: "bg-gray-600",
   config: "bg-blue-600",
   note: "bg-yellow-600",
+  memory: "bg-violet-600",
 };
 
 const EMPTY_DRAFT: KnowledgeDraft = {

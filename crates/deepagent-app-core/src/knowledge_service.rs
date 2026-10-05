@@ -43,6 +43,12 @@ pub struct KnowledgeDto {
     pub source_session: Option<String>,
     /// Markdown body.
     pub body: String,
+    /// Memory tier for `kind == "memory"` entries; `None` for ordinary notes.
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// Baseline importance used by the `memory_recall` ranking.
+    #[serde(default)]
+    pub importance: Option<f32>,
 }
 
 impl KnowledgeDto {
@@ -57,6 +63,8 @@ impl KnowledgeDto {
             updated_at: entry.updated_at,
             source_session: entry.source_session.clone(),
             body: entry.body.clone(),
+            tier: entry.tier.clone(),
+            importance: entry.importance,
         }
     }
 }
@@ -98,6 +106,12 @@ pub struct KnowledgeDraftDto {
     /// Originating session id, if any.
     #[serde(default)]
     pub source_session: Option<String>,
+    /// Memory tier (only meaningful for `kind == "memory"`).
+    #[serde(default)]
+    pub tier: Option<String>,
+    /// Baseline importance for the recall ranking.
+    #[serde(default)]
+    pub importance: Option<f32>,
 }
 
 /// Parse a scope label, defaulting to [`Scope::Global`] so saved knowledge is
@@ -238,6 +252,8 @@ impl KnowledgeService {
             tags: draft.tags,
             source_session: draft.source_session,
             scope,
+            tier: draft.tier,
+            importance: draft.importance,
         };
         let mut base = self.lock();
         let entry = base.base.write(kdraft, now_ms)?;
@@ -470,6 +486,8 @@ fn fallback_recovery_draft(signal: &capture::RecoverySignal, session_id: &str) -
         // Auto-captured recovery experience is reusable across every project,
         // so it lands in the global vault.
         scope: Scope::Global,
+        tier: None,
+        importance: None,
     }
 }
 
@@ -518,6 +536,8 @@ async fn summarize_recovery(
         // Lessons distilled from a recovery arc are reusable across every
         // project; they belong in the global vault.
         scope: Scope::Global,
+        tier: None,
+        importance: None,
     })
 }
 
@@ -593,6 +613,8 @@ async fn summarize_session_digest(
         source_session: Some(session_id.to_string()),
         // Distilled session knowledge is reusable across projects — global vault.
         scope: Scope::Global,
+        tier: None,
+        importance: None,
     })
 }
 
@@ -642,6 +664,8 @@ impl deepagent_builtins::KnowledgeBackend for KnowledgeServiceBackend {
             tags: draft.tags,
             scope: None, // None → parse_scope defaults to Global, so tool-captured knowledge follows the user across projects
             source_session: None,
+            tier: None,
+            importance: None,
         })?;
         Ok(dto.id)
     }
@@ -752,6 +776,8 @@ mod tests {
             tags: vec!["t".into()],
             scope: Some(scope.to_string()),
             source_session: None,
+            tier: None,
+            importance: None,
         }
     }
 
@@ -1159,6 +1185,8 @@ mod tests {
                 tags: vec![],
                 source_session: Some("ses1".into()),
                 scope: Scope::Project,
+                tier: None,
+                importance: None,
             })
             .unwrap();
         let d2 = svc
@@ -1169,6 +1197,8 @@ mod tests {
                 tags: vec![],
                 source_session: None,
                 scope: Scope::Project,
+                tier: None,
+                importance: None,
             })
             .unwrap();
         assert_eq!(svc.list_drafts().len(), 2);

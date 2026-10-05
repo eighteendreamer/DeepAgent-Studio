@@ -71,6 +71,11 @@ pub struct KnowledgeDraft {
     pub source_session: Option<String>,
     /// Target vault scope (defaults to project at the call site).
     pub scope: Scope,
+    /// Memory tier for [`EntryKind::Memory`] drafts; ordinary notes leave it
+    /// `None` so their files stay byte-stable.
+    pub tier: Option<String>,
+    /// Baseline importance for recall ranking.
+    pub importance: Option<f32>,
 }
 
 /// The composite, globally-unique id for an entry across vaults.
@@ -288,6 +293,8 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
                 source_session: draft.source_session,
                 scope: draft.scope,
                 status: crate::entry::EntryStatus::Active,
+                tier: draft.tier,
+                importance: draft.importance,
                 body: draft.body,
             }
         } else {
@@ -308,6 +315,8 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
                 source_session: draft.source_session,
                 scope: draft.scope,
                 status: crate::entry::EntryStatus::Active,
+                tier: draft.tier,
+                importance: draft.importance,
                 body: draft.body,
             }
         };
@@ -378,6 +387,8 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
             source_session: draft.source_session,
             scope: draft.scope,
             status: crate::entry::EntryStatus::Draft,
+            tier: draft.tier,
+            importance: draft.importance,
             body: draft.body,
         };
         vault.write_draft(&entry)?;
@@ -413,6 +424,8 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
                 tags: draft.tags,
                 source_session: draft.source_session,
                 scope: draft.scope,
+                tier: draft.tier,
+                importance: draft.importance,
             },
             now_ms,
         )
@@ -499,6 +512,8 @@ mod tests {
             tags: vec![],
             source_session: None,
             scope,
+            tier: None,
+            importance: None,
         }
     }
 

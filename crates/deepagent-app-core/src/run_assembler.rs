@@ -446,9 +446,13 @@ impl<'a> RunAssembler<'a> {
             crate::dag_orchestration::ChatPlanExecutor::new(task_runner.clone()),
         ));
         // Cross-session multi-tier memory (D3): persistent memory_write/recall.
-        let memory_backend: Option<Arc<dyn deepagent_builtins::MemoryBackend>> = Some(Arc::new(
-            crate::memory_service::MemoryService::new(self.db.clone()),
-        ));
+        // Backed by the knowledge vault, so a written memory is retrievable by
+        // the same `relevant memories` track that surfaces knowledge notes.
+        let memory_backend: Option<Arc<dyn deepagent_builtins::MemoryBackend>> =
+            self.knowledge.as_ref().map(|knowledge| {
+                Arc::new(crate::memory_service::MemoryService::new(knowledge.clone()))
+                    as Arc<dyn deepagent_builtins::MemoryBackend>
+            });
         let toolset = build_main_run_toolset(MainRunToolsetRequest {
             base,
             mcp: self.mcp.as_deref(),
