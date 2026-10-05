@@ -4,7 +4,9 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use deepagent_app_core::{ChatService, MemorySecretStore, PermissionPreset, SettingsService};
+use deepagent_app_core::{
+    ChatService, CostService, MemorySecretStore, PermissionPreset, SettingsService,
+};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
 use deepagent_persistence::Database;
@@ -1022,4 +1024,353 @@ async fn failed_subagent_propagates_paired_failure_and_parent_still_terminates()
     }
 
     std::fs::remove_dir_all(root).unwrap();
+}
+
+/// A text answer that also reports provider usage, so usage-gated behaviour
+/// (auto-compaction, the session-note pass) can be driven offline.
+fn answer_with_usage(text: &str, prompt: u32, completion: u32) -> Vec<String> {
+    vec![
+        serde_json::json!({"type":"response.output_text.delta","delta":text}).to_string(),
+        serde_json::json!({
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "usage": {
+                    "input_tokens": prompt,
+                    "output_tokens": completion,
+                    "total_tokens": prompt + completion,
+                },
+            },
+        })
+        .to_string(),
+    ]
+}
+
+/// Answers the session-note pass by its own script and everything else with a
+/// plain text turn. The pass is the only caller whose request names the note
+/// file, which is what makes the routing unambiguous: a queue-position script
+/// would be shifted by any other post-run model call (session title, hooks).
+///
+/// Each pass is a three-call round: read the note, edit it, then say it is done.
+/// Ordinary turns report growing context, which is what opens the gate.
+#[derive(Debug, Default)]
+struct NotePassTransport {
+    note_calls: AtomicUsize,
+    run_calls: AtomicUsize,
+    note_prompts: Mutex<Vec<String>>,
+}
+
+impl NotePassTransport {
+    /// Context the nth turn reports. The step from 20k to 26k is above the
+    /// gate's minimum delta; repeating 26k is below it.
+    fn turn_usage(&self) -> (u32, u32) {
+        match self.run_calls.fetch_add(1, Ordering::AcqRel) {
+            0 => (20_000, 120),
+            _ => (26_000, 140),
+        }
+    }
+}
+
+#[async_trait]
+impl HttpTransport for NotePassTransport {
+    async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let events = if request.body.contains("session-memory.md") {
+            let call = self.note_calls.fetch_add(1, Ordering::AcqRel);
+            if call % 3 == 0 {
+                self.note_prompts
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .push(request.body.clone());
+                response_function_call(
+                    "call-note-read",
+                    "read_file",
+                    serde_json::json!({"path": "session-memory.md"}),
+                )
+            } else if call % 3 == 1 {
+                // Each round anchors on what the previous round wrote, the way a
+                // real note-keeping agent appends instead of rewriting.
+                let (old, new) = match call / 3 {
+                    0 => (
+                        "(nothing recorded yet)",
+                        "- decision: one vault\n- backup: nightly",
+                    ),
+                    _ => ("- backup: nightly", "- backup: nightly, off-site"),
+                };
+                response_function_call(
+                    "call-note-edit",
+                    "edit_file",
+                    serde_json::json!({"path": "session-memory.md", "old": old, "new": new}),
+                )
+            } else {
+                answer_with_usage("note updated", 400, 60)
+            }
+        } else {
+            let (prompt, completion) = self.turn_usage();
+            answer_with_usage("recorded.", prompt, completion)
+        };
+        emit_responses_events(sink, &events)
+    }
+}
+
+/// The session-note pass's durable commit: its cursors land in the `documents`
+/// table only after the note has been edited and read back.
+fn session_memory_state(db: &Database, session_id: &str) -> Option<serde_json::Value> {
+    // `query_row` on an absent row is an error, and the error type is not
+    // reachable from an integration test (rusqlite is not a dev-dependency), so
+    // existence is probed with a count that always returns a row.
+    let body: Option<String> = db
+        .with_conn(|conn| {
+            let present: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM documents WHERE collection = 'session_memory' AND id = ?1",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| CoreError::Persistence(error.to_string()))?;
+            if present == 0 {
+                return Ok(None);
+            }
+            conn.query_row(
+                "SELECT body FROM documents WHERE collection = 'session_memory' AND id = ?1",
+                [session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .map_err(|error| CoreError::Persistence(error.to_string()))
+        })
+        .unwrap();
+    body.map(|body| serde_json::from_str(&body).unwrap())
+}
+
+fn cost_rows(db: &Database, session_id: &str) -> Vec<(i64, i64)> {
+    db.with_conn(|conn| {
+        let mut stmt = conn
+            .prepare(
+                "SELECT input_tokens, output_tokens FROM costs WHERE session_id = ?1 \
+                 ORDER BY input_tokens",
+            )
+            .map_err(|error| CoreError::Persistence(error.to_string()))?;
+        let rows = stmt
+            .query_map([session_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|error| CoreError::Persistence(error.to_string()))?
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| CoreError::Persistence(error.to_string()))?;
+        Ok(rows)
+    })
+    .unwrap()
+}
+
+/// Wait until the background note pass has committed `expected_rows` ledger
+/// rows. The pass saves its cursors and then bills, so a full ledger means the
+/// commit is durable. Offline a round finishes in tens of milliseconds; the
+/// 5s ceiling only guards against a hang.
+async fn wait_for_note_pass(
+    db: &Database,
+    session_id: &str,
+    expected_rows: usize,
+) -> Vec<(i64, i64)> {
+    for _ in 0..200 {
+        let rows = cost_rows(db, session_id);
+        if rows.len() >= expected_rows {
+            return rows;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!(
+        "the note pass never billed into the ledger for session {session_id} (expected {expected_rows} rows)"
+    );
+}
+
+/// Session-note wiring shared by the vertical tests: a real ChatService with a
+/// cost ledger attached, served by the transport that scripts the note pass
+/// separately from ordinary turns.
+struct NoteE2e {
+    base_run_id: String,
+    root: PathBuf,
+    db: Arc<Database>,
+    transport: Arc<NotePassTransport>,
+    chat: ChatService,
+}
+
+impl NoteE2e {
+    async fn new(tag: &str) -> Self {
+        let base_run_id = format!(
+            "kernel-v2-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis()
+        );
+        let root = e2e_root(&base_run_id);
+        std::fs::create_dir_all(&root).unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let discovery: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(
+            r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        ));
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            discovery,
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("sk-e2e-test").await.unwrap();
+        let transport = Arc::new(NotePassTransport::default());
+        let cost = Arc::new(CostService::new(db.clone()));
+        let chat = ChatService::new(db.clone(), settings, transport.clone(), &root).with_cost(cost);
+        Self {
+            base_run_id,
+            root,
+            db,
+            transport,
+            chat,
+        }
+    }
+
+    async fn run(&self, turn: u32, prompt: &str, session_id: Option<&str>) -> String {
+        let run_id = format!("{}-t{turn}", self.base_run_id);
+        self.chat
+            .run_in_session(
+                prompt,
+                session_id,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                Some(&run_id),
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap()
+    }
+
+    fn note_path(&self, session_id: &str) -> PathBuf {
+        let key =
+            <deepagent_core::id::SessionId as std::str::FromStr>::from_str(session_id).unwrap();
+        self.db.session_memory_path(key)
+    }
+
+    fn note_prompts(&self) -> Vec<String> {
+        self.transport
+            .note_prompts
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .clone()
+    }
+}
+
+/// A completed turn kicks off the session-note pass as a background kernel run:
+/// it must edit the note that lives beside the session's event log, and bill its
+/// own tokens. This is the vertical slice through the real run path (finalizer
+/// scheduling, gate inputs from provider usage, the pinned read/edit channel).
+#[tokio::test]
+async fn completed_turn_writes_the_session_note_and_bills_the_pass() {
+    let e2e = NoteE2e::new("note").await;
+    let session_id = e2e.run(1, "Remember the storage decision.", None).await;
+
+    let rows = wait_for_note_pass(&e2e.db, &session_id, 2).await;
+    let note_path = e2e.note_path(&session_id);
+    let note = std::fs::read_to_string(&note_path).unwrap_or_default();
+    let note_calls = e2e.transport.note_calls.load(Ordering::Acquire);
+    assert!(
+        note.contains("decision: one vault"),
+        "the note pass must edit the file beside the session log after {note_calls} pass calls; got {note:?} at {}",
+        note_path.display()
+    );
+
+    // Cursors persisted, and the note covers the whole (tool-free) turn.
+    let state =
+        session_memory_state(&e2e.db, &session_id).expect("the note pass must commit its cursors");
+    assert_eq!(state["initialized"], true);
+    assert!(
+        state["last_summarized_sequence"].is_number(),
+        "a clean turn ends the note at a safe cut point: {state}"
+    );
+
+    // Two ledger rows, each carrying only its own call's usage: the turn's
+    // 20k/120 and the note pass's 400/60. Folding the pass into the turn's row
+    // would hide what maintenance actually costs.
+    assert_eq!(
+        rows,
+        vec![(400, 60), (20_000, 120)],
+        "the turn and the note pass must bill separately for session {session_id}"
+    );
+
+    std::fs::remove_dir_all(&e2e.root).unwrap();
+}
+
+/// The two watermarks, proven through the real run path: a later pass folds in
+/// only what the note does not cover yet, and a turn that grows the context by
+/// less than the gate's minimum starts no pass and pays nothing.
+#[tokio::test]
+async fn a_later_pass_folds_only_the_uncovered_turn_and_a_flat_context_pays_nothing() {
+    let e2e = NoteE2e::new("note-fold").await;
+    let session_id = e2e.run(1, "Remember the storage decision.", None).await;
+    wait_for_note_pass(&e2e.db, &session_id, 2).await;
+
+    // The next turn reports 26k of context, six thousand above the note's own
+    // watermark, which is the smallest growth the gate accepts.
+    let continued = e2e
+        .run(2, "Now remember the backup rule.", Some(&session_id))
+        .await;
+    assert_eq!(continued, session_id, "the turn continues the session");
+    wait_for_note_pass(&e2e.db, &session_id, 4).await;
+
+    let prompts = e2e.note_prompts();
+    assert_eq!(prompts.len(), 2, "one opening prompt per pass round");
+    assert!(
+        prompts[0].contains("Remember the storage decision."),
+        "the first round has to see the turn it is summarising: {}",
+        prompts[0]
+    );
+    assert!(
+        prompts[1].contains("Now remember the backup rule."),
+        "the uncovered tail must reach the note: {}",
+        prompts[1]
+    );
+    assert!(
+        !prompts[1].contains("Remember the storage decision."),
+        "the first turn is already covered, so re-sending it would pay a full window again"
+    );
+    let note_path = e2e.note_path(&session_id);
+    let note_after_two = std::fs::read_to_string(&note_path).unwrap();
+    assert!(
+        note_after_two.contains("backup: nightly"),
+        "the second round appends to the note it just read: {note_after_two:?}"
+    );
+
+    // A turn reporting no context growth must not start a pass at all. Offline
+    // a round issues its first model call within tens of milliseconds, so a
+    // half-second window with no new call is the evidence the gate stayed shut.
+    let calls_before = e2e.transport.note_calls.load(Ordering::Acquire);
+    e2e.run(3, "Nothing new to record.", Some(&session_id))
+        .await;
+    for _ in 0..20 {
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert_eq!(
+        e2e.transport.note_calls.load(Ordering::Acquire),
+        calls_before,
+        "a flat context must not summarize"
+    );
+    assert_eq!(
+        cost_rows(&e2e.db, &session_id),
+        vec![
+            (400, 60),
+            (400, 60),
+            (20_000, 120),
+            (26_000, 140),
+            (26_000, 140)
+        ],
+        "three turns and two passes, no third pass"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&note_path).unwrap(),
+        note_after_two,
+        "no pass, no note change"
+    );
+
+    std::fs::remove_dir_all(&e2e.root).unwrap();
 }

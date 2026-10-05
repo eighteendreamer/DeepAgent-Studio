@@ -1287,8 +1287,6 @@ version = "0.1.0"
 dependencies = [
  "deepagent-core",
  "serde",
- "serde_json",
- "tracing",
 ]
 
 [[package]]
