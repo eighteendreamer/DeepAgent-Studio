@@ -153,6 +153,16 @@ async fn run(options: RunOptions) -> Result<(), String> {
             error.to_string()
         })?;
 
+    // The session-note pass runs as a background task. A one-shot process that
+    // returns here would cancel it mid-flight, so give it a bounded window to
+    // finish. Diagnostics go to stderr: stdout is the JSONL contract.
+    if !chat
+        .wait_for_session_memory_passes(std::time::Duration::from_secs(30))
+        .await
+    {
+        eprintln!("warning: session-note pass still running after 30s; the note may be behind");
+    }
+
     if !json {
         println!("thread: {thread_id}");
     }

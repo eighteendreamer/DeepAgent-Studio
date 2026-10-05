@@ -373,28 +373,44 @@ pub fn pending_tool_call_at_tail(events: &[Event]) -> bool {
         .unwrap_or(false)
 }
 
-/// Host-scoped scheduler: at most one extraction pass per session at a time.
+/// Host-scoped scheduler: at most one extraction pass per session at a time,
+/// plus a way to wait for the passes already in flight.
 ///
 /// Two passes for the same session would both read the same note and the later
 /// save would silently discard the earlier one, so a second request is dropped
 /// rather than queued — the next due turn re-runs it with a bigger window.
+///
+/// The wait matters because the pass is a background task: a one-shot process
+/// (the headless CLI) would otherwise exit and take the unfinished note with it.
 #[derive(Clone, Default)]
 pub struct SessionMemoryPasses {
-    in_flight: Arc<std::sync::Mutex<std::collections::HashSet<SessionId>>>,
+    book: Arc<PassBook>,
+}
+
+/// The shared state behind [`SessionMemoryPasses`]: claimed slots and the
+/// wakeup every finished pass fires.
+#[derive(Default)]
+struct PassBook {
+    slots: std::sync::Mutex<std::collections::HashSet<SessionId>>,
+    idle: tokio::sync::Notify,
 }
 
 /// Releases the session slot when the pass finishes (including on panic).
 pub struct SessionMemoryPassGuard {
     session_id: SessionId,
-    in_flight: Arc<std::sync::Mutex<std::collections::HashSet<SessionId>>>,
+    book: Arc<PassBook>,
 }
 
 impl Drop for SessionMemoryPassGuard {
     fn drop(&mut self) {
-        self.in_flight
+        self.book
+            .slots
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
             .remove(&self.session_id);
+        // `notify_waiters` only wakes already-registered waiters, which is why
+        // `wait_idle` parks before it reads the set.
+        self.book.idle.notify_waiters();
     }
 }
 
@@ -402,7 +418,8 @@ impl SessionMemoryPasses {
     /// Claim the session's pass slot, or `None` when a pass is already running.
     pub fn try_begin(&self, session_id: SessionId) -> Option<SessionMemoryPassGuard> {
         let mut set = self
-            .in_flight
+            .book
+            .slots
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         if !set.insert(session_id) {
@@ -410,8 +427,42 @@ impl SessionMemoryPasses {
         }
         Some(SessionMemoryPassGuard {
             session_id,
-            in_flight: self.in_flight.clone(),
+            book: self.book.clone(),
         })
+    }
+
+    /// Wait until no extraction pass is in flight, up to `timeout`.
+    ///
+    /// Returns `true` when the passes drained and `false` when the timeout hit,
+    /// which is the honest answer for a pass whose model call is still hanging:
+    /// the caller gets to decide whether to keep waiting, not a silent success.
+    pub async fn wait_idle(&self, timeout: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            // Park first, then look: a pass finishing between the two would
+            // otherwise be missed and this would wait out the whole timeout.
+            let notified = self.book.idle.notified();
+            tokio::pin!(notified);
+            if self
+                .book
+                .slots
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .is_empty()
+            {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            if tokio::time::timeout(remaining, notified.as_mut())
+                .await
+                .is_err()
+            {
+                return false;
+            }
+        }
     }
 }
 
@@ -1009,6 +1060,44 @@ mod tests {
             passes.try_begin(first).is_some(),
             "the slot is free again once the pass ends"
         );
+    }
+
+    #[tokio::test]
+    async fn wait_idle_reports_a_pass_that_is_still_running() {
+        let passes = SessionMemoryPasses::default();
+        let guard = passes
+            .try_begin(SessionId::new())
+            .expect("first pass claims the slot");
+        assert!(
+            !passes.wait_idle(std::time::Duration::from_millis(50)).await,
+            "a pass still in flight must not be reported as drained"
+        );
+        drop(guard);
+        assert!(
+            passes
+                .wait_idle(std::time::Duration::from_millis(500))
+                .await,
+            "the queue is empty once the guard is released"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_idle_wakes_when_a_background_pass_finishes() {
+        let passes = SessionMemoryPasses::default();
+        let guard = passes
+            .try_begin(SessionId::new())
+            .expect("first pass claims the slot");
+        let finisher = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            drop(guard);
+        });
+        assert!(
+            passes
+                .wait_idle(std::time::Duration::from_millis(2_000))
+                .await,
+            "waiting must end when the pass releases its slot, not on the timeout"
+        );
+        finisher.await.expect("the pass task completes");
     }
 
     // ---- compaction hand-off ---------------------------------------------

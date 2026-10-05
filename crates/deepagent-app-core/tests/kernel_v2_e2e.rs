@@ -1161,27 +1161,6 @@ fn cost_rows(db: &Database, session_id: &str) -> Vec<(i64, i64)> {
     .unwrap()
 }
 
-/// Wait until the background note pass has committed `expected_rows` ledger
-/// rows. The pass saves its cursors and then bills, so a full ledger means the
-/// commit is durable. Offline a round finishes in tens of milliseconds; the
-/// 5s ceiling only guards against a hang.
-async fn wait_for_note_pass(
-    db: &Database,
-    session_id: &str,
-    expected_rows: usize,
-) -> Vec<(i64, i64)> {
-    for _ in 0..200 {
-        let rows = cost_rows(db, session_id);
-        if rows.len() >= expected_rows {
-            return rows;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    panic!(
-        "the note pass never billed into the ledger for session {session_id} (expected {expected_rows} rows)"
-    );
-}
-
 /// Session-note wiring shared by the vertical tests: a real ChatService with a
 /// cost ledger attached, served by the transport that scripts the note pass
 /// separately from ordinary turns.
@@ -1252,6 +1231,18 @@ impl NoteE2e {
         self.db.session_memory_path(key)
     }
 
+    /// Wait for the background note pass to finish. The pass claims its slot
+    /// inside the awaited run, so an idle result means the note, the cursors and
+    /// the ledger row are already durable — no polling and no timing guess.
+    async fn drain(&self) {
+        assert!(
+            self.chat
+                .wait_for_session_memory_passes(std::time::Duration::from_secs(5))
+                .await,
+            "the note pass must finish on its own; a one-shot host would lose it"
+        );
+    }
+
     fn note_prompts(&self) -> Vec<String> {
         self.transport
             .note_prompts
@@ -1269,8 +1260,8 @@ impl NoteE2e {
 async fn completed_turn_writes_the_session_note_and_bills_the_pass() {
     let e2e = NoteE2e::new("note").await;
     let session_id = e2e.run(1, "Remember the storage decision.", None).await;
+    e2e.drain().await;
 
-    let rows = wait_for_note_pass(&e2e.db, &session_id, 2).await;
     let note_path = e2e.note_path(&session_id);
     let note = std::fs::read_to_string(&note_path).unwrap_or_default();
     let note_calls = e2e.transport.note_calls.load(Ordering::Acquire);
@@ -1293,7 +1284,7 @@ async fn completed_turn_writes_the_session_note_and_bills_the_pass() {
     // 20k/120 and the note pass's 400/60. Folding the pass into the turn's row
     // would hide what maintenance actually costs.
     assert_eq!(
-        rows,
+        cost_rows(&e2e.db, &session_id),
         vec![(400, 60), (20_000, 120)],
         "the turn and the note pass must bill separately for session {session_id}"
     );
@@ -1308,7 +1299,7 @@ async fn completed_turn_writes_the_session_note_and_bills_the_pass() {
 async fn a_later_pass_folds_only_the_uncovered_turn_and_a_flat_context_pays_nothing() {
     let e2e = NoteE2e::new("note-fold").await;
     let session_id = e2e.run(1, "Remember the storage decision.", None).await;
-    wait_for_note_pass(&e2e.db, &session_id, 2).await;
+    e2e.drain().await;
 
     // The next turn reports 26k of context, six thousand above the note's own
     // watermark, which is the smallest growth the gate accepts.
@@ -1316,7 +1307,7 @@ async fn a_later_pass_folds_only_the_uncovered_turn_and_a_flat_context_pays_noth
         .run(2, "Now remember the backup rule.", Some(&session_id))
         .await;
     assert_eq!(continued, session_id, "the turn continues the session");
-    wait_for_note_pass(&e2e.db, &session_id, 4).await;
+    e2e.drain().await;
 
     let prompts = e2e.note_prompts();
     assert_eq!(prompts.len(), 2, "one opening prompt per pass round");
@@ -1341,15 +1332,13 @@ async fn a_later_pass_folds_only_the_uncovered_turn_and_a_flat_context_pays_noth
         "the second round appends to the note it just read: {note_after_two:?}"
     );
 
-    // A turn reporting no context growth must not start a pass at all. Offline
-    // a round issues its first model call within tens of milliseconds, so a
-    // half-second window with no new call is the evidence the gate stayed shut.
+    // A turn reporting no context growth must not start a pass at all. The pass
+    // is claimed inside the awaited run, so an idle drain right after it is a
+    // deterministic answer rather than a timing guess.
     let calls_before = e2e.transport.note_calls.load(Ordering::Acquire);
     e2e.run(3, "Nothing new to record.", Some(&session_id))
         .await;
-    for _ in 0..20 {
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
+    e2e.drain().await;
     assert_eq!(
         e2e.transport.note_calls.load(Ordering::Acquire),
         calls_before,

@@ -515,6 +515,17 @@ impl ChatService {
         self
     }
 
+    /// Wait for the session-note passes this service started in the background,
+    /// up to `timeout`; `false` means one was still running when the wait gave
+    /// up.
+    ///
+    /// A long-lived host (the desktop app, the app server) does not need this:
+    /// its runtime outlives the pass. A one-shot process does — without a drain,
+    /// the CLI exits and takes an unfinished note with it.
+    pub async fn wait_for_session_memory_passes(&self, timeout: std::time::Duration) -> bool {
+        self.session_memory_passes.wait_idle(timeout).await
+    }
+
     /// Attach a dedicated runtime diagnostics log.
     pub fn with_runtime_logs(mut self, logs: Arc<RuntimeLogStore>) -> Self {
         self.runtime_logs = Some(logs);

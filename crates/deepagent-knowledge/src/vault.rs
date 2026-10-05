@@ -641,10 +641,9 @@ mod tests {
         let vault = Vault::new(tmp.path().join("k"), Scope::Project);
 
         let guard = vault.lock().unwrap();
-        let blocked = vault.write(&entry("note-1", "Note one", "first"));
-        let error = blocked
-            .err()
-            .expect("a locked vault must reject the writer");
+        let error = vault
+            .write(&entry("note-1", "Note one", "first"))
+            .expect_err("a locked vault must reject the writer");
         assert!(
             error.to_string().contains("another writer"),
             "unexpected error: {error}"
