@@ -453,6 +453,15 @@ impl<'a> RunAssembler<'a> {
                 Arc::new(crate::memory_service::MemoryService::new(knowledge.clone()))
                     as Arc<dyn deepagent_builtins::MemoryBackend>
             });
+        if memory_backend.is_none() {
+            // Memory is vault-backed since the storage convergence, so a host with
+            // no knowledge service has no long-term memory at all. Say so: two
+            // tools quietly missing is otherwise indistinguishable from a
+            // registration bug.
+            tracing::warn!(
+                "no knowledge vault attached; memory_write / memory_recall are off this run"
+            );
+        }
         let toolset = build_main_run_toolset(MainRunToolsetRequest {
             base,
             mcp: self.mcp.as_deref(),

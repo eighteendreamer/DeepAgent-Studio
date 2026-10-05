@@ -261,7 +261,11 @@ fn build_chat_service(
     let executor = SandboxBackendCommandExecutor::new(backend, workspace, sandbox_mode)
         .with_network(SandboxNetworkPolicy::Disabled);
     let mut chat = ChatService::new(db, settings, transport, workspace)
-        .with_local_command_executor(Arc::new(executor));
+        .with_local_command_executor(Arc::new(executor))
+        // Long-term memory lives in the knowledge vault, so a headless run needs
+        // the same store the desktop attaches; without this the memory tools would
+        // silently vanish from the CLI tool set.
+        .with_headless_knowledge(workspace);
     if let Some(sandboxie) = sandboxie {
         chat = chat.with_sandboxie_executor(sandboxie);
     }

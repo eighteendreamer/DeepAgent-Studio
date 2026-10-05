@@ -395,6 +395,47 @@ impl ChatService {
         self
     }
 
+    /// Attach the vault-backed knowledge + memory store from explicit roots.
+    /// Hosts that own a platform data directory (desktop) pass it as
+    /// `global_root`; the point is that memories and knowledge always share the
+    /// same store, so a written memory is retrievable by the injection track.
+    pub fn with_knowledge_roots(
+        self,
+        project_root: &std::path::Path,
+        global_root: &std::path::Path,
+    ) -> Self {
+        match crate::knowledge_service::KnowledgeService::open(project_root, global_root) {
+            Ok(service) => self.with_knowledge(std::sync::Arc::new(service)),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    project_root = %project_root.display(),
+                    "could not open the knowledge vault; knowledge and memory tools stay unavailable"
+                );
+                self
+            }
+        }
+    }
+
+    /// Attach the store for headless hosts (CLI, app-server) that have no
+    /// platform app-data directory. The user-global root comes from the
+    /// environment; when it cannot be resolved the service is returned unchanged
+    /// and the absence is logged, because running without long-term memory must
+    /// still work rather than abort the command.
+    pub fn with_headless_knowledge(self, project_root: &std::path::Path) -> Self {
+        let global_root = match crate::knowledge_service::global_vault_root() {
+            Ok(root) => root,
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "no user-global knowledge vault; knowledge and memory tools are off this run"
+                );
+                return self;
+            }
+        };
+        self.with_knowledge_roots(project_root, &global_root)
+    }
+
     /// Attach a [`KnowledgeService`](crate::knowledge_service::KnowledgeService)
     /// so each run passively injects relevant knowledge and exposes the
     /// `knowledge_search` / `knowledge_write` tools. Without it, runs behave
@@ -2307,6 +2348,39 @@ mod tests {
         );
         // knowledge_write is added in run_in_session, not build_registry; the
         // search tool is the shared-registry one.
+    }
+
+    #[tokio::test]
+    async fn headless_hosts_attach_the_vault_store() {
+        // Regression guard for the storage convergence: memories live in the
+        // knowledge vault now, so a host that attaches no knowledge service loses
+        // `memory_write` / `memory_recall` with them (both come from the same
+        // `Option`). The CLI and app-server must therefore attach it, and attaching
+        // from plain roots alone must be enough to bring the store up.
+        let (db, settings, dir) = seeded().await;
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path())
+            .with_knowledge_roots(dir.path(), &dir.path().join("global"));
+
+        // Vault-backed search lives in the base registry; the memory tools are
+        // added by the main-run toolset from the same attachment. Asserting the
+        // memory tools here would test the wrong boundary (they do not appear
+        // until a run is assembled), so this proves the store opened and wired.
+        let (registry, _todo_store) = chat
+            .build_registry(
+                dir.path(),
+                deepagent_builtins::FsAccess::Full,
+                None,
+                None,
+                None,
+                false,
+            )
+            .unwrap();
+        assert!(
+            registry
+                .get(deepagent_builtins::KNOWLEDGE_SEARCH_TOOL_NAME)
+                .is_some(),
+            "the vault store must be attached from plain roots"
+        );
     }
 
     #[tokio::test]

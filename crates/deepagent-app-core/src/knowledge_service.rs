@@ -118,6 +118,42 @@ pub struct KnowledgeDraftDto {
     pub importance: Option<f32>,
 }
 
+/// Resolve the user-global vault root for hosts that have no platform
+/// app-data directory (headless CLI, app-server). The desktop passes the Tauri
+/// resolver's directory instead, so both hosts read and write the *same* vault
+/// a memory was written to — a memory stored per-workspace would be invisible to
+/// every other project, which is exactly the split this layer just removed.
+///
+/// `DEEPAGENT_HOME` wins; otherwise `$HOME` (POSIX) or `%USERPROFILE%` (Windows)
+/// with `.deepagent` appended. Resolution is a pure function of the environment
+/// lookup so it can be tested without mutating process globals.
+pub fn global_vault_root() -> Result<std::path::PathBuf> {
+    global_vault_root_from(|name| std::env::var_os(name))
+}
+
+fn global_vault_root_from(
+    lookup: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<std::path::PathBuf> {
+    use std::path::PathBuf;
+    if let Some(root) = lookup("DEEPAGENT_HOME") {
+        let root = PathBuf::from(root);
+        if !root.as_os_str().is_empty() {
+            return Ok(root);
+        }
+    }
+    for name in ["HOME", "USERPROFILE"] {
+        if let Some(home) = lookup(name) {
+            let home = PathBuf::from(home);
+            if !home.as_os_str().is_empty() {
+                return Ok(home.join(".deepagent"));
+            }
+        }
+    }
+    Err(CoreError::invalid(
+        "cannot resolve a user-global knowledge vault: set DEEPAGENT_HOME or HOME",
+    ))
+}
+
 /// Parse a scope label, defaulting to [`Scope::Global`] so saved knowledge is
 /// shared across every project unless the caller explicitly opts into the
 /// project-local vault.
@@ -1257,6 +1293,53 @@ mod tests {
         assert!(svc.discard_draft(&d2.id).unwrap());
         assert!(svc.list_drafts().is_empty());
         assert_eq!(svc.list().len(), 1);
+    }
+
+    #[test]
+    fn global_vault_root_prefers_deepagent_home() {
+        use std::ffi::OsString;
+        let root = global_vault_root_from(|name| match name {
+            "DEEPAGENT_HOME" => Some(OsString::from("/srv/deepagent")),
+            "HOME" => Some(OsString::from("/home/dev")),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(root, std::path::PathBuf::from("/srv/deepagent"));
+
+        // Otherwise the user's home, with the same `.deepagent` folder name the
+        // project-local vault uses.
+        let root = global_vault_root_from(|name| match name {
+            "HOME" => Some(OsString::from("/home/dev")),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(root, std::path::PathBuf::from("/home/dev/.deepagent"));
+
+        // Windows hosts.
+        let root = global_vault_root_from(|name| match name {
+            "USERPROFILE" => Some(OsString::from("C:\\Users\\dev")),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(
+            root,
+            std::path::PathBuf::from("C:\\Users\\dev").join(".deepagent")
+        );
+    }
+
+    #[test]
+    fn global_vault_root_fails_loudly_instead_of_guessing() {
+        use std::ffi::OsString;
+        // An empty DEEPAGENT_HOME must not become a relative "" vault.
+        let error = global_vault_root_from(|name| match name {
+            "DEEPAGENT_HOME" => Some(OsString::from("")),
+            _ => None,
+        })
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("DEEPAGENT_HOME"),
+            "the error must name what to set: {error}"
+        );
     }
 
     #[tokio::test]

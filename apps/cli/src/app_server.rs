@@ -197,7 +197,8 @@ impl ServerState {
             transport.clone(),
             Arc::new(deepagent_app_core::EnvSecretStore::new()),
         ));
-        let chat = ChatService::new(database, settings, transport, workspace.clone());
+        let chat = ChatService::new(database, settings, transport, workspace.clone())
+            .with_headless_knowledge(&workspace);
         Self::new(
             chat,
             workspace,
