@@ -1153,6 +1153,66 @@ mod tests {
         );
     }
 
+    /// An unfinished pass must leave no watermark behind. The cut point is what
+    /// lets compaction remove transcript from the model view, so persisting it
+    /// after a pass that ran out of steps would delete content the note never
+    /// summarised — the same failure the unchanged-note guard closes.
+    #[tokio::test]
+    async fn an_abandoned_pass_saves_no_watermark_and_leaves_the_note_alone() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SessionMemoryStore::new(db.clone());
+        let session = SessionId::new();
+        let note_path = store.memory_path(session);
+        std::fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+        let template = ensure_note(&note_path).unwrap();
+
+        // The scripted agent keeps reading the note and never answers, so the
+        // loop exhausts its steps instead of completing.
+        let stuck: Vec<Vec<String>> = (0..10)
+            .map(|index| {
+                ScriptedTransport::call(
+                    &format!("c{index}"),
+                    "read_file",
+                    serde_json::json!({"path": note_path.to_string_lossy()}),
+                )
+            })
+            .collect();
+        let outcome =
+            SessionMemoryExtractor::new(db.clone(), scripted_client(stuck), "model".to_string())
+                .with_gate(ExtractionGate {
+                    init_tokens: 1,
+                    ..Default::default()
+                })
+                .run_if_due(
+                    session,
+                    &[Message::user("decide the storage layout")],
+                    &[tool_call(1), tool_call(2), tool_call(3)],
+                    12_000,
+                    true,
+                )
+                .await
+                .unwrap();
+
+        assert!(
+            !outcome.extracted,
+            "an unfinished pass extracted nothing: {outcome:?}"
+        );
+        assert_eq!(outcome.reason, "pass_failed");
+        assert_eq!(
+            std::fs::read_to_string(&note_path).unwrap(),
+            template,
+            "the note must be exactly as it was"
+        );
+        assert!(
+            store.load(session).unwrap().is_none(),
+            "no cursors may be written for a pass that never completed"
+        );
+        assert!(
+            outcome.usage.is_some(),
+            "the abandoned calls still cost tokens and stay billable: {outcome:?}"
+        );
+    }
+
     #[tokio::test]
     async fn wait_idle_reports_a_pass_that_is_still_running() {
         let passes = SessionMemoryPasses::default();

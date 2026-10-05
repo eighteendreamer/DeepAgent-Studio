@@ -1206,6 +1206,96 @@ mod tests {
         assert_eq!(convo[4].content, "done");
     }
 
+    /// A cut that lands inside a tool pair must never hand the model a result with
+    /// no matching call: the API rejects such a request, and the boundary code's own
+    /// rule is that keeping one extra turn is cheaper than breaking a pair. The
+    /// crash-shaped orphan (a call with no result) already has a test; this is the
+    /// compaction-shaped one.
+    #[test]
+    fn a_boundary_cut_inside_a_tool_pair_leaves_no_orphan_result() {
+        let sid = SessionId::nil();
+        let call = deepagent_core::message::ToolCall {
+            id: "call-1".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "a.txt"}),
+        };
+        let events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::MessageAppended {
+                    message: Message::user("read a.txt"),
+                },
+            ),
+            event(sid, 1, EventPayload::ToolCallRequested { call }),
+            event(
+                sid,
+                2,
+                EventPayload::ToolCallCompleted {
+                    call_id: "call-1".into(),
+                    ok: true,
+                    output: serde_json::json!({"status": "ok"}),
+                    duration_ms: 3,
+                },
+            ),
+            event(
+                sid,
+                3,
+                EventPayload::MessageAppended {
+                    message: Message::assistant("read it"),
+                },
+            ),
+            // The boundary asks to start at the result, which skips its call.
+            event(sid, 4, boundary("goal: read the file", Some(2))),
+        ];
+
+        let convo = model_history_from_events(&events);
+        let mut announced: std::collections::HashSet<String> = std::collections::HashSet::new();
+        for message in &convo {
+            for tool_call in &message.tool_calls {
+                announced.insert(tool_call.id.clone());
+            }
+            if message.role == Role::Tool {
+                assert!(
+                    message
+                        .tool_call_id
+                        .as_deref()
+                        .is_some_and(|id| announced.contains(id)),
+                    "a tool result reached the model without its call: {convo:?}"
+                );
+            }
+        }
+        // Dropping the unmatched result is the reader's fallback: the boundary
+        // writer is the place that keeps pairs whole (see `sequence_of_message`),
+        // and a summary standing in for the prefix already covers this turn.
+        assert_eq!(
+            convo.len(),
+            2,
+            "only the summary and the surviving turn may remain: {convo:?}"
+        );
+
+        // The item view is what a Responses request is built from, so the same
+        // rule has to hold there.
+        let items = response_items_from_events(&events);
+        let mut announced_items: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        for item in &items {
+            if let deepagent_core::response_item::ResponseItem::FunctionCall { call_id, .. } = item
+            {
+                announced_items.insert(call_id.clone());
+            }
+            if let deepagent_core::response_item::ResponseItem::FunctionCallOutput {
+                call_id, ..
+            } = item
+            {
+                assert!(
+                    announced_items.contains(call_id),
+                    "an orphan FunctionCallOutput would be rejected by the API: {items:?}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn tool_pair_replay_synthesizes_failures_for_orphaned_calls() {
         let sid = SessionId::nil();

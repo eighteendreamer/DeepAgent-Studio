@@ -2180,6 +2180,80 @@ mod tests {
             .any(|hit| hit.session.id == session_id));
     }
 
+    /// The headline guarantee of the boundary design, checked at the file layer:
+    /// compaction slices the model view only, while the session's own log keeps
+    /// every event written before the boundary. A purely in-memory view test could
+    /// not catch a writer that pruned the log, so this opens a real file-backed
+    /// database and reads the events back off disk.
+    #[test]
+    fn a_boundary_keeps_every_earlier_event_in_the_on_disk_log() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+        use deepagent_persistence::event_store::EventStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let db = Database::open(dir.path().join("state.sqlite3")).unwrap();
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::create(&db, &clock, Some("raw")).unwrap();
+        let sid = session.id();
+        for message in [
+            Message::user("first question"),
+            Message::assistant("first answer"),
+        ] {
+            session
+                .append(EventPayload::MessageAppended { message })
+                .unwrap();
+        }
+        let before = EventStore::new(&db).load_session(sid).unwrap();
+        // The most aggressive cut possible: nothing that happened so far stays in
+        // the model view.
+        let cut = before.last().map(|event| event.sequence + 1).unwrap_or(0);
+
+        session
+            .append(EventPayload::ContextCompacted {
+                tokens_before: 9_000,
+                tokens_after: 2_000,
+                strategy: "session_memory".to_string(),
+                summary: Some("- decided: one vault".to_string()),
+                first_kept_sequence: Some(cut),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("later question"),
+            })
+            .unwrap();
+
+        let after = EventStore::new(&db).load_session(sid).unwrap();
+        assert!(
+            after.len() >= before.len() + 2,
+            "the log must still hold every pre-boundary event: {} events, was {}",
+            after.len(),
+            before.len()
+        );
+        assert!(
+            after.iter().any(
+                |event| matches!(&event.payload, EventPayload::MessageAppended { message }
+                    if message.content == "first question")
+            ),
+            "the compacted-away turn must remain readable in the transcript"
+        );
+        let raw_log = std::fs::read_dir(db.session_memory_path(sid).parent().unwrap())
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .any(|entry| entry.path().extension().is_some_and(|ext| ext == "zst"));
+        assert!(raw_log, "the session's append-only log must be on disk");
+
+        let view = crate::input_runtime::model_history_from_events(&after);
+        assert_eq!(
+            view.len(),
+            2,
+            "the model view is the summary plus the single later turn: {view:?}"
+        );
+        assert!(view[0].content.contains("- decided: one vault"));
+        assert_eq!(view[1].content, "later question");
+    }
+
     #[test]
     fn full_history_from_events_keeps_text_turns_only() {
         use deepagent_core::event::{Event, EventPayload};
