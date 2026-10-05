@@ -136,6 +136,35 @@ fn entry_for_event(event: &Event) -> TimelineEntry {
             Some(truncate(text, 120)),
             None,
         ),
+        EventPayload::MemoriesInjected {
+            ids,
+            count,
+            trigger,
+            ..
+        } => (
+            "memory",
+            "🔖",
+            if trigger.is_empty() {
+                "Memories injected".to_string()
+            } else {
+                format!("Memories injected ({trigger})")
+            },
+            if ids.is_empty() {
+                Some(format!("{count} entries"))
+            } else {
+                Some(truncate(&ids.join(", "), 120))
+            },
+            None,
+        ),
+        EventPayload::MemoryEntryWritten {
+            id, tier, scope, ..
+        } => (
+            "memory",
+            "✍",
+            "Memory written to the vault".to_string(),
+            Some(format!("{scope}/{tier}: {}", truncate(id, 80))),
+            None,
+        ),
         _ => ("event", "•", event.kind().to_string(), None, None),
     };
 
@@ -175,6 +204,54 @@ mod tests {
             timestamp: Timestamp::from_millis(1000 + seq as i64),
             payload,
         }
+    }
+
+    /// Memory events must have their own rows: the generic fallback labels them
+    /// by raw kind string, so a replay would show `memories_injected` instead of
+    /// what the model was actually given.
+    #[test]
+    fn memory_events_render_as_memory_rows() {
+        let timeline = build_timeline(&[
+            event(
+                0,
+                EventPayload::MemoriesInjected {
+                    ids: vec!["project:build-fix".into(), "global:cargo-j1".into()],
+                    count: 2,
+                    latency_ms: 41,
+                    trigger: "prefetch".into(),
+                },
+            ),
+            event(
+                1,
+                EventPayload::MemoryEntryWritten {
+                    id: "project-new-vault-entry".into(),
+                    tier: "semantic".into(),
+                    scope: "project".into(),
+                    importance: Some(0.8),
+                },
+            ),
+        ]);
+        assert_eq!(timeline[0].kind, "memory");
+        assert!(
+            timeline[0].label.contains("prefetch"),
+            "the injection trigger belongs in the label: {}",
+            timeline[0].label
+        );
+        let detail = timeline[0].detail.clone().unwrap_or_default();
+        assert!(
+            detail.contains("project:build-fix") && detail.contains("global:cargo-j1"),
+            "the injected ids must be named: {detail}"
+        );
+        assert_eq!(timeline[1].kind, "memory");
+        assert!(
+            timeline[1]
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("project/semantic"),
+            "where the entry landed belongs in the detail: {:?}",
+            timeline[1].detail
+        );
     }
 
     #[test]

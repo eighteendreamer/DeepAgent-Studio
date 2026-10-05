@@ -324,6 +324,33 @@ fn mcp_degradation_projects_to_typed_lifecycle_event() {
 }
 
 #[test]
+fn compaction_events_reach_machine_consumers_with_their_strategy() {
+    // Contract: a context compaction must not be silently dropped on the
+    // harness protocol, and the `strategy` must survive — it is the only thing
+    // that tells a machine consumer whether the model view was cut by a session
+    // note fold, a model summary, or a reactive trim.
+    let context = EventContext::new(Some("thread-1".into()), Some("turn-1".into()));
+    let projected = project_runtime_event(
+        &RuntimeEvent::ContextCompacted {
+            tokens_before: 180_000,
+            tokens_after: 60_000,
+            strategy: "session_memory".into(),
+            summary: Some("everything through event 42".into()),
+        },
+        &context,
+    )
+    .expect("compaction must not be dropped");
+    let value = serde_json::to_value(projected).unwrap();
+
+    assert_eq!(value["type"], "item.updated");
+    assert_eq!(value["item"]["kind"], "runtime");
+    assert_eq!(value["item"]["eventType"], "context_compacted");
+    assert_eq!(value["item"]["data"]["tokens_before"], 180_000);
+    assert_eq!(value["item"]["data"]["tokens_after"], 60_000);
+    assert_eq!(value["item"]["data"]["strategy"], "session_memory");
+}
+
+#[test]
 fn memory_injection_events_reach_machine_consumers_as_runtime_items() {
     // Contract: a background memory injection must NOT be silently dropped on
     // the harness protocol. It has no first-class item type yet, so it must

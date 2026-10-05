@@ -146,6 +146,41 @@ fn render_markdown(title: Option<&str>, events: &[Event]) -> String {
                 }
                 out.push_str("\n\n");
             }
+            EventPayload::MemoriesInjected {
+                ids,
+                count,
+                latency_ms,
+                trigger,
+            } => {
+                // Which memories the model was given is part of the record, not
+                // an implementation detail: without it a replay cannot explain
+                // why a later answer used a fact the transcript never shows.
+                let source = if trigger.is_empty() {
+                    "unknown"
+                } else {
+                    trigger.as_str()
+                };
+                out.push_str(&format!(
+                    "> 🔖 注入记忆 {count} 条（{source}，{latency_ms} ms）"
+                ));
+                if !ids.is_empty() {
+                    out.push_str(&format!("：{}", ids.join(", ")));
+                }
+                out.push_str("\n\n");
+            }
+            EventPayload::MemoryEntryWritten {
+                id,
+                tier,
+                scope,
+                importance,
+            } => {
+                out.push_str(&format!(
+                    "> ✍ 写入记忆 `{id}`（{scope}/{tier}{}）\n\n",
+                    importance
+                        .map(|weight| format!("，重要度 {weight:.2}"))
+                        .unwrap_or_default()
+                ));
+            }
             EventPayload::Note { text } => {
                 out.push_str(&format!("> 📝 {text}\n\n"));
             }
@@ -195,6 +230,37 @@ mod tests {
                 },
             ),
         ]
+    }
+
+    /// The transcript is the complete export, so the events that changed what
+    /// the model was shown have to appear in it, not just in the live UI.
+    #[test]
+    fn transcript_records_memory_injection_and_writes() {
+        let events = vec![
+            event(
+                0,
+                EventPayload::MemoriesInjected {
+                    ids: vec!["project:build-fix".into()],
+                    count: 1,
+                    latency_ms: 41,
+                    trigger: "prefetch".into(),
+                },
+            ),
+            event(
+                1,
+                EventPayload::MemoryEntryWritten {
+                    id: "project-new".into(),
+                    tier: "semantic".into(),
+                    scope: "project".into(),
+                    importance: None,
+                },
+            ),
+        ];
+        let md = export_transcript(Some("My chat"), &events, TranscriptFormat::Markdown).unwrap();
+        assert!(md.contains("注入记忆 1 条"), "{md}");
+        assert!(md.contains("project:build-fix"), "{md}");
+        assert!(md.contains("`project-new`"), "{md}");
+        assert!(md.contains("project/semantic"), "{md}");
     }
 
     #[test]
