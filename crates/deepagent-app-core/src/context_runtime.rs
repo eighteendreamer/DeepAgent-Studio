@@ -2100,6 +2100,8 @@ mod tests {
                 tags: vec!["sandbox".into()],
                 scope: Some("project".to_string()),
                 source_session: None,
+                tier: None,
+                importance: None,
             })
             .unwrap();
 

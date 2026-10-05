@@ -53,6 +53,86 @@ fn collect_session_files(root: &Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// Records every request body so the run can be inspected for prompt-cache
+/// stability: DeepSeek caches implicitly on the whole prefix, so the first
+/// differing offset between two consecutive turns is exactly the depth at which
+/// the cached prefix stopped paying for this session.
+struct RecordingTransport {
+    inner: Arc<ReqwestTransport>,
+    bodies: Arc<Mutex<Vec<String>>>,
+}
+
+#[async_trait::async_trait]
+impl deepagent_models::transport::HttpTransport for RecordingTransport {
+    async fn stream(
+        &self,
+        request: deepagent_models::transport::TransportRequest,
+        sink: &mut dyn deepagent_models::transport::EventSink,
+    ) -> deepagent_core::error::Result<()> {
+        self.bodies.lock().unwrap().push(request.body.clone());
+        self.inner.stream(request, sink).await
+    }
+
+    async fn get_json(&self, url: &str, api_key: &str) -> deepagent_core::error::Result<String> {
+        self.inner.get_json(url, api_key).await
+    }
+}
+
+/// The cache-shape summary for consecutive recorded requests.
+fn cache_divergence(bodies: &[String]) -> Vec<String> {
+    let tool_names = |body: &str| -> Vec<String> {
+        serde_json::from_str::<serde_json::Value>(body)
+            .ok()
+            .and_then(|value| value["tools"].as_array().cloned())
+            .map(|tools| {
+                tools
+                    .iter()
+                    .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    bodies
+        .windows(2)
+        .map(|pair| {
+            let (left, right) = (&pair[0], &pair[1]);
+            let diverged = left
+                .chars()
+                .zip(right.chars())
+                .take_while(|(a, b)| a == b)
+                .count();
+            let (before, after) = (tool_names(left), tool_names(right));
+            let change = if before == after {
+                "same list".to_string()
+            } else {
+                let added: Vec<&String> =
+                    after.iter().filter(|name| !before.contains(name)).collect();
+                let removed: Vec<&String> =
+                    before.iter().filter(|name| !after.contains(name)).collect();
+                format!("added {added:?} removed {removed:?}")
+            };
+            // The window around the first difference is what names the culprit:
+            // an identical tool list that diverges means a schema's contents
+            // changed between turns.
+            let window = |body: &str| -> String {
+                body.chars()
+                    .skip(diverged.saturating_sub(40))
+                    .take(160)
+                    .collect::<String>()
+            };
+            format!(
+                "diverged_at_char={diverged} of {}/{} | tools {} -> {} ({change}) | left {:?} right {:?}",
+                left.len(),
+                right.len(),
+                before.len(),
+                after.len(),
+                window(left),
+                window(right)
+            )
+        })
+        .collect()
+}
+
 #[tokio::test]
 #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
 async fn real_responses_session_replays_tools_skills_files_and_logs() {
@@ -81,7 +161,12 @@ async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
 
     let db_path = temp.path().join("state.sqlite3");
     let db = Arc::new(Database::open(&db_path).unwrap());
-    let transport = Arc::new(ReqwestTransport::new());
+    let bodies: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let transport: Arc<dyn deepagent_models::transport::HttpTransport> =
+        Arc::new(RecordingTransport {
+            inner: Arc::new(ReqwestTransport::new()),
+            bodies: bodies.clone(),
+        });
     let secrets = Arc::new(MemorySecretStore::new());
     let settings = Arc::new(SettingsService::new(db.clone(), transport.clone(), secrets));
     settings
@@ -250,6 +335,89 @@ async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
         "Responses cached and uncached input tokens must account for every input token"
     );
     eprintln!("[real-session] provider usage (prompt, hit, miss, raw)={usage:?}");
+    eprintln!(
+        "[real-session] prompt prefix divergence between consecutive requests: {:?}",
+        cache_divergence(&bodies.lock().unwrap())
+    );
+
+    // Live memory line. The note pass is a background kernel run, so draining it
+    // is what a one-shot host has to do before exiting — and here it also makes
+    // the assertions below deterministic instead of racing a spawned task.
+    let drained = chat
+        .wait_for_session_memory_passes(std::time::Duration::from_secs(120))
+        .await;
+    assert!(
+        drained,
+        "the live session-note pass must finish, not be cancelled at shutdown"
+    );
+
+    let largest_context = usage.iter().map(|entry| entry.0 as u64).max().unwrap_or(0);
+    let note_path = db.session_memory_path(session);
+    if largest_context < 10_000 {
+        eprintln!(
+            "[real-session] largest live context was {largest_context} tokens, below the \
+             10k extraction gate; the note pass was not exercised"
+        );
+    } else {
+        let note = std::fs::read_to_string(&note_path)
+            .expect("the gate opened, so the note beside the session log must exist");
+        let unchanged = note.contains("(nothing recorded yet)");
+        eprintln!(
+            "[real-session] note {} at {}",
+            if unchanged { "UNCHANGED" } else { "UPDATED" },
+            note_path.display()
+        );
+
+        // `query_row` on an absent row is a rusqlite error that is not nameable
+        // from this test, so existence is probed with a count that always rows.
+        let cursors: Option<String> = db
+            .with_conn(|conn| {
+                let present: i64 = conn
+                    .query_row(
+                        "SELECT COUNT(*) FROM documents WHERE collection = 'session_memory' AND id = ?1",
+                        [&session_id],
+                        |row| row.get(0),
+                    )
+                    .map_err(|error| {
+                        deepagent_core::error::CoreError::Persistence(error.to_string())
+                    })?;
+                if present == 0 {
+                    return Ok(None);
+                }
+                conn.query_row(
+                    "SELECT body FROM documents WHERE collection = 'session_memory' AND id = ?1",
+                    [&session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| {
+                    deepagent_core::error::CoreError::Persistence(error.to_string())
+                })
+            })
+            .unwrap();
+        let state: serde_json::Value =
+            serde_json::from_str(&cursors.expect("a pass that ran must record its cursors"))
+                .expect("the cursors are JSON");
+        // The invariant the offline suite pins, verified against real model
+        // output: a note that gained nothing must not be trusted as coverage,
+        // because compaction cuts the model view at exactly that sequence.
+        if unchanged {
+            assert_eq!(
+                state["last_summarized_sequence"],
+                serde_json::Value::Null,
+                "an untouched note may not claim a cut point: {state}"
+            );
+        } else {
+            assert!(
+                state["last_summarized_sequence"].is_number(),
+                "an edited note must record the cut point it covers: {state}"
+            );
+        }
+        assert!(
+            state["tokens_at_last_extraction"].as_u64().unwrap_or(0) > 0,
+            "the paid window must be remembered so the next turn does not re-buy it: {state}"
+        );
+    }
+
     let requested_tools: Vec<&str> = events
         .iter()
         .filter_map(|event| match &event.payload {
