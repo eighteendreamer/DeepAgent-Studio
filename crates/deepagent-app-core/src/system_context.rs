@@ -322,6 +322,52 @@ mod tests {
         assert_eq!(&d[7..8], "-");
     }
 
+    /// The prompt cache only pays off while the leading bytes stay identical
+    /// between turns. This fences the placement rule: anything that can change
+    /// from turn to turn (date, cwd, connected MCP servers, deferred tool and
+    /// skill catalogs) must live after the dynamic boundary, and the pieces that
+    /// are stable for the life of a session must stay inside the prefix.
+    #[test]
+    fn volatile_context_never_enters_the_cacheable_prefix() {
+        let manifest = build_system_manifest(
+            Path::new("/work/proj"),
+            SandboxMode::WorkspaceWrite,
+            Some("# Built-in output style\nAnswer in prose.".to_string()),
+            Some("# Plugin output style\nBe terse.".to_string()),
+            Some("# Deferred tools\n- tool_search".to_string()),
+            Some("# MCP server instructions\n\n## demo\nUse the demo tools.".to_string()),
+            vec!["<system-reminder>\n<available-skills />\n</system-reminder>".to_string()],
+            usize::MAX,
+        );
+        let rendered = manifest.render();
+        let at = rendered
+            .find(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+            .expect("the boundary is part of the system prompt");
+        let (prefix, dynamic) = rendered.split_at(at);
+
+        assert!(
+            prefix.contains("Answer in prose"),
+            "the built-in output style is session-stable and belongs in the prefix"
+        );
+        for volatile in [
+            "# Environment",
+            "Today's date:",
+            "/work/proj",
+            "# Deferred tools",
+            "available-skills",
+            "Use the demo tools.",
+        ] {
+            assert!(
+                dynamic.contains(volatile),
+                "{volatile} must be rendered after the boundary"
+            );
+            assert!(
+                !prefix.contains(volatile),
+                "{volatile} moved into the cacheable prefix and will break the prompt cache"
+            );
+        }
+    }
+
     #[test]
     fn injects_mcp_instructions_as_mcp_catalog() {
         let manifest = build_system_manifest(
