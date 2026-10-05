@@ -403,6 +403,28 @@ impl ChatService {
         mut self,
         knowledge: Arc<crate::knowledge_service::KnowledgeService>,
     ) -> Self {
+        // One-release storage convergence, run where the two handles meet so it
+        // cannot be forgotten by a new entry point: memories an older build
+        // wrote as JSON rows become vault entries, which is the only store the
+        // `relevant memories` retrieval track reads. Never fatal — an unwritable
+        // item keeps its row and is retried on the next start.
+        match crate::memory_migration::migrate_legacy_memory_items(&self.db, &knowledge) {
+            Ok(report) if !report.is_no_op() => {
+                tracing::info!(
+                    migrated = report.migrated,
+                    skipped = report.skipped,
+                    failed = report.failed,
+                    "migrated legacy memory_items rows into the knowledge vault"
+                );
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    "legacy memory migration did not run; memories stay recall-only until the next start"
+                );
+            }
+        }
         self.knowledge = Some(knowledge);
         self
     }
@@ -2285,6 +2307,53 @@ mod tests {
         );
         // knowledge_write is added in run_in_session, not build_registry; the
         // search tool is the shared-registry one.
+    }
+
+    #[tokio::test]
+    async fn attaching_knowledge_migrates_legacy_memory_rows() {
+        // Scenario: an install upgraded from a build that stored memories as
+        // JSON rows. Attaching the knowledge service is the single seam where
+        // the row can be moved (it is the only place both handles exist), so the
+        // memory must land in the vault without any extra startup call.
+        use deepagent_core::clock::Clock as _;
+        let (db, settings, dir) = seeded().await;
+        let kb = Arc::new(
+            KnowledgeService::open(&dir.path().join("proj"), &dir.path().join("glob")).unwrap(),
+        );
+        let item = deepagent_memory::MemoryItem::new(
+            deepagent_memory::MemoryTier::Failure,
+            "rg is not installed; use the Grep tool instead".to_string(),
+            0.8,
+            deepagent_core::clock::SystemClock.now(),
+        );
+        let id = item.id.to_string();
+        deepagent_persistence::document_store::DocumentStore::new(&db)
+            .put(
+                "memory_items",
+                &id,
+                &serde_json::to_string(&item).unwrap(),
+                None,
+                deepagent_core::clock::SystemClock.now(),
+            )
+            .unwrap();
+
+        let _chat = ChatService::new(db.clone(), settings, chat_transport(), dir.path())
+            .with_knowledge(kb.clone());
+
+        let migrated = kb
+            .list()
+            .into_iter()
+            .find(|entry| entry.kind == "memory")
+            .expect("legacy memory row must become a vault entry");
+        assert_eq!(migrated.tier.as_deref(), Some("failure"));
+        assert_eq!(migrated.importance, Some(0.8));
+        assert!(
+            deepagent_persistence::document_store::DocumentStore::new(&db)
+                .list("memory_items")
+                .unwrap()
+                .is_empty(),
+            "the source row is removed only after the vault write succeeded"
+        );
     }
 
     #[tokio::test]

@@ -432,6 +432,24 @@ const MIGRATIONS: &[&str] = &[
     CREATE INDEX idx_costs_session ON costs(session_id);
     CREATE INDEX idx_costs_timestamp ON costs(timestamp);
     "#,
+    // V22: item-level memories moved out of the `memory_items` document
+    // collection into the knowledge vault (a memory must be retrievable by the
+    // same track that surfaces knowledge, or writing it is invisible to the
+    // model). This table is the one-release audit ledger: one row per legacy
+    // item, keeping the original JSON body so the move is reversible even after
+    // the source row is deleted. `vault_path IS NULL` marks an item the move
+    // could not write, and its source row is deliberately left in place.
+    // Declared with IF NOT EXISTS because lowering `user_version` (the V19/V20
+    // search-projection tests do exactly that) replays this script over a schema
+    // that already has the table. Same convention as V19's rebuildable tables.
+    r#"
+    CREATE TABLE IF NOT EXISTS memory_items_migration_ledger (
+        item_id      TEXT PRIMARY KEY NOT NULL,
+        vault_path   TEXT,
+        migrated_at  INTEGER NOT NULL,
+        source_body  TEXT NOT NULL
+    );
+    "#,
 ];
 
 /// The highest schema version defined by this build.
@@ -657,5 +675,36 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state_table, 1);
+    }
+
+    /// V22 is the memory-ledger table. It must exist after a full upgrade and
+    /// must survive a replay, because lowering `user_version` re-applies every
+    /// later script over a schema that already contains it.
+    #[test]
+    fn v22_creates_the_memory_ledger_and_is_reentrant() {
+        let conn = Connection::open_in_memory().unwrap();
+        for script in MIGRATIONS.iter() {
+            conn.execute_batch(script).unwrap();
+        }
+        conn.execute(
+            "INSERT INTO memory_items_migration_ledger \
+             (item_id, vault_path, migrated_at, source_body) VALUES ('m1', 'global:m1', 7, '{\"x\":1}')",
+            [],
+        )
+        .unwrap();
+
+        // Re-apply the final script the way a version rollback would.
+        conn.execute_batch(MIGRATIONS[MIGRATIONS.len() - 1])
+            .expect("V22 must be replayable without `already exists`");
+
+        let kept: String = conn
+            .query_row(
+                "SELECT vault_path FROM memory_items_migration_ledger WHERE item_id='m1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept, "global:m1", "replay must not drop recorded rows");
+        assert_eq!(LATEST_VERSION, MIGRATIONS.len() as i64);
     }
 }

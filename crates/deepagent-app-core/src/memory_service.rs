@@ -71,8 +71,9 @@ fn normalize_scope(scope: Option<&str>) -> Result<&'static str> {
 /// Derive a stable vault title from the memory content: its first non-empty
 /// line, clamped to [`TITLE_MAX_CHARS`]. Stability matters — the vault updates
 /// an entry in place when the normalized title matches, so re-writing the same
-/// memory does not pile up duplicates.
-fn title_from_content(content: &str) -> String {
+/// memory does not pile up duplicates. Shared with the one-release migration so
+/// both write the same title for the same content.
+pub(crate) fn memory_title(content: &str) -> String {
     let first_line = content
         .lines()
         .map(str::trim)
@@ -108,7 +109,7 @@ impl MemoryBackend for MemoryService {
             return Err(CoreError::invalid("memory content is empty"));
         }
         let dto = self.knowledge.save(KnowledgeDraftDto {
-            title: title_from_content(&draft.content),
+            title: memory_title(&draft.content),
             body: draft.content.clone(),
             kind: Some(MEMORY_KIND.to_string()),
             tags: draft.tags.clone(),
