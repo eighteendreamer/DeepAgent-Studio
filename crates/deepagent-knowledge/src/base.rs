@@ -122,46 +122,31 @@ impl ConsolidationReport {
     }
 }
 
-/// Body overlap needed to call two entries the same decision.
-///
-/// Measured on this vault's own Chinese entries rather than picked: two records
-/// of one decision written under reworded titles score 0.88, while two genuinely
-/// different pitfalls that merely share technical wording score 0.02. The gap is
-/// wide, so the bar sits at 0.75 — high enough that no amount of shared scaffolding
-/// merges two decisions, low enough that a re-typed entry still folds in.
-/// Title similarity is deliberately NOT a condition: the whole point is to catch
-/// the same fact saved again under a different heading.
-const DUPLICATE_SIMILARITY: f32 = 0.75;
-/// Below this many shared bigrams the ratio is short-string noise.
-const MIN_SHARED_BIGRAMS: usize = 12;
+/// A body must be at least this long (in significant characters) before containing
+/// another one proves anything. Short text fits inside unrelated sentences.
+const MIN_CONTAINED_CHARS: usize = 24;
 
-/// Character bigrams of a normalized text. Bigrams need no language-specific
-/// tokenizer, which the vault cannot assume: entries here are mostly Chinese,
-/// and splitting on whitespace turns a whole body into a single token.
-fn bigrams(text: &str) -> BTreeSet<(char, char)> {
-    let chars: Vec<char> = text
-        .to_lowercase()
+/// Body text reduced to the characters that carry meaning: lowercased, with
+/// whitespace and punctuation dropped. Two records of one decision differ in
+/// exactly those discarded characters — a re-typed sentence, a trailing period —
+/// while two different decisions never reduce to one containing the other.
+fn normalized_body(text: &str) -> String {
+    text.to_lowercase()
         .chars()
         .filter(|c| c.is_alphanumeric())
-        .collect();
-    chars
-        .windows(2)
-        .map(|window| (window[0], window[1]))
         .collect()
 }
 
-/// Jaccard overlap of two bigram sets.
-fn overlap(left: &BTreeSet<(char, char)>, right: &BTreeSet<(char, char)>) -> f32 {
-    let shared = left.iter().filter(|bigram| right.contains(bigram)).count();
-    let union = left.len() + right.len() - shared;
-    if union == 0 {
-        return 0.0;
-    }
-    shared as f32 / union as f32
-}
-
-/// Whether two entries record the same thing: same scope and kind, and either the
-/// same normalized title or a body that is nearly the text of the other.
+/// Whether two entries record the same thing.
+///
+/// Deliberately not a similarity score: a measured Jaccard bar of 0.75 folded 200
+/// template-written lessons — `lesson 12 …`, `lesson 13 …`, one digit apart — into
+/// a single entry, and near-identical wording is exactly how auto-capture writes a
+/// *family* of distinct lessons. Containment states something checkable instead:
+/// one record repeats the other's text in full and adds detail, so it is the same
+/// decision written twice. Where containment does not hold the pass leaves both
+/// entries alone, because an unmerged duplicate is noise while a wrong merge is
+/// lost memory.
 fn is_duplicate(a: &KnowledgeEntry, b: &KnowledgeEntry) -> bool {
     if a.scope != b.scope || a.kind != b.kind {
         return false;
@@ -169,10 +154,14 @@ fn is_duplicate(a: &KnowledgeEntry, b: &KnowledgeEntry) -> bool {
     if norm_title(&a.title) == norm_title(&b.title) {
         return true;
     }
-    let left = bigrams(&a.body);
-    let right = bigrams(&b.body);
-    let shared = left.iter().filter(|bigram| right.contains(bigram)).count();
-    shared >= MIN_SHARED_BIGRAMS && overlap(&left, &right) >= DUPLICATE_SIMILARITY
+    let left = normalized_body(&a.body);
+    let right = normalized_body(&b.body);
+    let (shorter, longer) = if left.len() <= right.len() {
+        (&left, &right)
+    } else {
+        (&right, &left)
+    };
+    shorter.len() >= MIN_CONTAINED_CHARS && longer.contains(shorter.as_str())
 }
 
 /// The newest entry of a cluster: what a reader would have written last.
@@ -1180,6 +1169,66 @@ mod tests {
         assert!(
             !is_duplicate(&cargo_a, &powershell),
             "shared technical wording is not the same decision"
+        );
+        // The family shape auto-capture actually produces: one template, one
+        // detail differing. These must never fold together.
+        let template = |index: usize| {
+            entry(
+                &format!("entry {index} about a distinct subsystem"),
+                &format!(
+                    "lesson {index}: the {index}th subsystem needs its own probe before the \
+                     panel can be trusted, so record the offset and the retry count."
+                ),
+            )
+        };
+        let twelfth = template(12);
+        let thirteenth = template(13);
+        assert!(
+            !is_duplicate(&twelfth, &thirteenth),
+            "one-digit-apart lessons are two decisions, not one written twice"
+        );
+    }
+
+    /// Measurement first: the pass is a pairwise scan and the service holds its
+    /// in-process mutex for the whole body, so a slow scan is a stalled UI. This
+    /// prints the elapsed time for a realistically-sized vault; the bound encoded
+    /// here is that measurement with headroom.
+    #[test]
+    fn consolidation_cost_on_a_realistically_sized_vault() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut kb = base(tmp.path());
+        for index in 0..200 {
+            kb.write(
+                draft(
+                    &format!("entry {index} about a distinct subsystem"),
+                    &format!(
+                        "lesson {index}: the {index}th subsystem needs its own probe before \
+                         the panel can be trusted, so record the offset and the retry count."
+                    ),
+                    EntryKind::Pitfall,
+                    Scope::Project,
+                ),
+                1_000 + index,
+            )
+            .unwrap();
+        }
+
+        let started = std::time::Instant::now();
+        let report = kb.consolidate(None, 9_000_000).unwrap();
+        let elapsed = started.elapsed();
+        eprintln!(
+            "[consolidate-cost] 200 distinct entries took {:?}, merged {}",
+            elapsed,
+            report.superseded.len()
+        );
+        assert!(
+            report.is_empty(),
+            "200 distinct lessons must not fold into each other: {report:?}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(1_000),
+            "the pass holds the service mutex, so {elapsed:?} would stall saves and search \
+             (measured 187ms for this vault in a debug build)"
         );
     }
 
