@@ -152,13 +152,33 @@ export interface ToolCall {
 export type MessagePart =
   | { kind: "reasoning"; text: string }
   | { kind: "text"; text: string; tone?: "normal" | "error" }
-  | { kind: "tool"; tool: ToolCall };
+  | { kind: "tool"; tool: ToolCall }
+  | {
+      kind: "compact_boundary";
+      tokensBefore: number;
+      tokensAfter: number;
+      strategy: string;
+    }
+  | { kind: "memories"; count: number; ids: string[]; latencyMs?: number };
 
 /** A reconstructed conversation part from a replayed session (mirrors
  * deepagent-app-core::ConversationPartDto). */
 export type ConversationPart =
   | { kind: "text"; text: string }
   | { kind: "reasoning"; text: string }
+  | {
+      kind: "compact_boundary";
+      tokens_before: number;
+      tokens_after: number;
+      strategy: string;
+      first_kept_sequence?: number | null;
+    }
+  | {
+      kind: "memories";
+      count: number;
+      ids?: string[];
+      latency_ms?: number;
+    }
   | {
       kind: "tool";
       call_id: string;
@@ -174,9 +194,11 @@ export type ConversationPart =
       meta?: Record<string, unknown> | null;
     };
 
-/** A reconstructed conversation message (mirrors ConversationMessageDto). */
+/** A reconstructed conversation message (mirrors ConversationMessageDto).
+ * `system` marks a session-level event row (compaction boundary, injected
+ * memories) rather than something either side said. */
 export interface ConversationMessage {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   attachments?: PersistedAttachment[];
   parts: ConversationPart[];
@@ -313,7 +335,9 @@ export interface DiagnosticResult {
 
 /** A message rendered in the chat view. */
 export interface ChatMessage {
-  role: "user" | "assistant";
+  /** `system` rows are session-level markers (compaction boundary, injected
+   * memories) that neither the user nor the model produced. */
+  role: "user" | "assistant" | "system";
   content: string;
   /** Inline skill chips selected from slash/typeahead for this user turn. */
   selectedSkills?: ComposerSkillSelection[];

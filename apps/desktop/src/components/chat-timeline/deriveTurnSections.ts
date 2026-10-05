@@ -36,9 +36,14 @@ function findFinalAssistantContentIndex(blocks: ChatBlock[]): number {
 export function deriveTurnSections(turn: Turn, _isProcessing: boolean): TurnSections {
   const processBlocks: ChatBlock[] = [];
   const assistantContentBlocks: Extract<ChatBlock, { kind: "assistant" }>[] = [];
+  const markerBlocks: TurnSections["markerBlocks"] = [];
   const finalAssistantContentIndex = findFinalAssistantContentIndex(turn.blocks);
 
   turn.blocks.forEach((block, index) => {
+    if (block.kind === "compaction" || block.kind === "memories") {
+      markerBlocks.push(block);
+      return;
+    }
     if (block.kind === "assistant") {
       if (index === finalAssistantContentIndex) {
         assistantContentBlocks.push(block);
@@ -50,7 +55,7 @@ export function deriveTurnSections(turn: Turn, _isProcessing: boolean): TurnSect
     processBlocks.push(block);
   });
 
-  return { processBlocks, assistantContentBlocks };
+  return { processBlocks, assistantContentBlocks, markerBlocks };
 }
 
 export function groupProcessSections(blocks: ChatBlock[]): ProcessSection[] {

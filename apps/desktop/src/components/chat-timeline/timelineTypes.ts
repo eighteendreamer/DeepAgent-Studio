@@ -35,6 +35,19 @@ export type ChatBlock =
       kind: "tool";
       id: string;
       tool: ToolCall;
+    }
+  | {
+      kind: "compaction";
+      id: string;
+      tokensBefore: number;
+      tokensAfter: number;
+      strategy: string;
+    }
+  | {
+      kind: "memories";
+      id: string;
+      count: number;
+      latencyMs: number;
     };
 
 export type Turn = {
@@ -51,4 +64,7 @@ export type ProcessSection = {
 export type TurnSections = {
   processBlocks: ChatBlock[];
   assistantContentBlocks: Extract<ChatBlock, { kind: "assistant" }>[];
+  /** Session-level markers (compaction boundary, injected memories). They are
+   * neither process steps nor an answer, so they render as their own quiet rows. */
+  markerBlocks: Extract<ChatBlock, { kind: "compaction" | "memories" }>[];
 };

@@ -3,6 +3,7 @@ import type { ComposerMention, ComposerSkillSelection } from "../../types";
 import { deriveTurnSections, groupProcessSections } from "./deriveTurnSections";
 import { AssistantMessageBubble, UserMessageBubble } from "./MessageBubble";
 import { ProcessSectionRow } from "./ProcessSectionRow";
+import { SessionMarkerRow } from "./SessionMarkerRow";
 import type { Turn } from "./timelineTypes";
 import { WorkMetaRow } from "./WorkMetaRow";
 import { CollapseBlurPanel } from "./CollapseBlurPanel";
@@ -37,7 +38,7 @@ function MessageTurnComponent({
   onResend,
   onOpenUrl,
 }: MessageTurnProps) {
-  const { processBlocks, assistantContentBlocks } = useMemo(
+  const { processBlocks, assistantContentBlocks, markerBlocks } = useMemo(
     () => deriveTurnSections(turn, processing),
     [turn, processing],
   );
@@ -73,6 +74,9 @@ function MessageTurnComponent({
       )}
       {assistantContentBlocks.map((block) => (
         <AssistantMessageBubble key={block.id} block={block} onOpenUrl={onOpenUrl} />
+      ))}
+      {markerBlocks.map((block) => (
+        <SessionMarkerRow key={block.id} block={block} />
       ))}
       {processing && !hasProcess && assistantContentBlocks.length === 0 && (
         <div className="flex w-fit items-center gap-2 py-0.5 text-[14px] font-medium text-text-secondary">

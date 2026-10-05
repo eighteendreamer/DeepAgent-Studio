@@ -1207,6 +1207,8 @@ export interface RuntimeEvent {
     | "verification"
     | "completion_evidence"
     | "context_usage"
+    | "context_compacted"
+    | "relevant_memories_injected"
     | "usage"
     | "cost_recorded"
     | "run_completed"

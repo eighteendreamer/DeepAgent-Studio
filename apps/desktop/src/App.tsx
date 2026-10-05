@@ -186,6 +186,22 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
   conversation.forEach((m) => {
     const attachments = m.attachments?.map(mapPersistedAttachment);
     const parts = m.parts.map((p): MessagePart => {
+      if (p.kind === "compact_boundary") {
+        return {
+          kind: "compact_boundary",
+          tokensBefore: p.tokens_before,
+          tokensAfter: p.tokens_after,
+          strategy: p.strategy,
+        };
+      }
+      if (p.kind === "memories") {
+        return {
+          kind: "memories",
+          count: p.count,
+          ids: p.ids ?? [],
+          latencyMs: p.latency_ms ?? 0,
+        };
+      }
       if (p.kind === "tool") {
         return {
           kind: "tool",
@@ -1556,6 +1572,37 @@ export function App() {
                 outcome,
               },
             });
+            break;
+          }
+          case "context_compacted": {
+            // A history snip is plumbing, not a conversation boundary; only a real
+            // compaction earns a row. The row rides the current assistant turn so
+            // streaming keeps appending where it did before.
+            const strategy = String(event.strategy ?? "");
+            if (!strategy || strategy === "history_snip") break;
+            mutateParts((parts) => [
+              ...parts,
+              {
+                kind: "compact_boundary",
+                tokensBefore: Number(event.tokens_before ?? 0),
+                tokensAfter: Number(event.tokens_after ?? 0),
+                strategy,
+              },
+            ]);
+            break;
+          }
+          case "relevant_memories_injected": {
+            const count = Number(event.count ?? 0);
+            if (count <= 0) break;
+            mutateParts((parts) => [
+              ...parts,
+              {
+                kind: "memories",
+                count,
+                ids: Array.isArray(event.ids) ? event.ids.map((id) => String(id)) : [],
+                latencyMs: Number(event.latency_ms ?? 0),
+              },
+            ]);
             break;
           }
           case "context_usage": {

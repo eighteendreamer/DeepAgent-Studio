@@ -580,6 +580,56 @@ impl AppService {
                         cost_yuan: recorded_costs.next().and_then(|c| c.cost_yuan),
                     });
                 }
+                // A durable compaction boundary is part of what the user reads
+                // back after a reload; metrics-only records (micro-compaction)
+                // changed nothing in the model-facing view, so they stay hidden.
+                EventPayload::ContextCompacted {
+                    tokens_before,
+                    tokens_after,
+                    strategy,
+                    summary: Some(_),
+                    first_kept_sequence,
+                } => {
+                    // The boundary closes the current turn's grouping: what
+                    // follows is a new context window.
+                    tool_pos.clear();
+                    seen_reasoning_items.clear();
+                    seen_assistant_texts.clear();
+                    native_reasoning_since_tool.clear();
+                    messages.push(ConversationMessageDto {
+                        role: "system".to_string(),
+                        content: String::new(),
+                        attachments: Vec::new(),
+                        parts: vec![ConversationPartDto::CompactBoundary {
+                            tokens_before: *tokens_before,
+                            tokens_after: *tokens_after,
+                            strategy: strategy.clone(),
+                            first_kept_sequence: *first_kept_sequence,
+                        }],
+                        usage: None,
+                    });
+                }
+                EventPayload::MemoriesInjected {
+                    ids,
+                    count,
+                    latency_ms,
+                    ..
+                } => {
+                    if *count == 0 {
+                        continue;
+                    }
+                    messages.push(ConversationMessageDto {
+                        role: "system".to_string(),
+                        content: String::new(),
+                        attachments: Vec::new(),
+                        parts: vec![ConversationPartDto::Memories {
+                            count: *count,
+                            ids: ids.clone(),
+                            latency_ms: *latency_ms,
+                        }],
+                        usage: None,
+                    });
+                }
                 _ => {}
             }
         }
@@ -595,7 +645,9 @@ impl AppService {
                 ConversationPartDto::Text { text } | ConversationPartDto::Reasoning { text } => {
                     !text.trim().is_empty()
                 }
-                ConversationPartDto::Tool { .. } => true,
+                ConversationPartDto::Tool { .. }
+                | ConversationPartDto::CompactBoundary { .. }
+                | ConversationPartDto::Memories { .. } => true,
             })
         });
 
@@ -1385,6 +1437,153 @@ mod tests {
                 && status == "ok"
                 && answer == "done"
         ));
+    }
+
+    #[test]
+    fn durable_compaction_boundary_is_replayed_as_its_own_row() {
+        use crate::dto::ConversationPartDto;
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("boundary")).unwrap();
+        let sid = session.id().to_string();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("first question"),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::assistant("first answer"),
+            })
+            .unwrap();
+        // The durable boundary written by auto-compaction or /compact.
+        session
+            .append(EventPayload::ContextCompacted {
+                tokens_before: 9_000,
+                tokens_after: 2_000,
+                strategy: "session_memory".to_string(),
+                summary: Some("- decided: one vault".to_string()),
+                first_kept_sequence: Some(2),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("second question"),
+            })
+            .unwrap();
+
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        let positions: Vec<(usize, &str)> = conversation
+            .iter()
+            .enumerate()
+            .map(|(index, message)| (index, message.role.as_str()))
+            .collect();
+        let boundary_at = positions
+            .iter()
+            .position(|(_, role)| *role == "system")
+            .unwrap_or_else(|| panic!("the boundary must replay as a row: {positions:?}"));
+        assert_eq!(
+            boundary_at, 2,
+            "the row sits where it happened, between the two turns: {positions:?}"
+        );
+        assert!(
+            matches!(
+                conversation[boundary_at].parts.first(),
+                Some(ConversationPartDto::CompactBoundary {
+                    tokens_before: 9_000,
+                    tokens_after: 2_000,
+                    strategy,
+                    first_kept_sequence: Some(2),
+                }) if strategy == "session_memory"
+            ),
+            "{:?}",
+            conversation[boundary_at].parts
+        );
+    }
+
+    #[test]
+    fn metrics_only_compaction_records_render_no_row() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("micro")).unwrap();
+        let sid = session.id().to_string();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("q"),
+            })
+            .unwrap();
+        // Micro-compaction / stats records: `summary: None`.
+        session
+            .append(EventPayload::ContextCompacted {
+                tokens_before: 500,
+                tokens_after: 400,
+                strategy: "micro_compact".to_string(),
+                summary: None,
+                first_kept_sequence: None,
+            })
+            .unwrap();
+
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        assert!(
+            !conversation.iter().any(|message| message.role == "system"),
+            "internal accounting must not clutter the transcript: {conversation:?}"
+        );
+    }
+
+    #[test]
+    fn injected_memories_replay_as_their_own_row() {
+        use crate::dto::ConversationPartDto;
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("memories")).unwrap();
+        let sid = session.id().to_string();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("q"),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::MemoriesInjected {
+                ids: vec!["mem_1".to_string(), "mem_2".to_string()],
+                count: 2,
+                latency_ms: 37,
+                trigger: "prefetch".to_string(),
+            })
+            .unwrap();
+
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        let row = conversation
+            .iter()
+            .find(|message| message.role == "system")
+            .expect("the injection must replay");
+        assert!(
+            matches!(
+                row.parts.first(),
+                Some(ConversationPartDto::Memories {
+                    count: 2,
+                    latency_ms: 37,
+                    ..
+                })
+            ),
+            "{:?}",
+            row.parts
+        );
+        assert_eq!(
+            row.parts.first().and_then(|part| match part {
+                ConversationPartDto::Memories { ids, .. } => Some(ids.as_slice()),
+                _ => None,
+            }),
+            Some(["mem_1".to_string(), "mem_2".to_string()].as_slice())
+        );
     }
 
     #[test]

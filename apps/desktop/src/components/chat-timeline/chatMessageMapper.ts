@@ -121,6 +121,23 @@ export function parseAttachmentContext(content: string): ComposerAttachment[] {
 }
 
 function mapAssistantPart(part: MessagePart, messageIndex: number, partIndex: number, message: ChatMessage): ChatBlock | null {
+  if (part.kind === "compact_boundary") {
+    return {
+      kind: "compaction",
+      id: `m${messageIndex}-p${partIndex}-compaction`,
+      tokensBefore: part.tokensBefore,
+      tokensAfter: part.tokensAfter,
+      strategy: part.strategy,
+    };
+  }
+  if (part.kind === "memories") {
+    return {
+      kind: "memories",
+      id: `m${messageIndex}-p${partIndex}-memories`,
+      count: part.count,
+      latencyMs: part.latencyMs ?? 0,
+    };
+  }
   if (part.kind === "reasoning") {
     if (!part.text.trim()) return null;
     return { kind: "reasoning", id: `m${messageIndex}-p${partIndex}-reasoning`, text: part.text };

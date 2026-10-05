@@ -478,6 +478,36 @@ pub enum ConversationPartDto {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         meta: Option<serde_json::Value>,
     },
+    /// A durable compaction boundary: everything before it is represented to the
+    /// model by the summary. Projected only from `ContextCompacted` records that
+    /// carry a `summary`; metrics-only records (micro-compaction) are internal
+    /// accounting and render nothing.
+    CompactBoundary {
+        /// Tokens in the model-facing view before compaction.
+        tokens_before: u64,
+        /// Tokens after it, summary included.
+        tokens_after: u64,
+        /// `session_memory` | `model` | ...: what supplied the summary.
+        strategy: String,
+        /// First event sequence still shown verbatim, when recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_kept_sequence: Option<u64>,
+    },
+    /// Relevant long-term memories surfaced into this turn.
+    Memories {
+        /// How many entries were injected.
+        count: usize,
+        /// Their ids, for dedup display and click-through.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ids: Vec<String>,
+        /// How long the recall took.
+        #[serde(default, skip_serializing_if = "is_zero_u64")]
+        latency_ms: u64,
+    },
+}
+
+fn is_zero_u64(value: &u64) -> bool {
+    *value == 0
 }
 
 /// A reconstructed conversation message (user or assistant) for replaying a
