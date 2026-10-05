@@ -23,7 +23,7 @@ use deepagent_runtime::RuntimeEvent;
 use deepagent_session::Session;
 
 use crate::cost_service::CostService;
-use crate::input_runtime::conversation_from_events;
+use crate::input_runtime::{full_history_from_events, model_history_from_events};
 use crate::knowledge_service::KnowledgeService;
 use crate::mcp_service::McpService;
 use crate::plugin_runtime::PluginRuntimeProjection;
@@ -115,22 +115,11 @@ impl<'a> SlashRuntime<'a> {
                 let store =
                     deepagent_persistence::event_store::EventStore::new(self.db);
                 let events = store.load_session(session.id())?;
-                let history = conversation_from_events(&events);
-                let rendered: Vec<String> = history
-                    .iter()
-                    .map(|m| format!("{:?}: {}", m.role, m.content))
-                    .collect();
-                let counter = HeuristicTokenizer::new();
-                let tokens_before: usize =
-                    rendered.iter().map(|t| counter.count(t)).sum();
-                let tokens_after = tokens_before / 2;
-                session.append(EventPayload::ContextCompacted {
-                    tokens_before: tokens_before as u64,
-                    tokens_after: tokens_after as u64,
-                    strategy: "manual".to_string(),
-                })?;
+                let history = model_history_from_events(&events);
+                let (tokens_before, tokens_after) =
+                    append_heuristic_compaction(session, &history, "manual")?;
                 format!(
-                    "Compacted current session context. Tokens before: {tokens_before}; target after: {tokens_after}."
+                    "Compacted current session context. Tokens before: {tokens_before}; now summarized to about {tokens_after}."
                 )
             }
             SlashAction::Cost => match self.cost {
@@ -531,40 +520,11 @@ impl<'a> SlashRuntime<'a> {
                         self.db,
                     );
                 let events = store.load_session(session.id())?;
-                let history = conversation_from_events(&events);
-                let rendered: Vec<String> = history
-                    .iter()
-                    .map(|m| format!("{:?}: {}", m.role, m.content))
-                    .collect();
-                let counter = HeuristicTokenizer::new();
-                let tokens_before: usize =
-                    rendered.iter().map(|t| counter.count(t)).sum();
-                let goal = history
-                    .first()
-                    .map(|m| m.content.clone())
-                    .unwrap_or_else(|| {
-                        format!("Resume session {session_id}")
-                    });
-                let summary = HeuristicSummarizer.summarize(
-                    &goal,
-                    &TaskSummary::default(),
-                    &rendered,
-                );
-                let summary_block = summary.to_context_block();
-                let injected = format!(
-                    "[Earlier conversation compacted to summary]\n{summary_block}"
-                );
-                let tokens_after = counter.count(&injected);
-                session.append(EventPayload::ContextCompacted {
-                    tokens_before: tokens_before as u64,
-                    tokens_after: tokens_after as u64,
-                    strategy: "resume".to_string(),
-                })?;
-                session.append(EventPayload::MessageAppended {
-                    message: Message::user(injected),
-                })?;
+                let history = model_history_from_events(&events);
+                let (tokens_before, tokens_after) =
+                    append_heuristic_compaction(session, &history, "resume")?;
                 format!(
-                    "Resumed session {session_id}. Loaded {} event(s), compacted recovered context from {tokens_before} to {tokens_after} estimated tokens. Continue with your next prompt.",
+                    "Resumed session {session_id}. Loaded {} event(s), compacted recovered context from {tokens_before} to about {tokens_after} estimated tokens. Continue with your next prompt.",
                     events.len()
                 )
             }
@@ -600,7 +560,7 @@ impl<'a> SlashRuntime<'a> {
                         self.db,
                     );
                 let events = store.load_session(session.id())?;
-                let history = conversation_from_events(&events);
+                let history = full_history_from_events(&events);
                 let title = session
                     .state()
                     .title
@@ -811,7 +771,7 @@ impl<'a> SlashRuntime<'a> {
                         self.db,
                     );
                 let events = store.load_session(session.id())?;
-                let history = conversation_from_events(&events);
+                let history = model_history_from_events(&events);
                 let counter = HeuristicTokenizer::new();
                 let tokens: usize = history
                     .iter()
@@ -1266,4 +1226,45 @@ fn collect_verifiable_files(root: &std::path::Path, out: &mut Vec<PathBuf>, cap:
             out.push(path);
         }
     }
+}
+
+/// Summarize the recovered history with the deterministic summarizer and record
+/// a durable compaction boundary, so `/compact` and a resumed session actually
+/// cut what the model is shown instead of only noting that compaction happened.
+///
+/// `first_kept_sequence: None` is deliberate for manual compaction: the
+/// model-facing view becomes the summary plus whatever is appended afterwards,
+/// which is exact — no message-index-to-event-sequence guessing. Raw events are
+/// never rewritten, so export, search and replay keep the whole transcript.
+///
+/// Returns the estimated tokens before and after for the user-facing line.
+pub(crate) fn append_heuristic_compaction(
+    session: &mut Session<'_, SystemClock>,
+    history: &[Message],
+    strategy: &str,
+) -> Result<(u64, u64)> {
+    let rendered: Vec<String> = history
+        .iter()
+        .map(|message| format!("{:?}: {}", message.role, message.content))
+        .collect();
+    let counter = HeuristicTokenizer::new();
+    let tokens_before: u64 = rendered.iter().map(|turn| counter.count(turn) as u64).sum();
+    if rendered.is_empty() {
+        return Ok((0, 0));
+    }
+    let goal = history
+        .first()
+        .map(|message| message.content.clone())
+        .unwrap_or_default();
+    let summary = HeuristicSummarizer.summarize(&goal, &TaskSummary::default(), &rendered);
+    let summary_block = summary.to_context_block();
+    let tokens_after = counter.count(&summary_block) as u64;
+    session.append(EventPayload::ContextCompacted {
+        tokens_before,
+        tokens_after,
+        strategy: strategy.to_string(),
+        summary: Some(summary_block),
+        first_kept_sequence: None,
+    })?;
+    Ok((tokens_before, tokens_after))
 }

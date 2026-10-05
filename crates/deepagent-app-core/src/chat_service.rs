@@ -46,7 +46,7 @@ use crate::dto::{ApprovalRequestDto, PreflightToolCallDto};
 #[cfg(test)]
 use crate::hook_assembly::OfficeSkillGuardHook;
 #[cfg(test)]
-use crate::input_runtime::{collect_discovered_tools_from_events, conversation_from_events};
+use crate::input_runtime::{collect_discovered_tools_from_events, full_history_from_events};
 use crate::model_runtime::build_model_client;
 use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
@@ -1944,7 +1944,7 @@ mod tests {
 
         let id = deepagent_core::id::SessionId::from_str(&sid).unwrap();
         let store = deepagent_persistence::event_store::EventStore::new(&db);
-        let history = conversation_from_events(&store.load_session(id).unwrap());
+        let history = full_history_from_events(&store.load_session(id).unwrap());
         assert!(history.iter().any(|m| m.content == "/plan"));
         assert!(history
             .iter()
@@ -2164,7 +2164,7 @@ mod tests {
     }
 
     #[test]
-    fn conversation_from_events_keeps_text_turns_only() {
+    fn full_history_from_events_keeps_text_turns_only() {
         use deepagent_core::event::{Event, EventPayload};
         use deepagent_core::id::{EventId, SessionId, TaskId};
         use deepagent_core::message::{Message, Role};
@@ -2212,7 +2212,7 @@ mod tests {
                 },
             ),
         ];
-        let convo = conversation_from_events(&events);
+        let convo = full_history_from_events(&events);
         assert_eq!(convo.len(), 2);
         assert_eq!(convo[0].role, Role::User);
         assert_eq!(convo[0].content, "hi");

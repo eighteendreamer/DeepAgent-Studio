@@ -1518,6 +1518,11 @@ impl<'a> RunAssembler<'a> {
             tokens_before: total as u64,
             tokens_after: tokens_after as u64,
             strategy: "model".to_string(),
+            // Metrics only for now: this run's summary is transient, so the next
+            // run recompacts from the full log. Making it a durable boundary
+            // (summary + verbatim tail) is the next step of this line of work.
+            summary: None,
+            first_kept_sequence: None,
         }) {
             tracing::warn!(error = %e, "failed to record ContextCompacted event");
         }

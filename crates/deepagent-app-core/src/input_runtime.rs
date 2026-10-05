@@ -113,7 +113,7 @@ where
             session = Session::recover(db, clock, id)?;
             prior_events =
                 deepagent_persistence::event_store::EventStore::new(db).load_session(id)?;
-            history = conversation_with_tool_pairs_from_events(&prior_events);
+            history = model_history_from_events(&prior_events);
             append_runtime_log(
                 &runtime_logs,
                 NewRuntimeLogEntry::info("input", "input_dequeued")
@@ -157,7 +157,7 @@ fn bind_session<'db, C: Clock>(
             // Main-run resume keeps the paired tool trajectory (Phase D):
             // the model sees which tools already ran and what they returned,
             // instead of a text-only shadow of the conversation.
-            let history = conversation_with_tool_pairs_from_events(&events);
+            let history = model_history_from_events(&events);
             Ok((session, history, events))
         }
         None => {
@@ -191,8 +191,83 @@ impl Drop for InputLeaseGuard {
     }
 }
 
-/// Rebuild a plain conversation (user/assistant text turns) from a session's
-/// event log, for seeding the model when continuing an existing session.
+/// Header on the message that stands in for a compacted prefix.
+///
+/// Older builds wrote this text as an ordinary assistant/user message and only
+/// ONE of the three history projections honoured it, so the model-facing item
+/// view kept replaying the full transcript. It is now rendered by the writer and
+/// recognised by the single boundary resolver below, i.e. by every view.
+pub(crate) const COMPACTED_SUMMARY_HEADER: &str = "[Earlier conversation compacted to summary]";
+
+/// Where the model-facing view starts, and what replaces everything before it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompactionBoundary {
+    /// Text injected in place of the compacted prefix (header included).
+    rendered: String,
+    /// First event sequence still visible verbatim.
+    first_kept_sequence: deepagent_core::event::Sequence,
+}
+
+/// Resolve the newest compaction boundary in a session log.
+///
+/// Recognises both shapes so one rule covers every projection and every session
+/// written since compaction existed:
+/// - `ContextCompacted { summary: Some(..) }` — the durable boundary. Raw events
+///   are never rewritten or deleted; only the view is cut, so export, replay and
+///   search still see the whole transcript (Claude Code does the same: an
+///   append-only transcript plus `getMessagesAfterCompactBoundary`).
+/// - A persisted message starting with [`COMPACTED_SUMMARY_HEADER`] — how a
+///   session compacted by an older build recorded it.
+fn compaction_boundary(events: &[Event]) -> Option<CompactionBoundary> {
+    events.iter().rev().find_map(|event| {
+        let keep_after = |rendered: String| {
+            Some(CompactionBoundary {
+                rendered,
+                first_kept_sequence: event.sequence.saturating_add(1),
+            })
+        };
+        match &event.payload {
+            EventPayload::ContextCompacted {
+                summary: Some(summary),
+                first_kept_sequence,
+                ..
+            } => Some(CompactionBoundary {
+                rendered: format!("{COMPACTED_SUMMARY_HEADER}\n{summary}"),
+                first_kept_sequence: first_kept_sequence.unwrap_or(event.sequence),
+            }),
+            EventPayload::MessageAppended { message }
+                if message.content.starts_with(COMPACTED_SUMMARY_HEADER) =>
+            {
+                keep_after(message.content.clone())
+            }
+            _ => None,
+        }
+    })
+}
+
+/// The event slice the model should see, plus the summary standing in for the
+/// compacted prefix. Shared by the Message view and the item view so the two can
+/// never disagree about where history starts.
+fn events_for_model_view(events: &[Event]) -> (Vec<Event>, Option<String>) {
+    match compaction_boundary(events) {
+        None => (events.to_vec(), None),
+        Some(boundary) => (
+            events
+                .iter()
+                .filter(|event| event.sequence >= boundary.first_kept_sequence)
+                .cloned()
+                .collect(),
+            Some(boundary.rendered),
+        ),
+    }
+}
+
+/// Rebuild the COMPLETE conversation (user/assistant text turns) from a
+/// session's event log, ignoring any compaction boundary.
+///
+/// For the history the model actually gets, use [`model_history_from_events`].
+/// This one is for consumers that must see everything: transcript export and
+/// session titling.
 ///
 /// Only [`EventPayload::MessageAppended`] user/assistant turns are taken, and
 /// any `tool_calls` are stripped: tool *requests* live as separate
@@ -200,18 +275,10 @@ impl Drop for InputLeaseGuard {
 /// replaying them as bare `tool_calls` would dangle without their matching
 /// `tool` results and the API would reject the request. Plain text turns are
 /// enough context for a follow-up question.
-pub(crate) fn conversation_from_events(events: &[Event]) -> Vec<Message> {
+pub(crate) fn full_history_from_events(events: &[Event]) -> Vec<Message> {
     let mut out = Vec::new();
     for ev in events {
         if let EventPayload::MessageAppended { message } = &ev.payload {
-            if message
-                .content
-                .starts_with("[Earlier conversation compacted to summary]")
-            {
-                out.clear();
-                out.push(Message::text(message.role, message.content.clone()));
-                continue;
-            }
             match message.role {
                 Role::User | Role::Assistant if !message.content.trim().is_empty() => {
                     out.push(Message::text(message.role, message.content.clone()));
@@ -228,18 +295,6 @@ pub(crate) fn conversation_from_events(events: &[Event]) -> Vec<Message> {
 /// window on stale outputs while preserving what the tool did and returned.
 const REPLAY_TOOL_RESULT_MAX_CHARS: usize = 2_000;
 
-/// Rebuild a conversation INCLUDING paired tool trajectories from a
-/// session's event log (kernel-refactor Phase D: tool-call pairing
-/// recovery).
-///
-/// In addition to the text turns of [`conversation_from_events`], every
-/// `ToolCallRequested` becomes an assistant `tool_calls` message and every
-/// `ToolCallCompleted` its matching `tool` result. Consecutive requests
-/// between boundaries replay as one batched assistant message (mirroring
-/// how the model issued them). Orphaned calls — a request whose result
-/// never arrived because the process crashed or the run was cancelled
-/// mid-flight — get a synthesized failure result so the transcript NEVER
-/// contains a dangling `tool_use` (strict providers reject those).
 /// Collect the union of every persisted snipped tag across the session's log.
 fn persisted_snipped_tags(events: &[Event]) -> Vec<String> {
     let mut tags = std::collections::BTreeSet::new();
@@ -251,17 +306,38 @@ fn persisted_snipped_tags(events: &[Event]) -> Vec<String> {
     tags.into_iter().collect()
 }
 
-/// Rebuild a run's conversation from the event log and re-apply any persisted
-/// history snips, so a restart reconstructs the same (snipped) working history
-/// instead of resurrecting removed segments.
-pub(crate) fn conversation_with_tool_pairs_from_events(events: &[Event]) -> Vec<Message> {
-    let messages = build_conversation(events);
-    let tags = persisted_snipped_tags(events);
+/// The history the model is actually shown.
+///
+/// Paired tool trajectories first (see [`build_conversation`]): every
+/// `ToolCallRequested` becomes an assistant `tool_calls` message and every
+/// `ToolCallCompleted` its matching `tool` result; consecutive requests between
+/// boundaries replay as one batched assistant message, and orphaned calls — a
+/// request whose result never arrived because the process crashed or the run was
+/// cancelled mid-flight — get a synthesized failure result so the transcript
+/// NEVER contains a dangling `tool_use` (strict providers reject those).
+///
+/// Then the two history-cutting mechanisms are re-applied in order: the
+/// compaction boundary (a compacted prefix returns as its summary, raw events
+/// untouched) and the persisted snips, so a restart reconstructs the same
+/// working history instead of resurrecting compacted or removed segments.
+///
+/// This is the ONLY place a compaction boundary is interpreted, and the item
+/// view goes through the same resolver — that is what keeps the run's Message
+/// history, the provider-native history, `/compact` and `/context` from becoming
+/// separate readings of one log.
+pub(crate) fn model_history_from_events(events: &[Event]) -> Vec<Message> {
+    let (kept, summary) = events_for_model_view(events);
+    let mut out = Vec::new();
+    if let Some(summary) = summary {
+        out.push(Message::user(summary));
+    }
+    out.extend(build_conversation(&kept));
+    let tags = persisted_snipped_tags(&kept);
     if tags.is_empty() {
-        return messages;
+        return out;
     }
     deepagent_runtime::snip_segments(
-        &messages,
+        &out,
         &tags,
         deepagent_runtime::SNIP_PROTECTED_RECENT_MESSAGES,
     )
@@ -360,20 +436,39 @@ fn build_conversation(events: &[Event]) -> Vec<Message> {
     out
 }
 
+/// The provider-native item history, honouring the SAME compaction boundary as
+/// [`model_history_from_events`].
+///
+/// Before this, only one projection honoured compaction, so the model kept
+/// replaying the full transcript while `/context` and titling believed a summary
+/// had replaced it.
 pub(crate) fn response_items_from_events(events: &[Event]) -> Vec<ResponseInputItem> {
-    if events
+    let (kept, summary) = events_for_model_view(events);
+    if kept
         .iter()
         .any(|event| matches!(event.payload, EventPayload::ResponseItemAppended { .. }))
     {
-        return events
+        let mut items: Vec<ResponseInputItem> = kept
             .iter()
             .filter_map(|event| match &event.payload {
                 EventPayload::ResponseItemAppended { item } => Some(item.clone()),
                 _ => None,
             })
             .collect();
+        if let Some(summary) = summary {
+            items.insert(
+                0,
+                ResponseInputItem::Message {
+                    role: "user".to_string(),
+                    content: summary,
+                },
+            );
+        }
+        return items;
     }
-    let history = conversation_with_tool_pairs_from_events(events);
+    // Legacy sessions without an item log: convert the SAME message view, so the
+    // summary and the snips are applied by exactly one implementation.
+    let history = model_history_from_events(events);
     let (_, items) = deepagent_models::response_items_from_messages(&history);
     items
 }
@@ -586,7 +681,7 @@ mod tests {
                 },
             },
         ];
-        let convo = conversation_from_events(&events);
+        let convo = full_history_from_events(&events);
         assert_eq!(convo.len(), 2);
         assert_eq!(convo[0].role, Role::User);
         assert_eq!(convo[0].content, "hi");
@@ -663,6 +758,196 @@ mod tests {
         assert!(collect_surfaced_memory_ids_from_events(&[]).is_empty());
     }
 
+    fn boundary(summary: &str, keep_from: Option<u64>) -> EventPayload {
+        EventPayload::ContextCompacted {
+            tokens_before: 5_000,
+            tokens_after: 400,
+            strategy: "model".to_string(),
+            summary: Some(summary.to_string()),
+            first_kept_sequence: keep_from,
+        }
+    }
+
+    fn conversation_fixture(sid: SessionId) -> Vec<Event> {
+        vec![
+            event(
+                sid,
+                0,
+                EventPayload::MessageAppended {
+                    message: Message::user("first question"),
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::MessageAppended {
+                    message: Message::assistant("first answer"),
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::MessageAppended {
+                    message: Message::user("later question"),
+                },
+            ),
+        ]
+    }
+
+    #[test]
+    fn model_history_replaces_the_compacted_prefix_with_its_summary() {
+        let sid = SessionId::nil();
+        let mut events = conversation_fixture(sid);
+        events.push(event(sid, 3, boundary("goal: ship it", Some(2))));
+
+        let history = model_history_from_events(&events);
+        assert_eq!(history.len(), 2, "summary + the kept tail: {history:?}");
+        assert_eq!(history[0].role, Role::User);
+        assert!(
+            history[0].content.starts_with(COMPACTED_SUMMARY_HEADER)
+                && history[0].content.contains("goal: ship it"),
+            "{:?}",
+            history[0].content
+        );
+        assert_eq!(history[1].content, "later question");
+    }
+
+    #[test]
+    fn both_views_agree_on_where_history_starts() {
+        // The regression this closes: only one projection honoured compaction, so
+        // the model kept replaying the whole transcript while titling and
+        // /context believed a summary had replaced it.
+        let sid = SessionId::nil();
+        let mut events = conversation_fixture(sid);
+        events.push(event(sid, 3, boundary("goal: ship it", Some(2))));
+
+        let messages = model_history_from_events(&events);
+        let items = response_items_from_events(&events);
+        assert_eq!(messages.len(), 2);
+        let item_texts: Vec<String> = items
+            .iter()
+            .filter_map(|item| match item {
+                deepagent_core::response_item::ResponseItem::Message { content, .. } => {
+                    Some(content.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(item_texts.len(), 2, "{item_texts:?}");
+        assert!(item_texts[0].contains("goal: ship it"));
+        assert_eq!(item_texts[1], "later question");
+        assert_eq!(
+            messages[1].content, item_texts[1],
+            "the two views must not disagree about the kept tail"
+        );
+    }
+
+    #[test]
+    fn boundary_without_keep_from_keeps_only_what_follows_it() {
+        // Manual compaction writes this shape: the summary replaces everything
+        // before the boundary event, and no guessing of message->event indexes.
+        let sid = SessionId::nil();
+        let mut events = conversation_fixture(sid);
+        events.push(event(sid, 3, boundary("goal: ship it", None)));
+        events.push(event(
+            sid,
+            4,
+            EventPayload::MessageAppended {
+                message: Message::user("next prompt"),
+            },
+        ));
+
+        let history = model_history_from_events(&events);
+        assert_eq!(history.len(), 2, "{history:?}");
+        assert!(history[0].content.contains("goal: ship it"));
+        assert_eq!(history[1].content, "next prompt");
+    }
+
+    #[test]
+    fn legacy_marker_messages_are_honoured_by_both_views() {
+        // Sessions compacted by an older build stored the boundary as a message.
+        let sid = SessionId::nil();
+        let mut events = conversation_fixture(sid);
+        events.push(event(
+            sid,
+            3,
+            EventPayload::MessageAppended {
+                message: Message::user(format!("{COMPACTED_SUMMARY_HEADER}\nold summary")),
+            },
+        ));
+
+        let history = model_history_from_events(&events);
+        assert_eq!(history.len(), 1, "only the marker survives: {history:?}");
+        assert!(history[0].content.contains("old summary"));
+        let items = response_items_from_events(&events);
+        assert_eq!(items.len(), 1, "item view must match: {items:?}");
+    }
+
+    #[test]
+    fn full_history_keeps_everything_across_a_boundary() {
+        // Export and titling read the complete transcript on purpose; a boundary
+        // changes the model's view, never the record.
+        let sid = SessionId::nil();
+        let mut events = conversation_fixture(sid);
+        events.push(event(sid, 3, boundary("goal: ship it", Some(2))));
+
+        let full = full_history_from_events(&events);
+        assert_eq!(full.len(), 3, "{full:?}");
+        assert_eq!(full[0].content, "first question");
+        assert_eq!(full[1].content, "first answer");
+        assert_eq!(full[2].content, "later question");
+        // and the model view really is smaller than it
+        assert_eq!(model_history_from_events(&events).len(), 2);
+    }
+
+    #[test]
+    fn manual_compaction_boundary_survives_a_reload() {
+        // End-to-end shape: /compact writes a boundary into the session log, and
+        // the NEXT run rebuilds its history from the reloaded events and honours
+        // it — the whole point of making the boundary durable.
+        let db = Database::open_in_memory().unwrap();
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = Session::create(&db, &clock, Some("compact-me")).expect("create session");
+        for turn in 0..8 {
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::user(format!("question {turn}")),
+                })
+                .unwrap();
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::assistant(format!("answer {turn}")),
+                })
+                .unwrap();
+        }
+        let events = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap();
+        let history = model_history_from_events(&events);
+        assert_eq!(history.len(), 16, "precondition: nothing compacted yet");
+
+        let (before, after) =
+            crate::slash_runtime::append_heuristic_compaction(&mut session, &history, "manual")
+                .expect("manual compaction");
+        assert!(before > 0, "tokens counted from the real history");
+        // The deterministic summarizer keeps the head turns and drops chatter;
+        // it must never make the context bigger.
+        assert!(after <= before, "{before} -> {after}");
+
+        let reloaded = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap();
+        let compacted = model_history_from_events(&reloaded);
+        assert_eq!(compacted.len(), 1, "{compacted:?}");
+        assert!(
+            compacted[0].content.starts_with(COMPACTED_SUMMARY_HEADER),
+            "{:?}",
+            compacted[0].content
+        );
+        // The raw turns are still in the log for export / replay.
+        assert_eq!(full_history_from_events(&reloaded).len(), 16);
+    }
+
     #[test]
     fn rebuild_reapplies_persisted_snips() {
         let sid = SessionId::nil();
@@ -684,7 +969,7 @@ mod tests {
             events.push(event(sid, 4 + i, assistant(&format!("filler {i}"))));
         }
 
-        let full = conversation_with_tool_pairs_from_events(&events);
+        let full = model_history_from_events(&events);
         assert!(full.iter().any(|m| m.content.contains("old task")));
 
         events.push(event(
@@ -694,7 +979,7 @@ mod tests {
                 tags: vec!["u1".to_string()],
             },
         ));
-        let snipped = conversation_with_tool_pairs_from_events(&events);
+        let snipped = model_history_from_events(&events);
         assert!(!snipped.iter().any(|m| m.content.contains("old task")));
         assert!(!snipped.iter().any(|m| m.content.contains("old answer")));
         assert!(snipped.iter().any(|m| m.content.contains("live task")));
@@ -759,7 +1044,7 @@ mod tests {
             ),
         ];
 
-        let convo = conversation_with_tool_pairs_from_events(&events);
+        let convo = model_history_from_events(&events);
         // user, assistant(tool_calls c1+c2), tool c1, tool c2, assistant text
         assert_eq!(convo.len(), 5);
         assert_eq!(convo[1].role, Role::Assistant);
@@ -790,7 +1075,7 @@ mod tests {
             // Crash: no ToolCallCompleted, no further messages.
         ];
 
-        let convo = conversation_with_tool_pairs_from_events(&events);
+        let convo = model_history_from_events(&events);
         assert_eq!(convo.len(), 2);
         assert_eq!(convo[0].tool_calls.len(), 1);
         assert_eq!(convo[1].role, Role::Tool);
@@ -826,7 +1111,7 @@ mod tests {
             ),
         ];
 
-        let convo = conversation_with_tool_pairs_from_events(&events);
+        let convo = model_history_from_events(&events);
         assert!(convo[1].content.contains("tool output truncated"));
         assert!(convo[1].content.chars().count() < REPLAY_TOOL_RESULT_MAX_CHARS + 300);
     }
@@ -888,7 +1173,7 @@ mod tests {
             ),
         ];
 
-        let convo = conversation_with_tool_pairs_from_events(&events);
+        let convo = model_history_from_events(&events);
 
         assert_eq!(convo.len(), 4);
         assert_eq!(convo[0].role, Role::User);

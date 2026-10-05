@@ -127,10 +127,24 @@ fn render_markdown(title: Option<&str>, events: &[Event]) -> String {
                 tokens_before,
                 tokens_after,
                 strategy,
+                summary,
+                first_kept_sequence,
             } => {
+                // The transcript is the COMPLETE export: a boundary changes what
+                // the model is shown from here on, never what is stored, so say
+                // both plainly instead of implying history was discarded.
                 out.push_str(&format!(
-                    "> 🗜 context compacted ({strategy}): {tokens_before} → {tokens_after} tokens\n\n"
+                    "> 🗜 context compacted ({strategy}): {tokens_before} → {tokens_after} tokens"
                 ));
+                if summary.is_some() {
+                    match first_kept_sequence {
+                        Some(keep_from) => out.push_str(&format!(
+                            " · 模型视图改从事件 #{keep_from} 起（此前完整记录仍保留在本导出中）"
+                        )),
+                        None => out.push_str(" · 模型视图此后仅见摘要（此前记录仍保留在本导出中）"),
+                    }
+                }
+                out.push_str("\n\n");
             }
             EventPayload::Note { text } => {
                 out.push_str(&format!("> 📝 {text}\n\n"));

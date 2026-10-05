@@ -16,7 +16,7 @@ use deepagent_models::{ModelClient, ModelConfig, ModelRole, ThinkingDepth};
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
 
-use crate::input_runtime::conversation_from_events;
+use crate::input_runtime::full_history_from_events;
 use crate::settings::{SettingsService, WebSearchProvider};
 
 const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
@@ -54,7 +54,7 @@ pub async fn generate_session_title(
     }
 
     let events = store.load_session(id)?;
-    let history = conversation_from_events(&events);
+    let history = full_history_from_events(&events);
     let mut lines = Vec::new();
     let mut user_messages = 0usize;
     for message in &history {

@@ -103,13 +103,32 @@ fn entry_for_event(event: &Event) -> TimelineEntry {
             tokens_before,
             tokens_after,
             strategy,
-        } => (
-            "compact",
-            "🗜",
-            format!("Context compacted ({strategy})"),
-            Some(format!("{tokens_before} → {tokens_after} tokens")),
-            None,
-        ),
+            summary,
+            first_kept_sequence,
+        } => {
+            // A `summary` turns this record into the boundary the model-facing
+            // view starts from; without one it is only a metrics entry
+            // (micro-compaction and pre-boundary builds).
+            let (title, detail) = match (summary, first_kept_sequence) {
+                (Some(_), Some(keep_from)) => (
+                    format!("Context compacted ({strategy})"),
+                    Some(format!(
+                        "{tokens_before} → {tokens_after} tokens · 模型视图自事件 #{keep_from} 起"
+                    )),
+                ),
+                (Some(_), None) => (
+                    format!("Context compacted ({strategy})"),
+                    Some(format!(
+                        "{tokens_before} → {tokens_after} tokens · 模型视图仅保留摘要之后的内容"
+                    )),
+                ),
+                (None, _) => (
+                    format!("Context compacted ({strategy})"),
+                    Some(format!("{tokens_before} → {tokens_after} tokens")),
+                ),
+            };
+            ("compact", "🗜", title, detail, None)
+        }
         EventPayload::Note { text } => (
             "note",
             "📝",

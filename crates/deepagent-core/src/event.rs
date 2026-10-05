@@ -115,6 +115,16 @@ pub enum EventPayload {
     },
 
     /// The context pipeline performed a compaction step (开发提示词.md §4).
+    ///
+    /// Two meanings share this variant, distinguished by `summary`:
+    /// - `summary: None` — a metrics-only record (what older builds wrote, and
+    ///   what micro-compaction still writes). Replay is unaffected.
+    /// - `summary: Some` — a **durable boundary**: the model-facing view starts
+    ///   here, with `summary` standing in for everything before
+    ///   `first_kept_sequence`. Raw events are never rewritten or deleted, so
+    ///   the full transcript stays replayable and exportable; only the view the
+    ///   model sees is cut. This is how Claude Code does it
+    ///   (`compact_boundary` record + `getMessagesAfterCompactBoundary`).
     ContextCompacted {
         /// Tokens before compaction.
         tokens_before: u64,
@@ -122,6 +132,13 @@ pub enum EventPayload {
         tokens_after: u64,
         /// Strategy label, e.g. "task_summary" / "memory_unload".
         strategy: String,
+        /// Replacement text for the compacted prefix; `Some` marks a boundary.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        summary: Option<String>,
+        /// First session-event sequence still visible to the model. Absent on a
+        /// boundary means "keep nothing before the summary".
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        first_kept_sequence: Option<Sequence>,
     },
 
     /// Earlier conversation segments were snipped (model-invoked history-snip).

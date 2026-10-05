@@ -171,11 +171,34 @@ mod tests {
                 tokens_before: 1000,
                 tokens_after: 600,
                 strategy: "summary".into(),
+                summary: None,
+                first_kept_sequence: None,
             },
         )];
         let s = SessionStats::from_events(&events);
         assert_eq!(s.compactions, 1);
         assert_eq!(s.tokens_saved, 400);
+    }
+
+    #[test]
+    fn a_durable_boundary_counts_as_one_compaction() {
+        // A boundary record is still exactly one compaction: the added
+        // `summary` / `first_kept_sequence` fields must not make stats count or
+        // save twice for the same event.
+        let events = vec![event(
+            0,
+            1000,
+            EventPayload::ContextCompacted {
+                tokens_before: 1000,
+                tokens_after: 250,
+                strategy: "resume".into(),
+                summary: Some("goal: ship it".into()),
+                first_kept_sequence: None,
+            },
+        )];
+        let s = SessionStats::from_events(&events);
+        assert_eq!(s.compactions, 1);
+        assert_eq!(s.tokens_saved, 750);
     }
 
     #[test]
