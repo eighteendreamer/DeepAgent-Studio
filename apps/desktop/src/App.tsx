@@ -1446,13 +1446,23 @@ export function App() {
           case "model_attempt_reset":
             if (modelAttemptBaseParts) {
               const snapshot = modelAttemptBaseParts;
-              mutateParts(() =>
-                snapshot.map((part) =>
-                  part.kind === "tool"
-                    ? { ...part, tool: { ...part.tool } }
-                    : { ...part },
-                ),
-              );
+              mutateParts((parts) => {
+                // A retry rewinds the turn to its pre-attempt shape. Markers that
+                // the attempt itself produced (compaction recovered an overflow,
+                // memories injected) are real events and must survive the rewind,
+                // or the row disappears until the session is reloaded.
+                const markers = parts.filter(
+                  (part) => part.kind === "compact_boundary" || part.kind === "memories",
+                );
+                return [
+                  ...snapshot.map((part) =>
+                    part.kind === "tool"
+                      ? { ...part, tool: { ...part.tool } }
+                      : { ...part },
+                  ),
+                  ...markers,
+                ];
+              });
             }
             break;
           case "model_request_completed":

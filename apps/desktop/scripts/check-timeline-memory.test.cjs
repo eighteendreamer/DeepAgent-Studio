@@ -62,6 +62,17 @@ test("the live event names the kernel emits are in the frontend union", () => {
   assert.match(APP_TSX, /strategy === "history_snip"/, "snips would clutter the transcript");
 });
 
+test("markers survive a model-attempt retry", () => {
+  // A reactive compaction happens *inside* an attempt; the attempt reset that
+  // follows rewinds the turn to its pre-attempt parts. Without carrying the
+  // marker forward the row vanishes until the session is reloaded.
+  assert.match(
+    APP_TSX,
+    /case "model_attempt_reset"[\s\S]{0,900}part\.kind === "compact_boundary"/,
+    "attempt reset rewinds away the compaction/memory marker",
+  );
+});
+
 test("every part kind has a TypeScript shape and a block", () => {
   for (const kind of ["compact_boundary", "memories"]) {
     assert.match(TYPES_TS, new RegExp(`kind: "${kind}"`), `types.ts has no ${kind} part`);
