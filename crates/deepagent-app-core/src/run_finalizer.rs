@@ -332,20 +332,24 @@ impl AppRunFinalizer {
                 reason = outcome.reason,
                 "session-memory: pass deferred"
             );
-            return;
         }
         let Some(usage) = outcome.usage else {
-            tracing::warn!(session_id, "session-memory: pass reported no usage");
+            if outcome.extracted {
+                tracing::warn!(session_id, "session-memory: pass reported no usage");
+            }
             return;
         };
         tracing::info!(
             session_id,
+            extracted = outcome.extracted,
+            reason = outcome.reason,
             prompt_tokens = usage.prompt_tokens,
             completion_tokens = usage.completion_tokens,
-            "session-memory: note updated"
+            "session-memory: note pass billed"
         );
         // Cost of the internal pass joins the ordinary ledger for the same
-        // session; it is never a private accounting path.
+        // session; it is never a private accounting path. A pass that produced no
+        // note still answered model calls, and the ledger describes spend.
         let Some(cost) = &self.cost else {
             return;
         };
@@ -740,6 +744,48 @@ mod tests {
             passes.try_begin(session_key).is_some(),
             "the session slot is released when the pass ends"
         );
+    }
+
+    /// A pass that leaves the note as it found it claims no coverage, but it did
+    /// answer model calls: the ledger has to describe spend, not outcomes.
+    #[tokio::test]
+    async fn a_deferred_pass_still_pays_into_the_ledger() {
+        use crate::session_memory::testing::{scripted_client, ScriptedTransport};
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session_key = transcript_session(&db);
+        let cost = Arc::new(CostService::new(db.clone()));
+        let passes = SessionMemoryPasses::default();
+        let guard = passes.try_begin(session_key).expect("slot is free");
+        let finalizer = finalizer_with(db.clone(), Some(cost.clone()), &passes);
+
+        finalizer
+            .run_session_memory_pass(
+                guard,
+                session_key,
+                20_000,
+                scripted_client(vec![
+                    ScriptedTransport::call(
+                        "c1",
+                        "read_file",
+                        serde_json::json!({"path": "session-memory.md"}),
+                    ),
+                    ScriptedTransport::text("nothing worth recording"),
+                ]),
+                "deepseek-chat".to_string(),
+            )
+            .await;
+
+        let note = std::fs::read_to_string(db.session_memory_path(session_key)).unwrap();
+        assert!(
+            note.contains("(nothing recorded yet)"),
+            "an untouched note must stay the template: {note}"
+        );
+        let summary = cost.summary(&session_key.to_string()).unwrap();
+        assert_eq!(summary.input_tokens, 120, "the attempt was billed");
+        // Two answered calls in this script, not three: completion tokens
+        // accumulate per call, so the deferred pass is cheaper but not free.
+        assert_eq!(summary.output_tokens, 36);
     }
 
     #[tokio::test]

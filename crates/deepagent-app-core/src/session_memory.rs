@@ -666,11 +666,25 @@ impl SessionMemoryExtractor {
         };
         let usage = agent.cumulative_usage();
         if !completed {
-            return Ok(ExtractionOutcome::skipped("pass_failed"));
+            // The pass may have burned several answered calls before it stopped.
+            // That is real spend and still belongs in the ledger, even though the
+            // note gained nothing from it.
+            return Ok(ExtractionOutcome {
+                extracted: false,
+                reason: "pass_failed",
+                usage,
+            });
         }
 
         let written = std::fs::read_to_string(&note_path)
             .map_err(|error| CoreError::Persistence(format!("read back session note: {error}")))?;
+        // Editing the note is the whole job. If the agent declared completion
+        // without changing a byte, the note cannot be trusted to cover the
+        // transcript, so the cut point must NOT move: compaction that believed it
+        // would drop transcript content the note never summarised. The token
+        // watermark still advances, because that attempt really was paid for and
+        // the next turn must not re-buy the same window.
+        let covered = written != note;
         // The note now covers everything handed in, so the candidate cut point is
         // the session's newest event. It becomes the actual cut point only when
         // the last turn opened no tool call — otherwise the compaction split
@@ -679,7 +693,7 @@ impl SessionMemoryExtractor {
         let mut advanced = advance_cursors(
             state.unwrap_or_default(),
             newest_sequence,
-            !last_turn_has_tool_call,
+            covered && !last_turn_has_tool_call,
             total_tokens,
             SystemClock.now(),
         );
@@ -687,8 +701,12 @@ impl SessionMemoryExtractor {
         store.save(session_id, &advanced)?;
 
         Ok(ExtractionOutcome {
-            extracted: true,
-            reason: "extracted",
+            extracted: covered,
+            reason: if covered {
+                "extracted"
+            } else {
+                "note_unchanged"
+            },
             usage,
         })
     }
@@ -1504,6 +1522,71 @@ mod tests {
         assert_eq!(saved.summary, note);
     }
 
+    /// Completion without an edit proves nothing. The cut point must not move —
+    /// compaction trusts it to represent the transcript — while the paid-for
+    /// attempt still advances the token watermark so the next turn does not buy
+    /// the same window twice.
+    #[tokio::test]
+    async fn a_pass_that_leaves_the_note_unchanged_claims_no_coverage() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SessionMemoryStore::new(db.clone());
+        let session = SessionId::new();
+        let note_path = store.memory_path(session);
+        std::fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+        let template = ensure_note(&note_path).unwrap();
+
+        let client = scripted_client(vec![
+            ScriptedTransport::call(
+                "c1",
+                "read_file",
+                serde_json::json!({"path": note_path.to_string_lossy()}),
+            ),
+            ScriptedTransport::text("nothing worth recording"),
+        ]);
+        let extractor = SessionMemoryExtractor::new(db.clone(), client, "deepseek-chat").with_gate(
+            ExtractionGate {
+                init_tokens: 1,
+                ..Default::default()
+            },
+        );
+        let outcome = extractor
+            .run_if_due(
+                session,
+                &[Message::user("decide the storage layout")],
+                &[tool_call(1), tool_call(2)],
+                12_000,
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            !outcome.extracted,
+            "an untouched note cannot count as extracted: {outcome:?}"
+        );
+        assert_eq!(outcome.reason, "note_unchanged");
+        assert!(outcome.usage.is_some(), "the attempt still cost tokens");
+        assert_eq!(std::fs::read_to_string(&note_path).unwrap(), template);
+
+        let saved = store
+            .load(session)
+            .unwrap()
+            .expect("the attempt is recorded");
+        assert_eq!(
+            saved.last_summarized_sequence, None,
+            "compaction may not cut on a note that says nothing new"
+        );
+        assert_eq!(
+            saved.tool_cursor_sequence,
+            Some(2),
+            "the calls themselves were still seen"
+        );
+        assert_eq!(
+            saved.tokens_at_last_extraction, 12_000,
+            "the window that was paid for is remembered"
+        );
+    }
+
     fn message_event(sequence: Sequence, content: &str) -> Event {
         Event {
             id: EventId::new(),
@@ -1672,7 +1755,11 @@ mod tests {
         .await
         .unwrap();
 
-        assert!(outcome.extracted, "the pass still completed");
+        assert!(
+            !outcome.extracted,
+            "the loop finished, but with the note untouched it covered nothing: {outcome:?}"
+        );
+        assert_eq!(outcome.reason, "note_unchanged");
         assert_eq!(
             std::fs::read_to_string(&note_path).unwrap(),
             NOTE_TEMPLATE,
