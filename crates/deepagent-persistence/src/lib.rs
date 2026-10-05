@@ -33,6 +33,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_core::id::SessionId;
 use rusqlite::Connection;
 
 /// Convert a [`rusqlite::Error`] into a [`CoreError::Persistence`].
@@ -106,6 +107,14 @@ impl Database {
 
     pub(crate) fn session_files_root(&self) -> PathBuf {
         self.data_root.join("files").join("sessions")
+    }
+
+    /// Path of a session's rolling summary file (`session-memory.md`), kept
+    /// beside the authoritative event log so one session's durable state lives in
+    /// one place. The layout stays owned here: callers must not rebuild it from
+    /// the session-file root.
+    pub fn session_memory_path(&self, session_id: SessionId) -> PathBuf {
+        session_files::session_dir(&self.session_files_root(), session_id).join("session-memory.md")
     }
 
     pub(crate) fn lock_session_io(&self) -> Result<std::sync::MutexGuard<'_, ()>> {

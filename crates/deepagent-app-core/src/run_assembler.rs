@@ -146,6 +146,9 @@ pub(crate) struct RunAssembler<'a> {
         &'a Arc<std::sync::Mutex<HashMap<String, SkillCatalogSendState>>>,
     pub(crate) discovered_tools: &'a DiscoveredToolsMap,
     pub(crate) invoked_skills: &'a InvokedSkillMap,
+    /// Host-scoped "one session-memory pass per session" scheduler, borrowed
+    /// from `ChatService` so two turns cannot fold the same window twice.
+    pub(crate) session_memory_passes: &'a crate::session_memory::SessionMemoryPasses,
     pub(crate) sandboxie_executor: &'a Option<Arc<SandboxieExecutor>>,
     pub(crate) local_command_executor:
         &'a Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
@@ -1032,6 +1035,7 @@ impl<'a> RunAssembler<'a> {
             self.cost.clone(),
             self.knowledge.clone(),
             self.coordinator.cancellation_map(),
+            self.session_memory_passes.clone(),
         )
         .finalize_after_kernel(
             &mut session,
@@ -1248,6 +1252,7 @@ impl<'a> RunAssembler<'a> {
             self.cost.clone(),
             self.knowledge.clone(),
             self.coordinator.cancellation_map(),
+            self.session_memory_passes.clone(),
         )
         .finalize_after_kernel(
             &mut session,
@@ -1503,18 +1508,15 @@ impl<'a> RunAssembler<'a> {
             _ => {}
         }
 
-        let split = history.len() - policy.keep_recent_turns;
-        let older = &rendered[..split];
-        let goal = history
-            .first()
-            .map(|m| m.content.clone())
-            .unwrap_or_default();
-
-        let compactor = ModelCompactor::new(client.clone(), model.to_string());
-        let summary: TaskSummary = compactor
-            .summarize(&goal, &TaskSummary::default(), older)
-            .await;
-        let summary_block = summary.to_context_block();
+        let count_split = history.len() - policy.keep_recent_turns;
+        let target = CompactionTarget {
+            events,
+            history: &history,
+            rendered: &rendered,
+            count_split,
+        };
+        let (split, summary_block, strategy) =
+            choose_compaction_summary(self.db, session.id(), &target, client, model).await;
 
         let tokens_after = counter.count(&summary_block)
             + rendered[split..]
@@ -1525,7 +1527,7 @@ impl<'a> RunAssembler<'a> {
         if let Err(e) = session.append(EventPayload::ContextCompacted {
             tokens_before: total as u64,
             tokens_after: tokens_after as u64,
-            strategy: "model".to_string(),
+            strategy: strategy.to_string(),
             summary: Some(summary_block.clone()),
             // Where the verbatim tail starts. Content-matched, because a batch of
             // parallel tool calls is one history entry but several events; when no
@@ -1652,6 +1654,171 @@ pub(crate) fn project_hook_paths(root: &Path) -> Vec<PathBuf> {
         root.join(".deepagent").join("settings.local.json"),
         root.join(".deepagent").join("hooks.json"),
     ]
+}
+
+/// The transcript a compaction must summarize, bundled so choosing its source
+/// stays a short call.
+pub(crate) struct CompactionTarget<'a> {
+    pub(crate) events: &'a [deepagent_core::event::Event],
+    pub(crate) history: &'a [Message],
+    pub(crate) rendered: &'a [String],
+    /// Where the count-based split would cut, used by the model summarizer.
+    pub(crate) count_split: usize,
+}
+
+/// Choose what replaces the compacted prefix.
+///
+/// The rolling session note is tried first: it already exists, was written by a
+/// pass that read exactly this transcript, and costs no model call. It is used
+/// only where it provably covers the prefix being dropped
+/// ([`crate::session_memory::compaction_from_note`]); otherwise this behaves as
+/// before and asks the model to summarize.
+async fn choose_compaction_summary(
+    db: &Arc<Database>,
+    session_id: deepagent_core::id::SessionId,
+    target: &CompactionTarget<'_>,
+    client: &Arc<ModelClient>,
+    model: &str,
+) -> (usize, String, &'static str) {
+    let store = crate::session_memory::SessionMemoryStore::new(db.clone());
+    if let Some((split, note)) = crate::session_memory::compaction_from_note(
+        &store,
+        session_id,
+        target.events,
+        target.history,
+    ) {
+        tracing::debug!(
+            split,
+            "compacting from the session note without a model call"
+        );
+        return (
+            split,
+            format!("Session notes maintained during this conversation:\n{note}"),
+            "session_memory",
+        );
+    }
+    let goal = target
+        .history
+        .first()
+        .map(|message| message.content.clone())
+        .unwrap_or_default();
+    let summary = ModelCompactor::new(client.clone(), model.to_string())
+        .summarize(
+            &goal,
+            &TaskSummary::default(),
+            &target.rendered[..target.count_split],
+        )
+        .await;
+    (target.count_split, summary.to_context_block(), "model")
+}
+
+#[cfg(test)]
+mod compaction_source_tests {
+    use super::*;
+    use crate::session_memory::testing::unreachable_client;
+    use crate::session_memory::{SessionMemoryState, SessionMemoryStore};
+    use deepagent_core::clock::{Clock, SystemClock};
+    use deepagent_core::event::{Event, EventPayload, Sequence};
+    use deepagent_core::id::EventId;
+
+    fn message_event(sequence: Sequence, message: Message) -> Event {
+        Event {
+            id: EventId::new(),
+            session_id: deepagent_core::id::SessionId::new(),
+            sequence,
+            timestamp: SystemClock.now(),
+            payload: EventPayload::MessageAppended { message },
+        }
+    }
+
+    fn transcript() -> (Vec<Event>, Vec<Message>) {
+        let history = vec![
+            Message::user("first decision: one vault"),
+            Message::assistant("agreed"),
+            Message::user("second decision: files hold bodies"),
+        ];
+        let events = vec![
+            message_event(1, Message::user("first decision: one vault")),
+            message_event(2, Message::assistant("agreed")),
+            message_event(5, Message::user("second decision: files hold bodies")),
+        ];
+        (events, history)
+    }
+
+    #[tokio::test]
+    async fn a_covered_note_compacts_without_calling_the_model() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = deepagent_core::id::SessionId::new();
+        SessionMemoryStore::new(db.clone())
+            .save(
+                session,
+                &SessionMemoryState {
+                    summary: "- goal: one vault\n- files hold bodies".to_string(),
+                    last_summarized_sequence: Some(2),
+                    tool_cursor_sequence: Some(2),
+                    tokens_at_last_extraction: 20_000,
+                    initialized: true,
+                    updated_at: 1,
+                },
+            )
+            .unwrap();
+        let (events, history) = transcript();
+
+        // The client would fail loudly if consulted, so success proves the note
+        // carried the summary.
+        let rendered: Vec<String> = transcript_rendered(&history);
+        let target = CompactionTarget {
+            events: &events,
+            history: &history,
+            rendered: &rendered,
+            count_split: 2,
+        };
+        let (split, block, strategy) = choose_compaction_summary(
+            &db,
+            session,
+            &target,
+            &unreachable_client(),
+            "deepseek-chat",
+        )
+        .await;
+
+        assert_eq!(strategy, "session_memory");
+        assert_eq!(split, 2, "the tail starts at the first uncovered entry");
+        assert!(block.contains("goal: one vault"), "{block}");
+    }
+
+    #[tokio::test]
+    async fn without_a_note_the_model_summarizer_stays_in_charge() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = deepagent_core::id::SessionId::new();
+        let (events, history) = transcript();
+
+        let rendered: Vec<String> = transcript_rendered(&history);
+        let target = CompactionTarget {
+            events: &events,
+            history: &history,
+            rendered: &rendered,
+            count_split: 1,
+        };
+        let (split, _block, strategy) = choose_compaction_summary(
+            &db,
+            session,
+            &target,
+            &unreachable_client(),
+            "deepseek-chat",
+        )
+        .await;
+
+        assert_eq!(strategy, "model");
+        assert_eq!(split, 1, "the count-based split is preserved");
+    }
+
+    fn transcript_rendered(history: &[Message]) -> Vec<String> {
+        history
+            .iter()
+            .map(|message| format!("{:?}: {}", message.role, message.content))
+            .collect()
+    }
 }
 
 #[cfg(test)]

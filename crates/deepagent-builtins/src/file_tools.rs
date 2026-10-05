@@ -1153,6 +1153,20 @@ pub fn file_tools(root: WorkspaceRoot) -> Vec<Arc<dyn Tool>> {
     ]
 }
 
+/// `read_file` + `edit_file` over one shared cache, for a run that may touch
+/// exactly one file (session-note extraction).
+///
+/// The pair has to be built together: `edit_file` enforces read-before-edit
+/// through the shared cache, so a run given only `edit_file` could never edit
+/// legally, and separate caches would make the read invisible to the edit.
+pub fn note_edit_tools(root: WorkspaceRoot) -> Vec<Arc<dyn Tool>> {
+    let cache = new_shared_cache();
+    vec![
+        Arc::new(ReadFileTool::with_cache(root.clone(), cache.clone())),
+        Arc::new(EditFileTool::with_cache(root, cache)),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

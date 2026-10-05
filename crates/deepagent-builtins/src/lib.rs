@@ -104,8 +104,8 @@ pub use cron_tools::{
 };
 pub use file_cache::{CachedFile, FileStateCache};
 pub use file_tools::{
-    file_tools, DeletePathTool, EditFileTool, GlobTool, GrepTool, ListDirTool, MovePathTool,
-    MultiEditTool, ReadFileTool, WriteFileTool,
+    file_tools, note_edit_tools, DeletePathTool, EditFileTool, GlobTool, GrepTool, ListDirTool,
+    MovePathTool, MultiEditTool, ReadFileTool, WriteFileTool,
 };
 pub use fs_guard::{is_sensitive_path, FsAccess, WorkspaceRoot};
 pub use git_tools::{GitCommitTool, GitDiffTool, GitLogTool, GitStatusTool};

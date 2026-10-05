@@ -73,6 +73,7 @@ pub mod sandbox_backend;
 pub mod sandboxie_service;
 pub mod secret_store;
 pub mod service;
+pub mod session_memory;
 pub mod session_state_service;
 pub mod session_title;
 pub mod settings;

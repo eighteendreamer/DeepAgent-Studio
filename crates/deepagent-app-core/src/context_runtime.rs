@@ -28,6 +28,15 @@ use crate::tool_manifest::{deferred_tools_announcement, ToolManifest};
 pub(crate) type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
 pub(crate) type RemoteContextFactory = Arc<dyn Fn(String) -> RemoteContextFuture + Send + Sync>;
 
+/// How many recent entries reactive compaction always keeps verbatim.
+///
+/// One number for the committed pass and the speculative prefire pass, and for
+/// both the `Message` view and the response-item view: the prefire note is only
+/// reusable while the two agree on where the verbatim tail starts. This is a
+/// different knob from `CompactionPolicy::keep_recent_turns`, which the
+/// before-the-run proactive compaction uses.
+pub(crate) const REACTIVE_KEEP_RECENT: usize = 8;
+
 pub(crate) struct HookedReactiveContextCompactor {
     client: Arc<ModelClient>,
     model: String,
@@ -163,8 +172,6 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         messages: &[Message],
         trigger: CompactionTrigger,
     ) -> Result<Option<ReactiveCompaction>> {
-        const KEEP_RECENT_MESSAGES: usize = 8;
-
         // Unified debounce / circuit breaker (Phase E): refuse to thrash.
         if !self
             .breaker
@@ -180,11 +187,11 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             .take_while(|message| message.role == deepagent_core::message::Role::System)
             .count();
         let body = &messages[system_end..];
-        if body.len() <= KEEP_RECENT_MESSAGES {
+        if body.len() <= REACTIVE_KEEP_RECENT {
             return Ok(None);
         }
 
-        let Some(split) = pairing_safe_compaction_split(body, KEEP_RECENT_MESSAGES) else {
+        let Some(split) = pairing_safe_compaction_split(body, REACTIVE_KEEP_RECENT) else {
             return Ok(None);
         };
 
@@ -304,8 +311,6 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         items: &[ResponseInputItem],
         trigger: CompactionTrigger,
     ) -> Result<Option<ReactiveCompaction>> {
-        const KEEP_RECENT_ITEMS: usize = 8;
-
         if !self
             .breaker
             .lock()
@@ -315,11 +320,11 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             return Ok(None);
         }
 
-        if items.len() <= KEEP_RECENT_ITEMS {
+        if items.len() <= REACTIVE_KEEP_RECENT {
             return Ok(None);
         }
 
-        let Some(split) = pairing_safe_response_item_compaction_split(items, KEEP_RECENT_ITEMS)
+        let Some(split) = pairing_safe_response_item_compaction_split(items, REACTIVE_KEEP_RECENT)
         else {
             return Ok(None);
         };
@@ -440,7 +445,6 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
     }
 
     async fn prefire_pass1(&self, messages: &[Message]) -> Result<Option<PrefireNote>> {
-        const KEEP_RECENT_MESSAGES: usize = 8;
         // Background/speculative: no hook dispatch, no breaker mutation — this
         // does not commit any state (Grok prefire pass-1 reads a snapshot only).
         let system_end = messages
@@ -448,10 +452,10 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             .take_while(|m| m.role == deepagent_core::message::Role::System)
             .count();
         let body = &messages[system_end..];
-        if body.len() <= KEEP_RECENT_MESSAGES {
+        if body.len() <= REACTIVE_KEEP_RECENT {
             return Ok(None);
         }
-        let Some(split) = pairing_safe_compaction_split(body, KEEP_RECENT_MESSAGES) else {
+        let Some(split) = pairing_safe_compaction_split(body, REACTIVE_KEEP_RECENT) else {
             return Ok(None);
         };
         let prefix_end = system_end + split;
@@ -468,11 +472,10 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         _instructions: Option<&str>,
         items: &[ResponseInputItem],
     ) -> Result<Option<PrefireNote>> {
-        const KEEP_RECENT_ITEMS: usize = 8;
-        if items.len() <= KEEP_RECENT_ITEMS {
+        if items.len() <= REACTIVE_KEEP_RECENT {
             return Ok(None);
         }
-        let Some(split) = pairing_safe_response_item_compaction_split(items, KEEP_RECENT_ITEMS)
+        let Some(split) = pairing_safe_response_item_compaction_split(items, REACTIVE_KEEP_RECENT)
         else {
             return Ok(None);
         };

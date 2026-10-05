@@ -173,6 +173,10 @@ pub struct ChatService {
     /// the `skill` tool. Used by office tool guards so specialized document
     /// tools cannot bypass the matching docx/xlsx/pdf/pptx skill.
     invoked_skills: InvokedSkillMap,
+    /// Sessions with a session-memory extraction pass currently in flight. The
+    /// rolling note is a per-session file, so two passes must not fold the same
+    /// window and then overwrite each other.
+    session_memory_passes: crate::session_memory::SessionMemoryPasses,
     /// Optional executor factory for remote (SSH) sessions. When set and the
     /// session is in `SessionMode::Remote`, the factory creates a
     /// [`CommandExecutor`] that routes bash/git commands through SSH instead
@@ -266,6 +270,7 @@ impl ChatService {
             skills: None,
             skill_catalog_state: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             invoked_skills: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            session_memory_passes: crate::session_memory::SessionMemoryPasses::default(),
             executor_factory: None,
             local_command_executor: None,
             runtime_broker: None,
@@ -1302,6 +1307,7 @@ impl ChatService {
             skill_catalog_state: &self.skill_catalog_state,
             discovered_tools: &self.discovered_tools,
             invoked_skills: &self.invoked_skills,
+            session_memory_passes: &self.session_memory_passes,
             sandboxie_executor: &self.sandboxie_executor,
             local_command_executor: &self.local_command_executor,
             executor_factory: &self.executor_factory,
