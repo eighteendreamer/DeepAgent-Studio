@@ -587,7 +587,7 @@ impl AppService {
                     tokens_before,
                     tokens_after,
                     strategy,
-                    summary: Some(_),
+                    summary: Some(summary),
                     first_kept_sequence,
                 } => {
                     // The boundary closes the current turn's grouping: what
@@ -604,6 +604,7 @@ impl AppService {
                             tokens_before: *tokens_before,
                             tokens_after: *tokens_after,
                             strategy: strategy.clone(),
+                            summary: summary.clone(),
                             first_kept_sequence: *first_kept_sequence,
                         }],
                         usage: None,
@@ -1496,8 +1497,10 @@ mod tests {
                     tokens_before: 9_000,
                     tokens_after: 2_000,
                     strategy,
+                    summary,
                     first_kept_sequence: Some(2),
                 }) if strategy == "session_memory"
+                    && summary == "- decided: one vault"
             ),
             "{:?}",
             conversation[boundary_at].parts

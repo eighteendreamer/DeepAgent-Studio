@@ -489,6 +489,10 @@ pub enum ConversationPartDto {
         tokens_after: u64,
         /// `session_memory` | `model` | ...: what supplied the summary.
         strategy: String,
+        /// What the earlier turns were folded into. The row is only emitted for
+        /// a real boundary, so the text is always there for the user to check
+        /// that compaction did not eat their thread.
+        summary: String,
         /// First event sequence still shown verbatim, when recorded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         first_kept_sequence: Option<u64>,

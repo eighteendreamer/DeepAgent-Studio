@@ -128,6 +128,7 @@ function mapAssistantPart(part: MessagePart, messageIndex: number, partIndex: nu
       tokensBefore: part.tokensBefore,
       tokensAfter: part.tokensAfter,
       strategy: part.strategy,
+      summary: part.summary,
     };
   }
   if (part.kind === "memories") {

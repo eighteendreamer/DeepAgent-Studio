@@ -42,6 +42,7 @@ export type ChatBlock =
       tokensBefore: number;
       tokensAfter: number;
       strategy: string;
+      summary: string;
     }
   | {
       kind: "memories";

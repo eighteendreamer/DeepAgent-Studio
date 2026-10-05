@@ -192,6 +192,7 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
           tokensBefore: p.tokens_before,
           tokensAfter: p.tokens_after,
           strategy: p.strategy,
+          summary: p.summary,
         };
       }
       if (p.kind === "memories") {
@@ -1597,6 +1598,9 @@ export function App() {
                 tokensBefore: Number(event.tokens_before ?? 0),
                 tokensAfter: Number(event.tokens_after ?? 0),
                 strategy,
+                // The live event carries the summary only once the compaction
+                // has actually written one; metrics-only records have none.
+                summary: String(event.summary ?? ""),
               },
             ]);
             break;

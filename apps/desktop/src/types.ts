@@ -158,6 +158,7 @@ export type MessagePart =
       tokensBefore: number;
       tokensAfter: number;
       strategy: string;
+      summary: string;
     }
   | { kind: "memories"; count: number; ids: string[]; latencyMs?: number };
 
@@ -171,6 +172,7 @@ export type ConversationPart =
       tokens_before: number;
       tokens_after: number;
       strategy: string;
+      summary: string;
       first_kept_sequence?: number | null;
     }
   | {

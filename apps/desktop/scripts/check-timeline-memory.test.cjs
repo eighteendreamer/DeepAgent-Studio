@@ -36,8 +36,14 @@ test("the kernel parts exist on the Rust DTO", () => {
 });
 
 test("session_conversation projects a boundary only when it is durable", () => {
-  const projection = /EventPayload::ContextCompacted \{[\s\S]*?summary: Some\(_\),[\s\S]*?\} => \{/;
+  const projection = /EventPayload::ContextCompacted \{[\s\S]*?summary: Some\(summary\),[\s\S]*?\} => \{/;
   assert.match(SERVICE_RS, projection, "only summary-bearing compaction records may render");
+  assert.match(
+    SERVICE_RS,
+    /ConversationPartDto::CompactBoundary \{[\s\S]*?summary: summary\.clone\(\),/,
+    "the boundary row would have nothing to show",
+  );
+  assert.match(DTO_RS, /CompactBoundary \{[\s\S]*?summary: String,/, "DTO dropped the summary");
   assert.match(SERVICE_RS, /EventPayload::MemoriesInjected \{/, "memories are not replayed");
   // Regression cover for the two claims above.
   assert.match(
@@ -84,6 +90,20 @@ test("every part kind has a TypeScript shape and a block", () => {
   }
   // Conversation replay mirrors the DTO's snake_case field names.
   assert.match(TYPES_TS, /tokens_before: number/, "replayed boundary fields are not typed");
+  assert.match(
+    TYPES_TS,
+    /kind: "compact_boundary";\s*[\s\S]{0,160}?\bsummary: string;/,
+    "neither TypeScript part shape carries the summary",
+  );
+});
+
+test("the boundary row says what compacted and shows what it became", () => {
+  // The plan's two facts a user must be able to read off the line: which path
+  // supplied the summary, and the summary text itself.
+  assert.match(MARKER_TSX, /STRATEGY_LABELS\[block\.strategy\]/, "strategy is never shown");
+  assert.match(MARKER_TSX, /session_memory: /, "the session-note strategy has no label");
+  assert.match(MARKER_TSX, /查看摘要/, "the summary cannot be opened");
+  assert.match(MARKER_TSX, /\{summary\}/, "the opened block shows nothing but a title");
 });
 
 test("markers render as their own quiet rows, not process steps", () => {
