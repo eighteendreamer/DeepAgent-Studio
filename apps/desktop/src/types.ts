@@ -1270,6 +1270,8 @@ export interface KnowledgeHit {
   scope: string;
   score: number;
   excerpt: string;
+  /** Entry last-update time (Unix ms); the kernel adds the staleness caveat. */
+  updated_at?: number;
 }
 
 /** A draft to create/update a knowledge entry (mirrors KnowledgeDraftDto). */

@@ -187,10 +187,18 @@ pub trait RelevantMemoryProvider: Send + Sync {
     /// Retrieve memories relevant to `query`, excluding ids in
     /// `already_surfaced`. Best-first, already length/score filtered by the
     /// implementation. An empty result means nothing relevant (not an error).
+    ///
+    /// `recent_tools` are the tool names the run has been calling lately. The
+    /// implementation uses them to suppress *usage reference* material the model
+    /// is already demonstrating in the transcript, while still returning the
+    /// pitfalls and warnings about those same tools — the distinction Claude Code
+    /// spells out in its memory-selection prompt, and the reason a keyword match
+    /// alone produces false positives.
     async fn fetch_relevant(
         &self,
         query: &str,
         already_surfaced: &[String],
+        recent_tools: &[String],
     ) -> Result<Vec<RelevantMemory>>;
 }
 
@@ -1204,10 +1212,34 @@ impl ModelAgent {
         }
         self.last_prefetch_query = Some(query.clone());
         let already: Vec<String> = self.surfaced_memory_ids.iter().cloned().collect();
+        // Tool names the run has actually been calling. The provider uses them to
+        // drop usage-reference entries the transcript already demonstrates, while
+        // keeping the pitfalls about those tools (which matter most while using
+        // them).
+        let recent_tools = self.recent_tool_names();
         self.memory_prefetch_started_at = Some(std::time::Instant::now());
         self.memory_prefetch_handle = Some(tokio::spawn(async move {
-            provider.fetch_relevant(&query, &already).await
+            provider
+                .fetch_relevant(&query, &already, &recent_tools)
+                .await
         }));
+    }
+
+    /// Distinct tool names observed most recently, oldest first, capped so the
+    /// retrieval hint stays cheap. Deduped because a loop over one tool would
+    /// otherwise repeat it up to the failure window.
+    fn recent_tool_names(&self) -> Vec<String> {
+        const MAX_RECENT_TOOLS: usize = 8;
+        let mut names: Vec<String> = Vec::new();
+        for (name, _ok) in &self.recent_tool_results {
+            if !names.iter().any(|seen| seen == name) {
+                names.push(name.clone());
+            }
+        }
+        if names.len() > MAX_RECENT_TOOLS {
+            names.truncate(MAX_RECENT_TOOLS);
+        }
+        names
     }
 
     /// Non-blocking: if the background relevant-memory prefetch has settled,
@@ -3762,6 +3794,7 @@ mod tests {
             &self,
             _query: &str,
             already_surfaced: &[String],
+            _recent_tools: &[String],
         ) -> Result<Vec<RelevantMemory>> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             // Honor the dedup contract: never return an already-surfaced id.
@@ -3928,6 +3961,54 @@ mod tests {
             agent.drain_memory_injections().is_empty(),
             "no injection means nothing to persist"
         );
+    }
+
+    #[test]
+    fn recent_tool_names_are_deduped_in_first_seen_order() {
+        // The anti-noise hint must name each tool the run used, once. A retry
+        // loop on one tool would otherwise repeat it up to the failure window and
+        // make the retrieval hint look like a broad tool list.
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed("ok")])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(transport, ModelConfig::deepseek("test")));
+        let mut agent = ModelAgent::new(client, "model", "system", "q", vec![]);
+        for (name, ok) in [
+            ("read_file", true),
+            ("read_file", false),
+            ("web_search", true),
+            ("bash", true),
+        ] {
+            agent.recent_tool_results.push_back((name.to_string(), ok));
+        }
+        assert_eq!(
+            agent.recent_tool_names(),
+            vec![
+                "read_file".to_string(),
+                "web_search".to_string(),
+                "bash".to_string()
+            ]
+        );
+        // Failed calls still count: the tool is being exercised either way.
+        let mut empty = ModelAgent::new(
+            Arc::new(ModelClient::new(
+                Arc::new(AttemptTransport {
+                    attempts: Mutex::new(VecDeque::new()),
+                    requests: Mutex::new(Vec::new()),
+                }),
+                ModelConfig::deepseek("test"),
+            )),
+            "model",
+            "system",
+            "q",
+            vec![],
+        );
+        assert!(empty.recent_tool_names().is_empty());
+        empty
+            .recent_tool_results
+            .push_back(("todo_write".to_string(), true));
+        assert_eq!(empty.recent_tool_names(), vec!["todo_write".to_string()]);
     }
 
     #[tokio::test]

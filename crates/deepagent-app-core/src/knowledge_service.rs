@@ -84,6 +84,10 @@ pub struct KnowledgeHitDto {
     pub score: f32,
     /// Matching excerpt.
     pub excerpt: String,
+    /// Entry last-update time (Unix ms), carried so the injection path can add
+    /// the shared staleness caveat without re-reading the vault.
+    #[serde(default)]
+    pub updated_at: i64,
 }
 
 /// A draft to create or update an entry (from the UI or a tool).
@@ -231,6 +235,7 @@ impl KnowledgeService {
                 scope: hit.entry.scope.label().to_string(),
                 score: hit.score,
                 excerpt: hit.excerpt,
+                updated_at: hit.entry.updated_at,
             })
             .collect()
     }
@@ -714,6 +719,34 @@ const RELEVANT_MEMORY_MIN_SCORE: f32 = 0.35;
 /// How many entries to surface per background prefetch round.
 const RELEVANT_MEMORY_LIMIT: usize = 3;
 
+/// Entry kinds that document *how to use* something rather than what went
+/// wrong. These are the ones worth suppressing while the model is already
+/// exercising the tool, because the transcript contains working usage.
+const REFERENCE_DOC_KINDS: [&str; 3] = ["command", "config", "note"];
+
+/// True when `hit` is reference material for a tool the run is actively using.
+///
+/// Local design, same intent as Claude Code's selection rule ("do not select
+/// memories that are usage reference or API documentation for those tools —
+/// they are already being exercised. DO still select warnings, gotchas or known
+/// issues about those tools"). Ours is deterministic: the vault has no per-entry
+/// tool tag, so a hit counts as reference material when its kind is a
+/// how-to kind *and* its title/excerpt names a recently-used tool. Pitfalls,
+/// solutions and memories are never dropped here — active use is exactly when
+/// those matter, and keyword overlap alone is what makes an unguarded match
+/// wrong (a query mentioning "search" otherwise pulls in `web_search` docs).
+fn is_reference_doc_for_active_tool(hit: &KnowledgeHitDto, recent_tools: &[String]) -> bool {
+    if recent_tools.is_empty() || !REFERENCE_DOC_KINDS.contains(&hit.kind.as_str()) {
+        return false;
+    }
+    let haystack = format!("{} {} {}", hit.title, hit.scope, hit.excerpt).to_lowercase();
+    recent_tools.iter().any(|tool| {
+        let lowered = tool.to_lowercase();
+        !lowered.is_empty()
+            && (haystack.contains(&lowered) || haystack.contains(&lowered.replace('_', " ")))
+    })
+}
+
 /// Adapts [`KnowledgeService`] to the runtime's background relevant-memory
 /// prefetch (§3.2). Reuses the existing retrieval stack; the runtime drives it
 /// off the critical path and injects settled results as a `<system-reminder>`.
@@ -734,25 +767,36 @@ impl deepagent_runtime::RelevantMemoryProvider for KnowledgeMemoryProvider {
         &self,
         query: &str,
         already_surfaced: &[String],
+        recent_tools: &[String],
     ) -> Result<Vec<deepagent_runtime::RelevantMemory>> {
         // Pull extra candidates so the surfaced-id filter still fills the limit.
         let hits = self
             .service
             .search(query, None, RELEVANT_MEMORY_LIMIT + already_surfaced.len());
+        let now_ms = SystemClock.now().as_millis();
         let out = hits
             .into_iter()
             .filter(|hit| hit.score >= RELEVANT_MEMORY_MIN_SCORE)
             .filter(|hit| !already_surfaced.contains(&hit.id))
+            .filter(|hit| !is_reference_doc_for_active_tool(hit, recent_tools))
             .take(RELEVANT_MEMORY_LIMIT)
-            .map(|hit| deepagent_runtime::RelevantMemory {
-                block: format!(
+            .map(|hit| {
+                let mut block = format!(
                     "[source: {} ({}) · {}]\n{}",
                     hit.title,
                     hit.scope,
                     hit.kind,
                     hit.excerpt.trim()
-                ),
-                id: hit.id,
+                );
+                // Same rule as the passive knowledge block: an entry older than
+                // one day carries a verify-first caveat, because a stale
+                // file:line claim reads more authoritative, not less.
+                let note = deepagent_knowledge::entry::staleness_note(hit.updated_at, now_ms);
+                if !note.is_empty() {
+                    block.push('\n');
+                    block.push_str(&note);
+                }
+                deepagent_runtime::RelevantMemory { block, id: hit.id }
             })
             .collect();
         Ok(out)
@@ -1233,7 +1277,7 @@ mod tests {
 
         let provider = KnowledgeMemoryProvider::new(svc.clone());
         let hits = provider
-            .fetch_relevant("sandboxie stdout output not showing", &[])
+            .fetch_relevant("sandboxie stdout output not showing", &[], &[])
             .await
             .unwrap();
         assert!(
@@ -1249,9 +1293,69 @@ mod tests {
             .fetch_relevant(
                 "sandboxie stdout output not showing",
                 std::slice::from_ref(&saved.id),
+                &[],
             )
             .await
             .unwrap();
         assert!(again.iter().all(|m| m.id != saved.id));
+    }
+
+    #[tokio::test]
+    async fn reference_docs_for_a_tool_in_use_are_dropped_but_its_pitfalls_are_kept() {
+        use deepagent_runtime::RelevantMemoryProvider;
+
+        // Scenario: the run is actively calling `web_search`. Surfacing its
+        // how-to note is noise (the transcript already shows working usage) and
+        // it eats the 3-slot injection budget, while a gotcha about the same
+        // tool is exactly what active use needs. A keyword match alone cannot
+        // tell these apart, so the kind is the discriminator.
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = Arc::new(service(tmp.path()));
+        let how_to = svc
+            .save(draft(
+                "web_search usage reference",
+                "Call web_search with a query string and optional allowed_domains.",
+                "command",
+                "global",
+            ))
+            .unwrap();
+        let gotcha = svc
+            .save(draft(
+                "web_search returns stale results",
+                "web_search results can lag the index by weeks; verify before citing.",
+                "pitfall",
+                "global",
+            ))
+            .unwrap();
+
+        let provider = KnowledgeMemoryProvider::new(svc.clone());
+        // Without the hint both surface (the query names the tool).
+        let baseline = provider
+            .fetch_relevant("web_search results and usage", &[], &[])
+            .await
+            .unwrap();
+        let baseline_ids: Vec<&str> = baseline.iter().map(|m| m.id.as_str()).collect();
+        assert!(
+            baseline_ids.contains(&how_to.id.as_str()),
+            "reference doc is injectable when the tool is not in use: {baseline_ids:?}"
+        );
+
+        let with_hint = provider
+            .fetch_relevant(
+                "web_search results and usage",
+                &[],
+                &["web_search".to_string()],
+            )
+            .await
+            .unwrap();
+        let kept: Vec<&str> = with_hint.iter().map(|m| m.id.as_str()).collect();
+        assert!(
+            !kept.contains(&how_to.id.as_str()),
+            "usage reference for an actively used tool must be suppressed: {kept:?}"
+        );
+        assert!(
+            kept.contains(&gotcha.id.as_str()),
+            "the pitfall about the same tool must still surface: {kept:?}"
+        );
     }
 }

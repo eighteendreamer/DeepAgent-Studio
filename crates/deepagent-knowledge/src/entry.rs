@@ -268,6 +268,50 @@ impl KnowledgeEntry {
     }
 }
 
+/// Days elapsed since `updated_at_ms`, floor-rounded (0 today, 1 yesterday).
+/// Negative inputs (clock skew, future mtime) clamp to 0.
+pub fn memory_age_days(updated_at_ms: i64, now_ms: i64) -> i64 {
+    ((now_ms - updated_at_ms).max(0)) / 86_400_000
+}
+
+/// Staleness caveat for an injected memory/knowledge entry. Returns an empty
+/// string for entries ≤1 day old — warning there is noise.
+///
+/// Mirrors the reason Claude Code carries this: memories are point-in-time
+/// observations, and one carrying a `file:line` claim reads *more* authoritative
+/// when it is stale, not less. Phrased as "N 天" rather than an ISO timestamp on
+/// purpose: models do not do date arithmetic, so a raw timestamp fails to
+/// trigger the verify-before-asserting behavior the note exists to cause.
+///
+/// Single implementation shared by the passive knowledge block and the
+/// background `relevant memories` injection so the two can never disagree.
+pub fn staleness_note(updated_at_ms: i64, now_ms: i64) -> String {
+    let days = memory_age_days(updated_at_ms, now_ms);
+    if days <= 1 {
+        return String::new();
+    }
+    format!(
+        "本条记录已 {days} 天。记忆是时点观测，不是实时状态：其中关于代码行为、\
+         文件位置或行号的断言可能已过期，断言前先核对当前代码。"
+    )
+}
+
+/// The oldest age among `updated_at_ms` values, as a caveat string prefixed for
+/// a block that injects several entries at once. Empty when all are fresh.
+pub fn block_staleness_note(updated_at_ms: &[i64], now_ms: i64) -> String {
+    let Some(oldest) = updated_at_ms.iter().min().copied() else {
+        return String::new();
+    };
+    let days = memory_age_days(oldest, now_ms);
+    if days <= 1 {
+        return String::new();
+    }
+    format!(
+        "以上记录中最旧的一条已 {days} 天。记忆是时点观测，不是实时状态：其中关于代码\
+         行为、文件位置或行号的断言可能已过期，断言前先核对当前代码。"
+    )
+}
+
 /// Turn a slug id back into a human-ish title (`my-note` -> `my note`).
 fn title_from_id(id: &str) -> String {
     let t = id.replace(['-', '_'], " ");
@@ -469,5 +513,39 @@ mod tests {
         let raw = "---\ntitle: Legacy\nkind: note\n---\nbody";
         let entry = KnowledgeEntry::from_markdown("legacy", Scope::Project, raw);
         assert_eq!(entry.status, EntryStatus::Active);
+    }
+
+    #[test]
+    fn staleness_note_only_fires_past_one_day() {
+        let day = 86_400_000;
+        let now = 1_730_000_000_000;
+        assert_eq!(memory_age_days(now, now), 0);
+        assert_eq!(memory_age_days(now - day + 1, now), 0);
+        assert_eq!(memory_age_days(now - day, now), 1);
+        assert_eq!(memory_age_days(now - 47 * day, now), 47);
+        // Clock skew / future mtime must not produce a negative age.
+        assert_eq!(memory_age_days(now + day, now), 0);
+
+        assert!(staleness_note(now - day, now).is_empty(), "1 day is noise");
+        assert!(staleness_note(now, now).is_empty());
+        let two = staleness_note(now - 2 * day, now);
+        assert!(
+            two.contains("2 天") && two.contains("断言前先核对当前代码"),
+            "{two}"
+        );
+        assert!(staleness_note(now - 47 * day, now).contains("47 天"));
+    }
+
+    #[test]
+    fn block_note_reports_the_oldest_entry_and_stays_quiet_when_fresh() {
+        let day = 86_400_000;
+        let now = 1_730_000_000_000;
+        assert!(block_staleness_note(&[now, now - day], now).is_empty());
+        let note = block_staleness_note(&[now - 3 * day, now - 40 * day, now], now);
+        assert!(
+            note.contains("最旧的一条已 40 天"),
+            "one caveat per block, sized by the oldest entry: {note}"
+        );
+        assert_eq!(block_staleness_note(&[], now), "");
     }
 }

@@ -243,6 +243,8 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         }
 
         let mut out = String::from("# 相关知识 (knowledge base, retrieved)\n");
+        // Age caveat computed before `chosen` is consumed by the loop.
+        let ages: Vec<i64> = chosen.iter().map(|hit| hit.entry.updated_at).collect();
         for hit in chosen {
             out.push_str(&format!(
                 "\n[source: {} ({}) · {}]\n{}\n",
@@ -251,6 +253,17 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
                 hit.entry.kind.label(),
                 hit.excerpt.trim()
             ));
+        }
+        // One shared staleness rule for every injection path (see entry.rs).
+        let now_ms = {
+            use deepagent_core::clock::Clock as _;
+            deepagent_core::clock::SystemClock.now().as_millis()
+        };
+        let note = crate::entry::block_staleness_note(&ages, now_ms);
+        if !note.is_empty() {
+            out.push('\n');
+            out.push_str(&note);
+            out.push('\n');
         }
         out.trim_end().to_string()
     }
@@ -596,6 +609,64 @@ mod tests {
         let only_cmd = kb.search("git status", Some(EntryKind::Command), 5);
         assert_eq!(only_cmd.len(), 1);
         assert_eq!(only_cmd[0].entry.kind, EntryKind::Command);
+    }
+
+    fn real_now_ms() -> i64 {
+        use deepagent_core::clock::Clock as _;
+        deepagent_core::clock::SystemClock.now().as_millis()
+    }
+
+    #[test]
+    fn passive_block_carries_the_staleness_caveat_for_old_entries() {
+        // A memory about code state is a point-in-time observation. Without the
+        // caveat the model asserts it as fact — the failure Claude Code documented
+        // after users reported stale file:line claims being trusted *more*
+        // because they looked precise.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut kb = base(tmp.path());
+        let forty_seven_days = 47 * 86_400_000;
+        kb.write(
+            draft(
+                "Build gate",
+                "cargo test hangs without --offline behind the proxy",
+                EntryKind::Pitfall,
+                Scope::Project,
+            ),
+            real_now_ms() - forty_seven_days,
+        )
+        .unwrap();
+
+        let block = kb.passive_block("cargo test hangs offline proxy");
+        assert!(block.contains("cargo test hangs"), "{block}");
+        assert!(
+            block.contains("47 天") && block.contains("断言前先核对当前代码"),
+            "stale entry must carry the caveat with a relative age: {block}"
+        );
+        assert!(
+            !block.contains("1970") && !block.contains("2026-"),
+            "the caveat uses a relative day count, not an absolute timestamp: {block}"
+        );
+    }
+
+    #[test]
+    fn passive_block_omits_the_caveat_for_fresh_entries() {
+        // ≤1 day is noise, not information.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut kb = base(tmp.path());
+        kb.write(
+            draft(
+                "Build gate",
+                "cargo test hangs without --offline behind the proxy",
+                EntryKind::Pitfall,
+                Scope::Project,
+            ),
+            real_now_ms() - 3_600_000,
+        )
+        .unwrap();
+
+        let block = kb.passive_block("cargo test hangs offline proxy");
+        assert!(block.contains("cargo test hangs"), "{block}");
+        assert!(!block.contains("断言前先核对当前代码"), "{block}");
     }
 
     #[test]
