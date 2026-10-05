@@ -587,15 +587,13 @@ impl SessionMemoryExtractor {
             return Ok(ExtractionOutcome::skipped("gate_wait"));
         }
 
-        let note_path = store.memory_path(session_id);
-        let note = ensure_note(&note_path)?;
         // Fold in only what the note does not cover yet. Re-sending the whole
         // visible history would make every pass cost a full context window and
         // would invite the model to rewrite rather than append.
         let covered_through = state
             .as_ref()
             .and_then(|state| state.last_summarized_sequence);
-        let transcript = history
+        let uncovered: Vec<&Message> = history
             .iter()
             .filter(|message| match covered_through {
                 // A message that cannot be mapped back to an event is not provably
@@ -604,9 +602,24 @@ impl SessionMemoryExtractor {
                 Some(sequence) => crate::input_runtime::sequence_of_message(events, message)
                     .map_or(true, |message_sequence| message_sequence > sequence),
             })
+            .collect();
+        if uncovered.is_empty() {
+            // The gate measures context growth, which is not the same thing as
+            // new content: after a rewind the note's cut point can sit at or past
+            // the end of the surviving stream, and a long single turn can be
+            // folded in while nothing follows it. A pass over an empty transcript
+            // would still pay for a read, an edit attempt and an answer, so it
+            // stops here, before the note is even created.
+            return Ok(ExtractionOutcome::skipped("nothing_uncovered"));
+        }
+        let transcript = uncovered
+            .iter()
             .map(|message| format!("{:?}: {}", message.role, message.content))
             .collect::<Vec<_>>()
             .join("\n");
+
+        let note_path = store.memory_path(session_id);
+        let note = ensure_note(&note_path)?;
         let prompt = build_extraction_prompt(&note_path, &note, &transcript);
 
         let permissions = PermissionSet::developer();
@@ -1077,6 +1090,66 @@ mod tests {
         assert!(
             passes.try_begin(first).is_some(),
             "the slot is free again once the pass ends"
+        );
+    }
+
+    /// The gate measures context growth, not new content. A note that already
+    /// covers everything — the shape left behind by a rewind, or by a pass whose
+    /// cut point sits past the surviving stream — must not buy a round trip, and
+    /// must not even create the note file.
+    #[tokio::test]
+    async fn nothing_uncovered_buys_no_model_call_and_no_note() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SessionMemoryStore::new(db.clone());
+        let session = SessionId::new();
+        store
+            .save(
+                session,
+                &SessionMemoryState {
+                    summary: "- already folded".to_string(),
+                    last_summarized_sequence: Some(9),
+                    tool_cursor_sequence: Some(9),
+                    tokens_at_last_extraction: 12_000,
+                    initialized: true,
+                    updated_at: 1,
+                },
+            )
+            .unwrap();
+
+        // Eight thousand tokens of growth, so the token condition is satisfied:
+        // only the empty uncovered window can stop this pass.
+        let events = vec![message_event(1, "decide the storage layout")];
+        let outcome = SessionMemoryExtractor::new(
+            db.clone(),
+            testing::unreachable_client(),
+            "model".to_string(),
+        )
+        .with_gate(ExtractionGate {
+            init_tokens: 1,
+            ..Default::default()
+        })
+        .run_if_due(
+            session,
+            &[Message::user("decide the storage layout")],
+            &events,
+            20_000,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !outcome.extracted,
+            "nothing was left to fold in: {outcome:?}"
+        );
+        assert_eq!(outcome.reason, "nothing_uncovered");
+        assert!(
+            outcome.usage.is_none(),
+            "no model call means nothing to bill: {outcome:?}"
+        );
+        assert!(
+            !store.memory_path(session).exists(),
+            "a pass that never started must not leave a note behind"
         );
     }
 
