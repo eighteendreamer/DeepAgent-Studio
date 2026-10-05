@@ -688,6 +688,66 @@ mod tests {
         assert_eq!(vault.scan().unwrap()[0].body, "second");
     }
 
+    /// "Reversible" has to mean more than "the bytes are still somewhere". Move a
+    /// superseded entry back and it must scan as a live entry again, which is the
+    /// whole reason consolidation archives instead of deleting.
+    #[test]
+    fn an_archived_entry_can_be_restored_and_scans_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Vault::new(tmp.path().join("k"), Scope::Project);
+        vault
+            .write(&entry("keep", "Keep", "surviving lesson"))
+            .unwrap();
+        vault
+            .write(&entry("dupe", "Dupe", "archived lesson"))
+            .unwrap();
+        assert!(vault.archive("dupe").unwrap());
+        assert_eq!(
+            vault.scan().unwrap().len(),
+            1,
+            "archived entry leaves the index"
+        );
+
+        let archived = tmp.path().join("k").join(".superseded").join("dupe.md");
+        assert!(archived.is_file(), "the entry is still on disk");
+        std::fs::rename(&archived, vault.resolve("dupe").unwrap()).unwrap();
+        let restored: Vec<String> = vault
+            .scan()
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.id)
+            .collect();
+        assert_eq!(restored, vec!["dupe".to_string(), "keep".to_string()]);
+    }
+
+    /// The shape the lock actually exists for: two hosts (desktop app and headless
+    /// CLI) open the same vault directory. A second instance must be refused while
+    /// the first holds the vault, and must get in afterwards.
+    #[test]
+    fn a_second_vault_instance_on_the_same_directory_is_locked_out() {
+        let tmp = tempfile::tempdir().unwrap();
+        let held = Vault::new(tmp.path().join("k"), Scope::Project);
+        let other = Vault::new(tmp.path().join("k"), Scope::Project);
+
+        let guard = held.lock().unwrap();
+        let error = other
+            .write(&entry("note-1", "Note one", "from the other host"))
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("another writer"),
+            "the second host must be told to back off, not interleave: {error}"
+        );
+        drop(guard);
+        other
+            .write(&entry("note-1", "Note one", "from the other host"))
+            .unwrap();
+        assert_eq!(
+            held.scan().unwrap()[0].body,
+            "from the other host",
+            "the write lands once the lock is released"
+        );
+    }
+
     /// An abandoned handle must not strand the vault. Closing the handle with no
     /// explicit unlock is how a killed process disappears, and the OS releases
     /// the lock for it — which is why there is no PID file to reclaim here.

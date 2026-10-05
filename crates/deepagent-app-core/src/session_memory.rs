@@ -1099,6 +1099,30 @@ mod tests {
         );
     }
 
+    /// The drain is on the exit path of a one-shot process, so a pass that dies
+    /// must not strand it: the guard releases its slot while unwinding.
+    #[tokio::test]
+    async fn wait_idle_is_not_stranded_by_a_panicking_pass() {
+        let passes = SessionMemoryPasses::default();
+        let guard = passes
+            .try_begin(SessionId::new())
+            .expect("first pass claims the slot");
+        let panicker = tokio::spawn(async move {
+            let _guard = guard;
+            panic!("the extraction task died");
+        });
+        assert!(
+            passes
+                .wait_idle(std::time::Duration::from_millis(2_000))
+                .await,
+            "a crashed pass must not hold the drain open"
+        );
+        assert!(
+            panicker.await.is_err(),
+            "the task really did panic, otherwise this proves nothing"
+        );
+    }
+
     #[tokio::test]
     async fn wait_idle_wakes_when_a_background_pass_finishes() {
         let passes = SessionMemoryPasses::default();
