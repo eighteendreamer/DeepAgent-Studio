@@ -12,6 +12,8 @@ Usage:
   python scripts/inspect_db.py --path X.db    # a specific DB file
   python scripts/inspect_db.py --events SID   # full event stream for a session
   python scripts/inspect_db.py --sql "SELECT ..."   # run a read-only query
+  python scripts/inspect_db.py --memory-rollback    # statements that restore
+                                                    # migrated memory rows
 
 The API key is NOT in this DB (it lives in the OS keychain), so nothing secret
 is printed here.
@@ -168,11 +170,79 @@ def run_sql(conn, sql):
         print("\t".join("" if v is None else str(v) for v in r))
 
 
+LEDGER = "memory_items_migration_ledger"
+LEGACY_COLLECTION = "memory_items"
+REQUIRED = {
+    LEDGER: {"item_id", "vault_path", "source_body"},
+    "documents": {"id", "collection", "body"},
+}
+
+
+def columns(conn, table):
+    return {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def memory_rollback(conn):
+    """Print the statements that put migrated memory rows back into `documents`.
+
+    Read-only by design: the plan keeps the original JSON in the migration
+    ledger instead of shipping an automatic reverse migration, so recovery is an
+    operator action on a copy of the DB. Expected columns are checked up front --
+    a schema change must fail loudly here rather than emit wrong SQL.
+    """
+    tables = {
+        r[0]
+        for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if LEDGER not in tables:
+        print(f"\nNo {LEDGER} table: this DB predates the memory migration.")
+        return
+
+    for table, needed in REQUIRED.items():
+        if table not in tables:
+            sys.exit(f"expected table {table} is missing; cannot roll back safely")
+        missing = needed - columns(conn, table)
+        if missing:
+            sys.exit(
+                f"{table} is missing {sorted(missing)}; the ledger layout changed, "
+                "update this script before trusting its output"
+            )
+
+    rows = conn.execute(
+        f"SELECT item_id, vault_path, source_body FROM {LEDGER} ORDER BY item_id"
+    ).fetchall()
+    still = conn.execute(
+        "SELECT count(*) FROM documents WHERE collection=?", (LEGACY_COLLECTION,)
+    ).fetchone()[0]
+    print(f"\n=== MEMORY ROLLBACK ({len(rows)} ledger rows) ===")
+    print(f"  rows still in the legacy collection: {still}")
+    print("  this script never writes; apply the statements below to a COPY of the DB")
+    for item_id, vault_entry, source_body in rows:
+        if vault_entry is None:
+            print(f"  {item_id}: attempt failed, the original row was never deleted")
+            continue
+        body = source_body.replace("'", "''")
+        print(f"-- {item_id} -> vault entry {vault_entry} (delete it to undo the move)")
+        print(
+            "INSERT OR IGNORE INTO documents (id, collection, body, created_at, updated_at)\n"
+            f"  VALUES ('{item_id}', '{LEGACY_COLLECTION}', '{body}',\n"
+            "          CAST(strftime('%s','now') AS INTEGER) * 1000,\n"
+            "          CAST(strftime('%s','now') AS INTEGER) * 1000);"
+        )
+
+
 def main():
     ap = argparse.ArgumentParser(description="Inspect the DeepAgent Studio DB")
     ap.add_argument("--path", help="explicit DB path")
     ap.add_argument("--events", metavar="SESSION_ID", help="dump a session's events")
     ap.add_argument("--sql", help="run a read-only SQL query")
+    ap.add_argument(
+        "--memory-rollback",
+        action="store_true",
+        help="print the statements that restore migrated memory rows",
+    )
     args = ap.parse_args()
 
     db = locate_db(args.path)
@@ -184,6 +254,8 @@ def main():
         run_sql(conn, args.sql)
     elif args.events:
         dump_events(conn, args.events)
+    elif args.memory_rollback:
+        memory_rollback(conn)
     else:
         summarize(conn)
 
