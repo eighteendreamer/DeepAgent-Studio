@@ -34,6 +34,10 @@ pub(crate) struct AppRunFinalizerRequest<'a> {
     pub(crate) discovered_before_run: &'a HashSet<String>,
     pub(crate) discovered_tools: &'a DiscoveredToolSet,
     pub(crate) usage: Option<RunUsage>,
+    /// Tokens of model calls the run loop did not make itself (compaction
+    /// summaries). Booked as its own ledger row, never folded into `usage`, so
+    /// the per-turn token display keeps describing only the sampling loop.
+    pub(crate) side_usage: Option<RunUsage>,
     pub(crate) model_name: &'a str,
     pub(crate) sink: &'a dyn RuntimeEventSink,
     pub(crate) run_succeeded: bool,
@@ -119,6 +123,17 @@ impl AppRunFinalizer {
             request.usage,
             request.sink,
         );
+        if let (Some(cost), Some(side)) = (&self.cost, request.side_usage) {
+            // Compaction spend is booked as its own row, never folded into the
+            // turn's usage (that would move the numbers the panel shows).
+            record_usage_cost(
+                cost,
+                request.session_id,
+                request.model_name,
+                side,
+                request.sink,
+            );
+        }
         self.clear_run_cancellation(request.session_id, request.run_id);
         self.spawn_session_memory(
             request.run_succeeded,
@@ -416,6 +431,7 @@ mod tests {
                     discovered_before_run: &before,
                     discovered_tools: &discovered,
                     usage: None,
+                    side_usage: None,
                     model_name: "model",
                     sink: &NullEventSink,
                     run_succeeded: false,
@@ -470,6 +486,61 @@ mod tests {
             })
             .unwrap();
         session.id()
+    }
+
+    #[test]
+    fn compaction_side_usage_is_booked_as_its_own_row() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let cost = Arc::new(CostService::new(db.clone()));
+        let clock = SystemClock;
+        let mut session = Session::create(&db, &clock, Some("rows")).unwrap();
+        let session_id = session.id().to_string();
+        let finalizer = AppRunFinalizer::new(
+            db.clone(),
+            Some(cost.clone()),
+            None,
+            Arc::new(Mutex::new(HashMap::new())),
+            SessionMemoryPasses::default(),
+        );
+        let empty: DiscoveredToolSet = Arc::new(Mutex::new(HashSet::new()));
+        let before = HashSet::new();
+
+        finalizer
+            .finalize_after_kernel(
+                &mut session,
+                AppRunFinalizerRequest {
+                    session_id: &session_id,
+                    run_id: "run_rows",
+                    discovered_before_run: &before,
+                    discovered_tools: &empty,
+                    usage: Some(RunUsage {
+                        prompt_tokens: 500,
+                        completion_tokens: 50,
+                        total_tokens: 550,
+                        ..Default::default()
+                    }),
+                    side_usage: Some(RunUsage {
+                        prompt_tokens: 900,
+                        completion_tokens: 60,
+                        total_tokens: 960,
+                        prompt_cache_hit_tokens: 700,
+                        ..Default::default()
+                    }),
+                    model_name: "deepseek-chat",
+                    sink: &NullEventSink,
+                    run_succeeded: false,
+                    capture_client: None,
+                    capture_model: None,
+                },
+            )
+            .unwrap();
+
+        // Two rows, not one merged figure: the turn's own tokens and the
+        // compaction tokens both reach the ledger.
+        let summary = cost.summary(&session_id).unwrap();
+        assert_eq!(summary.input_tokens, 1400);
+        assert_eq!(summary.output_tokens, 110);
+        assert_eq!(summary.cache_hit_tokens, 700);
     }
 
     #[tokio::test]

@@ -107,15 +107,21 @@ impl HookedReactiveContextCompactor {
     /// structured block via the model compactor, appending the working-set
     /// re-injection (modified files, failed checks, invoked skills). Shared by
     /// the synchronous stage-2 compaction and the prefire pass-1.
-    async fn summarize_response_item_zone(&self, zone: &[ResponseInputItem]) -> String {
+    ///
+    /// Returns the block plus what the summary call cost: the run loop never
+    /// sees that request, so this is the only place its tokens can be captured.
+    async fn summarize_response_item_zone(
+        &self,
+        zone: &[ResponseInputItem],
+    ) -> (String, deepagent_models::Usage) {
         let rendered = zone
             .iter()
             .map(render_response_item_for_compaction)
             .collect::<Vec<_>>();
         let goal = latest_user_content_from_response_items(zone).unwrap_or_default();
-        let summary =
+        let (summary, usage) =
             deepagent_context::ModelCompactor::new(self.client.clone(), self.model.clone())
-                .summarize(&goal, &deepagent_context::TaskSummary::default(), &rendered)
+                .summarize_accounted(&goal, &deepagent_context::TaskSummary::default(), &rendered)
                 .await;
         let mut summary_block = summary.to_context_block();
         // Post-compaction re-injection (Phase E): modified files, failed checks
@@ -125,10 +131,10 @@ impl HookedReactiveContextCompactor {
             summary_block.push_str("\n\n");
             summary_block.push_str(&reinjection);
         }
-        summary_block
+        (summary_block, usage)
     }
 
-    async fn summarize_zone(&self, zone: &[Message]) -> String {
+    async fn summarize_zone(&self, zone: &[Message]) -> (String, deepagent_models::Usage) {
         let (_, items) = deepagent_models::response_items_from_messages(zone);
         self.summarize_response_item_zone(&items).await
     }
@@ -258,12 +264,15 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                     tokens_before,
                     tokens_after,
                     summary: boundary,
+                    // Micro-compaction drops stale tool results locally; no model
+                    // call, so nothing to bill.
+                    usage: deepagent_models::Usage::default(),
                 }));
             }
         }
 
         // Stage 2 — full structured summary of the compacted zone.
-        let summary_block = self.summarize_zone(&body[..split]).await;
+        let (summary_block, summary_usage) = self.summarize_zone(&body[..split]).await;
 
         let mut compacted = Vec::with_capacity(system_end + 1 + body.len() - split);
         compacted.extend_from_slice(&messages[..system_end]);
@@ -302,6 +311,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             tokens_before,
             tokens_after,
             summary: summary_block,
+            usage: summary_usage,
         }))
     }
 
@@ -391,11 +401,13 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                     tokens_before,
                     tokens_after,
                     summary: boundary,
+                    usage: deepagent_models::Usage::default(),
                 }));
             }
         }
 
-        let summary_block = self.summarize_response_item_zone(&items[..split]).await;
+        let (summary_block, summary_usage) =
+            self.summarize_response_item_zone(&items[..split]).await;
 
         let mut compacted_items = Vec::with_capacity(1 + items.len() - split);
         compacted_items.push(ResponseInputItem::Message {
@@ -441,6 +453,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             tokens_before,
             tokens_after,
             summary: summary_block,
+            usage: summary_usage,
         }))
     }
 
@@ -459,11 +472,12 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             return Ok(None);
         };
         let prefix_end = system_end + split;
-        let summary_block = self.summarize_zone(&body[..split]).await;
+        let (summary_block, summary_usage) = self.summarize_zone(&body[..split]).await;
         Ok(Some(PrefireNote {
             note: summary_block,
             prefix_end,
             fingerprint: fingerprint_prefix(&messages[..prefix_end]),
+            usage: summary_usage,
         }))
     }
 
@@ -479,11 +493,13 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         else {
             return Ok(None);
         };
-        let summary_block = self.summarize_response_item_zone(&items[..split]).await;
+        let (summary_block, summary_usage) =
+            self.summarize_response_item_zone(&items[..split]).await;
         Ok(Some(PrefireNote {
             note: summary_block,
             prefix_end: split,
             fingerprint: fingerprint_response_item_prefix(&items[..split]),
+            usage: summary_usage,
         }))
     }
 
@@ -567,6 +583,9 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             tokens_before,
             tokens_after,
             summary: note.note.clone(),
+            // Pass-1 paid for this text; carry the charge to the boundary that
+            // uses it.
+            usage: note.usage,
         }))
     }
 
@@ -650,6 +669,9 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             tokens_before,
             tokens_after,
             summary: note.note.clone(),
+            // Pass-1 paid for this text; carry the charge to the boundary that
+            // uses it.
+            usage: note.usage,
         }))
     }
 }

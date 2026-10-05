@@ -42,6 +42,10 @@ pub struct ReactiveCompaction {
     pub tokens_before: u64,
     pub tokens_after: u64,
     pub summary: String,
+    /// What producing this summary cost the provider. A summary call is real
+    /// spend that happens outside the sampling loop, so it has to travel with
+    /// the result; the run folds it into its ledger entry.
+    pub usage: deepagent_models::Usage,
 }
 
 /// Cached result of a background prefire pass-1 (Grok two-pass compaction).
@@ -61,6 +65,9 @@ pub struct PrefireNote {
     /// the current conversation still starts with this exact prefix
     /// (edit/rewind/branch changes it → discard).
     pub fingerprint: u64,
+    /// What pass-1 spent to produce this note. It is spend whether pass-2 uses
+    /// the note or discards it, so the run must bill it either way.
+    pub usage: deepagent_models::Usage,
 }
 
 /// Why a context compaction was requested. Mirrors Claude Code's split
@@ -447,6 +454,11 @@ pub struct ModelAgent {
     /// Whether the idle-triggered micro-compact already ran for the current
     /// idle gap (reset on the next assistant turn).
     microcompacted_for_current_gap: bool,
+    /// Provider usage of the model calls the run loop did not make itself:
+    /// compaction summaries (including background prefire pass-1 notes that were
+    /// later discarded). Kept apart from `usage` so the per-turn numbers the UI
+    /// shows stay the sampling loop's, while the run's cost entry is complete.
+    side_usage: deepagent_models::Usage,
     /// Prefire (Grok two-pass) start line in tokens: below the real
     /// `proactive_compaction_threshold` by the lead margin. When the estimate
     /// crosses this, a background pass-1 is scheduled. `None` disables prefire.
@@ -540,6 +552,7 @@ impl ModelAgent {
             snipped_tags: std::collections::BTreeSet::new(),
             last_assistant_at: None,
             microcompacted_for_current_gap: false,
+            side_usage: deepagent_models::Usage::default(),
             prefire_start_threshold: None,
             prefire_cache: None,
             prefire_handle: None,
@@ -599,6 +612,10 @@ impl ModelAgent {
     }
 
     fn adopt_compacted_history(&mut self, compacted: &ReactiveCompaction) {
+        // Every adoption path (proactive threshold, prefire pass-2, reactive
+        // overflow recovery) funnels here, so this is the one place the
+        // summarizing call's spend can be recorded without missing a route.
+        self.side_usage.absorb(compacted.usage);
         if let Some(items) = compacted.response_items.clone() {
             let instructions = self.response_history.instructions.clone();
             self.messages =
@@ -1050,15 +1067,23 @@ impl ModelAgent {
                     self.adopt_compaction(compacted, "prefire_pass2");
                     return;
                 }
-                Ok(None) => tracing::info!(
-                    step,
-                    "prefire note stale/unusable; falling back to synchronous compaction"
-                ),
-                Err(error) => tracing::warn!(
-                    step,
-                    error = %error,
-                    "prefire apply failed; falling back to synchronous compaction"
-                ),
+                Ok(None) => {
+                    tracing::info!(
+                        step,
+                        "prefire note stale/unusable; falling back to synchronous compaction"
+                    );
+                    // Pass-1 already spent the call; throwing the note away does
+                    // not refund it.
+                    self.side_usage.absorb(note.usage);
+                }
+                Err(error) => {
+                    self.side_usage.absorb(note.usage);
+                    tracing::warn!(
+                        step,
+                        error = %error,
+                        "prefire apply failed; falling back to synchronous compaction"
+                    );
+                }
             }
         }
 
@@ -1086,7 +1111,12 @@ impl ModelAgent {
         self.autocompact_consecutive_failures = 0;
         self.snip_tokens_freed_unreflected = 0;
         self.snip_nudge_baseline_tokens = None;
-        self.prefire_cache = None;
+        // The summary call's own spend is folded inside
+        // `adopt_compacted_history`; a cached pass-1 note displaced by this
+        // adoption is spend too, so it is booked here.
+        if let Some(stale) = self.prefire_cache.take() {
+            self.side_usage.absorb(stale.usage);
+        }
         // The usage-grounded estimate is stale after compaction; seed it with
         // the compactor's post-compact estimate instead.
         self.last_call_context_tokens = compacted.tokens_after;
@@ -1691,6 +1721,20 @@ impl Agent for ModelAgent {
         std::mem::take(&mut self.pending_memory_injections)
     }
 
+    fn side_usage(&self) -> Option<crate::agent::RunUsage> {
+        // Folded-in-so-far spend, plus a prefire note still cached when the run
+        // ended: pass-1 was paid for even though pass-2 never consumed it.
+        let mut total = self.side_usage;
+        if let Some(note) = &self.prefire_cache {
+            total.absorb(note.usage);
+        }
+        if total == deepagent_models::Usage::default() {
+            None
+        } else {
+            Some(crate::agent::RunUsage::from(total))
+        }
+    }
+
     fn cumulative_usage(&self) -> Option<crate::agent::RunUsage> {
         // None when nothing was reported (all zero), so callers can skip the
         // persisted usage event for providers that don't return usage.
@@ -2267,6 +2311,15 @@ mod tests {
                 tokens_before: 100,
                 tokens_after: 20,
                 summary: "prior work".into(),
+                // The summary call the fake compactor would have paid for.
+                usage: deepagent_models::Usage {
+                    prompt_tokens: 900,
+                    completion_tokens: 60,
+                    total_tokens: 960,
+                    prompt_cache_hit_tokens: 700,
+                    prompt_cache_miss_tokens: 200,
+                    ..Default::default()
+                },
             }))
         }
     }
@@ -2898,6 +2951,20 @@ mod tests {
         let requests = transport.requests.lock().unwrap();
         assert!(requests[0]["input"].as_array().unwrap().len() > 3);
         assert_eq!(requests[1]["input"].as_array().unwrap().len(), 2);
+
+        // The summarizing call is spend the sampling loop never reports. It has
+        // to reach the host, but not by inflating the turn's own numbers.
+        let side = agent.side_usage().expect("the compaction call is billed");
+        assert_eq!(side.prompt_tokens, 900);
+        assert_eq!(side.completion_tokens, 60);
+        assert_eq!(side.prompt_cache_hit_tokens, 700);
+        assert_eq!(
+            agent
+                .cumulative_usage()
+                .map_or(0, |usage| usage.prompt_tokens),
+            0,
+            "run usage must not absorb the compaction call"
+        );
     }
 
     #[tokio::test]

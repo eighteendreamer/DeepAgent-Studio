@@ -504,6 +504,23 @@ pub struct Usage {
     pub prompt_cache_miss_tokens: u32,
 }
 
+impl Usage {
+    /// Fold another answered call into `self`.
+    ///
+    /// Provider semantics (and the rule the run loop already follows):
+    /// prompt/total/cache figures are *context totals* of the most recent call,
+    /// so they are replaced; output and reasoning figures are per-call amounts,
+    /// so they add up. Use this wherever several calls must be reported as one.
+    pub fn absorb(&mut self, fresh: Self) {
+        self.prompt_tokens = fresh.prompt_tokens;
+        self.completion_tokens += fresh.completion_tokens;
+        self.reasoning_tokens += fresh.reasoning_tokens;
+        self.total_tokens = fresh.total_tokens;
+        self.prompt_cache_hit_tokens = fresh.prompt_cache_hit_tokens;
+        self.prompt_cache_miss_tokens = fresh.prompt_cache_miss_tokens;
+    }
+}
+
 /// A fully assembled (non-streaming, or post-accumulation) Responses result.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Response {

@@ -178,17 +178,8 @@ impl ModelCompactor {
 }
 
 /// Fold one answered attempt into the running spend.
-///
-/// Same semantics the run loop uses for a whole run: the provider reports
-/// prompt/total/cache as *context totals* (last-wins), while output tokens
-/// accumulate across calls.
 fn fold_usage(spent: &mut Usage, fresh: Usage) {
-    spent.prompt_tokens = fresh.prompt_tokens;
-    spent.completion_tokens += fresh.completion_tokens;
-    spent.reasoning_tokens += fresh.reasoning_tokens;
-    spent.total_tokens = fresh.total_tokens;
-    spent.prompt_cache_hit_tokens = fresh.prompt_cache_hit_tokens;
-    spent.prompt_cache_miss_tokens = fresh.prompt_cache_miss_tokens;
+    spent.absorb(fresh);
 }
 
 /// Build the user message: prior summary (if any) + the older turns to fold in.

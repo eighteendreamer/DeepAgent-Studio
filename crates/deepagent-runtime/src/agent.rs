@@ -196,6 +196,16 @@ pub trait Agent: Send + Sync {
         None
     }
 
+    /// Usage of model calls the loop did not make itself — compaction summaries,
+    /// including background prefire passes.
+    ///
+    /// Reported *beside* [`Self::cumulative_usage`] so the cost ledger stays
+    /// complete while the per-turn token display keeps describing only the
+    /// sampling loop. Hosts must book it as its own ledger entry.
+    fn side_usage(&self) -> Option<RunUsage> {
+        None
+    }
+
     /// Seed the ids of memories already surfaced earlier in this session,
     /// rebuilt from the replayed event stream. Without it a resumed run would
     /// re-inject the same entries (the de-dup set used to be run-local).
