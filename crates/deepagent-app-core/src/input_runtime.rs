@@ -245,6 +245,42 @@ fn compaction_boundary(events: &[Event]) -> Option<CompactionBoundary> {
     })
 }
 
+/// Sequence of the event that recorded `wanted`.
+///
+/// Used to turn a message-space compaction split into an event-space boundary.
+/// Matching by content rather than counting records is what keeps it honest: a
+/// batch of parallel tool calls collapses into ONE history entry but spans
+/// several events, so history indexes and event sequences are not 1:1.
+///
+/// The FIRST matching event wins. If the same text occurs twice that puts the
+/// boundary earlier than strictly necessary, which keeps a few extra raw turns
+/// visible instead of risking cutting mid-pair — redundancy is cheap here,
+/// a broken tool pair is not. `None` means the caller must not write a
+/// verbatim-keeping boundary (it falls back to "summary plus whatever follows").
+pub(crate) fn sequence_of_message(
+    events: &[Event],
+    wanted: &Message,
+) -> Option<deepagent_core::event::Sequence> {
+    let wanted_role = match wanted.role {
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        _ => "",
+    };
+    events.iter().find_map(|event| match &event.payload {
+        EventPayload::MessageAppended { message }
+            if message.role == wanted.role && message.content == wanted.content =>
+        {
+            Some(event.sequence)
+        }
+        EventPayload::ResponseItemAppended {
+            item: deepagent_core::response_item::ResponseItem::Message { role, content },
+        } if !wanted_role.is_empty() && role == wanted_role && content == &wanted.content => {
+            Some(event.sequence)
+        }
+        _ => None,
+    })
+}
+
 /// The event slice the model should see, plus the summary standing in for the
 /// compacted prefix. Shared by the Message view and the item view so the two can
 /// never disagree about where history starts.
@@ -395,14 +431,6 @@ fn build_conversation(events: &[Event]) -> Vec<Message> {
             EventPayload::MessageAppended { message } => {
                 flush_batch(&mut out, &mut open_batch, &mut unresolved);
                 close_orphans(&mut out, &mut unresolved);
-                if message
-                    .content
-                    .starts_with("[Earlier conversation compacted to summary]")
-                {
-                    out.clear();
-                    out.push(Message::text(message.role, message.content.clone()));
-                    continue;
-                }
                 match message.role {
                     Role::User | Role::Assistant if !message.content.trim().is_empty() => {
                         out.push(Message::text(message.role, message.content.clone()));
@@ -898,6 +926,127 @@ mod tests {
         assert_eq!(full[2].content, "later question");
         // and the model view really is smaller than it
         assert_eq!(model_history_from_events(&events).len(), 2);
+    }
+
+    #[test]
+    fn sequence_of_message_maps_history_entries_back_to_events() {
+        // The automatic compactor splits in message space but must record the
+        // boundary in event space, so a history entry has to resolve to the event
+        // that produced it — on both log shapes.
+        let sid = SessionId::nil();
+        let plain = conversation_fixture(sid);
+        assert_eq!(
+            sequence_of_message(
+                &plain,
+                &Message::text(Role::Assistant, "first answer".to_string())
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            sequence_of_message(&plain, &Message::user("never said".to_string())),
+            None,
+            "an entry that is not in the log must not invent a boundary"
+        );
+
+        let item_sid = SessionId::nil();
+        let item_events = vec![event(
+            item_sid,
+            7,
+            EventPayload::ResponseItemAppended {
+                item: deepagent_core::response_item::ResponseItem::Message {
+                    role: "user".to_string(),
+                    content: "from the item log".to_string(),
+                },
+            },
+        )];
+        assert_eq!(
+            sequence_of_message(
+                &item_events,
+                &Message::user("from the item log".to_string())
+            ),
+            Some(7),
+            "provider-native sessions resolve through their item events"
+        );
+    }
+
+    #[test]
+    fn boundary_never_splits_a_tool_call_from_its_result() {
+        // Whatever the writer chooses, the resulting model view must stay
+        // API-legal: no tool result without its call, no orphan call.
+        let sid = SessionId::nil();
+        let mut events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::MessageAppended {
+                    message: Message::user("investigate"),
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::ToolCallRequested {
+                    call: deepagent_core::message::ToolCall {
+                        id: "call-1".to_string(),
+                        name: "read_file".to_string(),
+                        arguments: serde_json::json!({"path": "a.txt"}),
+                    },
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::ToolCallCompleted {
+                    call_id: "call-1".to_string(),
+                    ok: true,
+                    output: serde_json::json!("contents"),
+                    duration_ms: 5,
+                },
+            ),
+            event(
+                sid,
+                3,
+                EventPayload::MessageAppended {
+                    message: Message::assistant("done"),
+                },
+            ),
+        ];
+        events.push(event(sid, 4, boundary("phase one summary", Some(1))));
+
+        let history = model_history_from_events(&events);
+        let text = history
+            .iter()
+            .map(|m| format!("{:?}:{}", m.role, m.content))
+            .collect::<Vec<_>>()
+            .join("|");
+        assert!(
+            text.contains("call-1") || text.contains("contents"),
+            "tool pair must survive intact: {text}"
+        );
+        // Cutting at the request (sequence 1) keeps the request AND its result.
+        let history2 = {
+            let mut e = events.clone();
+            if let Some(last) = e.last_mut() {
+                if let EventPayload::ContextCompacted {
+                    first_kept_sequence,
+                    ..
+                } = &mut last.payload
+                {
+                    *first_kept_sequence = Some(2);
+                }
+            }
+            model_history_from_events(&e)
+        };
+        let orphan = history2.iter().any(|m| {
+            m.role == Role::Tool
+                && !history2
+                    .iter()
+                    .any(|o| o.tool_calls.iter().any(|c| c.id == "call-1"))
+        });
+        assert!(
+            !orphan,
+            "a boundary must not leave a tool result without its call: {history2:?}"
+        );
     }
 
     #[test]

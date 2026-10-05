@@ -668,6 +668,7 @@ impl<'a> RunAssembler<'a> {
             .maybe_compact_history(
                 &mut session,
                 history,
+                &prior_events,
                 &client,
                 &model,
                 &context_policy,
@@ -1448,10 +1449,17 @@ impl<'a> RunAssembler<'a> {
     }
 
     /// Model-driven context compaction (Phase 2B).
+    ///
+    /// The summary is written as a durable boundary (`summary` +
+    /// `first_kept_sequence`), so the NEXT run rebuilds a short history from the
+    /// event log and falls under the trigger — that is what stops a long session
+    /// from paying for the same summarizing model call on every turn.
+    #[allow(clippy::too_many_arguments)]
     async fn maybe_compact_history(
         &self,
         session: &mut Session<'_, SystemClock>,
         history: Vec<Message>,
+        events: &[deepagent_core::event::Event],
         client: &Arc<ModelClient>,
         model: &str,
         context_policy: &ContextPolicy,
@@ -1518,18 +1526,21 @@ impl<'a> RunAssembler<'a> {
             tokens_before: total as u64,
             tokens_after: tokens_after as u64,
             strategy: "model".to_string(),
-            // Metrics only for now: this run's summary is transient, so the next
-            // run recompacts from the full log. Making it a durable boundary
-            // (summary + verbatim tail) is the next step of this line of work.
-            summary: None,
-            first_kept_sequence: None,
+            summary: Some(summary_block.clone()),
+            // Where the verbatim tail starts. Content-matched, because a batch of
+            // parallel tool calls is one history entry but several events; when no
+            // match is found the boundary keeps nothing raw, which is still correct.
+            first_kept_sequence: history
+                .get(split)
+                .and_then(|message| crate::input_runtime::sequence_of_message(events, message)),
         }) {
             tracing::warn!(error = %e, "failed to record ContextCompacted event");
         }
 
         let mut compacted = Vec::with_capacity(policy.keep_recent_turns + 1);
         compacted.push(Message::user(format!(
-            "[Earlier conversation compacted to summary]\n{summary_block}"
+            "{}\n{summary_block}",
+            crate::input_runtime::COMPACTED_SUMMARY_HEADER
         )));
         compacted.extend(history.into_iter().skip(split));
         if let Err(error) = hooks
