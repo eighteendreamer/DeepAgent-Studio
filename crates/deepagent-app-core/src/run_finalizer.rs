@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::str::FromStr;
 use std::sync::Arc;
 
-use deepagent_core::clock::Clock;
+use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::Result;
 use deepagent_core::event::EventPayload;
 use deepagent_models::ModelClient;
@@ -26,6 +26,9 @@ pub(crate) struct AppRunFinalizer {
     knowledge: Option<Arc<KnowledgeService>>,
     cancellations: CancellationMap,
     session_memory: SessionMemoryPasses,
+    /// When the unattended memory pass is allowed to fold duplicates. Production
+    /// uses the defaults; a test that wants to watch the trigger fire lowers it.
+    consolidation_gate: crate::memory_consolidation::ConsolidationGate,
 }
 
 pub(crate) struct AppRunFinalizerRequest<'a> {
@@ -101,7 +104,17 @@ impl AppRunFinalizer {
             knowledge,
             cancellations,
             session_memory,
+            consolidation_gate: crate::memory_consolidation::ConsolidationGate::default(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_consolidation_gate(
+        mut self,
+        gate: crate::memory_consolidation::ConsolidationGate,
+    ) -> Self {
+        self.consolidation_gate = gate;
+        self
     }
 
     pub(crate) fn finalize_after_kernel<C: Clock>(
@@ -135,6 +148,9 @@ impl AppRunFinalizer {
             );
         }
         self.clear_run_cancellation(request.session_id, request.run_id);
+        if request.run_succeeded {
+            self.consolidate_memories(session, request.session_id)?;
+        }
         self.spawn_session_memory(
             request.run_succeeded,
             request.session_id,
@@ -148,6 +164,32 @@ impl AppRunFinalizer {
             request.capture_client,
             request.capture_model,
         );
+        Ok(())
+    }
+
+    /// Fold duplicate long-term entries when the gate allows, and record what the
+    /// pass changed in this run's own event log, so a merge is still auditable
+    /// after a refresh instead of only in the vault's file layout.
+    fn consolidate_memories<C: Clock>(
+        &self,
+        session: &mut Session<'_, C>,
+        session_id: &str,
+    ) -> Result<()> {
+        let Some(knowledge) = &self.knowledge else {
+            return Ok(());
+        };
+        let gate = self.consolidation_gate;
+        let Some(note) = crate::memory_consolidation::consolidate_if_due(
+            &self.db,
+            knowledge,
+            session_id,
+            &SystemClock,
+            &gate,
+        )?
+        else {
+            return Ok(());
+        };
+        session.append(EventPayload::Note { text: note })?;
         Ok(())
     }
 
@@ -468,6 +510,110 @@ mod tests {
             Arc::new(Mutex::new(HashMap::new())),
             passes.clone(),
         )
+    }
+
+    /// The wiring, not just the algorithm: a successful run must actually open
+    /// the vault, fold the duplicates, keep them recoverable, and leave a durable
+    /// note in that run's own event log.
+    #[test]
+    fn a_finished_run_consolidates_the_vault_and_notes_it_in_the_event_log() {
+        use deepagent_knowledge::{
+            EntryKind, KnowledgeBase, KnowledgeConfig, KnowledgeDraft, Scope, Vault,
+        };
+        use deepagent_memory::HashingEmbedder;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut base = KnowledgeBase::new(
+            vec![Vault::new(tmp.path().join("proj"), Scope::Project)],
+            HashingEmbedder::default(),
+            KnowledgeConfig::default(),
+        );
+        let note = |title: &str, body: &str| KnowledgeDraft {
+            title: title.to_string(),
+            body: body.to_string(),
+            kind: EntryKind::Pitfall,
+            tags: vec![],
+            source_session: Some("ses-other".to_string()),
+            scope: Scope::Project,
+            tier: None,
+            importance: None,
+        };
+        // Two decisions, each written down twice under reworded titles.
+        for (first, second, body) in [
+            (
+                "cargo 并行构建产生假错误",
+                "cargo 并行构建会假报错",
+                "本机 cargo 必须 -j1，并行构建会报出成百 prelude 假错误。",
+            ),
+            (
+                "pnpm 构建脚本白名单",
+                "pnpm allowBuilds 需要显式赋值",
+                "新增依赖后要写 allowBuilds，否则 install 以退出码 1 失败。",
+            ),
+        ] {
+            for title in [first, second] {
+                base.write(note(title, body), 1_000).unwrap();
+            }
+        }
+        let knowledge = Arc::new(KnowledgeService::from_base(base));
+        assert_eq!(knowledge.entry_count(), 4);
+
+        let mut session = Session::create(&db, &SystemClock, Some("consol")).unwrap();
+        let session_id = session.id().to_string();
+        let finalizer = AppRunFinalizer::new(
+            db.clone(),
+            None,
+            Some(knowledge.clone()),
+            Arc::new(Mutex::new(HashMap::new())),
+            SessionMemoryPasses::default(),
+        )
+        .with_consolidation_gate(crate::memory_consolidation::ConsolidationGate {
+            min_entries: 4,
+            min_interval: std::time::Duration::from_secs(0),
+            min_runs_between: 1,
+        });
+        let empty: DiscoveredToolSet = Arc::new(Mutex::new(HashSet::new()));
+        let before = HashSet::new();
+        finalizer
+            .finalize_after_kernel(
+                &mut session,
+                AppRunFinalizerRequest {
+                    session_id: &session_id,
+                    run_id: "run_consolidate",
+                    discovered_before_run: &before,
+                    discovered_tools: &empty,
+                    usage: None,
+                    side_usage: None,
+                    model_name: "deepseek-chat",
+                    sink: &NullEventSink,
+                    run_succeeded: true,
+                    capture_client: None,
+                    capture_model: None,
+                },
+            )
+            .unwrap();
+
+        assert_eq!(
+            knowledge.entry_count(),
+            2,
+            "one entry per decision must remain"
+        );
+        let archived = std::fs::read_dir(tmp.path().join("proj").join(".superseded"))
+            .expect("the archive directory exists")
+            .filter_map(|entry| entry.ok())
+            .count();
+        assert_eq!(archived, 2, "the duplicates are archived, not deleted");
+
+        let events = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap();
+        assert!(
+            events.iter().any(|event| {
+                matches!(&event.payload, EventPayload::Note { text } if text.contains("2 merged"))
+            }),
+            "the pass has to be visible in the run's durable event log"
+        );
     }
 
     fn transcript_session(db: &Arc<Database>) -> deepagent_core::id::SessionId {

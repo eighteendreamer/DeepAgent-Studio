@@ -34,7 +34,7 @@ pub mod capture;
 pub mod entry;
 pub mod vault;
 
-pub use base::{KnowledgeBase, KnowledgeConfig, KnowledgeDraft, KnowledgeHit};
+pub use base::{ConsolidationReport, KnowledgeBase, KnowledgeConfig, KnowledgeDraft, KnowledgeHit};
 pub use capture::{
     detect_recovery, detect_session_digest, is_session_substantive, is_worth_capturing,
     RecoverySignal, SessionDigest, SUBSTANTIVE_CHAR_THRESHOLD,

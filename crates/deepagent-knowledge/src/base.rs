@@ -97,6 +97,136 @@ fn estimate_tokens(s: &str) -> usize {
     (s.chars().count() / 4).max(1)
 }
 
+/// What one consolidation pass changed, in composite uids.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ConsolidationReport {
+    /// Entries moved to the vault's superseded archive.
+    pub superseded: Vec<String>,
+    /// Surviving entries rewritten with merged text or tags.
+    pub rewritten: Vec<String>,
+}
+
+impl ConsolidationReport {
+    /// Whether nothing changed, which is what makes a second pass a no-op.
+    pub fn is_empty(&self) -> bool {
+        self.superseded.is_empty() && self.rewritten.is_empty()
+    }
+
+    /// One line for a durable note or a log.
+    pub fn summary(&self) -> String {
+        format!(
+            "memory consolidation: {} merged, {} rewritten",
+            self.superseded.len(),
+            self.rewritten.len()
+        )
+    }
+}
+
+/// Body overlap needed to call two entries the same decision.
+///
+/// Measured on this vault's own Chinese entries rather than picked: two records
+/// of one decision written under reworded titles score 0.88, while two genuinely
+/// different pitfalls that merely share technical wording score 0.02. The gap is
+/// wide, so the bar sits at 0.75 — high enough that no amount of shared scaffolding
+/// merges two decisions, low enough that a re-typed entry still folds in.
+/// Title similarity is deliberately NOT a condition: the whole point is to catch
+/// the same fact saved again under a different heading.
+const DUPLICATE_SIMILARITY: f32 = 0.75;
+/// Below this many shared bigrams the ratio is short-string noise.
+const MIN_SHARED_BIGRAMS: usize = 12;
+
+/// Character bigrams of a normalized text. Bigrams need no language-specific
+/// tokenizer, which the vault cannot assume: entries here are mostly Chinese,
+/// and splitting on whitespace turns a whole body into a single token.
+fn bigrams(text: &str) -> BTreeSet<(char, char)> {
+    let chars: Vec<char> = text
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect();
+    chars
+        .windows(2)
+        .map(|window| (window[0], window[1]))
+        .collect()
+}
+
+/// Jaccard overlap of two bigram sets.
+fn overlap(left: &BTreeSet<(char, char)>, right: &BTreeSet<(char, char)>) -> f32 {
+    let shared = left.iter().filter(|bigram| right.contains(bigram)).count();
+    let union = left.len() + right.len() - shared;
+    if union == 0 {
+        return 0.0;
+    }
+    shared as f32 / union as f32
+}
+
+/// Whether two entries record the same thing: same scope and kind, and either the
+/// same normalized title or a body that is nearly the text of the other.
+fn is_duplicate(a: &KnowledgeEntry, b: &KnowledgeEntry) -> bool {
+    if a.scope != b.scope || a.kind != b.kind {
+        return false;
+    }
+    if norm_title(&a.title) == norm_title(&b.title) {
+        return true;
+    }
+    let left = bigrams(&a.body);
+    let right = bigrams(&b.body);
+    let shared = left.iter().filter(|bigram| right.contains(bigram)).count();
+    shared >= MIN_SHARED_BIGRAMS && overlap(&left, &right) >= DUPLICATE_SIMILARITY
+}
+
+/// The newest entry of a cluster: what a reader would have written last.
+fn pick_survivor(group: &[KnowledgeEntry]) -> &KnowledgeEntry {
+    group
+        .iter()
+        .min_by(|a, b| {
+            b.updated_at
+                .cmp(&a.updated_at)
+                .then_with(|| {
+                    b.importance
+                        .unwrap_or_default()
+                        .total_cmp(&a.importance.unwrap_or_default())
+                })
+                .then_with(|| a.id.cmp(&b.id))
+        })
+        .expect("a cluster is never empty")
+}
+
+/// Fold a cluster into `survivor`: union the tags, keep the strongest
+/// importance, and append only lines the survivor does not already carry.
+fn merge_into(mut survivor: KnowledgeEntry, group: &[KnowledgeEntry]) -> KnowledgeEntry {
+    let mut seen: BTreeSet<String> = survivor
+        .body
+        .lines()
+        .map(|line| line.trim().to_string())
+        .collect();
+    let mut tags: BTreeSet<String> = survivor.tags.iter().cloned().collect();
+    let mut importance = survivor.importance;
+    let mut created_at = survivor.created_at;
+    for member in group {
+        if member.id == survivor.id {
+            continue;
+        }
+        for line in member.body.lines() {
+            let trimmed = line.trim().to_string();
+            if trimmed.is_empty() || !seen.insert(trimmed.clone()) {
+                continue;
+            }
+            survivor.body.push('\n');
+            survivor.body.push_str(&trimmed);
+        }
+        tags.extend(member.tags.iter().cloned());
+        if let Some(weight) = member.importance {
+            importance = Some(importance.map_or(weight, |current| current.max(weight)));
+        }
+        created_at = created_at.min(member.created_at);
+    }
+    survivor.tags = tags.into_iter().collect();
+    survivor.importance = importance;
+    survivor.created_at = created_at;
+    survivor
+}
+
 type Retriever<E> = ContextualRetriever<E, HeadingContextualizer, ScoreReranker>;
 
 /// The knowledge base: one or more vaults plus a derived retrieval index.
@@ -339,6 +469,85 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
             .insert(uid(entry.scope, &entry.id), entry.clone());
         self.rebuild_index();
         Ok(entry)
+    }
+
+    /// Fold duplicate long-term entries into one and archive the rest.
+    ///
+    /// Deterministic on purpose: this runs unattended after a turn, so every
+    /// merged line is text that was already on disk, and nothing is deleted —
+    /// the losers move to the vault's superseded archive and a human can put one
+    /// back by hand. `exclude_session` keeps the entries the just-finished run
+    /// wrote out of a pass that has no context for them.
+    ///
+    /// Clustering is single-linkage within one `(scope, kind)`: a group grows by
+    /// any member matching. Transitive chains therefore merge as one decision,
+    /// and the survivor is the newest entry, so the merged file is the one a
+    /// reader would have written last.
+    pub fn consolidate(
+        &mut self,
+        exclude_session: Option<&str>,
+        now_ms: i64,
+    ) -> Result<ConsolidationReport> {
+        let mut report = ConsolidationReport::default();
+        let candidates: Vec<KnowledgeEntry> = self
+            .entries
+            .values()
+            .filter(|entry| match (&entry.source_session, exclude_session) {
+                (Some(source), Some(excluded)) => source != excluded,
+                _ => true,
+            })
+            .cloned()
+            .collect();
+
+        let mut groups: Vec<Vec<KnowledgeEntry>> = Vec::new();
+        for entry in candidates {
+            match groups
+                .iter_mut()
+                .find(|group| group.iter().any(|member| is_duplicate(member, &entry)))
+            {
+                Some(group) => group.push(entry),
+                None => groups.push(vec![entry]),
+            }
+        }
+
+        for group in groups.into_iter().filter(|group| group.len() > 1) {
+            let scope = group[0].scope;
+            let vault = self
+                .vault_for(scope)
+                .cloned()
+                .ok_or_else(|| CoreError::invalid("no vault for the consolidation scope"))?;
+            let survivor = pick_survivor(&group).clone();
+            let mut merged = merge_into(survivor.clone(), &group);
+            let rewritten = merged.body != survivor.body || merged.tags != survivor.tags;
+            if rewritten {
+                merged.updated_at = now_ms;
+            }
+
+            // One lock for the whole cluster: the rewrite and the archival moves
+            // must not interleave with another writer.
+            let lock = vault.lock()?;
+            if rewritten {
+                lock.write(&vault, &merged)?;
+                report.rewritten.push(uid(scope, &merged.id));
+            }
+            for member in &group {
+                if member.id == survivor.id {
+                    continue;
+                }
+                let member_uid = uid(scope, &member.id);
+                if lock.archive(&vault, &member.id)? {
+                    report.superseded.push(member_uid.clone());
+                }
+                self.entries.remove(&member_uid);
+            }
+            drop(lock);
+            self.entries.insert(uid(scope, &merged.id), merged);
+        }
+
+        if !report.is_empty() {
+            self.rebuild_index();
+        }
+        Ok(report)
     }
 
     /// All entries, ordered by uid.
@@ -930,5 +1139,146 @@ mod tests {
         let active_count = kb2.load_all().unwrap();
         assert_eq!(active_count, 1);
         assert_eq!(kb2.draft_count(), 1);
+    }
+
+    /// The duplicate rule, pinned on real entries: one decision written twice
+    /// under reworded titles must fold, and two different pitfalls that share
+    /// technical wording must not. These are the cases the threshold was measured
+    /// against, so they are the ones that have to keep behaving.
+    #[test]
+    fn duplicate_rule_folds_reworded_copies_and_keeps_distinct_pitfalls() {
+        let entry = |title: &str, body: &str| KnowledgeEntry {
+            id: Vault::slug(title),
+            title: title.to_string(),
+            kind: EntryKind::Pitfall,
+            tags: vec![],
+            created_at: 1,
+            updated_at: 1,
+            source_session: None,
+            scope: Scope::Project,
+            status: crate::entry::EntryStatus::Active,
+            tier: None,
+            importance: None,
+            body: body.to_string(),
+        };
+        let cargo_a = entry(
+            "cargo 并行构建产生假错误",
+            "本机 cargo 必须 -j1，并行构建会报出成百 prelude 假错误。",
+        );
+        let cargo_b = entry(
+            "cargo 并行构建会假报错",
+            "本机 cargo 必须 -j1，并行构建会报出成百 prelude 假错误，别再回退。",
+        );
+        let powershell = entry(
+            "PowerShell 管道把退出码吞掉",
+            "长命令重定向到文件再看，管道到 Select-String 会把崩溃报成退出码 0。",
+        );
+        assert!(
+            is_duplicate(&cargo_a, &cargo_b),
+            "one decision written twice must fold"
+        );
+        assert!(
+            !is_duplicate(&cargo_a, &powershell),
+            "shared technical wording is not the same decision"
+        );
+    }
+
+    #[test]
+    fn consolidation_merges_duplicates_and_is_idempotent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut kb = base(tmp.path());
+        let mut older = draft(
+            "cargo 并行构建产生假错误",
+            "本机 cargo 必须 -j1，并行构建会报出成百 prelude 假错误。",
+            EntryKind::Pitfall,
+            Scope::Project,
+        );
+        older.tags = vec!["cargo".to_string()];
+        kb.write(older, 1_000).unwrap();
+        let mut newer = draft(
+            "cargo 并行构建会假报错",
+            "本机 cargo 必须 -j1，并行构建会报出成百 prelude 假错误，别再回退。",
+            EntryKind::Pitfall,
+            Scope::Project,
+        );
+        newer.tags = vec!["构建".to_string()];
+        kb.write(newer, 2_000).unwrap();
+        // An unrelated decision must not be folded in.
+        kb.write(
+            draft(
+                "登录态验证",
+                "绕不过守卫时用构建加 DOM 探针取证，并声明未目视的屏。",
+                EntryKind::Pitfall,
+                Scope::Project,
+            ),
+            3_000,
+        )
+        .unwrap();
+
+        let report = kb.consolidate(None, 4_000).unwrap();
+        assert_eq!(
+            report.superseded.len(),
+            1,
+            "one duplicate folded: {report:?}"
+        );
+        assert_eq!(report.rewritten.len(), 1, "the survivor carries the merge");
+        assert_eq!(kb.list().len(), 2, "the unrelated entry survives");
+
+        let survivor = kb
+            .list()
+            .into_iter()
+            .find(|entry| entry.title.contains("假报错"))
+            .expect("the newest wording is the one that stays");
+        assert!(
+            survivor.tags.contains(&"cargo".to_string())
+                && survivor.tags.contains(&"构建".to_string()),
+            "tags from both copies must be kept: {:?}",
+            survivor.tags
+        );
+        assert!(
+            survivor.body.contains("别再回退"),
+            "the survivor's own text must not be rewritten away: {}",
+            survivor.body
+        );
+        assert_eq!(survivor.updated_at, 4_000);
+
+        // The loser is archived rather than deleted, so the pass stays reversible.
+        let archived = tmp.path().join("proj").join(".superseded");
+        let files: Vec<_> = std::fs::read_dir(&archived)
+            .expect("the archive directory exists")
+            .filter_map(|entry| entry.ok())
+            .collect();
+        assert_eq!(files.len(), 1, "the duplicate is recoverable: {report:?}");
+
+        let again = kb.consolidate(None, 5_000).unwrap();
+        assert!(
+            again.is_empty(),
+            "a second pass must change nothing: {again:?}"
+        );
+    }
+
+    #[test]
+    fn consolidation_leaves_the_active_session_and_other_scopes_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut kb = base(tmp.path());
+        let body = "本机 cargo 必须 -j1，并行构建会报出成百 prelude 假错误。";
+        let mut just_written = draft("cargo 假错误", body, EntryKind::Pitfall, Scope::Project);
+        just_written.source_session = Some("ses-active".to_string());
+        kb.write(just_written, 1_000).unwrap();
+        let older = draft(
+            "cargo 并行构建会假报错",
+            body,
+            EntryKind::Pitfall,
+            Scope::Global,
+        );
+        kb.write(older, 2_000).unwrap();
+
+        // Same text, different scope: never one decision written twice.
+        let report = kb.consolidate(Some("ses-active"), 3_000).unwrap();
+        assert!(
+            report.is_empty(),
+            "scope isolation and the active session both hold entries back: {report:?}"
+        );
+        assert_eq!(kb.list().len(), 2);
     }
 }

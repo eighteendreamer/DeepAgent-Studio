@@ -307,6 +307,26 @@ impl KnowledgeService {
         base.base.delete(id)
     }
 
+    /// How many entries both vaults hold, which is what the consolidation gate
+    /// measures before spending a scan.
+    pub fn entry_count(&self) -> usize {
+        self.lock().base.len()
+    }
+
+    /// Fold duplicate entries across both vaults and archive the losers.
+    ///
+    /// Synchronous by design: the merge is local file work with no model call, so
+    /// it holds the service mutex only while it rewrites, and there is no
+    /// background task to drain on shutdown.
+    pub fn consolidate(
+        &self,
+        exclude_session: Option<&str>,
+        now_millis: i64,
+    ) -> Result<deepagent_knowledge::ConsolidationReport> {
+        let mut state = self.lock();
+        state.base.consolidate(exclude_session, now_millis)
+    }
+
     /// The passive-injection block for `query` (empty when nothing qualifies or
     /// passive injection is disabled).
     pub fn passive_block(&self, query: &str) -> String {

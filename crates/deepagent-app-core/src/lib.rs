@@ -41,6 +41,7 @@ pub mod knowledge_service;
 pub mod managed_files;
 pub mod mcp_runtime;
 pub mod mcp_service;
+pub mod memory_consolidation;
 pub mod memory_migration;
 pub mod memory_service;
 pub mod mobile_service;

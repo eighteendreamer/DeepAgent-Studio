@@ -20,6 +20,11 @@ use crate::entry::{KnowledgeEntry, Scope};
 /// worse than a retriable "locked" error.
 const LOCK_WAIT: Duration = Duration::from_millis(500);
 
+/// Where superseded entries go instead of being deleted. A dot-directory, so
+/// [`Vault::scan`] never folds them back into the retrieval index and a human
+/// can move a file straight back to recover it.
+const SUPERSEDED_DIR: &str = ".superseded";
+
 /// The OS-held exclusive lock over one vault directory.
 ///
 /// `KnowledgeService`'s in-process mutex serialises a single process, but the
@@ -49,6 +54,12 @@ impl VaultLock {
     /// Remove one entry while holding the vault exclusively.
     pub fn delete(&self, vault: &Vault, id: &str) -> Result<bool> {
         vault.delete_inner(id)
+    }
+
+    /// Move one entry into the superseded archive while holding the vault
+    /// exclusively.
+    pub fn archive(&self, vault: &Vault, id: &str) -> Result<bool> {
+        vault.archive_inner(id)
     }
 }
 
@@ -157,6 +168,29 @@ impl Vault {
     /// Delete the `.md` file for `id`. Returns whether a file was removed.
     pub fn delete(&self, id: &str) -> Result<bool> {
         self.lock()?.delete(self, id)
+    }
+
+    /// Move one entry into `<root>/.superseded/` instead of removing it, so a
+    /// consolidation decision stays reversible. Returns whether a file moved.
+    pub fn archive(&self, id: &str) -> Result<bool> {
+        self.lock()?.archive(self, id)
+    }
+
+    /// The archive body, reachable only while a [`VaultLock`] is held.
+    fn archive_inner(&self, id: &str) -> Result<bool> {
+        let source = self.resolve(id)?;
+        if !source.is_file() {
+            return Ok(false);
+        }
+        let dir = self.root.join(SUPERSEDED_DIR);
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| CoreError::Persistence(format!("create superseded dir: {e}")))?;
+        let name = source
+            .file_name()
+            .ok_or_else(|| CoreError::invalid("knowledge id has no file name"))?;
+        std::fs::rename(&source, dir.join(name))
+            .map_err(|e| CoreError::Persistence(format!("archive knowledge file: {e}")))?;
+        Ok(true)
     }
 
     /// The write body, reachable only while a [`VaultLock`] is held.
