@@ -178,6 +178,19 @@ pub trait Agent: Send + Sync {
         None
     }
 
+    /// Seed the ids of memories already surfaced earlier in this session,
+    /// rebuilt from the replayed event stream. Without it a resumed run would
+    /// re-inject the same entries (the de-dup set used to be run-local).
+    /// Non-model agents have no memory track and keep the default.
+    fn seed_surfaced_memories(&mut self, _ids: &[String]) {}
+
+    /// Drain the background-memory injections produced during this run as
+    /// `(entry ids, prefetch latency ms)` so the loop can persist them as
+    /// durable `MemoriesInjected` events. Defaults to empty.
+    fn drain_memory_injections(&mut self) -> Vec<(Vec<String>, u64)> {
+        Vec::new()
+    }
+
     /// Drain provider-native Responses output items produced by the most
     /// recent model turn. Non-model agents return nothing; model-backed
     /// agents use this to persist exact item semantics alongside the legacy

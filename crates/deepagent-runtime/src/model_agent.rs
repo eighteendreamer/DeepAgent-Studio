@@ -471,6 +471,9 @@ pub struct ModelAgent {
     last_prefetch_query: Option<String>,
     /// Entry ids already surfaced this run (session de-dup + cap).
     surfaced_memory_ids: std::collections::HashSet<String>,
+    /// Injections produced this run, waiting to be persisted as durable
+    /// `MemoriesInjected` events by the loop: `(ids, latency_ms)`.
+    pending_memory_injections: Vec<(Vec<String>, u64)>,
     /// Periodic todo-reminder source (§3.1). `None` disables it.
     todo_source: Option<Arc<dyn TodoReminderSource>>,
     /// Assistant turns since the model last called `todo_write`.
@@ -541,6 +544,7 @@ impl ModelAgent {
             memory_prefetch_started_at: None,
             last_prefetch_query: None,
             surfaced_memory_ids: std::collections::HashSet::new(),
+            pending_memory_injections: Vec::new(),
             todo_source: None,
             turns_since_todo_write: 0,
             // Start eligible on the reminder axis so the write-inactivity axis
@@ -1250,6 +1254,7 @@ impl ModelAgent {
         for memory in &fresh {
             self.surfaced_memory_ids.insert(memory.id.clone());
         }
+        let injected_ids: Vec<String> = fresh.iter().map(|m| m.id.clone()).collect();
         let mut body = String::from("# 相关记忆 (relevant memories, retrieved in background)\n");
         for memory in &fresh {
             body.push('\n');
@@ -1267,8 +1272,14 @@ impl ModelAgent {
             latency_ms,
             "injected background-prefetched relevant memories"
         );
+        self.pending_memory_injections
+            .push((injected_ids.clone(), latency_ms));
         if let Some(sink) = &self.events {
-            sink.emit(RuntimeEvent::RelevantMemoriesInjected { count, latency_ms });
+            sink.emit(RuntimeEvent::RelevantMemoriesInjected {
+                count,
+                latency_ms,
+                ids: injected_ids,
+            });
         }
     }
 
@@ -1635,6 +1646,17 @@ impl Agent for ModelAgent {
         tools: Option<&mut dyn ToolAttemptController>,
     ) -> Result<AgentDecision> {
         self.think_inner(step, last, cancel, tools).await
+    }
+
+    fn seed_surfaced_memories(&mut self, ids: &[String]) {
+        // Session-wide de-dup: ids replayed from `MemoriesInjected` events
+        // count as already surfaced, so a resumed run does not re-inject them
+        // and the injection cap is honored across runs.
+        self.surfaced_memory_ids.extend(ids.iter().cloned());
+    }
+
+    fn drain_memory_injections(&mut self) -> Vec<(Vec<String>, u64)> {
+        std::mem::take(&mut self.pending_memory_injections)
     }
 
     fn cumulative_usage(&self) -> Option<crate::agent::RunUsage> {
@@ -3804,6 +3826,108 @@ mod tests {
                 && m.content.contains("cargo clean first")
         });
         assert!(injected, "background-prefetched memory must be injected");
+    }
+
+    #[tokio::test]
+    async fn memory_injections_are_drained_for_durable_persistence() {
+        // Scenario: a background prefetch injects two entries. The loop must be
+        // able to drain exactly that injection (ids + latency) so it can be
+        // persisted as a replayable MemoriesInjected event.
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                response_function_call_done("c1", "read_file", r#"{"path":"a.txt"}"#),
+                response_text_completed("done"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let provider = Arc::new(ScriptedMemoryProvider {
+            mems: vec![
+                RelevantMemory {
+                    id: "project:build-fix".to_string(),
+                    block: "run cargo clean first".to_string(),
+                },
+                RelevantMemory {
+                    id: "global:cargo-j1".to_string(),
+                    block: "cargo must run with -j1 here".to_string(),
+                },
+            ],
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let mut agent = ModelAgent::new(
+            client,
+            "model",
+            "system",
+            "investigate the failing build error and fix it",
+            vec![],
+        )
+        .with_relevant_memory_provider(provider);
+
+        agent.think(0, &[]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        agent.think(1, &[]).await.unwrap();
+
+        let drained = agent.drain_memory_injections();
+        assert_eq!(drained.len(), 1, "one injection batch this run");
+        let (ids, _latency) = &drained[0];
+        assert_eq!(ids.len(), 2, "both prefetched entries were surfaced");
+        assert!(ids.contains(&"project:build-fix".to_string()));
+        assert!(ids.contains(&"global:cargo-j1".to_string()));
+        // Draining is destructive: the loop owns persistence.
+        assert!(agent.drain_memory_injections().is_empty());
+    }
+
+    #[tokio::test]
+    async fn seeded_surfaced_memories_stop_reinjection_on_next_run() {
+        // Scenario: run 1 of a session injected `project:build-fix` and the loop
+        // persisted it. Run 2 replays that id into seed_surfaced_memories, so the
+        // same memory must NOT be injected again (the de-dup set used to be
+        // run-local, which re-sent it after every restart).
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                response_function_call_done("c1", "read_file", r#"{"path":"a.txt"}"#),
+                response_text_completed("done"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let provider = Arc::new(ScriptedMemoryProvider {
+            mems: vec![RelevantMemory {
+                id: "project:build-fix".to_string(),
+                block: "run cargo clean first".to_string(),
+            }],
+            calls: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let mut agent = ModelAgent::new(
+            client,
+            "model",
+            "system",
+            "investigate the failing build error and fix it",
+            vec![],
+        )
+        .with_relevant_memory_provider(provider);
+        agent.seed_surfaced_memories(&["project:build-fix".to_string()]);
+
+        agent.think(0, &[]).await.unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        agent.think(1, &[]).await.unwrap();
+
+        let injected = agent.conversation().iter().any(|m| {
+            m.role == Role::User
+                && m.content.contains("相关记忆")
+                && m.content.contains("cargo clean first")
+        });
+        assert!(!injected, "already-surfaced memory must not be re-injected");
+        assert!(
+            agent.drain_memory_injections().is_empty(),
+            "no injection means nothing to persist"
+        );
     }
 
     #[tokio::test]

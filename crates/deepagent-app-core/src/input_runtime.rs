@@ -503,6 +503,27 @@ pub(crate) fn collect_announced_mcp_servers_from_events(events: &[Event]) -> Has
     announced
 }
 
+/// Rebuild the cumulative set of long-term memory entry ids already surfaced
+/// into this session's model context. Walks every `MemoriesInjected` delta —
+/// the replay counterpart to Claude Code's `collectSurfacedMemories`, which
+/// also derives the set from the transcript rather than from process state.
+/// Preserves first-seen order so injection de-dup and the injection cap behave
+/// identically after a restart.
+pub(crate) fn collect_surfaced_memory_ids_from_events(events: &[Event]) -> Vec<String> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for e in events {
+        if let EventPayload::MemoriesInjected { ids, .. } = &e.payload {
+            for id in ids {
+                if seen.insert(id.clone()) {
+                    out.push(id.clone());
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Compute the MCP-instructions delta between the currently-connected servers
 /// that declared instructions (`entries`) and what has already been announced
 /// this session (`announced`). Returns `(added, removed)`:
@@ -581,6 +602,65 @@ mod tests {
             timestamp: deepagent_core::clock::Timestamp::from_millis(seq as i64),
             payload,
         }
+    }
+
+    #[test]
+    fn collect_surfaced_memory_ids_unions_deltas_in_first_seen_order() {
+        // Scenario: two runs of one session each injected memories; a third run
+        // must see the union so the provider is told to skip both. Order is
+        // preserved because injection budget accounting depends on it.
+        let sid = SessionId::nil();
+        let events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::MemoriesInjected {
+                    ids: vec!["a".into(), "b".into()],
+                    count: 2,
+                    latency_ms: 10,
+                    trigger: "prefetch".into(),
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::MessageAppended {
+                    message: Message::user("hi"),
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::MemoriesInjected {
+                    ids: vec!["b".into(), "c".into()],
+                    count: 2,
+                    latency_ms: 12,
+                    trigger: "prefetch".into(),
+                },
+            ),
+        ];
+        assert_eq!(
+            collect_surfaced_memory_ids_from_events(&events),
+            vec!["a".to_string(), "b".to_string(), "c".to_string()]
+        );
+    }
+
+    #[test]
+    fn collect_surfaced_memory_ids_is_empty_without_injections() {
+        let sid = SessionId::nil();
+        let events = vec![event(
+            sid,
+            0,
+            EventPayload::MemoryEntryWritten {
+                id: "m-1".into(),
+                tier: "failure".into(),
+                scope: "global".into(),
+                importance: Some(0.9),
+            },
+        )];
+        // A write is not a surfacing: it must not enter the de-dup set.
+        assert!(collect_surfaced_memory_ids_from_events(&events).is_empty());
+        assert!(collect_surfaced_memory_ids_from_events(&[]).is_empty());
     }
 
     #[test]

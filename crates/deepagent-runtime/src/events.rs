@@ -336,6 +336,10 @@ pub enum RuntimeEvent {
         count: usize,
         /// Milliseconds from prefetch start to injection.
         latency_ms: u64,
+        /// Ids of the injected entries. Carried so the loop can persist a
+        /// replayable `MemoriesInjected` event (session de-dup across runs).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        ids: Vec<String>,
     },
     /// The stall/laziness detector (§2.3, Grok laziness classifier) flagged a
     /// final answer as stalled and injected one advisory nudge before

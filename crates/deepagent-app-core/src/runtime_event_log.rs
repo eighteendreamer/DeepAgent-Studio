@@ -516,8 +516,19 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
         } => format!(
             "context compacted strategy={strategy} tokens={tokens_before}->{tokens_after}"
         ),
-        RuntimeEvent::RelevantMemoriesInjected { count, latency_ms } => {
-            format!("relevant memories injected count={count} latency_ms={latency_ms}")
+        RuntimeEvent::RelevantMemoriesInjected {
+            count,
+            latency_ms,
+            ids,
+        } => {
+            let picked = if ids.is_empty() {
+                String::from("-")
+            } else {
+                ids.join(",")
+            };
+            format!(
+                "relevant memories injected count={count} latency_ms={latency_ms} ids={picked}"
+            )
         }
         RuntimeEvent::StallNudgeInjected {
             step,

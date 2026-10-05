@@ -1048,6 +1048,19 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             })?;
         }
 
+        // Persist each background-memory injection as a replayable delta so the
+        // session's already-surfaced set is derived from the event stream
+        // instead of a process-local set (resumed runs then stop re-injecting).
+        for (ids, latency_ms) in agent.drain_memory_injections() {
+            let count = ids.len();
+            session.append(EventPayload::MemoriesInjected {
+                ids,
+                count,
+                latency_ms,
+                trigger: "prefetch".to_string(),
+            })?;
+        }
+
         if self.config.tool_result_budget.cleanup_on_run_end {
             let paths = {
                 let mut guard = self
@@ -2642,6 +2655,7 @@ mod tests {
     struct RawUsageAgent {
         usage: crate::agent::RunUsage,
         raw_usage: Vec<serde_json::Value>,
+        injections: Vec<(Vec<String>, u64)>,
     }
 
     #[async_trait]
@@ -2678,6 +2692,10 @@ mod tests {
 
         fn take_pending_raw_usage(&mut self) -> Vec<serde_json::Value> {
             std::mem::take(&mut self.raw_usage)
+        }
+
+        fn drain_memory_injections(&mut self) -> Vec<(Vec<String>, u64)> {
+            std::mem::take(&mut self.injections)
         }
     }
 
@@ -3096,6 +3114,7 @@ mod tests {
                 "output_tokens_details": {"reasoning_tokens": 3},
                 "total_tokens": 9
             })],
+            injections: Vec::new(),
         };
         let registry = registry();
         let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default());
@@ -3116,6 +3135,67 @@ mod tests {
             .expect("raw usage persisted");
         assert_eq!(usage[0]["input_tokens"], 4);
         assert_eq!(usage[0]["output_tokens_details"]["reasoning_tokens"], 3);
+    }
+
+    #[tokio::test]
+    async fn memory_injections_persist_as_replayable_deltas() {
+        // Scenario: a run surfaced two memory entries in the background. The
+        // loop must record that as a durable MemoriesInjected delta so the next
+        // run of the same session can rebuild the already-surfaced set from the
+        // event stream instead of re-injecting them.
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("memory")).unwrap();
+        let task = session.create_task("finish").unwrap();
+        let mut agent = RawUsageAgent {
+            usage: crate::agent::RunUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+                reasoning_tokens: 0,
+                total_tokens: 2,
+                prompt_cache_hit_tokens: 0,
+                prompt_cache_miss_tokens: 0,
+            },
+            raw_usage: Vec::new(),
+            injections: vec![(
+                vec![
+                    "project:build-fix".to_string(),
+                    "global:cargo-j1".to_string(),
+                ],
+                42,
+            )],
+        };
+        let registry = registry();
+        let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default());
+
+        engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        let events = EventStore::new(&db).load_session(session.id()).unwrap();
+        let injected: Vec<(Vec<String>, usize, u64, String)> = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::MemoriesInjected {
+                    ids,
+                    count,
+                    latency_ms,
+                    trigger,
+                } => Some((ids.clone(), *count, *latency_ms, trigger.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(injected.len(), 1, "one durable injection");
+        assert_eq!(
+            injected[0].0,
+            vec![
+                "project:build-fix".to_string(),
+                "global:cargo-j1".to_string()
+            ]
+        );
+        assert_eq!(injected[0].1, 2);
+        assert_eq!(injected[0].2, 42);
+        assert_eq!(injected[0].3, "prefetch");
+        // Draining left the agent clean: nothing to persist twice.
+        assert!(agent.drain_memory_injections().is_empty());
     }
 
     #[tokio::test]

@@ -322,3 +322,29 @@ fn mcp_degradation_projects_to_typed_lifecycle_event() {
     assert_eq!(value["configHash"], "config-hash");
     assert_eq!(value["toolCount"], 0);
 }
+
+#[test]
+fn memory_injection_events_reach_machine_consumers_as_runtime_items() {
+    // Contract: a background memory injection must NOT be silently dropped on
+    // the harness protocol. It has no first-class item type yet, so it must
+    // arrive through the catch-all `runtime` payload with a stable event_type
+    // and the ids the SDK needs for its own de-dup view.
+    let context = EventContext::new(Some("thread-1".into()), Some("turn-1".into()));
+    let projected = project_runtime_event(
+        &RuntimeEvent::RelevantMemoriesInjected {
+            count: 2,
+            latency_ms: 42,
+            ids: vec!["project:build-fix".into(), "global:cargo-j1".into()],
+        },
+        &context,
+    )
+    .expect("memory injection must not be dropped");
+    let value = serde_json::to_value(projected).unwrap();
+
+    assert_eq!(value["type"], "item.updated");
+    assert_eq!(value["item"]["kind"], "runtime");
+    assert_eq!(value["item"]["eventType"], "relevant_memories_injected");
+    assert_eq!(value["item"]["data"]["count"], 2);
+    assert_eq!(value["item"]["data"]["latency_ms"], 42);
+    assert_eq!(value["item"]["data"]["ids"][0], "project:build-fix");
+}

@@ -208,6 +208,38 @@ pub enum EventPayload {
         #[serde(default)]
         removed: Vec<String>,
     },
+
+    /// Long-term memory entries were injected into the model context. The
+    /// `relevant_memories` counterpart of [`EventPayload::ToolsDiscovered`]:
+    /// persisting the **ids** makes the already-surfaced de-dup set derivable
+    /// from the event stream, so a resumed or reopened session does not
+    /// re-inject the same memories, and the UI can show what was added.
+    MemoriesInjected {
+        /// Ids of the entries newly surfaced (empty when only counts are known).
+        #[serde(default)]
+        ids: Vec<String>,
+        /// How many distinct entries this injection added.
+        count: usize,
+        /// Prefetch-to-injection wall-clock latency in milliseconds.
+        #[serde(default)]
+        latency_ms: u64,
+        /// What caused the injection (e.g. `prefetch`, `model_request`).
+        #[serde(default)]
+        trigger: String,
+    },
+
+    /// A cross-session memory entry was written to the knowledge vault.
+    MemoryEntryWritten {
+        /// Vault entry id (also the tool's returned handle).
+        id: String,
+        /// Memory tier label (`semantic` / `episodic` / ...).
+        tier: String,
+        /// Vault scope label (`global` / `project`).
+        scope: String,
+        /// Importance weight when the writer supplied one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        importance: Option<f32>,
+    },
 }
 
 impl EventPayload {
@@ -230,6 +262,8 @@ impl EventPayload {
             EventPayload::UsageRecorded { .. } => "usage_recorded",
             EventPayload::ToolsDiscovered { .. } => "tools_discovered",
             EventPayload::McpInstructionsDelta { .. } => "mcp_instructions_delta",
+            EventPayload::MemoriesInjected { .. } => "memories_injected",
+            EventPayload::MemoryEntryWritten { .. } => "memory_entry_written",
         }
     }
 }
@@ -238,6 +272,69 @@ impl EventPayload {
 mod tests {
     use super::*;
     use crate::message::Message;
+
+    #[test]
+    fn memories_injected_round_trips_and_reports_its_kind() {
+        let payload = EventPayload::MemoriesInjected {
+            ids: vec![
+                "project:build-fix".to_string(),
+                "global:cargo-j1".to_string(),
+            ],
+            count: 2,
+            latency_ms: 41,
+            trigger: "prefetch".to_string(),
+        };
+        assert_eq!(payload.kind(), "memories_injected");
+        let json = serde_json::to_value(&payload).unwrap();
+        assert_eq!(json["type"], "memories_injected");
+        assert_eq!(json["count"], 2);
+        let back: EventPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(back, payload);
+    }
+
+    #[test]
+    fn memory_entry_written_round_trips_and_omits_absent_importance() {
+        let payload = EventPayload::MemoryEntryWritten {
+            id: "m-1".to_string(),
+            tier: "failure".to_string(),
+            scope: "global".to_string(),
+            importance: None,
+        };
+        assert_eq!(payload.kind(), "memory_entry_written");
+        let json = serde_json::to_value(&payload).unwrap();
+        assert!(
+            json.get("importance").is_none(),
+            "absent importance must not be serialized"
+        );
+        let back: EventPayload = serde_json::from_value(json).unwrap();
+        assert_eq!(back, payload);
+    }
+
+    #[test]
+    fn memories_injected_deserializes_without_the_new_defaults() {
+        // Forward compatibility: a payload written before `ids`/`trigger`
+        // existed must still parse.
+        let legacy = serde_json::json!({
+            "type": "memories_injected",
+            "count": 1,
+            "latency_ms": 7,
+        });
+        let parsed: EventPayload = serde_json::from_value(legacy).unwrap();
+        match parsed {
+            EventPayload::MemoriesInjected {
+                ids,
+                count,
+                latency_ms,
+                trigger,
+            } => {
+                assert!(ids.is_empty());
+                assert_eq!(count, 1);
+                assert_eq!(latency_ms, 7);
+                assert_eq!(trigger, "");
+            }
+            other => panic!("unexpected payload: {other:?}"),
+        }
+    }
 
     fn sample_event(seq: Sequence) -> Event {
         Event {
