@@ -8,10 +8,73 @@
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use deepagent_core::error::{CoreError, Result};
+use fs2::FileExt;
 
 use crate::entry::{KnowledgeEntry, Scope};
+
+/// How long a writer waits for another process to release the vault before it
+/// gives up. Kept short because saves run on the request path: a stalled UI is
+/// worse than a retriable "locked" error.
+const LOCK_WAIT: Duration = Duration::from_millis(500);
+
+/// The OS-held exclusive lock over one vault directory.
+///
+/// `KnowledgeService`'s in-process mutex serialises a single process, but the
+/// desktop app and the headless CLI can point at the same data root, and a
+/// multi-file transaction (consolidation) needs one barrier over the whole
+/// vault. Windows byte-range locks and POSIX `flock` are both released by the
+/// OS when the holder exits, which is why there is no PID file to reclaim.
+#[derive(Debug)]
+pub struct VaultLock {
+    file: std::fs::File,
+}
+
+impl Drop for VaultLock {
+    fn drop(&mut self) {
+        if let Err(error) = FileExt::unlock(&self.file) {
+            tracing::warn!(%error, "knowledge vault: unlock failed");
+        }
+    }
+}
+
+impl VaultLock {
+    /// Overwrite one entry while holding the vault exclusively.
+    pub fn write(&self, vault: &Vault, entry: &KnowledgeEntry) -> Result<PathBuf> {
+        vault.write_inner(entry)
+    }
+
+    /// Remove one entry while holding the vault exclusively.
+    pub fn delete(&self, vault: &Vault, id: &str) -> Result<bool> {
+        vault.delete_inner(id)
+    }
+}
+
+/// Whether a failed `try_lock_exclusive` means "someone else is inside the
+/// vault" rather than "the lock cannot be taken at all".
+///
+/// POSIX reports contention as `EAGAIN`/`EACCES`, which std already classifies.
+/// Windows reports a contended immediate lock as `ERROR_LOCK_FAILED` (33) with
+/// an `Uncategorized` kind, so its raw code has to be checked — measured here
+/// rather than assumed.
+fn contention(error: &std::io::Error) -> bool {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
+    ) {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        matches!(error.raw_os_error(), Some(33) | Some(36))
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
 
 /// A single markdown vault directory.
 #[derive(Debug, Clone)]
@@ -81,17 +144,49 @@ impl Vault {
 
     /// Write (create or overwrite) the `.md` file for `entry`. The resolved
     /// path is confined to the vault root. Returns the file path written.
+    ///
+    /// The bytes land through a sibling temp file plus a rename, so neither a
+    /// concurrent reader nor a crash can leave a half-written entry, and the
+    /// result is read back before the call reports success. A transaction that
+    /// touches several files takes one [`VaultLock`] and calls
+    /// [`VaultLock::write`] instead, so it never waits on its own lock.
     pub fn write(&self, entry: &KnowledgeEntry) -> Result<PathBuf> {
-        let path = self.resolve(&entry.id)?;
-        std::fs::create_dir_all(&self.root)
-            .map_err(|e| CoreError::Persistence(format!("create knowledge vault dir: {e}")))?;
-        std::fs::write(&path, entry.to_markdown())
-            .map_err(|e| CoreError::Persistence(format!("write knowledge file: {e}")))?;
-        Ok(path)
+        self.lock()?.write(self, entry)
     }
 
     /// Delete the `.md` file for `id`. Returns whether a file was removed.
     pub fn delete(&self, id: &str) -> Result<bool> {
+        self.lock()?.delete(self, id)
+    }
+
+    /// The write body, reachable only while a [`VaultLock`] is held.
+    fn write_inner(&self, entry: &KnowledgeEntry) -> Result<PathBuf> {
+        let path = self.resolve(&entry.id)?;
+        let markdown = entry.to_markdown();
+        std::fs::create_dir_all(&self.root)
+            .map_err(|e| CoreError::Persistence(format!("create knowledge vault dir: {e}")))?;
+        let temp = staging_path(&path);
+        std::fs::write(&temp, &markdown)
+            .map_err(|e| CoreError::Persistence(format!("stage knowledge file: {e}")))?;
+        if let Err(error) = std::fs::rename(&temp, &path) {
+            let _ = std::fs::remove_file(&temp);
+            return Err(CoreError::Persistence(format!(
+                "commit knowledge file: {error}"
+            )));
+        }
+        let read_back = std::fs::read_to_string(&path)
+            .map_err(|e| CoreError::Persistence(format!("read back knowledge file: {e}")))?;
+        if read_back != markdown {
+            return Err(CoreError::Persistence(format!(
+                "knowledge file did not read back as written: {}",
+                path.display()
+            )));
+        }
+        Ok(path)
+    }
+
+    /// The delete body, reachable only while a [`VaultLock`] is held.
+    fn delete_inner(&self, id: &str) -> Result<bool> {
         let path = self.resolve(id)?;
         if path.exists() {
             std::fs::remove_file(&path)
@@ -99,6 +194,45 @@ impl Vault {
             Ok(true)
         } else {
             Ok(false)
+        }
+    }
+
+    /// Take the vault's exclusive lock, waiting at most [`LOCK_WAIT`] for
+    /// whoever holds it. The returned guard releases the lock when dropped, and
+    /// a multi-file transaction is expected to hold one guard for its whole
+    /// body — never across a model call.
+    pub fn lock(&self) -> Result<VaultLock> {
+        let lock_path = self.root.join(".locks").join("vault.lock");
+        if let Some(dir) = lock_path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|e| CoreError::Persistence(format!("create vault lock dir: {e}")))?;
+        }
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|e| CoreError::Persistence(format!("open vault lock file: {e}")))?;
+        let deadline = Instant::now() + LOCK_WAIT;
+        loop {
+            match file.try_lock_exclusive() {
+                Ok(()) => return Ok(VaultLock { file }),
+                Err(error) if contention(&error) => {
+                    if Instant::now() >= deadline {
+                        return Err(CoreError::Persistence(format!(
+                            "knowledge vault is held by another writer: {}",
+                            lock_path.display()
+                        )));
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => {
+                    return Err(CoreError::Persistence(format!(
+                        "lock knowledge vault: {error}"
+                    )));
+                }
+            }
         }
     }
 
@@ -282,6 +416,21 @@ fn is_markdown(path: &Path) -> bool {
             .unwrap_or(false)
 }
 
+/// The staging file a write goes through before it is renamed into place. The
+/// name is unique per process and per call, and deliberately does not end in
+/// `.md`, so a vault scan can never mistake a half-written file for an entry.
+fn staging_path(target: &Path) -> PathBuf {
+    let name = target
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("entry.md");
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    target.with_file_name(format!(".{name}.{}-{nonce:x}.tmp", std::process::id()))
+}
+
 /// Truncate to at most `max` characters (not bytes), trimming a trailing dash.
 fn truncate_chars(s: &str, max: usize) -> String {
     let truncated: String = s.chars().take(max).collect();
@@ -451,5 +600,109 @@ mod tests {
         let vault = Vault::new(tmp.path().join("k"), Scope::Project);
         assert!(vault.delete_draft("../escape").is_err());
         assert!(vault.delete_draft("nested/path").is_err());
+    }
+
+    /// A write must land whole: the entry reads back through `scan`, and no
+    /// staging file survives in the vault directory.
+    #[test]
+    fn write_lands_whole_and_leaves_no_staging_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Vault::new(tmp.path().join("k"), Scope::Project);
+        vault
+            .write(&entry("note-1", "Note one", "the body"))
+            .unwrap();
+
+        let scanned = vault.scan().unwrap();
+        assert_eq!(scanned.len(), 1);
+        assert_eq!(scanned[0].body, "the body");
+
+        let leftovers: Vec<_> = std::fs::read_dir(vault.root())
+            .unwrap()
+            .filter_map(|dir| dir.ok())
+            .filter(|dir| {
+                dir.path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("tmp"))
+            })
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "staging files left behind: {leftovers:?}"
+        );
+    }
+
+    /// Two writers may not be inside one vault at the same time. The contended
+    /// write must fail with a retriable error instead of hanging, and go through
+    /// as soon as the holder is done. A second handle in this process is the
+    /// same OS barrier a second process would meet.
+    #[test]
+    fn a_held_lock_blocks_the_next_writer_until_released() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Vault::new(tmp.path().join("k"), Scope::Project);
+
+        let guard = vault.lock().unwrap();
+        let blocked = vault.write(&entry("note-1", "Note one", "first"));
+        let error = blocked
+            .err()
+            .expect("a locked vault must reject the writer");
+        assert!(
+            error.to_string().contains("another writer"),
+            "unexpected error: {error}"
+        );
+        drop(guard);
+
+        vault.write(&entry("note-1", "Note one", "second")).unwrap();
+        assert_eq!(vault.scan().unwrap()[0].body, "second");
+    }
+
+    /// An abandoned handle must not strand the vault. Closing the handle with no
+    /// explicit unlock is how a killed process disappears, and the OS releases
+    /// the lock for it — which is why there is no PID file to reclaim here.
+    #[test]
+    fn a_closed_handle_releases_the_vault_lock() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Vault::new(tmp.path().join("k"), Scope::Project);
+        let lock_path = vault.root().join(".locks").join("vault.lock");
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .unwrap();
+        file.lock_exclusive().unwrap();
+        drop(file);
+
+        let guard = vault.lock().unwrap();
+        guard
+            .write(&vault, &entry("note-1", "Note one", "after the crash"))
+            .unwrap();
+        drop(guard);
+        assert_eq!(vault.scan().unwrap()[0].body, "after the crash");
+    }
+
+    /// One guard covers a whole transaction: a merge that rewrites one file and
+    /// deletes another must not wait on the lock it already holds.
+    #[test]
+    fn one_guard_spans_a_multi_file_transaction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Vault::new(tmp.path().join("k"), Scope::Project);
+        vault.write(&entry("keep", "Keep", "survivor")).unwrap();
+        vault.write(&entry("drop-me", "Drop", "duplicate")).unwrap();
+
+        let guard = vault.lock().unwrap();
+        guard
+            .write(&vault, &entry("keep", "Keep", "merged body"))
+            .unwrap();
+        assert!(guard.delete(&vault, "drop-me").unwrap());
+        drop(guard);
+
+        let scanned = vault.scan().unwrap();
+        assert_eq!(scanned.len(), 1, "the duplicate must be gone");
+        assert_eq!(scanned[0].id, "keep");
+        assert_eq!(scanned[0].body, "merged body");
+        // The lock lives under a dot-directory, so it never becomes an entry.
+        assert_eq!(vault.scan().unwrap().len(), 1, "the lock is not an entry");
     }
 }

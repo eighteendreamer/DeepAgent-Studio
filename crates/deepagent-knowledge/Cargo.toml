@@ -11,6 +11,7 @@ description = "Knowledge base: Obsidian-style markdown vault as source of truth,
 deepagent-core.workspace = true
 deepagent-memory.workspace = true
 deepagent-skills.workspace = true
+fs2.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -368,6 +368,77 @@ mod tests {
         }
     }
 
+    /// The measurable half of the cache discipline: two consecutive turns of the
+    /// same session must send the same leading bytes, or the provider's implicit
+    /// whole-prefix cache is cold on every turn. The volatile inputs (cwd, plugin
+    /// output style, deferred tool catalog, connected MCP servers, invoked
+    /// skills) are deliberately different between the two calls.
+    #[test]
+    fn the_cacheable_prefix_is_byte_identical_between_turns() {
+        let turn_one = build_system_manifest(
+            Path::new("/work/proj"),
+            SandboxMode::WorkspaceWrite,
+            Some("# Built-in output style\nAnswer in prose.".to_string()),
+            None,
+            Some("# Deferred tools\n- tool_search".to_string()),
+            Some("# MCP server instructions\n\n## alpha\nUse alpha.".to_string()),
+            vec![
+                "<system-reminder>\n<available-skills>\n<skill>a</skill>\n</available-skills>\n</system-reminder>"
+                    .to_string(),
+            ],
+            usize::MAX,
+        )
+        .render();
+        let turn_two = build_system_manifest(
+            Path::new("/work/other-proj"),
+            SandboxMode::WorkspaceWrite,
+            Some("# Built-in output style\nAnswer in prose.".to_string()),
+            Some("# Plugin output style\nBe terse.".to_string()),
+            Some("# Deferred tools\n- tool_search\n- web_fetch".to_string()),
+            Some(
+                "# MCP server instructions\n\n## beta\nUse beta.\n\n## alpha\nUse alpha."
+                    .to_string(),
+            ),
+            Vec::new(),
+            usize::MAX,
+        )
+        .render();
+
+        let prefix = |rendered: &str| {
+            let at = rendered
+                .find(SYSTEM_PROMPT_DYNAMIC_BOUNDARY)
+                .expect("the boundary is part of the system prompt");
+            rendered[..at].to_string()
+        };
+        assert_eq!(
+            prefix(&turn_one),
+            prefix(&turn_two),
+            "bytes before the dynamic boundary drifted, so every turn is a prompt-cache miss"
+        );
+        // Guards the comparison above: if the volatile tail were missing, the
+        // two renders would be equal and the assertion would prove nothing.
+        assert_ne!(turn_one, turn_two, "the dynamic tail must still vary");
+
+        // Negative control: the same comparison has to notice drift that really
+        // is inside the prefix, or it cannot fence it either.
+        let different_style = build_system_manifest(
+            Path::new("/work/proj"),
+            SandboxMode::WorkspaceWrite,
+            Some("# Built-in output style\nAnswer in bullets.".to_string()),
+            None,
+            None,
+            None,
+            Vec::new(),
+            usize::MAX,
+        )
+        .render();
+        assert_ne!(
+            prefix(&turn_one),
+            prefix(&different_style),
+            "the comparison is blind to prefix changes, so the fence above is vacuous"
+        );
+    }
+
     #[test]
     fn injects_mcp_instructions_as_mcp_catalog() {
         let manifest = build_system_manifest(

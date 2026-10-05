@@ -1296,6 +1296,7 @@ dependencies = [
  "deepagent-core",
  "deepagent-memory",
  "deepagent-skills",
+ "fs2",
  "serde",
  "serde_json",
  "tempfile",
