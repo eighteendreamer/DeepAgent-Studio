@@ -1390,6 +1390,109 @@ mod tests {
         ));
     }
 
+    /// A boundary records the sequence its model view starts at. Forking copies a
+    /// session by *re-appending* the prefix, so that recorded number is only
+    /// meaningful while the copy keeps the source's numbering — an assumption
+    /// neither layer states or enforces. If it ever breaks, a forked session
+    /// quietly shows less history than it has, so pin the invariant here.
+    #[test]
+    fn a_forked_session_keeps_the_boundary_cut_point() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = deepagent_core::clock::SystemClock;
+        let mut source = deepagent_session::Session::create(&db, &clock, Some("source")).unwrap();
+        let source_id = source.id();
+        for message in [
+            Message::user("first question"),
+            Message::assistant("first answer"),
+            Message::user("second question"),
+            Message::assistant("second answer"),
+        ] {
+            source
+                .append(EventPayload::MessageAppended { message })
+                .unwrap();
+        }
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        // The cut is taken from the real stream: a session log starts with its own
+        // bookkeeping events, so absolute sequence numbers cannot be assumed.
+        let prefix = store.load_session(source_id).unwrap();
+        let cut = sequence_of_message(&prefix, &Message::user("second question"))
+            .expect("the appended turn must map back to an event");
+        let boundary_sequence = prefix
+            .last()
+            .expect("the prefix holds the turns")
+            .sequence
+            .saturating_add(1);
+        source
+            .append(EventPayload::ContextCompacted {
+                tokens_before: 9_000,
+                tokens_after: 2_000,
+                strategy: "session_memory".to_string(),
+                summary: Some("- decided: one vault".to_string()),
+                first_kept_sequence: Some(cut),
+            })
+            .unwrap();
+        let source_events = store.load_session(source_id).unwrap();
+        let before = model_history_from_events(&source_events);
+        assert_eq!(
+            before.len(),
+            3,
+            "the view is the summary plus the turns at or after the cut: {before:?}"
+        );
+
+        let forked =
+            deepagent_session::Session::fork(&db, &clock, source_id, boundary_sequence).unwrap();
+        let copied = store.load_session(forked.id()).unwrap();
+        assert_eq!(
+            copied
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            source_events
+                .iter()
+                .map(|event| event.sequence)
+                .collect::<Vec<_>>(),
+            "the copied prefix must keep the numbering the boundary refers to"
+        );
+        let after = model_history_from_events(&copied);
+        assert_eq!(
+            after.len(),
+            before.len(),
+            "a fork at the boundary must show the window the source showed: {after:?}"
+        );
+        assert!(
+            after[0].content.contains("- decided: one vault"),
+            "the fork must inherit the summary standing in for the prefix: {after:?}"
+        );
+
+        // Forking before the boundary leaves it out, which is the only
+        // acceptable way to lose a cut point: with no boundary the view keeps its
+        // whole (shorter) prefix, never a stale slice of it.
+        let early = deepagent_session::Session::fork(&db, &clock, source_id, cut).unwrap();
+        let early_events = store.load_session(early.id()).unwrap();
+        assert!(
+            !early_events
+                .iter()
+                .any(|event| matches!(event.payload, EventPayload::ContextCompacted { .. })),
+            "the early fork must stop before the boundary"
+        );
+        let early_view = model_history_from_events(&early_events);
+        // The invariant is that nothing gets sliced by a stale number: the turn
+        // that sits BEFORE any plausible cut point must still be there. Exact
+        // counts depend on unrelated conversation rules, so they are not asserted.
+        assert!(
+            early_view
+                .iter()
+                .any(|message| message.content == "first question"),
+            "a fork with no boundary must not be sliced by the source's cut point: {early_view:?}"
+        );
+        assert!(
+            !early_view
+                .iter()
+                .any(|message| message.content.contains("decided: one vault")),
+            "no boundary means no summary standing in for a prefix: {early_view:?}"
+        );
+    }
+
     #[test]
     fn collect_discovered_unions_across_events_preserving_order() {
         let sid = SessionId::nil();
