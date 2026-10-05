@@ -5,13 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
-description = "Input dispatch / intent recognition layer: slash-command routing, attachment normalization, and ExecutionRequest construction — the Prompt Submission layer aligned with Claude Code."
+description = "Slash-command dispatch: the code-defined slash registry and the prompt-template command registry loaded from .md command files."
 
 [dependencies]
 deepagent-core.workspace = true
 serde.workspace = true
-serde_json.workspace = true
-tracing.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
