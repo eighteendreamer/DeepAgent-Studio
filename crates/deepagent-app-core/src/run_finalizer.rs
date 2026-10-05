@@ -41,6 +41,48 @@ pub(crate) struct AppRunFinalizerRequest<'a> {
     pub(crate) capture_model: Option<String>,
 }
 
+/// Put one measured model call into the session's cost ledger and tell the UI.
+///
+/// Shared by the run itself and by side calls (pre-run compaction, session-note
+/// extraction) so "what did this session cost" has exactly one answer. A call
+/// that reported no tokens is skipped, not recorded as zero.
+pub(crate) fn record_usage_cost(
+    cost: &CostService,
+    session_id: &str,
+    model_name: &str,
+    usage: RunUsage,
+    sink: &dyn RuntimeEventSink,
+) {
+    match cost.record(CostRecordRequest {
+        session_id: session_id.to_string(),
+        model: model_name.to_string(),
+        input_tokens: usage.prompt_tokens,
+        output_tokens: usage.completion_tokens,
+        cache_hit_tokens: usage.prompt_cache_hit_tokens,
+        cache_miss_tokens: usage.prompt_cache_miss_tokens,
+        total_tokens: usage.total_tokens,
+    }) {
+        Ok(Some(cny)) => {
+            tracing::info!(cost_yuan = cny, "recorded run cost");
+            sink.emit(RuntimeEvent::CostRecorded {
+                model: model_name.to_string(),
+                cost_yuan: Some(cny),
+            });
+        }
+        Ok(None) => {
+            tracing::warn!(
+                model = model_name,
+                "token usage saved but cost unavailable (no pricing for model)"
+            );
+            sink.emit(RuntimeEvent::CostRecorded {
+                model: model_name.to_string(),
+                cost_yuan: None,
+            });
+        }
+        Err(error) => tracing::warn!(error = %error, "failed to record run cost"),
+    }
+}
+
 impl AppRunFinalizer {
     pub(crate) fn new(
         db: Arc<Database>,
@@ -134,34 +176,7 @@ impl AppRunFinalizer {
         if u.total_tokens == 0 {
             return;
         }
-        match cost.record(CostRecordRequest {
-            session_id: session_id.to_string(),
-            model: model_name.to_string(),
-            input_tokens: u.prompt_tokens,
-            output_tokens: u.completion_tokens,
-            cache_hit_tokens: u.prompt_cache_hit_tokens,
-            cache_miss_tokens: u.prompt_cache_miss_tokens,
-            total_tokens: u.total_tokens,
-        }) {
-            Ok(Some(cny)) => {
-                tracing::info!(cost_yuan = cny, "recorded run cost");
-                sink.emit(RuntimeEvent::CostRecorded {
-                    model: model_name.to_string(),
-                    cost_yuan: Some(cny),
-                });
-            }
-            Ok(None) => {
-                tracing::warn!(
-                    model = model_name,
-                    "token usage saved but cost unavailable (no pricing for model)"
-                );
-                sink.emit(RuntimeEvent::CostRecorded {
-                    model: model_name.to_string(),
-                    cost_yuan: None,
-                });
-            }
-            Err(error) => tracing::warn!(error = %error, "failed to record run cost"),
-        }
+        record_usage_cost(cost, session_id, model_name, u, sink);
     }
 
     fn clear_run_cancellation(&self, session_id: &str, run_id: &str) {

@@ -14,7 +14,9 @@
 
 use std::sync::Arc;
 
-use deepagent_models::{classify_model_error, ModelClient, ModelFailureKind, ResponseRequest};
+use deepagent_models::{
+    classify_model_error, ModelClient, ModelFailureKind, ResponseRequest, Usage,
+};
 
 use crate::compaction::{HeuristicSummarizer, Summarizer, TaskSummary};
 
@@ -81,11 +83,32 @@ impl ModelCompactor {
         prior: &TaskSummary,
         older_turns: &[String],
     ) -> TaskSummary {
-        match self.try_model_summary(goal, prior, older_turns).await {
-            Some(summary) => summary,
+        self.summarize_accounted(goal, prior, older_turns).await.0
+    }
+
+    /// [`Self::summarize`] plus the provider tokens the attempt(s) spent.
+    ///
+    /// A summary call is real spend even when its JSON fails to parse or the
+    /// request is retried after an overflow, so every answered attempt counts.
+    /// Callers that compact outside the run loop must put this into the cost
+    /// ledger, otherwise the session under-reports what compaction cost; a
+    /// zero-valued return means nothing was spent (all-zero usage, `total_tokens
+    /// == 0`, is what the ledger already skips).
+    pub async fn summarize_accounted(
+        &self,
+        goal: &str,
+        prior: &TaskSummary,
+        older_turns: &[String],
+    ) -> (TaskSummary, Usage) {
+        let (summary, spent) = self.try_model_summary(goal, prior, older_turns).await;
+        match summary {
+            Some(summary) => (summary, spent),
             None => {
                 tracing::warn!("model compaction failed; falling back to heuristic summarizer");
-                HeuristicSummarizer.summarize(goal, prior, older_turns)
+                (
+                    HeuristicSummarizer.summarize(goal, prior, older_turns),
+                    spent,
+                )
             }
         }
     }
@@ -102,15 +125,16 @@ impl ModelCompactor {
         goal: &str,
         prior: &TaskSummary,
         older_turns: &[String],
-    ) -> Option<TaskSummary> {
+    ) -> (Option<TaskSummary>, Usage) {
+        let mut spent = Usage::default();
         if older_turns.is_empty() {
-            return Some(prior.clone());
+            return (Some(prior.clone()), spent);
         }
         let mut keep_from = 0usize;
         for attempt in 0..=MAX_PTL_RETRIES {
             let slice = &older_turns[keep_from..];
             if slice.is_empty() {
-                return None;
+                return (None, spent);
             }
             let user = build_user_prompt(goal, prior, slice);
             let request = ResponseRequest::with_instructions_and_user_input(
@@ -123,15 +147,21 @@ impl ModelCompactor {
 
             match self.client.stream_response(request).await {
                 Ok(response) => {
+                    if let Some(usage) = response.usage {
+                        fold_usage(&mut spent, usage);
+                    }
                     let content = response.output_text_projection();
-                    return parse_summary_json(&content)
-                        .map(|parsed| merge_into_prior(prior, parsed, goal));
+                    return (
+                        parse_summary_json(&content)
+                            .map(|parsed| merge_into_prior(prior, parsed, goal)),
+                        spent,
+                    );
                 }
                 Err(error) => {
                     if classify_model_error(&error) != ModelFailureKind::ContextOverflow
                         || attempt == MAX_PTL_RETRIES
                     {
-                        return None;
+                        return (None, spent);
                     }
                     let remaining = older_turns.len() - keep_from;
                     keep_from += (remaining / 2).max(1);
@@ -143,8 +173,22 @@ impl ModelCompactor {
                 }
             }
         }
-        None
+        (None, spent)
     }
+}
+
+/// Fold one answered attempt into the running spend.
+///
+/// Same semantics the run loop uses for a whole run: the provider reports
+/// prompt/total/cache as *context totals* (last-wins), while output tokens
+/// accumulate across calls.
+fn fold_usage(spent: &mut Usage, fresh: Usage) {
+    spent.prompt_tokens = fresh.prompt_tokens;
+    spent.completion_tokens += fresh.completion_tokens;
+    spent.reasoning_tokens += fresh.reasoning_tokens;
+    spent.total_tokens = fresh.total_tokens;
+    spent.prompt_cache_hit_tokens = fresh.prompt_cache_hit_tokens;
+    spent.prompt_cache_miss_tokens = fresh.prompt_cache_miss_tokens;
 }
 
 /// Build the user message: prior summary (if any) + the older turns to fold in.
@@ -365,6 +409,57 @@ mod tests {
             .completed_steps
             .iter()
             .any(|s| s.contains("Created")));
+    }
+
+    fn usage_events() -> Vec<String> {
+        vec![
+            r#"{"type":"response.output_text.delta","delta":"{\"goal\":\"ship feature\",\"completed\":[\"wrote code\"]}"}"#.to_string(),
+            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":900,"output_tokens":60,"total_tokens":960,"input_tokens_details":{"cached_tokens":700},"output_tokens_details":{"reasoning_tokens":20}}}}"#.to_string(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn summarize_accounted_reports_the_tokens_spent() {
+        let compactor = ModelCompactor::new(client(usage_events()), "deepseek-v4-flash");
+        let (summary, usage) = compactor
+            .summarize_accounted(
+                "ship feature",
+                &TaskSummary::default(),
+                &["did some work".to_string()],
+            )
+            .await;
+        assert_eq!(summary.goal, "ship feature");
+        // Everything the ledger needs, including the DeepSeek cache split and
+        // the reasoning subset, survives the compaction seam.
+        assert_eq!(usage.prompt_tokens, 900);
+        assert_eq!(usage.completion_tokens, 60);
+        assert_eq!(usage.reasoning_tokens, 20);
+        assert_eq!(usage.total_tokens, 960);
+        assert_eq!(usage.prompt_cache_hit_tokens, 700);
+    }
+
+    #[tokio::test]
+    async fn heuristic_fallback_still_reports_its_cost() {
+        // The call already happened: falling back to the heuristic summary must
+        // not erase what the rejected attempt spent.
+        let events = vec![
+            r#"{"type":"response.output_text.delta","delta":"I cannot do that."}"#.to_string(),
+            usage_events()[1].clone(),
+        ];
+        let compactor = ModelCompactor::new(client(events), "deepseek-v4-flash");
+        let (summary, usage) = compactor
+            .summarize_accounted(
+                "build storage",
+                &TaskSummary::default(),
+                &["Created the database module".to_string()],
+            )
+            .await;
+        assert!(summary
+            .completed_steps
+            .iter()
+            .any(|step| step.contains("Created")));
+        assert_eq!(usage.prompt_tokens, 900);
+        assert_eq!(usage.completion_tokens, 60);
     }
 
     #[tokio::test]

@@ -124,6 +124,24 @@ pub struct RunUsage {
     pub prompt_cache_miss_tokens: u32,
 }
 
+/// Provider usage of a single answered call, expressed as run usage.
+///
+/// Side calls that bypass the agent loop (pre-run compaction) report one
+/// provider `Usage`; the ledger speaks [`RunUsage`], and the field meanings are
+/// identical for a single call.
+impl From<deepagent_models::Usage> for RunUsage {
+    fn from(usage: deepagent_models::Usage) -> Self {
+        Self {
+            prompt_tokens: usage.prompt_tokens,
+            completion_tokens: usage.completion_tokens,
+            reasoning_tokens: usage.reasoning_tokens,
+            total_tokens: usage.total_tokens,
+            prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+            prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
+        }
+    }
+}
+
 /// The agent brain. Implementations decide the next [`AgentDecision`] given the
 /// accumulated observations so far.
 #[async_trait]

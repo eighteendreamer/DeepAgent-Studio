@@ -52,7 +52,7 @@ use crate::project_map_service::ProjectMapService;
 use crate::prompt_gate::{finalize_blocked_user_prompt, submit_user_prompt};
 use crate::run_coordinator::RunCoordinator;
 use crate::run_environment::RunEnvironment;
-use crate::run_finalizer::{AppRunFinalizer, AppRunFinalizerRequest};
+use crate::run_finalizer::{record_usage_cost, AppRunFinalizer, AppRunFinalizerRequest};
 use crate::runtime_event_log::{append_runtime_log, spawn_runtime_event_pump};
 use crate::settings::SettingsService;
 use crate::skill_catalog_reminder::SkillCatalogSendState;
@@ -676,6 +676,7 @@ impl<'a> RunAssembler<'a> {
                 &model,
                 &context_policy,
                 &hooks,
+                sink.as_ref(),
             )
             .await;
         let response_history = if context_compacted {
@@ -1469,6 +1470,7 @@ impl<'a> RunAssembler<'a> {
         model: &str,
         context_policy: &ContextPolicy,
         hooks: &HookRegistry,
+        sink: &dyn RuntimeEventSink,
     ) -> (Vec<Message>, bool) {
         let policy = CompactionPolicy {
             trigger_tokens: context_policy.compaction_trigger_tokens(),
@@ -1515,8 +1517,22 @@ impl<'a> RunAssembler<'a> {
             rendered: &rendered,
             count_split,
         };
-        let (split, summary_block, strategy) =
-            choose_compaction_summary(self.db, session.id(), &target, client, model).await;
+        let choice = choose_compaction_summary(self.db, session.id(), &target, client, model).await;
+        if choice.usage.total_tokens > 0 {
+            // The summary call happens outside the run loop, so nothing else
+            // would ever bill it: it goes into the same ledger as the run.
+            if let Some(cost) = self.cost.as_deref() {
+                record_usage_cost(
+                    cost,
+                    &session.id().to_string(),
+                    model,
+                    deepagent_runtime::agent::RunUsage::from(choice.usage),
+                    sink,
+                );
+            }
+        }
+        let split = choice.split;
+        let summary_block = choice.summary_block;
 
         let tokens_after = counter.count(&summary_block)
             + rendered[split..]
@@ -1527,7 +1543,7 @@ impl<'a> RunAssembler<'a> {
         if let Err(e) = session.append(EventPayload::ContextCompacted {
             tokens_before: total as u64,
             tokens_after: tokens_after as u64,
-            strategy: strategy.to_string(),
+            strategy: choice.strategy.to_string(),
             summary: Some(summary_block.clone()),
             // Where the verbatim tail starts. Content-matched, because a batch of
             // parallel tool calls is one history entry but several events; when no
@@ -1679,7 +1695,7 @@ async fn choose_compaction_summary(
     target: &CompactionTarget<'_>,
     client: &Arc<ModelClient>,
     model: &str,
-) -> (usize, String, &'static str) {
+) -> CompactionChoice {
     let store = crate::session_memory::SessionMemoryStore::new(db.clone());
     if let Some((split, note)) = crate::session_memory::compaction_from_note(
         &store,
@@ -1691,31 +1707,47 @@ async fn choose_compaction_summary(
             split,
             "compacting from the session note without a model call"
         );
-        return (
+        return CompactionChoice {
             split,
-            format!("Session notes maintained during this conversation:\n{note}"),
-            "session_memory",
-        );
+            summary_block: format!("Session notes maintained during this conversation:\n{note}"),
+            strategy: "session_memory",
+            usage: deepagent_models::Usage::default(),
+        };
     }
     let goal = target
         .history
         .first()
         .map(|message| message.content.clone())
         .unwrap_or_default();
-    let summary = ModelCompactor::new(client.clone(), model.to_string())
-        .summarize(
+    let (summary, usage) = ModelCompactor::new(client.clone(), model.to_string())
+        .summarize_accounted(
             &goal,
             &TaskSummary::default(),
             &target.rendered[..target.count_split],
         )
         .await;
-    (target.count_split, summary.to_context_block(), "model")
+    CompactionChoice {
+        split: target.count_split,
+        summary_block: summary.to_context_block(),
+        strategy: "model",
+        usage,
+    }
+}
+
+/// What replaced the compacted prefix and what it cost.
+pub(crate) struct CompactionChoice {
+    pub(crate) split: usize,
+    pub(crate) summary_block: String,
+    pub(crate) strategy: &'static str,
+    /// Tokens the summarizing call spent; all-zero when the session note carried
+    /// the boundary, because that path makes no model call at all.
+    pub(crate) usage: deepagent_models::Usage,
 }
 
 #[cfg(test)]
 mod compaction_source_tests {
     use super::*;
-    use crate::session_memory::testing::unreachable_client;
+    use crate::session_memory::testing::{scripted_client, unreachable_client, ScriptedTransport};
     use crate::session_memory::{SessionMemoryState, SessionMemoryStore};
     use deepagent_core::clock::{Clock, SystemClock};
     use deepagent_core::event::{Event, EventPayload, Sequence};
@@ -1773,7 +1805,7 @@ mod compaction_source_tests {
             rendered: &rendered,
             count_split: 2,
         };
-        let (split, block, strategy) = choose_compaction_summary(
+        let choice = choose_compaction_summary(
             &db,
             session,
             &target,
@@ -1782,13 +1814,25 @@ mod compaction_source_tests {
         )
         .await;
 
-        assert_eq!(strategy, "session_memory");
-        assert_eq!(split, 2, "the tail starts at the first uncovered entry");
-        assert!(block.contains("goal: one vault"), "{block}");
+        assert_eq!(choice.strategy, "session_memory");
+        assert_eq!(
+            choice.usage,
+            deepagent_models::Usage::default(),
+            "a note-based boundary must not spend a model call"
+        );
+        assert_eq!(
+            choice.split, 2,
+            "the tail starts at the first uncovered entry"
+        );
+        assert!(
+            choice.summary_block.contains("goal: one vault"),
+            "{}",
+            choice.summary_block
+        );
     }
 
     #[tokio::test]
-    async fn without_a_note_the_model_summarizer_stays_in_charge() {
+    async fn without_a_note_the_model_summarizer_stays_in_charge_and_reports_cost() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = deepagent_core::id::SessionId::new();
         let (events, history) = transcript();
@@ -1800,17 +1844,22 @@ mod compaction_source_tests {
             rendered: &rendered,
             count_split: 1,
         };
-        let (split, _block, strategy) = choose_compaction_summary(
+        let choice = choose_compaction_summary(
             &db,
             session,
             &target,
-            &unreachable_client(),
+            &scripted_client(vec![ScriptedTransport::text(
+                "{\"goal\":\"ship\",\"completed\":[\"wrote code\"]}",
+            )]),
             "deepseek-chat",
         )
         .await;
 
-        assert_eq!(strategy, "model");
-        assert_eq!(split, 1, "the count-based split is preserved");
+        assert_eq!(choice.strategy, "model");
+        assert_eq!(choice.split, 1, "the count-based split is preserved");
+        // The tokens this call spent are what `maybe_compact_history` books.
+        assert_eq!(choice.usage.prompt_tokens, 120);
+        assert_eq!(choice.usage.completion_tokens, 18);
     }
 
     fn transcript_rendered(history: &[Message]) -> Vec<String> {
