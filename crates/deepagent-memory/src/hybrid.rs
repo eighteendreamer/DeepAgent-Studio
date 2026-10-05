@@ -29,8 +29,19 @@ use crate::bm25::{tokenize, Bm25Index};
 use crate::embedding::{cosine_similarity, Embedder};
 use crate::fusion::reciprocal_rank_fusion;
 use crate::ranking::RankingParams;
-use crate::store::ScoredMemory;
 use crate::{MemoryId, MemoryItem, MemoryTier};
+
+/// A retrieval hit: the item plus the score it was ranked with.
+///
+/// Lives here because the hybrid pipeline is its only producer; the retired
+/// in-process `MemoryStore` used to own the type.
+#[derive(Debug, Clone)]
+pub struct ScoredMemory {
+    /// The matched item.
+    pub item: MemoryItem,
+    /// Composite ranking score.
+    pub score: f32,
+}
 
 /// Tuning for the hybrid retriever.
 #[derive(Debug, Clone, Copy)]

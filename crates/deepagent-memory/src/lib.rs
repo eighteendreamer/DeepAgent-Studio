@@ -13,18 +13,18 @@
 //! | Workspace Memory   | project structure      |
 //! | Failure Memory     | past failures          |
 //!
-//! This crate provides two retrieval tracks over that model:
+//! This crate provides the retrieval primitives over that model:
 //!
 //! - **Chunk-level Contextual Retrieval** — the production path, consumed by
 //!   `deepagent-knowledge`. Markdown is chunked and heading-contextualized,
 //!   then retrieved via embeddings + BM25 fused with RRF and reranked
 //!   ([`contextual_retrieval::ContextualRetriever`], tuned by [`HybridConfig`]).
-//! - **Item-level tier stores** — in-memory primitives for the multi-tier
-//!   blueprint: the [`MemoryTier`] taxonomy and [`MemoryItem`] record, the
-//!   [`ranking`] model (importance / recency / decay), an in-memory keyword
-//!   [`store::MemoryStore`], and a vector-based [`semantic::SemanticMemoryStore`]
-//!   (embeddings + cosine similarity). These are not yet wired to cross-session
-//!   persistence.
+//! - The **tier vocabulary and ranking math** the persistent layer builds on:
+//!   [`MemoryTier`] / [`MemoryItem`] plus the importance × recency × frequency
+//!   [`ranking`](ranking) model. Durable storage deliberately lives *outside*
+//!   this crate — memories are knowledge-vault entries so one retrieval track
+//!   serves both, and the retired in-process `MemoryStore` / in-memory
+//!   `SemanticMemoryStore` are gone rather than a second, unsynced copy.
 
 pub mod bm25;
 pub mod chunking;
@@ -35,8 +35,6 @@ pub mod fusion;
 pub mod hybrid;
 pub mod observation;
 pub mod ranking;
-pub mod semantic;
-pub mod store;
 
 pub use bm25::{Bm25Index, Bm25Params};
 pub use chunking::{chunk_markdown, Chunk, ChunkConfig};
@@ -46,9 +44,8 @@ pub use contextualize::{
 };
 pub use embedding::{cosine_similarity, Embedder, HashingEmbedder};
 pub use fusion::reciprocal_rank_fusion;
-pub use hybrid::{to_l5_block, HybridConfig, HybridRetriever, Reranker, SignalReranker};
-pub use observation::{Observation, ObservationType};
-pub use semantic::SemanticMemoryStore;
+pub use hybrid::HybridConfig;
+pub use observation::ObservationType;
 
 use serde::{Deserialize, Serialize};
 
