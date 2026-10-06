@@ -36,8 +36,32 @@ pub struct TimelineEntry {
 /// Build a timeline from a session's events. Events that do not map to a
 /// user-meaningful entry (internal notes can be included or filtered by the
 /// caller) are still represented so the timeline is a faithful replay.
+/// The timeline is the **model-facing** view (§12), not the archive: everything
+/// before the last compaction boundary is dropped, because that is what the
+/// agent was actually given after compaction. The boundary row itself survives,
+/// and it already says where the model view starts. Nothing is deleted — the
+/// append-only log and `transcript` export still carry the earlier events.
+///
+/// A boundary without a recorded cut point (a manual `/compact` on a build that
+/// predates the field) cannot be honoured, so the whole stream stays visible
+/// rather than guessing a start.
 pub fn build_timeline(events: &[Event]) -> Vec<TimelineEntry> {
-    events.iter().map(entry_for_event).collect()
+    let model_view_from = events
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ContextCompacted {
+                summary: Some(_),
+                first_kept_sequence: Some(keep_from),
+                ..
+            } => Some(*keep_from),
+            _ => None,
+        })
+        .max();
+    events
+        .iter()
+        .filter(|event| model_view_from.map_or(true, |from| event.sequence >= from))
+        .map(entry_for_event)
+        .collect()
 }
 
 fn entry_for_event(event: &Event) -> TimelineEntry {
@@ -204,6 +228,66 @@ mod tests {
             timestamp: Timestamp::from_millis(1000 + seq as i64),
             payload,
         }
+    }
+
+    /// §12: the timeline is the model view. Rows the compaction dropped stop
+    /// being shown, while the boundary row itself stays so the cut is visible
+    /// rather than silent.
+    #[test]
+    fn the_timeline_starts_at_the_compaction_boundary() {
+        let message = |seq: u64, text: &str| {
+            event(
+                seq,
+                EventPayload::MessageAppended {
+                    message: deepagent_core::message::Message::user(text),
+                },
+            )
+        };
+        // Real shape: the transcript grows, then compaction appends a boundary
+        // that says the model view now starts at an earlier event.
+        let events = [
+            message(0, "dropped"),
+            message(1, "dropped too"),
+            message(2, "kept"),
+            message(3, "kept too"),
+            event(
+                4,
+                EventPayload::ContextCompacted {
+                    tokens_before: 9_000,
+                    tokens_after: 2_000,
+                    strategy: "session_memory".to_string(),
+                    summary: Some("- kept".to_string()),
+                    first_kept_sequence: Some(2),
+                },
+            ),
+        ];
+
+        let shown: Vec<u64> = build_timeline(&events)
+            .iter()
+            .map(|entry| entry.sequence)
+            .collect();
+        assert_eq!(shown, vec![2, 3, 4], "pre-boundary rows must not be shown");
+
+        // A boundary with no recorded cut point cannot be honoured, so nothing is
+        // hidden rather than guessing where the model view began.
+        let unlocated = [
+            message(0, "before"),
+            event(
+                1,
+                EventPayload::ContextCompacted {
+                    tokens_before: 9_000,
+                    tokens_after: 2_000,
+                    strategy: "manual".to_string(),
+                    summary: Some("- kept".to_string()),
+                    first_kept_sequence: None,
+                },
+            ),
+        ];
+        assert_eq!(
+            build_timeline(&unlocated).len(),
+            2,
+            "an unlocatable boundary must not hide history"
+        );
     }
 
     /// Memory events must have their own rows: the generic fallback labels them
