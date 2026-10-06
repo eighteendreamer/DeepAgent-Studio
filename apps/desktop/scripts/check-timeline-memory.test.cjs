@@ -156,3 +156,39 @@ test("markers render as their own quiet rows, not process steps", () => {
   assert.match(MARKER_TSX, /from "lucide-react"/, "marker icons must come from lucide");
   assert.doesNotMatch(MARKER_TSX, /[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u, "emoji icon in the row");
 });
+
+test("no durable event disappears from the transcript without a decision", () => {
+  // Phase 4 §7.1's real requirement: an unmapped durable payload is how "the
+  // content is gone after a reload" starts. Every variant must be either
+  // projected by session_conversation or declared deliberately invisible HERE,
+  // with a reason — so a new event cannot land in a silent `_ => {}`.
+  const eventRs = read("../../crates/deepagent-core/src/event.rs");
+  const body = eventRs.slice(eventRs.indexOf("pub enum EventPayload"));
+  const variants = [...body.matchAll(/^ {4}([A-Z][A-Za-z0-9]*) \{/gm)].map((found) => found[1]);
+  assert.ok(variants.length >= 17, `parsed only ${variants.length} EventPayload variants`);
+
+  const deliberatelyInvisible = {
+    SessionStarted: "session metadata; the transcript opens with the first message",
+    SessionEnded: "lifecycle marker for the session list, not a row",
+    TaskCreated: "task bookkeeping; the plan panel renders it",
+    TaskStateChanged: "same — transitions belong to the plan panel's vocabulary",
+    RunTerminal: "run outcome lives in the usage footer and the run store",
+    ContextSnipped: "internal history edit; a snip is not a conversation boundary",
+    MemoryEntryWritten: "vault audit trail, surfaced in the knowledge panel",
+    Note: "consolidation result for the observation timeline, not the chat",
+    McpInstructionsDelta: "bookkeeping about which servers announced",
+    ToolsDiscovered: "deferred tool catalog bookkeeping",
+  };
+  const unmapped = [];
+  for (const variant of variants) {
+    if (SERVICE_RS.includes(`EventPayload::${variant}`)) continue;
+    if (!deliberatelyInvisible[variant]) unmapped.push(variant);
+  }
+  assert.deepEqual(unmapped, [], "these durable events have neither a projection nor a reason");
+
+  assert.match(
+    SERVICE_RS,
+    /other => \{[\s\S]{0,260}tracing::debug!\([\s\S]{0,160}no conversation projection/,
+    "unmapped durable events must be logged, not silently dropped",
+  );
+});

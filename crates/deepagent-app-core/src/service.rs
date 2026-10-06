@@ -631,7 +631,16 @@ impl AppService {
                         usage: None,
                     });
                 }
-                _ => {}
+                // Bookkeeping without a transcript projection. Recorded rather
+                // than swallowed: a new content-bearing payload that nobody maps
+                // here is exactly how "content disappears after a reload" starts.
+                other => {
+                    tracing::debug!(
+                        kind = other.kind(),
+                        session_id,
+                        "durable event has no conversation projection"
+                    );
+                }
             }
         }
 
