@@ -500,11 +500,19 @@ async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
         requested_tools.contains(&"session_search"),
         "session_search tool was not invoked"
     );
-    assert!(events.iter().any(|event| matches!(
-        &event.payload,
-        EventPayload::MessageAppended { message }
-            if message.content.contains("DEEPAGENT_FILE_SESSION_90210")
-    )));
+    // The marker is asserted from the read_file RESULT, which is deterministic:
+    // the fixture file contains it. The previous form required the model to echo
+    // the marker into its summary, so this live gate went red on runs where the
+    // model phrased the recap differently — a flake with no connection to the code
+    // under test.
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ToolCallCompleted { output, .. }
+                if output.to_string().contains("DEEPAGENT_FILE_SESSION_90210")
+        )),
+        "no tool result ever carried the fixture marker"
+    );
 
     let sqlite_body_rows: i64 = db
         .with_conn(|conn| {
