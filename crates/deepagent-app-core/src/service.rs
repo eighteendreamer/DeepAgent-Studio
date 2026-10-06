@@ -1516,6 +1516,53 @@ mod tests {
         );
     }
 
+    /// Every route that writes a durable boundary must reach the transcript row,
+    /// including the mid-run ones: the projection keys on `summary: Some`, never on
+    /// which compactor produced the boundary.
+    #[test]
+    fn every_boundary_route_replays_as_its_own_row() {
+        use deepagent_core::compaction_strategy;
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        for strategy in [
+            compaction_strategy::SESSION_MEMORY,
+            compaction_strategy::MODEL,
+            compaction_strategy::PROACTIVE_THRESHOLD,
+            compaction_strategy::REACTIVE_MODEL,
+            compaction_strategy::PREFIRE_PASS2,
+        ] {
+            let db = Database::open_in_memory().unwrap();
+            let clock = FixedClock::new(1_000);
+            let mut session = Session::create(&db, &clock, Some("route")).unwrap();
+            let sid = session.id().to_string();
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::user("q"),
+                })
+                .unwrap();
+            session
+                .append(EventPayload::ContextCompacted {
+                    tokens_before: 3_000,
+                    tokens_after: 1_200,
+                    strategy: strategy.to_string(),
+                    summary: Some("- kept thread".to_string()),
+                    first_kept_sequence: Some(1),
+                })
+                .unwrap();
+
+            let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+            assert!(
+                conversation.iter().any(|message| matches!(
+                    message.parts.first(),
+                    Some(ConversationPartDto::CompactBoundary { strategy: label, .. })
+                        if label == strategy
+                )),
+                "a {strategy} boundary never reached the transcript: {conversation:?}"
+            );
+        }
+    }
+
     #[test]
     fn metrics_only_compaction_records_render_no_row() {
         use deepagent_core::event::EventPayload;
