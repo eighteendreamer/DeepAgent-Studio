@@ -1344,6 +1344,22 @@ export function App() {
           if (lastIdx < 0 || next[lastIdx].role !== "assistant") return prev;
           const msg = next[lastIdx];
           const parts = msg.parts ? [...msg.parts] : [];
+          // Only `tool_completed` closes a tool card, and a run can end without
+          // one (cancelled mid-tool, dropped event stream, a tool that never
+          // returns). Without this the card spins forever on a finished run.
+          for (let i = 0; i < parts.length; i += 1) {
+            const part = parts[i];
+            if (part.kind === "tool" && part.tool.status === "running") {
+              parts[i] = {
+                ...part,
+                tool: {
+                  ...part.tool,
+                  status: "error",
+                  detail: "该工具未返回结果：运行已结束（被停止、超时或事件中断）",
+                },
+              };
+            }
+          }
           const fin = finalContent.trim();
           const streamedText = parts
             .filter((p) => p.kind === "text")

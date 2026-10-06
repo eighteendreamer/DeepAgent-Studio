@@ -121,13 +121,17 @@ impl AdbCommandRunner for SystemAdbRunner {
         let result = tokio::select! {
             status = child.wait() => {
                 let exit_code = status.ok().and_then(|s| s.code());
-                let stdout = match stdout_task {
-                    Some(t) => t.await.unwrap_or_default(),
-                    None => Vec::new(),
-                };
-                let stderr = match stderr_task {
-                    Some(t) => t.await.unwrap_or_default(),
-                    None => String::new(),
+                // Draining is never a precondition for returning: `adb` starts a
+                // resident server that inherits these very handles, so waiting
+                // for EOF here would hang the call the same way the command tool
+                // used to (policy: deepagent-builtins `IO_DRAIN_GRACE`).
+                let stdout = drain_joined(stdout_task).await.unwrap_or_default();
+                let stderr = match drain_joined(stderr_task).await {
+                    Some(text) => text,
+                    None => String::from(
+                        "[deepagent] an adb process still holds this command's output pipe \
+                         (the adb server is resident); its later output is not captured here.",
+                    ),
                 };
                 Ok(AdbCommandOutput { exit_code, stdout, stderr })
             }
@@ -197,6 +201,20 @@ impl AdbCommandRunner for FakeAdbRunner {
             stderr: String::new(),
         }))
     }
+}
+
+/// How long the output drain may take once adb itself is done. Same policy value
+/// as `IO_DRAIN_GRACE` in `deepagent-builtins/src/bash_tool.rs`; duplicated here
+/// only because the mobile stack deliberately shares no base crate with it.
+const IO_DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// Wait for a reader task within the grace period. `None` means the pipe was
+/// still open when we gave up, i.e. somebody else is holding the write end.
+async fn drain_joined<T>(task: Option<tokio::task::JoinHandle<T>>) -> Option<T> {
+    tokio::time::timeout(IO_DRAIN_GRACE, task?)
+        .await
+        .ok()
+        .and_then(|result| result.ok())
 }
 
 #[cfg(test)]
