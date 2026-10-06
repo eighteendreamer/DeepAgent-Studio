@@ -1906,6 +1906,66 @@ mod tests {
         assert!(cut > 0, "the cut point must skip the folded prefix: {cut}");
     }
 
+    /// A boundary is recorded in the session the compactor belongs to, never in
+    /// whichever log happens to hold matching text. This is the property that keeps
+    /// a sub-agent's compaction from cutting the parent's transcript (the sub-agent
+    /// runs on its own session id, and its seeded history is not in that log at all).
+    #[tokio::test]
+    async fn a_boundary_lands_only_in_the_compactor_own_session() {
+        use crate::session_memory::testing::{scripted_client, ScriptedTransport};
+        use deepagent_core::event::EventPayload;
+
+        let db = Arc::new(deepagent_persistence::Database::open_in_memory().unwrap());
+        let clock = deepagent_core::clock::SystemClock;
+        let filler = "detail ".repeat(520);
+        let mut donor =
+            deepagent_session::Session::create(&db, &clock, Some("matching-log")).unwrap();
+        let seeded: Vec<Message> = (0..24)
+            .map(|turn| Message::user(format!("turn {turn} {filler}")))
+            .collect();
+        for message in &seeded {
+            donor
+                .append(EventPayload::MessageAppended {
+                    message: message.clone(),
+                })
+                .unwrap();
+        }
+        // The compactor's own session is empty: the text it must match does not
+        // exist in its log.
+        let own =
+            deepagent_session::Session::create(&db, &clock, Some("compactor-session")).unwrap();
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+
+        let compactor = HookedReactiveContextCompactor::new(
+            scripted_client(vec![ScriptedTransport::text(
+                "{\"goal\":\"ship\",\"completed\":[\"wrote code\"]}",
+            )]),
+            "deepseek-chat".to_string(),
+            Arc::new(HookRegistry::new()),
+            own.id(),
+            db.clone(),
+        );
+        let donor_events = store.load_session(donor.id()).unwrap();
+        let adopted = compactor
+            .compact(
+                &crate::input_runtime::model_history_from_events(&donor_events),
+                CompactionTrigger::ContextOverflow,
+            )
+            .await
+            .unwrap();
+        assert!(adopted.is_some(), "precondition: the pass still summarized");
+
+        for (label, id) in [("compactor", own.id()), ("donor", donor.id())] {
+            let events = store.load_session(id).unwrap();
+            assert!(
+                !events
+                    .iter()
+                    .any(|event| matches!(event.payload, EventPayload::ContextCompacted { .. })),
+                "{label} gained a boundary it should not have"
+            );
+        }
+    }
+
     #[test]
     fn the_cut_grows_to_both_floors_and_stops_at_the_cap() {
         let window = ContextPolicy::KEEP_WINDOW;
