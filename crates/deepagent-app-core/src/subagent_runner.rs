@@ -591,6 +591,7 @@ impl ChatSubagentRunner {
                 sub_model.clone(),
                 Arc::new(deepagent_hooks::HookRegistry::new()),
                 session.id(),
+                self.db.clone(),
             ));
         let mut agent = ModelAgent::new(
             self.client.clone(),

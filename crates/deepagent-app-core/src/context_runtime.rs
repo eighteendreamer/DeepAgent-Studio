@@ -13,6 +13,7 @@ use deepagent_core::message::Message;
 use deepagent_core::response_item::ResponseInputItem;
 use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
 use deepagent_models::{ModelClient, ToolSchema};
+use deepagent_persistence::Database;
 use deepagent_runtime::{
     CompactionTrigger, PrefireNote, ReactiveCompaction, ReactiveContextCompactor,
 };
@@ -33,6 +34,10 @@ pub(crate) struct HookedReactiveContextCompactor {
     model: String,
     hooks: Arc<HookRegistry>,
     session_id: SessionId,
+    /// Where this session's durable event log lives. A compaction that is only
+    /// adopted in memory is paid for again by the next run, so the boundary has
+    /// to be written here, at the moment it is produced.
+    db: Arc<Database>,
     breaker: Mutex<CompactionBreaker>,
 }
 
@@ -84,13 +89,31 @@ impl HookedReactiveContextCompactor {
         model: String,
         hooks: Arc<HookRegistry>,
         session_id: SessionId,
+        db: Arc<Database>,
     ) -> Self {
         Self {
             client,
             model,
             hooks,
             session_id,
+            db,
             breaker: Mutex::new(CompactionBreaker::default()),
+        }
+    }
+
+    /// The durable strategy label for a boundary this compactor produced.
+    ///
+    /// Mirrors what the run loop names the same adoption in its live event
+    /// (`model_agent.rs`), so the streamed marker and the replayed timeline row
+    /// cannot disagree about what happened.
+    fn boundary_strategy(trigger: CompactionTrigger) -> &'static str {
+        match trigger {
+            CompactionTrigger::AutoCompactThreshold => {
+                deepagent_core::compaction_strategy::PROACTIVE_THRESHOLD
+            }
+            CompactionTrigger::ContextOverflow => {
+                deepagent_core::compaction_strategy::REACTIVE_MODEL
+            }
         }
     }
 
@@ -128,6 +151,74 @@ impl HookedReactiveContextCompactor {
     async fn summarize_zone(&self, zone: &[Message]) -> (String, deepagent_models::Usage) {
         let (_, items) = deepagent_models::response_items_from_messages(zone);
         self.summarize_response_item_zone(&items).await
+    }
+
+    /// Record the boundary a summarizing pass just produced, so the NEXT run
+    /// rebuilds from this summary instead of replaying the transcript this run
+    /// already paid to compress (Phase 2 — 边界落盘 covers every compaction path,
+    /// not only the assembly-time one).
+    ///
+    /// Deliberately conservative: with no resolvable cut point (the first history
+    /// entry that survived verbatim) nothing is written, because a boundary without
+    /// one would also drop the surviving tail from the replayed view, and the
+    /// summary only describes what was dropped. The live `ContextCompacted` event
+    /// keeps `summary: None` on purpose — runtime logs must not carry prompt
+    /// content; the session log already stores model text.
+    fn record_durable_boundary(
+        &self,
+        strategy: &str,
+        tokens_before: u64,
+        tokens_after: u64,
+        summary: &str,
+        first_kept: Option<&Message>,
+    ) {
+        let store = deepagent_persistence::event_store::EventStore::new(&self.db);
+        let events = match store.load_session(self.session_id) {
+            Ok(events) => events,
+            Err(error) => {
+                tracing::warn!(%error, "cannot read the session log to place a compaction boundary");
+                return;
+            }
+        };
+        let Some(kept) = first_kept else {
+            tracing::debug!(
+                "compaction kept no identifiable verbatim entry; boundary not recorded"
+            );
+            return;
+        };
+        // Matching by content rather than counting records: a batch of parallel
+        // tool calls is one history entry but several events.
+        let Some(cut) = crate::input_runtime::sequence_of_message(&events, kept) else {
+            tracing::debug!(
+                "the compaction's first kept entry is not in the log; boundary skipped"
+            );
+            return;
+        };
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = match deepagent_session::Session::recover(
+            &self.db,
+            &clock,
+            self.session_id,
+        ) {
+            Ok(session) => session,
+            Err(error) => {
+                tracing::warn!(%error, "cannot reopen the session to record the compaction boundary");
+                return;
+            }
+        };
+        let transcript_dir = session.transcript_dir();
+        if let Err(error) = session.append(EventPayload::ContextCompacted {
+            tokens_before,
+            tokens_after,
+            strategy: strategy.to_string(),
+            summary: Some(crate::input_runtime::with_transcript_pointer(
+                summary.to_string(),
+                &transcript_dir,
+            )),
+            first_kept_sequence: Some(cut),
+        }) {
+            tracing::warn!(%error, "failed to record the reactive compaction boundary");
+        }
     }
 }
 
@@ -292,6 +383,14 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             ))
             .await?;
 
+        self.record_durable_boundary(
+            Self::boundary_strategy(trigger),
+            tokens_before,
+            tokens_after,
+            &summary_block,
+            body.get(split),
+        );
+
         Ok(Some(ReactiveCompaction {
             messages: compacted,
             response_items: None,
@@ -427,6 +526,19 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             ))
             .await?;
 
+        // The tail's first entry, projected the way the model sees it, is the cut
+        // point the next run must replay verbatim.
+        let first_kept = deepagent_models::messages_from_response_items(None, &items[split..])
+            .into_iter()
+            .next();
+        self.record_durable_boundary(
+            Self::boundary_strategy(trigger),
+            tokens_before,
+            tokens_after,
+            &summary_block,
+            first_kept.as_ref(),
+        );
+
         let messages =
             deepagent_models::messages_from_response_items(instructions, &compacted_items);
         Ok(Some(ReactiveCompaction {
@@ -552,6 +664,13 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                 },
             ))
             .await?;
+        self.record_durable_boundary(
+            deepagent_core::compaction_strategy::PREFIRE_PASS2,
+            tokens_before,
+            tokens_after,
+            &note.note,
+            tail.first(),
+        );
         Ok(Some(ReactiveCompaction {
             messages: compacted,
             response_items: None,
@@ -636,6 +755,16 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                 },
             ))
             .await?;
+        let first_kept = deepagent_models::messages_from_response_items(None, tail)
+            .into_iter()
+            .next();
+        self.record_durable_boundary(
+            deepagent_core::compaction_strategy::PREFIRE_PASS2,
+            tokens_before,
+            tokens_after,
+            &note.note,
+            first_kept.as_ref(),
+        );
         let messages =
             deepagent_models::messages_from_response_items(instructions, &compacted_items);
         Ok(Some(ReactiveCompaction {
@@ -1674,6 +1803,109 @@ mod tests {
         assert!(compaction_reinjection_block(&[Message::user("hello")]).is_none());
     }
 
+    /// Phase 2 — the boundary has to be durable on the overflow route too. A
+    /// summary only adopted in memory leaves the NEXT run replaying the whole
+    /// transcript the previous run already paid to compress.
+    #[tokio::test]
+    async fn a_reactive_boundary_is_durable_and_the_next_run_replays_from_it() {
+        use crate::session_memory::testing::{scripted_client, ScriptedTransport};
+        use deepagent_core::event::EventPayload;
+
+        let db = Arc::new(deepagent_persistence::Database::open_in_memory().unwrap());
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session =
+            deepagent_session::Session::create(&db, &clock, Some("reactive-boundary")).unwrap();
+        // ~910 tokens per turn (the heuristic counts 4 chars/token), so 24 turns
+        // sit near 22k: past the 10k tail floor with a real prefix left to fold.
+        // A smaller transcript cannot cut anything and would prove nothing here.
+        let filler = "detail ".repeat(520);
+        for turn in 0..24 {
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::user(format!("turn {turn} {filler}")),
+                })
+                .unwrap();
+        }
+        let session_id = session.id();
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let history = crate::input_runtime::model_history_from_events(
+            &store.load_session(session_id).unwrap(),
+        );
+        assert_eq!(history.len(), 24, "precondition: nothing compacted yet");
+
+        let compactor = HookedReactiveContextCompactor::new(
+            scripted_client(vec![ScriptedTransport::text(
+                "{\"goal\":\"ship\",\"completed\":[\"wrote code\"]}",
+            )]),
+            "deepseek-chat".to_string(),
+            Arc::new(HookRegistry::new()),
+            session_id,
+            db.clone(),
+        );
+        let adopted = compactor
+            .compact(&history, CompactionTrigger::ContextOverflow)
+            .await
+            .unwrap()
+            .expect("the overflow pass summarizes the prefix");
+        assert!(
+            adopted.tokens_after < adopted.tokens_before,
+            "{} -> {}",
+            adopted.tokens_before,
+            adopted.tokens_after
+        );
+
+        let reloaded = store.load_session(session_id).unwrap();
+        let written = reloaded.iter().find_map(|event| match &event.payload {
+            EventPayload::ContextCompacted {
+                strategy,
+                summary,
+                first_kept_sequence,
+                ..
+            } => Some((strategy.as_str(), summary.clone(), *first_kept_sequence)),
+            _ => None,
+        });
+        let (strategy, summary, cut) = written.expect("the reactive pass wrote a durable boundary");
+        assert_eq!(
+            strategy,
+            deepagent_core::compaction_strategy::REACTIVE_MODEL
+        );
+        let summary = summary.expect("the boundary carries the summary the model reads");
+        assert!(
+            summary.contains(&session.transcript_dir().display().to_string()),
+            "the durable summary lost the transcript pointer"
+        );
+        let cut = cut.expect("the boundary names the surviving tail");
+
+        // What the next run rebuilds: the summary standing in for the prefix, and
+        // the verbatim tail it kept — never the folded prefix again.
+        let view = crate::input_runtime::model_history_from_events(&reloaded);
+        assert!(
+            view[0]
+                .content
+                .starts_with(crate::input_runtime::COMPACTED_SUMMARY_HEADER),
+            "{:?}",
+            view[0].content
+        );
+        assert!(
+            view.len() < history.len(),
+            "the boundary did not shorten what the next run replays: {} -> {}",
+            history.len(),
+            view.len()
+        );
+        assert_eq!(
+            view.last().map(|message| message.content.as_str()),
+            history.last().map(|message| message.content.as_str()),
+            "the compaction's verbatim tail must survive the replay"
+        );
+        assert!(
+            !view
+                .iter()
+                .any(|message| message.content == history[0].content),
+            "the folded prefix is still in the model view"
+        );
+        assert!(cut > 0, "the cut point must skip the folded prefix: {cut}");
+    }
+
     #[test]
     fn the_cut_grows_to_both_floors_and_stops_at_the_cap() {
         let window = ContextPolicy::KEEP_WINDOW;
@@ -1970,12 +2202,23 @@ mod tests {
         let transport = Arc::new(ReqwestTransport::new());
         let client = Arc::new(ModelClient::new(transport, ModelConfig::deepseek(key)));
         let model = "deepseek-chat";
+        // A real session log, because the compactor now writes durable
+        // boundaries into one: the seeded turns below are persisted first, so the
+        // cut point is resolved against events that actually exist.
+        let db = Arc::new(deepagent_persistence::Database::open_in_memory().unwrap());
+        let mut live_session = deepagent_session::Session::create(
+            &db,
+            &deepagent_core::clock::SystemClock,
+            Some("real-compaction"),
+        )
+        .expect("create session");
         let compactor: Arc<dyn ReactiveContextCompactor> =
             Arc::new(HookedReactiveContextCompactor::new(
                 client.clone(),
                 model.to_string(),
                 Arc::new(HookRegistry::new()),
-                SessionId::new(),
+                live_session.id(),
+                db.clone(),
             ));
 
         // Long seeded history: every turn is roughly a kilotoken, so the body
@@ -1995,6 +2238,14 @@ mod tests {
                 }
             })
             .collect();
+        let seeded = history.len();
+        for message in &history {
+            live_session
+                .append(EventPayload::MessageAppended {
+                    message: message.clone(),
+                })
+                .expect("seed the session log");
+        }
 
         let mut agent = ModelAgent::new(
             client,
@@ -2050,6 +2301,37 @@ mod tests {
                 | AgentDecision::CallTool(_)
                 | AgentDecision::CallTools(_)
         ));
+        // The part that only a real run can show: the summary the provider wrote
+        // is in the session log as a boundary, and the next run rebuilds a shorter
+        // view from it instead of replaying all 24 seeded turns.
+        let reloaded = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(live_session.id())
+            .expect("reload the session log");
+        let durable = reloaded.iter().find_map(|event| match &event.payload {
+            EventPayload::ContextCompacted {
+                summary,
+                first_kept_sequence,
+                ..
+            } => Some((summary.clone(), *first_kept_sequence)),
+            _ => None,
+        });
+        let (summary, cut) = durable.expect("the real compaction wrote a durable boundary");
+        let summary = summary.expect("with the summary the next run reads");
+        assert!(
+            summary.contains(&live_session.transcript_dir().display().to_string()),
+            "the real boundary summary lost the transcript pointer"
+        );
+        assert!(cut.is_some(), "the real boundary names no surviving tail");
+        let view = crate::input_runtime::model_history_from_events(&reloaded);
+        assert!(
+            view.len() < seeded,
+            "the next run still replays the whole transcript: {} vs {seeded}",
+            view.len()
+        );
+        eprintln!(
+            "[real-model] durable boundary replays {seeded} -> {} entries",
+            view.len()
+        );
         eprintln!("[real-model] proactive compaction fired and the run continued OK");
         eprintln!("[real-model] tokens {tokens_before} -> {tokens_after}");
     }

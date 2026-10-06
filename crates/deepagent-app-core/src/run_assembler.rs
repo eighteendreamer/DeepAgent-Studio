@@ -818,6 +818,7 @@ impl<'a> RunAssembler<'a> {
                 model.clone(),
                 hooks.clone(),
                 session.id(),
+                self.db.clone(),
             ));
         let model_name_for_cost = model.clone();
 
