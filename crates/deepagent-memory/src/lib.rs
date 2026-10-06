@@ -26,25 +26,26 @@
 //!   serves both, and the retired in-process `MemoryStore` / in-memory
 //!   `SemanticMemoryStore` are gone rather than a second, unsynced copy.
 
-pub mod bm25;
-pub mod chunking;
 pub mod contextual_retrieval;
 pub mod contextualize;
 pub mod embedding;
-pub mod fusion;
-pub mod hybrid;
 pub mod observation;
 pub mod ranking;
 
-pub use bm25::{Bm25Index, Bm25Params};
-pub use chunking::{chunk_markdown, Chunk, ChunkConfig};
+// Internal machinery of the contextual retriever: nothing outside this crate
+// names these types (measured: zero references by symbol and by module path), so
+// they are not part of the crate's surface. Keeping them public only invites a
+// second retrieval implementation somewhere else.
+mod bm25;
+mod chunking;
+mod fusion;
+mod hybrid;
+
 pub use contextual_retrieval::{ChunkReranker, ContextualRetriever, RetrievedChunk, ScoreReranker};
 pub use contextualize::{
     contextualize_chunks, ContextualizedChunk, Contextualizer, HeadingContextualizer,
 };
 pub use embedding::{cosine_similarity, Embedder, HashingEmbedder};
-pub use fusion::reciprocal_rank_fusion;
-pub use hybrid::HybridConfig;
 pub use observation::ObservationType;
 
 use serde::{Deserialize, Serialize};

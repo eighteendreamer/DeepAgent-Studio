@@ -69,16 +69,6 @@ impl<Id: Clone + Eq> Bm25Index<Id> {
         }
     }
 
-    /// Number of indexed documents.
-    pub fn len(&self) -> usize {
-        self.docs.len()
-    }
-
-    /// Whether the index is empty.
-    pub fn is_empty(&self) -> bool {
-        self.docs.is_empty()
-    }
-
     /// Add a document. `text` is tokenized internally.
     pub fn add(&mut self, id: Id, text: &str) {
         let tokens = tokenize(text);
