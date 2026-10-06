@@ -216,6 +216,13 @@ impl Vault {
                 path.display()
             )));
         }
+        if let Err(error) = make_private(&path) {
+            tracing::debug!(
+                %error,
+                path = %path.display(),
+                "knowledge file left unrestricted: the platform refused to set owner-only bits"
+            );
+        }
         Ok(path)
     }
 
@@ -453,6 +460,43 @@ fn is_markdown(path: &Path) -> bool {
 /// The staging file a write goes through before it is renamed into place. The
 /// name is unique per process and per call, and deliberately does not end in
 /// `.md`, so a vault scan can never mistake a half-written file for an entry.
+/// The permission bits a memory file or directory should carry: owner-only
+/// (`0600` / `0700`, plan §5.3 and §11).
+///
+/// Separate from [`make_private`] so the decision is testable on every platform
+/// while the syscall underneath exists only where mode bits do.
+pub const fn private_mode(is_dir: bool) -> u32 {
+    if is_dir {
+        0o700
+    } else {
+        0o600
+    }
+}
+
+/// Restrict `path` to its owner.
+///
+/// A no-op where Unix mode bits do not exist: Windows `Permissions` expresses
+/// only the read-only flag, and the neighbouring session transcript carries the
+/// default ACL either way, so this is hardening on the platforms that can do it
+/// rather than a cross-platform guarantee. Callers log and continue on failure —
+/// filesystems without ACL support reject `chmod` on perfectly good files, and
+/// that must not turn a completed write into an error.
+pub fn make_private(path: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(
+            path,
+            std::fs::Permissions::from_mode(private_mode(path.is_dir())),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(())
+    }
+}
+
 fn staging_path(target: &Path) -> PathBuf {
     let name = target
         .file_name()
@@ -638,6 +682,27 @@ mod tests {
 
     /// A write must land whole: the entry reads back through `scan`, and no
     /// staging file survives in the vault directory.
+    /// The decision half of the permission rule is testable everywhere; only the
+    /// syscall underneath is platform-specific.
+    #[test]
+    fn memory_paths_are_owner_only_by_the_mode_table() {
+        assert_eq!(private_mode(false), 0o600);
+        assert_eq!(private_mode(true), 0o700);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_written_entry_carries_owner_only_bits() {
+        use std::os::unix::fs::PermissionsExt;
+        let vault = vault();
+        let path = vault.write(&entry("mem-1", "keep it")).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "a memory file must not be group or world readable"
+        );
+    }
+
     #[test]
     fn write_lands_whole_and_leaves_no_staging_file() {
         let tmp = tempfile::tempdir().unwrap();

@@ -317,6 +317,12 @@ pub fn ensure_note(path: &Path) -> Result<String> {
         Ok(_) => {
             std::fs::write(path, NOTE_TEMPLATE)
                 .map_err(|error| CoreError::Persistence(format!("write session note: {error}")))?;
+            // Plan §5.3: the note is created owner-only. Where the platform has
+            // no mode bits this reports and carries on; the bytes are already
+            // correct on disk.
+            if let Err(error) = deepagent_knowledge::vault::make_private(path) {
+                tracing::debug!(%error, "session note left unrestricted by the platform");
+            }
             Ok(NOTE_TEMPLATE.to_string())
         }
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
