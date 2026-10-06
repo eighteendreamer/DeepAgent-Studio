@@ -387,8 +387,10 @@ async fn run_process_controlled(
 
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stdout_task = tokio::spawn(read_pipe(stdout));
-    let stderr_task = tokio::spawn(read_pipe(stderr));
+    let out_bytes: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let err_bytes: Arc<std::sync::Mutex<Vec<u8>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let stdout_task = tokio::spawn(drain_pipe(stdout, out_bytes.clone()));
+    let stderr_task = tokio::spawn(drain_pipe(stderr, err_bytes.clone()));
 
     #[derive(Clone, Copy)]
     enum WaitResult {
@@ -405,7 +407,18 @@ async fn run_process_controlled(
     };
 
     let status = match result {
-        WaitResult::Exited(status) => status,
+        WaitResult::Exited(status) => {
+            // The shell finished by itself, so anything still running is a
+            // descendant the command chose to leave behind. Closing a
+            // kill-on-close job here would take the dev server down with this
+            // tool call, so drop that flag first (Codex does the same with
+            // `preserve_descendants`, utils/pty/src/win/job.rs:221-249).
+            #[cfg(windows)]
+            if let Some(job) = &job {
+                job.preserve_descendants();
+            }
+            status
+        }
         WaitResult::Cancelled | WaitResult::TimedOut => {
             #[cfg(windows)]
             if let Some(job) = &job {
@@ -434,40 +447,81 @@ async fn run_process_controlled(
         }
     };
 
-    let stdout = stdout_task.await.map_err(|e| {
-        deepagent_core::error::CoreError::other(format!("stdout join error: {e}"))
-    })??;
-    let stderr = stderr_task.await.map_err(|e| {
-        deepagent_core::error::CoreError::other(format!("stderr join error: {e}"))
-    })??;
+    // Reading the pipes is deliberately NOT a precondition for returning: a
+    // grandchild that inherited the shell's std handles keeps the write end open
+    // after the shell is gone, so `read_to_end` would block forever -- the exact
+    // hang Codex documents at core/src/exec.rs:89-93 and that Claude Code avoids
+    // by resolving on 'exit' rather than 'close' (utils/ShellCommand.ts:269-272).
+    let drained = join_drain(stdout_task, IO_DRAIN_GRACE).await
+        & join_drain(stderr_task, IO_DRAIN_GRACE).await;
+    let stdout = take_buffer(&out_bytes);
+    let stderr = take_buffer(&err_bytes);
+    let mut stderr_text = String::from_utf8_lossy(&stderr).into_owned();
+    if !drained {
+        stderr_text.push_str(
+            "\n[deepagent] the shell is done but a child process still holds this command's \
+             output pipe, so it was left running and its later output is not captured here. \
+             Check the port it listens on, or have it write to a file you can read.",
+        );
+    }
+    let stdout_text = String::from_utf8_lossy(&stdout).into_owned();
 
     match result {
         WaitResult::Cancelled => Err(deepagent_core::error::CoreError::other(format!(
-            "command cancelled (pid {pid})"
+            "command cancelled (pid {pid}); output so far:\n{stdout_text}{stderr_text}"
         ))),
         WaitResult::TimedOut => Err(deepagent_core::error::CoreError::other(format!(
-            "command timed out after {} ms (pid {pid})",
+            "command timed out after {} ms (pid {pid}); output so far:\n{stdout_text}{stderr_text}",
             timeout.as_millis()
         ))),
         WaitResult::Exited(_) => Ok(CommandOutcome {
             exit_code: status.code(),
-            stdout: String::from_utf8_lossy(&stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&stderr).into_owned(),
+            stdout: stdout_text,
+            stderr: stderr_text,
         }),
     }
 }
 
-async fn read_pipe<R>(pipe: Option<R>) -> Result<Vec<u8>>
+/// How long the output drain may take once we are done waiting for the process.
+/// Two seconds, matching Codex's `IO_DRAIN_TIMEOUT_MS`
+/// (`core/src/exec.rs:94`): long enough for a normal flush, short enough that a
+/// leaked handle cannot stall the run.
+const IO_DRAIN_GRACE: Duration = Duration::from_secs(2);
+
+/// Copy one pipe into a shared buffer until EOF, keeping whatever arrived even if
+/// the caller stops waiting for us.
+async fn drain_pipe<R>(pipe: Option<R>, sink: Arc<std::sync::Mutex<Vec<u8>>>)
 where
-    R: tokio::io::AsyncRead + Unpin,
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    let mut bytes = Vec::new();
-    if let Some(mut pipe) = pipe {
-        pipe.read_to_end(&mut bytes).await.map_err(|e| {
-            deepagent_core::error::CoreError::other(format!("pipe read failed: {e}"))
-        })?;
+    let Some(mut pipe) = pipe else { return };
+    let mut chunk = [0u8; 8 * 1024];
+    loop {
+        match pipe.read(&mut chunk).await {
+            Ok(0) => return,
+            Ok(read) => {
+                if let Ok(mut buffer) = sink.lock() {
+                    buffer.extend_from_slice(&chunk[..read]);
+                }
+            }
+            Err(_) => return,
+        }
     }
-    Ok(bytes)
+}
+
+/// True when the reader finished on its own; false when it was still holding the
+/// pipe open past the grace period and had to be abandoned.
+async fn join_drain(task: tokio::task::JoinHandle<()>, grace: Duration) -> bool {
+    match tokio::time::timeout(grace, task).await {
+        Ok(_) => true,
+        Err(_elapsed) => false,
+    }
+}
+
+fn take_buffer(sink: &std::sync::Mutex<Vec<u8>>) -> Vec<u8> {
+    sink.lock()
+        .map(|mut guard| std::mem::take(&mut *guard))
+        .unwrap_or_default()
 }
 
 async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
@@ -553,6 +607,12 @@ fn terminate_unix_process_group(pid: u32) {
 #[cfg(windows)]
 struct WindowsJob {
     handle: windows_sys::Win32::Foundation::HANDLE,
+    /// Once the root shell exits on its own, descendants that inherited its
+    /// handles must survive us: closing a kill-on-close job would take the dev
+    /// server down with the tool call. Whichever of the two operations grabs
+    /// this lock first decides whether the tree is preserved or terminated
+    /// (same race contract as Codex `utils/pty/src/win/job.rs:221-260`).
+    preserved: std::sync::Mutex<bool>,
 }
 
 #[cfg(windows)]
@@ -563,9 +623,7 @@ impl WindowsJob {
     fn attach(pid: u32) -> std::io::Result<Self> {
         use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         };
         use windows_sys::Win32::System::Threading::{
             OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SET_QUOTA, PROCESS_TERMINATE,
@@ -576,15 +634,7 @@ impl WindowsJob {
             if handle.is_null() {
                 return Err(std::io::Error::last_os_error());
             }
-            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if SetInformationJobObject(
-                handle,
-                JobObjectExtendedLimitInformation,
-                &info as *const _ as *const _,
-                std::mem::size_of_val(&info) as u32,
-            ) == 0
-            {
+            if Self::set_limit_flags(handle, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).is_err() {
                 CloseHandle(handle);
                 return Err(std::io::Error::last_os_error());
             }
@@ -603,11 +653,62 @@ impl WindowsJob {
                 CloseHandle(handle);
                 return Err(std::io::Error::last_os_error());
             }
-            Ok(Self { handle })
+            Ok(Self {
+                handle,
+                preserved: std::sync::Mutex::new(false),
+            })
+        }
+    }
+
+    #[cfg(windows)]
+    fn set_limit_flags(
+        handle: windows_sys::Win32::Foundation::HANDLE,
+        flags: u32,
+    ) -> std::io::Result<()> {
+        use windows_sys::Win32::System::JobObjects::{
+            JobObjectExtendedLimitInformation, SetInformationJobObject,
+            JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        };
+        let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+        info.BasicLimitInformation.LimitFlags = flags;
+        let applied = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                &info as *const _ as *const _,
+                std::mem::size_of_val(&info) as u32,
+            )
+        };
+        if applied == 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    /// Stop killing the tree when the job handle closes. Called on the normal
+    /// exit path only.
+    fn preserve_descendants(&self) {
+        use windows_sys::Win32::System::JobObjects::JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+        let Ok(mut preserved) = self.preserved.lock() else {
+            return;
+        };
+        if *preserved {
+            return;
+        }
+        // Any flag value other than kill-on-close is enough to drop it; the
+        // value must be non-zero or the system rejects the update.
+        if Self::set_limit_flags(self.handle, JOB_OBJECT_LIMIT_ACTIVE_PROCESS).is_ok() {
+            *preserved = true;
         }
     }
 
     fn terminate(&self) {
+        let Ok(preserved) = self.preserved.lock() else {
+            return;
+        };
+        if *preserved {
+            return;
+        }
         unsafe {
             windows_sys::Win32::System::JobObjects::TerminateJobObject(self.handle, 1);
         }
@@ -1461,5 +1562,157 @@ mod tests {
         // full 30s sleep. Kept well above 2s: pwsh startup under parallel test
         // load repeatedly tripped a tighter bound (load-sensitive flake).
         assert!(start.elapsed() < Duration::from_secs(10));
+    }
+
+    /// The hang this exists for: the shell exits in a few hundred ms, but the
+    /// grandchild it launched shares its std handles and keeps the pipe's write
+    /// end open for 25s. Reading the pipe must not be a precondition for
+    /// returning, or the tool call never ends and the UI row stays "running".
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_detached_child_holding_the_pipe_does_not_hang_the_call() {
+        let tmp = tempfile::tempdir().unwrap();
+        let command = "Start-Process powershell -NoNewWindow -ArgumentList \
+                       '-NoProfile','-Command','Start-Sleep -Seconds 25'; Write-Output done";
+        let start = std::time::Instant::now();
+
+        let out = SystemExecutor
+            .run_controlled(
+                command,
+                tmp.path().to_str().unwrap(),
+                CommandShell::Powershell,
+                Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "the call waited on the pipe for {:?}",
+            start.elapsed()
+        );
+        assert!(out.stdout.contains("done"), "{out:?}");
+        assert!(
+            out.stderr
+                .contains("still holds this command's output pipe"),
+            "the model must be told the output is incomplete: {out:?}"
+        );
+    }
+
+    /// A command that legitimately leaves a server behind must not have it
+    /// killed when the tool call returns: closing a kill-on-close job would do
+    /// exactly that.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_normal_exit_leaves_the_detached_child_running() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("grandchild.txt");
+        let script = tmp.path().join("leave-behind.ps1");
+        std::fs::write(
+            &script,
+            format!(
+                "Start-Sleep -Seconds 3\n'alive' | Out-File -FilePath '{}' -Encoding ascii\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let command = format!(
+            "Start-Process powershell -NoNewWindow -ArgumentList '-NoProfile','-File','{}'; Write-Output done",
+            script.display()
+        );
+
+        SystemExecutor
+            .run_controlled(
+                &command,
+                tmp.path().to_str().unwrap(),
+                CommandShell::Powershell,
+                Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        while std::time::Instant::now() < deadline && !marker.exists() {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        assert!(
+            marker.exists(),
+            "the detached child was killed when the tool call returned"
+        );
+    }
+
+    /// The mirror case: when we give up on a command (timeout), the whole tree
+    /// including its grandchildren must go, or every abandoned server keeps
+    /// holding a port.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_timed_out_command_takes_its_detached_child_with_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let marker = tmp.path().join("should-never-exist.txt");
+        let script = tmp.path().join("linger.ps1");
+        std::fs::write(
+            &script,
+            format!(
+                "Start-Sleep -Seconds 6\n'alive' | Out-File -FilePath '{}' -Encoding ascii\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        let command = format!(
+            "Start-Process powershell -NoNewWindow -ArgumentList '-NoProfile','-File','{}'; Start-Sleep -Seconds 60",
+            script.display()
+        );
+
+        let error = SystemExecutor
+            .run_controlled(
+                &command,
+                tmp.path().to_str().unwrap(),
+                CommandShell::Powershell,
+                Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(3),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("timed out"), "{error}");
+
+        // Outlive the moment the child would have written its marker.
+        tokio::time::sleep(Duration::from_secs(9)).await;
+        assert!(
+            !marker.exists(),
+            "a killed command left its grandchild running"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_detached_child_holding_the_pipe_does_not_hang_the_call_posix() {
+        let tmp = tempfile::tempdir().unwrap();
+        let start = std::time::Instant::now();
+
+        let out = SystemExecutor
+            .run_controlled(
+                "sleep 25 & echo done",
+                tmp.path().to_str().unwrap(),
+                CommandShell::Sh,
+                Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "the call waited on the pipe for {:?}",
+            start.elapsed()
+        );
+        assert!(out.stdout.contains("done"), "{out:?}");
+        assert!(
+            out.stderr
+                .contains("still holds this command's output pipe"),
+            "{out:?}"
+        );
     }
 }
