@@ -48,6 +48,8 @@ export type ChatBlock =
       kind: "memories";
       id: string;
       count: number;
+      /** Which entries came in; the row shows them, not just the count. */
+      ids: string[];
       latencyMs: number;
     };
 

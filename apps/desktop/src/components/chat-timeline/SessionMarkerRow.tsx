@@ -70,14 +70,44 @@ export function SessionMarkerRow({ block }: { block: MarkerBlock }) {
     );
   }
 
+  // §7.2 asks for WHICH entries came in, not just how many. The ids are readable
+  // slugs (the vault derives the title from them), and they already travel on the
+  // durable event and the DTO for exactly this display.
+  const ids = block.ids;
   return (
-    <div className="flex items-center gap-1.5 text-[13px] text-text-secondary">
-      <span className="flex h-5 w-5 items-center justify-center">
-        <Bookmark size={13} />
-      </span>
-      <span>{`已带入 ${block.count} 条相关记忆`}</span>
-      {block.latencyMs > 0 && (
-        <span className="text-[12px]">{formatMs(block.latencyMs)}</span>
+    <div className="text-[13px] text-text-secondary">
+      <div className="flex items-center gap-1.5">
+        <span className="flex h-5 w-5 items-center justify-center">
+          <Bookmark size={13} />
+        </span>
+        <span>{`已带入 ${block.count} 条相关记忆`}</span>
+        {block.latencyMs > 0 && <span className="text-[12px]">{formatMs(block.latencyMs)}</span>}
+        {ids.length > 0 && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-5 gap-1 px-1 text-[12px]"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <ChevronRight
+              size={12}
+              className={open ? "rotate-90 transition-transform" : "transition-transform"}
+            />
+            {open ? "收起条目" : "哪几条"}
+          </Button>
+        )}
+      </div>
+      {open && (
+        <ul className="mt-1 flex flex-wrap gap-1.5">
+          {ids.map((entryId) => (
+            <li
+              key={entryId}
+              className="rounded bg-gray-50 px-1.5 py-0.5 font-mono text-[12px] text-text-base"
+            >
+              {entryId}
+            </li>
+          ))}
+        </ul>
       )}
     </div>
   );

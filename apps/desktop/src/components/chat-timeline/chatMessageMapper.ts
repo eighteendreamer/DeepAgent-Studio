@@ -136,6 +136,7 @@ function mapAssistantPart(part: MessagePart, messageIndex: number, partIndex: nu
       kind: "memories",
       id: `m${messageIndex}-p${partIndex}-memories`,
       count: part.count,
+      ids: part.ids ?? [],
       latencyMs: part.latencyMs ?? 0,
     };
   }

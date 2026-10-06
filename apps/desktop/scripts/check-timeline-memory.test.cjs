@@ -26,6 +26,7 @@ const API_TS = read("src/api.ts");
 const TYPES_TS = read("src/types.ts");
 const MAPPER_TS = read("src/components/chat-timeline/chatMessageMapper.ts");
 const SECTIONS_TS = read("src/components/chat-timeline/deriveTurnSections.ts");
+const BLOCK_TYPES_TS = read("src/components/chat-timeline/timelineTypes.ts");
 const TURN_TSX = read("src/components/chat-timeline/MessageTurn.tsx");
 const MARKER_TSX = read("src/components/chat-timeline/SessionMarkerRow.tsx");
 const APP_TSX = read("src/App.tsx");
@@ -191,4 +192,17 @@ test("no durable event disappears from the transcript without a decision", () =>
     /other => \{[\s\S]{0,260}tracing::debug!\([\s\S]{0,160}no conversation projection/,
     "unmapped durable events must be logged, not silently dropped",
   );
+});
+
+test("the memory row names the entries it brought in, not only a count", () => {
+  // §7.2: "注入了哪几条". The ids ride the durable event and the DTO already; the
+  // failure mode here is dropping them at the block hop, which leaves a number
+  // where a name belongs.
+  assert.match(
+    BLOCK_TYPES_TS,
+    /kind: "memories"[\s\S]{0,160}ids: string\[\]/,
+    "the memories block carries no entry ids",
+  );
+  assert.match(MAPPER_TS, /ids: part\.ids \?\? \[\]/, "the mapper drops the ids");
+  assert.match(MARKER_TSX, /ids\.map\(/, "SessionMarkerRow never renders them");
 });
