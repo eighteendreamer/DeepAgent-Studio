@@ -309,6 +309,16 @@ pub fn ensure_note(path: &Path) -> Result<String> {
         std::fs::create_dir_all(parent)
             .map_err(|error| CoreError::Persistence(format!("create session dir: {error}")))?;
     }
+    // Plan §6.2 makes the writer lock the one mutual-exclusion rule for memory
+    // files, so the note takes the same primitive the vault takes. Creation here is
+    // two steps (`create_new`, then write the template); without a barrier a second
+    // process can win the read, see an empty note, and edit against a baseline that
+    // never existed.
+    let _guard = deepagent_knowledge::file_lock::acquire(
+        &deepagent_knowledge::file_lock::sidecar(path),
+        deepagent_knowledge::file_lock::WAIT,
+        "session note",
+    )?;
     match std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -1471,6 +1481,36 @@ mod tests {
     }
 
     // ---- note file --------------------------------------------------------
+
+    /// The lock is on the write path, not decoration: while another writer holds
+    /// the note's sidecar, `ensure_note` must refuse instead of creating or
+    /// reading a half-initialised file.
+    #[test]
+    fn ensure_note_refuses_while_another_writer_holds_the_note_lock() {
+        use deepagent_core::error::Result;
+        use deepagent_knowledge::file_lock;
+
+        let dir = tempfile::tempdir().unwrap();
+        let note = dir.path().join("session-memory.md");
+        let holder =
+            file_lock::acquire(&file_lock::sidecar(&note), file_lock::WAIT, "session note")
+                .unwrap();
+
+        let attempt: Result<String> = ensure_note(&note);
+        let error = attempt.expect_err("a held note lock must block creation");
+        assert!(
+            error
+                .to_string()
+                .contains("session note is held by another writer"),
+            "{error}"
+        );
+        assert!(
+            !note.exists(),
+            "the note was created anyway, so the lock guards nothing"
+        );
+        drop(holder);
+        assert_eq!(ensure_note(&note).unwrap(), NOTE_TEMPLATE);
+    }
 
     #[test]
     fn ensure_note_creates_once_and_never_clobbers() {

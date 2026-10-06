@@ -8,41 +8,29 @@
 
 use std::collections::BTreeSet;
 use std::path::{Component, Path, PathBuf};
-use std::time::{Duration, Instant};
 
 use deepagent_core::error::{CoreError, Result};
-use fs2::FileExt;
 
 use crate::entry::{KnowledgeEntry, Scope};
-
-/// How long a writer waits for another process to release the vault before it
-/// gives up. Kept short because saves run on the request path: a stalled UI is
-/// worse than a retriable "locked" error.
-const LOCK_WAIT: Duration = Duration::from_millis(500);
+use crate::file_lock;
 
 /// Where superseded entries go instead of being deleted. A dot-directory, so
-/// [`Vault::scan`] never folds them back into the retrieval index and a human
+/// [`Vault::scan`] never folds them into the retrieval index and a human
 /// can move a file straight back to recover it.
 const SUPERSEDED_DIR: &str = ".superseded";
 
 /// The OS-held exclusive lock over one vault directory.
 ///
-/// `KnowledgeService`'s in-process mutex serialises a single process, but the
-/// desktop app and the headless CLI can point at the same data root, and a
-/// multi-file transaction (consolidation) needs one barrier over the whole
-/// vault. Windows byte-range locks and POSIX `flock` are both released by the
-/// OS when the holder exits, which is why there is no PID file to reclaim.
+/// A thin wrapper over [`crate::file_lock`], the one lock rule the plan (§6.2)
+/// wants shared by every memory writer: the vault takes it through here, the
+/// session note takes it directly. `KnowledgeService`'s in-process mutex still
+/// serialises a single process; this is what spans processes.
 #[derive(Debug)]
 pub struct VaultLock {
-    file: std::fs::File,
-}
-
-impl Drop for VaultLock {
-    fn drop(&mut self) {
-        if let Err(error) = FileExt::unlock(&self.file) {
-            tracing::warn!(%error, "knowledge vault: unlock failed");
-        }
-    }
+    /// Held, never read: the guard's only job is to release the lock on drop
+    /// while the transaction body runs.
+    #[allow(dead_code)]
+    guard: file_lock::FileLock,
 }
 
 impl VaultLock {
@@ -60,30 +48,6 @@ impl VaultLock {
     /// exclusively.
     pub fn archive(&self, vault: &Vault, id: &str) -> Result<bool> {
         vault.archive_inner(id)
-    }
-}
-
-/// Whether a failed `try_lock_exclusive` means "someone else is inside the
-/// vault" rather than "the lock cannot be taken at all".
-///
-/// POSIX reports contention as `EAGAIN`/`EACCES`, which std already classifies.
-/// Windows reports a contended immediate lock as `ERROR_LOCK_FAILED` (33) with
-/// an `Uncategorized` kind, so its raw code has to be checked — measured here
-/// rather than assumed.
-fn contention(error: &std::io::Error) -> bool {
-    if matches!(
-        error.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
-    ) {
-        return true;
-    }
-    #[cfg(windows)]
-    {
-        matches!(error.raw_os_error(), Some(33) | Some(36))
-    }
-    #[cfg(not(windows))]
-    {
-        false
     }
 }
 
@@ -238,43 +202,17 @@ impl Vault {
         }
     }
 
-    /// Take the vault's exclusive lock, waiting at most [`LOCK_WAIT`] for
+    /// Take the vault's exclusive lock, waiting at most [`file_lock::WAIT`] for
     /// whoever holds it. The returned guard releases the lock when dropped, and
     /// a multi-file transaction is expected to hold one guard for its whole
     /// body — never across a model call.
     pub fn lock(&self) -> Result<VaultLock> {
-        let lock_path = self.root.join(".locks").join("vault.lock");
-        if let Some(dir) = lock_path.parent() {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| CoreError::Persistence(format!("create vault lock dir: {e}")))?;
-        }
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&lock_path)
-            .map_err(|e| CoreError::Persistence(format!("open vault lock file: {e}")))?;
-        let deadline = Instant::now() + LOCK_WAIT;
-        loop {
-            match file.try_lock_exclusive() {
-                Ok(()) => return Ok(VaultLock { file }),
-                Err(error) if contention(&error) => {
-                    if Instant::now() >= deadline {
-                        return Err(CoreError::Persistence(format!(
-                            "knowledge vault is held by another writer: {}",
-                            lock_path.display()
-                        )));
-                    }
-                    std::thread::sleep(Duration::from_millis(10));
-                }
-                Err(error) => {
-                    return Err(CoreError::Persistence(format!(
-                        "lock knowledge vault: {error}"
-                    )));
-                }
-            }
-        }
+        let guard = file_lock::acquire(
+            &self.root.join(".locks").join("vault.lock"),
+            file_lock::WAIT,
+            "knowledge vault",
+        )?;
+        Ok(VaultLock { guard })
     }
 
     /// The drafts subdirectory (`<root>/.drafts`), physically isolated from
@@ -829,7 +767,7 @@ mod tests {
             .truncate(false)
             .open(&lock_path)
             .unwrap();
-        file.lock_exclusive().unwrap();
+        fs2::FileExt::lock_exclusive(&file).unwrap();
         drop(file);
 
         let guard = vault.lock().unwrap();

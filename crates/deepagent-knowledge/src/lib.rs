@@ -32,6 +32,7 @@
 pub mod base;
 pub mod capture;
 pub mod entry;
+pub mod file_lock;
 pub mod vault;
 
 pub use base::{ConsolidationReport, KnowledgeBase, KnowledgeConfig, KnowledgeDraft, KnowledgeHit};
