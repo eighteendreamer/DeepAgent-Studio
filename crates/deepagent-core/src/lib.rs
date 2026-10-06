@@ -17,6 +17,7 @@
 //! - [`session_mode`] — the [`session_mode::SessionMode`] run-mode taxonomy.
 
 pub mod clock;
+pub mod compaction_strategy;
 pub mod error;
 pub mod event;
 pub mod id;

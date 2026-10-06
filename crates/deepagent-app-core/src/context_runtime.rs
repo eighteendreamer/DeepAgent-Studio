@@ -240,7 +240,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                         self.session_id,
                         HookPoint::PostCompact,
                         HookData::Compact {
-                            trigger: "micro_compact".to_string(),
+                            trigger: deepagent_core::compaction_strategy::MICRO_COMPACT.to_string(),
                             summary: Some(boundary.clone()),
                         },
                     ))
@@ -370,7 +370,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                         self.session_id,
                         HookPoint::PostCompact,
                         HookData::Compact {
-                            trigger: "micro_compact".to_string(),
+                            trigger: deepagent_core::compaction_strategy::MICRO_COMPACT.to_string(),
                             summary: Some(boundary.clone()),
                         },
                     ))

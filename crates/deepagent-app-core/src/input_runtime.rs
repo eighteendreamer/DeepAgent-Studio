@@ -1075,9 +1075,12 @@ mod tests {
         let history = model_history_from_events(&events);
         assert_eq!(history.len(), 16, "precondition: nothing compacted yet");
 
-        let (before, after) =
-            crate::slash_runtime::append_heuristic_compaction(&mut session, &history, "manual")
-                .expect("manual compaction");
+        let (before, after) = crate::slash_runtime::append_heuristic_compaction(
+            &mut session,
+            &history,
+            deepagent_core::compaction_strategy::MANUAL,
+        )
+        .expect("manual compaction");
         assert!(before > 0, "tokens counted from the real history");
         // The deterministic summarizer keeps the head turns and drops chatter;
         // it must never make the context bigger.

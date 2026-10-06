@@ -130,7 +130,9 @@ pub enum EventPayload {
         tokens_before: u64,
         /// Tokens after compaction.
         tokens_after: u64,
-        /// Strategy label, e.g. "task_summary" / "memory_unload".
+        /// What produced the summary. One of
+        /// [`crate::compaction_strategy`]'s labels; consumers label them for the
+        /// UI, so a value invented at a call site shows up raw.
         strategy: String,
         /// Replacement text for the compacted prefix; `Some` marks a boundary.
         #[serde(default, skip_serializing_if = "Option::is_none")]

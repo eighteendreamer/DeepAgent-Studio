@@ -1712,7 +1712,7 @@ async fn choose_compaction_summary(
         return CompactionChoice {
             split,
             summary_block: format!("Session notes maintained during this conversation:\n{note}"),
-            strategy: "session_memory",
+            strategy: deepagent_core::compaction_strategy::SESSION_MEMORY,
             usage: deepagent_models::Usage::default(),
         };
     }
@@ -1731,7 +1731,7 @@ async fn choose_compaction_summary(
     CompactionChoice {
         split: target.count_split,
         summary_block: summary.to_context_block(),
-        strategy: "model",
+        strategy: deepagent_core::compaction_strategy::MODEL,
         usage,
     }
 }

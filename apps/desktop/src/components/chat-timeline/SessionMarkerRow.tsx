@@ -7,15 +7,19 @@ import type { ChatBlock } from "./timelineTypes";
 type MarkerBlock = Extract<ChatBlock, { kind: "compaction" | "memories" }>;
 
 /**
- * How a boundary came to be, said in the user's terms. A strategy this map does
- * not know is shown verbatim instead of being relabelled as one it does.
+ * How a boundary came to be, said in the user's terms. The key set is pinned to
+ * `deepagent-core/src/compaction_strategy.rs` by
+ * `scripts/check-timeline-memory.test.cjs`; a strategy this map does not know is
+ * shown verbatim instead of being relabelled as one it does.
  */
 const STRATEGY_LABELS: Record<string, string> = {
   session_memory: "按会话笔记",
   model: "模型总结",
   manual: "手动压缩",
+  resume: "恢复会话时压缩",
   proactive_threshold: "超阈值自动",
   prefire_pass2: "复用预压缩",
+  reactive_model: "溢出后模型总结",
   micro_compact: "清理工具输出",
 };
 

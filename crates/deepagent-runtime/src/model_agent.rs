@@ -1064,7 +1064,10 @@ impl ModelAgent {
             {
                 Ok(Some(compacted)) => {
                     tracing::info!(step, "prefire pass-2 applied cached note (prefire hit)");
-                    self.adopt_compaction(compacted, "prefire_pass2");
+                    self.adopt_compaction(
+                        compacted,
+                        deepagent_core::compaction_strategy::PREFIRE_PASS2,
+                    );
                     return;
                 }
                 Ok(None) => {
@@ -1095,7 +1098,10 @@ impl ModelAgent {
             )
             .await
         {
-            Ok(Some(compacted)) => self.adopt_compaction(compacted, "proactive_threshold"),
+            Ok(Some(compacted)) => self.adopt_compaction(
+                compacted,
+                deepagent_core::compaction_strategy::PROACTIVE_THRESHOLD,
+            ),
             Ok(None) => self.record_proactive_compaction_failure(step, "compactor returned none"),
             Err(error) => {
                 self.record_proactive_compaction_failure(step, &error.to_string());
@@ -1515,7 +1521,7 @@ impl ModelAgent {
             sink.emit(RuntimeEvent::ContextCompacted {
                 tokens_before,
                 tokens_after,
-                strategy: "history_snip".to_string(),
+                strategy: deepagent_core::compaction_strategy::HISTORY_SNIP.to_string(),
                 summary: None,
             });
         }
@@ -1952,7 +1958,9 @@ impl ModelAgent {
                                         sink.emit(RuntimeEvent::ContextCompacted {
                                             tokens_before: compacted.tokens_before,
                                             tokens_after: compacted.tokens_after,
-                                            strategy: "reactive_model".to_string(),
+                                            strategy:
+                                                deepagent_core::compaction_strategy::REACTIVE_MODEL
+                                                    .to_string(),
                                             // Summary text stays in the model context and Hook
                                             // payload; runtime logs record only bounded metadata.
                                             summary: None,

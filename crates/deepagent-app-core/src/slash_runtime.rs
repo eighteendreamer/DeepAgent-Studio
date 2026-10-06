@@ -117,7 +117,7 @@ impl<'a> SlashRuntime<'a> {
                 let events = store.load_session(session.id())?;
                 let history = model_history_from_events(&events);
                 let (tokens_before, tokens_after) =
-                    append_heuristic_compaction(session, &history, "manual")?;
+                    append_heuristic_compaction(session, &history, deepagent_core::compaction_strategy::MANUAL)?;
                 format!(
                     "Compacted current session context. Tokens before: {tokens_before}; now summarized to about {tokens_after}."
                 )
@@ -522,7 +522,7 @@ impl<'a> SlashRuntime<'a> {
                 let events = store.load_session(session.id())?;
                 let history = model_history_from_events(&events);
                 let (tokens_before, tokens_after) =
-                    append_heuristic_compaction(session, &history, "resume")?;
+                    append_heuristic_compaction(session, &history, deepagent_core::compaction_strategy::RESUME)?;
                 format!(
                     "Resumed session {session_id}. Loaded {} event(s), compacted recovered context from {tokens_before} to about {tokens_after} estimated tokens. Continue with your next prompt.",
                     events.len()

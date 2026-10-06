@@ -106,6 +106,44 @@ test("the boundary row says what compacted and shows what it became", () => {
   assert.match(MARKER_TSX, /\{summary\}/, "the opened block shows nothing but a title");
 });
 
+// The strategy label is a cross-language wire value: Rust writes it, the desktop
+// turns it into Chinese. Without one source, a new producer string reaches the
+// user as a raw token and nothing fails.
+const STRATEGY_RS = read("../../crates/deepagent-core/src/compaction_strategy.rs");
+
+function rustStrategies() {
+  const values = new Map();
+  for (const [, name, value] of STRATEGY_RS.matchAll(/pub const (\w+): &str = "([^"]+)";/g)) {
+    values.set(name, value);
+  }
+  const list = STRATEGY_RS.match(/pub const ALL: &\[\&str\] = \&\[([\s\S]*?)\];/);
+  assert.ok(list, "compaction_strategy.rs lost its ALL list");
+  return [...list[1].matchAll(/\b([A-Z][A-Z0-9_]+)\b/g)]
+    .map(([, name]) => {
+      assert.ok(values.has(name), `ALL references ${name}, which has no label`);
+      return values.get(name);
+    });
+}
+
+test("the UI strategy labels and the Rust vocabulary cover each other", () => {
+  const strategies = rustStrategies();
+  assert.ok(strategies.length >= 8, `suspiciously small vocabulary: ${strategies}`);
+
+  const labelled = new Set(
+    [...MARKER_TSX.matchAll(/^\s{2}([a-z_0-9]+): /gm)].map(([, key]) => key)
+  );
+  // `history_snip` is internal bookkeeping: App.tsx drops that row on purpose,
+  // so it needs no Chinese label. Anything else must have one.
+  const missing = strategies.filter(
+    (value) => value !== "history_snip" && !labelled.has(value)
+  );
+  assert.deepEqual(missing, [], "the UI would show these strategies raw");
+
+  // And the other direction: a label with no producer is dead UI.
+  const invented = [...labelled].filter((key) => !strategies.includes(key));
+  assert.deepEqual(invented, [], "the UI labels strategies Rust never writes");
+});
+
 test("markers render as their own quiet rows, not process steps", () => {
   assert.match(
     SECTIONS_TS,
