@@ -458,11 +458,12 @@ async fn run_process_controlled(
     let stderr = take_buffer(&err_bytes);
     let mut stderr_text = String::from_utf8_lossy(&stderr).into_owned();
     if !drained {
-        stderr_text.push_str(
+        stderr_text.push_str(&format!(
             "\n[deepagent] the shell is done but a child process still holds this command's \
-             output pipe, so it was left running and its later output is not captured here. \
-             Check the port it listens on, or have it write to a file you can read.",
-        );
+             output pipe (shell pid {pid}), so it was left running and its later output is not \
+             captured here. Launch long-lived processes with their output redirected to a file \
+             you can read, and record their pid so you can stop them.",
+        ));
     }
     let stdout_text = String::from_utf8_lossy(&stdout).into_owned();
 
@@ -1024,7 +1025,13 @@ impl<E: CommandExecutor> Tool for BashTool<E> {
                 - Before creating a new directory with `mkdir`, run `ls <parent>` first so you don't overwrite an existing non-directory or write outside the workspace.\n\
                 \n\
                 ## Silent success\n\
-                - A command that exits 0 with empty stdout/stderr is success. The runtime substitutes a stub payload so the model doesn't mistake an empty body for a stop signal — do NOT retry just because the output was empty.".into(),
+                - A command that exits 0 with empty stdout/stderr is success. The runtime substitutes a stub payload so the model doesn't mistake an empty body for a stop signal — do NOT retry just because the output was empty.\n\
+                \n\
+                ## Long-running processes (dev servers, watchers)\n\
+                - The call returns as soon as the shell exits. Anything you left running KEEPS running, but its later output is not captured by the tool — redirect it to a file you can read afterwards.\n\
+                - PowerShell: `$p = Start-Process cargo -ArgumentList 'run','-p','api' -NoNewWindow -PassThru -RedirectStandardOutput server.log -RedirectStandardError server.err; $p.Id | Out-File server.pid`\n\
+                - POSIX: `nohup <command> >server.log 2>&1 & echo $! > server.pid`\n\
+                - Then read `server.log` with `read_file`, probe the port it listens on, and stop it when you are done (`Stop-Process -Id (Get-Content server.pid)`, or `kill $(cat server.pid)`). Never leave a server running unannounced in your final answer.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -1684,6 +1691,98 @@ mod tests {
             !marker.exists(),
             "a killed command left its grandchild running"
         );
+    }
+
+    /// The capability the tool description advertises, tested end to end: start
+    /// something long-lived, get control back, read what it wrote afterwards,
+    /// and still be able to stop it by the pid it recorded.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn the_documented_background_recipe_leaves_a_readable_log_and_a_stoppable_pid() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_str().unwrap();
+        let ticks = tmp.path().join("ticks.txt");
+        let pid_file = tmp.path().join("server.pid");
+        let script = tmp.path().join("pinger.ps1");
+        std::fs::write(
+            &script,
+            format!(
+                "for ($i = 0; $i -lt 8; $i++) {{ 'tick' | Out-File -FilePath '{}' -Append \
+                 -Encoding ascii; Start-Sleep -Milliseconds 500 }}\n",
+                ticks.display()
+            ),
+        )
+        .unwrap();
+        let command = format!(
+            "$p = Start-Process powershell -ArgumentList '-NoProfile','-File','{}' \
+             -NoNewWindow -PassThru; $p.Id | Out-File -Encoding ascii '{}'; Write-Output started",
+            script.display(),
+            pid_file.display()
+        );
+
+        let start = std::time::Instant::now();
+        let out = run(&command, cwd).await;
+        assert!(
+            start.elapsed() < Duration::from_secs(15),
+            "starting a server must not block the call: {:?}",
+            start.elapsed()
+        );
+        assert!(out.stdout.contains("started"), "{out:?}");
+
+        let pid = loop_read_pid(&pid_file).await.expect("the pid file");
+        // Two separate writes means the child is still working after we returned.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            let lines = std::fs::read_to_string(&ticks)
+                .map(|text| text.lines().count())
+                .unwrap_or(0);
+            if lines >= 2 {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the detached process never wrote after the call returned"
+            );
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+
+        run(&format!("Stop-Process -Id {pid} -Force"), cwd).await;
+        let after = run(&format!("Get-Process -Id {pid} | Out-Null"), cwd).await;
+        assert_ne!(
+            after.exit_code,
+            Some(0),
+            "the server was still running after Stop-Process"
+        );
+    }
+
+    #[cfg(windows)]
+    async fn run(command: &str, cwd: &str) -> CommandOutcome {
+        SystemExecutor
+            .run_controlled(
+                command,
+                cwd,
+                CommandShell::Powershell,
+                Arc::new(AtomicBool::new(false)),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[cfg(windows)]
+    async fn loop_read_pid(path: &Path) -> Option<u32> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                if let Ok(pid) = text.trim().parse::<u32>() {
+                    return Some(pid);
+                }
+            }
+            if std::time::Instant::now() > deadline {
+                return None;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     #[cfg(unix)]
