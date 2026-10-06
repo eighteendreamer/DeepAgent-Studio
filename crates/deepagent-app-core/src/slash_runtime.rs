@@ -112,12 +112,14 @@ impl<'a> SlashRuntime<'a> {
                 result.message
             }
             SlashAction::Compact => {
-                let store =
-                    deepagent_persistence::event_store::EventStore::new(self.db);
+                let store = deepagent_persistence::event_store::EventStore::new(self.db);
                 let events = store.load_session(session.id())?;
                 let history = model_history_from_events(&events);
-                let (tokens_before, tokens_after) =
-                    append_heuristic_compaction(session, &history, deepagent_core::compaction_strategy::MANUAL)?;
+                let (tokens_before, tokens_after) = append_heuristic_compaction(
+                    session,
+                    &history,
+                    deepagent_core::compaction_strategy::MANUAL,
+                )?;
                 format!(
                     "Compacted current session context. Tokens before: {tokens_before}; now summarized to about {tokens_after}."
                 )
@@ -515,14 +517,14 @@ impl<'a> SlashRuntime<'a> {
                 }
             },
             SlashAction::Resume { session_id: _ } => {
-                let store =
-                    deepagent_persistence::event_store::EventStore::new(
-                        self.db,
-                    );
+                let store = deepagent_persistence::event_store::EventStore::new(self.db);
                 let events = store.load_session(session.id())?;
                 let history = model_history_from_events(&events);
-                let (tokens_before, tokens_after) =
-                    append_heuristic_compaction(session, &history, deepagent_core::compaction_strategy::RESUME)?;
+                let (tokens_before, tokens_after) = append_heuristic_compaction(
+                    session,
+                    &history,
+                    deepagent_core::compaction_strategy::RESUME,
+                )?;
                 format!(
                     "Resumed session {session_id}. Loaded {} event(s), compacted recovered context from {tokens_before} to about {tokens_after} estimated tokens. Continue with your next prompt.",
                     events.len()
@@ -1257,7 +1259,10 @@ pub(crate) fn append_heuristic_compaction(
         .map(|message| message.content.clone())
         .unwrap_or_default();
     let summary = HeuristicSummarizer.summarize(&goal, &TaskSummary::default(), &rendered);
-    let summary_block = summary.to_context_block();
+    let summary_block = crate::input_runtime::with_transcript_pointer(
+        summary.to_context_block(),
+        &session.transcript_dir(),
+    );
     let tokens_after = counter.count(&summary_block) as u64;
     session.append(EventPayload::ContextCompacted {
         tokens_before,

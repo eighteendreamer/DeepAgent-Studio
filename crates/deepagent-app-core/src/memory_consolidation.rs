@@ -320,6 +320,39 @@ mod tests {
         assert_eq!(state.runs_since, 0, "the counter restarts after a pass");
     }
 
+    /// DoD §6 "跑两次不重复改": the gate would hold the second call back on its
+    /// interval, so the fold is re-run with the gate taken out of the way. What
+    /// must be idempotent is the fold, not the counter.
+    #[test]
+    fn the_fold_changes_nothing_on_a_second_pass() {
+        let scratch = Scratch::new("idempotent");
+        let db = Database::open_in_memory().unwrap();
+        let knowledge = knowledge(&scratch, 2, 2);
+        let clock = FixedClock::new(10_000);
+        consolidate_if_due(&db, &knowledge, "ses-active", &clock, &gate())
+            .unwrap()
+            .expect("precondition: the first pass folds");
+        let folded = knowledge.entry_count();
+
+        let report = knowledge
+            .consolidate(Some("ses-active"), 10_000)
+            .expect("second fold");
+        assert!(
+            report.is_empty(),
+            "a second pass changed the vault: {}",
+            report.summary()
+        );
+        assert_eq!(knowledge.entry_count(), folded);
+        assert_eq!(
+            std::fs::read_dir(scratch.vault_root().join(".superseded"))
+                .expect("the archive directory exists")
+                .filter_map(|entry| entry.ok())
+                .count(),
+            2,
+            "a no-op pass must not archive anything again"
+        );
+    }
+
     #[test]
     fn the_gate_holds_a_pass_back_until_enough_runs_accumulate() {
         let scratch = Scratch::new("gate");

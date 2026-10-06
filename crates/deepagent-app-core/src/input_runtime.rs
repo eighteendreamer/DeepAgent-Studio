@@ -199,6 +199,20 @@ impl Drop for InputLeaseGuard {
 /// recognised by the single boundary resolver below, i.e. by every view.
 pub(crate) const COMPACTED_SUMMARY_HEADER: &str = "[Earlier conversation compacted to summary]";
 
+/// Name the file the dropped detail actually lives in.
+///
+/// A summary is a lossy rewrite, and the model has no other way to recover a
+/// specific it lost. Claude Code writes the transcript path into the compacted
+/// body for exactly this reason (`compact/prompt.ts:349-351`). Appended wherever
+/// a durable boundary is written — the two places that turn a summary into the
+/// session's model-facing history.
+pub(crate) fn with_transcript_pointer(summary: String, transcript_dir: &std::path::Path) -> String {
+    format!(
+        "{summary}\n[完整记录（未压缩的原始事件）: {}]",
+        transcript_dir.display()
+    )
+}
+
 /// Where the model-facing view starts, and what replaces everything before it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompactionBoundary {
@@ -1075,6 +1089,7 @@ mod tests {
         let history = model_history_from_events(&events);
         assert_eq!(history.len(), 16, "precondition: nothing compacted yet");
 
+        let transcript_dir = session.transcript_dir();
         let (before, after) = crate::slash_runtime::append_heuristic_compaction(
             &mut session,
             &history,
@@ -1096,8 +1111,105 @@ mod tests {
             "{:?}",
             compacted[0].content
         );
+        // The model's only way back to detail the summary dropped is the pointer
+        // to the verbatim log, and it has to survive the reload (§5.1).
+        let pointer = transcript_dir.display().to_string();
+        assert!(
+            compacted[0].content.contains(&pointer),
+            "boundary summary lost the transcript pointer: {:?}",
+            compacted[0].content
+        );
+        // The pointer must name a directory that actually holds the log, not just
+        // any path — the model is meant to open it.
+        let files: Vec<String> = std::fs::read_dir(&transcript_dir)
+            .expect("transcript directory exists")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            files.iter().any(|name| name.ends_with(".jsonl.zst")),
+            "pointer names a directory with no event log: {files:?}"
+        );
         // The raw turns are still in the log for export / replay.
         assert_eq!(full_history_from_events(&reloaded).len(), 16);
+    }
+
+    /// Phase 2 DoD, the mechanism half of "第二次运行不再产生总结模型调用": the
+    /// trigger is computed on the model view, so a durable boundary must make the
+    /// next run decide not to compact. The other half — that a note-based boundary
+    /// really issues no request — is pinned by
+    /// `run_assembler::compaction_source_tests::a_covered_note_compacts_without_calling_the_model`.
+    #[test]
+    fn a_durable_boundary_stops_the_next_run_from_re_triggering_compaction() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = Session::create(&db, &clock, Some("re-trigger")).expect("create session");
+        for turn in 0..8 {
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::user(format!(
+                        "question {turn} carrying enough prose to be counted as real context"
+                    )),
+                })
+                .unwrap();
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::assistant(format!(
+                        "answer {turn} carrying enough prose to be counted as real context"
+                    )),
+                })
+                .unwrap();
+        }
+
+        // The same rendering and counter the run assembler uses for its decision.
+        let counter = deepagent_context::HeuristicTokenizer::new();
+        let total = |history: &[Message]| -> usize {
+            history
+                .iter()
+                .map(|message| {
+                    deepagent_context::TokenCounter::count(
+                        &counter,
+                        &format!("{:?}: {}", message.role, message.content),
+                    )
+                })
+                .sum()
+        };
+
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let events = store.load_session(session.id()).unwrap();
+        let history = model_history_from_events(&events);
+        let before = total(&history);
+        crate::slash_runtime::append_heuristic_compaction(
+            &mut session,
+            &history,
+            deepagent_core::compaction_strategy::MANUAL,
+        )
+        .expect("manual compaction");
+
+        let reloaded = store.load_session(session.id()).unwrap();
+        let after = total(&model_history_from_events(&reloaded));
+        assert!(
+            after < before,
+            "the boundary must shrink what the next run measures: {before} -> {after}"
+        );
+
+        // Any trigger between the two totals compacts on the first run and takes
+        // no summarizing call on the second, which is exactly what the boundary is
+        // for.
+        let policy = deepagent_context::CompactionPolicy {
+            trigger_tokens: (before + after) / 2,
+            ..Default::default()
+        };
+        assert!(
+            policy.should_compact(before),
+            "the pre-boundary view must exceed the trigger: {before} <= {}",
+            policy.trigger_tokens
+        );
+        assert!(
+            !policy.should_compact(after),
+            "the reloaded view re-triggers compaction: {after} > {}",
+            policy.trigger_tokens
+        );
     }
 
     #[test]

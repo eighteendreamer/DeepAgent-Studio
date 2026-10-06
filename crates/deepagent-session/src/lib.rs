@@ -247,6 +247,15 @@ impl<'db, C: Clock> Session<'db, C> {
         self.id
     }
 
+    /// Directory holding this session's authoritative event log.
+    ///
+    /// A compaction summary is a lossy rewrite, and this is the only handle the
+    /// model gets on the detail the summary dropped, so the session that owns the
+    /// log names its own location rather than having callers rebuild the layout.
+    pub fn transcript_dir(&self) -> std::path::PathBuf {
+        self.db.session_transcript_dir(self.id)
+    }
+
     /// The current in-memory projection.
     pub fn state(&self) -> &SessionState {
         &self.state

@@ -117,6 +117,16 @@ impl Database {
         session_files::session_dir(&self.session_files_root(), session_id).join("session-memory.md")
     }
 
+    /// The directory holding a session's authoritative event log
+    /// (`session.gNNNNNN.v1.jsonl.zst` generations).
+    ///
+    /// Reached through `Session::transcript_dir()`; public only because the
+    /// session crate is a different crate. The layout belongs to this crate —
+    /// nothing else may rebuild it from the session-file root.
+    pub fn session_transcript_dir(&self, session_id: SessionId) -> PathBuf {
+        session_files::session_dir(&self.session_files_root(), session_id)
+    }
+
     pub(crate) fn lock_session_io(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
         self.session_io
             .lock()

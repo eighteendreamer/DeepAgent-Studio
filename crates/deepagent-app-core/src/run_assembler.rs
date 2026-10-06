@@ -1699,41 +1699,54 @@ async fn choose_compaction_summary(
     model: &str,
 ) -> CompactionChoice {
     let store = crate::session_memory::SessionMemoryStore::new(db.clone());
-    if let Some((split, note)) = crate::session_memory::compaction_from_note(
+    let mut choice = match crate::session_memory::compaction_from_note(
         &store,
         session_id,
         target.events,
         target.history,
     ) {
-        tracing::debug!(
-            split,
-            "compacting from the session note without a model call"
-        );
-        return CompactionChoice {
-            split,
-            summary_block: format!("Session notes maintained during this conversation:\n{note}"),
-            strategy: deepagent_core::compaction_strategy::SESSION_MEMORY,
-            usage: deepagent_models::Usage::default(),
-        };
-    }
-    let goal = target
-        .history
-        .first()
-        .map(|message| message.content.clone())
-        .unwrap_or_default();
-    let (summary, usage) = ModelCompactor::new(client.clone(), model.to_string())
-        .summarize_accounted(
-            &goal,
-            &TaskSummary::default(),
-            &target.rendered[..target.count_split],
-        )
-        .await;
-    CompactionChoice {
-        split: target.count_split,
-        summary_block: summary.to_context_block(),
-        strategy: deepagent_core::compaction_strategy::MODEL,
-        usage,
-    }
+        Some((split, note)) => {
+            tracing::debug!(
+                split,
+                "compacting from the session note without a model call"
+            );
+            CompactionChoice {
+                split,
+                summary_block: format!(
+                    "Session notes maintained during this conversation:\n{note}"
+                ),
+                strategy: deepagent_core::compaction_strategy::SESSION_MEMORY,
+                usage: deepagent_models::Usage::default(),
+            }
+        }
+        None => {
+            let goal = target
+                .history
+                .first()
+                .map(|message| message.content.clone())
+                .unwrap_or_default();
+            let (summary, usage) = ModelCompactor::new(client.clone(), model.to_string())
+                .summarize_accounted(
+                    &goal,
+                    &TaskSummary::default(),
+                    &target.rendered[..target.count_split],
+                )
+                .await;
+            CompactionChoice {
+                split: target.count_split,
+                summary_block: summary.to_context_block(),
+                strategy: deepagent_core::compaction_strategy::MODEL,
+                usage,
+            }
+        }
+    };
+    // A summary is a lossy rewrite, so the block must also name the log the
+    // detail came from — that is the model's only way back (§5.1).
+    choice.summary_block = crate::input_runtime::with_transcript_pointer(
+        choice.summary_block,
+        &db.session_transcript_dir(session_id),
+    );
+    choice
 }
 
 /// What replaced the compacted prefix and what it cost.
@@ -1831,6 +1844,7 @@ mod compaction_source_tests {
             "{}",
             choice.summary_block
         );
+        assert_names_the_transcript(&choice, &db, session);
     }
 
     #[tokio::test]
@@ -1862,6 +1876,7 @@ mod compaction_source_tests {
         // The tokens this call spent are what `maybe_compact_history` books.
         assert_eq!(choice.usage.prompt_tokens, 120);
         assert_eq!(choice.usage.completion_tokens, 18);
+        assert_names_the_transcript(&choice, &db, session);
     }
 
     fn transcript_rendered(history: &[Message]) -> Vec<String> {
@@ -1869,6 +1884,20 @@ mod compaction_source_tests {
             .iter()
             .map(|message| format!("{:?}: {}", message.role, message.content))
             .collect()
+    }
+
+    /// Either summary source must tell the model where the verbatim log lives.
+    fn assert_names_the_transcript(
+        choice: &CompactionChoice,
+        db: &Database,
+        session: deepagent_core::id::SessionId,
+    ) {
+        let dir = db.session_transcript_dir(session);
+        assert!(
+            choice.summary_block.contains(&dir.display().to_string()),
+            "boundary summary lost the transcript pointer: {}",
+            choice.summary_block
+        );
     }
 }
 
