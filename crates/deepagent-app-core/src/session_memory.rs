@@ -672,7 +672,14 @@ impl SessionMemoryExtractor {
         let task = run_session.create_task(&prompt)?;
         let config = RuntimeConfig {
             max_steps: 6,
-            max_total_tokens: Some(32_000),
+            // No token gate here. The loop compares the *current request's* context
+            // against `max_total_tokens`, so any number below a legitimate
+            // uncovered window fails the pass AFTER it has already edited the note:
+            // the cut point stays behind, the next turn re-reads the same
+            // transcript, and the window only grows. Bounded work is what actually
+            // caps this pass — `max_steps`, plus the extraction gate that decides
+            // how much transcript it may receive, plus the cost ledger below.
+            max_total_tokens: None,
             permissions,
             auto_approve: false,
             // The loop derives "this run must have mutated a file" from the very
@@ -801,6 +808,27 @@ pub(crate) mod testing {
             vec![
                 serde_json::json!({"type":"response.output_text.delta","delta":delta}).to_string(),
                 Self::completed(),
+            ]
+        }
+
+        /// A turn whose reported context is `input_tokens` wide, for passes that
+        /// must survive a big uncovered window.
+        pub(crate) fn text_with_context(delta: &str, input_tokens: u64) -> Vec<String> {
+            let completed = serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "usage": {
+                        "input_tokens": input_tokens,
+                        "output_tokens": 18,
+                        "total_tokens": input_tokens + 18,
+                    },
+                },
+            })
+            .to_string();
+            vec![
+                serde_json::json!({"type":"response.output_text.delta","delta":delta}).to_string(),
+                completed,
             ]
         }
 
@@ -1718,19 +1746,23 @@ mod tests {
         (db, session, outcome)
     }
 
+    /// The scripted model's note edit: read the note, apply this one replacement,
+    /// then answer. Shared by the pass tests because they must all claim the same
+    /// kind of coverage.
+    fn note_edit(path: &Path) -> Vec<String> {
+        ScriptedTransport::call(
+            "c2",
+            "edit_file",
+            serde_json::json!({
+                "path": path.to_string_lossy(),
+                "old": "(nothing recorded yet)",
+                "new": "- goal: pick the storage layout",
+            }),
+        )
+    }
+
     #[tokio::test]
     async fn gated_pass_edits_the_note_and_records_a_safe_cut_point() {
-        let note_edit = |path: &Path| {
-            ScriptedTransport::call(
-                "c2",
-                "edit_file",
-                serde_json::json!({
-                    "path": path.to_string_lossy(),
-                    "old": "(nothing recorded yet)",
-                    "new": "- goal: pick the storage layout",
-                }),
-            )
-        };
         // The scripted model reads the note, edits it, then answers.
         let db = Arc::new(Database::open_in_memory().unwrap());
         let store = SessionMemoryStore::new(db.clone());
@@ -1781,6 +1813,59 @@ mod tests {
         assert_eq!(saved.tool_cursor_sequence, Some(2));
         assert_eq!(saved.tokens_at_last_extraction, 12_000);
         assert_eq!(saved.summary, note);
+    }
+
+    /// The note pass must survive a wide uncovered window. The run loop's
+    /// `max_total_tokens` gate reads the *current request's* context size, so a
+    /// budget smaller than a legitimate window fails the pass after it already
+    /// edited the note: the cut point never advances, the next turn re-does the
+    /// work, and the window only keeps growing.
+    #[tokio::test]
+    async fn a_wide_uncovered_window_still_advances_the_note() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let store = SessionMemoryStore::new(db.clone());
+        let session = SessionId::new();
+        let note_path = store.memory_path(session);
+        std::fs::create_dir_all(note_path.parent().unwrap()).unwrap();
+        ensure_note(&note_path).unwrap();
+
+        let client = scripted_client(vec![
+            ScriptedTransport::call(
+                "c1",
+                "read_file",
+                serde_json::json!({"path": note_path.to_string_lossy()}),
+            ),
+            note_edit(&note_path),
+            ScriptedTransport::text_with_context("note updated", 40_000),
+        ]);
+        let extractor = SessionMemoryExtractor::new(db.clone(), client, "deepseek-chat").with_gate(
+            ExtractionGate {
+                init_tokens: 1,
+                ..Default::default()
+            },
+        );
+        let events = vec![tool_call(1), tool_call(2)];
+        let outcome = extractor
+            .run_if_due(
+                session,
+                &[Message::user("decide the storage layout")],
+                &events,
+                12_000,
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            outcome.extracted,
+            "a pass whose request carried 40k context must still count: {outcome:?}"
+        );
+        let saved = store.load(session).unwrap().unwrap();
+        assert_eq!(
+            saved.last_summarized_sequence,
+            Some(2),
+            "the note was edited but the cut point stayed behind"
+        );
     }
 
     /// Completion without an edit proves nothing. The cut point must not move —
