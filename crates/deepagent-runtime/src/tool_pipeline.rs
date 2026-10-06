@@ -303,7 +303,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             approvals: Arc::new(AutoDenyGate),
             events: Arc::new(NullEventSink),
             cancel: Arc::new(AtomicBool::new(false)),
-            timeout: Duration::from_secs(120),
+            timeout: ToolExecutionContext::DEFAULT_TIMEOUT,
             budget: ToolResultBudgetConfig::default(),
             decorator: None,
             created_paths: Arc::new(Mutex::new(Vec::new())),

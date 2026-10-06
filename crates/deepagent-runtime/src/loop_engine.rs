@@ -196,7 +196,7 @@ impl Default for RuntimeConfig {
             fire_session_start: true,
             permissions: PermissionSet::developer(),
             auto_approve: false,
-            tool_timeout: std::time::Duration::from_secs(120),
+            tool_timeout: ToolExecutionContext::DEFAULT_TIMEOUT,
             checkpoint: None,
             artifact_persistence: None,
             action_persistence: None,

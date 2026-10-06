@@ -293,7 +293,7 @@ impl CommandExecutor for SystemExecutor {
             cwd,
             shell,
             Arc::new(AtomicBool::new(false)),
-            Duration::from_secs(120),
+            ToolExecutionContext::DEFAULT_TIMEOUT,
             &[],
         )
         .await
@@ -311,7 +311,7 @@ impl CommandExecutor for SystemExecutor {
             cwd,
             shell,
             Arc::new(AtomicBool::new(false)),
-            Duration::from_secs(120),
+            ToolExecutionContext::DEFAULT_TIMEOUT,
             environment,
         )
         .await

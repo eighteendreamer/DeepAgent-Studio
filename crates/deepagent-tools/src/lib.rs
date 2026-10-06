@@ -135,12 +135,18 @@ impl Default for ToolExecutionContext {
     fn default() -> Self {
         Self {
             cancel: Arc::new(AtomicBool::new(false)),
-            timeout: Duration::from_secs(120),
+            timeout: Self::DEFAULT_TIMEOUT,
         }
     }
 }
 
 impl ToolExecutionContext {
+    /// The system's one tool deadline, in one place.
+    ///
+    /// The pipeline's outer cap, `RuntimeConfig::tool_timeout`, and every
+    /// process-backed executor that has to pick a deadline for itself all read
+    /// this; a duration literal anywhere else means two owners for one rule.
+    pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
     pub fn new(cancel: Arc<AtomicBool>) -> Self {
         Self {
             cancel,

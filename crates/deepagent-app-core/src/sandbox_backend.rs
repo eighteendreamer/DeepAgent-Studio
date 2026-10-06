@@ -15,6 +15,7 @@ use deepagent_builtins::bash_tool::{
     CommandExecutor, CommandOutcome, CommandShell, SystemExecutor,
 };
 use deepagent_core::error::{CoreError, Result};
+use deepagent_tools::ToolExecutionContext;
 use serde::{Deserialize, Serialize};
 
 use crate::sandboxie_service::{sandbox_mode_code, sandbox_mode_from_code};
@@ -512,7 +513,7 @@ impl CommandExecutor for SandboxBackendCommandExecutor {
             cwd,
             shell,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            Duration::from_secs(120),
+            ToolExecutionContext::DEFAULT_TIMEOUT,
             &[],
         )
         .await
@@ -530,7 +531,7 @@ impl CommandExecutor for SandboxBackendCommandExecutor {
             cwd,
             shell,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            Duration::from_secs(120),
+            ToolExecutionContext::DEFAULT_TIMEOUT,
             environment,
         )
         .await
