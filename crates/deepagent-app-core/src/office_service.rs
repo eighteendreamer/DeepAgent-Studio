@@ -550,11 +550,11 @@ fn strip_inline(s: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::io::Read;
 
-    fn office() -> (OfficeService, tempfile::TempDir) {
+    pub(crate) fn office() -> (OfficeService, tempfile::TempDir) {
         let dir = tempfile::tempdir().unwrap();
         let runtime = Arc::new(RuntimeService::with_registry(
             &[dir.path().to_path_buf()],

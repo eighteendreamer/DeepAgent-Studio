@@ -802,8 +802,18 @@ impl deepagent_builtins::OfficeBackend for OfficeToolBackend {
                 "file already exists - pass overwrite=true to replace it",
             ));
         }
-        self.service
-            .create_docx_from_markdown(markdown, title.as_deref(), out_path)?;
+        // Both docx tiers wait on a child process (pandoc pipes Markdown and
+        // waits, LibreOffice converts on disk). A blocking `wait` parked on the
+        // async runtime stalls the whole worker, so it goes to the blocking pool
+        // like the other process-backed tool paths in this file.
+        let service = self.service.clone();
+        let markdown = markdown.to_string();
+        let target = out_path.to_string();
+        tokio::task::spawn_blocking(move || {
+            service.create_docx_from_markdown(&markdown, title.as_deref(), &target)
+        })
+        .await
+        .map_err(|error| CoreError::other(format!("office_docx task join failed: {error}")))??;
         Ok(serde_json::json!({ "path": out_path, "ok": true }))
     }
 
@@ -1369,5 +1379,33 @@ mod session_search_tests {
             .await
             .unwrap();
         assert_eq!(global.value["results"].as_array().unwrap().len(), 2);
+    }
+}
+
+#[cfg(all(test, feature = "runtimes"))]
+mod office_backend_tests {
+    use super::*;
+    use deepagent_builtins::OfficeBackend;
+
+    /// The docx export now crosses into the blocking pool because both of its
+    /// tiers wait on a child process. This is the round trip that must still
+    /// hold after that hop: the tool call returns ok and the file is on disk.
+    #[tokio::test]
+    async fn docx_export_completes_through_the_blocking_pool() {
+        let (service, dir) = crate::office_service::tests::office();
+        let backend = OfficeToolBackend {
+            service: Arc::new(service),
+        };
+        let out = dir.path().join("report.docx");
+        let out_path = out.to_str().unwrap().to_string();
+
+        let value = backend
+            .create_docx_from_markdown("# Heading\n\nBody text", None, &out_path, false)
+            .await
+            .unwrap();
+
+        assert_eq!(value["path"].as_str(), Some(out_path.as_str()));
+        assert_eq!(value["ok"].as_bool(), Some(true));
+        assert!(out.exists(), "the document was not written");
     }
 }
