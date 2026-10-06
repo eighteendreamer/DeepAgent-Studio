@@ -8,7 +8,6 @@ import type { ComposerMention, ComposerSkillSelection } from "../../types";
 import { MarkdownText } from "../MarkdownText";
 import { morphSpringTransition } from "../ui/morphingMenuMotion";
 import { TintButton } from "../ui/TintButton";
-import { TurnFooter } from "./TurnFooter";
 import type { ChatBlock } from "./timelineTypes";
 
 const USER_BUBBLE_READ =
@@ -293,7 +292,6 @@ export function AssistantMessageBubble({
       <div className="min-w-0 max-w-full text-text-base">
         <MarkdownText text={block.text} tone={block.tone} onOpenUrl={onOpenUrl} />
       </div>
-      <TurnFooter usage={block.usage} totalMs={block.runMs} answer={block.text} />
     </div>
   );
 }

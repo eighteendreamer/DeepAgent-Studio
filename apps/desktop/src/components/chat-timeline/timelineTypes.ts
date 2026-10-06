@@ -54,6 +54,12 @@ export type ChatBlock =
 export type Turn = {
   user?: Extract<ChatBlock, { kind: "user" }>;
   blocks: ChatBlock[];
+  /** Turn-level metrics, lifted off the blocks. They describe the whole turn,
+   * so they must not ride on whichever text block currently counts as the
+   * answer: that block moves between the answer surface and the process
+   * timeline every time the model starts another tool call. */
+  usage?: TokenUsage;
+  runMs?: number;
 };
 
 export type ProcessSection = {

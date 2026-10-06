@@ -12,6 +12,12 @@ export function groupTurns(blocks: ChatBlock[]): Turn[] {
     }
     if (!current) current = { blocks: [] };
     current.blocks.push(block);
+    if (block.kind === "assistant" && block.usage) {
+      // Last writer wins: the mapper stamps every text segment of the turn with
+      // the message's current usage, so the newest one is the live total.
+      current.usage = block.usage;
+      current.runMs = block.runMs;
+    }
   }
 
   if (current) turns.push(current);

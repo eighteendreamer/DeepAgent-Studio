@@ -96,3 +96,24 @@ test("the backend decides the session before spawning the run", () => {
     "the session must exist before the run task starts"
   );
 });
+
+// The per-turn metrics line belongs to the TURN, not to a text block. A text
+// block is reclassified from the answer surface into the collapsed process
+// timeline every time the model starts another tool call after it
+// (deriveTurnSections), which made the footer appear at each request's usage
+// event and vanish again on the next tool_started.
+test("the metrics footer is turn-level and renders exactly once", () => {
+  const bubble = read("components/chat-timeline/MessageBubble.tsx");
+  const turn = read("components/chat-timeline/MessageTurn.tsx");
+  const grouped = read("components/chat-timeline/groupTurns.ts");
+
+  assert.doesNotMatch(bubble, /<TurnFooter/, "a text block must not own the footer");
+  assert.match(turn, /<TurnFooter[\s\S]{0,120}usage=\{turn\.usage\}/, "the footer must read turn metrics");
+  assert.equal(
+    (turn.match(/<TurnFooter/g) ?? []).length,
+    1,
+    "one turn must produce exactly one footer"
+  );
+  assert.match(grouped, /current\.usage = block\.usage/, "groupTurns no longer lifts usage");
+  assert.match(turn, /previous\.usage === next\.usage/, "the memo would drop a usage-only change");
+});

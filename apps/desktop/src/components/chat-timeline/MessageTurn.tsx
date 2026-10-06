@@ -5,6 +5,7 @@ import { AssistantMessageBubble, UserMessageBubble } from "./MessageBubble";
 import { ProcessSectionRow } from "./ProcessSectionRow";
 import { SessionMarkerRow } from "./SessionMarkerRow";
 import type { Turn } from "./timelineTypes";
+import { TurnFooter } from "./TurnFooter";
 import { WorkMetaRow } from "./WorkMetaRow";
 import { CollapseBlurPanel } from "./CollapseBlurPanel";
 
@@ -75,6 +76,14 @@ function MessageTurnComponent({
       {assistantContentBlocks.map((block) => (
         <AssistantMessageBubble key={block.id} block={block} onOpenUrl={onOpenUrl} />
       ))}
+      {/* One metrics line per turn, rendered here rather than inside a text
+          block: while the run continues, the answer text can be reclassified
+          into the process timeline, and a block-level footer would blink. */}
+      <TurnFooter
+        usage={turn.usage}
+        totalMs={turn.runMs}
+        answer={assistantContentBlocks.map((block) => block.text).join("\n").trim()}
+      />
       {markerBlocks.map((block) => (
         <SessionMarkerRow key={block.id} block={block} />
       ))}
@@ -90,6 +99,8 @@ function MessageTurnComponent({
 
 function sameTurnBlocks(previous: Turn, next: Turn): boolean {
   return previous.user === next.user &&
+    previous.usage === next.usage &&
+    previous.runMs === next.runMs &&
     previous.blocks.length === next.blocks.length &&
     previous.blocks.every((block, index) => block === next.blocks[index]);
 }
