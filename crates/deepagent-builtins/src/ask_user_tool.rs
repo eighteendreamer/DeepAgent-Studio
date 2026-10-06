@@ -117,6 +117,13 @@ impl AskUserQuestionTool {
 
 #[async_trait]
 impl Tool for AskUserQuestionTool {
+    /// Waiting on a human has no deadline by design (see the comment above
+    /// `invoke_with_context`): the run's cancellation flag is the only escape
+    /// besides an answer, so an outer budget would silently drop questions.
+    fn bounded_by_run_timeout(&self) -> bool {
+        false
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: ASK_USER_QUESTION_TOOL_NAME.into(),

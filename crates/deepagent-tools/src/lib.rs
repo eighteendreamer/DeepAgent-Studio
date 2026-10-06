@@ -186,6 +186,18 @@ pub trait Tool: Send + Sync {
         self.invoke(arguments).await
     }
 
+    /// Whether the pipeline may abandon this tool once the run's per-tool budget
+    /// expires.
+    ///
+    /// Default `true`. The budget reaches tools as data (`ToolExecutionContext::
+    /// timeout`), and a tool is free to ignore it, so without an outer deadline a
+    /// single stuck tool holds the whole run open forever. Two shapes opt out
+    /// honestly: a nested run that carries its own, longer deadline (subagent
+    /// dispatch), and a wait on a human that is deliberately unbounded.
+    fn bounded_by_run_timeout(&self) -> bool {
+        true
+    }
+
     /// Validate and optionally normalize schema-valid input before hooks and
     /// permission rules observe it. Tools can override this for value-level
     /// constraints such as path normalization or mutually-exclusive fields.

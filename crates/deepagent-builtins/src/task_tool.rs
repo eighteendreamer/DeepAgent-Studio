@@ -244,6 +244,14 @@ impl<R: SubagentRunner> TaskTool<R> {
 
 #[async_trait]
 impl<R: SubagentRunner> Tool for TaskTool<R> {
+    /// A subagent run is a nested run: it carries its own deadline
+    /// (`RuntimeConfig::task_timeout`, enforced in the kernel at
+    /// `deepagent-runtime/src/kernel.rs`, default 30 minutes). Cutting it off at
+    /// the parent's per-tool budget would end every delegation prematurely.
+    fn bounded_by_run_timeout(&self) -> bool {
+        false
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         let types_note = if self.agent_types.is_empty() {
             "Only the default general-purpose agent is available; omit subagent_type.".to_string()

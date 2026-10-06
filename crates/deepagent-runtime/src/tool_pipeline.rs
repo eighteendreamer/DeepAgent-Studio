@@ -654,16 +654,33 @@ impl<'a> ToolExecutionPipeline<'a> {
             meta: metadata.meta,
         });
         let started = Instant::now();
-        let result = self
+        // The budget reaches a tool as data, which means a tool is free to ignore
+        // it; this is the only place that can actually enforce it. Without it one
+        // stuck tool holds the run open forever and the UI row spins.
+        let enforce_budget = self
             .registry
-            .invoke_with_context(
-                &prepared.name,
-                prepared.arguments.clone(),
-                &self.permissions,
-                true,
-                ToolExecutionContext::new(self.cancel.clone()).with_timeout(self.timeout),
-            )
-            .await;
+            .get(&prepared.name)
+            .map_or(true, |spec| spec.tool.bounded_by_run_timeout());
+        let invocation = self.registry.invoke_with_context(
+            &prepared.name,
+            prepared.arguments.clone(),
+            &self.permissions,
+            true,
+            ToolExecutionContext::new(self.cancel.clone()).with_timeout(self.timeout),
+        );
+        let result = if enforce_budget {
+            match tokio::time::timeout(self.timeout, invocation).await {
+                Ok(result) => result,
+                Err(_elapsed) => Err(deepagent_core::error::CoreError::other(format!(
+                    "tool '{}' exceeded its {} ms budget and was abandoned; its work may still \
+                     be finishing in the background",
+                    prepared.name,
+                    self.timeout.as_millis()
+                ))),
+            }
+        } else {
+            invocation.await
+        };
         let duration_ms = started.elapsed().as_millis() as u64;
         self.complete_prepared_inner(prepared, result, duration_ms, false, mutation_targets)
             .await
@@ -1269,6 +1286,107 @@ mod tests {
                 .unwrap()
                 .state,
             RunActionState::Denied
+        );
+    }
+
+    /// Ignores both the cancellation flag and the budget on purpose: this is the
+    /// shape that used to hold a run open forever.
+    struct StuckTool;
+
+    #[async_trait]
+    impl Tool for StuckTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "stuck".into(),
+                description: "test".into(),
+                parameters: serde_json::json!({"type":"object"}),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+
+        async fn invoke(&self, _: serde_json::Value) -> Result<ToolOutput> {
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            Ok(ToolOutput::success(serde_json::json!({"late": true})))
+        }
+    }
+
+    /// Same work, but declares that it carries its own deadline.
+    struct ExemptStuckTool;
+
+    #[async_trait]
+    impl Tool for ExemptStuckTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "exempt_stuck".into(),
+                description: "test".into(),
+                parameters: serde_json::json!({"type":"object"}),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+
+        fn bounded_by_run_timeout(&self) -> bool {
+            false
+        }
+
+        async fn invoke(&self, _: serde_json::Value) -> Result<ToolOutput> {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            Ok(ToolOutput::success(serde_json::json!({"own_budget": true})))
+        }
+    }
+
+    fn single_tool_registry(tool: Arc<dyn Tool>) -> ToolRegistry {
+        let mut registry = ToolRegistry::new();
+        registry.register(tool).unwrap();
+        registry
+    }
+
+    #[tokio::test]
+    async fn a_tool_that_ignores_the_budget_is_cut_off_by_the_pipeline() {
+        let registry = single_tool_registry(Arc::new(StuckTool));
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_execution_controls(
+                    Arc::new(AtomicBool::new(false)),
+                    Duration::from_millis(150),
+                );
+        let started = std::time::Instant::now();
+
+        let result = pipeline
+            .execute(ToolInvocation::new("stuck", serde_json::json!({})))
+            .await
+            .unwrap();
+
+        assert!(!result.output.ok, "a stuck tool must not report success");
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "the pipeline waited for the tool instead of enforcing its budget: {:?}",
+            started.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_tool_with_its_own_deadline_is_not_cut_off_early() {
+        let registry = single_tool_registry(Arc::new(ExemptStuckTool));
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_execution_controls(
+                    Arc::new(AtomicBool::new(false)),
+                    Duration::from_millis(150),
+                );
+        let started = std::time::Instant::now();
+
+        let result = pipeline
+            .execute(ToolInvocation::new("exempt_stuck", serde_json::json!({})))
+            .await
+            .unwrap();
+
+        assert!(result.output.ok, "{:?}", result.output);
+        assert!(
+            started.elapsed() >= Duration::from_millis(400),
+            "an exempt tool was abandoned before it finished: {:?}",
+            started.elapsed()
         );
     }
 

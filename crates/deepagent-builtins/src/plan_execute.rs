@@ -141,6 +141,12 @@ impl<P: PlanExecutor> PlanExecuteTool<P> {
 
 #[async_trait]
 impl<P: PlanExecutor> Tool for PlanExecuteTool<P> {
+    /// Runs a whole plan through a nested executor, which carries its own
+    /// deadline. The parent's per-tool budget must not end it mid-plan.
+    fn bounded_by_run_timeout(&self) -> bool {
+        false
+    }
+
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: PLAN_EXECUTE_TOOL_NAME.into(),
