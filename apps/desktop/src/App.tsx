@@ -1288,13 +1288,12 @@ export function App() {
       };
 
       // Merge a per-request usage report onto the (last) assistant message of
-      // the run. The provider reports whole-context totals per request, not
-      // deltas: prompt_tokens / prompt_cache_*_tokens describe the entire
-      // prompt sent for that step. Those are last-wins (the current context
-      // snapshot). Only completion / reasoning tokens are genuine per-step
-      // deltas and stay cumulative. `totalTokens` is derived from the stored
-      // values rather than taken from the provider so the footer can never show
-      // a stale "total" that contradicts prompt + completion.
+      // the run. The provider reports per-turn usage for stateless models like
+      // DeepSeek: every field reflects THIS turn's usage, not cumulative totals.
+      // `prompt_tokens` is the current context window size (grows until compaction).
+      // `completion_tokens` is THIS turn's output (not cumulative).
+      // All fields are last-wins to reflect the most recent provider report.
+      // `totalTokens` should equal `promptTokens + completionTokens` for the turn.
       const addUsage = (u: {
         prompt: number;
         completion: number;
@@ -1316,14 +1315,16 @@ export function App() {
             cacheHitTokens: 0,
             cacheMissTokens: 0,
           };
+          // All fields are last-wins (per-turn, not cumulative).
           const promptTokens = u.prompt;
-          const completionTokens = cur.completionTokens + u.completion;
+          const completionTokens = u.completion;
+          const reasoningTokens = u.reasoning;
           next[lastIdx] = {
             ...msg,
             usage: {
               promptTokens,
               completionTokens,
-              reasoningTokens: cur.reasoningTokens + u.reasoning,
+              reasoningTokens,
               totalTokens: promptTokens + completionTokens,
               cacheHitTokens: u.cacheHit,
               cacheMissTokens: u.cacheMiss,

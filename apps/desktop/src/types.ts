@@ -220,15 +220,31 @@ export interface ConversationUsage {
   cost_yuan?: number;
 }
 
-/** Accumulated token usage for an assistant turn (mirrors runtime Usage). */
+/**
+ * Token usage for THIS assistant turn (per-turn, not cumulative).
+ *
+ * For stateless models like DeepSeek, every request resends the full context:
+ * - `promptTokens`: current context window size (grows until compaction)
+ * - `completionTokens`: THIS turn's output tokens (NOT cumulative)
+ * - `totalTokens`: should equal `promptTokens + completionTokens`
+ *
+ * For cumulative session-wide statistics, see `CostSummary` (billing ledger).
+ * For current window occupancy, see `ContextUsageSnapshot.measured_prompt_tokens`.
+ */
 export interface TokenUsage {
+  /** Prompt (input) tokens from THIS turn (current context window size). */
   promptTokens: number;
+  /** Completion (output) tokens from THIS turn (NOT cumulative). */
   completionTokens: number;
+  /** Reasoning tokens from THIS turn (subset of completionTokens). */
   reasoningTokens: number;
+  /** Total tokens for THIS turn (should equal promptTokens + completionTokens). */
   totalTokens: number;
+  /** Cache hit tokens from THIS turn (last-wins). */
   cacheHitTokens: number;
+  /** Cache miss tokens from THIS turn (last-wins). */
   cacheMissTokens: number;
-  /** Cost in CNY/RMB. undefined when pricing unavailable. */
+  /** Cost in CNY/RMB for THIS turn. undefined when pricing unavailable. */
   costYuan?: number;
 }
 
@@ -306,6 +322,17 @@ export interface BudgetConfig {
 }
 
 /** Accumulated cost summary (mirrors deepagent-app-core::CostSummary). */
+/**
+ * Session-wide cost and token statistics (billing ledger, cumulative).
+ *
+ * All token fields are CUMULATIVE across all requests in the session:
+ * - `input_tokens`: sum of all `prompt_tokens` (billing dimension)
+ * - `output_tokens`: sum of all `completion_tokens`
+ *
+ * This is the source for `SessionUsageBar` (bottom bar statistics).
+ * For per-turn usage, see `TokenUsage`. For current window occupancy,
+ * see `ContextUsageSnapshot.measured_prompt_tokens`.
+ */
 export interface CostSummary {
   session_cost: number;
   today_cost: number;
@@ -313,9 +340,13 @@ export interface CostSummary {
   total_cost: number;
   currency: string;
   budget: BudgetConfig;
+  /** Cumulative input tokens across ALL requests (billing ledger). */
   input_tokens: number;
+  /** Cumulative output tokens across ALL requests (billing ledger). */
   output_tokens: number;
+  /** Cumulative cache hit tokens across ALL requests. */
   cache_hit_tokens: number;
+  /** Cumulative cache miss tokens across ALL requests. */
   cache_miss_tokens: number;
 }
 

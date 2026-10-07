@@ -111,14 +111,19 @@ impl Observation {
 /// `reasoning_tokens` sum over **every** request the run made, which is what the
 /// cost ledger books — a run of 60 steps paid for 60 prompts, not one.
 /// [`RunUsage::record_call`] is the only place either rule is written.
+///
+/// **Important**: [`RuntimeEvent::Usage`] emits **per-turn** values (the provider's
+/// raw report for THIS request), not these cumulative fields. The frontend displays
+/// per-turn usage in `TurnFooter`; cumulative billing totals come from `CostSummary`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RunUsage {
     /// Prompt (input) tokens reported by the most recent provider response
-    /// (last-wins, not cumulative).
+    /// (last-wins, not cumulative). This is the current context window size.
     pub prompt_tokens: u32,
-    /// Completion (output) tokens, cumulative across the run.
+    /// Completion (output) tokens, **cumulative** across the run (for billing).
+    /// `RuntimeEvent::Usage` emits the per-turn value, not this cumulative field.
     pub completion_tokens: u32,
-    /// Reasoning output tokens (a subset of completion tokens), cumulative.
+    /// Reasoning output tokens (a subset of completion tokens), **cumulative**.
     pub reasoning_tokens: u32,
     /// Total tokens reported by the most recent provider response (last-wins).
     pub total_tokens: u32,
@@ -126,11 +131,11 @@ pub struct RunUsage {
     pub prompt_cache_hit_tokens: u32,
     /// Prompt tokens NOT served from cache, last-wins.
     pub prompt_cache_miss_tokens: u32,
-    /// Prompt tokens summed over every answered request in the run.
+    /// Prompt tokens summed over every answered request in the run (billing ledger).
     pub billed_prompt_tokens: u32,
-    /// Cache-hit prompt tokens summed over every answered request.
+    /// Cache-hit prompt tokens summed over every answered request (billing ledger).
     pub billed_cache_hit_tokens: u32,
-    /// Cache-miss prompt tokens summed over every answered request.
+    /// Cache-miss prompt tokens summed over every answered request (billing ledger).
     pub billed_cache_miss_tokens: u32,
 }
 
