@@ -1449,6 +1449,9 @@ export function App() {
       };
 
       const onEvent = (event: RuntimeEvent) => {
+        // Debug: Log ALL events to catch run_cancelled
+        console.log("[DEBUG] RuntimeEvent received:", event.type, event);
+
         switch (event.type) {
           case "model_request_started": {
             const current = liveTranscripts.current.get(runKey) ?? [];
@@ -1693,9 +1696,11 @@ export function App() {
             finalize(`run failed: ${String(event.reason ?? "unknown error")}`, "error");
             break;
           case "run_cancelled": {
+            console.log("[DEBUG] run_cancelled event:", event);
             const editedFiles = Array.isArray(event.edited_files)
               ? (event.edited_files as EditedFile[])
               : undefined;
+            console.log("[DEBUG] editedFiles extracted:", editedFiles);
             finalize("（已手动停止）", "error", editedFiles);
             break;
           }

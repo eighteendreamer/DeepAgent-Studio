@@ -1315,7 +1315,14 @@ function unwrapRunPayload<T>(
 ): T | null {
   const maybe = payload as RunEventEnvelope<T>;
   if (maybe && typeof maybe === "object" && "run_id" in maybe && "payload" in maybe) {
-    return maybe.run_id === runId ? maybe.payload : null;
+    const matches = maybe.run_id === runId;
+    console.log("[DEBUG unwrapRunPayload]", {
+      expected_run_id: runId,
+      actual_run_id: maybe.run_id,
+      matches,
+      payload_type: (maybe.payload as any)?.type
+    });
+    return matches ? maybe.payload : null;
   }
   // Browser/mock fallback and older desktop builds emitted the raw payload.
   return payload as T;
@@ -1378,11 +1385,15 @@ export async function runChat(
         mod
           .listen<CompletedPayload>("session://completed", (e) => {
             if (e.payload.run_id !== actualRunId) return;
-            if (e.payload.status === "completed" && e.payload.session_id) {
-              resolve(e.payload.session_id);
-            } else {
-              reject(new Error(e.payload.error ?? "chat run failed"));
-            }
+            // Delay resolve to give trailing events (like run_cancelled with edited_files)
+            // time to arrive before the finally block tears down the event listeners.
+            setTimeout(() => {
+              if (e.payload.status === "completed" && e.payload.session_id) {
+                resolve(e.payload.session_id);
+              } else {
+                reject(new Error(e.payload.error ?? "chat run failed"));
+              }
+            }, 100);
           })
           .then((unlisten) => {
             completedCleanup.fn = unlisten;
