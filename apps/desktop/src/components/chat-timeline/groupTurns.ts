@@ -17,6 +17,7 @@ export function groupTurns(blocks: ChatBlock[]): Turn[] {
       // the message's current usage, so the newest one is the live total.
       current.usage = block.usage;
       current.runMs = block.runMs;
+      current.editedFiles = block.source.editedFiles;
     }
   }
 

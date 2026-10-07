@@ -51,6 +51,7 @@ import type {
   ComposerSkillSelection,
   ContextUsageSnapshot,
   ConversationMessage,
+  EditedFile,
   MessagePart,
   PersistedAttachment,
   Project,
@@ -1338,7 +1339,7 @@ export function App() {
       // Finalize the assistant turn once the run ends. Marks the tone on text
       // parts (for errors) and ensures the authoritative final message is
       // present if the stream produced no visible text (e.g. tool-only turn).
-      const finalize = (finalContent: string, tone?: "normal" | "error") => {
+      const finalize = (finalContent: string, tone?: "normal" | "error", editedFiles?: EditedFile[]) => {
         updateTranscript((prev) => {
           const next = [...prev];
           const lastIdx = next.length - 1;
@@ -1397,6 +1398,7 @@ export function App() {
             parts,
             content,
             runMs: Date.now() - runStart,
+            editedFiles: editedFiles && editedFiles.length > 0 ? editedFiles : undefined,
             ...(tone ? { tone } : {}),
           };
           return next;
@@ -1681,7 +1683,11 @@ export function App() {
           }
           case "run_completed":
             // Reconcile streamed content with the authoritative final message.
-            finalize(String(event.message ?? ""), undefined);
+            finalize(
+              String(event.message ?? ""),
+              undefined,
+              event.edited_files as EditedFile[] | undefined
+            );
             break;
           case "run_failed":
             finalize(`run failed: ${String(event.reason ?? "unknown error")}`, "error");

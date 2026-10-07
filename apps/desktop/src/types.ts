@@ -373,6 +373,13 @@ export interface DiagnosticResult {
   fix_hint: string | null;
 }
 
+/** File that was edited during a run (mirrors deepagent-runtime::EditedFile). */
+export interface EditedFile {
+  path: string;
+  lines_added: number;
+  lines_removed: number;
+}
+
 /** A message rendered in the chat view. */
 export interface ChatMessage {
   /** `system` rows are session-level markers (compaction boundary, injected
@@ -402,6 +409,8 @@ export interface ChatMessage {
   usage?: TokenUsage;
   /** Wall-clock duration of the run that produced this turn, in ms. */
   runMs?: number;
+  /** Files edited during this run (shown at turn completion). */
+  editedFiles?: EditedFile[];
 }
 
 export type ComposerAttachmentKind = "text" | "image" | "file";

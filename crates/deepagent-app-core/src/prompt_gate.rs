@@ -63,6 +63,6 @@ pub(crate) fn finalize_blocked_user_prompt<C: Clock>(
         message: Message::assistant(&message),
     })?;
     session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
-    sink.emit(RuntimeEvent::RunCompleted { message });
+    sink.emit(RuntimeEvent::RunCompleted { message, edited_files: vec![] });
     Ok(session_id)
 }

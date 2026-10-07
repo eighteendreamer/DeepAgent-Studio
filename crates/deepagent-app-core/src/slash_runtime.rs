@@ -1022,7 +1022,7 @@ where
         message: Message::assistant(&reply),
     })?;
     session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
-    on_event(RuntimeEvent::RunCompleted { message: reply });
+    on_event(RuntimeEvent::RunCompleted { message: reply, edited_files: vec![] });
 
     Ok(Some(session_id))
 }

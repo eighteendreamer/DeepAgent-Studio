@@ -83,6 +83,7 @@ function MessageTurnComponent({
         usage={turn.usage}
         totalMs={turn.runMs}
         answer={assistantContentBlocks.map((block) => block.text).join("\n").trim()}
+        editedFiles={turn.editedFiles}
       />
       {markerBlocks.map((block) => (
         <SessionMarkerRow key={block.id} block={block} />

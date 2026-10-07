@@ -419,7 +419,7 @@ pub fn project_runtime_event(event: &RuntimeEvent, context: &EventContext) -> Op
                 background: true,
             },
         }),
-        RuntimeEvent::RunCompleted { message } => Some(HarnessEvent::TurnCompleted {
+        RuntimeEvent::RunCompleted { message, .. } => Some(HarnessEvent::TurnCompleted {
             thread_id,
             turn_id,
             message: message.clone(),

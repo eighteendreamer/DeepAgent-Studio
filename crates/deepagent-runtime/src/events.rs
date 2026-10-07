@@ -30,6 +30,19 @@ pub enum CostOrigin {
     SideCall,
 }
 
+/// A file that was edited during a run (for UI display and git operations).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditedFile {
+    /// Absolute or workspace-relative file path.
+    pub path: String,
+    /// Lines added (+ count from git diff, or tool-reported).
+    #[serde(default)]
+    pub lines_added: usize,
+    /// Lines removed (- count from git diff, or tool-reported).
+    #[serde(default)]
+    pub lines_removed: usize,
+}
+
 /// UI-oriented metadata for rendering a tool call as a lightweight timeline
 /// row. This is a derived projection: the persisted event log remains the
 /// source of truth, while live/replayed UI surfaces can use these fields
@@ -416,6 +429,9 @@ pub enum RuntimeEvent {
     RunCompleted {
         /// Final assistant message.
         message: String,
+        /// Files edited during this run (for UI display and git operations).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        edited_files: Vec<EditedFile>,
     },
     /// The run is waiting for human approval and yielded.
     RunAwaitingApproval {
@@ -716,7 +732,8 @@ mod tests {
             "content_delta"
         );
         assert!(RuntimeEvent::RunCompleted {
-            message: "m".into()
+            message: "m".into(),
+            edited_files: vec![],
         }
         .is_terminal());
         assert!(!RuntimeEvent::TurnStarted { step: 0 }.is_terminal());
@@ -737,6 +754,7 @@ mod tests {
         sink.emit(RuntimeEvent::ContentDelta { text: "Hi".into() });
         sink.emit(RuntimeEvent::RunCompleted {
             message: "done".into(),
+            edited_files: vec![],
         });
         drop(sink);
 

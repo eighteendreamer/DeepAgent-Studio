@@ -49,7 +49,8 @@ pub use cancellation::CancellationTree;
 pub use checkpoint::CheckpointManager;
 pub use completion::{CompletionFailure, CompletionPolicy, ToolEffectRecord};
 pub use events::{
-    tool_ui_metadata, ChannelSink, NullEventSink, RuntimeEvent, RuntimeEventSink, ToolUiMetadata,
+    tool_ui_metadata, ChannelSink, EditedFile, NullEventSink, RuntimeEvent, RuntimeEventSink,
+    ToolUiMetadata,
 };
 pub use input::{
     InputAttachment, InputEnvelope, InputIngress, InputKind, InputLeaseRegistry, InputMode,

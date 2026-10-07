@@ -631,6 +631,7 @@ mod tests {
             .unwrap();
         tx.send(RuntimeEvent::RunCompleted {
             message: "done".into(),
+            edited_files: vec![],
         })
         .unwrap();
         drop(tx);
@@ -686,6 +687,7 @@ mod tests {
         }
         tx.send(RuntimeEvent::RunCompleted {
             message: "done".into(),
+            edited_files: vec![],
         })
         .unwrap();
         drop(tx);

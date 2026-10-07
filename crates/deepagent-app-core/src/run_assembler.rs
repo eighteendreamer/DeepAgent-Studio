@@ -755,6 +755,7 @@ impl<'a> RunAssembler<'a> {
             session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
             sink.emit(RuntimeEvent::RunCompleted {
                 message: abort_message,
+                edited_files: vec![],
             });
             drop(hooks);
             drop(sink);

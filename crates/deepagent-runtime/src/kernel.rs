@@ -851,6 +851,7 @@ mod tests {
         }
         sink.emit(RuntimeEvent::RunCompleted {
             message: "done".into(),
+            edited_files: vec![],
         });
 
         let events = store.events_after("run-deltas", None).unwrap();
@@ -933,6 +934,7 @@ mod tests {
         }
         sink.emit(RuntimeEvent::RunCompleted {
             message: "done".into(),
+            edited_files: vec![],
         });
 
         for (store, run_id) in [(&old_store, "old-run"), (&new_store, "new-run")] {
@@ -993,6 +995,7 @@ mod tests {
         }
         sink.emit(RuntimeEvent::RunCompleted {
             message: "done".into(),
+            edited_files: vec![],
         });
 
         let events = store.events_after("run-stream-deltas", None).unwrap();
@@ -1095,6 +1098,7 @@ mod tests {
 
         sink.emit(RuntimeEvent::RunCompleted {
             message: "done".into(),
+            edited_files: vec![],
         });
         assert_eq!(
             store.get("run-state").unwrap().unwrap().state,

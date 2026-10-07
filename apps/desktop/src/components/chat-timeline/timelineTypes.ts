@@ -3,6 +3,7 @@ import type {
   ComposerAttachment,
   ComposerMention,
   ComposerSkillSelection,
+  EditedFile,
   TokenUsage,
   ToolCall,
 } from "../../types";
@@ -62,6 +63,7 @@ export type Turn = {
    * timeline every time the model starts another tool call. */
   usage?: TokenUsage;
   runMs?: number;
+  editedFiles?: EditedFile[];
 };
 
 export type ProcessSection = {

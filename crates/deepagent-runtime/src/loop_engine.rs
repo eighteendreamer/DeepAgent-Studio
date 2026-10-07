@@ -226,6 +226,7 @@ pub struct RuntimeEngine<'a, C: Clock> {
     approvals: std::sync::Arc<dyn ApprovalGate>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     created_tool_result_paths: std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>,
+    edited_files: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>>,
     _clock: std::marker::PhantomData<&'a C>,
 }
 
@@ -455,6 +456,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             approvals: std::sync::Arc::new(AutoDenyGate),
             cancel: None,
             created_tool_result_paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            edited_files: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             _clock: std::marker::PhantomData,
         }
     }
@@ -549,6 +551,39 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             }
             None => Ok(HookOutcome::Continue),
         }
+    }
+
+    /// Record a file edit when a file-editing tool completes successfully.
+    fn record_file_edit(&self, tool_name: &str, file_path: &str, tool_kind: Option<&str>) {
+        // Only track file write/edit operations
+        let is_file_edit = matches!(
+            tool_kind,
+            Some("file_write") | Some("file_edit")
+        ) || matches!(
+            tool_name,
+            "Write" | "Edit" | "NotebookEdit"
+        );
+
+        if !is_file_edit || file_path.is_empty() {
+            return;
+        }
+
+        let path = std::path::PathBuf::from(file_path);
+        let mut files = self.edited_files.lock().unwrap();
+
+        files.entry(path.clone()).or_insert_with(|| crate::events::EditedFile {
+            path: file_path.to_string(),
+            lines_added: 0,
+            lines_removed: 0,
+        });
+    }
+
+    /// Collect all edited files for inclusion in RunCompleted event.
+    fn collect_edited_files(&self) -> Vec<crate::events::EditedFile> {
+        let files = self.edited_files.lock().unwrap();
+        let mut result: Vec<_> = files.values().cloned().collect();
+        result.sort_by(|a, b| a.path.cmp(&b.path));
+        result
     }
 
     /// Run `agent` against `task` within `session` until it terminates.
@@ -785,6 +820,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     session.transition_task(task, TaskState::Completed)?;
                     self.emit(RuntimeEvent::RunCompleted {
                         message: content.clone(),
+                        edited_files: self.collect_edited_files(),
                     });
                     outcome = RunOutcome::Completed(content);
                     finished = true;
@@ -925,6 +961,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     session.transition_task(task, TaskState::Completed)?;
                     self.emit(RuntimeEvent::RunCompleted {
                         message: content.clone(),
+                        edited_files: self.collect_edited_files(),
                     });
                     outcome = RunOutcome::Completed(content);
                     finished = true;
@@ -1525,11 +1562,19 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 ok,
                 output: value,
                 duration_ms,
-                tool_kind: metadata.tool_kind,
-                file_path: metadata.file_path,
+                tool_kind: metadata.tool_kind.clone(),
+                file_path: metadata.file_path.clone(),
                 summary: metadata.summary,
                 meta: metadata.meta,
             });
+
+            // Record file edit if this was a successful file write/edit operation
+            if ok {
+                if let Some(ref path) = metadata.file_path {
+                    self.record_file_edit(&name, path, metadata.tool_kind.as_deref());
+                }
+            }
+
             results.insert(i, (call_id, name, result, duration_ms));
         }
 
@@ -2187,11 +2232,19 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     ok: out.ok,
                     output: out.value.clone(),
                     duration_ms,
-                    tool_kind: metadata.tool_kind,
-                    file_path: metadata.file_path,
+                    tool_kind: metadata.tool_kind.clone(),
+                    file_path: metadata.file_path.clone(),
                     summary: metadata.summary,
                     meta: metadata.meta,
                 });
+
+                // Record file edit if this was a successful file write/edit operation
+                if out.ok {
+                    if let Some(ref path) = metadata.file_path {
+                        self.record_file_edit(&tool_name, path, metadata.tool_kind.as_deref());
+                    }
+                }
+
                 session.append(EventPayload::ToolCallCompleted {
                     call_id: call_id.clone(),
                     ok: out.ok,
@@ -4109,7 +4162,7 @@ mod tests {
                     assert!(ok);
                     assert_eq!(output["sum"], 5);
                 }
-                RuntimeEvent::RunCompleted { message } => final_msg = Some(message),
+                RuntimeEvent::RunCompleted { message, .. } => final_msg = Some(message),
                 _ => {}
             }
         }

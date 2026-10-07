@@ -1596,7 +1596,7 @@ mod tests {
         .unwrap();
 
         assert!(events.lock().unwrap().iter().any(|event| {
-            matches!(event, RuntimeEvent::RunCompleted { message } if message.contains("destructive request"))
+            matches!(event, RuntimeEvent::RunCompleted { message, .. } if message.contains("destructive request"))
         }));
     }
 
@@ -1939,7 +1939,7 @@ mod tests {
             .unwrap();
         assert!(chat.is_plan_mode(&sid));
         assert!(collected.lock().unwrap().iter().any(|ev| {
-            matches!(ev, RuntimeEvent::RunCompleted { message } if message.contains("Entered Plan mode"))
+            matches!(ev, RuntimeEvent::RunCompleted { message, .. } if message.contains("Entered Plan mode"))
         }));
 
         chat.run_in_session(
@@ -1984,7 +1984,7 @@ mod tests {
         .await
         .unwrap();
         assert!(help_events.lock().unwrap().iter().any(|ev| {
-            matches!(ev, RuntimeEvent::RunCompleted { message } if message.contains("/thinking"))
+            matches!(ev, RuntimeEvent::RunCompleted { message, .. } if message.contains("/thinking"))
         }));
 
         let thinking_events = Arc::new(std::sync::Mutex::new(Vec::<RuntimeEvent>::new()));
@@ -2000,7 +2000,7 @@ mod tests {
         .unwrap();
         assert_eq!(settings.thinking_depth().unwrap(), ThinkingDepth::Deep);
         assert!(thinking_events.lock().unwrap().iter().any(|ev| {
-            matches!(ev, RuntimeEvent::RunCompleted { message } if message.contains("deep"))
+            matches!(ev, RuntimeEvent::RunCompleted { message, .. } if message.contains("deep"))
         }));
     }
 
@@ -2024,7 +2024,7 @@ mod tests {
         assert!(events.lock().unwrap().iter().any(|ev| {
             matches!(
                 ev,
-                RuntimeEvent::RunCompleted { message }
+                RuntimeEvent::RunCompleted { message, .. }
                     if message.contains("deepseek-v4-pro") && message.contains("/model <model_id>")
             )
         }));
