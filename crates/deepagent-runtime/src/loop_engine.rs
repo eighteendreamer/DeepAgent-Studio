@@ -139,14 +139,20 @@ impl PromptDecision {
 /// Tuning knobs for a run.
 #[derive(Debug, Clone)]
 pub struct RuntimeConfig {
-    /// Hard cap on loop iterations (safety against runaway loops).
-    pub max_steps: usize,
+    /// Optional cap on loop iterations. `None` (the default) runs until the task
+    /// completes, is cancelled, or the context can no longer be compressed:
+    /// long-running work is the point of the loop, so a step counter must never
+    /// be what ends it. A cap is for headless/SDK callers that ask for one.
+    pub max_steps: Option<usize>,
     /// Hard wall-clock deadline for the complete kernel run, including model,
     /// hooks, approvals, tools and verification. `None` disables it.
     pub task_timeout: Option<std::time::Duration>,
-    /// Maximum cumulative provider-reported tokens for this run. The boundary
-    /// is checked after every model response and before any requested tool is
-    /// allowed to execute.
+    /// Maximum cumulative provider-reported tokens for this run: every request's
+    /// input plus every response's output, i.e. what the run was billed for.
+    /// Checked after each model response and before any requested tool runs.
+    /// `None` (the default) sets no spend cap — a long task bills more tokens by
+    /// definition, and context pressure is not a spend problem: the loop's own
+    /// compaction keeps the window in bounds.
     pub max_total_tokens: Option<u64>,
     /// Factual filesystem effects required before a final answer is accepted.
     pub completion_policy: crate::completion::CompletionPolicy,
@@ -188,9 +194,9 @@ pub struct RuntimeConfig {
 impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
-            max_steps: 64,
+            max_steps: None,
             task_timeout: Some(std::time::Duration::from_secs(30 * 60)),
-            max_total_tokens: Some(1_000_000),
+            max_total_tokens: None,
             completion_policy: crate::completion::CompletionPolicy::default(),
             max_completion_retries: 2,
             fire_session_start: true,
@@ -596,7 +602,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             .verification
             .map(|p| ReflectionEngine::new(p.max_repeats, p.max_attempts));
 
-        for step in 0..self.config.max_steps {
+        let max_steps = self.config.max_steps.unwrap_or(usize::MAX);
+        for step in 0..max_steps {
             // Honor a manual stop requested from the UI: end cleanly at the
             // step boundary so the partial transcript is preserved.
             if self.is_cancelled() {
@@ -660,31 +667,24 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 finished = true;
                 break;
             }
-            // Check context pressure (current context tokens vs auto_compact_at
-            // threshold). After the token accounting fix (prompt_tokens is now
-            // last-wins replacement, not +=), usage.prompt_tokens reflects the
-            // current request's context size. We use auto_compact_at (70% of
-            // prompt_budget) as the pressure gate, aligning with harness semantics.
-            if let Some(usage) = agent.cumulative_usage() {
-                let context_tokens = usage.prompt_tokens as u64;
-                // Derive the policy threshold from the agent's capability if available
-                if let Some(limit) = self.config.max_total_tokens {
-                    // Treat max_total_tokens as the auto_compact_at threshold (70%)
-                    // rather than a cumulative sum gate. This is a temporary alignment;
-                    // proper wiring would read context_policy.auto_compact_at directly.
-                    if context_tokens > limit {
-                        let reason = format!(
-                            "run context pressure exceeded: current prompt {} tokens, limit {limit}",
-                            usage.prompt_tokens
-                        );
-                        session.transition_task(task, TaskState::Failed)?;
-                        self.emit(RuntimeEvent::RunFailed {
-                            reason: reason.clone(),
-                        });
-                        outcome = RunOutcome::BudgetExceeded(reason);
-                        finished = true;
-                        break;
-                    }
+            // Spend, not context pressure. The loop compacts when the window
+            // fills and keeps working (`ModelAgent::maybe_proactive_compact`), so
+            // a growing context must never be what ends a run; only a configured
+            // ceiling on what the run has been billed for may do that.
+            if let Some(limit) = self.config.max_total_tokens {
+                let spent = agent.cumulative_usage().map_or(0u64, |usage| {
+                    (usage.billed_prompt_tokens + usage.completion_tokens) as u64
+                });
+                if spent > limit {
+                    let reason =
+                        format!("run budget exceeded: {spent} tokens billed of a {limit} limit");
+                    session.transition_task(task, TaskState::Failed)?;
+                    self.emit(RuntimeEvent::RunFailed {
+                        reason: reason.clone(),
+                    });
+                    outcome = RunOutcome::BudgetExceeded(reason);
+                    finished = true;
+                    break;
                 }
             }
             tracing::debug!(step, ?decision, "agent decision");
@@ -1022,10 +1022,14 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         }
 
         if !finished {
-            // Ran out of steps: mark failed so the task does not linger.
+            // Only an explicit cap can leave the loop without a completion
+            // decision now; the default run has no step bound to run out of.
             session.transition_task(task, TaskState::Failed)?;
             self.emit(RuntimeEvent::RunFailed {
-                reason: format!("step limit reached ({} steps)", self.config.max_steps),
+                reason: match self.config.max_steps {
+                    Some(limit) => format!("step limit reached ({limit} steps)"),
+                    None => "the loop stopped without a completion decision".to_string(),
+                },
             });
         }
         self.fire_task_hook(session, session_id, task, HookPoint::TaskCompleted)
@@ -3650,7 +3654,7 @@ mod tests {
 
         let reg = registry();
         let config = RuntimeConfig {
-            max_steps: 3,
+            max_steps: Some(3),
             ..Default::default()
         };
         let engine = RuntimeEngine::new(&reg, Metrics::new(), config);
@@ -3658,6 +3662,58 @@ mod tests {
         let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
         assert_eq!(outcome, RunOutcome::StepLimitReached);
         assert_eq!(session.state().task(task).unwrap().state, TaskState::Failed);
+    }
+
+    #[tokio::test]
+    async fn the_default_run_is_not_bounded_by_a_step_count() {
+        // Long work is the point of the loop. The previous default of 64 steps
+        // failed a task that was simply still working, so the bound must not
+        // come back as a behaviour.
+        struct UntilSeventy(usize);
+        #[async_trait]
+        impl Agent for UntilSeventy {
+            async fn think(
+                &mut self,
+                _step: usize,
+                _last: &[Observation],
+            ) -> Result<AgentDecision> {
+                self.0 += 1;
+                if self.0 >= 70 {
+                    return Ok(AgentDecision::Complete("finished".into()));
+                }
+                Ok(AgentDecision::CallTool(ToolInvocation::new(
+                    "add",
+                    serde_json::json!({"a": 0, "b": 0}),
+                )))
+            }
+        }
+
+        assert_eq!(
+            RuntimeConfig::default().max_steps,
+            None,
+            "the default config carries no step bound"
+        );
+        assert_eq!(
+            RuntimeConfig::default().max_total_tokens,
+            None,
+            "and no spend ceiling: context growth is what compaction is for"
+        );
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, None).unwrap();
+        let task = session.create_task("long job").unwrap();
+        let reg = registry();
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), RuntimeConfig::default());
+        let mut agent = UntilSeventy(0);
+
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+
+        assert_eq!(
+            outcome,
+            RunOutcome::Completed("finished".to_string()),
+            "70 steps must run to completion, not hit a ceiling at 64"
+        );
+        assert_eq!(agent.0, 70);
     }
 
     #[tokio::test]

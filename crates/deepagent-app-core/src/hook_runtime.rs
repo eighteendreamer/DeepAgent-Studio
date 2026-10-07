@@ -334,9 +334,13 @@ impl AppHookActionExecutor {
             .with_thinking_depth(self.thinking_depth)
             .with_max_model_attempts(2);
         let config = RuntimeConfig {
-            max_steps: 6,
+            max_steps: Some(6),
             task_timeout: Some(action.timeout_duration()),
-            max_total_tokens: Some(32_000),
+            // No spend ceiling for a hook run: `max_total_tokens` now means
+            // cumulative billed tokens, and a 32k figure sized the old
+            // per-request context gate. A hook is bounded by its own step cap
+            // and timeout instead.
+            max_total_tokens: None,
             auto_approve: false,
             permissions,
             ..RuntimeConfig::default()

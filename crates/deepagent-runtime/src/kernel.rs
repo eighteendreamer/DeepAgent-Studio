@@ -581,7 +581,10 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             Ok(RunOutcome::StepLimitReached) => KernelTerminal {
                 kind: TerminalKind::MaxTurns,
                 message: None,
-                reason: Some(format!("step limit reached ({})", self.config.max_steps)),
+                reason: Some(match self.config.max_steps {
+                    Some(limit) => format!("step limit reached ({limit} steps)"),
+                    None => "step limit reached".to_string(),
+                }),
             },
             Ok(RunOutcome::BudgetExceeded(reason)) => KernelTerminal {
                 kind: TerminalKind::BudgetExceeded,
@@ -769,12 +772,12 @@ mod tests {
         }
 
         fn cumulative_usage(&self) -> Option<RunUsage> {
-            // After the replacement-semantics fix, prompt_tokens is now the
-            // pressure value (current context size), not a cumulative sum.
-            // The loop_engine gate now checks prompt_tokens against the limit.
+            // The budget gate reads billed totals, so this run has spent 11
+            // input tokens against a limit of 10.
             Some(RunUsage {
                 prompt_tokens: 11,
                 total_tokens: 11,
+                billed_prompt_tokens: 11,
                 ..RunUsage::default()
             })
         }
@@ -1154,10 +1157,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(terminal.kind, TerminalKind::BudgetExceeded);
-        assert!(terminal
-            .reason
-            .unwrap()
-            .contains("run context pressure exceeded"));
+        assert!(terminal.reason.unwrap().contains("run budget exceeded"));
         assert_eq!(session.state().task(task).unwrap().state, TaskState::Failed);
     }
 

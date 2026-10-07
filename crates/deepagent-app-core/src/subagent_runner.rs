@@ -626,11 +626,10 @@ impl ChatSubagentRunner {
             // = model self-reports; never blocks on keyword heuristics.
             completion_policy: deepagent_runtime::CompletionPolicy::default(),
             checkpoint: Some(checkpoint.clone()),
-            // maxTurns (agent file) maps onto the engine's step cap; the
-            // default keeps the previous hard-coded 64.
-            max_steps: agent_profile
-                .and_then(|agent| agent.def.max_turns)
-                .unwrap_or(64),
+            // An agent file's `maxTurns` bounds that sub-agent; without one the
+            // loop is unbounded like the main run, so delegated long work is
+            // not cut off at a step count.
+            max_steps: agent_profile.and_then(|agent| agent.def.max_turns),
             ..Default::default()
         };
         let mut engine = RuntimeEngine::new(&sub_registry, Default::default(), config);

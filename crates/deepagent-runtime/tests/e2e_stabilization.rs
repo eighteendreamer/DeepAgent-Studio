@@ -84,7 +84,7 @@ async fn long_run_500_plus_tool_calls_stay_consistent() {
     let reg = registry();
     let metrics = Metrics::new();
     let config = RuntimeConfig {
-        max_steps: CALLS + 5,
+        max_steps: Some(CALLS + 5),
         ..Default::default()
     };
     let engine = RuntimeEngine::new(&reg, metrics.clone(), config);
@@ -113,7 +113,7 @@ async fn crash_recovery_reconstructs_exact_state() {
         let mut agent = BusyAgent { remaining: 50 };
         let reg = registry();
         let config = RuntimeConfig {
-            max_steps: 100,
+            max_steps: Some(100),
             ..Default::default()
         };
         let engine = RuntimeEngine::new(&reg, Metrics::new(), config);
@@ -150,7 +150,7 @@ async fn many_concurrent_sessions_do_not_interfere() {
             };
             let reg = registry();
             let config = RuntimeConfig {
-                max_steps: CALLS_PER + 5,
+                max_steps: Some(CALLS_PER + 5),
                 ..Default::default()
             };
             let engine = RuntimeEngine::new(&reg, Metrics::new(), config);
@@ -180,7 +180,7 @@ async fn event_log_sequences_are_gapless_under_load() {
         let mut agent = BusyAgent { remaining: 200 };
         let reg = registry();
         let config = RuntimeConfig {
-            max_steps: 300,
+            max_steps: Some(300),
             ..Default::default()
         };
         let engine = RuntimeEngine::new(&reg, Metrics::new(), config);
@@ -211,7 +211,7 @@ async fn repeated_recovery_is_idempotent() {
         let mut agent = BusyAgent { remaining: 30 };
         let reg = registry();
         let config = RuntimeConfig {
-            max_steps: 60,
+            max_steps: Some(60),
             ..Default::default()
         };
         RuntimeEngine::new(&reg, Metrics::new(), config)

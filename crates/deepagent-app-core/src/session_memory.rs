@@ -671,14 +671,15 @@ impl SessionMemoryExtractor {
         let mut run_session = Session::create(&run_db, &clock, Some("session-memory"))?;
         let task = run_session.create_task(&prompt)?;
         let config = RuntimeConfig {
-            max_steps: 6,
-            // No token gate here. The loop compares the *current request's* context
-            // against `max_total_tokens`, so any number below a legitimate
-            // uncovered window fails the pass AFTER it has already edited the note:
-            // the cut point stays behind, the next turn re-reads the same
-            // transcript, and the window only grows. Bounded work is what actually
-            // caps this pass — `max_steps`, plus the extraction gate that decides
-            // how much transcript it may receive, plus the cost ledger below.
+            max_steps: Some(6),
+            // No spend ceiling here. `max_total_tokens` bounds the run's
+            // cumulative billed tokens, and any number below what a legitimate
+            // uncovered window costs fails the pass AFTER it has already edited
+            // the note: the cut point stays behind, the next turn re-reads the
+            // same transcript, and the window only grows. Bounded work is what
+            // actually caps this pass — `max_steps`, plus the extraction gate
+            // that decides how much transcript it may receive, plus the cost
+            // ledger below.
             max_total_tokens: None,
             permissions,
             auto_approve: false,
@@ -1816,10 +1817,10 @@ mod tests {
     }
 
     /// The note pass must survive a wide uncovered window. The run loop's
-    /// `max_total_tokens` gate reads the *current request's* context size, so a
-    /// budget smaller than a legitimate window fails the pass after it already
-    /// edited the note: the cut point never advances, the next turn re-does the
-    /// work, and the window only keeps growing.
+    /// `max_total_tokens` gate is cumulative billed spend, so a ceiling smaller
+    /// than what such a window costs fails the pass after it already edited the
+    /// note: the cut point never advances, the next turn re-does the work, and
+    /// the window only keeps growing.
     #[tokio::test]
     async fn a_wide_uncovered_window_still_advances_the_note() {
         let db = Arc::new(Database::open_in_memory().unwrap());
