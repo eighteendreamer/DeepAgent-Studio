@@ -437,7 +437,7 @@ pub fn project_runtime_event(event: &RuntimeEvent, context: &EventContext) -> Op
             turn_id,
             reason: reason.clone(),
         }),
-        RuntimeEvent::RunCancelled => Some(HarnessEvent::TurnInterrupted {
+        RuntimeEvent::RunCancelled { .. } => Some(HarnessEvent::TurnInterrupted {
             thread_id,
             turn_id,
             reason: Some("run cancelled".into()),

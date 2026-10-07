@@ -1692,9 +1692,13 @@ export function App() {
           case "run_failed":
             finalize(`run failed: ${String(event.reason ?? "unknown error")}`, "error");
             break;
-          case "run_cancelled":
-            finalize("（已手动停止）", "error");
+          case "run_cancelled": {
+            const editedFiles = Array.isArray(event.edited_files)
+              ? (event.edited_files as EditedFile[])
+              : undefined;
+            finalize("（已手动停止）", "error", editedFiles);
             break;
+          }
           default:
             break;
         }

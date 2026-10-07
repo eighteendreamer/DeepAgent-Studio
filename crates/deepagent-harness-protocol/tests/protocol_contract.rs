@@ -145,7 +145,13 @@ fn runtime_tool_approval_and_terminal_events_keep_correlation() {
         &context,
     )
     .unwrap();
-    let terminal = project_runtime_event(&RuntimeEvent::RunCancelled, &context).unwrap();
+    let terminal = project_runtime_event(
+        &RuntimeEvent::RunCancelled {
+            edited_files: vec![],
+        },
+        &context,
+    )
+    .unwrap();
 
     assert!(matches!(
         started,

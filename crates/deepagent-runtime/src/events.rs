@@ -444,7 +444,9 @@ pub enum RuntimeEvent {
         reason: String,
     },
     /// The run was cancelled by the user (manual stop).
-    RunCancelled,
+    RunCancelled {
+        edited_files: Vec<EditedFile>,
+    },
 }
 
 const fn default_startup_attempt() -> u32 {
@@ -665,7 +667,7 @@ impl RuntimeEvent {
             RuntimeEvent::RunCompleted { .. } => "run_completed",
             RuntimeEvent::RunAwaitingApproval { .. } => "run_awaiting_approval",
             RuntimeEvent::RunFailed { .. } => "run_failed",
-            RuntimeEvent::RunCancelled => "run_cancelled",
+            RuntimeEvent::RunCancelled { .. } => "run_cancelled",
         }
     }
 
@@ -676,7 +678,7 @@ impl RuntimeEvent {
             RuntimeEvent::RunCompleted { .. }
                 | RuntimeEvent::RunAwaitingApproval { .. }
                 | RuntimeEvent::RunFailed { .. }
-                | RuntimeEvent::RunCancelled
+                | RuntimeEvent::RunCancelled { .. }
         )
     }
 }

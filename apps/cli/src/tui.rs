@@ -262,7 +262,7 @@ fn render_event(event: &RuntimeEvent, context: &Arc<Mutex<EventContext>>) {
         RuntimeEvent::RunFailed { reason } => {
             print!("\r\n{ACCENT}run failed:{RESET} {reason}\r\n");
         }
-        RuntimeEvent::RunCancelled => {
+        RuntimeEvent::RunCancelled { .. } => {
             print!("\r\n{MUTED}run interrupted{RESET}\r\n");
         }
         RuntimeEvent::RunCompleted { .. } => {

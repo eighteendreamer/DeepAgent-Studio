@@ -295,7 +295,7 @@ fn runtime_event_category(event: &RuntimeEvent) -> &'static str {
         | RuntimeEvent::SubagentNotification { .. }
         | RuntimeEvent::WorktreeCreated { .. }
         | RuntimeEvent::WorktreeRemoved { .. } => "subagent",
-        RuntimeEvent::RunCancelled => "cancel",
+        RuntimeEvent::RunCancelled { .. } => "cancel",
         RuntimeEvent::WorkflowNode { .. } => "workflow",
         RuntimeEvent::RunStarted { .. }
         | RuntimeEvent::SessionRegistered { .. }
@@ -330,7 +330,7 @@ fn runtime_event_level(event: &RuntimeEvent) -> &'static str {
             "warn"
         }
         RuntimeEvent::RunAwaitingApproval { .. } => "info",
-        RuntimeEvent::RunCancelled => "warn",
+        RuntimeEvent::RunCancelled { .. } => "warn",
         RuntimeEvent::SubagentCompleted { state, .. } if state == "failed" => "error",
         RuntimeEvent::SubagentCancelled { .. } => "warn",
         RuntimeEvent::WorkflowNode { event } => match event.status {
@@ -561,7 +561,7 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
             format!("run awaiting approval: {message}")
         }
         RuntimeEvent::RunFailed { reason } => format!("run failed: {reason}"),
-        RuntimeEvent::RunCancelled => "run cancelled".to_string(),
+        RuntimeEvent::RunCancelled { .. } => "run cancelled".to_string(),
     }
 }
 

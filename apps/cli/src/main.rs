@@ -383,9 +383,9 @@ fn print_human_event(event: &RuntimeEvent) {
     match event {
         RuntimeEvent::ContentDelta { text } => print!("{text}"),
         RuntimeEvent::ReasoningDelta { .. } => {}
-        RuntimeEvent::RunCompleted { message } => println!("\n{message}"),
+        RuntimeEvent::RunCompleted { message, .. } => println!("\n{message}"),
         RuntimeEvent::RunFailed { reason } => eprintln!("run failed: {reason}"),
-        RuntimeEvent::RunCancelled => eprintln!("run interrupted"),
+        RuntimeEvent::RunCancelled { .. } => eprintln!("run interrupted"),
         _ => {}
     }
     let _ = io::stdout().flush();

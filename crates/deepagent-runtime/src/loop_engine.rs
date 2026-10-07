@@ -226,7 +226,9 @@ pub struct RuntimeEngine<'a, C: Clock> {
     approvals: std::sync::Arc<dyn ApprovalGate>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     created_tool_result_paths: std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>,
-    edited_files: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>>,
+    edited_files: std::sync::Arc<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>,
+    >,
     _clock: std::marker::PhantomData<&'a C>,
 }
 
@@ -456,7 +458,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             approvals: std::sync::Arc::new(AutoDenyGate),
             cancel: None,
             created_tool_result_paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
-            edited_files: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
+            edited_files: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::HashMap::new(),
+            )),
             _clock: std::marker::PhantomData,
         }
     }
@@ -556,13 +560,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
     /// Record a file edit when a file-editing tool completes successfully.
     fn record_file_edit(&self, tool_name: &str, file_path: &str, tool_kind: Option<&str>) {
         // Only track file write/edit operations
-        let is_file_edit = matches!(
-            tool_kind,
-            Some("file_write") | Some("file_edit")
-        ) || matches!(
-            tool_name,
-            "Write" | "Edit" | "NotebookEdit"
-        );
+        let is_file_edit = matches!(tool_kind, Some("file_write") | Some("file_edit"))
+            || matches!(tool_name, "Write" | "Edit" | "NotebookEdit");
 
         if !is_file_edit || file_path.is_empty() {
             return;
@@ -571,11 +570,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let path = std::path::PathBuf::from(file_path);
         let mut files = self.edited_files.lock().unwrap();
 
-        files.entry(path.clone()).or_insert_with(|| crate::events::EditedFile {
-            path: file_path.to_string(),
-            lines_added: 0,
-            lines_removed: 0,
-        });
+        files
+            .entry(path.clone())
+            .or_insert_with(|| crate::events::EditedFile {
+                path: file_path.to_string(),
+                lines_added: 0,
+                lines_removed: 0,
+            });
     }
 
     /// Collect all edited files for inclusion in RunCompleted event.
@@ -643,7 +644,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             // step boundary so the partial transcript is preserved.
             if self.is_cancelled() {
                 session.transition_task(task, TaskState::Failed)?;
-                self.emit(RuntimeEvent::RunCancelled);
+                self.emit(RuntimeEvent::RunCancelled {
+                    edited_files: self.collect_edited_files(),
+                });
                 outcome = RunOutcome::Cancelled;
                 finished = true;
                 break;
@@ -688,7 +691,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 Ok(decision) => streaming_tools.normalize_decision(decision),
                 Err(_e) if self.is_cancelled() => {
                     session.transition_task(task, TaskState::Failed)?;
-                    self.emit(RuntimeEvent::RunCancelled);
+                    self.emit(RuntimeEvent::RunCancelled {
+                        edited_files: self.collect_edited_files(),
+                    });
                     outcome = RunOutcome::Cancelled;
                     finished = true;
                     break;
@@ -697,7 +702,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             };
             if self.is_cancelled() {
                 session.transition_task(task, TaskState::Failed)?;
-                self.emit(RuntimeEvent::RunCancelled);
+                self.emit(RuntimeEvent::RunCancelled {
+                    edited_files: self.collect_edited_files(),
+                });
                 outcome = RunOutcome::Cancelled;
                 finished = true;
                 break;

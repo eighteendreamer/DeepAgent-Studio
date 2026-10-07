@@ -293,7 +293,7 @@ impl RuntimeEventSink for PersistentEventSink {
                         }),
                     );
                 }
-                if matches!(&event, RuntimeEvent::RunCancelled) {
+                if matches!(&event, RuntimeEvent::RunCancelled { .. }) {
                     // Keep the operator intent and the runtime observation as
                     // separate durable facts. The terminal event remains the
                     // final lifecycle record for replay compatibility.
@@ -353,7 +353,7 @@ fn phase_for_event(event: &RuntimeEvent) -> (RunPhase, &'static str) {
         RuntimeEvent::RunCompleted { .. }
         | RuntimeEvent::RunAwaitingApproval { .. }
         | RuntimeEvent::RunFailed { .. }
-        | RuntimeEvent::RunCancelled => (RunPhase::Finalizing, "completed"),
+        | RuntimeEvent::RunCancelled { .. } => (RunPhase::Finalizing, "completed"),
         RuntimeEvent::ContentDelta { .. } | RuntimeEvent::ReasoningDelta { .. } => {
             (RunPhase::RunningTurn, "progress")
         }
