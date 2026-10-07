@@ -497,6 +497,17 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         self
     }
 
+    /// Inject session-level edited_files tracking (builder style). When set,
+    /// all turns in this run share the same accumulator, so cancelling a later
+    /// turn can report files edited by earlier turns.
+    pub fn with_edited_files(
+        mut self,
+        edited_files: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>>,
+    ) -> Self {
+        self.edited_files = edited_files;
+        self
+    }
+
     /// Emit a live runtime event (no-op if no sink attached).
     fn emit(&self, event: RuntimeEvent) {
         self.events.emit(event);

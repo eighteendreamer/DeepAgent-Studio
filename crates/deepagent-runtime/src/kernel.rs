@@ -383,6 +383,8 @@ pub struct AgentKernel<'a, C: Clock> {
     approvals: Arc<dyn ApprovalGate>,
     events: Arc<dyn RuntimeEventSink>,
     handle: RunHandle,
+    /// Session-level accumulation of edited files across all turns in this run.
+    edited_files: Arc<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>>,
     _clock: std::marker::PhantomData<&'a C>,
 }
 
@@ -409,6 +411,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                 run_id,
                 cancellation: CancellationTree::new(),
             },
+            edited_files: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             _clock: std::marker::PhantomData,
         }
     }
@@ -527,7 +530,8 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             RuntimeEngine::<C>::new(self.registry, self.metrics.clone(), self.config.clone())
                 .with_cancel(self.handle.cancellation.legacy_flag())
                 .with_events(persistent.clone())
-                .with_approvals(self.approvals.clone());
+                .with_approvals(self.approvals.clone())
+                .with_edited_files(self.edited_files.clone());
         if let Some(hooks) = self.hooks {
             engine = engine.with_hooks(hooks);
         }
