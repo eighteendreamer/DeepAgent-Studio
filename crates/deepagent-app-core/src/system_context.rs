@@ -46,25 +46,10 @@ pub(crate) fn build_system_manifest(
     // Inject user language preference if configured (Claude Code pattern).
     if let Some(lang) = user_language {
         if !lang.trim().is_empty() {
-            let lang_instruction = match lang.to_lowercase().as_str() {
-                "zh" | "zh-cn" | "chinese" | "中文" => {
-                    "- User's configured language: Chinese (Simplified). Reply in Chinese for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
-                }
-                "zh-tw" | "zh-hk" | "traditional chinese" => {
-                    "- User's configured language: Chinese (Traditional). Reply in Traditional Chinese for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
-                }
-                "en" | "en-us" | "english" => {
-                    "- User's configured language: English. Reply in English for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
-                }
-                "ja" | "japanese" | "日本語" => {
-                    "- User's configured language: Japanese. Reply in Japanese for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
-                }
-                _ => {
-                    // Fallback: pass through the raw language code
-                    "- User's configured language: {lang}. Reply in this language for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
-                }
-            };
-            env_lines.push(lang_instruction.replace("{lang}", lang));
+            env_lines.push(format!(
+                "- User's configured language: {}. Reply in this language for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language.",
+                lang
+            ));
         }
     }
 
