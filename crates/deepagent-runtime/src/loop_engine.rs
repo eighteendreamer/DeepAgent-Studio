@@ -3099,14 +3099,14 @@ mod tests {
         let mut session = Session::create(&db, &clock, Some("usage")).unwrap();
         let task = session.create_task("finish").unwrap();
         let mut agent = RawUsageAgent {
-            usage: crate::agent::RunUsage {
+            usage: crate::agent::RunUsage::from(deepagent_models::Usage {
                 prompt_tokens: 4,
                 completion_tokens: 5,
                 reasoning_tokens: 3,
                 total_tokens: 9,
                 prompt_cache_hit_tokens: 2,
                 prompt_cache_miss_tokens: 0,
-            },
+            }),
             raw_usage: vec![serde_json::json!({
                 "input_tokens": 4,
                 "input_tokens_details": {"cached_tokens": 2},
@@ -3148,14 +3148,14 @@ mod tests {
         let mut session = Session::create(&db, &clock, Some("memory")).unwrap();
         let task = session.create_task("finish").unwrap();
         let mut agent = RawUsageAgent {
-            usage: crate::agent::RunUsage {
+            usage: crate::agent::RunUsage::from(deepagent_models::Usage {
                 prompt_tokens: 1,
                 completion_tokens: 1,
                 reasoning_tokens: 0,
                 total_tokens: 2,
                 prompt_cache_hit_tokens: 0,
                 prompt_cache_miss_tokens: 0,
-            },
+            }),
             raw_usage: Vec::new(),
             injections: vec![(
                 vec![

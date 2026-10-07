@@ -103,10 +103,14 @@ impl Observation {
     }
 }
 
-/// Token usage snapshot for the current run. After the replacement-semantics
-/// fix, `prompt_tokens`, `total_tokens`, and cache tokens are last-wins (each
-/// model response overwrites the prior value, mirroring harness's pressure
-/// projection). Only `completion_tokens` and `reasoning_tokens` are cumulative.
+/// Token usage for the current run, carried in two distinct semantics.
+///
+/// `prompt_tokens`, `total_tokens` and the cache tokens describe the **latest
+/// answered request**: they are the context gauge that the usage event, the
+/// popover and the auto-compact check read. `billed_*`, `completion_tokens` and
+/// `reasoning_tokens` sum over **every** request the run made, which is what the
+/// cost ledger books — a run of 60 steps paid for 60 prompts, not one.
+/// [`RunUsage::record_call`] is the only place either rule is written.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RunUsage {
     /// Prompt (input) tokens reported by the most recent provider response
@@ -122,23 +126,46 @@ pub struct RunUsage {
     pub prompt_cache_hit_tokens: u32,
     /// Prompt tokens NOT served from cache, last-wins.
     pub prompt_cache_miss_tokens: u32,
+    /// Prompt tokens summed over every answered request in the run.
+    pub billed_prompt_tokens: u32,
+    /// Cache-hit prompt tokens summed over every answered request.
+    pub billed_cache_hit_tokens: u32,
+    /// Cache-miss prompt tokens summed over every answered request.
+    pub billed_cache_miss_tokens: u32,
+}
+
+impl RunUsage {
+    /// Fold one answered provider call into the run.
+    ///
+    /// Every step of the loop resends the whole conversation, so a request's
+    /// `prompt_tokens` is a fresh total of the context, not an increment: the
+    /// gauge replaces it while the billed sum adds it. Retries of the *same*
+    /// request keep replacing in both (see `model_compactor::fold_usage`), the
+    /// same per-step rule harness uses (`usage-projection.ts` subtracts the
+    /// previous record only for the same turn and step).
+    pub fn record_call(&mut self, call: &deepagent_models::Usage) {
+        self.prompt_tokens = call.prompt_tokens;
+        self.total_tokens = call.total_tokens;
+        self.prompt_cache_hit_tokens = call.prompt_cache_hit_tokens;
+        self.prompt_cache_miss_tokens = call.prompt_cache_miss_tokens;
+        self.completion_tokens += call.completion_tokens;
+        self.reasoning_tokens += call.reasoning_tokens;
+        self.billed_prompt_tokens += call.prompt_tokens;
+        self.billed_cache_hit_tokens += call.prompt_cache_hit_tokens;
+        self.billed_cache_miss_tokens += call.prompt_cache_miss_tokens;
+    }
 }
 
 /// Provider usage of a single answered call, expressed as run usage.
 ///
 /// Side calls that bypass the agent loop (pre-run compaction) report one
-/// provider `Usage`; the ledger speaks [`RunUsage`], and the field meanings are
-/// identical for a single call.
+/// provider `Usage`; the ledger speaks [`RunUsage`]. For a single call the
+/// gauge and the billed sum are the same numbers.
 impl From<deepagent_models::Usage> for RunUsage {
     fn from(usage: deepagent_models::Usage) -> Self {
-        Self {
-            prompt_tokens: usage.prompt_tokens,
-            completion_tokens: usage.completion_tokens,
-            reasoning_tokens: usage.reasoning_tokens,
-            total_tokens: usage.total_tokens,
-            prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
-            prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
-        }
+        let mut out = Self::default();
+        out.record_call(&usage);
+        out
     }
 }
 
@@ -263,5 +290,61 @@ pub(crate) mod testing {
                 .pop_front()
                 .unwrap_or_else(|| AgentDecision::Complete("script exhausted".into())))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RunUsage;
+    use deepagent_models::Usage;
+
+    fn call(prompt: u32, completion: u32, hit: u32, miss: u32) -> Usage {
+        Usage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            prompt_cache_hit_tokens: hit,
+            prompt_cache_miss_tokens: miss,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn folding_a_run_keeps_the_gauge_latest_and_the_bill_cumulative() {
+        let mut run = RunUsage::default();
+        for usage in [
+            call(1_000, 20, 800, 200),
+            call(1_200, 30, 1_000, 200),
+            call(1_500, 40, 1_200, 300),
+        ] {
+            run.record_call(&usage);
+        }
+
+        assert_eq!(
+            run.prompt_tokens, 1_500,
+            "the gauge is the latest request's context: that is what the auto-compact \
+             threshold and the occupancy popover compare against"
+        );
+        assert_eq!(run.total_tokens, 1_540);
+        assert_eq!(run.prompt_cache_hit_tokens, 1_200);
+        assert_eq!(
+            run.billed_prompt_tokens, 3_700,
+            "each step resent the conversation and was billed for it: 1000 + 1200 + 1500"
+        );
+        assert_eq!(run.billed_cache_hit_tokens, 3_000);
+        assert_eq!(run.billed_cache_miss_tokens, 700);
+        assert_eq!(
+            run.completion_tokens, 90,
+            "output tokens are genuine per-step deltas, so they sum"
+        );
+    }
+
+    #[test]
+    fn a_single_call_books_exactly_what_it_measured() {
+        let run = RunUsage::from(call(900, 60, 700, 200));
+        assert_eq!(run.prompt_tokens, run.billed_prompt_tokens);
+        assert_eq!(run.prompt_cache_hit_tokens, run.billed_cache_hit_tokens);
+        assert_eq!(run.prompt_cache_miss_tokens, run.billed_cache_miss_tokens);
+        assert_eq!(run.total_tokens, 960);
     }
 }

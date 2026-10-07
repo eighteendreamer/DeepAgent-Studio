@@ -458,7 +458,7 @@ pub struct ModelAgent {
     /// compaction summaries (including background prefire pass-1 notes that were
     /// later discarded). Kept apart from `usage` so the per-turn numbers the UI
     /// shows stay the sampling loop's, while the run's cost entry is complete.
-    side_usage: deepagent_models::Usage,
+    side_usage: crate::agent::RunUsage,
     /// Prefire (Grok two-pass) start line in tokens: below the real
     /// `proactive_compaction_threshold` by the lead margin. When the estimate
     /// crosses this, a background pass-1 is scheduled. `None` disables prefire.
@@ -552,7 +552,7 @@ impl ModelAgent {
             snipped_tags: std::collections::BTreeSet::new(),
             last_assistant_at: None,
             microcompacted_for_current_gap: false,
-            side_usage: deepagent_models::Usage::default(),
+            side_usage: crate::agent::RunUsage::default(),
             prefire_start_threshold: None,
             prefire_cache: None,
             prefire_handle: None,
@@ -615,7 +615,7 @@ impl ModelAgent {
         // Every adoption path (proactive threshold, prefire pass-2, reactive
         // overflow recovery) funnels here, so this is the one place the
         // summarizing call's spend can be recorded without missing a route.
-        self.side_usage.absorb(compacted.usage);
+        self.side_usage.record_call(&compacted.usage);
         if let Some(items) = compacted.response_items.clone() {
             let instructions = self.response_history.instructions.clone();
             self.messages =
@@ -1077,10 +1077,10 @@ impl ModelAgent {
                     );
                     // Pass-1 already spent the call; throwing the note away does
                     // not refund it.
-                    self.side_usage.absorb(note.usage);
+                    self.side_usage.record_call(&note.usage);
                 }
                 Err(error) => {
-                    self.side_usage.absorb(note.usage);
+                    self.side_usage.record_call(&note.usage);
                     tracing::warn!(
                         step,
                         error = %error,
@@ -1121,7 +1121,7 @@ impl ModelAgent {
         // `adopt_compacted_history`; a cached pass-1 note displaced by this
         // adoption is spend too, so it is booked here.
         if let Some(stale) = self.prefire_cache.take() {
-            self.side_usage.absorb(stale.usage);
+            self.side_usage.record_call(&stale.usage);
         }
         // The usage-grounded estimate is stale after compaction; seed it with
         // the compactor's post-compact estimate instead.
@@ -1732,13 +1732,9 @@ impl Agent for ModelAgent {
         // ended: pass-1 was paid for even though pass-2 never consumed it.
         let mut total = self.side_usage;
         if let Some(note) = &self.prefire_cache {
-            total.absorb(note.usage);
+            total.record_call(&note.usage);
         }
-        if total == deepagent_models::Usage::default() {
-            None
-        } else {
-            Some(crate::agent::RunUsage::from(total))
-        }
+        (total != crate::agent::RunUsage::default()).then_some(total)
     }
 
     fn cumulative_usage(&self) -> Option<crate::agent::RunUsage> {
@@ -1875,16 +1871,7 @@ impl ModelAgent {
                             tools.abort(attempt, "max_tokens truncation; resuming in a new turn");
                         }
                         if let Some(usage) = response.usage {
-                            // prompt_tokens and total_tokens are per-request context
-                            // totals from the provider (not deltas), so we replace
-                            // rather than accumulate (harness replacement semantics).
-                            // Cache tokens are also last-wins (next call overwrites).
-                            self.usage.prompt_tokens = usage.prompt_tokens;
-                            self.usage.completion_tokens += usage.completion_tokens;
-                            self.usage.reasoning_tokens += usage.reasoning_tokens;
-                            self.usage.total_tokens = usage.total_tokens;
-                            self.usage.prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
-                            self.usage.prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
+                            self.usage.record_call(&usage);
                         }
                         if let Some(raw_usage) = response.raw_usage.clone() {
                             self.pending_raw_usage.push(raw_usage);
@@ -2042,17 +2029,7 @@ impl ModelAgent {
         // and DeepSeek cache hit/miss totals for the run. Also track it so the
         // loop can persist the run's total usage at completion.
         if let Some(usage) = response.usage {
-            // prompt_tokens and total_tokens are per-request context totals from
-            // the provider (not deltas), so we replace rather than accumulate
-            // (harness replacement semantics). Cache tokens are also last-wins
-            // (next call overwrites). Only completion_tokens and reasoning_tokens
-            // are incremental and summed.
-            self.usage.prompt_tokens = usage.prompt_tokens;
-            self.usage.completion_tokens += usage.completion_tokens;
-            self.usage.reasoning_tokens += usage.reasoning_tokens;
-            self.usage.total_tokens = usage.total_tokens;
-            self.usage.prompt_cache_hit_tokens = usage.prompt_cache_hit_tokens;
-            self.usage.prompt_cache_miss_tokens = usage.prompt_cache_miss_tokens;
+            self.usage.record_call(&usage);
             // Usage-grounded context size for the proactive auto-compact check
             // (this response already reflects any snips applied before it).
             self.last_call_context_tokens =
@@ -2973,6 +2950,66 @@ mod tests {
             0,
             "run usage must not absorb the compaction call"
         );
+    }
+
+    /// A completed answer that carries provider usage, as every real step does.
+    fn response_text_completed_with_usage(
+        text: &str,
+        input: u32,
+        output: u32,
+        cached: u32,
+    ) -> Vec<String> {
+        vec![
+            response_text_delta(text),
+            serde_json::json!({
+                "type": "response.completed",
+                "response": {
+                    "status": "completed",
+                    "usage": {
+                        "input_tokens": input,
+                        "input_tokens_details": {"cached_tokens": cached},
+                        "output_tokens": output,
+                        "total_tokens": input + output
+                    }
+                }
+            })
+            .to_string(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn sampled_steps_bill_every_prompt_and_gauge_the_latest_one() {
+        // Three steps of one run. Each step resends the whole conversation, so
+        // the provider reports a fresh input total every time: the ledger must
+        // see 1000 + 1200 + 1500, while the context gauge stays at 1500.
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                response_text_completed_with_usage("one", 1_000, 20, 800),
+                response_text_completed_with_usage("two", 1_200, 30, 1_000),
+                response_text_completed_with_usage("three", 1_500, 40, 1_200),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(transport, ModelConfig::deepseek("test")));
+        let mut agent = ModelAgent::new(client, "model", "system", "current", vec![]);
+
+        for step in 0..3 {
+            let decision = agent.think(step, &[]).await.unwrap();
+            let _ = complete_items(decision);
+        }
+
+        let usage = agent.cumulative_usage().expect("three answered calls");
+        assert_eq!(
+            usage.billed_prompt_tokens, 3_700,
+            "the run paid for every prompt, not just the last one"
+        );
+        assert_eq!(
+            usage.prompt_tokens, 1_500,
+            "the gauge stays the latest request's context size"
+        );
+        assert_eq!(usage.billed_cache_hit_tokens, 3_000);
+        assert_eq!(usage.prompt_cache_hit_tokens, 1_200);
+        assert_eq!(usage.completion_tokens, 90);
     }
 
     #[tokio::test]

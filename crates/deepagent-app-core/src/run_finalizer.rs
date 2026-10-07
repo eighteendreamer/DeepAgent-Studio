@@ -53,6 +53,11 @@ pub(crate) struct AppRunFinalizerRequest<'a> {
 /// Shared by the run itself and by side calls (pre-run compaction, session-note
 /// extraction) so "what did this session cost" has exactly one answer. A call
 /// that reported no tokens is skipped, not recorded as zero.
+///
+/// The ledger books [`RunUsage::billed_prompt_tokens`] and the billed cache
+/// totals, never the `prompt_tokens` gauge: a run that took 60 steps was billed
+/// for 60 prompts, and booking the last request's context size understated
+/// session spend by orders of magnitude.
 pub(crate) fn record_usage_cost(
     cost: &CostService,
     session_id: &str,
@@ -63,11 +68,11 @@ pub(crate) fn record_usage_cost(
     match cost.record(CostRecordRequest {
         session_id: session_id.to_string(),
         model: model_name.to_string(),
-        input_tokens: usage.prompt_tokens,
+        input_tokens: usage.billed_prompt_tokens,
         output_tokens: usage.completion_tokens,
-        cache_hit_tokens: usage.prompt_cache_hit_tokens,
-        cache_miss_tokens: usage.prompt_cache_miss_tokens,
-        total_tokens: usage.total_tokens,
+        cache_hit_tokens: usage.billed_cache_hit_tokens,
+        cache_miss_tokens: usage.billed_cache_miss_tokens,
+        total_tokens: usage.billed_prompt_tokens + usage.completion_tokens,
     }) {
         Ok(Some(cny)) => {
             tracing::info!(cost_yuan = cny, "recorded run cost");
@@ -230,7 +235,9 @@ impl AppRunFinalizer {
         let Some(u) = usage else {
             return;
         };
-        if u.total_tokens == 0 {
+        // A provider that never reported usage produces an all-zero record; the
+        // ledger speaks billed totals, so those are what decide "nothing to book".
+        if u.billed_prompt_tokens == 0 && u.completion_tokens == 0 {
             return;
         }
         record_usage_cost(cost, session_id, model_name, u, sink);
@@ -638,6 +645,28 @@ mod tests {
         session.id()
     }
 
+    /// One answered provider request, as the model layer reports it.
+    fn provider_call(prompt: u32, completion: u32, hit: u32, miss: u32) -> deepagent_models::Usage {
+        deepagent_models::Usage {
+            prompt_tokens: prompt,
+            completion_tokens: completion,
+            total_tokens: prompt + completion,
+            prompt_cache_hit_tokens: hit,
+            prompt_cache_miss_tokens: miss,
+            ..Default::default()
+        }
+    }
+
+    /// A run's usage, folded the way the loop folds it: one `record_call` per
+    /// answered request.
+    fn run_of(calls: &[deepagent_models::Usage]) -> RunUsage {
+        let mut usage = RunUsage::default();
+        for call in calls {
+            usage.record_call(call);
+        }
+        usage
+    }
+
     #[test]
     fn compaction_side_usage_is_booked_as_its_own_row() {
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -663,19 +692,12 @@ mod tests {
                     run_id: "run_rows",
                     discovered_before_run: &before,
                     discovered_tools: &empty,
-                    usage: Some(RunUsage {
-                        prompt_tokens: 500,
-                        completion_tokens: 50,
-                        total_tokens: 550,
-                        ..Default::default()
-                    }),
-                    side_usage: Some(RunUsage {
-                        prompt_tokens: 900,
-                        completion_tokens: 60,
-                        total_tokens: 960,
-                        prompt_cache_hit_tokens: 700,
-                        ..Default::default()
-                    }),
+                    usage: Some(run_of(&[
+                        provider_call(500, 20, 400, 100),
+                        provider_call(450, 15, 300, 150),
+                        provider_call(550, 15, 400, 150),
+                    ])),
+                    side_usage: Some(RunUsage::from(provider_call(900, 60, 700, 200))),
                     model_name: "deepseek-chat",
                     sink: &NullEventSink,
                     run_succeeded: false,
@@ -686,11 +708,14 @@ mod tests {
             .unwrap();
 
         // Two rows, not one merged figure: the turn's own tokens and the
-        // compaction tokens both reach the ledger.
+        // compaction tokens both reach the ledger. The turn's input is the sum
+        // of its three requests (1500), not the last request's context size
+        // (550): every step resends the conversation and is billed again.
         let summary = cost.summary(&session_id).unwrap();
-        assert_eq!(summary.input_tokens, 1400);
-        assert_eq!(summary.output_tokens, 110);
-        assert_eq!(summary.cache_hit_tokens, 700);
+        assert_eq!(summary.input_tokens, 1500 + 900);
+        assert_eq!(summary.output_tokens, 50 + 60);
+        assert_eq!(summary.cache_hit_tokens, 1100 + 700);
+        assert_eq!(summary.cache_miss_tokens, 400 + 200);
     }
 
     #[tokio::test]
