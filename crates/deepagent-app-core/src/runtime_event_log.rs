@@ -537,9 +537,13 @@ fn runtime_event_message(event: &RuntimeEvent) -> String {
             ..
         } => format!("stall nudge injected step={step} category={category} confidence={confidence}"),
         RuntimeEvent::Usage { total_tokens, .. } => format!("usage total_tokens={total_tokens}"),
-        RuntimeEvent::CostRecorded { model, cost_yuan } => match cost_yuan {
-            Some(cost) => format!("cost recorded for {model}: ¥{cost:.6}"),
-            None => format!("cost recorded for {model}: pricing unavailable"),
+        RuntimeEvent::CostRecorded {
+            model,
+            cost_yuan,
+            origin,
+        } => match cost_yuan {
+            Some(cost) => format!("cost recorded for {model} origin={origin:?}: ¥{cost:.6}"),
+            None => format!("cost recorded for {model} origin={origin:?}: pricing unavailable"),
         },
         RuntimeEvent::WorkflowNode { event } => {
             let status = format!("{:?}", event.status).to_ascii_lowercase();

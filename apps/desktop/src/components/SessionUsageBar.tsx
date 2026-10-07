@@ -13,7 +13,7 @@ interface Props {
 /**
  * Usage seen since the last settled pull. The ledger row is written once per run
  * at completion while `usage` arrives per model request, so the bar grows from
- * this overlay and is replaced — not added to — when the authoritative pull lands.
+ * this overlay and is replaced — not added to — when the run's own row lands.
  */
 interface LiveUsage {
   input: number;
@@ -41,7 +41,11 @@ export function SessionUsageBar({ sessionId, busy = false }: Props) {
   const busyRef = useRef(busy);
   busyRef.current = busy;
 
-  const fetchSummary = useCallback(async () => {
+  // `settleLive` says whether the pull covers the run still in flight. Only the
+  // run's own ledger row does; a side call (compaction summary, session-note
+  // pass) books a row of its own while the run is mid-flight, and dropping the
+  // overlay then made the bar lose the totals the ledger has not received yet.
+  const fetchSummary = useCallback(async (settleLive = true) => {
     if (!sessionId) return;
     const requested = ++generation.current;
     setLoading(true);
@@ -49,7 +53,7 @@ export function SessionUsageBar({ sessionId, busy = false }: Props) {
       const data = await getCostSummary(sessionId);
       if (requested !== generation.current) return;
       setSummary(data);
-      setLive(EMPTY_LIVE);
+      if (settleLive) setLive(EMPTY_LIVE);
     } catch (err) {
       console.error("fetch cost summary failed:", err);
     } finally {
@@ -106,8 +110,10 @@ export function SessionUsageBar({ sessionId, busy = false }: Props) {
           if (!event) return;
           if (event.type === "cost_recorded") {
             // The backend writes the ledger row before emitting this event, so
-            // one pull here is authoritative — no polling timer needed.
-            void fetchSummary();
+            // one pull here is authoritative — no polling timer needed. Only the
+            // run's own row covers the in-flight overlay; a side-call row must
+            // not settle it, or the bar drops totals still outside the ledger.
+            void fetchSummary(String(event.origin ?? "run") !== "side_call");
           } else if (event.type === "usage" && busyRef.current) {
             setLive((prev) => ({
               input: prev.input + tokenCount(event.prompt_tokens),

@@ -33,7 +33,52 @@ test("envelope unwrap is implemented once and handles both published shapes", ()
 test("usage refresh is event-driven, not a polling timer", () => {
   const bar = read("components/SessionUsageBar.tsx");
   assert.doesNotMatch(bar, /setTimeout\(fetchSummary/, "a fixed delay races the ledger write");
-  assert.match(bar, /event\.type === "cost_recorded"[\s\S]{0,240}fetchSummary\(\)/);
+  assert.match(bar, /event\.type === "cost_recorded"[\s\S]{0,400}fetchSummary\(/);
+});
+
+// `cost_recorded` carries which spend landed. The bar may only settle its
+// in-flight overlay for the run's own row: a compaction summary or session-note
+// pass books a row while the run is still going, and clearing the overlay then
+// made the bar lose totals the ledger had not received yet.
+test("only the run's own ledger row settles the in-flight overlay", () => {
+  const bar = read("components/SessionUsageBar.tsx");
+  assert.match(
+    bar,
+    /fetchSummary\(String\(event\.origin \?\? "run"\) !== "side_call"\)/,
+    "the pull must key off the event's origin, not off arrival order",
+  );
+  assert.match(
+    bar,
+    /async \(settleLive = true\)/,
+    "mount and session-change pulls keep settling by default",
+  );
+  assert.match(bar, /if \(settleLive\) setLive\(EMPTY_LIVE\)/, "clearing must sit behind the flag");
+});
+
+// The origin crosses as snake_case JSON, so a renamed Rust variant would
+// silently make every side-call row look like a run row again.
+test("the cost origin vocabulary is shared with the backend", () => {
+  const rust = fs.readFileSync(
+    path.resolve(__dirname, "../../../crates/deepagent-runtime/src/events.rs"),
+    "utf8"
+  );
+  const start = rust.indexOf("pub enum CostOrigin");
+  assert.ok(start > -1, "CostOrigin must exist in the runtime event enum");
+  const block = rust.slice(start, rust.indexOf("\n}", start));
+  const variants = [...block.matchAll(/^\s{4}([A-Z][A-Za-z]*),$/gm)].map((match) => match[1]);
+  assert.ok(
+    variants.length >= 2,
+    `expected a run row and a side-call row, found: ${variants.join(", ")}`,
+  );
+  const bar = read("components/SessionUsageBar.tsx");
+  for (const variant of variants) {
+    const wire = variant.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
+    assert.match(
+      bar,
+      new RegExp(`"${wire}"`),
+      `the bar must name "${wire}", or it will treat it as the run's own row`,
+    );
+  }
 });
 
 test("switching sessions drops the previous session's numbers", () => {

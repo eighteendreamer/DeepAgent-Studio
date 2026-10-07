@@ -7,7 +7,11 @@ use deepagent_core::error::Result;
 use deepagent_core::event::EventPayload;
 use deepagent_models::ModelClient;
 use deepagent_persistence::Database;
-use deepagent_runtime::{agent::RunUsage, events::RuntimeEvent, RuntimeEventSink};
+use deepagent_runtime::{
+    agent::RunUsage,
+    events::{CostOrigin, RuntimeEvent},
+    RuntimeEventSink,
+};
 use deepagent_session::Session;
 
 use crate::cost_service::{CostRecordRequest, CostService};
@@ -48,6 +52,24 @@ pub(crate) struct AppRunFinalizerRequest<'a> {
     pub(crate) capture_model: Option<String>,
 }
 
+/// The ledger row one set of measured calls turns into.
+///
+/// One mapping for every booking site (run, compaction summary, session-note
+/// pass), so "what did this cost the session" cannot be answered two ways.
+/// It reads the billed totals: a pass that answered six requests is billed for
+/// six, not for the last request's context size.
+fn cost_request_for(session_id: &str, model_name: &str, usage: &RunUsage) -> CostRecordRequest {
+    CostRecordRequest {
+        session_id: session_id.to_string(),
+        model: model_name.to_string(),
+        input_tokens: usage.billed_prompt_tokens,
+        output_tokens: usage.completion_tokens,
+        cache_hit_tokens: usage.billed_cache_hit_tokens,
+        cache_miss_tokens: usage.billed_cache_miss_tokens,
+        total_tokens: usage.billed_prompt_tokens + usage.completion_tokens,
+    }
+}
+
 /// Put one measured model call into the session's cost ledger and tell the UI.
 ///
 /// Shared by the run itself and by side calls (pre-run compaction, session-note
@@ -63,22 +85,16 @@ pub(crate) fn record_usage_cost(
     session_id: &str,
     model_name: &str,
     usage: RunUsage,
+    origin: CostOrigin,
     sink: &dyn RuntimeEventSink,
 ) {
-    match cost.record(CostRecordRequest {
-        session_id: session_id.to_string(),
-        model: model_name.to_string(),
-        input_tokens: usage.billed_prompt_tokens,
-        output_tokens: usage.completion_tokens,
-        cache_hit_tokens: usage.billed_cache_hit_tokens,
-        cache_miss_tokens: usage.billed_cache_miss_tokens,
-        total_tokens: usage.billed_prompt_tokens + usage.completion_tokens,
-    }) {
+    match cost.record(cost_request_for(session_id, model_name, &usage)) {
         Ok(Some(cny)) => {
             tracing::info!(cost_yuan = cny, "recorded run cost");
             sink.emit(RuntimeEvent::CostRecorded {
                 model: model_name.to_string(),
                 cost_yuan: Some(cny),
+                origin,
             });
         }
         Ok(None) => {
@@ -89,6 +105,7 @@ pub(crate) fn record_usage_cost(
             sink.emit(RuntimeEvent::CostRecorded {
                 model: model_name.to_string(),
                 cost_yuan: None,
+                origin,
             });
         }
         Err(error) => tracing::warn!(error = %error, "failed to record run cost"),
@@ -149,6 +166,7 @@ impl AppRunFinalizer {
                 request.session_id,
                 request.model_name,
                 side,
+                CostOrigin::SideCall,
                 request.sink,
             );
         }
@@ -240,7 +258,7 @@ impl AppRunFinalizer {
         if u.billed_prompt_tokens == 0 && u.completion_tokens == 0 {
             return;
         }
-        record_usage_cost(cost, session_id, model_name, u, sink);
+        record_usage_cost(cost, session_id, model_name, u, CostOrigin::Run, sink);
     }
 
     fn clear_run_cancellation(&self, session_id: &str, run_id: &str) {
@@ -360,15 +378,7 @@ impl AppRunFinalizer {
         let Some(cost) = &self.cost else {
             return;
         };
-        if let Err(error) = cost.record(CostRecordRequest {
-            session_id: session_id.clone(),
-            model: model.clone(),
-            input_tokens: usage.prompt_tokens,
-            output_tokens: usage.completion_tokens,
-            cache_hit_tokens: usage.prompt_cache_hit_tokens,
-            cache_miss_tokens: usage.prompt_cache_miss_tokens,
-            total_tokens: usage.total_tokens,
-        }) {
+        if let Err(error) = cost.record(cost_request_for(&session_id, &model, &usage)) {
             tracing::warn!(error = %error, "session-memory: failed to record pass cost");
         }
     }
@@ -683,6 +693,10 @@ mod tests {
         );
         let empty: DiscoveredToolSet = Arc::new(Mutex::new(HashSet::new()));
         let before = HashSet::new();
+        // The bar needs to tell these two rows apart: only the run's own row
+        // settles the in-flight totals it has been holding.
+        let (sink, mut events) = deepagent_runtime::ChannelSink::new();
+        let sink: &dyn RuntimeEventSink = &sink;
 
         finalizer
             .finalize_after_kernel(
@@ -699,7 +713,7 @@ mod tests {
                     ])),
                     side_usage: Some(RunUsage::from(provider_call(900, 60, 700, 200))),
                     model_name: "deepseek-chat",
-                    sink: &NullEventSink,
+                    sink,
                     run_succeeded: false,
                     capture_client: None,
                     capture_model: None,
@@ -716,6 +730,18 @@ mod tests {
         assert_eq!(summary.output_tokens, 50 + 60);
         assert_eq!(summary.cache_hit_tokens, 1100 + 700);
         assert_eq!(summary.cache_miss_tokens, 400 + 200);
+
+        let origins: Vec<CostOrigin> = std::iter::from_fn(|| events.try_recv().ok())
+            .filter_map(|event| match event {
+                RuntimeEvent::CostRecorded { origin, .. } => Some(origin),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            origins,
+            vec![CostOrigin::Run, CostOrigin::SideCall],
+            "the run's own row must be told apart from the compaction row"
+        );
     }
 
     #[tokio::test]
@@ -760,9 +786,11 @@ mod tests {
         assert!(note.contains("decided: one vault"), "{note}");
 
         // The pass is not free: its tokens land in the same session ledger the
-        // user's run used, so the panel cannot under-report what happened.
+        // user's run used, so the panel cannot under-report what happened. Each
+        // of the three calls re-sent the conversation and reported 120 input
+        // tokens, so the session owes 360 — not the last call's 120.
         let summary = cost.summary(&session_key.to_string()).unwrap();
-        assert_eq!(summary.input_tokens, 120);
+        assert_eq!(summary.input_tokens, 360);
         assert_eq!(summary.output_tokens, 54);
 
         assert!(
@@ -807,7 +835,8 @@ mod tests {
             "an untouched note must stay the template: {note}"
         );
         let summary = cost.summary(&session_key.to_string()).unwrap();
-        assert_eq!(summary.input_tokens, 120, "the attempt was billed");
+        // Both calls reported 120 input tokens for the context they were sent.
+        assert_eq!(summary.input_tokens, 240, "the attempt was billed");
         // Two answered calls in this script, not three: completion tokens
         // accumulate per call, so the deferred pass is cheaper but not free.
         assert_eq!(summary.output_tokens, 36);

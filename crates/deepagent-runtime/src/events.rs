@@ -16,6 +16,20 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Which spend a ledger row came from. The sampling loop's own calls and the
+/// calls made on the run's behalf (compaction summaries, session-note passes)
+/// are separate rows on purpose; a consumer that has to decide whether the
+/// number it is holding is settled can only do that with this distinction.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CostOrigin {
+    /// The run's own sampling loop.
+    #[default]
+    Run,
+    /// A call the run loop did not make itself.
+    SideCall,
+}
+
 /// UI-oriented metadata for rendering a tool call as a lightweight timeline
 /// row. This is a derived projection: the persisted event log remains the
 /// source of truth, while live/replayed UI surfaces can use these fields
@@ -387,6 +401,12 @@ pub enum RuntimeEvent {
         /// Backend-computed RMB cost, or `None` when pricing is unavailable.
         #[serde(default)]
         cost_yuan: Option<f64>,
+        /// Which spend landed, so a consumer can tell "the run I am watching is
+        /// now in the ledger" from "some other call booked a row". Guessing that
+        /// from arrival order made the usage bar drop its in-flight totals
+        /// mid-run whenever a compaction or note pass paid for a call.
+        #[serde(default)]
+        origin: CostOrigin,
     },
     /// A workflow node changed execution status (pending → running → completed/failed/etc.).
     WorkflowNode {

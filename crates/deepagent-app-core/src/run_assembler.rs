@@ -1530,6 +1530,7 @@ impl<'a> RunAssembler<'a> {
                     &session.id().to_string(),
                     model,
                     deepagent_runtime::agent::RunUsage::from(choice.usage),
+                    deepagent_runtime::events::CostOrigin::SideCall,
                     sink,
                 );
             }
