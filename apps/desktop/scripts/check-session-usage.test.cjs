@@ -162,3 +162,41 @@ test("the metrics footer is turn-level and renders exactly once", () => {
   assert.match(grouped, /current\.usage = block\.usage/, "groupTurns no longer lifts usage");
   assert.match(turn, /previous\.usage === next\.usage/, "the memo would drop a usage-only change");
 });
+
+// Occupancy used to be recomputed by the frontend off `usage` events, which
+// invented a 1M window whenever no snapshot had arrived and let two owners
+// disagree on the same figure. The backend now re-publishes its own snapshot for
+// every answered request, so the panel only renders what it is given.
+test("context occupancy has one owner: the backend snapshot", () => {
+  const app = read("App.tsx");
+  const start = app.indexOf('case "usage": {');
+  assert.ok(start > -1, "the usage event branch must exist");
+  const usageBranch = app.slice(start, app.indexOf('case "', start + 10));
+  assert.doesNotMatch(
+    usageBranch,
+    /setContextUsageByKey/,
+    "the usage event must not write the occupancy map",
+  );
+  assert.doesNotMatch(app, /context_window:\s*1_000_000/, "the frontend must not invent a window");
+  assert.doesNotMatch(app, /promptTokens\s*\/\s*1_000_000/, "nor a ratio off an invented window");
+  assert.match(
+    app,
+    /case "context_usage"[\s\S]{0,300}setContextUsageByKey/,
+    "the snapshot event stays the only writer",
+  );
+  const indicator = read("components/ContextCapacityIndicator.tsx");
+  assert.match(
+    indicator,
+    /snapshot\.measured_prompt_tokens \?\? snapshot\.estimated_prompt_tokens/,
+    "the measured request wins, the estimate covers the window before the first answer",
+  );
+});
+
+// The popover listed the three biggest blocks against a measured total, so the
+// rows could never add up to the headline it was showing.
+test("the block breakdown truncates nothing and names its own gap", () => {
+  const indicator = read("components/ContextCapacityIndicator.tsx");
+  assert.doesNotMatch(indicator, /\.slice\(0, 3\)/, "dropping rows made them disagree with the total");
+  assert.match(indicator, /其他\/未归类/, "context the rows do not name gets a row");
+  assert.match(indicator, /装配期估算/, "the rows are an estimate, and must say so");
+});

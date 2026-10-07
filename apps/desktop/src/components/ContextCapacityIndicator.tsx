@@ -29,6 +29,16 @@ function capacityTone(ratio: number, isEmptySession: boolean): string {
   return "#94a3b8";
 }
 
+/**
+ * The only place the occupancy figure is decided: what the provider measured
+ * for the last request, or the assembly estimate until nothing has answered.
+ * The block breakdown below is always the estimate, so it can be smaller than
+ * this number and says so.
+ */
+export function contextOccupancyTokens(snapshot: ContextUsageSnapshot): number {
+  return snapshot.measured_prompt_tokens ?? snapshot.estimated_prompt_tokens;
+}
+
 export function ContextCapacityIndicator({
   snapshot,
   contextWindow: capabilityContextWindow = 0,
@@ -44,7 +54,9 @@ export function ContextCapacityIndicator({
   // then the provider-resolved capability. Never a hardcoded cap.
   const contextWindow = snapshot?.context_window ?? capabilityContextWindow;
   const hasWindow = contextWindow > 0;
-  const usedTokens = snapshot?.estimated_prompt_tokens ?? Math.max(0, Math.round(fallbackPromptTokens));
+  const usedTokens = snapshot
+    ? contextOccupancyTokens(snapshot)
+    : Math.max(0, Math.round(fallbackPromptTokens));
   const isEmptySession = !snapshot && usedTokens === 0;
   // Without a denominator there is no meaningful occupancy — show an empty ring
   // rather than dividing by a placeholder.
@@ -56,9 +68,20 @@ export function ContextCapacityIndicator({
   const circumference = 2 * Math.PI * 8.5;
   const dashOffset = circumference * (1 - ratio);
   const blocks = useMemo(
-    () => [...(snapshot?.blocks ?? [])].sort((a, b) => b.tokens - a.tokens).slice(0, 3),
+    () => [...(snapshot?.blocks ?? [])].sort((a, b) => b.tokens - a.tokens),
     [snapshot?.blocks],
   );
+  // The rows are the assembly estimate; the headline may be the provider's
+  // measurement of a bigger request. The gap is real context the breakdown does
+  // not name, so it gets its own row rather than making the rows and the total
+  // disagree.
+  const unattributed = snapshot
+    ? Math.max(
+        0,
+        contextOccupancyTokens(snapshot) -
+          blocks.reduce((sum, block) => sum + block.tokens, 0),
+      )
+    : 0;
   const cacheTotal = (snapshot?.cache_hit_tokens ?? 0) + (snapshot?.cache_miss_tokens ?? 0);
   const cacheRatio =
     snapshot?.cache_hit_ratio ?? (cacheTotal > 0 ? (snapshot?.cache_hit_tokens ?? 0) / cacheTotal : undefined);
@@ -135,12 +158,19 @@ export function ContextCapacityIndicator({
 
           {blocks.length > 0 && (
             <div className="mt-2 space-y-1.5 border-t border-border-theme pt-2">
+              <div className="text-[11px] text-text-tertiary">装配期估算</div>
               {blocks.map((block) => (
                 <div key={`${block.kind}-${block.source}`} className="flex items-center justify-between gap-2">
                   <span className="min-w-0 truncate text-text-secondary">{block.name}</span>
                   <span className="shrink-0 font-medium">{formatTokens(block.tokens)}</span>
                 </div>
               ))}
+              {unattributed > 0 && (
+                <div className="flex items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-text-secondary">其他/未归类</span>
+                  <span className="shrink-0 font-medium">{formatTokens(unattributed)}</span>
+                </div>
+              )}
             </div>
           )}
 

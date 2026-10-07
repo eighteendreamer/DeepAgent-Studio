@@ -415,6 +415,10 @@ pub struct ModelAgent {
     events: Option<Arc<dyn RuntimeEventSink>>,
     /// Cumulative token usage summed across every model call this run.
     usage: crate::agent::RunUsage,
+    /// The run's context occupancy snapshot, as assembled before the first
+    /// request. Each answered request updates it from the provider's own
+    /// numbers and re-emits it, so the occupancy surface has one source.
+    context_snapshot: Option<deepagent_context::ContextUsageSnapshot>,
     /// Provider-native Responses output items from the latest completed model
     /// turn, drained by the runtime loop into the append-only session log.
     pending_response_items: Vec<ResponseOutputItem>,
@@ -537,6 +541,7 @@ impl ModelAgent {
             pending_tool_call_id: None,
             events: None,
             usage: crate::agent::RunUsage::default(),
+            context_snapshot: None,
             pending_response_items: Vec::new(),
             pending_raw_usage: Vec::new(),
             thinking_depth: ThinkingDepth::default(),
@@ -757,6 +762,17 @@ impl ModelAgent {
     /// threshold (builder style). Requires a reactive compactor to act.
     pub fn with_proactive_compaction(mut self, threshold_tokens: u64) -> Self {
         self.proactive_compaction_threshold = Some(threshold_tokens);
+        self
+    }
+
+    /// Attach the context occupancy snapshot the runtime assembled for this run.
+    /// Each answered request re-publishes it with the provider's measured
+    /// request size and cache split (`ContextUsage` after `Usage`).
+    pub fn with_context_snapshot(
+        mut self,
+        snapshot: deepagent_context::ContextUsageSnapshot,
+    ) -> Self {
+        self.context_snapshot = Some(snapshot);
         self
     }
 
@@ -2046,6 +2062,20 @@ impl ModelAgent {
                     cost_yuan: None,
                     raw_responses_usage: response.raw_usage.clone(),
                 });
+                // The occupancy surface reports what the provider was actually
+                // sent, not this agent's earlier estimate of the pack. Reusing
+                // the same answer's cache split keeps the panel's cache row and
+                // the turn footer on one measurement instead of two owners.
+                if let Some(snapshot) = &mut self.context_snapshot {
+                    snapshot.record_provider_usage(
+                        usage.prompt_tokens,
+                        usage.prompt_cache_hit_tokens,
+                        usage.prompt_cache_miss_tokens,
+                    );
+                    sink.emit(RuntimeEvent::ContextUsage {
+                        snapshot: snapshot.clone(),
+                    });
+                }
             }
         }
         if let Some(raw_usage) = response.raw_usage.clone() {
@@ -3010,6 +3040,83 @@ mod tests {
         assert_eq!(usage.billed_cache_hit_tokens, 3_000);
         assert_eq!(usage.prompt_cache_hit_tokens, 1_200);
         assert_eq!(usage.completion_tokens, 90);
+    }
+
+    /// A snapshot whose assembly estimate is `estimated` inside `window`.
+    fn snapshot_estimating(
+        estimated: usize,
+        window: usize,
+    ) -> deepagent_context::ContextUsageSnapshot {
+        let capability = deepagent_models::ModelCapability {
+            model_id: "test".into(),
+            context_window: window,
+            max_output_tokens: 8_192,
+            supports_tools: true,
+            supports_thinking: true,
+            supports_json_output: true,
+            capability_source: deepagent_models::CapabilitySource::BundledOfficialSnapshot,
+            fallback_reason: None,
+        };
+        let policy = deepagent_context::ContextPolicy::for_capability(
+            &capability,
+            deepagent_models::ThinkingDepth::Simple,
+        );
+        let pack = deepagent_context::ContextPack::new(vec![deepagent_context::ContextBlock {
+            kind: deepagent_context::ContextBlockKind::ToolSchemas,
+            source: "visible_tool_schemas".into(),
+            priority: 1,
+            cache_scope: deepagent_context::CacheScope::StablePrefix,
+            estimated_tokens: estimated,
+            content: String::new(),
+        }]);
+        deepagent_context::ContextUsageSnapshot::from_pack(&policy, &pack, false)
+    }
+
+    #[tokio::test]
+    async fn answered_request_republishes_the_snapshot_with_the_providers_numbers() {
+        // The occupancy panel must not be recomputed by whoever renders it: the
+        // run publishes the estimate once and re-publishes it with the
+        // provider's measurement of the request it actually sent.
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([response_text_completed_with_usage(
+                "done", 51_200, 40, 50_000,
+            )])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(transport, ModelConfig::deepseek("test")));
+        let (sink, mut rx) = crate::events::ChannelSink::new();
+        let mut agent = ModelAgent::new(client, "model", "system", "current", vec![])
+            .with_events(Arc::new(sink))
+            .with_context_snapshot(snapshot_estimating(46_000, 1_000_000));
+
+        let decision = agent.think(0, &[]).await.unwrap();
+        let _ = complete_items(decision);
+
+        let snapshots: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                RuntimeEvent::ContextUsage { snapshot } => Some(snapshot),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            snapshots.len(),
+            1,
+            "the answered request re-publishes the occupancy snapshot"
+        );
+        let snapshot = &snapshots[0];
+        assert_eq!(
+            snapshot.estimated_prompt_tokens, 46_000,
+            "the block breakdown keeps the estimate it was built from"
+        );
+        assert_eq!(snapshot.measured_prompt_tokens, Some(51_200));
+        assert_eq!(
+            snapshot.occupancy_tokens(),
+            51_200,
+            "the provider's measurement of the sent request is the headline"
+        );
+        assert_eq!(snapshot.cache_hit_tokens, 50_000);
+        assert!(snapshot.cache_hit_ratio.is_some());
+        assert!(snapshot.used_ratio > 0.0);
     }
 
     #[tokio::test]

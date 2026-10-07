@@ -281,7 +281,14 @@ export interface ContextUsageSnapshot {
   model_id: string;
   context_window: number;
   prompt_budget: number;
+  /** Assembly estimate by the local counter, block by block. */
   estimated_prompt_tokens: number;
+  /**
+   * What the provider reported for the last answered request. When present it
+   * is the occupancy number; the estimate only covers the window before the
+   * first answer. Read it through `contextOccupancyTokens`, never inline.
+   */
+  measured_prompt_tokens?: number;
   used_ratio: number;
   reserved_output_tokens: number;
   reserved_tool_tokens: number;

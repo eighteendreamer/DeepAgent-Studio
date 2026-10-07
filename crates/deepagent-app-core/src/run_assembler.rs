@@ -806,8 +806,11 @@ impl<'a> RunAssembler<'a> {
         }
         let system_prompt = run_context.system_prompt;
         let final_user_prompt = run_context.final_user_prompt;
+        // The assembly-time snapshot goes out now and stays with the agent, so
+        // each answered request can re-publish it with the provider's numbers.
+        let context_usage = run_context.context_usage;
         sink.emit(RuntimeEvent::ContextUsage {
-            snapshot: run_context.context_usage,
+            snapshot: context_usage.clone(),
         });
 
         let capture_client = client.clone();
@@ -865,6 +868,7 @@ impl<'a> RunAssembler<'a> {
             .with_history(history)
             .with_response_history(response_history)
             .with_proactive_compaction(proactive_threshold)
+            .with_context_snapshot(context_usage)
             .with_prefire(prefire_start)
             .with_attachment_resolver(Arc::new(crate::attachment_service::FileAttachmentResolver))
             .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);

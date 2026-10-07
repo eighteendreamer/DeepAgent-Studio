@@ -1647,52 +1647,10 @@ export function App() {
             break;
           }
           case "usage": {
-            // Update the live context snapshot with current prompt tokens (pressure),
-            // and aggregate cache stats. After the P0 fix, event.prompt_tokens is
-            // the current context size (last-wins), not a cumulative sum.
-            setContextUsageByKey((prev) => {
-              const current = prev.get(runKey);
-              if (!current) {
-                // First usage event for this run arrived before context_usage.
-                // Build a minimal snapshot so cache/pressure stats can be shown.
-                const promptTokens = Number(event.prompt_tokens ?? 0);
-                const cacheHit = Number(event.prompt_cache_hit_tokens ?? 0);
-                const cacheMiss = Number(event.prompt_cache_miss_tokens ?? 0);
-                const cacheTotal = cacheHit + cacheMiss;
-                const next = new Map(prev);
-                next.set(runKey, {
-                  model_id: "", // Will be filled by context_usage if it arrives later
-                  context_window: 1_000_000, // Conservative default (DeepSeek standard)
-                  prompt_budget: 1_000_000,
-                  estimated_prompt_tokens: promptTokens,
-                  used_ratio: promptTokens > 0 ? promptTokens / 1_000_000 : 0,
-                  reserved_output_tokens: 0,
-                  reserved_tool_tokens: 0,
-                  cache_hit_tokens: cacheHit,
-                  cache_miss_tokens: cacheMiss,
-                  cache_hit_ratio: cacheTotal > 0 ? cacheHit / cacheTotal : undefined,
-                  compacted: false,
-                  blocks: [], // Will be populated by context_usage
-                });
-                return next;
-              }
-              const cacheHit = Number(event.prompt_cache_hit_tokens ?? 0);
-              const cacheMiss = Number(event.prompt_cache_miss_tokens ?? 0);
-              const cacheTotal = cacheHit + cacheMiss;
-              const next = new Map(prev);
-              const updatedPromptTokens = Number(event.prompt_tokens ?? current.estimated_prompt_tokens);
-              next.set(runKey, {
-                ...current,  // Keep all fields: blocks, reserved_*, compacted, etc.
-                estimated_prompt_tokens: updatedPromptTokens,
-                used_ratio: current.context_window > 0
-                  ? updatedPromptTokens / current.context_window
-                  : current.used_ratio,
-                cache_hit_tokens: cacheHit,
-                cache_miss_tokens: cacheMiss,
-                cache_hit_ratio: cacheTotal > 0 ? cacheHit / cacheTotal : current.cache_hit_ratio,
-              });
-              return next;
-            });
+            // The occupancy panel belongs to the backend snapshot: every
+            // answered request re-publishes `context_usage` with the provider's
+            // own numbers. Recomputing it here gave the same figure two owners,
+            // and the frontend one invented a window when it had no snapshot.
             addUsage({
               prompt: Number(event.prompt_tokens ?? 0),
               completion: Number(event.completion_tokens ?? 0),
