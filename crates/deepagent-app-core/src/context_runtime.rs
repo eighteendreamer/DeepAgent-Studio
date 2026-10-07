@@ -1172,6 +1172,17 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         request.mcp_instructions_entries,
         request.prior_events,
     );
+
+    // Load user language preference from settings (Claude Code pattern).
+    let user_language = request.settings.load().ok().flatten().and_then(|s| {
+        let lang = s.language.trim();
+        if lang.is_empty() {
+            None
+        } else {
+            Some(lang.to_string())
+        }
+    });
+
     let system_manifest = build_system_manifest(
         request.root,
         request.sandbox_mode,
@@ -1181,6 +1192,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         mcp_instructions_block,
         skill_catalog_blocks,
         request.context_policy.prompt_budget,
+        user_language.as_deref(),
     );
     let system_prompt = system_manifest.render();
 

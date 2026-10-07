@@ -1067,6 +1067,13 @@ pub struct AppSettings {
     /// `Default` injects nothing; `Explanatory`/`Learning` add a stable,
     /// DeepSeek-worded style block. `#[serde(default)]` → `Default` for older
     /// settings docs without the field.
+    /// User's preferred output language (e.g., "chinese", "english", "japanese").
+    /// When set, overrides the model's auto-detection and pins the reply language
+    /// for the entire session. When empty/unset, the model detects from the user's
+    /// first substantial message. `#[serde(default)]` → empty string for older
+    /// settings docs without the field.
+    #[serde(default)]
+    pub language: String,
     #[serde(default)]
     pub output_style: OutputStyle,
     /// Opt-in advanced execution safeguards (§2.2/§2.3/§6.1/§6.2). Each is a
@@ -1388,6 +1395,10 @@ impl SettingsService {
             pricing_catalog: prior
                 .as_ref()
                 .map(|s| s.pricing_catalog.clone())
+                .unwrap_or_default(),
+            language: prior
+                .as_ref()
+                .map(|s| s.language.clone())
                 .unwrap_or_default(),
         };
         self.save(&settings)?;
@@ -2731,6 +2742,7 @@ mod tests {
             autocompact_reserve_tokens: None,
             output_style: OutputStyle::default(),
             execution_features: ExecutionFeatures::default(),
+            language: String::new(),
         };
         svc.save(&settings).unwrap();
 

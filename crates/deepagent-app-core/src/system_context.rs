@@ -30,14 +30,45 @@ pub(crate) fn build_system_manifest(
     mcp_instructions_block: Option<String>,
     skill_catalog_blocks: Vec<String>,
     prompt_budget: usize,
+    user_language: Option<&str>,
 ) -> ContextManifest {
     let today = current_date_string();
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    let env_block = format!(
-        "# Environment\n- Today's date: {today}\n- Operating system: {os} ({arch})\n- Working directory: {cwd}\n- When you need current information, use this date — especially the year — in web_search queries.",
-        cwd = root.display()
-    );
+    let mut env_lines = vec![
+        format!("# Environment"),
+        format!("- Today's date: {today}"),
+        format!("- Operating system: {os} ({arch})"),
+        format!("- Working directory: {cwd}", cwd = root.display()),
+        format!("- When you need current information, use this date — especially the year — in web_search queries."),
+    ];
+
+    // Inject user language preference if configured (Claude Code pattern).
+    if let Some(lang) = user_language {
+        if !lang.trim().is_empty() {
+            let lang_instruction = match lang.to_lowercase().as_str() {
+                "zh" | "zh-cn" | "chinese" | "中文" => {
+                    "- User's configured language: Chinese (Simplified). Reply in Chinese for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
+                }
+                "zh-tw" | "zh-hk" | "traditional chinese" => {
+                    "- User's configured language: Chinese (Traditional). Reply in Traditional Chinese for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
+                }
+                "en" | "en-us" | "english" => {
+                    "- User's configured language: English. Reply in English for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
+                }
+                "ja" | "japanese" | "日本語" => {
+                    "- User's configured language: Japanese. Reply in Japanese for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
+                }
+                _ => {
+                    // Fallback: pass through the raw language code
+                    "- User's configured language: {lang}. Reply in this language for all text output. Preserve code, commands, file paths, logs, API names, and quoted text in their original language."
+                }
+            };
+            env_lines.push(lang_instruction.replace("{lang}", lang));
+        }
+    }
+
+    let env_block = env_lines.join("\n");
     // The built-in output style sits INSIDE the cacheable static prefix (before
     // the dynamic boundary): it is stable across a session, so keeping it in
     // the prefix preserves the prompt-cache hit (§7.1 cache boundary).
@@ -274,6 +305,7 @@ pub(crate) fn build_system_prompt(root: &Path) -> String {
         None,
         Vec::new(),
         usize::MAX,
+        None,
     )
     .render()
 }
@@ -338,6 +370,7 @@ mod tests {
             Some("# MCP server instructions\n\n## demo\nUse the demo tools.".to_string()),
             vec!["<system-reminder>\n<available-skills />\n</system-reminder>".to_string()],
             usize::MAX,
+            None,
         );
         let rendered = manifest.render();
         let at = rendered
@@ -387,6 +420,7 @@ mod tests {
                     .to_string(),
             ],
             usize::MAX,
+            None,
         )
         .render();
         let turn_two = build_system_manifest(
@@ -401,6 +435,7 @@ mod tests {
             ),
             Vec::new(),
             usize::MAX,
+            None,
         )
         .render();
 
@@ -430,6 +465,7 @@ mod tests {
             None,
             Vec::new(),
             usize::MAX,
+            None,
         )
         .render();
         assert_ne!(
@@ -450,6 +486,7 @@ mod tests {
             Some("# MCP server instructions\n\n## demo\nUse the demo tools.".to_string()),
             Vec::new(),
             usize::MAX,
+            None,
         );
         let entry = manifest
             .entries
@@ -474,6 +511,7 @@ mod tests {
             None,
             Vec::new(),
             usize::MAX,
+            None,
         );
         assert!(!manifest
             .entries
@@ -503,6 +541,7 @@ mod tests {
             None,
             Vec::new(),
             usize::MAX,
+            None,
         );
         let system_entry = manifest
             .entries
@@ -545,6 +584,7 @@ mod tests {
             None,
             Vec::new(),
             usize::MAX,
+            None,
         );
         let ws = manifest
             .entries
@@ -676,6 +716,7 @@ mod tests {
             Some(big_mcp),
             vec![big_skill],
             120,
+            None,
         );
         let sources = manifest
             .entries
@@ -722,6 +763,7 @@ mod tests {
             Some("# MCP server instructions\n\n## demo\nUse demo.".to_string()),
             vec!["<system-reminder>\n<available-skills />\n</system-reminder>".to_string()],
             usize::MAX,
+            None,
         );
         assert!(manifest
             .entries

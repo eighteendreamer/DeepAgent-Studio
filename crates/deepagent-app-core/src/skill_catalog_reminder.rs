@@ -219,6 +219,7 @@ mod tests {
             autocompact_reserve_tokens: None,
             output_style: crate::settings::OutputStyle::default(),
             execution_features: crate::settings::ExecutionFeatures::default(),
+            language: String::new(),
         }
     }
 

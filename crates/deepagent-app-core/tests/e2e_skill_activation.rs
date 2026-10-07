@@ -200,6 +200,7 @@ fn settings_default() -> AppSettings {
         autocompact_reserve_tokens: None,
         output_style: deepagent_app_core::OutputStyle::default(),
         execution_features: deepagent_app_core::ExecutionFeatures::default(),
+        language: String::new(),
     }
 }
 

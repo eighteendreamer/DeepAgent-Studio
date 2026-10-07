@@ -2327,7 +2327,10 @@ mod tests {
         assert!(prompt.contains("web_search"));
         assert!(prompt.contains("status\":\"error\""));
         assert!(prompt.contains("Match the user's language"));
-        assert!(prompt.contains("same natural language as the user's latest message"));
+        assert!(
+            prompt.contains("when the user has configured a preferred language")
+                || prompt.contains("detect from the user's first substantial message")
+        );
         // Frontend renderer contract: model output must stay parseable by the
         // Markdown/LaTeX/ECharts renderer without backend rewriting.
         assert!(prompt.contains("language `echarts`"));
@@ -2357,6 +2360,7 @@ mod tests {
             None,
             vec!["<system-reminder>\n<available-skills />\n</system-reminder>".to_string()],
             usize::MAX,
+            None,
         );
         let sources = manifest
             .entries
