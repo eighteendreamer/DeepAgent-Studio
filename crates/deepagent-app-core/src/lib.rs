@@ -14,6 +14,7 @@
 pub mod approval_bridge;
 pub mod archive_service;
 pub mod attachment_service;
+pub mod builtin_resources;
 pub mod canvas_artifact_service;
 pub mod canvas_model_gateway;
 pub mod canvas_node_contract;
@@ -231,3 +232,4 @@ pub use model_runtime::build_chat_model_client;
 
 #[cfg(feature = "keychain")]
 pub use secret_store::KeychainStore;
+pub use secret_store::KEYCHAIN_SERVICE;

@@ -9,10 +9,11 @@ use std::sync::{Arc, Mutex};
 
 use args::{CliCommand, RunOptions};
 use deepagent_app_core::{
-    AppService, ChatService, DirectSandboxBackend, EnvSecretStore, HarnessRunOverrides,
-    SandboxBackend, SandboxBackendCommandExecutor, SandboxBackendKind, SandboxCapabilities,
-    SandboxMode, SandboxNetworkPolicy, SandboxieBackend, SandboxieExecutor, SandboxieService,
-    SqliteSecretStore, WindowsSandboxBackend,
+    builtin_resources, data_root, AppService, ChatService, DirectSandboxBackend,
+    HarnessRunOverrides, KeychainStore, McpService, PluginRoots, PluginService, SandboxBackend,
+    SandboxBackendCommandExecutor, SandboxBackendKind, SandboxCapabilities, SandboxMode,
+    SandboxNetworkPolicy, SandboxieBackend, SandboxieExecutor, SandboxieService, SkillsRoots,
+    SkillsService, SqliteSecretStore, WindowsSandboxBackend, KEYCHAIN_SERVICE,
 };
 use deepagent_harness_protocol::{EventContext, HarnessEvent, PROTOCOL_VERSION};
 use deepagent_models::{HttpTransport, ReqwestTransport, DEEPSEEK_OFFICIAL_PROVIDER};
@@ -52,6 +53,7 @@ async fn main() {
         CliCommand::ToolsList => tools_list().await,
         CliCommand::SandboxStatus => sandbox_status().await,
         CliCommand::Server { transport } => app_server::run(transport).await,
+        CliCommand::MigrateData { dry_run, from } => migrate_data(dry_run, from.as_deref()),
     };
 
     if let Err(error) = result {
@@ -238,15 +240,28 @@ pub(crate) fn build_chat_service(
     workspace: &Path,
     options: &RunOptions,
 ) -> Result<(ChatService, Option<SandboxCapabilities>), String> {
+    // Prepare the shared root *before* opening the database. Creating
+    // `~/.deepagent/deepagent.db` first would collide with the legacy database
+    // and block the same migration the desktop runs at startup.
+    let preparation = deepagent_app_core::migrate::install_data_root(
+        &deepagent_app_core::migrate::DataRootRequest {
+            app_data_dir: None,
+            extra_sources: &[],
+            dry_run: false,
+        },
+    )
+    .map_err(|error| format!("prepare the data root: {error}"))?;
+    let paths = preparation.paths;
     let db_path = database_path()?;
     let db = Arc::new(Database::open(&db_path).map_err(|error| format!("open database: {error}"))?);
     let transport: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::new());
-    // Persist credentials in the shared encrypted SQLite secret store. The
-    // environment wrapper is read-only compatibility fallback for existing
-    // deployments; SettingsService writes always target SQLite.
+    // Credentials are one encrypted record in the shared SQLite store, wrapped by
+    // the same OS-keychain secret the desktop uses. Wrapping it from the
+    // environment instead would make the desktop's stored key undecryptable here,
+    // which is why the terminal used to look like it had no API configuration.
     let secrets = Arc::new(SqliteSecretStore::new(
         db.clone(),
-        Arc::new(EnvSecretStore::new()),
+        Arc::new(KeychainStore::new(KEYCHAIN_SERVICE)),
     ));
     let settings = Arc::new(deepagent_app_core::SettingsService::new(
         db.clone(),
@@ -271,12 +286,18 @@ pub(crate) fn build_chat_service(
     let (backend, capabilities, sandboxie) = build_backend(backend_kind);
     let executor = SandboxBackendCommandExecutor::new(backend, workspace, sandbox_mode)
         .with_network(SandboxNetworkPolicy::Disabled);
+    let (skills, plugins, mcp) = build_asset_services(workspace, &paths, Arc::clone(&db))?;
     let mut chat = ChatService::new(db, settings, transport, workspace)
         .with_local_command_executor(Arc::new(executor))
         // Long-term memory lives in the knowledge vault, so a headless run needs
         // the same store the desktop attaches; without this the memory tools would
         // silently vanish from the CLI tool set.
-        .with_headless_knowledge(workspace);
+        .with_headless_knowledge(workspace)
+        // The same roots the desktop assembled, so the terminal sees the skills,
+        // plugins and MCP servers the user already installed.
+        .with_skills(skills)
+        .with_plugins(plugins)
+        .with_mcp(mcp);
     if let Some(sandboxie) = sandboxie {
         chat = chat.with_sandboxie_executor(sandboxie);
     }
@@ -296,6 +317,96 @@ pub(crate) fn build_chat_service(
         .recover_unfinished_runs()
         .map_err(|error| format!("recover unfinished runs: {error}"))?;
     Ok((chat, Some(capabilities)))
+}
+
+/// Skills, plugins and MCP, wired over one root pair: user assets in
+/// `UserPaths`, built-ins in the installer's resource directory — exactly like
+/// the desktop shell's wiring.
+type AssetServices = (
+    Arc<Mutex<SkillsService>>,
+    Arc<PluginService>,
+    Arc<McpService>,
+);
+
+fn build_asset_services(
+    workspace: &Path,
+    paths: &data_root::UserPaths,
+    db: Arc<Database>,
+) -> Result<AssetServices, String> {
+    let resource_dir = builtin_resources::install_resource_dir().unwrap_or_default();
+    let skills = Arc::new(Mutex::new(
+        SkillsService::open_v2(SkillsRoots {
+            builtin: builtin_resources::locate_builtin_skills_dir(&resource_dir),
+            user: paths.skills_user.clone(),
+            marketplace: paths.skills_marketplace.clone(),
+            workspace: Some(workspace.join(".deepagent").join("skills")),
+        })
+        .map_err(|error| format!("open skills service: {error}"))?,
+    ));
+    let plugins = Arc::new(PluginService::new(
+        PluginRoots {
+            session: builtin_resources::session_plugin_roots_from_env(),
+            builtin: builtin_resources::locate_builtin_plugins_dir(&resource_dir, None),
+            workspace: Some(workspace.join(".deepagent").join("plugins")),
+            personal: paths.plugins.clone(),
+        },
+        &paths.root,
+    ));
+    Ok((skills, plugins, Arc::new(McpService::new(db))))
+}
+
+/// Move an older data root into `~/.deepagent`, through the same installer the
+/// desktop shell runs. The platform app-data root is discovered automatically;
+/// `--from` adds a root the CLI cannot know about (a second machine's folder, an
+/// unusual install layout).
+fn migrate_data(dry_run: bool, from: Option<&str>) -> Result<(), String> {
+    let mut extra_sources: Vec<PathBuf> = Vec::new();
+    if let Some(from) = from {
+        let explicit = PathBuf::from(from);
+        if !explicit.is_dir() {
+            return Err(format!("--from is not a directory: {}", explicit.display()));
+        }
+        extra_sources.push(explicit);
+    }
+    let preparation = deepagent_app_core::migrate::install_data_root(
+        &deepagent_app_core::migrate::DataRootRequest {
+            app_data_dir: None,
+            extra_sources: &extra_sources,
+            dry_run,
+        },
+    )
+    .map_err(|error| error.to_string())?;
+
+    let verb = if dry_run { "would move" } else { "moved" };
+    for report in &preparation.reports {
+        if report.skipped {
+            println!("{}: no DeepAgent data to migrate", report.source.display());
+            continue;
+        }
+        println!(
+            "{}: {verb} {} entries -> {}",
+            report.source.display(),
+            report.moved.len(),
+            report.target.display()
+        );
+        for entry in &report.moved {
+            println!("  {}", entry.display());
+        }
+    }
+    if dry_run {
+        println!(
+            "dry run: nothing was moved. After a real move, entries written by an older \
+             layout are re-placed under files/ ({}).",
+            deepagent_app_core::migrate::layout_fold_sources().join(", ")
+        );
+        return Ok(());
+    }
+    println!(
+        "data root is {} ({} layout entries folded)",
+        preparation.paths.root.display(),
+        preparation.folded
+    );
+    Ok(())
 }
 
 fn build_backend(

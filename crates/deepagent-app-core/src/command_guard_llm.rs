@@ -384,7 +384,7 @@ mod tests {
             .ok()
             .filter(|k| !k.trim().is_empty())
             .or_else(|| {
-                KeychainStore::new("deepagent-studio")
+                KeychainStore::new(crate::secret_store::KEYCHAIN_SERVICE)
                     .get("deepseek_api_key")
                     .ok()
                     .flatten()

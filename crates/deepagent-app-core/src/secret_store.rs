@@ -28,6 +28,11 @@ const MASTER_RECORD: &str = "secret_master_key";
 const MASTER_WRAP_NAME: &str = "deepagent_secret_wrap_key";
 const NONCE_LEN: usize = 12;
 
+/// Service name for every OS-keychain entry this app writes. Both hosts must use
+/// the same name or the terminal would look at a different credential than the
+/// desktop stored.
+pub const KEYCHAIN_SERVICE: &str = "deepagent-studio";
+
 /// Stores and retrieves a secret (the API key) by a logical name.
 pub trait SecretStore: Send + Sync {
     /// Persist `secret` under `name`.

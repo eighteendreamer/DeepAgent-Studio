@@ -21,6 +21,70 @@ use deepagent_persistence::Database;
 use crate::data_root::{UserPaths, DATABASE_FILE};
 use crate::host_lock;
 
+/// What a host asked the data-root installer to do.
+#[derive(Debug, Clone)]
+pub struct DataRootRequest<'a> {
+    /// The shell's platform app-data directory, when it has a precise value.
+    /// Otherwise the platform rule in `data_root::legacy_app_data_dir` is used.
+    pub app_data_dir: Option<&'a Path>,
+    /// Extra roots to migrate ahead of the discovered ones (`--from`).
+    pub extra_sources: &'a [PathBuf],
+    /// Report the plan without touching anything.
+    pub dry_run: bool,
+}
+
+/// Outcome of preparing a data root.
+#[derive(Debug, Clone)]
+pub struct DataRootPreparation {
+    pub paths: UserPaths,
+    pub reports: Vec<MigrationReport>,
+    /// Layout entries re-placed into the current directory shape.
+    pub folded: usize,
+}
+
+/// Resolve the user data root, move in whatever older builds left behind, and
+/// create the managed directories. Every host calls this **before** opening the
+/// database: creating `~/.deepagent/deepagent.db` first would collide with the
+/// legacy database and block the very migration it was meant to replace.
+pub fn install_data_root(request: &DataRootRequest<'_>) -> Result<DataRootPreparation> {
+    let paths = UserPaths::resolve()?;
+    let install_dir = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let legacy_app_data = request
+        .app_data_dir
+        .map(Path::to_path_buf)
+        .or_else(crate::data_root::legacy_app_data_dir);
+    let mut sources = discover_legacy_sources(
+        install_dir.as_deref(),
+        legacy_app_data.as_deref(),
+        &paths.root,
+    );
+    for extra in request.extra_sources {
+        sources.insert(0, extra.clone());
+    }
+
+    let reports = migrate_into(&paths, &sources, request.dry_run)?;
+    if request.dry_run {
+        return Ok(DataRootPreparation {
+            paths,
+            reports,
+            folded: 0,
+        });
+    }
+
+    let mut folded = normalize_user_root_layout(&paths)?.len();
+    if let Some(install_dir) = install_dir.as_deref() {
+        folded += fold_install_dir_layout(install_dir, &paths)?.len();
+    }
+    paths.ensure_dirs()?;
+    Ok(DataRootPreparation {
+        paths,
+        reports,
+        folded,
+    })
+}
+
 /// What one legacy root contributed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationReport {
@@ -82,6 +146,15 @@ pub fn discover_legacy_sources(
         .filter(|source| !same_path(source, target_root))
         .filter(|source| looks_like_data_root(source))
         .collect()
+}
+
+/// Top-level names the post-move layout fold re-places. A cross-root move keeps
+/// directory names as they were, so an old build's `tool_results` lands as
+/// `<root>/tool_results`; `normalize_user_root_layout` then puts it where the
+/// current layout reads it. Hosts report this list so a dry run is honest about
+/// the second step.
+pub fn layout_fold_sources() -> Vec<&'static str> {
+    USER_ROOT_FOLDS.iter().map(|(name, _)| *name).collect()
 }
 
 /// Move every legacy root into `target`, discovering them from the running
@@ -293,6 +366,50 @@ fn move_entry(from: &Path, to: &Path) -> Result<()> {
     })
 }
 
+/// Compare two files byte-for-byte without loading either one whole.
+fn identical_files(a: &Path, b: &Path) -> Result<bool> {
+    let stat = |path: &Path| -> Result<u64> {
+        std::fs::metadata(path)
+            .map(|metadata| metadata.len())
+            .map_err(|error| CoreError::Persistence(format!("stat {}: {error}", path.display())))
+    };
+    if stat(a)? != stat(b)? {
+        return Ok(false);
+    }
+    const CHUNK: usize = 64 * 1024;
+    let mut left = std::fs::File::open(a)
+        .map_err(|error| CoreError::Persistence(format!("open {}: {error}", a.display())))?;
+    let mut right = std::fs::File::open(b)
+        .map_err(|error| CoreError::Persistence(format!("open {}: {error}", b.display())))?;
+    let mut buffer_left = vec![0u8; CHUNK];
+    let mut buffer_right = vec![0u8; CHUNK];
+    loop {
+        let read_left = fill(&mut left, &mut buffer_left)?;
+        let read_right = fill(&mut right, &mut buffer_right)?;
+        if read_left != read_right || buffer_left[..read_left] != buffer_right[..read_right] {
+            return Ok(false);
+        }
+        if read_left == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+/// Read until `buffer` is full or the file ends, returning the filled length.
+fn fill(file: &mut std::fs::File, buffer: &mut [u8]) -> Result<usize> {
+    use std::io::Read;
+    let mut filled = 0usize;
+    while filled < buffer.len() {
+        match file.read(&mut buffer[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(CoreError::Persistence(format!("read file: {error}"))),
+        }
+    }
+    Ok(filled)
+}
+
 /// Delete the legacy root once it holds nothing, bottom-up. Anything left behind
 /// means a failed move and must stay visible for the next run.
 fn remove_if_emptied(source: &Path) {
@@ -326,12 +443,14 @@ fn remove_lock_artifacts(source: &Path) -> std::io::Result<()> {
 /// path segments under the data root. `plugins` is deliberately absent from the
 /// in-root table: that name now holds plugin *state*, and its decommissioned
 /// marketplace children are reclaimed by `PluginService` itself.
-const USER_ROOT_FOLDS: [(&str, &[&str]); 5] = [
+const USER_ROOT_FOLDS: [(&str, &[&str]); 7] = [
     ("skills", &["files", "skills", "user"]),
     ("runtimes", &["files", "runtimes"]),
     ("mcp-data", &["files", "mcp"]),
     ("attachments", &["files", "attachments"]),
     ("recordings", &["files", "recordings"]),
+    ("tool_results", &["files", "tool-results"]),
+    ("vision-cache", &["files", "cache", "vision"]),
 ];
 
 /// What an old install directory holds that is *not* a data root: the personal
@@ -372,7 +491,26 @@ fn fold_layout(base: &Path, folds: &[(&str, &[&str])], target_root: &Path) -> Re
         }
         let mut entries = Vec::new();
         collect_entries(&from, &from, &mut entries)?;
-        let conflicts = find_conflicts(&from, &entries, &to);
+        // A byte-identical duplicate of the canonical file is dropped rather than
+        // merged: an old build wrote the same content into two places, and keeping
+        // both would leave the uninstaller chasing two trees for one asset.
+        // Anything that actually differs still stops the fold.
+        let mut planned = Vec::new();
+        let mut duplicates = Vec::new();
+        let mut conflicts = Vec::new();
+        for relative in entries {
+            let source = from.join(&relative);
+            let target = to.join(&relative);
+            if source.is_file() && target.exists() {
+                if identical_files(&source, &target)? {
+                    duplicates.push(source);
+                } else {
+                    conflicts.push(target);
+                }
+            } else {
+                planned.push(relative);
+            }
+        }
         if !conflicts.is_empty() {
             let shown: Vec<String> = conflicts
                 .iter()
@@ -380,17 +518,22 @@ fn fold_layout(base: &Path, folds: &[(&str, &[&str])], target_root: &Path) -> Re
                 .map(|path| path.display().to_string())
                 .collect();
             return Err(CoreError::invalid(format!(
-                "refusing to fold '{}' into '{}': {} file(s) already exist ({}). \
-                 Resolve them, then retry.",
+                "refusing to fold '{}' into '{}': {} file(s) differ at the target ({}) and \
+                 cannot be replaced automatically. Resolve them, then retry.",
                 from.display(),
                 to.display(),
                 conflicts.len(),
                 shown.join(", ")
             )));
         }
-        for relative in &entries {
+        for relative in &planned {
             move_entry(&from.join(relative), &to.join(relative))?;
             moved.push(relative.clone());
+        }
+        for duplicate in &duplicates {
+            std::fs::remove_file(duplicate).map_err(|error| {
+                CoreError::Persistence(format!("remove duplicate {}: {error}", duplicate.display()))
+            })?;
         }
         prune_empty_dirs(&from);
         if let Err(error) = std::fs::remove_dir(&from) {
@@ -509,7 +652,7 @@ mod tests {
         file(&legacy.join("runtime-logs.db"), "logs");
         let target = UserPaths::under(tmp.path().join("home").join(".deepagent"));
 
-        let reports = migrate_into(&target, &[legacy.clone()], false).unwrap();
+        let reports = migrate_into(&target, std::slice::from_ref(&legacy), false).unwrap();
         assert_eq!(reports.len(), 1);
         assert!(!reports[0].skipped);
         assert!(target.plugins.join("demo").join("plugin.json").is_file());
@@ -529,7 +672,7 @@ mod tests {
         file(&legacy.join("files").join("mcp").join("a.json"), "{}");
         let target = UserPaths::under(tmp.path().join("home").join(".deepagent"));
 
-        let reports = migrate_into(&target, &[legacy.clone()], true).unwrap();
+        let reports = migrate_into(&target, std::slice::from_ref(&legacy), true).unwrap();
         assert_eq!(
             reports[0].moved,
             vec![rel("files"), rel("files/mcp"), rel("files/mcp/a.json")]
@@ -556,7 +699,7 @@ mod tests {
         let target = UserPaths::under(tmp.path().join("home").join(".deepagent"));
         file(&target.plugins.join("dup.txt"), "current");
 
-        let error = migrate_into(&target, &[legacy.clone()], false).unwrap_err();
+        let error = migrate_into(&target, std::slice::from_ref(&legacy), false).unwrap_err();
         let message = error.to_string();
         assert!(message.contains("already exist"), "{message}");
         assert!(message.contains("dup.txt"), "{message}");
@@ -587,7 +730,7 @@ mod tests {
         drop(db);
         let target = UserPaths::under(tmp.path().join("home").join(".deepagent"));
 
-        migrate_into(&target, &[legacy.clone()], false).unwrap();
+        migrate_into(&target, std::slice::from_ref(&legacy), false).unwrap();
 
         let moved = Database::open(&target.database).unwrap();
         let value: String = moved
@@ -612,7 +755,7 @@ mod tests {
         file(&legacy.join("files").join("keep.txt"), "keep");
         let target = UserPaths::under(tmp.path().join("home").join(".deepagent"));
 
-        let error = migrate_into(&target, &[legacy.clone()], false).unwrap_err();
+        let error = migrate_into(&target, std::slice::from_ref(&legacy), false).unwrap_err();
         let message = error.to_string();
         assert!(
             message.contains("deepagent.db"),
@@ -696,7 +839,7 @@ mod tests {
     }
 
     #[test]
-    fn a_fold_collides_only_when_the_same_file_exists_twice() {
+    fn a_fold_refuses_when_a_name_collides_with_different_content() {
         let tmp = tempfile::tempdir().unwrap();
         let target = UserPaths::under(tmp.path());
         target.ensure_dirs().unwrap();
@@ -716,12 +859,40 @@ mod tests {
     }
 
     #[test]
+    fn a_fold_drops_byte_identical_duplicates_instead_of_refusing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = UserPaths::under(tmp.path());
+        target.ensure_dirs().unwrap();
+        // An old build wrote the same vision cache into two places.
+        file(
+            &target.root.join("vision-cache").join("h1.json"),
+            "{\"a\":1}",
+        );
+        file(
+            &target.root.join("vision-cache").join("h2.json"),
+            "{\"a\":2}",
+        );
+        file(&target.vision_cache.join("h1.json"), "{\"a\":1}");
+
+        let moved = normalize_user_root_layout(&target).unwrap();
+        assert_eq!(moved, vec![rel("h2.json")], "only the missing copy moves");
+        assert_eq!(
+            std::fs::read_to_string(target.vision_cache.join("h1.json")).unwrap(),
+            "{\"a\":1}"
+        );
+        assert!(
+            !target.root.join("vision-cache").exists(),
+            "the stale directory is gone once its only copies are resolved"
+        );
+    }
+
+    #[test]
     fn roots_without_deepagent_data_are_skipped() {
         let tmp = tempfile::tempdir().unwrap();
         let legacy = tmp.path().join("install").join("data");
         file(&legacy.join("something-else.txt"), "x");
         let target = UserPaths::under(tmp.path().join("home").join(".deepagent"));
-        let reports = migrate_into(&target, &[legacy.clone()], false).unwrap();
+        let reports = migrate_into(&target, std::slice::from_ref(&legacy), false).unwrap();
         assert!(reports[0].skipped);
         assert!(legacy.exists());
     }

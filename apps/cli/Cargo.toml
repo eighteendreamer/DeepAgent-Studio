@@ -14,7 +14,9 @@ name = "deepagent"
 path = "src/main.rs"
 
 [dependencies]
-deepagent-app-core.workspace = true
+# `keychain` so the terminal unwraps the SQLite master key with the same OS
+# credential the desktop stored — one credential for both hosts.
+deepagent-app-core = { workspace = true, features = ["keychain"] }
 deepagent-builtins.workspace = true
 deepagent-core.workspace = true
 deepagent-harness-protocol.workspace = true

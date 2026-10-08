@@ -8,7 +8,14 @@ pub enum CliCommand {
     Run(RunOptions),
     ToolsList,
     SandboxStatus,
-    Server { transport: String },
+    Server {
+        transport: String,
+    },
+    /// Move an older data root into `~/.deepagent`.
+    MigrateData {
+        dry_run: bool,
+        from: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,6 +90,30 @@ where
                 return Err(format!("unsupported server transport: {transport}"));
             }
             Ok(CliCommand::Server { transport })
+        }
+        "migrate-data" => {
+            let mut dry_run = false;
+            let mut from = None;
+            let mut rest = args.peekable();
+            while let Some(arg) = rest.next() {
+                let value = arg.to_string_lossy().to_string();
+                if value == "--dry-run" {
+                    dry_run = true;
+                } else if value == "--from" {
+                    let path = rest
+                        .next()
+                        .ok_or_else(|| "--from requires a directory".to_string())?
+                        .to_string_lossy()
+                        .to_string();
+                    if path.is_empty() {
+                        return Err("--from requires a directory".to_string());
+                    }
+                    from = Some(path);
+                } else {
+                    return Err(format!("unknown migrate-data option: {value}"));
+                }
+            }
+            Ok(CliCommand::MigrateData { dry_run, from })
         }
         "-h" | "--help" => Err(usage().to_string()),
         other => Err(format!("unknown command '{other}'\n\n{}", usage())),
@@ -200,7 +231,7 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: deepagent [chat|run|resume|tools list|sandbox status|server] [options]"
+    "usage: deepagent [chat|run|resume|tools list|sandbox status|migrate-data|server] [options]"
 }
 
 #[cfg(test)]
@@ -273,6 +304,34 @@ mod tests {
             parse_args(["deepagent", "sandbox", "status"]).unwrap(),
             CliCommand::SandboxStatus
         );
+    }
+
+    #[test]
+    fn parses_migrate_data_options() {
+        assert_eq!(
+            parse_args(["deepagent", "migrate-data", "--dry-run"]).unwrap(),
+            CliCommand::MigrateData {
+                dry_run: true,
+                from: None,
+            }
+        );
+        assert_eq!(
+            parse_args([
+                "deepagent",
+                "migrate-data",
+                "--from",
+                "C:/Users/dev/AppData/Roaming/com.deepagent.studio",
+            ])
+            .unwrap(),
+            CliCommand::MigrateData {
+                dry_run: false,
+                from: Some("C:/Users/dev/AppData/Roaming/com.deepagent.studio".into()),
+            }
+        );
+        assert!(parse_args(["deepagent", "migrate-data", "--from"])
+            .unwrap_err()
+            .contains("--from requires a directory"));
+        assert!(parse_args(["deepagent", "migrate-data", "--nope"]).is_err());
     }
 
     #[test]

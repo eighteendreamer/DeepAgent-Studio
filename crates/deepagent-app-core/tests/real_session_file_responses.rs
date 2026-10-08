@@ -29,7 +29,7 @@ fn deepseek_key() -> Option<String> {
         .ok()
         .filter(|key| !key.trim().is_empty())
         .or_else(|| {
-            KeychainStore::new("deepagent-studio")
+            KeychainStore::new(deepagent_app_core::KEYCHAIN_SERVICE)
                 .get("deepseek_api_key")
                 .ok()
                 .flatten()

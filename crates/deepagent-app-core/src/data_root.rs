@@ -61,6 +61,41 @@ pub fn choose_data_root(input: &DataRootInput<'_>) -> Result<PathBuf> {
         })
 }
 
+/// The bundle identifier older builds stored their data under
+/// (`apps/desktop/src-tauri/tauri.conf.json` → `identifier`).
+pub const LEGACY_APP_IDENTIFIER: &str = "com.deepagent.studio";
+
+/// The platform app-data directory an older desktop build wrote to, using the
+/// same rule Tauri's `app_data_dir` resolves: Windows `%APPDATA%\{id}`, macOS
+/// `~/Library/Application Support/{id}`, Linux `$XDG_CONFIG_HOME` or
+/// `~/.config/{id}`.
+///
+/// The rule lives here so a terminal host discovers the same legacy root the
+/// shell does; `app_data_dir` is passed in when a host has a more precise value.
+pub fn legacy_app_data_dir() -> Option<PathBuf> {
+    let app_data = std::env::var_os("APPDATA");
+    let xdg_config = std::env::var_os("XDG_CONFIG_HOME");
+    let home = home_dir();
+    legacy_app_data_dir_from(app_data.as_deref(), xdg_config.as_deref(), home.as_deref())
+}
+
+/// Pure form of [`legacy_app_data_dir`], injectable for tests.
+pub fn legacy_app_data_dir_from(
+    app_data: Option<&OsStr>,
+    xdg_config: Option<&OsStr>,
+    home: Option<&Path>,
+) -> Option<PathBuf> {
+    let base = if cfg!(windows) {
+        non_empty(app_data.map(OsString::from))
+            .or_else(|| home.map(|home| home.join("AppData").join("Roaming")))
+    } else if cfg!(target_os = "macos") {
+        home.map(|home| home.join("Library").join("Application Support"))
+    } else {
+        non_empty(xdg_config.map(OsString::from)).or_else(|| home.map(|home| home.join(".config")))
+    }?;
+    Some(base.join(LEGACY_APP_IDENTIFIER))
+}
+
 /// Resolve the directory every host writes to.
 pub fn resolve_data_root() -> Result<PathBuf> {
     let data_root_env: Option<OsString> = std::env::var_os(DATA_ROOT_ENV);
@@ -212,8 +247,9 @@ pub fn resolve_database_path() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::{
-        choose_data_root, choose_database_path, DataRootInput, DatabasePathInput, UserPaths,
-        DATABASE_FILE, DATA_ROOT_ENV, HOME_DIR_NAME, RUNTIME_LOG_FILE,
+        choose_data_root, choose_database_path, legacy_app_data_dir_from, DataRootInput,
+        DatabasePathInput, UserPaths, DATABASE_FILE, DATA_ROOT_ENV, HOME_DIR_NAME,
+        LEGACY_APP_IDENTIFIER, RUNTIME_LOG_FILE,
     };
     use std::ffi::OsStr;
     use std::path::{Path, PathBuf};
@@ -295,6 +331,41 @@ mod tests {
             home: None,
         })
         .is_err());
+    }
+
+    #[test]
+    fn legacy_app_data_follows_the_platform_rule() {
+        let app_data = OsStr::new("C:/Users/dev/AppData/Roaming");
+        let xdg = OsStr::new("/xdg/config");
+        let home = Path::new("/home/dev");
+        let picked = legacy_app_data_dir_from(Some(app_data), Some(xdg), Some(home)).unwrap();
+        let expected = if cfg!(windows) {
+            PathBuf::from(app_data)
+        } else if cfg!(target_os = "macos") {
+            home.join("Library").join("Application Support")
+        } else {
+            PathBuf::from(xdg)
+        };
+        assert_eq!(picked, expected.join(LEGACY_APP_IDENTIFIER));
+    }
+
+    #[test]
+    fn legacy_app_data_falls_back_to_the_home_directory() {
+        let home = Path::new("/home/dev");
+        let picked = legacy_app_data_dir_from(None, None, Some(home)).unwrap();
+        let expected = if cfg!(windows) {
+            home.join("AppData").join("Roaming")
+        } else if cfg!(target_os = "macos") {
+            home.join("Library").join("Application Support")
+        } else {
+            home.join(".config")
+        };
+        assert_eq!(picked, expected.join(LEGACY_APP_IDENTIFIER));
+    }
+
+    #[test]
+    fn no_legacy_app_data_without_a_home_or_override() {
+        assert!(legacy_app_data_dir_from(None, None, None).is_none());
     }
 
     #[test]
