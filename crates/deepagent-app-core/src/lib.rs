@@ -13,6 +13,7 @@
 
 pub mod approval_bridge;
 pub mod archive_service;
+pub(crate) mod atomic_file;
 pub mod attachment_service;
 pub mod builtin_resources;
 pub mod canvas_artifact_service;
@@ -39,6 +40,7 @@ pub mod hook_assembly;
 pub mod hook_runtime;
 pub mod host_lock;
 pub mod input_runtime;
+pub mod install_ledger;
 pub mod kernel_runtime;
 pub mod knowledge_service;
 pub mod managed_files;

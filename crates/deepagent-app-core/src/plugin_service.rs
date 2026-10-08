@@ -14,6 +14,7 @@ use deepagent_mcp::config::{McpConfig, McpServerConfig, TransportType};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::atomic_file::write_file_atomically;
 use crate::plugin::dialect::{
     resolve_presentation, InterfaceSource, MarketplaceSource, PortableSource, Presentation,
     PresentationSources,
@@ -4710,84 +4711,6 @@ fn ensure_replace_dir_is_managed(
         }
     }
     Ok(())
-}
-
-fn write_file_atomically(path: &Path, contents: &[u8]) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        CoreError::invalid(format!("state path has no parent: {}", path.display()))
-    })?;
-    std::fs::create_dir_all(parent).map_err(|e| {
-        CoreError::Persistence(format!("create state parent {}: {e}", parent.display()))
-    })?;
-
-    let file_name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("state.json");
-    for attempt in 0..100u32 {
-        let tmp = parent.join(format!(
-            ".{file_name}.tmp-{}-{}-{attempt}",
-            std::process::id(),
-            now_string()
-        ));
-        let mut file = match OpenOptions::new().write(true).create_new(true).open(&tmp) {
-            Ok(file) => file,
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => {
-                return Err(CoreError::Persistence(format!(
-                    "create temp state file {}: {err}",
-                    tmp.display()
-                )));
-            }
-        };
-        let result = file
-            .write_all(contents)
-            .and_then(|_| file.sync_all())
-            .map_err(|e| {
-                CoreError::Persistence(format!("write temp state file {}: {e}", tmp.display()))
-            });
-        drop(file);
-        if let Err(error) = result {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(error);
-        }
-        return replace_file(&tmp, path);
-    }
-
-    Err(CoreError::other(format!(
-        "failed to allocate temp state file for {}",
-        path.display()
-    )))
-}
-
-fn replace_file(source: &Path, target: &Path) -> Result<()> {
-    match std::fs::rename(source, target) {
-        Ok(()) => Ok(()),
-        Err(rename_err) if target.exists() => {
-            std::fs::remove_file(target).map_err(|remove_err| {
-                CoreError::Persistence(format!(
-                    "replace state file {} failed after rename error ({rename_err}); remove target failed: {remove_err}",
-                    target.display()
-                ))
-            })?;
-            std::fs::rename(source, target).map_err(|second_err| {
-                CoreError::Persistence(format!(
-                    "replace state file {} with {} failed: {second_err}",
-                    target.display(),
-                    source.display()
-                ))
-            })
-        }
-        Err(err) => {
-            let _ = std::fs::remove_file(source);
-            Err(CoreError::Persistence(format!(
-                "replace state file {} with {} failed: {err}",
-                target.display(),
-                source.display()
-            )))
-        }
-    }
 }
 
 fn safe_remove_dir(base: &Path, target: &Path) -> Result<()> {
