@@ -138,12 +138,17 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     frame.set_cursor_position((cursor, composer_area.y));
 }
 
-/// A keyboard approval decision: `(approved, scope)`.
-pub fn approval_decision(key: KeyCode) -> Option<(bool, Option<&'static str>)> {
+/// A keyboard approval decision.
+///
+/// Only a single-call decision is offered today: the persisted request always
+/// carries scope `single_call` (`deepagent-runtime/src/tool_pipeline.rs:198`) and
+/// `RunCoordinator::resolve_approval_scoped` rejects any other scope
+/// (`run_coordinator.rs:185`), so a "allow this session" key would only error.
+/// Session grants belong in the `Bash(prefix:*)` allow-list seam instead.
+pub fn approval_decision(key: KeyCode) -> Option<bool> {
     match key {
-        KeyCode::Char('y') => Some((true, None)),
-        KeyCode::Char('a') => Some((true, Some("session"))),
-        KeyCode::Char('n') | KeyCode::Char('d') | KeyCode::Esc => Some((false, None)),
+        KeyCode::Char('y') => Some(true),
+        KeyCode::Char('n') | KeyCode::Char('d') | KeyCode::Esc => Some(false),
         _ => None,
     }
 }
@@ -414,8 +419,8 @@ impl App {
             return false;
         }
         if self.approval.is_some() {
-            if let Some((approved, scope)) = approval_decision(key.code) {
-                self.resolve_approval(approved, scope);
+            if let Some(approved) = approval_decision(key.code) {
+                self.resolve_approval(approved);
             }
             return false;
         }
@@ -563,21 +568,13 @@ impl App {
             .or_else(|| self.state.thread_id.clone())
     }
 
-    fn resolve_approval(&mut self, approved: bool, scope: Option<&'static str>) {
+    fn resolve_approval(&mut self, approved: bool) {
         let Some(prompt) = self.approval.take() else {
             return;
         };
-        let outcome = match scope {
-            Some(scope) => self.chat.resolve_approval_scoped(
-                &prompt.request.call_id,
-                approved,
-                Some(scope),
-                "cli_tui_user",
-            ),
-            None => self
-                .chat
-                .resolve_approval(&prompt.request.call_id, approved, "cli_tui_user"),
-        };
+        let outcome = self
+            .chat
+            .resolve_approval(&prompt.request.call_id, approved, "cli_tui_user");
         match outcome {
             Ok(true) => self.set_notice(if approved { "approved" } else { "denied" }),
             Ok(false) => self.set_notice("approval was no longer pending"),
@@ -723,7 +720,7 @@ impl App {
         let text = if self.question.is_some() {
             "1-9 choose | Enter confirm multi | s decline"
         } else if self.approval.is_some() {
-            "y allow once | a allow this session | n/d/Esc deny"
+            "y allow once | n/d/Esc deny | Ctrl-C stops the run"
         } else if self.state.busy {
             "Enter queue a follow-up | Esc interrupt the run"
         } else {
@@ -785,15 +782,14 @@ mod tests {
     }
 
     #[test]
-    fn approval_keys_map_to_scoped_decisions() {
-        assert_eq!(approval_decision(KeyCode::Char('y')), Some((true, None)));
-        assert_eq!(
-            approval_decision(KeyCode::Char('a')),
-            Some((true, Some("session")))
-        );
+    fn approval_keys_map_to_single_call_decisions_only() {
+        assert_eq!(approval_decision(KeyCode::Char('y')), Some(true));
         for key in [KeyCode::Char('n'), KeyCode::Char('d'), KeyCode::Esc] {
-            assert_eq!(approval_decision(key), Some((false, None)));
+            assert_eq!(approval_decision(key), Some(false));
         }
+        // `a` is deliberately not a decision: the backend rejects any scope other
+        // than the persisted `single_call`, so the key would only error.
+        assert_eq!(approval_decision(KeyCode::Char('a')), None);
         assert_eq!(approval_decision(KeyCode::Char('z')), None);
     }
 
