@@ -1267,6 +1267,7 @@ dependencies = [
  "deepagent-verification",
  "deepagent-workspace",
  "flate2",
+ "fs2",
  "futures",
  "hound",
  "image",

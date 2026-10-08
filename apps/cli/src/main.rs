@@ -326,13 +326,11 @@ fn build_backend(
 }
 
 fn database_path(workspace: &Path) -> Result<PathBuf, String> {
-    if let Some(path) = std::env::var_os("DEEPAGENT_DB_PATH") {
-        return Ok(PathBuf::from(path));
-    }
-    let directory = workspace.join(".deepagent");
-    std::fs::create_dir_all(&directory)
-        .map_err(|error| format!("create {}: {error}", directory.display()))?;
-    Ok(directory.join("deepagent.db"))
+    // One shared rule: DEEPAGENT_DB_PATH, then DEEPAGENT_DATA_ROOT, then the
+    // installed desktop shell's data directory, then the workspace default.
+    Ok(deepagent_app_core::data_root::resolve_database_path(
+        workspace,
+    ))
 }
 
 fn sandbox_mode_for_profile(profile: Option<&str>) -> Option<SandboxMode> {

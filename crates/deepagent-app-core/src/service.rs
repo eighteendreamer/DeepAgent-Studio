@@ -27,11 +27,27 @@ use crate::dto::{
     ForkResultDto, RewindResultDto, RunRecoveryDto, SessionDetailDto, SessionSearchHitDto,
     SessionStatsDto, SessionSummaryDto, TimelineEntryDto, TranscriptDto,
 };
+use crate::host_lock::{self, HostRole};
 use crate::{ArchiveService, ProjectService, SessionStateService};
+
+/// Elect this process as the data root's primary host, or mark it standby.
+///
+/// A lock failure is reported and treated as primary: keeping crash clean-up
+/// working is the lesser harm, and the reason stays in the log.
+fn claim_host(db: &Database) -> HostRole {
+    match host_lock::claim(db.data_root()) {
+        Ok(role) => role,
+        Err(error) => {
+            tracing::warn!(%error, "host election unavailable; assuming primary host");
+            HostRole::Primary
+        }
+    }
+}
 
 /// The application service backing the UI.
 pub struct AppService {
     db: std::sync::Arc<Database>,
+    host: HostRole,
 }
 
 impl AppService {
@@ -39,7 +55,10 @@ impl AppService {
     pub fn open(path: impl AsRef<std::path::Path>) -> Result<Self> {
         let db = std::sync::Arc::new(Database::open(path)?);
         ArchiveService::new(db.clone()).gc_deleted_sessions(30)?;
-        Ok(Self { db })
+        Ok(Self {
+            host: claim_host(&db),
+            db,
+        })
     }
 
     /// Build over an existing database (e.g. in-memory for tests).
@@ -52,7 +71,13 @@ impl AppService {
         if let Err(error) = ArchiveService::new(db.clone()).gc_deleted_sessions(30) {
             tracing::warn!(%error, "failed to collect expired recycled conversations");
         }
-        Self { db }
+        let host = claim_host(&db);
+        Self { db, host }
+    }
+
+    /// Whether this process owns the data root it opened.
+    pub fn host_role(&self) -> &HostRole {
+        &self.host
     }
 
     /// Borrow the database (for callers that also run the runtime against it).
@@ -69,7 +94,18 @@ impl AppService {
     /// crash or forced app shutdown. This does not resume model execution yet;
     /// it makes the persisted state truthful and prevents stale running tasks
     /// from blocking cancellation/UI state on the next boot.
+    ///
+    /// A standby host must not run this: its own rows look non-terminal while the
+    /// primary host is still executing them, and closing them out would fail a live
+    /// run in the other process.
     pub fn recover_unfinished_runs(&self) -> Result<Vec<RunRecoveryDto>> {
+        if let HostRole::Standby { holder } = &self.host {
+            tracing::warn!(
+                %holder,
+                "startup recovery skipped: another process owns this data root"
+            );
+            return Ok(Vec::new());
+        }
         let clock = SystemClock;
         let recovery_now = now_millis();
         // Recover the durable control projection before finalizing lifecycle

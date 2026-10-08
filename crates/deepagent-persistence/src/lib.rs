@@ -105,6 +105,12 @@ impl Database {
         })
     }
 
+    /// Root directory holding this database and its side-car files. Two host
+    /// processes that resolve to the same root share one data set.
+    pub fn data_root(&self) -> &Path {
+        &self.data_root
+    }
+
     pub(crate) fn session_files_root(&self) -> PathBuf {
         self.data_root.join("files").join("sessions")
     }
