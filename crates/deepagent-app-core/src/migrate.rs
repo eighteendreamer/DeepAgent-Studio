@@ -21,6 +21,48 @@ use deepagent_persistence::Database;
 use crate::data_root::{UserPaths, DATABASE_FILE};
 use crate::host_lock;
 
+/// Record the regenerable directories this program created under `files/`.
+///
+/// They carry no origin worth naming, but the uninstaller's job is "delete what
+/// this program put on disk", so listing them once keeps `uninstall --list`
+/// complete instead of relying on a hardcoded directory list drifting behind the
+/// layout. Upsert, so a restart does not stack entries.
+pub fn record_managed_dirs(target: &UserPaths) -> Result<()> {
+    use crate::install_ledger::{
+        InstallKind, InstallSource, InstallSourceKind, LedgerEntry, LedgerStore,
+    };
+    let ledger = LedgerStore::at(target.root.clone(), target.install_ledger());
+    let managed = [
+        ("cache", target.cache.as_path()),
+        ("vision-cache", target.vision_cache.as_path()),
+        ("tool-results", target.tool_results.as_path()),
+        ("artifacts", target.artifacts.as_path()),
+    ];
+    for (id, path) in managed {
+        let Ok(relative) = path.strip_prefix(&target.root) else {
+            return Err(CoreError::invalid(format!(
+                "managed directory {} is outside the data root",
+                path.display()
+            )));
+        };
+        ledger.record(LedgerEntry {
+            id: id.to_string(),
+            kind: InstallKind::Cache,
+            version: None,
+            source: InstallSource {
+                kind: InstallSourceKind::Bundled,
+                spec: format!("created by the {id} layout"),
+            },
+            path: relative.display().to_string(),
+            sidecars: Vec::new(),
+            sha256: None,
+            installed_at: String::new(),
+            last_updated: None,
+        })?;
+    }
+    Ok(())
+}
+
 /// What a host asked the data-root installer to do.
 #[derive(Debug, Clone)]
 pub struct DataRootRequest<'a> {
@@ -78,6 +120,7 @@ pub fn install_data_root(request: &DataRootRequest<'_>) -> Result<DataRootPrepar
         folded += fold_install_dir_layout(install_dir, &paths)?.len();
     }
     paths.ensure_dirs()?;
+    record_managed_dirs(&paths)?;
     // Assets can disappear between installs (deleted by hand, an install that
     // half-failed). Re-check existence here so the uninstaller only ever chases
     // things that are really on disk.
@@ -585,7 +628,7 @@ fn prune_empty_dirs(dir: &Path) {
 mod tests {
     use super::{
         collect_entries, discover_legacy_sources, fold_install_dir_layout, migrate_data_roots,
-        migrate_into, normalize_user_root_layout, same_path,
+        migrate_into, normalize_user_root_layout, record_managed_dirs, same_path,
     };
     use crate::data_root::UserPaths;
     use deepagent_core::CoreError;
@@ -895,6 +938,33 @@ mod tests {
         assert!(
             !target.root.join("vision-cache").exists(),
             "the stale directory is gone once its only copies are resolved"
+        );
+    }
+
+    #[test]
+    fn managed_directories_are_recorded_once_each() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = UserPaths::under(tmp.path());
+        target.ensure_dirs().unwrap();
+
+        record_managed_dirs(&target).unwrap();
+        record_managed_dirs(&target).unwrap();
+
+        let store =
+            crate::install_ledger::LedgerStore::at(target.root.clone(), target.install_ledger());
+        let entries = store.entries().unwrap();
+        assert_eq!(entries.len(), 4, "a restart must not stack the records");
+        assert!(entries
+            .iter()
+            .all(|entry| entry.kind == crate::install_ledger::InstallKind::Cache));
+        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+        for expected in ["cache", "vision-cache", "tool-results", "artifacts"] {
+            assert!(ids.contains(&expected), "{expected} missing from {ids:?}");
+        }
+        assert_eq!(
+            store.prune_missing().unwrap().len(),
+            0,
+            "the records point at directories that exist"
         );
     }
 

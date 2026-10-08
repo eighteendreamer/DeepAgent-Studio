@@ -28,6 +28,8 @@ use async_trait::async_trait;
 use deepagent_core::error::{CoreError, Result};
 use sha2::{Digest, Sha256};
 
+use crate::install_ledger::LedgerStore;
+
 use crate::dto::{RuntimeProgressDto, RuntimeStatusDto};
 
 /// Target platform of a runtime artifact.
@@ -395,6 +397,8 @@ pub struct RuntimeService {
     downloader: Arc<dyn Downloader>,
     /// Per-id cancellation flags for in-flight installs.
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Set by a host that keeps an install ledger (`with_state_root`).
+    ledger: Option<LedgerStore>,
 }
 
 impl RuntimeService {
@@ -444,6 +448,48 @@ impl RuntimeService {
             lookup_roots,
             downloader,
             cancels: Mutex::new(HashMap::new()),
+            ledger: None,
+        }
+    }
+
+    /// Record installs against the ledger anchored at `state_root` (the data root),
+    /// so an uninstall can delete exactly what a download put on disk instead of
+    /// re-deriving the path from the compiled-in registry.
+    pub fn with_state_root(mut self, state_root: &Path) -> Self {
+        self.ledger = Some(LedgerStore::at(
+            state_root,
+            state_root.join(crate::install_ledger::LEDGER_FILE),
+        ));
+        self
+    }
+
+    /// Note the downloaded runtime and where it came from. A lost record must not
+    /// undo a completed install, so failures are logged, not raised.
+    fn record_install(&self, entry: &RuntimeEntry, artifact: &RuntimeArtifact) {
+        let Some(ledger) = self.ledger.as_ref() else {
+            return;
+        };
+        let installed = self.active_root.join(&artifact.dest_subdir);
+        let Some(relative) = installed.strip_prefix(ledger.root()).ok() else {
+            tracing::warn!(path = %installed.display(), "runtime install is outside the data root");
+            return;
+        };
+        let result = ledger.record(crate::install_ledger::LedgerEntry {
+            id: entry.id.clone(),
+            kind: crate::install_ledger::InstallKind::Runtime,
+            version: Some(entry.version.clone()),
+            source: crate::install_ledger::InstallSource {
+                kind: crate::install_ledger::InstallSourceKind::Registry,
+                spec: artifact.url.clone(),
+            },
+            path: relative.display().to_string(),
+            sidecars: Vec::new(),
+            sha256: artifact.sha256.clone(),
+            installed_at: String::new(),
+            last_updated: None,
+        });
+        if let Err(error) = result {
+            tracing::warn!(runtime_id = %entry.id, %error, "could not record the installed runtime");
         }
     }
 
@@ -781,7 +827,21 @@ impl RuntimeService {
         }
     }
 
-    /// Uninstall a runtime: remove its destination subdir. Idempotent.
+    /// Where the install ledger says this runtime's bytes live, if it recorded one.
+    fn recorded_path(&self, id: &str) -> Option<PathBuf> {
+        let ledger = self.ledger.as_ref()?;
+        let entry = ledger.entries().ok()?.into_iter().find(|entry| {
+            entry.kind == crate::install_ledger::InstallKind::Runtime && entry.id == id
+        })?;
+        entry.absolute_path(ledger.root()).ok()
+    }
+
+    /// Uninstall a runtime from the managed root. Idempotent.
+    ///
+    /// The ledger's recorded location wins over re-deriving it from the registry:
+    /// a registry change (`dest_subdir`, URL) used to make old downloads undeletable
+    /// or delete the wrong directory. A failed delete is reported instead of
+    /// swallowed, so a half-removed runtime does not read as success.
     pub fn uninstall(&self, id: &str) -> Result<bool> {
         let Some(entry) = self.registry.iter().find(|e| e.id == id) else {
             return Ok(false);
@@ -790,25 +850,30 @@ impl RuntimeService {
         let Some(artifact) = entry.artifact() else {
             return Ok(false);
         };
-        let dir = self.active_root.join(&artifact.dest_subdir);
+        let dir = self
+            .recorded_path(id)
+            .unwrap_or_else(|| self.active_root.join(&artifact.dest_subdir));
         let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
         if !probe.exists() {
             return Ok(false);
         }
         // For raw single-file artifacts, only remove the file; for zip/tar and
         // multi-file installs, remove the whole destination directory.
-        if !artifact.files.is_empty() {
-            let _ = std::fs::remove_dir_all(&dir);
+        if !artifact.files.is_empty() || artifact.archive != ArchiveKind::Raw {
+            std::fs::remove_dir_all(&dir).map_err(|error| {
+                CoreError::Other(format!(
+                    "remove runtime directory {}: {error}",
+                    dir.display()
+                ))
+            })?;
         } else {
-            match artifact.archive {
-                ArchiveKind::Raw => {
-                    let f = dir.join(&artifact.file_name);
-                    let _ = std::fs::remove_file(f);
-                }
-                ArchiveKind::Zip | ArchiveKind::TarGz | ArchiveKind::Installer => {
-                    let _ = std::fs::remove_dir_all(&dir);
-                }
-            }
+            let file = dir.join(&artifact.file_name);
+            std::fs::remove_file(&file).map_err(|error| {
+                CoreError::Other(format!("remove runtime file {}: {error}", file.display()))
+            })?;
+        }
+        if let Some(ledger) = self.ledger.as_ref() {
+            ledger.forget(crate::install_ledger::InstallKind::Runtime, id)?;
         }
         Ok(true)
     }
@@ -845,6 +910,7 @@ impl RuntimeService {
                 .await;
             self.clear_cancel(id);
             install_result?;
+            self.record_install(&entry, &artifact);
             return self
                 .status(id)
                 .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")));
@@ -945,6 +1011,7 @@ impl RuntimeService {
             }
         }
 
+        self.record_install(&entry, &artifact);
         self.status(id)
             .ok_or_else(|| CoreError::Other(format!("runtime '{id}' vanished after install")))
     }
@@ -2840,6 +2907,67 @@ fn main() {{
         assert!(svc.is_installed("test-model"));
         assert!(svc.uninstall("test-model").unwrap());
         assert!(!svc.is_installed("test-model"));
+    }
+
+    #[tokio::test]
+    async fn uninstall_follows_the_recorded_path_not_the_current_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_root = dir.path().to_path_buf();
+        let active = state_root.join("files").join("runtimes");
+        let bytes = b"abc".to_vec();
+        let downloader = Arc::new(BytesDownloader {
+            bytes: bytes.clone(),
+        });
+
+        let installed = RuntimeService::with_registry(
+            std::slice::from_ref(&active),
+            downloader.clone(),
+            vec![raw_entry(Some(sha256_of(&bytes)))],
+        )
+        .with_state_root(&state_root);
+        installed
+            .install("test-model", noop_progress())
+            .await
+            .unwrap();
+
+        let ledger = LedgerStore::at(
+            &state_root,
+            state_root.join(crate::install_ledger::LEDGER_FILE),
+        );
+        let entries = ledger.entries().unwrap();
+        assert_eq!(entries.len(), 1, "the download left one record");
+        assert_eq!(entries[0].kind, crate::install_ledger::InstallKind::Runtime);
+        assert_eq!(
+            entries[0].source.spec, "https://example.com/model.bin",
+            "the ledger keeps the URL the bytes came from"
+        );
+
+        // The registry now points the same id at a different subdirectory.
+        // Re-deriving the path from it would leave the first download on disk forever.
+        let mut relocated = raw_entry(Some(sha256_of(&bytes)));
+        if let Some(artifact) = relocated.artifacts.get_mut(&Platform::current()) {
+            artifact.dest_subdir = "speech/models-v2".to_string();
+        }
+        let after_move = RuntimeService::with_registry(
+            std::slice::from_ref(&active),
+            downloader,
+            vec![relocated],
+        )
+        .with_state_root(&state_root);
+
+        assert!(after_move.uninstall("test-model").unwrap());
+        assert!(
+            !active
+                .join("speech")
+                .join("models")
+                .join("model.bin")
+                .exists(),
+            "the recorded location is what gets deleted"
+        );
+        assert!(
+            ledger.entries().unwrap().is_empty(),
+            "the record goes with the asset"
+        );
     }
 
     #[test]

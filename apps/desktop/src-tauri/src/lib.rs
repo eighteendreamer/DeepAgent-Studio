@@ -6151,11 +6151,14 @@ pub fn run() {
             let legacy_resource_runtime_dir = preferred_runtime_resource_dir(app.handle());
             let _ = copy_legacy_runtime_dir(&legacy_resource_runtime_dir, &runtimes_dir);
             let legacy_runtime_roots = vec![legacy_resource_runtime_dir];
-            let runtime = Arc::new(RuntimeService::with_lookup_roots(
-                std::slice::from_ref(&runtimes_dir),
-                &legacy_runtime_roots,
-                Arc::new(deepagent_app_core::runtime_service::ReqwestDownloader::default()),
-            ));
+            let runtime = Arc::new(
+                RuntimeService::with_lookup_roots(
+                    std::slice::from_ref(&runtimes_dir),
+                    &legacy_runtime_roots,
+                    Arc::new(deepagent_app_core::runtime_service::ReqwestDownloader::default()),
+                )
+                .with_state_root(&paths.root),
+            );
             let runtime_broker = Arc::new(RuntimeBroker::new(runtime.clone()));
             // This changes only DeepAgent's process environment. Every child
             // process inherits it; the Windows user/system PATH is untouched.
