@@ -3,7 +3,7 @@ source: apps/cli/src/tui/app.rs
 expression: terminal.backend().to_string()
 ---
 "> 改一下渲染                                                            " Hidden by multi-width symbols: [(3, " "), (5, " "), (7, " "), (9, " "), (11, " ")]
-"DeepAgent  C:\Users\32734\…  db: …ata\Local\Temp\.tmplIrz18  model: deep"
+"DeepAgent  C:\Users\32734\…  db: /home/dev/.deepagent  model: deepseek-c"
 "* edit_file: src/tui/app.rs — running                                   "
 "allow run_command [high]: destructive command                           "
 "y allow once | n/d/Esc deny | Ctrl-C stops the run                      "

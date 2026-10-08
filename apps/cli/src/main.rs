@@ -238,7 +238,7 @@ pub(crate) fn build_chat_service(
     workspace: &Path,
     options: &RunOptions,
 ) -> Result<(ChatService, Option<SandboxCapabilities>), String> {
-    let db_path = database_path(workspace)?;
+    let db_path = database_path()?;
     let db = Arc::new(Database::open(&db_path).map_err(|error| format!("open database: {error}"))?);
     let transport: Arc<dyn HttpTransport> = Arc::new(ReqwestTransport::new());
     // Persist credentials in the shared encrypted SQLite secret store. The
@@ -325,12 +325,10 @@ fn build_backend(
     }
 }
 
-fn database_path(workspace: &Path) -> Result<PathBuf, String> {
-    // One shared rule: DEEPAGENT_DB_PATH, then DEEPAGENT_DATA_ROOT, then the
-    // installed desktop shell's data directory, then the workspace default.
-    Ok(deepagent_app_core::data_root::resolve_database_path(
-        workspace,
-    ))
+fn database_path() -> Result<PathBuf, String> {
+    // One shared rule with the desktop shell: DEEPAGENT_DB_PATH, then
+    // DEEPAGENT_DATA_ROOT, then `~/.deepagent/deepagent.db`.
+    deepagent_app_core::data_root::resolve_database_path().map_err(|error| error.to_string())
 }
 
 fn sandbox_mode_for_profile(profile: Option<&str>) -> Option<SandboxMode> {

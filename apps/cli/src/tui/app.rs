@@ -924,7 +924,10 @@ mod tests {
             permission_profile: None,
             reasoning_effort: None,
         };
-        let app = App::new(dir.path().to_path_buf(), &options, chat, ui_sender);
+        let mut app = App::new(dir.path().to_path_buf(), &options, chat, ui_sender);
+        // `Database::open_in_memory` roots itself in a fresh temp dir, so leaving
+        // the derived root in place would bake a random path into every snapshot.
+        app.data_root = "/home/dev/.deepagent".to_string();
         // The workspace directory must outlive the service built on it.
         std::mem::forget(dir);
         app
