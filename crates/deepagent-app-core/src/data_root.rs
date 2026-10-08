@@ -23,6 +23,17 @@ pub const HOME_DIR_NAME: &str = ".deepagent";
 pub const DATA_ROOT_ENV: &str = "DEEPAGENT_DATA_ROOT";
 pub const DB_PATH_ENV: &str = "DEEPAGENT_DB_PATH";
 
+/// True when the environment names a root or database explicitly.
+///
+/// Such a root is *chosen*, not inherited: it must not become the destination for
+/// whatever an older build left in the install directory or the platform app-data
+/// folder. Relocation only ever targets the default `~/.deepagent`; an operator
+/// who wants to move data into a chosen root passes it with `--from`.
+pub fn is_explicitly_overridden() -> bool {
+    std::env::var_os(DB_PATH_ENV).is_some_and(|value| !value.is_empty())
+        || std::env::var_os(DATA_ROOT_ENV).is_some_and(|value| !value.is_empty())
+}
+
 /// The user's home directory, from `HOME` then `USERPROFILE`.
 pub fn home_dir() -> Option<PathBuf> {
     ["HOME", "USERPROFILE"]

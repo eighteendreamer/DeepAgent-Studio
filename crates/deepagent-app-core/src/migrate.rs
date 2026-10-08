@@ -88,6 +88,24 @@ pub struct DataRootPreparation {
 /// create the managed directories. Every host calls this **before** opening the
 /// database: creating `~/.deepagent/deepagent.db` first would collide with the
 /// legacy database and block the very migration it was meant to replace.
+/// Which roots may be relocated into `target_root`.
+///
+/// An explicitly chosen data root is never a relocation target: it holds no
+/// session history of its own, and pulling the platform app-data tree into it
+/// once emptied a developer's live root from a probe run. `--from` still works,
+/// because that source is named by the operator and passed as `extra_sources`.
+pub fn discovered_sources(
+    install_dir: Option<&Path>,
+    app_data_dir: Option<&Path>,
+    target_root: &Path,
+    explicitly_overridden: bool,
+) -> Vec<PathBuf> {
+    if explicitly_overridden {
+        return Vec::new();
+    }
+    discover_legacy_sources(install_dir, app_data_dir, target_root)
+}
+
 pub fn install_data_root(request: &DataRootRequest<'_>) -> Result<DataRootPreparation> {
     let paths = UserPaths::resolve()?;
     let install_dir = std::env::current_exe()
@@ -97,10 +115,14 @@ pub fn install_data_root(request: &DataRootRequest<'_>) -> Result<DataRootPrepar
         .app_data_dir
         .map(Path::to_path_buf)
         .or_else(crate::data_root::legacy_app_data_dir);
-    let mut sources = discover_legacy_sources(
+    // One decision covers every relocation step: an explicitly chosen root stays
+    // isolated, and only `--from` (extra_sources) can name a source for it.
+    let relocate = !crate::data_root::is_explicitly_overridden();
+    let mut sources = discovered_sources(
         install_dir.as_deref(),
         legacy_app_data.as_deref(),
         &paths.root,
+        !relocate,
     );
     for extra in request.extra_sources {
         sources.insert(0, extra.clone());
@@ -116,8 +138,11 @@ pub fn install_data_root(request: &DataRootRequest<'_>) -> Result<DataRootPrepar
     }
 
     let mut folded = normalize_user_root_layout(&paths)?.len();
-    if let Some(install_dir) = install_dir.as_deref() {
-        folded += fold_install_dir_layout(install_dir, &paths)?.len();
+    // The install-directory fold is relocation as well, so it follows the same rule.
+    if relocate {
+        if let Some(install_dir) = install_dir.as_deref() {
+            folded += fold_install_dir_layout(install_dir, &paths)?.len();
+        }
     }
     paths.ensure_dirs()?;
     record_managed_dirs(&paths)?;
@@ -258,6 +283,11 @@ fn migrate_one(source: &Path, target: &UserPaths, dry_run: bool) -> Result<Migra
         });
     }
 
+    // One host relocates a given legacy root at a time. Two processes racing the
+    // same move split the tree across their own targets — which is exactly what a
+    // desktop start and a terminal start sharing one machine can do.
+    let _source_lock = SourceLock::acquire(&source)?;
+
     let conflicts = find_conflicts(&source, &entries, &target.root);
     if !conflicts.is_empty() {
         let shown: Vec<String> = conflicts
@@ -279,10 +309,15 @@ fn migrate_one(source: &Path, target: &UserPaths, dry_run: bool) -> Result<Migra
     target.ensure_dirs()?;
     let mut moved = Vec::new();
     for relative in &entries {
-        move_entry(&source.join(relative), &target.root.join(relative)).map_err(|error| {
+        let from = source.join(relative);
+        if !from.exists() {
+            // Carried off already by whoever held this root first.
+            continue;
+        }
+        move_entry(&from, &target.root.join(relative)).map_err(|error| {
             CoreError::Persistence(format!(
                 "migrating {} -> {}: {error}",
-                source.join(relative).display(),
+                from.display(),
                 target.root.join(relative).display()
             ))
         })?;
@@ -356,14 +391,9 @@ fn checkpoint_database(source: &Path) -> Result<()> {
     if !database.is_file() {
         return Ok(());
     }
-    if let host_lock::HostRole::Standby { holder } = host_lock::claim(source)? {
-        host_lock::release(source);
-        return Err(CoreError::other(format!(
-            "another host owns '{}' (holder: {holder}); close it before migrating",
-            source.display()
-        )));
-    }
-    let result = (|| -> Result<()> {
+    // The caller holds `source`'s host lock for the whole relocation, so no claim
+    // happens here: claiming and releasing mid-move would reopen the race window.
+    (|| -> Result<()> {
         let db = Database::open(&database).map_err(|error| {
             CoreError::Persistence(format!(
                 "open {} for migration: {error}",
@@ -385,9 +415,32 @@ fn checkpoint_database(source: &Path) -> Result<()> {
                 )))
             }
         })
-    })();
-    host_lock::release(source);
-    result
+    })()
+}
+
+/// The legacy root's host lock, held for one whole relocation.
+struct SourceLock {
+    source: PathBuf,
+}
+
+impl SourceLock {
+    fn acquire(source: &Path) -> Result<Self> {
+        match host_lock::claim(source)? {
+            host_lock::HostRole::Primary => Ok(Self {
+                source: source.to_path_buf(),
+            }),
+            host_lock::HostRole::Standby { holder } => Err(CoreError::other(format!(
+                "another host owns '{}' (holder: {holder}); close it before migrating",
+                source.display()
+            ))),
+        }
+    }
+}
+
+impl Drop for SourceLock {
+    fn drop(&mut self) {
+        host_lock::release(&self.source);
+    }
 }
 
 /// Directories are recreated at the target and pruned from the source later;
@@ -627,8 +680,9 @@ fn prune_empty_dirs(dir: &Path) {
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_entries, discover_legacy_sources, fold_install_dir_layout, migrate_data_roots,
-        migrate_into, normalize_user_root_layout, record_managed_dirs, same_path,
+        collect_entries, discover_legacy_sources, discovered_sources, fold_install_dir_layout,
+        migrate_data_roots, migrate_into, normalize_user_root_layout, record_managed_dirs,
+        same_path,
     };
     use crate::data_root::UserPaths;
     use deepagent_core::CoreError;
@@ -965,6 +1019,29 @@ mod tests {
             store.prune_missing().unwrap().len(),
             0,
             "the records point at directories that exist"
+        );
+    }
+
+    #[test]
+    fn an_overridden_root_never_becomes_a_relocation_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app_data = tmp.path().join("roaming").join("com.deepagent.studio");
+        file(&app_data.join("deepagent.db"), "sessions");
+        let install = tmp.path().join("install");
+        file(&install.join("data").join("deepagent.db"), "sessions");
+        let target = tmp.path().join("chosen");
+
+        let normal = discovered_sources(Some(&install), Some(&app_data), &target, false);
+        assert_eq!(normal.len(), 2, "the default root inherits both legacies");
+        assert_eq!(
+            discovered_sources(Some(&install), Some(&app_data), &target, true),
+            Vec::<PathBuf>::new(),
+            "a root named by the environment is an isolated root"
+        );
+        assert!(
+            app_data.join("deepagent.db").is_file()
+                && install.join("data").join("deepagent.db").is_file(),
+            "deciding not to relocate must not move anything"
         );
     }
 
