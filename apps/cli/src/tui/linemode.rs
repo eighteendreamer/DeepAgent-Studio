@@ -88,6 +88,19 @@ pub async fn run(mut options: RunOptions) -> Result<(), String> {
         }
     }
 
+    // A headless host leaves the question notifier unset, which silently declines
+    // every `ask_user_question`. Line mode has a human on stdin, so ask them. The
+    // read blocks this callback the same way `on_approval` blocks on its prompt.
+    let chat_for_questions = chat.clone();
+    let chat = chat.with_question_notifier(move |request| {
+        println!("\n{}", super::questions::format_request(&request));
+        let answers =
+            super::questions::collect_answers(&request, &mut super::questions::StdinInput);
+        if !chat_for_questions.resolve_question(&request.question_id, answers) {
+            eprintln!("question was no longer pending: {}", request.question_id);
+        }
+    });
+
     print!(
         "{}",
         welcome_screen(

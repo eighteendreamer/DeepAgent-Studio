@@ -1323,6 +1323,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "deepagent-app-core",
+ "deepagent-builtins",
  "deepagent-core",
  "deepagent-harness-protocol",
  "deepagent-models",

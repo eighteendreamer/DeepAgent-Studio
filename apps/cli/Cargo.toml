@@ -15,6 +15,7 @@ path = "src/main.rs"
 
 [dependencies]
 deepagent-app-core.workspace = true
+deepagent-builtins.workspace = true
 deepagent-core.workspace = true
 deepagent-harness-protocol.workspace = true
 deepagent-models = { workspace = true, features = ["http"] }

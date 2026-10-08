@@ -8,6 +8,7 @@ mod app;
 mod event;
 mod history;
 mod linemode;
+mod questions;
 mod terminal;
 
 use std::io::IsTerminal;
