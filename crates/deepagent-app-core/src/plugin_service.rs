@@ -14,7 +14,7 @@ use deepagent_mcp::config::{McpConfig, McpServerConfig, TransportType};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::atomic_file::write_file_atomically;
+use crate::atomic_file::{remove_dir_all_with_retry, write_file_atomically};
 use crate::install_ledger::{
     InstallKind, InstallSource, InstallSourceKind, LedgerEntry, LedgerStore, LEDGER_FILE,
 };
@@ -4705,25 +4705,6 @@ fn create_temp_staging_dir(base: &Path, label: &str, purpose: &str) -> Result<Pa
             ))
         })?;
     Ok(temp_dir.keep())
-}
-
-fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let mut last_error = None;
-    for attempt in 0..5 {
-        match std::fs::remove_dir_all(path) {
-            Ok(()) => return Ok(()),
-            Err(error) => {
-                last_error = Some(error);
-                if attempt < 4 {
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-            }
-        }
-    }
-    Err(last_error.unwrap())
 }
 
 fn replace_plugin_dir(stage: &Path, destination: &Path, install_root: &Path) -> Result<()> {

@@ -54,6 +54,12 @@ async fn main() {
         CliCommand::SandboxStatus => sandbox_status().await,
         CliCommand::Server { transport } => app_server::run(transport).await,
         CliCommand::MigrateData { dry_run, from } => migrate_data(dry_run, from.as_deref()),
+        CliCommand::Uninstall {
+            list,
+            purge,
+            assume_yes,
+            ..
+        } => uninstall_assets(list, purge, assume_yes),
     };
 
     if let Err(error) = result {
@@ -406,6 +412,114 @@ fn migrate_data(dry_run: bool, from: Option<&str>) -> Result<(), String> {
         "data root is {} ({} layout entries folded)",
         preparation.paths.root.display(),
         preparation.folded
+    );
+    Ok(())
+}
+
+/// Ask the operator before deleting. A non-interactive reader (the NSIS hook
+/// passes `--yes`, a piped stdin has nothing to give) resolves to "no".
+fn confirm(prompt: &str) -> Result<bool, String> {
+    print!("{prompt} [y/N] ");
+    io::stdout()
+        .flush()
+        .map_err(|error| format!("flush prompt: {error}"))?;
+    let mut line = String::new();
+    let read = io::stdin()
+        .read_line(&mut line)
+        .map_err(|error| format!("read answer: {error}"))?;
+    if read == 0 {
+        println!();
+        return Ok(false);
+    }
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+/// `deepagent uninstall`: reverse what the install ledger says this program wrote.
+fn uninstall_assets(list: bool, purge: bool, assume_yes: bool) -> Result<(), String> {
+    use deepagent_app_core::uninstall;
+    let paths = data_root::UserPaths::resolve().map_err(|error| error.to_string())?;
+
+    if list {
+        let entries = uninstall::plan(&paths).map_err(|error| error.to_string())?;
+        if entries.is_empty() {
+            println!("{}: nothing recorded", paths.root.display());
+            return Ok(());
+        }
+        println!(
+            "{} asset(s) recorded under {}:",
+            entries.len(),
+            paths.root.display()
+        );
+        for entry in &entries {
+            println!(
+                "  {:<7} {:<26} {:<10} {} <- {}",
+                entry.kind.as_str(),
+                entry.id,
+                entry.version.as_deref().unwrap_or("-"),
+                entry.path,
+                entry.source.spec,
+            );
+        }
+        println!(
+            "sessions ({}) are not listed: they are your data, not an install asset.",
+            data_root::DATABASE_FILE
+        );
+        return Ok(());
+    }
+
+    let what = if purge {
+        "delete every recorded asset, the session database and the managed files"
+    } else {
+        "delete every recorded asset (sessions and credentials stay)"
+    };
+    if !assume_yes && !confirm(&format!("{what}? "))? {
+        println!("cancelled: nothing was deleted");
+        return Ok(());
+    }
+
+    let outcome = if purge {
+        uninstall::purge(&paths)
+    } else {
+        uninstall::uninstall_installed(&paths)
+    }
+    .map_err(|error| error.to_string())?;
+
+    for item in &outcome.removed {
+        println!("removed {:<7} {}", item.kind.as_str(), item.path.display());
+    }
+    for path in &outcome.purged {
+        println!("purged    {}", path.display());
+    }
+    for (id, reason) in &outcome.refused {
+        println!("refused {id}: {reason}");
+    }
+    for (id, reason) in &outcome.failed {
+        println!("failed {id}: {reason}");
+    }
+    if !outcome.is_clean() {
+        return Err(format!(
+            "uninstall did not finish: {} removed, {} failed, {} refused",
+            outcome.removed.len(),
+            outcome.failed.len(),
+            outcome.refused.len()
+        ));
+    }
+    println!(
+        "uninstalled {} asset(s){};{}",
+        outcome.removed.len(),
+        if outcome.purged.is_empty() {
+            String::new()
+        } else {
+            format!(", {} scope item(s)", outcome.purged.len())
+        },
+        if purge {
+            format!(" {} is left empty", paths.root.display())
+        } else {
+            format!(" sessions under {} were kept", paths.database.display())
+        }
     );
     Ok(())
 }

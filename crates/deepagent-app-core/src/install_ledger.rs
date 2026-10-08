@@ -214,6 +214,16 @@ impl LedgerStore {
         &self.root
     }
 
+    /// The lock file guarding read-modify-write on the ledger.
+    pub fn lock_path(&self) -> &Path {
+        &self.lock_path
+    }
+
+    /// The diagnostic sidecar naming the current lock holder.
+    pub fn owner_path(&self) -> &Path {
+        &self.owner_path
+    }
+
     pub fn read(&self) -> Result<InstallLedger> {
         if !self.path.is_file() {
             return Ok(InstallLedger::default());

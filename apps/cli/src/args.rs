@@ -16,6 +16,13 @@ pub enum CliCommand {
         dry_run: bool,
         from: Option<String>,
     },
+    /// Reverse of an install, driven by the install ledger.
+    Uninstall {
+        list: bool,
+        all: bool,
+        purge: bool,
+        assume_yes: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +121,40 @@ where
                 }
             }
             Ok(CliCommand::MigrateData { dry_run, from })
+        }
+        "uninstall" => {
+            let mut list = false;
+            let mut all = false;
+            let mut purge = false;
+            let mut assume_yes = false;
+            for arg in args {
+                let value = arg.to_string_lossy().to_string();
+                match value.as_str() {
+                    "--list" => list = true,
+                    "--all" => all = true,
+                    "--purge" => purge = true,
+                    "--yes" => assume_yes = true,
+                    other => return Err(format!("unknown uninstall option: {other}")),
+                }
+            }
+            if !list && !all && !purge {
+                return Err(
+                    "uninstall needs --list (show the record) or --all/--purge (delete it)"
+                        .to_string(),
+                );
+            }
+            if list && (all || purge) {
+                return Err("--list cannot be combined with --all or --purge".to_string());
+            }
+            if purge && !all {
+                return Err("--purge must be paired with --all".to_string());
+            }
+            Ok(CliCommand::Uninstall {
+                list,
+                all,
+                purge,
+                assume_yes,
+            })
         }
         "-h" | "--help" => Err(usage().to_string()),
         other => Err(format!("unknown command '{other}'\n\n{}", usage())),
@@ -231,7 +272,7 @@ where
 }
 
 fn usage() -> &'static str {
-    "usage: deepagent [chat|run|resume|tools list|sandbox status|migrate-data|server] [options]"
+    "usage: deepagent [chat|run|resume|tools list|sandbox status|migrate-data|uninstall|server] [options]"
 }
 
 #[cfg(test)]
@@ -332,6 +373,39 @@ mod tests {
             .unwrap_err()
             .contains("--from requires a directory"));
         assert!(parse_args(["deepagent", "migrate-data", "--nope"]).is_err());
+    }
+
+    #[test]
+    fn parses_uninstall_scopes_and_rejects_ambiguity() {
+        assert_eq!(
+            parse_args(["deepagent", "uninstall", "--list"]).unwrap(),
+            CliCommand::Uninstall {
+                list: true,
+                all: false,
+                purge: false,
+                assume_yes: false,
+            }
+        );
+        assert_eq!(
+            parse_args(["deepagent", "uninstall", "--all", "--purge", "--yes"]).unwrap(),
+            CliCommand::Uninstall {
+                list: false,
+                all: true,
+                purge: true,
+                assume_yes: true,
+            }
+        );
+        // A destructive command never runs on a bare word.
+        assert!(parse_args(["deepagent", "uninstall"])
+            .unwrap_err()
+            .contains("needs --list"));
+        assert!(parse_args(["deepagent", "uninstall", "--purge"])
+            .unwrap_err()
+            .contains("--purge must be paired with --all"));
+        assert!(parse_args(["deepagent", "uninstall", "--list", "--all"])
+            .unwrap_err()
+            .contains("cannot be combined"));
+        assert!(parse_args(["deepagent", "uninstall", "--force"]).is_err());
     }
 
     #[test]

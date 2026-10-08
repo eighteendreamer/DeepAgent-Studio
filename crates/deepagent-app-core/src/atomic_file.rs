@@ -98,6 +98,55 @@ fn replace_file(source: &Path, target: &Path) -> Result<()> {
     }
 }
 
+/// Delete a tree, retrying the brief Windows locks (an explorer window, an
+/// antivirus scan, a process that just exited) before giving up.
+pub(crate) fn remove_dir_all_with_retry(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut last_error = None;
+    for attempt in 0..8 {
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 7 {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        (20u64 << attempt).min(200),
+                    ));
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::other(format!("remove {}: unknown failure", path.display()))
+    }))
+}
+
+/// Delete one file with the same retry budget as [`remove_dir_all_with_retry`].
+pub(crate) fn remove_file_with_retry(path: &Path) -> std::io::Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    let mut last_error = None;
+    for attempt in 0..8 {
+        match std::fs::remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < 7 {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        (20u64 << attempt).min(200),
+                    ));
+                }
+            }
+        }
+    }
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::other(format!("remove {}: unknown failure", path.display()))
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::write_file_atomically;
