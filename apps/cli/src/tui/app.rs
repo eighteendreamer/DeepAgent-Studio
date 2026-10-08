@@ -329,6 +329,9 @@ impl QuestionPrompt {
 
 pub struct App {
     workspace: PathBuf,
+    /// Which database this host actually opened: the desktop and the terminal must
+    /// be provably the same file, so the path is on screen, not in a log.
+    data_root: String,
     model: String,
     sandbox: String,
     overrides: HarnessRunOverrides,
@@ -370,6 +373,7 @@ impl App {
         let thread_id = options.continue_thread.clone();
         Self {
             workspace,
+            data_root: chat.database().data_root().display().to_string(),
             model,
             sandbox,
             overrides,
@@ -636,7 +640,9 @@ impl App {
         let mut spans = vec![
             Span::styled("DeepAgent", Style::default().fg(Color::Cyan)),
             Span::styled("  ", muted),
-            Span::styled(truncate(&self.workspace.display().to_string(), 24), muted),
+            Span::styled(truncate(&self.workspace.display().to_string(), 16), muted),
+            Span::styled("  db: ", muted),
+            Span::styled(tail_path(&self.data_root, 26), muted),
             Span::styled("  model: ", muted),
             Span::styled(truncate(&self.model, 20), value),
             Span::styled("  sandbox: ", muted),
@@ -733,6 +739,20 @@ impl App {
 /// Strip control characters that would corrupt the terminal grid.
 fn sanitize(text: &str) -> String {
     text.chars().filter(|ch| !ch.is_control()).collect()
+}
+
+/// Show the *end* of a path. For a data root the distinguishing part is the
+/// tail (`…\com.deepagent.studio`), while the head is the same user profile
+/// directory every time.
+fn tail_path(path: &str, width: usize) -> String {
+    if display_width(path) <= width || width < 2 {
+        return truncate(path, width);
+    }
+    let chars: Vec<char> = path.chars().collect();
+    let keep = (width - 1).min(chars.len());
+    let mut out = String::from('…');
+    out.extend(chars[chars.len() - keep..].iter());
+    out
 }
 
 #[cfg(test)]
@@ -980,6 +1000,28 @@ mod tests {
         let tail = joined(&app.tail_line(60));
         assert!(tail.contains("run_command: cargo build"), "{tail}");
         assert!(tail.contains("running"), "{tail}");
+    }
+
+    #[test]
+    fn status_line_shows_which_database_this_host_opened() {
+        let app = test_app();
+        let line = joined(&app.status_line());
+        assert!(line.contains("db: "), "{line}");
+        assert!(
+            !app.data_root.is_empty(),
+            "the resolved data root must always be on screen"
+        );
+    }
+
+    #[test]
+    fn tail_path_keeps_the_distinguishing_end() {
+        let long = r"C:\Users\me\AppData\Roaming\com.deepagent.studio";
+        let shown = tail_path(long, 26);
+        assert!(shown.starts_with('…'), "{shown}");
+        assert!(shown.ends_with("com.deepagent.studio"), "{shown}");
+        assert!(display_width(&shown) <= 26, "{shown}");
+        assert_eq!(tail_path("short", 26), "short");
+        assert_eq!(tail_path("short", 0), "");
     }
 
     #[test]
