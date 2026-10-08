@@ -1,0 +1,14 @@
+---
+source: apps/cli/src/tui/app.rs
+expression: terminal.backend().to_string()
+---
+"DeepAgent  G:/repo  model: deepseek-chat  sandbox: sandb"
+"                                                        "
+">                                                       "
+"Enter record | Ctrl-C clear then quit | Ctrl-D quit     "
+"                                                        "
+"                                                        "
+"                                                        "
+"                                                        "
+"                                                        "
+"                                                        "

@@ -145,6 +145,15 @@ tree-sitter-go = "0.23"
 # File walking + .gitignore handling
 ignore = "0.4"
 
+# Terminal UI for the interactive CLI, on the crossterm backend. Version-aligned
+# with the reference implementation in 借鉴/codex/codex-rs (ratatui 0.30), so the
+# inline-viewport and insert_before behaviour we mirror matches its API surface.
+ratatui = "0.30"
+# `event-stream` is opt-in in crossterm 0.29 and ratatui does not enable it, but the
+# TUI event loop needs an async EventSource instead of a blocking read thread.
+crossterm = { version = "0.29", features = ["event-stream"] }
+unicode-width = "0.2"
+
 # Office document parsing (file preview + office tools): zip for OOXML
 # container access (docx/pptx), calamine for xlsx sheet reading. Pure Rust,
 # no external runtime — this is the Tier C fallback for office previews.
@@ -189,6 +198,8 @@ rust_xlsxwriter = "0.79"
 
 # Testing
 tempfile = "3"
+# Snapshot assertions for ratatui TestBackend frames in the TUI.
+insta = "1"
 
 [profile.dev]
 # Avoid accumulating large rustc incremental caches in the kernel workspace.

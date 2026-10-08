@@ -1,0 +1,14 @@
+---
+source: apps/cli/src/tui/app.rs
+expression: terminal.backend().to_string()
+---
+"> 跑一次                                                " Hidden by multi-width symbols: [(3, " "), (5, " "), (7, " ")]
+"DeepAgent  G:/repo  model: deepseek-chat  sandbox: sandb"
+"model run wiring lands in the next phase: this prompt w…"
+">                                                       "
+"Enter record | Ctrl-C clear then quit | Ctrl-D quit     "
+"                                                        "
+"                                                        "
+"                                                        "
+"                                                        "
+"                                                        "

@@ -30,9 +30,10 @@ async fn main() {
         }
     };
 
-    let log_writer = if matches!(command, CliCommand::Server { .. }) {
+    let log_writer = if matches!(command, CliCommand::Server { .. } | CliCommand::Chat(..)) {
         // `server --transport stdio` owns stdout as the machine protocol
-        // channel; every tracing line must go to stderr to keep it clean JSON.
+        // channel, and the chat TUI owns stdout as its render surface; every
+        // tracing line must go to stderr to keep both clean.
         deepagent_tracing::LogWriter::Stderr
     } else {
         deepagent_tracing::LogWriter::Stdout
@@ -233,7 +234,7 @@ async fn sandbox_status() -> Result<(), String> {
     Ok(())
 }
 
-fn build_chat_service(
+pub(crate) fn build_chat_service(
     workspace: &Path,
     options: &RunOptions,
 ) -> Result<(ChatService, Option<SandboxCapabilities>), String> {
@@ -391,7 +392,7 @@ fn print_human_event(event: &RuntimeEvent) {
     let _ = io::stdout().flush();
 }
 
-fn read_approval_decision() -> bool {
+pub(crate) fn read_approval_decision() -> bool {
     let mut line = String::new();
     if io::stdin().lock().read_line(&mut line).is_err() {
         return false;

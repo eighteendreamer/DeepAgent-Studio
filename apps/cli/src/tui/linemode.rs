@@ -1,3 +1,8 @@
+//! Non-interactive fallback chat: line-based input and plain stdout output.
+//!
+//! Used when stdout/stdin is not a terminal (CI smoke test, pipes, `deepagent | tee`).
+//! The ratatui interface in [`super::app`] replaces this for real terminals.
+
 use std::io::{self, Write};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -76,7 +81,7 @@ pub fn welcome_screen(workspace: &Path, model: Option<&str>, sandbox: Option<&st
 pub async fn run(mut options: RunOptions) -> Result<(), String> {
     let workspace =
         std::env::current_dir().map_err(|error| format!("read current directory: {error}"))?;
-    let (chat, backend_capabilities) = super::build_chat_service(&workspace, &options)?;
+    let (chat, backend_capabilities) = crate::build_chat_service(&workspace, &options)?;
     if let Some(capabilities) = backend_capabilities.as_ref() {
         if !capabilities.available {
             return Err(capabilities.message.clone());
@@ -184,7 +189,7 @@ async fn run_turn(
         );
         print!("Approve? [y/N] ");
         let _ = io::stdout().flush();
-        let approved = super::read_approval_decision();
+        let approved = crate::read_approval_decision();
         if let Err(error) =
             chat_for_approval.resolve_approval(&approval.call_id, approved, "cli_tui_user")
         {
