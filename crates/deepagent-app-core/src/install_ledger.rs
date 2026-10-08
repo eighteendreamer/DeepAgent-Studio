@@ -67,6 +67,8 @@ pub enum InstallSourceKind {
     Zip,
     Registry,
     Bundled,
+    /// Written by the user through the editor instead of downloaded.
+    Authored,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -74,16 +76,6 @@ pub struct InstallSource {
     pub kind: InstallSourceKind,
     /// Path, URL or registry name, exactly as the caller supplied it.
     pub spec: String,
-}
-
-/// Who performed the install. Uninstall only touches entries this program wrote.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum InstallVia {
-    Ui,
-    Cli,
-    Installer,
-    Update,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,7 +93,6 @@ pub struct LedgerEntry {
     pub sidecars: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sha256: Option<String>,
-    pub via: InstallVia,
     /// Epoch milliseconds, the same clock `plugins/state.json` records.
     pub installed_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -283,6 +274,29 @@ impl LedgerStore {
         Ok(self.read()?.entries)
     }
 
+    /// Drop the entries whose recorded path is gone and return them.
+    ///
+    /// A directory disappears between installs when a user deletes it by hand or
+    /// an install half-fails. Leaving the row behind would send the uninstaller
+    /// chasing paths that no longer exist and hide which installs actually landed,
+    /// so existence is re-checked rather than assumed. Only the main `path` counts:
+    /// a plugin's data directory is created lazily.
+    pub fn prune_missing(&self) -> Result<Vec<LedgerEntry>> {
+        self.with_locked(|ledger| {
+            let mut removed = Vec::new();
+            let mut stale = Vec::new();
+            for (position, entry) in ledger.entries.iter().enumerate() {
+                if !entry.absolute_path(&self.root)?.exists() {
+                    stale.push(position);
+                }
+            }
+            for position in stale.into_iter().rev() {
+                removed.push(ledger.entries.remove(position));
+            }
+            Ok(removed)
+        })
+    }
+
     /// One read-modify-write under the exclusive lock.
     pub fn with_locked<T>(
         &self,
@@ -407,8 +421,8 @@ fn now_millis() -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        InstallKind, InstallLedger, InstallSource, InstallSourceKind, InstallVia, LedgerEntry,
-        LedgerStore, LEDGER_SCHEMA_VERSION,
+        InstallKind, InstallLedger, InstallSource, InstallSourceKind, LedgerEntry, LedgerStore,
+        LEDGER_SCHEMA_VERSION,
     };
     use std::path::{Path, PathBuf};
 
@@ -424,7 +438,6 @@ mod tests {
             path: format!("files/plugins/{id}"),
             sidecars: vec![format!("files/plugins/data/{id}")],
             sha256: Some("abc".to_string()),
-            via: InstallVia::Ui,
             installed_at: String::new(),
             last_updated: None,
         }
@@ -450,7 +463,6 @@ mod tests {
         assert_eq!(read[0].sidecars, written.sidecars);
         assert_eq!(read[0].sha256.as_deref(), Some("abc"));
         assert_eq!(read[0].source.kind, InstallSourceKind::Dir);
-        assert_eq!(read[0].via, InstallVia::Ui);
         assert_eq!(read[0].installed_at, written.installed_at);
         assert!(!read[0].installed_at.is_empty(), "a timestamp is recorded");
     }
@@ -574,6 +586,24 @@ mod tests {
         .unwrap();
         let error = store(tmp.path()).read().unwrap_err();
         assert!(error.to_string().contains("newer version"), "{error}");
+    }
+
+    #[test]
+    fn a_recorded_asset_that_vanished_is_pruned_not_chased() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ledger = store(tmp.path());
+        for id in ["kept", "gone"] {
+            std::fs::create_dir_all(tmp.path().join("files/plugins").join(id)).unwrap();
+            ledger.record(entry(id, InstallKind::Plugin)).unwrap();
+        }
+        std::fs::remove_dir_all(tmp.path().join("files/plugins/gone")).unwrap();
+
+        let removed = ledger.prune_missing().unwrap();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].id, "gone");
+        let rest = ledger.entries().unwrap();
+        assert_eq!(rest.len(), 1);
+        assert_eq!(rest[0].id, "kept");
     }
 
     #[test]

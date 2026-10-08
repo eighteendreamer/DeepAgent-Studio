@@ -2746,7 +2746,7 @@ mod tests {
             session: Vec::new(),
             builtin: tmp.path().join("plugin-builtin"),
             workspace: None,
-            personal: tmp.path().join("plugins").join("personal"),
+            personal: tmp.path().join("app-data").join("plugins"),
         };
         let plugins = Arc::new(crate::plugin_service::PluginService::new(
             plugin_roots,

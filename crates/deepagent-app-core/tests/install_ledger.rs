@@ -8,7 +8,7 @@ use std::process::{Child, Command, Stdio};
 
 use deepagent_app_core::data_root::UserPaths;
 use deepagent_app_core::install_ledger::{
-    InstallKind, InstallSource, InstallSourceKind, InstallVia, LedgerEntry, LedgerStore,
+    InstallKind, InstallSource, InstallSourceKind, LedgerEntry, LedgerStore,
 };
 
 const MODE: &str = "DEEPAGENT_LEDGER_TEST";
@@ -47,7 +47,6 @@ fn entry(prefix: &str, index: usize) -> LedgerEntry {
         path: format!("files/plugins/{prefix}-{index}"),
         sidecars: Vec::new(),
         sha256: None,
-        via: InstallVia::Cli,
         installed_at: String::new(),
         last_updated: None,
     }

@@ -78,6 +78,18 @@ pub fn install_data_root(request: &DataRootRequest<'_>) -> Result<DataRootPrepar
         folded += fold_install_dir_layout(install_dir, &paths)?.len();
     }
     paths.ensure_dirs()?;
+    // Assets can disappear between installs (deleted by hand, an install that
+    // half-failed). Re-check existence here so the uninstaller only ever chases
+    // things that are really on disk.
+    let pruned = crate::install_ledger::LedgerStore::open(&paths)
+        .prune_missing()?
+        .len();
+    if pruned > 0 {
+        tracing::info!(
+            entries = pruned,
+            "pruned ledger entries whose assets are no longer on disk"
+        );
+    }
     Ok(DataRootPreparation {
         paths,
         reports,

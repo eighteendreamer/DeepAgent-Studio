@@ -13,7 +13,7 @@ fn roots(root: &std::path::Path) -> PluginRoots {
         session: Vec::new(),
         builtin: root.join("builtin"),
         workspace: None,
-        personal: root.join("personal"),
+        personal: root.join("app-data").join("personal"),
     }
 }
 

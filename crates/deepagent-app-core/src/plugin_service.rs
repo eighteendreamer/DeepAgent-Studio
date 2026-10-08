@@ -15,6 +15,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::atomic_file::write_file_atomically;
+use crate::install_ledger::{
+    InstallKind, InstallSource, InstallSourceKind, LedgerEntry, LedgerStore, LEDGER_FILE,
+};
 use crate::plugin::dialect::{
     resolve_presentation, InterfaceSource, MarketplaceSource, PortableSource, Presentation,
     PresentationSources,
@@ -321,6 +324,10 @@ pub struct PluginService {
     roots: PluginRoots,
     state_path: PathBuf,
     data_root: PathBuf,
+    /// The directory the ledger is anchored to (the data root in production), so
+    /// recorded paths stay relative across a root move.
+    state_root: PathBuf,
+    ledger: LedgerStore,
     runtime_cache: Mutex<Option<PluginRuntimeCache>>,
     list_cache: Mutex<Option<PluginListCache>>,
     summary_cache: Mutex<Option<PluginSummaryCache>>,
@@ -429,16 +436,112 @@ impl PluginService {
     /// anchor for persistent plugin state and data.
     pub fn new(roots: PluginRoots, install_dir: impl AsRef<Path>) -> Self {
         let plugin_data = install_dir.as_ref().join("plugins");
+        let state_root = install_dir.as_ref().to_path_buf();
+        let ledger = LedgerStore::at(state_root.clone(), state_root.join(LEDGER_FILE));
         let service = Self {
             roots,
             state_path: plugin_data.join("state.json"),
             data_root: plugin_data.join("data"),
+            state_root,
+            ledger,
             runtime_cache: Mutex::new(None),
             list_cache: Mutex::new(None),
             summary_cache: Mutex::new(None),
         };
         service.reclaim_decommissioned_marketplace_storage(&plugin_data);
+        service.adopt_unledgered_plugins();
         service
+    }
+
+    /// Personal plugins that were installed before the ledger existed have no
+    /// entry, so an uninstall could not find what to delete. Record them from the
+    /// directories actually on disk. Plugin loading must not depend on the ledger,
+    /// so a failure here is logged rather than raised.
+    fn adopt_unledgered_plugins(&self) {
+        let known: BTreeSet<String> = match self.ledger.entries() {
+            Ok(entries) => entries
+                .into_iter()
+                .filter(|entry| entry.kind == InstallKind::Plugin)
+                .map(|entry| entry.id)
+                .collect(),
+            Err(error) => {
+                tracing::warn!(%error, "could not read the install ledger; skipping plugin adoption");
+                return;
+            }
+        };
+        let state = self.load_state().unwrap_or_default();
+        for plugin in load_plugins(&self.roots)
+            .into_iter()
+            .filter(|plugin| plugin.origin == PluginOrigin::Personal)
+        {
+            if known.contains(&plugin.id) {
+                continue;
+            }
+            let version = state
+                .installed
+                .get(&plugin.id)
+                .and_then(|installed| installed.version.clone());
+            if let Err(error) = self.record_install(
+                &plugin.id,
+                version.as_deref(),
+                &plugin.root,
+                InstallSourceKind::Dir,
+                &plugin.root,
+            ) {
+                tracing::warn!(plugin_id = %plugin.id, %error, "could not record a pre-ledger plugin");
+            }
+        }
+    }
+
+    /// A path relative to the state root, which is how the ledger stores locations
+    /// so moving the data root never rewrites it.
+    fn relative_state_path(&self, target: &Path) -> Result<String> {
+        target
+            .strip_prefix(&self.state_root)
+            .ok()
+            .map(|relative| relative.display().to_string())
+            .ok_or_else(|| {
+                CoreError::invalid(format!(
+                    "plugin path {} is not under the state root {}",
+                    target.display(),
+                    self.state_root.display()
+                ))
+            })
+    }
+
+    /// Record what the install wrote. `source_spec` is where the bytes came from
+    /// (the downloaded directory, the archive, the registry URL); `path` alone
+    /// would not let an uninstall explain or re-fetch an asset.
+    fn record_install(
+        &self,
+        id: &str,
+        version: Option<&str>,
+        destination: &Path,
+        source_kind: InstallSourceKind,
+        source_spec: &Path,
+    ) -> Result<()> {
+        let path = self.relative_state_path(destination)?;
+        let data_dir = self.data_root.join(sanitize_file_name(id));
+        let sidecars = if data_dir.exists() {
+            vec![self.relative_state_path(&data_dir)?]
+        } else {
+            Vec::new()
+        };
+        self.ledger.record(LedgerEntry {
+            id: id.to_string(),
+            kind: InstallKind::Plugin,
+            version: version.map(|value| value.to_string()),
+            source: InstallSource {
+                kind: source_kind,
+                spec: source_spec.display().to_string(),
+            },
+            path,
+            sidecars,
+            sha256: None,
+            installed_at: String::new(),
+            last_updated: None,
+        })?;
+        Ok(())
     }
 
     /// The marketplace feature is gone, but a build that predates its removal
@@ -788,6 +891,13 @@ impl PluginService {
         let mut state = self.load_state()?;
         state.enabled.insert(id.clone(), true);
         self.save_state(&state)?;
+        self.record_install(
+            &id,
+            Some("0.1.0"),
+            &target,
+            InstallSourceKind::Authored,
+            &target,
+        )?;
         self.invalidate_plugin_caches();
         self.read(&id)?
             .ok_or_else(|| CoreError::other(format!("created plugin {id} was not discoverable")))
@@ -828,6 +938,13 @@ impl PluginService {
                 content_hash.as_deref(),
             );
             self.save_state(&state)?;
+            self.record_install(
+                &id,
+                manifest.version.as_deref(),
+                &destination,
+                InstallSourceKind::Dir,
+                source,
+            )?;
             self.invalidate_plugin_caches();
             if should_refresh_health {
                 if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
@@ -867,6 +984,13 @@ impl PluginService {
             },
         );
         self.save_state(&state)?;
+        self.record_install(
+            &id,
+            manifest.version.as_deref(),
+            &destination,
+            InstallSourceKind::Dir,
+            source,
+        )?;
         self.invalidate_plugin_caches();
         if should_refresh_health {
             if let Err(error) = self.refresh_plugin_runtime_and_health_after_install(&id) {
@@ -885,7 +1009,8 @@ impl PluginService {
             let mut state = self.load_state()?;
             let changed =
                 state.enabled.remove(id).is_some() || state.installed.remove(id).is_some();
-            if changed {
+            let forget = self.ledger.forget(InstallKind::Plugin, id)?;
+            if changed || forget.is_some() {
                 self.save_state(&state)?;
                 self.invalidate_plugin_caches();
             }
@@ -899,21 +1024,41 @@ impl PluginService {
                     plugin.origin.as_str()
                 )));
             }
-            PluginOrigin::Personal => safe_remove_dir(&self.roots.personal, &plugin.root)?,
+            PluginOrigin::Personal => {}
+        }
+
+        // Uninstall deletes what the install recorded, in reverse: the data
+        // directory the plugin grew first, then the directory that was copied in.
+        // Both stay behind the same whitelist roots `safe_remove_dir` enforces.
+        let entry = self
+            .ledger
+            .entries()?
+            .into_iter()
+            .find(|entry| entry.kind == InstallKind::Plugin && entry.id == id)
+            .ok_or_else(|| {
+                CoreError::other(format!(
+                    "no install record for plugin {id}; start the host once so assets \
+                     predating the ledger are recorded, then uninstall"
+                ))
+            })?;
+        if remove_data {
+            for sidecar in entry.sidecar_paths(&self.state_root)? {
+                if sidecar.exists() {
+                    safe_remove_dir(&self.data_root, &sidecar)?;
+                }
+            }
+        }
+        let installed = entry.absolute_path(&self.state_root)?;
+        if installed.exists() {
+            safe_remove_dir(&self.roots.personal, &installed)?;
         }
 
         let mut state = self.load_state()?;
         state.enabled.remove(id);
         state.installed.remove(id);
         self.save_state(&state)?;
+        self.ledger.forget(InstallKind::Plugin, id)?;
         self.invalidate_plugin_caches();
-
-        if remove_data {
-            let data_dir = self.data_root.join(sanitize_file_name(id));
-            if data_dir.exists() {
-                safe_remove_dir(&self.data_root, &data_dir)?;
-            }
-        }
         Ok(true)
     }
 
@@ -4955,7 +5100,9 @@ mod tests {
             session: Vec::new(),
             builtin: tmp.join("builtin"),
             workspace: None,
-            personal: tmp.join("personal"),
+            // Personal plugins live under the state root (`<root>/files/plugins`
+            // in production): the install ledger records paths relative to it.
+            personal: tmp.join("app-data").join("personal"),
         }
     }
 
@@ -6381,6 +6528,70 @@ rl.on('line', (line) => {
 
         std::env::remove_var("DEEPAGENT_TEST_PLUGIN_ALPHA_API_KEY");
         std::env::remove_var("DEEPAGENT_TEST_PLUGIN_BETA_API_KEY");
+    }
+
+    #[test]
+    fn an_install_is_recorded_and_an_uninstall_deletes_exactly_the_record() {
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        let source = tmp.path().join("source");
+        write_plugin(&source, "demo");
+        let state_root = tmp.path().join("app-data");
+        let svc = PluginService::new(roots.clone(), state_root.clone());
+
+        let installed = svc.install_from_dir(&source).unwrap();
+        assert_eq!(installed.id, "demo@personal");
+
+        let ledger = LedgerStore::at(&state_root, state_root.join(LEDGER_FILE));
+        let entries = ledger.entries().unwrap();
+        assert_eq!(entries.len(), 1, "the install left one record");
+        assert_eq!(entries[0].id, "demo@personal");
+        assert_eq!(entries[0].kind, InstallKind::Plugin);
+        assert_eq!(entries[0].source.kind, InstallSourceKind::Dir);
+        assert!(
+            entries[0].source.spec.contains("source"),
+            "the origin is recorded: {}",
+            entries[0].source.spec
+        );
+        assert_eq!(
+            Path::new(&entries[0].path),
+            Path::new("personal").join("demo"),
+            "paths are stored relative to the state root"
+        );
+
+        assert!(roots.personal.join("demo").is_dir());
+        assert!(svc.uninstall("demo@personal", false).unwrap());
+        assert!(!roots.personal.join("demo").exists());
+        assert!(
+            ledger.entries().unwrap().is_empty(),
+            "the record goes away with the asset"
+        );
+    }
+
+    #[test]
+    fn uninstall_refuses_a_plugin_it_cannot_locate_in_the_ledger() {
+        // The directory is on disk but its record was removed by hand. Guessing a
+        // path would delete the wrong thing, so uninstall stops and touches nothing.
+        let tmp = tempfile::tempdir().unwrap();
+        let roots = roots(tmp.path());
+        write_plugin(&roots.personal.join("ghost"), "ghost");
+        let state_root = tmp.path().join("app-data");
+        let svc = PluginService::new(roots.clone(), state_root.clone());
+        let ledger = LedgerStore::at(&state_root, state_root.join(LEDGER_FILE));
+        assert_eq!(ledger.entries().unwrap().len(), 1, "adoption recorded it");
+        ledger
+            .forget(InstallKind::Plugin, "ghost@personal")
+            .unwrap();
+
+        let error = svc.uninstall("ghost@personal", false).unwrap_err();
+        assert!(
+            error.to_string().contains("no install record"),
+            "refusal must name the cause: {error}"
+        );
+        assert!(
+            roots.personal.join("ghost").is_dir(),
+            "a refused uninstall deletes nothing"
+        );
     }
 
     #[test]
