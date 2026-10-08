@@ -209,6 +209,11 @@ impl LedgerStore {
         &self.path
     }
 
+    /// The data root every recorded path is relative to.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn read(&self) -> Result<InstallLedger> {
         if !self.path.is_file() {
             return Ok(InstallLedger::default());

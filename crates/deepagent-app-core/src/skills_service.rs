@@ -16,6 +16,7 @@ use deepagent_skills::{
 use serde::{Deserialize, Serialize};
 
 use crate::chat_service::ChatService;
+use crate::install_ledger::LedgerStore;
 
 /// A serializable view of a skill's Level-1 metadata for the UI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,6 +62,9 @@ pub struct SkillsService {
     manager: SkillManager,
     roots: Option<SkillsRoots>,
     plugin_roots: Vec<PathBuf>,
+    /// Set by a host that keeps an install ledger (`with_state_root`). Recording
+    /// is a side effect of installing, never a second deletion algorithm.
+    ledger: Option<LedgerStore>,
 }
 
 impl SkillsService {
@@ -73,7 +77,17 @@ impl SkillsService {
             manager,
             roots: None,
             plugin_roots: Vec::new(),
+            ledger: None,
         })
+    }
+
+    /// Record installs against the ledger anchored at `state_root` (the data root).
+    pub fn with_state_root(mut self, state_root: &Path) -> Self {
+        self.ledger = Some(LedgerStore::at(
+            state_root,
+            state_root.join(crate::install_ledger::LEDGER_FILE),
+        ));
+        self
     }
 
     /// Build over the four-tier marketplace storage layout
@@ -91,6 +105,7 @@ impl SkillsService {
             manager: Self::build_v2_manager(&roots, &[])?,
             roots: Some(roots),
             plugin_roots: Vec::new(),
+            ledger: None,
         })
     }
 
@@ -147,6 +162,7 @@ impl SkillsService {
             manager,
             roots: None,
             plugin_roots: Vec::new(),
+            ledger: None,
         }
     }
 
@@ -206,7 +222,9 @@ impl SkillsService {
 
     /// Install a skill from an already-downloaded/unpacked source directory.
     pub fn install_from_dir(&mut self, source: impl AsRef<std::path::Path>) -> Result<SkillDto> {
-        let meta = self.manager.install(source)?;
+        let source = source.as_ref().to_path_buf();
+        let meta = self.manager.install(&source)?;
+        self.record_install(&meta, &source);
         let triggers = self
             .manager
             .registry()
@@ -214,6 +232,36 @@ impl SkillsService {
             .map(|s| s.triggers.clone())
             .unwrap_or_default();
         Ok(SkillDto::from_meta(&meta, triggers))
+    }
+
+    /// Note where the skill came from, so an uninstall can report and remove it
+    /// without guessing. Losing this record must not undo a good install.
+    fn record_install(&self, meta: &deepagent_skills::SkillMeta, source: &Path) {
+        let (Some(ledger), Some(roots)) = (self.ledger.as_ref(), self.roots.as_ref()) else {
+            return;
+        };
+        let installed = roots.marketplace.join(&meta.id);
+        let Some(relative) = installed.strip_prefix(ledger.root()).ok() else {
+            tracing::warn!(path = %installed.display(), "installed skill is outside the data root");
+            return;
+        };
+        let result = ledger.record(crate::install_ledger::LedgerEntry {
+            id: meta.id.clone(),
+            kind: crate::install_ledger::InstallKind::Skill,
+            version: meta.version.clone(),
+            source: crate::install_ledger::InstallSource {
+                kind: crate::install_ledger::InstallSourceKind::Dir,
+                spec: source.display().to_string(),
+            },
+            path: relative.display().to_string(),
+            sidecars: Vec::new(),
+            sha256: None,
+            installed_at: String::new(),
+            last_updated: None,
+        });
+        if let Err(error) = result {
+            tracing::warn!(skill_id = %meta.id, %error, "could not record the installed skill");
+        }
     }
 
     /// Install a skill from a temporary directory (typically returned by
@@ -250,7 +298,15 @@ impl SkillsService {
                 return Err(CoreError::invalid("built-in skill cannot be uninstalled"));
             }
         }
-        self.manager.uninstall(id)
+        let removed = self.manager.uninstall(id)?;
+        if removed {
+            if let Some(ledger) = self.ledger.as_ref() {
+                if let Err(error) = ledger.forget(crate::install_ledger::InstallKind::Skill, id) {
+                    tracing::warn!(skill_id = %id, %error, "removed the skill but not its install record");
+                }
+            }
+        }
+        Ok(removed)
     }
 
     /// The always-resident catalog blurb (Level-1) for the system prompt.
@@ -839,6 +895,61 @@ mod tests {
         // Total: 6 distinct ids (only-builtin, only-installed, only-user,
         // only-workspace, shared, override-me).
         assert_eq!(list.len(), 6);
+    }
+
+    #[test]
+    fn an_installed_skill_records_its_origin_and_clears_it_on_uninstall() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state_root = tmp.path().to_path_buf();
+        let paths = crate::data_root::UserPaths::under(&state_root);
+        paths.ensure_dirs().unwrap();
+        let source = tmp.path().join("download").join("pdf-editor");
+        write(
+            &source.join("SKILL.md"),
+            "---\nname: PDF Editor\ndescription: \"rotate a pdf\"\nversion: 1.0.0\n---\nRotate",
+        );
+
+        let mut svc = SkillsService::open_v2(SkillsRoots {
+            builtin: tmp.path().join("builtin"),
+            user: paths.skills_user.clone(),
+            marketplace: paths.skills_marketplace.clone(),
+            workspace: None,
+        })
+        .unwrap()
+        .with_state_root(&state_root);
+
+        let installed = svc.install_from_dir(&source).unwrap();
+        assert_eq!(installed.id, "pdf-editor");
+
+        let ledger = LedgerStore::at(
+            &state_root,
+            state_root.join(crate::install_ledger::LEDGER_FILE),
+        );
+        let entries = ledger.entries().unwrap();
+        assert_eq!(entries.len(), 1, "the install left one record");
+        assert_eq!(entries[0].kind, crate::install_ledger::InstallKind::Skill);
+        assert!(
+            entries[0].source.spec.contains("download"),
+            "the origin is where the bytes came from: {}",
+            entries[0].source.spec
+        );
+        assert_eq!(
+            Path::new(&entries[0].path),
+            paths
+                .skills_marketplace
+                .strip_prefix(&state_root)
+                .unwrap()
+                .join("pdf-editor"),
+            "paths stay relative to the data root"
+        );
+        assert!(paths.skills_marketplace.join("pdf-editor").is_dir());
+
+        assert!(svc.uninstall("pdf-editor").unwrap());
+        assert!(
+            ledger.entries().unwrap().is_empty(),
+            "the record goes away with the skill"
+        );
+        assert!(!paths.skills_marketplace.join("pdf-editor").exists());
     }
 
     #[test]

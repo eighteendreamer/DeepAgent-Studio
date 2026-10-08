@@ -91,6 +91,10 @@ fn walk_recursive(
         .filter_map(|e| e.ok())
         .map(|e| e.path())
         .filter(|p| p.is_dir())
+        // Dot-prefixed directories are managed state (`.staging` holds an install
+        // that has not been swapped in yet); scanning them would surface a
+        // half-copied skill as if the user installed it.
+        .filter(|p| !is_managed_dir(p))
         .filter(|p| !is_excluded(p, excluded))
         .collect();
     children.sort();
@@ -122,6 +126,14 @@ fn is_excluded(p: &Path, excluded: &[PathBuf]) -> bool {
     }
     let canonical = std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     excluded.iter().any(|e| e == &canonical || e == p)
+}
+
+/// True for a dot-prefixed child directory, which holds managed state rather
+/// than a skill the user installed.
+fn is_managed_dir(p: &Path) -> bool {
+    p.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.starts_with('.'))
 }
 
 /// Load a single skill directory. Returns `Ok(None)` if it has no `SKILL.md`.
@@ -254,6 +266,26 @@ mod tests {
         registry.register(s.clone());
         let activated = registry.body_for_invoke("pdf-editor", None).unwrap();
         assert_eq!(activated.resources, vec!["scripts/rotate.py"]);
+    }
+
+    #[test]
+    fn hidden_state_directories_are_not_discovered_as_skills() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        write(
+            &root.join("real").join(SKILL_FILE),
+            "---\nname: Real\ndescription: \"do the thing\"\n---\nBody",
+        );
+        // An install in flight lives under `.staging` until it is swapped in; it
+        // must not surface as a skill the user installed.
+        write(
+            &root.join(".staging").join("half").join(SKILL_FILE),
+            "---\nname: Half\ndescription: \"do the thing\"\n---\nBody",
+        );
+
+        let found = discover(root, SkillOrigin::Installed).unwrap();
+        let ids: Vec<String> = found.iter().map(|skill| skill.meta.id.clone()).collect();
+        assert_eq!(ids, vec!["real".to_string()]);
     }
 
     #[test]

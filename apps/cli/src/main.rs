@@ -341,7 +341,8 @@ fn build_asset_services(
             marketplace: paths.skills_marketplace.clone(),
             workspace: Some(workspace.join(".deepagent").join("skills")),
         })
-        .map_err(|error| format!("open skills service: {error}"))?,
+        .map_err(|error| format!("open skills service: {error}"))?
+        .with_state_root(&paths.root),
     ));
     let plugins = Arc::new(PluginService::new(
         PluginRoots {

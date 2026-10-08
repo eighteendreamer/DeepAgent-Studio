@@ -6052,7 +6052,8 @@ pub fn run() {
                 marketplace: marketplace_dir.clone(),
                 workspace: workspace_skills.clone(),
             })
-            .map_err(|e| format!("failed to open skills service: {e}"))?;
+            .map_err(|e| format!("failed to open skills service: {e}"))?
+            .with_state_root(&paths.root);
             // Wrap in Arc<Mutex> so the chat service shares the same handle.
             // The Tauri command layer locks this mutex on every skill command
             // (list / install / uninstall / reload) and the chat service

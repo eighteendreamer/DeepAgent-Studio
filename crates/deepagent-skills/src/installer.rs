@@ -43,6 +43,10 @@ impl SkillInstaller {
     /// `SKILL.md`). The skill is copied to `<root>/<id>/` and loaded with
     /// [`SkillOrigin::Installed`]. An existing install with the same id is
     /// replaced.
+    ///
+    /// The copy lands in a staging directory first and is only swapped in once it
+    /// loads. Deleting the previous version up front meant a failed copy left the
+    /// user with neither the old nor the new skill.
     pub fn install_dir(&self, source: impl AsRef<Path>) -> Result<Skill> {
         let source = source.as_ref();
         let skill_md = source.join(SKILL_FILE);
@@ -58,20 +62,81 @@ impl SkillInstaller {
             .ok_or_else(|| CoreError::invalid("source is not a valid skill"))?;
         let id = parsed.meta.id.clone();
 
-        let dest = self.root.join(&id);
-        if dest.exists() {
-            std::fs::remove_dir_all(&dest)
-                .map_err(|e| CoreError::other(format!("replace existing skill {id}: {e}")))?;
+        let staging = self.staging_dir(&id)?;
+        let result = (|| -> Result<()> {
+            copy_tree(source, &staging)?;
+            loader::load_skill_dir(&staging, SkillOrigin::Installed)?
+                .ok_or_else(|| CoreError::invalid("staged skill failed to load"))?;
+            self.swap_in(&staging, &id)
+        })();
+        if let Err(error) = result {
+            let _ = std::fs::remove_dir_all(&staging);
+            return Err(error);
         }
-        std::fs::create_dir_all(&dest)
-            .map_err(|e| CoreError::other(format!("create skill dir {id}: {e}")))?;
-        copy_tree(source, &dest)?;
 
         // Reload from the installed location so resource paths are correct.
-        let mut installed = loader::load_skill_dir(&dest, SkillOrigin::Installed)?
+        let installed_root = self.root.join(&id);
+        let mut installed = loader::load_skill_dir(&installed_root, SkillOrigin::Installed)?
             .ok_or_else(|| CoreError::other("installed skill failed to reload"))?;
-        installed.resources = loader::scan_resources(&dest);
+        installed.resources = loader::scan_resources(&installed_root);
         Ok(installed)
+    }
+
+    /// A private staging directory inside the managed root, so the swap is a same
+    /// volume rename.
+    fn staging_dir(&self, id: &str) -> Result<PathBuf> {
+        let base = self.root.join(".staging");
+        std::fs::create_dir_all(&base).map_err(|e| {
+            CoreError::other(format!("create staging root {}: {e}", base.display()))
+        })?;
+        let unique = base.join(format!(
+            "{id}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&unique).map_err(|e| {
+            CoreError::other(format!("create staging dir {}: {e}", unique.display()))
+        })?;
+        Ok(unique)
+    }
+
+    /// Move the staged directory onto `<root>/<id>`, dropping the previous
+    /// version only once the new one is in place.
+    fn swap_in(&self, staging: &Path, id: &str) -> Result<()> {
+        let destination = self.root.join(id);
+        if destination.exists() {
+            let retired = staging.with_file_name(format!("replaced-{id}"));
+            std::fs::rename(&destination, &retired).map_err(|e| {
+                CoreError::other(format!(
+                    "set aside existing skill {id} at {}: {e}",
+                    retired.display()
+                ))
+            })?;
+            std::fs::rename(staging, &destination).map_err(|error| {
+                // Put the old version back rather than leave the root without it.
+                let _ = std::fs::rename(&retired, &destination);
+                CoreError::other(format!(
+                    "commit staged skill {id} to {}: {error}",
+                    destination.display()
+                ))
+            })?;
+            let _ = std::fs::remove_dir_all(&retired);
+            return Ok(());
+        }
+        std::fs::rename(staging, &destination).map_err(|e| {
+            CoreError::other(format!(
+                "move staged skill {id} to {}: {e}",
+                destination.display()
+            ))
+        })
+    }
+
+    /// The directory an installed skill occupies.
+    pub fn installed_path(&self, id: &str) -> PathBuf {
+        self.root.join(id)
     }
 
     /// Uninstall a skill by id. Returns `true` if it existed and was removed.
@@ -201,6 +266,57 @@ mod tests {
         assert!(reinstalled.body.contains("V2"));
         // Only one installed skill remains.
         assert_eq!(installer.installed().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn install_leaves_no_staging_behind() {
+        let tmp = tempfile::tempdir().unwrap();
+        let installer = SkillInstaller::new(tmp.path().join("installed"));
+        let src = tmp.path().join("pdf-editor");
+        make_source(&src);
+        installer.install_dir(&src).unwrap();
+        installer.install_dir(&src).unwrap();
+
+        assert_eq!(installer.installed().unwrap().len(), 1);
+        let staging = installer.root().join(".staging");
+        let leftovers = std::fs::read_dir(&staging)
+            .map(|read| read.flatten().count())
+            .unwrap_or(0);
+        assert_eq!(leftovers, 0, "a committed install empties its staging area");
+    }
+
+    #[test]
+    fn a_failed_source_never_touches_the_installed_copy() {
+        let tmp = tempfile::tempdir().unwrap();
+        let installer = SkillInstaller::new(tmp.path().join("installed"));
+        let src = tmp.path().join("pdf-editor");
+        make_source(&src);
+        installer.install_dir(&src).unwrap();
+        let before = std::fs::read_to_string(
+            installer
+                .root()
+                .join("pdf-editor")
+                .join("scripts")
+                .join("rotate.py"),
+        )
+        .unwrap();
+
+        // No SKILL.md: the install is rejected before anything is staged, and the
+        // version already on disk stays readable.
+        let empty = tmp.path().join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        assert!(installer.install_dir(&empty).is_err());
+        assert_eq!(
+            std::fs::read_to_string(
+                installer
+                    .root()
+                    .join("pdf-editor")
+                    .join("scripts")
+                    .join("rotate.py")
+            )
+            .unwrap(),
+            before
+        );
     }
 
     #[test]
