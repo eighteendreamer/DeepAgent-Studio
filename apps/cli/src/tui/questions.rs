@@ -124,20 +124,36 @@ fn resolve_choice(question: &Question, value: &str) -> Option<String> {
     if !all_numbers {
         return Some(value.to_string());
     }
-    let mut picked: Vec<String> = Vec::new();
-    for token in tokens {
-        let Ok(number) = token.parse::<usize>() else {
-            return None;
-        };
-        if !(1..=question.options.len()).contains(&number) {
-            return None;
-        }
-        let label = question.options[number - 1].label.clone();
-        if !picked.contains(&label) {
-            picked.push(label);
+    let numbers = tokens
+        .iter()
+        .map(|token| token.parse::<usize>())
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    if numbers
+        .iter()
+        .any(|number| *number < 1 || *number > question.options.len())
+    {
+        return None;
+    }
+    Some(join_selection(
+        numbers
+            .iter()
+            .map(|number| question.options[number - 1].label.clone())
+            .collect(),
+    ))
+}
+
+/// Join selected labels the way the kernel expects a multi-select answer:
+/// de-duplicated, in pick order, comma separated. Both chat surfaces use this so
+/// a keystroke answer and a typed answer cannot drift apart.
+pub fn join_selection(labels: Vec<String>) -> String {
+    let mut unique: Vec<String> = Vec::new();
+    for label in labels {
+        if !unique.contains(&label) {
+            unique.push(label);
         }
     }
-    Some(picked.join(", "))
+    unique.join(", ")
 }
 
 #[cfg(test)]

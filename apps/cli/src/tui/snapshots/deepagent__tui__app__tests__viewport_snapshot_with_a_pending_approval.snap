@@ -1,0 +1,14 @@
+---
+source: apps/cli/src/tui/app.rs
+expression: terminal.backend().to_string()
+---
+"> 改一下渲染                                                            " Hidden by multi-width symbols: [(3, " "), (5, " "), (7, " "), (9, " "), (11, " ")]
+"DeepAgent  C:\Users\32734\AppData\…  model: deepseek-chat  sandbox: dire"
+"* edit_file: src/tui/app.rs — running                                   "
+"allow run_command [high]: destructive command                           "
+"y allow once | a allow this session | n/d/Esc deny                      "
+"                                                                        "
+"                                                                        "
+"                                                                        "
+"                                                                        "
+"                                                                        "

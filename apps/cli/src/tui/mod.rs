@@ -7,8 +7,10 @@
 mod app;
 mod event;
 mod history;
+mod host;
 mod linemode;
 mod questions;
+mod state;
 mod terminal;
 
 use std::io::IsTerminal;

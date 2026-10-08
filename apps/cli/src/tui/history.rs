@@ -36,19 +36,62 @@ pub fn truncate(text: &str, width: usize) -> String {
 /// codex-rs uses to keep streaming from flickering.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HistoryCell {
-    UserPrompt { text: String },
+    UserPrompt {
+        text: String,
+    },
+    Assistant {
+        text: String,
+    },
+    Reasoning {
+        text: String,
+    },
+    Tool {
+        /// Correlation id, so the completion row can update the row it started.
+        call_id: String,
+        name: String,
+        summary: String,
+        outcome: String,
+    },
+    Notice {
+        text: String,
+    },
+    Failure {
+        text: String,
+    },
 }
 
 impl HistoryCell {
     fn marker(&self) -> (&'static str, Color) {
         match self {
             Self::UserPrompt { .. } => ("> ", Color::Yellow),
+            Self::Assistant { .. } => ("  ", Color::White),
+            Self::Reasoning { .. } => ("  ", Color::DarkGray),
+            Self::Tool { .. } => ("* ", Color::Cyan),
+            Self::Notice { .. } => ("* ", Color::DarkGray),
+            Self::Failure { .. } => ("! ", Color::Red),
         }
     }
 
-    fn body(&self) -> &str {
+    fn body(&self) -> String {
         match self {
-            Self::UserPrompt { text } => text,
+            Self::UserPrompt { text }
+            | Self::Assistant { text }
+            | Self::Reasoning { text }
+            | Self::Notice { text }
+            | Self::Failure { text } => text.clone(),
+            Self::Tool {
+                name,
+                summary,
+                outcome,
+                ..
+            } => {
+                let summary = if summary.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {summary}")
+                };
+                format!("{name}{summary} — {outcome}")
+            }
         }
     }
 
@@ -145,12 +188,17 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{display_width, truncate, wrap, HistoryCell};
+    use ratatui::text::Line;
 
-    fn rendered(line: &ratatui::text::Line<'static>) -> String {
+    fn rendered(line: &Line<'static>) -> String {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    fn lines_of(cell: &HistoryCell, width: u16) -> Vec<String> {
+        cell.to_lines(width).iter().map(rendered).collect()
     }
 
     #[test]
@@ -162,15 +210,15 @@ mod tests {
 
     #[test]
     fn wraps_on_word_boundaries() {
-        let wrapped = wrap("hello brave world", 6);
-        let wrapped: Vec<&str> = wrapped.iter().map(String::as_str).collect();
-        assert_eq!(wrapped, vec!["hello", "brave", "world"]);
+        assert_eq!(
+            wrap("hello brave world", 6),
+            vec!["hello", "brave", "world"]
+        );
     }
 
     #[test]
     fn hard_splits_words_longer_than_the_line() {
-        let wrapped = wrap("abcdefghij", 4);
-        assert_eq!(wrapped, vec!["abcd", "efgh", "ij"]);
+        assert_eq!(wrap("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
     }
 
     #[test]
@@ -182,38 +230,7 @@ mod tests {
 
     #[test]
     fn keeps_blank_lines() {
-        let wrapped = wrap("a\n\nb", 10);
-        assert_eq!(wrapped, vec!["a", "", "b"]);
-    }
-
-    #[test]
-    fn empty_body_still_occupies_one_line() {
-        let lines = HistoryCell::UserPrompt {
-            text: String::new(),
-        }
-        .to_lines(20);
-        assert_eq!(lines.len(), 1);
-        assert_eq!(rendered(&lines[0]), "> ");
-    }
-
-    #[test]
-    fn marker_appears_once_and_lines_stay_inside_width() {
-        let cell = HistoryCell::UserPrompt {
-            text: "请解释一下这个渲染管线".to_string(),
-        };
-        let lines = cell.to_lines(8);
-        assert_eq!(lines.len(), 4);
-        assert_eq!(rendered(&lines[0]), "> 请解释");
-        assert_eq!(rendered(&lines[1]), "  一下这");
-        assert_eq!(rendered(&lines[2]), "  个渲染");
-        assert_eq!(rendered(&lines[3]), "  管线");
-        for line in &lines {
-            assert!(
-                display_width(&rendered(line)) <= 8,
-                "line overflows the viewport: {}",
-                rendered(line)
-            );
-        }
+        assert_eq!(wrap("a\n\nb", 10), vec!["a", "", "b"]);
     }
 
     #[test]
@@ -223,6 +240,90 @@ mod tests {
         assert_eq!(display_width(&truncate("workflow", 6)), 6);
         assert_eq!(truncate("终端代理界面", 5), "终端…");
         assert_eq!(truncate("abc", 0), "");
-        assert_eq!(display_width(&truncate("终端代理界面", 5)), 5);
+    }
+
+    #[test]
+    fn prompt_marker_appears_once_and_lines_stay_inside_width() {
+        let lines = lines_of(
+            &HistoryCell::UserPrompt {
+                text: "请解释一下这个渲染管线".to_string(),
+            },
+            8,
+        );
+        assert_eq!(lines, vec!["> 请解释", "  一下这", "  个渲染", "  管线"]);
+    }
+
+    #[test]
+    fn empty_body_still_occupies_one_line() {
+        let lines = lines_of(
+            &HistoryCell::Notice {
+                text: String::new(),
+            },
+            20,
+        );
+        assert_eq!(lines, vec!["* "]);
+    }
+
+    #[test]
+    fn assistant_and_reasoning_are_flat_text_without_a_box() {
+        assert_eq!(
+            lines_of(
+                &HistoryCell::Assistant {
+                    text: "先看内核再改".to_string()
+                },
+                20
+            ),
+            vec!["  先看内核再改"]
+        );
+        assert_eq!(
+            lines_of(
+                &HistoryCell::Reasoning {
+                    text: "step by step".to_string()
+                },
+                20
+            ),
+            vec!["  step by step"]
+        );
+    }
+
+    #[test]
+    fn tool_cell_names_the_tool_with_summary_and_outcome() {
+        let lines = lines_of(
+            &HistoryCell::Tool {
+                call_id: "c1".to_string(),
+                name: "read_file".to_string(),
+                summary: "src/main.rs".to_string(),
+                outcome: "done in 12ms".to_string(),
+            },
+            40,
+        );
+        assert_eq!(lines, vec!["* read_file: src/main.rs — done in 12ms"]);
+    }
+
+    #[test]
+    fn tool_cell_without_summary_still_reads_cleanly() {
+        let lines = lines_of(
+            &HistoryCell::Tool {
+                call_id: "c2".to_string(),
+                name: "bash".to_string(),
+                summary: String::new(),
+                outcome: "failed".to_string(),
+            },
+            40,
+        );
+        assert_eq!(lines, vec!["* bash — failed"]);
+    }
+
+    #[test]
+    fn failure_uses_the_warning_marker() {
+        assert_eq!(
+            lines_of(
+                &HistoryCell::Failure {
+                    text: "run failed".to_string()
+                },
+                40
+            ),
+            vec!["! run failed"]
+        );
     }
 }
