@@ -437,13 +437,20 @@ impl Tool for WriteFileTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
+        let file_exists = tokio::fs::metadata(&resolved).await.is_ok();
         // Read-before-edit invariant: only when the file already exists.
         // Brand-new files don't require a prior read.
-        if tokio::fs::metadata(&resolved).await.is_ok()
-            && !cache_has_been_read(&self.cache, &resolved)
-        {
+        if file_exists && !cache_has_been_read(&self.cache, &resolved) {
             return Ok(ToolOutput::failure(READ_BEFORE_EDIT_MSG));
         }
+        let old_lines = if file_exists {
+            tokio::fs::read_to_string(&resolved)
+                .await
+                .map(|c| c.lines().count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
         if let Some(parent) = resolved.parent() {
             if let Err(e) = tokio::fs::create_dir_all(parent).await {
                 return Ok(ToolOutput::failure(format!("mkdir failed: {e}")));
@@ -452,9 +459,12 @@ impl Tool for WriteFileTool {
         match atomic_write(&resolved, content.as_bytes()).await {
             Ok(()) => {
                 cache_invalidate(&self.cache, &resolved);
+                let new_lines = content.lines().count();
                 Ok(ToolOutput::success(serde_json::json!({
                     "path": self.root.relativize(&resolved),
                     "bytes": content.len(),
+                    "lines_added": new_lines.saturating_sub(old_lines),
+                    "lines_removed": old_lines.saturating_sub(new_lines),
                 })))
             }
             Err(e) => Ok(ToolOutput::failure(format!("write failed: {e}"))),
@@ -556,9 +566,13 @@ impl Tool for EditFileTool {
         match atomic_write(&resolved, updated.as_bytes()).await {
             Ok(()) => {
                 cache_invalidate(&self.cache, &resolved);
+                let old_lines = content.lines().count();
+                let new_lines = updated.lines().count();
                 Ok(ToolOutput::success(serde_json::json!({
                     "path": self.root.relativize(&resolved),
                     "replacements": if replace_all { count } else { 1 },
+                    "lines_added": new_lines.saturating_sub(old_lines),
+                    "lines_removed": old_lines.saturating_sub(new_lines),
                 })))
             }
             Err(e) => Ok(ToolOutput::failure(format!("write failed: {e}"))),
@@ -648,6 +662,8 @@ impl Tool for MultiEditTool {
             Err(e) => return Ok(ToolOutput::failure(format!("read failed: {e}"))),
         };
 
+        let initial_lines = content.lines().count();
+
         // Apply edits in order against an in-memory copy; only persist if every
         // edit succeeds (atomic).
         let mut total_replacements = 0usize;
@@ -687,10 +703,13 @@ impl Tool for MultiEditTool {
         match atomic_write(&resolved, content.as_bytes()).await {
             Ok(()) => {
                 cache_invalidate(&self.cache, &resolved);
+                let final_lines = content.lines().count();
                 Ok(ToolOutput::success(serde_json::json!({
                     "path": self.root.relativize(&resolved),
                     "edits_applied": edits.len(),
                     "replacements": total_replacements,
+                    "lines_added": final_lines.saturating_sub(initial_lines),
+                    "lines_removed": initial_lines.saturating_sub(final_lines),
                 })))
             }
             Err(e) => Ok(ToolOutput::failure(format!("write failed: {e}"))),

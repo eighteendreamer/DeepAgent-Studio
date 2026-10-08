@@ -1,72 +1,172 @@
 import { useState } from "react";
-import { ChevronDown, ChevronRight, FileEdit, RotateCcw } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronUp,
+  File,
+  FileCode,
+  FileJson,
+  FileText,
+  FileType,
+  Palette,
+  type LucideIcon,
+} from "lucide-react";
 import type { EditedFile } from "../../types";
 import { HoverInfo } from "../ui/HoverInfo";
+
+const COLLAPSED_ROWS = 4;
+
+function getFileIcon(path: string): LucideIcon {
+  const ext = path.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "ts":
+    case "tsx":
+    case "js":
+    case "jsx":
+    case "rs":
+    case "py":
+    case "go":
+    case "java":
+    case "c":
+    case "cpp":
+    case "h":
+    case "rb":
+    case "swift":
+    case "kt":
+    case "lua":
+    case "sh":
+    case "bash":
+    case "zsh":
+    case "fish":
+    case "ps1":
+    case "toml":
+    case "yaml":
+    case "yml":
+      return FileCode;
+    case "json":
+    case "jsonc":
+    case "json5":
+      return FileJson;
+    case "md":
+    case "mdx":
+    case "txt":
+    case "log":
+    case "csv":
+      return FileText;
+    case "css":
+    case "scss":
+    case "less":
+    case "sass":
+      return Palette;
+    case "html":
+    case "htm":
+    case "xml":
+    case "svg":
+      return FileType;
+    default:
+      return File;
+  }
+}
+
+function basename(path: string): string {
+  const parts = path.replace(/\\/g, "/").split("/");
+  return parts[parts.length - 1] || path;
+}
+
+function Counts({
+  added,
+  deleted,
+}: {
+  added: number;
+  deleted: number;
+}) {
+  return (
+    <span className="inline-flex gap-1.5 font-mono text-[11px]">
+      <span className="text-green-600 dark:text-green-400">+{added}</span>
+      <span className="text-red-600 dark:text-red-400">-{deleted}</span>
+    </span>
+  );
+}
 
 export function EditedFilesList({ files }: { files: EditedFile[] }) {
   const [expanded, setExpanded] = useState(false);
 
   if (!files || files.length === 0) return null;
 
-  const visibleFiles = expanded ? files : files.slice(0, 3);
-  const hiddenCount = files.length - 3;
+  const totalAdded = files.reduce((s, f) => s + f.lines_added, 0);
+  const totalDeleted = files.reduce((s, f) => s + f.lines_removed, 0);
+  const singleFile = files.length === 1 ? files[0] : undefined;
+  const foldable = files.length > COLLAPSED_ROWS;
+  const rows = foldable && !expanded ? files.slice(0, COLLAPSED_ROWS) : files;
 
-  const handleRevert = (filePath: string) => {
-    // TODO: 实现 git revert 功能
-    console.log("Revert file:", filePath);
-  };
+  const SingleIcon = singleFile ? getFileIcon(singleFile.path) : FileCode;
 
   return (
-    <div className="mt-3 rounded-md border border-border-primary bg-bg-secondary/30 px-3 py-2">
-      <div className="mb-2 flex items-center gap-1.5 text-[11.5px] font-medium text-text-secondary">
-        <FileEdit size={12} />
-        <span>已编辑 {files.length} 个文件</span>
+    <div className="mt-3 flex flex-col overflow-hidden rounded-lg border border-[var(--theme-border)]">
+      {/* Header */}
+      <div className="flex h-[52px] items-center gap-2.5 bg-[var(--theme-elevated,var(--theme-bg))] px-3">
+        <span className="grid h-9 w-9 flex-none place-items-center rounded-[8px] border border-[var(--theme-border)] bg-[var(--theme-bg)]">
+          <SingleIcon size={18} className="text-[var(--theme-text-secondary)]" />
+        </span>
+        <span className="flex min-w-0 flex-1 flex-col">
+          <span className="truncate text-[13px] font-medium leading-5 text-[var(--theme-fg)]">
+            {singleFile
+              ? `已编辑 ${basename(singleFile.path)}`
+              : `已编辑 ${files.length} 个文件`}
+          </span>
+          <span className="text-[10px] leading-4 text-[var(--theme-text-secondary)]">
+            <Counts added={totalAdded} deleted={totalDeleted} />
+          </span>
+        </span>
       </div>
-      <div className="space-y-1">
-        {visibleFiles.map((file, idx) => (
-          <div
-            key={idx}
-            className="group flex items-center justify-between gap-2 rounded px-2 py-1.5 text-[11px] hover:bg-bg-secondary"
-          >
-            <div className="flex min-w-0 flex-1 items-center gap-2">
-              <HoverInfo content={file.path}>
-                <span className="truncate font-mono text-text-base">
-                  {file.path}
-                </span>
-              </HoverInfo>
-              <span className="shrink-0 text-[10px] text-text-tertiary">
-                +{file.lines_added} -{file.lines_removed}
-              </span>
-            </div>
-            <HoverInfo content="撤销修改">
-              <button
-                type="button"
-                onClick={() => handleRevert(file.path)}
-                className="invisible flex h-6 shrink-0 items-center gap-1 rounded px-2 text-[10px] text-text-tertiary transition hover:bg-bg-tertiary hover:text-text-base group-hover:visible"
-              >
-                <RotateCcw size={10} />
-                <span>撤销</span>
-              </button>
-            </HoverInfo>
-          </div>
-        ))}
-      </div>
-      {hiddenCount > 0 && (
+
+      {/* File list (multi-file only) */}
+      {!singleFile && (
+        <ul className="m-0 list-none border-t border-[var(--theme-border)] p-0">
+          {rows.map((file) => {
+            const Icon = getFileIcon(file.path);
+            return (
+              <li key={file.path}>
+                <HoverInfo content={file.path}>
+                  <div className="flex w-full items-center justify-between gap-2.5 px-3 py-[7px] text-left text-[12px] leading-[18px] text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-hover,rgba(0,0,0,0.04))]">
+                    <span className="flex min-w-0 flex-1 items-center gap-2">
+                      <Icon
+                        size={14}
+                        className="flex-none opacity-60"
+                      />
+                      <span className="truncate font-mono">
+                        {file.path}
+                      </span>
+                    </span>
+                    <span className="flex-none">
+                      <Counts
+                        added={file.lines_added}
+                        deleted={file.lines_removed}
+                      />
+                    </span>
+                  </div>
+                </HoverInfo>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {/* Fold toggle */}
+      {foldable && (
         <button
           type="button"
-          onClick={() => setExpanded(!expanded)}
-          className="mt-2 flex w-full items-center justify-center gap-1 rounded py-1 text-[11px] text-text-tertiary transition hover:bg-bg-secondary hover:text-text-base"
+          onClick={() => setExpanded((v) => !v)}
+          className="flex w-full items-center justify-start gap-1 border-t border-[var(--theme-border)] px-3 py-2.5 text-left text-[12px] leading-[18px] text-[var(--theme-text-secondary)] transition-colors hover:bg-[var(--theme-hover,rgba(0,0,0,0.04))]"
         >
+          <span>
+            {expanded
+              ? "收起"
+              : `显示全部 ${files.length} 个文件`}
+          </span>
           {expanded ? (
-            <>
-              <ChevronDown size={12} />
-              <span>收起</span>
-            </>
+            <ChevronUp size={14} />
           ) : (
-            <>
-              <ChevronRight size={12} />
-              <span>显示更多 ({hiddenCount} 个文件)</span>
-            </>
+            <ChevronDown size={14} />
           )}
         </button>
       )}

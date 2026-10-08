@@ -502,7 +502,11 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
     /// turn can report files edited by earlier turns.
     pub fn with_edited_files(
         mut self,
-        edited_files: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>>,
+        edited_files: std::sync::Arc<
+            std::sync::Mutex<
+                std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>,
+            >,
+        >,
     ) -> Self {
         self.edited_files = edited_files;
         self
@@ -569,10 +573,17 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
     }
 
     /// Record a file edit when a file-editing tool completes successfully.
-    fn record_file_edit(&self, tool_name: &str, file_path: &str, tool_kind: Option<&str>) {
-        // Only track file write/edit operations
-        let is_file_edit = matches!(tool_kind, Some("file_write") | Some("file_edit"))
-            || matches!(tool_name, "Write" | "Edit" | "NotebookEdit");
+    /// Line counts come from the tool output (computed inside each file tool).
+    fn record_file_edit(
+        &self,
+        tool_name: &str,
+        file_path: &str,
+        tool_kind: Option<&str>,
+        lines_added: usize,
+        lines_removed: usize,
+    ) {
+        let is_file_edit = matches!(tool_kind, Some("file_change"))
+            || matches!(tool_name, "write_file" | "edit_file" | "multi_edit");
 
         if !is_file_edit || file_path.is_empty() {
             return;
@@ -583,10 +594,14 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
         files
             .entry(path.clone())
+            .and_modify(|e| {
+                e.lines_added += lines_added;
+                e.lines_removed += lines_removed;
+            })
             .or_insert_with(|| crate::events::EditedFile {
                 path: file_path.to_string(),
-                lines_added: 0,
-                lines_removed: 0,
+                lines_added,
+                lines_removed,
             });
     }
 
@@ -1573,6 +1588,14 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 Ok(out) => (out.ok, out.value.clone()),
                 Err(e) => (false, serde_json::json!({ "error": e.to_string() })),
             };
+            let la = value
+                .get("lines_added")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+            let lr = value
+                .get("lines_removed")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
             let metadata = tool_ui_metadata(&name, &arguments, Some(&value));
             self.emit(RuntimeEvent::ToolCompleted {
                 name: name.clone(),
@@ -1589,7 +1612,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             // Record file edit if this was a successful file write/edit operation
             if ok {
                 if let Some(ref path) = metadata.file_path {
-                    self.record_file_edit(&name, path, metadata.tool_kind.as_deref());
+                    self.record_file_edit(&name, path, metadata.tool_kind.as_deref(), la, lr);
                 }
             }
 
@@ -2259,7 +2282,23 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 // Record file edit if this was a successful file write/edit operation
                 if out.ok {
                     if let Some(ref path) = metadata.file_path {
-                        self.record_file_edit(&tool_name, path, metadata.tool_kind.as_deref());
+                        let la = out
+                            .value
+                            .get("lines_added")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        let lr = out
+                            .value
+                            .get("lines_removed")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as usize;
+                        self.record_file_edit(
+                            &tool_name,
+                            path,
+                            metadata.tool_kind.as_deref(),
+                            la,
+                            lr,
+                        );
                     }
                 }
 
