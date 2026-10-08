@@ -46,6 +46,7 @@ pub mod mcp_service;
 pub mod memory_consolidation;
 pub mod memory_migration;
 pub mod memory_service;
+pub mod migrate;
 pub mod mobile_service;
 pub mod model_runtime;
 pub mod nested_instructions;

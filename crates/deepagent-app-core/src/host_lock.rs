@@ -19,11 +19,11 @@ use std::sync::{Arc, Mutex, OnceLock};
 use deepagent_core::error::{CoreError, Result};
 use fs2::FileExt;
 
-const LOCK_FILE: &str = "host.lock";
+pub const LOCK_FILE: &str = "host.lock";
 /// The holder's name lives in its own file: on Windows an exclusive byte-range
 /// lock also blocks other processes from *reading* the locked file, so the lock
 /// handle and the diagnostic text cannot share one file.
-const OWNER_FILE: &str = "host.owner";
+pub const OWNER_FILE: &str = "host.owner";
 
 /// Which role this process holds for a data root.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -18,6 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepagent_app_core::{
+    data_root, migrate,
     mobile_service::{AppMobileService, ArtifactRefDto, BackendStatusDto, DeviceDto},
     AppService, ArchiveProjectResultDto, ArchiveService, ArchivedConversationDto, AttachmentDto,
     AttachmentIngestDto, AttachmentService, BalanceDto, BudgetConfig, ChatService, CommandDto,
@@ -598,7 +599,7 @@ fn copy_legacy_runtime_dir(legacy_dir: &Path, target_runtime_dir: &Path) -> std:
     if !legacy_dir.exists() {
         return Ok(());
     }
-    if same_path(legacy_dir, target_runtime_dir) {
+    if migrate::same_path(legacy_dir, target_runtime_dir) {
         return Ok(());
     }
 
@@ -618,77 +619,50 @@ fn preferred_runtime_resource_dir(app: &tauri::AppHandle) -> PathBuf {
         .unwrap_or_else(|| std::env::temp_dir().join("deepagent-runtimes"))
 }
 
-fn preferred_plugin_install_dir(app: &tauri::AppHandle) -> PathBuf {
-    let resource_dir = app.path().resource_dir().ok();
-    let current_exe = std::env::current_exe().ok();
-    preferred_plugin_install_dir_from(resource_dir.as_deref(), current_exe.as_deref())
-}
-
-fn preferred_plugin_install_dir_from(
-    resource_dir: Option<&Path>,
-    current_exe: Option<&Path>,
-) -> PathBuf {
-    if let Some(resource_dir) = resource_dir {
-        if let Some(parent) = resource_dir.parent() {
-            return parent.join("plugins");
-        }
-    }
-    if let Some(current_exe) = current_exe {
-        if let Some(parent) = current_exe.parent() {
-            return parent.join("plugins");
-        }
-    }
-    std::env::temp_dir().join("deepagent-plugins")
-}
-
-fn preferred_runtime_log_path() -> Result<PathBuf, String> {
-    std::env::current_exe()
+/// Resolve the user-directory data root and move in whatever an older build left
+/// behind. Migration is a *move*: once an entry lands in `~/.deepagent` its
+/// legacy location is pruned, so there is exactly one root to read and one root
+/// for the uninstaller to clean. A refusal (live host, corrupt database, or a
+/// colliding file) stops startup instead of half-moving.
+fn prepare_data_root(app: &tauri::AppHandle) -> Result<data_root::UserPaths, String> {
+    let paths = data_root::UserPaths::resolve().map_err(|error| error.to_string())?;
+    let install_dir = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("runtime-logs.db")))
-        .ok_or_else(|| "failed to resolve install directory for runtime logs".to_string())
-}
-
-fn preferred_data_root() -> Result<PathBuf, String> {
-    std::env::current_exe()
-        .ok()
-        .and_then(|exe| exe.parent().map(|dir| dir.join("data")))
-        .ok_or_else(|| "failed to resolve install directory for app data".to_string())
-}
-
-/// One-time migration from the legacy `%APPDATA%` root: only when the install
-/// data root has no database yet and the legacy root has one. Missing entries
-/// are copied, existing ones are left untouched; on failure the half-copied
-/// database is removed so the next launch retries the whole migration.
-fn migrate_legacy_data_root(legacy_dir: &Path, data_root: &Path) -> Result<(), String> {
-    if same_path(legacy_dir, data_root) {
-        return Ok(());
+        .and_then(|exe| exe.parent().map(Path::to_path_buf));
+    let app_data_dir = app.path().app_data_dir().ok();
+    let reports = migrate::migrate_data_roots(
+        &paths,
+        install_dir.as_deref(),
+        app_data_dir.as_deref(),
+        false,
+    )
+    .map_err(|error| format!("migrate legacy data roots: {error}"))?;
+    for report in reports.iter().filter(|report| !report.skipped) {
+        eprintln!(
+            "[data-root] moved {} entries from '{}' to '{}'",
+            report.moved.len(),
+            report.source.display(),
+            report.target.display()
+        );
     }
-    if !legacy_dir.join("deepagent.db").exists() || data_root.join("deepagent.db").exists() {
-        return Ok(());
+    let mut folded = migrate::normalize_user_root_layout(&paths)
+        .map_err(|error| format!("fold the legacy user-root layout: {error}"))?;
+    if let Some(install_dir) = install_dir.as_deref() {
+        let from_install = migrate::fold_install_dir_layout(install_dir, &paths)
+            .map_err(|error| format!("fold assets from '{}': {error}", install_dir.display()))?;
+        folded.extend(from_install);
     }
-    if let Err(error) = copy_dir_missing(legacy_dir, data_root) {
-        let partial_db = data_root.join("deepagent.db");
-        if partial_db.exists() {
-            std::fs::remove_file(&partial_db).map_err(|e| {
-                format!(
-                    "migration failed with '{error}' and partial database '{}' could not be removed: {e}",
-                    partial_db.display()
-                )
-            })?;
-        }
-        return Err(format!(
-            "failed to migrate legacy app data from '{}': {error}",
-            legacy_dir.display()
-        ));
+    if !folded.is_empty() {
+        eprintln!(
+            "[data-root] folded {} entry/entries into the current layout under '{}'",
+            folded.len(),
+            paths.root.display()
+        );
     }
-    Ok(())
-}
-
-fn same_path(a: &Path, b: &Path) -> bool {
-    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
-        (Ok(a), Ok(b)) => a == b,
-        _ => a == b,
-    }
+    paths
+        .ensure_dirs()
+        .map_err(|error| format!("create data root: {error}"))?;
+    Ok(paths)
 }
 
 fn copy_dir_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
@@ -1886,7 +1860,7 @@ async fn run_doctor(state: State<'_, AppState>) -> Result<Vec<DiagnosticResult>,
         .map_err(|e| e.to_string())?
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::path::PathBuf::from(state.workspace.info().path));
-    let data_dir = preferred_data_root().map_err(|e| e.to_string())?;
+    let data_dir = data_root::resolve_data_root().map_err(|e| e.to_string())?;
     Ok(deepagent_app_core::run_diagnostics(&settings, &db, &root, &data_dir).await)
 }
 
@@ -6036,55 +6010,25 @@ pub fn run() {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.create_overlay_titlebar();
             }
-            let dir = preferred_data_root()?;
-            let legacy_data_dir = app.path().app_data_dir().ok();
-            std::fs::create_dir_all(&dir).map_err(|error| {
-                format!(
-                    "failed to create app data directory '{}': {error}",
-                    dir.display()
-                )
-            })?;
-            if let Some(legacy_dir) = legacy_data_dir.as_deref() {
-                migrate_legacy_data_root(legacy_dir, &dir)?;
-            }
-            let files_dir = dir.join("files");
-            let attachments_dir = files_dir.join("attachments");
-            let recordings_dir = files_dir.join("recordings");
-            let plugins_dir = files_dir.join("plugins");
-            let skills_dir = files_dir.join("skills");
-            let runtimes_dir = files_dir.join("runtimes");
-            let cache_dir = files_dir.join("cache");
-            let vision_cache_dir = cache_dir.join("vision");
-            let mcp_dir = files_dir.join("mcp");
-            let tool_results_dir = files_dir.join("tool-results");
-            let artifacts_dir = files_dir.join("artifacts");
-            for managed_dir in [
-                &attachments_dir,
-                &recordings_dir,
-                &plugins_dir,
-                &skills_dir,
-                &runtimes_dir,
-                &cache_dir,
-                &vision_cache_dir,
-                &mcp_dir,
-                &tool_results_dir,
-                &artifacts_dir,
-            ] {
-                std::fs::create_dir_all(managed_dir).map_err(|error| {
-                    format!(
-                        "failed to create managed directory '{}': {error}",
-                        managed_dir.display()
-                    )
-                })?;
-            }
-            let db_path = dir.join("deepagent.db");
-            let runtime_log_path = preferred_runtime_log_path()?;
+            let paths = prepare_data_root(app.handle())?;
+            let attachments_dir = paths.attachments.clone();
+            let recordings_dir = paths.recordings.clone();
+            let plugins_dir = paths.plugins.clone();
+            let skills_dir = paths.skills.clone();
+            let runtimes_dir = paths.runtimes.clone();
+            let cache_dir = paths.cache.clone();
+            let vision_cache_dir = paths.vision_cache.clone();
+            let mcp_dir = paths.mcp.clone();
+            let tool_results_dir = paths.tool_results.clone();
+            let artifacts_dir = paths.artifacts.clone();
+            let db_path = paths.database.clone();
+            let runtime_log_path = paths.runtime_logs.clone();
 
-            let service =
-                AppService::open(&db_path).map_err(|e| format!("failed to open database: {e}"))?;
+            let service = AppService::open(&db_path)
+                .map_err(|e| format!("failed to open database: {e}"))?;
             let runtime_logs = RuntimeLogStore::open(&runtime_log_path).map_err(|error| {
                 format!(
-                    "failed to open runtime log database at install path '{}': {error}",
+                    "failed to open runtime log database at the data root '{}': {error}",
                     runtime_log_path.display()
                 )
             })?;
@@ -6098,19 +6042,12 @@ pub fn run() {
                         "fallback": false,
                     })),
             );
-            if let Some(legacy_dir) = legacy_data_dir.as_deref() {
-                if !same_path(legacy_dir, &dir) && dir.join("deepagent.db").exists() {
-                    let _ = runtime_logs.append(
-                        NewRuntimeLogEntry::info("diagnostic", "app_data_root")
-                            .with_source("desktop-tauri")
-                            .with_message(format!(
-                                "app data root resolved to '{}' (legacy app data dir: '{}')",
-                                dir.display(),
-                                legacy_dir.display()
-                            )),
-                    );
-                }
-            }
+            let _ = runtime_logs.append(
+                NewRuntimeLogEntry::info("diagnostic", "data_root")
+                    .with_source("desktop-tauri")
+                    .with_message(format!("data root resolved to '{}'", paths.root.display()))
+                    .with_data(serde_json::json!({ "root": paths.root })),
+            );
             if service
                 .shared_database()
                 .take_migration_notice("responses_history_reset_completed")
@@ -6243,19 +6180,11 @@ pub fn run() {
                 }
             };
 
-            let legacy_user_root = app
-                .path()
-                .home_dir()
-                .unwrap_or_else(|_| std::env::temp_dir())
-                .join(".deepagent")
-                .join("skills");
-            let user_root = skills_dir.join("user");
-            let marketplace_dir = user_root.join("marketplace");
-            // Make sure both dirs exist so first-run on a clean machine doesn't
-            // error when the loader tries to canonicalize them.
-            let _ = std::fs::create_dir_all(&user_root);
-            let _ = std::fs::create_dir_all(&marketplace_dir);
-            let _ = copy_dir_missing(&legacy_user_root, &user_root);
+            // The user and marketplace roots live in the data root; the legacy
+            // `~/.deepagent/skills` layout was folded into them by
+            // `prepare_data_root`, so nothing is copied here anymore.
+            let user_root = paths.skills_user.clone();
+            let marketplace_dir = paths.skills_marketplace.clone();
 
             let workspace_skills = std::env::current_dir()
                 .ok()
@@ -6303,19 +6232,15 @@ pub fn run() {
                     std::env::temp_dir().join("deepagent-builtin-plugins-missing")
                 }
             };
-            let legacy_plugin_install_dir = preferred_plugin_install_dir(app.handle());
-            let plugin_install_dir = plugins_dir.clone();
-            let _ = std::fs::create_dir_all(&plugin_install_dir);
-            let _ = copy_dir_missing(&legacy_plugin_install_dir, &plugin_install_dir);
             let session_plugins = session_plugin_roots_from_env();
             let plugins = Arc::new(PluginService::new(
                 PluginRoots {
                     session: session_plugins.clone(),
                     builtin: resource_plugins_dir.clone(),
                     workspace: Some(workspace_root.join(".deepagent").join("plugins")),
-                    personal: plugin_install_dir.clone(),
+                    personal: plugins_dir.clone(),
                 },
-                &dir,
+                &paths.root,
             ));
             // Pre-warm built-in plugin `runtime.zip` payloads off the startup
             // path: the largest (`wedecode`, ~30 MB compressed / hundreds of MB
@@ -6328,19 +6253,19 @@ pub fn run() {
                     session: session_plugins.clone(),
                     builtin: resource_plugins_dir.clone(),
                     workspace: Some(workspace_root.join(".deepagent").join("plugins")),
-                    personal: plugin_install_dir.clone(),
+                    personal: plugins_dir.clone(),
                 };
-                let plugin_data_root = dir.join("plugins").join("data");
+                let plugin_data_root = paths.plugin_data.clone();
                 std::thread::spawn(move || {
                     deepagent_app_core::prepare_runtime_payloads(&warm_roots, &plugin_data_root);
                 });
             }
 
             // Knowledge base: a project-local vault (`<project>/.deepagent/knowledge`)
-            // plus a user-global vault (under the app data dir), loaded into one
+            // plus a user-global vault (under the data root), loaded into one
             // index. Drives passive injection + the knowledge_search/write tools.
             let knowledge = Arc::new(
-                KnowledgeService::open(&workspace_root, &dir)
+                KnowledgeService::open(&workspace_root, &paths.root)
                     .map_err(|e| format!("failed to open knowledge service: {e}"))?,
             );
 
@@ -6358,23 +6283,16 @@ pub fn run() {
                 Arc::new(deepagent_app_core::recording_service::CpalRecorder::new()),
             ));
 
-            // Managed runtimes are user-downloaded assets. New installs target
-            // the managed application-data runtime directory; older app-data/exe
-            // locations remain read-only lookup roots until the user migrates.
+            // Managed runtimes are user-downloaded assets and live in the data
+            // root; `prepare_data_root` already folded the older `<root>/runtimes`
+            // and `<install>/runtimes` copies into it. Only the bundled
+            // `resources/runtimes` remains a read-only fallback, since it ships
+            // with the installer and is removed with it.
             let legacy_resource_runtime_dir = preferred_runtime_resource_dir(app.handle());
-            let runtime_resource_dir = runtimes_dir.clone();
-            let app_runtime_dir = dir.join("runtimes");
-            let _ = copy_legacy_runtime_dir(&legacy_resource_runtime_dir, &runtime_resource_dir);
-            let _ = copy_legacy_runtime_dir(&app_runtime_dir, &runtime_resource_dir);
-            let mut legacy_runtime_roots = vec![app_runtime_dir.clone(), legacy_resource_runtime_dir];
-            if let Ok(exe) = std::env::current_exe() {
-                if let Some(exe_dir) = exe.parent() {
-                    let legacy_runtime_dir = exe_dir.join("runtimes");
-                    legacy_runtime_roots.push(legacy_runtime_dir);
-                }
-            }
+            let _ = copy_legacy_runtime_dir(&legacy_resource_runtime_dir, &runtimes_dir);
+            let legacy_runtime_roots = vec![legacy_resource_runtime_dir];
             let runtime = Arc::new(RuntimeService::with_lookup_roots(
-                std::slice::from_ref(&runtime_resource_dir),
+                std::slice::from_ref(&runtimes_dir),
                 &legacy_runtime_roots,
                 Arc::new(deepagent_app_core::runtime_service::ReqwestDownloader::default()),
             ));
@@ -6490,9 +6408,12 @@ pub fn run() {
             // JSON file is imported lazily on first access.
             let ssh_store = Arc::new(SqliteSshConfigStore {
                 secrets: sqlite_secrets.clone(),
-                legacy_path: dir.join("deepagent-ssh").join("connections.json"),
+                legacy_path: paths.ssh.join("connections.json"),
             });
-            let ssh = Arc::new(SshService::with_config_store(dir.clone(), ssh_store));
+            let ssh = Arc::new(SshService::with_config_store(
+                paths.root.clone(),
+                ssh_store,
+            ));
             {
                 let ssh_monitor = ssh.clone();
                 tauri::async_runtime::spawn(async move {
@@ -7172,34 +7093,6 @@ mod tests {
             source
         );
         assert_eq!(locate_builtin_plugins_dir(tmp.path(), None), copied);
-    }
-
-    #[test]
-    fn preferred_plugin_install_dir_prefers_resource_dir_parent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let resource_dir = tmp.path().join("DeepAgent").join("resources");
-        let current_exe = tmp.path().join("fallback").join("deepagent.exe");
-
-        let picked = preferred_plugin_install_dir_from(Some(&resource_dir), Some(&current_exe));
-
-        assert_eq!(picked, tmp.path().join("DeepAgent").join("plugins"));
-    }
-
-    #[test]
-    fn preferred_plugin_install_dir_falls_back_to_exe_parent() {
-        let tmp = tempfile::tempdir().unwrap();
-        let current_exe = tmp
-            .path()
-            .join("DeepAgent")
-            .join("bin")
-            .join("deepagent.exe");
-
-        let picked = preferred_plugin_install_dir_from(None, Some(&current_exe));
-
-        assert_eq!(
-            picked,
-            tmp.path().join("DeepAgent").join("bin").join("plugins")
-        );
     }
 
     #[test]
