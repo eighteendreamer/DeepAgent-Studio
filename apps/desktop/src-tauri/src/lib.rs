@@ -2283,10 +2283,11 @@ fn resolve_approval(
     state: State<'_, AppState>,
     call_id: String,
     approved: bool,
+    scope: Option<String>,
 ) -> Result<bool, String> {
     state
         .chat
-        .resolve_approval(&call_id, approved, "desktop_user")
+        .resolve_approval_scoped(&call_id, approved, scope.as_deref(), "desktop_user")
         .map_err(|error| error.to_string())
 }
 

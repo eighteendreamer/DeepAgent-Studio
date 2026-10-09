@@ -896,6 +896,7 @@
     "pending": "还有 {{count}} 个待审批",
     "requestTool": "请求执行工具：",
     "approve": "批准",
+    "approveSession": "本会话内允许该工具",
     "reject": "拒绝"
   },
   "askUserDialog": {

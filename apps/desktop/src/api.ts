@@ -1424,13 +1424,18 @@ export async function runChat(
   return mockChatStream(prompt, onEvent);
 }
 
-/** Resolve a pending tool approval (true = approved). */
+/**
+ * Resolve a pending tool approval (true = approved). `scope` widens the answer
+ * beyond this call and must be one of `request.scopes`; omitting it approves the
+ * single call.
+ */
 export async function resolveApproval(
   callId: string,
-  approved: boolean
+  approved: boolean,
+  scope?: string
 ): Promise<boolean> {
   const invoke = getInvoke();
-  if (invoke) return invoke<boolean>("resolve_approval", { callId, approved });
+  if (invoke) return invoke<boolean>("resolve_approval", { callId, approved, scope });
   return true;
 }
 

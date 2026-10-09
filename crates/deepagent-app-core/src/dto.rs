@@ -586,6 +586,10 @@ pub struct ApprovalRequestDto {
     pub arguments: String,
     /// Why approval is required.
     pub reason: String,
+    /// Scopes the answer may widen to (`single_call` / `tool_session` /
+    /// `command_prefix`), so a client draws exactly what the gate will honor.
+    #[serde(default)]
+    pub scopes: Vec<String>,
 }
 
 /// A question set `ask_user_question` put in front of the user. The run stays

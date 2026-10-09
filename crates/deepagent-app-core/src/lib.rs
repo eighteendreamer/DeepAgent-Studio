@@ -111,7 +111,9 @@ pub mod vision_service;
 pub(crate) mod wasm_tools;
 pub mod workspace_service;
 
-pub use approval_bridge::{ChannelApprovalGate, PendingApprovals, PolicyGate};
+pub use approval_bridge::{
+    ApprovalScope, ChannelApprovalGate, PendingApprovals, PolicyGate, SessionGrants,
+};
 pub use archive_service::ArchiveService;
 pub use attachment_service::AttachmentService;
 pub use chat_service::{ChatService, HarnessRunOverrides};

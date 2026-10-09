@@ -181,15 +181,18 @@ impl RunCoordinator {
         decided_by: &str,
     ) -> Result<bool> {
         let controls = RunControlStore::new(&self.db);
-        if let Some(record) = controls.get_approval(approval_id)? {
-            if requested_scope.is_some_and(|scope| scope != record.scope) {
-                return Err(deepagent_core::error::CoreError::invalid(
-                    "approval scope does not match the persisted request",
-                ));
-            }
-            if let Err(error) =
-                controls.respond_approval(approval_id, approved, decided_by, now_millis())
-            {
+        let record = controls.get_approval(approval_id)?;
+        // The gate owns which scopes an answer may widen to, because the gate is
+        // also what honors the resulting grant.
+        self.pending.check_scope(approval_id, requested_scope)?;
+        if record.is_some() {
+            if let Err(error) = controls.respond_approval_scoped(
+                approval_id,
+                approved,
+                decided_by,
+                requested_scope,
+                now_millis(),
+            ) {
                 if controls.get_approval(approval_id)?.is_some_and(|record| {
                     record.state == deepagent_persistence::run_control::ApprovalState::Expired
                 }) {
@@ -197,10 +200,13 @@ impl RunCoordinator {
                 }
                 return Err(error);
             }
-            let _ = self.pending.resolve_approved(approval_id, approved);
-            return Ok(true);
         }
-        Ok(self.pending.resolve_approved(approval_id, approved))
+        // Only after the durable answer lands does a grant take effect, so an
+        // expired or rejected answer can never leave a standing permission behind.
+        let awakened = self
+            .pending
+            .resolve_scoped(approval_id, approved, requested_scope)?;
+        Ok(awakened || record.is_some())
     }
 
     pub fn record_continuation(
@@ -418,6 +424,16 @@ mod tests {
         assert!(coordinator
             .resolve_approval_scoped("approval-1", true, Some("all_future_calls"), "test")
             .is_err());
+        // A grant scope needs a live request in this process; the durable row
+        // alone must not be enough to hand one out.
+        assert!(coordinator
+            .resolve_approval_scoped("approval-1", true, Some("tool_session"), "test")
+            .is_err());
+        assert_eq!(
+            controls.get_approval("approval-1").unwrap().unwrap().scope,
+            "single_call",
+            "a refused answer never rewrites the persisted scope"
+        );
         assert_eq!(
             controls.get_approval("approval-1").unwrap().unwrap().state,
             deepagent_persistence::run_control::ApprovalState::Pending
@@ -430,6 +446,17 @@ mod tests {
                 .state,
             RunActionState::Blocked
         );
+
+        // The plain answer still works and records the applied scope.
+        assert!(coordinator
+            .resolve_approval_scoped("approval-1", true, Some("single_call"), "test")
+            .unwrap());
+        let resolved = controls.get_approval("approval-1").unwrap().unwrap();
+        assert_eq!(
+            resolved.state,
+            deepagent_persistence::run_control::ApprovalState::Approved
+        );
+        assert_eq!(resolved.scope, "single_call");
     }
 
     #[test]

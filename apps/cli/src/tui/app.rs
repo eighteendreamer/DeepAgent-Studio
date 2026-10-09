@@ -138,17 +138,43 @@ fn render(frame: &mut Frame<'_>, app: &App) {
     frame.set_cursor_position((cursor, composer_area.y));
 }
 
-/// A keyboard approval decision.
+/// How far a keyboard answer reaches.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApprovalAnswer {
+    pub approved: bool,
+    /// `None` answers only this call; otherwise the scope string the gate offered.
+    pub scope: Option<&'static str>,
+}
+
+impl ApprovalAnswer {
+    const ONCE: Self = Self {
+        approved: true,
+        scope: None,
+    };
+    const DENY: Self = Self {
+        approved: false,
+        scope: None,
+    };
+}
+
+/// A keyboard approval decision, honoring only the scopes this request offered.
 ///
-/// Only a single-call decision is offered today: the persisted request always
-/// carries scope `single_call` (`deepagent-runtime/src/tool_pipeline.rs:198`) and
-/// `RunCoordinator::resolve_approval_scoped` rejects any other scope
-/// (`run_coordinator.rs:185`), so a "allow this session" key would only error.
-/// Session grants belong in the `Bash(prefix:*)` allow-list seam instead.
-pub fn approval_decision(key: KeyCode) -> Option<bool> {
+/// The offered list comes from the request DTO, which the gate builds with the
+/// same `ApprovalScope::offered` rule it validates answers against — so a key
+/// here can never promise something the server would reject.
+pub fn approval_decision(key: KeyCode, offered: &[String]) -> Option<ApprovalAnswer> {
+    let offers = |scope: &str| offered.iter().any(|candidate| candidate == scope);
     match key {
-        KeyCode::Char('y') => Some(true),
-        KeyCode::Char('n') | KeyCode::Char('d') | KeyCode::Esc => Some(false),
+        KeyCode::Char('y') => Some(ApprovalAnswer::ONCE),
+        KeyCode::Char('a') if offers("tool_session") => Some(ApprovalAnswer {
+            approved: true,
+            scope: Some("tool_session"),
+        }),
+        KeyCode::Char('p') if offers("command_prefix") => Some(ApprovalAnswer {
+            approved: true,
+            scope: Some("command_prefix"),
+        }),
+        KeyCode::Char('n') | KeyCode::Char('d') | KeyCode::Esc => Some(ApprovalAnswer::DENY),
         _ => None,
     }
 }
@@ -422,9 +448,13 @@ impl App {
             }
             return false;
         }
-        if self.approval.is_some() {
-            if let Some(approved) = approval_decision(key.code) {
-                self.resolve_approval(approved);
+        let offered = self
+            .approval
+            .as_ref()
+            .map(|prompt| prompt.request.scopes.clone());
+        if let Some(offered) = offered {
+            if let Some(answer) = approval_decision(key.code, &offered) {
+                self.resolve_approval(answer);
             }
             return false;
         }
@@ -572,15 +602,24 @@ impl App {
             .or_else(|| self.state.thread_id.clone())
     }
 
-    fn resolve_approval(&mut self, approved: bool) {
+    fn resolve_approval(&mut self, answer: ApprovalAnswer) {
         let Some(prompt) = self.approval.take() else {
             return;
         };
-        let outcome = self
-            .chat
-            .resolve_approval(&prompt.request.call_id, approved, "cli_tui_user");
+        let outcome = self.chat.resolve_approval_scoped(
+            &prompt.request.call_id,
+            answer.approved,
+            answer.scope,
+            "cli_tui_user",
+        );
         match outcome {
-            Ok(true) => self.set_notice(if approved { "approved" } else { "denied" }),
+            Ok(true) => self.set_notice(match (answer.approved, answer.scope) {
+                (true, Some("tool_session")) => {
+                    "approved, and this tool is allowed for the rest of this session".to_string()
+                }
+                (true, Some(_)) | (true, None) => "approved".to_string(),
+                (false, _) => "denied".to_string(),
+            }),
             Ok(false) => self.set_notice("approval was no longer pending"),
             Err(error) => self.set_notice(format!("could not record the approval: {error}")),
         }
@@ -724,13 +763,32 @@ impl App {
 
     fn hint_line(&self) -> Line<'static> {
         let text = if self.question.is_some() {
-            "1-9 choose | Enter confirm multi | s decline"
-        } else if self.approval.is_some() {
-            "y allow once | n/d/Esc deny | Ctrl-C stops the run"
+            "1-9 choose | Enter confirm multi | s decline".to_string()
+        } else if let Some(prompt) = self.approval.as_ref() {
+            // Only keys that will actually be honored are advertised.
+            let mut keys = String::from("y allow once");
+            if prompt
+                .request
+                .scopes
+                .iter()
+                .any(|scope| scope == "tool_session")
+            {
+                keys.push_str(" | a allow for this session");
+            }
+            if prompt
+                .request
+                .scopes
+                .iter()
+                .any(|scope| scope == "command_prefix")
+            {
+                keys.push_str(" | p trust this command");
+            }
+            keys.push_str(" | n/d/Esc deny");
+            keys
         } else if self.state.busy {
-            "Enter queue a follow-up | Esc interrupt the run"
+            "Enter queue a follow-up | Esc interrupt the run".to_string()
         } else {
-            "Enter send | Ctrl-C / Ctrl-D quit"
+            "Enter send | Ctrl-C / Ctrl-D quit".to_string()
         };
         Line::from(Span::styled(text, Style::default().fg(Color::DarkGray)))
     }
@@ -770,6 +828,7 @@ mod tests {
             risk: "high".to_string(),
             arguments: "{\"command\":\"rm -rf target\"}".to_string(),
             reason: "destructive command".to_string(),
+            scopes: vec!["single_call".to_string(), "tool_session".to_string()],
         }
     }
 
@@ -802,15 +861,79 @@ mod tests {
     }
 
     #[test]
-    fn approval_keys_map_to_single_call_decisions_only() {
-        assert_eq!(approval_decision(KeyCode::Char('y')), Some(true));
+    fn approval_keys_honor_only_the_scopes_the_request_offered() {
+        let once = || ApprovalAnswer {
+            approved: true,
+            scope: None,
+        };
+        let deny = || ApprovalAnswer {
+            approved: false,
+            scope: None,
+        };
+        let offered = |scopes: &[&str]| {
+            scopes
+                .iter()
+                .map(|scope| scope.to_string())
+                .collect::<Vec<String>>()
+        };
+
+        assert_eq!(
+            approval_decision(KeyCode::Char('y'), &offered(&["single_call"])),
+            Some(once())
+        );
         for key in [KeyCode::Char('n'), KeyCode::Char('d'), KeyCode::Esc] {
-            assert_eq!(approval_decision(key), Some(false));
+            assert_eq!(approval_decision(key, &offered(&[])), Some(deny()));
         }
-        // `a` is deliberately not a decision: the backend rejects any scope other
-        // than the persisted `single_call`, so the key would only error.
-        assert_eq!(approval_decision(KeyCode::Char('a')), None);
-        assert_eq!(approval_decision(KeyCode::Char('z')), None);
+        // `a` answers only when the request advertised the session scope.
+        assert_eq!(
+            approval_decision(
+                KeyCode::Char('a'),
+                &offered(&["single_call", "tool_session"])
+            ),
+            Some(ApprovalAnswer {
+                approved: true,
+                scope: Some("tool_session")
+            })
+        );
+        assert_eq!(
+            approval_decision(KeyCode::Char('a'), &offered(&["single_call"])),
+            None
+        );
+        assert_eq!(
+            approval_decision(KeyCode::Char('p'), &offered(&["command_prefix"])),
+            Some(ApprovalAnswer {
+                approved: true,
+                scope: Some("command_prefix")
+            })
+        );
+        assert_eq!(
+            approval_decision(KeyCode::Char('z'), &offered(&["tool_session"])),
+            None
+        );
+    }
+
+    #[test]
+    fn the_approval_hint_advertises_only_the_live_keys() {
+        let mut app = test_app();
+        let prompt = |scopes: Vec<String>| ApprovalPrompt {
+            request: ApprovalRequestDto {
+                call_id: "c1".into(),
+                tool: "bash".into(),
+                risk: "high".into(),
+                arguments: "{}".into(),
+                reason: "destructive command".into(),
+                scopes,
+            },
+        };
+        app.approval = Some(prompt(vec!["single_call".to_string()]));
+        let plain = joined(&app.hint_line());
+        assert!(plain.contains("y allow once"), "{plain}");
+        assert!(!plain.contains(" a allow"), "{plain}");
+        app.approval = Some(prompt(vec![
+            "single_call".to_string(),
+            "tool_session".to_string(),
+        ]));
+        assert!(joined(&app.hint_line()).contains("a allow for this session"));
     }
 
     #[test]

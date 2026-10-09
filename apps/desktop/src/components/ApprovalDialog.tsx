@@ -8,7 +8,8 @@ interface Props {
   request: ApprovalRequest | null;
   /** How many approvals are queued in total (including the current one). */
   queueCount?: number;
-  onApprove: (req: ApprovalRequest) => void;
+  /** `scope` widens the answer; omit it to approve this call only. */
+  onApprove: (req: ApprovalRequest, scope?: string) => void;
   onReject: (req: ApprovalRequest) => void;
 }
 
@@ -125,6 +126,16 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
             >
               {t("approvalDialog.reject")}
             </TintButton>
+            {/* Drawn from what the backend gate actually honors. */}
+            {request.scopes?.includes("tool_session") && (
+              <TintButton
+                variant="default"
+                className="px-3.5 py-1.5 rounded-full text-[13px]"
+                onClick={() => onApprove(request, "tool_session")}
+              >
+                {t("approvalDialog.approveSession")}
+              </TintButton>
+            )}
             <TintButton
               variant="primary"
               className="px-3.5 py-1.5 rounded-full text-[13px] shadow-sm"

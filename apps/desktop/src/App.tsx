@@ -1975,8 +1975,8 @@ export function App() {
 
   // Resolve the head-of-queue approval (allow/deny), then dequeue it.
   const onApprovalDecision = useCallback(
-    (request: ApprovalRequest, approved: boolean) => {
-      resolveApproval(request.call_id, approved).catch(() => {});
+    (request: ApprovalRequest, approved: boolean, scope?: string) => {
+      resolveApproval(request.call_id, approved, scope).catch(() => {});
       setApprovals((prev) => prev.filter((a) => a.call_id !== request.call_id));
     },
     []

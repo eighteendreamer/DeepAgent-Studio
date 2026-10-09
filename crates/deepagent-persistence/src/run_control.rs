@@ -487,6 +487,22 @@ impl<'db> RunControlStore<'db> {
         decided_by: &str,
         now: i64,
     ) -> Result<ControlMutation> {
+        self.respond_approval_scoped(approval_id, approved, decided_by, None, now)
+    }
+
+    /// Record the answer, optionally widening the scope it was asked at.
+    ///
+    /// An approval that says "stop asking about this tool" must be readable in the
+    /// audit trail as exactly that, so the applied scope replaces the request's
+    /// default in the row and in the `approval.responded` event.
+    pub fn respond_approval_scoped(
+        &self,
+        approval_id: &str,
+        approved: bool,
+        decided_by: &str,
+        applied_scope: Option<&str>,
+        now: i64,
+    ) -> Result<ControlMutation> {
         let outcome = self.db.with_conn(|connection| {
             in_immediate_transaction(connection, || {
                 let current = get_approval_from(connection, approval_id)?
@@ -515,10 +531,11 @@ impl<'db> RunControlStore<'db> {
                         to: next.label().to_string(),
                     });
                 }
+                let scope = applied_scope.unwrap_or(current.scope.as_str());
                 connection
                     .execute(
-                        "UPDATE run_approvals SET state=?2,decided_at=?3,decided_by=?4,updated_at=?3 WHERE approval_id=?1 AND state='pending'",
-                        params![approval_id, next.label(), now, decided_by],
+                        "UPDATE run_approvals SET state=?2,decided_at=?3,decided_by=?4,scope=?5,updated_at=?3 WHERE approval_id=?1 AND state='pending'",
+                        params![approval_id, next.label(), now, decided_by, scope],
                     )
                     .map_err(map_sqlite)?;
                 let action_state = if approved { "queued" } else { "denied" };
@@ -537,6 +554,7 @@ impl<'db> RunControlStore<'db> {
                         "approvalId": approval_id,
                         "callId": current.call_id,
                         "state": next.label(),
+                        "scope": scope,
                         "decidedBy": decided_by,
                     }),
                 )?;

@@ -84,6 +84,11 @@ export interface ApprovalRequest {
   risk: string;
   arguments: string;
   reason: string;
+  /**
+   * Scopes an approval may be widened to, decided by the backend gate. Buttons are
+   * drawn from this list so the UI never offers a choice the server would reject.
+   */
+  scopes?: string[];
   run_id?: string;
 }
 

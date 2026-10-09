@@ -90,7 +90,7 @@ interface Props {
   /** Total queued approvals (including the current one). */
   approvalQueueCount?: number;
   /** Resolve the current approval (allow / deny). */
-  onApprovalDecision?: (req: ApprovalRequest, approved: boolean) => void;
+  onApprovalDecision?: (req: ApprovalRequest, approved: boolean, scope?: string) => void;
   /** Head-of-queue question the run is blocked on (`ask_user_question`). */
   question?: QuestionRequest | null;
   /** Total queued questions (including the current one). */
@@ -1421,7 +1421,7 @@ export function ChatView({
                 <ApprovalDialog
                   request={approval}
                   queueCount={approvalQueueCount}
-                  onApprove={(req) => onApprovalDecision?.(req, true)}
+                  onApprove={(req, scope) => onApprovalDecision?.(req, true, scope)}
                   onReject={(req) => onApprovalDecision?.(req, false)}
                 />
               </div>

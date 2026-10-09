@@ -6,7 +6,7 @@ expression: terminal.backend().to_string()
 "DeepAgent  C:\Users\32734\…  db: /home/dev/.deepagent  model: deepseek-c"
 "* edit_file: src/tui/app.rs — running                                   "
 "allow run_command [high]: destructive command                           "
-"y allow once | n/d/Esc deny | Ctrl-C stops the run                      "
+"y allow once | a allow for this session | n/d/Esc deny                  "
 "                                                                        "
 "                                                                        "
 "                                                                        "

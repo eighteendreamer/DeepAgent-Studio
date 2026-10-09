@@ -896,6 +896,7 @@
     "pending": "{{count}} pending",
     "requestTool": "Request to execute tool: ",
     "approve": "Approve",
+    "approveSession": "Allow for this session",
     "reject": "Reject"
   },
   "askUserDialog": {
