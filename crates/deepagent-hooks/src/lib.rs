@@ -41,5 +41,7 @@ pub use external_hooks::{
 };
 pub use hook::{DecisionSource, Hook, HookOutcome};
 pub use lifecycle::{HookContext, HookData, HookPoint, ToolBatchItem};
-pub use permission_rules::{PermissionRules, PermissionRulesHook, RuleDecision};
+pub use permission_rules::{
+    bash_prefix_rule, rule_command_prefix, PermissionRules, PermissionRulesHook, RuleDecision,
+};
 pub use registry::HookRegistry;

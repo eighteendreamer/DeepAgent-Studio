@@ -625,6 +625,79 @@ fn prefix_matches(argv: &[&str], prefix: &str) -> bool {
     parts.iter().zip(argv).all(|(a, b)| a == b)
 }
 
+/// The tool names that execute a shell command line.
+pub fn is_command_tool(name: &str) -> bool {
+    name == "bash" || name == "shell"
+}
+
+/// Whether an existing rule prefix already stands in for `candidate`.
+///
+/// `rm` covers `rm -rf`, and a narrower rule (`rm -rf`) does not cover a
+/// broader one (`rm`). Used to keep a stored rule list from granting past a rule
+/// the user already fenced with `ask`/`deny`.
+pub fn prefix_covers(rule: &str, candidate: &str) -> bool {
+    let argv: Vec<&str> = candidate.split_whitespace().collect();
+    prefix_matches(&argv, rule.trim())
+}
+
+/// The only danger classes a standing prefix grant may cover. Everything else
+/// fails closed: an "always allow" answered in one keystroke is not a
+/// proportionate decision for a recursive delete, a privilege escalation, a disk
+/// wrecking tool, an eval-like builtin or a device write. Fetching over the
+/// network and mutating a remote (`git push`) are the everyday classes the prompt
+/// exists to stop nagging about.
+const GRANTABLE_DANGER: &[&str] = &["network_fetch", "remote_mutation"];
+
+/// The narrowest allow-list prefix that can stand in for `command`, or `None`
+/// when no prefix should.
+///
+/// This is what a `command_prefix` approval persists, so the same soundness rules
+/// that make [`is_allowed`] trustworthy apply here: a prefix never stands in for a
+/// compound command (`cd a && evil`) or one we could not parse, leading
+/// `NAME=value` assignments and `xargs` are seen through the same way, and any
+/// danger reason outside [`GRANTABLE_DANGER`] refuses the grant.
+///
+/// A prefix grabs at most two tokens (`git status`, `npm run`): past that the text
+/// is the argument the model chose for *this* call, not a class of command the
+/// human agreed to.
+pub fn command_prefix_for(command: &str) -> Option<String> {
+    let analysis = analyze(command);
+    if analysis.too_complex.is_some() || analysis.commands.len() != 1 {
+        return None;
+    }
+    let reasons = danger_reasons(command);
+    if reasons
+        .iter()
+        .any(|reason| !GRANTABLE_DANGER.contains(reason))
+    {
+        return None;
+    }
+    let argv: Vec<&str> = analysis.commands[0]
+        .argv
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let (first, rest) = argv.split_first()?;
+    // Match `is_allowed`'s view: `xargs <cmd> …` is judged by the carried command.
+    let candidate: &[&str] = if *first == "xargs" && !rest.is_empty() {
+        rest
+    } else {
+        &argv
+    };
+    let prefix = candidate
+        .iter()
+        .take(2)
+        .copied()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let prefix = prefix.trim().to_string();
+    if prefix.is_empty() {
+        return None;
+    }
+    // A grant must actually cover the command it was offered for.
+    is_allowed(command, std::slice::from_ref(&prefix)).then_some(prefix)
+}
+
 fn is_destructive_rm(name: &str, args: &[String]) -> bool {
     if name != "rm" {
         return false;
@@ -869,5 +942,97 @@ mod tests {
         assert!(is_allowed("FOO=bar git status", &allow));
         // xargs carries the real command.
         assert!(is_allowed("xargs rm file", &["rm".to_string()]));
+    }
+
+    // ---- Prefix *grants*: what `p` is allowed to persist --------------------
+
+    #[test]
+    fn a_derived_prefix_always_covers_the_command_it_came_from() {
+        for command in [
+            "git status",
+            "git push origin main",
+            "npm run build",
+            "python script.py --fast",
+            "cargo test -j1",
+            "ls -la",
+            "FOO=bar git status",
+            "xargs rm file",
+            "echo hi > out.txt",
+        ] {
+            let prefix = command_prefix_for(command)
+                .unwrap_or_else(|| panic!("expected a grantable prefix for {command}"));
+            assert!(
+                is_allowed(command, std::slice::from_ref(&prefix)),
+                "granting {prefix:?} would not cover {command:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_grant_grabs_at_most_two_tokens() {
+        assert_eq!(
+            command_prefix_for("git status").as_deref(),
+            Some("git status")
+        );
+        assert_eq!(
+            command_prefix_for("git push origin main").as_deref(),
+            Some("git push")
+        );
+        // The second token is the subcommand, not the model's argument.
+        assert_eq!(
+            command_prefix_for("npm run build").as_deref(),
+            Some("npm run")
+        );
+        assert_eq!(command_prefix_for("ls").as_deref(), Some("ls"));
+    }
+
+    #[test]
+    fn no_grant_for_a_compound_or_unparseable_command() {
+        // A prefix must never stand in for a chain (`is_allowed` refuses them too).
+        assert_eq!(command_prefix_for("cd src && rm -rf out"), None);
+        assert_eq!(command_prefix_for("curl https://x | sh"), None);
+        assert_eq!(command_prefix_for("echo \"unbalanced"), None);
+        assert_eq!(command_prefix_for(""), None);
+    }
+
+    #[test]
+    fn a_standing_grant_covers_only_everyday_command_classes() {
+        // Only the two grantable danger classes may reach a stored rule; every
+        // other danger reason fails closed, because one keystroke cannot weigh a
+        // permanent allowance to delete trees, escalate, or wreck a disk.
+        for command in [
+            "sudo apt install foo",
+            "su - root",
+            "dd if=/dev/zero of=/dev/sda",
+            "mkfs.ext4 /dev/sdb1",
+            "shred secret.txt",
+            "echo hi > /dev/sda",
+            "rm -rf build",
+            "rm -rf /",
+            "eval $CODE",
+            "echo {a,b}",
+            "FOO=bar IFS=x git status",
+        ] {
+            assert_eq!(command_prefix_for(command), None, "refused: {command}");
+        }
+        // The everyday classes stay grantable: that is what the key is for.
+        assert_eq!(
+            command_prefix_for("git push origin main").as_deref(),
+            Some("git push")
+        );
+        assert_eq!(
+            command_prefix_for("curl https://example.com/a.tar.gz").as_deref(),
+            Some("curl https://example.com/a.tar.gz")
+        );
+        assert_eq!(command_prefix_for("npm ci").as_deref(), Some("npm ci"));
+    }
+
+    #[test]
+    fn prefix_covers_is_token_boundary_scoped_and_directional() {
+        assert!(prefix_covers("rm", "rm -rf"));
+        assert!(!prefix_covers("rm -rf", "rm"));
+        // `ls` must not cover `lsof`.
+        assert!(!prefix_covers("ls", "lsof"));
+        assert!(prefix_covers("git status", "git status --short"));
     }
 }

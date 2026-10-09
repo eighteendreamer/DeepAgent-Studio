@@ -897,6 +897,8 @@
     "requestTool": "请求执行工具：",
     "approve": "批准",
     "approveSession": "本会话内允许该工具",
+    "approvePrefix": "始终允许「{{prefix}}」",
+    "grantRefused": "无法保存这条放行规则：{{error}}",
     "reject": "拒绝"
   },
   "askUserDialog": {

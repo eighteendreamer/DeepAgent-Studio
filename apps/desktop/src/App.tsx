@@ -1976,10 +1976,17 @@ export function App() {
   // Resolve the head-of-queue approval (allow/deny), then dequeue it.
   const onApprovalDecision = useCallback(
     (request: ApprovalRequest, approved: boolean, scope?: string) => {
-      resolveApproval(request.call_id, approved, scope).catch(() => {});
-      setApprovals((prev) => prev.filter((a) => a.call_id !== request.call_id));
+      resolveApproval(request.call_id, approved, scope)
+        .then(() => {
+          setApprovals((prev) => prev.filter((a) => a.call_id !== request.call_id));
+        })
+        .catch((error) => {
+          // A refused grant leaves the run parked on the same question, so the
+          // card stays up with the reason instead of vanishing.
+          message.error(t("approvalDialog.grantRefused", { error: String(error) }));
+        });
     },
-    []
+    [t]
   );
 
   // Subscribe once for the whole app: every run entry point can ask a question,

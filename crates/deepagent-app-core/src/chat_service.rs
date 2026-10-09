@@ -244,13 +244,22 @@ impl ChatService {
     ) -> Self {
         let workspace = workspace.into();
         let tool_results_dir = workspace.join(".deepagent").join("tool_results");
+        let coordinator = Arc::new(RunCoordinator::new(db.clone()));
+        // Answering a prompt with `command_prefix` writes a `Bash(prefix:*)` rule
+        // here and is read back through the same settings service on every later
+        // prompt, so the settings page is both the place to see one and to revoke
+        // it — no second copy of the list to keep in sync.
+        coordinator
+            .pending()
+            .prefixes()
+            .attach(settings.clone() as Arc<dyn crate::approval_bridge::CommandPrefixSource>);
         Self {
             db: db.clone(),
             settings,
             transport,
             workspace,
             bash_allow: default_bash_allow(),
-            coordinator: Arc::new(RunCoordinator::new(db.clone())),
+            coordinator,
             mcp: None,
             plugins: None,
             projects: None,
@@ -4043,5 +4052,58 @@ mod tests {
         let rendered = render_message_for_compaction(&messages[1]);
         assert!(rendered.contains("name=read_file"));
         assert!(rendered.contains("\"path\":\"one\""));
+    }
+
+    #[tokio::test]
+    async fn a_prefix_answer_persists_through_the_store_chat_service_wires() {
+        let (_db, settings, dir) = seeded().await;
+        let chat = ChatService::new(_db, settings.clone(), chat_transport(), dir.path());
+        let pending = chat.pending_approvals();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<ApprovalRequestDto>::new()));
+        let notifying = seen.clone();
+        let gate = Arc::new(ChannelApprovalGate::new(
+            pending.clone(),
+            Arc::new(move |dto| notifying.lock().unwrap().push(dto)),
+        ));
+        // `npm install` is not on the shipped convenience list, so this is the
+        // kind of prompt a human answers with `p`.
+        let asking = gate.clone();
+        let asking_task = tokio::spawn(async move {
+            asking
+                .request(approval_request("c1", "npm install left-pad"))
+                .await
+        });
+        for _ in 0..50 {
+            if pending.pending_count() == 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        }
+
+        chat.resolve_approval_scoped("c1", true, Some("command_prefix"), "cli_tui_user")
+            .unwrap();
+        assert_eq!(asking_task.await.unwrap(), ApprovalDecision::Allow);
+        assert_eq!(
+            seen.lock().unwrap()[0].command_prefix.as_deref(),
+            Some("npm install")
+        );
+        // The answer reached the store the settings page reads, not only memory.
+        assert_eq!(settings.command_prefix_grants().unwrap(), ["npm install"]);
+
+        // A later call of the same kind is answered from that rule, and the UI is
+        // not consulted again.
+        let second = approval_request("c2", "npm install typescript");
+        assert_eq!(gate.request(second).await, ApprovalDecision::Allow);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    fn approval_request(call_id: &str, command: &str) -> deepagent_runtime::ApprovalRequest {
+        deepagent_runtime::ApprovalRequest {
+            call_id: call_id.into(),
+            tool: "bash".into(),
+            reason: "runs on your computer".into(),
+            risk: "ask".into(),
+            arguments: serde_json::json!({ "command": command }),
+        }
     }
 }

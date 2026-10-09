@@ -590,6 +590,10 @@ pub struct ApprovalRequestDto {
     /// `command_prefix`), so a client draws exactly what the gate will honor.
     #[serde(default)]
     pub scopes: Vec<String>,
+    /// The rule a `command_prefix` answer would store (`git status`), so the
+    /// human can see the reach of a standing allowance before granting it.
+    #[serde(default)]
+    pub command_prefix: Option<String>,
 }
 
 /// A question set `ask_user_question` put in front of the user. The run stays

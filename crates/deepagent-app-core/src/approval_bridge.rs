@@ -23,13 +23,16 @@
 //! `(tool, risk)` with **no arguments**, mirroring codex's
 //! `McpToolApprovalKey` (`借鉴/codex/codex-rs/core/src/mcp_tool_call.rs:2246-2253`).
 //! It lives in this process only — nothing is persisted, so a restart always asks
-//! again. Broadening a grant to "this command prefix" is a separate, persisted
-//! decision; see [`ApprovalScope::CommandPrefix`].
+//! again. The wider [`ApprovalScope::CommandPrefix`] is persisted, as a
+//! `Bash(prefix:*)` permission rule the settings page already lists and can
+//! delete; [`PrefixGrants`] reads it back on every prompt, so an edit there
+//! bites here immediately.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use deepagent_builtins::{command_prefix_for, is_allowed, is_command_tool};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_runtime::{ApprovalDecision, ApprovalGate, ApprovalRequest};
 use tokio::sync::oneshot;
@@ -72,16 +75,21 @@ impl ApprovalScope {
     ///
     /// One function owns the vocabulary, so the buttons the UI draws and the
     /// validation an answer passes through cannot drift apart. A scope is listed
-    /// only once the write behind it exists: `command_prefix` needs the
-    /// `bash_allow` persistence seam and is added there, so no button ever offers
-    /// something that silently does nothing.
-    pub fn offered(_tool: &str) -> Vec<Self> {
-        vec![Self::SingleCall, Self::ToolSession]
+    /// only once the write behind it exists and the answer would actually be
+    /// honored: `command_prefix` appears when the request carries a command a
+    /// prefix can stand in for (see [`deepagent_builtins::command_prefix_for`]),
+    /// so no button ever offers something that silently does nothing.
+    pub fn offered(tool: &str, command: Option<&str>) -> Vec<Self> {
+        let mut scopes = vec![Self::SingleCall, Self::ToolSession];
+        if is_command_tool(tool) && command.is_some_and(|cmd| command_prefix_for(cmd).is_some()) {
+            scopes.push(Self::CommandPrefix);
+        }
+        scopes
     }
 
-    /// Whether a tool may be granted by command prefix (it takes a `command`).
-    pub fn offers(scope: Self, tool: &str) -> bool {
-        Self::offered(tool).contains(&scope)
+    /// Whether `tool`, asked about `command`, may be granted this scope.
+    pub fn offers(scope: Self, tool: &str, command: Option<&str>) -> bool {
+        Self::offered(tool, command).contains(&scope)
     }
 }
 
@@ -140,11 +148,145 @@ impl SessionGrants {
     }
 }
 
+/// Where standing command-prefix allowances are kept.
+///
+/// The gate reads through on every prompt instead of caching a copy: a rule the
+/// user edits or deletes in settings takes effect for the next command, and two
+/// hosts in one process cannot drift apart.
+pub trait CommandPrefixSource: Send + Sync {
+    /// Prefixes the human allowed for `tool`, already minus anything an
+    /// `ask`/`deny` rule fences.
+    fn prefixes(&self, tool: &str) -> Vec<String>;
+    /// Persist one allowance. Errors when it cannot be stored or is fenced.
+    fn grant(&self, tool: &str, prefix: &str) -> Result<()>;
+}
+
+impl CommandPrefixSource for crate::settings::SettingsService {
+    fn prefixes(&self, tool: &str) -> Vec<String> {
+        if !is_command_tool(tool) {
+            return Vec::new();
+        }
+        self.command_prefix_grants().unwrap_or_else(|error| {
+            // Losing the list must not silently widen what runs: the human just
+            // gets asked again, and the read failure is on the log.
+            tracing::warn!(error = %error, "could not read command prefix grants; asking again");
+            Vec::new()
+        })
+    }
+
+    fn grant(&self, tool: &str, prefix: &str) -> Result<()> {
+        if !is_command_tool(tool) {
+            return Err(CoreError::invalid(format!(
+                "tool {tool} takes no command, so no prefix can be granted"
+            )));
+        }
+        self.grant_command_prefix(prefix)
+    }
+}
+
+/// The command prefixes the human allowed to run without being asked again
+/// (answering a prompt with [`ApprovalScope::CommandPrefix`]).
+#[derive(Clone, Default)]
+pub struct PrefixGrants {
+    source: Arc<Mutex<Option<Arc<dyn CommandPrefixSource>>>>,
+}
+
+impl PrefixGrants {
+    /// Grants with nowhere to persist yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Point the grants at their store (the settings service in production).
+    pub fn attach(&self, source: Arc<dyn CommandPrefixSource>) {
+        *self
+            .source
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(source);
+    }
+
+    fn source(&self) -> Option<Arc<dyn CommandPrefixSource>> {
+        self.source
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Whether a `command_prefix` answer could be honored at all. Offers are only
+    /// drawn when the answer would stick.
+    pub fn attached(&self) -> bool {
+        self.source().is_some()
+    }
+
+    /// Whether `request` is covered by an allowance the human already gave.
+    ///
+    /// A sandbox escalation is *not* covered: granting a command prefix says the
+    /// command is fine inside the sandbox, not that it may leave it.
+    pub fn covers(&self, request: &ApprovalRequest) -> bool {
+        let Some(source) = self.source() else {
+            return false;
+        };
+        if !is_command_tool(&request.tool) || requests_escalation(&request.arguments) {
+            return false;
+        }
+        let Some(command) = command_of(&request.arguments) else {
+            return false;
+        };
+        let prefixes = source.prefixes(&request.tool);
+        if prefixes.is_empty() {
+            return false;
+        }
+        is_allowed(command, &prefixes)
+    }
+
+    /// Persist the prefix the request asked about, derived from the recorded
+    /// arguments — never from anything the answering client sends.
+    pub fn grant_for(&self, tool: &str, arguments: &serde_json::Value) -> Result<String> {
+        let source = self.source().ok_or_else(|| {
+            CoreError::invalid("no prefix store attached, so a command prefix cannot be granted")
+        })?;
+        let prefix = prefix_of(tool, arguments)?;
+        source.grant(tool, &prefix)?;
+        Ok(prefix)
+    }
+}
+
+/// The command line an approval request is about, if any.
+fn command_of(arguments: &serde_json::Value) -> Option<&str> {
+    arguments.get("command").and_then(|v| v.as_str())
+}
+
+/// Whether the model asked to escape the sandbox for this call.
+fn requests_escalation(arguments: &serde_json::Value) -> bool {
+    arguments
+        .get("sandbox_permissions")
+        .and_then(|v| v.as_str())
+        == Some("require_escalated")
+}
+
+/// The prefix a `command_prefix` answer would persist for a request.
+fn prefix_of(tool: &str, arguments: &serde_json::Value) -> Result<String> {
+    let command = command_of(arguments).ok_or_else(|| {
+        CoreError::invalid(format!(
+            "tool {tool} carries no command, so no prefix can be granted"
+        ))
+    })?;
+    command_prefix_for(command).ok_or_else(|| {
+        CoreError::invalid(format!(
+            "no command prefix can stand in for this command, so it cannot be granted \
+             for future calls: {command}"
+        ))
+    })
+}
+
 /// One request awaiting a human decision.
 struct Pending {
     sender: oneshot::Sender<ApprovalDecision>,
     tool: String,
     risk: String,
+    /// Kept so a widening answer's grant is derived from what was actually asked,
+    /// not from anything the answering client sends.
+    arguments: serde_json::Value,
 }
 
 /// Shared registry of in-flight approval requests, keyed by `call_id`.
@@ -152,6 +294,7 @@ struct Pending {
 pub struct PendingApprovals {
     inner: Arc<Mutex<HashMap<String, Pending>>>,
     grants: SessionGrants,
+    prefixes: PrefixGrants,
 }
 
 impl PendingApprovals {
@@ -165,6 +308,11 @@ impl PendingApprovals {
         self.grants.clone()
     }
 
+    /// The command-prefix allowances this registry reads through and writes.
+    pub fn prefixes(&self) -> PrefixGrants {
+        self.prefixes.clone()
+    }
+
     /// Register a pending request, returning the receiver to await.
     fn register(&self, request: &ApprovalRequest) -> oneshot::Receiver<ApprovalDecision> {
         let (tx, rx) = oneshot::channel();
@@ -174,24 +322,52 @@ impl PendingApprovals {
                 sender: tx,
                 tool: request.tool.clone(),
                 risk: request.risk.clone(),
+                arguments: request.arguments.clone(),
             },
         );
         rx
     }
 
-    /// Scopes the UI may offer for a pending request, or the default when the
-    /// request is not held by this process (a replay, or another host's run).
-    pub fn offered_scopes(&self, call_id: &str) -> Vec<ApprovalScope> {
-        let tool = self
-            .inner
-            .lock()
-            .expect("approvals poisoned")
+    /// What this process is still waiting on for `call_id`.
+    fn live(&self, call_id: &str) -> Option<(String, serde_json::Value)> {
+        let inner = self.inner.lock().expect("approvals poisoned");
+        inner
             .get(call_id)
-            .map(|pending| pending.tool.clone());
-        // Only a plain yes/no is safe when this process is not the one asking.
-        tool.map_or(vec![ApprovalScope::SingleCall], |tool| {
-            ApprovalScope::offered(&tool)
-        })
+            .map(|pending| (pending.tool.clone(), pending.arguments.clone()))
+    }
+
+    /// The scopes a request may widen to. A prefix scope is listed only while a
+    /// prefix store exists, so the offer and the honoring cannot drift apart.
+    fn offered_for(&self, tool: &str, arguments: &serde_json::Value) -> Vec<ApprovalScope> {
+        let mut scopes = ApprovalScope::offered(tool, command_of(arguments));
+        if !self.prefixes.attached() {
+            scopes.retain(|scope| *scope != ApprovalScope::CommandPrefix);
+        }
+        scopes
+    }
+
+    /// The unified request a UI draws, advertising exactly what this gate will
+    /// honor for it.
+    pub fn dto(&self, request: &ApprovalRequest) -> ApprovalRequestDto {
+        let scopes = self.offered_for(&request.tool, &request.arguments);
+        let command_prefix = scopes
+            .contains(&ApprovalScope::CommandPrefix)
+            .then(|| command_of(&request.arguments))
+            .flatten()
+            .and_then(command_prefix_for);
+        ApprovalRequestDto {
+            call_id: request.call_id.clone(),
+            tool: request.tool.clone(),
+            risk: request.risk.clone(),
+            arguments: serde_json::to_string_pretty(&request.arguments)
+                .unwrap_or_else(|_| request.arguments.to_string()),
+            reason: request.reason.clone(),
+            scopes: scopes
+                .into_iter()
+                .map(|scope| scope.as_str().to_string())
+                .collect(),
+            command_prefix,
+        }
     }
 
     /// Resolve a pending request by `call_id` with a decision. Returns `true`
@@ -227,15 +403,11 @@ impl PendingApprovals {
         if scope == ApprovalScope::SingleCall {
             return Ok(scope);
         }
-        let known = self
-            .inner
-            .lock()
-            .expect("approvals poisoned")
-            .get(call_id)
-            .map(|pending| pending.tool.clone());
-        match known {
-            Some(tool) if ApprovalScope::offers(scope, &tool) => Ok(scope),
-            Some(tool) => Err(CoreError::invalid(format!(
+        match self.live(call_id) {
+            Some((tool, arguments)) if self.offered_for(&tool, &arguments).contains(&scope) => {
+                Ok(scope)
+            }
+            Some((tool, _)) => Err(CoreError::invalid(format!(
                 "approval scope '{}' is not offered for tool {tool}",
                 scope.as_str()
             ))),
@@ -262,17 +434,26 @@ impl PendingApprovals {
                 None => return Ok(false),
             }
         };
+        let (tool, risk) = (pending.tool.clone(), pending.risk.clone());
+        // A prefix grant is written before the run is woken, so the answer only
+        // becomes real once the rule exists. A store that refuses it (a fenced
+        // prefix, no store attached) puts the request back unanswered rather than
+        // letting the command run on a promise nothing keeps.
+        if approved && scope == ApprovalScope::CommandPrefix {
+            if let Err(error) = self.prefixes.grant_for(&tool, &pending.arguments) {
+                self.inner
+                    .lock()
+                    .expect("approvals poisoned")
+                    .insert(call_id.to_string(), pending);
+                return Err(error);
+            }
+        }
         let resolved = pending
             .sender
             .send(ApprovalDecision::from_approved(approved))
             .is_ok();
-        if approved {
-            match scope {
-                ApprovalScope::ToolSession => self.grants.grant(&pending.tool, &pending.risk),
-                // Persisting a command prefix is the settings layer's job; the
-                // caller that owns `bash_allow` applies it.
-                ApprovalScope::CommandPrefix | ApprovalScope::SingleCall => {}
-            }
+        if approved && scope == ApprovalScope::ToolSession {
+            self.grants.grant(&tool, &risk);
         }
         Ok(resolved)
     }
@@ -280,22 +461,6 @@ impl PendingApprovals {
     /// How many requests are currently awaiting a decision.
     pub fn pending_count(&self) -> usize {
         self.inner.lock().expect("approvals poisoned").len()
-    }
-}
-
-/// Convert a runtime [`ApprovalRequest`] into the unified UI DTO.
-fn to_dto(req: &ApprovalRequest) -> ApprovalRequestDto {
-    ApprovalRequestDto {
-        call_id: req.call_id.clone(),
-        tool: req.tool.clone(),
-        risk: req.risk.clone(),
-        arguments: serde_json::to_string_pretty(&req.arguments)
-            .unwrap_or_else(|_| req.arguments.to_string()),
-        reason: req.reason.clone(),
-        scopes: ApprovalScope::offered(&req.tool)
-            .into_iter()
-            .map(|scope| scope.as_str().to_string())
-            .collect(),
     }
 }
 
@@ -322,9 +487,10 @@ impl ChannelApprovalGate {
 #[async_trait]
 impl ApprovalGate for ChannelApprovalGate {
     async fn request(&self, request: ApprovalRequest) -> ApprovalDecision {
-        // A grant the human handed out earlier in this process answers the call
-        // without waking the UI. This is the only place a prompt is suppressed,
-        // so policy handling stays in `PolicyGate` above it.
+        // A decision the human already made answers the call without waking the
+        // UI: a grant for this tool this process (`a`), or a standing allowance
+        // for this command prefix (`p`). This is the only place a prompt is
+        // suppressed, so policy handling stays in `PolicyGate` above it.
         if self.pending.grants().contains(&request.tool, &request.risk) {
             tracing::debug!(
                 tool = %request.tool,
@@ -333,8 +499,15 @@ impl ApprovalGate for ChannelApprovalGate {
             );
             return ApprovalDecision::Allow;
         }
+        if self.pending.prefixes().covers(&request) {
+            tracing::debug!(
+                tool = %request.tool,
+                "approving from a command prefix the human allowed without asking"
+            );
+            return ApprovalDecision::Allow;
+        }
         let rx = self.pending.register(&request);
-        (self.notify)(to_dto(&request));
+        (self.notify)(self.pending.dto(&request));
         // Await the human decision. If the sender is dropped (UI closed), deny
         // for safety.
         rx.await.unwrap_or(ApprovalDecision::Deny)
@@ -389,8 +562,7 @@ impl ApprovalGate for PolicyGate {
                     }
                 } else {
                     // Legacy fallback: bash/shell → ask; high-risk → ask; else allow.
-                    let tool = request.tool.as_str();
-                    let is_computer_op = matches!(tool, "bash" | "shell");
+                    let is_computer_op = is_command_tool(&request.tool);
                     let is_high_risk = request.risk.eq_ignore_ascii_case("high");
                     if is_computer_op || is_high_risk {
                         self.inner.request(request).await
@@ -573,20 +745,206 @@ mod tests {
     }
 
     #[test]
-    fn only_an_implemented_scope_is_offered() {
-        // `command_prefix` stays unoffered until the `bash_allow` write exists, so
-        // no UI can draw a button that answers without effect.
-        assert!(!ApprovalScope::offers(ApprovalScope::CommandPrefix, "bash"));
-        assert!(ApprovalScope::offers(ApprovalScope::ToolSession, "bash"));
+    fn a_scope_is_offered_only_where_the_answer_would_have_effect() {
         assert!(ApprovalScope::offers(
             ApprovalScope::ToolSession,
-            "write_file"
+            "bash",
+            None
         ));
-        let scopes: Vec<&str> = ApprovalScope::offered("run_command")
+        assert!(ApprovalScope::offers(
+            ApprovalScope::ToolSession,
+            "write_file",
+            None
+        ));
+        // A prefix can only stand in for a command, and only for a command one
+        // covers: no command, no tool that takes one, no compound, no sudo.
+        assert!(!ApprovalScope::offers(
+            ApprovalScope::CommandPrefix,
+            "bash",
+            None
+        ));
+        assert!(!ApprovalScope::offers(
+            ApprovalScope::CommandPrefix,
+            "write_file",
+            Some("rm -rf out")
+        ));
+        assert!(!ApprovalScope::offers(
+            ApprovalScope::CommandPrefix,
+            "bash",
+            Some("cd src && rm -rf out")
+        ));
+        assert!(!ApprovalScope::offers(
+            ApprovalScope::CommandPrefix,
+            "bash",
+            Some("sudo rm out")
+        ));
+        assert!(ApprovalScope::offers(
+            ApprovalScope::CommandPrefix,
+            "bash",
+            Some("git status")
+        ));
+        let scopes: Vec<&str> = ApprovalScope::offered("bash", Some("git status"))
             .iter()
             .map(|scope| scope.as_str())
             .collect();
-        assert_eq!(scopes, vec!["single_call", "tool_session"]);
+        assert_eq!(
+            scopes,
+            vec!["single_call", "tool_session", "command_prefix"]
+        );
+    }
+
+    /// The store seam, remembered in memory so the tests can watch what `p`
+    /// would persist without a database.
+    #[derive(Default)]
+    struct MemoryPrefixes {
+        granted: Mutex<Vec<String>>,
+        refuse: bool,
+    }
+
+    impl CommandPrefixSource for MemoryPrefixes {
+        fn prefixes(&self, tool: &str) -> Vec<String> {
+            if !is_command_tool(tool) {
+                return Vec::new();
+            }
+            self.granted.lock().unwrap().clone()
+        }
+
+        fn grant(&self, tool: &str, prefix: &str) -> Result<()> {
+            if !is_command_tool(tool) || self.refuse {
+                return Err(CoreError::invalid("the store refused this grant"));
+            }
+            self.granted.lock().unwrap().push(prefix.to_string());
+            Ok(())
+        }
+    }
+
+    fn gate_over(
+        pending: &PendingApprovals,
+        seen: Arc<Mutex<Vec<ApprovalRequestDto>>>,
+    ) -> ChannelApprovalGate {
+        ChannelApprovalGate::new(
+            pending.clone(),
+            Arc::new(move |dto| seen.lock().unwrap().push(dto)),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_prefix_answer_stores_the_prefix_the_prompt_showed() {
+        let pending = PendingApprovals::new();
+        let store = Arc::new(MemoryPrefixes::default());
+        pending.prefixes().attach(store.clone());
+        let seen = Arc::new(Mutex::new(Vec::<ApprovalRequestDto>::new()));
+        let gate = gate_over(&pending, seen.clone());
+        let handle = tokio::spawn(async move { gate.request(req("c1")).await });
+        wait_until_pending(&pending, 1).await;
+        // The prompt names what it is about to allow, and answering `p` stores
+        // exactly that — the client never sends a prefix of its own choosing.
+        assert_eq!(
+            seen.lock().unwrap()[0].command_prefix.as_deref(),
+            Some("git push")
+        );
+        pending
+            .resolve_scoped("c1", true, Some("command_prefix"))
+            .unwrap();
+        assert_eq!(handle.await.unwrap(), ApprovalDecision::Allow);
+        assert_eq!(store.granted.lock().unwrap().as_slice(), ["git push"]);
+    }
+
+    #[tokio::test]
+    async fn a_granted_prefix_stops_the_next_prompt_without_asking() {
+        let pending = PendingApprovals::new();
+        let store = Arc::new(MemoryPrefixes::default());
+        pending.prefixes().attach(store.clone());
+        let seen = Arc::new(Mutex::new(Vec::<ApprovalRequestDto>::new()));
+        let gate = Arc::new(gate_over(&pending, seen.clone()));
+        let asking = gate.clone();
+        let first = tokio::spawn(async move { asking.request(req("c1")).await });
+        wait_until_pending(&pending, 1).await;
+        pending
+            .resolve_scoped("c1", true, Some("command_prefix"))
+            .unwrap();
+        assert_eq!(first.await.unwrap(), ApprovalDecision::Allow);
+
+        // A later, longer command of the same kind: allowed from the rule, and the
+        // UI was never consulted a second time.
+        let mut second = req("c2");
+        second.arguments = serde_json::json!({"command": "git push origin main"});
+        assert_eq!(gate.request(second).await, ApprovalDecision::Allow);
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_sandbox_escalation_is_never_covered_by_a_prefix_grant() {
+        // Allowing a command says it may run *in* the sandbox, not that it may
+        // leave it.
+        let pending = PendingApprovals::new();
+        let store = Arc::new(MemoryPrefixes::default());
+        store
+            .granted
+            .lock()
+            .unwrap()
+            .push("cargo build".to_string());
+        pending.prefixes().attach(store.clone());
+        let mut request = req("c1");
+        request.arguments = serde_json::json!({"command": "cargo build", "sandbox_permissions": "require_escalated"});
+        assert!(!pending.prefixes().covers(&request));
+        request.arguments = serde_json::json!({"command": "cargo build --release"});
+        assert!(pending.prefixes().covers(&request));
+    }
+
+    #[tokio::test]
+    async fn a_plain_answer_never_stores_a_prefix() {
+        let pending = PendingApprovals::new();
+        let store = Arc::new(MemoryPrefixes::default());
+        pending.prefixes().attach(store.clone());
+        let seen = Arc::new(Mutex::new(Vec::<ApprovalRequestDto>::new()));
+        let gate = gate_over(&pending, seen.clone());
+        let handle = tokio::spawn(async move { gate.request(req("c1")).await });
+        wait_until_pending(&pending, 1).await;
+        pending.resolve_approved("c1", true);
+        assert_eq!(handle.await.unwrap(), ApprovalDecision::Allow);
+        assert!(store.granted.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn an_unattached_store_does_not_advertise_the_scope_it_cannot_write() {
+        let pending = PendingApprovals::new();
+        let request = req("c1");
+        assert!(!pending
+            .dto(&request)
+            .scopes
+            .contains(&"command_prefix".to_string()));
+        let refused = pending
+            .check_scope("c1", Some("command_prefix"))
+            .unwrap_err();
+        assert!(
+            refused.to_string().contains("no live approval"),
+            "{refused}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_store_that_refuses_leaves_the_prompt_answerable() {
+        let pending = PendingApprovals::new();
+        let store = Arc::new(MemoryPrefixes {
+            granted: Mutex::new(Vec::new()),
+            refuse: true,
+        });
+        pending.prefixes().attach(store.clone());
+        let seen = Arc::new(Mutex::new(Vec::<ApprovalRequestDto>::new()));
+        let gate = gate_over(&pending, seen.clone());
+        let handle = tokio::spawn(async move { gate.request(req("c1")).await });
+        wait_until_pending(&pending, 1).await;
+        let failed = pending
+            .resolve_scoped("c1", true, Some("command_prefix"))
+            .unwrap_err();
+        assert!(failed.to_string().contains("refused"), "{failed}");
+        // Nothing was stored, and the run is still parked on the same question,
+        // so the human can answer it a second way.
+        assert!(store.granted.lock().unwrap().is_empty());
+        assert_eq!(pending.pending_count(), 1);
+        assert!(pending.resolve_approved("c1", true));
+        assert_eq!(handle.await.unwrap(), ApprovalDecision::Allow);
     }
 
     #[test]

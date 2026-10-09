@@ -84,7 +84,9 @@ pub use ask_user_tool::{
     AskUserQuestionTool, DeclineResponder, Question, QuestionOption, QuestionResponder,
     RecommendedResponder, ASK_USER_QUESTION_TOOL_NAME,
 };
-pub use bash_analysis::{analyze, danger_reasons};
+pub use bash_analysis::{
+    analyze, command_prefix_for, danger_reasons, is_command_tool, prefix_covers,
+};
 pub use bash_tool::{
     detect_command_injection, is_allowed, is_dangerous, BashTool, CommandExecutor, CommandOutcome,
     CommandShell, SystemExecutor,

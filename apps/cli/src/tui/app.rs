@@ -617,11 +617,21 @@ impl App {
                 (true, Some("tool_session")) => {
                     "approved, and this tool is allowed for the rest of this session".to_string()
                 }
+                (true, Some("command_prefix")) => format!(
+                    "approved, and '{}' is allowed from now on (revoke it in settings)",
+                    prompt.request.command_prefix.clone().unwrap_or_default()
+                ),
                 (true, Some(_)) | (true, None) => "approved".to_string(),
                 (false, _) => "denied".to_string(),
             }),
             Ok(false) => self.set_notice("approval was no longer pending"),
-            Err(error) => self.set_notice(format!("could not record the approval: {error}")),
+            Err(error) => {
+                // A grant the store refused (a fenced prefix, no store) leaves the
+                // run parked on the same question, so the prompt comes back and
+                // the human can answer it a different way.
+                self.set_notice(format!("could not record the approval: {error}"));
+                self.approval = Some(prompt);
+            }
         }
         self.dirty = true;
     }
@@ -781,7 +791,14 @@ impl App {
                 .iter()
                 .any(|scope| scope == "command_prefix")
             {
-                keys.push_str(" | p trust this command");
+                // Name the rule the answer is about to store: "trust this command"
+                // would hide how far a standing allowance reaches.
+                let prefix = prompt
+                    .request
+                    .command_prefix
+                    .as_deref()
+                    .unwrap_or("this command");
+                keys.push_str(&format!(" | p always allow '{}'", sanitize(prefix)));
             }
             keys.push_str(" | n/d/Esc deny");
             keys
@@ -829,6 +846,7 @@ mod tests {
             arguments: "{\"command\":\"rm -rf target\"}".to_string(),
             reason: "destructive command".to_string(),
             scopes: vec!["single_call".to_string(), "tool_session".to_string()],
+            command_prefix: None,
         }
     }
 
@@ -915,7 +933,7 @@ mod tests {
     #[test]
     fn the_approval_hint_advertises_only_the_live_keys() {
         let mut app = test_app();
-        let prompt = |scopes: Vec<String>| ApprovalPrompt {
+        let prompt = |scopes: Vec<String>, prefix: Option<&str>| ApprovalPrompt {
             request: ApprovalRequestDto {
                 call_id: "c1".into(),
                 tool: "bash".into(),
@@ -923,16 +941,32 @@ mod tests {
                 arguments: "{}".into(),
                 reason: "destructive command".into(),
                 scopes,
+                command_prefix: prefix.map(str::to_string),
             },
         };
-        app.approval = Some(prompt(vec!["single_call".to_string()]));
+        let once = || vec!["single_call".to_string()];
+        let session = || {
+            vec![
+                "single_call".to_string(),
+                "tool_session".to_string(),
+                "command_prefix".to_string(),
+            ]
+        };
+        app.approval = Some(prompt(once(), None));
         let plain = joined(&app.hint_line());
         assert!(plain.contains("y allow once"), "{plain}");
         assert!(!plain.contains(" a allow"), "{plain}");
-        app.approval = Some(prompt(vec![
-            "single_call".to_string(),
-            "tool_session".to_string(),
-        ]));
+        assert!(!plain.contains(" p "), "{plain}");
+        app.approval = Some(prompt(session(), Some("git status")));
+        let widened = joined(&app.hint_line());
+        assert!(widened.contains("a allow for this session"), "{widened}");
+        // A standing allowance is named exactly: the human sees the rule text
+        // the answer is about to store before pressing the key.
+        assert!(widened.contains("p always allow 'git status'"), "{widened}");
+        app.approval = Some(prompt(
+            vec!["single_call".to_string(), "tool_session".to_string()],
+            None,
+        ));
         assert!(joined(&app.hint_line()).contains("a allow for this session"));
     }
 

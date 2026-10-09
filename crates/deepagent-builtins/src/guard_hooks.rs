@@ -181,7 +181,7 @@ impl BashGuardHook {
 
     /// The tool names this guard applies to.
     fn applies_to(name: &str) -> bool {
-        name == "bash" || name == "shell"
+        crate::bash_analysis::is_command_tool(name)
     }
 }
 

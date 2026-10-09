@@ -16,9 +16,10 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
+use deepagent_builtins::prefix_covers;
 use deepagent_core::clock::Timestamp;
 use deepagent_core::error::{CoreError, Result};
-use deepagent_hooks::PermissionRules;
+use deepagent_hooks::{bash_prefix_rule, rule_command_prefix, PermissionRules};
 use deepagent_models::balance::{fetch_balance, BalanceResponse};
 use deepagent_models::capability::{ModelCapability, ModelCapabilityResolver};
 use deepagent_models::discovery::{ModelCatalog, ModelDiscovery};
@@ -1288,6 +1289,44 @@ pub struct SettingsService {
     settings_cache: Mutex<Option<Option<AppSettings>>>,
 }
 
+/// The command prefixes `rules` allows, minus any fenced by an `ask`/`deny` rule.
+fn granted_prefixes(rules: &PermissionRules) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for pattern in &rules.allow {
+        let Some(prefix) = rule_command_prefix(pattern) else {
+            continue;
+        };
+        // A bare `bash` allow rule is not a prefix grant; it claims everything.
+        if prefix.is_empty() || fencing_rule(rules, prefix).is_some() {
+            continue;
+        }
+        let prefix = normalize_prefix(prefix);
+        if !out.contains(&prefix) {
+            out.push(prefix);
+        }
+    }
+    out
+}
+
+/// The `ask`/`deny` rule that already fences `prefix`. A bare `bash` rule fences
+/// every command; `Bash(rm:*)` fences `rm -rf` but not `git status`.
+fn fencing_rule<'a>(rules: &'a PermissionRules, prefix: &str) -> Option<&'a String> {
+    rules
+        .ask
+        .iter()
+        .chain(rules.deny.iter())
+        .find(|pattern| match rule_command_prefix(pattern) {
+            None => false,
+            Some("") => true,
+            Some(fenced) => prefix_covers(fenced, prefix),
+        })
+}
+
+/// Collapse whitespace so `git  status` and `git status` are the same rule.
+fn normalize_prefix(prefix: &str) -> String {
+    prefix.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 impl SettingsService {
     /// Build the service from a shared database, an HTTP transport (reaches
     /// DeepSeek for discovery), and a secret store (holds the API key).
@@ -2120,6 +2159,41 @@ impl SettingsService {
         self.save(&settings)
     }
 
+    /// Command prefixes the human gave standing approval for, by answering an
+    /// approval prompt with the `command_prefix` scope.
+    ///
+    /// They are stored as `Bash(prefix:*)` entries in [`Self::permission_rules`],
+    /// so the same settings list that shows the rules is the place to revoke one,
+    /// and a prefix the user fenced with `ask`/`deny` never reads back as a grant.
+    pub fn command_prefix_grants(&self) -> Result<Vec<String>> {
+        Ok(granted_prefixes(&self.permission_rules()?))
+    }
+
+    /// Record `prefix` as a standing allowance.
+    ///
+    /// Errors when an `ask`/`deny` rule already fences that prefix: an approval
+    /// answer must not walk past a rule the user wrote by hand.
+    pub fn grant_command_prefix(&self, prefix: &str) -> Result<()> {
+        let prefix = normalize_prefix(prefix);
+        if prefix.is_empty() {
+            return Err(CoreError::invalid(
+                "a command prefix grant needs a command prefix",
+            ));
+        }
+        let mut rules = self.permission_rules()?;
+        if let Some(fence) = fencing_rule(&rules, &prefix) {
+            return Err(CoreError::invalid(format!(
+                "permission rule `{fence}` fences a grant for `{prefix}`; remove it first"
+            )));
+        }
+        let rule = bash_prefix_rule(&prefix);
+        if rules.allow.iter().any(|existing| existing == &rule) {
+            return Ok(());
+        }
+        rules.allow.push(rule);
+        self.set_permission_rules(rules)
+    }
+
     /// The raw `hooks.json` source (empty when unset).
     pub fn hooks_json(&self) -> Result<String> {
         Ok(self.load()?.map(|s| s.hooks_json).unwrap_or_default())
@@ -2257,6 +2331,84 @@ mod tests {
         let secrets = Arc::new(MemorySecretStore::new());
         let svc = SettingsService::new(db, transport_with_models(), secrets.clone());
         (svc, secrets)
+    }
+
+    #[tokio::test]
+    async fn a_prefix_grant_is_a_permission_rule_the_settings_page_lists() {
+        let (svc, _secrets) = service();
+        svc.initialize("sk-secret-1234").await.unwrap();
+        assert!(svc.command_prefix_grants().unwrap().is_empty());
+
+        svc.grant_command_prefix("git status").unwrap();
+        // The rule is spelled in the vocabulary the permission-rules editor
+        // already shows, so seeing it and revoking it need no second surface.
+        assert_eq!(
+            svc.permission_rules().unwrap().allow,
+            vec!["Bash(git status:*)".to_string()]
+        );
+        assert_eq!(svc.command_prefix_grants().unwrap(), ["git status"]);
+
+        // The same answer twice, or spelled with extra spaces, is still one rule.
+        svc.grant_command_prefix("git status").unwrap();
+        svc.grant_command_prefix("  git   status ").unwrap();
+        assert_eq!(svc.permission_rules().unwrap().allow.len(), 1);
+
+        // A bare `bash` allow rule claims every command; it is not a prefix grant.
+        svc.set_permission_rules(PermissionRules::new(
+            ["bash".to_string()],
+            [],
+            ["WebSearch".to_string()],
+        ))
+        .unwrap();
+        assert!(svc.command_prefix_grants().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_grant_never_walks_past_a_rule_the_user_wrote() {
+        let (svc, _secrets) = service();
+        svc.initialize("sk-secret-1234").await.unwrap();
+        svc.set_permission_rules(PermissionRules::new(
+            [],
+            ["Bash(git:*)".to_string()],
+            ["Bash(sudo:*)".to_string()],
+        ))
+        .unwrap();
+
+        let refused = svc.grant_command_prefix("git status").unwrap_err();
+        assert!(refused.to_string().contains("fences"), "{refused}");
+        assert!(svc.permission_rules().unwrap().allow.is_empty());
+        // A deny fence blocks it too, even though the allow list has nothing yet.
+        let refused = svc.grant_command_prefix("sudo rm out").unwrap_err();
+        assert!(refused.to_string().contains("fences"), "{refused}");
+        // An unrelated command is still grantable.
+        svc.grant_command_prefix("npm run").unwrap();
+        assert_eq!(svc.command_prefix_grants().unwrap(), ["npm run"]);
+    }
+
+    #[tokio::test]
+    async fn a_prefix_grant_survives_a_restart() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let first = SettingsService::new(
+            db.clone(),
+            transport_with_models(),
+            Arc::new(MemorySecretStore::new()),
+        );
+        first.initialize("sk-secret-1234").await.unwrap();
+        first.grant_command_prefix("cargo test").unwrap();
+
+        // A fresh service over the same data root (the next process) reads it back.
+        let second = SettingsService::new(
+            db,
+            transport_with_models(),
+            Arc::new(MemorySecretStore::new()),
+        );
+        assert_eq!(second.command_prefix_grants().unwrap(), ["cargo test"]);
+
+        // Deleting the rule in settings is the revocation: nothing left to honor.
+        second
+            .set_permission_rules(PermissionRules::default())
+            .unwrap();
+        assert!(second.command_prefix_grants().unwrap().is_empty());
     }
 
     #[tokio::test]

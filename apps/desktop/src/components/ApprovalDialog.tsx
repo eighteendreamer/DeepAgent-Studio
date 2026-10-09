@@ -127,6 +127,15 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
               {t("approvalDialog.reject")}
             </TintButton>
             {/* Drawn from what the backend gate actually honors. */}
+            {request.scopes?.includes("command_prefix") && request.command_prefix && (
+              <TintButton
+                variant="default"
+                className="px-3.5 py-1.5 rounded-full text-[13px]"
+                onClick={() => onApprove(request, "command_prefix")}
+              >
+                {t("approvalDialog.approvePrefix", { prefix: request.command_prefix })}
+              </TintButton>
+            )}
             {request.scopes?.includes("tool_session") && (
               <TintButton
                 variant="default"

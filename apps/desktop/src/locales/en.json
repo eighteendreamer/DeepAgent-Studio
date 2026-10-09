@@ -897,6 +897,8 @@
     "requestTool": "Request to execute tool: ",
     "approve": "Approve",
     "approveSession": "Allow for this session",
+    "approvePrefix": "Always allow \"{{prefix}}\"",
+    "grantRefused": "Could not save that allowance: {{error}}",
     "reject": "Reject"
   },
   "askUserDialog": {

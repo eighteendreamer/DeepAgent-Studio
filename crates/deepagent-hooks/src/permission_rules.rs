@@ -103,14 +103,8 @@ pub enum RuleDecision {
 /// Case-insensitive on the tool name (so `Bash`/`bash` both match the `bash`
 /// tool, and `WebFetch`/`web_fetch` are normalized).
 fn matches_pattern(pattern: &str, tool: &str, arguments: &serde_json::Value) -> bool {
-    let pattern = pattern.trim();
-    // Split `Tool(inner)` into (tool, Some(inner)).
-    let (pat_tool, inner) = match pattern.split_once('(') {
-        Some((t, rest)) => {
-            let inner = rest.strip_suffix(')').unwrap_or(rest);
-            (t.trim(), Some(inner.trim()))
-        }
-        None => (pattern, None),
+    let Some((pat_tool, inner)) = rule_parts(pattern) else {
+        return false;
     };
 
     if !tool_names_match(pat_tool, tool) {
@@ -119,13 +113,8 @@ fn matches_pattern(pattern: &str, tool: &str, arguments: &serde_json::Value) -> 
 
     match inner {
         None => true, // bare tool pattern matches any call to that tool
-        Some(spec) => {
+        Some(prefix) => {
             // Command-prefix match against the bash/shell `command` arg.
-            let prefix = spec.strip_suffix(":*").unwrap_or(spec);
-            let prefix = prefix.strip_suffix('*').unwrap_or(prefix).trim();
-            if prefix.is_empty() {
-                return true;
-            }
             let command = arguments
                 .get("command")
                 .and_then(|v| v.as_str())
@@ -136,6 +125,44 @@ fn matches_pattern(pattern: &str, tool: &str, arguments: &serde_json::Value) -> 
                 || command.starts_with(&format!("{prefix}\t"))
         }
     }
+}
+
+/// The `(tool, inner-spec)` halves of a rule pattern, with the Claude Code `:*`
+/// (or bare `*`) suffix already stripped from the inner spec.
+///
+/// `WebFetch` → `Some(("WebFetch", None))`; `Bash(git:*)` → `Some(("Bash",
+/// Some("git")))`; a blank pattern → `None`. An empty inner spec (`Bash()`)
+/// normalizes to `None`, i.e. "any call to that tool", which is what matching
+/// already does.
+pub fn rule_parts(pattern: &str) -> Option<(&str, Option<&str>)> {
+    let pattern = pattern.trim();
+    if pattern.is_empty() {
+        return None;
+    }
+    match pattern.split_once('(') {
+        Some((tool, rest)) => {
+            let inner = rest.strip_suffix(')').unwrap_or(rest).trim();
+            let inner = inner.strip_suffix(":*").unwrap_or(inner);
+            let inner = inner.strip_suffix('*').unwrap_or(inner).trim();
+            Some((tool.trim(), (!inner.is_empty()).then_some(inner)))
+        }
+        None => Some((pattern, None)),
+    }
+}
+
+/// The rule text a command-prefix grant is stored as (`p` in an approval prompt).
+pub fn bash_prefix_rule(prefix: &str) -> String {
+    format!("Bash({prefix}:*)")
+}
+
+/// The command prefix `pattern` authorizes, or `Some("")` when it authorizes
+/// every command (`bash`). `None` when the pattern is about another tool.
+pub fn rule_command_prefix(pattern: &str) -> Option<&str> {
+    let (pat_tool, inner) = rule_parts(pattern)?;
+    if !tool_names_match(pat_tool, "bash") {
+        return None;
+    }
+    Some(inner.unwrap_or(""))
 }
 
 /// Compare a pattern's tool name to an actual tool name, tolerating the
@@ -322,5 +349,44 @@ mod tests {
         let json = serde_json::to_string(&r).unwrap();
         let back: PermissionRules = serde_json::from_str(&json).unwrap();
         assert_eq!(r, back);
+    }
+
+    #[test]
+    fn rule_grammar_reads_a_prefix_back_out_of_the_rule_it_wrote() {
+        assert_eq!(
+            rule_parts("Bash(git status:*)"),
+            Some(("Bash", Some("git status")))
+        );
+        assert_eq!(rule_parts("Bash(npm run)"), Some(("Bash", Some("npm run"))));
+        assert_eq!(rule_parts("bash"), Some(("bash", None)));
+        // An empty inner spec means "any call", same as a bare tool rule.
+        assert_eq!(rule_parts("Bash()"), Some(("Bash", None)));
+        assert_eq!(rule_parts("   "), None);
+
+        let written = bash_prefix_rule("git status");
+        assert_eq!(rule_command_prefix(&written), Some("git status"));
+        assert_eq!(rule_command_prefix("Read"), None);
+        assert_eq!(rule_command_prefix("shell"), Some(""));
+        // The alias spellings are the same rule.
+        assert_eq!(rule_command_prefix("Shell(curl:*)"), Some("curl"));
+        assert_eq!(
+            rule_command_prefix("BASH(git status:*)"),
+            Some("git status")
+        );
+    }
+
+    #[test]
+    fn prefix_matching_survives_the_grammar_extraction() {
+        let r = PermissionRules::new([bash_prefix_rule("git status")], [], []);
+        assert_eq!(
+            r.evaluate("bash", &bash("git status")),
+            Some(RuleDecision::Allow)
+        );
+        assert_eq!(
+            r.evaluate("bash", &bash("git status --short")),
+            Some(RuleDecision::Allow)
+        );
+        // Token boundary: a longer word is not the same command.
+        assert_eq!(r.evaluate("bash", &bash("git statusx")), None);
     }
 }

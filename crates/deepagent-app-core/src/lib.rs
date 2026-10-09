@@ -112,7 +112,8 @@ pub(crate) mod wasm_tools;
 pub mod workspace_service;
 
 pub use approval_bridge::{
-    ApprovalScope, ChannelApprovalGate, PendingApprovals, PolicyGate, SessionGrants,
+    ApprovalScope, ChannelApprovalGate, CommandPrefixSource, PendingApprovals, PolicyGate,
+    PrefixGrants, SessionGrants,
 };
 pub use archive_service::ArchiveService;
 pub use attachment_service::AttachmentService;

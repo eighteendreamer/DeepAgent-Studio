@@ -89,6 +89,11 @@ export interface ApprovalRequest {
    * drawn from this list so the UI never offers a choice the server would reject.
    */
   scopes?: string[];
+  /**
+   * The `Bash(prefix:*)` rule a `command_prefix` answer would store, shown on the
+   * button so a standing allowance is named before it is granted.
+   */
+  command_prefix?: string | null;
   run_id?: string;
 }
 
