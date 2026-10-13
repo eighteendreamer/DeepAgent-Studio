@@ -280,3 +280,7 @@ cargo test -p deepagent-mcp --offline
 插件侧增加清单、MCP 配置、原始 Skill/说明、锁文件和制作脚本；主系统只修改真实联调暴露的通用插件与 MCP 边界。验收测试通过现有 PluginService、RuntimeBroker、McpService、工具搜索和 ToolRegistry，不包含 REA 专属主系统入口。
 
 **最终验收目标：用户安装并启用 REA 插件后，AI 能通过系统已有工具链调用已验证能力；后续同类插件复用同一接入方式。**
+
+### 工具按需披露修正
+
+2026-10-13 对照 Codex 后，已将延迟工具的全量名称公告改为来源目录；搜索命中后，同一次任务的下一次模型请求刷新完整 schema。REA 仍在主机注册 170 个工具，模型初始目录只展示一个 MCP 来源。详细依据、Auto/Enabled/Disabled 差异、服务启动与模型上下文的区别及验证范围见 [插件与工具发现](plugin-tool-discovery.md)。

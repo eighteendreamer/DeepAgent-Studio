@@ -408,6 +408,9 @@ pub struct ModelAgent {
     response_history: ResponseHistory,
     /// Tool schemas advertised to the model each turn.
     tools: Vec<ToolSchema>,
+    /// Host-owned visibility policy, refreshed before each model turn so a
+    /// discovery call can expose schemas within the same run.
+    tool_schema_source: Option<Arc<dyn Fn() -> Vec<ToolSchema> + Send + Sync>>,
     /// Most recent tool call id, used to correlate the next tool result.
     pending_tool_call_id: Option<String>,
     /// Optional live event sink: when set, token/reasoning deltas are forwarded
@@ -538,6 +541,7 @@ impl ModelAgent {
             messages: vec![Message::system(system.clone()), Message::user(goal.clone())],
             response_history: ResponseHistory::from_seed(system, goal),
             tools,
+            tool_schema_source: None,
             pending_tool_call_id: None,
             events: None,
             usage: crate::agent::RunUsage::default(),
@@ -586,6 +590,17 @@ impl ModelAgent {
     fn push_message(&mut self, message: Message) {
         self.response_history.push_message_projection(&message);
         self.messages.push(message);
+    }
+
+    /// Supply schemas from the host's existing registry and visibility policy.
+    /// This only changes model disclosure; invocation authorization stays in
+    /// the runtime tool pipeline.
+    pub fn with_tool_schema_source(
+        mut self,
+        source: Arc<dyn Fn() -> Vec<ToolSchema> + Send + Sync>,
+    ) -> Self {
+        self.tool_schema_source = Some(source);
+        self
     }
 
     fn push_tool_observation(&mut self, call_id: String, tool_name: &str, content: String) {
@@ -1785,6 +1800,9 @@ impl ModelAgent {
         // must follow the assistant turn that requested them.
         for obs in last {
             self.record_observation(obs);
+        }
+        if let Some(source) = &self.tool_schema_source {
+            self.tools = source();
         }
 
         // Per-turn context management chain, aligned with Claude Code's fixed
@@ -3713,6 +3731,53 @@ mod tests {
         assert!(input
             .iter()
             .any(|item| { item["type"] == "function_call_output" && item["call_id"] == "c1" }));
+    }
+
+    #[tokio::test]
+    async fn tool_schema_source_refreshes_the_next_request_in_same_run() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                response_function_call_done("c1", "tool_search", r#"{"query":"rea managed"}"#),
+                response_text_completed("schema loaded"),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let tools = Arc::new(Mutex::new(vec![ToolSchema::function(
+            "tool_search",
+            "Search tools",
+            serde_json::json!({"type": "object"}),
+        )]));
+        let source_tools = tools.clone();
+        let mut agent = ModelAgent::new(client, "model", "system", "inspect", vec![])
+            .with_tool_schema_source(Arc::new(move || source_tools.lock().unwrap().clone()));
+        assert!(matches!(
+            agent.think(0, &[]).await.unwrap(),
+            AgentDecision::CallTool(_)
+        ));
+        tools.lock().unwrap().push(ToolSchema::function(
+            "mcp__rea__inspect",
+            "Inspect",
+            serde_json::json!({"type": "object"}),
+        ));
+        let observation = Observation {
+            tool: "tool_search".into(),
+            ok: true,
+            output: serde_json::json!({"matches": [{"name": "mcp__rea__inspect"}]}),
+            raw_output: None,
+            call_id: Some("c1".into()),
+        };
+        agent.think(1, &[observation]).await.unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests[0]["tools"].as_array().unwrap().len(), 1);
+        let loaded = requests[1]["tools"].as_array().unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert!(loaded
+            .iter()
+            .any(|tool| tool["name"] == "mcp__rea__inspect"));
     }
 
     #[tokio::test]

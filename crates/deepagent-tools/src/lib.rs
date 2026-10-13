@@ -228,6 +228,13 @@ pub trait Tool: Send + Sync {
         false
     }
 
+    /// Source advertised for discovery (for example an MCP server). Tools from
+    /// one source share a catalog entry; individual names and schemas stay in
+    /// the host registry until searched. This metadata grants no permissions.
+    fn discovery_source(&self) -> Option<&str> {
+        None
+    }
+
     /// Whether this tool MUST always be loaded — overrides `should_defer`.
     /// Default: `false`. Used by `tool_search` itself (the discovery channel
     /// can never be deferred behind itself) and by escape-hatch built-ins

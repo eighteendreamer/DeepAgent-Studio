@@ -3299,20 +3299,20 @@ mod tests {
     }
 
     #[test]
-    fn announcement_lists_names_in_order() {
-        let names = vec!["mcp__alpha__one".to_string(), "mcp__beta__two".to_string()];
+    fn announcement_lists_sources_in_order() {
+        let names = vec!["alpha".to_string(), "beta".to_string()];
         let block = deferred_tools_announcement(&names).unwrap();
         // Has the explanatory header.
         assert!(block.starts_with("## Lazy-loaded tools"));
         // Lists each name on its own bullet line inside the XML envelope.
-        assert!(block.contains("- mcp__alpha__one"));
-        assert!(block.contains("- mcp__beta__two"));
+        assert!(block.contains("- alpha"));
+        assert!(block.contains("- beta"));
         // Envelope tags are present and ordered correctly.
-        let open_idx = block.find("<available-deferred-tools>").unwrap();
-        let close_idx = block.find("</available-deferred-tools>").unwrap();
+        let open_idx = block.find("<available-tool-sources>").unwrap();
+        let close_idx = block.find("</available-tool-sources>").unwrap();
         assert!(open_idx < close_idx);
         // The first bullet must be inside the envelope (between open and close).
-        let first_bullet = block.find("- mcp__alpha__one").unwrap();
+        let first_bullet = block.find("- alpha").unwrap();
         assert!(first_bullet > open_idx && first_bullet < close_idx);
     }
 

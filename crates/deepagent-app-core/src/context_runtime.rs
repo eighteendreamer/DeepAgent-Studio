@@ -1158,7 +1158,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         .plugin_projection
         .and_then(|projection| plugin_output_styles_prompt(&projection.output_styles));
     let tool_catalog_block =
-        deferred_tools_announcement(&request.tool_manifest.undiscovered_deferred_names);
+        deferred_tools_announcement(&request.tool_manifest.undiscovered_deferred_sources);
     let skill_catalog_blocks = build_skill_catalog_blocks(
         request.skills,
         request.settings,

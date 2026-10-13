@@ -69,6 +69,10 @@ impl Tool for McpToolAdapter {
     fn should_defer(&self) -> bool {
         true
     }
+
+    fn discovery_source(&self) -> Option<&str> {
+        Some(&self.tool.server)
+    }
 }
 
 /// Build adapters for every tool currently in `registry`, sharing the registry
@@ -116,6 +120,7 @@ mod tests {
         assert_eq!(adapters.len(), 1);
         let d = adapters[0].descriptor();
         assert_eq!(d.name, "mcp__docs__search");
+        assert_eq!(adapters[0].discovery_source(), Some("docs"));
         assert_eq!(d.risk, RiskLevel::Medium);
         assert!(d.required_permissions.contains(Permission::Network));
     }

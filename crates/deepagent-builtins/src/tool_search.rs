@@ -155,7 +155,7 @@ impl Tool for ToolSearchTool {
             name: TOOL_SEARCH_TOOL_NAME.to_string(),
             description: "Discover and load deferred tools so they can be called.\n\
                 \n\
-                Some tools (especially MCP server tools) are NOT loaded into your initial tool list — only their names appear, in the `<available-deferred-tools>` block. Use this tool to fetch their full schemas. Once a tool's schema lands, you can call it on the next turn exactly like any built-in.\n\
+                Additional tools (especially MCP server tools) are available from the sources in `<available-tool-sources>`. Their individual definitions are withheld until needed. Search by task keywords and source name; do not guess names or arguments. Matching schemas become available on the next model request in the same task.\n\
                 \n\
                 ## Args\n\
                 - `query` (string, required) — what to discover.\n\

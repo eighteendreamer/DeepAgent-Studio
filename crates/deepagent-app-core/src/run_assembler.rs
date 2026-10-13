@@ -863,6 +863,13 @@ impl<'a> RunAssembler<'a> {
             || crate::verification_panel::adversarial_verify_enabled())
         .then(|| (client.clone(), model.clone(), prompt_for_model.to_string()));
         let mut agent = ModelAgent::new(client, model, system_prompt, final_user_prompt, tools)
+            .with_tool_schema_source(crate::tool_manifest::live_tool_schema_source(
+                registry.clone(),
+                granted.clone(),
+                tool_search_mode,
+                tool_search_discovered.clone(),
+                tool_search_threshold,
+            ))
             .with_thinking_depth(effective_thinking_depth)
             .with_fallback_model(fallback_model)
             .with_reactive_compactor(reactive_compactor)

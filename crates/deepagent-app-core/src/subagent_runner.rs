@@ -25,7 +25,8 @@ use deepagent_tools::{Permission, PermissionSet, ToolRegistry};
 use crate::chat_service::ChatService;
 use crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY;
 use crate::tool_manifest::{
-    build_visible_tool_schemas, register_tool_search_into, DiscoveredToolSet,
+    effective_tool_search_mode, live_tool_schema_source, register_tool_search_into,
+    DiscoveredToolSet,
 };
 
 /// Runs a sub-agent for the `task` tool: a nested agent loop over a sub-registry
@@ -525,28 +526,42 @@ impl ChatSubagentRunner {
                 sub_registry.replace(spec.tool.clone());
             }
         }
-        let _ = register_tool_search_into(
-            &mut sub_registry,
+        let mode = effective_tool_search_mode(
+            &sub_registry,
             self.tool_search_mode,
-            sub_discovered.clone(),
             self.tool_search_auto_threshold,
         );
+        register_tool_search_into(
+            &mut sub_registry,
+            mode,
+            sub_discovered.clone(),
+            self.tool_search_auto_threshold,
+        )?;
         let granted = permission_set_for_agent(agent_profile);
-        let mut tools: Vec<ToolSchema> = build_visible_tool_schemas(
-            &sub_registry,
-            &granted,
-            self.tool_search_mode,
-            &sub_discovered,
-        );
         // Fork (Claude Code full-context fork, `tools:['*']`): the child gets
         // the parent's FULL tool pool — skip the agent-profile / allowlist
         // restrictions. A normal sub-agent stays restricted to its profile.
-        if !request.fork {
-            apply_runtime_agent_tool_filter(&mut tools, agent_profile);
-            if let Some(allowlist) = runtime_agent_tool_allowlist(&request.allowed_tools) {
-                tools.retain(|tool| allowlist.contains(&tool.function.name));
+        let schema_source = live_tool_schema_source(
+            sub_registry.clone(),
+            granted.clone(),
+            mode,
+            sub_discovered.clone(),
+            self.tool_search_auto_threshold,
+        );
+        let schema_agent_profile = agent_profile.cloned();
+        let schema_allowed_tools = request.allowed_tools.clone();
+        let schema_fork = request.fork;
+        let schema_source = Arc::new(move || {
+            let mut tools = schema_source();
+            if !schema_fork {
+                apply_runtime_agent_tool_filter(&mut tools, schema_agent_profile.as_ref());
+                if let Some(allowlist) = runtime_agent_tool_allowlist(&schema_allowed_tools) {
+                    tools.retain(|tool| allowlist.contains(&tool.function.name));
+                }
             }
-        }
+            tools
+        });
+        let tools = schema_source();
         // Fork inherits the parent's COMPLETE conversation (byte-similar prefix
         // so the child continues from the exact current state). Best-effort:
         // reconstruct from the parent session's event log.
@@ -600,6 +615,7 @@ impl ChatSubagentRunner {
             &request.prompt,
             tools,
         )
+        .with_tool_schema_source(schema_source)
         .with_response_history(fork_response_history)
         .with_thinking_depth(sub_thinking)
         .with_reactive_compactor(reactive_compactor)
