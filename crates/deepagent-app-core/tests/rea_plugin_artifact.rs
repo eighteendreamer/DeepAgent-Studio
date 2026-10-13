@@ -1,5 +1,5 @@
-//! Opt-in acceptance of the shipped Windows ZIP through the existing host seams.
-//! REA_PLUGIN_ZIP, REA_RUNTIME_ROOT and REA_MANAGED_FIXTURE must be supplied.
+//! Opt-in acceptance of the Windows builtin payload and standalone ZIP.
+//! REA_RUNTIME_ROOT and REA_MANAGED_FIXTURE are required; ZIP tests also use REA_PLUGIN_ZIP.
 #![cfg(windows)]
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -21,29 +21,47 @@ fn required_path(name: &str) -> PathBuf {
 #[tokio::test]
 #[ignore = "requires packaged REA, installed managed Node 24 and a benign managed assembly"]
 async fn rea_zip_installs_discovers_and_analyzes_without_target_execution() {
-    tokio::time::timeout(Duration::from_secs(120), verify_artifact())
+    tokio::time::timeout(Duration::from_secs(120), verify_artifact(false))
         .await
         .expect("artifact acceptance deadline");
 }
 
-async fn verify_artifact() {
+#[tokio::test]
+#[ignore = "requires generated builtin payload, managed Node 24 and a benign managed assembly"]
+async fn rea_builtin_discovers_and_analyzes_without_external_installation() {
+    tokio::time::timeout(Duration::from_secs(120), verify_artifact(true))
+        .await
+        .expect("builtin acceptance deadline");
+}
+
+async fn verify_artifact(builtin: bool) {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("REA 插件 验证");
-    let source = root.join("zip source");
-    std::fs::create_dir_all(&source).unwrap();
-    let mut archive =
-        zip::ZipArchive::new(std::fs::File::open(required_path("REA_PLUGIN_ZIP")).unwrap())
-            .unwrap();
-    assert!(archive.len() < 100_000);
-    assert!(archive.decompressed_size().unwrap() < 512 * 1024 * 1024);
-    archive.extract(&source).unwrap();
+    let source = if builtin {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../apps/desktop/src-tauri/resources/plugins/rea")
+    } else {
+        let source = root.join("zip source");
+        std::fs::create_dir_all(&source).unwrap();
+        let mut archive =
+            zip::ZipArchive::new(std::fs::File::open(required_path("REA_PLUGIN_ZIP")).unwrap())
+                .unwrap();
+        assert!(archive.len() < 100_000);
+        assert!(archive.decompressed_size().unwrap() < 512 * 1024 * 1024);
+        archive.extract(&source).unwrap();
+        source
+    };
     assert!(source.join(".codex-plugin/plugin.json").is_file());
     assert!(source.join("runtime.zip").is_file());
     assert!(!source.join("runtime").exists());
     let plugins = PluginService::new(
         PluginRoots {
             session: vec![],
-            builtin: root.join("builtin"),
+            builtin: if builtin {
+                source.parent().unwrap().to_path_buf()
+            } else {
+                root.join("builtin")
+            },
             workspace: None,
             personal: root.join("app data/plugins/personal"),
         },
@@ -52,21 +70,32 @@ async fn verify_artifact() {
     let scan = plugins.scan_plugin(&source).unwrap();
     assert!(scan.errors.is_empty(), "scan: {:?}", scan.errors);
     println!("scan risks: {:?}", scan.risks);
-    let installed = plugins.install_from_dir(&source).unwrap();
+    let installed = if builtin {
+        let rea = plugins
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|plugin| plugin.id == "rea@builtin")
+            .expect("REA must be supplied by builtin resources");
+        assert_eq!(rea.origin, "builtin");
+        assert!(!root.join("app data/plugins/personal/rea").exists());
+        rea
+    } else {
+        plugins.install_from_dir(&source).unwrap()
+    };
     assert!(installed.enabled && installed.available && installed.has_runtime_payload);
     assert_eq!(installed.skill_count, 1);
     assert_eq!(installed.mcp_server_count, 1);
     let projection = plugins.runtime_projection().unwrap();
     assert!(projection.errors.is_empty(), "{:?}", projection.errors);
-    assert_eq!(projection.skill_roots.len(), 1);
-    assert!(projection.skill_roots[0]
-        .join("rea-analysis/SKILL.md")
-        .is_file());
-    let skills = deepagent_skills::loader::discover(
-        &projection.skill_roots[0],
-        deepagent_skills::SkillOrigin::Plugin,
-    )
-    .unwrap();
+    let rea_skill_root = projection
+        .skill_roots
+        .iter()
+        .find(|root| root.join("rea-analysis/SKILL.md").is_file())
+        .expect("enabled REA Skill root");
+    let skills =
+        deepagent_skills::loader::discover(rea_skill_root, deepagent_skills::SkillOrigin::Plugin)
+            .unwrap();
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].meta.id, "rea-analysis");
     let db = Arc::new(Database::open_in_memory().unwrap());
@@ -206,6 +235,10 @@ async fn verify_artifact() {
     registry.close_all().await.unwrap();
     plugins.set_enabled(&installed.id, false).unwrap();
     let disabled = plugins.runtime_projection().unwrap();
-    assert!(disabled.skill_roots.is_empty() && disabled.mcp_config.servers.is_empty());
+    assert!(disabled
+        .skill_roots
+        .iter()
+        .all(|root| !root.join("rea-analysis/SKILL.md").is_file()));
+    assert!(disabled.mcp_config.servers.is_empty());
     println!("managed inspection, target non-execution and plugin disable passed");
 }

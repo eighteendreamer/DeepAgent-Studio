@@ -11,6 +11,9 @@
     "shortDescription": "应用与程序包分析",
     "category": "Developer Tools",
     "capabilities": ["MCP", "Skill"],
-    "permissions": ["workspace.read", "process.execute", "network"]
+    "permissions": ["workspace.read", "process.execute", "network"],
+    "brandColor": "#2563EB",
+    "composerIcon": "./assets/app-icon.svg",
+    "logo": "./assets/app-icon.svg"
   }
 }

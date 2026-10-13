@@ -50,6 +50,13 @@ jobs:
         with:
           targets: ${{ matrix.rust-targets }}
 
+      - name: Setup Node for Windows bundled REA
+        # pnpm build prepares REA's verified Windows x64 native payload.
+        if: matrix.platform == 'windows-latest'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24.21.0
+
       - name: Install Linux dependencies
         if: matrix.platform == 'ubuntu-22.04'
         run: |

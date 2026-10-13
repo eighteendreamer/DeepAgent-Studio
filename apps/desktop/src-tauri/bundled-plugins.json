@@ -31,6 +31,21 @@
   ],
   "bundledThirdParty": [
     {
+      "contentHash": "sha256:626043c621490efcaf9ca6fb90c5345cf6734ec819a47efdc73f93dc846aa9ec",
+      "license": "MIT",
+      "licenseFile": "LICENSE-REA",
+      "name": "rea",
+      "notes": [
+        "Original Apache-2.0 host wrapper with fixed rea-agents@6.4.0 MIT runtime.",
+        "Content hash covers wrapper, Skill, icon and license notices; generated runtime files are separately verified by the locked packager.",
+        "The verified bundled runtime is Windows x64 only."
+      ],
+      "generatedFiles": ["runtime.zip", "runtime.zip.json"],
+      "generatedPlatform": "win32-x64",
+      "upstream": "https://github.com/morluto/rea",
+      "version": "0.1.0"
+    },
+    {
       "contentHash": "sha256:8f2161157731d3043dce139124f919b46203b84f5211dbbee1aec79103d3fe56",
       "license": "MIT",
       "licenseFile": "LICENSE",

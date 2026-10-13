@@ -207,7 +207,7 @@ DeepSeek 官方 [Responses 参考](https://api-docs.deepseek.com/api/create-resp
 
 ## 8. REA 的落地方式
 
-现有 `plugins/rea/` 已提供清单、MCP 配置、Skill、固定生产运行包及制作脚本。后续沿用该插件包和托管 Node 24.21.0，不增加 REA 专属 host command、代理工具或 Rust SDK。
+REA 清单、MCP 配置和 Skill 已收敛到内置目录 `apps/desktop/src-tauri/resources/plugins/rea/`；固定运行包的构建输入在 `plugins/rea/runtime/`。桌面构建使用同一制作脚本准备随包产物，用户无需外部安装。沿用该插件包和托管 Node 24.21.0，不增加 REA 专属 host command、代理工具或 Rust SDK。此资源接入不代表本文其余工具加载设计已实施。
 
 以当前实测的 170 个 MCP 工具为例：
 

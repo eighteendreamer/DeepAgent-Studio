@@ -16,6 +16,7 @@ const EXPECTED: &[(&str, u32, u32, u32, u32, u32, u32)] = &[
     ("meeting-recorder", 0, 0, 0, 1, 1, 0),
     ("office-agent", 0, 0, 0, 1, 1, 1),
     ("project-map", 0, 0, 0, 1, 1, 0),
+    ("rea", 1, 1, 0, 0, 0, 0),
     ("side-chat", 0, 0, 0, 1, 1, 0),
     ("superpowers", 14, 0, 0, 0, 0, 0),
     ("terminal", 0, 0, 0, 1, 1, 0),
@@ -86,6 +87,32 @@ fn bundled_plugins_keep_their_component_counts() {
             "{name} output styles"
         );
     }
+}
+
+#[test]
+fn rea_is_available_as_builtin_without_personal_installation() {
+    let tmp = tempfile::tempdir().unwrap();
+    let personal = tmp.path().join("personal");
+    let svc = PluginService::new(
+        PluginRoots {
+            session: Vec::new(),
+            builtin: bundled_plugins_root(),
+            workspace: None,
+            personal: personal.clone(),
+        },
+        tmp.path(),
+    );
+    let plugins = svc.list_summaries().unwrap();
+    let rea = plugins
+        .iter()
+        .find(|plugin| plugin.id == "rea@builtin")
+        .unwrap();
+    assert_eq!(rea.origin, "builtin");
+    assert_eq!(rea.display_name, "REA");
+    assert!(rea.enabled && rea.installed && rea.available);
+    assert_eq!(rea.skill_count, 1);
+    assert_eq!(rea.mcp_server_count, 1);
+    assert!(!personal.join("rea").exists());
 }
 
 #[test]

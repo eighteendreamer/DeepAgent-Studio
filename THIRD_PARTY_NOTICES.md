@@ -19,8 +19,19 @@ below. An unclassified plugin fails CI.
 
 | Plugin | Upstream | Version | License | License file | Content hash |
 | --- | --- | --- | --- | --- | --- |
+| `rea` | https://github.com/morluto/rea | Wrapper 0.1.0 / REA 6.4.0 | MIT runtime; Apache-2.0 wrapper | `resources/plugins/rea/LICENSE-REA`, `LICENSE` | `sha256:626043c621490efcaf9ca6fb90c5345cf6734ec819a47efdc73f93dc846aa9ec` |
 | `superpowers` | https://github.com/obra/superpowers | 5.1.3 | MIT | `resources/plugins/superpowers/LICENSE` | `sha256:8f2161157731d3043dce139124f919b46203b84f5211dbbee1aec79103d3fe56` |
 | `wedecode` | https://gitee.com/xiaoshangongzuoshi/wxapkg | 0.9.1 | GPL-3.0-or-later | `resources/plugins/wedecode/LICENSE` | `sha256:7a1c433926537e561ff8300628e86f738f71c43ab47ed8b73e4d0fb102d0d9ac` |
+
+REA's manifest, MCP configuration, original Skill and icon are maintained in the
+bundled resource directory. Its Windows x64 `runtime.zip` and metadata are
+generated from `plugins/rea/runtime/package-lock.json` by the existing packager;
+they are not committed. The recorded directory hash excludes these two generated
+files and covers the wrapper and retained notices. Build preparation verifies
+the generated ZIP digest and locked inputs; rebuilding checks npm integrity and
+the published Windows native artifact. The payload retains upstream and
+dependency license files. The resource directory also keeps `LICENSE-REA`,
+`REA-THIRD_PARTY_NOTICES.md` and `DEPENDENCY_NOTICES.json`.
 
 ### Open compliance item: `wedecode` corresponding source
 

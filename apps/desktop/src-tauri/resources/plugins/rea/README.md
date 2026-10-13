@@ -2,11 +2,11 @@
 
 DeepAgent Studio 插件包装 0.1.0；上游 `rea-agents@6.4.0`；Windows x64；Node 24.21.0。
 
-## 安装与使用
+## 内置与使用
 
-在插件页面选择“从 ZIP 安装”，安装 `rea-plugin-0.1.0-windows-x64.zip` 并启用。系统解包随附的生产运行树，使用兼容的本地 Node 或托管 Node 24。下一轮对话通过 Skill 和工具搜索发现 REA。
+REA 随 Windows x64 桌面版内置，在插件页的“DeepAgent 提供”和“开发工具”中显示。无需单独安装插件 ZIP；保持 REA 启用，下一轮对话通过 Skill 和工具搜索发现能力。系统解包随附的生产运行树，使用兼容的本地 Node 或托管 Node 24。
 
-主程序需要使用包含本轮 MCP 通用修复的构建，并在运行环境页面安装 Node 24.21.0 SDK。旧构建存在插件工具路由和中文路径问题。安装扫描会提示 `process.execute` 高风险声明，按现有安装页面审阅确认。
+主程序需要使用包含 REA 内置资源和 MCP 通用修复的构建，并具备 Node 24.21.0 运行环境。旧构建存在插件工具路由和中文路径问题。插件声明不会代替执行时的权限和审批。
 
 示例：“使用 REA 分析这个 ASAR，说明入口、IPC 和证据来源。”或“使用 REA 检查这个 .NET 程序集，列出类型和方法。”
 
@@ -20,7 +20,11 @@ DeepAgent Studio 插件包装 0.1.0；上游 `rea-agents@6.4.0`；Windows x64；
 pwsh -File scripts/package-rea-plugin.ps1 -NodePath '<Node 24.21.0 的绝对路径>'
 ```
 
-制作阶段从固定锁文件安装生产依赖并验证原生制品；输出到 `dist/plugins/`，同时生成 ZIP 校验信息和依赖声明。`node_modules` 和输出 ZIP 不提交。
+插件清单与 Skill 的唯一源目录为 `apps/desktop/src-tauri/resources/plugins/rea/`；运行包的 package.json 和锁文件位于 `plugins/rea/runtime/`。制作脚本从固定锁文件安装生产依赖、验证原生制品，生成内置 `runtime.zip` 和校验记录，同时保留 `dist/plugins/` 的可选独立 ZIP 输出。
+
+Windows x64 的 `pnpm dev` / `pnpm build` 会先执行 `prebundle-rea`：已有有效运行包时直接复用，否则使用当前 Node 24.21.0 或已安装的托管 SDK 调用同一制作脚本。首次准备需要 npm 注册表和 PowerShell 7；最终用户使用随包产物，不运行 npm。`node_modules`、runtime ZIP 和校验产物不提交。
+
+其他平台当前只包含插件说明与 Skill，尚未生成或验证该平台的 REA 运行包；不能据此宣称跨平台分析能力可用。
 
 ## 外部依赖与边界
 

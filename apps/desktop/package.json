@@ -5,11 +5,12 @@
   "type": "module",
   "description": "DeepAgent Studio desktop UI (Codex-style) built on Tauri v2 + React.",
   "scripts": {
-    "predev": "file-viewer-copy-assets ./public/file-viewer",
+    "predev": "pnpm prebundle-rea && file-viewer-copy-assets ./public/file-viewer",
     "dev": "vite",
     "prebundle-skills": "node scripts/prebundle-skills.cjs",
+    "prebundle-rea": "node scripts/prebundle-rea.cjs",
     "check-plugin-licenses": "node scripts/check-plugin-licenses.cjs",
-    "test:plugin-logos": "node --test scripts/check-bundled-plugin-logos.test.cjs",
+    "test:plugin-logos": "node --test scripts/check-bundled-plugin-logos.test.cjs scripts/check-plugin-license-hash.test.cjs",
     "test:plugin-detail": "node --test scripts/check-plugin-detail-metrics.test.cjs",
     "test:plugin-page": "node --test scripts/check-plugin-page-lifecycle.test.cjs",
     "test:plugin-toggle": "node --test scripts/check-plugin-toggle-refresh.test.cjs",
@@ -21,7 +22,7 @@
     "test:timeline-memory": "node --test scripts/check-timeline-memory.test.cjs",
     "test:workflow": "node --test scripts/check-workflow.test.cjs",
     "test:canvas-ipc": "node --test scripts/check-canvas-ipc.test.cjs",
-    "build": "pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm test:sidebar && pnpm test:session-usage && pnpm test:number-format && pnpm test:knowledge-kinds && pnpm test:hover-info && pnpm test:timeline-memory && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
+    "build": "pnpm prebundle-rea && pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm test:sidebar && pnpm test:session-usage && pnpm test:number-format && pnpm test:knowledge-kinds && pnpm test:hover-info && pnpm test:timeline-memory && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "review": "ocr"

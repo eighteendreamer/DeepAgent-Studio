@@ -13,7 +13,7 @@
  *   2. Every bundled third-party entry keeps its declared license file in-tree.
  *   3. Every bundled third-party entry is named in `THIRD_PARTY_NOTICES.md`.
  *   4. Every bundled third-party entry records the bundled version and a
- *      deterministic content hash of the full plugin directory.
+ *      deterministic source hash, excluding explicitly declared generated files.
  *
  * Classification is explicit rather than inferred from each manifest: whether a
  * plugin is ours or vendored is a distribution decision, and a manifest
@@ -157,6 +157,29 @@ function validateBundledEntry(entry, bucket, classified, notices) {
   }
 
   const pluginDir = path.join(pluginsDir, entry.name);
+  // Reproducible build inputs are hashed below. Generated payloads have their
+  // own lockfile/native verification in the packager and are not committed.
+  const generatedFiles = new Set();
+  if (entry.generatedFiles != null && !Array.isArray(entry.generatedFiles)) {
+    fail(`'${entry.name}': generatedFiles must be an array`);
+    return;
+  }
+  if (entry.generatedFiles?.length > 0 && typeof entry.generatedPlatform !== "string") {
+    fail(`'${entry.name}': generatedPlatform is required for generated payloads`);
+  }
+  for (const file of entry.generatedFiles ?? []) {
+    if (typeof file !== "string" || !file || path.basename(file) !== file) {
+      fail(`'${entry.name}': generatedFiles must contain root-level file names`);
+      continue;
+    }
+    generatedFiles.add(file);
+    if (entry.generatedPlatform === `${process.platform}-${process.arch}`) {
+      const output = path.join(pluginDir, file);
+      if (!fs.existsSync(output) || !fs.statSync(output).isFile() || fs.statSync(output).size === 0) {
+        fail(`'${entry.name}': generated payload missing: ${file}; run pnpm prebundle-rea`);
+      }
+    }
+  }
   const manifestVersion = readPluginManifestVersion(pluginDir);
   if (
     typeof entry.version === "string" &&
@@ -173,7 +196,7 @@ function validateBundledEntry(entry, bucket, classified, notices) {
     if (!/^sha256:[0-9a-f]{64}$/.test(entry.contentHash)) {
       fail(`'${entry.name}': contentHash must be sha256:<64 lowercase hex chars>`);
     } else if (fs.existsSync(pluginDir)) {
-      const actualHash = pluginDirectoryContentHash(pluginDir);
+      const actualHash = pluginDirectoryContentHash(pluginDir, generatedFiles);
       if (entry.contentHash !== actualHash) {
         fail(
           `'${entry.name}' content hash changed: expected ${entry.contentHash}, got ` +
@@ -255,9 +278,9 @@ function readPluginManifestVersion(pluginDir) {
   return null;
 }
 
-function pluginDirectoryContentHash(root) {
+function pluginDirectoryContentHash(root, generatedFiles = new Set()) {
   const entries = [];
-  collectPluginHashEntries(root, root, entries);
+  collectPluginHashEntries(root, root, entries, generatedFiles);
   entries.sort((a, b) => {
     if (a.relative < b.relative) return -1;
     if (a.relative > b.relative) return 1;
@@ -284,16 +307,17 @@ function pluginDirectoryContentHash(root) {
   return `sha256:${hasher.digest("hex")}`;
 }
 
-function collectPluginHashEntries(root, current, entries) {
+function collectPluginHashEntries(root, current, entries, generatedFiles) {
   for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
     if (entry.isDirectory() && entry.name === ".git") {
       continue;
     }
     const absolute = path.join(current, entry.name);
     const relative = path.relative(root, absolute).split(path.sep).join("/");
+    if (generatedFiles.has(relative)) continue;
     if (entry.isDirectory()) {
       entries.push({ kind: "dir", relative, absolute });
-      collectPluginHashEntries(root, absolute, entries);
+      collectPluginHashEntries(root, absolute, entries, generatedFiles);
     } else if (entry.isFile()) {
       entries.push({ kind: "file", relative, absolute });
     }
@@ -323,4 +347,5 @@ function report(pluginCount, classified) {
   );
 }
 
-main();
+if (require.main === module) main();
+module.exports = { pluginDirectoryContentHash };

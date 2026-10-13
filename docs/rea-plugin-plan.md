@@ -4,7 +4,7 @@
 
 ## 1. 交付目标与范围
 
-交付一个可通过 DeepAgent Studio 插件页面安装的 ZIP。用户安装、启用并具备所需运行环境后，下一轮对话即可让 AI 发现和调用 REA。
+REA 随 Windows x64 桌面程序内置，插件页显示为“DeepAgent 提供”。用户保持启用并具备所需运行环境后，下一轮对话即可让 AI 发现和调用 REA。制作脚本同时保留可独立分发的 ZIP 输出。
 
 采用 **插件清单 + MCP 配置 + Skills + 离线运行包**。复用现有 RuntimeBroker、PluginService、McpService、ToolRegistry 和 AgentKernel。
 
@@ -34,7 +34,9 @@
 
 ## 3. 插件与运行包结构
 
-建议首版制品名为 `rea-plugin-0.1.0-windows-x64.zip`。插件版本与上游 REA 版本分别记录。
+插件清单、MCP、Skill 和说明的唯一源目录是 `apps/desktop/src-tauri/resources/plugins/rea/`；运行包构建输入保留在 `plugins/rea/runtime/`。内置 runtime.zip 由同一制作脚本生成，Tauri 已有 resources glob 将其带入 Windows 桌面包。开发和构建先验证或准备运行包，最终用户无需额外安装插件。
+
+可选独立制品名为 `rea-plugin-0.1.0-windows-x64.zip`。插件版本与上游 REA 版本分别记录。
 
 ```text
 rea/
@@ -213,7 +215,7 @@ npm ci --omit=dev
 - 将生产安装树打包为 `runtime.zip`，制作外层插件目录和 ZIP。
 - 生成交付清单：插件版本、REA 版本、目标平台、Node 版本、两层 ZIP 的 SHA-256、已验证能力和验证结果。
 - 在干净测试安装中，从外层 ZIP 安装；不能只从开发 staging 启动成功就判定交付通过。
-- 首版通过插件页面安装分发。若后续决定随桌面程序内置，再更新资源目录、`bundled-plugins.json`、第三方声明及许可证门禁；该分发决定不混入首轮联调。
+- 首版随 Windows x64 桌面程序内置；资源目录、`bundled-plugins.json`、第三方声明和许可证门禁一起维护。独立 ZIP 只作为额外分发和安装回归制品。
 
 ## 6. 通用层的已知检查项
 
@@ -247,7 +249,7 @@ npm ci --omit=dev
 
 必须覆盖的用户流程：
 
-1. 从 ZIP 安装并启用，下一轮 AI 能发现 Skill 和工具。
+1. 启动包含内置 REA 资源的桌面程序，插件页无需外部安装即可显示 REA；下一轮 AI 能发现 Skill 和工具。独立 ZIP 另覆盖原有安装兼容性。
 2. JavaScript/Electron 与托管程序集各完成一个真实 fixture 分析。
 3. 缺少 Ghidra/JDK 时，相关工具给出明确原因，其他能力仍能使用。
 4. Windows 原生控制在正确平台与 Node 下加载；错误制品不得被静默接受。

@@ -6,8 +6,8 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $repoRoot = Split-Path $PSScriptRoot -Parent
-$pluginRoot = Join-Path $repoRoot 'plugins/rea'
-$runtimeRoot = Join-Path $pluginRoot 'runtime'
+$pluginRoot = Join-Path $repoRoot 'apps/desktop/src-tauri/resources/plugins/rea'
+$runtimeRoot = Join-Path $repoRoot 'plugins/rea/runtime'
 $node = (Resolve-Path -LiteralPath $NodePath).Path
 $nodeBin = Split-Path $node -Parent
 $npm = Join-Path $nodeBin 'node_modules/npm/bin/npm-cli.js'
@@ -45,7 +45,7 @@ try {
         }
     }
     New-Item -ItemType Directory -Path $stage -Force | Out-Null
-    foreach ($relative in @('.codex-plugin', '.mcp.json', 'skills', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
+    foreach ($relative in @('.codex-plugin', '.mcp.json', 'assets', 'skills', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md')) {
         Copy-Item -LiteralPath (Join-Path $pluginRoot $relative) -Destination $stage -Recurse
     }
     Copy-Item -LiteralPath (Join-Path $reaRoot 'LICENSE') -Destination (Join-Path $stage 'LICENSE-REA')
@@ -79,10 +79,14 @@ try {
         nodeVersion = '24.21.0'; platform = 'windows-x64'; reaIntegrity = $expectedIntegrity
         runtimeEntries = $entryCount; runtimeExpandedBytes = $expandedBytes
         runtimeSha256 = (Get-FileHash -LiteralPath $runtimeZip -Algorithm SHA256).Hash.ToLowerInvariant()
+        lockSha256 = (Get-FileHash -LiteralPath (Join-Path $runtimeRoot 'package-lock.json') -Algorithm SHA256).Hash.ToLowerInvariant()
+        packageSha256 = (Get-FileHash -LiteralPath (Join-Path $runtimeRoot 'package.json') -Algorithm SHA256).Hash.ToLowerInvariant()
         zipSha256 = (Get-FileHash -LiteralPath $output -Algorithm SHA256).Hash.ToLowerInvariant()
         zipBytes = (Get-Item -LiteralPath $output).Length
     }
     $metadata | ConvertTo-Json | Set-Content -LiteralPath ($output + '.json') -Encoding utf8NoBOM
+    Copy-Item -LiteralPath $runtimeZip -Destination (Join-Path $pluginRoot 'runtime.zip')
+    $metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $pluginRoot 'runtime.zip.json') -Encoding utf8NoBOM
     Write-Output $output
     Write-Output ($metadata | ConvertTo-Json)
 } finally {

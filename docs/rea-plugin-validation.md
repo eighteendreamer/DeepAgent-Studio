@@ -4,13 +4,30 @@
 
 ## 交付
 
-- 源文件：[plugins/rea](../plugins/rea/README.md)。
+- 内置源文件：[REA README](../apps/desktop/src-tauri/resources/plugins/rea/README.md)。
 - 制作脚本：[package-rea-plugin.ps1](../scripts/package-rea-plugin.ps1)。
 - 安装制品：`dist/plugins/rea-plugin-0.1.0-windows-x64.zip`，约 22 MiB。
 - 同名 `.zip.json` 记录 REA 注册表完整性、两层 ZIP 的 SHA-256、条目数和展开大小；以本次制品旁的记录为准。
 - 运行包包含 144 个生产依赖包，6,557 个条目，展开大小 91,148,579 字节，符合系统 100,000 条目 / 512 MiB 上限。
 
-没有向桌面内置资源目录添加 REA。安装时不运行 npm、不访问开发 checkout；Node 与 Ghidra 等外部引擎另行提供。包装、锁文件和验收源码提交；依赖树、临时目录和 ZIP 遵循构建产物忽略规则。
+首版独立制品验证后，现已将 REA 包装移入桌面内置资源目录，沿用通用插件扫描。构建阶段从锁文件准备 runtime.zip，最终用户无需外部安装，也不运行 npm 或访问开发 checkout；Node 与 Ghidra 等外部引擎另行提供。包装、锁文件和验收源码提交；依赖树、临时目录和 ZIP 遵循构建产物忽略规则。
+
+## 本轮内置接入验证
+
+本轮纠正分发方式：REA 作为 `rea@builtin` 随桌面提供，未向真实用户的个人插件目录安装。桌面继续使用已有资源扫描与 MCP 投影，不增加 REA 专属入口。
+
+| 命令或检查 | 本轮结果 |
+|---|---|
+| `pnpm --dir apps/desktop prebundle-rea` | 使用托管 Node 24.21.0，144 个生产依赖安装成功；原生制品验证和实际加载成功；生成内置运行 ZIP 与元数据 |
+| `cargo test -p deepagent-app-core --offline --test plugin_real_fixtures` | 7 项通过；真实内置资源共 10 个插件，REA 默认启用、来源 builtin、1 个 Skill、1 个 MCP；不需要个人安装 |
+| `cargo test -p deepagent-app-core --offline --test rea_plugin_artifact rea_builtin_discovers_and_analyzes_without_external_installation -- --ignored --nocapture` | 1 项通过；直接加载桌面内置资源，真实 MCP 发现 170 个工具，JS/ASAR 与 .NET 静态分析通过；Evidence、权限拒绝、目标未执行、禁用投影通过 |
+| `pnpm build`（`apps/desktop`） | 通过：运行包 SHA 与锁文件复用校验、前端测试、10 个插件许可门禁、TypeScript 检查、Vite 构建；保留依赖浏览器兼容与大 chunk 警告 |
+| `rustfmt --edition 2021 --check`（本轮两个 Rust 测试文件） | 通过 |
+| 许可证与依赖记录 | 内置的三份上游/依赖声明与本轮制作 ZIP 内容一致（统一换行后比较）；源目录采用 LF，避免 Windows 与 CI 的内容哈希差异 |
+
+内置 `runtime.zip` SHA-256：`b43f70e32da309147e49b865ed6de06979d016f2002f0e97106d097c29671731`。运行 ZIP 与校验记录为生成产物，未提交。
+
+本轮未构建 MSI/NSIS 安装器、未执行全量 workspace 测试或 clippy；生产 Rust、Tauri command 和前端 DTO 未改动。页面手动刷新/截图验证因用户 Esc 停止电脑操作而未完成，未声称已看到 REA 卡片。真实模型选工具、动态分析及其他平台继续未验收。Codex 工具加载目标设计仍见 [设计文档](codex-plugin-tool-loading-design.md)，本轮内置分发不等于该目标已全部实现。
 
 ## 已运行的验收
 
@@ -70,14 +87,14 @@ cargo test --workspace --offline
 - 主程序必须更新到包含本轮通用修复的构建；已有桌面可执行程序不会因修改仓库源码而自动升级。
 - Ghidra/JDK 21、IDA、JADX、设备、浏览器、Frida 注入及目标动态执行未验收；上游目录中的可选资源不等于引擎已安装。
 - 现有 MCP 适配统一为 Medium / Network，安装扫描对 process.execute 提示 high。安装确认不代表所有动态操作都受逐项审批或沙箱隔离；本次只验证了静态样本和现有权限路由。
-- 未完成真实模型自动选工具、桌面页面手动安装、多聊天隔离、长任务取消/重连、设备写入、跨平台原生运行验证。
+- 未完成真实模型自动选工具、桌面内置页面手动显示验证、多聊天隔离、长任务取消/重连、设备写入、跨平台原生运行验证。
 - 验收是在网络可用机器上运行；运行树随包完整且启动无需 npm，但没有通过禁网验证宣称整机离线能力。
 - skill-creator 的 quick_validate.py 已尝试执行，因工具 Python 缺少 PyYAML 未能运行；系统自身 Skill loader 验证通过。
 - 仓库全量格式检查已有无关阻塞：`crates/deepagent-runtime/src/kernel.rs:384` 的长类型需要 rustfmt 换行；本轮不修改该用户工作范围外的文件。
 
 ## 安装与使用
 
-使用新的主程序构建，在运行环境页面安装 Node 24.21.0 SDK，再在插件页面“从 ZIP 安装”，审阅扫描提示并启用 REA。下一轮可以输入：
+使用包含内置 REA 的 Windows x64 桌面构建，具备 Node 24.21.0 SDK 后，在插件页面“DeepAgent 提供”中确认 REA 已启用。无需外部 ZIP 安装。下一轮可以输入：
 
 > 使用 REA 分析这个 ASAR，列出入口、IPC 和对应 Evidence。
 
