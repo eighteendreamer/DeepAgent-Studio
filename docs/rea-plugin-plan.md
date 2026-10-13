@@ -25,9 +25,9 @@
 | 插件支持运行环境声明、MCP 配置和 Skills | [插件清单解析](../crates/deepagent-app-core/src/plugin_manifest.rs)、[运行时投影](../crates/deepagent-app-core/src/plugin_runtime.rs) | 通过配置完成通用接入 |
 | `runtime.zip` 解包到 `PLUGIN_DATA/runtime` | [运行包解包](../crates/deepagent-app-core/src/plugin_service.rs) | 启动路径引用插件数据目录 |
 | 运行包最多 100,000 个 ZIP 条目、解压总量最多 512 MiB | 同上 `prepare_runtime_payload` | 打包前检查条目数和解压大小 |
-| 当前托管 Node 为 22.23.2，托管 Java 为 JDK 17 | [运行环境注册表](../crates/deepagent-app-core/src/runtime_service.rs) | Node 22 可支撑基础能力；Ghidra 所需 JDK 另行准备 |
+| 当前托管 Node 为 24.21.0，托管 Java 为 JDK 17 | [运行环境注册表](../crates/deepagent-app-core/src/runtime_service.rs)、[Node 官方下载](https://nodejs.org/en/download) | Node 版本满足 REA 的基础及 SQLite 要求；Ghidra 所需 JDK 另行准备 |
 | REA 要求 Node 22.19+ 的 22 系列、24.11+ 的 24 系列，或 26+ | [REA package.json](../借鉴/rea/package.json) | 不将完整 npm semver 表达式直接填入系统的简化版本解析器 |
-| SQLite 检查要求 Node 24.15+ 的 24 系列或 26+ | [REA 使用指引](../借鉴/rea/.agents/skills/reverse-engineer-anything/SKILL.md) | 首版 Node 22 包不能声明 SQLite 已可用 |
+| SQLite 检查要求 Node 24.15+ 的 24 系列或 26+ | [REA 使用指引](../借鉴/rea/.agents/skills/reverse-engineer-anything/SKILL.md) | 托管 Node 24.21.0 满足版本要求，REA 工具仍须实际联调 |
 | Windows 原生控制需要包内 `.node` 文件及匹配 manifest | [Windows 原生控制说明](../借鉴/rea/native/windows/README.md) | 必须验证版本、架构、摘要和加载，不以存在文件代替验证 |
 
 `借鉴/rea` 用于查证接口和设计。运行制品从固定版本的上游发布包取得；需要源码构建时使用独立、固定提交的上游构建目录。
@@ -86,7 +86,7 @@ node_modules/
   "skills": "./skills",
   "mcpServers": "./.mcp.json",
   "runtime": {
-    "node": "=22.23.2",
+    "node": "=24.21.0",
     "preference": "prefer_local"
   }
 }
@@ -94,7 +94,7 @@ node_modules/
 
 首版将 Node 固定为当前托管版本，避免系统简化版本解析器误接受 REA 不支持的主版本。该声明可选择匹配的本地 Node 或托管 Node，前提是对应运行环境已安装。
 
-未来升级运行版本时，同步更新声明并重新验证。Node 24 功能可通过另一个经过验证的运行版本声明提供，优先复用用户已有的兼容 Node；当前托管 Node 22 不会因此自动升级为 Node 24。
+未来升级运行版本时，同步更新声明并重新验证。托管 SDK 已切换到 Node 24.21.0，使用 `sdk/node-24` 独立目录；旧 Node 22 文件不会被识别成新版。既有桌面程序需更新到新构建并安装 Node 24 SDK。系统继续优先选择满足声明的本地运行环境，不改机器 PATH。
 
 清单只声明启动 REA 所需的 Node。Java、Python 和外部引擎按具体能力诊断；不能假定清单中同时填写几个运行版本就完成了 REA 子进程依赖配置。
 
@@ -166,7 +166,7 @@ Skill 的主要规则：
 | Ghidra Windows 分析 | Windows 原生控制、Ghidra、安装要求的完整 JDK | 当前 REA 文档组合为 Ghidra 12.1.4、JDK 21；保持 P0 已验证目标边界 |
 | Android 代码分析 | JADX 集成及完整 JDK | 使用真实 APK fixture 验证 |
 | 浏览器/运行时观察 | 对应浏览器、CDP 或 provider | 独立验证连接、目标范围、断开和副作用 |
-| SQLite | Node 24.15+ 的 24 系列或 26+ | Node 22 首版列为运行版本不满足 |
+| SQLite | Node 24.15+ 的 24 系列或 26+ | 托管版本满足要求；使用真实数据库 fixture 验证 REA 工具 |
 | 固件、WASM 等扩展 | 对应外部工具、操作系统条件 | 按上游适用范围逐项验证 |
 
 缺少可选引擎时，应保留其他可用能力并给出具体不可用原因；不能声称首版涵盖未经验证的全量 REA 功能。
@@ -271,7 +271,9 @@ cargo test -p deepagent-mcp --offline
 
 当前已完成源码查证、npm 注册表版本与完整性信息查询。上一轮已运行插件安装后同步、运行时投影、插件规范、真实随包资源和 Skill 激活测试，合计 20 项通过。
 
-本轮只制作方案文档。REA runtime 尚未安装、打包或通过系统联调；没有真实模型分析结果，也没有 Windows Ghidra/Node 24 功能验证。
+方案初稿只包含文档。REA runtime 仍未安装、打包或通过系统联调；没有真实模型分析结果，也没有 Windows Ghidra 或 REA 在 Node 24 下的功能验证。
+
+后续 Node SDK 升级已将托管版本改为 24.21.0，六个平台的 SHA-256 均核对官方版本清单。Windows x64 已通过 RuntimeService 下载、校验、安装及 RuntimeBroker 所使用的托管解析路径验证，npm 和 `node:sqlite` 内存数据库读写验证通过。SDK 安装状态增加实际版本校验，避免将旧可执行文件标成新版已安装。这些验证覆盖运行环境；REA 工具和外部引擎仍按第 7 节联调。
 
 预计插件侧增加清单、MCP 配置、Skill/说明和制作流程。首轮接入使用已有入口与服务；完整发布若暴露第 6 节问题，主系统改动收敛到可复用的通用插件、MCP 或执行边界，并按实际 diff 报告。
 

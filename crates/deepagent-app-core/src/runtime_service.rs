@@ -148,7 +148,7 @@ pub struct RuntimeFileArtifact {
 
 /// A managed runtime: an id, the capability it provides, and per-platform
 /// artifacts. `probe` is a path (relative to `dest_subdir`) whose existence
-/// means "installed".
+/// means "installed"; executable SDKs also verify the registered version.
 #[derive(Debug, Clone)]
 pub struct RuntimeEntry {
     pub id: String,
@@ -183,7 +183,7 @@ impl RuntimeKind {
 
     fn managed_id(self) -> &'static str {
         match self {
-            Self::Node => "node-22",
+            Self::Node => "node-24",
             Self::Python => "python-3.11",
             Self::Java => "jdk-17",
         }
@@ -349,6 +349,16 @@ impl RuntimeEntry {
     fn artifact(&self) -> Option<&RuntimeArtifact> {
         self.artifacts.get(&Platform::current())
     }
+
+    fn probe_is_compatible(&self, probe: &Path) -> bool {
+        let sdk = [RuntimeKind::Node, RuntimeKind::Python, RuntimeKind::Java]
+            .into_iter()
+            .find(|kind| kind.managed_id() == self.id);
+        match sdk {
+            Some(kind) => inspect_runtime(kind, probe, &Some(self.version.clone())).is_some(),
+            None => probe.exists(),
+        }
+    }
 }
 
 /// Progress callback: `(downloaded_bytes, total_bytes_when_known)`.
@@ -503,7 +513,7 @@ impl RuntimeService {
         &self.lookup_roots
     }
 
-    /// True iff the runtime `id` is installed (its probe path exists).
+    /// True iff the runtime `id` has a compatible installed probe.
     pub fn is_installed(&self, id: &str) -> bool {
         self.installed_path(id).is_some()
     }
@@ -523,7 +533,7 @@ impl RuntimeService {
             for root in &self.lookup_roots {
                 let dir = root.join(&artifact.dest_subdir);
                 let probe = dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
-                if probe.exists() {
+                if entry.probe_is_compatible(&probe) {
                     let source = if same_path(root, &self.active_root) {
                         "active"
                     } else {
@@ -535,7 +545,7 @@ impl RuntimeService {
                     if let Some(parent) = dir.parent() {
                         let parent_probe =
                             parent.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
-                        if parent_probe.exists() {
+                        if entry.probe_is_compatible(&parent_probe) {
                             let source = if same_path(root, &self.active_root) {
                                 "active"
                             } else {
@@ -550,13 +560,17 @@ impl RuntimeService {
 
         // 2. Check system probe paths (winget / brew / apt / manual installs).
         if !entry.system_probe_paths.is_empty() {
-            if let Some(dir) = find_in_system_paths(&entry.probe, &entry.system_probe_paths) {
+            if let Some(dir) = find_in_system_paths(&entry.probe, &entry.system_probe_paths)
+                .filter(|dir| entry.probe_is_compatible(&dir.join(&entry.probe)))
+            {
                 return Some((dir, "system"));
             }
         }
 
         // 3. Check PATH lookup (works for any installed binary).
-        if let Some(dir) = find_binary_on_path(&entry.probe) {
+        if let Some(dir) = find_binary_on_path(&entry.probe)
+            .filter(|dir| entry.probe_is_compatible(&dir.join(&entry.probe)))
+        {
             return Some((dir, "system"));
         }
         None
@@ -1919,66 +1933,67 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
         "deepagent-whisper-cli-macos-arm64/whisper-cli",
     );
 
+    // Pinned from https://nodejs.org/dist/v24.21.0/SHASUMS256.txt.
     let node_artifacts = per_platform_pinned([
         (
             Platform::WindowsX64,
-            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-win-x64.zip",
+            "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-x64.zip",
             &[] as &[&str],
-            "1177b4137ba5adaa56354ae40f1080c7450e8ae09cecb47da459d1c52ac99f97",
-            "sdk/node-22",
-            "node-v22.23.2-win-x64.zip",
+            "158f7685b44de51f6c0df1d153526cbcd3e1bc739a8dfc607721cef75de9e541",
+            "sdk/node-24",
+            "node-v24.21.0-win-x64.zip",
             ArchiveKind::Zip,
-            "node-v22.23.2-win-x64/node.exe",
+            "node-v24.21.0-win-x64/node.exe",
         ),
         (
             Platform::WindowsArm64,
-            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-win-arm64.zip",
+            "https://nodejs.org/dist/v24.21.0/node-v24.21.0-win-arm64.zip",
             &[],
-            "fec025a6da31757e3b6af84c5a1628e9d38442ca99a2161091d78f2fcfa35ef3",
-            "sdk/node-22",
-            "node-v22.23.2-win-arm64.zip",
+            "8779b1bde1d39f8d420e3b57aa657b39891af434d3de44a919044cec06785921",
+            "sdk/node-24",
+            "node-v24.21.0-win-arm64.zip",
             ArchiveKind::Zip,
-            "node-v22.23.2-win-arm64/node.exe",
+            "node-v24.21.0-win-arm64/node.exe",
         ),
         (
             Platform::MacOsX64,
-            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-x64.tar.gz",
+            "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-x64.tar.gz",
             &[],
-            "58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026",
-            "sdk/node-22",
-            "node-v22.23.2-darwin-x64.tar.gz",
+            "1462cb3b3046b815cf8ea436d3da450ec1a9f11dac7e5a46b0ada5305d7e8097",
+            "sdk/node-24",
+            "node-v24.21.0-darwin-x64.tar.gz",
             ArchiveKind::TarGz,
-            "node-v22.23.2-darwin-x64/bin/node",
+            "node-v24.21.0-darwin-x64/bin/node",
         ),
         (
             Platform::MacOsArm64,
-            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-darwin-arm64.tar.gz",
+            "https://nodejs.org/dist/v24.21.0/node-v24.21.0-darwin-arm64.tar.gz",
             &[],
-            "61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6",
-            "sdk/node-22",
-            "node-v22.23.2-darwin-arm64.tar.gz",
+            "bed7eea5325e1108f32ce5228ddd6a5f0f08a499ee42aa7442aea583702f6057",
+            "sdk/node-24",
+            "node-v24.21.0-darwin-arm64.tar.gz",
             ArchiveKind::TarGz,
-            "node-v22.23.2-darwin-arm64/bin/node",
+            "node-v24.21.0-darwin-arm64/bin/node",
         ),
         (
             Platform::LinuxX64,
-            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-x64.tar.gz",
+            "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.gz",
             &[],
-            "b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a",
-            "sdk/node-22",
-            "node-v22.23.2-linux-x64.tar.gz",
+            "6e1db87ef58b8819e5d5402eff1536491b18edd8eb7bee5ef7897876e88dc5ff",
+            "sdk/node-24",
+            "node-v24.21.0-linux-x64.tar.gz",
             ArchiveKind::TarGz,
-            "node-v22.23.2-linux-x64/bin/node",
+            "node-v24.21.0-linux-x64/bin/node",
         ),
         (
             Platform::LinuxArm64,
-            "https://nodejs.org/dist/v22.23.2/node-v22.23.2-linux-arm64.tar.gz",
+            "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-arm64.tar.gz",
             &[],
-            "013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30",
-            "sdk/node-22",
-            "node-v22.23.2-linux-arm64.tar.gz",
+            "724282c3b43aec998aa9527380465b45d229e021b58035f5f4f63095eabfe5d5",
+            "sdk/node-24",
+            "node-v24.21.0-linux-arm64.tar.gz",
             ArchiveKind::TarGz,
-            "node-v22.23.2-linux-arm64/bin/node",
+            "node-v24.21.0-linux-arm64/bin/node",
         ),
     ]);
     let python_artifacts = per_platform_pinned([(
@@ -2001,9 +2016,9 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
 
     vec![
         RuntimeEntry {
-            id: "node-22".to_string(),
+            id: "node-24".to_string(),
             name: "Node.js".to_string(),
-            version: "22.23.2".to_string(),
+            version: "24.21.0".to_string(),
             capability: "node".to_string(),
             size_bytes: 55 * 1024 * 1024,
             artifacts: node_artifacts,
@@ -2818,6 +2833,65 @@ fn main() {{
     }
 
     #[test]
+    fn node_24_upgrade_does_not_reuse_node_22_installation() {
+        let active = tempfile::tempdir().unwrap();
+        let svc = RuntimeService::new(
+            &[active.path().to_path_buf()],
+            Arc::new(UnavailableDownloader),
+        );
+        let entry = svc
+            .registry
+            .iter()
+            .find(|entry| entry.id == RuntimeKind::Node.managed_id())
+            .unwrap();
+        let artifact = entry.artifact().unwrap();
+        let legacy_node_path = active
+            .path()
+            .join(artifact.dest_subdir.replace("node-24", "node-22"))
+            .join(
+                artifact
+                    .probe
+                    .as_ref()
+                    .unwrap()
+                    .replace("24.21.0", "22.23.2"),
+            );
+        let legacy_node_dir = legacy_node_path.parent().unwrap();
+        std::fs::create_dir_all(legacy_node_dir).unwrap();
+        let legacy_node = compile_fake_runtime(legacy_node_dir, "node", "22.23.2");
+        assert!(!entry.probe_is_compatible(&legacy_node));
+        let requirement = RuntimeRequirement {
+            kind: RuntimeKind::Node,
+            version: Some("24".to_string()),
+            preference: RuntimePreference::ManagedOnly,
+        };
+        assert!(svc.resolve_runtime(&requirement, None, None).is_err());
+
+        let node_path = active
+            .path()
+            .join(&artifact.dest_subdir)
+            .join(artifact.probe.as_ref().unwrap());
+        let node_dir = node_path.parent().unwrap();
+        std::fs::create_dir_all(node_dir).unwrap();
+        compile_fake_runtime(node_dir, "node", "22.23.2");
+        assert_ne!(
+            svc.status("node-24").unwrap().install_source.as_deref(),
+            Some("active")
+        );
+        let managed_node = compile_fake_runtime(node_dir, "node", &entry.version);
+        assert_eq!(managed_node, node_path);
+        assert_eq!(
+            svc.status("node-24").unwrap().install_source.as_deref(),
+            Some("active")
+        );
+
+        let runtime = svc.resolve_runtime(&requirement, None, None).unwrap();
+        assert_eq!(runtime.source, RuntimeSource::Managed);
+        assert_eq!(runtime.version, "24.21.0");
+        assert_eq!(runtime.executable, node_path);
+        assert!(legacy_node.is_file());
+    }
+
+    #[test]
     fn project_runtime_wins_over_managed_fallback() {
         let active = tempfile::tempdir().unwrap();
         let project = tempfile::tempdir().unwrap();
@@ -2826,8 +2900,7 @@ fn main() {{
 
         let managed_bin_dir = managed.path().join("managed/node");
         std::fs::create_dir_all(&managed_bin_dir).unwrap();
-        let managed_node = managed_bin_dir.join(runtime_binary_name("node"));
-        std::fs::copy(&project_node, &managed_node).unwrap();
+        let managed_node = compile_fake_runtime(&managed_bin_dir, "node", "24.21.0");
 
         let mut artifacts = HashMap::new();
         artifacts.insert(
@@ -2845,9 +2918,9 @@ fn main() {{
             },
         );
         let entry = RuntimeEntry {
-            id: "node-22".to_string(),
+            id: "node-24".to_string(),
             name: "Managed Node".to_string(),
-            version: "22.1.0".to_string(),
+            version: "24.21.0".to_string(),
             capability: "node-runtime".to_string(),
             size_bytes: 1,
             artifacts,
@@ -2879,6 +2952,18 @@ fn main() {{
         assert_eq!(managed.source, RuntimeSource::Managed);
         assert_eq!(managed.reason, "DeepAgent managed fallback");
         assert_eq!(managed.executable, managed_node);
+        assert_eq!(managed.version, "24.21.0");
+
+        let node_24_requirement = RuntimeRequirement::prefer_local(RuntimeKind::Node, "24");
+        let compatible = svc
+            .resolve_runtime(
+                &node_24_requirement,
+                Some(project.path()),
+                Some(&project_node),
+            )
+            .unwrap();
+        assert_eq!(compatible.source, RuntimeSource::Managed);
+        assert_eq!(compatible.executable, managed_node);
 
         let env = svc.build_process_environment(Some(project.path()));
         let project_node_display = project_node.display().to_string();
