@@ -1,0 +1,16 @@
+{
+  "name": "rea",
+  "version": "0.1.0",
+  "description": "使用 REA 分析应用包、JavaScript、程序集和二进制文件，返回可追溯的分析证据。",
+  "license": "Apache-2.0",
+  "skills": "./skills",
+  "mcpServers": "./.mcp.json",
+  "runtime": { "node": "=24.21.0", "preference": "prefer_local" },
+  "interface": {
+    "displayName": "REA",
+    "shortDescription": "应用与程序包分析",
+    "category": "Developer Tools",
+    "capabilities": ["MCP", "Skill"],
+    "permissions": ["workspace.read", "process.execute", "network"]
+  }
+}

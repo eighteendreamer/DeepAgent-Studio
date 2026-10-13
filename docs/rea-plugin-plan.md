@@ -1,6 +1,6 @@
 # REA 插件制作方案
 
-日期：2026-10-13。状态：制作方案，尚未制作或联调 REA 插件。
+日期：2026-10-13。状态：首版插件已制作，Windows x64 静态接入通过；实际结果与剩余范围见 [制作与验收记录](rea-plugin-validation.md)。
 
 ## 1. 交付目标与范围
 
@@ -25,9 +25,9 @@
 | 插件支持运行环境声明、MCP 配置和 Skills | [插件清单解析](../crates/deepagent-app-core/src/plugin_manifest.rs)、[运行时投影](../crates/deepagent-app-core/src/plugin_runtime.rs) | 通过配置完成通用接入 |
 | `runtime.zip` 解包到 `PLUGIN_DATA/runtime` | [运行包解包](../crates/deepagent-app-core/src/plugin_service.rs) | 启动路径引用插件数据目录 |
 | 运行包最多 100,000 个 ZIP 条目、解压总量最多 512 MiB | 同上 `prepare_runtime_payload` | 打包前检查条目数和解压大小 |
-| 当前托管 Node 为 24.21.0，托管 Java 为 JDK 17 | [运行环境注册表](../crates/deepagent-app-core/src/runtime_service.rs)、[Node 官方下载](https://nodejs.org/en/download) | Node 版本满足 REA 的基础及 SQLite 要求；Ghidra 所需 JDK 另行准备 |
+| 当前托管 Node 为 24.21.0，托管 Java 为 JDK 17 | [运行环境注册表](../crates/deepagent-app-core/src/runtime_service.rs)、[Node 官方下载](https://nodejs.org/en/download) | Node 满足 REA 基础要求；Ghidra 所需 JDK 另行准备 |
 | REA 要求 Node 22.19+ 的 22 系列、24.11+ 的 24 系列，或 26+ | [REA package.json](../借鉴/rea/package.json) | 不将完整 npm semver 表达式直接填入系统的简化版本解析器 |
-| SQLite 检查要求 Node 24.15+ 的 24 系列或 26+ | [REA 使用指引](../借鉴/rea/.agents/skills/reverse-engineer-anything/SKILL.md) | 托管 Node 24.21.0 满足版本要求，REA 工具仍须实际联调 |
+| 旧参考 Skill 提及 SQLite 与 Node 24.15+ | [REA 使用指引](../借鉴/rea/.agents/skills/reverse-engineer-anything/SKILL.md) | 仅作历史参考；实际 6.4.0 catalogue 未发现专门的 SQLite 工具 |
 | Windows 原生控制需要包内 `.node` 文件及匹配 manifest | [Windows 原生控制说明](../借鉴/rea/native/windows/README.md) | 必须验证版本、架构、摘要和加载，不以存在文件代替验证 |
 
 `借鉴/rea` 用于查证接口和设计。运行制品从固定版本的上游发布包取得；需要源码构建时使用独立、固定提交的上游构建目录。
@@ -43,14 +43,14 @@ rea/
 ├─ .mcp.json
 ├─ skills/
 │  └─ rea-analysis/
-│     ├─ SKILL.md
-│     └─ references/
-│        ├─ capabilities.md
-│        └─ troubleshooting.md
+│     └─ SKILL.md
 ├─ runtime.zip
 ├─ README.md
 ├─ LICENSE
-└─ THIRD_PARTY_NOTICES.md
+├─ THIRD_PARTY_NOTICES.md
+├─ LICENSE-REA
+├─ REA-THIRD_PARTY_NOTICES.md
+└─ DEPENDENCY_NOTICES.json
 ```
 
 `runtime.zip` 内部使用独立 npm 项目的生产安装树：
@@ -166,7 +166,7 @@ Skill 的主要规则：
 | Ghidra Windows 分析 | Windows 原生控制、Ghidra、安装要求的完整 JDK | 当前 REA 文档组合为 Ghidra 12.1.4、JDK 21；保持 P0 已验证目标边界 |
 | Android 代码分析 | JADX 集成及完整 JDK | 使用真实 APK fixture 验证 |
 | 浏览器/运行时观察 | 对应浏览器、CDP 或 provider | 独立验证连接、目标范围、断开和副作用 |
-| SQLite | Node 24.15+ 的 24 系列或 26+ | 托管版本满足要求；使用真实数据库 fixture 验证 REA 工具 |
+| SQLite | 参考 Skill 曾提及该能力 | 实际 6.4.0 MCP catalogue 未发现专门检查工具；首版不声明此能力 |
 | 固件、WASM 等扩展 | 对应外部工具、操作系统条件 | 按上游适用范围逐项验证 |
 
 缺少可选引擎时，应保留其他可用能力并给出具体不可用原因；不能声称首版涵盖未经验证的全量 REA 功能。
@@ -201,12 +201,12 @@ npm ci --omit=dev
 
 检查清单：
 
-- REA 版本、入口、`dist/mcp/main.js` 和所有发布包资源完整。
+- REA 版本、入口、`dist/main.js` 和所有发布包资源完整。
 - Windows `.node` 文件及 manifest 匹配，并在目标 Node 下通过上游提供的制品验证入口；该入口的确切调用参数以已安装包脚本为准。
 - 生产依赖全部位于 staging 目录内，不依赖开发机全局包、npm 缓存或源码目录。
 - runtime ZIP 不超过第 2 节的条目和解压大小限制。
 - 运行包和 Skill 均采用同一上游版本，包装锁文件包含 registry 完整性信息。
-- 包中保留上游 LICENSE、THIRD_PARTY_NOTICES 和依赖声明；发布数据不包含用户目标、请求、日志、凭据或机器路径。
+- 包中保留上游 LICENSE、`third_party/README.md`、licenses 与依赖声明；发布数据不包含用户目标、请求、日志、凭据或机器路径。
 
 ### 步骤三：制作插件 ZIP
 
@@ -228,6 +228,8 @@ npm ci --omit=dev
 | 工作目录与沙箱 | MCP 子进程有 cwd，但 cwd 不代表文件或命令隔离 | 核对启动与工具调用是否进入预期权限和 SandboxBackend；需要时修复通用执行边界，不能只加一条 Skill 指令 |
 | 运行包升级 | 解包缓存仅按 ZIP 文件大小比较 | 增加“内容不同但大小相同”的升级回归；缓存需要改为内容摘要或同等可靠身份，不用人为改变包大小的特判 |
 | 会话生命周期 | REA 长期 MCP 服务持有自己的分析会话 | 验证跨 turn 保留、不同聊天目标互不误用、禁用/重启后的状态提示；复用既有 MCP 所有权边界 |
+
+本轮已修复结果字段丢失、中文路径展开、插件命名空间路由和同尺寸运行包更新。现有客户端的初始化足以通过本轮实际静态请求；本轮没有改协议版本或补全完整生命周期协议。进度、取消、沙箱、动态权限和跨聊天隔离仍按验收记录列为未验证。
 
 初始化、版本协商和超时依据 [MCP Lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)。结构化结果和 schema 依据 [MCP Tools](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)。对应本地实现为 [McpClient](../crates/deepagent-mcp/src/client.rs)、[协议类型](../crates/deepagent-mcp/src/protocol.rs)、[stdio](../crates/deepagent-mcp/src/stdio.rs) 和 [工具适配](../crates/deepagent-mcp/src/adapter.rs)。
 
@@ -271,10 +273,10 @@ cargo test -p deepagent-mcp --offline
 
 当前已完成源码查证、npm 注册表版本与完整性信息查询。上一轮已运行插件安装后同步、运行时投影、插件规范、真实随包资源和 Skill 激活测试，合计 20 项通过。
 
-方案初稿只包含文档。REA runtime 仍未安装、打包或通过系统联调；没有真实模型分析结果，也没有 Windows Ghidra 或 REA 在 Node 24 下的功能验证。
+方案初稿只包含文档。现已完成固定 npm 发布产物的生产安装、独立 ZIP 制作和真实系统联调：170 个工具可发现，Skill 与工具搜索正常，JavaScript 目录、ASAR、.NET 静态分析在托管 Node 24 下通过。没有真实模型分析结果，也没有 Windows Ghidra 动态能力验收。
 
 后续 Node SDK 升级已将托管版本改为 24.21.0，六个平台的 SHA-256 均核对官方版本清单。Windows x64 已通过 RuntimeService 下载、校验、安装及 RuntimeBroker 所使用的托管解析路径验证，npm 和 `node:sqlite` 内存数据库读写验证通过。SDK 安装状态增加实际版本校验，避免将旧可执行文件标成新版已安装。这些验证覆盖运行环境；REA 工具和外部引擎仍按第 7 节联调。
 
-预计插件侧增加清单、MCP 配置、Skill/说明和制作流程。首轮接入使用已有入口与服务；完整发布若暴露第 6 节问题，主系统改动收敛到可复用的通用插件、MCP 或执行边界，并按实际 diff 报告。
+插件侧增加清单、MCP 配置、原始 Skill/说明、锁文件和制作脚本；主系统只修改真实联调暴露的通用插件与 MCP 边界。验收测试通过现有 PluginService、RuntimeBroker、McpService、工具搜索和 ToolRegistry，不包含 REA 专属主系统入口。
 
 **最终验收目标：用户安装并启用 REA 插件后，AI 能通过系统已有工具链调用已验证能力；后续同类插件复用同一接入方式。**

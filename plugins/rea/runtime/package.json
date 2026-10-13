@@ -1,0 +1,9 @@
+{
+  "name": "deepagent-rea-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "bin": { "rea": "node_modules/rea-agents/scripts/rea.mjs" },
+  "dependencies": { "rea-agents": "6.4.0" },
+  "allowScripts": { "frida@17.23.2": true }
+}

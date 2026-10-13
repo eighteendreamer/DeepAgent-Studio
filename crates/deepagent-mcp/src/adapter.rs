@@ -47,14 +47,18 @@ impl Tool for McpToolAdapter {
             .registry
             .invoke(&self.tool.namespaced_name, arguments)
             .await?;
-        if result.is_error {
-            Ok(ToolOutput::failure(result.text()))
-        } else {
-            Ok(ToolOutput::success(serde_json::json!({
-                "text": result.text(),
-                "content": result.content,
-            })))
+        let text = result.text();
+        let is_error = result.is_error;
+        let mut value = serde_json::to_value(result)?;
+        value["text"] = text.clone().into();
+        if is_error {
+            value["error"] = text.into();
         }
+        Ok(ToolOutput {
+            ok: !is_error,
+            value,
+            truncated: false,
+        })
     }
 
     /// MCP tools are workflow-specific and frequently arrive in large batches
@@ -93,7 +97,11 @@ mod tests {
             )
             .with_result(
                 "tools/call",
-                serde_json::json!({"content":[{"type":"text","text":"found it"}],"isError":false}),
+                serde_json::json!({
+                    "content":[{"type":"text","text":"found it"}],"isError":false,
+                    "structuredContent":{"evidence_id":"success-evidence"},
+                    "_meta":{"provenance":{"untrusted_content":true}}
+                }),
             );
         let client = Arc::new(McpClient::new(Arc::new(transport)));
         let mut reg = McpRegistry::new();
@@ -135,6 +143,11 @@ mod tests {
             .unwrap();
         assert!(out.ok);
         assert_eq!(out.value["text"], "found it");
+        assert_eq!(
+            out.value["structuredContent"]["evidence_id"],
+            "success-evidence"
+        );
+        assert_eq!(out.value["_meta"]["provenance"]["untrusted_content"], true);
     }
 
     #[tokio::test]
@@ -146,7 +159,11 @@ mod tests {
             )
             .with_result(
                 "tools/call",
-                serde_json::json!({"content":[{"type":"text","text":"bad input"}],"isError":true}),
+                serde_json::json!({
+                    "content":[{"type":"text","text":"bad input"}],"isError":true,
+                    "structuredContent":{"evidence_id":"failure-evidence"},
+                    "_meta":{"provenance":{"untrusted_content":true}}
+                }),
             );
         let client = Arc::new(McpClient::new(Arc::new(transport)));
         let mut reg = McpRegistry::new();
@@ -155,6 +172,12 @@ mod tests {
         let out = adapters[0].invoke(serde_json::json!({})).await.unwrap();
         assert!(!out.ok);
         assert_eq!(out.value["error"], "bad input");
+        assert_eq!(out.value["content"][0]["text"], "bad input");
+        assert_eq!(
+            out.value["structuredContent"]["evidence_id"],
+            "failure-evidence"
+        );
+        assert_eq!(out.value["_meta"]["provenance"]["untrusted_content"], true);
     }
 
     #[tokio::test]

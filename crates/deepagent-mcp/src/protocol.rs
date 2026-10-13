@@ -95,21 +95,66 @@ pub struct ToolCallResult {
     /// Whether the call ended in an error.
     #[serde(rename = "isError", default)]
     pub is_error: bool,
+    /// Structured evidence and server metadata, including provenance markers.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A content block in a tool result (MCP supports text/image/resource; we model
 /// the common text block and keep the rest as raw JSON).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ContentBlock {
     /// Plain text content.
     Text {
         /// The text.
         text: String,
+        /// Annotations, metadata and future extension fields.
+        extra: serde_json::Map<String, serde_json::Value>,
     },
     /// Any other block type, preserved verbatim.
-    #[serde(other)]
-    Other,
+    Other(serde_json::Value),
+}
+
+impl Serialize for ContentBlock {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        match self {
+            Self::Text { text, extra } => {
+                let mut value = extra.clone();
+                value.insert("type".into(), "text".into());
+                value.insert("text".into(), text.clone().into());
+                value.serialize(serializer)
+            }
+            Self::Other(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ContentBlock {
+    fn deserialize<D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Self, D::Error> {
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if value.get("type").and_then(|kind| kind.as_str()) == Some("text") {
+            let text = value
+                .get("text")
+                .and_then(|text| text.as_str())
+                .ok_or_else(|| {
+                    serde::de::Error::custom("MCP text content requires a string text")
+                })?;
+            let mut extra = value.as_object().cloned().unwrap_or_default();
+            extra.remove("type");
+            extra.remove("text");
+            Ok(Self::Text {
+                text: text.to_string(),
+                extra,
+            })
+        } else {
+            Ok(Self::Other(value))
+        }
+    }
 }
 
 impl ToolCallResult {
@@ -118,8 +163,8 @@ impl ToolCallResult {
         self.content
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                ContentBlock::Other => None,
+                ContentBlock::Text { text, .. } => Some(text.as_str()),
+                ContentBlock::Other(_) => None,
             })
             .collect::<Vec<_>>()
             .join("\n")
@@ -209,6 +254,28 @@ mod tests {
         let json = r#"{"content":[{"type":"image","data":"..."}],"isError":false}"#;
         let res: ToolCallResult = serde_json::from_str(json).unwrap();
         assert_eq!(res.text(), "");
+        assert_eq!(
+            serde_json::to_value(res).unwrap()["content"][0]["data"],
+            "..."
+        );
+    }
+
+    #[test]
+    fn evidence_and_provenance_roundtrip_on_success_and_error() {
+        for is_error in [false, true] {
+            let wire = serde_json::json!({
+                "content": [
+                    {"type":"text", "text":"evidence", "_meta":{"untrusted":true}},
+                    {"type":"resource", "resource":{"uri":"file:///sample.js", "text":"code"}}
+                ],
+                "structuredContent":{"evidence_id":"e1"},
+                "_meta":{"provenance":{"untrusted_content":true}},
+                "isError":is_error
+            });
+            let result: ToolCallResult = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(result.text(), "evidence");
+            assert_eq!(serde_json::to_value(result).unwrap(), wire);
+        }
     }
 
     #[test]

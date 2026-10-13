@@ -2193,7 +2193,7 @@ impl PluginService {
 }
 
 /// Extract a plugin's `runtime.zip` payload into `data_dir/runtime`, skipping
-/// the work when the marker file already matches the archive size.
+/// the work when the marker file already matches the archive SHA-256.
 ///
 /// Public so the desktop entry point can pre-warm the extraction off the
 /// startup path (a background thread); the MCP/plugin assembly paths still call
@@ -2208,11 +2208,13 @@ pub fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<(
     std::fs::create_dir_all(data_dir.join("workspace"))
         .map_err(|e| CoreError::Persistence(format!("create payload workspace: {e}")))?;
     let runtime_dir = data_dir.join("runtime");
-    let marker = runtime_dir.join(".payload-size");
-    let archive_size = std::fs::metadata(&archive_path)
-        .map_err(|e| CoreError::Persistence(format!("read {}: {e}", archive_path.display())))?
-        .len();
-    let expected_marker = archive_size.to_string();
+    let marker = runtime_dir.join(".payload-sha256");
+    let expected_marker = crate::runtime_service::sha256_file(&archive_path).map_err(|error| {
+        CoreError::Persistence(format!(
+            "hash runtime payload {}: {error}",
+            archive_path.display()
+        ))
+    })?;
     if marker
         .is_file()
         .then(|| std::fs::read_to_string(&marker).ok())
@@ -2267,7 +2269,7 @@ pub fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<(
     let _ = std::fs::remove_dir_all(&runtime_dir);
     std::fs::rename(&stage, &runtime_dir)
         .map_err(|e| CoreError::Persistence(format!("activate runtime payload: {e}")))?;
-    std::fs::write(marker, archive_size.to_string())
+    std::fs::write(marker, expected_marker)
         .map_err(|e| CoreError::Persistence(format!("write runtime payload marker: {e}")))?;
     Ok(())
 }
@@ -6973,10 +6975,10 @@ rl.on('line', (line) => {
         let runtime_dir = data_root.join("runtime-demo-builtin").join("runtime");
         assert!(runtime_dir.join("package.json").is_file());
         assert!(runtime_dir.join("dist").join("cli.js").is_file());
-        let marker = runtime_dir.join(".payload-size");
+        let marker = runtime_dir.join(".payload-sha256");
         let first = std::fs::read_to_string(&marker).unwrap();
 
-        // A second call is a no-op: the marker already matches the archive size,
+        // A second call is a no-op: the marker already matches the archive digest,
         // so the extraction is skipped and the marker is left untouched.
         prepare_runtime_payloads(&roots, &data_root);
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), first);
@@ -7094,8 +7096,43 @@ rl.on('line', (line) => {
         std::fs::remove_dir_all(data_dir.join("workspace")).unwrap();
         prepare_runtime_payload(&plugin_root, &data_dir).unwrap();
 
-        assert!(data_dir.join("runtime").join(".payload-size").is_file());
+        assert!(data_dir.join("runtime").join(".payload-sha256").is_file());
         assert!(data_dir.join("workspace").is_dir());
+    }
+
+    #[test]
+    fn runtime_payload_replaces_changed_archive_with_the_same_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin_root = tmp.path().join("plugin");
+        let data_dir = tmp.path().join("data");
+        let package = serde_json::json!({"name":"runtime-demo"});
+        write_plugin_with_runtime_payload(
+            &plugin_root,
+            "runtime-demo",
+            package.clone(),
+            &[("value.txt", b"one")],
+        );
+        let original_size = std::fs::metadata(plugin_root.join("runtime.zip"))
+            .unwrap()
+            .len();
+        prepare_runtime_payload(&plugin_root, &data_dir).unwrap();
+        write_plugin_with_runtime_payload(
+            &plugin_root,
+            "runtime-demo",
+            package,
+            &[("value.txt", b"two")],
+        );
+        assert_eq!(
+            original_size,
+            std::fs::metadata(plugin_root.join("runtime.zip"))
+                .unwrap()
+                .len()
+        );
+        prepare_runtime_payload(&plugin_root, &data_dir).unwrap();
+        assert_eq!(
+            std::fs::read(data_dir.join("runtime/value.txt")).unwrap(),
+            b"two"
+        );
     }
 
     #[test]

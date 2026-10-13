@@ -35,7 +35,8 @@ pub fn namespaced_name(server: &str, tool: &str) -> String {
     format!("mcp__{server}__{tool}")
 }
 
-/// Split a namespaced name back into `(server, tool)`, if it is one.
+/// Split at the first delimiter for simple server names. Server names may also
+/// contain `__`; routing must use registered [`RemoteTool`] ownership instead.
 pub fn split_namespaced(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("mcp__")?;
     let sep = rest.find("__")?;
@@ -97,6 +98,17 @@ impl McpRegistry {
             })
             .collect();
         let count = tools.len();
+        let mut names = std::collections::BTreeSet::new();
+        for tool in &tools {
+            if !names.insert(&tool.namespaced_name)
+                || self.find_tool(&tool.namespaced_name).is_some()
+            {
+                return Err(CoreError::invalid(format!(
+                    "MCP tool '{}' is already registered",
+                    tool.namespaced_name
+                )));
+            }
+        }
         self.servers.insert(
             server_name.to_string(),
             ConnectedServer {
@@ -163,11 +175,9 @@ impl McpRegistry {
 
     /// Look up a tool by its namespaced name.
     pub fn find_tool(&self, namespaced: &str) -> Option<&RemoteTool> {
-        let (server, _) = split_namespaced(namespaced)?;
         self.servers
-            .get(server)?
-            .tools
-            .iter()
+            .values()
+            .flat_map(|server| &server.tools)
             .find(|t| t.namespaced_name == namespaced)
     }
 
@@ -177,19 +187,22 @@ impl McpRegistry {
         namespaced: &str,
         arguments: serde_json::Value,
     ) -> Result<ToolCallResult> {
-        let (server, local) = split_namespaced(namespaced)
-            .ok_or_else(|| CoreError::invalid(format!("not an MCP tool name: {namespaced}")))?;
-        let connected = self
-            .servers
-            .get(server)
-            .ok_or_else(|| CoreError::not_found(format!("MCP server '{server}'")))?;
-        // Confirm the tool actually exists on that server.
-        if !connected.tools.iter().any(|t| t.local_name == local) {
-            return Err(CoreError::not_found(format!(
-                "tool '{local}' on MCP server '{server}'"
+        if split_namespaced(namespaced).is_none() {
+            return Err(CoreError::invalid(format!(
+                "not an MCP tool name: {namespaced}"
             )));
         }
-        connected.client.call_tool(local, arguments).await
+        let tool = self
+            .find_tool(namespaced)
+            .ok_or_else(|| CoreError::not_found(format!("MCP tool '{namespaced}'")))?;
+        let connected = self
+            .servers
+            .get(&tool.server)
+            .ok_or_else(|| CoreError::not_found(format!("MCP server '{}'", tool.server)))?;
+        connected
+            .client
+            .call_tool(&tool.local_name, arguments)
+            .await
     }
 
     /// Close all server connections.
@@ -289,6 +302,48 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.text(), "ok");
+    }
+
+    #[tokio::test]
+    async fn plugin_server_names_route_using_registered_ownership() {
+        let transport = Arc::new(tools_transport());
+        let mut reg = McpRegistry::new();
+        reg.register("plugin", client(tools_transport()))
+            .await
+            .unwrap();
+        reg.register(
+            "plugin__rea__rea",
+            Arc::new(McpClient::new(transport.clone())),
+        )
+        .await
+        .unwrap();
+        let name = "mcp__plugin__rea__rea__search";
+        let tool = reg.find_tool(name).expect("plugin tool lookup");
+        assert_eq!(tool.server, "plugin__rea__rea");
+        assert_eq!(
+            reg.invoke(name, serde_json::json!({"q":"x"}))
+                .await
+                .unwrap()
+                .text(),
+            "ok"
+        );
+        assert_eq!(transport.sent_methods(), vec!["tools/list", "tools/call"]);
+    }
+
+    #[tokio::test]
+    async fn ambiguous_namespaced_tool_registration_is_rejected() {
+        let mut reg = McpRegistry::new();
+        reg.register("plugin__rea", client(tools_transport()))
+            .await
+            .unwrap();
+        let ambiguous = MockTransport::new().with_result(
+            "tools/list",
+            serde_json::json!({
+                "tools":[{"name":"rea__search", "inputSchema":{}}]
+            }),
+        );
+        assert!(reg.register("plugin", client(ambiguous)).await.is_err());
+        assert_eq!(reg.server_count(), 1);
     }
 
     #[tokio::test]

@@ -197,26 +197,52 @@ where
     F: Fn(&str) -> Option<String>,
 {
     let mut out = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] == b'{' {
-            if let Some(end) = input[i + 2..].find('}') {
-                let var = &input[i + 2..i + 2 + end];
-                out.push_str(&lookup(var).unwrap_or_default());
-                i = i + 2 + end + 1;
-                continue;
-            }
-        }
-        out.push(bytes[i] as char);
-        i += 1;
+    let mut remaining = input;
+    while let Some(start) = remaining.find("${") {
+        out.push_str(&remaining[..start]);
+        let tail = &remaining[start + 2..];
+        let Some(end) = tail.find('}') else {
+            out.push_str(&remaining[start..]);
+            return out;
+        };
+        out.push_str(&lookup(&tail[..end]).unwrap_or_default());
+        remaining = &tail[end + 1..];
     }
+    out.push_str(remaining);
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expansion_preserves_unicode_paths_and_values_on_repeated_passes() {
+        let lookup = |name: &str| (name == "PLUGIN_DATA").then(|| "C:/REA 插件 验证".into());
+        let path = expand("${PLUGIN_DATA}/运行 文件/工具🚀.mjs", &lookup);
+        assert_eq!(path, "C:/REA 插件 验证/运行 文件/工具🚀.mjs");
+        assert_eq!(expand(&path, &|_| None), path);
+        assert_eq!(
+            expand("前缀${UNKNOWN}后缀${未闭合", &lookup),
+            "前缀后缀${未闭合"
+        );
+        let mut config = McpConfig::parse(
+            r#"{"mcpServers":{"test":{
+            "command":"node", "args":["${PLUGIN_DATA}/入口.js"],
+            "cwd":"${PLUGIN_DATA}/运行", "env":{"LABEL":"分析🚀"}
+        }}}"#,
+        )
+        .unwrap();
+        config.expand_with(&lookup);
+        config.expand_with(&|_| None);
+        let server = &config.servers["test"];
+        assert_eq!(server.args[0], "C:/REA 插件 验证/入口.js");
+        assert_eq!(
+            server.cwd.as_ref().unwrap(),
+            &PathBuf::from("C:/REA 插件 验证/运行")
+        );
+        assert_eq!(server.env["LABEL"], "分析🚀");
+    }
 
     #[test]
     fn parses_wrapped_form() {

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rea": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["${PLUGIN_DATA}/runtime/node_modules/rea-agents/scripts/rea.mjs", "mcp"],
+      "cwd": "${PLUGIN_DATA}/runtime",
+      "env": { "REA_ANALYSIS_PROVIDER": "auto" }
+    }
+  }
+}

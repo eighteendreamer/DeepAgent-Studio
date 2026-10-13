@@ -1683,7 +1683,7 @@ fn is_writable_dir(dir: &Path) -> bool {
 }
 
 /// Stream a file through SHA-256, returning the lowercase hex digest.
-fn sha256_file(path: &Path) -> Result<String> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String> {
     let mut file =
         std::fs::File::open(path).map_err(|e| CoreError::Other(format!("open for hash: {e}")))?;
     let mut hasher = Sha256::new();
