@@ -1,5 +1,10 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { ProcessStoreContext } from "./components/chat-timeline/ProcessDisclosureContext";
+import {
+  advanceTurnActivity,
+  ProcessDisclosureStore,
+} from "./components/chat-timeline/processDisclosure";
 import { useTranslation } from "react-i18next";
 import "./icons";
 import {
@@ -233,6 +238,13 @@ function mapConversationToChatMessages(conversation: ConversationMessage[]): Cha
       return { kind: "text", text: p.text };
     });
     mapped.push({
+      id: m.id,
+      turn: m.turn ? {
+        id: m.turn.id,
+        phase: "settled",
+        generation: 0,
+        finalAnswer: m.turn.final_answer ?? undefined,
+      } : undefined,
       role: m.role,
       content: m.content,
       attachments,
@@ -444,6 +456,7 @@ async function recognizeImageAttachmentsOnSend(
 }
 
 export function App() {
+  const [processDisclosureStore] = useState(() => new ProcessDisclosureStore());
   const { t } = useTranslation();
   const requestedSessionIdRef = useRef<string | null>(null);
   if (requestedSessionIdRef.current === null && typeof window !== "undefined") {
@@ -745,7 +758,11 @@ export function App() {
       .then((mod) =>
         mod.listen<SessionCompletedPayload>("session://completed", (event) => {
           const payload = event.payload;
-          if (payload.session_id) {
+          if (
+            payload.session_id &&
+            (!activeRunIdsRef.current.has(payload.session_id) ||
+              activeRunIdsRef.current.get(payload.session_id) === payload.run_id)
+          ) {
             setRunningSessionIds((prev) => {
               const next = new Set(prev);
               next.delete(payload.session_id as string);
@@ -1143,13 +1160,21 @@ export function App() {
       const seeded: ChatMessage[] = [
         ...prior,
         {
+          id: `${runId}:user`,
+          turn: { id: runId, phase: "working", generation: 0 },
           role: "user",
           content: visibleUserContent,
           attachments,
           selectedSkills: displaySkills,
           mentions,
         },
-        { role: "assistant", content: "", parts: [] },
+        {
+          id: `${runId}:assistant`,
+          turn: { id: runId, phase: "working", generation: 0 },
+          role: "assistant",
+          content: "",
+          parts: [],
+        },
       ];
       liveTranscripts.current.set(runKey, seeded);
       setMessages(seeded);
@@ -1203,8 +1228,17 @@ export function App() {
       ) => {
         const key = runKey;
         const current = liveTranscripts.current.get(key) ?? [];
+        if (current[current.length - 1]?.turn?.id !== runId) return;
         const updated = fn(current);
         if (updated === current) return;
+        const activity = updated[updated.length - 1]?.turn;
+        if (activity) {
+          for (let index = updated.length - 1; index >= 0; index -= 1) {
+            if (updated[index].role !== "user") continue;
+            if (updated[index].turn !== activity) updated[index] = { ...updated[index], turn: activity };
+            break;
+          }
+        }
         liveTranscripts.current.set(key, updated);
         scheduleTranscriptRender(key, immediate);
       };
@@ -1227,14 +1261,25 @@ export function App() {
       // appended in the EXACT order events stream in, so the UI preserves
       // chronology (reasoning before a tool that came after it, etc.) instead
       // of grouping all tools above all text.
-      const mutateParts = (fn: (parts: MessagePart[]) => MessagePart[]) => {
+      const mutateParts = (
+        fn: (parts: MessagePart[]) => MessagePart[],
+        phase?: "working" | "answering" | "settled",
+        reset = false,
+      ) => {
         updateTranscript((prev) => {
           const next = [...prev];
           const lastIdx = next.length - 1;
           if (lastIdx < 0 || next[lastIdx].role !== "assistant") return prev;
           const msg = next[lastIdx];
           const parts = fn(msg.parts ? [...msg.parts] : []);
-          next[lastIdx] = { ...msg, parts };
+          const nextPhase = phase === "answering" &&
+            parts.some((part) => part.kind === "tool" && part.tool.status === "running")
+            ? "working" : phase;
+          next[lastIdx] = {
+            ...msg,
+            parts,
+            turn: nextPhase ? advanceTurnActivity(msg.turn, nextPhase, reset) : msg.turn,
+          };
           return next;
         });
       };
@@ -1256,7 +1301,7 @@ export function App() {
             );
           }
           return parts;
-        });
+        }, kind === "reasoning" ? "working" : "answering");
       };
 
       // Insert or update a tool part keyed by call_id, preserving its position.
@@ -1285,7 +1330,7 @@ export function App() {
             });
           }
           return parts;
-        });
+        }, patch.status === "running" || patch.status === "blocked" ? "working" : undefined);
       };
 
       // Merge a per-request usage report onto the (last) assistant message of
@@ -1368,12 +1413,16 @@ export function App() {
             .map((p) => (p as { text: string }).text)
             .join("")
             .trim();
+          const lastTextIndex = parts.reduce((last, part, index) => part.kind === "text" ? index : last, -1);
+          const lastText = parts[lastTextIndex];
+          const finalAlreadyPresent = lastText?.kind === "text" && lastText.text.trim() === fin &&
+            !parts.slice(lastTextIndex + 1).some((part) => part.kind === "tool" && part.tool.meta?.isHook !== true);
 
           if (tone === "error") {
             // Append the error as its own trailing text part.
             parts.push({ kind: "text", text: fin, tone: "error" });
-          } else if (streamedText.length === 0 && fin.length > 0) {
-            // No visible text streamed but the run has a final message: show it.
+          } else if (!finalAlreadyPresent && fin.length > 0) {
+            // Reconcile the authoritative answer even after earlier narration.
             parts.push({ kind: "text", text: fin });
           } else if (streamedText.length === 0 && fin.length === 0) {
             // The provider completed without any visible content. Keep the turn
@@ -1397,6 +1446,10 @@ export function App() {
             ...msg,
             parts,
             content,
+            turn: {
+              ...advanceTurnActivity(msg.turn, "settled")!,
+              finalAnswer: fin || parts.reduce<string | undefined>((text, part) => part.kind === "text" ? part.text : text, undefined),
+            },
             runMs: Date.now() - runStart,
             editedFiles: editedFiles && editedFiles.length > 0 ? editedFiles : undefined,
             ...(tone ? { tone } : {}),
@@ -1453,7 +1506,13 @@ export function App() {
         console.log("[DEBUG] RuntimeEvent received:", event.type, event);
 
         switch (event.type) {
+          case "turn_started":
+          case "verification":
+          case "run_awaiting_approval":
+            mutateParts((parts) => parts, "working");
+            break;
           case "model_request_started": {
+            mutateParts((parts) => parts, "working");
             const current = liveTranscripts.current.get(runKey) ?? [];
             const last = current[current.length - 1];
             modelAttemptBaseParts =
@@ -1467,6 +1526,7 @@ export function App() {
             break;
           }
           case "model_attempt_reset":
+            mutateParts((parts) => parts, "working", true);
             if (modelAttemptBaseParts) {
               const snapshot = modelAttemptBaseParts;
               mutateParts((parts) => {
@@ -1573,6 +1633,7 @@ export function App() {
             }
             break;
           case "hook_started":
+            mutateParts((parts) => parts, "working");
             // Successful hooks are protocol plumbing, not assistant/tool output.
             // Claude Code keeps exit-0 hook stdout/stderr out of the normal
             // transcript; only completion errors are surfaced below.
@@ -1711,19 +1772,20 @@ export function App() {
 
       const finishRun = () => {
         scheduleTranscriptRender(runKey, true);
-        setRunningSessionIds((prev) => {
-          const next = new Set(prev);
-          next.delete(runKey);
-          if (continueId) next.delete(continueId);
-          return next;
-        });
+        if (activeRunIdsRef.current.get(runKey) === runId) {
+          setRunningSessionIds((prev) => {
+            const next = new Set(prev);
+            next.delete(runKey);
+            return next;
+          });
+          activeRunIdsRef.current.delete(runKey);
+        }
         if (activePendingRunKeyRef.current === pendingKey) {
           activePendingRunKeyRef.current = null;
         }
         setActivePendingRunKey((current) => (current === pendingKey ? null : current));
         setApprovals((prev) => prev.filter((a) => a.run_id !== runId));
-        activeRunIdsRef.current.delete(runKey);
-        activeRunIdsRef.current.delete(pendingKey);
+        if (activeRunIdsRef.current.get(pendingKey) === runId) activeRunIdsRef.current.delete(pendingKey);
         // Keep the finished session's live transcript in memory so returning
         // to it preserves streamed reasoning deltas. The DB replay currently
         // reconstructs tool cards and final messages, but tool-call reasoning
@@ -1880,6 +1942,7 @@ export function App() {
         submittedText,
         onEvent,
         (request) => {
+          mutateParts((parts) => parts, "working");
           // Queue the approval request; the dialog shows the head of the queue.
           setApprovals((prev) => [...prev, request]);
         },
@@ -1912,20 +1975,14 @@ export function App() {
           }
         })
         .catch((err) => {
-          updateTranscript((prev) => {
-            const next = [...prev];
-            const lastIdx = next.length - 1;
-            if (lastIdx >= 0 && next[lastIdx].role === "assistant") {
-              next[lastIdx] = {
-                ...next[lastIdx],
-                content: `error: ${String(err)}`,
-                tone: "error",
-              };
-            }
-            return next;
-          }, true);
+          const transcript = liveTranscripts.current.get(runKey) ?? [];
+          const last = transcript[transcript.length - 1];
+          if (last?.turn?.phase !== "settled") finalize(`error: ${String(err)}`, "error");
         })
-        .finally(finishRun);
+        .finally(() => {
+          mutateParts((parts) => parts, "settled");
+          finishRun();
+        });
     },
     [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey]
   );
@@ -2329,6 +2386,7 @@ export function App() {
             )}
             {view === "chat" && (
               <div key={viewFrameKey} className="view-frame">
+                <ProcessStoreContext.Provider value={processDisclosureStore}>
                 <ChatView
                   sessionId={chatSessionId}
                   messages={chatMessages}
@@ -2361,6 +2419,7 @@ export function App() {
                   projectMapOpenSignal={projectMapOpenSignal}
                   contextUsage={activeContextUsage}
                 />
+                </ProcessStoreContext.Provider>
               </div>
             )}
             {view === "skills" && (

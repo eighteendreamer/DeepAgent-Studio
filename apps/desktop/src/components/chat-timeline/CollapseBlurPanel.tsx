@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { cn } from "../shadcn/utils";
 
@@ -14,6 +14,15 @@ export function CollapseBlurPanel({
   innerClassName?: string;
   children: ReactNode;
 }) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+    if (!open && content.contains(document.activeElement)) {
+      content.closest("[data-process-turn]")?.querySelector<HTMLButtonElement>("[data-process-toggle]")?.focus({ preventScroll: true });
+    }
+    content.inert = !open;
+  }, [open]);
   return (
     <div
       className={cn(
@@ -24,6 +33,8 @@ export function CollapseBlurPanel({
     >
       <div className="min-h-0 overflow-hidden">
         <div
+          ref={contentRef}
+          aria-hidden={!open}
           className={cn(
             "transition-[filter,opacity] duration-[420ms] ease-out motion-reduce:blur-none motion-reduce:opacity-100 motion-reduce:transition-none",
             open ? "blur-0 opacity-100" : "pointer-events-none blur-[8px] opacity-0",

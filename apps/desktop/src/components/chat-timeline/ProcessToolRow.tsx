@@ -1,5 +1,6 @@
 import { HoverInfo } from "../ui/HoverInfo";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
+import { useProcessDetail } from "./ProcessDisclosureContext";
 import {
   Bot,
   ChevronDown,
@@ -218,7 +219,11 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
     }
   }
 
-  const [open, setOpen] = useState(false);
+  return <StandardToolRow tool={tool} />;
+}
+
+function StandardToolRow({ tool }: { tool: ToolCall }) {
+  const [open, toggleOpen] = useProcessDetail(`tool:${tool.call_id}`);
   const payload = useMemo(() => parsePayload(tool), [tool]);
   const summary = useMemo(() => summarizeTool(tool, payload), [tool, payload]);
   const status = statusMeta(tool);
@@ -232,7 +237,7 @@ export function ProcessToolRow({ tool }: { tool: ToolCall }) {
     <div className="min-w-0">
       <button
         type="button"
-        onClick={() => canOpen && tool.status !== "running" && setOpen((value) => !value)}
+        onClick={() => canOpen && tool.status !== "running" && toggleOpen()}
         className={`group/tool flex w-full min-w-0 items-center gap-2 rounded-md px-1 py-0.5 text-left text-[13.5px] leading-6 transition ${
           canOpen ? "cursor-pointer hover:bg-black/5" : "cursor-default"
         }`}

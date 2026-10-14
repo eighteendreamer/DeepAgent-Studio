@@ -38,6 +38,11 @@ export function deriveTurnSections(turn: Turn, _isProcessing: boolean): TurnSect
   const assistantContentBlocks: Extract<ChatBlock, { kind: "assistant" }>[] = [];
   const markerBlocks: TurnSections["markerBlocks"] = [];
   const finalAssistantContentIndex = findFinalAssistantContentIndex(turn.blocks);
+  const finalAnswer = turn.activity?.finalAnswer?.trim();
+  const candidate = turn.blocks[finalAssistantContentIndex];
+  const finalBlock = finalAnswer && candidate?.kind === "assistant" && candidate.text.trim() === finalAnswer
+    ? candidate
+    : undefined;
 
   turn.blocks.forEach((block, index) => {
     if (block.kind === "compaction" || block.kind === "memories") {
@@ -45,7 +50,7 @@ export function deriveTurnSections(turn: Turn, _isProcessing: boolean): TurnSect
       return;
     }
     if (block.kind === "assistant") {
-      if (index === finalAssistantContentIndex) {
+      if (finalAnswer ? block === finalBlock : index === finalAssistantContentIndex) {
         assistantContentBlocks.push(block);
       } else {
         processBlocks.push(block);
@@ -54,6 +59,19 @@ export function deriveTurnSections(turn: Turn, _isProcessing: boolean): TurnSect
     }
     processBlocks.push(block);
   });
+
+  if (finalAnswer && !finalBlock) {
+    const source = turn.user?.source ?? turn.blocks.find((block) => block.kind === "assistant")?.source;
+    if (source) {
+      assistantContentBlocks.push({
+        kind: "assistant",
+        id: `${turn.activity!.id}-final`,
+        text: finalAnswer,
+        tone: turn.blocks.find((block) => block.kind === "assistant")?.tone,
+        source,
+      });
+    }
+  }
 
   return { processBlocks, assistantContentBlocks, markerBlocks };
 }

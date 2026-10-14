@@ -1,4 +1,4 @@
-import { memo, useMemo, useState } from "react";
+import { memo, useMemo } from "react";
 import type { ComposerMention, ComposerSkillSelection } from "../../types";
 import { deriveTurnSections, groupProcessSections } from "./deriveTurnSections";
 import { AssistantMessageBubble, UserMessageBubble } from "./MessageBubble";
@@ -8,20 +8,13 @@ import type { Turn } from "./timelineTypes";
 import { TurnFooter } from "./TurnFooter";
 import { WorkMetaRow } from "./WorkMetaRow";
 import { CollapseBlurPanel } from "./CollapseBlurPanel";
+import { ProcessDetailsContext, useTurnDisclosure } from "./ProcessDisclosureContext";
 
 function totalToolMs(turn: Turn): number {
   return turn.blocks.reduce((sum, block) => {
     if (block.kind !== "tool") return sum;
     return sum + (block.tool.durationMs ?? 0);
   }, 0);
-}
-
-function toolCount(turn: Turn): number {
-  return turn.blocks.filter((block) => block.kind === "tool").length;
-}
-
-function hasProcessError(turn: Turn): boolean {
-  return turn.blocks.some((block) => block.kind === "tool" && (block.tool.status === "error" || block.tool.status === "blocked"));
 }
 
 interface MessageTurnProps {
@@ -44,32 +37,34 @@ function MessageTurnComponent({
     [turn, processing],
   );
   const sections = useMemo(() => groupProcessSections(processBlocks), [processBlocks]);
-  const forceOpen = processing || hasProcessError(turn);
-  const [expandedOverride, setExpandedOverride] = useState<boolean | null>(null);
-  const expanded = expandedOverride ?? forceOpen;
-  const tools = toolCount(turn);
-  const totalMs = totalToolMs(turn);
+  const phase = turn.activity?.phase ?? (processing ? "working" : "settled");
+  const turnKey = turn.activity?.id ?? turn.user?.id ?? turn.blocks[0]?.id ?? "empty-turn";
+  const epoch = phase === "settled" ? "settled" : `${turn.activity?.generation ?? 0}:${phase}`;
+  const { snapshot, setOpen, setDetail } = useTurnDisclosure(turnKey, epoch, phase === "working");
+  const expanded = snapshot.open;
+  const detailsContext = useMemo(() => ({ snapshot, setDetail }), [snapshot, setDetail]);
+  const totalMs = turn.runMs ?? totalToolMs(turn);
   const hasProcess = processBlocks.length > 0;
 
   return (
-    <div className="flex min-w-0 flex-col gap-4">
+    <div className="flex min-w-0 flex-col gap-4" data-process-turn={turnKey}>
       {turn.user && <UserMessageBubble block={turn.user} busy={busy} onResend={onResend} />}
       {hasProcess && (
         <div className="flex min-w-0 flex-col gap-1 pb-1">
           <WorkMetaRow
             processing={processing}
-            stepCount={processBlocks.length}
-            toolCount={tools}
             totalMs={totalMs}
             expanded={expanded}
-            onToggle={() => setExpandedOverride((value) => !(value ?? forceOpen))}
+            onToggle={() => setOpen(!expanded)}
           />
           <CollapseBlurPanel open={expanded && sections.length > 0}>
-            <div className="flex min-w-0 flex-col gap-1">
-              {sections.map((section) => (
-                <ProcessSectionRow key={section.id} section={section} processing={processing} />
-              ))}
-            </div>
+            <ProcessDetailsContext.Provider value={detailsContext}>
+              <div className="flex min-w-0 flex-col gap-1">
+                {sections.map((section) => (
+                  <ProcessSectionRow key={section.id} section={section} processing={processing} />
+                ))}
+              </div>
+            </ProcessDetailsContext.Provider>
           </CollapseBlurPanel>
         </div>
       )}
@@ -100,8 +95,10 @@ function MessageTurnComponent({
 
 function sameTurnBlocks(previous: Turn, next: Turn): boolean {
   return previous.user === next.user &&
+    previous.activity === next.activity &&
     previous.usage === next.usage &&
     previous.runMs === next.runMs &&
+    previous.editedFiles === next.editedFiles &&
     previous.blocks.length === next.blocks.length &&
     previous.blocks.every((block, index) => block === next.blocks[index]);
 }

@@ -20,9 +20,10 @@
     "test:knowledge-kinds": "node --test scripts/check-knowledge-kinds.test.cjs",
     "test:hover-info": "node --test scripts/check-hover-info.test.cjs",
     "test:timeline-memory": "node --test scripts/check-timeline-memory.test.cjs",
+    "test:process-collapse": "node --test scripts/check-process-collapse.test.cjs",
     "test:workflow": "node --test scripts/check-workflow.test.cjs",
     "test:canvas-ipc": "node --test scripts/check-canvas-ipc.test.cjs",
-    "build": "pnpm prebundle-rea && pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm test:sidebar && pnpm test:session-usage && pnpm test:number-format && pnpm test:knowledge-kinds && pnpm test:hover-info && pnpm test:timeline-memory && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
+    "build": "pnpm prebundle-rea && pnpm test:workflow && pnpm test:canvas-ipc && pnpm test:plugin-logos && pnpm test:plugin-detail && pnpm test:plugin-page && pnpm test:plugin-toggle && pnpm test:sidebar && pnpm test:session-usage && pnpm test:number-format && pnpm test:knowledge-kinds && pnpm test:hover-info && pnpm test:timeline-memory && pnpm test:process-collapse && pnpm check-plugin-licenses && pnpm prebundle-skills && tsc --noEmit && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
     "review": "ocr"

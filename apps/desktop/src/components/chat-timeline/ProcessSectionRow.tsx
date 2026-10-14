@@ -1,9 +1,11 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { Brain, Terminal, type LucideIcon } from "lucide-react";
 import type { ChatBlock, ProcessSection } from "./timelineTypes";
 import { MarkdownText } from "../MarkdownText";
 import { ProcessToolRow } from "./ProcessToolRow";
 import { CollapseBlurPanel, CollapseChevron } from "./CollapseBlurPanel";
+import { useProcessDetail } from "./ProcessDisclosureContext";
+import { Button } from "../shadcn/button";
 
 function toolLabel(block: Extract<ChatBlock, { kind: "tool" }>): string {
   const tool = block.tool;
@@ -64,19 +66,19 @@ function ProcessCollapsibleRow({
 }) {
   const hasError = section.blocks.some(blockHasError);
   const active = processing && section.blocks.some((block) => block.kind === "tool" && block.tool.status === "running");
-  const defaultOpen = (processing && (section.kind === "reasoning" || hasError)) || hasError;
-  const [userOpen, setUserOpen] = useState<boolean | null>(null);
-  const open = userOpen ?? defaultOpen;
+  const [open, toggle] = useProcessDetail(section.id, processing && section.kind === "reasoning");
   const canOpen = section.blocks.length > 0;
   const title = useMemo(() => sectionTitle(section), [section]);
   const Icon = sectionIcon(section);
 
   return (
     <div className="min-w-0">
-      <button
+      <Button
+        variant="ghost"
+        aria-expanded={open && canOpen}
         type="button"
-        onClick={() => canOpen && setUserOpen((value) => !(value ?? defaultOpen))}
-        className={`group flex w-full min-w-0 items-center gap-1.5 rounded-md px-1 py-0.5 text-left text-[13.5px] font-medium leading-6 transition ${
+        onClick={() => canOpen && toggle()}
+        className={`group h-auto w-full min-w-0 justify-start gap-1.5 rounded-md px-1 py-0.5 text-left text-[13.5px] font-medium leading-6 transition ${
           hasError ? "text-orange-700" : "text-text-secondary hover:bg-black/5 hover:text-text-base"
         }`}
       >
@@ -85,7 +87,7 @@ function ProcessCollapsibleRow({
           <span className="truncate">{title}</span>
           <CollapseChevron open={open && canOpen} />
         </span>
-      </button>
+      </Button>
       <CollapseBlurPanel open={open && canOpen} innerClassName="ml-5 mt-1 border-l border-border-theme/80 pl-3">
         <div className="flex min-w-0 flex-col gap-0.5">
           {section.blocks.map((block) => (

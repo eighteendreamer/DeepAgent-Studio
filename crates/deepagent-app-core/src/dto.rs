@@ -518,6 +518,10 @@ fn is_zero_u64(value: &u64) -> bool {
 /// session with full styling.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConversationMessageDto {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<ConversationTurnDto>,
     /// "user" or "assistant".
     pub role: String,
     /// Flat text mirror (for user turns / copy / fallback).
@@ -530,6 +534,17 @@ pub struct ConversationMessageDto {
     /// Persisted token usage for this turn, when recorded (assistant turns).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<ConversationUsageDto>,
+}
+
+/// Versioned UI projection of an existing task/run; never a second run state store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConversationTurnDto {
+    pub version: u8,
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_answer: Option<String>,
 }
 
 /// Persisted per-turn token usage + duration (mirrors `UsageRecorded`).

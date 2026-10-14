@@ -121,10 +121,11 @@ export function parseAttachmentContext(content: string): ComposerAttachment[] {
 }
 
 function mapAssistantPart(part: MessagePart, messageIndex: number, partIndex: number, message: ChatMessage): ChatBlock | null {
+  const messageKey = message.id ?? `m${messageIndex}`;
   if (part.kind === "compact_boundary") {
     return {
       kind: "compaction",
-      id: `m${messageIndex}-p${partIndex}-compaction`,
+      id: `${messageKey}-p${partIndex}-compaction`,
       tokensBefore: part.tokensBefore,
       tokensAfter: part.tokensAfter,
       strategy: part.strategy,
@@ -134,7 +135,7 @@ function mapAssistantPart(part: MessagePart, messageIndex: number, partIndex: nu
   if (part.kind === "memories") {
     return {
       kind: "memories",
-      id: `m${messageIndex}-p${partIndex}-memories`,
+      id: `${messageKey}-p${partIndex}-memories`,
       count: part.count,
       ids: part.ids ?? [],
       latencyMs: part.latencyMs ?? 0,
@@ -142,7 +143,7 @@ function mapAssistantPart(part: MessagePart, messageIndex: number, partIndex: nu
   }
   if (part.kind === "reasoning") {
     if (!part.text.trim()) return null;
-    return { kind: "reasoning", id: `m${messageIndex}-p${partIndex}-reasoning`, text: part.text };
+    return { kind: "reasoning", id: `${messageKey}-p${partIndex}-reasoning`, text: part.text };
   }
   if (part.kind === "tool") {
     return { kind: "tool", id: `tool-${part.tool.call_id || `${messageIndex}-${partIndex}`}`, tool: part.tool };
@@ -150,7 +151,7 @@ function mapAssistantPart(part: MessagePart, messageIndex: number, partIndex: nu
   if (!part.text.trim()) return null;
   return {
     kind: "assistant",
-    id: `m${messageIndex}-p${partIndex}-assistant`,
+    id: `${messageKey}-p${partIndex}-assistant`,
     text: part.text,
     tone: part.tone ?? message.tone,
     usage: message.usage,
@@ -160,12 +161,13 @@ function mapAssistantPart(part: MessagePart, messageIndex: number, partIndex: nu
 }
 
 function mapMessageToBlocks(message: ChatMessage, messageIndex: number): ChatBlock[] {
+  const messageKey = message.id ?? `m${messageIndex}`;
   if (message.role === "user") {
     const text = stripUserContext(message.content);
     return [
       {
         kind: "user",
-        id: `m${messageIndex}-user`,
+        id: `${messageKey}-user`,
         text,
         attachments: message.attachments?.length ? message.attachments : parseAttachmentContext(message.content),
         selectedSkills: message.selectedSkills?.length ? message.selectedSkills : parseSkillContexts(message.content),
@@ -184,7 +186,7 @@ function mapMessageToBlocks(message: ChatMessage, messageIndex: number): ChatBlo
 
   const blocks: ChatBlock[] = [];
   if (message.reasoning?.trim()) {
-    blocks.push({ kind: "reasoning", id: `m${messageIndex}-reasoning`, text: message.reasoning });
+    blocks.push({ kind: "reasoning", id: `${messageKey}-reasoning`, text: message.reasoning });
   }
   for (const tool of message.tools ?? []) {
     blocks.push({ kind: "tool", id: `tool-${tool.call_id}`, tool });
@@ -192,7 +194,7 @@ function mapMessageToBlocks(message: ChatMessage, messageIndex: number): ChatBlo
   if (message.content?.trim()) {
     blocks.push({
       kind: "assistant",
-      id: `m${messageIndex}-assistant`,
+      id: `${messageKey}-assistant`,
       text: message.content,
       tone: message.tone,
       usage: message.usage,

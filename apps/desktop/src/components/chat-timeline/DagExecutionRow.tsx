@@ -1,4 +1,5 @@
-import { useState, useMemo } from "react";
+import { useMemo } from "react";
+import { useProcessDetail } from "./ProcessDisclosureContext";
 import { ChevronDown, ChevronRight, Clock, CheckCircle, Loader2, XCircle } from "lucide-react";
 import type { DagExecution, DagNode } from "../../types/dag";
 
@@ -11,7 +12,7 @@ interface DagExecutionRowProps {
  * Shows plan_execute tool results with collapsible phase-grouped nodes.
  */
 export function DagExecutionRow({ execution }: DagExecutionRowProps) {
-  const [open, setOpen] = useState(false);
+  const [open, toggleOpen] = useProcessDetail(`dag:${execution.executionId}`);
 
   // Group nodes by phase
   const nodesByPhase = useMemo(() => {
@@ -64,7 +65,7 @@ export function DagExecutionRow({ execution }: DagExecutionRowProps) {
       {/* Main Row - matches ProcessToolRow style */}
       <button
         type="button"
-        onClick={() => setOpen(value => !value)}
+        onClick={toggleOpen}
         className={`group/tool flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-left transition ${
           open ? "bg-gray-50/75" : "hover:bg-gray-50/40"
         }`}

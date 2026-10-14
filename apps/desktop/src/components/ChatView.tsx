@@ -46,6 +46,7 @@ import {
 import { usePluginAppCards } from "./plugins/usePluginAppCards";
 import { RightSidebarWorkbench } from "./RightSidebarWorkbench";
 import { ChatTimeline } from "./chat-timeline/ChatTimeline";
+import { useTimelineScroll } from "./chat-timeline/useTimelineScroll";
 import { usePanelPresence } from "../hooks/usePanelPresence";
 import { SessionUsageBar } from "./SessionUsageBar";
 
@@ -1073,14 +1074,12 @@ export function ChatView({
     setIsGitWorkbenchOpen(false);
   }, [activeProjectPath]);
 
-  // Auto-scroll the conversation to the bottom as messages/tokens stream in.
+  // Follow streamed output at the tail; preserve the anchor while reading history.
   const scrollRef = useRef<HTMLDivElement>(null);
+  const timelineContentRef = useRef<HTMLDivElement>(null);
   const composerFrameRef = useRef<HTMLDivElement>(null);
   const [composerBottomPadding, setComposerBottomPadding] = useState(176);
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [messages, composerBottomPadding]);
+  useTimelineScroll(scrollRef, timelineContentRef, messages, composerBottomPadding);
 
   useEffect(() => {
     const frame = composerFrameRef.current;
@@ -1386,15 +1385,17 @@ export function ChatView({
         <div
           ref={scrollRef}
           className="stable-scrollbar-gutter flex-1 min-h-0 overflow-y-auto px-6 py-4"
-          style={{ paddingBottom: composerBottomPadding }}
+          style={{ paddingBottom: composerBottomPadding, overflowAnchor: "none" }}
         >
-          <ChatTimeline
-            messages={messages}
-            busy={busy}
-            onOpenUrl={openUrlInSidebarBrowser}
-            onResend={handleResend}
-            scrollContainerRef={scrollRef}
-          />
+          <div ref={timelineContentRef}>
+            <ChatTimeline
+              messages={messages}
+              busy={busy}
+              onOpenUrl={openUrlInSidebarBrowser}
+              onResend={handleResend}
+              scrollContainerRef={scrollRef}
+            />
+          </div>
         </div>
 
         {question && (

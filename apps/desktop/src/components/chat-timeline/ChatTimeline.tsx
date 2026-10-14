@@ -66,7 +66,7 @@ export function ChatTimeline({
           <MessageTurn
             key={key}
             turn={turn}
-            processing={busy && index === timelineTurns.length - 1}
+            processing={turn.activity ? turn.activity.phase !== "settled" : busy && index === timelineTurns.length - 1}
             busy={busy}
             onResend={onResend}
             onOpenUrl={onOpenUrl}
@@ -178,7 +178,7 @@ function VirtualizedChatTimeline({
             itemKey={item.key}
             top={item.top}
             turn={item.turn}
-            processing={busy && item.index === turns.length - 1}
+            processing={item.turn.activity ? item.turn.activity.phase !== "settled" : busy && item.index === turns.length - 1}
             busy={busy}
             onResend={onResend}
             onOpenUrl={onOpenUrl}

@@ -1,35 +1,27 @@
 import { ListChecks, LoaderCircle } from "lucide-react";
 import { formatMs } from "./format";
 import { CollapseChevron } from "./CollapseBlurPanel";
+import { Button } from "../shadcn/button";
 
 export function WorkMetaRow({
   processing,
-  stepCount,
-  toolCount,
   totalMs,
   expanded,
   onToggle,
 }: {
   processing: boolean;
-  stepCount: number;
-  toolCount: number;
   totalMs: number;
   expanded: boolean;
   onToggle: () => void;
 }) {
-  const label = processing
-    ? toolCount > 0
-      ? `正在执行 · ${toolCount} 次工具调用`
-      : "正在思考"
-    : toolCount > 0
-    ? `执行过程 · ${toolCount} 次工具调用`
-    : `执行过程 · ${stepCount} 步`;
-
   return (
-    <button
+    <Button
+      variant="ghost"
       type="button"
+      data-process-toggle
+      aria-expanded={expanded}
       onClick={onToggle}
-      className="group flex w-fit max-w-full items-center gap-1.5 rounded-md py-0.5 text-left text-[14px] font-medium text-text-secondary transition hover:text-text-base"
+      className="group h-auto w-fit max-w-full justify-start gap-1.5 rounded-md px-0 py-0.5 text-left text-[14px] font-medium text-text-secondary hover:bg-transparent hover:text-text-base"
     >
       <span className="flex h-5 w-5 items-center justify-center">
         {processing ? (
@@ -39,10 +31,10 @@ export function WorkMetaRow({
         )}
       </span>
       <span className={processing ? "bg-gradient-to-r from-primary via-blue-500 to-primary bg-[length:200%_100%] bg-clip-text text-transparent animate-pulse" : ""}>
-        {label}
+        {processing ? "正在处理" : "已处理"}
       </span>
       {totalMs > 0 && <span className="text-[12px] font-normal text-text-secondary">{formatMs(totalMs)}</span>}
       <CollapseChevron open={expanded} className="opacity-45 group-hover:opacity-80" />
-    </button>
+    </Button>
   );
 }

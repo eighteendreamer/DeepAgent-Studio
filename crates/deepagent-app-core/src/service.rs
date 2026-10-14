@@ -23,9 +23,9 @@ use deepagent_session::Session;
 use crate::commands::{builtin_commands, commands_from_roots, filter_commands};
 use crate::diff::{diff_lines, DiffResult};
 use crate::dto::{
-    AttachmentDto, CommandDto, ConversationMessageDto, ConversationPartDto, ConversationUsageDto,
-    ForkResultDto, RewindResultDto, RunRecoveryDto, SessionDetailDto, SessionSearchHitDto,
-    SessionStatsDto, SessionSummaryDto, TimelineEntryDto, TranscriptDto,
+    AttachmentDto, CommandDto, ConversationMessageDto, ConversationPartDto, ConversationTurnDto,
+    ConversationUsageDto, ForkResultDto, RewindResultDto, RunRecoveryDto, SessionDetailDto,
+    SessionSearchHitDto, SessionStatsDto, SessionSummaryDto, TimelineEntryDto, TranscriptDto,
 };
 use crate::host_lock::{self, HostRole};
 use crate::{ArchiveService, ProjectService, SessionStateService};
@@ -395,6 +395,12 @@ impl AppService {
             .into_iter();
 
         let mut messages: Vec<ConversationMessageDto> = Vec::new();
+        let run_ids: std::collections::HashMap<_, _> = RunStore::new(&self.db)
+            .list_for_session(session_id)?
+            .into_iter()
+            .filter_map(|run| run.task_id.map(|task| (task, run.id)))
+            .collect();
+        let mut turns: Vec<(usize, ConversationTurnDto)> = Vec::new();
         // Index of tool parts by call_id within the current assistant turn, so a
         // completion updates the request card in place.
         let mut tool_pos: std::collections::HashMap<String, (usize, usize)> =
@@ -419,6 +425,8 @@ impl AppService {
                 }
             }
             messages.push(ConversationMessageDto {
+                id: None,
+                turn: None,
                 role: "assistant".to_string(),
                 content: String::new(),
                 attachments: Vec::new(),
@@ -443,7 +451,18 @@ impl AppService {
                         seen_assistant_texts.clear();
                         native_reasoning_since_tool.clear();
                         let attachments = parse_conversation_attachments(&text, session_id);
+                        turns.push((
+                            messages.len(),
+                            ConversationTurnDto {
+                                version: 1,
+                                id: format!("{session_id}:{}", ev.id),
+                                terminal_kind: None,
+                                final_answer: None,
+                            },
+                        ));
                         messages.push(ConversationMessageDto {
+                            id: Some(ev.id.to_string()),
+                            turn: None,
                             role: "user".to_string(),
                             content: text.clone(),
                             attachments,
@@ -453,6 +472,11 @@ impl AppService {
                     }
                     Role::Assistant => {
                         let content = message.content.trim();
+                        if message.tool_calls.is_empty() && !content.is_empty() {
+                            if let Some((_, turn)) = turns.last_mut() {
+                                turn.final_answer = Some(content.to_string());
+                            }
+                        }
                         let reasoning = message
                             .reasoning_content
                             .as_deref()
@@ -487,6 +511,22 @@ impl AppService {
                     }
                     _ => {}
                 },
+                EventPayload::TaskCreated { task_id, .. } => {
+                    if let Some((_, turn)) = turns.last_mut() {
+                        turn.id = run_ids
+                            .get(&task_id.to_string())
+                            .cloned()
+                            .unwrap_or_else(|| format!("{session_id}:{task_id}"));
+                    }
+                }
+                EventPayload::RunTerminal { kind, reason } => {
+                    if let Some((_, turn)) = turns.last_mut() {
+                        turn.terminal_kind = Some(kind.clone());
+                        if turn.final_answer.is_none() {
+                            turn.final_answer = reason.clone();
+                        }
+                    }
+                }
                 EventPayload::ResponseItemAppended {
                     item: deepagent_core::response_item::ResponseItem::Reasoning { id, content },
                 } if !content.trim().is_empty() => {
@@ -633,6 +673,8 @@ impl AppService {
                     seen_assistant_texts.clear();
                     native_reasoning_since_tool.clear();
                     messages.push(ConversationMessageDto {
+                        id: Some(ev.id.to_string()),
+                        turn: None,
                         role: "system".to_string(),
                         content: String::new(),
                         attachments: Vec::new(),
@@ -656,6 +698,8 @@ impl AppService {
                         continue;
                     }
                     messages.push(ConversationMessageDto {
+                        id: Some(ev.id.to_string()),
+                        turn: None,
                         role: "system".to_string(),
                         content: String::new(),
                         attachments: Vec::new(),
@@ -677,6 +721,21 @@ impl AppService {
                         "durable event has no conversation projection"
                     );
                 }
+            }
+        }
+
+        for (index, (start, turn)) in turns.iter().enumerate() {
+            let end = turns
+                .get(index + 1)
+                .map_or(messages.len(), |(start, _)| *start);
+            for (offset, message) in messages[*start..end].iter_mut().enumerate() {
+                if message.role == "system" {
+                    continue;
+                }
+                message
+                    .id
+                    .get_or_insert_with(|| format!("{}:message:{offset}", turn.id));
+                message.turn = Some(turn.clone());
             }
         }
 
@@ -1103,6 +1162,136 @@ mod tests {
             .unwrap();
         }
         (AppService::new(db), sid)
+    }
+
+    #[test]
+    fn session_conversation_projects_all_terminals_with_stable_run_identity() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        for kind in [
+            "succeeded",
+            "failed",
+            "cancelled",
+            "blocked",
+            "max_turns",
+            "budget_exceeded",
+            "context_exhausted",
+        ] {
+            let db = Database::open_in_memory().unwrap();
+            let clock = FixedClock::new(1_000);
+            let mut session = Session::create(&db, &clock, Some("turn replay")).unwrap();
+            let sid = session.id().to_string();
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::user("question"),
+                })
+                .unwrap();
+            let task = session.create_task("question").unwrap();
+            RunStore::new(&db)
+                .create("run-turn", &sid, Some(&task.to_string()), 1_000)
+                .unwrap();
+            session
+                .append(EventPayload::ResponseItemAppended {
+                    item: deepagent_core::response_item::ResponseItem::Reasoning {
+                        id: Some("r1".into()),
+                        content: "inspect".into(),
+                    },
+                })
+                .unwrap();
+            // A system marker must not steal the terminal or final-answer owner.
+            session
+                .append(EventPayload::MemoriesInjected {
+                    ids: vec!["memory".into()],
+                    count: 1,
+                    latency_ms: 2,
+                    trigger: "prefetch".into(),
+                })
+                .unwrap();
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::assistant("final answer"),
+                })
+                .unwrap();
+            session
+                .append(EventPayload::RunTerminal {
+                    kind: kind.into(),
+                    reason: Some("terminal detail".into()),
+                })
+                .unwrap();
+            let service = AppService::new(db);
+            let first = service.session_conversation(&sid).unwrap();
+            let again = service.session_conversation(&sid).unwrap();
+            assert_eq!(first, again);
+            for message in first.iter().filter(|message| message.role != "system") {
+                let turn = message.turn.as_ref().unwrap();
+                assert_eq!(turn.version, 1);
+                assert_eq!(turn.id, "run-turn");
+                assert_eq!(turn.terminal_kind.as_deref(), Some(kind));
+                assert_eq!(turn.final_answer.as_deref(), Some("final answer"));
+                assert!(message.id.is_some());
+            }
+            assert!(first
+                .iter()
+                .filter(|message| message.role == "system")
+                .all(|message| message.turn.is_none()));
+        }
+    }
+
+    #[test]
+    fn session_conversation_keeps_legacy_unknown_and_separates_adjacent_runs() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("legacy turns")).unwrap();
+        let sid = session.id().to_string();
+        for text in ["old question", "new question"] {
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::user(text),
+                })
+                .unwrap();
+            session
+                .append(EventPayload::MessageAppended {
+                    message: Message::assistant(text),
+                })
+                .unwrap();
+        }
+        session
+            .append(EventPayload::RunTerminal {
+                kind: "cancelled".into(),
+                reason: None,
+            })
+            .unwrap();
+        let conversation = AppService::new(db).session_conversation(&sid).unwrap();
+        assert_ne!(
+            conversation[0].turn.as_ref().unwrap().id,
+            conversation[2].turn.as_ref().unwrap().id
+        );
+        assert!(conversation[0]
+            .turn
+            .as_ref()
+            .unwrap()
+            .terminal_kind
+            .is_none());
+        assert_eq!(
+            conversation[2]
+                .turn
+                .as_ref()
+                .unwrap()
+                .terminal_kind
+                .as_deref(),
+            Some("cancelled")
+        );
+        // Old DTOs still deserialize without the optional projection.
+        let old: ConversationMessageDto = serde_json::from_value(
+            serde_json::json!({ "role":"assistant", "content":"answer", "parts":[] }),
+        )
+        .unwrap();
+        assert!(old.turn.is_none());
+        assert!(old.id.is_none());
     }
 
     #[test]

@@ -210,6 +210,8 @@ export type ConversationPart =
  * `system` marks a session-level event row (compaction boundary, injected
  * memories) rather than something either side said. */
 export interface ConversationMessage {
+  id?: string;
+  turn?: { version: 1; id: string; terminal_kind?: string | null; final_answer?: string | null };
   role: "user" | "assistant" | "system";
   content: string;
   attachments?: PersistedAttachment[];
@@ -392,6 +394,9 @@ export interface EditedFile {
 
 /** A message rendered in the chat view. */
 export interface ChatMessage {
+  id?: string;
+  /** Transient presentation state; restored from the durable turn projection. */
+  turn?: import("./components/chat-timeline/processDisclosure").TurnActivity;
   /** `system` rows are session-level markers (compaction boundary, injected
    * memories) that neither the user nor the model produced. */
   role: "user" | "assistant" | "system";

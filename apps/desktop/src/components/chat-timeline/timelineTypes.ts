@@ -55,6 +55,7 @@ export type ChatBlock =
     };
 
 export type Turn = {
+  activity?: import("./processDisclosure").TurnActivity;
   user?: Extract<ChatBlock, { kind: "user" }>;
   blocks: ChatBlock[];
   /** Turn-level metrics, lifted off the blocks. They describe the whole turn,

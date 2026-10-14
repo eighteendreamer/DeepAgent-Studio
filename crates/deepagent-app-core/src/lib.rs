@@ -129,16 +129,17 @@ pub use doctor::{format_diagnostics, run_diagnostics, DiagStatus, DiagnosticResu
 pub use dto::{
     ApprovalRequestDto, ArchiveProjectResultDto, ArchivedConversationDto, AttachmentDto,
     AttachmentIngestDto, CommandDto, ConversationMessageDto, ConversationPartDto,
-    ConversationUsageDto, ForkResultDto, GitBatchCommitPreviewItemDto, GitBatchCommitTargetDto,
-    GitBatchProjectResultDto, GitBranchDto, GitChangedFileDto, GitChangesDto, GitCommitFileDto,
-    GitCommitMessageDraftDto, GitCompareCommitDto, GitDiffDto, GitLogEntryDto,
-    GitOperationResultDto, GitProjectStatusDto, GitPushCommitDto, GitPushPreviewDto,
-    GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto, GitWorktreeDto, PdfRenderResultDto,
-    PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto, ProjectDto, QuestionRequestDto,
-    RecordingSessionDto, RewindResultDto, RunRecoveryDto, RuntimeProgressDto, RuntimeRootsDto,
-    RuntimeStatusDto, SessionDetailDto, SessionSearchHitDto, SessionStatsDto, SessionSummaryDto,
-    SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto, TranscriptDto,
-    TranscriptSegmentDto, VisionRecognizeRequestDto, VisionRecognizeResultDto, WorkspaceInfoDto,
+    ConversationTurnDto, ConversationUsageDto, ForkResultDto, GitBatchCommitPreviewItemDto,
+    GitBatchCommitTargetDto, GitBatchProjectResultDto, GitBranchDto, GitChangedFileDto,
+    GitChangesDto, GitCommitFileDto, GitCommitMessageDraftDto, GitCompareCommitDto, GitDiffDto,
+    GitLogEntryDto, GitOperationResultDto, GitProjectStatusDto, GitPushCommitDto,
+    GitPushPreviewDto, GitPushRiskItemDto, GitPushRiskScanDto, GitRefCompareDto, GitWorktreeDto,
+    PdfRenderResultDto, PreflightToolCallDto, PreviewMetadataDto, PreviewResultDto, ProjectDto,
+    QuestionRequestDto, RecordingSessionDto, RewindResultDto, RunRecoveryDto, RuntimeProgressDto,
+    RuntimeRootsDto, RuntimeStatusDto, SessionDetailDto, SessionSearchHitDto, SessionStatsDto,
+    SessionSummaryDto, SessionUiPrefsDto, SheetPreviewDto, TerminalResultDto, TimelineEntryDto,
+    TranscriptDto, TranscriptSegmentDto, VisionRecognizeRequestDto, VisionRecognizeResultDto,
+    WorkspaceInfoDto,
 };
 pub use file_preview_service::FilePreviewService;
 pub use git_service::GitService;
