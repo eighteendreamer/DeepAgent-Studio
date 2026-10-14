@@ -586,7 +586,21 @@ export function App() {
     }
     let cancelled = false;
     getSessionDetail(activeId)
-      .then((next) => { if (!cancelled) setDetail(next); })
+      .then((next) => {
+        if (cancelled) return;
+        setDetail(next);
+        const snapshot = next.context_usage;
+        if (snapshot) {
+          setContextUsageByKey((prev) => {
+            // A live event may have arrived while the detail request was in
+            // flight. Restore only an absent buffer, never overwrite it.
+            if (prev.has(activeId)) return prev;
+            const restored = new Map(prev);
+            restored.set(activeId, snapshot);
+            return restored;
+          });
+        }
+      })
       .catch(() => { if (!cancelled) setDetail(null); });
     getPlanMode(activeId)
       .then((next) => { if (!cancelled) setPlanMode(next); })

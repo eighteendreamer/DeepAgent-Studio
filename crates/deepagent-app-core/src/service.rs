@@ -336,7 +336,57 @@ impl AppService {
             },
             timeline,
             stats,
+            context_usage: self.session_context_snapshot(session_id, &events)?,
         })
+    }
+
+    fn session_context_snapshot(
+        &self,
+        session_id: &str,
+        events: &[deepagent_core::event::Event],
+    ) -> Result<Option<deepagent_context::ContextUsageSnapshot>> {
+        let runs = deepagent_persistence::run_store::RunStore::new(&self.db);
+        let Some(run) = runs.list_for_session(session_id)?.into_iter().next() else {
+            return Ok(None);
+        };
+        let saved = runs.events_after(&run.id, None)?;
+        let Some(event) = saved
+            .iter()
+            .rev()
+            .find(|event| event.event_type == "context_usage")
+        else {
+            return Ok(None);
+        };
+        // A rewind or a Surface edit committed after the snapshot makes that
+        // old projection unusable; the next request will fully remeasure it.
+        if events
+            .last()
+            .map_or(true, |last| event.timestamp > last.timestamp.as_millis())
+            || events.iter().any(|source| {
+                source.timestamp.as_millis() > event.timestamp
+                    && matches!(
+                        source.payload,
+                        deepagent_core::event::EventPayload::ContextSurfacePatched { .. }
+                            | deepagent_core::event::EventPayload::ContextSnipped { .. }
+                            | deepagent_core::event::EventPayload::ContextCompacted { .. }
+                    )
+            })
+        {
+            return Ok(None);
+        }
+        match serde_json::from_value(
+            event
+                .data
+                .get("snapshot")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null),
+        ) {
+            Ok(snapshot) => Ok(Some(snapshot)),
+            Err(error) => {
+                tracing::warn!(run_id = %run.id, %error, "saved context snapshot cannot be restored");
+                Ok(None)
+            }
+        }
     }
 
     /// Rename a session's display title.
@@ -1427,6 +1477,49 @@ mod tests {
         for w in detail.timeline.windows(2) {
             assert!(w[0].sequence < w[1].sequence);
         }
+    }
+
+    #[test]
+    fn session_detail_restores_the_durable_context_projection() {
+        let (svc, sid) = seeded_service();
+        let policy = deepagent_context::ContextPolicy::for_capability(
+            &deepagent_models::ModelCapabilityResolver::new().resolve_model_id("deepseek-flash"),
+            deepagent_models::ThinkingDepth::Medium,
+        );
+        let mut snapshot = deepagent_context::ContextUsageSnapshot::from_pack(
+            &policy,
+            &deepagent_context::ContextPack::default(),
+            false,
+        );
+        snapshot.record_projection(
+            deepagent_context::SurfaceTokenBreakdown {
+                messages: 1_000,
+                ..Default::default()
+            },
+            1_200,
+        );
+        let runs = deepagent_persistence::run_store::RunStore::new(&svc.db);
+        runs.create("context-restore", &sid, None, 1).unwrap();
+        runs.append_event(
+            "context-restore",
+            1,
+            "running_turn",
+            "progress",
+            "context_usage",
+            &serde_json::json!({"snapshot": snapshot}),
+        )
+        .unwrap();
+        let detail = svc.session_detail(&sid).unwrap();
+        assert_eq!(
+            detail.context_usage.unwrap().projected_request_tokens,
+            Some(1_200)
+        );
+        let mut legacy = serde_json::to_value(svc.session_detail(&sid).unwrap()).unwrap();
+        legacy.as_object_mut().unwrap().remove("context_usage");
+        assert!(serde_json::from_value::<SessionDetailDto>(legacy)
+            .unwrap()
+            .context_usage
+            .is_none());
     }
 
     #[test]

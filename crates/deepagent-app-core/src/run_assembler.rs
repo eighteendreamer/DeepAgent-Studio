@@ -14,9 +14,9 @@ use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use deepagent_context::{
-    CompactionPolicy, ContextPolicy, HeuristicTokenizer, ModelCompactor, TaskSummary, TokenCounter,
-};
+use deepagent_context::ContextPolicy;
+#[cfg(test)]
+use deepagent_context::{ModelCompactor, TaskSummary};
 use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
@@ -24,7 +24,9 @@ use deepagent_core::id::SessionId;
 use deepagent_core::message::{Message, ToolCall};
 use deepagent_hooks::{Hook, HookDefinitions, HookPoint, HookRegistry};
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::{ModelCapabilityResolver, ModelClient, ModelRole};
+#[cfg(test)]
+use deepagent_models::ModelClient;
+use deepagent_models::ModelRole;
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::runtime_log_store::{NewRuntimeLogEntry, RuntimeLogStore};
 use deepagent_persistence::Database;
@@ -32,6 +34,7 @@ use deepagent_runtime::{
     tool_ui_metadata, Agent, AgentKernel, ChannelSink, InputLeaseRegistry, InputMode, ModelAgent,
     PromptDecision, ReactiveContextCompactor, RunRequest, RuntimeEvent, RuntimeEventSink,
 };
+#[cfg(test)]
 use deepagent_session::Session;
 use deepagent_tools::{PermissionSet, ToolRegistry};
 
@@ -52,7 +55,7 @@ use crate::project_map_service::ProjectMapService;
 use crate::prompt_gate::{finalize_blocked_user_prompt, submit_user_prompt};
 use crate::run_coordinator::RunCoordinator;
 use crate::run_environment::RunEnvironment;
-use crate::run_finalizer::{record_usage_cost, AppRunFinalizer, AppRunFinalizerRequest};
+use crate::run_finalizer::{AppRunFinalizer, AppRunFinalizerRequest};
 use crate::runtime_event_log::{append_runtime_log, spawn_runtime_event_pump};
 use crate::settings::SettingsService;
 use crate::skill_catalog_reminder::SkillCatalogSendState;
@@ -663,27 +666,28 @@ impl<'a> RunAssembler<'a> {
         }
         let prompt_for_model = model_prompt.as_str();
         let effective_thinking_depth = thinking_depth;
-        let model_capability = ModelCapabilityResolver::new().resolve_model_id(&model);
-        let context_policy =
-            ContextPolicy::for_capability(&model_capability, effective_thinking_depth);
+        let model_capability = client.capability(&model);
+        let requested_output_tokens = client
+            .prepare_response_request(deepagent_models::ResponseRequest::from_response_items(
+                model.clone(),
+                None,
+                Vec::new(),
+            ))
+            .max_output_tokens
+            .map(|tokens| tokens as usize);
+        let context_policy = ContextPolicy::for_capability_with_output(
+            &model_capability,
+            effective_thinking_depth,
+            requested_output_tokens,
+        );
 
-        let (history, context_compacted) = self
-            .maybe_compact_history(
-                &mut session,
-                history,
-                &prior_events,
-                &client,
-                &model,
-                &context_policy,
-                &hooks,
-                sink.as_ref(),
-            )
-            .await;
-        let response_history = if context_compacted {
-            Vec::new()
-        } else {
-            response_history
-        };
+        // The native model loop owns all context pressure decisions after
+        // instructions, user input, attachments and visible tools are assembled.
+        let context_compacted = history.first().is_some_and(|message| {
+            message
+                .content
+                .starts_with(crate::input_runtime::COMPACTED_SUMMARY_HEADER)
+        });
         let session_id = session.id().to_string();
         {
             let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
@@ -807,12 +811,9 @@ impl<'a> RunAssembler<'a> {
         }
         let system_prompt = run_context.system_prompt;
         let final_user_prompt = run_context.final_user_prompt;
-        // The assembly-time snapshot goes out now and stays with the agent, so
-        // each answered request can re-publish it with the provider's numbers.
+        // The agent publishes the snapshot once its native Surface is ready,
+        // then after every mutation and provider calibration.
         let context_usage = run_context.context_usage;
-        sink.emit(RuntimeEvent::ContextUsage {
-            snapshot: context_usage.clone(),
-        });
 
         let capture_client = client.clone();
         let capture_model = model.clone();
@@ -875,8 +876,17 @@ impl<'a> RunAssembler<'a> {
             .with_reactive_compactor(reactive_compactor)
             .with_history(history)
             .with_response_history(response_history)
+            .with_surface_persistence(Arc::new(crate::context_runtime::SessionSurfaceStore {
+                db: self.db.clone(),
+                session_id: session.id(),
+            }))
             .with_proactive_compaction(proactive_threshold)
             .with_context_snapshot(context_usage)
+            .with_context_policy(
+                context_policy.clone(),
+                autocompact_reserve,
+                autocompact_pct_override,
+            )
             .with_prefire(prefire_start)
             .with_attachment_resolver(Arc::new(crate::attachment_service::FileAttachmentResolver))
             .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);
@@ -1469,130 +1479,6 @@ impl<'a> RunAssembler<'a> {
         Ok(Some(hook))
     }
 
-    /// Model-driven context compaction (Phase 2B).
-    ///
-    /// The summary is written as a durable boundary (`summary` +
-    /// `first_kept_sequence`), so the NEXT run rebuilds a short history from the
-    /// event log and falls under the trigger — that is what stops a long session
-    /// from paying for the same summarizing model call on every turn.
-    #[allow(clippy::too_many_arguments)]
-    async fn maybe_compact_history(
-        &self,
-        session: &mut Session<'_, SystemClock>,
-        history: Vec<Message>,
-        events: &[deepagent_core::event::Event],
-        client: &Arc<ModelClient>,
-        model: &str,
-        context_policy: &ContextPolicy,
-        hooks: &HookRegistry,
-        sink: &dyn RuntimeEventSink,
-    ) -> (Vec<Message>, bool) {
-        let policy = CompactionPolicy {
-            trigger_tokens: context_policy.compaction_trigger_tokens(),
-            ..CompactionPolicy::default()
-        };
-        let rendered: Vec<String> = history
-            .iter()
-            .map(|m| format!("{:?}: {}", m.role, m.content))
-            .collect();
-        let counter = HeuristicTokenizer::new();
-        let total: usize = rendered.iter().map(|t| counter.count(t)).sum();
-
-        if !policy.should_compact(total) || history.len() <= policy.keep_recent_turns {
-            return (history, false);
-        }
-
-        let pre_compact = hooks
-            .dispatch(&deepagent_hooks::HookContext::new(
-                session.id(),
-                HookPoint::BeforeCompact,
-                deepagent_hooks::HookData::Compact {
-                    trigger: "token_pressure".to_string(),
-                    summary: None,
-                },
-            ))
-            .await;
-        match pre_compact {
-            Ok(deepagent_hooks::HookOutcome::Deny { reason, .. })
-            | Ok(deepagent_hooks::HookOutcome::Ask { reason, .. }) => {
-                tracing::warn!(reason, "context compaction blocked by PreCompact hook");
-                return (history, false);
-            }
-            Err(error) => {
-                tracing::warn!(error = %error, "PreCompact hook failed; keeping full history");
-                return (history, false);
-            }
-            _ => {}
-        }
-
-        let count_split = history.len() - policy.keep_recent_turns;
-        let target = CompactionTarget {
-            events,
-            history: &history,
-            rendered: &rendered,
-            count_split,
-        };
-        let choice = choose_compaction_summary(self.db, session.id(), &target, client, model).await;
-        if choice.usage.total_tokens > 0 {
-            // The summary call happens outside the run loop, so nothing else
-            // would ever bill it: it goes into the same ledger as the run.
-            if let Some(cost) = self.cost.as_deref() {
-                record_usage_cost(
-                    cost,
-                    &session.id().to_string(),
-                    model,
-                    deepagent_runtime::agent::RunUsage::from(choice.usage),
-                    deepagent_runtime::events::CostOrigin::SideCall,
-                    sink,
-                );
-            }
-        }
-        let split = choice.split;
-        let summary_block = choice.summary_block;
-
-        let tokens_after = counter.count(&summary_block)
-            + rendered[split..]
-                .iter()
-                .map(|t| counter.count(t))
-                .sum::<usize>();
-
-        if let Err(e) = session.append(EventPayload::ContextCompacted {
-            tokens_before: total as u64,
-            tokens_after: tokens_after as u64,
-            strategy: choice.strategy.to_string(),
-            summary: Some(summary_block.clone()),
-            // Where the verbatim tail starts. Content-matched, because a batch of
-            // parallel tool calls is one history entry but several events; when no
-            // match is found the boundary keeps nothing raw, which is still correct.
-            first_kept_sequence: history
-                .get(split)
-                .and_then(|message| crate::input_runtime::sequence_of_message(events, message)),
-        }) {
-            tracing::warn!(error = %e, "failed to record ContextCompacted event");
-        }
-
-        let mut compacted = Vec::with_capacity(policy.keep_recent_turns + 1);
-        compacted.push(Message::user(format!(
-            "{}\n{summary_block}",
-            crate::input_runtime::COMPACTED_SUMMARY_HEADER
-        )));
-        compacted.extend(history.into_iter().skip(split));
-        if let Err(error) = hooks
-            .dispatch(&deepagent_hooks::HookContext::new(
-                session.id(),
-                HookPoint::PostCompact,
-                deepagent_hooks::HookData::Compact {
-                    trigger: "token_pressure".to_string(),
-                    summary: Some(summary_block.clone()),
-                },
-            ))
-            .await
-        {
-            tracing::warn!(error = %error, "PostCompact hook failed");
-        }
-        (compacted, true)
-    }
-
     /// Assemble the shared [`ToolRegistryBuildRequest`] from the assembler's
     /// borrowed fields.
     fn base_registry_request(
@@ -1690,6 +1576,7 @@ pub(crate) fn project_hook_paths(root: &Path) -> Vec<PathBuf> {
 
 /// The transcript a compaction must summarize, bundled so choosing its source
 /// stays a short call.
+#[cfg(test)]
 pub(crate) struct CompactionTarget<'a> {
     pub(crate) events: &'a [deepagent_core::event::Event],
     pub(crate) history: &'a [Message],
@@ -1705,6 +1592,7 @@ pub(crate) struct CompactionTarget<'a> {
 /// only where it provably covers the prefix being dropped
 /// ([`crate::session_memory::compaction_from_note`]); otherwise this behaves as
 /// before and asks the model to summarize.
+#[cfg(test)]
 async fn choose_compaction_summary(
     db: &Arc<Database>,
     session_id: deepagent_core::id::SessionId,
@@ -1764,6 +1652,7 @@ async fn choose_compaction_summary(
 }
 
 /// What replaced the compacted prefix and what it cost.
+#[cfg(test)]
 pub(crate) struct CompactionChoice {
     pub(crate) split: usize,
     pub(crate) summary_block: String,

@@ -16,7 +16,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
-use deepagent_app_core::{ChatService, MemorySecretStore, SettingsService};
+use deepagent_app_core::{AppService, ChatService, MemorySecretStore, SettingsService};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
 use deepagent_persistence::run_store::StoredRunEvent;
@@ -153,7 +153,7 @@ fn e2e_root(run_id: &str) -> PathBuf {
     PathBuf::from(r"G:\Code\Kotlin_code\_deepagent-e2e").join(run_id)
 }
 
-async fn chat_with(transport: Arc<dyn HttpTransport>, root: &PathBuf) -> ChatService {
+async fn chat_with(transport: Arc<dyn HttpTransport>, root: &PathBuf) -> (ChatService, AppService) {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let discovery: Arc<dyn HttpTransport> = Arc::new(MockTransport::with_get_json(
         r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"},{"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}]}"#,
@@ -164,7 +164,8 @@ async fn chat_with(transport: Arc<dyn HttpTransport>, root: &PathBuf) -> ChatSer
         Arc::new(MemorySecretStore::new()),
     ));
     settings.initialize("sk-e2e-test").await.unwrap();
-    ChatService::new(db, settings, transport, root)
+    let service = AppService::from_shared(db.clone());
+    (ChatService::new(db, settings, transport, root), service)
 }
 
 fn unique_run_id(label: &str) -> String {
@@ -191,22 +192,23 @@ async fn golden_trace_simple_answer_matches_fixture() {
         r#"{"type":"response.output_text.delta","delta":"Paris."}"#.to_string(),
         r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
     ]]));
-    let chat = chat_with(transport, &root).await;
+    let (chat, service) = chat_with(transport, &root).await;
 
-    chat.run_in_session(
-        "What is the capital of France?",
-        None,
-        None,
-        None,
-        Vec::new(),
-        None,
-        false,
-        Some(&run_id),
-        |_| {},
-        |_| {},
-    )
-    .await
-    .unwrap();
+    let session_id = chat
+        .run_in_session(
+            "What is the capital of France?",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some(&run_id),
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
 
     let events = chat.run_events(&run_id, None).unwrap();
     let trace = golden_trace(&events);
@@ -225,10 +227,12 @@ async fn golden_trace_simple_answer_matches_fixture() {
         "preparing:session_registered",
         "running_turn:turn_started",
         "running_turn:model_request_started",
+        "running_turn:context_usage",
         "running_turn:model_first_token",
         "running_turn:model_output",
         "running_turn:responses_stream_event",
         "running_turn:model_request_completed",
+        "running_turn:context_usage",
         "verifying:completion_evidence",
         "finalizing:run_completed",
         "terminal:run_terminal",
@@ -238,6 +242,20 @@ async fn golden_trace_simple_answer_matches_fixture() {
         "golden trace diverged.\nactual:\n{trace:#?}"
     );
     assert_terminal_invariants(&chat, &run_id);
+    let detail = service.session_detail(&session_id).unwrap();
+    assert!(
+        detail.context_usage.is_some(),
+        "the real run's context projection must survive a desktop reload"
+    );
+    let snapshot = detail.context_usage.unwrap();
+    assert_eq!(
+        snapshot
+            .blocks
+            .iter()
+            .map(|block| block.tokens)
+            .sum::<usize>(),
+        snapshot.projected_request_tokens.unwrap()
+    );
     std::fs::remove_dir_all(root).unwrap();
 }
 
@@ -259,7 +277,7 @@ async fn golden_trace_tool_call_run_holds_invariants() {
             r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
         ],
     ]));
-    let chat = chat_with(transport, &root).await;
+    let (chat, _) = chat_with(transport, &root).await;
 
     chat.run_in_session(
         "Read hello.txt and tell me what it says.",
@@ -337,7 +355,8 @@ async fn cancel_request_acknowledged_within_200ms() {
     let transport: Arc<dyn HttpTransport> = Arc::new(NotifyHangTransport {
         started: started.clone(),
     });
-    let chat = Arc::new(chat_with(transport, &root).await);
+    let (chat, _) = chat_with(transport, &root).await;
+    let chat = Arc::new(chat);
 
     let runner = chat.clone();
     let task_run_id = run_id.clone();

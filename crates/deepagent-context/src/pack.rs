@@ -18,6 +18,7 @@ pub enum ContextBlockKind {
     ToolSchemas,
     ToolResultRefs,
     UserGoal,
+    Attachments,
     Other,
 }
 
@@ -72,15 +73,16 @@ impl ContextPack {
 impl ContextBlockKind {
     pub const fn label(self) -> &'static str {
         match self {
-            ContextBlockKind::StablePrefix => "稳定前缀",
+            ContextBlockKind::StablePrefix => "稳定系统提示",
             ContextBlockKind::DynamicRuntime => "动态环境",
             ContextBlockKind::TaskSummary => "任务摘要",
             ContextBlockKind::RecentConversation => "最近对话",
             ContextBlockKind::RetrievedKnowledge => "知识库检索",
             ContextBlockKind::RetrievedCode => "代码片段",
             ContextBlockKind::ToolSchemas => "工具定义",
-            ContextBlockKind::ToolResultRefs => "工具结果摘要",
+            ContextBlockKind::ToolResultRefs => "工具结果",
             ContextBlockKind::UserGoal => "当前目标",
+            ContextBlockKind::Attachments => "附件",
             ContextBlockKind::Other => "其他上下文",
         }
     }
@@ -105,9 +107,19 @@ pub struct ContextUsageSnapshot {
     pub prompt_budget: usize,
     /// What the assembled pack was estimated to cost, by the local counter.
     pub estimated_prompt_tokens: usize,
-    /// What the provider reported for the last answered request. Preferred over
-    /// the estimate for the occupancy headline: the estimate is a local
-    /// tokenizer's opinion of the blocks, the measurement is what was sent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projected_request_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_request_prompt_tokens: Option<usize>,
+    #[serde(default)]
+    pub compaction_threshold: usize,
+    #[serde(default)]
+    pub surface_tokens: usize,
+    #[serde(default)]
+    pub tool_schema_tokens: usize,
+    #[serde(default)]
+    pub attachment_tokens: usize,
+    /// Legacy alias of last_request_prompt_tokens, retained for old readers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measured_prompt_tokens: Option<usize>,
     pub used_ratio: f32,
@@ -138,6 +150,12 @@ impl ContextUsageSnapshot {
             context_window: policy.context_window,
             prompt_budget: policy.prompt_budget,
             estimated_prompt_tokens,
+            projected_request_tokens: Some(estimated_prompt_tokens),
+            last_request_prompt_tokens: None,
+            compaction_threshold: policy.autocompact_threshold_tokens(None, None),
+            surface_tokens: estimated_prompt_tokens,
+            tool_schema_tokens: 0,
+            attachment_tokens: 0,
             measured_prompt_tokens: None,
             used_ratio: occupancy_ratio(estimated_prompt_tokens, policy.context_window),
             reserved_output_tokens: policy.reserved_output_tokens,
@@ -150,21 +168,36 @@ impl ContextUsageSnapshot {
         }
     }
 
-    /// The number the occupancy surface shows: the provider's measurement of
-    /// the last request, or this run's estimate while nothing has answered yet.
+    /// Next-request projection, falling back to old snapshot semantics.
     pub fn occupancy_tokens(&self) -> usize {
-        self.measured_prompt_tokens
+        self.projected_request_tokens
+            .or(self.measured_prompt_tokens)
             .unwrap_or(self.estimated_prompt_tokens)
     }
 
     /// Fold one answered request's provider usage in.
     pub fn record_provider_usage(&mut self, prompt_tokens: u32, cache_hit: u32, cache_miss: u32) {
         self.measured_prompt_tokens = Some(prompt_tokens as usize);
+        self.last_request_prompt_tokens = Some(prompt_tokens as usize);
         self.cache_hit_tokens = cache_hit as usize;
         self.cache_miss_tokens = cache_miss as usize;
         let total = cache_hit + cache_miss;
         self.cache_hit_ratio = (total > 0).then_some(cache_hit as f32 / total as f32);
         self.used_ratio = occupancy_ratio(self.occupancy_tokens(), self.context_window);
+    }
+
+    pub fn record_projection(
+        &mut self,
+        surface: crate::meter::SurfaceTokenBreakdown,
+        projected: usize,
+    ) {
+        self.estimated_prompt_tokens = surface.total();
+        self.surface_tokens = surface.total().saturating_sub(surface.tools);
+        self.tool_schema_tokens = surface.tools;
+        self.attachment_tokens = surface.attachments;
+        self.projected_request_tokens = Some(projected);
+        self.blocks = surface.blocks(projected);
+        self.used_ratio = occupancy_ratio(projected, self.context_window);
     }
 }
 
@@ -216,11 +249,29 @@ mod tests {
         assert_eq!(snapshot.estimated_prompt_tokens, 100);
         assert_eq!(
             snapshot.occupancy_tokens(),
-            140,
-            "the provider's measurement of what it was sent wins once it exists"
+            100,
+            "usage alone does not replace the next-request projection"
         );
-        assert_eq!(snapshot.used_ratio, 140.0 / 1_000_000.0);
+        assert_eq!(snapshot.used_ratio, 100.0 / 1_000_000.0);
+        assert_eq!(snapshot.last_request_prompt_tokens, Some(140));
         assert_eq!(snapshot.cache_hit_ratio, Some(0.8));
         assert_eq!(snapshot.blocks.len(), 2);
+        let mut legacy = serde_json::to_value(&snapshot).unwrap();
+        for name in [
+            "projected_request_tokens",
+            "last_request_prompt_tokens",
+            "compaction_threshold",
+            "surface_tokens",
+            "tool_schema_tokens",
+            "attachment_tokens",
+        ] {
+            legacy.as_object_mut().unwrap().remove(name);
+        }
+        let legacy: ContextUsageSnapshot = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            legacy.occupancy_tokens(),
+            140,
+            "old snapshots still read their measured value"
+        );
     }
 }

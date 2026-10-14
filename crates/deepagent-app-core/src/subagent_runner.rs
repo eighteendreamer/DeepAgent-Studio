@@ -582,9 +582,15 @@ impl ChatSubagentRunner {
         let preloaded_skills = self.preload_skills(&skills)?;
         let system =
             subagent_system_prompt(execution_root, agent_profile, &preloaded_skills, &request);
-        let db = Database::open_in_memory()?;
+        let db = Arc::new(Database::open_in_memory()?);
         let clock = SystemClock;
         let mut session = Session::create(&db, &clock, Some(&request.description))?;
+        for item in &fork_response_history {
+            session.append_response_item(item.clone())?;
+        }
+        session.append(deepagent_core::event::EventPayload::MessageAppended {
+            message: deepagent_core::message::Message::user(&request.prompt),
+        })?;
         let task = session.create_task(&request.prompt)?;
         let sub_model = request.model.clone().unwrap_or_else(|| self.model.clone());
         let sub_thinking = subagent_thinking_depth(
@@ -597,7 +603,7 @@ impl ChatSubagentRunner {
         // sub-agent engine has no hook registry, so it compacts without hook
         // dispatch (an empty registry returns `Continue`).
         let context_policy = deepagent_context::ContextPolicy::for_capability(
-            &deepagent_models::ModelCapabilityResolver::new().resolve_model_id(&sub_model),
+            &self.client.capability(&sub_model),
             sub_thinking,
         );
         let reactive_compactor: Arc<dyn deepagent_runtime::ReactiveContextCompactor> =
@@ -606,7 +612,7 @@ impl ChatSubagentRunner {
                 sub_model.clone(),
                 Arc::new(deepagent_hooks::HookRegistry::new()),
                 session.id(),
-                self.db.clone(),
+                db.clone(),
             ));
         let mut agent = ModelAgent::new(
             self.client.clone(),
@@ -617,9 +623,14 @@ impl ChatSubagentRunner {
         )
         .with_tool_schema_source(schema_source)
         .with_response_history(fork_response_history)
+        .with_surface_persistence(Arc::new(crate::context_runtime::SessionSurfaceStore {
+            db: db.clone(),
+            session_id: session.id(),
+        }))
         .with_thinking_depth(sub_thinking)
         .with_reactive_compactor(reactive_compactor)
-        .with_proactive_compaction(context_policy.autocompact_threshold_tokens(None, None) as u64);
+        .with_proactive_compaction(context_policy.autocompact_threshold_tokens(None, None) as u64)
+        .with_context_policy(context_policy, None, None);
         let checkpoint = Arc::new(deepagent_runtime::CheckpointManager::new(
             self.db.clone(),
             self.parent_run_id.clone(),

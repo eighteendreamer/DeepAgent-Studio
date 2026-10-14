@@ -328,8 +328,19 @@ fn clean_file_name(value: &str) -> String {
 pub struct FileAttachmentResolver;
 
 impl AttachmentDataResolver for FileAttachmentResolver {
+    fn is_resolvable(&self, attachment: &MessageAttachment) -> bool {
+        attachment.kind == "image"
+            && attachment
+                .path
+                .as_deref()
+                .and_then(|path| std::fs::metadata(path).ok())
+                .is_some_and(|metadata| {
+                    metadata.is_file() && metadata.len() > 0 && metadata.len() <= 32 * 1024 * 1024
+                })
+    }
+
     fn data_url(&self, attachment: &MessageAttachment) -> Option<String> {
-        if attachment.kind != "image" {
+        if !self.is_resolvable(attachment) {
             return None;
         }
         let path = attachment.path.as_deref()?;

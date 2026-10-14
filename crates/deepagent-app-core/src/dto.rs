@@ -439,6 +439,10 @@ pub struct SessionDetailDto {
     pub timeline: Vec<TimelineEntryDto>,
     /// Aggregated stats.
     pub stats: SessionStatsDto,
+    /// Last durable model-Surface projection, restored through the existing
+    /// detail query. Older sessions and payloads may have no snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_usage: Option<deepagent_context::ContextUsageSnapshot>,
 }
 
 /// One ordered segment of a reconstructed assistant/user turn, mirroring the

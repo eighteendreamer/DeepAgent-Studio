@@ -187,8 +187,8 @@ test("context occupancy has one owner: the backend snapshot", () => {
   const indicator = read("components/ContextCapacityIndicator.tsx");
   assert.match(
     indicator,
-    /snapshot\.measured_prompt_tokens \?\? snapshot\.estimated_prompt_tokens/,
-    "the measured request wins, the estimate covers the window before the first answer",
+    /snapshot\.projected_request_tokens \?\? snapshot\.measured_prompt_tokens \?\? snapshot\.estimated_prompt_tokens/,
+    "the next request projection wins; legacy snapshots keep their fallback",
   );
 });
 
@@ -198,5 +198,5 @@ test("the block breakdown truncates nothing and names its own gap", () => {
   const indicator = read("components/ContextCapacityIndicator.tsx");
   assert.doesNotMatch(indicator, /\.slice\(0, 3\)/, "dropping rows made them disagree with the total");
   assert.match(indicator, /其他\/未归类/, "context the rows do not name gets a row");
-  assert.match(indicator, /装配期估算/, "the rows are an estimate, and must say so");
+  assert.match(indicator, /上下文组成（估算）/, "the rows are an estimate, and must say so");
 });

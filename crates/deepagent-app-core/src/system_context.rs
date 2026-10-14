@@ -1,8 +1,8 @@
 use std::path::Path;
 
 use deepagent_context::{
-    CacheScope, ContextAssembler, ContextBlock, ContextBlockKind, ContextManifest, ContextPack,
-    ContextPolicy, ContextSourceKind, HeuristicTokenizer, TokenCounter,
+    ContextAssembler, ContextManifest, ContextPack, ContextPolicy, ContextSourceKind,
+    HeuristicTokenizer, TokenCounter,
 };
 use deepagent_core::message::Message;
 use deepagent_models::ToolSchema;
@@ -11,7 +11,8 @@ use crate::settings::SandboxMode;
 
 /// Marker separating the stable, prefix-cacheable system prompt from dynamic
 /// per-run environment context.
-pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str = "\n\n<<<DYNAMIC>>>\n\n";
+pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str =
+    deepagent_context::meter::DYNAMIC_INSTRUCTIONS_BOUNDARY;
 
 /// Build the effective system context manifest for a run: the stable,
 /// prefix-cacheable base, then the dynamic environment, permissions, and
@@ -183,100 +184,23 @@ pub(crate) fn build_context_pack_snapshot(
     compacted: bool,
     counter: &dyn TokenCounter,
 ) -> deepagent_context::ContextUsageSnapshot {
-    let mut blocks = Vec::new();
-    let (stable_prefix, dynamic_runtime) = split_system_prompt_for_context(system_prompt);
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::StablePrefix,
-        "system_prompt_base",
-        u8::MAX,
-        CacheScope::StablePrefix,
-        stable_prefix,
+    let mut messages = vec![Message::system(system_prompt)];
+    messages.extend_from_slice(history);
+    messages.push(Message::user(final_user_prompt));
+    let (instructions, items) = deepagent_models::response_items_from_messages(&messages);
+    let surface = deepagent_context::measure_response_surface_with(
         counter,
+        instructions.as_deref(),
+        &items,
+        tools,
     );
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::DynamicRuntime,
-        "runtime_environment",
-        200,
-        CacheScope::Dynamic,
-        dynamic_runtime,
-        counter,
+    let mut snapshot = deepagent_context::ContextUsageSnapshot::from_pack(
+        policy,
+        &ContextPack::default(),
+        compacted,
     );
-
-    let rendered_history = render_history_for_context_usage(history);
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::RecentConversation,
-        "session_history",
-        130,
-        CacheScope::Dynamic,
-        &rendered_history,
-        counter,
-    );
-
-    let tool_schema_json = serde_json::to_string(tools).unwrap_or_default();
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::ToolSchemas,
-        "visible_tool_schemas",
-        180,
-        CacheScope::StablePrefix,
-        &tool_schema_json,
-        counter,
-    );
-
-    push_context_block(
-        &mut blocks,
-        ContextBlockKind::UserGoal,
-        "current_user_prompt",
-        u8::MAX,
-        CacheScope::Dynamic,
-        final_user_prompt,
-        counter,
-    );
-
-    let pack = ContextPack::new(blocks);
-    deepagent_context::ContextUsageSnapshot::from_pack(policy, &pack, compacted)
-}
-
-pub(crate) fn split_system_prompt_for_context(system_prompt: &str) -> (&str, &str) {
-    if let Some(idx) = system_prompt.find(SYSTEM_PROMPT_DYNAMIC_BOUNDARY) {
-        let dynamic_start = idx + SYSTEM_PROMPT_DYNAMIC_BOUNDARY.len();
-        (&system_prompt[..idx], &system_prompt[dynamic_start..])
-    } else {
-        (system_prompt, "")
-    }
-}
-
-fn render_history_for_context_usage(history: &[Message]) -> String {
-    history
-        .iter()
-        .map(|m| format!("{:?}: {}", m.role, m.content))
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn push_context_block(
-    blocks: &mut Vec<ContextBlock>,
-    kind: ContextBlockKind,
-    source: &str,
-    priority: u8,
-    cache_scope: CacheScope,
-    content: &str,
-    counter: &dyn TokenCounter,
-) {
-    if content.trim().is_empty() {
-        return;
-    }
-    blocks.push(ContextBlock {
-        kind,
-        source: source.to_string(),
-        priority,
-        cache_scope,
-        estimated_tokens: counter.count(content),
-        content: content.to_string(),
-    });
+    snapshot.record_projection(surface, surface.total());
+    snapshot
 }
 
 #[cfg(test)]

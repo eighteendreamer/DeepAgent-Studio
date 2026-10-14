@@ -50,6 +50,7 @@ export interface SessionDetail {
   summary: SessionSummary;
   timeline: TimelineEntry[];
   stats: SessionStats;
+  context_usage?: ContextUsageSnapshot;
 }
 
 export interface RuntimeLogEntry {
@@ -243,7 +244,7 @@ export interface ConversationUsage {
  * - `totalTokens`: should equal `promptTokens + completionTokens`
  *
  * For cumulative session-wide statistics, see `CostSummary` (billing ledger).
- * For current window occupancy, see `ContextUsageSnapshot.measured_prompt_tokens`.
+ * For current window occupancy, see `ContextUsageSnapshot.projected_request_tokens`.
  */
 export interface TokenUsage {
   /** Prompt (input) tokens from THIS turn (current context window size). */
@@ -294,6 +295,7 @@ export type ContextBlockKind =
   | "retrieved_code"
   | "tool_schemas"
   | "tool_result_refs"
+  | "attachments"
   | "user_goal"
   | "other";
 
@@ -313,12 +315,14 @@ export interface ContextUsageSnapshot {
   prompt_budget: number;
   /** Assembly estimate by the local counter, block by block. */
   estimated_prompt_tokens: number;
-  /**
-   * What the provider reported for the last answered request. When present it
-   * is the occupancy number; the estimate only covers the window before the
-   * first answer. Read it through `contextOccupancyTokens`, never inline.
-   */
+  /** Legacy alias for the last provider request; not current occupancy. */
   measured_prompt_tokens?: number;
+  projected_request_tokens?: number;
+  last_request_prompt_tokens?: number;
+  compaction_threshold?: number;
+  surface_tokens?: number;
+  tool_schema_tokens?: number;
+  attachment_tokens?: number;
   used_ratio: number;
   reserved_output_tokens: number;
   reserved_tool_tokens: number;
@@ -345,7 +349,7 @@ export interface BudgetConfig {
  *
  * This is the source for `SessionUsageBar` (bottom bar statistics).
  * For per-turn usage, see `TokenUsage`. For current window occupancy,
- * see `ContextUsageSnapshot.measured_prompt_tokens`.
+ * see `ContextUsageSnapshot.projected_request_tokens`.
  */
 export interface CostSummary {
   session_cost: number;

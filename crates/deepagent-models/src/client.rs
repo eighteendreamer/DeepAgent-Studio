@@ -37,6 +37,9 @@ pub struct ModelConfig {
     pub defaults: ResponseDefaults,
     /// Provider wire protocol. Existing Desktop callers remain on Responses.
     pub wire_mode: WireMode,
+    /// Immutable provider catalog capabilities, shared by main and child runs.
+    /// Host-only metadata; never serialized into a provider request.
+    pub capabilities: Vec<crate::ModelCapability>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -60,6 +63,7 @@ impl ModelConfig {
             api_key: api_key.into(),
             defaults: ResponseDefaults::default(),
             wire_mode: WireMode::Responses,
+            capabilities: Vec::new(),
         }
     }
 
@@ -70,6 +74,7 @@ impl ModelConfig {
             api_key: api_key.into(),
             defaults: ResponseDefaults::default(),
             wire_mode: WireMode::ChatCompletions,
+            capabilities: Vec::new(),
         }
     }
 
@@ -87,6 +92,11 @@ impl ModelConfig {
             api_key: api_key.into(),
             defaults: ResponseDefaults::default(),
             wire_mode: WireMode::Responses,
+            capabilities: catalog
+                .available
+                .iter()
+                .map(|model| crate::ModelCapabilityResolver::new().resolve_model(model))
+                .collect(),
         }
     }
 
@@ -121,6 +131,16 @@ impl ModelClient {
     /// Build a client from a transport and config.
     pub fn new(transport: Arc<dyn HttpTransport>, config: ModelConfig) -> Self {
         Self { transport, config }
+    }
+
+    /// Provider metadata wins; uncatalogued ids use the same bundled resolver.
+    pub fn capability(&self, model: &str) -> crate::ModelCapability {
+        self.config
+            .capabilities
+            .iter()
+            .find(|capability| capability.model_id == model)
+            .cloned()
+            .unwrap_or_else(|| crate::ModelCapabilityResolver::new().resolve_model_id(model))
     }
 
     /// Send a Responses request and assemble the streamed response.
@@ -299,6 +319,23 @@ impl ModelClient {
         accumulator.finish()
     }
 
+    /// Apply the same defaults used by dispatch, for request budgeting and UI.
+    /// This does not serialize or send anything.
+    pub fn prepare_response_request(&self, mut request: ResponseRequest) -> ResponseRequest {
+        self.apply_defaults(&mut request);
+        request
+    }
+
+    /// Conservative native-image request price for the DeepSeek route.
+    /// The local Harness image-tokens implementation documents a 1,024-token
+    /// provider cap per image. Actual provider usage calibrates the full request.
+    /// References that cannot be resolved or are routed as text have no visual cost.
+    pub fn image_token_reserve(&self, _model: &str) -> usize {
+        // This client owns the DeepSeek route. Other provider adapters must
+        // supply their own image pricing rather than reusing this estimate.
+        1024
+    }
+
     fn apply_defaults(&self, request: &mut ResponseRequest) {
         if request.temperature.is_none() {
             request.temperature = self.config.defaults.temperature;
@@ -474,6 +511,31 @@ mod tests {
     fn client_with(events: Vec<String>) -> ModelClient {
         let transport = Arc::new(MockTransport::new(events));
         ModelClient::new(transport, ModelConfig::deepseek("test-key"))
+    }
+
+    #[test]
+    fn request_budget_capability_prefers_provider_catalog_metadata() {
+        let catalog = crate::discovery::ModelCatalog {
+            base_url: crate::discovery::DEEPSEEK_BASE_URL.into(),
+            chat_model: "deepseek-flash".into(),
+            reasoner_model: "deepseek-flash".into(),
+            available: vec![crate::discovery::ModelInfo {
+                id: "deepseek-flash".into(),
+                object: "model".into(),
+                owned_by: "deepseek".into(),
+                context_window: Some(128_000),
+                max_output_tokens: Some(8_000),
+            }],
+        };
+        let config = ModelConfig::from_catalog("test", &catalog, crate::discovery::ModelRole::Chat);
+        let client = ModelClient::new(Arc::new(MockTransport::new(vec![])), config);
+        let capability = client.capability("deepseek-flash");
+        assert_eq!(capability.context_window, 128_000);
+        assert_eq!(capability.max_output_tokens, 8_000);
+        assert_eq!(
+            client.capability("deepseek-v4-flash").context_window,
+            1_000_000
+        );
     }
 
     #[test]

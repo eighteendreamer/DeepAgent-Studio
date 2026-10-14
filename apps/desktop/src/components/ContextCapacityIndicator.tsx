@@ -29,14 +29,9 @@ function capacityTone(ratio: number, isEmptySession: boolean): string {
   return "#94a3b8";
 }
 
-/**
- * The only place the occupancy figure is decided: what the provider measured
- * for the last request, or the assembly estimate until nothing has answered.
- * The block breakdown below is always the estimate, so it can be smaller than
- * this number and says so.
- */
+/** Projected next request; legacy snapshots retain their original fallback. */
 export function contextOccupancyTokens(snapshot: ContextUsageSnapshot): number {
-  return snapshot.measured_prompt_tokens ?? snapshot.estimated_prompt_tokens;
+  return snapshot.projected_request_tokens ?? snapshot.measured_prompt_tokens ?? snapshot.estimated_prompt_tokens;
 }
 
 export function ContextCapacityIndicator({
@@ -71,10 +66,7 @@ export function ContextCapacityIndicator({
     () => [...(snapshot?.blocks ?? [])].sort((a, b) => b.tokens - a.tokens),
     [snapshot?.blocks],
   );
-  // The rows are the assembly estimate; the headline may be the provider's
-  // measurement of a bigger request. The gap is real context the breakdown does
-  // not name, so it gets its own row rather than making the rows and the total
-  // disagree.
+  // Legacy snapshots may lack a complete block partition.
   const unattributed = snapshot
     ? Math.max(
         0,
@@ -145,9 +137,9 @@ export function ContextCapacityIndicator({
         </svg>
       </button>} />
 
-      <HoverCardContent side="top" align="end" className="w-[200px] px-3.5 py-3">
+      <HoverCardContent side="top" align="end" className="w-[240px] px-3.5 py-3">
           <div className="flex items-baseline justify-between gap-2">
-            <span className="font-semibold">上下文</span>
+            <span className="font-semibold">预计下一次请求</span>
             <span className="text-[18px] font-semibold leading-none">{percent}%</span>
           </div>
           <div className="mt-1.5 text-[13px] text-text-secondary">
@@ -156,9 +148,20 @@ export function ContextCapacityIndicator({
               : formatTokens(usedTokens)}
           </div>
 
+          {snapshot?.last_request_prompt_tokens != null && (
+            <div className="mt-1.5 flex justify-between gap-2 text-[12px] text-text-secondary">
+              <span>上一次请求</span><span>{formatTokens(snapshot.last_request_prompt_tokens)}</span>
+            </div>
+          )}
+          {!!snapshot?.compaction_threshold && (
+            <div className="mt-1.5 flex justify-between gap-2 text-[12px] text-text-secondary">
+              <span>自动压缩阈值</span><span>{formatTokens(snapshot.compaction_threshold)}</span>
+            </div>
+          )}
+
           {blocks.length > 0 && (
             <div className="mt-2 space-y-1.5 border-t border-border-theme pt-2">
-              <div className="text-[11px] text-text-tertiary">装配期估算</div>
+              <div className="text-[11px] text-text-tertiary">上下文组成（估算）</div>
               {blocks.map((block) => (
                 <div key={`${block.kind}-${block.source}`} className="flex items-center justify-between gap-2">
                   <span className="min-w-0 truncate text-text-secondary">{block.name}</span>
@@ -176,7 +179,7 @@ export function ContextCapacityIndicator({
 
           {(cacheRatio != null || snapshot?.cache_hit_tokens) && (
             <div className="mt-2 flex items-center justify-between border-t border-border-theme pt-2 text-text-secondary">
-              <span>缓存</span>
+              <span>上次缓存命中</span>
               <span className="font-medium text-text-base">
                 {cacheRatio == null ? formatTokens(snapshot?.cache_hit_tokens ?? 0) : `${Math.round(cacheRatio * 100)}%`}
               </span>

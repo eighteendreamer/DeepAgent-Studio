@@ -21,6 +21,7 @@ pub mod attachment;
 pub mod budget;
 pub mod compaction;
 pub mod config_overlay;
+pub mod meter;
 pub mod model_compactor;
 pub mod pack;
 pub mod policy;
@@ -40,12 +41,16 @@ pub use config_overlay::{
     default_managed_dir, ConfigLayer, ConfigOverlay, ConfigSource, DualConfigLoader,
     MANAGED_PRECEDENCE,
 };
+pub use meter::{
+    measure_response_surface, measure_response_surface_for_route, measure_response_surface_with,
+    ContextMeter, SurfaceTokenBreakdown,
+};
 pub use model_compactor::ModelCompactor;
 pub use pack::{
     CacheScope, ContextBlock, ContextBlockKind, ContextBlockUsage, ContextPack,
     ContextUsageSnapshot,
 };
-pub use policy::{CompactionKeepWindow, ContextPolicy};
+pub use policy::{CompactionKeepWindow, ContextBudget, ContextPolicy};
 pub use prompt::{CompiledPrompt, PromptFragment, PromptSource};
 pub use reminder::{append_to_tool_result, wrap};
 pub use tokenizer::{HeuristicTokenizer, TokenCounter};

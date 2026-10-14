@@ -126,6 +126,7 @@ test("session detail and plan mode loaders reject late responses after navigatio
   const activeIdRef = { current: null };
   let detail = null;
   let planMode = false;
+  let contextUsage = new Map();
   function open(activeId) {
     const detailRequest = deferred();
     const planRequest = deferred();
@@ -136,21 +137,31 @@ test("session detail and plan mode loaders reject late responses after navigatio
       getPlanMode: () => planRequest.promise,
       setDetail: value => { detail = value; },
       setPlanMode: value => { planMode = value; },
+      setContextUsageByKey: update => { contextUsage = update(contextUsage); },
     });
   }
   const closeFirst = open("a");
   closeFirst();
   const closeSecond = open("b");
-  const current = { summary: { id: "b" }, project_path: "/second/app" };
+  const current = { summary: { id: "b" }, project_path: "/second/app", context_usage: { projected_request_tokens: 1200 } };
   requests.get("b").detailRequest.resolve(current);
   requests.get("b").planRequest.resolve(true);
   await tick();
-  requests.get("a").detailRequest.resolve({ summary: { id: "a" }, project_path: "/first/app" });
+  requests.get("a").detailRequest.resolve({ summary: { id: "a" }, project_path: "/first/app", context_usage: { projected_request_tokens: 9000 } });
   requests.get("a").planRequest.resolve(false);
   await tick();
   assert.equal(detail, current);
   assert.equal(planMode, true);
+  assert.equal(contextUsage.get("b"), current.context_usage);
+  assert.equal(contextUsage.has("a"), false, "late detail response must not seed another session");
   closeSecond();
+  const live = { projected_request_tokens: 2500 };
+  contextUsage.set("b", live);
+  const closeThird = open("b");
+  requests.get("b").detailRequest.resolve(current);
+  await tick();
+  assert.equal(contextUsage.get("b"), live, "a saved snapshot must not overwrite a live projection");
+  closeThird();
 });
 
 function deferred() {

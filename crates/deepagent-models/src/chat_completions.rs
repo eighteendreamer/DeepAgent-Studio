@@ -589,7 +589,10 @@ fn parse_chat_usage(value: &serde_json::Value) -> Usage {
         .and_then(serde_json::Value::as_u64)
         .unwrap_or(0) as u32;
     Usage {
-        prompt_tokens: prompt_tokens.saturating_sub(cache_hit),
+        // DeepSeek reports prompt_tokens as the complete input, including
+        // cached input. Cache hit/miss are separate accounting dimensions and
+        // must not be subtracted from the context-window measurement.
+        prompt_tokens,
         completion_tokens,
         reasoning_tokens: value
             .get("completion_tokens_details")
@@ -771,7 +774,7 @@ mod tests {
         assert_eq!(
             response.usage,
             Some(Usage {
-                prompt_tokens: 7,
+                prompt_tokens: 10,
                 completion_tokens: 7,
                 reasoning_tokens: 4,
                 total_tokens: 17,
@@ -821,7 +824,7 @@ mod tests {
         assert_eq!(
             response.usage,
             Some(Usage {
-                prompt_tokens: 5,
+                prompt_tokens: 9,
                 completion_tokens: 5,
                 reasoning_tokens: 2,
                 total_tokens: 14,

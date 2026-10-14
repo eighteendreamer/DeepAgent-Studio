@@ -175,6 +175,7 @@ test("no durable event disappears from the transcript without a decision", () =>
     TaskStateChanged: "same — transitions belong to the plan panel's vocabulary",
     RunTerminal: "run outcome lives in the usage footer and the run store",
     ContextSnipped: "internal history edit; a snip is not a conversation boundary",
+    ContextSurfacePatched: "internal model Surface replacement; the raw tool transcript remains unchanged",
     MemoryEntryWritten: "vault audit trail, surfaced in the knowledge panel",
     Note: "consolidation result for the observation timeline, not the chat",
     McpInstructionsDelta: "bookkeeping about which servers announced",

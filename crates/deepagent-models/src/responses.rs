@@ -240,9 +240,12 @@ pub fn messages_from_response_items(
     let mut pending_tool_calls: Vec<deepagent_core::message::ToolCall> = Vec::new();
 
     let flush_tool_calls = |calls: &mut Vec<deepagent_core::message::ToolCall>,
-                            out: &mut Vec<Message>| {
+                            out: &mut Vec<Message>,
+                            reasoning: &mut Option<String>| {
         if !calls.is_empty() {
-            out.push(Message::assistant("").with_tool_calls(std::mem::take(calls)));
+            let mut message = Message::assistant("").with_tool_calls(std::mem::take(calls));
+            message.reasoning_content = reasoning.take();
+            out.push(message);
         }
     };
 
@@ -252,7 +255,7 @@ pub fn messages_from_response_items(
                 pending_reasoning = (!content.is_empty()).then(|| content.clone());
             }
             ResponseItem::Message { role, content } => {
-                flush_tool_calls(&mut pending_tool_calls, &mut out);
+                flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
                 let role = match role.as_str() {
                     "system" => Role::System,
                     "assistant" => Role::Assistant,
@@ -270,7 +273,7 @@ pub fn messages_from_response_items(
                 content,
                 attachments,
             } => {
-                flush_tool_calls(&mut pending_tool_calls, &mut out);
+                flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
                 let role = match role.as_str() {
                     "system" => Role::System,
                     "assistant" => Role::Assistant,
@@ -315,15 +318,15 @@ pub fn messages_from_response_items(
             }
             ResponseItem::FunctionCallOutput { call_id, output }
             | ResponseItem::CustomToolCallOutput { call_id, output } => {
-                flush_tool_calls(&mut pending_tool_calls, &mut out);
+                flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
                 out.push(Message::tool_result(call_id.clone(), output.clone()));
             }
             ResponseItem::WebSearchCall { .. } => {
-                flush_tool_calls(&mut pending_tool_calls, &mut out);
+                flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
             }
         }
     }
-    flush_tool_calls(&mut pending_tool_calls, &mut out);
+    flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
     out
 }
 
@@ -528,6 +531,7 @@ mod tests {
         assert_eq!(messages[1].tool_calls[0].id, "call-1");
         assert_eq!(messages[2].tool_call_id.as_deref(), Some("call-1"));
         assert_eq!(messages[3].content, "done");
-        assert_eq!(messages[3].reasoning_content.as_deref(), Some("thinking"));
+        assert_eq!(messages[1].reasoning_content.as_deref(), Some("thinking"));
+        assert!(messages[3].reasoning_content.is_none());
     }
 }

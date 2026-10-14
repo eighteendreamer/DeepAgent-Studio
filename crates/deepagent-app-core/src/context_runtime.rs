@@ -29,6 +29,67 @@ use crate::tool_manifest::{deferred_tools_announcement, ToolManifest};
 pub(crate) type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
 pub(crate) type RemoteContextFactory = Arc<dyn Fn(String) -> RemoteContextFuture + Send + Sync>;
 
+pub(crate) struct SessionSurfaceStore {
+    pub db: Arc<Database>,
+    pub session_id: SessionId,
+}
+
+impl deepagent_runtime::ContextSurfacePersistence for SessionSurfaceStore {
+    fn replace_tool_results(
+        &self,
+        strategy: &str,
+        replacements: &[(String, String)],
+    ) -> Result<()> {
+        if replacements.is_empty() {
+            return Ok(());
+        }
+        let events = deepagent_persistence::event_store::EventStore::new(&self.db)
+            .load_session(self.session_id)?;
+        let mut patches = Vec::new();
+        for (call_id, output) in replacements {
+            let source_sequence = events
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    EventPayload::ResponseItemAppended {
+                        item:
+                            ResponseInputItem::FunctionCallOutput { call_id: id, .. }
+                            | ResponseInputItem::CustomToolCallOutput { call_id: id, .. },
+                    } if id == call_id => Some(event.sequence),
+                    EventPayload::ToolCallCompleted { call_id: id, .. } if id == call_id => {
+                        Some(event.sequence)
+                    }
+                    _ => None,
+                })
+                .ok_or_else(|| {
+                    CoreError::invalid(format!("cannot replace unpersisted tool output {call_id}"))
+                })?;
+            patches.push(deepagent_core::event::ToolResultReplacement {
+                source_sequence,
+                call_id: call_id.clone(),
+                replacement_output: output.clone(),
+            });
+        }
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::recover(&self.db, &clock, self.session_id)?;
+        session.append(EventPayload::ContextSurfacePatched {
+            version: 1,
+            strategy: strategy.to_string(),
+            replacements: patches,
+        })?;
+        Ok(())
+    }
+
+    fn record_snip(&self, tags: &[String]) -> Result<()> {
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::recover(&self.db, &clock, self.session_id)?;
+        session.append(EventPayload::ContextSnipped {
+            tags: tags.to_vec(),
+        })?;
+        Ok(())
+    }
+}
+
 pub(crate) struct HookedReactiveContextCompactor {
     client: Arc<ModelClient>,
     model: String,
@@ -128,6 +189,31 @@ impl HookedReactiveContextCompactor {
         &self,
         zone: &[ResponseInputItem],
     ) -> (String, deepagent_models::Usage) {
+        let store = crate::session_memory::SessionMemoryStore::new(self.db.clone());
+        if let (Ok(Some(state)), Ok(events)) = (
+            store.load(self.session_id),
+            deepagent_persistence::event_store::EventStore::new(&self.db)
+                .load_session(self.session_id),
+        ) {
+            if let Some(covered) = state.last_summarized_sequence {
+                if !zone.is_empty()
+                    && !state.summary.trim().is_empty()
+                    && zone.iter().all(|item| {
+                        crate::input_runtime::sequence_of_response_item(&events, item)
+                            .is_some_and(|seq| seq <= covered)
+                    })
+                {
+                    let summary = crate::input_runtime::with_transcript_pointer(
+                        format!(
+                            "Session notes maintained during this conversation:\n{}",
+                            state.summary
+                        ),
+                        &self.db.session_transcript_dir(self.session_id),
+                    );
+                    return (summary, deepagent_models::Usage::default());
+                }
+            }
+        }
         let rendered = zone
             .iter()
             .map(render_response_item_for_compaction)
@@ -145,12 +231,65 @@ impl HookedReactiveContextCompactor {
             summary_block.push_str("\n\n");
             summary_block.push_str(&reinjection);
         }
-        (summary_block, usage)
+        (
+            crate::input_runtime::with_transcript_pointer(
+                summary_block,
+                &self.db.session_transcript_dir(self.session_id),
+            ),
+            usage,
+        )
     }
 
     async fn summarize_zone(&self, zone: &[Message]) -> (String, deepagent_models::Usage) {
         let (_, items) = deepagent_models::response_items_from_messages(zone);
         self.summarize_response_item_zone(&items).await
+    }
+
+    fn measure_native_items(&self, instructions: Option<&str>, items: &[ResponseInputItem]) -> u64 {
+        deepagent_context::measure_response_surface_for_route(
+            instructions,
+            items,
+            &[],
+            |attachment| {
+                if deepagent_runtime::AttachmentDataResolver::is_resolvable(
+                    &crate::attachment_service::FileAttachmentResolver,
+                    attachment,
+                ) {
+                    self.client.image_token_reserve(&self.model)
+                } else {
+                    0
+                }
+            },
+        )
+        .total() as u64
+    }
+
+    fn record_native_boundary(
+        &self,
+        strategy: &str,
+        before: u64,
+        after: u64,
+        summary: &str,
+        tail: &[ResponseInputItem],
+    ) -> Result<()> {
+        let events = deepagent_persistence::event_store::EventStore::new(&self.db)
+            .load_session(self.session_id)?;
+        let cut = tail
+            .iter()
+            .find_map(|item| crate::input_runtime::sequence_of_response_item(&events, item))
+            .ok_or_else(|| {
+                CoreError::invalid("cannot resolve native compaction tail in durable session log")
+            })?;
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::recover(&self.db, &clock, self.session_id)?;
+        session.append(EventPayload::ContextCompacted {
+            tokens_before: before,
+            tokens_after: after,
+            strategy: strategy.into(),
+            summary: Some(summary.into()),
+            first_kept_sequence: Some(cut),
+        })?;
+        Ok(())
     }
 
     /// Record the boundary a summarizing pass just produced, so the NEXT run
@@ -355,7 +494,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         let mut compacted = Vec::with_capacity(system_end + 1 + body.len() - split);
         compacted.extend_from_slice(&messages[..system_end]);
         compacted.push(Message::user(format!(
-            "[Earlier conversation compacted after context overflow]\n{summary_block}"
+            "[Earlier conversation compacted to summary]\n{summary_block}"
         )));
         compacted.extend_from_slice(&body[split..]);
 
@@ -435,57 +574,8 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             return Ok(None);
         }
 
-        let counter = HeuristicTokenizer::new();
-        let count = |items: &[ResponseInputItem]| {
-            items
-                .iter()
-                .map(|item| {
-                    deepagent_context::TokenCounter::count(
-                        &counter,
-                        &render_response_item_for_compaction(item),
-                    )
-                })
-                .sum::<usize>() as u64
-        };
-        let tokens_before = instructions
-            .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
-            .unwrap_or(0)
-            + count(items);
-
-        if let Some((micro_items, cleared)) = micro_compact_response_item_outputs(items, split) {
-            let tokens_after = instructions
-                .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
-                .unwrap_or(0)
-                + count(&micro_items);
-            if tokens_after.saturating_mul(10) <= tokens_before.saturating_mul(8) {
-                let boundary =
-                    format!("[micro-compact] cleared {cleared} historical tool result(s)");
-                self.breaker
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .record_success();
-                self.hooks
-                    .dispatch(&HookContext::new(
-                        self.session_id,
-                        HookPoint::PostCompact,
-                        HookData::Compact {
-                            trigger: deepagent_core::compaction_strategy::MICRO_COMPACT.to_string(),
-                            summary: Some(boundary.clone()),
-                        },
-                    ))
-                    .await?;
-                let messages =
-                    deepagent_models::messages_from_response_items(instructions, &micro_items);
-                return Ok(Some(ReactiveCompaction {
-                    messages,
-                    response_items: Some(micro_items),
-                    tokens_before,
-                    tokens_after,
-                    summary: boundary,
-                    usage: deepagent_models::Usage::default(),
-                }));
-            }
-        }
+        let count = |items: &[ResponseInputItem]| self.measure_native_items(instructions, items);
+        let tokens_before = count(items);
 
         let (summary_block, summary_usage) =
             self.summarize_response_item_zone(&items[..split]).await;
@@ -493,16 +583,11 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         let mut compacted_items = Vec::with_capacity(1 + items.len() - split);
         compacted_items.push(ResponseInputItem::Message {
             role: "user".to_string(),
-            content: format!(
-                "[Earlier conversation compacted after context overflow]\n{summary_block}"
-            ),
+            content: format!("[Earlier conversation compacted to summary]\n{summary_block}"),
         });
         compacted_items.extend_from_slice(&items[split..]);
 
-        let tokens_after = instructions
-            .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
-            .unwrap_or(0)
-            + count(&compacted_items);
+        let tokens_after = count(&compacted_items);
         if tokens_after >= tokens_before {
             self.breaker
                 .lock()
@@ -528,16 +613,13 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
 
         // The tail's first entry, projected the way the model sees it, is the cut
         // point the next run must replay verbatim.
-        let first_kept = deepagent_models::messages_from_response_items(None, &items[split..])
-            .into_iter()
-            .next();
-        self.record_durable_boundary(
+        self.record_native_boundary(
             Self::boundary_strategy(trigger),
             tokens_before,
             tokens_after,
             &summary_block,
-            first_kept.as_ref(),
-        );
+            &items[split..],
+        )?;
 
         let messages =
             deepagent_models::messages_from_response_items(instructions, &compacted_items);
@@ -645,7 +727,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         let mut compacted = Vec::with_capacity(system_end + 1 + tail.len());
         compacted.extend_from_slice(&messages[..system_end]);
         compacted.push(Message::user(format!(
-            "[Earlier conversation compacted after context overflow]\n{}",
+            "[Earlier conversation compacted to summary]\n{}",
             note.note
         )));
         compacted.extend_from_slice(tail);
@@ -710,38 +792,18 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
             return Ok(None);
         }
 
-        let counter = HeuristicTokenizer::new();
-        let count = |items: &[ResponseInputItem]| {
-            items
-                .iter()
-                .map(|item| {
-                    deepagent_context::TokenCounter::count(
-                        &counter,
-                        &render_response_item_for_compaction(item),
-                    )
-                })
-                .sum::<usize>() as u64
-        };
-        let tokens_before = instructions
-            .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
-            .unwrap_or(0)
-            + count(items);
+        let count = |items: &[ResponseInputItem]| self.measure_native_items(instructions, items);
+        let tokens_before = count(items);
 
         let tail = &items[note.prefix_end..];
         let mut compacted_items = Vec::with_capacity(1 + tail.len());
         compacted_items.push(ResponseInputItem::Message {
             role: "user".to_string(),
-            content: format!(
-                "[Earlier conversation compacted after context overflow]\n{}",
-                note.note
-            ),
+            content: format!("[Earlier conversation compacted to summary]\n{}", note.note),
         });
         compacted_items.extend_from_slice(tail);
 
-        let tokens_after = instructions
-            .map(|text| deepagent_context::TokenCounter::count(&counter, text) as u64)
-            .unwrap_or(0)
-            + count(&compacted_items);
+        let tokens_after = count(&compacted_items);
         if tokens_after >= tokens_before {
             return Ok(None);
         }
@@ -755,16 +817,13 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
                 },
             ))
             .await?;
-        let first_kept = deepagent_models::messages_from_response_items(None, tail)
-            .into_iter()
-            .next();
-        self.record_durable_boundary(
+        self.record_native_boundary(
             deepagent_core::compaction_strategy::PREFIRE_PASS2,
             tokens_before,
             tokens_after,
             &note.note,
-            first_kept.as_ref(),
-        );
+            tail,
+        )?;
         let messages =
             deepagent_models::messages_from_response_items(instructions, &compacted_items);
         Ok(Some(ReactiveCompaction {
@@ -881,12 +940,36 @@ fn pairing_safe_response_item_compaction_split(items: &[ResponseInputItem]) -> O
         .map(response_item_carries_text)
         .collect::<Vec<_>>();
     let split = budgeted_tail_split(&counts, &text, ContextPolicy::KEEP_WINDOW)?;
-    let split = retain_whole_tool_pair(split, items.len(), |index| {
-        is_tool_output_item(&items[index])
-    });
+    let mut split = split;
+    // Parallel calls can have results on either side of the proposed cut.
+    // Pull the boundary back to the earliest requesting item for every kept result.
+    loop {
+        let before = split;
+        for (index, item) in items[..split].iter().enumerate() {
+            let call_id = match item {
+                ResponseInputItem::FunctionCall { call_id, .. }
+                | ResponseInputItem::CustomToolCall { call_id, .. } => call_id,
+                _ => continue,
+            };
+            if items[split..].iter().any(|item| match item {
+                ResponseInputItem::FunctionCallOutput { call_id: id, .. }
+                | ResponseInputItem::CustomToolCallOutput { call_id: id, .. } => id == call_id,
+                _ => false,
+            }) {
+                split = split.min(index);
+            }
+        }
+        if split > 0 && matches!(items[split - 1], ResponseInputItem::Reasoning { .. }) {
+            split -= 1;
+        }
+        if split == before {
+            break;
+        }
+    }
     (split > 0).then_some(split)
 }
 
+#[cfg(test)]
 fn is_tool_output_item(item: &ResponseInputItem) -> bool {
     matches!(
         item,
@@ -895,6 +978,7 @@ fn is_tool_output_item(item: &ResponseInputItem) -> bool {
     )
 }
 
+#[cfg(test)]
 fn micro_compact_response_item_outputs(
     items: &[ResponseInputItem],
     split: usize,
@@ -1230,7 +1314,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         .await;
     let final_user_prompt =
         compose_prompt_with_attachments(request.prompt_for_model, &user_attachments);
-    let context_usage = build_context_pack_snapshot(
+    let mut context_usage = build_context_pack_snapshot(
         request.context_policy,
         &system_prompt,
         request.history,
@@ -1239,6 +1323,29 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         request.context_compacted,
         &HeuristicTokenizer::new(),
     );
+    if let Some((prompt, hit, miss)) =
+        request
+            .prior_events
+            .iter()
+            .rev()
+            .find_map(|event| match &event.payload {
+                EventPayload::UsageRecorded {
+                    prompt_tokens,
+                    prompt_cache_hit_tokens,
+                    prompt_cache_miss_tokens,
+                    ..
+                } => Some((
+                    *prompt_tokens,
+                    *prompt_cache_hit_tokens,
+                    *prompt_cache_miss_tokens,
+                )),
+                _ => None,
+            })
+    {
+        // The old request has no verifiable native/header anchor after resume.
+        // Keep its measured metadata, and remeasure the current Surface in full.
+        context_usage.record_provider_usage(prompt, hit, miss);
+    }
 
     Ok(BuiltRunContext {
         system_manifest,
@@ -1729,6 +1836,163 @@ or updated resources.\n\n<invoked-skills>\n",
 mod tests {
     use super::*;
     use deepagent_context::TokenCounter;
+
+    #[tokio::test]
+    async fn native_prune_changes_wire_and_survives_database_reopen() {
+        use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
+        use deepagent_runtime::{Agent, ModelAgent};
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("surface.sqlite3");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        let sid = session.id();
+        let original = "original-large-tool-result".repeat(4_000);
+        let mut items = vec![
+            ResponseInputItem::Message {
+                role: "user".into(),
+                content: "old task".into(),
+            },
+            ResponseInputItem::FunctionCall {
+                call_id: "old-c1".into(),
+                name: "read_file".into(),
+                arguments: r#"{"path":"a.txt"}"#.into(),
+            },
+            ResponseInputItem::FunctionCallOutput {
+                call_id: "old-c1".into(),
+                output: original.clone(),
+            },
+        ];
+        for index in 0..10 {
+            items.push(ResponseInputItem::Message {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: format!("recent {index}"),
+            });
+        }
+        for item in &items {
+            session.append_response_item(item.clone()).unwrap();
+        }
+        let (client, transport) =
+            scripted_client_with_transport(vec![ScriptedTransport::text("done")]);
+        let mut agent =
+            ModelAgent::new(client.clone(), "deepseek-flash", "rules", "current", vec![])
+                .with_response_history(items)
+                .with_surface_persistence(Arc::new(SessionSurfaceStore {
+                    db: db.clone(),
+                    session_id: sid,
+                }))
+                .with_reactive_compactor(Arc::new(HookedReactiveContextCompactor::new(
+                    client,
+                    "deepseek-flash".into(),
+                    Arc::new(HookRegistry::new()),
+                    sid,
+                    db.clone(),
+                )))
+                .with_proactive_compaction(2_000);
+        agent.think(0, &[]).await.unwrap();
+        let wire = transport.last_prompt();
+        assert!(!wire.contains("original-large-tool-result"));
+        assert!(wire.contains("tool result content cleared"));
+        assert!(wire.contains("read_file") && wire.contains("old-c1"));
+        drop(agent);
+        drop(session);
+        drop(db);
+        let reopened = Database::open(&path).unwrap();
+        let events = deepagent_persistence::event_store::EventStore::new(&reopened)
+            .load_session(sid)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(&event.payload, EventPayload::ResponseItemAppended { item: ResponseInputItem::FunctionCallOutput { output, .. } } if output == &original)), "raw event remains unchanged");
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::ContextSurfacePatched { .. })));
+        let replay = crate::input_runtime::response_items_from_events(&events);
+        let replay_wire = deepagent_models::ResponseRequest::from_response_items(
+            "deepseek-flash",
+            Some("rules".into()),
+            replay,
+        );
+        let replay_wire = serde_json::to_value(replay_wire).unwrap();
+        assert!(!replay_wire
+            .to_string()
+            .contains("original-large-tool-result"));
+        assert!(replay_wire
+            .to_string()
+            .contains("tool result content cleared"));
+    }
+
+    #[tokio::test]
+    async fn native_summary_keeps_exact_tool_metadata_across_replay() {
+        use crate::session_memory::testing::{scripted_client, ScriptedTransport};
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        let sid = session.id();
+        for index in 0..24 {
+            session
+                .append_response_item(ResponseInputItem::Message {
+                    role: "user".into(),
+                    content: format!("turn {index}: {}", "detail ".repeat(520)),
+                })
+                .unwrap();
+        }
+        let call = ResponseInputItem::FunctionCall {
+            call_id: "retained-c1".into(),
+            name: "read_file".into(),
+            arguments: " {  \"path\" : \"src/lib.rs\" } ".into(),
+        };
+        session.append_response_item(call.clone()).unwrap();
+        session
+            .append_response_item(ResponseInputItem::FunctionCallOutput {
+                call_id: "retained-c1".into(),
+                output: "file content".into(),
+            })
+            .unwrap();
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let before = store.load_session(sid).unwrap();
+        let items = crate::input_runtime::response_items_from_events(&before);
+        let compactor = HookedReactiveContextCompactor::new(
+            scripted_client(vec![ScriptedTransport::text(
+                "{\"goal\":\"ship\",\"completed\":[\"checked files\"]}",
+            )]),
+            "deepseek-flash".into(),
+            Arc::new(HookRegistry::new()),
+            sid,
+            db.clone(),
+        );
+        let compacted = compactor
+            .compact_response_items(
+                Some("protected system head"),
+                &items,
+                CompactionTrigger::ContextOverflow,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(compacted.tokens_after < compacted.tokens_before);
+        let compacted_items = compacted.response_items.unwrap();
+        assert!(
+            compacted_items.contains(&call),
+            "arguments must not be reserialized through Message"
+        );
+        let after = store.load_session(sid).unwrap();
+        assert!(after.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ContextCompacted {
+                first_kept_sequence: Some(_),
+                summary: Some(_),
+                ..
+            }
+        )));
+        let replay = crate::input_runtime::response_items_from_events(&after);
+        assert_eq!(
+            replay, compacted_items,
+            "live and durable native summary surfaces agree"
+        );
+        assert!(
+            after.len() > before.len(),
+            "original events remain in the log"
+        );
+    }
 
     fn tool_call(
         id: &str,

@@ -217,6 +217,7 @@ mod tests {
             permission_preset_visibility: PermissionPresetVisibility::default(),
             welcome_name: String::new(),
             autocompact_reserve_tokens: None,
+            context_headroom_tokens: None,
             output_style: crate::settings::OutputStyle::default(),
             execution_features: crate::settings::ExecutionFeatures::default(),
             language: String::new(),

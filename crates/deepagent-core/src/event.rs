@@ -22,6 +22,14 @@ use crate::task::TaskState;
 /// sequence `0`; the store enforces no gaps and no duplicates.
 pub type Sequence = u64;
 
+/// A durable change to a model-visible tool output; the original event remains intact.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolResultReplacement {
+    pub source_sequence: Sequence,
+    pub call_id: String,
+    pub replacement_output: String,
+}
+
 /// An immutable, append-only event.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Event {
@@ -152,6 +160,13 @@ pub enum EventPayload {
         tags: Vec<String>,
     },
 
+    /// Replayable Surface mutations. Version 1 only replaces tool output bodies.
+    ContextSurfacePatched {
+        version: u32,
+        strategy: String,
+        replacements: Vec<ToolResultReplacement>,
+    },
+
     /// The kernel run reached a terminal state. Projected into the session
     /// stream so replaying the session log alone reconstructs the run terminal
     /// (the `runs`/`run_events` tables remain the run-local authority; this
@@ -276,6 +291,7 @@ impl EventPayload {
             EventPayload::ToolCallCompleted { .. } => "tool_call_completed",
             EventPayload::ContextCompacted { .. } => "context_compacted",
             EventPayload::ContextSnipped { .. } => "context_snipped",
+            EventPayload::ContextSurfacePatched { .. } => "context_surface_patched",
             EventPayload::RunTerminal { .. } => "run_terminal",
             EventPayload::Note { .. } => "note",
             EventPayload::UsageRecorded { .. } => "usage_recorded",
@@ -388,6 +404,25 @@ mod tests {
         let json = serde_json::to_string(&e).unwrap();
         let back: Event = serde_json::from_str(&json).unwrap();
         assert_eq!(e, back);
+    }
+
+    #[test]
+    fn surface_patch_roundtrips_with_source_identity() {
+        let payload = EventPayload::ContextSurfacePatched {
+            version: 1,
+            strategy: "tool_result_prune".into(),
+            replacements: vec![ToolResultReplacement {
+                source_sequence: 42,
+                call_id: "c1".into(),
+                replacement_output: "cleared".into(),
+            }],
+        };
+        let json = serde_json::to_string(&payload).unwrap();
+        assert_eq!(
+            serde_json::from_str::<EventPayload>(&json).unwrap(),
+            payload
+        );
+        assert_eq!(payload.kind(), "context_surface_patched");
     }
 
     #[test]

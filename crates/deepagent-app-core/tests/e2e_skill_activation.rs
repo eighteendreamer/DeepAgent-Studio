@@ -198,6 +198,7 @@ fn settings_default() -> AppSettings {
         permission_preset_visibility: PermissionPresetVisibility::default(),
         welcome_name: String::new(),
         autocompact_reserve_tokens: None,
+        context_headroom_tokens: None,
         output_style: deepagent_app_core::OutputStyle::default(),
         execution_features: deepagent_app_core::ExecutionFeatures::default(),
         language: String::new(),

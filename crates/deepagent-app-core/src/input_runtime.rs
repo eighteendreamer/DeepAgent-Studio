@@ -271,6 +271,18 @@ fn compaction_boundary(events: &[Event]) -> Option<CompactionBoundary> {
 /// visible instead of risking cutting mid-pair — redundancy is cheap here,
 /// a broken tool pair is not. `None` means the caller must not write a
 /// verbatim-keeping boundary (it falls back to "summary plus whatever follows").
+fn without_user_tag(content: &str) -> &str {
+    if let Some((text, suffix)) = content.rsplit_once("\n[id:u") {
+        if suffix
+            .strip_suffix(']')
+            .is_some_and(|id| id.parse::<usize>().is_ok())
+        {
+            return text;
+        }
+    }
+    content
+}
+
 pub(crate) fn sequence_of_message(
     events: &[Event],
     wanted: &Message,
@@ -282,17 +294,159 @@ pub(crate) fn sequence_of_message(
     };
     events.iter().find_map(|event| match &event.payload {
         EventPayload::MessageAppended { message }
-            if message.role == wanted.role && message.content == wanted.content =>
+            if message.role == wanted.role
+                && without_user_tag(&message.content) == without_user_tag(&wanted.content) =>
         {
             Some(event.sequence)
         }
         EventPayload::ResponseItemAppended {
             item: deepagent_core::response_item::ResponseItem::Message { role, content },
-        } if !wanted_role.is_empty() && role == wanted_role && content == &wanted.content => {
+        } if !wanted_role.is_empty()
+            && role == wanted_role
+            && without_user_tag(content) == without_user_tag(&wanted.content) =>
+        {
             Some(event.sequence)
         }
         _ => None,
     })
+}
+
+/// Migrate only the legacy prefix. Once native events start, those events own
+/// the Surface and the compatibility Message/Tool events are not appended again.
+fn indexed_response_items(
+    events: &[Event],
+) -> Vec<(deepagent_core::event::Sequence, ResponseInputItem)> {
+    let first_native = events
+        .iter()
+        .position(|event| matches!(event.payload, EventPayload::ResponseItemAppended { .. }))
+        .unwrap_or(events.len());
+    let mut out = Vec::new();
+    let mut custom_calls = std::collections::HashSet::new();
+    for (index, event) in events.iter().enumerate() {
+        if let EventPayload::ResponseItemAppended { item } = &event.payload {
+            out.push((event.sequence, item.clone()));
+            continue;
+        }
+        if index >= first_native {
+            continue;
+        }
+        let generated = match &event.payload {
+            EventPayload::MessageAppended { message } => {
+                let mut message = message.clone();
+                message.tool_calls.clear(); // Legacy calls have their own ToolCallRequested events.
+                deepagent_models::response_items_from_messages(&[message]).1
+            }
+            EventPayload::ToolCallRequested { call } => {
+                if call.name == "apply_patch" {
+                    custom_calls.insert(call.id.clone());
+                }
+                deepagent_models::response_items_from_messages(&[
+                    Message::assistant("").with_tool_calls(vec![call.clone()])
+                ])
+                .1
+            }
+            EventPayload::ToolCallCompleted {
+                call_id,
+                ok,
+                output,
+                ..
+            } => {
+                let output = bounded_tool_result(*ok, output);
+                vec![if custom_calls.contains(call_id) {
+                    ResponseInputItem::CustomToolCallOutput {
+                        call_id: call_id.clone(),
+                        output,
+                    }
+                } else {
+                    ResponseInputItem::FunctionCallOutput {
+                        call_id: call_id.clone(),
+                        output,
+                    }
+                }]
+            }
+            _ => Vec::new(),
+        };
+        // The first native item may echo its immediately preceding source event.
+        // Exclude that source only; all older legacy turns must survive migration.
+        let echoed = index + 1 == first_native
+            && events.get(first_native).is_some_and(|event| {
+                let EventPayload::ResponseItemAppended { item } = &event.payload else {
+                    return false;
+                };
+                generated.first().is_some_and(|generated| {
+                    generated == item
+                        || match (generated, item) {
+                            (
+                                ResponseInputItem::FunctionCallOutput { call_id: a, .. },
+                                ResponseInputItem::FunctionCallOutput { call_id: b, .. },
+                            )
+                            | (
+                                ResponseInputItem::CustomToolCallOutput { call_id: a, .. },
+                                ResponseInputItem::CustomToolCallOutput { call_id: b, .. },
+                            ) => a == b,
+                            _ => false,
+                        }
+                })
+            });
+        if !echoed {
+            out.extend(generated.into_iter().map(|item| (event.sequence, item)));
+        }
+    }
+    let mut items: Vec<_> = out.iter().map(|(_, item)| item.clone()).collect();
+    deepagent_runtime::tag_response_user_items(&mut items);
+    for ((_, item), tagged) in out.iter_mut().zip(items) {
+        *item = tagged;
+    }
+    out
+}
+
+/// Resolve a native item against the durable log without reconstructing calls.
+/// User tags are derived over the complete log before cuts, so tagged live
+/// user turns still resolve after earlier compactions or snips.
+pub(crate) fn sequence_of_response_item(
+    events: &[Event],
+    wanted: &ResponseInputItem,
+) -> Option<deepagent_core::event::Sequence> {
+    let indexed = indexed_response_items(events);
+    let user_tag = |item: &ResponseInputItem| -> Option<String> {
+        match item {
+            ResponseInputItem::Message { role, content }
+            | ResponseInputItem::InputMessage { role, content, .. }
+                if role == "user" =>
+            {
+                content
+                    .rsplit_once("[id:u")
+                    .and_then(|(_, rest)| rest.split_once(']'))
+                    .map(|(id, _)| id.to_string())
+            }
+            _ => None,
+        }
+    };
+    indexed
+        .iter()
+        .find_map(|(sequence, item)| {
+            let same = item == wanted
+                || match (item, wanted) {
+                    (
+                        ResponseInputItem::FunctionCallOutput { call_id: a, .. },
+                        ResponseInputItem::FunctionCallOutput { call_id: b, .. },
+                    )
+                    | (
+                        ResponseInputItem::CustomToolCallOutput { call_id: a, .. },
+                        ResponseInputItem::CustomToolCallOutput { call_id: b, .. },
+                    ) => a == b,
+                    _ => user_tag(wanted).is_some_and(|tag| user_tag(item).as_ref() == Some(&tag)),
+                };
+            same.then_some(*sequence)
+        })
+        .or_else(|| {
+            events.iter().find_map(|event| match &event.payload {
+                EventPayload::ResponseItemAppended { item } if item == wanted => {
+                    Some(event.sequence)
+                }
+                _ => None,
+            })
+        })
 }
 
 /// The event slice the model should see, plus the summary standing in for the
@@ -376,6 +530,26 @@ fn persisted_snipped_tags(events: &[Event]) -> Vec<String> {
 /// history, the provider-native history, `/compact` and `/context` from becoming
 /// separate readings of one log.
 pub(crate) fn model_history_from_events(events: &[Event]) -> Vec<Message> {
+    if events.iter().any(|event| {
+        matches!(
+            event.payload,
+            EventPayload::ResponseItemAppended { .. }
+                | EventPayload::ContextSurfacePatched { .. }
+                | EventPayload::ContextSnipped { .. }
+        )
+    }) {
+        let mut messages = deepagent_models::messages_from_response_items(
+            None,
+            &response_items_from_events(events),
+        );
+        // Tags are model routing metadata, not UI transcript content.
+        for message in &mut messages {
+            if message.role == Role::User {
+                message.content = without_user_tag(&message.content).to_string();
+            }
+        }
+        return messages;
+    }
     let (kept, summary) = events_for_model_view(events);
     let mut out = Vec::new();
     if let Some(summary) = summary {
@@ -485,34 +659,65 @@ fn build_conversation(events: &[Event]) -> Vec<Message> {
 /// replaying the full transcript while `/context` and titling believed a summary
 /// had replaced it.
 pub(crate) fn response_items_from_events(events: &[Event]) -> Vec<ResponseInputItem> {
-    let (kept, summary) = events_for_model_view(events);
-    if kept
-        .iter()
-        .any(|event| matches!(event.payload, EventPayload::ResponseItemAppended { .. }))
-    {
-        let mut items: Vec<ResponseInputItem> = kept
-            .iter()
-            .filter_map(|event| match &event.payload {
-                EventPayload::ResponseItemAppended { item } => Some(item.clone()),
-                _ => None,
-            })
-            .collect();
-        if let Some(summary) = summary {
-            items.insert(
-                0,
-                ResponseInputItem::Message {
-                    role: "user".to_string(),
-                    content: summary,
-                },
-            );
-        }
-        return items;
+    if !events.iter().any(|event| {
+        matches!(
+            event.payload,
+            EventPayload::ResponseItemAppended { .. }
+                | EventPayload::ContextSurfacePatched { .. }
+                | EventPayload::ContextSnipped { .. }
+        )
+    }) {
+        let history = model_history_from_events(events);
+        return deepagent_models::response_items_from_messages(&history).1;
     }
-    // Legacy sessions without an item log: convert the SAME message view, so the
-    // summary and the snips are applied by exactly one implementation.
-    let history = model_history_from_events(events);
-    let (_, items) = deepagent_models::response_items_from_messages(&history);
-    items
+    let boundary = compaction_boundary(events);
+    let mut indexed = indexed_response_items(events);
+    if let Some(boundary) = &boundary {
+        indexed.retain(|(seq, _)| *seq >= boundary.first_kept_sequence);
+    }
+    for event in events {
+        if let EventPayload::ContextSurfacePatched {
+            version: 1,
+            replacements,
+            ..
+        } = &event.payload
+        {
+            for replacement in replacements {
+                if replacement.source_sequence >= event.sequence {
+                    continue;
+                }
+                if let Some((_, item)) = indexed
+                    .iter_mut()
+                    .find(|(seq, _)| *seq == replacement.source_sequence)
+                {
+                    match item {
+                        ResponseInputItem::FunctionCallOutput { call_id, output }
+                        | ResponseInputItem::CustomToolCallOutput { call_id, output }
+                            if call_id == &replacement.call_id =>
+                        {
+                            *output = replacement.replacement_output.clone()
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    let mut items: Vec<_> = indexed.into_iter().map(|(_, item)| item).collect();
+    if let Some(boundary) = boundary {
+        items.insert(
+            0,
+            ResponseInputItem::Message {
+                role: "user".into(),
+                content: boundary.rendered,
+            },
+        );
+    }
+    deepagent_runtime::snip_response_items(
+        &items,
+        &persisted_snipped_tags(events),
+        deepagent_runtime::SNIP_PROTECTED_RECENT_MESSAGES,
+    )
 }
 
 fn conversation_from_response_items(events: &[Event]) -> Vec<Message> {
@@ -696,6 +901,101 @@ pub(crate) fn mcp_instructions_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upgrading_a_legacy_session_keeps_its_prefix_without_duplicate_native_echo() {
+        let sid = SessionId::nil();
+        let events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::MessageAppended {
+                    message: Message::user("legacy question"),
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::MessageAppended {
+                    message: Message::assistant("legacy answer"),
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::MessageAppended {
+                    message: Message::user("new question"),
+                },
+            ),
+            event(
+                sid,
+                3,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseInputItem::Message {
+                        role: "user".into(),
+                        content: "new question".into(),
+                    },
+                },
+            ),
+        ];
+        let items = response_items_from_events(&events);
+        assert_eq!(items.len(), 3);
+        assert!(
+            matches!(&items[0], ResponseInputItem::Message { content, .. } if content.contains("legacy question"))
+        );
+        assert!(
+            matches!(&items[2], ResponseInputItem::Message { content, .. } if content.contains("[id:u2]"))
+        );
+        let messages = model_history_from_events(&events);
+        assert_eq!(messages[0].content, "legacy question");
+        assert_eq!(messages[2].content, "new question");
+    }
+
+    #[test]
+    fn surface_patches_also_replay_on_legacy_tool_outputs() {
+        let sid = SessionId::nil();
+        let events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::ToolCallRequested {
+                    call: deepagent_core::message::ToolCall {
+                        id: "legacy-c1".into(),
+                        name: "read_file".into(),
+                        arguments: serde_json::json!({"path":"a.txt"}),
+                    },
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::ToolCallCompleted {
+                    call_id: "legacy-c1".into(),
+                    ok: true,
+                    output: serde_json::json!("original"),
+                    duration_ms: 1,
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::ContextSurfacePatched {
+                    version: 1,
+                    strategy: "micro_compact".into(),
+                    replacements: vec![deepagent_core::event::ToolResultReplacement {
+                        source_sequence: 1,
+                        call_id: "legacy-c1".into(),
+                        replacement_output: "cleared".into(),
+                    }],
+                },
+            ),
+        ];
+        let items = response_items_from_events(&events);
+        assert!(
+            matches!(&items[1], ResponseInputItem::FunctionCallOutput { output, .. } if output == "cleared")
+        );
+        assert_eq!(model_history_from_events(&events)[1].content, "cleared");
+    }
     use deepagent_core::clock::SystemClock;
     use deepagent_core::id::{EventId, SessionId};
     use deepagent_runtime::{InputIngress, InputMode};
@@ -1535,7 +1835,7 @@ mod tests {
         assert_eq!(convo[2].role, Role::Tool);
         assert_eq!(convo[3].content, "done");
         assert_eq!(
-            convo[3].reasoning_content.as_deref(),
+            convo[1].reasoning_content.as_deref(),
             Some("need a file read")
         );
     }
@@ -1593,6 +1893,140 @@ mod tests {
                 && status == "completed"
                 && action["query"] == "DeepSeek Responses"
         ));
+    }
+
+    #[test]
+    fn native_response_replay_applies_persisted_snip_without_losing_live_calls() {
+        let sid = SessionId::nil();
+        let mut events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Message {
+                        role: "user".into(),
+                        content: "[id:u1] old".into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::FunctionCall {
+                        call_id: "old".into(),
+                        name: "read_file".into(),
+                        arguments: r#"{"path":"old"}"#.into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::FunctionCallOutput {
+                        call_id: "old".into(),
+                        output: "old result".into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                3,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Message {
+                        role: "assistant".into(),
+                        content: "old done".into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                4,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Message {
+                        role: "user".into(),
+                        content: "[id:u2] live".into(),
+                    },
+                },
+            ),
+        ];
+        for index in 5..12 {
+            events.push(event(
+                sid,
+                index,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::Message {
+                        role: "assistant".into(),
+                        content: format!("tail {index}"),
+                    },
+                },
+            ));
+        }
+        events.push(event(
+            sid,
+            12,
+            EventPayload::ContextSnipped {
+                tags: vec!["u1".into()],
+            },
+        ));
+
+        let items = response_items_from_events(&events);
+        assert!(!items.iter().any(|item| matches!(
+            item,
+            ResponseItem::FunctionCall { call_id, .. } if call_id == "old"
+        )));
+        assert!(items.iter().any(|item| matches!(
+            item,
+            ResponseItem::Message { content, .. } if content.contains("[id:u2]")
+        )));
+    }
+
+    #[test]
+    fn native_response_replay_applies_tool_result_surface_patch() {
+        let sid = SessionId::nil();
+        let events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::FunctionCall {
+                        call_id: "c1".into(),
+                        name: "read_file".into(),
+                        arguments: "{}".into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::ResponseItemAppended {
+                    item: ResponseItem::FunctionCallOutput {
+                        call_id: "c1".into(),
+                        output: "full result".into(),
+                    },
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::ContextSurfacePatched {
+                    version: 1,
+                    strategy: "micro_compact".into(),
+                    replacements: vec![deepagent_core::event::ToolResultReplacement {
+                        source_sequence: 1,
+                        call_id: "c1".into(),
+                        replacement_output: "[tool result content cleared]".into(),
+                    }],
+                },
+            ),
+        ];
+        let items = response_items_from_events(&events);
+        assert!(items.iter().any(|item| matches!(
+            item,
+            ResponseItem::FunctionCallOutput { call_id, output }
+                if call_id == "c1" && output == "[tool result content cleared]"
+        )));
     }
 
     /// A boundary records the sequence its model view starts at. Forking copies a

@@ -59,16 +59,19 @@ pub use input::{
 pub use kernel::{AgentKernel, KernelTerminal, RunHandle, RunPhase, RunRequest, TerminalKind};
 pub use loop_engine::{PromptDecision, RunOutcome, RuntimeConfig, RuntimeEngine, VerificationPlan};
 pub use model_agent::{
-    AttachmentDataResolver, CompactionTrigger, ModelAgent, PrefireNote, ReactiveCompaction,
-    ReactiveContextCompactor, RelevantMemory, RelevantMemoryProvider, TodoReminderSnapshot,
-    TodoReminderSource,
+    AttachmentDataResolver, CompactionTrigger, ContextSurfacePersistence, ModelAgent, PrefireNote,
+    ReactiveCompaction, ReactiveContextCompactor, RelevantMemory, RelevantMemoryProvider,
+    TodoReminderSnapshot, TodoReminderSource,
 };
 pub use phase::LoopPhase;
 pub use schedule::{
     next_local_match, parse_5_field, run_tick_loop, CronFields, CronScheduler, FireOutcome,
     ScheduledTask, ScheduledTaskStore,
 };
-pub use snip::{plan_snip, snip_segments, SnipPlan, SNIP_PROTECTED_RECENT_MESSAGES};
+pub use snip::{
+    plan_response_item_snip, plan_snip, snip_response_items, snip_segments,
+    tag_response_user_items, ResponseItemSnipPlan, SnipPlan, SNIP_PROTECTED_RECENT_MESSAGES,
+};
 pub use stall_detector::{
     build_stall_nudge, evaluate_stall, parse_stall_verdict, render_stall_transcript, NoNudgeReason,
     StallCategory, StallClassifier, StallDecision, StallParseError, StallVerdict,

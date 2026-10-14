@@ -106,8 +106,8 @@ impl Observation {
 /// Token usage for the current run, carried in two distinct semantics.
 ///
 /// `prompt_tokens`, `total_tokens` and the cache tokens describe the **latest
-/// answered request**: they are the context gauge that the usage event, the
-/// popover and the auto-compact check read. `billed_*`, `completion_tokens` and
+/// answered request**: they describe the last provider request, distinct from the
+/// current Surface projection used by the context panel and pressure checks. `billed_*`, `completion_tokens` and
 /// `reasoning_tokens` sum over **every** request the run made, which is what the
 /// cost ledger books — a run of 60 steps paid for 60 prompts, not one.
 /// [`RunUsage::record_call`] is the only place either rule is written.
@@ -118,7 +118,7 @@ impl Observation {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RunUsage {
     /// Prompt (input) tokens reported by the most recent provider response
-    /// (last-wins, not cumulative). This is the current context window size.
+    /// (last-wins, not cumulative), not the next request projection.
     pub prompt_tokens: u32,
     /// Completion (output) tokens, **cumulative** across the run (for billing).
     /// `RuntimeEvent::Usage` emits the per-turn value, not this cumulative field.

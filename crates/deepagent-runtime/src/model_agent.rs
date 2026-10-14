@@ -169,6 +169,18 @@ pub trait ReactiveContextCompactor: Send + Sync {
 /// materialized; the message then falls back to its text content.
 pub trait AttachmentDataResolver: Send + Sync {
     fn data_url(&self, attachment: &deepagent_core::message::MessageAttachment) -> Option<String>;
+    /// Eligibility for request pricing. File-backed implementations can avoid
+    /// loading and base64-encoding image bytes on every meter refresh.
+    fn is_resolvable(&self, attachment: &deepagent_core::message::MessageAttachment) -> bool {
+        self.data_url(attachment).is_some()
+    }
+}
+
+/// Writes model Surface changes to the existing session log before adoption.
+pub trait ContextSurfacePersistence: Send + Sync {
+    fn replace_tool_results(&self, strategy: &str, replacements: &[(String, String)])
+        -> Result<()>;
+    fn record_snip(&self, tags: &[String]) -> Result<()>;
 }
 
 /// One background-prefetched memory ready for injection (§3.2, Claude Code
@@ -318,6 +330,10 @@ impl ResponseHistory {
         *self = Self::from_messages(messages);
     }
 
+    fn replace_items(&mut self, items: Vec<ResponseInputItem>) {
+        self.items = items;
+    }
+
     fn push_message_projection(&mut self, message: &Message) {
         match message.role {
             Role::System => {
@@ -362,10 +378,18 @@ impl ResponseHistory {
                     }
                 }
                 if !message.content.is_empty() || message.tool_calls.is_empty() {
-                    self.items.push(ResponseInputItem::Message {
-                        role: message.role.as_str().to_string(),
-                        content: message.content.clone(),
-                    });
+                    if message.attachments.is_empty() {
+                        self.items.push(ResponseInputItem::Message {
+                            role: message.role.as_str().to_string(),
+                            content: message.content.clone(),
+                        });
+                    } else {
+                        self.items.push(ResponseInputItem::InputMessage {
+                            role: message.role.as_str().to_string(),
+                            content: message.content.clone(),
+                            attachments: message.attachments.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -422,6 +446,7 @@ pub struct ModelAgent {
     /// request. Each answered request updates it from the provider's own
     /// numbers and re-emits it, so the occupancy surface has one source.
     context_snapshot: Option<deepagent_context::ContextUsageSnapshot>,
+    surface_persistence: Option<Arc<dyn ContextSurfacePersistence>>,
     /// Provider-native Responses output items from the latest completed model
     /// turn, drained by the runtime loop into the append-only session log.
     pending_response_items: Vec<ResponseOutputItem>,
@@ -439,13 +464,15 @@ pub struct ModelAgent {
     proactive_compaction_threshold: Option<u64>,
     /// Consecutive proactive auto-compact failures (circuit breaker input).
     autocompact_consecutive_failures: u32,
-    /// `prompt + completion` tokens reported by the most recent model call —
-    /// the usage-grounded context size estimate (Claude Code
-    /// `tokenCountWithEstimation` reads usage off the last assistant turn).
-    last_call_context_tokens: u64,
-    /// Tokens freed by snips since the last provider usage report. Subtracted
-    /// from the usage-based estimate, which cannot see the removal yet
-    /// (Claude Code plumbs `snipTokensFreed` into `shouldAutoCompact`).
+    /// Prompt tokens reported by the most recent model call. The next-request
+    /// estimate adds the signed native-Surface delta after this anchor.
+    context_meter: deepagent_context::ContextMeter,
+    context_policy: Option<deepagent_context::ContextPolicy>,
+    context_headroom: Option<usize>,
+    context_pct_override: Option<f32>,
+    request_max_output_override: Option<u32>,
+    /// Diagnostic tokens freed by snips since the last provider report.
+    /// Pressure decisions use the meter's signed native-Surface delta.
     snip_tokens_freed_unreflected: u64,
     /// Name of the registered history-snip tool, when available to this run.
     snip_tool: Option<String>,
@@ -455,6 +482,7 @@ pub struct ModelAgent {
     /// layer persists these as `ContextSnipped` so a history rebuild after a
     /// restart re-applies the snip (Claude Code `removedUuids` parity).
     snipped_tags: std::collections::BTreeSet<String>,
+    snipped_tags_persisted: std::collections::BTreeSet<String>,
     /// Wall-clock time the last assistant turn was recorded, for the
     /// time-triggered micro-compact (a cold prompt cache after a long gap).
     last_assistant_at: Option<std::time::Instant>,
@@ -546,6 +574,7 @@ impl ModelAgent {
             events: None,
             usage: crate::agent::RunUsage::default(),
             context_snapshot: None,
+            surface_persistence: None,
             pending_response_items: Vec::new(),
             pending_raw_usage: Vec::new(),
             thinking_depth: ThinkingDepth::default(),
@@ -554,11 +583,17 @@ impl ModelAgent {
             reactive_compactor: None,
             proactive_compaction_threshold: None,
             autocompact_consecutive_failures: 0,
-            last_call_context_tokens: 0,
+            context_meter: deepagent_context::ContextMeter::default(),
+            context_policy: None,
+            context_headroom: None,
+            context_pct_override: None,
+            request_max_output_override: None,
+
             snip_tokens_freed_unreflected: 0,
             snip_tool: None,
             snip_nudge_baseline_tokens: None,
             snipped_tags: std::collections::BTreeSet::new(),
+            snipped_tags_persisted: std::collections::BTreeSet::new(),
             last_assistant_at: None,
             microcompacted_for_current_gap: false,
             side_usage: crate::agent::RunUsage::default(),
@@ -589,7 +624,33 @@ impl ModelAgent {
 
     fn push_message(&mut self, message: Message) {
         self.response_history.push_message_projection(&message);
-        self.messages.push(message);
+        // Runtime feedback/reminders are not durable user turns. They must not
+        // consume tag numbers that recovery derives from the session log.
+        self.sync_message_projection();
+    }
+
+    /// Rebuild the compatibility transcript from the provider-native Surface.
+    /// Runtime mutations must update the native items first; this projection is
+    /// never used as the source for a live provider request.
+    fn sync_message_projection(&mut self) {
+        self.messages = deepagent_models::messages_from_response_items(
+            self.response_history.instructions.as_deref(),
+            &self.response_history.items,
+        );
+        for message in &mut self.messages {
+            if message.role == Role::Assistant && message.tool_calls.is_empty() {
+                message.reasoning_content = None;
+            }
+        }
+        self.publish_context_usage();
+    }
+
+    pub fn with_surface_persistence(
+        mut self,
+        persistence: Arc<dyn ContextSurfacePersistence>,
+    ) -> Self {
+        self.surface_persistence = Some(persistence);
+        self
     }
 
     /// Supply schemas from the host's existing registry and visibility policy.
@@ -623,12 +684,15 @@ impl ModelAgent {
         // compatibility projection used by UI rendering, compaction, and stall
         // transcripts. Do not route this through `push_message`, or it would
         // re-derive a second Responses output item from the tool-role message.
-        self.messages.push(Message::tool_result(call_id, content));
+        self.sync_message_projection();
     }
 
-    fn replace_messages(&mut self, messages: Vec<Message>) {
+    /// Legacy compatibility bridge for compactors that have not yet returned
+    /// native response items. Live context operations must use `replace_items`.
+    fn replace_messages_legacy(&mut self, messages: Vec<Message>) {
         self.messages = messages;
         self.response_history.replace_from_messages(&self.messages);
+        self.sync_message_projection();
     }
 
     fn adopt_compacted_history(&mut self, compacted: &ReactiveCompaction) {
@@ -637,15 +701,10 @@ impl ModelAgent {
         // summarizing call's spend can be recorded without missing a route.
         self.side_usage.record_call(&compacted.usage);
         if let Some(items) = compacted.response_items.clone() {
-            let instructions = self.response_history.instructions.clone();
-            self.messages =
-                deepagent_models::messages_from_response_items(instructions.as_deref(), &items);
-            self.response_history = ResponseHistory {
-                instructions,
-                items,
-            };
+            self.response_history.replace_items(items);
+            self.sync_message_projection();
         } else {
-            self.replace_messages(compacted.messages.clone());
+            self.replace_messages_legacy(compacted.messages.clone());
         }
     }
 
@@ -653,30 +712,68 @@ impl ModelAgent {
     /// when none). The app layer persists these so a restart re-applies the
     /// snip.
     pub fn snipped_tags(&self) -> Vec<String> {
-        self.snipped_tags.iter().cloned().collect()
+        self.snipped_tags
+            .difference(&self.snipped_tags_persisted)
+            .cloned()
+            .collect()
     }
 
     /// Clear the BODIES of historical tool-result messages outside the protected
     /// recent tail, keeping conversation/tool pairing intact. Returns how many
     /// were cleared. Reversible in spirit: the model can re-run a tool if it
     /// really needs the data again.
-    fn clear_stale_tool_results(&mut self) -> usize {
+    fn clear_stale_tool_results(&mut self) -> Result<usize> {
+        self.prune_stale_tool_results(0, "micro_compact")
+    }
+
+    fn prune_stale_tool_results(&mut self, min_tokens: usize, strategy: &str) -> Result<usize> {
         const CLEARED_MARKER: &str = "[tool result content cleared]";
         let protected_start = self
-            .messages
+            .response_history
+            .items
             .len()
             .saturating_sub(crate::snip::SNIP_PROTECTED_RECENT_MESSAGES);
-        let mut cleared = 0;
-        for message in self.messages.iter_mut().take(protected_start) {
-            if message.role == deepagent_core::message::Role::Tool
-                && !message.content.is_empty()
-                && message.content != CLEARED_MARKER
-            {
-                message.content = CLEARED_MARKER.to_string();
-                cleared += 1;
+        let replacements: Vec<_> = self
+            .response_history
+            .items
+            .iter()
+            .take(protected_start)
+            .filter_map(|item| match item {
+                ResponseInputItem::FunctionCallOutput { call_id, output }
+                | ResponseInputItem::CustomToolCallOutput { call_id, output }
+                    if !output.is_empty()
+                        && output != CLEARED_MARKER
+                        && deepagent_context::TokenCounter::count(
+                            &deepagent_context::HeuristicTokenizer::new(),
+                            output,
+                        ) > min_tokens.max(deepagent_context::TokenCounter::count(
+                            &deepagent_context::HeuristicTokenizer::new(),
+                            CLEARED_MARKER,
+                        )) =>
+                {
+                    Some((call_id.clone(), CLEARED_MARKER.to_string()))
+                }
+                _ => None,
+            })
+            .collect();
+        if let Some(persistence) = &self.surface_persistence {
+            persistence.replace_tool_results(strategy, &replacements)?;
+        }
+        for item in self.response_history.items.iter_mut().take(protected_start) {
+            match item {
+                ResponseInputItem::FunctionCallOutput { call_id, output }
+                | ResponseInputItem::CustomToolCallOutput { call_id, output } => {
+                    if let Some((_, replacement)) =
+                        replacements.iter().find(|(id, _)| id == call_id)
+                    {
+                        *output = replacement.clone();
+                    }
+                }
+                _ => {}
             }
         }
-        cleared
+        self.sync_message_projection();
+        Ok(replacements.len())
     }
 
     /// Time-triggered micro-compact (Claude Code `timeBasedMCConfig`): when the
@@ -698,7 +795,13 @@ impl ModelAgent {
             return;
         }
         self.microcompacted_for_current_gap = true;
-        let cleared = self.clear_stale_tool_results();
+        let cleared = match self.clear_stale_tool_results() {
+            Ok(cleared) => cleared,
+            Err(error) => {
+                tracing::warn!(%error, "micro compact persistence failed; keeping original Surface");
+                return;
+            }
+        };
         if cleared > 0 {
             tracing::info!(
                 cleared,
@@ -734,9 +837,9 @@ impl ModelAgent {
         request
     }
 
-    fn push_provider_output_items(&mut self, assistant: Message, items: &[ResponseOutputItem]) {
+    fn push_provider_output_items(&mut self, _assistant: Message, items: &[ResponseOutputItem]) {
         self.response_history.extend_output_items(items);
-        self.messages.push(assistant);
+        self.sync_message_projection();
         // A new assistant turn ends any idle gap; arm the time-triggered
         // micro-compact for the next gap and update the gap clock.
         self.last_assistant_at = Some(std::time::Instant::now());
@@ -778,6 +881,58 @@ impl ModelAgent {
     pub fn with_proactive_compaction(mut self, threshold_tokens: u64) -> Self {
         self.proactive_compaction_threshold = Some(threshold_tokens);
         self
+    }
+
+    pub fn with_context_policy(
+        mut self,
+        policy: deepagent_context::ContextPolicy,
+        headroom: Option<usize>,
+        pct_override: Option<f32>,
+    ) -> Self {
+        self.context_policy = Some(policy);
+        self.context_headroom = headroom;
+        self.context_pct_override = pct_override;
+        self
+    }
+
+    fn current_context_policy(&self) -> Option<deepagent_context::ContextPolicy> {
+        let configured = self.context_policy.as_ref()?;
+        let request = self
+            .client
+            .prepare_response_request(self.response_history.request(self.model.clone()));
+        let capability = if configured.model_id == self.model {
+            deepagent_models::ModelCapability {
+                model_id: self.model.clone(),
+                context_window: configured.context_window,
+                max_output_tokens: configured.max_output_tokens,
+                supports_tools: true,
+                supports_thinking: true,
+                supports_json_output: true,
+                capability_source: deepagent_models::CapabilitySource::ProviderMetadata,
+                fallback_reason: None,
+            }
+        } else {
+            self.client.capability(&self.model)
+        };
+        Some(
+            deepagent_context::ContextPolicy::for_capability_with_output(
+                &capability,
+                self.thinking_depth,
+                self.request_max_output_override
+                    .or(request.max_output_tokens)
+                    .map(|value| value as usize),
+            ),
+        )
+    }
+
+    fn pressure_threshold(&self) -> Option<u64> {
+        self.current_context_policy()
+            .map(|policy| {
+                policy
+                    .autocompact_threshold_tokens(self.context_headroom, self.context_pct_override)
+                    as u64
+            })
+            .or(self.proactive_compaction_threshold)
     }
 
     /// Attach the context occupancy snapshot the runtime assembled for this run.
@@ -849,33 +1004,8 @@ impl ModelAgent {
     /// Call after `with_history` so seeded turns are tagged too.
     pub fn with_snip_tool(mut self, name: impl Into<String>) -> Self {
         self.snip_tool = Some(name.into());
-        let mut next_id = 0usize;
-        for message in &mut self.messages {
-            if message.role == deepagent_core::message::Role::User
-                && !message.content.starts_with('[')
-                && !message.content.starts_with("<system-reminder>")
-            {
-                next_id += 1;
-                if !message.content.contains("[id:u") {
-                    message.content.push_str(&format!("\n[id:u{next_id}]"));
-                }
-            }
-        }
-        let mut next_item_id = 0usize;
-        for item in &mut self.response_history.items {
-            let ResponseInputItem::Message { role, content } = item else {
-                continue;
-            };
-            if role == "user"
-                && !content.starts_with('[')
-                && !content.starts_with("<system-reminder>")
-            {
-                next_item_id += 1;
-                if !content.contains("[id:u") {
-                    content.push_str(&format!("\n[id:u{next_item_id}]"));
-                }
-            }
-        }
+        crate::snip::tag_response_user_items(&mut self.response_history.items);
+        self.sync_message_projection();
         self
     }
 
@@ -891,6 +1021,7 @@ impl ModelAgent {
             self.messages.extend(history);
             self.messages.push(goal);
             self.response_history.replace_from_messages(&self.messages);
+            self.sync_message_projection();
         }
         self
     }
@@ -900,35 +1031,23 @@ impl ModelAgent {
     /// This keeps resumed model input item-native (`function_call_output`,
     /// `custom_tool_call_output`, `web_search_call`, reasoning, etc.) instead
     /// of forcing the event log through the legacy chat `Message` projection.
-    /// The current live user goal remains sourced from `self.messages` so
+    /// The current live user goal remains sourced from the seeded native Surface so
     /// per-run prompt decorations and history-snip tags stay visible.
     pub fn with_response_history(mut self, history: Vec<ResponseInputItem>) -> Self {
         if history.is_empty() {
             return self;
         }
-        let system_messages: Vec<Message> = self
-            .messages
-            .iter()
-            .filter(|message| message.role == Role::System)
-            .cloned()
-            .collect();
-        let live_goal = self
-            .messages
-            .last()
-            .filter(|message| message.role == Role::User)
-            .cloned();
-        let (instructions, _) = deepagent_models::response_items_from_messages(&system_messages);
+        let instructions = self.response_history.instructions.clone();
+        let live_goal = self.response_history.items.last().filter(|item| matches!(item,
+            ResponseInputItem::Message { role, .. } | ResponseInputItem::InputMessage { role, .. } if role == "user")).cloned();
         self.response_history = ResponseHistory {
             instructions,
             items: history,
         };
         if let Some(goal) = live_goal {
-            self.response_history.push_message_projection(&goal);
+            self.response_history.items.push(goal);
         }
-        self.messages = deepagent_models::messages_from_response_items(
-            self.response_history.instructions.as_deref(),
-            &self.response_history.items,
-        );
+        self.sync_message_projection();
         self
     }
 
@@ -1030,25 +1149,115 @@ impl ModelAgent {
         }
     }
 
-    /// Estimate the token size of the next request's conversation. Combines a
-    /// heuristic estimate over the live messages with the usage-grounded size
-    /// of the last model call (Claude Code `tokenCountWithEstimation` reads
-    /// usage off the protected-tail assistant), minus tokens snip freed that
-    /// usage cannot see yet.
+    fn context_measurement(&self) -> (u64, deepagent_context::SurfaceTokenBreakdown) {
+        let request = self
+            .response_history
+            .request(self.model.clone())
+            .with_thinking_depth(self.thinking_depth)
+            .with_tools(self.tools.clone());
+        self.measure_request(&request)
+    }
+
+    fn measure_request(
+        &self,
+        request: &ResponseRequest,
+    ) -> (u64, deepagent_context::SurfaceTokenBreakdown) {
+        let request = self.client.prepare_response_request(request.clone());
+        let header = serde_json::json!({"model": request.model, "max_output_tokens": request.max_output_tokens,
+            "reasoning_effort": request.reasoning_effort, "tool_choice": request.tool_choice, "text": request.text,
+            "temperature": request.temperature, "top_p": request.top_p, "user": request.user});
+        let key = deepagent_context::ContextMeter::request_fingerprint(
+            &header.to_string(),
+            request.instructions.as_deref(),
+            &request.tools,
+        );
+        let surface = deepagent_context::measure_response_surface_for_route(
+            request.instructions.as_deref(),
+            &request.input,
+            &request.tools,
+            |attachment| {
+                if self
+                    .attachment_resolver
+                    .as_ref()
+                    .is_some_and(|resolver| resolver.is_resolvable(attachment))
+                {
+                    self.client.image_token_reserve(&request.model)
+                } else {
+                    0
+                }
+            },
+        );
+        (key, surface)
+    }
+
     fn estimate_context_tokens(&self) -> u64 {
-        let counter = deepagent_context::HeuristicTokenizer::new();
-        let heuristic: u64 = self
-            .messages
-            .iter()
-            .map(|message| {
-                deepagent_context::TokenCounter::count(&counter, &render_for_estimate(message))
-                    as u64
-            })
-            .sum();
-        let usage_based = self
-            .last_call_context_tokens
-            .saturating_sub(self.snip_tokens_freed_unreflected);
-        heuristic.max(usage_based)
+        let (key, surface) = self.context_measurement();
+        self.context_meter.projected_tokens(key, surface) as u64
+    }
+
+    fn publish_context_usage(&mut self) {
+        if self.context_snapshot.is_none() {
+            return;
+        }
+        let (key, surface) = self.context_measurement();
+        let projected = self.context_meter.projected_tokens(key, surface);
+        let policy = self.current_context_policy();
+        let threshold = self.pressure_threshold();
+        if let Some(snapshot) = &mut self.context_snapshot {
+            if let Some(policy) = policy {
+                snapshot.model_id = policy.model_id;
+                snapshot.context_window = policy.context_window;
+                snapshot.prompt_budget = policy.prompt_budget;
+                snapshot.reserved_output_tokens = policy.reserved_output_tokens;
+                snapshot.reserved_tool_tokens = policy.reserved_tool_tokens;
+            }
+            snapshot.record_projection(surface, projected);
+            if let Some(threshold) = threshold {
+                snapshot.compaction_threshold = threshold as usize;
+            }
+            if let Some(sink) = &self.events {
+                sink.emit(RuntimeEvent::ContextUsage {
+                    snapshot: snapshot.clone(),
+                });
+            }
+        }
+    }
+
+    fn record_provider_response_usage(
+        &mut self,
+        response: &deepagent_models::Response,
+        fingerprint: u64,
+        surface: deepagent_context::SurfaceTokenBreakdown,
+    ) {
+        if let Some(usage) = response.usage {
+            self.usage.record_call(&usage);
+            self.context_meter
+                .anchor(fingerprint, surface.total(), usage.prompt_tokens as usize);
+            self.snip_tokens_freed_unreflected = 0;
+            if let Some(snapshot) = &mut self.context_snapshot {
+                snapshot.record_provider_usage(
+                    usage.prompt_tokens,
+                    usage.prompt_cache_hit_tokens,
+                    usage.prompt_cache_miss_tokens,
+                );
+            }
+            if let Some(sink) = &self.events {
+                sink.emit(RuntimeEvent::Usage {
+                    prompt_tokens: usage.prompt_tokens,
+                    completion_tokens: usage.completion_tokens,
+                    reasoning_tokens: usage.reasoning_tokens,
+                    total_tokens: usage.total_tokens,
+                    prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+                    prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
+                    cost_yuan: None,
+                    raw_responses_usage: response.raw_usage.clone(),
+                });
+            }
+            self.publish_context_usage();
+        }
+        if let Some(raw) = response.raw_usage.clone() {
+            self.pending_raw_usage.push(raw);
+        }
     }
 
     /// Proactive auto-compact (Claude Code `autoCompactIfNeeded`, fired before
@@ -1057,7 +1266,7 @@ impl ModelAgent {
     /// [`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES`]; the reactive overflow path
     /// remains as the fallback, so a tripped breaker never fails the run.
     async fn maybe_proactive_compact(&mut self, step: usize) {
-        let Some(threshold) = self.proactive_compaction_threshold else {
+        let Some(threshold) = self.pressure_threshold() else {
             return;
         };
         if self.autocompact_consecutive_failures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES {
@@ -1069,6 +1278,13 @@ impl ModelAgent {
         let estimated = self.estimate_context_tokens();
         if estimated < threshold {
             return;
+        }
+        match self.prune_stale_tool_results(60, "tool_result_prune") {
+            Ok(_) if self.estimate_context_tokens() < threshold => return,
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(%error, "tool result pruning failed; retaining original results")
+            }
         }
         tracing::info!(
             step,
@@ -1144,6 +1360,10 @@ impl ModelAgent {
     /// dependent estimates/counters, drop any prefire cache, and emit the
     /// `ContextCompacted` event under `strategy`.
     fn adopt_compaction(&mut self, compacted: ReactiveCompaction, strategy: &str) {
+        self.context_meter.invalidate();
+        if let Some(snapshot) = &mut self.context_snapshot {
+            snapshot.compacted = true;
+        }
         self.adopt_compacted_history(&compacted);
         self.autocompact_consecutive_failures = 0;
         self.snip_tokens_freed_unreflected = 0;
@@ -1154,9 +1374,8 @@ impl ModelAgent {
         if let Some(stale) = self.prefire_cache.take() {
             self.side_usage.record_call(&stale.usage);
         }
-        // The usage-grounded estimate is stale after compaction; seed it with
-        // the compactor's post-compact estimate instead.
-        self.last_call_context_tokens = compacted.tokens_after;
+        // Compaction invalidates the request anchor; remeasure the new Surface.
+        self.publish_context_usage();
         if let Some(sink) = &self.events {
             sink.emit(RuntimeEvent::ContextCompacted {
                 tokens_before: compacted.tokens_before,
@@ -1514,32 +1733,28 @@ impl ModelAgent {
         if ids.is_empty() {
             return;
         }
-        let counter = deepagent_context::HeuristicTokenizer::new();
-        let tokens_before: u64 = self
-            .messages
-            .iter()
-            .map(|m| {
-                deepagent_context::TokenCounter::count(&counter, &render_for_estimate(m)) as u64
-            })
-            .sum();
-        let plan = crate::snip::plan_snip(
-            &self.messages,
+        let tokens_before = self.context_measurement().1.total() as u64;
+        let plan = crate::snip::plan_response_item_snip(
+            &self.response_history.items,
             &ids,
             crate::snip::SNIP_PROTECTED_RECENT_MESSAGES,
         );
         if !plan.removes_anything() {
             return;
         }
+        if let Some(persistence) = &self.surface_persistence {
+            if let Err(error) = persistence.record_snip(&plan.applied_tags) {
+                tracing::warn!(%error, "snip persistence failed; keeping original Surface");
+                return;
+            }
+            self.snipped_tags_persisted
+                .extend(plan.applied_tags.iter().cloned());
+        }
         self.snipped_tags.extend(plan.applied_tags.iter().cloned());
-        let messages = std::mem::take(&mut self.messages);
-        self.replace_messages(plan.apply(messages));
-        let tokens_after: u64 = self
-            .messages
-            .iter()
-            .map(|m| {
-                deepagent_context::TokenCounter::count(&counter, &render_for_estimate(m)) as u64
-            })
-            .sum();
+        let items = std::mem::take(&mut self.response_history.items);
+        self.response_history.replace_items(plan.apply(items));
+        self.sync_message_projection();
+        let tokens_after = self.context_measurement().1.total() as u64;
         let freed = tokens_before.saturating_sub(tokens_after);
         self.snip_tokens_freed_unreflected += freed;
         self.snip_nudge_baseline_tokens = None;
@@ -1557,20 +1772,6 @@ impl ModelAgent {
             });
         }
     }
-}
-
-/// Render one message for heuristic token estimation (content + reasoning +
-/// tool calls), mirroring the compactor-side rendering.
-fn render_for_estimate(message: &Message) -> String {
-    let mut rendered = message.content.clone();
-    if let Some(reasoning) = message.reasoning_content.as_deref() {
-        rendered.push('\n');
-        rendered.push_str(reasoning);
-    }
-    for call in &message.tool_calls {
-        rendered.push_str(&format!("\n{} {}", call.name, call.arguments));
-    }
-    rendered
 }
 
 /// A stable signature of one turn's tool calls (sorted `name(arguments)`) for
@@ -1795,6 +1996,7 @@ impl ModelAgent {
         cancel: Option<Arc<AtomicBool>>,
         mut tools: Option<&mut dyn ToolAttemptController>,
     ) -> Result<AgentDecision> {
+        self.request_max_output_override = None;
         // Feed back every tool result from the previous step (more than one when
         // the previous turn ran tools in parallel). Order matters: tool results
         // must follow the assistant turn that requested them.
@@ -1805,15 +2007,11 @@ impl ModelAgent {
             self.tools = source();
         }
 
-        // Per-turn context management chain, aligned with Claude Code's fixed
-        // order (query.ts L365-468): snips already applied via observations
-        // above → proactive auto-compact threshold check → snip nudge. The
-        // reactive overflow path below stays as the fallback. Prefire (Grok
-        // two-pass) folds a finished background pass-1 into the cache first,
-        // then schedules a new one once the estimate enters the lead band.
+        // Gather the completed Surface mutations and pending reminders before
+        // request projection. Every attempt below runs the shared pressure
+        // check; overflow recovery remains the bounded fallback.
         self.collect_finished_prefire().await;
         self.collect_finished_memory_prefetch().await;
-        self.maybe_proactive_compact(step).await;
         self.maybe_time_based_microcompact();
         self.maybe_schedule_prefire();
         self.maybe_schedule_memory_prefetch();
@@ -1825,18 +2023,7 @@ impl ModelAgent {
             .request_for_current_history()
             .with_thinking_depth(self.thinking_depth)
             .with_tools(self.tools.clone());
-        let message_count = self.messages.len();
-        let tool_count = request.tools.len();
         let request_started_at = std::time::Instant::now();
-        if let Some(sink) = &self.events {
-            sink.emit(RuntimeEvent::ModelRequestStarted {
-                step,
-                model: self.model.clone(),
-                thinking_depth: self.thinking_depth.label().to_string(),
-                message_count,
-                tool_count,
-            });
-        }
 
         // Stream the turn, forwarding token/reasoning deltas to the event sink
         // (if any) as they arrive.
@@ -1846,8 +2033,30 @@ impl ModelAgent {
         let mut max_output_recoveries = 0usize;
         let mut rate_limited_failures = 0usize;
         let mut reactive_compaction_attempted = false;
+        let mut overflow_prune_attempted = false;
         let response = loop {
             attempt += 1;
+            self.request_max_output_override = request.max_output_tokens;
+            // Run pressure management against the final Surface and this
+            // attempt's output ceiling, including nudges and retry changes.
+            self.maybe_proactive_compact(step).await;
+            let canonical = self.request_for_current_history();
+            request.instructions = canonical.instructions;
+            request.input = canonical.input;
+            request.attachment_data_urls = canonical.attachment_data_urls;
+            if attempt == 1 {
+                if let Some(sink) = &self.events {
+                    sink.emit(RuntimeEvent::ModelRequestStarted {
+                        step,
+                        model: request.model.clone(),
+                        thinking_depth: self.thinking_depth.label().to_string(),
+                        message_count: self.messages.len(),
+                        tool_count: request.tools.len(),
+                    });
+                }
+            }
+            self.publish_context_usage();
+            let (request_fingerprint, request_surface) = self.measure_request(&request);
             if let Some(tools) = tools.as_deref_mut() {
                 tools.begin(attempt);
             }
@@ -1866,6 +2075,11 @@ impl ModelAgent {
             tools = returned_tools;
             match result {
                 Ok(response) => {
+                    self.record_provider_response_usage(
+                        &response,
+                        request_fingerprint,
+                        request_surface,
+                    );
                     if response.finish_reason == Some(FinishReason::Length)
                         && !max_output_escalated
                         && attempt < self.max_model_attempts
@@ -1895,8 +2109,6 @@ impl ModelAgent {
                     // usable tool calls. Keep the partial output in the
                     // conversation and inject the resume prompt instead of
                     // failing the turn and discarding the partial work.
-                    let response_text = response.output_text_projection();
-                    let response_reasoning = response.reasoning_text_projection();
                     if response.finish_reason == Some(FinishReason::Length)
                         && response.tool_invocations_from_items().is_empty()
                         && max_output_recoveries < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT
@@ -1904,17 +2116,11 @@ impl ModelAgent {
                         if let Some(tools) = tools.as_deref_mut() {
                             tools.abort(attempt, "max_tokens truncation; resuming in a new turn");
                         }
-                        if let Some(usage) = response.usage {
-                            self.usage.record_call(&usage);
-                        }
-                        if let Some(raw_usage) = response.raw_usage.clone() {
-                            self.pending_raw_usage.push(raw_usage);
-                        }
-                        let mut partial = Message::text(Role::Assistant, response_text.clone());
-                        partial.reasoning_content = response_reasoning.clone();
+                        self.pending_response_items
+                            .extend(response.output_items.clone());
                         self.response_history
                             .extend_output_items(&response.output_items);
-                        self.messages.push(partial);
+                        self.sync_message_projection();
                         self.push_message(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
                         request = self
                             .request_for_current_history()
@@ -1950,6 +2156,22 @@ impl ModelAgent {
                     if failure == ModelFailureKind::ContextOverflow
                         && !reactive_compaction_attempted
                     {
+                        if !overflow_prune_attempted {
+                            overflow_prune_attempted = true;
+                            match self.prune_stale_tool_results(60, "overflow_tool_result_prune") {
+                                Ok(count) if count > 0 => {
+                                    request = self
+                                        .request_for_current_history()
+                                        .with_thinking_depth(self.thinking_depth)
+                                        .with_tools(self.tools.clone());
+                                    continue;
+                                }
+                                Ok(_) => {}
+                                Err(error) => {
+                                    tracing::warn!(%error, "overflow pruning failed; retaining original Surface")
+                                }
+                            }
+                        }
                         reactive_compaction_attempted = true;
                         if let Some(compactor) = self.reactive_compactor.as_ref() {
                             match compactor
@@ -1961,7 +2183,10 @@ impl ModelAgent {
                                 .await
                             {
                                 Ok(Some(compacted)) => {
-                                    self.adopt_compacted_history(&compacted);
+                                    self.adopt_compaction(
+                                        compacted.clone(),
+                                        deepagent_core::compaction_strategy::REACTIVE_MODEL,
+                                    );
                                     request = self
                                         .request_for_current_history()
                                         .with_thinking_depth(self.thinking_depth)
@@ -1975,18 +2200,6 @@ impl ModelAgent {
                                             compacted.tokens_before, compacted.tokens_after
                                         ),
                                     );
-                                    if let Some(sink) = &self.events {
-                                        sink.emit(RuntimeEvent::ContextCompacted {
-                                            tokens_before: compacted.tokens_before,
-                                            tokens_after: compacted.tokens_after,
-                                            strategy:
-                                                deepagent_core::compaction_strategy::REACTIVE_MODEL
-                                                    .to_string(),
-                                            // Summary text stays in the model context and Hook
-                                            // payload; runtime logs record only bounded metadata.
-                                            summary: None,
-                                        });
-                                    }
                                     continue;
                                 }
                                 Ok(None) => {}
@@ -2059,47 +2272,8 @@ impl ModelAgent {
             });
         }
 
-        // Forward token usage to the event sink so the UI can show input/output
-        // and DeepSeek cache hit/miss totals for the run. Also track it so the
-        // loop can persist the run's total usage at completion.
-        if let Some(usage) = response.usage {
-            self.usage.record_call(&usage);
-            // Usage-grounded context size for the proactive auto-compact check
-            // (this response already reflects any snips applied before it).
-            self.last_call_context_tokens =
-                usage.prompt_tokens as u64 + usage.completion_tokens as u64;
-            self.snip_tokens_freed_unreflected = 0;
-            if let Some(sink) = &self.events {
-                sink.emit(RuntimeEvent::Usage {
-                    prompt_tokens: usage.prompt_tokens,
-                    completion_tokens: usage.completion_tokens,
-                    reasoning_tokens: usage.reasoning_tokens,
-                    total_tokens: usage.total_tokens,
-                    prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
-                    prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
-                    cost_yuan: None,
-                    raw_responses_usage: response.raw_usage.clone(),
-                });
-                // The occupancy surface reports what the provider was actually
-                // sent, not this agent's earlier estimate of the pack. Reusing
-                // the same answer's cache split keeps the panel's cache row and
-                // the turn footer on one measurement instead of two owners.
-                if let Some(snapshot) = &mut self.context_snapshot {
-                    snapshot.record_provider_usage(
-                        usage.prompt_tokens,
-                        usage.prompt_cache_hit_tokens,
-                        usage.prompt_cache_miss_tokens,
-                    );
-                    sink.emit(RuntimeEvent::ContextUsage {
-                        snapshot: snapshot.clone(),
-                    });
-                }
-            }
-        }
-        if let Some(raw_usage) = response.raw_usage.clone() {
-            self.pending_raw_usage.push(raw_usage);
-        }
-        self.pending_response_items = response.output_items.clone();
+        self.pending_response_items
+            .extend(response.output_items.clone());
 
         // Persist the assistant turn in the agent's running conversation.
         // Only turns that actually need replayable Thinking Mode context keep
@@ -2112,6 +2286,7 @@ impl ModelAgent {
             }
             message
         };
+        self.request_max_output_override = None;
         self.push_provider_output_items(assistant, &response.output_items);
 
         // Decide the next action. The model may emit several tool calls in one
@@ -2692,7 +2867,10 @@ mod tests {
             .iter()
             .any(|message| message.tool_call_id.as_deref() == Some("call-parent")));
         assert!(agent.conversation().iter().any(|message| {
-            message.content == "parent answer"
+            message
+                .tool_calls
+                .iter()
+                .any(|call| call.id == "call-parent")
                 && message.reasoning_content.as_deref() == Some("parent reasoning")
         }));
 
@@ -3116,21 +3294,24 @@ mod tests {
                 _ => None,
             })
             .collect();
-        assert_eq!(
-            snapshots.len(),
-            1,
-            "the answered request re-publishes the occupancy snapshot"
+        assert!(
+            snapshots.len() >= 2,
+            "request and appended output both publish projections"
         );
-        let snapshot = &snapshots[0];
-        assert_eq!(
-            snapshot.estimated_prompt_tokens, 46_000,
-            "the block breakdown keeps the estimate it was built from"
-        );
+        let snapshot = snapshots.last().unwrap();
         assert_eq!(snapshot.measured_prompt_tokens, Some(51_200));
+        assert_eq!(snapshot.last_request_prompt_tokens, Some(51_200));
+        assert!(
+            snapshot.occupancy_tokens() > 51_200,
+            "assistant output increases next-request occupancy"
+        );
         assert_eq!(
-            snapshot.occupancy_tokens(),
-            51_200,
-            "the provider's measurement of the sent request is the headline"
+            snapshot
+                .blocks
+                .iter()
+                .map(|block| block.tokens)
+                .sum::<usize>(),
+            snapshot.occupancy_tokens()
         );
         assert_eq!(snapshot.cache_hit_tokens, 50_000);
         assert!(snapshot.cache_hit_ratio.is_some());
@@ -3232,6 +3413,47 @@ mod tests {
         assert_eq!(transport.requests.lock().unwrap().len(), 1);
     }
 
+    #[tokio::test]
+    async fn large_tool_schema_triggers_pressure_compaction() {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tools = vec![ToolSchema::function(
+            "large_tool",
+            "schema description ".repeat(2_000),
+            serde_json::json!({"type":"object"}),
+        )];
+        let mut agent = ModelAgent::new(
+            client(response_text_completed("done")),
+            "model",
+            "sys",
+            "goal",
+            tools,
+        )
+        .with_history(vec![Message::user("old"), Message::assistant("old answer")])
+        .with_reactive_compactor(Arc::new(StaticReactiveCompactor {
+            calls: calls.clone(),
+        }))
+        .with_proactive_compaction(3_000);
+        agent.think(0, &[]).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Acquire), 1);
+    }
+
+    #[test]
+    fn short_tool_results_are_not_replaced_with_a_larger_stub() {
+        let mut agent = agent_with_stale_tool_result();
+        for item in &mut agent.response_history.items {
+            if let ResponseInputItem::FunctionCallOutput { output, .. } = item {
+                *output = "ok".into();
+            }
+        }
+        assert_eq!(agent.clear_stale_tool_results().unwrap(), 0);
+        assert!(agent
+            .response_history
+            .items
+            .iter()
+            .any(|item| matches!(item,
+            ResponseInputItem::FunctionCallOutput { output, .. } if output == "ok")));
+    }
+
     #[test]
     fn snip_tool_tags_seeded_user_turns() {
         let history = vec![
@@ -3249,6 +3471,24 @@ mod tests {
             .collect();
         // Both seeded user turns plus the current goal user turn get tagged.
         assert_eq!(tagged.len(), 3);
+    }
+
+    #[test]
+    fn runtime_feedback_does_not_consume_durable_user_tag_numbers() {
+        let mut agent = ModelAgent::new(client(vec![]), "model", "sys", "goal", vec![])
+            .with_snip_tool("snip_history");
+        agent.push_message(Message::user(r#"{"status":"retry"}"#));
+        assert!(agent
+            .conversation()
+            .last()
+            .unwrap()
+            .content
+            .find("[id:u")
+            .is_none());
+        assert!(agent
+            .conversation()
+            .iter()
+            .any(|message| message.content.contains("[id:u1]")));
     }
 
     #[tokio::test]
@@ -4411,21 +4651,21 @@ mod tests {
         let mut agent = ModelAgent::new(client(vec![]), "m", "sys", "goal", vec![]);
         let mut messages = vec![
             Message::user("do work"),
-            Message::tool_result("c1", "big tool output"),
+            Message::tool_result("c1", "big tool output".repeat(100)),
         ];
         // Pad with assistant turns so the tool result falls outside the
         // protected recent tail (SNIP_PROTECTED_RECENT_MESSAGES = 8).
         for i in 0..8 {
             messages.push(Message::assistant(format!("filler {i}")));
         }
-        agent.replace_messages(messages);
+        agent.replace_messages_legacy(messages);
         agent
     }
 
     #[test]
     fn time_based_microcompact_clears_stale_tool_results_after_idle() {
         let mut agent = agent_with_stale_tool_result();
-        assert_eq!(agent.messages[1].content, "big tool output");
+        assert_eq!(agent.messages[1].content, "big tool output".repeat(100));
         // Pretend the last assistant turn was a long time ago.
         agent.last_assistant_at = Some(
             std::time::Instant::now() - std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS + 1),
@@ -4434,7 +4674,7 @@ mod tests {
         agent.maybe_time_based_microcompact();
         assert_eq!(agent.messages[1].content, "[tool result content cleared]");
         // Idempotent within the same idle gap.
-        assert_eq!(agent.clear_stale_tool_results(), 0);
+        assert_eq!(agent.clear_stale_tool_results().unwrap(), 0);
     }
 
     #[test]
@@ -4443,6 +4683,6 @@ mod tests {
         agent.last_assistant_at = Some(std::time::Instant::now());
         agent.microcompacted_for_current_gap = false;
         agent.maybe_time_based_microcompact();
-        assert_eq!(agent.messages[1].content, "big tool output");
+        assert_eq!(agent.messages[1].content, "big tool output".repeat(100));
     }
 }

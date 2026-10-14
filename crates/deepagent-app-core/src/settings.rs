@@ -1059,11 +1059,14 @@ pub struct AppSettings {
     pub welcome_name: String,
     /// Optional override for the proactive auto-compact reserve buffer (the
     /// tokens subtracted from the effective context window to form the
-    /// threshold). `None` uses the Claude-Code-aligned default (13_000; see
+    /// threshold). `None` uses the Harness default (65_536; see
     /// `ContextPolicy::autocompact_threshold_tokens`). Persisted as `Option`
     /// so older settings docs round-trip cleanly.
     #[serde(default)]
     pub autocompact_reserve_tokens: Option<usize>,
+    /// Context pressure headroom; overrides the legacy reserve field.
+    #[serde(default)]
+    pub context_headroom_tokens: Option<usize>,
     /// Built-in system-prompt output style (Claude Code output styles §7.1).
     /// `Default` injects nothing; `Explanatory`/`Learning` add a stable,
     /// DeepSeek-worded style block. `#[serde(default)]` → `Default` for older
@@ -1426,6 +1429,7 @@ impl SettingsService {
                 .map(|s| s.welcome_name.clone())
                 .unwrap_or_default(),
             autocompact_reserve_tokens: prior.as_ref().and_then(|s| s.autocompact_reserve_tokens),
+            context_headroom_tokens: prior.as_ref().and_then(|s| s.context_headroom_tokens),
             output_style: prior.as_ref().map(|s| s.output_style).unwrap_or_default(),
             execution_features: prior
                 .as_ref()
@@ -1658,10 +1662,21 @@ impl SettingsService {
     }
 
     /// Effective proactive auto-compact reserve buffer override. Precedence:
-    /// `DEEPAGENT_AUTOCOMPACT_RESERVE_TOKENS` env var (operator escape hatch,
-    /// aligned with Claude Code's env overrides) > persisted setting > `None`
-    /// (the caller then uses the CC-aligned 13k default).
+    /// new headroom env/setting > legacy reserve env/setting > Harness default.
     pub fn autocompact_reserve_tokens(&self) -> Option<usize> {
+        if let Ok(raw) = std::env::var("DEEPAGENT_CONTEXT_HEADROOM_TOKENS") {
+            if let Ok(parsed) = raw.trim().parse::<usize>() {
+                return Some(parsed);
+            }
+        }
+        if let Some(headroom) = self
+            .load()
+            .ok()
+            .flatten()
+            .and_then(|s| s.context_headroom_tokens)
+        {
+            return Some(headroom);
+        }
         if let Ok(raw) = std::env::var("DEEPAGENT_AUTOCOMPACT_RESERVE_TOKENS") {
             if let Ok(parsed) = raw.trim().parse::<usize>() {
                 return Some(parsed);
@@ -2305,6 +2320,30 @@ mod tests {
     use crate::secret_store::MemorySecretStore;
     use deepagent_models::transport::MockTransport;
 
+    #[tokio::test]
+    async fn context_headroom_overrides_legacy_reserve_and_survives_settings_update() {
+        let (svc, _) = service();
+        svc.initialize("sk-synthetic-test").await.unwrap();
+        let mut settings = svc.load().unwrap().unwrap();
+        settings.autocompact_reserve_tokens = Some(23_456);
+        settings.context_headroom_tokens = Some(65_536);
+        svc.save(&settings).unwrap();
+        assert_eq!(svc.autocompact_reserve_tokens(), Some(65_536));
+        svc.initialize("sk-synthetic-test").await.unwrap();
+        assert_eq!(
+            svc.load().unwrap().unwrap().context_headroom_tokens,
+            Some(65_536)
+        );
+        let mut legacy = serde_json::to_value(&settings).unwrap();
+        legacy
+            .as_object_mut()
+            .unwrap()
+            .remove("context_headroom_tokens");
+        let legacy: AppSettings = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.context_headroom_tokens, None);
+        assert_eq!(legacy.autocompact_reserve_tokens, Some(23_456));
+    }
+
     #[test]
     fn vision_mode_tolerates_legacy_and_unknown_values() {
         // Legacy persisted "model" selected native vision → maps to Off now.
@@ -2892,6 +2931,7 @@ mod tests {
             permission_preset_visibility: PermissionPresetVisibility::default(),
             welcome_name: String::new(),
             autocompact_reserve_tokens: None,
+            context_headroom_tokens: None,
             output_style: OutputStyle::default(),
             execution_features: ExecutionFeatures::default(),
             language: String::new(),
