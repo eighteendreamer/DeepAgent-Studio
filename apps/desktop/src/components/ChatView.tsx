@@ -16,6 +16,8 @@ import type {
   ProjectMapStatus,
 } from "../types";
 import { Composer } from "./Composer";
+import { ComposerActivityBar } from "./ComposerActivityBar";
+import { composerActivityMock } from "./composerActivityMock";
 import { ApprovalDialog } from "./ApprovalDialog";
 import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { RenameSessionDialog } from "./RenameSessionDialog";
@@ -1414,6 +1416,7 @@ export function ChatView({
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
           <div ref={composerFrameRef} className="w-full max-w-4xl relative">
+            <ComposerActivityBar {...composerActivityMock} />
             {approval && (
               <div
                 className="absolute left-0 right-0 z-30"
