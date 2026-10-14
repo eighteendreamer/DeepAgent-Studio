@@ -1,8 +1,8 @@
 import { useRef, useState } from "react";
-import { CheckCircle2, ChevronUp, Circle, FileCode2, GitCompareArrows, ListTodo, LoaderCircle, X } from "lucide-react";
+import { CheckCircle2, ChevronUp, Circle, FileCode2, GitCompareArrows, ListTodo, LoaderCircle } from "lucide-react";
 import { Button } from "./shadcn/button";
 import { Item, ItemActions, ItemContent, ItemDescription, ItemGroup, ItemMedia, ItemTitle } from "./shadcn/item";
-import { Popover, PopoverClose, PopoverContent, PopoverTitle, PopoverTrigger } from "./shadcn/popover";
+import { Popover, PopoverContent, PopoverTitle, PopoverTrigger } from "./shadcn/popover";
 import { cn } from "./shadcn/utils";
 
 export interface ComposerTodo {
@@ -20,20 +20,6 @@ export interface ComposerFileChange {
 interface Props {
   todos: ComposerTodo[];
   changes: ComposerFileChange[];
-}
-
-function PanelHeading({ title, summary }: { title: string; summary: string }) {
-  return (
-    <div className="flex items-center justify-between gap-3 border-b border-border-theme px-4 py-3">
-      <div className="flex items-center gap-2.5">
-        <PopoverTitle className="text-[13px] font-medium">{title}</PopoverTitle>
-        <span className="text-[11px] text-text-secondary">{summary}</span>
-      </div>
-      <PopoverClose render={<Button variant="ghost" size="icon" className="h-6 w-6" aria-label="收起列表" />}>
-        <X size={13} />
-      </PopoverClose>
-    </div>
-  );
 }
 
 const triggerClass = "h-8 gap-1.5 rounded-none px-2 text-[11px] font-normal text-text-secondary hover:bg-hover-bg data-[popup-open]:bg-hover-bg data-[popup-open]:text-text-base sm:gap-2 sm:px-3 sm:text-[12px]";
@@ -57,7 +43,7 @@ export function ComposerActivityBar({ todos, changes }: Props) {
             <ChevronUp size={12} className={cn("hidden opacity-60 transition-transform sm:block", active === "todos" && "rotate-180")} />
           </PopoverTrigger>
           <PopoverContent side="top" anchor={barRef} className="w-[460px] max-w-[calc(100vw-32px)] overflow-hidden">
-            <PanelHeading title="待办清单" summary={`${completed}/${todos.length} 已完成`} />
+            <PopoverTitle className="sr-only">待办清单</PopoverTitle>
             <div className="max-h-[min(340px,calc(100dvh-280px))] overflow-y-auto overscroll-contain p-1.5">
               <ItemGroup aria-label="待办清单">
                 {todos.map((todo) => (
@@ -88,7 +74,7 @@ export function ComposerActivityBar({ todos, changes }: Props) {
             <ChevronUp size={12} className={cn("hidden opacity-60 transition-transform sm:block", active === "changes" && "rotate-180")} />
           </PopoverTrigger>
           <PopoverContent side="top" anchor={barRef} className="w-[460px] max-w-[calc(100vw-32px)] overflow-hidden">
-            <PanelHeading title="文件变更" summary={`${changes.length} 个文件`} />
+            <PopoverTitle className="sr-only">文件变更</PopoverTitle>
             <div className="max-h-[min(340px,calc(100dvh-280px))] overflow-y-auto overscroll-contain p-1.5">
               <ItemGroup aria-label="文件变更">
                 {changes.map((file) => (
