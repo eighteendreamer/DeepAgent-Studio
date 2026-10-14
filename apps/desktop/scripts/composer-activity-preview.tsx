@@ -26,21 +26,25 @@ function record(todos: typeof initialTodos, id: string, status: ToolCall["status
 }
 
 function Preview() {
-  const [messages, setMessages] = useState<ChatMessage[]>([record(initialTodos, "first")]);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [session, setSession] = useState(0);
   const [project, setProject] = useState<string | null>(payload.changes.project_path);
   const [input, setInput] = useState("");
+  const [queryCount, setQueryCount] = useState(0);
   const mode = useRef<"changed" | "clean" | "failed">("changed");
   const call = useRef(0);
   const client = useMemo<GitStatusClient>(() => ({
     gitProjectStatus: async () => payload.status,
     gitBranchList: async () => [],
     gitChanges: async () => {
+      setQueryCount(value => value + 1);
       if (mode.current === "failed") throw new Error("验证查询失败");
       return mode.current === "clean" ? payload.clean : payload.changes;
     },
   }), []);
-  const git = useGitStatus(project, client);
+  const git = useGitStatus(messages.length ? project : null, client, {
+    automatic: false, cacheScope: "verification:" + session,
+  });
   const activity = collectComposerActivity(messages);
   const append = (todos: typeof initialTodos, status: ToolCall["status"] = "ok") =>
     setMessages(previous => [...previous, record(todos, "call-" + ++call.current, status)]);
@@ -48,6 +52,9 @@ function Preview() {
     <div style={{ height: "100dvh", position: "relative", padding: 24 }}>
       <h1 style={{ fontSize: 16, marginBottom: 12 }}>待办与变更 · 数据接入验证</h1>
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        <Button variant="outline" onClick={() => { setSession(value => value + 1); setMessages([record(initialTodos, "history")]); }}>载入待办对话</Button>
+        <Button variant="outline" onClick={() => { mode.current = "changed"; append(initialTodos); void git.refreshChanges(); }}>工具完成</Button>
+        <Button variant="outline" onClick={() => { setSession(value => value + 1); setMessages([{ role: "user", content: "另一个历史对话" }]); }}>切换对话</Button>
         <Button variant="outline" onClick={() => append(initialTodos.map(todo => ({ ...todo, status: "completed" })))}>完成待办</Button>
         <Button variant="outline" onClick={() => append([])}>清空待办</Button>
         <Button variant="outline" onClick={() => append([], "error")}>失败写入</Button>
@@ -59,10 +66,10 @@ function Preview() {
         <Button variant="outline" onClick={() => setProject(null)}>无项目</Button>
       </div>
       <p style={{ marginTop: 24, color: "#6b7280", fontSize: 13 }}>
-        Git 文件与行数来自临时仓库的真实 GitService 返回；待办使用实际工具结果格式。
+        Git 查询：{queryCount}。Git 文件与行数来自临时仓库的真实 GitService 返回；待办使用实际工具结果格式。
       </p>
       <div style={{ position: "absolute", left: 24, right: 24, bottom: 24, maxWidth: 896, margin: "0 auto" }}>
-        <ComposerActivityBar
+        {messages.length > 0 && <ComposerActivityBar
           key={session + ":" + project}
           todos={activity.todos}
           changes={(git.changes?.files ?? []).map(file => ({
@@ -73,7 +80,7 @@ function Preview() {
           gitLoading={git.loading}
           gitError={git.error}
           onRefreshChanges={() => { void git.refreshChanges(); }}
-        />
+        />}
         <Composer value={input} onChange={setInput} onSubmit={() => {}} placeholder="要求后续变更" />
       </div>
     </div>

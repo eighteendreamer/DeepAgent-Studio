@@ -23,6 +23,7 @@ export type OutputItem =
   | { kind: "image"; label: string; source: "tool" | "url" };
 
 interface EnvironmentInfoMenuProps {
+  onOpenChange?: (open: boolean) => void;
   children: ReactElement;
   activeProjectPath?: string | null;
   gitStatus: GitProjectStatus | null;
@@ -45,6 +46,7 @@ interface EnvironmentInfoMenuProps {
 }
 
 export function EnvironmentInfoMenu({
+  onOpenChange,
   children,
   activeProjectPath,
   gitStatus,
@@ -110,7 +112,7 @@ export function EnvironmentInfoMenu({
   );
 
   return (
-    <DropdownMenu modal={false}>
+    <DropdownMenu modal={false} onOpenChange={onOpenChange}>
       {/* HoverInfo wraps the trigger (not the reverse): Radix's `asChild` slot
           clones its child with a positioning ref and trigger props, so the
           direct child must be a forwardRef DOM element. */}

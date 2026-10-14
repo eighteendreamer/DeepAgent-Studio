@@ -38,7 +38,7 @@ export function ComposerActivityBar({ todos, changes, gitAvailable = false, gitL
   const deletions = changes.reduce((sum, file) => sum + (file.statsAvailable === true ? file.deletions : 0), 0);
   const unknownStats = changes.filter((file) => file.statsAvailable !== true).length;
   const allStatsUnknown = changes.length > 0 && unknownStats === changes.length;
-  const showChanges = gitAvailable || gitLoading || !!gitError;
+  const showChanges = (gitAvailable && changes.length > 0) || !!gitError;
   useEffect(() => {
     if ((active === "todos" && !todos.length) || (active === "changes" && !showChanges)) setActive(null);
   }, [active, todos.length, showChanges]);
@@ -81,7 +81,7 @@ export function ComposerActivityBar({ todos, changes, gitAvailable = false, gitL
         }}>
           <PopoverTrigger render={<Button variant="ghost" className={triggerClass} />} aria-label={gitError ? "变更读取失败，点击重试" : allStatsUnknown ? `变更，${changes.length} 个文件，行数未统计` : `变更，${changes.length} 个文件，新增 ${additions} 行，删除 ${deletions} 行${unknownStats ? "，部分未统计" : ""}`}>
             {gitLoading ? <LoaderCircle size={13} className="animate-spin" /> : <GitCompareArrows size={13} className="hidden sm:block" />}
-            <span className="whitespace-nowrap">{gitError ? "变更读取失败" : gitLoading && !gitAvailable ? "读取变更…" : `${changes.length} 个文件变更`}</span>
+            <span className="whitespace-nowrap">{gitError ? "变更读取失败" : `${changes.length} 个文件变更`}</span>
             {!gitError && gitAvailable && <>
               {!allStatsUnknown && <>
                 <span className="tabular-nums text-green-600">+{additions}</span>

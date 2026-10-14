@@ -4,6 +4,7 @@ import type { GitBranch, GitChanges, GitProjectStatus } from "../types";
 
 type GitStatusState = {
   projectPath: string | null;
+  cacheKey: string | null;
   loading: boolean;
   status: GitProjectStatus | null;
   branches: GitBranch[];
@@ -11,35 +12,48 @@ type GitStatusState = {
   error: string | null;
 };
 const EMPTY_STATE: GitStatusState = {
-  projectPath: null, loading: false, status: null, branches: [], changes: null, error: null,
+  projectPath: null, cacheKey: null, loading: false, status: null, branches: [], changes: null, error: null,
 };
 const GIT_STATUS_CACHE_PREFIX = "deepagent:git-status:";
 const GIT_CLIENT = { gitBranchList, gitChanges, gitProjectStatus };
 // Injectable read boundary for fixture/queue tests; production uses the Tauri API.
 export type GitStatusClient = typeof GIT_CLIENT;
+type GitStatusOptions = {
+  /** Git workbenches refresh automatically; conversation summaries refresh on live events. */
+  automatic?: boolean;
+  /** Undefined uses the project cache, null disables caching, a string isolates a conversation. */
+  cacheScope?: string | null;
+};
 
-function readCache(projectPath: string): GitStatusState {
+function readCache(projectPath: string, cacheKey: string | null): GitStatusState {
   try {
-    const raw = localStorage.getItem(GIT_STATUS_CACHE_PREFIX + encodeURIComponent(projectPath));
+    const raw = cacheKey ? localStorage.getItem(cacheKey) : null;
     const parsed = raw ? JSON.parse(raw) : null;
     if (parsed?.version === 2 && parsed.projectPath === projectPath && Array.isArray(parsed.branches)) {
-      return { ...parsed, loading: false, error: null };
+      return { ...parsed, cacheKey, loading: false, error: null };
     }
   } catch { /* Best-effort UI cache. */ }
-  return { ...EMPTY_STATE, projectPath };
+  return { ...EMPTY_STATE, projectPath, cacheKey };
 }
 
-function writeCache(state: GitStatusState) {
-  if (!state.projectPath) return;
+function writeCache(state: GitStatusState, cacheKey: string | null) {
+  if (!cacheKey) return;
   try {
-    localStorage.setItem(GIT_STATUS_CACHE_PREFIX + encodeURIComponent(state.projectPath),
+    localStorage.setItem(cacheKey,
       JSON.stringify({ ...state, version: 2, cachedAt: Date.now() }));
   } catch { /* Best-effort UI cache. */ }
 }
 
 /** One refresh queue per project. Late results cannot update another project. */
-export function useGitStatus(projectPath?: string | null, client: GitStatusClient = GIT_CLIENT) {
+export function useGitStatus(
+  projectPath?: string | null,
+  client: GitStatusClient = GIT_CLIENT,
+  { automatic = true, cacheScope }: GitStatusOptions = {},
+) {
   const path = projectPath || null;
+  const cacheKey = !path || cacheScope === null ? null
+    : GIT_STATUS_CACHE_PREFIX + encodeURIComponent(path)
+      + (cacheScope === undefined ? "" : ":scope:" + encodeURIComponent(cacheScope));
   const [state, setState] = useState<GitStatusState>(EMPTY_STATE);
   const refreshRef = useRef<(full: boolean) => Promise<void>>(async () => {});
   const refresh = useCallback(() => refreshRef.current(true), []);
@@ -52,7 +66,7 @@ export function useGitStatus(projectPath?: string | null, client: GitStatusClien
       return;
     }
     let cancelled = false;
-    let snapshot = readCache(path);
+    let snapshot = readCache(path, cacheKey);
     let inFlight: Promise<void> | null = null;
     let queued = false;
     let needsFull = false;
@@ -75,8 +89,8 @@ export function useGitStatus(projectPath?: string | null, client: GitStatusClien
             const branches = changes.is_repo
               ? complete ? await client.gitBranchList(path) : snapshot.branches : [];
             if (cancelled) return;
-            snapshot = { projectPath: path, loading: false, status, branches, changes, error: null };
-            writeCache(snapshot);
+            snapshot = { projectPath: path, cacheKey, loading: false, status, branches, changes, error: null };
+            writeCache(snapshot, cacheKey);
             setState(snapshot);
           } catch (error) {
             if (cancelled) return;
@@ -89,20 +103,23 @@ export function useGitStatus(projectPath?: string | null, client: GitStatusClien
       return inFlight;
     };
     refreshRef.current = request;
-    // Cache is a preview; it never replaces checking the actual repository.
-    void request(true);
+    // Conversation navigation only restores its snapshot; live events request fresh data.
+    if (automatic) void request(true);
     const onFocus = () => { if (document.visibilityState === "visible") void request(true); };
-    window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onFocus);
+    if (automatic) {
+      window.addEventListener("focus", onFocus);
+      document.addEventListener("visibilitychange", onFocus);
+    }
     return () => {
       cancelled = true;
       refreshRef.current = async () => {};
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
     };
-  }, [path, client]);
+  }, [path, client, automatic, cacheKey]);
 
   // Hide the previous project's data before the new effect even starts.
-  const visible = state.projectPath === path ? state : { ...EMPTY_STATE, projectPath: path, loading: !!path };
+  const visible = state.projectPath === path && state.cacheKey === cacheKey ? state
+    : { ...EMPTY_STATE, projectPath: path, cacheKey, loading: automatic && !!path };
   return { ...visible, refresh, refreshChanges };
 }

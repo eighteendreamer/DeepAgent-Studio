@@ -975,7 +975,8 @@ export function ChatView({
   const [envMode, setEnvMode] = useState<"local" | "remote">(() =>
     localStorage.getItem("envMode") === "remote" ? "remote" : "local",
   );
-  const gitProjectPath = envMode === "local" ? repositoryPath : null;
+  const hasConversation = messages.length > 0;
+  const gitProjectPath = hasConversation && envMode === "local" ? repositoryPath : null;
   const {
     loading: gitLoading,
     status: gitStatus,
@@ -983,7 +984,10 @@ export function ChatView({
     refresh: refreshGitStatus,
     refreshChanges: refreshGitChanges,
     error: gitError,
-  } = useGitStatus(gitProjectPath);
+  } = useGitStatus(gitProjectPath, undefined, {
+    automatic: false,
+    cacheScope: sessionId ? `chat:${sessionId}` : null,
+  });
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [isSessionMenuOpen, setIsSessionMenuOpen] = useState(false);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
@@ -1027,8 +1031,21 @@ export function ChatView({
     path: file.path, additions: file.additions, deletions: file.deletions,
     statsAvailable: file.line_stats_available === true,
   })), [gitChangesState]);
+  const previousGitActivity = useRef<{
+    sessionId: string | null | undefined; path: string; completionKey: string; busy: boolean;
+  } | null>(null);
   useEffect(() => {
-    if (!gitProjectPath) return;
+    if (!gitProjectPath) {
+      previousGitActivity.current = null;
+      return;
+    }
+    const previous = previousGitActivity.current;
+    previousGitActivity.current = { sessionId, path: gitProjectPath, completionKey: activity.completionKey, busy };
+    // Seed history without requesting Git. Only newly observed live activity refreshes it.
+    if (!previous || previous.sessionId !== sessionId || previous.path !== gitProjectPath) return;
+    const toolsFinished = busy && previous.completionKey !== activity.completionKey;
+    const runFinished = previous.busy && !busy;
+    if (!toolsFinished && !runFinished) return;
     const timer = window.setTimeout(() => { void refreshGitChanges(); }, 400);
     return () => window.clearTimeout(timer);
   }, [activity.completionKey, busy, gitProjectPath, sessionId, refreshGitChanges]);
@@ -1042,7 +1059,6 @@ export function ChatView({
   const gitWorkspaceDeletions = gitChangesState?.deletions ?? gitStatus?.deletions ?? 0;
   const gitWorkspaceFilesChanged =
     gitChangesState?.files.length ?? gitStatus?.files_changed ?? 0;
-  const hasConversation = messages.length > 0;
 
   useEffect(() => {
     setIsGitWorkbenchOpen(false);
@@ -1324,6 +1340,7 @@ export function ChatView({
               )}
               {hasConversation && (
                 <EnvironmentInfoMenu
+                  onOpenChange={(open) => { if (open) void refreshGitStatus(); }}
                   activeProjectPath={gitProjectPath}
                   gitStatus={gitStatus}
                   gitLoading={gitLoading}
@@ -1388,7 +1405,7 @@ export function ChatView({
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
           <div ref={composerFrameRef} className="w-full max-w-4xl relative">
-            <ComposerActivityBar
+            {hasConversation && <ComposerActivityBar
               key={`${sessionId ?? "pending"}:${gitProjectPath ?? "no-git"}`}
               todos={activity.todos}
               changes={composerChanges}
@@ -1396,7 +1413,7 @@ export function ChatView({
               gitLoading={gitLoading}
               gitError={gitError}
               onRefreshChanges={() => { void refreshGitChanges(); }}
-            />
+            />}
             {approval && (
               <div
                 className="absolute left-0 right-0 z-30"

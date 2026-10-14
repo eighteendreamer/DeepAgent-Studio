@@ -31,7 +31,7 @@ test("existing chats resolve their own project path, never a matching name or st
   assert.equal(resolveChatRepositoryPath(null, first, "/second/app"), "/second/app");
 });
 
-test("all unknown Git statistics render as unknown, never a fabricated zero-line change", () => {
+function renderActivityBar(props) {
   const cache = new Map();
   function load(relative) {
     if (cache.has(relative)) return cache.get(relative);
@@ -47,9 +47,22 @@ test("all unknown Git statistics render as unknown, never a fabricated zero-line
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");
   const { ComposerActivityBar } = load("src/components/ComposerActivityBar.tsx");
-  const html = renderToStaticMarkup(React.createElement(ComposerActivityBar, {
+  return renderToStaticMarkup(React.createElement(ComposerActivityBar, props));
+}
+
+test("empty, loading-only and clean repositories never create a composer activity entry", () => {
+  for (const props of [{}, { gitLoading: true }, { gitAvailable: true }, { gitAvailable: true, gitLoading: true }]) {
+    assert.equal(renderActivityBar({ todos: [], changes: [], ...props }), "");
+  }
+  const todoOnly = renderActivityBar({ todos: [{ id: "a", text: "work", status: "pending" }], changes: [], gitAvailable: true });
+  assert.match(todoOnly, /待办/);
+  assert.doesNotMatch(todoOnly, /个文件变更|读取变更/);
+});
+
+test("all unknown Git statistics render as unknown, never a fabricated zero-line change", () => {
+  const html = renderActivityBar({
     todos: [], changes: [{ path: "binary.bin", additions: 99, deletions: 99, statsAvailable: false }], gitAvailable: true,
-  }));
+  });
   assert.match(html, /未统计行数/);
   assert.doesNotMatch(html, /新增 0 行|删除 0 行|新增 99 行/);
 });
@@ -191,15 +204,86 @@ function gitHarness() {
   });
   return {
     api, storage, calls, listeners,
-    render(project) {
+    render(project, options) {
       cursor = 0;
-      const result = useGitStatus(project, api);
+      const result = useGitStatus(project, api, options);
       effects.splice(0).forEach(effect => effect());
       return result;
     },
     unmount() { slots.forEach(slot => slot?.cleanup?.()); },
   };
 }
+
+test("conversation navigation and focus make zero Git requests; cached snapshots stay session-scoped", async () => {
+  const host = gitHarness();
+  const lazy = id => ({ automatic: false, cacheScope: "chat:" + id });
+  host.storage.set("deepagent:git-status:A", JSON.stringify({ version: 2, projectPath: "A", branches: [], changes: { files: [{ path: "unrelated" }] } }));
+  host.render("A", lazy("first"));
+  await tick();
+  let value = host.render("A", lazy("first"));
+  assert.equal(value.loading, false);
+  assert.equal(value.changes, null);
+  assert.equal(host.calls.length, 0);
+  assert.equal(host.listeners.size, 0);
+  host.render("B", lazy("second"));
+  host.render(null, lazy("empty"));
+  host.render("A", lazy("first"));
+  assert.equal(host.calls.length, 0);
+  host.api.gitChanges = async () => { host.calls.push(["changes", "A"]); return { is_repo: true, files: [{ path: "first.txt" }] }; };
+  await host.render("A", lazy("first")).refreshChanges();
+  const reads = host.calls.length;
+  // A different conversation in the same repository cannot display the previous result even for one render.
+  assert.equal(host.render("A", lazy("second")).changes, null);
+  assert.equal(host.render("A", lazy("second")).changes, null);
+  host.render("A", lazy("first"));
+  assert.equal(host.render("A", lazy("first")).changes.files[0].path, "first.txt");
+  assert.equal(host.calls.length, reads);
+  host.unmount();
+});
+
+test("production conversation refresh responds to live completions, never history restoration or switching", () => {
+  const source = fs.readFileSync(path.join(root, "src/components/ChatView.tsx"), "utf8");
+  const ast = ts.createSourceFile("ChatView.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let effect;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(ast) === "useEffect"
+      && node.arguments[0]?.getText(ast).includes("previousGitActivity.current")) effect = node.getText(ast);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.ok(effect);
+  let dependencies, cleanup;
+  const timers = new Map();
+  let nextTimer = 0, reads = 0;
+  const context = {
+    previousGitActivity: { current: null }, refreshGitChanges: () => { reads++; },
+    window: { setTimeout: fn => { timers.set(++nextTimer, fn); return nextTimer; }, clearTimeout: id => timers.delete(id) },
+    useEffect: (fn, deps) => {
+      if (dependencies?.every((value, i) => Object.is(value, deps[i]))) return;
+      cleanup?.(); dependencies = deps; cleanup = fn();
+    },
+  };
+  function render(sessionId, gitProjectPath, busy, completionKey) {
+    vm.runInNewContext(effect, { ...context, sessionId, gitProjectPath, busy, activity: { completionKey } });
+  }
+  render("a", null, false, "[]");
+  render("a", "A", false, "old");
+  render("a", "A", false, "restored history");
+  render("b", "B", false, "other history");
+  assert.equal(timers.size, 0);
+  render("b", "B", true, "other history");
+  assert.equal(timers.size, 0);
+  render("b", "B", true, "new completion 1");
+  render("b", "B", true, "new completion 2");
+  assert.equal(timers.size, 1);
+  for (const fn of timers.values()) fn(); timers.clear();
+  assert.equal(reads, 1);
+  render("b", "B", false, "new completion 2");
+  assert.equal(timers.size, 1);
+  render("c", "C", false, "history");
+  assert.equal(timers.size, 0, "switching cancels scheduled work from the previous conversation");
+  cleanup?.();
+});
 
 test("cached data is revalidated and old-project results cannot overwrite a new project", async () => {
   const host = gitHarness();
