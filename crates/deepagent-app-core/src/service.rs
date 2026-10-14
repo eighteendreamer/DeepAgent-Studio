@@ -323,6 +323,8 @@ impl AppService {
         };
 
         Ok(SessionDetailDto {
+            version: 1,
+            project_path: record.project.clone(),
             summary: {
                 let project = record.project.as_deref().map(|path| {
                     projects
@@ -1416,6 +1418,8 @@ mod tests {
         let (svc, sid) = seeded_service();
         let detail = svc.session_detail(&sid).unwrap();
         assert_eq!(detail.summary.id, sid);
+        assert_eq!(detail.version, 1);
+        assert!(detail.project_path.is_none());
         assert!(!detail.timeline.is_empty());
         assert_eq!(detail.stats.tool_successes, 1);
         assert_eq!(detail.stats.tool_success_rate, Some(1.0));
@@ -1423,6 +1427,36 @@ mod tests {
         for w in detail.timeline.windows(2) {
             assert!(w[0].sequence < w[1].sequence);
         }
+    }
+
+    #[test]
+    fn session_detail_preserves_project_identity_and_legacy_payloads() {
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let projects = ProjectService::new(db.clone());
+        for path in ["/work/first/app", "/work/second/app"] {
+            projects.add_project(path).unwrap();
+        }
+        projects.set_active("/work/second/app").unwrap();
+        let session = Session::create_in_project(
+            &db,
+            &clock,
+            Some("first project"),
+            Default::default(),
+            Some("/work/first/app"),
+        )
+        .unwrap();
+        let detail = AppService::from_shared(db.clone())
+            .session_detail(&session.id().to_string())
+            .unwrap();
+        assert_eq!(detail.summary.project.as_deref(), Some("app"));
+        assert_eq!(detail.project_path.as_deref(), Some("/work/first/app"));
+        let mut legacy = serde_json::to_value(&detail).unwrap();
+        legacy.as_object_mut().unwrap().remove("version");
+        legacy.as_object_mut().unwrap().remove("project_path");
+        let decoded: SessionDetailDto = serde_json::from_value(legacy).unwrap();
+        assert_eq!(decoded.version, 0);
+        assert!(decoded.project_path.is_none());
     }
 
     #[test]

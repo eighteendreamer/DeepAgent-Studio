@@ -45,6 +45,8 @@ export interface SessionStats {
 }
 
 export interface SessionDetail {
+  version?: number;
+  project_path?: string | null;
   summary: SessionSummary;
   timeline: TimelineEntry[];
   stats: SessionStats;
@@ -1057,9 +1059,13 @@ export interface GitChangedFile {
   category: "staged" | "unstaged" | "untracked" | "conflicted" | string;
   additions: number;
   deletions: number;
+  /** Additive v1 field; false/missing means counts are not authoritative. */
+  line_stats_available?: boolean;
 }
 
 export interface GitChanges {
+  /** v1 provides line_stats_available; older backends omit this field. */
+  version?: number;
   project_path: string;
   repo_root: string | null;
   is_repo: boolean;

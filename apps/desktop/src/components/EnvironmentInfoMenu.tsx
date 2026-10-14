@@ -20,15 +20,7 @@ type EnvironmentMode = "local" | "remote";
 export type OutputItem =
   | { kind: "url"; label: string }
   | { kind: "file"; label: string; action: "write" | "edit" }
-  | { kind: "image"; label: string; source: "tool" | "url" }
-  | {
-      kind: "todo";
-      label: string;
-      total: number;
-      pending: number;
-      inProgress: number;
-      completed: number;
-    };
+  | { kind: "image"; label: string; source: "tool" | "url" };
 
 interface EnvironmentInfoMenuProps {
   children: ReactElement;
@@ -426,19 +418,15 @@ function OutputRow({ item, onOpenUrl }: { item: OutputItem; onOpenUrl: (url: str
       ? ["fas", "globe"]
       : item.kind === "image"
         ? ["far", "image"]
-        : item.kind === "todo"
-          ? ["fas", "list-check"]
-          : ["far", "file-lines"];
+        : ["far", "file-lines"];
   const iconColor =
-    item.kind === "todo"
-      ? "text-blue-500"
-      : item.kind === "image"
-        ? "text-purple-500"
-        : item.kind === "file"
-          ? item.action === "write"
-            ? "text-green-600"
-            : "text-amber-600"
-          : "text-text-secondary";
+    item.kind === "image"
+      ? "text-purple-500"
+      : item.kind === "file"
+        ? item.action === "write"
+          ? "text-green-600"
+          : "text-amber-600"
+        : "text-text-secondary";
   const clickable = item.kind === "url" || (item.kind === "image" && item.source === "url");
   const handleItemClick = () => {
     if (item.kind === "url") onOpenUrl(item.label);
@@ -470,8 +458,5 @@ function OutputRow({ item, onOpenUrl }: { item: OutputItem; onOpenUrl: (url: str
 }
 
 function outputItemKey(item: OutputItem) {
-  if (item.kind === "todo") {
-    return `todo:${item.total}:${item.pending}:${item.inProgress}:${item.completed}`;
-  }
   return `${item.kind}:${item.label}`;
 }

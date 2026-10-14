@@ -5,7 +5,7 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -24,6 +24,8 @@ use std::sync::Arc;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const MAX_DIFF_BYTES: usize = 96_000;
+// Bound untracked-file inspection; large or non-text files retain unknown stats.
+const MAX_NEW_FILE_STATS_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Read-only Git inspection service.
 pub struct GitService {
@@ -123,8 +125,26 @@ impl GitService {
 
     /// Changed files and +/- summary. Non-repositories return an empty result.
     pub fn changes(&self, project_path: &str) -> Result<GitChangesDto> {
-        let Some(repo_root) = repo_root(project_path) else {
+        let probe = run_command(
+            Path::new(project_path),
+            "git",
+            &["rev-parse", "--show-toplevel"],
+        )
+        .map_err(|error| {
+            deepagent_core::error::CoreError::other(format!(
+                "Git repository lookup failed: {error}"
+            ))
+        })?;
+        if !probe.status.success()
+            && !String::from_utf8_lossy(&probe.stderr).contains("not a git repository")
+        {
+            return Err(deepagent_core::error::CoreError::other(
+                String::from_utf8_lossy(&probe.stderr).trim().to_string(),
+            ));
+        }
+        if !probe.status.success() {
             return Ok(GitChangesDto {
+                version: 1,
                 project_path: project_path.to_string(),
                 repo_root: None,
                 is_repo: false,
@@ -132,19 +152,37 @@ impl GitService {
                 additions: 0,
                 deletions: 0,
             });
+        }
+        let repo_root = PathBuf::from(String::from_utf8_lossy(&probe.stdout).trim());
+        let status = git_stdout_checked(
+            &repo_root,
+            &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        )?;
+        let has_head = ref_exists(&repo_root, "HEAD");
+        let args = if has_head {
+            vec!["diff", "--numstat", "-z", "HEAD", "--"]
+        } else {
+            vec!["diff", "--cached", "--numstat", "-z", "--"]
         };
-
-        let status =
-            git_stdout(&repo_root, &["status", "--porcelain=v1", "-z"]).unwrap_or_default();
-        let numstat =
-            git_output(&repo_root, &["diff", "--numstat", "HEAD", "--"]).unwrap_or_default();
-        let stats = parse_numstat(&numstat);
+        let stats = parse_numstat_z(&git_stdout_checked(&repo_root, &args)?);
         let mut files = parse_status_z(&status, &stats);
+        for file in &mut files {
+            let counts = if file.category == "conflicted" {
+                None
+            } else if file.category == "untracked" || !has_head {
+                new_file_line_stats(&repo_root, &file.path)
+            } else {
+                stats.get(&file.path).copied().flatten()
+            };
+            file.line_stats_available = counts.is_some();
+            (file.additions, file.deletions) = counts.unwrap_or((0, 0));
+        }
         files.sort_by_key(|f| (category_order(&f.category), f.path.to_lowercase()));
         let additions = files.iter().map(|f| f.additions).sum();
         let deletions = files.iter().map(|f| f.deletions).sum();
 
         Ok(GitChangesDto {
+            version: 1,
             project_path: project_path.to_string(),
             repo_root: Some(repo_root.to_string_lossy().into_owned()),
             is_repo: true,
@@ -1215,6 +1253,7 @@ impl GitService {
         );
         let (ahead, behind) = ahead_behind(&repo_root, upstream.as_deref());
         let changes = self.changes(project_path).unwrap_or(GitChangesDto {
+            version: 1,
             project_path: project_path.to_string(),
             repo_root: Some(repo_root.to_string_lossy().into_owned()),
             is_repo: true,
@@ -1347,6 +1386,66 @@ fn git_stdout(cwd: impl AsRef<Path>, args: &[&str]) -> Option<String> {
         return None;
     }
     Some(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn git_stdout_checked(cwd: &Path, args: &[&str]) -> Result<String> {
+    let output = run_command(cwd, "git", args).map_err(|error| {
+        deepagent_core::error::CoreError::other(format!("Git query failed: {error}"))
+    })?;
+    if !output.status.success() {
+        return Err(deepagent_core::error::CoreError::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn new_file_line_stats(root: &Path, relative: &str) -> Option<(u32, u32)> {
+    let path = safe_repo_file_path(root, relative)?;
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Some((0, 0)),
+        Err(_) => return None,
+    };
+    if !metadata.is_file() || metadata.len() > MAX_NEW_FILE_STATS_BYTES {
+        return None;
+    }
+    let canonical = path.canonicalize().ok()?;
+    if !canonical.starts_with(root.canonicalize().ok()?) {
+        return None;
+    }
+    let file = fs::File::open(canonical).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_NEW_FILE_STATS_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_NEW_FILE_STATS_BYTES || bytes.contains(&0) {
+        return None;
+    }
+    let text = std::str::from_utf8(&bytes).ok()?;
+    Some((u32::try_from(text.lines().count()).ok()?, 0))
+}
+
+/// NUL records preserve tabs, Unicode paths and rename destinations.
+fn parse_numstat_z(output: &str) -> HashMap<String, Option<(u32, u32)>> {
+    let mut records = output.split('\0');
+    let mut stats = HashMap::new();
+    while let Some(record) = records.next() {
+        let mut columns = record.splitn(3, '\t');
+        let additions = columns.next().and_then(|value| value.parse().ok());
+        let deletions = columns.next().and_then(|value| value.parse().ok());
+        let Some(mut path) = columns.next() else {
+            continue;
+        };
+        if path.is_empty() {
+            // Git emits old-path NUL new-path NUL for a rename/copy.
+            let _old = records.next();
+            let Some(new) = records.next() else { break };
+            path = new;
+        }
+        stats.insert(path.to_string(), additions.zip(deletions));
+    }
+    stats
 }
 
 fn git_stdout_owned(cwd: impl AsRef<Path>, args: &[String]) -> Option<String> {
@@ -1708,20 +1807,10 @@ fn empty_to_none(s: &str) -> Option<String> {
     }
 }
 
-fn parse_numstat(output: &str) -> HashMap<String, (u32, u32)> {
-    let mut map = HashMap::new();
-    for line in output.lines() {
-        let mut parts = line.split('\t');
-        let add = parts.next().unwrap_or("0").parse().unwrap_or(0);
-        let del = parts.next().unwrap_or("0").parse().unwrap_or(0);
-        if let Some(path) = parts.next() {
-            map.insert(path.to_string(), (add, del));
-        }
-    }
-    map
-}
-
-fn parse_status_z(output: &str, stats: &HashMap<String, (u32, u32)>) -> Vec<GitChangedFileDto> {
+fn parse_status_z(
+    output: &str,
+    stats: &HashMap<String, Option<(u32, u32)>>,
+) -> Vec<GitChangedFileDto> {
     let mut files = Vec::new();
     let mut entries = output.split('\0').filter(|s| !s.is_empty()).peekable();
     while let Some(entry) = entries.next() {
@@ -1729,20 +1818,17 @@ fn parse_status_z(output: &str, stats: &HashMap<String, (u32, u32)>) -> Vec<GitC
             continue;
         }
         let xy = &entry[..2];
-        let mut path = entry[3..].to_string();
+        let path = entry[3..].to_string();
         let mut old_path = None;
-        if xy.starts_with('R') || xy.starts_with('C') {
+        if xy.contains('R') || xy.contains('C') {
             if let Some(next) = entries.peek().copied() {
                 old_path = Some(next.to_string());
                 entries.next();
             }
         }
-        if path.contains(" -> ") {
-            let mut parts = path.splitn(2, " -> ");
-            old_path = parts.next().map(|s| s.to_string());
-            path = parts.next().unwrap_or("").to_string();
-        }
-        let (additions, deletions) = stats.get(&path).copied().unwrap_or((0, 0));
+        let counts = stats.get(&path).copied().flatten();
+        let (additions, deletions) = counts.unwrap_or((0, 0));
+        let line_stats_available = counts.is_some();
         files.push(GitChangedFileDto {
             path,
             old_path,
@@ -1750,6 +1836,7 @@ fn parse_status_z(output: &str, stats: &HashMap<String, (u32, u32)>) -> Vec<GitC
             category: status_category(xy).to_string(),
             additions,
             deletions,
+            line_stats_available,
         });
     }
     files
@@ -2313,21 +2400,153 @@ fn truncate_diff(mut text: String) -> (String, bool) {
 mod tests {
     use super::*;
 
+    fn fixture_git(root: &Path, args: &[&str]) {
+        let mut command = vec![
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+        ];
+        command.extend_from_slice(args);
+        let output = run_command(root, "git", &command).unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn fixture_service() -> GitService {
+        GitService::new(Arc::new(ProjectService::new(Arc::new(
+            deepagent_persistence::Database::open_in_memory().unwrap(),
+        ))))
+    }
+
     #[test]
-    fn parses_numstat() {
-        let stats = parse_numstat("2\t1\tsrc/a.rs\n-\t-\tbin.dat\n");
-        assert_eq!(stats.get("src/a.rs"), Some(&(2, 1)));
-        assert_eq!(stats.get("bin.dat"), Some(&(0, 0)));
+    fn real_git_changes_include_unicode_rename_deleted_new_and_binary_files() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        fixture_git(root, &["init", "--quiet"]);
+        fs::write(root.join("中文 空格.txt"), "old\nsame\n").unwrap();
+        fs::write(root.join("deleted.txt"), "one\ntwo\n").unwrap();
+        fs::write(root.join("rename.txt"), "rename\n").unwrap();
+        fs::write(root.join("tracked.bin"), b"\0old").unwrap();
+        fixture_git(root, &["add", "."]);
+        fixture_git(root, &["commit", "--quiet", "-m", "fixture"]);
+        fs::write(root.join("中文 空格.txt"), "new\nsame\nextra\n").unwrap();
+        fs::remove_file(root.join("deleted.txt")).unwrap();
+        fixture_git(root, &["mv", "rename.txt", "新 名.txt"]);
+        fs::create_dir(root.join("new-folder")).unwrap();
+        fs::write(root.join("new-folder/new.txt"), "one\ntwo\n").unwrap();
+        fs::write(root.join("literal name.txt"), "one\n").unwrap();
+        fs::write(root.join("tracked.bin"), b"\0changed").unwrap();
+        fs::write(root.join("fresh.bin"), b"\0new").unwrap();
+        let service = fixture_service();
+        let path = root.to_str().unwrap();
+        let changes = service.changes(path).unwrap();
+        assert_eq!(changes.version, 1);
+        assert_eq!((changes.additions, changes.deletions), (5, 3));
+        assert_eq!(changes.files.len(), 7);
+        let renamed = changes
+            .files
+            .iter()
+            .find(|file| file.path == "新 名.txt")
+            .unwrap();
+        assert_eq!(renamed.old_path.as_deref(), Some("rename.txt"));
+        assert!(renamed.line_stats_available);
+        assert!(changes
+            .files
+            .iter()
+            .any(|file| file.path == "literal name.txt" && file.additions == 1));
+        assert!(changes
+            .files
+            .iter()
+            .filter(|file| file.path.ends_with(".bin"))
+            .all(|file| !file.line_stats_available));
+        let status = service.project_status(path).unwrap();
+        fixture_git(root, &["add", "."]);
+        fixture_git(root, &["commit", "--quiet", "-m", "finish"]);
+        let clean = service.changes(path).unwrap();
+        assert!(clean.files.is_empty());
+        // Optional, sanitized backend payload for the browser integration fixture.
+        if let Ok(output_path) = std::env::var("DEEPAGENT_COMPOSER_GIT_FIXTURE") {
+            fs::write(
+                output_path,
+                serde_json::to_vec_pretty(&serde_json::json!({
+                    "status": status, "changes": changes, "clean": clean,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn real_git_unborn_stats_use_current_content_and_errors_are_not_clean_results() {
+        let repo = tempfile::tempdir().unwrap();
+        let root = repo.path();
+        fixture_git(root, &["init", "--quiet"]);
+        fs::write(root.join("first.txt"), "one\n").unwrap();
+        fixture_git(root, &["add", "."]);
+        fs::write(root.join("first.txt"), "one\ntwo\n").unwrap();
+        fs::write(root.join("new.txt"), "new\n").unwrap();
+        let service = fixture_service();
+        assert_eq!(
+            service.changes(root.to_str().unwrap()).unwrap().additions,
+            3
+        );
+        assert!(service
+            .changes(root.join("missing").to_str().unwrap())
+            .is_err());
+        let non_repo = tempfile::tempdir().unwrap();
+        assert!(
+            !service
+                .changes(non_repo.path().to_str().unwrap())
+                .unwrap()
+                .is_repo
+        );
+        let large = root.join("large.txt");
+        fs::File::create(&large)
+            .unwrap()
+            .set_len(MAX_NEW_FILE_STATS_BYTES + 1)
+            .unwrap();
+        assert_eq!(new_file_line_stats(root, "large.txt"), None);
+        assert_eq!(new_file_line_stats(root, "../outside.txt"), None);
+        let legacy: GitChangesDto = serde_json::from_value(serde_json::json!({
+            "project_path": "legacy", "repo_root": null, "is_repo": true,
+            "additions": 0, "deletions": 0,
+            "files": [{ "path": "old", "old_path": null, "status": " M",
+                "category": "unstaged", "additions": 0, "deletions": 0 }],
+        }))
+        .unwrap();
+        assert_eq!(legacy.version, 0);
+        assert!(!legacy.files[0].line_stats_available);
+    }
+
+    #[test]
+    fn parses_numstat_paths_and_unknown_binary_stats() {
+        let stats = parse_numstat_z(concat!(
+            "2\t1\t中文 空格.rs\0",
+            "-\t-\tbin.dat\0",
+            "3\t1\t\0old.rs\0new.rs\0",
+        ));
+        assert_eq!(stats.get("中文 空格.rs"), Some(&Some((2, 1))));
+        assert_eq!(stats.get("bin.dat"), Some(&None));
+        assert_eq!(stats.get("new.rs"), Some(&Some((3, 1))));
     }
 
     #[test]
     fn parses_status_z() {
-        let stats = HashMap::from([("src/a.rs".to_string(), (3, 1))]);
+        let stats = HashMap::from([("src/a.rs".to_string(), Some((3, 1)))]);
         let files = parse_status_z(" M src/a.rs\0?? new.txt\0", &stats);
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].category, "unstaged");
         assert_eq!(files[0].additions, 3);
         assert_eq!(files[1].category, "untracked");
+        let literal = parse_status_z("?? literal -> name.txt\0", &HashMap::new());
+        assert_eq!(literal[0].path, "literal -> name.txt");
     }
 
     #[test]
@@ -2442,6 +2661,7 @@ mod tests {
             category: "staged".to_string(),
             additions: 25,
             deletions: 0,
+            line_stats_available: true,
         }];
         let (title, body) = build_commit_message_draft(&files);
         assert_eq!(title, "feat(apps): add GitAssistant.tsx");
@@ -2458,6 +2678,7 @@ mod tests {
                 category: "unstaged".to_string(),
                 additions: 3,
                 deletions: 1,
+                line_stats_available: true,
             },
             GitChangedFileDto {
                 path: "docs/guide.md".to_string(),
@@ -2466,6 +2687,7 @@ mod tests {
                 category: "unstaged".to_string(),
                 additions: 2,
                 deletions: 0,
+                line_stats_available: true,
             },
         ];
         let (title, body) = build_commit_message_draft(&files);

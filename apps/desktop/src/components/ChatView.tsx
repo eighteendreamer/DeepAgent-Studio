@@ -17,7 +17,7 @@ import type {
 } from "../types";
 import { Composer } from "./Composer";
 import { ComposerActivityBar } from "./ComposerActivityBar";
-import { composerActivityMock } from "./composerActivityMock";
+import { collectComposerActivity, conversationTools } from "./composerActivityData";
 import { ApprovalDialog } from "./ApprovalDialog";
 import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { RenameSessionDialog } from "./RenameSessionDialog";
@@ -108,6 +108,8 @@ interface Props {
   planMode?: boolean;
   /** Explicitly selected project path. Empty means the chat is not project-bound. */
   activeProjectPath?: string | null;
+  /** Authoritative current chat repository path, supplied independently of global selection. */
+  repositoryPath?: string | null;
   /** Incremented by parent when another UI surface asks to open the project map. */
   projectMapOpenSignal?: number;
   /** Latest context usage snapshot for the active session/run. */
@@ -240,49 +242,13 @@ function parseFieldFromArgs(argsJson: string | undefined, field: string): string
   }
 }
 
-function parseTodoSnapshotFromArgs(argsJson: string | undefined): OutputItem | null {
-  if (!argsJson) return null;
-  try {
-    const obj = JSON.parse(argsJson);
-    if (!Array.isArray(obj?.todos)) return null;
-    let pending = 0;
-    let inProgress = 0;
-    let completed = 0;
-    for (const t of obj.todos) {
-      const status = String(t?.status ?? "");
-      if (status === "pending") pending++;
-      else if (status === "in_progress" || status === "in-progress" || status === "inprogress") {
-        inProgress++;
-      } else if (status === "completed" || status === "complete" || status === "done") {
-        completed++;
-      }
-    }
-    const total = obj.todos.length;
-    const parts: string[] = [];
-    if (completed > 0) parts.push(`已完成 ${completed}`);
-    if (inProgress > 0) parts.push(`进行中 ${inProgress}`);
-    if (pending > 0) parts.push(`待办 ${pending}`);
-    const label = `Todo · ${total}${parts.length ? " · " + parts.join(" · ") : ""}`;
-    return { kind: "todo", label, total, pending, inProgress, completed };
-  } catch {
-    return null;
-  }
-}
 function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
-  // Walk every tool call once (legacy `tools` array + ordered `parts`).
-  const allTools: ToolCall[] = [];
-  for (const message of messages) {
-    if (message.tools) allTools.push(...message.tools);
-    for (const part of message.parts ?? []) {
-      if (part.kind === "tool") allTools.push(part.tool);
-    }
-  }
+  const allTools = conversationTools(messages);
 
   const seen = new Set<string>();
   const items: OutputItem[] = [];
-  let latestTodo: OutputItem | null = null;
 
-  // Phase 1: file/image generation + todo snapshots from tool calls.
+  // Phase 1: generated file/image outputs. Todos live above the composer.
   for (const tool of allTools) {
     // Only count completed-OK tools - running calls aren't done, errored
     // calls didn't materialize their effect.
@@ -303,11 +269,6 @@ function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
       }
     }
 
-    if (tool.name === "todo_write") {
-      const snap = parseTodoSnapshotFromArgs(tool.args);
-      // Always overwrite - only the latest snapshot is shown.
-      if (snap) latestTodo = snap;
-    }
   }
 
   // Phase 2: URL extraction from message text. URLs ending in image
@@ -345,9 +306,6 @@ function collectOutputItems(messages: ChatMessage[]): OutputItem[] {
       items.push({ kind: "url", label: cleaned });
     }
   }
-
-  // Phase 3: todo lands first - it's the most actionable summary.
-  if (latestTodo) items.unshift(latestTodo);
 
   // Cap at 15 - enough to surface a turn's worth of output without crowding
   // the floating panel.
@@ -998,6 +956,7 @@ export function ChatView({
   onStop,
   planMode = false,
   activeProjectPath = null,
+  repositoryPath = null,
   projectMapOpenSignal = 0,
   contextUsage = null,
 }: Props) {
@@ -1013,19 +972,22 @@ export function ChatView({
     return 0;
   }, [messages]);
   const [isGitWorkbenchOpen, setIsGitWorkbenchOpen] = useState(false);
+  const [envMode, setEnvMode] = useState<"local" | "remote">(() =>
+    localStorage.getItem("envMode") === "remote" ? "remote" : "local",
+  );
+  const gitProjectPath = envMode === "local" ? repositoryPath : null;
   const {
     loading: gitLoading,
     status: gitStatus,
     changes: gitChangesState,
     refresh: refreshGitStatus,
-  } = useGitStatus(activeProjectPath);
+    refreshChanges: refreshGitChanges,
+    error: gitError,
+  } = useGitStatus(gitProjectPath);
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
   const [isSessionMenuOpen, setIsSessionMenuOpen] = useState(false);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
-  const [envMode, setEnvMode] = useState<"local" | "remote">(() =>
-    localStorage.getItem("envMode") === "remote" ? "remote" : "local",
-  );
   const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(() =>
     localStorage.getItem("ssh_connection_id"),
   );
@@ -1060,6 +1022,16 @@ export function ChatView({
   const [mapStatus, setMapStatus] = useState<ProjectMapStatus | null>(null);
 
   const outputItems = useMemo(() => collectOutputItems(messages), [messages]);
+  const activity = useMemo(() => collectComposerActivity(messages), [messages]);
+  const composerChanges = useMemo(() => (gitChangesState?.files ?? []).map((file) => ({
+    path: file.path, additions: file.additions, deletions: file.deletions,
+    statsAvailable: file.line_stats_available === true,
+  })), [gitChangesState]);
+  useEffect(() => {
+    if (!gitProjectPath) return;
+    const timer = window.setTimeout(() => { void refreshGitChanges(); }, 400);
+    return () => window.clearTimeout(timer);
+  }, [activity.completionKey, busy, gitProjectPath, sessionId, refreshGitChanges]);
   // Agent-driven changeset (`write_file` / `edit_file` / `multi_edit`).
   // Replaces the legacy `git diff --shortstat HEAD` source so the env
   // panel's "+N -M" reflects what THIS conversation actually wrote, even
@@ -1074,7 +1046,7 @@ export function ChatView({
 
   useEffect(() => {
     setIsGitWorkbenchOpen(false);
-  }, [activeProjectPath]);
+  }, [gitProjectPath]);
 
   // Follow streamed output at the tail; preserve the anchor while reading history.
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -1352,7 +1324,7 @@ export function ChatView({
               )}
               {hasConversation && (
                 <EnvironmentInfoMenu
-                  activeProjectPath={activeProjectPath}
+                  activeProjectPath={gitProjectPath}
                   gitStatus={gitStatus}
                   gitLoading={gitLoading}
                   gitWorkspaceAdditions={gitWorkspaceAdditions}
@@ -1416,7 +1388,15 @@ export function ChatView({
 
         <div className="absolute bottom-6 left-0 w-full px-6 flex justify-center">
           <div ref={composerFrameRef} className="w-full max-w-4xl relative">
-            <ComposerActivityBar {...composerActivityMock} />
+            <ComposerActivityBar
+              key={`${sessionId ?? "pending"}:${gitProjectPath ?? "no-git"}`}
+              todos={activity.todos}
+              changes={composerChanges}
+              gitAvailable={gitChangesState?.is_repo ?? gitStatus?.is_repo ?? false}
+              gitLoading={gitLoading}
+              gitError={gitError}
+              onRefreshChanges={() => { void refreshGitChanges(); }}
+            />
             {approval && (
               <div
                 className="absolute left-0 right-0 z-30"
@@ -1546,12 +1526,12 @@ export function ChatView({
               </div>
             </div>
       )}
-        {isGitWorkbenchOpen && activeProjectPath && (
+        {isGitWorkbenchOpen && gitProjectPath && (
           <div
             className="absolute left-1/2 top-1/2 z-20 h-[min(620px,calc(100vh-96px))] w-[min(1040px,calc(100vw-48px))] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-2xl border border-border-theme bg-bg-base shadow-[0_18px_46px_rgb(0,0,0,0.14)]"
           >
             <GitWorkbench
-              projectPath={activeProjectPath}
+              projectPath={gitProjectPath}
               status={gitStatus}
               changes={gitChangesState}
               loading={gitLoading}

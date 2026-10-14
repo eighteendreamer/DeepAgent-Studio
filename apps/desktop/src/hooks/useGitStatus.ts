@@ -1,174 +1,108 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { gitBranchList, gitChanges, gitProjectStatus } from "../api";
 import type { GitBranch, GitChanges, GitProjectStatus } from "../types";
 
 type GitStatusState = {
+  projectPath: string | null;
   loading: boolean;
   status: GitProjectStatus | null;
   branches: GitBranch[];
   changes: GitChanges | null;
   error: string | null;
 };
-
 const EMPTY_STATE: GitStatusState = {
-  loading: false,
-  status: null,
-  branches: [],
-  changes: null,
-  error: null,
+  projectPath: null, loading: false, status: null, branches: [], changes: null, error: null,
 };
-
-type GitStatusCache = {
-  version: 1;
-  projectPath: string;
-  cachedAt: number;
-  status: GitProjectStatus | null;
-  branches: GitBranch[];
-  changes: GitChanges | null;
-};
-
 const GIT_STATUS_CACHE_PREFIX = "deepagent:git-status:";
+const GIT_CLIENT = { gitBranchList, gitChanges, gitProjectStatus };
+// Injectable read boundary for fixture/queue tests; production uses the Tauri API.
+export type GitStatusClient = typeof GIT_CLIENT;
 
-function gitStatusCacheKey(projectPath: string): string {
-  return `${GIT_STATUS_CACHE_PREFIX}${encodeURIComponent(projectPath)}`;
-}
-
-function readGitStatusCache(projectPath?: string | null): GitStatusCache | null {
-  if (!projectPath || typeof window === "undefined") return null;
+function readCache(projectPath: string): GitStatusState {
   try {
-    const raw = window.localStorage.getItem(gitStatusCacheKey(projectPath));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<GitStatusCache>;
-    if (parsed.version !== 1 || parsed.projectPath !== projectPath || !Array.isArray(parsed.branches)) return null;
-    return parsed as GitStatusCache;
-  } catch {
-    return null;
-  }
+    const raw = localStorage.getItem(GIT_STATUS_CACHE_PREFIX + encodeURIComponent(projectPath));
+    const parsed = raw ? JSON.parse(raw) : null;
+    if (parsed?.version === 2 && parsed.projectPath === projectPath && Array.isArray(parsed.branches)) {
+      return { ...parsed, loading: false, error: null };
+    }
+  } catch { /* Best-effort UI cache. */ }
+  return { ...EMPTY_STATE, projectPath };
 }
 
-function writeGitStatusCache(
-  projectPath: string,
-  status: GitProjectStatus | null,
-  branches: GitBranch[],
-  changes: GitChanges | null,
-) {
-  if (typeof window === "undefined") return;
+function writeCache(state: GitStatusState) {
+  if (!state.projectPath) return;
   try {
-    window.localStorage.setItem(
-      gitStatusCacheKey(projectPath),
-      JSON.stringify({ version: 1, projectPath, cachedAt: Date.now(), status, branches, changes } satisfies GitStatusCache),
-    );
-  } catch {
-    // Best-effort UI cache.
-  }
+    localStorage.setItem(GIT_STATUS_CACHE_PREFIX + encodeURIComponent(state.projectPath),
+      JSON.stringify({ ...state, version: 2, cachedAt: Date.now() }));
+  } catch { /* Best-effort UI cache. */ }
 }
 
-export function useGitStatus(projectPath?: string | null) {
-  const [state, setState] = useState<GitStatusState>(() => {
-    const cached = readGitStatusCache(projectPath);
-    if (!cached) return EMPTY_STATE;
-    return {
-      loading: false,
-      status: cached.status,
-      branches: cached.branches,
-      changes: cached.changes,
-      error: null,
-    };
-  });
-
-  const refresh = useCallback(async () => {
-    if (!projectPath) {
-      setState(EMPTY_STATE);
-      return;
-    }
-
-    setState((prev) => ({ ...prev, loading: true, error: null }));
-    try {
-      const status = await gitProjectStatus(projectPath);
-      if (!status.is_repo) {
-        writeGitStatusCache(projectPath, status, [], null);
-        setState({
-          loading: false,
-          status,
-          branches: [],
-          changes: null,
-          error: null,
-        });
-        return;
-      }
-
-      const [branches, changes] = await Promise.all([
-        gitBranchList(projectPath),
-        gitChanges(projectPath),
-      ]);
-      setState({
-        loading: false,
-        status,
-        branches,
-        changes,
-        error: null,
-      });
-      writeGitStatusCache(projectPath, status, branches, changes);
-    } catch (error) {
-      setState((prev) => ({
-        ...prev,
-        loading: false,
-        error: error instanceof Error ? error.message : String(error),
-      }));
-    }
-  }, [projectPath]);
+/** One refresh queue per project. Late results cannot update another project. */
+export function useGitStatus(projectPath?: string | null, client: GitStatusClient = GIT_CLIENT) {
+  const path = projectPath || null;
+  const [state, setState] = useState<GitStatusState>(EMPTY_STATE);
+  const refreshRef = useRef<(full: boolean) => Promise<void>>(async () => {});
+  const refresh = useCallback(() => refreshRef.current(true), []);
+  const refreshChanges = useCallback(() => refreshRef.current(false), []);
 
   useEffect(() => {
+    if (!path) {
+      setState(EMPTY_STATE);
+      refreshRef.current = async () => {};
+      return;
+    }
     let cancelled = false;
-    const load = async () => {
-      if (!projectPath) {
-        setState(EMPTY_STATE);
-        return;
-      }
-      const cached = readGitStatusCache(projectPath);
-      if (cached) {
-        setState({
-          loading: false,
-          status: cached.status,
-          branches: cached.branches,
-          changes: cached.changes,
-          error: null,
-        });
-        return;
-      }
-      setState((prev) => ({ ...prev, loading: true, error: null }));
-      try {
-        const status = await gitProjectStatus(projectPath);
-        if (cancelled) return;
-        if (!status.is_repo) {
-          writeGitStatusCache(projectPath, status, [], null);
-          setState({ loading: false, status, branches: [], changes: null, error: null });
-          return;
+    let snapshot = readCache(path);
+    let inFlight: Promise<void> | null = null;
+    let queued = false;
+    let needsFull = false;
+    setState(snapshot);
+    const request = (full: boolean): Promise<void> => {
+      queued = true;
+      needsFull ||= full;
+      if (inFlight) return inFlight;
+      const execute = async () => {
+        while (queued && !cancelled) {
+          const complete = needsFull || !snapshot.status?.is_repo;
+          queued = false;
+          needsFull = false;
+          setState({ ...snapshot, loading: true, error: null });
+          try {
+            const [status, changes] = await Promise.all([
+              complete ? client.gitProjectStatus(path) : Promise.resolve(snapshot.status!), client.gitChanges(path),
+            ]);
+            if (cancelled) return;
+            const branches = changes.is_repo
+              ? complete ? await client.gitBranchList(path) : snapshot.branches : [];
+            if (cancelled) return;
+            snapshot = { projectPath: path, loading: false, status, branches, changes, error: null };
+            writeCache(snapshot);
+            setState(snapshot);
+          } catch (error) {
+            if (cancelled) return;
+            snapshot = { ...snapshot, loading: false, error: error instanceof Error ? error.message : String(error) };
+            setState(snapshot);
+          }
         }
-        const [branches, changes] = await Promise.all([
-          gitBranchList(projectPath),
-          gitChanges(projectPath),
-        ]);
-        if (cancelled) return;
-        writeGitStatusCache(projectPath, status, branches, changes);
-        setState({ loading: false, status, branches, changes, error: null });
-      } catch (error) {
-        if (cancelled) return;
-        setState((prev) => ({
-          ...prev,
-          loading: false,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-      }
+      };
+      inFlight = execute().finally(() => { inFlight = null; });
+      return inFlight;
     };
-    load();
+    refreshRef.current = request;
+    // Cache is a preview; it never replaces checking the actual repository.
+    void request(true);
+    const onFocus = () => { if (document.visibilityState === "visible") void request(true); };
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
     return () => {
       cancelled = true;
+      refreshRef.current = async () => {};
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
     };
-  }, [projectPath]);
+  }, [path, client]);
 
-  return {
-    ...state,
-    refresh,
-  };
+  // Hide the previous project's data before the new effect even starts.
+  const visible = state.projectPath === path ? state : { ...EMPTY_STATE, projectPath: path, loading: !!path };
+  return { ...visible, refresh, refreshChanges };
 }

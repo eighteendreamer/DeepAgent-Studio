@@ -72,6 +72,7 @@ import { TrustDialog } from "./components/TrustDialog";
 import { Sidebar } from "./components/Sidebar";
 import { CustomTitleBar } from "./components/CustomTitleBar";
 import { message } from "./components/message";
+import { resolveChatRepositoryPath } from "./components/composerActivityData";
 
 const StartView = lazy(() =>
   import("./components/StartView").then((module) => ({ default: module.StartView })),
@@ -583,12 +584,14 @@ export function App() {
       setPlanMode(false);
       return;
     }
+    let cancelled = false;
     getSessionDetail(activeId)
-      .then(setDetail)
-      .catch(() => setDetail(null));
+      .then((next) => { if (!cancelled) setDetail(next); })
+      .catch(() => { if (!cancelled) setDetail(null); });
     getPlanMode(activeId)
-      .then(setPlanMode)
-      .catch(() => setPlanMode(false));
+      .then((next) => { if (!cancelled) setPlanMode(next); })
+      .catch(() => { if (!cancelled) setPlanMode(false); });
+    return () => { cancelled = true; };
   }, [activeId]);
 
   // Keep a ref mirror of `messages` for stale-closure-free reads in onSubmit.
@@ -2125,8 +2128,10 @@ export function App() {
           getSessionConversation(activeId),
           refreshSessions(),
         ]);
-        setDetail(nextDetail);
-        setMessages(mapConversationToChatMessages(nextConversation));
+        if (activeIdRef.current === activeId) {
+          setDetail(nextDetail);
+          setMessages(mapConversationToChatMessages(nextConversation));
+        }
       } catch (error) {
         // keep current screen state if rewind fails, but never silently
         console.error("rewind_session failed", error);
@@ -2189,10 +2194,10 @@ export function App() {
         setSessions((prev) =>
           prev.map((session) => (session.id === summary.id ? summary : session))
         );
-        setDetail((prev) => (prev ? { ...prev, summary } : prev));
+        setDetail((prev) => (prev?.summary.id === summary.id ? { ...prev, summary } : prev));
         await refreshSessions();
         const latest = await getSessionDetail(activeId);
-        setDetail(latest);
+        if (activeIdRef.current === activeId) setDetail(latest);
         message.success("已重命名对话");
       } catch (err) {
         message.error(`重命名失败：${String(err)}`);
@@ -2389,6 +2394,7 @@ export function App() {
                 <ProcessStoreContext.Provider value={processDisclosureStore}>
                 <ChatView
                   sessionId={chatSessionId}
+                  repositoryPath={resolveChatRepositoryPath(chatSessionId, detail, activeProjectPath)}
                   messages={chatMessages}
                   onSend={onChatSend}
                   onFork={onForkSession}

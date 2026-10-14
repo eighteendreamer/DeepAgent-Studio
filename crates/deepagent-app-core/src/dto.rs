@@ -141,11 +141,17 @@ pub struct GitChangedFileDto {
     pub additions: u32,
     /// Deleted lines for this path, when available.
     pub deletions: u32,
+    /// Additive UI field: false means binary, unreadable or otherwise uncounted.
+    #[serde(default)]
+    pub line_stats_available: bool,
 }
 
 /// Working tree changes for a project.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitChangesDto {
+    /// UI contract v1 adds explicit line-stat availability; legacy payloads are v0.
+    #[serde(default)]
+    pub version: u8,
     pub project_path: String,
     pub repo_root: Option<String>,
     pub is_repo: bool,
@@ -421,6 +427,12 @@ pub struct SessionStatsDto {
 /// A full session detail payload for the main view.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SessionDetailDto {
+    /// UI projection version; legacy payloads deserialize as v0.
+    #[serde(default)]
+    pub version: u8,
+    /// Persisted project path, independent of the currently selected project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_path: Option<String>,
     /// The session summary.
     pub summary: SessionSummaryDto,
     /// The agent timeline.
