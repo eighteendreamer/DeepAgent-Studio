@@ -1,5 +1,7 @@
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "./shadcn/hover-card";
 import { useMemo, useState, useEffect, useRef } from "react";
+import { CircularProgressbar, buildStyles } from "react-circular-progressbar";
+import { Button } from "./shadcn/button";
 import type { ContextUsageSnapshot } from "../types";
 import { formatTokens } from "./chat-timeline/format";
 import { MOTION } from "./ui/motion";
@@ -23,10 +25,9 @@ interface Props {
 
 function capacityTone(ratio: number, isEmptySession: boolean): string {
   if (isEmptySession) return "#cbd5e1";
-  if (ratio >= 0.92) return "#ef4444";
-  if (ratio >= 0.8) return "#f59e0b";
-  if (ratio >= 0.6) return "#3b82f6";
-  return "#94a3b8";
+  if (ratio >= 0.92) return "#dc4b41";
+  if (ratio >= 0.8) return "#d99015";
+  return "#4979a8";
 }
 
 /** Projected next request; legacy snapshots retain their original fallback. */
@@ -57,11 +58,9 @@ export function ContextCapacityIndicator({
   // rather than dividing by a placeholder.
   const ratio = !hasWindow
     ? 0
-    : Math.max(0, Math.min(1, snapshot?.used_ratio ?? usedTokens / contextWindow));
+    : Math.max(0, Math.min(1, usedTokens / contextWindow));
   const percent = Math.round(ratio * 100);
   const stroke = capacityTone(ratio, isEmptySession);
-  const circumference = 2 * Math.PI * 8.5;
-  const dashOffset = circumference * (1 - ratio);
   const blocks = useMemo(
     () => [...(snapshot?.blocks ?? [])].sort((a, b) => b.tokens - a.tokens),
     [snapshot?.blocks],
@@ -103,39 +102,29 @@ export function ContextCapacityIndicator({
         if (details.reason === "trigger-press") details.cancel();
         else if (!popoverSuppressed) setOpen(next);
       }}>
-      <HoverCardTrigger delay={120} closeDelay={150} render={<button
-        type="button"
-        className={`flex h-8 w-8 items-center justify-center rounded-full text-text-secondary ${MOTION.fast}`}
+      <HoverCardTrigger delay={120} closeDelay={150} render={<Button
+        variant="ghost"
+        size="icon"
+        className={`h-8 w-8 rounded-full hover:bg-ui-tint ${MOTION.fast}`}
         aria-label={`Context ${percent}%`}
         onClick={() => {
           if (!popoverSuppressed) setOpen((value) => !value);
         }}
       >
-        <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
-          <circle
-            cx="10"
-            cy="10"
-            r="8.5"
-            fill="none"
-            className="stroke-border-theme"
-            strokeWidth="1.8"
+        <span className="block h-[26px] w-[26px] shrink-0" aria-hidden="true">
+          <CircularProgressbar
+            value={ratio}
+            maxValue={1}
+            strokeWidth={11}
+            className="block h-full w-full [&_.CircularProgressbar-path]:transition-[stroke-dashoffset] [&_.CircularProgressbar-path]:duration-300 motion-reduce:[&_.CircularProgressbar-path]:transition-none"
+            styles={buildStyles({
+              pathColor: stroke,
+              trailColor: "var(--theme-border, #e7e9ed)",
+              strokeLinecap: "butt",
+            })}
           />
-          {(ratio > 0 || !isEmptySession) && (
-            <circle
-              cx="10"
-              cy="10"
-              r="8.5"
-              fill="none"
-              stroke={stroke}
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeDasharray={circumference}
-              strokeDashoffset={dashOffset}
-              transform="rotate(-90 10 10)"
-            />
-          )}
-        </svg>
-      </button>} />
+        </span>
+      </Button>} />
 
       <HoverCardContent side="top" align="end" className="w-[240px] px-3.5 py-3">
           <div className="flex items-baseline justify-between gap-2">
