@@ -23,6 +23,10 @@ const menuItemClass = cn(
   "focus:bg-black/5 data-[highlighted]:bg-black/5 data-[disabled]:pointer-events-none data-[disabled]:opacity-50",
 );
 
+// 二级面板锚在子菜单项上，而该项比一级面板边缘内缩 p-1.5（6px）；不补这 6px，
+// Radix 默认 sideOffset=0 会让二级压进一级面板，两块白底看起来粘成一片。
+const SUB_SIDE_OFFSET = 14;
+
 const DropdownMenuSubTrigger = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.SubTrigger>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubTrigger> & {
@@ -43,10 +47,11 @@ DropdownMenuSubTrigger.displayName = DropdownMenuPrimitive.SubTrigger.displayNam
 const DropdownMenuSubContent = React.forwardRef<
   React.ElementRef<typeof DropdownMenuPrimitive.SubContent>,
   React.ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.SubContent>
->(({ className, ...props }, ref) => (
+>(({ className, sideOffset = SUB_SIDE_OFFSET, ...props }, ref) => (
   <DropdownMenuPrimitive.Portal>
     <DropdownMenuPrimitive.SubContent
       ref={ref}
+      sideOffset={sideOffset}
       className={cn(menuPanelClass, "z-[80]", className)}
       {...props}
     />
