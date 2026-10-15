@@ -25,6 +25,7 @@ type Anchor = { top: number; left: number };
 type Props = {
   isPinned: boolean;
   open: boolean;
+  contextMenuPosition?: Anchor;
   onOpenChange: (open: boolean) => void;
   onPin: () => void;
   onOpenExplorer: () => void;
@@ -47,6 +48,7 @@ function anchorPanelRightOfTrigger(triggerRect: DOMRect) {
 export function SidebarProjectMenu({
   isPinned,
   open,
+  contextMenuPosition,
   onOpenChange,
   onPin,
   onOpenExplorer,
@@ -68,11 +70,18 @@ export function SidebarProjectMenu({
   const syncAnchor = useCallback(() => {
     const triggerRect = triggerRef.current?.getBoundingClientRect();
     if (!triggerRect) return;
+    const margin = 8;
+    const panelHeight = panelRef.current?.offsetHeight ?? 0;
     setAnchor({
-      top: triggerRect.top,
-      left: anchorPanelRightOfTrigger(triggerRect),
+      top: Math.max(margin, Math.min(
+        contextMenuPosition?.top ?? triggerRect.top,
+        window.innerHeight - panelHeight - margin,
+      )),
+      left: contextMenuPosition
+        ? Math.max(margin, Math.min(contextMenuPosition.left, window.innerWidth - PANEL_WIDTH - margin))
+        : anchorPanelRightOfTrigger(triggerRect),
     });
-  }, []);
+  }, [contextMenuPosition]);
 
   useLayoutEffect(() => {
     if (!open) {
@@ -192,6 +201,11 @@ export function SidebarProjectMenu({
       {open &&
         createPortal(
           <div
+            data-custom-contextmenu="1"
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+            }}
             style={{
               position: "fixed",
               top: anchor.top,

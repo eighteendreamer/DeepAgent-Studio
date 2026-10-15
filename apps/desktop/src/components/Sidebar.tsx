@@ -196,7 +196,10 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isNewProjectMenuOpen, setIsNewProjectMenuOpen] = useState(false);
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false);
-  const [activeProjectMenu, setActiveProjectMenu] = useState<string | null>(null);
+  const [activeProjectMenu, setActiveProjectMenu] = useState<{
+    project: string;
+    position?: { top: number; left: number };
+  } | null>(null);
   const [archiveProject, setArchiveProject] = useState<{ path: string; name: string } | null>(null);
   const [renameProject, setRenameProject] = useState<{ path: string; name: string } | null>(null);
   const [renameValue, setRenameValue] = useState("");
@@ -433,7 +436,16 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     return (
       <div key={proj} className="flex flex-col">
         <div
-          className={`flex items-center px-2.5 py-1.5 text-[13px] cursor-pointer hover:bg-sidebar-highlight rounded-md transition-colors group/proj ${activeProjectMenu === proj || nameToPath[proj] === activeProjectPath ? 'bg-sidebar-highlight text-text-base font-medium' : 'text-text-secondary'}`}
+          data-custom-contextmenu="1"
+          className={`flex items-center px-2.5 py-1.5 text-[13px] cursor-pointer hover:bg-sidebar-highlight rounded-md transition-colors group/proj ${activeProjectMenu?.project === proj || nameToPath[proj] === activeProjectPath ? 'bg-sidebar-highlight text-text-base font-medium' : 'text-text-secondary'}`}
+          onContextMenu={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setActiveProjectMenu({
+              project: proj,
+              position: { top: event.clientY, left: event.clientX },
+            });
+          }}
           onClick={() => {
             const path = nameToPath[proj];
             if (path) onSelectProject(path);
@@ -443,7 +455,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           <FontAwesomeIcon icon={["far", "folder"]} className="w-4 shrink-0 text-left mr-2 text-text-secondary" />
           <span className="truncate flex-1">{proj}</span>
 
-          <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu === proj || isProjectPinned ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
+          <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu?.project === proj || isProjectPinned ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
             <HoverInfo content={isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}><button
               type="button"
               className={cn(
@@ -461,8 +473,9 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             </button></HoverInfo>
             <SidebarProjectMenu
               isPinned={isProjectPinned}
-              open={activeProjectMenu === proj}
-              onOpenChange={(next) => setActiveProjectMenu(next ? proj : null)}
+              open={activeProjectMenu?.project === proj}
+              contextMenuPosition={activeProjectMenu?.project === proj ? activeProjectMenu.position : undefined}
+              onOpenChange={(next) => setActiveProjectMenu(next ? { project: proj } : null)}
               onPin={() => {
                 const path = nameToPath[proj];
                 if (path) onPinProject(path, !isProjectPinned);
