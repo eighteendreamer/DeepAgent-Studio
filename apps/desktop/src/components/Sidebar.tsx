@@ -5,6 +5,7 @@ import { Archive, ArrowDown, Book, Check, ChevronDown, ChevronRight, Clock, Elli
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
+import { SidebarSessionMenu, type SidebarSessionActions } from "./SidebarSessionMenu";
 import { partitionSidebarSessions, type SidebarSortCriterion } from "./sidebarSessions";
 import { SidebarSettingsMenu } from "./SidebarSettingsMenu";
 import { Panel } from "./ui/Panel";
@@ -51,6 +52,7 @@ interface Props {
   onAddProject: () => void;
   onPinSession: (id: string, pinned: boolean) => void;
   onArchiveSession: (id: string) => void;
+  sessionActions?: SidebarSessionActions;
   onArchiveAllSessions: () => void;
   onRemoveProject: (path: string) => void;
   onPinProject: (path: string, pinned: boolean) => void;
@@ -154,7 +156,7 @@ function writeRecentCollapsed(collapsed: boolean) {
   window.localStorage.setItem(SIDEBAR_RECENT_COLLAPSED_KEY, collapsed ? "1" : "0");
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, sessionActions, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
 
   /* 顶部导航滑动药丸（静默着色）：悬停跟随，离开滑回激活项；无 surface 激活时停靠「新对话」 */
@@ -196,6 +198,10 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isNewProjectMenuOpen, setIsNewProjectMenuOpen] = useState(false);
   const [isRecentMenuOpen, setIsRecentMenuOpen] = useState(false);
+  const [sessionMenu, setSessionMenu] = useState<{
+    id: string; position: { left: number; top: number }; open: boolean;
+  } | null>(null);
+  const menuSession = sessions.find((session) => session.id === sessionMenu?.id);
   const [activeProjectMenu, setActiveProjectMenu] = useState<{
     project: string;
     position?: { top: number; left: number };
@@ -361,6 +367,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     return (
       <div
         key={s.id + (isPinnedSection ? '_pinned' : '')}
+        data-custom-contextmenu={sessionActions ? "1" : undefined}
+        onContextMenu={(event) => {
+          if (!sessionActions) return;
+          event.preventDefault();
+          event.stopPropagation();
+          setActiveProjectMenu(null);
+          setSessionMenu({ id: s.id, position: { left: event.clientX, top: event.clientY }, open: true });
+        }}
         onClick={() => onSelect(s.id)}
         className={cn(
           "group/session flex cursor-pointer items-center rounded-md text-[13px] transition-colors duration-150",
@@ -797,6 +811,12 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         </div>
       </div>
 
+      {sessionMenu && menuSession && sessionActions && (
+        <SidebarSessionMenu key={menuSession.id} session={menuSession} position={sessionMenu.position}
+          open={sessionMenu.open} onOpenChange={(open) => setSessionMenu((prev) => prev ? { ...prev, open } : null)}
+          actions={sessionActions} onPin={() => onPinSession(menuSession.id, !menuSession.pinned)}
+          onArchive={() => onArchiveSession(menuSession.id)}/>
+      )}
       {/* Bottom settings */}
       <div className="px-3 pt-2">
         <SidebarSettingsMenu onOpenSettings={onOpenSettings} onLogout={onLogout} />

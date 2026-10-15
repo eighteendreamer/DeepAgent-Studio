@@ -26,7 +26,7 @@ import type { OutputItem } from "./EnvironmentInfoMenu";
 import { ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { WorkbenchWindowActions } from "./WorkbenchWindowActions";
-import { ChatSessionMenu } from "./ChatSessionMenu";
+import { ChatSessionMenu, formatSessionRewindTimestamp, sessionRewindEntries } from "./ChatSessionMenu";
 import { TintButton } from "./ui/TintButton";
 import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
@@ -989,6 +989,7 @@ export function ChatView({
     cacheScope: sessionId ? `chat:${sessionId}` : null,
   });
   const [isRenameDialogOpen, setIsRenameDialogOpen] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [isSessionMenuOpen, setIsSessionMenuOpen] = useState(false);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(false);
   const [isRightSidebarOpen, setIsRightSidebarOpen] = useState(false);
@@ -1231,6 +1232,7 @@ export function ChatView({
   };
 
   const handleRename = () => {
+    setRenameError(null);
     setIsRenameDialogOpen(true);
   };
 
@@ -1238,32 +1240,10 @@ export function ChatView({
     window.dispatchEvent(new CustomEvent(OPEN_AUTOMATION_EVENT));
   };
 
-  const isUserRewindEntry = useCallback(
-    (entry: TimelineEntry) =>
-      entry.kind === "message" &&
-      entry.label.toLowerCase().includes("user") &&
-      typeof entry.detail === "string" &&
-      entry.detail.trim().length > 0,
-    [],
-  );
-
   const rewindEntries = useMemo(
-    () => timeline.filter((entry) => isUserRewindEntry(entry)),
-    [isUserRewindEntry, timeline],
+    () => sessionRewindEntries(timeline),
+    [timeline],
   );
-
-  const formatRewindTimestamp = useCallback((timestamp: number) => {
-    const date = new Date(timestamp);
-    if (Number.isNaN(date.getTime())) return "";
-    return new Intl.DateTimeFormat("zh-CN", {
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: false,
-    }).format(date);
-  }, []);
   const activeBottomTab =
     bottomTabs.find((tab) => tab.id === activeBottomTabId) ?? null;
 
@@ -1271,11 +1251,16 @@ export function ChatView({
     <div className="w-full h-full min-w-0 overflow-hidden flex flex-col relative">
       <RenameSessionDialog
         open={isRenameDialogOpen}
+        error={renameError}
         initialValue={title || t("chatView.chat")}
         onClose={() => setIsRenameDialogOpen(false)}
         onConfirm={async (nextTitle) => {
-          await onRename?.(nextTitle);
-          setIsRenameDialogOpen(false);
+          try {
+            await onRename?.(nextTitle);
+            setIsRenameDialogOpen(false);
+          } catch (error) {
+            setRenameError(String(error));
+          }
         }}
       />
       <WorkbenchWindowActions
@@ -1296,7 +1281,7 @@ export function ChatView({
               open={isSessionMenuOpen}
               onOpenChange={setIsSessionMenuOpen}
               rewindEntries={rewindEntries}
-              formatRewindTimestamp={formatRewindTimestamp}
+              formatRewindTimestamp={formatSessionRewindTimestamp}
               onPin={onPin}
               onRename={handleRename}
               onArchive={onArchive}

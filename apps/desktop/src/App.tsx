@@ -2105,44 +2105,44 @@ export function App() {
 
   // Fork the active session at its latest sequence into a new branch, then
   // switch to it.
-  const onForkSession = useCallback(() => {
+  const onForkSession = useCallback(async (sessionId = activeId) => {
     // Silent-return + swallowed rejection made the Fork button appear dead
     // (manual acceptance M-16). Every early exit and failure now surfaces.
-    if (!activeId || !detail) {
+    if (!sessionId) {
       message.warning("会话尚未加载完成，无法创建分支");
       return;
     }
-    const lastSeq =
-      detail.timeline.length > 0
-        ? detail.timeline[detail.timeline.length - 1].sequence
-        : 0;
-    forkSession(activeId, lastSeq)
-      .then((res) => {
-        refreshSessions();
-        navigateTo(res.new_session_id, "chat");
-        message.success("已创建分支会话");
-      })
-      .catch((error) => {
-        console.error("fork_session failed", error);
-        message.error(`创建分支失败：${String(error)}`);
-      });
+    try {
+      const sourceDetail = detail?.summary.id === sessionId ? detail : await getSessionDetail(sessionId);
+      const lastSeq =
+        sourceDetail.timeline.length > 0
+          ? sourceDetail.timeline[sourceDetail.timeline.length - 1].sequence
+          : 0;
+      const res = await forkSession(sessionId, lastSeq);
+      refreshSessions();
+      navigateTo(res.new_session_id, "chat");
+      message.success("已创建分支会话");
+    } catch (error) {
+      console.error("fork_session failed", error);
+      message.error(`创建分支失败：${String(error)}`);
+    }
   }, [activeId, detail, refreshSessions, navigateTo]);
 
   // Rewind the active session to a timeline sequence (destructive truncate),
   // then reload its detail.
   const onRewindSession = useCallback(
-    async (toSeq: number) => {
-      if (!activeId) return;
+    async (toSeq: number, sessionId = activeId) => {
+      if (!sessionId) return;
       try {
-        liveTranscripts.current.delete(activeId);
-        setMessages([]);
-        await rewindSession(activeId, toSeq);
+        liveTranscripts.current.delete(sessionId);
+        if (activeIdRef.current === sessionId) setMessages([]);
+        await rewindSession(sessionId, toSeq);
         const [nextDetail, nextConversation] = await Promise.all([
-          getSessionDetail(activeId),
-          getSessionConversation(activeId),
+          getSessionDetail(sessionId),
+          getSessionConversation(sessionId),
           refreshSessions(),
         ]);
-        if (activeIdRef.current === activeId) {
+        if (activeIdRef.current === sessionId) {
           setDetail(nextDetail);
           setMessages(mapConversationToChatMessages(nextConversation));
         }
@@ -2157,16 +2157,16 @@ export function App() {
 
   // Export the active session transcript and trigger a browser/Tauri download.
   const onExportSession = useCallback(
-    async (format: "markdown" | "json") => {
-      if (!activeId) return;
+    async (format: "markdown" | "json", sessionId = activeId) => {
+      if (!sessionId) return;
       try {
-        const transcript = await exportTranscript(activeId, format);
-        const rawTitle = activeSession?.title ?? detail?.summary.title ?? "";
+        const transcript = await exportTranscript(sessionId, format);
+        const rawTitle = sessions.find((session) => session.id === sessionId)?.title ?? "";
         const safeTitle = rawTitle
           .trim()
           .replace(/[<>:"/\\|?*\u0000-\u001F]/g, "_")
           .slice(0, 80);
-        const suggestedName = `${safeTitle || `session-${activeId}`}.${transcript.extension}`;
+        const suggestedName = `${safeTitle || `session-${sessionId}`}.${transcript.extension}`;
         const savedPath = await saveTranscriptFile(transcript, suggestedName);
         if (!savedPath) return;
         message.success(format === "json" ? "JSON 已导出" : "对话已导出");
@@ -2174,12 +2174,12 @@ export function App() {
         message.error(`导出失败：${String(err)}`);
       }
     },
-    [activeId, activeSession?.title, detail?.summary.title]
+    [activeId, sessions]
   );
 
-  const onCopySession = useCallback(() => {
-    if (!activeId) return;
-    exportTranscript(activeId, "markdown")
+  const onCopySession = useCallback((sessionId = activeId) => {
+    if (!sessionId) return;
+    exportTranscript(sessionId, "markdown")
       .then(async (transcript) => {
         if (navigator.clipboard?.writeText) {
           await navigator.clipboard.writeText(transcript.content);
@@ -2201,28 +2201,29 @@ export function App() {
   }, [activeId]);
 
   const onRenameSession = useCallback(
-    async (title: string) => {
-      if (!activeId) return;
+    async (title: string, sessionId = activeId) => {
+      if (!sessionId) return;
       try {
-        const summary = await renameSession(activeId, title);
+        const summary = await renameSession(sessionId, title);
         setSessions((prev) =>
           prev.map((session) => (session.id === summary.id ? summary : session))
         );
         setDetail((prev) => (prev?.summary.id === summary.id ? { ...prev, summary } : prev));
         await refreshSessions();
-        const latest = await getSessionDetail(activeId);
-        if (activeIdRef.current === activeId) setDetail(latest);
+        const latest = await getSessionDetail(sessionId);
+        if (activeIdRef.current === sessionId) setDetail(latest);
         message.success("已重命名对话");
       } catch (err) {
         message.error(`重命名失败：${String(err)}`);
+        throw err;
       }
     },
     [activeId, refreshSessions]
   );
 
-  const onOpenSessionInNewWindow = useCallback(() => {
-    if (!activeId) return;
-    openSessionInNewWindow(activeId)
+  const onOpenSessionInNewWindow = useCallback((sessionId = activeId) => {
+    if (!sessionId) return;
+    openSessionInNewWindow(sessionId)
       .catch((err) => {
         message.error(`打开新窗口失败：${String(err)}`);
       });
@@ -2327,6 +2328,15 @@ export function App() {
                 onAddProject={onAddProject}
                 onPinSession={onPinSession}
                 onArchiveSession={onArchiveSession}
+                sessionActions={{
+                  rename: (id, title) => onRenameSession(title, id),
+                  copy: onCopySession,
+                  export: (id) => { void onExportSession("json", id); },
+                  fork: (id) => { void onForkSession(id); },
+                  rewind: (id, sequence) => { void onRewindSession(sequence, id); },
+                  openInNewWindow: onOpenSessionInNewWindow,
+                  automation: (id) => navigateTo(id, "automation"),
+                }}
                 onArchiveAllSessions={onArchiveAllSessions}
                 onRemoveProject={onRemoveProject}
                 onPinProject={onPinProject}

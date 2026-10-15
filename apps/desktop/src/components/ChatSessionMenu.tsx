@@ -1,4 +1,4 @@
-import { useId, useLayoutEffect, useRef, useState } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Archive,
   ArrowUpRightFromSquare,
@@ -19,6 +19,21 @@ import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { MENU_LIST, MOTION } from "./ui/motion";
 import { Panel } from "./ui/Panel";
 import { cn } from "./shadcn/utils";
+import { Popover, PopoverContent } from "./shadcn/popover";
+
+export function sessionRewindEntries(timeline: TimelineEntry[]) {
+  return timeline.filter((entry) => entry.kind === "message"
+    && entry.label.toLowerCase().includes("user")
+    && typeof entry.detail === "string" && entry.detail.trim().length > 0);
+}
+
+export function formatSessionRewindTimestamp(timestamp: number) {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
+  }).format(date);
+}
 
 const SESSION_MENU = {
   pad: "px-2 py-1.5",
@@ -32,6 +47,7 @@ type Props = {
   title?: string | null;
   pinned?: boolean;
   open: boolean;
+  contextMenuPosition?: { left: number; top: number };
   onOpenChange: (open: boolean) => void;
   rewindEntries: TimelineEntry[];
   formatRewindTimestamp: (timestamp: number) => string;
@@ -50,6 +66,7 @@ export function ChatSessionMenu({
   title,
   pinned,
   open,
+  contextMenuPosition,
   onOpenChange,
   rewindEntries,
   formatRewindTimestamp,
@@ -69,6 +86,9 @@ export function ChatSessionMenu({
   const rewindRowRef = useRef<HTMLDivElement>(null);
   const [isRewindFlyoutOpen, setIsRewindFlyoutOpen] = useState(false);
   const [rewindFlyoutAnchor, setRewindFlyoutAnchor] = useState({ top: 0, height: 36 });
+  const pointerAnchor = useMemo(() => contextMenuPosition ? {
+    getBoundingClientRect: () => new DOMRect(contextMenuPosition.left, contextMenuPosition.top, 0, 0),
+  } : undefined, [contextMenuPosition]);
 
   useLayoutEffect(() => {
     if (!isRewindFlyoutOpen || !rewindRowRef.current || !padRef.current) return;
@@ -105,21 +125,7 @@ export function ChatSessionMenu({
     </button>
   );
 
-  return (
-    <MorphingMenuShell
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) setIsRewindFlyoutOpen(false);
-        onOpenChange(next);
-      }}
-      layoutId={layoutId}
-      trigger={trigger}
-      panelPlacement="below"
-      panelAlign="left"
-      panelClassName="mt-1.5 w-[min(280px,calc(100vw-48px))] overflow-visible"
-      staggerContent={false}
-      zIndex={50}
-    >
+  const content = (
       <div ref={padRef} className={cn(SESSION_MENU.pad, "relative overflow-visible")}>
         <SlidingMenuList activeId="__none__" pillClassName={SESSION_MENU.pill}>
           <div
@@ -260,6 +266,27 @@ export function ChatSessionMenu({
           </>
         )}
       </div>
+  );
+
+  const changeOpen = (next: boolean) => {
+    if (!next) setIsRewindFlyoutOpen(false);
+    onOpenChange(next);
+  };
+  if (pointerAnchor) return (
+    <Popover open={open} onOpenChange={changeOpen}>
+      <PopoverContent anchor={pointerAnchor} side="bottom" align="start" sideOffset={0}
+        className="w-[min(280px,calc(100vw-48px))]" data-custom-contextmenu="1"
+        onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}>
+        {content}
+      </PopoverContent>
+    </Popover>
+  );
+  return (
+    <MorphingMenuShell open={open} onOpenChange={changeOpen} layoutId={layoutId} trigger={trigger}
+      panelPlacement="below" panelAlign="left"
+      panelClassName="mt-1.5 w-[min(280px,calc(100vw-48px))] overflow-visible"
+      staggerContent={false} zIndex={50}>
+      {content}
     </MorphingMenuShell>
   );
 }
