@@ -25,7 +25,7 @@ import { EnvironmentInfoMenu } from "./EnvironmentInfoMenu";
 import type { OutputItem } from "./EnvironmentInfoMenu";
 import { ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
-import { BottomPanelIcon, SidebarRightIcon } from "./icons";
+import { WorkbenchWindowActions } from "./WorkbenchWindowActions";
 import { ChatSessionMenu } from "./ChatSessionMenu";
 import { TintButton } from "./ui/TintButton";
 import { message as toast } from "./message";
@@ -1278,36 +1278,17 @@ export function ChatView({
           setIsRenameDialogOpen(false);
         }}
       />
-      {/* Global Window Actions: fixed position in all states. */}
-      <div className="absolute top-3 right-6 z-50 flex items-center gap-3 text-text-secondary pointer-events-auto">
-        <HoverInfo content={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}><button
-          type="button"
-          onClick={() => setIsRightSidebarOpen((v) => !v)}
-          className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-            isRightSidebarOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
-          }`}
-
-          aria-label={isRightSidebarOpen ? "收起侧栏" : "打开右侧栏"}
-        >
-          <SidebarRightIcon className="text-[15px]" />
-        </button></HoverInfo>
-        <HoverInfo content="打开底部终端"><button
-          type="button"
-          onClick={handleToggleBottomTerminalPanel}
-          className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors ${
-            isBottomPanelOpen ? "text-text-base" : "text-text-secondary hover:bg-hover-bg hover:text-text-base"
-          }`}
-
-          aria-label="打开底部终端"
-        >
-          <BottomPanelIcon className="text-[15px]" />
-        </button></HoverInfo>
-      </div>
+      <WorkbenchWindowActions
+        isRightSidebarOpen={isRightSidebarOpen}
+        onToggleRightSidebar={() => setIsRightSidebarOpen((open) => !open)}
+        isBottomPanelOpen={isBottomPanelOpen}
+        onToggleBottomPanel={handleToggleBottomTerminalPanel}
+      />
 
       {/* Top half: conversation flow & overlay */}
       <div className="relative flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="relative flex w-full flex-shrink-0 items-center justify-between pl-3 pr-6 pt-3 pb-1.5">
+        <header className="relative flex h-8 w-full flex-shrink-0 items-center justify-between pl-3 pr-6">
           <div className="relative min-w-0 flex-1 pr-28">
             <ChatSessionMenu
               title={title}
