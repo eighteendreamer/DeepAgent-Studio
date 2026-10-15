@@ -585,7 +585,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
       {/* Project / session list */}
       <div className="stable-scrollbar-gutter flex-1 overflow-y-auto px-2 mt-4 space-y-3 pb-2 custom-scrollbar">
         <div className="flex flex-col">
-          <HoverInfo content={projectsCollapsed ? t("sidebar.expandProjects") : t("sidebar.collapseProjects")}><div
+          <div
             className="flex items-center justify-between px-2 mb-1 text-text-secondary group cursor-pointer select-none"
 
             onClick={toggleProjectsSection}
@@ -695,7 +695,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
-          </div></HoverInfo>
+          </div>
           {!projectsCollapsed && (
             <div className="space-y-0.5">
               {projects.length === 0 && projectEntries.length === 0 && (
@@ -712,7 +712,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         </div>
 
         <div className="flex flex-col">
-          <HoverInfo content={recentCollapsed ? t("sidebar.expandRecentChats") : t("sidebar.collapseRecentChats")}><div
+          <div
             className="flex items-center justify-between px-2 mb-1 text-text-secondary group cursor-pointer select-none"
 
             onClick={toggleRecentSection}
@@ -772,7 +772,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 <SquarePen className="h-3 w-3" />
               </button></HoverInfo>
             </div>
-          </div></HoverInfo>
+          </div>
           {!recentCollapsed && (
             <div className="space-y-0.5">
               {recentSessions.length === 0 && (
