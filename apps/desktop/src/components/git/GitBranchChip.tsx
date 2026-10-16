@@ -59,6 +59,10 @@ export function GitBranchChip({
   }, [onStatusChange, status]);
 
   useEffect(() => {
+    if (open) void refresh();
+  }, [open, refresh]);
+
+  useEffect(() => {
     const onClick = (event: MouseEvent) => {
       if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
     };
@@ -67,7 +71,9 @@ export function GitBranchChip({
   }, [open]);
 
   const currentLabel = status?.current_branch ?? (loading ? "..." : null);
-  if (!projectPath || (!loading && !status?.is_repo)) return null;
+  // Loading is not evidence that this directory is a repository. Keep cached
+  // branches visible during refresh, and never flash a placeholder for non-repos.
+  if (!projectPath || !status?.is_repo) return null;
 
   const dirty = !!status?.has_changes;
   const displayAheadBehind =

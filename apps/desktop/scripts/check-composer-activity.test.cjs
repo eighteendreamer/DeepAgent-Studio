@@ -177,6 +177,7 @@ function gitHarness() {
   const storage = new Map();
   const listeners = new Map();
   const calls = [];
+  let now = Date.now();
   let cursor = 0;
   const same = (a, b) => a && a.length === b.length && a.every((value, i) => Object.is(value, b[i]));
   const react = {
@@ -212,42 +213,47 @@ function gitHarness() {
     require: name => name === "react" ? react : api,
     localStorage: { getItem: key => storage.get(key), setItem: (key, value) => storage.set(key, value) },
     window: events, document: { ...events, visibilityState: "visible" },
+    Date: { now: () => now },
   });
   return {
     api, storage, calls, listeners,
+    advance(ms) { now += ms; },
     render(project, options) {
       cursor = 0;
       const result = useGitStatus(project, api, options);
       effects.splice(0).forEach(effect => effect());
       return result;
     },
-    unmount() { slots.forEach(slot => slot?.cleanup?.()); },
+    unmount() { slots.forEach(slot => slot?.cleanup?.()); slots.length = 0; },
   };
 }
 
-test("conversation navigation and focus make zero Git requests; cached snapshots stay session-scoped", async () => {
+test("conversation navigation reuses one project Git snapshot without new requests", async () => {
   const host = gitHarness();
-  const lazy = id => ({ automatic: false, cacheScope: "chat:" + id });
-  host.storage.set("deepagent:git-status:A", JSON.stringify({ version: 2, projectPath: "A", branches: [], changes: { files: [{ path: "unrelated" }] } }));
-  host.render("A", lazy("first"));
+  const project = { automatic: false };
+  host.storage.set("deepagent:git-status:A", JSON.stringify({
+    version: 2,
+    projectPath: "A",
+    status: { is_repo: true },
+    branches: [],
+    changes: { files: [{ path: "unrelated" }] },
+  }));
+  host.render("A", project);
   await tick();
-  let value = host.render("A", lazy("first"));
+  let value = host.render("A", project);
   assert.equal(value.loading, false);
-  assert.equal(value.changes, null);
+  assert.equal(value.changes.files[0].path, "unrelated");
   assert.equal(host.calls.length, 0);
   assert.equal(host.listeners.size, 0);
-  host.render("B", lazy("second"));
-  host.render(null, lazy("empty"));
-  host.render("A", lazy("first"));
+  host.render("B", project);
+  host.render(null, project);
+  host.render("A", project);
   assert.equal(host.calls.length, 0);
   host.api.gitChanges = async () => { host.calls.push(["changes", "A"]); return { is_repo: true, files: [{ path: "first.txt" }] }; };
-  await host.render("A", lazy("first")).refreshChanges();
+  await host.render("A", project).refreshChanges();
   const reads = host.calls.length;
-  // A different conversation in the same repository cannot display the previous result even for one render.
-  assert.equal(host.render("A", lazy("second")).changes, null);
-  assert.equal(host.render("A", lazy("second")).changes, null);
-  host.render("A", lazy("first"));
-  assert.equal(host.render("A", lazy("first")).changes.files[0].path, "first.txt");
+  host.render("A", project);
+  assert.equal(host.render("A", project).changes.files[0].path, "first.txt");
   assert.equal(host.calls.length, reads);
   host.unmount();
 });
@@ -296,12 +302,24 @@ test("production conversation refresh responds to live completions, never histor
   cleanup?.();
 });
 
+test("conversation change summaries keep explicit scopes isolated from the shared project chip", async () => {
+  const host = gitHarness();
+  const first = { automatic: false, cacheScope: "chat:first" };
+  const second = { automatic: false, cacheScope: "chat:second" };
+  await host.render("A", first).refreshChanges();
+  assert.equal(host.render("A", first).changes.is_repo, true);
+  assert.equal(host.render("A", second).changes, null);
+  assert.equal(host.render("A", { automatic: false }).changes, null);
+  assert.equal(host.render("A", first).changes.is_repo, true);
+  host.unmount();
+});
+
 test("cached data is revalidated and old-project results cannot overwrite a new project", async () => {
   const host = gitHarness();
   const slow = deferred();
   host.api.gitChanges = project => project === "A" ? slow.promise : Promise.resolve({ project_path: project, is_repo: true, files: [{ path: "B.txt" }], additions: 1, deletions: 0 });
   host.storage.set("deepagent:git-status:A", JSON.stringify({ version: 2, projectPath: "A", branches: [], status: { is_repo: true }, changes: { files: [{ path: "cached" }] } }));
-  host.render("A");
+  assert.equal(host.render("A").changes.files[0].path, "cached", "disk cache is visible on the first render");
   const switched = host.render("B");
   assert.equal(switched.changes, null);
   await tick();
@@ -345,10 +363,17 @@ test("errors stay observable, retry clears them, and no-project removes stale re
   host.unmount();
 });
 
-test("returning to the foreground refreshes; unmounted queries cannot publish", async () => {
+test("fresh project snapshots survive remounts; stale focus refreshes and late data stays cached", async () => {
   const host = gitHarness();
   host.render("A"); await tick();
   const before = host.calls.filter(([kind]) => kind === "changes").length;
+  host.listeners.get("focus")(); await tick();
+  assert.equal(host.calls.filter(([kind]) => kind === "changes").length, before);
+  host.unmount();
+  assert.equal(host.render("A").status.is_repo, true, "remount has repository data on its first frame");
+  await tick();
+  assert.equal(host.calls.filter(([kind]) => kind === "changes").length, before);
+  host.advance(30_001);
   host.listeners.get("focus")(); await tick();
   assert.equal(host.calls.filter(([kind]) => kind === "changes").length, before + 1);
   const slow = deferred();
@@ -357,6 +382,44 @@ test("returning to the foreground refreshes; unmounted queries cannot publish", 
   host.unmount();
   slow.resolve({ is_repo: true, files: [{ path: "late" }] });
   await pending;
-  assert.equal(JSON.parse(host.storage.get("deepagent:git-status:A")).changes.files.length, 0);
+  assert.equal(JSON.parse(host.storage.get("deepagent:git-status:A")).changes.files.length, 1);
   assert.equal(host.listeners.size, 0);
+});
+
+test("automatic remount during a pending query shares it without a second trailing read", async () => {
+  const host = gitHarness();
+  const slow = deferred();
+  host.api.gitChanges = async project => {
+    host.calls.push(["changes", project]);
+    return slow.promise;
+  };
+  host.render("A");
+  host.unmount();
+  host.render("A");
+  slow.resolve({ is_repo: false, files: [] });
+  await tick();
+  assert.equal(host.calls.filter(([kind]) => kind === "changes").length, 1);
+  host.unmount();
+});
+
+test("branch chip hides unknown and non-repositories even during loading, retaining cached branches", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  let snapshot;
+  const { GitBranchChip } = compile("src/components/git/GitBranchChip.tsx", { require: name => {
+    if (name === "react" || name === "react/jsx-runtime") return require(name);
+    if (name === "react-i18next") return { useTranslation: () => ({ t: key => key }) };
+    if (name.includes("useGitStatus")) return { useGitStatus: () => ({ ...snapshot, refresh: async () => {} }) };
+    if (name.includes("MorphingToolbarMenu")) return { MorphingToolbarMenu: ({ label }) => React.createElement("button", null, label) };
+    if (name.includes("fontawesome")) return { FontAwesomeIcon: () => null };
+    if (name.includes("GitCreateBranchDialog")) return { GitCreateBranchDialog: () => null };
+    if (name.includes("GitBranchMenuContent")) return { GitBranchMenuContent: () => null };
+    return {};
+  } });
+  for (const status of [null, { is_repo: false }]) {
+    snapshot = { loading: true, status };
+    assert.equal(renderToStaticMarkup(React.createElement(GitBranchChip, { projectPath: "A" })), "");
+  }
+  snapshot = { loading: true, status: { is_repo: true, current_branch: "main" } };
+  assert.match(renderToStaticMarkup(React.createElement(GitBranchChip, { projectPath: "A" })), />main<\/button>/);
 });
