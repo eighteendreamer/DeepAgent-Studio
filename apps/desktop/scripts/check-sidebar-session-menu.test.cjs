@@ -83,3 +83,68 @@ test("deep links use the existing session-window route and encode the session id
   vm.runInNewContext(ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, context);
   assert.equal(context.exports.sessionDeepLink("session/中文"), "http://localhost/app#session=session%2F%E4%B8%AD%E6%96%87");
 });
+
+function appFunction(name, context) {
+  const source = readFileSync(path.join(__dirname, "../src/App.tsx"), "utf8");
+  const ast = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let initializer;
+  function visit(node) {
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === name) initializer = node.initializer.getText(ast);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.ok(initializer, `production function ${name} exists`);
+  const code = ts.transpileModule(`result = ${initializer};`, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText;
+  vm.runInNewContext(code, context);
+  return context.result;
+}
+
+test("section new-chat keeps the current project and ordinary navigation clears the draft scope", () => {
+  const ref = { current: null };
+  let starts = 0;
+  const start = appFunction("onNewSectionChat", { useCallback: fn => fn, pendingNewChatSectionRef: ref,
+    onNewChat: () => { starts++; ref.current = null; } });
+  start("section-a");
+  assert.equal(ref.current, "section-a");
+  assert.equal(starts, 1);
+  const navigate = appFunction("navigateTo", { useCallback: fn => fn, pendingNewChatSectionRef: ref,
+    activeId: "old", view: "start" });
+  navigate("old", "start");
+  assert.equal(ref.current, null, "even navigation to the same frame discards the section draft");
+});
+
+test("a new run assigns its captured section once; continuations do not reassign", async () => {
+  const calls = [];
+  const errors = [];
+  const context = { newSessionSectionId: "section-a", sectionAssignmentStarted: false,
+    changeSidebarPreferences: async action => { calls.push(action); }, message: { error: text => errors.push(text) } };
+  const assign = appFunction("assignNewSessionSection", context);
+  assign(""); assign("new-session"); assign("new-session");
+  await new Promise(setImmediate);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].section_id, "section-a");
+  assert.equal(calls[0].session_id, "new-session");
+  const continuation = appFunction("assignNewSessionSection", { ...context, newSessionSectionId: null, sectionAssignmentStarted: false });
+  continuation("existing-session");
+  assert.equal(calls.length, 1);
+  const failed = appFunction("assignNewSessionSection", { ...context, sectionAssignmentStarted: false,
+    changeSidebarPreferences: async () => { throw new Error("removed section"); } });
+  failed("new-session-2");
+  await new Promise(setImmediate);
+  assert.match(errors[0], /removed section/);
+});
+
+test("section archive targets its members and refreshes successful results on partial failure", async () => {
+  const calls = [];
+  const archive = appFunction("onArchiveSection", { useCallback: fn => fn,
+    useSidebarPreferences: { getState: () => ({ preferences: { session_sections: { a: "one", b: "two", c: "one" } } }) },
+    sessions: [{ id: "a" }, { id: "b" }, { id: "c" }], activeIdRef: { current: "a" },
+    archiveConversation: async id => { calls.push(id); if (id === "c") throw new Error("busy c"); return true; },
+    refreshSessions: async () => calls.push("refresh"), setDetail() {}, navigateTo: id => calls.push(["navigate", id]),
+    message: { success() {} } });
+  await assert.rejects(archive("one"), /busy c/);
+  assert.ok(calls.includes("a") && calls.includes("c"));
+  assert.equal(calls.includes("b"), false);
+  assert.ok(calls.includes("refresh"));
+  assert.ok(calls.some(call => Array.isArray(call) && call[0] === "navigate" && call[1] === null));
+});

@@ -5,11 +5,11 @@ import { Archive, ArrowDown, Book, Check, ChevronDown, ChevronRight, Clock, Elli
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
+import { SidebarSectionGroup } from "./SidebarSectionGroup";
 import { EditProjectDialog, type EditingProject } from "./EditProjectDialog";
 import { SidebarSessionMenu, type SidebarSessionActions } from "./SidebarSessionMenu";
 import type { SessionMenuOptions } from "./ChatSessionMenu";
 import { useSidebarPreferences } from "./sidebarPreferences";
-import { Button } from "./shadcn/button";
 import { partitionSidebarSessions, type SidebarSortCriterion } from "./sidebarSessions";
 import { SidebarSettingsMenu } from "./SidebarSettingsMenu";
 import { Panel } from "./ui/Panel";
@@ -52,6 +52,8 @@ interface Props {
   onSelect: (id: string) => void;
   onSelectProject: (path: string | null) => void;
   onNewChat: () => void;
+  onNewSectionChat?: (sectionId: string) => void;
+  onArchiveSection?: (sectionId: string) => Promise<void>;
   onAddProject: () => void;
   onPinSession: (id: string, pinned: boolean) => void;
   onArchiveSession: (id: string) => void;
@@ -161,7 +163,7 @@ function writeRecentCollapsed(collapsed: boolean) {
   window.localStorage.setItem(SIDEBAR_RECENT_COLLAPSED_KEY, collapsed ? "1" : "0");
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, sessionActions, sessionMenuOptions, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onEditProject, onAddProjectSection, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onNewSectionChat, onArchiveSection, onAddProject, onPinSession, onArchiveSession, sessionActions, sessionMenuOptions, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onEditProject, onAddProjectSection, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
 
   /* 顶部导航滑动药丸（静默着色）：悬停跟随，离开滑回激活项；无 surface 激活时停靠「新对话」 */
@@ -815,12 +817,16 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             </div>
           )}
         </div>
-        {preferences.sections.map((section) => <div key={section.id} className="flex flex-col">
-          <Button variant="ghost" className="mb-1 h-auto justify-start gap-1 rounded-none px-2 py-0 text-[12px] font-normal text-text-secondary" onClick={() => setCollapsedSections((prev) => ({ ...prev, [section.id]: !prev[section.id] }))}>
-            {section.name}<ChevronDown className={cn("h-3 w-3", collapsedSections[section.id] && "-rotate-90")}/>
-          </Button>
-          {!collapsedSections[section.id] && sessions.filter((session) => preferences.session_sections[session.id] === section.id).map((session) => renderSessionItem(session, true))}
-        </div>)}
+        {[...preferences.sections].sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned)).map((section) => {
+          const members = sessions.filter((session) => preferences.session_sections[session.id] === section.id);
+          return <SidebarSectionGroup key={section.id} section={section} collapsed={!!collapsedSections[section.id]} sessionCount={members.length}
+            onToggle={() => setCollapsedSections((prev) => ({ ...prev, [section.id]: !prev[section.id] }))}
+            onNewChat={onNewSectionChat ? () => { setCollapsedSections((prev) => ({ ...prev, [section.id]: false })); onNewSectionChat(section.id); } : undefined}
+            onArchive={onArchiveSection ? () => onArchiveSection(section.id) : undefined}
+            onAddSection={onAddProjectSection}>
+            {members.map((session) => renderSessionItem(session, true))}
+          </SidebarSectionGroup>;
+        })}
       </div>
 
       {sessionMenu && menuSession && sessionActions && (

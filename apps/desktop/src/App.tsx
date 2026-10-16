@@ -470,6 +470,7 @@ async function recognizeImageAttachmentsOnSend(
 export function App() {
   const sidebarPreferences = useSidebarPreferences((state) => state.preferences);
   const [sectionDialogFor, setSectionDialogFor] = useState<{ session: string | null } | null>(null);
+  const pendingNewChatSectionRef = useRef<string | null>(null);
   useEffect(() => { void loadSidebarPreferences().catch((error) => message.error(`读取侧栏设置失败：${String(error)}`)); }, []);
   const [processDisclosureStore] = useState(() => new ProcessDisclosureStore());
   const { t } = useTranslation();
@@ -696,6 +697,7 @@ export function App() {
   }, [activePendingRunKey, activeSession, detail, activeId]);
 
   const navigateTo = useCallback((newActiveId: string | null, newView: View) => {
+    pendingNewChatSectionRef.current = null;
     if (newActiveId === activeId && newView === view) {
       return;
     }
@@ -719,6 +721,7 @@ export function App() {
   }, [activeId, view]);
 
   const goBack = useCallback(() => {
+    pendingNewChatSectionRef.current = null;
     runUiTransition(() => {
       activePendingRunKeyRef.current = null;
       setActivePendingRunKey(null);
@@ -746,6 +749,7 @@ export function App() {
   }, []);
 
   const goForward = useCallback(() => {
+    pendingNewChatSectionRef.current = null;
     runUiTransition(() => {
       activePendingRunKeyRef.current = null;
       setActivePendingRunKey(null);
@@ -776,6 +780,11 @@ export function App() {
   const onNewChat = useCallback(() => {
     navigateTo(activeId, "start");
   }, [activeId, navigateTo]);
+
+  const onNewSectionChat = useCallback((sectionId: string) => {
+    onNewChat();
+    pendingNewChatSectionRef.current = sectionId;
+  }, [onNewChat]);
 
   // Reload the sessions + projects lists (after a run/fork changes them).
   const refreshSessions = useCallback(() => {
@@ -973,6 +982,20 @@ export function App() {
       });
   }, [activeId, refreshSessions]);
 
+  const onArchiveSection = useCallback(async (sectionId: string) => {
+    const membership = useSidebarPreferences.getState().preferences.session_sections;
+    const ids = sessions.filter((session) => membership[session.id] === sectionId).map((session) => session.id);
+    const results = await Promise.allSettled(ids.map((id) => archiveConversation(id)));
+    await refreshSessions();
+    if (ids.some((id, index) => id === activeIdRef.current && results[index].status === "fulfilled")) {
+      setDetail(null);
+      navigateTo(null, "start");
+    }
+    const errors = results.filter((result) => result.status === "rejected");
+    if (errors.length) throw new Error(`部分会话归档失败：${errors.map((result) => String(result.reason)).join("；")}`);
+    message.success(ids.length ? `已归档 ${ids.length} 个对话` : "没有可归档的对话");
+  }, [sessions, refreshSessions, navigateTo]);
+
   const onPinProject = useCallback(
     (path: string, pinned: boolean) => {
       setProjectPinned(path, pinned)
@@ -1099,6 +1122,16 @@ export function App() {
       const continueId = view === "chat" && activeId ? activeId : null;
       if (continueId && runningSessionIds.has(continueId)) return;
       if (!continueId && activePendingRunKey) return;
+      // Capture the draft section for this run; later navigation cannot redirect it.
+      const newSessionSectionId = continueId ? null : pendingNewChatSectionRef.current;
+      if (!continueId) pendingNewChatSectionRef.current = null;
+      let sectionAssignmentStarted = false;
+      const assignNewSessionSection = (sid: string) => {
+        if (!sid || !newSessionSectionId || sectionAssignmentStarted) return;
+        sectionAssignmentStarted = true;
+        void changeSidebarPreferences({ type: "set_section", session_id: sid, section_id: newSessionSectionId })
+          .catch((error) => message.error(`新会话归入分区失败：${String(error)}`));
+      };
       const requestedPlanMode = mentions.some((mention) => mention.kind === "plan_mode");
       if (continueId && requestedPlanMode) {
         try {
@@ -1144,6 +1177,7 @@ export function App() {
       // never drag them into a different conversation.
       const adoptSession = (sid: string) => {
         if (!sid) return;
+        assignNewSessionSection(sid);
         if (runKey !== sid) {
           flushTranscriptRender();
           const buf = liveTranscripts.current.get(runKey);
@@ -1997,6 +2031,7 @@ export function App() {
         adoptSession
       )
         .then((newSessionId) => {
+          if (newSessionId) assignNewSessionSection(newSessionId);
           // The run created (or continued) a session under the active project;
           // refresh the sidebar lists and focus that session.
           refreshSessions();
@@ -2372,6 +2407,8 @@ export function App() {
                 sessionMenuOptions={sessionMenuOptions}
                 onSelectProject={onSelectProject}
                 onNewChat={onNewChat}
+                onNewSectionChat={onNewSectionChat}
+                onArchiveSection={onArchiveSection}
                 onAddProject={onAddProject}
                 onPinSession={onPinSession}
                 onArchiveSession={onArchiveSession}

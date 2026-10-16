@@ -44,6 +44,8 @@ impl Default for SidebarPreferences {
 pub struct SidebarSection {
     pub id: String,
     pub name: String,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +62,17 @@ pub enum SidebarPreferenceAction {
     CreateSection {
         name: String,
         session_id: Option<String>,
+    },
+    SetSectionPinned {
+        section_id: String,
+        pinned: bool,
+    },
+    RenameSection {
+        section_id: String,
+        name: String,
+    },
+    RemoveSection {
+        section_id: String,
     },
     SetOpenTarget {
         target: String,
@@ -150,25 +163,41 @@ impl SessionStateService {
             }
             SidebarPreferenceAction::CreateSection { name, session_id } => {
                 let name = name.trim();
-                if name.is_empty()
-                    || name.chars().count() > 64
-                    || ["项目", "最近对话"].contains(&name)
-                {
-                    return Err(CoreError::invalid(
-                        "section name must contain 1–64 characters",
-                    ));
-                }
-                if prefs.sections.iter().any(|section| section.name == name) {
-                    return Err(CoreError::invalid("section name already exists"));
-                }
+                validate_section_name(&prefs.sections, name, None)?;
                 let id = deepagent_core::id::EventId::new().to_string();
                 prefs.sections.push(SidebarSection {
                     id: id.clone(),
                     name: name.to_string(),
+                    pinned: false,
                 });
                 if let Some(session_id) = session_id {
                     prefs.session_sections.insert(session_id, id);
                 }
+            }
+            SidebarPreferenceAction::SetSectionPinned { section_id, pinned } => {
+                let section = prefs
+                    .sections
+                    .iter_mut()
+                    .find(|s| s.id == section_id)
+                    .ok_or_else(|| CoreError::not_found("sidebar section"))?;
+                section.pinned = pinned;
+            }
+            SidebarPreferenceAction::RenameSection { section_id, name } => {
+                let name = name.trim();
+                validate_section_name(&prefs.sections, name, Some(&section_id))?;
+                let section = prefs
+                    .sections
+                    .iter_mut()
+                    .find(|s| s.id == section_id)
+                    .ok_or_else(|| CoreError::not_found("sidebar section"))?;
+                section.name = name.to_string();
+            }
+            SidebarPreferenceAction::RemoveSection { section_id } => {
+                if !prefs.sections.iter().any(|s| s.id == section_id) {
+                    return Err(CoreError::not_found("sidebar section"));
+                }
+                prefs.sections.retain(|s| s.id != section_id);
+                prefs.session_sections.retain(|_, id| id != &section_id);
             }
             SidebarPreferenceAction::SetOpenTarget { target } => {
                 if !OPEN_TARGETS.contains(&target.as_str()) {
@@ -289,12 +318,107 @@ impl SessionStateService {
     }
 }
 
+fn validate_section_name(
+    sections: &[SidebarSection],
+    name: &str,
+    except: Option<&str>,
+) -> Result<()> {
+    if name.is_empty() || name.chars().count() > 64 || ["项目", "最近对话"].contains(&name) {
+        return Err(CoreError::invalid(
+            "section name must contain 1–64 characters",
+        ));
+    }
+    if sections
+        .iter()
+        .any(|s| s.name == name && Some(s.id.as_str()) != except)
+    {
+        return Err(CoreError::invalid("section name already exists"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn service() -> SessionStateService {
         SessionStateService::new(Arc::new(Database::open_in_memory().unwrap()))
+    }
+
+    #[test]
+    fn section_edits_persist_and_removal_only_clears_its_membership() {
+        let svc = service();
+        let prefs = svc
+            .update_sidebar_preferences(SidebarPreferenceAction::CreateSection {
+                name: "研发".into(),
+                session_id: Some("s1".into()),
+            })
+            .unwrap();
+        let id = prefs.sections[0].id.clone();
+        svc.update_sidebar_preferences(SidebarPreferenceAction::SetSectionPinned {
+            section_id: id.clone(),
+            pinned: true,
+        })
+        .unwrap();
+        svc.update_sidebar_preferences(SidebarPreferenceAction::RenameSection {
+            section_id: id.clone(),
+            name: "  维护  ".into(),
+        })
+        .unwrap();
+        let restored = SessionStateService::new(svc.db.clone())
+            .sidebar_preferences()
+            .unwrap();
+        assert_eq!(restored.sections[0].name, "维护");
+        assert!(restored.sections[0].pinned);
+        assert_eq!(restored.session_sections["s1"], id);
+        svc.update_sidebar_preferences(SidebarPreferenceAction::CreateSection {
+            name: "其他".into(),
+            session_id: Some("s2".into()),
+        })
+        .unwrap();
+        let before = svc.sidebar_preferences().unwrap();
+        for name in ["", "项目", "其他"] {
+            assert!(svc
+                .update_sidebar_preferences(SidebarPreferenceAction::RenameSection {
+                    section_id: id.clone(),
+                    name: name.into(),
+                })
+                .is_err());
+        }
+        assert_eq!(svc.sidebar_preferences().unwrap(), before);
+        let prefs = svc
+            .update_sidebar_preferences(SidebarPreferenceAction::RemoveSection { section_id: id })
+            .unwrap();
+        assert_eq!(prefs.sections.len(), 1);
+        assert!(!prefs.session_sections.contains_key("s1"));
+        assert_eq!(prefs.session_sections["s2"], prefs.sections[0].id);
+    }
+
+    #[test]
+    fn legacy_sections_default_to_unpinned_and_missing_edits_do_not_write() {
+        let section: SidebarSection =
+            serde_json::from_str(r#"{"id":"old","name":"旧分区"}"#).unwrap();
+        assert!(!section.pinned);
+        let svc = service();
+        for action in [
+            SidebarPreferenceAction::SetSectionPinned {
+                section_id: "missing".into(),
+                pinned: true,
+            },
+            SidebarPreferenceAction::RenameSection {
+                section_id: "missing".into(),
+                name: "test".into(),
+            },
+            SidebarPreferenceAction::RemoveSection {
+                section_id: "missing".into(),
+            },
+        ] {
+            assert!(svc.update_sidebar_preferences(action).is_err());
+        }
+        assert_eq!(
+            svc.sidebar_preferences().unwrap(),
+            SidebarPreferences::default()
+        );
     }
 
     #[test]

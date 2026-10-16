@@ -23,7 +23,7 @@ export interface SessionUiPrefs {
   env_panel_auto_open: boolean;
 }
 
-export interface SidebarSection { id: string; name: string }
+export interface SidebarSection { id: string; name: string; pinned?: boolean }
 export interface SidebarPreferences {
   version: number;
   revision: number;
@@ -36,6 +36,9 @@ export type SidebarPreferenceAction =
   | { type: "set_unread"; session_id: string; unread: boolean }
   | { type: "set_section"; session_id: string; section_id: string | null }
   | { type: "create_section"; name: string; session_id: string | null }
+  | { type: "set_section_pinned"; section_id: string; pinned: boolean }
+  | { type: "rename_section"; section_id: string; name: string }
+  | { type: "remove_section"; section_id: string }
   | { type: "set_open_target"; target: string };
 
 export interface TimelineEntry {
