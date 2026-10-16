@@ -132,6 +132,8 @@ export interface AskUserQuestion {
 /** A question set the run is blocked on until the user answers it. */
 export interface QuestionRequest {
   question_id: string;
+  /** Session that owns this pending question. */
+  session_id: string;
   questions: AskUserQuestion[];
 }
 

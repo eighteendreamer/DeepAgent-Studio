@@ -1472,11 +1472,18 @@ export async function resolveApproval(
  * unblocks the run with the same "no answer" contract headless hosts get.
  */
 export async function respondQuestion(
+  sessionId: string,
   questionId: string,
   answers?: Record<string, string>
 ): Promise<boolean> {
   const invoke = getInvoke();
-  if (invoke) return invoke<boolean>("respond_question", { questionId, answers: answers ?? null });
+  if (invoke) {
+    return invoke<boolean>("respond_question", {
+      sessionId,
+      questionId,
+      answers: answers ?? null,
+    });
+  }
   return false;
 }
 

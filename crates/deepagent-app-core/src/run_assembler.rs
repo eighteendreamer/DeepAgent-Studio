@@ -385,6 +385,7 @@ impl<'a> RunAssembler<'a> {
                 None,
                 Some(local_execution_mode),
                 matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
+                &session_id_str,
             );
             sub_request.project = session_project.clone();
             // A sub-agent has no human watching its own turn, so it answers
@@ -444,6 +445,7 @@ impl<'a> RunAssembler<'a> {
             connection_id,
             Some(local_execution_mode),
             true,
+            &session_id_str,
         );
         base.project = session_project.clone();
         // Multi-agent control plane: the `plan_execute` tool plans a goal into a
@@ -1489,6 +1491,7 @@ impl<'a> RunAssembler<'a> {
         connection_id: Option<&'a str>,
         local_exec_mode: Option<crate::settings::LocalExecutionMode>,
         bash_external_safety_gate: bool,
+        session_id: &str,
     ) -> ToolRegistryBuildRequest<'a> {
         let local_command_executor = match (self.runtime_broker, self.local_command_executor) {
             (Some(broker), Some(executor)) => Some(Arc::new(RuntimeCommandExecutor::new(
@@ -1523,7 +1526,7 @@ impl<'a> RunAssembler<'a> {
             project_map: self.project_map.clone(),
             office: self.office.clone(),
             remote_ops_factory: self.remote_ops_factory.clone(),
-            question_responder: self.service.question_responder(),
+            question_responder: self.service.question_responder(session_id),
         }
     }
 }

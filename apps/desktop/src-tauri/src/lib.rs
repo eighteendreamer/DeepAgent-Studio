@@ -2389,10 +2389,13 @@ fn resolve_approval(
 #[tauri::command]
 fn respond_question(
     state: State<'_, AppState>,
+    session_id: String,
     question_id: String,
     answers: Option<std::collections::BTreeMap<String, String>>,
 ) -> Result<bool, String> {
-    Ok(state.chat.resolve_question(&question_id, answers))
+    Ok(state
+        .chat
+        .resolve_question(&session_id, &question_id, answers))
 }
 
 /// Request a manual stop of an in-flight run for `session_id`. The run ends

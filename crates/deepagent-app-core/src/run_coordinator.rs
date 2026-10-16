@@ -70,10 +70,12 @@ impl RunCoordinator {
     /// declined. Returns `false` when no such question is pending.
     pub fn resolve_question(
         &self,
+        session_id: &str,
         question_id: &str,
         answers: Option<std::collections::BTreeMap<String, String>>,
     ) -> bool {
-        self.pending_questions.resolve(question_id, answers)
+        self.pending_questions
+            .resolve(session_id, question_id, answers)
     }
 
     pub fn readiness(&self) -> Result<CoordinatorReadiness> {

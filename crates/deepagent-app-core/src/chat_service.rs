@@ -737,10 +737,12 @@ impl ChatService {
     /// Returns `false` when no such question is pending.
     pub fn resolve_question(
         &self,
+        session_id: &str,
         question_id: &str,
         answers: Option<std::collections::BTreeMap<String, String>>,
     ) -> bool {
-        self.coordinator.resolve_question(question_id, answers)
+        self.coordinator
+            .resolve_question(session_id, question_id, answers)
     }
 
     /// The responder `ask_user_question` uses on this host: the UI-backed channel
@@ -748,10 +750,14 @@ impl ChatService {
     /// implementation for both the main run and standalone registries; sub-agent
     /// registries replace it with
     /// [`RecommendedResponder`](deepagent_builtins::RecommendedResponder).
-    pub(crate) fn question_responder(&self) -> Arc<dyn deepagent_builtins::QuestionResponder> {
+    pub(crate) fn question_responder(
+        &self,
+        session_id: &str,
+    ) -> Arc<dyn deepagent_builtins::QuestionResponder> {
         match &self.question_notifier {
             Some(notifier) => Arc::new(crate::question_bridge::ChannelQuestionResponder::new(
                 self.coordinator.pending_questions(),
+                session_id.to_string(),
                 notifier.clone(),
             )),
             None => Arc::new(deepagent_builtins::DeclineResponder),
@@ -935,7 +941,7 @@ impl ChatService {
             project_map: self.project_map.clone(),
             office: self.office.clone(),
             remote_ops_factory: self.remote_ops_factory.clone(),
-            question_responder: self.question_responder(),
+            question_responder: self.question_responder(""),
         }
     }
 
@@ -1544,7 +1550,7 @@ mod tests {
 
         let mut answers = std::collections::BTreeMap::new();
         answers.insert("Which city?".to_string(), "Changsha".to_string());
-        assert!(pending.resolve(&request.question_id, Some(answers)));
+        assert!(pending.resolve("session-a", &request.question_id, Some(answers)));
 
         let output = invoke.await.unwrap().unwrap();
         assert!(output.ok);

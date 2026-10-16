@@ -634,6 +634,9 @@ pub struct ApprovalRequestDto {
 pub struct QuestionRequestDto {
     /// Correlates the answer back to the blocked tool call.
     pub question_id: String,
+    /// Session that owns the blocked tool call. Desktop uses this to keep the
+    /// question card scoped to the active conversation.
+    pub session_id: String,
     /// The questions and options exactly as the model supplied them.
     pub questions: Vec<deepagent_builtins::Question>,
 }

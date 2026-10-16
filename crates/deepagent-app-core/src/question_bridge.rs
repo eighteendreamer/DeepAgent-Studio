@@ -29,7 +29,12 @@ type Answer = Option<BTreeMap<String, String>>;
 /// Shared registry of in-flight question sets, keyed by `question_id`.
 #[derive(Clone, Default)]
 pub struct PendingQuestions {
-    inner: Arc<Mutex<HashMap<String, oneshot::Sender<Answer>>>>,
+    inner: Arc<Mutex<HashMap<String, PendingQuestion>>>,
+}
+
+struct PendingQuestion {
+    session_id: String,
+    sender: oneshot::Sender<Answer>,
 }
 
 impl PendingQuestions {
@@ -39,24 +44,39 @@ impl PendingQuestions {
     }
 
     /// Register a pending question set, returning the receiver to await.
-    fn register(&self, question_id: String) -> oneshot::Receiver<Answer> {
+    fn register(&self, question_id: String, session_id: String) -> oneshot::Receiver<Answer> {
         let (tx, rx) = oneshot::channel();
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .insert(question_id, tx);
+            .insert(
+                question_id,
+                PendingQuestion {
+                    session_id,
+                    sender: tx,
+                },
+            );
         rx
     }
 
     /// Resolve a pending question with the user's answers, or `None` when they
     /// declined. Returns `false` when no such question is pending (already
     /// answered, or the run moved on).
-    pub fn resolve(&self, question_id: &str, answers: Answer) -> bool {
-        let sender = self
-            .inner
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(question_id);
+    pub fn resolve(&self, session_id: &str, question_id: &str, answers: Answer) -> bool {
+        let sender = {
+            let mut guard = self
+                .inner
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if guard
+                .get(question_id)
+                .is_some_and(|pending| pending.session_id == session_id)
+            {
+                guard.remove(question_id).map(|pending| pending.sender)
+            } else {
+                None
+            }
+        };
         match sender {
             Some(tx) => tx.send(answers).is_ok(),
             None => false,
@@ -98,6 +118,7 @@ impl Drop for PendingGuard {
 /// the answer.
 pub struct ChannelQuestionResponder {
     pending: PendingQuestions,
+    session_id: String,
     /// Called when a question set needs human attention (UI emit). Boxed so the
     /// responder stays transport-agnostic, mirroring the approval gate.
     notify: Arc<dyn Fn(QuestionRequestDto) + Send + Sync>,
@@ -107,9 +128,14 @@ impl ChannelQuestionResponder {
     /// Build a responder over a shared [`PendingQuestions`] and a UI notify hook.
     pub fn new(
         pending: PendingQuestions,
+        session_id: String,
         notify: Arc<dyn Fn(QuestionRequestDto) + Send + Sync>,
     ) -> Self {
-        Self { pending, notify }
+        Self {
+            pending,
+            session_id,
+            notify,
+        }
     }
 }
 
@@ -117,13 +143,16 @@ impl ChannelQuestionResponder {
 impl QuestionResponder for ChannelQuestionResponder {
     async fn ask(&self, questions: &[Question]) -> Result<Answer> {
         let question_id = format!("q-{}", uuid::Uuid::new_v4());
-        let receiver = self.pending.register(question_id.clone());
+        let receiver = self
+            .pending
+            .register(question_id.clone(), self.session_id.clone());
         let _guard = PendingGuard {
             pending: self.pending.clone(),
             question_id: question_id.clone(),
         };
         (self.notify)(QuestionRequestDto {
             question_id,
+            session_id: self.session_id.clone(),
             questions: questions.to_vec(),
         });
         // A closed channel means nobody answered: the UI declined, or the wait
@@ -162,6 +191,7 @@ mod tests {
         let notify = seen.clone();
         let responder = ChannelQuestionResponder::new(
             pending.clone(),
+            "session-a".into(),
             Arc::new(move |dto| *notify.lock().unwrap() = Some(dto)),
         );
         let handle = tokio::spawn(async move { responder.ask(&questions()).await.unwrap() });
@@ -172,6 +202,7 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
         let shown = seen.lock().unwrap().take().expect("the UI was notified");
+        assert_eq!(shown.session_id, "session-a");
         (shown.question_id, shown.questions, handle)
     }
 
@@ -184,7 +215,7 @@ mod tests {
 
         let mut answers = BTreeMap::new();
         answers.insert("Which city?".to_string(), "Changsha".to_string());
-        assert!(pending.resolve(&question_id, Some(answers.clone())));
+        assert!(pending.resolve("session-a", &question_id, Some(answers.clone())));
         assert_eq!(handle.await.unwrap(), Some(answers));
         assert_eq!(pending.pending_count(), 0, "the wait must clean up");
     }
@@ -193,21 +224,22 @@ mod tests {
     async fn declining_returns_no_answer() {
         let pending = PendingQuestions::new();
         let (question_id, _, handle) = drive_question(&pending).await;
-        assert!(pending.resolve(&question_id, None));
+        assert!(pending.resolve("session-a", &question_id, None));
         assert_eq!(handle.await.unwrap(), None);
     }
 
     #[tokio::test]
     async fn resolving_an_unknown_question_is_rejected() {
         let pending = PendingQuestions::new();
-        assert!(!pending.resolve("q-nope", None));
+        assert!(!pending.resolve("session-a", "q-nope", None));
     }
 
     #[tokio::test]
     async fn abandoning_the_wait_clears_the_registry() {
         // A cancelled run drops the tool future; the registration must not stay.
         let pending = PendingQuestions::new();
-        let responder = ChannelQuestionResponder::new(pending.clone(), Arc::new(|_| {}));
+        let responder =
+            ChannelQuestionResponder::new(pending.clone(), "session-a".into(), Arc::new(|_| {}));
         let handle = tokio::spawn(async move { responder.ask(&questions()).await.unwrap() });
         for _ in 0..200 {
             if pending.pending_count() == 1 {
@@ -223,5 +255,15 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(2)).await;
         }
         panic!("an abandoned question stayed registered");
+    }
+
+    #[tokio::test]
+    async fn a_question_cannot_be_resolved_from_another_session() {
+        let pending = PendingQuestions::new();
+        let (question_id, _, handle) = drive_question(&pending).await;
+        assert!(!pending.resolve("session-b", &question_id, None));
+        assert_eq!(pending.pending_count(), 1);
+        assert!(pending.resolve("session-a", &question_id, None));
+        assert_eq!(handle.await.unwrap(), None);
     }
 }

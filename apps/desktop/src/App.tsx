@@ -75,6 +75,12 @@ import { changeSidebarPreferences, loadSidebarPreferences, useSidebarPreferences
 import { SidebarSectionDialog } from "./components/SidebarSectionDialog";
 import { sessionDeepLink, sessionWorkingDirectory, openSessionTarget } from "./api";
 import { writeClipboardText } from "./clipboard";
+import {
+  clearQuestionSession,
+  enqueueQuestion,
+  questionsForSession,
+  removeQuestion,
+} from "./questionQueue";
 import { CustomTitleBar } from "./components/CustomTitleBar";
 import { message } from "./components/message";
 import { resolveChatRepositoryPath } from "./components/composerActivityData";
@@ -490,10 +496,13 @@ export function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   // FIFO queue of tool-approval requests awaiting the user's decision.
   const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
-  // FIFO queue of `ask_user_question` sets the run is blocked on. The backend
-  // waits for an answer indefinitely, so a card only leaves the queue when the
-  // user answers, skips, or stops the run.
-  const [questions, setQuestions] = useState<QuestionRequest[]>([]);
+  // FIFO queues of `ask_user_question` sets, isolated by session. The backend
+  // waits for an answer indefinitely, so switching conversations hides a
+  // queue without losing it; a card leaves its own queue only when answered,
+  // skipped, cancelled, or completed.
+  const [questionsBySession, setQuestionsBySession] = useState<
+    Map<string, readonly QuestionRequest[]>
+  >(() => new Map());
   // True while an agent run is streaming. Used to gate new submissions (you
   // can't send a new message mid-output) and to show a busy send button. The
   // run itself is async on the backend, so the UI never freezes — approvals,
@@ -793,6 +802,11 @@ export function App() {
               next.delete(payload.session_id as string);
               return next;
             });
+          }
+          if (payload.session_id) {
+            setQuestionsBySession((prev) =>
+              clearQuestionSession(prev, payload.session_id as string)
+            );
           }
           refreshSessions();
         })
@@ -2034,6 +2048,7 @@ export function App() {
   );
 
   const chatMessages = messages;
+  const activeQuestions = questionsForSession(questionsBySession, activeId);
   const activeContextUsage =
     contextUsageByKey.get(activeId ?? "") ??
     contextUsageByKey.get(activePendingRunKey ?? "") ??
@@ -2051,9 +2066,12 @@ export function App() {
     } else if (activeId && runningSessionIds.has(activeId)) {
       stopChat(activeId).catch(() => {});
     }
-    // A cancelled run drops its pending questions in the backend, so their
-    // cards have to go too — otherwise a dead card sits over the composer.
-    setQuestions([]);
+    // A cancelled run drops its pending questions in the backend. Clear only
+    // the visible session's queue; questions belonging to other runs must
+    // remain available when their conversations are opened.
+    if (activeId) {
+      setQuestionsBySession((prev) => clearQuestionSession(prev, activeId));
+    }
   }, [runningSessionIds, activeId]);
 
   // Resolve the head-of-queue approval (allow/deny), then dequeue it.
@@ -2073,17 +2091,17 @@ export function App() {
   );
 
   // Subscribe once for the whole app: every run entry point can ask a question,
-  // and the listener has to survive switching sessions.
+  // while the payload's session id keeps the UI queue isolated.
   useEffect(() => {
     let disposed = false;
     let unlisten: (() => void) | null = null;
     listenQuestions((request) => {
       if (disposed) return;
-      setQuestions((prev) =>
-        prev.some((item) => item.question_id === request.question_id)
-          ? prev
-          : [...prev, request]
-      );
+      if (!request.session_id) {
+        console.warn("dropping ask_user_question without a session id", request.question_id);
+        return;
+      }
+      setQuestionsBySession((prev) => enqueueQuestion(prev, request));
     })
       .then((fn) => {
         if (disposed) fn();
@@ -2101,13 +2119,15 @@ export function App() {
   const onQuestionAnswer = useCallback(
     async (request: QuestionRequest, answers: Record<string, string> | null) => {
       try {
-        await respondQuestion(request.question_id, answers ?? undefined);
+        await respondQuestion(request.session_id, request.question_id, answers ?? undefined);
       } catch (error) {
         console.error("respond question failed:", error);
         message.error("提交失败，运行仍在等待这个答案，请重试。");
         return;
       }
-      setQuestions((prev) => prev.filter((q) => q.question_id !== request.question_id));
+      setQuestionsBySession((prev) =>
+        removeQuestion(prev, request.session_id, request.question_id)
+      );
     },
     []
   );
@@ -2466,8 +2486,8 @@ export function App() {
                   approval={approvals[0] ?? null}
                   approvalQueueCount={approvals.length}
                   onApprovalDecision={onApprovalDecision}
-                  question={questions[0] ?? null}
-                  questionQueueCount={questions.length}
+                  question={activeQuestions[0] ?? null}
+                  questionQueueCount={activeQuestions.length}
                   onQuestionAnswer={onQuestionAnswer}
                   busy={activeChatBusy}
                   onStop={onStopRun}
