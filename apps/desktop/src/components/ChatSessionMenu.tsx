@@ -47,7 +47,7 @@ export function ChatSessionMenu({ title, pinned, open, onOpenChange, contextMenu
         </Button>}
     </DropdownMenuTrigger>
     <DropdownMenuContent align="start" sideOffset={contextMenuPosition ? 0 : 6}
-      className="w-64" data-custom-contextmenu="1" onContextMenu={(event) => event.preventDefault()}>
+      className="w-48" data-custom-contextmenu="1" onContextMenu={(event) => event.preventDefault()}>
       <DropdownMenuItem className={item} onSelect={onRename}><Pencil className={icon}/>重命名</DropdownMenuItem>
       <DropdownMenuItem className={item} onSelect={onPin}><Pin className={icon}/>{pinned ? "取消置顶" : "置顶"}</DropdownMenuItem>
       <DropdownMenuItem className={item} disabled={!onSetUnread} onSelect={() => onSetUnread?.(!unread)}>
