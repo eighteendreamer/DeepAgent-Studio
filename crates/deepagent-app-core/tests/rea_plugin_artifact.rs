@@ -18,6 +18,50 @@ fn required_path(name: &str) -> PathBuf {
     PathBuf::from(std::env::var_os(name).unwrap_or_else(|| panic!("set {name}")))
 }
 
+/// Explicit opt-in repair of the selected installed cache, followed by an
+/// actual Node 24 stdio initialize/tools-list exchange (no analysis tool calls).
+#[tokio::test]
+#[ignore = "repairs REA_DATA_DIR; requires REA_PAYLOAD_ROOT and REA_NODE_EXECUTABLE"]
+async fn installed_rea_cache_recovers_and_completes_mcp_handshake() {
+    let payload = required_path("REA_PAYLOAD_ROOT");
+    let data = required_path("REA_DATA_DIR");
+    let node = required_path("REA_NODE_EXECUTABLE");
+    let start = std::time::Instant::now();
+    deepagent_app_core::prepare_runtime_payload(&payload, &data).unwrap();
+    println!("installed runtime repair: {:?}", start.elapsed());
+    let start = std::time::Instant::now();
+    deepagent_app_core::prepare_runtime_payload(&payload, &data).unwrap();
+    println!("complete cache verification: {:?}", start.elapsed());
+    let entry = data.join("runtime/node_modules/rea-agents/scripts/rea.mjs");
+    assert!(entry.is_file());
+    let config = deepagent_mcp::McpServerConfig {
+        command: Some(node.to_string_lossy().into_owned()),
+        args: vec![entry.to_string_lossy().into_owned(), "mcp".into()],
+        cwd: Some(data.join("runtime")),
+        env: std::collections::BTreeMap::from([("REA_ANALYSIS_PROVIDER".into(), "auto".into())]),
+        transport: None,
+        url: None,
+        headers: Default::default(),
+    };
+    let client = deepagent_mcp::McpClient::new(Arc::new(
+        deepagent_mcp::StdioTransport::spawn(&config).unwrap(),
+    ));
+    tokio::time::timeout(
+        Duration::from_secs(30),
+        client.initialize("deepagent-rea-recovery"),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let tools = tokio::time::timeout(Duration::from_secs(30), client.list_tools())
+        .await
+        .unwrap()
+        .unwrap();
+    println!("installed REA discovered {} tools", tools.len());
+    assert_eq!(tools.len(), 170);
+    client.close().await.unwrap();
+}
+
 #[tokio::test]
 #[ignore = "requires packaged REA, installed managed Node 24 and a benign managed assembly"]
 async fn rea_zip_installs_discovers_and_analyzes_without_target_execution() {

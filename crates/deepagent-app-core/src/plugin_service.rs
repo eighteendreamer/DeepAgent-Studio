@@ -2192,87 +2192,7 @@ impl PluginService {
     }
 }
 
-/// Extract a plugin's `runtime.zip` payload into `data_dir/runtime`, skipping
-/// the work when the marker file already matches the archive SHA-256.
-///
-/// Public so the desktop entry point can pre-warm the extraction off the
-/// startup path (a background thread); the MCP/plugin assembly paths still call
-/// it synchronously and rely on the marker to make the repeat call a no-op.
-pub fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<()> {
-    let archive_path = payload_root.join("runtime.zip");
-    if !archive_path.is_file() {
-        return Ok(());
-    }
-    std::fs::create_dir_all(data_dir)
-        .map_err(|e| CoreError::Persistence(format!("create plugin data dir: {e}")))?;
-    std::fs::create_dir_all(data_dir.join("workspace"))
-        .map_err(|e| CoreError::Persistence(format!("create payload workspace: {e}")))?;
-    let runtime_dir = data_dir.join("runtime");
-    let marker = runtime_dir.join(".payload-sha256");
-    let expected_marker = crate::runtime_service::sha256_file(&archive_path).map_err(|error| {
-        CoreError::Persistence(format!(
-            "hash runtime payload {}: {error}",
-            archive_path.display()
-        ))
-    })?;
-    if marker
-        .is_file()
-        .then(|| std::fs::read_to_string(&marker).ok())
-        .flatten()
-        .as_deref()
-        == Some(expected_marker.as_str())
-    {
-        return Ok(());
-    }
-
-    let file = File::open(&archive_path)
-        .map_err(|e| CoreError::Persistence(format!("open {}: {e}", archive_path.display())))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| CoreError::Persistence(format!("read runtime payload: {e}")))?;
-    if archive.len() > 100_000 {
-        return Err(CoreError::invalid(
-            "runtime payload contains too many files",
-        ));
-    }
-    let stage = data_dir.join(".runtime.tmp");
-    let _ = std::fs::remove_dir_all(&stage);
-    std::fs::create_dir_all(&stage)
-        .map_err(|e| CoreError::Persistence(format!("create runtime payload stage: {e}")))?;
-    let mut extracted = 0u64;
-    for index in 0..archive.len() {
-        let mut entry = archive
-            .by_index(index)
-            .map_err(|e| CoreError::Persistence(format!("read runtime payload entry: {e}")))?;
-        extracted = extracted.saturating_add(entry.size());
-        if extracted > 512 * 1024 * 1024 {
-            let _ = std::fs::remove_dir_all(&stage);
-            return Err(CoreError::invalid("runtime payload exceeds 512 MiB"));
-        }
-        let relative = entry
-            .enclosed_name()
-            .ok_or_else(|| CoreError::invalid("runtime payload contains an unsafe path"))?;
-        let output = stage.join(relative);
-        if entry.is_dir() {
-            std::fs::create_dir_all(&output)
-                .map_err(|e| CoreError::Persistence(format!("create payload directory: {e}")))?;
-        } else {
-            if let Some(parent) = output.parent() {
-                std::fs::create_dir_all(parent)
-                    .map_err(|e| CoreError::Persistence(format!("create payload parent: {e}")))?;
-            }
-            let mut output_file = File::create(&output)
-                .map_err(|e| CoreError::Persistence(format!("create payload file: {e}")))?;
-            std::io::copy(&mut entry, &mut output_file)
-                .map_err(|e| CoreError::Persistence(format!("extract payload file: {e}")))?;
-        }
-    }
-    let _ = std::fs::remove_dir_all(&runtime_dir);
-    std::fs::rename(&stage, &runtime_dir)
-        .map_err(|e| CoreError::Persistence(format!("activate runtime payload: {e}")))?;
-    std::fs::write(marker, expected_marker)
-        .map_err(|e| CoreError::Persistence(format!("write runtime payload marker: {e}")))?;
-    Ok(())
-}
+pub use crate::runtime_payload::prepare_runtime_payload;
 
 /// Extract every enabled plugin's `runtime.zip` payload into its
 /// `PLUGIN_DATA/runtime` directory, using the same id → directory mapping as
@@ -2281,7 +2201,7 @@ pub fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<(
 /// Intended for the desktop entry point to call on a background thread at
 /// startup, so the first session after an upgrade does not stall on the
 /// synchronous extraction of a large payload (e.g. `wedecode`'s ~30 MB zip).
-/// The per-payload marker file makes a later synchronous call a no-op. A
+/// Later calls verify the extracted tree and skip extraction when intact. A
 /// failure for one plugin is logged and does not abort the others; the session
 /// path still surfaces genuine errors through the normal MCP/plugin channel.
 pub fn prepare_runtime_payloads(roots: &PluginRoots, data_root: &Path) {
@@ -7098,6 +7018,43 @@ rl.on('line', (line) => {
 
         assert!(data_dir.join("runtime").join(".payload-sha256").is_file());
         assert!(data_dir.join("workspace").is_dir());
+    }
+
+    #[test]
+    fn runtime_payload_marker_hit_repairs_missing_entrypoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("plugin");
+        let data = tmp.path().join("data");
+        write_plugin_with_runtime_payload(
+            &root,
+            "demo",
+            serde_json::json!({"name":"demo"}),
+            &[("scripts/rea.mjs", b"console.log('ok');\n")],
+        );
+        prepare_runtime_payload(&root, &data).unwrap();
+        std::fs::remove_file(data.join("runtime/scripts/rea.mjs")).unwrap();
+        prepare_runtime_payload(&root, &data).unwrap();
+        assert!(data.join("runtime/scripts/rea.mjs").is_file());
+    }
+
+    #[test]
+    fn runtime_payload_marker_hit_repairs_same_size_corruption() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("plugin");
+        let data = tmp.path().join("data");
+        write_plugin_with_runtime_payload(
+            &root,
+            "demo",
+            serde_json::json!({"name":"demo"}),
+            &[("value.txt", b"one")],
+        );
+        prepare_runtime_payload(&root, &data).unwrap();
+        std::fs::write(data.join("runtime/value.txt"), b"bad").unwrap();
+        prepare_runtime_payload(&root, &data).unwrap();
+        assert_eq!(
+            std::fs::read(data.join("runtime/value.txt")).unwrap(),
+            b"one"
+        );
     }
 
     #[test]
