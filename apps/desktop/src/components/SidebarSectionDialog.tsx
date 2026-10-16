@@ -12,7 +12,7 @@ export function SidebarSectionDialog({ open, onClose, onCreate }: {
   useEffect(() => { if (open) { setName(""); setError(""); } }, [open]);
   return <Dialog open={open} onOpenChange={(next) => { if (!next && !saving) onClose(); }}>
     <DialogContent className="max-w-sm"><DialogHeader><DialogTitle>创建分区</DialogTitle></DialogHeader>
-      <form onSubmit={async (event) => {
+      <form className="px-6 pb-6" onSubmit={async (event) => {
         event.preventDefault();
         if (!name.trim() || saving) return;
         setSaving(true); setError("");
@@ -22,7 +22,7 @@ export function SidebarSectionDialog({ open, onClose, onCreate }: {
       }}>
         <Input autoFocus aria-label="分区名称" placeholder="分区名称" maxLength={64} value={name} onChange={(e) => setName(e.target.value)}/>
         {error && <p className="mt-2 text-xs text-red-500">{error}</p>}
-        <DialogFooter className="mt-4"><Button type="button" variant="ghost" disabled={saving} onClick={onClose}>取消</Button>
+        <DialogFooter className="mt-5 p-0"><Button type="button" variant="ghost" disabled={saving} onClick={onClose}>取消</Button>
           <Button type="submit" disabled={saving || !name.trim()}>创建</Button></DialogFooter>
       </form>
     </DialogContent>
