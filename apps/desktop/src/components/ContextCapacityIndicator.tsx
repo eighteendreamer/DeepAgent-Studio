@@ -27,7 +27,7 @@ function capacityTone(ratio: number, isEmptySession: boolean): string {
   if (isEmptySession) return "#cbd5e1";
   if (ratio >= 0.92) return "#dc4b41";
   if (ratio >= 0.8) return "#d99015";
-  return "#4979a8";
+  return "#2563eb";
 }
 
 /** Projected next request; legacy snapshots retain their original fallback. */
@@ -119,7 +119,7 @@ export function ContextCapacityIndicator({
             className="block h-full w-full [&_.CircularProgressbar-path]:transition-[stroke-dashoffset] [&_.CircularProgressbar-path]:duration-300 motion-reduce:[&_.CircularProgressbar-path]:transition-none"
             styles={buildStyles({
               pathColor: stroke,
-              trailColor: "var(--theme-border, #e7e9ed)",
+              trailColor: "color-mix(in srgb, var(--theme-text-secondary, #6b7280) 20%, var(--theme-bg, #ffffff))",
               strokeLinecap: "butt",
             })}
           />
