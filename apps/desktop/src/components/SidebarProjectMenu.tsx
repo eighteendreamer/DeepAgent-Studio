@@ -2,6 +2,7 @@ import { HoverInfo } from "./ui/HoverInfo";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Archive, FolderOpen, Layers, Network, X } from "lucide-react";
 import { PinThumbtackIcon } from "./ui/PinThumbtackIcon";
 import { motion, useReducedMotion } from "framer-motion";
 import { useTranslation } from "react-i18next";
@@ -16,7 +17,7 @@ const PANEL_WIDTH = 224;
 const PROJECT_MENU = {
   pad: "px-2 py-1.5",
   row: "relative z-[1] flex w-full cursor-pointer items-center rounded-lg px-2.5 py-2 text-left text-[13px] text-text-base whitespace-nowrap",
-  icon: "mr-2.5 w-4 shrink-0 text-[13px] text-text-secondary",
+  icon: "mr-2.5 h-4 w-4 shrink-0 text-[13px] text-text-secondary",
   pill: "left-0 right-0 rounded-lg",
 } as const;
 
@@ -154,7 +155,7 @@ export function SidebarProjectMenu({
           className={cn(PROJECT_MENU.row, MOTION.fast)}
           onClick={() => run(onAddSection)}
         >
-          <FontAwesomeIcon icon={["fas", "layer-group"]} className={PROJECT_MENU.icon} />
+          <Layers className={PROJECT_MENU.icon} />
           {t("sidebar.addSection")}
         </div>
         <div
@@ -162,7 +163,7 @@ export function SidebarProjectMenu({
           className={cn(PROJECT_MENU.row, MOTION.fast)}
           onClick={() => run(onOpenExplorer)}
         >
-          <FontAwesomeIcon icon={["far", "folder"]} className={PROJECT_MENU.icon} />
+          <FolderOpen className={PROJECT_MENU.icon} />
           {t("sidebar.openInExplorer")}
         </div>
         <div
@@ -170,7 +171,7 @@ export function SidebarProjectMenu({
           className={cn(PROJECT_MENU.row, MOTION.fast)}
           onClick={() => run(onOpenMap)}
         >
-          <FontAwesomeIcon icon={["fas", "share-nodes"]} className={PROJECT_MENU.icon} />
+          <Network className={PROJECT_MENU.icon} />
           项目地图
         </div>
         <div className={MENU_LIST.divider} />
@@ -179,7 +180,7 @@ export function SidebarProjectMenu({
           className={cn(PROJECT_MENU.row, MOTION.fast)}
           onClick={() => run(onArchive)}
         >
-          <FontAwesomeIcon icon={["fas", "box-archive"]} className={PROJECT_MENU.icon} />
+          <Archive className={PROJECT_MENU.icon} />
           {t("sidebar.archiveChats")}
         </div>
         <div
@@ -187,7 +188,7 @@ export function SidebarProjectMenu({
           className={cn(PROJECT_MENU.row, MOTION.fast)}
           onClick={() => run(onRemove)}
         >
-          <FontAwesomeIcon icon={["fas", "xmark"]} className={PROJECT_MENU.icon} />
+          <X className={PROJECT_MENU.icon} />
           {t("sidebar.removeProject")}
         </div>
       </SlidingMenuList>
