@@ -45,7 +45,7 @@ export function SettingsView({ activeCategoryId }: Props) {
   };
 
   return (
-    <div className="w-full h-full bg-bg-base text-text-base overflow-y-auto px-16 pt-16 pb-20 flex justify-center relative">
+    <div className="stable-scrollbar-gutter w-full h-full bg-bg-base text-text-base overflow-y-auto px-16 pt-16 pb-20 flex justify-center relative">
       <div className="w-full max-w-[700px]">
           <div
             key={activeCategoryId}
