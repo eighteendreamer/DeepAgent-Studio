@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useRef, useCallback, useId, type ReactNode } from "react";
-import { ChevronUp } from "lucide-react";
+import { ArrowUp } from "lucide-react";
 import { Button } from "../../../components/shadcn/button";
 import "./BottomBar.css";
 
@@ -117,7 +117,7 @@ export function CanvasToolbarDock({ children }: { children: ReactNode }) {
           openTools();
         }}
       >
-        <ChevronUp size={12} strokeWidth={2} color="rgba(248,248,248,0.7)" />
+        <ArrowUp size={13} strokeWidth={1.8} color="rgba(248,248,248,0.7)" />
       </Button>
       <div ref={toolsRef} id={toolsId} className="canvas-bottom-dock__tools" role="toolbar" aria-label="画布工具" aria-hidden={!toolsOpen}>
           <div ref={rowRef} className="canvas-bottom-dock__row flex items-center gap-1 px-1.5">
