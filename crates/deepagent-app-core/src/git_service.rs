@@ -8,6 +8,12 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Mutex;
+use std::thread;
+use std::time::{Duration, Instant};
+
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 
 use deepagent_core::error::Result;
 
@@ -26,15 +32,23 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 const MAX_DIFF_BYTES: usize = 96_000;
 // Bound untracked-file inspection; large or non-text files retain unknown stats.
 const MAX_NEW_FILE_STATS_BYTES: u64 = 8 * 1024 * 1024;
+const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+const GIT_POLL_INTERVAL: Duration = Duration::from_millis(20);
+const GIT_CHANGES_CACHE_TTL: Duration = Duration::from_millis(250);
+const DISABLED_HOOKS_PATH: &str = if cfg!(windows) { "NUL" } else { "/dev/null" };
 
 /// Read-only Git inspection service.
 pub struct GitService {
     projects: Arc<ProjectService>,
+    changes_cache: Mutex<HashMap<String, (Instant, GitChangesDto)>>,
 }
 
 impl GitService {
     pub fn new(projects: Arc<ProjectService>) -> Self {
-        Self { projects }
+        Self {
+            projects,
+            changes_cache: Mutex::new(HashMap::new()),
+        }
     }
 
     /// Status for one project path. Non-repositories return a negative status
@@ -125,6 +139,25 @@ impl GitService {
 
     /// Changed files and +/- summary. Non-repositories return an empty result.
     pub fn changes(&self, project_path: &str) -> Result<GitChangesDto> {
+        // `project_status` and the UI's detailed changes query arrive together
+        // during navigation. Share the short-lived result so one switch cannot
+        // launch two identical worktree scans (the mature Codex path shares an
+        // in-flight status future for the same repository).
+        let mut cache = self
+            .changes_cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some((created, value)) = cache.get(project_path) {
+            if created.elapsed() < GIT_CHANGES_CACHE_TTL {
+                return Ok(value.clone());
+            }
+        }
+        let value = self.compute_changes(project_path)?;
+        cache.insert(project_path.to_string(), (Instant::now(), value.clone()));
+        Ok(value)
+    }
+
+    fn compute_changes(&self, project_path: &str) -> Result<GitChangesDto> {
         let probe = run_command(
             Path::new(project_path),
             "git",
@@ -1646,9 +1679,11 @@ fn diff_path_matches(path: &str, file_path: &str, prefix: Option<&str>) -> bool 
 
 fn run_command(cwd: &Path, program: &str, args: &[&str]) -> std::io::Result<std::process::Output> {
     let mut cmd = Command::new(program);
-    cmd.args(args).current_dir(cwd);
+    cmd.current_dir(cwd);
+    configure_command(&mut cmd, program);
+    cmd.args(args);
     configure_hidden_process(&mut cmd);
-    cmd.output()
+    spawn_and_capture(cmd)
 }
 
 fn run_command_owned(
@@ -1657,9 +1692,130 @@ fn run_command_owned(
     args: &[String],
 ) -> std::io::Result<std::process::Output> {
     let mut cmd = Command::new(program);
-    cmd.args(args).current_dir(cwd);
+    cmd.current_dir(cwd);
+    configure_command(&mut cmd, program);
+    cmd.args(args);
     configure_hidden_process(&mut cmd);
-    cmd.output()
+    spawn_and_capture(cmd)
+}
+
+/// Run a child with bounded lifetime and drained pipes. Git is an external
+/// boundary: repository hooks, fsmonitor helpers, locks, and credential
+/// prompts must never be able to hold an IPC request indefinitely.
+fn spawn_and_capture(mut cmd: Command) -> std::io::Result<std::process::Output> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    capture_child(cmd.spawn()?)
+}
+
+fn capture_child(mut child: std::process::Child) -> std::io::Result<std::process::Output> {
+    let stdout = child.stdout.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).map(|_| bytes)
+        })
+    });
+    let stderr = child.stderr.take().map(|mut pipe| {
+        thread::spawn(move || {
+            let mut bytes = Vec::new();
+            pipe.read_to_end(&mut bytes).map(|_| bytes)
+        })
+    });
+
+    let deadline = Instant::now() + GIT_COMMAND_TIMEOUT;
+    let mut timed_out = false;
+    let mut failure = None;
+    let mut status = None;
+    loop {
+        match child.try_wait() {
+            Ok(Some(exit)) => {
+                status = Some(exit);
+                break;
+            }
+            Ok(None) if Instant::now() < deadline => {
+                thread::sleep(GIT_POLL_INTERVAL);
+            }
+            Ok(None) => {
+                timed_out = true;
+                terminate_child(&mut child);
+                if let Err(error) = child.wait() {
+                    failure = Some(error);
+                }
+                break;
+            }
+            Err(error) => {
+                // `try_wait` can fail after the process has already become
+                // unobservable. Always clean up before returning the error so
+                // no child or pipe reader survives the IPC request.
+                failure = Some(error);
+                terminate_child(&mut child);
+                let _ = child.wait();
+                break;
+            }
+        }
+    }
+
+    let stdout = stdout
+        .map(|reader| {
+            reader
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("git stdout reader panicked")))
+        })
+        .transpose();
+    let stderr = stderr
+        .map(|reader| {
+            reader
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("git stderr reader panicked")))
+        })
+        .transpose();
+    if timed_out {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "git command timed out after {}ms",
+                GIT_COMMAND_TIMEOUT.as_millis()
+            ),
+        ));
+    }
+    if let Some(error) = failure {
+        return Err(error);
+    }
+    let stdout = stdout?.unwrap_or_default();
+    let stderr = stderr?.unwrap_or_default();
+    Ok(std::process::Output {
+        status: status.ok_or_else(|| std::io::Error::other("git process exited without status"))?,
+        stdout,
+        stderr,
+    })
+}
+
+fn terminate_child(child: &mut std::process::Child) {
+    #[cfg(windows)]
+    {
+        // Git can hand work to a credential helper or hook. Kill the process
+        // tree so inherited pipes are closed and the reader/writer threads can
+        // finish when the hard timeout fires.
+        let _ = Command::new("taskkill")
+            .args(["/PID", &child.id().to_string(), "/T", "/F"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .status();
+    }
+    let _ = child.kill();
+}
+
+fn configure_command(cmd: &mut Command, program: &str) {
+    if program != "git" {
+        return;
+    }
+    cmd.env("GIT_CONFIG_COUNT", "0")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .arg("-c")
+        .arg(format!("core.hooksPath={DISABLED_HOOKS_PATH}"))
+        .arg("-c")
+        .arg("core.fsmonitor=");
 }
 
 fn run_git_operation(repo_root: &Path, args: Vec<String>) -> GitOperationResultDto {
@@ -1687,11 +1843,12 @@ fn run_git_operation_with_stdin(
 ) -> GitOperationResultDto {
     let command = format!("git {}", args.join(" "));
     let mut cmd = Command::new("git");
-    cmd.args(&args)
-        .current_dir(repo_root)
+    cmd.current_dir(repo_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    configure_command(&mut cmd, "git");
+    cmd.args(&args);
     configure_hidden_process(&mut cmd);
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -1704,24 +1861,32 @@ fn run_git_operation_with_stdin(
             }
         }
     };
-    if let Some(mut child_stdin) = child.stdin.take() {
-        if let Err(error) = child_stdin.write_all(stdin.as_bytes()) {
-            return GitOperationResultDto {
-                ok: false,
-                command,
-                stdout: String::new(),
-                stderr: error.to_string(),
-            };
-        }
-    }
-    match child.wait_with_output() {
-        Ok(output) => GitOperationResultDto {
+    let stdin_writer = child.stdin.take().map(|mut child_stdin| {
+        let input = stdin.as_bytes().to_vec();
+        thread::spawn(move || child_stdin.write_all(&input))
+    });
+    let output = capture_child(child);
+    let stdin_result = stdin_writer
+        .map(|writer| {
+            writer
+                .join()
+                .unwrap_or_else(|_| Err(std::io::Error::other("git stdin writer panicked")))
+        })
+        .unwrap_or(Ok(()));
+    match (output, stdin_result) {
+        (Ok(output), Ok(())) => GitOperationResultDto {
             ok: output.status.success(),
             command,
             stdout: String::from_utf8_lossy(&output.stdout).to_string(),
             stderr: String::from_utf8_lossy(&output.stderr).to_string(),
         },
-        Err(error) => GitOperationResultDto {
+        (Ok(_output), Err(error)) => GitOperationResultDto {
+            ok: false,
+            command,
+            stdout: String::new(),
+            stderr: error.to_string(),
+        },
+        (Err(error), _) => GitOperationResultDto {
             ok: false,
             command,
             stdout: String::new(),

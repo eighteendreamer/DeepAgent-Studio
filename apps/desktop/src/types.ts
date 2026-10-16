@@ -68,6 +68,7 @@ export interface SessionDetail {
   summary: SessionSummary;
   timeline: TimelineEntry[];
   stats: SessionStats;
+  conversation?: ConversationMessage[];
   context_usage?: ContextUsageSnapshot;
 }
 

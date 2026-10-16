@@ -160,31 +160,40 @@ impl<'db> EventStore<'db> {
     ) -> Result<Event> {
         let _io = self.db.lock_session_io()?;
         let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
-        if self.get_session(session_id)?.is_none() {
+        if self
+            .get_session(session_id)
+            .map_err(|error| CoreError::Persistence(format!("read session metadata: {error}")))?
+            .is_none()
+        {
             return Err(CoreError::not_found(format!(
                 "session {session_id} does not exist"
             )));
         }
-        let cursor = self.projected_cursor(session_id)?;
-        let search_cursor = self.db.with_conn(|c| {
-            c.query_row(
-                "SELECT generation, last_sequence, dirty
+        let cursor = self
+            .projected_cursor(session_id)
+            .map_err(|error| CoreError::Persistence(format!("read session cursor: {error}")))?;
+        let search_cursor = self
+            .db
+            .with_conn(|c| {
+                c.query_row(
+                    "SELECT generation, last_sequence, dirty
                  FROM session_search_cursors WHERE session_id = ?1",
-                params![session_id.to_string()],
-                |row| {
-                    let generation: i64 = row.get(0)?;
-                    let last_sequence: Option<i64> = row.get(1)?;
-                    let dirty: i64 = row.get(2)?;
-                    Ok((
-                        generation as u64,
-                        last_sequence.map(|value| value as u64),
-                        dirty != 0,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(map_sqlite)
-        })?;
+                    params![session_id.to_string()],
+                    |row| {
+                        let generation: i64 = row.get(0)?;
+                        let last_sequence: Option<i64> = row.get(1)?;
+                        let dirty: i64 = row.get(2)?;
+                        Ok((
+                            generation as u64,
+                            last_sequence.map(|value| value as u64),
+                            dirty != 0,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(map_sqlite)
+            })
+            .map_err(|error| CoreError::Persistence(format!("read search cursor: {error}")))?;
         let candidate_sequence = cursor
             .and_then(|cursor| cursor.last_sequence)
             .map_or(0, |sequence| sequence + 1);
@@ -196,7 +205,9 @@ impl<'db> EventStore<'db> {
             payload,
         };
         let committed =
-            session_files::append(&self.db.session_files_root(), session_id, event, cursor)?;
+            session_files::append(&self.db.session_files_root(), session_id, event, cursor)
+                .map_err(|error| CoreError::Persistence(format!("append session file: {error}")))?;
+        let appended_rebuild_events = committed.rebuild_events;
         let event = committed.event;
         if committed.recovered_tail_bytes > 0 {
             tracing::warn!(
@@ -218,15 +229,7 @@ impl<'db> EventStore<'db> {
         let rebuild_events = if search_is_incremental {
             None
         } else {
-            Some(
-                session_files::load(&self.db.session_files_root(), session_id)?
-                    .ok_or_else(|| {
-                        CoreError::EventLog(format!(
-                            "session {session_id} disappeared after event append"
-                        ))
-                    })?
-                    .events,
-            )
+            appended_rebuild_events
         };
 
         let projection_result = self.db.with_conn(|c| {
@@ -338,7 +341,9 @@ impl<'db> EventStore<'db> {
     /// Read events for a session starting at `from_sequence` (inclusive).
     /// Useful for incremental replay / tailing.
     pub fn read_from(&self, session_id: SessionId, from_sequence: Sequence) -> Result<Vec<Event>> {
-        let _io = self.db.lock_session_io()?;
+        let _io = self
+            .db
+            .lock_session_io_for(std::time::Duration::from_secs(5))?;
         let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
         let Some(loaded) = session_files::load(&self.db.session_files_root(), session_id)? else {
             return Ok(Vec::new());

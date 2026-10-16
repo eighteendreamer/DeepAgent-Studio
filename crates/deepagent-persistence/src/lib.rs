@@ -139,6 +139,35 @@ impl Database {
             .map_err(|_| CoreError::Persistence("session file mutex poisoned".into()))
     }
 
+    /// Acquire the session-file gate without allowing a read request to wait
+    /// forever behind a long-running writer. Writes keep the historical
+    /// blocking lock; UI-facing reads use this bounded variant.
+    pub(crate) fn lock_session_io_for(
+        &self,
+        timeout: std::time::Duration,
+    ) -> Result<std::sync::MutexGuard<'_, ()>> {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match self.session_io.try_lock() {
+                Ok(guard) => return Ok(guard),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(CoreError::Persistence("session file mutex poisoned".into()));
+                }
+                Err(std::sync::TryLockError::WouldBlock)
+                    if std::time::Instant::now() < deadline =>
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    return Err(CoreError::Persistence(format!(
+                        "timed out waiting for session file I/O lock after {}ms",
+                        timeout.as_millis()
+                    )));
+                }
+            }
+        }
+    }
+
     /// Run a closure with exclusive access to the underlying connection.
     pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let guard = self

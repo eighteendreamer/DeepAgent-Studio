@@ -1,6 +1,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use deepagent_core::clock::Timestamp;
 use deepagent_core::error::{CoreError, Result};
@@ -13,6 +15,8 @@ use serde::{Deserialize, Serialize};
 const FORMAT_VERSION: u32 = 1;
 const FILE_SUFFIX: &str = ".v1.jsonl.zst";
 const ZSTD_MAGIC: [u8; 4] = [0x28, 0xb5, 0x2f, 0xfd];
+const SESSION_LOCK_TIMEOUT: Duration = Duration::from_secs(5);
+const SESSION_LOCK_POLL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct SessionFileHeader {
@@ -59,6 +63,7 @@ pub(crate) struct AppendedSessionEvent {
     pub(crate) generation: u64,
     pub(crate) byte_len: u64,
     pub(crate) recovered_tail_bytes: u64,
+    pub(crate) rebuild_events: Option<Vec<Event>>,
 }
 
 pub(crate) struct SessionLock {
@@ -98,12 +103,8 @@ pub(crate) fn load(root: &Path, session_id: SessionId) -> Result<Option<LoadedSe
     let Some((generation, path)) = current_generation(root, session_id)? else {
         return Ok(None);
     };
-    let mut file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(&path)
-        .map_err(io_error)?;
-    file.lock_exclusive().map_err(io_error)?;
+    let mut file = open_session_file(&path, false)?;
+    lock_exclusive_with_timeout(&file)?;
     let result = read_locked_file(&mut file, generation, session_id, true);
     let unlock_result = FileExt::unlock(&file).map_err(io_error);
     match (result, unlock_result) {
@@ -164,16 +165,18 @@ pub(crate) fn append(
     let (generation, path) = current_generation(root, session_id)?.ok_or_else(|| {
         CoreError::EventLog(format!("session {session_id} has no persisted event file"))
     })?;
-    let mut file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .open(&path)
-        .map_err(io_error)?;
-    file.lock_exclusive().map_err(io_error)?;
+    let mut file = open_session_file(&path, true).map_err(|error| {
+        CoreError::Persistence(format!("open session file {}: {error}", path.display()))
+    })?;
+    lock_exclusive_with_timeout(&file)?;
 
-    let file_len = file.metadata().map_err(io_error)?.len();
+    let file_len = file
+        .metadata()
+        .map_err(|error| CoreError::Persistence(format!("stat session file: {error}")))?
+        .len();
     let matching_cursor =
         cursor.filter(|cursor| cursor.generation == generation && cursor.byte_len == file_len);
+    let needs_rebuild = matching_cursor.is_none();
     let recovered_tail_bytes;
     event.sequence = if let Some(cursor) = matching_cursor {
         recovered_tail_bytes = 0;
@@ -189,16 +192,29 @@ pub(crate) fn append(
         event: event.clone(),
     };
     let encoded = encode_records(std::slice::from_ref(&record))?;
-    file.seek(SeekFrom::End(0)).map_err(io_error)?;
-    file.write_all(&encoded).map_err(io_error)?;
-    file.sync_all().map_err(io_error)?;
-    let byte_len = file.metadata().map_err(io_error)?.len();
-    FileExt::unlock(&file).map_err(io_error)?;
+    file.seek(SeekFrom::End(0))
+        .map_err(|error| CoreError::Persistence(format!("seek session file: {error}")))?;
+    file.write_all(&encoded)
+        .map_err(|error| CoreError::Persistence(format!("write session file: {error}")))?;
+    file.sync_all()
+        .map_err(|error| CoreError::Persistence(format!("sync session file: {error}")))?;
+    let byte_len = file
+        .metadata()
+        .map_err(|error| CoreError::Persistence(format!("stat session file: {error}")))?
+        .len();
+    let rebuild_events = if needs_rebuild {
+        Some(read_locked_file(&mut file, generation, session_id, false)?.events)
+    } else {
+        None
+    };
+    FileExt::unlock(&file)
+        .map_err(|error| CoreError::Persistence(format!("unlock session file: {error}")))?;
     Ok(AppendedSessionEvent {
         event,
         generation,
         byte_len,
         recovered_tail_bytes,
+        rebuild_events,
     })
 }
 
@@ -634,15 +650,84 @@ fn current_generation(root: &Path, session_id: SessionId) -> Result<Option<(u64,
 pub(crate) fn lock_session(root: &Path, session_id: SessionId) -> Result<SessionLock> {
     let lock_root = root.parent().unwrap_or(root).join("locks").join("sessions");
     fs::create_dir_all(&lock_root).map_err(io_error)?;
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(lock_root.join(format!("{session_id}.lock")))
-        .map_err(io_error)?;
-    file.lock_exclusive().map_err(io_error)?;
+    let path = lock_root.join(format!("{session_id}.lock"));
+    let deadline = Instant::now() + SESSION_LOCK_TIMEOUT;
+    let file = loop {
+        match OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(file) => break file,
+            Err(error) if is_lock_busy(&error) && Instant::now() < deadline => {
+                thread::sleep(SESSION_LOCK_POLL);
+            }
+            Err(error) if is_lock_busy(&error) => {
+                return Err(CoreError::Persistence(format!(
+                    "timed out opening session lock after {}ms",
+                    SESSION_LOCK_TIMEOUT.as_millis()
+                )));
+            }
+            Err(error) => return Err(io_error(error)),
+        }
+    };
+    lock_exclusive_with_timeout(&file)?;
     Ok(SessionLock { file })
+}
+
+fn lock_exclusive_with_timeout(file: &File) -> Result<()> {
+    let deadline = Instant::now() + SESSION_LOCK_TIMEOUT;
+    loop {
+        match file.try_lock_exclusive() {
+            Ok(()) => return Ok(()),
+            Err(error) if is_lock_busy(&error) && Instant::now() < deadline => {
+                thread::sleep(SESSION_LOCK_POLL);
+            }
+            Err(error) if is_lock_busy(&error) => {
+                return Err(CoreError::Persistence(format!(
+                    "timed out waiting for session lock after {}ms",
+                    SESSION_LOCK_TIMEOUT.as_millis()
+                )));
+            }
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+}
+
+fn open_session_file(path: &Path, append: bool) -> Result<File> {
+    let deadline = Instant::now() + SESSION_LOCK_TIMEOUT;
+    loop {
+        let mut options = OpenOptions::new();
+        options.read(true);
+        if append {
+            options.append(true);
+        } else {
+            options.write(true);
+        }
+        match options.open(path) {
+            Ok(file) => return Ok(file),
+            Err(error) if is_lock_busy(&error) && Instant::now() < deadline => {
+                thread::sleep(SESSION_LOCK_POLL);
+            }
+            Err(error) if is_lock_busy(&error) => {
+                return Err(CoreError::Persistence(format!(
+                    "timed out opening session file after {}ms",
+                    SESSION_LOCK_TIMEOUT.as_millis()
+                )));
+            }
+            Err(error) => return Err(io_error(error)),
+        }
+    }
+}
+
+fn is_lock_busy(error: &std::io::Error) -> bool {
+    error.raw_os_error() == Some(33)
+        || matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::PermissionDenied
+        )
 }
 
 pub(crate) fn session_dir(root: &Path, session_id: SessionId) -> PathBuf {

@@ -13,7 +13,6 @@ import {
   archiveAllConversations,
   archiveConversation,
   getSessionDetail,
-  getSessionConversation,
   listSessions,
   listProjects,
   getActiveProject,
@@ -656,23 +655,13 @@ export function App() {
       return;
     }
 
-    let cancelled = false;
-    getSessionConversation(activeId)
-      .then((conv) => {
-        if (cancelled) return;
-        const mapped = mapConversationToChatMessages(conv);
-        // Don't clobber a live transcript that appeared while loading.
-        if (!liveTranscripts.current.get(activeId)) {
-          setMessages(mapped);
-        }
-      })
-      .catch(() => {
-        /* leave the view empty rather than showing raw timeline lines */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [view, activeId]);
+    if (!detail || detail.summary.id !== activeId) return;
+    const mapped = mapConversationToChatMessages(detail.conversation ?? []);
+    // Don't clobber a live transcript that appeared while loading.
+    if (!liveTranscripts.current.get(activeId)) {
+      setMessages(mapped);
+    }
+  }, [view, activeId, detail]);
 
   // The active project's display name (folder name), for the StartView header.
   const activeProjectName = useMemo(() => {
@@ -2201,14 +2190,13 @@ export function App() {
         liveTranscripts.current.delete(sessionId);
         if (activeIdRef.current === sessionId) setMessages([]);
         await rewindSession(sessionId, toSeq);
-        const [nextDetail, nextConversation] = await Promise.all([
+        const [nextDetail] = await Promise.all([
           getSessionDetail(sessionId),
-          getSessionConversation(sessionId),
           refreshSessions(),
         ]);
         if (activeIdRef.current === sessionId) {
           setDetail(nextDetail);
-          setMessages(mapConversationToChatMessages(nextConversation));
+          setMessages(mapConversationToChatMessages(nextDetail.conversation ?? []));
         }
       } catch (error) {
         // keep current screen state if rewind fails, but never silently

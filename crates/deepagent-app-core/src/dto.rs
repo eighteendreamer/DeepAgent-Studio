@@ -439,6 +439,11 @@ pub struct SessionDetailDto {
     pub timeline: Vec<TimelineEntryDto>,
     /// Aggregated stats.
     pub stats: SessionStatsDto,
+    /// Reconstructed conversation projection for the main chat view. Keeping
+    /// this beside the timeline lets one session-open operation replay the
+    /// event log once instead of issuing a second full history read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub conversation: Vec<ConversationMessageDto>,
     /// Last durable model-Surface projection, restored through the existing
     /// detail query. Older sessions and payloads may have no snapshot.
     #[serde(default, skip_serializing_if = "Option::is_none")]

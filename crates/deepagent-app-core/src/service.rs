@@ -321,6 +321,7 @@ impl AppService {
             tool_success_rate: s.tool_success_rate(),
             duration_ms: s.duration_ms,
         };
+        let conversation = self.session_conversation_from_events(session_id, &events)?;
 
         Ok(SessionDetailDto {
             version: 1,
@@ -336,8 +337,20 @@ impl AppService {
             },
             timeline,
             stats,
+            conversation,
             context_usage: self.session_context_snapshot(session_id, &events)?,
         })
+    }
+
+    /// Resolve a session's persisted project without replaying its event log.
+    /// Used by open-target actions that only need the working directory.
+    pub fn session_project_path(&self, session_id: &str) -> Result<Option<String>> {
+        let id = SessionId::from_str(session_id)
+            .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+        match EventStore::new(&self.db).get_session(id)? {
+            Some(record) => Ok(record.project),
+            None => Err(CoreError::not_found(format!("session {session_id}"))),
+        }
     }
 
     fn session_context_snapshot(
@@ -432,13 +445,21 @@ impl AppService {
     /// `ToolCallRequested`/`ToolCallCompleted` fold into a tool card attached
     /// (in chronological position) to the current assistant turn.
     pub fn session_conversation(&self, session_id: &str) -> Result<Vec<ConversationMessageDto>> {
-        use deepagent_core::event::EventPayload;
-        use deepagent_core::message::Role;
-
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         let store = EventStore::new(&self.db);
         let events = store.load_session(id)?;
+        self.session_conversation_from_events(session_id, &events)
+    }
+
+    fn session_conversation_from_events(
+        &self,
+        session_id: &str,
+        events: &[deepagent_core::event::Event],
+    ) -> Result<Vec<ConversationMessageDto>> {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Role;
+
         if events.is_empty() {
             return Err(CoreError::not_found(format!("session {session_id}")));
         }

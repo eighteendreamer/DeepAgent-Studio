@@ -348,7 +348,7 @@ fn parse_verify_mode(mode: &str) -> deepagent_ssh::RemoteVerifyMode {
 }
 
 struct AppState {
-    service: Mutex<AppService>,
+    service: Arc<Mutex<AppService>>,
     settings: Arc<SettingsService>,
     secrets: Arc<dyn SecretStore>,
     /// Shared skills service. Wrapped in `Arc<Mutex>` so the chat service
@@ -422,6 +422,21 @@ struct AppState {
     mobile: Arc<AppMobileService>,
     /// Tokio runtime for async calls invoked from sync commands.
     rt: tokio::runtime::Runtime,
+}
+
+/// Run filesystem/database work outside Tauri's command dispatcher.
+///
+/// Tauri's async command wrapper does not make synchronous work non-blocking;
+/// the closure must be moved to the blocking pool explicitly. Keeping this
+/// boundary in one helper also makes failures visible to the IPC caller.
+async fn run_blocking<T, F>(task: F) -> Result<T, String>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|error| format!("blocking task failed: {error}"))?
 }
 
 /// Maximum idle time for an entry in [`AppState::pending_scans`] before the
@@ -589,40 +604,56 @@ struct SessionTitleUpdatedPayload {
 // ---- session / view commands ---------------------------------------------
 
 #[tauri::command]
-fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummaryDto>, String> {
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    svc.list_sessions().map_err(|e| e.to_string())
+async fn list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummaryDto>, String> {
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let svc = service.lock().map_err(|e| e.to_string())?;
+        svc.list_sessions().map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn search_sessions(
+async fn search_sessions(
     state: State<'_, AppState>,
     query: String,
     project: Option<String>,
     limit: Option<usize>,
 ) -> Result<Vec<SessionSearchHitDto>, String> {
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    svc.search_sessions(&query, project.as_deref(), limit.unwrap_or(50))
-        .map_err(|e| e.to_string())
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let svc = service.lock().map_err(|e| e.to_string())?;
+        svc.search_sessions(&query, project.as_deref(), limit.unwrap_or(50))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn session_detail(
+async fn session_detail(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<SessionDetailDto, String> {
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    svc.session_detail(&session_id).map_err(|e| e.to_string())
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let svc = service.lock().map_err(|e| e.to_string())?;
+        svc.session_detail(&session_id).map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn session_conversation(
+async fn session_conversation(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<Vec<ConversationMessageDto>, String> {
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    svc.session_conversation(&session_id)
-        .map_err(|e| e.to_string())
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let svc = service.lock().map_err(|e| e.to_string())?;
+        svc.session_conversation(&session_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -649,14 +680,18 @@ fn runtime_logs_for_session(
 }
 
 #[tauri::command]
-fn rename_session(
+async fn rename_session(
     state: State<'_, AppState>,
     session_id: String,
     title: String,
 ) -> Result<SessionSummaryDto, String> {
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    svc.rename_session(&session_id, &title)
-        .map_err(|e| e.to_string())
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let svc = service.lock().map_err(|e| e.to_string())?;
+        svc.rename_session(&session_id, &title)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -712,23 +747,25 @@ fn update_sidebar_preferences(
 }
 
 #[tauri::command]
-fn session_working_directory(
+async fn session_working_directory(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<String, String> {
-    let detail = state
-        .service
-        .lock()
-        .map_err(|e| e.to_string())?
-        .session_detail(&session_id)
-        .map_err(|e| e.to_string())?;
-    Ok(detail
-        .project_path
-        .unwrap_or_else(|| state.workspace.root_display()))
+    let service = Arc::clone(&state.service);
+    let fallback = state.workspace.root_display();
+    run_blocking(move || {
+        let project = service
+            .lock()
+            .map_err(|e| e.to_string())?
+            .session_project_path(&session_id)
+            .map_err(|e| e.to_string())?;
+        Ok(project.unwrap_or(fallback))
+    })
+    .await
 }
 
 #[tauri::command]
-fn open_session_target(
+async fn open_session_target(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     session_id: String,
@@ -738,7 +775,7 @@ fn open_session_target(
     if !deepagent_app_core::session_state_service::OPEN_TARGETS.contains(&target.as_str()) {
         return Err("unsupported open target".into());
     }
-    let path = session_working_directory(state, session_id.clone())?;
+    let path = session_working_directory(state, session_id.clone()).await?;
     if !Path::new(&path).is_dir() {
         return Err("会话工作目录不存在或不可访问".into());
     }
@@ -792,64 +829,83 @@ fn set_session_env_panel_auto_open(
 }
 
 #[tauri::command]
-fn commands(state: State<'_, AppState>, query: String) -> Result<Vec<CommandDto>, String> {
-    let mut roots = Vec::new();
-    if let Ok(Some(active)) = state.projects.active() {
-        roots.push(std::path::PathBuf::from(active));
-    }
-    roots.push(std::path::PathBuf::from(state.workspace.root_display()));
-    let projection = state
-        .plugins
-        .runtime_projection()
-        .map_err(|e| e.to_string())?;
-    Ok(deepagent_app_core::commands_from_roots_and_plugins(
-        &query,
-        roots,
-        &projection.command_roots,
-    ))
+async fn commands(state: State<'_, AppState>, query: String) -> Result<Vec<CommandDto>, String> {
+    let projects = Arc::clone(&state.projects);
+    let workspace = Arc::clone(&state.workspace);
+    let plugins = Arc::clone(&state.plugins);
+    run_blocking(move || {
+        let mut roots = Vec::new();
+        if let Ok(Some(active)) = projects.active() {
+            roots.push(std::path::PathBuf::from(active));
+        }
+        roots.push(std::path::PathBuf::from(workspace.root_display()));
+        let projection = plugins.runtime_projection().map_err(|e| e.to_string())?;
+        Ok(deepagent_app_core::commands_from_roots_and_plugins(
+            &query,
+            roots,
+            &projection.command_roots,
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
-fn compute_diff(
+async fn compute_diff(
     state: State<'_, AppState>,
     old: String,
     new: String,
 ) -> Result<DiffResult, String> {
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    Ok(svc.diff(&old, &new))
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let svc = service.lock().map_err(|e| e.to_string())?;
+        Ok(svc.diff(&old, &new))
+    })
+    .await
 }
 
 #[tauri::command]
-fn fork_session(
+async fn fork_session(
     state: State<'_, AppState>,
     session_id: String,
     at_seq: u64,
 ) -> Result<ForkResultDto, String> {
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    svc.fork_session(&session_id, at_seq)
-        .map_err(|e| e.to_string())
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let svc = service.lock().map_err(|e| e.to_string())?;
+        svc.fork_session(&session_id, at_seq)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn rewind_session(
+async fn rewind_session(
     state: State<'_, AppState>,
     session_id: String,
     to_seq: u64,
 ) -> Result<RewindResultDto, String> {
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    svc.rewind_session(&session_id, to_seq)
-        .map_err(|e| e.to_string())
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let svc = service.lock().map_err(|e| e.to_string())?;
+        svc.rewind_session(&session_id, to_seq)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn export_transcript(
+async fn export_transcript(
     state: State<'_, AppState>,
     session_id: String,
     format: String,
 ) -> Result<TranscriptDto, String> {
-    let svc = state.service.lock().map_err(|e| e.to_string())?;
-    svc.export_transcript(&session_id, &format)
-        .map_err(|e| e.to_string())
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let svc = service.lock().map_err(|e| e.to_string())?;
+        svc.export_transcript(&session_id, &format)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1096,17 +1152,22 @@ fn set_chat_model(state: State<'_, AppState>, model_id: String) -> Result<Settin
 // ---- skill commands -------------------------------------------------------
 
 fn sync_plugin_skill_roots(state: &AppState) -> Result<(), String> {
-    let projection = state
-        .plugins
-        .runtime_projection()
-        .map_err(|e| e.to_string())?;
-    let mut skills = state.skills.lock().map_err(|e| e.to_string())?;
+    sync_plugin_skill_roots_from_services(&state.plugins, &state.skills, &state.chat)
+}
+
+fn sync_plugin_skill_roots_from_services(
+    plugins: &PluginService,
+    skills: &Mutex<SkillsService>,
+    chat: &ChatService,
+) -> Result<(), String> {
+    let projection = plugins.runtime_projection().map_err(|e| e.to_string())?;
+    let mut skills = skills.lock().map_err(|e| e.to_string())?;
     if skills.plugin_roots() != projection.skill_roots.as_slice() {
         skills
             .set_plugin_roots(projection.skill_roots)
             .map_err(|e| e.to_string())?;
         drop(skills);
-        state.chat.reset_all_sent_skills();
+        chat.reset_all_sent_skills();
     }
     Ok(())
 }
@@ -1123,10 +1184,16 @@ async fn sync_plugin_runtime_after_change(state: &AppState) -> Result<(), String
 }
 
 #[tauri::command]
-fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillDto>, String> {
-    sync_plugin_skill_roots(state.inner())?;
-    let svc = state.skills.lock().map_err(|e| e.to_string())?;
-    Ok(svc.list())
+async fn list_skills(state: State<'_, AppState>) -> Result<Vec<SkillDto>, String> {
+    let plugins = Arc::clone(&state.plugins);
+    let skills = Arc::clone(&state.skills);
+    let chat = Arc::clone(&state.chat);
+    run_blocking(move || {
+        sync_plugin_skill_roots_from_services(&plugins, &skills, &chat)?;
+        let svc = skills.lock().map_err(|e| e.to_string())?;
+        Ok(svc.list())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -3855,7 +3922,7 @@ fn fuzzy_file_score(query: &str, rel_path: &str, name: &str, is_dir: bool) -> Op
 }
 
 #[tauri::command]
-fn search_project_files(
+async fn search_project_files(
     state: State<'_, AppState>,
     project_path: Option<String>,
     query: Option<String>,
@@ -3864,177 +3931,192 @@ fn search_project_files(
     let root = canonicalize_path(&resolve_project_root(&state, project_path)?)?;
     let q = query.unwrap_or_default();
     let limit = limit.unwrap_or(30).clamp(1, 100);
-    let mut scored: Vec<(i64, ProjectFileEntryDto)> = Vec::new();
+    run_blocking(move || {
+        let mut scored: Vec<(i64, ProjectFileEntryDto)> = Vec::new();
 
-    let mut builder = WalkBuilder::new(&root);
-    builder
-        .hidden(false)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .parents(true)
-        .require_git(false)
-        .filter_entry(|entry| {
-            let Some(name) = entry.file_name().to_str() else {
-                return true;
+        let mut builder = WalkBuilder::new(&root);
+        builder
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(true)
+            .git_exclude(true)
+            .parents(true)
+            .require_git(false)
+            .filter_entry(|entry| {
+                let Some(name) = entry.file_name().to_str() else {
+                    return true;
+                };
+                !(entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
+                    && should_skip_search_dir(name))
+            });
+
+        for result in builder.build().take(20_000) {
+            let entry = match result {
+                Ok(entry) => entry,
+                Err(_) => continue,
             };
-            !(entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false)
-                && should_skip_search_dir(name))
-        });
-
-    for result in builder.build().take(20_000) {
-        let entry = match result {
-            Ok(entry) => entry,
-            Err(_) => continue,
-        };
-        if entry.path() == root {
-            continue;
-        }
-        let file_type = match entry.file_type() {
-            Some(file_type) if !file_type.is_symlink() => file_type,
-            _ => continue,
-        };
-        let visible_path = entry.path().to_path_buf();
-        let canonical_path = match canonicalize_path(&visible_path) {
-            Ok(path) if path.starts_with(&root) => path,
-            _ => continue,
-        };
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let rel_path = visible_path
-            .strip_prefix(&root)
-            .map(normalize_relative_path)
-            .unwrap_or_else(|_| name.clone());
-        let is_dir = file_type.is_dir();
-        let Some(score) = fuzzy_file_score(&q, &rel_path, &name, is_dir) else {
-            continue;
-        };
-        let meta = entry.metadata().ok();
-        let ext = visible_path
-            .extension()
-            .map(|s| s.to_string_lossy().to_lowercase())
-            .unwrap_or_default();
-        scored.push((
-            score,
-            ProjectFileEntryDto {
-                path: canonical_path.to_string_lossy().into_owned(),
-                name,
-                rel_path,
-                is_dir,
-                size_bytes: if file_type.is_file() {
-                    meta.as_ref().map(|m| m.len())
-                } else {
-                    None
+            if entry.path() == root {
+                continue;
+            }
+            let file_type = match entry.file_type() {
+                Some(file_type) if !file_type.is_symlink() => file_type,
+                _ => continue,
+            };
+            let visible_path = entry.path().to_path_buf();
+            let canonical_path = match canonicalize_path(&visible_path) {
+                Ok(path) if path.starts_with(&root) => path,
+                _ => continue,
+            };
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let rel_path = visible_path
+                .strip_prefix(&root)
+                .map(normalize_relative_path)
+                .unwrap_or_else(|_| name.clone());
+            let is_dir = file_type.is_dir();
+            let Some(score) = fuzzy_file_score(&q, &rel_path, &name, is_dir) else {
+                continue;
+            };
+            let meta = entry.metadata().ok();
+            let ext = visible_path
+                .extension()
+                .map(|s| s.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            scored.push((
+                score,
+                ProjectFileEntryDto {
+                    path: canonical_path.to_string_lossy().into_owned(),
+                    name,
+                    rel_path,
+                    is_dir,
+                    size_bytes: if file_type.is_file() {
+                        meta.as_ref().map(|m| m.len())
+                    } else {
+                        None
+                    },
+                    ext,
                 },
-                ext,
-            },
-        ));
-    }
+            ));
+        }
 
-    scored.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then_with(|| b.1.is_dir.cmp(&a.1.is_dir))
-            .then_with(|| {
-                a.1.rel_path
-                    .to_lowercase()
-                    .cmp(&b.1.rel_path.to_lowercase())
-            })
-    });
-    let entries = scored
-        .into_iter()
-        .take(limit)
-        .map(|(_, entry)| entry)
-        .collect();
+        scored.sort_by(|a, b| {
+            a.0.cmp(&b.0)
+                .then_with(|| b.1.is_dir.cmp(&a.1.is_dir))
+                .then_with(|| {
+                    a.1.rel_path
+                        .to_lowercase()
+                        .cmp(&b.1.rel_path.to_lowercase())
+                })
+        });
+        let entries = scored
+            .into_iter()
+            .take(limit)
+            .map(|(_, entry)| entry)
+            .collect();
 
-    Ok(ProjectFileSearchDto {
-        root_path: root.to_string_lossy().into_owned(),
-        entries,
+        Ok(ProjectFileSearchDto {
+            root_path: root.to_string_lossy().into_owned(),
+            entries,
+        })
     })
+    .await
 }
 
 // ---- project map -----------------------------------------------------------
 
 #[tauri::command]
-fn project_map_status(
+async fn project_map_status(
     state: State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<ProjectMapStatusDto, String> {
     let root = resolve_project_root(&state, project_path)?;
-    Ok(state.project_map.status(&root))
+    let project_map = Arc::clone(&state.project_map);
+    run_blocking(move || Ok(project_map.status(&root))).await
 }
 
 #[tauri::command]
-fn project_map_overview(
+async fn project_map_overview(
     state: State<'_, AppState>,
     project_path: Option<String>,
 ) -> Result<ProjectMapOverviewDto, String> {
     let root = resolve_project_root(&state, project_path)?;
-    Ok(state.project_map.overview(&root))
+    let project_map = Arc::clone(&state.project_map);
+    run_blocking(move || Ok(project_map.overview(&root))).await
 }
 
 #[tauri::command]
-fn project_map_search(
+async fn project_map_search(
     state: State<'_, AppState>,
     project_path: Option<String>,
     query: String,
     limit: Option<usize>,
 ) -> Result<Vec<ProjectMapHitDto>, String> {
     let root = resolve_project_root(&state, project_path)?;
-    state
-        .project_map
-        .search(&root, &query, limit.unwrap_or(20).clamp(1, 50))
-        .map_err(|e| e.to_string())
+    let project_map = Arc::clone(&state.project_map);
+    run_blocking(move || {
+        project_map
+            .search(&root, &query, limit.unwrap_or(20).clamp(1, 50))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn project_map_node(
+async fn project_map_node(
     state: State<'_, AppState>,
     project_path: Option<String>,
     node_id: String,
 ) -> Result<Option<ProjectMapNodeDto>, String> {
     let root = resolve_project_root(&state, project_path)?;
-    state
-        .project_map
-        .node(&root, &node_id)
-        .map_err(|e| e.to_string())
+    let project_map = Arc::clone(&state.project_map);
+    run_blocking(move || project_map.node(&root, &node_id).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn project_map_neighbors(
+async fn project_map_neighbors(
     state: State<'_, AppState>,
     project_path: Option<String>,
     node_id: String,
 ) -> Result<ProjectMapNeighborsDto, String> {
     let root = resolve_project_root(&state, project_path)?;
-    state
-        .project_map
-        .neighbors(&root, &node_id)
-        .map_err(|e| e.to_string())
+    let project_map = Arc::clone(&state.project_map);
+    run_blocking(move || {
+        project_map
+            .neighbors(&root, &node_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn project_map_graph(
+async fn project_map_graph(
     state: State<'_, AppState>,
     project_path: Option<String>,
     limit: Option<usize>,
 ) -> Result<ProjectMapGraphDto, String> {
     let root = resolve_project_root(&state, project_path)?;
-    state
-        .project_map
-        .graph(&root, limit.unwrap_or(80))
-        .map_err(|e| e.to_string())
+    let project_map = Arc::clone(&state.project_map);
+    run_blocking(move || {
+        project_map
+            .graph(&root, limit.unwrap_or(80))
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn project_map_impact(
+async fn project_map_impact(
     state: State<'_, AppState>,
     project_path: Option<String>,
     target: String,
 ) -> Result<ProjectMapImpactDto, String> {
     let root = resolve_project_root(&state, project_path)?;
-    state
-        .project_map
-        .impact(&root, &target)
-        .map_err(|e| e.to_string())
+    let project_map = Arc::clone(&state.project_map);
+    run_blocking(move || {
+        project_map
+            .impact(&root, &target)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
@@ -4054,13 +4136,15 @@ async fn project_map_refresh_deep(
 // ---- projects (sidebar: folders → sessions) -------------------------------
 
 #[tauri::command]
-fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectDto>, String> {
-    state.projects.list().map_err(|e| e.to_string())
+async fn list_projects(state: State<'_, AppState>) -> Result<Vec<ProjectDto>, String> {
+    let projects = Arc::clone(&state.projects);
+    run_blocking(move || projects.list().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn active_project(state: State<'_, AppState>) -> Result<Option<String>, String> {
-    state.projects.active().map_err(|e| e.to_string())
+async fn active_project(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let projects = Arc::clone(&state.projects);
+    run_blocking(move || projects.active().map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
@@ -4179,98 +4263,125 @@ fn open_project_in_file_manager(path: String) -> Result<(), String> {
 // ---- archived conversations ----------------------------------------------
 
 #[tauri::command]
-fn archive_project_conversations(
+async fn archive_project_conversations(
     state: State<'_, AppState>,
     project_path: String,
 ) -> Result<ArchiveProjectResultDto, String> {
-    state
-        .archive
-        .archive_project(&project_path)
-        .map_err(|e| e.to_string())
+    let archive = Arc::clone(&state.archive);
+    run_blocking(move || {
+        archive
+            .archive_project(&project_path)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn archive_conversation(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
-    let archived = state
-        .archive
-        .archive_session(&session_id)
-        .map_err(|e| e.to_string())?;
-    if archived {
-        state
-            .session_state
-            .clear_session(&session_id)
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(archived)
-}
-
-#[tauri::command]
-fn archive_all_conversations(state: State<'_, AppState>) -> Result<u32, String> {
-    let sessions = {
-        let svc = state.service.lock().map_err(|e| e.to_string())?;
-        svc.list_sessions().map_err(|e| e.to_string())?
-    };
-    let mut archived_count = 0u32;
-    for session in sessions {
-        if state
-            .archive
-            .archive_session(&session.id)
-            .map_err(|e| e.to_string())?
-        {
-            state
-                .session_state
-                .clear_session(&session.id)
-                .map_err(|e| e.to_string())?;
-            archived_count += 1;
-        }
-    }
-    Ok(archived_count)
-}
-
-#[tauri::command]
-fn list_archived_conversations(
-    state: State<'_, AppState>,
-) -> Result<Vec<ArchivedConversationDto>, String> {
-    state.archive.list().map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn unarchive_conversation(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
-    state
-        .archive
-        .unarchive_session(&session_id)
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
-fn delete_archived_conversation(
+async fn archive_conversation(
     state: State<'_, AppState>,
     session_id: String,
 ) -> Result<bool, String> {
-    let deleted = state
-        .archive
-        .delete_archived_session(&session_id)
-        .map_err(|e| e.to_string())?;
-    if deleted {
-        state
-            .session_state
-            .purge_session_state(&session_id)
+    let archive = Arc::clone(&state.archive);
+    let session_state = Arc::clone(&state.session_state);
+    run_blocking(move || {
+        let archived = archive
+            .archive_session(&session_id)
             .map_err(|e| e.to_string())?;
-    }
-    Ok(deleted)
+        if archived {
+            session_state
+                .clear_session(&session_id)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(archived)
+    })
+    .await
 }
 
 #[tauri::command]
-fn delete_all_archived_conversations(state: State<'_, AppState>) -> Result<u32, String> {
-    let archived = state.archive.list().map_err(|e| e.to_string())?;
-    let deleted = state.archive.delete_all().map_err(|e| e.to_string())?;
-    for session in archived {
-        state
-            .session_state
-            .purge_session_state(&session.session_id)
+async fn archive_all_conversations(state: State<'_, AppState>) -> Result<u32, String> {
+    let archive = Arc::clone(&state.archive);
+    let session_state = Arc::clone(&state.session_state);
+    let service = Arc::clone(&state.service);
+    run_blocking(move || {
+        let sessions = {
+            let svc = service.lock().map_err(|e| e.to_string())?;
+            svc.list_sessions().map_err(|e| e.to_string())?
+        };
+        let mut archived_count = 0u32;
+        for session in sessions {
+            if archive
+                .archive_session(&session.id)
+                .map_err(|e| e.to_string())?
+            {
+                session_state
+                    .clear_session(&session.id)
+                    .map_err(|e| e.to_string())?;
+                archived_count += 1;
+            }
+        }
+        Ok(archived_count)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_archived_conversations(
+    state: State<'_, AppState>,
+) -> Result<Vec<ArchivedConversationDto>, String> {
+    let archive = Arc::clone(&state.archive);
+    run_blocking(move || archive.list().map_err(|e| e.to_string())).await
+}
+
+#[tauri::command]
+async fn unarchive_conversation(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<bool, String> {
+    let archive = Arc::clone(&state.archive);
+    run_blocking(move || {
+        archive
+            .unarchive_session(&session_id)
+            .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_archived_conversation(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<bool, String> {
+    let archive = Arc::clone(&state.archive);
+    let session_state = Arc::clone(&state.session_state);
+    run_blocking(move || {
+        let deleted = archive
+            .delete_archived_session(&session_id)
             .map_err(|e| e.to_string())?;
-    }
-    Ok(deleted)
+        if deleted {
+            session_state
+                .purge_session_state(&session_id)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(deleted)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_all_archived_conversations(state: State<'_, AppState>) -> Result<u32, String> {
+    let archive = Arc::clone(&state.archive);
+    let session_state = Arc::clone(&state.session_state);
+    run_blocking(move || {
+        let archived = archive.list().map_err(|e| e.to_string())?;
+        let deleted = archive.delete_all().map_err(|e| e.to_string())?;
+        for session in archived {
+            session_state
+                .purge_session_state(&session.session_id)
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(deleted)
+    })
+    .await
 }
 
 // ---- terminal (interactive command in the active project) -----------------
@@ -5047,193 +5158,226 @@ async fn ssh_pty_resize(
 // ---- git (read-only project/worktree state for the Git Workbench) ---------
 
 #[tauri::command]
-fn git_project_status(
+async fn git_project_status(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<GitProjectStatusDto, String> {
-    state.git.project_status(&path).map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.project_status(&path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_projects_status(
+async fn git_projects_status(
     state: State<'_, AppState>,
     paths: Option<Vec<String>>,
 ) -> Result<Vec<GitProjectStatusDto>, String> {
-    state.git.projects_status(paths).map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.projects_status(paths).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_branch_list(state: State<'_, AppState>, path: String) -> Result<Vec<GitBranchDto>, String> {
-    state.git.branch_list(&path).map_err(|e| e.to_string())
+async fn git_branch_list(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<GitBranchDto>, String> {
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.branch_list(&path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_checkout_branch(
+async fn git_checkout_branch(
     state: State<'_, AppState>,
     path: String,
     branch: String,
 ) -> Result<GitOperationResultDto, String> {
-    state
-        .git
-        .checkout_branch(&path, &branch)
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.checkout_branch(&path, &branch)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_create_branch(
+async fn git_create_branch(
     state: State<'_, AppState>,
     path: String,
     name: String,
     start_point: Option<String>,
 ) -> Result<GitOperationResultDto, String> {
-    state
-        .git
-        .create_branch(&path, &name, start_point.as_deref())
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.create_branch(&path, &name, start_point.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_changes(state: State<'_, AppState>, path: String) -> Result<GitChangesDto, String> {
-    state.git.changes(&path).map_err(|e| e.to_string())
+async fn git_changes(state: State<'_, AppState>, path: String) -> Result<GitChangesDto, String> {
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.changes(&path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_diff(
+async fn git_diff(
     state: State<'_, AppState>,
     path: String,
     file_path: String,
     staged: bool,
 ) -> Result<GitDiffDto, String> {
-    state
-        .git
-        .diff(&path, &file_path, staged)
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.diff(&path, &file_path, staged)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_log(
+async fn git_log(
     state: State<'_, AppState>,
     path: String,
     limit: Option<u32>,
 ) -> Result<Vec<GitLogEntryDto>, String> {
-    state.git.log(&path, limit).map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.log(&path, limit).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_commit_diff(
+async fn git_commit_diff(
     state: State<'_, AppState>,
     path: String,
     commit: String,
     file_path: String,
 ) -> Result<GitDiffDto, String> {
-    state
-        .git
-        .commit_diff(&path, &commit, &file_path)
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.commit_diff(&path, &commit, &file_path)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_stage(
+async fn git_stage(
     state: State<'_, AppState>,
     path: String,
     files: Vec<String>,
 ) -> Result<GitOperationResultDto, String> {
-    state.git.stage(&path, &files).map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.stage(&path, &files).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_unstage(
+async fn git_unstage(
     state: State<'_, AppState>,
     path: String,
     files: Vec<String>,
 ) -> Result<GitOperationResultDto, String> {
-    state.git.unstage(&path, &files).map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.unstage(&path, &files).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_apply_hunk(
+async fn git_apply_hunk(
     state: State<'_, AppState>,
     path: String,
     file_path: String,
     patch: String,
     staged: bool,
 ) -> Result<GitOperationResultDto, String> {
-    state
-        .git
-        .apply_hunk(&path, &file_path, &patch, staged)
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.apply_hunk(&path, &file_path, &patch, staged)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_commit(
+async fn git_commit(
     state: State<'_, AppState>,
     path: String,
     message: String,
     files: Option<Vec<String>>,
 ) -> Result<GitOperationResultDto, String> {
-    state
-        .git
-        .commit(&path, &message, files.as_deref())
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.commit(&path, &message, files.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_commit_message_draft(
+async fn git_commit_message_draft(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<GitCommitMessageDraftDto, String> {
-    state
-        .git
-        .commit_message_draft(&path)
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.commit_message_draft(&path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_push_preview(state: State<'_, AppState>, path: String) -> Result<GitPushPreviewDto, String> {
-    state.git.push_preview(&path).map_err(|e| e.to_string())
+async fn git_push_preview(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<GitPushPreviewDto, String> {
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.push_preview(&path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_push_risk_scan(
+async fn git_push_risk_scan(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<GitPushRiskScanDto, String> {
-    state.git.push_risk_scan(&path).map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.push_risk_scan(&path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_push(
+async fn git_push(
     state: State<'_, AppState>,
     path: String,
     remote: Option<String>,
     branch: Option<String>,
 ) -> Result<GitOperationResultDto, String> {
-    state
-        .git
-        .push(&path, remote.as_deref(), branch.as_deref())
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.push(&path, remote.as_deref(), branch.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_fetch(
+async fn git_fetch(
     state: State<'_, AppState>,
     path: String,
     all: bool,
 ) -> Result<GitOperationResultDto, String> {
-    state.git.fetch(&path, all).map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.fetch(&path, all).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_pull_update(
+async fn git_pull_update(
     state: State<'_, AppState>,
     path: String,
 ) -> Result<GitOperationResultDto, String> {
-    state.git.pull_update(&path).map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.pull_update(&path).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_worktrees(state: State<'_, AppState>, path: String) -> Result<Vec<GitWorktreeDto>, String> {
-    state.git.worktrees(&path).map_err(|e| e.to_string())
+async fn git_worktrees(
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<Vec<GitWorktreeDto>, String> {
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.worktrees(&path).map_err(|e| e.to_string())).await
 }
 
 /// §6.2 trust: current trust status for a project path (trusted + whether
@@ -5266,75 +5410,86 @@ fn list_trusted_projects(state: State<'_, AppState>) -> Result<Vec<String>, Stri
 }
 
 #[tauri::command]
-fn git_compare_refs(
+async fn git_compare_refs(
     state: State<'_, AppState>,
     path: String,
     base_ref: String,
     target_ref: String,
 ) -> Result<GitRefCompareDto, String> {
-    state
-        .git
-        .compare_refs(&path, &base_ref, &target_ref)
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.compare_refs(&path, &base_ref, &target_ref)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_ref_diff(
+async fn git_ref_diff(
     state: State<'_, AppState>,
     path: String,
     base_ref: String,
     target_ref: String,
     file_path: Option<String>,
 ) -> Result<GitDiffDto, String> {
-    state
-        .git
-        .ref_diff(&path, &base_ref, &target_ref, file_path.as_deref())
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.ref_diff(&path, &base_ref, &target_ref, file_path.as_deref())
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_batch_commit_preview(
+async fn git_batch_commit_preview(
     state: State<'_, AppState>,
     targets: Vec<String>,
 ) -> Result<Vec<GitBatchCommitPreviewItemDto>, String> {
-    state
-        .git
-        .batch_commit_preview(&targets)
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.batch_commit_preview(&targets)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_batch_commit(
+async fn git_batch_commit(
     state: State<'_, AppState>,
     targets: Vec<GitBatchCommitTargetDto>,
     message: String,
     stage_all: bool,
 ) -> Result<Vec<GitBatchProjectResultDto>, String> {
-    state
-        .git
-        .batch_commit(&targets, &message, stage_all)
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.batch_commit(&targets, &message, stage_all)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 #[tauri::command]
-fn git_batch_push(
+async fn git_batch_push(
     state: State<'_, AppState>,
     targets: Vec<String>,
 ) -> Result<Vec<GitBatchProjectResultDto>, String> {
-    state.git.batch_push(&targets).map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || git.batch_push(&targets).map_err(|e| e.to_string())).await
 }
 
 #[tauri::command]
-fn git_batch_commit_and_push(
+async fn git_batch_commit_and_push(
     state: State<'_, AppState>,
     targets: Vec<GitBatchCommitTargetDto>,
     message: String,
     stage_all: bool,
 ) -> Result<Vec<GitBatchProjectResultDto>, String> {
-    state
-        .git
-        .batch_commit_and_push(&targets, &message, stage_all)
-        .map_err(|e| e.to_string())
+    let git = Arc::clone(&state.git);
+    run_blocking(move || {
+        git.batch_commit_and_push(&targets, &message, stage_all)
+            .map_err(|e| e.to_string())
+    })
+    .await
 }
 
 // ---- file preview (office-agent: preview office files in the panel) -------
@@ -6633,7 +6788,7 @@ pub fn run() {
             });
 
             app.manage(AppState {
-                service: Mutex::new(service),
+                service: Arc::new(Mutex::new(service)),
                 settings: settings_arc,
                 secrets: sqlite_secrets,
                 skills,

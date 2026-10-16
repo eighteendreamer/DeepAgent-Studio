@@ -19,6 +19,12 @@ let availableUpdate: Update | null = null;
 let checkPromise: Promise<boolean> | null = null;
 let downloadPromise: Promise<boolean> | null = null;
 
+// Update discovery is best-effort background work. Bound both a single
+// endpoint and the complete proxy fallback chain so an unreachable update
+// service cannot keep an IPC request pending for minutes.
+const UPDATE_CHECK_ATTEMPT_TIMEOUT_MS = 5_000;
+const UPDATE_CHECK_TOTAL_TIMEOUT_MS = 12_000;
+
 function inTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -38,9 +44,12 @@ function updateProxyCandidates(): Array<string | undefined> {
 
 async function checkWithFallbacks(): Promise<Update | null> {
   let lastError: unknown = null;
+  const deadline = Date.now() + UPDATE_CHECK_TOTAL_TIMEOUT_MS;
   for (const proxy of updateProxyCandidates()) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
     const options: CheckOptions = {
-      timeout: 20_000,
+      timeout: Math.min(UPDATE_CHECK_ATTEMPT_TIMEOUT_MS, remaining),
       ...(proxy ? { proxy } : {}),
     };
     try {
