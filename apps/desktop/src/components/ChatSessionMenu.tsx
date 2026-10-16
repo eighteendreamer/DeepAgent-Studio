@@ -1,4 +1,4 @@
-import { Archive, ArrowUpRightFromSquare, Check, Clock, Copy, Ellipsis, Eye, EyeOff, Folder, GitBranch, Layers, Pencil, Pin, Plus, Share, SquareArrowOutUpRight } from "lucide-react";
+import { Archive, ArrowUpRightFromSquare, Check, Clock, Copy, Ellipsis, Eye, EyeOff, Folder, GitBranch, Pencil, Pin, Share, SquareArrowOutUpRight } from "lucide-react";
 import type { Project, SidebarSection } from "../types";
 import { OPEN_TARGET_OPTIONS } from "./openTargets";
 import {
@@ -33,8 +33,8 @@ type Props = SessionMenuOptions & {
 
 export function ChatSessionMenu({ title, pinned, open, onOpenChange, contextMenuPosition,
   onPin, onRename, onArchive, onCopy, onFork, onOpenAutomation, onOpenInNewWindow,
-  projects = [], sections = [], sectionId, unread, defaultOpenTarget,
-  onSetUnread, onOpenProject, onSetSection, onCreateSection, onCopyDeepLink, onCopyDirectory, onOpenTarget,
+  projects = [], unread, defaultOpenTarget,
+  onSetUnread, onOpenProject, onCopyDeepLink, onCopyDirectory, onOpenTarget,
 }: Props) {
   const item = "gap-2 text-[13px]";
   const icon = "h-3.5 w-3.5 text-text-secondary";
@@ -59,15 +59,6 @@ export function ChatSessionMenu({ title, pinned, open, onOpenChange, contextMenu
           {projects.map((project) => <DropdownMenuItem key={project.path} className={item} onSelect={() => onOpenProject?.(project.path)}>
             <Folder className={icon}/><span className="max-w-64 truncate">{project.name}</span>
           </DropdownMenuItem>)}
-        </DropdownMenuSubContent>
-      </DropdownMenuSub>
-      <DropdownMenuSub><DropdownMenuSubTrigger className={item}><Layers className={icon}/>分区</DropdownMenuSubTrigger>
-        <DropdownMenuSubContent className="max-h-80 min-w-48 overflow-y-auto" data-custom-contextmenu="1">
-          {sections.map((section) => <DropdownMenuItem key={section.id} onSelect={() => onSetSection?.(section.id)}>
-            {section.name}{sectionId === section.id && <Check className="ml-auto h-3.5 w-3.5"/>}
-          </DropdownMenuItem>)}
-          {sections.length > 0 && <DropdownMenuSeparator/>}
-          <DropdownMenuItem className={item} onSelect={onCreateSection}><Plus className={icon}/>创建分区…</DropdownMenuItem>
         </DropdownMenuSubContent>
       </DropdownMenuSub>
       <DropdownMenuSeparator/>
