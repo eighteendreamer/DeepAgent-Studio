@@ -440,7 +440,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                   className="flex h-5 w-5 items-center justify-center rounded text-text-secondary hover:bg-sidebar-highlight"
 
                 >
-                  <FontAwesomeIcon icon={["fas", "box-archive"]} className="text-[10px]" />
+                  <Archive className="h-3.5 w-3.5 shrink-0" />
                 </button></HoverInfo>
               </div>
             </>
