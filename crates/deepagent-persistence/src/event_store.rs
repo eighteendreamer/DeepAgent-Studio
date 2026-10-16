@@ -1022,6 +1022,86 @@ impl<'db> EventStore<'db> {
         }
         Ok(removed)
     }
+
+    /// Re-point every session of `old_project` at `new_project` and return how
+    /// many moved.
+    ///
+    /// The session file header is the truth for the project binding —
+    /// [`Self::recover_orphaned_session_files`] re-derives the row from it — so
+    /// each file is re-stamped first and the SQLite projection follows. A
+    /// failed projection update leaves the row on the old project, which the
+    /// next attempt selects again.
+    pub fn move_project_sessions(&self, old_project: &str, new_project: &str) -> Result<u32> {
+        let targets: Vec<SessionId> = self.db.with_conn(|c| {
+            let mut stmt = c
+                .prepare(
+                    "SELECT s.id FROM sessions s
+                     JOIN session_file_state f ON f.session_id = s.id
+                     WHERE s.project = ?1",
+                )
+                .map_err(map_sqlite)?;
+            let rows = stmt
+                .query_map(params![old_project], |row| row.get::<_, String>(0))
+                .map_err(map_sqlite)?;
+            let mut ids = Vec::new();
+            for row in rows {
+                let raw = row.map_err(map_sqlite)?;
+                let id = raw
+                    .parse::<SessionId>()
+                    .map_err(|e| CoreError::Persistence(e.to_string()))?;
+                ids.push(id);
+            }
+            Ok(ids)
+        })?;
+        for session_id in &targets {
+            self.move_session_project(*session_id, new_project)?;
+        }
+        Ok(targets.len() as u32)
+    }
+
+    fn move_session_project(&self, session_id: SessionId, new_project: &str) -> Result<()> {
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        let rewritten = session_files::rewrite_header_project(
+            &self.db.session_files_root(),
+            session_id,
+            new_project,
+        )?;
+        let projection_result = self.db.with_conn(|c| {
+            let tx = c.unchecked_transaction().map_err(map_sqlite)?;
+            tx.execute(
+                "UPDATE sessions SET project = ?2 WHERE id = ?1",
+                params![session_id.to_string(), new_project],
+            )
+            .map_err(map_sqlite)?;
+            tx.execute(
+                "UPDATE session_file_state SET generation = ?2, byte_size = ?3 WHERE session_id = ?1",
+                params![
+                    session_id.to_string(),
+                    rewritten.generation as i64,
+                    rewritten.byte_len as i64
+                ],
+            )
+            .map_err(map_sqlite)?;
+            tx.commit().map_err(map_sqlite)
+        });
+        if let Err(error) = projection_result {
+            tracing::error!(
+                %session_id,
+                %error,
+                "session project header moved but SQLite projection update failed"
+            );
+            return Err(error);
+        }
+        if let Err(error) = session_files::prune_older_generations(
+            &self.db.session_files_root(),
+            session_id,
+            rewritten.generation,
+        ) {
+            tracing::warn!(%session_id, %error, "could not remove obsolete session generations");
+        }
+        Ok(())
+    }
 }
 
 fn replace_search_index(
@@ -2011,6 +2091,99 @@ mod tests {
         let all = store.list_sessions().unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].id, sid);
+    }
+
+    /// The session file header is the truth that
+    /// [`EventStore::recover_orphaned_session_files`] re-derives a row from, so
+    /// a project move must land in both stores and must not break the append
+    /// cursor that the generation bump invalidates.
+    #[test]
+    fn move_project_sessions_moves_header_and_projection_together() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let moved_id = SessionId::new();
+        let untouched_id = SessionId::new();
+        let store = EventStore::new(&db);
+        store
+            .create_session_full(
+                moved_id,
+                Some("moved"),
+                deepagent_core::session_mode::SessionMode::Normal,
+                Some("/old/proj"),
+                clock.now(),
+            )
+            .unwrap();
+        store
+            .create_session_full(
+                untouched_id,
+                Some("untouched"),
+                deepagent_core::session_mode::SessionMode::Normal,
+                Some("/other/proj"),
+                clock.now(),
+            )
+            .unwrap();
+        for _ in 0..2 {
+            store
+                .append(
+                    moved_id,
+                    EventPayload::MessageAppended {
+                        message: Message::user("hi"),
+                    },
+                    clock.now(),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            store
+                .move_project_sessions("/old/proj", "/new/proj")
+                .unwrap(),
+            1
+        );
+
+        let project_of = |id: SessionId| {
+            store
+                .list_sessions()
+                .unwrap()
+                .into_iter()
+                .find(|s| s.id == id)
+                .and_then(|s| s.project)
+        };
+        assert_eq!(project_of(moved_id).as_deref(), Some("/new/proj"));
+        assert_eq!(project_of(untouched_id).as_deref(), Some("/other/proj"));
+
+        let loaded = session_files::load(&db.session_files_root(), moved_id)
+            .unwrap()
+            .expect("session file");
+        assert_eq!(loaded.header.project.as_deref(), Some("/new/proj"));
+        assert_eq!(loaded.events.len(), 2, "event stream must stay intact");
+
+        let next = store
+            .append(
+                moved_id,
+                EventPayload::MessageAppended {
+                    message: Message::user("again"),
+                },
+                clock.now(),
+            )
+            .unwrap();
+        assert_eq!(next.sequence, 2, "append continues gaplessly");
+        let after = session_files::load(&db.session_files_root(), moved_id)
+            .unwrap()
+            .expect("session file");
+        assert_eq!(
+            after.events.len(),
+            3,
+            "rewritten generation keeps the stream"
+        );
+        assert_eq!(after.header.project.as_deref(), Some("/new/proj"));
+
+        store.recover_orphaned_session_files().unwrap();
+        assert_eq!(
+            project_of(moved_id).as_deref(),
+            Some("/new/proj"),
+            "recovery must not resurrect the old binding"
+        );
     }
 
     #[test]

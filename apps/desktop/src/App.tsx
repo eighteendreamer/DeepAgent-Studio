@@ -25,6 +25,7 @@ import {
   renameProject,
   removeProject,
   setProjectPinned,
+  setProjectFolder,
   setSessionPinned,
   clearApiKey,
   getVisionSettings,
@@ -70,6 +71,10 @@ import { DesktopUpdateController } from "./components/DesktopUpdateController";
 import { AppContextMenu } from "./components/AppContextMenu";
 import { TrustDialog } from "./components/TrustDialog";
 import { Sidebar } from "./components/Sidebar";
+import { changeSidebarPreferences, loadSidebarPreferences, useSidebarPreferences } from "./components/sidebarPreferences";
+import { SidebarSectionDialog } from "./components/SidebarSectionDialog";
+import { sessionDeepLink, sessionWorkingDirectory, openSessionTarget } from "./api";
+import { writeClipboardText } from "./clipboard";
 import { CustomTitleBar } from "./components/CustomTitleBar";
 import { message } from "./components/message";
 import { resolveChatRepositoryPath } from "./components/composerActivityData";
@@ -457,6 +462,9 @@ async function recognizeImageAttachmentsOnSend(
 }
 
 export function App() {
+  const sidebarPreferences = useSidebarPreferences((state) => state.preferences);
+  const [sectionDialogFor, setSectionDialogFor] = useState<{ session: string | null } | null>(null);
+  useEffect(() => { void loadSidebarPreferences().catch((error) => message.error(`读取侧栏设置失败：${String(error)}`)); }, []);
   const [processDisclosureStore] = useState(() => new ProcessDisclosureStore());
   const { t } = useTranslation();
   const requestedSessionIdRef = useRef<string | null>(null);
@@ -979,18 +987,19 @@ export function App() {
     }
   }, [view, onSelectProject]);
 
-  const onRenameProject = useCallback(
-    (path: string, name: string) => {
-      renameProject(path, name)
-        .then(() => refreshSessions())
-        .then(() => {
-          message.success("已重命名项目");
-        })
-        .catch((err) => {
-          message.error(`重命名失败：${String(err)}`);
-        });
+  const onEditProject = useCallback(
+    async (path: string, name: string, folder: string) => {
+      const moved = folder !== path;
+      if (moved) await setProjectFolder(path, folder);
+      await renameProject(folder, name);
+      if (moved && activeProjectPath === path) {
+        await setActiveProject(folder);
+        setActiveProjectPath(folder);
+      }
+      await refreshSessions();
+      message.success("已更新项目");
     },
-    [refreshSessions]
+    [activeProjectPath, refreshSessions]
   );
 
   const onArchiveProject = useCallback(
@@ -2181,18 +2190,7 @@ export function App() {
     if (!sessionId) return;
     exportTranscript(sessionId, "markdown")
       .then(async (transcript) => {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(transcript.content);
-        } else {
-          const textarea = document.createElement("textarea");
-          textarea.value = transcript.content;
-          textarea.style.position = "fixed";
-          textarea.style.opacity = "0";
-          document.body.appendChild(textarea);
-          textarea.select();
-          document.execCommand("copy");
-          document.body.removeChild(textarea);
-        }
+        await writeClipboardText(transcript.content);
         message.success("已复制对话");
       })
       .catch((err) => {
@@ -2228,6 +2226,29 @@ export function App() {
         message.error(`打开新窗口失败：${String(err)}`);
       });
   }, [activeId]);
+
+  const sessionMenuOptions = (id: string) => ({
+    projects,
+    sections: sidebarPreferences.sections,
+    sectionId: sidebarPreferences.session_sections[id],
+    unread: !!sidebarPreferences.unread[id],
+    defaultOpenTarget: sidebarPreferences.default_open_target,
+    onSetUnread: (unread: boolean) => {
+      void changeSidebarPreferences({ type: "set_unread", session_id: id, unread }).catch((error) => message.error(String(error)));
+    },
+    onOpenProject: (path: string) => { onSelectProject(path); },
+    onSetSection: (section_id: string | null) => {
+      void changeSidebarPreferences({ type: "set_section", session_id: id, section_id }).catch((error) => message.error(String(error)));
+    },
+    onCreateSection: () => setSectionDialogFor({ session: id }),
+    onCopyDeepLink: () => {
+      void writeClipboardText(sessionDeepLink(id)).then(() => message.success("已复制深度链接")).catch((error) => message.error(String(error)));
+    },
+    onCopyDirectory: () => {
+      void sessionWorkingDirectory(id).then(writeClipboardText).then(() => message.success("已复制工作目录")).catch((error) => message.error(String(error)));
+    },
+    onOpenTarget: (target: string) => { void openSessionTarget(id, target).catch((error) => message.error(String(error))); },
+  });
 
   const [isSidebarOpen, setIsSidebarOpen] = useState(readLeftSidebarOpen);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
@@ -2303,6 +2324,8 @@ export function App() {
   return (
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
       <AppContextMenu />
+      <SidebarSectionDialog open={sectionDialogFor !== null} onClose={() => setSectionDialogFor(null)}
+        onCreate={(name) => changeSidebarPreferences({ type: "create_section", name, session_id: sectionDialogFor?.session ?? null })}/>
       <TrustDialog projectPath={activeProjectPath} />
       <DesktopUpdateController />
       <CustomTitleBar
@@ -2322,7 +2345,11 @@ export function App() {
                 projects={projects}
                 activeProjectPath={activeProjectPath}
                 activeId={activeId}
-                onSelect={onSelect}
+                onSelect={(id) => {
+                  if (sidebarPreferences.unread[id]) void changeSidebarPreferences({ type: "set_unread", session_id: id, unread: false }).catch((error) => message.error(String(error)));
+                  onSelect(id);
+                }}
+                sessionMenuOptions={sessionMenuOptions}
                 onSelectProject={onSelectProject}
                 onNewChat={onNewChat}
                 onAddProject={onAddProject}
@@ -2331,9 +2358,7 @@ export function App() {
                 sessionActions={{
                   rename: (id, title) => onRenameSession(title, id),
                   copy: onCopySession,
-                  export: (id) => { void onExportSession("json", id); },
                   fork: (id) => { void onForkSession(id); },
-                  rewind: (id, sequence) => { void onRewindSession(sequence, id); },
                   openInNewWindow: onOpenSessionInNewWindow,
                   automation: (id) => navigateTo(id, "automation"),
                 }}
@@ -2342,7 +2367,8 @@ export function App() {
                 onPinProject={onPinProject}
                 onOpenProject={onOpenProject}
                 onOpenProjectMap={onOpenProjectMap}
-                onRenameProject={onRenameProject}
+                onEditProject={onEditProject}
+                onAddProjectSection={() => setSectionDialogFor({ session: null })}
                 onArchiveProject={onArchiveProject}
                 onOpenSearch={() => setIsSearchOpen(true)}
                 activeSurface={
@@ -2427,6 +2453,7 @@ export function App() {
                   onCopy={onCopySession}
                   onRename={onRenameSession}
                   onOpenInNewWindow={onOpenSessionInNewWindow}
+                  sessionMenuOptions={activeId ? sessionMenuOptions(activeId) : undefined}
                   onPin={() => {
                     if (activeSession) onPinSession(activeSession.id, !activeSession.pinned);
                   }}

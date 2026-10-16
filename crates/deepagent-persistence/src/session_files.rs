@@ -234,6 +234,34 @@ pub(crate) fn rewrite_prefix(
     ))
 }
 
+/// Re-stamp the header's project and keep the event stream byte-identical.
+///
+/// The header is record zero of the compressed stream, so the only way to edit
+/// it is to re-emit the file as a new generation. Callers must move the
+/// `session_file_state` cursor afterwards, exactly like [`rewrite_prefix`].
+pub(crate) fn rewrite_header_project(
+    root: &Path,
+    session_id: SessionId,
+    project: &str,
+) -> Result<LoadedSessionFile> {
+    let current = load(root, session_id)?.ok_or_else(|| {
+        CoreError::EventLog(format!("session {session_id} has no persisted event file"))
+    })?;
+    let generation = current.generation + 1;
+    let mut header = current.header.clone();
+    header.project = Some(project.to_string());
+    let path = generation_path(&session_dir(root, session_id), generation);
+    write_generation(&path, generation, &header, &current.events)?;
+    let byte_len = fs::metadata(&path).map_err(io_error)?.len();
+    Ok(LoadedSessionFile {
+        generation,
+        header,
+        events: current.events,
+        byte_len,
+        recovered_tail_bytes: 0,
+    })
+}
+
 pub(crate) fn prune_older_generations(
     root: &Path,
     session_id: SessionId,

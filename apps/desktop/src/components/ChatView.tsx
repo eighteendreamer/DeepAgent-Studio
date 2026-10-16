@@ -26,7 +26,7 @@ import type { OutputItem } from "./EnvironmentInfoMenu";
 import { ProjectMapStatusBadge } from "./project-map/ProjectMapPanel";
 import { ToolLauncherPanel } from "./ToolLauncherPanel";
 import { WorkbenchWindowActions } from "./WorkbenchWindowActions";
-import { ChatSessionMenu, formatSessionRewindTimestamp, sessionRewindEntries } from "./ChatSessionMenu";
+import { ChatSessionMenu, type SessionMenuOptions } from "./ChatSessionMenu";
 import { TintButton } from "./ui/TintButton";
 import { message as toast } from "./message";
 import { useTranslation } from "react-i18next";
@@ -78,6 +78,7 @@ interface Props {
   onRename?: (title: string) => void | Promise<void>;
   /** Open the current session in a new window. */
   onOpenInNewWindow?: () => void;
+  sessionMenuOptions?: SessionMenuOptions;
   /** Pin or unpin the current session. */
   onPin?: () => void;
   /** Archive the current session. */
@@ -936,16 +937,14 @@ export function ChatView({
   messages,
   onSend,
   onFork,
-  onRewind,
-  onExport,
   onCopy,
   onRename,
   onOpenInNewWindow,
+  sessionMenuOptions,
   onPin,
   onArchive,
   pinned = false,
   title = null,
-  timeline = [],
   approval = null,
   approvalQueueCount = 0,
   onApprovalDecision,
@@ -1240,10 +1239,6 @@ export function ChatView({
     window.dispatchEvent(new CustomEvent(OPEN_AUTOMATION_EVENT));
   };
 
-  const rewindEntries = useMemo(
-    () => sessionRewindEntries(timeline),
-    [timeline],
-  );
   const activeBottomTab =
     bottomTabs.find((tab) => tab.id === activeBottomTabId) ?? null;
 
@@ -1276,22 +1271,16 @@ export function ChatView({
         <header className="relative flex h-8 w-full flex-shrink-0 items-center justify-between pl-3 pr-6">
           <div className="relative min-w-0 flex-1 pr-28">
             <ChatSessionMenu
+              {...sessionMenuOptions}
               title={title}
               pinned={pinned}
               open={isSessionMenuOpen}
               onOpenChange={setIsSessionMenuOpen}
-              rewindEntries={rewindEntries}
-              formatRewindTimestamp={formatSessionRewindTimestamp}
               onPin={onPin}
               onRename={handleRename}
               onArchive={onArchive}
               onCopy={onCopy}
-              onExport={() => onExport?.("json")}
               onFork={onFork}
-              onRewindEntry={(sequence, detail) => {
-                onRewind?.(sequence);
-                if (detail?.trim()) setValue(detail);
-              }}
               onOpenAutomation={handleOpenAutomation}
               onOpenInNewWindow={onOpenInNewWindow}
             />

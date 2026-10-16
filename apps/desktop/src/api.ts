@@ -104,6 +104,34 @@ import type {
 
 type InvokeFn = <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
 
+export async function getSidebarPreferences(): Promise<import("./types").SidebarPreferences> {
+  const invoke = getInvoke();
+  if (invoke) return invoke("get_sidebar_preferences");
+  return { version: 1, revision: 0, sections: [], unread: {}, session_sections: {}, default_open_target: "VS Code" };
+}
+
+export async function updateSidebarPreferences(action: import("./types").SidebarPreferenceAction): Promise<import("./types").SidebarPreferences> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("侧栏设置保存需要桌面运行环境");
+  return invoke("update_sidebar_preferences", { action });
+}
+
+export async function sessionWorkingDirectory(sessionId: string): Promise<string> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("读取会话工作目录需要桌面运行环境");
+  return invoke("session_working_directory", { sessionId });
+}
+
+export async function openSessionTarget(sessionId: string, target: string): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) throw new Error("外部打开需要桌面运行环境");
+  return invoke("open_session_target", { sessionId, target });
+}
+
+export function sessionDeepLink(sessionId: string): string {
+  return `${window.location.origin}${window.location.pathname}${window.location.search}#session=${encodeURIComponent(sessionId)}`;
+}
+
 export const SETTINGS_CHANGED_EVENT = "deepagent:settings-changed";
 export const ARCHIVE_CHANGED_EVENT = "deepagent:archive-changed";
 export const OPEN_AUTOMATION_EVENT = "deepagent:open-automation";
@@ -2025,6 +2053,19 @@ export async function setProjectPinned(path: string, pinned: boolean): Promise<P
   };
 }
 
+/// Re-bind a project to another folder on disk; its sessions follow it.
+export async function setProjectFolder(path: string, newPath: string): Promise<Project> {
+  const invoke = getInvoke();
+  if (invoke) return invoke<Project>("set_project_folder", { path, newPath });
+  return {
+    name: newPath.split(/[\\/]/).pop() || newPath,
+    path: newPath,
+    pinned: false,
+    session_count: 0,
+    updated_at: Date.now(),
+  };
+}
+
 export async function renameProject(path: string, name: string): Promise<Project> {
   const invoke = getInvoke();
   if (invoke) return invoke<Project>("rename_project", { path, name });
@@ -2092,7 +2133,7 @@ export async function gitCreateBranch(
 }
 
 export async function openSessionInNewWindow(sessionId: string): Promise<void> {
-  const url = `${window.location.origin}${window.location.pathname}${window.location.search}#session=${encodeURIComponent(sessionId)}`;
+  const url = sessionDeepLink(sessionId);
   if (typeof window !== "undefined" && (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__) {
     const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
     const label = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;

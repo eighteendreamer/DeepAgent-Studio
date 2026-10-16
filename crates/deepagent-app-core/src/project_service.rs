@@ -188,6 +188,54 @@ impl ProjectService {
         self.enrich(path, &reg)
     }
 
+    /// Re-bind a registered project to a different folder on disk and move its
+    /// sessions over, so history keeps following the project. The folders
+    /// themselves are never copied, renamed or deleted here.
+    pub fn set_project_folder(&self, path: &str, new_path: &str) -> Result<ProjectDto> {
+        let target = new_path.trim().to_string();
+        if target.is_empty() {
+            return Err(CoreError::invalid("project path must not be empty"));
+        }
+        if !Path::new(&target).is_dir() {
+            return Err(CoreError::invalid(format!(
+                "folder '{target}' does not exist"
+            )));
+        }
+        let mut reg = self.load()?;
+        if !reg.paths.iter().any(|p| p == path) {
+            return Err(CoreError::not_found(format!("project '{path}' not opened")));
+        }
+        if target == path {
+            return self.enrich(path, &reg);
+        }
+        if reg.paths.iter().any(|p| p == &target) {
+            return Err(CoreError::invalid(format!(
+                "project '{target}' is already registered"
+            )));
+        }
+        let moved = EventStore::new(&self.db).move_project_sessions(path, &target)?;
+        tracing::info!(old = %path, new = %target, moved, "project folder re-bound");
+        for registered in reg.paths.iter_mut() {
+            if registered == path {
+                *registered = target.clone();
+            }
+        }
+        if let Some(name) = reg.names.remove(path) {
+            reg.names.insert(target.clone(), name);
+        }
+        if reg.pinned.remove(path) {
+            reg.pinned.insert(target.clone());
+        }
+        if reg.trusted_hook_projects.remove(path) {
+            reg.trusted_hook_projects.insert(target.clone());
+        }
+        if reg.active.as_deref() == Some(path) {
+            reg.active = Some(target.clone());
+        }
+        self.save(&reg)?;
+        self.enrich(&target, &reg)
+    }
+
     /// Display name for a path, honoring a user-provided alias when present.
     pub fn display_name(&self, path: &str) -> Result<String> {
         let reg = self.load()?;
@@ -320,6 +368,70 @@ mod tests {
             .find(|p| p.path == "/work/p")
             .unwrap();
         assert_eq!(p.session_count, 2);
+    }
+
+    /// A folder re-bind must carry the sessions, the display alias, the pin and
+    /// the registry key over, and must refuse targets that are not usable.
+    #[test]
+    fn set_project_folder_rebinds_project_and_following_sessions() {
+        let (svc, db) = service();
+        let target = tempfile::tempdir().unwrap();
+        let target_path = target.path().to_string_lossy().replace('\\', "/");
+        svc.add_project("/work/old").unwrap();
+        svc.add_project("/work/keep").unwrap();
+        svc.set_pinned("/work/old", true).unwrap();
+        svc.rename_project("/work/old", "旧名字").unwrap();
+        let clock = FixedClock::new(1_000);
+        Session::create_in_project(
+            &db,
+            &clock,
+            Some("a"),
+            Default::default(),
+            Some("/work/old"),
+        )
+        .unwrap();
+        Session::create_in_project(
+            &db,
+            &clock,
+            Some("b"),
+            Default::default(),
+            Some("/work/keep"),
+        )
+        .unwrap();
+
+        let dto = svc.set_project_folder("/work/old", &target_path).unwrap();
+        assert_eq!(dto.path, target_path);
+        assert_eq!(dto.name, "旧名字", "display alias must survive the move");
+        assert!(dto.pinned, "pin must survive the move");
+        assert_eq!(dto.session_count, 1);
+        assert_eq!(
+            svc.active().unwrap().as_deref(),
+            Some("/work/keep"),
+            "re-binding another project must not steal the active one"
+        );
+
+        let store = EventStore::new(&db);
+        let project_of = |title: &str| {
+            store
+                .list_sessions()
+                .unwrap()
+                .into_iter()
+                .find(|s| s.title.as_deref() == Some(title))
+                .and_then(|s| s.project)
+        };
+        assert_eq!(project_of("a").as_deref(), Some(target_path.as_str()));
+        assert_eq!(project_of("b").as_deref(), Some("/work/keep"));
+        assert!(svc
+            .list()
+            .unwrap()
+            .into_iter()
+            .all(|p| p.path != "/work/old"));
+
+        assert!(svc.set_project_folder(&target_path, "/work/keep").is_err());
+        assert!(svc.set_project_folder("/work/old", &target_path).is_err());
+        assert!(svc
+            .set_project_folder(&target_path, "C:/definitely/not/here")
+            .is_err());
     }
 
     #[test]

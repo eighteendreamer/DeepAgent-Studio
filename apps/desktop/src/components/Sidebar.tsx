@@ -5,11 +5,14 @@ import { Archive, ArrowDown, Book, Check, ChevronDown, ChevronRight, Clock, Elli
 import { useTranslation } from "react-i18next";
 import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
+import { EditProjectDialog, type EditingProject } from "./EditProjectDialog";
 import { SidebarSessionMenu, type SidebarSessionActions } from "./SidebarSessionMenu";
+import type { SessionMenuOptions } from "./ChatSessionMenu";
+import { useSidebarPreferences } from "./sidebarPreferences";
+import { Button } from "./shadcn/button";
 import { partitionSidebarSessions, type SidebarSortCriterion } from "./sidebarSessions";
 import { SidebarSettingsMenu } from "./SidebarSettingsMenu";
 import { Panel } from "./ui/Panel";
-import { InputSurface } from "./ui/InputSurface";
 import { TintButton } from "./ui/TintButton";
 import { PinThumbtackIcon } from "./ui/PinThumbtackIcon";
 import { cn } from "./shadcn/utils";
@@ -53,12 +56,14 @@ interface Props {
   onPinSession: (id: string, pinned: boolean) => void;
   onArchiveSession: (id: string) => void;
   sessionActions?: SidebarSessionActions;
+  sessionMenuOptions?: (id: string) => SessionMenuOptions;
   onArchiveAllSessions: () => void;
   onRemoveProject: (path: string) => void;
   onPinProject: (path: string, pinned: boolean) => void;
   onOpenProject: (path: string) => void;
   onOpenProjectMap: (path: string) => void;
-  onRenameProject: (path: string, name: string) => void;
+  onEditProject: (path: string, name: string, folder: string) => Promise<void>;
+  onAddProjectSection: () => void;
   onArchiveProject: (path: string, name: string) => void;
   onOpenSearch: () => void;
   activeSurface?: "skills" | "knowledge" | "plugins" | "automation" | "remote" | null;
@@ -156,7 +161,7 @@ function writeRecentCollapsed(collapsed: boolean) {
   window.localStorage.setItem(SIDEBAR_RECENT_COLLAPSED_KEY, collapsed ? "1" : "0");
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, sessionActions, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onRenameProject, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onAddProject, onPinSession, onArchiveSession, sessionActions, sessionMenuOptions, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onEditProject, onAddProjectSection, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
   const { t } = useTranslation();
 
   /* 顶部导航滑动药丸（静默着色）：悬停跟随，离开滑回激活项；无 surface 激活时停靠「新对话」 */
@@ -207,8 +212,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     position?: { top: number; left: number };
   } | null>(null);
   const [archiveProject, setArchiveProject] = useState<{ path: string; name: string } | null>(null);
-  const [renameProject, setRenameProject] = useState<{ path: string; name: string } | null>(null);
-  const [renameValue, setRenameValue] = useState("");
+  const [editingProject, setEditingProject] = useState<EditingProject | null>(null);
   const [removeProject, setRemoveProject] = useState<{ path: string; name: string } | null>(null);
   const [organizeMode, setOrganizeMode] = useState<SidebarOrganizeMode>(() =>
     readSidebarPreference("deepagent:sidebar-organize-mode", "project", SIDEBAR_ORGANIZE_MODES)
@@ -231,12 +235,14 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     window.localStorage.setItem("deepagent:sidebar-sort-criterion", sortCriterion);
   }, [sortCriterion]);
 
+  const preferences = useSidebarPreferences((state) => state.preferences);
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const sessionSortValue = (session: SessionSummary) =>
     sortCriterion === "created" ? session.created_at : session.updated_at;
 
   const { projectSessions, recentSessions } = useMemo(
-    () => partitionSidebarSessions(sessions, sortCriterion),
-    [sessions, sortCriterion]
+    () => partitionSidebarSessions(sessions.filter((session) => !preferences.session_sections[session.id]), sortCriterion),
+    [sessions, sortCriterion, preferences.session_sections]
   );
 
   // Group sessions by their project (display name). Seed the map from the real
@@ -392,7 +398,8 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               className="flex-shrink-0 text-[11px] text-blue-500"
             /></HoverInfo>
           )}
-          <span className="truncate">{s.title?.trim() || t("sidebar.newChat")}</span>
+          {preferences.unread[s.id] && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" aria-label="未读"/>}
+          <span className={cn("truncate", preferences.unread[s.id] && "font-semibold text-text-base")}>{s.title?.trim() || t("sidebar.newChat")}</span>
         </div>
 
         {/* Fixed-width slot: timestamp ↔ actions swap without shifting title */}
@@ -502,12 +509,11 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
                 const path = nameToPath[proj];
                 if (path) onOpenProjectMap(path);
               }}
-              onRename={() => {
+              onEdit={() => {
                 const path = nameToPath[proj];
-                if (!path) return;
-                setRenameProject({ path, name: proj });
-                setRenameValue(proj);
+                if (path) setEditingProject({ path, name: proj });
               }}
+              onAddSection={onAddProjectSection}
               onArchive={() => {
                 const path = nameToPath[proj];
                 if (path) setArchiveProject({ path, name: proj });
@@ -809,11 +815,18 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
             </div>
           )}
         </div>
+        {preferences.sections.map((section) => <div key={section.id} className="flex flex-col">
+          <Button variant="ghost" className="mb-1 h-auto justify-start gap-1 rounded-none px-2 py-0 text-[12px] font-normal text-text-secondary" onClick={() => setCollapsedSections((prev) => ({ ...prev, [section.id]: !prev[section.id] }))}>
+            {section.name}<ChevronDown className={cn("h-3 w-3", collapsedSections[section.id] && "-rotate-90")}/>
+          </Button>
+          {!collapsedSections[section.id] && sessions.filter((session) => preferences.session_sections[session.id] === section.id).map((session) => renderSessionItem(session, true))}
+        </div>)}
       </div>
 
       {sessionMenu && menuSession && sessionActions && (
         <SidebarSessionMenu key={menuSession.id} session={menuSession} position={sessionMenu.position}
           open={sessionMenu.open} onOpenChange={(open) => setSessionMenu((prev) => prev ? { ...prev, open } : null)}
+          options={sessionMenuOptions?.(menuSession.id) ?? {}}
           actions={sessionActions} onPin={() => onPinSession(menuSession.id, !menuSession.pinned)}
           onArchive={() => onArchiveSession(menuSession.id)}/>
       )}
@@ -822,55 +835,15 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         <SidebarSettingsMenu onOpenSettings={onOpenSettings} onLogout={onLogout} />
       </div>
 
-      {renameProject && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 px-4">
-          <form
-            className="w-full max-w-[340px]"
-            onSubmit={(e) => {
-              e.preventDefault();
-              const nextName = renameValue.trim();
-              if (!nextName) return;
-              onRenameProject(renameProject.path, nextName);
-              setRenameProject(null);
-              setRenameValue("");
-            }}
-          >
-            <Panel menu={false} className="p-5 shadow-none">
-              <div className="text-[15px] font-semibold text-text-base">
-                {t("sidebar.renameProjectDialog.title")}
-              </div>
-              <InputSurface className="mt-4 rounded-2xl bg-ui-tint shadow-none focus-within:shadow-none">
-                <input
-                  autoFocus
-                  className="w-full bg-transparent px-4 py-2.5 text-[14px] text-text-base outline-none placeholder:text-text-secondary"
-                  placeholder={t("sidebar.renameProjectDialog.placeholder")}
-                  value={renameValue}
-                  onChange={(e) => setRenameValue(e.target.value)}
-                />
-              </InputSurface>
-              <div className="mt-5 flex justify-end gap-2">
-                <TintButton
-                  type="button"
-                  className="px-4 py-2 text-[13px]"
-                  onClick={() => {
-                    setRenameProject(null);
-                    setRenameValue("");
-                  }}
-                >
-                  {t("sidebar.renameProjectDialog.cancel")}
-                </TintButton>
-                <TintButton
-                  type="submit"
-                  disabled={!renameValue.trim()}
-                  className="px-4 py-2 text-[13px] font-semibold"
-                >
-                  {t("sidebar.renameProjectDialog.confirm")}
-                </TintButton>
-              </div>
-            </Panel>
-          </form>
-        </div>
-      )}
+      <EditProjectDialog
+        open={editingProject !== null}
+        project={editingProject}
+        onClose={() => setEditingProject(null)}
+        onSave={async (name, folder) => {
+          if (!editingProject) return;
+          await onEditProject(editingProject.path, name, folder);
+        }}
+      />
 
       {removeProject && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/20 px-4">

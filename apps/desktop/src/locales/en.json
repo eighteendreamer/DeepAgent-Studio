@@ -39,6 +39,10 @@
     "pinProject": "Pin project",
     "unpinProject": "Unpin project",
     "openInExplorer": "Open in Explorer",
+    "edit": "Edit",
+    "addSection": "Add section",
+    "archiveChats": "Archive chats",
+    "removeProject": "Remove project",
     "renameProject": "Rename project",
     "remove": "Remove",
     "renameProjectDialog": {

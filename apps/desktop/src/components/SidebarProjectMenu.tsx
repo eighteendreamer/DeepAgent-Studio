@@ -28,9 +28,10 @@ type Props = {
   contextMenuPosition?: Anchor;
   onOpenChange: (open: boolean) => void;
   onPin: () => void;
+  onEdit: () => void;
+  onAddSection: () => void;
   onOpenExplorer: () => void;
   onOpenMap: () => void;
-  onRename: () => void;
   onArchive: () => void;
   onRemove: () => void;
 };
@@ -51,9 +52,10 @@ export function SidebarProjectMenu({
   contextMenuPosition,
   onOpenChange,
   onPin,
+  onEdit,
+  onAddSection,
   onOpenExplorer,
   onOpenMap,
-  onRename,
   onArchive,
   onRemove,
 }: Props) {
@@ -137,7 +139,23 @@ export function SidebarProjectMenu({
           onClick={() => run(onPin)}
         >
           <PinThumbtackIcon pinned={isPinned} className="mr-2.5 h-[13px] w-[13px] shrink-0" />
-          {isPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}
+          {isPinned ? t("sidebar.unpin") : t("sidebar.pin")}
+        </div>
+        <div
+          {...{ [MENU_ITEM_ATTR]: "edit" }}
+          className={cn(PROJECT_MENU.row, MOTION.fast)}
+          onClick={() => run(onEdit)}
+        >
+          <FontAwesomeIcon icon={["far", "pen-to-square"]} className={PROJECT_MENU.icon} />
+          {t("sidebar.edit")}
+        </div>
+        <div
+          {...{ [MENU_ITEM_ATTR]: "section" }}
+          className={cn(PROJECT_MENU.row, MOTION.fast)}
+          onClick={() => run(onAddSection)}
+        >
+          <FontAwesomeIcon icon={["fas", "layer-group"]} className={PROJECT_MENU.icon} />
+          {t("sidebar.addSection")}
         </div>
         <div
           {...{ [MENU_ITEM_ATTR]: "explorer" }}
@@ -155,14 +173,6 @@ export function SidebarProjectMenu({
           <FontAwesomeIcon icon={["fas", "share-nodes"]} className={PROJECT_MENU.icon} />
           项目地图
         </div>
-        <div
-          {...{ [MENU_ITEM_ATTR]: "rename" }}
-          className={cn(PROJECT_MENU.row, MOTION.fast)}
-          onClick={() => run(onRename)}
-        >
-          <FontAwesomeIcon icon={["fas", "pen"]} className={PROJECT_MENU.icon} />
-          {t("sidebar.renameProject")}
-        </div>
         <div className={MENU_LIST.divider} />
         <div
           {...{ [MENU_ITEM_ATTR]: "archive" }}
@@ -170,7 +180,7 @@ export function SidebarProjectMenu({
           onClick={() => run(onArchive)}
         >
           <FontAwesomeIcon icon={["fas", "box-archive"]} className={PROJECT_MENU.icon} />
-          {t("sidebar.archive")}
+          {t("sidebar.archiveChats")}
         </div>
         <div
           {...{ [MENU_ITEM_ATTR]: "remove" }}
@@ -178,7 +188,7 @@ export function SidebarProjectMenu({
           onClick={() => run(onRemove)}
         >
           <FontAwesomeIcon icon={["fas", "xmark"]} className={PROJECT_MENU.icon} />
-          {t("sidebar.remove")}
+          {t("sidebar.removeProject")}
         </div>
       </SlidingMenuList>
     </div>

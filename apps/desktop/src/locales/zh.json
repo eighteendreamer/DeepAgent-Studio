@@ -39,6 +39,10 @@
     "pinProject": "置顶项目",
     "unpinProject": "取消置顶项目",
     "openInExplorer": "在资源管理器中打开",
+    "edit": "编辑",
+    "addSection": "添加分区",
+    "archiveChats": "归档聊天",
+    "removeProject": "移除项目",
     "renameProject": "重命名项目",
     "remove": "移除",
     "renameProjectDialog": {

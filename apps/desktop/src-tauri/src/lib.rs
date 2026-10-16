@@ -686,6 +686,97 @@ fn get_session_ui_prefs(
 }
 
 #[tauri::command]
+fn get_sidebar_preferences(
+    state: State<'_, AppState>,
+) -> Result<deepagent_app_core::session_state_service::SidebarPreferences, String> {
+    state
+        .session_state
+        .sidebar_preferences()
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn update_sidebar_preferences(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    action: deepagent_app_core::session_state_service::SidebarPreferenceAction,
+) -> Result<deepagent_app_core::session_state_service::SidebarPreferences, String> {
+    let prefs = state
+        .session_state
+        .update_sidebar_preferences(action)
+        .map_err(|e| e.to_string())?;
+    if let Err(error) = app.emit("sidebar://preferences", &prefs) {
+        eprintln!("sidebar preferences notification failed: {error}");
+    }
+    Ok(prefs)
+}
+
+#[tauri::command]
+fn session_working_directory(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<String, String> {
+    let detail = state
+        .service
+        .lock()
+        .map_err(|e| e.to_string())?
+        .session_detail(&session_id)
+        .map_err(|e| e.to_string())?;
+    Ok(detail
+        .project_path
+        .unwrap_or_else(|| state.workspace.root_display()))
+}
+
+#[tauri::command]
+fn open_session_target(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    session_id: String,
+    target: String,
+) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if !deepagent_app_core::session_state_service::OPEN_TARGETS.contains(&target.as_str()) {
+        return Err("unsupported open target".into());
+    }
+    let path = session_working_directory(state, session_id.clone())?;
+    if !Path::new(&path).is_dir() {
+        return Err("会话工作目录不存在或不可访问".into());
+    }
+    if target == "File Explorer" {
+        return open_project_in_file_manager(path);
+    }
+    // Explicit user UI action. Fixed executable allowlist; no model tool or shell command string.
+    eprintln!("opening session directory from user menu: session={session_id}, target={target}");
+    if target == "Terminal" || target == "WSL" {
+        #[cfg(target_os = "windows")]
+        {
+            let mut command = std::process::Command::new("wt.exe");
+            command.args(["-d", &path]);
+            if target == "WSL" {
+                command.args(["wsl.exe", "--cd", &path]);
+            }
+            command
+                .spawn()
+                .map_err(|e| format!("无法打开 {target}：{e}"))?;
+            return Ok(());
+        }
+        #[cfg(not(target_os = "windows"))]
+        return Err("Terminal / WSL 打开方式仅支持 Windows".into());
+    }
+    let program = match target.as_str() {
+        "VS Code" => Some("code"),
+        "Visual Studio" => Some("devenv"),
+        "Cursor" => Some("cursor"),
+        "Zed" => Some("zed"),
+        "Antigravity" => Some("antigravity"),
+        _ => None,
+    };
+    app.opener()
+        .open_path(path, program)
+        .map_err(|e| format!("无法打开 {target}，请确认已安装且可从命令行启动：{e}"))
+}
+
+#[tauri::command]
 fn set_session_env_panel_auto_open(
     state: State<'_, AppState>,
     session_id: String,
@@ -4044,6 +4135,18 @@ fn rename_project(
 }
 
 #[tauri::command]
+fn set_project_folder(
+    state: State<'_, AppState>,
+    path: String,
+    new_path: String,
+) -> Result<ProjectDto, String> {
+    state
+        .projects
+        .set_project_folder(&path, &new_path)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn open_project_in_file_manager(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     let mut command = {
@@ -6554,6 +6657,10 @@ pub fn run() {
             runtime_logs_for_session,
             rename_session,
             set_session_pinned,
+            get_sidebar_preferences,
+            update_sidebar_preferences,
+            session_working_directory,
+            open_session_target,
             get_session_ui_prefs,
             set_session_env_panel_auto_open,
             commands,
@@ -6733,6 +6840,7 @@ pub fn run() {
             remove_project,
             set_project_pinned,
             rename_project,
+            set_project_folder,
             open_project_in_file_manager,
             archive_project_conversations,
             archive_conversation,

@@ -23,6 +23,21 @@ export interface SessionUiPrefs {
   env_panel_auto_open: boolean;
 }
 
+export interface SidebarSection { id: string; name: string }
+export interface SidebarPreferences {
+  version: number;
+  revision: number;
+  sections: SidebarSection[];
+  unread: Record<string, boolean>;
+  session_sections: Record<string, string>;
+  default_open_target: string;
+}
+export type SidebarPreferenceAction =
+  | { type: "set_unread"; session_id: string; unread: boolean }
+  | { type: "set_section"; session_id: string; section_id: string | null }
+  | { type: "create_section"; name: string; session_id: string | null }
+  | { type: "set_open_target"; target: string };
+
 export interface TimelineEntry {
   sequence: number;
   timestamp: number;

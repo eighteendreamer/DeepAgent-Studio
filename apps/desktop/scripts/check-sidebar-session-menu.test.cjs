@@ -25,6 +25,7 @@ function actions() {
     renameSession: record("rename", summary),
     openSessionInNewWindow: record("window"),
     navigator: { clipboard: { writeText: record("clipboard") } },
+    writeClipboardText: record("clipboard"),
     liveTranscripts: { current: new Map() },
     setMessages: (...args) => calls.push(["messages", ...args]),
     setDetail() {}, setSessions() {}, mapConversationToChatMessages: (value) => value,
@@ -62,4 +63,23 @@ test("header actions retain their active-session default", async () => {
   a.onOpenSessionInNewWindow();
   assert.ok(a.calls.some(([op, id, seq]) => op === "fork" && id === "current" && seq === 999));
   assert.ok(a.calls.some(([op, id]) => op === "window" && id === "current"));
+});
+
+test("open targets in settings and the menu match the backend allowlist", () => {
+  const root = path.join(__dirname, "..");
+  const catalog = readFileSync(path.join(root, "src/components/openTargets.ts"), "utf8");
+  const targets = [...catalog.matchAll(/title: "([^"]+)"/g)].map((match) => match[1]);
+  const rust = readFileSync(path.join(root, "../../crates/deepagent-app-core/src/session_state_service.rs"), "utf8");
+  const start = rust.indexOf("pub const OPEN_TARGETS");
+  const list = rust.slice(start, rust.indexOf("];", start));
+  assert.deepEqual(targets, [...list.matchAll(/"([^"]+)"/g)].map((match) => match[1]));
+});
+
+test("deep links use the existing session-window route and encode the session identity", () => {
+  const source = readFileSync(path.join(__dirname, "../src/api.ts"), "utf8");
+  const start = source.indexOf("export function sessionDeepLink");
+  const code = source.slice(start, source.indexOf("\n}", start) + 2);
+  const context = { exports: {}, window: { location: { origin: "http://localhost", pathname: "/app", search: "" } } };
+  vm.runInNewContext(ts.transpileModule(code, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText, context);
+  assert.equal(context.exports.sessionDeepLink("session/中文"), "http://localhost/app#session=session%2F%E4%B8%AD%E6%96%87");
 });

@@ -1,292 +1,98 @@
-import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Archive, ArrowUpRightFromSquare, Check, Clock, Copy, Ellipsis, Eye, EyeOff, Folder, GitBranch, Layers, Pencil, Pin, Plus, Share, SquareArrowOutUpRight } from "lucide-react";
+import type { Project, SidebarSection } from "../types";
+import { OPEN_TARGET_OPTIONS } from "./openTargets";
 import {
-  Archive,
-  ArrowUpRightFromSquare,
-  ChevronRight,
-  Clock,
-  Copy,
-  Ellipsis,
-  FileOutput,
-  GitBranch,
-  History,
-  Pencil,
-  Pin,
-} from "lucide-react";
-import { useTranslation } from "react-i18next";
-import type { TimelineEntry } from "../types";
-import { MorphingMenuShell } from "./ui/MorphingMenuShell";
-import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
-import { MENU_LIST, MOTION } from "./ui/motion";
-import { Panel } from "./ui/Panel";
-import { cn } from "./shadcn/utils";
-import { Popover, PopoverContent } from "./shadcn/popover";
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+  DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger,
+} from "./shadcn/dropdown-menu";
+import { Button } from "./shadcn/button";
 
-export function sessionRewindEntries(timeline: TimelineEntry[]) {
-  return timeline.filter((entry) => entry.kind === "message"
-    && entry.label.toLowerCase().includes("user")
-    && typeof entry.detail === "string" && entry.detail.trim().length > 0);
+export interface SessionMenuOptions {
+  projects?: Project[];
+  sections?: SidebarSection[];
+  sectionId?: string;
+  unread?: boolean;
+  defaultOpenTarget?: string;
+  onSetUnread?: (unread: boolean) => void;
+  onOpenProject?: (path: string) => void;
+  onSetSection?: (id: string | null) => void;
+  onCreateSection?: () => void;
+  onCopyDeepLink?: () => void;
+  onCopyDirectory?: () => void;
+  onOpenTarget?: (target: string) => void;
 }
 
-export function formatSessionRewindTimestamp(timestamp: number) {
-  const date = new Date(timestamp);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false,
-  }).format(date);
-}
-
-const SESSION_MENU = {
-  pad: "px-2 py-1.5",
-  row: "relative z-[1] flex w-full cursor-pointer items-center rounded-lg px-2.5 py-2 text-left text-[13px] text-text-base whitespace-nowrap",
-  icon: "mr-2.5 w-4 shrink-0 text-[13px] text-text-secondary",
-  shortcut: "ml-auto shrink-0 pl-3 text-[10px] tabular-nums text-text-secondary",
-  pill: "left-0 right-0 rounded-lg",
-} as const;
-
-type Props = {
-  title?: string | null;
-  pinned?: boolean;
-  open: boolean;
-  contextMenuPosition?: { left: number; top: number };
+type Props = SessionMenuOptions & {
+  title?: string | null; pinned?: boolean; open: boolean;
   onOpenChange: (open: boolean) => void;
-  rewindEntries: TimelineEntry[];
-  formatRewindTimestamp: (timestamp: number) => string;
-  onPin?: () => void;
-  onRename?: () => void;
-  onArchive?: () => void;
-  onCopy?: () => void;
-  onExport?: () => void;
-  onFork?: () => void;
-  onRewindEntry?: (sequence: number, detail?: string) => void;
-  onOpenAutomation?: () => void;
-  onOpenInNewWindow?: () => void;
+  contextMenuPosition?: { left: number; top: number };
+  onPin?: () => void; onRename?: () => void; onArchive?: () => void;
+  onCopy?: () => void; onFork?: () => void;
+  onOpenAutomation?: () => void; onOpenInNewWindow?: () => void;
 };
 
-export function ChatSessionMenu({
-  title,
-  pinned,
-  open,
-  contextMenuPosition,
-  onOpenChange,
-  rewindEntries,
-  formatRewindTimestamp,
-  onPin,
-  onRename,
-  onArchive,
-  onCopy,
-  onExport,
-  onFork,
-  onRewindEntry,
-  onOpenAutomation,
-  onOpenInNewWindow,
+export function ChatSessionMenu({ title, pinned, open, onOpenChange, contextMenuPosition,
+  onPin, onRename, onArchive, onCopy, onFork, onOpenAutomation, onOpenInNewWindow,
+  projects = [], sections = [], sectionId, unread, defaultOpenTarget,
+  onSetUnread, onOpenProject, onSetSection, onCreateSection, onCopyDeepLink, onCopyDirectory, onOpenTarget,
 }: Props) {
-  const { t } = useTranslation();
-  const layoutId = useId().replace(/:/g, "");
-  const padRef = useRef<HTMLDivElement>(null);
-  const rewindRowRef = useRef<HTMLDivElement>(null);
-  const [isRewindFlyoutOpen, setIsRewindFlyoutOpen] = useState(false);
-  const [rewindFlyoutAnchor, setRewindFlyoutAnchor] = useState({ top: 0, height: 36 });
-  const pointerAnchor = useMemo(() => contextMenuPosition ? {
-    getBoundingClientRect: () => new DOMRect(contextMenuPosition.left, contextMenuPosition.top, 0, 0),
-  } : undefined, [contextMenuPosition]);
-
-  useLayoutEffect(() => {
-    if (!isRewindFlyoutOpen || !rewindRowRef.current || !padRef.current) return;
-    const rowRect = rewindRowRef.current.getBoundingClientRect();
-    const padRect = padRef.current.getBoundingClientRect();
-    setRewindFlyoutAnchor({
-      top: rowRect.top - padRect.top,
-      height: rowRect.height,
-    });
-  }, [isRewindFlyoutOpen, open]);
-
-  const close = () => {
-    setIsRewindFlyoutOpen(false);
-    onOpenChange(false);
-  };
-
-  const run = (action?: () => void) => {
-    close();
-    action?.();
-  };
-
-  const trigger = (
-    <button
-      type="button"
-      className={cn(
-        "flex h-8 max-w-full min-w-0 cursor-pointer items-center gap-2 rounded-md pl-1 pr-2 text-sm font-medium text-text-base outline-none",
-        MOTION.fast,
-        open ? "bg-black/5" : "hover:bg-black/5",
-      )}
-      onClick={() => onOpenChange(!open)}
-    >
-      <span className="truncate">{title?.trim() || t("chatView.chat")}</span>
-      <Ellipsis className="h-3 w-3 shrink-0 text-text-secondary" />
-    </button>
-  );
-
-  const content = (
-      <div ref={padRef} className={cn(SESSION_MENU.pad, "relative overflow-visible")}>
-        <SlidingMenuList activeId="__none__" pillClassName={SESSION_MENU.pill}>
-          <div
-            {...{ [MENU_ITEM_ATTR]: "pin" }}
-            className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
-            onClick={() => run(onPin)}
-          >
-            <Pin className={SESSION_MENU.icon} />
-            <span>{pinned ? t("sidebar.unpin") : t("chatView.pinChat")}</span>
-            <span className={SESSION_MENU.shortcut}>Ctrl+Alt+P</span>
-          </div>
-          <div
-            {...{ [MENU_ITEM_ATTR]: "rename" }}
-            className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
-            onClick={() => run(onRename)}
-          >
-            <Pencil className={SESSION_MENU.icon} />
-            <span>{t("chatView.renameChat")}</span>
-            <span className={SESSION_MENU.shortcut}>Ctrl+Alt+R</span>
-          </div>
-          <div
-            {...{ [MENU_ITEM_ATTR]: "archive" }}
-            className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
-            onClick={() => run(onArchive)}
-          >
-            <Archive className={SESSION_MENU.icon} />
-            <span>{t("chatView.archiveChat")}</span>
-            <span className={SESSION_MENU.shortcut}>Ctrl+Shift+A</span>
-          </div>
-
-          <div className={MENU_LIST.divider} />
-
-          <div
-            {...{ [MENU_ITEM_ATTR]: "copy" }}
-            className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
-            onClick={() => run(onCopy)}
-          >
-            <Copy className={SESSION_MENU.icon} />
-            <span>{t("chatView.copy")}</span>
-          </div>
-          <div
-            {...{ [MENU_ITEM_ATTR]: "export" }}
-            className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
-            onClick={() => run(onExport)}
-          >
-            <FileOutput className={SESSION_MENU.icon} />
-            <span>{t("chatView.exportJson")}</span>
-          </div>
-          <div
-            {...{ [MENU_ITEM_ATTR]: "branch" }}
-            className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
-            onClick={() => run(onFork)}
-          >
-            <GitBranch className={SESSION_MENU.icon} />
-            <span>{t("chatView.branch")}</span>
-          </div>
-
-          <div
-            ref={rewindRowRef}
-            {...{ [MENU_ITEM_ATTR]: "rewind" }}
-            className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
-            onMouseEnter={() => setIsRewindFlyoutOpen(true)}
-          >
-            <History className={SESSION_MENU.icon} />
-            <span className="min-w-0 flex-1 truncate">{t("chatView.rewind")}</span>
-            <ChevronRight className="ml-2 h-3 w-3 shrink-0 text-text-secondary" />
-          </div>
-
-          <div className={MENU_LIST.divider} />
-
-          <div
-            {...{ [MENU_ITEM_ATTR]: "automation" }}
-            className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
-            onClick={() => run(onOpenAutomation)}
-          >
-            <Clock className={SESSION_MENU.icon} />
-            <span>{t("chatView.addAutomation")}</span>
-          </div>
-
-          <div className={MENU_LIST.divider} />
-
-          <div
-            {...{ [MENU_ITEM_ATTR]: "new-window" }}
-            className={cn(SESSION_MENU.row, MOTION.fast, "hover:bg-transparent")}
-            onClick={() => run(onOpenInNewWindow)}
-          >
-            <ArrowUpRightFromSquare className={SESSION_MENU.icon} />
-            <span>{t("chatView.openInNewWindow")}</span>
-          </div>
-        </SlidingMenuList>
-
-        {isRewindFlyoutOpen && (
-          <>
-            <div
-              className="absolute left-full z-[65] w-2"
-              style={{ top: rewindFlyoutAnchor.top, height: rewindFlyoutAnchor.height }}
-              onMouseEnter={() => setIsRewindFlyoutOpen(true)}
-              aria-hidden
-            />
-            <Panel
-              menu
-              className="absolute left-full top-0 z-[70] ml-1.5 max-h-72 w-[min(280px,calc(100vw-48px))] origin-top-left overflow-y-auto shadow-none"
-              style={{ top: rewindFlyoutAnchor.top }}
-              onMouseEnter={() => setIsRewindFlyoutOpen(true)}
-              onMouseLeave={() => setIsRewindFlyoutOpen(false)}
-            >
-              <div className="px-2 py-1.5">
-                {rewindEntries.length === 0 ? (
-                  <div className="px-2.5 py-2 text-[12px] text-text-secondary">{t("chatView.noRewindPoints")}</div>
-                ) : (
-                  <SlidingMenuList activeId="__none__" pillClassName={SESSION_MENU.pill}>
-                    {rewindEntries.map((entry) => (
-                      <div
-                        key={entry.sequence}
-                        {...{ [MENU_ITEM_ATTR]: `rewind-${entry.sequence}` }}
-                        className={cn(
-                          "relative z-[1] flex w-full cursor-pointer items-start gap-2 rounded-lg px-2.5 py-2.5 text-left hover:bg-transparent",
-                          MOTION.fast,
-                        )}
-                        onClick={() => {
-                          const detail = typeof entry.detail === "string" ? entry.detail : undefined;
-                          run(() => onRewindEntry?.(Math.max(0, entry.sequence - 1), detail));
-                        }}
-                      >
-                        <span className="shrink-0 tabular-nums text-[11px] text-text-secondary">#{entry.sequence}</span>
-                        <div className="min-w-0 flex-1">
-                          <div className="truncate text-[13px] text-text-base">{entry.detail}</div>
-                          <div className="mt-0.5 text-[11px] text-text-secondary">
-                            {formatRewindTimestamp(entry.timestamp)}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </SlidingMenuList>
-                )}
-              </div>
-            </Panel>
-          </>
-        )}
-      </div>
-  );
-
-  const changeOpen = (next: boolean) => {
-    if (!next) setIsRewindFlyoutOpen(false);
-    onOpenChange(next);
-  };
-  if (pointerAnchor) return (
-    <Popover open={open} onOpenChange={changeOpen}>
-      <PopoverContent anchor={pointerAnchor} side="bottom" align="start" sideOffset={0}
-        className="w-[min(280px,calc(100vw-48px))]" data-custom-contextmenu="1"
-        onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}>
-        {content}
-      </PopoverContent>
-    </Popover>
-  );
-  return (
-    <MorphingMenuShell open={open} onOpenChange={changeOpen} layoutId={layoutId} trigger={trigger}
-      panelPlacement="below" panelAlign="left"
-      panelClassName="mt-1.5 w-[min(280px,calc(100vw-48px))] overflow-visible"
-      staggerContent={false} zIndex={50}>
-      {content}
-    </MorphingMenuShell>
-  );
+  const item = "gap-2 text-[13px]";
+  const icon = "h-3.5 w-3.5 text-text-secondary";
+  return <DropdownMenu open={open} onOpenChange={onOpenChange} modal={false}>
+    <DropdownMenuTrigger asChild>
+      {contextMenuPosition ? <span aria-hidden className="pointer-events-none fixed h-px w-px"
+        style={{ left: contextMenuPosition.left, top: contextMenuPosition.top }}/>
+        : <Button variant="ghost" className="h-8 max-w-full min-w-0 gap-2 pl-1 pr-2 font-medium">
+          <span className="truncate">{title?.trim() || "对话"}</span><Ellipsis className="h-3 w-3 shrink-0"/>
+        </Button>}
+    </DropdownMenuTrigger>
+    <DropdownMenuContent align="start" sideOffset={contextMenuPosition ? 0 : 6}
+      className="w-64" data-custom-contextmenu="1" onContextMenu={(event) => event.preventDefault()}>
+      <DropdownMenuItem className={item} onSelect={onRename}><Pencil className={icon}/>重命名</DropdownMenuItem>
+      <DropdownMenuItem className={item} onSelect={onPin}><Pin className={icon}/>{pinned ? "取消置顶" : "置顶"}</DropdownMenuItem>
+      <DropdownMenuItem className={item} disabled={!onSetUnread} onSelect={() => onSetUnread?.(!unread)}>
+        {unread ? <Eye className={icon}/> : <EyeOff className={icon}/>}{unread ? "标记为已读" : "标记为未读"}
+      </DropdownMenuItem>
+      <DropdownMenuSub><DropdownMenuSubTrigger className={item}><Folder className={icon}/>项目</DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="max-h-80 min-w-56 overflow-y-auto" data-custom-contextmenu="1">
+          {projects.length === 0 && <DropdownMenuItem disabled>暂无项目</DropdownMenuItem>}
+          {projects.map((project) => <DropdownMenuItem key={project.path} className={item} onSelect={() => onOpenProject?.(project.path)}>
+            <Folder className={icon}/><span className="max-w-64 truncate">{project.name}</span>
+          </DropdownMenuItem>)}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+      <DropdownMenuSub><DropdownMenuSubTrigger className={item}><Layers className={icon}/>分区</DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="max-h-80 min-w-48 overflow-y-auto" data-custom-contextmenu="1">
+          {sections.map((section) => <DropdownMenuItem key={section.id} onSelect={() => onSetSection?.(section.id)}>
+            {section.name}{sectionId === section.id && <Check className="ml-auto h-3.5 w-3.5"/>}
+          </DropdownMenuItem>)}
+          {sections.length > 0 && <DropdownMenuSeparator/>}
+          <DropdownMenuItem className={item} onSelect={onCreateSection}><Plus className={icon}/>创建分区…</DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+      <DropdownMenuSeparator/>
+      <DropdownMenuItem className={item} onSelect={onFork}><GitBranch className={icon}/>分支</DropdownMenuItem>
+      <DropdownMenuSeparator/>
+      <DropdownMenuItem className={item} disabled><Share className={icon}/>分享</DropdownMenuItem>
+      <DropdownMenuSub><DropdownMenuSubTrigger className={item}><Copy className={icon}/>复制</DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="min-w-48" data-custom-contextmenu="1">
+          <DropdownMenuItem disabled={!onCopyDeepLink} onSelect={onCopyDeepLink}>复制深度链接</DropdownMenuItem>
+          <DropdownMenuItem onSelect={onCopy}>复制为 Markdown</DropdownMenuItem>
+          <DropdownMenuItem disabled={!onCopyDirectory} onSelect={onCopyDirectory}>复制工作目录</DropdownMenuItem>
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+      <DropdownMenuSeparator/>
+      <DropdownMenuItem className={item} onSelect={onOpenInNewWindow}><ArrowUpRightFromSquare className={icon}/>在新窗口中打开</DropdownMenuItem>
+      <DropdownMenuSub><DropdownMenuSubTrigger className={item}><SquareArrowOutUpRight className={icon}/>打开方式</DropdownMenuSubTrigger>
+        <DropdownMenuSubContent className="min-w-48" data-custom-contextmenu="1">
+          {OPEN_TARGET_OPTIONS.map((target) => <DropdownMenuItem key={target.title} disabled={!onOpenTarget} onSelect={() => onOpenTarget?.(target.title)}>
+            {target.title}{target.title === defaultOpenTarget && <Check className="ml-auto h-3.5 w-3.5"/>}
+          </DropdownMenuItem>)}
+        </DropdownMenuSubContent>
+      </DropdownMenuSub>
+      <DropdownMenuItem className={item} onSelect={onOpenAutomation}><Clock className={icon}/>添加自动化…</DropdownMenuItem>
+      <DropdownMenuSeparator/>
+      <DropdownMenuItem className={item} onSelect={onArchive}><Archive className={icon}/>归档</DropdownMenuItem>
+    </DropdownMenuContent>
+  </DropdownMenu>;
 }
