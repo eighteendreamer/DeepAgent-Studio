@@ -6,7 +6,6 @@ import {
   AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd,
   AlignVerticalJustifyStart,
-  ChevronUp,
   Grid3x3,
   Magnet,
   Maximize2,
@@ -20,11 +19,7 @@ import {
   LayoutGrid,
   type LucideIcon,
 } from "lucide-react";
-import {
-  HoverCard,
-  HoverCardTrigger,
-  HoverCardContent,
-} from "../../../components/shadcn/hover-card";
+import { Button } from "../../../components/shadcn/button";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
@@ -34,6 +29,7 @@ import type { NodeAlignMode } from "../types";
 import type { Viewport } from "@xyflow/react";
 import type { ReactFlowInstance } from "@xyflow/react";
 import { useState, useEffect } from "react";
+import { CanvasToolbarDock } from "./CanvasToolbarDock";
 
 interface Props {
   viewport: Viewport;
@@ -41,16 +37,8 @@ interface Props {
   rfInstance: ReactFlowInstance | null;
 }
 
-const BAR_STYLE: React.CSSProperties = {
-  background: "rgba(76,80,82,0.55)",
-  border: "1px solid rgba(255,255,255,0.08)",
-  boxShadow: "rgba(0,0,0,0.11) 0px 20px 84px, rgba(0,0,0,0.15) 0px 33px 139px",
-  backdropFilter: "blur(40px)",
-  WebkitBackdropFilter: "blur(40px)",
-};
-
 const BTN_CLASS =
-  "w-7 h-7 flex-shrink-0 rounded-lg flex items-center justify-center transition-all duration-300 active:scale-95";
+  "w-7 h-7 flex-shrink-0 rounded-lg bg-transparent p-0 text-white/70 transition-[background-color,color,transform] duration-150 hover:bg-white/10 hover:text-white active:scale-95 disabled:opacity-100";
 
 const ICON_COLOR = "rgba(248,248,248,0.7)";
 const ICON_ACTIVE = "rgb(248,248,248)";
@@ -106,7 +94,6 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
   };
 
   const [running, setRunning] = useState(false);
-  const [toolsOpen, setToolsOpen] = useState(false);
   useEffect(() => {
     const interval = setInterval(() => setRunning(isWorkflowRunning()), 200);
     return () => clearInterval(interval);
@@ -168,88 +155,73 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
   };
 
   return (
-    <div
-      className={`absolute bottom-4 left-1/2 -translate-x-1/2 z-[9997]${toolsOpen ? " pointer-events-none" : ""}`}
-    >
-      <HoverCard open={toolsOpen} onOpenChange={setToolsOpen}>
-        <HoverCardTrigger delay={120} closeDelay={300} render={
-          <button
-            className="flex items-center justify-center outline-none transition-all duration-300 hover:brightness-125 active:scale-95 data-popup-open:pointer-events-none data-popup-open:opacity-0"
-            style={{ ...BAR_STYLE, width: 44, height: 28, borderRadius: 999, cursor: "pointer" }}
-            aria-label="工具栏"
-          >
-            <ChevronUp size={12} strokeWidth={2} color={ICON_COLOR} />
-          </button>
-        } />
-        <HoverCardContent
-          side="top"
-          align="center"
-          sideOffset={-28}
-          className="w-auto max-w-none"
-          style={{ ...BAR_STYLE, borderRadius: 12, padding: 0 }}
-        >
-          <div className="flex items-center gap-1 px-1.5" style={{ height: 40 }}>
+    <CanvasToolbarDock>
       {/* Grid / Snap */}
-      <HoverInfo content="网格"><button
+      <HoverInfo content="网格"><Button variant="ghost"
+        aria-label="网格"
         className={BTN_CLASS}
         onClick={toggleGrid}
 
         style={{ background: gridVisible ? "rgba(255,255,255,0.15)" : undefined }}
       >
         <Grid3x3 size={14} strokeWidth={1.8} color={gridVisible ? ICON_ACTIVE : ICON_COLOR} />
-      </button></HoverInfo>
-      <HoverInfo content="磁吸"><button
+      </Button></HoverInfo>
+      <HoverInfo content="磁吸"><Button variant="ghost"
+        aria-label="磁吸"
         className={BTN_CLASS}
         onClick={toggleSnap}
 
         style={{ background: snapToGrid ? "rgba(255,255,255,0.15)" : undefined }}
       >
         <Magnet size={14} strokeWidth={1.8} color={snapToGrid ? ICON_ACTIVE : ICON_COLOR} />
-      </button></HoverInfo>
-      <HoverInfo content="撤销"><button className={BTN_CLASS} onClick={handleUndo} disabled={!canUndo} >
+      </Button></HoverInfo>
+      <HoverInfo content="撤销"><Button variant="ghost" aria-label="撤销" className={BTN_CLASS} onClick={handleUndo} disabled={!canUndo} >
         <Undo2 size={14} strokeWidth={1.8} color={canUndo ? ICON_COLOR : ICON_MUTED} />
-      </button></HoverInfo>
-      <HoverInfo content="重做"><button className={BTN_CLASS} onClick={handleRedo} disabled={!canRedo} >
+      </Button></HoverInfo>
+      <HoverInfo content="重做"><Button variant="ghost" aria-label="重做" className={BTN_CLASS} onClick={handleRedo} disabled={!canRedo} >
         <Redo2 size={14} strokeWidth={1.8} color={canRedo ? ICON_COLOR : ICON_MUTED} />
-      </button></HoverInfo>
+      </Button></HoverInfo>
 
       <div style={DIVIDER_STYLE} />
 
       {/* Align */}
       {ALIGN_BUTTONS.map(({ mode: alignMode, title, Icon }) => (
-        <HoverInfo key={alignMode} content={canAlign ? title : "选择至少两个节点后可对齐"}><button
+        <HoverInfo key={alignMode} content={canAlign ? title : "选择至少两个节点后可对齐"}><Button variant="ghost"
+          aria-label={title}
           className={BTN_CLASS}
           onClick={() => handleAlign(alignMode)}
           disabled={!canAlign}
 
         >
           <Icon size={14} strokeWidth={1.8} color={canAlign ? ICON_COLOR : ICON_MUTED} />
-        </button></HoverInfo>
+        </Button></HoverInfo>
       ))}
 
       <div style={DIVIDER_STYLE} />
 
       {/* Auto layout */}
-      <HoverInfo content={nodeCount > 0 ? "自动布局" : "画布为空"}><button
+      <HoverInfo content={nodeCount > 0 ? "自动布局" : "画布为空"}><Button variant="ghost"
+        aria-label="自动布局"
         className={BTN_CLASS}
         onClick={handleAutoLayout}
         disabled={nodeCount === 0}
 
       >
         <LayoutGrid size={14} strokeWidth={1.8} color={nodeCount > 0 ? ICON_COLOR : ICON_MUTED} />
-      </button></HoverInfo>
+      </Button></HoverInfo>
 
       <div style={DIVIDER_STYLE} />
 
       {/* Fit screen + Zoom */}
-      <HoverInfo content="适应屏幕"><button className={BTN_CLASS} onClick={handleFitScreen} >
+      <HoverInfo content="适应屏幕"><Button variant="ghost" aria-label="适应屏幕" className={BTN_CLASS} onClick={handleFitScreen} >
         <Maximize2 size={14} strokeWidth={1.8} color={ICON_COLOR} />
-      </button></HoverInfo>
-      <HoverInfo content="缩小"><button className={BTN_CLASS} onClick={handleZoomOut} >
+      </Button></HoverInfo>
+      <HoverInfo content="缩小"><Button variant="ghost" aria-label="缩小" className={BTN_CLASS} onClick={handleZoomOut} >
         <ZoomOut size={14} strokeWidth={1.8} color={ICON_COLOR} />
-      </button></HoverInfo>
+      </Button></HoverInfo>
       <input
         type="range"
+        aria-label="画布缩放比例"
         min={20}
         max={300}
         step={5}
@@ -258,17 +230,18 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
         className="w-28 cursor-pointer"
         style={{ accentColor: "rgb(248,248,248)" }}
       />
-      <HoverInfo content="放大"><button className={BTN_CLASS} onClick={handleZoomIn} >
+      <HoverInfo content="放大"><Button variant="ghost" aria-label="放大" className={BTN_CLASS} onClick={handleZoomIn} >
         <ZoomIn size={14} strokeWidth={1.8} color={ICON_COLOR} />
-      </button></HoverInfo>
-      <HoverInfo content="重置缩放"><button
+      </Button></HoverInfo>
+      <HoverInfo content="重置缩放"><Button variant="ghost"
+        aria-label="重置缩放"
         className="px-1.5 text-xs font-medium transition-colors duration-200"
         style={{ color: ICON_COLOR, minWidth: 36 }}
         onClick={handleResetZoom}
 
       >
         {percent}%
-      </button></HoverInfo>
+      </Button></HoverInfo>
 
       <div style={DIVIDER_STYLE} />
 
@@ -280,8 +253,8 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
       <div style={DIVIDER_STYLE} />
 
       {/* Run / Stop */}
-      <button
-        className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-all duration-300 active:scale-95"
+      <Button variant="ghost"
+        className="flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium transition-[background-color,transform] duration-150 hover:bg-white/10 active:scale-95"
         style={{
           background: running ? "rgba(239,68,68,0.8)" : "rgba(59,130,246,0.8)",
           color: "rgb(248,248,248)",
@@ -290,17 +263,14 @@ export function BottomBar({ viewport, onViewportChange, rfInstance }: Props) {
       >
         {running ? <Square size={10} fill="currentColor" strokeWidth={0} /> : <Play size={10} fill="currentColor" strokeWidth={0} />}
         {running ? "停止" : "运行"}
-      </button>
+      </Button>
 
       <div style={DIVIDER_STYLE} />
 
       {/* Settings */}
-      <HoverInfo content="设置"><button className={BTN_CLASS}  onClick={useCanvasStore.getState().openSettings}>
+      <HoverInfo content="设置"><Button variant="ghost" aria-label="设置" className={BTN_CLASS}  onClick={useCanvasStore.getState().openSettings}>
         <Settings size={14} strokeWidth={1.8} color={ICON_COLOR} />
-      </button></HoverInfo>
-          </div>
-        </HoverCardContent>
-      </HoverCard>
-    </div>
+      </Button></HoverInfo>
+    </CanvasToolbarDock>
   );
 }
