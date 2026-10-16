@@ -21,11 +21,10 @@ license = "Apache-2.0"
 authors = ["DeepAgent Studio"]
 
 [profile.dev]
-# Windows often keeps files in target/debug/incremental locked while Tauri dev,
-# rust-analyzer, or antivirus/indexing is active. Disabling incremental for the
-# desktop shell avoids noisy "error finalizing incremental compilation session"
-# warnings and failed rebuilds caused by transient OS file locks.
-incremental = false
+# Keep incremental compilation enabled for the desktop development loop. The
+# Tauri process is rebuilt frequently, and forcing a full Rust rebuild here made
+# every small backend change look like a frozen application on Windows.
+incremental = true
 
 [lib]
 name = "deepagent_desktop_lib"

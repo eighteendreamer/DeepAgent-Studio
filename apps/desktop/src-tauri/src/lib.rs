@@ -6558,29 +6558,50 @@ pub fn run() {
             }
             let workspace_plugins = workspace_root.join(".deepagent").join("plugins");
             inventory_roots.push(("workspace_plugins".to_string(), workspace_plugins));
-            for (category, root) in &inventory_roots {
-                if let Err(error) = inventory.refresh(category, root) {
-                    let _ = runtime_logs.append(
-                        NewRuntimeLogEntry::info("persistence", "managed_file_inventory_failed")
-                            .with_source("desktop-tauri")
-                            .with_message(format!(
-                                "failed to index managed files for category '{category}': {error}"
-                            ))
-                            .with_data(serde_json::json!({
-                                "category": category,
-                                "root": root,
-                            })),
-                    );
-                }
-            }
+            // Inventory is diagnostic metadata and is not required to render the
+            // first window. Scanning plugin/runtime trees can involve tens of
+            // thousands of files, so never perform the initial refresh on the
+            // Tauri setup thread; doing so makes Windows report the window as
+            // unresponsive during startup.
             {
                 let inventory = inventory.clone();
                 let roots = inventory_roots.clone();
                 let runtime_logs = runtime_logs.clone();
                 tauri::async_runtime::spawn(async move {
                     loop {
-                        for (category, root) in &roots {
-                            if let Err(error) = inventory.refresh(category, root) {
+                        let inventory_for_refresh = inventory.clone();
+                        let roots_for_refresh = roots.clone();
+                        let refresh_result = tauri::async_runtime::spawn_blocking(move || {
+                            let mut failures = Vec::new();
+                            for (category, root) in &roots_for_refresh {
+                                if let Err(error) = inventory_for_refresh.refresh(category, root) {
+                                    failures.push((category.clone(), root.clone(), error));
+                                }
+                            }
+                            failures
+                        })
+                        .await;
+
+                        match refresh_result {
+                            Ok(failures) => {
+                                for (category, root, error) in failures {
+                                    let _ = runtime_logs.append(
+                                        NewRuntimeLogEntry::info(
+                                            "persistence",
+                                            "managed_file_inventory_failed",
+                                        )
+                                        .with_source("desktop-tauri")
+                                        .with_message(format!(
+                                            "background managed-file refresh failed for '{category}': {error}"
+                                        ))
+                                        .with_data(serde_json::json!({
+                                            "category": category,
+                                            "root": root,
+                                        })),
+                                    );
+                                }
+                            }
+                            Err(error) => {
                                 let _ = runtime_logs.append(
                                     NewRuntimeLogEntry::info(
                                         "persistence",
@@ -6588,11 +6609,12 @@ pub fn run() {
                                     )
                                     .with_source("desktop-tauri")
                                     .with_message(format!(
-                                        "background managed-file refresh failed for '{category}': {error}"
+                                        "background managed-file refresh task failed: {error}"
                                     )),
                                 );
                             }
                         }
+
                         tokio::time::sleep(std::time::Duration::from_secs(60)).await;
                     }
                 });
