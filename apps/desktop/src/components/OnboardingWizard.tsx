@@ -1,9 +1,12 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Eye, FolderOpen, Globe, LoaderCircle, Lock, LockOpen, MessagesSquare, Monitor, Moon, Shield, SlidersHorizontal, Sun, Terminal } from "lucide-react";
 import { getWelcomeName, initializeProject, isTauri, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
 import { message } from "./message";
 import { useTranslation } from "react-i18next";
 import { useTheme, type ThemeMode } from "../hooks/useTheme";
+import { startOnboardingEntrance, type OnboardingEntrance } from "./onboardingEntrance";
+import { Button } from "./shadcn/button";
+
 interface Props {
   onComplete: () => void;
 }
@@ -29,6 +32,21 @@ export function OnboardingWizard({ onComplete }: Props) {
   const [apiKey, setApiKey] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
+  const finishPendingRef = useRef(false);
+  const entranceRef = useRef<OnboardingEntrance | null>(null);
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const welcomeRef = useRef<HTMLDivElement>(null);
+  const pointRef = useRef<HTMLDivElement>(null);
+  const leftDoorRef = useRef<HTMLDivElement>(null);
+  const rightDoorRef = useRef<HTMLDivElement>(null);
+  const leftSeamRef = useRef<HTMLDivElement>(null);
+  const rightSeamRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => () => {
+    finishPendingRef.current = false;
+    entranceRef.current?.cancel();
+  }, []);
   
   const { t, i18n } = useTranslation();
   const { activeIsDark, switchTheme } = useTheme();
@@ -38,7 +56,6 @@ export function OnboardingWizard({ onComplete }: Props) {
   const [isLangDropdownOpen, setIsLangDropdownOpen] = useState(false);
   const [workMode, setWorkMode] = useState<"code" | "daily">("code");
   const [sandboxMode, setSandboxModeState] = useState<SandboxMode>("workspace_write");
-  const [animStage, setAnimStage] = useState<'idle' | 'contentBlur' | 'welcomeText' | 'welcomeOut' | 'lineAppear' | 'doorsOpen'>('idle');
   const [welcomeName, setWelcomeName] = useState(() => localStorage.getItem("userName")?.trim() || "");
 
   useEffect(() => {
@@ -102,42 +119,53 @@ export function OnboardingWizard({ onComplete }: Props) {
   };
 
   const handleFinish = async () => {
-    if (isFinishing) return;
+    if (finishPendingRef.current) return;
+    finishPendingRef.current = true;
     setIsFinishing(true);
 
     try {
       await setSandboxMode(sandboxMode);
-    } catch (e) {
-      message.error("沙箱设置保存失败，请重试");
-      console.error("set_sandbox_mode failed:", e);
+      if (!finishPendingRef.current) return;
+      // Theme is already persisted by ThemeProvider; retain the existing keys.
+      localStorage.setItem("appLanguage", language);
+      localStorage.setItem("workMode", workMode);
+      localStorage.setItem("onboarding_complete", "true");
+    } catch (error) {
+      if (!finishPendingRef.current) return;
+      console.error("onboarding settings save failed:", error);
+      message.error("初始化设置保存失败，请重试");
+      finishPendingRef.current = false;
       setIsFinishing(false);
       return;
     }
 
-    // Save settings locally with the correct keys used by the rest of the app
-    
-    // Theme is already persisted via ThemeProvider when switchTheme was called.
-    // Nothing to write to legacy storage here.
-    
-    // Language uses appLanguage
-    localStorage.setItem("appLanguage", language);
-    
-    // Work mode uses workMode
-    localStorage.setItem("workMode", workMode);
-    
-    localStorage.setItem("onboarding_complete", "true");
-    
-    // Start the cinematic entrance animation
-    setAnimStage('contentBlur');
-    setTimeout(() => setAnimStage('welcomeText'), 600);
-    setTimeout(() => setAnimStage('welcomeOut'), 2400); // Text starts exiting
-    setTimeout(() => setAnimStage('lineAppear'), 3400); // Triggers exactly as text fades out
-    setTimeout(() => setAnimStage('doorsOpen'), 4600); // Line grows for 1.2s, then doors open
-    setTimeout(() => {
-      onComplete();
-      // We no longer reload here to preserve the smooth transition.
-      // i18n and theme are already updated via state, so it should be fine.
-    }, 6200); // wait for sliding door
+    try {
+      const overlay = overlayRef.current;
+      const card = cardRef.current;
+      const welcome = welcomeRef.current;
+      const point = pointRef.current;
+      const leftDoor = leftDoorRef.current;
+      const rightDoor = rightDoorRef.current;
+      const leftSeam = leftSeamRef.current;
+      const rightSeam = rightSeamRef.current;
+      if (!overlay || !card || !welcome || !point || !leftDoor || !rightDoor || !leftSeam || !rightSeam) {
+        throw new Error("onboarding entrance elements are unavailable");
+      }
+      entranceRef.current = startOnboardingEntrance({
+        overlay, card, welcome, point,
+        doors: [leftDoor, rightDoor], seams: [leftSeam, rightSeam],
+      }, window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+      const completed = await entranceRef.current.finished;
+      if (completed && finishPendingRef.current) onComplete();
+    } catch (error) {
+      if (!finishPendingRef.current) return;
+      entranceRef.current?.cancel();
+      entranceRef.current = null;
+      console.error("onboarding entrance failed:", error);
+      message.error("进入系统失败，请重试");
+      finishPendingRef.current = false;
+      setIsFinishing(false);
+    }
   };
 
   const nextStep = () => setStep((s) => Math.min(s + 1, 4) as any);
@@ -166,76 +194,28 @@ export function OnboardingWizard({ onComplete }: Props) {
   const doorSurface = activeIsDark
     ? "rgba(255, 255, 255, 0.06)"
     : "rgba(17, 24, 39, 0.055)";
-  const doorsOpen = animStage === "doorsOpen";
-  const lineVisible = animStage === "lineAppear" || doorsOpen;
-  const bridgeDotVisible = animStage === "welcomeOut" || lineVisible;
-  const cardExiting = animStage !== "idle";
 
   return (
-    <div className="absolute top-10 inset-x-0 bottom-0 z-50 flex items-center justify-center overflow-hidden">
-      {/* Keep a solid transition surface behind the animation. It fades only when
-          the doors open, so the blurred card never exposes the app underneath. */}
-      <div
-        aria-hidden="true"
-        className={`onboarding-transition-surface absolute inset-0 z-0 bg-bg-base ${
-          doorsOpen ? "is-open" : ""
-        }`}
-      />
-
-      {/* Sliding Doors Backdrop */}
-      <div className="absolute inset-0 z-10 pointer-events-none">
-        <div
-            className="absolute top-0 bottom-0 left-0 backdrop-blur-md overflow-visible"
-            style={{
-              backgroundColor: doorSurface,
-              width: doorsOpen ? "0%" : "50%",
-            }}
-          >
-            <div className="absolute right-0 top-0 bottom-0 flex items-center">
-              <div
-                className={`onboarding-door-line w-[1px] ${lineVisible ? "is-visible" : ""}`}
-                style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }}
-              />
-            </div>
-          </div>
-          <div
-            className="absolute top-0 bottom-0 right-0 backdrop-blur-md overflow-visible"
-            style={{
-              backgroundColor: doorSurface,
-              width: doorsOpen ? "0%" : "50%",
-            }}
-          >
-            <div className="absolute left-0 top-0 bottom-0 flex items-center">
-              <div
-                className={`onboarding-door-line w-[1px] ${lineVisible ? "is-visible" : ""}`}
-                style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }}
-              />
-            </div>
+    <div ref={overlayRef} className="absolute top-10 inset-x-0 bottom-0 z-50 flex items-center justify-center overflow-hidden">
+      <div className="absolute inset-0 z-10 pointer-events-none" aria-hidden="true">
+        <div ref={leftDoorRef} className="onboarding-door absolute inset-y-0 left-0 w-1/2 bg-bg-base">
+          <div className="absolute inset-0" style={{ backgroundColor: doorSurface }} />
+          <div className="absolute right-0 inset-y-0 flex items-center">
+            <div ref={leftSeamRef} className="onboarding-door-line w-px" style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }} />
           </div>
         </div>
-
-        {/* The dot bridges the text exit and the vertical line without a blank frame. */}
-        <div
-          className={`onboarding-transition-dot absolute left-1/2 top-1/2 z-20 h-[1px] w-[1px] -translate-x-1/2 -translate-y-1/2 rounded-full ${
-            bridgeDotVisible ? "is-visible" : ""
-          }`}
-          style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }}
-        />
-
-      {/* Welcome Text */}
-        {animStage === 'welcomeText' && (
-          <div
-            className={`onboarding-welcome-text absolute z-50 text-3xl font-bold tracking-wider ${themeStyles.textBase} pointer-events-none drop-shadow-lg`}
-          >
-            {t("settings.personalize.greetingPrefix")}{welcomeName || t("settings.personalize.greetingDefaultName")}
+        <div ref={rightDoorRef} className="onboarding-door absolute inset-y-0 right-0 w-1/2 bg-bg-base">
+          <div className="absolute inset-0" style={{ backgroundColor: doorSurface }} />
+          <div className="absolute left-0 inset-y-0 flex items-center">
+            <div ref={rightSeamRef} className="onboarding-door-line w-px" style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }} />
           </div>
-        )}
-
-      <div
-        className={`onboarding-card w-full max-w-lg bg-bg-base rounded-3xl shadow-2xl border ${themeStyles.borderTheme} relative min-h-[400px] z-30 ${
-          cardExiting ? "is-exiting" : ""
-        }`}
-      >
+        </div>
+      </div>
+      <div ref={pointRef} aria-hidden="true" className="onboarding-transition-dot absolute left-1/2 top-1/2 z-20 h-px w-px rounded-full" style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }} />
+      <div ref={welcomeRef} className={`onboarding-welcome-text absolute z-50 text-3xl font-bold tracking-wider ${themeStyles.textBase} pointer-events-none`}>
+        {t("settings.personalize.greetingPrefix")}{welcomeName || t("settings.personalize.greetingDefaultName")}
+      </div>
+      <div ref={cardRef} className={`onboarding-card w-full max-w-lg bg-bg-base rounded-3xl shadow-2xl border ${themeStyles.borderTheme} relative min-h-[400px] z-30`} aria-busy={isFinishing}>
           {/* STEP 0: API Key */}
           {step === 0 && (
             <div
@@ -509,10 +489,12 @@ export function OnboardingWizard({ onComplete }: Props) {
                   { id: "code", title: "适用于编程", desc: "更具技术性的回复和控制", icon: Terminal },
                   { id: "daily", title: "适用于日常工作", desc: "同样强大，技术细节更少", icon: MessagesSquare },
                 ].map((m) => (
-                  <div
+                  <Button
+                    variant="ghost"
+                    disabled={isFinishing}
                     key={m.id}
-                    onClick={() => setWorkMode(m.id as any)}
-                    className={`flex-1 flex flex-col items-start p-4 border rounded-xl cursor-pointer transition-all ${
+                    onClick={() => setWorkMode(m.id as "code" | "daily")}
+                    className={`h-auto flex-1 flex flex-col items-start whitespace-normal p-4 border rounded-xl cursor-pointer transition-all ${
                       workMode === m.id
                         ? `${themeStyles.selectedBorder} ${themeStyles.selectedBg} shadow-sm`
                         : `${themeStyles.borderTheme} bg-transparent hover:bg-sidebar-bg`
@@ -530,21 +512,23 @@ export function OnboardingWizard({ onComplete }: Props) {
                     <div className={`text-xs ${workMode === m.id ? 'text-text-base' : themeStyles.textSecondary}`}>
                       {m.desc}
                     </div>
-                  </div>
+                  </Button>
                 ))}
               </div>
 
               <div className="flex space-x-3 mt-8">
-                <button
+                <Button
+                  variant="outline"
+                  disabled={isFinishing}
                   onClick={prevStep}
-                  className={`px-6 py-3 rounded-xl text-sm font-medium border ${themeStyles.borderTheme} ${themeStyles.textSecondary} hover:bg-sidebar-bg transition-colors`}
+                  className={`h-auto px-6 py-3 rounded-xl text-sm font-medium border ${themeStyles.borderTheme} ${themeStyles.textSecondary} hover:bg-sidebar-bg transition-colors`}
                 >
                   上一步
-                </button>
-                <button
+                </Button>
+                <Button
                   onClick={handleFinish}
                   disabled={isFinishing}
-                  className={`flex-1 flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors disabled:opacity-50 disabled:cursor-not-allowed`}
+                  className={`h-auto flex-1 flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
                   {isFinishing ? (
                     <LoaderCircle className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />
@@ -552,7 +536,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                     <Check className="mr-2 h-4 w-4" aria-hidden="true" />
                   )}
                   {isFinishing ? "保存中..." : "进入系统"}
-                </button>
+                </Button>
               </div>
             </div>
           )}
