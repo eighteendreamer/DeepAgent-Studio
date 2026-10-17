@@ -27,5 +27,26 @@ export default defineConfig(({ command }) => ({
     target: "es2020",
     outDir: "dist",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        // Pin the libraries both windows share into their own chunks. Without
+        // this, Rollup folds React into whichever file-viewer renderer chunk
+        // first claims it, and the main entry then statically loads every
+        // renderer chunk (~4.7 MB) before the first paint.
+        manualChunks(id: string) {
+          const normalized = id.replace(/\\/g, "/");
+          if (/\/node_modules\/(\.pnpm\/[^/]+\/node_modules\/)?(react|react-dom|scheduler)\//.test(normalized)) {
+            return "vendor-react";
+          }
+          if (/\/node_modules\/(\.pnpm\/[^/]+\/node_modules\/)?gsap\//.test(normalized)) {
+            return "vendor-gsap";
+          }
+          if (/\/node_modules\/(\.pnpm\/[^/]+\/node_modules\/)?@tauri-apps\/api\//.test(normalized)) {
+            return "vendor-tauri";
+          }
+          return undefined;
+        },
+      },
+    },
   },
 }));
