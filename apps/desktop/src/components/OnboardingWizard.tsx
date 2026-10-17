@@ -14,11 +14,11 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 
 const ConnectButton = motion.create(Button);
 const STEPS = [
-  { label: "连接 API", title: "连接你的 API", description: "", icon: Lock },
-  { label: "界面外观", title: "选择系统主题", description: "自定义界面的外观", icon: Monitor },
-  { label: "系统语言", title: "选择语言", description: "请选择你熟悉的系统语言", icon: Globe },
-  { label: "沙箱权限", title: "沙箱权限", description: "设置工具最多可以访问和修改哪里", icon: Shield },
-  { label: "工作模式", title: "工作模式", description: "选择适合你的工作方式", icon: SlidersHorizontal },
+  { title: "连接你的 API", description: "", icon: Lock },
+  { title: "选择系统主题", description: "自定义界面的外观", icon: Monitor },
+  { title: "选择语言", description: "请选择你熟悉的系统语言", icon: Globe },
+  { title: "沙箱权限", description: "设置工具最多可以访问和修改哪里", icon: Shield },
+  { title: "工作模式", description: "选择适合你的工作方式", icon: SlidersHorizontal },
 ] as const;
 
 const SUPPORTED_LANGUAGES = [
@@ -233,15 +233,7 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
       <div ref={welcomeRef} aria-hidden="true" className="onboarding-welcome-text absolute z-50 text-3xl font-bold tracking-wider text-text-base pointer-events-none">
         {t("settings.personalize.greetingPrefix")}{welcomeName || t("settings.personalize.greetingDefaultName")}
       </div>
-      <div ref={cardRef} className="onboarding-card relative z-30 w-full max-w-lg rounded-3xl border border-border-theme bg-bg-base text-text-base" aria-busy={isFinishing || moving}>
-        <div className="onboarding-progress" aria-label="初始化进度">
-          <div className="grid grid-cols-5 gap-1.5" aria-hidden="true">
-            {STEPS.map((item, index) => <span key={item.label} className={`h-[3px] rounded-full transition-colors duration-200 ${index <= step ? "bg-text-base" : "bg-border-theme opacity-55"}`} />)}
-          </div>
-          <div className="mt-2.5 flex justify-between text-[10px] tracking-wide text-text-secondary" aria-live="polite">
-            <span>{current.label}</span><span className="tabular-nums">0{step + 1} / 05</span>
-          </div>
-        </div>
+      <div ref={cardRef} className="onboarding-card relative z-30 w-full max-w-lg rounded-3xl border border-border-theme bg-bg-base text-text-base shadow-2xl" aria-busy={isFinishing || moving}>
         <motion.div initial={false} animate={{ height: panelHeight ?? "auto" }} transition={{ duration: reducedMotion ? 0 : 0.28, ease: ONBOARDING_EASE }} className="relative" style={{ overflow: moving ? "hidden" : "visible" }}>
           <AnimatePresence initial={false} mode="popLayout" custom={direction}>
             <OnboardingPanel key={step} direction={direction} disabled={moving || isFinishing} onHeight={setPanelHeight} onEntered={() => { movingRef.current = false; setMoving(false); }}>
@@ -249,9 +241,9 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
                 <div className={`onboarding-emblem ${step === 0 ? "onboarding-brand" : ""}`}>
                   {step === 0 ? <img src="/logo.png" alt="DeepAgent Studio" /> : <current.icon aria-hidden="true" />}
                 </div>
-                <h1 tabIndex={-1} className={`mb-2 font-semibold tracking-tight outline-none ${step === 0 ? "text-[28px] leading-[38px]" : "text-[25px] leading-[34px]"}`}>{current.title}</h1>
+                <h1 tabIndex={-1} className={`mb-2 font-bold outline-none ${step === 0 ? "text-3xl" : "text-2xl"}`}>{current.title}</h1>
                 {step === 0 ? (
-                  <p className="text-[13px] leading-[21px] text-text-secondary">
+                  <p className="text-sm text-text-secondary">
                     请输入你的{" "}
                     <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2" onClick={event => {
                       if (!isTauri()) return;
@@ -259,14 +251,14 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
                       void openExternalUrl(event.currentTarget.href).catch(error => message.error(`打开密钥管理页面失败：${String(error)}`));
                     }}>DeepSeek API Key</a>{" "}激活桌面客户端
                   </p>
-                ) : <p className="text-[13px] leading-[21px] text-text-secondary">{current.description}</p>}
+                ) : <p className="text-sm text-text-secondary">{current.description}</p>}
               </header>
               {step === 0 && (
                 <div>
-                  <Label htmlFor="onboarding-api-key" className="mb-2 block text-[13px] text-text-base">API Key</Label>
+                  <Label htmlFor="onboarding-api-key" className="mb-2 block text-sm text-text-base">API Key</Label>
                   <div className={`onboarding-key-field ${connectError ? "onboarding-key-invalid" : ""}`}>
                     <Lock className="h-[15px] w-[15px] shrink-0 text-text-secondary" aria-hidden="true" />
-                    <Input ref={inputRef} id="onboarding-api-key" type={keyVisible ? "text" : "password"} value={apiKey} readOnly={isConnecting} autoComplete="off" spellCheck={false} placeholder="sk-..." aria-invalid={!!connectError} aria-describedby={connectError ? "onboarding-connect-error" : undefined} className="h-full min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-[13px] shadow-none focus:ring-0"
+                    <Input ref={inputRef} id="onboarding-api-key" type={keyVisible ? "text" : "password"} value={apiKey} readOnly={isConnecting} autoComplete="off" spellCheck={false} placeholder="sk-..." aria-invalid={!!connectError} aria-describedby={connectError ? "onboarding-connect-error" : undefined} className="h-full min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-sm shadow-none focus:ring-0"
                       onChange={event => { setApiKey(event.target.value); setConnectError(""); setConnectState("idle"); }}
                       onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void handleConnect(); } }} />
                     <Button variant="ghost" size="icon" disabled={isConnecting} className="h-6 w-6 rounded text-text-secondary hover:bg-ui-tint" aria-label={keyVisible ? "隐藏密钥" : "显示密钥"} onClick={() => setKeyVisible(value => !value)}>
@@ -280,7 +272,7 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               {step === 2 && (
                 <DropdownMenu open={isLangDropdownOpen} onOpenChange={setIsLangDropdownOpen} modal={false}>
                   <DropdownMenuTrigger asChild>
-                    <Button variant="outline" className="onboarding-language-trigger h-[46px] w-full justify-between rounded-xl bg-transparent px-4 text-[13px] hover:bg-ui-tint" aria-label="系统语言">
+                    <Button variant="outline" className="onboarding-language-trigger h-[46px] w-full justify-between rounded-xl bg-transparent px-4 text-sm hover:bg-ui-tint" aria-label="系统语言">
                       <span>{SUPPORTED_LANGUAGES.find(item => item.id === language)?.label}</span><ChevronDown aria-hidden="true" className={`h-4 w-4 transition-transform ${isLangDropdownOpen ? "rotate-180" : ""}`} />
                     </Button>
                   </DropdownMenuTrigger>
@@ -301,10 +293,10 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
                 { id: "daily", title: "适用于日常工作", description: "同样强大，技术细节更少", icon: MessagesSquare },
               ]} />}
               {step === 4 && <div className={`onboarding-inline-error ${finishError ? "onboarding-error-visible" : ""}`} role="alert"><div>{finishError}</div></div>}
-              <footer className="onboarding-actions">
+              <footer className={`onboarding-actions ${step === 0 ? "onboarding-actions-connect" : ""}`}>
                 {step > 0 && <Button variant="outline" className="onboarding-back" onClick={() => goToStep(step - 1)}>上一步</Button>}
                 {step === 0 ? (
-                  <ConnectButton initial="expanded" animate={connectAnimation} variants={{ expanded: { width: "100%", borderRadius: "12px" }, collapsed: { width: "46px", borderRadius: "23px" } }} onClick={handleConnect} disabled={!apiKey.trim() || isConnecting} aria-busy={isConnecting} aria-label={{ idle: "确定连接", connecting: "正在连接", success: "连接成功", error: "重试连接" }[connectState]} data-connect-state={connectState} className="onboarding-primary min-w-0 overflow-hidden px-0 disabled:opacity-50 data-[connect-state=connecting]:disabled:opacity-100 data-[connect-state=success]:disabled:opacity-100">
+                  <ConnectButton initial="expanded" animate={connectAnimation} variants={{ expanded: { width: "100%", borderRadius: "12px" }, collapsed: { width: "46px", borderRadius: "23px" } }} onClick={handleConnect} disabled={!apiKey.trim() || isConnecting} aria-busy={isConnecting} aria-label={{ idle: "确定连接", connecting: "正在连接", success: "连接成功", error: "重试连接" }[connectState]} data-connect-state={connectState} className="onboarding-primary w-full min-w-0 overflow-hidden px-0 disabled:opacity-50 data-[connect-state=connecting]:disabled:opacity-100 data-[connect-state=success]:disabled:opacity-100">
                     <motion.span key={connectState} initial={reducedMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: reducedMotion ? 0 : 0.18 }} className="inline-flex items-center justify-center gap-2 whitespace-nowrap" aria-hidden="true">
                       {connectState === "connecting" ? <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" /> : connectState === "success" ? <><Check className="h-4 w-4" />连接成功</> : connectState === "error" ? "重试连接" : "确定连接"}
                     </motion.span>
