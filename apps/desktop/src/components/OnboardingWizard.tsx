@@ -1,15 +1,25 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Eye, FolderOpen, Globe, LoaderCircle, Lock, LockOpen, MessagesSquare, Monitor, Moon, Shield, SlidersHorizontal, Sun, Terminal } from "lucide-react";
-import { getWelcomeName, initializeProject, isTauri, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
+import { Check, ChevronDown, Eye, EyeOff, FolderOpen, Globe, LoaderCircle, Lock, LockOpen, MessagesSquare, Monitor, Moon, Shield, SlidersHorizontal, Sun, Terminal } from "lucide-react";
+import { AnimatePresence, motion, useAnimationControls, useReducedMotion } from "framer-motion";
+import { getWelcomeName, initializeProject, isTauri, openExternalUrl, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
 import { message } from "./message";
 import { useTranslation } from "react-i18next";
 import { useTheme, type ThemeMode } from "../hooks/useTheme";
 import { startOnboardingEntrance, type OnboardingEntrance } from "./onboardingEntrance";
+import { ONBOARDING_EASE, OnboardingChoices, OnboardingPanel } from "./onboardingMotion";
 import { Button } from "./shadcn/button";
+import { Input } from "./shadcn/input";
+import { Label } from "./shadcn/label";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "./shadcn/dropdown-menu";
 
-interface Props {
-  onComplete: () => void;
-}
+const ConnectButton = motion.create(Button);
+const STEPS = [
+  { label: "连接 API", title: "连接你的 API", description: "", icon: Lock },
+  { label: "界面外观", title: "选择系统主题", description: "自定义界面的外观", icon: Monitor },
+  { label: "系统语言", title: "选择语言", description: "请选择你熟悉的系统语言", icon: Globe },
+  { label: "沙箱权限", title: "沙箱权限", description: "设置工具最多可以访问和修改哪里", icon: Shield },
+  { label: "工作模式", title: "工作模式", description: "选择适合你的工作方式", icon: SlidersHorizontal },
+] as const;
 
 const SUPPORTED_LANGUAGES = [
   { id: "zh", label: "中文 (简体)" },
@@ -27,11 +37,23 @@ const SUPPORTED_LANGUAGES = [
   { id: "hy", label: "Հայերեն (Armenian)" },
 ];
 
-export function OnboardingWizard({ onComplete }: Props) {
-  const [step, setStep] = useState<0 | 1 | 2 | 3 | 4>(0);
+export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
+  const [step, setStep] = useState(0);
+  const [direction, setDirection] = useState(1);
+  const [moving, setMoving] = useState(false);
+  const movingRef = useRef(false);
+  const [panelHeight, setPanelHeight] = useState<number>();
   const [apiKey, setApiKey] = useState("");
+  const [keyVisible, setKeyVisible] = useState(false);
+  const [connectState, setConnectState] = useState<"idle" | "connecting" | "success" | "error">("idle");
+  const [connectError, setConnectError] = useState("");
   const [isConnecting, setIsConnecting] = useState(false);
+  const connectPendingRef = useRef(false);
+  const mountedRef = useRef(true);
+  const connectAnimation = useAnimationControls();
+  const reducedMotion = useReducedMotion();
   const [isFinishing, setIsFinishing] = useState(false);
+  const [finishError, setFinishError] = useState("");
   const finishPendingRef = useRef(false);
   const entranceRef = useRef<OnboardingEntrance | null>(null);
   const overlayRef = useRef<HTMLDivElement>(null);
@@ -42,28 +64,36 @@ export function OnboardingWizard({ onComplete }: Props) {
   const rightDoorRef = useRef<HTMLDivElement>(null);
   const leftSeamRef = useRef<HTMLDivElement>(null);
   const rightSeamRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => () => {
-    finishPendingRef.current = false;
-    entranceRef.current?.cancel();
-  }, []);
-  
+  const inputRef = useRef<HTMLInputElement>(null);
+  const finishButtonRef = useRef<HTMLButtonElement>(null);
   const { t, i18n } = useTranslation();
-  const { activeIsDark, switchTheme } = useTheme();
-  
-  const [theme, setTheme] = useState<"light" | "dark" | "system">("system");
-  const [language, setLanguage] = useState("zh");
+  const { activeIsDark, updateConfig, config } = useTheme();
+  const [theme, setTheme] = useState<ThemeMode>(config.mode);
+  const [language, setLanguage] = useState(() => SUPPORTED_LANGUAGES.some(item => item.id === i18n.language) ? i18n.language : "zh");
   const [isLangDropdownOpen, setIsLangDropdownOpen] = useState(false);
   const [workMode, setWorkMode] = useState<"code" | "daily">("code");
   const [sandboxMode, setSandboxModeState] = useState<SandboxMode>("workspace_write");
   const [welcomeName, setWelcomeName] = useState(() => localStorage.getItem("userName")?.trim() || "");
 
   useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      finishPendingRef.current = false;
+      entranceRef.current?.cancel();
+      connectAnimation.stop();
+    };
+  }, [connectAnimation]);
+
+  useEffect(() => {
+    if (!isFinishing && finishError) finishButtonRef.current?.focus();
+  }, [finishError, isFinishing]);
+
+  useEffect(() => {
     let active = true;
     const legacyName = localStorage.getItem("userName")?.trim() || "";
-
     getWelcomeName()
-      .then(async (storedName) => {
+      .then(async storedName => {
         if (!active) return;
         const databaseName = storedName.trim();
         if (databaseName) {
@@ -71,7 +101,6 @@ export function OnboardingWizard({ onComplete }: Props) {
           if (isTauri()) localStorage.removeItem("userName");
           return;
         }
-
         if (legacyName) {
           try {
             const migratedName = await persistWelcomeName(legacyName);
@@ -83,77 +112,92 @@ export function OnboardingWizard({ onComplete }: Props) {
           }
         }
       })
-      .catch((error) => console.error("failed to load welcome name:", error));
-
-    return () => {
-      active = false;
-    };
+      .catch(error => console.error("failed to load welcome name:", error));
+    return () => { active = false; };
   }, []);
+
+  const goToStep = (next: number) => {
+    if (movingRef.current || finishPendingRef.current || next < 0 || next >= STEPS.length) return;
+    movingRef.current = true;
+    setMoving(true);
+    setDirection(next > step ? 1 : -1);
+    setIsLangDropdownOpen(false);
+    setStep(next);
+  };
 
   const handleConnect = async () => {
     const key = apiKey.trim();
-    if (!key || isConnecting) return;
-
-    // The key is validated by the Rust backend (it runs DeepSeek model
-    // discovery). That backend only exists inside the desktop app — a plain
-    // browser preview has no way to validate, so we refuse to proceed there.
+    if (!key || connectPendingRef.current || movingRef.current) return;
     if (!isTauri()) {
-      message.error("连接验证需要在桌面应用中进行（请运行桌面客户端）");
+      setConnectError("连接验证需要在桌面应用中进行，请运行桌面客户端。");
       return;
     }
-
+    connectPendingRef.current = true;
     setIsConnecting(true);
+    setConnectError("");
+    setConnectState("connecting");
+    const transition = { duration: reducedMotion ? 0 : 0.38, ease: ONBOARDING_EASE };
     try {
-      // Invalid key → backend returns a 401 error → this throws → we stay on
-      // step 0. Only a valid key (stored as encrypted SQLite ciphertext) advances.
-      await initializeProject(key);
-      message.success("连接成功，API Key 已验证");
-      setStep(1);
-    } catch (e) {
-      message.error("连接失败：API Key 无效或网络不可用");
-      // Keep the detailed reason in the console for debugging.
-      console.error("initialize_project failed:", e);
+      const validation = initializeProject(key).then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+      // Authentication and the visual contraction run together. Only the backend can advance the flow.
+      const [result] = await Promise.all([validation, connectAnimation.start("collapsed", transition)]);
+      if (!mountedRef.current) return;
+      setConnectState(result.ok ? "success" : "error");
+      await connectAnimation.start("expanded", transition);
+      if (!mountedRef.current) return;
+      if (result.ok) {
+        goToStep(1);
+      } else {
+        console.error("initialize_project failed:", result.error);
+        setConnectError("连接失败，请检查 API Key 或网络后重试。");
+        inputRef.current?.focus();
+      }
+    } catch (error) {
+      if (!mountedRef.current) return;
+      console.error("onboarding connection failed:", error);
+      setConnectState("error");
+      setConnectError("连接过程失败，请重试。");
     } finally {
-      setIsConnecting(false);
+      connectPendingRef.current = false;
+      if (mountedRef.current) {
+        setIsConnecting(false);
+        setConnectState(current => current === "success" ? "idle" : current);
+      }
     }
   };
 
   const handleFinish = async () => {
-    if (finishPendingRef.current) return;
+    if (finishPendingRef.current || movingRef.current) return;
     finishPendingRef.current = true;
     setIsFinishing(true);
-
+    setFinishError("");
     try {
       await setSandboxMode(sandboxMode);
       if (!finishPendingRef.current) return;
-      // Theme is already persisted by ThemeProvider; retain the existing keys.
+      // Keep existing settings keys and the backend permission boundary.
       localStorage.setItem("appLanguage", language);
       localStorage.setItem("workMode", workMode);
       localStorage.setItem("onboarding_complete", "true");
     } catch (error) {
       if (!finishPendingRef.current) return;
       console.error("onboarding settings save failed:", error);
-      message.error("初始化设置保存失败，请重试");
+      setFinishError("初始化设置保存失败，请重试。");
       finishPendingRef.current = false;
       setIsFinishing(false);
       return;
     }
-
     try {
-      const overlay = overlayRef.current;
-      const card = cardRef.current;
-      const welcome = welcomeRef.current;
-      const point = pointRef.current;
-      const leftDoor = leftDoorRef.current;
-      const rightDoor = rightDoorRef.current;
-      const leftSeam = leftSeamRef.current;
-      const rightSeam = rightSeamRef.current;
+      const overlay = overlayRef.current, card = cardRef.current, welcome = welcomeRef.current;
+      const point = pointRef.current, leftDoor = leftDoorRef.current, rightDoor = rightDoorRef.current;
+      const leftSeam = leftSeamRef.current, rightSeam = rightSeamRef.current;
       if (!overlay || !card || !welcome || !point || !leftDoor || !rightDoor || !leftSeam || !rightSeam) {
         throw new Error("onboarding entrance elements are unavailable");
       }
       entranceRef.current = startOnboardingEntrance({
-        overlay, card, welcome, point,
-        doors: [leftDoor, rightDoor], seams: [leftSeam, rightSeam],
+        overlay, card, welcome, point, doors: [leftDoor, rightDoor], seams: [leftSeam, rightSeam],
       }, window.matchMedia("(prefers-reduced-motion: reduce)").matches);
       const completed = await entranceRef.current.finished;
       if (completed && finishPendingRef.current) onComplete();
@@ -162,384 +206,116 @@ export function OnboardingWizard({ onComplete }: Props) {
       entranceRef.current?.cancel();
       entranceRef.current = null;
       console.error("onboarding entrance failed:", error);
-      message.error("进入系统失败，请重试");
+      setFinishError("进入系统失败，请重试。");
       finishPendingRef.current = false;
       setIsFinishing(false);
     }
   };
 
-  const nextStep = () => setStep((s) => Math.min(s + 1, 4) as any);
-  const prevStep = () => setStep((s) => Math.max(s - 1, 1) as any);
-
-  // Custom theme classes based on user request
-  const themeStyles = {
-    primaryBg: "bg-text-base hover:opacity-90",
-    primaryText: "text-bg-base",
-    textBase: "text-text-base",
-    textSecondary: "text-text-secondary",
-    borderTheme: "border-border-theme",
-    selectedBorder: "border-text-base",
-    selectedBg: "bg-sidebar-bg",
-  };
-
-  // Keep the cinematic transition visible in both themes. The door surface is
-  // a subtle tint over the base layer, while the seam uses the opposite neutral
-  // contrast instead of a hard-coded white that disappears on light themes.
-  const transitionColor = activeIsDark
-    ? "rgba(255, 255, 255, 0.72)"
-    : "rgba(17, 24, 39, 0.58)";
-  const transitionShadow = activeIsDark
-    ? "0 0 12px rgba(255, 255, 255, 0.32)"
-    : "0 0 12px rgba(17, 24, 39, 0.18)";
-  const doorSurface = activeIsDark
-    ? "rgba(255, 255, 255, 0.06)"
-    : "rgba(17, 24, 39, 0.055)";
+  const current = STEPS[step];
+  const transitionColor = activeIsDark ? "rgba(255,255,255,.72)" : "rgba(17,24,39,.58)";
+  const transitionShadow = activeIsDark ? "0 0 12px rgba(255,255,255,.32)" : "0 0 12px rgba(17,24,39,.18)";
+  const doorSurface = activeIsDark ? "rgba(255,255,255,.06)" : "rgba(17,24,39,.045)";
 
   return (
-    <div ref={overlayRef} className="absolute top-10 inset-x-0 bottom-0 z-50 flex items-center justify-center overflow-hidden">
+    <div ref={overlayRef} className="onboarding-overlay absolute top-8 inset-x-0 bottom-0 z-50 flex items-center justify-center overflow-hidden" role="dialog" aria-modal="true" aria-label="初始化向导">
       <div className="absolute inset-0 z-10 pointer-events-none" aria-hidden="true">
         <div ref={leftDoorRef} className="onboarding-door absolute inset-y-0 left-0 w-1/2 bg-bg-base">
           <div className="absolute inset-0" style={{ backgroundColor: doorSurface }} />
-          <div className="absolute right-0 inset-y-0 flex items-center">
-            <div ref={leftSeamRef} className="onboarding-door-line w-px" style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }} />
-          </div>
+          <div ref={leftSeamRef} className="onboarding-door-line absolute right-0 inset-y-0 w-px" style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }} />
         </div>
         <div ref={rightDoorRef} className="onboarding-door absolute inset-y-0 right-0 w-1/2 bg-bg-base">
           <div className="absolute inset-0" style={{ backgroundColor: doorSurface }} />
-          <div className="absolute left-0 inset-y-0 flex items-center">
-            <div ref={rightSeamRef} className="onboarding-door-line w-px" style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }} />
-          </div>
+          <div ref={rightSeamRef} className="onboarding-door-line absolute left-0 inset-y-0 w-px" style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }} />
         </div>
       </div>
       <div ref={pointRef} aria-hidden="true" className="onboarding-transition-dot absolute left-1/2 top-1/2 z-20 h-px w-px rounded-full" style={{ backgroundColor: transitionColor, boxShadow: transitionShadow }} />
-      <div ref={welcomeRef} className={`onboarding-welcome-text absolute z-50 text-3xl font-bold tracking-wider ${themeStyles.textBase} pointer-events-none`}>
+      <div ref={welcomeRef} aria-hidden="true" className="onboarding-welcome-text absolute z-50 text-3xl font-bold tracking-wider text-text-base pointer-events-none">
         {t("settings.personalize.greetingPrefix")}{welcomeName || t("settings.personalize.greetingDefaultName")}
       </div>
-      <div ref={cardRef} className={`onboarding-card w-full max-w-lg bg-bg-base rounded-3xl shadow-2xl border ${themeStyles.borderTheme} relative min-h-[400px] z-30`} aria-busy={isFinishing}>
-          {/* STEP 0: API Key */}
-          {step === 0 && (
-            <div
-              key="step0"
-              className="onboarding-step p-10 flex flex-col h-full justify-center"
-            >
-              <div className="text-center mb-8">
-                <img src="/logo.png" alt="Logo" className="w-20 h-20 mx-auto mb-6 object-contain" />
-                <h1 className={`text-3xl font-bold ${themeStyles.textBase} mb-2`}>连接你的 API</h1>
-                <p className={`${themeStyles.textSecondary} text-sm`}>请输入你的 DeepSeek API Key 激活桌面客户端</p>
-              </div>
-
-              <div className="space-y-6">
+      <div ref={cardRef} className="onboarding-card relative z-30 w-full max-w-lg rounded-3xl border border-border-theme bg-bg-base text-text-base" aria-busy={isFinishing || moving}>
+        <div className="onboarding-progress" aria-label="初始化进度">
+          <div className="grid grid-cols-5 gap-1.5" aria-hidden="true">
+            {STEPS.map((item, index) => <span key={item.label} className={`h-[3px] rounded-full transition-colors duration-200 ${index <= step ? "bg-text-base" : "bg-border-theme opacity-55"}`} />)}
+          </div>
+          <div className="mt-2.5 flex justify-between text-[10px] tracking-wide text-text-secondary" aria-live="polite">
+            <span>{current.label}</span><span className="tabular-nums">0{step + 1} / 05</span>
+          </div>
+        </div>
+        <motion.div initial={false} animate={{ height: panelHeight ?? "auto" }} transition={{ duration: reducedMotion ? 0 : 0.28, ease: ONBOARDING_EASE }} className="relative" style={{ overflow: moving ? "hidden" : "visible" }}>
+          <AnimatePresence initial={false} mode="popLayout" custom={direction}>
+            <OnboardingPanel key={step} direction={direction} disabled={moving || isFinishing} onHeight={setPanelHeight} onEntered={() => { movingRef.current = false; setMoving(false); }}>
+              <header className="onboarding-panel-header text-center">
+                <div className={`onboarding-emblem ${step === 0 ? "onboarding-brand" : ""}`}>
+                  {step === 0 ? <img src="/logo.png" alt="DeepAgent Studio" /> : <current.icon aria-hidden="true" />}
+                </div>
+                <h1 tabIndex={-1} className={`mb-2 font-semibold tracking-tight outline-none ${step === 0 ? "text-[28px] leading-[38px]" : "text-[25px] leading-[34px]"}`}>{current.title}</h1>
+                {step === 0 ? (
+                  <p className="text-[13px] leading-[21px] text-text-secondary">
+                    请输入你的{" "}
+                    <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer" className="text-primary underline underline-offset-2" onClick={event => {
+                      if (!isTauri()) return;
+                      event.preventDefault();
+                      void openExternalUrl(event.currentTarget.href).catch(error => message.error(`打开密钥管理页面失败：${String(error)}`));
+                    }}>DeepSeek API Key</a>{" "}激活桌面客户端
+                  </p>
+                ) : <p className="text-[13px] leading-[21px] text-text-secondary">{current.description}</p>}
+              </header>
+              {step === 0 && (
                 <div>
-                  <label className={`block text-sm font-medium ${themeStyles.textBase} mb-2`}>API Key</label>
-                  <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                      <Lock className="h-3.5 w-3.5 text-text-secondary opacity-70" aria-hidden="true" />
-                    </div>
-                    <input
-                      type="password"
-                      value={apiKey}
-                      onChange={(e) => setApiKey(e.target.value)}
-                      placeholder="sk-..."
-                      className={`block w-full pl-10 pr-4 py-3 border ${themeStyles.borderTheme} rounded-xl text-sm focus:ring-2 focus:ring-primary/20 focus:border-primary bg-transparent outline-none transition-all ${themeStyles.textBase}`}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") handleConnect();
-                      }}
-                    />
+                  <Label htmlFor="onboarding-api-key" className="mb-2 block text-[13px] text-text-base">API Key</Label>
+                  <div className={`onboarding-key-field ${connectError ? "onboarding-key-invalid" : ""}`}>
+                    <Lock className="h-[15px] w-[15px] shrink-0 text-text-secondary" aria-hidden="true" />
+                    <Input ref={inputRef} id="onboarding-api-key" type={keyVisible ? "text" : "password"} value={apiKey} readOnly={isConnecting} autoComplete="off" spellCheck={false} placeholder="sk-..." aria-invalid={!!connectError} aria-describedby={connectError ? "onboarding-connect-error" : undefined} className="h-full min-w-0 flex-1 rounded-none border-0 bg-transparent p-0 text-[13px] shadow-none focus:ring-0"
+                      onChange={event => { setApiKey(event.target.value); setConnectError(""); setConnectState("idle"); }}
+                      onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void handleConnect(); } }} />
+                    <Button variant="ghost" size="icon" disabled={isConnecting} className="h-6 w-6 rounded text-text-secondary hover:bg-ui-tint" aria-label={keyVisible ? "隐藏密钥" : "显示密钥"} onClick={() => setKeyVisible(value => !value)}>
+                      {keyVisible ? <EyeOff className="h-[15px] w-[15px]" /> : <Eye className="h-[15px] w-[15px]" />}
+                    </Button>
                   </div>
+                  <div id="onboarding-connect-error" className={`onboarding-inline-error ${connectError ? "onboarding-error-visible" : ""}`} role="alert"><div>{connectError}</div></div>
                 </div>
-
-                <button
-                  onClick={handleConnect}
-                  disabled={!apiKey.trim() || isConnecting}
-                  className={`w-full flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-[#111827] disabled:opacity-50 disabled:cursor-not-allowed transition-all`}
-                >
-                  {isConnecting ? (
-                    <>
-                      <LoaderCircle className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />
-                      连接中...
-                    </>
-                  ) : (
-                    "确定连接"
-                  )}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 1: Theme */}
-          {step === 1 && (
-            <div
-              key="step1"
-              className="onboarding-step p-10 flex flex-col h-full"
-            >
-              <div className="text-center mb-8">
-                <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
-                  <Monitor className="h-6 w-6 text-text-base" aria-hidden="true" />
-                </div>
-                <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>选择系统主题</h1>
-                <p className={`${themeStyles.textSecondary} text-sm`}>自定义界面的外观</p>
-              </div>
-
-              <div className="flex-1">
-                <div className="flex space-x-3">
-                  {[
-                    { id: "light", icon: Sun, label: "浅色" },
-                    { id: "dark", icon: Moon, label: "深色" },
-                    { id: "system", icon: Monitor, label: "系统" },
-                  ].map((tItem) => (
-                    <button
-                      key={tItem.id}
-                      type="button"
-                      onClick={(event) => {
-                        const mode = tItem.id as ThemeMode;
-                        const rect = event.currentTarget.getBoundingClientRect();
-                        setTheme(mode);
-                        switchTheme(mode, {
-                          x: rect.left + rect.width / 2,
-                          y: rect.top + rect.height / 2,
-                        });
-                      }}
-                      className={`flex-1 flex flex-col items-center justify-center py-6 border rounded-xl text-sm transition-all ${
-                        theme === tItem.id
-                          ? `${themeStyles.selectedBorder} ${themeStyles.selectedBg} text-text-base shadow-sm`
-                          : `${themeStyles.borderTheme} bg-transparent ${themeStyles.textSecondary} hover:bg-sidebar-bg`
-                      }`}
-                    >
-                      <tItem.icon className="mb-2 h-[18px] w-[18px]" aria-hidden="true" />
-                      <span className="font-medium">{tItem.label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex space-x-3 mt-8">
-                <button
-                  onClick={nextStep}
-                  className={`flex-1 py-3 px-4 rounded-xl text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors`}
-                >
-                  下一步
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 2: Language */}
-          {step === 2 && (
-            <div
-              key="step2"
-              className="onboarding-step p-10 flex flex-col h-full"
-            >
-              <div className="text-center mb-8">
-                <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
-                  <Globe className="h-6 w-6 text-text-base" aria-hidden="true" />
-                </div>
-                <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>选择语言</h1>
-                <p className={`${themeStyles.textSecondary} text-sm`}>请选择你熟悉的系统语言</p>
-              </div>
-
-              <div className="flex-1">
-                <div className="relative mt-2">
-                  <button
-                    type="button"
-                    onClick={() => setIsLangDropdownOpen(!isLangDropdownOpen)}
-                    className={`relative w-full pl-4 pr-10 py-3 text-left text-base border ${themeStyles.borderTheme} focus:outline-none focus:ring-2 focus:ring-primary focus:border-primary sm:text-sm rounded-xl bg-transparent ${themeStyles.textBase} transition-all`}
-                  >
-                    <span className="block truncate">
-                      {SUPPORTED_LANGUAGES.find((l) => l.id === language)?.label}
-                    </span>
-                    <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-4 text-text-secondary opacity-70">
-                      <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-200 ${isLangDropdownOpen ? "rotate-180" : ""}`} aria-hidden="true" />
-                    </span>
-                  </button>
-
-                    {isLangDropdownOpen && (
-                      <>
-                        <div 
-                          className="fixed inset-0 z-40" 
-                          onClick={() => setIsLangDropdownOpen(false)}
-                        ></div>
-                        <div
-                          className={`popover-menu absolute z-50 mt-2 w-full bg-bg-base rounded-xl shadow-lg border ${themeStyles.borderTheme} overflow-hidden max-h-60 overflow-y-auto`}
-                        >
-                          <ul className="py-1">
-                            {SUPPORTED_LANGUAGES.map((l) => (
-                              <li
-                                key={l.id}
-                                onClick={() => {
-                                  setLanguage(l.id);
-                                  setIsLangDropdownOpen(false);
-                                  i18n.changeLanguage(l.id);
-                                }}
-                                className={`cursor-pointer select-none relative py-2.5 pl-4 pr-9 hover:bg-sidebar-bg transition-colors ${
-                                  language === l.id ? "bg-sidebar-bg text-text-base font-medium" : themeStyles.textBase
-                                }`}
-                              >
-                                <span className="block truncate">{l.label}</span>
-                                {language === l.id && (
-                                  <span className="absolute inset-y-0 right-0 flex items-center pr-4 text-text-base">
-                                    <Check className="h-3.5 w-3.5" aria-hidden="true" />
-                                  </span>
-                                )}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      </>
-                    )}
-                </div>
-              </div>
-
-              <div className="flex space-x-3 mt-8">
-                <button
-                  onClick={prevStep}
-                  className={`px-6 py-3 rounded-xl text-sm font-medium border ${themeStyles.borderTheme} ${themeStyles.textSecondary} hover:bg-gray-50 transition-colors`}
-                >
-                  上一步
-                </button>
-                <button
-                  onClick={nextStep}
-                  className={`flex-1 py-3 px-4 rounded-xl text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors`}
-                >
-                  下一步
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 3: Sandbox */}
-          {step === 3 && (
-            <div
-              key="step3"
-              className="onboarding-step p-10 flex flex-col h-full"
-            >
-              <div className="text-center mb-8">
-                <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
-                  <Shield className="h-6 w-6 text-text-base" aria-hidden="true" />
-                </div>
-                <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>沙箱权限</h1>
-                <p className={`${themeStyles.textSecondary} text-sm`}>设置工具最多可以访问和修改哪里</p>
-              </div>
-
-              <div className="flex-1 space-y-3">
-                {[
-                  { id: "read_only", title: "只读模式", desc: "只能阅读当前项目文件，不能修改文件。", icon: Eye },
-                  { id: "workspace_write", title: "项目内读写", desc: "允许读取和修改当前项目，推荐日常开发使用。", icon: FolderOpen },
-                  { id: "full_access", title: "完全访问", desc: "允许读写项目外文件，适合明确需要跨目录操作时使用。", icon: LockOpen },
-                ].map((m) => (
-                  <button
-                    key={m.id}
-                    type="button"
-                    onClick={() => setSandboxModeState(m.id as SandboxMode)}
-                    className={`w-full flex items-start gap-3 p-4 border rounded-xl text-left transition-all ${
-                      sandboxMode === m.id
-                        ? `${themeStyles.selectedBorder} ${themeStyles.selectedBg} shadow-sm`
-                        : `${themeStyles.borderTheme} bg-transparent hover:bg-sidebar-bg`
-                    }`}
-                  >
-                    <div className={`mt-0.5 w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${sandboxMode === m.id ? "border-text-base" : "border-border-theme"}`}>
-                      {sandboxMode === m.id && <div className="w-2.5 h-2.5 rounded-full bg-text-base" />}
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className={`text-sm font-medium mb-1 ${sandboxMode === m.id ? "text-text-base" : themeStyles.textBase}`}>
-                        {m.title}
-                        {m.id === "workspace_write" && <span className="ml-2 text-[11px] text-text-secondary opacity-80">推荐</span>}
-                      </div>
-                      <div className={`text-xs leading-5 ${sandboxMode === m.id ? "text-text-base" : themeStyles.textSecondary}`}>
-                        {m.desc}
-                      </div>
-                    </div>
-                    <m.icon className={`mt-0.5 h-4 w-4 shrink-0 ${sandboxMode === m.id ? "text-text-base" : "text-text-secondary opacity-70"}`} aria-hidden="true" />
-                  </button>
-                ))}
-              </div>
-
-              <div className="flex space-x-3 mt-8">
-                <button
-                  onClick={prevStep}
-                  className={`px-6 py-3 rounded-xl text-sm font-medium border ${themeStyles.borderTheme} ${themeStyles.textSecondary} hover:bg-sidebar-bg transition-colors`}
-                >
-                  上一步
-                </button>
-                <button
-                  onClick={nextStep}
-                  className={`flex-1 py-3 px-4 rounded-xl text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors`}
-                >
-                  下一步
-                </button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 4: Work Mode */}
-          {step === 4 && (
-            <div
-              key="step4"
-              className="onboarding-step p-10 flex flex-col h-full"
-            >
-              <div className="text-center mb-8">
-                <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
-                  <SlidersHorizontal className="h-6 w-6 text-text-base" aria-hidden="true" />
-                </div>
-                <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>工作模式</h1>
-                <p className={`${themeStyles.textSecondary} text-sm`}>选择 Codex 显示多少技术细节</p>
-              </div>
-
-              <div className="flex-1 flex space-x-3">
-                {[
-                  { id: "code", title: "适用于编程", desc: "更具技术性的回复和控制", icon: Terminal },
-                  { id: "daily", title: "适用于日常工作", desc: "同样强大，技术细节更少", icon: MessagesSquare },
-                ].map((m) => (
-                  <Button
-                    variant="ghost"
-                    disabled={isFinishing}
-                    key={m.id}
-                    onClick={() => setWorkMode(m.id as "code" | "daily")}
-                    className={`h-auto flex-1 flex flex-col items-start whitespace-normal p-4 border rounded-xl cursor-pointer transition-all ${
-                      workMode === m.id
-                        ? `${themeStyles.selectedBorder} ${themeStyles.selectedBg} shadow-sm`
-                        : `${themeStyles.borderTheme} bg-transparent hover:bg-sidebar-bg`
-                    }`}
-                  >
-                    <div className="flex items-center w-full mb-3">
-                      <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${workMode === m.id ? 'border-text-base' : 'border-border-theme'}`}>
-                        {workMode === m.id && <div className="w-2.5 h-2.5 rounded-full bg-text-base" />}
-                      </div>
-                      <m.icon className={`ml-auto h-4 w-4 ${workMode === m.id ? 'text-text-base' : 'text-text-secondary opacity-70'}`} aria-hidden="true" />
-                    </div>
-                    <div className={`text-sm font-medium mb-1 ${workMode === m.id ? 'text-text-base' : themeStyles.textBase}`}>
-                      {m.title}
-                    </div>
-                    <div className={`text-xs ${workMode === m.id ? 'text-text-base' : themeStyles.textSecondary}`}>
-                      {m.desc}
-                    </div>
-                  </Button>
-                ))}
-              </div>
-
-              <div className="flex space-x-3 mt-8">
-                <Button
-                  variant="outline"
-                  disabled={isFinishing}
-                  onClick={prevStep}
-                  className={`h-auto px-6 py-3 rounded-xl text-sm font-medium border ${themeStyles.borderTheme} ${themeStyles.textSecondary} hover:bg-sidebar-bg transition-colors`}
-                >
-                  上一步
-                </Button>
-                <Button
-                  onClick={handleFinish}
-                  disabled={isFinishing}
-                  className={`h-auto flex-1 flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors disabled:opacity-50 disabled:cursor-not-allowed`}
-                >
-                  {isFinishing ? (
-                    <LoaderCircle className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />
-                  ) : (
-                    <Check className="mr-2 h-4 w-4" aria-hidden="true" />
-                  )}
-                  {isFinishing ? "保存中..." : "进入系统"}
-                </Button>
-              </div>
-            </div>
-          )}
+              )}
+              {step === 1 && <OnboardingChoices<ThemeMode> label="系统主题" value={theme} layout="theme" onChange={mode => { setTheme(mode); updateConfig({ mode }); }} options={[{ id: "light", title: "浅色", icon: Sun }, { id: "dark", title: "深色", icon: Moon }, { id: "system", title: "系统", icon: Monitor }]} />}
+              {step === 2 && (
+                <DropdownMenu open={isLangDropdownOpen} onOpenChange={setIsLangDropdownOpen} modal={false}>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" className="onboarding-language-trigger h-[46px] w-full justify-between rounded-xl bg-transparent px-4 text-[13px] hover:bg-ui-tint" aria-label="系统语言">
+                      <span>{SUPPORTED_LANGUAGES.find(item => item.id === language)?.label}</span><ChevronDown aria-hidden="true" className={`h-4 w-4 transition-transform ${isLangDropdownOpen ? "rotate-180" : ""}`} />
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="start" sideOffset={8} className="onboarding-language-menu max-h-60 w-[var(--radix-dropdown-menu-trigger-width)] overflow-y-auto rounded-xl border border-border-theme bg-bg-base p-1">
+                    {SUPPORTED_LANGUAGES.map(item => <DropdownMenuItem key={item.id} role="menuitemradio" aria-checked={language === item.id} className="justify-between px-3 py-2.5 text-[13px] focus:bg-ui-tint" onSelect={() => {
+                      void i18n.changeLanguage(item.id).then(() => { if (mountedRef.current) setLanguage(item.id); }).catch(error => { console.error("onboarding language change failed:", error); message.error("语言切换失败，请重试"); });
+                    }}><span>{item.label}</span>{language === item.id && <Check className="h-3.5 w-3.5" aria-hidden="true" />}</DropdownMenuItem>)}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
+              {step === 3 && <OnboardingChoices<SandboxMode> label="沙箱权限" value={sandboxMode} onChange={setSandboxModeState} layout="sandbox" options={[
+                { id: "read_only", title: "只读模式", description: "只能阅读当前项目文件，不能修改文件。", icon: Eye },
+                { id: "workspace_write", title: "项目内读写", description: "允许读取和修改当前项目，推荐日常开发使用。", icon: FolderOpen, recommended: true },
+                { id: "full_access", title: "完全访问", description: "允许读写项目外文件，适合跨目录操作时使用。", icon: LockOpen },
+              ]} />}
+              {step === 4 && <OnboardingChoices<"code" | "daily"> label="工作模式" value={workMode} onChange={setWorkMode} layout="work" options={[
+                { id: "code", title: "适用于编程", description: "更具技术性的回复和控制", icon: Terminal },
+                { id: "daily", title: "适用于日常工作", description: "同样强大，技术细节更少", icon: MessagesSquare },
+              ]} />}
+              {step === 4 && <div className={`onboarding-inline-error ${finishError ? "onboarding-error-visible" : ""}`} role="alert"><div>{finishError}</div></div>}
+              <footer className="onboarding-actions">
+                {step > 0 && <Button variant="outline" className="onboarding-back" onClick={() => goToStep(step - 1)}>上一步</Button>}
+                {step === 0 ? (
+                  <ConnectButton initial="expanded" animate={connectAnimation} variants={{ expanded: { width: "100%", borderRadius: "12px" }, collapsed: { width: "46px", borderRadius: "23px" } }} onClick={handleConnect} disabled={!apiKey.trim() || isConnecting} aria-busy={isConnecting} aria-label={{ idle: "确定连接", connecting: "正在连接", success: "连接成功", error: "重试连接" }[connectState]} data-connect-state={connectState} className="onboarding-primary min-w-0 overflow-hidden px-0 disabled:opacity-50 data-[connect-state=connecting]:disabled:opacity-100 data-[connect-state=success]:disabled:opacity-100">
+                    <motion.span key={connectState} initial={reducedMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: reducedMotion ? 0 : 0.18 }} className="inline-flex items-center justify-center gap-2 whitespace-nowrap" aria-hidden="true">
+                      {connectState === "connecting" ? <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" /> : connectState === "success" ? <><Check className="h-4 w-4" />连接成功</> : connectState === "error" ? "重试连接" : "确定连接"}
+                    </motion.span>
+                  </ConnectButton>
+                ) : step === 4 ? (
+                  <Button ref={finishButtonRef} onClick={handleFinish} disabled={isFinishing} className="onboarding-primary flex-1" aria-busy={isFinishing}>{isFinishing && <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />}{isFinishing ? "保存中…" : "进入系统"}</Button>
+                ) : <Button className="onboarding-primary flex-1" onClick={() => goToStep(step + 1)}>下一步</Button>}
+              </footer>
+            </OnboardingPanel>
+          </AnimatePresence>
+        </motion.div>
       </div>
     </div>
   );
