@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { Check, ChevronDown, Eye, FolderOpen, Globe, LoaderCircle, Lock, LockOpen, MessagesSquare, Monitor, Moon, Shield, SlidersHorizontal, Sun, Terminal } from "lucide-react";
 import { getWelcomeName, initializeProject, isTauri, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
 import { message } from "./message";
 import { useTranslation } from "react-i18next";
@@ -253,7 +253,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                   <label className={`block text-sm font-medium ${themeStyles.textBase} mb-2`}>API Key</label>
                   <div className="relative">
                     <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none">
-                      <FontAwesomeIcon icon={["fas", "lock"]} className="text-text-secondary opacity-70 text-sm" />
+                      <Lock className="h-3.5 w-3.5 text-text-secondary opacity-70" aria-hidden="true" />
                     </div>
                     <input
                       type="password"
@@ -275,7 +275,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                 >
                   {isConnecting ? (
                     <>
-                      <FontAwesomeIcon icon={["fas", "circle-notch"]} className="animate-spin mr-2" />
+                      <LoaderCircle className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />
                       连接中...
                     </>
                   ) : (
@@ -294,7 +294,7 @@ export function OnboardingWizard({ onComplete }: Props) {
             >
               <div className="text-center mb-8">
                 <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
-                  <FontAwesomeIcon icon={["fas", "desktop"]} className="text-text-base text-2xl" />
+                  <Monitor className="h-6 w-6 text-text-base" aria-hidden="true" />
                 </div>
                 <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>选择系统主题</h1>
                 <p className={`${themeStyles.textSecondary} text-sm`}>自定义界面的外观</p>
@@ -303,9 +303,9 @@ export function OnboardingWizard({ onComplete }: Props) {
               <div className="flex-1">
                 <div className="flex space-x-3">
                   {[
-                    { id: "light", icon: ["far", "sun"], label: "浅色" },
-                    { id: "dark", icon: ["fas", "moon"], label: "深色" },
-                    { id: "system", icon: ["fas", "desktop"], label: "系统" },
+                    { id: "light", icon: Sun, label: "浅色" },
+                    { id: "dark", icon: Moon, label: "深色" },
+                    { id: "system", icon: Monitor, label: "系统" },
                   ].map((tItem) => (
                     <button
                       key={tItem.id}
@@ -325,7 +325,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                           : `${themeStyles.borderTheme} bg-transparent ${themeStyles.textSecondary} hover:bg-sidebar-bg`
                       }`}
                     >
-                      <FontAwesomeIcon icon={tItem.icon as any} className="mb-2 text-lg" />
+                      <tItem.icon className="mb-2 h-[18px] w-[18px]" aria-hidden="true" />
                       <span className="font-medium">{tItem.label}</span>
                     </button>
                   ))}
@@ -351,7 +351,7 @@ export function OnboardingWizard({ onComplete }: Props) {
             >
               <div className="text-center mb-8">
                 <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
-                  <FontAwesomeIcon icon={["fas", "globe"]} className="text-text-base text-2xl" />
+                  <Globe className="h-6 w-6 text-text-base" aria-hidden="true" />
                 </div>
                 <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>选择语言</h1>
                 <p className={`${themeStyles.textSecondary} text-sm`}>请选择你熟悉的系统语言</p>
@@ -368,7 +368,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                       {SUPPORTED_LANGUAGES.find((l) => l.id === language)?.label}
                     </span>
                     <span className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-4 text-text-secondary opacity-70">
-                      <FontAwesomeIcon icon={["fas", "chevron-down"]} className={`text-sm transition-transform duration-200 ${isLangDropdownOpen ? "rotate-180" : ""}`} />
+                      <ChevronDown className={`h-3.5 w-3.5 transition-transform duration-200 ${isLangDropdownOpen ? "rotate-180" : ""}`} aria-hidden="true" />
                     </span>
                   </button>
 
@@ -397,7 +397,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                                 <span className="block truncate">{l.label}</span>
                                 {language === l.id && (
                                   <span className="absolute inset-y-0 right-0 flex items-center pr-4 text-text-base">
-                                    <FontAwesomeIcon icon={["fas", "check"]} className="text-sm" />
+                                    <Check className="h-3.5 w-3.5" aria-hidden="true" />
                                   </span>
                                 )}
                               </li>
@@ -434,7 +434,7 @@ export function OnboardingWizard({ onComplete }: Props) {
             >
               <div className="text-center mb-8">
                 <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
-                  <FontAwesomeIcon icon={["fas", "shield-halved"]} className="text-text-base text-2xl" />
+                  <Shield className="h-6 w-6 text-text-base" aria-hidden="true" />
                 </div>
                 <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>沙箱权限</h1>
                 <p className={`${themeStyles.textSecondary} text-sm`}>设置工具最多可以访问和修改哪里</p>
@@ -442,9 +442,9 @@ export function OnboardingWizard({ onComplete }: Props) {
 
               <div className="flex-1 space-y-3">
                 {[
-                  { id: "read_only", title: "只读模式", desc: "只能阅读当前项目文件，不能修改文件。", icon: "eye" },
-                  { id: "workspace_write", title: "项目内读写", desc: "允许读取和修改当前项目，推荐日常开发使用。", icon: "folder-open" },
-                  { id: "full_access", title: "完全访问", desc: "允许读写项目外文件，适合明确需要跨目录操作时使用。", icon: "unlock" },
+                  { id: "read_only", title: "只读模式", desc: "只能阅读当前项目文件，不能修改文件。", icon: Eye },
+                  { id: "workspace_write", title: "项目内读写", desc: "允许读取和修改当前项目，推荐日常开发使用。", icon: FolderOpen },
+                  { id: "full_access", title: "完全访问", desc: "允许读写项目外文件，适合明确需要跨目录操作时使用。", icon: LockOpen },
                 ].map((m) => (
                   <button
                     key={m.id}
@@ -468,7 +468,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                         {m.desc}
                       </div>
                     </div>
-                    <FontAwesomeIcon icon={["fas", m.icon as any]} className={`mt-0.5 ${sandboxMode === m.id ? "text-text-base" : "text-text-secondary opacity-70"}`} />
+                    <m.icon className={`mt-0.5 h-4 w-4 shrink-0 ${sandboxMode === m.id ? "text-text-base" : "text-text-secondary opacity-70"}`} aria-hidden="true" />
                   </button>
                 ))}
               </div>
@@ -498,7 +498,7 @@ export function OnboardingWizard({ onComplete }: Props) {
             >
               <div className="text-center mb-8">
                 <div className="w-16 h-16 bg-sidebar-bg rounded-2xl flex items-center justify-center mx-auto mb-6 shadow-sm border border-border-theme">
-                  <FontAwesomeIcon icon={["fas", "sliders"]} className="text-text-base text-2xl" />
+                  <SlidersHorizontal className="h-6 w-6 text-text-base" aria-hidden="true" />
                 </div>
                 <h1 className={`text-2xl font-bold ${themeStyles.textBase} mb-2`}>工作模式</h1>
                 <p className={`${themeStyles.textSecondary} text-sm`}>选择 Codex 显示多少技术细节</p>
@@ -506,8 +506,8 @@ export function OnboardingWizard({ onComplete }: Props) {
 
               <div className="flex-1 flex space-x-3">
                 {[
-                  { id: "code", title: "适用于编程", desc: "更具技术性的回复和控制", icon: "terminal" },
-                  { id: "daily", title: "适用于日常工作", desc: "同样强大，技术细节更少", icon: "comments" },
+                  { id: "code", title: "适用于编程", desc: "更具技术性的回复和控制", icon: Terminal },
+                  { id: "daily", title: "适用于日常工作", desc: "同样强大，技术细节更少", icon: MessagesSquare },
                 ].map((m) => (
                   <div
                     key={m.id}
@@ -522,7 +522,7 @@ export function OnboardingWizard({ onComplete }: Props) {
                       <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${workMode === m.id ? 'border-text-base' : 'border-border-theme'}`}>
                         {workMode === m.id && <div className="w-2.5 h-2.5 rounded-full bg-text-base" />}
                       </div>
-                      <FontAwesomeIcon icon={["fas", m.icon as any]} className={`ml-auto ${workMode === m.id ? 'text-text-base' : 'text-text-secondary opacity-70'}`} />
+                      <m.icon className={`ml-auto h-4 w-4 ${workMode === m.id ? 'text-text-base' : 'text-text-secondary opacity-70'}`} aria-hidden="true" />
                     </div>
                     <div className={`text-sm font-medium mb-1 ${workMode === m.id ? 'text-text-base' : themeStyles.textBase}`}>
                       {m.title}
@@ -546,7 +546,11 @@ export function OnboardingWizard({ onComplete }: Props) {
                   disabled={isFinishing}
                   className={`flex-1 flex justify-center items-center py-3 px-4 border border-transparent rounded-xl shadow-sm text-sm font-medium ${themeStyles.primaryText} ${themeStyles.primaryBg} transition-colors disabled:opacity-50 disabled:cursor-not-allowed`}
                 >
-                  <FontAwesomeIcon icon={["fas", isFinishing ? "circle-notch" : "check"]} className={`mr-2 ${isFinishing ? "animate-spin" : ""}`} />
+                  {isFinishing ? (
+                    <LoaderCircle className="mr-2 h-4 w-4 motion-safe:animate-spin" aria-hidden="true" />
+                  ) : (
+                    <Check className="mr-2 h-4 w-4" aria-hidden="true" />
+                  )}
                   {isFinishing ? "保存中..." : "进入系统"}
                 </button>
               </div>
