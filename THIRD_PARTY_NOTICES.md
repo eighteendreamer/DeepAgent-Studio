@@ -60,6 +60,18 @@ The Corresponding Source obligation is **not yet resolved** and needs a decision
 Until this is settled, treat `wedecode` as a known open item rather than a
 cleared dependency.
 
+## Vendored source
+
+| File | Upstream | License |
+| --- | --- | --- |
+| `apps/desktop/src/splash/StrokeText.tsx` | https://github.com/DavidHDev/react-bits (`src/ts-tailwind/TextAnimations/StrokeText/StrokeText.tsx`) | MIT + Commons Clause License Condition v1.0, Copyright (c) 2026 David Haz |
+
+`StrokeText.tsx` is used as part of the application (the startup splash) and
+keeps the upstream copyright and permission notice in its file header. The
+Commons Clause forbids selling, sublicensing or redistributing the component
+itself, alone or as a port, so it must not be republished as a standalone
+component or in a component library.
+
 ## Reference material
 
 `借鉴/` holds upstream projects consulted during development. It is a reference

@@ -6117,6 +6117,80 @@ fn extract_zip_limited(
     Ok(dest.to_path_buf())
 }
 
+/// Startup splash gate.
+///
+/// The transparent `splashscreen` window plays the StrokeText animation while
+/// the hidden `main` window loads. The main window is revealed only when both
+/// the animation has finished and the main window has painted its first frame,
+/// so the user never sees a blank main window or a cut-off animation.
+#[derive(Default)]
+struct SplashGate {
+    animation_done: bool,
+    frontend_ready: bool,
+    finished: bool,
+}
+
+/// Upper bound for the splash after setup completes. If either webview fails
+/// to report (script error, missing asset), the app still opens.
+const SPLASH_FALLBACK: std::time::Duration = std::time::Duration::from_secs(8);
+
+fn finish_splash(app: &tauri::AppHandle) {
+    let gate = app.state::<Mutex<SplashGate>>();
+    {
+        let mut gate = match gate.lock() {
+            Ok(gate) => gate,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if gate.finished {
+            return;
+        }
+        gate.finished = true;
+    }
+    if let Some(main) = app.get_webview_window("main") {
+        let _ = main.show();
+        let _ = main.set_focus();
+    }
+    if let Some(splash) = app.get_webview_window("splashscreen") {
+        let _ = splash.close();
+    }
+}
+
+/// Called by the splash (`kind = "animation"`) and by the main window after
+/// its first paint (`kind = "ready"`).
+#[tauri::command]
+fn splash_signal(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    gate: State<'_, Mutex<SplashGate>>,
+    kind: String,
+) -> Result<(), String> {
+    let expected_window = match kind.as_str() {
+        "animation" => "splashscreen",
+        "ready" => "main",
+        other => return Err(format!("unknown splash signal: {other}")),
+    };
+    // Session windows reuse the same frontend; only the main window gates startup.
+    if window.label() != expected_window {
+        return Ok(());
+    }
+    let should_finish = {
+        let mut gate = gate.lock().map_err(|error| error.to_string())?;
+        if gate.finished {
+            return Ok(());
+        }
+        if kind == "animation" {
+            gate.animation_done = true;
+        } else {
+            gate.frontend_ready = true;
+        }
+        gate.animation_done && gate.frontend_ready
+    };
+    if should_finish {
+        finish_splash(&app);
+    }
+    Ok(())
+}
+
 /// Entry point invoked by `main.rs`.
 pub fn run() {
     tauri::Builder::default()
@@ -6124,6 +6198,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_decorum::init())
+        .manage(Mutex::new(SplashGate::default()))
         .setup(|app| {
             if let Some(win) = app.get_webview_window("main") {
                 let _ = win.create_overlay_titlebar();
@@ -6826,9 +6901,17 @@ pub fn run() {
                 mobile: mobile_service,
                 rt,
             });
+
+            // Never leave the user staring at the splash if a signal is lost.
+            let splash_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(SPLASH_FALLBACK).await;
+                finish_splash(&splash_app);
+            });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            splash_signal,
             list_sessions,
             search_sessions,
             session_detail,

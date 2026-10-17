@@ -1,0 +1,31 @@
+/* No Tailwind here: the shared content glob would pull every utility used by the
+   whole app into this window. These are the only classes StrokeText uses. */
+.block { display: block; }
+.w-full { width: 100%; }
+.h-auto { height: auto; }
+.mx-auto { margin-left: auto; margin-right: auto; }
+.overflow-visible { overflow: visible; }
+.select-none { user-select: none; }
+.cursor-pointer { cursor: pointer; }
+.leading-\[0\] { line-height: 0; }
+
+.splash-root {
+  box-sizing: border-box;
+  display: flex;
+  height: 100%;
+  width: 100%;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  font-family: Inter, "Segoe UI", -apple-system, BlinkMacSystemFont, "PingFang SC",
+    "Microsoft YaHei", system-ui, sans-serif;
+  /* StrokeText fills with currentColor. The window is transparent, so follow
+     the OS scheme to stay readable on light and dark desktops. */
+  color: #1f1b2e;
+}
+
+@media (prefers-color-scheme: dark) {
+  .splash-root {
+    color: #f5f3ff;
+  }
+}

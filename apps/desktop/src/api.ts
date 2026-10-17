@@ -205,6 +205,17 @@ function getInvoke(): InvokeFn | null {
   return null;
 }
 
+/**
+ * Tell the shell that the main window has painted its first frame. The Rust
+ * side reveals the main window and closes the startup splash once this and the
+ * splash animation have both finished. Windows other than `main` are ignored.
+ */
+export async function signalSplashReady(): Promise<void> {
+  const invoke = getInvoke();
+  if (!invoke) return;
+  await invoke<void>("splash_signal", { kind: "ready" });
+}
+
 export async function listSessions(): Promise<SessionSummary[]> {
   const invoke = getInvoke();
   if (invoke) return invoke<SessionSummary[]>("list_sessions");

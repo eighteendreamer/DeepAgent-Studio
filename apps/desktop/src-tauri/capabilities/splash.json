@@ -1,0 +1,6 @@
+{
+  "identifier": "splash-capability",
+  "description": "Startup splash window: only needs core IPC to report that its animation finished.",
+  "windows": ["splashscreen"],
+  "permissions": ["core:default"]
+}

@@ -13,6 +13,7 @@ import {
   archiveAllConversations,
   archiveConversation,
   getSessionDetail,
+  signalSplashReady,
   listSessions,
   listProjects,
   getActiveProject,
@@ -471,6 +472,31 @@ export function App() {
   const [sectionDialogFor, setSectionDialogFor] = useState<{ session: string | null } | null>(null);
   const pendingNewChatSectionRef = useRef<string | null>(null);
   useEffect(() => { void loadSidebarPreferences().catch((error) => message.error(`读取侧栏设置失败：${String(error)}`)); }, []);
+  // The main window starts hidden behind the startup splash. Report readiness
+  // once the first render has committed. Two rAFs mean the frame was painted,
+  // but a hidden WebView may throttle rAF entirely, so a short timer races it;
+  // whichever fires first sends the signal.
+  useEffect(() => {
+    let sent = false;
+    let second = 0;
+    const send = () => {
+      if (sent) return;
+      sent = true;
+      void signalSplashReady().catch(() => {
+        // The 8s fallback on the Rust side still reveals the window.
+      });
+    };
+    const first = requestAnimationFrame(() => {
+      second = requestAnimationFrame(send);
+    });
+    const timer = window.setTimeout(send, 50);
+    return () => {
+      sent = true;
+      cancelAnimationFrame(first);
+      cancelAnimationFrame(second);
+      window.clearTimeout(timer);
+    };
+  }, []);
   const [processDisclosureStore] = useState(() => new ProcessDisclosureStore());
   const { t } = useTranslation();
   const requestedSessionIdRef = useRef<string | null>(null);
