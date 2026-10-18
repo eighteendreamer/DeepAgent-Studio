@@ -949,8 +949,6 @@ impl<'a> RunAssembler<'a> {
         let config = kernel_runtime.config;
 
         cancellation.add_alias(session_id.clone());
-        let cancel = cancellation.flag();
-
         let discovered_before_run: std::collections::HashSet<String> = tool_search_discovered
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -973,7 +971,7 @@ impl<'a> RunAssembler<'a> {
             .with_events(sink.clone())
             .with_approvals(gate)
             .with_hooks(&hooks)
-            .with_cancellation_flag(cancel);
+            .with_cancellation(cancellation.cancellation());
             if let Some(plan) = verification_plan.as_ref() {
                 kernel = kernel.with_verification(plan);
             }
@@ -1235,8 +1233,6 @@ impl<'a> RunAssembler<'a> {
         let config = kernel_runtime.config;
 
         cancellation.add_alias(session_id.clone());
-        let cancel = cancellation.flag();
-
         let empty_discovered = std::collections::HashSet::new();
         let empty_toolset: crate::tool_manifest::DiscoveredToolSet =
             Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
@@ -1258,7 +1254,7 @@ impl<'a> RunAssembler<'a> {
             .with_events(sink.clone())
             .with_approvals(gate)
             .with_hooks(&hooks)
-            .with_cancellation_flag(cancel);
+            .with_cancellation(cancellation.cancellation());
 
             let task = session.create_task("[workflow run]")?;
             match kernel

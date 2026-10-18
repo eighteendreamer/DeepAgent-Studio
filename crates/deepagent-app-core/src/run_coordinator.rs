@@ -5,7 +5,6 @@
 //! cross-transport control signals that must survive a client disconnect.
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use deepagent_core::error::{CoreError, Result};
@@ -17,7 +16,8 @@ use serde::Serialize;
 use crate::approval_bridge::PendingApprovals;
 use crate::question_bridge::PendingQuestions;
 
-pub(crate) type CancellationMap = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
+pub(crate) type CancellationMap =
+    Arc<Mutex<HashMap<String, Arc<deepagent_runtime::CancellationTree>>>>;
 
 #[derive(Clone)]
 pub struct RunCoordinator {
@@ -137,9 +137,9 @@ impl RunCoordinator {
     /// A missing active alias is not an error: the request is acknowledged as
     /// not accepted and no durable event is fabricated.
     pub fn request_cancel(&self, alias: &str) -> Result<CancelRequest> {
-        let (run_id, flag) = {
+        let (run_id, cancellation) = {
             let map = self.cancellations.lock().unwrap_or_else(|p| p.into_inner());
-            let Some(flag) = map.get(alias).cloned() else {
+            let Some(cancellation) = map.get(alias).cloned() else {
                 return Ok(CancelRequest { accepted: false });
             };
             let run_id = self
@@ -149,7 +149,7 @@ impl RunCoordinator {
                 .get(alias)
                 .cloned()
                 .unwrap_or_else(|| alias.to_string());
-            (run_id, flag)
+            (run_id, cancellation)
         };
         // `alias` is normally the run id. For session/turn aliases, the event
         // is still safely attached by the active registration's canonical key.
@@ -162,7 +162,10 @@ impl RunCoordinator {
                 ("cancel.propagated", &propagated),
             ],
         )?;
-        flag.store(true, std::sync::atomic::Ordering::Release);
+        cancellation.cancel();
+        // `accepted` means the alias still addressed an active run. Repeated
+        // clicks while it is already cancelling remain acknowledged so the UI
+        // does not incorrectly report a transient not-found error.
         Ok(CancelRequest { accepted: true })
     }
 
@@ -239,7 +242,7 @@ pub(crate) struct ActiveRunRegistration {
     map: CancellationMap,
     run_ids: Arc<Mutex<HashMap<String, String>>>,
     run_id: String,
-    flag: Arc<AtomicBool>,
+    cancellation: Arc<deepagent_runtime::CancellationTree>,
     keys: Mutex<Vec<String>>,
 }
 
@@ -254,7 +257,7 @@ impl ActiveRunRegistration {
             map,
             run_ids,
             run_id: run_id.clone(),
-            flag: Arc::new(AtomicBool::new(false)),
+            cancellation: Arc::new(deepagent_runtime::CancellationTree::new()),
             keys: Mutex::new(Vec::new()),
         };
         registration.add_alias(run_id);
@@ -272,7 +275,7 @@ impl ActiveRunRegistration {
         self.map
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .insert(key.clone(), self.flag.clone());
+            .insert(key.clone(), self.cancellation.clone());
         self.run_ids
             .lock()
             .unwrap_or_else(|p| p.into_inner())
@@ -280,8 +283,12 @@ impl ActiveRunRegistration {
         keys.push(key);
     }
 
-    pub(crate) fn flag(&self) -> Arc<AtomicBool> {
-        self.flag.clone()
+    pub(crate) fn flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.cancellation.legacy_flag()
+    }
+
+    pub(crate) fn cancellation(&self) -> deepagent_runtime::CancellationTree {
+        (*self.cancellation).clone()
     }
 }
 
@@ -293,7 +300,7 @@ impl Drop for ActiveRunRegistration {
         for key in keys.iter() {
             if map
                 .get(key)
-                .is_some_and(|flag| Arc::ptr_eq(flag, &self.flag))
+                .is_some_and(|cancellation| Arc::ptr_eq(cancellation, &self.cancellation))
             {
                 map.remove(key);
             }
@@ -356,6 +363,7 @@ mod tests {
         assert!(registration
             .flag()
             .load(std::sync::atomic::Ordering::Acquire));
+        assert!(registration.cancellation().is_cancelled());
 
         let events = RunStore::new(&db)
             .events_after("run-1", None)

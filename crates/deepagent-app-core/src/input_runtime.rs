@@ -30,6 +30,38 @@ pub(crate) struct AcceptedInputTurn<'db, C: Clock> {
     pub(crate) lease: InputLeaseGuard,
 }
 
+/// Model-only reminder appended once before the next user input after an
+/// interrupted run. It deliberately is not persisted as a chat message: the
+/// durable `RunTerminal` event is the source of truth and the reminder is a
+/// projection for the next model request.
+const ABORTED_TURN_REMINDER: &str = "The previous turn was aborted by the user. A tool or command may have executed only partially. Inspect the current workspace and process state before retrying. Do not assume the previous operation did not happen.";
+
+fn latest_terminal_was_cancelled(events: &[Event]) -> bool {
+    events
+        .iter()
+        .rev()
+        .find_map(|event| match &event.payload {
+            EventPayload::RunTerminal { kind, .. } => Some(kind == "cancelled"),
+            _ => None,
+        })
+        .unwrap_or(false)
+}
+
+fn append_abort_reminder_if_needed(
+    events: &[Event],
+    history: &mut Vec<Message>,
+    response_history: &mut Vec<ResponseInputItem>,
+) {
+    if !latest_terminal_was_cancelled(events) {
+        return;
+    }
+    history.push(Message::user(ABORTED_TURN_REMINDER));
+    response_history.push(ResponseInputItem::Message {
+        role: "user".to_string(),
+        content: ABORTED_TURN_REMINDER.to_string(),
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn accept_input_turn<'db, C, F>(
     db: &'db Database,
@@ -130,9 +162,12 @@ where
         }
     }
 
+    let mut response_history = response_items_from_events(&prior_events);
+    append_abort_reminder_if_needed(&prior_events, &mut history, &mut response_history);
+
     Ok(AcceptedInputTurn {
         session,
-        response_history: response_items_from_events(&prior_events),
+        response_history,
         history,
         prior_events,
         session_id,
@@ -1039,6 +1074,45 @@ mod tests {
             timestamp: deepagent_core::clock::Timestamp::from_millis(seq as i64),
             payload,
         }
+    }
+
+    #[test]
+    fn abort_reminder_is_projected_only_after_latest_cancelled_terminal() {
+        let sid = SessionId::nil();
+        let cancelled = vec![event(
+            sid,
+            0,
+            EventPayload::RunTerminal {
+                kind: "cancelled".into(),
+                reason: Some("cancelled by user".into()),
+            },
+        )];
+        let mut messages = vec![Message::assistant("partial")];
+        let mut items = vec![ResponseInputItem::Message {
+            role: "assistant".into(),
+            content: "partial".into(),
+        }];
+        append_abort_reminder_if_needed(&cancelled, &mut messages, &mut items);
+        assert!(messages
+            .last()
+            .is_some_and(|message| { message.content.contains("previous turn was aborted") }));
+        assert!(items.last().is_some_and(|item| matches!(
+            item,
+            ResponseInputItem::Message { role, content }
+                if role == "user" && content.contains("previous turn was aborted")
+        )));
+
+        let succeeded = vec![event(
+            sid,
+            1,
+            EventPayload::RunTerminal {
+                kind: "succeeded".into(),
+                reason: None,
+            },
+        )];
+        let before = messages.len();
+        append_abort_reminder_if_needed(&succeeded, &mut messages, &mut items);
+        assert_eq!(messages.len(), before);
     }
 
     #[test]

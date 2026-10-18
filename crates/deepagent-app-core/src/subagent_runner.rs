@@ -21,6 +21,7 @@ use deepagent_persistence::Database;
 use deepagent_runtime::{RuntimeEvent, RuntimeEventSink};
 use deepagent_session::Session;
 use deepagent_tools::{Permission, PermissionSet, ToolRegistry};
+use tokio_util::sync::CancellationToken;
 
 use crate::chat_service::ChatService;
 use crate::system_context::SYSTEM_PROMPT_DYNAMIC_BOUNDARY;
@@ -86,9 +87,18 @@ impl ChatSubagentRunner {
         request: deepagent_builtins::SubagentRequest,
         cancel: Option<Arc<AtomicBool>>,
     ) -> Result<deepagent_builtins::SubagentOutcome> {
+        self.run_inner_with_controls(request, cancel, None).await
+    }
+
+    async fn run_inner_with_controls(
+        &self,
+        request: deepagent_builtins::SubagentRequest,
+        cancel: Option<Arc<AtomicBool>>,
+        cancel_token: Option<CancellationToken>,
+    ) -> Result<deepagent_builtins::SubagentOutcome> {
         let subagent_id = format!("sub_{}", deepagent_core::id::EventId::new());
         let persist = self.begin_tracking(&subagent_id, &request, false)?;
-        self.run_tracked(subagent_id, request, cancel, persist, false)
+        self.run_tracked(subagent_id, request, cancel, cancel_token, persist, false)
             .await
     }
 
@@ -310,6 +320,7 @@ impl ChatSubagentRunner {
         subagent_id: String,
         request: deepagent_builtins::SubagentRequest,
         cancel: Option<Arc<AtomicBool>>,
+        cancel_token: Option<CancellationToken>,
         persist: bool,
         background: bool,
     ) -> Result<deepagent_builtins::SubagentOutcome> {
@@ -351,12 +362,20 @@ impl ChatSubagentRunner {
         let mut result = if let Some(error) = preparation_error {
             Err(error)
         } else {
-            self.run_active(request.clone(), cancel.clone(), &execution_root)
-                .await
+            self.run_active(
+                request.clone(),
+                cancel.clone(),
+                cancel_token.clone(),
+                &execution_root,
+            )
+            .await
         };
         let cancelled = cancel
             .as_ref()
-            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire));
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+            || cancel_token
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled);
         let state = if cancelled {
             "cancelled"
         } else if result.is_ok() {
@@ -491,6 +510,7 @@ impl ChatSubagentRunner {
         &self,
         request: deepagent_builtins::SubagentRequest,
         cancel: Option<Arc<AtomicBool>>,
+        cancel_token: Option<CancellationToken>,
         execution_root: &Path,
     ) -> Result<deepagent_builtins::SubagentOutcome> {
         use deepagent_runtime::{ModelAgent, RunOutcome, RuntimeConfig, RuntimeEngine};
@@ -677,6 +697,9 @@ impl ChatSubagentRunner {
         }
         if let Some(cancel) = cancel {
             engine = engine.with_cancel(cancel);
+        }
+        if let Some(cancel_token) = cancel_token {
+            engine = engine.with_cancellation_token(cancel_token);
         }
         let started_at = std::time::Instant::now();
         let outcome = engine.run(&mut session, task, &mut agent).await;
@@ -900,7 +923,12 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
         request: deepagent_builtins::SubagentRequest,
         context: deepagent_tools::ToolExecutionContext,
     ) -> Result<deepagent_builtins::SubagentOutcome> {
-        self.run_inner(request, Some(context.cancel_flag())).await
+        self.run_inner_with_controls(
+            request,
+            Some(context.cancel_flag()),
+            Some(context.cancellation_token()),
+        )
+        .await
     }
 
     async fn start_background(
@@ -926,23 +954,20 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
 
         let runner = self.clone();
         let task_id = subagent_id.clone();
-        let parent_cancel = context.cancel_flag();
         tokio::spawn(async move {
-            let run = runner.run_tracked(
-                task_id.clone(),
-                request,
-                Some(child_cancel.clone()),
-                true,
-                true,
-            );
-            tokio::pin!(run);
-            tokio::select! {
-                _ = wait_for_subagent_cancel(parent_cancel) => {
-                    child_cancel.store(true, std::sync::atomic::Ordering::Release);
-                    let _ = run.await;
-                }
-                _ = &mut run => {}
-            }
+            // Background agents are detached from the foreground run's
+            // cancellation signal. They are stopped only by their own
+            // `cancel_subagent` request (or by process shutdown).
+            let _ = runner
+                .run_tracked(
+                    task_id.clone(),
+                    request,
+                    Some(child_cancel.clone()),
+                    None,
+                    true,
+                    true,
+                )
+                .await;
             runner
                 .background
                 .lock()
@@ -1008,6 +1033,7 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
             id.to_string(),
             request,
             Some(context.cancel_flag()),
+            Some(context.cancellation_token()),
             true,
             false,
         )
@@ -1232,12 +1258,6 @@ mod tests {
             None,
             "no file effort, no request effort -> inherit parent"
         );
-    }
-}
-
-async fn wait_for_subagent_cancel(cancel: Arc<AtomicBool>) {
-    while !cancel.load(std::sync::atomic::Ordering::Acquire) {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
 

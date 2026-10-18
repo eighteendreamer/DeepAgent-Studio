@@ -1,9 +1,10 @@
 //! Canonical tool execution pipeline shared by the query loop and tests.
 
 use std::collections::HashSet;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tokio_util::sync::CancellationToken;
 
 use deepagent_core::error::Result;
 use deepagent_core::id::SessionId;
@@ -279,6 +280,7 @@ pub struct ToolExecutionPipeline<'a> {
     approvals: Arc<dyn ApprovalGate>,
     events: Arc<dyn RuntimeEventSink>,
     cancel: Arc<AtomicBool>,
+    cancel_token: Option<CancellationToken>,
     timeout: Duration,
     budget: ToolResultBudgetConfig,
     decorator: Option<Arc<dyn ToolResultDecorator>>,
@@ -303,6 +305,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             approvals: Arc::new(AutoDenyGate),
             events: Arc::new(NullEventSink),
             cancel: Arc::new(AtomicBool::new(false)),
+            cancel_token: None,
             timeout: ToolExecutionContext::DEFAULT_TIMEOUT,
             budget: ToolResultBudgetConfig::default(),
             decorator: None,
@@ -337,6 +340,34 @@ impl<'a> ToolExecutionPipeline<'a> {
         self.cancel = cancel;
         self.timeout = timeout;
         self
+    }
+
+    pub fn with_execution_token(mut self, token: Option<CancellationToken>) -> Self {
+        self.cancel_token = token;
+        self
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::Acquire)
+            || self
+                .cancel_token
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled)
+    }
+
+    fn execution_context(&self) -> ToolExecutionContext {
+        // Each tool invocation receives a child token. Parent cancellation
+        // still propagates into it, while a tool-local cancellation cannot
+        // cancel the run or any sibling invocation.
+        let token = self
+            .cancel_token
+            .as_ref()
+            .map(CancellationToken::child_token);
+        if let Some(token) = token {
+            ToolExecutionContext::from_token_and_flag(token, self.cancel.clone())
+        } else {
+            ToolExecutionContext::new(self.cancel.clone())
+        }
     }
 
     pub fn with_result_policy(
@@ -390,6 +421,18 @@ impl<'a> ToolExecutionPipeline<'a> {
             .clone()
             .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
         let name = invocation.name.clone();
+
+        if self.is_cancelled() {
+            return Ok(ToolPreparation::Blocked(self.blocked(
+                call_id,
+                name,
+                invocation.arguments,
+                "tool execution cancelled by user".to_string(),
+                "cancelled",
+                ToolPipelineStage::Execution,
+                false,
+            )?));
+        }
 
         // Sentinel from the stream decoder: the provider emitted argument
         // bytes that were not valid JSON. Reject deterministically BEFORE
@@ -448,6 +491,17 @@ impl<'a> ToolExecutionPipeline<'a> {
                 .await?
             }
         };
+        if self.is_cancelled() {
+            return Ok(ToolPreparation::Blocked(self.blocked(
+                call_id,
+                name,
+                invocation.arguments,
+                "tool execution cancelled by user".to_string(),
+                "cancelled",
+                ToolPipelineStage::Execution,
+                false,
+            )?));
+        }
         let mut approval_granted = false;
         match before {
             HookOutcome::Continue | HookOutcome::AsyncPending { .. } => {}
@@ -514,6 +568,18 @@ impl<'a> ToolExecutionPipeline<'a> {
             }
         }
 
+        if self.is_cancelled() {
+            return Ok(ToolPreparation::Blocked(self.blocked(
+                call_id,
+                name,
+                invocation.arguments,
+                "tool execution cancelled by user".to_string(),
+                "cancelled",
+                ToolPipelineStage::Execution,
+                false,
+            )?));
+        }
+
         Ok(ToolPreparation::Ready(PreparedToolInvocation {
             call_id,
             name,
@@ -565,16 +631,27 @@ impl<'a> ToolExecutionPipeline<'a> {
         if let Some(persistence) = self.action_persistence.as_ref() {
             persistence.request_approval(call_id, risk, &reason)?;
         }
-        let decision = self
-            .approvals
-            .request(ApprovalRequest {
+        let cancellation_wait = self.execution_context();
+        let decision = tokio::select! {
+            decision = self.approvals.request(ApprovalRequest {
                 call_id: call_id.to_string(),
                 tool: name.to_string(),
                 reason: reason.clone(),
                 risk: risk.to_string(),
                 arguments: arguments.clone(),
-            })
-            .await;
+            }) => decision,
+            _ = cancellation_wait.cancelled() => {
+                return Ok(Some(self.blocked(
+                    call_id.to_string(),
+                    name.to_string(),
+                    arguments.clone(),
+                    "tool approval cancelled by user".to_string(),
+                    "cancelled",
+                    ToolPipelineStage::Execution,
+                    false,
+                )?));
+            }
+        };
         Ok(match decision {
             ApprovalDecision::Allow => {
                 if let Some(persistence) = self.action_persistence.as_ref() {
@@ -666,7 +743,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             prepared.arguments.clone(),
             &self.permissions,
             true,
-            ToolExecutionContext::new(self.cancel.clone()).with_timeout(self.timeout),
+            self.execution_context().with_timeout(self.timeout),
         );
         let result = if enforce_budget {
             match tokio::time::timeout(self.timeout, invocation).await {

@@ -1996,6 +1996,12 @@ impl ModelAgent {
         cancel: Option<Arc<AtomicBool>>,
         mut tools: Option<&mut dyn ToolAttemptController>,
     ) -> Result<AgentDecision> {
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(CoreError::other("request cancelled by user"));
+        }
         self.request_max_output_override = None;
         // Feed back every tool result from the previous step (more than one when
         // the previous turn ran tools in parallel). Order matters: tool results
@@ -2035,11 +2041,23 @@ impl ModelAgent {
         let mut reactive_compaction_attempted = false;
         let mut overflow_prune_attempted = false;
         let response = loop {
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+            {
+                return Err(CoreError::other("request cancelled by user"));
+            }
             attempt += 1;
             self.request_max_output_override = request.max_output_tokens;
             // Run pressure management against the final Surface and this
             // attempt's output ceiling, including nudges and retry changes.
             self.maybe_proactive_compact(step).await;
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+            {
+                return Err(CoreError::other("request cancelled by user"));
+            }
             let canonical = self.request_for_current_history();
             request.instructions = canonical.instructions;
             request.input = canonical.input;
@@ -2084,6 +2102,12 @@ impl ModelAgent {
                         && !max_output_escalated
                         && attempt < self.max_model_attempts
                     {
+                        if cancel
+                            .as_ref()
+                            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+                        {
+                            return Err(CoreError::other("request cancelled by user"));
+                        }
                         let current_max = request.max_output_tokens.unwrap_or(8_192);
                         let escalated_max = current_max.max(65_536);
                         if escalated_max > current_max {
@@ -2113,6 +2137,12 @@ impl ModelAgent {
                         && response.tool_invocations_from_items().is_empty()
                         && max_output_recoveries < MAX_OUTPUT_TOKENS_RECOVERY_LIMIT
                     {
+                        if cancel
+                            .as_ref()
+                            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+                        {
+                            return Err(CoreError::other("request cancelled by user"));
+                        }
                         if let Some(tools) = tools.as_deref_mut() {
                             tools.abort(attempt, "max_tokens truncation; resuming in a new turn");
                         }
@@ -2160,6 +2190,11 @@ impl ModelAgent {
                             overflow_prune_attempted = true;
                             match self.prune_stale_tool_results(60, "overflow_tool_result_prune") {
                                 Ok(count) if count > 0 => {
+                                    if cancel.as_ref().is_some_and(|flag| {
+                                        flag.load(std::sync::atomic::Ordering::Acquire)
+                                    }) {
+                                        return Err(CoreError::other("request cancelled by user"));
+                                    }
                                     request = self
                                         .request_for_current_history()
                                         .with_thinking_depth(self.thinking_depth)
@@ -2183,6 +2218,11 @@ impl ModelAgent {
                                 .await
                             {
                                 Ok(Some(compacted)) => {
+                                    if cancel.as_ref().is_some_and(|flag| {
+                                        flag.load(std::sync::atomic::Ordering::Acquire)
+                                    }) {
+                                        return Err(CoreError::other("request cancelled by user"));
+                                    }
                                     self.adopt_compaction(
                                         compacted.clone(),
                                         deepagent_core::compaction_strategy::REACTIVE_MODEL,
@@ -2261,7 +2301,16 @@ impl ModelAgent {
                         failure = ?failure,
                         "retrying classified model stream failure"
                     );
-                    tokio::time::sleep(delay).await;
+                    if let Some(cancel) = cancel.clone() {
+                        tokio::select! {
+                            _ = tokio::time::sleep(delay) => {}
+                            _ = wait_for_cancel(cancel) => {
+                                return Err(CoreError::other("request cancelled by user"));
+                            }
+                        }
+                    } else {
+                        tokio::time::sleep(delay).await;
+                    }
                 }
             }
         };
@@ -2425,6 +2474,12 @@ fn emit_attempt_reset(
             attempt,
             reason,
         });
+    }
+}
+
+async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
+    while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
 

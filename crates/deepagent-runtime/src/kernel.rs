@@ -384,7 +384,9 @@ pub struct AgentKernel<'a, C: Clock> {
     events: Arc<dyn RuntimeEventSink>,
     handle: RunHandle,
     /// Session-level accumulation of edited files across all turns in this run.
-    edited_files: Arc<std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>>,
+    edited_files: Arc<
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>,
+    >,
     _clock: std::marker::PhantomData<&'a C>,
 }
 
@@ -452,6 +454,14 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
 
     pub fn with_cancellation_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.handle.cancellation = CancellationTree::from_legacy_flag(flag);
+        self
+    }
+
+    /// Attach the coordinator-owned cancellation tree. This keeps token
+    /// propagation intact while `with_cancellation_flag` remains available for
+    /// older embedders.
+    pub fn with_cancellation(mut self, cancellation: CancellationTree) -> Self {
+        self.handle.cancellation = cancellation;
         self
     }
 
@@ -529,6 +539,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         let mut engine =
             RuntimeEngine::<C>::new(self.registry, self.metrics.clone(), self.config.clone())
                 .with_cancel(self.handle.cancellation.legacy_flag())
+                .with_cancellation_token(self.handle.cancellation.token())
                 .with_events(persistent.clone())
                 .with_approvals(self.approvals.clone())
                 .with_edited_files(self.edited_files.clone());

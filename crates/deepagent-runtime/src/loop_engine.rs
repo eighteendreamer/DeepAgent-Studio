@@ -22,6 +22,7 @@ use deepagent_tools::{ToolExecutionContext, ToolRegistry};
 use deepagent_tracing::metrics::{names, Metrics};
 use deepagent_verification::reflection::NextAction;
 use deepagent_verification::{CommandRunner, ReflectionEngine, VerificationStep, Verifier};
+use tokio_util::sync::CancellationToken;
 
 use crate::agent::{Agent, AgentDecision, Observation, ToolAttemptController};
 use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
@@ -225,6 +226,7 @@ pub struct RuntimeEngine<'a, C: Clock> {
     events: std::sync::Arc<dyn RuntimeEventSink>,
     approvals: std::sync::Arc<dyn ApprovalGate>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    cancel_token: Option<CancellationToken>,
     created_tool_result_paths: std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>,
     edited_files: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>,
@@ -240,6 +242,7 @@ struct StreamingToolAttempt<'a> {
     registry: &'a ToolRegistry,
     permissions: PermissionSet,
     runtime_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    runtime_token: Option<CancellationToken>,
     timeout: std::time::Duration,
     speculation_enabled: bool,
     active_attempt: Option<usize>,
@@ -254,6 +257,7 @@ struct StreamPreparedCall {
 
 struct SpeculativeToolExecution {
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    token: Option<CancellationToken>,
     handle: tokio::task::JoinHandle<(Result<deepagent_tools::ToolOutput>, u64)>,
 }
 
@@ -262,6 +266,7 @@ impl<'a> StreamingToolAttempt<'a> {
         registry: &'a ToolRegistry,
         permissions: PermissionSet,
         runtime_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        runtime_token: Option<CancellationToken>,
         timeout: std::time::Duration,
         speculation_enabled: bool,
     ) -> Self {
@@ -269,6 +274,7 @@ impl<'a> StreamingToolAttempt<'a> {
             registry,
             permissions,
             runtime_cancel,
+            runtime_token,
             timeout,
             speculation_enabled,
             active_attempt: None,
@@ -316,6 +322,9 @@ impl<'a> StreamingToolAttempt<'a> {
                 speculative
                     .cancel
                     .store(true, std::sync::atomic::Ordering::Release);
+                if let Some(token) = speculative.token.as_ref() {
+                    token.cancel();
+                }
                 speculative.handle.abort();
             }
         }
@@ -400,22 +409,44 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
                 let arguments = normalized.arguments.clone();
                 let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let execution_cancel = cancel.clone();
+                let execution_token = self
+                    .runtime_token
+                    .as_ref()
+                    .map(CancellationToken::child_token);
+                let task_token = execution_token.clone();
                 let timeout = self.timeout;
-                let handle = tokio::spawn(async move {
-                    let started = std::time::Instant::now();
-                    let result = registry
+                let handle =
+                    tokio::spawn(async move {
+                        let started = std::time::Instant::now();
+                        let result = registry
                         .invoke_with_context(
                             &name,
                             arguments,
                             &permissions,
                             true,
-                            deepagent_tools::ToolExecutionContext::new(execution_cancel)
-                                .with_timeout(timeout),
+                            task_token.as_ref().map_or_else(
+                                || {
+                                    deepagent_tools::ToolExecutionContext::new(
+                                        execution_cancel.clone(),
+                                    )
+                                },
+                                |token| {
+                                    deepagent_tools::ToolExecutionContext::from_token_and_flag(
+                                        token.clone(),
+                                        execution_cancel.clone(),
+                                    )
+                                },
+                            )
+                            .with_timeout(timeout),
                         )
                         .await;
-                    (result, started.elapsed().as_millis() as u64)
-                });
-                Some(SpeculativeToolExecution { cancel, handle })
+                        (result, started.elapsed().as_millis() as u64)
+                    });
+                Some(SpeculativeToolExecution {
+                    cancel,
+                    token: execution_token,
+                    handle,
+                })
             })
         } else {
             None
@@ -457,6 +488,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             events: std::sync::Arc::new(NullEventSink),
             approvals: std::sync::Arc::new(AutoDenyGate),
             cancel: None,
+            cancel_token: None,
             created_tool_result_paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             edited_files: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
@@ -465,20 +497,45 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         }
     }
 
-    /// Attach a cancellation flag (builder style). When set to `true` mid-run,
-    /// the loop stops at the next step boundary and returns
-    /// [`RunOutcome::Cancelled`] (manual stop from the UI).
+    /// Attach the compatibility cancellation flag (builder style). When set to
+    /// `true` mid-run, the stream, current tool gate, and loop observe the
+    /// stop; [`RunOutcome::Cancelled`] is returned after durable cleanup.
     pub fn with_cancel(mut self, cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
         self.cancel = Some(cancel);
         self
     }
 
+    /// Attach the hierarchical run cancellation token. The legacy flag remains
+    /// accepted for process-backed tools and older Agent implementations.
+    pub fn with_cancellation_token(mut self, token: CancellationToken) -> Self {
+        self.cancel_token = Some(token);
+        self
+    }
+
     /// Whether a cancellation has been requested.
     fn is_cancelled(&self) -> bool {
-        self.cancel
+        self.cancel_token
             .as_ref()
-            .map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
-            .unwrap_or(false)
+            .is_some_and(CancellationToken::is_cancelled)
+            || self
+                .cancel
+                .as_ref()
+                .is_some_and(|c| c.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    fn execution_context(&self) -> ToolExecutionContext {
+        let legacy = self
+            .cancel
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        let child_token = self
+            .cancel_token
+            .as_ref()
+            .map(CancellationToken::child_token);
+        child_token.map_or_else(
+            || ToolExecutionContext::new(legacy.clone()),
+            |token| ToolExecutionContext::from_token_and_flag(token, legacy.clone()),
+        )
     }
 
     /// Attach a live event sink (builder style). Events are pushed as the run
@@ -558,7 +615,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 if let Some(cancel) = self.cancel.clone() {
                     tokio::select! {
                         result = reg.dispatch(&ctx) => result,
-                        _ = wait_for_runtime_cancel(cancel) => Err(
+                        _ = wait_for_runtime_cancel(cancel, self.cancel_token.clone()) => Err(
                             deepagent_core::error::CoreError::other(
                                 format!("hook '{}' cancelled by user", point.label())
                             )
@@ -702,6 +759,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 self.registry,
                 self.config.permissions.clone(),
                 runtime_cancel,
+                self.cancel_token.clone(),
                 self.config.tool_timeout,
                 self.hooks.is_none(),
             );
@@ -727,6 +785,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 Err(e) => return Err(e),
             };
             if self.is_cancelled() {
+                self.record_cancelled_decision(session, decision, false)
+                    .await?;
                 session.transition_task(task, TaskState::Failed)?;
                 self.emit(RuntimeEvent::RunCancelled {
                     edited_files: self.collect_edited_files(),
@@ -767,7 +827,30 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 }
                 other => (other, pending_response_items),
             };
-            let provider_items_persisted = persist_response_items(session, response_items)?;
+            // If the stop signal arrived while the provider was closing its
+            // stream, discard the interrupted assistant surface before it can
+            // become a durable answer. Tool calls are handled below so every
+            // emitted call still receives a paired cancellation result.
+            let provider_items_persisted = if self.is_cancelled() {
+                false
+            } else {
+                persist_response_items(session, response_items)?
+            };
+
+            // A cancellation may arrive after the provider stream has closed
+            // but before the decision is dispatched. Do not start verification,
+            // approval or another tool in that gap.
+            if self.is_cancelled() {
+                self.record_cancelled_decision(session, decision, provider_items_persisted)
+                    .await?;
+                session.transition_task(task, TaskState::Failed)?;
+                self.emit(RuntimeEvent::RunCancelled {
+                    edited_files: self.collect_edited_files(),
+                });
+                outcome = RunOutcome::Cancelled;
+                finished = true;
+                break;
+            }
 
             match decision {
                 AgentDecision::Complete(msg) => {
@@ -1315,6 +1398,87 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         Ok(decision)
     }
 
+    /// Persist a provider tool call that could not be started because the user
+    /// cancelled the run. Responses-style providers require every emitted call
+    /// to have a following result, even when the result is a cancellation.
+    async fn record_cancelled_tool(
+        &self,
+        session: &mut Session<'a, C>,
+        invocation: deepagent_tools::ToolInvocation,
+        provider_tool_calls_persisted: bool,
+    ) -> Result<Observation> {
+        let call_id = invocation
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
+        if !provider_tool_calls_persisted {
+            session.append(EventPayload::ToolCallRequested {
+                call: ToolCall {
+                    id: call_id.clone(),
+                    name: invocation.name.clone(),
+                    arguments: invocation.arguments.clone(),
+                },
+            })?;
+        }
+        let output = serde_json::json!({
+            "ok": false,
+            "cancelled": true,
+            "error_type": "cancelled_by_user",
+            "error": "The user cancelled this tool call before it completed. The operation may have run partially; inspect the current state before retrying.",
+        });
+        session.append(EventPayload::ToolCallCompleted {
+            call_id: call_id.clone(),
+            ok: false,
+            output: output.clone(),
+            duration_ms: 0,
+        })?;
+        let metadata = tool_ui_metadata(&invocation.name, &invocation.arguments, Some(&output));
+        self.emit(RuntimeEvent::ToolCompleted {
+            name: invocation.name.clone(),
+            call_id: call_id.clone(),
+            ok: false,
+            output: output.clone(),
+            duration_ms: 0,
+            tool_kind: metadata.tool_kind,
+            file_path: metadata.file_path,
+            summary: Some("已由用户停止，结果可能只执行了一部分".to_string()),
+            meta: metadata.meta,
+        });
+        Ok(Observation {
+            tool: invocation.name,
+            ok: false,
+            raw_output: None,
+            output,
+            call_id: Some(call_id),
+        })
+    }
+
+    /// Complete every tool call in a model decision when cancellation wins the
+    /// race between stream completion and the dispatch boundary. The call is
+    /// never started, but the durable history still needs a result so the next
+    /// provider request cannot contain a dangling tool use.
+    async fn record_cancelled_decision(
+        &self,
+        session: &mut Session<'a, C>,
+        decision: AgentDecision,
+        provider_tool_calls_persisted: bool,
+    ) -> Result<()> {
+        match decision {
+            AgentDecision::CallTool(invocation) => {
+                self.record_cancelled_tool(session, invocation, provider_tool_calls_persisted)
+                    .await?;
+            }
+            AgentDecision::CallTools(invocations) => {
+                for invocation in invocations {
+                    self.record_cancelled_tool(session, invocation, provider_tool_calls_persisted)
+                        .await?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Execute several tool invocations requested in the same model turn.
     ///
     /// Mirrors Claude Code's parallel tool calling. To keep the append-only
@@ -1334,6 +1498,16 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         mut speculative: std::collections::HashMap<String, SpeculativeToolExecution>,
         provider_tool_calls_persisted: bool,
     ) -> Result<Vec<Observation>> {
+        if self.is_cancelled() {
+            let mut out = Vec::with_capacity(invocations.len());
+            for invocation in invocations {
+                out.push(
+                    self.record_cancelled_tool(session, invocation, provider_tool_calls_persisted)
+                        .await?,
+                );
+            }
+            return Ok(out);
+        }
         if invocations.len() <= 1 {
             let mut out = Vec::with_capacity(invocations.len());
             for inv in invocations {
@@ -1450,6 +1624,17 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             return Ok(out);
         }
 
+        if self.is_cancelled() {
+            let mut out = Vec::with_capacity(invocations.len());
+            for invocation in invocations {
+                out.push(
+                    self.record_cancelled_tool(session, invocation, provider_tool_calls_persisted)
+                        .await?,
+                );
+            }
+            return Ok(out);
+        }
+
         // Pre-assign call ids and emit ToolStarted for EVERY parallel tool up
         // front, so the UI shows them all as "running" immediately — not only
         // after they finish. (This is what makes parallel `task` sub-agents and
@@ -1504,10 +1689,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             let registry = self.registry;
             let perms = self.config.permissions.clone();
             let auto = self.config.auto_approve;
-            let execution_context =
-                ToolExecutionContext::new(self.cancel.clone().unwrap_or_else(|| {
-                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
-                }))
+            let execution_context = self
+                .execution_context()
                 .with_timeout(self.config.tool_timeout);
             let budget = self.config.tool_result_budget.clone();
             let session_id_str = session_id.to_string();
@@ -1907,6 +2090,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         .with_events(self.events.clone())
         .with_auto_approve(self.config.auto_approve)
         .with_execution_controls(cancel, self.config.tool_timeout)
+        .with_execution_token(self.cancel_token.clone())
         .with_result_policy(
             self.config.tool_result_budget.clone(),
             self.config.tool_result_decorator.clone(),
@@ -1915,6 +2099,21 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         .with_checkpoint(self.config.checkpoint.clone());
         let pipeline = pipeline.with_artifact_persistence(self.config.artifact_persistence.clone());
         let pipeline = pipeline.with_action_persistence(self.config.action_persistence.clone());
+
+        if self.is_cancelled() {
+            if let Some(speculative) = speculative {
+                speculative
+                    .cancel
+                    .store(true, std::sync::atomic::Ordering::Release);
+                if let Some(token) = speculative.token.as_ref() {
+                    token.cancel();
+                }
+                speculative.handle.abort();
+            }
+            return self
+                .record_cancelled_tool(session, invocation, provider_tool_calls_persisted)
+                .await;
+        }
 
         let prepared = pipeline.prepare(invocation, before_override).await?;
         let result = match prepared {
@@ -1956,6 +2155,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     speculative
                         .cancel
                         .store(true, std::sync::atomic::Ordering::Release);
+                    if let Some(token) = speculative.token.as_ref() {
+                        token.cancel();
+                    }
                     speculative.handle.abort();
                 }
                 let requested = EventPayload::ToolCallRequested {
@@ -2229,12 +2431,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         });
 
         let start = std::time::Instant::now();
-        let execution_context = ToolExecutionContext::new(
-            self.cancel
-                .clone()
-                .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))),
-        )
-        .with_timeout(self.config.tool_timeout);
+        let execution_context = self
+            .execution_context()
+            .with_timeout(self.config.tool_timeout);
         let output = self
             .registry
             .invoke_with_context(
@@ -2545,7 +2744,21 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
     }
 }
 
-async fn wait_for_runtime_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+async fn wait_for_runtime_cancel(
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    token: Option<CancellationToken>,
+) {
+    if let Some(token) = token {
+        tokio::select! {
+            _ = token.cancelled() => {},
+            _ = wait_for_runtime_cancel_flag(cancel) => {},
+        }
+    } else {
+        wait_for_runtime_cancel_flag(cancel).await;
+    }
+}
+
+async fn wait_for_runtime_cancel_flag(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     while !cancel.load(std::sync::atomic::Ordering::Acquire) {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -2670,6 +2883,21 @@ mod tests {
     struct HangingReadTool {
         started: Arc<AtomicBool>,
         completed: Arc<AtomicBool>,
+    }
+
+    struct CancelAfterDecision {
+        cancel: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl Agent for CancelAfterDecision {
+        async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            self.cancel.store(true, Ordering::Release);
+            Ok(AgentDecision::CallTool(
+                ToolInvocation::new("read_file", serde_json::json!({"path": "a.txt"}))
+                    .with_id("cancelled-call"),
+            ))
+        }
     }
 
     #[async_trait]
@@ -3327,6 +3555,7 @@ mod tests {
             &registry,
             PermissionSet::read_only(),
             Arc::new(AtomicBool::new(false)),
+            None,
             std::time::Duration::from_secs(60),
             true,
         );
@@ -3348,6 +3577,49 @@ mod tests {
         assert!(!completed.load(Ordering::Acquire));
         assert!(attempt.prepared.is_empty());
         assert_eq!(attempt.committed_attempt, None);
+    }
+
+    #[tokio::test]
+    async fn cancellation_before_tool_dispatch_persists_a_paired_result() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("cancelled dispatch")).unwrap();
+        let task = session.create_task("read fixture").unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let mut agent = CancelAfterDecision {
+            cancel: cancel.clone(),
+        };
+        let registry = registry();
+        let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default())
+            .with_cancel(cancel);
+
+        assert_eq!(
+            engine.run(&mut session, task, &mut agent).await.unwrap(),
+            RunOutcome::Cancelled
+        );
+        let events = EventStore::new(&db).load_session(session.id()).unwrap();
+        let requested = events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::ToolCallRequested { call } if call.id == "cancelled-call"
+            )
+        });
+        let completed = events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                EventPayload::ToolCallCompleted { call_id, ok: false, output, .. }
+                    if call_id == "cancelled-call"
+                        && output.get("cancelled").and_then(serde_json::Value::as_bool) == Some(true)
+            )
+        });
+        assert!(
+            requested,
+            "the interrupted tool call must remain in the log"
+        );
+        assert!(
+            completed,
+            "the interrupted tool call must have a paired result"
+        );
     }
 
     #[tokio::test]

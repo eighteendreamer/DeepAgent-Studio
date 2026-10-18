@@ -57,6 +57,12 @@ impl CancellationTree {
         self.token.clone()
     }
 
+    /// Derive a token for one invocation. The derived token follows this tree
+    /// downward, while cancelling it remains local to the invocation.
+    pub fn child_token(&self) -> CancellationToken {
+        self.token.child_token()
+    }
+
     /// Bridge used while the legacy model/tool interfaces still accept an
     /// `AtomicBool`. Cancelling the root always updates this flag immediately.
     pub fn legacy_flag(&self) -> Arc<AtomicBool> {
@@ -78,5 +84,17 @@ mod tests {
         child.cancelled().await;
         assert!(child.is_cancelled());
         assert!(flag.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn cancelling_child_does_not_cancel_parent_or_siblings() {
+        let root = CancellationTree::new();
+        let child = root.child();
+        let sibling = root.child();
+
+        assert!(child.cancel());
+        assert!(child.is_cancelled());
+        assert!(!root.is_cancelled());
+        assert!(!sibling.is_cancelled());
     }
 }

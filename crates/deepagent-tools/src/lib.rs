@@ -33,6 +33,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use tokio_util::sync::CancellationToken;
+
 use deepagent_core::error::Result;
 
 pub use permission::{Permission, PermissionSet, RiskLevel};
@@ -128,6 +130,7 @@ pub struct ToolDescriptor {
 #[derive(Clone, Debug)]
 pub struct ToolExecutionContext {
     cancel: Arc<AtomicBool>,
+    token: CancellationToken,
     timeout: Duration,
 }
 
@@ -135,6 +138,7 @@ impl Default for ToolExecutionContext {
     fn default() -> Self {
         Self {
             cancel: Arc::new(AtomicBool::new(false)),
+            token: CancellationToken::new(),
             timeout: Self::DEFAULT_TIMEOUT,
         }
     }
@@ -150,7 +154,41 @@ impl ToolExecutionContext {
     pub fn new(cancel: Arc<AtomicBool>) -> Self {
         Self {
             cancel,
+            token: CancellationToken::new(),
             ..Self::default()
+        }
+    }
+
+    /// Build a context from the hierarchical cancellation signal used by the
+    /// runtime. `legacy_flag` remains available for process-backed tools that
+    /// still expose the older AtomicBool seam; the token is the authoritative
+    /// signal for new tools and for async cancellation gates.
+    pub fn from_token(token: CancellationToken) -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+            token,
+            ..Self::default()
+        }
+    }
+
+    /// Build a token-backed context while preserving a legacy flag for tools
+    /// such as the shell executor. Cancelling either signal is observable via
+    /// [`Self::is_cancelled`] and [`Self::cancelled`].
+    pub fn from_token_and_flag(token: CancellationToken, cancel: Arc<AtomicBool>) -> Self {
+        Self {
+            cancel,
+            token,
+            ..Self::default()
+        }
+    }
+
+    /// Derive an invocation-local child signal. Cancelling the child never
+    /// cancels its parent, while parent cancellation propagates automatically.
+    pub fn child(&self) -> Self {
+        Self {
+            cancel: Arc::new(AtomicBool::new(false)),
+            token: self.token.child_token(),
+            timeout: self.timeout,
         }
     }
 
@@ -164,11 +202,31 @@ impl ToolExecutionContext {
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancel.load(Ordering::Acquire)
+        self.cancel.load(Ordering::Acquire) || self.token.is_cancelled()
+    }
+
+    pub fn cancellation_token(&self) -> CancellationToken {
+        self.token.clone()
+    }
+
+    /// Await either the hierarchical token or the compatibility flag. The
+    /// latter is polled only for legacy callers; token-backed tools wake
+    /// immediately when their parent is cancelled.
+    pub async fn cancelled(&self) {
+        tokio::select! {
+            _ = self.token.cancelled() => {}
+            _ = wait_for_legacy_cancel(self.cancel.clone()) => {}
+        }
     }
 
     pub fn timeout(&self) -> Duration {
         self.timeout
+    }
+}
+
+async fn wait_for_legacy_cancel(cancel: Arc<AtomicBool>) {
+    while !cancel.load(Ordering::Acquire) {
+        tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
 
@@ -287,5 +345,19 @@ mod tests {
             "Tool::should_defer must default to false"
         );
         assert!(!t.always_load(), "Tool::always_load must default to false");
+    }
+
+    #[tokio::test]
+    async fn execution_context_child_cancellation_isolated_from_parent() {
+        let parent = ToolExecutionContext::from_token(CancellationToken::new());
+        let child = parent.child();
+        child.cancellation_token().cancel();
+
+        assert!(child.is_cancelled());
+        assert!(!parent.is_cancelled());
+
+        parent.cancellation_token().cancel();
+        assert!(child.is_cancelled());
+        assert!(parent.is_cancelled());
     }
 }

@@ -115,7 +115,16 @@ test("actual scroll hook distinguishes virtual-list clamping from user scrolling
 function liveAccumulator() {
   const source = fs.readFileSync(path.join(root, "src/App.tsx"), "utf8");
   const ast = ts.createSourceFile("App.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
-  const names = ["updateTranscript", "mutateParts", "appendDelta", "upsertTool", "finalize", "onEvent", "finishRun"];
+  const names = [
+    "updateTranscript",
+    "mutateParts",
+    "appendDelta",
+    "upsertTool",
+    "finalize",
+    "finalizeCancelled",
+    "onEvent",
+    "finishRun",
+  ];
   const declarations = new Map();
   function visit(node) {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && names.includes(node.name.text)) {

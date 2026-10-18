@@ -103,10 +103,28 @@ fn response_items_for_payload(
             output,
             ..
         } => {
-            let custom = store.load_session(session_id)?.iter().rev().any(|event| {
-                matches!(&event.payload, EventPayload::ToolCallRequested { call }
-                    if call.id == *call_id && call.name == "apply_patch")
-            });
+            // Model-backed runs persist the provider-native call before the
+            // legacy ToolCallRequested projection. Resolve the call kind from
+            // whichever representation is newest so a completed custom call
+            // (apply_patch) receives CustomToolCallOutput rather than a
+            // mismatched FunctionCallOutput.
+            let custom = store
+                .load_session(session_id)?
+                .iter()
+                .rev()
+                .find_map(|event| match &event.payload {
+                    EventPayload::ToolCallRequested { call } if call.id == *call_id => {
+                        Some(call.name == "apply_patch")
+                    }
+                    EventPayload::ResponseItemAppended {
+                        item: ResponseItem::CustomToolCall { call_id: id, .. },
+                    } if id == call_id => Some(true),
+                    EventPayload::ResponseItemAppended {
+                        item: ResponseItem::FunctionCall { call_id: id, .. },
+                    } if id == call_id => Some(false),
+                    _ => None,
+                })
+                .unwrap_or(false);
             let output = if *ok {
                 serde_json::json!({"status":"ok","result":output}).to_string()
             } else {
@@ -588,6 +606,42 @@ mod tests {
         assert!(matches!(
             &items[1],
             ResponseItem::FunctionCallOutput { call_id, .. } if call_id == "call-1"
+        ));
+    }
+
+    #[test]
+    fn native_custom_tool_completion_keeps_custom_pairing() {
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("custom items")).unwrap();
+        session
+            .append_response_item(ResponseItem::CustomToolCall {
+                call_id: "patch-1".into(),
+                name: "apply_patch".into(),
+                input: "*** Begin Patch".into(),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::ToolCallCompleted {
+                call_id: "patch-1".into(),
+                ok: false,
+                output: serde_json::json!({"cancelled": true}),
+                duration_ms: 0,
+            })
+            .unwrap();
+
+        let items: Vec<_> = EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| match event.payload {
+                EventPayload::ResponseItemAppended { item } => Some(item),
+                _ => None,
+            })
+            .collect();
+        assert!(matches!(
+            &items[1],
+            ResponseItem::CustomToolCallOutput { call_id, .. } if call_id == "patch-1"
         ));
     }
 

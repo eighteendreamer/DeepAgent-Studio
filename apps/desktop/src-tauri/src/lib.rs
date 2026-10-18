@@ -595,6 +595,24 @@ struct SessionCompletedPayload {
     error: Option<String>,
 }
 
+/// Read the kernel's durable terminal record before publishing the transport
+/// completion event. `KernelTerminal::into_completion_result()` intentionally
+/// treats cancellation as a clean return for headless callers, so inspecting
+/// the run ledger here is the only way for Desktop to distinguish a user stop
+/// from a successful completion without adding a second result channel.
+fn run_was_cancelled(chat: &deepagent_app_core::ChatService, run_id: &str) -> bool {
+    chat.run_events(run_id, None)
+        .ok()
+        .and_then(|events| {
+            events
+                .into_iter()
+                .rev()
+                .find(|event| event.event_type == "run_terminal")
+        })
+        .and_then(|event| event.data.get("kind").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .is_some_and(|kind| kind == "cancelled")
+}
+
 #[derive(Debug, Clone, Serialize)]
 struct SessionTitleUpdatedPayload {
     session_id: String,
@@ -1965,6 +1983,12 @@ fn start_chat_v2(
             )
             .await;
         let completed = match &result {
+            Ok(session_id) if run_was_cancelled(&chat, &run_id) => SessionCompletedPayload {
+                run_id: run_id.clone(),
+                session_id: Some(session_id.clone()),
+                status: "cancelled".to_string(),
+                error: Some("cancelled by user".to_string()),
+            },
             Ok(session_id) => SessionCompletedPayload {
                 run_id: run_id.clone(),
                 session_id: Some(session_id.clone()),
@@ -2418,6 +2442,12 @@ fn start_workflow(
             )
             .await;
         let completed = match &result {
+            Ok(session_id) if run_was_cancelled(&chat, &run_id) => SessionCompletedPayload {
+                run_id: run_id.clone(),
+                session_id: Some(session_id.clone()),
+                status: "cancelled".to_string(),
+                error: Some("cancelled by user".to_string()),
+            },
             Ok(session_id) => SessionCompletedPayload {
                 run_id: run_id.clone(),
                 session_id: Some(session_id.clone()),
@@ -2465,9 +2495,10 @@ fn respond_question(
         .resolve_question(&session_id, &question_id, answers))
 }
 
-/// Request a manual stop of an in-flight run for `session_id`. The run ends
-/// cleanly at its next step boundary (partial transcript preserved). Returns
-/// whether a matching in-flight run was found.
+/// Request a manual stop of an in-flight run for `session_id`. The cancellation
+/// signal is propagated to the model stream and active tools, then the run is
+/// finalized with paired tool results. Returns whether a matching in-flight run
+/// was found.
 #[tauri::command]
 fn stop_chat(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
     state

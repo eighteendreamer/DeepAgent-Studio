@@ -440,19 +440,20 @@ impl AppRunFinalizer {
 mod tests {
     use super::*;
     use deepagent_core::clock::SystemClock;
-    use deepagent_runtime::NullEventSink;
+    use deepagent_runtime::{CancellationTree, NullEventSink};
     use std::collections::HashMap;
-    use std::sync::atomic::AtomicBool;
     use std::sync::Mutex;
 
     #[test]
     fn clear_run_cancellation_removes_session_and_run_aliases() {
         let map: CancellationMap = Arc::new(Mutex::new(HashMap::new()));
-        let flag = Arc::new(AtomicBool::new(false));
+        let cancellation = Arc::new(CancellationTree::new());
         map.lock()
             .unwrap()
-            .insert("ses_test".to_string(), flag.clone());
-        map.lock().unwrap().insert("run_test".to_string(), flag);
+            .insert("ses_test".to_string(), cancellation.clone());
+        map.lock()
+            .unwrap()
+            .insert("run_test".to_string(), cancellation);
 
         let finalizer = AppRunFinalizer::new(
             Arc::new(Database::open_in_memory().unwrap()),

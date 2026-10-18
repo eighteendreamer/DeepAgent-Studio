@@ -425,7 +425,7 @@ async fn run_process_controlled(
                 job.terminate();
             }
             #[cfg(unix)]
-            terminate_unix_process_group(pid);
+            terminate_unix_process_group(pid).await;
             // The Job/process-group operation is the primary tree kill. This
             // direct kill is the fallback when attachment or grouping failed.
             let _ = child.kill().await;
@@ -597,8 +597,16 @@ fn prepare_process_command(
 }
 
 #[cfg(unix)]
-fn terminate_unix_process_group(pid: u32) {
+async fn terminate_unix_process_group(pid: u32) {
     if pid != 0 {
+        unsafe {
+            // Give the process group a short graceful window first, matching
+            // Codex's TERM-then-KILL cancellation contract. The follow-up
+            // hard kill guarantees that a stubborn child cannot keep the run
+            // alive indefinitely.
+            libc::kill(-(pid as i32), libc::SIGTERM);
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
         unsafe {
             libc::kill(-(pid as i32), libc::SIGKILL);
         }

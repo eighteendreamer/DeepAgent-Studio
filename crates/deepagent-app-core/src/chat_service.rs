@@ -136,9 +136,9 @@ pub struct ChatService {
     /// are in normal mode.
     plan_modes:
         Arc<std::sync::Mutex<std::collections::HashMap<String, deepagent_builtins::PlanMode>>>,
-    /// Per-session cancellation flags for in-flight runs. The UI sets one via
-    /// [`ChatService::cancel_session`] to stop a run; the engine checks it at
-    /// each step boundary.
+    /// Per-session cancellation trees for in-flight runs. The UI sets one via
+    /// [`ChatService::cancel_session`] to stop the model stream, tools, and
+    /// agent loop through one propagated signal.
     /// Per-session input dispatch lease. A continued session may receive a new
     /// prompt while the previous turn is still streaming; the lease serializes
     /// those turns and lets the new prompt request interruption first.
@@ -307,9 +307,10 @@ impl ChatService {
     }
 
     /// Request cancellation of an in-flight run by session id or diagnostic
-    /// run id. Both keys point at the same flag while a run is active. Returns
-    /// whether a matching in-flight run was found. The run stops at its next
-    /// step boundary and ends as cancelled (partial transcript preserved).
+    /// run id. Both keys point at the same cancellation tree while a run is
+    /// active. Returns whether a matching in-flight run was found. The signal
+    /// is propagated immediately; the run ends as cancelled after its durable
+    /// tool/result cleanup.
     pub fn cancel_session(&self, session_id: &str) -> bool {
         let found = self
             .request_cancel(session_id)

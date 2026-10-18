@@ -165,7 +165,7 @@ function readLeftSidebarOpen(): boolean {
 interface SessionCompletedPayload {
   run_id: string;
   session_id: string | null;
-  status: "completed" | "failed" | string;
+  status: "completed" | "cancelled" | "failed" | string;
   error?: string | null;
 }
 
@@ -1547,6 +1547,49 @@ export function App() {
         }, true);
       };
 
+      // Cancellation is a distinct terminal state. Do not turn the streamed
+      // prefix into an assistant error message: that text was never accepted
+      // as a complete answer. Keep durable tool cards, close any still-running
+      // card with an explicit partial-execution result, and remove all
+      // reasoning/output fragments so the next turn starts from a clean
+      // transcript. The backend session replay supplies the paired tool
+      // result and the next model turn receives its abort reminder there.
+      const finalizeCancelled = (editedFiles?: EditedFile[]) => {
+        updateTranscript((prev) => {
+          const next = [...prev];
+          const lastIdx = next.length - 1;
+          if (lastIdx < 0 || next[lastIdx].role !== "assistant") return prev;
+          const msg = next[lastIdx];
+          const parts = (msg.parts ?? [])
+            .filter((part) => part.kind === "tool" || part.kind === "compact_boundary" || part.kind === "memories")
+            .map((part) => {
+              if (part.kind !== "tool" || part.tool.status !== "running") return part;
+              return {
+                ...part,
+                tool: {
+                  ...part.tool,
+                  status: "error" as const,
+                  detail: "用户已停止，工具可能只执行了一部分；请重新检查当前状态",
+                },
+              };
+            });
+          next[lastIdx] = {
+            ...msg,
+            parts,
+            content: "",
+            reasoning: undefined,
+            tone: undefined,
+            editedFiles: editedFiles && editedFiles.length > 0 ? editedFiles : undefined,
+            turn: {
+              ...advanceTurnActivity(msg.turn, "settled")!,
+              finalAnswer: undefined,
+            },
+            runMs: Date.now() - runStart,
+          };
+          return next;
+        }, true);
+      };
+
       // Summarize a tool's JSON output into a short one-line detail string.
       const summarizeWebSearch = (output: Record<string, unknown>): string => {
         if (typeof output.error === "string") return output.error.slice(0, 200);
@@ -1846,12 +1889,10 @@ export function App() {
             finalize(`run failed: ${String(event.reason ?? "unknown error")}`, "error");
             break;
           case "run_cancelled": {
-            console.log("[DEBUG] run_cancelled event:", event);
             const editedFiles = Array.isArray(event.edited_files)
               ? (event.edited_files as EditedFile[])
               : undefined;
-            console.log("[DEBUG] editedFiles extracted:", editedFiles);
-            finalize("（已手动停止）", "error", editedFiles);
+            finalizeCancelled(editedFiles);
             break;
           }
           default:
@@ -2104,7 +2145,8 @@ export function App() {
     contextUsageByKey.get(activePendingRunKey ?? "") ??
     null;
 
-  // Manually stop the in-flight run (the run ends cleanly at the next step).
+  // Manually stop the in-flight run. The backend propagates one cancellation
+  // signal through the model stream, active tools, and the agent loop.
   const onStopRun = useCallback(() => {
     const key =
       activeId && runningSessionIds.has(activeId)
