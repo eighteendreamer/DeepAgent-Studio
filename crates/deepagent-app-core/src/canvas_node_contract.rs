@@ -163,8 +163,8 @@ pub fn canvas_node_contracts() -> Vec<CanvasNodeContract> {
         },
         contract! {
             node: "video-edit",
-            executor: Executor::Local,
-            operations: [VideoEdit],
+            executor: Executor::Unsupported,
+            operations: [VideoTimelineEdit],
             inputs: ["Video", "VideoList"],
             output: "VideoArtifact",
             skills: [],
@@ -500,5 +500,17 @@ mod tests {
             video.input_contract.accepted_input_kinds,
             vec!["Text", "Image"]
         );
+    }
+
+    #[test]
+    fn timeline_edit_never_routes_to_cloud_video_edit() {
+        let contract = canvas_node_contract("video-edit").expect("edit contract");
+        assert_eq!(
+            contract.allowed_operations,
+            vec![CanvasOperation::VideoTimelineEdit]
+        );
+        assert!(CanvasOperation::VideoTimelineEdit.is_local());
+        assert_eq!(CanvasOperation::VideoTimelineEdit.scenario(), None);
+        assert_eq!(contract.executor_kind, Executor::Unsupported);
     }
 }

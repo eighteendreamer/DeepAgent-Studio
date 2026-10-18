@@ -1,19 +1,58 @@
-import { useEffect, useMemo, useState } from "react";
-import { Download, FileVideo, Upload } from "lucide-react";
-import type { CreativeNodeData } from "../types";
-import { importCanvasMediaFile, loadCanvasMediaPixels, resolveCanvasMediaSrc } from "../utils/canvasMedia";
+import { useState } from "react";
+import { FileVideo, Upload } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Button } from "../../../components/shadcn/button";
 import { message } from "../../../components/message";
+import type { CreativeNodeData } from "../types";
+import { importCanvasMedia } from "../utils/canvasMedia";
 
-export function VideoEditForm({ data, onUpdate }: { data: CreativeNodeData; onUpdate: (patch: Record<string, unknown>) => void }) {
-  const inputRef = data.videoEditInputRefs?.[0];
-  const src = useMemo(() => inputRef ?? data.videoEditOutputRef ?? data.videoUrl, [inputRef, data.videoEditOutputRef, data.videoUrl]);
-  const [preview, setPreview] = useState<string>();
-  const [duration, setDuration] = useState(0);
-  const [start, setStart] = useState(0);
-  const [end, setEnd] = useState(0);
-  useEffect(() => { let active = true; if (!src) { setPreview(undefined); return; } void resolveCanvasMediaSrc(src).then((value) => { if (active) setPreview(value); }); return () => { active = false; }; }, [src]);
-  useEffect(() => { if (duration && !end) setEnd(duration); }, [duration, end]);
-  const importFile = async (file?: File) => { if (!file) return; try { const reference = await importCanvasMediaFile("video", file); onUpdate({ videoEditInputRefs: [reference], videoEditOutputRef: undefined, videoEditStatus: "dirty", videoEditInputFingerprint: `${file.name}:${file.size}:${file.lastModified}` }); message.success("视频已加入编辑工程", 1800); } catch (error) { message.error(`导入视频失败：${String(error)}`); } };
-  const exportEdit = async () => { if (!inputRef) return; try { const dataUrl = await loadCanvasMediaPixels(inputRef); const response = await fetch(dataUrl); const blob = await response.blob(); const file = new File([blob], `edited-${Date.now()}.mp4`, { type: blob.type || "video/mp4" }); const output = await importCanvasMediaFile("video", file); onUpdate({ videoEditOutputRef: output, videoUrl: output, videoEditStatus: "exported", videoEditInputFingerprint: `${inputRef}:${start}:${end}` }); message.success("编辑结果已导出为新视频资产", 1800); } catch (error) { message.error(`导出失败：${String(error)}`); } };
-  return <div className="space-y-3 text-xs text-white/75"><div className="flex items-center justify-between"><div className="flex items-center gap-2"><FileVideo className="h-4 w-4 text-violet-300" />本地视频编辑</div><label className="flex cursor-pointer items-center gap-1 rounded-md bg-white/10 px-2 py-1 hover:bg-white/15"><Upload className="h-3.5 w-3.5" />导入<input type="file" accept="video/*" className="hidden" onChange={(event) => void importFile(event.target.files?.[0])} /></label></div>{preview ? <video src={preview} controls className="max-h-44 w-full rounded-lg bg-black" onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)} /> : <div className="rounded-lg border border-dashed border-white/15 px-3 py-8 text-center text-white/40">连接上游视频或导入本地文件</div>}{duration > 0 ? <div className="space-y-2 rounded-lg bg-white/5 p-2.5"><div className="flex justify-between text-[11px] text-white/50"><span>时间线范围</span><span>{start.toFixed(1)}s – {end.toFixed(1)}s</span></div><input type="range" min={0} max={Math.max(0, duration - 0.1)} step={0.1} value={start} onChange={(event) => setStart(Math.min(Number(event.target.value), end - 0.1))} className="w-full" /><input type="range" min={0.1} max={duration} step={0.1} value={end || duration} onChange={(event) => setEnd(Math.max(Number(event.target.value), start + 0.1))} className="w-full" /></div> : null}<button type="button" disabled={!inputRef} onClick={() => void exportEdit()} className="flex w-full items-center justify-center gap-2 rounded-lg bg-violet-500/80 px-3 py-2 font-medium text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40"><Download className="h-4 w-4" />导出为新视频资产</button><p className="text-[10px] leading-relaxed text-white/35">工程按项目 ID 保存在画布节点中。导出会创建新的 artifact，不覆盖原视频。</p></div>;
+export function VideoEditForm({ data, onUpdate }: {
+  data: CreativeNodeData;
+  onUpdate: (patch: Record<string, unknown>) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+
+  async function importVideo() {
+    setBusy(true);
+    try {
+      const path = await open({
+        multiple: false,
+        title: "导入视频素材",
+        filters: [{ name: "视频", extensions: ["mp4", "webm", "mov", "mkv"] }],
+      });
+      if (!path) return;
+      // Only the path crosses IPC; the artifact service streams the file.
+      const reference = await importCanvasMedia("video", { localPath: path });
+      onUpdate({
+        videoEditProjectId: data.videoEditProjectId ?? crypto.randomUUID(),
+        videoEditInputRefs: [reference],
+        videoEditStatus: "dirty",
+        videoEditOutputRef: undefined,
+        videoEditInputFingerprint: undefined,
+        videoUrl: undefined,
+        result: undefined,
+        status: "idle",
+      });
+    } catch (error) {
+      message.error(`导入视频失败：${String(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-3 text-xs text-white/75">
+      <div className="flex items-center justify-between">
+        <span className="flex items-center gap-2">
+          <FileVideo className="h-4 w-4" />视频素材
+        </span>
+        <Button size="sm" disabled={busy} onClick={() => void importVideo()}>
+          <Upload className="h-3.5 w-3.5" />{busy ? "导入中…" : "导入"}
+        </Button>
+      </div>
+      <p role="status" className="text-white/50">
+        时间线编辑器尚未接通，当前仅支持保存素材引用。
+      </p>
+    </div>
+  );
 }

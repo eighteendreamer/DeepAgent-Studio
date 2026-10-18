@@ -19,7 +19,7 @@ use super::canvas::{
     CanvasJobProgressSink, CanvasModelBridge, CanvasRouteRequest, CanvasVideoRequest,
 };
 use deepagent_models::client::ModelClient;
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value};
 
 use super::graph::CompiledWorkflow;
 use super::knowledge::KnowledgeRetriever;
@@ -214,18 +214,12 @@ impl WorkflowAgent {
         }
     }
 
-    fn execute_video_edit(&self, config: &Map<String, Value>) -> Result<Value> {
-        let output = config
-            .get("videoEditOutputRef")
-            .or_else(|| config.get("videoUrl"))
-            .and_then(Value::as_str)
-            .filter(|value| value.starts_with("artifact://"))
-            .ok_or_else(|| {
-                deepagent_core::error::CoreError::invalid(
-                    "VideoEditNotExported: export the local edit before running the node",
-                )
-            })?;
-        Ok(json!({ "videoUrl": output, "videoEditStatus": "exported" }))
+    fn execute_video_edit(&self, _config: &Map<String, Value>) -> Result<Value> {
+        // Legacy output fields may contain an unedited source copy. Only a
+        // validated timeline export may be published to downstream nodes.
+        Err(CoreError::invalid(
+            "UnsupportedOperation: local video timeline export is not connected yet",
+        ))
     }
 
     /// Merge upstream node text into a node's own prompt.
@@ -2025,6 +2019,25 @@ mod tests {
                 error.to_string().contains("UnsupportedOperation"),
                 "{kind} reported {error}"
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn video_edit_does_not_publish_unrendered_legacy_outputs() {
+        let mut agent = agent_with_bridge(RecordingBridge::default());
+        for fields in [
+            config(&[]),
+            config(&[("videoUrl", json!("artifact://source"))]),
+            config(&[
+                ("videoEditOutputRef", json!("artifact://copied-source")),
+                ("videoEditStatus", json!("exported")),
+            ]),
+        ] {
+            let error = agent
+                .execute_node_inline("video-edit", &fields)
+                .await
+                .expect_err("an unvalidated source copy is not a rendered edit");
+            assert!(error.to_string().contains("UnsupportedOperation"));
         }
     }
 

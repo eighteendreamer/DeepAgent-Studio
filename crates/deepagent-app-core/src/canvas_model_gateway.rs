@@ -135,6 +135,7 @@ pub enum CanvasOperation {
     VideoEdit,
     VideoExtend,
     VideoCompose,
+    VideoTimelineEdit,
     CameraConstraint,
     LensConstraint,
     FocalLengthConstraint,
@@ -168,6 +169,7 @@ impl CanvasOperation {
             Self::VideoEdit => "video_edit",
             Self::VideoExtend => "video_extend",
             Self::VideoCompose => "video_compose",
+            Self::VideoTimelineEdit => "video_timeline_edit",
             Self::CameraConstraint => "camera_constraint",
             Self::LensConstraint => "lens_constraint",
             Self::FocalLengthConstraint => "focal_length_constraint",
@@ -202,6 +204,7 @@ impl CanvasOperation {
             Self::VideoEdit,
             Self::VideoExtend,
             Self::VideoCompose,
+            Self::VideoTimelineEdit,
             Self::CameraConstraint,
             Self::LensConstraint,
             Self::FocalLengthConstraint,
@@ -250,6 +253,7 @@ impl CanvasOperation {
             Self::ArtifactImport
                 | Self::ImageCrop
                 | Self::VideoCompose
+                | Self::VideoTimelineEdit
                 | Self::CameraConstraint
                 | Self::LensConstraint
                 | Self::FocalLengthConstraint
