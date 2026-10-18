@@ -606,7 +606,7 @@ export function DrawingOverlay({ imageUrl, itemName, mode, onConfirm, onCancel }
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[10000] flex flex-col items-center justify-center"
+      className="wf-floating-layer fixed inset-0 z-[10000] flex flex-col items-center justify-center"
       onMouseDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.stopPropagation()}

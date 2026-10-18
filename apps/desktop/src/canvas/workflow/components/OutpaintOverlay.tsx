@@ -88,7 +88,7 @@ export function OutpaintOverlay({ imageUrl, itemName, onCancel }: Props) {
 
   return createPortal(
     <div
-      className="fixed inset-0 z-[10000] overflow-hidden bg-black/78 backdrop-blur-md"
+      className="wf-floating-layer fixed inset-0 z-[10000] overflow-hidden bg-black/78 backdrop-blur-md"
       onMouseDown={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.stopPropagation()}

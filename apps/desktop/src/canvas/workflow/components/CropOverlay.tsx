@@ -259,7 +259,7 @@ export function CropOverlay({ imageUrl, itemName, initialRatio, onConfirm, onCan
 
   return createPortal(
     <div
-      className="fixed inset-0 flex flex-col"
+      className="wf-floating-layer fixed inset-0 flex flex-col"
       style={{ zIndex: 10000, background: "rgba(0,0,0,0.85)" }}
       onMouseDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}

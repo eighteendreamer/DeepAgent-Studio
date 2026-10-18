@@ -363,7 +363,7 @@ export function NodeFloatingToolbar({ kind, onDelete, onRename, onDuplicate, onD
       <div
         ref={submenuRef}
         data-wf-popover="true"
-        className="overflow-hidden"
+        className="wf-floating-layer overflow-hidden"
         onDoubleClick={(e) => e.stopPropagation()}
         onContextMenu={(e) => e.stopPropagation()}
         style={{
@@ -437,7 +437,7 @@ export function NodeFloatingToolbar({ kind, onDelete, onRename, onDuplicate, onD
                       return (
                         <div
                           data-wf-popover="true"
-                          className="overflow-hidden"
+                          className="wf-floating-layer overflow-hidden"
                           style={{ ...SUBMENU_SURFACE, position: "fixed", left, top, zIndex: SUBMENU_Z_INDEX }}
                           onMouseLeave={() => setOpenNestedKey(null)}
                         >

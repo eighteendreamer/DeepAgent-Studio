@@ -249,7 +249,7 @@ export function CreativeLibraryPanel({ onClose, onUse }: Props) {
 
   return createPortal(
     <div
-      className="fixed inset-0 flex flex-col"
+      className="wf-floating-layer fixed inset-0 flex flex-col"
       style={{ zIndex: 10000, background: "rgba(0,0,0,0.85)" }}
       onMouseDown={(e) => e.stopPropagation()}
       onDoubleClick={(e) => e.stopPropagation()}
@@ -517,7 +517,7 @@ function AddCreativeModal({ onClose, onSave }: { onClose: () => void; onSave: (i
   };
 
   return createPortal(
-    <div className="fixed inset-0 flex items-center justify-center" style={{ zIndex: 10001, background: "rgba(0,0,0,0.7)" }} onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()} onContextMenu={(e) => e.stopPropagation()}>
+    <div className="wf-floating-layer fixed inset-0 flex items-center justify-center" style={{ zIndex: 10001, background: "rgba(0,0,0,0.7)" }} onMouseDown={(e) => e.stopPropagation()} onDoubleClick={(e) => e.stopPropagation()} onContextMenu={(e) => e.stopPropagation()}>
       <div className="flex flex-col rounded-2xl" style={{ width: 560, maxHeight: "85vh", background: "rgba(30,30,35,0.98)", border: "1px solid rgba(255,255,255,0.08)" }}>
         <div className="flex items-center justify-between px-5 py-3" style={{ borderBottom: "1px solid rgba(255,255,255,0.08)" }}>
           <span className="text-sm font-medium" style={{ color: "rgba(255,255,255,0.85)" }}>新增创意</span>
