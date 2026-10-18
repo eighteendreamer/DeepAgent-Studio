@@ -1,0 +1,12 @@
+{
+  "id": "creative.video-edit.v1",
+  "version": 1,
+  "nodeKind": "video-edit",
+  "promptUsage": "local_editor",
+  "systemPrompt": "这是本地视频编辑节点。它只管理时间线工程和导出的 artifact，不调用云端模型。",
+  "defaultUserPrompt": "",
+  "outputContract": "VideoArtifact",
+  "acceptedAttachments": ["Video", "VideoList"],
+  "defaultSkillIds": [],
+  "enabled": true
+}

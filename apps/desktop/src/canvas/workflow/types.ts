@@ -14,6 +14,7 @@ export type CreativeNodeKind =
   | "image-edit"
   | "script-gen"
   | "video-gen"
+  | "video-edit"
   | "video-stitch"
   | "camera"
   | "lens"
@@ -139,6 +140,12 @@ export interface CreativeNodeData {
   videoPrompt?: string;
   videoInputUrl?: string;
   videoUrl?: string;
+  /** Stable local editing project and its last exported artifact. */
+  videoEditProjectId?: string;
+  videoEditInputRefs?: string[];
+  videoEditOutputRef?: string;
+  videoEditStatus?: "empty" | "ready" | "dirty" | "exported";
+  videoEditInputFingerprint?: string;
   videoDuration?: number;
   videoProgress?: number;
   videoTaskId?: string;
@@ -267,6 +274,7 @@ export const CREATIVE_NODE_CATEGORIES: CreativeNodeCategory[] = [
     items: [
       { kind: "script-gen", label: "脚本生成", icon: "file-lines" },
       { kind: "video-gen", label: "视频生成", icon: "video" },
+      { kind: "video-edit", label: "视频编辑", icon: "film" },
       { kind: "video-stitch", label: "视频拼接", icon: "film" },
     ],
   },

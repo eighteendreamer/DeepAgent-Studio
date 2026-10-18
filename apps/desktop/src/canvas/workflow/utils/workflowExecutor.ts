@@ -51,6 +51,7 @@ const CREATIVE_OUTPUT_FIELD: Record<string, string> = {
   "image-edit": "imageUrl",
   "image-input": "imageUrl",
   "video-gen": "videoUrl",
+  "video-edit": "videoUrl",
   "video-stitch": "videoUrl",
   audio: "audioUrl",
 };
@@ -77,6 +78,7 @@ function creativeConfig(
   outputFieldByNode: Map<string, string>,
 ): Record<string, unknown> {
   const data = node.data as Record<string, unknown>;
+  const kind = String(data.kind ?? "");
   const config: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(data)) {
     if (!UI_META_KEYS.has(key) && value !== undefined) config[key] = value;
@@ -84,12 +86,15 @@ function creativeConfig(
   const texts: string[] = [];
   const images: string[] = [];
   const audios: string[] = [];
+  const videos: string[] = Array.isArray(data.videoEditInputRefs) ? data.videoEditInputRefs.map(String) : [];
   for (const edge of incoming) {
     const field = outputFieldByNode.get(edge.source);
     if (!field) continue;
     const reference = `{{#${edge.source}.${field}#}}`;
     if (field === "imageUrl") images.push(reference);
-    else if (field === "videoUrl") continue;
+    else if (field === "videoUrl") {
+      if (kind === "video-edit") videos.push(reference);
+    }
     else if (field === "audioUrl") audios.push(reference);
     else texts.push(reference);
   }
@@ -101,6 +106,7 @@ function creativeConfig(
   const references = [...new Set([...images, ...own])];
   if (references.length) config.referenceImages = references;
   if (audios.length) config.audioInputs = audios;
+  if (videos.length && kind === "video-edit") config.videoEditInputRefs = [...new Set(videos)];
   return config;
 }
 

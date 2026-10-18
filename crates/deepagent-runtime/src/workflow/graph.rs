@@ -358,6 +358,7 @@ fn output_contract(kind: &str) -> Result<(&'static [&'static str], Option<&'stat
         "image-input" | "image-gen" | "image-edit" => (&["imageUrl"], None),
         "image-compare" => (&["summary", "differences"], None),
         "video-gen" => (&["videoUrl"], None),
+        "video-edit" => (&["videoUrl"], None),
         "video-stitch" => (&["videoUrl"], None),
         "camera" => (&["cameraSettings"], None),
         "lens" => (&["lensSettings"], None),

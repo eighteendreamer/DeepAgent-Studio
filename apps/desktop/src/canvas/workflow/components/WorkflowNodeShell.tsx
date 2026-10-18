@@ -25,6 +25,7 @@ import { ImageEditContent } from "../nodes/creative/ImageEditContent";
 import { ScriptGenContent } from "../nodes/creative/ScriptGenContent";
 import { VideoGenContent } from "../nodes/creative/VideoGenContent";
 import { VideoStitchContent } from "../nodes/creative/VideoStitchContent";
+import { VideoEditContent } from "../nodes/creative/VideoEditContent";
 import { AudioContent } from "../nodes/creative/AudioNodeContent";
 import { CategoryPickerContent } from "../nodes/creative/CategoryPickerContent";
 import {
@@ -153,6 +154,8 @@ function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
       return <ScriptGenContent data={creativeData} />;
     case "video-gen":
       return <VideoGenContent id={nodeId ?? ""} data={creativeData} />;
+    case "video-edit":
+      return <VideoEditContent data={creativeData} />;
     case "video-stitch":
       return <VideoStitchContent data={creativeData} />;
     case "audio":
@@ -366,7 +369,7 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
       return;
     }
 
-    if (kind === "video-gen" || kind === "video-stitch") {
+    if (kind === "video-gen" || kind === "video-edit" || kind === "video-stitch") {
       const url = creativeData.videoUrl;
       if (!url) return;
       void loadCanvasMediaPixels(url)

@@ -6,6 +6,7 @@ import { getAllNodeDefinitions, normalizeProfessionalData } from "../utils/nodeR
 import type { WorkflowNodeData, CreativeNodeData, ProfessionalNodeData } from "../types";
 import { TextGenEditorPanel } from "./TextGenEditorPanel";
 import { SchemaConfigForm } from "./SchemaConfigForm";
+import { VideoEditForm } from "./VideoEditForm";
 import {
   ImageGenForm,
   VideoGenForm,
@@ -42,6 +43,8 @@ export function NodeConfigForm({ nodeId, nodeData, nodeType }: {
       return <ImageGenForm data={creativeData} {...formProps} />;
     case "video-gen":
       return <VideoGenForm data={creativeData} {...formProps} />;
+    case "video-edit":
+      return <VideoEditForm data={creativeData} onUpdate={handleUpdate} />;
     case "script-gen":
       return <ScriptGenForm data={creativeData} {...formProps} />;
     case "image-edit":

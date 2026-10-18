@@ -19,7 +19,7 @@ use super::canvas::{
     CanvasJobProgressSink, CanvasModelBridge, CanvasRouteRequest, CanvasVideoRequest,
 };
 use deepagent_models::client::ModelClient;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
 
 use super::graph::CompiledWorkflow;
 use super::knowledge::KnowledgeRetriever;
@@ -190,6 +190,7 @@ impl WorkflowAgent {
             "image-gen" | "image-edit" => self.execute_image_gen(kind, &resolved_config).await,
             "audio" => self.execute_audio(&resolved_config).await,
             "video-gen" => self.execute_video(&resolved_config).await,
+            "video-edit" => self.execute_video_edit(&resolved_config),
             "embeddings" => self.execute_embedding(&resolved_config).await,
             // Media kinds without a backend job runner fail loudly instead of
             // reporting a fabricated completion through the passthrough arm.
@@ -211,6 +212,20 @@ impl WorkflowAgent {
                 "UnsupportedNode: kernel has no executor for node kind `{kind}`"
             ))),
         }
+    }
+
+    fn execute_video_edit(&self, config: &Map<String, Value>) -> Result<Value> {
+        let output = config
+            .get("videoEditOutputRef")
+            .or_else(|| config.get("videoUrl"))
+            .and_then(Value::as_str)
+            .filter(|value| value.starts_with("artifact://"))
+            .ok_or_else(|| {
+                deepagent_core::error::CoreError::invalid(
+                    "VideoEditNotExported: export the local edit before running the node",
+                )
+            })?;
+        Ok(json!({ "videoUrl": output, "videoEditStatus": "exported" }))
     }
 
     /// Merge upstream node text into a node's own prompt.

@@ -94,7 +94,7 @@ macro_rules! embed_skills {
 }
 
 /// Every canvas node kind that must own exactly one profile.
-pub const CREATIVE_NODE_KINDS: [&str; 20] = [
+pub const CREATIVE_NODE_KINDS: [&str; 21] = [
     "category-picker",
     "text-gen",
     "image-input",
@@ -103,6 +103,7 @@ pub const CREATIVE_NODE_KINDS: [&str; 20] = [
     "image-edit",
     "script-gen",
     "video-gen",
+    "video-edit",
     "video-stitch",
     "camera",
     "lens",
@@ -128,6 +129,7 @@ pub fn creative_profiles() -> &'static [PromptProfile] {
         "image-edit",
         "script-gen",
         "video-gen",
+        "video-edit",
         "video-stitch",
         "camera",
         "lens",

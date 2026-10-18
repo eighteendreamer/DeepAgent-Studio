@@ -52,6 +52,14 @@ function createDefaultCreativeData(kind: CreativeNodeKind): CreativeNodeData {
       return { ...base, label: "脚本生成", prompt: "" };
     case "video-gen":
       return { ...base, label: "视频生成", videoModel: "", videoPrompt: "" };
+    case "video-edit":
+      return {
+        ...base,
+        label: "视频编辑",
+        videoEditProjectId: crypto.randomUUID(),
+        videoEditInputRefs: [],
+        videoEditStatus: "empty",
+      };
     case "video-stitch":
       return { ...base, label: "视频拼接" };
     case "camera":

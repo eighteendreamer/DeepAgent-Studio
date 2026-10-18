@@ -162,6 +162,14 @@ pub fn canvas_node_contracts() -> Vec<CanvasNodeContract> {
             skills: [],
         },
         contract! {
+            node: "video-edit",
+            executor: Executor::Local,
+            operations: [VideoEdit],
+            inputs: ["Video", "VideoList"],
+            output: "VideoArtifact",
+            skills: [],
+        },
+        contract! {
             node: "video-stitch",
             executor: Executor::Local,
             operations: [VideoCompose],
