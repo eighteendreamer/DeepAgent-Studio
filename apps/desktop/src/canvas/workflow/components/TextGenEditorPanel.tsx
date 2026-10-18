@@ -1,6 +1,7 @@
 import { HoverInfo } from "../../../components/ui/HoverInfo";
 import { useMemo, useRef, useState } from "react";
 import { ArrowUp, ChevronDown, Maximize2, Sparkles, X } from "lucide-react";
+import { Button } from "../../../components/shadcn/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -76,6 +77,7 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
       }}
       onPointerDown={stopPanelGesture}
       onMouseDown={stopPanelGesture}
+      onKeyDown={stopPanelGesture}
     >
       {isImageToPrompt && (
         <div className="flex items-center gap-2 px-4 pb-0 pt-3">
@@ -121,16 +123,19 @@ export function TextGenEditorPanel({ nodeId, data, onUpdate }: Props) {
 
       <div className="flex items-center justify-between px-3 pb-3 pt-1">
         <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <HoverInfo content="选择模型"><button
-              type="button"
-
-              className="flex h-8 max-w-[260px] items-center gap-2 rounded-lg bg-white/[0.08] px-3 text-xs text-white/75 outline-none transition hover:bg-white/[0.12] focus-visible:ring-1 focus-visible:ring-white/20 data-[state=open]:bg-white/[0.12]"
-            >
-              <span className="truncate">{selectedModelLabel}</span>
-              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-white/40" />
-            </button></HoverInfo>
-          </DropdownMenuTrigger>
+          <HoverInfo content="选择模型">
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label="选择模型"
+                className="h-8 max-w-[260px] gap-2 rounded-lg bg-white/[0.08] px-3 text-xs font-normal text-white/75 hover:bg-white/[0.12] hover:text-white/75 focus-visible:ring-1 focus-visible:ring-white/20 data-[state=open]:bg-white/[0.12]"
+              >
+                <span className="truncate">{selectedModelLabel}</span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 text-white/40" />
+              </Button>
+            </DropdownMenuTrigger>
+          </HoverInfo>
           <DropdownMenuContent
             align="start"
             sideOffset={6}
