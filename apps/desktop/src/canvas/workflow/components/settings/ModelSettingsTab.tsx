@@ -1,5 +1,6 @@
 import { HoverInfo } from "../../../../components/ui/HoverInfo";
-import { useState, useMemo, useEffect, useRef } from "react";
+import { memo, useCallback, useState, useMemo, useEffect, useRef } from "react";
+import { VirtualList, type VirtualListPosition } from "../../../../components/ui/VirtualList";
 import {
   Activity,
   Bot,
@@ -55,6 +56,7 @@ import {
   useCanvasSettingsStore,
   type ModelProtocol,
   type ModelProvider,
+  type ProviderModelConfig,
   type ModelScenario,
 } from "../../store/canvasSettingsStore";
 
@@ -424,6 +426,76 @@ interface PingStatus {
   latency?: number;
 }
 
+interface GlobalModel {
+  model: ProviderModelConfig;
+  provider: ModelProvider;
+}
+
+const modelKey = (model: ProviderModelConfig) => model.id;
+const globalModelKey = ({ model, provider }: GlobalModel) => JSON.stringify([provider.id, model.id]);
+
+const ModelListRow = memo(function ModelListRow({ model, providerId, providerName, providerLogo, global = false,
+  onConfigure, onToggle, onRemove }: {
+  model: ProviderModelConfig;
+  providerId: string;
+  providerName?: string;
+  providerLogo?: string;
+  global?: boolean;
+  onConfigure: (providerId: string, modelId: string, modelName: string, scenarios?: ModelScenario[]) => void;
+  onToggle: (providerId: string, modelId: string) => void;
+  onRemove?: (providerId: string, modelId: string) => void;
+}) {
+  const labels = scenarioLabels(model.scenarios);
+  const scenarios = (
+    <div className={global ? "flex min-w-0 flex-wrap gap-1 pr-2" : "mt-1 flex min-w-0 items-center gap-1 overflow-hidden"}>
+      {labels.length ? labels.map(label => (
+        <span key={label} className="shrink-0 rounded bg-[#339CFF]/10 px-1.5 py-0.5 text-[9px] text-[#7CC2FF]">{label}</span>
+      )) : <span className="text-[9px] text-white/25">未设置场景</span>}
+    </div>
+  );
+  return (
+    <div className={global
+      ? "grid grid-cols-[minmax(170px,1.15fr)_140px_minmax(150px,1.5fr)_minmax(170px,1.5fr)_100px] items-center border-b border-white/[0.04] px-3 py-2.5 hover:bg-white/[0.025] transition-colors"
+      : "group flex items-center justify-between gap-3 border-b border-white/[0.04] px-3 py-2 hover:bg-white/[0.03] transition-colors"}>
+      <div className={`flex min-w-0 items-center gap-2.5 ${global ? "pr-2" : "flex-1"}`}>
+        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#339CFF]/10 text-[#339CFF]"><Cpu size={13} /></div>
+        <div className="min-w-0 flex-1">
+          <div className={global ? "truncate text-[12px] font-medium text-white/90" : "flex items-center gap-2"}>
+            <span className="truncate text-[12px] font-medium text-white/90">{model.name}</span>
+            {!global && <span className="rounded bg-white/[0.05] px-1.5 py-0.2 text-[9.5px] text-white/50 font-mono">{model.id}</span>}
+          </div>
+          {global ? <div className="truncate text-[10px] text-white/40 font-mono">{model.id}</div> : <>
+            <div className="truncate text-[10px] text-white/40 mt-0.2">{model.description || "通用模型服务"}</div>
+            {scenarios}
+          </>}
+        </div>
+      </div>
+      {global && <>
+        <div className="min-w-0 pr-2"><span className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2 py-0.5 text-[10px] text-white/70">
+          <ProviderLogo logo={providerLogo} name={providerName} size="xs" /><span className="truncate">{providerName}</span>
+        </span></div>
+        <div className="truncate text-[11px] text-white/40 pr-2">{model.description || "通用大模型服务"}</div>
+        {scenarios}
+      </>}
+      <div className={global ? "flex items-center justify-end gap-2" : "flex shrink-0 items-center gap-2.5"}>
+        <HoverInfo content="设置模型使用场景">
+          <Button variant="ghost" size="sm" aria-label="设置模型使用场景" onClick={() => onConfigure(providerId, model.id, model.name, model.scenarios)}
+            className={global
+              ? "h-auto rounded-md p-1 text-white/40 hover:bg-[#339CFF]/10 hover:text-[#9DD4FF]"
+              : "h-auto gap-1 rounded-md border border-white/[0.08] bg-white/[0.02] px-1.5 py-1 text-[10px] font-normal text-white/55 hover:border-[#339CFF]/40 hover:bg-[#339CFF]/10 hover:text-[#9DD4FF]"}>
+            <Settings2 size={global ? 13 : 11} />{!global && "设置"}
+          </Button>
+        </HoverInfo>
+        {!global && onRemove && <HoverInfo content="删除模型">
+          <Button variant="ghost" size="sm" aria-label="删除模型" onClick={() => onRemove(providerId, model.id)}
+            className="h-auto rounded p-1 text-white/30 opacity-0 transition-all hover:bg-transparent hover:text-red-400 group-hover:opacity-100 focus-visible:opacity-100"><Trash2 size={12} /></Button>
+        </HoverInfo>}
+        <ToggleSwitch checked={model.enabled} onChange={() => onToggle(providerId, model.id)} size="sm" aria-label={`启用模型 ${model.name}`} />
+      </div>
+    </div>
+  );
+});
+
 export function ModelSettingsTab() {
   const providers = useCanvasSettingsStore((s) => s.providers);
   const addProvider = useCanvasSettingsStore((s) => s.addProvider);
@@ -452,6 +524,19 @@ export function ModelSettingsTab() {
   const [modelSearch, setModelSearch] = useState("");
   const [globalProviderFilter, setGlobalProviderFilter] = useState<string>("all");
   const [globalScenarioFilter, setGlobalScenarioFilter] = useState<ModelScenario | "all">("all");
+  // Geometry is scoped to the list/provider and survives switching tabs; no model data is copied.
+  const listPositions = useRef(new Map<string, VirtualListPosition>());
+  const listScope = mode === "providers" ? `provider:${selectedProviderId}` : "models";
+  const listFilter = JSON.stringify([modelSearch, mode === "models" ? globalProviderFilter : null, mode === "models" ? globalScenarioFilter : null]);
+  let listPosition = listPositions.current.get(listScope);
+  if (!listPosition || listPosition.filter !== listFilter) {
+    listPosition = { filter: listFilter, top: 0, width: 0, heights: new Map() };
+    listPositions.current.set(listScope, listPosition);
+  }
+  useEffect(() => {
+    const live = new Set(["models", ...providers.map(provider => `provider:${provider.id}`)]);
+    for (const key of listPositions.current.keys()) if (!live.has(key)) listPositions.current.delete(key);
+  }, [providers]);
 
   // API Key 显隐状态
   const [showApiKey, setShowApiKey] = useState<Record<string, boolean>>({});
@@ -520,7 +605,7 @@ export function ModelSettingsTab() {
   // 当前选中供应商的模型列表
   const currentModels = useMemo(() => {
     if (!selectedProvider) return [];
-    const models = selectedProvider.models ?? [];
+    const models = selectedProvider?.models ?? [];
     const q = modelSearch.trim().toLowerCase();
     if (!q) return models;
     return models.filter(
@@ -529,15 +614,12 @@ export function ModelSettingsTab() {
         m.name.toLowerCase().includes(q) ||
         (m.description ?? "").toLowerCase().includes(q),
     );
-  }, [selectedProvider, modelSearch]);
+  }, [selectedProvider?.models, modelSearch]);
 
   // 全局所有模型
   const allModelsWithProvider = useMemo(() => {
     return providers.flatMap((p) =>
-      (p.models ?? []).map((m) => ({
-        ...m,
-        provider: p,
-      })),
+      (p.models ?? []).map((model) => ({ model, provider: p })),
     );
   }, [providers]);
 
@@ -548,23 +630,32 @@ export function ModelSettingsTab() {
       list = list.filter((item) => item.provider.id === globalProviderFilter);
     }
     if (globalScenarioFilter !== "all") {
-      list = list.filter((item) => (item.scenarios ?? []).includes(globalScenarioFilter));
+      list = list.filter((item) => (item.model.scenarios ?? []).includes(globalScenarioFilter));
     }
     const q = modelSearch.trim().toLowerCase();
     if (!q) return list;
     return list.filter(
       (item) =>
-        item.name.toLowerCase().includes(q) ||
-        item.id.toLowerCase().includes(q) ||
+        item.model.name.toLowerCase().includes(q) ||
+        item.model.id.toLowerCase().includes(q) ||
         item.provider.name.toLowerCase().includes(q) ||
-        (item.description ?? "").toLowerCase().includes(q),
+        (item.model.description ?? "").toLowerCase().includes(q),
     );
   }, [allModelsWithProvider, globalProviderFilter, globalScenarioFilter, modelSearch]);
 
-  const openScenarioDialog = (providerId: string, modelId: string, modelName: string, scenarios?: ModelScenario[]) => {
+  const openScenarioDialog = useCallback((providerId: string, modelId: string, modelName: string, scenarios?: ModelScenario[]) => {
     setScenarioDialogTarget({ providerId, modelId, modelName });
     setDraftScenarios([...(scenarios ?? [])]);
-  };
+  }, []);
+
+  const renderProviderModel = useCallback((model: ProviderModelConfig) => (
+    <ModelListRow model={model} providerId={selectedProviderId!} onConfigure={openScenarioDialog}
+      onToggle={toggleModelEnabled} onRemove={removeModelFromProvider} />
+  ), [selectedProviderId, openScenarioDialog, toggleModelEnabled, removeModelFromProvider]);
+  const renderGlobalModel = useCallback(({ model, provider }: GlobalModel) => (
+    <ModelListRow global model={model} providerId={provider.id} providerName={provider.name} providerLogo={provider.logo}
+      onConfigure={openScenarioDialog} onToggle={toggleModelEnabled} />
+  ), [openScenarioDialog, toggleModelEnabled]);
 
   const toggleDraftScenario = (scenario: ModelScenario) => {
     setDraftScenarios((current) =>
@@ -585,7 +676,7 @@ export function ModelSettingsTab() {
   };
 
   const totalEnabledModels = useMemo(
-    () => allModelsWithProvider.filter((m) => m.enabled).length,
+    () => allModelsWithProvider.filter((item) => item.model.enabled).length,
     [allModelsWithProvider],
   );
 
@@ -1158,105 +1249,24 @@ export function ModelSettingsTab() {
                       </div>
                     </div>
 
-                    {/* 真正滚动的模型列表 (Only this area scrolls) */}
-                    <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain divide-y divide-white/[0.04] rounded-lg border border-white/[0.06] bg-white/[0.01]">
-                      {currentModels.length === 0 ? (
+                    <VirtualList
+                      key={`${listScope}:${listFilter}`}
+                      label="供应商模型列表"
+                      items={currentModels} itemKey={modelKey} renderItem={renderProviderModel}
+                      estimatedHeight={68} position={listPosition}
+                      className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-lg border border-white/[0.06] bg-white/[0.01]"
+                      empty={
                         <div className="flex flex-col items-center justify-center py-12 px-4 text-center">
                           <Cpu size={22} className="mb-2 text-white/20" />
-                          <div className="text-[12px] font-medium text-white/70">
-                            暂无模型配置
-                          </div>
-                          <div className="text-[10px] text-white/40 mt-1">
-                            还没有模型，点击上方按钮从服务商拉取真实模型清单
-                          </div>
-                          <Button
-                            type="button"
-                            size="sm"
-                            onClick={() => handleDiscoverModels(selectedProvider)}
-                            className="mt-3 h-7 rounded-lg bg-white/[0.08] text-[11px] text-white hover:bg-white/[0.14]"
-                          >
-                            <RefreshCw size={11} className="mr-1.5 text-[#339CFF]" />
-                            拉取该服务商的模型清单
+                          <div className="text-[12px] font-medium text-white/70">暂无模型配置</div>
+                          <div className="text-[10px] text-white/40 mt-1">还没有模型，点击上方按钮从服务商拉取真实模型清单</div>
+                          <Button type="button" size="sm" onClick={() => handleDiscoverModels(selectedProvider)}
+                            className="mt-3 h-7 rounded-lg bg-white/[0.08] text-[11px] text-white hover:bg-white/[0.14]">
+                            <RefreshCw size={11} className="mr-1.5 text-[#339CFF]" />拉取该服务商的模型清单
                           </Button>
                         </div>
-                      ) : (
-                        currentModels.map((model) => (
-                          <div
-                            key={model.id}
-                            className="group flex items-center justify-between gap-3 px-3 py-2 hover:bg-white/[0.03] transition-colors"
-                          >
-                            <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                              <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#339CFF]/10 text-[#339CFF]">
-                                <Cpu size={13} />
-                              </div>
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-2">
-                                  <span className="truncate text-[12px] font-medium text-white/90">
-                                    {model.name}
-                                  </span>
-                                  <span className="rounded bg-white/[0.05] px-1.5 py-0.2 text-[9.5px] text-white/50 font-mono">
-                                    {model.id}
-                                  </span>
-                                </div>
-                                <div className="truncate text-[10px] text-white/40 mt-0.2">
-                                  {model.description || "通用模型服务"}
-                                </div>
-                                <div className="mt-1 flex min-w-0 items-center gap-1 overflow-hidden">
-                                  {scenarioLabels(model.scenarios).length > 0 ? (
-                                    scenarioLabels(model.scenarios).map((label) => (
-                                      <span
-                                        key={label}
-                                        className="shrink-0 rounded bg-[#339CFF]/10 px-1.5 py-0.5 text-[9px] text-[#7CC2FF]"
-                                      >
-                                        {label}
-                                      </span>
-                                    ))
-                                  ) : (
-                                    <span className="text-[9px] text-white/25">未设置场景</span>
-                                  )}
-                                </div>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center gap-2.5 shrink-0">
-                              <HoverInfo content="设置模型使用场景"><button
-                                type="button"
-                                onClick={() =>
-                                  openScenarioDialog(
-                                    selectedProvider.id,
-                                    model.id,
-                                    model.name,
-                                    model.scenarios,
-                                  )
-                                }
-                                className="flex items-center gap-1 rounded-md border border-white/[0.08] bg-white/[0.02] px-1.5 py-1 text-[10px] text-white/55 transition-colors hover:border-[#339CFF]/40 hover:bg-[#339CFF]/10 hover:text-[#9DD4FF]"
-
-                              >
-                                <Settings2 size={11} />
-                                设置
-                              </button></HoverInfo>
-                              <HoverInfo content="删除模型"><button
-                                type="button"
-                                onClick={() =>
-                                  removeModelFromProvider(selectedProvider.id, model.id)
-                                }
-                                className="opacity-0 group-hover:opacity-100 p-1 text-white/30 hover:text-red-400 transition-all"
-
-                              >
-                                <Trash2 size={12} />
-                              </button></HoverInfo>
-                              <ToggleSwitch
-                                checked={model.enabled}
-                                onChange={() =>
-                                  toggleModelEnabled(selectedProvider.id, model.id)
-                                }
-                                size="sm"
-                              />
-                            </div>
-                          </div>
-                        ))
-                      )}
-                    </div>
+                      }
+                    />
                   </div>
                 </div>
               ) : (
@@ -1465,87 +1475,19 @@ export function ModelSettingsTab() {
                 <span className="text-right">操作</span>
               </div>
 
-              {/* 真正滚动的表格主体 */}
-              <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain divide-y divide-white/[0.04] pr-1">
-                {filteredGlobalModels.length === 0 ? (
+              <VirtualList
+                key={`${listScope}:${listFilter}`}
+                label="全局模型列表"
+                items={filteredGlobalModels} itemKey={globalModelKey} renderItem={renderGlobalModel}
+                estimatedHeight={60} position={listPosition}
+                className="min-h-0 flex-1 overflow-y-auto overscroll-contain pr-1"
+                empty={
                   <div className="py-16 text-center text-white/40">
                     <CircleAlert size={22} className="mx-auto mb-2 opacity-30" />
                     <div className="text-[12px]">暂无匹配的模型资产</div>
                   </div>
-                ) : (
-                  filteredGlobalModels.map((item) => (
-                    <div
-                      key={`${item.provider.id}-${item.id}`}
-                      className="grid grid-cols-[minmax(170px,1.15fr)_140px_minmax(150px,1.5fr)_minmax(170px,1.5fr)_100px] items-center px-3 py-2.5 hover:bg-white/[0.025] transition-colors"
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0 pr-2">
-                        <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[#339CFF]/10 text-[#339CFF]">
-                          <Cpu size={13} />
-                        </div>
-                        <div className="min-w-0">
-                          <div className="truncate text-[12px] font-medium text-white/90">
-                            {item.name}
-                          </div>
-                          <div className="truncate text-[10px] text-white/40 font-mono">
-                            {item.id}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="min-w-0 pr-2">
-                        <span className="inline-flex items-center gap-1.5 rounded-md bg-white/[0.05] px-2 py-0.5 text-[10px] text-white/70">
-                          <ProviderLogo logo={item.provider.logo} name={item.provider.name} size="xs" />
-                          <span className="truncate">{item.provider.name}</span>
-                        </span>
-                      </div>
-
-                      <div className="truncate text-[11px] text-white/40 pr-2">
-                        {item.description || "通用大模型服务"}
-                      </div>
-
-                      <div className="flex min-w-0 flex-wrap gap-1 pr-2">
-                        {scenarioLabels(item.scenarios).length > 0 ? (
-                          scenarioLabels(item.scenarios).map((label) => (
-                            <span
-                              key={label}
-                              className="rounded bg-[#339CFF]/10 px-1.5 py-0.5 text-[9px] text-[#7CC2FF]"
-                            >
-                              {label}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="text-[10px] text-white/25">未设置场景</span>
-                        )}
-                      </div>
-
-                      <div className="flex items-center justify-end gap-2">
-                        <HoverInfo content="设置模型使用场景"><button
-                          type="button"
-                          onClick={() =>
-                            openScenarioDialog(
-                              item.provider.id,
-                              item.id,
-                              item.name,
-                              item.scenarios,
-                            )
-                          }
-                          className="rounded-md p-1 text-white/40 transition-colors hover:bg-[#339CFF]/10 hover:text-[#9DD4FF]"
-
-                        >
-                          <Settings2 size={13} />
-                        </button></HoverInfo>
-                        <ToggleSwitch
-                          checked={item.enabled}
-                          onChange={() =>
-                            toggleModelEnabled(item.provider.id, item.id)
-                          }
-                          size="sm"
-                        />
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
+                }
+              />
             </div>
           </main>
         )}
