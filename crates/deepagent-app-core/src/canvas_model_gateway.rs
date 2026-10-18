@@ -317,6 +317,20 @@ impl DeterministicRouteResolver {
             ));
         }
         if let Some(operation) = facts.explicit_operation {
+            if facts.node_kind == "video-gen"
+                && matches!(
+                    operation,
+                    CanvasOperation::VideoEdit | CanvasOperation::VideoExtend
+                )
+            {
+                return Err(CanvasError::new(
+                    CanvasErrorCode::UnsupportedCapability,
+                    format!(
+                        "video operation `{}` is not connected to a provider request adapter",
+                        operation.as_str()
+                    ),
+                ));
+            }
             if !facts.allowed_operations.contains(&operation) {
                 return Err(CanvasError::new(
                     CanvasErrorCode::OperationInputConflict,
@@ -1793,6 +1807,82 @@ async fn fetch_binary(url: &str, api_key: Option<&str>) -> CanvasResult<Vec<u8>>
     })
 }
 
+async fn fetch_video_artifact(
+    url: &str,
+    artifacts: &crate::canvas_artifact_service::CanvasArtifactService,
+    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    task_id: &str,
+) -> CanvasResult<crate::canvas_artifact_service::CanvasArtifactDto> {
+    use std::sync::atomic::Ordering;
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|error| {
+            CanvasError::new(
+                CanvasErrorCode::TransientFailure,
+                format!("create video download client: {error}"),
+            )
+        })?;
+    let response = client.get(url).send().await.map_err(|error| {
+        CanvasError::new(
+            CanvasErrorCode::TransientFailure,
+            format!("download generated video: {error}"),
+        )
+    })?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(classify_status(
+            status.as_u16(),
+            "video artifact download failed",
+        ));
+    }
+    let media_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
+        .filter(|value| value.starts_with("video/"))
+        .or_else(|| {
+            let inferred = mime_from_url(url);
+            (inferred != "application/octet-stream").then_some(inferred)
+        });
+    let mut stream = artifacts
+        .begin_stream(
+            deepagent_persistence::artifact_store::ArtifactKind::Video,
+            media_type.as_deref(),
+            None,
+            None,
+        )
+        .map_err(|error| CanvasError::new(CanvasErrorCode::ProviderFailure, error.to_string()))?;
+    let mut response = response;
+    while let Some(chunk) = response.chunk().await.map_err(|error| {
+        CanvasError::new(
+            CanvasErrorCode::TransientFailure,
+            format!("read generated video stream for task `{task_id}`: {error}"),
+        )
+    })? {
+        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            return Err(CanvasError::new(
+                CanvasErrorCode::TransientFailure,
+                format!("Cancelled: video task `{task_id}` interrupted while downloading; rerun to resume"),
+            ));
+        }
+        stream.write_chunk(&chunk).map_err(|error| {
+            CanvasError::new(
+                CanvasErrorCode::ProviderFailure,
+                format!("store generated video stream for task `{task_id}`: {error}"),
+            )
+        })?;
+    }
+    stream.finish().map_err(|error| {
+        CanvasError::new(
+            CanvasErrorCode::ProviderFailure,
+            format!("finalize generated video artifact for task `{task_id}`: {error}"),
+        )
+    })
+}
+
 /// Classify a node-stored media reference from its mime, not its config key.
 fn classify_media_reference(value: &str) -> Option<&'static str> {
     let mime = if let Some(rest) = value.strip_prefix("data:") {
@@ -1857,6 +1947,7 @@ fn transcription_form(
 }
 
 /// Detect a video container from its magic bytes.
+#[cfg(test)]
 fn sniff_video_mime(bytes: &[u8]) -> Option<String> {
     let mime = match bytes {
         // ISO-BMFF: 4-byte box size, then the `ftyp` fourcc at offset 4.
@@ -2389,21 +2480,14 @@ impl CanvasModelBridge for CanvasModelGateway {
             ))
         })?;
         // 供应商链接通常一小时过期，必须当场下载入库，节点只留 artifact 引用。
-        let bytes = fetch_binary(&url, None).await.map_err(to_core_error)?;
-        if bytes.is_empty() {
-            return Err(deepagent_core::error::CoreError::other(
-                "ProviderFailure: downloaded video is empty".to_string(),
-            ));
-        }
-        let mime = sniff_video_mime(&bytes).unwrap_or_else(|| mime_from_url(&url));
-        let stored = self
-            .artifact_store("store a generated video")?
-            .import_bytes(
-                deepagent_persistence::artifact_store::ArtifactKind::Video,
-                Some(&mime),
-                &bytes,
-                None,
-            )?;
+        let artifacts = self.artifact_store("store a generated video")?;
+        let stored = fetch_video_artifact(&url, artifacts, request.cancel.as_ref(), &task_id)
+            .await
+            .map_err(to_core_error)?;
+        let mime = stored
+            .media_type
+            .clone()
+            .unwrap_or_else(|| mime_from_url(&url));
         Ok(CanvasVideoResponse {
             artifact_uri: stored.uri,
             mime,
@@ -2666,6 +2750,22 @@ mod tests {
         ))
         .expect("first frame is a video input");
         assert_eq!(resolved.operation, CanvasOperation::VideoGenerate);
+    }
+
+    #[test]
+    fn legacy_video_edit_and_extend_operations_fail_as_unsupported_without_rerouting() {
+        for operation in [CanvasOperation::VideoEdit, CanvasOperation::VideoExtend] {
+            let error = DeterministicRouteResolver::resolve(&facts(
+                "video-gen",
+                &[CanvasOperation::VideoGenerate],
+                Some(operation),
+                &[CanvasInputKind::Video],
+                true,
+            ))
+            .expect_err("unsupported legacy operation");
+            assert_eq!(error.code, CanvasErrorCode::UnsupportedCapability);
+            assert!(error.message.contains(operation.as_str()));
+        }
     }
 
     #[test]
@@ -3933,6 +4033,61 @@ mod tests {
             "a resumed job must not submit a second generation"
         );
         let _ = std::fs::remove_dir_all(&artifact_root);
+    }
+
+    #[test]
+    fn generated_video_download_streams_beyond_the_legacy_artifact_limit() {
+        use std::io::{Read, Write};
+        let total_bytes = 64 * 1024 * 1024 + 1;
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let address = listener.local_addr().expect("address");
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept download");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = stream.read(&mut buffer).expect("read request");
+                assert_ne!(count, 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..count]);
+            }
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {total_bytes}\r\nConnection: close\r\n\r\n"
+            )
+            .expect("write headers");
+            let mut chunk = vec![b'x'; 64 * 1024];
+            chunk[..12].copy_from_slice(b"\x00\x00\x00\x14ftypmp42");
+            let mut remaining = total_bytes;
+            while remaining > 0 {
+                let count = remaining.min(chunk.len());
+                stream.write_all(&chunk[..count]).expect("write body chunk");
+                remaining -= count;
+            }
+        });
+
+        let root = std::env::temp_dir().join(format!(
+            "deepagent-gateway-large-video-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let artifacts = crate::canvas_artifact_service::CanvasArtifactService::new(&root, db)
+            .expect("artifact service");
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let stored = runtime
+            .block_on(fetch_video_artifact(
+                &format!("http://{address}/video.mp4"),
+                &artifacts,
+                None,
+                "large-job",
+            ))
+            .expect("download large video");
+        server.join().expect("server thread");
+        assert_eq!(stored.byte_size, total_bytes as i64);
+        assert_eq!(stored.media_type.as_deref(), Some("video/mp4"));
+        let record = artifacts.record(&stored.id).expect("record").expect("row");
+        assert_eq!(record.byte_size, total_bytes as i64);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

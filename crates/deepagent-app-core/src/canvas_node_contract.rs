@@ -156,8 +156,8 @@ pub fn canvas_node_contracts() -> Vec<CanvasNodeContract> {
         contract! {
             node: "video-gen",
             executor: Executor::MediaJob,
-            operations: [VideoGenerate, VideoEdit, VideoExtend],
-            inputs: ["Text", "Image", "Video", "Audio"],
+            operations: [VideoGenerate],
+            inputs: ["Text", "Image"],
             output: "VideoArtifact",
             skills: [],
         },
@@ -484,8 +484,13 @@ mod tests {
         );
         let video = canvas_node_contract("video-gen").expect("video");
         assert_eq!(video.executor_kind, CanvasExecutorKind::MediaJob);
-        assert!(video
-            .allowed_operations
-            .contains(&CanvasOperation::VideoExtend));
+        assert_eq!(
+            video.allowed_operations,
+            vec![CanvasOperation::VideoGenerate]
+        );
+        assert_eq!(
+            video.input_contract.accepted_input_kinds,
+            vec!["Text", "Image"]
+        );
     }
 }

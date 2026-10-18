@@ -673,7 +673,6 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
   const modelOptions = useScenarioModelOptions("video_generation", nodeModel);
   const selectedModel = nodeModel || modelOptions[0]?.value || "";
   const prompt = data.videoPrompt ?? "";
-  const duration = data.videoDuration ?? 5;
 
   const resizeTextarea = (target: HTMLTextAreaElement) => {
     target.style.height = "auto";
@@ -728,21 +727,6 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
               options={modelOptions}
               onChange={(videoModel) => onUpdate({ videoModel })}
             />
-            <HoverInfo content="视频时长"><label
-              className="flex h-8 items-center gap-1 rounded-lg bg-white/[0.08] px-2.5 text-xs text-white/70"
-
-            >
-              <input
-                type="number"
-                min={1}
-                max={60}
-                value={duration}
-                onChange={(event) => onUpdate({ videoDuration: Number(event.target.value) })}
-                onKeyDown={(event) => event.stopPropagation()}
-                className="w-8 border-0 bg-transparent p-0 text-xs font-medium text-white/80 outline-none [appearance:textfield] focus:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-              />
-              <span className="text-white/40">秒</span>
-            </label></HoverInfo>
           </div>
           <GlassRunButton disabled={!prompt.trim()} onClick={() => void runWorkflow(nodeId)} />
         </div>
@@ -778,18 +762,6 @@ export function VideoGenForm({ nodeId, data, onUpdate }: { data: CreativeNodeDat
                 options={modelOptions}
                 onChange={(videoModel) => onUpdate({ videoModel })}
               />
-              <label className="flex h-8 items-center gap-1 rounded-lg bg-white/[0.08] px-2.5 text-xs text-white/70">
-                <input
-                  type="number"
-                  min={1}
-                  max={60}
-                  value={duration}
-                  onChange={(event) => onUpdate({ videoDuration: Number(event.target.value) })}
-                  onKeyDown={(event) => event.stopPropagation()}
-                  className="w-8 border-0 bg-transparent p-0 text-xs font-medium text-white/80 outline-none [appearance:textfield] focus:ring-0 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                />
-                <span className="text-white/40">秒</span>
-              </label>
             </div>
             <button
               type="button"

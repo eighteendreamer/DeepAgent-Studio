@@ -10,6 +10,8 @@
 //! Node configs and events may contain the URI; they must never contain bytes,
 //! the absolute path or a provider's signed URL.
 
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -19,12 +21,12 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_persistence::artifact_store::{ArtifactKind, ArtifactRecord, ArtifactStore};
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// URI scheme stored on canvas nodes instead of the bytes themselves.
 pub const ARTIFACT_URI_PREFIX: &str = "artifact://";
 
-/// Largest blob accepted into the store.
-pub const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
+const COPY_BUFFER_BYTES: usize = 64 * 1024;
 
 /// Where the imported bytes come from. Exactly one of these must be set.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -183,9 +185,23 @@ impl CanvasArtifactService {
             (Some(data_url), None) => decode_data_url(data_url)?,
             (None, Some(path)) => {
                 let mime = guess_media_type(Path::new(path), kind);
-                let bytes = std::fs::read(path)
-                    .map_err(|error| CoreError::Other(format!("read {path}: {error}")))?;
-                (mime, bytes)
+                let file_name = input
+                    .file_name
+                    .as_deref()
+                    .or_else(|| Path::new(path).file_name().and_then(|name| name.to_str()));
+                return self.import_reader(
+                    kind,
+                    input
+                        .media_type
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .or(mime.as_deref()),
+                    file_name,
+                    File::open(path)
+                        .map_err(|error| CoreError::Other(format!("open {path}: {error}")))?,
+                    input.workspace_id.as_deref(),
+                );
             }
             (Some(_), Some(_)) => {
                 return Err(CoreError::invalid(
@@ -204,11 +220,11 @@ impl CanvasArtifactService {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        self.store(
+        self.import_reader(
             kind,
-            declared.or(declared_mime),
+            declared.as_deref().or(declared_mime.as_deref()),
             input.file_name.as_deref(),
-            &bytes,
+            std::io::Cursor::new(bytes),
             input.workspace_id.as_deref(),
         )
     }
@@ -221,73 +237,80 @@ impl CanvasArtifactService {
         bytes: &[u8],
         workspace_id: Option<&str>,
     ) -> Result<CanvasArtifactDto> {
-        self.store(
+        self.import_reader(
             kind,
-            media_type.map(str::to_string),
+            media_type,
             None,
-            bytes,
+            std::io::Cursor::new(bytes),
             workspace_id,
         )
     }
 
-    fn store(
+    fn import_reader(
         &self,
         kind: ArtifactKind,
-        media_type: Option<String>,
+        media_type: Option<&str>,
         file_name: Option<&str>,
-        bytes: &[u8],
+        mut reader: impl Read,
         workspace_id: Option<&str>,
     ) -> Result<CanvasArtifactDto> {
-        if bytes.is_empty() {
-            return Err(CoreError::invalid("artifact payload is empty"));
+        let mut stream = self.begin_stream(kind, media_type, file_name, workspace_id)?;
+        let mut buffer = [0u8; COPY_BUFFER_BYTES];
+        loop {
+            let count = reader.read(&mut buffer).map_err(|error| {
+                CoreError::Other(format!("read artifact input stream: {error}"))
+            })?;
+            if count == 0 {
+                break;
+            }
+            stream.write_chunk(&buffer[..count])?;
         }
-        if bytes.len() > MAX_ARTIFACT_BYTES {
-            return Err(CoreError::invalid(format!(
-                "artifact payload is {} bytes, limit {MAX_ARTIFACT_BYTES}",
-                bytes.len()
-            )));
-        }
-        let media_type = media_type
-            .or_else(|| guess_media_type(Path::new(file_name.unwrap_or("")), kind))
-            .or_else(|| default_media_type(kind));
+        stream.finish()
+    }
 
+    /// Begin a bounded-memory write into the managed artifact area. The
+    /// returned stream only becomes visible in the artifact index on finish.
+    pub fn begin_stream(
+        &self,
+        kind: ArtifactKind,
+        media_type: Option<&str>,
+        file_name: Option<&str>,
+        workspace_id: Option<&str>,
+    ) -> Result<CanvasArtifactStream> {
         let id = format!("art_{}", deepagent_core::id::EventId::new());
         ArtifactStore::validate_id(&id)?;
-        let path = self.root.join(format!(
-            "{id}{}",
-            extension_for(media_type.as_deref(), file_name, kind)
-        ));
-        std::fs::write(&path, bytes).map_err(|error| {
-            CoreError::Other(format!("write artifact {}: {error}", path.display()))
-        })?;
-
-        let record = ArtifactRecord {
-            id: id.clone(),
+        let staging_path = self.root.join(format!(".{id}.part"));
+        Ok(CanvasArtifactStream {
+            root: self.root.clone(),
+            db: self.db.clone(),
+            id,
             kind,
-            run_id: None,
-            call_id: None,
+            media_type: media_type.map(str::to_string),
+            file_name: file_name.map(str::to_string),
             workspace_id: workspace_id.map(str::to_string),
-            path: path.to_string_lossy().to_string(),
-            digest: Some(format!(
-                "sha256:{}",
-                crate::vision_provider_service::hash_bytes(bytes)
-            )),
-            byte_size: bytes.len() as i64,
-            media_type,
-            created_at: SystemClock.now().as_millis(),
-        };
-        if let Err(error) = ArtifactStore::new(&self.db).put(&record) {
-            // Never leave a blob behind that the index does not know about.
-            let _ = std::fs::remove_file(&path);
-            return Err(error);
-        }
-        tracing::debug!(
-            artifact_id = %id,
-            kind = record.kind.as_str(),
-            bytes = record.byte_size,
-            "canvas artifact imported"
-        );
-        Ok(CanvasArtifactDto::from_record(&record))
+            staging: Some(ArtifactStaging::create(staging_path)?),
+        })
+    }
+
+    /// Import a local file without holding the full file contents in memory.
+    pub fn import_file(
+        &self,
+        kind: ArtifactKind,
+        media_type: Option<&str>,
+        file_name: Option<&str>,
+        path: impl AsRef<Path>,
+        workspace_id: Option<&str>,
+    ) -> Result<CanvasArtifactDto> {
+        let path = path.as_ref();
+        let mime = media_type
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .or_else(|| guess_media_type(path, kind));
+        let name = file_name.or_else(|| path.file_name().and_then(|name| name.to_str()));
+        let file = File::open(path)
+            .map_err(|error| CoreError::Other(format!("open {}: {error}", path.display())))?;
+        self.import_reader(kind, mime.as_deref(), name, file, workspace_id)
     }
 
     /// Index row for an artifact id.
@@ -375,6 +398,185 @@ impl CanvasArtifactService {
         }
         ArtifactStore::new(&self.db).delete(id)
     }
+}
+
+pub struct CanvasArtifactStream {
+    root: PathBuf,
+    db: Arc<Database>,
+    id: String,
+    kind: ArtifactKind,
+    media_type: Option<String>,
+    file_name: Option<String>,
+    workspace_id: Option<String>,
+    staging: Option<ArtifactStaging>,
+}
+
+impl CanvasArtifactStream {
+    pub fn write_chunk(&mut self, bytes: &[u8]) -> Result<()> {
+        self.staging
+            .as_mut()
+            .ok_or_else(|| CoreError::other("artifact stream is already finalized"))?
+            .write(bytes)
+    }
+
+    pub fn finish(mut self) -> Result<CanvasArtifactDto> {
+        let mut staging = self
+            .staging
+            .take()
+            .ok_or_else(|| CoreError::other("artifact stream is already finalized"))?;
+        let (byte_size, digest, head) = staging.finish_writing()?;
+        if byte_size == 0 {
+            return Err(CoreError::invalid("artifact payload is empty"));
+        }
+        let byte_size = i64::try_from(byte_size)
+            .map_err(|_| CoreError::invalid("artifact is too large to index"))?;
+        let media_type = sniff_media_type(self.kind, &head)
+            .or(self.media_type)
+            .or_else(|| {
+                guess_media_type(
+                    Path::new(self.file_name.as_deref().unwrap_or("")),
+                    self.kind,
+                )
+            })
+            .or_else(|| default_media_type(self.kind));
+        let path = self.root.join(format!(
+            "{}{}",
+            self.id,
+            extension_for(media_type.as_deref(), self.file_name.as_deref(), self.kind)
+        ));
+        staging.publish(&path)?;
+
+        let record = ArtifactRecord {
+            id: self.id,
+            kind: self.kind,
+            run_id: None,
+            call_id: None,
+            workspace_id: self.workspace_id,
+            path: path.to_string_lossy().to_string(),
+            digest: Some(format!("sha256:{digest}")),
+            byte_size,
+            media_type,
+            created_at: SystemClock.now().as_millis(),
+        };
+        if let Err(error) = ArtifactStore::new(&self.db).put(&record) {
+            let _ = std::fs::remove_file(&path);
+            return Err(error);
+        }
+        tracing::debug!(
+            artifact_id = %record.id,
+            kind = record.kind.as_str(),
+            bytes = record.byte_size,
+            "canvas artifact imported"
+        );
+        Ok(CanvasArtifactDto::from_record(&record))
+    }
+}
+
+struct ArtifactStaging {
+    path: PathBuf,
+    file: Option<File>,
+    hasher: Sha256,
+    byte_size: u64,
+    head: Vec<u8>,
+    published: bool,
+}
+
+impl ArtifactStaging {
+    fn create(path: PathBuf) -> Result<Self> {
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map_err(|error| {
+                CoreError::Other(format!(
+                    "create artifact staging file {}: {error}",
+                    path.display()
+                ))
+            })?;
+        Ok(Self {
+            path,
+            file: Some(file),
+            hasher: Sha256::new(),
+            byte_size: 0,
+            head: Vec::with_capacity(32),
+            published: false,
+        })
+    }
+
+    fn write(&mut self, bytes: &[u8]) -> Result<()> {
+        let file = self
+            .file
+            .as_mut()
+            .ok_or_else(|| CoreError::other("artifact staging stream is already closed"))?;
+        file.write_all(bytes).map_err(|error| {
+            CoreError::Other(format!(
+                "write artifact staging file {}: {error}",
+                self.path.display()
+            ))
+        })?;
+        self.byte_size = self
+            .byte_size
+            .checked_add(bytes.len() as u64)
+            .ok_or_else(|| CoreError::invalid("artifact size overflow"))?;
+        self.hasher.update(bytes);
+        let needed = 32usize.saturating_sub(self.head.len());
+        self.head
+            .extend_from_slice(&bytes[..bytes.len().min(needed)]);
+        Ok(())
+    }
+
+    fn finish_writing(&mut self) -> Result<(u64, String, Vec<u8>)> {
+        let mut file = self
+            .file
+            .take()
+            .ok_or_else(|| CoreError::other("artifact staging stream is already closed"))?;
+        file.flush()
+            .and_then(|()| file.sync_all())
+            .map_err(|error| {
+                CoreError::Other(format!(
+                    "flush artifact staging file {}: {error}",
+                    self.path.display()
+                ))
+            })?;
+        let digest = format!("{:x}", std::mem::take(&mut self.hasher).finalize());
+        Ok((self.byte_size, digest, self.head.clone()))
+    }
+
+    fn publish(&mut self, final_path: &Path) -> Result<()> {
+        std::fs::rename(&self.path, final_path).map_err(|error| {
+            CoreError::Other(format!(
+                "publish artifact {}: {error}",
+                final_path.display()
+            ))
+        })?;
+        self.published = true;
+        Ok(())
+    }
+}
+
+impl Drop for ArtifactStaging {
+    fn drop(&mut self) {
+        self.file.take();
+        if !self.published {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
+fn sniff_media_type(kind: ArtifactKind, head: &[u8]) -> Option<String> {
+    let mime = match kind {
+        ArtifactKind::Image if head.starts_with(b"\x89PNG\r\n\x1a\n") => "image/png",
+        ArtifactKind::Image if head.starts_with(&[0xff, 0xd8, 0xff]) => "image/jpeg",
+        ArtifactKind::Image if head.starts_with(b"GIF8") => "image/gif",
+        ArtifactKind::Video if head.len() >= 12 && &head[4..12] == b"ftypqt  " => "video/quicktime",
+        ArtifactKind::Video if head.len() >= 8 && &head[4..8] == b"ftyp" => "video/mp4",
+        ArtifactKind::Video if head.starts_with(b"\x1aE\xdf\xa3") => "video/webm",
+        ArtifactKind::Audio if head.starts_with(b"RIFF") && head.get(8..12) == Some(b"WAVE") => {
+            "audio/wav"
+        }
+        _ => return None,
+    };
+    Some(mime.to_string())
 }
 
 fn guess_media_type(path: &Path, kind: ArtifactKind) -> Option<String> {
@@ -596,6 +798,47 @@ mod tests {
     }
 
     #[test]
+    fn artifact_stream_publishes_on_finish_and_discards_unfinished_staging() {
+        let (root, service) = service("stream-lifecycle");
+        {
+            let mut abandoned = service
+                .begin_stream(
+                    ArtifactKind::Video,
+                    Some("video/mp4"),
+                    Some("clip.mp4"),
+                    None,
+                )
+                .expect("begin abandoned stream");
+            abandoned.write_chunk(b"partial").expect("write partial");
+        }
+        assert_eq!(std::fs::read_dir(&root.dir).unwrap().count(), 0);
+
+        let mut stream = service
+            .begin_stream(
+                ArtifactKind::Video,
+                Some("application/octet-stream"),
+                None,
+                None,
+            )
+            .expect("begin stream");
+        stream
+            .write_chunk(b"\x00\x00\x00\x14ftypmp42")
+            .expect("write header");
+        stream.write_chunk(b"media").expect("write body");
+        let imported = stream.finish().expect("finish stream");
+        assert_eq!(imported.media_type.as_deref(), Some("video/mp4"));
+        assert_eq!(imported.byte_size, 17);
+        assert_eq!(
+            service
+                .read_bytes(&imported.id)
+                .expect("read artifact")
+                .expect("stored bytes"),
+            b"\x00\x00\x00\x14ftypmp42media"
+        );
+        assert_eq!(std::fs::read_dir(&root.dir).unwrap().count(), 1);
+    }
+
+    #[test]
     fn delete_removes_row_and_bytes_together() {
         let (_root, service) = service("delete");
         let imported = service
@@ -618,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_conflicting_missing_empty_and_oversized_sources() {
+    fn rejects_invalid_sources_and_streams_beyond_the_legacy_limit() {
         let (_root, service) = service("reject");
         let conflict = service
             .import(&CanvasArtifactImport {
@@ -668,21 +911,17 @@ mod tests {
             .expect_err("unknown kind");
         assert!(bad_kind.to_string().contains("unknown artifact kind"));
 
-        let oversized = format!(
-            "data:image/png;base64,{}",
-            STANDARD.encode(vec![7u8; MAX_ARTIFACT_BYTES + 1])
-        );
-        let error = service
-            .import(&CanvasArtifactImport {
-                kind: "image".to_string(),
-                data_url: Some(oversized),
-                local_path: None,
-                file_name: None,
-                media_type: None,
-                workspace_id: None,
-            })
-            .expect_err("oversized payload");
-        assert!(error.to_string().contains("limit"));
+        let beyond_legacy_limit = service
+            .import_reader(
+                ArtifactKind::Video,
+                Some("video/mp4"),
+                Some("large.mp4"),
+                std::io::repeat(7).take(64 * 1024 * 1024 + 1),
+                None,
+            )
+            .expect("stream larger than the former limit");
+        assert_eq!(beyond_legacy_limit.byte_size, 64 * 1024 * 1024 + 1);
+        assert!(Path::new(&beyond_legacy_limit.path).exists());
     }
 
     #[test]

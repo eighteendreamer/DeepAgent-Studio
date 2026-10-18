@@ -309,9 +309,8 @@ export const CREATIVE_NODE_PICKER_CATEGORIES: CreativePickerCategory[] = [
     icon: "video",
     description: "参考素材与视频生成",
     options: [
-      { key: "all-reference", label: "全部参考", kind: "video-gen", icon: "layer-group" },
-      { key: "image-to-video", label: "图生视频", kind: "video-gen", icon: "image" },
-      { key: "first-last-frame-to-video", label: "首尾帧生视频", kind: "video-gen", icon: "film" },
+      { key: "text-to-video", label: "文字生视频", kind: "video-gen", icon: "video" },
+      { key: "image-to-video", label: "单图参考生视频", kind: "video-gen", icon: "image" },
     ],
   },
   {
