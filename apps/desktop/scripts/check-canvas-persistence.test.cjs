@@ -249,6 +249,7 @@ for (const [filename, exported, kind] of [
     const html = renderToStaticMarkup(React.createElement(component, { data }));
     assert.ok(html.includes("AI_OUTPUT"));
     assert.ok(!html.includes("USER_INPUT") && !html.includes("SYSTEM_INPUT"));
+    assert.ok(!html.includes("nodrag"), "正文不能禁用 React Flow 节点拖动");
     const empty = renderToStaticMarkup(React.createElement(component, { data: { ...data, output: undefined, result: undefined } }));
     assert.ok(empty.includes("运行后显示输出"));
     assert.ok(!empty.includes("USER_INPUT"));
