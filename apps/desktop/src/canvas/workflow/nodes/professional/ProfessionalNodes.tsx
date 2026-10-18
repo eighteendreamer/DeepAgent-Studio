@@ -1,5 +1,7 @@
 import type { ProfessionalNodeData } from "../../types";
 import { getNodeOutputs } from "../../utils/nodeRegistry";
+import { NodeTextOutput } from "../../components/NodeTextOutput";
+import { nodeResultText } from "../../utils/nodeOutput";
 
 interface Props {
   data: ProfessionalNodeData;
@@ -67,11 +69,7 @@ export function LLMContent({ data }: Props) {
           </span>
         )}
       </div>
-      {data.llmPrompt && (
-        <div className="text-[10px] truncate" style={{ color: "rgba(248,248,248,0.5)" }}>
-          {data.llmPrompt}
-        </div>
-      )}
+      <NodeTextOutput output={nodeResultText(data.result)} status={data.status} />
     </div>
   );
 }

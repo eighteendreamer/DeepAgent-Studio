@@ -13,7 +13,7 @@ import type {
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
-import { normalizeProfessionalData } from "../utils/nodeRegistry";
+import { getAllNodeDefinitions, normalizeProfessionalData } from "../utils/nodeRegistry";
 import { message } from "../../../components/message";
 import { NodeConfigForm } from "./NodeConfigForm";
 import { NodeFloatingToolbar } from "./NodeFloatingToolbar";
@@ -60,6 +60,8 @@ import {
 } from "../nodes/professional/ProfessionalNodes";
 import { loadCanvasMediaPixels } from "../utils/canvasMedia";
 import { prependCreativeItem } from "../utils/creativeLibrary";
+import { NodeTextOutput } from "./NodeTextOutput";
+import { nodeOutputMarkdown, nodeResultText } from "../utils/nodeOutput";
 
 const STATUS_BORDER: Record<NodeStatus, string> = {
   idle: "1px solid rgba(255,255,255,0.1)",
@@ -67,6 +69,8 @@ const STATUS_BORDER: Record<NodeStatus, string> = {
   completed: "1px solid rgba(34,197,94,0.7)",
   error: "1px solid rgba(239,68,68,0.7)",
 };
+
+const PROFESSIONAL_KINDS = new Set(getAllNodeDefinitions().map((definition) => definition.kind));
 
 const STATUS_SHADOW: Record<NodeStatus, string> = {
   idle: "none",
@@ -124,11 +128,19 @@ function renderContent(nodeData: WorkflowNodeData, nodeId?: string) {
   const creativeData = nodeData as CreativeNodeData;
   const professionalData = nodeData as ProfessionalNodeData;
 
+  const result = PROFESSIONAL_KINDS.has(kind as ProfessionalNodeKind) ? nodeResultText(professionalData.result) : undefined;
+  if (result !== undefined) {
+    return <NodeTextOutput output={result} status={nodeData.status} />;
+  }
+
   switch (kind) {
     case "category-picker":
       return <CategoryPickerContent id={nodeId ?? ""} data={creativeData} />;
     case "text-gen":
-      return <TextGenContent id={nodeId ?? ""} data={creativeData} />;
+      return <TextGenContent data={creativeData} />;
+    case "director":
+    case "creative-template":
+      return <NodeTextOutput output={creativeData.output} status={nodeData.status} />;
     case "image-input":
       return <ImageInputContent id={nodeId ?? ""} data={creativeData} />;
     case "image-gen":
@@ -364,8 +376,8 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
     }
 
     if (kind !== "text-gen" && kind !== "script-gen") return;
-    const prompt = creativeData.prompt ?? "";
-    const md = `# ${nodeLabel}\n\n${prompt}`;
+    const md = nodeOutputMarkdown(nodeLabel, creativeData.output);
+    if (md === null) return;
     const blob = new Blob([md], { type: "text/markdown;charset=utf-8" });
     const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");

@@ -196,21 +196,10 @@ export async function flushCanvasPreferences(): Promise<void> {
     }
     await flushKey(key);
   }
+  if (dirty.size) throw new Error("画布偏好尚未保存");
 }
 
 // 画布窗口一挂载就把偏好拉进内存，调用方仍按同步方式读取。
 void whenCanvasPreferencesReady();
 
-// 关窗时先补完防抖窗口内的写入；刷完后 dirty 为空，第二次关闭事件直接放行。
-if (isTauriRuntime()) {
-  void (async () => {
-    const { getCurrentWindow } = await import("@tauri-apps/api/window");
-    const appWindow = getCurrentWindow();
-    await appWindow.onCloseRequested(async (event) => {
-      if (!dirty.size) return;
-      event.preventDefault();
-      await flushCanvasPreferences();
-      await appWindow.close();
-    });
-  })().catch((error) => console.error("[canvas] 注册关窗刷库失败:", error));
-}
+// 关闭前由 useWorkflowPersistence 统一等待偏好与节点图，避免两个监听器分别重发关闭。

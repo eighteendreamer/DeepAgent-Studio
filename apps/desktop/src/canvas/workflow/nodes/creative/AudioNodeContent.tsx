@@ -1,60 +1,21 @@
-import { HoverInfo } from "../../../../components/ui/HoverInfo";
-import { AudioLines, Music } from "lucide-react";
+import { Music } from "lucide-react";
 import type { CreativeNodeData } from "../../types";
 import { useCanvasMediaSrc } from "../../utils/canvasMedia";
+import { NodeTextOutput } from "../../components/NodeTextOutput";
 
-interface Props {
-  data: CreativeNodeData;
-}
-
-/**
- * 音频节点的卡片内容。
- *
- * 合成结果只是一个 `artifact://` 引用，播放地址由内核解析出真实文件后再交给
- * asset 协议，节点里永远不留音频字节。
- */
-export function AudioContent({ data }: Props) {
-  const playable = useCanvasMediaSrc(data.audioUrl ?? data.audioReference);
+/** 转写展示文本输出，合成展示音频输出；待转写文件留在配置面板。 */
+export function AudioContent({ data }: { data: CreativeNodeData }) {
   const transcribed = data.audioOperation !== "speech_synthesize";
-
-  return (
-    <div className="flex flex-col gap-1.5">
-      {playable ? (
-        <div
-          className="flex items-center gap-2 rounded-lg px-2 py-2"
-          style={{ background: "rgba(255,255,255,0.03)" }}
-        >
-          {transcribed ? (
-            <AudioLines className="h-3.5 w-3.5 shrink-0" style={{ color: "rgba(248,248,248,0.35)" }} />
-          ) : (
-            <Music className="h-3.5 w-3.5 shrink-0" style={{ color: "rgba(248,248,248,0.35)" }} />
-          )}
-          <audio controls src={playable} className="h-8 w-full" />
-        </div>
-      ) : (
-        <div
-          className="flex items-center justify-center rounded-lg px-2 text-center"
-          style={{
-            height: 56,
-            background: "rgba(255,255,255,0.03)",
-            border: "1px dashed rgba(255,255,255,0.08)",
-          }}
-        >
-          <span className="text-[11px]" style={{ color: "rgba(248,248,248,0.28)" }}>
-            {transcribed ? "选择要转写的音频文件" : "输入文本并选择音色"}
-          </span>
-        </div>
-      )}
-
-      {transcribed && typeof data.output === "string" && data.output && (
-        <HoverInfo content={data.output}><p
-          className="line-clamp-3 text-[11px] leading-relaxed"
-          style={{ color: "rgba(248,248,248,0.6)" }}
-
-        >
-          {data.output}
-        </p></HoverInfo>
-      )}
+  const playable = useCanvasMediaSrc(transcribed ? undefined : data.audioUrl);
+  if (transcribed) return <NodeTextOutput output={data.output} status={data.status} />;
+  return playable ? (
+    <div className="flex items-center gap-2 rounded-lg bg-white/[0.03] px-2 py-2">
+      <Music className="h-3.5 w-3.5 shrink-0 text-white/35" />
+      <audio controls src={playable} className="nodrag nopan nowheel h-8 w-full" />
+    </div>
+  ) : (
+    <div className="flex h-14 items-center justify-center rounded-lg border border-dashed border-white/[0.08] bg-white/[0.03] text-[11px] text-white/30">
+      {data.status === "running" ? "正在生成音频…" : "运行后显示音频"}
     </div>
   );
 }

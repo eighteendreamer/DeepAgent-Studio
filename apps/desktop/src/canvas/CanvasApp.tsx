@@ -32,6 +32,7 @@ import { WorkflowEdge } from "./workflow/components/WorkflowEdge";
 import { useWorkflowPersistence } from "./workflow/hooks/useWorkflowPersistence";
 import { CREATIVE_NODE_KINDS, PROFESSIONAL_NODE_CATEGORIES, type WorkflowNode } from "./workflow/types";
 import { isTauri } from "../api";
+import { Button } from "../components/shadcn/button";
 
 function buildNodeTypes(prefix: string, kinds: string[]) {
   const map: Record<string, React.ComponentType<any>> = {};
@@ -52,7 +53,6 @@ function isEditableTarget(target: EventTarget | null) {
 }
 
 function WorkflowCanvasInner() {
-  useWorkflowPersistence();
   const mode = useCanvasStore((s) => s.mode);
   const settingsOpen = useCanvasStore((s) => s.settingsOpen);
   const gridVisible = useCanvasStore((s) => s.gridVisible);
@@ -758,11 +758,17 @@ function WorkflowCanvasInner() {
 }
 
 export function CanvasApp() {
+  const { ready, error, retry } = useWorkflowPersistence();
   return (
     <div className="h-screen w-full overflow-hidden text-text-base">
-      <ReactFlowProvider>
+      {!ready ? (
+        <div className="flex h-full flex-col items-center justify-center gap-3 bg-[#0a0a0a] text-sm text-white/60" role={error ? "alert" : "status"}>
+          <span>{error ? "画布恢复失败，请重试" : "正在恢复画布…"}</span>
+          {error && <Button variant="secondary" size="sm" onClick={retry}>重新加载</Button>}
+        </div>
+      ) : <ReactFlowProvider>
         <WorkflowCanvasInner />
-      </ReactFlowProvider>
+      </ReactFlowProvider>}
     </div>
   );
 }

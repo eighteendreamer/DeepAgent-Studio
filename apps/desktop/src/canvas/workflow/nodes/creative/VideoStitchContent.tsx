@@ -1,32 +1,13 @@
 import type { CreativeNodeData } from "../../types";
+import { useCanvasMediaSrc } from "../../utils/canvasMedia";
 
-interface Props {
-  data: CreativeNodeData;
-}
-
-export function VideoStitchContent({ data }: Props) {
-  const count = data.inputVideoUrls?.length ?? 0;
-  return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex gap-1">
-        {[0, 1, 2].map((i) => (
-          <div
-            key={i}
-            className="flex-1 flex items-center justify-center rounded"
-            style={{
-              height: 56,
-              background: i < count ? "rgba(255,255,255,0.06)" : "rgba(255,255,255,0.02)",
-              border: i < count ? "none" : "1px dashed rgba(255,255,255,0.06)",
-            }}
-          >
-            {i < count ? (
-              <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.5)" }}>#{i + 1}</span>
-            ) : (
-              <span className="text-[10px]" style={{ color: "rgba(248,248,248,0.15)" }}>+</span>
-            )}
-          </div>
-        ))}
-      </div>
+export function VideoStitchContent({ data }: { data: CreativeNodeData }) {
+  const src = useCanvasMediaSrc(data.videoUrl);
+  return src ? (
+    <video src={src} className="nodrag nopan nowheel block max-h-[260px] w-full rounded-lg" controls />
+  ) : (
+    <div className="flex h-14 items-center justify-center rounded-lg border border-dashed border-white/[0.08] bg-white/[0.03] text-xs text-white/30">
+      {data.status === "running" ? "正在拼接…" : "运行后显示拼接结果"}
     </div>
   );
 }
