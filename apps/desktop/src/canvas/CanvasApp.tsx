@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -20,7 +20,14 @@ import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar"
 import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
 import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
-import { SelectionFrameNode, SELECTION_NODE_ID, SELECTION_NODE_TYPE, SELECTION_FRAME_PADDING } from "./workflow/components/SelectionFrameNode";
+import {
+  SelectionFrameNode,
+  SELECTION_NODE_ID,
+  SELECTION_NODE_TYPE,
+  SELECTION_FRAME_PADDING,
+  type SelectionFrameConnectionSide,
+  type SelectionFrameNodeData,
+} from "./workflow/components/SelectionFrameNode";
 import { boundsOfNodes } from "./workflow/utils/nodeBounds";
 import { importCanvasMedia } from "./workflow/utils/canvasMedia";
 import { CropOverlay } from "./workflow/components/CropOverlay";
@@ -50,6 +57,30 @@ const edgeTypes = { default: WorkflowEdge };
 
 function isEditableTarget(target: EventTarget | null) {
   return target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable);
+}
+
+interface BatchConnectionPoint {
+  x: number;
+  y: number;
+}
+
+interface BatchConnectionDrag {
+  pointerId: number;
+  side: SelectionFrameConnectionSide;
+  nodeIds: string[];
+  startClientX: number;
+  startClientY: number;
+  anchors: BatchConnectionPoint[];
+  captureTarget: HTMLButtonElement;
+  moved: boolean;
+}
+
+function makeBatchConnectionPath(from: BatchConnectionPoint, to: BatchConnectionPoint): string {
+  const direction = Math.sign(to.x - from.x) || 1;
+  const controlOffset = Math.max(36, Math.abs(to.x - from.x) * 0.45);
+  const firstControlX = from.x + direction * controlOffset;
+  const secondControlX = to.x - direction * controlOffset;
+  return `M ${from.x} ${from.y} C ${firstControlX} ${from.y}, ${secondControlX} ${to.y}, ${to.x} ${to.y}`;
 }
 
 function WorkflowCanvasInner() {
@@ -85,6 +116,9 @@ function WorkflowCanvasInner() {
   const [viewport, setLocalViewport] = useState<Viewport>({ x: 0, y: 0, zoom: 1 });
   const containerRef = useRef<HTMLDivElement>(null);
   const rfWrapperRef = useRef<HTMLDivElement>(null);
+  const batchConnectionSvgRef = useRef<SVGSVGElement>(null);
+  const batchConnectionDragRef = useRef<BatchConnectionDrag | null>(null);
+  const batchConnectionPathsRef = useRef<SVGPathElement[]>([]);
   const flowStore = useStoreApi();
   const isSpaceHeldRef = useRef(false);
   const [isSpaceHeld, setIsSpaceHeld] = useState(false);
@@ -279,6 +313,168 @@ function WorkflowCanvasInner() {
   const edges = mode === "creative" ? creativeEdges : proEdges;
   const onNodesChange = mode === "creative" ? creativeOnNodesChange : proOnNodesChange;
   const onEdgesChange = mode === "creative" ? creativeOnEdgesChange : proOnEdgesChange;
+
+  const clearBatchConnectionPreview = useCallback(() => {
+    for (const path of batchConnectionPathsRef.current) path.remove();
+    batchConnectionPathsRef.current = [];
+  }, []);
+
+  const cancelBatchConnectionDrag = useCallback(() => {
+    const drag = batchConnectionDragRef.current;
+    batchConnectionDragRef.current = null;
+    clearBatchConnectionPreview();
+    if (drag?.captureTarget.hasPointerCapture(drag.pointerId)) {
+      drag.captureTarget.releasePointerCapture(drag.pointerId);
+    }
+  }, [clearBatchConnectionPreview]);
+
+  const handleBatchConnectionPointerDown = useCallback((
+    nodeIds: string[],
+    side: SelectionFrameConnectionSide,
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    cancelBatchConnectionDrag();
+    const svg = batchConnectionSvgRef.current;
+    const wrapper = rfWrapperRef.current;
+    if (!svg || !wrapper) return;
+
+    const svgRect = svg.getBoundingClientRect();
+    const anchors: BatchConnectionPoint[] = [];
+    const nodeElements = wrapper.querySelectorAll<HTMLElement>(".react-flow__node[data-id]");
+    for (const id of nodeIds) {
+      const nodeElement = Array.from(nodeElements).find((element) => element.dataset.id === id);
+      const rect = nodeElement?.getBoundingClientRect();
+      if (!rect) continue;
+      anchors.push({
+        x: (side === "right" ? rect.right : rect.left) - svgRect.left,
+        y: rect.top + rect.height / 2 - svgRect.top,
+      });
+    }
+
+    if (anchors.length === 0) {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      return;
+    }
+
+    batchConnectionDragRef.current = {
+      pointerId: event.pointerId,
+      side,
+      nodeIds: nodeIds.filter((id) => nodes.some((node) => node.id === id)),
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      anchors,
+      captureTarget: event.currentTarget,
+      moved: false,
+    };
+  }, [cancelBatchConnectionDrag, nodes]);
+
+  const handleBatchConnectionPointerMove = useCallback((
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const drag = batchConnectionDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    const distance = Math.hypot(event.clientX - drag.startClientX, event.clientY - drag.startClientY);
+    if (!drag.moved && distance <= 4) return;
+    drag.moved = true;
+
+    const svg = batchConnectionSvgRef.current;
+    if (!svg) return;
+    if (batchConnectionPathsRef.current.length !== drag.anchors.length) {
+      clearBatchConnectionPreview();
+      batchConnectionPathsRef.current = drag.anchors.map(() => {
+        const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        path.setAttribute("fill", "none");
+        path.setAttribute("vector-effect", "non-scaling-stroke");
+        path.setAttribute("stroke", "rgba(235,241,255,0.76)");
+        path.setAttribute("stroke-width", "2");
+        path.setAttribute("stroke-linecap", "round");
+        path.setAttribute("stroke-dasharray", "6 5");
+        svg.appendChild(path);
+        return path;
+      });
+    }
+
+    const svgRect = svg.getBoundingClientRect();
+    const target = { x: event.clientX - svgRect.left, y: event.clientY - svgRect.top };
+    batchConnectionPathsRef.current.forEach((path, index) => {
+      const anchor = drag.anchors[index];
+      if (anchor) path.setAttribute("d", makeBatchConnectionPath(anchor, target));
+    });
+  }, [clearBatchConnectionPreview]);
+
+  const handleBatchConnectionPointerUp = useCallback((
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    const drag = batchConnectionDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    batchConnectionDragRef.current = null;
+    clearBatchConnectionPreview();
+
+    const canvasRect = containerRef.current?.getBoundingClientRect();
+    const insideCanvas = !!canvasRect
+      && event.clientX >= canvasRect.left
+      && event.clientX <= canvasRect.right
+      && event.clientY >= canvasRect.top
+      && event.clientY <= canvasRect.bottom;
+    if (!insideCanvas) return;
+
+    const openPicker = () => {
+      if (!rfInstance || !canvasRect) return;
+      const world = rfInstance.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      });
+      const wiring = drag.side === "right"
+        ? { sources: drag.nodeIds, targets: [] }
+        : { sources: [], targets: drag.nodeIds };
+      openNodePicker(
+        { x: event.clientX, y: event.clientY, worldX: world.x, worldY: world.y },
+        wiring,
+      );
+    };
+
+    const moved = Math.hypot(
+      event.clientX - drag.startClientX,
+      event.clientY - drag.startClientY,
+    ) > 4;
+    if (!moved) {
+      openPicker();
+      return;
+    }
+
+    const hit = document.elementFromPoint(event.clientX, event.clientY);
+    const hitNode = hit instanceof Element
+      ? hit.closest<HTMLElement>(".react-flow__node[data-id]")
+      : null;
+    const targetNodeId = hitNode?.dataset.id;
+    if (targetNodeId === SELECTION_NODE_ID || drag.nodeIds.includes(targetNodeId ?? "")) return;
+
+    if (targetNodeId && nodes.some((node) => node.id === targetNodeId)) {
+      const connections = drag.side === "right"
+        ? drag.nodeIds.map((source) => ({ source, target: targetNodeId }))
+        : drag.nodeIds.map((target) => ({ source: targetNodeId, target }));
+      const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
+      store.connectMany(connections);
+      return;
+    }
+
+    openPicker();
+  }, [clearBatchConnectionPreview, mode, nodes, openNodePicker, rfInstance]);
+
+  const handleBatchConnectionPointerCancel = useCallback((
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    if (batchConnectionDragRef.current?.pointerId === event.pointerId) {
+      cancelBatchConnectionDrag();
+    }
+  }, [cancelBatchConnectionDrag]);
+
+  useEffect(() => () => cancelBatchConnectionDrag(), [cancelBatchConnectionDrag]);
+
   const nodeTypes = useMemo(
     () => ({
       ...(mode === "creative" ? creativeNodeTypes : professionalNodeTypes),
@@ -299,32 +495,37 @@ function WorkflowCanvasInner() {
         id: SELECTION_NODE_ID,
         type: SELECTION_NODE_TYPE,
         position: { x: box.left - SELECTION_FRAME_PADDING, y: box.top - SELECTION_FRAME_PADDING },
-        data: {},
+        data: {
+          selectedNodeIds: selectedNodes.map((node) => node.id),
+          onConnectionPointerDown: handleBatchConnectionPointerDown,
+          onConnectionPointerMove: handleBatchConnectionPointerMove,
+          onConnectionPointerUp: handleBatchConnectionPointerUp,
+          onConnectionPointerCancel: handleBatchConnectionPointerCancel,
+        } as SelectionFrameNodeData,
         width: box.right - box.left + SELECTION_FRAME_PADDING * 2,
         height: box.bottom - box.top + SELECTION_FRAME_PADDING * 2,
         draggable: false,
         selectable: false,
         deletable: false,
-        style: { pointerEvents: "none", zIndex: 0 },
-      } as WorkflowNode,
+        // Selected node cards use z-index 20; keep the group handles above them
+        // so pointerdown reaches this batch-connection surface.
+        style: { pointerEvents: "none", zIndex: 30 },
+      // 这是仅用于画布交互的临时节点，不进入工作流 store 或持久化模型。
+      } as unknown as WorkflowNode,
     ];
-  }, [nodes, selectedNodes]);
+  }, [
+    handleBatchConnectionPointerCancel,
+    handleBatchConnectionPointerDown,
+    handleBatchConnectionPointerMove,
+    handleBatchConnectionPointerUp,
+    nodes,
+    selectedNodes,
+  ]);
 
-  /** 从选区桩拉出的连线展开成"每个选中节点 → 目标"，反向同理。 */
+  /** 普通节点连线走 React Flow；选区批量连线由选区按钮的指针手势单独接管。 */
   const handleConnect = useCallback(
     (connection: Connection) => {
       const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
-      const selectedIds = store.nodes.filter((node) => node.selected).map((node) => node.id);
-      if (connection.source === SELECTION_NODE_ID && connection.target) {
-        const target = connection.target;
-        store.connectMany(selectedIds.map((id) => ({ source: id, target })));
-        return;
-      }
-      if (connection.target === SELECTION_NODE_ID && connection.source) {
-        const source = connection.source;
-        store.connectMany(selectedIds.map((id) => ({ source, target: id })));
-        return;
-      }
       store.onConnect(connection);
     },
     [mode],
@@ -395,16 +596,14 @@ function WorkflowCanvasInner() {
       const rect = containerRef.current?.getBoundingClientRect();
       if (!rect) return;
       const world = rfInstance.screenToFlowPosition({ x: clientX - rect.left, y: clientY - rect.top });
-      const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
-      const ids = state.fromNode.id === SELECTION_NODE_ID
-        ? store.nodes.filter((node) => node.selected).map((node) => node.id)
-        : [state.fromNode.id];
       openNodePicker(
         { x: clientX, y: clientY, worldX: world.x, worldY: world.y },
-        state.fromHandle.type === "source" ? { sources: ids, targets: [] } : { sources: [], targets: ids },
+        state.fromHandle.type === "source"
+          ? { sources: [state.fromNode.id], targets: [] }
+          : { sources: [], targets: [state.fromNode.id] },
       );
     },
-    [rfInstance, openNodePicker, mode],
+    [rfInstance, openNodePicker],
   );
 
   useEffect(() => {
@@ -419,6 +618,7 @@ function WorkflowCanvasInner() {
       }
 
       if (e.key === "Escape") {
+        cancelBatchConnectionDrag();
         onNodesChange(nodes.map((n) => ({ id: n.id, type: "select", selected: false })));
         setSelectedNodeId(null);
         closeNodePicker();
@@ -502,7 +702,7 @@ function WorkflowCanvasInner() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [mode, selectedNodeId, setSelectedNodeId, closeNodePicker, nodes, onNodesChange, rfInstance]);
+  }, [mode, selectedNodeId, setSelectedNodeId, closeNodePicker, nodes, onNodesChange, rfInstance, cancelBatchConnectionDrag]);
 
   useEffect(() => {
     const onPaste = (e: ClipboardEvent) => {
@@ -664,6 +864,12 @@ function WorkflowCanvasInner() {
       >
         <Background variant={BackgroundVariant.Dots} gap={24} size={1} color="transparent" />
       </ReactFlow>
+      <svg
+        ref={batchConnectionSvgRef}
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+        style={{ zIndex: 1002 }}
+      />
       </div>
 
       {nodes.length === 0 && (
