@@ -845,6 +845,21 @@
     "noProject": "No project"
   },
   "composer": {
+    "attachments": {
+      "limit": "Maximum {{count}} attachments allowed",
+      "recognizing": "Analyzing",
+      "processing": "Processing",
+      "failed": "Processing failed",
+      "readFailed": "Failed to read file",
+      "text": "Text",
+      "file": "File",
+      "removeImage": "Remove image: {{name}}",
+      "removeAttachment": "Remove attachment: {{name}}",
+      "previewImage": "Preview image",
+      "previewNamedImage": "Preview image: {{name}}",
+      "closePreview": "Close image preview",
+      "statusLabel": "{{name}}: {{status}}"
+    },
     "placeholder": "Ask anything...",
     "selectModel": "Select Model",
     "noModels": "No models available — enter an API key at login first",

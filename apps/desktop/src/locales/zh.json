@@ -845,6 +845,21 @@
     "noProject": "不使用项目"
   },
   "composer": {
+    "attachments": {
+      "limit": "最多可添加 {{count}} 个附件",
+      "recognizing": "识别中",
+      "processing": "处理中",
+      "failed": "处理失败",
+      "readFailed": "读取文件失败",
+      "text": "文本",
+      "file": "文件",
+      "removeImage": "移除图片：{{name}}",
+      "removeAttachment": "移除附件：{{name}}",
+      "previewImage": "预览图片",
+      "previewNamedImage": "预览图片：{{name}}",
+      "closePreview": "关闭图片预览",
+      "statusLabel": "{{name}}：{{status}}"
+    },
     "placeholder": "尽管问...",
     "selectModel": "选择模型",
     "noModels": "暂无可用模型，请先在登录时填写 API Key",

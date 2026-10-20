@@ -523,6 +523,21 @@
     "noProject": "沒有專案"
   },
   "composer": {
+    "attachments": {
+      "limit": "最多可加入 {{count}} 個附件",
+      "recognizing": "辨識中",
+      "processing": "處理中",
+      "failed": "處理失敗",
+      "readFailed": "讀取檔案失敗",
+      "text": "文字",
+      "file": "檔案",
+      "removeImage": "移除圖片：{{name}}",
+      "removeAttachment": "移除附件：{{name}}",
+      "previewImage": "預覽圖片",
+      "previewNamedImage": "預覽圖片：{{name}}",
+      "closePreview": "關閉圖片預覽",
+      "statusLabel": "{{name}}：{{status}}"
+    },
     "placeholder": "詢問任何問題...",
     "autoReview": "自動審查",
     "selectModel": "選取模型",

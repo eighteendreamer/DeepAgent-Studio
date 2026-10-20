@@ -229,6 +229,9 @@ export function Composer({
   onOverlayOpenChange,
 }: Props) {
   const { t } = useTranslation();
+  const attachmentLimitMessage = t("composer.attachments.limit", {
+    count: MAX_COMPOSER_ATTACHMENTS,
+  });
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false);
   const [isApprovalDropdownOpen, setIsApprovalDropdownOpen] = useState(false);
   const [isContextPopoverOpen, setIsContextPopoverOpen] = useState(false);
@@ -938,7 +941,7 @@ export function Composer({
   };
 
   const showAttachmentLimitWarning = () => {
-    message.warning(`Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments allowed`);
+    message.warning(attachmentLimitMessage);
   };
 
   const removeAttachment = (id: string) => {
@@ -955,7 +958,7 @@ export function Composer({
     new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result ?? ""));
-      reader.onerror = () => reject(reader.error ?? new Error("read file failed"));
+      reader.onerror = () => reject(reader.error ?? new Error(t("composer.attachments.readFailed")));
       reader.readAsDataURL(file);
     });
 
@@ -963,7 +966,7 @@ export function Composer({
     new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
       reader.onload = () => resolve(String(reader.result ?? ""));
-      reader.onerror = () => reject(reader.error ?? new Error("read file failed"));
+      reader.onerror = () => reject(reader.error ?? new Error(t("composer.attachments.readFailed")));
       reader.readAsText(file);
     });
 
@@ -1564,7 +1567,7 @@ export function Composer({
           />
           <ComposerAttachButton
             disabled={attachments.length >= MAX_COMPOSER_ATTACHMENTS}
-            disabledTitle={`Maximum ${MAX_COMPOSER_ATTACHMENTS} attachments allowed`}
+            disabledTitle={attachmentLimitMessage}
             onClick={() => fileInputRef.current?.click()}
           />
 

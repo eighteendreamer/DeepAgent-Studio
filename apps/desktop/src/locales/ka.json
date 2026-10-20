@@ -579,6 +579,21 @@
     "noProject": "არანაირი პროექტი"
   },
   "composer": {
+    "attachments": {
+      "limit": "დასაშვებია მაქსიმუმ {{count}} დანართი",
+      "recognizing": "მიმდინარეობს ანალიზი",
+      "processing": "მიმდინარეობს დამუშავება",
+      "failed": "დამუშავება ვერ მოხერხდა",
+      "readFailed": "ფაილის წაკითხვა ვერ მოხერხდა",
+      "text": "ტექსტი",
+      "file": "ფაილი",
+      "removeImage": "სურათის წაშლა: {{name}}",
+      "removeAttachment": "დანართის წაშლა: {{name}}",
+      "previewImage": "სურათის წინასწარი ნახვა",
+      "previewNamedImage": "სურათის წინასწარი ნახვა: {{name}}",
+      "closePreview": "სურათის წინასწარი ნახვის დახურვა",
+      "statusLabel": "{{name}}: {{status}}"
+    },
     "placeholder": "იკითხე რამე...",
     "autoReview": "ავტომატური მიმოხილვა",
     "selectModel": "აირჩიეთ მოდელი",

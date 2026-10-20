@@ -523,6 +523,21 @@
     "noProject": "Ekkert verkefni"
   },
   "composer": {
+    "attachments": {
+      "limit": "Að hámarki {{count}} viðhengi leyfð",
+      "recognizing": "Greini",
+      "processing": "Vinnsla í gangi",
+      "failed": "Vinnsla mistókst",
+      "readFailed": "Ekki tókst að lesa skrá",
+      "text": "Texti",
+      "file": "Skrá",
+      "removeImage": "Fjarlægja mynd: {{name}}",
+      "removeAttachment": "Fjarlægja viðhengi: {{name}}",
+      "previewImage": "Forskoða mynd",
+      "previewNamedImage": "Forskoða mynd: {{name}}",
+      "closePreview": "Loka forskoðun myndar",
+      "statusLabel": "{{name}}: {{status}}"
+    },
     "placeholder": "Spyrðu að hverju sem er...",
     "autoReview": "Sjálfvirk yfirferð",
     "selectModel": "Veldu líkan",

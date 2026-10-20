@@ -523,6 +523,21 @@
     "noProject": "Нема проект"
   },
   "composer": {
+    "attachments": {
+      "limit": "Дозволени се најмногу {{count}} прилози",
+      "recognizing": "Се анализира",
+      "processing": "Се обработува",
+      "failed": "Обработката не успеа",
+      "readFailed": "Читањето на датотеката не успеа",
+      "text": "Текст",
+      "file": "Датотека",
+      "removeImage": "Отстрани слика: {{name}}",
+      "removeAttachment": "Отстрани прилог: {{name}}",
+      "previewImage": "Преглед на слика",
+      "previewNamedImage": "Преглед на слика: {{name}}",
+      "closePreview": "Затвори преглед на слика",
+      "statusLabel": "{{name}}: {{status}}"
+    },
     "placeholder": "Прашајте што било...",
     "autoReview": "Автоматски преглед",
     "selectModel": "Изберете модел",

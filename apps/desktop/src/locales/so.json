@@ -523,6 +523,21 @@
     "noProject": "Mashruuc ma jiro"
   },
   "composer": {
+    "attachments": {
+      "limit": "Ugu badnaan {{count}} lifaaq ayaa la oggol yahay",
+      "recognizing": "Waa la falanqaynayaa",
+      "processing": "Waa la farsamaynayaa",
+      "failed": "Farsamayntu way fashilantay",
+      "readFailed": "Faylka lama akhrin karin",
+      "text": "Qoraal",
+      "file": "Fayl",
+      "removeImage": "Ka saar sawirka: {{name}}",
+      "removeAttachment": "Ka saar lifaaqa: {{name}}",
+      "previewImage": "Hordhaca sawirka",
+      "previewNamedImage": "Hordhaca sawirka: {{name}}",
+      "closePreview": "Xir hordhaca sawirka",
+      "statusLabel": "{{name}}: {{status}}"
+    },
     "placeholder": "Weydii wax walba...",
     "autoReview": "Dib-u-eegis Is-wada",
     "selectModel": "Dooro Model",

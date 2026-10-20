@@ -523,6 +523,21 @@
     "noProject": "Առանց նախագծի"
   },
   "composer": {
+    "attachments": {
+      "limit": "Թույլատրվում է առավելագույնը {{count}} կցորդ",
+      "recognizing": "Վերլուծվում է",
+      "processing": "Մշակվում է",
+      "failed": "Մշակումը ձախողվեց",
+      "readFailed": "Չհաջողվեց կարդալ ֆայլը",
+      "text": "Տեքստ",
+      "file": "Ֆայլ",
+      "removeImage": "Հեռացնել պատկերը՝ {{name}}",
+      "removeAttachment": "Հեռացնել կցորդը՝ {{name}}",
+      "previewImage": "Պատկերի նախադիտում",
+      "previewNamedImage": "Պատկերի նախադիտում՝ {{name}}",
+      "closePreview": "Փակել պատկերի նախադիտումը",
+      "statusLabel": "{{name}}՝ {{status}}"
+    },
     "placeholder": "Հարցրեք որևէ բան...",
     "autoReview": "Ավտոմատ վերանայում",
     "selectModel": "Ընտրել մոդել",

@@ -1,4 +1,5 @@
 import { X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import { cn } from "./shadcn/utils";
 import {
   Dialog,
@@ -20,7 +21,10 @@ export function ImagePreviewTrigger({
   triggerClassName,
   imageClassName,
 }: ImagePreviewTriggerProps) {
-  const label = alt.trim() ? `预览图片：${alt}` : "预览图片";
+  const { t } = useTranslation();
+  const label = alt.trim()
+    ? t("composer.attachments.previewNamedImage", { name: alt })
+    : t("composer.attachments.previewImage");
 
   return (
     <Dialog>
@@ -51,7 +55,7 @@ export function ImagePreviewTrigger({
             className="block max-h-[min(75dvh,760px)] max-w-[min(80vw,1120px)] rounded-lg object-contain shadow-2xl"
           />
           <DialogCloseIcon
-            aria-label="关闭图片预览"
+            aria-label={t("composer.attachments.closePreview")}
             className="absolute right-3 top-3 z-10 h-9 w-9 rounded-full bg-black/55 text-white hover:bg-black/75 hover:text-white"
           >
             <X aria-hidden="true" className="h-5 w-5" />

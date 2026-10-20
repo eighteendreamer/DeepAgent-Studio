@@ -523,6 +523,21 @@
     "noProject": "Asnjë projekt"
   },
   "composer": {
+    "attachments": {
+      "limit": "Lejohen maksimumi {{count}} bashkëngjitje",
+      "recognizing": "Duke analizuar",
+      "processing": "Duke përpunuar",
+      "failed": "Përpunimi dështoi",
+      "readFailed": "Leximi i skedarit dështoi",
+      "text": "Tekst",
+      "file": "Skedar",
+      "removeImage": "Hiq imazhin: {{name}}",
+      "removeAttachment": "Hiq bashkëngjitjen: {{name}}",
+      "previewImage": "Shiko imazhin",
+      "previewNamedImage": "Shiko imazhin: {{name}}",
+      "closePreview": "Mbyll pamjen e imazhit",
+      "statusLabel": "{{name}}: {{status}}"
+    },
     "placeholder": "Pyesni çfarëdo...",
     "autoReview": "Rishikim automatik",
     "selectModel": "Zgjidhni modelin",

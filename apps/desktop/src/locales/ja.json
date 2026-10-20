@@ -523,6 +523,21 @@
     "noProject": "プロジェクトなし"
   },
   "composer": {
+    "attachments": {
+      "limit": "添付ファイルは最大 {{count}} 個まで追加できます",
+      "recognizing": "解析中",
+      "processing": "処理中",
+      "failed": "処理に失敗しました",
+      "readFailed": "ファイルを読み込めませんでした",
+      "text": "テキスト",
+      "file": "ファイル",
+      "removeImage": "画像を削除：{{name}}",
+      "removeAttachment": "添付ファイルを削除：{{name}}",
+      "previewImage": "画像をプレビュー",
+      "previewNamedImage": "画像をプレビュー：{{name}}",
+      "closePreview": "画像プレビューを閉じる",
+      "statusLabel": "{{name}}：{{status}}"
+    },
     "placeholder": "何でも聞いてください...",
     "autoReview": "自動レビュー",
     "selectModel": "モデルの選択",

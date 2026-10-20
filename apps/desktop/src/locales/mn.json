@@ -523,6 +523,21 @@
     "noProject": "Төсөл алга"
   },
   "composer": {
+    "attachments": {
+      "limit": "Хамгийн ихдээ {{count}} хавсралт нэмэх боломжтой",
+      "recognizing": "Шинжилж байна",
+      "processing": "Боловсруулж байна",
+      "failed": "Боловсруулалт амжилтгүй боллоо",
+      "readFailed": "Файлыг уншиж чадсангүй",
+      "text": "Текст",
+      "file": "Файл",
+      "removeImage": "Зургийг хасах: {{name}}",
+      "removeAttachment": "Хавсралтыг хасах: {{name}}",
+      "previewImage": "Зургийг урьдчилан харах",
+      "previewNamedImage": "Зургийг урьдчилан харах: {{name}}",
+      "closePreview": "Зургийн урьдчилсан харагдацыг хаах",
+      "statusLabel": "{{name}}: {{status}}"
+    },
     "placeholder": "Юу ч хамаагүй асуу...",
     "autoReview": "Автомат хяналт",
     "selectModel": "Модел сонгох",

@@ -523,6 +523,21 @@
     "noProject": "ပရောဂျက်မရှိပါ"
   },
   "composer": {
+    "attachments": {
+      "limit": "အများဆုံး ပူးတွဲဖိုင် {{count}} ခု ထည့်နိုင်သည်",
+      "recognizing": "ခွဲခြမ်းစိတ်ဖြာနေသည်",
+      "processing": "လုပ်ဆောင်နေသည်",
+      "failed": "လုပ်ဆောင်မှု မအောင်မြင်ပါ",
+      "readFailed": "ဖိုင်ကို ဖတ်၍မရပါ",
+      "text": "စာသား",
+      "file": "ဖိုင်",
+      "removeImage": "ပုံကို ဖယ်ရှားရန်: {{name}}",
+      "removeAttachment": "ပူးတွဲဖိုင်ကို ဖယ်ရှားရန်: {{name}}",
+      "previewImage": "ပုံကို အစမ်းကြည့်ရန်",
+      "previewNamedImage": "ပုံကို အစမ်းကြည့်ရန်: {{name}}",
+      "closePreview": "ပုံအစမ်းကြည့်ခြင်းကို ပိတ်ရန်",
+      "statusLabel": "{{name}}: {{status}}"
+    },
     "placeholder": "တစ်ခုခုမေးပါ...",
     "autoReview": "အလိုအလျောက်စစ်ဆေးခြင်း",
     "selectModel": "မော်ဒယ်ရွေးချယ်ရန်",

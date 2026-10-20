@@ -1,5 +1,6 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { CircleAlert, Image, LoaderCircle, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 import type { ComposerAttachment } from "../types";
 import { ImagePreviewTrigger } from "./ImagePreviewTrigger";
 import { Button } from "./shadcn/button";
@@ -13,6 +14,7 @@ interface ComposerAttachmentListProps {
 }
 
 export function ComposerAttachmentList({ attachments, onRemove }: ComposerAttachmentListProps) {
+  const { t } = useTranslation();
   if (attachments.length === 0) return null;
 
   return (
@@ -20,12 +22,22 @@ export function ComposerAttachmentList({ attachments, onRemove }: ComposerAttach
       {attachments.map((item) => {
         if (item.kind === "image") {
           const failed = item.status === "error";
-          const status = failed ? "处理失败" : item.status === "processing" ? "识别中" : null;
+          const status = failed
+            ? t("composer.attachments.failed")
+            : item.status === "processing"
+            ? t("composer.attachments.recognizing")
+            : null;
+          const description = status
+            ? t("composer.attachments.statusLabel", {
+                name: item.name,
+                status: failed ? item.error ?? status : status,
+              })
+            : item.name;
 
           return (
             <HoverInfo
               key={item.id}
-              content={failed ? `${item.name}：${item.error ?? "处理失败"}` : item.name}
+              content={description}
             >
               <div className="group/attachment relative flex h-[68px] w-[68px] shrink-0">
                 {item.dataUrl ? (
@@ -43,7 +55,7 @@ export function ComposerAttachmentList({ attachments, onRemove }: ComposerAttach
                 {status && (
                   <span
                     role={failed ? "alert" : "status"}
-                    aria-label={failed ? `${item.name}：${item.error ?? status}` : `${item.name}：${status}`}
+                    aria-label={description}
                     className={cn(
                       "pointer-events-none absolute inset-x-1 bottom-1 flex items-center justify-center gap-0.5 whitespace-nowrap rounded-md bg-elevated-bg px-0.5 py-0.5 text-[10px] leading-4",
                       failed ? "text-red-500" : "text-text-secondary",
@@ -54,13 +66,13 @@ export function ComposerAttachmentList({ attachments, onRemove }: ComposerAttach
                     ) : (
                       <LoaderCircle aria-hidden="true" className="h-3 w-3 shrink-0 motion-safe:animate-spin" />
                     )}
-                    {status}
+                    <span className="min-w-0 truncate">{status}</span>
                   </span>
                 )}
                 <Button
                   variant="ghost"
                   size="icon"
-                  aria-label={`移除图片：${item.name}`}
+                  aria-label={t("composer.attachments.removeImage", { name: item.name })}
                   onClick={() => onRemove(item.id)}
                   className="absolute -right-1 -top-1 z-10 h-5 w-5 rounded-full border-2 border-elevated-bg bg-neutral-600 p-0 text-white opacity-0 transition-opacity hover:bg-neutral-800 hover:text-white group-hover/attachment:opacity-100 group-focus-within/attachment:opacity-100 motion-reduce:transition-none [@media(hover:none)]:opacity-100"
                 >
@@ -83,17 +95,17 @@ export function ComposerAttachmentList({ attachments, onRemove }: ComposerAttach
               <div className="truncate text-[12px] font-medium text-text-base">{item.name}</div>
               <div className="truncate text-[11px] text-text-secondary">
                 {item.status === "processing"
-                  ? "处理中"
+                  ? t("composer.attachments.processing")
                   : item.status === "error"
-                  ? item.error ?? "处理失败"
+                  ? item.error ?? t("composer.attachments.failed")
                   : item.kind === "text"
-                  ? "文本"
-                  : "文件"}
+                  ? t("composer.attachments.text")
+                  : t("composer.attachments.file")}
               </div>
             </div>
             <IconButton
               type="button"
-              aria-label={`移除附件：${item.name}`}
+              aria-label={t("composer.attachments.removeAttachment", { name: item.name })}
               onClick={() => onRemove(item.id)}
               className="h-6 w-6 rounded-full"
             >
