@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>确定连接 · 动效预览 | DeepAgent Studio</title>
+  <style>
+    :root { color-scheme: light; font-family: Inter, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; color: #1f2937; background: #fff; }
+    * { box-sizing: border-box; }
+    body { margin: 0; }
+    button, input, select { font: inherit; }
+    button, select, label { -webkit-tap-highlight-color: transparent; }
+    button { cursor: pointer; }
+    button:focus-visible, input:focus-visible, select:focus-visible, a:focus-visible { outline: 2px solid #339cff; outline-offset: 4px; }
+    .topbar { height: 72px; padding: 0 32px; border-bottom: 1px solid #e5e7eb; display: flex; align-items: center; justify-content: space-between; gap: 20px; }
+    .brand { font-size: 18px; font-weight: 650; letter-spacing: -.6px; }
+    .caption { margin-left: 16px; padding-left: 16px; border-left: 1px solid #d1d5db; font-size: 13px; color: #6b7280; }
+    .preview-note { font-size: 12px; color: #6b7280; }
+    .workspace { display: grid; grid-template-columns: 256px minmax(0, 1fr); min-height: calc(100svh - 72px); }
+    aside { padding: 30px 24px; border-right: 1px solid #e5e7eb; }
+    .section-label { margin: 0 0 14px; color: #6b7280; font-size: 12px; font-weight: 500; }
+    .choices { display: flex; flex-direction: column; gap: 6px; }
+    .choice { display: grid; grid-template-columns: 24px 1fr; gap: 10px; width: 100%; border: 0; border-radius: 8px; background: transparent; padding: 15px 12px; text-align: left; color: #6b7280; }
+    .choice:hover { background: #f9fafb; }
+    .choice[aria-pressed="true"] { background: #f3f4f6; color: #111827; }
+    .number { padding-top: 2px; font-size: 11px; font-variant-numeric: tabular-nums; }
+    .choice-title { display: block; font-size: 14px; font-weight: 600; }
+    .choice-detail { display: block; margin-top: 5px; color: #6b7280; font-size: 11px; line-height: 1.5; }
+    .controls { margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 24px; }
+    .control-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 0 0 18px; font-size: 12px; }
+    select { padding: 6px 8px; color: #1f2937; background: white; border: 1px solid #d1d5db; border-radius: 6px; font-size: 12px; }
+    input[type="checkbox"] { width: 15px; height: 15px; margin: 0; accent-color: #1f2937; cursor: pointer; }
+    .reset { padding: 0; border: 0; color: #6b7280; background: transparent; font-size: 12px; text-decoration: underline; text-underline-offset: 4px; }
+    .reset:hover { color: #111827; }
+    .stage { min-width: 0; background: #f1f1f2; padding: 36px 32px; display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 24px; }
+    .stage-heading { width: min(512px, 100%); display: flex; justify-content: space-between; gap: 16px; align-items: baseline; }
+    .stage-heading h1 { margin: 0; font-size: 13px; font-weight: 600; }
+    .stage-heading span { font-size: 11px; color: #6b7280; }
+    .login-card { width: min(512px, 100%); padding: 40px; background: #fff; border: 1px solid #9ca3af; border-radius: 24px; box-shadow: 0 25px 50px -12px rgb(0 0 0 / .22); }
+    .login-header { text-align: center; margin-bottom: 32px; }
+    .logo { display: block; width: 80px; height: 80px; object-fit: contain; margin: 0 auto 24px; }
+    h2 { margin: 0 0 8px; font-size: 30px; line-height: 36px; font-weight: 700; }
+    .login-header p { margin: 0; font-size: 14px; line-height: 20px; color: #6b7280; }
+    .login-header a { color: #339cff; text-underline-offset: 2px; }
+    .key-label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 500; line-height: 20px; }
+    .input-wrap { position: relative; }
+    .lock { position: absolute; left: 14px; top: 15px; width: 14px; height: 16px; pointer-events: none; }
+    .key-input { width: 100%; height: 46px; padding: 12px 16px 12px 40px; font-size: 14px; color: #6b7280; background: transparent; border: 1px solid #9ca3af; border-radius: 12px; }
+    .key-input:focus { border-color: #339cff; outline: 2px solid rgb(51 156 255 / .15); outline-offset: 0; }
+    .button-slot { display: flex; justify-content: center; margin-top: 24px; height: 46px; }
+    .connect { position: relative; isolation: isolate; display: flex; align-items: center; justify-content: center; width: 100%; height: 46px; padding: 0 16px; overflow: hidden; border: 1px solid transparent; border-radius: 12px; background: #1f2937; color: #fff; font-size: 14px; font-weight: 600; line-height: 20px; transition: transform 180ms ease, box-shadow 180ms ease, background 180ms ease, opacity 180ms ease; }
+    .connect[data-state="idle"]:disabled { cursor: not-allowed; opacity: .5; }
+    .connect[data-state="busy"] { cursor: progress; }
+    .connect[data-state="success"], .connect[data-state="error"] { cursor: default; }
+    .button-content { position: relative; z-index: 2; display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; pointer-events: none; }
+    .state-icon { width: 15px; height: 15px; object-fit: contain; }
+    .state-icon[hidden] { display: none; }
+    .connect[data-state="busy"] .state-icon { animation: spin 800ms linear infinite; }
+    .button-content.enter { animation: label-in 220ms ease-out both; }
+    .connect[data-state="success"] .state-icon { animation: check-in 320ms cubic-bezier(.2, .8, .3, 1.5) both; }
+    .connect[data-state="error"] { animation: shake 360ms ease; }
+    .connect[data-effect="press"]:not(:disabled):hover { transform: translateY(-2px); background: #111827; box-shadow: 0 6px 12px rgb(0 0 0 / .13); }
+    .connect[data-effect="press"]:not(:disabled):active { transform: translateY(0) scale(.98); box-shadow: 0 1px 3px rgb(0 0 0 / .08); }
+    .connect[data-effect="sheen"]::after { content: ""; position: absolute; z-index: 1; top: -60%; left: -40%; width: 48px; height: 220%; background: rgb(255 255 255 / .23); filter: blur(10px); transform: rotate(24deg); pointer-events: none; }
+    .connect[data-effect="sheen"]:not(:disabled):hover::after { animation: sheen 900ms ease-in-out; }
+    .connect[data-effect="sheen"][data-state="busy"]::after { animation: sheen 1700ms ease-in-out infinite; }
+    .connect[data-effect="sheen"]:not(:disabled):active { transform: scale(.985); }
+    .connect[data-effect="ripple"]:not(:disabled):hover { background: #111827; }
+    .ripple { position: absolute; z-index: 1; width: var(--diameter); height: var(--diameter); left: var(--x); top: var(--y); border-radius: 50%; background: rgb(255 255 255 / .25); transform: translate(-50%, -50%) scale(0); animation: ripple-out 700ms ease-out forwards; pointer-events: none; }
+    .connect[data-effect="morph"] { transition: width 380ms cubic-bezier(.65, 0, .35, 1), border-radius 380ms ease, transform 180ms ease, background 180ms ease; }
+    .connect[data-effect="morph"]:not(:disabled):hover { background: #111827; }
+    .connect[data-effect="morph"]:not(:disabled):active { transform: scale(.98); }
+    .connect[data-effect="morph"][data-state="busy"] { width: 46px; border-radius: 50%; padding: 0; }
+    .connect[data-effect="morph"][data-state="busy"] .button-text { display: none; }
+    .connect[data-effect="morph"][data-state="busy"] .button-content { gap: 0; }
+    .connect[data-effect="morph"][data-state="busy"] .state-icon { width: 18px; height: 18px; }
+    .connect[data-effect="morph"][data-state="success"] .button-content, .connect[data-effect="morph"][data-state="error"] .button-content { animation: label-in 220ms 300ms ease-out both; }
+    .stage-footer { width: min(512px, 100%); min-height: 40px; font-size: 12px; line-height: 20px; color: #6b7280; text-align: center; }
+    .status { display: block; color: #374151; }
+    .safety { display: block; font-size: 11px; color: #6b7280; }
+    .slow .connect { transition-duration: 650ms; }
+    .slow .connect[data-effect="morph"] { transition-duration: 950ms; }
+    .slow .button-content.enter { animation-duration: 650ms; }
+    .slow .connect[data-effect="sheen"]::after { animation-duration: 2400ms !important; }
+    .slow .ripple { animation-duration: 1800ms; }
+    .slow .connect[data-state="error"] { animation-duration: 900ms; }
+    .slow .connect[data-state="success"] .state-icon { animation-duration: 800ms; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes sheen { from { left: -40%; } to { left: 130%; } }
+    @keyframes ripple-out { to { transform: translate(-50%, -50%) scale(1); opacity: 0; } }
+    @keyframes label-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+    @keyframes check-in { from { opacity: 0; transform: scale(.45); } to { opacity: 1; transform: scale(1); } }
+    @keyframes shake { 0%, 100% { transform: translateX(0); } 20%, 60% { transform: translateX(-4px); } 40%, 80% { transform: translateX(4px); } }
+    @media (max-width: 840px) {
+      .topbar { padding: 0 20px; height: 60px; }
+      .preview-note { display: none; }
+      .workspace { grid-template-columns: 1fr; min-height: calc(100svh - 60px); }
+      aside { border-right: 0; padding: 20px; border-bottom: 1px solid #e5e7eb; }
+      .choices { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .choice { display: block; padding: 10px 8px; text-align: center; }
+      .number, .choice-detail, .section-label { display: none; }
+      .choice-title { font-size: 12px; }
+      .controls { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 16px; margin-top: 14px; padding-top: 14px; }
+      .control-row { margin: 0; }
+      .stage { padding: 30px 20px; }
+    }
+    @media (max-width: 480px) {
+      .brand { font-size: 15px; }
+      .caption { font-size: 11px; margin-left: 10px; padding-left: 10px; }
+      .login-card { padding: 30px 24px; }
+      h2 { font-size: 26px; }
+      .login-header p { font-size: 12px; }
+      .stage-heading span { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+      .connect:not(:disabled):hover, .connect:not(:disabled):active { transform: none !important; }
+      .connect::after, .ripple { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div><span class="brand">DeepAgent Studio</span><span class="caption">连接按钮动效</span></div>
+    <span class="preview-note">本地交互预览 · 不影响正式页面</span>
+  </header>
+  <div class="workspace">
+    <aside aria-label="动效与演示设置">
+      <h2 class="section-label">选择动效</h2>
+      <div class="choices" role="group" aria-label="按钮动效">
+        <button class="choice" data-effect="press" aria-pressed="true"><span class="number">01</span><span><span class="choice-title">轻按回弹</span><span class="choice-detail">轻浮起，按下回弹。推荐。</span></span></button>
+        <button class="choice" data-effect="sheen" aria-pressed="false"><span class="number">02</span><span><span class="choice-title">柔光掠过</span><span class="choice-detail">一束柔光穿过按钮表面。</span></span></button>
+        <button class="choice" data-effect="ripple" aria-pressed="false"><span class="number">03</span><span><span class="choice-title">水波扩散</span><span class="choice-detail">从点击位置向四周扩散。</span></span></button>
+        <button class="choice" data-effect="morph" aria-pressed="false"><span class="number">04</span><span><span class="choice-title">收缩变圆</span><span class="choice-detail">连接时收成圆，结束后展开。</span></span></button>
+      </div>
+      <div class="controls">
+        <label class="control-row" for="outcome">模拟结果<select id="outcome"><option value="success">连接成功</option><option value="error">连接失败</option></select></label>
+        <label class="control-row" for="slow">慢速播放<input id="slow" type="checkbox" /></label>
+        <label class="control-row" for="disabled">禁用状态<input id="disabled" type="checkbox" /></label>
+        <button class="reset" id="reset" type="button">重置动效</button>
+      </div>
+    </aside>
+    <main class="stage">
+      <div class="stage-heading"><h1 id="effect-name">01 / 轻按回弹</h1><span>悬停感受反馈 · 点击播放连接过程</span></div>
+      <section class="login-card" aria-label="连接界面预览">
+        <div class="login-header">
+          <img class="logo" src="./logo.png" alt="DeepAgent Studio" />
+          <h2>连接你的 API</h2>
+          <p>请输入你的 <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">DeepSeek API Key</a> 激活桌面客户端</p>
+        </div>
+        <label class="key-label" for="demo-key">API Key</label>
+        <div class="input-wrap">
+          <img class="lock" alt="" src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NDggNTEyIj48cGF0aCBmaWxsPSIjOWNhM2FmIiBkPSJNMTQ0IDE0NGwwIDQ4IDE2MCAwIDAtNDhjMC00NC4yLTM1LjgtODAtODAtODBzLTgwIDM1LjgtODAgODB6TTgwIDE5MmwwLTQ4QzgwIDY0LjUgMTQ0LjUgMCAyMjQgMHMxNDQgNjQuNSAxNDQgMTQ0bDAgNDggMTYgMGMzNS4zIDAgNjQgMjguNyA2NCA2NGwwIDE5MmMwIDM1LjMtMjguNyA2NC02NCA2NEw2NCA1MTJjLTM1LjMgMC02NC0yOC43LTY0LTY0TDAgMjU2YzAtMzUuMyAyOC43LTY0IDY0LTY0bDE2IDB6Ii8+PC9zdmc+" />
+          <input class="key-input" id="demo-key" type="text" value="sk-demo-preview" placeholder="sk-..." autocomplete="off" spellcheck="false" aria-describedby="safety" />
+        </div>
+        <div class="button-slot">
+          <button class="connect" id="connect" type="button" data-effect="press" data-state="idle" aria-busy="false">
+            <span class="button-content"><img class="state-icon" alt="" hidden /><span class="button-text">确定连接</span></span>
+          </button>
+        </div>
+      </section>
+      <div class="stage-footer">
+        <span class="status" id="status" role="status" aria-live="polite">移入按钮，再点击试试。</span>
+        <span class="safety" id="safety">仅演示动效，不验证、发送或保存 API Key；请勿输入真实密钥。</span>
+      </div>
+    </main>
+  </div>
+  <script>
+    const connect = document.querySelector('#connect');
+    const content = connect.querySelector('.button-content');
+    const text = connect.querySelector('.button-text');
+    const stateIcon = connect.querySelector('.state-icon');
+    const key = document.querySelector('#demo-key');
+    const status = document.querySelector('#status');
+    const outcome = document.querySelector('#outcome');
+    const slow = document.querySelector('#slow');
+    const disabled = document.querySelector('#disabled');
+    const icons = {
+      busy: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA1MTIgNTEyIj48cGF0aCBmaWxsPSIjZmZmZmZmIiBkPSJNMjIyLjcgMzIuMWM1IDE2LjktNC42IDM0LjgtMjEuNSAzOS44QzEyMS44IDk1LjYgNjQgMTY5LjEgNjQgMjU2YzAgMTA2IDg2IDE5MiAxOTIgMTkyczE5Mi04NiAxOTItMTkyYzAtODYuOS01Ny44LTE2MC40LTEzNy4xLTE4NC4xYy0xNi45LTUtMjYuNi0yMi45LTIxLjUtMzkuOHMyMi45LTI2LjYgMzkuOC0yMS41QzQzNC45IDQyLjEgNTEyIDE0MCA1MTIgMjU2YzAgMTQxLjQtMTE0LjYgMjU2LTI1NiAyNTZTMCAzOTcuNCAwIDI1NkMwIDE0MCA3Ny4xIDQyLjEgMTgyLjkgMTAuNmMxNi45LTUgMzQuOCA0LjYgMzkuOCAyMS41eiIvPjwvc3ZnPg==',
+      success: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA0NDggNTEyIj48cGF0aCBmaWxsPSIjZmZmZmZmIiBkPSJNNDM4LjYgMTA1LjRjMTIuNSAxMi41IDEyLjUgMzIuOCAwIDQ1LjNsLTI1NiAyNTZjLTEyLjUgMTIuNS0zMi44IDEyLjUtNDUuMyAwbC0xMjgtMTI4Yy0xMi41LTEyLjUtMTIuNS0zMi44IDAtNDUuM3MzMi44LTEyLjUgNDUuMyAwTDE2MCAzMzguNyAzOTMuNCAxMDUuNGMxMi41LTEyLjUgMzIuOC0xMi41IDQ1LjMgMHoiLz48L3N2Zz4=',
+      error: 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzODQgNTEyIj48cGF0aCBmaWxsPSIjZmZmZmZmIiBkPSJNMzQyLjYgMTUwLjZjMTIuNS0xMi41IDEyLjUtMzIuOCAwLTQ1LjNzLTMyLjgtMTIuNS00NS4zIDBMMTkyIDIxMC43IDg2LjYgMTA1LjRjLTEyLjUtMTIuNS0zMi44LTEyLjUtNDUuMyAwcy0xMi41IDMyLjggMCA0NS4zTDE0Ni43IDI1NiA0MS40IDM2MS40Yy0xMi41IDEyLjUtMTIuNSAzMi44IDAgNDUuM3MzMi44IDEyLjUgNDUuMyAwTDE5MiAzMDEuMyAyOTcuNCA0MDYuNmMxMi41IDEyLjUgMzIuOCAxMi41IDQ1LjMgMHMxMi41LTMyLjggMC00NS4zTDIzNy4zIDI1NiAzNDIuNiAxNTAuNnoiLz48L3N2Zz4='
+    };
+    let timers = [];
+    let run = 0;
+
+    function setState(state) {
+      connect.dataset.state = state;
+      connect.setAttribute('aria-busy', String(state === 'busy'));
+      connect.disabled = state !== 'idle' || disabled.checked || !key.value.trim();
+      key.readOnly = state === 'busy';
+      text.textContent = { idle: '确定连接', busy: '正在连接', success: '连接成功', error: '连接失败' }[state];
+      connect.setAttribute('aria-label', text.textContent);
+      stateIcon.hidden = state === 'idle';
+      if (icons[state]) stateIcon.src = icons[state];
+      content.classList.remove('enter');
+      void content.offsetWidth;
+      content.classList.add('enter');
+    }
+
+    function reset() {
+      run++;
+      timers.forEach(clearTimeout);
+      timers = [];
+      connect.querySelectorAll('.ripple').forEach(element => element.remove());
+      setState('idle');
+      status.textContent = connect.disabled ? '按钮已禁用，不响应悬停与点击。' : '移入按钮，再点击试试。';
+    }
+
+    function start(event) {
+      if (connect.disabled || connect.dataset.state !== 'idle') return;
+      const currentRun = ++run;
+      const speed = slow.checked ? 2.5 : 1;
+      const result = outcome.value;
+      if (connect.dataset.effect === 'ripple' && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        const bounds = connect.getBoundingClientRect();
+        const ripple = document.createElement('span');
+        ripple.className = 'ripple';
+        ripple.style.setProperty('--diameter', `${Math.hypot(bounds.width, bounds.height) * 2}px`);
+        ripple.style.setProperty('--x', `${event.detail ? event.clientX - bounds.left : bounds.width / 2}px`);
+        ripple.style.setProperty('--y', `${event.detail ? event.clientY - bounds.top : bounds.height / 2}px`);
+        ripple.addEventListener('animationend', () => ripple.remove(), { once: true });
+        connect.appendChild(ripple);
+      }
+      setState('busy');
+      status.textContent = '正在模拟连接，可随时重置或切换动效。';
+      timers.push(setTimeout(() => {
+        if (currentRun !== run) return;
+        setState(result);
+        status.textContent = result === 'success' ? '模拟连接成功；稍后自动恢复，可再次体验。' : '模拟连接失败；轻微晃动反馈，稍后可重试。';
+        timers.push(setTimeout(() => {
+          if (currentRun === run) reset();
+        }, 1400 * speed));
+      }, 1600 * speed));
+    }
+
+    document.querySelectorAll('.choice').forEach(choice => {
+      choice.addEventListener('click', () => {
+        reset();
+        connect.dataset.effect = choice.dataset.effect;
+        document.querySelectorAll('.choice').forEach(item => item.setAttribute('aria-pressed', String(item === choice)));
+        document.querySelector('#effect-name').textContent = `${choice.querySelector('.number').textContent} / ${choice.querySelector('.choice-title').textContent}`;
+      });
+    });
+    connect.addEventListener('click', start);
+    document.querySelector('#reset').addEventListener('click', reset);
+    disabled.addEventListener('change', reset);
+    key.addEventListener('input', reset);
+    key.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); connect.click(); }
+    });
+    outcome.addEventListener('change', reset);
+    slow.addEventListener('change', () => { document.body.classList.toggle('slow', slow.checked); reset(); });
+    window.addEventListener('pagehide', () => timers.forEach(clearTimeout));
+  </script>
+</body>
+</html>

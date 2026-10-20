@@ -22,7 +22,7 @@ function Splash() {
     <div className="splash-root" data-tauri-drag-region>
       <StrokeText
         text="DeepAgent-Studio"
-        strokeColor="#A78BFA"
+        strokeColor="#000000"
         strokeStyle="solid"
         strokeWidth={1.4}
         dashLength={10}
