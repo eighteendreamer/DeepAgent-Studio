@@ -313,10 +313,51 @@ impl CanvasArtifactService {
         self.import_reader(kind, mime.as_deref(), name, file, workspace_id)
     }
 
+    /// Import a native media-tool output as a video artifact.
+    pub fn import_video_file(
+        &self,
+        media_type: &str,
+        file_name: &str,
+        path: impl AsRef<Path>,
+    ) -> Result<CanvasArtifactDto> {
+        self.import_file(
+            ArtifactKind::Video,
+            Some(media_type),
+            Some(file_name),
+            path,
+            None,
+        )
+    }
+
     /// Index row for an artifact id.
     pub fn record(&self, id: &str) -> Result<Option<ArtifactRecord>> {
         ArtifactStore::validate_id(id)?;
         ArtifactStore::new(&self.db).get(id)
+    }
+
+    /// Validate a persisted reference as a readable video artifact.
+    pub fn validate_video_reference(&self, reference: &str) -> Result<()> {
+        self.video_file_path(reference).map(|_| ())
+    }
+
+    /// Resolve a validated video artifact to its managed file for native media tools.
+    pub fn video_file_path(&self, reference: &str) -> Result<PathBuf> {
+        let id = artifact_id_from_uri(reference.trim())
+            .ok_or_else(|| CoreError::invalid("expected an artifact:// video reference"))?;
+        let record = self
+            .record(id)?
+            .ok_or_else(|| CoreError::invalid(format!("unknown video artifact `{id}`")))?;
+        if record.kind != ArtifactKind::Video {
+            return Err(CoreError::invalid(format!(
+                "artifact `{id}` is {}, expected video",
+                record.kind.as_str()
+            )));
+        }
+        let path = PathBuf::from(&record.path);
+        File::open(&path).map_err(|error| {
+            CoreError::invalid(format!("video artifact `{id}` is unreadable: {error}"))
+        })?;
+        Ok(path)
     }
 
     /// Bytes behind an artifact, for sending to a provider.
@@ -939,5 +980,37 @@ mod tests {
             .expect("import");
         assert!(Path::new(&imported.path).starts_with(&root.dir));
         assert!(!imported.path.contains(".."));
+    }
+
+    #[test]
+    fn video_reference_validation_checks_index_kind_and_file() {
+        let (_root, service) = service("validate-video");
+        let video = service
+            .import_bytes(ArtifactKind::Video, Some("video/webm"), b"video", None)
+            .expect("store video");
+        service
+            .validate_video_reference(&video.uri)
+            .expect("stored video passes");
+
+        let image = service
+            .import_bytes(ArtifactKind::Image, Some("image/png"), b"image", None)
+            .expect("store image");
+        assert!(service
+            .validate_video_reference(&image.uri)
+            .expect_err("image must not pass as video")
+            .to_string()
+            .contains("expected video"));
+        assert!(service
+            .validate_video_reference("artifact://missing")
+            .expect_err("missing artifact must fail")
+            .to_string()
+            .contains("unknown video artifact"));
+
+        std::fs::remove_file(&video.path).expect("remove video bytes");
+        assert!(service
+            .validate_video_reference(&video.uri)
+            .expect_err("missing bytes must fail")
+            .to_string()
+            .contains("unreadable"));
     }
 }

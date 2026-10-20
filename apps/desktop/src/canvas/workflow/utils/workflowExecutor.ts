@@ -93,7 +93,9 @@ function creativeConfig(
     const reference = `{{#${edge.source}.${field}#}}`;
     if (field === "imageUrl") images.push(reference);
     else if (field === "videoUrl") {
-      if (kind === "video-edit") videos.push(reference);
+      // The interactive editor currently edits one source at a time. A manually
+      // selected/imported source takes precedence; otherwise use the first link.
+      if (kind === "video-edit" && videos.length === 0) videos.push(reference);
     }
     else if (field === "audioUrl") audios.push(reference);
     else texts.push(reference);

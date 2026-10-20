@@ -251,6 +251,7 @@ function ComplexDropdown({
 const RUNTIME_CAPABILITY_LABEL: Record<string, string> = {
   "speech-model": "语音模型",
   "speech-engine": "转写引擎",
+  "video-media-tools": "视频处理",
   "doc-convert": "文档转换",
   "pdf-render": "PDF 渲染",
   "office-suite": "Office 套件",
@@ -261,6 +262,7 @@ const RUNTIME_DESCRIPTIONS: Record<string, string> = {
   "whisper-base": "默认本地语音转文字模型，适合会议录音、语音备忘和日常转写。",
   "whisper-small": "更高质量的 Whisper 模型，体积更大，适合对准确率要求更高的录音。",
   "whisper-cli": "whisper.cpp 本地转写引擎，语音模型需要通过它在本机执行。",
+  ffmpeg: "FFmpeg 与 FFprobe 视频工具。Windows/Linux LGPL 构建可按需下载；macOS 原生构建仍待完成来源与再分发校验。",
   pandoc: "增强 Markdown、docx 等文档转换能力。",
   pdfium: "增强 PDF 页面预览和栅格化渲染能力。",
   libreoffice: "用于旧版 Office 格式、高保真转换和导出能力。",

@@ -1,7 +1,7 @@
 # DeepAgent Studio 视频生成与本地编辑集成工程方案
 
 > 方案版本：v3.0（云端生成 + 本地编辑并存）
-> 状态：实施中（云端生成和 artifact 流已接入；video-edit 仅有节点骨架及素材导入，时间线和编码导出未完成）
+> 状态：实施中（云端生成、artifact 流、裁剪编辑 MVP、工程草稿持久化、上游视频载入、指纹校验和运行时 artifact 存在性校验已接入；Tauri 实机兼容验收仍未完成）
 > 目标：保留画布视频节点的云端 API 生成能力，并新增可持久化的本地视频编辑节点。
 > 核心原则：生成任务归模型网关；编辑工程归画布节点；所有媒体文件复用 artifact 存储。
 
@@ -12,13 +12,30 @@
 - 云端生成和 artifact 流式存储已提交于 `cd35c8c`。
 - `1f07a36` 增加了编辑节点骨架，但不代表编辑器完成。其中初版导出只是复制源视频，时间范围未参与编码；后续纠正移除了该入口，运行时拒绝这些未经验证的旧输出。
 - 本地导入现走原生文件选择器，将路径交给既有 artifact 服务流式写入，不使用 FileReader/base64。
-- `VideoTimelineEdit` 为独立本地操作，不映射云端视频编辑场景。在真实导出接通之前，节点执行器标为 Unsupported。
-- 用户已明确允许直接借鉴 ArtCraft；本轮未集成或打包其编辑器源码。
+- 新增编辑工程 preference key、项目存储适配器与分块上传 IPC（256 KiB 分块、8 GiB 单文件上限、最多 8 个并行上传、offset 校验）；Rust 回归测试覆盖完整顺序上传、超限拒绝、非法 offset 清理和未知长度流上传。
+- 编辑适配器不再导入 ArtCraft 源码类型；工程记录通过现有 canvas preference 保存。节点面板已接入视频预览、播放头、起止裁剪范围和自动保存。Windows 桌面使用按需下载的托管 FFmpeg 裁剪并导出为新 artifact，不依赖 WebView 的 MediaRecorder；支持 MP4/MOV、WebM 和 MKV 容器，按流复制保留源编码，剪切边界受关键帧影响。
+- 编辑工程的 `saveVideoEditProject()` 现在等待对应 preference 写入应用数据库成功后才完成；数据库写入失败会让保存操作失败并保留 dirty 状态，不再把防抖队列入队误报为持久化成功。
+- 分块上传对每块限制为 256 KiB、总量上限 8 GiB；上传队列有 8 MiB 背压阈值，编码/上传失败会中止并清理未完成 artifact。时间范围或输入引用变化会清空旧导出引用；节点预览优先显示最新导出结果。
+- 该编辑 MVP 只实现片段裁剪，不是完整多轨编辑器；当前通过托管 FFmpeg 按流复制导出，不受 WebView 实时播放速度限制。预览仍依赖 WebView 解码能力，当前尚未做真实 Tauri WebView 的预览/重启验收。
+- `VideoTimelineEdit` 为独立本地操作，不映射云端视频编辑场景。工作流运行时会校验导出 artifact 与全部源引用是否在 artifact 索引中存在、类型为 Video 且文件可打开，并验证裁剪范围和输入指纹后才向下游投影结果。
+- 用户已明确允许参考 ArtCraft；其仓库许可证标注为 WIP，并明确限制将源码用于开发竞争产品。本轮没有把其源码接入运行路径或发行包；若继续直接集成，需先取得权利方许可。工作区中的源码副本仅为未提交的调查/适配验证材料。
 - 源码核查：`VideoEditor.tsx` 接收但不使用 `projectId`，宿主必须显式初始化工程；`core/index.ts` 使用首次初始化生效的单例，切换节点必须处理保存、资源释放和实例生命周期。
-- 源码核查：当前 ExportSink 接收已编码 Blob；要满足大文件约束，仍需实现分块写入，并检查编码阶段本身的内存使用。不能用复制原片替代时间线渲染。
-- 尚未完成：ArtCraft 依赖集成、真实时间线、工程保存/恢复适配器、输入变更失效校验、编码导出、Tauri 桌面兼容性和重启验收。本文后续阶段仍为目标设计。
+- FFmpeg/FFprobe 裁剪通过 artifact 受管源路径、临时输出和 artifact 流式导入完成；FFprobe 在处理前读取源时长并在导入前验证输出。媒体字节不经过前端。安装资源或配套 FFprobe 缺失时命令明确提示通过按需下载资源安装，不回退到平台不一致的 WebView 编码。
+- Windows FFmpeg 裁剪现以 `-progress` 事件报告进度，并支持取消正在运行的 FFmpeg 子进程；取消后临时目录自动清理，只有处理和输出探测成功后才导入 artifact。
+- 尚未完成：完整多轨/过渡/音频编辑、Tauri 实机编解码和重启恢复验收、基于 stream copy 的关键帧边界限制、macOS 受管资源，以及 Linux/macOS 桌面验收。当前裁剪不保证精确帧级边界，容器依赖输入视频实际编解码器支持情况。
+- 媒体工具决策：FFmpeg/ffprobe 采用应用托管的按需资源，由设置页统一查看、下载、校验和卸载；不要求系统 PATH，也不默认塞入桌面安装包。Windows `video-edit` 裁剪通过托管命令行处理，用户必须安装已验证的资源包后才能导出。接入前须为 Windows/Linux/macOS 的目标架构固定可再分发构建、版本、SHA-256 和许可证材料；未经核验的二进制不能进入可下载资源目录。
 
 ---
+
+## Windows 真实媒体验证（2026-10-19）
+
+- 使用用户提供的本地会议 MP4，仅在本机处理，未上传到供应商。FFprobe 检测为 5.248 秒、H.264 1728×1080 视频与 AAC 音频，文件大小 721,788 bytes。
+- 通过实际 RuntimeService 下载固定 Windows LGPL 资源，完成 SHA-256 校验和安装；诊断入口能发现受管 FFmpeg。未依赖系统 PATH。
+- `video_trim_real_media_and_cancel` 实测通过：源文件导入 artifact、调用生产 FFmpeg 执行器、输出探测和完整解码、新 artifact 生成、进度触发取消、Windows 文件句柄释放及临时目录清理、原文件字节不变。
+- 测试请求从第 1 秒截取 2 秒，按流复制的实际输出为 2.953 秒、203,489 bytes。该结果明确体现关键帧边界限制，不代表帧精确裁剪通过。
+- `video_live_check` 使用只读数据库快照读取真实供应商配置，避免对正式数据库执行启动恢复；密钥不输出。一次合成提示词云端生成未获得视频，当前唯一标记为视频生成的模型为 `doubao-seed-2-0-lite-260428`，其官方能力为文本生成/多模态理解。需配置实际支持视频生成的模型，并验证网关与供应商协议，不能将通用连接测试通过当成视频能力通过。
+- 验证通过：上述真实媒体测试、artifact 服务 9 项测试、裁剪容器 2 项测试、诊断 example 编译与 inspect、workspace/desktop 格式检查和 diff 检查。
+- 尚未验收：真实 Tauri UI 点击导出/预览、桌面重启工程恢复、云端视频生成成功路径、Linux/macOS 实机。此次后端测试不能替代这些验收。
 
 ## 1. 目标与关键决策
 
@@ -36,7 +53,7 @@
 
 - 保留现有 **video-gen** 云端生成链路；不删除 MediaJob、供应商配置、任务 ID、进度、续跑或取消逻辑。
 - 本地编辑使用独立的 **video-edit** 节点；不把生成节点改成本地编辑节点。
-- 编辑器按 ArtCraft **video-editor** 的 ProjectStorage、MediaSource、ExportSink 适配边界集成；经用户明确授权后允许直接借鉴其组件实现，生产打包仍需单独验证依赖和许可证。
+- 编辑器可参考 ArtCraft **video-editor** 的 ProjectStorage、MediaSource、ExportSink 适配边界；用户对本项目的授权不替代 ArtCraft 权利方的许可，取得覆盖本产品开发和分发的书面许可后才可集成其源码。
 - 编辑节点接受上游视频 artifact，也允许用户从磁盘导入本地视频。
 - 编辑项目必须跨画布关闭和桌面重启恢复；编辑导出创建新 artifact，原片保持不变。
 - 继续使用现有 **artifact://<id>** 作为节点中媒体资产的持久引用；不引入 **asset://** 或第二套媒体存储。
@@ -375,6 +392,16 @@ video-edit 节点
 - 授权通过后先固定许可证文件、上游 commit、组件清单和所需依赖版本，执行项目既有 license 检查。
 - 复用本项目已有 React、Tauri、Lucide 和 shadcn 组件；ArtCraft 内部 UI 如需依赖其图标或基础组件，要在许可和打包范围内一并审查。
 - WASM/编码库仅从获准的编辑器依赖链引入，不因方案预设直接增加未经核验的 package。
+
+### 10.4 FFmpeg/ffprobe 托管资源
+
+- 通过现有 `RuntimeService` 与“按需下载资源”页面管理，不捆绑到默认安装包，不修改用户系统 `PATH`。
+- `ffmpeg` 与 `ffprobe` 同属一个版本化资源包，安装到应用管理目录；消费者通过 RuntimeService 解析可执行文件路径，不自行搜索任意系统目录或拼接平台路径。
+- 覆盖 Windows、Linux、macOS 的 x64 与 ARM64 目标。每个平台包需独立固定 HTTPS 来源、版本、SHA-256、探测路径、文件大小和许可证材料；无已验证哈希的平台保持不可安装，不能静默降级为不校验下载。
+- 首次调用视频裁剪时如资源缺失，明确提示到「按需下载资源」安装；Windows 当前裁剪导出依赖托管 FFmpeg/FFprobe，不回退到 WebView `MediaRecorder`。
+- 已接入 Windows x64/ARM64 与 Linux x64/ARM64 的固定 LGPL 构建：BtbN [`autobuild-2026-10-17-20-51`](https://github.com/BtbN/FFmpeg-Builds/releases/tag/autobuild-2026-10-17-20-51) 中 FFmpeg 9.0.2 包，SHA-256 来自同一发布快照的 [`checksums.sha256`](https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-17-20-51/checksums.sha256)；构建变体说明见 [BtbN 构建说明](https://github.com/BtbN/FFmpeg-Builds#available-variants)。Linux `.tar.xz` 由 RuntimeService 增加的安全 tar.xz 解压分支处理。它们显示在「按需下载资源」中。
+- macOS x64/ARM64 暂不提供下载项：FFmpeg [官方下载页](https://ffmpeg.org/download.html)列出的 [evermeet Intel 静态包](https://evermeet.cx/ffmpeg/)启用了 GPL，且其 [Apple Silicon 页面](https://evermeet.cx/ffmpeg/apple-silicon-arm)明确不提供 Apple Silicon 原生包；当前没有核验通过的 LGPL 双架构包。因此不得用该包冒充 macOS 全平台方案。后续应从 FFmpeg 源码按 LGPL 配置构建并固定可复现产物、校验值与许可证材料后再开放。
+- 建立来源与再分发核验记录后，补齐必要的按需功能调用。功能不得在资源安装前假称可以做 FFmpeg 探测或转码。
 
 ---
 

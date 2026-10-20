@@ -176,6 +176,7 @@ percent-encoding = "2"
 # pdfium ship tarballs on some platforms). Pure Rust.
 tar = "0.4"
 flate2 = "1"
+xz2 = "0.1"
 
 # PDF page rendering (office-agent Tier R, behind the `pdfium` feature).
 # pdfium-render dynamically loads the pdfium library at runtime, so it compiles

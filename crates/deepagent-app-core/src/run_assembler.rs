@@ -1410,7 +1410,9 @@ impl<'a> RunAssembler<'a> {
         }
 
         if let Some(gateway) = self.canvas_model.clone() {
-            agent = agent.with_canvas_bridge(gateway);
+            agent = agent
+                .with_canvas_bridge(gateway.clone())
+                .with_artifact_validator(gateway);
         }
 
         if let Some(knowledge) = self.knowledge.clone() {

@@ -7,6 +7,10 @@ license.workspace = true
 authors.workspace = true
 description = "Application-service facade: serializable DTOs and commands bridging the kernel to any UI (Tauri/web)."
 
+[[example]]
+name = "video_live_check"
+required-features = ["keychain", "runtimes"]
+
 [dependencies]
 deepagent-core.workspace = true
 deepagent-persistence.workspace = true
@@ -65,6 +69,7 @@ notify = "8.2.0"
 # .tar.gz extraction for managed runtimes (always compiled — small, pure Rust).
 tar.workspace = true
 flate2.workspace = true
+xz2.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
 # PDF page rendering (Tier R) — optional, behind `pdfium`.
 pdfium-render = { workspace = true, optional = true }

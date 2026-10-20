@@ -12,8 +12,9 @@
 //! - [`TerminalService`] — interactive terminal in the active project dir.
 
 use std::collections::{BTreeMap, HashMap};
-use std::io::Read;
+use std::io::{BufRead, Read};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -405,6 +406,7 @@ struct AppState {
     recording: Arc<RecordingService>,
     /// Managed-runtime download/install manager (office-agent).
     runtime: Arc<RuntimeService>,
+    video_trim_operations: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     /// Local system-vision image recognition.
     vision: Arc<VisionService>,
     /// Windows software sandbox integration (Sandboxie-Plus).
@@ -422,6 +424,13 @@ struct AppState {
     mobile: Arc<AppMobileService>,
     /// Tokio runtime for async calls invoked from sync commands.
     rt: tokio::runtime::Runtime,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CanvasVideoTrimProgress {
+    operation_id: String,
+    fraction: f64,
 }
 
 /// Run filesystem/database work outside Tauri's command dispatcher.
@@ -609,7 +618,13 @@ fn run_was_cancelled(chat: &deepagent_app_core::ChatService, run_id: &str) -> bo
                 .rev()
                 .find(|event| event.event_type == "run_terminal")
         })
-        .and_then(|event| event.data.get("kind").and_then(serde_json::Value::as_str).map(str::to_owned))
+        .and_then(|event| {
+            event
+                .data
+                .get("kind")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        })
         .is_some_and(|kind| kind == "cancelled")
 }
 
@@ -2346,6 +2361,18 @@ fn canvas_artifact_import(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn canvas_artifact_upload(
+    state: State<'_, Arc<deepagent_app_core::canvas_artifact_uploads::CanvasArtifactUploads>>,
+    action: deepagent_app_core::canvas_artifact_uploads::ArtifactUploadAction,
+) -> Result<serde_json::Value, String> {
+    let uploads = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || uploads.apply(action))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())
+}
+
 /// Resolve a node-stored media reference for display. Returns `None` for
 /// `http(s)`, `data:` and `asset:` values, which the renderer uses as-is.
 #[tauri::command]
@@ -2357,6 +2384,331 @@ fn canvas_artifact_url(
         .canvas_artifacts
         .display_target(&reference)
         .map_err(|e| e.to_string())
+}
+
+/// Trim a stored video with the app-managed FFmpeg runtime. The source artifact
+/// is kept intact and the new artifact is published only after FFmpeg succeeds.
+#[tauri::command]
+async fn canvas_video_trim(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    operation_id: String,
+    reference: String,
+    start_seconds: f64,
+    end_seconds: f64,
+) -> Result<deepagent_app_core::canvas_artifact_service::CanvasArtifactDto, String> {
+    let operation_id = operation_id.trim().to_string();
+    if operation_id.is_empty() || operation_id.len() > 128 {
+        return Err("视频处理任务标识无效".to_string());
+    }
+    if !start_seconds.is_finite()
+        || !end_seconds.is_finite()
+        || start_seconds < 0.0
+        || end_seconds <= start_seconds
+    {
+        return Err("裁剪时间范围无效".to_string());
+    }
+    let input = state
+        .canvas_artifacts
+        .video_file_path(&reference)
+        .map_err(|error| error.to_string())?;
+    let record = state
+        .canvas_artifacts
+        .record(reference.trim().trim_start_matches("artifact://"))
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "视频素材不存在".to_string())?;
+    let (extension, mime) = video_trim_output_format(&input, record.media_type.as_deref())?;
+    let ffmpeg = state
+        .runtime
+        .installed_executable("ffmpeg")
+        .ok_or_else(|| "FFmpeg 尚未安装，请在设置 > 按需下载资源中安装视频处理工具".to_string())?;
+    let artifacts = state.canvas_artifacts.clone();
+    let runtime_dir = ffmpeg
+        .parent()
+        .ok_or_else(|| "FFmpeg 安装路径无效".to_string())?
+        .to_path_buf();
+    let ffprobe_name = if cfg!(windows) {
+        "ffprobe.exe"
+    } else {
+        "ffprobe"
+    };
+    let ffprobe = runtime_dir.join(ffprobe_name);
+    if !ffprobe.is_file() {
+        return Err("托管视频工具包缺少 FFprobe，请重新安装 FFmpeg 与 FFprobe".to_string());
+    }
+    let operations = state.video_trim_operations.clone();
+    let event_operation_id = operation_id.clone();
+    let cancelled = Arc::new(AtomicBool::new(false));
+    {
+        let mut operations = operations
+            .lock()
+            .map_err(|_| "视频处理任务状态不可用".to_string())?;
+        if operations.contains_key(&operation_id) {
+            return Err("视频处理任务标识重复".to_string());
+        }
+        operations.insert(operation_id.clone(), cancelled.clone());
+    }
+    let task_result = tauri::async_runtime::spawn_blocking(move || {
+        let probe = std::process::Command::new(&ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+            ])
+            .arg(&input)
+            .output()
+            .map_err(|error| format!("启动托管 FFprobe 失败：{error}"))?;
+        if !probe.status.success() {
+            return Err(format!(
+                "FFprobe 无法读取视频：{}",
+                String::from_utf8_lossy(&probe.stderr).trim()
+            ));
+        }
+        let duration = String::from_utf8_lossy(&probe.stdout)
+            .trim()
+            .parse::<f64>()
+            .map_err(|error| format!("FFprobe 返回了无效时长：{error}"))?;
+        if end_seconds > duration + 0.05 {
+            return Err(format!("裁剪结束时间超过视频时长（{duration:.3} 秒）"));
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("已取消视频导出".to_string());
+        }
+        let staging = tempfile::Builder::new()
+            .prefix("deepagent-video-trim-")
+            .tempdir()
+            .map_err(|error| format!("创建视频临时目录失败：{error}"))?;
+        let output_path = staging.path().join(format!("output.{extension}"));
+        let mut command = std::process::Command::new(ffmpeg);
+        command
+            .args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-progress",
+                "pipe:1",
+                "-nostats",
+            ])
+            .arg("-ss")
+            .arg(format!("{start_seconds:.3}"))
+            .arg("-i")
+            .arg(&input)
+            .arg("-t")
+            .arg(format!("{:.3}", end_seconds - start_seconds))
+            .args(["-map", "0:v:0", "-map", "0:a?", "-c", "copy"]);
+        if extension == "mp4" {
+            command.args(["-avoid_negative_ts", "make_zero", "-movflags", "+faststart"]);
+        }
+        let path_var = std::env::var_os("PATH").unwrap_or_default();
+        let mut search_paths = vec![runtime_dir];
+        search_paths.extend(std::env::split_paths(&path_var));
+        if let Ok(path) = std::env::join_paths(search_paths) {
+            command.env("PATH", path);
+        }
+        command.arg(&output_path);
+        run_ffmpeg_with_progress(
+            &cancelled,
+            command,
+            end_seconds - start_seconds,
+            |fraction| {
+                let _ = app.emit(
+                    "canvas-video-trim-progress",
+                    CanvasVideoTrimProgress {
+                        operation_id: event_operation_id.clone(),
+                        fraction,
+                    },
+                );
+            },
+        )?;
+        let metadata = std::fs::metadata(&output_path)
+            .map_err(|error| format!("读取 FFmpeg 输出失败：{error}"))?;
+        if metadata.len() == 0 {
+            return Err("FFmpeg 输出为空".to_string());
+        }
+        let output_probe = std::process::Command::new(&ffprobe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+            ])
+            .arg(&output_path)
+            .output()
+            .map_err(|error| format!("校验导出视频失败：{error}"))?;
+        if !output_probe.status.success()
+            || !String::from_utf8_lossy(&output_probe.stdout)
+                .trim()
+                .parse::<f64>()
+                .is_ok_and(|duration| duration > 0.0)
+        {
+            return Err("FFprobe 无法确认导出文件是有效视频".to_string());
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("已取消视频导出".to_string());
+        }
+        let artifact = artifacts
+            .import_video_file(mime, &format!("video-trim.{extension}"), &output_path)
+            .map_err(|error| format!("保存裁剪视频失败：{error}"))?;
+        let _ = app.emit(
+            "canvas-video-trim-progress",
+            CanvasVideoTrimProgress {
+                operation_id: event_operation_id,
+                fraction: 1.0,
+            },
+        );
+        Ok(artifact)
+    })
+    .await;
+    if let Ok(mut operations) = operations.lock() {
+        operations.remove(operation_id.as_str());
+    }
+    task_result.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+fn canvas_video_trim_cancel(
+    state: State<'_, AppState>,
+    operation_id: String,
+) -> Result<(), String> {
+    let operations = state
+        .video_trim_operations
+        .lock()
+        .map_err(|_| "视频处理任务状态不可用".to_string())?;
+    let cancellation = operations
+        .get(operation_id.trim())
+        .ok_or_else(|| "视频处理任务已结束".to_string())?;
+    cancellation.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+fn run_ffmpeg_with_progress(
+    cancelled: &AtomicBool,
+    mut command: std::process::Command,
+    duration_seconds: f64,
+    on_progress: impl Fn(f64),
+) -> Result<(), String> {
+    use std::process::Stdio;
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("启动托管 FFmpeg 失败：{error}"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "无法读取 FFmpeg 进度".to_string())?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| "无法读取 FFmpeg 错误输出".to_string())?;
+    let (progress_tx, progress_rx) = std::sync::mpsc::channel();
+    let progress_reader = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stdout);
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if let Some(value) = line
+                        .strip_prefix("out_time_us=")
+                        .and_then(|value| value.trim().parse::<f64>().ok())
+                    {
+                        let _ = progress_tx.send(value / 1_000_000.0);
+                    }
+                }
+            }
+        }
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut reader = std::io::BufReader::new(stderr);
+        let mut output = String::new();
+        let _ = reader.read_to_string(&mut output);
+        output
+    });
+
+    let mut was_cancelled = false;
+    let status = loop {
+        if cancelled.load(Ordering::Relaxed) {
+            was_cancelled = true;
+            let _ = child.kill();
+        }
+        if let Some(status) = child
+            .try_wait()
+            .map_err(|error| format!("等待 FFmpeg 退出失败：{error}"))?
+        {
+            break status;
+        }
+        if let Ok(processed_seconds) =
+            progress_rx.recv_timeout(std::time::Duration::from_millis(100))
+        {
+            let fraction = if duration_seconds.is_finite() && duration_seconds > 0.0 {
+                (0.05 + 0.9 * processed_seconds / duration_seconds).clamp(0.05, 0.95)
+            } else {
+                0.05
+            };
+            on_progress(fraction);
+        }
+    };
+    let _ = progress_reader.join();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    if was_cancelled || cancelled.load(Ordering::Relaxed) {
+        return Err("已取消视频导出".to_string());
+    }
+    if !status.success() {
+        let detail = stderr.trim();
+        return Err(if detail.is_empty() {
+            format!("FFmpeg 裁剪失败，退出码 {:?}", status.code())
+        } else {
+            format!("FFmpeg 裁剪失败：{detail}")
+        });
+    }
+    Ok(())
+}
+
+/// Preserve the source container for stream-copy trimming. The artifact path
+/// keeps its detected/imported extension, which is more reliable than MIME
+/// sniffing for Matroska because WebM is a Matroska subset.
+fn video_trim_output_format(
+    input: &std::path::Path,
+    media_type: Option<&str>,
+) -> Result<(&'static str, &'static str), String> {
+    let from_extension = input
+        .extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .map(str::to_ascii_lowercase);
+    match from_extension.as_deref() {
+        Some("mp4" | "m4v") => return Ok(("mp4", "video/mp4")),
+        Some("mov") => return Ok(("mov", "video/quicktime")),
+        Some("webm") => return Ok(("webm", "video/webm")),
+        Some("mkv" | "mka" | "matroska") => return Ok(("mkv", "video/x-matroska")),
+        _ => {}
+    }
+
+    match media_type
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .to_ascii_lowercase()
+        })
+        .as_deref()
+    {
+        Some("video/mp4" | "video/quicktime") => Ok(("mp4", "video/mp4")),
+        Some("video/webm") => Ok(("webm", "video/webm")),
+        Some("video/x-matroska" | "video/matroska") => Ok(("mkv", "video/x-matroska")),
+        Some(other) => Err(format!("FFmpeg 裁剪暂不支持此容器：{other}")),
+        None => Err("无法识别视频容器，请重新导入 MP4、MOV、WebM 或 MKV 文件".to_string()),
+    }
 }
 
 /// One-off `data:` URL for the crop / annotate overlays, which need actual
@@ -6709,6 +7061,11 @@ pub fn run() {
                 )
                 .map_err(|error| format!("failed to open canvas artifact store: {error}"))?,
             );
+            app.manage(Arc::new(
+                deepagent_app_core::canvas_artifact_uploads::CanvasArtifactUploads::new(
+                    canvas_artifacts.clone(),
+                ),
+            ));
             let canvas_gateway = Arc::new(
                 deepagent_app_core::canvas_model_gateway::CanvasModelGateway::new(
                     canvas_providers.clone(),
@@ -6966,6 +7323,7 @@ pub fn run() {
                 attachments,
                 recording,
                 runtime,
+                video_trim_operations: Arc::new(Mutex::new(HashMap::new())),
                 vision,
                 sandboxie,
                 speech,
@@ -7093,7 +7451,10 @@ pub fn run() {
             canvas_workflow_load,
             canvas_workflow_delete,
             canvas_artifact_import,
+            canvas_artifact_upload,
             canvas_artifact_url,
+            canvas_video_trim,
+            canvas_video_trim_cancel,
             canvas_artifact_data_url,
             canvas_preference_read,
             canvas_preference_write,
@@ -7316,6 +7677,155 @@ mod tests {
     use super::*;
     use std::fs;
     use std::io::Write;
+
+    #[test]
+    #[ignore = "requires TEST_VIDEO_SOURCE and TEST_FFMPEG pointing to real local media/tools"]
+    fn video_trim_real_media_and_cancel() {
+        use deepagent_app_core::canvas_artifact_service::CanvasArtifactService;
+        let source = PathBuf::from(std::env::var_os("TEST_VIDEO_SOURCE").expect("source video"));
+        let ffmpeg = PathBuf::from(std::env::var_os("TEST_FFMPEG").expect("managed FFmpeg"));
+        let original = std::fs::read(&source).unwrap();
+        let staging = tempfile::tempdir().unwrap();
+        let service = AppService::open(staging.path().join("test.db")).unwrap();
+        let db = service.shared_database();
+        let artifacts = CanvasArtifactService::new(staging.path().join("artifacts"), db).unwrap();
+        let imported = artifacts
+            .import_video_file("video/mp4", "source.mp4", &source)
+            .unwrap();
+        let input = artifacts.video_file_path(&imported.uri).unwrap();
+        let output = staging.path().join("trim.mp4");
+        let make_command = |output: &Path, realtime: bool| {
+            let mut command = std::process::Command::new(&ffmpeg);
+            command.args([
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-nostdin",
+                "-y",
+                "-progress",
+                "pipe:1",
+                "-nostats",
+            ]);
+            if realtime {
+                command.arg("-re");
+            }
+            command
+                .args(["-ss", "1"])
+                .arg("-i")
+                .arg(&input)
+                .args([
+                    "-t",
+                    "2",
+                    "-map",
+                    "0:v:0",
+                    "-map",
+                    "0:a?",
+                    "-c",
+                    "copy",
+                    "-avoid_negative_ts",
+                    "make_zero",
+                    "-movflags",
+                    "+faststart",
+                ])
+                .arg(output);
+            command
+        };
+        let cancelled = AtomicBool::new(false);
+        run_ffmpeg_with_progress(&cancelled, make_command(&output, false), 2.0, |_| {}).unwrap();
+        let probe = ffmpeg.parent().unwrap().join(if cfg!(windows) {
+            "ffprobe.exe"
+        } else {
+            "ffprobe"
+        });
+        let result = std::process::Command::new(&probe)
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "json",
+            ])
+            .arg(&output)
+            .output()
+            .unwrap();
+        assert!(result.status.success());
+        let info: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        let seconds: f64 = info["format"]["duration"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert!(seconds.is_finite() && seconds > 0.0);
+        println!(
+            "real_trim duration_seconds={seconds} output_bytes={}",
+            std::fs::metadata(&output).unwrap().len()
+        );
+        let exported = artifacts
+            .import_video_file("video/mp4", "trim.mp4", &output)
+            .unwrap();
+        assert_ne!(imported.uri, exported.uri);
+        assert!(artifacts.video_file_path(&exported.uri).unwrap().is_file());
+        let decoded = std::process::Command::new(&ffmpeg)
+            .args(["-v", "error", "-nostdin", "-i"])
+            .arg(&output)
+            .args(["-f", "null", "-"])
+            .output()
+            .unwrap();
+        assert!(
+            decoded.status.success(),
+            "exported media must decode successfully"
+        );
+        let cancelled_dir = tempfile::tempdir_in(staging.path()).unwrap();
+        let cancelled_path = cancelled_dir.path().to_path_buf();
+        let error = run_ffmpeg_with_progress(
+            &cancelled,
+            make_command(&cancelled_path.join("partial.mp4"), true),
+            2.0,
+            |_| {
+                cancelled.store(true, Ordering::Relaxed);
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("已取消视频导出"));
+        drop(cancelled_dir);
+        assert!(
+            !cancelled_path.exists(),
+            "Windows child must exit and release output handles"
+        );
+        assert_eq!(
+            std::fs::read(&source).unwrap(),
+            original,
+            "source must be unchanged"
+        );
+    }
+
+    #[test]
+    fn video_trim_uses_container_extension_before_ambiguous_mime() {
+        assert_eq!(
+            video_trim_output_format(std::path::Path::new("source.mkv"), Some("video/webm"))
+                .unwrap(),
+            ("mkv", "video/x-matroska")
+        );
+        assert_eq!(
+            video_trim_output_format(
+                std::path::Path::new("source.webm"),
+                Some("video/x-matroska")
+            )
+            .unwrap(),
+            ("webm", "video/webm")
+        );
+        assert_eq!(
+            video_trim_output_format(std::path::Path::new("source.mov"), None).unwrap(),
+            ("mov", "video/quicktime")
+        );
+    }
+
+    #[test]
+    fn video_trim_rejects_unknown_container_instead_of_labeling_it_mp4() {
+        let error = video_trim_output_format(std::path::Path::new("source.avi"), None).unwrap_err();
+        assert!(error.contains("无法识别视频容器"));
+    }
 
     #[test]
     fn list_plugins_for_display_does_not_prepare_runtime_payload() {

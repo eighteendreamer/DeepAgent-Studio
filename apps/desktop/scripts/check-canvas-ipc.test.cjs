@@ -30,6 +30,8 @@ const REQUIRED_COMMANDS = [
   "canvas_workflow_save",
   "canvas_workflow_delete",
   "canvas_artifact_import",
+  "canvas_video_trim",
+  "canvas_video_trim_cancel",
   "canvas_artifact_url",
 ];
 

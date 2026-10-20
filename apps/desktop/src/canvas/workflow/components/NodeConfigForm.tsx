@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useCanvasStore } from "../store/canvasStore";
 import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
@@ -24,11 +24,25 @@ export function NodeConfigForm({ nodeId, nodeData, nodeType }: {
   nodeType?: string;
 }) {
   const mode = useCanvasStore((state) => state.mode);
-  const data = normalizeProfessionalData(nodeData, nodeType);
+  const creativeNodes = useCreativeStore((state) => state.nodes);
+  const creativeEdges = useCreativeStore((state) => state.edges);
+  const data = useMemo(() => normalizeProfessionalData(nodeData, nodeType), [nodeData, nodeType]);
   const handleUpdate = useCallback((patch: Record<string, unknown>) => {
     const store = mode === "creative" ? useCreativeStore.getState() : useProfessionalStore.getState();
     store.updateNodeData(nodeId, patch);
   }, [mode, nodeId]);
+
+  const videoEditData = useMemo(() => {
+    if (data.kind !== "video-edit" || mode !== "creative") return data as CreativeNodeData;
+    const connectedRefs = creativeEdges
+      .filter((edge) => edge.target === nodeId)
+      .map((edge) => creativeNodes.find((node) => node.id === edge.source)?.data)
+      .map((source) => source?.videoUrl ?? (source?.videoEditStatus === "exported" ? source.videoEditOutputRef : undefined))
+      .filter((reference): reference is string => typeof reference === "string" && reference.startsWith("artifact://"));
+    const ownRefs = (data as CreativeNodeData).videoEditInputRefs ?? [];
+    const selectedRefs = ownRefs.length ? ownRefs : connectedRefs.slice(0, 1);
+    return { ...data, videoEditInputRefs: [...new Set(selectedRefs)] } as CreativeNodeData;
+  }, [data, mode, creativeEdges, creativeNodes, nodeId]);
 
   if (getAllNodeDefinitions().some((definition) => definition.kind === data.kind)) {
     return <SchemaConfigForm nodeId={nodeId} data={data as ProfessionalNodeData} onUpdate={handleUpdate} />;
@@ -44,7 +58,7 @@ export function NodeConfigForm({ nodeId, nodeData, nodeType }: {
     case "video-gen":
       return <VideoGenForm data={creativeData} {...formProps} />;
     case "video-edit":
-      return <VideoEditForm data={creativeData} onUpdate={handleUpdate} />;
+      return <VideoEditForm data={videoEditData} onUpdate={handleUpdate} />;
     case "script-gen":
       return <ScriptGenForm data={creativeData} {...formProps} />;
     case "image-edit":

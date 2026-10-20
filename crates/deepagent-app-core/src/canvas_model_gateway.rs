@@ -2612,6 +2612,13 @@ impl CanvasModelBridge for CanvasModelGateway {
     }
 }
 
+impl deepagent_runtime::workflow::CanvasArtifactValidator for CanvasModelGateway {
+    fn validate_video_artifact(&self, reference: &str) -> CoreResult<()> {
+        self.artifact_store("validate a video-edit artifact")?
+            .validate_video_reference(reference)
+    }
+}
+
 /// Validate that the caller's request matches the routed operation before any
 /// network call happens, so a mis-wired node fails fast.
 pub fn validate_request(request: &CanvasModelRequest) -> CanvasResult<()> {

@@ -17,6 +17,7 @@ pub(crate) mod atomic_file;
 pub mod attachment_service;
 pub mod builtin_resources;
 pub mod canvas_artifact_service;
+pub mod canvas_artifact_uploads;
 pub mod canvas_model_gateway;
 pub mod canvas_node_contract;
 pub mod canvas_preferences;

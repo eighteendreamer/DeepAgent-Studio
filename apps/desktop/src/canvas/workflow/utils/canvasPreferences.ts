@@ -15,16 +15,21 @@ import { importCanvasMedia } from "./canvasMedia";
  * homes.
  */
 
-export type CanvasPreferenceKey = "creative-library" | "workflow-snippets" | "workspace-dirs";
+export type CanvasPreferenceKey =
+  | "creative-library"
+  | "workflow-snippets"
+  | "workspace-dirs"
+  | "video-edit-projects";
 
 export const CANVAS_PREFERENCE_KEYS: CanvasPreferenceKey[] = [
   "creative-library",
   "workflow-snippets",
   "workspace-dirs",
+  "video-edit-projects",
 ];
 
 /** Keys written by the pre-database canvas. */
-const LEGACY_STORAGE_KEYS: Record<CanvasPreferenceKey, string> = {
+const LEGACY_STORAGE_KEYS: Partial<Record<CanvasPreferenceKey, string>> = {
   "creative-library": "canvas-creative-library",
   "workflow-snippets": "workflow-canvas-professional-snippets",
   "workspace-dirs": "workflow-workspace",
@@ -36,6 +41,12 @@ const FLUSH_DEBOUNCE_MS = 400;
 const cache = new Map<CanvasPreferenceKey, unknown>();
 const dirty = new Set<CanvasPreferenceKey>();
 const timers = new Map<CanvasPreferenceKey, ReturnType<typeof setTimeout>>();
+const revisions = new Map<CanvasPreferenceKey, number>();
+const flushes = new Map<CanvasPreferenceKey, Promise<void>>();
+const persistenceWaiters = new Map<CanvasPreferenceKey, Array<{
+  resolve: () => void;
+  reject: (error: Error) => void;
+}>>();
 
 let hydration: Promise<void> | null = null;
 
@@ -45,7 +56,9 @@ function isTauriRuntime(): boolean {
 
 function readLegacy(key: CanvasPreferenceKey): unknown {
   try {
-    const raw = localStorage.getItem(LEGACY_STORAGE_KEYS[key]);
+    const legacyKey = LEGACY_STORAGE_KEYS[key];
+    if (!legacyKey) return null;
+    const raw = localStorage.getItem(legacyKey);
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -54,7 +67,8 @@ function readLegacy(key: CanvasPreferenceKey): unknown {
 
 function forgetLegacy(key: CanvasPreferenceKey) {
   try {
-    localStorage.removeItem(LEGACY_STORAGE_KEYS[key]);
+    const legacyKey = LEGACY_STORAGE_KEYS[key];
+    if (legacyKey) localStorage.removeItem(legacyKey);
   } catch {
     // 存储不可用不影响：数据库已经是唯一读取来源
   }
@@ -140,8 +154,23 @@ function publish(key: CanvasPreferenceKey) {
 /** 覆盖一个偏好文档：先更新缓存，再合并写库。 */
 export function writeCanvasPreference(key: CanvasPreferenceKey, value: unknown): void {
   cache.set(key, value);
+  revisions.set(key, (revisions.get(key) ?? 0) + 1);
   publish(key);
   queueFlush(key);
+}
+
+/** Write through the shared debounce and resolve only when the latest value is durable. */
+export function writeCanvasPreferenceAndWait(
+  key: CanvasPreferenceKey,
+  value: unknown,
+): Promise<void> {
+  writeCanvasPreference(key, value);
+  if (!isTauriRuntime()) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const waiters = persistenceWaiters.get(key) ?? [];
+    waiters.push({ resolve, reject });
+    persistenceWaiters.set(key, waiters);
+  });
 }
 
 function queueFlush(key: CanvasPreferenceKey): void {
@@ -159,12 +188,30 @@ function queueFlush(key: CanvasPreferenceKey): void {
 
 async function flushKey(key: CanvasPreferenceKey): Promise<void> {
   if (!dirty.has(key) || !isTauriRuntime()) return;
-  try {
-    await invoke("canvas_preference_write", { key, value: cache.get(key) ?? null });
-    dirty.delete(key);
-  } catch (error) {
-    console.error(`[canvas] 保存偏好 ${key} 失败:`, error);
-  }
+  const existing = flushes.get(key);
+  if (existing) return existing;
+  const pending = (async () => {
+    while (dirty.has(key)) {
+      const revision = revisions.get(key) ?? 0;
+      try {
+        await invoke("canvas_preference_write", { key, value: cache.get(key) ?? null });
+      } catch (cause) {
+        const error = cause instanceof Error ? cause : new Error(String(cause));
+        console.error(`[canvas] 保存偏好 ${key} 失败:`, error);
+        const waiters = persistenceWaiters.get(key) ?? [];
+        persistenceWaiters.delete(key);
+        waiters.forEach(({ reject }) => reject(error));
+        return;
+      }
+      if (revision !== (revisions.get(key) ?? 0)) continue;
+      dirty.delete(key);
+      const waiters = persistenceWaiters.get(key) ?? [];
+      persistenceWaiters.delete(key);
+      waiters.forEach(({ resolve }) => resolve());
+    }
+  })().finally(() => flushes.delete(key));
+  flushes.set(key, pending);
+  return pending;
 }
 
 /** 载入全部偏好文档（含旧 localStorage 迁移）；重复调用共享同一次结果。 */

@@ -95,6 +95,8 @@ pub enum ArchiveKind {
     Zip,
     /// A gzip-compressed tar archive extracted into the destination subdir.
     TarGz,
+    /// An xz-compressed tar archive extracted into the destination subdir.
+    TarXz,
     /// A single raw file (e.g. a `.bin` model) copied as-is.
     Raw,
     /// An executable installer (e.g. Inno Setup `.exe`) that is run silently
@@ -521,6 +523,14 @@ impl RuntimeService {
     /// Absolute install dir for `id` when installed, else `None`.
     pub fn installed_path(&self, id: &str) -> Option<PathBuf> {
         self.installed_location(id).map(|(path, _source)| path)
+    }
+
+    /// Resolve the pinned executable probe for a managed runtime entry.
+    pub fn installed_executable(&self, id: &str) -> Option<PathBuf> {
+        let entry = self.registry.iter().find(|entry| entry.id == id)?;
+        let artifact = entry.artifact()?;
+        let probe = artifact.probe.as_deref().unwrap_or(&entry.probe);
+        self.installed_path(id).map(|root| root.join(probe))
     }
 
     fn installed_location(&self, id: &str) -> Option<(PathBuf, &'static str)> {
@@ -1009,20 +1019,25 @@ impl RuntimeService {
         let install_result = match artifact.archive {
             ArchiveKind::Zip => extract_zip_into(&tmp, &dest_dir),
             ArchiveKind::TarGz => extract_tar_gz_into(&tmp, &dest_dir),
+            ArchiveKind::TarXz => extract_tar_xz_into(&tmp, &dest_dir),
             ArchiveKind::Raw => copy_raw(&tmp, &dest_dir, &artifact.file_name),
             ArchiveKind::Installer => run_installer_silent(&tmp, &dest_dir),
         };
         let _ = std::fs::remove_file(&tmp);
         self.clear_cancel(id);
         install_result?;
-        if is_installer {
-            let probe = dest_dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
-            if !probe.is_file() {
-                return Err(CoreError::Other(format!(
-                    "installer finished but runtime probe was not found: {}",
-                    probe.display()
-                )));
-            }
+        let probe = dest_dir.join(artifact.probe.as_deref().unwrap_or(&entry.probe));
+        let probe_found = if is_installer {
+            probe.is_file()
+        } else {
+            probe.exists()
+        };
+        if !probe_found {
+            let _ = std::fs::remove_dir_all(&dest_dir);
+            return Err(CoreError::Other(format!(
+                "runtime install finished but probe was not found: {}",
+                probe.display()
+            )));
         }
 
         self.record_install(&entry, &artifact);
@@ -1766,6 +1781,20 @@ fn extract_tar_gz_into(archive_path: &Path, dest_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Extract an xz-compressed tar archive into `dest_dir` (created if missing).
+fn extract_tar_xz_into(archive_path: &Path, dest_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest_dir)
+        .map_err(|e| CoreError::Other(format!("create dest dir: {e}")))?;
+    let file = std::fs::File::open(archive_path)
+        .map_err(|e| CoreError::Other(format!("open tar.xz: {e}")))?;
+    let decoder = xz2::read::XzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    archive
+        .unpack(dest_dir)
+        .map_err(|e| CoreError::Other(format!("extract tar.xz: {e}")))?;
+    Ok(())
+}
+
 /// The default runtime registry. Entries are listed in the UI catalog so users
 /// can see what's available; **install is blocked until a SHA-256 is pinned**
 /// (artifacts ship `sha256: None` here as a fail-closed placeholder — the
@@ -2013,6 +2042,51 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
         (Platform::LinuxX64, "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_x64_linux_hotspot_17.0.20_8.tar.gz", &[], "be7668bc030d578b83d6d5ef9221d6d6729bbbca8cf94a7d52e16ac68b5a5a35", "sdk/jdk-17", "OpenJDK17U-jdk_x64_linux_hotspot_17.0.20_8.tar.gz", ArchiveKind::TarGz, "jdk-17.0.20+8/bin/java"),
         (Platform::LinuxArm64, "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20%2B8/OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.20_8.tar.gz", &[], "d143936f473a4cb24e3b0e247d6d0775769d55ec9775c339540e753059a8d77a", "sdk/jdk-17", "OpenJDK17U-jdk_aarch64_linux_hotspot_17.0.20_8.tar.gz", ArchiveKind::TarGz, "jdk-17.0.20+8/bin/java"),
     ]);
+    // BtbN publishes versioned LGPL archives with a per-release SHA-256
+    // manifest. Pin the exact release snapshot instead of a moving "latest"
+    // URL. These archives contain both ffmpeg and ffprobe under bin/.
+    let ffmpeg_artifacts = per_platform_pinned([
+        (
+            Platform::WindowsX64,
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-17-20-51/ffmpeg-n9.0.2-28-g669f5ab083-win64-lgpl-9.0.zip",
+            &[] as &[&str],
+            "18649dd106aa12e3022c3cac9d62a84e56a7e9e9067cabd5970edfccde260cb7",
+            "video/ffmpeg",
+            "ffmpeg-win64-lgpl.zip",
+            ArchiveKind::Zip,
+            "ffmpeg-n9.0.2-28-g669f5ab083-win64-lgpl-9.0/bin/ffmpeg.exe",
+        ),
+        (
+            Platform::WindowsArm64,
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-17-20-51/ffmpeg-n9.0.2-28-g669f5ab083-winarm64-lgpl-9.0.zip",
+            &[] as &[&str],
+            "5f31bf31573e24255f13d41254714c8e458dd118c8ef1afa1611a49461a9967c",
+            "video/ffmpeg",
+            "ffmpeg-winarm64-lgpl.zip",
+            ArchiveKind::Zip,
+            "ffmpeg-n9.0.2-28-g669f5ab083-winarm64-lgpl-9.0/bin/ffmpeg.exe",
+        ),
+        (
+            Platform::LinuxX64,
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-17-20-51/ffmpeg-n9.0.2-28-g669f5ab083-linux64-lgpl-9.0.tar.xz",
+            &[] as &[&str],
+            "a66d2e90b6493e78d5cbdebe752a6552b06b41ef9f3427cfacb18b3ca141cc7d",
+            "video/ffmpeg",
+            "ffmpeg-linux64-lgpl.tar.xz",
+            ArchiveKind::TarXz,
+            "ffmpeg-n9.0.2-28-g669f5ab083-linux64-lgpl-9.0/bin/ffmpeg",
+        ),
+        (
+            Platform::LinuxArm64,
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-10-17-20-51/ffmpeg-n9.0.2-28-g669f5ab083-linuxarm64-lgpl-9.0.tar.xz",
+            &[] as &[&str],
+            "6ff021f3aa7afce5683ad94972941af866640a76a3526b5553194a3c1d906d32",
+            "video/ffmpeg",
+            "ffmpeg-linuxarm64-lgpl.tar.xz",
+            ArchiveKind::TarXz,
+            "ffmpeg-n9.0.2-28-g669f5ab083-linuxarm64-lgpl-9.0/bin/ffmpeg",
+        ),
+    ]);
 
     vec![
         RuntimeEntry {
@@ -2043,6 +2117,21 @@ pub fn default_registry() -> Vec<RuntimeEntry> {
             size_bytes: 190 * 1024 * 1024,
             artifacts: jdk_artifacts,
             probe: if cfg!(target_os = "windows") { "java.exe" } else { "java" }.to_string(),
+            system_probe_paths: vec![],
+        },
+        RuntimeEntry {
+            id: "ffmpeg".to_string(),
+            name: "FFmpeg / FFprobe".to_string(),
+            version: "9.0.2".to_string(),
+            capability: "video-media-tools".to_string(),
+            size_bytes: 100 * 1024 * 1024,
+            artifacts: ffmpeg_artifacts,
+            probe: if cfg!(target_os = "windows") {
+                "ffmpeg.exe"
+            } else {
+                "ffmpeg"
+            }
+            .to_string(),
             system_probe_paths: vec![],
         },
         RuntimeEntry {
@@ -2756,6 +2845,67 @@ fn main() {{
         );
     }
 
+    #[tokio::test]
+    async fn install_extracts_tar_xz() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tar_xz: Vec<u8> = Vec::new();
+        {
+            let enc = xz2::write::XzEncoder::new(&mut tar_xz, 6);
+            let mut builder = tar::Builder::new(enc);
+            let data = b"ffmpeg tools";
+            let mut header = tar::Header::new_gnu();
+            header.set_size(data.len() as u64);
+            header.set_mode(0o755);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, "bin/ffmpeg", &data[..])
+                .unwrap();
+            let encoder = builder.into_inner().unwrap();
+            encoder.finish().unwrap();
+        }
+        let mut artifacts = HashMap::new();
+        artifacts.insert(
+            Platform::current(),
+            RuntimeArtifact {
+                url: "https://example.com/tool.tar.xz".to_string(),
+                mirror_urls: Vec::new(),
+                sha256: Some(sha256_of(&tar_xz)),
+                dest_subdir: "video/ffmpeg".to_string(),
+                file_name: "tool.tar.xz".to_string(),
+                archive: ArchiveKind::TarXz,
+                probe: Some("bin/ffmpeg".to_string()),
+                files: Vec::new(),
+                allow_unpinned_files: false,
+            },
+        );
+        let entry = RuntimeEntry {
+            id: "ffmpeg-test".to_string(),
+            name: "FFmpeg test".to_string(),
+            version: "9.0.2".to_string(),
+            capability: "video-media-tools".to_string(),
+            size_bytes: tar_xz.len() as u64,
+            artifacts,
+            probe: "bin/ffmpeg".to_string(),
+            system_probe_paths: vec![],
+        };
+        let svc = RuntimeService::with_registry(
+            &[dir.path().to_path_buf()],
+            Arc::new(BytesDownloader { bytes: tar_xz }),
+            vec![entry],
+        );
+        let status = svc.install("ffmpeg-test", noop_progress()).await.unwrap();
+        assert!(status.installed);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("video/ffmpeg/bin/ffmpeg")).unwrap(),
+            "ffmpeg tools"
+        );
+        assert_eq!(
+            svc.installed_executable("ffmpeg-test").as_deref(),
+            Some(dir.path().join("video/ffmpeg/bin/ffmpeg").as_path()),
+            "native media commands must resolve the pinned installed probe, not PATH"
+        );
+    }
+
     #[test]
     fn default_registry_lists_tier_r_runtimes() {
         let dir = tempfile::tempdir().unwrap();
@@ -2763,6 +2913,40 @@ fn main() {{
         let ids: Vec<String> = svc.list().into_iter().map(|s| s.id).collect();
         assert!(ids.contains(&"pandoc".to_string()));
         assert!(ids.contains(&"pdfium".to_string()));
+        assert!(ids.contains(&"ffmpeg".to_string()));
+        let ffmpeg_entry = default_registry()
+            .into_iter()
+            .find(|entry| entry.id == "ffmpeg")
+            .unwrap();
+        for platform in [
+            Platform::WindowsX64,
+            Platform::WindowsArm64,
+            Platform::LinuxX64,
+            Platform::LinuxArm64,
+        ] {
+            let artifact = ffmpeg_entry.artifacts.get(&platform).unwrap();
+            assert!(
+                artifact.sha256.is_some(),
+                "missing pinned checksum for {platform:?}"
+            );
+            assert!(artifact.url.contains("autobuild-2026-10-17-20-51"));
+            assert!(artifact.url.contains("lgpl"));
+            assert!(artifact.probe.as_deref().unwrap().contains("ffmpeg"));
+        }
+        let ffmpeg = svc.status("ffmpeg").unwrap();
+        if matches!(
+            Platform::current(),
+            Platform::WindowsX64
+                | Platform::WindowsArm64
+                | Platform::LinuxX64
+                | Platform::LinuxArm64
+        ) {
+            assert!(ffmpeg.checksum_pinned);
+            assert!(ffmpeg.available_for_platform);
+        } else {
+            assert!(!ffmpeg.available_for_platform);
+            assert!(!ffmpeg.checksum_pinned);
+        }
         let whisper_base = svc.status("whisper-base").unwrap();
         let whisper_small = svc.status("whisper-small").unwrap();
         let whisper_cli = svc.status("whisper-cli").unwrap();

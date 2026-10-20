@@ -146,6 +146,8 @@ export interface CreativeNodeData {
   videoEditOutputRef?: string;
   videoEditStatus?: "empty" | "ready" | "dirty" | "exported";
   videoEditInputFingerprint?: string;
+  videoEditTrimStart?: number;
+  videoEditTrimEnd?: number;
   videoDuration?: number;
   videoProgress?: number;
   videoTaskId?: string;

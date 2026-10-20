@@ -279,6 +279,13 @@ pub trait CanvasModelBridge: Send + Sync {
     fn inspect_input_kinds(&self, references: &[String]) -> Result<Vec<String>>;
 }
 
+/// Validates that a canvas reference points to a stored video artifact.
+/// Storage remains owned by the app layer; workflow execution only depends on
+/// this narrow validation boundary.
+pub trait CanvasArtifactValidator: Send + Sync {
+    fn validate_video_artifact(&self, reference: &str) -> Result<()>;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

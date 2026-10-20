@@ -15,8 +15,9 @@ use deepagent_core::message::Message;
 use deepagent_models::chat_completions::ChatCompletionRequest;
 
 use super::canvas::{
-    CanvasAudioRequest, CanvasCompletionRequest, CanvasEmbeddingRequest, CanvasImageRequest,
-    CanvasJobProgressSink, CanvasModelBridge, CanvasRouteRequest, CanvasVideoRequest,
+    CanvasArtifactValidator, CanvasAudioRequest, CanvasCompletionRequest, CanvasEmbeddingRequest,
+    CanvasImageRequest, CanvasJobProgressSink, CanvasModelBridge, CanvasRouteRequest,
+    CanvasVideoRequest,
 };
 use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
@@ -53,6 +54,7 @@ pub struct WorkflowAgent {
     knowledge_retriever: Option<Arc<dyn KnowledgeRetriever>>,
     tool_executor: Option<Arc<dyn ToolExecutor>>,
     canvas_bridge: Option<Arc<dyn CanvasModelBridge>>,
+    artifact_validator: Option<Arc<dyn CanvasArtifactValidator>>,
     usage: RunUsage,
 }
 
@@ -79,6 +81,7 @@ impl WorkflowAgent {
             knowledge_retriever: None,
             tool_executor: None,
             canvas_bridge: None,
+            artifact_validator: None,
             usage: RunUsage::default(),
         }
     }
@@ -107,6 +110,12 @@ impl WorkflowAgent {
     /// model nodes keep using the run-level chat model.
     pub fn with_canvas_bridge(mut self, bridge: Arc<dyn CanvasModelBridge>) -> Self {
         self.canvas_bridge = Some(bridge);
+        self
+    }
+
+    /// Attach the app-owned artifact validator used by media authoring nodes.
+    pub fn with_artifact_validator(mut self, validator: Arc<dyn CanvasArtifactValidator>) -> Self {
+        self.artifact_validator = Some(validator);
         self
     }
 
@@ -214,12 +223,76 @@ impl WorkflowAgent {
         }
     }
 
-    fn execute_video_edit(&self, _config: &Map<String, Value>) -> Result<Value> {
-        // Legacy output fields may contain an unedited source copy. Only a
-        // validated timeline export may be published to downstream nodes.
-        Err(CoreError::invalid(
-            "UnsupportedOperation: local video timeline export is not connected yet",
-        ))
+    fn execute_video_edit(&self, config: &Map<String, Value>) -> Result<Value> {
+        let output = config
+            .get("videoEditOutputRef")
+            .and_then(Value::as_str)
+            .filter(|reference| reference.starts_with("artifact://"))
+            .ok_or_else(|| {
+                CoreError::invalid(
+                    "UnsupportedOperation: video-edit has no exported artifact reference",
+                )
+            })?;
+        if config.get("videoEditStatus").and_then(Value::as_str) != Some("exported") {
+            return Err(CoreError::invalid(
+                "UnsupportedOperation: video-edit output is not marked as exported",
+            ));
+        }
+        let inputs = config
+            .get("videoEditInputRefs")
+            .and_then(Value::as_array)
+            .filter(|refs| !refs.is_empty())
+            .ok_or_else(|| {
+                CoreError::invalid("MissingReferenceInput: video-edit requires a source artifact")
+            })?;
+        let validator = self.artifact_validator.as_ref().ok_or_else(|| {
+            CoreError::invalid(
+                "ArtifactValidationUnavailable: video-edit cannot publish without artifact validation",
+            )
+        })?;
+        let mut input_refs = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            let reference = input
+                .as_str()
+                .filter(|value| value.starts_with("artifact://"))
+                .ok_or_else(|| {
+                    CoreError::invalid(
+                        "InvalidReferenceInput: video-edit source must be an artifact",
+                    )
+                })?;
+            validator.validate_video_artifact(reference)?;
+            input_refs.push(reference);
+        }
+        validator.validate_video_artifact(output)?;
+        let start = config
+            .get("videoEditTrimStart")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .ok_or_else(|| {
+                CoreError::invalid("InvalidConfiguration: video-edit trim start is missing")
+            })?;
+        let end = config
+            .get("videoEditTrimEnd")
+            .and_then(Value::as_f64)
+            .filter(|value| value.is_finite() && *value > start)
+            .ok_or_else(|| {
+                CoreError::invalid("InvalidConfiguration: video-edit trim end is missing")
+            })?;
+        let expected_fingerprint = format!("{}:{start:.3}:{end:.3}", input_refs.join("|"));
+        if config
+            .get("videoEditInputFingerprint")
+            .and_then(Value::as_str)
+            != Some(expected_fingerprint.as_str())
+        {
+            return Err(CoreError::invalid(
+                "StaleArtifact: video-edit output no longer matches its source and trim range",
+            ));
+        }
+        Ok(serde_json::json!({
+            "videoUrl": output,
+            "videoEditOutputRef": output,
+            "videoEditInputFingerprint": expected_fingerprint,
+        }))
     }
 
     /// Merge upstream node text into a node's own prompt.
@@ -2023,7 +2096,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn video_edit_does_not_publish_unrendered_legacy_outputs() {
+    async fn video_edit_does_not_publish_unverified_outputs() {
         let mut agent = agent_with_bridge(RecordingBridge::default());
         for fields in [
             config(&[]),
@@ -2037,8 +2110,62 @@ mod tests {
                 .execute_node_inline("video-edit", &fields)
                 .await
                 .expect_err("an unvalidated source copy is not a rendered edit");
-            assert!(error.to_string().contains("UnsupportedOperation"));
+            assert!(
+                error.to_string().contains("UnsupportedOperation")
+                    || error.to_string().contains("MissingReferenceInput")
+                    || error.to_string().contains("InvalidConfiguration")
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn video_edit_publishes_only_an_export_matching_its_input_and_trim() {
+        struct ExistingVideoArtifacts;
+        impl CanvasArtifactValidator for ExistingVideoArtifacts {
+            fn validate_video_artifact(&self, reference: &str) -> Result<()> {
+                if reference.starts_with("artifact://") {
+                    Ok(())
+                } else {
+                    Err(CoreError::invalid("not an artifact reference"))
+                }
+            }
+        }
+
+        let mut agent = agent_with_bridge(RecordingBridge::default())
+            .with_artifact_validator(Arc::new(ExistingVideoArtifacts));
+        let valid = config(&[
+            ("videoEditOutputRef", json!("artifact://rendered")),
+            ("videoEditStatus", json!("exported")),
+            ("videoEditInputRefs", json!(["artifact://source"])),
+            ("videoEditTrimStart", json!(1.25)),
+            ("videoEditTrimEnd", json!(4.5)),
+            (
+                "videoEditInputFingerprint",
+                json!("artifact://source:1.250:4.500"),
+            ),
+        ]);
+        let output = agent
+            .execute_node_inline("video-edit", &valid)
+            .await
+            .expect("validated export passes through to downstream nodes");
+        assert_eq!(output["videoUrl"], "artifact://rendered");
+
+        let stale = config(&[
+            ("videoEditOutputRef", json!("artifact://rendered")),
+            ("videoEditStatus", json!("exported")),
+            ("videoEditInputRefs", json!(["artifact://other-source"])),
+            ("videoEditTrimStart", json!(1.25)),
+            ("videoEditTrimEnd", json!(4.5)),
+            (
+                "videoEditInputFingerprint",
+                json!("artifact://source:1.250:4.500"),
+            ),
+        ]);
+        let error = agent
+            .execute_node_inline("video-edit", &stale)
+            .await
+            .expect_err("source changes invalidate the export");
+        assert!(error.to_string().contains("StaleArtifact"));
     }
 
     #[tokio::test]

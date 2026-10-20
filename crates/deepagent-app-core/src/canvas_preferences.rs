@@ -20,8 +20,12 @@ pub const CANVAS_PREFERENCES_COLLECTION: &str = "canvas_preferences";
 
 /// The only preference documents the canvas may store. An allowlist keeps the
 /// collection from becoming a second unmanaged key-value dump.
-pub const CANVAS_PREFERENCE_KEYS: [&str; 3] =
-    ["creative-library", "workflow-snippets", "workspace-dirs"];
+pub const CANVAS_PREFERENCE_KEYS: [&str; 4] = [
+    "creative-library",
+    "workflow-snippets",
+    "workspace-dirs",
+    "video-edit-projects",
+];
 
 /// Largest accepted preference payload, in bytes of serialized JSON.
 const MAX_PREFERENCE_BYTES: usize = 8 * 1024 * 1024;
