@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>图片附件 · 缩略图样式</title>
+  <!--
+    Visual thesis: white workbench surfaces, quiet borders, image-first attachments.
+    Content plan: three comparable composer layouts, using identical sample images.
+    Interaction thesis: subtle hover feedback, independent removal, full-image preview.
+    Standalone design preview; does not read or write application/session data.
+  -->
+  <style>
+    :root { color-scheme: light; --page:#fafafa; --surface:#fff; --ink:#26282d; --muted:#87898f; --line:#e8e8eb; --soft:#f3f3f5; --hover:#ebebee; --focus:#687dba; --shadow:0 4px 24px #1c233008; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--page); color:var(--ink); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; }
+    button,textarea { font:inherit; }
+    button { color:inherit; cursor:pointer; }
+    button:focus-visible,textarea:focus-visible { outline:2px solid var(--focus); outline-offset:3px; }
+    button { -webkit-tap-highlight-color:transparent; }
+    svg { display:block; width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
+    .symbols { position:absolute; width:0; height:0; overflow:hidden; }
+    main { width:min(1140px,100%); margin:auto; padding:36px 32px 26px; }
+    header { display:flex; justify-content:space-between; align-items:center; gap:20px; padding-bottom:23px; border-bottom:1px solid var(--line); }
+    h1 { margin:0; font-size:21px; font-weight:600; letter-spacing:-.5px; }
+    .intro { margin:5px 0 0; color:var(--muted); font-size:12px; }
+    .actions { display:flex; gap:8px; align-items:center; }
+    .utility { display:inline-flex; gap:6px; align-items:center; border:1px solid var(--line); background:var(--surface); border-radius:7px; padding:6px 10px; font-size:12px; white-space:nowrap; }
+    .utility:hover { background:var(--soft); }
+    .variant { display:grid; grid-template-columns:170px minmax(0,1fr); gap:26px; align-items:center; padding:26px 0; border-bottom:1px solid var(--line); }
+    .variant:last-of-type { border-bottom:0; }
+    h2 { display:flex; align-items:center; gap:9px; margin:0; font-size:14px; font-weight:600; }
+    .letter { color:var(--muted); font:12px/1.5 ui-monospace,monospace; font-weight:400; }
+    .caption { margin:7px 0 0; color:var(--muted); font-size:12px; }
+    .recommend { display:inline-flex; margin-top:11px; padding:1px 6px; border-radius:4px; background:var(--soft); color:#626873; font-size:10px; }
+    .composer { min-width:0; border:1px solid var(--line); border-radius:18px; background:var(--surface); padding:14px 16px 12px; box-shadow:var(--shadow); }
+    .attachments { display:flex; align-items:flex-start; gap:10px; max-width:100%; overflow-x:auto; overscroll-behavior-x:contain; padding:6px 6px 9px; margin:-4px -6px 0; scrollbar-width:thin; scrollbar-color:var(--line) transparent; }
+    .attachment { position:relative; flex-shrink:0; }
+    .preview { display:block; border:0; padding:0; overflow:hidden; background:var(--soft); cursor:zoom-in; }
+    .preview img { display:block; width:100%; height:100%; object-fit:cover; transition:filter .15s ease; }
+    .preview:hover img { filter:brightness(.93); }
+    .remove { position:absolute; top:-5px; right:-5px; z-index:1; display:grid; place-items:center; width:20px; height:20px; padding:0; border:2px solid var(--surface); border-radius:50%; background:#54575d; color:#fff; opacity:0; transition:opacity .12s ease,background .12s ease; }
+    .remove svg { width:11px; height:11px; stroke-width:2; }
+    .attachment:hover .remove,.attachment:focus-within .remove { opacity:1; }
+    .remove:hover { background:#25282d; }
+    .style-a .preview { width:68px; height:68px; border:1px solid var(--line); border-radius:10px; }
+    .style-b .attachment { display:flex; align-items:center; gap:9px; width:208px; height:52px; padding:6px 32px 6px 6px; border:1px solid var(--line); border-radius:10px; }
+    .style-b .preview { width:38px; height:38px; flex-shrink:0; border-radius:5px; }
+    .file-info { min-width:0; }
+    .file-name { overflow:hidden; white-space:nowrap; text-overflow:ellipsis; font-size:12px; font-weight:500; }
+    .file-detail { margin-top:2px; color:var(--muted); font-size:10px; }
+    .style-b .remove { top:16px; right:7px; width:18px; height:18px; color:var(--muted); background:transparent; border:0; opacity:1; }
+    .style-b .remove:hover { color:var(--ink); background:var(--soft); }
+    .style-c .attachment { width:104px; }
+    .style-c .preview { width:104px; height:68px; border:1px solid var(--line); border-radius:8px; }
+    .style-c .file-name { padding:5px 2px 0; color:var(--muted); font-size:10px; font-weight:400; }
+    textarea { display:block; resize:none; border:0; outline:0; background:transparent; color:var(--ink); width:100%; height:40px; padding:7px 0; font-size:13px; line-height:22px; }
+    textarea::placeholder { color:#a2a3a9; }
+    .composer-toolbar { display:flex; align-items:center; gap:8px; padding-top:9px; }
+    .icon-button { display:grid; place-items:center; width:28px; height:28px; border:0; border-radius:50%; background:var(--soft); }
+    .icon-button:hover { background:var(--hover); }
+    .permission { display:inline-flex; align-items:center; gap:5px; color:#82858d; font-size:11px; }
+    .permission svg { width:12px; height:12px; }
+    .model { margin-left:auto; display:flex; align-items:center; gap:5px; color:#676b74; font-size:11px; white-space:nowrap; }
+    .model svg { width:12px; height:12px; }
+    .send { margin-left:4px; background:#292e37; color:#fff; }
+    .send:hover { background:#414753; }
+    .send svg { width:14px; height:14px; }
+    .hint { margin:0; padding-top:8px; color:var(--muted); text-align:center; font-size:11px; }
+    .empty { display:flex; align-items:center; height:68px; color:var(--muted); font-size:12px; }
+    dialog { max-width:calc(100vw - 40px); max-height:calc(100dvh - 40px); padding:0; border:0; background:transparent; color:white; overflow:visible; }
+    dialog::backdrop { background:rgb(10 12 16 / .88); }
+    .lightbox { position:relative; }
+    .lightbox img { display:block; max-width:min(1080px,calc(100vw - 48px)); max-height:calc(100dvh - 100px); border-radius:9px; object-fit:contain; background:#fff; }
+    .lightbox-close { position:absolute; top:12px; right:12px; display:grid; place-items:center; width:32px; height:32px; padding:0; border:0; border-radius:50%; color:white; background:#25282dbb; }
+    .lightbox-close:hover { background:#25282d; }
+    .lightbox-name { margin:11px 0 0; text-align:center; color:#c2c4ca; font-size:12px; }
+    body.dark { color-scheme:dark; --page:#18191c; --surface:#232428; --ink:#e5e5e8; --muted:#8c8e97; --line:#36373c; --soft:#2e3035; --hover:#3a3c43; --shadow:none; }
+    body.dark .model,body.dark .permission { color:#acaeb7; }
+    body.dark .send { background:#d4d6df; color:#24262b; }
+    body.dark .recommend { color:#b6bbc9; }
+    @media(hover:none) { .remove { opacity:1; } }
+    @media(prefers-reduced-motion:reduce) { *,*::before,*::after { transition:none !important; } }
+    @media(min-width:761px) and (max-height:850px) { main { padding:24px 32px 12px; } header { padding-bottom:16px; } .variant { padding:14px 0; } .composer { padding:12px 16px 10px; } textarea { height:30px; padding:4px 0; } .composer-toolbar { padding-top:5px; } }
+    @media(max-width:760px) { main { padding:22px 20px; } .variant { grid-template-columns:1fr; gap:14px; padding:23px 0; } .variant-info { display:flex; align-items:center; flex-wrap:wrap; gap:8px 14px; } .caption,.recommend { margin:0; } .composer { padding:12px 13px; } .permission { display:none; } }
+    @media(max-width:440px) { header { align-items:flex-start; } .actions { gap:5px; } .utility { padding:6px 7px; } .utility svg { display:none; } h1 { font-size:18px; } }
+  </style>
+</head>
+<body>
+  <svg class="symbols" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="m18 6-12 12M6 6l12 12"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4 20-7ZM22 2 11 13"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 22s8-4 8-11V5l-8-3-8 3v6c0 7 8 11 8 11Z"/></symbol>
+    <symbol id="i-reset" viewBox="0 0 24 24"><path d="M3 10a9 9 0 1 1 2.6 8.4M3 4v6h6"/></symbol>
+  </svg>
+  <main>
+    <header>
+      <div><h1>图片附件</h1><p class="intro">输入框缩略图 · 3 种样式</p></div>
+      <div class="actions">
+        <button class="utility" id="theme" type="button" aria-pressed="false">深色模式</button>
+        <button class="utility" id="reset" type="button"><svg aria-hidden="true"><use href="#i-reset"/></svg>恢复示例</button>
+      </div>
+    </header>
+    <div id="variants"></div>
+    <p class="hint">点击图片放大 · 移入显示删除 · 支持深色预览</p>
+  </main>
+  <dialog id="lightbox" aria-label="图片预览">
+    <div class="lightbox">
+      <img id="full-image" alt="" />
+      <button class="lightbox-close" type="button" aria-label="关闭图片预览"><svg aria-hidden="true"><use href="#i-x"/></svg></button>
+      <p class="lightbox-name" id="full-name"></p>
+    </div>
+  </dialog>
+  <script>
+    const icon = (name) => `<svg aria-hidden="true"><use href="#i-${name}"/></svg>`;
+    const svgImage = (content, width = 1000, height = 640) => 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">${content}</svg>`);
+    const samples = [
+      {
+        id:'workspace', name:'界面截图.png', detail:'PNG · 1280 × 800',
+        src:svgImage(`<rect width="1000" height="640" fill="#fff"/><rect width="186" height="640" fill="#f0f1f3"/><rect x="20" y="24" width="146" height="40" rx="8" fill="#dfe2e7"/><g fill="#b4bac4"><rect x="33" y="38" width="88" height="10" rx="5"/><rect x="28" y="96" width="96" height="9" rx="4"/><rect x="28" y="132" width="112" height="9" rx="4"/><rect x="28" y="168" width="74" height="9" rx="4"/><rect x="28" y="257" width="125" height="9" rx="4"/><rect x="28" y="291" width="98" height="9" rx="4"/></g><rect x="225" y="34" width="184" height="14" rx="5" fill="#414b60"/><rect x="225" y="91" width="570" height="10" rx="5" fill="#d9dde5"/><rect x="225" y="116" width="470" height="10" rx="5" fill="#e4e7ec"/><rect x="225" y="168" width="724" height="46" fill="#f6f7f9"/><g stroke="#eceef1"><path d="M225 214h724M225 267h724M225 320h724M225 373h724M225 426h724"/></g><g fill="#a7afbc"><rect x="245" y="185" width="51" height="10" rx="4"/><rect x="505" y="185" width="51" height="10" rx="4"/><rect x="785" y="185" width="51" height="10" rx="4"/><rect x="245" y="237" width="111" height="9" rx="4"/><rect x="505" y="237" width="74" height="9" rx="4"/><rect x="785" y="237" width="86" height="9" rx="4"/><rect x="245" y="290" width="111" height="9" rx="4"/><rect x="505" y="290" width="74" height="9" rx="4"/><rect x="785" y="290" width="86" height="9" rx="4"/><rect x="245" y="343" width="111" height="9" rx="4"/><rect x="505" y="343" width="74" height="9" rx="4"/><rect x="785" y="343" width="86" height="9" rx="4"/></g><rect x="225" y="493" width="724" height="117" rx="20" fill="#fafafa" stroke="#eceef1"/><rect x="247" y="514" width="239" height="9" rx="4" fill="#c1c7d1"/><circle cx="258" cy="580" r="13" fill="#e5e8ef"/><rect x="733" y="566" width="155" height="26" rx="13" fill="#ebeef3"/><circle cx="918" cy="580" r="15" fill="#323b4d"/>`),
+      },
+      {
+        id:'reference', name:'页面布局参考_最终修改版本.png', detail:'PNG · 960 × 1280',
+        src:svgImage(`<rect width="600" height="800" fill="#faf9f6"/><rect x="42" y="42" width="516" height="40" rx="4" fill="#eeeae2"/><rect x="59" y="57" width="65" height="9" rx="4" fill="#9b9589"/><rect x="42" y="116" width="516" height="295" rx="9" fill="#c6cfc9"/><circle cx="425" cy="185" r="37" fill="#e4e6dc"/><path d="m42 355 152-132 112 96 86-80 166 136v36H42" fill="#8d9d92"/><path d="m42 388 187-111 123 90 121-47 85 56v35H42" fill="#697e72"/><rect x="43" y="448" width="281" height="22" rx="4" fill="#414d47"/><rect x="43" y="491" width="473" height="9" rx="4" fill="#c0c3bb"/><rect x="43" y="516" width="439" height="9" rx="4" fill="#c0c3bb"/><rect x="43" y="541" width="277" height="9" rx="4" fill="#c0c3bb"/><rect x="43" y="603" width="155" height="126" rx="5" fill="#e4ded4"/><rect x="217" y="603" width="155" height="126" rx="5" fill="#ced8d1"/><rect x="391" y="603" width="167" height="126" rx="5" fill="#dedfdc"/>`,600,800),
+      },
+      {
+        id:'detail', name:'组件细节.jpg', detail:'JPG · 1200 × 800',
+        src:svgImage(`<rect width="1000" height="640" fill="#edeff4"/><rect x="135" y="72" width="730" height="496" rx="28" fill="#fff"/><rect x="181" y="118" width="173" height="17" rx="6" fill="#353e50"/><rect x="181" y="157" width="317" height="9" rx="4" fill="#c7ccd6"/><rect x="181" y="209" width="638" height="58" rx="10" fill="#f7f8fa" stroke="#e7e9ee"/><rect x="204" y="232" width="184" height="11" rx="4" fill="#a5afc0"/><rect x="181" y="291" width="638" height="58" rx="10" fill="#f7f8fa" stroke="#e7e9ee"/><rect x="204" y="314" width="257" height="11" rx="4" fill="#a5afc0"/><rect x="181" y="380" width="22" height="22" rx="5" fill="#7188b9"/><path d="m187 391 4 4 7-9" fill="none" stroke="#fff" stroke-width="3"/><rect x="217" y="387" width="141" height="9" rx="4" fill="#a5afc0"/><rect x="181" y="451" width="638" height="62" rx="12" fill="#3f4f6e"/><rect x="434" y="476" width="132" height="11" rx="4" fill="#e1e7f2"/>`),
+      },
+    ];
+    const variants = [
+      { id:'a', title:'纯图片', caption:'68 × 68，图片直接展示', recommended:true },
+      { id:'b', title:'紧凑横卡', caption:'缩略图 + 文件名，减轻底色' },
+      { id:'c', title:'图片与文件名', caption:'104 × 68，名称放在下方' },
+    ];
+    const states = new Map(variants.map(v => [v.id,[...samples]]));
+    const variantsRoot = document.getElementById('variants');
+    const dialog = document.getElementById('lightbox');
+    let previewTrigger;
+
+    const attachment = (item, variant) => {
+      const wrapper = document.createElement('div');
+      wrapper.className = 'attachment';
+      const preview = document.createElement('button');
+      preview.type = 'button';
+      preview.className = 'preview';
+      preview.setAttribute('aria-label',`预览${variant.toUpperCase()}：${item.name}`);
+      preview.title = `${item.name} · 点击放大`;
+      const image = document.createElement('img');
+      image.src = item.src;
+      image.alt = item.name;
+      preview.append(image);
+      preview.addEventListener('click',() => {
+        previewTrigger = preview;
+        document.getElementById('full-image').src = item.src;
+        document.getElementById('full-image').alt = item.name;
+        document.getElementById('full-name').textContent = item.name;
+        dialog.showModal();
+      });
+      wrapper.append(preview);
+      if(variant !== 'a') {
+        const info = document.createElement('div');
+        info.className = 'file-info';
+        const name = document.createElement('div');
+        name.className = 'file-name';
+        name.textContent = item.name;
+        name.title = item.name;
+        info.append(name);
+        if(variant === 'b') {
+          const detail = document.createElement('div');
+          detail.className = 'file-detail';
+          detail.textContent = item.detail;
+          info.append(detail);
+        }
+        wrapper.append(info);
+      }
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'remove';
+      remove.setAttribute('aria-label',`移除${variant.toUpperCase()}：${item.name}`);
+      remove.title = '移除图片';
+      remove.innerHTML = icon('x');
+      remove.addEventListener('click',() => {
+        const row = wrapper.parentElement;
+        states.set(variant,states.get(variant).filter(i => i.id !== item.id));
+        const index = [...row.children].indexOf(wrapper);
+        renderAttachments(variant,row);
+        const buttons = row.querySelectorAll('button.preview');
+        (buttons[Math.min(index,buttons.length - 1)] ?? document.getElementById('reset')).focus();
+      });
+      wrapper.append(remove);
+      return wrapper;
+    };
+
+    function renderAttachments(id,row) {
+      row.replaceChildren(...states.get(id).map(item => attachment(item,id)));
+      if(!states.get(id).length) {
+        const empty = document.createElement('span');
+        empty.className = 'empty';
+        empty.textContent = '图片已移除，可点击「恢复示例」重新查看';
+        row.append(empty);
+      }
+    }
+
+    for(const variant of variants) {
+      const section = document.createElement('section');
+      section.className = `variant style-${variant.id}`;
+      section.setAttribute('aria-label',`方案 ${variant.id.toUpperCase()} ${variant.title}`);
+      section.innerHTML = `<div class="variant-info"><h2><span class="letter">${variant.id.toUpperCase()}</span>${variant.title}</h2><p class="caption">${variant.caption}</p>${variant.recommended ? '<span class="recommend">推荐</span>' : ''}</div><div class="composer"><div class="attachments" aria-label="${variant.id.toUpperCase()} 图片附件列表"></div><textarea aria-label="${variant.id.toUpperCase()} 消息输入框" placeholder="描述你想对这些图片做的事…"></textarea><div class="composer-toolbar"><button class="icon-button restore-row" type="button" aria-label="为${variant.id.toUpperCase()}添加示例图片" title="添加示例图片">${icon('plus')}</button><span class="permission">${icon('shield')}默认权限</span><span class="model">deepseek-flash${icon('chevron')}</span><button class="icon-button send" type="button" disabled aria-label="发送（仅样式预览）">${icon('send')}</button></div></div>`;
+      renderAttachments(variant.id,section.querySelector('.attachments'));
+      section.querySelector('.restore-row').addEventListener('click',() => {
+        states.set(variant.id,[...samples]);
+        renderAttachments(variant.id,section.querySelector('.attachments'));
+      });
+      variantsRoot.append(section);
+    }
+    document.getElementById('reset').addEventListener('click',() => {
+      for(const variant of variants) {
+        states.set(variant.id,[...samples]);
+        renderAttachments(variant.id,document.querySelector(`.style-${variant.id} .attachments`));
+      }
+    });
+    document.getElementById('theme').addEventListener('click',(event) => {
+      const dark = document.body.classList.toggle('dark');
+      event.currentTarget.textContent = dark ? '浅色模式' : '深色模式';
+      event.currentTarget.setAttribute('aria-pressed',String(dark));
+    });
+    dialog.querySelector('.lightbox-close').addEventListener('click',() => dialog.close());
+    dialog.addEventListener('click',event => {
+      if(event.target === dialog) dialog.close();
+    });
+    dialog.addEventListener('close',() => previewTrigger?.focus());
+  </script>
+</body>
+</html>
