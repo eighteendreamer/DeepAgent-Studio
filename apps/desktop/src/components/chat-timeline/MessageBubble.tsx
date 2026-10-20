@@ -6,6 +6,7 @@ import { convertFileSrc } from "@tauri-apps/api/core";
 import { AnimatePresence, LayoutGroup, motion, useReducedMotion } from "framer-motion";
 import type { ComposerMention, ComposerSkillSelection } from "../../types";
 import { MarkdownText } from "../MarkdownText";
+import { ImagePreviewTrigger } from "../ImagePreviewTrigger";
 import { morphSpringTransition } from "../ui/morphingMenuMotion";
 import { TintButton } from "../ui/TintButton";
 import type { ChatBlock } from "./timelineTypes";
@@ -120,11 +121,12 @@ function AttachmentPreviews({ block }: { block: Extract<ChatBlock, { kind: "user
             : "";
         if (imageSrc) {
           return (
-            <img
+            <ImagePreviewTrigger
               key={attachment.id}
               src={imageSrc}
               alt={attachment.name}
-              className="max-h-20 max-w-[120px] rounded-xl border border-border-theme object-contain shadow-sm"
+              triggerClassName="max-h-20 max-w-[120px] rounded-xl border border-border-theme shadow-sm"
+              imageClassName="max-h-20 max-w-[120px] object-contain"
             />
           );
         }

@@ -8,6 +8,7 @@ import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
 import { InputSurface } from "./ui/InputSurface";
 import { ComposerAttachButton } from "./ComposerAttachButton";
+import { ImagePreviewTrigger } from "./ImagePreviewTrigger";
 import { IconButton } from "./ui/IconButton";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 import { MOTION } from "./ui/motion";
@@ -1508,7 +1509,12 @@ export function Composer({
               className="flex h-14 max-w-[220px] shrink-0 items-center gap-2 rounded-2xl bg-black/5 px-2 text-left"
             >
               {item.kind === "image" && item.dataUrl ? (
-                <img src={item.dataUrl} alt="" className="h-10 w-10 rounded-xl object-cover" />
+                <ImagePreviewTrigger
+                  src={item.dataUrl}
+                  alt={item.name}
+                  triggerClassName="h-10 w-10 rounded-xl"
+                  imageClassName="h-full w-full rounded-xl object-cover"
+                />
               ) : (
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-text-secondary">
                   <FontAwesomeIcon icon={["fas", item.kind === "text" ? "file-lines" : "file"]} />

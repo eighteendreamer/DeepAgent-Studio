@@ -34,6 +34,7 @@ export interface GlobalModalProps {
   panelClassName?: string;
   panelProps?: Omit<HTMLAttributes<HTMLDivElement>, "children" | "className">;
   panelRef?: Ref<HTMLDivElement>;
+  backdropClassName?: string;
   closeOnBackdrop?: boolean;
   closeOnEscape?: boolean;
   zIndexClass?: string;
@@ -51,6 +52,7 @@ export function GlobalModal({
   panelClassName,
   panelProps,
   panelRef,
+  backdropClassName,
   closeOnBackdrop = true,
   closeOnEscape = true,
   zIndexClass = "z-[200]",
@@ -158,7 +160,11 @@ export function GlobalModal({
       className={cn("fixed inset-0 flex items-center justify-center px-4", zIndexClass, className)}
       onMouseDown={handleShellMouseDown}
     >
-      <div ref={backdropRef} className="absolute inset-0 bg-black/20" aria-hidden="true" />
+      <div
+        ref={backdropRef}
+        className={cn("absolute inset-0 bg-black/20", backdropClassName)}
+        aria-hidden="true"
+      />
       <Panel
         ref={setPanelRef}
         menu={false}

@@ -92,10 +92,12 @@ DialogOverlay.displayName = "DialogOverlay";
 interface DialogContentProps extends React.HTMLAttributes<HTMLDivElement> {
   /** Override the global modal shell layer for surfaces that must cover canvas overlays. */
   zIndexClass?: string;
+  /** Optional overlay styling for focused viewers such as image preview. */
+  backdropClassName?: string;
 }
 
 const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
-  ({ className, children, zIndexClass, ...props }, ref) => {
+  ({ className, children, zIndexClass, backdropClassName, ...props }, ref) => {
     const { open, setOpen, origin } = useDialogContext();
 
     return (
@@ -104,6 +106,7 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
         origin={origin}
         onClose={() => setOpen(false)}
         zIndexClass={zIndexClass}
+        backdropClassName={backdropClassName}
         panelClassName={className}
         panelProps={{ role: "dialog", "aria-modal": true, ...props }}
         panelRef={ref}
