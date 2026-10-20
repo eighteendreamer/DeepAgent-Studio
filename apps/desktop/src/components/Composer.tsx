@@ -8,8 +8,7 @@ import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
 import { InputSurface } from "./ui/InputSurface";
 import { ComposerAttachButton } from "./ComposerAttachButton";
-import { ImagePreviewTrigger } from "./ImagePreviewTrigger";
-import { IconButton } from "./ui/IconButton";
+import { ComposerAttachmentList } from "./ComposerAttachmentList";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
 import { MOTION } from "./ui/motion";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
@@ -1501,52 +1500,7 @@ export function Composer({
         </div>
       )}
 
-      {attachments.length > 0 && (
-        <div className="mb-2 flex max-w-full gap-2 overflow-x-auto pb-1">
-          {attachments.map((item) => (
-            <div
-              key={item.id}
-              className="flex h-14 max-w-[220px] shrink-0 items-center gap-2 rounded-2xl bg-black/5 px-2 text-left"
-            >
-              {item.kind === "image" && item.dataUrl ? (
-                <ImagePreviewTrigger
-                  src={item.dataUrl}
-                  alt={item.name}
-                  triggerClassName="h-10 w-10 rounded-xl"
-                  imageClassName="h-full w-full rounded-xl object-cover"
-                />
-              ) : (
-                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-white text-text-secondary">
-                  <FontAwesomeIcon icon={["fas", item.kind === "text" ? "file-lines" : "file"]} />
-                </div>
-              )}
-              <div className="min-w-0 flex-1">
-                <div className="truncate text-[12px] font-medium text-text-base">{item.name}</div>
-                <div className="truncate text-[11px] text-text-secondary">
-                  {item.status === "processing"
-                    ? item.kind === "image"
-                      ? "识别中"
-                      : "处理中"
-                    : item.status === "error"
-                    ? item.error ?? "处理失败"
-                    : item.kind === "image"
-                    ? "图片"
-                    : item.kind === "text"
-                    ? "文本"
-                    : "文件"}
-                </div>
-              </div>
-              <IconButton
-                type="button"
-                onClick={() => removeAttachment(item.id)}
-                className="h-6 w-6 rounded-full"
-              >
-                <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[11px]" />
-              </IconButton>
-            </div>
-          ))}
-        </div>
-      )}
+      <ComposerAttachmentList attachments={attachments} onRemove={removeAttachment} />
 
       <div className="relative w-full">
         <div
