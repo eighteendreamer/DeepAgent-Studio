@@ -1278,7 +1278,7 @@ mod tests {
                 .events_after("run-1", None)
                 .unwrap()
                 .len(),
-            4
+            5
         );
         assert!(store
             .transition_action("run-1", "call-1", RunActionState::Running, 6, None, None)
@@ -1295,8 +1295,9 @@ mod tests {
         assert!(error.to_string().contains("UNIQUE constraint failed"));
         assert!(store.get_action("run-1", "call-2").unwrap().is_none());
         let events = RunStore::new(&db).events_after("run-1", None).unwrap();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].event_type, "action.received");
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].event_type, "run_accepted");
+        assert_eq!(events[1].event_type, "action.received");
     }
 
     #[test]

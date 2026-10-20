@@ -1,6 +1,6 @@
 //! Verified, serialized activation of plugin runtime archives.
 use std::fs::{File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -10,18 +10,48 @@ use fs2::FileExt;
 use crate::atomic_file::remove_dir_all_with_retry;
 use crate::plugin::spec::resolve_existing_within;
 
+// Host maintenance only. One disk-heavy job across plugins and bundled MCP.
+static DISK_PREPARATION: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn check_cancel(cancel: &deepagent_runtime::CancellationTree) -> Result<()> {
+    if cancel.is_cancelled() {
+        Err(CoreError::other("plugin preparation cancelled"))
+    } else {
+        Ok(())
+    }
+}
+
 const MAX_FILES: usize = 100_000;
 const MAX_BYTES: u64 = 512 * 1024 * 1024;
 
 /// A matching archive marker is only an identity hint: verify extracted bytes
 /// too, so missing dependencies and same-size damage are repaired automatically.
 pub fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<()> {
+    prepare_runtime_payload_with_cancel(payload_root, data_dir, &Default::default())
+}
+
+pub(crate) fn prepare_runtime_payload_with_cancel(
+    payload_root: &Path,
+    data_dir: &Path,
+    cancel: &deepagent_runtime::CancellationTree,
+) -> Result<()> {
     let archive_path = payload_root.join("runtime.zip");
     if !archive_path.is_file() {
         return Ok(());
     }
+    let _disk = loop {
+        check_cancel(cancel)?;
+        match DISK_PREPARATION.try_lock() {
+            Ok(guard) => break guard,
+            Err(std::sync::TryLockError::Poisoned(error)) => break error.into_inner(),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                std::thread::sleep(Duration::from_millis(25))
+            }
+        }
+    };
+    let started = Instant::now();
     std::fs::create_dir_all(data_dir).map_err(|e| io_error("create plugin data", e))?;
-    let _lock = acquire_lock(data_dir)?;
+    let _lock = acquire_lock(data_dir, cancel)?;
     std::fs::create_dir_all(data_dir.join("workspace"))
         .map_err(|e| io_error("create payload workspace", e))?;
     let runtime = data_dir.join("runtime");
@@ -31,16 +61,34 @@ pub fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<(
         std::fs::rename(&previous, &runtime)
             .map_err(|e| io_error("recover previous runtime", e))?;
     }
-    let digest = crate::runtime_service::sha256_file(&archive_path)?;
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    let mut source = File::open(&archive_path).map_err(|e| io_error("open runtime archive", e))?;
+    let mut buffer = [0u8; 32 * 1024];
+    loop {
+        check_cancel(cancel)?;
+        let count = source
+            .read(&mut buffer)
+            .map_err(|e| io_error("hash runtime archive", e))?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let digest = format!("{:x}", hasher.finalize());
     let file = File::open(&archive_path).map_err(|e| io_error("open runtime archive", e))?;
     let mut archive =
         zip::ZipArchive::new(file).map_err(|e| io_error("read runtime archive", e))?;
-    validate_archive(&mut archive)?;
+    validate_archive(&mut archive, cancel)?;
     let marker_matches = std::fs::read_to_string(runtime.join(".payload-sha256"))
         .ok()
         .as_deref()
         == Some(&digest);
-    if marker_matches && payload_matches(&mut archive, &runtime)? {
+    if marker_matches && payload_matches(&mut archive, &runtime, cancel)? {
+        tracing::info!(
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "plugin payload verified"
+        );
         return Ok(());
     }
     tracing::info!(path = %runtime.display(), marker_matches, "preparing verified plugin runtime payload");
@@ -49,6 +97,7 @@ pub fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<(
         .tempdir_in(data_dir)
         .map_err(|e| io_error("create runtime stage", e))?;
     for index in 0..archive.len() {
+        check_cancel(cancel)?;
         let mut entry = archive
             .by_index(index)
             .map_err(|e| io_error("read payload entry", e))?;
@@ -62,18 +111,28 @@ pub fn prepare_runtime_payload(payload_root: &Path, data_dir: &Path) -> Result<(
                     .map_err(|e| io_error("create payload parent", e))?;
             }
             let mut out = File::create(&output).map_err(|e| io_error("create payload file", e))?;
-            std::io::copy(&mut entry, &mut out)
-                .map_err(|e| io_error("extract payload entry", e))?;
+            loop {
+                check_cancel(cancel)?;
+                let count = entry
+                    .read(&mut buffer)
+                    .map_err(|e| io_error("read payload entry", e))?;
+                if count == 0 {
+                    break;
+                }
+                out.write_all(&buffer[..count])
+                    .map_err(|e| io_error("extract payload entry", e))?;
+            }
         }
     }
     // Publish the marker with the completed tree, never before extraction succeeds.
     std::fs::write(stage.path().join(".payload-sha256"), &digest)
         .map_err(|e| io_error("write runtime marker", e))?;
+    check_cancel(cancel)?;
     activate(stage.path(), &runtime, &previous)?;
     Ok(())
 }
 
-fn acquire_lock(data: &Path) -> Result<File> {
+fn acquire_lock(data: &Path, cancel: &deepagent_runtime::CancellationTree) -> Result<File> {
     let file = OpenOptions::new()
         .read(true)
         .write(true)
@@ -83,6 +142,7 @@ fn acquire_lock(data: &Path) -> Result<File> {
         .map_err(|e| io_error("open runtime lock", e))?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
+        check_cancel(cancel)?;
         match FileExt::try_lock_exclusive(&file) {
             Ok(()) => return Ok(file), // Closing the handle releases the OS lock.
             Err(e)
@@ -114,7 +174,10 @@ fn safe_entry_path(entry: &zip::read::ZipFile<'_>) -> Result<PathBuf> {
         .ok_or_else(|| CoreError::invalid("runtime payload contains an unsafe path"))
 }
 
-fn validate_archive(archive: &mut zip::ZipArchive<File>) -> Result<()> {
+fn validate_archive(
+    archive: &mut zip::ZipArchive<File>,
+    cancel: &deepagent_runtime::CancellationTree,
+) -> Result<()> {
     if archive.len() > MAX_FILES {
         return Err(CoreError::invalid(
             "runtime payload contains too many files",
@@ -122,6 +185,7 @@ fn validate_archive(archive: &mut zip::ZipArchive<File>) -> Result<()> {
     }
     let mut bytes = 0u64;
     for index in 0..archive.len() {
+        check_cancel(cancel)?;
         let entry = archive
             .by_index(index)
             .map_err(|e| io_error("inspect payload entry", e))?;
@@ -134,11 +198,16 @@ fn validate_archive(archive: &mut zip::ZipArchive<File>) -> Result<()> {
     Ok(())
 }
 
-fn payload_matches(archive: &mut zip::ZipArchive<File>, runtime: &Path) -> Result<bool> {
+fn payload_matches(
+    archive: &mut zip::ZipArchive<File>,
+    runtime: &Path,
+    cancel: &deepagent_runtime::CancellationTree,
+) -> Result<bool> {
     if std::fs::symlink_metadata(runtime).is_ok_and(|m| m.file_type().is_symlink()) {
         return Ok(false);
     }
     for index in 0..archive.len() {
+        check_cancel(cancel)?;
         let mut entry = archive
             .by_index(index)
             .map_err(|e| io_error("verify payload entry", e))?;
@@ -164,6 +233,7 @@ fn payload_matches(archive: &mut zip::ZipArchive<File>, runtime: &Path) -> Resul
         let mut source = [0u8; 32 * 1024];
         let mut target = [0u8; 32 * 1024];
         loop {
+            check_cancel(cancel)?;
             let count = entry
                 .read(&mut source)
                 .map_err(|e| io_error("verify archived bytes", e))?;

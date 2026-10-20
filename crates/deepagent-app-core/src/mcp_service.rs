@@ -26,6 +26,9 @@ use crate::plugin_runtime::PluginMcpServerSource;
 use crate::runtime_service::{RuntimeKind, RuntimePreference, RuntimeRequirement};
 use crate::{ProjectService, RuntimeBroker};
 
+#[path = "mcp_preparation.rs"]
+mod preparation;
+
 /// Document-store location for the MCP config.
 const MCP_COLLECTION: &str = "mcp";
 const MCP_ID: &str = "servers";
@@ -235,7 +238,7 @@ pub struct McpToolInfoDto {
 pub struct McpConnectionStatusDto {
     /// Server name (matches the [`McpServerDto`] key).
     pub name: String,
-    /// `"connected"` | `"failed"` | `"disabled"`.
+    /// `"connected"` | `"failed"` | `"disabled"` | `"preparing"`.
     pub status: String,
     /// Error message when `status == "failed"`.
     #[serde(default)]
@@ -252,12 +255,7 @@ pub struct McpService {
     projects: Option<Arc<ProjectService>>,
     builtin_mcp_root: Option<PathBuf>,
     builtin_mcp_data: Option<PathBuf>,
-    /// Cross-run cache of the connected registry, keyed by a fingerprint of the
-    /// enabled-server config. Lets a chat run reuse already-spawned MCP servers
-    /// (stdio/npx cold-start is the dominant per-run latency) instead of
-    /// re-connecting every message; the cache is invalidated (old connections
-    /// closed) whenever the enabled config changes.
-    cache: Arc<AsyncMutex<Option<CachedRegistry>>>,
+    preparation: preparation::McpPreparation,
 }
 
 /// A cached, live [`McpRegistry`] plus the config fingerprint it was built for.
@@ -276,7 +274,7 @@ impl McpService {
             projects: None,
             builtin_mcp_root: None,
             builtin_mcp_data: None,
-            cache: Arc::new(AsyncMutex::new(None)),
+            preparation: preparation::McpPreparation::default(),
         }
     }
 
@@ -317,9 +315,6 @@ impl McpService {
         let config = McpConfig::parse(&body).map_err(|e| {
             CoreError::invalid(format!("parse built-in MCP config {}: {e}", path.display()))
         })?;
-        if let Some(data_root) = self.builtin_mcp_data.as_ref() {
-            crate::plugin_service::prepare_runtime_payload(resource_root, data_root)?;
-        }
         Ok(config)
     }
 
@@ -728,14 +723,8 @@ impl McpService {
         Ok((registry, failures))
     }
 
-    /// Return a **shared, cached** connected registry for the current enabled
-    /// config, connecting only when the config changed since the last call.
-    ///
-    /// This is the per-run entry point: the first run pays the connect cost
-    /// (now parallel), and subsequent runs reuse the already-spawned servers
-    /// with near-zero latency. When the enabled config changes (add / edit /
-    /// toggle / remove a server) the fingerprint no longer matches, so the old
-    /// connections are closed and fresh ones are established.
+    /// Read the host-published snapshot. This method never initializes MCP
+    /// connections; `start_preparation` owns connection lifecycle.
     pub async fn connected_registry(&self) -> Result<(Arc<McpRegistry>, Vec<(String, String)>)> {
         self.connected_registry_for_config(self.enabled_config()?)
             .await
@@ -747,14 +736,10 @@ impl McpService {
     /// the user's persisted MCP config, so callers need an explicit invalidation
     /// hook instead of waiting for the next effective-config fingerprint check.
     pub async fn invalidate_connected_registry(&self) -> Result<()> {
-        let mut guard = self.cache.lock().await;
-        if let Some(cached) = guard.take() {
-            cached.registry.close_all().await?;
-        }
-        Ok(())
+        self.reconcile_owner("legacy", BTreeSet::new()).await
     }
 
-    /// Cached connected registry for enabled user config plus plugin overlay.
+    /// Read the host-published snapshot for enabled user config plus overlay.
     pub async fn connected_registry_with_overlay(
         &self,
         overlay: McpConfig,
@@ -763,7 +748,7 @@ impl McpService {
             .await
     }
 
-    /// Cached connected registry for enabled user config plus plugin overlay.
+    /// Read the host-published snapshot for enabled user config plus plugin overlay.
     pub async fn connected_registry_with_plugin_overlay(
         &self,
         overlay: McpConfig,
@@ -777,37 +762,24 @@ impl McpService {
 
     async fn connected_registry_for_config(
         &self,
-        mut config: McpConfig,
+        config: McpConfig,
     ) -> Result<(Arc<McpRegistry>, Vec<(String, String)>)> {
-        self.prepare_runtime_config(&mut config);
-        // Fingerprint = the serialized effective config. Any change to which
-        // servers are enabled or how they're configured busts the cache.
-        let fingerprint = serde_json::to_string(&config).unwrap_or_default();
-
-        let mut guard = self.cache.lock().await;
-        if let Some(cached) = guard.as_ref() {
-            if cached.fingerprint == fingerprint {
-                return Ok((cached.registry.clone(), cached.failures.clone()));
-            }
-            // Config changed: tear down the stale connections before reconnecting.
-            let _ = cached.registry.close_all().await;
-        }
-
-        let (registry, failures) = self.connect_config(config).await?;
-        let mut registry = registry;
-        // Long-lived cached connections get a background liveness probe (MCP
-        // spec `ping` utility, §5.2): a server that dies between runs is
-        // detected and respawned by the self-healing transport underneath the
-        // ping, instead of failing the next tool call. Probes stop when the
-        // cache entry is replaced/dropped.
-        registry.enable_liveness(deepagent_mcp::LivenessConfig::default());
-        let registry = Arc::new(registry);
-        *guard = Some(CachedRegistry {
-            fingerprint,
-            registry: registry.clone(),
-            failures: failures.clone(),
-        });
-        Ok((registry, failures))
+        let mut registry = (*self.ready_registry()).clone();
+        registry.retain_servers(|name| config.servers.contains_key(name));
+        let failures = config
+            .servers
+            .keys()
+            .filter_map(|name| {
+                let status = self.cached_status(name);
+                (status.status == "failed").then(|| {
+                    (
+                        name.clone(),
+                        status.error.unwrap_or_else(|| "MCP startup failed".into()),
+                    )
+                })
+            })
+            .collect();
+        Ok((Arc::new(registry), failures))
     }
 
     /// Connect a single server and perform the initialize handshake. Used by
@@ -857,21 +829,16 @@ impl McpService {
         Ok(Self::probe(&dto.name, &cfg).await)
     }
 
-    /// Live status of every saved server: disabled ones are reported as
-    /// `"disabled"` without connecting; enabled ones are probed (connect +
-    /// `tools/list`) with failures captured per-server. Ordered by name.
-    ///
-    /// The per-server probes run **concurrently** (`join_all`): each probe is
-    /// IO-bound (spawn / network + handshake), so fanning them out means a
-    /// "refresh status" over N servers costs roughly the slowest one rather
-    /// than the sum. Result order still matches the (name-sorted) server map.
+    /// Read the host-published status of every saved server. This call never
+    /// starts a process or network connection; enabled servers without a
+    /// published result remain `"preparing"`. Results are ordered by name.
     pub async fn connection_status(&self) -> Result<Vec<McpConnectionStatusDto>> {
         let state = self.load_state()?;
         self.connection_status_for_entries(Self::user_entries(&state))
             .await
     }
 
-    /// Live status of persisted user servers plus plugin overlay servers.
+    /// Host-published status of persisted user servers plus plugin overlay servers.
     pub async fn connection_status_with_plugin_overlay(
         &self,
         overlay: McpConfig,
@@ -887,25 +854,21 @@ impl McpService {
         &self,
         entries: Vec<EffectiveMcpServer>,
     ) -> Result<Vec<McpConnectionStatusDto>> {
-        let probes = entries.into_iter().map(|entry| {
-            let name = entry.dto.name.clone();
-            let enabled = entry.dto.enabled && entry.dto.conflict.is_none();
-            let conflict = entry.dto.conflict.clone();
-            let mut cfg = entry.config;
-            async move {
-                if !enabled {
-                    return McpConnectionStatusDto {
-                        name,
+        Ok(entries
+            .into_iter()
+            .map(|entry| {
+                if !entry.dto.enabled || entry.dto.conflict.is_some() {
+                    McpConnectionStatusDto {
+                        name: entry.dto.name,
                         status: "disabled".into(),
-                        error: conflict,
+                        error: entry.dto.conflict,
                         tools: Vec::new(),
-                    };
+                    }
+                } else {
+                    self.cached_status(&entry.dto.name)
                 }
-                cfg.expand_with(&|var| std::env::var(var).ok());
-                Self::probe(&name, &cfg).await
-            }
-        });
-        Ok(futures::future::join_all(probes).await)
+            })
+            .collect())
     }
 
     /// Connect + `initialize` + `tools/list` one config, mapping any failure to
@@ -1216,7 +1179,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connection_status_probes_enabled_servers() {
+    async fn connection_status_reads_cached_state_without_starting_servers() {
         let svc = service();
         let mut dto = stdio_dto("ghost");
         dto.command = Some("definitely-not-a-real-binary-xyz".into());
@@ -1225,12 +1188,14 @@ mod tests {
 
         let statuses = svc.connection_status().await.unwrap();
         assert_eq!(statuses.len(), 1);
-        assert_eq!(statuses[0].status, "failed");
-        assert!(statuses[0].error.is_some());
+        assert_eq!(statuses[0].status, "preparing");
+        assert!(statuses[0].error.is_none());
+        assert!(statuses[0].tools.is_empty());
+        assert_eq!(svc.cached_status("ghost").status, "preparing");
     }
 
     #[tokio::test]
-    async fn connected_registry_reuses_until_config_changes() {
+    async fn connected_registry_only_reads_published_servers() {
         let svc = service();
         let mut dto = stdio_dto("ghost");
         dto.command = Some("definitely-not-a-real-binary-xyz".into());
@@ -1238,45 +1203,36 @@ mod tests {
         svc.upsert(dto).unwrap();
 
         let (reg1, failures1) = svc.connected_registry().await.unwrap();
-        assert_eq!(failures1.len(), 1);
-        // Same config → the exact same Arc is reused (no reconnect).
-        let (reg2, _) = svc.connected_registry().await.unwrap();
-        assert!(
-            Arc::ptr_eq(&reg1, &reg2),
-            "registry should be reused when config is unchanged"
-        );
+        assert!(failures1.is_empty());
+        assert_eq!(reg1.server_count(), 0);
+        assert_eq!(svc.cached_status("ghost").status, "preparing");
 
-        // Config change (add a server) busts the cache → a fresh Arc.
+        // A config update is not itself a connection attempt. It only changes
+        // the allow-list used to project the already-published host snapshot.
         let mut other = stdio_dto("ghost2");
         other.command = Some("definitely-not-a-real-binary-xyz".into());
         other.args = vec![];
         svc.upsert(other).unwrap();
         let (reg3, _) = svc.connected_registry().await.unwrap();
-        assert!(
-            !Arc::ptr_eq(&reg1, &reg3),
-            "registry should be rebuilt after a config change"
-        );
+        assert_eq!(reg3.server_count(), 0);
+        assert_eq!(svc.cached_status("ghost2").status, "preparing");
     }
 
     #[tokio::test]
-    async fn invalidate_connected_registry_drops_cached_registry() {
+    async fn invalidating_legacy_owner_does_not_start_connections() {
         let svc = service();
         let (reg1, failures) = svc.connected_registry().await.unwrap();
         assert!(failures.is_empty());
-        assert!(svc.cache.lock().await.is_some());
+        assert_eq!(reg1.server_count(), 0);
 
         svc.invalidate_connected_registry().await.unwrap();
-        assert!(svc.cache.lock().await.is_none());
 
         let (reg2, _) = svc.connected_registry().await.unwrap();
-        assert!(
-            !Arc::ptr_eq(&reg1, &reg2),
-            "registry should be rebuilt after explicit invalidation"
-        );
+        assert_eq!(reg2.server_count(), 0);
     }
 
     #[tokio::test]
-    async fn connected_registry_with_plugin_overlay_rebuilds_when_overlay_changes() {
+    async fn connected_registry_does_not_initialize_plugin_overlay() {
         let svc = service();
         let mut overlay = McpConfig {
             servers: BTreeMap::new(),
@@ -1295,7 +1251,12 @@ mod tests {
             .connected_registry_with_plugin_overlay(overlay, &sources)
             .await
             .unwrap();
-        assert_eq!(failures1.len(), 1);
+        assert!(failures1.is_empty());
+        assert_eq!(reg1.server_count(), 0);
+        assert_eq!(
+            svc.cached_status("plugin__docs_plugin__docs").status,
+            "preparing"
+        );
 
         let (reg2, failures2) = svc
             .connected_registry_with_plugin_overlay(
@@ -1308,10 +1269,7 @@ mod tests {
             .unwrap();
 
         assert!(failures2.is_empty());
-        assert!(
-            !Arc::ptr_eq(&reg1, &reg2),
-            "registry should be rebuilt when plugin overlay changes"
-        );
+        assert_eq!(reg2.server_count(), 0);
     }
 
     #[test]
@@ -1425,8 +1383,8 @@ mod tests {
 
     #[tokio::test]
     async fn connection_status_mixes_states_in_name_order() {
-        // Concurrent probing must preserve the (name-sorted) order and each
-        // server's own status: enabled+bad → failed, disabled → disabled.
+        // Snapshot reads preserve the (name-sorted) order; enabled servers that
+        // have not published a result remain preparing, while disabled stays explicit.
         let svc = service();
         for name in ["a_on", "b_off", "c_on"] {
             let mut dto = stdio_dto(name);
@@ -1439,9 +1397,9 @@ mod tests {
         let statuses = svc.connection_status().await.unwrap();
         let names: Vec<_> = statuses.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(names, vec!["a_on", "b_off", "c_on"]);
-        assert_eq!(statuses[0].status, "failed");
+        assert_eq!(statuses[0].status, "preparing");
         assert_eq!(statuses[1].status, "disabled");
-        assert_eq!(statuses[2].status, "failed");
+        assert_eq!(statuses[2].status, "preparing");
     }
 
     /// Live smoke test against the official MCP "everything" reference server.

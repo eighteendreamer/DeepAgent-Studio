@@ -1272,6 +1272,7 @@ dependencies = [
  "hound",
  "image",
  "keyring",
+ "notify",
  "pdf-extract",
  "pdfium-render",
  "percent-encoding",

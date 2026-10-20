@@ -1,4 +1,3 @@
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use deepagent_core::error::Result;
@@ -37,123 +36,49 @@ pub(crate) struct McpLifecycleRecord {
     pub(crate) tool_count: usize,
 }
 
-/// Connect enabled MCP servers and register their tool adapters into the run
-/// registry. Connection failures are intentionally non-fatal: one broken MCP
-/// server should not prevent the agent from using built-in tools.
+/// Read ready host snapshots only; no configuration I/O or startup awaits.
 pub(crate) async fn attach_mcp_tools(
     registry: &mut ToolRegistry,
     service: Option<&McpService>,
     plugin_projection: Option<&PluginRuntimeProjection>,
+    plugin_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
 ) -> Result<McpRuntimeTools> {
     let Some(mcp) = service else {
         return Ok(McpRuntimeTools::default());
     };
 
-    let snapshot_config = match plugin_projection {
-        Some(projection) if !projection.mcp_config.servers.is_empty() => mcp
-            .enabled_config_with_plugin_overlay(
-                projection.mcp_config.clone(),
-                &projection.mcp_server_sources,
-            )
-            .ok(),
-        _ => mcp.enabled_config().ok(),
-    };
-    let config_metadata = snapshot_config
-        .as_ref()
-        .map(|config| {
-            config
-                .servers
-                .iter()
-                .map(|(id, cfg)| {
-                    let transport = cfg
-                        .effective_type()
-                        .ok()
-                        .map(|kind| format!("{kind:?}").to_ascii_lowercase());
-                    (id.clone(), (transport, config_hash(cfg)))
-                })
-                .collect::<BTreeMap<_, _>>()
-        })
-        .unwrap_or_default();
-
-    let connect_result = match plugin_projection {
-        Some(projection) if !projection.mcp_config.servers.is_empty() => {
-            mcp.connected_registry_with_plugin_overlay(
-                projection.mcp_config.clone(),
-                &projection.mcp_server_sources,
-            )
-            .await
-        }
-        _ => mcp.connected_registry().await,
-    };
-
-    let (mcp_registry, failures) = match connect_result {
-        Ok(result) => result,
-        Err(error) => {
-            tracing::warn!(%error, "MCP connected_registry failed; continuing without MCP tools");
-            return Ok(McpRuntimeTools {
-                hook_registry: None,
-                instructions_block: None,
-                instructions_entries: Vec::new(),
-                lifecycle: vec![McpLifecycleRecord {
-                    server_id: "mcp".into(),
-                    status: "degraded".into(),
-                    transport: None,
-                    config_hash: None,
-                    tool_schema_hash: None,
-                    startup_attempt: 1,
-                    degradation_code: Some("resolve_failed".into()),
-                    reason: Some(error.to_string()),
-                    tool_count: 0,
-                }],
-            });
-        }
-    };
-
-    let mut lifecycle = mcp_registry
+    let mut ready = (*mcp.ready_registry()).clone();
+    if let Some(plugins) = plugin_registry {
+        let mut plugins = (*plugins).clone();
+        let user_names = ready.server_names();
+        plugins.retain_servers(|name| !user_names.iter().any(|user| user == name));
+        ready.extend_ready(&plugins)?;
+    }
+    let mcp_registry = Arc::new(ready);
+    for adapter in deepagent_mcp::adapters_for(mcp_registry.clone()) {
+        registry.register(adapter)?;
+    }
+    let lifecycle = mcp_registry
         .server_names()
         .into_iter()
         .map(|server_id| McpLifecycleRecord {
+            config_hash: plugin_projection
+                .and_then(|projection| projection.mcp_config.servers.get(&server_id))
+                .map(config_hash),
+            tool_schema_hash: Some(tool_schema_hash(&mcp_registry, &server_id)),
             tool_count: mcp_registry
                 .all_tools()
                 .iter()
                 .filter(|tool| tool.server == server_id)
                 .count(),
-            server_id: server_id.clone(),
+            server_id,
             status: "ready".into(),
-            transport: config_metadata
-                .get(&server_id)
-                .and_then(|meta| meta.0.clone()),
-            config_hash: config_metadata.get(&server_id).map(|meta| meta.1.clone()),
-            tool_schema_hash: Some(tool_schema_hash(&mcp_registry, &server_id)),
-            startup_attempt: 1,
+            transport: None,
+            startup_attempt: 0,
             degradation_code: None,
             reason: None,
         })
-        .collect::<Vec<_>>();
-    if !failures.is_empty() {
-        tracing::warn!(count = failures.len(), "some MCP servers failed to connect");
-        lifecycle.extend(failures.into_iter().map(|(server_id, reason)| {
-            McpLifecycleRecord {
-                server_id: server_id.clone(),
-                status: "degraded".into(),
-                transport: config_metadata
-                    .get(&server_id)
-                    .and_then(|meta| meta.0.clone()),
-                config_hash: config_metadata.get(&server_id).map(|meta| meta.1.clone()),
-                tool_schema_hash: None,
-                startup_attempt: 1,
-                degradation_code: Some("connect_failed".into()),
-                reason: Some(reason),
-                tool_count: 0,
-            }
-        }));
-    }
-    for adapter in deepagent_mcp::adapters_for(mcp_registry.clone()) {
-        if let Err(error) = registry.register(adapter) {
-            tracing::warn!(%error, "failed to register MCP tool adapter");
-        }
-    }
-
+        .collect();
     Ok(McpRuntimeTools {
         hook_registry: Some(mcp_registry.clone()),
         instructions_block: render_mcp_instructions(&mcp_registry),

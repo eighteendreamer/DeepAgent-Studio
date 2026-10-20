@@ -688,7 +688,11 @@ impl<'a> ToolExecutionPipeline<'a> {
         needs_approval: bool,
     ) -> Result<ToolPipelineResult> {
         if let Some(persistence) = self.action_persistence.as_ref() {
-            persistence.fail(&call_id, &reason)?;
+            if error_type == "cancelled" {
+                persistence.cancel(&call_id, &reason)?;
+            } else {
+                persistence.fail(&call_id, &reason)?;
+            }
         }
         self.events.emit(RuntimeEvent::ToolBlocked {
             name: name.clone(),

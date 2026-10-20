@@ -50,7 +50,6 @@ use crate::input_runtime::{accept_input_turn, collect_discovered_tools_from_even
 use crate::kernel_runtime::{build_kernel_runtime_config, KernelRuntimeConfigRequest};
 use crate::model_runtime::select_run_model;
 use crate::office_service::OfficeService;
-use crate::plugin_runtime::PluginRuntimeProjection;
 use crate::project_map_service::ProjectMapService;
 use crate::prompt_gate::{finalize_blocked_user_prompt, submit_user_prompt};
 use crate::run_coordinator::RunCoordinator;
@@ -193,6 +192,114 @@ impl<'a> RunAssembler<'a> {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
+        let run_id = diagnostic_run_id
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| format!("run_{}", deepagent_core::id::EventId::new()));
+        let db = self.db.clone();
+        let session_id = if let Some(id) = continue_session {
+            id.to_owned()
+        } else {
+            let (_, project) = self.run_location(None)?;
+            let mode = if env_mode == Some("remote") {
+                deepagent_core::SessionMode::Remote
+            } else {
+                deepagent_core::SessionMode::Normal
+            };
+            deepagent_session::Session::create_in_project(
+                &db,
+                &SystemClock,
+                None,
+                mode,
+                project.as_deref(),
+            )?
+            .id()
+            .to_string()
+        };
+        let store = deepagent_persistence::run_store::RunStore::new(&db);
+        if let Some(record) = store.get(&run_id)? {
+            if record.session_id != session_id || record.finished_at.is_some() {
+                return Err(CoreError::invalid("run admission does not match session"));
+            }
+        } else {
+            self.coordinator.admit(&run_id, &session_id)?;
+        }
+        let cancellation = self.coordinator.take_admission(&run_id)?;
+        let result = self
+            .run_inner(
+                prompt,
+                continue_session,
+                env_mode,
+                connection_id,
+                preflight_tools,
+                preflight_abort_message,
+                initial_plan_mode,
+                Some(&run_id),
+                overrides,
+                on_event,
+                on_approval,
+                &session_id,
+                &cancellation,
+            )
+            .await;
+        // The kernel may already have committed the terminal boundary. Setup
+        // failures and cancellations use that same idempotent writer.
+        let terminal = deepagent_runtime::KernelTerminal {
+            kind: if cancellation.cancellation().is_cancelled() {
+                deepagent_runtime::TerminalKind::Cancelled
+            } else if result.is_ok() {
+                deepagent_runtime::TerminalKind::Succeeded
+            } else {
+                deepagent_runtime::TerminalKind::Failed
+            },
+            message: None,
+            reason: result.as_ref().err().map(ToString::to_string),
+        };
+        if deepagent_runtime::kernel::persist_terminal(
+            &db,
+            &run_id,
+            &terminal,
+            &cancellation.cancellation(),
+        )? {
+            let id = session_id
+                .parse()
+                .map_err(|e| CoreError::invalid(format!("session id: {e}")))?;
+            let mut session = deepagent_session::Session::recover(&db, &SystemClock, id)?;
+            session.append(EventPayload::RunTerminal {
+                kind: terminal.kind.label().to_owned(),
+                reason: terminal.reason,
+            })?;
+        }
+        if cancellation.cancellation().is_cancelled() {
+            Ok(session_id)
+        } else {
+            result
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_inner<F, A>(
+        self,
+        prompt: &str,
+        continue_session: Option<&str>,
+        env_mode: Option<&str>,
+        connection_id: Option<&str>,
+        preflight_tools: Vec<PreflightToolCallDto>,
+        preflight_abort_message: Option<String>,
+        initial_plan_mode: bool,
+        diagnostic_run_id: Option<&str>,
+        overrides: HarnessRunOverrides,
+        on_event: F,
+        on_approval: A,
+        bound_session_id: &str,
+        cancellation: &crate::run_coordinator::ActiveRunRegistration,
+    ) -> Result<String>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+        A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
+    {
+        if cancellation.cancellation().is_cancelled() {
+            return Err(CoreError::other("cancelled before preparation"));
+        }
         let (root, session_project) = self.run_location(continue_session)?;
         let normalized_input = deepagent_runtime::InputIngress::normalize(
             continue_session.map(ToOwned::to_owned),
@@ -218,7 +325,6 @@ impl<'a> RunAssembler<'a> {
         let run_trace = deepagent_tracing::trace_context::TraceContext::new_root();
         let run_trace_id = run_trace.trace_id.to_hex();
         let run_traceparent = run_trace.traceparent();
-        let cancellation = self.coordinator.register(run_id.clone(), continue_session);
         append_runtime_log(
             self.runtime_logs,
             NewRuntimeLogEntry::info("chat", "run_requested")
@@ -241,7 +347,13 @@ impl<'a> RunAssembler<'a> {
                 })),
         );
 
-        let plugin_projection = self.sync_plugin_runtime()?;
+        let plugin_snapshot = self
+            .plugins
+            .as_ref()
+            .map(|plugins| plugins.ready_snapshot());
+        let plugin_projection = plugin_snapshot
+            .as_ref()
+            .map(|(projection, _)| projection.clone());
         let RunEnvironment {
             config: run_config,
             profile: _profile,
@@ -281,7 +393,7 @@ impl<'a> RunAssembler<'a> {
             self.input_leases.clone(),
             self.runtime_logs.as_ref().map(Arc::clone),
             &run_id,
-            continue_session,
+            Some(bound_session_id),
             env_mode,
             session_project.as_deref(),
             normalized_input.clone(),
@@ -313,6 +425,10 @@ impl<'a> RunAssembler<'a> {
         let prior_events = accepted_turn.prior_events;
         let session_id_str = accepted_turn.session_id;
         let _input_lease = accepted_turn.lease;
+        cancellation.add_alias(session_id_str.clone());
+        if cancellation.cancellation().is_cancelled() {
+            return Err(CoreError::other("cancelled during preparation"));
+        }
 
         let effective_env_mode = match continue_session {
             Some(_) => match session.state().mode {
@@ -474,6 +590,7 @@ impl<'a> RunAssembler<'a> {
             base,
             mcp: self.mcp.as_deref(),
             plugin_projection: plugin_projection.as_ref(),
+            plugin_registry: plugin_snapshot.map(|(_, registry)| registry),
             task_runner,
             task_agent_types,
             plan_executor,
@@ -594,14 +711,18 @@ impl<'a> RunAssembler<'a> {
         );
 
         let prompt_decision = {
-            submit_user_prompt(
-                &registry,
-                &hooks,
-                session.id(),
-                model_prompt.clone(),
-                cancellation.flag(),
-            )
-            .await?
+            let cancel = cancellation.cancellation();
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(CoreError::other("cancelled before user prompt hooks")),
+                result = submit_user_prompt(
+                    &registry,
+                    &hooks,
+                    session.id(),
+                    model_prompt.clone(),
+                    cancellation.flag(),
+                ) => result?,
+            }
         };
         match prompt_decision {
             PromptDecision::Accept(effective_prompt) => {
@@ -691,6 +812,9 @@ impl<'a> RunAssembler<'a> {
                 .starts_with(crate::input_runtime::COMPACTED_SUMMARY_HEADER)
         });
         let session_id = session.id().to_string();
+        if cancellation.cancellation().is_cancelled() {
+            return Err(CoreError::other("cancelled before persisting user input"));
+        }
         {
             let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
             map.entry(session_id.clone())
@@ -701,6 +825,9 @@ impl<'a> RunAssembler<'a> {
                 .with_attachments(message_attachments(&self.attachments)),
         })?;
         let task = session.create_task(&prompt_to_record)?;
+        if cancellation.cancellation().is_cancelled() {
+            return Err(CoreError::other("cancelled before preflight results"));
+        }
         for tool in &preflight_tools {
             let call = ToolCall {
                 id: tool.call_id.clone(),
@@ -769,7 +896,7 @@ impl<'a> RunAssembler<'a> {
             return Ok(session_id);
         }
 
-        let run_context = build_run_context(RunContextRequest {
+        let run_context_request = RunContextRequest {
             root: &root,
             sandbox_mode,
             plugin_projection: plugin_projection.as_ref(),
@@ -790,26 +917,40 @@ impl<'a> RunAssembler<'a> {
             history: &history,
             tools: &tools,
             context_compacted,
-        })
-        .await?;
+        };
+        let run_context = {
+            let cancel = cancellation.cancellation();
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(CoreError::other("cancelled while assembling context")),
+                result = build_run_context(run_context_request) => result?,
+            }
+        };
         let system_manifest = run_context.system_manifest;
         if !system_manifest.loaded_paths.is_empty() {
-            if let Err(error) = hooks
-                .dispatch(&deepagent_hooks::HookContext::new(
-                    session.id(),
-                    HookPoint::InstructionsLoaded,
-                    deepagent_hooks::HookData::Instructions {
-                        paths: system_manifest
-                            .loaded_paths
-                            .iter()
-                            .map(|path| path.to_string_lossy().to_string())
-                            .collect(),
-                    },
-                ))
-                .await
-            {
-                tracing::warn!(error = %error, "InstructionsLoaded hook failed");
+            let cancel = cancellation.cancellation();
+            let context = deepagent_hooks::HookContext::new(
+                session.id(),
+                HookPoint::InstructionsLoaded,
+                deepagent_hooks::HookData::Instructions {
+                    paths: system_manifest
+                        .loaded_paths
+                        .iter()
+                        .map(|path| path.to_string_lossy().to_string())
+                        .collect(),
+                },
+            );
+            let dispatch = hooks.dispatch(&context);
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(CoreError::other("cancelled before model request")),
+                result = dispatch => if let Err(error) = result {
+                    tracing::warn!(error = %error, "InstructionsLoaded hook failed");
+                },
             }
+        }
+        if cancellation.cancellation().is_cancelled() {
+            return Err(CoreError::other("cancelled before model request"));
         }
         let system_prompt = run_context.system_prompt;
         let final_user_prompt = run_context.final_user_prompt;
@@ -1095,6 +1236,7 @@ impl<'a> RunAssembler<'a> {
         self,
         workflow_request: deepagent_runtime::workflow::WorkflowRequest,
         run_id: String,
+        session_id: String,
         on_event: F,
         on_approval: A,
     ) -> Result<String>
@@ -1102,8 +1244,78 @@ impl<'a> RunAssembler<'a> {
         F: Fn(RuntimeEvent) + Send + 'static,
         A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
     {
-        let (root, session_project) = self.run_location(None)?;
-        let cancellation = self.coordinator.register(run_id.clone(), None);
+        let store = deepagent_persistence::run_store::RunStore::new(self.db);
+        match store.get(&run_id)? {
+            Some(record) if record.session_id == session_id && record.finished_at.is_none() => {}
+            Some(_) => {
+                return Err(CoreError::invalid(
+                    "workflow admission does not match session",
+                ))
+            }
+            None => self.coordinator.admit(&run_id, &session_id)?,
+        }
+        let cancellation = self.coordinator.take_admission(&run_id)?;
+        let db = self.db.clone();
+        let result = self
+            .run_workflow_inner(
+                workflow_request,
+                run_id.clone(),
+                session_id.clone(),
+                on_event,
+                on_approval,
+                &cancellation,
+            )
+            .await;
+        let terminal = deepagent_runtime::KernelTerminal {
+            kind: if cancellation.cancellation().is_cancelled() {
+                deepagent_runtime::TerminalKind::Cancelled
+            } else if result.is_ok() {
+                deepagent_runtime::TerminalKind::Succeeded
+            } else {
+                deepagent_runtime::TerminalKind::Failed
+            },
+            message: None,
+            reason: result.as_ref().err().map(ToString::to_string),
+        };
+        if deepagent_runtime::kernel::persist_terminal(
+            &db,
+            &run_id,
+            &terminal,
+            &cancellation.cancellation(),
+        )? {
+            let id = session_id
+                .parse()
+                .map_err(|e| CoreError::invalid(format!("session id: {e}")))?;
+            let mut session = deepagent_session::Session::recover(&db, &SystemClock, id)?;
+            session.append(EventPayload::RunTerminal {
+                kind: terminal.kind.label().to_owned(),
+                reason: terminal.reason,
+            })?;
+        }
+        if cancellation.cancellation().is_cancelled() {
+            Ok(session_id)
+        } else {
+            result
+        }
+    }
+
+    async fn run_workflow_inner<F, A>(
+        self,
+        workflow_request: deepagent_runtime::workflow::WorkflowRequest,
+        run_id: String,
+        session_id: String,
+        on_event: F,
+        on_approval: A,
+        cancellation: &crate::run_coordinator::ActiveRunRegistration,
+    ) -> Result<String>
+    where
+        F: Fn(RuntimeEvent) + Send + 'static,
+        A: Fn(ApprovalRequestDto) + Send + Sync + 'static,
+    {
+        if cancellation.cancellation().is_cancelled() {
+            return Err(CoreError::other("cancelled before workflow preparation"));
+        }
+        let (root, session_project) = self.run_location(Some(&session_id))?;
 
         append_runtime_log(
             self.runtime_logs,
@@ -1119,7 +1331,7 @@ impl<'a> RunAssembler<'a> {
 
         let clock = SystemClock;
         let normalized_input = deepagent_runtime::InputIngress::normalize(
-            None,
+            Some(session_id.clone()),
             root.clone(),
             format!(
                 "[workflow] {} nodes, {} edges",
@@ -1136,7 +1348,7 @@ impl<'a> RunAssembler<'a> {
             self.input_leases.clone(),
             self.runtime_logs.as_ref().map(Arc::clone),
             &run_id,
-            None,
+            Some(&session_id),
             None,
             session_project.as_deref(),
             normalized_input,
@@ -1152,6 +1364,10 @@ impl<'a> RunAssembler<'a> {
         let mut session = accepted_turn.session;
         let session_id = accepted_turn.session_id;
         let _input_lease = accepted_turn.lease;
+        cancellation.add_alias(session_id.clone());
+        if cancellation.cancellation().is_cancelled() {
+            return Err(CoreError::other("cancelled during workflow preparation"));
+        }
 
         let (sink, rx) = ChannelSink::new();
         let sink: Arc<dyn RuntimeEventSink> = Arc::new(sink);
@@ -1232,7 +1448,9 @@ impl<'a> RunAssembler<'a> {
         })?;
         let config = kernel_runtime.config;
 
-        cancellation.add_alias(session_id.clone());
+        if cancellation.cancellation().is_cancelled() {
+            return Err(CoreError::other("cancelled before workflow execution"));
+        }
         let empty_discovered = std::collections::HashSet::new();
         let empty_toolset: crate::tool_manifest::DiscoveredToolSet =
             Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
@@ -1354,21 +1572,6 @@ impl<'a> RunAssembler<'a> {
     /// Delegate to [`crate::slash_runtime::dynamic_command_prompt`].
     fn dynamic_command_prompt(&self, prompt: &str) -> Result<Option<String>> {
         crate::slash_runtime::dynamic_command_prompt(&self.slash_runtime(), prompt)
-    }
-
-    /// Synchronize the plugin runtime projection (if plugins are attached).
-    fn sync_plugin_runtime(&self) -> Result<Option<PluginRuntimeProjection>> {
-        let Some(plugins) = self.plugins else {
-            return Ok(None);
-        };
-        let projection = plugins.runtime_projection()?;
-        if let Some(skills) = self.skills {
-            let mut svc = skills
-                .lock()
-                .map_err(|_| CoreError::other("skills lock poisoned"))?;
-            svc.set_plugin_roots(projection.skill_roots.clone())?;
-        }
-        Ok(Some(projection))
     }
 
     /// Return the shared plan-mode flag for a session.

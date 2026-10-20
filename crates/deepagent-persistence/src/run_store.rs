@@ -47,11 +47,17 @@ impl<'db> RunStore<'db> {
         now: i64,
     ) -> Result<()> {
         self.db.with_conn(|conn| {
-            conn.execute(
+            let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
+            tx.execute(
                 "INSERT INTO runs (id, session_id, task_id, state, created_at, updated_at) VALUES (?1, ?2, ?3, 'accepted', ?4, ?4)",
                 params![run_id, session_id, task_id, now],
             )
             .map_err(map_sqlite)?;
+            tx.execute(
+                "INSERT INTO run_events (run_id, sequence, timestamp, phase, status, event_type, data) VALUES (?1, 0, ?2, 'accepted', 'completed', 'run_accepted', ?3)",
+                params![run_id, now, serde_json::json!({"session_id":session_id,"task_id":task_id}).to_string()],
+            ).map_err(map_sqlite)?;
+            tx.commit().map_err(map_sqlite)?;
             Ok(())
         })
     }
@@ -71,6 +77,62 @@ impl<'db> RunStore<'db> {
                 });
             }
             Ok(())
+        })
+    }
+
+    /// Bind a kernel task to an admitted run without changing its identity.
+    pub fn bind_task(&self, run_id: &str, session_id: &str, task_id: &str) -> Result<()> {
+        self.db.with_conn(|conn| {
+            let changed = conn.execute(
+                "UPDATE runs SET task_id=?3 WHERE id=?1 AND session_id=?2 AND finished_at IS NULL AND (task_id IS NULL OR task_id=?3)",
+                params![run_id, session_id, task_id],
+            ).map_err(map_sqlite)?;
+            if changed != 1 {
+                return Err(CoreError::invalid("run admission does not match the kernel task"));
+            }
+            Ok(())
+        })
+    }
+
+    /// Commit cancellation audit, terminal event and terminal state atomically.
+    /// Repeated finalizers cannot append a second terminal boundary.
+    pub fn finish_with_event(
+        &self,
+        run_id: &str,
+        terminal_kind: &str,
+        reason: Option<&str>,
+        terminal: &serde_json::Value,
+        cancel_alias: Option<&str>,
+        now: i64,
+    ) -> Result<bool> {
+        self.db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
+            let changed = tx.execute(
+                "UPDATE runs SET state='terminal', terminal_kind=?2, terminal_reason=?3, updated_at=?4, finished_at=?4 WHERE id=?1 AND finished_at IS NULL",
+                params![run_id, terminal_kind, reason, now],
+            ).map_err(map_sqlite)?;
+            if changed == 0 {
+                return Ok(false);
+            }
+            let mut sequence: i64 = tx.query_row(
+                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM run_events WHERE run_id=?1",
+                [run_id], |row| row.get(0),
+            ).map_err(map_sqlite)?;
+            let mut events = Vec::new();
+            if let Some(alias) = cancel_alias {
+                events.push(("control", "cancel.requested", serde_json::json!({"alias": alias})));
+                events.push(("control", "cancel.propagated", serde_json::json!({"alias": alias, "target": "active_run"})));
+            }
+            events.push(("terminal", "run_terminal", terminal.clone()));
+            for (phase, event_type, data) in events {
+                tx.execute(
+                    "INSERT INTO run_events (run_id, sequence, timestamp, phase, status, event_type, data) VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?6)",
+                    params![run_id, sequence, now, phase, event_type, data.to_string()],
+                ).map_err(map_sqlite)?;
+                sequence += 1;
+            }
+            tx.commit().map_err(map_sqlite)?;
+            Ok(true)
         })
     }
 
@@ -247,6 +309,68 @@ mod tests {
     use super::*;
 
     #[test]
+    fn terminal_and_cancel_audit_commit_once_and_replay_in_order() {
+        let db = Database::open_in_memory().unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id, created_at, updated_at) VALUES ('s', 1, 1)",
+                [],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+        let store = RunStore::new(&db);
+        store.create("r", "s", None, 1).unwrap();
+        store.bind_task("r", "s", "t").unwrap();
+        assert!(store.bind_task("r", "other", "t").is_err());
+        assert!(store.bind_task("r", "s", "other").is_err());
+        let terminal = serde_json::json!({"kind": "cancelled"});
+        assert!(store
+            .finish_with_event("r", "cancelled", None, &terminal, Some("r"), 2)
+            .unwrap());
+        assert!(!store
+            .finish_with_event("r", "succeeded", None, &terminal, Some("r"), 3)
+            .unwrap());
+        let events = store.events_after("r", None).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.event_type.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "run_accepted",
+                "cancel.requested",
+                "cancel.propagated",
+                "run_terminal"
+            ]
+        );
+        assert_eq!(
+            store.events_after("r", Some(events[0].sequence)).unwrap(),
+            events[1..]
+        );
+    }
+
+    #[test]
+    fn failed_terminal_event_rolls_back_state() {
+        let db = Database::open_in_memory().unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("INSERT INTO sessions (id, created_at, updated_at) VALUES ('s', 1, 1);
+                CREATE TRIGGER fail_terminal BEFORE INSERT ON run_events WHEN NEW.event_type='run_terminal' BEGIN SELECT RAISE(ABORT, 'injected disk failure'); END;").unwrap();
+            Ok(())
+        }).unwrap();
+        let store = RunStore::new(&db);
+        store.create("r", "s", None, 1).unwrap();
+        assert!(store
+            .finish_with_event("r", "cancelled", None, &serde_json::json!({}), Some("r"), 2)
+            .is_err());
+        assert!(store.get("r").unwrap().unwrap().finished_at.is_none());
+        let events = store.events_after("r", None).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].event_type, "run_accepted");
+    }
+
+    #[test]
     fn run_terminal_is_exactly_once_and_events_are_gapless() {
         let db = Database::open_in_memory().unwrap();
         db.with_conn(|conn| {
@@ -271,7 +395,7 @@ mod tests {
                     &serde_json::json!({})
                 )
                 .unwrap(),
-            0
+            1
         );
         assert_eq!(
             store
@@ -284,13 +408,13 @@ mod tests {
                     &serde_json::json!({})
                 )
                 .unwrap(),
-            1
+            2
         );
         assert!(store.finish("r1", "succeeded", None, 4).unwrap());
         assert!(!store.finish("r1", "failed", Some("late"), 5).unwrap());
         let record = store.get("r1").unwrap().unwrap();
         assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
-        assert_eq!(store.events_after("r1", None).unwrap().len(), 2);
+        assert_eq!(store.events_after("r1", None).unwrap().len(), 3);
         assert_eq!(store.list_for_session("s1").unwrap().len(), 1);
     }
 }

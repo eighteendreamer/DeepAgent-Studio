@@ -640,10 +640,11 @@ impl App {
         let Some(prompt) = self.question.take() else {
             return;
         };
-        if !self
-            .chat
-            .resolve_question(&prompt.request.question_id, answers.clone())
-        {
+        if !self.chat.resolve_question(
+            &prompt.request.session_id,
+            &prompt.request.question_id,
+            answers.clone(),
+        ) {
             self.set_notice("question was no longer pending");
         } else if answers.is_none() {
             self.set_notice("declined to answer");
@@ -860,6 +861,7 @@ mod tests {
     fn question_request(count: usize, multi: bool) -> QuestionRequestDto {
         QuestionRequestDto {
             question_id: "q-1".to_string(),
+            session_id: "session-q".to_string(),
             questions: (0..count)
                 .map(|index| Question {
                     question: format!("Pick {index}?"),

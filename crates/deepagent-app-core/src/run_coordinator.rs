@@ -26,6 +26,7 @@ pub struct RunCoordinator {
     pending_questions: PendingQuestions,
     cancellations: CancellationMap,
     run_ids: Arc<Mutex<HashMap<String, String>>>,
+    admissions: Arc<Mutex<HashMap<String, ActiveRunRegistration>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,6 +54,7 @@ impl RunCoordinator {
             pending_questions: PendingQuestions::new(),
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             run_ids: Arc::new(Mutex::new(HashMap::new())),
+            admissions: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -120,49 +122,68 @@ impl RunCoordinator {
         self.cancellations.clone()
     }
 
+    #[cfg(test)]
     pub(crate) fn register(
         &self,
         run_id: impl Into<String>,
         session_id: Option<&str>,
     ) -> ActiveRunRegistration {
+        let run_id = run_id.into();
+        if let Some(registration) = self
+            .admissions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(&run_id)
+        {
+            return registration;
+        }
         ActiveRunRegistration::new(
             self.cancellations.clone(),
             self.run_ids.clone(),
-            run_id.into(),
+            run_id,
             session_id,
         )
     }
 
-    /// Persist the cancellation request before publishing the in-memory flag.
+    /// Consume the cancellation registration created before the transport ACK.
+    /// A run can be executed only once, even if two worker tasks race to resume
+    /// the same durable admission.
+    pub(crate) fn take_admission(&self, run_id: &str) -> Result<ActiveRunRegistration> {
+        self.admissions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .remove(run_id)
+            .ok_or_else(|| CoreError::invalid("run admission is missing or already consumed"))
+    }
+
+    /// Reserve both durable identity and cancellation before transport ACK.
+    /// Session aliases are attached only after the input lease is acquired.
+    pub fn admit(&self, run_id: &str, session_id: &str) -> Result<()> {
+        let mut admissions = self.admissions.lock().unwrap_or_else(|p| p.into_inner());
+        RunStore::new(&self.db).create(run_id, session_id, None, now_millis())?;
+        let registration = ActiveRunRegistration::new(
+            self.cancellations.clone(),
+            self.run_ids.clone(),
+            run_id.to_owned(),
+            None,
+        );
+        admissions.insert(run_id.to_owned(), registration);
+        Ok(())
+    }
+
+    /// Publish cancellation without waiting for storage. The run lifecycle
+    /// persists the recorded intent together with its terminal boundary.
     /// A missing active alias is not an error: the request is acknowledged as
     /// not accepted and no durable event is fabricated.
     pub fn request_cancel(&self, alias: &str) -> Result<CancelRequest> {
-        let (run_id, cancellation) = {
+        let cancellation = {
             let map = self.cancellations.lock().unwrap_or_else(|p| p.into_inner());
             let Some(cancellation) = map.get(alias).cloned() else {
                 return Ok(CancelRequest { accepted: false });
             };
-            let run_id = self
-                .run_ids
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .get(alias)
-                .cloned()
-                .unwrap_or_else(|| alias.to_string());
-            (run_id, cancellation)
+            cancellation
         };
-        // `alias` is normally the run id. For session/turn aliases, the event
-        // is still safely attached by the active registration's canonical key.
-        let requested = serde_json::json!({ "alias": alias });
-        let propagated = serde_json::json!({ "alias": alias, "target": "active_run" });
-        RunControlStore::new(&self.db).append_control_signals(
-            &run_id,
-            &[
-                ("cancel.requested", &requested),
-                ("cancel.propagated", &propagated),
-            ],
-        )?;
-        cancellation.cancel();
+        cancellation.request_cancel(alias);
         // `accepted` means the alias still addressed an active run. Repeated
         // clicks while it is already cancelling remain acknowledged so the UI
         // does not incorrectly report a transient not-found error.
@@ -332,6 +353,34 @@ mod tests {
     use deepagent_persistence::run_store::RunStore;
 
     #[test]
+    fn cancellation_does_not_wait_for_a_durable_run() {
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let coordinator = RunCoordinator::new(db);
+        let registration = coordinator.register("preparing-run", None);
+        assert!(
+            coordinator
+                .request_cancel("preparing-run")
+                .expect("cancel")
+                .accepted
+        );
+        assert!(registration.cancellation().is_cancelled());
+    }
+
+    #[test]
+    fn cancel_does_not_acquire_the_database_lock() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let coordinator = RunCoordinator::new(db.clone());
+        let registration = coordinator.register("preparing", None);
+        db.with_conn(|_| {
+            assert!(coordinator.request_cancel("preparing")?.accepted);
+            assert!(coordinator.request_cancel("preparing")?.accepted);
+            assert!(registration.cancellation().is_cancelled());
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
     fn readiness_reads_shared_durable_control_plane() {
         let db = Arc::new(Database::open_in_memory().expect("db"));
         let readiness = RunCoordinator::new(db).readiness().expect("readiness");
@@ -365,13 +414,28 @@ mod tests {
             .load(std::sync::atomic::Ordering::Acquire));
         assert!(registration.cancellation().is_cancelled());
 
+        let accepted = RunStore::new(&db).events_after("run-1", None).unwrap();
+        assert_eq!(accepted.len(), 1);
+        assert_eq!(accepted[0].event_type, "run_accepted");
+        deepagent_runtime::kernel::persist_terminal(
+            &db,
+            "run-1",
+            &deepagent_runtime::KernelTerminal {
+                kind: deepagent_runtime::TerminalKind::Cancelled,
+                message: None,
+                reason: None,
+            },
+            &registration.cancellation(),
+        )
+        .unwrap();
         let events = RunStore::new(&db)
             .events_after("run-1", None)
             .expect("events");
-        assert_eq!(events.len(), 2);
-        assert_eq!(events[0].event_type, "cancel.requested");
-        assert_eq!(events[1].event_type, "cancel.propagated");
-        assert_eq!(events[0].data["alias"], session_alias);
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].event_type, "run_accepted");
+        assert_eq!(events[1].event_type, "cancel.requested");
+        assert_eq!(events[2].event_type, "cancel.propagated");
+        assert_eq!(events[1].data["alias"], session_alias);
 
         drop(registration);
         assert!(
@@ -483,8 +547,9 @@ mod tests {
             .record_continuation("run-cont", "turn-old", "turn-new")
             .expect("continuation");
         let events = RunStore::new(&db).events_after("run-cont", None).unwrap();
-        assert_eq!(events[0].event_type, "continuation.created");
-        assert_eq!(events[0].data["disposition"], "new_turn");
-        assert_eq!(events[0].data["replacesTurnId"], "turn-old");
+        assert_eq!(events[0].event_type, "run_accepted");
+        assert_eq!(events[1].event_type, "continuation.created");
+        assert_eq!(events[1].data["disposition"], "new_turn");
+        assert_eq!(events[1].data["replacesTurnId"], "turn-old");
     }
 }

@@ -31,11 +31,16 @@ function StatusBadge({ status }: { status: McpConnectionStatus["status"] }) {
       icon: ["fas", "minus"],
       label: t("settings.mcp.statusDisabled"),
     },
+    preparing: {
+      cls: "bg-blue-50 text-blue-600",
+      icon: ["fas", "circle-notch"],
+      label: t("settings.mcp.statusPreparing"),
+    },
   };
   const c = cfg[status];
   return (
     <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${c.cls}`}>
-      <FontAwesomeIcon icon={c.icon} className="mr-1 text-[10px]" />
+      <FontAwesomeIcon icon={c.icon} spin={status === "preparing"} className="mr-1 text-[10px]" />
       {c.label}
     </span>
   );

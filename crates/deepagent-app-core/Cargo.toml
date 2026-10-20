@@ -61,6 +61,7 @@ tempfile.workspace = true
 rusqlite.workspace = true
 # Advisory lock on `<data root>/host.lock` elects the primary host process.
 fs2.workspace = true
+notify = "8.2.0"
 # .tar.gz extraction for managed runtimes (always compiled — small, pure Rust).
 tar.workspace = true
 flate2.workspace = true

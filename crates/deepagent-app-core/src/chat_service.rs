@@ -340,6 +340,10 @@ impl ChatService {
         self.coordinator.request_cancel(session_id)
     }
 
+    pub fn admit_run(&self, run_id: &str, session_id: &str) -> Result<()> {
+        self.coordinator.admit(run_id, session_id)
+    }
+
     /// Read the shared coordinator's durable readiness projection.
     pub fn coordinator_readiness(&self) -> Result<crate::run_coordinator::CoordinatorReadiness> {
         self.coordinator.readiness()
@@ -399,6 +403,27 @@ impl ChatService {
     pub fn with_plugins(mut self, plugins: Arc<crate::plugin_service::PluginService>) -> Self {
         self.plugins = Some(plugins);
         self
+    }
+
+    /// Host startup/update entry. Conversation assembly only consumes snapshots.
+    pub fn start_plugin_preparation(&self, changed: Arc<dyn Fn() + Send + Sync>) {
+        if let Some(mcp) = &self.mcp {
+            mcp.start_preparation();
+            if let Some(plugins) = &self.plugins {
+                let skills = self.skills.clone();
+                let weak = Arc::downgrade(plugins);
+                plugins.start_preparation(mcp.clone(), Arc::new(move || {
+                    if let (Some(plugins), Some(skills)) = (weak.upgrade(), skills.as_ref()) {
+                        if let Ok(mut skills) = skills.lock() {
+                            if let Err(error) = skills.set_plugin_roots(plugins.ready_snapshot().0.skill_roots) {
+                                tracing::error!(%error, "failed to publish plugin skill snapshot");
+                            }
+                        }
+                    }
+                    changed();
+                }));
+            }
+        }
     }
 
     /// Attach a [`ProjectService`](crate::project_service::ProjectService) so
@@ -596,7 +621,7 @@ impl ChatService {
         let Some(plugins) = &self.plugins else {
             return Ok(None);
         };
-        let projection = plugins.runtime_projection()?;
+        let projection = plugins.prepare_projection_for_test()?;
         if let Some(skills) = &self.skills {
             let mut svc = skills
                 .lock()
@@ -1290,6 +1315,7 @@ impl ChatService {
         &self,
         workflow_request: deepagent_runtime::workflow::WorkflowRequest,
         run_id: String,
+        session_id: String,
         on_event: F,
         on_approval: A,
     ) -> Result<String>
@@ -1299,7 +1325,7 @@ impl ChatService {
     {
         let assembler = self.run_assembler();
         assembler
-            .run_workflow(workflow_request, run_id, on_event, on_approval)
+            .run_workflow(workflow_request, run_id, session_id, on_event, on_approval)
             .await
     }
 
@@ -1551,7 +1577,7 @@ mod tests {
 
         let mut answers = std::collections::BTreeMap::new();
         answers.insert("Which city?".to_string(), "Changsha".to_string());
-        assert!(pending.resolve("session-a", &request.question_id, Some(answers)));
+        assert!(pending.resolve(&request.session_id, &request.question_id, Some(answers)));
 
         let output = invoke.await.unwrap().unwrap();
         assert!(output.ok);

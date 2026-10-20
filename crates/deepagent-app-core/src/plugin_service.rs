@@ -67,6 +67,7 @@ pub enum PluginExecutionKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PluginLifecycleState {
+    Preparing,
     Discovered,
     Parsed,
     Installed,
@@ -322,17 +323,24 @@ impl Default for PluginState {
 
 pub struct PluginService {
     roots: PluginRoots,
+    active_workspace_root: Mutex<Option<PathBuf>>,
     state_path: PathBuf,
     data_root: PathBuf,
     /// The directory the ledger is anchored to (the data root in production), so
     /// recorded paths stay relative across a root move.
     state_root: PathBuf,
     ledger: LedgerStore,
+    #[cfg(test)]
     runtime_cache: Mutex<Option<PluginRuntimeCache>>,
     list_cache: Mutex<Option<PluginListCache>>,
     summary_cache: Mutex<Option<PluginSummaryCache>>,
+    preparation: preparation::PluginPreparation,
 }
 
+#[path = "plugin_preparation.rs"]
+mod preparation;
+
+#[cfg(test)]
 struct PluginRuntimeCache {
     projection: PluginRuntimeProjection,
     snapshots: Vec<PathSnapshot>,
@@ -440,13 +448,16 @@ impl PluginService {
         let ledger = LedgerStore::at(state_root.clone(), state_root.join(LEDGER_FILE));
         let service = Self {
             roots,
+            active_workspace_root: Mutex::new(None),
             state_path: plugin_data.join("state.json"),
             data_root: plugin_data.join("data"),
             state_root,
             ledger,
+            #[cfg(test)]
             runtime_cache: Mutex::new(None),
             list_cache: Mutex::new(None),
             summary_cache: Mutex::new(None),
+            preparation: preparation::PluginPreparation::default(),
         };
         service.reclaim_decommissioned_marketplace_storage(&plugin_data);
         service.adopt_unledgered_plugins();
@@ -470,7 +481,8 @@ impl PluginService {
             }
         };
         let state = self.load_state().unwrap_or_default();
-        for plugin in load_plugins(&self.roots)
+        for plugin in self
+            .load_plugins_in_scope()
             .into_iter()
             .filter(|plugin| plugin.origin == PluginOrigin::Personal)
         {
@@ -567,19 +579,54 @@ impl PluginService {
         &self.roots
     }
 
+    /// Change the workspace-scoped plugin collection used by runtime and
+    /// management reads. The static workspace root remains the fallback when
+    /// no project is active.
+    pub fn set_active_workspace_root(&self, root: Option<PathBuf>) -> bool {
+        let mut active = self
+            .active_workspace_root
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        if *active == root {
+            return false;
+        }
+        *active = root;
+        drop(active);
+        self.invalidate_plugin_caches();
+        true
+    }
+
+    pub(super) fn effective_roots(&self) -> PluginRoots {
+        let mut roots = self.roots.clone();
+        if let Some(workspace) = self
+            .active_workspace_root
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            roots.workspace = Some(workspace.join(".deepagent").join("plugins"));
+        }
+        roots
+    }
+
+    pub(super) fn load_plugins_in_scope(&self) -> Vec<LoadedPlugin> {
+        load_plugins(&self.effective_roots())
+    }
+
     pub fn list(&self) -> Result<Vec<PluginDto>> {
         if let Some(plugins) = self.cached_plugin_list() {
             return Ok(plugins);
         }
 
         let state = self.load_state()?;
-        let loaded = load_plugins(&self.roots);
+        let roots = self.effective_roots();
+        let loaded = load_plugins(&roots);
         let dependencies = self.dependency_outcome(&loaded, &state);
         let plugins = loaded
             .iter()
             .map(|plugin| self.dto_from_loaded(plugin, &loaded, &state, &dependencies))
             .collect::<Vec<_>>();
-        let snapshots = self.plugin_list_cache_snapshots(&loaded, &state);
+        let snapshots = self.plugin_list_cache_snapshots_for(&roots, &loaded, &state);
         self.store_plugin_list_cache(plugins.clone(), snapshots);
         Ok(plugins)
     }
@@ -589,24 +636,27 @@ impl PluginService {
             return Ok(plugins);
         }
         let state = self.load_state()?;
-        let loaded = load_plugins(&self.roots);
+        let roots = self.effective_roots();
+        let loaded = load_plugins(&roots);
         let dependencies = self.dependency_outcome(&loaded, &state);
         let plugins = loaded
             .iter()
             .map(|plugin| self.summary_from_loaded(plugin, &loaded, &state, &dependencies))
             .collect::<Vec<_>>();
-        let snapshots = self.plugin_list_cache_snapshots(&loaded, &state);
+        let snapshots = self.plugin_list_cache_snapshots_for(&roots, &loaded, &state);
         self.store_plugin_summary_cache(plugins.clone(), snapshots);
         Ok(plugins)
     }
 
     pub fn reload(&self) -> Result<Vec<PluginDto>> {
+        self.invalidate_plugin_caches();
         self.list()
     }
 
     pub fn read(&self, id: &str) -> Result<Option<PluginDto>> {
         let state = self.load_state()?;
-        let loaded = load_plugins(&self.roots);
+        let roots = self.effective_roots();
+        let loaded = load_plugins(&roots);
         let dependencies = self.dependency_outcome(&loaded, &state);
         Ok(loaded
             .iter()
@@ -621,6 +671,10 @@ impl PluginService {
     }
 
     pub fn check_plugin_health(&self, id: &str) -> Result<Option<PluginRuntimeInspectionDto>> {
+        if self.preparation.is_started() {
+            self.invalidate_plugin_caches();
+            return self.inspect_plugin_runtime(id);
+        }
         self.invalidate_plugin_caches();
         let Some(plugin) = self.read(id)? else {
             return Ok(None);
@@ -673,7 +727,8 @@ impl PluginService {
         PluginHealthStatus,
         Option<String>,
     )> {
-        let Some(loaded) = load_plugins(&self.roots)
+        let Some(loaded) = self
+            .load_plugins_in_scope()
             .into_iter()
             .find(|loaded| loaded.id == id)
         else {
@@ -762,6 +817,9 @@ impl PluginService {
 
     fn refresh_plugin_runtime_and_health_after_install(&self, id: &str) -> Result<()> {
         self.invalidate_plugin_caches();
+        if self.preparation.is_started() {
+            return Ok(());
+        }
         let data_dir = self.data_root.join(sanitize_file_name(id));
         std::fs::create_dir_all(&data_dir).map_err(|e| {
             CoreError::Persistence(format!(
@@ -1002,7 +1060,8 @@ impl PluginService {
     }
 
     pub fn uninstall(&self, id: &str, remove_data: bool) -> Result<bool> {
-        let Some(plugin) = load_plugins(&self.roots)
+        let Some(plugin) = self
+            .load_plugins_in_scope()
             .into_iter()
             .find(|plugin| plugin.id == id)
         else {
@@ -1067,12 +1126,18 @@ impl PluginService {
     }
 
     pub fn runtime_projection(&self) -> Result<PluginRuntimeProjection> {
+        Ok(self.ready_snapshot().0)
+    }
+
+    /// Explicit maintenance entry point, never called by a request reader.
+    #[cfg(test)]
+    pub(crate) fn prepare_projection_for_test(&self) -> Result<PluginRuntimeProjection> {
         if let Some(projection) = self.cached_runtime_projection() {
             return Ok(projection);
         }
 
         let state = self.load_state()?;
-        let loaded = load_plugins(&self.roots);
+        let loaded = self.load_plugins_in_scope();
         let dependencies = self.dependency_outcome(&loaded, &state);
         let mut enabled_plugins = loaded
             .iter()
@@ -1122,7 +1187,7 @@ impl PluginService {
 
     pub fn list_apps(&self) -> Result<Vec<crate::plugin_runtime::PluginAppEntry>> {
         let state = self.load_state()?;
-        let loaded = load_plugins(&self.roots);
+        let loaded = self.load_plugins_in_scope();
         let dependencies = self.dependency_outcome(&loaded, &state);
         let mut enabled_plugins = loaded
             .into_iter()
@@ -1152,7 +1217,7 @@ impl PluginService {
 
     pub fn list_output_styles(&self) -> Result<Vec<crate::plugin_runtime::PluginOutputStyleEntry>> {
         let state = self.load_state()?;
-        let loaded = load_plugins(&self.roots);
+        let loaded = self.load_plugins_in_scope();
         let dependencies = self.dependency_outcome(&loaded, &state);
         Ok(loaded
             .iter()
@@ -1581,7 +1646,8 @@ impl PluginService {
         if plugin.health_status != PluginHealthStatus::Ready {
             return Ok(None);
         }
-        let Some(loaded) = load_plugins(&self.roots)
+        let Some(loaded) = self
+            .load_plugins_in_scope()
             .into_iter()
             .find(|loaded| loaded.id == id)
         else {
@@ -1827,7 +1893,7 @@ impl PluginService {
             computed_health_status,
         );
         let last_health_check = persisted_health.map(|check| check.checked_at.clone());
-        let (health_status, health_error) =
+        let (mut health_status, mut health_error) =
             if plugin.available && resolved.is_some() && !has_fatal_plugin_errors(plugin) {
                 persisted_health
                     .map(|check| (check.status, check.error.clone()))
@@ -1839,7 +1905,7 @@ impl PluginService {
             .installed
             .get(&plugin.id)
             .and_then(|installed| installed.content_hash.clone());
-        let lifecycle_state = self.plugin_lifecycle_state(
+        let mut lifecycle_state = self.plugin_lifecycle_state(
             plugin,
             manifest,
             resolved,
@@ -1847,6 +1913,17 @@ impl PluginService {
             health_status,
             &entrypoints,
         );
+        if self.preparation.is_started() && self.is_effectively_enabled(plugin, state) {
+            let (ready_state, ready_health, error) =
+                self.preparation_status(&plugin.id).unwrap_or((
+                    PluginLifecycleState::Preparing,
+                    PluginHealthStatus::Unknown,
+                    None,
+                ));
+            lifecycle_state = ready_state;
+            health_status = ready_health;
+            health_error = error;
+        }
         let capabilities = plugin_capabilities(manifest, counts);
 
         let mut errors = plugin.errors.clone();
@@ -2113,6 +2190,7 @@ impl PluginService {
         }
     }
 
+    #[cfg(test)]
     fn cached_runtime_projection(&self) -> Option<PluginRuntimeProjection> {
         let cache = self.runtime_cache.lock().ok()?;
         let cache = cache.as_ref()?;
@@ -2123,6 +2201,7 @@ impl PluginService {
         }
     }
 
+    #[cfg(test)]
     fn store_runtime_projection_cache(
         &self,
         projection: PluginRuntimeProjection,
@@ -2137,6 +2216,8 @@ impl PluginService {
     }
 
     fn invalidate_runtime_cache(&self) {
+        self.preparation.invalidate();
+        #[cfg(test)]
         if let Ok(mut cache) = self.runtime_cache.lock() {
             *cache = None;
         }
@@ -2153,18 +2234,19 @@ impl PluginService {
     }
 
     fn runtime_cache_snapshots(&self, loaded: &[LoadedPlugin]) -> Vec<PathSnapshot> {
-        runtime_watch_paths(&self.roots, &self.state_path, loaded)
+        runtime_watch_paths(&self.effective_roots(), &self.state_path, loaded)
             .into_iter()
             .map(PathSnapshot::capture)
             .collect()
     }
 
-    fn plugin_list_cache_snapshots(
+    fn plugin_list_cache_snapshots_for(
         &self,
+        roots: &PluginRoots,
         loaded: &[LoadedPlugin],
         state: &PluginState,
     ) -> Vec<PathSnapshot> {
-        plugin_list_watch_paths(&self.roots, &self.state_path, loaded, state)
+        plugin_list_watch_paths(roots, &self.state_path, loaded, state)
             .into_iter()
             .map(PathSnapshot::capture)
             .collect()
@@ -5542,7 +5624,7 @@ rl.on('line', (line) => {
             .unwrap_or_default()
             .contains("authorization"));
 
-        let projection = svc.runtime_projection().unwrap();
+        let projection = svc.prepare_projection_for_test().unwrap();
         assert!(projection.app_entries.is_empty());
         assert_eq!(projection.connector_entries.len(), 1);
         assert_eq!(projection.connector_entries[0].provider, "design-provider");
@@ -6787,7 +6869,7 @@ rl.on('line', (line) => {
 
         // The projection is what hands PLUGIN_DATA to subprocesses, so the
         // directory must exist once it has run — with no runtime.zip involved.
-        svc.runtime_projection().unwrap();
+        svc.prepare_projection_for_test().unwrap();
         assert!(
             data_dir.is_dir(),
             "PLUGIN_DATA must exist before a subprocess is launched: {}",
@@ -6819,7 +6901,7 @@ rl.on('line', (line) => {
             "content-changing updates must not inherit a previous package's health check"
         );
 
-        svc.runtime_projection().unwrap();
+        svc.prepare_projection_for_test().unwrap();
         assert_eq!(
             std::fs::read_to_string(data_dir.join("state.json")).unwrap(),
             r#"{"runs":7}"#,
@@ -7099,7 +7181,7 @@ rl.on('line', (line) => {
         write_plugin(&roots.builtin.join("demo"), "demo");
         let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
 
-        let initial = svc.runtime_projection().unwrap();
+        let initial = svc.prepare_projection_for_test().unwrap();
         assert_eq!(
             initial.skill_roots,
             vec![roots.builtin.join("demo").join("skills")]
@@ -7107,7 +7189,11 @@ rl.on('line', (line) => {
 
         let disabled = svc.set_enabled("demo@builtin", false).unwrap();
         assert!(!disabled.enabled);
-        assert!(svc.runtime_projection().unwrap().skill_roots.is_empty());
+        assert!(svc
+            .prepare_projection_for_test()
+            .unwrap()
+            .skill_roots
+            .is_empty());
     }
 
     #[test]
@@ -7117,7 +7203,7 @@ rl.on('line', (line) => {
         write_plugin(&roots.builtin.join("demo"), "demo");
         let svc = PluginService::new(roots.clone(), tmp.path().join("app-data"));
 
-        let stale_projection = svc.runtime_projection().unwrap();
+        let stale_projection = svc.prepare_projection_for_test().unwrap();
         assert_eq!(
             stale_projection.skill_roots,
             vec![roots.builtin.join("demo").join("skills")]
@@ -7128,7 +7214,7 @@ rl.on('line', (line) => {
 
         assert!(!disabled.enabled);
         assert!(
-            svc.runtime_projection().unwrap().skill_roots.is_empty(),
+            svc.prepare_projection_for_test().unwrap().skill_roots.is_empty(),
             "set_enabled must invalidate runtime projection cache even when file snapshots still match"
         );
     }
@@ -7149,7 +7235,7 @@ rl.on('line', (line) => {
             deepagent_persistence::Database::open_in_memory().unwrap(),
         ));
 
-        let initial = plugins.runtime_projection().unwrap();
+        let initial = plugins.prepare_projection_for_test().unwrap();
         let effective = mcp
             .enabled_config_with_plugin_overlay(
                 initial.mcp_config.clone(),
@@ -7162,7 +7248,7 @@ rl.on('line', (line) => {
 
         let disabled = plugins.set_enabled("mcp-demo@builtin", false).unwrap();
         assert!(!disabled.enabled);
-        let disabled_projection = plugins.runtime_projection().unwrap();
+        let disabled_projection = plugins.prepare_projection_for_test().unwrap();
         assert!(disabled_projection.mcp_config.servers.is_empty());
         assert!(disabled_projection.mcp_server_sources.is_empty());
         let disabled_effective = mcp
@@ -7175,7 +7261,7 @@ rl.on('line', (line) => {
 
         let enabled = plugins.set_enabled("mcp-demo@builtin", true).unwrap();
         assert!(enabled.enabled);
-        let refreshed = plugins.runtime_projection().unwrap();
+        let refreshed = plugins.prepare_projection_for_test().unwrap();
         let refreshed_effective = mcp
             .enabled_config_with_plugin_overlay(
                 refreshed.mcp_config.clone(),
@@ -7202,7 +7288,11 @@ rl.on('line', (line) => {
             .errors
             .iter()
             .any(|error| error.kind == "reserved-name"));
-        assert!(svc.runtime_projection().unwrap().skill_roots.is_empty());
+        assert!(svc
+            .prepare_projection_for_test()
+            .unwrap()
+            .skill_roots
+            .is_empty());
     }
 
     #[test]
@@ -7317,7 +7407,7 @@ rl.on('line', (line) => {
         let plugin = svc.read("demo@builtin").unwrap().unwrap();
         assert_eq!(plugin.command_count, 1);
 
-        let projection = svc.runtime_projection().unwrap();
+        let projection = svc.prepare_projection_for_test().unwrap();
         assert_eq!(projection.command_roots.len(), 1);
         assert_eq!(projection.command_roots[0].plugin_id, "demo@builtin");
         assert_eq!(
@@ -7337,12 +7427,16 @@ rl.on('line', (line) => {
 
         let listed = svc.read("team@workspace").unwrap().unwrap();
         assert!(!listed.enabled);
-        assert!(svc.runtime_projection().unwrap().skill_roots.is_empty());
+        assert!(svc
+            .prepare_projection_for_test()
+            .unwrap()
+            .skill_roots
+            .is_empty());
 
         let enabled = svc.set_enabled("team@workspace", true).unwrap();
         assert!(enabled.enabled);
         assert_eq!(
-            svc.runtime_projection().unwrap().skill_roots,
+            svc.prepare_projection_for_test().unwrap().skill_roots,
             vec![workspace.join("team").join("skills")]
         );
     }
@@ -7359,7 +7453,7 @@ rl.on('line', (line) => {
         let listed = svc.read("temp@session").unwrap().unwrap();
         assert!(listed.enabled);
         assert_eq!(
-            svc.runtime_projection().unwrap().skill_roots,
+            svc.prepare_projection_for_test().unwrap().skill_roots,
             vec![session.join("temp").join("skills")]
         );
     }
@@ -7378,7 +7472,11 @@ rl.on('line', (line) => {
             .iter()
             .any(|err| err.kind == "dependency-unsatisfied"
                 && err.message.contains("helper@personal is not-found")));
-        assert!(svc.runtime_projection().unwrap().skill_roots.is_empty());
+        assert!(svc
+            .prepare_projection_for_test()
+            .unwrap()
+            .skill_roots
+            .is_empty());
     }
 
     #[test]
@@ -7435,6 +7533,10 @@ rl.on('line', (line) => {
             .iter()
             .any(|err| err.kind == "dependency-cycle"));
         assert!(beta.errors.iter().any(|err| err.kind == "dependency-cycle"));
-        assert!(svc.runtime_projection().unwrap().skill_roots.is_empty());
+        assert!(svc
+            .prepare_projection_for_test()
+            .unwrap()
+            .skill_roots
+            .is_empty());
     }
 }

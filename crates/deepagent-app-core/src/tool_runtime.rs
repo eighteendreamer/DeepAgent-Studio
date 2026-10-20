@@ -487,6 +487,7 @@ where
     pub(crate) base: ToolRegistryBuildRequest<'a>,
     pub(crate) mcp: Option<&'a McpService>,
     pub(crate) plugin_projection: Option<&'a PluginRuntimeProjection>,
+    pub(crate) plugin_registry: Option<Arc<deepagent_mcp::McpRegistry>>,
     pub(crate) task_runner: R,
     pub(crate) task_agent_types: Vec<deepagent_builtins::TaskAgentType>,
     /// Multi-agent control plane: the `plan_execute` tool's executor. `None`
@@ -525,8 +526,13 @@ where
     {
         crate::wasm_tools::register_wasm_tools(&mut registry, &wasm_tools_root)?;
     }
-    let mcp_runtime =
-        attach_mcp_tools(&mut registry, request.mcp, request.plugin_projection).await?;
+    let mcp_runtime = attach_mcp_tools(
+        &mut registry,
+        request.mcp,
+        request.plugin_projection,
+        request.plugin_registry,
+    )
+    .await?;
     register_task_tool(&mut registry, request.task_runner, request.task_agent_types)?;
     register_plan_execute_tool(&mut registry, request.plan_executor)?;
     register_memory_tools(&mut registry, request.memory_backend)?;

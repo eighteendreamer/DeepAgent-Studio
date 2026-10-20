@@ -161,6 +161,9 @@ impl StdioTransport {
 impl Drop for StdioTransport {
     fn drop(&mut self) {
         self.stderr_task.get_mut().abort();
+        // Dropping the last client during cancellation or config replacement
+        // must not orphan its child process.
+        let _ = self.child.get_mut().start_kill();
     }
 }
 

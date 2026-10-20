@@ -189,6 +189,7 @@ mod tests {
     fn request(multi: bool) -> QuestionRequestDto {
         QuestionRequestDto {
             question_id: "q-1".to_string(),
+            session_id: "session-q".to_string(),
             questions: vec![Question {
                 question: CITY.to_string(),
                 header: "City".to_string(),
@@ -289,11 +290,12 @@ mod tests {
         let captured = seen.clone();
         let responder = ChannelQuestionResponder::new(
             pending.clone(),
+            "session-q".to_string(),
             Arc::new(move |dto: QuestionRequestDto| {
                 let registry = registry.clone();
                 let mut input = ScriptedInput::new(&["2"]);
                 let answers = collect_answers(&dto, &mut input);
-                assert!(registry.resolve(&dto.question_id, answers.clone()));
+                assert!(registry.resolve(&dto.session_id, &dto.question_id, answers.clone()));
                 *captured.lock().unwrap() = answers;
             }),
         );

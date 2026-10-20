@@ -304,6 +304,7 @@ pub(crate) fn build_chat_service(
         .with_skills(skills)
         .with_plugins(plugins)
         .with_mcp(mcp);
+    chat.start_plugin_preparation(Arc::new(|| {}));
     if let Some(sandboxie) = sandboxie {
         chat = chat.with_sandboxie_executor(sandboxie);
     }

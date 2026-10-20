@@ -43,19 +43,20 @@ pub fn split_namespaced(name: &str) -> Option<(&str, &str)> {
     Some((&rest[..sep], &rest[sep + 2..]))
 }
 
+#[derive(Clone)]
 struct ConnectedServer {
     client: Arc<McpClient>,
     tools: Vec<RemoteTool>,
     /// Background liveness pinger (long-lived registries only); aborts with
     /// the entry, so probing stops exactly when the connection is dropped.
-    probe: Option<LivenessProbe>,
+    probe: Option<Arc<LivenessProbe>>,
     /// Server `instructions` from the MCP `initialize` result, surfaced to the
     /// model via `<mcp-instructions>` context. `None` when the server omits it.
     instructions: Option<String>,
 }
 
 /// Registry of connected MCP servers and their tools.
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct McpRegistry {
     servers: BTreeMap<String, ConnectedServer>,
 }
@@ -129,11 +130,11 @@ impl McpRegistry {
     pub fn enable_liveness(&mut self, config: LivenessConfig) {
         for (name, server) in &mut self.servers {
             if server.probe.is_none() {
-                server.probe = Some(LivenessProbe::spawn(
+                server.probe = Some(Arc::new(LivenessProbe::spawn(
                     server.client.clone(),
                     name.clone(),
                     config.clone(),
-                ));
+                )));
             }
         }
     }
@@ -141,6 +142,22 @@ impl McpRegistry {
     /// Number of connected servers.
     pub fn server_count(&self) -> usize {
         self.servers.len()
+    }
+
+    /// Combine already discovered entries without performing network I/O.
+    /// Connections and their liveness probes stay shared by immutable snapshots.
+    pub fn extend_ready(&mut self, other: &Self) -> Result<()> {
+        for name in other.servers.keys() {
+            if self.servers.contains_key(name) {
+                return Err(CoreError::invalid(format!("duplicate MCP server: {name}")));
+            }
+        }
+        self.servers.extend(other.servers.clone());
+        Ok(())
+    }
+
+    pub fn retain_servers(&mut self, mut keep: impl FnMut(&str) -> bool) {
+        self.servers.retain(|name, _| keep(name));
     }
 
     /// Connected server identifiers, stable-sorted for deterministic lifecycle

@@ -1193,11 +1193,7 @@ fn sync_plugin_skill_roots_from_services(
 async fn sync_plugin_runtime_after_change(state: &AppState) -> Result<(), String> {
     sync_plugin_skill_roots(state)?;
     state.chat.reset_all_sent_skills();
-    state
-        .mcp
-        .invalidate_connected_registry()
-        .await
-        .map_err(|e| e.to_string())?;
+    state.mcp.start_preparation();
     Ok(())
 }
 
@@ -1908,7 +1904,7 @@ struct StartChatV2Ack {
 /// loop. Consumers follow `chat://event`, `session://completed`, or `run_events`.
 #[allow(clippy::too_many_arguments)]
 #[tauri::command]
-fn start_chat_v2(
+async fn start_chat_v2(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     prompt: String,
@@ -1927,15 +1923,24 @@ fn start_chat_v2(
     // holding the previously selected session as this run's identity for that
     // window, so a brand-new chat displayed the old session's data and a
     // navigation in between got yanked to the new session when the event landed.
-    let session_id = match session_id {
-        Some(id) => Some(id),
-        None => Some(
-            state
-                .chat
-                .create_session(env_mode.as_deref())
-                .map_err(|error| error.to_string())?,
-        ),
-    };
+    let admission_chat = state.chat.clone();
+    let admission_run_id = run_id.clone();
+    let admission_mode = env_mode.clone();
+    let session_id = Some(
+        run_blocking(move || {
+            let id = match session_id {
+                Some(id) => id,
+                None => admission_chat
+                    .create_session(admission_mode.as_deref())
+                    .map_err(|error| error.to_string())?,
+            };
+            admission_chat
+                .admit_run(&admission_run_id, &id)
+                .map_err(|error| error.to_string())?;
+            Ok(id)
+        })
+        .await?,
+    );
     let acknowledgement = StartChatV2Ack {
         run_id: run_id.clone(),
         session_id: session_id.clone(),
@@ -2398,13 +2403,30 @@ fn canvas_preference_write(
 /// and executed through the same kernel pipeline as chat runs. Consumers
 /// follow `chat://event` and `session://completed` for progress.
 #[tauri::command]
-fn start_workflow(
+async fn start_workflow(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     workflow: deepagent_app_core::WorkflowRequest,
     session_id: Option<String>,
 ) -> Result<StartChatV2Ack, String> {
     let run_id = format!("run_{}", deepagent_core::id::EventId::new());
+    let admission_chat = state.chat.clone();
+    let admission_run_id = run_id.clone();
+    let session_id = Some(
+        run_blocking(move || {
+            let id = match session_id {
+                Some(id) => id,
+                None => admission_chat
+                    .create_session(None)
+                    .map_err(|error| error.to_string())?,
+            };
+            admission_chat
+                .admit_run(&admission_run_id, &id)
+                .map_err(|error| error.to_string())?;
+            Ok(id)
+        })
+        .await?,
+    );
     let acknowledgement = StartChatV2Ack {
         run_id: run_id.clone(),
         session_id: session_id.clone(),
@@ -2421,6 +2443,9 @@ fn start_workflow(
             .run_workflow(
                 workflow,
                 run_id.clone(),
+                requested_session_id
+                    .clone()
+                    .expect("workflow session admitted before spawn"),
                 move |event| {
                     let _ = event_emitter.emit(
                         "chat://event",
@@ -3051,12 +3076,22 @@ fn save_mcp_server(
     state: State<'_, AppState>,
     server: McpServerDto,
 ) -> Result<McpServerDto, String> {
-    state.mcp.upsert(server).map_err(|e| e.to_string())
+    let result = state.mcp.upsert(server).map_err(|e| e.to_string())?;
+    let mcp = state.mcp.clone();
+    state.rt.spawn(async move {
+        mcp.start_preparation();
+    });
+    Ok(result)
 }
 
 #[tauri::command]
 fn remove_mcp_server(state: State<'_, AppState>, name: String) -> Result<bool, String> {
-    state.mcp.remove(&name).map_err(|e| e.to_string())
+    let result = state.mcp.remove(&name).map_err(|e| e.to_string())?;
+    let mcp = state.mcp.clone();
+    state.rt.spawn(async move {
+        mcp.start_preparation();
+    });
+    Ok(result)
 }
 
 #[tauri::command]
@@ -3065,10 +3100,15 @@ fn set_mcp_server_enabled(
     name: String,
     enabled: bool,
 ) -> Result<bool, String> {
-    state
+    let result = state
         .mcp
         .set_enabled(&name, enabled)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    let mcp = state.mcp.clone();
+    state.rt.spawn(async move {
+        mcp.start_preparation();
+    });
+    Ok(result)
 }
 
 /// Test-connect a single server config (may be an unsaved draft): runs the
@@ -4192,7 +4232,11 @@ fn add_project(state: State<'_, AppState>, path: String) -> Result<ProjectDto, S
 }
 
 #[tauri::command]
-fn set_active_project(state: State<'_, AppState>, path: Option<String>) -> Result<(), String> {
+fn set_active_project(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: Option<String>,
+) -> Result<(), String> {
     if let Some(path) = path.filter(|path| !path.trim().is_empty()) {
         state
             .projects
@@ -4201,18 +4245,34 @@ fn set_active_project(state: State<'_, AppState>, path: Option<String>) -> Resul
         state
             .knowledge
             .activate_project(std::path::Path::new(&path))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
     } else {
         state.projects.clear_active().map_err(|e| e.to_string())?;
         state
             .knowledge
             .activate_project(std::path::Path::new(&state.workspace.info().path))
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
     }
+    let active = state.projects.active().map_err(|e| e.to_string())?;
+    if state
+        .plugins
+        .set_active_workspace_root(active.map(std::path::PathBuf::from))
+    {
+        let mcp = state.mcp.clone();
+        state.rt.spawn(async move {
+            mcp.start_preparation();
+        });
+        let _ = app.emit("deepagent:plugins-changed", ());
+    }
+    Ok(())
 }
 
 #[tauri::command]
-fn remove_project(state: State<'_, AppState>, path: String) -> Result<bool, String> {
+fn remove_project(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    path: String,
+) -> Result<bool, String> {
     let removed = state
         .projects
         .remove_project(&path)
@@ -4223,6 +4283,17 @@ fn remove_project(state: State<'_, AppState>, path: String) -> Result<bool, Stri
                 .knowledge
                 .activate_project(std::path::Path::new(&active))
                 .map_err(|e| e.to_string())?;
+        }
+        let active = state.projects.active().map_err(|e| e.to_string())?;
+        if state
+            .plugins
+            .set_active_workspace_root(active.map(std::path::PathBuf::from))
+        {
+            let mcp = state.mcp.clone();
+            state.rt.spawn(async move {
+                mcp.start_preparation();
+            });
+            let _ = app.emit("deepagent:plugins-changed", ());
         }
     }
     Ok(removed)
@@ -6470,24 +6541,10 @@ pub fn run() {
                 },
                 &paths.root,
             ));
-            // Pre-warm built-in plugin `runtime.zip` payloads off the startup
-            // path: the largest (`wedecode`, ~30 MB compressed / hundreds of MB
-            // expanded) would otherwise be extracted synchronously the first
-            // time a plugin runtime projection is built on the session path.
-            // `prepare_runtime_payloads` reuses the runtime id → directory
-            // mapping and the per-payload marker makes the later call a no-op.
-            {
-                let warm_roots = PluginRoots {
-                    session: session_plugins.clone(),
-                    builtin: resource_plugins_dir.clone(),
-                    workspace: Some(workspace_root.join(".deepagent").join("plugins")),
-                    personal: plugins_dir.clone(),
-                };
-                let plugin_data_root = paths.plugin_data.clone();
-                std::thread::spawn(move || {
-                    deepagent_app_core::prepare_runtime_payloads(&warm_roots, &plugin_data_root);
-                });
-            }
+            plugins.set_active_workspace_root(
+                projects.active().map_err(|error| format!("read active project for plugins: {error}"))?
+                    .map(std::path::PathBuf::from),
+            );
 
             // Knowledge base: a project-local vault (`<project>/.deepagent/knowledge`)
             // plus a user-global vault (under the data root), loaded into one
@@ -6560,29 +6617,6 @@ pub fn run() {
                     .with_runtime(runtime_broker.clone(), projects.clone())
                     .with_builtin_mcp(builtin_mcp_root.clone(), builtin_mcp_data.clone()),
             );
-            // Pre-warm the built-in MCP runtime payload off the startup path.
-            // `prepare_runtime_payload` extracts `js-reverse/runtime.zip` (13 MB,
-            // hundreds of MB expanded) and is otherwise first triggered on the
-            // session path when MCP config is assembled, which made the first
-            // session after an upgrade stall on a large one-off disk write.
-            // Running it here on a background thread keeps `setup` returning
-            // immediately; the marker file makes the later session-path call a
-            // cheap no-op. Failures are non-fatal: the session path retries and
-            // reports through the normal MCP error channel.
-            {
-                let payload_root = builtin_mcp_root.clone();
-                let data_dir = builtin_mcp_data.clone();
-                std::thread::spawn(move || {
-                    if let Err(error) =
-                        deepagent_app_core::prepare_runtime_payload(&payload_root, &data_dir)
-                    {
-                        eprintln!(
-                            "[builtin-mcp] runtime payload pre-warm failed for {}: {error}",
-                            payload_root.display()
-                        );
-                    }
-                });
-            }
             let vision = Arc::new(VisionService::new(
                 settings_arc.clone(),
                 vision_cache_dir.clone(),
@@ -6767,6 +6801,15 @@ pub fn run() {
                 )
             };
 
+            {
+                let host = chat.clone();
+                let emitter = app.handle().clone();
+                rt.spawn(async move {
+                    host.start_plugin_preparation(Arc::new(move || {
+                        let _ = emitter.emit("deepagent:plugins-changed", ());
+                    }));
+                });
+            }
             // Initialize and attach Cron service for scheduled tasks
             let cron_service = Arc::new(deepagent_app_core::CronService::new(
                 &workspace_root,

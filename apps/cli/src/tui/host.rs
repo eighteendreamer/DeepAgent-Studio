@@ -37,7 +37,8 @@ pub fn attach_line_question_channel(chat: ChatService) -> ChatService {
     chat.with_question_notifier(move |question: QuestionRequestDto| {
         println!("\n{}", format_request(&question));
         let answers = collect_answers(&question, &mut StdinInput);
-        if !chat_for_answers.resolve_question(&question.question_id, answers) {
+        if !chat_for_answers.resolve_question(&question.session_id, &question.question_id, answers)
+        {
             eprintln!("question was no longer pending: {}", question.question_id);
         }
     })

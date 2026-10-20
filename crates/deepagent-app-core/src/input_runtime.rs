@@ -80,23 +80,22 @@ where
     C: Clock,
     F: Fn(&str) -> bool,
 {
-    let (mut session, mut history, mut prior_events) =
-        bind_session(db, clock, continue_session, env_mode, project)?;
-    let session_id = session.id().to_string();
-    append_runtime_log(
-        &runtime_logs,
-        NewRuntimeLogEntry::info("chat", "session_bound")
-            .with_run_id(run_id)
-            .with_session_id(session_id.clone())
-            .with_source("deepagent-app-core::input_runtime")
-            .with_message("run bound to session")
-            .with_data(serde_json::json!({
-                "continued": continue_session.is_some(),
-                "project": project,
-                "history_messages": history.len(),
-                "prior_events": prior_events.len(),
-            })),
-    );
+    let (session_identity, created_session) = match continue_session {
+        Some(id_str) => {
+            let id = SessionId::from_str(id_str)
+                .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
+            (id, None)
+        }
+        None => {
+            let mode = match env_mode {
+                Some("remote") => deepagent_core::SessionMode::Remote,
+                _ => deepagent_core::SessionMode::Normal,
+            };
+            let session = Session::create_in_project(db, clock, None, mode, project)?;
+            (session.id(), Some(session))
+        }
+    };
+    let session_id = session_identity.to_string();
 
     let session_input = InputEnvelope {
         session_id: Some(session_id.clone()),
@@ -141,11 +140,6 @@ where
             input_leases
                 .wait_for_turn(&session_id, run_id, cancel_flag.as_ref())
                 .await?;
-            let id = session.id();
-            session = Session::recover(db, clock, id)?;
-            prior_events =
-                deepagent_persistence::event_store::EventStore::new(db).load_session(id)?;
-            history = model_history_from_events(&prior_events);
             append_runtime_log(
                 &runtime_logs,
                 NewRuntimeLogEntry::info("input", "input_dequeued")
@@ -155,12 +149,45 @@ where
                     .with_message("queued input acquired session dispatch lease")
                     .with_data(serde_json::json!({
                         "input_id": normalized_input.input_id.clone(),
-                        "history_messages": history.len(),
-                        "prior_events": prior_events.len(),
                     })),
             );
         }
     }
+
+    if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(CoreError::other(
+            "cancelled before session history recovery",
+        ));
+    }
+    let (session, mut history, prior_events) = match created_session {
+        Some(session) => (session, Vec::new(), Vec::new()),
+        None => {
+            let session = Session::recover(db, clock, session_identity)?;
+            let prior_events = deepagent_persistence::event_store::EventStore::new(db)
+                .load_session(session_identity)?;
+            let history = model_history_from_events(&prior_events);
+            (session, history, prior_events)
+        }
+    };
+    if cancel_flag.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(CoreError::other(
+            "cancelled during session history recovery",
+        ));
+    }
+    append_runtime_log(
+        &runtime_logs,
+        NewRuntimeLogEntry::info("chat", "session_bound")
+            .with_run_id(run_id)
+            .with_session_id(session_id.clone())
+            .with_source("deepagent-app-core::input_runtime")
+            .with_message("run acquired session lease and recovered history")
+            .with_data(serde_json::json!({
+                "continued": continue_session.is_some(),
+                "project": project,
+                "history_messages": history.len(),
+                "prior_events": prior_events.len(),
+            })),
+    );
 
     let mut response_history = response_items_from_events(&prior_events);
     append_abort_reminder_if_needed(&prior_events, &mut history, &mut response_history);
@@ -173,37 +200,6 @@ where
         session_id,
         lease,
     })
-}
-
-fn bind_session<'db, C: Clock>(
-    db: &'db Database,
-    clock: &'db C,
-    continue_session: Option<&str>,
-    env_mode: Option<&str>,
-    project: Option<&str>,
-) -> Result<(Session<'db, C>, Vec<Message>, Vec<Event>)> {
-    match continue_session {
-        Some(id_str) => {
-            let id = SessionId::from_str(id_str)
-                .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
-            let session = Session::recover(db, clock, id)?;
-            let events =
-                deepagent_persistence::event_store::EventStore::new(db).load_session(id)?;
-            // Main-run resume keeps the paired tool trajectory (Phase D):
-            // the model sees which tools already ran and what they returned,
-            // instead of a text-only shadow of the conversation.
-            let history = model_history_from_events(&events);
-            Ok((session, history, events))
-        }
-        None => {
-            let mode = match env_mode {
-                Some("remote") => deepagent_core::SessionMode::Remote,
-                _ => deepagent_core::SessionMode::Normal,
-            };
-            let session = Session::create_in_project(db, clock, None, mode, project)?;
-            Ok((session, Vec::new(), Vec::new()))
-        }
-    }
 }
 
 impl InputLeaseGuard {

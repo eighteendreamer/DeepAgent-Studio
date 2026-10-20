@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import {
   Anchor,
   ArrowLeft,
@@ -139,6 +140,19 @@ export function PluginsView() {
   useEffect(() => {
     void load();
   }, []);
+
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    const unlisten = listen("deepagent:plugins-changed", () => {
+      void listPlugins().then((rows) => { if (!disposed) setPlugins(rows); })
+        .catch((error) => { if (!disposed) setError(String(error)); });
+      if (selectedId) void readPlugin(selectedId)
+        .then((plugin) => { if (!disposed) setSelectedPlugin(plugin); })
+        .catch((error) => { if (!disposed) setError(String(error)); });
+    });
+    return () => { disposed = true; void unlisten.then((stop) => stop()); };
+  }, [selectedId]);
 
   useEffect(() => {
     if (!selectedId) {
@@ -1431,6 +1445,8 @@ function SeverityBadge({ severity }: { severity: string }) {
 
 function pluginStateLabel(state: Plugin["state"]): string {
   switch (state) {
+    case "preparing":
+      return "准备中";
     case "discovered":
       return "已发现";
     case "parsed":

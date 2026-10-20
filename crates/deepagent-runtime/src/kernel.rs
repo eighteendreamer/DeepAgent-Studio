@@ -483,14 +483,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         if store.get(&run_id)?.is_none() {
             store.create(&run_id, &session_id, Some(&task_id), now_ms())?;
         }
-        store.append_event(
-            &run_id,
-            now_ms(),
-            RunPhase::Accepted.label(),
-            "completed",
-            "run_accepted",
-            &serde_json::json!({ "session_id": session_id, "task_id": task_id }),
-        )?;
+        store.bind_task(&run_id, &session_id, &task_id)?;
         store.append_event(
             &run_id,
             now_ms(),
@@ -640,24 +633,26 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         };
 
         persistent.flush_delta();
-        store.append_event(
-            &run_id,
-            now_ms(),
-            RunPhase::Terminal.label(),
-            "completed",
-            "run_terminal",
-            &crate::redaction::scrub_secrets_value(
-                serde_json::to_value(&terminal).unwrap_or(serde_json::Value::Null),
-            ),
-        )?;
-        store.finish(
-            &run_id,
-            terminal.kind.label(),
-            terminal.reason.as_deref(),
-            now_ms(),
-        )?;
+        persist_terminal(&self.db, &run_id, &terminal, &self.handle.cancellation)?;
         Ok(terminal)
     }
+}
+
+/// Shared terminal boundary for kernel execution and admission/setup failures.
+pub fn persist_terminal(
+    db: &Database,
+    run_id: &str,
+    terminal: &KernelTerminal,
+    cancellation: &CancellationTree,
+) -> Result<bool> {
+    RunStore::new(db).finish_with_event(
+        run_id,
+        terminal.kind.label(),
+        terminal.reason.as_deref(),
+        &crate::redaction::scrub_secrets_value(serde_json::to_value(terminal)?),
+        cancellation.requested_by().as_deref(),
+        now_ms(),
+    )
 }
 
 fn classify_terminal_error(error: &CoreError) -> TerminalKind {

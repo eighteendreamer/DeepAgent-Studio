@@ -534,6 +534,7 @@ export function App() {
   // run itself is async on the backend, so the UI never freezes — approvals,
   // scrolling and navigation stay responsive while this is true.
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
+  const [stoppingRunIds, setStoppingRunIds] = useState<Set<string>>(() => new Set());
   const [planMode, setPlanMode] = useState(false);
   // The session id of the in-flight run, set as soon as the backend announces
   // it (session_registered) — used for the manual stop button and to navigate
@@ -1902,6 +1903,12 @@ export function App() {
 
       const finishRun = () => {
         scheduleTranscriptRender(runKey, true);
+        setStoppingRunIds((prev) => {
+          if (!prev.has(runId)) return prev;
+          const next = new Set(prev);
+          next.delete(runId);
+          return next;
+        });
         if (activeRunIdsRef.current.get(runKey) === runId) {
           setRunningSessionIds((prev) => {
             const next = new Set(prev);
@@ -2144,6 +2151,10 @@ export function App() {
     contextUsageByKey.get(activeId ?? "") ??
     contextUsageByKey.get(activePendingRunKey ?? "") ??
     null;
+  const activeRunKey =
+    activeId && runningSessionIds.has(activeId) ? activeId : activePendingRunKey;
+  const activeRunId = activeRunKey ? activeRunIdsRef.current.get(activeRunKey) ?? null : null;
+  const activeRunIsStopping = activeRunId !== null && stoppingRunIds.has(activeRunId);
 
   // Manually stop the in-flight run. The backend propagates one cancellation
   // signal through the model stream, active tools, and the agent loop.
@@ -2153,18 +2164,31 @@ export function App() {
         ? activeId
         : activePendingRunKeyRef.current;
     const runId = key ? activeRunIdsRef.current.get(key) : null;
+    const onCancelError = (error: unknown) => {
+      message.error(t("composer.cancelFailed", { error: String(error) }));
+    };
     if (runId) {
-      cancelRun(runId).catch(() => {});
+      void cancelRun(runId).then((ack) => {
+        if (ack.accepted) {
+          if (activeRunIdsRef.current.get(key ?? "") === runId) {
+            setStoppingRunIds((prev) => new Set(prev).add(runId));
+          }
+          message.info(t("composer.stopping"));
+          if (activeId) setQuestionsBySession((prev) => clearQuestionSession(prev, activeId));
+        } else onCancelError(t("composer.cancelNotFound"));
+      }).catch(onCancelError);
     } else if (activeId && runningSessionIds.has(activeId)) {
-      stopChat(activeId).catch(() => {});
+      void stopChat(activeId).then((accepted) => {
+        if (accepted) {
+          const currentRunId = activeRunIdsRef.current.get(activeId);
+          if (currentRunId) setStoppingRunIds((prev) => new Set(prev).add(currentRunId));
+          message.info(t("composer.stopping"));
+          setQuestionsBySession((prev) => clearQuestionSession(prev, activeId));
+        }
+        else onCancelError(t("composer.cancelNotFound"));
+      }).catch(onCancelError);
     }
-    // A cancelled run drops its pending questions in the backend. Clear only
-    // the visible session's queue; questions belonging to other runs must
-    // remain available when their conversations are opened.
-    if (activeId) {
-      setQuestionsBySession((prev) => clearQuestionSession(prev, activeId));
-    }
-  }, [runningSessionIds, activeId]);
+  }, [runningSessionIds, activeId, t]);
 
   // Resolve the head-of-queue approval (allow/deny), then dequeue it.
   const onApprovalDecision = useCallback(
@@ -2584,6 +2608,7 @@ export function App() {
                   onQuestionAnswer={onQuestionAnswer}
                   busy={activeChatBusy}
                   onStop={onStopRun}
+                  stopping={activeRunIsStopping}
                   planMode={planMode}
                   activeProjectPath={activeProjectPath}
                   projectMapOpenSignal={projectMapOpenSignal}

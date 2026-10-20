@@ -1,7 +1,7 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Brain, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, ShieldHalf } from "lucide-react";
+import { Brain, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Loader2, ShieldHalf } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
@@ -194,6 +194,8 @@ interface Props {
   busy?: boolean;
   /** Stop the in-flight run (turns the busy button into a stop button). */
   onStop?: () => void;
+  /** Cancellation was accepted and the backend is draining the run. */
+  stopping?: boolean;
   /** True when the current session is in read-only Plan mode. */
   planMode?: boolean;
   /** Active project path used for @ file/folder search. */
@@ -219,6 +221,7 @@ export function Composer({
   placeholder,
   busy = false,
   onStop,
+  stopping = false,
   planMode = false,
   activeProjectPath = null,
   footer,
@@ -1733,7 +1736,7 @@ export function Composer({
               onChooseThinking={chooseThinking}
             />
           </div>
-          <HoverInfo content={busy ? t("composer.stop") : undefined}><button
+          <HoverInfo content={busy ? t(stopping ? "composer.stopping" : "composer.stop") : undefined}><button
             onClick={() => {
               if (busy) {
                 onStop?.();
@@ -1741,7 +1744,8 @@ export function Composer({
                 submitWithAttachments();
               }
             }}
-            disabled={busy ? !onStop : !hasComposerContent}
+            disabled={busy ? !onStop || stopping : !hasComposerContent}
+            aria-label={busy ? t(stopping ? "composer.stopping" : "composer.stop") : t("composer.send")}
 
             className={cn(
               "composer-send-btn",
@@ -1756,7 +1760,9 @@ export function Composer({
                   : "composer-send-btn--idle",
             )}
           >
-            <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} className="text-[11px]" />
+            {stopping
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <FontAwesomeIcon icon={busy ? ["fas", "stop"] : ["fas", "arrow-up"]} className="text-[11px]" />}
           </button></HoverInfo>
         </div>
       </div>

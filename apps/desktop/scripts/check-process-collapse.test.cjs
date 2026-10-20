@@ -139,11 +139,13 @@ function liveAccumulator() {
   const liveTranscripts = { current: new Map([["session-a", messages]]) };
   const activeRuns = { current: new Map([["session-a", "run-a"]]) };
   let running = new Set(["session-a"]);
+  let stopping = new Set(["run-a"]);
   const context = vm.createContext({
     liveTranscripts, runKey: "session-a", runId: "run-a", runStart: Date.now(), advanceTurnActivity,
     activeRunIdsRef: activeRuns, pendingKey: "pending-a",
     activePendingRunKeyRef: { current: null },
     setRunningSessionIds: update => { running = update(running); },
+    setStoppingRunIds: update => { stopping = update(stopping); },
     setActivePendingRunKey: update => update(null), setApprovals: update => update([]),
     scheduleTranscriptRender() {}, console: { log() {} },
     asObjectRecord: value => value, summarize: (_, output) => String(output ?? ""),
@@ -156,6 +158,7 @@ function liveAccumulator() {
     user: () => liveTranscripts.current.get("session-a")[0],
     replace: messages => liveTranscripts.current.set("session-a", messages),
     activeRuns, running: () => running,
+    stopping: () => stopping,
   };
 }
 
@@ -247,8 +250,10 @@ test("old transport cleanup keeps the new run busy and preserves its ownership",
   live.finish();
   assert.equal(live.activeRuns.current.get("session-a"), "run-b");
   assert.equal(live.running().has("session-a"), true);
+  assert.equal(live.stopping().has("run-a"), false);
   const completed = liveAccumulator();
   completed.finish();
   assert.equal(completed.activeRuns.current.has("session-a"), false);
   assert.equal(completed.running().has("session-a"), false);
+  assert.equal(completed.stopping().has("run-a"), false);
 });

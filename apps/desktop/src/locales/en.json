@@ -335,6 +335,7 @@
       "statusConnected": "Connected",
       "statusFailed": "Failed",
       "statusDisabled": "Disabled",
+      "statusPreparing": "Preparing",
       "toolsFound": "{{count}} tool(s)"
     },
     "personalize": {
@@ -871,7 +872,11 @@
     "thinkingMedium": "Medium",
     "thinkingDeep": "Deep",
     "thinkingSwitchFailed": "Failed to change thinking level",
+    "send": "Send",
     "stop": "Stop",
+    "stopping": "Stopping…",
+    "cancelFailed": "Could not stop the run: {{error}}",
+    "cancelNotFound": "The run has ended or is no longer available",
     "systemCommands": "System Commands",
     "skillsGroup": "Skills",
     "models": {

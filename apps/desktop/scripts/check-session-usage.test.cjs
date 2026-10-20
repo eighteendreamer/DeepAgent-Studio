@@ -128,17 +128,22 @@ test("session adoption cannot hijack a view the user navigated away from", () =>
   );
 });
 
-test("the backend decides the session before spawning the run", () => {
+test("the backend admits the run before spawning its execution task", () => {
   const rust = fs.readFileSync(
     path.resolve(sourceRoot, "../src-tauri/src/lib.rs"),
     "utf8"
   );
   const command = rust.slice(rust.indexOf("fn start_chat_v2("), rust.indexOf("/// Canvas settings payload"));
   assert.ok(command.length > 400, "start_chat_v2 must be found");
-  assert.match(command, /\.create_session\(env_mode\.as_deref\(\)\)/, "identity must be minted here");
+  assert.match(
+    command,
+    /\.create_session\(admission_mode\.as_deref\(\)\)/,
+    "a new session must be created before admission"
+  );
+  assert.match(command, /\.admit_run\(&admission_run_id, &id\)/, "the run must be durably admitted");
   assert.ok(
-    command.indexOf(".create_session(") < command.indexOf("state.rt.spawn"),
-    "the session must exist before the run task starts"
+    command.indexOf(".admit_run(") < command.indexOf("state.rt.spawn"),
+    "the run record must exist before the execution task starts"
   );
 });
 

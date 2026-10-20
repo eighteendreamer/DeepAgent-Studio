@@ -105,6 +105,8 @@ interface Props {
   busy?: boolean;
   /** Stop the in-flight run (manual cancel). */
   onStop?: () => void;
+  /** Cancellation was accepted and the backend is draining the run. */
+  stopping?: boolean;
   /** Current session is in read-only Plan mode. */
   planMode?: boolean;
   /** Explicitly selected project path. Empty means the chat is not project-bound. */
@@ -953,6 +955,7 @@ export function ChatView({
   onQuestionAnswer,
   busy = false,
   onStop,
+  stopping = false,
   planMode = false,
   activeProjectPath = null,
   repositoryPath = null,
@@ -1389,6 +1392,7 @@ export function ChatView({
               placeholder={t("chatView.requestFollowUp")}
               busy={busy}
               onStop={onStop}
+              stopping={stopping}
               planMode={planMode}
               activeProjectPath={activeProjectPath}
               contextUsage={contextUsage}

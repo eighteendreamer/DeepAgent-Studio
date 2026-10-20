@@ -559,10 +559,10 @@ export interface McpToolInfo {
   description: string;
 }
 
-/** Live connection status of an MCP server (mirrors McpConnectionStatusDto). */
+/** Host-published connection status of an MCP server (mirrors McpConnectionStatusDto). */
 export interface McpConnectionStatus {
   name: string;
-  status: "connected" | "failed" | "disabled";
+  status: "connected" | "failed" | "disabled" | "preparing";
   error: string | null;
   tools: McpToolInfo[];
 }
@@ -605,6 +605,7 @@ export type PluginExecutionKind =
   | "mcp_sidecar";
 
 export type PluginLifecycleState =
+  | "preparing"
   | "discovered"
   | "parsed"
   | "installed"
