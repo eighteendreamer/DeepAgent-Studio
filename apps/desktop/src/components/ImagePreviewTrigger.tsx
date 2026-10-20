@@ -44,11 +44,11 @@ export function ImagePreviewTrigger({
         backdropClassName="!bg-black/85"
         className="!h-fit !max-h-none !w-fit !max-w-none !overflow-visible !rounded-none !bg-transparent !shadow-none"
       >
-        <div className="relative flex max-h-[calc(100dvh-32px)] max-w-[calc(100vw-32px)] items-center justify-center">
+        <div className="relative flex items-center justify-center">
           <img
             src={src}
             alt={alt}
-            className="block max-h-[calc(100dvh-32px)] max-w-[calc(100vw-32px)] rounded-lg object-contain shadow-2xl"
+            className="block max-h-[min(75dvh,760px)] max-w-[min(80vw,1120px)] rounded-lg object-contain shadow-2xl"
           />
           <DialogCloseIcon
             aria-label="关闭图片预览"
