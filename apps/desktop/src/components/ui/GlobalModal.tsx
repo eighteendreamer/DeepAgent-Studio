@@ -17,6 +17,7 @@ import { cn } from "../shadcn/utils";
 import {
   playModalOriginClose,
   playModalOriginOpen,
+  prefersReducedMotion,
   type ModalTriggerOrigin,
 } from "./modalFromOriginMotion";
 import { Panel } from "./Panel";
@@ -89,6 +90,10 @@ export function GlobalModal({
 
     closingRef.current = true;
     tlRef.current?.kill();
+    if (prefersReducedMotion()) {
+      finishClose();
+      return;
+    }
     tlRef.current = playModalOriginClose(backdrop, panel, originRef.current);
     tlRef.current.eventCallback("onComplete", finishClose);
   }, [finishClose, mounted]);

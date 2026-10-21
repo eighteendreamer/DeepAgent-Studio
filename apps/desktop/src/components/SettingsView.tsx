@@ -1,4 +1,6 @@
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useLayoutEffect, useRef } from "react";
+import gsap from "gsap";
+import { prefersReducedMotion } from "./ui/springMotion";
 
 const GeneralSettings = lazy(() => import("./settings/GeneralSettings").then((m) => ({ default: m.GeneralSettings })));
 const AppearanceSettings = lazy(() => import("./settings/AppearanceSettings").then((m) => ({ default: m.AppearanceSettings })));
@@ -22,6 +24,14 @@ interface Props {
 }
 
 export function SettingsView({ activeCategoryId }: Props) {
+  const sectionRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (!sectionRef.current || prefersReducedMotion()) return;
+    const context = gsap.context(() => {
+      gsap.fromTo(sectionRef.current, { opacity: 0, y: 7 }, { opacity: 1, y: 0, duration: 0.24, ease: "power2.out" });
+    });
+    return () => context.revert();
+  }, [activeCategoryId]);
   const renderPlugin = () => {
     switch (activeCategoryId) {
       case "general": return <GeneralSettings />;
@@ -49,7 +59,8 @@ export function SettingsView({ activeCategoryId }: Props) {
       <div className="w-full max-w-[700px]">
           <div
             key={activeCategoryId}
-            className="settings-section w-full"
+            ref={sectionRef}
+            className="settings-section spring-settings-section w-full"
           >
             <Suspense
               fallback={

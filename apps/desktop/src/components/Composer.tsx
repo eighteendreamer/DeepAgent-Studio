@@ -1556,8 +1556,8 @@ export function Composer({
         />
       </div>
 
-      <div className="mt-2.5 flex h-8 items-center gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-visible">
+      <div className="composer-toolbar mt-2.5 flex h-8 items-center gap-3">
+        <div className="composer-primary-tools flex min-w-0 flex-1 items-center gap-1.5 overflow-visible">
           <input
             ref={fileInputRef}
             type="file"
@@ -1627,17 +1627,18 @@ export function Composer({
                   </button>
                 }
                 className="min-w-0 max-w-full"
-                panelClassName="w-[min(380px,calc(100vw-48px))]"
+                panelClassName="w-[min(288px,calc(100vw-48px))]"
+                panelShadow="0 4px 12px rgba(0,0,0,0.08)"
                 panelAlign="left"
               >
-                <div className="p-2">
+                <div className="p-1.5">
                   <SlidingMenuList
                     activeId={selectedApproval?.id ?? ""}
                     pillClassName={cn(
-                      "left-0 right-0 rounded-xl",
+                      "left-0 right-0 rounded-xl bg-[#f5f5f5]",
                       selectedApproval?.id === "full" && "bg-[#e25507]/10",
                     )}
-                    className="flex w-full flex-col gap-1"
+                    className="flex w-full flex-col gap-0.5"
                   >
                     {visibleOptions.map((opt) => {
                       const selected = selectedApproval?.id === opt.id;
@@ -1647,7 +1648,7 @@ export function Composer({
                           key={opt.id}
                           {...{ [MENU_ITEM_ATTR]: opt.id }}
                           className={cn(
-                            "relative z-[1] flex w-full cursor-pointer items-start gap-3 rounded-xl px-3 py-3 text-left",
+                            "relative z-[1] flex w-full cursor-pointer items-start gap-[7px] rounded-xl px-2 py-2 text-left",
                             MOTION.fast,
                             selected
                               ? isFull
@@ -1657,22 +1658,22 @@ export function Composer({
                           )}
                           onClick={() => chooseApproval(opt)}
                         >
-                          <div className="mt-0.5 flex w-4 shrink-0 justify-center">
+                          <div className="mt-0.5 flex w-3 shrink-0 justify-center">
                             <opt.icon
-                              size={14}
+                              size={12}
                               className={cn(
                                 selected && isFull ? "text-[#e25507]" : "text-text-secondary",
                               )}
                             />
                           </div>
                           <div className="min-w-0 flex-1">
-                            <div className={cn("text-[13px] font-medium leading-normal", selected && !isFull && "text-text-base")}>
+                            <div className={cn("pr-3.5 text-[12px] font-medium leading-[17px]", selected && !isFull && "text-text-base")}>
                               {t(opt.label)}
                             </div>
                             <div
                               className={cn(
-                                "mt-1.5 text-[11px] leading-relaxed",
-                                selected && isFull ? "text-[#e25507]/80" : "text-text-secondary",
+                                "mt-0.5 text-[11px] leading-[15px]",
+                                selected && isFull ? "text-[#e25507]/80" : "text-[#8c8c8c]",
                               )}
                             >
                               {t(opt.desc)}
@@ -1680,8 +1681,8 @@ export function Composer({
                           </div>
                           {selected && (
                             <Check
-                              size={11}
-                              className={cn("mt-1 shrink-0", isFull ? "text-[#e25507]" : "text-text-secondary")}
+                              size={10}
+                              className={cn("absolute right-2 top-[11px] shrink-0", isFull ? "text-[#e25507]" : "text-text-secondary")}
                             />
                           )}
                         </div>
@@ -1694,7 +1695,7 @@ export function Composer({
           )}
         </div>
 
-        <div className="flex h-8 shrink-0 items-center gap-2">
+        <div className="composer-model-tools flex h-8 shrink-0 items-center gap-2">
           <ContextCapacityIndicator
             snapshot={contextUsage}
             contextWindow={

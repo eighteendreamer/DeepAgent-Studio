@@ -2,6 +2,33 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --ui-interactive-radius: 12px;
+}
+
+/* One policy for Tailwind, authored CSS, portal surfaces and canvas controls. */
+@continuous-corners;
+
+/* Match the interactive face and the sliding hover background. Keep explicit
+   circles, capsules, square edges and larger surface radii as authored. */
+:where(
+  button, [role="button"], [role="tab"], [role="option"],
+  [role="menuitem"], [role="menuitemradio"], [role="menuitemcheckbox"],
+  [data-menu-item], .ui-hover-highlight, .cursor-pointer
+):is(.rounded, .rounded-sm, .rounded-md, .rounded-lg, .rounded-xl):not(.rounded-full, .rounded-none) {
+  border-radius: var(--ui-interactive-radius, 12px);
+}
+
+.onboarding-primary {
+  corner-shape: superellipse(var(--connect-corner-curvature, var(--continuous-corner-curvature)));
+}
+.morph-menu-shell {
+  corner-shape: superellipse(var(--morph-corner-curvature, var(--continuous-corner-curvature)));
+}
+[data-spring-shell] {
+  corner-shape: superellipse(var(--spring-corner-curvature, var(--continuous-corner-curvature)));
+}
+
 @layer base {
   html,
   body,
@@ -506,6 +533,24 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
   position: absolute;
   inset: 0;
   z-index: 40;
+/* These surfaces use GSAP; do not run a second CSS entrance on their children. */
+.spring-surface,
+.spring-surface .floating-menu-panel,
+.spring-surface .floating-menu-item {
+  animation: none !important;
+  transition: none;
+}
+.spring-surface-content { min-width: 0; }
+.spring-settings-section { animation: none !important; }
+.spring-surface[data-state="closed"],
+.spring-surface[data-closed] { pointer-events: none; }
+
+.morph-menu-shell .floating-menu-panel,
+.morph-menu-shell .floating-menu-item {
+  animation: none !important;
+}
+.morph-menu-expanded .morph-menu-content { border-radius: inherit; }
+
   width: 100% !important;
   animation: none;
   transition: opacity 180ms ease;
@@ -644,6 +689,11 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
 .onboarding-brand { width: 80px; height: 80px; border: 0; background: transparent; }
 .onboarding-brand img { width: 80px; height: 80px; object-fit: contain; }
 .onboarding-actions { display: flex; justify-content: center; gap: 12px; margin-top: 32px; }
+.right-sidebar-workbench[data-spring-panel],
+.right-sidebar-workbench[data-spring-panel] > div {
+  transition: none;
+}
+
 .onboarding-actions-connect { margin-top: 24px; }
 .onboarding-primary, .onboarding-back { height: 46px; border-radius: 12px; font-size: 14px; }
 .onboarding-primary { color: var(--theme-bg); background: var(--theme-fg); }

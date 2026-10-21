@@ -4,11 +4,10 @@ import { createPortal } from "react-dom";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { Archive, FolderOpen, Layers, Network, X } from "lucide-react";
 import { PinThumbtackIcon } from "./ui/PinThumbtackIcon";
-import { motion, useReducedMotion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { MENU_LIST, MOTION } from "./ui/motion";
-import { morphSpringTransition } from "./ui/morphingMenuMotion";
+import { SpringSurface } from "./ui/SpringSurface";
 import { MorphPanelLayoutContext } from "./ui/MorphPanelLayoutContext";
 import { cn } from "./shadcn/utils";
 
@@ -61,8 +60,7 @@ export function SidebarProjectMenu({
   onRemove,
 }: Props) {
   const { t } = useTranslation();
-  const reduced = useReducedMotion();
-  const spring = morphSpringTransition(reduced);
+  const [present, setPresent] = useState(open);
   const triggerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [anchor, setAnchor] = useState<Anchor>({ top: 0, left: 0 });
@@ -92,8 +90,9 @@ export function SidebarProjectMenu({
       return;
     }
     syncAnchor();
+    setPresent(true);
     setLayoutAnimating(true);
-    const fallback = window.setTimeout(() => setLayoutAnimating(false), 420);
+    const fallback = window.setTimeout(() => setLayoutAnimating(false), 820);
     return () => clearTimeout(fallback);
   }, [open, syncAnchor]);
 
@@ -209,7 +208,7 @@ export function SidebarProjectMenu({
         <FontAwesomeIcon icon={["fas", "ellipsis"]} className="text-[10px]" />
       </button></HoverInfo>
 
-      {open &&
+      {(open || present) &&
         createPortal(
           <div
             data-custom-contextmenu="1"
@@ -223,29 +222,26 @@ export function SidebarProjectMenu({
               left: anchor.left,
               width: PANEL_WIDTH,
               zIndex: 200,
-              filter: "drop-shadow(0 6px 24px rgba(0,0,0,0.10))",
             }}
           >
-            <motion.div
+            <SpringSurface
               ref={panelRef}
               role="menu"
-              initial={reduced ? false : { opacity: 0.6, scale: 0.15 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.15 }}
-              transition={spring}
+              data-side={contextMenuPosition ? "bottom" : "right"}
+              data-align="start"
+              data-state={open ? "open" : "closed"}
+              anchor={contextMenuPosition ? undefined : triggerRef}
+              onMotionExit={() => setPresent(false)}
               style={{ transformOrigin: "top left" }}
-              onAnimationComplete={() => {
-                if (open) setLayoutAnimating(false);
-              }}
               className={cn(
-                "overflow-hidden rounded-2xl bg-elevated-bg",
+                "overflow-hidden rounded-2xl bg-elevated-bg shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
                 layoutAnimating && "overflow-hidden",
               )}
             >
               <MorphPanelLayoutContext.Provider value={layoutAnimating}>
                 {menuContent}
               </MorphPanelLayoutContext.Provider>
-            </motion.div>
+            </SpringSurface>
           </div>,
           document.body,
         )}

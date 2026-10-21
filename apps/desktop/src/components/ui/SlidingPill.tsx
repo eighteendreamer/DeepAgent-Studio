@@ -117,7 +117,7 @@ export function useSlidingIndicator({
 }
 
 /** 静默着色药丸 —— 默认 ui-tint；侧栏传 className="bg-sidebar-highlight" */
-const PILL_BASE = `absolute left-3 right-3 z-0 rounded-md pointer-events-none ${MOTION.standard}`;
+const PILL_BASE = `ui-hover-highlight absolute left-3 right-3 z-0 rounded-md pointer-events-none ${MOTION.standard}`;
 
 export function SlidingPill({ style, className }: { style: CSSProperties; className?: string }) {
   const hasBgClass = Boolean(className && /\bbg-/.test(className));

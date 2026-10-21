@@ -77,7 +77,8 @@ export function BalanceChip({ popoverSuppressed = false }: { popoverSuppressed?:
         {label}
       </button>} />
 
-      <HoverCardContent side="top" align="end" className="min-w-[240px] px-3 py-2.5">
+      <HoverCardContent motionTone="menu" side="top" align="end" className="min-w-[240px] cursor-pointer px-3 py-2.5"
+        onClick={(event) => { event.stopPropagation(); if (!loading) refresh(); }}>
         {balance && balance.infos.length > 0 ? <>
           {balance.infos.map((info, i) => (
             <div key={`${info.currency}-${i}`} className={i > 0 ? "mt-3" : ""}>

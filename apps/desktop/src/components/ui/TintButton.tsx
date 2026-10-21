@@ -1,6 +1,7 @@
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { cn } from "../shadcn/utils";
 import { MOTION } from "./motion";
+import { useSpringPress } from "./useSpringPress";
 
 /**
  * 着色按钮 —— 统一语言：无边框、bg-black/5 着色底、hover 同色加深。
@@ -11,9 +12,10 @@ export const TintButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTM
   className,
   ...rest
 }, ref) {
+  const pressRef = useSpringPress(ref);
   return (
     <button
-      ref={ref}
+      ref={pressRef}
       className={cn(
         "rounded-full px-2 py-1.5 text-[12px] text-text-base",
         MOTION.fast,

@@ -1,4 +1,5 @@
 import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
+import { continuousCornerStyle } from "../../../theme/continuousCorners";
 import type { NodeProps } from "@xyflow/react";
 import { Plus } from "lucide-react";
 import type { WorkflowNode } from "../types";
@@ -91,7 +92,7 @@ function ConnectionButton({
         transform: "translateY(-50%)",
         padding: 0,
         border: "1px solid rgba(95,201,209,0.52)",
-        borderRadius: 9999,
+        ...continuousCornerStyle(9999),
         background: "rgba(30,30,35,0.94)",
         color: "rgba(148,225,229,0.9)",
         cursor: "crosshair",

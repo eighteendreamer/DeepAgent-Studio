@@ -1,5 +1,6 @@
 import { HoverInfo } from "../../../components/ui/HoverInfo";
 import React, { useRef, useState } from "react";
+import { continuousCornerStyle } from "../../../theme/continuousCorners";
 import { ArrowUp, ChevronDown, Maximize2, Plus, X, Square } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "../../../components/shadcn/dialog";
 import { CanvasInput } from "./CanvasFields";
@@ -246,7 +247,7 @@ function RatioIcon({ ratio, size = 14 }: { ratio?: string; size?: number }) {
         style={{
           width: size,
           height: size,
-          borderRadius: 2,
+          ...continuousCornerStyle(2),
           border: "1.5px dashed rgba(255,255,255,0.7)",
           background: "rgba(255,255,255,0.10)",
         }}
@@ -273,7 +274,7 @@ function RatioIcon({ ratio, size = 14 }: { ratio?: string; size?: number }) {
       style={{
         width: w,
         height: h,
-        borderRadius: 2,
+        ...continuousCornerStyle(2),
         border: "1.5px solid rgba(255,255,255,0.85)",
         background: "rgba(255,255,255,0.18)",
       }}

@@ -9,6 +9,7 @@ import { getGitUiSettings } from "./gitSettings";
 import { GitCreateBranchDialog } from "./GitCreateBranchDialog";
 import { GitBranchMenuContent, formatAheadBehind } from "./GitBranchMenuContent";
 import { MorphingToolbarMenu } from "../ui/MorphingToolbarMenu";
+import { MorphingMenuShell } from "../ui/MorphingMenuShell";
 
 interface Props {
   projectPath?: string | null;
@@ -143,6 +144,29 @@ export function GitBranchChip({
     await runOperation("fetch", async () => gitFetch(projectPath, false));
   };
 
+  const menuContent = (
+    <GitBranchMenuContent
+      small={compactMenu}
+      branches={branches}
+      loading={loading}
+      busy={busy}
+      query={query}
+      onQueryChange={setQuery}
+      currentBranch={status?.current_branch ?? null}
+      additions={status?.additions ?? changes?.additions ?? 0}
+      deletions={status?.deletions ?? changes?.deletions ?? 0}
+      filesChanged={status?.files_changed ?? changes?.files.length ?? 0}
+      rebaseState={status?.rebase_state ?? null}
+      mergeState={!!status?.merge_state}
+      operationError={operationError}
+      operationResult={operationResult}
+      onCheckout={checkoutBranch}
+      onFetch={fetchAndRefresh}
+      onCreateBranch={openCreateBranchDialog}
+      onOpenWorkbench={onOpenWorkbench}
+    />
+  );
+
   return (
     <div className={`relative ${className}`} ref={ref}>
       {variant === "chip" ? (
@@ -164,35 +188,18 @@ export function GitBranchChip({
               .filter(Boolean)
               .join(" · ") || undefined
           }
-          panelClassName={`origin-bottom-left ${
-            dropdownPlacement === "top" ? "bottom-full mb-2" : "top-full mt-2"
-          } ${dropdownAlign === "right" ? "right-0 left-auto" : "left-0"}`}
+          panelPlacement={dropdownPlacement === "top" ? "above" : "below"}
+          panelAlign={dropdownAlign}
           zIndex={70}
           staggerContent={false}
           unstyled
         >
-          <GitBranchMenuContent
-            small={compactMenu}
-            branches={branches}
-            loading={loading}
-            busy={busy}
-            query={query}
-            onQueryChange={setQuery}
-            currentBranch={status?.current_branch ?? null}
-            additions={status?.additions ?? changes?.additions ?? 0}
-            deletions={status?.deletions ?? changes?.deletions ?? 0}
-            filesChanged={status?.files_changed ?? changes?.files.length ?? 0}
-            rebaseState={status?.rebase_state ?? null}
-            mergeState={!!status?.merge_state}
-            operationError={operationError}
-            operationResult={operationResult}
-            onCheckout={checkoutBranch}
-            onFetch={fetchAndRefresh}
-            onCreateBranch={openCreateBranchDialog}
-            onOpenWorkbench={onOpenWorkbench}
-          />
+          {menuContent}
         </MorphingToolbarMenu>
       ) : (
+      <MorphingMenuShell open={open} onOpenChange={setOpen} layoutId={gitMorphLayoutId}
+        panelPlacement={dropdownPlacement === "top" ? "above" : "below"}
+        panelAlign={dropdownAlign} triggerLayout="block" className="w-full min-w-0" zIndex={70} unstyled trigger={
       <HoverInfo content={status?.repo_root ?? projectPath ?? undefined}><button
         type="button"
         className={
@@ -232,35 +239,7 @@ export function GitBranchChip({
           </>
         )}
       </button></HoverInfo>
-      )}
-
-      {variant !== "chip" && open && (
-        <div
-          className={`absolute z-[70] origin-bottom-left ${
-            dropdownPlacement === "top" ? "bottom-full mb-2" : "top-full mt-2"
-          } ${dropdownAlign === "right" ? "right-0" : "left-0"}`}
-        >
-          <GitBranchMenuContent
-            small={compactMenu}
-            branches={branches}
-            loading={loading}
-            busy={busy}
-            query={query}
-            onQueryChange={setQuery}
-            currentBranch={status?.current_branch ?? null}
-            additions={status?.additions ?? changes?.additions ?? 0}
-            deletions={status?.deletions ?? changes?.deletions ?? 0}
-            filesChanged={status?.files_changed ?? changes?.files.length ?? 0}
-            rebaseState={status?.rebase_state ?? null}
-            mergeState={!!status?.merge_state}
-            operationError={operationError}
-            operationResult={operationResult}
-            onCheckout={checkoutBranch}
-            onFetch={fetchAndRefresh}
-            onCreateBranch={openCreateBranchDialog}
-            onOpenWorkbench={onOpenWorkbench}
-          />
-        </div>
+      }>{menuContent}</MorphingMenuShell>
       )}
 
       <GitCreateBranchDialog

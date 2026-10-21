@@ -1,8 +1,9 @@
 import { useLayoutEffect, useRef, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import { cn } from "../shadcn/utils";
+import { SpringDisclosure } from "../ui/SpringDisclosure";
 
-/** K 方案：grid 高度 + blur/opacity 聚焦揭示 */
+/** Process details share the restrained layout spring. */
 export function CollapseBlurPanel({
   open,
   className,
@@ -24,27 +25,15 @@ export function CollapseBlurPanel({
     content.inert = !open;
   }, [open]);
   return (
-    <div
-      className={cn(
-        "grid transition-[grid-template-rows] duration-300 ease-out motion-reduce:transition-none",
-        open ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
-        className,
-      )}
-    >
-      <div className="min-h-0 overflow-hidden">
+    <SpringDisclosure open={open} className={className}>
         <div
           ref={contentRef}
           aria-hidden={!open}
-          className={cn(
-            "transition-[filter,opacity] duration-[420ms] ease-out motion-reduce:blur-none motion-reduce:opacity-100 motion-reduce:transition-none",
-            open ? "blur-0 opacity-100" : "pointer-events-none blur-[8px] opacity-0",
-            innerClassName,
-          )}
+          className={cn(!open && "pointer-events-none", innerClassName)}
         >
           {children}
         </div>
-      </div>
-    </div>
+    </SpringDisclosure>
   );
 }
 

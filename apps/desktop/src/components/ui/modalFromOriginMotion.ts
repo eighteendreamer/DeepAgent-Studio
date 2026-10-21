@@ -1,27 +1,25 @@
 import gsap from "gsap";
+import { prefersReducedMotion } from "./springMotion";
+export { prefersReducedMotion } from "./springMotion";
 
 /** 方案 A：从触发按钮中心 scale 展开 / 收回 */
 export const MODAL_ORIGIN_MOTION = {
-  openBackdropDuration: 0.38,
-  openPanelDuration: 0.52,
+  openBackdropDuration: 0.22,
+  openPanelDuration: 0.32,
   openPanelDelay: 0.02,
-  closePanelDuration: 0.42,
-  closeBackdropDuration: 0.3,
-  closeBackdropDelay: 0.1,
-  scaleFrom: 0.04,
-  openPanelEase: "power4.inOut",
+  closePanelDuration: 0.2,
+  closeBackdropDuration: 0.18,
+  closeBackdropDelay: 0.02,
+  scaleFrom: 0.96,
+  openPanelEase: "power3.out",
   openBackdropEase: "power2.out",
-  closePanelEase: "power4.inOut",
+  closePanelEase: "power2.inOut",
   closeBackdropEase: "power2.in",
 } as const;
 
 export interface ModalTriggerOrigin {
   centerX: number;
   centerY: number;
-}
-
-export function prefersReducedMotion(): boolean {
-  return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 export function originTransformFromPanel(panel: HTMLElement, origin: ModalTriggerOrigin): string {
@@ -46,16 +44,17 @@ export function playModalOriginOpen(
 ): gsap.core.Timeline {
   const tl = gsap.timeline();
 
-  if (prefersReducedMotion() || !origin) {
+  if (prefersReducedMotion()) {
     gsap.set(backdrop, { autoAlpha: 1 });
     gsap.set(panel, { autoAlpha: 1, scale: 1, clearProps: "transform,transformOrigin" });
     return tl;
   }
 
-  const transformOrigin = originTransformFromPanel(panel, origin);
+  const transformOrigin = origin ? originTransformFromPanel(panel, origin) : "center center";
   gsap.set(backdrop, { autoAlpha: 0 });
   gsap.set(panel, {
-    autoAlpha: 0,
+    opacity: 0,
+    visibility: "visible",
     scale: MODAL_ORIGIN_MOTION.scaleFrom,
     transformOrigin,
   });
@@ -67,7 +66,7 @@ export function playModalOriginOpen(
   }, 0).to(
     panel,
     {
-      autoAlpha: 1,
+      opacity: 1,
       scale: 1,
       duration: MODAL_ORIGIN_MOTION.openPanelDuration,
       ease: MODAL_ORIGIN_MOTION.openPanelEase,
@@ -85,12 +84,12 @@ export function playModalOriginClose(
 ): gsap.core.Timeline {
   const tl = gsap.timeline();
 
-  if (prefersReducedMotion() || !origin) {
+  if (prefersReducedMotion()) {
     gsap.set([backdrop, panel], { autoAlpha: 0 });
     return tl;
   }
 
-  const transformOrigin = originTransformFromPanel(panel, origin);
+  const transformOrigin = origin ? originTransformFromPanel(panel, origin) : "center center";
   gsap.set(panel, { transformOrigin });
 
   tl.to(

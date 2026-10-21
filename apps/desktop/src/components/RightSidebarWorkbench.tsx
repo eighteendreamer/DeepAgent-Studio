@@ -1,5 +1,7 @@
 import { HoverInfo } from "./ui/HoverInfo";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import gsap from "gsap";
+import { SOFT_SPRING, prefersReducedMotion, springEase } from "./ui/springMotion";
 import { Maximize2, Minimize2 } from "lucide-react";
 import { SidebarPluginHeader } from "./SidebarPluginHeader";
 import { ToolLauncherPanel, type ToolLauncherCard } from "./ToolLauncherPanel";
@@ -53,7 +55,7 @@ export function RightSidebarWorkbench({
 }: RightSidebarWorkbenchProps) {
   const [pluginAppCards] = usePluginAppCards(open);
   const presence = usePanelPresence(open, SIDEBAR_ANIM_MS);
-  const [shellWidth, setShellWidth] = useState(0);
+  const shellRef = useRef<HTMLElement | null>(null);
 
   const visibleTabs = useMemo(
     () => tabs.filter((tab) => getPluginDefinition(tab.type) != null),
@@ -80,6 +82,10 @@ export function RightSidebarWorkbench({
 
   const { width, sidebarRef, isResizing, startResizing, isMaximized, toggleMaximize, resetMaximize } =
     useResizableSidebar({ defaultWidth: 400, minWidth: sidebarMinWidth });
+  const setShellRef = useCallback((node: HTMLElement | null) => {
+    shellRef.current = node;
+    sidebarRef(node);
+  }, [sidebarRef]);
   const availablePluginCards = pluginAppCards;
   const launcherCards: ToolLauncherCard[] = useMemo(
     () => [...availablePluginCards, STUDIO_CANVAS_CARD],
@@ -94,25 +100,26 @@ export function RightSidebarWorkbench({
     if (tabs.length === 0) resetMaximize();
   }, [resetMaximize, tabs.length]);
 
-  useEffect(() => {
-    if (!presence.shouldRender) {
-      setShellWidth(0);
-      return;
+  useLayoutEffect(() => {
+    const shell = shellRef.current;
+    if (!shell || !presence.shouldRender) return;
+    shell.inert = !open;
+    const content = shell.firstElementChild;
+    if (isMaximized) {
+      gsap.set(shell, { clearProps: "width" });
+      const fade = content ? gsap.to(content, { opacity: open ? 1 : 0,
+        duration: prefersReducedMotion() ? 0 : 0.18 }) : null;
+      return () => { fade?.kill(); };
     }
-
-    if (!open) {
-      setShellWidth(0);
-      return;
-    }
-
-    if (presence.phase === "opening") {
-      setShellWidth(0);
-      const id = window.requestAnimationFrame(() => setShellWidth(targetShellWidth));
-      return () => window.cancelAnimationFrame(id);
-    }
-
-    setShellWidth(targetShellWidth);
-  }, [open, presence.shouldRender, presence.phase, targetShellWidth]);
+    const instant = isResizing || prefersReducedMotion();
+    const timeline = gsap.timeline();
+    timeline.to(shell, { width: open ? targetShellWidth : 0,
+      duration: instant ? 0 : 0.36,
+      ease: springEase(SOFT_SPRING.stiffness, SOFT_SPRING.damping, 0.36) }, 0);
+    if (content) timeline.to(content, { opacity: open ? 1 : 0,
+      duration: instant ? 0 : open ? 0.24 : 0.14, ease: "power2.out" }, 0);
+    return () => { timeline.kill(); };
+  }, [open, presence.shouldRender, targetShellWidth, isResizing, isMaximized]);
 
   const handleLauncherSelect = (card: ToolLauncherCard) => {
     if (card.type === STUDIO_CANVAS_CARD.type) {
@@ -155,7 +162,7 @@ export function RightSidebarWorkbench({
   if (isMaximized) {
     return (
       <aside
-        ref={sidebarRef}
+        ref={setShellRef}
         className="right-sidebar-workbench absolute inset-0 z-40 h-full overflow-hidden is-maximized"
       >
         <div className="relative flex h-full w-full flex-col overflow-hidden bg-bg-base">
@@ -178,18 +185,18 @@ export function RightSidebarWorkbench({
     );
   }
 
-  const totalWidth = presence.shouldRender ? shellWidth : 0;
   const isOpening = presence.phase === "opening";
 
   return (
     <aside
-      ref={sidebarRef}
+      ref={setShellRef}
+      data-spring-panel
       className={`right-sidebar-workbench relative flex h-full flex-shrink-0 overflow-hidden ${
         isOpening ? "is-opening" : ""
       } ${presence.isClosing ? "is-closing" : ""} ${isResizing ? "is-resizing" : ""}`}
-      style={{ width: totalWidth }}
+      style={{ width: 0 }}
     >
-      <div className="relative flex h-full w-full flex-col overflow-hidden bg-bg-base">
+      <div className="relative flex h-full shrink-0 flex-col overflow-hidden bg-bg-base" style={{ width: targetShellWidth }}>
         <div
           className={`panel-resize-handle-col ${isResizing ? "is-active" : ""}`}
           onMouseDown={(e) => {
