@@ -15,7 +15,7 @@
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口及 SSE 分帧不完整均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30；全部错误和流式分支未完成 |
-| 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费和回退后旧笔记覆盖新分支均已复现 | 已确认 H-10、H-11、H-14、H-23；笔记计数及其他压缩边界仍在核查 |
+| 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突、子 Agent 工具限制未约束执行及未信任项目提升只读权限 | 已确认 H-03、H-15、H-16、H-19、H-28；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
@@ -768,11 +768,33 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应统一字节 UTF-8 解码、SSE 事件分帧、provider JSON 解析的三个边界。可评估现有依赖或标准解析器，保持单一 transport 链路；兼容无空行的非标准供应商若确有需求，需显式定义策略，不能默认把半帧等同于完成。
 - 验收应覆盖多 data 行、CR/LF/CRLF、分隔符跨网络 chunk、注释心跳、EOF 半帧和完整终态，并检查真实 HTTP→ModelClient→运行终态。现有默认测试把连续 data 行直接视为两个 payload，恰好固化了行级假设，常规通过不能证明 SSE 协议完整。本轮未修改生产 parser。
 
+### H-31：同步原生压缩的摘要请求没有运行取消信号，停止必须等摘要返回
+
+**级别：高（P1）；范围：ModelAgent 请求前的同步完整摘要压缩。** 需要历史超过压缩阈值并进入模型摘要阶段。与 H-10 的后台 prefire 生命周期及 H-29 的错误正文等待不同：本项使用正常成功摘要，也能拖住运行取消。
+
+#### 生产调用与动态复现
+
+- `ModelAgent::think_inner()` 检查 cancel 后 await maybe_proactive_compact，再检查 cancel；压缩调用的 ReactiveContextCompactor 契约没有传递取消上下文。生产 HookedReactiveContextCompactor 调用 ModelCompactor::summarize_accounted，最终使用 `client.stream_response(request)`，而非取消感知入口。因此前后检查不能中断正在等待的摘要请求。
+- 新增默认忽略探针 `context_runtime::tests::audit_cancel_interrupts_native_summary_before_next_model_request`。真实内存数据库与 Session 持久化 24 条唯一原生消息；正式 ModelAgent 使用生产 HookedReactiveContextCompactor，设置本地测试阈值 2000，触发完整摘要。无历史工具结果，因此不是便宜的工具结果清理。
+- 只有摘要 transport 为可控 fixture：确认收到生产摘要请求后保持响应 pending；fixture 同时提供正确响应取消 flag 的 stream_cancelled 实现并计数。此时设置正式 think_cancelled 的同一个运行 flag，观察 500ms，再主动释放正常结构化摘要并回收任务。没有模型网络请求、真实用户历史或人为修改生产 compactor。
+- 执行：`cargo test -p deepagent-app-core --lib audit_cancel_interrupts_native_summary_before_next_model_request --offline -- --ignored --nocapture`。实际 `stopped_within_500ms=false, total_requests=1, cancel_aware_requests=0`；释放摘要后才返回 request cancelled by user，最终断言失败。也确认停止后没有再发主模型请求，不能概括成取消后仍启动了新工具或主模型。
+- 本次只验证主动压缩；reactive overflow 与 prefire 的契约也缺少取消参数是代码观察，不能把它们全部报成同一动态测试已覆盖。未运行真实桌面超大上下文/真实慢供应商，也未统计 P95。
+
+#### 成熟实现、后果与修复方向
+
+- DeepSeek Harness `compaction-basic/src/summarizer.ts::summarizeWithLlm()` 接收 signal 并放入 GenerateOptions，透传至模型 adapter；aborted finish 转为 LlmError。`region.ts` 在摘要和提交边界检查取消；manual-compaction 回归明确验证取消落在摘要之后时不写 compaction/summary，同时保留已经进入 durability checkpoint 的收尾语义。
+- Claude Code `services/compact/compact.ts` 的 fork 路径复用 context.abortController，streaming fallback 传同一 signal，重试 sleep 也接收它。可借鉴的是压缩属于同一取消树，并区分正在请求与已进入持久化收尾的阶段；不是简单无条件 drop 所有压缩 Future。
+- 用户在“正在压缩上下文”期间点击停止，取消 flag 虽已设置，执行仍等待摘要响应/超时才退出。在生产 ReqwestTransport 中该调用仍受 total deadline 限制，默认 300 秒；本次没有实际等到该上限，不声称无限挂起。
+- 根因修复需扩展既有 compactor 调用边界以接收运行取消上下文，覆盖同步摘要、prefire owner、溢出恢复、重试和 hooks 等待；保留正常取消错误，不能转成启发式摘要后继续提交。摘要完成后的采用/落盘也要定义明确的取消提交点，同时保留已发生 usage，复用现有运行树及 Session 事件日志。
+- 验收使用同一探针再覆盖摘要前/中/后、持久化故障、取消与完成竞争以及真实 transport；H-10/H-29/H-31 已显示多个独立等待边界缺口，应统一审视取消生命周期，不能继续仅在按钮或 await 之后补检查。本轮未修改生产压缩行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
 | `cargo fmt --all -- --check` | 通过 |
+| `cargo test -p deepagent-app-core --lib context_runtime::tests --offline`（新增 H-31 及阈值压缩恢复验证后） | 23 passed / 3 ignored，0 failed；包含真正经过阈值的原生摘要请求与数据库重开验证 |
+| H-31 单项忽略探针（见该节命令） | 明确失败：运行取消后等待摘要 gate 释放，摘要请求未调用取消感知入口；主模型请求数为零 |
 | H-30 单项忽略探针（见该节命令） | 明确失败：多行 JSON、CR-only 和未闭合终态帧三组不符预期，单行完整帧对照通过 |
 | `cargo test -p deepagent-models --features http --offline`（新增 H-30 后） | 84 passed / 4 ignored，0 failed；新缺陷探针默认忽略 |
 | H-29 单项忽略探针（见该节命令） | 明确失败：200 正文读取响应取消，429/503 半正文未在 500ms 观察期内响应；释放正文后才返回 |
@@ -877,6 +899,15 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 保留 Windows 专属默认回归，只使用临时内存数据和回环地址；没有调用公网。进程树清理由生产 ProcessTreeGuard 负责，本次未单独枚举子进程验证完整树退出。
 - 本项补充证明大输入样本的 deadline 可用，不证明 H-26 的输出协议正确，也不是对 stdin 全生命周期时限的形式保证。
 
+### 后续独立验证：唯一历史边界的主动原生摘要进入请求并在数据库重开后保持一致
+
+- 新增默认测试 `native_threshold_summary_changes_request_and_survives_database_reopen`；执行 `cargo test -p deepagent-app-core --lib native_threshold_summary_changes_request_and_survives_database_reopen --offline -- --nocapture`：1 passed。
+- 真实文件数据库持久化 24 条内容唯一的原生消息、近期 function_call/result 及当前输入。使用正式 ModelAgent、HookedReactiveContextCompactor、keep-window 和 2000 的本地强制阈值；模型仅为离线 ScriptedTransport，先返回短摘要再返回主模型答案，不手工调用 compactor 绕过阈值入口。
+- 从正式 ModelClient 发出的序列化请求 body 反序列化原生 input，确认包含摘要标记、近期工具的原始 name/call_id/arguments/output 及当前输入，保留 instructions，早期完整正文已经消失。只有一个 ContextCompacted boundary，估算 68759→11564 tokens，wire input 为 8 items。
+- 释放 agent、session 和数据库后重新打开相同 SQLite 文件；按生产 response_items_from_events 恢复，8 items 与刚发送的请求 input 完全相等，原始早期事件仍保留。这是请求序列化/原生边界/实际磁盘重开的正向证据，没有真实供应商、桌面 UI 或真实 1M 容量压力测试；强制阈值低于受保护尾部，本项不要求压缩结果低于 2000。
+- 初次 fixture 没有启用生产组装器使用的 snip tagging，导致 live/replay 只在 user 的 `[id:uN]` 标签上不等；按 RunAssembler 实际顺序启用同一 with_snip_tool 后通过。该 fixture 不一致未列为新缺陷，也未通过删除标签来放宽最终逐 item 比较。
+- 此处刻意使用唯一内容的边界，不能用它否定已复现 H-11 的重复内容匹配故障；也不覆盖 H-31 的压缩中取消。真实供应商大窗口压缩和完整 Tauri 重启仍未验收。
+
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
 下表依据已复现的边界归并；优先级不等于所有问题具有相同触发概率。设计收敛在本系统既有内核，不复制参考项目建立第二套运行链。
@@ -885,6 +916,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 |---|---|---|---|
 | 执行权限与子运行上下文 | H-03、H-19、H-22 | 有效工具集合、sandbox 选择、执行根、checkpoint 必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
+| 运行取消覆盖所有等待 | H-10、H-29、H-31 | 摘要、prefire、成功/错误正文和重试均属于现有取消树；区分可取消外部等待与已进入持久化的收尾 | 压缩和错误半正文中停止及时退出；后台任务有 owner；取消不被转成成功摘要或吞掉保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |

@@ -1838,6 +1838,242 @@ mod tests {
     use deepagent_context::TokenCounter;
 
     #[tokio::test]
+    #[ignore = "audit H-31: synchronous native compaction does not receive run cancellation"]
+    async fn audit_cancel_interrupts_native_summary_before_next_model_request() {
+        use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
+        use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
+        use deepagent_runtime::{Agent, ModelAgent};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use tokio::sync::{Notify, Semaphore};
+
+        struct GatedSummary {
+            inner: Arc<ScriptedTransport>,
+            entered: Semaphore,
+            release: Notify,
+            requests: AtomicUsize,
+            cancel_aware_requests: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl HttpTransport for GatedSummary {
+            async fn stream(
+                &self,
+                request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                self.requests.fetch_add(1, Ordering::SeqCst);
+                self.entered.add_permits(1);
+                self.release.notified().await;
+                self.inner.stream(request, sink).await
+            }
+
+            async fn stream_cancelled(
+                &self,
+                request: TransportRequest,
+                sink: &mut dyn EventSink,
+                cancel: Arc<AtomicBool>,
+            ) -> Result<()> {
+                self.cancel_aware_requests.fetch_add(1, Ordering::SeqCst);
+                tokio::select! {
+                    result = self.stream(request, sink) => result,
+                    _ = async {
+                        while !cancel.load(Ordering::Acquire) {
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        }
+                    } => Err(CoreError::other("audit request cancelled")),
+                }
+            }
+        }
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut session =
+            deepagent_session::Session::create(&db, &deepagent_core::clock::SystemClock, None)
+                .unwrap();
+        let sid = session.id();
+        let items: Vec<_> = (0..24)
+            .map(|index| ResponseInputItem::Message {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: format!("turn {index}: {}", "context detail ".repeat(600)),
+            })
+            .collect();
+        for item in &items {
+            session.append_response_item(item.clone()).unwrap();
+        }
+        let (_, inner) = scripted_client_with_transport(vec![ScriptedTransport::text(
+            r#"{"goal":"audit cancellation","completed":["summarized"]}"#,
+        )]);
+        let transport = Arc::new(GatedSummary {
+            inner,
+            entered: Semaphore::new(0),
+            release: Notify::new(),
+            requests: AtomicUsize::new(0),
+            cancel_aware_requests: AtomicUsize::new(0),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            deepagent_models::ModelConfig::deepseek("audit-placeholder"),
+        ));
+        let mut agent =
+            ModelAgent::new(client.clone(), "deepseek-flash", "rules", "current", vec![])
+                .with_response_history(items)
+                .with_reactive_compactor(Arc::new(HookedReactiveContextCompactor::new(
+                    client,
+                    "deepseek-flash".into(),
+                    Arc::new(HookRegistry::new()),
+                    sid,
+                    db,
+                )))
+                .with_proactive_compaction(2_000);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let run_cancel = cancel.clone();
+        let mut operation =
+            tokio::spawn(async move { agent.think_cancelled(0, &[], Some(run_cancel)).await });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            transport.entered.acquire(),
+        )
+        .await
+        .expect("production compaction did not request a summary")
+        .unwrap()
+        .forget();
+        cancel.store(true, Ordering::Release);
+        let completion =
+            tokio::time::timeout(std::time::Duration::from_millis(500), &mut operation).await;
+        let stopped_promptly = completion.is_ok();
+        transport.release.notify_one();
+        let result = match completion {
+            Ok(completed) => completed.unwrap(),
+            Err(_) => operation.await.unwrap(),
+        };
+        let requests = transport.requests.load(Ordering::SeqCst);
+        let cancel_aware = transport.cancel_aware_requests.load(Ordering::SeqCst);
+        eprintln!(
+            "stopped_within_500ms={stopped_promptly}, total_requests={requests}, cancel_aware_requests={cancel_aware}, result={result:?}"
+        );
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert_eq!(
+            requests, 1,
+            "a stopped run must not start its main model request"
+        );
+        assert!(
+            stopped_promptly,
+            "run cancellation waited for an unrelated release of the summary response"
+        );
+    }
+
+    #[tokio::test]
+    async fn native_threshold_summary_changes_request_and_survives_database_reopen() {
+        use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
+        use deepagent_runtime::{Agent, ModelAgent};
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("threshold-summary.sqlite3");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let mut session =
+            deepagent_session::Session::create(&db, &deepagent_core::clock::SystemClock, None)
+                .unwrap();
+        let sid = session.id();
+        let mut items: Vec<_> = (0..24)
+            .map(|index| ResponseInputItem::Message {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: format!("unique turn {index}: {}", "historical details ".repeat(600)),
+            })
+            .collect();
+        let call = ResponseInputItem::FunctionCall {
+            call_id: "audit-retained-call".into(),
+            name: "read_file".into(),
+            arguments: " { \"path\" : \"kept.txt\" } ".into(),
+        };
+        let output = ResponseInputItem::FunctionCallOutput {
+            call_id: "audit-retained-call".into(),
+            output: "audit retained result".into(),
+        };
+        items.extend([call.clone(), output.clone()]);
+        for item in &items {
+            session.append_response_item(item.clone()).unwrap();
+        }
+        let (client, transport) = scripted_client_with_transport(vec![
+            ScriptedTransport::text(
+                r#"{"goal":"audit summary","completed":["audit-summary-token"]}"#,
+            ),
+            ScriptedTransport::text("completed"),
+        ]);
+        let mut agent = ModelAgent::new(
+            client.clone(),
+            "deepseek-flash",
+            "protected rules",
+            "current",
+            vec![],
+        )
+        .with_response_history(items)
+        .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME)
+        .with_reactive_compactor(Arc::new(HookedReactiveContextCompactor::new(
+            client,
+            "deepseek-flash".into(),
+            Arc::new(HookRegistry::new()),
+            sid,
+            db.clone(),
+        )))
+        .with_proactive_compaction(2_000);
+        // Persist the same live user item as AppCore admission does before think.
+        session
+            .append_response_item(ResponseInputItem::Message {
+                role: "user".into(),
+                content: "current".into(),
+            })
+            .unwrap();
+        agent.think(0, &[]).await.unwrap();
+        let request: serde_json::Value = serde_json::from_str(&transport.last_prompt()).unwrap();
+        let sent: Vec<ResponseInputItem> =
+            serde_json::from_value(request["input"].clone()).unwrap();
+        assert_eq!(request["instructions"], "protected rules");
+        assert!(request.to_string().contains("audit-summary-token"));
+        assert!(!request.to_string().contains("unique turn 0:"));
+        assert!(sent.contains(&call) && sent.contains(&output));
+        assert!(
+            matches!(sent.last(), Some(ResponseInputItem::Message { role, content })
+            if role == "user" && content.starts_with("current\n[id:u"))
+        );
+        drop(agent);
+        drop(session);
+        drop(db);
+
+        let reopened = Database::open(&path).unwrap();
+        let events = deepagent_persistence::event_store::EventStore::new(&reopened)
+            .load_session(sid)
+            .unwrap();
+        let boundaries: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.payload {
+                EventPayload::ContextCompacted {
+                    tokens_before,
+                    tokens_after,
+                    ..
+                } => Some((*tokens_before, *tokens_after)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(boundaries.len(), 1);
+        assert!(boundaries[0].1 < boundaries[0].0);
+        assert!(events.iter().any(|event| matches!(&event.payload,
+            EventPayload::ResponseItemAppended {
+                item: ResponseInputItem::Message { content, .. }
+            } if content.starts_with("unique turn 0:"))));
+        let replay = crate::input_runtime::response_items_from_events(&events);
+        assert!(
+            replay == sent,
+            "reopen must recover the exact compacted request surface"
+        );
+        eprintln!(
+            "threshold=2000, estimated_tokens={} -> {}, wire_items={}, reopened_items={}",
+            boundaries[0].0,
+            boundaries[0].1,
+            sent.len(),
+            replay.len()
+        );
+    }
+
+    #[tokio::test]
     async fn native_prune_changes_wire_and_survives_database_reopen() {
         use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
         use deepagent_runtime::{Agent, ModelAgent};
