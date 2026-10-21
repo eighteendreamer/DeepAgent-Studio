@@ -1275,6 +1275,51 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: resuming a thread must preserve its explicit permission profile"]
+    fn audit_resume_preserves_explicit_thread_overrides() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+        let started = state.handle_request_for_test(rpc_request(
+            2,
+            "thread/start",
+            serde_json::json!({
+                "provider": "deepseek",
+                "model": "deepseek-flash",
+                "permissionProfile": "read_only",
+                "sandboxBackend": "windows_sandbox"
+            }),
+        ));
+        let thread_id = started.result()["threadId"].as_str().unwrap().to_owned();
+        let original = state.threads.get(&thread_id).unwrap().clone();
+        let resumed = state.handle_request_for_test(rpc_request(
+            3,
+            "thread/resume",
+            serde_json::json!({"threadId":thread_id}),
+        ));
+        assert_eq!(resumed.result()["status"], "ready");
+        let (_, launch) = state.dispatch(
+            rpc_request(
+                4,
+                "turn/start",
+                serde_json::json!({"threadId":thread_id,"input":"read-only audit"}),
+            ),
+            None,
+        );
+        let actual = serde_json::to_value(launch.unwrap().overrides).unwrap();
+        let expected = serde_json::json!({
+            "provider": original.provider,
+            "model": original.model,
+            "permission_profile": original.permission_profile,
+            "sandbox_backend": original.sandbox_backend
+        });
+        eprintln!("audit resume: before={expected}, after={actual}");
+        assert_eq!(
+            actual, expected,
+            "thread/resume silently discarded explicit model and safety configuration"
+        );
+    }
+
+    #[test]
     fn rejects_requests_before_initialize() {
         let mut state = ServerState::new_for_test();
         let request = rpc_request(1, "thread/list", serde_json::json!({}));
