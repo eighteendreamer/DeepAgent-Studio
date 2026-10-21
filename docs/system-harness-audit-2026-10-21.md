@@ -27,6 +27,7 @@
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | Harness 每轮模型参数优先级 | 显式 max/low 覆盖经正式 ChatService 执行后，实际请求仍服从持久化桌面深度 | 已确认 H-54；共享 AppCore 入口及真实序列化，未调用公网供应商 |
 | 两协议思考模式映射 | 两协议三档中仅 Chat Simple 在请求前本地校验失败，Responses 三档与 Chat 另两档完成 | 已确认 H-55；公开 Chat adapter 的条件缺陷，默认生产组装仍为 Responses |
+| MCP 快照合并后的名称唯一性 | 两真实 stdio 服务独立 Ready 后，冲突工具名在每轮 ToolRegistry 注册才被拒绝，普通聊天没有发模型 | 已确认 H-56；正式宿主准备和 ChatService，未覆盖桌面错误展示 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -1278,10 +1279,31 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - DeepSeek Harness `packages/llm/llm-pi-ai/tests/adapter.spec.ts` 的 DeepSeek thinkingFormat 用例对 high→off 连续发请求，明确要求 off 产生 `thinking: { type: 'disabled' }` 并不携带 reasoning_effort；其其他 provider 映射可声明 off→none，体现关闭语义按适配器转换，而非把所有协议的字符串视为相同。`llm-deepseek/src/serialize.ts` 的 Messages route 也将统一 effort off 映射为 disabled，但字段布局不同，不可直接复制。这里只对照参考源码/测试，未运行参考项目。
 - 修复应让既有 thinking 配置携带明确的启用状态与有效 effort，由 provider adapter 生成自己支持的字段并在同一边界验证；关闭模式、缺省和显式禁用不能都退化为一个 Option::None。覆盖两协议三档、显式 off 与默认高强度并存、运行取消及重试；后一个默认值覆盖疑点本轮未动态验证，不列为独立已确认结论。本轮只新增审计测试与报告，没有切换生产默认协议或修改 serializer。
 
+### H-56：宿主就绪快照合并未检查工具重名，已连接 MCP 可让普通聊天在请求前整体失败
+
+**级别：高（P1）；范围：两个已启用 MCP 的 server/local-tool 组合拼接成同一个模型可见名称。** 不需要工具实际执行，也不要求任意命令或恶意代码。
+
+- `McpRegistry::namespaced_name` 直接拼接 `mcp__{server}__{tool}`。单个 registry 的 register_with_instructions 会检查完整工具名冲突，这是已有保护；但宿主 `prepare_server_with_cancel` 为各服务独立创建 registry，`start_preparation` 通过 `extend_ready` 合并。后者只拒绝重复 server key，不检查两个独立 registry 的工具完整名是否相同，故两者都能进入 Ready。
+- 聊天 `tool_runtime::build_run_tool_registry` 无条件调用 `attach_mcp_tools`；后者把所有 adapter 注册进正式 ToolRegistry，第二个同名工具在这里才报 already registered，错误沿组装链传播。虽然 MCP 设为 deferred，延迟的是 schema 展示，不是 ToolRegistry 注册，因此普通不使用工具的对话也失败。
+- 新增默认忽略探针 `kernel_v2_e2e::audit_ready_mcp_name_collision_does_not_block_chat`。两组均使用两个真实本地 Node stdio MCP 子进程、正式 upsert/start_preparation 和 ChatService 全执行入口；等待正式 ready_registry 已发布两个 server 后才聊天。唯一差别是第二个 server 名：对照为 b，故障为 a__b；第一个为 a，提供 b__echo，第二个提供 echo。没有注入损坏快照、手工追加同名工具或关闭已有保护。底层模型 transport 仅记录次数并返回离线正常回答。
+- 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_ready_mcp_name_collision_does_not_block_chat --offline -- --ignored --nocapture`，最终断言明确失败：
+
+| 第二 server | 两个 Ready 工具名 | 普通聊天 | 模型请求数 |
+|---|---|---|---:|
+| b（对照） | mcp__a__b__echo / mcp__b__echo | 成功 | 1 |
+| a__b | mcp__a__b__echo / mcp__a__b__echo | already registered | 0 |
+
+- 两组均在断言前调用正式 close_all 关闭本测试连接，测试共约 0.46 秒。没有调用公网、实际工具或真实供应商，也没有验收 Tauri 错误展示。直接后果是这个就绪集合被每轮复用时，普通对话持续在组装阶段失败，破坏“插件失败不阻塞主体运行”的边界。当前 ToolRegistry 拒绝重名，故本轮没有复现错误工具执行或静默跨 server 路由，不能声称发生了这些后果。
+- Codex `借鉴/codex/codex-rs/codex-mcp/src/tools.rs::normalize_tools_for_model_with_prefix` 保留 raw server/tool identity，统一生成模型可见名，并由 unique_callable_parts 对最终全名集合检查唯一性、必要时加稳定身份 hash；不是只对 server key 去重。`connection_manager_tests.rs` 有 namespace/tool 清洗冲突的独立测试。本轮只核对源码，没有执行 Codex 测试，也不将其 128 字节上限当成 DeepSeek 的协议限制。
+- 修复应在既有就绪快照发布边界统一名称分配与反向路由，确保模型 schema、ToolRegistry、审批/权限来源和 MCP 原始调用身份一致；冲突能力必须在发布前消歧或隔离并报管理状态，不能到普通聊天组装时才使整轮失败。名称规则变化还需兼容已有历史工具调用与权限匹配。应补跨用户/插件快照、不同发布顺序、刷新/恢复以及同名配置替换测试；不通过吞掉 ToolRegistry 错误、选择第一个或禁止所有双下划线临时掩盖。本轮只新增测试和报告，没有修改生产工具命名或快照发布。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-56 两真实 MCP 的名称冲突显式探针（见该节命令） | 明确失败：两服务器均 Ready；正常命名对照发 1 次模型并完成，冲突组普通聊天在工具注册失败、模型请求为 0 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（H-56 核查时） | 11 passed / 7 ignored；H-56 探针已另行显式执行并失败 |
+| `cargo test -p deepagent-mcp --offline`（H-56 核查时） | 58 passed / 6 ignored；直接 register 的重名拒绝回归通过，不覆盖宿主 extend_ready 发布后的聊天可用性 |
 | H-55 两协议三档思考显式探针（见该节命令） | 明确失败：5 组完成；Chat Simple 在本地校验返回 unsupported reasoning effort: none，transport 次数为 0 |
 | `cargo test -p deepagent-models --offline`（H-55 核查时） | 80 passed / 2 ignored；各 adapter 的独立单测不覆盖 Simple 的跨层转换，新探针已单独执行失败 |
 | `cargo test -p deepagent-runtime --lib --offline`（H-55 核查时） | 266 passed / 8 ignored；包括 H-55 在内的审计缺陷探针默认忽略，不能以此宣称问题已修复 |
@@ -1500,6 +1522,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
 | MCP 初始化复用与配置代次 | H-47 | 按服务连接身份复用 pending startup，定向取消/失效；全局视图代次不能写坏仍有效的共享 slot | 新增或修改 B 不取消未变 A；禁用/替换 A 才终止旧任务；迟到取消结果不变成新代缓存失败 |
+| MCP 模型可见名称与快照发布 | H-56 | 现有 registry 在发布前统一名称唯一性和 raw owner 路由；参考 Codex 对最终可见名的消歧 | 多快照合并不发布重名；能力冲突不阻塞普通对话；历史和权限匹配保持可解释 |
 | MCP 断线恢复耗尽与能力退役 | H-48 | 探活与工具共用连接身份的恢复 owner/预算，状态驱动下一请求就绪快照；参考 Grok stdio 耗尽后 Unavailable 与注销工具 | 失败耗尽后新发现不含旧工具/说明；普通连续调用不重开启动风暴；显式重试可恢复；不影响其他服务 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |

@@ -1987,6 +1987,113 @@ async fn a_later_pass_folds_only_the_uncovered_turn_and_a_flat_context_pays_noth
 }
 
 #[tokio::test]
+#[ignore = "audit reproducer: merged ready MCP tools must not collide and block ordinary chat"]
+async fn audit_ready_mcp_name_collision_does_not_block_chat() {
+    use deepagent_app_core::{McpServerDto, McpService};
+    use std::time::Duration;
+
+    struct ObservedModel(AtomicUsize);
+
+    #[async_trait]
+    impl HttpTransport for ObservedModel {
+        async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            emit_responses_events(sink, &response_text("ordinary chat completed"))
+        }
+    }
+
+    let mut observations = Vec::new();
+    for colliding in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let script = root.path().join("namespaced-tools.cjs");
+        std::fs::write(
+            &script,
+            r#"
+const tool = process.argv[2];
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const msg = JSON.parse(line);
+  const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
+  if (msg.method === 'initialize') reply({ protocolVersion: msg.params.protocolVersion,
+    capabilities: { tools: {} }, serverInfo: { name: 'namespacing-audit', version: '1' } });
+  else if (msg.method === 'tools/list') reply({ tools: [{ name: tool,
+    description: 'audit tool', inputSchema: { type: 'object' } }] });
+  else if (msg.id !== undefined) reply({});
+});
+"#,
+        )
+        .unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("sk-audit-placeholder").await.unwrap();
+        let mcp = Arc::new(McpService::new(db.clone()));
+        for (name, tool) in [
+            ("a", "b__echo"),
+            (if colliding { "a__b" } else { "b" }, "echo"),
+        ] {
+            let dto: McpServerDto = serde_json::from_value(serde_json::json!({
+                "name":name, "transport":"stdio", "enabled":true,
+                "command":"node", "args":[script,tool]
+            }))
+            .unwrap();
+            mcp.upsert(dto).unwrap();
+        }
+        mcp.start_preparation();
+        let prepared = tokio::time::timeout(Duration::from_secs(5), async {
+            while mcp.ready_registry().server_count() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        let ready = mcp.ready_registry();
+        if prepared.is_err() {
+            ready.close_all().await.unwrap();
+            panic!("both local fixture servers must publish before chat");
+        }
+        let tools = ready.all_tools();
+        let model = Arc::new(ObservedModel(AtomicUsize::new(0)));
+        let chat = ChatService::new(db, settings, model.clone(), root.path()).with_mcp(mcp);
+        let outcome = chat
+            .run_in_session(
+                "Reply briefly without using any tools.",
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                None,
+                |_| {},
+                |_| {},
+            )
+            .await;
+        ready.close_all().await.unwrap();
+        observations.push(serde_json::json!({
+            "colliding": colliding,
+            "ready_servers": ready.server_count(),
+            "tools": tools.iter().map(|tool| tool.namespaced_name.clone()).collect::<Vec<_>>(),
+            "completed": outcome.is_ok(),
+            "model_requests": model.0.load(Ordering::SeqCst),
+            "error": outcome.err().map(|error| error.to_string()),
+        }));
+    }
+    eprintln!("ready MCP names audit: {}", serde_json::json!(observations));
+    assert_eq!(
+        observations[0]["completed"], true,
+        "noncolliding control must finish"
+    );
+    assert!(
+        observations.iter().all(|case| case["completed"] == true),
+        "an MCP naming conflict must be resolved or isolated before publishing, not fail every ordinary chat"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit reproducer: explicit Harness reasoning effort must reach the provider request"]
 async fn audit_harness_reasoning_override_reaches_provider_request() {
     use deepagent_app_core::HarnessRunOverrides;
