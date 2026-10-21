@@ -19,7 +19,7 @@
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效均已复现 | 已确认 H-17、H-32、H-33、H-36；完整恢复及并发压力未完成 |
-| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置及完成事件串话已复现 | 已确认 H-19 至 H-22、H-38 至 H-41；记忆现有回归通过，其他图执行及重启边界未完成 |
+| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话及订阅就绪前启动的竞态已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -1014,10 +1014,33 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应在现有调度服务上明确 workspace 所有权、主备接管及 occurrence 身份；复用现有 RunStore 做计划→运行的可审计关联，不另建运行中心。计划锁不能等同于每个外部动作 exactly-once；崩溃时应区分“未派发、已接纳、执行结果未知”，按业务幂等性恢复。单纯提前删除 one-shot 或增加进程内 Mutex 都不覆盖跨进程和崩溃窗口。
 - 验收覆盖两个 data root 打开同一项目、one-shot/recurring 并发触发、owner 正常退出及崩溃接管、落盘失败和已接纳运行的恢复；普通会话输入租约修复不能代替此项。本轮仅增加默认忽略审计测试和文档，未修改生产调度。
 
+### H-43：运行启动先于事件订阅就绪，提前终态丢失后前端持续等待
+
+**级别：高（P1）；范围：桌面普通聊天和画布客户端的启动/订阅顺序。** 与 H-01 的 stdio 队列溢出和 H-41 的外部会话终态串话不同：本项只发送当前 run 的事件，且没有队列拥塞。
+
+#### 生产路径及可复现时序
+
+- `workflowExecutor.ts::runBackendWorkflow()` 先 await `start_workflow` ACK，之后才注册 chat://event 和 session://completed。Tauri `start_workflow` 在返回 ACK 前已经 spawn 后台运行，并在运行结束时 emit 一次终态；没有等待前端订阅的握手。快速工作流、立即失败或 IPC 返回延迟时，节点结果及终态可以发生在订阅前。
+- `api.ts::runChat()` 虽然 await 了普通事件和审批监听，但只启动完成监听的 Promise，没有 await 注册完成，就调用 start_chat_v2。当前锁定的 Tauri 2.11.2 中，JS listen 返回 plugin:event|listen 的 invoke Promise；Rust event/plugin.rs 的 listen 本身也是 async command。发出注册请求不等于注册已完成，不能把调用顺序当成已建立的订阅屏障。
+- 两个包装器都依赖一次性的完成回调结算，没有在此等待路径查询持久化 run 终态或自动补读。普通聊天保留已有的 100ms 回调延迟，也无法恢复从未收到的事件。这里只确定包装器的等待结果，不把它扩大为应用中全部其他全局监听都没有收到通知。
+- 新增 `apps/desktop/scripts/audit-start-subscription.test.cjs`，用既有 TS loader 加载实际 api.ts/runChat 和 workflowExecutor.ts/runWorkflow，只替换 Tauri 边界和画布 store。保持完成订阅尚未就绪，启动回调发送所属 run 的节点结果/终态后返回 ACK，再放行订阅。这是固定一个允许的异步交错，没有复制客户端实现。
+- PowerShell 设置 `$env:RUN_HARNESS_AUDIT='1'` 后执行 `node --test apps/desktop/scripts/audit-start-subscription.test.cjs`，随后移除该临时环境变量：两个不丢完成信号的断言均明确失败。chat 与 canvas 均 `startedBeforeSubscriptionReady=true`、`earlyTerminalDelivered=false`、`pendingAfterReadiness=true`；canvas 的 nodeCompleted=false。放行后等待 150ms，覆盖 chat 自带的 100ms 结算延迟。测试再发同一所属 run 的晚终态作为清理对照，两者正常结算、监听归零；此对照不是声称 Tauri 会重放已丢事件。
+- 探针没有启动真实后端、模型、工具或云视频任务；动态证据是生产前端在受控 IPC 时序下丢完成且继续等待，不是实际桌面发生频率或付费任务损失统计。原始后端历史没有因此被删除。它也不能解释 Codex 宿主的 continuation_history_incomplete/cipher_incompatible 报错，两者属于不同系统。
+
+#### 成熟实现、后果与修复方向
+
+- Codex `app-server-client/src/lib.rs::InProcessAppServerClient::start()` 在返回客户端之前建立 event_rx 并 spawn 持续读取 runtime 事件的 worker；请求通过 command 通道进入同一个活跃 worker，事件可先进入客户端队列，不依赖某次请求返回后才开始监听。它的队列取舍不能照搬，本项参考的是稳定事件消费生命周期及请求/事件并行处理。
+- Codex `app-server/src/request_processors/thread_lifecycle.rs::ensure_conversation_listener()` 先将 connection 订阅到 thread，再确保监听任务运行；失败会撤销订阅。`turn_processor.rs::prepare_realtime_conversation_thread()` await 该过程，确认 Attached 后才提交实时会话操作。这里明确引用实时入口而非声称所有 turn/start 原样调用该函数；参考源码已阅读，未运行 Codex 测试。
+- 本系统聊天已有两个 await listen 的本地先例。应在现有 run_id 及事件契约上建立完整就绪屏障，画布在启动前可缓存早到的 envelope，再按 ACK 归属筛选，或复用现有接纳/回放能力消除身份窗口；订阅失败不得先启动无法跟踪的工作。再用现有 run_events/状态读取补偿终态漏通知、窗口重载与断连，不能只加固定延时假定监听已经完成。
+- 潜在后果：后端已结束，调用方仍等待；画布节点可能缺少结果、UI 保持运行态或阻塞下一操作。普通聊天的其他状态处理是否会部分纠正 UI，要另外实测，不把包装器 Promise 悬挂直接等同所有界面都完全冻结。由于后端实际已经终态，不能把这项笼统描述成后台工作无法停止。
+- 验收包括注册延迟、ACK 前完成、快速校验失败、当前 run 失败/取消、订阅失败、窗口重连及持久化补读；必须保证无丢终态且监听可释放。此阶段只增加默认跳过的故障探针和文档，没有修改生产订阅或另建事件中心。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-43 前端启动/订阅显式探针（见该节命令） | 两个断言明确失败：聊天/画布均先启动后就绪，早到终态未交付且继续 pending；画布节点结果亦未收到，晚终态对照可正常清理 |
+| `node --test apps/desktop/scripts/audit-start-subscription.test.cjs apps/desktop/scripts/audit-workflow-isolation.test.cjs apps/desktop/scripts/check-workflow.test.cjs apps/desktop/scripts/check-canvas-ipc.test.cjs` | 常规入口 79 passed / 3 skipped，0 failed；三项为 H-41/H-43 显式启用探针，不代表其生产缺陷已修复 |
 | H-42 双进程调度忽略探针（见该节命令） | 明确失败：one-shot/recurring 同一 occurrence 均被两个进程 fire；顺序再次 poll 的两组对照均无重触发 |
 | `cargo test -p deepagent-runtime --lib schedule:: --offline`（新增 H-42 后） | 19 passed；基本时间与单实例持久化通过，不覆盖共享调度所有权 |
 | `cargo test -p deepagent-runtime --test schedule_audit --offline` | 1 ignored；缺陷探针已另行显式执行失败 |
@@ -1189,7 +1212,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 工作流工具能力与失败传播 | H-38 | 复用现有工具组装和 ToolPipeline，NodeOutcome 保留结构化失败并定义显式容错；参考 DeepSeek isError 保真及现有 DAG 依赖失败传播 | 只读工具能实际运行；未知工具/拒绝/执行失败不冒充成功；节点、下游及 RunStore 语义一致 |
 | 工作流条件可达性与派发 | H-39 | 在现有编译图/WorkflowAgent 统一激活边、跳过边和合流；参考 DeepSeek 程序式工作流只启动实际执行路径的工作 | 未选分支真实执行数为零，嵌套与公共后继正确，不把跳过分支的输出当作已有值 |
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
-| 画布运行事件与订阅所有权 | H-41 | 现有 run_id、完成 payload 和监听生命周期绑定；复用普通 chat 已有过滤方式，参考 Codex thread 通道 | 外部会话终态不影响画布；本 run 终态可回收；停止仍能发送对应取消；旧回调不能清理新 run |
+| 桌面运行事件与订阅生命周期 | H-41、H-43 | 现有 run_id、完成 payload、订阅就绪屏障和持久化补读统一；参考 Codex thread 通道和持续消费 worker | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能清理新 run |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
