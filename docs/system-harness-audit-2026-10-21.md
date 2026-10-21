@@ -20,7 +20,7 @@
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效均已复现 | 已确认 H-17、H-32、H-33、H-36；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置及完成事件串话已复现 | 已确认 H-19 至 H-22、H-38 至 H-41；记忆现有回归通过，其他图执行及重启边界未完成 |
-| 定时任务与无人值守运行 | 真实 Cron tick 进入正式 ChatService，审批通知丢弃后仍挂起；基础 cron/store 回归通过 | 已确认 H-37；多宿主调度、重复触发及完整退出边界未完成 |
+| 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -994,10 +994,33 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应把所有画布事件和终态订阅绑定到既有 run_id / listener owner，并让旧运行的 finally 不能清除新运行的资源；完成失败/取消的投影也读取已有 status/error。这里最后两项是应覆盖的生命周期验收方向，未另行宣称动态确认全部旧运行竞态。
 - 验收：A 运行期间，B 完成/失败/取消均不能结束 A、移除 A 监听或阻断停止；只有 A 自己的终态结算；两个运行交错收尾、快速重跑及监听注册前完成也应测试。实际节点、会话终态和取消都走现有链路，不新增执行中心。本轮未修改生产订阅行为。
 
+### H-42：定时调度没有跨进程所有权，同一触发时段可重复派发一次性和循环任务
+
+**级别：高（P1）；范围：多个调度实例共享同一 workspace 的持久化计划文件。** 与 H-33 的同一会话输入租约不同：CronService 每次 fire 新建会话，即使修复同会话租约，也挡不住同一计划生成两个不同运行。
+
+#### 生产链路与双进程复现
+
+- Tauri 启动处无条件构造 CronService 并启动 run_tick_loop；该路径没有查询 AppService 的 Primary/Standby 角色，也没有取得 workspace 调度锁。系统现有 host.lock 作用域是 data root，不能覆盖“两个数据目录打开同一 workspace 的计划文件”。
+- `CronScheduler::poll()` 读取完整 JSON，判断 due，先调用 fire，之后才批量 remove/mark_fired；ScheduledTaskStore 的这些操作也是无锁 read→write。两个进程在前一方落盘前均能看到相同 due 任务；CronService 的 fire 随即 spawn 正式 ChatService，执行开始不需要等待计划标记更新。
+- 新增默认忽略集成探针 `crates/deepagent-runtime/tests/schedule_audit.rs::audit_two_scheduler_processes_cannot_fire_the_same_occurrence`。父进程真正进入生产 poll 的 fire callback 后，启动同一个测试二进制的独立子进程，共享同一实际 scheduled-tasks.json 和同一确定的 now；子进程也运行生产 poll。父回调的暂停固定一个合法交错，没有替换 read/write 或直接伪造重复回调。
+- 执行 `cargo test -p deepagent-runtime --test schedule_audit --offline -- --ignored --nocapture`，约 0.07 秒，one-shot 和 recurring 两组都观察到父、子进程 fire 相同 task id；one-shot 最后已删除，recurring 最后只剩一条且已更新，说明最终文件看起来正确不能反证重复派发。再以同一 now 单进程 poll，两组都不重触发，作为顺序账本有效的对照。收集两组并回收子进程后，唯一派发断言明确失败。
+- 这是两个真实调度进程和正式持久化的复现，没有同时开启两个桌面窗口，没有发模型/工具请求；只记录重复 fire，不把潜在的重复付费、文件写入或多次发送通知说成已发生。桌面装配允许多个调度实例的证据来自代码。
+
+#### 成熟实现、影响与修复方向
+
+- Claude Code `utils/cronTasksLock.ts::tryAcquireSchedulerLock()` 使用项目级锁文件、独占 `wx` 创建、owner/session/PID 与存活检查；活 owner 阻止另一会话成为 scheduler，失效时重新竞争独占创建，release 只释放自己拥有的锁。
+- `utils/cronScheduler.ts` 只在 isOwner 时处理 file-backed tasks，未取得锁的会话定期尝试接管；session-only 任务是进程私有，不受这把共享锁限制。它还用 inFlight 防止文件 watcher 重载期间再次派发。这里只核对参考源码，未执行 Claude 测试，也不声称该锁解决了任意崩溃下的 exactly-once 外部副作用。
+- 触发后果是相同计划可能创建多个新会话/运行；涉及模型、编辑或外部操作时会带来重复费用或动作风险，事件日志中不同 run id 也难以反推出它们来自同一个 occurrence。该触发需要重叠调度，频率未做压力统计；单实例顺序控制通过。
+- 修复应在现有调度服务上明确 workspace 所有权、主备接管及 occurrence 身份；复用现有 RunStore 做计划→运行的可审计关联，不另建运行中心。计划锁不能等同于每个外部动作 exactly-once；崩溃时应区分“未派发、已接纳、执行结果未知”，按业务幂等性恢复。单纯提前删除 one-shot 或增加进程内 Mutex 都不覆盖跨进程和崩溃窗口。
+- 验收覆盖两个 data root 打开同一项目、one-shot/recurring 并发触发、owner 正常退出及崩溃接管、落盘失败和已接纳运行的恢复；普通会话输入租约修复不能代替此项。本轮仅增加默认忽略审计测试和文档，未修改生产调度。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-42 双进程调度忽略探针（见该节命令） | 明确失败：one-shot/recurring 同一 occurrence 均被两个进程 fire；顺序再次 poll 的两组对照均无重触发 |
+| `cargo test -p deepagent-runtime --lib schedule:: --offline`（新增 H-42 后） | 19 passed；基本时间与单实例持久化通过，不覆盖共享调度所有权 |
+| `cargo test -p deepagent-runtime --test schedule_audit --offline` | 1 ignored；缺陷探针已另行显式执行失败 |
 | H-41 前端事件归属显式探针（见该节命令） | 明确失败：B 完成令 A 提前结算，监听归零，A 后续节点终态未交付且停止不发送 cancel_run；没有启动真实云作业 |
 | `node --test apps/desktop/scripts/audit-workflow-isolation.test.cjs`（未启用审计环境变量） | 1 skipped；显式启用后两次复现同一故障，约 106ms/96ms；导出共用 TS loader 后重跑 H-40，四组仍复现 |
 | H-40 真实前端序列化→正式后端执行忽略探针（见该节命令） | 明确失败：四组均未兑现配置；输入引用被拒绝，条件 false、end 空对象、模板空文本；后三组仍 succeeded |
@@ -1151,6 +1174,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 定时任务的运行归属与交互能力 | H-37 | 现有 CronService → AppCore 接纳、审批和通知共用明确的 unattended 契约；参考 Claude 队列归属与 Codex headless 策略 | 需要人工时明确拒绝或投递到真实 owner；计划可关联运行，停止入口可发现；不能留下无消费者审批 |
+| 定时调度所有权与触发身份 | H-42 | workspace 调度 owner、主备接管和 occurrence→现有 RunStore 关联；参考 Claude 项目 scheduler lock 与 inFlight | 多宿主相同时段只有一个派发者；owner 失效可接管，已派发但结果未知的动作不盲目重试 |
 | 工作流工具能力与失败传播 | H-38 | 复用现有工具组装和 ToolPipeline，NodeOutcome 保留结构化失败并定义显式容错；参考 DeepSeek isError 保真及现有 DAG 依赖失败传播 | 只读工具能实际运行；未知工具/拒绝/执行失败不冒充成功；节点、下游及 RunStore 语义一致 |
 | 工作流条件可达性与派发 | H-39 | 在现有编译图/WorkflowAgent 统一激活边、跳过边和合流；参考 DeepSeek 程序式工作流只启动实际执行路径的工作 | 未选分支真实执行数为零，嵌套与公共后继正确，不把跳过分支的输出当作已有值 |
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
