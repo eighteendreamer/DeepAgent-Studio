@@ -28,7 +28,7 @@
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
 | 两协议思考模式映射 | 两协议三档中仅 Chat Simple 在请求前本地校验失败，Responses 三档与 Chat 另两档完成 | 已确认 H-55；公开 Chat adapter 的条件缺陷，默认生产组装仍为 Responses |
 | MCP 快照合并后的名称唯一性 | 两真实 stdio 服务独立 Ready 后，冲突工具名在每轮 ToolRegistry 注册才被拒绝，普通聊天没有发模型 | 已确认 H-56；正式宿主准备和 ChatService，未覆盖桌面错误展示 |
-| MCP 说明在后续无状态请求中的保留 | 真实 MCP 说明首轮存在，同会话第二轮完整 wire 中消失；另一新会话恢复 | 已确认 H-57；正式 AppCore 连续运行与请求序列化，未覆盖重启/压缩和真实供应商 |
+| 能力目录和说明在后续无状态请求中的保留 | MCP 说明和技能目录均在首轮存在，第二轮完整 wire 中消失；新会话恢复，技能 reset 也恢复 | 已确认 H-57；正式 AppCore 连续运行与请求序列化，未覆盖重启/压缩和真实供应商 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -1314,7 +1314,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - Codex `借鉴/codex/codex-rs/codex-mcp/src/tools.rs::normalize_tools_for_model_with_prefix` 保留 raw server/tool identity，统一生成模型可见名，并由 unique_callable_parts 对最终全名集合检查唯一性、必要时加稳定身份 hash；不是只对 server key 去重。`connection_manager_tests.rs` 有 namespace/tool 清洗冲突的独立测试。本轮只核对源码，没有执行 Codex 测试，也不将其 128 字节上限当成 DeepSeek 的协议限制。
 - 修复应在既有就绪快照发布边界统一名称分配与反向路由，确保模型 schema、ToolRegistry、审批/权限来源和 MCP 原始调用身份一致；冲突能力必须在发布前消歧或隔离并报管理状态，不能到普通聊天组装时才使整轮失败。名称规则变化还需兼容已有历史工具调用与权限匹配。应补跨用户/插件快照、不同发布顺序、刷新/恢复以及同名配置替换测试；不通过吞掉 ToolRegistry 错误、选择第一个或禁止所有双下划线临时掩盖。本轮只新增测试和报告，没有修改生产工具命名或快照发布。
 
-### H-57：MCP 说明仅按历史名称去重，正文没有进入可回放模型历史，后续无状态请求完全丢失约束
+### H-57：MCP 说明与技能目录仅按已发送身份去重，正文未进入可回放模型历史，后续无状态请求丢失内容
 
 **级别：高（P1）；范围：MCP 返回 initialize.instructions，且使用默认开启的 MCP instructions delta，同会话继续普通对话。** 无需压缩、工具调用、供应商故障或修改服务配置。
 
@@ -1334,10 +1334,28 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - DeepSeek Harness `借鉴/deepseek-harness/packages/mcp/mcp-client/src/server-context.ts::registerServerContext` 将连接拥有的 instructions 注册为 systemPrompt.section 的 text 回调；说明有连接与提示词服务的明确内容来源。本轮仅核对这些参考源码，没有运行参考项目，也未单凭该注册函数断言其全部压缩/重启行为。
 - 修复应在既有原生 Surface/事件边界保留模型实际收到的说明正文，再基于当前保留内容去重；或者在每次请求按就绪快照重新注入。二者的选择及删除、压缩、重连和配置更新语义属于本地映射设计，需以完整 wire、回放与就绪身份一致性验收，不能另建说明历史存储。现有 `mcp_instructions_delta_slashes_per_turn_token_pressure` 只证明 block 变短或变为 None，未检查后续实际请求是否保留内容。本轮仅增加审计测试和报告，尚未修复生产行为。
 
+#### 后续复现：技能目录同样只进入当轮系统提示，续聊后无法从请求发现技能
+
+- `build_skill_catalog_blocks` 通过 session-keyed `SkillCatalogSendState::next_delta` 取得目录并放入 system manifest；next_delta 将所有已渲染 id 加进内存 sent_ids，后续仅生成新增项。目录正文没有变成模型历史附件，下一轮重建 system header 后不含旧目录；`SkillTool` 虽仍注册，schema/固定说明只指向 available-skills 提醒，不携带具体完整目录。该函数中“sent_ids 仅用于诊断、每轮完整渲染”的局部注释与后面的真实差集代码不一致；本结论依据执行结果，不以注释为实现保证。
+- 新增默认忽略探针 `kernel_v2_e2e::audit_skill_catalog_survives_continuation_on_wire`：通过正式 SkillManager 注册含独有描述的用户技能，经 SkillsService/ChatService 全运行入口连续发四轮，不调用 skill 工具，离线模型固定回复不复述目录。所有完整请求均含可调用的 skill schema；发送前没有手工删改历史。执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_skill_catalog_survives_continuation_on_wire --offline -- --ignored --nocapture`，四轮均完成，最终保留性断言明确失败：
+
+| 请求 | 完整 wire 中含技能 id 与独有描述 |
+|---|---|
+| 首轮新会话 | 是 |
+| 同会话第二轮 | 否 |
+| 调用正式 reset_sent_skills 后继续 | 是 |
+| 另一新会话 | 是 |
+
+- 首次显式运行约 0.57 秒，三个正对照将原因收敛到发送去重状态，而不是技能未加载或不可见。后续模型仍有 skill 工具，却没有当前目录中的 id/适用描述，普通请求无法按这份目录选择尚未调用过的技能。已调用技能的历史结果、用户直接点名、猜测 id 后的错误建议仍可能提供其他线索，故不能声称所有技能调用都失效。未测试真实模型选择质量、磁盘重开或压缩；不把该情况扩大为执行权限绕过，也不重复计为新 H 编号。
+- Claude Code `借鉴/claudecode/restored-src/src/utils/attachments.ts::getSkillListingAttachments` 同样维护 sentSkillNames，但实际返回带格式化 content 的 skill_listing 附件；`messages.ts` 的 skill_listing 分支把 content 变为模型 user message。其 resume suppression 注释明确以 transcript 已经有 listing 为前提。本系统仅复制 send-once 状态语义，却没有与之匹配的正文保留边界。参考项目只做源码对照，未运行。
+- 应将技能目录一并纳入 H-57 的内容保留修复：当前 Surface 的目录正文与已展示身份必须一致，失败接纳、压缩/snip、目录更新及重启都需有明确规则。仅在 UI 安装/重载时 reset 或延长发送间隔，不能修复普通第二轮丢目录；本轮仍只添加测试和文档。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-57 技能目录续聊显式探针（见补充命令） | 明确失败：first=true / continued=false / reset=true / fresh=true；四轮均成功且 skill 工具仍在请求中 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（H-57 技能目录补充时） | 11 passed / 10 ignored；技能探针显式重跑仍失败；同批 cargo fmt --all -- --check 通过 |
 | H-54 持久化输出上限显式探针（见补充命令） | 明确失败：设置 512/768 后 wire 均为 16,384；设置 65,536 后 wire 为 32,768；无覆盖对照正常，四组均完成 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（H-54 输出上限补充时） | 11 passed / 9 ignored；缺陷探针已另行显式执行失败，默认绿测不代表修复；同批 cargo fmt --all -- --check 通过 |
 | H-57 真实 MCP 说明跨 turn 显式探针（见该节命令） | 明确失败且重跑一致：完整请求标记 first=true / continued=false / fresh=true，三轮模型请求均正常完成 |
@@ -1566,7 +1584,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
 | MCP 初始化复用与配置代次 | H-47 | 按服务连接身份复用 pending startup，定向取消/失效；全局视图代次不能写坏仍有效的共享 slot | 新增或修改 B 不取消未变 A；禁用/替换 A 才终止旧任务；迟到取消结果不变成新代缓存失败 |
 | MCP 模型可见名称与快照发布 | H-56 | 现有 registry 在发布前统一名称唯一性和 raw owner 路由；参考 Codex 对最终可见名的消歧 | 多快照合并不发布重名；能力冲突不阻塞普通对话；历史和权限匹配保持可解释 |
-| MCP 使用说明的内容保留与去重 | H-57 | 既有原生 Surface/事件保存实际正文并基于当前内容去重，或每请求从就绪快照注入；参考 Claude 正文附件及 DeepSeek 连接拥有的 system section | 连续 turn 的完整 wire 均保留有效说明；压缩/恢复不因旧名称标记丢正文；断线与配置更新语义一致 |
+| 能力目录和使用说明的内容保留与去重 | H-57 | 既有原生 Surface/事件保存实际正文并基于当前内容去重，或每请求从就绪快照注入；参考 Claude 的 MCP/skill 正文附件及 DeepSeek 连接拥有的 system section | 连续 turn 的完整 wire 均保留有效目录/说明；压缩/恢复不因旧身份标记丢正文；断线与配置更新语义一致 |
 | MCP 断线恢复耗尽与能力退役 | H-48 | 探活与工具共用连接身份的恢复 owner/预算，状态驱动下一请求就绪快照；参考 Grok stdio 耗尽后 Unavailable 与注销工具 | 失败耗尽后新发现不含旧工具/说明；普通连续调用不重开启动风暴；显式重试可恢复；不影响其他服务 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |

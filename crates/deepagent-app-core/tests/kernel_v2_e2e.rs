@@ -2278,6 +2278,90 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
 }
 
 #[tokio::test]
+#[ignore = "audit reproducer: advertised skill catalog must remain visible in continued requests"]
+async fn audit_skill_catalog_survives_continuation_on_wire() {
+    use deepagent_app_core::SkillsService;
+    use deepagent_skills::{frontmatter, Skill, SkillManager, SkillOrigin};
+
+    const MARKER: &str = "AUDIT_SKILL_UNIQUE_DISCOVERY_PURPOSE";
+    struct ObservedModel(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl HttpTransport for ObservedModel {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.0.lock().unwrap().push(request.body);
+            emit_responses_events(sink, &response_text("ordinary reply"))
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let mut manager = SkillManager::new(None, root.path().join("installed"));
+    let fm = frontmatter::parse(&format!(
+        "---\nname: Audit helper\ndescription: {MARKER}\n---\nRead the project instructions."
+    ));
+    manager.register(Skill::from_frontmatter("audit-helper", &fm, SkillOrigin::User).unwrap());
+    let skills = Arc::new(Mutex::new(SkillsService::from_manager(manager)));
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = Arc::new(SettingsService::new(
+        db.clone(),
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(MemorySecretStore::new()),
+    ));
+    settings.initialize("sk-audit-placeholder").await.unwrap();
+    settings.set_skill_catalog_enabled(true).unwrap();
+    let model = Arc::new(ObservedModel(Mutex::new(Vec::new())));
+    let chat = ChatService::new(db, settings, model.clone(), root.path()).with_skills(skills);
+    let mut session = None;
+    for (continued, reset) in [(false, false), (true, false), (true, true), (false, false)] {
+        if reset {
+            chat.reset_sent_skills(session.as_deref().unwrap());
+        }
+        let id = chat
+            .run_in_session(
+                "Reply briefly without invoking any tools.",
+                continued.then_some(session.as_deref()).flatten(),
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                None,
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap();
+        session = Some(id);
+    }
+    let requests = model.0.lock().unwrap();
+    assert_eq!(requests.len(), 4);
+    for body in requests.iter() {
+        let wire: serde_json::Value = serde_json::from_str(body).unwrap();
+        assert!(wire["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tool| tool["name"] == "skill"));
+        assert_eq!(body.contains("audit-helper"), body.contains(MARKER));
+    }
+    let present: Vec<_> = requests.iter().map(|body| body.contains(MARKER)).collect();
+    eprintln!(
+        "Skill catalog wire audit: first={} continued={} reset={} fresh={}",
+        present[0], present[1], present[2], present[3]
+    );
+    assert!(
+        present[0] && present[2] && present[3],
+        "fresh and reset controls must advertise the same skill"
+    );
+    assert!(
+        present[1],
+        "send-once catalog content must remain in the next stateless request"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit reproducer: saved output ceiling must survive the runtime thinking profile"]
 async fn audit_configured_output_limit_reaches_provider_request() {
     use deepagent_app_core::settings::ResponsesApiSettings;
