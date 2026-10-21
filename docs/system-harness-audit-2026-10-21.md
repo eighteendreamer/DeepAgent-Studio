@@ -15,10 +15,10 @@
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具续轮投影拆分已复现 | 已确认 H-05；全部错误和流式分支未完成 |
-| 上下文、压缩、记忆 | 连续对话与笔记用例；笔记请求数量断言失败 | 进行中，未据此认定业务故障 |
+| 上下文、压缩、记忆 | 连续对话、笔记用例及 27 项 input_runtime 恢复测试；笔记请求数量断言失败 | 进行中，未据此认定业务故障 |
 | 工具、审批、权限与沙箱 | 真实文件读取及工作区外拦截；沙箱 backend override 路由探针 | 已确认 H-03；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 副作用重试、工具分页、握手与并发回包已复现；含本机子进程 | 已确认 H-06 至 H-09；宿主准备与 hooks 未完成 |
-| 持久化、崩溃恢复、并发与输入租约 | 取消终态已读取，其他边界待验证 | 未完成 |
+| 持久化、崩溃恢复、并发与输入租约 | 取消终态、进程重启继续、27 项恢复与 6 项取消协调器测试 | 已获得部分基线；数据库故障及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 待逐项验证 | 未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -45,6 +45,7 @@
 | 真实只读工具调用 | 工作区内放入未在提示中透露内容的随机标记文件；模型调用 `read_file` 后回复与文件一致。文件放在工作区外时被权限钩子拦截；未修改权限绕过 |
 | 桌面进程重启与继续对话 | 正常关闭并重启同一隔离数据目录的桌面进程；展开折叠的“最近对话”后打开原会话，历史与标记仍可见；发起新一轮要求复述标记且不调用工具，模型正确复述 |
 | 真实三轮 AppCore 用例 | 完成三轮；每轮持久化 provider usage 分别为 12468 / 13101 / 14019 输入 tokens，cache hit + miss 等于输入；后续测试断言失败，整条用例不算通过 |
+| MCP 初始化未完成时的普通对话 | 新增 `pending_host_mcp_initialization_does_not_block_conversations`：真实 Node MCP 子进程将 initialize 持有至 180 秒或显式释放；确认子进程已收到 initialize 后运行两轮真实 ChatService、mock 模型请求。两轮合计 384ms、initialize 仅 1 次、待就绪工具未发布且未进入任何模型请求；释放后工具正常发布。1 passed |
 
 ### 尚未定性的现象
 
@@ -140,7 +141,7 @@ Codex 的 `app-server/src/request_processors/thread_processor.rs` 将请求 sand
 - 将生效 backend、工作目录、mode 和 network policy 形成逐次不可变执行上下文；保证工具注册和执行使用同一份结果。不要依赖修改全局共享 backend 来切换并发会话。
 - 补充不同会话并行、继续会话、显式 backend 不可用及实际返回配置一致性测试。此探针同样默认忽略，待修复后转常规回归。
 
-### H-04：恢复 Harness 会话会清空显式模型和权限配置
+### H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置
 
 **级别：高（P1）；范围：stdio `thread/resume` 后未重新指定覆盖值的运行。** 与 H-03 区分：本项影响权限 profile、模型和 provider 的生命周期，甚至同一宿主内重新附着也会触发。
 
@@ -152,6 +153,14 @@ Codex 的 `app-server/src/request_processors/thread_processor.rs` 将请求 sand
 - 探针 `audit_resume_preserves_explicit_thread_overrides` 使用生产请求分发器启动、恢复、再构造下一次 turn，检查交给 AppCore 的 overrides；不调用模型、不执行工具。
 - 执行：`cargo test -p deepagent-cli audit_resume_preserves --offline -- --ignored --nocapture`。
 - 实际输出：`before={"model":"deepseek-flash","permission_profile":"read_only","provider":"deepseek","sandbox_backend":"windows_sandbox"}, after={}`；配置保留断言失败。
+
+#### 后续复现：不经 resume 的 steer 同样丢失配置
+
+- `turn_steer()` 会取消旧运行、登记新 turn，并直接构造 `HarnessRunOverrides::default()`，既没有承接线程配置，也没有承接旧 turn 的有效覆盖值。
+- `audit_steer_preserves_effective_turn_overrides` 通过生产 thread/start 与 turn/start 建立配置；显式调用既有 `admit_run()` 使取消注册和 durable run 确实存在，排除 H-02 的接纳窗口后再调用 steer。
+- 执行：`cargo test -p deepagent-cli audit_steer_preserves --offline -- --ignored --nocapture`。实际 before 包含 provider/model/read_only/windows_sandbox 及 reasoning_effort=high，after 为 `{}`；保留断言失败。没有执行真实模型或工具。
+- Codex `turn_processor.rs::turn_steer_inner()` 把新增输入交给现有线程的 `steer_turn()` 并验证 expected_turn_id；它不会通过创建默认配置的新运行实现此操作。本系统可以保留自己的“取消后替换 turn”语义，但必须让替换运行继承已解析的有效配置。
+- 因此本项修复应覆盖 resume、steer、fork 等生命周期边界；只保存线程元数据仍不足以保留上一 turn 的逐次覆盖。
 
 #### 成熟实现对照
 
@@ -300,12 +309,22 @@ Codex `rmcp-client/src/rmcp_client.rs::call_tool()` 从 RunningService peer 提�
 |---|---|
 | `cargo fmt --all -- --check` | 通过 |
 | `cargo test -p deepagent-cli -p deepagent-models -p deepagent-mcp --offline` | CLI 82 passed / 3 ignored；models 84 passed / 1 ignored；MCP 单元 55 passed / 3 ignored、子进程集成 3 passed、协议审查 1 ignored；均无常规失败。组合命令的 feature 合并启用了额外 HTTP 测试 |
-| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` | 11 passed，1 个审查探针 ignored |
-| `cargo test -p deepagent-cli audit_ --offline -- --ignored --nocapture` | 2 个探针明确失败，分别复现 H-01、H-02；不是常规测试通过 |
+| `cargo test -p deepagent-cli --offline`（新增 steer 探针后） | 82 passed / 4 ignored，无常规失败 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` | 11 passed / 2 ignored，无常规失败 |
+| `cargo test -p deepagent-app-core --lib --offline input_runtime::tests` | 27 passed；覆盖 native snip/patch、工具配对、压缩边界及恢复等现有测试；不代表真实大上下文端到端压缩已验收 |
+| `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests` | 6 passed；包括无 durable run 时取消、不获取数据库锁、审批作用域等现有测试；不等于已完成审计写入故障注入 |
+| `cargo test -p deepagent-cli audit_ --offline -- --ignored --nocapture`（首批执行时） | 当时的 2 个探针明确失败，分别复现 H-01、H-02；后来新增的 resume/steer 探针分别单独执行，见 H-04 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_sandbox_override --offline -- --ignored --nocapture` | 探针明确失败，复现 H-03 |
-| H-04 至 H-09 各节列出的单项命令 | 6 个探针分别明确失败，证据见对应章节；不是常规测试通过 |
+| H-04 至 H-09 各节列出的单项命令 | 7 个探针分别明确失败（H-04 包含 resume、steer 两个），证据见对应章节；不是常规测试通过 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告和九个默认忽略的审查探针，未修改生产运行逻辑。本批重新运行了格式检查和 CLI/models/MCP 常规测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十个默认忽略的缺陷探针及一个默认忽略的宿主隔离集成探针，未修改生产运行逻辑。本批重新运行了格式检查和 CLI/models/MCP 常规测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
-后续仍需覆盖插件 180 秒延迟故障注入、审计落盘失败、并发租约/取消竞争、完整压缩及重放、DeepSeek 流式异常与其他宿主入口。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。
+### 后续独立验证：后台 MCP 准备不阻塞聊天
+
+- 执行：`cargo test -p deepagent-app-core --test kernel_v2_e2e pending_host_mcp_initialization --offline -- --ignored --nocapture`，1 passed。此集成探针需要本机 Node，因此默认忽略；它与 H 系列预期失败的缺陷探针性质不同。
+- 180 秒是 fixture 的自然完成时间；本次在两轮对话完成后主动释放，没有实际等待 180 秒。生产 MCP 启动本身还有 30 秒整体上限，测试证明的是“确认握手正在进行时，对话不等待它”，不是承诺握手可运行 180 秒。
+- 两轮模型均为离线 replay；真实执行了宿主启动、MCP 进程、ChatService 接纳、组装、Kernel 及模型请求构造。MCP fixture 在释放后接受宽松 legacy 握手，以单独验证生命周期隔离；不覆盖 H-08 的严格协议兼容性。
+- 该结果支持当前聊天读取 ready snapshot 的边界；不能由此证明磁盘运行包全量校验也已通过 180 秒延迟注入，更不能证明失败插件的 skills/hooks/说明全部隔离。
+
+后续仍需覆盖运行包校验延迟注入、审计落盘失败、并发租约/取消竞争、完整压缩及重放、DeepSeek 流式异常与其他宿主入口。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。
