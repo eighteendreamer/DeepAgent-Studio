@@ -15,7 +15,7 @@
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具续轮投影拆分已复现 | 已确认 H-05；全部错误和流式分支未完成 |
-| 上下文、压缩、记忆 | 连续对话、笔记用例及 27 项 input_runtime 恢复测试；笔记请求数量断言失败 | 进行中，未据此认定业务故障 |
+| 上下文、压缩、记忆 | 连续对话、恢复测试；预取摘要在运行结束后继续且无法归集已复现 | 已确认 H-10；笔记计数和完整压缩回放仍在核查 |
 | 工具、审批、权限与沙箱 | 真实文件读取及工作区外拦截；沙箱 backend override 路由探针 | 已确认 H-03；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 副作用重试、工具分页、握手与并发回包已复现；含本机子进程 | 已确认 H-06 至 H-09；宿主准备与 hooks 未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消终态、进程重启继续、27 项恢复与 6 项取消协调器测试 | 已获得部分基线；数据库故障及并发压力未完成 |
@@ -303,6 +303,32 @@ Codex `rmcp-client/src/rmcp_client.rs::call_tool()` 从 RunningService peer 提�
 - 只锁住整个 send 可以避免此示例丢包，但会让慢工具阻塞活性检查和其他调用，不能当作完整并发设计；不要简单延长 timeout。
 - 覆盖乱序、交错通知、超时后迟到响应、单请求取消、断线与并发 close。此探针默认忽略，生产 transport 尚未修改。
 
+### H-10：运行结束后预取压缩任务仍继续执行，结果及 usage 无处归集
+
+**级别：中（P2）；范围：进入 prefire 提前压缩区间、主运行先结束而 pass-1 尚未返回的场景。** 短上下文未触发 prefire 时不受此项影响；不同于有明确独立生命周期的后台 sub-agent。
+
+#### 触发与复现
+
+- `ModelAgent::maybe_schedule_prefire()` 直接 tokio::spawn，保存在普通 JoinHandle 中；任务不接收运行取消树，也没有 Drop/终态收尾取消或转交宿主的路径。
+- AppCore `run_assembler.rs` 为生产 agent 配置 prefire_start，并在运行收尾读取 `agent.side_usage()`。该方法只包含已归集的 side_usage 和 prefire_cache，不包含尚未完成的 handle。
+- 主运行完成或取消后丢弃 agent，只丢弃 JoinHandle，并不会取消已 spawn 的任务。它后来产生的 PrefireNote 只作为孤立 task 的返回值，不会进入后续运行、持久化缓存或已结束的计费记录。
+- 探针 `model_agent::tests::audit_completed_agent_does_not_leave_prefire_running` 使用生产 ModelAgent 调度、mock 主模型和可控的 compactor：将提前阈值设为 1、硬阈值设为 1,000,000，确保进入 lead band；主模型正常结束，确认 pass-1 已开始，再读取 side_usage 并释放 agent，最后允许 pass-1 完成。没有请求真实供应商。
+- 执行：`cargo test -p deepagent-runtime audit_completed_agent_does_not_leave_prefire_running --offline -- --ignored --nocapture`。
+- 实际输出：`main_done=true, continued_after_owner_end=true, side_usage_at_end=None`；要求释放 agent 后不继续执行推测请求的断言失败。该探针直接复现正常结束，不是一次真实桌面点击取消；取消路径同样未向此 task 传递信号的判断来自生产调用链。
+
+#### 成熟实现对照
+
+Grok `session/compaction_config.rs::CompactCancelGate` 让 compact/prefire 共享取消 token；`compaction.rs` 将 token 传给 `generate_session_compact()`，`acp_session_impl/cancel.rs` 在停止时调用 `compaction.cancel.request_cancel()`。模型切换/记忆控制失效时，`model_switch.rs::abort_and_clear_prefire()` 还会取出 handle、abort 并 await，再清理缓存。
+
+Grok 可以让部分预取跨 turn 保留，因为它的 handle/cache 属于 SessionActor；本系统却放在逐运行的 ModelAgent 中。不能只复制 spawn 和两段压缩策略，遗漏任务所属生命周期及费用归集。
+
+#### 后果和修复方向
+
+- 主界面已经完成或停止后，推测摘要仍可能占用网络、模型配额和费用；本地账单无法归集晚到 usage。取消本地请求也不能保证供应商已产生的费用为零，修复不能作此承诺。
+- 运行反复进入提前区间后立即结束，会重复启动无消费者的摘要；本次未做真实供应商批量压力或费用测量。
+- 在既有取消树中给运行所属的摘要/预取派生子信号，终态收尾有界取消并回收；若要跨 turn 缓存，应由现有会话服务明确接管其身份、有效性和计费，不能丢弃 handle 后默许继续。
+- 已获得的 usage 必须在有主人的收尾路径归集；覆盖正常完成、用户取消、模型切换、摘要已完成但未收取、任务失败及会话重启。此缺陷探针默认忽略，生产行为尚未修改。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -310,15 +336,17 @@ Codex `rmcp-client/src/rmcp_client.rs::call_tool()` 从 RunningService peer 提�
 | `cargo fmt --all -- --check` | 通过 |
 | `cargo test -p deepagent-cli -p deepagent-models -p deepagent-mcp --offline` | CLI 82 passed / 3 ignored；models 84 passed / 1 ignored；MCP 单元 55 passed / 3 ignored、子进程集成 3 passed、协议审查 1 ignored；均无常规失败。组合命令的 feature 合并启用了额外 HTTP 测试 |
 | `cargo test -p deepagent-cli --offline`（新增 steer 探针后） | 82 passed / 4 ignored，无常规失败 |
+| `cargo test -p deepagent-runtime --offline`（新增 H-10 探针后） | 常规测试及 500 次以上工具调用稳定性集成测试通过；H-10 探针默认忽略 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` | 11 passed / 2 ignored，无常规失败 |
 | `cargo test -p deepagent-app-core --lib --offline input_runtime::tests` | 27 passed；覆盖 native snip/patch、工具配对、压缩边界及恢复等现有测试；不代表真实大上下文端到端压缩已验收 |
 | `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests` | 6 passed；包括无 durable run 时取消、不获取数据库锁、审批作用域等现有测试；不等于已完成审计写入故障注入 |
 | `cargo test -p deepagent-cli audit_ --offline -- --ignored --nocapture`（首批执行时） | 当时的 2 个探针明确失败，分别复现 H-01、H-02；后来新增的 resume/steer 探针分别单独执行，见 H-04 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_sandbox_override --offline -- --ignored --nocapture` | 探针明确失败，复现 H-03 |
 | H-04 至 H-09 各节列出的单项命令 | 7 个探针分别明确失败（H-04 包含 resume、steer 两个），证据见对应章节；不是常规测试通过 |
+| H-10 节单项命令 | 1 个探针明确失败，复现结束后预取仍继续及收尾 usage 缺失 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十个默认忽略的缺陷探针及一个默认忽略的宿主隔离集成探针，未修改生产运行逻辑。本批重新运行了格式检查和 CLI/models/MCP 常规测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十一个默认忽略的缺陷探针及一个默认忽略的宿主隔离集成探针，未修改生产运行逻辑。本批重新运行了格式检查和 CLI/models/MCP/runtime 常规测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 

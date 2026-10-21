@@ -3469,6 +3469,87 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: run-owned prefire must not detach when its agent ends"]
+    async fn audit_completed_agent_does_not_leave_prefire_running() {
+        struct HeldPrefire {
+            started: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+            completed: tokio::sync::Notify,
+        }
+
+        #[async_trait]
+        impl ReactiveContextCompactor for HeldPrefire {
+            async fn compact(
+                &self,
+                _messages: &[Message],
+                _trigger: CompactionTrigger,
+            ) -> Result<Option<ReactiveCompaction>> {
+                Ok(None)
+            }
+
+            async fn prefire_pass1_response_items(
+                &self,
+                _instructions: Option<&str>,
+                _items: &[ResponseInputItem],
+            ) -> Result<Option<PrefireNote>> {
+                self.started.notify_one();
+                self.release.notified().await;
+                self.completed.notify_one();
+                Ok(Some(PrefireNote {
+                    note: "audit note".into(),
+                    prefix_end: 1,
+                    fingerprint: 0,
+                    usage: deepagent_models::Usage {
+                        prompt_tokens: 900,
+                        completion_tokens: 60,
+                        total_tokens: 960,
+                        ..Default::default()
+                    },
+                }))
+            }
+        }
+
+        let compactor = Arc::new(HeldPrefire {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+            completed: tokio::sync::Notify::new(),
+        });
+        let mut agent = ModelAgent::new(
+            client(response_text_completed("done")),
+            "model",
+            "system",
+            "current task",
+            vec![],
+        )
+        .with_reactive_compactor(compactor.clone())
+        .with_proactive_compaction(1_000_000)
+        .with_prefire(1);
+        let _ = complete_items(agent.think(0, &[]).await.unwrap());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            compactor.started.notified(),
+        )
+        .await
+        .expect("production scheduling must have started the held prefire");
+        let usage_at_end = agent.side_usage();
+        drop(agent);
+        compactor.release.notify_one();
+        let continued_after_owner_end = tokio::time::timeout(
+            std::time::Duration::from_millis(200),
+            compactor.completed.notified(),
+        )
+        .await
+        .is_ok();
+        eprintln!(
+            "audit prefire lifecycle: main_done=true, continued_after_owner_end={continued_after_owner_end}, side_usage_at_end={usage_at_end:?}"
+        );
+        assert!(
+            !continued_after_owner_end,
+            "dropping the completed agent must not detach its speculative model work"
+        );
+    }
+
+    #[tokio::test]
     async fn large_tool_schema_triggers_pressure_compaction() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let tools = vec![ToolSchema::function(
