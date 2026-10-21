@@ -2139,6 +2139,55 @@ mod tests {
         assert!(res.is_err());
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-27: project settings hooks bypass the project hooks trust switch"]
+    async fn audit_untrusted_project_settings_hooks_do_not_execute() {
+        let mut executed = Vec::new();
+        for file_name in ["hooks.json", "settings.json"] {
+            let (db, settings, dir) = seeded().await;
+            let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
+            let root = dir.path().to_str().unwrap();
+            projects.add_project(root).unwrap();
+            projects.set_hooks_trusted(root, false).unwrap();
+            assert!(!projects.hooks_trusted(root).unwrap());
+            assert!(!crate::trust_service::TrustService::new(db.clone()).is_trusted(dir.path()));
+            let marker = dir.path().join("audit-hook-ran.txt");
+            let quoted_marker = marker.to_string_lossy().replace('\'', "''");
+            let definitions = serde_json::json!({ "hooks": { "SessionStart": [{
+                "hooks": [{
+                    "type": "command", "shell": "powershell", "timeout": 5,
+                    "command": format!("Set-Content -LiteralPath '{quoted_marker}' -Value 'audit' -NoNewline")
+                }]
+            }]}});
+            std::fs::create_dir_all(dir.path().join(".deepagent")).unwrap();
+            std::fs::write(
+                dir.path().join(".deepagent").join(file_name),
+                definitions.to_string(),
+            )
+            .unwrap();
+            let chat = ChatService::new(db, settings, chat_transport(), dir.path())
+                .with_projects(projects);
+            chat.run("hello", |_| {}, |_| {}).await.unwrap();
+            let marker_present = marker.exists();
+            eprintln!("source={file_name}, hooks_trusted=false, marker_present={marker_present}");
+            if file_name == "hooks.json" {
+                assert!(
+                    !marker_present,
+                    "dedicated hooks file control must respect trust"
+                );
+            }
+            if marker_present {
+                assert_eq!(std::fs::read_to_string(&marker).unwrap(), "audit");
+                executed.push(file_name);
+            }
+        }
+        assert!(
+            executed.is_empty(),
+            "untrusted project hooks executed from {executed:?}"
+        );
+    }
+
     #[tokio::test]
     async fn continuing_a_session_appends_instead_of_creating() {
         let (db, settings, dir) = seeded().await;

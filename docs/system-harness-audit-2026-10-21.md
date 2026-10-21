@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断工具调用提交、Unicode 错误解析 panic 及限流等待元数据丢失均已复现 | 已确认 H-05、H-18、H-24、H-25；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费和回退后旧笔记覆盖新分支均已复现 | 已确认 H-10、H-11、H-14、H-23；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突及子 Agent 工具限制未约束执行 | 已确认 H-03、H-15、H-16、H-19；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留及标准 hooks 的 deny/ask 被忽略已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
 
@@ -692,6 +692,26 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 在既有统一外部 hook 输出解析器中建立按事件类型的契约，兼容已有顶层格式，明确未知/不匹配事件、无效 JSON 和退出码优先级。权限决策、输入修改和追加上下文应独立承载，避免用单一枚举互相覆盖；后两项本次仅做代码核查，未扩展为独立已复现问题。
 - 验收应包含真实进程和实际工具调度、顶层旧格式、标准嵌套 deny/ask/allow、不同事件及错误提示，不只测 JSON 能反序列化。未修改生产 hooks 行为。
 
+### H-27：项目 hooks 信任开关只覆盖独立文件，settings.json 内联 hook 仍执行宿主命令
+
+**级别：高（P1）；范围：项目配置来源到外部 hook 执行的信任边界。** 触发需要打开含相关项目配置的目录并开始会话，本次不是“仅查看目录即自动执行”的证明。
+
+#### 两条加载路径及真实执行证据
+
+- `run_assembler.rs::project_hook_definitions()` 在读取 `.deepagent/hooks.json` 等独立 hook 文件前检查 `ProjectService::hooks_trusted()`，未信任时跳过。这条保护确实存在。
+- 另一条 `DualConfigLoader::load()` 读取项目 `.claude/.deepagent/settings.json` 及 local 文件；`RunConfigOverlay::hook_definitions()` 汇总所有 layers 的内联 hooks/hooks_json；`hook_assembly.rs::register_run_config_hooks()` 注册这些 hook 时没有同样的项目来源信任判断。最终与独立 hook 共用 SystemHookRunner 执行宿主命令。
+- 新增 Windows 默认忽略探针 `chat_service::tests::audit_untrusted_project_settings_hooks_do_not_execute`。每组使用全新临时项目、内存数据库和离线模型，通过正式 ProjectService 打开项目并显式 set_hooks_trusted(false)，同时确认 TrustService 的 workspace trust 为 false。
+- 在第一组 `.deepagent/hooks.json`、第二组 `.deepagent/settings.json` 中分别写入相同 SessionStart 配置：真实 PowerShell 仅向该临时项目写固定 `audit` 标记。运行正式 ChatService→组装→Kernel 会话，不提供模型工具调用，也不自动批准 hook 命令。
+- 执行：`cargo test -p deepagent-app-core --lib audit_untrusted_project_settings_hooks_do_not_execute --offline -- --ignored --nocapture`。独立文件 `marker_present=false`；内联 settings 文件 `marker_present=true`，文件内容核对为 audit，最终安全断言失败。证明后者实际执行了 OS 命令，非仅进入内存注册表。
+- 本次直接复现 `.deepagent/settings.json`，其他 overlay 项目来源只做代码链核对；未在 Linux/macOS 或真实桌面启动该 fixture。没有读取或修改用户私有文件、凭据、真实项目配置，也没有模型网络请求。
+
+#### 后果、成熟实现与修复方向
+
+- 一个仓库把相同 hook 放在不同受支持配置文件，就能改变信任开关是否生效。执行发生在宿主 hook runner，不依赖模型生成 shell 调用；模型工具层的工作区/审批不能替代配置加载前的来源信任检查。本次只验证写临时标记，不扩大为已发生凭据泄露或系统破坏。
+- Claude Code `utils/hooks.ts::shouldSkipHookDueToTrust()` 明确为交互模式的全部 hook 检查 workspace trust，涵盖 SessionEnd/SubagentStop 等路径；非交互 SDK 有显式的隐含信任规则。参考点是按宿主与来源定义统一门禁，而不是声称其非交互模式也拒绝未确认项目。
+- 收敛独立 hooks.json 与 overlay 内联 hooks 的来源解析：保留 ConfigLayer 作用域并在注册/执行前应用一致授权；项目、本地、用户、管理员、插件和 run override 的信任来源应可追踪，不把所有配置一概拒绝或全部默认允许。复用现有 ProjectService/TrustService，明确两个开关的关系。
+- 验收覆盖相同 payload 跨配置文件、撤销信任、SessionStart/结束/子 Agent、迟到任务、显式非交互授权和插件来源，保证切换文件不能绕过授权。不应只给 `.deepagent/settings.json` 再加一个路径特判。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -732,6 +752,9 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-26 节单项命令 | 真实 Windows hook 进程的顶层 deny 正确拦截；标准嵌套 deny/ask 两组均执行工具且无审批，安全断言失败 |
 | `cargo test -p deepagent-runtime --lib tool_pipeline::tests --offline`（新增 H-26 后） | 11 passed / 2 ignored；H-16、H-26 已分别显式复现，未修生产行为 |
 | `cargo test -p deepagent-hooks --offline`（H-26 核查时） | 62 passed，无 ignored 或失败；原有 stdout 测试仅覆盖扁平格式等，未覆盖标准嵌套 PreToolUse 决策 |
+| H-27 节单项命令 | 正式 ChatService 中，未信任的独立 hooks 文件不执行，同样的内联 settings hook 实际写出临时标记，安全断言失败 |
+| `cargo test -p deepagent-app-core --lib chat_service::tests --offline`（新增 H-27 后） | 74 passed / 2 ignored，无常规失败；H-13、H-27 已分别显式复现 |
+| `cargo test -p deepagent-hooks --offline`（新增大输入时限回归后） | 63 passed；新增 Windows 大输入 deadline 测试通过，无 ignored 或失败 |
 | `cargo test -p deepagent-app-core --lib service::tests --offline`（新增 H-23 后） | 405 passed / 4 ignored；该 substring filter 也匹配其他 *_service::tests，并非仅 AppService |
 | `cargo test -p deepagent-session -p deepagent-persistence --offline`（新增 H-23 后） | session 14 passed，persistence 67 passed，均无 ignored 或失败；原有 rewind 测试覆盖事件截断及恢复，没有验证笔记覆盖身份 |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-21、H-22 后） | 6 passed / 3 ignored；H-19 提取共享 fixture 后另行显式复跑，四组仍复现同一缺陷 |
@@ -746,7 +769,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、二十三个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
+审查累计新增内容限于报告、各 H 节列出的默认忽略 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障、排队取消和 Windows hook 大输入时限测试，未修改生产运行逻辑。各批实际命令及先后关系见上表；没有在每批重复运行全 workspace、Clippy 或前端构建，不能据单项回归宣称全系统通过。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
@@ -785,6 +808,13 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 核查笔记提取实际使用仅含 pinned note 工具的 registry；这与 H-19 的“完整执行表、仅过滤 schema”不同。原有测试实际验证 off-note 访问拒绝、未编辑不宣称覆盖、放弃的 pass 不保存 watermark。
 - 上述是现有离线回归，不覆盖真实模型笔记内容质量、跨进程崩溃瞬间，也没有消除前述真实笔记请求次数用例的未定性状态。随后单独验证的会话 rewind/笔记一致性已确认为 H-23；这说明原有 157 项通过不能替代分支恢复测试，不能概括成记忆系统全面验收通过。
 
+### 后续独立验证：Windows hook 大输入仍能触发命令超时
+
+- 代码中 stdin 写入发生在 child.wait_with_output 的 timeout 之前，最初怀疑大输入可能挡住命令超时；实际验证没有支持这个假设，因此不列为 H 系列缺陷。
+- `system_runner_deadline_handles_large_stdin_payload` 使用生产 SystemHookRunner，向 Windows cmd/ping 回环命令提供 1MiB JSON stdin，配置 100ms 命令超时。实测约 119ms 返回 exit_code=124；先前 PowerShell 延迟读取的 fixture 也在约 287ms 返回超时。没有据此认定所有平台/管道背压情况都安全。
+- 保留 Windows 专属默认回归，只使用临时内存数据和回环地址；没有调用公网。进程树清理由生产 ProcessTreeGuard 负责，本次未单独枚举子进程验证完整树退出。
+- 本项补充证明大输入样本的 deadline 可用，不证明 H-26 的输出协议正确，也不是对 stdin 全生命周期时限的形式保证。
+
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
 下表依据已复现的边界归并；优先级不等于所有问题具有相同触发概率。设计收敛在本系统既有内核，不复制参考项目建立第二套运行链。
@@ -795,6 +825,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
+| 外部 hooks 来源和决策 | H-26、H-27 | 独立文件和配置 overlay 共用来源信任及按事件解析；参考 Claude 全部交互 hooks 的 trust gate 与 hookSpecificOutput | 未授权项目不能借更换配置文件执行脚本；标准 deny/ask 能实际拦截/审批 |
+| Provider 错误和请求恢复 | H-24、H-25 | 既有错误元数据和单一重试边界；参考 Codex 安全字符截断、DeepSeek providerRetryAfterMs | Unicode 错误不 panic；有界供应商等待期间可取消，不提前耗尽尝试 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 

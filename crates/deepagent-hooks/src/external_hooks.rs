@@ -2373,6 +2373,36 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(2));
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn system_runner_deadline_handles_large_stdin_payload() {
+        let input = serde_json::json!({ "prompt": "x".repeat(1024 * 1024) }).to_string();
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(8),
+            SystemHookRunner.run(
+                "ping -n 4 127.0.0.1 >NUL",
+                &input,
+                HookCommandShell::Cmd,
+                &BTreeMap::new(),
+                Duration::from_millis(100),
+            ),
+        )
+        .await
+        .expect("audit outer bound exceeded")
+        .unwrap();
+        eprintln!(
+            "configured_timeout_ms=100, elapsed_ms={}, exit_code={}, stdout={:?}",
+            started.elapsed().as_millis(),
+            result.exit_code,
+            result.stdout.trim()
+        );
+        assert!(
+            result.exit_code == 124 && started.elapsed() < Duration::from_secs(2),
+            "large hook input must not prevent the command deadline from firing"
+        );
+    }
+
     #[test]
     fn rejects_nested_powershell_launcher() {
         let error = HookDefinitions::parse(
