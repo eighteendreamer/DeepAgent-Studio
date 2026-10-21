@@ -349,4 +349,106 @@ mod tests {
         // Worktrees cleaned up even on failure.
         assert!(worktrees.active().is_empty());
     }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: successful DAG worktree changes must survive cleanup"]
+    async fn audit_successful_dag_preserves_files_for_handoff() {
+        use crate::worktree::GitWorktrees;
+        use std::path::{Path, PathBuf};
+
+        fn git(repo: &Path, args: &[&str]) {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(args)
+                .output()
+                .expect("audit requires git");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+
+        #[derive(Default)]
+        struct FileHandoffProbe {
+            producer_path: Mutex<Option<PathBuf>>,
+            consumer_saw_file: Mutex<Option<bool>>,
+        }
+
+        #[async_trait]
+        impl SubAgentExecutor for FileHandoffProbe {
+            async fn execute(&self, ctx: SubAgentContext) -> Result<SubAgentResult> {
+                let root = PathBuf::from(ctx.worktree.path);
+                if ctx.node_id == "produce" {
+                    std::fs::write(root.join("README.md"), "modified by producer").unwrap();
+                    std::fs::write(root.join("generated.txt"), "uncommitted task output").unwrap();
+                    assert_eq!(
+                        std::fs::read_to_string(root.join("generated.txt")).unwrap(),
+                        "uncommitted task output"
+                    );
+                    *self.producer_path.lock().unwrap() = Some(root);
+                    Ok(SubAgentResult::success(
+                        ctx.node_id,
+                        "Created generated.txt",
+                    ))
+                } else {
+                    assert_eq!(ctx.upstream_results, vec!["Created generated.txt"]);
+                    *self.consumer_saw_file.lock().unwrap() =
+                        Some(root.join("generated.txt").is_file());
+                    // Record visibility without choosing the real downstream agent's response.
+                    Ok(SubAgentResult::success(
+                        ctx.node_id,
+                        "Observed upstream file visibility",
+                    ))
+                }
+            }
+        }
+
+        // Only this disposable repository is mutated; command-local author identity
+        // avoids changing either repository or global Git configuration.
+        let temp = tempfile::tempdir().unwrap();
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git(&repo, &["init"]);
+        std::fs::write(repo.join("README.md"), "original").unwrap();
+        git(&repo, &["add", "README.md"]);
+        git(
+            &repo,
+            &[
+                "-c",
+                "user.name=Audit Fixture",
+                "-c",
+                "user.email=audit@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-m",
+                "fixture",
+            ],
+        );
+
+        let dag = PlanDag::new([
+            PlanNode::new("produce", "Create output files"),
+            PlanNode::new("consume", "Read upstream output").depends_on(["produce".to_string()]),
+        ])
+        .unwrap();
+        let executor = FileHandoffProbe::default();
+        let worktrees = GitWorktrees::new(&repo, temp.path().join("worktrees"));
+        let report = DagScheduler::new(&executor, &worktrees)
+            .run(&dag)
+            .await
+            .unwrap();
+        assert!(report.all_succeeded);
+        let producer_path = executor.producer_path.lock().unwrap().clone().unwrap();
+        let producer_retained = producer_path.is_dir();
+        let consumer_saw_file = executor.consumer_saw_file.lock().unwrap().unwrap();
+        let main_has_file = repo.join("generated.txt").is_file();
+        let main_readme = std::fs::read_to_string(repo.join("README.md")).unwrap();
+        eprintln!("audit DAG handoff: all_succeeded={}, producer_retained={producer_retained}, consumer_saw_file={consumer_saw_file}, main_has_file={main_has_file}, main_readme={main_readme:?}", report.all_succeeded);
+        assert!(
+            producer_retained || main_has_file,
+            "successful producer files were removed without retention or integration"
+        );
+    }
 }

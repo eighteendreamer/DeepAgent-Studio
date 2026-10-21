@@ -19,7 +19,7 @@
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突及子 Agent 工具限制未约束执行 | 已确认 H-03、H-15、H-16、H-19；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
-| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 待逐项验证 | 未完成 |
+| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19、H-20；恢复、记忆和其他宿主一致性未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -557,6 +557,26 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 角色限制需与父权限取交集，避免只读角色获得更宽的写权限；保留原有文件边界、审批及沙箱校验，不建立第二套工具执行器。覆盖 alias、deferred/MCP 工具、角色 denylist、空 allowlist、后台子运行和恢复后的限制一致性。
 - 本轮仅增加审计测试和报告，未修改生产权限或工具路由。
 
+### H-20：DAG 成功节点的工作树被强制删除，文件未交付给主目录或下游
+
+**级别：高（P1）；范围：plan_execute 的 DAG 工作树调度。** 本项用真实临时 Git 仓库复现未提交文件和修改丢失；没有删除本项目或用户工作树。
+
+#### 触发与复现
+
+- `ChatPlanExecutor::execute_plan()` 使用生产 DagScheduler + GitWorktrees。`DagSubagentExecutor` 将子运行重定根到调度器工作树，并指定 shared isolation，因此子运行自己的成功工作树保留逻辑不会接管该目录。
+- `DagScheduler::run()` 每个节点执行完后，无条件调用 worktrees.remove，并忽略返回错误；实际 `GitWorktrees::remove()` 执行 `git worktree remove --force`。在这之前没有合并、补丁或资产交付。后继节点从主仓库 HEAD 另建 detached worktree，只收到上游 summary。
+- 默认忽略探针 `scheduler::tests::audit_successful_dag_preserves_files_for_handoff` 创建一次性真实 Git 仓库和初始提交，然后使用生产调度器与工作树实现。记录型 executor 的 produce 节点修改 tracked README.md 并创建 untracked generated.txt，现场读回校验；consume 节点确认收到了摘要并检查自己的目录是否有该文件。
+- 执行：`cargo test -p deepagent-subagents audit_successful_dag_preserves_files_for_handoff --offline -- --ignored --nocapture`。
+- 实测 `all_succeeded=true, producer_retained=false, consumer_saw_file=false, main_has_file=false, main_readme="original"`；要求成功输出至少保留或集成一处的断言失败。上游文件确实写出，却在下游启动前被强制删除；主工作区没有获得 tracked 修改或新文件。
+- 此处两节点 executor 为确定性文件 fixture，没有调用模型或完整 ChatPlanExecutor。`all_succeeded` 是 fixture 两次返回 success 的聚合，不代表真实 review 遇到缺文件也必定成功。测试只覆盖未提交修改，不声称已提交 Git 对象不可恢复；没有验证清理错误被吞掉的另一分支。
+
+#### 成熟实现对照与修复方向
+
+- Claude Code `tools/AgentTool/AgentTool.tsx::cleanupWorktreeIfNeeded()` 调用 `utils/worktree.ts::hasWorktreeChanges()`；仅确认无变化时删除，否则返回保留的工作树路径/分支。变化判据包含 dirty tree、新 commits；检查失败也按有变化处理，避免误删。hook 创建的未知 VCS 工作树同样保留。
+- 本系统普通 task 子运行成功时已经保留隔离工作树，DAG 所属目录却走了不同的清理语义。应在现有工作树所有权边界统一“产出交付后才清理”，沿用现有子运行记录与结果投影，不新增另一套工作树注册或存储。
+- 明确输出交付契约：至少保留可定位、可恢复的工作树/提交；有依赖的下游须得到可读取的产物或受控集成后的基线。仅保留摘要或把路径写进文字，不能让已经删除的文件可用；自动集成涉及冲突和权限，应作为明确策略验证。
+- 覆盖修改/无修改、未提交/已提交、失败与取消、合并冲突、清理失败、重启定位和并发 DAG 的工作树身份。此次未改生产清理逻辑或引入自动合并。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -586,12 +606,14 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-17 真实 Tauri 探针 | 当前源码桌面编译通过；真实模型首片段后停止约 2ms ACK；保存失败已送达 UI，但展示断言明确失败 |
 | H-18 节单项命令 | 1 个探针四组均复现：Chat/Responses、空参数/半截 JSON 在第二次 length 后仍返回工具决策并保留原生调用 |
 | H-19 节单项命令 | 1 个探针四组均复现：wire 无 write_file schema，真实子运行仍成功写入各自临时目录 |
+| H-20 节单项命令 | 真实临时 Git 仓库探针失败：上游工作树已删除、下游无产物、主目录仍是初始内容 |
+| `cargo test -p deepagent-subagents --offline`（新增 H-20 后） | 13 passed / 1 ignored；原有 DAG 测试检查清理和摘要，未校验文件产出保留 |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-19 后） | 6 passed / 1 ignored；常规角色测试只验证 schema 过滤，没有验证清单外实际调用被拒绝 |
 | `cargo test -p deepagent-runtime --lib model_agent::tests --offline`（新增 H-18 后） | 56 passed / 1 failed / 2 ignored；原有 `time_based_microcompact_clears_stale_tool_results_after_idle` 在 `Instant::now() - 3601s` 处溢出，尚未进入生产 microcompact；单独重跑同样失败。本轮未修改该测试或生产时钟，不能报常规测试全绿，也不据此认定生产压缩故障 |
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十九个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
+审查累计新增内容限于报告、二十个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
