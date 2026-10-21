@@ -2226,6 +2226,92 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: rewinding must invalidate notes from the discarded branch"]
+    fn audit_rewind_rejects_session_note_from_discarded_branch() {
+        use crate::session_memory::{compaction_from_note, SessionMemoryState, SessionMemoryStore};
+        use deepagent_core::{event::EventPayload, message::Message};
+
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("audit rewind notes")).unwrap();
+        let id = session.id();
+        for message in [
+            Message::user("Stable task"),
+            Message::assistant("Stable answer"),
+        ] {
+            session
+                .append(EventPayload::MessageAppended { message })
+                .unwrap();
+        }
+        let keep = EventStore::new(&db)
+            .load_session(id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .sequence;
+        for message in [
+            Message::user("Discarded decision: use RED"),
+            Message::assistant("Old branch confirmed RED"),
+        ] {
+            session
+                .append(EventPayload::MessageAppended { message })
+                .unwrap();
+        }
+        let old_covered = EventStore::new(&db)
+            .load_session(id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .sequence;
+        let notes = SessionMemoryStore::new(db.clone());
+        // Seed a valid persisted note snapshot; this test concerns branch lineage,
+        // not whether a model can produce a semantically correct summary.
+        notes
+            .save(
+                id,
+                &SessionMemoryState {
+                    summary: "Discarded decision: use RED".into(),
+                    last_summarized_sequence: Some(old_covered),
+                    tool_cursor_sequence: Some(old_covered),
+                    tokens_at_last_extraction: 20_000,
+                    initialized: true,
+                    updated_at: 1_000,
+                },
+            )
+            .unwrap();
+        drop(session);
+        let service = AppService::from_shared(db.clone());
+        service.rewind_session(&id.to_string(), keep).unwrap();
+        let mut resumed = Session::recover(&db, &clock, id).unwrap();
+        for message in [
+            Message::user("Replacement decision: use BLUE"),
+            Message::assistant("New branch confirmed BLUE"),
+            Message::user("Continue only the BLUE branch"),
+            Message::assistant("Ready to continue BLUE"),
+        ] {
+            resumed
+                .append(EventPayload::MessageAppended { message })
+                .unwrap();
+        }
+        let events = EventStore::new(&db).load_session(id).unwrap();
+        let history = crate::input_runtime::model_history_from_events(&events);
+        assert!(
+            history.iter().all(|m| !m.content.contains("RED")),
+            "rewind itself must have removed the discarded branch"
+        );
+        let choice = compaction_from_note(&notes, id, &events, &history);
+        let dropped_new_content = choice
+            .as_ref()
+            .is_some_and(|(split, _)| history[..*split].iter().any(|m| m.content.contains("BLUE")));
+        eprintln!("audit rewind note: keep={keep}, old_covered={old_covered}, current_tail={}, replacement={choice:?}, drops_new_branch={dropped_new_content}",
+            events.last().unwrap().sequence);
+        assert!(
+            choice.is_none(),
+            "stale note from the discarded branch was reused as current branch coverage"
+        );
+    }
+
+    #[test]
     fn rewind_restores_files_from_checkpoints() {
         let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
         let clock = FixedClock::new(1_000);

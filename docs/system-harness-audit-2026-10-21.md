@@ -15,7 +15,7 @@
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分与截断工具调用提交均已复现 | 已确认 H-05、H-18；全部错误和流式分支未完成 |
-| 上下文、压缩、记忆 | 预取生命周期、压缩回放边界及无效压缩丢失已返回 usage 均已复现 | 已确认 H-10、H-11、H-14；笔记计数及其他压缩边界仍在核查 |
+| 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费和回退后旧笔记覆盖新分支均已复现 | 已确认 H-10、H-11、H-14、H-23；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突及子 Agent 工具限制未约束执行 | 已确认 H-03、H-15、H-16、H-19；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
@@ -617,6 +617,26 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 覆盖两个并行子目录写同名文件、父目录不变、相对和绝对路径、sandbox/审批、工具搜索、恢复及普通 task 与 DAG 一致性。H-19、H-20、H-22 显示同一子运行上下文在 schema、工具根、产物所有权处分裂，后续应围绕既有 runner 的有效执行配置统一治理，不逐个增加路径特判。
 - 本轮只增加审计证据，没有修生产工具根或删除逻辑。
 
+### H-23：回退会话后旧笔记仍按复用序号宣称覆盖，压缩候选会替换新分支
+
+**级别：高（P1）；触发条件：已有会话笔记，回退到其覆盖点之前，再继续到足够的新事件，且笔记尚未重新生成。** 这是“历史分支身份”缺失，不是简单的重复消息内容匹配问题 H-11。
+
+#### 触发与复现
+
+- `AppService::rewind_session()` 恢复 checkpoint、截断事件日志并重新打开会话，没有同步失效 SessionMemoryState。`Session::rewind()` 允许新事件从保留尾部连续追加，所以被删掉的 sequence 会被新分支重新占用。
+- 笔记覆盖状态只记录 last_summarized_sequence，没有事件 ID 或分支代次；`compaction_from_note()` 把当前消息 sequence <= 旧覆盖值视为已总结。native `summarize_response_item_zone()` 也有同样的只比较 sequence 的覆盖判断，后者本次只做代码核对，未独立动态验证。
+- 默认忽略探针 `service::tests::audit_rewind_rejects_session_note_from_discarded_branch` 建立真实 Session，先写稳定前缀，再写旧分支 RED 决策；为其保存有效的 note 状态 fixture，覆盖到 sequence=8。调用正式 AppService::rewind_session 保留到 4，然后通过 Session::recover 追加新的 BLUE 分支，事件到 12。
+- 执行：`cargo test -p deepagent-app-core --lib audit_rewind_rejects_session_note_from_discarded_branch --offline -- --ignored --nocapture`。
+- 先确认当前模型历史已没有 RED，说明 rewind 本身确实删掉旧分支；随后调用生产 compaction_from_note，实际得到 `Some((4,"Discarded decision: use RED"))`，且将被替换的前缀已经包含 BLUE 新决策。要求拒绝旧分支 note 的断言失败：`keep=4, old_covered=8, current_tail=12, drops_new_branch=true`。
+- 本次验证到真实 rewind/恢复及压缩候选选择，没有向真实供应商发送该候选，也没有实际提交 ContextCompacted。笔记是确定性持久化 fixture，不是自然模型提取，故不涉及摘要质量；首次编译探针因缺少测试 import 失败，补齐后才得到上述产品行为证据。
+
+#### 成熟实现对照与修复方向
+
+- Claude Code `services/SessionMemory/sessionMemoryUtils.ts` 用 lastSummarizedMessageId 跟踪覆盖端点；`services/compact/sessionMemoryCompact.ts` 在有端点时按 message.uuid 查找，当前历史找不到该 ID 则 return null，回退到模型压缩。它另有无端点的 resumed-session 策略，不能概括为所有恢复分支都使用这一保护。
+- 本系统现有 session_file_state 和 session files 已有 generation，事件也有稳定 EventId。覆盖证明应绑定实际事件身份/分支代次，回退后失效旧 note 覆盖及 extraction 水位；只对 sequence 做数值截断不能证明旧摘要属于新历史。
+- 笔记文本本身包含被撤销的决策，不能仅把 last_summarized_sequence 改小而继续使用旧 summary。采用现有存储里的失效/重新提取策略，或可证明对应保留分支的旧快照；native 与 Message 两条压缩入口应共用同一覆盖校验。
+- 覆盖回退后序号复用、回退期间后台 extraction 晚完成、fork、宿主重启、未达提取阈值、覆盖端点保留/删除以及工具配对。未在本轮修生产 rewind、笔记状态或压缩实现。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -649,18 +669,22 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-20 节单项命令 | 真实临时 Git 仓库探针失败：上游工作树已删除、下游无产物、主目录仍是初始内容 |
 | H-21 节单项命令 | 真实首次运行及 resume 后契约断言失败；恢复计数为 1，但 schema/phase/label 和 wire 指令均丢失 |
 | H-22 节单项命令 | 真实 DAG 子执行器及文件工具探针失败；wire 声明子目录，产出实际落到临时父目录 |
+| H-23 节单项命令 | 真实 rewind/恢复后探针失败：旧覆盖点 8 被新分支复用，旧 RED 摘要被选为包含新 BLUE 决策前缀的替代候选 |
+| `cargo test -p deepagent-app-core --lib service::tests --offline`（新增 H-23 后） | 405 passed / 4 ignored；该 substring filter 也匹配其他 *_service::tests，并非仅 AppService |
+| `cargo test -p deepagent-session -p deepagent-persistence --offline`（新增 H-23 后） | session 14 passed，persistence 67 passed，均无 ignored 或失败；原有 rewind 测试覆盖事件截断及恢复，没有验证笔记覆盖身份 |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-21、H-22 后） | 6 passed / 3 ignored；H-19 提取共享 fixture 后另行显式复跑，四组仍复现同一缺陷 |
 | `cargo test -p deepagent-subagents --offline`（新增 H-20 后） | 13 passed / 1 ignored；原有 DAG 测试检查清理和摘要，未校验文件产出保留 |
 | `cargo test -p deepagent-memory -p deepagent-knowledge --offline` | memory 40 passed，knowledge 63 passed；均无 ignored 或失败 |
 | `cargo test -p deepagent-app-core --lib session_memory::tests --offline` | 31 passed；含空窗口不请求、笔记未改不推进覆盖游标、越界读写拒绝及异步 pass 收尾 |
 | `cargo test -p deepagent-app-core --lib memory_service::tests --offline` | 5 passed；vault 写入、主动 recall 与知识检索可见性边界通过 |
 | `cargo test -p deepagent-app-core --lib knowledge_service::tests --offline` | 18 passed；项目切换、磁盘重载、draft、检索及离线捕获测试通过 |
+| `cargo test -p deepagent-app-core --lib --offline`（新增 H-22 后） | 1072 passed / 9 ignored，0 failed；忽略项含已知缺陷探针及 opt-in 集成探针，不能将常规通过解释为这些缺陷已修复。输出保存在忽略提交的 target/audit-app-core-20261021.log |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-19 后） | 6 passed / 1 ignored；常规角色测试只验证 schema 过滤，没有验证清单外实际调用被拒绝 |
 | `cargo test -p deepagent-runtime --lib model_agent::tests --offline`（新增 H-18 后） | 56 passed / 1 failed / 2 ignored；原有 `time_based_microcompact_clears_stale_tool_results_after_idle` 在 `Instant::now() - 3601s` 处溢出，尚未进入生产 microcompact；单独重跑同样失败。本轮未修改该测试或生产时钟，不能报常规测试全绿，也不据此认定生产压缩故障 |
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、二十二个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
+审查累计新增内容限于报告、二十三个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
@@ -697,7 +721,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 - memory/knowledge 两个 crate 和 AppCore 的 session_memory、memory_service、knowledge_service 测试合计 157 项通过，分别为 40+63+31+5+18。没有因为发现其他模块缺陷而把这部分也定性为失效。
 - 核查笔记提取实际使用仅含 pinned note 工具的 registry；这与 H-19 的“完整执行表、仅过滤 schema”不同。原有测试实际验证 off-note 访问拒绝、未编辑不宣称覆盖、放弃的 pass 不保存 watermark。
-- 上述是现有离线回归，不覆盖真实模型笔记内容质量、跨进程崩溃瞬间、会话 rewind 后笔记与当前历史一致性，也没有消除前述真实笔记请求次数用例的未定性状态。不能将 157 项通过概括成记忆系统全面验收通过。
+- 上述是现有离线回归，不覆盖真实模型笔记内容质量、跨进程崩溃瞬间，也没有消除前述真实笔记请求次数用例的未定性状态。随后单独验证的会话 rewind/笔记一致性已确认为 H-23；这说明原有 157 项通过不能替代分支恢复测试，不能概括成记忆系统全面验收通过。
 
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
@@ -709,7 +733,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
-| 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18 | 同一原生提交边界决定完整调用、截断续写及回放；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；无效摘要仍记已返回 usage；结束后无游离预取 |
+| 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 
 其中子运行已经出现三类独立执行上下文分裂（H-19/H-20/H-22）。后续修复应先确定同一配置/工作树/工具注册表的所有权和生命周期，再按这些探针逐项关闭；不能只隐藏工具、修改提示路径或延迟删目录来宣称隔离已成立。
