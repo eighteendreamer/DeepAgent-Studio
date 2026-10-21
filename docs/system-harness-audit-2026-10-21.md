@@ -21,6 +21,7 @@
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
+| 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -1154,10 +1155,32 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 后果是本可由备用模型接续的短任务，因沿用不兼容输出参数从暂时过载变成请求失败；日志/面板可能显示已按较小输出预留，实际却发送较大上限。若 gateway 自行裁剪，该 gateway 可能掩盖错误，不能据此认为本系统配置已经一致。
 - 修复应在既有模型请求边界形成同一份有效模型/能力/输出上限，再供 policy、meter 和 wire 使用；模型切换、截断上调及每步请求都重新验证这份配置。对不支持的显式配置明确报错或按已定义策略收敛，不能只在预算层取 min，也不把特定模型名/8,192 特判散落在 fallback 分支。补足不同窗口、不同输出能力、显式覆盖、截断后再切换和两协议对照。本轮仅新增审计测试与文档，生产行为未修复。
 
+### H-50：移动输入未校验界面快照，已过期和未知引用仍下发设备命令
+
+**级别：高（P1）；范围：移动设备 MobileService → Android 输入。** 动态证据为正式服务和后端配合离线 ADB runner；没有向真实手机发送输入，也未证明 iOS 后端具备相同行为。
+
+#### 触发、生产路径与复现
+
+- `deepagent-mobile-protocol/src/ui.rs::UiSnapshot` 声明下一快照产生后旧引用失效，并应返回 StaleUiNode。`InputRequest.snapshot_id` 实际为 Option；本项只验证显式携带的引用，不把人工坐标输入的 None 擅自定义为必须拒绝。
+- `deepagent-mobile-runtime/src/mobile_service.rs::ui_snapshot` 返回 backend 的 UUID 快照，但另行调用 SnapshotStore.register 生成递增 ID 并丢弃该返回值；该 store 因此不认识调用方刚收到的最新 ID。`input` 没有调用 validate，Android `AdbBackend::input` 也不读取 snapshot_id，直接构造并执行 input argv。
+- 桌面 `mobile_ui_action` 与 AppMobileService.input 按原值转交这个请求。模型工具 MobileInputTool.invoke 也读取并转交 snapshot_id，但其 descriptor schema 没有声明这个字段，这是源码观察，尚未通过完整模型请求验证。本项不扩展为权限或工具取消结论。
+- 新增默认忽略探针 `audit_mobile_service_fences_input_to_the_returned_snapshot`：正式设备发现、DeviceRegistry、MobileService、SnapshotStore、AdbBackend 全部执行；仅 AdbCommandRunner 替换为记录器，使用不可执行的假 ADB 路径。先返回两份不同 XML/快照并断言两者内容和 ID 确实不同，再依次携带最新、已被替代和未知 ID 点击同一坐标，核对返回结果和实际发给 runner 的 argv。
+- 执行：`cargo test -p deepagent-mobile-android --lib audit_mobile_service_fences_input_to_the_returned_snapshot --offline -- --ignored --nocapture`。明确失败：`tracked_matches_returned=false latest_validates=false`；current、superseded、unknown 三组全部 accepted=true、StaleUiNode=false，`adb_input_commands=3`。预期仅最新引用能执行，旧/未知引用应在下发命令前拒绝。
+- 首次 fixture 缺少生产 uiautomator 输出所带的 XML 声明，parser 返回固定 fallback root，测试在前置“内容不同”断言处停止；补齐正常 XML 声明后才获得上述输入缺陷证据。没有修改生产 parser，也没有把 fixture 错误列为产品缺陷。
+
+#### 成熟实现对照、后果与修复方向
+
+- 在本轮已查参考中没有找到直接等价的 Android 快照实现。可借鉴 Codex `codex-mcp/src/client_tool_catalog.rs::run_with_snapshot` 的版本栅栏：检查预期 revision 与当前定义，再在读保护下完成准备/执行。其 `apps_catalog_broadcast_preserves_running_calls_and_rejects_stale_calls` 测试令旧版本调用的 preparation 闭包不能进入，同时保留已开始调用；不是声称 Codex 用该代码操控手机。
+- 本系统的具体移动方案属于**本地设计**：收敛在现有 MobileService/SnapshotStore，统一发布/登记的快照身份，在同一设备操作边界检查显式引用；定义快照捕获、输入、主动失效的先后关系，避免检查通过后另一个操作已改变界面。不要只在 UI 检查，或只加 validate 却保留两套不一致的 ID。None 的人工输入语义需显式定义，与模型基于快照的输入区分。
+- 影响是模型根据旧界面定位后，新的界面已出现但旧坐标仍能被执行，可能点到另一个按钮、输入到错误页面，造成任务错误或非预期操作。实际后果取决于设备当时界面；本轮没有执行付款、删除等破坏动作，也没有证明所有旧输入都会点错。
+- 应回归最新/旧/未知 ID、不同设备隔离、并发捕获/输入、重连失效、人工 None、工具 schema 到服务的真实传递，以及 iOS/远程 backend 的一致性。已有 SnapshotStore 单元测试只验证 store 自身，无法证明生产输入链调用了它。本轮只增加审计测试与文档，未修复生产行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-50 移动输入快照显式探针（见该节命令） | 明确失败：登记/返回 ID 不同，最新/旧/未知引用全部接受，记录到 3 条 ADB 输入 argv；未连接真实设备 |
+| `cargo test -p deepagent-mobile-runtime -p deepagent-mobile-android --offline`（H-50 核查时） | runtime 67 passed；Android 63 passed / 1 ignored，另有 7 个真机测试 ignored；缺陷探针另行显式执行并失败 |
 | H-49 备用能力/实际请求显式探针（见该节命令） | 明确失败：两协议的 32,768→8,192 备用组，快照预留已为 8,192，wire 仍为 32,768；容量相同的两组成功 |
 | `cargo test -p deepagent-runtime --lib fallback --offline`（H-49 核查时） | 1 passed / 1 ignored；普通切换基线通过，新缺陷探针已另以 --ignored 显式执行并失败 |
 | H-48 stdio 探活耗尽/连续调用显式探针（见该节命令） | 明确失败：探活已结束仍保留 1 工具/adapter/说明；实际启动数 10→13→16，随后两调用各重开一轮恢复且失败 |
@@ -1365,6 +1388,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
 | 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
+| 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 

@@ -1073,6 +1073,116 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: mobile input must reject superseded and unknown snapshot references"]
+    async fn audit_mobile_service_fences_input_to_the_returned_snapshot() {
+        struct RecordingAdb {
+            calls: std::sync::Mutex<Vec<Vec<String>>>,
+        }
+        #[async_trait]
+        impl AdbCommandRunner for RecordingAdb {
+            async fn run(
+                &self,
+                _program: &str,
+                args: &[&str],
+                _timeout: Duration,
+                _cancel: &tokio_util::sync::CancellationToken,
+            ) -> MobileResult<AdbCommandOutput> {
+                let mut calls = self.calls.lock().unwrap();
+                calls.push(args.iter().map(|arg| (*arg).to_string()).collect());
+                let stdout = if args.first() == Some(&"devices") {
+                    b"List of devices attached\nABC123\tdevice\tmodel:Audit\n".to_vec()
+                } else if args.get(2) == Some(&"exec-out") {
+                    // Different returned screens, not just different UUIDs.
+                    format!(r#"<?xml version="1.0" encoding="UTF-8"?><hierarchy><node index="0" text="screen-{}" class="android.widget.Button" bounds="[0,0][100,100]" /></hierarchy>"#,
+                        calls.len()).into_bytes()
+                } else {
+                    Vec::new()
+                };
+                Ok(AdbCommandOutput {
+                    exit_code: Some(0),
+                    stdout,
+                    stderr: String::new(),
+                })
+            }
+        }
+
+        let runner = Arc::new(RecordingAdb {
+            calls: std::sync::Mutex::new(Vec::new()),
+        });
+        let resolver = super::super::ToolResolver::new();
+        resolver.insert(ResolvedTool {
+            name: "adb".into(),
+            path: std::path::PathBuf::from("/audit/no-executable-adb"),
+            version: None,
+        });
+        let backend = Arc::new(AdbBackend::new(resolver, runner.clone()));
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let registry = deepagent_mobile_runtime::DeviceRegistry::new(tx);
+        for device in backend.list_devices(&ctx()).await.unwrap() {
+            registry.upsert(device).await;
+        }
+        let service = deepagent_mobile_runtime::MobileService::new(
+            registry,
+            deepagent_mobile_runtime::ArtifactStore::new(),
+            deepagent_mobile_runtime::SnapshotStore::new(),
+        );
+        service
+            .register_backend(MobilePlatform::Android, backend)
+            .await;
+        let device = "android-ABC123";
+        let old = service.ui_snapshot(device, &ctx()).await.unwrap();
+        let latest = service.ui_snapshot(device, &ctx()).await.unwrap();
+        assert_ne!(old.snapshot_id, latest.snapshot_id);
+        assert_ne!(old.nodes, latest.nodes);
+        let tracked = service.snapshot_store().current(device).await.unwrap();
+        let tracked_matches_returned = tracked == latest.snapshot_id;
+        let latest_validates = service
+            .snapshot_store()
+            .validate(device, &latest.snapshot_id, &latest.root_node_id)
+            .await
+            .is_ok();
+        let mut outcomes = Vec::new();
+        for (kind, snapshot_id) in [
+            ("current", latest.snapshot_id.as_str()),
+            ("superseded", old.snapshot_id.as_str()),
+            ("unknown", "unknown-snapshot"),
+        ] {
+            let result = service
+                .input(
+                    &InputRequest {
+                        device_id: device.into(),
+                        snapshot_id: Some(snapshot_id.into()),
+                        action: InputAction::Tap { x: 50, y: 50 },
+                    },
+                    &ctx(),
+                )
+                .await;
+            outcomes.push((
+                kind,
+                result.as_ref().is_ok_and(|r| r.accepted),
+                matches!(result, Err(MobileError::StaleUiNode { .. })),
+            ));
+        }
+        let input_commands = runner
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|args| args.get(3).is_some_and(|arg| arg == "input"))
+            .count();
+        eprintln!("mobile snapshot audit: tracked_matches_returned={tracked_matches_returned} latest_validates={latest_validates} outcomes={outcomes:?} adb_input_commands={input_commands}");
+        assert!(
+            tracked_matches_returned
+                && latest_validates
+                && outcomes[0].1
+                && outcomes[1].2
+                && outcomes[2].2
+                && input_commands == 1,
+            "one snapshot identity must fence stale input before any device command"
+        );
+    }
+
+    #[tokio::test]
     async fn adb_backend_uses_resolver_cached_path() {
         let resolver = super::super::ToolResolver::new();
         let runner = Arc::new(FakeAdbRunner::new());
