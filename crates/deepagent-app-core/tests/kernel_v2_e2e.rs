@@ -2276,3 +2276,104 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
         "an explicit Harness effort must take precedence over the saved desktop depth"
     );
 }
+
+#[tokio::test]
+#[ignore = "audit reproducer: saved output ceiling must survive the runtime thinking profile"]
+async fn audit_configured_output_limit_reaches_provider_request() {
+    use deepagent_app_core::settings::ResponsesApiSettings;
+    use deepagent_app_core::RuntimeEvent;
+    use deepagent_models::ThinkingDepth;
+
+    struct ObservedModel(Mutex<Vec<serde_json::Value>>);
+
+    #[async_trait]
+    impl HttpTransport for ObservedModel {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&request.body)?);
+            emit_responses_events(sink, &response_text("ordinary reply"))
+        }
+    }
+
+    let mut matched = Vec::new();
+    for (depth, panel, developer, expected) in [
+        (ThinkingDepth::Medium, None, None, 16_384),
+        (ThinkingDepth::Medium, Some(512), None, 512),
+        (ThinkingDepth::Medium, Some(512), Some(768), 768),
+        (ThinkingDepth::Deep, Some(65_536), None, 65_536),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("sk-audit-placeholder").await.unwrap();
+        settings.set_thinking_depth(depth).unwrap();
+        settings
+            .set_responses_settings(ResponsesApiSettings {
+                max_output_tokens: panel,
+                ..Default::default()
+            })
+            .unwrap();
+        if let Some(limit) = developer {
+            settings
+                .set_responses_developer_json(
+                    &serde_json::json!({"max_output_tokens": limit}).to_string(),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            settings
+                .responses_settings()
+                .unwrap()
+                .effective_max_output_tokens(),
+            developer.or(panel)
+        );
+        let model = Arc::new(ObservedModel(Mutex::new(Vec::new())));
+        let reservations = Arc::new(Mutex::new(Vec::new()));
+        let captured = reservations.clone();
+        let chat = ChatService::new(db, settings, model.clone(), root.path());
+        chat.run_in_session(
+            "Reply briefly without using tools.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            None,
+            move |event| {
+                if let RuntimeEvent::ContextUsage { snapshot } = event {
+                    captured
+                        .lock()
+                        .unwrap()
+                        .push(snapshot.reserved_output_tokens);
+                }
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let requests = model.0.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let actual = requests[0]["max_output_tokens"].as_u64().unwrap();
+        let reservations = reservations.lock().unwrap();
+        assert!(!reservations.is_empty());
+        eprintln!("Output limit audit: depth={depth:?} panel={panel:?} developer={developer:?} expected={expected} wire={actual} reservations={reservations:?}");
+        matched.push(actual == expected);
+    }
+    assert!(
+        matched[0],
+        "without an explicit cap the profile default remains valid"
+    );
+    assert!(
+        matched.into_iter().all(|value| value),
+        "saved output limits must reach the actual provider request"
+    );
+}

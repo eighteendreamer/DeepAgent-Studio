@@ -25,7 +25,7 @@
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录 | 已确认 H-51；服务/工具级确定性交错，完整双会话桌面动态验证未执行 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
-| Harness 每轮模型参数优先级 | 显式 max/low 覆盖经正式 ChatService 执行后，实际请求仍服从持久化桌面深度 | 已确认 H-54；共享 AppCore 入口及真实序列化，未调用公网供应商 |
+| 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
 | 两协议思考模式映射 | 两协议三档中仅 Chat Simple 在请求前本地校验失败，Responses 三档与 Chat 另两档完成 | 已确认 H-55；公开 Chat adapter 的条件缺陷，默认生产组装仍为 Responses |
 | MCP 快照合并后的名称唯一性 | 两真实 stdio 服务独立 Ready 后，冲突工具名在每轮 ToolRegistry 注册才被拒绝，普通聊天没有发模型 | 已确认 H-56；正式宿主准备和 ChatService，未覆盖桌面错误展示 |
 | MCP 说明在后续无状态请求中的保留 | 真实 MCP 说明首轮存在，同会话第二轮完整 wire 中消失；另一新会话恢复 | 已确认 H-57；正式 AppCore 连续运行与请求序列化，未覆盖重启/压缩和真实供应商 |
@@ -1250,7 +1250,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - Claude Code `借鉴/claudecode/restored-src/src/utils/attachments.ts:2251` 的 `collectSurfacedMemories(messages)` 扫描当前保留的 relevant_memories 附件，注释明确说明：压缩移除旧附件后，去重和累计字节预算自然释放。这里只对照源码，未运行参考项目。
 - 修复方向：在既有 Surface 的记忆附件身份上统一 live/replay 的当前可见集合与预算；摘要若保留某条记忆，应明确保留其身份，否则允许重新检索。不能无条件清空全部去重，导致仍在尾部的摘录反复注入；同样不能以全量历史事件替代当前可见状态。具体身份与回放映射属于本地设计，应覆盖保留尾部、重复压缩、snip、在途预取和恢复场景。本轮只新增审计测试与报告，没有修改生产检索行为。
 
-### H-54：Harness 显式思考强度被桌面深度覆盖，调用方配置没有进入真实请求
+### H-54：有效模型参数被桌面深度覆盖，显式思考强度与输出上限没有进入真实请求
 
 **级别：中（P2）；范围：CLI/app-server 调用共享 ChatService 时指定 `reasoning_effort` / `reasoningEffort`，且与持久化 ThinkingDepth 不同。** 本项不是 H-04 的 resume/steer 参数丢失：这里新运行直接携带参数仍失效。
 
@@ -1268,6 +1268,22 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 已确认后果：调用方请求更强思考时可能仍关闭思考；请求较低强度时仍使用最大强度。影响 DeepSeek 的任务推理策略和 headless 接口的可控性；延迟、费用和答案质量可能受影响，但本轮未使用真实供应商测量这些差异。没有启动真实 SDK/stdio 客户端；生产字段传递由源码核对，动态证据覆盖它们共用的 AppCore 执行入口。
 - DeepSeek Harness `packages/llm/llm-deepseek/src/serialize.ts:146` 在最终序列化明确使用本次 `options.reasoningEffort`，缺省才回退 connection 默认；部署禁用与 effort 冲突则报错，不静默改成另一档。`tests/serialize.spec.ts:282` 逐一断言 off/low/high/max 的映射。其协议为 Messages，借鉴的是配置解析与优先级，不能直接复制 wire 字段。Codex `core/src/client.rs` 使用本次 effort 构造 reasoning，`core/tests/suite/client.rs::includes_configured_effort_in_request` 对实际请求断言配置值；本轮未执行两个参考项目的测试。
 - 修复应在既有模型配置边界把桌面深度作为缺省，先解析显式运行配置、有效模型能力与部署限制，再供 Agent、meter 和 serializer 使用同一结果；合法覆盖实际生效，不合法值在请求前明确拒绝。不能只在 CLI 映射一次，后续重试/备用模型/摘要/子运行又重新套桌面默认。还需验证 run/project/managed 配置优先级、缺省对照、无效 effort、两协议及重试后的保持。本轮只新增测试和报告，未修复生产配置行为。
+
+#### 后续复现：持久化输出上限也被相同默认填充顺序覆盖
+
+- 此补充扩大 H-54 的已证实范围到普通桌面共用的持久化 Responses 参数，不增加重复缺陷编号。`SettingsService::set_responses_settings` 和 `set_responses_developer_json` 正确保存并解析 max_output_tokens，`select_run_model` 正确放入 ResponseDefaults。但 Agent 先对尚未应用这些 defaults 的空请求调用 with_thinking_depth，填入 8,192/16,384/32,768，ModelClient 之后只填 None，用户上限无法再生效。与 H-49 的备用模型切换不同，此处第一轮、没有任何供应商错误就失效。
+- 新增默认忽略探针 `kernel_v2_e2e::audit_configured_output_limit_reaches_provider_request`，使用正式 SettingsService/ChatService/Kernel/ModelAgent 与请求序列化，四组独立内存数据库/临时工作区，模型底层为记录型离线 HttpTransport。发送前断言正式 effective_max_output_tokens 等于用户配置；每组运行均完成且只发送一次请求。执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_configured_output_limit_reaches_provider_request --offline -- --ignored --nocapture`，最终配置保持断言明确失败：
+
+| 深度 | 普通设置上限 | 开发者 JSON 上限 | 应发上限 | 实际 wire | 按收到顺序记录的 ContextUsage 输出预留 |
+|---|---:|---:|---:|---:|---|
+| Medium | 无（对照） | 无 | 16,384 | 16,384 | 16,384 → 384,000 |
+| Medium | 512 | 无 | 512 | 16,384 | 16,384 → 512 |
+| Medium | 512 | 768 | 768 | 16,384 | 16,384 → 768 |
+| Deep | 65,536 | 无 | 65,536 | 32,768 | 32,768 → 65,536 |
+
+- ContextUsage 差异也有明确源码来源：请求中 `request_max_output_override` 保存 profile 上限，`current_context_policy` 优先使用它；回答写入前又将该字段清空，随后的 publish 回到 client defaults，未配置时则使用 capability.max_output_tokens（本 fixture 为 384,000）。下一次实际请求又重新套 profile。不是根据数值不同猜测事件乱序；本次捕获的是正式事件回调顺序，没有验收 Tauri 渲染或磁盘重开。不能宣称模型真的生成了超出 512 的文本，因为离线回答很短；已证明的是用户限制和运行后预算与实际请求不一致。
+- 本系统 `ChatService::run_review_streaming` 已有同类正确对照：先调用 with_max_output_tokens，再应用深度，因此显式上限不会被该 helper 填掉。DeepSeek Harness `packages/llm/llm-deepseek/src/serialize.ts` 使用 options.maxTokens 优先于 model/connection 缺省；`llm-pi-ai/src/adapter.ts` 将 options.maxTokens 作为本次流式调用参数，其 modelInfo 明确区分模型能力与部署配置的请求缺省。这里只借鉴优先级及能力/请求上限分离，没有把 Messages 的 max_tokens 字段套到 Responses，也未运行参考项目。
+- 修复与 H-54 原方向共用一次有效参数解析，应进一步要求发送前、回答写入后的下一请求预算及实际 wire 使用同一输出上限。覆盖低于/高于深度缺省、开发者 JSON 优先、无配置对照和多轮工具调用；本轮没有修改任何生产参数或计量策略。
 
 ### H-55：简单思考模式直接携带 Responses 的 none 进入 Chat 适配器，本地校验拒绝整个运行
 
@@ -1322,6 +1338,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-54 持久化输出上限显式探针（见补充命令） | 明确失败：设置 512/768 后 wire 均为 16,384；设置 65,536 后 wire 为 32,768；无覆盖对照正常，四组均完成 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（H-54 输出上限补充时） | 11 passed / 9 ignored；缺陷探针已另行显式执行失败，默认绿测不代表修复；同批 cargo fmt --all -- --check 通过 |
 | H-57 真实 MCP 说明跨 turn 显式探针（见该节命令） | 明确失败且重跑一致：完整请求标记 first=true / continued=false / fresh=true，三轮模型请求均正常完成 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（H-57 核查时） | 11 passed / 8 ignored；新增缺陷探针已单独显式执行并失败，默认通过不代表修复 |
 | `cargo test -p deepagent-app-core --lib mcp_instructions --offline` | 6 passed；现有去重测试未验证第二轮完整请求仍含正文 |
@@ -1553,7 +1571,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
 | 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
-| Harness 思考配置的有效值 | H-54 | 既有配置 overlay、模型能力、桌面深度缺省统一解析到最终请求；参考 DeepSeek 本次 effort 优先及 Codex wire 断言 | 显式覆盖生效；无覆盖保持默认；不支持值明确拒绝；重试和子运行不重新覆盖 |
+| 有效模型参数与输出预算 | H-54 | 既有配置 overlay、模型能力、桌面深度缺省统一解析到最终请求；参考 DeepSeek 本次 effort/maxTokens 优先及 Codex wire 断言 | 显式 effort/输出上限生效；发送前及下一请求预算与 wire 一致；无覆盖保持默认；不支持值明确拒绝；重试和子运行不重新覆盖 |
 | 思考模式的协议转换 | H-55 | 既有 thinking 配置表达开关/强度，由 adapter 显式生成和校验自己的 wire 字段；参考 DeepSeek 分 provider 的 off 映射 | Simple/Medium/Deep 经两协议完整 Agent 路径均可发送；禁用不被默认强度重新启用 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
