@@ -339,4 +339,35 @@ mod tests {
         let error = provider_error(401, "bad key sk-secret-value");
         assert!(!error.to_string().contains("secret-value"));
     }
+
+    #[test]
+    #[ignore = "audit H-24: long non-ASCII provider errors panic at the byte truncation boundary"]
+    fn audit_long_unicode_provider_error_remains_structured() {
+        let message = "错".repeat(800);
+        let json = serde_json::json!({
+            "error": { "message": message, "code": "rate_limit_exceeded" }
+        })
+        .to_string();
+        let mut panicked = Vec::new();
+        for (format, body) in [("json", json), ("plain", message)] {
+            let result = std::panic::catch_unwind(|| provider_error(429, &body));
+            eprintln!("format={format}, parser_panicked={}", result.is_err());
+            match result {
+                Ok(error) => {
+                    assert!(matches!(
+                        error,
+                        CoreError::Provider {
+                            status: Some(429),
+                            ..
+                        }
+                    ));
+                }
+                Err(_) => panicked.push(format),
+            }
+        }
+        assert!(
+            panicked.is_empty(),
+            "provider error parsing must return a structured failure, panicked formats={panicked:?}"
+        );
+    }
 }

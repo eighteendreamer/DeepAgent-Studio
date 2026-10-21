@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分与截断工具调用提交均已复现 | 已确认 H-05、H-18；全部错误和流式分支未完成 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断工具调用提交及 Unicode 错误解析 panic 均已复现 | 已确认 H-05、H-18、H-24；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费和回退后旧笔记覆盖新分支均已复现 | 已确认 H-10、H-11、H-14、H-23；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突及子 Agent 工具限制未约束执行 | 已确认 H-03、H-15、H-16、H-19；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
@@ -637,6 +637,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 笔记文本本身包含被撤销的决策，不能仅把 last_summarized_sequence 改小而继续使用旧 summary。采用现有存储里的失效/重新提取策略，或可证明对应保留分支的旧快照；native 与 Message 两条压缩入口应共用同一覆盖校验。
 - 覆盖回退后序号复用、回退期间后台 extraction 晚完成、fork、宿主重启、未达提取阈值、覆盖端点保留/删除以及工具配对。未在本轮修生产 rewind、笔记状态或压缩实现。
 
+### H-24：较长的非 ASCII 供应商错误触发 panic，结构化错误处理被中断
+
+**级别：中（P2）；范围：启用 http feature 的 ReqwestTransport 非成功响应错误解析。** 本次确认函数 panic，没有证明整个桌面进程退出。
+
+#### 触发与复现
+
+- `crates/deepagent-models/src/reqwest_transport.rs::stream_inner()` 对非成功 HTTP 状态读取 body 后调用 `provider_error()`；后者统一调用 `sanitize_provider_message()`。错误文本超过 2000 字节时，直接 `String::truncate(2000)`，未检查 UTF-8 字符边界。
+- 新增默认忽略探针 `audit_long_unicode_provider_error_remains_structured`，分别给生产 provider_error 输入 HTTP 429 的 JSON error.message 和纯文本 body。文本为 800 个“错”（2400 字节），无密钥或用户数据。
+- 执行：`cargo test -p deepagent-models --features http audit_long_unicode_provider_error_remains_structured --offline -- --ignored --nocapture`。
+- 两种格式均在同一生产 truncate 处触发 `assertion failed: self.is_char_boundary(new_len)`；catch_unwind 记录 `format=json, parser_panicked=true` 和 `format=plain, parser_panicked=true`，最终安全断言失败。测试没有改生产函数，也没有调用外部供应商。
+
+#### 后果、成熟实现与修复方向
+
+- 正常应返回包含 HTTP status/code/message 的 CoreError，此时却发生 panic，调用方无法按该返回值分类限流、上下文超限或服务端故障。上层是否捕获任务 panic、如何收尾运行及 UI 具体表现尚未独立验证，不据此宣称桌面崩溃或取消失效。
+- 仓库 Codex `codex-rs/protocol/src/error.rs::truncate_with_ellipsis()` 在截断前向前查找 `is_char_boundary`；UnexpectedResponseError::display_body 的非结构化 body 分支使用它。其 JSON error message 分支另有处理，不能声称该 helper 覆盖它的所有错误文本。
+- 在既有统一错误清理边界实现安全的 Unicode 长度限制，继续保留脱敏和 status/code。覆盖多字节字符恰好跨界、ASCII、空 body、JSON/纯文本、密钥跨截断边界；必要时再验证真实 HTTP→运行终态，不能通过 catch_unwind 静默吞掉生产问题。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -670,6 +687,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-21 节单项命令 | 真实首次运行及 resume 后契约断言失败；恢复计数为 1，但 schema/phase/label 和 wire 指令均丢失 |
 | H-22 节单项命令 | 真实 DAG 子执行器及文件工具探针失败；wire 声明子目录，产出实际落到临时父目录 |
 | H-23 节单项命令 | 真实 rewind/恢复后探针失败：旧覆盖点 8 被新分支复用，旧 RED 摘要被选为包含新 BLUE 决策前缀的替代候选 |
+| H-24 节单项命令 | JSON 和纯文本两种较长中文错误均在生产 truncate 处 panic，安全断言失败 |
+| `cargo test -p deepagent-models --features http --offline`（新增 H-24 后） | 84 passed / 2 ignored，无常规失败；H-24 已另行显式执行复现 |
 | `cargo test -p deepagent-app-core --lib service::tests --offline`（新增 H-23 后） | 405 passed / 4 ignored；该 substring filter 也匹配其他 *_service::tests，并非仅 AppService |
 | `cargo test -p deepagent-session -p deepagent-persistence --offline`（新增 H-23 后） | session 14 passed，persistence 67 passed，均无 ignored 或失败；原有 rewind 测试覆盖事件截断及恢复，没有验证笔记覆盖身份 |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-21、H-22 后） | 6 passed / 3 ignored；H-19 提取共享 fixture 后另行显式复跑，四组仍复现同一缺陷 |
