@@ -3953,6 +3953,141 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: fallback output ceiling must match the active model capability"]
+    async fn audit_fallback_rebuilds_output_limit_from_active_capability() {
+        struct CapabilityGate {
+            wire_mode: deepagent_models::WireMode,
+            fallback_limit: u32,
+            requests: Mutex<Vec<serde_json::Value>>,
+        }
+
+        #[async_trait]
+        impl HttpTransport for CapabilityGate {
+            async fn stream(
+                &self,
+                request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                let body: serde_json::Value = serde_json::from_str(&request.body)?;
+                self.requests.lock().unwrap().push(body.clone());
+                if body["model"] == "audit-primary" {
+                    return Err(CoreError::provider(
+                        Some(529),
+                        Some("overloaded_error".into()),
+                        "audit primary overloaded",
+                    ));
+                }
+                let requested = body["max_output_tokens"]
+                    .as_u64()
+                    .or_else(|| body["max_tokens"].as_u64())
+                    .unwrap();
+                if requested > u64::from(self.fallback_limit) {
+                    return Err(CoreError::provider(
+                        Some(400),
+                        Some("invalid_request_error".into()),
+                        "audit output limit exceeds active model capability",
+                    ));
+                }
+                let events = match self.wire_mode {
+                    deepagent_models::WireMode::Responses => response_text_completed("recovered"),
+                    deepagent_models::WireMode::ChatCompletions => vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}).to_string(),
+                        "[DONE]".into(),
+                    ],
+                };
+                for event in events {
+                    if sink.on_event(&event)? {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let mut cases = Vec::new();
+        for wire_mode in [
+            deepagent_models::WireMode::Responses,
+            deepagent_models::WireMode::ChatCompletions,
+        ] {
+            for fallback_limit in [32_768, 8_192] {
+                let primary = deepagent_models::ModelCapability {
+                    model_id: "audit-primary".into(),
+                    context_window: 1_000_000,
+                    max_output_tokens: 32_768,
+                    supports_tools: true,
+                    supports_thinking: true,
+                    supports_json_output: true,
+                    capability_source: deepagent_models::CapabilitySource::ProviderMetadata,
+                    fallback_reason: None,
+                };
+                let fallback = deepagent_models::ModelCapability {
+                    model_id: "audit-fallback".into(),
+                    context_window: 128_000,
+                    max_output_tokens: fallback_limit as usize,
+                    ..primary.clone()
+                };
+                let transport = Arc::new(CapabilityGate {
+                    wire_mode,
+                    fallback_limit,
+                    requests: Mutex::new(Vec::new()),
+                });
+                let mut config = ModelConfig::deepseek("test").with_wire_mode(wire_mode);
+                config.capabilities = vec![primary.clone(), fallback];
+                let client = Arc::new(ModelClient::new(transport.clone(), config));
+                let (sink, mut rx) = crate::events::ChannelSink::new();
+                let mut agent = ModelAgent::new(client, "audit-primary", "system", "goal", vec![])
+                    .with_thinking_depth(ThinkingDepth::Deep)
+                    .with_fallback_model(Some("audit-fallback".into()))
+                    .with_context_policy(
+                        deepagent_context::ContextPolicy::for_capability(
+                            &primary,
+                            ThinkingDepth::Deep,
+                        ),
+                        None,
+                        None,
+                    )
+                    .with_events(Arc::new(sink))
+                    .with_context_snapshot(snapshot_estimating(1, 1_000_000));
+                let outcome = agent.think(0, &[]).await;
+                let snapshot = std::iter::from_fn(|| rx.try_recv().ok())
+                    .filter_map(|event| match event {
+                        RuntimeEvent::ContextUsage { snapshot } => Some(snapshot),
+                        _ => None,
+                    })
+                    .last()
+                    .unwrap();
+                let requests = transport.requests.lock().unwrap();
+                assert_eq!(
+                    requests.len(),
+                    2,
+                    "exactly one primary and one fallback attempt"
+                );
+                assert_eq!(requests[1]["model"], "audit-fallback");
+                assert_eq!(snapshot.model_id, "audit-fallback");
+                assert_eq!(snapshot.context_window, 128_000);
+                assert_eq!(snapshot.reserved_output_tokens, fallback_limit as usize);
+                let wire_limit = requests[1]["max_output_tokens"]
+                    .as_u64()
+                    .or_else(|| requests[1]["max_tokens"].as_u64())
+                    .unwrap();
+                cases.push(serde_json::json!({
+                    "wire": format!("{wire_mode:?}"),
+                    "fallback_limit": fallback_limit,
+                    "reserved_output": snapshot.reserved_output_tokens,
+                    "wire_limit": wire_limit,
+                    "completed": outcome.is_ok(),
+                    "failure": outcome.err().map(|error| error.to_string()),
+                }));
+            }
+        }
+        eprintln!("fallback capability audit: {}", serde_json::json!(cases));
+        assert!(
+            cases.iter().all(|case| case["completed"] == true),
+            "fallback must not retain the primary model's incompatible output limit"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "audit reproducer: max-token truncation must not commit unfinished tool calls"]
     async fn audit_output_limit_does_not_dispatch_unfinished_tool_calls() {
         let mut dispatched = Vec::new();

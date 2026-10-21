@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口及 SSE 分帧不完整均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30；全部错误和流式分支未完成 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
@@ -1129,10 +1129,37 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 后果是模型仍会发现并尝试失效工具，连续调用重复承担启动/握手负担，用户可能反复经历长等待。生产默认一轮完整退避合计 21 秒，另加每次启动和初始化；本探针实际使用短退避，没有实测每轮 21 秒，外层运行/工具 deadline 也可能提前截断。不能把本结果概括为所有普通聊天都等待或所有连接都失效。
 - 修复应在现有 MCP 服务生命周期内维护同一连接身份的 ready/recovering/unavailable 状态和恢复预算，探活/工具调用共用恢复 owner；耗尽时在下一请求边界退役该服务新发现的工具及说明，并让既有请求收到结构化失败。明确显式重试、配置变更、宿主重启或受控冷却何时重新开放预算，避免 request 层自行无限重启；保留历史调用配对。应覆盖恢复成功、持续失败、并发调用/探活、旧代迟到、用户禁用和全局快照投影。本轮只新增测试与文档，未修改生产恢复策略。
 
+### H-49：备用模型切换只更新模型和预算，实际请求仍携带主模型的输出上限
+
+**级别：中（P2）；范围：主模型过载后自动切换到输出容量较小的备用模型。** 容量相同的切换对照成功；不声称当前官方 flash/pro 默认组合一定触发，也不涉及跨供应商/账号切换。
+
+#### 生产链路与确定性对照
+
+- `deepagent-app-core/src/model_runtime.rs::select_run_model` 从同一 catalog 选择主模型和 fallback_role，RunAssembler 将两者及 context_policy 传给正式 ModelAgent。`model_agent.rs::think_inner` 的过载恢复分支只修改 request.model/self.model，保留已由 ThinkingDepth 生成的 max_output_tokens；下一轮 pressure check 能查到备用能力，却只通过 `ContextPolicy::for_capability_with_output` 对预算中的 reserved_output 做 min，没有修改 wire 字段。ModelClient 的两种序列化路径也没有按新能力重建该字段。
+- 新增默认忽略探针 `audit_fallback_rebuilds_output_limit_from_active_capability`。使用正式 ModelAgent、ModelClient、两种 serializer/accumulator 和 ContextUsage 通道；只有底层 HttpTransport 为离线 CapabilityGate。主模型能力 32,768，Deep 深度生成合法的 32,768 输出上限；首请求固定模拟 529。备用模型上下文均为 128,000，分别声明 32,768（成功对照）和 8,192（故障组）输出上限。fixture 在读到实际序列化 body 后，仅按声明上限决定成功或模拟 400，没有人为改 request 或 agent 状态。
+- 执行 `cargo test -p deepagent-runtime --lib audit_fallback_rebuilds_output_limit_from_active_capability --offline -- --ignored --nocapture`：整体断言明确失败；四组都恰好发出一次主请求和一次备用请求。每组的 ContextUsage 已显示 audit-fallback/128,000 窗口，reserved_output 也等于其能力声明：
+
+| 协议 | 备用输出上限 | 快照 reserved_output | 实际 wire 上限 | 结果 |
+|---|---:|---:|---:|---|
+| Responses | 32,768 | 32,768 | 32,768 | 成功 |
+| Responses | 8,192 | 8,192 | 32,768 | fixture 拒绝，运行返回 400 错误 |
+| Chat Completions | 32,768 | 32,768 | 32,768 | 成功 |
+| Chat Completions | 8,192 | 8,192 | 32,768 | fixture 拒绝，运行返回 400 错误 |
+
+- 这是已声明能力与正式 wire 的确定性不一致；400 来自严格离线 fixture，不是本轮真实 DeepSeek 请求结果。未执行桌面降级、真实供应商小容量模型、reasoning 不兼容或历史迁移测试，不能据此声称所有备用调用失败。
+
+#### 成熟实现对照、后果与修复方向
+
+- Claude Code `services/api/withRetry.ts` 达到 529 切换条件后抛 FallbackTriggeredError；`query.ts` 更新 currentModel、清理失败 attempt 的工具执行状态，再以新的 options.model 重新进入 callModel。`services/api/claude.ts::getMaxOutputTokensForModel` 根据该模型的 default/upperLimit 计算默认值并校验环境覆盖，paramsFromContext 重新组装 max_tokens。这里借鉴的是重新解析有效请求配置；不能概括为 Claude 的任意显式 maxOutputTokensOverride 都会自动被 clamp，本轮也未运行其测试。
+- 后果是本可由备用模型接续的短任务，因沿用不兼容输出参数从暂时过载变成请求失败；日志/面板可能显示已按较小输出预留，实际却发送较大上限。若 gateway 自行裁剪，该 gateway 可能掩盖错误，不能据此认为本系统配置已经一致。
+- 修复应在既有模型请求边界形成同一份有效模型/能力/输出上限，再供 policy、meter 和 wire 使用；模型切换、截断上调及每步请求都重新验证这份配置。对不支持的显式配置明确报错或按已定义策略收敛，不能只在预算层取 min，也不把特定模型名/8,192 特判散落在 fallback 分支。补足不同窗口、不同输出能力、显式覆盖、截断后再切换和两协议对照。本轮仅新增审计测试与文档，生产行为未修复。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-49 备用能力/实际请求显式探针（见该节命令） | 明确失败：两协议的 32,768→8,192 备用组，快照预留已为 8,192，wire 仍为 32,768；容量相同的两组成功 |
+| `cargo test -p deepagent-runtime --lib fallback --offline`（H-49 核查时） | 1 passed / 1 ignored；普通切换基线通过，新缺陷探针已另以 --ignored 显式执行并失败 |
 | H-48 stdio 探活耗尽/连续调用显式探针（见该节命令） | 明确失败：探活已结束仍保留 1 工具/adapter/说明；实际启动数 10→13→16，随后两调用各重开一轮恢复且失败 |
 | `cargo test -p deepagent-mcp --offline`（H-48 核查时） | 58 passed / 6 ignored；真实崩溃后恢复成功对照仍通过，本次持续失败耗尽探针已另用显式命令执行 |
 | H-47 宿主准备配置变更显式探针（见该节命令） | 明确失败：无变更 A 正常 ready；仅新增 B 后 A 的相同配置被缓存为 preparation cancelled，ready 只保留 B，重复同配置准备为 no-op |
@@ -1337,6 +1364,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | MCP 断线恢复耗尽与能力退役 | H-48 | 探活与工具共用连接身份的恢复 owner/预算，状态驱动下一请求就绪快照；参考 Grok stdio 耗尽后 Unavailable 与注销工具 | 失败耗尽后新发现不含旧工具/说明；普通连续调用不重开启动风暴；显式重试可恢复；不影响其他服务 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
+| 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 
