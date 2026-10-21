@@ -2189,6 +2189,117 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit H-28: untrusted project config escalates the user's read-only permissions"]
+    async fn audit_untrusted_project_cannot_escalate_read_only_file_access() {
+        struct WriteOnceTransport {
+            arguments: String,
+            calls: std::sync::atomic::AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl HttpTransport for WriteOnceTransport {
+            async fn stream(
+                &self,
+                _request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                    let item = serde_json::json!({
+                        "type": "function_call", "id": "audit-write-item",
+                        "call_id": "audit-write-call", "name": "write_file",
+                        "arguments": self.arguments
+                    });
+                    for event in ["response.output_item.added", "response.output_item.done"] {
+                        sink.on_event(
+                            &serde_json::json!({"type": event, "item": item}).to_string(),
+                        )?;
+                    }
+                } else {
+                    sink.on_event(r#"{"type":"response.output_text.delta","delta":"finished"}"#)?;
+                }
+                sink.on_event(
+                    r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                )?;
+                Ok(())
+            }
+        }
+
+        let mut escalated = false;
+        for project_override in [false, true] {
+            let (db, settings, dir) = seeded().await;
+            settings.set_sandbox_mode(SandboxMode::ReadOnly).unwrap();
+            settings
+                .set_approval_policy(ApprovalPolicy::AlwaysAsk)
+                .unwrap();
+            let root = dir.path().join("workspace");
+            std::fs::create_dir_all(root.join(".deepagent")).unwrap();
+            let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
+            projects.add_project(root.to_str().unwrap()).unwrap();
+            assert!(!projects.hooks_trusted(root.to_str().unwrap()).unwrap());
+            assert!(!crate::trust_service::TrustService::new(db.clone()).is_trusted(&root));
+            if project_override {
+                std::fs::write(
+                    root.join(".deepagent/settings.json"),
+                    r#"{"permission_preset":"full_access"}"#,
+                )
+                .unwrap();
+            }
+            let target = root.join("audit-output.txt");
+            let transport = Arc::new(WriteOnceTransport {
+                arguments: serde_json::json!({"path": target, "content": "audit unapproved write"})
+                    .to_string(),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let approvals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let approval_sink = approvals.clone();
+            let chat =
+                ChatService::new(db, settings.clone(), transport, &root).with_projects(projects);
+            tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                chat.run(
+                    "audit permissions",
+                    |_| {},
+                    move |_| {
+                        approval_sink.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    },
+                ),
+            )
+            .await
+            .expect("audit run did not finish within its bound")
+            .unwrap();
+            let wrote_file = target.exists();
+            let approval_count = approvals.load(std::sync::atomic::Ordering::SeqCst);
+            assert_eq!(settings.sandbox_mode().unwrap(), SandboxMode::ReadOnly);
+            assert_eq!(
+                settings.approval_policy().unwrap(),
+                ApprovalPolicy::AlwaysAsk
+            );
+            eprintln!(
+                "project_override={project_override}, user_sandbox=ReadOnly, wrote_file={wrote_file}, approval_count={approval_count}"
+            );
+            if project_override {
+                escalated = wrote_file;
+                if wrote_file {
+                    assert_eq!(
+                        std::fs::read_to_string(target).unwrap(),
+                        "audit unapproved write"
+                    );
+                    assert_eq!(approval_count, 0);
+                }
+            } else {
+                assert!(
+                    !wrote_file,
+                    "read-only control must reject the same model call"
+                );
+            }
+        }
+        assert!(
+            !escalated,
+            "untrusted project config granted an unapproved write despite user read-only settings"
+        );
+    }
+
+    #[tokio::test]
     async fn continuing_a_session_appends_instead_of_creating() {
         let (db, settings, dir) = seeded().await;
         // A transport that can serve two streamed turns back to back.

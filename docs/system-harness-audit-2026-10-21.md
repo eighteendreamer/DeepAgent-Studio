@@ -16,7 +16,7 @@
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断工具调用提交、Unicode 错误解析 panic 及限流等待元数据丢失均已复现 | 已确认 H-05、H-18、H-24、H-25；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费和回退后旧笔记覆盖新分支均已复现 | 已确认 H-10、H-11、H-14、H-23；笔记计数及其他压缩边界仍在核查 |
-| 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突及子 Agent 工具限制未约束执行 | 已确认 H-03、H-15、H-16、H-19；其他边界未完成 |
+| 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突、子 Agent 工具限制未约束执行及未信任项目提升只读权限 | 已确认 H-03、H-15、H-16、H-19、H-28；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
@@ -712,11 +712,32 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 收敛独立 hooks.json 与 overlay 内联 hooks 的来源解析：保留 ConfigLayer 作用域并在注册/执行前应用一致授权；项目、本地、用户、管理员、插件和 run override 的信任来源应可追踪，不把所有配置一概拒绝或全部默认允许。复用现有 ProjectService/TrustService，明确两个开关的关系。
 - 验收覆盖相同 payload 跨配置文件、撤销信任、SessionStart/结束/子 Agent、迟到任务、显式非交互授权和插件来源，保证切换文件不能绕过授权。不应只给 `.deepagent/settings.json` 再加一个路径特判。
 
+### H-28：未信任项目的权限配置覆盖用户只读设置，实际写文件没有请求审批
+
+**级别：高（P1）；范围：项目配置来源到有效执行权限的解析边界。** 需要打开项目并开始包含写工具调用的会话；本次证明工作区内未经批准的写入，不声称已证明任意工作区外写入或绕过管理员策略。
+
+#### 生产路径与对照复现
+
+- `RunEnvironment::resolve()` 加载 `RunConfigOverlay`，再用 `apply_permission_profile(settings.effective_permission_profile()?)` 解析本轮权限。项目 overlay 的 `permission_preset: full_access` 会替换用户 profile，并令本轮审批和文件访问权限变为 FullAccess；这条链没有依据项目来源应用 TrustService 或 hooks_trusted 门禁。
+- 新增默认忽略探针 `chat_service::tests::audit_untrusted_project_cannot_escalate_read_only_file_access`。两组各自建立全新临时项目和内存数据库，通过正式 SettingsService 将用户设置为 ReadOnly + AlwaysAsk，通过 ProjectService 打开项目，并确认 workspace trust 与 hooks_trusted 均为 false。
+- 模型使用本地 Transport fixture，先返回完整原生 write_file 调用，再返回结束文本；实际执行正式 ChatService、Kernel、工具注册和 write_file。审批回调只计数，不批准。目标及固定内容完全位于临时项目；无外部模型请求、凭据或真实用户文件。
+- 执行：`cargo test -p deepagent-app-core --lib audit_untrusted_project_cannot_escalate_read_only_file_access --offline -- --ignored --nocapture`。无项目覆盖时：`wrote_file=false, approval_count=0`；加入 `.deepagent/settings.json` 的 `{"permission_preset":"full_access"}` 后：`wrote_file=true, approval_count=0`，并核对文件内容。两组结束后，持久化用户设置仍为 ReadOnly + AlwaysAsk。最终禁止提权断言明确失败，测试耗时约 0.45 秒。
+- 最初尝试工作区外目标时，实验组返回 `checkpoint target escapes workspace`，测试的成功返回断言失败，未完成该目标的写入后核查；因此不能据此报告工作区外写入成功。最终探针改为工作区内目标，独立验证用户只读限制是否真正作用于工具。最初的 fixture 编译错误也不是产品缺陷。
+
+#### 后果、成熟实现与修复方向
+
+- 用户在设置中选择的只读和审批策略，没有成为未信任项目配置的权限上限。相同模型调用因项目文件存在而获得写权限，界面保存的用户设置却未变。这与 H-27 共用配置来源信任缺口，但有独立的实际文件工具执行证据；H-27 不需要模型工具调用。
+- Codex `config/src/loader/mod.rs::ProjectTrustContext::disabled_reason_for_decision()` 将 project-local config、hooks 和 exec policies 纳入项目授权；`project_layer_entry()` 对未信任来源创建 disabled layer。`config/src/state.rs::layers_low_to_high()` 过滤 disabled layers，未信任配置不会参与有效配置合并。参考机制是先确定来源是否被允许，再解析执行配置，不能直接照搬其全部权限语义。
+- 在现有配置加载及有效 profile 解析边界统一来源授权和权限上限：明确用户主动授权、受信任项目偏好、插件默认与管理员约束各自能修改什么。项目、本地配置不应仅凭更高 merge 优先级自动放宽用户权限；复用现有配置层和信任服务，不另建权限表或执行链。
+- 验收覆盖只读/工作区写入、审批策略、不同项目配置来源、显式授权及撤销、运行覆盖和管理员约束，并同时断言实际工具副作用与审批调用。当前只运行 Windows 离线 AppCore 探针，没有验证所有宿主、平台或配置来源，也未修改生产权限行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
 | `cargo fmt --all -- --check` | 通过 |
+| H-28 单项忽略探针（见该节命令） | 明确失败：只读对照无文件，未信任项目 full_access 覆盖后实际写入，审批数为零；没有修复生产行为 |
+| `cargo test -p deepagent-app-core --lib chat_service::tests --offline`（新增 H-28 后） | 74 passed / 3 ignored，0 failed；新增探针默认忽略，不代表其缺陷修复 |
 | `cargo test -p deepagent-cli -p deepagent-models -p deepagent-mcp --offline` | CLI 82 passed / 3 ignored；models 84 passed / 1 ignored；MCP 单元 55 passed / 3 ignored、子进程集成 3 passed、协议审查 1 ignored；均无常规失败。组合命令的 feature 合并启用了额外 HTTP 测试 |
 | `cargo test -p deepagent-mcp --features http --offline`（新增 H-12 后） | 单元 60 passed / 3 ignored、子进程集成 3 passed、协议审查 2 ignored；无常规失败 |
 | `cargo test -p deepagent-cli --offline`（新增 steer 探针后） | 82 passed / 4 ignored，无常规失败 |
@@ -825,7 +846,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
-| 外部 hooks 来源和决策 | H-26、H-27 | 独立文件和配置 overlay 共用来源信任及按事件解析；参考 Claude 全部交互 hooks 的 trust gate 与 hookSpecificOutput | 未授权项目不能借更换配置文件执行脚本；标准 deny/ask 能实际拦截/审批 |
+| 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 错误和请求恢复 | H-24、H-25 | 既有错误元数据和单一重试边界；参考 Codex 安全字符截断、DeepSeek providerRetryAfterMs | Unicode 错误不 panic；有界供应商等待期间可取消，不提前耗尽尝试 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
