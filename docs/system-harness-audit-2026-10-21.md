@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口及 SSE 分帧不完整均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任及 Windows MCP 后代清理缺口已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
@@ -1073,10 +1073,30 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 后果是已 budget_exceeded 的父运行仍关联永远 running 的前台子记录，缺少 transcript 和终态通知。status/恢复/清理入口可能受其影响；当前数据库重启会将 running 子记录当 orphan 取消，但那不能补回本轮本应产生的 transcript/子终态，也不能作为运行中收尾的替代。此处未新增真实桌面卡片或重启验收。
 - 修复应把父总时限与用户停止统一接回现有取消树及受控收尾，保留预算超限这个终态原因，先给前台子工作有界退出机会，再由 owner 保证丢弃路径仍能终结持久化子记录并发布一次结果。不能在父终态前无期限等待，也不能因为子工作本应独立的后台模式就把全部后台任务一并停止。测试应继续保留正常取消对照，并覆盖超时发生于子模型、工具、审批和工作树准备的边界。本轮只添加测试和文档，未修改生产 deadline 或子任务执行。
 
+### H-46：Windows MCP transport 只终止直接进程，非 libuv 服务的普通后代仍继续运行
+
+**级别：中（P2）；范围：Windows 本地 stdio MCP 的显式 close 或最后一个 transport 被释放，服务曾通过没有额外 Job 管理的进程启动机制创建后代。** 不是所有 MCP 都残留进程；不是要求停止一轮对话时关闭仍由其他会话共享的 MCP。
+
+#### 正反对照与生产路径
+
+- `deepagent-mcp/src/stdio.rs::StdioTransport::spawn` 使用 tokio Command，Windows 只设置 CREATE_NO_WINDOW；没有 Job Object 或统一进程树 owner。`close()` 调用直接 Child 的 start_kill/wait；Drop 中 abort stderr reader 并对同一 Child 调用 start_kill。kill_on_drop 同样针对该 Child，不能证明后代已结束。
+- 新增 Windows 专用、默认忽略的 `tests/process_lifecycle_audit.rs::audit_stdio_close_and_drop_terminate_owned_descendants`，使用正式 StdioTransport 和真实本地进程。四组分别为 Node/.NET 根服务 × close/Drop。工作进程均为相同 Node 脚本，只写临时心跳，并自带 8 秒兜底退出；.NET 根服务由 PowerShell 执行 ProcessStartInfo + Process.Start，没有 detached/breakaway 标志、没有外网或模型调用。worker 报告实际 parent PID，正式 RPC 响应中的 server PID 必须与其相等；两进程均确认为已启动后才进行清理。
+- 执行 `cargo test -p deepagent-mcp --test process_lifecycle_audit --offline -- --ignored --nocapture`：约 3.39 秒，断言明确失败。Node 两组均 parent_exited=true、descendant_alive=false、父退出后心跳增量=0；.NET 两组均 parent_exited=true、descendant_alive=true，父退出后 250ms 的观察区间内各新增 11 次心跳。这不只是 PID 可能残留：工作进程在父退出后仍实际执行文件写入。探针在失败断言之前按自身刚创建的 PID 清理后代，并等待确认退出；没有留下测试进程。
+- 第一版仅 Node 的两组曾全部通过，因此没有直接把源码疑点登记为缺陷。本机 Node 22.22.1 / libuv 1.51.0；与运行库版本相符的 [libuv 1.51.0 Windows 源码](https://github.com/libuv/libuv/blob/v1.51.0/src/win/process.c)在 uv__init_global_job_handle / uv_spawn 中对非 detached 子进程设置 KILL_ON_JOB_CLOSE 并加入自己的 Job。该机制解释此处 Node 组的正对照，但不是本系统对任意 MCP 程序提供的保证。.NET fixture 的启动字段已对照 [Microsoft ProcessStartInfo 文档](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo)及 Process.Start 的对应重载。
+
+#### 成熟实现、影响和修复边界
+
+- Codex `rmcp-client/src/stdio_server_launcher.rs::LocalStdioServerLauncher::launch_server` 创建属于该服务的进程归属：Windows 在可用时使用无 breakaway 的 Job、挂起启动后 assign/resume，Unix 使用 NewGroup。LocalProcessTerminator 用 Job 终止或组 SIGTERM 后有界升级；ProcessHandle 的显式 terminate 和 Drop 共用该归属。其 Windows Job 建立失败有日志并回退到直接进程 handle，不能据此声称 Codex 的任何环境都绝对不会残留。
+- 对应 Codex `rmcp-client/tests/stdio_message_limits.rs::local_stdio_shutdown_terminates_descendants_after_server_exit` 验证 Windows 根服务已退出后 shutdown 仍终止后代，并检查 breakaway 被拒；`tests/process_group_cleanup.rs::drop_kills_wrapper_process_group` 则验证 Unix wrapper 后代。这里只阅读参考源码，没有运行参考项目测试。Claude Code 的 MCP cleanup 此次阅读到的是按直接 PID 发送 SIGINT/SIGTERM/SIGKILL 的有界升级，不能把它描述成已证明的任意树清理机制。
+- 后果是 MCP 连接已经关闭或替换后，服务创建的浏览器、worker 等资源可能继续工作并占用资源；反复重建可积累旧工作进程。本探针动态证明的是 .NET fixture 的普通后代仍运行，不代表任意真实浏览器、远程付费任务或平台都已复现；尚未做插件管理 UI、真实宿主退出和 Linux/macOS 验收。
+- 修复应在既有 stdio transport/服务 owner 边界收敛树归属，参考 Codex 区分管道关闭、服务有界退出、归属范围内后代强制清理和 stderr drain。Windows 应处理 spawn→assign 的竞态并明确记录 containment 降级；不能仅在设置按钮调用 taskkill，也不能把共享 MCP 进程树挂到单轮运行取消上。验收覆盖非 Node 根服务、正常关闭、初始化中断、父服务先崩溃、配置替换及 shared snapshot 最后引用释放；Unix 机制需单独动态验证。本轮只新增审计测试和文档，未修改生产进程管理。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-46 Windows MCP 进程归属显式探针（见该节命令） | 明确失败：Node close/Drop 两对照后代均退出；.NET close/Drop 两组父已退出但后代仍运行并各新增 11 次心跳，测试主动清理并确认退出 |
+| `cargo test -p deepagent-mcp --offline`（H-46 核查时） | 58 passed / 5 ignored；包括真实崩溃重连、诊断脱敏基线；本次进程树探针已另用显式命令执行 |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（H-45 核查时） | 6 passed / 4 ignored；包括本次失败探针在内的审计用例默认忽略，须使用各节命令显式执行 |
 | `cargo test -p deepagent-runtime --lib kernel_deadline_finalizes_and_fails_active_task --offline` | 1 passed；父运行正常写出预算终态的既有回归通过，未覆盖前台子运行收尾 |
 | H-45 父总时限/前台子 Agent 显式探针（见该节命令） | 明确失败：主动取消对照能收尾；总时限退出后父=budget_exceeded、根未取消、子记录仍 running、无 transcript/子终态事件 |
@@ -1261,6 +1281,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | 启动恢复的规范终态与会话投影 | H-44 | 恢复共用现有幂等终态边界，文件会话投影具备按 run 身份的补偿；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补，不能改错后续 turn |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
+| 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
