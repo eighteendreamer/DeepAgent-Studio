@@ -456,4 +456,49 @@ mod tests {
         assert_eq!(dto.status, "ready");
         assert!(dto.sha256.is_some());
     }
+
+    #[test]
+    #[ignore = "audit reproducer: attachment cleanup must reject directory components and empty ids"]
+    fn audit_attachment_removal_stays_inside_one_attachment() {
+        let mut safe = Vec::new();
+        for (label, bucket, id) in [
+            ("normal", "session-a", "first"),
+            ("empty-id", "session-a", ""),
+            ("dot-id", "session-a", "."),
+            ("parent-bucket", "..", "unrelated"),
+        ] {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("attachments");
+            let first = root.join("session-a/first");
+            let second = root.join("session-a/second");
+            let unrelated = fixture.path().join("unrelated");
+            for dir in [&first, &second, &unrelated] {
+                fs::create_dir_all(dir).unwrap();
+                fs::write(dir.join("canary.txt"), "test-owned data").unwrap();
+            }
+            // This probe may exercise an overbroad recursive removal. Resolve
+            // and verify the actual target stays within this disposable fixture.
+            let actual_target = root
+                .join(sanitize_segment(bucket))
+                .join(sanitize_segment(id))
+                .canonicalize()
+                .unwrap();
+            let fixture_root = fixture.path().canonicalize().unwrap();
+            assert!(actual_target.starts_with(&fixture_root));
+            assert_ne!(actual_target, fixture_root);
+
+            let result = AttachmentService::new(root.clone()).remove(Some(bucket), id);
+            let first_present = first.join("canary.txt").exists();
+            let second_present = second.join("canary.txt").exists();
+            let unrelated_present = unrelated.join("canary.txt").exists();
+            eprintln!("Attachment cleanup audit: case={label} result={result:?} first={first_present} second={second_present} outside_root={unrelated_present}");
+            if label == "normal" {
+                assert!(result.unwrap());
+                assert!(!first_present && second_present && unrelated_present);
+            } else {
+                safe.push(first_present && second_present && unrelated_present);
+            }
+        }
+        assert!(safe.into_iter().all(|value| value), "invalid attachment identities must not remove a bucket or a directory outside the attachment root");
+    }
 }
