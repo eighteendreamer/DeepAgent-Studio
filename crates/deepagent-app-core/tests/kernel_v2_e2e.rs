@@ -1985,3 +1985,78 @@ async fn a_later_pass_folds_only_the_uncovered_turn_and_a_flat_context_pays_noth
 
     std::fs::remove_dir_all(&e2e.root).unwrap();
 }
+
+#[tokio::test]
+#[ignore = "audit reproducer: explicit Harness reasoning effort must reach the provider request"]
+async fn audit_harness_reasoning_override_reaches_provider_request() {
+    use deepagent_app_core::HarnessRunOverrides;
+    use deepagent_models::ThinkingDepth;
+
+    struct ObservedModel(Mutex<Vec<serde_json::Value>>);
+
+    #[async_trait]
+    impl HttpTransport for ObservedModel {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&request.body)?);
+            emit_responses_events(sink, &response_text("audit complete"))
+        }
+    }
+
+    let mut matched = Vec::new();
+    for (depth, requested, expected) in [
+        (ThinkingDepth::Medium, None, "high"),
+        (ThinkingDepth::Medium, Some("max"), "max"),
+        (ThinkingDepth::Simple, Some("max"), "max"),
+        (ThinkingDepth::Deep, Some("low"), "low"),
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let discovery = Arc::new(MockTransport::with_get_json(
+            r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        ));
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            discovery,
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("sk-audit-placeholder").await.unwrap();
+        settings.set_thinking_depth(depth).unwrap();
+        let transport = Arc::new(ObservedModel(Mutex::new(Vec::new())));
+        let chat = ChatService::new(db, settings, transport.clone(), root.path());
+        chat.run_in_session_with_overrides(
+            "Reply with audit complete without using tools.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            None,
+            HarnessRunOverrides {
+                reasoning_effort: requested.map(str::to_string),
+                ..Default::default()
+            },
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let requests = transport.0.lock().unwrap();
+        let actual = requests[0]["reasoning"]["effort"].as_str().unwrap();
+        eprintln!(
+            "Harness effort audit: depth={depth:?} override={requested:?} expected={expected} wire={actual}"
+        );
+        matched.push(actual == expected);
+    }
+    assert!(
+        matched[0],
+        "the no-override control must retain the desktop depth"
+    );
+    assert!(
+        matched.into_iter().all(|value| value),
+        "an explicit Harness effort must take precedence over the saved desktop depth"
+    );
+}

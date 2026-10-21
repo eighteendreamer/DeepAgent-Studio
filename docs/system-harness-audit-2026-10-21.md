@@ -25,6 +25,7 @@
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录 | 已确认 H-51；服务/工具级确定性交错，完整双会话桌面动态验证未执行 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
+| Harness 每轮模型参数优先级 | 显式 max/low 覆盖经正式 ChatService 执行后，实际请求仍服从持久化桌面深度 | 已确认 H-54；共享 AppCore 入口及真实序列化，未调用公网供应商 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -1246,10 +1247,31 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - Claude Code `借鉴/claudecode/restored-src/src/utils/attachments.ts:2251` 的 `collectSurfacedMemories(messages)` 扫描当前保留的 relevant_memories 附件，注释明确说明：压缩移除旧附件后，去重和累计字节预算自然释放。这里只对照源码，未运行参考项目。
 - 修复方向：在既有 Surface 的记忆附件身份上统一 live/replay 的当前可见集合与预算；摘要若保留某条记忆，应明确保留其身份，否则允许重新检索。不能无条件清空全部去重，导致仍在尾部的摘录反复注入；同样不能以全量历史事件替代当前可见状态。具体身份与回放映射属于本地设计，应覆盖保留尾部、重复压缩、snip、在途预取和恢复场景。本轮只新增审计测试与报告，没有修改生产检索行为。
 
+### H-54：Harness 显式思考强度被桌面深度覆盖，调用方配置没有进入真实请求
+
+**级别：中（P2）；范围：CLI/app-server 调用共享 ChatService 时指定 `reasoning_effort` / `reasoningEffort`，且与持久化 ThinkingDepth 不同。** 本项不是 H-04 的 resume/steer 参数丢失：这里新运行直接携带参数仍失效。
+
+- CLI 的 `--reasoning-effort` 和 app-server `turn/start.reasoningEffort` 都进入 `HarnessRunOverrides`；`RunConfigOverlay::reasoning_effort_override` 按配置优先级读取，`select_run_model` 将其放进 `ResponseDefaults.reasoning_effort`。但 `RunAssembler` 继续把持久化的 `thinking_depth` 传给 ModelAgent。后者每次 `think_inner` 调用 `with_thinking_depth` 写入显式 reasoning_effort；`ModelClient::apply_defaults` 只填 None，故不会再应用调用方覆盖。
+- 新增默认忽略探针 `kernel_v2_e2e::audit_harness_reasoning_override_reaches_provider_request`。四组分别使用正式 SettingsService、临时工作区/内存数据库、ChatService→RunAssembler→Kernel→ModelAgent→ModelClient 请求序列化。仅最底层 HttpTransport 使用离线回复并记录实际 body；没有绕过组装器手工造 request，也未修改生产深度或参数解析。每次运行成功，再检查第一个主请求的 `reasoning.effort`。
+- 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_harness_reasoning_override_reaches_provider_request --offline -- --ignored --nocapture`，最终断言明确失败，四组输出如下：
+
+| 持久化深度 | 本次显式覆盖 | 应发 effort | 实际 wire effort |
+|---|---|---|---|
+| Medium | 无（对照） | high | high |
+| Medium | max | max | high |
+| Simple | max | max | none |
+| Deep | low | low | max |
+
+- 已确认后果：调用方请求更强思考时可能仍关闭思考；请求较低强度时仍使用最大强度。影响 DeepSeek 的任务推理策略和 headless 接口的可控性；延迟、费用和答案质量可能受影响，但本轮未使用真实供应商测量这些差异。没有启动真实 SDK/stdio 客户端；生产字段传递由源码核对，动态证据覆盖它们共用的 AppCore 执行入口。
+- DeepSeek Harness `packages/llm/llm-deepseek/src/serialize.ts:146` 在最终序列化明确使用本次 `options.reasoningEffort`，缺省才回退 connection 默认；部署禁用与 effort 冲突则报错，不静默改成另一档。`tests/serialize.spec.ts:282` 逐一断言 off/low/high/max 的映射。其协议为 Messages，借鉴的是配置解析与优先级，不能直接复制 wire 字段。Codex `core/src/client.rs` 使用本次 effort 构造 reasoning，`core/tests/suite/client.rs::includes_configured_effort_in_request` 对实际请求断言配置值；本轮未执行两个参考项目的测试。
+- 修复应在既有模型配置边界把桌面深度作为缺省，先解析显式运行配置、有效模型能力与部署限制，再供 Agent、meter 和 serializer 使用同一结果；合法覆盖实际生效，不合法值在请求前明确拒绝。不能只在 CLI 映射一次，后续重试/备用模型/摘要/子运行又重新套桌面默认。还需验证 run/project/managed 配置优先级、缺省对照、无效 effort、两协议及重试后的保持。本轮只新增测试和报告，未修复生产配置行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-54 Harness 思考覆盖显式探针（见该节命令） | 明确失败：无覆盖对照正确；max/low 覆盖被 Medium/Simple/Deep 持久化档位分别改成 high/none/max |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（H-54 核查时） | 11 passed / 6 ignored；新缺陷探针另行显式执行并失败 |
 | H-53 压缩后后台记忆显式探针（见该节命令） | 明确失败：1 条组再次取回但被旧 ID 过滤；12 条组不再调用 provider；两组后续 wire 均缺少摘录 |
 | `cargo test -p deepagent-runtime --lib memor --offline`（H-53 核查时） | 5 passed / 1 ignored；新缺陷探针另行显式执行并失败，不视为已修复 |
 | H-52 独立知识服务写入显式探针（见该节命令） | 明确失败：两次保存均成功，不刷新时 ID 相同、磁盘只剩 B、首缓存仍为 A；刷新对照两条均保留 |
@@ -1467,6 +1489,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
 | 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
+| Harness 思考配置的有效值 | H-54 | 既有配置 overlay、模型能力、桌面深度缺省统一解析到最终请求；参考 DeepSeek 本次 effort 优先及 Codex wire 断言 | 显式覆盖生效；无覆盖保持默认；不支持值明确拒绝；重试和子运行不重新覆盖 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
