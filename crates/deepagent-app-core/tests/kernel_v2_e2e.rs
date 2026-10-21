@@ -677,6 +677,133 @@ async fn audit_unrelated_read_does_not_move_reads_before_write_barrier() {
 }
 
 #[tokio::test]
+#[ignore = "audit: model-visible saved tool results must survive turn completion and database reopen"]
+async fn audit_saved_tool_result_survives_turn_and_database_reopen() {
+    use deepagent_core::event::EventPayload;
+    use deepagent_persistence::{artifact_store::ArtifactStore, event_store::EventStore};
+
+    struct InspectSavedResult {
+        inner: ReplayTransport,
+        observed: Arc<Mutex<Option<(PathBuf, bool)>>>,
+    }
+    #[async_trait]
+    impl HttpTransport for InspectSavedResult {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let body: serde_json::Value = serde_json::from_str(&request.body)?;
+            for item in body["input"].as_array().unwrap() {
+                if item["type"] == "function_call_output" && item["call_id"] == "audit-large-result"
+                {
+                    let output: serde_json::Value = match item["output"].as_str() {
+                        Some(text) => serde_json::from_str(text)?,
+                        None => item["output"].clone(),
+                    };
+                    assert_eq!(output["status"], "ok");
+                    let path = PathBuf::from(
+                        output["result"]["saved_path"]
+                            .as_str()
+                            .expect("budgeted result"),
+                    );
+                    let existed = path.is_file();
+                    let full = std::fs::read_to_string(&path).unwrap();
+                    assert!(full.contains("AUDIT_RESULT_TAIL"));
+                    *self.observed.lock().unwrap() = Some((path, existed));
+                }
+            }
+            self.inner.stream(request, sink).await
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("audit.sqlite");
+    let db = Arc::new(Database::open(&db_path).unwrap());
+    let settings = Arc::new(SettingsService::new(
+        db.clone(),
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(MemorySecretStore::new()),
+    ));
+    settings.initialize("sk-audit-placeholder").await.unwrap();
+    // Fewer than 2000 lines, but above the production 4000-token result budget.
+    let content = format!(
+        "{}\nAUDIT_RESULT_TAIL",
+        ("audit-row-".repeat(20) + "\n").repeat(200)
+    );
+    std::fs::write(root.path().join("large.txt"), &content).unwrap();
+    let observed = Arc::new(Mutex::new(None));
+    let chat = ChatService::new(
+        db.clone(),
+        settings,
+        Arc::new(InspectSavedResult {
+            inner: ReplayTransport::new([
+                response_function_call(
+                    "audit-large-result",
+                    "read_file",
+                    serde_json::json!({"path":"large.txt"}),
+                ),
+                response_text("done"),
+            ]),
+            observed: observed.clone(),
+        }),
+        root.path(),
+    );
+    let session_id = chat
+        .run_in_session(
+            "Inspect large.txt.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("audit-result-lifetime"),
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let (path, existed_during_tool) = observed.lock().unwrap().clone().unwrap();
+    let exists_after_turn = path.is_file();
+    drop(chat);
+    drop(db);
+    let reopened = Database::open(&db_path).unwrap();
+    let artifacts = ArtifactStore::new(&reopened)
+        .list_for_run("audit-result-lifetime")
+        .unwrap();
+    assert_eq!(
+        artifacts.len(),
+        1,
+        "serial pipeline must index the full result"
+    );
+    assert_eq!(PathBuf::from(&artifacts[0].path), path);
+    let events = EventStore::new(&reopened)
+        .load_session(session_id.parse().unwrap())
+        .unwrap();
+    let persisted = events
+        .iter()
+        .find_map(|event| match &event.payload {
+            EventPayload::ToolCallCompleted {
+                call_id, output, ..
+            } if call_id == "audit-large-result" => Some(output),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(persisted["truncated"], true);
+    assert_eq!(persisted["saved_path"].as_str(), path.to_str());
+    assert!(
+        !persisted.to_string().contains("AUDIT_RESULT_TAIL"),
+        "tail must only exist in the saved full result"
+    );
+    let reread_ok = std::fs::read_to_string(&path).is_ok();
+    eprintln!("during_tool={existed_during_tool} after_turn={exists_after_turn} reopened_artifacts={} replay_has_reference=true reread_ok={reread_ok}", artifacts.len());
+    assert!(existed_during_tool);
+    assert!(
+        reread_ok,
+        "a durable model-visible result reference must remain readable after the turn"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit reproducer: cancelled approval waiters must expire before late scoped answers"]
 async fn audit_cancelled_run_rejects_late_approval_and_releases_waiter() {
     use deepagent_app_core::ApprovalPolicy;

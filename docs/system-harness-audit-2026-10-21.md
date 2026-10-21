@@ -18,7 +18,7 @@
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
-| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型均已复现 | 已确认 H-17、H-32、H-33；完整恢复及并发压力未完成 |
+| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效均已复现 | 已确认 H-17、H-32、H-33、H-36；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -869,10 +869,32 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应与 H-34 一起收敛到既有统一 ToolPipeline：按原调用序列切分连续并行组及串行屏障，只有组内 I/O 重叠；前一组完全收尾后才能执行屏障，屏障结束后才能派发后一组。复用现有权限、hooks、deadline、取消和配对结果，不能通过对工具名增加临时特判或只重排日志修复。
 - 验收覆盖 write→read、read→write→read、多个串行屏障、审批阻塞及取消；加入或删除无关并行工具不能改变跨屏障的先后关系。本轮只增加审计测试和文档，未修改生产行为。
 
+### H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用
+
+**级别：高（P1）；范围：超过工具结果预算、被替换成 preview + saved_path 的工具输出。** 原始工作区文件不因此删除；本项删除的是系统自己保存的完整结果副本。对于可重新读取的来源可再次执行工具，但一次性命令输出、远程响应等未必可重建，本探针没有实际执行这些不可重建来源。
+
+#### 生命周期与真实文件数据库复现
+
+- `tool_budget.rs::apply_tool_result_budget()` 将完整 JSON 写盘，向模型返回短 preview、saved_path 和“full output saved”说明。默认 `cleanup_on_run_end=true`；生产 `kernel_runtime.rs::build_kernel_runtime_config()` 只覆盖目录和单工具限额，继续采用该默认值。
+- 串行 `ToolExecutionPipeline::complete_prepared_inner()` 将完整结果记录到现有 ArtifactStore，并将 saved_path 加入运行的 created_paths。`RuntimeEngine::run()` 在最终收尾时调用 `cleanup_tool_result_paths()` 删除这些文件，却没有使历史引用失效、移除 artifact 索引或保存可恢复的完整副本。并行分支也加入同一清理列表，但该路径的索引差异尚未由本探针覆盖。
+- 新增默认忽略集成探针 `audit_saved_tool_result_survives_turn_and_database_reopen`，使用正式 ChatService、ModelAgent、内置 read_file、默认生产预算及真实临时 SQLite / session 文件。输入 201 行、约 40k 字符的本地测试文本，不触发内置 2000 行限制；仅模型 transport 离线脚本化。
+- 在发送下一次模型请求时，从正式序列化 function_call_output 的 `status/result` 包装中取得 saved_path，确认文件此时存在且含 preview 外的尾标记。模型返回完成后，该路径已经不存在。释放服务和数据库再重新打开，artifact 索引仍有一条相同路径；原始 ToolCallCompleted 仍含 truncated=true 和 saved_path，但无尾标记，重新读完整结果得到 NotFound。
+- 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_saved_tool_result_survives_turn_and_database_reopen --offline -- --ignored --nocapture`：`during_tool=true after_turn=false reopened_artifacts=1 replay_has_reference=true reread_ok=false`；要求跨 turn 可读的断言失败，测试约 0.28 秒。没有修改用户文件、调用真实模型或手工删除结果来制造失败。
+- 前三次 fixture 检查分别有尾标记重复进入 preview、误把异步桌面事件回调当作同步执行观测点、未解开 `status/result` 包装的问题，均不算生产故障证据。停止微调后核对正式 Session 与 ModelAgent 投影，改在 transport 请求边界检查真实路径；最终失败点才是产品文件生命周期断言。
+
+#### 成熟实现、影响与修复方向
+
+- Claude Code `restored-src/src/utils/toolResultStorage.ts::getToolResultsDir/getToolResultPath/persistToolResult()` 按项目和 session 保存完整结果，用 `writeFile(..., flag:'wx')` 避免对同一引用反复覆盖；preview 内保留完整结果路径。`cleanup.ts::cleanupOldMessageFiles()` 对 session 下 tool-results 文件调用 `unlinkIfOld(..., cutoffDate)`，采用保留期清理，不在单次 turn 结束时直接删除。参考源码已查，未运行参考清理测试；不声称文件永久保留。
+- 已确认的后果是会话持久化了一个结束即失效的模型可见引用，artifact 元数据与字节文件不一致。下轮或重启后若根据该路径追问完整结果，会无法读取；本次通过实际文件读取确认 NotFound，尚未另发一轮真实供应商追问。对于原文件仍在的本样本，可重读来源，不能概括为全部原始数据永久丢失。
+- 修复应复用现有 ArtifactStore 和 session/run 归属，明确临时中间文件与被历史引用的结果资产的不同生命周期。后者按引用与保留策略清理；清理需同步索引、可见状态和恢复语义，失败需可诊断。目录身份、原子写入和同 call_id 跨运行的边界也需覆盖，不能只在某个调用方改一个 cleanup 开关后宣称完整解决。
+- 验收应覆盖 turn 结束、继续对话、重启、取消、并行结果、保存失败和受控保留期回收；同一历史引用在允许保留期内必须指向相同完整内容。本轮未修改生产生命周期。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-36 完整结果生命周期忽略探针（见该节命令） | 明确失败：模型下一请求时文件存在且完整；turn 完成即删除；真实数据库重开后 artifact 索引与历史引用仍在，文件不可读 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（新增 H-36 后） | 11 passed / 5 ignored；H-36 缺陷探针另行显式执行失败 |
 | H-35 内置写读屏障忽略探针（见该节命令） | 明确失败：两调用先写后读且读到 NEW；增加无关读取后，两次读均先于写启动，下一请求的 source 读结果报错，最终磁盘写入成功 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（新增 H-35 后） | 11 passed / 4 ignored；缺陷探针另行显式执行失败，不代表生产问题已修复 |
 | H-34 串并行对照忽略探针（见该节命令） | 明确失败：单工具 80ms 超时并落失败结果；两个相同工具越过 400ms，取消后 200ms 仍 pending，主动 release 后才退出 |
@@ -1008,6 +1030,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35 | 摘要、prefire、成功/错误正文、重试和串并行工具属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分外部工作清理与持久化收尾 | 压缩/错误正文/并行工具中停止及时退出；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
+| 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
