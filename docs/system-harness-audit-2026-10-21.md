@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具续轮投影拆分已复现 | 已确认 H-05；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取摘要生命周期及重复 assistant 文本导致压缩回放复活旧历史均已复现 | 已确认 H-10、H-11；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 真实文件读取及工作区外拦截；沙箱 backend override 路由探针 | 已确认 H-03；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 副作用重试、工具分页、握手与并发回包已复现；含本机子进程 | 已确认 H-06 至 H-09；宿主准备与 hooks 未完成 |
+| MCP、插件与 hooks 生命周期 | 副作用重试、分页、握手、stdio 并发回包及 HTTP session header 丢失已复现 | 已确认 H-06 至 H-09、H-12；宿主准备与 hooks 未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消终态、重启继续；注入取消审计写入失败仍能传递根/子取消信号，恢复后显式重试幂等 | 已通过该存储故障边界；UI 保存错误及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 待逐项验证 | 未完成 |
 
@@ -355,12 +355,38 @@ Codex `core/src/session/mod.rs::replace_compacted_history()` 先为缺失身份�
 - 沿用现有 `ContextCompacted` / `run_events` 持久化边界，必要时兼容扩展实际 replacement/provenance，不能新建第二套上下文存储。来源不可验证时明确失败或采用可验证的保守边界，不写一个猜测的成功切点。
 - 补充相同 assistant 文本、相同 reasoning、连续多次压缩、snip/patch 后压缩及重启后的 live/replay/wire 等价测试。此探针默认忽略，生产边界尚未修复。
 
+### H-12：Streamable HTTP 未保存初始化分配的 session header，有状态远程服务后续请求失败
+
+**级别：中（P2）；范围：启用 http feature、使用初始化分配 Mcp-Session-Id 的 Streamable HTTP 服务。** 无状态 HTTP 服务及 stdio 不受这项 header 缺失影响。
+
+#### 触发与复现
+
+- `connect.rs::connect_network()` 的生产 HTTP/SSE 路由进入 `http.rs::HttpTransport`；该结构只保存静态 URL、配置 headers 和 reqwest Client。send 读取响应状态及 Content-Type 后消费正文，丢弃初始化返回的会话标识，下一请求只能发送静态配置头。
+- 新增 `tests/protocol_audit.rs::audit_http_initialization_retains_session_header`：在 127.0.0.1 的随机端口启动真实 TCP/HTTP fixture，第一次 initialize 返回 JSON 及 `Mcp-Session-Id: audit-session`，第二次 tools/list 只有带回该头才成功，否则返回规范建议的 400。请求均经过真实 reqwest / HttpTransport，不是 mock send。
+- 执行：`cargo test -p deepagent-mcp --features http --test protocol_audit audit_http_initialization_retains_session_header --offline -- --ignored --nocapture`。
+- 实际输出：`received=[("initialize", false), ("tools/list", false)]`，`discovery=Err(...400 Bad Request: missing Mcp-Session-Id)`；后续请求携带初始化 session 的断言失败。
+- 最终探针直接驱动生产 HttpTransport，initialize 的请求及响应版本均为 2025-03-26，排除 McpClient 仍固定声明 2024-11-05 的版本协商混杂因素。fixture 仅检查 session header，不检查 initialized 通知，以隔离 H-08；不是一次完整 MCP 协议符合性或外部服务验收。
+
+#### 官方规则与成熟实现对照
+
+[MCP 2025-03-26 Streamable HTTP 规范的 Session Management](https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#session-management)允许服务器在初始化时分配 Mcp-Session-Id，随后客户端必须带回；缺失时服务可返回 400，过期会话返回 404 并要求重新初始化。此处依据 Streamable HTTP 规则，不能把这些字段说成 2024-11-05 legacy HTTP+SSE 的原有要求。
+
+Codex `rmcp-client/src/http_client_adapter.rs` 从 HTTP response headers 读取 HEADER_SESSION_ID，并将 session_id 与 Json/Sse 响应交给 rmcp StreamableHttpClientTransport；后续 post_message 接收该 session_id，并通过同一适配器插入 mcp-session-id 请求头。遇到过期会话另有恢复边界，不是要求用户手填一次性标识。
+
+#### 后果和修复方向
+
+- 初始化 HTTP 本身成功，但后续工具发现或调用被拒，远程工具无法进入就绪快照；不能把错误仅归因于 API Key 或服务宕机。本次只测试本机 fixture，没有使用用户凭据或外部 MCP。
+- 在现有 transport/client 边界拥有动态会话状态，安全读取并带回标识；配置凭据与 session header 分开，错误及日志不得泄漏真实会话标识。
+- 同时明确支持的协议版本、协商/拒绝规则及 legacy SSE 的不同连接流程；当前固定的 2024-11-05 版本不应让代码注释中的 Streamable HTTP 支持声明替代真实兼容测试。
+- 补初始化、普通调用、ping、并发请求、过期 404、重建及关闭测试；恢复会话不能绕过 H-06 的副作用未知结果限制。此探针仅在 http feature 下编译，默认忽略，生产 transport 尚未修复。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
 | `cargo fmt --all -- --check` | 通过 |
 | `cargo test -p deepagent-cli -p deepagent-models -p deepagent-mcp --offline` | CLI 82 passed / 3 ignored；models 84 passed / 1 ignored；MCP 单元 55 passed / 3 ignored、子进程集成 3 passed、协议审查 1 ignored；均无常规失败。组合命令的 feature 合并启用了额外 HTTP 测试 |
+| `cargo test -p deepagent-mcp --features http --offline`（新增 H-12 后） | 单元 60 passed / 3 ignored、子进程集成 3 passed、协议审查 2 ignored；无常规失败 |
 | `cargo test -p deepagent-cli --offline`（新增 steer 探针后） | 82 passed / 4 ignored，无常规失败 |
 | `cargo test -p deepagent-runtime --offline`（新增 H-10 探针后） | 265 单元 + 5 稳定性集成测试 passed，1 ignored；含 500 次以上工具调用测试 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` | 11 passed / 2 ignored，无常规失败 |
@@ -372,9 +398,10 @@ Codex `core/src/session/mod.rs::replace_compacted_history()` 先为缺失身份�
 | H-04 至 H-09 各节列出的单项命令 | 7 个探针分别明确失败（H-04 包含 resume、steer 两个），证据见对应章节；不是常规测试通过 |
 | H-10 节单项命令 | 1 个探针明确失败，复现结束后预取仍继续及收尾 usage 缺失 |
 | H-11 节单项命令 | 1 个探针明确失败：压缩保留 6 items，数据库恢复得到 54 items |
+| H-12 节 http feature 单项命令 | 1 个探针明确失败：真实本机 HTTP 请求丢失 session header，后续 tools/list 收到 400 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十二个默认忽略的缺陷探针、一个默认忽略的宿主隔离集成探针和一个默认运行的取消存储故障注入测试，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十三个默认忽略的缺陷探针、一个默认忽略的宿主隔离集成探针和一个默认运行的取消存储故障注入测试，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
