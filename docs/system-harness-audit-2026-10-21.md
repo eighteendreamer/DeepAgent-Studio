@@ -19,7 +19,7 @@
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效均已复现 | 已确认 H-17、H-32、H-33、H-36；完整恢复及并发压力未完成 |
-| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流空工具注册及内层失败映射成功已复现 | 已确认 H-19 至 H-22、H-38；记忆现有回归通过，其他图执行及重启边界未完成 |
+| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流空工具注册、失败映射成功及条件互斥路径仍执行已复现 | 已确认 H-19 至 H-22、H-38、H-39；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | 真实 Cron tick 进入正式 ChatService，审批通知丢弃后仍挂起；基础 cron/store 回归通过 | 已确认 H-37；多宿主调度、重复触发及完整退出边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -930,10 +930,31 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应复用已有工具组装、授权及 ToolPipeline，并在 WorkflowAgent 边界定义明确的 NodeOutcome。区分“工具执行失败”与“允许作为数据处理的错误”；默认按失败传播，只有显式容错契约才能继续且保留错误状态。同步 Rust 事件、RunStore 终态、前端外层 success 和下游依赖，不能靠前端改红色或把失败 JSON 当成功结果解决。
 - 验收覆盖实际只读成功、工具返回 ok=false、未知工具、参数错误、权限拒绝、审批不可用、显式容错及下游跳过；节点状态、结果和运行终态必须一致。本轮仅增加审计测试和文档，未修复生产装配。
 
+### H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发
+
+**级别：高（P1）；范围：正式工作流的 if-else 控制流。** 图编译校验了 source_handle 的有效性，但运行时没有根据已选分支筛选可执行边，拓扑可排序不等于路径可以执行。
+
+#### 生产链路与集成复现
+
+- `workflow/graph.rs::compile()` 保留边的 source_handle，并计算全图拓扑 order 和 ancestors。桌面 `WorkflowNodeShell.tsx::getNodeSourceHandles()` 为单组条件提供 true/false 出口，节点注册表将其标为 enabled/control-flow。
+- `WorkflowAgent::execute_if_else()` 返回 `__branch`，`node_output_value_inline()` 将其投影成 branch。`think()` 逐项执行 compiled.order，只有 target_node_id 的局部过滤，没有按条件出口判断节点是否可达；即使已经输出 false，true 专属后继仍运行。
+- 新增默认忽略的 `workflow_audit.rs::audit_workflow_unselected_branch_is_not_dispatched`，使用正式 ChatService、图编译、Kernel、节点事件和 RunStore；图为 start→条件→互斥模板 A/B→共同 end。条件刻意使用后端实际读取的 `logicalOperator/conditions/left/right` 结构，先隔离桌面字段映射问题；不调用模型、命令、网络或媒体供应商。
+- 执行 `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unselected_branch_is_not_dispatched --offline -- --ignored --nocapture`：两组约 0.21 秒，true 时未选中的 FALSE_PATH 进入 Running 并产生 Completed 输出；false 时未选中的 TRUE_PATH 同样执行。两次持久化终态均为 succeeded；断言在收集完两组结果后明确失败。已确认条件本身在这两组后端结构中正确输出 true/false，排除了“仅条件比较算错”的解释。
+
+#### 参考机制、影响与修复方向
+
+- DeepSeek Harness `packages/workflow/workflow-ptc/src/runtime.ts::WorkflowExecution` 将工作流 body 编译为 async 脚本，由 `drive()` 的 runInContext 实际执行；child 仅在脚本调用 agent() 时创建。其控制流由程序的实际执行决定，不是提前枚举所有可能分支并执行。它是程序式工作流，不存在与本系统 source_handle 一一对应的图 API，不能称其采用了同款图调度器；这里只参考“只有实际选中的路径才启动工作”的机制。本轮读取参考源码，未运行该参考项目。
+- 当前证据直接证明两条互斥模板路径都会产生输出。若路径接入 LLM、HTTP 或媒体作业，按相同派发机制存在多余请求、费用及不该发生的外部动作风险；本探针没有实际发起这些操作，不能把推断写成已发生的扣费或权限绕过。条件节点本身也不能取代权限控制。
+- 修复应在既有 WorkflowAgent/编译图中统一“边已激活、边未激活、前驱未决”和节点派发状态；未选中的独占后继应跳过，不能仅隐藏 UI 输出。需要明确合流语义：来自未激活路径的边不应永远挡住公共下游，且不可读取被跳过分支不存在的值。复用原有 Kernel、节点事件和 RunStore，不新增另一套执行中心。
+- 验收应覆盖 true/false、多组条件、嵌套分支、共同后继、分支内失败及显式 run-from-here；以真正的调用计数和持久化状态验证未选路径未执行。本轮仅补审计测试与记录，未改生产调度。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-39 条件派发忽略探针（见该节命令） | 明确失败：条件正确输出 true/false，两组未选中的互斥模板都进入 Running/Completed，运行均 succeeded |
+| `cargo test -p deepagent-runtime --lib workflow:: --offline`（新增 H-39 后） | 66 passed；尚无条件派发回归，不能用基础图与值测试替代真实路径验证 |
+| `cargo test -p deepagent-app-core --test workflow_audit --offline`（新增 H-39 后） | 2 ignored；H-38 与 H-39 均已单独显式运行并失败；抽取共用宿主 fixture 后 H-38 仍复现同样的 unknown tool/Completed/succeeded |
 | H-38 正式工作流工具失败忽略探针（见该节命令） | 明确失败：read_file 未注册；输出含 success=false/unknown tool，但节点 Completed、end 继续、持久化 run=succeeded |
 | `cargo test -p deepagent-runtime --lib workflow:: --offline`（新增 H-38 后） | 66 passed；图/值/媒体等单元回归，不覆盖正式工作流的空 registry 装配 |
 | `cargo test -p deepagent-app-core --lib session_search_tests --offline`（新增 H-38 后） | 2 passed；手动注册工具的适配器权限/校验测试通过，不能证明 run_workflow 实际注册了工具 |
@@ -1080,6 +1101,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 定时任务的运行归属与交互能力 | H-37 | 现有 CronService → AppCore 接纳、审批和通知共用明确的 unattended 契约；参考 Claude 队列归属与 Codex headless 策略 | 需要人工时明确拒绝或投递到真实 owner；计划可关联运行，停止入口可发现；不能留下无消费者审批 |
 | 工作流工具能力与失败传播 | H-38 | 复用现有工具组装和 ToolPipeline，NodeOutcome 保留结构化失败并定义显式容错；参考 DeepSeek isError 保真及现有 DAG 依赖失败传播 | 只读工具能实际运行；未知工具/拒绝/执行失败不冒充成功；节点、下游及 RunStore 语义一致 |
+| 工作流条件可达性与派发 | H-39 | 在现有编译图/WorkflowAgent 统一激活边、跳过边和合流；参考 DeepSeek 程序式工作流只启动实际执行路径的工作 | 未选分支真实执行数为零，嵌套与公共后继正确，不把跳过分支的输出当作已有值 |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
