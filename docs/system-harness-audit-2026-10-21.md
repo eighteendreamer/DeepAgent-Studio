@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具续轮投影拆分已复现 | 已确认 H-05；全部错误和流式分支未完成 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分与截断工具调用提交均已复现 | 已确认 H-05、H-18；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放边界及无效压缩丢失已返回 usage 均已复现 | 已确认 H-10、H-11、H-14；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权及跨运行审批 ID 冲突 | 已确认 H-03、H-15、H-16；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
@@ -513,6 +513,30 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 在现有运行与通知链路中独立表达执行结果和保存诊断，允许 settled 后追加一次、按 run/session 隔离的保存错误；不能把 cancelled 再改成“执行未停止”，也不能为避免错误而提前谎报 durable terminal。
 - 覆盖正常取消与取消错误去重、错误晚于 settled、切换会话后错误、终态保存重试以及重启恢复。若改事件/DTO，沿用同一 run_events/RunStore 边界同步消费方。本轮只增加审计探针和报告，未修生产 UI。
 
+### H-18：输出上限重试后仍截断时，未完成工具调用被补参数并提交
+
+**级别：中（P2），若工具接受空参数并使用有副作用的默认行为，影响可升高；触发条件：首次输出上限恢复已用尽或无法提高，响应仍包含未完成工具调用。** 本项验证到真实 ModelAgent 的决策及 Surface 提交，没有执行真实文件修改或系统命令。
+
+#### 复现与生产路径
+
+- `ChatCompletionAccumulator` 收到 `[DONE]` 会无条件 complete_tool_calls；`finish()` 把空 arguments 改为 `{}`。Responses accumulator 在 `response.incomplete` 后的 `finish()` 也把尚未收到 item.done/arguments.done 的 builder 转成原生 FunctionCall，空参数同样补 `{}`。
+- `ModelAgent::think_inner()` 第一次 length 会尝试把输出上限升至 65,536 并 abort 原 attempt，这一步正常。但再次 length 后，只有 `tool_invocations_from_items().is_empty()` 才进入续写恢复；非空时直接 commit，然后在最终 length 错误判定之前返回 CallTool/CallTools，并将原生调用加入历史。
+- 默认忽略探针 `model_agent::tests::audit_output_limit_does_not_dispatch_unfinished_tool_calls` 使用生产 ModelClient、两种 accumulator、ModelAgent 与记录型 ToolAttemptController。每种协议分别输入“只开始调用，尚无参数”和“不完整 JSON 参数”，连续两次明确 max-token 终态，另留一份成功响应用于确认是否实际进入恢复。Responses fixture 没有伪造 item.done 或 arguments.done。
+- 执行 `cargo test -p deepagent-runtime audit_output_limit_does_not_dispatch_unfinished_tool_calls --offline -- --ignored --nocapture`：四组都仅请求两次，均返回 `Ok(CallTool(...))`，原生 Surface 均保留一个 truncated-call，断言明确失败。Chat 的记录为 `begin:1 → prepare → abort:1 → begin:2 → prepare → commit:2`；Responses 为 `begin:1 → abort:1 → begin:2 → commit:2`。第三份正常响应没有消费。
+- 空参数两组决策为 `arguments={}`；半截 JSON 两组带 `__invalid_tool_arguments__` 哨兵。生产 `ToolPipeline::prepare()` 确实会在 hooks/权限/执行之前拦截该哨兵，因此**不声称半截 JSON 能绕过校验执行**。空 `{}` 没有哨兵，后续是否执行仍取决于工具 schema、权限和审批，不等于这些边界被绕过。
+
+#### 官方语义与成熟实现
+
+- [DeepSeek Chat API](https://api-docs.deepseek.com/api/create-chat-completion/) 将 length 与 tool_calls 区分，并要求宿主验证工具参数；length 表示输出达到指定上限，不能仅依据已有工具名字推断调用完整。
+- DeepSeek Harness `packages/llm/llm/src/assembler.ts::assembled()` 在 `finish.kind === 'max-tokens'` 时统一去掉 tool-call blocks，并同步过滤 replay metadata；不会把被丢弃的调用在下一请求重放。
+- 它的 `llm-pi-ai/tests/loader-composition.spec.ts` 明确用“partial 文本 + 半截工具参数 + length”检查：保留文字，去掉 tool-call，续写请求里没有 tool_calls。这里引用仓库实现/测试作为设计证据，没有在本机执行其完整测试套件。
+
+#### 后果与修复方向
+
+- 未完成调用会成为执行候选、触发一次校验失败/工具循环，并污染原生 replay；空参数还可能改变工具的默认操作范围。此次 fixture 未执行工具，不能将潜在默认副作用说成已发生。
+- 在同一模型响应提交边界统一处理终态与调用完整性；截断恢复的保留集合应同时决定决策、原生 Surface、stream attempt commit 及 durable replay，避免仅 UI 隐藏调用。借鉴 Harness 保留可安全续写文本、剔除截断调用并同步 replay 的方式。
+- 保留正常完成的无参调用、既有权限/审批和调用配对；新增多调用中途截断、第二次 length、无法升级输出上限、Responses 未闭合 item、取消与截断交错及重启测试。本轮未改生产模型或工具逻辑。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -540,10 +564,12 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-15 节单项命令 | 1 个探针明确失败：取消终态后审批仍 Pending，迟到回答受理并产生 tool_session grant；命令执行数为零 |
 | H-16 节单项命令 | 1 个探针明确失败：第二 run 的 action 独立登记，但相同 provider id 的审批遭全库幂等冲突 |
 | H-17 真实 Tauri 探针 | 当前源码桌面编译通过；真实模型首片段后停止约 2ms ACK；保存失败已送达 UI，但展示断言明确失败 |
+| H-18 节单项命令 | 1 个探针四组均复现：Chat/Responses、空参数/半截 JSON 在第二次 length 后仍返回工具决策并保留原生调用 |
+| `cargo test -p deepagent-runtime --lib model_agent::tests --offline`（新增 H-18 后） | 56 passed / 1 failed / 2 ignored；原有 `time_based_microcompact_clears_stale_tool_results_after_idle` 在 `Instant::now() - 3601s` 处溢出，尚未进入生产 microcompact；单独重跑同样失败。本轮未修改该测试或生产时钟，不能报常规测试全绿，也不据此认定生产压缩故障 |
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十七个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
+审查累计新增内容限于报告、十八个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 

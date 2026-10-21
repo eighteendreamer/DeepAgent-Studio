@@ -3831,6 +3831,76 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: max-token truncation must not commit unfinished tool calls"]
+    async fn audit_output_limit_does_not_dispatch_unfinished_tool_calls() {
+        let mut dispatched = Vec::new();
+        for wire_mode in [
+            deepagent_models::WireMode::ChatCompletions,
+            deepagent_models::WireMode::Responses,
+        ] {
+            for arguments in ["", r#"{"value":"#] {
+                let events = match wire_mode {
+                    deepagent_models::WireMode::ChatCompletions => vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{
+                            "tool_calls":[{"index":0,"id":"truncated-call","type":"function",
+                                "function":{"name":"audit_default","arguments":arguments}}]
+                        },"finish_reason":null}]}).to_string(),
+                        serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}).to_string(),
+                        "[DONE]".into(),
+                    ],
+                    deepagent_models::WireMode::Responses => vec![
+                        // No item.done or arguments.done: the call never completed.
+                        serde_json::json!({"type":"response.output_item.added","item":{
+                            "type":"function_call","id":"truncated-item","call_id":"truncated-call",
+                            "name":"audit_default","arguments":arguments
+                        }}).to_string(),
+                        response_incomplete(),
+                    ],
+                };
+                let success = match wire_mode {
+                    deepagent_models::WireMode::ChatCompletions => vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"content":"recovered"},"finish_reason":"stop"}]}).to_string(),
+                        "[DONE]".into(),
+                    ],
+                    deepagent_models::WireMode::Responses => response_text_completed("recovered"),
+                };
+                let transport = Arc::new(AttemptTransport {
+                    attempts: Mutex::new(VecDeque::from([events.clone(), events, success])),
+                    requests: Mutex::new(Vec::new()),
+                });
+                let mut config = ModelConfig::deepseek("audit-placeholder");
+                config.wire_mode = wire_mode;
+                let mut agent = ModelAgent::new(
+                    Arc::new(ModelClient::new(transport.clone(), config)),
+                    "deepseek-flash", "system", "inspect", vec![ToolSchema::function(
+                        "audit_default", "Audit fixture only; no real side effects",
+                        serde_json::json!({"type":"object","properties":{"value":{"type":"string"}}}),
+                    )],
+                ).with_max_model_attempts(4);
+                let mut attempt = RecordingToolAttempt::default();
+                let decision = agent
+                    .think_streaming_cancelled(0, &[], None, Some(&mut attempt))
+                    .await;
+                let is_call = matches!(
+                    decision,
+                    Ok(AgentDecision::CallTool(_)) | Ok(AgentDecision::CallTools(_))
+                );
+                let native_calls = agent.response_history.items.iter().filter(|item| matches!(
+                    item, ResponseInputItem::FunctionCall { call_id, .. } if call_id == "truncated-call"
+                )).count();
+                eprintln!("audit truncated tool: route={wire_mode:?}, raw={arguments:?}, requests={}, attempt_events={:?}, native_calls={native_calls}, decision={decision:?}",
+                    transport.requests.lock().unwrap().len(), attempt.events);
+                dispatched.push(is_call || native_calls > 0);
+            }
+        }
+        // Only the recording attempt fixture ran; no tool/process/file action was executed.
+        assert!(
+            dispatched.iter().all(|value| !value),
+            "unfinished calls entered the committed decision or native history: {dispatched:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn max_output_retries_same_turn_with_larger_limit_and_aborts_old_tools() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
