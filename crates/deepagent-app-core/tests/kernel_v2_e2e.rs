@@ -329,6 +329,151 @@ async fn audit_sandbox_override_does_not_route_to_default_direct_backend() {
 }
 
 #[tokio::test]
+#[ignore = "audit integration: requires local Node to hold a real MCP initialization open"]
+async fn pending_host_mcp_initialization_does_not_block_conversations() {
+    use deepagent_app_core::{McpServerDto, McpService};
+    use std::time::{Duration, Instant};
+
+    struct ObservedModel {
+        inner: ReplayTransport,
+        requests: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl HttpTransport for ObservedModel {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.requests.lock().unwrap().push(request.body.clone());
+            self.inner.stream(request, sink).await
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("slow-initialize.cjs");
+    let started = root.path().join("initialize.log");
+    let release = root.path().join("release");
+    std::fs::write(
+        &script,
+        r#"
+const fs = require('node:fs');
+const readline = require('node:readline');
+function reply(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+}
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') {
+    fs.appendFileSync(process.env.AUDIT_INIT_LOG, 'initialize\n');
+    const began = Date.now();
+    const timer = setInterval(() => {
+      if (!fs.existsSync(process.env.AUDIT_RELEASE) && Date.now() - began < 180000) return;
+      clearInterval(timer);
+      reply(request.id, { protocolVersion: request.params.protocolVersion,
+        capabilities: { tools: {} }, serverInfo: { name: 'slow-audit', version: '1' } });
+    }, 20);
+  } else if (request.method === 'tools/list') {
+    reply(request.id, { tools: [{ name: 'pending_audit_tool',
+      description: 'Pending audit capability', inputSchema: { type: 'object' } }] });
+  } else if (request.method === 'ping') {
+    reply(request.id, {});
+  }
+});
+"#,
+    )
+    .unwrap();
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = Arc::new(SettingsService::new(
+        db.clone(),
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(MemorySecretStore::new()),
+    ));
+    settings.initialize("sk-audit-placeholder").await.unwrap();
+    let mcp = Arc::new(McpService::new(db.clone()));
+    let dto: McpServerDto = serde_json::from_value(serde_json::json!({
+        "name":"slow_audit", "transport":"stdio", "enabled":true,
+        "command":"node", "args":[script],
+        "env":{"AUDIT_INIT_LOG":started,"AUDIT_RELEASE":release}
+    }))
+    .unwrap();
+    mcp.upsert(dto).unwrap();
+    let model = Arc::new(ObservedModel {
+        inner: ReplayTransport::new([response_text("first ready"), response_text("second ready")]),
+        requests: Mutex::new(Vec::new()),
+    });
+    let chat = ChatService::new(db, settings, model.clone(), root.path()).with_mcp(mcp.clone());
+    chat.start_plugin_preparation(Arc::new(|| {}));
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while !started.exists() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("real MCP child must have received initialize");
+    assert!(mcp.ready_registry().all_tools().is_empty());
+
+    let began = Instant::now();
+    let mut session = None;
+    let conversations = tokio::time::timeout(Duration::from_secs(5), async {
+        for run_id in ["pending-mcp-first", "pending-mcp-second"] {
+            session = Some(
+                chat.run_in_session(
+                    "Reply briefly.",
+                    session.as_deref(),
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    false,
+                    Some(run_id),
+                    |_| {},
+                    |_| {},
+                )
+                .await?,
+            );
+        }
+        Ok::<_, CoreError>(())
+    })
+    .await;
+    let elapsed = began.elapsed();
+    let pending_tools = mcp.ready_registry().all_tools();
+    let init_count = std::fs::read_to_string(&started).unwrap().lines().count();
+
+    // Release the held handshake and wait for publication before dropping the
+    // fixture. This also verifies late readiness without leaking the child.
+    std::fs::write(&release, "release").unwrap();
+    let published = tokio::time::timeout(Duration::from_secs(5), async {
+        while mcp.ready_registry().all_tools().is_empty() {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    if published.is_ok() {
+        mcp.ready_registry().close_all().await.unwrap();
+    }
+    eprintln!(
+        "audit pending MCP: two_turns_ms={}, init_count={init_count}, pending_tools={}",
+        elapsed.as_millis(),
+        pending_tools.len()
+    );
+    assert!(matches!(conversations, Ok(Ok(()))), "{conversations:?}");
+    assert!(published.is_ok(), "released server must become ready");
+    assert!(
+        pending_tools.is_empty(),
+        "pending capabilities must not publish"
+    );
+    assert_eq!(
+        init_count, 1,
+        "conversation must not start another MCP connection"
+    );
+    let requests = model.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests
+        .iter()
+        .all(|body| !body.contains("pending_audit_tool")));
+}
+
+#[tokio::test]
 async fn write_turn_reaches_terminal_with_checkpoint_and_real_side_effect() {
     let run_id = format!(
         "kernel-v2-{}-{}",
