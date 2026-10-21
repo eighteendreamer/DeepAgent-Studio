@@ -83,7 +83,10 @@ async function emitFixtures() {
   process.stdout.write(JSON.stringify(fixtures));
 }
 
-if (process.argv[2] !== "--emit-fixtures") {
-  throw new Error("opt-in audit only: pass --emit-fixtures or run the ignored Rust workflow contract probe");
+module.exports = { loadTypeScript };
+if (require.main === module) {
+  if (process.argv[2] !== "--emit-fixtures") {
+    throw new Error("opt-in audit only: pass --emit-fixtures or run the ignored Rust workflow contract probe");
+  }
+  emitFixtures().catch((error) => { console.error(error); process.exitCode = 1; });
 }
-emitFixtures().catch((error) => { console.error(error); process.exitCode = 1; });

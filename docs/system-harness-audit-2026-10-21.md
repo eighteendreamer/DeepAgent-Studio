@@ -19,7 +19,7 @@
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效均已复现 | 已确认 H-17、H-32、H-33、H-36；完整恢复及并发压力未完成 |
-| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流空工具注册、失败映射成功、互斥路径仍执行及前后端配置契约断裂已复现 | 已确认 H-19 至 H-22、H-38 至 H-40；记忆现有回归通过，其他图执行及重启边界未完成 |
+| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置及完成事件串话已复现 | 已确认 H-19 至 H-22、H-38 至 H-41；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | 真实 Cron tick 进入正式 ChatService，审批通知丢弃后仍挂起；基础 cron/store 回归通过 | 已确认 H-37；多宿主调度、重复触发及完整退出边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -975,10 +975,31 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 已确认后果：合法输入引用被拒绝；条件值改变；配置的模板和输出映射静默失效，并且后三组仍报告运行成功。这会使用户难以区分“空结果是业务结果”与“配置根本没被执行”。没有把这些结果夸大为数据泄漏或真实付费损失。
 - 验收必须从生产前端 schema 合法配置生成请求，再经正式 Rust 执行对比具体输出；覆盖每种 enabled 专业节点、输入声明与引用、真实 false 条件、输出映射和旧工程迁移。分别测试 UI schema 和 Rust 图结构不能替代跨语言执行测试。本轮仅增加 fixture 桥、审计测试和文档，未修改生产配置过滤或执行器。
 
+### H-41：其他会话完成会清掉当前画布运行监听和停止入口
+
+**级别：高（P1）；范围：画布运行与普通会话等共享 Tauri 全局 session://completed 通知时的前端运行归属。** 这与 H-39/H-40 的后端图执行无关，不需要错误的节点配置即可触发。
+
+#### 生产链路与前端行为复现
+
+- Tauri `SessionCompletedPayload` 已携带 run_id、session_id、status、error；普通 chat 和 start_workflow 都用全局 `completion_emitter.emit("session://completed", completed)` 发布。后端具有区分归属的信息，不是缺少 run 标识。
+- `workflowExecutor.ts::runBackendWorkflow()` 对 chat://event 的 envelope.run_id 有过滤，但 session://completed 的监听不读取任何 payload，任意通知都 cleanup、resolve。runWorkflow 的 finally 随后将 `_abortController`、`_currentRunId` 清空；cancelWorkflow 因而失去待停止的 run id，不再发送 cancel_run。
+- 新增显式启用的 `audit-workflow-isolation.test.cjs`，复用审计 TS loader，实际调用生产 runWorkflow/isWorkflowRunning/cancelWorkflow，替换 store、Tauri invoke/event bus。先投递 A 的 Running，再投递 B 的节点 Completed，确认已有节点过滤有效；之后投递带完整 B 归属的 session://completed，再检查 A 的监听、终态节点投递及取消请求。
+- 命令：PowerShell 先设 `$env:RUN_HARNESS_AUDIT='1'`，执行 `node --test apps/desktop/scripts/audit-workflow-isolation.test.cjs`，再删除该临时环境变量。显式探针约 106ms 失败：其他会话完成后，A 的 Promise 已结束，isWorkflowRunning=false、监听数=0、A 后续节点终态未交付，点击生产 cancelWorkflow 的 cancel_run 请求数=0。断言发生前已清理本地运行；该测试没有实际启动后台模型/媒体任务。
+- 复现边界：这里动态证明前端过早结算、丢弃后续事件并不发取消，不声称已经在真实桌面观察到了付费任务一直运行。后台是否仍在执行取决于 A 自身生命周期；B 的完成不会替 A 构成后端取消，潜在后果是 UI 已失去控制而实际作业还未结束。
+
+#### 成熟实现、影响与修复方向
+
+- Codex `tui/src/app/app_server_event_targets.rs` 将 TurnCompleted 等通知映射到所属 thread_id，`app_server_events.rs` 按线程通道 enqueue，未知/无效归属被拒绝。它不是本系统 Tauri 的同名事件协议；参考的是完成事件同样必须具有明确 owner。
+- 本系统自己的 `api.ts` 普通聊天监听已经使用 `if (e.payload.run_id !== actualRunId) return`，并按 status 判断 resolve/reject；这证明可以复用现有事件契约，不需要额外全局完成中心。读取了 Codex 源码，未执行参考项目测试。
+- 修复应把所有画布事件和终态订阅绑定到既有 run_id / listener owner，并让旧运行的 finally 不能清除新运行的资源；完成失败/取消的投影也读取已有 status/error。这里最后两项是应覆盖的生命周期验收方向，未另行宣称动态确认全部旧运行竞态。
+- 验收：A 运行期间，B 完成/失败/取消均不能结束 A、移除 A 监听或阻断停止；只有 A 自己的终态结算；两个运行交错收尾、快速重跑及监听注册前完成也应测试。实际节点、会话终态和取消都走现有链路，不新增执行中心。本轮未修改生产订阅行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-41 前端事件归属显式探针（见该节命令） | 明确失败：B 完成令 A 提前结算，监听归零，A 后续节点终态未交付且停止不发送 cancel_run；没有启动真实云作业 |
+| `node --test apps/desktop/scripts/audit-workflow-isolation.test.cjs`（未启用审计环境变量） | 1 skipped；显式启用后两次复现同一故障，约 106ms/96ms；导出共用 TS loader 后重跑 H-40，四组仍复现 |
 | H-40 真实前端序列化→正式后端执行忽略探针（见该节命令） | 明确失败：四组均未兑现配置；输入引用被拒绝，条件 false、end 空对象、模板空文本；后三组仍 succeeded |
 | `node --test apps/desktop/scripts/check-workflow.test.cjs`（新增 H-40 后） | 77 passed；现有配置、归一化与前端行为测试通过，不验证这些字段在 Rust 正式执行中生效 |
 | `cargo test -p deepagent-app-core --test workflow_audit --offline`（新增 H-40 后） | 3 ignored；均为已有缺陷的 opt-in 失败探针，已经分别显式执行，不把默认无失败解释为问题修复 |
@@ -1133,6 +1154,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 工作流工具能力与失败传播 | H-38 | 复用现有工具组装和 ToolPipeline，NodeOutcome 保留结构化失败并定义显式容错；参考 DeepSeek isError 保真及现有 DAG 依赖失败传播 | 只读工具能实际运行；未知工具/拒绝/执行失败不冒充成功；节点、下游及 RunStore 语义一致 |
 | 工作流条件可达性与派发 | H-39 | 在现有编译图/WorkflowAgent 统一激活边、跳过边和合流；参考 DeepSeek 程序式工作流只启动实际执行路径的工作 | 未选分支真实执行数为零，嵌套与公共后继正确，不把跳过分支的输出当作已有值 |
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
+| 画布运行事件与订阅所有权 | H-41 | 现有 run_id、完成 payload 和监听生命周期绑定；复用普通 chat 已有过滤方式，参考 Codex thread 通道 | 外部会话终态不影响画布；本 run 终态可回收；停止仍能发送对应取消；旧回调不能清理新 run |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
