@@ -3953,6 +3953,68 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: all supported thinking depths must map through the selected adapter"]
+    async fn audit_simple_depth_maps_to_chat_thinking_disabled() {
+        let mut results = Vec::new();
+        for wire_mode in [
+            deepagent_models::WireMode::Responses,
+            deepagent_models::WireMode::ChatCompletions,
+        ] {
+            for depth in [
+                ThinkingDepth::Simple,
+                ThinkingDepth::Medium,
+                ThinkingDepth::Deep,
+            ] {
+                let events = match wire_mode {
+                    deepagent_models::WireMode::Responses => response_text_completed("done"),
+                    deepagent_models::WireMode::ChatCompletions => vec![
+                        serde_json::json!({"choices":[{"index":0,"delta":{"content":"done"},"finish_reason":"stop"}]}).to_string(),
+                        "[DONE]".into(),
+                    ],
+                };
+                let transport = Arc::new(AttemptTransport {
+                    attempts: Mutex::new(VecDeque::from([events])),
+                    requests: Mutex::new(Vec::new()),
+                });
+                let config = ModelConfig::deepseek("audit-placeholder").with_wire_mode(wire_mode);
+                let client = Arc::new(ModelClient::new(transport.clone(), config));
+                let mut agent =
+                    ModelAgent::new(client, "deepseek-flash", "system", "hello", vec![])
+                        .with_thinking_depth(depth);
+                let outcome = agent.think(0, &[]).await;
+                let requests = transport.requests.lock().unwrap();
+                let last = requests.last();
+                results.push(serde_json::json!({
+                    "mode": format!("{wire_mode:?}"),
+                    "depth": format!("{depth:?}"),
+                    "completed": outcome.is_ok(),
+                    "transport_calls": requests.len(),
+                    "thinking": last.and_then(|body| body.get("thinking")),
+                    "effort": last.and_then(|body| body.get("reasoning_effort").or_else(|| body.get("reasoning"))),
+                    "error": outcome.err().map(|error| error.to_string()),
+                }));
+            }
+        }
+        eprintln!("thinking adapter audit: {}", serde_json::json!(results));
+        assert!(
+            results
+                .iter()
+                .filter(|case| case["mode"] == "Responses")
+                .all(|case| case["completed"] == true),
+            "all native protocol controls must complete"
+        );
+        assert!(
+            results.iter().all(|case| case["completed"] == true),
+            "Simple depth must disable chat thinking instead of failing local request validation"
+        );
+        assert_eq!(
+            results[3]["thinking"],
+            serde_json::json!({"type":"disabled"})
+        );
+        assert!(results[3]["effort"].is_null());
+    }
+
+    #[tokio::test]
     #[ignore = "audit reproducer: fallback output ceiling must match the active model capability"]
     async fn audit_fallback_rebuilds_output_limit_from_active_capability() {
         struct CapabilityGate {
