@@ -19,7 +19,7 @@
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突及子 Agent 工具限制未约束执行 | 已确认 H-03、H-15、H-16、H-19；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
-| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19、H-20；恢复、记忆和其他宿主一致性未完成 |
+| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -577,6 +577,46 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 明确输出交付契约：至少保留可定位、可恢复的工作树/提交；有依赖的下游须得到可读取的产物或受控集成后的基线。仅保留摘要或把路径写进文字，不能让已经删除的文件可用；自动集成涉及冲突和权限，应作为明确策略验证。
 - 覆盖修改/无修改、未提交/已提交、失败与取消、合并冲突、清理失败、重启定位和并发 DAG 的工作树身份。此次未改生产清理逻辑或引入自动合并。
 
+### H-21：子 Agent 恢复遗漏原始输出契约，schema、phase、label 全部丢失
+
+**级别：中（P2）；范围：task operation=resume 的原始请求持久化和重新投影。** 本项不是 H-04 的主会话恢复覆盖值问题，而是子运行已有字段在 writer/reader 之间不对称。
+
+#### 触发与复现
+
+- `run_tracked()` 保存 request 时写了 description/prompt/type/allowed_tools/model/effort/skills/isolation，却没有 phase、label、schema；`resume_request()` 明确读取这三个字段，并注释为保留原 frontmatter，但缺失时全部为 None。
+- `subagent_system_prompt()` 在 schema 存在时注入原 schema 和必须返回匹配 JSON 的要求。恢复后 schema=None，连同该输出要求一起消失；不是只有管理列表少显示一个标签。
+- 默认忽略探针 `subagent_runner::tests::audit_child_resume_preserves_schema_phase_and_label` 通过生产 runner 完成首次子运行、读取真实 SubagentRunStore 和生成的 transcript，然后调用正式 SubagentRunner::resume。两个模型响应是离线 fixture，但两次实际请求都由生产 ModelAgent 构造并记录。
+- 执行：`cargo test -p deepagent-app-core --lib audit_child_resume_preserves_schema_phase_and_label --offline -- --ignored --nocapture`。
+- 首次实际 wire instructions 包含 audit-contract-phase、audit-contract-label 和 audit_resume_value schema；子运行 succeeded。恢复后仍 succeeded，resume_count=1，但 `restored_phase=None, restored_label=None, restored_schema=None`，恢复的 wire instructions 对应三项均 false；契约相等断言失败。没有伪造 transcript 或手工删除字段。
+- 这证明恢复请求不再要求原输出格式，不证明真实模型一定返回无效 JSON。本次未模拟宿主重启，也未验证长历史丢失；原恢复实现另以原任务+2000 字符结果摘要重建请求，完整子历史是否应持久化仍需单独定义和测试。
+
+#### 成熟实现对照与修复方向
+
+- Claude Code `tools/AgentTool/resumeAgent.ts` 并行读取 getAgentTranscript 与 readAgentMetadata，恢复消息/replacement 状态、角色和工作目录后重新运行；`sessionStorage.ts::AgentMetadata` 特别说明缺角色元数据会使 fork 恢复静默退化。Codex `core/src/agent/control/resume.rs` 恢复后返回实际 ThreadConfigSnapshot。可借鉴的是恢复有效状态并验证其完整性，不是照搬它们的字段或存储。
+- 本系统应在现有子运行 request/transcript 边界统一序列化与恢复契约，避免 writer/reader 手工字段清单不同步；兼容旧数据，对字段缺失给出明确默认或恢复诊断，不凭空猜出旧 schema。
+- 覆盖首次运行→继续、再次继续、跨父 turn、宿主重启、旧 transcript、工具限制和模型配置；完整历史与压缩 replacement 如需恢复，应复用现有事件及 Surface 能力，不能另造子 Agent 运行内核。
+- 本轮仅增加测试与报告，并把测试 runner fixture 提取复用；未修生产保存或恢复行为。
+
+### H-22：DAG 子运行只改变声明的工作目录，文件工具仍绑定父工作区
+
+**级别：高（P1）；范围：DagSubagentExecutor 到 ChatSubagentRunner 的工作区绑定。** 本项与 H-20 分开：H-20 是调度器删除已写入工作树的产出；本项是实际工具可能根本没有写入所分配的工作树。
+
+#### 触发与复现
+
+- `DagSubagentExecutor::execute()` 调用 runner.with_root(assigned_worktree)，其实现仅修改 self.root，没有重建 parent registry 中已绑定根目录的工具。请求使用 shared isolation，execution_root() 返回这个新 self.root。
+- `run_active()` 仅在 execution_root != self.root 时重绑工具；DAG 路径两者已相等，因此跳过重绑并克隆父工作区 registry。system prompt/checkpoint 的根却是新目录，形成声明与实际读写目标不一致。
+- 默认忽略探针 `subagent_runner::tests::audit_dag_child_rebinds_file_tools_to_assigned_worktree` 创建临时 parent 与 assigned-worktree 两个目录，在 parent 上构建真实文件工具 registry；将 assigned-worktree 作为真实 SubAgentContext 传给生产 DagSubagentExecutor。固定模型返回完整 write_file 相对路径调用，之后正常结束。
+- 执行：`cargo test -p deepagent-app-core --lib audit_dag_child_rebinds_file_tools_to_assigned_worktree --offline -- --ignored --nocapture`。
+- 实测子运行 `ok=true`，每次实际 wire instructions 都声明子目录，但 `parent_output=Some("hidden tool executed"), child_output=None`；要求只写入分配目录的断言失败。真实 WriteFileTool 执行，没有跳过权限或虚构 tool result。
+- 本探针验证生产执行边界，用目录模拟调度器已经分配的上下文，没有在该测试再启动 Git、模型网络或完整 plan_execute。与 H-20 的真实 Git 调度器探针互补，但不能将二者拼成已经做过完整端到端模型编排。只验证 write_file，其他绑定工具需独立覆盖。
+
+#### 成熟实现对照与修复方向
+
+- Claude Code `AgentTool.tsx` 将完整同步执行包在 wrapWithCwd/runWithCwdOverride 内；`utils/cwd.ts` 使用 AsyncLocalStorage 为并发子运行派生有效 cwd。FileWriteTool 使用 expandPath/getCwd，路径展开以该执行上下文为依据；提示词和文件执行共享有效目录，不只修改提示文字。
+- 本系统已有 run_active() 的 registry 重绑分支，应让工作区绑定与实际 registry 来源保持明确关系，避免 with_root 修改比较基准后跳过重绑。文件、命令、权限、checkpoint、项目查询和模型环境需核对同一有效工作区；保留已有 session_search 会话项目约束，不全局 chdir 或修改共享父 registry。
+- 覆盖两个并行子目录写同名文件、父目录不变、相对和绝对路径、sandbox/审批、工具搜索、恢复及普通 task 与 DAG 一致性。H-19、H-20、H-22 显示同一子运行上下文在 schema、工具根、产物所有权处分裂，后续应围绕既有 runner 的有效执行配置统一治理，不逐个增加路径特判。
+- 本轮只增加审计证据，没有修生产工具根或删除逻辑。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -607,13 +647,20 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-18 节单项命令 | 1 个探针四组均复现：Chat/Responses、空参数/半截 JSON 在第二次 length 后仍返回工具决策并保留原生调用 |
 | H-19 节单项命令 | 1 个探针四组均复现：wire 无 write_file schema，真实子运行仍成功写入各自临时目录 |
 | H-20 节单项命令 | 真实临时 Git 仓库探针失败：上游工作树已删除、下游无产物、主目录仍是初始内容 |
+| H-21 节单项命令 | 真实首次运行及 resume 后契约断言失败；恢复计数为 1，但 schema/phase/label 和 wire 指令均丢失 |
+| H-22 节单项命令 | 真实 DAG 子执行器及文件工具探针失败；wire 声明子目录，产出实际落到临时父目录 |
+| `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-21、H-22 后） | 6 passed / 3 ignored；H-19 提取共享 fixture 后另行显式复跑，四组仍复现同一缺陷 |
 | `cargo test -p deepagent-subagents --offline`（新增 H-20 后） | 13 passed / 1 ignored；原有 DAG 测试检查清理和摘要，未校验文件产出保留 |
+| `cargo test -p deepagent-memory -p deepagent-knowledge --offline` | memory 40 passed，knowledge 63 passed；均无 ignored 或失败 |
+| `cargo test -p deepagent-app-core --lib session_memory::tests --offline` | 31 passed；含空窗口不请求、笔记未改不推进覆盖游标、越界读写拒绝及异步 pass 收尾 |
+| `cargo test -p deepagent-app-core --lib memory_service::tests --offline` | 5 passed；vault 写入、主动 recall 与知识检索可见性边界通过 |
+| `cargo test -p deepagent-app-core --lib knowledge_service::tests --offline` | 18 passed；项目切换、磁盘重载、draft、检索及离线捕获测试通过 |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-19 后） | 6 passed / 1 ignored；常规角色测试只验证 schema 过滤，没有验证清单外实际调用被拒绝 |
 | `cargo test -p deepagent-runtime --lib model_agent::tests --offline`（新增 H-18 后） | 56 passed / 1 failed / 2 ignored；原有 `time_based_microcompact_clears_stale_tool_results_after_idle` 在 `Instant::now() - 3601s` 处溢出，尚未进入生产 microcompact；单独重跑同样失败。本轮未修改该测试或生产时钟，不能报常规测试全绿，也不据此认定生产压缩故障 |
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、二十个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
+审查累计新增内容限于报告、二十二个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
@@ -645,3 +692,24 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - `cargo test -p deepagent-app-core --lib --offline input_runtime::tests`：28 passed。该测试只验证输入接纳/租约层，前驱的取消回调为记录型 fixture，没有运行并发模型、Tauri UI、完整终态或多进程压力，不能据此覆盖所有会话调度竞态。
 
 后续仍需覆盖逐文件运行包校验长延迟注入、完整宿主并发租约/取消压力、完整压缩的真实 wire 及重启、DeepSeek 流式异常与其他宿主入口。保存失败的 UI 通知现已通过真实故障注入确定为 H-17。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。
+
+### 后续独立验证：记忆与知识库已有保护边界
+
+- memory/knowledge 两个 crate 和 AppCore 的 session_memory、memory_service、knowledge_service 测试合计 157 项通过，分别为 40+63+31+5+18。没有因为发现其他模块缺陷而把这部分也定性为失效。
+- 核查笔记提取实际使用仅含 pinned note 工具的 registry；这与 H-19 的“完整执行表、仅过滤 schema”不同。原有测试实际验证 off-note 访问拒绝、未编辑不宣称覆盖、放弃的 pass 不保存 watermark。
+- 上述是现有离线回归，不覆盖真实模型笔记内容质量、跨进程崩溃瞬间、会话 rewind 后笔记与当前历史一致性，也没有消除前述真实笔记请求次数用例的未定性状态。不能将 157 项通过概括成记忆系统全面验收通过。
+
+## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
+
+下表依据已复现的边界归并；优先级不等于所有问题具有相同触发概率。设计收敛在本系统既有内核，不复制参考项目建立第二套运行链。
+
+| 修复批次 | 关联问题 | 应统一的现有边界 | 首要验收 |
+|---|---|---|---|
+| 执行权限与子运行上下文 | H-03、H-19、H-22 | 有效工具集合、sandbox 选择、执行根、checkpoint 必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致 |
+| 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
+| 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
+| MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
+| 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18 | 同一原生提交边界决定完整调用、截断续写及回放；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；无效摘要仍记已返回 usage；结束后无游离预取 |
+| 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
+
+其中子运行已经出现三类独立执行上下文分裂（H-19/H-20/H-22）。后续修复应先确定同一配置/工作树/工具注册表的所有权和生命周期，再按这些探针逐项关闭；不能只隐藏工具、修改提示路径或延迟删目录来宣称隔离已成立。

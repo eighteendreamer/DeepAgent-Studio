@@ -1165,6 +1165,7 @@ mod tests {
     #[derive(Default)]
     struct AuditChildWriteTransport {
         tools_seen: std::sync::Mutex<Vec<Vec<String>>>,
+        instructions_seen: std::sync::Mutex<Vec<String>>,
     }
 
     #[async_trait::async_trait]
@@ -1175,6 +1176,12 @@ mod tests {
             sink: &mut dyn deepagent_models::transport::EventSink,
         ) -> Result<()> {
             let body: serde_json::Value = serde_json::from_str(&request.body)?;
+            self.instructions_seen.lock().unwrap().push(
+                body["instructions"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string(),
+            );
             let tools = body["tools"]
                 .as_array()
                 .unwrap()
@@ -1206,77 +1213,81 @@ mod tests {
         }
     }
 
+    fn audit_child_runner(
+        root: &Path,
+        transport: Arc<dyn deepagent_models::transport::HttpTransport>,
+    ) -> ChatSubagentRunner {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = SystemClock;
+        let session = Session::create(&db, &clock, Some("audit parent")).unwrap();
+        deepagent_persistence::run_store::RunStore::new(&db)
+            .create(
+                "audit-parent",
+                &session.id().to_string(),
+                None,
+                subagent_now_ms(),
+            )
+            .unwrap();
+        let settings = Arc::new(crate::settings::SettingsService::new(
+            db.clone(),
+            transport.clone(),
+            Arc::new(crate::secret_store::MemorySecretStore::new()),
+        ));
+        let host = ChatService::new(db.clone(), settings, transport.clone(), root);
+        let mut registry = ToolRegistry::new();
+        for tool in deepagent_builtins::file_tools(deepagent_builtins::WorkspaceRoot::new(root)) {
+            registry.register(tool).unwrap();
+        }
+        let definitions: std::collections::BTreeMap<_, _> = builtin_runtime_agent_definitions()
+            .into_iter()
+            .map(|def| (def.type_name.clone(), def))
+            .collect();
+        let sink: Arc<dyn RuntimeEventSink> = Arc::new(deepagent_runtime::NullEventSink);
+        ChatSubagentRunner {
+            db: db.clone(),
+            parent_run_id: "audit-parent".into(),
+            transcript_root: root.join("transcripts"),
+            client: Arc::new(ModelClient::new(
+                transport.clone(),
+                deepagent_models::ModelConfig::deepseek("audit-placeholder"),
+            )),
+            model: "deepseek-flash".into(),
+            thinking_depth: ThinkingDepth::Simple,
+            registry: Arc::new(registry),
+            root: root.to_path_buf(),
+            tool_search_mode: deepagent_builtins::ToolSearchMode::Disabled,
+            tool_search_auto_threshold: 10_000,
+            parent_discovered_snapshot: Default::default(),
+            agent_definitions: definitions,
+            background: Default::default(),
+            events: Arc::downgrade(&sink),
+            skills: None,
+            host,
+            access: deepagent_builtins::FsAccess::Workspace,
+            local_execution_mode: crate::settings::LocalExecutionMode::Direct,
+            bash_full_access: false,
+            hooks: Default::default(),
+            parent_checkpoint: Default::default(),
+            parent_approvals: Default::default(),
+        }
+    }
+
     #[tokio::test]
     #[ignore = "audit reproducer: child tool restrictions must also constrain actual dispatch"]
     async fn audit_read_only_subagent_rejects_tools_hidden_by_its_profile() {
         let mut unexpected_writes = Vec::new();
         for scope in ["explore", "plan", "request_allowlist", "profile_denylist"] {
             let dir = tempfile::tempdir().unwrap();
-            let db = Arc::new(Database::open_in_memory().unwrap());
-            let clock = SystemClock;
-            let session = Session::create(&db, &clock, Some("audit parent")).unwrap();
-            deepagent_persistence::run_store::RunStore::new(&db)
-                .create(
-                    "audit-parent",
-                    &session.id().to_string(),
-                    None,
-                    subagent_now_ms(),
-                )
-                .unwrap();
             let transport = Arc::new(AuditChildWriteTransport::default());
-            let settings = Arc::new(crate::settings::SettingsService::new(
-                db.clone(),
-                transport.clone(),
-                Arc::new(crate::secret_store::MemorySecretStore::new()),
-            ));
-            let host = ChatService::new(db.clone(), settings, transport.clone(), dir.path());
-            let mut registry = ToolRegistry::new();
-            for tool in
-                deepagent_builtins::file_tools(deepagent_builtins::WorkspaceRoot::new(dir.path()))
-            {
-                registry.register(tool).unwrap();
-            }
-            let mut definitions: std::collections::BTreeMap<_, _> =
-                builtin_runtime_agent_definitions()
-                    .into_iter()
-                    .map(|def| (def.type_name.clone(), def))
-                    .collect();
+            let mut runner = audit_child_runner(dir.path(), transport.clone());
             let profile_name = if scope == "profile_denylist" {
                 let def = profile(&[], &["Write"]).unwrap();
-                definitions.insert(def.type_name.clone(), def);
+                runner.agent_definitions.insert(def.type_name.clone(), def);
                 Some("t".into())
             } else if scope == "request_allowlist" {
                 None
             } else {
                 Some(scope.into())
-            };
-            let sink: Arc<dyn RuntimeEventSink> = Arc::new(deepagent_runtime::NullEventSink);
-            let runner = ChatSubagentRunner {
-                db: db.clone(),
-                parent_run_id: "audit-parent".into(),
-                transcript_root: dir.path().join("transcripts"),
-                client: Arc::new(ModelClient::new(
-                    transport.clone(),
-                    deepagent_models::ModelConfig::deepseek("audit-placeholder"),
-                )),
-                model: "deepseek-flash".into(),
-                thinking_depth: ThinkingDepth::Simple,
-                registry: Arc::new(registry),
-                root: dir.path().to_path_buf(),
-                tool_search_mode: deepagent_builtins::ToolSearchMode::Disabled,
-                tool_search_auto_threshold: 10_000,
-                parent_discovered_snapshot: Default::default(),
-                agent_definitions: definitions,
-                background: Default::default(),
-                events: Arc::downgrade(&sink),
-                skills: None,
-                host,
-                access: deepagent_builtins::FsAccess::Workspace,
-                local_execution_mode: crate::settings::LocalExecutionMode::Direct,
-                bash_full_access: false,
-                hooks: Default::default(),
-                parent_checkpoint: Default::default(),
-                parent_approvals: Default::default(),
             };
             let request = deepagent_builtins::SubagentRequest {
                 description: format!("audit {scope}"),
@@ -1315,6 +1326,144 @@ mod tests {
         assert!(
             unexpected_writes.iter().all(|wrote| !wrote),
             "child executed tools excluded by declared restrictions: {unexpected_writes:?}"
+        );
+    }
+
+    #[derive(Default)]
+    struct AuditResumeTransport {
+        requests: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+
+    #[async_trait::async_trait]
+    impl deepagent_models::transport::HttpTransport for AuditResumeTransport {
+        async fn stream(
+            &self,
+            request: deepagent_models::transport::TransportRequest,
+            sink: &mut dyn deepagent_models::transport::EventSink,
+        ) -> Result<()> {
+            self.requests
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&request.body)?);
+            sink.on_event(
+                &serde_json::json!({"type":"response.output_text.delta",
+                "delta":r#"{"audit_resume_value":"kept"}"#})
+                .to_string(),
+            )?;
+            sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: child resume must preserve its original output contract"]
+    async fn audit_child_resume_preserves_schema_phase_and_label() {
+        use deepagent_builtins::SubagentRunner;
+        use deepagent_persistence::subagent_store::SubagentRunStore;
+
+        let dir = tempfile::tempdir().unwrap();
+        let transport = Arc::new(AuditResumeTransport::default());
+        let runner = audit_child_runner(dir.path(), transport.clone());
+        let original = deepagent_builtins::SubagentRequest {
+            description: "audit resume".into(),
+            prompt: "Return the required JSON value".into(),
+            subagent_type: None,
+            allowed_tools: vec!["Read".into()],
+            model: None,
+            effort: None,
+            skills: vec![],
+            isolation: "shared".into(),
+            fork: false,
+            phase: Some("audit-contract-phase".into()),
+            label: Some("audit-contract-label".into()),
+            schema: Some(serde_json::json!({"type":"object","properties":{
+                "audit_resume_value":{"type":"string"}},"required":["audit_resume_value"]})),
+        };
+        runner.run_inner(original.clone(), None).await.unwrap();
+        let store = SubagentRunStore::new(&runner.db);
+        let record = store
+            .list_for_parent(&runner.parent_run_id)
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(record.state, "succeeded");
+        let restored = runner
+            .resume_request(&record, "Continue with the same contract")
+            .unwrap();
+        runner
+            .resume(
+                &record.id,
+                "Continue with the same contract",
+                Default::default(),
+            )
+            .await
+            .unwrap();
+        let after = store.get(&record.id).unwrap().unwrap();
+        assert_eq!(after.state, "succeeded");
+        assert_eq!(after.resume_count, 1);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let initial = requests[0]["instructions"].as_str().unwrap();
+        let resumed = requests[1]["instructions"].as_str().unwrap();
+        assert!(
+            initial.contains("audit-contract-phase")
+                && initial.contains("audit-contract-label")
+                && initial.contains("audit_resume_value"),
+            "original contract must be sent"
+        );
+        eprintln!("audit child resume: restored_phase={:?}, restored_label={:?}, restored_schema={:?}, resumed_wire_phase={}, resumed_wire_label={}, resumed_wire_schema={}, resume_count={}",
+            restored.phase, restored.label, restored.schema,
+            resumed.contains("audit-contract-phase"), resumed.contains("audit-contract-label"),
+            resumed.contains("audit_resume_value"), after.resume_count);
+        assert_eq!(
+            (restored.phase, restored.label, restored.schema),
+            (original.phase, original.label, original.schema),
+            "resume lost the original child contract after durable tracking"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: DAG tool paths must use the assigned worktree, not parent root"]
+    async fn audit_dag_child_rebinds_file_tools_to_assigned_worktree() {
+        use deepagent_subagents::{SubAgentContext, SubAgentExecutor, Worktree};
+
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("parent");
+        let child = temp.path().join("assigned-worktree");
+        std::fs::create_dir_all(&parent).unwrap();
+        std::fs::create_dir_all(&child).unwrap();
+        let transport = Arc::new(AuditChildWriteTransport::default());
+        let runner = audit_child_runner(&parent, transport.clone());
+        let result = DagSubagentExecutor::new(runner)
+            .execute(SubAgentContext {
+                node_id: "audit-node".into(),
+                goal: "Create the requested file in your working directory".into(),
+                role: None,
+                phase: None,
+                worktree: Worktree {
+                    name: "audit-node".into(),
+                    path: child.to_string_lossy().to_string(),
+                },
+                upstream_results: vec![],
+            })
+            .await
+            .unwrap();
+        assert!(
+            result.ok,
+            "child failed before path verification: {result:?}"
+        );
+        let instructions = transport.instructions_seen.lock().unwrap();
+        let assigned = format!("Working directory: {}", child.display());
+        assert!(
+            !instructions.is_empty() && instructions.iter().all(|s| s.contains(&assigned)),
+            "fixture requires the actual request to name the assigned child directory"
+        );
+        let parent_output = std::fs::read_to_string(parent.join("audit-child.txt")).ok();
+        let child_output = std::fs::read_to_string(child.join("audit-child.txt")).ok();
+        eprintln!("audit DAG tool root: child_ok={}, wire_names_child=true, parent_output={parent_output:?}, child_output={child_output:?}", result.ok);
+        assert!(
+            parent_output.is_none() && child_output.as_deref() == Some("hidden tool executed"),
+            "DAG child wrote through the parent-bound tool registry"
         );
     }
 
