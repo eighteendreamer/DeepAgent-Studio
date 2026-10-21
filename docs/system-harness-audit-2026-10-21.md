@@ -18,7 +18,7 @@
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
-| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效均已复现 | 已确认 H-17、H-32、H-33、H-36；完整恢复及并发压力未完成 |
+| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话及订阅就绪前启动的竞态已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 
@@ -1035,10 +1035,33 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 潜在后果：后端已结束，调用方仍等待；画布节点可能缺少结果、UI 保持运行态或阻塞下一操作。普通聊天的其他状态处理是否会部分纠正 UI，要另外实测，不把包装器 Promise 悬挂直接等同所有界面都完全冻结。由于后端实际已经终态，不能把这项笼统描述成后台工作无法停止。
 - 验收包括注册延迟、ACK 前完成、快速校验失败、当前 run 失败/取消、订阅失败、窗口重连及持久化补读；必须保证无丢终态且监听可释放。此阶段只增加默认跳过的故障探针和文档，没有修改生产订阅或另建事件中心。
 
+### H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态
+
+**级别：中（P2）；范围：非终态运行的启动恢复、恢复重试与重新打开的会话投影。** 与 H-32 的备用宿主越权恢复不同，本项由确认持有 Primary 角色的单宿主执行，不依赖多进程竞争。
+
+#### 生产路径与真实持久化复现
+
+- 正常 `kernel::persist_terminal()` 复用 RunStore::finish_with_event，在一个 SQL 事务中更新 runs、追加取消审计及规范 run_terminal，重复收尾不会再次落终态。既有失败回滚和重试测试提供了正确路径的对照。
+- `AppService::recover_unfinished_runs()` 未使用该边界：它先修复 task，再独立 append_event(run_recovered_after_startup)，最后调用仅更新 runs 的 finish；既不写规范 run_terminal，也不将 EventPayload::RunTerminal 投影到会话文件。session_conversation_from_events 只凭会话 RunTerminal 设置 turn.terminal_kind，不会用 runs.terminal_kind 补齐。
+- 新增默认忽略集成探针 `crates/deepagent-app-core/tests/recovery_terminal_audit.rs::audit_startup_recovery_preserves_one_replayable_terminal`：实际临时 SQLite 与生产 Session 文件保存用户输入、Running task 和 running_turn run；通过正式 AppService 执行恢复。对照不注入故障；实验组用 SQLite trigger 仅拒绝该 run 的 finished_at 更新，确认恢复失败且 run 仍未终结后移除 trigger，再调用原恢复入口。没有替换恢复函数、直接伪造恢复事件或使用用户数据库。
+- 执行 `cargo test -p deepagent-app-core --test recovery_terminal_audit --offline -- --ignored --nocapture`：探针约 0.28 秒明确失败。正常恢复为 recovery_markers=1、run_kind=failed、run_terminals=0、session_terminals=0、conversation_turn_kind=null；注入后重试为 recovery_markers=2，其他值相同。两组 task 均确已 Failed，后续恢复返回空列表，说明这不是根本没执行恢复。
+- 每组都先释放原 Session、Database、AppService 和 host lock，再用 AppService::open 打开相同实际文件后读取上述结果。新宿主仍不补写缺失终态；恢复入口认为运行已经完成，不再处理。这里只模拟崩溃遗留状态及一次 SQL 更新故障并实际重开存储，没有强杀真实 Tauri 或模拟 OS 断电。
+
+#### 对照、影响与修复方向
+
+- Codex `app-server/src/request_processors/thread_lifecycle.rs::set_thread_status_and_interrupt_stale_turns()` 在没有 live active turn 时，将遗留 InProgress turn 投影为 Interrupted；`thread_resume_and_read_interrupt_incomplete_rollout_turn_when_thread_is_idle` 测试要求首次 resume、再次 resume 和 thread/read 均保留同一 turn 的 Interrupted 状态。正常 TurnAborted 的增量投影也按 turn_id 更新终态；见 app-server-protocol 的 thread_history_projection.rs 和 thread_history.rs。这里只阅读源码和测试，未运行参考项目；不声称 Codex 采用本系统相同的 SQL/会话文件事务。
+- 已实证的影响是两个恢复视图矛盾：run 查询明确失败，而 session_conversation 给同一 run 的 turn 返回空终态；仅重放规范 run_terminal 的消费者也不会收到该终态。故障重试还产生重复恢复标记。当前 thread/read 同时包含 runs 状态，能据此判定失败，不能声称所有 SDK 都永久挂起；本轮也未验证桌面是否显示错误、是否自动重跑任务，不把这些写成已发生后果。
+- 修复应让启动恢复接回现有规范终态写入，并明确 runs/run_events 与文件会话投影之间可重试、按 run 身份去重的补偿规则。两种存储不是同一 SQL 事务，不能简单宣称包一个事务就全部原子；应让已终态但缺会话投影的运行仍能修复，并按真实归属写到对应 turn，避免只追加在会话尾部误标后续 turn。可从现有正常终态边界收敛，不新增恢复执行器或事件存储。
+- 验收需要覆盖正常遗留恢复、恢复事件后更新失败、规范终态后会话投影失败、反复重开、同会话多个遗留运行和随后已完成 turn。以上后几项是后续修复必须验证的边界，本探针未全部动态覆盖。本轮仅增加显式运行的失败探针和文档，未修改生产恢复行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-44 文件数据库启动恢复显式探针（见该节命令） | 明确失败：正常与故障重试均 run=failed、两日志终态数=0、会话 turn 终态为空；故障重试额外产生两条恢复标记，真实重开后未自愈 |
+| `cargo test -p deepagent-persistence --lib run_store::tests --offline`（H-44 核查时） | 3 passed；正常终态幂等和事务回滚通过，不能替代恢复路径的投影一致性 |
+| `cargo test -p deepagent-app-core --lib startup_recovery_finalizes_unfinished_runs_and_active_tasks --offline` | 1 passed；原有测试只检查运行表/task/恢复标记等，没有检查规范终态和会话 turn 投影 |
+| `cargo test -p deepagent-app-core --test recovery_terminal_audit --offline` | 1 ignored；H-44 已另行显式执行失败 |
 | H-43 前端启动/订阅显式探针（见该节命令） | 两个断言明确失败：聊天/画布均先启动后就绪，早到终态未交付且继续 pending；画布节点结果亦未收到，晚终态对照可正常清理 |
 | `node --test apps/desktop/scripts/audit-start-subscription.test.cjs apps/desktop/scripts/audit-workflow-isolation.test.cjs apps/desktop/scripts/check-workflow.test.cjs apps/desktop/scripts/check-canvas-ipc.test.cjs` | 常规入口 79 passed / 3 skipped，0 failed；三项为 H-41/H-43 显式启用探针，不代表其生产缺陷已修复 |
 | H-42 双进程调度忽略探针（见该节命令） | 明确失败：one-shot/recurring 同一 occurrence 均被两个进程 fire；顺序再次 poll 的两组对照均无重触发 |
@@ -1214,6 +1237,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
 | 桌面运行事件与订阅生命周期 | H-41、H-43 | 现有 run_id、完成 payload、订阅就绪屏障和持久化补读统一；参考 Codex thread 通道和持续消费 worker | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能清理新 run |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
+| 启动恢复的规范终态与会话投影 | H-44 | 恢复共用现有幂等终态边界，文件会话投影具备按 run 身份的补偿；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补，不能改错后续 turn |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
