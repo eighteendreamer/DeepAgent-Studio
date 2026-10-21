@@ -18,7 +18,7 @@
 | 上下文、压缩、记忆 | 预取摘要生命周期及重复 assistant 文本导致压缩回放复活旧历史均已复现 | 已确认 H-10、H-11；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 真实文件读取及工作区外拦截；沙箱 backend override 路由探针 | 已确认 H-03；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 副作用重试、工具分页、握手与并发回包已复现；含本机子进程 | 已确认 H-06 至 H-09；宿主准备与 hooks 未完成 |
-| 持久化、崩溃恢复、并发与输入租约 | 取消终态、进程重启继续、27 项恢复与 6 项取消协调器测试 | 已获得部分基线；数据库故障及并发压力未完成 |
+| 持久化、崩溃恢复、并发与输入租约 | 取消终态、重启继续；注入取消审计写入失败仍能传递根/子取消信号，恢复后显式重试幂等 | 已通过该存储故障边界；UI 保存错误及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 待逐项验证 | 未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -366,7 +366,7 @@ Codex `core/src/session/mod.rs::replace_compacted_history()` 先为缺失身份�
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` | 11 passed / 2 ignored，无常规失败 |
 | `cargo test -p deepagent-app-core --lib --offline input_runtime::tests` | 27 passed；覆盖 native snip/patch、工具配对、压缩边界及恢复等现有测试；不代表真实大上下文端到端压缩已验收 |
 | `cargo test -p deepagent-app-core --lib --offline context_runtime::tests`（新增 H-11 后） | 22 passed / 1 ignored；新重复内容缺陷探针默认忽略，常规测试无失败 |
-| `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests` | 6 passed；包括无 durable run 时取消、不获取数据库锁、审批作用域等现有测试；不等于已完成审计写入故障注入 |
+| `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests`（新增存储故障注入后） | 7 passed；包括审计插入失败后的信号送达、事务回滚、显式重试及唯一终态 |
 | `cargo test -p deepagent-cli audit_ --offline -- --ignored --nocapture`（首批执行时） | 当时的 2 个探针明确失败，分别复现 H-01、H-02；后来新增的 resume/steer 探针分别单独执行，见 H-04 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_sandbox_override --offline -- --ignored --nocapture` | 探针明确失败，复现 H-03 |
 | H-04 至 H-09 各节列出的单项命令 | 7 个探针分别明确失败（H-04 包含 resume、steer 两个），证据见对应章节；不是常规测试通过 |
@@ -374,7 +374,7 @@ Codex `core/src/session/mod.rs::replace_compacted_history()` 先为缺失身份�
 | H-11 节单项命令 | 1 个探针明确失败：压缩保留 6 items，数据库恢复得到 54 items |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十二个默认忽略的缺陷探针及一个默认忽略的宿主隔离集成探针，未修改生产运行逻辑。本批重新运行了格式检查和 CLI/models/MCP/runtime 常规测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十二个默认忽略的缺陷探针、一个默认忽略的宿主隔离集成探针和一个默认运行的取消存储故障注入测试，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
@@ -383,4 +383,12 @@ Codex `core/src/session/mod.rs::replace_compacted_history()` 先为缺失身份�
 - 两轮模型均为离线 replay；真实执行了宿主启动、MCP 进程、ChatService 接纳、组装、Kernel 及模型请求构造。MCP fixture 在释放后接受宽松 legacy 握手，以单独验证生命周期隔离；不覆盖 H-08 的严格协议兼容性。
 - 该结果支持当前聊天读取 ready snapshot 的边界；不能由此证明磁盘运行包全量校验也已通过 180 秒延迟注入，更不能证明失败插件的 skills/hooks/说明全部隔离。
 
-后续仍需覆盖运行包校验延迟注入、审计落盘失败、并发租约/取消竞争、完整压缩及重放、DeepSeek 流式异常与其他宿主入口。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。
+### 后续独立验证：取消审计写入失败不阻止信号
+
+- 新增默认运行的 `run_coordinator::tests::cancellation_survives_audit_write_failure_and_terminal_retry_is_idempotent`，通过真正的 RunCoordinator 接纳并取得运行注册，在内存数据库的 run_events 表安装仅拦截 `cancel.requested` 的 SQLite trigger，使用 `RAISE(ABORT, ...)` 注入写失败。
+- 重复 request_cancel 均 accepted；根 token、派生子 token 和 legacy flag 均已取消。调用生产 `kernel::persist_terminal()` 明确返回注入错误；数据库只保留 run_accepted，finished_at 仍为空，说明审计及终态未部分提交，也未把停止落盘说成成功。
+- 撤销 trigger 后显式重试，同一取消意图成功写入 `cancel.requested → cancel.propagated → run_terminal`；再次写终态返回 false，最终仅一个 cancelled 终态。释放注册后不再接受该 run 的取消。
+- 执行 `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests`：7 passed，其中包括本项故障注入。此项验证已存在实现的正确边界，本轮未修生产代码。
+- 边界：没有真实损坏用户数据库，没有实际模拟磁盘写满；显式重试成功不代表所有生产失败都会自动重试。尚未端到端验证 UI 对“执行已停止、保存失败”的错误展示，也没有据此宣称模型/进程资源都完成清理。
+
+后续仍需覆盖运行包校验延迟注入、保存失败的 UI 通知、并发租约/取消竞争、完整压缩的真实 wire 及重启、DeepSeek 流式异常与其他宿主入口。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。

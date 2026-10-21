@@ -447,6 +447,134 @@ mod tests {
     }
 
     #[test]
+    fn cancellation_survives_audit_write_failure_and_terminal_retry_is_idempotent() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session_id = SessionId::new();
+        EventStore::new(&db)
+            .create_session(
+                session_id,
+                Some("cancel audit fault"),
+                Timestamp::from_millis(1),
+            )
+            .unwrap();
+        let coordinator = RunCoordinator::new(db.clone());
+        coordinator
+            .admit("audit-fault-run", &session_id.to_string())
+            .unwrap();
+        let registration = coordinator.take_admission("audit-fault-run").unwrap();
+        let cancellation = registration.cancellation();
+        let child = cancellation.child_token();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER fail_cancel_audit BEFORE INSERT ON run_events
+                 WHEN NEW.event_type='cancel.requested'
+                 BEGIN SELECT RAISE(ABORT, 'injected cancel audit write failure'); END;",
+            )
+            .map_err(|error| CoreError::Persistence(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+
+        assert!(
+            coordinator
+                .request_cancel("audit-fault-run")
+                .unwrap()
+                .accepted
+        );
+        assert!(
+            coordinator
+                .request_cancel("audit-fault-run")
+                .unwrap()
+                .accepted
+        );
+        assert!(cancellation.is_cancelled());
+        assert!(child.is_cancelled());
+        assert!(registration
+            .flag()
+            .load(std::sync::atomic::Ordering::Acquire));
+        let terminal = deepagent_runtime::KernelTerminal {
+            kind: deepagent_runtime::TerminalKind::Cancelled,
+            message: None,
+            reason: None,
+        };
+        let failure = deepagent_runtime::kernel::persist_terminal(
+            &db,
+            "audit-fault-run",
+            &terminal,
+            &cancellation,
+        )
+        .unwrap_err();
+        assert!(failure
+            .to_string()
+            .contains("injected cancel audit write failure"));
+        let store = RunStore::new(&db);
+        assert!(store
+            .get("audit-fault-run")
+            .unwrap()
+            .unwrap()
+            .finished_at
+            .is_none());
+        assert_eq!(
+            store.events_after("audit-fault-run", None).unwrap().len(),
+            1
+        );
+        assert!(
+            cancellation.is_cancelled(),
+            "storage failure cannot undo the signal"
+        );
+
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER fail_cancel_audit")
+                .map_err(|error| CoreError::Persistence(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(deepagent_runtime::kernel::persist_terminal(
+            &db,
+            "audit-fault-run",
+            &terminal,
+            &cancellation,
+        )
+        .unwrap());
+        assert!(!deepagent_runtime::kernel::persist_terminal(
+            &db,
+            "audit-fault-run",
+            &terminal,
+            &cancellation,
+        )
+        .unwrap());
+        let events = store.events_after("audit-fault-run", None).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| event.event_type.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "run_accepted",
+                "cancel.requested",
+                "cancel.propagated",
+                "run_terminal"
+            ]
+        );
+        assert_eq!(
+            store
+                .get("audit-fault-run")
+                .unwrap()
+                .unwrap()
+                .terminal_kind
+                .as_deref(),
+            Some("cancelled")
+        );
+        drop(registration);
+        assert!(
+            !coordinator
+                .request_cancel("audit-fault-run")
+                .unwrap()
+                .accepted
+        );
+    }
+
+    #[test]
     fn approval_scope_mismatch_does_not_mutate_durable_state() {
         let db = Arc::new(Database::open_in_memory().expect("db"));
         let session_id = SessionId::new();
