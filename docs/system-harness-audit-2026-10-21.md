@@ -19,7 +19,7 @@
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效均已复现 | 已确认 H-17、H-32、H-33、H-36；完整恢复及并发压力未完成 |
-| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
+| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流空工具注册及内层失败映射成功已复现 | 已确认 H-19 至 H-22、H-38；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | 真实 Cron tick 进入正式 ChatService，审批通知丢弃后仍挂起；基础 cron/store 回归通过 | 已确认 H-37；多宿主调度、重复触发及完整退出边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -910,10 +910,33 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应在现有 AppCore 接纳/审批边界明确 unattended 模式：要么投递到有真实 owner 和通知路由的既有会话，要么对必须人工批准的动作立即给出结构化拒绝/需要交互的终态。沿用既有权限、审批、RunStore、取消树和事件通知；调度触发结果关联 run_id，让任务管理可发现并停止。禁止为避免等待改成 FullAccess，也不能只加超时掩盖无消费者的问题。
 - 验收覆盖 AlwaysAsk、AutoReview 的 Allow/Deny/Ask、已有有效授权、调度停止、显式取消和重复触发；拒绝必须配对工具结果且命令执行计数为零，有交互模式的通知必须到达正确会话。本轮仅增加 cfg(test) 审计探针，未修改生产调度行为。
 
+### H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功
+
+**级别：高（P1）；范围：通过 ChatService / Tauri start_workflow 执行的 tool 节点。** 两个可独立核对的边界共同造成假成功：生产组装没有注册可调用工具；执行器报告失败后，WorkflowAgent 仍将其当作正常节点输出。不是模型自行决定忽略错误，也没有显式配置容错策略。
+
+#### 生产链路与集成复现
+
+- `run_assembler.rs::run_workflow_inner()` 创建 `Arc::new(ToolRegistry::new())`，之后直接构造 WorkflowToolExecutor 并交给 WorkflowAgent，没有调用普通对话的工具组装。registry 因而连内置 read_file 都没有；请求仍能通过版本化 workflow graph 的 tool 契约校验。
+- `tool_runtime.rs::WorkflowToolExecutor::execute()` 将 registry.invoke 的 Err 包成 `Ok(ToolExecutionResult {success:false, output:null, error:Some(...)})`。`WorkflowAgent::execute_tool()` 再将它包成 `Ok(JSON)`；`think()` 仅按 Rust Result 的 Ok/Err 决定 Completed/Failed，未判别内层 success。后续 end 正常执行，AgentKernel 的终态成为 succeeded。
+- 新增默认忽略集成探针 `tests/workflow_audit.rs::audit_workflow_unknown_tool_propagates_node_and_run_failure`。实际临时 input.txt 存在，正式 SettingsService、ChatService、输入接纳、图编译、WorkflowAgent、AgentKernel、事件泵和 RunStore；图为 start→read_file tool→end，不调用模型或自造节点完成事件。
+- 执行 `cargo test -p deepagent-app-core --test workflow_audit --offline -- --ignored --nocapture`：`api_ok=true tool_status=Completed tool_outputs={error:"invalid input: unknown tool: read_file",output:null,success:false} node_error=None end_completed=true run_terminal=Some("succeeded")`。要求工具节点失败的断言失败，约 0.11 秒。证明正式 AppCore 事件和持久化终态，未启动 Tauri 手动点击，不能将推断的 UI 表现写成实际截图证据。
+- 前端 `workflowExecutor.ts` 按事件 status 生成外层 `{success: mapped === "completed", outputs: ...}`，未从内层工具结果纠正状态；因此该投影的外层 success 会与内部 success=false 冲突。这里是消费方代码证据；不是声称生产环境已经执行了真实副作用工具。
+
+#### 成熟实现、影响与修复方向
+
+- DeepSeek Harness `packages/core/agent-loop/src/tool-calls.ts::appendToolResult()` 明确保留 `result.isError` 进入模型工具消息，同时保留 result.error.info 和调用事件关联。其共享 tool runtime 交付结构化执行结果，而非只看调度 Future 是否 resolve。参考的是错误语义在边界间保真；模型 Agent 可以读错误继续修复，不代表每次工具失败都必须终结整个 Agent。
+- 本系统既有 `DagScheduler::run()` 也已经有 result.ok → failed 集合 → 跳过依赖节点的正式机制，说明不需另造第二套运行存储来表达失败。参考 DeepSeek 源码已查，未执行参考测试；本项只动态验证当前工作流入口。
+- 已确认的影响是配置了有效节点、现有文件与合法参数的工具工作流实际没有读取成功，却得到节点 Completed 和运行 succeeded；依赖节点仍继续。需要真实工具的流程无法按预期执行，自动化消费者按终态判断会得到错误的成功信号。若将来只补 registry 注册，现有错误包装仍会隐藏未知工具、权限和执行错误，不能把二者视为一个初始化特判。
+- 修复应复用已有工具组装、授权及 ToolPipeline，并在 WorkflowAgent 边界定义明确的 NodeOutcome。区分“工具执行失败”与“允许作为数据处理的错误”；默认按失败传播，只有显式容错契约才能继续且保留错误状态。同步 Rust 事件、RunStore 终态、前端外层 success 和下游依赖，不能靠前端改红色或把失败 JSON 当成功结果解决。
+- 验收覆盖实际只读成功、工具返回 ok=false、未知工具、参数错误、权限拒绝、审批不可用、显式容错及下游跳过；节点状态、结果和运行终态必须一致。本轮仅增加审计测试和文档，未修复生产装配。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-38 正式工作流工具失败忽略探针（见该节命令） | 明确失败：read_file 未注册；输出含 success=false/unknown tool，但节点 Completed、end 继续、持久化 run=succeeded |
+| `cargo test -p deepagent-runtime --lib workflow:: --offline`（新增 H-38 后） | 66 passed；图/值/媒体等单元回归，不覆盖正式工作流的空 registry 装配 |
+| `cargo test -p deepagent-app-core --lib session_search_tests --offline`（新增 H-38 后） | 2 passed；手动注册工具的适配器权限/校验测试通过，不能证明 run_workflow 实际注册了工具 |
 | H-37 无人值守 Cron 忽略探针（见该节命令） | 明确失败：one-shot 已移除，scheduler 停止后 pending=1、run 未终结、命令执行数为 0；显式取消并等待终态后结束测试 |
 | `cargo test -p deepagent-app-core --lib approval_bridge::tests --offline`（新增 H-37 后） | 19 passed；验证现有审批桥接，不代表无人值守装配正确 |
 | `cargo test -p deepagent-runtime --lib schedule:: --offline`（新增 H-37 后） | 19 passed；验证 cron 时间计算与 store/poll，不代表 fire 后台会话可以获得人工答复 |
@@ -1056,6 +1079,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 定时任务的运行归属与交互能力 | H-37 | 现有 CronService → AppCore 接纳、审批和通知共用明确的 unattended 契约；参考 Claude 队列归属与 Codex headless 策略 | 需要人工时明确拒绝或投递到真实 owner；计划可关联运行，停止入口可发现；不能留下无消费者审批 |
+| 工作流工具能力与失败传播 | H-38 | 复用现有工具组装和 ToolPipeline，NodeOutcome 保留结构化失败并定义显式容错；参考 DeepSeek isError 保真及现有 DAG 依赖失败传播 | 只读工具能实际运行；未知工具/拒绝/执行失败不冒充成功；节点、下游及 RunStore 语义一致 |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
