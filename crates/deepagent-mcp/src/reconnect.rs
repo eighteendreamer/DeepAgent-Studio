@@ -215,6 +215,68 @@ mod tests {
         JsonRpcRequest::new(1, "tools/call", None)
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: reconnect must not repeat a tool whose outcome is unknown"]
+    async fn audit_disconnect_after_tool_effect_does_not_replay_mutation() {
+        struct AppliedThenDisconnected {
+            effects: Arc<AtomicUsize>,
+            lose_reply: bool,
+        }
+
+        #[async_trait]
+        impl McpTransport for AppliedThenDisconnected {
+            async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+                assert_eq!(request.method, "tools/call");
+                self.effects.fetch_add(1, Ordering::SeqCst);
+                if self.lose_reply {
+                    return Err(deepagent_core::error::CoreError::other("broken pipe"));
+                }
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: request.id,
+                    result: Some(serde_json::json!({"content":[],"isError":false})),
+                    error: None,
+                })
+            }
+        }
+
+        struct Factory(Arc<AtomicUsize>);
+
+        #[async_trait]
+        impl ReconnectFactory for Factory {
+            async fn reconnect(&self) -> Result<Arc<dyn McpTransport>> {
+                Ok(Arc::new(AppliedThenDisconnected {
+                    effects: self.0.clone(),
+                    lose_reply: false,
+                }))
+            }
+        }
+
+        let effects = Arc::new(AtomicUsize::new(0));
+        let transport = ReconnectingTransport::new(
+            Arc::new(AppliedThenDisconnected {
+                effects: effects.clone(),
+                lose_reply: true,
+            }),
+            Arc::new(Factory(effects.clone())),
+        )
+        .with_backoff(vec![Duration::ZERO]);
+        let client = McpClient::new(Arc::new(transport));
+        let result = client
+            .call_tool("append_record", serde_json::json!({"value":"audit"}))
+            .await;
+        eprintln!(
+            "audit MCP replay: result_ok={}, applied_effects={}",
+            result.is_ok(),
+            effects.load(Ordering::SeqCst)
+        );
+        assert_eq!(
+            effects.load(Ordering::SeqCst),
+            1,
+            "a lost reply must not cause an unknown-outcome mutation to be applied twice"
+        );
+    }
+
     /// A factory that hands out a fresh healthy MockTransport each reconnect,
     /// counting how many times it was called; can be told to fail the first
     /// `fail_first` reconnect attempts before succeeding.

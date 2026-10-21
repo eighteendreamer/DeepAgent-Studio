@@ -131,6 +131,52 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: tool discovery must follow the server's nextCursor"]
+    async fn audit_tool_discovery_reads_all_pages() {
+        use crate::protocol::JsonRpcResponse;
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        #[derive(Default)]
+        struct PaginatedServer(Mutex<Vec<Option<serde_json::Value>>>);
+
+        #[async_trait]
+        impl McpTransport for PaginatedServer {
+            async fn send(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+                assert_eq!(req.method, "tools/list");
+                self.0.lock().unwrap().push(req.params.clone());
+                let cursor = req.params.as_ref().and_then(|p| p["cursor"].as_str());
+                let result = match cursor {
+                    None => serde_json::json!({
+                        "tools": [{"name":"first", "inputSchema":{"type":"object"}}],
+                        "nextCursor":"opaque-page-two"
+                    }),
+                    Some("opaque-page-two") => serde_json::json!({
+                        "tools": [{"name":"second", "inputSchema":{"type":"object"}}]
+                    }),
+                    _ => panic!("client changed the opaque cursor"),
+                };
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id,
+                    result: Some(result),
+                    error: None,
+                })
+            }
+        }
+
+        let server = Arc::new(PaginatedServer::default());
+        let client = McpClient::new(server.clone());
+        let tools = client.list_tools().await.unwrap();
+        let names: Vec<_> = tools.iter().map(|tool| tool.name.as_str()).collect();
+        eprintln!(
+            "audit MCP pagination: names={names:?}, requests={:?}",
+            server.0.lock().unwrap()
+        );
+        assert_eq!(names, ["first", "second"], "later pages must not disappear");
+    }
+
+    #[tokio::test]
     async fn calls_tool_and_reads_text() {
         let t = MockTransport::new().with_result(
             "tools/call",

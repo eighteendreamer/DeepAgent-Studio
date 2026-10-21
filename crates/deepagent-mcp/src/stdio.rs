@@ -232,6 +232,76 @@ impl McpTransport for StdioTransport {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: concurrent MCP replies must be routed by request ID"]
+    async fn audit_out_of_order_concurrent_replies_reach_both_callers() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("reordered-replies.cjs");
+        std::fs::write(
+            &script,
+            r#"
+const readline = require('node:readline');
+const pending = [];
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  pending.push(JSON.parse(line));
+  if (pending.length === 2) {
+    for (const request of [...pending].reverse()) {
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id,
+        result: { echoed: request.id } }) + '\n');
+    }
+  }
+});
+"#,
+        )
+        .unwrap();
+        let config = McpServerConfig {
+            transport: None,
+            command: Some("node".into()),
+            args: vec![script.to_string_lossy().into_owned()],
+            env: Default::default(),
+            cwd: None,
+            url: None,
+            headers: Default::default(),
+        };
+        let transport = Arc::new(StdioTransport::spawn(&config).unwrap());
+        let first = tokio::spawn({
+            let transport = transport.clone();
+            async move {
+                tokio::time::timeout(
+                    Duration::from_secs(5),
+                    transport.send(&JsonRpcRequest::new(10, "ping", None)),
+                )
+                .await
+            }
+        });
+        // Observe the first caller owning the reader before issuing the second
+        // request; this fixes the interleaving instead of relying on a sleep.
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if transport.stdout.try_lock().is_err() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("first request must reach the response reader");
+
+        let second = tokio::time::timeout(
+            Duration::from_secs(1),
+            transport.send(&JsonRpcRequest::new(11, "ping", None)),
+        )
+        .await;
+        let first = first.await.unwrap();
+        transport.close().await.unwrap();
+        eprintln!("audit MCP concurrent responses: first={first:?}, second={second:?}");
+        assert!(
+            matches!(first, Ok(Ok(response)) if response.id == 10)
+                && matches!(second, Ok(Ok(response)) if response.id == 11),
+            "a response for another pending ID must be delivered, not discarded"
+        );
+    }
+
     #[test]
     fn spawn_requires_command() {
         let cfg = McpServerConfig {

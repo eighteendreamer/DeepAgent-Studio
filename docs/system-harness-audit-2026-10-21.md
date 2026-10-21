@@ -13,11 +13,11 @@
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
-| stdio Harness / SDK 事件交付与恢复 | 队列丢终态与立即中断窗口均已确定性复现 | 已确认 H-01、H-02；其余路径未完成 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；尚未覆盖全部错误和流式分支 | 进行中 |
+| stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具续轮投影拆分已复现 | 已确认 H-05；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 连续对话与笔记用例；笔记请求数量断言失败 | 进行中，未据此认定业务故障 |
 | 工具、审批、权限与沙箱 | 真实文件读取及工作区外拦截；沙箱 backend override 路由探针 | 已确认 H-03；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | 待逐项验证 | 未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 副作用重试、工具分页、握手与并发回包已复现；含本机子进程 | 已确认 H-06 至 H-09；宿主准备与 hooks 未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消终态已读取，其他边界待验证 | 未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 待逐项验证 | 未完成 |
 
@@ -140,17 +140,172 @@ Codex 的 `app-server/src/request_processors/thread_processor.rs` 将请求 sand
 - 将生效 backend、工作目录、mode 和 network policy 形成逐次不可变执行上下文；保证工具注册和执行使用同一份结果。不要依赖修改全局共享 backend 来切换并发会话。
 - 补充不同会话并行、继续会话、显式 backend 不可用及实际返回配置一致性测试。此探针同样默认忽略，待修复后转常规回归。
 
+### H-04：恢复 Harness 会话会清空显式模型和权限配置
+
+**级别：高（P1）；范围：stdio `thread/resume` 后未重新指定覆盖值的运行。** 与 H-03 区分：本项影响权限 profile、模型和 provider 的生命周期，甚至同一宿主内重新附着也会触发。
+
+#### 触发与复现
+
+- 通过 `thread/start` 显式选择 `permissionProfile=read_only`、provider、model 和 sandbox backend；这些值仅存于进程内 `ThreadState`。
+- `thread_resume()` 在确认会话存在后，无条件重新插入 `ThreadState`，将上述四项设为 `None`，包括线程已经加载在同一进程内的情况。
+- `turn_start()` 只从本次参数或此 ThreadState 取值。恢复请求类型只有 `threadId`，也没有机会在恢复时重申或查看生效配置；启动响应只返回 `ready/cwd`。
+- 探针 `audit_resume_preserves_explicit_thread_overrides` 使用生产请求分发器启动、恢复、再构造下一次 turn，检查交给 AppCore 的 overrides；不调用模型、不执行工具。
+- 执行：`cargo test -p deepagent-cli audit_resume_preserves --offline -- --ignored --nocapture`。
+- 实际输出：`before={"model":"deepseek-flash","permission_profile":"read_only","provider":"deepseek","sandbox_backend":"windows_sandbox"}, after={}`；配置保留断言失败。
+
+#### 成熟实现对照
+
+Codex `app-server/src/request_processors/thread_processor.rs::collect_resume_override_mismatches()` 对已加载线程的恢复请求比较 model、provider、cwd、approval 与 sandbox 的请求值及实际 config snapshot；恢复响应包含实际配置。其 `ThreadResumeParams` 提供显式覆盖入口。本系统目前既无完整恢复配置、也无生效值回传。可借鉴的是恢复配置必须有可验证的语义，不要求无条件冻结所有历史设置。
+
+#### 后果和修复方向
+
+- 恢复后若宿主默认权限比 `read_only` 更宽，后续运行将回退到更宽配置；具体工具副作用还受宿主默认值与其他审批/钩子约束，此探针没有执行真实写操作。
+- 模型或 provider 可变为宿主默认选择，影响能力、费用及数据发送目标；不能承诺同一 thread ID 仍代表相同执行条件。
+- 在现有会话元数据中明确持久化可恢复的配置，或要求显式重新选择并返回有效配置；已加载线程不能在普通 resume 中悄悄丢弃配置。若希望始终采用最新全局设置，应在协议和响应中明确体现，并禁止静默放宽安全约束。
+- 覆盖同进程重新附着、宿主重启、默认设置改变与更严格权限恢复；探针默认忽略，修复时转常规回归。
+
+### H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应
+
+**级别：中（P2；启用严格 reasoning 校验的供应商可能升级为请求失败）；范围：`WireMode::ChatCompletions` 下经原生 ResponseItem 再发出的工具续轮。** 默认 Responses 路由的真实桌面测试不能证明本路径无误。
+
+#### 触发与复现
+
+- 模型同一条 assistant 响应同时返回 reasoning、说明文本和 tool call。这是正常工具协议形态。
+- `ChatCompletionAccumulator::finish()` 将其转成 `Reasoning → FunctionCall → Message`；运行时再追加工具结果。
+- 下次 `ResponseRequest::from_response_items()` 的配对修复把工具结果搬到 call 后，`client.rs::response_to_chat_completion()` 经兼容 `Message` 投影重新序列化，最终产生：
+
+```text
+assistant(reasoning + tool_calls, content="")
+tool(result)
+assistant(content="I will read the file.", 无 reasoning)
+```
+
+- 原本在执行前给出的说明变成执行后的独立 assistant 消息，且其 reasoning 不再跟随。工具 call_id 和 arguments 在本例仍完整，不能称它们也丢失。
+- 探针 `client::tests::audit_chat_projection_preserves_tool_turn_narration_and_reasoning` 使用生产流式 accumulator、生产 request 构造器、生产 Chat 投影和 serializer；输入为合成但合法的单个工具响应，不访问供应商。
+- 执行：`cargo test -p deepagent-models audit_chat_projection --offline -- --ignored --nocapture`。
+- 实际 wire 显示上述四条消息（含最初 user）；assistant 数量为 2，期望保持同一响应的断言失败。
+
+#### 官方规则与成熟实现对照
+
+[DeepSeek Thinking Mode 官方文档](https://api-docs.deepseek.com/guides/thinking_mode/)（2026-10-21 核对）要求携带 tools 的后续请求完整回传历史 reasoning，包括没有调用工具的 assistant 回答；示例将同一 response 的 content、reasoning 和 tool_calls 保留在同一个 assistant message 中。这里已证明 wire 关联被改变，**尚未用此特定请求实测 HTTP 400，不能把潜在拒绝当作已发生的网络结果**。
+
+DeepSeek Harness `packages/llm/llm-deepseek/src/serialize.ts::assistant()` 将同一 durable assistant message 中的 text、reasoning、tool-call 块统一映射为内容；`replay.ts` 以块索引校验模型和原生 metadata 的对应关系。它当前走 Messages 协议；借鉴点是保持 assistant turn 的边界与块归属，不是复制字段名。
+
+#### 后果和修复方向
+
+- 续轮上下文含额外、时间顺序错误的 assistant 发言，破坏模型对工具执行前后语义的理解；严格 reasoning 规则下存在请求被拒绝风险。
+- native Surface 与 Chat adapter 之间不能把有损 UI 投影当成协议回放。应由 provider seam 保留或恢复同一响应的块归属，在一次 serializer 内生成正确的 assistant 原子消息。
+- 补充含文本的单/多工具响应、reasoning 多块、重启回放、压缩边界和取消中断测试，并核对真实 wire；不能通过填造 reasoning 来满足校验。
+
+### H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用
+
+**级别：高（P1）；范围：使用 `ReconnectingTransport` 的 MCP 调用。** 不是一般的“连接重建有问题”，而是连接恢复与业务操作重试没有分开。
+
+#### 触发与复现
+
+- `reconnect.rs::ReconnectingTransport::send()` 遇到字符串匹配的 `broken pipe`、`connection lost` 等错误后，重新连接并对新 transport 调用 `send(request)`；既不区分 `tools/list` 与 `tools/call`，也不知道旧调用是否已在服务端执行。
+- `mcp_service.rs::connect_one_resilient()` 将生产连接包装为此 transport；`McpClient::call_tool()` 没有额外幂等键或结果去重。JSON-RPC request ID 是响应关联标识，不能保证重启后的外部服务不重复执行。
+- 探针 `reconnect::tests::audit_disconnect_after_tool_effect_does_not_replay_mutation` 通过真实 McpClient 调用合成 `append_record` 工具。第一个 mock transport 先增加副作用计数，再返回 `broken pipe` 模拟响应丢失；重连后的 transport 增加同一计数并成功返回。没有执行真实外部写操作。
+- 执行：`cargo test -p deepagent-mcp audit_disconnect_after_tool_effect --offline -- --ignored --nocapture`。
+- 实际输出：`result_ok=true, applied_effects=2`；期望只执行一次的断言失败。客户端看到成功，但逻辑操作已经执行两次。现有重连测试只模拟执行前断线，未覆盖执行成功但回包丢失。
+
+#### 成熟实现对照
+
+Grok 的 `xai-grok-shell/src/session/mcp_restart.rs::auto_restart_stdio()` 使用 1/4/16 秒有界退避重建并发布连接；该重启任务不持有原工具请求，也不负责重发它。本系统文件注释虽称对齐此机制，却增加了语义不同的业务请求重试。
+
+Codex `rmcp-client/src/rmcp_client.rs::run_service_operation_with_transient_retries()` 明确只对 `tools/list` 的可重试传输错误做通用重试，`is_retryable_tools_list_error()` 对其他方法返回 false。它也支持显式 HTTP session-expired 404 的恢复，不能概括成“Codex 从不重试任何工具”；关键差别是没有把任意断线都解释成可以重发副作用。`tool_input.rs::call_tool()` 对已提交 proof 的续轮失败还明确禁止重启原操作。
+
+#### 后果和修复方向
+
+- 非幂等工具可能重复新增记录、发送消息或创建外部任务；这些是影响示例，不表示此次测试操作了这些真实服务。重试全部耗尽时，还可能出现客户端报错、服务端已执行多次的状态。
+- 将连接恢复与操作重试分离：为后续调用恢复连接；已发出且结果未知的调用返回结构化 unknown-outcome，让运行知道需要核实结果。
+- 只有明确未发送、操作被证明幂等或服务端支持持久化幂等键时才允许自动重发。不能仅依据错误字符串或只读名称推断安全。
+- 补充执行前断线、执行后回包丢失、并发重连、取消与多次断线测试，并验证调用次数和最终外部状态。此审查探针默认忽略，生产逻辑尚未修复。
+
+### H-07：MCP 工具发现忽略分页，只发布首页工具且不报不完整
+
+**级别：中（P2）；范围：返回 `nextCursor` 的 MCP 服务。** 不分页的服务不受此项影响。
+
+#### 触发与复现
+
+- `McpClient::list_tools()` 只发一次不带 cursor 的 `tools/list`。`protocol.rs::ToolsListResult` 只有 tools 字段，反序列化直接丢弃 `nextCursor`。
+- `McpRegistry::register_with_instructions()` 及 AppCore 工具发现继续使用该结果，成功注册并发布首页集合，没有第二条生产路径补拉后续页。
+- 探针 `client::tests::audit_tool_discovery_reads_all_pages` 使用两页合规 mock server：第一页工具 first，并返回不透明 cursor；携带同一 cursor 才返回 second。通过真实 McpClient 发现工具。
+- 执行：`cargo test -p deepagent-mcp audit_tool_discovery_reads_all_pages --offline -- --ignored --nocapture`。
+- 实际输出：`names=["first"], requests=[None]`；期望 `["first","second"]` 的断言失败。不是目录展示截断，而是后续工具根本没有被发现和注册。
+
+#### 官方规则与成熟实现对照
+
+[MCP 2024-11-05 分页规范](https://modelcontextprotocol.io/specification/2024-11-05/server/utilities/pagination)明确将 tools/list 列为支持分页的操作，以 nextCursor 继续、缺省表示结束；cursor 必须作为不透明值传回。
+
+Codex `codex-mcp/src/rmcp_client.rs::list_tools_for_client_uncached()` 用 `pagination.rs::collect_paginated_with_limit()` 汇总全部页，同时限制页数、条目数、cursor 大小和整体耗时，并拒绝重复 cursor。可以借鉴其“完整发现且有界”的边界，不能仅增加一次无界循环。
+
+#### 后果和修复方向
+
+- 模型会误认为插件没有后续页的能力，任务无法完成或选择替代工具；设置界面还可能显示连接正常，增加定位难度。
+- 在现有 McpClient 统一实现有界分页，供 registry、状态查询和就绪快照共用；分页失败不能把半个工具集当作完整成功发布。
+- 补充无分页、多页、空页但有 cursor、重复 cursor、超限和取消测试。此探针默认忽略，生产发现逻辑尚未修复。
+
+### H-08：MCP 初始化缺少 initialized 通知，严格服务端无法进入就绪状态
+
+**级别：中（P2；对要求完整握手的服务为连接阻断）；范围：当前 McpClient、stdio 及使用同一握手的重连路径。** 宽松服务端可能仍工作，不能概括成所有 MCP 都无法连接。
+
+#### 触发与复现
+
+- `McpClient::initialize()` 仅发送 initialize 请求并直接返回其 result；没有发送 notifications/initialized。
+- `McpTransport` 只提供带 u64 ID 的 request/response `send()` 与 close，没有无 ID 通知接口；stdio 和 HTTP 实现都没有在初始化响应后补发通知。AppCore 的初连及 ConfigReconnectFactory 也未补足此步。
+- 真实子进程探针 `tests/protocol_audit.rs::audit_strict_stdio_server_completes_initialization` 启动本机 Node JSON-RPC fixture。它接受本系统声明的协议版本，initialize 成功，但在 initialized 通知前拒绝 tools/list。探针使用生产 StdioTransport 与 McpClient，并在断言前关闭子进程。
+- 执行：`cargo test -p deepagent-mcp --test protocol_audit audit_strict_stdio --offline -- --ignored --nocapture`。
+- 实际服务端记录：`received=initialize,tools/list`，返回 `not initialized`；发现成功断言失败。该失败来自有意严格的本机 fixture，未声称所有用户插件已返回此错误。
+
+#### 官方规则与成熟实现对照
+
+[MCP 2024-11-05 生命周期规范](https://modelcontextprotocol.io/specification/2024-11-05/basic/lifecycle)要求 initialize 成功后客户端发送 initialized 通知，表示可以开始正常操作。本系统声明的正是这一协议版本，因此不是新版本功能缺失。
+
+Codex `core/tests/suite/codex_apps_protocol.rs` 将 legacy 握手次序断言为 `initialize → notifications/initialized → tools/list`；`rmcp-client` 通过服务生命周期驱动握手，不用裸 request 代替完整初始化。其现代协议有独立协商分支，不能据此跳过本系统所选 legacy 协议的必需步骤。
+
+#### 后果和修复方向
+
+- 严格服务端无法发布工具，插件可能被标记连接/发现失败；仅重试会重复不完整握手，增加等待而不能恢复。
+- 在现有 transport/client 边界补齐 JSON-RPC notification 和初始化状态机，只有协议协商及通知完成后才能发布 Ready。初连、显式重试和断线恢复共用这一实现。
+- 补充 wire 次序、通知无 ID、不等待通知响应、初始化失败不发通知、协商版本不支持及重连握手测试。此探针默认忽略，生产握手尚未修改。
+
+### H-09：stdio MCP 并发回包按读取者筛选，其他请求的响应会被永久丢弃
+
+**级别：高（P1）；范围：同一个 StdioTransport 上存在两个未完成请求且服务端乱序响应。** 单请求顺序测试无法发现此问题。
+
+#### 触发与复现
+
+- `StdioTransport::send()` 分别锁 stdin 和 stdout：请求 A 写入后持有 stdout 等待；请求 B 仍能写入，但要等待 stdout。A 的读取循环遇到 ID 不等于 A 的响应就直接跳过，没有按 ID 缓存或分派。
+- 服务端先回复 B、再回复 A 时，A 丢弃 B 的有效响应后完成；B 获得 reader 后再也读不到自己的响应。无外层超时则持续等待；有超时则把已成功的调用报为超时。
+- 现有 registry/liveness 共享 Arc<McpClient>，后台 `client.ping()` 能与工具请求重叠；共享服务的多会话调用也需要此 transport 正确分派。此缺陷不以“模型一定并行调用 MCP 工具”为前提。
+- 真实 Node 子进程探针 `stdio::tests::audit_out_of_order_concurrent_replies_reach_both_callers` 使用生产 StdioTransport。先观察请求 A 已持有 stdout，再发送 B；fixture 收齐两请求后逆序写回两个结果。用锁状态固定交错，不以任意 sleep 猜时序。
+- 执行：`cargo test -p deepagent-mcp audit_out_of_order --offline -- --ignored --nocapture`。
+- 实际输出：A 的 id=10 响应正确，B 为 `Err(Elapsed(()))`，尽管服务端已写出 id=11。探针在断言前关闭子进程；没有访问真实插件或执行副作用。
+
+#### 成熟实现对照
+
+Codex `rmcp-client/src/rmcp_client.rs::call_tool()` 从 RunningService peer 提交请求，得到关联的 request handle 后单独 await_response；连接服务与每个调用的结果等待分离。Codex 的另一条 JSON-RPC 连接 `app-server-client/src/remote.rs` 明确用 pending_requests 将 response.id 分发给对应的 oneshot sender。后者不是 MCP transport，借鉴的是相同 JSON-RPC 关联机制，不能混称为 MCP 的实现文件。
+
+#### 后果和修复方向
+
+- 正常成功的工具看起来挂起/超时；活性探针也可能误判健康连接，进而触发不必要重连。与 H-06 叠加时存在未知结果被再次执行的风险；本探针只验证丢响应，没有实测这条组合故障。
+- 在现有 transport 内收敛成单 reader 驱动，按 ID 投递各 pending request；通知走独立处理，取消移除对应 waiter，断线使全部未完成请求得到明确错误。所有连接用户共用该分派器。
+- 只锁住整个 send 可以避免此示例丢包，但会让慢工具阻塞活性检查和其他调用，不能当作完整并发设计；不要简单延长 timeout。
+- 覆盖乱序、交错通知、超时后迟到响应、单请求取消、断线与并发 close。此探针默认忽略，生产 transport 尚未修改。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
 | `cargo fmt --all -- --check` | 通过 |
-| `cargo test -p deepagent-cli --offline` | 82 passed，2 个审查探针 ignored |
+| `cargo test -p deepagent-cli -p deepagent-models -p deepagent-mcp --offline` | CLI 82 passed / 3 ignored；models 84 passed / 1 ignored；MCP 单元 55 passed / 3 ignored、子进程集成 3 passed、协议审查 1 ignored；均无常规失败。组合命令的 feature 合并启用了额外 HTTP 测试 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` | 11 passed，1 个审查探针 ignored |
 | `cargo test -p deepagent-cli audit_ --offline -- --ignored --nocapture` | 2 个探针明确失败，分别复现 H-01、H-02；不是常规测试通过 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_sandbox_override --offline -- --ignored --nocapture` | 探针明确失败，复现 H-03 |
+| H-04 至 H-09 各节列出的单项命令 | 6 个探针分别明确失败，证据见对应章节；不是常规测试通过 |
 | `git diff --check` | 通过 |
 
-本轮新增内容限于报告和三个默认忽略的审查探针，未修改生产运行逻辑。没有重复运行全 workspace 测试、Clippy 或前端构建；本轮没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告和九个默认忽略的审查探针，未修改生产运行逻辑。本批重新运行了格式检查和 CLI/models/MCP 常规测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
 后续仍需覆盖插件 180 秒延迟故障注入、审计落盘失败、并发租约/取消竞争、完整压缩及重放、DeepSeek 流式异常与其他宿主入口。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。
