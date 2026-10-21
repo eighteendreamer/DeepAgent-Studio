@@ -22,6 +22,7 @@
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
+| 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录 | 已确认 H-51；服务/工具级确定性交错，完整双会话桌面动态验证未执行 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -1174,11 +1175,41 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 本系统的具体移动方案属于**本地设计**：收敛在现有 MobileService/SnapshotStore，统一发布/登记的快照身份，在同一设备操作边界检查显式引用；定义快照捕获、输入、主动失效的先后关系，避免检查通过后另一个操作已改变界面。不要只在 UI 检查，或只加 validate 却保留两套不一致的 ID。None 的人工输入语义需显式定义，与模型基于快照的输入区分。
 - 影响是模型根据旧界面定位后，新的界面已出现但旧坐标仍能被执行，可能点到另一个按钮、输入到错误页面，造成任务错误或非预期操作。实际后果取决于设备当时界面；本轮没有执行付款、删除等破坏动作，也没有证明所有旧输入都会点错。
 - 应回归最新/旧/未知 ID、不同设备隔离、并发捕获/输入、重连失效、人工 None、工具 schema 到服务的真实传递，以及 iOS/远程 backend 的一致性。已有 SnapshotStore 单元测试只验证 store 自身，无法证明生产输入链调用了它。本轮只增加审计测试与文档，未修复生产行为。
+- 后续注册链核对：当前 crates/apps Rust 源码搜索 mobile_tools、MobileInputTool 只找到定义/导出/测试，未找到生产注册入口。因此不把移动模型工具的权限/取消源码疑点作为已复现线上缺陷；本项服务与桌面输入路径仍然成立。
+
+### H-51：项目激活改写共享知识服务，既有运行的记忆读写会被重定向到另一个项目
+
+**级别：高（P1）；范围：项目级 memory_write / memory_recall 与相关知识后台检索。** 用户明确选择 global 的跨项目共享属于预期；本项只针对 project 作用域和本应绑定原运行的检索。
+
+#### 触发、生产路径与复现
+
+- 桌面 AppState 与 ChatService 共享同一 Arc<KnowledgeService>；`set_active_project` / `add_project` 调用 activate_project。`RunAssembler` 也先对该共享服务 activate_project(root)，然后把它 clone 到 MemoryService、KnowledgeServiceBackend、KnowledgeMemoryProvider。这些 wrapper 没有保存原项目根。
+- `KnowledgeService::activate_project` 在互斥锁内整体替换唯一 KnowledgeState.project_root/base；锁保证单次方法不并发读坏，却不保证已捕获后端继续使用原项目。因此 A 请求等待模型/工具时切换到 B，或 B 会话开始组装后，A 后续读写会跟随 B 的当前 base。工作目录和 session 即使仍为 A，也不会给这些方法重新传回 A 的根。
+- 新增默认忽略探针 `audit_existing_memory_handles_keep_their_project_after_activation`。每组使用真实临时项目 A/B、独立 global 目录，磁盘各写一条同主题的 project/workspace 记忆且 owner 标记不同；在 A 活跃时捕获正式 MemoryService、MemoryRecallTool、MemoryWriteTool、KnowledgeMemoryProvider，并将两个工具注册到正式 ToolRegistry。对照不切项目；实验组随后调用生产 activate_project(B)，再经 schema/权限校验执行原工具，调用原后台检索 provider，并重新打开磁盘核对写入位置。没有 fake memory backend、网络或模型。
+- 执行：`cargo test -p deepagent-app-core --lib audit_existing_memory_handles_keep_their_project_after_activation --offline -- --ignored --nocapture`。整体断言明确失败：
+
+| 交错 | 原工具 recall | 原 provider fetch | 原工具 scope=project 的写入位置 |
+|---|---|---|---|
+| A 捕获后不切换 | 只有 PROJECT_A | 只有 PROJECT_A | A=true、B=false |
+| A 捕获后激活 B | 只有 PROJECT_B | 只有 PROJECT_B | A=false、B=true |
+
+- 该结果证明生产后端/正式工具对项目切换的作用域漂移；尚未通过真实双会话模型请求、Tauri 点击或后台自动捕获动态复现。组装/桌面源码表明存在可达交错，不能把本探针描述为完整桌面端到端测试。
+
+#### 成熟实现对照、后果与修复方向
+
+- Claude Code `memdir/paths.ts::getAutoMemPath` 根据项目根解析项目记忆目录，缓存按项目根区分；`utils/attachments.ts::getRelevantMemoryAttachments` 先形成本次操作的 dirs，再把每个目录显式传给 `findRelevantMemories(query, memoryDir, signal, ...)`。后者扫描的是传入目录，异步工作不会逐步重新读取一个桌面共享“当前知识 base”。它通常按会话进程运行，不能据此声称已原样解决本系统多会话桌面问题；借鉴的是显式操作作用域和目录身份。
+- 直接后果是 A 运行获得 B 项目的约定/错误经验，降低 DeepSeek 任务准确性；A 的 project 记忆被实际落到 B 目录，污染后续 B 会话，也使 A 重开后看不到自己刚保存的内容。若项目存放不同敏感资料，还可能把 B 的资料带入 A 后续请求；本轮只验证 provider 返回值，未发真实供应商证明实际上传。
+- 修复应收敛在现有知识/记忆存储：共享 global vault，项目 vault/index 按规范化项目身份缓存；运行接纳/组装时获得绑定项目的稳定服务视图，并供工具、检索、压缩/自动捕获和收尾一致使用。UI 激活只切换 UI 查询视图，不能改变已发运行的目标。此多会话服务视图属于**本地设计**，不新增独立记忆存储；不能靠全程持有全局锁、禁止切项目或工具执行前临时切回补救。
+- 还需完整双会话交错、异项目并行/同项目共享、项目移除与规范化、global 按预期共享、后台工作迟到、重启磁盘恢复及来源引用身份测试。本轮只增加审计测试和报告，未修改生产项目激活或存储行为。
 
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-51 项目记忆作用域显式探针（见该节命令） | 明确失败：不切换对照仅访问 A；激活 B 后，原工具/provider 改读 B 且 project 写入实际落在 B，磁盘重开确认 |
+| `cargo test -p deepagent-app-core --lib knowledge_service::tests --offline`（H-51 核查时） | 18 passed / 1 ignored；缺陷探针另行显式执行并失败 |
+| `cargo test -p deepagent-app-core --lib memory_service::tests --offline`（H-51 核查时） | 5 passed；单项目读写/检索基线通过，不能覆盖项目切换交错 |
+| `cargo test -p deepagent-knowledge -p deepagent-memory --offline`（H-51 核查时） | knowledge 63 passed、memory 40 passed；不包含 H-51 的跨服务作用域探针 |
 | H-50 移动输入快照显式探针（见该节命令） | 明确失败：登记/返回 ID 不同，最新/旧/未知引用全部接受，记录到 3 条 ADB 输入 argv；未连接真实设备 |
 | `cargo test -p deepagent-mobile-runtime -p deepagent-mobile-android --offline`（H-50 核查时） | runtime 67 passed；Android 63 passed / 1 ignored，另有 7 个真机测试 ignored；缺陷探针另行显式执行并失败 |
 | H-49 备用能力/实际请求显式探针（见该节命令） | 明确失败：两协议的 32,768→8,192 备用组，快照预留已为 8,192，wire 仍为 32,768；容量相同的两组成功 |
@@ -1389,6 +1420,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
 | 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
+| 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 

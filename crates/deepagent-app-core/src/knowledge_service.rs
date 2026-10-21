@@ -1007,6 +1007,98 @@ mod tests {
         assert!(titles.iter().any(|t| t == "Global note"));
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: active project changes must not retarget existing run memory handles"]
+    async fn audit_existing_memory_handles_keep_their_project_after_activation() {
+        use deepagent_builtins::{MemoryRecallTool, MemoryWriteTool};
+        use deepagent_runtime::RelevantMemoryProvider;
+        use deepagent_tools::{PermissionSet, ToolRegistry};
+
+        let mut checks = Vec::new();
+        for switch_project in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let project_a = tmp.path().join("a");
+            let project_b = tmp.path().join("b");
+            let global = tmp.path().join("global");
+            let query = "audit deployment workspace routing memory";
+            for (root, owner) in [(&project_a, "PROJECT_A"), (&project_b, "PROJECT_B")] {
+                let seed = KnowledgeService::open(root, &global).unwrap();
+                let mut entry = draft(
+                    "Audit deployment workspace routing memory",
+                    &format!("{query} owner={owner}"),
+                    "memory",
+                    "project",
+                );
+                entry.tier = Some("workspace".into());
+                seed.save(entry).unwrap();
+            }
+
+            // The production assembler retains these wrappers over one shared
+            // service. Capture them while A is active, before the UI or another
+            // run activates B. No fake memory backend or retrieval is involved.
+            let knowledge = Arc::new(KnowledgeService::open(&project_a, &global).unwrap());
+            let memory = Arc::new(crate::memory_service::MemoryService::new(knowledge.clone()));
+            let provider = KnowledgeMemoryProvider::new(knowledge.clone());
+            let mut registry = ToolRegistry::new();
+            registry
+                .register(Arc::new(MemoryRecallTool::new(memory.clone())))
+                .unwrap();
+            registry
+                .register(Arc::new(MemoryWriteTool::new(memory)))
+                .unwrap();
+            if switch_project {
+                knowledge.activate_project(&project_b).unwrap();
+            }
+
+            let recall = registry
+                .invoke(
+                    "memory_recall",
+                    serde_json::json!({"tier":"workspace"}),
+                    &PermissionSet::developer(),
+                    false,
+                )
+                .await
+                .unwrap();
+            assert!(recall.ok);
+            let recall_text = recall.value.to_string();
+            let fetched = provider.fetch_relevant(query, &[], &[]).await.unwrap();
+            let read_a = recall_text.contains("PROJECT_A");
+            let read_b = recall_text.contains("PROJECT_B");
+            let fetched_a = fetched.iter().any(|item| item.block.contains("PROJECT_A"));
+            let fetched_b = fetched.iter().any(|item| item.block.contains("PROJECT_B"));
+
+            let content = "Audit durable write from the already running project A";
+            let written = registry
+                .invoke(
+                    "memory_write",
+                    serde_json::json!({
+                        "tier":"workspace", "content":content, "scope":"project"
+                    }),
+                    &PermissionSet::developer(),
+                    false,
+                )
+                .await
+                .unwrap();
+            assert!(written.ok);
+            let saved_a = KnowledgeService::open(&project_a, &global)
+                .unwrap()
+                .list()
+                .iter()
+                .any(|entry| entry.body == content);
+            let saved_b = KnowledgeService::open(&project_b, &global)
+                .unwrap()
+                .list()
+                .iter()
+                .any(|entry| entry.body == content);
+            eprintln!("project memory audit: switched={switch_project} recall_a={read_a} recall_b={read_b} fetched_a={fetched_a} fetched_b={fetched_b} saved_a={saved_a} saved_b={saved_b}");
+            checks.push(read_a && !read_b && fetched_a && !fetched_b && saved_a && !saved_b);
+        }
+        assert!(
+            checks.iter().all(|check| *check),
+            "handles retained by a running project A must not read or write project B"
+        );
+    }
+
     // ---- auto-capture --------------------------------------------------
 
     use deepagent_core::clock::Timestamp;
