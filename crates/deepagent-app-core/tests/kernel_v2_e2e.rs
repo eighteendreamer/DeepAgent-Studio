@@ -2094,6 +2094,115 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
 }
 
 #[tokio::test]
+#[ignore = "audit reproducer: announced MCP instructions must remain in later stateless requests"]
+async fn audit_mcp_instructions_survive_continuation_on_wire() {
+    use deepagent_app_core::{McpServerDto, McpService};
+    use std::time::Duration;
+
+    const MARKER: &str = "AUDIT_MCP_REQUIRED_USAGE_CONTRACT";
+    struct ObservedModel(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl HttpTransport for ObservedModel {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.0.lock().unwrap().push(request.body);
+            emit_responses_events(sink, &response_text("ordinary reply"))
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let script = root.path().join("instructions-mcp.cjs");
+    std::fs::write(
+        &script,
+        r#"
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const msg = JSON.parse(line);
+  const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
+  if (msg.method === 'initialize') reply({ protocolVersion: msg.params.protocolVersion,
+    capabilities: { tools: {} }, serverInfo: { name: 'instructions-audit', version: '1' },
+    instructions: 'AUDIT_MCP_REQUIRED_USAGE_CONTRACT: check the active account before using this service.' });
+  else if (msg.method === 'tools/list') reply({ tools: [{ name: 'echo',
+    description: 'Echo text', inputSchema: { type: 'object' } }] });
+  else if (msg.id !== undefined) reply({});
+});
+"#,
+    )
+    .unwrap();
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = Arc::new(SettingsService::new(
+        db.clone(),
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(MemorySecretStore::new()),
+    ));
+    settings.initialize("sk-audit-placeholder").await.unwrap();
+    let mcp = Arc::new(McpService::new(db.clone()));
+    let dto: McpServerDto = serde_json::from_value(serde_json::json!({
+        "name":"instructions_audit", "transport":"stdio", "enabled":true,
+        "command":"node", "args":[script]
+    }))
+    .unwrap();
+    mcp.upsert(dto).unwrap();
+    mcp.start_preparation();
+    let prepared = tokio::time::timeout(Duration::from_secs(5), async {
+        while mcp.ready_registry().server_count() != 1 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    let ready = mcp.ready_registry();
+    if prepared.is_err() {
+        ready.close_all().await.unwrap();
+        panic!("the real MCP must publish instructions before chat");
+    }
+    assert!(ready.server_instructions()[0].1.contains(MARKER));
+    let model = Arc::new(ObservedModel(Mutex::new(Vec::new())));
+    let chat = ChatService::new(db.clone(), settings, model.clone(), root.path()).with_mcp(mcp);
+    let mut session = None;
+    for continue_previous in [false, true, false] {
+        let continue_id = continue_previous.then_some(session.as_deref()).flatten();
+        let result = chat
+            .run_in_session(
+                "Reply briefly without using any tools.",
+                continue_id,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                None,
+                |_| {},
+                |_| {},
+            )
+            .await;
+        match result {
+            Ok(id) => session = Some(id),
+            Err(error) => {
+                ready.close_all().await.unwrap();
+                panic!("all three ordinary turns must complete: {error}");
+            }
+        }
+    }
+    ready.close_all().await.unwrap();
+    let requests = model.0.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    let present: Vec<_> = requests.iter().map(|body| body.contains(MARKER)).collect();
+    eprintln!(
+        "MCP instruction wire audit: first={} continued={} fresh={}",
+        present[0], present[1], present[2]
+    );
+    assert!(
+        present[0] && present[2],
+        "both fresh-session controls must include the server instructions"
+    );
+    assert!(
+        present[1],
+        "a prior announcement marker cannot replace instruction content in a stateless request"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit reproducer: explicit Harness reasoning effort must reach the provider request"]
 async fn audit_harness_reasoning_override_reaches_provider_request() {
     use deepagent_app_core::HarnessRunOverrides;

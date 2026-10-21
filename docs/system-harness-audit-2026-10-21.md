@@ -28,6 +28,7 @@
 | Harness 每轮模型参数优先级 | 显式 max/low 覆盖经正式 ChatService 执行后，实际请求仍服从持久化桌面深度 | 已确认 H-54；共享 AppCore 入口及真实序列化，未调用公网供应商 |
 | 两协议思考模式映射 | 两协议三档中仅 Chat Simple 在请求前本地校验失败，Responses 三档与 Chat 另两档完成 | 已确认 H-55；公开 Chat adapter 的条件缺陷，默认生产组装仍为 Responses |
 | MCP 快照合并后的名称唯一性 | 两真实 stdio 服务独立 Ready 后，冲突工具名在每轮 ToolRegistry 注册才被拒绝，普通聊天没有发模型 | 已确认 H-56；正式宿主准备和 ChatService，未覆盖桌面错误展示 |
+| MCP 说明在后续无状态请求中的保留 | 真实 MCP 说明首轮存在，同会话第二轮完整 wire 中消失；另一新会话恢复 | 已确认 H-57；正式 AppCore 连续运行与请求序列化，未覆盖重启/压缩和真实供应商 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -1297,10 +1298,34 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - Codex `借鉴/codex/codex-rs/codex-mcp/src/tools.rs::normalize_tools_for_model_with_prefix` 保留 raw server/tool identity，统一生成模型可见名，并由 unique_callable_parts 对最终全名集合检查唯一性、必要时加稳定身份 hash；不是只对 server key 去重。`connection_manager_tests.rs` 有 namespace/tool 清洗冲突的独立测试。本轮只核对源码，没有执行 Codex 测试，也不将其 128 字节上限当成 DeepSeek 的协议限制。
 - 修复应在既有就绪快照发布边界统一名称分配与反向路由，确保模型 schema、ToolRegistry、审批/权限来源和 MCP 原始调用身份一致；冲突能力必须在发布前消歧或隔离并报管理状态，不能到普通聊天组装时才使整轮失败。名称规则变化还需兼容已有历史工具调用与权限匹配。应补跨用户/插件快照、不同发布顺序、刷新/恢复以及同名配置替换测试；不通过吞掉 ToolRegistry 错误、选择第一个或禁止所有双下划线临时掩盖。本轮只新增测试和报告，没有修改生产工具命名或快照发布。
 
+### H-57：MCP 说明仅按历史名称去重，正文没有进入可回放模型历史，后续无状态请求完全丢失约束
+
+**级别：高（P1）；范围：MCP 返回 initialize.instructions，且使用默认开启的 MCP instructions delta，同会话继续普通对话。** 无需压缩、工具调用、供应商故障或修改服务配置。
+
+- `context_runtime::build_run_context` 调用 `mcp_instructions_block_for_run`，将说明放进本轮 system manifest；默认 delta 开启时，从全部 prior_events 收集已经 announced 的 server 名称，只渲染尚未出现的服务。新一轮会重新构建 system prompt，上一轮的 system header 不会自动成为原生模型历史。
+- `run_assembler` 收尾写入 `EventPayload::McpInstructionsDelta { added, removed }`，事件只保存 server 名，没有说明正文。`collect_announced_mcp_servers_from_events` 据此恢复已告知集合，但本轮 user 附件及历史恢复没有把说明正文补回模型 Surface。因此第二轮同时省掉当前 header 和历史正文；这是内容丢失，不能当作不改变模型可见信息的 token 优化。
+- 新增默认忽略探针 `kernel_v2_e2e::audit_mcp_instructions_survive_continuation_on_wire`。真实本地 Node stdio MCP 的 initialize 返回独有说明标记，tools/list 描述不含该标记；正式 McpService.upsert/start_preparation 发布 Ready 后，经正式 ChatService→RunAssembler→Kernel→ModelAgent→ModelClient 连续运行三个普通 turn：新会话、同会话继续、另一新会话。仅最底层 HttpTransport 返回离线普通回答并记录完整序列化请求；回答不复述说明，没有手工追加 announced 事件。
+- 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_mcp_instructions_survive_continuation_on_wire --offline -- --ignored --nocapture`：三轮运行均成功且共发出三次模型请求；最终保留性断言明确失败。重新执行仍得到相同结果，单次执行约 0.52 秒：
+
+| 请求 | 完整 wire body 中含 MCP 说明标记 |
+|---|---|
+| 首个新会话 | 是 |
+| 同会话第二轮 | 否 |
+| 另一新会话（对照） | 是 |
+
+- 已确认后果：仍向模型提供 MCP 工具时，后续请求不再含服务声明的使用约定、注意事项或资源操作说明；无状态模型不能从上一次请求的 header 自动找回它们。探针没有实际调用工具、发生账户误操作或产生费用，不能把这些潜在后果写成已发生。使用内存 SQLite 和临时工作区，断言前正式 close_all；未进行磁盘重启、压缩、Tauri 或公网供应商验证。本项不同于 H-53 的压缩后记忆预算未释放，也没有证据关联宿主 Codex 的 continuation/cipher 错误。
+- Claude Code `借鉴/claudecode/restored-src/src/utils/mcpInstructionsDelta.ts` 的 delta 同时包含 addedNames 和实际 addedBlocks，从当前 messages 的 attachment 重建 announced；`attachments.ts` 生成 mcp_instructions_delta 附件，`messages.ts` 的对应分支把 addedBlocks 渲染为带 MCP Server Instructions 的模型 user 内容。其设计是持久化正文后减少重复注入，不是只保存名字并删正文。该源码也按 server name 去重，本轮不声称它解决所有同名配置更新问题。
+- DeepSeek Harness `借鉴/deepseek-harness/packages/mcp/mcp-client/src/server-context.ts::registerServerContext` 将连接拥有的 instructions 注册为 systemPrompt.section 的 text 回调；说明有连接与提示词服务的明确内容来源。本轮仅核对这些参考源码，没有运行参考项目，也未单凭该注册函数断言其全部压缩/重启行为。
+- 修复应在既有原生 Surface/事件边界保留模型实际收到的说明正文，再基于当前保留内容去重；或者在每次请求按就绪快照重新注入。二者的选择及删除、压缩、重连和配置更新语义属于本地映射设计，需以完整 wire、回放与就绪身份一致性验收，不能另建说明历史存储。现有 `mcp_instructions_delta_slashes_per_turn_token_pressure` 只证明 block 变短或变为 None，未检查后续实际请求是否保留内容。本轮仅增加审计测试和报告，尚未修复生产行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-57 真实 MCP 说明跨 turn 显式探针（见该节命令） | 明确失败且重跑一致：完整请求标记 first=true / continued=false / fresh=true，三轮模型请求均正常完成 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（H-57 核查时） | 11 passed / 8 ignored；新增缺陷探针已单独显式执行并失败，默认通过不代表修复 |
+| `cargo test -p deepagent-app-core --lib mcp_instructions --offline` | 6 passed；现有去重测试未验证第二轮完整请求仍含正文 |
+| `cargo fmt --all -- --check`（H-57 核查时） | 通过；首次指出新探针格式差异，格式化该测试文件后重跑通过 |
 | H-56 两真实 MCP 的名称冲突显式探针（见该节命令） | 明确失败：两服务器均 Ready；正常命名对照发 1 次模型并完成，冲突组普通聊天在工具注册失败、模型请求为 0 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（H-56 核查时） | 11 passed / 7 ignored；H-56 探针已另行显式执行并失败 |
 | `cargo test -p deepagent-mcp --offline`（H-56 核查时） | 58 passed / 6 ignored；直接 register 的重名拒绝回归通过，不覆盖宿主 extend_ready 发布后的聊天可用性 |
@@ -1523,6 +1548,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
 | MCP 初始化复用与配置代次 | H-47 | 按服务连接身份复用 pending startup，定向取消/失效；全局视图代次不能写坏仍有效的共享 slot | 新增或修改 B 不取消未变 A；禁用/替换 A 才终止旧任务；迟到取消结果不变成新代缓存失败 |
 | MCP 模型可见名称与快照发布 | H-56 | 现有 registry 在发布前统一名称唯一性和 raw owner 路由；参考 Codex 对最终可见名的消歧 | 多快照合并不发布重名；能力冲突不阻塞普通对话；历史和权限匹配保持可解释 |
+| MCP 使用说明的内容保留与去重 | H-57 | 既有原生 Surface/事件保存实际正文并基于当前内容去重，或每请求从就绪快照注入；参考 Claude 正文附件及 DeepSeek 连接拥有的 system section | 连续 turn 的完整 wire 均保留有效说明；压缩/恢复不因旧名称标记丢正文；断线与配置更新语义一致 |
 | MCP 断线恢复耗尽与能力退役 | H-48 | 探活与工具共用连接身份的恢复 owner/预算，状态驱动下一请求就绪快照；参考 Grok stdio 耗尽后 Unavailable 与注销工具 | 失败耗尽后新发现不含旧工具/说明；普通连续调用不重开启动风暴；显式重试可恢复；不影响其他服务 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
