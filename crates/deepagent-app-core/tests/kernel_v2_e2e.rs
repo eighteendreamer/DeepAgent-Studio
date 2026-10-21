@@ -556,6 +556,128 @@ async fn write_turn_reaches_terminal_with_checkpoint_and_real_side_effect() {
 }
 
 #[tokio::test]
+#[ignore = "audit reproducer: cancelled approval waiters must expire before late scoped answers"]
+async fn audit_cancelled_run_rejects_late_approval_and_releases_waiter() {
+    use deepagent_app_core::ApprovalPolicy;
+    use deepagent_builtins::bash_tool::{CommandExecutor, CommandOutcome};
+    use deepagent_persistence::run_control::{ApprovalState, RunActionState, RunControlStore};
+    use std::time::Duration;
+
+    struct NeverExecutes(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl CommandExecutor for NeverExecutes {
+        async fn run(&self, _command: &str, _cwd: &str) -> Result<CommandOutcome> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(CoreError::other(
+                "audit fixture must never execute a process",
+            ))
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = Arc::new(SettingsService::new(
+        db.clone(),
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(MemorySecretStore::new()),
+    ));
+    settings.initialize("sk-audit-placeholder").await.unwrap();
+    settings
+        .set_approval_policy(ApprovalPolicy::AlwaysAsk)
+        .unwrap();
+    let command_calls = Arc::new(AtomicUsize::new(0));
+    let model = Arc::new(ReplayTransport::new([response_function_call(
+        "audit-waiting-approval",
+        "bash",
+        serde_json::json!({"command":"npm install audit-fixture-no-execution"}),
+    )]));
+    let chat = Arc::new(
+        ChatService::new(db.clone(), settings, model, root.path())
+            .with_local_command_executor(Arc::new(NeverExecutes(command_calls.clone()))),
+    );
+    let pending = chat.pending_approvals();
+    let notified = Arc::new(tokio::sync::Notify::new());
+    let runner = chat.clone();
+    let notify = notified.clone();
+    let task = tokio::spawn(async move {
+        runner
+            .run_in_session(
+                "Request the audit command; wait for approval.",
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                Some("audit-cancelled-approval"),
+                |_| {},
+                move |_| notify.notify_one(),
+            )
+            .await
+    });
+    tokio::time::timeout(Duration::from_secs(5), notified.notified())
+        .await
+        .expect("tool must reach the real approval gate");
+    assert_eq!(pending.pending_count(), 1);
+    assert!(
+        chat.request_cancel("audit-cancelled-approval")
+            .unwrap()
+            .accepted
+    );
+    tokio::time::timeout(Duration::from_secs(2), task)
+        .await
+        .expect("cancel must finish the run")
+        .unwrap()
+        .unwrap();
+    let events = chat.run_events("audit-cancelled-approval", None).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "run_terminal" && event.data["kind"] == "cancelled")
+            .count(),
+        1
+    );
+    let controls = RunControlStore::new(&db);
+    let approvals = controls.list_approvals("audit-cancelled-approval").unwrap();
+    assert_eq!(approvals.len(), 1);
+    let action = controls
+        .get_action("audit-cancelled-approval", "audit-waiting-approval")
+        .unwrap()
+        .unwrap();
+    assert_eq!(action.state, RunActionState::Cancelled);
+    assert_eq!(command_calls.load(Ordering::SeqCst), 0);
+
+    let pending_after_terminal = pending.pending_count();
+    let late = chat.resolve_approval_scoped(
+        &approvals[0].approval_id,
+        true,
+        Some("tool_session"),
+        "audit-late-user",
+    );
+    let granted_after_terminal = !pending.grants().list().is_empty();
+    let last_event = chat
+        .run_events("audit-cancelled-approval", None)
+        .unwrap()
+        .last()
+        .unwrap()
+        .event_type
+        .clone();
+    eprintln!(
+        "audit cancelled approval: terminal=cancelled, action=cancelled, command_calls=0, pending_after_terminal={pending_after_terminal}, durable_state={:?}, late={late:?}, granted_after_terminal={granted_after_terminal}, last_event={last_event}",
+        approvals[0].state
+    );
+    assert!(
+        pending_after_terminal == 0
+            && approvals[0].state != ApprovalState::Pending
+            && !granted_after_terminal,
+        "cancelled runs must release/expire approvals and reject stale permission grants"
+    );
+}
+
+#[tokio::test]
 async fn cancel_by_run_id_stops_model_stream_and_reaches_terminal_under_two_seconds() {
     let run_id = format!(
         "kernel-v2-cancel-{}-{}",
