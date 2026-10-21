@@ -221,6 +221,113 @@ fn e2e_root(run_id: &str) -> PathBuf {
     PathBuf::from(r"G:\Code\Kotlin_code\_deepagent-e2e").join(run_id)
 }
 
+/// Audit-only probe: records backend routing without running any host command.
+#[tokio::test]
+#[ignore = "audit reproducer: a per-turn sandbox override must not use the host default backend"]
+async fn audit_sandbox_override_does_not_route_to_default_direct_backend() {
+    use deepagent_app_core::{
+        ApprovalPolicy, HarnessRunOverrides, SandboxBackend, SandboxBackendCommandExecutor,
+        SandboxBackendKind, SandboxCapabilities, SandboxExecutionRequest, SandboxExecutionResult,
+        SandboxMode,
+    };
+    use deepagent_builtins::bash_tool::CommandOutcome;
+
+    struct RecordingDirectBackend(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl SandboxBackend for RecordingDirectBackend {
+        fn capabilities(&self) -> SandboxCapabilities {
+            SandboxCapabilities {
+                kind: SandboxBackendKind::Direct,
+                available: true,
+                supports_one_shot: true,
+                supports_interactive_pty: false,
+                supports_network_toggle: false,
+                supports_readonly_mapping: false,
+                message: "audit fake: never executes a process".into(),
+            }
+        }
+
+        async fn execute(
+            &self,
+            _request: SandboxExecutionRequest,
+        ) -> Result<SandboxExecutionResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(SandboxExecutionResult {
+                outcome: CommandOutcome {
+                    exit_code: Some(0),
+                    stdout: "audit fake output".into(),
+                    stderr: String::new(),
+                },
+                backend: SandboxBackendKind::Direct,
+                artifacts: Vec::new(),
+            })
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let discovery = Arc::new(MockTransport::with_get_json(
+        r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+    ));
+    let settings = Arc::new(SettingsService::new(
+        db.clone(),
+        discovery,
+        Arc::new(MemorySecretStore::new()),
+    ));
+    settings.initialize("sk-audit-placeholder").await.unwrap();
+    settings
+        .set_approval_policy(ApprovalPolicy::FullAccess)
+        .unwrap();
+    settings
+        .set_sandbox_mode(SandboxMode::WorkspaceWrite)
+        .unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let executor = SandboxBackendCommandExecutor::new(
+        Arc::new(RecordingDirectBackend(calls.clone())),
+        root.path(),
+        SandboxMode::WorkspaceWrite,
+    );
+    let transport = Arc::new(ReplayTransport::new([
+        response_function_call(
+            "audit-command",
+            "bash",
+            serde_json::json!({"command":"echo audit"}),
+        ),
+        response_text("done"),
+    ]));
+    let chat = ChatService::new(db, settings, transport, root.path())
+        .with_local_command_executor(Arc::new(executor));
+    let result = chat
+        .run_in_session_with_overrides(
+            "Run the audit command using the requested sandbox.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("audit-sandbox-override"),
+            HarnessRunOverrides {
+                sandbox_backend: Some("windows_sandbox".into()),
+                ..Default::default()
+            },
+            |_| {},
+            |_| {},
+        )
+        .await;
+    eprintln!(
+        "audit sandbox: run_ok={}, direct_backend_calls={}",
+        result.is_ok(),
+        calls.load(Ordering::SeqCst)
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "a windows_sandbox override must select that backend or reject the run, never execute using direct"
+    );
+}
+
 #[tokio::test]
 async fn write_turn_reaches_terminal_with_checkpoint_and_real_side_effect() {
     let run_id = format!(

@@ -1187,6 +1187,93 @@ async fn write_response(
 mod tests {
     use super::*;
 
+    // Audit probes intentionally assert the desired invariant and stay ignored
+    // until the corresponding production defect is fixed. See the 2026-10-21
+    // system Harness audit for reproduction commands and evidence boundaries.
+    #[test]
+    #[ignore = "audit reproducer: a stalled consumer must not lose terminal notification"]
+    fn audit_stalled_outbox_preserves_terminal_notification() {
+        let (tx, mut rx) = mpsc::channel(256);
+        let outbox = EventOutbox {
+            tx,
+            next_sequence: AtomicU64::new(1),
+        };
+        for step in 0..256 {
+            outbox.emit(HarnessEvent::TurnStarted {
+                thread_id: Some("audit-thread".into()),
+                turn_id: "audit-turn".into(),
+                step: Some(step),
+            });
+        }
+        outbox.emit(HarnessEvent::TurnCompleted {
+            thread_id: Some("audit-thread".into()),
+            turn_id: Some("audit-turn".into()),
+            message: "done".into(),
+        });
+        let mut received = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            received.push(event);
+        }
+        let terminal_received = received
+            .iter()
+            .any(|queued| matches!(queued.event, HarnessEvent::TurnCompleted { .. }));
+        outbox.emit(HarnessEvent::TurnStarted {
+            thread_id: Some("audit-thread".into()),
+            turn_id: "next-turn".into(),
+            step: None,
+        });
+        let next_sequence = rx.try_recv().unwrap().sequence;
+        eprintln!(
+            "audit outbox: queued={}, terminal_received={terminal_received}, next_sequence={next_sequence}",
+            received.len()
+        );
+        assert!(
+            terminal_received,
+            "a full connection queue silently lost the terminal event; next sequence is {next_sequence}"
+        );
+    }
+
+    #[test]
+    #[ignore = "audit reproducer: interrupt after turn ACK must reach cancellation registration"]
+    fn audit_interrupt_after_start_ack_reaches_cancellation() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+        let thread =
+            state.handle_request_for_test(rpc_request(2, "thread/start", serde_json::json!({})));
+        let thread_id = thread.result()["threadId"].as_str().unwrap().to_owned();
+        // Keep the launch pending to reproduce the interval between the ACK and
+        // execution-side admission; use the production dispatcher for both RPCs.
+        let (response, launch) = state.dispatch(
+            rpc_request(
+                3,
+                "turn/start",
+                serde_json::json!({ "threadId": thread_id, "input": "audit" }),
+            ),
+            None,
+        );
+        let launch = launch.expect("turn launch");
+        let turn_id = response.result()["turnId"].as_str().unwrap();
+        let interrupted = state.handle_request_for_test(rpc_request(
+            4,
+            "turn/interrupt",
+            serde_json::json!({ "threadId": thread_id, "turnId": turn_id }),
+        ));
+        let active_registration = launch.chat.request_cancel(turn_id).unwrap().accepted;
+        let durable_runs = RunStore::new(&state.database)
+            .list_for_session(&thread_id)
+            .unwrap();
+        eprintln!(
+            "audit interrupt: status={}, active_registration={active_registration}, durable_runs={}",
+            interrupted.result()["status"],
+            durable_runs.len()
+        );
+        assert_eq!(interrupted.result()["status"], "cancelling");
+        assert!(
+            active_registration,
+            "interrupt acknowledged cancelling without an execution-side registration"
+        );
+    }
+
     #[test]
     fn rejects_requests_before_initialize() {
         let mut state = ServerState::new_for_test();
