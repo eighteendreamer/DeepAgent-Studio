@@ -1272,6 +1272,153 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct AuditPendingChildTransport {
+        entered: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl deepagent_models::transport::HttpTransport for AuditPendingChildTransport {
+        async fn stream(
+            &self,
+            _request: deepagent_models::transport::TransportRequest,
+            _sink: &mut dyn deepagent_models::transport::EventSink,
+        ) -> Result<()> {
+            self.entered.notify_one();
+            std::future::pending().await
+        }
+
+        async fn stream_cancelled(
+            &self,
+            request: deepagent_models::transport::TransportRequest,
+            sink: &mut dyn deepagent_models::transport::EventSink,
+            cancel: Arc<AtomicBool>,
+        ) -> Result<()> {
+            tokio::select! {
+                result = self.stream(request, sink) => result,
+                _ = async {
+                    while !cancel.load(std::sync::atomic::Ordering::Acquire) {
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                } => Err(CoreError::other("audit child cancelled")),
+            }
+        }
+    }
+
+    struct AuditDelegateAgent;
+
+    #[async_trait::async_trait]
+    impl deepagent_runtime::Agent for AuditDelegateAgent {
+        async fn think(
+            &mut self,
+            _step: usize,
+            _last: &[deepagent_runtime::Observation],
+        ) -> Result<deepagent_runtime::AgentDecision> {
+            Ok(deepagent_runtime::AgentDecision::CallTool(
+                deepagent_tools::ToolInvocation {
+                    id: Some("audit-delegate".into()),
+                    name: deepagent_builtins::TASK_TOOL_NAME.into(),
+                    arguments: serde_json::json!({
+                        "description": "audit pending child", "prompt": "wait for cancellation",
+                    }),
+                },
+            ))
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "audit: a parent kernel deadline must finalize its foreground child"]
+    async fn audit_parent_deadline_finalizes_foreground_child() {
+        let mut observations = Vec::new();
+        for user_cancel in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let transport = Arc::new(AuditPendingChildTransport::default());
+            let runner = audit_child_runner(root.path(), transport.clone());
+            let db = runner.db.clone();
+            let parent = deepagent_persistence::run_store::RunStore::new(&db)
+                .get("audit-parent")
+                .unwrap()
+                .unwrap();
+            let mut session =
+                Session::recover(&db, &SystemClock, parent.session_id.parse().unwrap()).unwrap();
+            let task = session.create_task("audit delegation").unwrap();
+            let mut registry = ToolRegistry::new();
+            registry
+                .register(Arc::new(deepagent_builtins::TaskTool::new(
+                    runner.clone(),
+                    Vec::<String>::new(),
+                )))
+                .unwrap();
+            let config = deepagent_runtime::RuntimeConfig {
+                task_timeout: Some(std::time::Duration::from_secs(1)),
+                ..Default::default()
+            };
+            let kernel = deepagent_runtime::AgentKernel::<SystemClock>::new(
+                db.clone(),
+                &registry,
+                Default::default(),
+                config,
+                "audit-parent",
+            );
+            let control = kernel.handle();
+            let mut agent = AuditDelegateAgent;
+            let (terminal, ()) = tokio::join!(
+                kernel.start(deepagent_runtime::RunRequest::new(
+                    &mut session,
+                    task,
+                    &mut agent
+                )),
+                async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        transport.entered.notified(),
+                    )
+                    .await
+                    .expect("the actual foreground child must enter ModelClient before stopping");
+                    if user_cancel {
+                        control.cancel();
+                    }
+                }
+            );
+            let terminal = terminal.unwrap();
+            assert_eq!(
+                terminal.kind,
+                if user_cancel {
+                    deepagent_runtime::TerminalKind::Cancelled
+                } else {
+                    deepagent_runtime::TerminalKind::BudgetExceeded
+                }
+            );
+            let children = deepagent_persistence::subagent_store::SubagentRunStore::new(&db)
+                .list_for_parent("audit-parent")
+                .unwrap();
+            assert_eq!(children.len(), 1);
+            let child = &children[0];
+            let events = deepagent_persistence::run_store::RunStore::new(&db)
+                .events_after("audit-parent", None)
+                .unwrap();
+            let cleanup_error = deepagent_builtins::SubagentRunner::cleanup(&runner, &child.id)
+                .await
+                .err()
+                .map(|error| error.to_string());
+            observations.push(serde_json::json!({
+                "user_cancel": user_cancel,
+                "parent_kind": terminal.kind.label(),
+                "root_cancelled": control.is_cancelled(),
+                "child_state": child.state,
+                "child_finished": child.finished_at.is_some(),
+                "transcript_exists": child.transcript_path.as_ref().is_some_and(|p| Path::new(p).exists()),
+                "child_terminal_events": events.iter().filter(|e| matches!(e.event_type.as_str(), "subagent_cancelled" | "subagent_completed")).count(),
+                "cleanup_error": cleanup_error,
+            }));
+        }
+        eprintln!("{}", serde_json::to_string_pretty(&observations).unwrap());
+        assert!(
+            observations.iter().all(|o| o["child_finished"] == true),
+            "a terminal parent must not leave its dropped foreground child running"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "audit reproducer: child tool restrictions must also constrain actual dispatch"]
     async fn audit_read_only_subagent_rejects_tools_hidden_by_its_profile() {

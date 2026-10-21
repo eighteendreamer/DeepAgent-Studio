@@ -19,7 +19,7 @@
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
-| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话及订阅就绪前启动的竞态已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43；记忆现有回归通过，其他图执行及重启边界未完成 |
+| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -1054,10 +1054,32 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应让启动恢复接回现有规范终态写入，并明确 runs/run_events 与文件会话投影之间可重试、按 run 身份去重的补偿规则。两种存储不是同一 SQL 事务，不能简单宣称包一个事务就全部原子；应让已终态但缺会话投影的运行仍能修复，并按真实归属写到对应 turn，避免只追加在会话尾部误标后续 turn。可从现有正常终态边界收敛，不新增恢复执行器或事件存储。
 - 验收需要覆盖正常遗留恢复、恢复事件后更新失败、规范终态后会话投影失败、反复重开、同会话多个遗留运行和随后已完成 turn。以上后几项是后续修复必须验证的边界，本探针未全部动态覆盖。本轮仅增加显式运行的失败探针和文档，未修改生产恢复行为。
 
+### H-45：父 Kernel 总时限直接丢弃执行 Future，前台子 Agent 没有取消和持久化收尾
+
+**级别：中（P2）；范围：前台 task 子 Agent 仍在等待时，父运行触发 task_timeout。** 本项不是后台子 Agent 的独立生命周期设计，也不将正常用户取消归为同样失效。
+
+#### 生产机制与父子运行复现
+
+- `AgentKernel::start_prepared()` 用 tokio::time::timeout 包住 engine.run；elapsed 分支只生成预算错误并写父终态，没有先取消现有 CancellationTree 或等待所属前台子工作收尾。timeout 丢弃内层 Future，不等于执行了该 Future 的异步退出路径。
+- 正式 TaskTool 的 foreground run 调用 ChatSubagentRunner::run_controlled→run_inner_with_controls→run_tracked。begin_tracking 先写 state=running 和 SubagentStarted；run_tracked 在 await run_active **之后**才写 transcript、SubagentRunStore::finish 和子终态事件。没有为 await 被外层丢弃安排等效的收尾。
+- 新增默认忽略测试 `subagent_runner::tests::audit_parent_deadline_finalizes_foreground_child`，复用既有审计 runner fixture、正式 TaskTool/ToolRegistry、父 AgentKernel 和子 ModelAgent；父决策仅为离线脚本，子 transport 在真正进入 ModelClient 后保持 pending 并支持取消。先跑“子模型已启动后主动 cancel”的对照，再跑相同子任务触发父总时限。总时限只在测试配置缩短为 1 秒；生产默认 30 分钟，不声称真实用户每秒触发。
+- 执行 `cargo test -p deepagent-app-core --lib audit_parent_deadline_finalizes_foreground_child --offline -- --ignored --nocapture`：首次约 1.31 秒，补充 cleanup 检查后再次执行约 1.25 秒，断言明确失败。主动取消组：parent=cancelled、root_cancelled=true、child=cancelled、finished_at 存在、transcript 存在、子终态事件=1、cleanup 成功；总时限组：parent=budget_exceeded、root_cancelled=false、child=running、finished_at 为空、transcript 不存在、子终态事件=0，正式 cleanup 入口因子记录仍 running 而拒绝。两组先等待 transport 的启动通知，排除只验证“尚未启动就取消”的假阳性。此处没有创建隔离工作树，cleanup 在检查是否有工作树之前就被运行状态拦截，不据此声称真实工作树删除失败。
+- 这是生产父子执行及真实临时子运行记录的证据，没有外网、真实子工具命令或隔离工作树；不据此声称 OS 子进程或付费网络任务一定在父终态后继续。动态证明的是执行 Future 已退出后，durable 子记录仍 running 且缺收尾；实际外部工作是否停取决于具体工具的 drop/cancel 行为。
+
+#### 成熟实现、影响与修复方向
+
+- Codex `core/src/tasks/mod.rs` 的 abort_task 路径先取消 task token，等待 done 通知或有限的 graceful timeout，再 abort handle 并显式调用 SessionTask::abort；取消传播、等待和任务专属清理是不同步骤。这里只借鉴退出结构，没有声称参考路径是同名 task_timeout 或相同期限策略。
+- Claude Code `tools/AgentTool/AgentTool.tsx` 为前台 agent 使用 finally 清理 foreground 注册、skills 状态、定时器和工作树，并向 SDK 投递 stopped/failed/completed；backgrounded 分支由其独立 finally 负责。TypeScript finally 不能直接替代 Rust 被 drop Future 的异步清理，但说明子运行的资源与终态必须有可完成的生命周期 owner。参考源码已阅读，未运行这两个项目测试。
+- 后果是已 budget_exceeded 的父运行仍关联永远 running 的前台子记录，缺少 transcript 和终态通知。status/恢复/清理入口可能受其影响；当前数据库重启会将 running 子记录当 orphan 取消，但那不能补回本轮本应产生的 transcript/子终态，也不能作为运行中收尾的替代。此处未新增真实桌面卡片或重启验收。
+- 修复应把父总时限与用户停止统一接回现有取消树及受控收尾，保留预算超限这个终态原因，先给前台子工作有界退出机会，再由 owner 保证丢弃路径仍能终结持久化子记录并发布一次结果。不能在父终态前无期限等待，也不能因为子工作本应独立的后台模式就把全部后台任务一并停止。测试应继续保留正常取消对照，并覆盖超时发生于子模型、工具、审批和工作树准备的边界。本轮只添加测试和文档，未修改生产 deadline 或子任务执行。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（H-45 核查时） | 6 passed / 4 ignored；包括本次失败探针在内的审计用例默认忽略，须使用各节命令显式执行 |
+| `cargo test -p deepagent-runtime --lib kernel_deadline_finalizes_and_fails_active_task --offline` | 1 passed；父运行正常写出预算终态的既有回归通过，未覆盖前台子运行收尾 |
+| H-45 父总时限/前台子 Agent 显式探针（见该节命令） | 明确失败：主动取消对照能收尾；总时限退出后父=budget_exceeded、根未取消、子记录仍 running、无 transcript/子终态事件 |
 | H-44 文件数据库启动恢复显式探针（见该节命令） | 明确失败：正常与故障重试均 run=failed、两日志终态数=0、会话 turn 终态为空；故障重试额外产生两条恢复标记，真实重开后未自愈 |
 | `cargo test -p deepagent-persistence --lib run_store::tests --offline`（H-44 核查时） | 3 passed；正常终态幂等和事务回滚通过，不能替代恢复路径的投影一致性 |
 | `cargo test -p deepagent-app-core --lib startup_recovery_finalizes_unfinished_runs_and_active_tasks --offline` | 1 passed；原有测试只检查运行表/task/恢复标记等，没有检查规范终态和会话 turn 投影 |
@@ -1227,7 +1249,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 |---|---|---|---|
 | 执行权限与子运行上下文 | H-03、H-19、H-22 | 有效工具集合、sandbox 选择、执行根、checkpoint 必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
-| 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35 | 摘要、prefire、成功/错误正文、重试和串并行工具属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分外部工作清理与持久化收尾 | 压缩/错误正文/并行工具中停止及时退出；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
+| 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 定时任务的运行归属与交互能力 | H-37 | 现有 CronService → AppCore 接纳、审批和通知共用明确的 unattended 契约；参考 Claude 队列归属与 Codex headless 策略 | 需要人工时明确拒绝或投递到真实 owner；计划可关联运行，停止入口可发现；不能留下无消费者审批 |
