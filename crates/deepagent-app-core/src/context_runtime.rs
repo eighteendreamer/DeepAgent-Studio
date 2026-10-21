@@ -1994,6 +1994,95 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: repeated assistant text must not move a durable compaction cut backwards"]
+    async fn audit_native_summary_replay_preserves_repeated_assistant_boundary() {
+        use crate::session_memory::testing::{scripted_client, ScriptedTransport};
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = deepagent_core::clock::SystemClock;
+        let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        let sid = session.id();
+        for index in 0..24 {
+            session
+                .append_response_item(ResponseInputItem::Message {
+                    role: "user".into(),
+                    content: format!("old turn {index}: {}", "detail ".repeat(520)),
+                })
+                .unwrap();
+            session
+                .append_response_item(ResponseInputItem::Message {
+                    role: "assistant".into(),
+                    content: if index == 0 {
+                        "Done".into()
+                    } else {
+                        format!("Old answer {index}")
+                    },
+                })
+                .unwrap();
+        }
+        session
+            .append_response_item(ResponseInputItem::Message {
+                role: "user".into(),
+                content: "Finish this milestone".into(),
+            })
+            .unwrap();
+        let repeated = ResponseInputItem::Message {
+            role: "assistant".into(),
+            content: "Done".into(),
+        };
+        let retained_event = session.append_response_item(repeated.clone()).unwrap();
+        for index in 0..4 {
+            session
+                .append_response_item(ResponseInputItem::Message {
+                    role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                    content: format!("recent {index}: {}", "tail ".repeat(2200)),
+                })
+                .unwrap();
+        }
+        let store = deepagent_persistence::event_store::EventStore::new(&db);
+        let items =
+            crate::input_runtime::response_items_from_events(&store.load_session(sid).unwrap());
+        let split = pairing_safe_response_item_compaction_split(&items).unwrap();
+        assert_eq!(
+            split,
+            items.len() - 5,
+            "fixture must use the production tail selector"
+        );
+        assert_eq!(items[split], repeated);
+        let compactor = HookedReactiveContextCompactor::new(
+            scripted_client(vec![ScriptedTransport::text(
+                "{\"goal\":\"ship\",\"completed\":[\"old milestones\"]}",
+            )]),
+            "deepseek-flash".into(),
+            Arc::new(HookRegistry::new()),
+            sid,
+            db.clone(),
+        );
+        let compacted = compactor
+            .compact_response_items(None, &items, CompactionTrigger::ContextOverflow)
+            .await
+            .unwrap()
+            .unwrap();
+        let live = compacted.response_items.unwrap();
+        let events = store.load_session(sid).unwrap();
+        let saved_cut = events.iter().rev().find_map(|event| match &event.payload {
+            EventPayload::ContextCompacted {
+                first_kept_sequence,
+                ..
+            } => *first_kept_sequence,
+            _ => None,
+        });
+        let replay = crate::input_runtime::response_items_from_events(&events);
+        eprintln!(
+            "audit native compaction cut: expected={:?}, saved={saved_cut:?}, original_items={}, live_items={}, replay_items={}",
+            retained_event.sequence, items.len(), live.len(), replay.len()
+        );
+        assert!(
+            replay == live,
+            "recovery must preserve the compacted surface even when assistant text repeats"
+        );
+    }
+
     fn tool_call(
         id: &str,
         name: &str,

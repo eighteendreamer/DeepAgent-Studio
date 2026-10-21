@@ -15,7 +15,7 @@
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具续轮投影拆分已复现 | 已确认 H-05；全部错误和流式分支未完成 |
-| 上下文、压缩、记忆 | 连续对话、恢复测试；预取摘要在运行结束后继续且无法归集已复现 | 已确认 H-10；笔记计数和完整压缩回放仍在核查 |
+| 上下文、压缩、记忆 | 预取摘要生命周期及重复 assistant 文本导致压缩回放复活旧历史均已复现 | 已确认 H-10、H-11；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 真实文件读取及工作区外拦截；沙箱 backend override 路由探针 | 已确认 H-03；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 副作用重试、工具分页、握手与并发回包已复现；含本机子进程 | 已确认 H-06 至 H-09；宿主准备与 hooks 未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消终态、进程重启继续、27 项恢复与 6 项取消协调器测试 | 已获得部分基线；数据库故障及并发压力未完成 |
@@ -329,6 +329,32 @@ Grok 可以让部分预取跨 turn 保留，因为它的 handle/cache 属于 Ses
 - 在既有取消树中给运行所属的摘要/预取派生子信号，终态收尾有界取消并回收；若要跨 turn 缓存，应由现有会话服务明确接管其身份、有效性和计费，不能丢弃 handle 后默许继续。
 - 已获得的 usage 必须在有主人的收尾路径归集；覆盖正常完成、用户取消、模型切换、摘要已完成但未收取、任务失败及会话重启。此缺陷探针默认忽略，生产行为尚未修改。
 
+### H-11：以消息内容反查压缩边界，重复回答会让恢复重新带回已摘要的历史
+
+**级别：中（P2）；范围：原生压缩保留尾部的首条可定位 item 是重复 assistant 文本等非唯一内容。** 用户消息已有标签，不能概括为所有重复用户输入都会触发；本项与 H-05 的 Chat 投影拆分无关。
+
+#### 触发与复现
+
+- `context_runtime.rs::record_native_boundary()` 用 tail 中第一条可解析 item 查找事件序号；`input_runtime.rs::sequence_of_response_item()` 对完整事件日志从前向后执行内容相等匹配，没有保留该 live item 的事件身份。
+- 相同的 assistant `Done` 可以出现在早期与近期，查找会选中早期事件。`ContextCompacted.first_kept_sequence` 因而指向已经被摘要的前缀；恢复按该序号重放，把前缀与新摘要同时放回 Surface。
+- 新增探针 `context_runtime::tests::audit_native_summary_replay_preserves_repeated_assistant_boundary`：使用真实内存数据库、Session 原生事件、生产 keep-window 选择器、HookedReactiveContextCompactor 和恢复函数，只有摘要模型使用 mock。24 轮旧对话及近期尾部中包含两条相同的 assistant `Done`；通过断言确认生产选择器确实从近期的 `Done` 开始保留 5 条，而非人为指定一个无法出现的切点。
+- 执行：`cargo test -p deepagent-app-core audit_native_summary_replay_preserves_repeated_assistant_boundary --offline -- --ignored --nocapture`。
+- 实际输出：`expected=50, saved=Some(2), original_items=54, live_items=6, replay_items=54`；live 与 replay 相等的断言失败。压缩后应只剩摘要 + 5 条尾部，恢复却多出 48 条已被摘要的旧内容。日志原始事件未删除，问题是模型视图的恢复边界错误。
+- 这是生产压缩及数据库回放的确定性复现；尚未做真实供应商大窗口压缩后重启桌面的端到端复测。既有 `native_summary_keeps_exact_tool_metadata_across_replay` 使用可区分的用户尾部，无法覆盖这个非唯一边界。
+
+#### 成熟实现对照
+
+Claude Code `services/compact/sessionMemoryCompact.ts` 通过 `lastSummarizedMessageId` 与 `msg.uuid` 找到已总结位置；已知 UUID 不存在则返回 null，转入其他压缩路径，不拿相同文本猜边界。随后统一选择尾部并保护工具配对。
+
+Codex `core/src/session/mod.rs::replace_compacted_history()` 先为缺失身份的 item 分配 ID，再从同一份 items 建立 live history 与持久化 `CompactedItem.replacement_history`；`core/src/compact.rs::CompactedHistoryMetadata` 的注释明确要求二者一致。它持久化的是实际替换结果，不依赖重启时凭文本猜原事件。
+
+#### 后果和修复方向
+
+- 跨运行或重启后，模型看到“摘要 + 被摘要的原文 + 近期尾部”，token 和费用增加，可能很快再次进入压缩或 overflow；摘要已更新的状态还可能与恢复的旧叙述冲突。这些是错误 Surface 的推论，本次没有测实际收费或真实模型误判。
+- 原生 Surface 应携带既有事件 sequence/稳定 item 身份或旁路 provenance，压缩尾部必须定位到确切事件；不能简单把 first match 改成 last match，因为尾部内部也可能重复。
+- 沿用现有 `ContextCompacted` / `run_events` 持久化边界，必要时兼容扩展实际 replacement/provenance，不能新建第二套上下文存储。来源不可验证时明确失败或采用可验证的保守边界，不写一个猜测的成功切点。
+- 补充相同 assistant 文本、相同 reasoning、连续多次压缩、snip/patch 后压缩及重启后的 live/replay/wire 等价测试。此探针默认忽略，生产边界尚未修复。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -336,17 +362,19 @@ Grok 可以让部分预取跨 turn 保留，因为它的 handle/cache 属于 Ses
 | `cargo fmt --all -- --check` | 通过 |
 | `cargo test -p deepagent-cli -p deepagent-models -p deepagent-mcp --offline` | CLI 82 passed / 3 ignored；models 84 passed / 1 ignored；MCP 单元 55 passed / 3 ignored、子进程集成 3 passed、协议审查 1 ignored；均无常规失败。组合命令的 feature 合并启用了额外 HTTP 测试 |
 | `cargo test -p deepagent-cli --offline`（新增 steer 探针后） | 82 passed / 4 ignored，无常规失败 |
-| `cargo test -p deepagent-runtime --offline`（新增 H-10 探针后） | 常规测试及 500 次以上工具调用稳定性集成测试通过；H-10 探针默认忽略 |
+| `cargo test -p deepagent-runtime --offline`（新增 H-10 探针后） | 265 单元 + 5 稳定性集成测试 passed，1 ignored；含 500 次以上工具调用测试 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` | 11 passed / 2 ignored，无常规失败 |
 | `cargo test -p deepagent-app-core --lib --offline input_runtime::tests` | 27 passed；覆盖 native snip/patch、工具配对、压缩边界及恢复等现有测试；不代表真实大上下文端到端压缩已验收 |
+| `cargo test -p deepagent-app-core --lib --offline context_runtime::tests`（新增 H-11 后） | 22 passed / 1 ignored；新重复内容缺陷探针默认忽略，常规测试无失败 |
 | `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests` | 6 passed；包括无 durable run 时取消、不获取数据库锁、审批作用域等现有测试；不等于已完成审计写入故障注入 |
 | `cargo test -p deepagent-cli audit_ --offline -- --ignored --nocapture`（首批执行时） | 当时的 2 个探针明确失败，分别复现 H-01、H-02；后来新增的 resume/steer 探针分别单独执行，见 H-04 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_sandbox_override --offline -- --ignored --nocapture` | 探针明确失败，复现 H-03 |
 | H-04 至 H-09 各节列出的单项命令 | 7 个探针分别明确失败（H-04 包含 resume、steer 两个），证据见对应章节；不是常规测试通过 |
 | H-10 节单项命令 | 1 个探针明确失败，复现结束后预取仍继续及收尾 usage 缺失 |
+| H-11 节单项命令 | 1 个探针明确失败：压缩保留 6 items，数据库恢复得到 54 items |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十一个默认忽略的缺陷探针及一个默认忽略的宿主隔离集成探针，未修改生产运行逻辑。本批重新运行了格式检查和 CLI/models/MCP/runtime 常规测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十二个默认忽略的缺陷探针及一个默认忽略的宿主隔离集成探针，未修改生产运行逻辑。本批重新运行了格式检查和 CLI/models/MCP/runtime 常规测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
