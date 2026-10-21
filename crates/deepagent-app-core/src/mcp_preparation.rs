@@ -604,6 +604,133 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit: unrelated config changes must preserve valid pending MCP startup"]
+    async fn audit_unrelated_config_change_preserves_pending_startup() {
+        let mut observations = Vec::new();
+        for add_unrelated in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let script = dir.path().join("gated-mcp.cjs");
+            std::fs::write(
+                &script,
+                r#"
+const fs = require('node:fs');
+const [attempts, entered, gate] = process.argv.slice(2);
+fs.appendFileSync(attempts, 'start\n');
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const msg = JSON.parse(line);
+  const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
+  if (msg.method === 'initialize') {
+    fs.writeFileSync(entered, 'initialize received');
+    const timer = setInterval(() => {
+      if (!fs.existsSync(gate)) return;
+      clearInterval(timer);
+      reply({ protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} },
+        serverInfo: { name: 'gated-audit', version: '1' } });
+    }, 10);
+  } else if (msg.method === 'tools/list') {
+    reply({ tools: [{ name: 'echo', description: 'audit', inputSchema: { type: 'object' } }] });
+  } else { reply({}); }
+});
+"#,
+            )
+            .unwrap();
+            let config_for = |name: &str| McpServerConfig {
+                transport: None,
+                command: Some("node".into()),
+                args: vec![
+                    script.to_string_lossy().into_owned(),
+                    dir.path()
+                        .join(format!("{name}.attempts"))
+                        .to_string_lossy()
+                        .into_owned(),
+                    dir.path()
+                        .join(format!("{name}.entered"))
+                        .to_string_lossy()
+                        .into_owned(),
+                    dir.path()
+                        .join(format!("{name}.gate"))
+                        .to_string_lossy()
+                        .into_owned(),
+                ],
+                env: BTreeMap::new(),
+                cwd: None,
+                url: None,
+                headers: BTreeMap::new(),
+            };
+            let service = Arc::new(McpService::new(Arc::new(
+                Database::open_in_memory().unwrap(),
+            )));
+            let a_config = config_for("a");
+            service
+                .upsert(McpServerDto::from_config("a", &a_config, true))
+                .unwrap();
+            let original_a = service.get("a").unwrap().unwrap().to_config().unwrap();
+            service.start_preparation();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while !dir.path().join("a.entered").exists() {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("A must receive initialize before changing unrelated config");
+            if add_unrelated {
+                std::fs::write(dir.path().join("b.gate"), "open").unwrap();
+                service
+                    .upsert(McpServerDto::from_config("b", &config_for("b"), true))
+                    .unwrap();
+                service.start_preparation();
+                tokio::time::timeout(Duration::from_secs(3), async {
+                    while service.cached_status("a").status == "preparing"
+                        || service.ready_registry().find_tool("mcp__b__echo").is_none()
+                    {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .expect("the new generation must publish B and settle A");
+            }
+            std::fs::write(dir.path().join("a.gate"), "open").unwrap();
+            tokio::time::timeout(Duration::from_secs(3), async {
+                while service.cached_status("a").status == "preparing" {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                if service.cached_status("a").status == "connected" {
+                    while service.ready_registry().find_tool("mcp__a__echo").is_none() {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+            })
+            .await
+            .expect("A startup must settle after releasing its fixture gate");
+            let generation = service.preparation.generation.load(Ordering::Acquire);
+            service.start_preparation();
+            let status = service.cached_status("a");
+            let ready = service.ready_registry();
+            let a_unchanged = service.get("a").unwrap().unwrap().to_config().unwrap() == original_a;
+            assert!(
+                a_unchanged,
+                "the effective persisted config for A must remain unchanged"
+            );
+            observations.push(serde_json::json!({
+                "add_unrelated": add_unrelated,
+                "a_status": status.status,
+                "a_error": status.error,
+                "a_config_unchanged": a_unchanged,
+                "a_process_starts": std::fs::read_to_string(dir.path().join("a.attempts")).unwrap().lines().count(),
+                "ready_servers": ready.server_names(),
+                "ready_tools": ready.all_tools().iter().map(|tool| tool.namespaced_name.clone()).collect::<Vec<_>>(),
+                "same_config_preparation_noop": generation == service.preparation.generation.load(Ordering::Acquire),
+            }));
+            ready.close_all().await.unwrap();
+        }
+        eprintln!("{}", serde_json::to_string_pretty(&observations).unwrap());
+        assert!(
+            observations.iter().all(|o| o["a_status"] == "connected"),
+            "adding B must not poison the unchanged startup slot for A"
+        );
+    }
+
+    #[tokio::test]
     async fn concurrent_preparation_shares_a_server_startup() {
         let service = McpService::new(Arc::new(Database::open_in_memory().unwrap()));
         let config = missing_stdio_config();

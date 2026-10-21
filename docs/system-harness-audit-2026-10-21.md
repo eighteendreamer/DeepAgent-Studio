@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口及 SSE 分帧不完整均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任及 Windows MCP 后代清理缺口已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows MCP 后代清理及配置变更误取消未变服务均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46、H-47；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
@@ -1091,10 +1091,31 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 后果是 MCP 连接已经关闭或替换后，服务创建的浏览器、worker 等资源可能继续工作并占用资源；反复重建可积累旧工作进程。本探针动态证明的是 .NET fixture 的普通后代仍运行，不代表任意真实浏览器、远程付费任务或平台都已复现；尚未做插件管理 UI、真实宿主退出和 Linux/macOS 验收。
 - 修复应在既有 stdio transport/服务 owner 边界收敛树归属，参考 Codex 区分管道关闭、服务有界退出、归属范围内后代强制清理和 stderr drain。Windows 应处理 spawn→assign 的竞态并明确记录 containment 降级；不能仅在设置按钮调用 taskkill，也不能把共享 MCP 进程树挂到单轮运行取消上。验收覆盖非 Node 根服务、正常关闭、初始化中断、父服务先崩溃、配置替换及 shared snapshot 最后引用释放；Unix 机制需单独动态验证。本轮只新增审计测试和文档，未修改生产进程管理。
 
+### H-47：新增无关 MCP 配置会取消未变服务的初始化，并将宿主取消缓存为该服务失败
+
+**级别：中（P2）；范围：服务 A 正在初始化，用户新增 B 等导致全局配置 fingerprint 改变，但 A 自身配置未变。** 本项不把“已 ready 的 A 被重启”或“每轮聊天重新初始化”当作已复现事实。
+
+#### 根因与宿主级正反对照
+
+- 桌面 `save_mcp_server` 执行 McpService::upsert 后调用 start_preparation；后者以全部服务配置 fingerprint 管理单个全局 generation，变化时对上一代 active_cancel 调用 cancel，而不是仅取消被替换服务的初始化。
+- `mcp_preparation.rs::prepare_server_with_cancel` 持有按服务器 name 共享的 slot，在取消分支把 `MCP preparation cancelled` 作为 failures 写入同配置 fingerprint 的 CachedRegistry。新一代针对同一 A 等到该 slot 后，由于 fingerprint 未变且 retry_failed=false，直接返回这个宿主取消错误。发布处的 generation 检查能阻止旧 ready 发布，但不能阻止旧任务写坏仍被新代使用的 slot。
+- 默认忽略探针 `mcp_service::preparation::tests::audit_unrelated_config_change_preserves_pending_startup` 使用正式内存数据库、McpService 的 upsert/start_preparation/cached_status/ready_registry 和真实 Node MCP 进程；A 已接收 initialize 后才改变配置，文件 gate 控制响应，不靠 sleep 猜初始化位置。两组只在是否新增 B 上不同，均最终开放 A gate；比较 upsert 规范化之后的前后 A 配置，排除 None→stdio 的 DTO 规范化被误认为业务配置变化。fixture 使用宽松 legacy 握手，隔离已登记的 H-08。
+- 执行 `cargo test -p deepagent-app-core --lib audit_unrelated_config_change_preserves_pending_startup --offline -- --ignored --nocapture`：约 0.25 秒，断言明确失败。无 B 对照：A 配置未变、只启动 1 次、status=connected、ready 工具含 mcp__a__echo。新增 B：A 配置同样未变且只启动 1 次，但 status=failed/error=MCP preparation cancelled，ready 只含 B/mcp__b__echo。随后再次 start_preparation，两个场景均因全局配置相同而 no-op，失败组不会因此重新启动 A。
+- 断言前主动关闭本地 ready registry；没有公网或真实模型调用。动态证据到宿主状态和实际工具快照为止，未做 Tauri 设置界面操作或下一请求的真实 wire 抓取。正式 attach_mcp_tools 消费该 ready snapshot，所以 A 的能力不会因单纯再发聊天自动回到新请求，这是调用链判断。
+
+#### 参考机制、后果与修复方向
+
+- Codex `codex-mcp/src/connection_manager.rs` 的 reusable_pending_startup 比较该服务的 connection_identity、startup_timeout、protocol mode、取消状态及 catalog 策略，复用未变化且未取消的 AsyncManagedClient；重新建立视图不要求终止它。对应 `connection_manager_tests.rs::reconciliation_reuses_an_unchanged_pending_server_without_waiting` 用 gate 验证 reconciliation 返回后原初始化仍可继续并产出工具；`reconciliation_cancels_a_reused_pending_server_when_disabled` 则验证真正禁用时才取消过时初始化。本轮只阅读参考源码，未执行其测试。
+- Claude Code `services/mcp/client.ts::connectToServer` 按 getServerCacheKey(name, config) memoize 初始化 Promise；clearServerCache 接受具体服务及配置，定向删除连接和发现缓存。这是按服务身份复用/失效的参考，不声称其全局配置处理与本系统完全同构。
+- 后果是在管理另一台 MCP 时，仍然合法、原本正在加载的 A 被误报为失败，新请求缺失 A 的工具；仅重复聊天或相同配置的宿主准备不会修复。初始化越慢，越容易遇到该窗口；不是模型网络慢，也不是 A 自身握手失败。重启或显式定向重试等路径可能恢复，本探针没有动态覆盖这些恢复入口。
+- 修复应把初始化 owner/cancel 和失败缓存归到同一服务连接身份及配置代次；全局 generation 只控制当前视图发布，不能撤销未变服务的共享工作。取消的旧身份不应成为新身份可复用的稳定失败；同时保留真实初始化失败的有界重试策略，避免每轮聊天重试。验收增加 A 初始化中新增 B、修改 B、禁用 A、修改 A、迟到旧任务及共享插件 owner 的对照，确认只失效目标服务且新视图无过期能力。本轮仅添加测试和文档，未修改生产准备调度。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-47 宿主准备配置变更显式探针（见该节命令） | 明确失败：无变更 A 正常 ready；仅新增 B 后 A 的相同配置被缓存为 preparation cancelled，ready 只保留 B，重复同配置准备为 no-op |
+| `cargo test -p deepagent-app-core --lib mcp_service:: --offline`（H-47 核查时） | 26 passed / 2 ignored；网络参考服务与本次缺陷探针默认忽略，本次探针已另用显式命令执行 |
 | H-46 Windows MCP 进程归属显式探针（见该节命令） | 明确失败：Node close/Drop 两对照后代均退出；.NET close/Drop 两组父已退出但后代仍运行并各新增 11 次心跳，测试主动清理并确认退出 |
 | `cargo test -p deepagent-mcp --offline`（H-46 核查时） | 58 passed / 5 ignored；包括真实崩溃重连、诊断脱敏基线；本次进程树探针已另用显式命令执行 |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（H-45 核查时） | 6 passed / 4 ignored；包括本次失败探针在内的审计用例默认忽略，须使用各节命令显式执行 |
@@ -1282,6 +1303,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 启动恢复的规范终态与会话投影 | H-44 | 恢复共用现有幂等终态边界，文件会话投影具备按 run 身份的补偿；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补，不能改错后续 turn |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
+| MCP 初始化复用与配置代次 | H-47 | 按服务连接身份复用 pending startup，定向取消/失效；全局视图代次不能写坏仍有效的共享 slot | 新增或修改 B 不取消未变 A；禁用/替换 A 才终止旧任务；迟到取消结果不变成新代缓存失败 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
