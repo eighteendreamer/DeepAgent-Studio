@@ -18,7 +18,7 @@
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放边界及无效压缩丢失已返回 usage 均已复现 | 已确认 H-10、H-11、H-14；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权及跨运行审批 ID 冲突 | 已确认 H-03、H-15、H-16；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
-| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消与取得租约交错后后继输入继续推进 | 已通过这些确定性边界；UI 保存错误及并发压力未完成 |
+| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 待逐项验证 | 未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -481,6 +481,38 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 - 内存 waiter、持久化、RuntimeEvent、Tauri/CLI/SDK 回答 DTO 必须使用同一审批身份，并兼容读取旧数据；覆盖两会话相同 ID、同一 run 的幂等重试、同一调用多次审批及重启后的回答。
 - 此缺陷探针默认忽略，生产审批身份及协议未修改。真实重复 ID 频率、桌面表现和迁移策略仍需后续验证。
 
+### H-17：桌面收到取消后的保存失败，却因对话已 settled 而静默丢弃错误
+
+**级别：中（P2）；触发条件：取消已被模型执行循环观察，但取消审计或终态保存失败。** 此项不是取消信号被数据库挡住；停止本身已经生效，缺陷在执行状态与保存状态的 UI 投影。
+
+#### 真实桌面复现
+
+- 重新执行 `cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --offline` 成功（约 1m26s），直接启动 Vite 与本次桌面产物，使用独立 `target/live-desktop-test-20261021` 数据目录和现有专用测试供应商配置。通过 CDP 操作实际 Tauri WebView，先验证 `__TAURI_INTERNALS__` 存在，排除普通浏览器 mock。
+- 首次探索及随后提交的可重跑探针均复现。探针 `apps/desktop/scripts/audit-cancel-storage.cjs` 不在默认测试/build 中执行；需要 Node 的 `node:sqlite`、Playwright、已启动的隔离桌面以及真实测试模型，会发起一轮付费请求。`AUDIT_DATA_ROOT` 必须解析到本仓库 target/ 的子目录，不能指向用户生产数据。
+- 操作：发送不调用工具的长文请求，等真实 `model_first_token`，在隔离 SQLite 中为该 run 安装仅拒绝 `cancel.requested` 插入的 trigger，随后点击“停止”。finally 撤销 trigger 并断开 CDP；不改生产取消代码，不模拟 UI 事件。
+- 第二次实测 `cancel_run` 请求到 HTTP 200 约 **2ms**。事件按顺序为 `run_cancelled → session://completed {status:failed,error:"persistence error: audit injected cancel audit storage failure"}`；前者比点击时间晚约 38ms，后者晚约 59ms。这是单次样本，不能声明 P95 达标或所有资源已回收。
+- 等待 1.2 秒后的 DOM 和实际截图都无保存失败提示，发送按钮可见、停止按钮消失；`visibleStorageError=false`。探针在“界面必须显示保存错误”的断言明确失败。数据库该 run 保持 `state=finalizing, terminal_kind=NULL, finished_at=NULL`，有 `run_cancelled` 观察事件，但没有成功的 `cancel.requested` 或 `run_terminal`；未把事务回滚误说为终态保存成功。
+- 截图与仅含事件元数据的结果：忽略提交的 `target/live-desktop-test-20261021/cancel-storage-failure.png`、`cancel-storage-failure.json`。没有真实制造磁盘写满或损坏生产数据库，故障类型是确定性的审计插入失败。
+
+复跑前启动隔离桌面并配置测试模型，设置 `AUDIT_DATA_ROOT`、`AUDIT_PLAYWRIGHT_MODULE`（本机 Playwright 模块绝对路径）、`AUDIT_CDP_URL` 后执行：
+
+```text
+node apps/desktop/scripts/audit-cancel-storage.cjs
+```
+
+#### 根因与成熟实现对照
+
+- Kernel 在转发 `RunCancelled` 之后才执行 `persist_terminal()`；保存失败沿 Result 返回。Tauri `start_chat_v2` 正确将这个 Err 转成 `session://completed` 的 failed/error，`api.ts::runChat()` 也正确 reject，错误没有在这两层丢失。
+- `App.tsx::finalizeCancelled()` 已将 assistant turn 置为 settled；随后 runChat 的 catch 仅在 `last.turn.phase !== "settled"` 时调用 error finalize。因此合法的迟到保存错误直接被跳过。`onStopRun` 的 cancel IPC catch 处理的是另一条 Promise，无法覆盖这个错误；finally 继续清理 running 状态。
+- Codex `tui/src/chatwidget/turn_runtime.rs::on_error()` 先 finalize_turn，再将独立 error event 加入历史并请求重绘；错误展示不依赖 turn 仍处于运行中。它提供可借鉴的“执行结束与错误展示分离”边界。
+- 同时核查 Codex `core/src/tasks/mod.rs`：中断标记在 TurnAborted 前尝试 flush，终态后另做 flush；相应 flush 失败在该路径只是 warn。因此不声称 Codex 已通过本系统相同的数据库故障和 UI 验收，也不照搬其日志策略作为完整修复。
+
+#### 影响与修复方向
+
+- 用户无法区分“执行已停止”和“停止结果未保存”，也没有管理/恢复提示；重新打开或重启时可能看到未收尾记录。本次没有据此断言下一次启动一定重复执行工具或恢复成何种终态。
+- 在现有运行与通知链路中独立表达执行结果和保存诊断，允许 settled 后追加一次、按 run/session 隔离的保存错误；不能把 cancelled 再改成“执行未停止”，也不能为避免错误而提前谎报 durable terminal。
+- 覆盖正常取消与取消错误去重、错误晚于 settled、切换会话后错误、终态保存重试以及重启恢复。若改事件/DTO，沿用同一 run_events/RunStore 边界同步消费方。本轮只增加审计探针和报告，未修生产 UI。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -507,10 +539,11 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 | H-14 节单项命令 | 1 个探针明确失败：摘要与主模型均已返回 usage，原上下文保留，但 side_usage 为空 |
 | H-15 节单项命令 | 1 个探针明确失败：取消终态后审批仍 Pending，迟到回答受理并产生 tool_session grant；命令执行数为零 |
 | H-16 节单项命令 | 1 个探针明确失败：第二 run 的 action 独立登记，但相同 provider id 的审批遭全库幂等冲突 |
+| H-17 真实 Tauri 探针 | 当前源码桌面编译通过；真实模型首片段后停止约 2ms ACK；保存失败已送达 UI，但展示断言明确失败 |
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十七个默认忽略的缺陷探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十七个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
@@ -533,7 +566,7 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 - 重复 request_cancel 均 accepted；根 token、派生子 token 和 legacy flag 均已取消。调用生产 `kernel::persist_terminal()` 明确返回注入错误；数据库只保留 run_accepted，finished_at 仍为空，说明审计及终态未部分提交，也未把停止落盘说成成功。
 - 撤销 trigger 后显式重试，同一取消意图成功写入 `cancel.requested → cancel.propagated → run_terminal`；再次写终态返回 false，最终仅一个 cancelled 终态。释放注册后不再接受该 run 的取消。
 - 执行 `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests`：7 passed，其中包括本项故障注入。此项验证已存在实现的正确边界，本轮未修生产代码。
-- 边界：没有真实损坏用户数据库，没有实际模拟磁盘写满；显式重试成功不代表所有生产失败都会自动重试。尚未端到端验证 UI 对“执行已停止、保存失败”的错误展示，也没有据此宣称模型/进程资源都完成清理。
+- 边界：没有真实损坏用户数据库，没有实际模拟磁盘写满；显式重试成功不代表所有生产失败都会自动重试。本测试本身不覆盖 UI 或全部模型/进程资源清理；后来真实桌面的错误展示验证见 H-17，结果为缺陷。
 
 ### 后续独立验证：排队取消不使后继输入失去租约
 
@@ -541,4 +574,4 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 - 分别执行“待取消输入仍在队列”和“前驱已释放、待取消输入刚被提升为 active”两种交错。两者都在有界时间返回取消，待取消项从队列消失；owner 不被错误释放，follower 随后取得租约，最后新输入仍能正常 acquire。
 - `cargo test -p deepagent-app-core --lib --offline input_runtime::tests`：28 passed。该测试只验证输入接纳/租约层，前驱的取消回调为记录型 fixture，没有运行并发模型、Tauri UI、完整终态或多进程压力，不能据此覆盖所有会话调度竞态。
 
-后续仍需覆盖逐文件运行包校验长延迟注入、保存失败的 UI 通知、完整宿主并发租约/取消压力、完整压缩的真实 wire 及重启、DeepSeek 流式异常与其他宿主入口。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。
+后续仍需覆盖逐文件运行包校验长延迟注入、完整宿主并发租约/取消压力、完整压缩的真实 wire 及重启、DeepSeek 流式异常与其他宿主入口。保存失败的 UI 通知现已通过真实故障注入确定为 H-17。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。
