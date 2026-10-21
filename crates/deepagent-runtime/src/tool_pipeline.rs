@@ -1201,6 +1201,59 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: approval identity must include the owning run"]
+    fn audit_distinct_runs_can_approve_the_same_provider_call_id_independently() {
+        let registry = registry(RiskLevel::High, Arc::new(AtomicUsize::new(0)));
+        let (db, first) = action_fixture(&registry);
+        let second_session = SessionId::new();
+        EventStore::new(&db)
+            .create_session(second_session, None, Timestamp::from_millis(2))
+            .unwrap();
+        RunStore::new(&db)
+            .create(
+                "run-action-second",
+                &second_session.to_string(),
+                Some("turn-2"),
+                2,
+            )
+            .unwrap();
+        let second = ToolActionPersistence::new(db.clone(), "run-action-second", "turn-2").unwrap();
+        let invocation = ToolInvocation::new("counting", serde_json::json!({"value":"audit"}))
+            .with_id("provider-call-reused");
+        first
+            .register_invocations(&mut [invocation.clone()], &registry)
+            .unwrap();
+        first
+            .request_approval("provider-call-reused", "high", "audit first")
+            .unwrap();
+        first.deny("provider-call-reused").unwrap();
+        // Actions are correctly scoped by (run_id, call_id). The approval
+        // layer must retain that identity instead of treating the provider id
+        // as a database-wide idempotency key.
+        second
+            .register_invocations(&mut [invocation], &registry)
+            .unwrap();
+        let second_approval =
+            second.request_approval("provider-call-reused", "high", "audit second");
+        let store = RunControlStore::new(&db);
+        let first_approvals = store.list_approvals("run-action-test").unwrap();
+        let second_approvals = store.list_approvals("run-action-second").unwrap();
+        eprintln!(
+            "audit approval identity: first_state={:?}, second_action={:?}, second_approval={second_approval:?}, first_approvals={}, second_approvals={}",
+            first_approvals[0].state,
+            store.get_action("run-action-second", "provider-call-reused").unwrap().unwrap().state,
+            first_approvals.len(), second_approvals.len()
+        );
+        assert!(
+            second_approval.is_ok(),
+            "a different run needs an independent approval: {second_approval:?}"
+        );
+        assert_eq!(first_approvals[0].state, ApprovalState::Denied);
+        assert_eq!(second_approvals.len(), 1);
+        assert_eq!(second_approvals[0].state, ApprovalState::Pending);
+    }
+
+    #[test]
     fn durable_registration_preserves_model_order_without_retry_gaps() {
         let registry = registry(RiskLevel::Safe, Arc::new(AtomicUsize::new(0)));
         let (db, persistence) = action_fixture(&registry);

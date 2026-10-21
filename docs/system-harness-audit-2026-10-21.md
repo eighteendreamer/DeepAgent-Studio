@@ -16,7 +16,7 @@
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具续轮投影拆分已复现 | 已确认 H-05；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放边界及无效压缩丢失已返回 usage 均已复现 | 已确认 H-10、H-11、H-14；笔记计数及其他压缩边界仍在核查 |
-| 工具、审批、权限与沙箱 | 工作区拦截、backend override；取消运行后仍能接受迟到审批并留下跨调用授权 | 已确认 H-03、H-15；其他边界未完成 |
+| 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权及跨运行审批 ID 冲突 | 已确认 H-03、H-15、H-16；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消与取得租约交错后后继输入继续推进 | 已通过这些确定性边界；UI 保存错误及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 待逐项验证 | 未完成 |
@@ -461,6 +461,26 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 - 覆盖审批期间停止、回答/取消竞态、重复回答、工具作用域与命令前缀持久化作用域、两会话隔离、进程重启及审计写失败。本项只验证 tool_session；command_prefix 采用同一路径但尚未独立复现，不把它当作已经执行的测试。
 - 此缺陷探针默认忽略，生产审批逻辑未修改。
 
+### H-16：审批直接以 provider call_id 为全库身份，不同运行之间产生幂等冲突
+
+**级别：中（P2）；触发条件：两个独立运行收到相同的 provider tool-call id，且都需要审批。** 不声称真实供应商在本次桌面样本中返回了重复 ID；这是宿主在缺少全库唯一保证时的身份边界缺陷，与 H-15 的终态清理不同。
+
+#### 触发与复现
+
+- ModelAgent 将 provider 的调用标识原样放入 ToolInvocation.id；`ToolActionPersistence::register_invocations()` 正确使用 `(run_id, call_id)` 检查和持久化 action，仅缺失 id 时生成新值。
+- 同一结构的 `request_approval()` 却直接令 `approval_id=call_id`；`run_approvals` 以 approval_id 唯一。第二个 run 的 action 能正常登记，审批则撞到第一条记录；RunControlStore 检查 run 不同后返回 idempotency conflict，不会建立第二条待审批记录。
+- 探针 `tool_pipeline::tests::audit_distinct_runs_can_approve_the_same_provider_call_id_independently` 使用真实内存数据库和生产 ToolActionPersistence：第一项审批拒绝后，另一独立 session/run 使用相同 provider id 请求自己的审批。两个会话没有共享模型历史，排除同一请求内重复 tool id 的混杂因素；工具仅为计数 fixture，测试没有 invoke 或模型网络调用。
+- 执行：`cargo test -p deepagent-runtime audit_distinct_runs_can_approve_the_same_provider_call_id_independently --offline -- --ignored --nocapture`。
+- 实际输出：`first_state=Denied, second_action=Received, second_approval=Err(Invalid("idempotency conflict for approval provider-call-reused")), first_approvals=1, second_approvals=0`；第二运行应有独立审批的断言失败。
+- 存储冲突检查在这里正确地阻止了覆盖/复用旧授权；本探针证明合法新 action 无法进入审批，不证明旧会话的一次批准已错误放行另一个会话。
+
+#### 成熟实现对照与修复方向
+
+- Codex `core/src/session/mod.rs::request_command_approval()` 将 effective_approval_id 的 waiter 放进当前 active turn 的 TurnState，并说明匹配必须投递到正确的 in-flight turn；`core/src/state/turn.rs` 的 map 是 turn 所属，避免拿 provider 字符串直接建立全进程的请求身份。
+- 沿用现有 run_approvals，给审批独立的宿主身份，或采用明确编码的 run/turn + call 复合身份；保留原始 provider call_id 关联模型调用，不能为修审批而改坏请求中的 tool call/result 配对。
+- 内存 waiter、持久化、RuntimeEvent、Tauri/CLI/SDK 回答 DTO 必须使用同一审批身份，并兼容读取旧数据；覆盖两会话相同 ID、同一 run 的幂等重试、同一调用多次审批及重启后的回答。
+- 此缺陷探针默认忽略，生产审批身份及协议未修改。真实重复 ID 频率、桌面表现和迁移策略仍需后续验证。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -473,6 +493,7 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（新增 H-15 后） | 11 passed / 3 ignored，无常规失败 |
 | `cargo test -p deepagent-app-core --lib --offline approval_bridge::tests` | 19 passed；常规审批测试未覆盖运行取消后的迟到回答 |
 | `cargo test -p deepagent-app-core --lib --offline runtime_payload::tests` | 3 passed / 1 ignored；磁盘锁隔离集成探针另行显式执行通过 |
+| `cargo test -p deepagent-runtime --lib --offline tool_pipeline::tests`（新增 H-16 后） | 11 passed / 1 ignored，无常规失败；审批身份缺陷探针另行显式执行复现失败 |
 | `cargo test -p deepagent-app-core --lib --offline input_runtime::tests`（新增排队取消测试后） | 28 passed；含取得租约前/后取消及后继输入推进；不代表真实大上下文端到端压缩或完整宿主并发压力已验收 |
 | `cargo test -p deepagent-app-core --lib --offline context_runtime::tests`（新增 H-14 后） | 22 passed / 2 ignored；重复内容和无效压缩计费缺陷探针默认忽略，常规测试无失败 |
 | `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests`（新增存储故障注入后） | 7 passed；包括审计插入失败后的信号送达、事务回滚、显式重试及唯一终态 |
@@ -485,10 +506,11 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 | H-13 节单项命令 | 1 个探针明确失败：已禁用、ready roots 为空，全新会话的实际模型请求仍声明该插件技能 |
 | H-14 节单项命令 | 1 个探针明确失败：摘要与主模型均已返回 usage，原上下文保留，但 side_usage 为空 |
 | H-15 节单项命令 | 1 个探针明确失败：取消终态后审批仍 Pending，迟到回答受理并产生 tool_session grant；命令执行数为零 |
+| H-16 节单项命令 | 1 个探针明确失败：第二 run 的 action 独立登记，但相同 provider id 的审批遭全库幂等冲突 |
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十六个默认忽略的缺陷探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十七个默认忽略的缺陷探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
