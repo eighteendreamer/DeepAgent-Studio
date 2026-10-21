@@ -107,3 +107,119 @@ impl CronBackend for CronService {
             .collect())
     }
 }
+
+#[cfg(test)]
+mod audit_tests {
+    use super::*;
+    use crate::{ApprovalPolicy, MemorySecretStore, SettingsService};
+    use deepagent_builtins::bash_tool::{CommandExecutor, CommandOutcome};
+    use deepagent_models::transport::MockTransport;
+    use deepagent_persistence::{run_store::RunStore, Database};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    struct NeverExecutes(Arc<AtomicUsize>);
+    #[async_trait]
+    impl CommandExecutor for NeverExecutes {
+        async fn run(&self, _command: &str, _cwd: &str) -> Result<CommandOutcome> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(deepagent_core::error::CoreError::other(
+                "audit command must not execute",
+            ))
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "audit: unattended cron must not wait for an approval callback that discards requests"]
+    async fn audit_unattended_cron_does_not_leave_an_unreachable_approval() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("sk-audit-placeholder").await.unwrap();
+        settings
+            .set_approval_policy(ApprovalPolicy::AlwaysAsk)
+            .unwrap();
+        let item = serde_json::json!({
+            "type":"function_call", "id":"audit-cron-item", "call_id":"audit-cron-approval",
+            "name":"bash", "arguments":r#"{"command":"npm install audit-no-execution"}"#
+        });
+        let transport = MockTransport::new([
+            serde_json::json!({"type":"response.output_item.added","item":item}).to_string(),
+            serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+            serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+                .to_string(),
+        ]);
+        let commands = Arc::new(AtomicUsize::new(0));
+        let chat = Arc::new(
+            ChatService::new(db.clone(), settings, Arc::new(transport), root.path())
+                .with_local_command_executor(Arc::new(NeverExecutes(commands.clone()))),
+        );
+        let cron = Arc::new(CronService::new(root.path(), chat.clone()));
+        let now_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        cron.scheduler
+            .store()
+            .add(
+                "* * * * *".into(),
+                "Run the audit command.".into(),
+                false,
+                now_ms - 120_000,
+            )
+            .unwrap();
+        let shutdown = CancellationToken::new();
+        let runner = cron.clone();
+        let stop = shutdown.clone();
+        let tick = tokio::spawn(async move { runner.run_tick_loop(stop).await });
+        let pending = chat.pending_approvals();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while pending.pending_count() == 0 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("scheduled run must reach the formal approval gate");
+        shutdown.cancel();
+        tick.await.unwrap().unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let (run_id, finished): (String, bool) = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT id, finished_at IS NOT NULL FROM runs ORDER BY created_at DESC LIMIT 1",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .map_err(|error| deepagent_core::error::CoreError::Persistence(error.to_string()))
+            })
+            .unwrap();
+        let unreachable_pending = pending.pending_count();
+        let task_removed = cron.list().await.unwrap().is_empty();
+        assert!(chat.request_cancel(&run_id).unwrap().accepted);
+        tokio::time::timeout(Duration::from_secs(3), async {
+            while RunStore::new(&db)
+                .get(&run_id)
+                .unwrap()
+                .unwrap()
+                .finished_at
+                .is_none()
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("audit must clean up its scheduled run");
+        eprintln!("cron_task_removed={task_removed} scheduler_stopped=true pending={unreachable_pending} run_finished_before_cancel={finished} command_calls={}", commands.load(Ordering::SeqCst));
+        assert_eq!(commands.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            unreachable_pending, 0,
+            "unattended work must reject or expose approval; an empty notifier cannot answer it"
+        );
+    }
+}

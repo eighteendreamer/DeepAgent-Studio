@@ -20,6 +20,7 @@
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效均已复现 | 已确认 H-17、H-32、H-33、H-36；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
+| 定时任务与无人值守运行 | 真实 Cron tick 进入正式 ChatService，审批通知丢弃后仍挂起；基础 cron/store 回归通过 | 已确认 H-37；多宿主调度、重复触发及完整退出边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -889,10 +890,33 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应复用现有 ArtifactStore 和 session/run 归属，明确临时中间文件与被历史引用的结果资产的不同生命周期。后者按引用与保留策略清理；清理需同步索引、可见状态和恢复语义，失败需可诊断。目录身份、原子写入和同 call_id 跨运行的边界也需覆盖，不能只在某个调用方改一个 cleanup 开关后宣称完整解决。
 - 验收应覆盖 turn 结束、继续对话、重启、取消、并行结果、保存失败和受控保留期回收；同一历史引用在允许保留期内必须指向相同完整内容。本轮未修改生产生命周期。
 
+### H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上
+
+**级别：高（P1）；范围：Cron 触发的后台会话发生需要人工决策的工具调用。** 用户已有授权或自动策略允许的操作不一定触发；本项不是绕过审批执行命令，而是审批无人接收导致运行无法继续。与 H-15 的“终态后迟到授权”是不同生命周期阶段。
+
+#### 正式定时链路复现
+
+- `cron_service.rs::CronService::run_tick_loop()` 在 fire 中 spawn 正式 `ChatService::run_in_session()`，两个回调均为空，审批回调注释称 auto-deny，实际没有调用任何拒绝接口。
+- AppCore 仍组装 `PolicyGate + ChannelApprovalGate`；AlwaysAsk 和 AutoReview 需要人处理的分支会进入 `approval_bridge.rs::ChannelApprovalGate::request()`：注册 oneshot、调用空 notifier，然后 await rx。PendingApprovals 继续持有 sender，空闭包返回不会关闭 channel，也不等于 ApprovalDecision::Deny。生产 ToolPipeline 只和运行取消竞争，没有“没有人工消费者”的结果。
+- 新增默认忽略探针 `cron_service::audit_tests::audit_unattended_cron_does_not_leave_an_unreachable_approval`：真实 CronService tick、正式磁盘 scheduled-tasks.json、ChatService、AlwaysAsk、模型脚本产生 bash 调用。命令执行器仅计数并拒绝执行，没有真实命令、网络或用户数据。
+- 创建已到期 one-shot，启动实际 tick loop；等待正式 pending 审批出现，再停止 scheduler 并观察 300ms。结果：`cron_task_removed=true scheduler_stopped=true pending=1 run_finished_before_cancel=false command_calls=0`。随后通过正式 request_cancel(run_id) 清理，并等待数据库终态后才断言，未遗留执行中的后台运行。
+- 执行 `cargo test -p deepagent-app-core --lib audit_unattended_cron_does_not_leave_an_unreachable_approval --offline -- --ignored --nocapture`：要求无人值守调用不能留下不可达审批的断言失败，测试约 0.55 秒。观察期不能证明数学意义无限等待，但正式代码中该等待只有回答、sender 关闭或运行取消的出口；本路径没有投递回答者。没有声称用户桌面已经发生同一 cron 故障。
+
+#### 成熟实现、影响与修复方向
+
+- Claude Code `restored-src/src/hooks/useScheduledTasks.ts` 将定时提示放进现有 REPL 队列，并追加 scheduled fire 消息；有 agentId 的任务路由到存活 teammate，owner 不存在则删除孤儿任务。可借鉴的是复用真实可交互宿主与队列，而非对后台会话提供一个空 UI 回调。
+- Codex `codex-rs/exec/src/lib.rs` 为 headless 入口显式设置 `approval_policy=AskForApproval::Never`，并说明有效 reviewer 为 AutoReview 时另行解析；`core/src/tools/network_approval.rs::allows_network_approval_flow()` 排除 Never。可借鉴的是无人值守入口显式声明不能提问，而不是把无交互误当作完全访问，也不能宣称 Never 代表所有工具都被拒绝。这些参考源码已查，未运行参考测试。
+- 已确认的后果：一次性计划已从调度列表移除，执行却仍停在没有通知接收者的审批上，用户看不到本路径的实时事件；关闭 tick loop 本身也不结束已派生运行。周期任务在后续时点可能积累多个等待运行，但本探针仅运行一次，未声称已验证规模和资源上限。
+- 修复应在现有 AppCore 接纳/审批边界明确 unattended 模式：要么投递到有真实 owner 和通知路由的既有会话，要么对必须人工批准的动作立即给出结构化拒绝/需要交互的终态。沿用既有权限、审批、RunStore、取消树和事件通知；调度触发结果关联 run_id，让任务管理可发现并停止。禁止为避免等待改成 FullAccess，也不能只加超时掩盖无消费者的问题。
+- 验收覆盖 AlwaysAsk、AutoReview 的 Allow/Deny/Ask、已有有效授权、调度停止、显式取消和重复触发；拒绝必须配对工具结果且命令执行计数为零，有交互模式的通知必须到达正确会话。本轮仅增加 cfg(test) 审计探针，未修改生产调度行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-37 无人值守 Cron 忽略探针（见该节命令） | 明确失败：one-shot 已移除，scheduler 停止后 pending=1、run 未终结、命令执行数为 0；显式取消并等待终态后结束测试 |
+| `cargo test -p deepagent-app-core --lib approval_bridge::tests --offline`（新增 H-37 后） | 19 passed；验证现有审批桥接，不代表无人值守装配正确 |
+| `cargo test -p deepagent-runtime --lib schedule:: --offline`（新增 H-37 后） | 19 passed；验证 cron 时间计算与 store/poll，不代表 fire 后台会话可以获得人工答复 |
 | H-36 完整结果生命周期忽略探针（见该节命令） | 明确失败：模型下一请求时文件存在且完整；turn 完成即删除；真实数据库重开后 artifact 索引与历史引用仍在，文件不可读 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（新增 H-36 后） | 11 passed / 5 ignored；H-36 缺陷探针另行显式执行失败 |
 | H-35 内置写读屏障忽略探针（见该节命令） | 明确失败：两调用先写后读且读到 NEW；增加无关读取后，两次读均先于写启动，下一请求的 source 读结果报错，最终磁盘写入成功 |
@@ -1031,6 +1055,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35 | 摘要、prefire、成功/错误正文、重试和串并行工具属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分外部工作清理与持久化收尾 | 压缩/错误正文/并行工具中停止及时退出；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
+| 定时任务的运行归属与交互能力 | H-37 | 现有 CronService → AppCore 接纳、审批和通知共用明确的 unattended 契约；参考 Claude 队列归属与 Codex headless 策略 | 需要人工时明确拒绝或投递到真实 owner；计划可关联运行，停止入口可发现；不能留下无消费者审批 |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
