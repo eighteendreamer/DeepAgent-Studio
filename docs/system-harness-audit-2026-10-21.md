@@ -24,6 +24,7 @@
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录 | 已确认 H-51；服务/工具级确定性交错，完整双会话桌面动态验证未执行 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
+| 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -1228,10 +1229,29 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应在现有 KnowledgeBase/Vault 边界内让锁覆盖读取当前条目身份、去重/分配 ID、版本核对和最终落盘；操作完成再一致更新或失效派生索引。对真正同一条目的并发修改采用明确版本冲突或合并策略，不能以同文件名认定同笔记；读缓存需要可诊断的刷新机制。此跨宿主事务实现为**本地设计**，复用既有锁/vault，不另建数据库，不只扩大锁等待或追加一次无锁 reload。
 - 还应覆盖两个真实宿主、外部编辑、同条目冲突、中文/截断 slug、写失败重试及 consolidation/archive 使用旧快照的交错。后者源码同样在分组后才加锁，但本轮未动态复现，不把其后果当作已确认事实。本轮只新增审计测试和报告，未修改生产写入行为。
 
+### H-53：原生压缩移除相关记忆后，后台检索去重与预算仍保留旧记录
+
+**级别：中（P2）；范围：同一 ModelAgent 内完成压缩后，再次需要已经从 Surface 移除的后台相关记忆。** 本项与宿主 Codex 的 `continuation_history_incomplete/cipher_incompatible` 无关。
+
+- `ModelAgent::maybe_schedule_memory_prefetch` 使用独立 `surfaced_memory_ids` 排除已经展示的 ID，达到 `MAX_SURFACED_MEMORIES_PER_RUN = 12` 后直接停止预取；`collect_finished_memory_prefetch` 也按该集合过滤返回值。`adopt_compaction` / `adopt_compacted_history` 更换模型历史，没有根据保留内容重建该集合。因此旧摘录被摘要合法省略后，其 ID 仍占用去重集合与配额。
+- 新增默认忽略探针 `audit_compaction_releases_removed_memories_for_retrieval`：正式 ModelAgent、ModelClient 和请求序列化，底层响应与记忆 provider 使用既有离线 fixture。先分别注入 1 条、12 条记忆，核对实际第二次 wire input 含摘录；通过生产 adoption 边界采纳一个明确省略摘录的原生摘要，再输入不同的新查询，检查实际第四次 wire input。测试没有手改去重集合，也没有触发真实容量阈值或真实摘要模型，不能称作自动压缩端到端测试。
+- 执行 `cargo test -p deepagent-runtime --lib audit_compaction_releases_removed_memories_for_retrieval --offline -- --ignored --nocapture`，断言明确失败：
+
+| 压缩前已注入数量 | provider 总调用次数 | 压缩后去重数量 | 后续 wire 恢复旧摘录 |
+|---:|---:|---:|---|
+| 1 | 2 | 1 | false |
+| 12 | 1 | 12 | false |
+
+- 第一组再次检索但旧 ID 被过滤；第二组已耗尽旧配额，后续检索没有启动。直接后果是压缩后同一运行无法通过这个后台通道重新取得相关摘录。系统另有 `KnowledgeReminderProvider::passive_block` 和显式记忆工具，可能补偿；不能据此声称所有记忆从此永久不可访问。重启回放侧的 `collect_surfaced_memory_ids_from_events` 也累计历史注入 ID，但本轮未新增该路径的动态探针，不扩大复现范围。
+- Claude Code `借鉴/claudecode/restored-src/src/utils/attachments.ts:2251` 的 `collectSurfacedMemories(messages)` 扫描当前保留的 relevant_memories 附件，注释明确说明：压缩移除旧附件后，去重和累计字节预算自然释放。这里只对照源码，未运行参考项目。
+- 修复方向：在既有 Surface 的记忆附件身份上统一 live/replay 的当前可见集合与预算；摘要若保留某条记忆，应明确保留其身份，否则允许重新检索。不能无条件清空全部去重，导致仍在尾部的摘录反复注入；同样不能以全量历史事件替代当前可见状态。具体身份与回放映射属于本地设计，应覆盖保留尾部、重复压缩、snip、在途预取和恢复场景。本轮只新增审计测试与报告，没有修改生产检索行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-53 压缩后后台记忆显式探针（见该节命令） | 明确失败：1 条组再次取回但被旧 ID 过滤；12 条组不再调用 provider；两组后续 wire 均缺少摘录 |
+| `cargo test -p deepagent-runtime --lib memor --offline`（H-53 核查时） | 5 passed / 1 ignored；新缺陷探针另行显式执行并失败，不视为已修复 |
 | H-52 独立知识服务写入显式探针（见该节命令） | 明确失败：两次保存均成功，不刷新时 ID 相同、磁盘只剩 B、首缓存仍为 A；刷新对照两条均保留 |
 | `cargo test -p deepagent-app-core --lib knowledge_service::tests --offline`（H-52 核查时） | 18 passed / 2 ignored；H-51/H-52 缺陷探针各自另行显式执行，不能用默认绿测视为已修复 |
 | H-51 项目记忆作用域显式探针（见该节命令） | 明确失败：不切换对照仅访问 A；激活 B 后，原工具/provider 改读 B 且 project 写入实际落在 B，磁盘重开确认 |
@@ -1450,6 +1470,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
+| 压缩后的记忆可见性与检索预算 | H-53 | 当前保留 Surface 的附件身份统一去重、配额与回放；参考 Claude 从当前 transcript 收集已展示记忆 | 旧摘录移除可再次检索；尾部仍保留的不重复注入；在途结果、snip 和恢复一致 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 

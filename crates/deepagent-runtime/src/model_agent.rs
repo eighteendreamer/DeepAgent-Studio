@@ -4950,6 +4950,107 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: compaction must release dedup and budget for removed memory attachments"]
+    async fn audit_compaction_releases_removed_memories_for_retrieval() {
+        let mut restored = Vec::new();
+        for count in [1, MAX_SURFACED_MEMORIES_PER_RUN] {
+            let transport = Arc::new(AttemptTransport {
+                attempts: Mutex::new(VecDeque::from([
+                    response_function_call_done("before-1", "read_file", r#"{"path":"a"}"#),
+                    response_function_call_done("before-2", "read_file", r#"{"path":"b"}"#),
+                    response_function_call_done("after-1", "read_file", r#"{"path":"c"}"#),
+                    response_text_completed("done"),
+                ])),
+                requests: Mutex::new(Vec::new()),
+            });
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let provider = Arc::new(ScriptedMemoryProvider {
+                mems: (0..count)
+                    .map(|index| RelevantMemory {
+                        id: format!("project:audit-memory-{index}"),
+                        block: format!(
+                            "AUDIT_RETRIEVABLE_MEMORY_{index}: verify retry configuration"
+                        ),
+                    })
+                    .collect(),
+                calls: calls.clone(),
+            });
+            let mut agent = ModelAgent::new(
+                Arc::new(ModelClient::new(
+                    transport.clone(),
+                    ModelConfig::deepseek("test"),
+                )),
+                "model",
+                "system",
+                "investigate the retry configuration failure",
+                vec![],
+            )
+            .with_relevant_memory_provider(provider);
+            agent.think(0, &[]).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while !agent.memory_prefetch_handle.as_ref().unwrap().is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            agent.think(1, &[]).await.unwrap();
+            assert_eq!(agent.surfaced_memory_ids.len(), count);
+            assert!(transport.requests.lock().unwrap()[1]["input"]
+                .to_string()
+                .contains("AUDIT_RETRIEVABLE_MEMORY_0"));
+
+            // A completed native compaction can legitimately omit an old
+            // retrieval excerpt. Exercise the production adoption boundary,
+            // without changing any memory bookkeeping in the fixture.
+            agent.adopt_compaction(
+                ReactiveCompaction {
+                    messages: vec![],
+                    response_items: Some(vec![ResponseInputItem::Message {
+                        role: "user".into(),
+                        content: "[compacted summary] earlier investigation completed".into(),
+                    }]),
+                    tokens_before: 5000,
+                    tokens_after: 20,
+                    summary: "earlier investigation completed".into(),
+                    usage: Default::default(),
+                },
+                deepagent_core::compaction_strategy::PROACTIVE_THRESHOLD,
+            );
+            assert!(!agent
+                .conversation()
+                .iter()
+                .any(|message| { message.content.contains("AUDIT_RETRIEVABLE_MEMORY_0") }));
+            agent.push_message(Message::user(
+                "review the retry configuration failure again",
+            ));
+            agent.think(2, &[]).await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(1), async {
+                while agent
+                    .memory_prefetch_handle
+                    .as_ref()
+                    .is_some_and(|h| !h.is_finished())
+                {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            agent.think(3, &[]).await.unwrap();
+            let found = transport.requests.lock().unwrap()[3]["input"]
+                .to_string()
+                .contains("AUDIT_RETRIEVABLE_MEMORY_0");
+            eprintln!("memory compaction audit: initially_injected={count} provider_calls={} dedup_after={} excerpt_in_final_wire={found}",
+                calls.load(std::sync::atomic::Ordering::Acquire), agent.surfaced_memory_ids.len());
+            restored.push(found);
+        }
+        assert!(
+            restored.iter().all(|found| *found),
+            "a removed memory excerpt must be eligible for retrieval after compaction"
+        );
+    }
+
     #[test]
     fn recent_tool_names_are_deduped_in_first_seen_order() {
         // The anti-noise hint must name each tool the run used, once. A retry
