@@ -514,6 +514,60 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: native-to-chat projection must preserve one assistant tool turn"]
+    fn audit_chat_projection_preserves_tool_turn_narration_and_reasoning() {
+        let mut accumulator = ChatCompletionAccumulator::new();
+        for event in [
+            serde_json::json!({"choices":[{"delta":{
+                "reasoning_content":"Need the file before answering.",
+                "content":"I will read the file.",
+                "tool_calls":[{"index":0,"id":"audit-read","type":"function",
+                    "function":{"name":"read_file","arguments":"{\"path\":\"note.txt\"}"}}]
+            },"finish_reason":"tool_calls"}]})
+            .to_string(),
+            "[DONE]".into(),
+        ] {
+            accumulator.push_sse_data(&event).unwrap();
+        }
+        let response = accumulator.finish().unwrap();
+        let mut items = vec![ResponseInputItem::Message {
+            role: "user".into(),
+            content: "Read note.txt".into(),
+        }];
+        items.extend(response.output_items);
+        items.push(ResponseInputItem::FunctionCallOutput {
+            call_id: "audit-read".into(),
+            output: "file content".into(),
+        });
+        let request = ResponseRequest::from_response_items("deepseek-flash", None, items)
+            .with_tools(vec![crate::chat::ToolSchema::function(
+                "read_file",
+                "Read a file",
+                serde_json::json!({"type":"object","properties":{"path":{"type":"string"}}}),
+            )]);
+        let chat = response_to_chat_completion(request).unwrap();
+        let wire = serde_json::to_value(chat).unwrap();
+        let assistant: Vec<_> = wire["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "assistant")
+            .collect();
+        eprintln!("audit chat projection: {}", wire["messages"]);
+        assert_eq!(
+            assistant.len(),
+            1,
+            "one provider turn was split into distinct assistant messages"
+        );
+        assert_eq!(assistant[0]["content"], "I will read the file.");
+        assert_eq!(
+            assistant[0]["reasoning_content"],
+            "Need the file before answering."
+        );
+        assert_eq!(assistant[0]["tool_calls"][0]["id"], "audit-read");
+    }
+
+    #[test]
     fn request_budget_capability_prefers_provider_catalog_metadata() {
         let catalog = crate::discovery::ModelCatalog {
             base_url: crate::discovery::DEEPSEEK_BASE_URL.into(),
