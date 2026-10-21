@@ -1021,6 +1021,9 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-42 双进程调度忽略探针（见该节命令） | 明确失败：one-shot/recurring 同一 occurrence 均被两个进程 fire；顺序再次 poll 的两组对照均无重触发 |
 | `cargo test -p deepagent-runtime --lib schedule:: --offline`（新增 H-42 后） | 19 passed；基本时间与单实例持久化通过，不覆盖共享调度所有权 |
 | `cargo test -p deepagent-runtime --test schedule_audit --offline` | 1 ignored；缺陷探针已另行显式执行失败 |
+| `cargo test -p deepagent-builtins --lib system_executor_cancels_running_process_within_two_seconds --offline -- --nocapture`（加强真实启动判据后） | 1 passed；PowerShell 实际写出 ready 标记后取消，cancel→命令退出约 13ms；总用例约 0.55s |
+| `cargo test -p deepagent-builtins --lib a_timed_out_command_takes_its_detached_child_with_it --offline -- --nocapture` | 1 passed，约 12.21s；既有超时/后代延迟标记回归通过，未独立枚举 PID |
+| `cargo test -p deepagent-builtins --lib bash_tool::tests --offline`（加强真实启动取消判据后） | 23 passed，约 26.14s；包括启动后取消、超时、长脚本、后台进程日志与输出管道边界 |
 | H-41 前端事件归属显式探针（见该节命令） | 明确失败：B 完成令 A 提前结算，监听归零，A 后续节点终态未交付且停止不发送 cancel_run；没有启动真实云作业 |
 | `node --test apps/desktop/scripts/audit-workflow-isolation.test.cjs`（未启用审计环境变量） | 1 skipped；显式启用后两次复现同一故障，约 106ms/96ms；导出共用 TS loader 后重跑 H-40，四组仍复现 |
 | H-40 真实前端序列化→正式后端执行忽略探针（见该节命令） | 明确失败：四组均未兑现配置；输入引用被拒绝，条件 false、end 空对象、模板空文本；后三组仍 succeeded |
@@ -1161,6 +1164,14 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 释放 agent、session 和数据库后重新打开相同 SQLite 文件；按生产 response_items_from_events 恢复，8 items 与刚发送的请求 input 完全相等，原始早期事件仍保留。这是请求序列化/原生边界/实际磁盘重开的正向证据，没有真实供应商、桌面 UI 或真实 1M 容量压力测试；强制阈值低于受保护尾部，本项不要求压缩结果低于 2000。
 - 初次 fixture 没有启用生产组装器使用的 snip tagging，导致 live/replay 只在 user 的 `[id:uN]` 标签上不等；按 RunAssembler 实际顺序启用同一 with_snip_tool 后通过。该 fixture 不一致未列为新缺陷，也未通过删除标签来放宽最终逐 item 比较。
 - 此处刻意使用唯一内容的边界，不能用它否定已复现 H-11 的重复内容匹配故障；也不覆盖 H-31 的压缩中取消。真实供应商大窗口压缩和完整 Tauri 重启仍未验收。
+
+### 后续独立验证：Windows 命令真正启动后取消
+
+- 审阅现有 `system_executor_cancels_running_process_within_two_seconds` 时发现：它创建并 pin Future 后先 sleep 和设置取消，再首次 await 命令 Future；Rust async 的该用例实际上只验证启动前取消。其最初约 0.10s 的通过不能算运行中取消已验证。此前 commentary 已及时更正，不把测试标题当行为证据。
+- 本轮只加强 cfg(test) 测试：使用 tokio::spawn 真实驱动生产 SystemExecutor；临时 PowerShell 向环境变量指定的临时文件写 PID，然后等待 30 秒；父测试必须看见子进程写出的 ready 文件才发取消。取消等待有 3 秒上限，超限先 abort/join 回收测试工作再报错；不用用户目录或网络命令。
+- 实际执行 `cargo test -p deepagent-builtins --lib system_executor_cancels_running_process_within_two_seconds --offline -- --nocapture`：`shell_started=true cancel_to_exit_ms=13`，1 passed，总约 0.55 秒；返回包含 cancelled 且不包含 before start。生产 run_process_controlled 在取消后等待 child 退出再返回，这是已启动 shell 的退出证据，未覆盖整个 Agent/Tauri 的取消链。
+- 另外执行既有 `a_timed_out_command_takes_its_detached_child_with_it`，1 passed，约 12.21 秒；断言是后代计划写出的延迟标记未出现，没有单独枚举所有子孙 PID。因此只说明该 timeout fixture 通过，不能把它扩大为任意进程树都清理正确。H-34、H-31、H-29 等其他取消缺口仍成立。
+- 没有修改生产命令、权限或沙箱行为；此处保留为正向保护边界与测试质量修正，不新增 H 缺陷编号。
 
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 

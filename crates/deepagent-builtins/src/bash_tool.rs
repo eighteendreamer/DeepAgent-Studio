@@ -1537,22 +1537,54 @@ mod tests {
     #[tokio::test]
     async fn system_executor_cancels_running_process_within_two_seconds() {
         let tmp = tempfile::tempdir().unwrap();
+        let ready_file = tmp.path().join("shell-ready.pid");
+        let ready_environment = ready_file.to_string_lossy().into_owned();
+        let cwd = tmp.path().to_string_lossy().into_owned();
         let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        let mut worker = tokio::spawn(async move {
+            SystemExecutor
+                .run_controlled_with_environment(
+                    "$PID | Set-Content -LiteralPath $env:DEEPAGENT_AUDIT_READY; Start-Sleep -Seconds 30",
+                    &cwd,
+                    CommandShell::Powershell,
+                    worker_cancel,
+                    Duration::from_secs(10),
+                    &[("DEEPAGENT_AUDIT_READY".into(), ready_environment)],
+                )
+                .await
+        });
+        // A pinned but unpolled Future never launches the shell. Require a
+        // marker written by the actual child before issuing cancellation.
+        let ready_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while !ready_file.exists() && !worker.is_finished() {
+            if std::time::Instant::now() >= ready_deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let ready = ready_file.exists();
         let start = std::time::Instant::now();
-        let future = SystemExecutor.run_controlled(
-            "Start-Sleep -Seconds 30",
-            tmp.path().to_str().unwrap(),
-            CommandShell::Powershell,
-            cancel.clone(),
-            Duration::from_secs(60),
-        );
-        tokio::pin!(future);
-        tokio::time::sleep(Duration::from_millis(100)).await;
         cancel.store(true, Ordering::Release);
-        let error = future.await.unwrap_err().to_string();
-
+        let result = tokio::time::timeout(Duration::from_secs(3), &mut worker).await;
+        let elapsed = start.elapsed();
+        let outcome = match result {
+            Ok(result) => result.unwrap(),
+            Err(_) => {
+                worker.abort();
+                let _ = worker.await;
+                panic!("running command did not respond to cancellation within 3 seconds");
+            }
+        };
+        assert!(ready, "the shell must actually run before cancellation");
+        let error = outcome.unwrap_err().to_string();
         assert!(error.contains("cancelled"), "{error}");
-        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(!error.contains("before start"), "{error}");
+        eprintln!(
+            "shell_started={ready} cancel_to_exit_ms={}",
+            elapsed.as_millis()
+        );
+        assert!(elapsed < Duration::from_secs(2));
     }
 
     #[cfg(windows)]
