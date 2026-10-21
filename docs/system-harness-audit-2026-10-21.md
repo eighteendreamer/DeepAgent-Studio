@@ -23,6 +23,7 @@
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录 | 已确认 H-51；服务/工具级确定性交错，完整双会话桌面动态验证未执行 |
+| 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -1202,10 +1203,37 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应收敛在现有知识/记忆存储：共享 global vault，项目 vault/index 按规范化项目身份缓存；运行接纳/组装时获得绑定项目的稳定服务视图，并供工具、检索、压缩/自动捕获和收尾一致使用。UI 激活只切换 UI 查询视图，不能改变已发运行的目标。此多会话服务视图属于**本地设计**，不新增独立记忆存储；不能靠全程持有全局锁、禁止切项目或工具执行前临时切回补救。
 - 还需完整双会话交错、异项目并行/同项目共享、项目移除与规范化、global 按预期共享、后台工作迟到、重启磁盘恢复及来源引用身份测试。本轮只增加审计测试和报告，未修改生产项目激活或存储行为。
 
+### H-52：知识库锁仅保护最终文件写入，独立宿主的旧索引可把不同笔记静默覆盖
+
+**级别：高（P1）；范围：多个知识服务/宿主共享同一 vault，或写入前磁盘已被其他作者改变。** 与 H-51 的项目切换无关；本项两个服务从始至终使用完全相同的项目/global 根。
+
+#### 触发、生产路径与复现
+
+- `KnowledgeService::save` 只取本服务 Mutex，调用 `KnowledgeBase::write`。后者从本地 entries 决定同标题更新及 existing_ids，再用 Vault.unique_slug 分配文件名；直到 `Vault::write` 才获取 vault 的跨进程文件锁。锁内只执行完整文件替换/read-back，不重新扫描或核对磁盘上的条目身份和版本。
+- 因此两个服务都先加载旧索引，即使写入完全串行、从未争锁，也会基于旧 existing_ids 选择同一 slug。`Audit retry: policy` 与 `Audit retry policy` 是不同 normalized title，但 slug 都是 audit-retry-policy；第二次写入不报冲突，原文件被替换，首服务的缓存仍展示第一条。
+- 新增默认忽略探针 `audit_independent_vault_writers_preserve_distinct_notes`：使用两个正式 KnowledgeService 和真实临时磁盘目录，均在首写前打开；首服务保存 A 后，第二服务保存 B。对照组在第二次保存前主动 reload，故障组保持生产 save 默认行为。两次 save 都必须成功，再新开第三服务读取磁盘并比对首服务缓存。未用 fake 存储、模型或网络，也未把单进程两实例称为已运行两个桌面进程。
+- 执行：`cargo test -p deepagent-app-core --lib audit_independent_vault_writers_preserve_distinct_notes --offline -- --ignored --nocapture`。整体断言明确失败：
+
+| 第二服务写入前 | 两次返回 ID 相同 | 重开磁盘条数 | A 保留 | B 保留 | 首服务缓存与磁盘一致 |
+|---|---|---:|---|---|---|
+| 显式 reload 对照 | false | 2 | true | true | true |
+| 默认不 reload | true | 1 | false | true | false |
+
+- 已存在的 Vault 文件锁/临时文件/原子 rename 真实执行；它们确保文件不会半写，不能证明读→选 ID→写的事务一致性。桌面有手动 kb_reload，但 save 和同项目 activate_project 不会自动刷新；把一次 reload 放到锁前也仍存在其他写入插入的窗口。
+
+#### 成熟实现对照、后果与修复方向
+
+- Claude Code 的记忆使用普通文件工具；`FileWriteTool` 在写前读取当前内容/修改时间，与 readFileState 比较，内容确已变化或没有读过就拒绝覆盖。`FileEditTool` 同样检查，并刻意禁止在检查和同步写入之间 await。其代码还保留 edit 前 fileHistoryTrackEdit 备份。借鉴的是“验证当前版本，冲突不能假成功”；本轮没有运行 Claude 测试，也不把单进程同步区段声称为跨进程原子事务。
+- 直接后果是不同笔记被静默丢弃，且保存端/首宿主/重启后的视图互相矛盾。丢失的知识可能不再给 DeepSeek 提供纠错经验，旧宿主还可能继续检索到磁盘已不存在的 A。触发需同一 vault 的独立旧视图及 slug 冲突；单服务串行写入的对照正常，不声称任意写入都会丢失。没有确认外部备份存在，因此也不承诺可恢复。
+- 修复应在现有 KnowledgeBase/Vault 边界内让锁覆盖读取当前条目身份、去重/分配 ID、版本核对和最终落盘；操作完成再一致更新或失效派生索引。对真正同一条目的并发修改采用明确版本冲突或合并策略，不能以同文件名认定同笔记；读缓存需要可诊断的刷新机制。此跨宿主事务实现为**本地设计**，复用既有锁/vault，不另建数据库，不只扩大锁等待或追加一次无锁 reload。
+- 还应覆盖两个真实宿主、外部编辑、同条目冲突、中文/截断 slug、写失败重试及 consolidation/archive 使用旧快照的交错。后者源码同样在分组后才加锁，但本轮未动态复现，不把其后果当作已确认事实。本轮只新增审计测试和报告，未修改生产写入行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-52 独立知识服务写入显式探针（见该节命令） | 明确失败：两次保存均成功，不刷新时 ID 相同、磁盘只剩 B、首缓存仍为 A；刷新对照两条均保留 |
+| `cargo test -p deepagent-app-core --lib knowledge_service::tests --offline`（H-52 核查时） | 18 passed / 2 ignored；H-51/H-52 缺陷探针各自另行显式执行，不能用默认绿测视为已修复 |
 | H-51 项目记忆作用域显式探针（见该节命令） | 明确失败：不切换对照仅访问 A；激活 B 后，原工具/provider 改读 B 且 project 写入实际落在 B，磁盘重开确认 |
 | `cargo test -p deepagent-app-core --lib knowledge_service::tests --offline`（H-51 核查时） | 18 passed / 1 ignored；缺陷探针另行显式执行并失败 |
 | `cargo test -p deepagent-app-core --lib memory_service::tests --offline`（H-51 核查时） | 5 passed；单项目读写/检索基线通过，不能覆盖项目切换交错 |
@@ -1421,6 +1449,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
+| 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 

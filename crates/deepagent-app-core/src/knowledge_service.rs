@@ -980,6 +980,54 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: independent vault views must not overwrite distinct titles on slug collision"]
+    fn audit_independent_vault_writers_preserve_distinct_notes() {
+        let mut outcomes = Vec::new();
+        for refresh_second in [true, false] {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("project");
+            let global = tmp.path().join("global");
+            // Same disk roots, different host caches. Both load before the
+            // first write; the OS lock serializes their actual file writes.
+            let first = KnowledgeService::open(&project, &global).unwrap();
+            let second = KnowledgeService::open(&project, &global).unwrap();
+            let first_note = first
+                .save(draft(
+                    "Audit retry: policy",
+                    "AUDIT_NOTE_A is a distinct deployment retry policy.",
+                    "note",
+                    "global",
+                ))
+                .unwrap();
+            if refresh_second {
+                second.reload().unwrap();
+            }
+            let second_note = second
+                .save(draft(
+                    "Audit retry policy",
+                    "AUDIT_NOTE_B is a separate application retry policy.",
+                    "note",
+                    "global",
+                ))
+                .unwrap();
+            assert_ne!(first_note.title, second_note.title);
+            let reopened = KnowledgeService::open(&project, &global).unwrap();
+            let entries = reopened.list();
+            let a_on_disk = entries.iter().any(|entry| entry.body == first_note.body);
+            let b_on_disk = entries.iter().any(|entry| entry.body == second_note.body);
+            let first_cache_matches_disk =
+                first.get(&first_note.id) == reopened.get(&first_note.id);
+            eprintln!("vault writer audit: refreshed={refresh_second} same_id={} disk_entries={} note_a={a_on_disk} note_b={b_on_disk} first_cache_matches_disk={first_cache_matches_disk}",
+                first_note.id == second_note.id, entries.len());
+            outcomes.push(a_on_disk && b_on_disk && first_note.id != second_note.id);
+        }
+        assert!(
+            outcomes.iter().all(|preserved| *preserved),
+            "successful saves of distinct titles must survive independent host caches"
+        );
+    }
+
+    #[test]
     fn activate_project_switches_project_vault_but_keeps_global() {
         let tmp = tempfile::tempdir().unwrap();
         let global_root = tmp.path().join("glob");
