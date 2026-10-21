@@ -16,7 +16,7 @@
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口及 SSE 分帧不完整均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
-| 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突、子 Agent 工具限制未约束执行及未信任项目提升只读权限 | 已确认 H-03、H-15、H-16、H-19、H-28；其他边界未完成 |
+| 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权及批量工具绕过超时 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型均已复现 | 已确认 H-17、H-32、H-33；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
@@ -829,10 +829,32 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 应与 H-32 共同确定现有宿主运行契约：要么统一向单一 owner 路由同会话执行，要么在既有接纳/租约层增加跨进程会话 owner 与 fencing，覆盖历史恢复、模型、工具、提交及取消路由；进程内 registry 保留为本地队列投影。不能仅在 UI 禁止双击，也不能只加单次 append 锁或把备用宿主日志改成警告。
 - 本地设计的验收应覆盖相同 session 两宿主派发/取消、不同 session 并行、owner 崩溃释放与接管、持有者正常完成/租约失效的竞争，并检查单条连续 history 和工具副作用。此处只新增审计探针和报告，未修生产执行链。
 
+### H-34：并行工具绕过统一执行流水线，单工具超时保护在批量调用时失效
+
+**级别：高（P1）；范围：同一步至少两个通过校验和 PreToolUse 的 concurrency-safe 工具。** 需工具执行没有主动响应 ToolExecutionContext，例如仅实现 Tool::invoke 的合法兼容工具；不代表每个内置工具都会挂起。这个问题与模型取消缺口 H-29/H-31 位于不同等待边界。
+
+#### 分叉路径与对照复现
+
+- 串行路径 `ToolPipeline::execute_prepared()` 对 bounded_by_run_timeout=true 的工具使用 tokio::time::timeout，强制执行 RuntimeConfig.tool_timeout；Tool trait 默认 bounded_by_run_timeout=true，默认 invoke_with_context 则直接 await invoke，不强制响应取消/超时。因此外层保护是明确契约的一部分。
+- `RuntimeEngine::execute_tools()` 在至少两个可并行项时走自己的 FuturesUnordered 分支，直接 registry.invoke_with_context，没有串行流水线的外层 timeout，也没有围绕 futs.next 的运行取消选择。传 context.with_timeout 只是数据，不会自动取消 Future。单个相同工具仍走正式 pipeline，所以常规单工具超时测试无法覆盖。
+- 新增默认忽略探针 `loop_engine::tests::audit_parallel_tools_preserve_serial_deadline_and_cancellation`。正式 RuntimeEngine、真实内存 Session/EventStore、ScriptedAgent 请求固定工具并完成；同一种 Safe、只读、无副作用的 GatedRead 只实现合法 Tool::invoke，等待显式 release。分别请求一个和两个，tool_timeout=80ms，未开启流式推测执行，也未直接调用私有分支替代 agent loop。
+- 执行 `cargo test -p deepagent-runtime --lib audit_parallel_tools_preserve_serial_deadline_and_cancellation --offline -- --ignored --nocapture`：单个 started=1、400ms 内完成、持久化一条 exceeded its 80 ms budget 失败结果；两个 started=2、400ms 后仍 pending，随后设置实际运行 cancel flag，再观察 200ms 仍 pending、timeout 结果为零。主动 release 后才退出，最后断言失败。全部 Future 在断言前回收，没有真实工具、模型网络或用户数据。第一次探针编译的借用错误已调整 fixture 取 session id 的时机，不列为产品缺陷。
+- 动态证据限于给定观察期和兼容工具，不声称运行了默认 120 秒或无限等待；生产并行分支缺少同等期限是代码证据。当前没有实际复现某个内置网络工具或后台进程泄漏，不能将其写成既成后果。
+
+#### 成熟实现、影响与修复方向
+
+- Codex `codex-rs/core/src/tools/parallel.rs::ToolCallRuntime::handle_tool_call_with_source()` 让串行/并行都经过统一 dispatch，使用 RwLock 控制 overlap；外层 select 等待 dispatch_handle 或 cancellation_token，取消时按 terminal_outcome_reached 判断是否等已完成结果，否则 abort 并 await 子任务、生成配对 aborted response。这里参考的是统一派发与有 owner 的取消收尾，不是宣称 Codex 给每种工具套同一个固定超时。
+- DeepSeek Harness `packages/guard/timeout-policy/src/index.ts` 把声明 timeoutMs 的工具 deadline 放在通用 tools/execute wrapper 内，`core/agent-loop/src/tool-calls.ts` 的串/并行调度共用工具运行时。必须同时说明其策略是 cooperative：工具承诺遵守 exec.signal，wrapper 等底层达到 quiescence，不会靠 Promise.race 硬杀不协作代码；不能据此声称其能直接解决本探针的任意不协作 Future。两家参考源码已查，未执行参考测试。
+- 影响是同一个工具单独调用会按时返回，模型一次发出两个却可能长期占住整个会话，停止也必须等工具自行返回；同会话后续输入等待其租约。批量请求增多时可能把预期的性能优化变成可用性回退。后续输入阻塞及实际工具资源清理需独立验证，本次仅确认运行等待和超时差异。
+- 修复应让并行调度复用既有 ToolPipeline 的 prepare/dispatch/complete 边界，调度器只管理并发与模型顺序；统一 deadline、取消、工具 opt-out、结果装饰、artifact、动作投影与 hooks。取消时停止补充派发、清理本调用拥有的异步/进程资源并记录配对结果；不能把所有工具的 Future 直接丢弃当作外部工作已经停止，也不能在另一个分支再复制一套超时逻辑。
+- 验收同一工具的单个/两个/混合串并行，覆盖超时、取消、失败、不同完成顺序和 opt-out 子运行/人工等待；确认结果配对、动作终态和输入租约释放。本轮未修改生产调度行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-34 串并行对照忽略探针（见该节命令） | 明确失败：单工具 80ms 超时并落失败结果；两个相同工具越过 400ms，取消后 200ms 仍 pending，主动 release 后才退出 |
+| `cargo test -p deepagent-runtime --lib loop_engine::tests --offline`（新增 H-34 后） | 35 passed / 1 ignored；单工具、常规并行与取消前派发等已有回归通过，缺陷探针另行显式执行失败 |
 | H-33 双宿主会话忽略探针（见该节命令） | 明确失败：同一 session 的父响应仍 pending 时，Standby 子宿主已发出第二条模型请求；两条 run 同时 running_turn，释放后均返回成功 |
 | `cargo test -p deepagent-app-core --test host_lock --test host_session_audit --offline`（新增 H-33 后） | 原有跨进程测试 1 passed，新缺陷探针合计 2 ignored；两个探针另行显式运行均失败，不代表缺陷已修复 |
 | H-32 双进程忽略探针（见该节命令） | 明确失败：备用宿主恢复数为零且父 run 仍 running，但动作已 failed、子运行已 cancelled，父宿主正常成功落盘均被拒绝 |
@@ -962,7 +984,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 |---|---|---|---|
 | 执行权限与子运行上下文 | H-03、H-19、H-22 | 有效工具集合、sandbox 选择、执行根、checkpoint 必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
-| 运行取消覆盖所有等待 | H-10、H-29、H-31 | 摘要、prefire、成功/错误正文和重试均属于现有取消树；区分可取消外部等待与已进入持久化的收尾 | 压缩和错误半正文中停止及时退出；后台任务有 owner；取消不被转成成功摘要或吞掉保存错误 |
+| 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34 | 摘要、prefire、成功/错误正文、重试和串并行工具属于现有取消树；共用 ToolPipeline 与 deadline；区分外部工作清理与持久化收尾 | 压缩/错误正文/并行工具中停止及时退出；串并行超时一致；任务有 owner；取消不假成功或吞保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |

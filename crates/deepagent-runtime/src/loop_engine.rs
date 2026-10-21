@@ -3580,6 +3580,116 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit: parallel tool dispatch must enforce the same deadline as serial dispatch"]
+    async fn audit_parallel_tools_preserve_serial_deadline_and_cancellation() {
+        struct GatedRead {
+            started: Arc<std::sync::atomic::AtomicUsize>,
+            release: Arc<AtomicBool>,
+        }
+
+        #[async_trait]
+        impl Tool for GatedRead {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor {
+                    name: "audit_pending_read".into(),
+                    description: "offline read-only deadline probe".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                    risk: RiskLevel::Safe,
+                    required_permissions: PermissionSet::read_only(),
+                }
+            }
+
+            async fn invoke(&self, _arguments: serde_json::Value) -> Result<ToolOutput> {
+                self.started.fetch_add(1, Ordering::AcqRel);
+                while !self.release.load(Ordering::Acquire) {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Ok(ToolOutput::success(serde_json::json!({"released": true})))
+            }
+        }
+
+        let mut observations = Vec::new();
+        for count in [1, 2] {
+            let db = Database::open_in_memory().unwrap();
+            let clock = FixedClock::new(1);
+            let mut session = Session::create(&db, &clock, Some("audit deadline")).unwrap();
+            let session_id = session.id();
+            let task = session.create_task("read without side effects").unwrap();
+            let started = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let release = Arc::new(AtomicBool::new(false));
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mut registry = ToolRegistry::new();
+            registry
+                .register(Arc::new(GatedRead {
+                    started: started.clone(),
+                    release: release.clone(),
+                }))
+                .unwrap();
+            let calls = (0..count)
+                .map(|index| {
+                    ToolInvocation::new("audit_pending_read", serde_json::json!({}))
+                        .with_id(format!("audit-call-{index}"))
+                })
+                .collect();
+            let mut agent = ScriptedAgent::new([
+                AgentDecision::CallTools(calls),
+                AgentDecision::Complete("done".into()),
+            ]);
+            let engine = RuntimeEngine::new(
+                &registry,
+                Metrics::new(),
+                RuntimeConfig {
+                    tool_timeout: std::time::Duration::from_millis(80),
+                    ..RuntimeConfig::default()
+                },
+            )
+            .with_cancel(cancel.clone());
+            let run = engine.run(&mut session, task, &mut agent);
+            tokio::pin!(run);
+            let deadline_result =
+                tokio::time::timeout(std::time::Duration::from_millis(400), run.as_mut()).await;
+            let finished_by_deadline = deadline_result.is_ok();
+            let mut stopped_after_cancel = finished_by_deadline;
+            if let Ok(result) = deadline_result {
+                result.unwrap();
+            } else {
+                cancel.store(true, Ordering::Release);
+                let cancelled_result =
+                    tokio::time::timeout(std::time::Duration::from_millis(200), run.as_mut()).await;
+                stopped_after_cancel = cancelled_result.is_ok();
+                if let Ok(result) = cancelled_result {
+                    result.unwrap();
+                } else {
+                    release.store(true, Ordering::Release);
+                    tokio::time::timeout(std::time::Duration::from_secs(1), run.as_mut())
+                        .await
+                        .expect("release must drain the probe")
+                        .unwrap();
+                }
+            }
+            let events = EventStore::new(&db).load_session(session_id).unwrap();
+            let budget_errors = events
+                .iter()
+                .filter(|event| {
+                    matches!(&event.payload,
+                        EventPayload::ToolCallCompleted { ok: false, output, .. }
+                            if output.to_string().contains("exceeded its 80 ms budget"))
+                })
+                .count();
+            eprintln!(
+                "count={count} started={} finished_by_deadline={finished_by_deadline} stopped_after_cancel={stopped_after_cancel} budget_errors={budget_errors}",
+                started.load(Ordering::Acquire)
+            );
+            observations.push((finished_by_deadline, stopped_after_cancel, budget_errors));
+        }
+        assert_eq!(observations[0], (true, true, 1), "single-call control");
+        assert!(
+            observations[1].0 && observations[1].2 == 2,
+            "parallel dispatch must preserve the tool deadline and paired timeout results"
+        );
+    }
+
+    #[tokio::test]
     async fn cancellation_before_tool_dispatch_persists_a_paired_result() {
         let db = Database::open_in_memory().unwrap();
         let clock = FixedClock::new(1);
