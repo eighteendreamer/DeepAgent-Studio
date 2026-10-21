@@ -1162,6 +1162,162 @@ mod tests {
             .collect()
     }
 
+    #[derive(Default)]
+    struct AuditChildWriteTransport {
+        tools_seen: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl deepagent_models::transport::HttpTransport for AuditChildWriteTransport {
+        async fn stream(
+            &self,
+            request: deepagent_models::transport::TransportRequest,
+            sink: &mut dyn deepagent_models::transport::EventSink,
+        ) -> Result<()> {
+            let body: serde_json::Value = serde_json::from_str(&request.body)?;
+            let tools = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["name"].as_str().map(str::to_string))
+                .collect();
+            let step = {
+                let mut seen = self.tools_seen.lock().unwrap();
+                seen.push(tools);
+                seen.len()
+            };
+            if step == 1 {
+                let item = serde_json::json!({"type":"function_call","id":"write-item",
+                    "call_id":"hidden-write","name":"write_file",
+                    "arguments":r#"{"path":"audit-child.txt","content":"hidden tool executed"}"#});
+                sink.on_event(
+                    &serde_json::json!({"type":"response.output_item.added","item":item})
+                        .to_string(),
+                )?;
+                sink.on_event(
+                    &serde_json::json!({"type":"response.output_item.done","item":item})
+                        .to_string(),
+                )?;
+            } else {
+                sink.on_event(r#"{"type":"response.output_text.delta","delta":"audit finished"}"#)?;
+            }
+            sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: child tool restrictions must also constrain actual dispatch"]
+    async fn audit_read_only_subagent_rejects_tools_hidden_by_its_profile() {
+        let mut unexpected_writes = Vec::new();
+        for scope in ["explore", "plan", "request_allowlist", "profile_denylist"] {
+            let dir = tempfile::tempdir().unwrap();
+            let db = Arc::new(Database::open_in_memory().unwrap());
+            let clock = SystemClock;
+            let session = Session::create(&db, &clock, Some("audit parent")).unwrap();
+            deepagent_persistence::run_store::RunStore::new(&db)
+                .create(
+                    "audit-parent",
+                    &session.id().to_string(),
+                    None,
+                    subagent_now_ms(),
+                )
+                .unwrap();
+            let transport = Arc::new(AuditChildWriteTransport::default());
+            let settings = Arc::new(crate::settings::SettingsService::new(
+                db.clone(),
+                transport.clone(),
+                Arc::new(crate::secret_store::MemorySecretStore::new()),
+            ));
+            let host = ChatService::new(db.clone(), settings, transport.clone(), dir.path());
+            let mut registry = ToolRegistry::new();
+            for tool in
+                deepagent_builtins::file_tools(deepagent_builtins::WorkspaceRoot::new(dir.path()))
+            {
+                registry.register(tool).unwrap();
+            }
+            let mut definitions: std::collections::BTreeMap<_, _> =
+                builtin_runtime_agent_definitions()
+                    .into_iter()
+                    .map(|def| (def.type_name.clone(), def))
+                    .collect();
+            let profile_name = if scope == "profile_denylist" {
+                let def = profile(&[], &["Write"]).unwrap();
+                definitions.insert(def.type_name.clone(), def);
+                Some("t".into())
+            } else if scope == "request_allowlist" {
+                None
+            } else {
+                Some(scope.into())
+            };
+            let sink: Arc<dyn RuntimeEventSink> = Arc::new(deepagent_runtime::NullEventSink);
+            let runner = ChatSubagentRunner {
+                db: db.clone(),
+                parent_run_id: "audit-parent".into(),
+                transcript_root: dir.path().join("transcripts"),
+                client: Arc::new(ModelClient::new(
+                    transport.clone(),
+                    deepagent_models::ModelConfig::deepseek("audit-placeholder"),
+                )),
+                model: "deepseek-flash".into(),
+                thinking_depth: ThinkingDepth::Simple,
+                registry: Arc::new(registry),
+                root: dir.path().to_path_buf(),
+                tool_search_mode: deepagent_builtins::ToolSearchMode::Disabled,
+                tool_search_auto_threshold: 10_000,
+                parent_discovered_snapshot: Default::default(),
+                agent_definitions: definitions,
+                background: Default::default(),
+                events: Arc::downgrade(&sink),
+                skills: None,
+                host,
+                access: deepagent_builtins::FsAccess::Workspace,
+                local_execution_mode: crate::settings::LocalExecutionMode::Direct,
+                bash_full_access: false,
+                hooks: Default::default(),
+                parent_checkpoint: Default::default(),
+                parent_approvals: Default::default(),
+            };
+            let request = deepagent_builtins::SubagentRequest {
+                description: format!("audit {scope}"),
+                prompt: "Inspect without modifying files".into(),
+                subagent_type: profile_name,
+                allowed_tools: if scope == "request_allowlist" {
+                    vec!["Read".into()]
+                } else {
+                    vec![]
+                },
+                model: None,
+                effort: None,
+                skills: vec![],
+                isolation: "shared".into(),
+                fork: false,
+                phase: None,
+                label: None,
+                schema: None,
+            };
+            let outcome = runner.run_inner(request, None).await;
+            let seen = transport.tools_seen.lock().unwrap();
+            assert!(
+                !seen.is_empty(),
+                "child never called the model: {outcome:?}"
+            );
+            assert!(
+                seen.iter()
+                    .all(|tools| !tools.iter().any(|name| name == "write_file")),
+                "fixture requires write_file to be absent from every request schema"
+            );
+            let wrote = std::fs::read_to_string(dir.path().join("audit-child.txt")).ok();
+            eprintln!("audit child dispatch: scope={scope}, wire_tools={seen:?}, outcome={outcome:?}, written={wrote:?}");
+            unexpected_writes.push(wrote.is_some());
+        }
+        // Production file tool + engine ran; all writes stay inside TempDir and are removed on drop.
+        assert!(
+            unexpected_writes.iter().all(|wrote| !wrote),
+            "child executed tools excluded by declared restrictions: {unexpected_writes:?}"
+        );
+    }
+
     #[test]
     fn tool_filter_drops_disallowed_without_allowlist() {
         // No `tools:` allowlist at all — only `disallowedTools: Bash`.

@@ -16,7 +16,7 @@
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分与截断工具调用提交均已复现 | 已确认 H-05、H-18；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放边界及无效压缩丢失已返回 usage 均已复现 | 已确认 H-10、H-11、H-14；笔记计数及其他压缩边界仍在核查 |
-| 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权及跨运行审批 ID 冲突 | 已确认 H-03、H-15、H-16；其他边界未完成 |
+| 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突及子 Agent 工具限制未约束执行 | 已确认 H-03、H-15、H-16、H-19；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 待逐项验证 | 未完成 |
@@ -537,6 +537,26 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 在同一模型响应提交边界统一处理终态与调用完整性；截断恢复的保留集合应同时决定决策、原生 Surface、stream attempt commit 及 durable replay，避免仅 UI 隐藏调用。借鉴 Harness 保留可安全续写文本、剔除截断调用并同步 replay 的方式。
 - 保留正常完成的无参调用、既有权限/审批和调用配对；新增多调用中途截断、第二次 length、无法升级输出上限、Responses 未闭合 item、取消与截断交错及重启测试。本轮未改生产模型或工具逻辑。
 
+### H-19：子 Agent 的工具限制只过滤 schema，实际执行仍可调用被排除的工具
+
+**级别：高（P1）；范围：ChatSubagentRunner 的内置只读角色、请求 allowlist 和角色 denylist。** 本项实际写入了临时文件，不只是观察模型 schema；没有触碰用户文件，也没有调用真实供应商或系统命令。
+
+#### 触发与复现
+
+- `subagent_runner.rs::run_active()` 克隆父 ToolRegistry；schema callback 通过 `apply_runtime_agent_tool_filter()` 及 request.allowed_tools 过滤模型工具定义，但 RuntimeEngine 接收的仍是完整 sub_registry。`permission_set_for_agent()` 对只读角色也返回 developer 权限，因此工具 schema 限制没有形成执行边界。
+- 默认忽略探针 `subagent_runner::tests::audit_read_only_subagent_rejects_tools_hidden_by_its_profile` 使用真实 ChatSubagentRunner、RuntimeEngine、文件工具实现及内存数据库。模型 transport 固定返回一个完整的 write_file 调用，随后正常完成；未安装自动批准 gate。
+- 四个独立临时目录分别测试内置 explore、内置 plan、request.allowed_tools=[Read]、自定义角色 disallowedTools=[Write]。逐次检查实际 wire request 均没有 write_file schema；前三组列表分别是只读四工具、只读四工具、仅 read_file，第四组保留其他文件工具但没有 write_file。
+- 执行：`cargo test -p deepagent-app-core --lib audit_read_only_subagent_rejects_tools_hidden_by_its_profile --offline -- --ignored --nocapture`。
+- 实测四组都 `outcome=Ok, tool_use_count=1`，并在各自目录创建 `audit-child.txt`，内容为 `hidden tool executed`。最终要求零越界写入的断言失败：`[true, true, true, true]`。单组运行约 91–108ms，不是性能统计。
+- 当前 WriteFileTool 属于 Low risk，要求 WorkspaceWrite；developer 权限满足该要求。因此本次没有绕过审批程序的证据，缺口是角色/请求声明的工具限制未进入实际 dispatch。测试调用真实子运行，但没有经过完整父会话接纳或桌面 UI，也不声称供应商在自然对话中已返回过清单外工具。
+
+#### 成熟实现对照与修复方向
+
+- Claude Code `tools/AgentTool/runAgent.ts` 先得到 resolvedTools，再组装 allTools 并写入 agentOptions.tools；`services/tools/toolExecution.ts` 从 `toolUseContext.options.tools` 查找实际调用，找不到时返回结构化 `No such tool available`。该实现另有废弃别名兼容分支，不能概括成完全没有 fallback。
+- 应在现有 ToolRegistry/ToolPipeline 边界生成同一份有效工具集合，让 schema 与 dispatch 共享其身份和限制；模型返回隐藏工具时应拒绝并补配对失败结果，不能仅用提示词劝模型遵守。
+- 角色限制需与父权限取交集，避免只读角色获得更宽的写权限；保留原有文件边界、审批及沙箱校验，不建立第二套工具执行器。覆盖 alias、deferred/MCP 工具、角色 denylist、空 allowlist、后台子运行和恢复后的限制一致性。
+- 本轮仅增加审计测试和报告，未修改生产权限或工具路由。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -565,11 +585,13 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-16 节单项命令 | 1 个探针明确失败：第二 run 的 action 独立登记，但相同 provider id 的审批遭全库幂等冲突 |
 | H-17 真实 Tauri 探针 | 当前源码桌面编译通过；真实模型首片段后停止约 2ms ACK；保存失败已送达 UI，但展示断言明确失败 |
 | H-18 节单项命令 | 1 个探针四组均复现：Chat/Responses、空参数/半截 JSON 在第二次 length 后仍返回工具决策并保留原生调用 |
+| H-19 节单项命令 | 1 个探针四组均复现：wire 无 write_file schema，真实子运行仍成功写入各自临时目录 |
+| `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-19 后） | 6 passed / 1 ignored；常规角色测试只验证 schema 过滤，没有验证清单外实际调用被拒绝 |
 | `cargo test -p deepagent-runtime --lib model_agent::tests --offline`（新增 H-18 后） | 56 passed / 1 failed / 2 ignored；原有 `time_based_microcompact_clears_stale_tool_results_after_idle` 在 `Instant::now() - 3601s` 处溢出，尚未进入生产 microcompact；单独重跑同样失败。本轮未修改该测试或生产时钟，不能报常规测试全绿，也不据此认定生产压缩故障 |
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十八个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
+审查累计新增内容限于报告、十九个默认忽略的 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
