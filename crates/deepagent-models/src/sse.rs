@@ -61,6 +61,66 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "audit H-30: SSE line splitting is not complete event framing"]
+    fn audit_sse_frames_preserve_multiline_json_and_require_terminal_boundary() {
+        fn assemble(chunks: &[&str]) -> deepagent_core::error::Result<crate::Response> {
+            let mut parser = SseParser::new();
+            let mut accumulator = crate::ChatCompletionAccumulator::new();
+            for chunk in chunks {
+                for payload in parser.feed(chunk) {
+                    if accumulator.push_sse_data(&payload)? {
+                        return accumulator.finish();
+                    }
+                }
+            }
+            if let Some(payload) = parser.flush() {
+                accumulator.push_sse_data(&payload)?;
+            }
+            accumulator.finish()
+        }
+
+        let single = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},",
+            "\"finish_reason\":\"stop\"}]}\n\n"
+        );
+        let multiline = concat!(
+            "data: {\"choices\":\n",
+            "data: [{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"
+        );
+        let cr_only = format!("{}data: [DONE]\r\r", single.replace('\n', "\r"));
+        let cases: [(&str, Vec<&str>, bool); 4] = [
+            (
+                "single-line control",
+                vec![single, "data: [DONE]\n\n"],
+                true,
+            ),
+            ("multiline JSON", vec![multiline, "data: [DONE]\n\n"], true),
+            ("CR-only lines", vec![&cr_only], true),
+            (
+                "unterminated terminal frame",
+                vec![single, "data: [DONE]"],
+                false,
+            ),
+        ];
+        let mut mismatched = Vec::new();
+        for (name, chunks, expected_success) in cases {
+            let result = assemble(&chunks);
+            eprintln!(
+                "case={name}, expected_success={expected_success}, actual_success={}, error={:?}",
+                result.is_ok(),
+                result.as_ref().err()
+            );
+            if result.is_ok() != expected_success {
+                mismatched.push(name);
+            }
+        }
+        assert!(
+            mismatched.is_empty(),
+            "SSE event boundaries were not preserved: {mismatched:?}"
+        );
+    }
+
+    #[test]
     fn parses_complete_lines() {
         let mut p = SseParser::new();
         let out = p.feed(

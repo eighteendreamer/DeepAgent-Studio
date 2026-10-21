@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、Unicode 错误 panic、限流元数据丢失及错误正文取消缺口均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29；全部错误和流式分支未完成 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口及 SSE 分帧不完整均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费和回退后旧笔记覆盖新分支均已复现 | 已确认 H-10、H-11、H-14、H-23；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突、子 Agent 工具限制未约束执行及未信任项目提升只读权限 | 已确认 H-03、H-15、H-16、H-19、H-28；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
@@ -750,11 +750,31 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 在现有 transport 统一成功/错误正文的取消、idle/total 时限及清理边界；错误正文读取失败保留上下文，不用 unwrap_or_default 抹除原因。应有有界错误正文大小，防止未截断前的整段读入；后者本次仅作代码风险提示，未进行内存压力复现。
 - 验收覆盖 4xx/5xx 半正文、慢速错误正文、正文中断、停止与 total timeout 竞争，以及经过 ModelAgent/Kernel 的终态收尾。修复应使用现有取消树及 transport helper，不新建第二套运行取消机制。本轮未改生产行为。
 
+### H-30：SSE 实际按 data 行解析，合法多行事件失败，未闭合终态帧却被接受
+
+**级别：中（P2）；范围：共用 SSE 分帧与模型响应组装边界。** 触发需要供应商/兼容网关输出多行 data、CR-only 行结束符，或连接在终态事件空行前断开；未声称当前真实 DeepSeek 成功样本采用了这些格式。
+
+#### 标准依据与可重跑证据
+
+- [WHATWG SSE 解析与解释规则](https://html.spec.whatwg.org/multipage/server-sent-events.html#parsing-an-event-stream) 要求同一事件的多个 data 字段以换行拼接，接受 CRLF/LF/CR 行结束符，并由空行派发事件；EOF 时未闭合事件应丢弃。这里区分 SSE 事件与网络字节 chunk，后者任意拆分并不改变前者。
+- `deepagent-models/src/sse.rs::SseParser::feed()` 每见 LF 就直接返回该行 data，不维护事件级 data buffer，也不等待空行；flush 把无终止符的剩余 data 当成事件发送。`ReqwestTransport::stream_inner()` 把这些返回值直接交给模型 accumulator，并在 EOF 调用 flush，因此是生产解析边界的问题，非仅注释不准确。
+- 新增默认忽略探针 `audit_sse_frames_preserve_multiline_json_and_require_terminal_boundary`，直接组合正式 SseParser 与 ChatCompletionAccumulator，按 transport 相同顺序 feed/flush/finish；终态提前返回规则也相同。执行：`cargo test -p deepagent-models audit_sse_frames_preserve_multiline_json_and_require_terminal_boundary --offline -- --ignored --nocapture`。
+- 单行完整事件对照成功；完全等价的多行 JSON 事件报 `EOF while parsing a value`；CR-only 合法事件报 `trailing characters`；正文完整但最后 `data: [DONE]` 没有事件结束空行时，反而成功返回。三组协议断言失败。测试使用本地字符串，没有 HTTP 网络或真实供应商调用；没有据此宣称所有流式请求都失败。
+
+#### 成熟实现、后果与修复方向
+
+- Codex `codex-client/src/sse.rs::sse_stream()` 使用 eventsource_stream::Eventsource，在事件级取得 ev.data 后才交给消费方。DeepSeek Harness `llm-deepseek/src/sse.ts::parseSse()` 使用 TextDecoderStream + EventSourceParserStream，明确不把 unterminated tail 派发成事件，再解析 JSON；错误以结构化模型失败上交。本轮核查参考源码，未执行参考项目的全部解析器测试。
+- 兼容网关改变合法 SSE 格式就可能使普通文本或工具调用失败，即使 JSON 语义未变；连接半帧结束又可能被误判成功。这里只证明模型组装结果，未额外运行实际工具执行或桌面终态回放，不能把它扩大为已发生工具副作用。
+- 修复应统一字节 UTF-8 解码、SSE 事件分帧、provider JSON 解析的三个边界。可评估现有依赖或标准解析器，保持单一 transport 链路；兼容无空行的非标准供应商若确有需求，需显式定义策略，不能默认把半帧等同于完成。
+- 验收应覆盖多 data 行、CR/LF/CRLF、分隔符跨网络 chunk、注释心跳、EOF 半帧和完整终态，并检查真实 HTTP→ModelClient→运行终态。现有默认测试把连续 data 行直接视为两个 payload，恰好固化了行级假设，常规通过不能证明 SSE 协议完整。本轮未修改生产 parser。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
 | `cargo fmt --all -- --check` | 通过 |
+| H-30 单项忽略探针（见该节命令） | 明确失败：多行 JSON、CR-only 和未闭合终态帧三组不符预期，单行完整帧对照通过 |
+| `cargo test -p deepagent-models --features http --offline`（新增 H-30 后） | 84 passed / 4 ignored，0 failed；新缺陷探针默认忽略 |
 | H-29 单项忽略探针（见该节命令） | 明确失败：200 正文读取响应取消，429/503 半正文未在 500ms 观察期内响应；释放正文后才返回 |
 | `cargo test -p deepagent-models --features http --offline`（新增 H-29 后） | 84 passed / 3 ignored，0 failed；已知缺陷探针默认忽略 |
 | H-28 单项忽略探针（见该节命令） | 明确失败：只读对照无文件，未信任项目 full_access 覆盖后实际写入，审批数为零；没有修复生产行为 |
@@ -868,7 +888,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
-| Provider 错误和请求恢复 | H-24、H-25、H-29 | 既有错误元数据、单一重试及正文取消边界；参考 Codex 安全字符截断、DeepSeek providerRetryAfterMs 和全请求 AbortSignal | Unicode 错误不 panic；成功/错误正文和有界供应商等待均可取消，不提前耗尽尝试 |
+| Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 
