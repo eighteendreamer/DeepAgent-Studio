@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断工具调用提交、Unicode 错误解析 panic 及限流等待元数据丢失均已复现 | 已确认 H-05、H-18、H-24、H-25；全部错误和流式分支未完成 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、Unicode 错误 panic、限流元数据丢失及错误正文取消缺口均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费和回退后旧笔记覆盖新分支均已复现 | 已确认 H-10、H-11、H-14、H-23；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突、子 Agent 工具限制未约束执行及未信任项目提升只读权限 | 已确认 H-03、H-15、H-16、H-19、H-28；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
@@ -731,11 +731,32 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 在现有配置加载及有效 profile 解析边界统一来源授权和权限上限：明确用户主动授权、受信任项目偏好、插件默认与管理员约束各自能修改什么。项目、本地配置不应仅凭更高 merge 优先级自动放宽用户权限；复用现有配置层和信任服务，不另建权限表或执行链。
 - 验收覆盖只读/工作区写入、审批策略、不同项目配置来源、显式授权及撤销、运行覆盖和管理员约束，并同时断言实际工具副作用与审批调用。当前只运行 Windows 离线 AppCore 探针，没有验证所有宿主、平台或配置来源，也未修改生产权限行为。
 
+### H-29：HTTP 错误正文挂起时取消检查缺失，停止等待退化到正文完成或总超时
+
+**级别：中（P2）；范围：真实 HTTP 模型 transport 的非 2xx 响应读取。** 需要供应商或网关先返回错误状态/响应头，再使正文持续未完成。正常 2xx SSE 的停止保护仍有效。
+
+#### 生产路径与真实回环复现
+
+- `ReqwestTransport::stream_inner()` 对请求发送及成功 SSE 的每次 body.next 应用 `await_cancelable_timeout()`，但非成功状态分支直接执行 `response.text().await.unwrap_or_default()`，没有取消检查或正文 idle 超时。外层 stream_cancelled 的 total deadline 仍然存在，默认 300 秒，因此不是无限期无界等待。
+- `RuntimeEngine` 直接 await agent.think_streaming_cancelled；ModelAgent 再 await ModelClient 的取消感知流。代码核查未发现这一 await 外另有引擎级取消竞争，因此不能依赖“信号已写入 flag”自动中断任意内部等待。本项动态证据限于实际 HTTP transport，没有运行 Tauri 或宣称已复现某次用户截图中的长等待。
+- 新增默认忽略的 `reqwest_transport::tests::audit_cancel_interrupts_stalled_success_and_error_bodies`。真实 localhost TCP 服务完整消费请求，分别返回 200/429/503 响应头及正文首字节；保持剩余正文不发。客户端使用正式 ReqwestTransport，idle=2 秒、total=4 秒，确认操作仍 pending 后设置同一取消 flag，观察 500ms，再主动释放服务器正文并回收任务。无外部请求、密钥或真实付费调用。
+- 执行：`cargo test -p deepagent-models --features http audit_cancel_interrupts_stalled_success_and_error_bodies --offline -- --ignored --nocapture`。200 组约 20ms 返回 request cancelled；429 与 503 组在约 508ms 观察期后仍未返回，释放正文后才返回各自 Provider 错误。最终取消断言失败。500ms 是本地测试观察界限，不是系统承诺或 P95，测试也没有实际等待生产默认 300 秒。
+- 初次编译因测试闭包的 &str 生命周期推断失败；显式标注参数后才执行上述实测。编译问题不列为生产缺陷。
+
+#### 成熟实现、后果与修复方向
+
+- DeepSeek Harness `llm-deepseek/src/adapter.ts::generate()` 合并调用者及 consumer AbortSignal，再经 idleWatchdog 传给 request；fetch 的 signal 覆盖请求和返回 body 的消费，非 2xx response.text 也处于同一取消生命周期。finally 取消 consumer；调用者取消映射为 ABORTED。`tests/runtime.spec.ts` 有 outstanding fetch、mid-stream abort 和 idle watchdog 回归；本轮只核查这些源码，没有声称已运行参考项目测试，也不声称它已有完全相同的非 2xx 半正文用例。
+- 本系统收到停止信号后，该分支仍可能继续等待错误正文，UI 的“正在停止”和运行终态随之拖延，且 transport 最终可能上交 HTTP 错误而非取消。它与 H-17 的保存错误 UI 投影、H-25 的 Retry-After 丢失是不同故障点。
+- 在现有 transport 统一成功/错误正文的取消、idle/total 时限及清理边界；错误正文读取失败保留上下文，不用 unwrap_or_default 抹除原因。应有有界错误正文大小，防止未截断前的整段读入；后者本次仅作代码风险提示，未进行内存压力复现。
+- 验收覆盖 4xx/5xx 半正文、慢速错误正文、正文中断、停止与 total timeout 竞争，以及经过 ModelAgent/Kernel 的终态收尾。修复应使用现有取消树及 transport helper，不新建第二套运行取消机制。本轮未改生产行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
 | `cargo fmt --all -- --check` | 通过 |
+| H-29 单项忽略探针（见该节命令） | 明确失败：200 正文读取响应取消，429/503 半正文未在 500ms 观察期内响应；释放正文后才返回 |
+| `cargo test -p deepagent-models --features http --offline`（新增 H-29 后） | 84 passed / 3 ignored，0 failed；已知缺陷探针默认忽略 |
 | H-28 单项忽略探针（见该节命令） | 明确失败：只读对照无文件，未信任项目 full_access 覆盖后实际写入，审批数为零；没有修复生产行为 |
 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`（新增 H-28 后） | 74 passed / 3 ignored，0 failed；新增探针默认忽略，不代表其缺陷修复 |
 | `cargo test -p deepagent-cli -p deepagent-models -p deepagent-mcp --offline` | CLI 82 passed / 3 ignored；models 84 passed / 1 ignored；MCP 单元 55 passed / 3 ignored、子进程集成 3 passed、协议审查 1 ignored；均无常规失败。组合命令的 feature 合并启用了额外 HTTP 测试 |
@@ -847,7 +868,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
-| Provider 错误和请求恢复 | H-24、H-25 | 既有错误元数据和单一重试边界；参考 Codex 安全字符截断、DeepSeek providerRetryAfterMs | Unicode 错误不 panic；有界供应商等待期间可取消，不提前耗尽尝试 |
+| Provider 错误和请求恢复 | H-24、H-25、H-29 | 既有错误元数据、单一重试及正文取消边界；参考 Codex 安全字符截断、DeepSeek providerRetryAfterMs 和全请求 AbortSignal | Unicode 错误不 panic；成功/错误正文和有界供应商等待均可取消，不提前耗尽尝试 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 

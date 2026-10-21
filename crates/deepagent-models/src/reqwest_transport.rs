@@ -301,6 +301,127 @@ async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    #[ignore = "audit H-29: a stalled HTTP error body does not observe request cancellation"]
+    async fn audit_cancel_interrupts_stalled_success_and_error_bodies() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let mut stalled = Vec::new();
+        for status in [200, 429, 503] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (headers_sent, headers_received) = oneshot::channel();
+            let (release, released) = oneshot::channel();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0; 1024];
+                loop {
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&chunk[..count]);
+                    assert!(request.len() < 16 * 1024);
+                    if let Some(end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                        let headers = std::str::from_utf8(&request[..end]).unwrap();
+                        let length: usize = headers
+                            .lines()
+                            .filter_map(|line| line.split_once(':'))
+                            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+                            .unwrap()
+                            .1
+                            .trim()
+                            .parse()
+                            .unwrap();
+                        if request.len() >= end + 4 + length {
+                            break;
+                        }
+                    }
+                }
+                let body = if status == 200 {
+                    "data: [DONE]\n\n"
+                } else {
+                    r#"{"error":{"code":"audit_error","message":"temporary failure"}}"#
+                };
+                let content_type = if status == 200 {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                };
+                let header = format!(
+                    "HTTP/1.1 {status} Audit\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                socket.write_all(header.as_bytes()).await.unwrap();
+                socket.write_all(&body.as_bytes()[..1]).await.unwrap();
+                headers_sent.send(()).unwrap();
+                released.await.unwrap();
+                // A correctly cancelled client may already have closed its socket.
+                let _ = socket.write_all(&body.as_bytes()[1..]).await;
+            });
+            let transport = ReqwestTransport::with_client(
+                reqwest::Client::builder().no_proxy().build().unwrap(),
+            )
+            .with_timeouts(TransportTimeouts {
+                connect: Duration::from_secs(1),
+                first_byte: Duration::from_secs(1),
+                idle: Duration::from_secs(2),
+                total: Duration::from_secs(4),
+            });
+            let cancel = Arc::new(AtomicBool::new(false));
+            let request_cancel = cancel.clone();
+            let mut operation = tokio::spawn(async move {
+                let request = TransportRequest {
+                    url: format!("http://{address}/v1/chat/completions"),
+                    api_key: "audit-placeholder".to_string(),
+                    body: "{}".to_string(),
+                };
+                transport
+                    .stream_cancelled(request, &mut |_: &str| Ok(false), request_cancel)
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(2), headers_received)
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(
+                !operation.is_finished(),
+                "fixture body must still be pending"
+            );
+            let requested_at = std::time::Instant::now();
+            cancel.store(true, Ordering::Release);
+            let completion = tokio::time::timeout(Duration::from_millis(500), &mut operation).await;
+            let elapsed = requested_at.elapsed();
+            let prompt = completion.is_ok();
+            let result = match completion {
+                Ok(completed) => {
+                    release.send(()).unwrap();
+                    completed.unwrap()
+                }
+                Err(_) => {
+                    release.send(()).unwrap();
+                    operation.await.unwrap()
+                }
+            };
+            server.await.unwrap();
+            eprintln!(
+                "status={status}, cancelled_within_500ms={prompt}, observed_ms={}, result={result:?}",
+                elapsed.as_millis()
+            );
+            if prompt {
+                assert!(result.unwrap_err().to_string().contains("cancelled"));
+            } else {
+                stalled.push(status);
+            }
+        }
+        assert!(
+            stalled.is_empty(),
+            "cancellation did not interrupt stalled response bodies: {stalled:?}"
+        );
+    }
+
     #[test]
     fn decodes_full_utf8() {
         let (s, n) = decode_utf8_prefix("hello".as_bytes());
