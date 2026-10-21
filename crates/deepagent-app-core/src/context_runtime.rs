@@ -1995,6 +1995,76 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: paid summary usage must survive an ineffective compaction"]
+    async fn audit_ineffective_native_compaction_still_accounts_summary_usage() {
+        use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
+        use deepagent_runtime::{Agent, ModelAgent};
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = deepagent_core::clock::SystemClock;
+        let session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        let mut history = vec![ResponseInputItem::Message {
+            role: "user".into(),
+            content: "old task".into(),
+        }];
+        for index in 0..4 {
+            history.push(ResponseInputItem::Message {
+                role: if index % 2 == 0 { "user" } else { "assistant" }.into(),
+                content: format!("recent {index}: {}", "tail ".repeat(2200)),
+            });
+        }
+        let mut expected_input = history.clone();
+        expected_input.push(ResponseInputItem::Message {
+            role: "user".into(),
+            content: "current".into(),
+        });
+        assert_eq!(
+            pairing_safe_response_item_compaction_split(&expected_input),
+            Some(1),
+            "production keep-window must retain the large tail and summarize only the tiny prefix"
+        );
+        let (summary_client, summary_transport) = scripted_client_with_transport(vec![
+            ScriptedTransport::text(
+                r#"{"goal":"old task","completed":["reviewed the earlier task"],"pending":[],"decisions":[],"failures":[]}"#,
+            ),
+        ]);
+        let (main_client, main_transport) =
+            scripted_client_with_transport(vec![ScriptedTransport::text("done")]);
+        let mut agent = ModelAgent::new(main_client, "deepseek-flash", "rules", "current", vec![])
+            .with_response_history(history)
+            .with_reactive_compactor(Arc::new(HookedReactiveContextCompactor::new(
+                summary_client,
+                "deepseek-flash".into(),
+                Arc::new(HookRegistry::new()),
+                session.id(),
+                db.clone(),
+            )))
+            .with_proactive_compaction(1);
+        agent.think(0, &[]).await.unwrap();
+
+        assert!(!summary_transport.last_prompt().is_empty());
+        assert!(main_transport.last_prompt().contains("old task"));
+        let events = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event.payload, EventPayload::ContextCompacted { .. })));
+        let main_usage = agent.cumulative_usage().unwrap();
+        let side_usage = agent.side_usage();
+        eprintln!(
+            "audit ineffective summary: model_calls=2, summary_usage=120+18, main_billed={}, side_usage={side_usage:?}, adopted=false",
+            main_usage.billed_prompt_tokens
+        );
+        assert_eq!(main_usage.billed_prompt_tokens, 120);
+        assert_eq!(
+            side_usage.map(|usage| (usage.billed_prompt_tokens, usage.completion_tokens)),
+            Some((120, 18)),
+            "provider-reported summary spend must be collected even when the original surface is kept"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "audit reproducer: repeated assistant text must not move a durable compaction cut backwards"]
     async fn audit_native_summary_replay_preserves_repeated_assistant_boundary() {
         use crate::session_memory::testing::{scripted_client, ScriptedTransport};

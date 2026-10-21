@@ -15,7 +15,7 @@
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具续轮投影拆分已复现 | 已确认 H-05；全部错误和流式分支未完成 |
-| 上下文、压缩、记忆 | 预取摘要生命周期及重复 assistant 文本导致压缩回放复活旧历史均已复现 | 已确认 H-10、H-11；笔记计数及其他压缩边界仍在核查 |
+| 上下文、压缩、记忆 | 预取生命周期、压缩回放边界及无效压缩丢失已返回 usage 均已复现 | 已确认 H-10、H-11、H-14；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 真实文件读取及工作区外拦截；沙箱 backend override 路由探针 | 已确认 H-03；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消终态、重启继续；注入取消审计写入失败仍能传递根/子取消信号，恢复后显式重试幂等 | 已通过该存储故障边界；UI 保存错误及并发压力未完成 |
@@ -405,6 +405,32 @@ Claude Code `services/plugins/pluginOperations.ts::setPluginEnabledOp()` 在写 
 - 禁用与能力失效属于 AppCore 插件生命周期，不能只在 Tauri command 补同步。使该请求的 skills catalog、SkillTool registry、MCP/hook/Agent 投影来自同一份可验证就绪代次，或在统一边界进行同步失效/快照读取。
 - 不为解决竞态重新把插件校验和连接放回会话路径；未就绪能力应缺省不可见。补 AppCore/CLI/Desktop、watcher、禁用与新请求交错、多插件及准备失败用例。此探针默认忽略，生产逻辑未修改。
 
+### H-14：无效压缩保留原上下文时，已完成摘要请求的 usage 一同被丢弃
+
+**级别：中（P2）；范围：同步原生压缩已取得 provider usage，但替换结果不比原文更小。** 与 H-10 的后台任务脱离生命周期不同，本项摘要已经完成并返回；prefire note 未采纳时另有记账分支，不能概括为所有失败压缩都漏记。
+
+#### 触发与复现
+
+- `HookedReactiveContextCompactor::compact_response_items()` 取得 `(summary_block, summary_usage)` 后比较 tokens；若 `tokens_after >= tokens_before`，直接返回 `Ok(None)`，usage 没有返回通道。
+- `ModelAgent::maybe_proactive_compact()` 仅在 `Some(ReactiveCompaction)` 的 adoption 中归集同步摘要 usage；`None` 只增加失败计数。生产 `run_assembler.rs` 收尾读取 `agent.cumulative_usage()` / `agent.side_usage()`，后者无法看到已经丢掉的摘要用量。
+- 探针 `context_runtime::tests::audit_ineffective_native_compaction_still_accounts_summary_usage` 使用真实 ModelAgent、生产 HookedReactiveContextCompactor、keep-window 选择器和内存 Session 数据库；主模型和摘要模型分别使用可观察离线 transport。历史为一个很短的前缀加足够大的近期尾部，断言生产选择器确实只压缩短前缀；摘要是正常短 JSON，没有超过 1024 输出上限的大型假回复。
+- 执行：`cargo test -p deepagent-app-core --lib audit_ineffective_native_compaction_still_accounts_summary_usage --offline -- --ignored --nocapture`。
+- 实际输出：`model_calls=2, summary_usage=120+18, main_billed=120, side_usage=None, adopted=false`。摘要及主模型均成功返回 120 输入 / 18 输出，下一主请求仍包含原文，且未写入 ContextCompacted；要求 side_usage 收到摘要用量的断言失败。
+- 这直接证明 Agent 对运行收尾提供的用量缺失；没有请求真实供应商，也没有把测试的固定 token 数当作实际收费金额或验证桌面账单截图。
+
+#### 成熟实现对照
+
+Codex `core/src/compact.rs` 在压缩流收到 `ResponseEvent::Completed` 时，先调用 `record_observed_response_completed()` 及 `update_token_usage_info()`，然后才返回 CompactionResponse 给后续替换路径。已观察到的用量归集与是否最终采用 replacement 分离。
+
+本系统底层 `ModelCompactor::summarize_accounted()` 也已经在 JSON 解析或 heuristic fallback 之前归集 usage；缺口在上层把“没有可采用的替换结果”和“没有发生模型消耗”都表达成了 None。
+
+#### 后果和修复方向
+
+- 运行及会话的模型用量少计已经完成的摘要请求；反复无效压缩会继续消耗而本地统计不完整。外部供应商仍可能正常收费，不能把保留原文解释为请求免费。
+- 在既有 compactor outcome / 运行计费边界里分别携带“已观察用量”和“可选 replacement”，或通过同一运行所属的用量收集器归集；不能只在 adoption 成功时记账，也不能新增第二套账本。
+- 保留摘要必须更小的保护，不通过强行采用更大的摘要修复记账；同一请求用量只能归集一次。后续覆盖无效摘要、post-hook 拒绝/失败、持久化失败、fallback、prefire stale、用户取消和重试。
+- 此缺陷探针默认忽略，生产行为未修改；hook/持久化失败的漏记属于相邻待验证分支，本次没有据此独立定性。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -416,7 +442,7 @@ Claude Code `services/plugins/pluginOperations.ts::setPluginEnabledOp()` 在写 
 | `cargo test -p deepagent-runtime --offline`（新增 H-10 探针后） | 265 单元 + 5 稳定性集成测试 passed，1 ignored；含 500 次以上工具调用测试 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` | 11 passed / 2 ignored，无常规失败 |
 | `cargo test -p deepagent-app-core --lib --offline input_runtime::tests` | 27 passed；覆盖 native snip/patch、工具配对、压缩边界及恢复等现有测试；不代表真实大上下文端到端压缩已验收 |
-| `cargo test -p deepagent-app-core --lib --offline context_runtime::tests`（新增 H-11 后） | 22 passed / 1 ignored；新重复内容缺陷探针默认忽略，常规测试无失败 |
+| `cargo test -p deepagent-app-core --lib --offline context_runtime::tests`（新增 H-14 后） | 22 passed / 2 ignored；重复内容和无效压缩计费缺陷探针默认忽略，常规测试无失败 |
 | `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests`（新增存储故障注入后） | 7 passed；包括审计插入失败后的信号送达、事务回滚、显式重试及唯一终态 |
 | `cargo test -p deepagent-cli audit_ --offline -- --ignored --nocapture`（首批执行时） | 当时的 2 个探针明确失败，分别复现 H-01、H-02；后来新增的 resume/steer 探针分别单独执行，见 H-04 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_sandbox_override --offline -- --ignored --nocapture` | 探针明确失败，复现 H-03 |
@@ -425,10 +451,11 @@ Claude Code `services/plugins/pluginOperations.ts::setPluginEnabledOp()` 在写 
 | H-11 节单项命令 | 1 个探针明确失败：压缩保留 6 items，数据库恢复得到 54 items |
 | H-12 节 http feature 单项命令 | 1 个探针明确失败：真实本机 HTTP 请求丢失 session header，后续 tools/list 收到 400 |
 | H-13 节单项命令 | 1 个探针明确失败：已禁用、ready roots 为空，全新会话的实际模型请求仍声明该插件技能 |
+| H-14 节单项命令 | 1 个探针明确失败：摘要与主模型均已返回 usage，原上下文保留，但 side_usage 为空 |
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十四个默认忽略的缺陷探针、一个默认忽略的宿主隔离集成探针和一个默认运行的取消存储故障注入测试，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十五个默认忽略的缺陷探针、一个默认忽略的宿主隔离集成探针和一个默认运行的取消存储故障注入测试，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
