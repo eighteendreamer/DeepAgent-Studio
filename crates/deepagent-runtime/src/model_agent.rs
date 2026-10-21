@@ -3374,6 +3374,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn context_projection_tracks_retained_history_output_and_tool_result_on_wire() {
+        let arguments = serde_json::json!({"query": "q".repeat(1_200)}).to_string();
+        let mut call_events = response_function_call_done("meter-call", "lookup", &arguments);
+        *call_events.last_mut().unwrap() =
+            response_text_completed_with_usage("", 10_000, 350, 8_000)
+                .pop()
+                .unwrap();
+        let answer = "a".repeat(2_000);
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                call_events,
+                response_text_completed_with_usage(&answer, 12_000, 500, 9_000),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let history = vec![
+            ResponseInputItem::Message {
+                role: "user".into(),
+                content: "retained question ".repeat(1_000),
+            },
+            ResponseInputItem::Message {
+                role: "assistant".into(),
+                content: "retained answer ".repeat(1_000),
+            },
+        ];
+        let schemas = vec![ToolSchema::function(
+            "lookup",
+            "Lookup a value",
+            serde_json::json!({"type":"object","properties":{"query":{"type":"string"}}}),
+        )];
+        let (sink, mut rx) = crate::events::ChannelSink::new();
+        let mut agent = ModelAgent::new(client, "model", "system", "current", schemas)
+            .with_response_history(history.clone())
+            .with_events(Arc::new(sink))
+            .with_context_snapshot(snapshot_estimating(1, 1_000_000));
+
+        assert!(matches!(
+            agent.think(0, &[]).await.unwrap(),
+            AgentDecision::CallTool(_)
+        ));
+        let first_snapshots: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                RuntimeEvent::ContextUsage { snapshot } => Some(snapshot),
+                _ => None,
+            })
+            .collect();
+        let initial = first_snapshots
+            .iter()
+            .find(|snapshot| snapshot.last_request_prompt_tokens.is_none())
+            .unwrap();
+        assert!(
+            initial.occupancy_tokens() > 8_000,
+            "retained history is counted"
+        );
+        let after_call = first_snapshots.last().unwrap();
+        assert_eq!(after_call.last_request_prompt_tokens, Some(10_000));
+        assert!(
+            after_call.occupancy_tokens() >= 10_300,
+            "call arguments occupy context"
+        );
+
+        let result = "tool data ".repeat(800);
+        let observation = Observation::new("lookup", true, serde_json::json!({"data": result}))
+            .with_call_id(Some("meter-call".into()));
+        let _ = complete_items(agent.think(1, &[observation]).await.unwrap());
+        let second_snapshots: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|event| match event {
+                RuntimeEvent::ContextUsage { snapshot } => Some(snapshot),
+                _ => None,
+            })
+            .collect();
+        // The real result replaces the request-boundary missing-result stub;
+        // its net growth is slightly less than its own ~2,000-token price.
+        assert!(
+            second_snapshots.iter().any(|snapshot| {
+                snapshot.last_request_prompt_tokens == Some(10_000)
+                    && snapshot.occupancy_tokens() >= after_call.occupancy_tokens() + 1_900
+            }),
+            "tool result is projected before the next provider measurement"
+        );
+        let final_snapshot = second_snapshots.last().unwrap();
+        assert_eq!(final_snapshot.last_request_prompt_tokens, Some(12_000));
+        assert!(final_snapshot.occupancy_tokens() >= 12_500);
+        for snapshot in first_snapshots.iter().chain(&second_snapshots) {
+            assert_eq!(
+                snapshot
+                    .blocks
+                    .iter()
+                    .map(|block| block.tokens)
+                    .sum::<usize>(),
+                snapshot.occupancy_tokens()
+            );
+        }
+        assert_eq!(
+            agent.cumulative_usage().unwrap().billed_prompt_tokens,
+            22_000
+        );
+
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let sent: Vec<ResponseInputItem> =
+            serde_json::from_value(requests[1]["input"].clone()).unwrap();
+        assert_eq!(&sent[..history.len()], history.as_slice());
+        assert!(sent.iter().any(|item| matches!(item,
+            ResponseInputItem::FunctionCall { call_id, name, arguments: sent_args }
+                if call_id == "meter-call" && name == "lookup" && sent_args == &arguments)));
+        assert!(sent.iter().any(|item| matches!(item,
+            ResponseInputItem::FunctionCallOutput { call_id, output }
+                if call_id == "meter-call" && output.contains(&result))));
+        eprintln!(
+            "context wire audit: retained={} after_call={} final={} billed_prompt=22000",
+            initial.occupancy_tokens(),
+            after_call.occupancy_tokens(),
+            final_snapshot.occupancy_tokens()
+        );
+    }
+
+    #[tokio::test]
     async fn repeated_context_overflow_trips_compaction_circuit_breaker() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([

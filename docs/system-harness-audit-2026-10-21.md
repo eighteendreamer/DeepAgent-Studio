@@ -1303,6 +1303,15 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 另外执行既有 `a_timed_out_command_takes_its_detached_child_with_it`，1 passed，约 12.21 秒；断言是后代计划写出的延迟标记未出现，没有单独枚举所有子孙 PID。因此只说明该 timeout fixture 通过，不能把它扩大为任意进程树都清理正确。H-34、H-31、H-29 等其他取消缺口仍成立。
 - 没有修改生产命令、权限或沙箱行为；此处保留为正向保护边界与测试质量修正，不新增 H 缺陷编号。
 
+### 后续独立验证：保留历史、工具参数和结果进入同一上下文投影及实际请求
+
+- 新增默认测试 `context_projection_tracks_retained_history_output_and_tool_result_on_wire`；执行 `cargo test -p deepagent-runtime --lib context_projection_tracks_retained_history_output_and_tool_result_on_wire --offline -- --nocapture`：1 passed。正式 ModelAgent、ModelClient 与请求序列化均实际执行，provider 响应来自离线 AttemptTransport，没有调用真实供应商或工具。
+- 使用内容唯一于本测试的两条较长历史消息、当前输入、1,200 字符的调用参数及约 8,000 字符的工具结果。初始投影为 8,571；第一步 provider 输入 fixture 为 10,000，调用写入后投影 10,345；工具结果写入后的快照仍以 10,000 为锚点且已增长；第二步 provider 输入 fixture 为 12,000，最终回答写入后投影为 12,508。累计计费输入独立为 22,000，所有快照分项之和等于各自投影。
+- 对正式客户端实际发出的第二次请求 body 反序列化原生 input，逐项核对旧历史，以及调用的 name/call_id/原始 arguments 和完整结果均存在。此样本证明运行内的当前投影不是只保留最近一轮消耗，也没有把两次重复发送的输入计费相加当作占用。
+- 首次断言误要求工具结果净增量至少 2,000，实际为 1,977；核查发现 `ResponseRequest::from_response_items` 会给尚未返回的调用补临时失败输出供请求投影使用，真实结果到来后替换该占位。已将断言改为明确容纳占位扣除的 1,900 下限，并保留真实请求中完整结果的严格断言；这是测试预期修正，不列为产品缺陷。
+- 对照 `借鉴/deepseek-harness/packages/llm/token-meter/src/estimate.ts` 和 `projection.ts`：参考实现同样使用固定字符密度估算增量，并明确区分 provider 输入锚点、下一请求投影和累计计费；其文档也承认启发式对 CJK/schema 的偏差。本系统的 `HeuristicTokenizer` 注释所称“不会低估”不能当作真实 tokenizer 的保证。本轮没有精确 tokenizer 或真实供应商的增量误差测量，因此不据此新增缺陷。
+- 同批执行 `cargo test -p deepagent-context --offline`：54 passed；`cargo test -p deepagent-runtime --lib context_ --offline`：5 passed。这里只覆盖原生 Responses 离线路径，没有新增 Chat Completions、图片真实 token 成本、跨用户 turn 的 AppCore 重新组装或桌面显示验证；H-05 等已确认问题仍未修复。
+
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
 下表依据已复现的边界归并；优先级不等于所有问题具有相同触发概率。设计收敛在本系统既有内核，不复制参考项目建立第二套运行链。
