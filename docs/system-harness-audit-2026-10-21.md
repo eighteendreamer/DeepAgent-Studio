@@ -18,7 +18,7 @@
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放边界及无效压缩丢失已返回 usage 均已复现 | 已确认 H-10、H-11、H-14；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；取消运行后仍能接受迟到审批并留下跨调用授权 | 已确认 H-03、H-15；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
-| 持久化、崩溃恢复、并发与输入租约 | 取消终态、重启继续；注入取消审计写入失败仍能传递根/子取消信号，恢复后显式重试幂等 | 已通过该存储故障边界；UI 保存错误及并发压力未完成 |
+| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消与取得租约交错后后继输入继续推进 | 已通过这些确定性边界；UI 保存错误及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 待逐项验证 | 未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -473,7 +473,7 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（新增 H-15 后） | 11 passed / 3 ignored，无常规失败 |
 | `cargo test -p deepagent-app-core --lib --offline approval_bridge::tests` | 19 passed；常规审批测试未覆盖运行取消后的迟到回答 |
 | `cargo test -p deepagent-app-core --lib --offline runtime_payload::tests` | 3 passed / 1 ignored；磁盘锁隔离集成探针另行显式执行通过 |
-| `cargo test -p deepagent-app-core --lib --offline input_runtime::tests` | 27 passed；覆盖 native snip/patch、工具配对、压缩边界及恢复等现有测试；不代表真实大上下文端到端压缩已验收 |
+| `cargo test -p deepagent-app-core --lib --offline input_runtime::tests`（新增排队取消测试后） | 28 passed；含取得租约前/后取消及后继输入推进；不代表真实大上下文端到端压缩或完整宿主并发压力已验收 |
 | `cargo test -p deepagent-app-core --lib --offline context_runtime::tests`（新增 H-14 后） | 22 passed / 2 ignored；重复内容和无效压缩计费缺陷探针默认忽略，常规测试无失败 |
 | `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests`（新增存储故障注入后） | 7 passed；包括审计插入失败后的信号送达、事务回滚、显式重试及唯一终态 |
 | `cargo test -p deepagent-cli audit_ --offline -- --ignored --nocapture`（首批执行时） | 当时的 2 个探针明确失败，分别复现 H-01、H-02；后来新增的 resume/steer 探针分别单独执行，见 H-04 |
@@ -488,7 +488,7 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十六个默认忽略的缺陷探针、两个默认忽略的宿主隔离集成探针和一个默认运行的取消存储故障注入测试，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十六个默认忽略的缺陷探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障注入和排队取消测试各一个，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
@@ -513,4 +513,10 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 - 执行 `cargo test -p deepagent-app-core --lib --offline run_coordinator::tests`：7 passed，其中包括本项故障注入。此项验证已存在实现的正确边界，本轮未修生产代码。
 - 边界：没有真实损坏用户数据库，没有实际模拟磁盘写满；显式重试成功不代表所有生产失败都会自动重试。尚未端到端验证 UI 对“执行已停止、保存失败”的错误展示，也没有据此宣称模型/进程资源都完成清理。
 
-后续仍需覆盖运行包校验延迟注入、保存失败的 UI 通知、并发租约/取消竞争、完整压缩的真实 wire 及重启、DeepSeek 流式异常与其他宿主入口。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。
+### 后续独立验证：排队取消不使后继输入失去租约
+
+- 新增默认测试 `input_runtime::tests::cancelling_queued_input_before_or_after_promotion_does_not_strand_follower`，使用真实 Session 数据库、生产 accept_input_turn、InputLeaseRegistry 与 InputLeaseGuard；固定前驱 owner、待取消输入及 follower 的顺序。
+- 分别执行“待取消输入仍在队列”和“前驱已释放、待取消输入刚被提升为 active”两种交错。两者都在有界时间返回取消，待取消项从队列消失；owner 不被错误释放，follower 随后取得租约，最后新输入仍能正常 acquire。
+- `cargo test -p deepagent-app-core --lib --offline input_runtime::tests`：28 passed。该测试只验证输入接纳/租约层，前驱的取消回调为记录型 fixture，没有运行并发模型、Tauri UI、完整终态或多进程压力，不能据此覆盖所有会话调度竞态。
+
+后续仍需覆盖逐文件运行包校验长延迟注入、保存失败的 UI 通知、完整宿主并发租约/取消压力、完整压缩的真实 wire 及重启、DeepSeek 流式异常与其他宿主入口。此次样本不能用来宣称全系统验收完成，或所有准备与取消问题均已修复。

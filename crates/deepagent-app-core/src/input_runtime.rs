@@ -1031,6 +1031,81 @@ mod tests {
     use deepagent_core::id::{EventId, SessionId};
     use deepagent_runtime::{InputIngress, InputMode};
 
+    #[tokio::test]
+    async fn cancelling_queued_input_before_or_after_promotion_does_not_strand_follower() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        for cancel_before_promotion in [true, false] {
+            let db = Database::open_in_memory().unwrap();
+            let clock = SystemClock;
+            let session = Session::create(&db, &clock, None).unwrap();
+            let sid = session.id().to_string();
+            let leases = Arc::new(InputLeaseRegistry::default());
+            let input = InputIngress::normalize(
+                Some(sid.clone()),
+                "audit-workspace",
+                "queued input",
+                InputMode::Prompt,
+                Vec::new(),
+            )
+            .unwrap();
+            assert_eq!(
+                leases.acquire(&sid, "owner", input.clone()),
+                LeaseDecision::Acquired
+            );
+            let cancel = Arc::new(AtomicBool::new(false));
+            let interrupted = AtomicUsize::new(0);
+            let waiting = accept_input_turn(
+                &db,
+                &clock,
+                leases.clone(),
+                None,
+                "cancelled",
+                Some(&sid),
+                None,
+                None,
+                input.clone(),
+                cancel.clone(),
+                |run| {
+                    assert_eq!(run, "owner");
+                    interrupted.fetch_add(1, Ordering::SeqCst);
+                    true
+                },
+            );
+            tokio::pin!(waiting);
+            tokio::select! {
+                _ = &mut waiting => panic!("queued input must wait behind the owner"),
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+            assert_eq!(leases.queued_position(&sid, "cancelled"), Some(1));
+            assert_eq!(
+                leases.acquire(&sid, "follower", input.clone()),
+                LeaseDecision::Queued { position: 2 }
+            );
+            cancel.store(true, Ordering::Release);
+            if !cancel_before_promotion {
+                leases.release(&sid, "owner");
+                assert!(leases.is_active_run(&sid, "cancelled"));
+            }
+            assert!(tokio::time::timeout(Duration::from_secs(1), &mut waiting)
+                .await
+                .expect("queued cancellation must be bounded")
+                .is_err());
+            assert_eq!(interrupted.load(Ordering::SeqCst), 1);
+            assert!(leases.queued_position(&sid, "cancelled").is_none());
+            if cancel_before_promotion {
+                assert!(leases.is_active_run(&sid, "owner"));
+                leases.release(&sid, "owner");
+            }
+            assert!(leases.is_active_run(&sid, "follower"));
+            leases.release(&sid, "follower");
+            assert_eq!(leases.acquire(&sid, "next", input), LeaseDecision::Acquired);
+            leases.release(&sid, "next");
+            eprintln!("audit input queue: cancelled_before_promotion={cancel_before_promotion}, follower_promoted=true, next_acquired=true");
+        }
+    }
+
     #[test]
     fn conversation_keeps_text_turns_only() {
         let sid = SessionId::nil();
