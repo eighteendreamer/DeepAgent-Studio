@@ -1640,6 +1640,95 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit H-26: standard hookSpecificOutput decisions silently become Continue"]
+    async fn audit_standard_external_hook_decisions_gate_actual_tool_dispatch() {
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let mut failures = Vec::new();
+        for (label, payload, expected_calls, expected_approvals) in [
+            (
+                "flat-deny-control",
+                serde_json::json!({ "permissionDecision": "deny" }),
+                0,
+                0,
+            ),
+            (
+                "standard-deny",
+                serde_json::json!({ "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": "audit policy blocks this tool"
+                }}),
+                0,
+                0,
+            ),
+            (
+                "standard-ask",
+                serde_json::json!({ "hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "ask",
+                    "permissionDecisionReason": "audit policy requires approval"
+                }}),
+                1,
+                1,
+            ),
+        ] {
+            let (command, shell) = if cfg!(windows) {
+                (format!("echo {payload}"), "cmd")
+            } else {
+                (format!("printf '%s' '{payload}'"), "sh")
+            };
+            let definitions = HookDefinitions::parse(
+                &serde_json::json!({ "hooks": { "PreToolUse": [{
+                    "matcher": "counting",
+                    "hooks": [{ "type": "command", "command": command,
+                        "shell": shell, "timeout": 5 }]
+                }]}})
+                .to_string(),
+            )
+            .unwrap();
+            let mut hooks = HookRegistry::new();
+            assert_eq!(
+                definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+                1
+            );
+            let calls = Arc::new(AtomicUsize::new(0));
+            let approvals = Arc::new(AtomicUsize::new(0));
+            let registry = registry(RiskLevel::Safe, calls.clone());
+            let pipeline =
+                ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                    .with_hooks(Some(&hooks))
+                    .with_approvals(Arc::new(CountingApproval(approvals.clone())));
+            let result = pipeline
+                .execute(ToolInvocation::new(
+                    "counting",
+                    serde_json::json!({ "value": "audit" }),
+                ))
+                .await
+                .unwrap();
+            let actual_calls = calls.load(Ordering::SeqCst);
+            let actual_approvals = approvals.load(Ordering::SeqCst);
+            eprintln!(
+                "case={label}, tool_ok={}, tool_calls={actual_calls}, approval_calls={actual_approvals}",
+                result.output.ok
+            );
+            if label == "flat-deny-control" {
+                assert!(
+                    !result.output.ok,
+                    "control must prove command-hook execution works"
+                );
+            }
+            if actual_calls != expected_calls || actual_approvals != expected_approvals {
+                failures.push(label);
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "ignored external-hook decisions: {failures:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn speculative_completion_rejects_non_safe_tools() {
         let registry = registry(RiskLevel::High, Arc::new(AtomicUsize::new(0)));
         let pipeline =

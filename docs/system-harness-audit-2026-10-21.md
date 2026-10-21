@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断工具调用提交、Unicode 错误解析 panic 及限流等待元数据丢失均已复现 | 已确认 H-05、H-18、H-24、H-25；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费和回退后旧笔记覆盖新分支均已复现 | 已确认 H-10、H-11、H-14、H-23；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突及子 Agent 工具限制未约束执行 | 已确认 H-03、H-15、H-16、H-19；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议问题；AppCore 禁用插件后就绪快照与技能注入不同代已复现 | 已确认 H-06 至 H-09、H-12、H-13；hooks 及其他准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留及标准 hooks 的 deny/ask 被忽略已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
 
@@ -673,6 +673,25 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 在既有 provider adapter/CoreError 边界保留经过白名单处理的重试元数据和请求身份；统一策略决定采用有界 provider 等待、向上交还或本地退避。等待继续接入现有取消树，避免为这一问题新建第二套重试链。
 - 增加秒数、日期、负值/非法值、过长建议、取消期间等待、不同 HTTP 状态和请求 ID 脱敏回归。request ID 丢失也削弱跨供应商排障能力，但本次没有验证 UI/日志里所有其他请求追踪来源。
 
+### H-26：标准 PreToolUse 输出中的 deny/ask 被忽略，实际工具照常执行
+
+**级别：高（P1）；范围：外部 hooks 的 Claude 兼容输出协议。** 不等同于绕过独立的文件边界、ToolRegistry 权限或高风险工具审批。
+
+#### 生产链路与复现
+
+- `deepagent-hooks/src/external_hooks.rs::parse_structured_hook_output()` 只读取顶层 permissionDecision/decision/continue/ok，没有识别标准 `hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny|ask" }`。退出码为 0 且解析无结果时，interpret_result 返回 Continue。
+- 新增默认忽略的 `tool_pipeline::tests::audit_standard_external_hook_decisions_gate_actual_tool_dispatch`。通过正式 HookDefinitions 解析配置并注册；SystemHookRunner 真实启动 Windows cmd，打印固定 JSON；经 ExternalCommandHook、HookRegistry 和 ToolExecutionPipeline 调用计数型 Safe 工具。没有模型调用、文件副作用或替换生产 parser。
+- 执行：`cargo test -p deepagent-runtime --lib audit_standard_external_hook_decisions_gate_actual_tool_dispatch --offline -- --ignored --nocapture`。
+- 对照组顶层 deny：`tool_ok=false, tool_calls=0, approval_calls=0`，确认进程与配置链路有效。标准嵌套 deny：`tool_ok=true, tool_calls=1, approval_calls=0`；标准嵌套 ask 同样为 `true/1/0`。两组安全断言失败。审批 fixture 在被调用时会批准，但 ask 组根本没有请求审批。
+- 探针含 POSIX sh 分支，本次仅在 Windows 执行，不能宣称 Linux/macOS 已验证。工具为计数 fixture，证据是实际 dispatch，没有执行危险命令或证明额外权限逃逸。
+
+#### 成熟实现、后果与修复方向
+
+- Claude Code `restored-src/src/types/hooks.ts` 定义 hookSpecificOutput 的按事件类型契约；`utils/hooks.ts` 验证 hookEventName 与当前事件一致，再提取 PreToolUse 的 permissionDecision、updatedInput、additionalContext。`services/tools/toolExecution.ts` 使用其权限结果和更新输入继续审批/执行。
+- 迁入的兼容 hook 可以成功启动并输出合法 JSON，用户却失去它承诺的禁止/询问策略，且工具成功返回。适用插件/用户依赖该 hook 作为额外审批或策略门禁的情形；现有独立权限仍然有效。
+- 在既有统一外部 hook 输出解析器中建立按事件类型的契约，兼容已有顶层格式，明确未知/不匹配事件、无效 JSON 和退出码优先级。权限决策、输入修改和追加上下文应独立承载，避免用单一枚举互相覆盖；后两项本次仅做代码核查，未扩展为独立已复现问题。
+- 验收应包含真实进程和实际工具调度、顶层旧格式、标准嵌套 deny/ask/allow、不同事件及错误提示，不只测 JSON 能反序列化。未修改生产 hooks 行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -710,6 +729,9 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | `cargo test -p deepagent-models --features http --offline`（新增 H-24 后） | 84 passed / 2 ignored，无常规失败；H-24 已另行显式执行复现 |
 | H-25 节单项命令 | 真实回环 HTTP 指定等待 3000ms，455ms 后已重试并再次 429，模型循环失败；安全断言失败 |
 | `cargo test -p deepagent-app-core --features web --test audit_provider_retry --offline` | 常规入口 1 ignored，无失败；这是显式 opt-in 的 HTTP 故障探针，不代表限流恢复通过 |
+| H-26 节单项命令 | 真实 Windows hook 进程的顶层 deny 正确拦截；标准嵌套 deny/ask 两组均执行工具且无审批，安全断言失败 |
+| `cargo test -p deepagent-runtime --lib tool_pipeline::tests --offline`（新增 H-26 后） | 11 passed / 2 ignored；H-16、H-26 已分别显式复现，未修生产行为 |
+| `cargo test -p deepagent-hooks --offline`（H-26 核查时） | 62 passed，无 ignored 或失败；原有 stdout 测试仅覆盖扁平格式等，未覆盖标准嵌套 PreToolUse 决策 |
 | `cargo test -p deepagent-app-core --lib service::tests --offline`（新增 H-23 后） | 405 passed / 4 ignored；该 substring filter 也匹配其他 *_service::tests，并非仅 AppService |
 | `cargo test -p deepagent-session -p deepagent-persistence --offline`（新增 H-23 后） | session 14 passed，persistence 67 passed，均无 ignored 或失败；原有 rewind 测试覆盖事件截断及恢复，没有验证笔记覆盖身份 |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-21、H-22 后） | 6 passed / 3 ignored；H-19 提取共享 fixture 后另行显式复跑，四组仍复现同一缺陷 |
