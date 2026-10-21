@@ -2781,6 +2781,94 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: a new run must not advertise disabled plugin skills from a stale registry"]
+    async fn audit_disabled_plugin_skills_do_not_enter_new_model_request() {
+        let (db, settings, dir) = seeded().await;
+        let roots = crate::plugin_loader::PluginRoots {
+            session: Vec::new(),
+            builtin: dir.path().join("plugins-builtin"),
+            workspace: None,
+            personal: dir.path().join("plugins-personal"),
+        };
+        let plugin = roots.builtin.join("audit-ready");
+        std::fs::create_dir_all(plugin.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(plugin.join("skills/audit-plugin-skill")).unwrap();
+        std::fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"audit-ready","version":"0.1.0","skills":"skills"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin.join("skills/audit-plugin-skill/SKILL.md"),
+            "---\nname: audit-plugin-skill\ndescription: Audit plugin readiness\n---\nUse only while the plugin is ready.",
+        )
+        .unwrap();
+        let plugins = Arc::new(crate::PluginService::new(
+            roots,
+            dir.path().join("app-data"),
+        ));
+        let skills = Arc::new(std::sync::Mutex::new(
+            SkillsService::open_v2(deepagent_skills::SkillsRoots {
+                builtin: dir.path().join("skills/builtin"),
+                user: dir.path().join("skills/user"),
+                marketplace: dir.path().join("skills/marketplace"),
+                workspace: None,
+            })
+            .unwrap(),
+        ));
+        let transport = Arc::new(RecordingTransport::default());
+        let chat = ChatService::new(db.clone(), settings, transport.clone(), dir.path())
+            .with_plugins(plugins.clone())
+            .with_mcp(Arc::new(crate::McpService::new(db)))
+            .with_skills(skills.clone());
+        chat.start_plugin_preparation(Arc::new(|| {}));
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !skills
+                .lock()
+                .unwrap()
+                .manager()
+                .registry()
+                .contains("audit-plugin-skill")
+            {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("host must publish the initial ready skill");
+        assert_eq!(plugins.ready_snapshot().0.skill_roots.len(), 1);
+        let disabled = plugins.set_enabled("audit-ready@builtin", false).unwrap();
+        assert!(!disabled.enabled);
+        assert!(plugins.ready_snapshot().0.skill_roots.is_empty());
+
+        // Use the public AppCore lifecycle. The desktop command separately
+        // synchronizes skills; that host-specific repair is outside this path.
+        chat.run_in_session(
+            "Reply briefly.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("audit-disabled-plugin-skill"),
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let body = transport.last_body.lock().unwrap().clone().unwrap();
+        let advertised = body.contains("audit-plugin-skill");
+        eprintln!(
+            "audit plugin generation: enabled={}, ready_skill_roots={}, new_request_has_disabled_skill={advertised}",
+            disabled.enabled, plugins.ready_snapshot().0.skill_roots.len()
+        );
+        assert!(
+            !advertised,
+            "the new model request must use the ready generation for its skill catalog"
+        );
+    }
+
     #[test]
     fn chat_service_syncs_plugin_runtime_after_install_without_restart() {
         let tmp = tempfile::tempdir().unwrap();
