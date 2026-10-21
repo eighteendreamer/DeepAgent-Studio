@@ -19,7 +19,7 @@
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效均已复现 | 已确认 H-17、H-32、H-33、H-36；完整恢复及并发压力未完成 |
-| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流空工具注册、失败映射成功及条件互斥路径仍执行已复现 | 已确认 H-19 至 H-22、H-38、H-39；记忆现有回归通过，其他图执行及重启边界未完成 |
+| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流空工具注册、失败映射成功、互斥路径仍执行及前后端配置契约断裂已复现 | 已确认 H-19 至 H-22、H-38 至 H-40；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | 真实 Cron tick 进入正式 ChatService，审批通知丢弃后仍挂起；基础 cron/store 回归通过 | 已确认 H-37；多宿主调度、重复触发及完整退出边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -948,10 +948,40 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应在既有 WorkflowAgent/编译图中统一“边已激活、边未激活、前驱未决”和节点派发状态；未选中的独占后继应跳过，不能仅隐藏 UI 输出。需要明确合流语义：来自未激活路径的边不应永远挡住公共下游，且不可读取被跳过分支不存在的值。复用原有 Kernel、节点事件和 RunStore，不新增另一套执行中心。
 - 验收应覆盖 true/false、多组条件、嵌套分支、共同后继、分支内失败及显式 run-from-here；以真正的调用计数和持久化状态验证未选路径未执行。本轮仅补审计测试与记录，未改生产调度。
 
+### H-40：专业工作流配置在前端序列化被删除或被后端按另一套字段读取
+
+**级别：高（P1）；范围：桌面专业工作流的输入声明、条件、输出映射和模板。** 图结构使用版本化 DTO，但节点 config 是开放 Map；前端配置 schema、发送过滤器和执行器没有同一份字段契约。H-39 证明的是有效后端条件也不控制派发；本项另行证明用户配置根本没有完整到达执行器，两者不能互相代替。
+
+#### 跨语言真实链路复现
+
+- `workflowExecutor.ts::UI_META_KEYS` 把 `inputVariables`、`conditions` 与 status 等界面属性列在一起；专业模式的 `serializeNodes()` 直接过滤它们。`collectInputs()` 虽把 customer 的值发到 inputs，但 start 的声明已经丢失；Rust `graph.rs::output_contract()` 依赖声明识别合法引用，因此后继引用会在 compile 阶段被拒绝。条件变成空 config 后，后端 execute_if_else 默认返回 false。
+- 另外两处执行字段不一致：桌面 schema/registry 的 end 使用 `outputVariables[].name`，execute_end 却读取 variable；模板配置为 `templateScript/templateInputVariables`，execute_template_transform 却读取 `template/variables`。这些配置在开放 Map 中可进入后端，执行器静默采用空缺默认值，结果为成功的空输出。
+- 新增仅供显式审计使用的 `apps/desktop/scripts/audit-workflow-contract.cjs --emit-fixtures`。沿用现有 check-workflow.test.cjs 的 TypeScript 模块加载方法，实际调用生产 createDefaultNodeData、配置 schema 校验和 runWorkflow，截取真正传给 start_workflow 的 workflow；仅替换 store 和 Tauri transport，不手写/复制 serializeNodes。四组 fixture 均通过现有桌面配置校验。
+- Rust 默认忽略测试 `workflow_audit.rs::audit_desktop_workflow_config_survives_backend_execution` 启动本机 Node 获取上述 JSON，再逐组送入正式 ChatService、图编译、WorkflowAgent、Kernel、节点事件和 RunStore。执行 `cargo test -p deepagent-app-core --test workflow_audit audit_desktop_workflow_config_survives_backend_execution --offline -- --ignored --nocapture`，约 0.66 秒，四组完成观察后断言明确失败：
+
+| 有效桌面配置与期望 | 实际序列化 / 正式后端结果 |
+|---|---|
+| start 声明 customer=BLUE，end 引用该输出 | inputs 中值还在，但 start.config={}；compile 报 `references an undeclared output`，run=failed |
+| BLUE 等于 BLUE，应选 true | inspect.config={}；节点实际输出 branch=false，run=succeeded |
+| end 映射 report=EXPECTED_REPORT | name 字段保留，但 execute_end 没读到 variable；节点输出 {}，run=succeeded |
+| 模板正文 EXPECTED_TEMPLATE | templateScript 保留但未被读取；节点输出 `output:""`，run=succeeded |
+
+- 这是生产前端序列化与真实 Rust 后端之间的集成探针，不是 Tauri WebView 手动截图验收；供应商、网络和命令均未调用。本项没有遍历每一种专业节点，也没有将其他节点字段差异一概列为动态确认。
+
+#### 成熟实现、影响与修复方向
+
+- DeepSeek Harness `workflow-ptc/src/meta.ts::validateMeta()` 对边界数据校验已知字段、类型和嵌套结构，错误逐项命名；同目录 runtime.ts 的 readAgentOptions() 拒绝不认识或暂不支持的选项，而非以空值假装接受。其接口是程序式工作流元数据及 agent 参数，并非本系统的画布节点；可借鉴的是在消费边界拒绝契约漂移，不能声称它实现了这里的专业节点 schema。
+- 本系统自己已经有统一的 values 解析、版本化 graph 和声明校验，修复应收敛到这几个既有边界：只过滤真正的 UI 属性；为每种可执行节点明确唯一的版本化 config/input/output 契约，前端编辑/序列化、后端验证/执行及字段迁移共用规则。无效或旧字段必须显式迁移或报错；不能只把三项从过滤器删掉，因为 end/template 的执行字段仍不一致，if-else 内层的桌面 `logic/items/variable/value` 与后端 `logicalOperator/conditions/left/right` 也仍需核对和统一。
+- 已确认后果：合法输入引用被拒绝；条件值改变；配置的模板和输出映射静默失效，并且后三组仍报告运行成功。这会使用户难以区分“空结果是业务结果”与“配置根本没被执行”。没有把这些结果夸大为数据泄漏或真实付费损失。
+- 验收必须从生产前端 schema 合法配置生成请求，再经正式 Rust 执行对比具体输出；覆盖每种 enabled 专业节点、输入声明与引用、真实 false 条件、输出映射和旧工程迁移。分别测试 UI schema 和 Rust 图结构不能替代跨语言执行测试。本轮仅增加 fixture 桥、审计测试和文档，未修改生产配置过滤或执行器。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-40 真实前端序列化→正式后端执行忽略探针（见该节命令） | 明确失败：四组均未兑现配置；输入引用被拒绝，条件 false、end 空对象、模板空文本；后三组仍 succeeded |
+| `node --test apps/desktop/scripts/check-workflow.test.cjs`（新增 H-40 后） | 77 passed；现有配置、归一化与前端行为测试通过，不验证这些字段在 Rust 正式执行中生效 |
+| `cargo test -p deepagent-app-core --test workflow_audit --offline`（新增 H-40 后） | 3 ignored；均为已有缺陷的 opt-in 失败探针，已经分别显式执行，不把默认无失败解释为问题修复 |
 | H-39 条件派发忽略探针（见该节命令） | 明确失败：条件正确输出 true/false，两组未选中的互斥模板都进入 Running/Completed，运行均 succeeded |
 | `cargo test -p deepagent-runtime --lib workflow:: --offline`（新增 H-39 后） | 66 passed；尚无条件派发回归，不能用基础图与值测试替代真实路径验证 |
 | `cargo test -p deepagent-app-core --test workflow_audit --offline`（新增 H-39 后） | 2 ignored；H-38 与 H-39 均已单独显式运行并失败；抽取共用宿主 fixture 后 H-38 仍复现同样的 unknown tool/Completed/succeeded |
@@ -1102,6 +1132,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 定时任务的运行归属与交互能力 | H-37 | 现有 CronService → AppCore 接纳、审批和通知共用明确的 unattended 契约；参考 Claude 队列归属与 Codex headless 策略 | 需要人工时明确拒绝或投递到真实 owner；计划可关联运行，停止入口可发现；不能留下无消费者审批 |
 | 工作流工具能力与失败传播 | H-38 | 复用现有工具组装和 ToolPipeline，NodeOutcome 保留结构化失败并定义显式容错；参考 DeepSeek isError 保真及现有 DAG 依赖失败传播 | 只读工具能实际运行；未知工具/拒绝/执行失败不冒充成功；节点、下游及 RunStore 语义一致 |
 | 工作流条件可达性与派发 | H-39 | 在现有编译图/WorkflowAgent 统一激活边、跳过边和合流；参考 DeepSeek 程序式工作流只启动实际执行路径的工作 | 未选分支真实执行数为零，嵌套与公共后继正确，不把跳过分支的输出当作已有值 |
+| 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
@@ -1110,3 +1141,5 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 能力快照与传输恢复 | H-01、H-04、H-13 | 现有快照代次、宿主配置和持久化游标；参考 Codex 的慢连接处理与 Grok 的只读 registry 快照 | 禁用后新请求无残留技能；SDK 感知缺口并可恢复；resume/steer 不丢有效配置 |
 
 其中子运行已经出现三类独立执行上下文分裂（H-19/H-20/H-22）。后续修复应先确定同一配置/工作树/工具注册表的所有权和生命周期，再按这些探针逐项关闭；不能只隐藏工具、修改提示路径或延迟删目录来宣称隔离已成立。
+
+工作流同样已确认能力装配/失败传播（H-38）、路径派发（H-39）、跨语言配置契约（H-40）三个独立断点。不能继续用单个字段别名、前端状态改色或无条件跳过节点修补。应先明确现有版本化节点契约及执行状态机，再逐项接回同一工具注册/权限/Kernel 链路，以跨语言真实请求、节点输出、实际调用数和 RunStore 终态共同验收。本轮未获生产修复授权，以上仍为审计建议。

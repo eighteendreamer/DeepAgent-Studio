@@ -163,3 +163,73 @@ async fn audit_workflow_unselected_branch_is_not_dispatched() {
         "exclusive unselected paths executed for decisions {violations:?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "audit: requires local Node and desktop TypeScript dependencies; tests the actual TS/Rust seam"]
+async fn audit_desktop_workflow_config_survives_backend_execution() {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/scripts/audit-workflow-contract.cjs");
+    let output = std::process::Command::new("node")
+        .arg(script)
+        .arg("--emit-fixtures")
+        .output()
+        .expect("local Node is required for this opt-in audit");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixtures: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(fixtures.len(), 4);
+    let mut violations = Vec::new();
+    for fixture in fixtures {
+        let name = fixture["name"].as_str().unwrap();
+        let workflow: WorkflowRequest =
+            serde_json::from_value(fixture["workflow"].clone()).unwrap();
+        let (_root, db, chat, session) = workflow_fixture().await;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let capture = events.clone();
+        let result = chat
+            .run_workflow(
+                workflow,
+                "audit-desktop-workflow-contract".into(),
+                session,
+                move |event| {
+                    if let RuntimeEvent::WorkflowNode { event } = event {
+                        capture.lock().unwrap().push(event);
+                    }
+                },
+                |_| {},
+            )
+            .await;
+        let events = events.lock().unwrap();
+        let node_id = if matches!(name, "input" | "output") {
+            "end"
+        } else {
+            "inspect"
+        };
+        let actual = events
+            .iter()
+            .find(|e| e.node_id == node_id && e.status == NodeExecutionStatus::Completed)
+            .and_then(|e| e.outputs.clone());
+        let expected = match name {
+            "input" => serde_json::json!({"report":"BLUE"}),
+            "output" => serde_json::json!({"report":"EXPECTED_REPORT"}),
+            "condition" => serde_json::json!({"branch":"true"}),
+            "template" => serde_json::json!({"output":"EXPECTED_TEMPLATE"}),
+            _ => panic!("unexpected fixture"),
+        };
+        let terminal = RunStore::new(&db)
+            .get("audit-desktop-workflow-contract")
+            .unwrap()
+            .and_then(|r| r.terminal_kind);
+        eprintln!("fixture={name} api_error={:?} actual={actual:?} expected={expected} terminal={terminal:?}", result.as_ref().err());
+        if result.is_err() || actual.as_ref() != Some(&expected) {
+            violations.push(name.to_owned());
+        }
+    }
+    assert!(
+        violations.is_empty(),
+        "desktop settings were lost or ignored across the execution seam: {violations:?}"
+    );
+}
