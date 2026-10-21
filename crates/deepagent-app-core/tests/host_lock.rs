@@ -12,7 +12,9 @@ use deepagent_app_core::AppService;
 use deepagent_core::clock::SystemClock;
 use deepagent_core::SessionMode;
 use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::run_control::{NewRunAction, RunActionState, RunControlStore};
 use deepagent_persistence::run_store::RunStore;
+use deepagent_persistence::subagent_store::{SubagentRunRecord, SubagentRunStore};
 use deepagent_persistence::Database;
 use deepagent_session::Session;
 
@@ -129,6 +131,97 @@ fn run_state(database: &Database, run_id: &str) -> String {
         .expect("read run")
         .map(|record| record.state)
         .unwrap_or_else(|| "missing".to_string())
+}
+
+/// Audit probe: run explicitly; the invariant currently fails in production.
+/// The existing subprocess fixture opens the file database and performs the
+/// normal standby recovery path while this process still owns the OS lock.
+#[test]
+#[ignore = "audit: opening a standby database mutates the primary's live control records"]
+fn audit_standby_open_preserves_live_actions_and_subagents() {
+    let directory = tempfile::tempdir().expect("isolated audit data root");
+    let root = directory.path();
+    assert_eq!(host_lock::claim(root).unwrap(), HostRole::Primary);
+    let database = Database::open(root.join("deepagent.db")).unwrap();
+    let run_id = "audit-live-parent";
+    let call_id = "audit-live-tool";
+    let child_id = "audit-live-child";
+    create_running_run(&database, root, run_id);
+    let now = now_millis();
+    let controls = RunControlStore::new(&database);
+    controls
+        .create_action(&NewRunAction {
+            run_id,
+            turn_id: "audit-turn",
+            call_id,
+            sequence: 0,
+            tool_name: "read_file",
+            arguments_hash: "audit-fixture-no-execution",
+            risk: "low",
+            parent_action_id: None,
+            now,
+        })
+        .unwrap();
+    for state in [RunActionState::Prepared, RunActionState::Running] {
+        controls
+            .transition_action(run_id, call_id, state, now, None, None)
+            .unwrap();
+    }
+    let children = SubagentRunStore::new(&database);
+    children
+        .create(&SubagentRunRecord {
+            id: child_id.into(),
+            parent_run_id: run_id.into(),
+            origin_parent_run_id: run_id.into(),
+            state: "running".into(),
+            agent_type: "explore".into(),
+            transcript_path: None,
+            worktree_path: None,
+            summary: None,
+            created_at: now,
+            updated_at: now,
+            finished_at: None,
+            resume_count: 0,
+        })
+        .unwrap();
+
+    let recovery = finish_child(&mut start_child("recover", root, run_id), "recover", root);
+    assert_eq!(
+        recovery,
+        format!("standby:{} recovered:0 running", expected_holder()),
+        "control: real standby election and run-level recovery protection work"
+    );
+    let action = controls.get_action(run_id, call_id).unwrap().unwrap();
+    let child = children.get(child_id).unwrap().unwrap();
+    // Also test the real owner's later success persistence, rather than only
+    // observing labels. No tool, child agent, or external API is executed.
+    let action_completion = controls.transition_action(
+        run_id,
+        call_id,
+        RunActionState::Completed,
+        now_millis(),
+        None,
+        None,
+    );
+    let child_completion = children.finish(child_id, "succeeded", Some("done"), now_millis());
+    eprintln!(
+        "run={} action={:?} reason={:?} child={} action_completion={:?} child_completion={:?}",
+        run_state(&database, run_id),
+        action.state,
+        action.blocked_reason,
+        child.state,
+        action_completion,
+        child_completion
+    );
+    host_lock::release(root);
+    assert!(
+        action.state == RunActionState::Running
+            && child.state == "running"
+            && child.finished_at.is_none()
+            && action_completion.is_ok()
+            && child_completion.is_ok(),
+        "standby open must preserve live owner records and allow their normal completion"
+    );
 }
 
 #[test]

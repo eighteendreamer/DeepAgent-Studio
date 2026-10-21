@@ -18,7 +18,7 @@
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突、子 Agent 工具限制未约束执行及未信任项目提升只读权限 | 已确认 H-03、H-15、H-16、H-19、H-28；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
-| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败已复现 | 已确认 H-17；完整恢复及并发压力未完成 |
+| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败，以及备用宿主打开数据库误终结主宿主动作/子运行均已复现 | 已确认 H-17、H-32；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -788,10 +788,33 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 根因修复需扩展既有 compactor 调用边界以接收运行取消上下文，覆盖同步摘要、prefire owner、溢出恢复、重试和 hooks 等待；保留正常取消错误，不能转成启发式摘要后继续提交。摘要完成后的采用/落盘也要定义明确的取消提交点，同时保留已发生 usage，复用现有运行树及 Session 事件日志。
 - 验收使用同一探针再覆盖摘要前/中/后、持久化故障、取消与完成竞争以及真实 transport；H-10/H-29/H-31 已显示多个独立等待边界缺口，应统一审视取消生命周期，不能继续仅在按钮或 await 之后补检查。本轮未修改生产压缩行为。
 
+### H-32：备用宿主打开数据库先执行无所有权恢复，误终结主宿主的工具动作和子 Agent
+
+**级别：高（P1）；范围：两个进程共用同一数据目录且先运行者存在 running 工具动作或子 Agent。** 不要求崩溃、数据库损坏或并发执行相同工具；第二个 CLI/桌面打开数据库即可触发。单宿主正常重启的恢复目标本身合理，问题是恢复执行早于宿主所有权判定。
+
+#### 根因与真实双进程复现
+
+- `crates/deepagent-persistence/src/lib.rs::Database::open()` 在返回数据库前调用 RunControlStore::recover 与 SubagentRunStore::cancel_orphaned。前者无 owner 条件地把所有 running 动作标为 failed 并追加 action.failed，原因为 process_restarted_while_running；后者把所有 running 子运行改为 cancelled、设置 finished_at。两者都没有证明原进程已退出。
+- `AppService::open()` 先 Database::open，再 claim_host；from_shared 接收的数据库同样已执行上述维护。虽然 `AppService::recover_unfinished_runs()` 明确保护 Standby 并返回空列表，但此时子表已经改变。原有跨进程测试仅验证 runs 仍为 running，因而没有覆盖这条子表恢复路径。open_in_memory 不执行这些恢复，也容易让单元测试漏掉问题。
+- 新增默认忽略探针 `crates/deepagent-app-core/tests/host_lock.rs::audit_standby_open_preserves_live_actions_and_subagents`。真实临时 SQLite 文件、父进程持有生产 OS host.lock，按正式 store API 建立 running run、Received→Prepared→Running 动作和 running 子 Agent。复用原有 subprocess fixture，让真实第二进程 claim、Database::open、AppService::from_shared 并调用 recover_unfinished_runs；没有 mock 所有权、修改生产恢复函数或访问用户数据库。
+- 执行 `cargo test -p deepagent-app-core --test host_lock audit_standby_open_preserves_live_actions_and_subagents --offline -- --ignored --nocapture`。对照成立：第二进程确为 standby、recovered:0、父 run 仍 running；但父进程读回 action=Failed、reason=process_restarted_while_running、child=cancelled。父进程随后调用正式成功落盘 API，动作得到 `IllegalTransition { from: "failed", to: "completed" }`，子运行得到 `NotFound("active subagent run not found: audit-live-child")`。保持现状的不变式断言明确失败。
+- 这是仍存活且持锁的 owner 的控制记录复现，没有真实启动工具/子 Agent 或调用供应商。已证明状态被误改及正常成功写入被拒绝；没有据此声称实际文件写入被中断、重复执行或全部父运行已失败。探针退出前释放锁，数据只位于自动清理的独立临时目录。
+
+#### 成熟实现、影响与修复方向
+
+- Claude Code `restored-src/src/utils/cronTasksLock.ts::tryAcquireSchedulerLock()` 对另一个存活 PID 返回 false，只有 stale owner 才恢复；释放也核对 sessionId。该代码是调度器锁，不是相同数据库结构，但可直接参考“先证明所有权或失活，再做恢复”的边界。
+- Codex `codex-rs/state/src/runtime/memories.rs::try_claim_stage1_job()` 在事务内记录 worker_id、ownership_token、lease_until，冲突更新要求原作业不在运行或租约失效；有效 running 租约不因另一连接出现而被覆盖。这是记忆后台作业示例，不能泛化为 Codex 全部 turn 都采用同一租约；本轮仅核查参考源码，未运行参考项目测试。
+- 触发后可能出现父 run 仍显示运行、工具控制记录却已失败、子运行已取消的矛盾。工具正常成功路径在 `tool_pipeline.rs` 调用持久化 Completed 转移并传播错误；SubagentRunStore::finish 也拒绝已终结记录。即使实际工作继续，正式结果也无法按原状态机正常收尾。第二宿主的“备用模式不恢复”日志不能证明数据未被改变。
+- 根因修复应把“打开数据库/迁移”和“有所有权的启动恢复”分离，统一收敛到现有宿主生命周期。取得实际主宿主资格后才能恢复其失效记录；单纯把此处函数再搬进 AppService 而不核对记录 owner，也不足以覆盖允许 Standby 正常执行工作的现有设计。若支持多宿主各自运行，需要在现有运行/动作/子运行中表达可验证 owner/租约，按失效 owner 定向恢复；若不支持，则应明确限定运行入口。该选择为本系统本地设计，不新增第二套 RunStore 或控制中心。
+- 验收需包括两进程持锁运行、次宿主仅查询、次宿主也运行、主宿主真正退出后接管、同进程重复打开，以及运行/动作/审批/子运行的共同恢复边界。本轮没有修改生产恢复行为，完整崩溃与多宿主压力测试仍未完成。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-32 双进程忽略探针（见该节命令） | 明确失败：备用宿主恢复数为零且父 run 仍 running，但动作已 failed、子运行已 cancelled，父宿主正常成功落盘均被拒绝 |
+| `cargo test -p deepagent-app-core --test host_lock --offline`（新增 H-32 后） | 1 passed / 1 ignored；原有主备运行恢复及双进程写入测试通过，未覆盖动作和子运行被误终结 |
+| `cargo test -p deepagent-persistence --offline`（核查 H-32 时） | 67 passed；既有单宿主恢复及文件会话并发追加测试通过，不代表恢复具有跨宿主所有权判断 |
 | `cargo fmt --all -- --check` | 通过 |
 | `cargo test -p deepagent-app-core --lib context_runtime::tests --offline`（新增 H-31 及阈值压缩恢复验证后） | 23 passed / 3 ignored，0 failed；包含真正经过阈值的原生摘要请求与数据库重开验证 |
 | H-31 单项忽略探针（见该节命令） | 明确失败：运行取消后等待摘要 gate 释放，摘要请求未调用取消感知入口；主模型请求数为零 |
@@ -918,6 +941,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 运行取消覆盖所有等待 | H-10、H-29、H-31 | 摘要、prefire、成功/错误正文和重试均属于现有取消树；区分可取消外部等待与已进入持久化的收尾 | 压缩和错误半正文中停止及时退出；后台任务有 owner；取消不被转成成功摘要或吞掉保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
+| 多宿主所有权与启动恢复 | H-32 | 数据库打开与有所有权的恢复分离；现有宿主/运行/动作/子运行共同定义失效 owner，参考 Claude 存活 owner 保护、Codex 后台作业有效租约保护 | 第二宿主打开不改变活跃记录；真正失效 owner 才恢复；原宿主仍可正常完成动作和子运行 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
