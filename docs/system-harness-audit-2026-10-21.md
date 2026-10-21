@@ -18,7 +18,7 @@
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批授权、跨运行审批 ID 冲突、子 Agent 工具限制未约束执行及未信任项目提升只读权限 | 已确认 H-03、H-15、H-16、H-19、H-28；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
-| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；真实桌面吞掉保存失败，以及备用宿主打开数据库误终结主宿主动作/子运行均已复现 | 已确认 H-17、H-32；完整恢复及并发压力未完成 |
+| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型均已复现 | 已确认 H-17、H-32、H-33；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
@@ -808,10 +808,33 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 根因修复应把“打开数据库/迁移”和“有所有权的启动恢复”分离，统一收敛到现有宿主生命周期。取得实际主宿主资格后才能恢复其失效记录；单纯把此处函数再搬进 AppService 而不核对记录 owner，也不足以覆盖允许 Standby 正常执行工作的现有设计。若支持多宿主各自运行，需要在现有运行/动作/子运行中表达可验证 owner/租约，按失效 owner 定向恢复；若不支持，则应明确限定运行入口。该选择为本系统本地设计，不新增第二套 RunStore 或控制中心。
 - 验收需包括两进程持锁运行、次宿主仅查询、次宿主也运行、主宿主真正退出后接管、同进程重复打开，以及运行/动作/审批/子运行的共同恢复边界。本轮没有修改生产恢复行为，完整崩溃与多宿主压力测试仍未完成。
 
+### H-33：输入租约仅限 ChatService 内存，两宿主可同时推进同一会话
+
+**级别：高（P1）；范围：独立 CLI/桌面宿主共用数据目录，并同时继续同一个 session。** 与 H-32 不同，本项不需要工具或子 Agent；即使父动作表为空，父运行也未被启动恢复终结，两个模型循环仍可并发执行。
+
+#### 生产路径与双进程模型请求复现
+
+- `ChatService::new()` 每实例创建自己的 Arc<InputLeaseRegistry> 和 RunCoordinator；`input_runtime::accept_input_turn()` 调用本实例 registry.acquire/wait_for_turn。`deepagent-runtime/src/input.rs` 的 registry 由进程内 Mutex<HashMap>、队列和 Notify 组成，没有跨宿主会话 owner。RunCoordinator 的取消注册也在本实例内存。host.lock 当前仅限制部分启动恢复，Standby 仍可正常运行 ChatService。
+- 现有 session 文件 OS 锁保护单次追加/投影提交，可以保证事件文件不被同时写坏，但不覆盖“恢复上下文→请求模型→执行工具→提交输出”的整个 turn。持久化执行租约也不能仅因存在表和查询就视作聊天入口已接入；本轮调用链没有以 session 为资源取得该租约。
+- 新增独立默认忽略集成探针 `crates/deepagent-app-core/tests/host_session_audit.rs::audit_two_hosts_cannot_dispatch_the_same_session_concurrently`。父进程用正式 AppService、SettingsService、ChatService 建立真实文件会话，实际进入 ModelClient transport 后以文件 barrier 保持响应 pending。随后启动同一测试二进制的独立子进程；子进程通过 AppService::open 确认为 Standby，recover_unfinished_runs 返回空，再以自己的 ChatService 继续父进程同一个 session。
+- 执行 `cargo test -p deepagent-app-core --test host_session_audit --offline -- --ignored --nocapture`：`child_role=standby, parent_pending=true, child_reached_model=true`，两条 run 在同一观察点均为 running_turn；释放响应后父调用成功、子进程正常退出且子调用成功返回同一 session。不变式断言明确失败。该测试实际执行接纳、输入恢复、内核、请求序列化和文件持久化，仅模型 transport 是离线固定响应；没有公网、真实密钥、工具副作用或用户数据。
+- 再以不同的父/子输入与输出标记复测，结果相同；子请求正文包含父输入标记，却没有仍被 barrier 持有的父回答标记。这直接确认第二请求在上一轮尚未完成的历史上构造，而非另一个 session 的请求或上一轮已经结束后的正常续聊。
+- 两个响应均在断言前主动释放并回收，子进程有超时 kill/wait 清理。当前证据证明会话派发互斥失效，不证明事件文件损坏、已发生文件覆盖或重复扣费；这些是需要进一步工具/供应商压力验证的后果，不能当作本次已发生事实。
+
+#### 成熟实现、后果与修复方向
+
+- Codex `codex-rs/rollout/src/writer_lock.rs::WriterLockCoordinator::acquire()` 按 thread_id 取得 OS writer lock，竞争 owner 得到 WouldBlock；WriterLockGuard 持有文件句柄，直到相关写工作完成才释放，清理另有协调锁。`writer_lock_tests.rs::writer_locks_reject_competing_owners_and_release_their_files` 明确验证同 thread 冲突、不同 thread 可用、释放后重新取得。该参考体现 thread writer 所有权，不把单次文件追加锁等同于长期 owner；本轮只核查参考源码，未运行其测试。
+- 参考的生产接入也已核对：`codex-rs/thread-store/src/local/live_writer.rs::create_thread/resume_thread` 先 acquire_writer_lock，再创建/恢复 recorder 并将 guard 存入 live recorder；`local/mod.rs::acquire_writer_lock` 把 WouldBlock 映射成 ThreadStoreError::Conflict。它不是只有一个未使用的锁工具函数或测试。
+- 用户同时从两个入口继续同一会话，两边都可能根据未完成的历史做决策，当前实例的排队/打断策略看不到另一个宿主。输入、回答与工具结果可以交错；若两边操作同一工作区，文件副作用可能竞争。实际工具冲突、跨进程停止与供应商计费本轮未动态复现，需保留验证范围。
+- 应与 H-32 共同确定现有宿主运行契约：要么统一向单一 owner 路由同会话执行，要么在既有接纳/租约层增加跨进程会话 owner 与 fencing，覆盖历史恢复、模型、工具、提交及取消路由；进程内 registry 保留为本地队列投影。不能仅在 UI 禁止双击，也不能只加单次 append 锁或把备用宿主日志改成警告。
+- 本地设计的验收应覆盖相同 session 两宿主派发/取消、不同 session 并行、owner 崩溃释放与接管、持有者正常完成/租约失效的竞争，并检查单条连续 history 和工具副作用。此处只新增审计探针和报告，未修生产执行链。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-33 双宿主会话忽略探针（见该节命令） | 明确失败：同一 session 的父响应仍 pending 时，Standby 子宿主已发出第二条模型请求；两条 run 同时 running_turn，释放后均返回成功 |
+| `cargo test -p deepagent-app-core --test host_lock --test host_session_audit --offline`（新增 H-33 后） | 原有跨进程测试 1 passed，新缺陷探针合计 2 ignored；两个探针另行显式运行均失败，不代表缺陷已修复 |
 | H-32 双进程忽略探针（见该节命令） | 明确失败：备用宿主恢复数为零且父 run 仍 running，但动作已 failed、子运行已 cancelled，父宿主正常成功落盘均被拒绝 |
 | `cargo test -p deepagent-app-core --test host_lock --offline`（新增 H-32 后） | 1 passed / 1 ignored；原有主备运行恢复及双进程写入测试通过，未覆盖动作和子运行被误终结 |
 | `cargo test -p deepagent-persistence --offline`（核查 H-32 时） | 67 passed；既有单宿主恢复及文件会话并发追加测试通过，不代表恢复具有跨宿主所有权判断 |
@@ -941,7 +964,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 运行取消覆盖所有等待 | H-10、H-29、H-31 | 摘要、prefire、成功/错误正文和重试均属于现有取消树；区分可取消外部等待与已进入持久化的收尾 | 压缩和错误半正文中停止及时退出；后台任务有 owner；取消不被转成成功摘要或吞掉保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
-| 多宿主所有权与启动恢复 | H-32 | 数据库打开与有所有权的恢复分离；现有宿主/运行/动作/子运行共同定义失效 owner，参考 Claude 存活 owner 保护、Codex 后台作业有效租约保护 | 第二宿主打开不改变活跃记录；真正失效 owner 才恢复；原宿主仍可正常完成动作和子运行 |
+| 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
