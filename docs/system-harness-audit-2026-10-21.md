@@ -16,7 +16,7 @@
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口及 SSE 分帧不完整均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
-| 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权及批量工具绕过超时 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34；其他边界未完成 |
+| 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略及内联项目 hooks 绕过信任已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型均已复现 | 已确认 H-17、H-32、H-33；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制和 DAG 文件交付已复现缺陷 | 已确认 H-19 至 H-22；记忆现有回归通过，跨宿主和重启边界未完成 |
@@ -849,10 +849,32 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应让并行调度复用既有 ToolPipeline 的 prepare/dispatch/complete 边界，调度器只管理并发与模型顺序；统一 deadline、取消、工具 opt-out、结果装饰、artifact、动作投影与 hooks。取消时停止补充派发、清理本调用拥有的异步/进程资源并记录配对结果；不能把所有工具的 Future 直接丢弃当作外部工作已经停止，也不能在另一个分支再复制一套超时逻辑。
 - 验收同一工具的单个/两个/混合串并行，覆盖超时、取消、失败、不同完成顺序和 opt-out 子运行/人工等待；确认结果配对、动作终态和输入租约释放。本轮未修改生产调度行为。
 
+### H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义
+
+**级别：高（P1）；范围：同一模型响应混合串行工具与至少两个通过检查的并行安全工具。** 与 H-34 的期限缺口不同，本项确认真实内置文件工具的执行顺序和下一请求结果不一致；不是仅凭事件显示次序推断。
+
+#### 根因与正式链路复现
+
+- `RuntimeEngine::execute_tools()` 先遍历整个 batch 收集 `parallel_idx`。只有零或一个并行候选时按模型顺序串行执行；至少两个时，先执行所有并行 I/O，再遍历原始 invocations，把已算出的结果放回原顺序，并执行剩余串行项。事件落盘顺序不能恢复已越过写操作的读取语义。
+- 新增默认忽略探针 `audit_unrelated_read_does_not_move_reads_before_write_barrier`，位于 `crates/deepagent-app-core/tests/kernel_v2_e2e.rs`。正式 ChatService、ModelAgent、工具注册和内置 write_file/read_file，在临时工作区运行；只有模型 transport 离线脚本化。捕获真实下一请求的序列化原生 `function_call_output`、实时 ToolStarted 和实际磁盘结果。
+- 对照请求 `write_file(source.txt, NEW) → read_file(source.txt)`：实时启动顺序为 write、read；磁盘为 NEW，下一模型请求中读结果包含 NEW，没有错误。
+- 加入无关的第三个调用 `read_file(other.txt)`：实时启动顺序变为 read-source、read-other、write；最终磁盘仍为 NEW，但下一模型请求收到 source 的读失败结果，不含 NEW。所有调用均已完成才检查断言，没有遗留工作或真实供应商请求。
+- 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_unrelated_read_does_not_move_reads_before_write_barrier --offline -- --ignored --nocapture`：对照 `read_saw_new=true read_failed=false`，三调用 `read_saw_new=false read_failed=true`；“无关读取不改变写读屏障”断言失败，测试运行约 0.57 秒。
+- 初版 fixture 预先建立 source.txt，却没有先读再覆盖，触发了正式内置工具的 read-before-edit 保护；那次失败不是本缺陷证据。现使用新文件创建流程，符合 `WriteFileTool::invoke()` 对新文件无需先读的现有契约，两个 case 均确认实际写入成功。未关闭保护或放宽权限。
+
+#### 成熟实现、影响与修复方向
+
+- DeepSeek Harness `packages/core/agent-loop/src/tool-calls.ts::executeToolCalls()` 明确将 exclusive 调用作为 barrier：首项为 exclusive 时仅运行该项；首项为 parallel 时进入 rolling pool，`runGroup::fillPool()` 遇到后续非 parallel 项停止补充派发，等待当前 inFlight 清空，再交还外层推进下一组。工具结果仍按模型顺序提交。参考源码已核对，未执行参考项目测试。
+- 已证实的后果：增加一个无关只读调用，会让原来成功的“创建后读取”向模型返回错误，尽管最终文件创建成功。对“编辑后验证”存在读到旧状态、模型误判失败并重复操作的风险，但这两种后果尚未在本探针复现，不写成已发生的事实。
+- 修复应与 H-34 一起收敛到既有统一 ToolPipeline：按原调用序列切分连续并行组及串行屏障，只有组内 I/O 重叠；前一组完全收尾后才能执行屏障，屏障结束后才能派发后一组。复用现有权限、hooks、deadline、取消和配对结果，不能通过对工具名增加临时特判或只重排日志修复。
+- 验收覆盖 write→read、read→write→read、多个串行屏障、审批阻塞及取消；加入或删除无关并行工具不能改变跨屏障的先后关系。本轮只增加审计测试和文档，未修改生产行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-35 内置写读屏障忽略探针（见该节命令） | 明确失败：两调用先写后读且读到 NEW；增加无关读取后，两次读均先于写启动，下一请求的 source 读结果报错，最终磁盘写入成功 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（新增 H-35 后） | 11 passed / 4 ignored；缺陷探针另行显式执行失败，不代表生产问题已修复 |
 | H-34 串并行对照忽略探针（见该节命令） | 明确失败：单工具 80ms 超时并落失败结果；两个相同工具越过 400ms，取消后 200ms 仍 pending，主动 release 后才退出 |
 | `cargo test -p deepagent-runtime --lib loop_engine::tests --offline`（新增 H-34 后） | 35 passed / 1 ignored；单工具、常规并行与取消前派发等已有回归通过，缺陷探针另行显式执行失败 |
 | H-33 双宿主会话忽略探针（见该节命令） | 明确失败：同一 session 的父响应仍 pending 时，Standby 子宿主已发出第二条模型请求；两条 run 同时 running_turn，释放后均返回成功 |
@@ -984,7 +1006,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 |---|---|---|---|
 | 执行权限与子运行上下文 | H-03、H-19、H-22 | 有效工具集合、sandbox 选择、执行根、checkpoint 必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
-| 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34 | 摘要、prefire、成功/错误正文、重试和串并行工具属于现有取消树；共用 ToolPipeline 与 deadline；区分外部工作清理与持久化收尾 | 压缩/错误正文/并行工具中停止及时退出；串并行超时一致；任务有 owner；取消不假成功或吞保存错误 |
+| 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35 | 摘要、prefire、成功/错误正文、重试和串并行工具属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分外部工作清理与持久化收尾 | 压缩/错误正文/并行工具中停止及时退出；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |

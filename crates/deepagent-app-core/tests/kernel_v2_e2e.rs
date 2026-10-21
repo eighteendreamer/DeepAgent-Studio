@@ -556,6 +556,127 @@ async fn write_turn_reaches_terminal_with_checkpoint_and_real_side_effect() {
 }
 
 #[tokio::test]
+#[ignore = "audit: parallel reads must not overtake an earlier serial write in the same batch"]
+async fn audit_unrelated_read_does_not_move_reads_before_write_barrier() {
+    struct CaptureReplay {
+        inner: ReplayTransport,
+        requests: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl HttpTransport for CaptureReplay {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.requests.lock().unwrap().push(request.body.clone());
+            self.inner.stream(request, sink).await
+        }
+    }
+
+    let mut results = Vec::new();
+    for extra_read in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("other.txt"), "unrelated").unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("sk-audit-placeholder").await.unwrap();
+        let mut calls = vec![
+            (
+                "audit-write",
+                "write_file",
+                serde_json::json!({"path":"source.txt","content":"AUDIT_NEW_CONTENT"}),
+            ),
+            (
+                "audit-read-source",
+                "read_file",
+                serde_json::json!({"path":"source.txt"}),
+            ),
+        ];
+        if extra_read {
+            calls.push((
+                "audit-read-other",
+                "read_file",
+                serde_json::json!({"path":"other.txt"}),
+            ));
+        }
+        let mut batch = Vec::new();
+        for (id, name, args) in calls {
+            let mut events = response_function_call(id, name, args);
+            events.pop(); // one terminal marker for the whole model response
+            batch.extend(events);
+        }
+        batch.push(
+            serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+                .to_string(),
+        );
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let capture_order = order.clone();
+        let chat = ChatService::new(
+            db,
+            settings,
+            Arc::new(CaptureReplay {
+                inner: ReplayTransport::new([batch, response_text("done")]),
+                requests: requests.clone(),
+            }),
+            root.path(),
+        );
+        chat.run_in_session(
+            "Create source.txt and read it back, then inspect other.txt if requested.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("audit-barrier"),
+            move |event| {
+                if let deepagent_runtime::RuntimeEvent::ToolStarted { call_id, .. } = event {
+                    capture_order.lock().unwrap().push(call_id);
+                }
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let disk = std::fs::read_to_string(root.path().join("source.txt")).unwrap();
+        assert_eq!(
+            disk, "AUDIT_NEW_CONTENT",
+            "the real write must have completed"
+        );
+        let requests = requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        let next: serde_json::Value = serde_json::from_str(&requests[1]).unwrap();
+        let output = next["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == "audit-read-source"
+            })
+            .expect("read result must reach the real next model request")["output"]
+            .to_string();
+        let read_saw_new = output.contains("AUDIT_NEW_CONTENT");
+        let read_failed = output.contains("error");
+        eprintln!(
+            "extra_read={extra_read} live_order={:?} read_saw_new={read_saw_new} read_failed={read_failed} disk_is_new=true",
+            order.lock().unwrap()
+        );
+        results.push((read_saw_new, read_failed));
+    }
+    assert_eq!(results[0], (true, false), "two-call serial control");
+    assert_eq!(
+        results[1],
+        (true, false),
+        "adding an unrelated safe read must not move an earlier write behind its dependent read"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit reproducer: cancelled approval waiters must expire before late scoped answers"]
 async fn audit_cancelled_run_rejects_late_approval_and_releases_waiter() {
     use deepagent_app_core::ApprovalPolicy;
