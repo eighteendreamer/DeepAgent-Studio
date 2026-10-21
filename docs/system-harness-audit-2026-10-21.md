@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口及 SSE 分帧不完整均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows MCP 后代清理及配置变更误取消未变服务均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46、H-47；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
@@ -1110,10 +1110,31 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 后果是在管理另一台 MCP 时，仍然合法、原本正在加载的 A 被误报为失败，新请求缺失 A 的工具；仅重复聊天或相同配置的宿主准备不会修复。初始化越慢，越容易遇到该窗口；不是模型网络慢，也不是 A 自身握手失败。重启或显式定向重试等路径可能恢复，本探针没有动态覆盖这些恢复入口。
 - 修复应把初始化 owner/cancel 和失败缓存归到同一服务连接身份及配置代次；全局 generation 只控制当前视图发布，不能撤销未变服务的共享工作。取消的旧身份不应成为新身份可复用的稳定失败；同时保留真实初始化失败的有界重试策略，避免每轮聊天重试。验收增加 A 初始化中新增 B、修改 B、禁用 A、修改 A、迟到旧任务及共享插件 owner 的对照，确认只失效目标服务且新视图无过期能力。本轮仅添加测试和文档，未修改生产准备调度。
 
+### H-48：stdio MCP 探活耗尽后只停止探针，旧能力仍可发现，后续每次调用重新启动完整恢复预算
+
+**级别：中（P2）；范围：本地 stdio MCP 曾正常发现工具，随后断线且重启一直失败。** 本项不是 H-06 的未知结果自动重放，也不是 H-47 的配置变更取消；只审查恢复耗尽的稳定状态及后续调用。
+
+#### 生产边界与真实进程复现
+
+- `deepagent-mcp/src/liveness.rs::probe_loop` 达到 failure_limit 后记录“parking probe (server unavailable)”并 return，没有向 registry/宿主发布状态；McpRegistry 的工具/说明仍为初始化发现结果。`ReconnectingTransport::send` 的重试计数是每次 send 内部局部循环，没有共享的耗尽状态或服务级恢复 owner；下一次工具调用会重走全部 backoff/factory。
+- 新增默认忽略探针 `registry::tests::audit_exhausted_liveness_retires_tools_and_stops_request_reconnects` 使用正式 StdioTransport、ConfigReconnectFactory、McpClient、McpRegistry、LivenessProbe 与真实 Node 进程。第 1 代能 initialize/tools/list，首次 ping 时退出；以后每代都在启动后、initialize 前退出。实际进程每次 append 一条临时启动记录，因此计数不是 mock factory 调用次数。fixture 不要求 initialized 通知，隔离 H-08。
+- 测试只把三次退避改成每次 5ms、探活间隔改成 5ms，失败上限仍为 3；使用 probe.is_finished 明确等待真实耗尽，而不是等任意时长后假定停用。执行 `cargo test -p deepagent-mcp --lib audit_exhausted_liveness_retires_tools_and_stops_request_reconnects --offline -- --ignored --nocapture`：约 0.98 秒，断言明确失败。
+- 实际 probe_finished=true、starts_after_probe=10（首代 + 3 次探活各自再启动 3 次）；仍有 discoverable_tools=1、adapter_count=1、instruction_entries=1。随后对同一 registry 做两次 invoke，均失败，进程累计启动数分别为 13、16。探针最后执行 close_all；没有公网、模型或持久副作用工具。
+- 动态证据覆盖 registry、adapter 投影及连续调用的真实重启，没有冒称已执行完整 AppCore/UI 故障场景。源码中 AppCore cached_status 仍只检查初始化 CachedRegistry.failures，ready_registry 不读取 probe 退出状态，attach_mcp_tools 消费该快照；因此其状态/模型发现可能继续沿用旧能力，这是调用链判断，尚未通过真实桌面截图或 wire 抓取验收。
+
+#### 参考差异、后果与修复方向
+
+- 本系统源码声称借鉴 Grok 的 `[1s, 4s, 16s]` 及停用理念；实际只复制退避数字，缺少耗尽后的能力退役。Grok `xai-grok-shell/src/session/mcp_restart.rs::auto_restart_stdio` 三次失败后发布 Unavailable/RestartFailed，调用 unregister_server_tools；dispatcher 的 ShutdownState 有 per-server in_flight_restart，避免重复恢复任务。`exhaustion_unregisters_server_tools` 验证三次 respawn 后只移除一次，`all_three_attempts_fail_emits_exhausted_telemetry` 验证耗尽状态推送。本轮只读参考实现与测试，未运行其 workspace。
+- Grok 的 HTTP 恢复路径明确允许 parked until next tool call，不能将该策略混称为其 stdio 行为，或宣称所有类型都应永久断路。这里需要修复的是本系统宣称的本地服务级耗尽语义与实际行为不一致，且不可用工具继续被发现。
+- 后果是模型仍会发现并尝试失效工具，连续调用重复承担启动/握手负担，用户可能反复经历长等待。生产默认一轮完整退避合计 21 秒，另加每次启动和初始化；本探针实际使用短退避，没有实测每轮 21 秒，外层运行/工具 deadline 也可能提前截断。不能把本结果概括为所有普通聊天都等待或所有连接都失效。
+- 修复应在现有 MCP 服务生命周期内维护同一连接身份的 ready/recovering/unavailable 状态和恢复预算，探活/工具调用共用恢复 owner；耗尽时在下一请求边界退役该服务新发现的工具及说明，并让既有请求收到结构化失败。明确显式重试、配置变更、宿主重启或受控冷却何时重新开放预算，避免 request 层自行无限重启；保留历史调用配对。应覆盖恢复成功、持续失败、并发调用/探活、旧代迟到、用户禁用和全局快照投影。本轮只新增测试与文档，未修改生产恢复策略。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-48 stdio 探活耗尽/连续调用显式探针（见该节命令） | 明确失败：探活已结束仍保留 1 工具/adapter/说明；实际启动数 10→13→16，随后两调用各重开一轮恢复且失败 |
+| `cargo test -p deepagent-mcp --offline`（H-48 核查时） | 58 passed / 6 ignored；真实崩溃后恢复成功对照仍通过，本次持续失败耗尽探针已另用显式命令执行 |
 | H-47 宿主准备配置变更显式探针（见该节命令） | 明确失败：无变更 A 正常 ready；仅新增 B 后 A 的相同配置被缓存为 preparation cancelled，ready 只保留 B，重复同配置准备为 no-op |
 | `cargo test -p deepagent-app-core --lib mcp_service:: --offline`（H-47 核查时） | 26 passed / 2 ignored；网络参考服务与本次缺陷探针默认忽略，本次探针已另用显式命令执行 |
 | H-46 Windows MCP 进程归属显式探针（见该节命令） | 明确失败：Node close/Drop 两对照后代均退出；.NET close/Drop 两组父已退出但后代仍运行并各新增 11 次心跳，测试主动清理并确认退出 |
@@ -1304,6 +1325,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
 | MCP 初始化复用与配置代次 | H-47 | 按服务连接身份复用 pending startup，定向取消/失效；全局视图代次不能写坏仍有效的共享 slot | 新增或修改 B 不取消未变 A；禁用/替换 A 才终止旧任务；迟到取消结果不变成新代缓存失败 |
+| MCP 断线恢复耗尽与能力退役 | H-48 | 探活与工具共用连接身份的恢复 owner/预算，状态驱动下一请求就绪快照；参考 Grok stdio 耗尽后 Unavailable 与注销工具 | 失败耗尽后新发现不含旧工具/说明；普通连续调用不重开启动风暴；显式重试可恢复；不影响其他服务 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
 | 模型 Surface、压缩与用量 | H-05、H-10、H-11、H-14、H-18、H-23 | 同一原生提交边界决定完整调用、截断续写及回放；覆盖点绑定真实分支身份；预取有 owner；压缩采用与已发生消耗分离；参考 DeepSeek Harness 的 max-tokens 过滤 | 未闭合调用不提交；live/replay 一致；回退后旧笔记不可覆盖新分支；无效摘要仍记已返回 usage；结束后无游离预取 |

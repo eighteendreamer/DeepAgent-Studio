@@ -255,6 +255,110 @@ mod tests {
             )
     }
 
+    #[tokio::test]
+    #[ignore = "audit: a parked stdio server must leave discovery and stop automatic respawns"]
+    async fn audit_exhausted_liveness_retires_tools_and_stops_request_reconnects() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("exhausted-server.cjs");
+        let attempts = dir.path().join("process-starts");
+        std::fs::write(
+            &script,
+            r#"
+const fs = require('node:fs');
+const attempts = process.argv[2];
+const first = !fs.existsSync(attempts);
+fs.appendFileSync(attempts, 'start\n');
+if (!first) process.exit(19);
+require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
+  const msg = JSON.parse(line);
+  const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
+  if (msg.method === 'initialize') {
+    reply({ protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} },
+      serverInfo: { name: 'exhaustion-audit', version: '1' } });
+  } else if (msg.method === 'tools/list') {
+    reply({ tools: [{ name: 'echo', description: 'audit tool', inputSchema: { type: 'object' } }] });
+  } else if (msg.method === 'ping') { process.exit(19); }
+  else { reply({ content: [{ type: 'text', text: 'ok' }] }); }
+});
+"#,
+        )
+        .unwrap();
+        let config = crate::McpServerConfig {
+            transport: None,
+            command: Some("node".into()),
+            args: vec![
+                script.to_string_lossy().into_owned(),
+                attempts.to_string_lossy().into_owned(),
+            ],
+            env: Default::default(),
+            cwd: None,
+            url: None,
+            headers: Default::default(),
+        };
+        let transport = crate::ReconnectingTransport::new(
+            Arc::new(crate::StdioTransport::spawn(&config).unwrap()),
+            Arc::new(crate::ConfigReconnectFactory::new(
+                config,
+                "exhaustion-audit",
+            )),
+        )
+        .with_backoff(vec![std::time::Duration::from_millis(5); 3]);
+        let client = Arc::new(McpClient::new(Arc::new(transport)));
+        client.initialize("exhaustion-audit").await.unwrap();
+        let mut registry = McpRegistry::new();
+        registry
+            .register_with_instructions("audit", client, Some("audit instructions".into()))
+            .await
+            .unwrap();
+        registry.enable_liveness(LivenessConfig {
+            interval: std::time::Duration::from_millis(5),
+            timeout: std::time::Duration::from_secs(3),
+            failure_limit: 3,
+        });
+        let probe = registry.servers["audit"].probe.as_ref().unwrap().clone();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while !probe.is_finished() {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("real failed handshakes must exhaust the liveness budget");
+        let starts = || std::fs::read_to_string(&attempts).unwrap().lines().count();
+        let after_probe = starts();
+        let registry = Arc::new(registry);
+        let adapters = crate::adapters_for(registry.clone());
+        let mut failed_calls = Vec::new();
+        let mut starts_after_calls = Vec::new();
+        for _ in 0..2 {
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                registry.invoke("mcp__audit__echo", serde_json::json!({})),
+            )
+            .await
+            .expect("fixture retries must finish");
+            failed_calls.push(result.is_err());
+            starts_after_calls.push(starts());
+        }
+        registry.close_all().await.unwrap();
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "probe_finished": probe.is_finished(),
+                "starts_after_probe": after_probe,
+                "starts_after_calls": starts_after_calls,
+                "failed_calls": failed_calls,
+                "discoverable_tools": registry.all_tools().len(),
+                "adapter_count": adapters.len(),
+                "instruction_entries": registry.server_instructions().len(),
+            })
+        );
+        assert!(
+            registry.all_tools().is_empty()
+                && starts_after_calls.iter().all(|count| *count == after_probe),
+            "a parked server must not remain discoverable and spend a new recovery budget per call"
+        );
+    }
+
     #[test]
     fn namespacing_roundtrip() {
         let n = namespaced_name("asana", "create_task");
