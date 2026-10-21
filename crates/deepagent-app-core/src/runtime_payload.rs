@@ -380,4 +380,169 @@ mod tests {
         .is_err());
         assert_eq!(std::fs::read(runtime.join("keep.txt")).unwrap(), b"keep");
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "audit integration: exclusively holds the production disk-preparation gate"]
+    async fn blocked_host_payload_preparation_does_not_block_conversations() {
+        use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
+        use crate::{ChatService, McpService, MemorySecretStore, PluginService, SettingsService};
+        use deepagent_models::transport::MockTransport;
+        use deepagent_persistence::Database;
+        use std::sync::{Arc, Mutex};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = tmp.path().join("chat-workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
+        let roots = crate::plugin_loader::PluginRoots {
+            session: Vec::new(),
+            builtin: tmp.path().join("builtin"),
+            workspace: None,
+            personal: tmp.path().join("personal"),
+        };
+        let plugin = roots.builtin.join("audit-slow");
+        std::fs::create_dir_all(plugin.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(plugin.join("skills/audit-slow-skill")).unwrap();
+        std::fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"audit-slow","version":"0.1.0","skills":"skills"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin.join("skills/audit-slow-skill/SKILL.md"),
+            "---\nname: audit-slow-skill\ndescription: Audit payload readiness\n---\nReady only after payload verification.",
+        )
+        .unwrap();
+        archive(&plugin, b"verified payload");
+        let install = tmp.path().join("app-data");
+        let data = install.join("plugins/data/audit-slow-builtin");
+        std::fs::create_dir_all(&data).unwrap();
+        let held_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(data.join(".runtime.lock"))
+            .unwrap();
+        FileExt::lock_exclusive(&held_lock).unwrap();
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("sk-audit-placeholder").await.unwrap();
+        let plugins = Arc::new(PluginService::new(roots, &install));
+        let skills = Arc::new(Mutex::new(
+            crate::SkillsService::open_v2(deepagent_skills::SkillsRoots {
+                builtin: tmp.path().join("skills/builtin"),
+                user: tmp.path().join("skills/user"),
+                marketplace: tmp.path().join("skills/marketplace"),
+                workspace: None,
+            })
+            .unwrap(),
+        ));
+        let (_, model) = scripted_client_with_transport(vec![
+            ScriptedTransport::text("first"),
+            ScriptedTransport::text("second"),
+            ScriptedTransport::text("ready"),
+        ]);
+        let chat = ChatService::new(db.clone(), settings, model.clone(), &workspace)
+            .with_plugins(plugins.clone())
+            .with_mcp(Arc::new(McpService::new(db)))
+            .with_skills(skills.clone());
+        chat.start_plugin_preparation(Arc::new(|| {}));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                // No other preparation runs in this explicitly isolated test.
+                // Holding this gate proves the host worker entered payload
+                // preparation and is waiting behind our real OS file lock.
+                if matches!(
+                    DISK_PREPARATION.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("host worker must enter the production disk preparation path");
+        assert!(plugins.ready_snapshot().0.skill_roots.is_empty());
+
+        let began = Instant::now();
+        let conversations = tokio::time::timeout(Duration::from_secs(5), async {
+            let mut session = None;
+            for run in ["payload-wait-first", "payload-wait-second"] {
+                session = Some(
+                    chat.run_in_session(
+                        "Reply briefly.",
+                        session.as_deref(),
+                        None,
+                        None,
+                        Vec::new(),
+                        None,
+                        false,
+                        Some(run),
+                        |_| {},
+                        |_| {},
+                    )
+                    .await?,
+                );
+                assert!(!model
+                    .last_prompt()
+                    .contains("- audit-slow-skill: Audit payload readiness"));
+            }
+            Ok::<_, CoreError>(())
+        })
+        .await;
+        let elapsed = began.elapsed();
+        let unpublished_while_locked = plugins.ready_snapshot().0.skill_roots.is_empty();
+        let unextracted_while_locked = !data.join("runtime/value.txt").exists();
+        // Release even if the conversation times out, so the blocking host
+        // worker can exit and Tokio shutdown cannot hang behind the fixture.
+        FileExt::unlock(&held_lock).unwrap();
+        let published = tokio::time::timeout(Duration::from_secs(5), async {
+            while !skills
+                .lock()
+                .unwrap()
+                .manager()
+                .registry()
+                .contains("audit-slow-skill")
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        eprintln!(
+            "audit payload wait: two_turns_ms={}, unpublished_while_locked={unpublished_while_locked}, unextracted_while_locked={unextracted_while_locked}, published_after_release={}",
+            elapsed.as_millis(), published.is_ok()
+        );
+        assert!(matches!(conversations, Ok(Ok(()))), "{conversations:?}");
+        assert!(unpublished_while_locked && unextracted_while_locked);
+        assert!(published.is_ok());
+        assert_eq!(
+            std::fs::read(data.join("runtime/value.txt")).unwrap(),
+            b"verified payload"
+        );
+        chat.run_in_session(
+            "Reply briefly.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("payload-now-ready"),
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+        assert!(model
+            .last_prompt()
+            .contains("- audit-slow-skill: Audit payload readiness"));
+    }
 }

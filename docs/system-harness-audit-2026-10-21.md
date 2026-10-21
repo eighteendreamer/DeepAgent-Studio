@@ -46,6 +46,7 @@
 | 桌面进程重启与继续对话 | 正常关闭并重启同一隔离数据目录的桌面进程；展开折叠的“最近对话”后打开原会话，历史与标记仍可见；发起新一轮要求复述标记且不调用工具，模型正确复述 |
 | 真实三轮 AppCore 用例 | 完成三轮；每轮持久化 provider usage 分别为 12468 / 13101 / 14019 输入 tokens，cache hit + miss 等于输入；后续测试断言失败，整条用例不算通过 |
 | MCP 初始化未完成时的普通对话 | 新增 `pending_host_mcp_initialization_does_not_block_conversations`：真实 Node MCP 子进程将 initialize 持有至 180 秒或显式释放；确认子进程已收到 initialize 后运行两轮真实 ChatService、mock 模型请求。两轮合计 384ms、initialize 仅 1 次、待就绪工具未发布且未进入任何模型请求；释放后工具正常发布。1 passed |
+| 运行包准备等待真实磁盘锁时的普通对话 | `blocked_host_payload_preparation_does_not_block_conversations`：宿主 worker 确认进入生产磁盘准备路径并被真实 OS 文件锁阻塞；两轮 ChatService + mock 模型合计 349ms，运行包尚未解压、技能未发布；释放后成功解压，第三个新会话实际请求含就绪技能目录。1 passed |
 
 ### 尚未定性的现象
 
@@ -391,6 +392,7 @@ Codex `rmcp-client/src/http_client_adapter.rs` 从 HTTP response headers 读取 
 - 探针 `chat_service::tests::audit_disabled_plugin_skills_do_not_enter_new_model_request`：创建真实临时插件和 SKILL.md，启动生产宿主准备，等待首次就绪及技能发布；调用公共 set_enabled(false)，确认 ready skill_roots 已为空，再通过真实 ChatService/Kernel 发起全新会话，截获模型的 TransportRequest。模型只有离线固定回复，未使用外部 API。
 - 执行：`cargo test -p deepagent-app-core --lib audit_disabled_plugin_skills_do_not_enter_new_model_request --offline -- --ignored --nocapture`。
 - 实际输出：`enabled=false, ready_skill_roots=0, new_request_has_disabled_skill=true`；新请求不应包含禁用技能的断言失败。该会话没有历史，不能用“保留过去的技能调用记录”解释本次新注入。
+- 后续收紧探针：插件 fixture 放在独立聊天工作目录之外，仅匹配完整目录条目 `- audit-plugin-skill: Audit plugin readiness`，再次运行仍得到相同失败。排除动态环境中的普通文件路径命中技能名造成误报；不是仅据 body 中出现一个文件夹名称定性。
 - 桌面 `lib.rs::set_plugin_enabled()` 在返回前调用 `sync_plugin_runtime_after_change()` / `sync_plugin_skill_roots()`，是一个宿主特有的补同步路径。本探针明确没有调用这层 Tauri handler；文件 watcher 失效也可能经过共享注册表更新窗口，但尚未独立做 watcher → 桌面 wire 复现，不能扩大结论。
 
 #### 成熟实现对照
@@ -455,7 +457,7 @@ Codex `core/src/compact.rs` 在压缩流收到 `ResponseEvent::Completed` 时，
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、十五个默认忽略的缺陷探针、一个默认忽略的宿主隔离集成探针和一个默认运行的取消存储故障注入测试，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
+审查累计新增内容限于报告、十五个默认忽略的缺陷探针、两个默认忽略的宿主隔离集成探针和一个默认运行的取消存储故障注入测试，未修改生产运行逻辑。本批重新运行了格式检查、CLI/models/MCP/runtime 常规测试及 AppCore 上下文/取消相关测试；没有重复运行全 workspace 测试、Clippy 或前端构建，本批没有改变跨 crate 生产行为或前端代码。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
@@ -463,6 +465,14 @@ Codex `core/src/compact.rs` 在压缩流收到 `ResponseEvent::Completed` 时，
 - 180 秒是 fixture 的自然完成时间；本次在两轮对话完成后主动释放，没有实际等待 180 秒。生产 MCP 启动本身还有 30 秒整体上限，测试证明的是“确认握手正在进行时，对话不等待它”，不是承诺握手可运行 180 秒。
 - 两轮模型均为离线 replay；真实执行了宿主启动、MCP 进程、ChatService 接纳、组装、Kernel 及模型请求构造。MCP fixture 在释放后接受宽松 legacy 握手，以单独验证生命周期隔离；不覆盖 H-08 的严格协议兼容性。
 - 该结果支持当前聊天读取 ready snapshot 的边界；不能由此证明磁盘运行包全量校验也已通过 180 秒延迟注入，更不能证明失败插件的 skills/hooks/说明全部隔离。
+
+### 后续独立验证：运行包磁盘准备等待不阻塞聊天
+
+- 执行：`cargo test -p deepagent-app-core --lib blocked_host_payload_preparation_does_not_block_conversations --offline -- --ignored --nocapture`，1 passed。该探针独占生产全局磁盘准备 gate，应单独运行，默认忽略。
+- 创建真实临时 runtime.zip 与插件技能，在启动宿主前对其 `.runtime.lock` 加 OS 排他锁；随后观察生产 `DISK_PREPARATION` 已被 worker 持有，确认它已经进入运行包准备并等待文件锁。没有替换生产准备函数或虚构 Ready 状态。
+- 保持锁期间两轮真实 ChatService/Kernel + 离线模型在 349ms 内完成；runtime/value.txt 不存在、ready skill_roots 为空、两次实际请求均没有该技能的完整目录条目。释放后校验/解压完成，技能注册表更新；第三个全新会话的实际请求包含该目录条目，且解压内容与原包相同。
+- 首次探针把 fixture 放在聊天工作目录内，单纯匹配技能名会命中动态环境的文件路径；已把工作目录与 fixture 分开，并改为匹配目录条目后重跑通过。该早期断言失败不认定为产品能力泄漏；H-13 也收紧相同判据并独立重跑，缺陷仍存在。
+- 这是实际文件锁等待边界，没有真的等待 180 秒，也没有对逐文件校验人为注入 180 秒延迟、统计 P95 或验证跨进程安装并发。它支持磁盘准备在宿主后台执行的隔离设计，不能代替完整运行包性能及损坏恢复验收。
 
 ### 后续独立验证：取消审计写入失败不阻止信号
 

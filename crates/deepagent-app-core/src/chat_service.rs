@@ -2785,6 +2785,8 @@ mod tests {
     #[ignore = "audit reproducer: a new run must not advertise disabled plugin skills from a stale registry"]
     async fn audit_disabled_plugin_skills_do_not_enter_new_model_request() {
         let (db, settings, dir) = seeded().await;
+        let workspace = dir.path().join("workspace");
+        std::fs::create_dir_all(&workspace).unwrap();
         let roots = crate::plugin_loader::PluginRoots {
             session: Vec::new(),
             builtin: dir.path().join("plugins-builtin"),
@@ -2818,7 +2820,7 @@ mod tests {
             .unwrap(),
         ));
         let transport = Arc::new(RecordingTransport::default());
-        let chat = ChatService::new(db.clone(), settings, transport.clone(), dir.path())
+        let chat = ChatService::new(db.clone(), settings, transport.clone(), &workspace)
             .with_plugins(plugins.clone())
             .with_mcp(Arc::new(crate::McpService::new(db)))
             .with_skills(skills.clone());
@@ -2858,7 +2860,7 @@ mod tests {
         .await
         .unwrap();
         let body = transport.last_body.lock().unwrap().clone().unwrap();
-        let advertised = body.contains("audit-plugin-skill");
+        let advertised = body.contains("- audit-plugin-skill: Audit plugin readiness");
         eprintln!(
             "audit plugin generation: enabled={}, ready_skill_roots={}, new_request_has_disabled_skill={advertised}",
             disabled.enabled, plugins.ready_snapshot().0.skill_roots.len()
