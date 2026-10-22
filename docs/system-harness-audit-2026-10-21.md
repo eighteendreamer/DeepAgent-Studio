@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；慢连接与终态投影仍待收敛 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93；默认 Responses 路由不在 H-93 范围内 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94；H-93/H-94 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
@@ -1884,6 +1884,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：选定函数调用模式时，Chat wire body 包含不匹配的对象形状，可能导致请求被 provider 拒绝或不按调用方预期执行；这两种 provider 行为均未在本轮实测。桌面 `select_run_model` 强制 `WireMode::Responses`，`ModelConfig::from_catalog` 也默认 Responses；`build_chat_model_client` 同样沿用该默认。仓库搜索到的 ChatCompletions 切换点是显式公开 adapter 及测试代码，故当前证据不支持把它外推为默认桌面主链路故障。
 - 收敛方向（尚未实施，本地设计）：在现有 `response_to_chat_completion` 边界将 Responses `{type:function,name}` 映射成 Chat `{type:function,function:{name}}`；字符串形式原样保留；Responses-only 的 `custom`、`web_search` 等取值若 Chat 不支持，应在本地明确拒绝，不能发出未经验证的形状。配置默认值与请求级显式值共用同一转换函数。补充序列化线级断言及受控 transport 捕获，覆盖显式对象、默认对象、字符串、unsupported 类型与 Chat 原生直接请求；再以真实 provider 仅验证已确认支持的调用选择。
 
+### H-94：Chat 兼容投影覆盖相邻 reasoning item，只保留最后一段
+
+**级别：低（P3，条件性适配器缺陷）；触发条件：显式使用 `WireMode::ChatCompletions`，并传入两个或更多相邻 Responses reasoning items，随后跟 assistant message 或 function call。** 单段 reasoning 和桌面默认 Responses 路由不在本项范围内。
+
+- 根因与生产路径：`response_to_chat_completion` 通过 `messages_from_response_items` 把原生历史投影为 Chat 的 `Message`。该函数遇到每个 `ResponseItem::Reasoning` 都执行 `pending_reasoning = Some(content.clone())`；连续 item 后一项覆盖前一项，再将只剩的值放入 assistant `reasoning_content`。DeepSeek 官方 [Responses API 输入定义](https://api-docs.deepseek.com/api/create-response) 将 `reasoning` 列为可用 input item，并支持有序 item list。Chat 仅提供单个 `reasoning_content` 字段，转换应合并相邻文本或明确拒绝不能表达的历史，不能静默丢段。
+- 动态复现：ignored 探针 `client::tests::audit_chat_projection_preserves_all_reasoning_items` 向正式转换函数传入 `reasoning("first ")`、`reasoning("second")`、assistant `"answer"`，再序列化 Chat JSON。断言 assistant reasoning 应为 `first second`，实际只有 `second`，探针以 **0 passed / 1 failed** 退出。仅测试本地投影/序列化，没有请求真实 provider。
+- 成熟实现对照：DeepSeek Harness `packages/llm/llm-deepseek/src/translate.ts::startBlock` 将每个 native `thinking` block 建成独立 reasoning block，`deltaChunk` 保留各自 block index；`serialize.ts::assistant` 按顺序遍历所有 assistant content blocks 并逐块发出 thinking。该代码走 DeepSeek Messages，而非本系统 Chat Completions，因此只佐证成熟 Harness 保留分段 reasoning 的内部历史，不作为 Chat provider wire 格式依据。
+- 影响及限制：Chat 路由的下一请求会遗漏较早的 reasoning 文本，模型收到的内部续轮上下文变短；其对最终回答、工具选择或 provider 接受性的具体影响没有经过真实模型验证。Responses 输出通常是单个 reasoning item 的路径已被覆盖，但当前类型、累加器和输入协议均允许多个 item；本项仍不能外推为用户桌面默认路径已触发。
+- 收敛方向（尚未实施，本地设计）：将尚未 flush 的相邻 reasoning 文本按输入顺序追加到一个 pending buffer，并在 assistant message / tool-call grouping 处一次消费；不要跨 user/tool 边界携带。补充一段、多段、reasoning 后工具调用、reasoning 被非 assistant item 隔断及重开后相同投影的回归，并保持现有 provider-native Surface 不变。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1899,6 +1909,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-91 app-server 默认测试基线 | `cargo test -p deepagent-cli app_server::tests --offline`：8 passed / 0 failed / 5 ignored；H-91 为显式 ignored 审计探针，默认通过不代表该交错已修复 |
 | H-92 runtime shutdown 活动 turn 显式探针 | `cargo test -p deepagent-cli terminal_audit::audit_runtime_shutdown_finalizes_in_flight_stdio_turn --offline -- --ignored --nocapture`：0 passed / 1 failed；模型请求确已进入 transport，runtime drop 后 `running_turn` 未终结、`finished_at=None`、`run_terminal=0`；正式 AppCore run 与临时 SQLite，未启动真实 stdio 子进程/客户端 |
 | H-93 Chat 命名工具选择请求/默认值显式探针 | `cargo test -p deepagent-models audit_chat_tool_choice --offline -- --ignored --nocapture`：0 passed / 2 failed；request 与 defaults 两路径均序列化为 Responses 形状而非 DeepSeek Chat 形状；仅 adapter/serializer 离线复现，无公网 provider 请求 |
+| H-94 Chat 连续 reasoning item 显式探针 | `cargo test -p deepagent-models audit_chat_projection_preserves_all_reasoning_items --offline -- --ignored --nocapture`：0 passed / 1 failed；输入 `first ` 与 `second`，输出仅含 `second`；仅 adapter/serializer 离线复现，无公网 provider 请求 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |

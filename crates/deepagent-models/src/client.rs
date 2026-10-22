@@ -555,6 +555,38 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: preserve every adjacent Responses reasoning item in Chat history"]
+    fn audit_chat_projection_preserves_all_reasoning_items() {
+        let request = ResponseRequest::from_response_items(
+            "deepseek-flash",
+            None,
+            vec![
+                ResponseInputItem::Reasoning {
+                    id: Some("reasoning-1".into()),
+                    content: "first ".into(),
+                },
+                ResponseInputItem::Reasoning {
+                    id: Some("reasoning-2".into()),
+                    content: "second".into(),
+                },
+                ResponseInputItem::Message {
+                    role: "assistant".into(),
+                    content: "answer".into(),
+                },
+            ],
+        );
+
+        let wire = serde_json::to_value(response_to_chat_completion(request).unwrap()).unwrap();
+        let assistant = wire["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["reasoning_content"], "first second");
+    }
+
+    #[test]
     #[ignore = "audit reproducer: native-to-chat projection must preserve one assistant tool turn"]
     fn audit_chat_projection_preserves_tool_turn_narration_and_reasoning() {
         let mut accumulator = ChatCompletionAccumulator::new();
