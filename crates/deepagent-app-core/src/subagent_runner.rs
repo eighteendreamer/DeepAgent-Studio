@@ -1272,6 +1272,88 @@ mod tests {
         }
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-109: SubagentStop payload must satisfy its required input schema"]
+    async fn audit_subagent_stop_hook_includes_required_fields() {
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let dir = tempfile::tempdir().unwrap();
+        let start_payload_path = dir.path().join("subagent-start.json");
+        let stop_payload_path = dir.path().join("subagent-stop.json");
+        let capture_command = |path: &Path| {
+            let quoted = path.to_string_lossy().replace('\'', "''");
+            format!(
+                "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted}', $payload)"
+            )
+        };
+        let definitions = HookDefinitions::parse(
+            &serde_json::json!({
+                "hooks": {
+                    "SubagentStart": [{ "hooks": [{
+                        "type": "command", "shell": "powershell", "timeout": 5,
+                        "command": capture_command(&start_payload_path)
+                    }] }],
+                    "SubagentStop": [{ "hooks": [{
+                        "type": "command", "shell": "powershell", "timeout": 5,
+                        "command": capture_command(&stop_payload_path)
+                    }] }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = HookRegistry::new();
+        assert_eq!(
+            definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+            2
+        );
+
+        let transport = Arc::new(AuditResumeTransport::default());
+        let runner = audit_child_runner(dir.path(), transport);
+        assert!(runner.hooks.set(Arc::new(hooks)).is_ok());
+        runner
+            .run_inner(
+                deepagent_builtins::SubagentRequest {
+                    description: "audit subagent hook payload".into(),
+                    prompt: "Return a short result".into(),
+                    subagent_type: Some("review".into()),
+                    allowed_tools: Vec::new(),
+                    model: None,
+                    effort: None,
+                    skills: Vec::new(),
+                    isolation: "shared".into(),
+                    fork: false,
+                    phase: None,
+                    label: None,
+                    schema: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+
+        let start_payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(start_payload_path).expect("SubagentStart hook ran"),
+        )
+        .unwrap();
+        let stop_payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(stop_payload_path).expect("SubagentStop hook ran"),
+        )
+        .unwrap();
+        eprintln!("SubagentStart payload: {start_payload}");
+        eprintln!("SubagentStop payload: {stop_payload}");
+        assert!(start_payload["agent_id"].is_string());
+        assert!(start_payload["agent_type"].is_string());
+        assert!(
+            stop_payload["stop_hook_active"].is_boolean()
+                && stop_payload["agent_id"].is_string()
+                && stop_payload["agent_transcript_path"].is_string()
+                && stop_payload["agent_type"].is_string(),
+            "SubagentStop payload misses required schema fields: {stop_payload}"
+        );
+    }
+
     #[derive(Default)]
     struct AuditPendingChildTransport {
         entered: tokio::sync::Notify,

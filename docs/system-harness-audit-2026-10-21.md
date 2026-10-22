@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-108；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、PreCompact 输入契约/指令未生效、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-111；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
@@ -2056,6 +2056,36 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响及限制：校验兼容 schema 的 hook 会拒绝 payload；不校验的脚本无法按启动/恢复来源或退出原因分支。本轮只证明字段缺失，没有运行第三方校验器或用户脚本；H-107 的频率问题也意味着当前 SessionEnd 不能诚实映射成一次真实会话退出原因。
 - 收敛方向（尚未实施，本地设计）：在现有 hook 生命周期边界使用有类型的 Start source / End reason 数据，不从当前任务结束推造退出原因；待 H-107 的真实会话关闭 owner 确定后再为 End 选择合法 reason。覆盖新建、恢复、清理、压缩、退出以及不触发 End 的普通续聊，并使用官方 schema 做 payload 回归。
 
+### H-109：SubagentStop hook 缺少必需的停止状态与 transcript 路径
+
+**级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：项目或用户配置了 `SubagentStop` command hook，并有子 Agent 正常或异常结束。** 未配置该 hook 时不影响子运行结果。
+
+- 根因与生产路径：`ChatSubagentRunner::run_tracked()` 结束子运行后只将 `agent_id`、`agent_type` 和可选 summary 放入 `HookData::Subagent`。`ExternalCommandHook::build_payload()` 对该类型只序列化这些值与 `last_assistant_message`，没有传入该子运行的 transcript 文件路径，也没有停止 hook 的重入状态。
+- 动态复现：Windows ignored 探针 `subagent_runner::tests::audit_subagent_stop_hook_includes_required_fields` 经正式 `ChatSubagentRunner::run_inner()` 同时触发 Start/Stop command hooks，并从 PowerShell stdin 捕获 JSON。Start 收到 `agent_id`、`agent_type`；Stop 实际为 `{"agent_id":"…","agent_type":"review","hook_event_name":"SubagentStop","last_assistant_message":"…","session_id":"…"}`，`stop_hook_active` 与 `agent_transcript_path` 缺失，schema 断言以 **0 passed / 1 failed** 退出。使用临时目录、离线模型 transport，无公网请求。
+- 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::SubagentStopHookInputSchema` 将 `stop_hook_active`、`agent_id`、`agent_transcript_path`、`agent_type` 定义为必需事件字段；`utils/hooks/hooksConfigManager.ts` 也向 hook 用户说明提供 `agent_transcript_path`。其公共 `cwd` / `transcript_path` 另属 H-104，本项只统计 SubagentStop 的专属字段。
+- 影响及限制：依赖 schema 校验或读取 agent transcript 的兼容 hook 会拒绝输入或无法定位子运行记录。本探针证明字段缺失，没有运行第三方 schema validator 或用户 hook 的实际逻辑；没有据此判断 `stop_hook_active` 的正确取值语义。
+- 收敛方向（尚未实施，本地设计）：让子运行完成上下文携带稳定 transcript path 与有明确定义的 Stop hook 重入状态，在现有 typed hook data / serializer 边界构造事件 payload；验证成功、失败、取消、Stop hook 要求继续及再次触发 Stop 的路径，并对照官方 schema 校验。
+
+### H-110：PreCompact hook payload 不符合事件输入 schema
+
+**级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `PreCompact` command hook，且发生自动阈值或 provider overflow 压缩。** 未配置该 hook 时不影响压缩。
+
+- 根因与生产路径：`HookedReactiveContextCompactor` 在消息与原生 ResponseItem 压缩路径都以 `HookData::Compact { trigger, summary: None }` 派发 `HookPoint::BeforeCompact`；外部 serializer 固定把它写成 `trigger` 和 `compact_summary`。`CompactionTrigger::as_str()` 返回 `auto_compact_threshold` 或 `context_overflow`，均不属于参考 schema 的 `manual|auto`，且没有输出必需的 `custom_instructions: null`。
+- 动态复现：Windows ignored 探针 `context_runtime::tests::audit_precompact_payload_includes_required_fields` 使用正式 compactor 触发 `ContextOverflow`，经 PowerShell hook stdin 捕获 payload：`{"compact_summary":null,"hook_event_name":"PreCompact","session_id":"…","trigger":"context_overflow"}`。schema 字段/取值断言以 **0 passed / 1 failed** 退出；compaction 与离线摘要请求本身实际执行。
+- 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::PreCompactHookInputSchema` 要求 `trigger` 为 `manual|auto` 且 `custom_instructions` 存在（可为 null）；`hooksConfigManager.ts` 也以同一 trigger 集合作 matcher。
+- 影响及限制：依赖字段校验或按触发类型过滤的 hook 无法正确处理本系统压缩事件。本探针覆盖正式 Message compactor 的 overflow 分支；源代码确认 ResponseItem compactor 使用相同 `HookData::Compact`，但本次未单独运行该分支，也未启动第三方 schema validator。
+- 收敛方向（尚未实施，本地设计）：区分 hook 协议 trigger (`auto`/`manual`) 与内部压缩原因，且只在现有 hook DTO 边界映射；为 PreCompact 使用 `custom_instructions` 字段并保留 null 语义。分别覆盖自动阈值、provider overflow、原生 Responses compaction 及手动路径（若产品提供）。
+
+### H-111：PreCompact hook 的 stdout 指令没有进入摘要请求
+
+**级别：中（P2，条件性 hook 功能缺陷）；触发条件：配置 `PreCompact` command hook，并从成功退出的 hook stdout 返回摘要指令。** 不返回指令或使用退出码拒绝压缩时不受此项影响。
+
+- 根因与生产路径：外部命令结果解释器将普通文本 stdout 映射为 `HookOutcome::Continue`；`HookedReactiveContextCompactor::compact()` 对 `BeforeCompact` 只检查 `Deny`/`Ask`，随后直接调用 `summarize_zone()`，没有把 hook stdout 或修改结果传给摘要模型。
+- 动态复现：Windows ignored 探针 `context_runtime::tests::audit_precompact_stdout_is_used_as_compaction_instructions` 让正式 PowerShell PreCompact hook 输出唯一标记 `AUDIT_CUSTOM_COMPACTION_INSTRUCTIONS`，随后检查 `ScriptedTransport` 捕获的真实 summary request body；标记不存在，断言以 **0 passed / 1 failed** 退出。hook 与模型请求均为本地离线执行。
+- 成熟实现对照：Claude Code `utils/hooks/hooksConfigManager.ts` 对 `PreCompact` 明确规定：exit code 0 时 stdout 追加为 custom compact instructions，exit code 2 阻止压缩。本系统保留阻止路径，但未实现成功 stdout 的指令路径。
+- 影响及限制：用户配置的压缩保留/强调指令会被静默忽略，摘要可能丢掉 hook 指定的重要信息。本探针确认了 compactor 发出的请求体不含指令，没有尝试证明具体摘要质量变化或真实模型输出。
+- 收敛方向（尚未实施，本地设计）：为 `BeforeCompact` 明确一个有类型的 hook result，区分 veto、审批和 custom instructions；在已有 compaction pipeline 将指令纳入 summary prompt，不把通用 `Modify` 猜测性地套用到所有 hook。覆盖空 stdout、多 hook 合并、拒绝、超时、Message/ResponseItem 和取消路径。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2095,6 +2125,10 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-107 默认基线与检查 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`：74 passed / 8 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅增加 ignored 审计探针与报告，未修改生产逻辑、未跑 workspace 全量测试、Clippy、桌面构建或真实 Tauri |
 | H-108 Session lifecycle metadata 显式探针 | `cargo test -p deepagent-app-core --lib chat_service::tests::audit_session_lifecycle_hooks_include_required_event_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；捕获的 SessionStart/SessionEnd payload 分别缺官方 schema 必需的 `source`/`reason`；真实 Windows PowerShell hooks、临时 workspace、内存 SQLite 与离线 transport |
 | H-108 默认基线与检查 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`：74 passed / 9 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅增加 ignored 审计探针与报告，未修改生产逻辑、未跑 workspace 全量测试、Clippy、桌面构建或真实 Tauri |
+| H-109 SubagentStop payload 显式探针 | `cargo test -p deepagent-app-core --lib subagent_runner::tests::audit_subagent_stop_hook_includes_required_fields --offline -- --ignored --nocapture`：0 passed / 1 failed，约 1.09s；正式 ChatSubagentRunner 的 PowerShell hook 捕获到缺少 `stop_hook_active` 与 `agent_transcript_path` 的 Stop payload，Start/Stop 均真实触发，离线模型 transport |
+| H-109 默认基线 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`：6 passed / 5 ignored；5 个 ignored 包含现存审计项和 H-109，默认通过不表示 ignored 项已修复 |
+| H-110/H-111 PreCompact 显式探针 | `cargo test -p deepagent-app-core --lib context_runtime::tests::audit_precompact_ --offline -- --ignored --nocapture`：0 passed / 2 failed，约 0.70s；捕获 `trigger=context_overflow`、`compact_summary=null` 且缺 `custom_instructions`；hook stdout 唯一标记未进入 ScriptedTransport 捕获的 summary request body |
+| H-110/H-111 默认基线与检查 | `cargo test -p deepagent-app-core --lib context_runtime::tests --offline`：23 passed / 5 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅增加 ignored 审计探针与报告，未修改生产逻辑、未跑 workspace 全量测试、Clippy、桌面构建或真实 Tauri |
 | Responses `tool_search_call` 候选差异核查 | DeepSeek 官方请求 schema 不提供可触发该 item 的工具类型；AppCore `tool_search` 以普通 function schema 注册。`cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed；`cargo test -p deepagent-models --lib stream::tests --offline`：21 passed。未新增缺陷或测试，未调用公网 provider |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |

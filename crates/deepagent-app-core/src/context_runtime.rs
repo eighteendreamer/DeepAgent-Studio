@@ -1837,6 +1837,104 @@ mod tests {
     use super::*;
     use deepagent_context::TokenCounter;
 
+    #[cfg(windows)]
+    async fn audit_precompact_command(command_tail: &str) -> (serde_json::Value, String) {
+        use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let dir = tempfile::tempdir().unwrap();
+        let payload_path = dir.path().join("precompact.json");
+        let quoted = payload_path.to_string_lossy().replace('\'', "''");
+        let command = format!(
+            "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted}', $payload); {command_tail}"
+        );
+        let definitions = HookDefinitions::parse(
+            &serde_json::json!({
+                "hooks": {
+                    "PreCompact": [{ "hooks": [{
+                        "type": "command", "shell": "powershell", "timeout": 5,
+                        "command": command
+                    }] }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = HookRegistry::new();
+        assert_eq!(
+            definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+            1
+        );
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session =
+            deepagent_session::Session::create(&db, &deepagent_core::clock::SystemClock, None)
+                .unwrap();
+        let sid = session.id();
+        let (client, transport) = scripted_client_with_transport(vec![ScriptedTransport::text(
+            r#"{"goal":"audit compact","completed":["summary"]}"#,
+        )]);
+        let compactor = HookedReactiveContextCompactor::new(
+            client,
+            "deepseek-flash".into(),
+            Arc::new(hooks),
+            sid,
+            db,
+        );
+        let messages = (0..24)
+            .map(|index| {
+                let text = format!("turn {index}: {}", "historical detail ".repeat(600));
+                if index % 2 == 0 {
+                    Message::user(text)
+                } else {
+                    Message::assistant(text)
+                }
+            })
+            .collect::<Vec<_>>();
+        assert!(compactor
+            .compact(&messages, CompactionTrigger::ContextOverflow)
+            .await
+            .unwrap()
+            .is_some());
+
+        let payload = serde_json::from_str(
+            &std::fs::read_to_string(payload_path).expect("PreCompact hook ran"),
+        )
+        .unwrap();
+        (payload, transport.last_prompt())
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-110: PreCompact payload must satisfy its required input schema"]
+    async fn audit_precompact_payload_includes_required_fields() {
+        let (payload, _) = audit_precompact_command("").await;
+        eprintln!("PreCompact payload: {payload}");
+        assert!(
+            matches!(payload["trigger"].as_str(), Some("manual" | "auto"))
+                && payload.get("custom_instructions").is_some()
+                && payload["custom_instructions"].is_null(),
+            "PreCompact payload misses required schema fields or has an invalid trigger: {payload}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-111: PreCompact stdout must reach the compaction request"]
+    async fn audit_precompact_stdout_is_used_as_compaction_instructions() {
+        const INSTRUCTIONS: &str = "AUDIT_CUSTOM_COMPACTION_INSTRUCTIONS";
+        let (_, model_request) =
+            audit_precompact_command(&format!("Write-Output '{INSTRUCTIONS}'")).await;
+        eprintln!(
+            "precompact_stdout_reaches_model_request={}",
+            model_request.contains(INSTRUCTIONS)
+        );
+        assert!(
+            model_request.contains(INSTRUCTIONS),
+            "PreCompact stdout was not included in the model's summary request"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "audit H-31: synchronous native compaction does not receive run cancellation"]
     async fn audit_cancel_interrupts_native_summary_before_next_model_request() {
