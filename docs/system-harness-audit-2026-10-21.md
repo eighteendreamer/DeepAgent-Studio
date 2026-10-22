@@ -63,6 +63,7 @@
 | 工作流节点事件的持久化通道 | 正式视频工作流实时收到 6 条节点事件；关闭全部原数据库 owner 后重开，规范 run_events 仍为 0 条节点事件；唯一运行成功终态与视频资产均保留 | 已确认 H-120；不等同于所有画布自动保存内容丢失，未验真实桌面崩溃/断线重连 |
 | 视频运行中 task ID 的前端投影与续跑 | 正式 Rust publisher 发出 Running/job_id，生产 TS executor 与真实 Zustand store 收到后仍不存 ID，停止再提交时 config 缺 videoTaskId；Completed 对照正常 | 已确认 H-121；实际跨语言事件/序列化探针，Tauri 传输替换为本机内存桥，未发生真实云端重复收费 |
 | 视频修改输入及配置后的执行身份 | 真实 TS/Rust 往返中，修改提示词仍轮询旧任务并 succeeded，新提示词未提交；同一 provider ID 改地址/凭据后，旧 task ID 被发到新地址并 succeeded | 已确认 H-122；本机真实 HTTP、原地址续跑对照；未验真实供应商视频、同地址仅换凭据或云端账号权限 |
+| 本地与 SSH 终端的分页读取 | 真实 Windows ConPTY / SQLite 与正式 SSH session reader 均在 64 KiB 返回上限时将游标推进到全部缓存末尾；未返回后缀仍可从实际末端读出 | 已确认 H-123；小输出对照正常；当前桌面旧读取不使用该游标接口，SSH 网络与其他平台未验证 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -2212,10 +2213,23 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 代码原因：generate_video 在每次恢复时按当前 model_ref 重新 resolve provider，resume_task_id 只有字符串，没有提交时的 endpoint/account 版本；“同一次调用内不切候选供应商”的保证无法覆盖两次运行间配置替换。参考 ArtCraft 保存任务 provider/provider_job_id 并据此选择 polling；对自定义 endpoint/凭据版本的绑定与变更处置仍需本系统本地设计，不能声称参考项目已验证任意可编辑网关配置。
 - 影响与限制：新地址可能查不到旧任务，也可能把相同字符串解释成另一个任务；本机 B 接受该 ID 的 fixture 证明本系统未校验来源，不证明真实云端任务 ID 必定碰撞或已经发生数据泄漏。样本同时更换地址和占位凭据，并确认生产 resolve 的有效凭据已变化；未分别验证同地址只换 Key、真实账户切换/撤销或新主机认证规则。归属变化应明确拒绝不匹配恢复或重新核对原来源授权；不可自动复用已撤销旧凭据，也不可静默将旧 ID 交给新主机。
 
+### H-123：本地与 SSH 终端的分片读取推进到缓存末尾，未返回的输出被游标跳过
+
+**级别：中（P2，游标接口的数据完整性）；范围：单次待返回历史超过 64 KiB、仍在 256 KiB 保留窗口内的终端读取或重新附着。** 本项不覆盖普通模型流或命令工具的输出；桌面 `TerminalPlugin` 当前调用旧版无游标的 `localPtyRead` / `sshPtyRead`，不能据本探针宣称当前 xterm 面板已发生相同丢失。
+
+- 生产路径：`terminal_service.rs::TerminalService::pty_read_with_cursor` 与 `deepagent-ssh/src/session.rs::SshSession::pty_read_with_cursor` 都先取得全部已接收字节的 `current`，将返回 `data` 截至 64 KiB，最后却返回 `cursor: current`。`truncated` 只检查旧历史是否被淘汰，没有反映此处尚未返回的尾部。Direct 与 SSH 的 `TerminalSessionBackend::read` 又把该 cursor 写入现有 SQLite 游标存储；Tauri 的 `local_pty_read_cursor` / `terminal_session_read` 直接暴露本地生产路径，TypeScript 也导出对应 API。
+- 本地动态验证：新增默认忽略的 `crates/deepagent-app-core/tests/terminal_audit.rs::audit_direct_terminal_cursor_preserves_unreturned_output`，通过正式 TerminalService、Direct backend、实际 Windows ConPTY / cmd.exe 和临时文件 SQLite 运行。受控 `type payload.txt` 产生输出；先用正式旧版读取排空有界 transport 队列并保留历史，再让游标消费者附着。执行 `cargo test -p deepagent-app-core --test terminal_audit --offline -- --ignored --nocapture`，**0 passed / 1 failed**，约 0.45s：小输出对照 `first_bytes=3832, cursor=3832, next_bytes=0, tail_received=true`；大输出 `first_bytes=65536, cursor=107992, persisted_cursor=107992, next_bytes=0, truncated=false`。消费者按返回 cursor 继续读时收不到尾标记，而独立从实际返回长度 65536 读取仍得到 **42456 字节和完整尾标记**。所有 shell 均在缺陷断言前通过正式 close 关闭；精确总字节数包含本机控制序列和提示符，不作为跨机器固定常数。
+- SSH 动态验证：`cargo test -p deepagent-ssh audit_ssh_terminal_cursor_preserves_unreturned_output --offline -- --ignored --nocapture`，**0 passed / 1 failed**，约 0.00s（首次依赖编译约 28.77s）。测试将 4 KiB transport chunks 放入正式 SshSession 的 PTY receiver，调用真实 reader，不替换读取算法。16 KiB 对照完整；96 KiB 组为 `source=98304, first=65536, cursor=98304, next=0, suffix=32768, truncated=false`，未返回后缀的每个字节均与来源相符。这里只验证会话缓冲/分页，无远程 SSH 登录或实际网络丢包结论。
+- 探针限制与排错：本地夹具最初不读取 transport 就等待命令完成标记，分别在 10s / 3s 等待期失败；读取诊断显示命令确已输出但未执行后续标记。该夹具会让按 chunk 数限长的 transport 队列阻塞大量输出，不能当成产品缺陷。本次改为通过生产旧读取持续排空队列、完成后验证保留历史；没有增加生产超时或改动读取实现。未运行真实桌面游标重连、跨进程恢复、Linux/macOS PTY；未动态验证 SSH adapter 的 SQLite 写入，该分支仅由源码核对。
+- 成熟机制对照：Codex `core/src/unified_exec/process.rs::OutputBuffers` 在同一锁内记录 pending 与 transcript；`process_manager.rs::collect_output_until_deadline` 取走的 pending 完整进入本次收集，`head_tail_buffer.rs::HeadTailBuffer` 对预算淘汰独立累计 `omitted_bytes`，在输出路径提供 omission marker。它不是本系统相同的字节游标协议，不能直接照搬 DTO；可借鉴的是**消费位置对应实际交付范围、预算淘汰有明确损失信息**，不把缓存生产进度等同于已交付进度。
+- 影响与收敛方向（尚未实施，本地设计）：附着消费者会静默跳过尚在内存中的输出，持久化 cursor 也可能让恢复误以为已读取；例如命令错误或完成标记恰在后缀时会遗漏。复用现有终端契约，统一 local/SSH 的已生成范围、保留起点与本次返回终点，下一读取位置只能推进到本次实际返回末尾；历史淘汰仍单独显式报告。若需要客户端真正确认收到数据，还应由既有接口明确区分服务端返回位置与客户端 ACK，不能把本次已验证的返回前写库等同于网络交付成功。回归应覆盖多页、页内偏移、恰好上限、历史淘汰、重复/未来 cursor、并发生产和断线恢复；不新增第二套输出存储。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-123 本地终端与 SSH 游标探针 | 本地 `cargo test -p deepagent-app-core --test terminal_audit --offline -- --ignored --nocapture`：0 passed / 1 failed，实际 ConPTY 与 SQLite；SSH `cargo test -p deepagent-ssh audit_ssh_terminal_cursor_preserves_unreturned_output --offline -- --ignored --nocapture`：0 passed / 1 failed，正式 session reader / 受控 transport。两组小输出正常，大输出均在无历史淘汰时跳过保留后缀；生产尚未修改 |
+| H-123 相关正常基线 | `cargo test -p deepagent-ssh -p deepagent-terminal --offline`：SSH 1 passed / 2 ignored（含需真实服务器的既有集成测试），terminal 4 passed；`cargo test -p deepagent-app-core --lib terminal_ --offline`：9 passed，含终端服务、SQLite 租约和取消存储故障回归。未执行本批 workspace 全量、Clippy、桌面 build 或真实 Tauri 点击 |
 | H-122 provider 来源替换补充探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_video_resume_rejects_replaced_provider_identity --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.41s；原地址续跑总 submit=1，替换地址/占位凭据后 B 收到原 task ID 并返回 succeeded；仅本机 HTTP，无真实云端账号 |
 | H-122 来源探针默认基线与 fixture 所有权复核 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 8 ignored，约 0.17s；fixture 新增 provider service 保活后，H-120 重开测试显式 drop 该 owner，再按原命令复测仍 0 passed / 1 failed，约 0.17s，实时 6/落盘 0 的结论不变。fmt/diff 检查通过；未跑 workspace、Clippy、桌面构建或真实账号 |
 | H-122 修改提示词后的真实往返显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_edited_video_prompt_submits_a_new_task --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.72s；首次真实本机生成完成事件→生产 TS 修改/序列化→正式 Rust/网关第二次运行，两次 succeeded，仅 1 次 submit/2 次旧任务 poll，新提示词未发给供应商 |
@@ -2631,6 +2645,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45、H-119 | 摘要、prefire、正文、重试、工具、画布媒体 HTTP 和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误；本地停止不冒充云任务已撤销 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
+| 交互终端的分页范围与恢复游标 | H-123 | 既有 TerminalReadChunk / local 与 SSH reader 统一返回终点及淘汰语义；参考 Codex 将 pending 消费与明确 omission 信息分开，字节游标投影为本地设计 | 每页 cursor 不跳过未返回字节；大输出分页可还原；只有真实历史缺口才报告丢失；持久化/恢复不得将生产位置冒充已交付位置 |
 | 可选模型复核与主运行终态一致性 | H-61 | 既有取消树派生复核子 token，面板任务 owner 管理取消与 join，完成提交重查运行取消；参考 Codex 的有界 turn abort 和任务清理 | 取消后不提交成功；总时限/drop 不遗留复核请求；正常 PASS 仍完成，失败反馈有界，取消不当作普通复核失败 |
 | 停滞检测的取消与结果采纳 | H-62 | 既有模型取消入口及运行 token 覆盖分类等待、nudge 注入与重入；参考 Grok 分类 generation/idle 核对和 Codex turn abort | 分类中停止及时退出；取消不被 fail-open 吞成继续采样；无延迟新请求；最终取消映射保持正确 |
 | 附属模型调用的费用归属 | H-63 | 复用现有 SideCall/CostService，模型响应归属传递保留真实模型和 usage，独立于文本/判定采纳；参考 Claude 公共调用路径记录 usage | panel/classifier 成功或不采纳均记已返回量；缓存/模型准确；缺价保留 tokens；不误加上下文 gauge、不重复记账 |

@@ -10,6 +10,10 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex, RwLock};
 use tokio::task::JoinHandle;
 
+#[cfg(test)]
+#[path = "session_audit.rs"]
+mod audit;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SshPtyHandle {
     pub connection_id: String,
