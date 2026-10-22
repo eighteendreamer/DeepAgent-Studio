@@ -50,6 +50,21 @@ fn completed_text(text: &str) -> Vec<String> {
     ]
 }
 
+fn function_call(call_id: &str, name: &str, arguments: Value) -> Vec<String> {
+    let item = json!({
+        "type":"function_call",
+        "id":format!("item_{call_id}"),
+        "call_id":call_id,
+        "name":name,
+        "arguments":serde_json::to_string(&arguments).unwrap()
+    });
+    vec![
+        json!({"type":"response.output_item.added","item":item}).to_string(),
+        json!({"type":"response.output_item.done","item":item}).to_string(),
+        json!({"type":"response.completed","response":{"status":"completed"}}).to_string(),
+    ]
+}
+
 impl Fixture {
     async fn new(events: Vec<String>) -> Self {
         let temporary = tempfile::tempdir().unwrap();
@@ -203,6 +218,12 @@ async fn successful_final_hook_has_one_matching_live_and_durable_terminal() {
     let turn_id = fixture.run_turn().await;
     assert_durable_terminal(&fixture.read(), &turn_id, "succeeded");
     assert_eq!(fixture.terminals(&turn_id), ["turn.completed"]);
+    assert!(!fixture
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|event| { event["type"] == "approval.requested" && event["turnId"] == turn_id }));
     assert!(fixture.events.lock().unwrap().iter().any(|event| {
         event["item"]["eventType"] == "hook_completed"
             && event["item"]["data"]["event"] == "TaskCompleted"
@@ -220,6 +241,101 @@ async fn provider_error_has_one_matching_live_and_durable_terminal() {
     let turn_id = fixture.run_turn().await;
     assert_durable_terminal(&fixture.read(), &turn_id, "failed");
     assert_eq!(fixture.terminals(&turn_id), ["turn.failed"]);
+}
+
+#[tokio::test]
+#[ignore = "audit: one tool approval must produce one correlated approval.requested event"]
+async fn audit_tool_approval_emits_one_correlated_event() {
+    let call_id = "audit-approval-call";
+    let fixture = Fixture::new(function_call(
+        call_id,
+        "delete_path",
+        json!({"path":"must-not-be-deleted"}),
+    ))
+    .await;
+    let (response, launch) = fixture.state.lock().unwrap().dispatch(
+        rpc(
+            "turn/start",
+            json!({"threadId":fixture.thread_id,"input":"Request a guarded tool."}),
+        ),
+        None,
+    );
+    assert!(response.is_success());
+    let turn_id = response.result()["turnId"].as_str().unwrap().to_owned();
+    let launch = launch.expect("turn launch");
+    let chat = launch.chat.clone();
+    let events = fixture.events.clone();
+    let emitter: EventEmitter = Arc::new(move |event| {
+        events
+            .lock()
+            .unwrap()
+            .push(serde_json::to_value(event).unwrap());
+    });
+    spawn_turn(fixture.state.clone(), emitter, launch);
+
+    let observed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let count = fixture
+                .events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|event| event["type"] == "approval.requested" && event["turnId"] == turn_id)
+                .count();
+            let active = fixture
+                .state
+                .lock()
+                .unwrap()
+                .turns
+                .get(&turn_id)
+                .is_some_and(|turn| turn.active);
+            if count >= 2 || !active {
+                break count;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+
+    let requests: Vec<_> = fixture
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event["type"] == "approval.requested" && event["turnId"] == turn_id)
+        .cloned()
+        .collect();
+    assert!(chat.request_cancel(&turn_id).unwrap().accepted);
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if !fixture
+                .state
+                .lock()
+                .unwrap()
+                .turns
+                .get(&turn_id)
+                .is_some_and(|turn| turn.active)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("cancel the approval wait and finish the run");
+
+    assert!(!fixture.workspace.join("must-not-be-deleted").exists());
+    eprintln!("approval event audit: observed={observed:?}, requests={requests:?}");
+    assert!(
+        observed.is_ok(),
+        "approval request was not emitted before timeout"
+    );
+    assert_eq!(
+        requests.len(),
+        1,
+        "one approval generated multiple protocol events"
+    );
+    assert_eq!(requests[0]["approvalId"], call_id);
 }
 
 #[tokio::test]
@@ -252,17 +368,11 @@ async fn audit_final_hook_error_has_one_matching_live_and_durable_terminal() {
         .iter()
         .position(|event| event["event_type"] == "run_completed")
         .unwrap();
-    let hook_error = events
-        .iter()
-        .position(|event| {
-            event["event_type"] == "hook_completed" && event["data"]["event"] == "TaskCompleted"
-        })
-        .unwrap();
     let terminal = events
         .iter()
         .position(|event| event["event_type"] == "run_terminal")
         .unwrap();
-    assert!(completed < hook_error && hook_error < terminal);
+    assert!(completed < terminal);
     let reopened = dispatch(
         &mut fixture.reopened_state(),
         "thread/read",
