@@ -121,6 +121,7 @@
 1. **笔记请求次数断言失败**：真实用例在 `real_session_file_responses.rs` 的 `note_requests % 3 == 0` 处失败，观察到 6 次主 Agent 请求 + 4 次笔记请求。生产笔记代理允许正常工具循环，并未要求每轮恰好 3 次请求。需要核对笔记内容、游标及实际执行结果，不能把此计数直接认定为生产故障。
 2. **第一次与第二次上下文总量下降**：桌面两轮投影分别约 16.8k → 15.5k。分项中动态环境约 3723 → 1969 tokens，而对话分项 26 → 41 tokens；不能据总量下降认定历史丢失。需要继续验证动态环境变化来源和 wire history。
 3. **立即点击停止的自动化不一致**：两轮 agent-browser 批处理显示点击成功但最终运行成功；这些轮次数据库无取消审计。另一次通过 Playwright 记录真实 IPC 的立即停止成功。当前仅证明自动化点击记录不足以证明取消请求送达，尚不能认定系统存在同样的取消缺陷。
+4. **检查点捕获失败后的同对象重试契约**：`capture_before()` 在真正复制备份前就向 captured 集合插入路径；复制失败后标记未撤销。`checkpoint_audit.rs::audit_capture_failure_does_not_skip_backup_on_write_retry` 通过正式 ToolExecutionPipeline 和共享 read-before-write 缓存的真实文件工具复现：以测试 storage 的空 `files/0` 目录注入首次复制失败，文件保持 before-retry；只移除该空目录后显式再次调用同一 pipeline，write_file 成功，但最终 manifest entries=0、restore 返回 0 条，文件仍为 after-retry。对应正常备份/真实写入对照恢复 before-retry。执行 `cargo test -p deepagent-app-core --test checkpoint_audit capture --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.06s。这是底层同对象重试的不变量缺口，**尚不据此新增常规聊天缺陷编号**：当前 `loop_engine.rs::execute_tool_with_before_and_speculative()` 对 execute_prepared 的错误使用 `.await?` 传播，并非自动再调用同一 checkpoint；探针的第二次调用是测试显式发起，不能写成模型在真实普通 turn 中已经越过备份继续写入。后续需要证明生产恢复/复用入口的可达性，或明确该公共 API 禁止失败后复用的契约。Claude `fileHistoryTrackEdit()` 先完成 createBackup，成功后才提交 trackedFileBackups；其备份失败可能按可选能力处理，不据此声称其所有写入都必须因备份失败终止。本轮保留默认 ignored 探针及正常对照，生产行为未改。
 
 ## 已确认问题
 
@@ -1636,6 +1637,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 |---|---|
 | H-72 检查点恢复显式探针与正常对照（见该节命令） | 1 passed / 1 failed，约 0.22s；rewind/fork 缺失备份均导致当前文件不可读、健康文件已恢复，原历史和检查点未变；完整备份两入口对照通过。未操作用户文件、未运行真实桌面 |
 | H-72 存在性补强及默认基线 | 补强后显式探针 1 passed / 1 failed，约 0.19s，两个入口 current_file_exists=false。默认 `cargo test -p deepagent-app-core --test checkpoint_audit --offline`：1 passed / 1 ignored；`cargo test -p deepagent-app-core --test checkpoint_audit --lib service::tests --offline`：库测试 405 passed / 10 ignored / 688 filtered，集成因同一名字过滤运行 0 项，已另跑前述集成命令；`cargo test -p deepagent-runtime --lib checkpoint::tests --offline`：5 passed。fmt、diff 检查通过；未跑本批 workspace、Clippy、前端构建、公网模型或真实桌面，生产行为未修改 |
+| 检查点捕获同对象重试的待定证据 | 显式 capture 探针与对照 1 passed / 1 failed，约 0.06s；正式 pipeline/真实文件工具的第二次调用由测试发起，生产普通 loop 同对象重试尚未证明，不新增 H 编号。补充后默认 `cargo test -p deepagent-app-core --test checkpoint_audit --offline`：2 passed / 2 ignored，约 0.21s；fmt、diff 检查通过。仅测试与文档，未再次扩大到 workspace、Clippy、桌面或公网验证 |
 | H-71 模型输入模态显式探针及对照（见该节命令） | 1 passed / 1 failed，测试体 <0.01s；Flash 图片、Pro 文字对照完成，Pro 图片也到达 transport，目录未保留 input_modalities；无公网调用或完整桌面图片测试 |
 | H-71 模型 crate 默认基线 | `cargo test -p deepagent-models --offline`：单元测试 81 passed / 2 ignored，新增集成测试 1 passed / 1 ignored；fmt、diff 检查通过。缺陷探针已另行显式执行失败；未运行全 workspace、Clippy、前端构建、完整 AppCore 图片路由或公网供应商测试，本批仅审计测试与文档 |
 | H-70 历史图片内容身份显式探针（见该节命令） | 约 0.69s 明确失败；正常 wire 摘要等于导入值，替换组 metadata 保持原值但 wire 含替换 PNG 的摘要且续聊成功；仅改测试临时图片，无公网调用 |

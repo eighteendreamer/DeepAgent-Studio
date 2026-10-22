@@ -157,3 +157,110 @@ fn audit_missing_backup_preserves_current_file_on_failed_rewind_and_fork() {
         );
     }
 }
+
+#[derive(Debug)]
+struct CaptureRetryObservation {
+    write_succeeded: bool,
+    backup_count: usize,
+    restored_count: usize,
+    content_after_restore: String,
+}
+
+async fn observe_capture_retry(fail_first_capture: bool) -> CaptureRetryObservation {
+    use deepagent_builtins::{file_tools::file_tools, fs_guard::WorkspaceRoot};
+    use deepagent_runtime::tool_pipeline::ToolExecutionPipeline;
+    use deepagent_tools::{PermissionSet, ToolInvocation, ToolRegistry};
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let clock = FixedClock::new(1_000);
+    let session = Session::create(&db, &clock, Some("capture retry audit")).unwrap();
+    let session_id = session.id();
+    RunStore::new(&db)
+        .create("audit-capture-run", &session_id.to_string(), None, 1_000)
+        .unwrap();
+    let workspace = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let target = workspace.path().join("retry.txt");
+    std::fs::write(&target, "before-retry").unwrap();
+    let checkpoint = Arc::new(
+        CheckpointManager::new(
+            db.clone(),
+            "audit-capture-run",
+            0,
+            workspace.path(),
+            storage.path(),
+        )
+        .unwrap(),
+    );
+    let mut registry = ToolRegistry::new();
+    for tool in file_tools(WorkspaceRoot::new(workspace.path())) {
+        registry.register(tool).unwrap();
+    }
+    let pipeline = ToolExecutionPipeline::new(&registry, session_id, PermissionSet::developer())
+        .with_auto_approve(true)
+        .with_checkpoint(Some(checkpoint.clone()));
+    // Use the real shared read cache required by the real overwrite tool.
+    let read = pipeline
+        .execute(ToolInvocation::new(
+            "read_file",
+            serde_json::json!({"path": target}),
+        ))
+        .await
+        .unwrap();
+    assert!(read.output.ok);
+    let write = || {
+        ToolInvocation::new(
+            "write_file",
+            serde_json::json!({"path": target, "content": "after-retry"}),
+        )
+    };
+    if fail_first_capture {
+        // The production destination for the first backup must be a file.
+        // An empty directory there injects a real copy error without permissions
+        // assumptions; removing only that empty fixture directory repairs it.
+        let blocked_destination = storage.path().join(checkpoint.id()).join("files/0");
+        assert!(blocked_destination.starts_with(storage.path()));
+        std::fs::create_dir(&blocked_destination).unwrap();
+        assert!(pipeline.execute(write()).await.is_err());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "before-retry");
+        assert!(CheckpointStore::new(&db)
+            .get(checkpoint.id())
+            .unwrap()
+            .is_none());
+        std::fs::remove_dir(&blocked_destination).unwrap();
+    }
+    let written = pipeline.execute(write()).await.unwrap();
+    let id = checkpoint.commit().unwrap();
+    let record = CheckpointStore::new(&db).get(&id).unwrap().unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&record.manifest).unwrap();
+    let restored = CheckpointManager::restore(&db, &id).unwrap();
+    CaptureRetryObservation {
+        write_succeeded: written.output.ok,
+        backup_count: manifest["entries"].as_array().unwrap().len(),
+        restored_count: restored.len(),
+        content_after_restore: std::fs::read_to_string(&target).unwrap(),
+    }
+}
+
+#[tokio::test]
+async fn successful_capture_before_real_write_remains_restorable() {
+    let observed = observe_capture_retry(false).await;
+    assert!(observed.write_succeeded);
+    assert_eq!(observed.backup_count, 1);
+    assert_eq!(observed.restored_count, 1);
+    assert_eq!(observed.content_after_restore, "before-retry");
+}
+
+#[tokio::test]
+#[ignore = "audit: failed capture must not poison deduplication of the next real write"]
+async fn audit_capture_failure_does_not_skip_backup_on_write_retry() {
+    let observed = observe_capture_retry(true).await;
+    eprintln!("checkpoint capture retry audit: {observed:?}");
+    assert!(observed.write_succeeded);
+    assert_eq!(
+        observed.backup_count, 1,
+        "retry must capture the original file"
+    );
+    assert_eq!(observed.restored_count, 1);
+    assert_eq!(observed.content_after_restore, "before-retry");
+}
