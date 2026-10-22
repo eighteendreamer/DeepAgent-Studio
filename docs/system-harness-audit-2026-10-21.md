@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94；H-93/H-94 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98；H-93/H-94/H-98 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
@@ -1936,6 +1936,17 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 当前证据只证明 stopping tick loop 不影响已经派发的模型请求；并未关闭 Tauri 整个 runtime、杀进程、验证启动恢复或真实供应商调用。桌面宿主退出时后台 future 如何被 runtime drop 处理，以及数据库记录如何重启恢复，仍需单独验证。
 - 收敛方向（尚未实施，本地设计）：为 CronService 的 fire 工作建立明确 owner。宿主 shutdown 时停止接纳新 occurrence，再按既有 RunCoordinator 取消/等待已运行项并记录终态；如果产品语义要求 fire 独立于调度器继续运行，则至少要由宿主级任务 supervisor 持有并在重启时恢复/呈现。运行 ID 与稳定 occurrence identity 关联应复用现有 RunStore，不另建任务 store。验收需覆盖 fire 前 shutdown、模型请求中、工具/审批等待、取消审计失败、正常完成竞争、真实桌面退出与重启，且一个 scheduler shutdown 不能影响其他会话或插件宿主任务。
 
+### H-98：DeepSeek Chat Completions 的 JSON 输出模式被拒绝或静默丢弃
+
+**级别：低（P3，条件性适配器缺陷）；触发条件：显式使用公开 `WireMode::ChatCompletions`，并通过 `ResponseRequest.text` 或客户端默认值请求 `json_object`。** 当前桌面模型组装固定使用 Responses，因此本项不覆盖默认桌面对话。DeepSeek Chat 文档支持 `text` 和 `json_object`；不把 Responses 的 JSON Schema 格式假定为 Chat 协议能力。
+
+- 根因与生产路径：`ModelClient::stream_response_observed()` 将 Chat 路由交给 `response_to_chat_completion()`。该函数遇到任何 `request.text` 都在发送前返回 `text response format is not supported by DeepSeek Chat Completions`，没有区分官方支持的 `json_object`。若调用方将格式放在 `ModelConfig.defaults.text`，Chat 路径调用的 `apply_chat_defaults()` 不读取该字段；`ChatCompletionRequest` 与自定义 serializer 也没有 `response_format`，所以该默认值不会进入 wire，且不会报错。
+- 动态复现：`client::tests::audit_chat_json_object_format_reaches_provider_request` 走请求级值 → 转换器 → serializer，实际在 transport 前被上述错误拒绝（**0 passed / 1 failed**）。`client::tests::audit_chat_default_json_object_format_reaches_provider_request` 走正式 `ModelClient::stream_response()`、Chat 默认值、受控 transport 和 wire 捕获；模型请求成功到达 transport，但 wire 的 `response_format` 为缺失（**0 passed / 1 failed**）。两个测试都没有调用公网供应商。
+- 官方依据（2026-10-22 核对）：DeepSeek [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion) 的 `response_format` 描述声明 `{ "type": "json_object" }` 开启 JSON Output，允许值为 `text`、`json_object`；该 schema 未声明 `json_schema`。JSON Output 还要求提示词指示模型输出 JSON，否则文档提示可能持续生成空白直至 token 上限。
+- 成熟实现对照：Claude Code SDK 在 `entrypoints/sdk/coreSchemas.ts` 显式定义 `json_schema` 输出格式；Grok `acp_session_impl/turn.rs` 校验 schema，并根据 backend 能力选择原生 schema 或 `StructuredOutput` 工具回退。两者使用各自协议，不能据此将 JSON Schema wire 形状套到 DeepSeek Chat。DeepSeek Harness 的 `llm-deepseek` 使用 Messages 协议，本次代码搜索未发现同构 Chat `response_format` serializer，因此以 DeepSeek 官方 Chat 字段定义为本项的协议依据。可借鉴的工程边界是结构化格式需要显式校验、按 adapter 能力映射或拒绝，不能静默丢弃。
+- 影响及限制：显式请求 JSON 输出的 Chat 调用会在本地失败；仅设置默认值时调用表面成功但模型没有收到 JSON 模式约束。未验证真实供应商下游表现、最终回答格式或实际 Chat 生产调用频率。`select_run_model()` 固定选择 Responses，故不外推为桌面默认请求故障。
+- 收敛方向（尚未实施，本地设计）：在现有 Chat adapter 增加 provider 明确支持的 `response_format` 表达，将 `ResponseRequest.text.format.type=json_object` 和配置默认值统一解析并序列化为 DeepSeek Chat `{ "type": "json_object" }`；对 `json_schema`、未知类型或其余 Responses-only 形状在发送前给出明确的不支持错误。补充请求级、默认值、`text` 模式和不支持模式的 wire/拒绝回归，不改 Messages/Responses 协议。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1959,6 +1970,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-96 派发后记账失败/重启重放显式探针 | `cargo test -p deepagent-runtime --test schedule_audit audit_post_fire_bookkeeping_failure_replays_same_occurrence --offline -- --ignored --nocapture`：1 passed；one-shot 与 recurring 均在 callback 后触发存储错误，重建 scheduler 后 callback count=2。正式 `CronScheduler` 与 Windows 文件权限、临时 workspace；未执行 `ChatService`/模型/工具，也未启动真实桌面 |
 | H-96 默认探针基线与检查 | `cargo test -p deepagent-runtime --test schedule_audit --offline`：0 passed / 2 ignored；H-42/H-96 均是显式审计探针。`cargo fmt --all -- --check`、`git diff --check` 通过；本批未跑全 workspace、Clippy、桌面构建或真实 Tauri |
 | H-97 scheduler shutdown 与在途 run 显式探针 | `cargo test -p deepagent-app-core --lib audit_scheduler_shutdown_leaves_started_cron_run_active --offline -- --ignored --nocapture`：1 passed，预期复现为 scheduler 已返回、run 未终结、模型取消未观察到；之后通过正式 run cancel 完成清理。真实 CronService/ChatService/RunStore、挂起型离线 transport；未关闭整个 Tauri/CLI 进程、未调用公网或工具 |
+| H-98 Chat JSON 输出请求级与默认值显式探针 | `cargo test -p deepagent-models audit_chat_json_object_format_reaches_provider_request --offline -- --ignored --nocapture`：0 passed / 1 failed，显式 `json_object` 在 transport 前被拒绝；`cargo test -p deepagent-models audit_chat_default_json_object_format_reaches_provider_request --offline -- --ignored --nocapture`：0 passed / 1 failed，正式 Chat 请求到达受控 transport，但 wire 未含 `response_format`。官方 DeepSeek Chat 文档核对支持 `text/json_object`；无公网调用，桌面默认 Responses 路径不在本项范围 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |

@@ -533,6 +533,80 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: map the supported DeepSeek Chat JSON response format"]
+    fn audit_chat_json_object_format_reaches_provider_request() {
+        let mut request = ResponseRequest::new("deepseek-flash", Vec::new());
+        request.text = Some(serde_json::json!({
+            "format": { "type": "json_object" }
+        }));
+
+        let chat = response_to_chat_completion(request)
+            .expect("DeepSeek Chat Completions supports JSON object response_format");
+        let wire = serde_json::to_value(chat).unwrap();
+        assert_eq!(
+            wire["response_format"],
+            serde_json::json!({ "type": "json_object" })
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: Chat Completions must apply its configured JSON response format"]
+    async fn audit_chat_default_json_object_format_reaches_provider_request() {
+        struct CaptureBodyTransport {
+            body: Arc<std::sync::Mutex<Option<String>>>,
+            events: Vec<String>,
+        }
+
+        #[async_trait]
+        impl HttpTransport for CaptureBodyTransport {
+            async fn stream(
+                &self,
+                request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                *self.body.lock().unwrap() = Some(request.body);
+                for event in &self.events {
+                    if sink.on_event(event)? {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let transport = Arc::new(CaptureBodyTransport {
+            body: captured.clone(),
+            events: vec![
+                r#"{"choices":[{"delta":{"content":"{}"},"finish_reason":null}]}"#.into(),
+                r#"{"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}"#.into(),
+                r#"{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"choices":[]}"#.into(),
+                "[DONE]".into(),
+            ],
+        });
+        let mut config = ModelConfig::deepseek_chat("test-key");
+        config.defaults.text = Some(serde_json::json!({
+            "format": { "type": "json_object" }
+        }));
+        let client = ModelClient::new(transport, config);
+
+        client
+            .stream_response(ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("Return a JSON object.")],
+            ))
+            .await
+            .unwrap();
+
+        let body = captured.lock().unwrap().clone().unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            wire["response_format"],
+            serde_json::json!({ "type": "json_object" })
+        );
+    }
+
+    #[test]
     #[ignore = "audit reproducer: translate Responses defaults to Chat Completions shape"]
     fn audit_chat_tool_choice_translates_default_shape() {
         let mut config = ModelConfig::deepseek_chat("test-key");
