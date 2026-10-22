@@ -1756,14 +1756,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         None,
                         None,
                     )?,
-                    _ if self
-                        .cancel
-                        .as_ref()
-                        .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) =>
-                    {
-                        persistence
-                            .cancel(&call_id, "parallel tool execution observed cancellation")?
-                    }
+                    _ if self.is_cancelled() => persistence
+                        .cancel(&call_id, "parallel tool execution observed cancellation")?,
                     _ => persistence.fail(&call_id, "parallel tool execution failed")?,
                 }
             }

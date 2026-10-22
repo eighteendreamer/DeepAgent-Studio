@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_tools::ToolExecutionContext;
 
 use crate::client::McpClient;
 use crate::liveness::{LivenessConfig, LivenessProbe};
@@ -219,6 +220,31 @@ impl McpRegistry {
         connected
             .client
             .call_tool(&tool.local_name, arguments)
+            .await
+    }
+
+    /// Invoke a namespaced tool with run-scoped cancellation controls.
+    pub async fn invoke_with_context(
+        &self,
+        namespaced: &str,
+        arguments: serde_json::Value,
+        context: ToolExecutionContext,
+    ) -> Result<ToolCallResult> {
+        if split_namespaced(namespaced).is_none() {
+            return Err(CoreError::invalid(format!(
+                "not an MCP tool name: {namespaced}"
+            )));
+        }
+        let tool = self
+            .find_tool(namespaced)
+            .ok_or_else(|| CoreError::not_found(format!("MCP tool '{namespaced}'")))?;
+        let connected = self
+            .servers
+            .get(&tool.server)
+            .ok_or_else(|| CoreError::not_found(format!("MCP server '{}'", tool.server)))?;
+        connected
+            .client
+            .call_tool_with_context(&tool.local_name, arguments, context)
             .await
     }
 

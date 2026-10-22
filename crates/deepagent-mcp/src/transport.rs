@@ -14,14 +14,37 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_tools::ToolExecutionContext;
 
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
+
+pub(crate) const MCP_CANCELLED_UNKNOWN_OUTCOME: &str =
+    "MCP tool call cancelled; the remote outcome may be unknown";
+pub(crate) const MCP_CANCELLED_BEFORE_DISPATCH: &str = "MCP tool call cancelled before dispatch";
 
 /// Sends JSON-RPC requests to an MCP server.
 #[async_trait]
 pub trait McpTransport: Send + Sync {
     /// Send `request` and await the correlated response.
     async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse>;
+
+    /// Send a request with the current run's cancellation controls. Transports
+    /// with native cancellation support should override this to cancel the
+    /// request and notify the peer; the default still stops waiting locally.
+    async fn send_with_context(
+        &self,
+        request: &JsonRpcRequest,
+        context: ToolExecutionContext,
+    ) -> Result<JsonRpcResponse> {
+        if context.is_cancelled() {
+            return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
+        }
+        tokio::select! {
+            biased;
+            _ = context.cancelled() => Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME)),
+            result = self.send(request) => result,
+        }
+    }
 
     /// Close the transport / terminate the server process.
     async fn close(&self) -> Result<()> {

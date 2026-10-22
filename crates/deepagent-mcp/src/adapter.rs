@@ -12,7 +12,7 @@ use async_trait::async_trait;
 
 use deepagent_core::error::Result;
 use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};
-use deepagent_tools::{Tool, ToolDescriptor, ToolOutput};
+use deepagent_tools::{Tool, ToolDescriptor, ToolExecutionContext, ToolOutput};
 
 use crate::registry::{McpRegistry, RemoteTool};
 
@@ -46,6 +46,29 @@ impl Tool for McpToolAdapter {
         let result = self
             .registry
             .invoke(&self.tool.namespaced_name, arguments)
+            .await?;
+        let text = result.text();
+        let is_error = result.is_error;
+        let mut value = serde_json::to_value(result)?;
+        value["text"] = text.clone().into();
+        if is_error {
+            value["error"] = text.into();
+        }
+        Ok(ToolOutput {
+            ok: !is_error,
+            value,
+            truncated: false,
+        })
+    }
+
+    async fn invoke_with_context(
+        &self,
+        arguments: serde_json::Value,
+        context: ToolExecutionContext,
+    ) -> Result<ToolOutput> {
+        let result = self
+            .registry
+            .invoke_with_context(&self.tool.namespaced_name, arguments, context)
             .await?;
         let text = result.text();
         let is_error = result.is_error;

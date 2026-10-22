@@ -869,7 +869,7 @@ impl<'a> ToolExecutionPipeline<'a> {
         if let Some(persistence) = self.action_persistence.as_ref() {
             if output.ok {
                 persistence.transition(&prepared.call_id, RunActionState::Completed, None, None)?;
-            } else if self.cancel.load(std::sync::atomic::Ordering::Acquire) {
+            } else if self.is_cancelled() {
                 persistence.cancel(&prepared.call_id, "tool execution observed cancellation")?;
             } else {
                 persistence.fail(&prepared.call_id, "tool execution failed")?;
@@ -989,6 +989,10 @@ mod tests {
 
     struct CancellationAwareTool;
 
+    struct WaitForCancellationTool {
+        started: Arc<tokio::sync::Notify>,
+    }
+
     #[async_trait]
     impl Tool for CountingTool {
         fn descriptor(&self) -> ToolDescriptor {
@@ -1101,6 +1105,35 @@ mod tests {
         }
     }
 
+    #[async_trait]
+    impl Tool for WaitForCancellationTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "wait_for_cancellation".into(),
+                description: "waits until the run is cancelled".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::read_only(),
+            }
+        }
+
+        async fn invoke(&self, _arguments: serde_json::Value) -> Result<ToolOutput> {
+            unreachable!("the context-aware implementation must be used")
+        }
+
+        async fn invoke_with_context(
+            &self,
+            _arguments: serde_json::Value,
+            context: ToolExecutionContext,
+        ) -> Result<ToolOutput> {
+            self.started.notify_one();
+            context.cancelled().await;
+            Err(deepagent_core::error::CoreError::other(
+                "tool cancelled by run",
+            ))
+        }
+    }
+
     struct CountingHook(Arc<AtomicUsize>);
 
     struct FileChangeHook(Arc<Mutex<Vec<(String, String)>>>);
@@ -1196,6 +1229,7 @@ mod tests {
             registry.get("counting").is_some()
                 || registry.get("delayed").is_some()
                 || registry.get("cancellation_aware").is_some()
+                || registry.get("wait_for_cancellation").is_some()
         );
         (db, persistence)
     }
@@ -1579,6 +1613,56 @@ mod tests {
         assert_eq!(
             RunControlStore::new(&cancel_db)
                 .get_action("run-action-test", "call-cancelled")
+                .unwrap()
+                .unwrap()
+                .state,
+            RunActionState::Cancelled
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_token_marks_active_tool_action_cancelled() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(WaitForCancellationTool {
+                started: started.clone(),
+            }))
+            .unwrap();
+        let (db, persistence) = action_fixture(&registry);
+        let mut invocations =
+            vec![
+                ToolInvocation::new("wait_for_cancellation", serde_json::json!({}))
+                    .with_id("call-token-cancelled"),
+            ];
+        persistence
+            .register_invocations(&mut invocations, &registry)
+            .unwrap();
+
+        let token = CancellationToken::new();
+        let run_token = token.clone();
+        let run = tokio::spawn(async move {
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_execution_token(Some(run_token))
+                .with_action_persistence(Some(persistence))
+                .execute(invocations.remove(0))
+                .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(1), started.notified())
+            .await
+            .expect("tool should begin before cancellation");
+        token.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(1), run)
+            .await
+            .expect("active tool should observe its cancellation token")
+            .unwrap()
+            .unwrap();
+        assert!(!result.output.ok);
+        assert_eq!(result.call_id, "call-token-cancelled");
+        assert_eq!(
+            RunControlStore::new(&db)
+                .get_action("run-action-test", "call-token-cancelled")
                 .unwrap()
                 .unwrap()
                 .state,

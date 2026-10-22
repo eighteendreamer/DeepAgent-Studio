@@ -35,13 +35,16 @@ use std::time::Duration;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use deepagent_core::error::Result;
+use deepagent_core::error::{CoreError, Result};
+use deepagent_tools::ToolExecutionContext;
 
 use crate::client::McpClient;
 use crate::config::McpServerConfig;
 use crate::connect::connect_transport;
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
-use crate::transport::McpTransport;
+use crate::transport::{
+    McpTransport, MCP_CANCELLED_BEFORE_DISPATCH, MCP_CANCELLED_UNKNOWN_OUTCOME,
+};
 
 /// Grok's bounded stdio-restart backoff schedule (`mcp_restart.rs::BACKOFF`):
 /// three attempts at +1s / +4s / +16s (~21s total window).
@@ -190,6 +193,74 @@ impl McpTransport for ReconnectingTransport {
                     tracing::warn!(attempt, error = %error, "MCP reconnect attempt failed");
                     last_error = error;
                     continue;
+                }
+            }
+        }
+        tracing::warn!(
+            attempts = self.backoff.len(),
+            "MCP reconnect budget exhausted; surfacing transport error"
+        );
+        Err(last_error)
+    }
+
+    async fn send_with_context(
+        &self,
+        request: &JsonRpcRequest,
+        context: ToolExecutionContext,
+    ) -> Result<JsonRpcResponse> {
+        if context.is_cancelled() {
+            return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
+        }
+        let current = self.inner.lock().await.clone();
+        match current.send_with_context(request, context.clone()).await {
+            Ok(response) => return Ok(response),
+            Err(_) if context.is_cancelled() => {
+                return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME));
+            }
+            Err(error) if is_transport_closed_error(&error) => {
+                tracing::warn!(
+                    error = %error,
+                    "MCP transport closed mid-request; attempting bounded reconnect"
+                );
+            }
+            Err(error) => return Err(error),
+        }
+
+        let mut last_error = CoreError::other("MCP transport closed; reconnect not attempted");
+        for (idx, wait) in self.backoff.iter().enumerate() {
+            let attempt = idx + 1;
+            tokio::select! {
+                biased;
+                _ = context.cancelled() => return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME)),
+                _ = tokio::time::sleep(*wait) => {}
+            }
+            let reconnected = tokio::select! {
+                biased;
+                _ = context.cancelled() => return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME)),
+                result = self.factory.reconnect() => result,
+            };
+            match reconnected {
+                Ok(fresh) => {
+                    if context.is_cancelled() {
+                        return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME));
+                    }
+                    tracing::info!(attempt, "MCP transport reconnected; retrying request");
+                    *self.inner.lock().await = fresh.clone();
+                    match fresh.send_with_context(request, context.clone()).await {
+                        Ok(response) => return Ok(response),
+                        Err(_) if context.is_cancelled() => {
+                            return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME));
+                        }
+                        Err(error) if is_transport_closed_error(&error) => {
+                            last_error = error;
+                            continue;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(attempt, error = %error, "MCP reconnect attempt failed");
+                    last_error = error;
                 }
             }
         }

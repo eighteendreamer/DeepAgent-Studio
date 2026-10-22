@@ -29,8 +29,7 @@ impl HttpTransport for McpCancellationModel {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: stopping a run must cancel its in-flight stdio MCP tool call"]
-async fn audit_stopping_run_interrupts_inflight_mcp_call() {
+async fn stopping_run_interrupts_inflight_stdio_mcp_call() {
     let root = tempfile::tempdir().unwrap();
     let script = root.path().join("held-tool-mcp.cjs");
     let started = root.path().join("tool-call-started");
@@ -155,13 +154,16 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
     std::fs::write(&release, "release").unwrap();
     let run_result = tokio::time::timeout(Duration::from_secs(5), run)
         .await
-        .expect("the released MCP response must let the run finish")
+        .expect("the cancelled MCP tool call must let the run finish")
         .expect("chat task must not panic");
     ready.close_all().await.unwrap();
     let terminal = deepagent_persistence::run_store::RunStore::new(&db)
         .get("audit-cancel-inflight-mcp")
         .unwrap()
         .expect("the cancelled run must persist a terminal record");
+    let events = deepagent_persistence::run_store::RunStore::new(&db)
+        .events_after("audit-cancel-inflight-mcp", None)
+        .unwrap();
 
     eprintln!(
         "MCP cancellation audit: accepted={}, run_still_waiting_after_250ms={}, cancellation_notification_received={}, terminal_kind={:?}, model_requests={}",
@@ -188,4 +190,15 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         "the cancelled run should finalize cleanly"
     );
     assert_eq!(terminal.terminal_kind.as_deref(), Some("cancelled"));
+    assert_eq!(model.calls.load(Ordering::Acquire), 1);
+    assert!(
+        events.iter().any(|event| {
+            let error = event.data["output"]["error"].as_str().unwrap_or_default();
+            event.event_type == "tool_completed"
+                && event.data["call_id"] == "audit-cancel-mcp-call"
+                && event.data["ok"] == false
+                && error.contains("remote outcome may be unknown")
+        }),
+        "the interrupted MCP tool call must have a paired failure result"
+    );
 }

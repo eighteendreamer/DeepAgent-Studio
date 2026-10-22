@@ -18,10 +18,13 @@ use tokio::sync::Mutex;
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::redaction::{is_secret_key, scrub_secret_literals};
+use deepagent_tools::ToolExecutionContext;
 
 use crate::config::McpServerConfig;
 use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
-use crate::transport::McpTransport;
+use crate::transport::{
+    McpTransport, MCP_CANCELLED_BEFORE_DISPATCH, MCP_CANCELLED_UNKNOWN_OUTCOME,
+};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
@@ -156,6 +159,81 @@ impl StdioTransport {
             format!("{reason}{status}; stderr: {diagnostic}")
         })
     }
+
+    async fn send_cancelled_notification(&self, request_id: u64, reason: &str) -> Result<()> {
+        let line = serde_json::json!({
+            "jsonrpc": crate::protocol::JSONRPC_VERSION,
+            "method": "notifications/cancelled",
+            "params": { "requestId": request_id, "reason": reason }
+        });
+        let mut wire = serde_json::to_string(&line)?;
+        wire.push('\n');
+        let mut stdin = self.stdin.lock().await;
+        stdin
+            .write_all(wire.as_bytes())
+            .await
+            .map_err(|error| CoreError::other(format!("write MCP cancellation failed: {error}")))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|error| CoreError::other(format!("flush MCP cancellation failed: {error}")))
+    }
+
+    async fn notify_cancelled_bounded(&self, request_id: u64) {
+        match tokio::time::timeout(
+            Duration::from_millis(50),
+            self.send_cancelled_notification(request_id, "user requested cancellation"),
+        )
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                tracing::debug!(%error, request_id, "could not send MCP cancellation notification")
+            }
+            Err(_) => tracing::debug!(request_id, "MCP cancellation notification write timed out"),
+        }
+    }
+
+    async fn write_request(&self, request: &JsonRpcRequest) -> Result<()> {
+        let mut line = serde_json::to_string(request)?;
+        line.push('\n');
+        let mut stdin = self.stdin.lock().await;
+        if let Err(error) = stdin.write_all(line.as_bytes()).await {
+            return Err(self
+                .disconnect_error(&format!("write to MCP server failed: {error}"))
+                .await);
+        }
+        if let Err(error) = stdin.flush().await {
+            return Err(self
+                .disconnect_error(&format!("flush to MCP server failed: {error}"))
+                .await);
+        }
+        Ok(())
+    }
+
+    async fn read_response(&self, request_id: u64) -> Result<JsonRpcResponse> {
+        let mut reader = self.stdout.lock().await;
+        loop {
+            let mut buf = String::new();
+            let n = reader.read_line(&mut buf).await.map_err(|error| {
+                CoreError::other(format!("read from MCP server failed: {error}"))
+            })?;
+            if n == 0 {
+                return Err(self
+                    .disconnect_error("MCP server closed the connection")
+                    .await);
+            }
+            let trimmed = buf.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
+                if response.id == request_id {
+                    return Ok(response);
+                }
+            }
+        }
+    }
 }
 
 impl Drop for StdioTransport {
@@ -170,49 +248,32 @@ impl Drop for StdioTransport {
 #[async_trait]
 impl McpTransport for StdioTransport {
     async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
-        // Write the request as a single JSON line.
-        let mut line = serde_json::to_string(request)?;
-        line.push('\n');
-        {
-            let mut stdin = self.stdin.lock().await;
-            let written = stdin.write_all(line.as_bytes()).await;
-            if let Err(error) = written {
-                return Err(self
-                    .disconnect_error(&format!("write to MCP server failed: {error}"))
-                    .await);
-            }
-            if let Err(error) = stdin.flush().await {
-                return Err(self
-                    .disconnect_error(&format!("flush to MCP server failed: {error}"))
-                    .await);
-            }
+        self.write_request(request).await?;
+        self.read_response(request.id).await
+    }
+
+    async fn send_with_context(
+        &self,
+        request: &JsonRpcRequest,
+        context: ToolExecutionContext,
+    ) -> Result<JsonRpcResponse> {
+        if context.is_cancelled() {
+            return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
+        }
+        let request_id = request.id;
+        self.write_request(request).await?;
+        if context.is_cancelled() {
+            self.notify_cancelled_bounded(request_id).await;
+            return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME));
         }
 
-        // Read lines until we find the response with the matching id.
-        let mut reader = self.stdout.lock().await;
-        loop {
-            let mut buf = String::new();
-            let n = reader
-                .read_line(&mut buf)
-                .await
-                .map_err(|e| CoreError::other(format!("read from MCP server failed: {e}")))?;
-            if n == 0 {
-                return Err(self
-                    .disconnect_error("MCP server closed the connection")
-                    .await);
+        tokio::select! {
+            biased;
+            _ = context.cancelled() => {
+                self.notify_cancelled_bounded(request_id).await;
+                Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME))
             }
-            let trimmed = buf.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            // Try to parse as a response; skip lines that are notifications
-            // (no id) or unrelated.
-            if let Ok(resp) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
-                if resp.id == request.id {
-                    return Ok(resp);
-                }
-            }
-            // Otherwise keep reading (notification / log line).
+            result = self.read_response(request_id) => result,
         }
     }
 

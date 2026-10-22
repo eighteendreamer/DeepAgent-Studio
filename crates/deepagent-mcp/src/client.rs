@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_tools::ToolExecutionContext;
 
 use crate::protocol::{
     JsonRpcRequest, McpToolDef, ToolCallResult, ToolsListResult, MCP_PROTOCOL_VERSION,
@@ -38,8 +39,20 @@ impl McpClient {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<serde_json::Value> {
+        self.call_inner(method, params, None).await
+    }
+
+    async fn call_inner(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+        context: Option<ToolExecutionContext>,
+    ) -> Result<serde_json::Value> {
         let req = JsonRpcRequest::new(self.next_id(), method, params);
-        let resp = self.transport.send(&req).await?;
+        let resp = match context {
+            Some(context) => self.transport.send_with_context(&req, context).await?,
+            None => self.transport.send(&req).await?,
+        };
         if let Some(err) = resp.error {
             return Err(CoreError::other(format!(
                 "MCP error {} on {method}: {}",
@@ -76,6 +89,21 @@ impl McpClient {
     ) -> Result<ToolCallResult> {
         let params = serde_json::json!({ "name": name, "arguments": arguments });
         let result = self.call("tools/call", Some(params)).await?;
+        let parsed: ToolCallResult = serde_json::from_value(result)?;
+        Ok(parsed)
+    }
+
+    /// Invoke a remote tool with the current run's cancellation controls.
+    pub async fn call_tool_with_context(
+        &self,
+        name: &str,
+        arguments: serde_json::Value,
+        context: ToolExecutionContext,
+    ) -> Result<ToolCallResult> {
+        let params = serde_json::json!({ "name": name, "arguments": arguments });
+        let result = self
+            .call_inner("tools/call", Some(params), Some(context))
+            .await?;
         let parsed: ToolCallResult = serde_json::from_value(result)?;
         Ok(parsed)
     }
