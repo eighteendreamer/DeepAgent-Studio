@@ -2,9 +2,12 @@
 
 use super::*;
 use deepagent_models::ModelRole;
+use deepagent_persistence::cost_store::{CostStore, SessionUsageTotals};
+use deepagent_runtime::RuntimeEvent;
 
 struct IncompleteModel {
     reason: &'static str,
+    incomplete_responses: usize,
     requests: Mutex<Vec<serde_json::Value>>,
 }
 
@@ -16,10 +19,12 @@ impl HttpTransport for IncompleteModel {
             requests.push(serde_json::from_str(&request.body).unwrap());
             requests.len()
         };
-        // Two incomplete responses exercise escalation and continuation separately.
-        // The final response closes the bounded fixture even when the client retries incorrectly.
-        assert!(attempt <= 3, "unexpected extra model request");
-        let incomplete = attempt < 3;
+        // A following completed response bounds the fixture if the client retries.
+        assert!(
+            attempt <= self.incomplete_responses + 1,
+            "unexpected extra model request"
+        );
+        let incomplete = attempt <= self.incomplete_responses;
         let text = if incomplete {
             "AUDIT_PARTIAL"
         } else {
@@ -38,7 +43,11 @@ impl HttpTransport for IncompleteModel {
         });
         let mut response = serde_json::json!({
             "id":id,"object":"response","status":status,"output":[item],
-            "usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}
+            "usage":{
+                "input_tokens":12 * attempt,
+                "input_tokens_details":{"cached_tokens":4 * attempt},
+                "output_tokens":6 * attempt,"total_tokens":18 * attempt
+            }
         });
         if incomplete {
             response["incomplete_details"] = serde_json::json!({"reason":self.reason});
@@ -63,7 +72,51 @@ impl HttpTransport for IncompleteModel {
     }
 }
 
-async fn observe_incomplete_reason(reason: &'static str) -> (bool, usize, String, bool) {
+fn assert_attempt_usage(
+    db: &Database,
+    session_id: &str,
+    events: &[RuntimeEvent],
+    request_count: usize,
+) -> SessionUsageTotals {
+    let reported: Vec<_> = events
+        .iter()
+        .filter_map(|event| match event {
+            RuntimeEvent::Usage {
+                prompt_tokens,
+                completion_tokens,
+                prompt_cache_hit_tokens,
+                prompt_cache_miss_tokens,
+                ..
+            } => Some((
+                *prompt_tokens as u64,
+                *completion_tokens as u64,
+                *prompt_cache_hit_tokens as u64,
+                *prompt_cache_miss_tokens as u64,
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reported.len(), request_count);
+    for (index, usage) in reported.iter().enumerate() {
+        let attempt = (index + 1) as u64;
+        assert_eq!(
+            *usage,
+            (12 * attempt, 6 * attempt, 4 * attempt, 8 * attempt)
+        );
+    }
+    let ledger = CostStore::new(db).session_usage(session_id).unwrap();
+    let factor = (request_count * (request_count + 1) / 2) as u64;
+    assert_eq!(ledger.input_tokens, 12 * factor);
+    assert_eq!(ledger.output_tokens, 6 * factor);
+    assert_eq!(ledger.cache_hit_tokens, 4 * factor);
+    assert_eq!(ledger.cache_miss_tokens, 8 * factor);
+    ledger
+}
+
+async fn observe_incomplete_reason(
+    reason: &'static str,
+    incomplete_responses: usize,
+) -> (bool, usize, String, bool) {
     let workspace = tempfile::tempdir().unwrap();
     let db = Arc::new(Database::open(workspace.path().join("state.sqlite")).unwrap());
     let settings = Arc::new(SettingsService::new(
@@ -82,9 +135,13 @@ async fn observe_incomplete_reason(reason: &'static str) -> (bool, usize, String
     }
     let model = Arc::new(IncompleteModel {
         reason,
+        incomplete_responses,
         requests: Mutex::new(Vec::new()),
     });
-    let chat = ChatService::new(db, settings, model.clone(), workspace.path());
+    let chat = ChatService::new(db.clone(), settings, model.clone(), workspace.path())
+        .with_cost(Arc::new(CostService::new(db.clone())));
+    let live_events = Arc::new(Mutex::new(Vec::new()));
+    let observed_events = live_events.clone();
     let result = chat
         .run_in_session(
             "Audit incomplete response classification.",
@@ -95,7 +152,7 @@ async fn observe_incomplete_reason(reason: &'static str) -> (bool, usize, String
             None,
             false,
             Some("audit-incomplete-reason"),
-            |_| {},
+            move |event| observed_events.lock().unwrap().push(event),
             |_| {},
         )
         .await;
@@ -106,7 +163,31 @@ async fn observe_incomplete_reason(reason: &'static str) -> (bool, usize, String
         .collect::<Vec<_>>();
     assert_eq!(terminal.len(), 1, "the run must terminate exactly once");
     let terminal_kind = terminal[0].data["kind"].as_str().unwrap().to_string();
+    let run = deepagent_persistence::run_store::RunStore::new(&db)
+        .get("audit-incomplete-reason")
+        .unwrap()
+        .unwrap();
     let requests = model.requests.lock().unwrap();
+    let ledger = assert_attempt_usage(
+        &db,
+        &run.session_id,
+        &live_events.lock().unwrap(),
+        requests.len(),
+    );
+    drop(chat);
+    drop(db);
+    let reopened = Database::open(workspace.path().join("state.sqlite")).unwrap();
+    let restored = CostStore::new(&reopened)
+        .session_usage(&run.session_id)
+        .unwrap();
+    assert_eq!(
+        restored, ledger,
+        "all billed attempts must survive reopening"
+    );
+    eprintln!(
+        "output-limit accounting: incomplete_responses={incomplete_responses}, usage_events={}, persisted={ledger:?}",
+        requests.len()
+    );
     let ceilings: Vec<_> = requests
         .iter()
         .map(|r| r["max_output_tokens"].clone())
@@ -156,7 +237,7 @@ async fn observe_incomplete_reason(reason: &'static str) -> (bool, usize, String
 #[tokio::test]
 async fn output_limit_can_recover_with_escalation_and_continuation() {
     let (succeeded, requests, terminal, used_length_recovery) =
-        observe_incomplete_reason("max_output_tokens").await;
+        observe_incomplete_reason("max_output_tokens", 2).await;
     assert!(succeeded);
     assert_eq!(requests, 3);
     assert_eq!(terminal, "succeeded");
@@ -164,9 +245,19 @@ async fn output_limit_can_recover_with_escalation_and_continuation() {
 }
 
 #[tokio::test]
+async fn output_limit_exhaustion_still_books_every_answered_attempt() {
+    let (succeeded, requests, terminal, used_length_recovery) =
+        observe_incomplete_reason("max_output_tokens", 5).await;
+    assert!(!succeeded);
+    assert_eq!(requests, 5, "the recovery budget must remain bounded");
+    assert_eq!(terminal, "context_exhausted");
+    assert!(used_length_recovery);
+}
+
+#[tokio::test]
 #[ignore = "audit: content_filter must not trigger max-output escalation or an automatic continue request"]
 async fn audit_content_filter_does_not_retry_as_output_limit() {
-    let (_, _, _, used_length_recovery) = observe_incomplete_reason("content_filter").await;
+    let (_, _, _, used_length_recovery) = observe_incomplete_reason("content_filter", 2).await;
     assert!(
         !used_length_recovery,
         "content filtering must not use output-limit recovery"

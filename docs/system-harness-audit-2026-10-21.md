@@ -2214,6 +2214,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-117 默认基线与检查 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`：74 passed / 10 ignored，约 1.39s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批只增加 ignored 审计探针与报告，未修改生产行为，未跑 workspace 全量、Clippy、桌面构建、真实 Tauri 或公网模型故障 |
 | H-118 流式溢出恢复显式探针 | `cargo test -p deepagent-runtime --lib audit_streamed_overflow_recovers_from_provider_code_without_message_keywords --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.00s；同一 code 的英文对照请求 2 次/压缩 1 次，中文组请求 1 次/压缩 0 次并返回 Unknown；正式 parser/ModelAgent、离线 transport、计数型摘要 fixture |
 | H-118 默认基线与检查 | `cargo test -p deepagent-runtime --lib model_agent::tests --offline`：58 passed / 6 ignored，约 0.98s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅新增 ignored 测试与报告，未修改生产行为；未跑 workspace 全量、Clippy、桌面构建、真实 Tauri 或供应商流内溢出 |
+| 长度恢复用量与重开正向验证 | `cargo test -p deepagent-app-core --test kernel_v2_e2e incomplete_reason --offline -- --nocapture`：2 passed / 1 ignored，最终约 0.37s；成功/耗尽两组实际分别 3/5 次请求，逐条 usage 与落盘总量对应，重开不丢失。`cargo fmt --all -- --check` 与 `git diff --check` 通过；仅测试与报告，未跑 workspace、Clippy 或桌面构建 |
+| 修改长度 fixture 后复核旧 H-82 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_content_filter_does_not_retry_as_output_limit --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.32s；过滤组仍实际发出 3 次请求并升级/续写，账本断言通过但原因恢复断言失败，不将默认测试通过报告成 H-82 已修复 |
 | H-112/H-113 格式与差异检查 | `cargo fmt --all -- --check` 与 `git diff --check` 通过；本批仅增加 ignored 审计探针与报告，未修改生产行为、未跑 workspace 全量测试、Clippy、桌面构建或真实 Git worktree 子 Agent |
 | Responses `tool_search_call` 候选差异核查 | DeepSeek 官方请求 schema 不提供可触发该 item 的工具类型；AppCore `tool_search` 以普通 function schema 注册。`cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed；`cargo test -p deepagent-models --lib stream::tests --offline`：21 passed。未新增缺陷或测试，未调用公网 provider |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
@@ -2539,6 +2541,14 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 成熟实现对照：DeepSeek Harness `packages/core/agent-loop/tests/request-cache.e2e.ts` 有 key-gated 真实 API 用例，构造多步工具调用和下一轮追问，并断言首个请求之后每个请求均返回 `cacheReadTokens > 0`。本轮只检查该测试的源码，没有运行它，也没有调用 DeepSeek API。
 - 后续执行真实用例：`cargo test -p deepagent-app-core --features keychain,web --test real_session_file_responses real_responses_session_replays_tools_skills_files_and_logs --offline -- --ignored --nocapture`。三轮主 Agent provider usage 分别为 12469 / 13059 / 13926 输入 tokens，cache hit 分别为 12288 / 2944 / 13184；另有 3 次笔记维护请求，持久化笔记已更新且 `last_summarized_sequence`、`tokens_at_last_extraction` 断言通过。该记录证明本次真实供应商响应返回了 cache-hit usage，不代表稳定前缀必然命中，也不能由三轮样本推导普遍 cache hit 比例。
 - 结论：当前证据仍不支持“system prompt 每轮重写导致稳定前缀丢失”的缺陷，不新增 H 编号。实际前缀字节测试证明的是组装布局；live usage 是供应商对本次请求的计量。要归因 cache hit 仍需结合请求正文、provider 计费语义及更多重复样本，本次结果不做该推断。
+
+### 后续独立验证：输出到限恢复的全部响应保留用量并写入账本
+
+- 扩展既有 `tests/kernel_v2_e2e/incomplete_reason.rs` 的离线 provider fixture，复用正式 ChatService → ModelClient/ResponseAccumulator → ModelAgent → Kernel → AppRunFinalizer/CostService。每次请求返回不同的完整 usage：第 N 次输入 `12N`、输出 `6N`、cache hit `4N`；逐条核对 RuntimeEvent::Usage，并从真实 SQLite 费用表读取总量，释放原 ChatService/Database 后再打开同一文件读取。
+- 成功恢复组两次 incomplete 后第三次 completed，**3 次请求、3 条 usage，累计输入/输出 72/36，cache hit/miss 24/48**，唯一终态 succeeded。耗尽组连续五次 incomplete 后停止，**5 次请求、5 条 usage，累计输入/输出 180/90，cache hit/miss 60/120**，唯一终态 context_exhausted；这两个样本的累计值均超过最后一次请求量。数据库重开后四项总量完全一致，未重复记账，也未因最终未完成而丢弃已回答请求的费用。
+- 成熟实现对照：Claude Code `services/api/claude.ts` 收到 usage 后更新总费用，再处理 `max_tokens` 的恢复消息；DeepSeek Harness `token-meter/src/turn-usage.ts` 及其测试按尝试归集用量，避免 streaming sample 与最终 message 重复相加。本系统 `record_provider_response_usage()` 在是否升级/续写前计入 usage，AppRunFinalizer 在非成功终态也记录已发生量；本次是对这条已有行为的验证，没有修复生产逻辑或新增 H 编号。
+- 首次耗尽组的测试预期误写为通用 failed，账本断言均已通过；核对 `kernel.rs::classify_terminal_error` 发现既有 `max_tokens` 映射为 context_exhausted，改为该约定后重跑。这里不据此声称该终态命名已完成语义审查，也不将测试预期修正计为产品缺陷。
+- 本项不关闭 H-82 的过滤原因丢失、H-14 的未采纳摘要费用遗漏或 H-63 的附属模型调用费用归属问题。仅使用合成 provider usage 与临时数据库，没有真实供应商账单、Tauri UI、在途取消或数据库写入失败验证。
 
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
