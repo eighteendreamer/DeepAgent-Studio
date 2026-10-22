@@ -34,6 +34,7 @@
 | 命令输出读取任务的归属 | drain 超时后正式 helper 仍持有缓冲，调用方释放后继续读入迟到输出；正常 EOF 释放 | 已确认 H-60；真实 Windows 进程管道/helper 复现，完整执行器/UI 内存与其他平台未验收 |
 | 可选对抗复核的取消与任务归属 | Kernel 已受理取消仍等待三个复核请求，返回 PASS 后记录成功；总时限结束后请求仍存活 | 已确认 H-61；正式 Kernel/ModelAgent/模型复核及真实临时文件证据，传输为离线受控响应，未验桌面和公网 |
 | 可选停滞检测期间的停止 | 主答案之后同步分类不接收取消，取消只能等分类结束再成为 Cancelled | 已确认 H-62；正式 ModelStallClassifier/ModelAgent/Kernel 离线请求对照，正常完成及最终取消映射成立；生产分类超时 20 秒，未实等该上限 |
+| 可选复核/分类的用量归属 | 完整 provider Response 返回 usage 后仅保留判定文本，真实 Finalizer/成本库只保存主调用量 | 已确认 H-63；两条正式模型检查及 SQLite 账本复现，未测真实供应商费用；已有摘要 side_usage 账本能力不因此失效 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -1482,10 +1483,24 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟参考：Grok `借鉴/grok-build/crates/codegen/xai-grok-shell/src/session/acp_session_impl/laziness.rs` 对 sampler future 同时 select 超时和 generation 轮询，用户新输入/模型变化使分类作废，注入前又核对当前 generation 和 idle/notifications_suppressed 状态。它是 idle classifier，不能把其用户新输入机制等同于本系统 turn token；可借鉴“等待及采纳均验证所属生命周期”。Codex `core/src/tasks/mod.rs::handle_task_abort` 的 turn token、有界 grace 和 task abort 给出运行级后备边界；Claude `query.ts` 给附属摘要传同一 abortController.signal，并在后续推进前检查 aborted。这里均为源码比对，未运行参考项目。
 - 后果与修复建议（未实施）：用户已看到主答案、点击停止仍可能等待额外分类请求完成或生产 timeout，延长输入租约占用与下一轮推进；不据此宣称所有对话都会慢。复用当前取消树和 ModelClient 取消版入口，分类返回取消应中止本次推进，不能把取消吞成 fail-open 无分类再继续补发模型。分类返回后、nudge 注入和递归采样前核对运行有效性。验收覆盖分类头等待/流式中/解析后取消、超时和 nudge 重入，检查无延迟新请求且最终状态仍是同一 Cancelled。
 
+### H-63：对抗复核和停滞分类丢弃已返回的 usage，现有会话成本账本漏记附属请求
+
+**级别：中（P2）；范围：开启上述可选复核/分类，附属模型请求成功并返回 usage。** 默认关闭开关不能代替开启后的成本正确性；不把这两条链路外推为所有后台模型请求都漏计。
+
+- `verification_panel.rs::ModelSkepticSpawner::spawn` 得到 Response 后只返回 output_text_projection；`stall_classifier.rs::ModelStallClassifier::classify` 只解析 output_text_projection，均未转交 response.usage。对应 traits 仅提供文本/判定，不能把 usage 带回 RuntimeEngine/ModelAgent。ModelClient 的非取消 stream_response 只组装 Response，本身没有数据库/会话费用记录。`run_assembler.rs` 向正式 AppRunFinalizer 传递的 usage 和 side_usage 均来自主 agent，未取得上述附属响应。
+- 扩展共享离线 transport，让主模型的真实 response.completed 带 usage=input_tokens 11、output_tokens 3、total_tokens 14；每个检查请求真实终帧带 101/7/108。通过生产 ModelClient/累积器，而非直接给 finalizer 填想要的统计数字。保留主回答、正常判定和生命周期对照；在 Kernel 返回后按生产组装的同样来源传 `agent.cumulative_usage()` / `agent.side_usage()`，调用真实 AppRunFinalizer、CostService 和同一真实 SQLite costs 表，读取 CostSummary。
+- 新默认忽略项 `verification_panel::audit_tests::audit_completion_check_usage_reaches_cost_ledger` 分别跑三个 skeptics 和一个 stall classifier。两组正式检查均正常完成、唯一 succeeded 终态且无残留请求；main 为 11/3、side=None。实际账本分别是 input/output=(11,3)、(11,3)，应有的 provider 返回量为 (314,24)、(112,10)。执行 `cargo test -p deepagent-app-core --lib audit_completion_check_usage_reaches_cost_ledger --offline -- --ignored --nocapture`：约 0.50 秒明确失败，差异完全对应 3×101/7 与 1×101/7。没有创建另一个成本存储。
+- 边界：这是正式模型、Kernel 与 Finalizer 的集成探针，没有运行完整 ChatService/桌面，也未实际调用公网、设置真实价格或推算漏计人民币；CostService 未配置价格时仍保存 token，价格缺失不是本测试漏 token 的来源。fixture 的 usage 用于可计算对照，不代表模型真实 tokenizer 数量。H-14 是未采用的摘要费用丢失；本项是成功完成的复核/分类正常返回后没有费用归属。
+- 正向对照：主调用的 11/3 正确进入现有账本；既有 `run_finalizer::tests::compaction_side_usage_is_booked_as_its_own_row` 使用同一 Finalizer 验证主调用和摘要 side_usage 分别写行。因此本系统已具备可复用的旁路计费边界，不能把本项描述为成本系统完全未实现。正常用量测试并不证明所有附属请求自动接入它。
+- 成熟参考：Claude `借鉴/claudecode/restored-src/src/services/api/claude.ts` 在收到 message_delta usage 后更新当前 message 及调用 addToTotalSessionCost；返回量进入会话累计的动作发生于公共模型调用路径，独立于主回答文本是否被采用。这里借鉴“每个已完成调用都有用量归属”的边界，不主张直接照搬其进程级状态或 API 字段；未运行 Claude，也不声称其全部辅助客户端都被这一个调用点覆盖。
+- 后果：开启检查后，会话累计 tokens/成本统计低于已收到的供应商 usage，用户基于该账本查看消费与预算时缺少这部分消耗。没有实测月/日限额绕过或大额消费，因此该后果不升级为已复现。修复建议（未实施）：在既有 ModelClient/调用方 seam 传递带实际模型身份、调用归属和 usage 的结果，复用现有 CostOrigin::SideCall/CostService 幂等记录；文本/判定可丢，用量不可因 PASS、FAIL、解析错误而丢；不要将附属请求量并入上下文占用 gauge，也不要另建私有账本。验收覆盖成功/不采用/解析失败、已返回 usage 后取消、模型身份、缓存字段、缺价格保存与重复终帧去重。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-63 附属检查用量进入真实成本账本显式探针（见该节命令） | 明确失败：panel 应有 314/24、stall 应有 112/10，实际均仅 11/3；检查完成且无残留，未测真实价格或公网费用 |
+| H-63 正向账本对照及检查基线 | `cargo test -p deepagent-app-core --lib run_finalizer::tests::compaction_side_usage_is_booked_as_its_own_row --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib verification_panel:: --offline -- --nocapture`：8 passed / 4 ignored，约 0.21s；fmt、diff 通过。四个忽略探针均已分别显式执行失败；本轮仅测试及文档，未执行全 workspace、UI 构建或公网测试 |
 | H-62 停滞检测取消显式探针（见该节命令） | 明确失败：取消后分类仍活跃；响应释放后正确落 cancelled，正常对照成功；没有把最终状态正确说成停止及时 |
 | `cargo test -p deepagent-app-core --lib verification_panel:: --offline -- --nocapture`（停滞检测核查时） | 8 passed / 3 ignored，约 0.21s；新增停滞检测完整 Kernel 正常对照通过；合并显式执行 `verification_panel::audit_tests::audit_` 三项均按既有缺陷失败、约 0.53s，H-61 两项行为保持；fmt 与 diff 检查通过。仅测试和文档变更，未执行全 workspace、桌面构建或真实供应商 |
 | H-61 对抗复核取消与总时限显式探针（见该节两条命令） | 两项均明确失败；正常对照成功，取消后仍 succeeded；主 Kernel 超时后仍有三个活跃复核请求。断言前请求均已释放，未修生产行为 |
@@ -1745,6 +1760,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
 | 可选模型复核与主运行终态一致性 | H-61 | 既有取消树派生复核子 token，面板任务 owner 管理取消与 join，完成提交重查运行取消；参考 Codex 的有界 turn abort 和任务清理 | 取消后不提交成功；总时限/drop 不遗留复核请求；正常 PASS 仍完成，失败反馈有界，取消不当作普通复核失败 |
 | 停滞检测的取消与结果采纳 | H-62 | 既有模型取消入口及运行 token 覆盖分类等待、nudge 注入与重入；参考 Grok 分类 generation/idle 核对和 Codex turn abort | 分类中停止及时退出；取消不被 fail-open 吞成继续采样；无延迟新请求；最终取消映射保持正确 |
+| 附属模型调用的费用归属 | H-63 | 复用现有 SideCall/CostService，模型响应归属传递保留真实模型和 usage，独立于文本/判定采纳；参考 Claude 公共调用路径记录 usage | panel/classifier 成功或不采纳均记已返回量；缓存/模型准确；缺价保留 tokens；不误加上下文 gauge、不重复记账 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 附件存储身份与写入/删除范围 | H-58 | 既有 AttachmentService 统一有效单组件身份、会话归属和精确附件读写/删除；参考本仓库 ledger 组件验证及 Claude 宿主会话/UUID 文件身份 | 异常 id/session 在写入前拒绝；不覆盖或删除桶/root/兄弟数据；正常导入/幂等删除、junction/竞态和重开分别验证 |

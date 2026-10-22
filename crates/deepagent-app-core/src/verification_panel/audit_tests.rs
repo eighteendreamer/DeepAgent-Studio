@@ -6,7 +6,7 @@ use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, Trans
 use deepagent_models::{ModelClient, ModelConfig};
 use deepagent_persistence::{run_store::RunStore, Database};
 use deepagent_runtime::{
-    AgentKernel, CheckpointManager, ModelAgent, RunRequest, RuntimeConfig, TerminalKind,
+    Agent, AgentKernel, CheckpointManager, ModelAgent, RunRequest, RuntimeConfig, TerminalKind,
 };
 use deepagent_session::Session;
 use deepagent_tools::ToolRegistry;
@@ -79,7 +79,9 @@ impl HttpTransport for WaitingTransport {
                 .to_string(),
         )?);
         assert!(
-            sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#,)?
+            sink.on_event(
+                r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":101,"output_tokens":7,"total_tokens":108}}}"#,
+            )?
         );
         Ok(())
     }
@@ -136,7 +138,7 @@ fn main_agent() -> ModelAgent {
             Arc::new(MockTransport::new([
                 r#"{"type":"response.output_text.delta","delta":"Created answer.txt."}"#
                     .to_string(),
-                r#"{"type":"response.completed","response":{"status":"completed"}}"#.to_string(),
+                r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":11,"output_tokens":3,"total_tokens":14}}}"#.to_string(),
             ])),
             ModelConfig::deepseek("offline-placeholder"),
         )),
@@ -150,7 +152,11 @@ fn main_agent() -> ModelAgent {
 /// Exercise the shipped model-backed completion checks through the kernel. Only the
 /// provider transport is offline; checkpoint evidence is a real temporary
 /// file mutation. Kept opt-in because these are unfixed audit assertions.
-async fn audit_check_lifecycle(kind: CheckKind, cancel: bool, deadline: bool) {
+async fn audit_check_lifecycle(
+    kind: CheckKind,
+    cancel: bool,
+    deadline: bool,
+) -> crate::cost_service::CostSummary {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let clock = FixedClock::new(1);
     let mut session = Session::create(&db, &clock, Some("panel lifecycle audit")).unwrap();
@@ -293,6 +299,55 @@ async fn audit_check_lifecycle(kind: CheckKind, cancel: bool, deadline: bool) {
         assert_eq!(terminal.kind, TerminalKind::Succeeded);
         assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
     }
+
+    finalize_usage(&db, &mut session, run_id, &agent, terminal.succeeded())
+}
+
+fn finalize_usage(
+    db: &Arc<Database>,
+    session: &mut Session<'_, FixedClock>,
+    run_id: &str,
+    agent: &ModelAgent,
+    succeeded: bool,
+) -> crate::cost_service::CostSummary {
+    use crate::run_finalizer::{AppRunFinalizer, AppRunFinalizerRequest};
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Mutex;
+
+    let cost = Arc::new(crate::cost_service::CostService::new(db.clone()));
+    let session_id = session.id().to_string();
+    let usage = agent.cumulative_usage();
+    let side = agent.side_usage();
+    AppRunFinalizer::new(
+        db.clone(),
+        Some(cost.clone()),
+        None,
+        Arc::new(Mutex::new(HashMap::new())),
+        crate::session_memory::SessionMemoryPasses::default(),
+    )
+    .finalize_after_kernel(
+        session,
+        AppRunFinalizerRequest {
+            session_id: &session_id,
+            run_id,
+            discovered_before_run: &HashSet::new(),
+            discovered_tools: &Arc::new(Mutex::new(HashSet::new())),
+            usage,
+            side_usage: side,
+            model_name: "deepseek-flash",
+            sink: &deepagent_runtime::NullEventSink,
+            run_succeeded: succeeded,
+            capture_client: None,
+            capture_model: None,
+        },
+    )
+    .unwrap();
+    let summary = cost.summary(&session_id).unwrap();
+    eprintln!(
+        "completion-check accounting: main={usage:?} side={side:?} ledger_input={} ledger_output={}",
+        summary.input_tokens, summary.output_tokens,
+    );
+    summary
 }
 
 #[tokio::test]
@@ -323,4 +378,20 @@ async fn model_stall_check_completes_after_classifier_reply() {
 async fn audit_cancel_during_stall_classifier_exits_before_reply() {
     audit_check_lifecycle(CheckKind::Stall, false, false).await;
     audit_check_lifecycle(CheckKind::Stall, true, false).await;
+}
+
+#[tokio::test]
+#[ignore = "audit probe: auxiliary model calls must retain provider usage in the existing ledger"]
+async fn audit_completion_check_usage_reaches_cost_ledger() {
+    let panel = audit_check_lifecycle(CheckKind::Panel, false, false).await;
+    let stall = audit_check_lifecycle(CheckKind::Stall, false, false).await;
+    let observed = [
+        (panel.input_tokens, panel.output_tokens),
+        (stall.input_tokens, stall.output_tokens),
+    ];
+    assert_eq!(
+        observed,
+        [(11 + 3 * 101, 3 + 3 * 7), (11 + 101, 3 + 7)],
+        "both completed auxiliary paths must book their returned usage, separately from context occupancy",
+    );
 }
