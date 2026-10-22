@@ -1,4 +1,4 @@
-//! Opt-in audit probes for the model-backed verification lifecycle.
+//! Opt-in audit probes for model-backed completion checks and their lifecycle.
 
 use super::*;
 use deepagent_core::clock::FixedClock;
@@ -22,7 +22,39 @@ impl Drop for ActiveRequest<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug)]
+enum CheckKind {
+    Panel,
+    Stall,
+}
+
+impl CheckKind {
+    fn count(self) -> u32 {
+        match self {
+            Self::Panel => DEFAULT_SKEPTIC_COUNT,
+            Self::Stall => 1,
+        }
+    }
+
+    fn request_marker(self) -> &'static str {
+        match self {
+            Self::Panel => "FILES THE AGENT CHANGED THIS RUN",
+            Self::Stall => "[runtime_state]",
+        }
+    }
+
+    fn reply(self) -> &'static str {
+        match self {
+            Self::Panel => "VERDICT: PASS",
+            Self::Stall => {
+                r#"{"category":"not_stalled_complete","confidence":0.9,"evidence":"fixture completed"}"#
+            }
+        }
+    }
+}
+
 struct WaitingTransport {
+    kind: CheckKind,
     entered: Semaphore,
     release: Semaphore,
     active: AtomicUsize,
@@ -34,17 +66,18 @@ struct WaitingTransport {
 impl HttpTransport for WaitingTransport {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         self.plain_calls.fetch_add(1, Ordering::SeqCst);
-        // This is the actual serialized skeptic request, not a custom
-        // verifier which ignores a supplied cancellation signal.
-        assert!(request.body.contains("FILES THE AGENT CHANGED THIS RUN"));
+        // Inspect the actual serialized auxiliary request, not a custom
+        // verifier/classifier which ignores a supplied cancellation signal.
+        assert!(request.body.contains(self.kind.request_marker()));
         assert!(request.body.contains("answer.txt"));
         self.active.fetch_add(1, Ordering::SeqCst);
         let _active = ActiveRequest(&self.active);
         self.entered.add_permits(1);
         self.release.acquire().await.unwrap().forget();
-        assert!(
-            !sink.on_event(r#"{"type":"response.output_text.delta","delta":"VERDICT: PASS"}"#,)?
-        );
+        assert!(!sink.on_event(
+            &serde_json::json!({"type":"response.output_text.delta","delta":self.kind.reply()})
+                .to_string(),
+        )?);
         assert!(
             sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#,)?
         );
@@ -114,10 +147,10 @@ fn main_agent() -> ModelAgent {
     )
 }
 
-/// Exercise the shipped model-backed panel through the kernel. Only the
+/// Exercise the shipped model-backed completion checks through the kernel. Only the
 /// provider transport is offline; checkpoint evidence is a real temporary
 /// file mutation. Kept opt-in because these are unfixed audit assertions.
-async fn audit_panel_lifecycle(cancel: bool, deadline: bool) {
+async fn audit_check_lifecycle(kind: CheckKind, cancel: bool, deadline: bool) {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let clock = FixedClock::new(1);
     let mut session = Session::create(&db, &clock, Some("panel lifecycle audit")).unwrap();
@@ -134,25 +167,16 @@ async fn audit_panel_lifecycle(cancel: bool, deadline: bool) {
     let (_temp, checkpoint) = changed_file_checkpoint(db.clone(), run_id);
 
     let transport = Arc::new(WaitingTransport {
+        kind,
         entered: Semaphore::new(0),
         release: Semaphore::new(0),
         active: AtomicUsize::new(0),
         plain_calls: AtomicUsize::new(0),
         cancellable_calls: AtomicUsize::new(0),
     });
-    let verifier = Arc::new(ModelAdversarialVerifier::new(
-        Arc::new(
-            ModelSkepticSpawner::new(
-                Arc::new(ModelClient::new(
-                    transport.clone(),
-                    ModelConfig::deepseek("offline-placeholder"),
-                )),
-                "deepseek-flash",
-            )
-            .with_system_prompt(GOAL_COVERAGE_SKEPTIC_PROMPT),
-        ),
-        "create answer.txt",
-        DEFAULT_SKEPTIC_COUNT,
+    let check_client = Arc::new(ModelClient::new(
+        transport.clone(),
+        ModelConfig::deepseek("offline-placeholder"),
     ));
     let registry = ToolRegistry::new();
     let config = RuntimeConfig {
@@ -160,11 +184,27 @@ async fn audit_panel_lifecycle(cancel: bool, deadline: bool) {
         task_timeout: deadline.then_some(Duration::from_millis(300)),
         ..RuntimeConfig::default()
     };
-    let kernel =
-        AgentKernel::<FixedClock>::new(db.clone(), &registry, Metrics::new(), config, run_id)
-            .with_adversarial_verifier(verifier);
-    let handle = kernel.handle();
+    let mut kernel =
+        AgentKernel::<FixedClock>::new(db.clone(), &registry, Metrics::new(), config, run_id);
     let mut agent = main_agent();
+    match kind {
+        CheckKind::Panel => {
+            kernel = kernel.with_adversarial_verifier(Arc::new(ModelAdversarialVerifier::new(
+                Arc::new(
+                    ModelSkepticSpawner::new(check_client, "deepseek-flash")
+                        .with_system_prompt(GOAL_COVERAGE_SKEPTIC_PROMPT),
+                ),
+                "create answer.txt",
+                kind.count(),
+            )));
+        }
+        CheckKind::Stall => {
+            agent = agent.with_stall_classifier(Arc::new(
+                crate::stall_classifier::ModelStallClassifier::new(check_client, "deepseek-flash"),
+            ));
+        }
+    }
+    let handle = kernel.handle();
     let exited = AtomicBool::new(false);
     let run = async {
         let result = kernel
@@ -177,13 +217,13 @@ async fn audit_panel_lifecycle(cancel: bool, deadline: bool) {
         tokio::time::timeout(Duration::from_secs(2), async {
             transport
                 .entered
-                .acquire_many(DEFAULT_SKEPTIC_COUNT)
+                .acquire_many(kind.count())
                 .await
                 .unwrap()
                 .forget();
         })
         .await
-        .expect("all production skeptic requests must actually start");
+        .expect("all production check requests must actually start");
         if cancel {
             assert!(handle.cancel());
             assert!(handle.is_cancelled());
@@ -193,15 +233,13 @@ async fn audit_panel_lifecycle(cancel: bool, deadline: bool) {
         let active_before_release = transport.active.load(Ordering::SeqCst);
         let record = RunStore::new(&db).get(run_id).unwrap().unwrap();
         eprintln!(
-            "panel cancel={cancel} deadline={deadline}: exited_before_release={exited_before_release} \
+            "check={kind:?} cancel={cancel} deadline={deadline}: exited_before_release={exited_before_release} \
              active_before_release={active_before_release} terminal_before_release={:?}",
             record.terminal_kind,
         );
         // Always release and drain the spawned requests BEFORE asserting
         // the defect, so a failing probe leaves no detached fixture tasks.
-        transport
-            .release
-            .add_permits(DEFAULT_SKEPTIC_COUNT as usize);
+        transport.release.add_permits(kind.count() as usize);
         tokio::time::timeout(Duration::from_secs(2), async {
             while transport.active.load(Ordering::SeqCst) != 0 {
                 tokio::task::yield_now().await;
@@ -222,7 +260,7 @@ async fn audit_panel_lifecycle(cancel: bool, deadline: bool) {
         .filter(|e| e.event_type == "run_terminal")
         .count();
     eprintln!(
-        "panel cancel={cancel} deadline={deadline}: terminal={:?} persisted={:?} \
+        "check={kind:?} cancel={cancel} deadline={deadline}: terminal={:?} persisted={:?} \
          task={:?} active={} plain_calls={} cancellable_calls={} terminal_count={terminal_count}",
         terminal.kind,
         record.terminal_kind,
@@ -240,18 +278,18 @@ async fn audit_panel_lifecycle(cancel: bool, deadline: bool) {
         );
         assert_eq!(
             active_before_release, 0,
-            "timed-out kernel must own and stop its panel"
+            "timed-out kernel must own and stop its completion check"
         );
     } else if cancel {
         assert!(
             exited_before_release && terminal.kind == TerminalKind::Cancelled,
-            "user cancellation must stop the panel and never become succeeded: \
+            "user cancellation must stop the completion check and never become succeeded: \
              exited={exited_before_release}, terminal={:?}",
             terminal.kind,
         );
     } else {
         assert!(!exited_before_release);
-        assert_eq!(active_before_release, DEFAULT_SKEPTIC_COUNT as usize);
+        assert_eq!(active_before_release, kind.count() as usize);
         assert_eq!(terminal.kind, TerminalKind::Succeeded);
         assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
     }
@@ -259,18 +297,30 @@ async fn audit_panel_lifecycle(cancel: bool, deadline: bool) {
 
 #[tokio::test]
 async fn model_panel_completes_after_all_skeptics_reply() {
-    audit_panel_lifecycle(false, false).await;
+    audit_check_lifecycle(CheckKind::Panel, false, false).await;
 }
 
 #[tokio::test]
 #[ignore = "audit probe: cancellation must interrupt the production verification panel"]
 async fn audit_cancel_during_model_panel_does_not_complete_successfully() {
-    audit_panel_lifecycle(false, false).await;
-    audit_panel_lifecycle(true, false).await;
+    audit_check_lifecycle(CheckKind::Panel, false, false).await;
+    audit_check_lifecycle(CheckKind::Panel, true, false).await;
 }
 
 #[tokio::test]
 #[ignore = "audit probe: task deadline must not detach production skeptic requests"]
 async fn audit_kernel_deadline_releases_model_panel_requests() {
-    audit_panel_lifecycle(false, true).await;
+    audit_check_lifecycle(CheckKind::Panel, false, true).await;
+}
+
+#[tokio::test]
+async fn model_stall_check_completes_after_classifier_reply() {
+    audit_check_lifecycle(CheckKind::Stall, false, false).await;
+}
+
+#[tokio::test]
+#[ignore = "audit probe: cancellation must interrupt the production stall classifier"]
+async fn audit_cancel_during_stall_classifier_exits_before_reply() {
+    audit_check_lifecycle(CheckKind::Stall, false, false).await;
+    audit_check_lifecycle(CheckKind::Stall, true, false).await;
 }

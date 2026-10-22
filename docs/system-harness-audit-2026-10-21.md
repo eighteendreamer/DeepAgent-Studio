@@ -33,6 +33,7 @@
 | 可选 WASM 工具的超时归属 | 成功调用遗留的 watchdog 增加共享 Engine epoch，使后续调用在自己的期限前中断 | 已确认 H-59；Windows 隔离子进程对照；默认未启用 wasm，不外推为普通桌面卡顿原因 |
 | 命令输出读取任务的归属 | drain 超时后正式 helper 仍持有缓冲，调用方释放后继续读入迟到输出；正常 EOF 释放 | 已确认 H-60；真实 Windows 进程管道/helper 复现，完整执行器/UI 内存与其他平台未验收 |
 | 可选对抗复核的取消与任务归属 | Kernel 已受理取消仍等待三个复核请求，返回 PASS 后记录成功；总时限结束后请求仍存活 | 已确认 H-61；正式 Kernel/ModelAgent/模型复核及真实临时文件证据，传输为离线受控响应，未验桌面和公网 |
+| 可选停滞检测期间的停止 | 主答案之后同步分类不接收取消，取消只能等分类结束再成为 Cancelled | 已确认 H-62；正式 ModelStallClassifier/ModelAgent/Kernel 离线请求对照，正常完成及最终取消映射成立；生产分类超时 20 秒，未实等该上限 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -1470,10 +1471,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 用户后果：明明已经停止，复核仍等待供应商，可能继续产生请求成本；返回 PASS 时还把已取消的工作标记为成功。总时限只终结主运行时，已发复核请求仍消耗资源直到自己结束。动态证据是三个受控请求的 future 活跃与真实 SQLite 终态；没有测公网实际计费、OS 网络 socket 或真实 Tauri 界面。复核本身没有文件写工具，不能据此声称它会继续改用户文件。H-31 针对同步摘要取消，H-45 针对子 Agent 持久化收尾，本项针对复核面板的模型任务归属及取消后的成功提交。
 - 修复建议（尚未实施）：复用现有取消树，让复核入口、模型流及每个 skeptic 派生同一运行的子 token；复核任务由能取消并 join 的 owner 管理，父 future 结束时不能仅 detach JoinHandle。运行取消应作为控制结果传播，不能转成普通复核失败或 fail-open PASS；在完成提交边界重新确认取消，并经现有唯一终态入口落盘。总时限、手动取消及异常退出共用有界清理；不新增第二套取消器。验收覆盖正常 PASS、拒绝重试、单请求卡住、取消与 PASS 竞争、task_timeout、调用方 drop，结合实际模型请求计数、session/task/RunStore 状态和资源退出检查。
 
+### H-62：停滞分类等待没有运行取消，停止要等分类结束，但最终取消映射正确
+
+**级别：中（P2）；范围：显式开启 execution_features.stall_detector 或 DEEPAGENT_STALL_DETECTOR，主模型已经给出无工具调用的最终答案、分类预算尚未用完，正在等待分类响应。** 默认不开启。与 H-61 的取消后错误成功不同，本项没有复现终态误记成功。
+
+- 正式装配位于 `crates/deepagent-app-core/src/run_assembler.rs`：给 ModelAgent 设置 `ModelStallClassifier`。`model_agent.rs::think_inner` 在主模型返回最终答案之后同步 `maybe_stall_nudge(step).await`；后者直接 await trait 的 classify，未传递已经可用的运行 cancel。`stall_classifier.rs` 只给 `client.stream_response` 包 20 秒 timeout，没有使用取消版客户端入口。取消在 RuntimeEngine 收到 AgentDecision 后才再检查，因此分类等待没有被主运行取消树打断。
+- 复用并扩展正式链路探针 `crates/deepagent-app-core/src/verification_panel/audit_tests.rs`，通过明确 CheckKind 区分面板和停滞检测，避免复制第二套 Kernel 夹具。新默认忽略项 `audit_cancel_during_stall_classifier_exits_before_reply` 先执行正常组，再执行取消组；使用真实 Session/RunStore、ModelAgent、ModelStallClassifier 和序列化请求，只有 transport 受控。等分类请求确实进入 transport 后调用 RunHandle::cancel，验证 true 和 is_cancelled=true；transport 同时实现可取消接口，不是注入无视信号的自制 classifier。
+- 执行 `cargo test -p deepagent-app-core --lib audit_cancel_during_stall_classifier_exits_before_reply --offline -- --ignored --nocapture`：约 0.37 秒明确失败。正常组 100ms 窗口内等待一个分类请求，释放 not_stalled_complete 后 succeeded/Task Completed；取消组在相同窗口仍未退出，active=1、无数据库终态，释放后 cancelled/Task Failed。两组 plain_calls=1、cancellable_calls=0，最终各仅一个 run_terminal，active=0，缺陷断言前已收尾。
+- 这证明的是“已触发运行取消仍等待分类响应”的具体交错；没有真实等待 20 秒、没有计量网络取消延迟，也没有真实供应商或桌面验收。20 秒上限来自生产 CLASSIFY_TIMEOUT，不将 100ms 观察外推为已测最坏延迟。与 H-61 不同，分类位于主 think future 内，没有这里复现的额外 tokio::spawn 面板；不能据本测试声称 Kernel 超时后分类一定游离或最终误记成功。
+- 成熟参考：Grok `借鉴/grok-build/crates/codegen/xai-grok-shell/src/session/acp_session_impl/laziness.rs` 对 sampler future 同时 select 超时和 generation 轮询，用户新输入/模型变化使分类作废，注入前又核对当前 generation 和 idle/notifications_suppressed 状态。它是 idle classifier，不能把其用户新输入机制等同于本系统 turn token；可借鉴“等待及采纳均验证所属生命周期”。Codex `core/src/tasks/mod.rs::handle_task_abort` 的 turn token、有界 grace 和 task abort 给出运行级后备边界；Claude `query.ts` 给附属摘要传同一 abortController.signal，并在后续推进前检查 aborted。这里均为源码比对，未运行参考项目。
+- 后果与修复建议（未实施）：用户已看到主答案、点击停止仍可能等待额外分类请求完成或生产 timeout，延长输入租约占用与下一轮推进；不据此宣称所有对话都会慢。复用当前取消树和 ModelClient 取消版入口，分类返回取消应中止本次推进，不能把取消吞成 fail-open 无分类再继续补发模型。分类返回后、nudge 注入和递归采样前核对运行有效性。验收覆盖分类头等待/流式中/解析后取消、超时和 nudge 重入，检查无延迟新请求且最终状态仍是同一 Cancelled。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-62 停滞检测取消显式探针（见该节命令） | 明确失败：取消后分类仍活跃；响应释放后正确落 cancelled，正常对照成功；没有把最终状态正确说成停止及时 |
+| `cargo test -p deepagent-app-core --lib verification_panel:: --offline -- --nocapture`（停滞检测核查时） | 8 passed / 3 ignored，约 0.21s；新增停滞检测完整 Kernel 正常对照通过；合并显式执行 `verification_panel::audit_tests::audit_` 三项均按既有缺陷失败、约 0.53s，H-61 两项行为保持；fmt 与 diff 检查通过。仅测试和文档变更，未执行全 workspace、桌面构建或真实供应商 |
 | H-61 对抗复核取消与总时限显式探针（见该节两条命令） | 两项均明确失败；正常对照成功，取消后仍 succeeded；主 Kernel 超时后仍有三个活跃复核请求。断言前请求均已释放，未修生产行为 |
 | `cargo test -p deepagent-app-core --lib verification_panel:: --offline -- --nocapture` | 7 passed / 2 ignored，约 0.18s；包含正式 Kernel/ModelAgent 正常完成对照；两项忽略缺陷已单独及合并显式执行失败，不能视为已修；本轮 fmt、diff 检查通过，未运行全 workspace 或桌面构建，因为仅新增测试/审计文档、无生产或 UI 契约变更 |
 | `cargo test -p deepagent-runtime --lib loop_engine::tests --offline`（双完成事件与门禁核查时） | 36 passed / 1 ignored，约 3.22s；新增完整语义流三组对照通过，忽略的是既有 H-34 探针，不代表缺陷修复；同批 fmt 与 diff 检查通过 |
@@ -1730,6 +1744,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
 | 可选模型复核与主运行终态一致性 | H-61 | 既有取消树派生复核子 token，面板任务 owner 管理取消与 join，完成提交重查运行取消；参考 Codex 的有界 turn abort 和任务清理 | 取消后不提交成功；总时限/drop 不遗留复核请求；正常 PASS 仍完成，失败反馈有界，取消不当作普通复核失败 |
+| 停滞检测的取消与结果采纳 | H-62 | 既有模型取消入口及运行 token 覆盖分类等待、nudge 注入与重入；参考 Grok 分类 generation/idle 核对和 Codex turn abort | 分类中停止及时退出；取消不被 fail-open 吞成继续采样；无延迟新请求；最终取消映射保持正确 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 附件存储身份与写入/删除范围 | H-58 | 既有 AttachmentService 统一有效单组件身份、会话归属和精确附件读写/删除；参考本仓库 ledger 组件验证及 Claude 宿主会话/UUID 文件身份 | 异常 id/session 在写入前拒绝；不覆盖或删除桶/root/兄弟数据；正常导入/幂等删除、junction/竞态和重开分别验证 |
