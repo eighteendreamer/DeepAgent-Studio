@@ -110,6 +110,9 @@ fn discover_steps(root: &Path) -> Vec<VerificationStep> {
 }
 
 #[cfg(test)]
+mod audit_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

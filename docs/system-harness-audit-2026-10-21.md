@@ -35,6 +35,7 @@
 | 可选对抗复核的取消与任务归属 | Kernel 已受理取消仍等待三个复核请求，返回 PASS 后记录成功；总时限结束后请求仍存活 | 已确认 H-61；正式 Kernel/ModelAgent/模型复核及真实临时文件证据，传输为离线受控响应，未验桌面和公网 |
 | 可选停滞检测期间的停止 | 主答案之后同步分类不接收取消，取消只能等分类结束再成为 Cancelled | 已确认 H-62；正式 ModelStallClassifier/ModelAgent/Kernel 离线请求对照，正常完成及最终取消映射成立；生产分类超时 20 秒，未实等该上限 |
 | 可选复核/分类的用量归属 | 完整 provider Response 返回 usage 后仅保留判定文本，真实 Finalizer/成本库只保存主调用量 | 已确认 H-63；两条正式模型检查及 SQLite 账本复现，未测真实供应商费用；已有摘要 side_usage 账本能力不因此失效 |
+| 自动完成验证的真实构建生命周期 | 正式发现的 cargo check 已启动 build.rs 后，用户取消仍等待；Kernel 超时落终态后 build.rs 仍可写文件 | 已确认 H-64；Windows 真实临时 Cargo 工程、SystemCommandRunner、ModelAgent/Kernel/SQLite 对照，未覆盖其他构建系统和桌面 UI |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -68,7 +69,7 @@
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态（H-01/H-43/H-44） | Codex 明确背压/断连、持续消费和 stale turn 投影；已保留各机制适用范围 | UI/SDK 长期等待或与持久化状态不一致 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
-| 运行及附属工作的归属 | 摘要、子运行、输出 reader 和复核没有一致的取消/退出 owner（H-31/H-45/H-60/H-61） | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
+| 运行及附属工作的归属 | 摘要、子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-31/H-45/H-60/H-61/H-64） | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
 | 内容身份与生命周期 | 去重名称没有对应正文、共享可变项目 scope、旧计时器作用到新调用（H-51/H-53/H-57/H-59） | Claude transcript 内容驱动去重及局部 timer cleanup；DeepSeek connection-owned system section；Wasmtime 的 Store deadline 语义 | 能力或记忆漏注入、跨项目污染、调用被无关计时器提前中断 |
 
 表中采用的是已查证的机制级比较，不表示参考项目整体没有其他缺陷；本系统的特定宿主、移动/工作流/WASM 集成，也不能直接以 Codex 同名能力代替验收。后文按问题给出触发、证据、影响及收敛方向，未覆盖项继续保持待审计。
@@ -1495,10 +1496,27 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟参考：Claude `借鉴/claudecode/restored-src/src/services/api/claude.ts` 在收到 message_delta usage 后更新当前 message 及调用 addToTotalSessionCost；返回量进入会话累计的动作发生于公共模型调用路径，独立于主回答文本是否被采用。这里借鉴“每个已完成调用都有用量归属”的边界，不主张直接照搬其进程级状态或 API 字段；未运行 Claude，也不声称其全部辅助客户端都被这一个调用点覆盖。
 - 后果：开启检查后，会话累计 tokens/成本统计低于已收到的供应商 usage，用户基于该账本查看消费与预算时缺少这部分消耗。没有实测月/日限额绕过或大额消费，因此该后果不升级为已复现。修复建议（未实施）：在既有 ModelClient/调用方 seam 传递带实际模型身份、调用归属和 usage 的结果，复用现有 CostOrigin::SideCall/CostService 幂等记录；文本/判定可丢，用量不可因 PASS、FAIL、解析错误而丢；不要将附属请求量并入上下文占用 gauge，也不要另建私有账本。验收覆盖成功/不采用/解析失败、已返回 usage 后取消、模型身份、缓存字段、缺价格保存与重复终帧去重。
 
+### H-64：自动完成验证没有运行取消与进程归属，总时限终态后真实 build.rs 仍能写文件
+
+**级别：高（P1）；范围：AppCore 在识别到构建系统的工程中自动装配 VerificationPlan，且本轮真实创建/修改文件，模型声明完成后进入构建验证。** 该计划与可选对抗复核/停滞分类不同，不以开启这两个实验功能为前提。本项是执行生命周期缺口，不把它推断为用户此前每次准备慢或宿主 Codex 续接失败的原因。
+
+- 生产路径：`deepagent-app-core/src/completion_plan.rs::discover_verification_plan()` 根据工程结构返回真实 `SystemCommandRunner`；Rust 步骤为 `cargo check --offline --quiet`。`run_assembler.rs` 将该计划和 hooks 一起挂到既有 Kernel。`deepagent-runtime/src/loop_engine.rs` 的 Complete/CompleteMessage 分支在 `run_mutated_files()` 成立时调用 `verify_after_completion()`；后者直接等待 `Verifier::run_suite()`。`deepagent-verification/src/verifier.rs` 逐项等待 runner，没有运行 token 或步骤前取消检查；`runner.rs::SystemCommandRunner::run()` 在 `spawn_blocking` 内使用 `std::process::Command::output()`，没有可取消进程句柄、进程树 guard 或命令截止时间。
+- 根因：运行的取消树与构建进程没有关联。外层 Kernel 的 `tokio::time::timeout(engine.run(...))` 只能丢弃等待该 blocking task 的 future，不能停止已经执行的 `cmd.output()` 或其子进程。不能将 `spawn_blocking` 视为取消机制，也不能仅在构建之后检查一次 flag 来修复终态后的副作用。
+- 动态证据：新增 `completion_plan/audit_tests.rs`，创建无外部依赖的临时 Cargo 工程、真实 `build.rs` 和 answer.txt 的正式 checkpoint Created 证据。使用正式计划发现、SystemCommandRunner、ModelAgent、Kernel、SQLite RunStore；模型 transport 为离线完成帧，文件变更由测试在进入 Kernel 前准备，**不是完整工具写入或桌面验收**。发现的命令仅增加 `--target-dir` 隔离构建锁/产物，未替换执行器或构建步骤。build.rs 先落 `build-started`，等待测试放行后再写 `build-wrote-after-release`；测试看到真实启动标记后才取消，避免“命令尚未启动”的伪通过。
+- 正常对照：观察约 215ms 时 Kernel 未退出、无终态、无迟到文件；放行后构建成功、任务 Completed、run=succeeded、终态事件 1 条。用户取消组：`handle.cancel()` 成功且 flag=true，约 215ms 后仍未退出、无终态；放行后构建仍写文件，随后该样本最终为 cancelled、任务 Failed、终态 1 条。**本项没有证明取消总会误成功，也未实测任意长度构建的最坏停止耗时；已证明取消无法中断正在运行的构建。**
+- 总时限对照：配置 5 秒 task_timeout，真实 build.rs 已启动；从启动标记后约 4,430ms 观察到 Kernel 已退出，SQLite=budget_exceeded、任务 Failed，迟到文件尚不存在。随后只放行已启动的 build.rs，真实文件出现；证明终态提交后原构建仍在执行并产生副作用。没有假造外部残留状态，也未触碰真实用户工程。每组在缺陷断言前放行、等待文件，并用同 target-dir 的第二次真实 Cargo check 等待原 Cargo 锁释放，清理成功后才释放临时目录；build.rs 另设 15 秒防悬挂上限。
+- 可重跑：`cargo test -p deepagent-app-core --lib completion_plan::audit_tests::audit_ --offline -- --ignored --nocapture`。两项均明确失败，约 6.28s；正常对照各自通过。默认 `completion_plan::audit_tests::` 为 1 passed / 2 ignored，约 1.51s；忽略项必须显式运行，不能把默认绿测当修复。未动态验证 npm/tsc/go/maven/dotnet、macOS/Linux 或 Tauri 操作。
+- 影响：模型已给出答案，界面仍可能长时间停在完成验证；停止无法阻止构建脚本继续操作文件。达到运行总时限也只停止主等待，旧构建可与下一轮编辑/构建交错、持有构建锁或使用 CPU。实际已发生的是测试文件在终态后写入；覆盖真实代码、重复发布或外部副作用属于依赖工程脚本的潜在风险，未在用户环境制造。
+- 成熟实现对照：Codex `core/src/exec.rs::ExecExpiration` 显式统一 Timeout/Cancellation/TimeoutOrCancellation；执行等待在同一个 select 中处理进程退出与 expiration，取消分支对归属进程组先请求终止、有限等待再强制清理，超时分支同样清理子进程/进程组。`core/src/tasks/mod.rs::handle_task_abort()` 先发 turn token，等待 done 或有界 grace，再 abort 任务并调用专属清理。本轮只阅读其源码，未运行参考项目；不能据此声称所有内部 helper 都已覆盖取消。
+- 本系统已有可复用能力：`deepagent-builtins/src/bash_tool.rs::SystemExecutor::run_controlled_with_environment()` 已接收取消与 timeout，实际进程使用 kill_on_drop、Windows Job/Unix 进程组及等待分支。另一个外部 hooks runner `deepagent-hooks/src/external_hooks.rs::run_hook_process()` 也已有 kill_on_drop 和 ProcessTreeGuard，runtime `fire_hook()` 已 select 运行取消；因此不列“全部 hooks 都不响应取消”的错误结论。这些源码保护是否覆盖所有 hooks 边界还需独立动态验证，不能用本次构建探针证明。
+- 修复方向（尚未实施）：让既有验证计划接入运行命令执行/权限及进程 owner 边界，传递同一取消树和有效 deadline，每一步开始前与结果提交前均核对取消。无论主动取消、总时限、验证错误或 future drop，均需在有界时间内停止归属进程树并处理输出 reader；不得另造验证执行系统，也不能仅在 Kernel 完成后发 kill。回归需覆盖真实 build.rs/脚本、连续步骤、子孙进程、停止与完成竞态、父进程先退出但管道开放及单终态，并确保正常工程构建仍可完成。本轮只新增审计测试和文档，没有修改生产运行行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-64 真实自动构建取消/总时限显式探针（见该节命令） | 两项明确失败、约 6.28s：取消后等待真实 build；5 秒总时限落 budget_exceeded 后原 build.rs 仍写文件。正常对照成功，全部临时构建在断言前放行并完成清理 |
+| H-64 计划发现与已有受控命令对照 | `cargo test -p deepagent-app-core --lib completion_plan:: --offline -- --nocapture`：8 passed / 2 ignored，约 1.22s；两项 ignored 已显式执行失败。`cargo test -p deepagent-hooks --lib system_runner_timeout_terminates_process_tree_promptly --offline -- --nocapture`：1 passed；`cargo test -p deepagent-builtins --lib system_executor_cancels_running_process_within_two_seconds --offline -- --nocapture`：1 passed，真实 shell 启动后约 11ms 取消退出。fmt、diff 检查通过；本批仅测试/文档，未跑全 workspace、Clippy、桌面构建或真实供应商 |
 | H-63 附属检查用量进入真实成本账本显式探针（见该节命令） | 明确失败：panel 应有 314/24、stall 应有 112/10，实际均仅 11/3；检查完成且无残留，未测真实价格或公网费用 |
 | H-63 正向账本对照及检查基线 | `cargo test -p deepagent-app-core --lib run_finalizer::tests::compaction_side_usage_is_booked_as_its_own_row --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib verification_panel:: --offline -- --nocapture`：8 passed / 4 ignored，约 0.21s；fmt、diff 通过。四个忽略探针均已分别显式执行失败；本轮仅测试及文档，未执行全 workspace、UI 构建或公网测试 |
 | H-62 停滞检测取消显式探针（见该节命令） | 明确失败：取消后分类仍活跃；响应释放后正确落 cancelled，正常对照成功；没有把最终状态正确说成停止及时 |
@@ -1761,6 +1779,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 可选模型复核与主运行终态一致性 | H-61 | 既有取消树派生复核子 token，面板任务 owner 管理取消与 join，完成提交重查运行取消；参考 Codex 的有界 turn abort 和任务清理 | 取消后不提交成功；总时限/drop 不遗留复核请求；正常 PASS 仍完成，失败反馈有界，取消不当作普通复核失败 |
 | 停滞检测的取消与结果采纳 | H-62 | 既有模型取消入口及运行 token 覆盖分类等待、nudge 注入与重入；参考 Grok 分类 generation/idle 核对和 Codex turn abort | 分类中停止及时退出；取消不被 fail-open 吞成继续采样；无延迟新请求；最终取消映射保持正确 |
 | 附属模型调用的费用归属 | H-63 | 复用现有 SideCall/CostService，模型响应归属传递保留真实模型和 usage，独立于文本/判定采纳；参考 Claude 公共调用路径记录 usage | panel/classifier 成功或不采纳均记已返回量；缓存/模型准确；缺价保留 tokens；不误加上下文 gauge、不重复记账 |
+| 自动构建验证的执行归属 | H-64 | 既有 VerificationPlan 接回受控命令、运行取消和有效截止；参考 Codex ExecExpiration 与进程组清理，不靠 spawn_blocking 丢 future 停进程 | 真实 build.rs 在取消/总时限/drop 后有界退出，终态后无迟到写入；后续步骤不启动；正常验证和单终态保持 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 附件存储身份与写入/删除范围 | H-58 | 既有 AttachmentService 统一有效单组件身份、会话归属和精确附件读写/删除；参考本仓库 ledger 组件验证及 Claude 宿主会话/UUID 文件身份 | 异常 id/session 在写入前拒绝；不覆盖或删除桶/root/兄弟数据；正常导入/幂等删除、junction/竞态和重开分别验证 |
