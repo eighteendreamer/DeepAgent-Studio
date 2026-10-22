@@ -124,3 +124,98 @@ fn audit_startup_recovery_preserves_one_replayable_terminal() {
         assert_eq!(observed["conversation_turn_kind"], "failed");
     }
 }
+
+#[test]
+#[ignore = "audit H-95: startup interruption classification must follow each run's task boundary"]
+fn audit_recovery_classifies_each_run_from_its_own_task_turn() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let session_id;
+    let old_task;
+    let latest_task;
+    {
+        let mut session =
+            Session::create(&db, &SystemClock, Some("overlapping recovery audit")).unwrap();
+        session_id = session.id().to_string();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("older prompt whose tool call was interrupted"),
+            })
+            .unwrap();
+        old_task = session.create_task("older in-progress run").unwrap();
+        session
+            .transition_task(old_task, TaskState::Running)
+            .unwrap();
+        session
+            .append(EventPayload::ToolCallRequested {
+                call: deepagent_core::message::ToolCall {
+                    id: "old-call".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path":"audit.txt"}),
+                },
+            })
+            .unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("newer prompt not yet answered"),
+            })
+            .unwrap();
+        latest_task = session.create_task("newer in-progress run").unwrap();
+        session
+            .transition_task(latest_task, TaskState::Running)
+            .unwrap();
+    }
+
+    let runs = RunStore::new(&db);
+    runs.create(
+        "audit-old-run",
+        &session_id,
+        Some(&old_task.to_string()),
+        10,
+    )
+    .unwrap();
+    runs.transition("audit-old-run", "running_turn", 11)
+        .unwrap();
+    runs.create(
+        "audit-latest-run",
+        &session_id,
+        Some(&latest_task.to_string()),
+        12,
+    )
+    .unwrap();
+    runs.transition("audit-latest-run", "running_turn", 13)
+        .unwrap();
+
+    let service = AppService::from_shared(db);
+    let projected_turn_ids: std::collections::HashSet<_> = service
+        .session_conversation(&session_id)
+        .unwrap()
+        .into_iter()
+        .filter_map(|message| message.turn.map(|turn| turn.id))
+        .collect();
+    assert!(projected_turn_ids.contains("audit-old-run"));
+    assert!(projected_turn_ids.contains("audit-latest-run"));
+
+    let recovered = service.recover_unfinished_runs().unwrap();
+    let old = recovered
+        .iter()
+        .find(|run| run.run_id == "audit-old-run")
+        .expect("older run recovery result");
+    let latest = recovered
+        .iter()
+        .find(|run| run.run_id == "audit-latest-run")
+        .expect("latest run recovery result");
+    eprintln!(
+        "run interruption audit: old={:?}, latest={:?}",
+        old.interruption, latest.interruption
+    );
+    assert_eq!(
+        old.interruption.as_deref(),
+        Some("interrupted_turn"),
+        "the older run ends in a pending tool call before the newer prompt"
+    );
+    assert_eq!(
+        latest.interruption.as_deref(),
+        Some("interrupted_prompt"),
+        "the latest run ends immediately after its user prompt"
+    );
+}

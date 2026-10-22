@@ -18,7 +18,7 @@
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
-| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
+| 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
@@ -66,7 +66,7 @@
 
 `AgentKernel` 已定义 Accepted → Preparing → RunningTurn / ExecutingTools → Finalizing → Terminal，使用现有 RunStore、事件与取消树；`RunCoordinator` 提供跨入口控制信号，provider wire 集中在 `deepagent-models`。这组职责分离有明确价值：本报告的真实桌面普通对话、只读工具、取消与重启继续，以及正式 AppCore 的工具副作用和子运行测试，已证明部分组合能实际闭环。运行包与 MCP 慢准备不进入聊天等待、取消审计失败仍传播信号，也有独立动态证据。
 
-当前结构性缺口集中在这些抽象被不同入口组合后的不变量：ACK 早于真正接纳（H-02），会话租约的 owner 仅存在单个宿主内（H-33），子运行配置/工作树/产物归属分裂（H-19～H-22），工作流另行装配工具与结果解释（H-38～H-40），启动恢复缺少规范终态和会话投影（H-44）。因此本轮建议在既有 AppCore/Kernel 统一执行配置、运行归属和提交边界，按真实入口回归；这些判断并不要求新增第二套执行器或持久化。
+当前结构性缺口集中在这些抽象被不同入口组合后的不变量：ACK 早于真正接纳（H-02），会话租约的 owner 仅存在单个宿主内（H-33），子运行配置/工作树/产物归属分裂（H-19～H-22），工作流另行装配工具与结果解释（H-38～H-40），启动恢复缺少规范终态和会话投影（H-44），且恢复中断原因按 session 全日志分类而没有按 run/task 隔离（H-95）。因此本轮建议在既有 AppCore/Kernel 统一执行配置、运行归属和提交边界，按真实入口回归；这些判断并不要求新增第二套执行器或持久化。
 
 ### 对 DeepSeek 的适配：已有可用链路，协议与配置边界存在确定性缺口
 
@@ -98,7 +98,7 @@
 |---|---|---|---|
 | 执行身份与控制 | ACK、租约、审批和实际运行的归属未全部统一（H-02/H-15/H-16/H-33） | Codex 按 turn 管理 waiter、thread writer 保护；Claude 活跃 owner/锁保护（见各项源码与探针） | 停止虚假确认、迟到或串运行审批、同会话并发推进 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
-| 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、最终钩子失败前已通知完成，以及审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84） | Codex 明确背压/断连、持续消费、stale turn 投影及统一携带错误的 turn 完成通知；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、重复提示或审批请求无法关联 |
+| 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
@@ -1896,6 +1896,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：Chat 路由的下一请求会遗漏较早的 reasoning 文本，模型收到的内部续轮上下文变短；其对最终回答、工具选择或 provider 接受性的具体影响没有经过真实模型验证。Responses 输出通常是单个 reasoning item 的路径已被覆盖，但当前类型、累加器和输入协议均允许多个 item；本项仍不能外推为用户桌面默认路径已触发。
 - 收敛方向（尚未实施，本地设计）：将尚未 flush 的相邻 reasoning 文本按输入顺序追加到一个 pending buffer，并在 assistant message / tool-call grouping 处一次消费；不要跨 user/tool 边界携带。补充一段、多段、reasoning 后工具调用、reasoning 被非 assistant item 隔断及重开后相同投影的回归，并保持现有 provider-native Surface 不变。
 
+### H-95：启动恢复把同一 session 的最新中断原因套用到所有未完成 run
+
+**级别：低（P3，诊断分类缺陷）；触发条件：同一 session 中存在多个未完成 run，较早 run 的中断位置与较新 run 不同，且较新的 session 事件改变了全局日志尾部分类。** run 的终态处理仍按各自记录进行；本项只确认 interruption 原因没有按 run/task 隔离。
+
+- 根因与生产路径：`AppService::recover_unfinished_runs()` 逐个处理 `RunStore::unfinished()` 返回的 run，但每次都加载该 session 的完整 `EventStore` 日志，并调用 `classify_interruption(&events)`。分类函数从 session 尾部反向扫描，签名不接收 run ID 或 `task_id`。同一日志中的 `TaskCreated` 和 `runs.task_id` 已标识各 task；正式会话投影也能将两个 run 分成独立 turn，但恢复诊断没有使用这些身份。
+- 动态复现：显式 ignored 探针 `crates/deepagent-app-core/tests/recovery_terminal_audit.rs::audit_recovery_classifies_each_run_from_its_own_task_turn` 使用正式 `Session`、`RunStore`、`AppService::session_conversation()` 和 `recover_unfinished_runs()`。同一 session 中先创建停在 `ToolCallRequested` 后的旧 task/run，再创建停在新 user message 后的新 task/run；投影确认两个 run ID 都存在。恢复结果实际为 `old=Some("interrupted_prompt"), latest=Some("interrupted_prompt")`，而旧 run 应为 `interrupted_turn`，因此探针以 **0 passed / 1 failed** 退出。没有启动真实双宿主或模拟进程崩溃；此探针只验证正式恢复分类路径。
+- 成熟实现对照：Codex `app-server/tests/suite/v2/thread_resume.rs::thread_resume_and_read_interrupt_incomplete_rollout_turn_when_thread_is_idle` 以具体 `turn_id` 将不完整 rollout turn 恢复为 `Interrupted`；`app-server/src/request_processors/thread_lifecycle.rs::set_thread_status_and_interrupt_stale_turns()` 仅改变仍处于 `InProgress` 的 turn。可借鉴的是以 turn 身份更新恢复状态，不是对整份 thread 历史只做一次尾部判断。
+- 影响及限制：错误分类被写入 `run_recovered_after_startup` 事件并返回 `RunRecoveryDto.interruption`。当前源码搜索没有发现该字段驱动续跑、模型请求或 run/task 终态；因此已证实影响是旧 run 的恢复原因诊断可能归错，不能据此声称会改变执行行为或用户可见 UI。终态写入和任务失败处理属于既有恢复路径，本探针不评估 H-44 的终态投影问题。
+- 收敛方向（尚未实施，本地设计）：在现有事件流中用明确的 run/task 身份确定各 turn 的分类范围；若需要把位于 `TaskCreated` 前的 user prompt 归属到 task，应由统一投影按现有 task/run 关系处理，不能简单截断后遗漏 prompt。补充同 session 多 run 的旧工具中断、新 prompt 中断、已完成旧 turn、无决定性事件，以及重放后身份稳定的测试；保留现有 RunStore、session event log 和恢复入口。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1914,6 +1924,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-01 慢消费者真实 stdout 管道显式探针 | `cargo test -p deepagent-cli --offline audit_stdio_slow_output_drops_terminal_on_real_pipe -- --ignored --nocapture`：审计断言通过，表示复现成立；生产 outbox 在真实 Windows 子进程 stdout 管道未读 250 ms 时，1,024 条终态类型通知只收到 272 条，`critical-terminal` 丢失，读取后输出共 1,157,606 字节。探针未运行正式 ChatService/RunStore/SDK；未测试 Tauri |
 | H-93 Chat 命名工具选择请求/默认值显式探针 | `cargo test -p deepagent-models audit_chat_tool_choice --offline -- --ignored --nocapture`：0 passed / 2 failed；request 与 defaults 两路径均序列化为 Responses 形状而非 DeepSeek Chat 形状；仅 adapter/serializer 离线复现，无公网 provider 请求 |
 | H-94 Chat 连续 reasoning item 显式探针 | `cargo test -p deepagent-models audit_chat_projection_preserves_all_reasoning_items --offline -- --ignored --nocapture`：0 passed / 1 failed；输入 `first ` 与 `second`，输出仅含 `second`；仅 adapter/serializer 离线复现，无公网 provider 请求 |
+| H-95 同一 session 多 run 的恢复分类显式探针 | `cargo test -p deepagent-app-core --test recovery_terminal_audit audit_recovery_classifies_each_run_from_its_own_task_turn --offline -- --ignored --nocapture`：0 passed / 1 failed；旧 run 的 tool interruption 被分类为 `interrupted_prompt`，最新 run 的 `interrupted_prompt` 分类正确；正式 AppService/SQLite 内存数据库与 session projection，无真实进程崩溃或桌面验收 |
+| H-95 默认探针基线与检查 | `cargo test -p deepagent-app-core --test recovery_terminal_audit --offline`：0 passed / 2 ignored；两条均为显式审计探针，默认通过不代表问题已修复。`cargo fmt --all -- --check`、`git diff --check` 通过；本批未跑全 workspace、Clippy、桌面构建或真实 Tauri |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
@@ -2246,6 +2258,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 执行权限与子运行上下文 | H-03、H-19、H-22、H-65 | 有效工具集合、sandbox 选择、执行根、checkpoint 与两处自动验证必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd、Codex 的统一命令编排 | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致；配置后端拒绝时单文件/完成验证均不得转为宿主执行 |
 | 可选 WASM 的时钟与调用归属 | H-59 | 既有 WasmSandbox 统一 Engine tick 与 per-Store deadline；参考上游 Wasmtime 及成熟 Agent 的局部 timer 清理 | 顺序与并发调用互不提前超时；成功/失败/取消不遗留误伤；Windows trap 错误不终结宿主；默认未启用路径保持不受影响 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17、H-84 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；审批通知只由一个 gate owner 发布并携带 call ID；参考 Codex 的 turn 所属 waiter 和单一权限请求 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；一项人工审批只发一条可响应请求；保存失败可见 |
+| 启动恢复的 run/task 诊断归属 | H-44、H-95 | 现有恢复投影按 run 的 task 身份界定历史范围；参考 Codex 按 turn ID 标记 stale turn | 同 session 多个未完成 run 的中断原因各自匹配其 task turn；较新的 user prompt 不改写旧 run 的工具中断原因；重放稳定，且不改变唯一终态 |
 | 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
@@ -2264,7 +2277,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 桌面运行事件与订阅生命周期 | H-41、H-43 | 现有 run_id、完成 payload、订阅就绪屏障和持久化补读统一；参考 Codex thread 通道和持续消费 worker | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能清理新 run |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | 共享设置与凭据的提交资格 | H-87、H-88 | 现有 SettingsService/SecretStore 在数据库当前版本上提交字段变更；参考 Codex Session 设置持久化许可与 DeepSeek 账户撤销/登录生命周期，跨宿主版本栅栏为本地设计 | 刷新不覆盖已收紧限制；退出/换 Key 后旧刷新不能写回旧凭据；独立连接、真实主备进程、失败和乱序完成一致 |
-| 启动恢复的规范终态与会话投影 | H-44 | 恢复共用现有幂等终态边界，文件会话投影具备按 run 身份的补偿；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补，不能改错后续 turn |
+| 启动恢复的规范终态、会话投影与诊断归属 | H-44、H-95 | 恢复共用现有幂等终态边界，文件会话投影与 interruption 分类均具备按 run/task 身份的处理；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补；多个 unfinished run 的原因各自对应目标 turn，不能改错后续 turn |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
 | MCP 初始化复用与配置代次 | H-47 | 按服务连接身份复用 pending startup，定向取消/失效；全局视图代次不能写坏仍有效的共享 slot | 新增或修改 B 不取消未变 A；禁用/替换 A 才终止旧任务；迟到取消结果不变成新代缓存失败 |
