@@ -4282,6 +4282,96 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-115: PermissionDenied hook payload must include the model tool call ID"]
+    async fn audit_permission_denied_hook_includes_tool_call_id() {
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("permission hook audit")).unwrap();
+        let task = session.create_task("audit permission denied hook").unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("permission-denied.json");
+        let quoted_marker = marker.to_string_lossy().replace('\'', "''");
+        let definitions = HookDefinitions::parse(
+            &serde_json::json!({ "hooks": { "PermissionDenied": [{
+                "matcher": "counting_read",
+                "hooks": [{
+                    "type": "command", "shell": "powershell", "timeout": 5,
+                    "command": format!(
+                        "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted_marker}', $payload)"
+                    )
+                }]
+            }]}})
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = HookRegistry::new();
+        assert_eq!(
+            definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+            1
+        );
+
+        let call_id = "audit-permission-denied-call";
+        let arguments = serde_json::json!({ "path": "audit.txt" });
+        let mut agent = ScriptedAgent::new([
+            AgentDecision::CallTool(
+                ToolInvocation::new("counting_read", arguments.clone()).with_id(call_id),
+            ),
+            AgentDecision::Complete("permission denial recorded".into()),
+        ]);
+        let config = RuntimeConfig {
+            permissions: PermissionSet::empty(),
+            ..Default::default()
+        };
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut reg = ToolRegistry::new();
+        reg.register(Arc::new(CountingReadTool {
+            calls: calls.clone(),
+        }))
+        .unwrap();
+        let engine = RuntimeEngine::new(&reg, Metrics::new(), config).with_hooks(&hooks);
+
+        let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+        assert_eq!(
+            outcome,
+            RunOutcome::Completed("permission denial recorded".into())
+        );
+        assert_eq!(calls.load(Ordering::Acquire), 0);
+        assert_eq!(agent.observations.len(), 1);
+        let observation = &agent.observations[0];
+        assert!(!observation.ok);
+        assert_eq!(observation.call_id.as_deref(), Some(call_id));
+        assert_eq!(observation.output["error_type"], "permission_denied");
+        let events = EventStore::new(&db).load_session(session.id()).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    &event.payload,
+                    EventPayload::ToolCallCompleted { call_id: id, ok: false, .. }
+                        if id == call_id
+                ))
+                .count(),
+            1
+        );
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(marker).unwrap()).unwrap();
+        eprintln!("PermissionDenied payload: {payload}");
+        assert_eq!(payload["tool_name"], "counting_read");
+        assert_eq!(payload["tool_input"], arguments);
+        assert_eq!(payload["reason"], observation.output["error"]);
+        assert_eq!(payload["hook_event_name"], "PermissionDenied");
+        assert_eq!(
+            payload["tool_use_id"].as_str(),
+            Some(call_id),
+            "PermissionDenied payload must retain the recorded tool call identity: {payload}"
+        );
+    }
+
     #[tokio::test]
     async fn step_limit_marks_failed() {
         let db = Database::open_in_memory().unwrap();
