@@ -126,7 +126,7 @@ export function ContextCapacityIndicator({
         </span>
       </Button>} />
 
-      <HoverCardContent side="top" align="end" className="w-[240px] px-3.5 py-3">
+      <HoverCardContent motionTone="menu" side="top" align="end" className="w-[240px] px-3.5 py-3">
           <div className="flex items-baseline justify-between gap-2">
             <span className="font-semibold">预计下一次请求</span>
             <span className="text-[18px] font-semibold leading-none">{percent}%</span>

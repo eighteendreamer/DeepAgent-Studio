@@ -11,6 +11,8 @@ type Props = {
   trailing?: ReactNode;
   title?: string;
   panelClassName?: string;
+  panelPlacement?: "above" | "below";
+  panelAlign?: "left" | "right";
   zIndex?: number;
   staggerContent?: boolean;
   unstyled?: boolean;
@@ -27,6 +29,8 @@ export function MorphingToolbarMenu({
   trailing,
   title,
   panelClassName,
+  panelPlacement,
+  panelAlign = "left",
   zIndex = 60,
   children,
   staggerContent = true,
@@ -51,7 +55,8 @@ export function MorphingToolbarMenu({
       trigger={trigger}
       className="shrink-0"
       panelClassName={panelClassName}
-      panelAlign="left"
+      panelPlacement={panelPlacement}
+      panelAlign={panelAlign}
       zIndex={zIndex}
       staggerContent={staggerContent}
       unstyled={unstyled}

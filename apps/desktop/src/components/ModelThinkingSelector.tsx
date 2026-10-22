@@ -70,11 +70,11 @@ function modelLabel(id: string): string {
 }
 
 
-/** 模型/推理浮层 —— px-2 外框 + 药丸贴齐内容区 */
+/** 标题、选项容器与滑轨统一外沿，选项文字保留独立内边距。 */
 const MODEL_MENU = {
-  padX: "px-2",
-  divider: "mx-2 my-1.5 h-px shrink-0 bg-border-theme opacity-[0.55]",
-  section: "flex items-center justify-between px-0.5 py-1 text-[12px]",
+  padX: "px-3",
+  divider: "mx-3 my-2 h-px shrink-0 bg-border-theme opacity-[0.55]",
+  section: "flex items-center py-1 text-[12px]",
   pill: "left-0 right-0 rounded-lg",
 } as const;
 
@@ -152,7 +152,6 @@ export function ModelThinkingSelector({
 
               <span className="font-medium text-text-base">模型</span>
 
-              <span className="text-text-secondary">{modelLabel(selectedModel) || "未选择"}</span>
 
             </div>
 
@@ -187,7 +186,7 @@ export function ModelThinkingSelector({
                         onClick={switching ? undefined : () => onChooseModel(id)}
 
                         className={cn(
-                          "cursor-pointer px-2.5 text-left",
+                          "cursor-pointer px-2.5 py-2 text-left",
                           selected ? "text-text-base" : "text-text-secondary",
                         )}
 
@@ -217,9 +216,9 @@ export function ModelThinkingSelector({
 
 
 
-          <div className={cn(MODEL_MENU.padX, "pt-0.5")}>
+          <div className="px-3 pb-1 pt-0.5">
 
-            <div className="mb-1.5 flex items-center justify-between px-0.5 text-[12px]">
+            <div className="mb-2.5 flex items-center text-[12px]">
 
               <span className="font-medium text-text-base">推理强度</span>
 

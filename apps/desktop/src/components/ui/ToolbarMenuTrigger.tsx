@@ -3,6 +3,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { cn } from "../shadcn/utils";
 import { HoverInfo } from "./HoverInfo";
 import { MOTION } from "./motion";
+import { Button } from "../shadcn/button";
 
 /**
  * Composer 底栏工具触发器 —— 项目 / 环境 / Git 同级入口。
@@ -23,10 +24,10 @@ export function ToolbarMenuTrigger({
   trailing?: ReactNode;
 }) {
   return (
-    <HoverInfo content={title}><button
+    <HoverInfo content={title}><Button variant="ghost"
       type="button"
       className={cn(
-        "inline-flex h-8 max-w-[200px] shrink-0 items-center gap-1.5 text-[12px] font-medium text-text-secondary",
+        "inline-flex h-8 max-w-[200px] shrink-0 items-center gap-1.5 p-0 text-[12px] font-medium text-text-secondary shadow-none",
         MOTION.fast,
         "hover:text-text-base",
         open && "text-text-base",
@@ -43,6 +44,6 @@ export function ToolbarMenuTrigger({
         icon={["fas", "chevron-down"]}
         className="shrink-0 text-[9px] text-text-secondary opacity-70"
       />
-    </button></HoverInfo>
+    </Button></HoverInfo>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { continuousRadius, CORNER_CURVATURE } from "../theme/continuousCorners";
 import { Check, ChevronDown, Eye, EyeOff, FolderOpen, Globe, LoaderCircle, Lock, LockOpen, MessagesSquare, Monitor, Moon, Shield, SlidersHorizontal, Sun, Terminal } from "lucide-react";
 import { AnimatePresence, motion, useAnimationControls, useReducedMotion } from "framer-motion";
 import { getWelcomeName, initializeProject, isTauri, openExternalUrl, setSandboxMode, setWelcomeName as persistWelcomeName, type SandboxMode } from "../api";
@@ -296,7 +297,7 @@ export function OnboardingWizard({ onComplete }: { onComplete: () => void }) {
               <footer className={`onboarding-actions ${step === 0 ? "onboarding-actions-connect" : ""}`}>
                 {step > 0 && <Button variant="outline" className="onboarding-back" onClick={() => goToStep(step - 1)}>上一步</Button>}
                 {step === 0 ? (
-                  <ConnectButton initial="expanded" animate={connectAnimation} variants={{ expanded: { width: "100%", borderRadius: "12px" }, collapsed: { width: "46px", borderRadius: "23px" } }} onClick={handleConnect} disabled={!apiKey.trim() || isConnecting} aria-busy={isConnecting} aria-label={{ idle: "确定连接", connecting: "正在连接", success: "连接成功", error: "重试连接" }[connectState]} data-connect-state={connectState} className="onboarding-primary w-full min-w-0 overflow-hidden px-0 disabled:opacity-50 data-[connect-state=connecting]:disabled:opacity-100 data-[connect-state=success]:disabled:opacity-100">
+                  <ConnectButton initial="expanded" animate={connectAnimation} variants={{ expanded: { width: "100%", borderRadius: `${continuousRadius(12)}px`, "--connect-corner-curvature": CORNER_CURVATURE }, collapsed: { width: "46px", borderRadius: "23px", "--connect-corner-curvature": 1 } }} onClick={handleConnect} disabled={!apiKey.trim() || isConnecting} aria-busy={isConnecting} aria-label={{ idle: "确定连接", connecting: "正在连接", success: "连接成功", error: "重试连接" }[connectState]} data-connect-state={connectState} className="onboarding-primary w-full min-w-0 overflow-hidden px-0 disabled:opacity-50 data-[connect-state=connecting]:disabled:opacity-100 data-[connect-state=success]:disabled:opacity-100">
                     <motion.span key={connectState} initial={reducedMotion ? false : { opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: reducedMotion ? 0 : 0.18 }} className="inline-flex items-center justify-center gap-2 whitespace-nowrap" aria-hidden="true">
                       {connectState === "connecting" ? <LoaderCircle className="h-4 w-4 motion-safe:animate-spin" /> : connectState === "success" ? <><Check className="h-4 w-4" />连接成功</> : connectState === "error" ? "重试连接" : "确定连接"}
                     </motion.span>

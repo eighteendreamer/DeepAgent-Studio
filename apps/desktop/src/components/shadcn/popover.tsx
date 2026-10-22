@@ -1,8 +1,17 @@
 import { Popover as PopoverPrimitive } from "@base-ui/react/popover";
 import { cn } from "./utils";
+import { SpringPopupContext, SpringSurface, usePopupMotionRoot } from "../ui/SpringSurface";
 
 // Base UI composition from the shadcn registry, with this app's theme/motion.
-export const Popover = PopoverPrimitive.Root;
+export function Popover({ actionsRef, onOpenChange, ...props }: PopoverPrimitive.Root.Props) {
+  const motion = usePopupMotionRoot(actionsRef);
+  return <SpringPopupContext.Provider value={motion.context}>
+    <PopoverPrimitive.Root {...props} actionsRef={motion.actionsRef} onOpenChange={(open, details) => {
+      onOpenChange?.(open, details);
+      motion.onChange(open, details);
+    }} />
+  </SpringPopupContext.Provider>;
+}
 export const PopoverTrigger = PopoverPrimitive.Trigger;
 export const PopoverTitle = PopoverPrimitive.Title;
 export const PopoverClose = PopoverPrimitive.Close;
@@ -20,9 +29,10 @@ export function PopoverContent({
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Positioner anchor={anchor} align={align} side={side} sideOffset={sideOffset} className="z-[90]">
         <PopoverPrimitive.Popup
+          render={<SpringSurface />}
           data-slot="popover-content"
           className={cn(
-            "origin-[var(--transform-origin)] rounded-2xl border border-border-theme bg-elevated-bg text-text-base shadow-[0_12px_40px_rgb(0,0,0,0.10)] outline-none transition-[opacity,transform] duration-150 data-[starting-style]:translate-y-1 data-[starting-style]:opacity-0 data-[ending-style]:opacity-0 motion-reduce:transition-none",
+            "origin-[var(--transform-origin)] rounded-2xl border border-border-theme bg-elevated-bg text-text-base shadow-[0_12px_40px_rgb(0,0,0,0.10)] outline-none",
             className,
           )}
           {...props}

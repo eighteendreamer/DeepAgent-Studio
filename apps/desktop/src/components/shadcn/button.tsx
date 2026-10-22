@@ -1,6 +1,7 @@
 import * as React from "react";
 
 import { cn } from "./utils";
+import { useSpringPress } from "../ui/useSpringPress";
 
 type ButtonVariant = "default" | "secondary" | "outline" | "ghost" | "destructive";
 type ButtonSize = "default" | "sm" | "icon";
@@ -25,9 +26,11 @@ const sizeClasses: Record<ButtonSize, string> = {
 };
 
 const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
-  ({ className, variant = "default", size = "default", type = "button", ...props }, ref) => (
+  ({ className, variant = "default", size = "default", type = "button", ...props }, ref) => {
+    const pressRef = useSpringPress(ref);
+    return (
     <button
-      ref={ref}
+      ref={pressRef}
       type={type}
       className={cn(
         "inline-flex shrink-0 items-center justify-center gap-2 rounded-lg font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-primary/30 disabled:pointer-events-none disabled:opacity-45",
@@ -37,7 +40,8 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       )}
       {...props}
     />
-  ),
+    );
+  },
 );
 Button.displayName = "Button";
 

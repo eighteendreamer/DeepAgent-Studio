@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { searchSessions } from "../api";
 import type { Project, SessionSearchHit, SessionSummary } from "../types";
-import { Panel } from "./ui/Panel";
+import { GlobalModal } from "./ui/GlobalModal";
 import { ListItem } from "./ui/ListItem";
 
 interface Props {
@@ -74,7 +74,6 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
   useEffect(() => {
     if (!isOpen) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
       if (e.ctrlKey && /^[1-9]$/.test(e.key)) {
         const index = Number(e.key) - 1;
         const result = results[index];
@@ -101,15 +100,8 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
   if (!isOpen) return null;
 
   return (
-        <div className="modal-layer fixed inset-0 z-[100] flex items-center justify-center bg-transparent">
-          {/* Backdrop overlay for closing */}
-          <div 
-            className="absolute inset-0 bg-black/5" 
-            onClick={onClose} 
-          />
-      
-          {/* Modal */}
-          <Panel menu={false} className="modal-panel relative h-[340px] w-[380px] max-h-[calc(100vh-96px)] max-w-[calc(100vw-32px)] flex flex-col overflow-hidden">
+        <GlobalModal open={isOpen} onClose={onClose} zIndexClass="z-[100]" backdropClassName="!bg-black/5"
+          panelClassName="h-[340px] w-[380px] max-h-[calc(100vh-96px)] max-w-[calc(100vw-32px)] flex flex-col overflow-hidden">
         {/* Header / Input area */}
         <div className="px-4 py-3 border-b border-transparent">
           <input 
@@ -161,7 +153,6 @@ export function SearchModal({ isOpen, onClose, sessions, projects, onSelectSessi
             )}
           </div>
         </div>
-      </Panel>
-    </div>
+    </GlobalModal>
   );
 }

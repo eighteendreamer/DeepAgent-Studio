@@ -1,6 +1,7 @@
-import { isValidElement, type ReactElement, type ReactNode } from "react";
+import { isValidElement, useContext, useEffect, useState, type ReactElement, type ReactNode } from "react";
 
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../shadcn/hover-card";
+import { MenuTriggerOpenContext } from "./MorphPanelLayoutContext";
 
 interface HoverInfoProps {
   content: ReactNode;
@@ -10,6 +11,9 @@ interface HoverInfoProps {
 
 /** A short, non-underlined information card for an existing UI trigger. */
 export function HoverInfo({ content, children, side }: HoverInfoProps) {
+  const menuOpen = useContext(MenuTriggerOpenContext);
+  const [open, setOpen] = useState(false);
+  useEffect(() => { if (menuOpen) setOpen(false); }, [menuOpen]);
   if (content == null || content === "") return children;
   const disabled = isValidElement<{ disabled?: boolean; className?: string }>(children)
     && children.props.disabled === true;
@@ -30,8 +34,9 @@ export function HoverInfo({ content, children, side }: HoverInfoProps) {
   ) : children;
 
   return (
-    <HoverCard onOpenChange={(_open, details) => {
-      if (details.reason === "trigger-press") details.cancel();
+    <HoverCard open={open && !menuOpen} onOpenChange={(next, details) => {
+      if (details.reason === "trigger-press" || (next && menuOpen)) details.cancel();
+      else setOpen(next);
     }}>
       <HoverCardTrigger
         render={trigger}

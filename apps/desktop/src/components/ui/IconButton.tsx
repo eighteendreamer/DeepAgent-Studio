@@ -1,6 +1,7 @@
 import { forwardRef, type ButtonHTMLAttributes } from "react";
 import { cn } from "../shadcn/utils";
 import { MOTION } from "./motion";
+import { useSpringPress } from "./useSpringPress";
 
 /**
  * 图标按钮 —— 统一语言：无边框、透明底、hover 静默着色。
@@ -8,9 +9,10 @@ import { MOTION } from "./motion";
  */
 export const IconButton = forwardRef<HTMLButtonElement, ButtonHTMLAttributes<HTMLButtonElement>>(
   function IconButton({ className, ...rest }, ref) {
+    const pressRef = useSpringPress(ref);
     return (
       <button
-        ref={ref}
+        ref={pressRef}
         className={cn(
           "ui-circle-icon-btn flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-text-secondary",
           MOTION.fast,

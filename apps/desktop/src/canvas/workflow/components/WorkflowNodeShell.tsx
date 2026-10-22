@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState } from "react";
+import { continuousCornerStyle } from "../../../theme/continuousCorners";
 import { Handle, NodeToolbar, Position, type NodeProps } from "@xyflow/react";
 import { Plus } from "lucide-react";
 import type {
@@ -239,7 +240,7 @@ const EDIT_PANEL_STYLE: React.CSSProperties = {
   width: 320,
   background: "rgba(24,24,27,0.92)",
   border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: 12,
+  ...continuousCornerStyle(12),
   boxShadow: "0 24px 64px rgba(0,0,0,0.4)",
   backdropFilter: "blur(40px)",
   WebkitBackdropFilter: "blur(40px)",
@@ -502,7 +503,7 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
           const handles = getNodeSourceHandles(nodeData.kind ?? "", nodeData as Record<string, unknown>);
           return Math.max(64, handles.length * 28 + 16);
         })(),
-        borderRadius: 16,
+        ...continuousCornerStyle(16),
         background: "#101010",
         border: STATUS_BORDER[nodeStatus],
         boxShadow: selected
@@ -519,7 +520,7 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
             className="absolute pointer-events-none"
             style={{
               inset: -3,
-              borderRadius: 19,
+              ...continuousCornerStyle(19),
               background:
                 "conic-gradient(from var(--glow-angle, 0deg), rgba(0,0,0,0) 0%, #8b7cf7 4%, #a78bfa 10%, rgba(0,0,0,0) 22%, rgba(0,0,0,0) 45%, #ff7ec7 55%, #ff9ecf 62%, rgba(0,0,0,0) 75%)",
               WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
@@ -534,7 +535,7 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
             className="absolute pointer-events-none"
             style={{
               inset: -2,
-              borderRadius: 18,
+              ...continuousCornerStyle(18),
               background:
                 "conic-gradient(from var(--glow-angle, 0deg), rgba(0,0,0,0) 0%, #c8bfff 3%, #e0d9ff 8%, rgba(0,0,0,0) 14%, rgba(0,0,0,0) 48%, #ffc0e0 54%, #ffd0e8 60%, rgba(0,0,0,0) 68%)",
               WebkitMask: "linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0)",
@@ -638,7 +639,7 @@ function WorkflowNodeShellInner({ id, data, type, selected }: NodeProps) {
             pointerEvents: "none",
           }}
         >
-          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "rgba(156,163,175,0.7)", pointerEvents: "none" }} />
+          <div style={{ width: 6, height: 6, ...continuousCornerStyle("50%"), background: "rgba(156,163,175,0.7)", pointerEvents: "none" }} />
         </div>
       </Handle>
       {(() => {

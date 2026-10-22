@@ -1,12 +1,37 @@
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { CircleAlert, Image, LoaderCircle, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import gsap from "gsap";
 import type { ComposerAttachment } from "../types";
 import { ImagePreviewTrigger } from "./ImagePreviewTrigger";
 import { Button } from "./shadcn/button";
 import { cn } from "./shadcn/utils";
 import { HoverInfo } from "./ui/HoverInfo";
 import { IconButton } from "./ui/IconButton";
+import { SpringDisclosure } from "./ui/SpringDisclosure";
+import { prefersReducedMotion, springEase } from "./ui/springMotion";
+
+function AttachmentMotionItem({ exiting, onExited, children }: {
+  exiting: boolean; onExited: () => void; children: ReactNode;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const latestExit = useRef(onExited);
+  latestExit.current = onExited;
+  useLayoutEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+    const reduced = prefersReducedMotion();
+    node.inert = exiting;
+    const tween = exiting
+      ? gsap.to(node, { opacity: 0, scale: 0.95, duration: reduced ? 0 : 0.16,
+          onComplete: () => latestExit.current() })
+      : gsap.fromTo(node, { opacity: 0, y: 6, scale: 0.96 }, { opacity: 1, y: 0, scale: 1,
+          duration: reduced ? 0 : 0.42, ease: springEase(360, 24, 0.42) });
+    return () => { tween.kill(); };
+  }, [exiting]);
+  return <div ref={ref} className="shrink-0">{children}</div>;
+}
 
 interface ComposerAttachmentListProps {
   attachments: ComposerAttachment[];
@@ -15,11 +40,18 @@ interface ComposerAttachmentListProps {
 
 export function ComposerAttachmentList({ attachments, onRemove }: ComposerAttachmentListProps) {
   const { t } = useTranslation();
-  if (attachments.length === 0) return null;
+  const [retained, setRetained] = useState(attachments);
+  const activeIds = new Set(attachments.map((item) => item.id));
+  const shown = [...attachments, ...retained.filter((item) => !activeIds.has(item.id))];
+  useEffect(() => {
+    setRetained((previous) => [...attachments, ...previous.filter((item) => !attachments.some((active) => active.id === item.id))]);
+  }, [attachments]);
+  const removeExited = (id: string) => setRetained((items) => items.filter((item) => item.id !== id));
 
   return (
+    <SpringDisclosure open={shown.length > 0} unmountOnExit animateOnMount>
     <div className="-mx-1 mb-2 flex max-w-full items-start gap-2.5 overflow-x-auto px-1 pb-1 pt-1.5">
-      {attachments.map((item) => {
+      {shown.map((item) => {
         if (item.kind === "image") {
           const failed = item.status === "error";
           const status = failed
@@ -35,7 +67,7 @@ export function ComposerAttachmentList({ attachments, onRemove }: ComposerAttach
             : item.name;
 
           return (
-            <HoverInfo
+            <AttachmentMotionItem key={item.id} exiting={!activeIds.has(item.id)} onExited={() => removeExited(item.id)}><HoverInfo
               key={item.id}
               content={description}
             >
@@ -79,12 +111,12 @@ export function ComposerAttachmentList({ attachments, onRemove }: ComposerAttach
                   <X aria-hidden="true" className="h-2.5 w-2.5" />
                 </Button>
               </div>
-            </HoverInfo>
+            </HoverInfo></AttachmentMotionItem>
           );
         }
 
         return (
-          <div
+          <AttachmentMotionItem key={item.id} exiting={!activeIds.has(item.id)} onExited={() => removeExited(item.id)}><div
             key={item.id}
             className="flex h-14 max-w-[220px] shrink-0 items-center gap-2 rounded-2xl bg-black/5 px-2 text-left"
           >
@@ -111,9 +143,10 @@ export function ComposerAttachmentList({ attachments, onRemove }: ComposerAttach
             >
               <FontAwesomeIcon icon={["fas", "xmark"]} className="text-[11px]" />
             </IconButton>
-          </div>
+          </div></AttachmentMotionItem>
         );
       })}
     </div>
+    </SpringDisclosure>
   );
 }

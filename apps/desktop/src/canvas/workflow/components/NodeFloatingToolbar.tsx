@@ -1,4 +1,5 @@
 import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { continuousCornerStyle } from "../../../theme/continuousCorners";
 import { createPortal } from "react-dom";
 import {
   Paintbrush,
@@ -264,7 +265,7 @@ const SUBMENU_SURFACE: React.CSSProperties = {
   boxShadow: "0 6px 24px rgba(0,0,0,0.24)",
   backdropFilter: "blur(40px)",
   WebkitBackdropFilter: "blur(40px)",
-  borderRadius: 12,
+  ...continuousCornerStyle(12),
 };
 
 const SUBMENU_Z_INDEX = 10001;

@@ -1,5 +1,6 @@
 import { HoverInfo } from "../../../components/ui/HoverInfo";
 import { useState } from "react";
+import { continuousCornerStyle } from "../../../theme/continuousCorners";
 import { Eye, EyeOff, Maximize2, ZoomIn, ZoomOut } from "lucide-react";
 import { useReactFlow } from "@xyflow/react";
 import { useCanvasStore } from "../store/canvasStore";
@@ -34,7 +35,7 @@ const SHELL_STYLE: React.CSSProperties = {
   height: LENS_SIZE,
   background: "rgba(30,30,35,0.45)",
   border: "1px solid rgba(255,255,255,0.08)",
-  borderRadius: "50%",
+  ...continuousCornerStyle("50%"),
   boxShadow: "0 18px 44px rgba(0,0,0,0.24)",
   backdropFilter: "blur(16px) saturate(1.18)",
   overflow: "hidden",
@@ -207,7 +208,7 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
                 top: 0,
                 width: major ? 2 : 1,
                 height: major ? 13 : 7,
-                borderRadius: 999,
+                ...continuousCornerStyle(999),
                 background: major ? "rgba(255,255,255,0.62)" : "rgba(255,255,255,0.28)",
                 transform: `translateX(-50%) rotate(${index * (360 / TICK_COUNT)}deg)`,
                 transformOrigin: `50% ${TICK_RING_SIZE / 2}px`,
@@ -304,7 +305,7 @@ export function MiniMap({ containerWidth, containerHeight }: Props) {
           padding: "3px 5px",
           boxSizing: "border-box",
           border: "1px solid rgba(255,255,255,0.1)",
-          borderRadius: 999,
+          ...continuousCornerStyle(999),
           background: "rgba(36,39,45,0.82)",
           boxShadow: "0 10px 28px rgba(0,0,0,0.24)",
           backdropFilter: "blur(14px) saturate(1.2)",
@@ -342,7 +343,7 @@ const CONTROL_BUTTON_STYLE: React.CSSProperties = {
   justifyContent: "center",
   padding: 0,
   border: 0,
-  borderRadius: 8,
+  ...continuousCornerStyle(8),
   color: "rgba(248,248,248,0.78)",
   background: "transparent",
   cursor: "pointer",

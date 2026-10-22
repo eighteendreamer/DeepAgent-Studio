@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { motion, useReducedMotion } from "framer-motion";
 import { useTranslation } from "react-i18next";
 import { CircleUser, LogOut, Settings } from "lucide-react";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
 import { MENU_LIST, MOTION } from "./ui/motion";
-import { morphSpringTransition } from "./ui/morphingMenuMotion";
+import { SpringSurface } from "./ui/SpringSurface";
 import { MorphPanelLayoutContext } from "./ui/MorphPanelLayoutContext";
 import { cn } from "./shadcn/utils";
+import { Button } from "./shadcn/button";
 
 const PANEL_WIDTH = 224;
 const PANEL_GAP = 6;
@@ -25,6 +25,7 @@ type Anchor = { left: number; bottom: number };
 type Props = {
   onOpenSettings: () => void;
   onLogout: () => void;
+  compact?: boolean;
 };
 
 /** 面板底边对齐触发器顶边上方，左缘与触发器左缘对齐 */
@@ -39,13 +40,12 @@ function anchorPanelAboveTrigger(triggerRect: DOMRect): Anchor {
   };
 }
 
-export function SidebarSettingsMenu({ onOpenSettings, onLogout }: Props) {
+export function SidebarSettingsMenu({ onOpenSettings, onLogout, compact = false }: Props) {
   const { t } = useTranslation();
-  const reduced = useReducedMotion();
-  const spring = morphSpringTransition(reduced);
   const triggerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const [open, setOpen] = useState(false);
+  const [present, setPresent] = useState(false);
   const [anchor, setAnchor] = useState<Anchor>({ left: 0, bottom: 0 });
   const [layoutAnimating, setLayoutAnimating] = useState(false);
 
@@ -63,8 +63,9 @@ export function SidebarSettingsMenu({ onOpenSettings, onLogout }: Props) {
       return;
     }
     syncAnchor();
+    setPresent(true);
     setLayoutAnimating(true);
-    const fallback = window.setTimeout(() => setLayoutAnimating(false), 420);
+    const fallback = window.setTimeout(() => setLayoutAnimating(false), 820);
     return () => clearTimeout(fallback);
   }, [open, syncAnchor]);
 
@@ -131,21 +132,23 @@ export function SidebarSettingsMenu({ onOpenSettings, onLogout }: Props) {
   );
 
   return (
-    <div ref={triggerRef} className="relative w-full">
-      <button
-        type="button"
+    <div ref={triggerRef} className={cn("relative", !compact && "w-full")}>
+      <Button
+        variant="ghost"
+        aria-label={t("sidebar.settings")}
+        aria-expanded={open}
         className={cn(
-          "flex w-full items-center rounded-md px-2.5 py-1.5 text-sm text-text-base",
+          compact ? "app-navigation-button" : "flex h-auto w-full justify-start rounded-md px-2.5 py-1.5 text-sm text-text-base",
           MOTION.fast,
           open ? "bg-ui-tint" : "hover:bg-ui-tint",
         )}
         onClick={() => setOpen((v) => !v)}
       >
         <Settings className="h-[18px] w-[18px] shrink-0 text-text-secondary" />
-        <span className="ml-0.5">{t("sidebar.settings")}</span>
-      </button>
+        {!compact && <span className="ml-0.5">{t("sidebar.settings")}</span>}
+      </Button>
 
-      {open &&
+      {(open || present) &&
         createPortal(
           <div
             style={{
@@ -154,29 +157,26 @@ export function SidebarSettingsMenu({ onOpenSettings, onLogout }: Props) {
               bottom: anchor.bottom,
               width: PANEL_WIDTH,
               zIndex: 200,
-              filter: "drop-shadow(0 6px 24px rgba(0,0,0,0.10))",
             }}
           >
-            <motion.div
+            <SpringSurface
               ref={panelRef}
               role="menu"
-              initial={reduced ? false : { opacity: 0.6, scale: 0.15 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.15 }}
-              transition={spring}
+              data-side="top"
+              data-align="start"
+              data-state={open ? "open" : "closed"}
+              anchor={triggerRef}
+              onMotionExit={() => setPresent(false)}
               style={{ transformOrigin: "bottom left" }}
-              onAnimationComplete={() => {
-                if (open) setLayoutAnimating(false);
-              }}
               className={cn(
-                "overflow-hidden rounded-2xl bg-elevated-bg",
+                "overflow-hidden rounded-2xl bg-elevated-bg shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
                 layoutAnimating && "overflow-hidden",
               )}
             >
               <MorphPanelLayoutContext.Provider value={layoutAnimating}>
                 {menuContent}
               </MorphPanelLayoutContext.Provider>
-            </motion.div>
+            </SpringSurface>
           </div>,
           document.body,
         )}

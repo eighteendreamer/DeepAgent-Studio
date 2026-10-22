@@ -194,7 +194,7 @@ export function GitBranchMenuContent({
 
           onChange={(e) => onQueryChange(e.target.value)}
 
-          onKeyDown={(e) => e.stopPropagation()}
+          onKeyDown={(e) => { if (e.key !== "Escape") e.stopPropagation(); }}
 
           placeholder={t("git.searchBranches")}
 
