@@ -14,8 +14,8 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；stable/dynamic system prefix 的边界与字节稳定性测试通过，但本轮未验证真实供应商 cache hit 比例；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94；H-93/H-94 均不覆盖默认 Responses 路由 |
-| 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94；H-93/H-94 均不覆盖默认 Responses 路由 |
+| 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
@@ -132,16 +132,19 @@
 | 模拟挂起模型的取消回归 | `cargo test -p deepagent-app-core --test golden_trace cancel_request_acknowledged_within_200ms -- --nocapture`：1 passed |
 | 真实只读工具调用 | 工作区内放入未在提示中透露内容的随机标记文件；模型调用 `read_file` 后回复与文件一致。文件放在工作区外时被权限钩子拦截；未修改权限绕过 |
 | 桌面进程重启与继续对话 | 正常关闭并重启同一隔离数据目录的桌面进程；展开折叠的“最近对话”后打开原会话，历史与标记仍可见；发起新一轮要求复述标记且不调用工具，模型正确复述 |
-| 真实三轮 AppCore 用例 | 完成三轮；每轮持久化 provider usage 分别为 12468 / 13101 / 14019 输入 tokens，cache hit + miss 等于输入；后续测试断言失败，整条用例不算通过 |
+| 真实三轮 AppCore 用例 | `real_session_file_responses` 真实 provider 用例通过；三轮主 Agent 请求分别为 12469 / 13059 / 13926 输入 tokens，cache hit 为 12288 / 2944 / 13184；另有 3 次笔记维护请求。笔记更新，持久化 `last_summarized_sequence` 有效且 `tokens_at_last_extraction > 0` |
 | MCP 初始化未完成时的普通对话 | 新增 `pending_host_mcp_initialization_does_not_block_conversations`：真实 Node MCP 子进程将 initialize 持有至 180 秒或显式释放；确认子进程已收到 initialize 后运行两轮真实 ChatService、mock 模型请求。两轮合计 384ms、initialize 仅 1 次、待就绪工具未发布且未进入任何模型请求；释放后工具正常发布。1 passed |
 | 运行包准备等待真实磁盘锁时的普通对话 | `blocked_host_payload_preparation_does_not_block_conversations`：宿主 worker 确认进入生产磁盘准备路径并被真实 OS 文件锁阻塞；两轮 ChatService + mock 模型合计 349ms，运行包尚未解压、技能未发布；释放后成功解压，第三个新会话实际请求含就绪技能目录。1 passed |
 
+### 已澄清项
+
+- **笔记请求次数断言失败属于测试假设错误，不是生产故障证据。** 笔记代理一次提取可执行可变数量的模型/工具循环，生产契约没有要求请求数是 3 的倍数。移除 `note_requests % 3 == 0` 后，使用授权测试 Key 的真实三轮 AppCore 用例通过：6 次主 Agent 请求、3 次笔记维护请求；笔记已更新，持久化 `last_summarized_sequence` 有效且 `tokens_at_last_extraction > 0`。具体命令及实际 provider usage 见下方“真实三轮 AppCore 用例”和缓存核查记录。此结果验证本次实际提取及状态落账，不评价笔记内容质量或所有运行配置下的请求次数。
+
 ### 尚未定性的现象
 
-1. **笔记请求次数断言失败**：真实用例在 `real_session_file_responses.rs` 的 `note_requests % 3 == 0` 处失败，观察到 6 次主 Agent 请求 + 4 次笔记请求。生产笔记代理允许正常工具循环，并未要求每轮恰好 3 次请求。需要核对笔记内容、游标及实际执行结果，不能把此计数直接认定为生产故障。
-2. **第一次与第二次上下文总量下降**：桌面两轮投影分别约 16.8k → 15.5k。分项中动态环境约 3723 → 1969 tokens，而对话分项 26 → 41 tokens；不能据总量下降认定历史丢失。需要继续验证动态环境变化来源和 wire history。
-3. **立即点击停止的自动化不一致**：两轮 agent-browser 批处理显示点击成功但最终运行成功；这些轮次数据库无取消审计。另一次通过 Playwright 记录真实 IPC 的立即停止成功。当前仅证明自动化点击记录不足以证明取消请求送达，尚不能认定系统存在同样的取消缺陷。
-4. **检查点捕获失败后的同对象重试契约**：`capture_before()` 在真正复制备份前就向 captured 集合插入路径；复制失败后标记未撤销。`checkpoint_audit.rs::audit_capture_failure_does_not_skip_backup_on_write_retry` 通过正式 ToolExecutionPipeline 和共享 read-before-write 缓存的真实文件工具复现：以测试 storage 的空 `files/0` 目录注入首次复制失败，文件保持 before-retry；只移除该空目录后显式再次调用同一 pipeline，write_file 成功，但最终 manifest entries=0、restore 返回 0 条，文件仍为 after-retry。对应正常备份/真实写入对照恢复 before-retry。执行 `cargo test -p deepagent-app-core --test checkpoint_audit capture --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.06s。这是底层同对象重试的不变量缺口，**尚不据此新增常规聊天缺陷编号**：当前 `loop_engine.rs::execute_tool_with_before_and_speculative()` 对 execute_prepared 的错误使用 `.await?` 传播，并非自动再调用同一 checkpoint；探针的第二次调用是测试显式发起，不能写成模型在真实普通 turn 中已经越过备份继续写入。后续需要证明生产恢复/复用入口的可达性，或明确该公共 API 禁止失败后复用的契约。Claude `fileHistoryTrackEdit()` 先完成 createBackup，成功后才提交 trackedFileBackups；其备份失败可能按可选能力处理，不据此声称其所有写入都必须因备份失败终止。本轮保留默认 ignored 探针及正常对照，生产行为未改。
+1. **第一次与第二次上下文总量下降**：桌面两轮投影分别约 16.8k → 15.5k。分项中动态环境约 3723 → 1969 tokens，而对话分项 26 → 41 tokens；不能据总量下降认定历史丢失。需要继续验证动态环境变化来源和 wire history。
+2. **立即点击停止的自动化不一致**：两轮 agent-browser 批处理显示点击成功但最终运行成功；这些轮次数据库无取消审计。另一次通过 Playwright 记录真实 IPC 的立即停止成功。当前仅证明自动化点击记录不足以证明取消请求送达，尚不能认定系统存在同样的取消缺陷。
+3. **检查点捕获失败后的同对象重试契约**：`capture_before()` 在真正复制备份前就向 captured 集合插入路径；复制失败后标记未撤销。`checkpoint_audit.rs::audit_capture_failure_does_not_skip_backup_on_write_retry` 通过正式 ToolExecutionPipeline 和共享 read-before-write 缓存的真实文件工具复现：以测试 storage 的空 `files/0` 目录注入首次复制失败，文件保持 before-retry；只移除该空目录后显式再次调用同一 pipeline，write_file 成功，但最终 manifest entries=0、restore 返回 0 条，文件仍为 after-retry。对应正常备份/真实写入对照恢复 before-retry。执行 `cargo test -p deepagent-app-core --test checkpoint_audit capture --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.06s。这是底层同对象重试的不变量缺口，**尚不据此新增常规聊天缺陷编号**：当前 `loop_engine.rs::execute_tool_with_before_and_speculative()` 对 execute_prepared 的错误使用 `.await?` 传播，并非自动再调用同一 checkpoint；探针的第二次调用是测试显式发起，不能写成模型在真实普通 turn 中已经越过备份继续写入。后续需要证明生产恢复/复用入口的可达性，或明确该公共 API 禁止失败后复用的契约。Claude `fileHistoryTrackEdit()` 先完成 createBackup，成功后才提交 trackedFileBackups；其备份失败可能按可选能力处理，不据此声称其所有写入都必须因备份失败终止。本轮保留默认 ignored 探针及正常对照，生产行为未改。
 
 ## 已确认问题
 
@@ -2176,7 +2179,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 - memory/knowledge 两个 crate 和 AppCore 的 session_memory、memory_service、knowledge_service 测试合计 157 项通过，分别为 40+63+31+5+18。没有因为发现其他模块缺陷而把这部分也定性为失效。
 - 核查笔记提取实际使用仅含 pinned note 工具的 registry；这与 H-19 的“完整执行表、仅过滤 schema”不同。原有测试实际验证 off-note 访问拒绝、未编辑不宣称覆盖、放弃的 pass 不保存 watermark。
-- 上述是现有离线回归，不覆盖真实模型笔记内容质量、跨进程崩溃瞬间，也没有消除前述真实笔记请求次数用例的未定性状态。随后单独验证的会话 rewind/笔记一致性已确认为 H-23；这说明原有 157 项通过不能替代分支恢复测试，不能概括成记忆系统全面验收通过。
+- 上述是现有离线回归，不覆盖真实模型笔记内容质量或跨进程崩溃瞬间。随后进行的真实三轮 session-memory 用例验证了本次笔记更新和游标落账；会话 rewind/笔记一致性仍已确认为 H-23。这说明原有 157 项通过及单次 live 提取均不能替代分支恢复测试，不能概括成记忆系统全面验收通过。
 
 ### 后续独立验证：Windows hook 大输入仍能触发命令超时
 
@@ -2259,7 +2262,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - `system_context.rs::build_system_manifest()` 将内置 system prompt 与用户选择的 output style 放在 `DYNAMIC_INSTRUCTIONS_BOUNDARY` 之前；cwd、日期及运行环境等易变内容位于边界之后。没有从这一设计直接推断真实供应商必然命中缓存。
 - 执行三项既有生产组装测试：`volatile_context_never_enters_the_cacheable_prefix`、`the_cacheable_prefix_is_byte_identical_between_turns`、`output_style_stays_in_cacheable_prefix_before_boundary`，均为 **1 passed**。这证明测试覆盖的 system prompt 前缀跨样本稳定，不证明整份 Responses wire（包括 input、tools、配置默认值）每轮都相同，也不证明 DeepSeek provider cache 的命中率。
 - 成熟实现对照：DeepSeek Harness `packages/core/agent-loop/tests/request-cache.e2e.ts` 有 key-gated 真实 API 用例，构造多步工具调用和下一轮追问，并断言首个请求之后每个请求均返回 `cacheReadTokens > 0`。本轮只检查该测试的源码，没有运行它，也没有调用 DeepSeek API。
-- 结论：当前证据不支持“system prompt 每轮重写导致稳定前缀丢失”的缺陷，不新增 H 编号。本系统现有可选 live 测试 `real_session_file_responses.rs` 会记录 Responses 请求体及 usage，但该测试不是本轮执行项；live cache hit 比例仍未在本轮实测。
+- 后续执行真实用例：`cargo test -p deepagent-app-core --features keychain,web --test real_session_file_responses real_responses_session_replays_tools_skills_files_and_logs --offline -- --ignored --nocapture`。三轮主 Agent provider usage 分别为 12469 / 13059 / 13926 输入 tokens，cache hit 分别为 12288 / 2944 / 13184；另有 3 次笔记维护请求，持久化笔记已更新且 `last_summarized_sequence`、`tokens_at_last_extraction` 断言通过。该记录证明本次真实供应商响应返回了 cache-hit usage，不代表稳定前缀必然命中，也不能由三轮样本推导普遍 cache hit 比例。
+- 结论：当前证据仍不支持“system prompt 每轮重写导致稳定前缀丢失”的缺陷，不新增 H 编号。实际前缀字节测试证明的是组装布局；live usage 是供应商对本次请求的计量。要归因 cache hit 仍需结合请求正文、provider 计费语义及更多重复样本，本次结果不做该推断。
 
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 

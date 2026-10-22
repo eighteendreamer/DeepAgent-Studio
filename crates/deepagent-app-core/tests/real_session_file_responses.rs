@@ -388,11 +388,10 @@ async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
         "the live session-note pass must finish, not be cancelled at shutdown"
     );
 
-    // The note pass is the only caller whose request names the note file, so the
-    // count of those requests is the count of rounds the gate actually allowed.
-    // Three turns of a 12k-context session must buy exactly one round: the turns
-    // that follow grow the context by a few hundred tokens, below the gate's
-    // minimum delta, so re-summarizing them would be pure waste.
+    // The note pass is the only caller whose request names the note file. One
+    // extraction can use a variable number of model/tool turns, so validate its
+    // bounded spend and persisted cursor below instead of assuming one call per
+    // read/edit/answer phase.
     let final_bodies = bodies.lock().unwrap();
     let note_requests = final_bodies
         .iter()
@@ -401,11 +400,6 @@ async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
     let agent_requests = final_bodies.len() - note_requests;
     eprintln!(
         "[real-session] model requests: {agent_requests} agent + {note_requests} note-pass calls"
-    );
-    assert_eq!(
-        note_requests % 3,
-        0,
-        "the pass runs in whole read/edit/answer rounds: {note_requests} calls"
     );
     assert!(
         note_requests <= 6,
