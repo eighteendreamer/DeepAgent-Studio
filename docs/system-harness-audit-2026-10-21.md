@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-106；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-107；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
@@ -2036,6 +2036,16 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本系统的 `tool_search` 是 AppCore 延迟工具注册的普通 function schema，模型以 `function_call(name="tool_search")` 调用，由现有函数调用解析和工具执行链处理。Codex 的 `tool_search_call` 则使用其独有的 `execution="client"`、结构化 `arguments` 与配对的 `tool_search_output`，不能据此把 Codex item 当成 DeepSeek 的等价协议。当前 Responses 累加器会忽略未识别的 `tool_search_call`，但本次未找到 DeepSeek 官方支持的请求配置可触发它，也未取得真实 provider 输出证据；因此不把这个差异登记为生产缺陷，保留为 provider 行为出现或官方补充启用条件后的复核项。
 
+### H-107：续聊的每个 turn 结束都会触发 SessionEnd hook
+
+**级别：低（P3，条件性生命周期语义缺陷）；触发条件：配置了 `SessionEnd` hook，并在同一个持久会话中完成一轮或多轮续聊。** 未配置该 hook 时不影响模型运行和任务终态。
+
+- 根因与生产路径：`RunAssembler` 只在 `continue_session.is_none()` 时设置 `fire_session_start`；而 `RuntimeEngine::run()` 在每次 run 收尾都无条件派发 `HookPoint::SessionEnd`。同一持久 session 的第二轮仍走 `run_in_session(..., Some(session_id), ...)`，不会触发 `SessionStart`，却会再次收到 `SessionEnd`。`HookPoint` 自身文档定义为“会话结束时触发一次”，与按 turn 派发不符。
+- 动态复现：Windows ignored 探针 `chat_service::tests::audit_session_end_hook_does_not_fire_after_each_continued_turn` 用正式 `ChatService::run_in_session` 对同一 session 连续执行两轮，通过真实 PowerShell command hooks 记录事件名。断言前检查 session id 相同；实际日志为 `["SessionStart", "SessionEnd", "SessionEnd"]`，期望仍打开的会话只有 `["SessionStart"]`，以 **0 passed / 1 failed** 复现。使用临时 workspace、内存 SQLite 和固定离线模型事件，没有真实用户数据或公网请求。
+- 成熟实现对照：Claude Code 的 `processSessionStartHooks()` 由 startup、resume、clear、compact 等会话生命周期路径调用；`executeSessionEndHooks()` 在显式 clear 与 graceful shutdown 路径执行，不在每次 assistant turn 后执行。
+- 影响及限制：为关闭对话而配置的清理、同步或汇总 hook 会在每个 assistant turn 后提前执行，并可能重复产生副作用。探针确认事件频率错误，没有运行用户配置的实际清理逻辑；宿主退出时跨多个打开会话的 hook 调度仍需单独核查。
+- 收敛方向（尚未实施，本地设计）：将 `SessionEnd` 从 Kernel run 收尾移到现有会话关闭/清理或宿主关闭生命周期，并确保每个 session 最多派发一次；每 turn 的任务终态继续由 `TaskCompleted`/`RunCompleted` 表达。补测新建、续聊、显式清理、窗口关闭、取消/失败和重复关闭，验证 Start/End 配对与可重放状态一致。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2071,6 +2081,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-105 默认基线与检查 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`：74 passed / 6 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本轮仅新增 ignored 审计探针与报告，未跑 workspace 全量测试、Clippy、桌面构建、真实 Tauri 或公网 hook |
 | H-106 StopFailure 失败分支显式探针 | `cargo test -p deepagent-app-core --lib chat_service::tests::audit_stop_failure_hook_payload_includes_error --offline -- --ignored --nocapture`：0 passed / 1 failed；Stop 首次拒绝、StopFailure 真实派发、模型重试后成功；payload 缺 Claude schema 必需的 `error`，仅有文本 `content`；Windows 临时项目、离线 transport |
 | H-106 默认基线与检查 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`：74 passed / 7 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本轮仅新增 ignored 审计探针与报告，未跑 workspace 全量测试、Clippy、桌面构建、真实 Tauri 或公网 hook |
+| H-107 SessionEnd 生命周期显式探针 | `cargo test -p deepagent-app-core --lib chat_service::tests::audit_session_end_hook_does_not_fire_after_each_continued_turn --offline -- --ignored --nocapture`：0 passed / 1 failed；两个 turn 共用同一 session id，真实 PowerShell hooks 实际记录 `SessionStart, SessionEnd, SessionEnd`。临时 workspace、内存 SQLite、离线模型 transport |
+| H-107 默认基线与检查 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`：74 passed / 8 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅增加 ignored 审计探针与报告，未修改生产逻辑、未跑 workspace 全量测试、Clippy、桌面构建或真实 Tauri |
 | Responses `tool_search_call` 候选差异核查 | DeepSeek 官方请求 schema 不提供可触发该 item 的工具类型；AppCore `tool_search` 以普通 function schema 注册。`cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed；`cargo test -p deepagent-models --lib stream::tests --offline`：21 passed。未新增缺陷或测试，未调用公网 provider |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |

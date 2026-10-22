@@ -2379,6 +2379,79 @@ mod tests {
         assert!(payload["error"].is_string(), "missing required error");
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-107: SessionEnd must wait for the conversation session to end"]
+    async fn audit_session_end_hook_does_not_fire_after_each_continued_turn() {
+        let (db, settings, dir) = seeded().await;
+        let marker = dir.path().join("session-hook-events.txt");
+        let quoted_marker = marker.to_string_lossy().replace('\'', "''");
+        let command = format!(
+            "$payload = [Console]::In.ReadToEnd(); $event = (ConvertFrom-Json -InputObject $payload).hook_event_name; [System.IO.File]::AppendAllText('{quoted_marker}', $event + [Environment]::NewLine)"
+        );
+        let hook = serde_json::json!({
+            "hooks": [{
+                "type": "command",
+                "shell": "powershell",
+                "timeout": 5,
+                "command": command
+            }]
+        });
+        settings
+            .set_hooks_json(
+                &serde_json::json!({
+                    "hooks": {
+                        "SessionStart": [hook.clone()],
+                        "SessionEnd": [hook]
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path());
+        let session_id = chat
+            .run_in_session(
+                "first turn",
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                None,
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap();
+        let continued_session_id = chat
+            .run_in_session(
+                "second turn",
+                Some(&session_id),
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                None,
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(session_id, continued_session_id);
+        let events = std::fs::read_to_string(marker).unwrap_or_default();
+        let events: Vec<_> = events.lines().collect();
+        eprintln!("same-session hook events after two completed turns: {events:?}");
+        assert_eq!(
+            events,
+            ["SessionStart"],
+            "SessionEnd must not fire while the same conversation remains open"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "audit H-28: untrusted project config escalates the user's read-only permissions"]
     async fn audit_untrusted_project_cannot_escalate_read_only_file_access() {
