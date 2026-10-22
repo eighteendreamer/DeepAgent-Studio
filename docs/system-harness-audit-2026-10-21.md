@@ -19,6 +19,7 @@
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
+| 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -1810,10 +1811,22 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：仅当远端错误体包含已发送凭据时触发；触发后它会进入可见诊断和持久化聊天记录，后续续聊可能再次放入模型上下文；若用户之后导出或分享该会话，也会扩大凭据接触范围。上游本身已接收密钥，因此本项不是向该上游新增泄露。没有观察到 DeepSeek 当前 `/models` 错误体实际回显密钥，也未实测未来续聊 wire 或会话导出。
 - 收敛方向（尚未实施，本地设计）：授权 GET 错误只保留状态码和经过长度限制、密钥脱敏的结构化错误消息；不可解析或非 JSON 正文不原样展示。脱敏需覆盖完整 Bearer 值、常见 `sk-` token 及跨空白分割场景；回归包括伪造反射正文、标准 DeepSeek error object、纯文本长错误、doctor 回复和会话历史，并确认不回显 key 的同时保留可诊断状态码/错误码。
 
+### H-87：模型刷新用宿主本地旧快照覆盖另一宿主新设置
+
+**级别：中（P2）；触发条件：同一数据目录由多个宿主打开，模型初始化/刷新与另一宿主修改设置并发。** 单进程、单 `SettingsService` 的顺序设置操作不构成本项触发条件；本轮没有做实际双桌面进程验收。
+
+- 根因与生产路径：`SettingsService` 在每个实例内缓存完整 `AppSettings`（`settings_cache`）；`initialize` 先等待模型目录网络发现，再通过 `load()` 取得 prior 设置并整体 `save()`。`refresh_models` 复用 `initialize`。另一个独立服务/宿主在网络等待期间提交权限等设置时，当前服务仍可能用本地缓存的旧 prior 组装完整对象并覆盖共享设置文档。`DocumentStore::put` 的 upsert 直接替换 body，没有读取版本条件；SQLite 串行化单次写入不能阻止这类旧快照覆盖。`HostLock` 明确允许 Standby 对同一 SQLite 数据库继续正常读写；桌面创建各自的 `SettingsService`，`initialize_project`、`refresh_models` 和 `set_sandbox_mode` 命令均未要求 Primary，因此生产拓扑允许该竞争。
+- 动态复现：ignored 探针 `settings::tests::audit_refresh_models_preserves_other_host_sandbox_mode` 使用两个分别打开同一个临时文件 SQLite 的数据库连接。第一服务先缓存 `WorkspaceWrite`，然后刷新在受控网络 transport 处暂停；第二服务将沙箱收紧为 `ReadOnly` 并收到成功 view；恢复刷新后，通过第三个新连接重新读库。探针显式以 **0 passed / 1 failed** 退出，精确实测持久化沙箱值回到 `WorkspaceWrite`。初始探针同时观察到模型选择回到 Flash，但目录刷新本身会重新 auto-select，不能据此把选型变化归因于旧缓存；最终探针仅断言与模型自动选型无关的沙箱限制。没有调用真实供应商、用户数据或真实多进程桌面。
+- 成熟实现对照：Codex `core/src/session/mod.rs::update_settings_if` 在同一 Session 的状态锁内从当前配置派生并发布更新；`core/src/session/thread_settings.rs::apply_update` 与 `checkpoint_thread_settings` 另以同一个持久化信号量串行化设置更新、快照捕获和落盘。这说明设置变更与持久化快照应由共同所有者串行提交。该锁/信号量属于 Codex 的单 Session 进程内机制，并不直接解决本系统多个进程共享 SQLite 的竞争，不能把它作为跨进程修复的现成答案。
+- 影响及限制：在触发竞争时，沙箱模式会被旧值覆盖；`initialize` 从 prior 携带的其他 `AppSettings` 字段同样处于该整文档覆盖边界，但本探针没有逐字段动态验证。将 `ReadOnly` 覆回 `WorkspaceWrite` 会改变新宿主/刷新宿主后续读取到的默认运行限制；运行专属配置、显式权限 profile 或独立沙箱后端仍可能另有限制，本项没有执行工具以证明完整权限提升。当前证据证明的是两个独立 SQLite 连接下的可达覆盖，不证明用户的单进程日常操作已经遇到，也没有验证实际多个 Tauri/CLI 进程间的时序与锁行为。
+- 收敛方向（尚未实施，本地设计）：把已发现模型目录等刷新结果作为字段级变更应用到数据库当前值，禁止网络 await 后将旧缓存整份写回；共享 SQLite 的读改写使用可检测冲突的版本字段/条件更新或等效原子事务，并在冲突时重新基于最新文档合并/重试。进程内互斥只能减少同一宿主竞争，不能取代跨宿主数据库提交边界。回归需使用两个独立文件连接及真实 Primary/Standby 进程，覆盖刷新与模型、沙箱、permission rules、hooks 等字段并发更新、冲突重试、进程退出恢复和普通单宿主刷新。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-87 多宿主设置覆盖显式探针 | `cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_preserves_other_host_sandbox_mode --offline -- --ignored --nocapture`：0 passed / 1 failed；两个独立 SQLite 文件连接交错写入后，刷新将另一连接成功保存的 `ReadOnly` 覆为旧 `WorkspaceWrite`；第三连接读回确认落盘结果；临时数据库与离线 GateTransport，未启动真实多进程桌面或调用公网 |
+| H-87 默认设置基线与检查 | `cargo test -p deepagent-app-core --lib settings::tests --offline`：30 passed / 1 ignored，约 0.54s；单服务沙箱设置刷新对照通过；`cargo fmt --all -- --check`、`git diff --check` 通过。缺陷探针需显式执行，默认通过不代表已修复；本批仅测试与文档，未跑全 workspace、Clippy、前端构建、真实 Tauri 或多进程测试 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |

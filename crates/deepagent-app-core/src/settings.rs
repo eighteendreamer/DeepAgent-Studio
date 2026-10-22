@@ -2318,7 +2318,36 @@ fn now_ms() -> i64 {
 mod tests {
     use super::*;
     use crate::secret_store::MemorySecretStore;
-    use deepagent_models::transport::MockTransport;
+    use async_trait::async_trait;
+    use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::Notify;
+
+    struct GateTransport {
+        body: String,
+        block_next: Arc<AtomicBool>,
+        started: Arc<Notify>,
+        release: Arc<Notify>,
+    }
+
+    #[async_trait]
+    impl HttpTransport for GateTransport {
+        async fn stream(
+            &self,
+            _request: TransportRequest,
+            _sink: &mut dyn EventSink,
+        ) -> Result<()> {
+            Err(CoreError::other("stream not used by settings audit"))
+        }
+
+        async fn get_json(&self, _url: &str, _api_key: &str) -> Result<String> {
+            if self.block_next.swap(false, Ordering::SeqCst) {
+                self.started.notify_one();
+                self.release.notified().await;
+            }
+            Ok(self.body.clone())
+        }
+    }
 
     #[tokio::test]
     async fn context_headroom_overrides_legacy_reserve_and_survives_settings_update() {
@@ -2525,6 +2554,67 @@ mod tests {
         let json = serde_json::to_string(&persisted).unwrap();
         assert!(!json.contains("sk-secret-1234"));
         assert!(!json.contains("\"deepseek_api_key\""));
+    }
+
+    #[tokio::test]
+    #[ignore = "audit H-87: a stale settings cache can overwrite a concurrent host update"]
+    async fn audit_refresh_models_preserves_other_host_sandbox_mode() {
+        let database_dir = tempfile::tempdir().unwrap();
+        let database_path = database_dir.path().join("settings.sqlite");
+        let first_db = Arc::new(Database::open(&database_path).unwrap());
+        let secrets = Arc::new(MemorySecretStore::new());
+        let body = r#"{"object":"list","data":[
+            {"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"},
+            {"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}
+        ]}"#;
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let block_next = Arc::new(AtomicBool::new(false));
+        let transport = Arc::new(GateTransport {
+            body: body.to_string(),
+            block_next: block_next.clone(),
+            started: started.clone(),
+            release: release.clone(),
+        });
+        let first = Arc::new(SettingsService::new(first_db, transport, secrets.clone()));
+        first.initialize("sk-audit-placeholder").await.unwrap();
+        // The first host keeps the original sandbox policy in its own cache.
+        assert_eq!(
+            first.load().unwrap().unwrap().sandbox_mode,
+            SandboxMode::WorkspaceWrite
+        );
+
+        let second = SettingsService::new(
+            Arc::new(Database::open(&database_path).unwrap()),
+            Arc::new(MockTransport::with_get_json(body)),
+            secrets,
+        );
+        block_next.store(true, Ordering::SeqCst);
+        let refresh = {
+            let first = first.clone();
+            tokio::spawn(async move { first.refresh_models().await })
+        };
+        started.notified().await;
+
+        // A different host changes settings while the first host is in its
+        // network await. The first host later reads its warm cache, rather than
+        // the database values written by this host.
+        let restricted = second.set_sandbox_mode(SandboxMode::ReadOnly).unwrap();
+        assert_eq!(restricted.sandbox_mode, "read_only");
+        release.notify_one();
+        refresh.await.unwrap().unwrap();
+
+        let reopened = SettingsService::new(
+            Arc::new(Database::open(&database_path).unwrap()),
+            Arc::new(MockTransport::with_get_json(body)),
+            Arc::new(MemorySecretStore::new()),
+        );
+        let reopened_settings = reopened.load().unwrap().unwrap();
+        assert_eq!(
+            reopened_settings.sandbox_mode,
+            SandboxMode::ReadOnly,
+            "refresh overwrote the sandbox restriction persisted by another host"
+        );
     }
 
     #[tokio::test]
