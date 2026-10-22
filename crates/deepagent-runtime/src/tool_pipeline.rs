@@ -1728,6 +1728,76 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-103: external tool hooks must receive call identity and results"]
+    async fn audit_external_tool_hooks_include_call_id_and_result() {
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let dir = tempfile::tempdir().unwrap();
+        let pre_marker = dir.path().join("pre-tool-use.json");
+        let post_marker = dir.path().join("post-tool-use.json");
+        let capture_command = |path: &std::path::Path| {
+            let quoted = path.to_string_lossy().replace('\'', "''");
+            format!(
+                "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted}', $payload)"
+            )
+        };
+        let definitions = HookDefinitions::parse(
+            &serde_json::json!({
+                "hooks": {
+                    "PreToolUse": [{
+                        "matcher": "counting",
+                        "hooks": [{
+                            "type": "command", "shell": "powershell", "timeout": 5,
+                            "command": capture_command(&pre_marker)
+                        }]
+                    }],
+                    "PostToolUse": [{
+                        "matcher": "counting",
+                        "hooks": [{
+                            "type": "command", "shell": "powershell", "timeout": 5,
+                            "command": capture_command(&post_marker)
+                        }]
+                    }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = HookRegistry::new();
+        assert_eq!(
+            definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+            2
+        );
+        let calls = Arc::new(AtomicUsize::new(0));
+        let registry = registry(RiskLevel::Safe, calls);
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_hooks(Some(&hooks));
+        let result = pipeline
+            .execute(
+                ToolInvocation::new("counting", serde_json::json!({ "value": "audit" }))
+                    .with_id("audit-tool-use-42"),
+            )
+            .await
+            .unwrap();
+        assert!(result.output.ok);
+
+        let pre: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(pre_marker).unwrap()).unwrap();
+        let post: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(post_marker).unwrap()).unwrap();
+        eprintln!("PreToolUse payload: {pre}");
+        eprintln!("PostToolUse payload: {post}");
+        assert_eq!(pre["tool_use_id"], "audit-tool-use-42");
+        assert_eq!(post["tool_use_id"], "audit-tool-use-42");
+        assert_eq!(
+            post["tool_response"],
+            serde_json::json!({ "value": "audit" })
+        );
+    }
+
     #[tokio::test]
     async fn speculative_completion_rejects_non_safe_tools() {
         let registry = registry(RiskLevel::High, Arc::new(AtomicUsize::new(0)));

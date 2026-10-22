@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、InstructionsLoaded 输入缺字段、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、InstructionsLoaded 输入缺字段、工具 hook 缺调用身份/结果、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102、H-103；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
@@ -1989,6 +1989,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：按 Claude schema 读取 `file_path` 或按 `load_reason`/`memory_type` 筛选的兼容 hook 会拿不到所需字段，可能跳过处理或由其自身报错。仅证明缺字段，没有测试某个第三方脚本的最终行为，也未测试 compaction reload、nested instructions 和条件规则分别对应何种原因。
 - 收敛方向（尚未实施，本地设计）：扩展现有 `HookData::Instructions` 表达每个来源文件及本系统可确认的类型/原因；在 hook 输入 serializer 内对 Claude 兼容字段做明确映射。若本系统无法确定某个来源语义，不伪造 Claude enum，应定义版本化的本地事件字段或在兼容模式下明确拒绝不完整映射。覆盖 root instructions、nested instructions、重载、多个文件和未知来源，并验证真实 hook stdin。
 
+### H-103：工具生命周期 hook 缺少调用 ID 与真实工具结果
+
+**级别：低（P3，条件性 hooks 输入契约缺陷）；触发条件：配置的 `PreToolUse` 或 `PostToolUse` hook 依赖标准 `tool_use_id`，或 Post hook 需要读取工具返回内容。** hook 本身仍执行；本项与 H-26 的标准权限决策输出解析缺陷独立。
+
+- 根因与生产路径：`ToolExecutionPipeline::prepare()` 已持有 provider `call_id`，却通过 `HookData::before_tool(name, arguments)` 派发而丢弃 ID。工具执行后虽有完整 `ToolOutput`，流水线只调用 `HookData::after_tool(name, arguments, ok)`，既丢弃 call ID，也丢弃 `output.value`；`ExternalCommandHook::build_payload()` 最终只发 `tool_name`、`tool_input`，Post hook 的 `tool_response` 被压成 `{"ok":true|false}`。
+- 动态复现：Windows ignored 探针 `tool_pipeline::tests::audit_external_tool_hooks_include_call_id_and_result` 使用正式 `ToolExecutionPipeline`、`HookDefinitions::register_into()`、`SystemHookRunner` 和计数工具。调用明确携带 `id="audit-tool-use-42"`，Pre/Post 命令 hook 分别把真实 stdin 存入临时目录。实际 Pre payload 缺 `tool_use_id`；Post payload 同样缺 ID，且 `tool_response` 为 `{"ok":true}`，实际工具返回 `{"value":"audit"}`。要求保留身份及结果的探针以 **0 passed / 1 failed** 退出；没有真实模型、文件写入或公网调用。
+- 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts` 的 `PreToolUseHookInputSchema` 与 `PostToolUseHookInputSchema` 都要求 `tool_use_id`；Post 还要求 `tool_response`。本系统的 HookData 需要跨 runtime 事件和 Claude 兼容 serializer 传递这些值，不能只在 JSON parser 层补默认值。
+- 影响及限制：需要把 hook 输入与模型原始调用对应、或基于实际工具输出做后处理的兼容脚本，拿到的身份和结果不足。探针确认字段缺失，但没有运行某个用户脚本来测量其实际误判或副作用；本项也未测试 PostToolUseFailure 的标准 `error` 字段。
+- 收敛方向（尚未实施，本地设计）：在现有 `HookData::Tool` 增加可选 call ID 和按事件携带成功结果/失败详情，由 ToolExecutionPipeline 在执行前后传入；外部 serializer 按事件构造 `tool_use_id`、真实 `tool_response` 或 `error`，不把调用信息散落到独立全局映射。覆盖有/无 provider ID、工具成功/失败、并行工具、工具参数被 hook 修改及调用结果截断后的 payload，并保持 H-26 权限决策语义独立测试。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2017,6 +2027,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-100 SDK initialize 畸形 response 显式探针 | `cargo test -p deepagent-harness-sdk --lib audit_initialize_rejects_response_without_result_or_error --offline -- --ignored --nocapture`：0 passed / 1 failed；实际 `result=None, error=None` 仍返回 Ok 并设置 `initialized=true`。Windows PowerShell 子进程和本地管道 fixture；未启动真实 CLI server、第三方 server 或公网 |
 | H-101 SDK 畸形 stdout 行显式探针 | `cargo test -p deepagent-harness-sdk --lib audit_malformed_server_line_does_not_leave_request_pending --offline -- --ignored --nocapture`：0 passed / 1 failed；畸形行发出并由标记确认后，调用仍 pending、表内保留 1 项，直到 fixture EOF 才释放。Windows PowerShell 子进程和真实本地管道，无 CLI server 或公网 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
+| H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
