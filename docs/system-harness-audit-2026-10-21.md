@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99、H-118；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117；其他 hooks 和准备边界未完成 |
@@ -2146,6 +2146,16 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响及限制：依赖该事件的失败通知、诊断收集和外部自动化在本次真实 API 失败路径没有运行；H-106 已动态证明正常回答被 Stop 拒绝后反而派发 StopFailure，可能导致误报。H-106 的 payload 缺 `error` 与本项触发时机错误是两条独立验收项。本探针未验证限流重试耗尽、鉴权 HTTP 状态、取消或进程总时限，也没有证明数据库把 API 失败写成成功——本次失败落盘正确。
 - 收敛方向（尚未实施，本地设计）：在既有运行失败收尾入口按最终 provider 错误原因派发一次有类型的 StopFailure；可恢复重试和 Stop 要求继续不触发终结性失败通知。明确 hook 的时限、取消和异常处理不得破坏原失败及单一终态，验证错误恢复成功、恢复耗尽、鉴权/限流、普通成功及 Stop 拒绝重试。
 
+### H-118：Responses 流式失败丢弃供应商错误码，上下文溢出恢复依赖消息措辞
+
+**级别：中（P2，条件性模型恢复缺陷）；触发条件：供应商通过 `response.failed` 返回本系统已支持的 `context_length_exceeded` code，但 message 没有现有分类器识别的英文溢出关键词。** HTTP 错误和包含关键词的消息不能用来替代该事件路径验收。
+
+- 根因与生产路径：`deepagent-models/src/stream.rs::ResponseAccumulator::push_sse_data_observed` 处理 `response.failed` 时只取 `response.error.message`，把真实 code 固定替换为 `response_failed`。`ModelClient` 原样向上返回该 CoreError；`classify_model_error` 本可单凭 `context_length_exceeded` 识别 ContextOverflow，但元数据丢失后只能匹配 message，最终返回 Unknown。`ModelAgent::think_inner` 的工具结果剪枝与原生压缩恢复只在 ContextOverflow 分支进入，Unknown 直接返回失败。
+- 动态复现：ignored 探针 `model_agent::tests::audit_streamed_overflow_recovers_from_provider_code_without_message_keywords` 用同一 `response.failed` / `context_length_exceeded` fixture 仅替换 message，经正式 ModelClient/ResponseAccumulator/ModelAgent 执行。英文 `maximum context window exceeded` 对照实际请求 **2 次、压缩 1 次**，第二次请求的 input 从超过 3 项缩到 2 项并正常回答；中文 `输入超出限制，请缩短内容` 组实际请求 **1 次、压缩 0 次**，返回 `Provider { status: None, code: Some("response_failed"), ... }`，分类为 Unknown，原历史保持未修改。两组先验证完整 code 可被当前分类器正确识别；最终断言以 **0 passed / 1 failed** 复现。摘要为既有计数型 fixture，模型传输离线，没有真实超长请求或公网供应商错误。
+- 官方与成熟实现对照：DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-response/) 定义失败 response 的 `error.code` / `error.message`，[Responses 指南](https://api-docs.deepseek.com/guides/responses_api/) 明确 `response.failed` 携带包含 error 的完整 response；该页未列具体 code 枚举，本项不声称 DeepSeek 必然以该 code 返回每次溢出。Codex `codex-api/src/sse/responses_error.rs::parse_failed_response` 按实际 code 将 `context_length_exceeded` 映射到 ContextWindowExceeded；DeepSeek Harness `llm-deepseek/src/transport.ts::providerError` 同时保留 type/code/message 的分类信息，后者是 Messages 协议，仅参考错误归一化边界，不复制其事件结构。
+- 影响及限制：具有已支持机器错误码的流式上下文溢出会因本地丢码而跳过恢复；依赖英文文本意味着供应商措辞变化或本地化也会改变行为。本次只动态验证 ContextOverflow，没有把限流、鉴权、过载的分类/重试/备用模型效果一并视为已验证，也没有实测供应商何时在 HTTP 与流内错误之间选择。既有直接由测试 transport 返回结构化错误的 `__ERROR_CONTEXT__` 回归绕过 accumulator，无法发现此缺口。
+- 收敛方向（尚未实施，本地设计）：在现有 provider seam 统一 HTTP 与流内失败的结构化错误构造，保留可信 code 与经过现有脱敏边界处理的 message，不在 Runtime/UI 追加文本特判。缺失或未知 code 保留明确 fallback，不伪造 HTTP 状态；补测真实 code/不同 message、缺字段、各可恢复错误、取消和压缩后再次失败，核对实际请求数、压缩次数及终态。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2202,6 +2212,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-116 默认基线与检查 | `cargo test -p deepagent-runtime --lib loop_engine::tests --offline`：36 passed / 3 ignored，约 5.11s；`cargo fmt --all -- --check` 通过。本批只增加审计测试和报告，未修改生产行为，未跑 workspace 全量、Clippy、桌面构建或真实 Tauri |
 | H-117 API 失败 hook 显式探针 | `cargo test -p deepagent-app-core --lib audit_provider_error_dispatches_stop_failure_hook --offline -- --ignored --nocapture`：0 passed / 1 failed，约 1.89s；成功组实际有 SessionStart/Stop，API 失败组只有 SessionStart，双方各一条正确规范终态；临时 SQLite 与真实 PowerShell hooks，模型传输离线 |
 | H-117 默认基线与检查 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`：74 passed / 10 ignored，约 1.39s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批只增加 ignored 审计探针与报告，未修改生产行为，未跑 workspace 全量、Clippy、桌面构建、真实 Tauri 或公网模型故障 |
+| H-118 流式溢出恢复显式探针 | `cargo test -p deepagent-runtime --lib audit_streamed_overflow_recovers_from_provider_code_without_message_keywords --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.00s；同一 code 的英文对照请求 2 次/压缩 1 次，中文组请求 1 次/压缩 0 次并返回 Unknown；正式 parser/ModelAgent、离线 transport、计数型摘要 fixture |
+| H-118 默认基线与检查 | `cargo test -p deepagent-runtime --lib model_agent::tests --offline`：58 passed / 6 ignored，约 0.98s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅新增 ignored 测试与报告，未修改生产行为；未跑 workspace 全量、Clippy、桌面构建、真实 Tauri 或供应商流内溢出 |
 | H-112/H-113 格式与差异检查 | `cargo fmt --all -- --check` 与 `git diff --check` 通过；本批仅增加 ignored 审计探针与报告，未修改生产行为、未跑 workspace 全量测试、Clippy、桌面构建或真实 Git worktree 子 Agent |
 | Responses `tool_search_call` 候选差异核查 | DeepSeek 官方请求 schema 不提供可触发该 item 的工具类型；AppCore `tool_search` 以普通 function schema 注册。`cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed；`cargo test -p deepagent-models --lib stream::tests --offline`：21 passed。未新增缺陷或测试，未调用公网 provider |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
@@ -2565,7 +2577,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | MCP 断线恢复耗尽与能力退役 | H-48 | 探活与工具共用连接身份的恢复 owner/预算，状态驱动下一请求就绪快照；参考 Grok stdio 耗尽后 Unavailable 与注销工具 | 失败耗尽后新发现不含旧工具/说明；普通连续调用不重开启动风暴；显式重试可恢复；不影响其他服务 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
 | Hook 生命周期与输入/输出契约 | H-102 至 H-117 | 现有 HookData 按事件定义所需上下文，command/HTTP 共用 serializer；参考 Claude 按事件声明输入 schema 和输出处理。真实 session owner、调用 ID、transcript 与结果在派发点传入，压缩 stdout 由 compactor 明确消费 | 正式入口捕获的 payload 可校验且身份正确；普通续聊不误发 SessionEnd；失败不误发 TaskCompleted；API 错误终止派发一次 StopFailure，Stop 拒绝重试不误报；PreCompact 指令进入实际摘要请求；缺字段不能靠任意占位值掩盖 |
-| Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
+| Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30、H-118 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消；流内错误保留实际 code，已支持的溢出分类不依赖 message 措辞 |
 | 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
 | 有效模型参数与输出预算 | H-54 | 既有配置 overlay、模型能力、桌面深度缺省统一解析到最终请求；参考 DeepSeek 本次 effort/maxTokens 优先及 Codex wire 断言 | 显式 effort/输出上限生效；发送前及下一请求预算与 wire 一致；无覆盖保持默认；不支持值明确拒绝；重试和子运行不重新覆盖 |
 | 思考模式的协议转换 | H-55 | 既有 thinking 配置表达开关/强度，由 adapter 显式生成和校验自己的 wire 字段；参考 DeepSeek 分 provider 的 off 映射 | Simple/Medium/Deep 经两协议完整 Agent 路径均可发送；禁用不被默认强度重新启用 |

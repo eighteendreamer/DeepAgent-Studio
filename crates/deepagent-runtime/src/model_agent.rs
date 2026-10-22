@@ -3182,6 +3182,92 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit H-118: response.failed must preserve the code used by overflow recovery"]
+    async fn audit_streamed_overflow_recovers_from_provider_code_without_message_keywords() {
+        let mut unrecovered = Vec::new();
+        for (label, message) in [
+            ("keyword-control", "maximum context window exceeded"),
+            ("code-only", "输入超出限制，请缩短内容"),
+        ] {
+            // Classification already understands this code independently of the
+            // display message. Feed the actual SSE event through ModelClient,
+            // rather than the transport's __ERROR_CONTEXT__ shortcut.
+            assert_eq!(
+                classify_model_error(&CoreError::provider(
+                    None,
+                    Some("context_length_exceeded".into()),
+                    message,
+                )),
+                ModelFailureKind::ContextOverflow
+            );
+            let transport = Arc::new(AttemptTransport {
+                attempts: Mutex::new(VecDeque::from([
+                    vec![serde_json::json!({
+                        "type": "response.failed",
+                        "sequence_number": 1,
+                        "response": {
+                            "status": "failed",
+                            "error": {"code": "context_length_exceeded", "message": message}
+                        }
+                    })
+                    .to_string()],
+                    response_text_completed("after compact"),
+                ])),
+                requests: Mutex::new(Vec::new()),
+            });
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let client = Arc::new(ModelClient::new(
+                transport.clone(),
+                ModelConfig::deepseek("test"),
+            ));
+            let history = (0..12)
+                .map(|index| {
+                    if index % 2 == 0 {
+                        Message::user(format!("old user {index}"))
+                    } else {
+                        Message::assistant(format!("old assistant {index}"))
+                    }
+                })
+                .collect();
+            let mut agent = ModelAgent::new(client, "model", "system", "current", vec![])
+                .with_history(history)
+                .with_reactive_compactor(Arc::new(StaticReactiveCompactor {
+                    calls: calls.clone(),
+                }));
+            let original = agent.conversation().to_vec();
+            let result = agent.think(0, &[]).await;
+            let compactions = calls.load(std::sync::atomic::Ordering::Acquire);
+            let requests = transport.requests.lock().unwrap();
+            eprintln!(
+                "case={label}, requests={}, compactions={compactions}, error={:?}",
+                requests.len(),
+                result
+                    .as_ref()
+                    .err()
+                    .map(|error| (classify_model_error(error), error))
+            );
+            match result {
+                Ok(decision) => {
+                    let (answer, _) = complete_items(decision);
+                    assert_eq!(answer.content, "after compact");
+                    assert_eq!(compactions, 1);
+                    assert_eq!(requests.len(), 2);
+                    assert!(requests[0]["input"].as_array().unwrap().len() > 3);
+                    assert_eq!(requests[1]["input"].as_array().unwrap().len(), 2);
+                }
+                Err(_) => {
+                    assert_eq!(agent.conversation(), original);
+                    unrecovered.push(label);
+                }
+            }
+        }
+        assert!(
+            unrecovered.is_empty(),
+            "streamed overflow lost its recovery classification: {unrecovered:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn context_overflow_compacts_once_then_retries_clean_request() {
         let transport = Arc::new(AttemptTransport {
             attempts: Mutex::new(VecDeque::from([
