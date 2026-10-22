@@ -32,6 +32,7 @@
 | 附件导入/删除的身份与路径边界 | 正式 remove 接受空/点号 ID 删除整桶；ingest 接受点目录并覆盖上级文件；父目录 session 可使写入与删除越出 root | 已确认 H-58；Windows 临时目录真实文件复现，未调用真实用户目录或桌面 IPC |
 | 可选 WASM 工具的超时归属 | 成功调用遗留的 watchdog 增加共享 Engine epoch，使后续调用在自己的期限前中断 | 已确认 H-59；Windows 隔离子进程对照；默认未启用 wasm，不外推为普通桌面卡顿原因 |
 | 命令输出读取任务的归属 | drain 超时后正式 helper 仍持有缓冲，调用方释放后继续读入迟到输出；正常 EOF 释放 | 已确认 H-60；真实 Windows 进程管道/helper 复现，完整执行器/UI 内存与其他平台未验收 |
+| 可选对抗复核的取消与任务归属 | Kernel 已受理取消仍等待三个复核请求，返回 PASS 后记录成功；总时限结束后请求仍存活 | 已确认 H-61；正式 Kernel/ModelAgent/模型复核及真实临时文件证据，传输为离线受控响应，未验桌面和公网 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -65,6 +66,7 @@
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态（H-01/H-43/H-44） | Codex 明确背压/断连、持续消费和 stale turn 投影；已保留各机制适用范围 | UI/SDK 长期等待或与持久化状态不一致 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
+| 运行及附属工作的归属 | 摘要、子运行、输出 reader 和复核没有一致的取消/退出 owner（H-31/H-45/H-60/H-61） | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
 | 内容身份与生命周期 | 去重名称没有对应正文、共享可变项目 scope、旧计时器作用到新调用（H-51/H-53/H-57/H-59） | Claude transcript 内容驱动去重及局部 timer cleanup；DeepSeek connection-owned system section；Wasmtime 的 Store deadline 语义 | 能力或记忆漏注入、跨项目污染、调用被无关计时器提前中断 |
 
 表中采用的是已查证的机制级比较，不表示参考项目整体没有其他缺陷；本系统的特定宿主、移动/工作流/WASM 集成，也不能直接以 Codex 同名能力代替验收。后文按问题给出触发、证据、影响及收敛方向，未覆盖项继续保持待审计。
@@ -1448,10 +1450,32 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响：后台服务持续输出时，已完成工具调用之后仍存在没有结果消费者的 reader 与无上限缓冲；重复调用可累积这种资源。持续时间取决于写端什么时候关闭、宿主 runtime 何时退出；有限输出可能只形成暂时占用，大量持续输出可能导致内存压力乃至宿主内存耗尽。动态只证明迟到 64 KiB 的保留与增长，没有把 OOM 或每次命令都泄漏当作实测事实。H-46 是 MCP 关闭后进程树残留；本项是命令工具已返回后的输出读取归属，触发、对象和修复边界不同。
 - 修复建议（尚未实施）：在现有 SystemExecutor 中统一两个 reader 的生命周期，drain 截止后 abort 并有界确认 reader 已结束，再读取/释放最终缓冲；取消/外层 Future 被丢弃也必须有 owner 清理。为仍需保留的后台输出使用已有受控文件/任务归属，而非孤立内存 Vec；有效输出设保留预算并保持截断提示，不要求持续后台服务随普通命令返回而退出。验收覆盖正常 EOF、单/双写端开放、迟到输出、取消、外层 drop 和重复执行；同时核实关闭 pipe 对合法后台服务的影响，不能仅让测试缓冲变小或提高等待时限。
 
+### H-61：对抗复核脱离主运行取消，取消后仍可落成功终态，总时限也不清理复核请求
+
+**级别：高（P1）；范围：显式开启 adversarial_verify 或 DEEPAGENT_ADVERSARIAL_VERIFY，且当前运行有创建/修改文件证据、复核重试预算尚未耗尽。** 设置默认关闭。没有证据将该条件缺陷视为所有普通对话变慢的原因；与当前 Codex 宿主的加密历史续接错误无关。
+
+#### 生产路径与确定性对照
+
+- `crates/deepagent-app-core/src/run_assembler.rs` 在上述 opt-in 条件下，为正式 Kernel 装配 `ModelAdversarialVerifier`、`ModelSkepticSpawner` 和默认三个 skeptics。`crates/deepagent-runtime/src/loop_engine.rs` 将原生 CompleteItems 归一为 CompleteMessage，完成事实门禁后直接 `verifier.verify(...).await`；此等待没有运行取消参数或取消 select，Accepted 后也没有再次核对取消，继续转为 TaskState::Completed、发 RunCompleted。
+- `verification_panel.rs::run_skeptic_panel` 用 `tokio::spawn` 创建三个任务，逐个 await 普通 JoinHandle，没有取消 owner 或 Drop 清理。`ModelSkepticSpawner::spawn` 调用非取消版 `ModelClient::stream_response`；现有 cancel-aware 入口没有被使用。Kernel 的 Ok(Completed) 分支直接映射 Succeeded，仅 Err 分支按 handle.is_cancelled 改写终态。因此取消树正确触发也不能阻止这条成功提交路径。
+- 在 `crates/deepagent-app-core/src/verification_panel/audit_tests.rs` 新增默认忽略的 `audit_cancel_during_model_panel_does_not_complete_successfully`：真实内存 SQLite Session/RunStore、Kernel、ModelAgent、ModelAdversarialVerifier、ModelSkepticSpawner 和正式请求序列化；仅 HttpTransport 离线受控。先持久化 run，用正式 CheckpointManager 捕获临时 answer.txt 写前状态并实际创建该文件，确认 Created，排除“无 checkpoint 时默认认为修改”的测试兼容分支。文件变更由 fixture 在运行前准备，不是完整 AppCore 工具写入验收。
+- 正常组和取消组都等三个正式复核请求真正进入 transport，再作观察。正常组等待响应，释放后一个 succeeded 终态，任务 Completed；取消组 `RunHandle::cancel()` 返回 true 且 is_cancelled=true，100ms 观察窗口后仍未退出、active=3、数据库无终态；释放相同 PASS 响应后仍一个 succeeded 终态，任务 Completed。两组 plain_calls=3、cancellable_calls=0。受控 transport 同时实现可取消入口，若实际传入信号可中止；没有注入一个故意无视取消的自制 verifier。
+- 执行 `cargo test -p deepagent-app-core --lib audit_cancel_during_model_panel_does_not_complete_successfully --offline -- --ignored --nocapture`，约 0.39 秒明确失败：正常对照成立，取消组 exited_before_release=false、terminal=Succeeded。100ms 是已执行的观察窗口，不将其外推为真实网络的最长等待；等待复核释放才完成的确定性交错与无取消生产路径共同确定问题。
+- 第二探针 `audit_kernel_deadline_releases_model_panel_requests` 用同一链路、300ms task_timeout；450ms 观察时 Kernel 已返回并落盘 budget_exceeded，任务 Failed，三个复核 transport 仍 active=3。执行 `cargo test -p deepagent-app-core --lib audit_kernel_deadline_releases_model_panel_requests --offline -- --ignored --nocapture`，约 0.53 秒明确失败。释放后 active=0；两个探针均在缺陷断言前释放并等所有 fixture 请求退出，没有留下测试任务。
+
+#### 成熟实现、影响与修复边界
+
+- Codex `借鉴/codex/codex-rs/core/src/tasks/mod.rs::handle_task_abort` 先 cancel 运行 token，等待 done 或明确的 100ms grace，随后 abort 所属任务并调用任务级 abort 清理；相同文件的 SessionTask::run 接收 cancellation_token。参考的是“协作取消、有界退出和专属清理”共同属于 turn 生命周期，不能仅抄 token 字段而让完成后的复核另开无归属模型任务。
+- Grok `借鉴/grok-build/crates/codegen/xai-grok-shell/src/session/acp_session_impl/cancel.rs::cancel_running_task` 在适用的用户 Stop 路径通过 abort_turn_task 中止当前 AgentTask；`goal_classifier.rs::run_verification_stage` 位于 turn 的 handle_prompt 内，源码也明确说明 turn abort 会丢弃该 future。这里仅确认 turn 级取消边界，不据注释承诺其所有 coordinator/后台 skeptic 必然随 Drop 停止，也没有动态运行参考项目。
+- 用户后果：明明已经停止，复核仍等待供应商，可能继续产生请求成本；返回 PASS 时还把已取消的工作标记为成功。总时限只终结主运行时，已发复核请求仍消耗资源直到自己结束。动态证据是三个受控请求的 future 活跃与真实 SQLite 终态；没有测公网实际计费、OS 网络 socket 或真实 Tauri 界面。复核本身没有文件写工具，不能据此声称它会继续改用户文件。H-31 针对同步摘要取消，H-45 针对子 Agent 持久化收尾，本项针对复核面板的模型任务归属及取消后的成功提交。
+- 修复建议（尚未实施）：复用现有取消树，让复核入口、模型流及每个 skeptic 派生同一运行的子 token；复核任务由能取消并 join 的 owner 管理，父 future 结束时不能仅 detach JoinHandle。运行取消应作为控制结果传播，不能转成普通复核失败或 fail-open PASS；在完成提交边界重新确认取消，并经现有唯一终态入口落盘。总时限、手动取消及异常退出共用有界清理；不新增第二套取消器。验收覆盖正常 PASS、拒绝重试、单请求卡住、取消与 PASS 竞争、task_timeout、调用方 drop，结合实际模型请求计数、session/task/RunStore 状态和资源退出检查。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-61 对抗复核取消与总时限显式探针（见该节两条命令） | 两项均明确失败；正常对照成功，取消后仍 succeeded；主 Kernel 超时后仍有三个活跃复核请求。断言前请求均已释放，未修生产行为 |
+| `cargo test -p deepagent-app-core --lib verification_panel:: --offline -- --nocapture` | 7 passed / 2 ignored，约 0.18s；包含正式 Kernel/ModelAgent 正常完成对照；两项忽略缺陷已单独及合并显式执行失败，不能视为已修；本轮 fmt、diff 检查通过，未运行全 workspace 或桌面构建，因为仅新增测试/审计文档、无生产或 UI 契约变更 |
 | `cargo test -p deepagent-runtime --lib loop_engine::tests --offline`（双完成事件与门禁核查时） | 36 passed / 1 ignored，约 3.22s；新增完整语义流三组对照通过，忽略的是既有 H-34 探针，不代表缺陷修复；同批 fmt 与 diff 检查通过 |
 | H-60 Windows 输出 drain 显式探针（见该节命令） | 明确失败：正常 EOF 释放缓冲，开放管道在 grace 结束、调用方释放后仍保留缓冲并接收迟到 65,536 字节；断言前 reader/子进程均已回收 |
 | `cargo test -p deepagent-builtins --lib bash_tool::tests --offline`（H-60 核查时） | 23 passed / 1 ignored，约 26.39s；忽略的是已显式执行失败的新缺陷探针；同批 fmt 与 diff 检查通过，未修改生产行为 |
@@ -1705,6 +1729,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
+| 可选模型复核与主运行终态一致性 | H-61 | 既有取消树派生复核子 token，面板任务 owner 管理取消与 join，完成提交重查运行取消；参考 Codex 的有界 turn abort 和任务清理 | 取消后不提交成功；总时限/drop 不遗留复核请求；正常 PASS 仍完成，失败反馈有界，取消不当作普通复核失败 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 附件存储身份与写入/删除范围 | H-58 | 既有 AttachmentService 统一有效单组件身份、会话归属和精确附件读写/删除；参考本仓库 ledger 组件验证及 Claude 宿主会话/UUID 文件身份 | 异常 id/session 在写入前拒绝；不覆盖或删除桶/root/兄弟数据；正常导入/幂等删除、junction/竞态和重开分别验证 |

@@ -429,6 +429,9 @@ impl deepagent_runtime::AdversarialVerifier for ModelAdversarialVerifier {
 }
 
 #[cfg(test)]
+mod audit_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::sync::Mutex;
