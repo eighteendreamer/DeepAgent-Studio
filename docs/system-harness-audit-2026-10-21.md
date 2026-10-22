@@ -13,7 +13,7 @@
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
-| stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置均已确定性复现 | 已确认 H-01、H-02、H-04；其余路径未完成 |
+| stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置及最终钩子失败时先完成后失败已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83；慢连接与终态投影仍待收敛 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35；其他边界未完成 |
@@ -54,6 +54,7 @@
 | Responses 工具调用类型配对 | 公共 `ResponseRequest` 修复入口只按 call_id 选择已有 output；若外部传入同 call_id 的混合 native kind，错误类型仍进入下一次 wire | H-80 条件性确认；正常 Session 入口的 custom/function 配对对照通过，只有手工构造或未证实的坏历史才触发失败探针；未调用公网供应商 |
 | Responses 多文本 item 与增量去重 | 同一响应的两段完成文本被保留后，整次响应的增量全文又作为第三项加入；done-only 则额外补空 assistant，均进入恢复后的 wire | 已确认 H-81；正式 ChatService/ModelClient/SSE 累加器/磁盘存储重开/下一 wire，单 item 对照正常；离线事件，无真实模型频率或计费结论 |
 | Responses incomplete 的原因与恢复策略 | content_filter 与 max_output_tokens 均触发加大输出上限及注入长度恢复提示，离线第三响应完成后运行成功终结 | 已确认 H-82；正式 ChatService/Kernel/ModelAgent/请求序列化/SQLite 终态，长度对照正常；未测试真实供应商过滤或桌面展示 |
+| 运行完成通知与最终钩子的提交边界 | 正式 TaskCompleted prompt hook 输出无效决策 JSON 后，stdio 同一 turn 先通知 completed 再通知 failed，thread/read 保持唯一 failed 终态 | 已确认 H-83；真实 dispatcher/spawn_turn/AppCore/Kernel/磁盘事件及独立 reader；正常钩子和普通模型错误对照正常，未跑真实 stdio 管道或桌面 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -93,7 +94,7 @@
 |---|---|---|---|
 | 执行身份与控制 | ACK、租约、审批和实际运行的归属未全部统一（H-02/H-15/H-16/H-33） | Codex 按 turn 管理 waiter、thread writer 保护；Claude 活跃 owner/锁保护（见各项源码与探针） | 停止虚假确认、迟到或串运行审批、同会话并发推进 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
-| 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态（H-01/H-43/H-44） | Codex 明确背压/断连、持续消费和 stale turn 投影；已保留各机制适用范围 | UI/SDK 长期等待或与持久化状态不一致 |
+| 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态，以及最终钩子失败前已通知完成（H-01/H-43/H-44/H-83） | Codex 明确背压/断连、持续消费、stale turn 投影及统一携带错误的 turn 完成通知；已保留各机制适用范围 | UI/SDK 长期等待、提前结束或与持久化状态不一致 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
@@ -1757,10 +1758,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响：会增加不合适的重试和等待，把“输出长度不足”的错误解释写入续轮上下文；原始内容过滤原因不再到达上层分类与用户诊断。此样本第三次由离线 fixture 主动返回 completed，成功终态仅证明原原因没有成为独立运行失败，不能推断真实供应商会接受续写、过滤必被绕过或存在实际额外收费。本轮没有真实过滤请求、工具副作用、桌面截图或真实 token 账单。
 - 收敛方向（尚未实施，本地设计）：在既有 provider seam 保留 incomplete 原因及已返回 usage，仅明确 max_output_tokens 进入当前长度恢复；内容过滤走独立、有限、可诊断的策略，未知原因不得默认为长度。复用现有 ModelFailure/终态事件，不另造重试器。回归覆盖两种官方原因、未知/缺失原因、部分文本、完整/截断工具调用、取消、重试上限和单终态；是否允许过滤恢复应另定显式产品策略，不能靠换提示词假装输出预算耗尽。
 
+### H-83：最终钩子报错前已发布完成，stdio 同一 turn 收到相互冲突的两个终态
+
+**级别：中（P2）；范围：stdio Harness 正式运行已生成答案，随后 TaskCompleted 生命周期钩子执行报错。** 本轮用已支持的用户 `hooks_json` 配置 prompt hook；主回答文本合法，但同一离线模型为 hook 返回普通文本，触发既有结构化决策解析错误。正常钩子和普通 provider error 的对照各只有一个匹配的终态。没有证明普通 provider error 会重复失败，也没有将本项外推为所有对话都会触发。
+
+- 根因与生产路径：`deepagent-runtime/src/loop_engine.rs::RuntimeEngine::run` 在 `Complete`/`CompleteMessage` 分支先把 task 置为 Completed 并 emit `RuntimeEvent::RunCompleted`，退出循环后才 `fire_task_hook(..., HookPoint::TaskCompleted).await?`。正式 `ExternalHostHook` → `AppHookActionExecutor::execute_prompt` 的模型响应若无法由 `parse_model_hook_decision` 解析，错误穿过 HookRegistry 回到 Kernel；Kernel 随后保存唯一 `failed` 终态。`apps/cli/src/app_server.rs::spawn_turn` 的 on_event 已将早到的 RunCompleted 投影为 `turn.completed`，而 AppCore 返回 Err 后又发送 `turn.failed`。持久化 `run_terminal` 的幂等机制仍有效，实时“完成”的含义却早于实际收尾边界。
+- 动态复现：新增 `apps/cli/src/app_server/terminal_audit.rs`，通过生产 `initialize`/`thread/start`/`turn/start` dispatcher，执行真实 `spawn_turn`、ChatService、RunAssembler、Kernel、prompt hook 和 ResponseRequest 序列化。只在底层使用 MockTransport，设置保存在临时磁盘 SQLite，使用 MemorySecretStore 和虚构占位凭据，没有公网请求或真实用户数据。收集正式 HarnessEvent，等待内存 active=false 后再判断，避免只看到首个通知便结束测试。没有人工 emit RunCompleted/RunFailed。
+- 首次实测：`cargo test -p deepagent-cli terminal_audit --offline -- --include-ignored --nocapture` 为 **3 passed / 1 failed**，测试体约 **0.74s**。缺陷探针实际收到 `["turn.completed", "turn.failed"]`；durable run events 也先后包含 `run_completed`、钩子错误，最后只有一个 `run_terminal=failed`。钩子正常返回 `{"ok":true}`、普通 `response.failed`、两轮独立游标补读三个对照通过。缺陷探针保持 ignored 并显式执行，未修改生产行为。
+- 成熟实现对照：Codex `app-server/src/bespoke_event_handling.rs::handle_error_notification` 记录错误并发送独立诊断，`handle_turn_complete` 从 turn_summary 读取 last_error，再统一调用 `emit_turn_completed_with_status` 选择 Completed/Failed；中断也通过该函数携带 Interrupted 状态。其错误诊断与 turn 完成边界有明确区分。Claude `tools/TaskUpdateTool/TaskUpdateTool.ts` 在设置 completed 前先执行 TaskCompleted hooks，并在 blockingErrors 非空时返回更新失败；`query/stopHooks.ts` 在继续/结束决策前汇集相关钩子反馈并传入 abort signal。Claude 此处是任务状态更新/teammate 收尾，不与本系统 run 协议等同；这些代码只提供边界参考，本轮未执行参考项目。
+- 影响及限制：消费端若将首个 `turn.completed` 当作运行结束，可在错误通知前停止等待或开始下一步；后续 `thread/read` 又显示 failed，实时与恢复视图发生冲突。失败原因仍然可从正式 hook 错误和持久化终态获得，未发现此样本的日志缺失或重复持久化终态。此轮没有真实 stdin/stdout 背压、SDK 进程订阅、Tauri UI、钩子网络故障或公开模型请求，不能宣称这些路径都已验收。
+- 收敛方向（尚未实施，本地设计）：让既有 Kernel 终态提交成为机器协议的唯一完成事实；答案生成、钩子进度和诊断继续作为非终态事件。先明确所有 final hook、usage 和必要清理的失败策略，再将最终状态投影一次，复用现有 RunStore/run_terminal 和事件体系；不在客户端靠忽略第二个通知决定结果。回归覆盖正常钩子、钩子失败/超时/取消、provider error、完成与停止竞争、数据库失败、重连补读和不同宿主入口。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-83 完成后钩子失败与正常对照 | `cargo test -p deepagent-cli terminal_audit --offline -- --include-ignored --nocapture`：3 passed / 1 failed，测试体约 0.74s；实际实时 completed→failed，唯一 durable failed；正常钩子、provider error、两轮游标及独立 reader 对照通过。仅测试和文档，未修改生产行为 |
+| H-83 默认测试基线及通用检查 | `cargo test -p deepagent-cli terminal_audit --offline`：3 passed / 0 failed / 1 ignored，约 0.60s；缺陷探针仍需显式执行。`cargo fmt --all -- --check`、`git diff --check` 通过 |
 | H-82 incomplete 原因显式探针及长度对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e incomplete_reason --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.50s；两组请求数/预算/部分文本续写及成功终态相同；过滤组不应走长度恢复的断言失败，仅离线 transport 和临时 SQLite |
 | H-82 收紧断言后的复测及默认基线 | 最终显式探针仍 1 passed / 1 failed，约 0.37s；严格确认预算升级和实际长度续写 user item，未强制过滤一律不能重试。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：22 passed / 22 ignored，约 2.06s；`cargo test -p deepagent-models --offline`：单元 82 passed / 3 ignored、集成 1 passed / 1 ignored。fmt、diff 检查通过；本批仅审计测试与报告，未跑全 workspace、Clippy、桌面构建、真实 Tauri 或公网过滤请求；默认通过不代表忽略问题已修复 |
 | H-77 搜索敏感文件显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.85s；三组 direct read 均硬拒绝、grep 均成功且敏感 canary 进入下一 wire，普通 *.txt 对照无泄漏；虚构临时文件和离线 transport |
@@ -2062,6 +2076,12 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 首次以 `cargo test -p deepagent-models --lib reasoning --offline -- --include-ignored --nocapture` 执行，12 passed / 1 failed；新增候选通过，失败是同时匹配到的旧 H-05 `audit_chat_projection_preserves_tool_turn_narration_and_reasoning`，不能解释为 reasoning item 探针失败。此对照未覆盖空 reasoning done、缺失 done、公开网络或 AppCore 续轮。
 - 将夹具收紧为逐 item 的 added→delta→done 顺序后，默认 `cargo test -p deepagent-models --offline` 的 82 个通过单测包含本对照；只新增测试，生产累加器未修改。
 
+### 后续独立验证：stdio 补读的 session 与各 run 游标互相独立
+
+- `terminal_audit::reopened_thread_read_keeps_session_and_each_run_cursor_independent` 经正式 dispatcher/spawn_turn 完成同一 session 两轮运行，两轮都只有一个实时完成及一个 durable succeeded；用独立 Database/ServerState reader 重新读取同一磁盘，完整 `thread/read` 与原结果相等。
+- 同一请求中显式设置 sessionAfterSequence 和不同的 runAfterSequences，另将旧 afterSequence/runAfterSequence 设为 u64::MAX 验证优先级；返回结果与各条 stream 单独 `sequence > after` 筛选逐项相等。first run 到末尾后为空、second run 从中段仍可取到终态，runId/stream/streamSequence 关联一致。第一次显式运行通过，测试体共 0.74s（与另外三项合计），不能当作该探针单独耗时。
+- 这是持久化读取和游标优先级的正常证据，不覆盖真实管道断连/背压和 SDK 自动恢复；H-01 的实时丢通知及 ACK 缺口仍保留。独立 reader 建立时原宿主对象仍在，未宣称完成真实进程退出重启验收。
+
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
 下表依据已复现的边界归并；优先级不等于所有问题具有相同触发概率。设计收敛在本系统既有内核，不复制参考项目建立第二套运行链。
@@ -2071,6 +2091,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 执行权限与子运行上下文 | H-03、H-19、H-22、H-65 | 有效工具集合、sandbox 选择、执行根、checkpoint 与两处自动验证必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd、Codex 的统一命令编排 | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致；配置后端拒绝时单文件/完成验证均不得转为宿主执行 |
 | 可选 WASM 的时钟与调用归属 | H-59 | 既有 WasmSandbox 统一 Engine tick 与 per-Store deadline；参考上游 Wasmtime 及成熟 Agent 的局部 timer 清理 | 顺序与并发调用互不提前超时；成功/失败/取消不遗留误伤；Windows trap 错误不终结宿主；默认未启用路径保持不受影响 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
+| 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
 | 可选模型复核与主运行终态一致性 | H-61 | 既有取消树派生复核子 token，面板任务 owner 管理取消与 join，完成提交重查运行取消；参考 Codex 的有界 turn abort 和任务清理 | 取消后不提交成功；总时限/drop 不遗留复核请求；正常 PASS 仍完成，失败反馈有界，取消不当作普通复核失败 |

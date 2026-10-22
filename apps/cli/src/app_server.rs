@@ -1184,6 +1184,10 @@ async fn write_response(
 }
 
 #[cfg(test)]
+#[path = "app_server/terminal_audit.rs"]
+mod terminal_audit;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
