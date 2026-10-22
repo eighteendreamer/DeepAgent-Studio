@@ -2452,6 +2452,60 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-108: session lifecycle hooks must include required event metadata"]
+    async fn audit_session_lifecycle_hooks_include_required_event_metadata() {
+        let (db, settings, dir) = seeded().await;
+        let start_payload_path = dir.path().join("session-start-payload.json");
+        let end_payload_path = dir.path().join("session-end-payload.json");
+        let quoted_start = start_payload_path.to_string_lossy().replace('\'', "''");
+        let quoted_end = end_payload_path.to_string_lossy().replace('\'', "''");
+        let capture = |path: &str| {
+            serde_json::json!({
+                "hooks": [{
+                    "type": "command",
+                    "shell": "powershell",
+                    "timeout": 5,
+                    "command": format!(
+                        "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{path}', $payload)"
+                    )
+                }]
+            })
+        };
+        settings
+            .set_hooks_json(
+                &serde_json::json!({
+                    "hooks": {
+                        "SessionStart": [capture(&quoted_start)],
+                        "SessionEnd": [capture(&quoted_end)]
+                    }
+                })
+                .to_string(),
+            )
+            .unwrap();
+
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path());
+        chat.run("capture session lifecycle hook input", |_| {}, |_| {})
+            .await
+            .unwrap();
+
+        let start_payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(start_payload_path).expect("SessionStart hook ran"),
+        )
+        .unwrap();
+        let end_payload: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(end_payload_path).expect("SessionEnd hook ran"),
+        )
+        .unwrap();
+        eprintln!("SessionStart payload: {start_payload}");
+        eprintln!("SessionEnd payload: {end_payload}");
+        assert!(
+            start_payload["source"].is_string() && end_payload["reason"].is_string(),
+            "missing event metadata: SessionStart={start_payload}, SessionEnd={end_payload}"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "audit H-28: untrusted project config escalates the user's read-only permissions"]
     async fn audit_untrusted_project_cannot_escalate_read_only_file_access() {
