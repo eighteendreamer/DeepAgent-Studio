@@ -30,6 +30,8 @@ pub struct TransportTimeouts {
     pub total: Duration,
 }
 
+const MAX_PROVIDER_ERROR_BODY_BYTES: usize = 64 * 1024;
+
 impl Default for TransportTimeouts {
     fn default() -> Self {
         Self {
@@ -152,7 +154,9 @@ impl ReqwestTransport {
 
         if !response.status().is_success() {
             let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
+            let detail = self
+                .read_provider_error_body(response, cancel.as_ref())
+                .await?;
             return Err(provider_error(status.as_u16(), &detail));
         }
 
@@ -226,6 +230,36 @@ impl ReqwestTransport {
         tokio::time::timeout(timeout, self.await_cancelable(future, cancel))
             .await
             .map_err(|_| CoreError::other(label))?
+    }
+
+    async fn read_provider_error_body(
+        &self,
+        response: reqwest::Response,
+        cancel: Option<&Arc<AtomicBool>>,
+    ) -> Result<String, CoreError> {
+        let mut body_stream = response.bytes_stream();
+        let mut body = Vec::new();
+
+        while let Some(chunk) = self
+            .await_cancelable_timeout(
+                body_stream.next(),
+                cancel,
+                self.timeouts.idle,
+                "provider error body idle timeout",
+            )
+            .await?
+        {
+            let chunk = chunk.map_err(|error| {
+                CoreError::other(format!("reading provider error body failed: {error}"))
+            })?;
+            let remaining = MAX_PROVIDER_ERROR_BODY_BYTES.saturating_sub(body.len());
+            if remaining == 0 {
+                break;
+            }
+            body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+        }
+
+        Ok(String::from_utf8_lossy(&body).into_owned())
     }
 }
 
@@ -543,7 +577,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-29: a stalled HTTP error body does not observe request cancellation"]
     async fn audit_cancel_interrupts_stalled_success_and_error_bodies() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;

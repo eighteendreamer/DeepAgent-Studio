@@ -832,24 +832,25 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 在现有配置加载及有效 profile 解析边界统一来源授权和权限上限：明确用户主动授权、受信任项目偏好、插件默认与管理员约束各自能修改什么。项目、本地配置不应仅凭更高 merge 优先级自动放宽用户权限；复用现有配置层和信任服务，不另建权限表或执行链。
 - 验收覆盖只读/工作区写入、审批策略、不同项目配置来源、显式授权及撤销、运行覆盖和管理员约束，并同时断言实际工具副作用与审批调用。当前只运行 Windows 离线 AppCore 探针，没有验证所有宿主、平台或配置来源，也未修改生产权限行为。
 
-### H-29：HTTP 错误正文挂起时取消检查缺失，停止等待退化到正文完成或总超时
+### H-29：HTTP 错误正文挂起时取消检查缺失，停止等待退化到正文完成或总超时（已修复）
 
-**级别：中（P2）；范围：真实 HTTP 模型 transport 的非 2xx 响应读取。** 需要供应商或网关先返回错误状态/响应头，再使正文持续未完成。正常 2xx SSE 的停止保护仍有效。
+**状态：已修复。级别：中（P2）；范围：真实 HTTP 模型 transport 的非 2xx 响应读取。** 需要供应商或网关先返回错误状态/响应头，再使正文持续未完成。正常 2xx SSE 的停止保护仍有效。
 
 #### 生产路径与真实回环复现
 
-- `ReqwestTransport::stream_inner()` 对请求发送及成功 SSE 的每次 body.next 应用 `await_cancelable_timeout()`，但非成功状态分支直接执行 `response.text().await.unwrap_or_default()`，没有取消检查或正文 idle 超时。外层 stream_cancelled 的 total deadline 仍然存在，默认 300 秒，因此不是无限期无界等待。
+- 修复前，`ReqwestTransport::stream_inner()` 对请求发送及成功 SSE 的每次 body.next 应用 `await_cancelable_timeout()`，但非成功状态分支直接执行 `response.text().await.unwrap_or_default()`，没有取消检查或正文 idle 超时。外层 stream_cancelled 的 total deadline 仍然存在，默认 300 秒，因此不是无限期无界等待。
 - `RuntimeEngine` 直接 await agent.think_streaming_cancelled；ModelAgent 再 await ModelClient 的取消感知流。代码核查未发现这一 await 外另有引擎级取消竞争，因此不能依赖“信号已写入 flag”自动中断任意内部等待。本项动态证据限于实际 HTTP transport，没有运行 Tauri 或宣称已复现某次用户截图中的长等待。
-- 新增默认忽略的 `reqwest_transport::tests::audit_cancel_interrupts_stalled_success_and_error_bodies`。真实 localhost TCP 服务完整消费请求，分别返回 200/429/503 响应头及正文首字节；保持剩余正文不发。客户端使用正式 ReqwestTransport，idle=2 秒、total=4 秒，确认操作仍 pending 后设置同一取消 flag，观察 500ms，再主动释放服务器正文并回收任务。无外部请求、密钥或真实付费调用。
-- 执行：`cargo test -p deepagent-models --features http audit_cancel_interrupts_stalled_success_and_error_bodies --offline -- --ignored --nocapture`。200 组约 20ms 返回 request cancelled；429 与 503 组在约 508ms 观察期后仍未返回，释放正文后才返回各自 Provider 错误。最终取消断言失败。500ms 是本地测试观察界限，不是系统承诺或 P95，测试也没有实际等待生产默认 300 秒。
+- 回归 `reqwest_transport::tests::audit_cancel_interrupts_stalled_success_and_error_bodies` 使用真实 localhost TCP 服务完整消费请求，分别返回 200/429/503 响应头及正文首字节；保持剩余正文不发。客户端使用正式 ReqwestTransport，idle=2 秒、total=4 秒，确认操作仍 pending 后设置同一取消 flag，观察 500ms，再主动释放服务器正文并回收任务。无外部请求、密钥或真实付费调用。
+- 修复：非 2xx 响应改用 `read_provider_error_body()`，按块读取并在每次 `body.next()` 上复用 `await_cancelable_timeout()`；错误正文限制为 64 KiB，读取失败保留 transport 错误，上层取消仍返回 `request cancelled`。成功和错误响应因此共享取消、idle 及外层 total 边界。
+- 修复后执行：`cargo test -p deepagent-models --features http audit_cancel_interrupts_stalled_success_and_error_bodies --offline -- --nocapture`。200/429/503 三组均在 500ms 内返回；本次实测分别约 0ms、21ms、17ms，结果均为 `Other("request cancelled")`。测试使用同一 localhost TCP fixture，无外部请求、密钥或真实付费调用。
 - 初次编译因测试闭包的 &str 生命周期推断失败；显式标注参数后才执行上述实测。编译问题不列为生产缺陷。
 
 #### 成熟实现、后果与修复方向
 
 - DeepSeek Harness `llm-deepseek/src/adapter.ts::generate()` 合并调用者及 consumer AbortSignal，再经 idleWatchdog 传给 request；fetch 的 signal 覆盖请求和返回 body 的消费，非 2xx response.text 也处于同一取消生命周期。finally 取消 consumer；调用者取消映射为 ABORTED。`tests/runtime.spec.ts` 有 outstanding fetch、mid-stream abort 和 idle watchdog 回归；本轮只核查这些源码，没有声称已运行参考项目测试，也不声称它已有完全相同的非 2xx 半正文用例。
 - 本系统收到停止信号后，该分支仍可能继续等待错误正文，UI 的“正在停止”和运行终态随之拖延，且 transport 最终可能上交 HTTP 错误而非取消。它与 H-17 的保存错误 UI 投影、H-25 的 Retry-After 丢失是不同故障点。
-- 在现有 transport 统一成功/错误正文的取消、idle/total 时限及清理边界；错误正文读取失败保留上下文，不用 unwrap_or_default 抹除原因。应有有界错误正文大小，防止未截断前的整段读入；后者本次仅作代码风险提示，未进行内存压力复现。
-- 验收覆盖 4xx/5xx 半正文、慢速错误正文、正文中断、停止与 total timeout 竞争，以及经过 ModelAgent/Kernel 的终态收尾。修复应使用现有取消树及 transport helper，不新建第二套运行取消机制。本轮未改生产行为。
+- 这消除了停止等待错误正文时的取消缺口；仍需在后续 H-85 工作中为 `get_json()` 的发现/余额 GET 链路接入同等的 header、body、取消与总时限边界，不能把本项修复扩大为所有 HTTP 请求已经可取消。
+- 后续验收仍覆盖 4xx/5xx 半正文、慢速错误正文、正文中断、停止与 total timeout 竞争，以及经过 ModelAgent/Kernel 的终态收尾；本次已完成 transport 层 4xx/5xx 半正文回归，未据此宣称 Tauri 终态全链路已完成。
 
 ### H-30：SSE 实际按 data 行解析，合法多行事件失败，未闭合终态帧却被接受
 
@@ -2522,8 +2523,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-31 摘要取消回归 | `cargo test -p deepagent-app-core --lib context_runtime::tests::audit_cancel_interrupts_native_summary_before_next_model_request --offline -- --nocapture`：1 passed；500ms 内取消成功，summary request 通过 cancel-aware transport，主模型请求数仍为 1，且没有写入部分 `ContextCompacted` 边界 |
 | H-30 单项忽略探针（见该节命令） | 明确失败：多行 JSON、CR-only 和未闭合终态帧三组不符预期，单行完整帧对照通过 |
 | `cargo test -p deepagent-models --features http --offline`（新增 H-30 后） | 84 passed / 4 ignored，0 failed；新缺陷探针默认忽略 |
-| H-29 单项忽略探针（见该节命令） | 明确失败：200 正文读取响应取消，429/503 半正文未在 500ms 观察期内响应；释放正文后才返回 |
-| `cargo test -p deepagent-models --features http --offline`（新增 H-29 后） | 84 passed / 3 ignored，0 failed；已知缺陷探针默认忽略 |
+| H-29 单项回归（见该节命令） | 通过：200/429/503 半正文均在 500ms 内响应取消，实测约 0/21/17ms；不再释放正文后才返回 |
+| `cargo test -p deepagent-models --features http --offline`（H-29 修复后） | 单元测试 88 passed / 12 ignored，集成测试 1 passed / 1 ignored；0 failed，H-29 不再是 ignored 探针 |
 | H-28 单项忽略探针（见该节命令） | 明确失败：只读对照无文件，未信任项目 full_access 覆盖后实际写入，审批数为零；没有修复生产行为 |
 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`（新增 H-28 后） | 74 passed / 3 ignored，0 failed；新增探针默认忽略，不代表其缺陷修复 |
 | `cargo test -p deepagent-cli -p deepagent-models -p deepagent-mcp --offline` | CLI 82 passed / 3 ignored；models 84 passed / 1 ignored；MCP 单元 55 passed / 3 ignored、子进程集成 3 passed、协议审查 1 ignored；均无常规失败。组合命令的 feature 合并启用了额外 HTTP 测试 |
