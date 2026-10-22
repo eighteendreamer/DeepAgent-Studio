@@ -31,6 +31,8 @@ pub struct TransportTimeouts {
 }
 
 const MAX_PROVIDER_ERROR_BODY_BYTES: usize = 64 * 1024;
+const MAX_GET_BODY_BYTES: usize = 16 * 1024 * 1024;
+const GET_TOTAL_TIMEOUT_CAP: Duration = Duration::from_secs(30);
 
 impl Default for TransportTimeouts {
     fn default() -> Self {
@@ -79,25 +81,26 @@ impl ReqwestTransport {
 #[async_trait]
 impl HttpTransport for ReqwestTransport {
     async fn get_json(&self, url: &str, api_key: &str) -> Result<String> {
-        let response = self
-            .client
-            .get(url)
-            .bearer_auth(api_key)
-            .header("accept", "application/json")
-            .send()
-            .await
-            .map_err(|e| CoreError::other(format!("GET {url} failed: {e}")))?;
-        if !response.status().is_success() {
-            let status = response.status();
-            let detail = response.text().await.unwrap_or_default();
-            return Err(CoreError::other(format!(
-                "GET {url} returned {status}: {detail}"
-            )));
-        }
-        response
-            .text()
-            .await
-            .map_err(|e| CoreError::other(format!("reading GET {url} body failed: {e}")))
+        tokio::time::timeout(
+            self.timeouts.total.min(GET_TOTAL_TIMEOUT_CAP),
+            self.get_json_inner(url, api_key, None),
+        )
+        .await
+        .map_err(|_| CoreError::other("GET total deadline exceeded"))?
+    }
+
+    async fn get_json_cancelled(
+        &self,
+        url: &str,
+        api_key: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<String> {
+        tokio::time::timeout(
+            self.timeouts.total.min(GET_TOTAL_TIMEOUT_CAP),
+            self.get_json_inner(url, api_key, Some(cancel)),
+        )
+        .await
+        .map_err(|_| CoreError::other("GET total deadline exceeded"))?
     }
 
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
@@ -122,6 +125,46 @@ impl HttpTransport for ReqwestTransport {
 }
 
 impl ReqwestTransport {
+    async fn get_json_inner(
+        &self,
+        url: &str,
+        api_key: &str,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<String> {
+        if is_cancelled(cancel.as_ref()) {
+            return Err(CoreError::other("request cancelled"));
+        }
+
+        let send = self
+            .client
+            .get(url)
+            .bearer_auth(api_key)
+            .header("accept", "application/json")
+            .send();
+        let response = self
+            .await_cancelable_timeout(
+                send,
+                cancel.as_ref(),
+                self.timeouts.first_byte,
+                "GET first-byte timeout",
+            )
+            .await
+            .map_err(|error| CoreError::other(format!("GET {url} failed: {error}")))?
+            .map_err(|error| CoreError::other(format!("GET {url} failed: {error}")))?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let detail = self
+                .read_provider_error_body(response, cancel.as_ref())
+                .await?;
+            return Err(CoreError::other(format!(
+                "GET {url} returned {status}: {detail}"
+            )));
+        }
+
+        self.read_get_body(response, cancel.as_ref()).await
+    }
+
     async fn stream_inner(
         &self,
         request: TransportRequest,
@@ -261,6 +304,37 @@ impl ReqwestTransport {
 
         Ok(String::from_utf8_lossy(&body).into_owned())
     }
+
+    async fn read_get_body(
+        &self,
+        response: reqwest::Response,
+        cancel: Option<&Arc<AtomicBool>>,
+    ) -> Result<String, CoreError> {
+        let mut body_stream = response.bytes_stream();
+        let mut body = Vec::new();
+
+        while let Some(chunk) = self
+            .await_cancelable_timeout(
+                body_stream.next(),
+                cancel,
+                self.timeouts.idle,
+                "GET body idle timeout",
+            )
+            .await?
+        {
+            let chunk = chunk
+                .map_err(|error| CoreError::other(format!("reading GET body failed: {error}")))?;
+            if body.len().saturating_add(chunk.len()) > MAX_GET_BODY_BYTES {
+                return Err(CoreError::other(format!(
+                    "GET response body exceeds {MAX_GET_BODY_BYTES} bytes"
+                )));
+            }
+            body.extend_from_slice(&chunk);
+        }
+
+        String::from_utf8(body)
+            .map_err(|error| CoreError::other(format!("GET response body is not UTF-8: {error}")))
+    }
 }
 
 fn provider_error(status: u16, body: &str) -> CoreError {
@@ -336,7 +410,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "audit H-85: GET requests do not observe the transport timeout budget"]
     async fn audit_get_json_is_bounded_while_waiting_for_headers_and_body() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -437,6 +510,74 @@ mod tests {
             unbounded.is_empty(),
             "GET remained pending beyond the configured 50ms budget: {unbounded:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn get_json_cancelled_interrupts_stalled_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (body_started, body_ready) = oneshot::channel();
+        let (release, released) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let response = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{";
+            socket.write_all(response).await.unwrap();
+            body_started.send(()).unwrap();
+            released.await.unwrap();
+            let _ = socket.write_all(b"}").await;
+        });
+
+        let transport =
+            ReqwestTransport::with_client(reqwest::Client::builder().no_proxy().build().unwrap())
+                .with_timeouts(TransportTimeouts {
+                    connect: Duration::from_secs(1),
+                    first_byte: Duration::from_secs(1),
+                    idle: Duration::from_secs(2),
+                    total: Duration::from_secs(4),
+                });
+        let cancel = Arc::new(AtomicBool::new(false));
+        let request_cancel = cancel.clone();
+        let mut operation = tokio::spawn(async move {
+            transport
+                .get_json_cancelled(
+                    &format!("http://{address}/models"),
+                    "audit-placeholder",
+                    request_cancel,
+                )
+                .await
+        });
+        tokio::time::timeout(Duration::from_secs(2), body_ready)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cancel.store(true, Ordering::Release);
+
+        let result = tokio::time::timeout(Duration::from_millis(500), &mut operation)
+            .await
+            .expect("cancel-aware GET did not finish within 500ms")
+            .unwrap();
+        let error = result.expect_err("cancelled GET unexpectedly succeeded");
+        assert!(
+            error.to_string().contains("request cancelled"),
+            "unexpected cancellation error: {error:?}"
+        );
+        release.send(()).unwrap();
+        server.await.unwrap();
     }
 
     #[tokio::test]

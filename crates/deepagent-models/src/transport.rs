@@ -58,6 +58,23 @@ pub trait HttpTransport: Send + Sync {
             "this transport does not support GET requests",
         ))
     }
+
+    /// Cancel-aware variant for management requests such as model discovery
+    /// and balance lookup. Existing transports remain source-compatible: the
+    /// default checks an already-cancelled request and otherwise delegates to
+    /// [`Self::get_json`]. Real transports should override this method so an
+    /// in-flight header or body read can be interrupted as well.
+    async fn get_json_cancelled(
+        &self,
+        url: &str,
+        api_key: &str,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<String> {
+        if cancel.load(Ordering::Relaxed) {
+            return Err(CoreError::other("request cancelled"));
+        }
+        self.get_json(url, api_key).await
+    }
 }
 
 /// Receives decoded SSE payloads as they arrive.
