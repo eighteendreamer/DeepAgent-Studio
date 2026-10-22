@@ -471,4 +471,64 @@ mod audit_tests {
             "invalid JSON-RPC response must not authorize SDK calls: result={result:?}, initialized={initialized}"
         );
     }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: malformed server output must fail pending SDK calls"]
+    async fn audit_malformed_server_line_does_not_leave_request_pending() {
+        let marker = std::env::temp_dir().join(format!(
+            "deepagent-harness-sdk-audit-malformed-{}.marker",
+            std::process::id()
+        ));
+        let marker_literal = marker.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "$null = [Console]::In.ReadLine(); [Console]::Out.WriteLine('not-json'); [System.IO.File]::WriteAllText('{marker_literal}', 'ready'); Start-Sleep -Seconds 30"
+        );
+        let mut child = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a local malformed-response fixture");
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let (events, _) = broadcast::channel(1);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let client = HarnessClient {
+            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
+            next_id: Arc::new(AtomicI64::new(1)),
+            pending,
+            events,
+            initialized: Arc::new(Mutex::new(false)),
+        };
+
+        let request_client = client.clone();
+        let request =
+            tokio::spawn(async move { request_client.initialize("audit-fixture", "0.1.0").await });
+        let marker_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !marker.exists() && tokio::time::Instant::now() < marker_deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(marker.exists(), "fixture must emit malformed output");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let completed_before_eof = request.is_finished();
+        let pending_before_eof = client.pending.lock().unwrap().len();
+
+        let _ = child.kill().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+            .await
+            .expect("fixture should exit when terminated");
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), request)
+            .await
+            .expect("EOF should release the pending request");
+        let _ = std::fs::remove_file(marker);
+
+        assert!(
+            completed_before_eof && pending_before_eof == 0,
+            "malformed server output should fail the request before EOF: completed={completed_before_eof}, pending={pending_before_eof}"
+        );
+    }
 }
