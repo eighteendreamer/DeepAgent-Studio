@@ -47,6 +47,7 @@
 | 回退后检查点的分支归属 | 旧分支回退后其检查点仍参与新分支的序号查询；新分支仅回退纯文字尾部，文件却被成功恢复为旧分支内容 | 已确认 H-73；正常 Session/检查点/AppService 两次回退和临时磁盘复现，所有备份完整，无磁盘故障注入或真实桌面操作 |
 | 源事件与原生镜像之间的分支边界 | 以用户 MessageAppended 的 sequence 为保留点，正式 fork/rewind 成功且源消息存在，下一次 ChatService wire 却缺该消息；包含下一条镜像的对照正常 | 已确认 H-74；两个入口各两组、正式恢复及请求序列化离线复现；限定原始序号锚点，未宣称桌面默认最新位置分支同样触发 |
 | 运行中回退与迟到结果提交 | 模型请求已发出但回答未释放时，正式 rewind 成功删除本轮输入；旧回答随后仍写入回退后的历史，原运行成功终结 | 已确认 H-75；真实 ChatService/RunStore/Session/AppService 与可控离线 transport 双组复现，没有真实桌面点击、文件工具或公网请求 |
+| 普通文件工具的读取版本与覆盖保护 | 已读文件被外部保存后，write_file 仍凭旧缓存存在即成功覆盖；不改文件及外部改动后重读的对照正常 | 已确认 H-76；正式 ChatService/工具注册/流水线/真实临时文件及下一次 wire 结果复现，没有时间竞争或真实用户文件操作 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -1668,10 +1669,24 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：Claude Code `restored-src/src/screens/REPL.tsx` 的消息编辑快速恢复路径明确先 `onCancel()` 再 `handleRestoreMessage(raw)`，注释直接说明 `rewindConversationTo` 的 setMessages 会与 stream append 竞争。`onCancel()` 终结 query guard 并对本地请求调用 `abortController.abort('user-cancel')`；确认弹窗通过 `MessageSelector` 的 `onPreRestore={onCancel}` 在确认恢复时触发，而取消弹窗不触发。随后 rewind 切消息数组、更新 conversationId、重置 microcompact 等派生状态。已读取这些生产函数，没有运行参考项目；这支持“恢复操作必须协调活动查询”的设计，不能推论该参考已具备本系统所需的跨进程持久化事务或完整迟到结果栅栏。Codex 的有效 turn 截断边界见 H-74，不能将它等同于本轮已查明整个 thread 回退忙态政策。
 - 修复方向（尚未实施，本地设计）：在既有 AppCore/输入租约/RunCoordinator 统一管理同会话的破坏性控制操作，先选择明确的忙态拒绝或“取消并确认退出后回退”政策；控制操作与新输入接纳必须共用所有权边界，避免检查后再被新 turn 抢占。现有事件存储追加应校验运行绑定的分支身份/提交代次，回退后拒绝旧运行的迟到模型、工具和终态投影；运行审计仍保存在既有 RunStore/run_events，不能简单删除审计或只清空 UI。与 H-23/H-73 的派生状态分支身份一并收敛，保留正常顺序追加。回归覆盖请求中、工具/审批/排队中、完成竞争、取消失败及重启，检查真实日志/请求数/副作用与单终态；本轮仅增加证据，不修改生产实现。
 
+### H-76：文件写入只验证“曾经读过”，外部已保存的改动仍被旧内容成功覆盖
+
+**级别：高（P1）；范围：同一 ChatService 运行内通过 read_file 读取已有文件后，用户编辑器、格式化器或其他本地写入者保存该文件，随后模型使用旧版本调用 write_file 全量替换。** 不依赖多个 Agent 同时运行、保持文件长度/mtime 不变或低概率的写入瞬间竞争；本轮不是 H-52 的知识 vault 多实例去重与存储锁问题，也不是 H-35 的批量工具顺序问题。
+
+- 根因与生产路径：AppCore `tool_runtime.rs::build_base_tool_registry()` 经 register_builtins 装配生产文件工具，`file_tools()` 为 read_file/write_file/edit_file/multi_edit 共享 FileStateCache。read_file 保存完整内容、hash、mtime 和长度；但 `WriteFileTool::invoke()` 对已有文件只调用 `cache_has_been_read()`，最终只是 `FileStateCache::has_been_read()` 的 entries.contains_key。之后读取磁盘内容仅用于旧行数统计，没有与模型实际读取版本比较；atomic_write 只保证替换文件的写入方式，不提供版本冲突检查。ToolExecutionPipeline 执行检查点捕获、权限和正式工具调用，也没有把“此前读过”升级为“当前版本仍等于所读版本”。因此外部更新不会自动撤销写资格。虽然 EditFileTool/MultiEditTool 源码也使用该布尔入口，本节动态缺陷只确认 write_file，不把未执行的编辑样本当作已复现数据丢失。
+- 动态证据：新增 `tests/kernel_v2_e2e/file_version.rs`。临时 shared.txt 初始为 owner=audit-initial、value=old；真实 ChatService/ModelAgent 接收离线模型生成的 read_file 调用。第二次实际请求中的 function_call_output 必须含初始 owner，证明旧内容已经返回给模型。随后 transport fixture 作为外部编辑器执行真实 fs::write，保存更长且 owner 不同的新文件，并读取磁盘确认写入完成；该动作发生在模型发出 write_file 之前，不是延迟或并发概率注入。模型按旧内容提交整文件替换，只把 value 改为 new。生产 write_file 返回成功，下一次真实模型请求中包含其配对结果，正式 run_events 的 tool_completed.ok=true；最终磁盘 owner 恢复为 initial、外部 owner 消失，value=new，整个运行单 succeeded 终态。没有绕过生产 read cache 或直接伪造 ToolOutput。
+- 对照与执行：`cargo test -p deepagent-app-core --test kernel_v2_e2e file_version --offline -- --include-ignored --nocapture`：1 passed / 1 failed，测试体约 0.66s。正常测试分别执行无外部改动、外部改动后再调用正式 read_file 两组，均写入成功；后者实际新请求包含 external owner，最终保留 external owner 且 value=new。缺陷组 `external=true, refreshed=false, write_ok=true, external_owner_preserved=false, model_value_written=true`，安全断言“拒绝过期写且保留外部内容”失败。默认忽略探针记录待修缺陷，不把正常对照通过当作该缺陷已修。
+- 影响：外部工具或用户已保存的新内容可被模型基于旧版本的写操作覆盖，而系统仍向模型和运行日志报告成功。即使模型有“保留其他修改”的用户要求，仅依赖模型自行再次读取也不是可靠执行边界；对于 DeepSeek/Codex 等模型都会削弱编辑安全性。生产可能存在写前检查点，因此不将当前磁盘覆盖描述为所有备份也被永久销毁；本轮没有验收恢复此冲突文件、真实编辑器进程、真实桌面或公网模型，也未模拟文件写到一半、同 mtime/同长度或跨进程检查后写入竞争。
+- 成熟实现对照：Claude Code `FileWriteTool.ts::validateInput()` 使用 readFileState 和修改时间拒绝未读/过期读；实际 call 在异步 mkdir/fileHistoryTrackEdit 之后重新同步读取当前 metadata/content，修改时间较新或缺少读取状态时再核对完整读取内容，不一致抛 FILE_UNEXPECTEDLY_MODIFIED_ERROR。其源码明确要求从检查到 writeTextContent 之间不 await，避免本进程其他异步编辑插入；Windows 修改时间变化但完整内容相同时有内容比较以避免误报。`FileEditTool.ts::call()` 也保留相同读后版本校验及同步临界段。这里已阅读参考代码，没有运行其测试；不声称该 mtime 条件覆盖同时间戳内容变更，也不能将 Node 同步区段当作跨进程原子比较与交换。借鉴的是版本身份与写资格、执行时复查，而非复制工具文案。
+- 修复方向（尚未实施，本地设计）：在既有 FileStateCache/文件工具入口保留模型实际看见的版本，并在授权写入时核对当前内容身份；过期读明确返回冲突，保持磁盘内容，要求重新读取后生成操作。统一 write/edit/multi_edit 的版本语义，区分部分读取与允许替换的范围，明确工具成功写入后的新版本。现有原子替换还需与每路径操作所有权及外部变更检测配合，避免在异步检查与真正写入之间再次丢改动；跨进程事务约束为本地设计，不能声称仅加一个 mutex 即可解决所有写入者。复用既有检查点、权限和审计，不新增第二套文件工具。回归覆盖外部编辑/格式化、单文件工具之间交错、相同内容更新时间、部分读取、换行与编码、失败/取消、多个宿主及重启，并以实际磁盘和模型收到的结构化结果共同验收。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-76 文件版本显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_version --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.66s；不改文件及外部保存后重读均正常，过期读的 write_file 仍成功覆盖外部内容；真实临时磁盘/生产流水线/下一请求配对结果，transport 离线 |
+| H-76 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：17 passed / 16 ignored，约 1.85s；新增缺陷探针默认忽略，不能把该结果说成过期写已修复。fmt、diff 检查通过；本批未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
+| H-76 现有文件工具测试基线 | `cargo test -p deepagent-builtins --lib file_tools::tests --offline`：36 passed / 0 ignored，约 0.11s；含未读拒绝、已读可改、写后缓存失效及重复读取等，不代替本轮已显式失败的外部保存后过期覆盖场景 |
 | H-75 活跃 turn 回退显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e active_rewind --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.29s；回退已删除 user，释放响应后旧 answer 仍落盘，运行 succeeded/单终态；仅离线 transport 与临时会话文件 |
 | H-75 消息断言补强与共享入口基线 | 将内容存在检查限定为 MessageAppended/ResponseItemAppended，排除 task 等元数据后显式重跑仍为 1 passed / 1 failed，约 0.28s。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：16 passed / 15 ignored，约 1.59s；fmt、diff 检查通过。本批仅测试和报告，未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-74 源消息分支边界显式探针与对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e branch_boundary --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.66s；两入口 keep=5 丢目标消息、keep=6 保留，正式续聊均 Ok；transport 离线，不含真实供应商或桌面 UI |
@@ -2000,6 +2015,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 回退后的派生状态分支身份 | H-23、H-73 | 现有回退事实同时决定事件、检查点恢复资格和笔记覆盖；参考 Claude 的 messageId 快照与 Codex 的有效历史位置，持久化提交/补偿为本地设计 | 丢弃分支不覆盖新文件/摘要；保留前缀仍可回退；同序号替换、重启、fork、多次回退与失败重试可验证 |
 | 源事件与原生镜像的语义提交边界 | H-74 | 现有 Session/EventStore 关联逻辑消息与完整镜像组，分支/回退统一解析语义锚点；参考 Codex 按 turn/message 计算边界，原始 sequence 兼容为本地设计 | 保留的消息完整进入下一 wire；raw 锚点、旧日志、崩溃、附件/reasoning/工具和压缩不拆组，不在 UI 散落 +1 特判 |
 | 活跃运行与回退的提交所有权 | H-75 | 现有输入租约/RunCoordinator 与回退共用同会话所有权，明确拒绝或取消并等待；参考 Claude 恢复前 onCancel，持久化分支提交栅栏为本地设计 | 成功回退不再接收被丢弃 turn 的迟到回答；新接纳、排队、工具/审批、终态及重启保持一致，原审计不删除 |
+| 文件读取版本与后续修改资格 | H-76 | 现有 FileStateCache/文件工具统一已读版本、执行时冲突校验和实际写入；参考 Claude 的 stale read 拒绝与检查后不 await，跨进程提交约束为本地设计 | 过期写不覆盖外部改动，重读后正常修改；整文件/部分读取、write/edit/multi_edit、外部编辑与格式化、失败/取消和审计一致 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
