@@ -501,4 +501,53 @@ mod tests {
         }
         assert!(safe.into_iter().all(|value| value), "invalid attachment identities must not remove a bucket or a directory outside the attachment root");
     }
+
+    #[test]
+    #[ignore = "audit reproducer: attachment import must reject identities outside one attachment directory"]
+    fn audit_attachment_import_stays_inside_one_attachment() {
+        let mut safe = Vec::new();
+        for (label, bucket, id) in [
+            ("normal", "session-a", "first"),
+            ("dot-id", "session-a", "."),
+            ("parent-id", "session-a", ".."),
+            ("parent-bucket", "..", "unrelated"),
+        ] {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path().join("attachments");
+            fs::create_dir_all(root.join("session-a")).unwrap();
+            fs::create_dir_all(fixture.path().join("unrelated")).unwrap();
+            let target = root.join(bucket).join(id);
+            fs::create_dir_all(&target).unwrap();
+            // Verify the resolved destination before exercising production
+            // writes; every file involved belongs to this disposable fixture.
+            let resolved = target.canonicalize().unwrap();
+            let fixture_root = fixture.path().canonicalize().unwrap();
+            assert!(resolved.starts_with(&fixture_root));
+            assert_ne!(resolved, fixture_root);
+            let canary = resolved.join("canary.txt");
+            fs::write(&canary, "existing test-owned data").unwrap();
+
+            let result = AttachmentService::new(root.clone()).ingest(AttachmentIngestDto {
+                id: Some(id.to_string()),
+                session_id: Some(bucket.to_string()),
+                kind: "text".to_string(),
+                name: "canary.txt".to_string(),
+                mime: "text/plain".to_string(),
+                source: "paste".to_string(),
+                local_path: None,
+                data_url: None,
+                text: Some("new attachment content".to_string()),
+            });
+            let overwritten = fs::read_to_string(&canary).unwrap() == "new attachment content";
+            let metadata = resolved.join("metadata.json").is_file();
+            let outside_root = !resolved.starts_with(root.canonicalize().unwrap());
+            eprintln!("Attachment import audit: case={label} accepted={} overwritten={overwritten} metadata={metadata} outside_root={outside_root}",result.is_ok());
+            if label == "normal" {
+                assert!(result.is_ok() && overwritten && metadata && !outside_root);
+            } else {
+                safe.push(result.is_err() && !overwritten && !metadata);
+            }
+        }
+        assert!(safe.into_iter().all(|value| value), "invalid attachment identities must be rejected before writing to the bucket, attachment root or sibling directory");
+    }
 }

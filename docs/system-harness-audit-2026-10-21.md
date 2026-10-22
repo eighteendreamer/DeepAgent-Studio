@@ -29,7 +29,7 @@
 | 两协议思考模式映射 | 两协议三档中仅 Chat Simple 在请求前本地校验失败，Responses 三档与 Chat 另两档完成 | 已确认 H-55；公开 Chat adapter 的条件缺陷，默认生产组装仍为 Responses |
 | MCP 快照合并后的名称唯一性 | 两真实 stdio 服务独立 Ready 后，冲突工具名在每轮 ToolRegistry 注册才被拒绝，普通聊天没有发模型 | 已确认 H-56；正式宿主准备和 ChatService，未覆盖桌面错误展示 |
 | 能力目录和说明在后续无状态请求中的保留 | MCP 说明和技能目录均在首轮存在，第二轮完整 wire 中消失；新会话恢复，技能 reset 也恢复 | 已确认 H-57；正式 AppCore 连续运行与请求序列化，未覆盖重启/压缩和真实供应商 |
-| 附件删除的身份与路径边界 | 正式 remove 接受空/点号 ID，删除整个会话附件桶；父目录 session 组件删除 root 外兄弟目录 | 已确认 H-58；Windows 临时目录真实文件复现，未调用真实用户目录或桌面 IPC |
+| 附件导入/删除的身份与路径边界 | 正式 remove 接受空/点号 ID 删除整桶；ingest 接受点目录并覆盖上级文件；父目录 session 可使写入与删除越出 root | 已确认 H-58；Windows 临时目录真实文件复现，未调用真实用户目录或桌面 IPC |
 | 可选 WASM 工具的超时归属 | 成功调用遗留的 watchdog 增加共享 Engine epoch，使后续调用在自己的期限前中断 | 已确认 H-59；Windows 隔离子进程对照；默认未启用 wasm，不外推为普通桌面卡顿原因 |
 
 ## 阶段性架构判断（审计仍在进行）
@@ -1408,6 +1408,14 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应在现有 AttachmentService 建立单一有效身份解析，要求 id/session_bucket 为非空普通单组件，拒绝当前/父目录和 Windows 特殊路径形式；删除前确认精确附件归属，目标不得等于 session 或 root，也不得逃出拥有者目录。对 junction/符号链接及检查后替换需单独定义和验证；不通过简单禁止字符串里所有点号破坏合法文件名，也不再新增另一套附件存储。普通缺失附件可幂等，非法身份应有明确错误和诊断。
 - 本项使用 code-audit 的数据流/可达性/真实文件验证；未运行 Semgrep/CodeQL（本机未发现命令，未安装新依赖），不能据此宣称完成全仓库 SAST。只添加 cfg(test) 探针和报告，生产删除行为尚未修复。
 
+#### 补充验证：同一身份解析缺口也允许导入覆盖附件目录外文件
+
+- `AttachmentService::ingest` 同样把外部 id/session_id 经 sanitize_segment 后用于 storage_dir；`persist_original` 对该目录直接 fs::write/copy，随后写 extracted.txt 和 metadata.json。Tauri attachment_ingest 将 AttachmentIngestDto 直接交给服务；DTO 只声明字符串，没有拒绝点目录的反序列化校验。未启动桌面发送异常输入，也未证明远程站点有 IPC 权限。
+- 新增默认忽略探针 `audit_attachment_import_stays_inside_one_attachment`。四组独立 TempDir 均先创建附件 root、会话目录与兄弟 unrelated，并放置测试 canary；在调用生产 ingest 前 canonicalize 实际写入目录，确认始终在本 fixture 内且不等于 fixture 根。全程只覆盖测试创建的文本，不引用真实用户数据，不使用符号链接或 junction。
+- 执行 `cargo test -p deepagent-app-core --lib audit_attachment_import_stays_inside_one_attachment --offline -- --ignored --nocapture`：明确失败，约 0.04 秒。普通 session-a/first 对照按预期写入自己的附件目录；session-a/单点、session-a/双点、双点/unrelated 均返回成功、覆盖 canary 且写入 metadata.json。三组异常分别落在会话桶、整个附件 root 和 root 外兄弟目录，最后一组 outside_root=true。
+- 因而 H-58 的影响还包括覆盖可解析到的现有文件及向错误目录写入附件元数据。该项与前述删除共享同一身份验证根因，合并记录，不新增问题编号。修复必须在创建目录/写文件之前共用有效身份与精确归属解析；只限制 remove 不能关闭此缺口。空 id 在 ingest 中会生成新 ID，未把 remove 的空 id 行为套到 ingest；任意多级路径、系统文件、junction 和竞态均未验证。
+- 成熟实现对照沿用本节 Claude inboundAttachments：宿主 session 确定上传目录，经过清洗的不含点号的 prefix 与文件名拼接成最终单文件身份；本仓库 install_ledger 的 ParentDir 检查可提供组件级边界参考。它们与本系统的附件 DTO 结构不同，需在现有 AttachmentService 内按其真实存储契约设计和验证。
+
 ### H-59：WASM 调用完成后遗留的 watchdog 中断共享引擎上的后续调用
 
 **级别：中（P2，启用可选功能时影响执行正确性；本机 Windows trap 路径另有宿主退出风险）。** `deepagent-tools` / `deepagent-app-core` 的 `wasm` feature 默认关闭，当前桌面与 CLI manifest 未启用它；不能据此解释默认桌面聊天卡顿或取消。触发需共享同一 WasmSandbox、后续 guest 跨过旧 watchdog 的期限，且尚未被自己的 fuel/timeout 限制结束。
@@ -1424,6 +1432,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-58 附件导入异常身份显式探针（见补充命令） | 明确失败：三组异常均成功覆盖 canary 并写 metadata，分别落在会话桶、附件 root 及 root 外兄弟目录；正常对照成立 |
+| `cargo test -p deepagent-app-core --lib attachment_service::tests --offline`（导入补充时） | 4 passed / 2 ignored；导入本轮显式执行失败，删除此前已显式失败；同批 fmt 与 diff 检查通过 |
 | H-59 WASM 共享 watchdog 显式探针（见该节命令） | 明确失败；独立组有 2 秒/5.5 秒标记，共享组均无且更早退出；Windows 两组 trap 均异常退出，父测试进程正常保留证据 |
 | `cargo test -p deepagent-tools --features wasm --lib --offline` | 27 passed / 2 ignored；H-59 显式执行失败，另一个忽略项是既有 Windows fuel trap；同批 fmt 与 diff 检查通过 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（跨运行上下文验证补充时） | 12 passed / 10 ignored；新增跨两轮运行及数据库重开的上下文正向测试默认执行；忽略的缺陷探针不代表通过 |
@@ -1656,7 +1666,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
-| 附件存储身份与删除范围 | H-58 | 既有 AttachmentService 统一有效单组件身份、会话归属和精确附件删除；参考本仓库 ledger 组件验证及 Claude 宿主会话/UUID 文件身份 | 异常 id/session 拒绝；不删除桶/root/兄弟数据；正常幂等删除、junction/竞态和重开分别验证 |
+| 附件存储身份与写入/删除范围 | H-58 | 既有 AttachmentService 统一有效单组件身份、会话归属和精确附件读写/删除；参考本仓库 ledger 组件验证及 Claude 宿主会话/UUID 文件身份 | 异常 id/session 在写入前拒绝；不覆盖或删除桶/root/兄弟数据；正常导入/幂等删除、junction/竞态和重开分别验证 |
 | 定时任务的运行归属与交互能力 | H-37 | 现有 CronService → AppCore 接纳、审批和通知共用明确的 unattended 契约；参考 Claude 队列归属与 Codex headless 策略 | 需要人工时明确拒绝或投递到真实 owner；计划可关联运行，停止入口可发现；不能留下无消费者审批 |
 | 定时调度所有权与触发身份 | H-42 | workspace 调度 owner、主备接管和 occurrence→现有 RunStore 关联；参考 Claude 项目 scheduler lock 与 inFlight | 多宿主相同时段只有一个派发者；owner 失效可接管，已派发但结果未知的动作不盲目重试 |
 | 工作流工具能力与失败传播 | H-38 | 复用现有工具组装和 ToolPipeline，NodeOutcome 保留结构化失败并定义显式容错；参考 DeepSeek isError 保真及现有 DAG 依赖失败传播 | 只读工具能实际运行；未知工具/拒绝/执行失败不冒充成功；节点、下游及 RunStore 语义一致 |
