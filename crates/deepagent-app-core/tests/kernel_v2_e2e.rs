@@ -39,6 +39,9 @@ mod native_output_items;
 #[path = "kernel_v2_e2e/mcp_image_output.rs"]
 mod mcp_image_output;
 
+#[path = "kernel_v2_e2e/mcp_cancellation.rs"]
+mod mcp_cancellation;
+
 #[path = "kernel_v2_e2e/incomplete_reason.rs"]
 mod incomplete_reason;
 
