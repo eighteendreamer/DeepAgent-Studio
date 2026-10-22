@@ -52,6 +52,7 @@
 | 工作区物理路径与 Windows 目录联接 | WorkspaceWrite 下词法位于根目录的 junction 指向根外时，read_file 仍能读取外部临时文件并成功完成 | 已确认 H-78；Windows 临时 workspace/outside、真实 `mklink /J`、正式 ChatService/PathGuard/文件工具与下一 wire 复现，未接触用户目录 |
 | 文件发现与敏感读取名称策略 | read_file 被拒绝的 `.env` 仍通过 `glob("**")` 和 `list_dir` 返回文件名并进入下一实际请求；普通文件名仍可见 | 已确认 H-79；正式 ChatService/中央 hook/文件工具/序列化与普通文件对照，缺陷探针显式失败；仅临时 fixture，无真实凭据或公网传输 |
 | Responses 工具调用类型配对 | 公共 `ResponseRequest` 修复入口只按 call_id 选择已有 output；若外部传入同 call_id 的混合 native kind，错误类型仍进入下一次 wire | H-80 条件性确认；正常 Session 入口的 custom/function 配对对照通过，只有手工构造或未证实的坏历史才触发失败探针；未调用公网供应商 |
+| Responses 多文本 item 与增量去重 | 同一响应的两段完成文本被保留后，整次响应的增量全文又作为第三项加入；最终文本与重启续轮 wire 均重复 | 已确认 H-81；正式 ChatService/ModelClient/SSE 累加器/磁盘存储重开/下一 wire，单 item 对照正常；离线事件，无真实模型频率或计费结论 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -73,6 +74,7 @@
 - H-69 表明 token 容量不能替代媒体传输预算：两张均符合单图限制的图片在 base64 后已超过请求体上限，却仍进入发送边界。参考 Harness 的请求图像转换、Files/inline 预算及显式 offload，本系统需在既有 provider seam 单独校验字节/图片数量，不能仅提高 context window 或依赖 provider 拒绝。
 - H-70 进一步表明附件路径不是稳定内容身份：即使 metadata 已有导入哈希，请求时不校验仍可在相同历史引用下发送不同图片。DeepSeek Harness 将内容摘要作为 durable ref 并验证读取结果；本系统需把已有摘要接入持久化引用与读取边界，不能只在 UI 导入结果中显示哈希。
 - H-71 补充模型能力契约的另一断点：容量数字能够保留，但 input_modalities 被丢弃，正式客户端也未按目标模型限制图片。能力解析需同时供正常请求、模型切换、备用模型和附件准备使用；不能把 H-66 的搜索特判扩写成分散的模态特判，或仅以模型名称推测能力。
+- H-81 补充 Responses 实时增量与完成 item 的双源问题：同一响应含两个文本 item 时，已保存的两段又被整段 fallback 重复补入；最终回答、持久化和重开后的下一请求一致地保留重复内容。Codex 将 delta 用于活动 item 的流式展示、done item 用于完成处理；本系统需要按 item 身份确认哪些增量尚未由完成项覆盖，不能用整次全文与某一 item 的字符串相等替代归属判断。
 - 上下文占用已有正向证据：运行内工具循环、跨用户 turn 和数据库重开样本都保留完整历史，并区分 provider 输入锚点、下一请求投影和累计计费。DeepSeek Harness 的 token-meter 同样区分这些概念；其 UI 分项是启发式组成且不要求与 provider 投影相加一致，本系统的分项守恒属于自身实现选择，不能把它写成参考项目的共同保证。真实 tokenizer 误差和全部压缩/附件路径仍待验证。
 
 ### “能增强模型”的证据与尚未证明的部分
@@ -1730,6 +1732,17 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响：如果坏历史确实通过迁移、第三方调用或损坏回放进入 DeepSeek Responses 请求，供应商可能拒绝整个下一轮输入，导致会话续聊失败、工具结果无法被模型消费或恢复链路持续携带坏历史。当前证据只证明公共构造器会接受人为混型输入并生成错误 wire；不证明正常生产会话已产生该状态，也不证明 DeepSeek 在每种部署上返回的具体 HTTP 错误码，更不把它解释为 Codex 桌面出现的 `Continuation requires complete conversation input`。
 - 修复方向（尚未实施，本地设计）：repair 时为每个 call_id 保存 `Function`/`Custom` 类型，并在输出重建时强制生成匹配的 output variant；遇到同一 call_id 同时出现两种 call 类型时明确记录诊断并拒绝/选择可验证的首个类型，不能静默覆盖。恢复、snip、compaction 和旧事件迁移都应复用同一 invariant；在请求发送前增加无敏感内容的类型配对摘要和正式回归，复用现有 Responses seam，不新增第二套历史修复链。
 
+### H-81：Responses 多个完成文本 item 被整次 delta fallback 再追加一次
+
+**级别：中（P2）；触发条件：同一 Responses 响应生成至少两个非空 assistant message item，既有文本 delta，也有对应 `response.output_item.done`。** 单 message item 的对照正常。该接口使用列表承载输出，不限定为一个 message；本项没有统计真实 DeepSeek Flash/Pro 当前生成这种响应的频率，也不假设 OpenAI/Codex 特有的 phase 字段在 DeepSeek 上可用。
+
+- 根因与生产路径：`deepagent-models/src/stream.rs::ResponseAccumulator` 把所有 `response.output_text.delta` 写进一个全局 `content`，`record_output_item` 又逐项保存 done message。`finish()` 无条件为整个 content 构造一个 message fallback，再由 `response_item_already_present` 与单个已有 item 做字符串相等比较。两段不同文本都已完整保存时，拼接全文不等于任一段，因而被作为第三项追加。`Response::output_text_projection` 将三项再拼接，`ModelAgent` 同时把三项加入 Surface/待持久化队列；RuntimeEngine 使用正式 `Session::append_response_item` 全部落盘。错误发生在正常解析/组装，不需要篡改已存历史或制造不配对工具结果。
+- 可控复现：新增 `tests/kernel_v2_e2e/native_output_items.rs`，由底层离线 HttpTransport 提供完整 created、每个 item 的 added/content-part added/text delta/text done/content-part done/item done，以及带同一 output 列表与 usage 的 completed。各事件带唯一 sequence_number，item_id/output_index/content_index 对应；无缺终态、重复发送或手工修改会话事件。通过正式 ChatService→Kernel→ModelClient→ResponseAccumulator 先完成一轮，再释放全部原 ChatService/Database owner，从磁盘 `state.sqlite` 和既有文件会话存储重开，续聊时检查正式序列化 input。
+- 2026-10-22 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e native_output_items --offline -- --include-ignored --nocapture`：1 passed / 1 failed，测试体约 0.55s。单 item 内容 `AUDIT_FIRST|AUDIT_SECOND`：provider_items=1 / persisted_items=1 / resumed_wire_items=1，流式与最终均 24 字节。两 item 内容分别为 `AUDIT_FIRST|`、`AUDIT_SECOND`：provider_items=2 / persisted_items=3 / resumed_wire_items=3，流式 24 字节、最终 48 字节。第三项恰为两段拼接全文；重开后的实际 wire 与错误持久化三项完全一致。默认正常对照不依赖“错误仍存在”通过，缺陷探针独立 ignored 并已显式执行失败。
+- 一手契约与成熟实现：本轮通过 HTTP 实际读取 [DeepSeek Responses API](https://api-docs.deepseek.com/api/create-response/)，输出定义为 item 列表，message content 为 output_text parts，SSE 示例包含 item_id/output_index/content_index。参考 Codex `codex-api/src/sse/responses.rs::parses_items_and_completed` 明确测试两个 message done 后 completed；`process_responses_event` 分别发出 OutputItemDone 与 OutputTextDelta，`core/src/session/turn.rs` 用活动 item 的身份处理展示增量，并把完成 item 交给完成路径，不在终态用全部展示文字再造一个完成 message。fixture 只采用本系统已支持的公共 message/文本事件，不使用 Codex phase、加密内容或私有字段；未运行参考项目。
+- 影响：此样本已证明最终保存的回答比流式展示多一份全文，且重复内容随下一轮请求保留；会增加可见回答重复、上下文占用和后续推理中重复强调的风险。没有公网请求、真实费用、tokenizer 或 UI 截图证据，因此不能给出实际计费增量、所有响应必然翻倍或桌面重复绘制的发生率。会话恢复忠实保留了错误结果，并未修正它。
+- 修复方向（尚未实施，本地设计）：在既有 ResponseAccumulator 内按 provider item_id/output_index（及 content_index）持有增量归属；以完成 item 作为该项规范结果，只为确实缺少 done 的对应项补 fallback。不要直接禁用所有 fallback，已有 delta-only 兼容样本仍需要显式策略；也不能把全局 contains/字符串去重作为替代，否则相同文本的不同合法 item 会被误删。回归覆盖单/多 item、相同内容不同身份、工具/搜索穿插、流式展示与最终结果一致、截断/取消及持久化重开后的 wire，复用同一原生 Surface，不新增第二套历史。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1740,6 +1753,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-79 文件发现名称显式探针与普通文件对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_listing_policy --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.59s；read_file 被拒绝，glob/list_dir 均成功并将 `.env` 与 `visible.txt` 带入下一 wire；普通文件控制通过；仅临时 fixture 和离线 transport |
 | H-80 Responses 工具类型配对显式探针 | `cargo test -p deepagent-models --lib audit_repairs_mismatched_custom_output_kind_before_serialization --offline -- --include-ignored --nocapture`：0 passed / 1 failed，约 0.00s；人为混型输入的正式 ResponseRequest 序列化结果保留 `function_call_output`，未校正为 `custom_tool_call_output`；无公网调用 |
 | H-80 正常 Session 配对对照 | `cargo test -p deepagent-session --offline`：14 passed，测试体约 0.36s，包括 `native_custom_tool_completion_keeps_custom_pairing` 与 `appending_tool_trajectory_persists_responses_items`；本批 fmt、diff 检查通过；该对照不把公共边界探针解释成生产坏历史。未执行全 workspace、前端构建、真实 Tauri 或公网供应商验证 |
+| H-81 多文本 item 与磁盘恢复显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e native_output_items --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.55s；两个 provider item 变三个持久化/续轮 wire item，24 字节 delta 变 48 字节最终文本；单 item 对照通过，仅离线 provider fixture 与临时磁盘 |
+| H-81 单终态补强及共享集成基线 | 增加续聊的唯一 succeeded 终态断言后显式重跑仍 1 passed / 1 failed，约 0.43s；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：21 passed / 20 ignored，约 1.95s。fmt、diff 检查通过；本批仅测试与文档，没有全 workspace、Clippy、前端构建、真实 Tauri 或公网供应商验证；默认通过不代表忽略缺陷已修复 |
 | H-78 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：19 passed / 18 ignored，约 1.83s；非 ignored 物理路径权限对照通过，junction 缺陷探针另行显式失败；fmt、diff 检查通过，本批未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-76 文件版本显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_version --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.66s；不改文件及外部保存后重读均正常，过期读的 write_file 仍成功覆盖外部内容；真实临时磁盘/生产流水线/下一请求配对结果，transport 离线 |
 | H-76 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：17 passed / 16 ignored，约 1.85s；新增缺陷探针默认忽略，不能把该结果说成过期写已修复。fmt、diff 检查通过；本批未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
@@ -2077,6 +2092,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 物理路径解析与工作区隔离 | H-78 | WorkspaceRoot/PathGuard 解析真实父级/目标路径，文件工具和隐式搜索共用；参考 Claude 原始路径+realpath 检查，Codex 平台沙箱为独立对照 | WorkspaceWrite 不能跟随 junction 读取或写到根外；正常目录、悬空目标、FullAccess、平台差异和竞态语义可验证 |
 | 文件发现名称与读取策略 | H-79 | 现有 WorkspaceRoot/读取策略为 list_dir、glob、grep 提供统一候选可见性；参考 Claude 将 Read deny 转为 glob/grep 排除项 | 被拒绝文件的名称不进入下一 wire；普通文件仍可发现；默认/显式模式、物理路径、配置变更和恢复语义一致 |
 | Responses 工具调用与结果类型不变量 | H-80 | 现有 repair_tool_call_pairs 按 call_id 和原生 kind 共同配对；参考 Codex 分别验证 function/custom 两组并要求对称 | custom/function 结果类型不混用；旧事件、恢复、压缩和取消后的补结果都能在 wire 前明确拒绝或校正 |
+| Responses 增量与完成 item 的内容归属 | H-81 | 现有累加器按 item 身份拥有 delta/completed 状态；参考 Codex 活动 item 的展示增量与完成项提交分离 | 多文本 item 不额外追加全文；相同文本不同 item 不误删；流式、最终、Surface、重开后 wire 一致；兼容 fallback 只覆盖未完成对应项 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
