@@ -301,13 +301,18 @@ impl McpService {
         let result = if let Some(cancel) = &cancellation {
             tokio::select! {
                 _ = cancel.cancelled() => Err(CoreError::other("MCP preparation cancelled")),
-                result = tokio::time::timeout(Duration::from_secs(30), connect) =>
-                    result.unwrap_or_else(|_| Err(CoreError::other("MCP startup timed out after 30 seconds"))),
+                result = tokio::time::timeout(MCP_STARTUP_TIMEOUT, connect) =>
+                    result.unwrap_or_else(|_| Err(CoreError::other(format!("MCP startup timed out after {} seconds", MCP_STARTUP_TIMEOUT.as_secs())))),
             }
         } else {
-            tokio::time::timeout(Duration::from_secs(30), connect)
+            tokio::time::timeout(MCP_STARTUP_TIMEOUT, connect)
                 .await
-                .unwrap_or_else(|_| Err(CoreError::other("MCP startup timed out after 30 seconds")))
+                .unwrap_or_else(|_| {
+                    Err(CoreError::other(format!(
+                        "MCP startup timed out after {} seconds",
+                        MCP_STARTUP_TIMEOUT.as_secs()
+                    )))
+                })
         };
         let (registry, failures) = match &result {
             Ok(registry) => (registry.clone(), Vec::new()),

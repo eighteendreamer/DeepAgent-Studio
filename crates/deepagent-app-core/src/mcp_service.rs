@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
@@ -32,6 +33,8 @@ mod preparation;
 /// Document-store location for the MCP config.
 const MCP_COLLECTION: &str = "mcp";
 const MCP_ID: &str = "servers";
+pub(super) const MCP_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const MCP_PROBE_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Persisted MCP state: the server config map + per-server enabled flags.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -782,17 +785,6 @@ impl McpService {
         Ok((Arc::new(registry), failures))
     }
 
-    /// Connect a single server and perform the initialize handshake. Used by
-    /// one-shot probes (`test_server` / `connection_status`), which close the
-    /// connection immediately — no self-healing needed.
-    async fn connect_one(name: &str, cfg: &McpServerConfig) -> Result<Arc<McpClient>> {
-        let transport = connect_transport(cfg)?;
-        let client = Arc::new(McpClient::new(transport));
-        client.initialize("deepagent-studio").await?;
-        tracing::info!(server = name, "MCP server initialized");
-        Ok(client)
-    }
-
     /// Connect a single server for the long-lived run registry, wrapping the
     /// transport with bounded auto-reconnect (§5.2 MCP resilience, Grok
     /// `mcp_restart.rs` backoff): if the server crashes mid-run, a later tool
@@ -824,9 +816,18 @@ impl McpService {
     /// connection. Connection problems never error — they are captured as a
     /// `"failed"` status so the "test connection" button can render the reason.
     pub async fn test_server(&self, dto: McpServerDto) -> Result<McpConnectionStatusDto> {
+        self.test_server_with_timeout(dto, MCP_STARTUP_TIMEOUT)
+            .await
+    }
+
+    async fn test_server_with_timeout(
+        &self,
+        dto: McpServerDto,
+        startup_timeout: Duration,
+    ) -> Result<McpConnectionStatusDto> {
         let mut cfg = dto.to_config()?;
         cfg.expand_with(&|var| std::env::var(var).ok());
-        Ok(Self::probe(&dto.name, &cfg).await)
+        Ok(Self::probe_with_timeout(&dto.name, &cfg, startup_timeout).await)
     }
 
     /// Read the host-published status of every saved server. This call never
@@ -872,22 +873,55 @@ impl McpService {
     }
 
     /// Connect + `initialize` + `tools/list` one config, mapping any failure to
-    /// a `"failed"` status. The connection is closed before returning.
-    async fn probe(name: &str, cfg: &McpServerConfig) -> McpConnectionStatusDto {
+    /// a `"failed"` status. The startup deadline covers the entire handshake;
+    /// timeout and protocol failures close the temporary transport before return.
+    async fn probe_with_timeout(
+        name: &str,
+        cfg: &McpServerConfig,
+        startup_timeout: Duration,
+    ) -> McpConnectionStatusDto {
         let failed = |e: CoreError| McpConnectionStatusDto {
             name: name.to_string(),
             status: "failed".into(),
             error: Some(e.to_string()),
             tools: Vec::new(),
         };
-        let client = match Self::connect_one(name, cfg).await {
-            Ok(client) => client,
-            Err(e) => return failed(e),
+        let transport = match connect_transport(cfg) {
+            Ok(transport) => transport,
+            Err(error) => return failed(error),
         };
-        let result = client.list_tools().await;
-        let _ = client.close().await;
+        let client = Arc::new(McpClient::new(transport));
+        let handshake = async {
+            client.initialize("deepagent-studio").await?;
+            tracing::info!(server = name, "MCP server initialized for connection test");
+            client.list_tools().await
+        };
+        let result = tokio::time::timeout(startup_timeout, handshake).await;
+        let close_result = tokio::time::timeout(MCP_PROBE_SHUTDOWN_TIMEOUT, client.close()).await;
+        let close_error = match close_result {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(format!("MCP test transport shutdown failed: {error}")),
+            Err(_) => Some(format!(
+                "MCP test transport shutdown timed out after {} seconds",
+                MCP_PROBE_SHUTDOWN_TIMEOUT.as_secs()
+            )),
+        };
         match result {
-            Ok(defs) => McpConnectionStatusDto {
+            Err(_) => failed(CoreError::other(format!(
+                "MCP startup timed out after {} seconds{}",
+                startup_timeout.as_secs(),
+                close_error
+                    .map(|error| format!("; {error}"))
+                    .unwrap_or_default()
+            ))),
+            Ok(Err(error)) => failed(CoreError::other(match close_error {
+                Some(close_error) => format!("{error}; {close_error}"),
+                None => error.to_string(),
+            })),
+            Ok(Ok(_)) if close_error.is_some() => {
+                failed(CoreError::other(close_error.expect("checked above")))
+            }
+            Ok(Ok(defs)) => McpConnectionStatusDto {
                 name: name.to_string(),
                 status: "connected".into(),
                 error: None,
@@ -899,7 +933,6 @@ impl McpService {
                     })
                     .collect(),
             },
-            Err(e) => failed(e),
         }
     }
 }
@@ -1152,8 +1185,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: one-shot MCP connection tests must have a bounded startup deadline"]
-    async fn audit_test_server_is_bounded_while_stdio_initialize_is_pending() {
+    async fn test_server_deadlines_stdio_initialize() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("held-mcp-probe.cjs");
         let started = dir.path().join("initialize-started");
@@ -1199,7 +1231,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
             started.to_string_lossy().into_owned(),
             release.to_string_lossy().into_owned(),
         ];
-        let probe = tokio::spawn(async move { svc.test_server(dto).await });
+        let probe = tokio::spawn(async move {
+            svc.test_server_with_timeout(dto, Duration::from_secs(2))
+                .await
+        });
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !started.exists() {
@@ -1209,31 +1244,37 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         .await
         .expect("the real MCP child must receive initialize");
 
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let still_pending_after_250ms = !probe.is_finished();
-
-        // Always release and join the child before asserting so the expected
-        // failure cannot leave a fixture process behind.
-        std::fs::write(&release, "release").unwrap();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), probe)
+        let began = tokio::time::Instant::now();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(4), probe)
             .await
-            .expect("the released MCP probe must finish")
+            .expect("MCP probe must honor its startup deadline")
             .expect("MCP probe task must not panic")
             .unwrap();
+        let elapsed = began.elapsed();
 
         eprintln!(
-            "MCP one-shot probe audit: still_pending_after_250ms={still_pending_after_250ms}, final_status={}",
-            result.status
+            "MCP initialize deadline: elapsed_ms={}, status={}, error={:?}",
+            elapsed.as_millis(),
+            result.status,
+            result.error
         );
         assert!(
-            !still_pending_after_250ms,
-            "one-shot MCP test connection must stop waiting within its startup deadline"
+            result.status == "failed"
+                && result
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("MCP startup timed out")),
+            "initialize timeout must be surfaced as a failed connection test"
+        );
+        assert!(elapsed < Duration::from_secs(4));
+        assert!(
+            !release.exists(),
+            "the hung fixture was not manually released"
         );
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: one-shot MCP connection tests must bound tools/list"]
-    async fn audit_test_server_is_bounded_while_stdio_tools_list_is_pending() {
+    async fn test_server_deadlines_stdio_tools_list() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("held-mcp-tools-list.cjs");
         let started = dir.path().join("tools-list-started");
@@ -1279,7 +1320,10 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
             started.to_string_lossy().into_owned(),
             release.to_string_lossy().into_owned(),
         ];
-        let probe = tokio::spawn(async move { svc.test_server(dto).await });
+        let probe = tokio::spawn(async move {
+            svc.test_server_with_timeout(dto, Duration::from_secs(2))
+                .await
+        });
 
         tokio::time::timeout(std::time::Duration::from_secs(5), async {
             while !started.exists() {
@@ -1289,25 +1333,32 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         .await
         .expect("the real MCP child must receive tools/list after initialize");
 
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-        let still_pending_after_250ms = !probe.is_finished();
-
-        // Release and join before asserting, so the expected failure cannot
-        // leave the child process behind.
-        std::fs::write(&release, "release").unwrap();
-        let result = tokio::time::timeout(std::time::Duration::from_secs(5), probe)
+        let began = tokio::time::Instant::now();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(4), probe)
             .await
-            .expect("the released MCP probe must finish")
+            .expect("MCP probe must honor its startup deadline")
             .expect("MCP probe task must not panic")
             .unwrap();
+        let elapsed = began.elapsed();
 
         eprintln!(
-            "MCP tools/list audit: still_pending_after_250ms={still_pending_after_250ms}, final_status={}",
-            result.status
+            "MCP tools/list deadline: elapsed_ms={}, status={}, error={:?}",
+            elapsed.as_millis(),
+            result.status,
+            result.error
         );
         assert!(
-            !still_pending_after_250ms,
-            "one-shot MCP test connection must stop waiting for tools/list within its deadline"
+            result.status == "failed"
+                && result
+                    .error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("MCP startup timed out")),
+            "tools/list timeout must be surfaced as a failed connection test"
+        );
+        assert!(elapsed < Duration::from_secs(4));
+        assert!(
+            !release.exists(),
+            "the hung fixture was not manually released"
         );
     }
 
