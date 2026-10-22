@@ -1432,6 +1432,74 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-114: Notification hook payload must include its required notification type"]
+    async fn audit_background_subagent_notification_includes_required_fields() {
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let dir = tempfile::tempdir().unwrap();
+        let payload_path = dir.path().join("notification.json");
+        let quoted = payload_path.to_string_lossy().replace('\'', "''");
+        let definitions = HookDefinitions::parse(
+            &serde_json::json!({
+                "hooks": {
+                    "Notification": [{ "hooks": [{
+                        "type": "command", "shell": "powershell", "timeout": 5,
+                        "command": format!(
+                            "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted}', $payload)"
+                        )
+                    }] }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = HookRegistry::new();
+        assert_eq!(
+            definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+            1
+        );
+
+        let runner = audit_child_runner(dir.path(), Arc::new(AuditResumeTransport::default()));
+        assert!(runner.hooks.set(Arc::new(hooks)).is_ok());
+        let request = deepagent_builtins::SubagentRequest {
+            description: "audit background notification".into(),
+            prompt: "Return a short result".into(),
+            subagent_type: Some("review".into()),
+            allowed_tools: Vec::new(),
+            model: None,
+            effort: None,
+            skills: Vec::new(),
+            isolation: "shared".into(),
+            fork: false,
+            phase: None,
+            label: None,
+            schema: None,
+        };
+        let subagent_id = "sub_audit_notification";
+        assert!(runner.begin_tracking(subagent_id, &request, true).unwrap());
+        runner
+            .run_tracked(
+                subagent_id.to_string(),
+                request,
+                Some(Arc::new(AtomicBool::new(false))),
+                None,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(payload_path).unwrap()).unwrap();
+        eprintln!("Notification payload: {payload}");
+        assert!(
+            payload["message"].is_string() && payload["notification_type"].is_string(),
+            "Notification payload misses required schema fields: {payload}"
+        );
+    }
+
     #[derive(Default)]
     struct AuditPendingChildTransport {
         entered: tokio::sync::Notify,

@@ -2106,6 +2106,16 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响及限制：按文件路径或 add/change/unlink 类型处理的兼容 hook 无法通过字段校验，也不能区分创建、修改和删除。本探针动态覆盖创建；其它映射值由生产 `mutation_kind_label()` 代码确认，未逐个执行编辑和删除工具。
 - 收敛方向（尚未实施，本地设计）：在既有 `MutationKind` 到 hook DTO 的唯一边界映射标准字段和值，同时保留内部事件名；以真实 write/edit/delete pipeline 和 checkpoint evidence 验证 add/change/unlink，并覆盖失败、未变化和多路径工具。
 
+### H-114：后台子 Agent Notification hook 缺少必需的通知类别
+
+**级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `Notification` command hook，且后台子 Agent 完成并向父会话发布终态结果。** 未配置该 hook 时不影响子运行结果。
+
+- 根因与生产路径：`ChatSubagentRunner::run_tracked()` 在后台子 Agent 终态时以 `HookData::Notification { message }` 派发通知；当前类型和 `ExternalCommandHook::build_payload()` serializer 只支持 `message`，没有通知类别字段。
+- 动态复现：Windows ignored 探针 `subagent_runner::tests::audit_background_subagent_notification_includes_required_fields` 经正式 `ChatSubagentRunner::run_tracked()` 执行离线子 Agent，再由真实 PowerShell command hook 捕获 stdin。payload 为 `{"hook_event_name":"Notification","message":"background sub-agent … finished (succeeded): …","session_id":"…"}`；`message` 存在但 schema 必需的 `notification_type` 缺失，断言以 **0 passed / 1 failed** 退出。使用临时目录与离线 transport，无公网调用。
+- 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::NotificationHookInputSchema` 要求 `hook_event_name="Notification"`、`message` 和 `notification_type`，`title` 可选；`utils/hooks/hooks.ts` 还按 `notification_type` 进行 matcher 匹配。
+- 影响及限制：依赖 schema 校验或按通知类别筛选的兼容 hook 会拒绝该 payload，无法区分后台 Agent 完成等通知类型。本探针证明字段缺失，没有运行第三方 schema validator，也未验证 Claude 对 `notification_type` 的具体枚举约束；schema 将它定义为字符串。
+- 收敛方向（尚未实施，本地设计）：在现有 typed `HookData::Notification` 中定义通知类别来源，并由唯一 serializer 输出 `notification_type`；确认各通知调用方能提供稳定类别后，再覆盖后台子 Agent 成功、失败、取消及其它通知来源，避免从 message 文本推断类别。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2154,6 +2164,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-113 文件变更 hook payload 显式探针 | `cargo test -p deepagent-runtime --lib audit_file_changed_hook_payload_includes_required_fields --offline -- --ignored --nocapture`：0 passed / 1 failed；真实工具写入触发 hook，捕获 `path` / `change_kind=created`，缺 schema 要求的 `file_path` / `event=add` |
 | H-112 默认基线 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`：6 passed / 6 ignored；ignored 包含 H-109、H-112 和既有子 Agent 审计项 |
 | H-113 默认基线 | `cargo test -p deepagent-runtime --lib tool_pipeline::tests --offline`：11 passed / 5 ignored；ignored 包含 H-103、H-113 和既有审批审计项 |
+| H-114 后台子 Agent Notification payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_background_subagent_notification_includes_required_fields --offline -- --ignored --nocapture`：0 passed / 1 failed；真实 PowerShell hook 捕获正式后台子 Agent 的 Notification payload，缺少 schema 必需的 `notification_type`；离线模型 transport、临时目录，无公网 |
+| H-114 默认基线与格式检查 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`：6 passed / 7 ignored；ignored 包含 H-109、H-112、H-114 和既有子 Agent 审计项。`cargo fmt --all -- --check` 通过；本批仅增加 ignored 审计探针与报告，未修改生产行为、未跑 workspace 全量测试、Clippy、桌面构建或真实 Git worktree 子 Agent |
 | H-112/H-113 格式与差异检查 | `cargo fmt --all -- --check` 与 `git diff --check` 通过；本批仅增加 ignored 审计探针与报告，未修改生产行为、未跑 workspace 全量测试、Clippy、桌面构建或真实 Git worktree 子 Agent |
 | Responses `tool_search_call` 候选差异核查 | DeepSeek 官方请求 schema 不提供可触发该 item 的工具类型；AppCore `tool_search` 以普通 function schema 注册。`cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed；`cargo test -p deepagent-models --lib stream::tests --offline`：21 passed。未新增缺陷或测试，未调用公网 provider |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
