@@ -22,7 +22,7 @@
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
-| Harness SDK 关闭后的请求失败清理 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表 | 已确认 H-90；Windows 真实子进程管道夹具；未通过真实 CLI server 测试关闭交错 |
+| Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化 | 已确认 H-90、H-100；Windows 子进程夹具；未验证真实第三方 server 对该畸形响应的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -1958,6 +1958,17 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：当调用者期望该配置在 Chat 请求中生效时，系统实际不发字段且仍报告调用成功。当前响应类型也未证明能保留/暴露 token logprob 结果，因此本项不把“应当支持 logprobs”作为结论，只确认默认值被静默忽略。公开 Chat adapter 的生产使用频率和真实设置组合尚未验证。
 - 收敛方向（尚未实施，本地设计）：对 defaults 和 request 先经过同一协议能力校验。第一版若 Chat adapter 尚未支持 `logprobs` 请求与返回数据，就在发送前对 `top_logprobs` 默认值明确报不支持；完整支持时则成对设置 `logprobs=true` 和范围合法的 `top_logprobs`，并验证响应信息的保留。补充请求级拒绝、默认值拒绝及完整支持时的线级形状测试。
 
+### H-100：Harness SDK initialize 接受缺少 result/error 的 JSON-RPC response
+
+**级别：低（P3，条件性 SDK 协议校验缺陷）；触发条件：Harness SDK 连接的服务端对 initialize 请求返回一个 JSON-RPC response object，但同时省略 `result` 和 `error`。** 正常的本系统 CLI app-server 通过 `RpcResponse::success/error` 创建响应，本项不证明默认 CLI/Tauri 服务会发出畸形响应。
+
+- 根因与生产路径：协议 DTO 将 `RpcResponse.result` 和 `RpcResponse.error` 都表示为可选字段；`HarnessClient::call_unchecked()` 只在 `error` 存在时返回错误，否则返回 response。`initialize()` 收到该成功结果后直接设置共享 `initialized=true`。因此只含 `jsonrpc` 和 `id` 的非法 response 会被当作握手成功，后续 SDK 调用也会通过初始化门禁。
+- 动态复现：Windows ignored 探针 `client::audit_tests::audit_initialize_rejects_response_without_result_or_error` 使用本机 PowerShell 子进程和真实 stdin/stdout 管道返回 `{"jsonrpc":"2.0","id":1}`，再调用正式 `HarnessClient::initialize()`。实际为 `Ok(RpcResponse { jsonrpc: "2.0", id: Number(1), result: None, error: None })` 且 `initialized=true`；要求拒绝并保持未初始化的探针以 **0 passed / 1 failed** 退出。fixture 不启动真实 CLI server、第三方服务或公网供应商。
+- 协议依据（2026-10-22 核对）：[JSON-RPC 2.0 response object](https://www.jsonrpc.org/specification#response_object) 要求 response 包含 `result` 或 `error`，且必须恰好包含其中一个。成功响应必须带 `result`；错误响应必须带 `error`。
+- 成熟实现对照：Codex `codex-rs/app-server-protocol/src/rpc.rs` 将 `JSONRPCResponse.result` 定义为必需字段；其 remote initialize 路径会解析握手返回的数据再完成初始化。本系统 CLI 正常构造路径使用 `RpcResponse::success/error`，目前没有证据表明它会生成该非法 envelope。因此缺陷边界是 SDK 对不符合规范的外部/替代 server 响应校验不足，不外推为默认 Harness server 的常规运行故障。
+- 影响及限制：当服务端返回该畸形 envelope 时，SDK 会错误地报告初始化成功，随后请求可能继续发送并以超时或远端错误失败，令握手兼容性问题难以在边界处诊断。没有验证生产环境有服务端会返回此响应，也没有测得真实调用频率。
+- 收敛方向（尚未实施，本地设计）：在现有 RPC response 解码/校验边界拒绝同时缺失 `result` 与 `error`、或同时出现二者的 envelope，并确保 initialize 只在匹配请求 ID、协议版本及有效成功结果后标记已初始化。补充非法 envelope、错误 response、正常 initialize 和错配 ID 的 SDK 回归；复用单一 protocol DTO 与既有错误类型，不增加第二套协议层。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1983,6 +1994,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-97 scheduler shutdown 与在途 run 显式探针 | `cargo test -p deepagent-app-core --lib audit_scheduler_shutdown_leaves_started_cron_run_active --offline -- --ignored --nocapture`：1 passed，预期复现为 scheduler 已返回、run 未终结、模型取消未观察到；之后通过正式 run cancel 完成清理。真实 CronService/ChatService/RunStore、挂起型离线 transport；未关闭整个 Tauri/CLI 进程、未调用公网或工具 |
 | H-98 Chat JSON 输出请求级与默认值显式探针 | `cargo test -p deepagent-models audit_chat_json_object_format_reaches_provider_request --offline -- --ignored --nocapture`：0 passed / 1 failed，显式 `json_object` 在 transport 前被拒绝；`cargo test -p deepagent-models audit_chat_default_json_object_format_reaches_provider_request --offline -- --ignored --nocapture`：0 passed / 1 failed，正式 Chat 请求到达受控 transport，但 wire 未含 `response_format`。官方 DeepSeek Chat 文档核对支持 `text/json_object`；无公网调用，桌面默认 Responses 路径不在本项范围 |
 | H-99 Chat `top_logprobs` 默认值显式探针 | `cargo test -p deepagent-models audit_chat_top_logprobs_default_is_rejected_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed；配置 `top_logprobs=5` 后正式 Chat 运行使用合法离线响应完成，transport 被调用一次，证明配置默认未与请求级值共用不支持校验。官方文档要求 `logprobs=true`；无公网调用，桌面默认 Responses 路径不在本项范围 |
+| H-100 SDK initialize 畸形 response 显式探针 | `cargo test -p deepagent-harness-sdk --lib audit_initialize_rejects_response_without_result_or_error --offline -- --ignored --nocapture`：0 passed / 1 failed；实际 `result=None, error=None` 仍返回 Ok 并设置 `initialized=true`。Windows PowerShell 子进程和本地管道 fixture；未启动真实 CLI server、第三方 server 或公网 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
