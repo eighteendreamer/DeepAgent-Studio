@@ -96,3 +96,65 @@ fn audit_two_scheduler_processes_cannot_fire_the_same_occurrence() {
         "one occurrence was dispatched twice for recurring={duplicates:?}"
     );
 }
+
+#[cfg(windows)]
+#[test]
+#[ignore = "audit H-96: post-fire schedule bookkeeping failure must not replay the same occurrence"]
+fn audit_post_fire_bookkeeping_failure_replays_same_occurrence() {
+    let now = time::macros::datetime!(2026-10-21 12:00:00);
+
+    for recurring in [false, true] {
+        let directory = tempfile::tempdir().unwrap();
+        let scheduler = CronScheduler::for_workspace(directory.path());
+        let task = scheduler
+            .store()
+            .add(
+                "* * * * *".into(),
+                "audit post-fire bookkeeping only".into(),
+                recurring,
+                local_to_epoch_ms(now) - 120_000,
+            )
+            .unwrap();
+        let schedule_path = scheduler.store().path().to_path_buf();
+        let mut fire_count = 0;
+
+        let first_poll = scheduler.poll(now, |_| {
+            fire_count += 1;
+            let mut permissions = std::fs::metadata(&schedule_path).unwrap().permissions();
+            permissions.set_readonly(true);
+            std::fs::set_permissions(&schedule_path, permissions).unwrap();
+        });
+        assert!(
+            first_poll.is_err(),
+            "post-fire bookkeeping should fail for recurring={recurring}"
+        );
+        assert_eq!(fire_count, 1);
+        let pending = scheduler.store().read().unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, task.id);
+        assert_eq!(pending[0].last_fired_at, None);
+        drop(scheduler);
+
+        let mut permissions = std::fs::metadata(&schedule_path).unwrap().permissions();
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&schedule_path, permissions).unwrap();
+
+        let scheduler = CronScheduler::for_workspace(directory.path());
+        let retry = scheduler
+            .poll(now, |_| {
+                fire_count += 1;
+            })
+            .unwrap();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(fire_count, 2, "the same occurrence fired again");
+        if recurring {
+            assert_eq!(
+                scheduler.store().read().unwrap()[0].last_fired_at,
+                Some(local_to_epoch_ms(now))
+            );
+        } else {
+            assert!(scheduler.store().read().unwrap().is_empty());
+        }
+        eprintln!("recurring={recurring} fire_count={fire_count}");
+    }
+}

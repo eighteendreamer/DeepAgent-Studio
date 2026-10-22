@@ -24,7 +24,7 @@
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
 | Harness SDK 关闭后的请求失败清理 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表 | 已确认 H-90；Windows 真实子进程管道夹具；未通过真实 CLI server 测试关闭交错 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
-| 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
+| 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务，以及派发后记账失败导致重启重触发均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96；真实模型副作用、原子接纳与完整退出边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录 | 已确认 H-51；服务/工具级确定性交错，完整双会话桌面动态验证未执行 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
@@ -1906,6 +1906,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：错误分类被写入 `run_recovered_after_startup` 事件并返回 `RunRecoveryDto.interruption`。当前源码搜索没有发现该字段驱动续跑、模型请求或 run/task 终态；因此已证实影响是旧 run 的恢复原因诊断可能归错，不能据此声称会改变执行行为或用户可见 UI。终态写入和任务失败处理属于既有恢复路径，本探针不评估 H-44 的终态投影问题。
 - 收敛方向（尚未实施，本地设计）：在现有事件流中用明确的 run/task 身份确定各 turn 的分类范围；若需要把位于 `TaskCreated` 前的 user prompt 归属到 task，应由统一投影按现有 task/run 关系处理，不能简单截断后遗漏 prompt。补充同 session 多 run 的旧工具中断、新 prompt 中断、已完成旧 turn、无决定性事件，以及重放后身份稳定的测试；保留现有 RunStore、session event log 和恢复入口。
 
+### H-96：定时任务已派发但落账失败，重启后会再次派发且调度循环退出
+
+**级别：中（P2，条件性调度可靠性缺陷）；触发条件：桌面调度器发现到期任务并调用 fire 后，one-shot 删除或 recurring 的 `last_fired_at` 写入失败，之后应用重启。** 本项确认重复派发和 tick loop 退出；没有执行模型或工具副作用。
+
+- 根因与生产路径：桌面启动时创建 `CronService` 并启动 `run_tick_loop()`。其 fire callback 对每个任务立即 `tokio::spawn` `ChatService::run_in_session()`，然后返回。`CronScheduler::poll()` 在 callback 执行后才调用 `ScheduledTaskStore::remove()` 或 `mark_fired()`；若写入错误，due task 的持久状态仍在。`run_tick_loop()` 对 `poll()` 使用 `?`，因此错误会结束循环；Tauri 调用处只记录错误并结束该后台任务，没有重试 owner。应用重启重新读取未变化的 due 文件后会再次触发。
+- 动态复现：Windows ignored 探针 `crates/deepagent-runtime/tests/schedule_audit.rs::audit_post_fire_bookkeeping_failure_replays_same_occurrence` 让正式 poll 读取临时计划后，在 fire callback 中将计划文件设为只读，注入 callback 之后的持久化错误。one-shot 删除和 recurring 标记都失败，计划仍保持 due；释放权限并重建 `CronScheduler` 后，同一 `now` 再 poll，两个模式的 callback 计数都为 2。探针 **1 passed** 表示预期的重复已复现；callback 仅记录次数，没有执行 `ChatService`、模型、工具或公网请求，也没有重启桌面应用。
+- 成熟实现对照：Claude Code `utils/cronScheduler.ts` 用 `inFlight` 阻止异步文件删除/`lastFiredAt` 更新尚未完成时重复处理，并在 recurring 文件持久化之前先推进进程内 `nextFireAt`；失败会记录日志并清理 in-flight 状态。该机制提供进程内去重和明确错误路径，不证明跨重启 exactly-once；本系统需要额外定义 durable occurrence 与恢复语义。
+- 影响及限制：故障后当前桌面 cron tick loop 停止，直至应用重启；重启后 one-shot 仍在文件中、recurring 的 fire anchor 仍旧时，同一到期 occurrence 可重新创建会话并再次请求模型。具体费用、工具副作用和重复操作未在探针中发生或量化。该条件需要计划记账写入失败，不能外推为每轮计划都会重复。
+- 收敛方向（尚未实施，本地设计）：以稳定的 task+scheduled-time occurrence identity 接入现有 AppCore 接纳与 RunStore，区分待派发、已接纳、结果未知；同一 occurrence 的重放必须关联或发现既有 run，不能因计划文件写失败而盲目再建会话。计划文件与 SQLite 不能原子提交，必须明确崩溃窗口和人工/自动恢复策略，不宣称外部动作 exactly-once。tick owner 对可恢复 poll 错误要有有界重试和可观测状态；恢复策略需同时验证失败发生在 fire 前、接纳后及标记持久化后。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1926,6 +1936,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-94 Chat 连续 reasoning item 显式探针 | `cargo test -p deepagent-models audit_chat_projection_preserves_all_reasoning_items --offline -- --ignored --nocapture`：0 passed / 1 failed；输入 `first ` 与 `second`，输出仅含 `second`；仅 adapter/serializer 离线复现，无公网 provider 请求 |
 | H-95 同一 session 多 run 的恢复分类显式探针 | `cargo test -p deepagent-app-core --test recovery_terminal_audit audit_recovery_classifies_each_run_from_its_own_task_turn --offline -- --ignored --nocapture`：0 passed / 1 failed；旧 run 的 tool interruption 被分类为 `interrupted_prompt`，最新 run 的 `interrupted_prompt` 分类正确；正式 AppService/SQLite 内存数据库与 session projection，无真实进程崩溃或桌面验收 |
 | H-95 默认探针基线与检查 | `cargo test -p deepagent-app-core --test recovery_terminal_audit --offline`：0 passed / 2 ignored；两条均为显式审计探针，默认通过不代表问题已修复。`cargo fmt --all -- --check`、`git diff --check` 通过；本批未跑全 workspace、Clippy、桌面构建或真实 Tauri |
+| H-96 派发后记账失败/重启重放显式探针 | `cargo test -p deepagent-runtime --test schedule_audit audit_post_fire_bookkeeping_failure_replays_same_occurrence --offline -- --ignored --nocapture`：1 passed；one-shot 与 recurring 均在 callback 后触发存储错误，重建 scheduler 后 callback count=2。正式 `CronScheduler` 与 Windows 文件权限、临时 workspace；未执行 `ChatService`/模型/工具，也未启动真实桌面 |
+| H-96 默认探针基线与检查 | `cargo test -p deepagent-runtime --test schedule_audit --offline`：0 passed / 2 ignored；H-42/H-96 均是显式审计探针。`cargo fmt --all -- --check`、`git diff --check` 通过；本批未跑全 workspace、Clippy、桌面构建或真实 Tauri |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
@@ -2269,8 +2281,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 附件存储身份与写入/删除范围 | H-58 | 既有 AttachmentService 统一有效单组件身份、会话归属和精确附件读写/删除；参考本仓库 ledger 组件验证及 Claude 宿主会话/UUID 文件身份 | 异常 id/session 在写入前拒绝；不覆盖或删除桶/root/兄弟数据；正常导入/幂等删除、junction/竞态和重开分别验证 |
-| 定时任务的运行归属与交互能力 | H-37 | 现有 CronService → AppCore 接纳、审批和通知共用明确的 unattended 契约；参考 Claude 队列归属与 Codex headless 策略 | 需要人工时明确拒绝或投递到真实 owner；计划可关联运行，停止入口可发现；不能留下无消费者审批 |
-| 定时调度所有权与触发身份 | H-42 | workspace 调度 owner、主备接管和 occurrence→现有 RunStore 关联；参考 Claude 项目 scheduler lock 与 inFlight | 多宿主相同时段只有一个派发者；owner 失效可接管，已派发但结果未知的动作不盲目重试 |
+| 定时任务的运行归属与交互能力 | H-37、H-96 | 现有 CronService → AppCore 接纳、审批和通知共用明确的 unattended 契约；参考 Claude 队列归属与 Codex headless 策略 | 需要人工时明确拒绝或投递到真实 owner；计划可关联运行，停止入口可发现；不能留下无消费者审批；poll 故障后循环状态可见且可恢复 |
+| 定时调度所有权与触发身份 | H-42、H-96 | workspace 调度 owner、主备接管及稳定 occurrence→现有 RunStore 关联；参考 Claude 项目 scheduler lock 与 inFlight | 多宿主同一时段只派发一次；owner 失效可接管；已接纳 occurrence 重放时命中同一 run，结果未知时不盲目重试外部动作 |
 | 工作流工具能力与失败传播 | H-38 | 复用现有工具组装和 ToolPipeline，NodeOutcome 保留结构化失败并定义显式容错；参考 DeepSeek isError 保真及现有 DAG 依赖失败传播 | 只读工具能实际运行；未知工具/拒绝/执行失败不冒充成功；节点、下游及 RunStore 语义一致 |
 | 工作流条件可达性与派发 | H-39 | 在现有编译图/WorkflowAgent 统一激活边、跳过边和合流；参考 DeepSeek 程序式工作流只启动实际执行路径的工作 | 未选分支真实执行数为零，嵌套与公共后继正确，不把跳过分支的输出当作已有值 |
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
