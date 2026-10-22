@@ -8,6 +8,7 @@ use deepagent_runtime::InputAttachment;
 struct ImageAnswer {
     images_per_request: Arc<Mutex<Vec<usize>>>,
     request_bytes: Option<Arc<Mutex<Vec<usize>>>>,
+    image_hashes: Option<Arc<Mutex<Vec<Vec<String>>>>>,
 }
 
 #[async_trait]
@@ -33,6 +34,31 @@ impl HttpTransport for ImageAnswer {
             })
             .count();
         self.images_per_request.lock().unwrap().push(images);
+        if let Some(hashes) = &self.image_hashes {
+            use base64::Engine;
+            use sha2::{Digest, Sha256};
+            let current = body["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|item| item["content"].as_array())
+                .flatten()
+                .filter(|part| part["type"] == "input_image")
+                .map(|part| {
+                    let encoded = part["image_url"]
+                        .as_str()
+                        .unwrap()
+                        .split_once(',')
+                        .unwrap()
+                        .1;
+                    let bytes = base64::engine::general_purpose::STANDARD
+                        .decode(encoded)
+                        .unwrap();
+                    format!("{:x}", Sha256::digest(bytes))
+                })
+                .collect();
+            hashes.lock().unwrap().push(current);
+        }
         let item = serde_json::json!({
             "type": "message", "id": "audit-image-answer", "role": "assistant",
             "content": [{"type": "output_text", "text": "Offline image preparation audit."}],
@@ -75,13 +101,23 @@ async fn image_settings(db: Arc<Database>) -> Arc<SettingsService> {
 }
 
 async fn imported_image_across_turns(seed_plain_turn: bool) -> Vec<usize> {
-    observe_imported_image(seed_plain_turn, false).await.0
+    observe_imported_image(seed_plain_turn, ImageMutation::Keep)
+        .await
+        .0
+}
+
+enum ImageMutation {
+    Keep,
+    Remove,
+    #[cfg(feature = "runtimes")]
+    Replace(Vec<u8>),
 }
 
 async fn observe_imported_image(
     seed_plain_turn: bool,
-    remove_before_continuation: bool,
-) -> (Vec<usize>, bool) {
+    mutation: ImageMutation,
+) -> (Vec<usize>, bool, Vec<Vec<String>>, String) {
+    let remove_before_continuation = matches!(mutation, ImageMutation::Remove);
     let root = tempfile::tempdir().unwrap();
     let attachments = AttachmentService::new(root.path().join("attachments"));
     // A complete one-pixel PNG, imported through the desktop's production DTO.
@@ -109,12 +145,14 @@ async fn observe_imported_image(
     let db = Arc::new(Database::open_in_memory().unwrap());
     let settings = image_settings(db.clone()).await;
     let counts = Arc::new(Mutex::new(Vec::new()));
+    let hashes = Arc::new(Mutex::new(Vec::new()));
     let chat = ChatService::new(
         db.clone(),
         settings,
         Arc::new(ImageAnswer {
             images_per_request: counts.clone(),
             request_bytes: None,
+            image_hashes: Some(hashes.clone()),
         }),
         root.path(),
     );
@@ -177,11 +215,22 @@ async fn observe_imported_image(
             item: deepagent_core::response_item::ResponseItem::InputMessage { attachments, .. }
         } if attachments.iter().any(|attachment| attachment.id == imported.id)
     )).count();
-    if remove_before_continuation {
-        // Only remove this test's own imported temporary file, after the
-        // production session has durably accepted its attachment reference.
-        std::fs::remove_file(&path).unwrap();
+    match mutation {
+        ImageMutation::Keep => {}
+        ImageMutation::Remove => {
+            // Only mutate this test's own file, after durable admission.
+            std::fs::remove_file(&path).unwrap();
+        }
+        #[cfg(feature = "runtimes")]
+        ImageMutation::Replace(bytes) => {
+            std::fs::write(&path, bytes).unwrap();
+        }
     }
+    let metadata: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(path.parent().unwrap().join("metadata.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(metadata["sha256"].as_str(), imported.sha256.as_deref());
     let continuation = chat
         .run_in_session(
             "Refer to the previously attached image.",
@@ -221,12 +270,18 @@ async fn observe_imported_image(
         }
     }
     let counts = counts.lock().unwrap().clone();
-    if !remove_before_continuation {
+    if !remove_before_continuation && continuation_succeeded {
         assert!(continuation_succeeded);
         assert_eq!(counts.len(), if seed_plain_turn { 3 } else { 2 });
     }
     eprintln!("image-preparation seed_plain={seed_plain_turn} imported_ready=true bytes={} removed_before_continuation={remove_before_continuation} native_image_refs={native_images} wire_image_counts={counts:?} continuation_succeeded={continuation_succeeded}", imported.size_bytes);
-    (counts, continuation_succeeded)
+    let hashes = hashes.lock().unwrap().clone();
+    (
+        counts,
+        continuation_succeeded,
+        hashes,
+        imported.sha256.unwrap(),
+    )
 }
 
 #[tokio::test]
@@ -249,11 +304,11 @@ async fn audit_new_image_reaches_first_model_request() {
 #[tokio::test]
 #[ignore = "audit probe: a missing retained image must fail explicitly before sampling"]
 async fn audit_missing_retained_image_is_not_silently_dropped() {
-    let readable = observe_imported_image(false, false).await;
-    assert_eq!(readable, (vec![0, 1], true));
-    let missing = observe_imported_image(false, true).await;
+    let readable = observe_imported_image(false, ImageMutation::Keep).await;
+    assert_eq!((readable.0, readable.1), (vec![0, 1], true));
+    let missing = observe_imported_image(false, ImageMutation::Remove).await;
     assert_eq!(
-        missing,
+        (missing.0, missing.1),
         (vec![0], false),
         "a retained image that disappears must not become a successful text-only request"
     );
@@ -297,6 +352,7 @@ async fn large_image_request(image_count: usize, source: &std::path::Path) -> (V
         Arc::new(ImageAnswer {
             images_per_request: counts.clone(),
             request_bytes: Some(sizes.clone()),
+            image_hashes: None,
         }),
         root.path(),
     );
@@ -380,5 +436,36 @@ async fn audit_multi_image_request_respects_inline_body_budget() {
     assert!(
         two.0.iter().all(|bytes| *bytes <= 48 * 1024 * 1024),
         "an over-budget inline body reached the model transport"
+    );
+}
+
+#[cfg(feature = "runtimes")]
+#[tokio::test]
+#[ignore = "audit probe: retained image identity must not silently change with file bytes"]
+async fn audit_retained_image_verifies_ingested_digest() {
+    use image::ImageEncoder;
+    use sha2::{Digest, Sha256};
+
+    let readable = observe_imported_image(false, ImageMutation::Keep).await;
+    assert!(readable.1);
+    assert_eq!(readable.2[1], vec![readable.3]);
+    let mut replacement = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut replacement)
+        .write_image(&[255, 0, 0, 255], 1, 1, image::ExtendedColorType::Rgba8)
+        .unwrap();
+    let decoded = image::load_from_memory(&replacement).unwrap().to_rgba8();
+    assert_eq!(decoded.get_pixel(0, 0).0, [255, 0, 0, 255]);
+    let replacement_digest = format!("{:x}", Sha256::digest(&replacement));
+    let changed = observe_imported_image(false, ImageMutation::Replace(replacement)).await;
+    assert_ne!(changed.3, replacement_digest);
+    let replacement_sent = changed
+        .2
+        .iter()
+        .flatten()
+        .any(|hash| hash == &replacement_digest);
+    eprintln!("image-integrity metadata_still_original=true replacement_sent={replacement_sent} continuation_succeeded={}", changed.1);
+    assert!(
+        !replacement_sent,
+        "the original persisted attachment identity was reused to send different image bytes"
     );
 }
