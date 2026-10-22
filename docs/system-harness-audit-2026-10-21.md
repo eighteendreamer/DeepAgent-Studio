@@ -42,6 +42,7 @@
 | 历史图片读取失败的语义 | 相同初始图片在续聊中可正常携带；临时原图丢失后，同一路径静默发送纯文字且运行成功，调用方未收到附件错误 | 已确认 H-68；正式 AppCore/Kernel/文件解析/序列化两组对照，只删除测试自己导入的临时文件，未验证真实桌面提示及其他文件故障 |
 | 多图请求的字节预算 | 两张各约 20 MiB 的合法 PNG 均通过导入和单图限制，续聊实际序列化出 55,977,624 字节请求，超过官方 48 MiB 上限仍交给 transport | 已确认 H-69；真实图片解码、AppCore/Kernel/序列化单图与双图对照，未向公网发送超限图片或验证供应商错误码 |
 | 历史附件的内容身份 | 导入时已计算并记录 SHA-256；原图文件被另一张合法 PNG 替换后，同一事件附件 ID 在续聊中发送新字节，旧 metadata 未变且运行成功 | 已确认 H-70；真实导入、文件替换、解码、正式续聊和 wire 字节哈希对照，仅操作测试临时文件，未证明非授权写入能力 |
+| 发现能力与请求输入模态 | 官方形状的 input_modalities 在发现/目录恢复中丢失，声明仅文字的 Pro 仍经正式客户端发送 input_image；Flash 图片和 Pro 文字对照正常 | 已确认 H-71；ModelDiscovery/目录 serde/ModelClient/实际序列化离线复现，不含完整 AppCore 图片装配或真实供应商错误 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -62,6 +63,7 @@
 - H-68 是另一处附件语义缺口：即使图片已经能从历史恢复，读取失败仍被 Option 映射成正常纯文字请求，运行可成功。附件恢复、请求准备和错误通知必须区分“没有图片”与“应有图片但不可读”；修复当前输入的归属并不能自动修复这条降级路径。
 - H-69 表明 token 容量不能替代媒体传输预算：两张均符合单图限制的图片在 base64 后已超过请求体上限，却仍进入发送边界。参考 Harness 的请求图像转换、Files/inline 预算及显式 offload，本系统需在既有 provider seam 单独校验字节/图片数量，不能仅提高 context window 或依赖 provider 拒绝。
 - H-70 进一步表明附件路径不是稳定内容身份：即使 metadata 已有导入哈希，请求时不校验仍可在相同历史引用下发送不同图片。DeepSeek Harness 将内容摘要作为 durable ref 并验证读取结果；本系统需把已有摘要接入持久化引用与读取边界，不能只在 UI 导入结果中显示哈希。
+- H-71 补充模型能力契约的另一断点：容量数字能够保留，但 input_modalities 被丢弃，正式客户端也未按目标模型限制图片。能力解析需同时供正常请求、模型切换、备用模型和附件准备使用；不能把 H-66 的搜索特判扩写成分散的模态特判，或仅以模型名称推测能力。
 - 上下文占用已有正向证据：运行内工具循环、跨用户 turn 和数据库重开样本都保留完整历史，并区分 provider 输入锚点、下一请求投影和累计计费。DeepSeek Harness 的 token-meter 同样区分这些概念；其 UI 分项是启发式组成且不要求与 provider 投影相加一致，本系统的分项守恒属于自身实现选择，不能把它写成参考项目的共同保证。真实 tokenizer 误差和全部压缩/附件路径仍待验证。
 
 ### “能增强模型”的证据与尚未证明的部分
@@ -1603,10 +1605,24 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：DeepSeek Harness `attachment-local/src/store.ts::readImageFile()` 从 `sha256:...` 引用取得期望摘要，读取后比较 digest，并核对 mediaType/bytes/width/height；不匹配抛 `ATTACHMENT_CORRUPT`。相同文件的不同编码/尺寸请求版本由 `readImageRequest()` 在受控转换中派生，不能将任意路径变化视为合法转换。本轮只源码对照，未运行参考测试。
 - 修复方向（尚未实施，本地设计）：复用现有附件存储和导入摘要，将稳定内容身份带入既有持久化引用或可核对的元数据解析边界；读取请求原图时校验身份，不一致时显式失败并保留源事件。受控重新编码应有明确派生关系，合法更新以新资产/新消息接纳，不能静默借用旧 ID。旧历史缺少摘要时需显式兼容/迁移策略，不能伪造已经验证；覆盖正常、缺失、损坏、合法替换、旧记录、重启和取消，并检查实际发送字节与单终态。
 
+### H-71：发现目录丢弃官方输入模态，文字模型仍收到原生图片请求
+
+**级别：中（P2）；范围：已发现的模型明确不支持 image，却构造了含图片的原生 Responses 请求。** 动态验证集中在模型发现/目录恢复/provider seam，不把它扩大为所有默认 Flash 图片都失败，也不声称完整桌面必定到达相同分支；H-67 的当前图片装配缺陷可能先阻止图片进入请求。
+
+- 官方依据：2026-10-22 实际打开 [Lists Models](https://api-docs.deepseek.com/api/list-models/)，其 input_modalities 表示模型可接受的输入类型，示例 Flash 为 `[text,image]`、deepseek-v4-pro 为 `[text]`。本项使用这些公开字段构造离线 fixture，不把模型身份或能力从本地名字猜出；没有查询用户账号的实时 model 列表。
+- 生产链：`discovery.rs::ModelInfo` 仅保留 id/object/owned_by/context_window/max_output_tokens，serde 忽略未知 input_modalities；持久化的 ModelCatalog 无法恢复该字段。`ModelConfig::from_catalog()` 生成的 ModelCapability 也无模态字段；`ModelClient::stream_response_observed_cancelled()` 在 defaults/序列化后直接调用 transport，没有根据目标模型检查原生 input_image。容量 metadata 数字确实保留，不可把本项说成整个官方元数据均丢失。
+- 动态证据：新增 `deepagent-models/tests/modalities_audit.rs`，使用正式 ModelDiscovery 解析公开两模型目录，再实际序列化/恢复 ModelCatalog 并构造正式 ModelClient。三个请求经过同一 cancel-aware Responses 入口、真实请求序列化和离线 transport：Flash+图片发送 1 张图且客户端完成；Pro+纯文字发送 0 图且完成；Pro+图片也发送 1 张图且完成。三组解析后的 context_window 均严格等于 1,048,576，input_modalities 是否保留则均为 false。图片为已经验证过的合法 1×1 PNG data URL，在 provider seam 显式提供已解析内容，不经过 H-67 的缺图路径；不能把此夹具称为真实桌面上传验收。
+- 执行 `cargo test -p deepagent-models --test modalities_audit --offline -- --include-ignored --nocapture`：1 passed / 1 failed，测试体小于 0.01s；失败探针 `audit_declared_input_modalities_constrain_requests` 明确观察 `modalities_retained=false transport_requests=[(deepseek-v4-pro,1)] accepted=true`。这里 accepted 仅表示本地客户端收到离线回答后返回 Ok，不表示实际供应商接受不受支持的图片。
+- 影响：用户切换至不支持图片的模型，或运行选择这类备用模型时，有效历史图片可能形成与 provider 模态契约不符的请求；模型目录也不足以驱动准确的 UI 提示与请求路由。实际确认的是正式客户端边界缺失，未测试真实 HTTP 状态、UI 行为、自动 fallback、供应商计费或全部其他模型。不以这项推断 DeepSeek 官方当前不支持图片，Flash 支持图片已有公开依据和正向对照。
+- 成熟实现对照：DeepSeek Harness `llm-deepseek/src/images.ts::prepareImages()` 从连接的 model entry 读取 inputModalities；有图但模型未声明 image 或 attachment service 不可用时，在读图/序列化/fetch 前抛 UNSUPPORTED_CONTENT，随后才准备图片。该参考使用 Messages 适配，借鉴的是按有效模型能力检查输入，不能照搬其协议字段或断言参考的所有模型切换路径已验收。本轮未运行其测试。
+- 修复方向（尚未实施，本地设计）：扩展既有发现/能力解析边界保留公开输入模态并保持旧目录可读；在 provider 请求准备时按本次有效模型检查整份原生输入，工具输出图片等形态也应归同一检查。明确“不支持”和“未知”的政策，选择显式错误、用户确认的文字投影或具备能力的路由；不得静默去图或仅修改 UI。切模型/fallback/子运行共用该能力快照，回归涵盖发现、序列化恢复、旧目录、图片/文字对照和真实发送计数，不新增第二套模型注册表。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-71 模型输入模态显式探针及对照（见该节命令） | 1 passed / 1 failed，测试体 <0.01s；Flash 图片、Pro 文字对照完成，Pro 图片也到达 transport，目录未保留 input_modalities；无公网调用或完整桌面图片测试 |
+| H-71 模型 crate 默认基线 | `cargo test -p deepagent-models --offline`：单元测试 81 passed / 2 ignored，新增集成测试 1 passed / 1 ignored；fmt、diff 检查通过。缺陷探针已另行显式执行失败；未运行全 workspace、Clippy、前端构建、完整 AppCore 图片路由或公网供应商测试，本批仅审计测试与文档 |
 | H-70 历史图片内容身份显式探针（见该节命令） | 约 0.69s 明确失败；正常 wire 摘要等于导入值，替换组 metadata 保持原值但 wire 含替换 PNG 的摘要且续聊成功；仅改测试临时图片，无公网调用 |
 | H-70 共享入口与条件编译基线 | runtimes feature 下 `cargo test -p deepagent-app-core --features runtimes --test kernel_v2_e2e --offline`：14 passed / 15 ignored，约 1.80s；默认同入口 14 passed / 13 ignored，约 1.76s；fmt、diff 检查通过。未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网视觉请求；本批只补审计测试与文档 |
 | H-69 多图 inline 请求体显式探针（见该节命令） | 约 4.51s 明确失败；单图 28,009,830 字节，双图 55,977,624 字节并含全部两图，均到达离线 transport；本地合法 PNG 解码通过，未发公网请求 |
@@ -1919,6 +1935,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 附件请求准备的失败语义 | H-68 | 既有 AttachmentDataResolver 区分不适用与读取失败，并在采样前保留结构化错误；参考 DeepSeek Harness 的附件错误和 await 准备链 | 正常图可用；丢失/权限/空文件/超限有明确结果；不静默删除模型图片；恢复、取消、单终态及实际请求数可验证 |
 | 多图路由的传输预算 | H-69 | 复用附件/provider seam，独立控制请求图像编码、inline/Files 字节及数量；参考 Harness 的请求版本和显式 offload，完整 JSON 边界为本地设计 | 合法单图可发；多图和文字/schema 累积不交出超限 body；重试/备用模型、取消、恢复及 Files 降级可验证 |
 | 历史附件的内容身份 | H-70 | 复用导入摘要与附件存储，把期望身份贯穿引用与请求读取；参考 Harness 的 digest/metadata 校验，旧记录迁移为本地设计 | 正常读取身份一致；合法替换/损坏不借旧 ID 发送；受控转换可追踪；旧会话、重启、取消、实际字节和单终态可验证 |
+| 发现能力与输入模态 | H-71 | 既有 ModelInfo/ModelCapability/provider seam 共用本次有效模型的模态声明；参考 Harness 在准备图片前检查 model inputModalities | 目录/恢复保留能力；文字模型不交出图片请求；未知能力、切模型/fallback/子运行、旧目录和真实请求计数可验证 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
