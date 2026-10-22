@@ -30,6 +30,7 @@
 | MCP 快照合并后的名称唯一性 | 两真实 stdio 服务独立 Ready 后，冲突工具名在每轮 ToolRegistry 注册才被拒绝，普通聊天没有发模型 | 已确认 H-56；正式宿主准备和 ChatService，未覆盖桌面错误展示 |
 | 能力目录和说明在后续无状态请求中的保留 | MCP 说明和技能目录均在首轮存在，第二轮完整 wire 中消失；新会话恢复，技能 reset 也恢复 | 已确认 H-57；正式 AppCore 连续运行与请求序列化，未覆盖重启/压缩和真实供应商 |
 | 附件删除的身份与路径边界 | 正式 remove 接受空/点号 ID，删除整个会话附件桶；父目录 session 组件删除 root 外兄弟目录 | 已确认 H-58；Windows 临时目录真实文件复现，未调用真实用户目录或桌面 IPC |
+| 可选 WASM 工具的超时归属 | 成功调用遗留的 watchdog 增加共享 Engine epoch，使后续调用在自己的期限前中断 | 已确认 H-59；Windows 隔离子进程对照；默认未启用 wasm，不外推为普通桌面卡顿原因 |
 
 ## 实测基线：Windows 桌面与真实 DeepSeek
 
@@ -1371,10 +1372,24 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应在现有 AttachmentService 建立单一有效身份解析，要求 id/session_bucket 为非空普通单组件，拒绝当前/父目录和 Windows 特殊路径形式；删除前确认精确附件归属，目标不得等于 session 或 root，也不得逃出拥有者目录。对 junction/符号链接及检查后替换需单独定义和验证；不通过简单禁止字符串里所有点号破坏合法文件名，也不再新增另一套附件存储。普通缺失附件可幂等，非法身份应有明确错误和诊断。
 - 本项使用 code-audit 的数据流/可达性/真实文件验证；未运行 Semgrep/CodeQL（本机未发现命令，未安装新依赖），不能据此宣称完成全仓库 SAST。只添加 cfg(test) 探针和报告，生产删除行为尚未修复。
 
+### H-59：WASM 调用完成后遗留的 watchdog 中断共享引擎上的后续调用
+
+**级别：中（P2，启用可选功能时影响执行正确性；本机 Windows trap 路径另有宿主退出风险）。** `deepagent-tools` / `deepagent-app-core` 的 `wasm` feature 默认关闭，当前桌面与 CLI manifest 未启用它；不能据此解释默认桌面聊天卡顿或取消。触发需共享同一 WasmSandbox、后续 guest 跨过旧 watchdog 的期限，且尚未被自己的 fuel/timeout 限制结束。
+
+- 生产路径：`deepagent-app-core/src/wasm_tools.rs::register_wasm_tools` 为发现的工具共享一个 WasmSandbox；`SandboxedTool::invoke` 在 blocking 任务中调用正式 `run_json`。`deepagent-tools/src/wasm.rs` 每次创建新 Store，却都设置 `set_epoch_deadline(1)`，再启动独立线程 sleep 后 `engine.increment_epoch()`；成功返回仅 drop JoinHandle，使旧线程继续运行。后续 Store 的一跳期限会被前一个调用的线程满足；并发调用也有相同的共享时钟风险，但本轮只动态验证顺序调用。
+- 直接 API 依据为本地 Cargo.lock 锁定的 Wasmtime 27.0.0 源码：`runtime/store.rs::set_epoch_deadline` 的 tick 相对同 Engine 的当前 epoch，默认到期 trap；`engine.rs::increment_epoch` 增加 Engine 内的单一 AtomicU64。已联网核对上游同版本 [Store 源码](https://raw.githubusercontent.com/bytecodealliance/wasmtime/v27.0.0/crates/wasmtime/src/runtime/store.rs) 与 [Engine 源码](https://raw.githubusercontent.com/bytecodealliance/wasmtime/v27.0.0/crates/wasmtime/src/engine.rs)。最新在线 API 文档为 51 开发版，未拿它替代本仓库 27 版本证据。
+- 默认忽略探针 `wasm::tests::audit_completed_call_watchdog_does_not_interrupt_next_call`：先正式执行 echo，设置 1 秒 timeout 并确认成功；随后正式执行无限循环 guest，给足 fuel 并设置 6 秒 timeout。对照使用独立 Engine，实验使用同一 Engine。两组都在测试可执行文件的独立子进程执行，父进程设 12 秒外层上限并回收子进程；不向 guest 开放 host import，也不修改生产超时机制。
+- 执行 `cargo test -p deepagent-tools --features wasm --lib audit_completed_call_watchdog_does_not_interrupt_next_call --offline -- --ignored --nocapture` 明确失败。补充进程内存活标记后：独立引擎组打印 2 秒与 5.5 秒标记，退出观察耗时 8,952ms；共享组两个标记均未出现，退出观察耗时 3,905ms。两子进程均为 `0xc0000409`，没有正常返回 typed timeout；这是与既有 fuel trap 测试 ignore 说明一致的本机 Windows trap 退出行为。结合短 watchdog、共享 epoch 源码与引擎对照，确认后续调用被提前中断；退出观察耗时包含崩溃处理，存活标记也受线程调度影响，均不冒充 guest 精确 trap 时刻。此前未加标记的第一次探针同样失败（9,037ms 对 3,766ms），没有以默认忽略测试的绿结果宣称修复。
+- 后果：正常共享工具可能得到属于旧调用的提前超时；在本机 trap 异常环境还会提前终结承载进程。当前生产注册使用默认 policy，探针显式扩大 fuel 以隔离 epoch 原因，没有证明默认 fuel 下任意 guest 都能触发，亦未验证 Linux/macOS 或真实桌面启用该 feature。
+- 成熟实现对照：Claude Code `utils/combinedAbortSignal.ts::createCombinedAbortSignal` 把 timer 放在调用局部 controller 内，并在 cleanup 清除；`utils/hooks/execHttpHook.ts` 成功和失败均 cleanup。Codex `core/src/exec.rs::ExecExpiration::wait_with_outcome` 与执行 select 把 timeout future 绑定本次 child wait。它们不是同构 Wasmtime 实现；借鉴的是完成时回收局部定时工作、不同调用互不取消。WASM 的直接实现依据来自上游 API，不宣称成熟 Agent 已采用本仓库相同后端。
+- 修复方向（尚未实施）：在既有 WasmSandbox 内统一 epoch 时钟与每 Store 的真实截止时间，可参考上游 Store deadline callback 按该 Store 的 deadline 决定继续或 trap；共享 Engine 的 tick 不应由任意一个调用独占解释为“自身超时”。回收调用局部工作，不能只在成功路径加取消而遗漏并发 Store、错误返回或取消路径。另需独立验证 Windows trap 能正常返回错误，或使用有界隔离 worker 防止宿主被带走；不能仅增加超时或全局串行化掩盖。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-59 WASM 共享 watchdog 显式探针（见该节命令） | 明确失败；独立组有 2 秒/5.5 秒标记，共享组均无且更早退出；Windows 两组 trap 均异常退出，父测试进程正常保留证据 |
+| `cargo test -p deepagent-tools --features wasm --lib --offline` | 27 passed / 2 ignored；H-59 显式执行失败，另一个忽略项是既有 Windows fuel trap；同批 fmt 与 diff 检查通过 |
 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（跨运行上下文验证补充时） | 12 passed / 10 ignored；新增跨两轮运行及数据库重开的上下文正向测试默认执行；忽略的缺陷探针不代表通过 |
 | H-58 附件清理异常身份显式探针（见该节命令） | 明确失败：正常对照只删目标，空/点号 id 删除同桶两附件，父目录 session 实际删除 root 外测试目录 |
 | `cargo test -p deepagent-app-core --lib attachment_service::tests --offline` | 4 passed / 1 ignored；新缺陷探针另行显式执行失败；同批 cargo fmt --all -- --check 通过 |
@@ -1600,6 +1615,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 修复批次 | 关联问题 | 应统一的现有边界 | 首要验收 |
 |---|---|---|---|
 | 执行权限与子运行上下文 | H-03、H-19、H-22 | 有效工具集合、sandbox 选择、执行根、checkpoint 必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致 |
+| 可选 WASM 的时钟与调用归属 | H-59 | 既有 WasmSandbox 统一 Engine tick 与 per-Store deadline；参考上游 Wasmtime 及成熟 Agent 的局部 timer 清理 | 顺序与并发调用互不提前超时；成功/失败/取消不遗留误伤；Windows trap 错误不终结宿主；默认未启用路径保持不受影响 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |

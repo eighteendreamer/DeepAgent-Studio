@@ -265,4 +265,113 @@ mod tests {
         let err = sb.run_json(&wasm, "{}", &policy).unwrap_err();
         assert!(err.to_string().contains("fuel") || err.to_string().contains("timeout"));
     }
+
+    #[test]
+    #[ignore = "audit reproducer: a completed WASM call must not interrupt a later shared-engine call"]
+    fn audit_completed_call_watchdog_does_not_interrupt_next_call() {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        const CHILD_MODE: &str = "DEEPAGENT_AUDIT_WASM_EPOCH_CHILD";
+        const FIRST_TIMEOUT_MS: u64 = 1_000;
+        const SECOND_TIMEOUT_MS: u64 = 6_000;
+
+        if let Ok(mode) = std::env::var(CHILD_MODE) {
+            let first = WasmSandbox::new().unwrap();
+            let first_policy = SandboxPolicy {
+                timeout_ms: FIRST_TIMEOUT_MS,
+                ..SandboxPolicy::default()
+            };
+            let (echo, _) = first.run_json(&echo_wasm(), "{}", &first_policy).unwrap();
+            assert_eq!(echo, "{}", "the first call completes without a trap");
+            let second = match mode.as_str() {
+                "separate" => WasmSandbox::new().unwrap(),
+                "shared" => first.clone(),
+                _ => panic!("unknown isolated audit mode"),
+            };
+            let spin = wat::parse_str(
+                r#"(module
+                    (memory (export "memory") 1)
+                    (func (export "alloc") (param i32) (result i32) i32.const 1024)
+                    (func (export "run") (param i32) (param i32) (result i64)
+                        (loop $spin br $spin)
+                        i64.const 0))"#,
+            )
+            .unwrap();
+            let policy = SandboxPolicy {
+                fuel: Some(u64::MAX),
+                timeout_ms: SECOND_TIMEOUT_MS,
+                ..SandboxPolicy::default()
+            };
+            println!("audit second call started mode={mode}");
+            std::io::stdout().flush().unwrap();
+            std::thread::spawn(|| {
+                std::thread::sleep(Duration::from_millis(2_000));
+                println!("audit second call alive_after_ms=2000");
+                std::io::stdout().flush().unwrap();
+                std::thread::sleep(Duration::from_millis(3_500));
+                println!("audit second call alive_after_ms=5500");
+                std::io::stdout().flush().unwrap();
+            });
+            let started = Instant::now();
+            let error = second.run_json(&spin, "{}", &policy).unwrap_err();
+            println!(
+                "audit second call returned elapsed_ms={} error={error}",
+                started.elapsed().as_millis()
+            );
+            assert!(error.to_string().contains("wall-clock timeout"));
+            return;
+        }
+
+        // Guest trap unwinding is known to crash on some Windows toolchains.
+        // Run BOTH control and shared-engine guest calls in isolated children;
+        // the parent survives and compares their actual termination times.
+        let mut observations = Vec::new();
+        for mode in ["separate", "shared"] {
+            let started = Instant::now();
+            let mut child = Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "wasm::tests::audit_completed_call_watchdog_does_not_interrupt_next_call",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env(CHILD_MODE, mode)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap();
+            while child.try_wait().unwrap().is_none() {
+                if started.elapsed() > Duration::from_secs(12) {
+                    child.kill().unwrap();
+                    let output = child.wait_with_output().unwrap();
+                    panic!(
+                        "isolated audit exceeded its outer deadline: {}",
+                        String::from_utf8_lossy(&output.stdout)
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            let elapsed = started.elapsed();
+            let output = child.wait_with_output().unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                stdout.contains(&format!("audit second call started mode={mode}")),
+                "child must finish its first call and enter the second: {stdout}; stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            eprintln!(
+                "WASM epoch audit: mode={mode} elapsed_ms={} status={} stdout={stdout}",
+                elapsed.as_millis(),
+                output.status
+            );
+            observations.push(stdout.contains("audit second call alive_after_ms=5500"));
+        }
+        assert!(observations[0], "separate-engine control must survive 5.5s");
+        assert!(
+            observations[1],
+            "a completed call's old watchdog must not shorten the next call's deadline"
+        );
+    }
 }
