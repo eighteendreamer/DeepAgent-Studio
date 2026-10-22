@@ -1798,6 +1798,77 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-103: failure hooks must receive call identity and error details"]
+    async fn audit_external_tool_failure_hook_includes_call_id_and_error() {
+        struct FailureProbeTool;
+
+        #[async_trait]
+        impl Tool for FailureProbeTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor {
+                    name: "failure_probe".into(),
+                    description: "returns a controlled failure for hook auditing".into(),
+                    parameters: serde_json::json!({
+                        "type": "object",
+                        "properties": {},
+                        "additionalProperties": false
+                    }),
+                    risk: RiskLevel::Safe,
+                    required_permissions: PermissionSet::read_only(),
+                }
+            }
+
+            async fn invoke(&self, _arguments: serde_json::Value) -> Result<ToolOutput> {
+                Ok(ToolOutput::failure("audit failure detail"))
+            }
+        }
+
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("post-tool-use-failure.json");
+        let quoted_marker = marker.to_string_lossy().replace('\'', "''");
+        let definitions = HookDefinitions::parse(
+            &serde_json::json!({ "hooks": { "PostToolUseFailure": [{
+                "matcher": "failure_probe",
+                "hooks": [{
+                    "type": "command", "shell": "powershell", "timeout": 5,
+                    "command": format!(
+                        "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted_marker}', $payload)"
+                    )
+                }]
+            }]}})
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = HookRegistry::new();
+        assert_eq!(
+            definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+            1
+        );
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(FailureProbeTool)).unwrap();
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_hooks(Some(&hooks));
+        let result = pipeline
+            .execute(
+                ToolInvocation::new("failure_probe", serde_json::json!({}))
+                    .with_id("audit-failed-tool-use-9"),
+            )
+            .await
+            .unwrap();
+        assert!(!result.output.ok);
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(marker).unwrap()).unwrap();
+        eprintln!("PostToolUseFailure payload: {payload}");
+        assert_eq!(payload["tool_use_id"], "audit-failed-tool-use-9");
+        assert_eq!(payload["error"], "audit failure detail");
+    }
+
     #[tokio::test]
     async fn speculative_completion_rejects_non_safe_tools() {
         let registry = registry(RiskLevel::High, Arc::new(AtomicUsize::new(0)));
