@@ -27,6 +27,9 @@ mod active_rewind;
 #[path = "kernel_v2_e2e/file_version.rs"]
 mod file_version;
 
+#[path = "kernel_v2_e2e/file_search_policy.rs"]
+mod file_search_policy;
+
 #[cfg(feature = "web")]
 #[path = "kernel_v2_e2e/search_capability.rs"]
 mod search_capability;

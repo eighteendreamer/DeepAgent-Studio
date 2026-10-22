@@ -48,6 +48,7 @@
 | 源事件与原生镜像之间的分支边界 | 以用户 MessageAppended 的 sequence 为保留点，正式 fork/rewind 成功且源消息存在，下一次 ChatService wire 却缺该消息；包含下一条镜像的对照正常 | 已确认 H-74；两个入口各两组、正式恢复及请求序列化离线复现；限定原始序号锚点，未宣称桌面默认最新位置分支同样触发 |
 | 运行中回退与迟到结果提交 | 模型请求已发出但回答未释放时，正式 rewind 成功删除本轮输入；旧回答随后仍写入回退后的历史，原运行成功终结 | 已确认 H-75；真实 ChatService/RunStore/Session/AppService 与可控离线 transport 双组复现，没有真实桌面点击、文件工具或公网请求 |
 | 普通文件工具的读取版本与覆盖保护 | 已读文件被外部保存后，write_file 仍凭旧缓存存在即成功覆盖；不改文件及外部改动后重读的对照正常 | 已确认 H-76；正式 ChatService/工具注册/流水线/真实临时文件及下一次 wire 结果复现，没有时间竞争或真实用户文件操作 |
+| 搜索与敏感文件读取策略的一致性 | read_file 被中央 path_guard 拒绝的 .env/credentials/server.key，仍可通过 grep 返回内容并进入下一实际请求 | 已确认 H-77；正式 ChatService/中央 hook/文件工具/序列化三组及普通文件对照；仅临时虚构 canary，无真实凭据或公网传输 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -87,6 +88,7 @@
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态（H-01/H-43/H-44） | Codex 明确背压/断连、持续消费和 stale turn 投影；已保留各机制适用范围 | UI/SDK 长期等待或与持久化状态不一致 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
+| 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 运行及附属工作的归属 | 摘要、子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-31/H-45/H-60/H-61/H-64） | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
 | 内容身份与生命周期 | 去重名称没有对应正文、共享可变项目 scope、旧计时器作用到新调用（H-51/H-53/H-57/H-59） | Claude transcript 内容驱动去重及局部 timer cleanup；DeepSeek connection-owned system section；Wasmtime 的 Store deadline 语义 | 能力或记忆漏注入、跨项目污染、调用被无关计时器提前中断 |
 | 文件回退的失败边界 | 备份不可用尚未检查，当前文件已经删除；多文件已部分恢复而历史未变（H-72） | Claude fileHistory 先 stat 备份，已知缺失时不复制或删除当前文件；该机制不等于整个回退事务原子化 | 回退/分叉失败仍丢失当前文件，磁盘与会话处于不同恢复阶段 |
@@ -1680,10 +1682,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：Claude Code `FileWriteTool.ts::validateInput()` 使用 readFileState 和修改时间拒绝未读/过期读；实际 call 在异步 mkdir/fileHistoryTrackEdit 之后重新同步读取当前 metadata/content，修改时间较新或缺少读取状态时再核对完整读取内容，不一致抛 FILE_UNEXPECTEDLY_MODIFIED_ERROR。其源码明确要求从检查到 writeTextContent 之间不 await，避免本进程其他异步编辑插入；Windows 修改时间变化但完整内容相同时有内容比较以避免误报。`FileEditTool.ts::call()` 也保留相同读后版本校验及同步临界段。这里已阅读参考代码，没有运行其测试；不声称该 mtime 条件覆盖同时间戳内容变更，也不能将 Node 同步区段当作跨进程原子比较与交换。借鉴的是版本身份与写资格、执行时复查，而非复制工具文案。
 - 修复方向（尚未实施，本地设计）：在既有 FileStateCache/文件工具入口保留模型实际看见的版本，并在授权写入时核对当前内容身份；过期读明确返回冲突，保持磁盘内容，要求重新读取后生成操作。统一 write/edit/multi_edit 的版本语义，区分部分读取与允许替换的范围，明确工具成功写入后的新版本。现有原子替换还需与每路径操作所有权及外部变更检测配合，避免在异步检查与真正写入之间再次丢改动；跨进程事务约束为本地设计，不能声称仅加一个 mutex 即可解决所有写入者。复用既有检查点、权限和审计，不新增第二套文件工具。回归覆盖外部编辑/格式化、单文件工具之间交错、相同内容更新时间、部分读取、换行与编码、失败/取消、多个宿主及重启，并以实际磁盘和模型收到的结构化结果共同验收。
 
+### H-77：grep 未继承敏感文件读取拒绝，普通搜索可将被禁止的内容送入模型请求
+
+**级别：高（P1）；范围：工作区内存在本系统 fs_guard 明确禁止读取的文件，且 grep 的 query 匹配其中某行、glob 覆盖该文件。** 已确认默认递归搜索的 .env/credentials，以及显式 **/*.key 搜索的 certs/server.key；不依赖 shell、MCP、额外授权、符号链接或跳出工作区。
+
+- 根因与生产路径：`PathGuardHook` 在正式 BeforeToolUse 阶段只检查 path/file_path/filename 三类参数；grep 接收的是 query/glob，glob 接收 pattern，因此中央 guard 不会解析它们实际遍历到的资源。`GrepTool::invoke()` 用 `walk_collect()` 从 WorkspaceRoot.path 取得候选文件，再直接 `tokio::fs::read_to_string(root.join(rel))`，没有逐候选调用 resolve_read 或 is_sensitive_path。walk_collect 只跳过部分目录和点开头的目录，不过滤敏感文件；所以根目录的 .env、非隐藏 credentials、key 文件都能进入内容扫描。工具只要求 ReadOnly 且风险 Safe，通用权限检查无法替代文件级拒绝。本系统对 Full/ReadAnywhere 模式也声明敏感文件始终禁止，不能用允许常规读取解释这个跨入口差异。
+- 动态证据：新增 `tests/kernel_v2_e2e/file_search_policy.rs`。每组在独立临时工作区创建普通 safe.txt 和一个敏感文件，均只含虚构 AUDIT_SEARCH canary；先让离线模型通过真实 ChatService 发出 read_file(敏感路径)。中央 path_guard 产生唯一 tool_blocked、needs_approval=false，实际后续请求的配对结果含 sensitive 拒绝且无受保护 canary。然后同一运行让模型发出 grep；实际下一请求的 function_call_output 包含该敏感 canary，正式 run_events 中 grep 的 tool_completed.ok=true，运行单 succeeded 终态。三组分别为 `.env + 默认 glob`、`credentials + 默认 glob`、`certs/server.key + **/*.key`，均 protected_sent=true；前两组也包含正常 public canary。原生请求体在测试内解析，不打印完整请求或读取真实配置。
+- 对照与执行：`cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -- --include-ignored --nocapture`：1 passed / 1 failed，测试体约 0.85s。正常对照保持 .env 拒绝，但 grep 指定 *.txt，只发送普通文件 canary、不发送敏感 canary。默认 ignored 缺陷探针在完成三组后统一断言失败。初版 fixture 错误要求 hook 拒绝也产生 tool_completed，经实际事件摘要和 blocked() 源码核对后改为断言 tool_blocked；前两次夹具断言失败不计为产品缺陷，当前结论基于正常对照通过且内容泄漏断言失败的最终运行。
+- 影响：常规搜索可以把用户以为被读取策略保护的配置、密钥或凭据行带入模型上下文；真实部署若继续调用供应商，这些内容会随模型请求上传。已验证边界是虚构敏感内容进入正式待发送请求，而不是已经向公网泄漏真实凭据。当前 grep 每行最多返回 200 字符、总 hits 有上限，这限制数量，不能使被禁止内容变成允许读取；并非每一次搜索都必定泄漏。本轮未将 glob/list_dir 仅返回文件名判为同等内容泄密，也未验证 junction、符号链接、外部目录或真实 Tauri 页面。
+- 成熟实现对照：Claude Code `GrepTool.ts::checkPermissions()` 使用统一 checkReadPermissionForTool；实际 call 还从 `getFileReadIgnorePatterns(toolPermissionContext)` 获取 Read deny 规则，并在用户 glob 参数之后生成否定 rg --glob，过滤搜索候选。`utils/glob.ts` 同样使用这些 deny patterns 生成排除项，再执行文件枚举；`filesystem.ts::getFileReadIgnorePatterns()` 明确说明它用于隐藏 Read deny 拒绝的文件。该参考说明拒绝规则需要作用于隐式遍历资源，而非仅校验工具顶层参数；不声称 Claude 默认硬编码了本系统相同的敏感文件表，也没有运行参考项目或证明其覆盖所有符号链接/规则组合。
+- 修复方向（尚未实施，本地设计）：在既有 WorkspaceRoot/文件访问策略内定义候选路径的读取资格，让 grep/glob/代码搜索等隐式文件发现入口复用，按当前访问模式和拒绝规则在读取内容之前过滤或明确拒绝。中央 hook 的入参校验继续存在，但不能承担它无法看见的实际文件 I/O 权限；不得只在 query/glob 字符串上查 .env，也不能先读取敏感内容再只裁 UI。目录枚举的名称可见性与内容读取应有明确契约；物理路径/junction 和运行中的策略变更需要另外验证。回归覆盖默认/显式 glob、隐藏文件、嵌套目录、敏感名称/后缀、普通可读文件、模式切换及下一 wire 内容，复用既有 registry、权限与工具结果审计，不另建搜索工具链。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-77 搜索敏感文件显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.85s；三组 direct read 均硬拒绝、grep 均成功且敏感 canary 进入下一 wire，普通 *.txt 对照无泄漏；虚构临时文件和离线 transport |
+| H-77 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：18 passed / 17 ignored，约 1.71s；fmt、diff 检查通过。缺陷探针另行显式失败；本批仅新增测试和报告，未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-76 文件版本显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_version --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.66s；不改文件及外部保存后重读均正常，过期读的 write_file 仍成功覆盖外部内容；真实临时磁盘/生产流水线/下一请求配对结果，transport 离线 |
 | H-76 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：17 passed / 16 ignored，约 1.85s；新增缺陷探针默认忽略，不能把该结果说成过期写已修复。fmt、diff 检查通过；本批未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-76 现有文件工具测试基线 | `cargo test -p deepagent-builtins --lib file_tools::tests --offline`：36 passed / 0 ignored，约 0.11s；含未读拒绝、已读可改、写后缓存失效及重复读取等，不代替本轮已显式失败的外部保存后过期覆盖场景 |
@@ -2016,6 +2031,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 源事件与原生镜像的语义提交边界 | H-74 | 现有 Session/EventStore 关联逻辑消息与完整镜像组，分支/回退统一解析语义锚点；参考 Codex 按 turn/message 计算边界，原始 sequence 兼容为本地设计 | 保留的消息完整进入下一 wire；raw 锚点、旧日志、崩溃、附件/reasoning/工具和压缩不拆组，不在 UI 散落 +1 特判 |
 | 活跃运行与回退的提交所有权 | H-75 | 现有输入租约/RunCoordinator 与回退共用同会话所有权，明确拒绝或取消并等待；参考 Claude 恢复前 onCancel，持久化分支提交栅栏为本地设计 | 成功回退不再接收被丢弃 turn 的迟到回答；新接纳、排队、工具/审批、终态及重启保持一致，原审计不删除 |
 | 文件读取版本与后续修改资格 | H-76 | 现有 FileStateCache/文件工具统一已读版本、执行时冲突校验和实际写入；参考 Claude 的 stale read 拒绝与检查后不 await，跨进程提交约束为本地设计 | 过期写不覆盖外部改动，重读后正常修改；整文件/部分读取、write/edit/multi_edit、外部编辑与格式化、失败/取消和审计一致 |
+| 搜索遍历与读取拒绝规则 | H-77 | 隐式候选文件共用既有 WorkspaceRoot/读取策略，读内容前判定；参考 Claude Read deny → grep/glob 排除项 | 直接拒绝的内容不经搜索进入下一 wire；默认/显式 glob、敏感名称/后缀和普通文件对照一致；路径别名和名称可见性另有明确契约 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
