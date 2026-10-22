@@ -36,7 +36,7 @@ impl HttpTransport for ScriptedTransport {
 }
 
 struct Fixture {
-    _temporary: tempfile::TempDir,
+    _temporary: Option<tempfile::TempDir>,
     database_path: PathBuf,
     workspace: PathBuf,
     settings: Arc<SettingsService>,
@@ -117,9 +117,19 @@ impl Fixture {
 
     async fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
         let temporary = tempfile::tempdir().unwrap();
-        let workspace = temporary.path().join("workspace");
+        let root = temporary.path().to_path_buf();
+        Self::with_transport_root(transport, root, Some(temporary)).await
+    }
+
+    async fn with_transport_root(
+        transport: Arc<dyn HttpTransport>,
+        root: PathBuf,
+        temporary: Option<tempfile::TempDir>,
+    ) -> Self {
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = root.join("workspace");
         std::fs::create_dir(&workspace).unwrap();
-        let database_path = temporary.path().join("state.sqlite");
+        let database_path = root.join("state.sqlite");
         let database = Arc::new(Database::open(&database_path).unwrap());
         let settings = Arc::new(SettingsService::new(
             database.clone(),
@@ -237,6 +247,7 @@ impl Fixture {
 struct BlockingTurnTransport {
     started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     release: tokio::sync::Notify,
+    marker_path: Option<PathBuf>,
 }
 
 #[async_trait::async_trait]
@@ -246,6 +257,9 @@ impl HttpTransport for BlockingTurnTransport {
         _request: TransportRequest,
         _sink: &mut dyn EventSink,
     ) -> CoreResult<()> {
+        if let Some(path) = &self.marker_path {
+            std::fs::write(path, b"model request entered").unwrap();
+        }
         if let Some(started) = self.started.lock().unwrap().take() {
             let _ = started.send(());
         }
@@ -268,6 +282,7 @@ fn audit_runtime_shutdown_finalizes_in_flight_stdio_turn() {
     let transport = Arc::new(BlockingTurnTransport {
         started: Mutex::new(Some(started_tx)),
         release: tokio::sync::Notify::new(),
+        marker_path: None,
     });
     let fixture = runtime.block_on(Fixture::with_transport(transport));
     let (response, launch) = fixture.state.lock().unwrap().dispatch(
@@ -321,6 +336,171 @@ fn audit_runtime_shutdown_finalizes_in_flight_stdio_turn() {
     assert!(
         after.finished_at.is_some() && terminal_events == 1,
         "runtime exit dropped the active turn before it wrote one durable terminal"
+    );
+}
+
+const STDIO_CHILD_ROOT_ENV: &str = "DEEPAGENT_AUDIT_STDIO_CHILD_ROOT";
+
+#[test]
+#[ignore = "audit H-92: verify active-turn EOF behavior across a real child-process stdio pipe"]
+fn audit_stdio_eof_child_entrypoint() {
+    let Some(root) = std::env::var_os(STDIO_CHILD_ROOT_ENV).map(PathBuf::from) else {
+        return;
+    };
+    let marker_path = root.join("model-request-entered");
+    let transport = Arc::new(BlockingTurnTransport {
+        started: Mutex::new(None),
+        release: tokio::sync::Notify::new(),
+        marker_path: Some(marker_path),
+    });
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let fixture = runtime.block_on(Fixture::with_transport_root(transport, root, None));
+    let chat = fixture.state.lock().unwrap().base_chat.clone();
+    runtime
+        .block_on(run_stdio(
+            chat,
+            fixture.workspace.clone(),
+            SandboxCapabilities {
+                kind: deepagent_app_core::SandboxBackendKind::Direct,
+                available: true,
+                supports_one_shot: true,
+                supports_interactive_pty: true,
+                supports_network_toggle: false,
+                supports_readonly_mapping: false,
+                message: "offline stdio audit backend".into(),
+            },
+        ))
+        .unwrap();
+}
+
+#[test]
+#[ignore = "audit H-92: stdio EOF must finalize an active turn before process exit"]
+fn audit_stdio_eof_drops_active_turn_in_child_process() {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path().to_path_buf();
+    let database_path = root.join("state.sqlite");
+    let marker_path = root.join("model-request-entered");
+    let executable = std::env::current_exe().unwrap();
+    let mut child = Command::new(executable)
+        .args([
+            "--exact",
+            "app_server::terminal_audit::audit_stdio_eof_child_entrypoint",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(STDIO_CHILD_ROOT_ENV, &root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (line_tx, line_rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut reader = BufReader::new(stdout);
+        loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    if line_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+            }
+        }
+    });
+
+    let mut send = |id: u64, method: &str, params: Value| {
+        let request = json!({"jsonrpc":"2.0", "id":id, "method":method, "params":params});
+        writeln!(stdin, "{request}").unwrap();
+        stdin.flush().unwrap();
+    };
+    let receive_response = |expected_id: u64| {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for RPC {expected_id}"
+            );
+            let line = line_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("child stdout should remain open while the server is active");
+            let Ok(value) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            if value["id"] == expected_id {
+                return value;
+            }
+        }
+    };
+
+    send(
+        1,
+        "initialize",
+        json!({"clientName":"h92-subprocess-audit", "clientVersion":"0.1.0",
+            "protocolVersion":PROTOCOL_VERSION}),
+    );
+    assert!(receive_response(1)["result"].is_object());
+    send(2, "thread/start", json!({"cwd":root.join("workspace")}));
+    let thread_response = receive_response(2);
+    let thread_id = thread_response["result"]["threadId"]
+        .as_str()
+        .expect("thread/start response contains threadId")
+        .to_owned();
+    send(
+        3,
+        "turn/start",
+        json!({"threadId":thread_id,"input":"Wait at the local audit transport."}),
+    );
+    let turn_response = receive_response(3);
+    let turn_id = turn_response["result"]["turnId"]
+        .as_str()
+        .expect("turn/start response contains turnId")
+        .to_owned();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !marker_path.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "model transport was never entered"
+        );
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "stdio child exited before transport entry"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    drop(stdin);
+    let status = child.wait().unwrap();
+    assert!(status.success(), "child stdio server exited with {status}");
+
+    let database = Arc::new(Database::open(&database_path).unwrap());
+    let store = RunStore::new(&database);
+    let run = store
+        .get(&turn_id)
+        .unwrap()
+        .expect("accepted run remains readable");
+    let terminal_events = store
+        .events_after(&turn_id, None)
+        .unwrap()
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .count();
+    eprintln!(
+        "stdio subprocess EOF audit: child_status={status}, run_state={:?}, finished_at={:?}, terminal_events={terminal_events}",
+        run.state, run.finished_at
+    );
+    assert!(
+        run.finished_at.is_some() && terminal_events == 1,
+        "stdio EOF exited the child with an active turn lacking one durable terminal"
     );
 }
 
