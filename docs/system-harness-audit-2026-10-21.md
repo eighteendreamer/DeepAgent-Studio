@@ -64,6 +64,7 @@
 | 视频运行中 task ID 的前端投影与续跑 | 正式 Rust publisher 发出 Running/job_id，生产 TS executor 与真实 Zustand store 收到后仍不存 ID，停止再提交时 config 缺 videoTaskId；Completed 对照正常 | 已确认 H-121；实际跨语言事件/序列化探针，Tauri 传输替换为本机内存桥，未发生真实云端重复收费 |
 | 视频修改输入及配置后的执行身份 | 真实 TS/Rust 往返中，修改提示词仍轮询旧任务并 succeeded，新提示词未提交；同一 provider ID 改地址/凭据后，旧 task ID 被发到新地址并 succeeded | 已确认 H-122；本机真实 HTTP、原地址续跑对照；未验真实供应商视频、同地址仅换凭据或云端账号权限 |
 | 本地与 SSH 终端的分页读取 | 真实 Windows ConPTY / SQLite 与正式 SSH session reader 均在 64 KiB 返回上限时将游标推进到全部缓存末尾；未返回后缀仍可从实际末端读出 | 已确认 H-123；小输出对照正常；当前桌面旧读取不使用该游标接口，SSH 网络与其他平台未验证 |
+| 系统视觉发送前图片预处理与停止 | 正式 App submit/stop callback 与 API client 的受控图像请求中，run 尚未进入后端就显示运行；cancel 返回 not_found，释放请求后仍识别下一张并提交主模型 | 已确认 H-124；continued/new 两种会话均复现；使用实际 App 回调但 React/Tauri/provider 为隔离 harness，不是真实窗口/网络 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -2224,12 +2225,24 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 成熟机制对照：Codex `core/src/unified_exec/process.rs::OutputBuffers` 在同一锁内记录 pending 与 transcript；`process_manager.rs::collect_output_until_deadline` 取走的 pending 完整进入本次收集，`head_tail_buffer.rs::HeadTailBuffer` 对预算淘汰独立累计 `omitted_bytes`，在输出路径提供 omission marker。它不是本系统相同的字节游标协议，不能直接照搬 DTO；可借鉴的是**消费位置对应实际交付范围、预算淘汰有明确损失信息**，不把缓存生产进度等同于已交付进度。
 - 影响与收敛方向（尚未实施，本地设计）：附着消费者会静默跳过尚在内存中的输出，持久化 cursor 也可能让恢复误以为已读取；例如命令错误或完成标记恰在后缀时会遗漏。复用现有终端契约，统一 local/SSH 的已生成范围、保留起点与本次返回终点，下一读取位置只能推进到本次实际返回末尾；历史淘汰仍单独显式报告。若需要客户端真正确认收到数据，还应由既有接口明确区分服务端返回位置与客户端 ACK，不能把本次已验证的返回前写库等同于网络交付成功。回归应覆盖多页、页内偏移、恰好上限、历史淘汰、重复/未来 cursor、并发生产和断线恢复；不新增第二套输出存储。
 
+### H-124：系统视觉预处理未纳入运行生命周期，点击停止后仍处理附件并提交主模型
+
+**级别：高（P1，可见的停止操作无效并造成后续模型调用）；范围：系统视觉开启且有图片尚未识别，正式 `onSubmit` 在调用 `runChat` / `start_chat_v2` 前等待 Vision API 的新会话与续聊。** 纯文本正常停止路径作为正对照通过；本项不是后端已接纳 run 的 cancellation tree 缺陷，也不表示所有图片识别失败。
+
+- 生产路径：React `App.tsx::onSubmit` 先等 `getVisionSettings()`，随后同步创建运行 ID、写入 `activeRunIdsRef` 并让 `runningSessionIds` / `activePendingRunKey` 表现为运行中；构造 transcript 后调用 `recognizeImageAttachmentsOnSend()`，它又逐张 await `visionRecognizeImage()`。直到全部预处理完成后，`runChat()` 才调用 `start_chat_v2` 创建真正的 AppCore admission/cancellation registration。停止按钮此时读到有效的前端 run ID，并调用真实 `cancelRun(runId)`；Tauri `cancel_run` 最终查询 `RunCoordinator` 的活动注册。尚未 admission 的 ID 返回 `{accepted:false,state:"not_found"}`，UI 提示取消失败；原 `onSubmit` 在图像 promise 完成后没有重新检查该 run 的取消/失效状态，继续处理余下图片并调用 `start_chat_v2`。后端取消注册从未覆盖此前的识别等待。
+- 动态复现：新增 opt-in `apps/desktop/scripts/audit-vision-preflight-cancel.test.cjs`。它从生产 `App.tsx` AST 加载并执行原 `onSubmit`、`onStopRun` 和视觉/附件 helper；直接加载生产 `api.ts::visionRecognizeImage/runChat/cancelRun`，受控 Tauri IPC 暂停 Vision 响应，并以与正式 RunCoordinator 一致的 accepted 语义按是否 `start_chat_v2` admission 返回取消 ACK。调用原 UI callback，分别在续聊和新会话的第一张图片请求挂起时点击停止，随后释放原图片请求，等待所有订阅、定时器和 run promise 收尾。
+- 执行 `$env:RUN_HARNESS_AUDIT='1'; node --test scripts/audit-vision-preflight-cancel.test.cjs`（工作目录 `apps/desktop`），**1 passed / 2 failed**：普通文本对照 `startsBeforeStop=1, cancelsBeforeRelease=1, cancelAccepted=true, stoppingBeforeRelease=true, startsAfterStop=0`；续聊和新会话都为 `startsBeforeStop=0, cancelsBeforeRelease=1, cancelAccepted=false, stoppingBeforeRelease=false, cancelNotFoundVisible=true, startsAfterStop=1, recognizedTextSubmitted=true, preflightToolsSubmitted=1, listenersAfterFinish=0`。停止后仍多发的唯一识别请求就是第二张图片；第一张识别结果连同后续图片处理正常结束后，生产 API 收到一次新 `start_chat_v2`。失败断言在 completion 和生产 TS listener 清理之后触发，因此没有留下后台 run/测试进程。
+- 本探针没有执行真实图片读取、视觉公网请求、真实 Tauri 窗口或 SQLite admission；`visionRecognizeImage` IPC 使用本机受控延迟，没有推断其服务商延迟/计费。本地 handler 不模拟 stop 前已进入取消表的后端 run，但相邻纯文本正对照证实同一个实际 stop callback 可取消这种已接纳运行。
+- 成熟实现对照：Codex `core/src/tasks/mod.rs::handle_task_abort` 将活动 turn 的取消交给任务 token；Claude Code `restored-src/src/utils/attachments.ts` 的相关 prefetch 从 turn AbortController 创建 child controller，并在 turn abort 时同步中止，`query.ts` 在处理中断流和逐工具派发前主动查同一信号；DeepSeek Harness `core/agent/src/runtime-types.ts` 定义 `agent/pre-step` 的 turn signal，`api/session-controller/src/index.ts::prompt()` 在 prompt admission 前 `throwIfAborted()`。这些机制共同说明预处理要么属于一个有 owner、能取消的准备阶段，要么 admission 前就拒绝已取消请求；不能让 UI 先登记“运行中”而后端没有取消目标。本系统在提交前的 UI preflight 状态应标为单一 run 生命周期的一部分，不需要另建第二个运行表或取消机制。
+- 影响与收敛方向（尚未实施，本地设计）：图片识别可能继续耗时与计费，所有剩余图片仍处理，并在用户看到“停止失败”后启动主模型。复用已有 run ID 与 AppCore admission/cancellation 树，让前端 admission 与准备状态一致；取消需要阻止未启动的下一图、后端 admission 和主请求，且对已经启动但不可中止的视觉 HTTP 至少在响应返回时检查旧 run 的取消意图并丢弃结果。要求覆盖新会话/续聊、首图/后续图、两图、切换会话、停止/正常完成竞争、视觉失败与普通文本对照，验证停止后新增视觉请求数和主模型 start 数为零，且只有一个正确终态。HTTP 级取消能否在 provider request 途中释放资源需独立验证，不从前端防迟到 admission 推导。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
 | H-123 本地终端与 SSH 游标探针 | 本地 `cargo test -p deepagent-app-core --test terminal_audit --offline -- --ignored --nocapture`：0 passed / 1 failed，实际 ConPTY 与 SQLite；SSH `cargo test -p deepagent-ssh audit_ssh_terminal_cursor_preserves_unreturned_output --offline -- --ignored --nocapture`：0 passed / 1 failed，正式 session reader / 受控 transport。两组小输出正常，大输出均在无历史淘汰时跳过保留后缀；生产尚未修改 |
 | H-123 相关正常基线 | `cargo test -p deepagent-ssh -p deepagent-terminal --offline`：SSH 1 passed / 2 ignored（含需真实服务器的既有集成测试），terminal 4 passed；`cargo test -p deepagent-app-core --lib terminal_ --offline`：9 passed，含终端服务、SQLite 租约和取消存储故障回归。未执行本批 workspace 全量、Clippy、桌面 build 或真实 Tauri 点击 |
+| H-124 视觉发送前停止跨层探针 | `RUN_HARNESS_AUDIT=1 node --test scripts/audit-vision-preflight-cancel.test.cjs`：文本对照通过，继续会话/新会话的视觉等待组各 0 passed / 1 failed；释放和 listener 清理完成后，停止失败且第二张图片和主 `start_chat_v2` 仍发出。无真实图片内容、供应商、Tauri 窗口或数据库 |
 | H-122 provider 来源替换补充探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_video_resume_rejects_replaced_provider_identity --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.41s；原地址续跑总 submit=1，替换地址/占位凭据后 B 收到原 task ID 并返回 succeeded；仅本机 HTTP，无真实云端账号 |
 | H-122 来源探针默认基线与 fixture 所有权复核 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 8 ignored，约 0.17s；fixture 新增 provider service 保活后，H-120 重开测试显式 drop 该 owner，再按原命令复测仍 0 passed / 1 failed，约 0.17s，实时 6/落盘 0 的结论不变。fmt/diff 检查通过；未跑 workspace、Clippy、桌面构建或真实账号 |
 | H-122 修改提示词后的真实往返显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_edited_video_prompt_submits_a_new_task --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.72s；首次真实本机生成完成事件→生产 TS 修改/序列化→正式 Rust/网关第二次运行，两次 succeeded，仅 1 次 submit/2 次旧任务 poll，新提示词未发给供应商 |
