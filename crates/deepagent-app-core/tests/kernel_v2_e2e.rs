@@ -30,6 +30,9 @@ mod file_version;
 #[path = "kernel_v2_e2e/file_search_policy.rs"]
 mod file_search_policy;
 
+#[path = "kernel_v2_e2e/file_listing_policy.rs"]
+mod file_listing_policy;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/path_boundary.rs"]
 mod path_boundary;

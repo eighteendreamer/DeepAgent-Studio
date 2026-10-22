@@ -50,6 +50,7 @@
 | 普通文件工具的读取版本与覆盖保护 | 已读文件被外部保存后，write_file 仍凭旧缓存存在即成功覆盖；不改文件及外部改动后重读的对照正常 | 已确认 H-76；正式 ChatService/工具注册/流水线/真实临时文件及下一次 wire 结果复现，没有时间竞争或真实用户文件操作 |
 | 搜索与敏感文件读取策略的一致性 | read_file 被中央 path_guard 拒绝的 .env/credentials/server.key，仍可通过 grep 返回内容并进入下一实际请求 | 已确认 H-77；正式 ChatService/中央 hook/文件工具/序列化三组及普通文件对照；仅临时虚构 canary，无真实凭据或公网传输 |
 | 工作区物理路径与 Windows 目录联接 | WorkspaceWrite 下词法位于根目录的 junction 指向根外时，read_file 仍能读取外部临时文件并成功完成 | 已确认 H-78；Windows 临时 workspace/outside、真实 `mklink /J`、正式 ChatService/PathGuard/文件工具与下一 wire 复现，未接触用户目录 |
+| 文件发现与敏感读取名称策略 | read_file 被拒绝的 `.env` 仍通过 `glob("**")` 和 `list_dir` 返回文件名并进入下一实际请求；普通文件名仍可见 | 已确认 H-79；正式 ChatService/中央 hook/文件工具/序列化与普通文件对照，缺陷探针显式失败；仅临时 fixture，无真实凭据或公网传输 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -1706,6 +1707,17 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：Claude Code `fsOperations.ts::getPathsForPermissionCheck()` 明确沿 symlink 链收集中间目标与最终 realpath；`filesystem.ts` 的 `pathInAllowedWorkingPath()` 对原始及解析路径都做工作目录判断，并在权限规则上同时检查两种形式。该机制与本系统当前词法 `starts_with` 有直接差异。Codex 的 `SandboxBackend`/平台沙箱是独立执行边界，不能据此声称其文件工具在相同 junction fixture 下的具体行为；本轮没有运行参考测试。
 - 修复方向（尚未实施，本地设计）：在既有 WorkspaceRoot/PathGuard 边界增加物理路径解析，按操作类型处理不存在的最终文件、已存在的父目录联接、悬空联接和 Windows 特殊路径；原始输入、每个中间目标及最终句柄路径都必须满足当前 `FsAccess`。对读取可先解析所有已存在父级，写入必须防止检查后联接替换，必要时采用不跟随联接的句柄/原子创建策略；错误需保留路径诊断而不泄漏外部内容。grep/glob/list_dir 的隐式遍历应复用同一解析策略，与 H-77 一并验收。回归覆盖正常目录、junction、file symlink、悬空目标、FullAccess 对照、Windows/Unix 及真实工具下一 wire，不能只增加字符串黑名单。
 
+### H-79：glob/list_dir 返回被直接读取策略拒绝的敏感文件名
+
+**级别：中（P2）；范围：工作区内存在被 `fs_guard` 禁止直接读取的 `.env`，模型调用 `glob("**")` 或 `list_dir`，并继续消费工具结果。** 本项限定为文件名/目录结构泄漏；敏感文件内容经搜索进入模型请求的独立证据见 H-77。
+
+- 根因与生产路径：`PathGuardHook` 只从工具参数中的 `path`、`file_path`、`filename` 读取候选路径；`glob` 使用 `pattern`，因此 hook 不会看到实际匹配文件。`ListDirTool::invoke()` 直接枚举目录 entry 名称，`GlobTool::invoke()` 通过 `walk_collect()` 枚举工作区；该遍历只跳过少量构建/点开头目录，不调用 `WorkspaceRoot::resolve_read()` 或 `is_sensitive_path()`。结果因此包含 `.env`，即使同一运行中 `read_file(".env")` 已被中央策略拒绝。
+- 动态证据：新增 `tests/kernel_v2_e2e/file_listing_policy.rs`。临时工作区包含虚构 `.env` 与 `visible.txt`；正式 ChatService 先发出 `read_file(".env")`，事件确认 `tool_blocked` 且结果含敏感拒绝。随后同一正式运行分别发出 `list_dir` 和 `glob("**")`，解析下一次真实序列化请求中的配对 `function_call_output`：两者都 `tool_completed.ok=true`，同时包含 `.env` 和 `visible.txt` 文件名。默认普通文件控制通过；缺陷测试显式失败，未读取真实凭据或向公网发送请求。
+- 对照与执行：`cargo test -p deepagent-app-core --test kernel_v2_e2e file_listing_policy --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.59s；两次直接读取均被拒绝、两次发现均成功且 `hidden_name_sent=true, visible_name_sent=true`。失败断言为“拒绝的 `.env` 名称不得进入下一 wire”。`cargo fmt --all` 已执行；本批没有修改生产行为。
+- 影响：模型可获知用户明确禁止读取的配置文件存在性和目录结构，进而推断环境、凭据或私有资源布局；文件名本身不等于内容泄漏，不能把本项与 H-77 合并。实际敏感内容仍需通过另一个工具路径进入请求才构成 H-77 的内容边界。本轮没有真实用户目录、真实密钥或公网传输。
+- 成熟实现对照：Claude Code 的 `GlobTool.ts`、`GrepTool.ts` 均调用 `checkReadPermissionForTool()`，并通过 `getFileReadIgnorePatterns()` 将 Read deny 规则转成搜索排除模式；`utils/glob.ts` 在枚举阶段应用这些排除项。该机制说明隐式发现必须复用读取策略，而不是只检查顶层 `pattern`/`path`。本轮未运行参考项目，不声称其默认敏感文件规则与本系统完全相同。
+- 修复方向（尚未实施，本地设计）：在现有 `WorkspaceRoot`/文件读取策略中提供候选路径可见性判断，让 `list_dir`、`glob`、`grep` 共用同一过滤边界；先确定“文件名可见”和“内容可读”是否同一策略，再按访问模式、显式授权和物理路径解析统一实现。过滤应发生在遍历结果生成前，不能先返回敏感名称再由 UI 删除；与 H-77、H-78 共用真实路径和重启/配置变更回归，不新增第二套搜索工具。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1713,6 +1725,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-77 搜索敏感文件显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.85s；三组 direct read 均硬拒绝、grep 均成功且敏感 canary 进入下一 wire，普通 *.txt 对照无泄漏；虚构临时文件和离线 transport |
 | H-77 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：18 passed / 17 ignored，约 1.71s；fmt、diff 检查通过。缺陷探针另行显式失败；本批仅新增测试和报告，未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-78 Windows junction 显式探针与权限对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e path_boundary --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.46s；WorkspaceWrite 直接外部路径拒绝、FullAccess 直接外部路径允许，junction 组仍将 canary 带入下一 wire 且 read_file/tool_completed 成功；Windows 临时文件、离线 transport，无用户路径 |
+| H-79 文件发现名称显式探针与普通文件对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_listing_policy --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.59s；read_file 被拒绝，glob/list_dir 均成功并将 `.env` 与 `visible.txt` 带入下一 wire；普通文件控制通过；仅临时 fixture 和离线 transport |
 | H-78 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：19 passed / 18 ignored，约 1.83s；非 ignored 物理路径权限对照通过，junction 缺陷探针另行显式失败；fmt、diff 检查通过，本批未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-76 文件版本显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_version --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.66s；不改文件及外部保存后重读均正常，过期读的 write_file 仍成功覆盖外部内容；真实临时磁盘/生产流水线/下一请求配对结果，transport 离线 |
 | H-76 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：17 passed / 16 ignored，约 1.85s；新增缺陷探针默认忽略，不能把该结果说成过期写已修复。fmt、diff 检查通过；本批未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
@@ -2048,6 +2061,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 文件读取版本与后续修改资格 | H-76 | 现有 FileStateCache/文件工具统一已读版本、执行时冲突校验和实际写入；参考 Claude 的 stale read 拒绝与检查后不 await，跨进程提交约束为本地设计 | 过期写不覆盖外部改动，重读后正常修改；整文件/部分读取、write/edit/multi_edit、外部编辑与格式化、失败/取消和审计一致 |
 | 搜索遍历与读取拒绝规则 | H-77 | 隐式候选文件共用既有 WorkspaceRoot/读取策略，读内容前判定；参考 Claude Read deny → grep/glob 排除项 | 直接拒绝的内容不经搜索进入下一 wire；默认/显式 glob、敏感名称/后缀和普通文件对照一致；路径别名和名称可见性另有明确契约 |
 | 物理路径解析与工作区隔离 | H-78 | WorkspaceRoot/PathGuard 解析真实父级/目标路径，文件工具和隐式搜索共用；参考 Claude 原始路径+realpath 检查，Codex 平台沙箱为独立对照 | WorkspaceWrite 不能跟随 junction 读取或写到根外；正常目录、悬空目标、FullAccess、平台差异和竞态语义可验证 |
+| 文件发现名称与读取策略 | H-79 | 现有 WorkspaceRoot/读取策略为 list_dir、glob、grep 提供统一候选可见性；参考 Claude 将 Read deny 转为 glob/grep 排除项 | 被拒绝文件的名称不进入下一 wire；普通文件仍可发现；默认/显式模式、物理路径、配置变更和恢复语义一致 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
