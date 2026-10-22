@@ -1940,4 +1940,76 @@ mod tests {
         assert_eq!(recorded[0].0, target.to_string_lossy());
         assert_eq!(recorded[0].1, "created");
     }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-113: FileChanged hook payload must satisfy its required input schema"]
+    async fn audit_file_changed_hook_payload_includes_required_fields() {
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let db = Arc::new(deepagent_persistence::Database::open_in_memory().unwrap());
+        let workspace = tempfile::tempdir().unwrap();
+        let checkpoint_root = tempfile::tempdir().unwrap();
+        let hook_output = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("created.txt");
+        let payload_path = hook_output.path().join("file-changed.json");
+        let quoted = payload_path.to_string_lossy().replace('\'', "''");
+        let definitions = HookDefinitions::parse(
+            &serde_json::json!({
+                "hooks": {
+                    "FileChanged": [{ "hooks": [{
+                        "type": "command", "shell": "powershell", "timeout": 5,
+                        "command": format!(
+                            "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted}', $payload)"
+                        )
+                    }] }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = HookRegistry::new();
+        assert_eq!(
+            definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+            1
+        );
+        let checkpoint = Arc::new(
+            CheckpointManager::new(
+                db,
+                "audit-file-hook",
+                0,
+                workspace.path(),
+                checkpoint_root.path(),
+            )
+            .unwrap(),
+        );
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(WriteFileProbeTool)).unwrap();
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::developer())
+                .with_hooks(Some(&hooks))
+                .with_checkpoint(Some(checkpoint))
+                .with_auto_approve(true);
+
+        let result = pipeline
+            .execute(ToolInvocation::new(
+                "write_file",
+                serde_json::json!({
+                    "path": target.to_string_lossy().to_string(),
+                    "content": "audit content"
+                }),
+            ))
+            .await
+            .unwrap();
+        assert!(result.output.ok);
+
+        let payload: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(payload_path).unwrap()).unwrap();
+        eprintln!("FileChanged payload: {payload}");
+        assert!(
+            payload["file_path"].is_string()
+                && matches!(payload["event"].as_str(), Some("change" | "add" | "unlink")),
+            "FileChanged payload misses required schema fields or has an invalid event: {payload}"
+        );
+    }
 }

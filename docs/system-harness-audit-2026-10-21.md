@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-111；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-113；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
@@ -2086,6 +2086,26 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响及限制：用户配置的压缩保留/强调指令会被静默忽略，摘要可能丢掉 hook 指定的重要信息。本探针确认了 compactor 发出的请求体不含指令，没有尝试证明具体摘要质量变化或真实模型输出。
 - 收敛方向（尚未实施，本地设计）：为 `BeforeCompact` 明确一个有类型的 hook result，区分 veto、审批和 custom instructions；在已有 compaction pipeline 将指令纳入 summary prompt，不把通用 `Modify` 猜测性地套用到所有 hook。覆盖空 stdout、多 hook 合并、拒绝、超时、Message/ResponseItem 和取消路径。
 
+### H-112：工作树生命周期 hook 缺少事件专属字段
+
+**级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `WorktreeCreate`、`WorktreeRemove` 或 `CwdChanged` command hook，并执行隔离子 Agent 的工作树创建、移除或工作目录切换。** 普通共享目录子运行不触发这组事件。
+
+- 根因与生产路径：`ChatSubagentRunner::execution_root()`、`remove_worktree()` 与 `run_tracked()` 分别派发三个 hook，但统一使用 `HookData::Path`；外部 command/HTTP serializer 只生成 `path`，无法表达工作树名称、删除路径或切换前后的目录。
+- 动态复现：Windows ignored 探针 `subagent_runner::tests::audit_worktree_hook_payloads_include_required_fields` 通过正式 `dispatch_child_hook()` 和真实 PowerShell command hooks 分别捕获三种 payload，实际均为 `hook_event_name`、`session_id`、`path`。`name`、`worktree_path`、`old_cwd`、`new_cwd` 联合断言以 **0 passed / 1 failed** 退出。该探针直接验证生产 dispatcher 和 serializer，传入代表性事件数据；未创建真实 Git worktree。
+- 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts` 的 `WorktreeCreateHookInputSchema` 要求 `name`，`WorktreeRemoveHookInputSchema` 要求 `worktree_path`，`CwdChangedHookInputSchema` 要求 `old_cwd` 与 `new_cwd`。
+- 影响及限制：依赖 schema 校验、按目录切换同步状态或清理特定 worktree 的 hook 会因必需字段缺失而无法工作。本探针未测试真实 Git create/remove 的执行顺序、hook 拒绝或隔离目录路径的安全边界。
+- 收敛方向（尚未实施，本地设计）：使用事件专属 typed hook data；创建事件携带稳定名称，删除事件携带实际 worktree 路径，目录切换事件在同一切换点传递旧/新绝对路径。通过真实隔离子 Agent、创建拒绝、子运行失败清理和 Windows 路径 schema 回归。
+
+### H-113：FileChanged hook 字段名与变化类型不符合 schema
+
+**级别：低（P3，条件性 hook 输入契约缺陷）；触发条件：配置 `FileChanged` command hook，且工具通过正式 checkpoint 变更工作区文件。** 未配置该 hook 时不影响文件写入。
+
+- 根因与生产路径：`ToolExecutionPipeline::fire_file_changed_hooks()` 根据 checkpoint mutation evidence 派发 `HookData::FileChange`；serializer 输出 `path` / `change_kind`，且类型值是 `created`、`modified`、`deleted`。参考 schema 要求字段 `file_path` 和枚举 `event: add|change|unlink`，本系统没有相应映射。
+- 动态复现：Windows ignored 探针 `tool_pipeline::tests::audit_file_changed_hook_payload_includes_required_fields` 经正式 ToolExecutionPipeline、CheckpointManager 和 `write_file` 工具创建临时文件，真实 PowerShell hook 捕获 `{"change_kind":"created","hook_event_name":"FileChanged","path":"…/created.txt","session_id":"…"}`。schema 字段及枚举断言以 **0 passed / 1 failed** 退出；没有访问用户文件或网络。
+- 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::FileChangedHookInputSchema` 要求 `file_path`，`event` 只能是 `change`、`add`、`unlink`。
+- 影响及限制：按文件路径或 add/change/unlink 类型处理的兼容 hook 无法通过字段校验，也不能区分创建、修改和删除。本探针动态覆盖创建；其它映射值由生产 `mutation_kind_label()` 代码确认，未逐个执行编辑和删除工具。
+- 收敛方向（尚未实施，本地设计）：在既有 `MutationKind` 到 hook DTO 的唯一边界映射标准字段和值，同时保留内部事件名；以真实 write/edit/delete pipeline 和 checkpoint evidence 验证 add/change/unlink，并覆盖失败、未变化和多路径工具。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2130,6 +2150,11 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-110 Pre/PostCompact schema 显式探针 | `cargo test -p deepagent-app-core --lib compact_payload_includes_required_fields --offline -- --ignored --nocapture`：0 passed / 2 failed；两个正式 hook payload 均泄露 `trigger=context_overflow`，PreCompact 另缺 `custom_instructions` |
 | H-111 PreCompact stdout 指令显式探针 | `cargo test -p deepagent-app-core --lib audit_precompact_stdout_is_used_as_compaction_instructions --offline -- --ignored --nocapture`：0 passed / 1 failed；hook stdout 的唯一标记未进入 ScriptedTransport 捕获的 summary request body |
 | H-110/H-111 默认基线与检查 | `cargo test -p deepagent-app-core --lib context_runtime::tests --offline`：23 passed / 6 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅增加 ignored 审计探针与报告，未修改生产逻辑、未跑 workspace 全量测试、Clippy、桌面构建或真实 Tauri |
+| H-112 工作树 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_worktree_hook_payloads_include_required_fields --offline -- --ignored --nocapture`：0 passed / 1 failed；WorktreeCreate/WorktreeRemove/CwdChanged 均实际仅发 `path` |
+| H-113 文件变更 hook payload 显式探针 | `cargo test -p deepagent-runtime --lib audit_file_changed_hook_payload_includes_required_fields --offline -- --ignored --nocapture`：0 passed / 1 failed；真实工具写入触发 hook，捕获 `path` / `change_kind=created`，缺 schema 要求的 `file_path` / `event=add` |
+| H-112 默认基线 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`：6 passed / 6 ignored；ignored 包含 H-109、H-112 和既有子 Agent 审计项 |
+| H-113 默认基线 | `cargo test -p deepagent-runtime --lib tool_pipeline::tests --offline`：11 passed / 5 ignored；ignored 包含 H-103、H-113 和既有审批审计项 |
+| H-112/H-113 格式与差异检查 | `cargo fmt --all -- --check` 与 `git diff --check` 通过；本批仅增加 ignored 审计探针与报告，未修改生产行为、未跑 workspace 全量测试、Clippy、桌面构建或真实 Git worktree 子 Agent |
 | Responses `tool_search_call` 候选差异核查 | DeepSeek 官方请求 schema 不提供可触发该 item 的工具类型；AppCore `tool_search` 以普通 function schema 注册。`cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed；`cargo test -p deepagent-models --lib stream::tests --offline`：21 passed。未新增缺陷或测试，未调用公网 provider |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |

@@ -1354,6 +1354,84 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-112: worktree lifecycle hook payloads must satisfy their event schemas"]
+    async fn audit_worktree_hook_payloads_include_required_fields() {
+        use deepagent_hooks::{HookData, HookDefinitions, HookPoint, SystemHookRunner};
+
+        let dir = tempfile::tempdir().unwrap();
+        let create_path = dir.path().join("worktree-create.json");
+        let remove_path = dir.path().join("worktree-remove.json");
+        let cwd_path = dir.path().join("cwd-changed.json");
+        let capture_command = |path: &Path| {
+            let quoted = path.to_string_lossy().replace('\'', "''");
+            format!(
+                "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted}', $payload)"
+            )
+        };
+        let definitions = HookDefinitions::parse(
+            &serde_json::json!({
+                "hooks": {
+                    "WorktreeCreate": [{ "hooks": [{
+                        "type": "command", "shell": "powershell", "timeout": 5,
+                        "command": capture_command(&create_path)
+                    }] }],
+                    "WorktreeRemove": [{ "hooks": [{
+                        "type": "command", "shell": "powershell", "timeout": 5,
+                        "command": capture_command(&remove_path)
+                    }] }],
+                    "CwdChanged": [{ "hooks": [{
+                        "type": "command", "shell": "powershell", "timeout": 5,
+                        "command": capture_command(&cwd_path)
+                    }] }]
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let mut hooks = HookRegistry::new();
+        assert_eq!(
+            definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+            3
+        );
+
+        let runner = audit_child_runner(dir.path(), Arc::new(AuditResumeTransport::default()));
+        assert!(runner.hooks.set(Arc::new(hooks)).is_ok());
+        for (point, path) in [
+            (HookPoint::WorktreeCreate, "planned-worktree"),
+            (HookPoint::WorktreeRemove, "existing-worktree"),
+            (HookPoint::CwdChanged, "child-worktree"),
+        ] {
+            runner
+                .dispatch_child_hook(
+                    point,
+                    HookData::Path {
+                        path: path.to_string(),
+                    },
+                )
+                .await
+                .unwrap();
+        }
+
+        let create: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(create_path).unwrap()).unwrap();
+        let remove: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(remove_path).unwrap()).unwrap();
+        let cwd: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(cwd_path).unwrap()).unwrap();
+        eprintln!("WorktreeCreate payload: {create}");
+        eprintln!("WorktreeRemove payload: {remove}");
+        eprintln!("CwdChanged payload: {cwd}");
+        assert!(
+            create["name"].is_string()
+                && remove["worktree_path"].is_string()
+                && cwd["old_cwd"].is_string()
+                && cwd["new_cwd"].is_string(),
+            "worktree lifecycle payloads miss required event fields: create={create}, remove={remove}, cwd={cwd}"
+        );
+    }
+
     #[derive(Default)]
     struct AuditPendingChildTransport {
         entered: tokio::sync::Notify,
