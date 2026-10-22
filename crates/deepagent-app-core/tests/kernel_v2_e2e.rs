@@ -15,6 +15,9 @@ use deepagent_subagents::WorktreeProvider;
 #[path = "kernel_v2_e2e/build_boundary.rs"]
 mod build_boundary;
 
+#[path = "kernel_v2_e2e/image_preparation.rs"]
+mod image_preparation;
+
 #[cfg(feature = "web")]
 #[path = "kernel_v2_e2e/search_capability.rs"]
 mod search_capability;

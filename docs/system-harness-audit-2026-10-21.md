@@ -38,6 +38,7 @@
 | 自动完成验证的真实构建生命周期 | 正式发现的 cargo check 已启动 build.rs 后，用户取消仍等待；Kernel 超时落终态后 build.rs 仍可写文件 | 已确认 H-64；Windows 真实临时 Cargo 工程、SystemCommandRunner、ModelAgent/Kernel/SQLite 对照，未覆盖其他构建系统和桌面 UI |
 | 自动验证与宿主命令边界 | 显式 cargo check 经配置后端被拒绝，但 .txt 修改后的完成验证、创建 .rs 后的单文件验证均绕过该后端，真实 build.rs 写到 workspace 外 | 已确认 H-65；完整 ChatService/工具/Kernel/真实 Cargo 与拒绝型 backend 复现；不是实际 Sandboxie/Windows Sandbox 容器逃逸测试 |
 | DeepSeek 原生搜索的模型能力选择 | Flash 开启 DeepSeekFirst 时，正式请求只剩官方明确会忽略的原生 web_search，本地 function 搜索描述被替换；Pro、外部搜索、关闭搜索对照成立 | 已确认 H-66；启用桌面同用的 web feature，正式 ChatService/Kernel/序列化离线复现，未实测公网搜索或回答质量 |
+| 当前轮图片与实时模型 Surface | 正式导入的可读图片已在本轮用户事件中持久化，首次模型请求却无 input_image；下一轮不重传附件才从历史带入 | 已确认 H-67；正式 AppCore 两轮、真实附件文件及 wire 对照，模型 transport 为离线回答，未测真实识图质量或桌面点击 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -54,6 +55,7 @@
 - H-54 的显式 effort / 输出上限与实际 wire 不一致，以及 H-49 的备用模型预算分裂，会使用户选择、上下文预算和供应商参数相互矛盾。应由一次有效请求配置解析同时供 meter、请求和恢复使用；参考实现对本次 options 与连接 defaults 的优先级有显式处理。
 - H-66 进一步证明能力启用不能只看全局开关：默认 DeepSeekFirst 在 Flash 上将本地可调用搜索替换为官方会忽略的原生工具。原生搜索是否可用应由有效模型与协议共同决定；不支持时采用明确的外部搜索配置或返回设置不可用，不能宣称搜索已开启却移除可调用入口。
 - 无状态请求必须重新携带当前有效内容。H-57 的 MCP 说明和 skill 目录首轮存在、第二轮正文消失，是当前确定性不适配点。需要保存实际内容或在每次请求边界重新注入；仅记录“曾发送过这个名字”不满足续轮要求。
+- H-67 显示当前多模态输入也有双源问题：附件虽已落盘，实时 Surface 却由纯文字 goal 创建；原图到下一轮才从历史出现。应统一当前用户输入的文字、附件与持久化归属，不能用底层图片 serializer 的单测通过替代 AppCore 首次请求验收。
 - 上下文占用已有正向证据：运行内工具循环、跨用户 turn 和数据库重开样本都保留完整历史，并区分 provider 输入锚点、下一请求投影和累计计费。DeepSeek Harness 的 token-meter 同样区分这些概念；其 UI 分项是启发式组成且不要求与 provider 投影相加一致，本系统的分项守恒属于自身实现选择，不能把它写成参考项目的共同保证。真实 tokenizer 误差和全部压缩/附件路径仍待验证。
 
 ### “能增强模型”的证据与尚未证明的部分
@@ -1545,10 +1547,26 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：DeepSeek Harness `packages/web/tool-web/src/search.ts::runSearchQueries()` 将模型可调用工具交给独立 `ctx.web.search(request,signal)`；`packages/web/web/src/index.ts::WebRuntime.search()` 在明确注册/选择的 provider 上执行，无法解析可用 provider 时返回显式错误。该机制使主模型不具备内置搜索时仍可使用外部搜索 seam。本轮未运行参考项目，其 DeepSeek 搜索插件另用辅助模型/协议，不能照搬其默认模型并宣称与当前官方 Responses 限制相同。Codex `core/src/tools/hosted_spec.rs::create_web_search_tool()` 则接收独立的搜索模式与模型工具类型构造声明；本轮只核对该 seam，不据此声称 Codex 自动拦截所有不支持模型。
 - 修复方向（尚未实施）：在既有有效模型/协议能力解析与 provider adapter 边界决定 hosted search 或 callable search，注册定义、路由和设置状态共用同一决定。对不支持原生工具的模型保留显式外部 provider，或明确提示不可用；模型切换、备用模型与子运行均需重新解析。测试应覆盖默认 Flash、Pro、搜索禁用、外部搜索、模型切换，以及实际搜索计数和失败反馈；不新增第二套搜索注册表，不通过删除开关或提示模型“假装联网”绕过问题。
 
+### H-67：当前轮图片仅写入持久化用户事件，没有进入实时模型 Surface，下一轮才从历史出现
+
+**级别：高（P1）；范围：ChatService 的结构化图片输入，尤其桌面关闭第三方系统视觉、直接把原图发送给主模型的路径。** 系统视觉开启时可能有额外的前置识图文字，该独立路径不能据此判为完全不可用；本项不涉及供应商不支持图片、图片过大或附件丢失。
+
+- 第一个错误边界：`run_assembler.rs` 将 `message_attachments(&self.attachments)` 写入 `session.append(MessageAppended)`，但 `ModelAgent::new(client, model, system_prompt, final_user_prompt, tools)` 只传纯文字 goal，没有把同一当前输入的附件交给实时 Surface。`ModelAgent::new` 以纯文字 Message::user 和 ResponseHistory::from_seed 创建当前目标；with_history/with_response_history 加的是接纳阶段读取的历史，不包含刚写入的当前事件。随后 FileAttachmentResolver 只遍历 Surface 已存在的 InputMessage，无法补回根本没有引用的本轮图片。
+- 新增 `tests/kernel_v2_e2e/image_preparation.rs`：通过正式 AttachmentService 和桌面 AttachmentIngestDto 导入 68 字节的 PNG，SettingsService、ChatService → Kernel → ModelAgent → ModelClient 与序列化均真实执行。模型只替换底层 HttpTransport，记录每次实际 input_image 数并返回中性的离线答案；没有公网识图调用或真实凭据。所选 Chat/Reasoner 均为官方支持图片的 deepseek-flash，不依赖 fallback。
+- 两轮对照：第一轮用 run_in_session_with_attachments 提交新图；第二轮沿同一 session 普通 run_in_session，不重新上传。图片文件始终存在，两轮各一条 succeeded 终态，各发一次模型请求；实际图片数为 `[0,1]`，应为 `[1,1]`。同一文件在第二轮成功转为 data:image/png，排除了文件解析器、图片尺寸、权限拒绝或 fixture 没有设置 data URL 的解释。第二轮看到图片不能弥补第一轮在缺图前提下已经完成的回答。
+- 已执行显式探针 `cargo test -p deepagent-app-core --test kernel_v2_e2e image_preparation::audit_new_image_reaches_first_model_request --offline -- --ignored --nocapture`：约 0.32s 明确失败，实际 `[0,1]`、期望 `[1,1]`。正常历史对照 `retained_imported_image_reaches_continuation_request` 通过；该默认测试只确认第二轮，不以默认绿测宣称新图片发送正确。随后补强原生视觉 Off 设置与第一轮事件的附件引用断言，按下面验证记录重跑。
+- 补强结果：显式设置 VisionMode::Off、读取真实 EventStore 并严格检查第一轮用户事件含导入图片的 id/path；将 transport 从仅文本 delta 改为完整 message 的 output_item.done 和 response.completed（含 output），避免只走无原生输出的兼容回放。显式探针再次约 0.37s 失败，仍为 `[0,1]`；共享入口默认回归 14 passed / 12 ignored，约 1.67s。没有因此宣称所有后续用户输入都能通过原生历史恢复，那个边界需另测。
+- 调查与 fixture 边界：最初用完整 82 字节 PNG 检查正常图片时先发现首次 wire 图片为 0，因此停止把“不可读/超限附件静默省略”直接定性，转而追当前输入与历史的不一致。最终采用 68 字节样本；修正其 IDAT CRC 后，用独立 Python zlib/CRC 以及 Pillow 实际解码确认为 1×1 PNG，再重跑仍为 `[0,1]`。没有通过删除生产校验或手工把图片塞进 request 造出故障。
+- 影响：用户在本轮问截图、图表或图片内容时，主模型实际只得到文字；运行仍可正常成功结束，难以仅从运行状态发现缺图。下一轮才出现图像还会造成“追问后才能识图”的错位。这里确认的是实际模型输入缺失，没有调用真实模型，不能声称已测到幻觉率、特定答案错误或费用损失。默认系统视觉为 System，本项不能扩大为所有默认图片请求都无图/无识图文本；前端原生视觉路径由 Off 开关明确提供。
+- 成熟实现对照：DeepSeek Harness `attachment/src/index.ts::admitPromptContent()` 将上传内容替换为有序 durable refs；`api/session-controller/src/commands.ts` 在 prompt 命令中完成该接纳再转给会话。`llm-deepseek/src/images.ts::prepareImages()` 针对将要请求的 messages 准备引用，serialize.ts 从这些同一 message 的 image blocks 构造 wire。本轮仅源码对照，它使用 Messages 适配，不能把其字段直接复制为本系统 Responses 字段。可借鉴的是“当前消息的文字、图片和持久化归属是同一份输入”，不是在下一轮回放才补充图片。
+- 修复方向（尚未实施）：在既有 RunAssembler/ModelAgent 原生 Surface 边界，用同一份已接纳当前消息创建实时输入和持久化事件；保留最终 prompt decorations、附件引用及 snip 标签，不能再让纯文字 goal 重建丢弃附件。无需新增附件存储或重读整段事件来重复追加当前消息。回归需覆盖首轮、新图续轮、多图、工具循环、重启恢复、压缩后保留图像、系统视觉文字路径及 ContextMeter 与实际 wire 一致；单测手工写入 attachment_data_urls 不足以验收这条跨层链路。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-67 当前图片进入首个请求显式探针（见该节命令） | 约 0.32s 明确失败；两轮 wire 图片数 `[0,1]`，正常历史对照通过；真实图片文件始终存在，两运行均成功。未调用真实视觉模型或桌面 UI |
+| H-67 原生响应、持久化输入及共享入口补强 | 原生 output_item.done 与 completed/output fixture 下显式探针约 0.37s 再次失败；已断言 Off 设置和正式首轮事件附件引用。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：14 passed / 12 ignored；fmt、diff 检查通过。本批只测试与文档，未跑全 workspace、Clippy、桌面构建或公网识图 |
 | H-66 模型搜索能力显式探针（见该节命令） | 约 0.66s 明确失败；三组正常对照成立，Flash+DeepSeekFirst 实际 native=true/callable_function=false；只验证实际请求形状与官方限制，不含真实联网和回答质量 |
 | H-66 搜索契约与共享入口基线 | `cargo test -p deepagent-app-core --features web --test kernel_v2_e2e --offline`：14 passed / 12 ignored，约 1.69s；缺陷探针另行显式失败。`cargo test -p deepagent-models --offline`：81 passed / 2 ignored；包含新增的官方容量元数据发现/目录恢复对照。仅测试与文档，未做公网搜索、真实桌面、全 workspace、Clippy 或前端构建 |
 | H-65 配置后端拒绝与真实宿主构建显式探针（见该节命令） | 初版 A/B 约 1.30s、扩展 A/B/C 约 2.65s，均明确失败；无修改无 canary，.txt 在完成后出现，.rs 在最终采样前已出现；backend 均仅收到并拒绝 1 次显式命令，三组 run=succeeded；未使用真实 OS sandbox |
@@ -1848,6 +1866,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 有效模型参数与输出预算 | H-54 | 既有配置 overlay、模型能力、桌面深度缺省统一解析到最终请求；参考 DeepSeek 本次 effort/maxTokens 优先及 Codex wire 断言 | 显式 effort/输出上限生效；发送前及下一请求预算与 wire 一致；无覆盖保持默认；不支持值明确拒绝；重试和子运行不重新覆盖 |
 | 思考模式的协议转换 | H-55 | 既有 thinking 配置表达开关/强度，由 adapter 显式生成和校验自己的 wire 字段；参考 DeepSeek 分 provider 的 off 映射 | Simple/Medium/Deep 经两协议完整 Agent 路径均可发送；禁用不被默认强度重新启用 |
 | 模型与搜索能力的有效选择 | H-66 | 既有模型/协议能力解析统一 hosted 与 callable search；参考 DeepSeek Harness 的独立 web provider seam，原生能力以当前官方限制为准 | Flash 不被注入会忽略的唯一搜索入口；Pro 原生及外部搜索正常；禁用、切换、备用模型和子运行策略一致，真实搜索数与错误可验证 |
+| 当前多模态用户输入与实时 Surface | H-67 | RunAssembler/ModelAgent 共用同一已接纳消息的文字、附件与持久化归属；参考 DeepSeek Harness 在创建 user message 前完成有序附件接纳 | 首轮与续轮新图均进入本次实际请求；无重复 user item；历史/压缩/重启、系统视觉文本及 meter/wire 一致；不可读附件的行为独立验证 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
