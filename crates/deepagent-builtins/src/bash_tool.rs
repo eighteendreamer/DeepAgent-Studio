@@ -1611,6 +1611,118 @@ mod tests {
         assert!(start.elapsed() < Duration::from_secs(10));
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit reproducer: timed-out pipe readers retain and grow an unowned buffer"]
+    async fn audit_drain_deadline_releases_reader_and_buffer() {
+        use std::os::windows::process::CommandExt;
+        use tokio::io::AsyncWriteExt;
+
+        async fn wait_for_bytes(
+            buffer: &std::sync::Weak<std::sync::Mutex<Vec<u8>>>,
+            expected: usize,
+        ) -> bool {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let length = buffer.upgrade().map(|buffer| buffer.lock().unwrap().len());
+                    match length {
+                        Some(length) if length >= expected => return true,
+                        None => return false,
+                        _ => tokio::time::sleep(Duration::from_millis(5)).await,
+                    }
+                }
+            })
+            .await
+            .unwrap_or(false)
+        }
+
+        let mut observations = Vec::new();
+        for keep_pipe_open in [false, true] {
+            // The second process waits for test input before producing any late
+            // bytes. Neither fixture creates descendants or accesses user files.
+            let script = if keep_pipe_open {
+                "[Console]::Out.Write('READY'); [Console]::Out.Flush(); \
+                 $null = [Console]::ReadLine(); \
+                 [Console]::Out.Write(('x' * 65536)); [Console]::Out.Flush(); \
+                 $null = [Console]::ReadLine()"
+            } else {
+                "[Console]::Out.Write('READY'); [Console]::Out.Flush()"
+            };
+            let (mut command, _guard) =
+                prepare_process_command(CommandShell::Powershell, script).unwrap();
+            command
+                .creation_flags(CREATE_NO_WINDOW)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null());
+            let mut child = tokio::process::Command::from(command)
+                .kill_on_drop(true)
+                .spawn()
+                .unwrap();
+            let buffer = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let observer = Arc::downgrade(&buffer);
+            let reader = tokio::spawn(drain_pipe(child.stdout.take(), buffer.clone()));
+            let cleanup = reader.abort_handle();
+            let ready = wait_for_bytes(&observer, 5).await;
+            let drained = join_drain(reader, IO_DRAIN_GRACE).await;
+            let initial = take_buffer(&buffer);
+            // Match run_process_controlled returning and dropping its buffers.
+            // The observer is weak, so it cannot itself retain the buffer.
+            drop(buffer);
+            let retained = observer.strong_count() != 0;
+            let mut late_bytes = 0;
+            let mut late_write_ok = !keep_pipe_open;
+            if keep_pipe_open {
+                let mut stdin = child.stdin.take().unwrap();
+                late_write_ok = matches!(
+                    tokio::time::timeout(Duration::from_secs(1), stdin.write_all(b"go\r\n")).await,
+                    Ok(Ok(()))
+                );
+                if late_write_ok {
+                    let _ = wait_for_bytes(&observer, 65_536).await;
+                    late_bytes = observer
+                        .upgrade()
+                        .map_or(0, |buffer| buffer.lock().unwrap().len());
+                }
+                // Keep stdin open until the reader has been inspected above.
+                drop(stdin);
+            }
+            // Clean up before asserting the deliberately failing invariant.
+            cleanup.abort();
+            let reader_stopped = tokio::time::timeout(Duration::from_secs(2), async {
+                while !cleanup.is_finished() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .is_ok();
+            let reaped = tokio::time::timeout(Duration::from_secs(3), async {
+                let _ = child.kill().await;
+                child.wait().await
+            })
+            .await
+            .is_ok_and(|result| result.is_ok());
+            eprintln!(
+                "pipe audit: open={keep_pipe_open} ready={ready} drained={drained} \
+                 retained={retained} late_write={late_write_ok} late_bytes={late_bytes} \
+                 reader_stopped={reader_stopped} reaped={reaped}"
+            );
+            assert!(ready && initial == b"READY" && late_write_ok);
+            assert!(reader_stopped && reaped && observer.strong_count() == 0);
+            observations.push((drained, retained, late_bytes));
+        }
+        assert_eq!(observations[0], (true, false, 0), "normal EOF control");
+        assert!(
+            !observations[1].0,
+            "the held pipe must reach the drain deadline"
+        );
+        assert_eq!(
+            (observations[1].1, observations[1].2),
+            (false, 0),
+            "after the drain deadline no reader may retain a buffer or collect late output"
+        );
+    }
+
     /// The hang this exists for: the shell exits in a few hundred ms, but the
     /// grandchild it launched shares its std handles and keeps the pipe's write
     /// end open for 25s. Reading the pipe must not be a precondition for

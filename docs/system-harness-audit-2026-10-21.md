@@ -31,6 +31,7 @@
 | 能力目录和说明在后续无状态请求中的保留 | MCP 说明和技能目录均在首轮存在，第二轮完整 wire 中消失；新会话恢复，技能 reset 也恢复 | 已确认 H-57；正式 AppCore 连续运行与请求序列化，未覆盖重启/压缩和真实供应商 |
 | 附件导入/删除的身份与路径边界 | 正式 remove 接受空/点号 ID 删除整桶；ingest 接受点目录并覆盖上级文件；父目录 session 可使写入与删除越出 root | 已确认 H-58；Windows 临时目录真实文件复现，未调用真实用户目录或桌面 IPC |
 | 可选 WASM 工具的超时归属 | 成功调用遗留的 watchdog 增加共享 Engine epoch，使后续调用在自己的期限前中断 | 已确认 H-59；Windows 隔离子进程对照；默认未启用 wasm，不外推为普通桌面卡顿原因 |
+| 命令输出读取任务的归属 | drain 超时后正式 helper 仍持有缓冲，调用方释放后继续读入迟到输出；正常 EOF 释放 | 已确认 H-60；真实 Windows 进程管道/helper 复现，完整执行器/UI 内存与其他平台未验收 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -1428,10 +1429,31 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：Claude Code `utils/combinedAbortSignal.ts::createCombinedAbortSignal` 把 timer 放在调用局部 controller 内，并在 cleanup 清除；`utils/hooks/execHttpHook.ts` 成功和失败均 cleanup。Codex `core/src/exec.rs::ExecExpiration::wait_with_outcome` 与执行 select 把 timeout future 绑定本次 child wait。它们不是同构 Wasmtime 实现；借鉴的是完成时回收局部定时工作、不同调用互不取消。WASM 的直接实现依据来自上游 API，不宣称成熟 Agent 已采用本仓库相同后端。
 - 修复方向（尚未实施）：在既有 WasmSandbox 内统一 epoch 时钟与每 Store 的真实截止时间，可参考上游 Store deadline callback 按该 Store 的 deadline 决定继续或 trap；共享 Engine 的 tick 不应由任意一个调用独占解释为“自身超时”。回收调用局部工作，不能只在成功路径加取消而遗漏并发 Store、错误返回或取消路径。另需独立验证 Windows trap 能正常返回错误，或使用有界隔离 worker 防止宿主被带走；不能仅增加超时或全局串行化掩盖。
 
+### H-60：命令输出管道的等待超时仅丢弃句柄，读取任务仍保留缓冲并继续收集迟到输出
+
+**级别：中（P2）；范围：SystemExecutor 的命令结束后仍有进程持有 stdout/stderr 写端，超过输出 drain 截止时间。** 正常 EOF 不触发；不将“允许命令正常留下后台服务”本身定为缺陷，也不据此解释 Codex 宿主的续接错误。
+
+#### 生产路径、对照与复现
+
+- `crates/deepagent-builtins/src/bash_tool.rs::run_process_controlled` 为 stdout/stderr 各启动 `tokio::spawn(drain_pipe(...))`；命令结束后分别调用 `join_drain`，生产 grace 为 2 秒。`join_drain` 把 JoinHandle 按值移入 `tokio::time::timeout`，elapsed 时返回 false，没有保留句柄并 abort。当前锁定的 Tokio 1.52.3 `runtime/task/join.rs` 明确说明 drop JoinHandle 会 detach，而非取消任务。
+- 调用方读取一次 `take_buffer` 并返回后，原有读取任务仍拥有 pipe 和 `Arc<Mutex<Vec<u8>>>`。`drain_pipe` 持续 `extend_from_slice`，没有读入容量上限；迟到字节进入一个已不属于任何工具结果的缓冲。返回文案称后续输出不再捕获，实际仍在内存读取。模型结果预算在执行器返回之后生效，不能限制这段孤立缓冲。
+- 新增 Windows 专用、默认忽略的 `bash_tool::tests::audit_drain_deadline_releases_reader_and_buffer`：通过正式 `prepare_process_command` 创建两个真实、隐藏的 PowerShell 子进程，stdout 使用正式 `drain_pipe` / `join_drain`。正常组写 READY 并退出；实验组写 READY 后保持管道开放，只在收到测试 stdin 后再写 65,536 字节。两组均先确认读取 READY，使用未缩短的生产 2 秒 grace；没有创建后代、联网或访问用户文件。
+- 执行 `cargo test -p deepagent-builtins --lib audit_drain_deadline_releases_reader_and_buffer --offline -- --ignored --nocapture`：约 2.98 秒，明确失败。正常 EOF：drained=true、retained=false、late_bytes=0；开放管道：drained=false、retained=true，**在 join_drain 返回并 take_buffer、释放调用方强引用之后**才发送输出指令，仍读入 late_bytes=65536。观测使用 Weak，不会自行维持缓冲存活。失败断言前显式 abort 测试读取任务并确认结束、回收两个子进程；两组 reaped=true，清理后 Weak 强引用数为 0。
+- 这是实际进程管道与正式清理 helper 的资源生命周期复现，不是完整 SystemExecutor/ToolPipeline/UI 的端到端内存测试。生产路径可达性由上述调用点以及已有 `a_detached_child_holding_the_pipe_does_not_hang_the_call` / `a_normal_exit_leaves_the_detached_child_running` 对照：它们验证返回有界、后台服务保留，但原有断言没有验证 reader 已释放。没有运行高内存/OOM 压力，也没有动态验证 Linux/macOS。
+
+#### 成熟实现、后果与收敛方向
+
+- Codex `借鉴/codex/codex-rs/core/src/exec.rs::await_output` 通过 `&mut JoinHandle` 等待；drain 超时显式 `handle.abort()`。同文件 full-buffer 分支会 abort 未完成 reader 并等待其结束；不能把这两个 capture policy 的输出保留规则混成一个保证。本项直接借鉴的是“等待截止后处理所属读取任务”，不是要求无条件杀死合法后台服务。
+- Claude Code `借鉴/claudecode/restored-src/src/utils/ShellCommand.ts::cleanup` 清理两个 StreamWrapper 并释放 TaskOutput；后台 file mode 有文件大小 watchdog，pipe mode 会 spillToDisk。这里仅核对已有清理/输出所有权设计，未运行参考项目，也不声称与本系统 pipe helper 的策略完全一致。
+- 影响：后台服务持续输出时，已完成工具调用之后仍存在没有结果消费者的 reader 与无上限缓冲；重复调用可累积这种资源。持续时间取决于写端什么时候关闭、宿主 runtime 何时退出；有限输出可能只形成暂时占用，大量持续输出可能导致内存压力乃至宿主内存耗尽。动态只证明迟到 64 KiB 的保留与增长，没有把 OOM 或每次命令都泄漏当作实测事实。H-46 是 MCP 关闭后进程树残留；本项是命令工具已返回后的输出读取归属，触发、对象和修复边界不同。
+- 修复建议（尚未实施）：在现有 SystemExecutor 中统一两个 reader 的生命周期，drain 截止后 abort 并有界确认 reader 已结束，再读取/释放最终缓冲；取消/外层 Future 被丢弃也必须有 owner 清理。为仍需保留的后台输出使用已有受控文件/任务归属，而非孤立内存 Vec；有效输出设保留预算并保持截断提示，不要求持续后台服务随普通命令返回而退出。验收覆盖正常 EOF、单/双写端开放、迟到输出、取消、外层 drop 和重复执行；同时核实关闭 pipe 对合法后台服务的影响，不能仅让测试缓冲变小或提高等待时限。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-60 Windows 输出 drain 显式探针（见该节命令） | 明确失败：正常 EOF 释放缓冲，开放管道在 grace 结束、调用方释放后仍保留缓冲并接收迟到 65,536 字节；断言前 reader/子进程均已回收 |
+| `cargo test -p deepagent-builtins --lib bash_tool::tests --offline`（H-60 核查时） | 23 passed / 1 ignored，约 26.39s；忽略的是已显式执行失败的新缺陷探针；同批 fmt 与 diff 检查通过，未修改生产行为 |
 | `cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`（权限验证补充时） | 4 passed；搜索后的 schema/执行权限、动态加载、父子发现集合隔离均通过；同批 fmt 和 diff 检查通过 |
 | H-58 附件导入异常身份显式探针（见补充命令） | 明确失败：三组异常均成功覆盖 canary 并写 metadata，分别落在会话桶、附件 root 及 root 外兄弟目录；正常对照成立 |
 | `cargo test -p deepagent-app-core --lib attachment_service::tests --offline`（导入补充时） | 4 passed / 2 ignored；导入本轮显式执行失败，删除此前已显式失败；同批 fmt 与 diff 检查通过 |
@@ -1672,6 +1694,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 可选 WASM 的时钟与调用归属 | H-59 | 既有 WasmSandbox 统一 Engine tick 与 per-Store deadline；参考上游 Wasmtime 及成熟 Agent 的局部 timer 清理 | 顺序与并发调用互不提前超时；成功/失败/取消不遗留误伤；Windows trap 错误不终结宿主；默认未启用路径保持不受影响 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
+| 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 附件存储身份与写入/删除范围 | H-58 | 既有 AttachmentService 统一有效单组件身份、会话归属和精确附件读写/删除；参考本仓库 ledger 组件验证及 Claude 宿主会话/UUID 文件身份 | 异常 id/session 在写入前拒绝；不覆盖或删除桶/root/兄弟数据；正常导入/幂等删除、junction/竞态和重开分别验证 |
