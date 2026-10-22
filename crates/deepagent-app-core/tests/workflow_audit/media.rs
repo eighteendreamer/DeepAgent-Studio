@@ -145,6 +145,7 @@ struct MediaFixture {
     chat: ChatService,
     session: String,
     artifacts: Arc<CanvasArtifactService>,
+    providers: Arc<CanvasProviderService>,
     workflow: WorkflowRequest,
     live: Arc<Mutex<Vec<NodeExecutionEvent>>>,
 }
@@ -186,7 +187,7 @@ impl MediaFixture {
             CanvasArtifactService::new(root.path().join("artifacts"), db.clone()).unwrap(),
         );
         let gateway =
-            Arc::new(CanvasModelGateway::new(providers).with_artifacts(artifacts.clone()));
+            Arc::new(CanvasModelGateway::new(providers.clone()).with_artifacts(artifacts.clone()));
         let chat = ChatService::new(
             db.clone(),
             settings,
@@ -217,6 +218,7 @@ impl MediaFixture {
             chat,
             session,
             artifacts,
+            providers,
             workflow,
             live: Arc::new(Mutex::new(Vec::new())),
         }
@@ -392,10 +394,12 @@ async fn audit_video_node_events_survive_database_reopen() {
         db,
         chat,
         artifacts,
+        providers,
         ..
     } = fixture;
     drop(chat);
     drop(artifacts);
+    drop(providers);
     drop(db);
     // All original application/database owners have been dropped. This reader
     // does not borrow the live callback and cannot invent missing node events.
@@ -572,4 +576,125 @@ async fn audit_edited_video_prompt_submits_a_new_task() {
         "executing the edited prompt must submit a new generation rather than silently polling the previous task"
     );
     assert!(new_prompt_sent, "the edited prompt must reach the provider");
+}
+
+#[tokio::test]
+#[ignore = "audit: a saved task id must not be sent to a replacement provider endpoint on resume"]
+async fn audit_video_resume_rejects_replaced_provider_identity() {
+    let mut original = LocalVideoProvider::start("Succeed").await;
+    let mut replacement = LocalVideoProvider::start("Succeed").await;
+    let mut fixture = MediaFixture::new(&original).await;
+    let mut first = fixture.spawn("audit-video-original-provider");
+    original.wait_for_poll().await;
+    original.release_poll.notify_one();
+    finish_run(&mut first).await.unwrap();
+    let task_id = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.node_id == "video" && event.status == NodeExecutionStatus::Completed)
+        .unwrap()
+        .job_id
+        .clone()
+        .unwrap();
+    let video = fixture
+        .workflow
+        .definition
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == "video")
+        .unwrap();
+    video.config.insert("videoTaskId".into(), json!(task_id));
+    let model_ref = video.config["videoModel"].as_str().unwrap().to_string();
+    let (provider_id, model_id) = model_ref.split_once("::").unwrap();
+
+    // Control: an explicit resume with the same provider does not resubmit.
+    let mut same = fixture.spawn("audit-video-same-provider-resume");
+    original.wait_for_poll().await;
+    original.release_poll.notify_one();
+    finish_run(&mut same).await.unwrap();
+    assert_eq!(
+        original
+            .requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(line, _)| line.starts_with("POST /v1/video/submit "))
+            .count(),
+        1
+    );
+
+    let previous = fixture.providers.provider(provider_id).unwrap();
+    fixture
+        .providers
+        .save_provider(CanvasProviderInput {
+            id: previous.id,
+            name: previous.name,
+            protocol: "openai".into(),
+            base_url: replacement.base_url.clone(),
+            enabled: true,
+            models: previous.models,
+            api_key: Some("sk-audit-replacement-placeholder".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let resolved = fixture
+        .providers
+        .resolve_model(provider_id, model_id)
+        .unwrap();
+    assert_eq!(resolved.provider.base_url, replacement.base_url);
+    assert_eq!(
+        resolved.api_key.as_deref(),
+        Some("sk-audit-replacement-placeholder")
+    );
+    let original_requests_before = original.requests.lock().unwrap().len();
+    let run_id = "audit-video-replaced-provider-resume";
+    let mut resumed = fixture.spawn(run_id);
+    // A corrected implementation may reject the changed identity before any
+    // network request. Observe the run and the replacement listener together.
+    let replacement_polled = tokio::select! {
+        _ = replacement.wait_for_poll() => true,
+        result = &mut resumed => {
+            assert!(result.unwrap().is_err(), "changed identity must not silently succeed");
+            false
+        }
+    };
+    let result = if replacement_polled {
+        replacement.release_poll.notify_one();
+        Some(finish_run(&mut resumed).await)
+    } else {
+        None
+    };
+    original.close().await;
+    replacement.close().await;
+    let foreign_requests = replacement.requests.lock().unwrap();
+    let foreign_task = foreign_requests
+        .iter()
+        .find(|(line, _)| line.starts_with("POST /v1/video/status "))
+        .map(|(_, body)| body["requestId"].clone());
+    assert_eq!(
+        original.requests.lock().unwrap().len(),
+        original_requests_before
+    );
+    let terminal = RunStore::new(&fixture.db)
+        .get(run_id)
+        .unwrap()
+        .unwrap()
+        .terminal_kind;
+    assert_eq!(
+        RunStore::new(&fixture.db)
+            .events_after(run_id, None)
+            .unwrap()
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .count(),
+        1
+    );
+    eprintln!("video provider replacement: unchanged_resume_submits=1, replacement_polled={replacement_polled}, same_old_task={}, api_ok={}, terminal={terminal:?}",
+        foreign_task.as_ref() == Some(&json!(task_id)), result.as_ref().is_some_and(|result| result.is_ok()));
+    assert!(
+        !replacement_polled,
+        "an old task id must not be polled against a replacement provider endpoint/account"
+    );
 }

@@ -62,7 +62,7 @@
 | 画布云端视频任务的取消等待 | 正式 ChatService/WorkflowAgent/Kernel 与真实本机 HTTP、文件 SQLite、artifact 正常对照；停止在状态接口等待中已受理，但释放响应前运行仍未退出 | 已确认 H-119；未实等生产 60 秒轮询时限，未执行真实云端生成或桌面点击 |
 | 工作流节点事件的持久化通道 | 正式视频工作流实时收到 6 条节点事件；关闭全部原数据库 owner 后重开，规范 run_events 仍为 0 条节点事件；唯一运行成功终态与视频资产均保留 | 已确认 H-120；不等同于所有画布自动保存内容丢失，未验真实桌面崩溃/断线重连 |
 | 视频运行中 task ID 的前端投影与续跑 | 正式 Rust publisher 发出 Running/job_id，生产 TS executor 与真实 Zustand store 收到后仍不存 ID，停止再提交时 config 缺 videoTaskId；Completed 对照正常 | 已确认 H-121；实际跨语言事件/序列化探针，Tauri 传输替换为本机内存桥，未发生真实云端重复收费 |
-| 视频修改输入后的执行身份 | 首次视频成功后，将实际 Completed 事件交给生产前端，修改提示词并把其真实下一 WorkflowRequest 送回正式后端；只轮询旧任务，两次 succeeded，新提示词未提交 | 已确认 H-122；真实本机 HTTP 与 TS/Rust 往返，未验证真实供应商视频内容或账号切换 |
+| 视频修改输入及配置后的执行身份 | 真实 TS/Rust 往返中，修改提示词仍轮询旧任务并 succeeded，新提示词未提交；同一 provider ID 改地址/凭据后，旧 task ID 被发到新地址并 succeeded | 已确认 H-122；本机真实 HTTP、原地址续跑对照；未验真实供应商视频、同地址仅换凭据或云端账号权限 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -2205,10 +2205,19 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响与限制：用户看见新提示词仍得到旧任务结果与 succeeded，无法据状态分辨新指令是否执行；依赖该节点的下游可能继续使用过期产物。样本仅改提示词、用占位视频验证 task/request/asset 轨迹，不评价实际视频内容、模型质量或 UI 截图；供应商/账号、参考图和尺寸变化仍需独立动态验证，不能一并计为已覆盖。
 - 收敛方向（本地设计，尚未实施）：在既有节点/attempt/task 关系中明确“新生成”与“恢复旧任务”的意图，保存输入身份及原 provider/model/account 归属；输入变化或主动重新生成创建新 attempt，显式续跑只使用原任务身份。已完成输出保留为来源资产，新结果提交前标注有效性，旧任务晚事件按 attempt 拒绝覆盖新结果。复用现有 run_events 与图存储，补测修改/未修改/已完成/取消/失败后重跑及实际 submit 次数，和 H-119～H-121 一起验收完整状态机。
 
+#### 恢复归属补充：同一 provider ID 的地址/凭据替换
+
+- 后续 ignored 探针 `audit_video_resume_rejects_replaced_provider_identity` 复用正式 ChatService/Gateway、SQLite 与两台独立 loopback HTTP。先在 A 完成 submit/status/download，从实际 Completed 取得 ID；显式带 ID 在未变的 A 上续跑，对照确认总 submit 仍为 1。随后通过生产 save_provider 保留原配置 ID，将 base URL 和占位 API Key 改成 B；resolve_model 读回新地址/新凭据，再用相同模型引用与原 task ID 经正式入口恢复。
+- `cargo test -p deepagent-app-core --test workflow_audit audit_video_resume_rejects_replaced_provider_identity --offline -- --ignored --nocapture`：**0 passed / 1 failed**，约 0.41s；`replacement_polled=true, same_old_task=true, api_ok=true, terminal=succeeded`。A 不再收到请求，B 收到携带原 ID 的 status 并下载 B 返回的结果；所有运行和两个本机服务器在最终缺陷断言前回收。此处没有新增 H 编号，归于 H-122 中同一个无输入/来源绑定的 task ID 复用边界。
+- 代码原因：generate_video 在每次恢复时按当前 model_ref 重新 resolve provider，resume_task_id 只有字符串，没有提交时的 endpoint/account 版本；“同一次调用内不切候选供应商”的保证无法覆盖两次运行间配置替换。参考 ArtCraft 保存任务 provider/provider_job_id 并据此选择 polling；对自定义 endpoint/凭据版本的绑定与变更处置仍需本系统本地设计，不能声称参考项目已验证任意可编辑网关配置。
+- 影响与限制：新地址可能查不到旧任务，也可能把相同字符串解释成另一个任务；本机 B 接受该 ID 的 fixture 证明本系统未校验来源，不证明真实云端任务 ID 必定碰撞或已经发生数据泄漏。样本同时更换地址和占位凭据，并确认生产 resolve 的有效凭据已变化；未分别验证同地址只换 Key、真实账户切换/撤销或新主机认证规则。归属变化应明确拒绝不匹配恢复或重新核对原来源授权；不可自动复用已撤销旧凭据，也不可静默将旧 ID 交给新主机。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-122 provider 来源替换补充探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_video_resume_rejects_replaced_provider_identity --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.41s；原地址续跑总 submit=1，替换地址/占位凭据后 B 收到原 task ID 并返回 succeeded；仅本机 HTTP，无真实云端账号 |
+| H-122 来源探针默认基线与 fixture 所有权复核 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 8 ignored，约 0.17s；fixture 新增 provider service 保活后，H-120 重开测试显式 drop 该 owner，再按原命令复测仍 0 passed / 1 failed，约 0.17s，实时 6/落盘 0 的结论不变。fmt/diff 检查通过；未跑 workspace、Clippy、桌面构建或真实账号 |
 | H-122 修改提示词后的真实往返显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_edited_video_prompt_submits_a_new_task --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.72s；首次真实本机生成完成事件→生产 TS 修改/序列化→正式 Rust/网关第二次运行，两次 succeeded，仅 1 次 submit/2 次旧任务 poll，新提示词未发给供应商 |
 | H-122 默认基线及旧探针复核 | 提取跨语言测试 helper 后，`cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 7 ignored，约 0.17s；H-121 原命令显式复测仍 0 passed / 1 failed，约 0.47s，完成对照保留 ID、进度组仍丢失；未将 helper 重构说成生产修复 |
 | H-122 完成通知对照调整后的复核 | 脚本的 Completed 分支改用本运行完成通知正常结束后，H-122 与 H-121 各自原命令仍均为 0 passed / 1 failed，分别约 0.65s / 0.42s；同一新提示词轨迹及 ID 丢失结论不变。仅审计测试/报告，未跑 workspace 全量、Clippy、完整桌面 build 或真实云端视频生成 |
