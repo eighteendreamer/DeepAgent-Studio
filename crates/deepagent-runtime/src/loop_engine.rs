@@ -3345,6 +3345,167 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn responses_dual_completion_keeps_tool_execution_and_gates_consistent() {
+        use crate::model_agent::ModelAgent;
+        use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
+        use deepagent_models::{ModelClient, ModelConfig, ToolSchema};
+
+        struct SemanticTransport {
+            requests: std::sync::Mutex<Vec<serde_json::Value>>,
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+            expect_early_read: bool,
+        }
+
+        #[async_trait]
+        impl HttpTransport for SemanticTransport {
+            async fn stream(
+                &self,
+                request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                let index = {
+                    let mut requests = self.requests.lock().unwrap();
+                    requests.push(serde_json::from_str(&request.body)?);
+                    requests.len() - 1
+                };
+                if index == 0 {
+                    let arguments = r#"{"path":"fixture.txt"}"#;
+                    let item = serde_json::json!({
+                        "type":"function_call", "id":"stream-item", "call_id":"stream-call",
+                        "name":"counting_read", "arguments":arguments
+                    });
+                    let mut added = item.clone();
+                    added["arguments"] = serde_json::json!("");
+                    for event in [
+                        serde_json::json!({"type":"response.output_item.added","item":added}),
+                        serde_json::json!({"type":"response.function_call_arguments.delta",
+                            "item_id":"stream-item","delta":arguments}),
+                        serde_json::json!({"type":"response.function_call_arguments.done",
+                            "item_id":"stream-item","arguments":arguments}),
+                        serde_json::json!({"type":"response.output_item.done","item":item}),
+                    ] {
+                        assert!(!sink.on_event(&event.to_string())?);
+                    }
+                    if self.expect_early_read {
+                        // The model stream has not completed. Require an actual
+                        // speculative execution, not merely a scheduled task.
+                        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                            while self.calls.load(Ordering::Acquire) == 0 {
+                                tokio::task::yield_now().await;
+                            }
+                        })
+                        .await
+                        .expect("eligible read must start before response.completed");
+                    }
+                    let early = self.calls.load(Ordering::Acquire);
+                    assert_eq!(early, usize::from(self.expect_early_read));
+                    eprintln!("dual-completion stream: early_calls={early}");
+                } else {
+                    assert_eq!(index, 1, "only one tool round and one final response");
+                    assert!(!sink.on_event(
+                        &serde_json::json!({"type":"response.output_text.delta","delta":"done"})
+                            .to_string()
+                    )?);
+                }
+                assert!(sink.on_event(
+                    r#"{"type":"response.completed","response":{"status":"completed"}}"#
+                )?);
+                Ok(())
+            }
+        }
+
+        for (label, deny_hook, permissions, expected_calls) in [
+            ("eligible", false, PermissionSet::read_only(), 1),
+            ("hook-denied", true, PermissionSet::read_only(), 0),
+            ("permission-denied", false, PermissionSet::empty(), 0),
+        ] {
+            let db = Database::open_in_memory().unwrap();
+            let clock = FixedClock::new(1);
+            let mut session = Session::create(&db, &clock, Some(label)).unwrap();
+            let session_id = session.id();
+            let task = session.create_task("read fixture").unwrap();
+            let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut registry = ToolRegistry::new();
+            registry
+                .register(Arc::new(CountingReadTool {
+                    calls: calls.clone(),
+                }))
+                .unwrap();
+            let transport = Arc::new(SemanticTransport {
+                requests: std::sync::Mutex::new(Vec::new()),
+                calls: calls.clone(),
+                expect_early_read: expected_calls == 1,
+            });
+            let mut agent = ModelAgent::new(
+                Arc::new(ModelClient::new(
+                    transport.clone(),
+                    ModelConfig::deepseek("offline-placeholder"),
+                )),
+                "deepseek-flash",
+                "system",
+                "read fixture",
+                vec![ToolSchema::function(
+                    "counting_read",
+                    "offline read counter",
+                    registry
+                        .get("counting_read")
+                        .unwrap()
+                        .descriptor
+                        .parameters
+                        .clone(),
+                )],
+            );
+            let mut hooks = HookRegistry::new();
+            hooks.register(
+                HookPoint::BeforeToolUse,
+                Arc::new(ToolAllowlistHook::new(["other_tool".to_string()])),
+            );
+            let mut engine = RuntimeEngine::new(
+                &registry,
+                Metrics::new(),
+                RuntimeConfig {
+                    permissions,
+                    auto_approve: true,
+                    ..RuntimeConfig::default()
+                },
+            );
+            if deny_hook {
+                engine = engine.with_hooks(&hooks);
+            }
+            let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+            assert_eq!(outcome, RunOutcome::Completed("done".into()));
+            assert_eq!(calls.load(Ordering::Acquire), expected_calls, "{label}");
+            let events = EventStore::new(&db).load_session(session_id).unwrap();
+            let results = events
+                .iter()
+                .filter_map(|event| match &event.payload {
+                    EventPayload::ToolCallCompleted { call_id, ok, .. }
+                        if call_id == "stream-call" =>
+                    {
+                        Some(*ok)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(results, vec![expected_calls == 1], "{label}");
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            let items = requests[1]["input"].as_array().unwrap();
+            for kind in ["function_call", "function_call_output"] {
+                assert_eq!(
+                    items
+                        .iter()
+                        .filter(|item| item["type"] == kind && item["call_id"] == "stream-call")
+                        .count(),
+                    1,
+                    "{label}: {kind}"
+                );
+            }
+            eprintln!("dual-completion result: case={label} calls={expected_calls} paired_results={} requests={}", results.len(), requests.len());
+        }
+    }
+
+    #[tokio::test]
     async fn native_response_items_suppress_synthetic_assistant_projection() {
         let db = Database::open_in_memory().unwrap();
         let clock = FixedClock::new(1);

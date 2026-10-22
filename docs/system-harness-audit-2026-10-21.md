@@ -1452,6 +1452,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 | 命令或实测 | 结果 |
 |---|---|
+| `cargo test -p deepagent-runtime --lib loop_engine::tests --offline`（双完成事件与门禁核查时） | 36 passed / 1 ignored，约 3.22s；新增完整语义流三组对照通过，忽略的是既有 H-34 探针，不代表缺陷修复；同批 fmt 与 diff 检查通过 |
 | H-60 Windows 输出 drain 显式探针（见该节命令） | 明确失败：正常 EOF 释放缓冲，开放管道在 grace 结束、调用方释放后仍保留缓冲并接收迟到 65,536 字节；断言前 reader/子进程均已回收 |
 | `cargo test -p deepagent-builtins --lib bash_tool::tests --offline`（H-60 核查时） | 23 passed / 1 ignored，约 26.39s；忽略的是已显式执行失败的新缺陷探针；同批 fmt 与 diff 检查通过，未修改生产行为 |
 | `cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`（权限验证补充时） | 4 passed；搜索后的 schema/执行权限、动态加载、父子发现集合隔离均通过；同批 fmt 和 diff 检查通过 |
@@ -1683,6 +1684,15 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 执行 `cargo test -p deepagent-app-core --lib deferred_discovery_does_not_grant_missing_execution_permissions --offline -- --nocapture`：1 passed。当前搜索确实返回一个匹配并写入 discovered（matches=1 / discovered=1），但只读 live schema 没有该工具；即使 pipeline 设置 auto_approve=true，真实调用仍在 Permission 阶段拒绝，计数为 0。developer 权限对照能够执行，计数变为 1。
 - 这证明该样本下的 discovery 不会增加 PermissionSet 能力，auto approve 也不绕过缺失能力。搜索候选快照本身尚未按 granted 过滤，会显示当前不可执行的名称/描述；本轮没有证据证明这导致真实模型循环失败或泄露敏感内容，不将其等同于执行越权，也不据此新增缺陷编号。该测试没有覆盖自定义角色按工具名限制：H-19 的 schema allowlist 与实际 registry 分裂仍是独立已复现问题。
 - Claude Code `tools/ToolSearchTool/ToolSearchTool.ts::call` 使用 invocation options.tools 作为发现池，`utils/toolSearch.ts` 决定 deferral；Codex `core/src/tools/handlers/tool_search.rs::ToolSearchHandlerCache::get_or_build` 从当前 registry 的 deferred entries 构建搜索视图。这里只对照发现池归属，不声称它们所有权限策略均等价于本系统 PermissionSet。已有 `large_plugin_advertises_one_source_and_loads_only_matches_in_same_run` 与 `cloned_registry_rebinds_search_to_child_discoveries` 还分别验证动态 schema 加载与父子 discovered 集合隔离；本轮执行 `cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed。
+
+### 后续独立验证：Responses 双完成事件不重复执行工具，流式预执行保留 hooks 和权限门禁
+
+- 核查 `ResponseAccumulator::emit_tool_completed` 在 builder 上记录 completed_emitted，参数完成和 output_item 完成共用一次完成通知；`RuntimeEngine` 仅在没有挂载 hooks 时允许 speculation，提前执行仍经过 registry.check。最初的“双完成事件可能启动两次预执行”的疑点没有得到证据支持，不新增 H 系列缺陷。
+- 新增默认执行测试 `loop_engine::tests::responses_dual_completion_keeps_tool_execution_and_gates_consistent`，贯穿正式 ModelClient/ResponseAccumulator → ModelAgent/SinkObserver → StreamingToolAttempt → ToolExecutionPipeline/ToolRegistry → SQLite session events → 下一次真实序列化请求。离线 transport 依次提供 item.added、arguments.delta、arguments.done、item.done 和 response.completed；工具只增加内存计数，未访问用户文件、网络或真实供应商。
+- 执行 `cargo test -p deepagent-runtime --lib responses_dual_completion_keeps_tool_execution_and_gates_consistent --offline -- --nocapture`：1 passed，约 0.45 秒。可执行组在 response.completed 之前已实际执行一次，完整模型/工具循环结束后仍为一次；BeforeToolUse allowlist 拒绝组、PermissionSet 为空组，提前执行和最终执行计数均为零。测试显式设置 auto_approve=true，仍不能绕过这两项拒绝。
+- 三组均为两个模型请求、同一 call_id 的一条工具完成持久化事件，第二请求各只有一个原生 FunctionCall 和一个对应 FunctionCallOutput；成功组 ok=true，拒绝组 ok=false，模型最终正常结束。它验证了完整语义流的去重、真实执行次数和配对，不仅是手工调用 ToolAttemptController 的模拟。
+- 参考 DeepSeek Harness 的 `packages/llm/llm-pi-ai/tests/tool-argument-streaming.spec.ts`：其 OpenAI Responses 路由 fixture 同时发送 arguments.done 和 item.done，并核查参数完成行为，说明两事件共存应被正常处理。该参考属于其 pi-ai 的兼容路由，不是官方 DeepSeek Messages 字段；没有把它当成默认 DeepSeek provider 的同构实现，也未运行参考项目测试。
+- 此测试没有装配完整 AppCore/桌面、durable run_actions、真实供应商或网络 SSE 分帧，不证明所有工具幂等/并发取消、异常矛盾参数、截断输出均正确。尤其不关闭 H-18 的截断提交、H-19 的子角色限制或 H-34 的批量超时缺口；也与 Codex 宿主的 cipher_incompatible 无关。本轮仅补正向审计证据，未修改生产行为。
 
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
