@@ -399,9 +399,28 @@ fn format_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::secret_store::MemorySecretStore;
-    use deepagent_models::transport::MockTransport;
+    use crate::secret_store::{MemorySecretStore, SecretStore};
+    use async_trait::async_trait;
+    use deepagent_core::error::{CoreError, Result};
+    use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
     use std::sync::Arc;
+
+    struct ErrorTransport(String);
+
+    #[async_trait]
+    impl HttpTransport for ErrorTransport {
+        async fn stream(
+            &self,
+            _request: TransportRequest,
+            _sink: &mut dyn EventSink,
+        ) -> Result<()> {
+            Err(CoreError::other("not used"))
+        }
+
+        async fn get_json(&self, _url: &str, _api_key: &str) -> Result<String> {
+            Err(CoreError::other(self.0.clone()))
+        }
+    }
 
     fn settings_with_models(db: Arc<Database>) -> SettingsService {
         let body = r#"{"object":"list","data":[
@@ -476,5 +495,26 @@ mod tests {
         settings.initialize("sk-test").await.unwrap();
         let result = check_api_key(&settings).await;
         assert_eq!(result.status, DiagStatus::Ok);
+    }
+
+    #[tokio::test]
+    #[ignore = "audit H-86: provider error text containing a credential reaches doctor diagnostics"]
+    async fn audit_api_key_check_redacts_credentials_reflected_by_get_errors() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let secret = "sk-audit-secret-placeholder";
+        let secrets = Arc::new(MemorySecretStore::new());
+        secrets.set("deepseek_api_key", secret).unwrap();
+        let transport = Arc::new(ErrorTransport(format!(
+            "GET /models returned 401: credential rejected: Bearer {secret}"
+        )));
+        let settings = SettingsService::new(db, transport, secrets);
+
+        let result = check_api_key(&settings).await;
+
+        assert!(
+            !result.detail.contains(secret),
+            "doctor diagnostic contains the API key: {}",
+            result.detail
+        );
     }
 }

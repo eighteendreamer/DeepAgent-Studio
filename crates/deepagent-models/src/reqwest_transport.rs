@@ -486,6 +486,63 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit H-86: authenticated GET error bodies can reflect credentials into diagnostics"]
+    async fn audit_get_error_body_does_not_echo_bearer_credential() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let headers = String::from_utf8(request).unwrap().to_ascii_lowercase();
+            let authorization = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("authorization: "))
+                .unwrap();
+            let body =
+                format!(r#"{{"error":{{"message":"credential rejected: {authorization}"}}}}"#);
+            let response = format!(
+                "HTTP/1.1 401 Unauthorized\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+        let transport = ReqwestTransport::with_client(client);
+        let error = transport
+            .get_json(
+                &format!("http://{address}/models"),
+                "sk-audit-secret-placeholder",
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        server.await.unwrap();
+
+        assert!(
+            !error.contains("sk-audit-secret-placeholder"),
+            "GET error propagated the reflected bearer credential: {error}"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "audit H-29: a stalled HTTP error body does not observe request cancellation"]
     async fn audit_cancel_interrupts_stalled_success_and_error_bodies() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

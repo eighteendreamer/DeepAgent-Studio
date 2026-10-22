@@ -1799,10 +1799,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 动态验证：新增非 ignored 测试 `reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization`。本机第一个 listener 收到 `Authorization: Bearer audit-secret-placeholder` 并将请求 302 到第二个 listener；第二个 listener 收到实际跟随请求，但没有 `Authorization`，返回 JSON 后调用成功。只使用回环地址和占位 key。
 - 结论与边界：该候选不构成已复现泄露，不新增 H 编号。验证覆盖模型发现/余额共用的 GET transport 与跨端口 origin；没有覆盖自定义 redirect policy 的 `with_client`、任意自定义传输实现或供应商 POST 的其他 transport 行为，不据此宣称所有 provider/网络重定向都安全。
 
+### H-86：模型发现 GET 的错误正文可把反射的 API Key 写入 `/doctor` 会话历史
+
+**级别：条件性低（P3）；范围：API Key 校验失败且响应正文包含授权值时。** 不能据此声称 DeepSeek 正常错误响应会回显 API Key；漏洞前置条件是供应商或错误网关的正文确实含有该值。DeepSeek 当前模型发现地址固定，不支持这里切换到任意代理 URL，故不把恶意自定义 provider 当作常规触发条件。
+
+- 根因与生产路径：`ReqwestTransport::get_json` 对非成功状态读取完整 `response.text()`，再把原文直接格式化进 `CoreError::Other`。同 crate 的流式错误路径会用 `provider_error`/`sanitize_provider_message` 对消息做清理，GET 路径没有复用。`doctor::check_api_key` 又将 transport 错误原样插入 `DiagnosticResult.detail`；正式 `/doctor` 把该 detail 编入回复，而 `slash_runtime::maybe_handle_slash_command` 将回复作为 assistant `MessageAppended` 持久化到 session event log。该会话后续恢复时可能把内容重新带入模型请求。
+- 动态复现：ignored 探针 `reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential` 使用本机 HTTP 服务读取真实 `bearer_auth` 头，并故意在 401 JSON 错误正文反射该值。正式 GET 返回的错误文本含完整 `sk-audit-secret-placeholder`，探针以 **0 passed / 1 failed** 退出。没有真实密钥或公网请求。
+- 诊断传播复现：ignored 探针 `doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors` 通过正式 `check_api_key`，注入同形 transport 错误；`DiagnosticResult.detail` 实际包含完整 key，探针以 **0 passed / 1 failed** 退出。slash 回复到 session 的持久化链路由同文件 `maybe_handle_slash_command` 的正式生产代码确认；本探针未启动完整 slash session，也未验证下一轮 wire 重放。
+- 成熟实现对照：DeepSeek Harness `packages/credentials/deepseek-account-platform/src/protocol.ts` 明确将协议错误限制为稳定错误码，不暴露响应正文；该账户平台使用不同 endpoint 和 token 类型，此处只借鉴“授权请求错误不转发原始响应正文”的错误边界。当前模型 stream 已有本地 `sanitize_provider_message`，可复用其结构化 provider message/敏感值清理方向，但需对任意 bearer 格式而不只 `sk-` 前缀验证。
+- 影响及限制：仅当远端错误体包含已发送凭据时触发；触发后它会进入可见诊断和持久化聊天记录，后续续聊可能再次放入模型上下文；若用户之后导出或分享该会话，也会扩大凭据接触范围。上游本身已接收密钥，因此本项不是向该上游新增泄露。没有观察到 DeepSeek 当前 `/models` 错误体实际回显密钥，也未实测未来续聊 wire 或会话导出。
+- 收敛方向（尚未实施，本地设计）：授权 GET 错误只保留状态码和经过长度限制、密钥脱敏的结构化错误消息；不可解析或非 JSON 正文不原样展示。脱敏需覆盖完整 Bearer 值、常见 `sk-` token 及跨空白分割场景；回归包括伪造反射正文、标准 DeepSeek error object、纯文本长错误、doctor 回复和会话历史，并确认不回显 key 的同时保留可诊断状态码/错误码。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
+| H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
 | H-85 GET 响应停滞显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_json_is_bounded_while_waiting_for_headers_and_body -- --ignored --nocapture`：0 passed / 1 failed，约 0.48s；等待响应头、200 半截 body、503 半截 body 三组均在 150ms 观察期后仍 pending，释放 loopback fixture 后才结束；仅本机 HTTP，无公网或真实凭据 |
 | H-83 完成后钩子失败显式探针 | `cargo test -p deepagent-cli terminal_audit::audit_final_hook_error_has_one_matching_live_and_durable_terminal --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.32s；实际收到 `turn.completed → turn.failed`，durable 唯一终态为 failed；失败断言准确指出实时多发了 completed |
