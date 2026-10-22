@@ -402,6 +402,31 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit: a custom tool call must not retain a function_call_output kind"]
+    fn audit_repairs_mismatched_custom_output_kind_before_serialization() {
+        let items = vec![
+            ResponseItem::CustomToolCall {
+                call_id: "call-patch".into(),
+                name: "apply_patch".into(),
+                input: "diff".into(),
+            },
+            // A legacy or partially replayed event stream can carry the right
+            // call_id with the wrong provider-native output kind.
+            ResponseItem::FunctionCallOutput {
+                call_id: "call-patch".into(),
+                output: "patch applied".into(),
+            },
+        ];
+        let request =
+            crate::chat::ResponseRequest::from_response_items("deepseek-v4-flash", None, items);
+        let wire = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            wire["input"][1]["type"], "custom_tool_call_output",
+            "the output kind must match the preceding custom_tool_call"
+        );
+    }
+
+    #[test]
     fn reorders_interleaved_items_to_deepseek_adjacent_pairs() {
         let items = vec![
             ResponseItem::FunctionCall {

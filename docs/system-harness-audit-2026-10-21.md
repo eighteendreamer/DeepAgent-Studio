@@ -51,6 +51,7 @@
 | 搜索与敏感文件读取策略的一致性 | read_file 被中央 path_guard 拒绝的 .env/credentials/server.key，仍可通过 grep 返回内容并进入下一实际请求 | 已确认 H-77；正式 ChatService/中央 hook/文件工具/序列化三组及普通文件对照；仅临时虚构 canary，无真实凭据或公网传输 |
 | 工作区物理路径与 Windows 目录联接 | WorkspaceWrite 下词法位于根目录的 junction 指向根外时，read_file 仍能读取外部临时文件并成功完成 | 已确认 H-78；Windows 临时 workspace/outside、真实 `mklink /J`、正式 ChatService/PathGuard/文件工具与下一 wire 复现，未接触用户目录 |
 | 文件发现与敏感读取名称策略 | read_file 被拒绝的 `.env` 仍通过 `glob("**")` 和 `list_dir` 返回文件名并进入下一实际请求；普通文件名仍可见 | 已确认 H-79；正式 ChatService/中央 hook/文件工具/序列化与普通文件对照，缺陷探针显式失败；仅临时 fixture，无真实凭据或公网传输 |
+| Responses 工具调用类型配对 | `custom_tool_call` 搭配 `function_call_output` 时，repair 只按 call_id 配对，错误类型仍进入下一次 wire | 已确认 H-80；正式 `ResponseRequest` 序列化探针及 Codex 请求不变量对照，缺陷断言显式失败；未调用公网供应商 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -1718,6 +1719,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：Claude Code 的 `GlobTool.ts`、`GrepTool.ts` 均调用 `checkReadPermissionForTool()`，并通过 `getFileReadIgnorePatterns()` 将 Read deny 规则转成搜索排除模式；`utils/glob.ts` 在枚举阶段应用这些排除项。该机制说明隐式发现必须复用读取策略，而不是只检查顶层 `pattern`/`path`。本轮未运行参考项目，不声称其默认敏感文件规则与本系统完全相同。
 - 修复方向（尚未实施，本地设计）：在现有 `WorkspaceRoot`/文件读取策略中提供候选路径可见性判断，让 `list_dir`、`glob`、`grep` 共用同一过滤边界；先确定“文件名可见”和“内容可读”是否同一策略，再按访问模式、显式授权和物理路径解析统一实现。过滤应发生在遍历结果生成前，不能先返回敏感名称再由 UI 删除；与 H-77、H-78 共用真实路径和重启/配置变更回归，不新增第二套搜索工具。
 
+### H-80：Responses repair 保留了错误的工具结果类型
+
+**级别：中（P2）；范围：历史回放或旧事件中出现 `custom_tool_call` 与 `function_call_output` 同一 `call_id` 的混合记录，下一次使用 Responses 适配器发送该历史。** 正常运行时 `apply_patch` 的生产路径会生成同类 custom output；本项针对崩溃恢复、旧数据迁移或部分事件重放造成的类型不一致。
+
+- 根因与生产路径：`deepagent_models::responses::repair_tool_call_pairs()` 建立全局 `call_id → output` 映射，只验证 call_id 是否存在，没有保存每个 call 的 provider-native kind。重建时若 call 是 `CustomToolCall`，但映射中的首个 output 是 `FunctionCallOutput`，函数会原样推回错误类型；相反方向同样成立。`ResponseRequest::from_response_items()` 会调用该 repair，但 `Serialize` 直接把保留下来的 item 类型写入 wire，未再做 kind 校验或转换。
+- 动态证据：新增 `responses::tests::audit_repairs_mismatched_custom_output_kind_before_serialization`。测试通过正式 `ResponseRequest::from_response_items()` 构造 `custom_tool_call(call-patch)` + `function_call_output(call-patch)`，再序列化真实请求；断言期望 `custom_tool_call_output`，实际 wire 为 `function_call_output`，显式失败。未修改生产逻辑、未调用公网供应商、未使用真实会话数据。
+- 成熟实现对照：Codex `core/tests/common/responses.rs::validate_request_body_invariants()` 同时按类型收集调用和结果，明确断言每个 `custom_tool_call_output` 匹配 `custom_tool_call`，并对 function/custom 两组分别要求对称配对。该参考说明仅匹配 call_id 不足以保证 Responses 历史合法；本轮没有把 Codex 测试代码当作可直接复制的业务实现。
+- 影响：如果错误类型进入 DeepSeek Responses 请求，供应商可能拒绝整个下一轮输入，导致会话续聊失败、工具结果无法被模型消费或恢复链路持续携带坏历史。当前证据证明项目会生成错误 wire，不证明 DeepSeek 在每种部署上返回的具体 HTTP 错误码，也不把它解释为 Codex 桌面出现的 `Continuation requires complete conversation input`。
+- 修复方向（尚未实施，本地设计）：repair 时为每个 call_id 保存 `Function`/`Custom` 类型，并在输出重建时强制生成匹配的 output variant；遇到同一 call_id 同时出现两种 call 类型时明确记录诊断并拒绝/选择可验证的首个类型，不能静默覆盖。恢复、snip、compaction 和旧事件迁移都应复用同一 invariant；在请求发送前增加无敏感内容的类型配对摘要和正式回归，复用现有 Responses seam，不新增第二套历史修复链。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1726,6 +1737,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-77 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：18 passed / 17 ignored，约 1.71s；fmt、diff 检查通过。缺陷探针另行显式失败；本批仅新增测试和报告，未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-78 Windows junction 显式探针与权限对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e path_boundary --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.46s；WorkspaceWrite 直接外部路径拒绝、FullAccess 直接外部路径允许，junction 组仍将 canary 带入下一 wire 且 read_file/tool_completed 成功；Windows 临时文件、离线 transport，无用户路径 |
 | H-79 文件发现名称显式探针与普通文件对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_listing_policy --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.59s；read_file 被拒绝，glob/list_dir 均成功并将 `.env` 与 `visible.txt` 带入下一 wire；普通文件控制通过；仅临时 fixture 和离线 transport |
+| H-80 Responses 工具类型配对显式探针 | `cargo test -p deepagent-models --lib audit_repairs_mismatched_custom_output_kind_before_serialization --offline -- --include-ignored --nocapture`：0 passed / 1 failed，约 0.00s；正式 ResponseRequest 序列化结果保留 `function_call_output`，未校正为 `custom_tool_call_output`；无公网调用 |
 | H-78 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：19 passed / 18 ignored，约 1.83s；非 ignored 物理路径权限对照通过，junction 缺陷探针另行显式失败；fmt、diff 检查通过，本批未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-76 文件版本显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_version --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.66s；不改文件及外部保存后重读均正常，过期读的 write_file 仍成功覆盖外部内容；真实临时磁盘/生产流水线/下一请求配对结果，transport 离线 |
 | H-76 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：17 passed / 16 ignored，约 1.85s；新增缺陷探针默认忽略，不能把该结果说成过期写已修复。fmt、diff 检查通过；本批未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
@@ -2062,6 +2074,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 搜索遍历与读取拒绝规则 | H-77 | 隐式候选文件共用既有 WorkspaceRoot/读取策略，读内容前判定；参考 Claude Read deny → grep/glob 排除项 | 直接拒绝的内容不经搜索进入下一 wire；默认/显式 glob、敏感名称/后缀和普通文件对照一致；路径别名和名称可见性另有明确契约 |
 | 物理路径解析与工作区隔离 | H-78 | WorkspaceRoot/PathGuard 解析真实父级/目标路径，文件工具和隐式搜索共用；参考 Claude 原始路径+realpath 检查，Codex 平台沙箱为独立对照 | WorkspaceWrite 不能跟随 junction 读取或写到根外；正常目录、悬空目标、FullAccess、平台差异和竞态语义可验证 |
 | 文件发现名称与读取策略 | H-79 | 现有 WorkspaceRoot/读取策略为 list_dir、glob、grep 提供统一候选可见性；参考 Claude 将 Read deny 转为 glob/grep 排除项 | 被拒绝文件的名称不进入下一 wire；普通文件仍可发现；默认/显式模式、物理路径、配置变更和恢复语义一致 |
+| Responses 工具调用与结果类型不变量 | H-80 | 现有 repair_tool_call_pairs 按 call_id 和原生 kind 共同配对；参考 Codex 分别验证 function/custom 两组并要求对称 | custom/function 结果类型不混用；旧事件、恢复、压缩和取消后的补结果都能在 wire 前明确拒绝或校正 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
