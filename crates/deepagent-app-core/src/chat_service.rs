@@ -2381,6 +2381,122 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    #[ignore = "audit H-117: an API error ending a turn must dispatch StopFailure"]
+    async fn audit_provider_error_dispatches_stop_failure_hook() {
+        let mut mismatches = Vec::new();
+        for (label, api_failure, expected_events) in [
+            ("completed-control", false, vec!["SessionStart", "Stop"]),
+            (
+                "provider-failure",
+                true,
+                vec!["SessionStart", "StopFailure"],
+            ),
+        ] {
+            let (db, settings, dir) = seeded().await;
+            let marker = dir.path().join("hook-events.jsonl");
+            let quoted_marker = marker.to_string_lossy().replace('\'', "''");
+            let hook = serde_json::json!({ "hooks": [{
+                "type": "command", "shell": "powershell", "timeout": 5,
+                "command": format!(
+                    "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::AppendAllText('{quoted_marker}', $payload + [Environment]::NewLine)"
+                )
+            }] });
+            settings
+                .set_hooks_json(
+                    &serde_json::json!({ "hooks": {
+                        "SessionStart": [hook.clone()],
+                        "Stop": [hook.clone()],
+                        "StopFailure": [hook]
+                    }})
+                    .to_string(),
+                )
+                .unwrap();
+            let transport: Arc<dyn HttpTransport> = if api_failure {
+                Arc::new(MockTransport::new([serde_json::json!({
+                    "type": "response.failed",
+                    "response": {
+                        "status": "failed",
+                        "error": {
+                            "code": "invalid_request_error",
+                            "message": "audit invalid request"
+                        }
+                    }
+                })
+                .to_string()]))
+            } else {
+                chat_transport()
+            };
+            let chat = ChatService::new(db.clone(), settings, transport, dir.path());
+            let run_id = format!("audit-stop-failure-{label}");
+            let result = chat
+                .run_in_session(
+                    "audit API error lifecycle",
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    false,
+                    Some(&run_id),
+                    |_| {},
+                    |_| {},
+                )
+                .await;
+            if api_failure {
+                let error = result.unwrap_err();
+                assert!(error.to_string().contains("audit invalid request"));
+            } else {
+                result.unwrap();
+            }
+            let store = deepagent_persistence::run_store::RunStore::new(&db);
+            let run = store.get(&run_id).unwrap().expect("run was admitted");
+            assert_eq!(
+                run.terminal_kind.as_deref(),
+                Some(if api_failure { "failed" } else { "succeeded" })
+            );
+            assert_eq!(
+                store
+                    .events_after(&run_id, None)
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event.event_type == "run_terminal")
+                    .count(),
+                1
+            );
+            let payloads = std::fs::read_to_string(marker).expect("SessionStart hook must run");
+            let payloads: Vec<serde_json::Value> = payloads
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            let events: Vec<_> = payloads
+                .iter()
+                .map(|payload| {
+                    assert_eq!(payload["session_id"], run.session_id);
+                    payload["hook_event_name"].as_str().unwrap()
+                })
+                .collect();
+            eprintln!(
+                "case={label}, terminal={:?}, hooks={events:?}",
+                run.terminal_kind
+            );
+            assert!(events.contains(&"SessionStart"));
+            if api_failure {
+                assert!(!events.contains(&"Stop"), "API errors must not enter Stop");
+            } else {
+                assert_eq!(events, expected_events, "successful command-hook control");
+            }
+            if events != expected_events {
+                mismatches.push(label);
+            }
+        }
+        assert!(
+            mismatches.is_empty(),
+            "API error lifecycle hooks do not match their trigger: {mismatches:?}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     #[ignore = "audit H-107: SessionEnd must wait for the conversation session to end"]
     async fn audit_session_end_hook_does_not_fire_after_each_continued_turn() {
         let (db, settings, dir) = seeded().await;
