@@ -6,6 +6,9 @@ use deepagent_persistence::{run_store::RunStore, Database};
 use deepagent_runtime::workflow::{NodeExecutionStatus, WorkflowRequest};
 use deepagent_runtime::RuntimeEvent;
 
+#[path = "workflow_audit/media.rs"]
+mod media;
+
 async fn workflow_fixture() -> (tempfile::TempDir, Arc<Database>, ChatService, String) {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("input.txt"), "audit input").unwrap();

@@ -59,6 +59,7 @@
 | Responses 多文本 item 与增量去重 | 同一响应的两段完成文本被保留后，整次响应的增量全文又作为第三项加入；done-only 则额外补空 assistant，均进入恢复后的 wire | 已确认 H-81；正式 ChatService/ModelClient/SSE 累加器/磁盘存储重开/下一 wire，单 item 对照正常；离线事件，无真实模型频率或计费结论 |
 | Responses incomplete 的原因与恢复策略 | content_filter 与 max_output_tokens 均触发加大输出上限及注入长度恢复提示，离线第三响应完成后运行成功终结 | 已确认 H-82；正式 ChatService/Kernel/ModelAgent/请求序列化/SQLite 终态，长度对照正常；未测试真实供应商过滤或桌面展示 |
 | 运行完成通知与最终钩子的提交边界 | 正式 TaskCompleted prompt hook 输出无效决策 JSON 后，stdio 同一 turn 先通知 completed 再通知 failed，thread/read 保持唯一 failed 终态 | 已确认 H-83；真实 dispatcher/spawn_turn/AppCore/Kernel/磁盘事件及独立 reader；正常钩子和普通模型错误对照正常，未跑真实 stdio 管道或桌面 |
+| 画布云端视频任务的取消等待 | 正式 ChatService/WorkflowAgent/Kernel 与真实本机 HTTP、文件 SQLite、artifact 正常对照；停止在状态接口等待中已受理，但释放响应前运行仍未退出 | 已确认 H-119；未实等生产 60 秒轮询时限，未执行真实云端生成或桌面点击 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -2156,10 +2157,24 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响及限制：具有已支持机器错误码的流式上下文溢出会因本地丢码而跳过恢复；依赖英文文本意味着供应商措辞变化或本地化也会改变行为。本次只动态验证 ContextOverflow，没有把限流、鉴权、过载的分类/重试/备用模型效果一并视为已验证，也没有实测供应商何时在 HTTP 与流内错误之间选择。既有直接由测试 transport 返回结构化错误的 `__ERROR_CONTEXT__` 回归绕过 accumulator，无法发现此缺口。
 - 收敛方向（尚未实施，本地设计）：在现有 provider seam 统一 HTTP 与流内失败的结构化错误构造，保留可信 code 与经过现有脱敏边界处理的 message，不在 Runtime/UI 追加文本特判。缺失或未知 code 保留明确 fallback，不伪造 HTTP 状态；补测真实 code/不同 message、缺字段、各可恢复错误、取消和压缩后再次失败，核对实际请求数、压缩次数及终态。
 
+### H-119：视频状态 HTTP 等待不响应运行取消，停止已受理仍需等待供应商返回
+
+**级别：高（P1，长任务可用性）；范围：画布 `video-gen` 已提交云任务、正在等待 `/video/status` 响应。** 与 H-29 的聊天错误正文、H-31 的摘要等待不同，本项通过正式画布运行和成功形状的真实 HTTP 网关定位等待边界；不是 UI 没有发送停止信号。
+
+- 生产路径：`run_assembler::run_workflow_inner` 给 WorkflowAgent 注入现有取消树的 flag；`execute_video` 将该 flag 交给 CanvasVideoRequest。`CanvasModelGateway::generate_video` 只在每轮 poll **之前**检查 flag，随后直接 await `poll_media_job(..., 60_000)`；`post_json` 的请求/正文读取没有取消选择。WorkflowAgent 只实现 `Agent::think`，继承的 `think_cancelled` 也是启动前检查；RuntimeEngine await 此决策，没有另外中断正在等待的节点。故信号已经到达仍不能打断此 HTTP 等待。
+- 可重跑探针：`cargo test -p deepagent-app-core --test workflow_audit media:: --offline -- --include-ignored --nocapture`，本次 **1 passed / 1 failed**，约 0.48s。新增 `tests/workflow_audit/media.rs` 复用生产 SettingsService、CanvasProviderService、CanvasModelGateway、ChatService、Kernel、取消树、文件 SQLite 与 artifact 存储；只有供应商为本机 loopback HTTP。必须收到真实 `POST /v1/video/status` 后才调用 `request_cancel`，保持响应 pending 观察 300ms，再释放 `Failed` 响应并等待、回收工作流与服务器任务；最终断言在清理后执行。
+- 实际取消组：`accepted=true, signal_ms=0, stopped_within_300ms=false, unfinished_before_response=true, exit_after_release_ms=316`。释放响应后得到唯一规范 `cancelled` 终态，视频节点为 Cancelled，end 未完成，总计仅 submit/status 两个请求，没有额外提交或下载。**最终取消语义成立、当前等待无法及时退出**；不能把 0ms 的本地受理耗时写成执行已停止或 P95，也未实际等待生产 60 秒上限。
+- 正常对照 `real_video_workflow_stores_the_download_and_one_success_terminal` 通过：同一生产链路执行 submit→status(Succeed)→download，状态请求携带原 task ID，产出 artifact，读回测试视频字节与下载内容相同；实时节点带正确 job ID，RunStore 恰好一个 succeeded 终态。使用的是占位 MP4 字节以验证传输与存储，没有解码/播放或真实生成质量验收。
+- 成熟实现对照：Codex `codex-rs/core/src/tasks/mod.rs::handle_task_abort` 先 cancel token，再等待任务完成通知或 `GRACEFULL_INTERRUPTION_TIMEOUT_MS=100`，然后 abort/join 对应拥有者与任务清理，最后发布中断生命周期并刷新 rollout。参考的是有 owner 的取消、有限等待和提交顺序，**不是**宣称 Codex 实现本系统的视频协议或能撤销云端任务；只核查参考源码，未运行其全套测试。
+- 影响与边界：状态接口慢或半截正文停滞时，用户看到取消受理但同一运行/输入租约仍占用到本次 HTTP 返回或超时。视频提交（120 秒）、下载 headers/chunk（120 秒）和轮询 sleep 也存在前后检查的代码疑点，本探针仅动态覆盖状态请求等待，不将其他阶段或云端计费/撤销效果一并报为已复现。
+- 收敛方向（本地设计，尚未实施）：在现有 CanvasModelBridge/取消树边界贯通可唤醒的取消上下文，覆盖 submit、poll headers/body、退避和下载，不另造运行链路；任务 owner 负责释放本地 HTTP/流式临时文件与唯一终态。明确“停止本地等待”和“供应商支持且成功执行远程取消”是两个独立结果；已提交的云任务保留 provider/account/task 身份供恢复，不能通过直接 drop Future 宣称云任务已撤销。验收需补各阶段取消、截止时间、完成竞争、无迟到请求与终态、临时文件清理、任务恢复及真实桌面。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-119 视频 HTTP 取消显式探针与成功对照 | `cargo test -p deepagent-app-core --test workflow_audit media:: --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.48s；取消已受理但 300ms 内未退出，释放响应后唯一 cancelled；成功对照完成下载入库。首次编译有仅用于临时目录保活的字段未读取警告，后改为 `_root`；不作为产品缺陷 |
+| H-119 默认基线与检查 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 4 ignored，约 0.20s；重新编译无上述警告，`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅审计测试与报告，未跑 workspace 全量、Clippy、桌面构建、真实 Tauri 或云端视频 API |
 | H-88 在途刷新凭据覆盖显式探针 | `cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_does_not_restore_a_superseded_api_key --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.19s；sign_out、replace_key 两组均未保持新状态，第三连接读回 configured=true；正式文件 SQLite 加密存储、临时包装 Key、离线 transport，无公网/真实 Tauri |
 | H-87/H-88 强化凭据身份断言后合跑 | `cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_ --offline -- --ignored --nocapture`：0 passed / 2 failed，约 0.22s；H-87 严格落盘沙箱断言失败，H-88 两组均 previous_restored=true；没有将“凭据缺失或任意不同值”误当作恢复旧凭据 |
 | H-88 默认回归与检查 | `cargo test -p deepagent-app-core --lib settings::tests --offline`：30 passed / 2 ignored，约 0.50s；`cargo test -p deepagent-app-core --lib secret_store::tests --offline`：5 passed，约 0.02s；`cargo fmt --all -- --check`、`git diff --check` 通过。本批只增加审计探针及报告，未运行全 workspace、Clippy、前端构建、真实 Tauri 或跨进程复测；两项缺陷保持未修复 |
@@ -2561,7 +2576,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17、H-84 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；审批通知只由一个 gate owner 发布并携带 call ID；参考 Codex 的 turn 所属 waiter 和单一权限请求 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；一项人工审批只发一条可响应请求；保存失败可见 |
 | 启动恢复的 run/task 诊断归属 | H-44、H-95 | 现有恢复投影按 run 的 task 身份界定历史范围；参考 Codex 按 turn ID 标记 stale turn | 同 session 多个未完成 run 的中断原因各自匹配其 task turn；较新的 user prompt 不改写旧 run 的工具中断原因；重放稳定，且不改变唯一终态 |
 | 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
-| 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
+| 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45、H-119 | 摘要、prefire、正文、重试、工具、画布媒体 HTTP 和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误；本地停止不冒充云任务已撤销 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
 | 可选模型复核与主运行终态一致性 | H-61 | 既有取消树派生复核子 token，面板任务 owner 管理取消与 join，完成提交重查运行取消；参考 Codex 的有界 turn abort 和任务清理 | 取消后不提交成功；总时限/drop 不遗留复核请求；正常 PASS 仍完成，失败反馈有界，取消不当作普通复核失败 |
 | 停滞检测的取消与结果采纳 | H-62 | 既有模型取消入口及运行 token 覆盖分类等待、nudge 注入与重入；参考 Grok 分类 generation/idle 核对和 Codex turn abort | 分类中停止及时退出；取消不被 fail-open 吞成继续采样；无延迟新请求；最终取消映射保持正确 |
