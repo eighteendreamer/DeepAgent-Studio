@@ -234,6 +234,96 @@ impl Fixture {
     }
 }
 
+struct BlockingTurnTransport {
+    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: tokio::sync::Notify,
+}
+
+#[async_trait::async_trait]
+impl HttpTransport for BlockingTurnTransport {
+    async fn stream(
+        &self,
+        _request: TransportRequest,
+        _sink: &mut dyn EventSink,
+    ) -> CoreResult<()> {
+        if let Some(started) = self.started.lock().unwrap().take() {
+            let _ = started.send(());
+        }
+        self.release.notified().await;
+        Ok(())
+    }
+
+    async fn get_json(&self, _url: &str, _api_key: &str) -> CoreResult<String> {
+        Ok(json!({"data":[{"id":"deepseek-flash","object":"model",
+            "owned_by":"deepseek"}]})
+        .to_string())
+    }
+}
+
+#[test]
+#[ignore = "audit H-92: stdio shutdown must finalize active turns before runtime exit"]
+fn audit_runtime_shutdown_finalizes_in_flight_stdio_turn() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+    let transport = Arc::new(BlockingTurnTransport {
+        started: Mutex::new(Some(started_tx)),
+        release: tokio::sync::Notify::new(),
+    });
+    let fixture = runtime.block_on(Fixture::with_transport(transport));
+    let (response, launch) = fixture.state.lock().unwrap().dispatch(
+        rpc(
+            "turn/start",
+            json!({"threadId":fixture.thread_id,"input":"Audit shutdown cleanup."}),
+        ),
+        None,
+    );
+    assert!(response.is_success());
+    let turn_id = response.result()["turnId"].as_str().unwrap().to_owned();
+    let events = fixture.events.clone();
+    let emitter: EventEmitter = Arc::new(move |event| {
+        events
+            .lock()
+            .unwrap()
+            .push(serde_json::to_value(event).unwrap());
+    });
+    runtime.block_on(async {
+        spawn_turn(fixture.state.clone(), emitter, launch.unwrap());
+    });
+
+    runtime.block_on(async {
+        tokio::time::timeout(Duration::from_secs(5), started_rx)
+            .await
+            .expect("model request must start before shutdown")
+            .expect("transport start signal");
+    });
+
+    let database = fixture.state.lock().unwrap().database.clone();
+    let before = RunStore::new(&database)
+        .get(&turn_id)
+        .unwrap()
+        .expect("accepted turn must be durable before its model request");
+    assert!(before.finished_at.is_none());
+
+    drop(runtime);
+
+    let store = RunStore::new(&database);
+    let after = store.get(&turn_id).unwrap().expect("run remains readable");
+    let terminal_events = store
+        .events_after(&turn_id, None)
+        .unwrap()
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .count();
+    eprintln!(
+        "stdio shutdown audit: before={:?}, after={:?}, finished_at={:?}, terminal_events={terminal_events}",
+        before.state, after.state, after.finished_at
+    );
+    assert!(
+        after.finished_at.is_some() && terminal_events == 1,
+        "runtime exit dropped the active turn before it wrote one durable terminal"
+    );
+}
+
 fn assert_durable_terminal(read: &Value, turn_id: &str, kind: &str) {
     let run = read["runEvents"]
         .as_array()
