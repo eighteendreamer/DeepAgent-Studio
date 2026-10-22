@@ -13,6 +13,7 @@
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
+| SSH 远端主机身份验证 | 正式 SshService 通过 loopback 连上临时随机服务器密钥；同一地址的 known_hosts 对照拒绝不匹配密钥 | 已确认 H-125；未连接公网或用户服务器 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99、H-118；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
@@ -2236,10 +2237,22 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 成熟实现对照：Codex `core/src/tasks/mod.rs::handle_task_abort` 将活动 turn 的取消交给任务 token；Claude Code `restored-src/src/utils/attachments.ts` 的相关 prefetch 从 turn AbortController 创建 child controller，并在 turn abort 时同步中止，`query.ts` 在处理中断流和逐工具派发前主动查同一信号；DeepSeek Harness `core/agent/src/runtime-types.ts` 定义 `agent/pre-step` 的 turn signal，`api/session-controller/src/index.ts::prompt()` 在 prompt admission 前 `throwIfAborted()`。这些机制共同说明预处理要么属于一个有 owner、能取消的准备阶段，要么 admission 前就拒绝已取消请求；不能让 UI 先登记“运行中”而后端没有取消目标。本系统在提交前的 UI preflight 状态应标为单一 run 生命周期的一部分，不需要另建第二个运行表或取消机制。
 - 影响与收敛方向（尚未实施，本地设计）：图片识别可能继续耗时与计费，所有剩余图片仍处理，并在用户看到“停止失败”后启动主模型。复用已有 run ID 与 AppCore admission/cancellation 树，让前端 admission 与准备状态一致；取消需要阻止未启动的下一图、后端 admission 和主请求，且对已经启动但不可中止的视觉 HTTP 至少在响应返回时检查旧 run 的取消意图并丢弃结果。要求覆盖新会话/续聊、首图/后续图、两图、切换会话、停止/正常完成竞争、视觉失败与普通文本对照，验证停止后新增视觉请求数和主模型 start 数为零，且只有一个正确终态。HTTP 级取消能否在 provider request 途中释放资源需独立验证，不从前端防迟到 admission 推导。
 
+### H-125：SSH 客户端不验证远端主机密钥，连接到未信任服务器仍成功
+
+**级别：高（P1，网络中间人或错误地址映射触发时破坏 SSH 对端身份、机密性与完整性；密码认证还可能泄露密码）；范围：桌面/应用通过正式 `SshService` 建立的 SSH 连接及复用该连接的命令、PTY、文件和远程安装功能。** 本项不涉及 DeepSeek 模型协议或模型请求，是独立的远端执行身份边界。
+
+- 生产路径：`crates/deepagent-ssh/src/service.rs::connect_client`（约第 1358 行）将 `ServerCheckMethod::NoCheck` 传给 `async-ssh2-tokio 0.12.2`。已核对该版本 registry 源码 `src/client.rs::ClientHandler::check_server_key`（约第 964 行）：`NoCheck => Ok(true)`；库还提供 `KnownHostsFile`、`DefaultKnownHostsFile` 和 pin 公钥等验证选项。`SshConnectionConfig` 没有服务端 host key/fingerprint 字段，创建/更新 SSH 连接的 DTO 与表单也没有对应信任输入。`connect`、连接测试和定期状态刷新都复用 `connect_client`，因此不是只影响一条诊断路径。
+- 动态复现：新增 opt-in `crates/deepagent-ssh/tests/host_key_audit.rs`。测试仅绑定 `127.0.0.1` 随机端口，在进程内启动 russh 临时服务器并随机生成 host key；使用正式 `SshService::create_connection` 和 `SshService::connect`，密码是测试专用临时值。实测 `production_connect_accepts_untrusted_key=true`。随后为同一 host/port 写入另一把随机公钥，使用依赖正式 `KnownHostsFile` 验证路径连接，得到 `known_hosts_rejects_mismatched_key=true`，证明拒绝能力可用且该测试对照能区分验证与 `NoCheck`。
+- 显式探针命令 `cargo test -p deepagent-ssh --test host_key_audit --offline -- --ignored --nocapture` 以 **0 passed / 1 failed** 结束；这是预期的审计失败，最后断言要求生产入口拒绝未信任密钥，但当前入口成功。输出中仅有 loopback、临时端口和布尔结果。第一次探针版本把 `check_known_hosts_path` 的预期 `KeyChanged` 当成异常而在对照阶段 panic；修正为将其作为拒绝证据后，正式入口断言稳定失败。第一次运行中服务器也因客户端主动断开而得到 session close 错误；夹具现已将正常关闭/握手拒绝视为 fixture 生命周期，不把它们算作产品故障。
+- 成熟实现对照：DeepSeek Harness `packages/ssh/ssh/src/index.ts` 启动本地 OpenSSH 时明确传 `StrictHostKeyChecking=yes`，其 SSH README 要求连接前配置 known-host 项，启动测试检查实际参数；Claude Code `restored-src/src/utils/plugins/marketplaceManager.ts` 对 Git SSH/submodule 使用同一 strict 选项，并针对未知/变更主机密钥给出失败诊断。Codex 本次核查到的 `windows-sandbox-rs/src/ssh_config_dependencies.rs` 是将 OpenSSH 的 known-host/config 文件纳入沙箱依赖追踪；没有据此推断 Codex 独立实现了通用 SSH 主机密钥校验。
+- 影响与触发边界：攻击者需要能中间人拦截/重定向 SSH 网络，或连接配置中的主机地址错误地指向攻击者；单纯持有正常 SSH 账户并不能令可信网络下的真实服务器密钥替换。触发后，使用密码认证时客户端可能把口令交给伪装服务器；使用密钥文件时不表示私钥会被发送，但客户端会把该连接视作目标并可能向错误对端发送命令、路径和文件内容，接收伪造输出，破坏远程操作的机密性与完整性。此次只使用本机随机服务器和测试凭据，没有访问公网、用户服务器或真实凭据，也没有证明现实网络中已有攻击发生。
+- 收敛方向（尚未实施，本地设计）：在 SSH 连接配置中持久化可审计的 host key 信任来源，首次连接通过用户核验 fingerprint 后写入现有配置存储，后续按 host+port 校验并在密钥变化时失败关闭；至少复用现有库的 known_hosts 支持，并明确其路径、hashed-host/非默认端口兼容和 Windows 路径行为。禁止在未知密钥时静默自动接受。信任配置要贯穿 `connect`、test、status refresh、重连以及更新后的连接身份；UI 显示首次核验和 key changed 的可操作错误。回归覆盖 unknown / matching / changed key、非默认端口、IPv6、连接复用、密码与 key-file auth、临时 known_hosts、重启恢复以及服务端密钥轮换；只有失败关闭和兼容路径均验证后才算修复。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-125 SSH 主机密钥显式审计探针 | `cargo test -p deepagent-ssh --test host_key_audit --offline -- --ignored --nocapture`：0 passed / 1 failed（预期暴露缺陷）；真实生产 `SshService.connect` 接受本机临时随机 host key，库的 `KnownHostsFile` 对照拒绝随机错误 key。仅 loopback、临时服务与测试口令；没有公网/用户 SSH 连接。未修改生产实现 |
 | H-123 本地终端与 SSH 游标探针 | 本地 `cargo test -p deepagent-app-core --test terminal_audit --offline -- --ignored --nocapture`：0 passed / 1 failed，实际 ConPTY 与 SQLite；SSH `cargo test -p deepagent-ssh audit_ssh_terminal_cursor_preserves_unreturned_output --offline -- --ignored --nocapture`：0 passed / 1 failed，正式 session reader / 受控 transport。两组小输出正常，大输出均在无历史淘汰时跳过保留后缀；生产尚未修改 |
 | H-123 相关正常基线 | `cargo test -p deepagent-ssh -p deepagent-terminal --offline`：SSH 1 passed / 2 ignored（含需真实服务器的既有集成测试），terminal 4 passed；`cargo test -p deepagent-app-core --lib terminal_ --offline`：9 passed，含终端服务、SQLite 租约和取消存储故障回归。未执行本批 workspace 全量、Clippy、桌面 build 或真实 Tauri 点击 |
 | H-124 视觉发送前停止跨层探针 | `RUN_HARNESS_AUDIT=1 node --test scripts/audit-vision-preflight-cancel.test.cjs`：文本对照通过，继续会话/新会话的视觉等待组各 0 passed / 1 failed；释放和 listener 清理完成后，停止失败且第二张图片和主 `start_chat_v2` 仍发出。无真实图片内容、供应商、Tauri 窗口或数据库 |
