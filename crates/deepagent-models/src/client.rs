@@ -514,6 +514,47 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: translate Responses tool_choice to Chat Completions shape"]
+    fn audit_chat_tool_choice_translates_request_shape() {
+        let mut request = ResponseRequest::new("deepseek-flash", Vec::new());
+        request.tool_choice = Some(serde_json::json!({
+            "type": "function",
+            "name": "read_file"
+        }));
+
+        let wire = serde_json::to_value(response_to_chat_completion(request).unwrap()).unwrap();
+        assert_eq!(
+            wire["tool_choice"],
+            serde_json::json!({
+                "type": "function",
+                "function": { "name": "read_file" }
+            })
+        );
+    }
+
+    #[test]
+    #[ignore = "audit reproducer: translate Responses defaults to Chat Completions shape"]
+    fn audit_chat_tool_choice_translates_default_shape() {
+        let mut config = ModelConfig::deepseek_chat("test-key");
+        config.defaults.tool_choice = Some(serde_json::json!({
+            "type": "function",
+            "name": "read_file"
+        }));
+        let client = ModelClient::new(Arc::new(MockTransport::new([])), config);
+        let mut request = ChatCompletionRequest::new("deepseek-flash", Vec::new());
+
+        client.apply_chat_defaults(&mut request);
+        let wire = serde_json::to_value(request).unwrap();
+        assert_eq!(
+            wire["tool_choice"],
+            serde_json::json!({
+                "type": "function",
+                "function": { "name": "read_file" }
+            })
+        );
+    }
+
+    #[test]
     #[ignore = "audit reproducer: native-to-chat projection must preserve one assistant tool turn"]
     fn audit_chat_projection_preserves_tool_turn_narration_and_reasoning() {
         let mut accumulator = ChatCompletionAccumulator::new();
