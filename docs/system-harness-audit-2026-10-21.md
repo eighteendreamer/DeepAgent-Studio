@@ -2030,6 +2030,12 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：依赖该结构化字段的兼容脚本会因 payload 校验失败，或无法区分 API 失败与 Stop hook 拒绝。本探针证明的是 Stop veto 产生的失败事件没有 typed error；没有测试 API 请求失败时是否会派发 StopFailure，也没有证明第三方脚本的实际运行结果。
 - 收敛方向（尚未实施，本地设计）：先划清本系统 `StopFailure` 的触发语义。若仅表示候选答复被 hook 拒绝，应扩展事件输入保留拒绝原因，并在版本化的本地字段表达，而不是伪造 Claude API error enum；若宣称完整 Claude 兼容，则需按其实际 API failure 触发条件及错误类型构造 payload。补测 Stop veto、模型失败、重试成功/耗尽和外部 schema 校验，避免混淆 hook 决策拒绝与供应商请求失败。
 
+### 复核但未登记：Responses `tool_search_call`
+
+DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-response) 将 `tool_search_call` 列为可能的输出 item，但同页请求工具类型只列 `function`、`custom`、`web_search`，输入 item 也不接受 `tool_search_call`；页面说明其他内置工具类型会被忽略，且只明确 `web_search` 对 `deepseek-v4-pro` 可用。官方 [Responses API Guide](https://api-docs.deepseek.com/guides/responses_api) 的事件列表也只把它列为 output item，没有列出对应生命周期事件或当前可启用条件。
+
+本系统的 `tool_search` 是 AppCore 延迟工具注册的普通 function schema，模型以 `function_call(name="tool_search")` 调用，由现有函数调用解析和工具执行链处理。Codex 的 `tool_search_call` 则使用其独有的 `execution="client"`、结构化 `arguments` 与配对的 `tool_search_output`，不能据此把 Codex item 当成 DeepSeek 的等价协议。当前 Responses 累加器会忽略未识别的 `tool_search_call`，但本次未找到 DeepSeek 官方支持的请求配置可触发它，也未取得真实 provider 输出证据；因此不把这个差异登记为生产缺陷，保留为 provider 行为出现或官方补充启用条件后的复核项。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2065,6 +2071,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-105 默认基线与检查 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`：74 passed / 6 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本轮仅新增 ignored 审计探针与报告，未跑 workspace 全量测试、Clippy、桌面构建、真实 Tauri 或公网 hook |
 | H-106 StopFailure 失败分支显式探针 | `cargo test -p deepagent-app-core --lib chat_service::tests::audit_stop_failure_hook_payload_includes_error --offline -- --ignored --nocapture`：0 passed / 1 failed；Stop 首次拒绝、StopFailure 真实派发、模型重试后成功；payload 缺 Claude schema 必需的 `error`，仅有文本 `content`；Windows 临时项目、离线 transport |
 | H-106 默认基线与检查 | `cargo test -p deepagent-app-core --lib chat_service::tests --offline`：74 passed / 7 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本轮仅新增 ignored 审计探针与报告，未跑 workspace 全量测试、Clippy、桌面构建、真实 Tauri 或公网 hook |
+| Responses `tool_search_call` 候选差异核查 | DeepSeek 官方请求 schema 不提供可触发该 item 的工具类型；AppCore `tool_search` 以普通 function schema 注册。`cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed；`cargo test -p deepagent-models --lib stream::tests --offline`：21 passed。未新增缺陷或测试，未调用公网 provider |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
