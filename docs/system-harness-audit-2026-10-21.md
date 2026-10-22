@@ -18,7 +18,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99、H-118；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、stdio/HTTP 响应无 transport 字节上限、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117、H-126；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
@@ -2248,10 +2248,26 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响与触发边界：攻击者需要能中间人拦截/重定向 SSH 网络，或连接配置中的主机地址错误地指向攻击者；单纯持有正常 SSH 账户并不能令可信网络下的真实服务器密钥替换。触发后，使用密码认证时客户端可能把口令交给伪装服务器；使用密钥文件时不表示私钥会被发送，但客户端会把该连接视作目标并可能向错误对端发送命令、路径和文件内容，接收伪造输出，破坏远程操作的机密性与完整性。此次只使用本机随机服务器和测试凭据，没有访问公网、用户服务器或真实凭据，也没有证明现实网络中已有攻击发生。
 - 收敛方向（尚未实施，本地设计）：在 SSH 连接配置中持久化可审计的 host key 信任来源，首次连接通过用户核验 fingerprint 后写入现有配置存储，后续按 host+port 校验并在密钥变化时失败关闭；至少复用现有库的 known_hosts 支持，并明确其路径、hashed-host/非默认端口兼容和 Windows 路径行为。禁止在未知密钥时静默自动接受。信任配置要贯穿 `connect`、test、status refresh、重连以及更新后的连接身份；UI 显示首次核验和 key changed 的可操作错误。回归覆盖 unknown / matching / changed key、非默认端口、IPv6、连接复用、密码与 key-file auth、临时 known_hosts、重启恢复以及服务端密钥轮换；只有失败关闭和兼容路径均验证后才算修复。
 
+### H-126：MCP stdio 与 HTTP transport 在完整读取/解析前没有响应字节上限
+
+**级别：中（P2；仅当已配置的 MCP server 返回异常大响应，或并发 MCP 请求同时返回大响应时，才会形成显著的宿主内存与解析 CPU 压力；本探针证明缺少上限，不声称 2 MiB 本身会导致进程失效）。** 本项关注 transport 的资源边界，不是 MCP 协议要求的通用最大响应大小。
+
+- 生产路径：stdio 的 `crates/deepagent-mcp/src/stdio.rs::StdioTransport::send` 使用 `AsyncBufReadExt::read_line(&mut String)` 读取整条 JSON-RPC 消息，再调用 `serde_json::from_str`；读取前没有累计字节计数或行长度上限。HTTP 的 `crates/deepagent-mcp/src/http.rs::HttpTransport::send` 对成功响应调用 `response.text().await`，随后才解析 JSON 或 SSE；总请求 timeout 为 60 秒，但没有 body 字节上限。非成功 HTTP 状态的错误正文也通过 `response.text()` 全量读取。
+- 工具结果预算不能保护该边界：`crates/deepagent-runtime/src/tool_budget.rs::apply_tool_result_budget` 的默认模型可见预算为 4,000 tokens，但它位于工具结果已由 MCP transport 收到并反序列化之后；因此只限制后续进入模型的结果投影，不能限制 transport 的缓冲、JSON 解析和中间对象分配。
+- 动态复现：新增 opt-in `crates/deepagent-mcp/tests/response_limit_audit.rs`，使用正式 `StdioTransport::spawn/send` 启动本机临时 Node MCP server，并使用正式 `HttpTransport::with_url/send` 对接 loopback HTTP fixture。两条路径都先发送 16 字节 payload 的小响应对照，再发送 2 MiB payload。实测 stdio `accepted_payload_bytes=2097152`；HTTP `accepted_payload_bytes=2097152`，本机 fixture 观测到完整 `Content-Length=2097200`。两边均在 10 秒探针截止内完整解析并返回。探针使用的 1 MiB 仅是审计对照线，**不是 MCP 标准上限或既有产品配置**；证明点是 transport 未施加任何读取上限。
+- 显式复现命令：
+  - `cargo test -p deepagent-mcp --test response_limit_audit audit_stdio_transport_accepts_oversized_response_line --offline -- --ignored --nocapture`：**0 passed / 1 failed（预期）**；16 字节对照通过，2 MiB 正常返回后被审计断言捕获。
+  - `cargo test -p deepagent-mcp --features http --test response_limit_audit audit_http_transport_accepts_oversized_response_body --offline -- --ignored --nocapture`：**0 passed / 1 failed（预期）**；16 字节对照通过，HTTP fixture 确认向客户端发送完整 2 MiB body，transport 正常返回并解析。
+- 成熟实现对照与边界：DeepSeek Harness `packages/mcp/mcp-client/src/connection.ts` 对 MCP attributed server instructions 提供 32 KiB 上限；这是语义字段的大小约束，不是任意 JSON-RPC 响应 body 限制。Codex `codex-mcp/src/trusted_access.rs` 对特定 verified-access HTTP 响应采用 1 MiB 流式字节上限；这是另一个受控 API 的局部做法，不能据此声称 Codex 已给所有 MCP transport 加统一上限。两者只支持“在解码/解析前设置有界读取”的工程模式；通用 MCP 响应预算仍应由本系统按工具目录、工具调用和资源内容制定本地策略。
+- 影响与触发边界：stdio server 是本机已配置子进程，HTTP server 是显式配置的 MCP 端点；需要相应 server 返回大型内容。现实现对 JSONL 整行和 HTTP 正文均先完整缓冲，再构建 JSON 值；多请求/多连接并发会叠加内存和解析成本。探针只确认 2 MiB 可完整通过，没有制造极端 payload、压力测试或证明实际 OOM。MCP server 的可信级别、单次调用并发度和允许的大型资源使用场景需要在修复设计中区分，避免把文件/图像资源误伤为过小的固定限制。
+- 收敛方向（尚未实施，本地设计）：在 MCP transport 边界引入明确、可配置且有合理默认值的字节预算。stdio 采用有上限的增量行读取，超过上限即返回结构化 transport 错误并关闭/隔离该连接；HTTP 按流式 chunk 计数后再解析，不能只依赖可伪造或缺失的 `Content-Length`，成功正文、SSE 和错误正文都要有界。错误信息只保留状态、字节数和预算，不回显完整远端 body。再为 MCP 工具目录、单次工具结果和资源/图片分别定义策略；大型合法内容走现有 artifact/file reference 或分块读取，不让无界 JSON 进入内存。验收需包含小响应成功、刚好到界成功、超界拒绝、chunked 无 Content-Length、SSE 超界、畸形/多行 stdio 输出、并发请求、取消/超时及不回显远端正文；预算值作为本地设计，经真实插件兼容测试确定。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-126 stdio MCP 响应大小显式审计探针 | `cargo test -p deepagent-mcp --test response_limit_audit audit_stdio_transport_accepts_oversized_response_line --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 `StdioTransport` 接受并解析 2 MiB JSONL payload，小响应对照通过；本机临时 Node 子进程，无真实插件副作用 |
+| H-126 HTTP MCP 响应大小显式审计探针 | `cargo test -p deepagent-mcp --features http --test response_limit_audit audit_http_transport_accepts_oversized_response_body --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 `HttpTransport` 接受并解析 2 MiB JSON body，小响应对照通过；仅 loopback fixture，无公网服务 |
 | H-125 SSH 主机密钥显式审计探针 | `cargo test -p deepagent-ssh --test host_key_audit --offline -- --ignored --nocapture`：0 passed / 1 failed（预期暴露缺陷）；真实生产 `SshService.connect` 接受本机临时随机 host key，库的 `KnownHostsFile` 对照拒绝随机错误 key。仅 loopback、临时服务与测试口令；没有公网/用户 SSH 连接。未修改生产实现 |
 | H-123 本地终端与 SSH 游标探针 | 本地 `cargo test -p deepagent-app-core --test terminal_audit --offline -- --ignored --nocapture`：0 passed / 1 failed，实际 ConPTY 与 SQLite；SSH `cargo test -p deepagent-ssh audit_ssh_terminal_cursor_preserves_unreturned_output --offline -- --ignored --nocapture`：0 passed / 1 failed，正式 session reader / 受控 transport。两组小输出正常，大输出均在无历史淘汰时跳过保留后缀；生产尚未修改 |
 | H-123 相关正常基线 | `cargo test -p deepagent-ssh -p deepagent-terminal --offline`：SSH 1 passed / 2 ignored（含需真实服务器的既有集成测试），terminal 4 passed；`cargo test -p deepagent-app-core --lib terminal_ --offline`：9 passed，含终端服务、SQLite 租约和取消存储故障回归。未执行本批 workspace 全量、Clippy、桌面 build 或真实 Tauri 点击 |
