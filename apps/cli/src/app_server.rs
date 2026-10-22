@@ -85,7 +85,15 @@ impl EventOutbox {
     }
 
     fn emit(&self, event: HarnessEvent) {
-        let sequence = self.next_sequence.fetch_add(1, Ordering::Relaxed);
+        let sequence = self.allocate_sequence();
+        self.enqueue(sequence, event);
+    }
+
+    fn allocate_sequence(&self) -> u64 {
+        self.next_sequence.fetch_add(1, Ordering::Relaxed)
+    }
+
+    fn enqueue(&self, sequence: u64, event: HarnessEvent) {
         if let Err(error) = self.tx.try_send(QueuedEvent { sequence, event }) {
             eprintln!("app-server event outbox full; dropped sequence {sequence}: {error}");
         }
@@ -1235,6 +1243,43 @@ mod tests {
             terminal_received,
             "a full connection queue silently lost the terminal event; next sequence is {next_sequence}"
         );
+    }
+
+    #[test]
+    #[ignore = "audit H-91: event sequence must match concurrent enqueue order"]
+    fn audit_concurrent_event_producers_keep_sequences_in_wire_order() {
+        let (tx, mut rx) = mpsc::channel(2);
+        let outbox = EventOutbox {
+            tx,
+            next_sequence: AtomicU64::new(1),
+        };
+
+        // Model a producer being descheduled after reserving its sequence but
+        // before enqueueing; another producer can complete both steps first.
+        let earlier = outbox.allocate_sequence();
+        let later = outbox.allocate_sequence();
+        outbox.enqueue(
+            later,
+            HarnessEvent::TurnStarted {
+                thread_id: Some("audit-thread".into()),
+                turn_id: "later-producer".into(),
+                step: None,
+            },
+        );
+        outbox.enqueue(
+            earlier,
+            HarnessEvent::TurnStarted {
+                thread_id: Some("audit-thread".into()),
+                turn_id: "earlier-producer".into(),
+                step: None,
+            },
+        );
+
+        let observed: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|queued| queued.sequence)
+            .collect();
+        eprintln!("reserved=[{earlier},{later}] enqueued={observed:?}");
+        assert_eq!(observed, vec![earlier, later]);
     }
 
     #[test]

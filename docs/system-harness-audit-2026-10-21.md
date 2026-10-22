@@ -13,7 +13,7 @@
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
-| stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败，以及审批事件重复且有一条缺少 ID 已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84；慢连接与终态投影仍待收敛 |
+| stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID，以及并发生产时实时事件序号倒退均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91；慢连接与终态投影仍待收敛 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49；全部错误和流式分支未完成 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
@@ -1854,6 +1854,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响与限制：关闭后请求仍会按预期失败，不会进入 CLI/AppCore 或调用模型；问题限于该 SDK client 实例及其克隆的待处理表，若调用方持续误用关闭后的句柄且 reader 尚未 EOF，内存会随失败次数增加。没有测量生产客户端长期内存影响，也没有证明正常 `HarnessProcess::wait()` 后仍会持续累积；server 通常会在 stdin EOF 后退出并由 reader 清表。
 - 收敛方向（尚未实施，本地设计）：在共享 writer 锁内先验证句柄仍开放，再登记/发送，或在统一发送错误出口无条件按 ID 清理 pending；newline 和 flush 失败也走相同清理路径。回归覆盖 close 后请求、close 与并发调用、JSON 行已部分写入后断管、flush 失败和 reader EOF 收尾，并保持原有 id 匹配与快速响应竞态保护。
 
+### H-91：Harness 并发事件生产可使实时 eventSequence 倒退
+
+**级别：低（P3）；触发条件：同一 stdio 连接有多个并发事件生产者，并在某个生产者分配序号后、入队前发生调度切换。** 单生产者或分配与入队没有交错时，FIFO 通知顺序正常。本项不是持久化事件丢失。
+
+- 根因与生产路径：`EventOutbox::emit` 先以 `AtomicU64::fetch_add` 分配序号，再调用 Tokio mpsc 的 `try_send`。原子操作只保证序号唯一，不会把序号分配和发送入队做成同一临界区；多个生产者可先后取得 1、2，却按 2、1 的顺序入队。writer 按队列顺序写出，因此真实 wire 上可能先看到 `eventSequence=2`，再看到 `eventSequence=1`。服务端 `event_ack` 明确拒绝小于已确认值的序号，消费者若逐事件确认，在确认 2 后确认迟到的 1 会得到 invalid params。
+- 动态复现：ignored 探针 `app_server::tests::audit_concurrent_event_producers_keep_sequences_in_wire_order` 将生产步骤确定性地暂停在“已分配、尚未入队”边界，再模拟另一生产者完成入队。实际输出 `reserved=[1,2] enqueued=[2, 1]`，期望 `[1,2]` 的断言以 **0 passed / 1 failed** 退出。该探针精确复现了生产代码允许的交错，但没有启动完整 stdio server、真实并发线程或客户端，也没有观察事件 ack 的端到端失败。
+- 成熟实现对照：Codex app-server 将连接通知交由每连接 worker/writer 串行发送；其对应实现没有本系统的 `eventSequence`/`event_ack` 契约，因此这里只能对照“单连接拥有一个 outbound writer”的结构，不能声称 Codex 直接证明了本系统序号规则。
+- 影响及限制：实时消费者可能收到不单调的事件序号；使用序号作确认游标的消费者会遇到确认回退错误，或需要额外容错处理。当前证据没有表明底层 `run_events`/session 事件被删除、持久化补读丢失，亦没有证明某个 SDK 已因此漏处理事件。H-01 仍单独描述 outbox 满队列丢通知及其恢复边界，不能与本项合并。
+- 收敛方向（尚未实施，本地设计）：将未编号事件送入现有有界队列，由唯一 writer 在实际串行化输出时分配 `eventSequence`；或在同一短临界区内完成序号分配与入队。保留现有 writer 和协议，不新增队列/存储。补充两个生产者的确定性交错、完整 wire 顺序及 ack 递增回归；队列满导致的丢通知和序号缺口仍由 H-01 独立验收。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1865,6 +1875,8 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-87 默认设置基线与检查 | `cargo test -p deepagent-app-core --lib settings::tests --offline`：30 passed / 1 ignored，约 0.54s；单服务沙箱设置刷新对照通过；`cargo fmt --all -- --check`、`git diff --check` 通过。缺陷探针需显式执行，默认通过不代表已修复；本批仅测试与文档，未跑全 workspace、Clippy、前端构建、真实 Tauri 或多进程测试 |
 | H-89 显式模型选择探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e model_selection --offline -- --include-ignored --nocapture`：2 passed / 1 failed；未知显式模型实际发送为 `deepseek-v4-flash` 并成功终止，默认与已知显式模型以及非法 provider 对照均通过；临时 SQLite/离线 transport，无公网或完整 CLI stdio/Tauri |
 | H-90 关闭 writer 后 pending 泄漏探针 | `cargo test -p deepagent-harness-sdk --lib audit_request_after_close_does_not_leak_pending_reply --offline -- --ignored --nocapture`：0 passed / 1 failed；BrokenPipe 后 pending=1；Windows 临时 `cmd.exe` 管道 fixture，无真实 CLI server；同 crate 默认单测 4 passed / 1 ignored |
+| H-91 并发事件序号倒退显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_concurrent_event_producers_keep_sequences_in_wire_order --offline -- --ignored --nocapture`：0 passed / 1 failed；确定性调度得到 `reserved=[1,2] enqueued=[2, 1]`。未启动真实 stdio server/客户端；这不是持久化丢事件测试 |
+| H-91 app-server 默认测试基线 | `cargo test -p deepagent-cli app_server::tests --offline`：8 passed / 0 failed / 5 ignored；H-91 为显式 ignored 审计探针，默认通过不代表该交错已修复 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
