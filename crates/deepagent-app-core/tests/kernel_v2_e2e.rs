@@ -2461,3 +2461,172 @@ async fn audit_configured_output_limit_reaches_provider_request() {
         "saved output limits must reach the actual provider request"
     );
 }
+
+#[tokio::test]
+async fn context_projection_retains_turns_across_runs_and_database_reopen() {
+    use deepagent_app_core::{AppService, RuntimeEvent};
+    use deepagent_context::ContextUsageSnapshot;
+
+    struct ObservedModel {
+        requests: Mutex<Vec<String>>,
+        answers: Mutex<VecDeque<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl HttpTransport for ObservedModel {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.requests.lock().unwrap().push(request.body);
+            let answer = self
+                .answers
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("exactly three model calls");
+            emit_responses_events(sink, &answer)
+        }
+    }
+
+    fn settings(db: Arc<Database>) -> Arc<SettingsService> {
+        Arc::new(SettingsService::new(
+            db,
+            Arc::new(MockTransport::with_get_json(
+                r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        ))
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let db_path = root.path().join("state.sqlite");
+    let first_input = format!(
+        "AUDIT_FIRST_INPUT {}END_FIRST_INPUT",
+        "retained user text ".repeat(300)
+    );
+    let first_answer = format!(
+        "AUDIT_FIRST_ANSWER {}END_FIRST_ANSWER",
+        "retained assistant text ".repeat(200)
+    );
+    let second_input = "AUDIT_SECOND_INPUT: continue the same discussion.";
+    let second_answer = "AUDIT_SECOND_ANSWER: additional context stays in history.";
+    let model = Arc::new(ObservedModel {
+        requests: Mutex::new(Vec::new()),
+        answers: Mutex::new(VecDeque::from([
+            answer_with_usage(&first_answer, 4_000, 600),
+            answer_with_usage(second_answer, 6_000, 25),
+            answer_with_usage("AUDIT_THIRD_ANSWER", 7_500, 10),
+        ])),
+    });
+    let snapshots = Arc::new(Mutex::new(Vec::<ContextUsageSnapshot>::new()));
+    let (session, before_reopen) = {
+        let db = Arc::new(Database::open(&db_path).unwrap());
+        let config = settings(db.clone());
+        config.initialize("sk-audit-placeholder").await.unwrap();
+        let chat = ChatService::new(db.clone(), config, model.clone(), root.path())
+            .with_cost(Arc::new(CostService::new(db.clone())));
+        let mut session = None;
+        for (index, prompt) in [first_input.as_str(), second_input].into_iter().enumerate() {
+            let captured = snapshots.clone();
+            let id = chat
+                .run_in_session(
+                    prompt,
+                    session.as_deref(),
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    false,
+                    Some(&format!("audit-context-turn-{index}")),
+                    move |event| {
+                        if let RuntimeEvent::ContextUsage { snapshot } = event {
+                            captured.lock().unwrap().push(snapshot);
+                        }
+                    },
+                    |_| {},
+                )
+                .await
+                .unwrap();
+            if let Some(previous) = &session {
+                assert_eq!(&id, previous);
+            }
+            session = Some(id);
+            let latest = snapshots.lock().unwrap().last().unwrap().clone();
+            let last_prompt = if index == 0 { 4_000 } else { 6_000 };
+            assert_eq!(latest.last_request_prompt_tokens, Some(last_prompt));
+            assert!(
+                latest.occupancy_tokens() > last_prompt,
+                "new assistant output increases retained context"
+            );
+            eprintln!(
+                "AppCore context audit: turn={} measured={last_prompt} projected={}",
+                index + 1,
+                latest.occupancy_tokens()
+            );
+        }
+        let id = session.unwrap();
+        let latest = snapshots.lock().unwrap().last().unwrap().clone();
+        let saved = AppService::from_shared(db.clone())
+            .session_detail(&id)
+            .unwrap()
+            .context_usage
+            .unwrap();
+        assert_eq!(
+            saved, latest,
+            "session detail must restore the last emitted snapshot"
+        );
+        assert_eq!(cost_rows(&db, &id), vec![(4_000, 600), (6_000, 25)]);
+        (id, saved)
+    };
+    // All first-host database and ChatService owners have been dropped.
+    let app = AppService::open(&db_path).unwrap();
+    assert_eq!(
+        app.session_detail(&session).unwrap().context_usage.unwrap(),
+        before_reopen
+    );
+    let config = settings(app.shared_database());
+    config.initialize("sk-audit-placeholder").await.unwrap();
+    let chat = ChatService::new(app.shared_database(), config, model.clone(), root.path());
+    let captured = snapshots.clone();
+    chat.run_in_session(
+        "AUDIT_THIRD_INPUT: continue after database reopen.",
+        Some(&session),
+        None,
+        None,
+        Vec::new(),
+        None,
+        false,
+        Some("audit-context-turn-after-reopen"),
+        move |event| {
+            if let RuntimeEvent::ContextUsage { snapshot } = event {
+                captured.lock().unwrap().push(snapshot);
+            }
+        },
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let requests = model.requests.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    for (index, body) in requests.iter().enumerate().skip(1) {
+        eprintln!("AppCore history audit: request={} first_user={} first_assistant={} user_marker={} answer_marker={}",index+1,body.contains(&first_input),body.contains(&first_answer),body.contains("AUDIT_FIRST_INPUT"),body.contains("AUDIT_FIRST_ANSWER"));
+        assert!(
+            body.contains(&first_input) && body.contains(&first_answer),
+            "earliest retained turn must remain in provider input"
+        );
+    }
+    assert!(requests[2].contains(second_input) && requests[2].contains(second_answer));
+    let snapshots = snapshots.lock().unwrap();
+    for snapshot in snapshots.iter() {
+        assert_eq!(
+            snapshot
+                .blocks
+                .iter()
+                .map(|block| block.tokens)
+                .sum::<usize>(),
+            snapshot.occupancy_tokens()
+        );
+    }
+    let final_snapshot = snapshots.last().unwrap();
+    assert_eq!(final_snapshot.last_request_prompt_tokens, Some(7_500));
+    assert!(final_snapshot.occupancy_tokens() > 7_500);
+    eprintln!("AppCore context audit: reopened=true measured=7500 projected={} all_three_requests_keep_history=true",final_snapshot.occupancy_tokens());
+}

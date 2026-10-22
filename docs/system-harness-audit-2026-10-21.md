@@ -1375,6 +1375,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 | 命令或实测 | 结果 |
 |---|---|
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`（跨运行上下文验证补充时） | 12 passed / 10 ignored；新增跨两轮运行及数据库重开的上下文正向测试默认执行；忽略的缺陷探针不代表通过 |
 | H-58 附件清理异常身份显式探针（见该节命令） | 明确失败：正常对照只删目标，空/点号 id 删除同桶两附件，父目录 session 实际删除 root 外测试目录 |
 | `cargo test -p deepagent-app-core --lib attachment_service::tests --offline` | 4 passed / 1 ignored；新缺陷探针另行显式执行失败；同批 cargo fmt --all -- --check 通过 |
 | H-57 技能目录续聊显式探针（见补充命令） | 明确失败：first=true / continued=false / reset=true / fresh=true；四轮均成功且 skill 工具仍在请求中 |
@@ -1583,6 +1584,14 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 首次断言误要求工具结果净增量至少 2,000，实际为 1,977；核查发现 `ResponseRequest::from_response_items` 会给尚未返回的调用补临时失败输出供请求投影使用，真实结果到来后替换该占位。已将断言改为明确容纳占位扣除的 1,900 下限，并保留真实请求中完整结果的严格断言；这是测试预期修正，不列为产品缺陷。
 - 对照 `借鉴/deepseek-harness/packages/llm/token-meter/src/estimate.ts` 和 `projection.ts`：参考实现同样使用固定字符密度估算增量，并明确区分 provider 输入锚点、下一请求投影和累计计费；其文档也承认启发式对 CJK/schema 的偏差。本系统的 `HeuristicTokenizer` 注释所称“不会低估”不能当作真实 tokenizer 的保证。本轮没有精确 tokenizer 或真实供应商的增量误差测量，因此不据此新增缺陷。
 - 同批执行 `cargo test -p deepagent-context --offline`：54 passed；`cargo test -p deepagent-runtime --lib context_ --offline`：5 passed。这里只覆盖原生 Responses 离线路径，没有新增 Chat Completions、图片真实 token 成本、跨用户 turn 的 AppCore 重新组装或桌面显示验证；H-05 等已确认问题仍未修复。
+
+### 后续独立验证：跨用户轮次与数据库重开后仍保留完整上下文
+
+- 新增默认测试 `context_projection_retains_turns_across_runs_and_database_reopen`，通过正式文件 SQLite、SettingsService、ChatService → Kernel → ModelAgent → ModelClient 执行三轮。仅底层 HttpTransport 使用记录请求并返回合成 provider usage 的离线 fixture；未调用公网供应商。
+- 前两轮沿用同一 session：第一轮 provider 输入 4,000、回答写入后投影 5,217；第二轮 provider 输入 6,000、回答写入后投影 6,023。第一轮较长的完整用户输入与完整 assistant 回答均存在于第二次实际序列化请求中。两轮 CostService 独立账目为 `(4,000, 600)`、`(6,000, 25)`，没有把累计输入 10,000 当作当前占用。
+- 第一宿主的 ChatService 与所有数据库 owner 离开作用域后，以 `AppService::open` 重开同一数据库；`session_detail.context_usage` 与重开前最后发出的快照逐字段一致。第三轮实际序列化请求同时保留前两轮的完整输入和完整回答；provider 输入 fixture 为 7,500，最终投影 7,513。所有捕获快照的 blocks token 总和均等于 occupancy；第三轮未接入 CostService，不能据此声称三轮计费都已验证。
+- 首次 fixture 的长输入/回答以空格结尾，严格 substring 断言未通过；改为带明确 END 后缀的内容后，仍对完整输入/回答进行严格比较并通过。尚未精确定位末尾空白处理来源，不将此测试数据调整列为产品缺陷。
+- 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：12 passed / 10 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本项扩展了上节的运行内证据，证明该样本的跨轮次组装与数据库恢复没有把上下文缩减为最近一轮消耗；不证明真实 tokenizer/供应商误差、工具循环/压缩边界、Tauri 面板或完整桌面进程重启已通过。H-05、H-54、H-57 等已确认缺陷仍然独立存在。
 
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
