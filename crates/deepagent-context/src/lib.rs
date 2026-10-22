@@ -45,7 +45,7 @@ pub use meter::{
     measure_response_surface, measure_response_surface_for_route, measure_response_surface_with,
     ContextMeter, SurfaceTokenBreakdown,
 };
-pub use model_compactor::ModelCompactor;
+pub use model_compactor::{ModelCompactionError, ModelCompactor};
 pub use pack::{
     CacheScope, ContextBlock, ContextBlockKind, ContextBlockUsage, ContextPack,
     ContextUsageSnapshot,

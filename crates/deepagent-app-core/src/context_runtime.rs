@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -15,7 +16,7 @@ use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistr
 use deepagent_models::{ModelClient, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
-    CompactionTrigger, PrefireNote, ReactiveCompaction, ReactiveContextCompactor,
+    CompactionFailure, CompactionTrigger, PrefireNote, ReactiveCompaction, ReactiveContextCompactor,
 };
 
 use crate::knowledge_service::KnowledgeService;
@@ -243,6 +244,341 @@ impl HookedReactiveContextCompactor {
     async fn summarize_zone(&self, zone: &[Message]) -> (String, deepagent_models::Usage) {
         let (_, items) = deepagent_models::response_items_from_messages(zone);
         self.summarize_response_item_zone(&items).await
+    }
+
+    async fn dispatch_compaction_hook(
+        &self,
+        context: HookContext,
+        cancel: Option<Arc<AtomicBool>>,
+        usage: deepagent_models::Usage,
+    ) -> std::result::Result<HookOutcome, CompactionFailure> {
+        deepagent_runtime::cancellation::await_cancelled(self.hooks.dispatch(&context), cancel)
+            .await
+            .map_err(|error| CompactionFailure::new(error, usage))
+    }
+
+    async fn summarize_response_item_zone_cancelled(
+        &self,
+        zone: &[ResponseInputItem],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<(String, deepagent_models::Usage), CompactionFailure> {
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(CompactionFailure::new(
+                CoreError::other("request cancelled by user"),
+                deepagent_models::Usage::default(),
+            ));
+        }
+        let store = crate::session_memory::SessionMemoryStore::new(self.db.clone());
+        if let (Ok(Some(state)), Ok(events)) = (
+            store.load(self.session_id),
+            deepagent_persistence::event_store::EventStore::new(&self.db)
+                .load_session(self.session_id),
+        ) {
+            if let Some(covered) = state.last_summarized_sequence {
+                if !zone.is_empty()
+                    && !state.summary.trim().is_empty()
+                    && zone.iter().all(|item| {
+                        crate::input_runtime::sequence_of_response_item(&events, item)
+                            .is_some_and(|seq| seq <= covered)
+                    })
+                {
+                    let summary = crate::input_runtime::with_transcript_pointer(
+                        format!(
+                            "Session notes maintained during this conversation:\n{}",
+                            state.summary
+                        ),
+                        &self.db.session_transcript_dir(self.session_id),
+                    );
+                    return Ok((summary, deepagent_models::Usage::default()));
+                }
+            }
+        }
+        let rendered = zone
+            .iter()
+            .map(render_response_item_for_compaction)
+            .collect::<Vec<_>>();
+        let goal = latest_user_content_from_response_items(zone).unwrap_or_default();
+        let (summary, usage) =
+            deepagent_context::ModelCompactor::new(self.client.clone(), self.model.clone())
+                .summarize_accounted_cancelled(
+                    &goal,
+                    &deepagent_context::TaskSummary::default(),
+                    &rendered,
+                    cancel.clone(),
+                )
+                .await
+                .map_err(|failure| CompactionFailure::new(failure.error, failure.usage))?;
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(CompactionFailure::new(
+                CoreError::other("request cancelled by user"),
+                usage,
+            ));
+        }
+        let mut summary_block = summary.to_context_block();
+        if let Some(reinjection) = compaction_reinjection_block_from_items(zone) {
+            summary_block.push_str("\n\n");
+            summary_block.push_str(&reinjection);
+        }
+        Ok((
+            crate::input_runtime::with_transcript_pointer(
+                summary_block,
+                &self.db.session_transcript_dir(self.session_id),
+            ),
+            usage,
+        ))
+    }
+
+    async fn compact_response_items_inner(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        trigger: CompactionTrigger,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(CompactionFailure::new(
+                CoreError::other("request cancelled by user"),
+                deepagent_models::Usage::default(),
+            ));
+        }
+        if !self
+            .breaker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .admit()
+        {
+            return Ok(None);
+        }
+        let Some(split) = pairing_safe_response_item_compaction_split(items) else {
+            return Ok(None);
+        };
+        let before = self
+            .dispatch_compaction_hook(
+                HookContext::new(
+                    self.session_id,
+                    HookPoint::BeforeCompact,
+                    HookData::Compact {
+                        trigger: trigger.as_str().to_string(),
+                        summary: None,
+                    },
+                ),
+                cancel.clone(),
+                deepagent_models::Usage::default(),
+            )
+            .await?;
+        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+            return Ok(None);
+        }
+        let count = |items: &[ResponseInputItem]| self.measure_native_items(instructions, items);
+        let tokens_before = count(items);
+        let (summary_block, summary_usage) = self
+            .summarize_response_item_zone_cancelled(&items[..split], cancel.clone())
+            .await?;
+        let mut compacted_items = Vec::with_capacity(1 + items.len() - split);
+        compacted_items.push(ResponseInputItem::Message {
+            role: "user".to_string(),
+            content: format!("[Earlier conversation compacted to summary]\n{summary_block}"),
+        });
+        compacted_items.extend_from_slice(&items[split..]);
+        let tokens_after = count(&compacted_items);
+        if tokens_after >= tokens_before {
+            self.breaker
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .record_ineffective();
+            return Ok(None);
+        }
+        let post = self
+            .dispatch_compaction_hook(
+                HookContext::new(
+                    self.session_id,
+                    HookPoint::PostCompact,
+                    HookData::Compact {
+                        trigger: trigger.as_str().to_string(),
+                        summary: Some(summary_block.clone()),
+                    },
+                ),
+                cancel.clone(),
+                summary_usage.clone(),
+            )
+            .await?;
+        if matches!(post, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+            return Ok(None);
+        }
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(CompactionFailure::new(
+                CoreError::other("request cancelled by user"),
+                summary_usage,
+            ));
+        }
+        self.record_native_boundary(
+            Self::boundary_strategy(trigger),
+            tokens_before,
+            tokens_after,
+            &summary_block,
+            &items[split..],
+        )
+        .map_err(|error| CompactionFailure::new(error, summary_usage.clone()))?;
+        self.breaker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .record_success();
+        let messages =
+            deepagent_models::messages_from_response_items(instructions, &compacted_items);
+        Ok(Some(ReactiveCompaction {
+            messages,
+            response_items: Some(compacted_items),
+            tokens_before,
+            tokens_after,
+            summary: summary_block,
+            usage: summary_usage,
+        }))
+    }
+
+    async fn prefire_pass1_response_items_inner(
+        &self,
+        items: &[ResponseInputItem],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<Option<PrefireNote>, CompactionFailure> {
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(CompactionFailure::new(
+                CoreError::other("request cancelled by user"),
+                deepagent_models::Usage::default(),
+            ));
+        }
+        let Some(split) = pairing_safe_response_item_compaction_split(items) else {
+            return Ok(None);
+        };
+        let (summary_block, summary_usage) = self
+            .summarize_response_item_zone_cancelled(&items[..split], cancel.clone())
+            .await?;
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(CompactionFailure::new(
+                CoreError::other("request cancelled by user"),
+                summary_usage,
+            ));
+        }
+        Ok(Some(PrefireNote {
+            note: summary_block,
+            prefix_end: split,
+            fingerprint: fingerprint_response_item_prefix(&items[..split]),
+            usage: summary_usage,
+        }))
+    }
+
+    async fn apply_prefire_response_items_inner(
+        &self,
+        note: &PrefireNote,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(CompactionFailure::new(
+                CoreError::other("request cancelled by user"),
+                note.usage.clone(),
+            ));
+        }
+        if note.prefix_end == 0
+            || note.prefix_end > items.len()
+            || fingerprint_response_item_prefix(&items[..note.prefix_end]) != note.fingerprint
+        {
+            return Ok(None);
+        }
+        let before = self
+            .dispatch_compaction_hook(
+                HookContext::new(
+                    self.session_id,
+                    HookPoint::BeforeCompact,
+                    HookData::Compact {
+                        trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
+                        summary: None,
+                    },
+                ),
+                cancel.clone(),
+                note.usage.clone(),
+            )
+            .await?;
+        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+            return Ok(None);
+        }
+        let tokens_before = self.measure_native_items(instructions, items);
+        let tail = &items[note.prefix_end..];
+        let mut compacted_items = Vec::with_capacity(1 + tail.len());
+        compacted_items.push(ResponseInputItem::Message {
+            role: "user".to_string(),
+            content: format!("[Earlier conversation compacted to summary]\n{}", note.note),
+        });
+        compacted_items.extend_from_slice(tail);
+        let tokens_after = self.measure_native_items(instructions, &compacted_items);
+        if tokens_after >= tokens_before {
+            return Ok(None);
+        }
+        let post = self
+            .dispatch_compaction_hook(
+                HookContext::new(
+                    self.session_id,
+                    HookPoint::PostCompact,
+                    HookData::Compact {
+                        trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
+                        summary: Some(note.note.clone()),
+                    },
+                ),
+                cancel.clone(),
+                note.usage.clone(),
+            )
+            .await?;
+        if matches!(post, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
+            return Ok(None);
+        }
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+        {
+            return Err(CompactionFailure::new(
+                CoreError::other("request cancelled by user"),
+                note.usage.clone(),
+            ));
+        }
+        self.record_native_boundary(
+            deepagent_core::compaction_strategy::PREFIRE_PASS2,
+            tokens_before,
+            tokens_after,
+            &note.note,
+            tail,
+        )
+        .map_err(|error| CompactionFailure::new(error, note.usage.clone()))?;
+        let messages =
+            deepagent_models::messages_from_response_items(instructions, &compacted_items);
+        Ok(Some(ReactiveCompaction {
+            messages,
+            response_items: Some(compacted_items),
+            tokens_before,
+            tokens_after,
+            summary: note.note.clone(),
+            usage: note.usage.clone(),
+        }))
     }
 
     fn measure_native_items(&self, instructions: Option<&str>, items: &[ResponseInputItem]) -> u64 {
@@ -546,91 +882,20 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         items: &[ResponseInputItem],
         trigger: CompactionTrigger,
     ) -> Result<Option<ReactiveCompaction>> {
-        if !self
-            .breaker
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .admit()
-        {
-            return Ok(None);
-        }
+        self.compact_response_items_inner(instructions, items, trigger, None)
+            .await
+            .map_err(|failure| failure.error)
+    }
 
-        let Some(split) = pairing_safe_response_item_compaction_split(items) else {
-            return Ok(None);
-        };
-
-        let before = self
-            .hooks
-            .dispatch(&HookContext::new(
-                self.session_id,
-                HookPoint::BeforeCompact,
-                HookData::Compact {
-                    trigger: trigger.as_str().to_string(),
-                    summary: None,
-                },
-            ))
-            .await?;
-        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
-            return Ok(None);
-        }
-
-        let count = |items: &[ResponseInputItem]| self.measure_native_items(instructions, items);
-        let tokens_before = count(items);
-
-        let (summary_block, summary_usage) =
-            self.summarize_response_item_zone(&items[..split]).await;
-
-        let mut compacted_items = Vec::with_capacity(1 + items.len() - split);
-        compacted_items.push(ResponseInputItem::Message {
-            role: "user".to_string(),
-            content: format!("[Earlier conversation compacted to summary]\n{summary_block}"),
-        });
-        compacted_items.extend_from_slice(&items[split..]);
-
-        let tokens_after = count(&compacted_items);
-        if tokens_after >= tokens_before {
-            self.breaker
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .record_ineffective();
-            return Ok(None);
-        }
-        self.breaker
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .record_success();
-
-        self.hooks
-            .dispatch(&HookContext::new(
-                self.session_id,
-                HookPoint::PostCompact,
-                HookData::Compact {
-                    trigger: trigger.as_str().to_string(),
-                    summary: Some(summary_block.clone()),
-                },
-            ))
-            .await?;
-
-        // The tail's first entry, projected the way the model sees it, is the cut
-        // point the next run must replay verbatim.
-        self.record_native_boundary(
-            Self::boundary_strategy(trigger),
-            tokens_before,
-            tokens_after,
-            &summary_block,
-            &items[split..],
-        )?;
-
-        let messages =
-            deepagent_models::messages_from_response_items(instructions, &compacted_items);
-        Ok(Some(ReactiveCompaction {
-            messages,
-            response_items: Some(compacted_items),
-            tokens_before,
-            tokens_after,
-            summary: summary_block,
-            usage: summary_usage,
-        }))
+    async fn compact_response_items_cancelled(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        trigger: CompactionTrigger,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+        self.compact_response_items_inner(instructions, items, trigger, cancel)
+            .await
     }
 
     async fn prefire_pass1(&self, messages: &[Message]) -> Result<Option<PrefireNote>> {
@@ -659,17 +924,18 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         _instructions: Option<&str>,
         items: &[ResponseInputItem],
     ) -> Result<Option<PrefireNote>> {
-        let Some(split) = pairing_safe_response_item_compaction_split(items) else {
-            return Ok(None);
-        };
-        let (summary_block, summary_usage) =
-            self.summarize_response_item_zone(&items[..split]).await;
-        Ok(Some(PrefireNote {
-            note: summary_block,
-            prefix_end: split,
-            fingerprint: fingerprint_response_item_prefix(&items[..split]),
-            usage: summary_usage,
-        }))
+        self.prefire_pass1_response_items_inner(items, None)
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    async fn prefire_pass1_response_items_cancelled(
+        &self,
+        _instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<Option<PrefireNote>, CompactionFailure> {
+        self.prefire_pass1_response_items_inner(items, cancel).await
     }
 
     async fn apply_prefire(
@@ -771,71 +1037,20 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         instructions: Option<&str>,
         items: &[ResponseInputItem],
     ) -> Result<Option<ReactiveCompaction>> {
-        if note.prefix_end == 0 || note.prefix_end > items.len() {
-            return Ok(None);
-        }
-        if fingerprint_response_item_prefix(&items[..note.prefix_end]) != note.fingerprint {
-            return Ok(None);
-        }
-        let before = self
-            .hooks
-            .dispatch(&HookContext::new(
-                self.session_id,
-                HookPoint::BeforeCompact,
-                HookData::Compact {
-                    trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
-                    summary: None,
-                },
-            ))
-            .await?;
-        if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
-            return Ok(None);
-        }
+        self.apply_prefire_response_items_inner(note, instructions, items, None)
+            .await
+            .map_err(|failure| failure.error)
+    }
 
-        let count = |items: &[ResponseInputItem]| self.measure_native_items(instructions, items);
-        let tokens_before = count(items);
-
-        let tail = &items[note.prefix_end..];
-        let mut compacted_items = Vec::with_capacity(1 + tail.len());
-        compacted_items.push(ResponseInputItem::Message {
-            role: "user".to_string(),
-            content: format!("[Earlier conversation compacted to summary]\n{}", note.note),
-        });
-        compacted_items.extend_from_slice(tail);
-
-        let tokens_after = count(&compacted_items);
-        if tokens_after >= tokens_before {
-            return Ok(None);
-        }
-        self.hooks
-            .dispatch(&HookContext::new(
-                self.session_id,
-                HookPoint::PostCompact,
-                HookData::Compact {
-                    trigger: CompactionTrigger::AutoCompactThreshold.as_str().to_string(),
-                    summary: Some(note.note.clone()),
-                },
-            ))
-            .await?;
-        self.record_native_boundary(
-            deepagent_core::compaction_strategy::PREFIRE_PASS2,
-            tokens_before,
-            tokens_after,
-            &note.note,
-            tail,
-        )?;
-        let messages =
-            deepagent_models::messages_from_response_items(instructions, &compacted_items);
-        Ok(Some(ReactiveCompaction {
-            messages,
-            response_items: Some(compacted_items),
-            tokens_before,
-            tokens_after,
-            summary: note.note.clone(),
-            // Pass-1 paid for this text; carry the charge to the boundary that
-            // uses it.
-            usage: note.usage,
-        }))
+    async fn apply_prefire_response_items_cancelled(
+        &self,
+        note: &PrefireNote,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+        self.apply_prefire_response_items_inner(note, instructions, items, cancel)
+            .await
     }
 }
 
@@ -1951,7 +2166,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-31: synchronous native compaction does not receive run cancellation"]
     async fn audit_cancel_interrupts_native_summary_before_next_model_request() {
         use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
         use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
@@ -1999,6 +2213,7 @@ mod tests {
         }
 
         let db = Arc::new(Database::open_in_memory().unwrap());
+        let audit_db = db.clone();
         let mut session =
             deepagent_session::Session::create(&db, &deepagent_core::clock::SystemClock, None)
                 .unwrap();
@@ -2071,6 +2286,16 @@ mod tests {
         assert!(
             stopped_promptly,
             "run cancellation waited for an unrelated release of the summary response"
+        );
+        let events = deepagent_persistence::event_store::EventStore::new(&audit_db)
+            .load_session(sid)
+            .unwrap();
+        assert!(
+            events.iter().all(|event| !matches!(
+                event.payload,
+                deepagent_core::event::EventPayload::ContextCompacted { .. }
+            )),
+            "cancellation during summary must not persist a partial compaction boundary"
         );
     }
 

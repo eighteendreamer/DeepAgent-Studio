@@ -16,7 +16,7 @@
 | SSH 远端主机身份验证 | 正式 SshService 通过 loopback 连上临时随机服务器密钥；同一地址的 known_hosts 对照拒绝不匹配密钥 | 已确认 H-125；未连接公网或用户服务器 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99、H-118、H-127；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
-| 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
+| 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、stdio/HTTP 响应无 transport 字节上限、图像工具结果未转为模型多模态内容、一次性测试连接在 initialize/tools/list 阶段无界等待（已修复并验证 30 秒总握手上限）、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认并修复 H-128、H-129；其他已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117、H-126 至 H-127；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
@@ -71,7 +71,7 @@
 
 ### 现有内核有可保留的基础，入口与生命周期的一致性仍不足
 
-`AgentKernel` 已定义 Accepted → Preparing → RunningTurn / ExecutingTools → Finalizing → Terminal，使用现有 RunStore、事件与取消树；`RunCoordinator` 提供跨入口控制信号，provider wire 集中在 `deepagent-models`。这组职责分离有明确价值：本报告的真实桌面普通对话、只读工具、取消与重启继续，以及正式 AppCore 的工具副作用和子运行测试，已证明部分组合能实际闭环。运行包与 MCP 慢准备不进入聊天等待、取消审计失败仍传播信号，也有独立动态证据。
+`AgentKernel` 已定义 Accepted → Preparing → RunningTurn / ExecutingTools → Finalizing → Terminal，使用现有 RunStore、事件与取消树；`RunCoordinator` 提供跨入口控制信号，provider wire 集中在 `deepagent-models`。这组职责分离有明确价值：本报告的真实桌面普通对话、只读工具、取消与重启继续，以及正式 AppCore 的工具副作用和子运行测试，已证明部分组合能实际闭环。运行包与 MCP 慢准备不进入聊天等待、取消审计失败仍传播信号、原生摘要压缩沿运行取消树退出，也有独立动态证据。
 
 当前结构性缺口集中在这些抽象被不同入口组合后的不变量：ACK 早于真正接纳（H-02），会话租约的 owner 仅存在单个宿主内（H-33），子运行配置/工作树/产物归属分裂（H-19～H-22），工作流另行装配工具与结果解释（H-38～H-40），启动恢复缺少规范终态和会话投影（H-44），且恢复中断原因按 session 全日志分类而没有按 run/task 隔离（H-95）。因此本轮建议在既有 AppCore/Kernel 统一执行配置、运行归属和提交边界，按真实入口回归；这些判断并不要求新增第二套执行器或持久化。
 
@@ -109,7 +109,7 @@
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
-| 运行及附属工作的归属 | 摘要、子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-31/H-45/H-60/H-61/H-64） | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
+| 运行及附属工作的归属 | 子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-45/H-60/H-61/H-64）；原生摘要取消已修复 | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
 | 内容身份与生命周期 | 去重名称没有对应正文、共享可变项目 scope、旧计时器作用到新调用（H-51/H-53/H-57/H-59） | Claude transcript 内容驱动去重及局部 timer cleanup；DeepSeek connection-owned system section；Wasmtime 的 Store deadline 语义 | 能力或记忆漏注入、跨项目污染、调用被无关计时器提前中断 |
 | 文件回退的失败边界 | 备份不可用尚未检查，当前文件已经删除；多文件已部分恢复而历史未变（H-72） | Claude fileHistory 先 stat 备份，已知缺失时不复制或删除当前文件；该机制不等于整个回退事务原子化 | 回退/分叉失败仍丢失当前文件，磁盘与会话处于不同恢复阶段 |
 | 回退后的派生数据归属 | 重用 sequence 后，丢弃分支的笔记覆盖和文件检查点仍可能作用于新分支（H-23/H-73） | Claude 按目标 messageId 定位文件快照；Codex 对有效历史应用 rollback 标记后计算分支位置 | 新分支历史与文件/摘要不一致，已经丢弃的决策或文件内容重新出现 |
@@ -869,25 +869,24 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应统一字节 UTF-8 解码、SSE 事件分帧、provider JSON 解析的三个边界。可评估现有依赖或标准解析器，保持单一 transport 链路；兼容无空行的非标准供应商若确有需求，需显式定义策略，不能默认把半帧等同于完成。
 - 验收应覆盖多 data 行、CR/LF/CRLF、分隔符跨网络 chunk、注释心跳、EOF 半帧和完整终态，并检查真实 HTTP→ModelClient→运行终态。现有默认测试把连续 data 行直接视为两个 payload，恰好固化了行级假设，常规通过不能证明 SSE 协议完整。本轮未修改生产 parser。
 
-### H-31：同步原生压缩的摘要请求没有运行取消信号，停止必须等摘要返回
+### H-31：同步原生压缩的摘要请求没有运行取消信号，停止必须等摘要返回（已修复）
 
-**级别：高（P1）；范围：ModelAgent 请求前的同步完整摘要压缩。** 需要历史超过压缩阈值并进入模型摘要阶段。与 H-10 的后台 prefire 生命周期及 H-29 的错误正文等待不同：本项使用正常成功摘要，也能拖住运行取消。
+**状态：已修复。级别：高（P1）；范围：ModelAgent 请求前的同步完整摘要压缩。** 需要历史超过压缩阈值并进入模型摘要阶段。与 H-10 的后台 prefire 生命周期及 H-29 的错误正文等待不同：本项使用正常成功摘要，也能拖住运行取消。
 
 #### 生产调用与动态复现
 
-- `ModelAgent::think_inner()` 检查 cancel 后 await maybe_proactive_compact，再检查 cancel；压缩调用的 ReactiveContextCompactor 契约没有传递取消上下文。生产 HookedReactiveContextCompactor 调用 ModelCompactor::summarize_accounted，最终使用 `client.stream_response(request)`，而非取消感知入口。因此前后检查不能中断正在等待的摘要请求。
-- 新增默认忽略探针 `context_runtime::tests::audit_cancel_interrupts_native_summary_before_next_model_request`。真实内存数据库与 Session 持久化 24 条唯一原生消息；正式 ModelAgent 使用生产 HookedReactiveContextCompactor，设置本地测试阈值 2000，触发完整摘要。无历史工具结果，因此不是便宜的工具结果清理。
+- 修复前：`ModelAgent::think_inner()` 检查 cancel 后 await maybe_proactive_compact，再检查 cancel；压缩调用的 ReactiveContextCompactor 契约没有传递取消上下文。生产 HookedReactiveContextCompactor 调用 ModelCompactor::summarize_accounted，最终使用 `client.stream_response(request)`，而非取消感知入口。因此前后检查不能中断正在等待的摘要请求。
+- 审计探针 `context_runtime::tests::audit_cancel_interrupts_native_summary_before_next_model_request` 使用真实内存数据库与 Session 持久化 24 条唯一原生消息；正式 ModelAgent 使用生产 HookedReactiveContextCompactor，设置本地测试阈值 2000，触发完整摘要。无历史工具结果，因此不是便宜的工具结果清理。
 - 只有摘要 transport 为可控 fixture：确认收到生产摘要请求后保持响应 pending；fixture 同时提供正确响应取消 flag 的 stream_cancelled 实现并计数。此时设置正式 think_cancelled 的同一个运行 flag，观察 500ms，再主动释放正常结构化摘要并回收任务。没有模型网络请求、真实用户历史或人为修改生产 compactor。
-- 执行：`cargo test -p deepagent-app-core --lib audit_cancel_interrupts_native_summary_before_next_model_request --offline -- --ignored --nocapture`。实际 `stopped_within_500ms=false, total_requests=1, cancel_aware_requests=0`；释放摘要后才返回 request cancelled by user，最终断言失败。也确认停止后没有再发主模型请求，不能概括成取消后仍启动了新工具或主模型。
-- 本次只验证主动压缩；reactive overflow 与 prefire 的契约也缺少取消参数是代码观察，不能把它们全部报成同一动态测试已覆盖。未运行真实桌面超大上下文/真实慢供应商，也未统计 P95。
+- 修复后：`ReactiveContextCompactor` 增加原生 Surface 的取消感知入口；`HookedReactiveContextCompactor` 将摘要模型请求、压缩 hooks、prefire 和 durable boundary 前后的检查接入同一运行取消标志；`ModelCompactor` 使用 `stream_response_cancelled`。默认回归 `cargo test -p deepagent-app-core --lib context_runtime::tests::audit_cancel_interrupts_native_summary_before_next_model_request --offline -- --nocapture` 输出 `stopped_within_500ms=true, total_requests=1, cancel_aware_requests=1` 并通过，同时确认没有 `ContextCompacted` 边界或后续主模型请求。
+- 修复前的复现数据仍保留在本节作为根因证据；本轮另运行了 `cargo test -p deepagent-context -p deepagent-runtime --offline`，54 + 268 个测试通过。真实桌面超大上下文/真实供应商仍未作为本项验收条件。
 
 #### 成熟实现、后果与修复方向
 
 - DeepSeek Harness `compaction-basic/src/summarizer.ts::summarizeWithLlm()` 接收 signal 并放入 GenerateOptions，透传至模型 adapter；aborted finish 转为 LlmError。`region.ts` 在摘要和提交边界检查取消；manual-compaction 回归明确验证取消落在摘要之后时不写 compaction/summary，同时保留已经进入 durability checkpoint 的收尾语义。
 - Claude Code `services/compact/compact.ts` 的 fork 路径复用 context.abortController，streaming fallback 传同一 signal，重试 sleep 也接收它。可借鉴的是压缩属于同一取消树，并区分正在请求与已进入持久化收尾的阶段；不是简单无条件 drop 所有压缩 Future。
-- 用户在“正在压缩上下文”期间点击停止，取消 flag 虽已设置，执行仍等待摘要响应/超时才退出。在生产 ReqwestTransport 中该调用仍受 total deadline 限制，默认 300 秒；本次没有实际等到该上限，不声称无限挂起。
-- 根因修复需扩展既有 compactor 调用边界以接收运行取消上下文，覆盖同步摘要、prefire owner、溢出恢复、重试和 hooks 等待；保留正常取消错误，不能转成启发式摘要后继续提交。摘要完成后的采用/落盘也要定义明确的取消提交点，同时保留已发生 usage，复用现有运行树及 Session 事件日志。
-- 验收使用同一探针再覆盖摘要前/中/后、持久化故障、取消与完成竞争以及真实 transport；H-10/H-29/H-31 已显示多个独立等待边界缺口，应统一审视取消生命周期，不能继续仅在按钮或 await 之后补检查。本轮未修改生产压缩行为。
+- 修复前用户在“正在压缩上下文”期间点击停止，取消 flag 虽已设置，执行仍等待摘要响应/超时才退出。修复后摘要请求、prefire 和 hooks 等待均可被取消；取消发生在 durable boundary 提交前不会采用部分摘要，已发生的 summary usage 仍归入运行侧账本。
+- 修复复用了现有运行取消树及 Session 事件日志，没有新增存储或第二套取消机制。已覆盖主动摘要中取消、无后续主模型请求和无部分压缩边界；错误正文、SSE 分帧等其他等待边界仍由各自 H 项跟踪。
 
 ### H-32：备用宿主打开数据库先执行无所有权恢复，误终结主宿主的工具动作和子 Agent
 
@@ -2520,7 +2519,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | `cargo test -p deepagent-persistence --offline`（核查 H-32 时） | 67 passed；既有单宿主恢复及文件会话并发追加测试通过，不代表恢复具有跨宿主所有权判断 |
 | `cargo fmt --all -- --check` | 通过 |
 | `cargo test -p deepagent-app-core --lib context_runtime::tests --offline`（新增 H-31 及阈值压缩恢复验证后） | 23 passed / 3 ignored，0 failed；包含真正经过阈值的原生摘要请求与数据库重开验证 |
-| H-31 单项忽略探针（见该节命令） | 明确失败：运行取消后等待摘要 gate 释放，摘要请求未调用取消感知入口；主模型请求数为零 |
+| H-31 摘要取消回归 | `cargo test -p deepagent-app-core --lib context_runtime::tests::audit_cancel_interrupts_native_summary_before_next_model_request --offline -- --nocapture`：1 passed；500ms 内取消成功，summary request 通过 cancel-aware transport，主模型请求数仍为 1，且没有写入部分 `ContextCompacted` 边界 |
 | H-30 单项忽略探针（见该节命令） | 明确失败：多行 JSON、CR-only 和未闭合终态帧三组不符预期，单行完整帧对照通过 |
 | `cargo test -p deepagent-models --features http --offline`（新增 H-30 后） | 84 passed / 4 ignored，0 failed；新缺陷探针默认忽略 |
 | H-29 单项忽略探针（见该节命令） | 明确失败：200 正文读取响应取消，429/503 半正文未在 500ms 观察期内响应；释放正文后才返回 |
@@ -2639,7 +2638,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 审阅现有 `system_executor_cancels_running_process_within_two_seconds` 时发现：它创建并 pin Future 后先 sleep 和设置取消，再首次 await 命令 Future；Rust async 的该用例实际上只验证启动前取消。其最初约 0.10s 的通过不能算运行中取消已验证。此前 commentary 已及时更正，不把测试标题当行为证据。
 - 本轮只加强 cfg(test) 测试：使用 tokio::spawn 真实驱动生产 SystemExecutor；临时 PowerShell 向环境变量指定的临时文件写 PID，然后等待 30 秒；父测试必须看见子进程写出的 ready 文件才发取消。取消等待有 3 秒上限，超限先 abort/join 回收测试工作再报错；不用用户目录或网络命令。
 - 实际执行 `cargo test -p deepagent-builtins --lib system_executor_cancels_running_process_within_two_seconds --offline -- --nocapture`：`shell_started=true cancel_to_exit_ms=13`，1 passed，总约 0.55 秒；返回包含 cancelled 且不包含 before start。生产 run_process_controlled 在取消后等待 child 退出再返回，这是已启动 shell 的退出证据，未覆盖整个 Agent/Tauri 的取消链。
-- 另外执行既有 `a_timed_out_command_takes_its_detached_child_with_it`，1 passed，约 12.21 秒；断言是后代计划写出的延迟标记未出现，没有单独枚举所有子孙 PID。因此只说明该 timeout fixture 通过，不能把它扩大为任意进程树都清理正确。H-34、H-31、H-29 等其他取消缺口仍成立。
+- 另外执行既有 `a_timed_out_command_takes_its_detached_child_with_it`，1 passed，约 12.21 秒；断言是后代计划写出的延迟标记未出现，没有单独枚举所有子孙 PID。因此只说明该 timeout fixture 通过，不能把它扩大为任意进程树都清理正确。H-34、H-29 等其他取消缺口仍成立；H-31 已在本轮修复并通过回归。
 - 没有修改生产命令、权限或沙箱行为；此处保留为正向保护边界与测试质量修正，不新增 H 缺陷编号。
 
 ### 后续独立验证：保留历史、工具参数和结果进入同一上下文投影及实际请求

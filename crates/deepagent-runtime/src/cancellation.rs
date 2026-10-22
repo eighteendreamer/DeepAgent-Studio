@@ -1,9 +1,40 @@
 //! Hierarchical cancellation shared by model streams, hooks, tools and agents.
 
+use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use deepagent_core::error::{CoreError, Result};
 use tokio_util::sync::CancellationToken;
+
+/// Wait for a legacy cancellation flag that does not expose a wake primitive.
+/// The short polling interval is shared by async boundaries which still bridge
+/// the runtime's hierarchical token to an `AtomicBool` API.
+pub async fn wait_for_legacy_flag(flag: Arc<AtomicBool>) {
+    while !flag.load(Ordering::Acquire) {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// Await one fallible operation while honoring an optional legacy run flag.
+/// Dropping the operation future is the cancellation mechanism; implementations
+/// with external side effects should also receive the flag directly so their
+/// transport or child process can stop cooperatively.
+pub async fn await_cancelled<F, T>(future: F, cancel: Option<Arc<AtomicBool>>) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    let Some(flag) = cancel else {
+        return future.await;
+    };
+    if flag.load(Ordering::Acquire) {
+        return Err(CoreError::other("request cancelled by user"));
+    }
+    tokio::select! {
+        result = future => result,
+        _ = wait_for_legacy_flag(flag) => Err(CoreError::other("request cancelled by user")),
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct CancellationTree {

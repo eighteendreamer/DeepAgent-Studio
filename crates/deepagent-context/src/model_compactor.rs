@@ -12,8 +12,10 @@
 //! back to the heuristic summarizer on any model failure (no key, network
 //! error, malformed JSON) so compaction always succeeds (Requirement 4.5).
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+use deepagent_core::error::CoreError;
 use deepagent_models::{
     classify_model_error, ModelClient, ModelFailureKind, ResponseRequest, Usage,
 };
@@ -49,6 +51,15 @@ Each array holds short strings (max ~12 items). If a section is empty, use []."#
 /// Retries after a compaction request is rejected as too long (Claude Code
 /// `MAX_PTL_RETRIES`). Each retry drops the oldest half of the remaining turns.
 const MAX_PTL_RETRIES: usize = 3;
+
+/// A failed/cancelled summary attempt may still have incurred provider usage.
+/// Keep the spend attached to the error so the runtime can bill it without
+/// adopting a partial summary.
+#[derive(Debug)]
+pub struct ModelCompactionError {
+    pub error: CoreError,
+    pub usage: Usage,
+}
 
 impl ModelCompactor {
     /// Build a compactor over a model client and model id. Defaults: temperature
@@ -100,15 +111,42 @@ impl ModelCompactor {
         prior: &TaskSummary,
         older_turns: &[String],
     ) -> (TaskSummary, Usage) {
-        let (summary, spent) = self.try_model_summary(goal, prior, older_turns).await;
-        match summary {
-            Some(summary) => (summary, spent),
-            None => {
-                tracing::warn!("model compaction failed; falling back to heuristic summarizer");
+        match self
+            .summarize_accounted_cancelled(goal, prior, older_turns, None)
+            .await
+        {
+            Ok(result) => result,
+            Err(failure) => {
+                tracing::warn!(error = %failure.error, "model compaction failed; falling back to heuristic summarizer");
                 (
                     HeuristicSummarizer.summarize(goal, prior, older_turns),
-                    spent,
+                    failure.usage,
                 )
+            }
+        }
+    }
+
+    /// [`Self::summarize_accounted`] with the owning run's cancellation flag.
+    /// Provider cancellation is returned to the caller instead of silently
+    /// turning a stopped run into a heuristic compaction and continuing.
+    pub async fn summarize_accounted_cancelled(
+        &self,
+        goal: &str,
+        prior: &TaskSummary,
+        older_turns: &[String],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<(TaskSummary, Usage), ModelCompactionError> {
+        let (summary, spent) = self
+            .try_model_summary(goal, prior, older_turns, cancel)
+            .await?;
+        match summary {
+            Some(summary) => Ok((summary, spent)),
+            None => {
+                tracing::warn!("model compaction failed; falling back to heuristic summarizer");
+                Ok((
+                    HeuristicSummarizer.summarize(goal, prior, older_turns),
+                    spent,
+                ))
             }
         }
     }
@@ -125,16 +163,26 @@ impl ModelCompactor {
         goal: &str,
         prior: &TaskSummary,
         older_turns: &[String],
-    ) -> (Option<TaskSummary>, Usage) {
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<(Option<TaskSummary>, Usage), ModelCompactionError> {
         let mut spent = Usage::default();
         if older_turns.is_empty() {
-            return (Some(prior.clone()), spent);
+            return Ok((Some(prior.clone()), spent));
         }
         let mut keep_from = 0usize;
         for attempt in 0..=MAX_PTL_RETRIES {
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Acquire))
+            {
+                return Err(ModelCompactionError {
+                    error: CoreError::other("request cancelled by user"),
+                    usage: spent,
+                });
+            }
             let slice = &older_turns[keep_from..];
             if slice.is_empty() {
-                return (None, spent);
+                return Ok((None, spent));
             }
             let user = build_user_prompt(goal, prior, slice);
             let request = ResponseRequest::with_instructions_and_user_input(
@@ -145,23 +193,46 @@ impl ModelCompactor {
             .with_temperature(self.temperature)
             .with_max_output_tokens(self.max_tokens);
 
-            match self.client.stream_response(request).await {
+            let response = match cancel.clone() {
+                Some(flag) => self.client.stream_response_cancelled(request, flag).await,
+                None => self.client.stream_response(request).await,
+            };
+            match response {
                 Ok(response) => {
                     if let Some(usage) = response.usage {
                         fold_usage(&mut spent, usage);
                     }
+                    if cancel
+                        .as_ref()
+                        .is_some_and(|flag| flag.load(Ordering::Acquire))
+                    {
+                        return Err(ModelCompactionError {
+                            error: CoreError::other("request cancelled by user"),
+                            usage: spent,
+                        });
+                    }
                     let content = response.output_text_projection();
-                    return (
+                    return Ok((
                         parse_summary_json(&content)
                             .map(|parsed| merge_into_prior(prior, parsed, goal)),
                         spent,
-                    );
+                    ));
                 }
                 Err(error) => {
-                    if classify_model_error(&error) != ModelFailureKind::ContextOverflow
-                        || attempt == MAX_PTL_RETRIES
+                    let failure = classify_model_error(&error);
+                    if cancel.is_some()
+                        && (failure == ModelFailureKind::Cancelled
+                            || cancel
+                                .as_ref()
+                                .is_some_and(|flag| flag.load(Ordering::Acquire)))
                     {
-                        return (None, spent);
+                        return Err(ModelCompactionError {
+                            error,
+                            usage: spent,
+                        });
+                    }
+                    if failure != ModelFailureKind::ContextOverflow || attempt == MAX_PTL_RETRIES {
+                        return Ok((None, spent));
                     }
                     let remaining = older_turns.len() - keep_from;
                     keep_from += (remaining / 2).max(1);
@@ -173,7 +244,7 @@ impl ModelCompactor {
                 }
             }
         }
-        (None, spent)
+        Ok((None, spent))
     }
 }
 

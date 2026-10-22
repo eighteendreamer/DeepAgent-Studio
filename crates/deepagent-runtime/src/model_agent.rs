@@ -48,6 +48,22 @@ pub struct ReactiveCompaction {
     pub usage: deepagent_models::Usage,
 }
 
+/// A compaction failure can still carry provider usage when cancellation
+/// arrives after a summary response has completed but before the summary is
+/// durably adopted. The run bills that spend while preserving its prior
+/// conversation surface.
+#[derive(Debug)]
+pub struct CompactionFailure {
+    pub error: CoreError,
+    pub usage: deepagent_models::Usage,
+}
+
+impl CompactionFailure {
+    pub fn new(error: CoreError, usage: deepagent_models::Usage) -> Self {
+        Self { error, usage }
+    }
+}
+
 /// Cached result of a background prefire pass-1 (Grok two-pass compaction).
 /// Produced by [`ReactiveContextCompactor::prefire_pass1`] against a stable
 /// conversation prefix and later applied by
@@ -114,6 +130,25 @@ pub trait ReactiveContextCompactor: Send + Sync {
         self.compact(&messages, trigger).await
     }
 
+    /// Cancellation-aware native-surface compaction. The compatibility
+    /// default drops the legacy compactor future when the run is cancelled;
+    /// production compactors should override this and forward the flag into
+    /// any model request or other cancellable work they start.
+    async fn compact_response_items_cancelled(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        trigger: CompactionTrigger,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+        crate::cancellation::await_cancelled(
+            self.compact_response_items(instructions, items, trigger),
+            cancel,
+        )
+        .await
+        .map_err(|error| CompactionFailure::new(error, deepagent_models::Usage::default()))
+    }
+
     /// Prefire pass-1 (Grok two-pass): summarize the stable prefix of
     /// `messages` into a cacheable [`PrefireNote`], run off the critical path.
     /// Default: no prefire support (`None`) — keeps non-model compactors and
@@ -131,6 +166,22 @@ pub trait ReactiveContextCompactor: Send + Sync {
     ) -> Result<Option<PrefireNote>> {
         let messages = deepagent_models::messages_from_response_items(instructions, items);
         self.prefire_pass1(&messages).await
+    }
+
+    /// Cancellation-aware background prefire. A run-owned prefire must not
+    /// keep waiting for its summary request after the owning run is stopped.
+    async fn prefire_pass1_response_items_cancelled(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<Option<PrefireNote>, CompactionFailure> {
+        crate::cancellation::await_cancelled(
+            self.prefire_pass1_response_items(instructions, items),
+            cancel,
+        )
+        .await
+        .map_err(|error| CompactionFailure::new(error, deepagent_models::Usage::default()))
     }
 
     /// Prefire pass-2 apply: if `note` still matches the current conversation
@@ -155,6 +206,23 @@ pub trait ReactiveContextCompactor: Send + Sync {
     ) -> Result<Option<ReactiveCompaction>> {
         let messages = deepagent_models::messages_from_response_items(instructions, items);
         self.apply_prefire(note, &messages).await
+    }
+
+    /// Cancellation-aware native prefire adoption. This method can run hooks
+    /// and persist the compaction boundary even though it does not call a model.
+    async fn apply_prefire_response_items_cancelled(
+        &self,
+        note: &PrefireNote,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+        crate::cancellation::await_cancelled(
+            self.apply_prefire_response_items(note, instructions, items),
+            cancel,
+        )
+        .await
+        .map_err(|error| CompactionFailure::new(error, note.usage.clone()))
     }
 }
 
@@ -501,7 +569,9 @@ pub struct ModelAgent {
     /// Cached pass-1 note ready for a fast pass-2 apply at the real threshold.
     prefire_cache: Option<PrefireNote>,
     /// In-flight background pass-1 task; awaited if compaction fires first.
-    prefire_handle: Option<tokio::task::JoinHandle<Result<Option<PrefireNote>>>>,
+    prefire_handle: Option<
+        tokio::task::JoinHandle<std::result::Result<Option<PrefireNote>, CompactionFailure>>,
+    >,
     /// Sliding window of recent tool outcomes `(tool, ok)`, used to detect a
     /// wall-banging loop: many failures of the same tool in a short span even
     /// with unrelated successes interleaved. Drives the escalated recovery
@@ -1265,22 +1335,32 @@ impl ModelAgent {
     /// run the shared compactor. Failures trip a per-run circuit breaker after
     /// [`MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES`]; the reactive overflow path
     /// remains as the fallback, so a tripped breaker never fails the run.
-    async fn maybe_proactive_compact(&mut self, step: usize) {
+    async fn maybe_proactive_compact(
+        &mut self,
+        step: usize,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<()> {
+        if cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(CoreError::other("request cancelled by user"));
+        }
         let Some(threshold) = self.pressure_threshold() else {
-            return;
+            return Ok(());
         };
         if self.autocompact_consecutive_failures >= MAX_CONSECUTIVE_AUTOCOMPACT_FAILURES {
-            return;
+            return Ok(());
         }
         let Some(compactor) = self.reactive_compactor.clone() else {
-            return;
+            return Ok(());
         };
         let estimated = self.estimate_context_tokens();
         if estimated < threshold {
-            return;
+            return Ok(());
         }
         match self.prune_stale_tool_results(60, "tool_result_prune") {
-            Ok(_) if self.estimate_context_tokens() < threshold => return,
+            Ok(_) if self.estimate_context_tokens() < threshold => return Ok(()),
             Ok(_) => {}
             Err(error) => {
                 tracing::warn!(%error, "tool result pruning failed; retaining original results")
@@ -1298,14 +1378,15 @@ impl ModelAgent {
         // live tail — skipping the blocking summary call. Stale note (prefix
         // changed) or no cache → fall through to synchronous compaction.
         if self.prefire_handle.is_some() {
-            self.collect_prefire_result().await;
+            self.collect_prefire_result(cancel.clone()).await?;
         }
         if let Some(note) = self.prefire_cache.take() {
             match compactor
-                .apply_prefire_response_items(
+                .apply_prefire_response_items_cancelled(
                     &note,
                     self.response_history.instructions.as_deref(),
                     &self.response_history.items,
+                    cancel.clone(),
                 )
                 .await
             {
@@ -1315,7 +1396,7 @@ impl ModelAgent {
                         compacted,
                         deepagent_core::compaction_strategy::PREFIRE_PASS2,
                     );
-                    return;
+                    return Ok(());
                 }
                 Ok(None) => {
                     tracing::info!(
@@ -1327,10 +1408,17 @@ impl ModelAgent {
                     self.side_usage.record_call(&note.usage);
                 }
                 Err(error) => {
-                    self.side_usage.record_call(&note.usage);
+                    self.side_usage.record_call(&error.usage);
+                    if classify_model_error(&error.error) == ModelFailureKind::Cancelled
+                        || cancel
+                            .as_ref()
+                            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+                    {
+                        return Err(error.error);
+                    }
                     tracing::warn!(
                         step,
-                        error = %error,
+                        error = %error.error,
                         "prefire apply failed; falling back to synchronous compaction"
                     );
                 }
@@ -1338,10 +1426,11 @@ impl ModelAgent {
         }
 
         match compactor
-            .compact_response_items(
+            .compact_response_items_cancelled(
                 self.response_history.instructions.as_deref(),
                 &self.response_history.items,
                 CompactionTrigger::AutoCompactThreshold,
+                cancel,
             )
             .await
         {
@@ -1351,9 +1440,14 @@ impl ModelAgent {
             ),
             Ok(None) => self.record_proactive_compaction_failure(step, "compactor returned none"),
             Err(error) => {
-                self.record_proactive_compaction_failure(step, &error.to_string());
+                self.side_usage.record_call(&error.usage);
+                if classify_model_error(&error.error) == ModelFailureKind::Cancelled {
+                    return Err(error.error);
+                }
+                self.record_proactive_compaction_failure(step, &error.error.to_string());
             }
         }
+        Ok(())
     }
 
     /// Replace the live conversation with a completed compaction, reset the
@@ -1391,30 +1485,74 @@ impl ModelAgent {
     /// Move a finished prefire pass-1 result into the cache. Awaits the handle
     /// (callers gate on `is_finished()` for the non-blocking path, or accept the
     /// blocking wait when compaction fires before pass-1 completes).
-    async fn collect_prefire_result(&mut self) {
-        let Some(handle) = self.prefire_handle.take() else {
-            return;
+    async fn collect_prefire_result(&mut self, cancel: Option<Arc<AtomicBool>>) -> Result<()> {
+        let Some(mut handle) = self.prefire_handle.take() else {
+            return Ok(());
         };
-        match handle.await {
+        let result = if let Some(flag) = cancel {
+            if flag.load(std::sync::atomic::Ordering::Acquire) {
+                handle.abort();
+                let _ = handle.await;
+                return Err(CoreError::other("request cancelled by user"));
+            }
+            tokio::select! {
+                biased;
+                result = &mut handle => result,
+                _ = wait_for_cancel(flag) => {
+                    match tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        &mut handle,
+                    )
+                    .await
+                    {
+                        Ok(Ok(Ok(Some(note)))) => self.prefire_cache = Some(note),
+                        Ok(Ok(Err(failure))) => {
+                            self.side_usage.record_call(&failure.usage);
+                        }
+                        Ok(Ok(Ok(None))) => {}
+                        Ok(Err(join_error)) => {
+                            tracing::warn!(error = %join_error, "prefire pass-1 task join failed during cancellation")
+                        }
+                        Err(_) => {
+                            handle.abort();
+                            let _ = handle.await;
+                        }
+                    }
+                    return Err(CoreError::other("request cancelled by user"));
+                }
+            }
+        } else {
+            handle.await
+        };
+        match result {
             Ok(Ok(Some(note))) => self.prefire_cache = Some(note),
             Ok(Ok(None)) => {}
-            Ok(Err(error)) => tracing::warn!(error = %error, "prefire pass-1 produced no cache"),
+            Ok(Err(error)) if classify_model_error(&error.error) == ModelFailureKind::Cancelled => {
+                self.side_usage.record_call(&error.usage);
+                return Err(error.error);
+            }
+            Ok(Err(error)) => {
+                self.side_usage.record_call(&error.usage);
+                tracing::warn!(error = %error.error, "prefire pass-1 produced no cache")
+            }
             Err(join_error) => {
                 tracing::warn!(error = %join_error, "prefire pass-1 task join failed")
             }
         }
+        Ok(())
     }
 
     /// Non-blocking: if the background pass-1 has finished, fold its result into
     /// the cache (the `await` returns immediately once `is_finished`).
-    async fn collect_finished_prefire(&mut self) {
+    async fn collect_finished_prefire(&mut self, cancel: Option<Arc<AtomicBool>>) -> Result<()> {
         if self
             .prefire_handle
             .as_ref()
             .is_some_and(|handle| handle.is_finished())
         {
-            self.collect_prefire_result().await;
+            self.collect_prefire_result(cancel).await?;
         }
+        Ok(())
     }
 
     /// Prefire scheduling (Grok `should_prefire_two_pass` + `spawn_local`): when
@@ -1422,7 +1560,7 @@ impl ModelAgent {
     /// note/handle exists yet, spawn a background pass-1 against a conversation
     /// snapshot so the summary is ready off the critical path before the real
     /// threshold. No-op when the compactor lacks prefire support (returns None).
-    fn maybe_schedule_prefire(&mut self) {
+    fn maybe_schedule_prefire(&mut self, cancel: Option<Arc<AtomicBool>>) {
         let (Some(start), Some(threshold)) = (
             self.prefire_start_threshold,
             self.proactive_compaction_threshold,
@@ -1449,7 +1587,7 @@ impl ModelAgent {
         let snapshot = self.response_history.items.clone();
         self.prefire_handle = Some(tokio::spawn(async move {
             compactor
-                .prefire_pass1_response_items(instructions.as_deref(), &snapshot)
+                .prefire_pass1_response_items_cancelled(instructions.as_deref(), &snapshot, cancel)
                 .await
         }));
     }
@@ -2016,10 +2154,10 @@ impl ModelAgent {
         // Gather the completed Surface mutations and pending reminders before
         // request projection. Every attempt below runs the shared pressure
         // check; overflow recovery remains the bounded fallback.
-        self.collect_finished_prefire().await;
+        self.collect_finished_prefire(cancel.clone()).await?;
         self.collect_finished_memory_prefetch().await;
         self.maybe_time_based_microcompact();
-        self.maybe_schedule_prefire();
+        self.maybe_schedule_prefire(cancel.clone());
         self.maybe_schedule_memory_prefetch();
         self.maybe_inject_snip_nudge();
         self.maybe_inject_doom_loop_nudge();
@@ -2051,7 +2189,7 @@ impl ModelAgent {
             self.request_max_output_override = request.max_output_tokens;
             // Run pressure management against the final Surface and this
             // attempt's output ceiling, including nudges and retry changes.
-            self.maybe_proactive_compact(step).await;
+            self.maybe_proactive_compact(step, cancel.clone()).await?;
             if cancel
                 .as_ref()
                 .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
@@ -2210,23 +2348,28 @@ impl ModelAgent {
                         reactive_compaction_attempted = true;
                         if let Some(compactor) = self.reactive_compactor.as_ref() {
                             match compactor
-                                .compact_response_items(
+                                .compact_response_items_cancelled(
                                     self.response_history.instructions.as_deref(),
                                     &self.response_history.items,
                                     CompactionTrigger::ContextOverflow,
+                                    cancel.clone(),
                                 )
                                 .await
                             {
                                 Ok(Some(compacted)) => {
+                                    // The compactor's durable boundary is its
+                                    // commit point. Adopt it before honoring a
+                                    // cancellation that raced with that write,
+                                    // so replay and the live Surface stay aligned.
+                                    self.adopt_compaction(
+                                        compacted.clone(),
+                                        deepagent_core::compaction_strategy::REACTIVE_MODEL,
+                                    );
                                     if cancel.as_ref().is_some_and(|flag| {
                                         flag.load(std::sync::atomic::Ordering::Acquire)
                                     }) {
                                         return Err(CoreError::other("request cancelled by user"));
                                     }
-                                    self.adopt_compaction(
-                                        compacted.clone(),
-                                        deepagent_core::compaction_strategy::REACTIVE_MODEL,
-                                    );
                                     request = self
                                         .request_for_current_history()
                                         .with_thinking_depth(self.thinking_depth)
@@ -2243,9 +2386,20 @@ impl ModelAgent {
                                     continue;
                                 }
                                 Ok(None) => {}
+                                Err(compaction_error)
+                                    if classify_model_error(&compaction_error.error)
+                                        == ModelFailureKind::Cancelled
+                                        || cancel.as_ref().is_some_and(|flag| {
+                                            flag.load(std::sync::atomic::Ordering::Acquire)
+                                        }) =>
+                                {
+                                    self.side_usage.record_call(&compaction_error.usage);
+                                    return Err(compaction_error.error);
+                                }
                                 Err(compaction_error) => {
+                                    self.side_usage.record_call(&compaction_error.usage);
                                     tracing::warn!(
-                                        error = %compaction_error,
+                                        error = %compaction_error.error,
                                         "reactive context compaction failed"
                                     );
                                 }
