@@ -37,6 +37,7 @@
 | 可选复核/分类的用量归属 | 完整 provider Response 返回 usage 后仅保留判定文本，真实 Finalizer/成本库只保存主调用量 | 已确认 H-63；两条正式模型检查及 SQLite 账本复现，未测真实供应商费用；已有摘要 side_usage 账本能力不因此失效 |
 | 自动完成验证的真实构建生命周期 | 正式发现的 cargo check 已启动 build.rs 后，用户取消仍等待；Kernel 超时落终态后 build.rs 仍可写文件 | 已确认 H-64；Windows 真实临时 Cargo 工程、SystemCommandRunner、ModelAgent/Kernel/SQLite 对照，未覆盖其他构建系统和桌面 UI |
 | 自动验证与宿主命令边界 | 显式 cargo check 经配置后端被拒绝，但 .txt 修改后的完成验证、创建 .rs 后的单文件验证均绕过该后端，真实 build.rs 写到 workspace 外 | 已确认 H-65；完整 ChatService/工具/Kernel/真实 Cargo 与拒绝型 backend 复现；不是实际 Sandboxie/Windows Sandbox 容器逃逸测试 |
+| DeepSeek 原生搜索的模型能力选择 | Flash 开启 DeepSeekFirst 时，正式请求只剩官方明确会忽略的原生 web_search，本地 function 搜索描述被替换；Pro、外部搜索、关闭搜索对照成立 | 已确认 H-66；启用桌面同用的 web feature，正式 ChatService/Kernel/序列化离线复现，未实测公网搜索或回答质量 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -51,6 +52,7 @@
 - 当前 `model_runtime.rs::select_run_model` 组装默认 Responses 路由，真实桌面基线验证了该配置的连接、连续对话、工具和 usage。另有公开 Chat Completions adapter；两者的通过范围应分别记录，不能用默认路由成功覆盖其他协议。
 - H-05 已证明 Chat 往返转换改变同次 assistant 的 reasoning / text / tool-call 归属；H-18 已证明截断调用仍进入提交；H-55 则在 Chat Simple 发请求之前就本地失败。这些直接影响无状态续轮中模型看到的历史和工具协议，不能只靠提示词弥补。DeepSeek Harness 的 `llm-deepseek/serialize.ts` 保留块归属并检查未闭合工具，提供了对应的协议边界参考；其 Messages 字段与本系统 adapter 字段应分别处理。
 - H-54 的显式 effort / 输出上限与实际 wire 不一致，以及 H-49 的备用模型预算分裂，会使用户选择、上下文预算和供应商参数相互矛盾。应由一次有效请求配置解析同时供 meter、请求和恢复使用；参考实现对本次 options 与连接 defaults 的优先级有显式处理。
+- H-66 进一步证明能力启用不能只看全局开关：默认 DeepSeekFirst 在 Flash 上将本地可调用搜索替换为官方会忽略的原生工具。原生搜索是否可用应由有效模型与协议共同决定；不支持时采用明确的外部搜索配置或返回设置不可用，不能宣称搜索已开启却移除可调用入口。
 - 无状态请求必须重新携带当前有效内容。H-57 的 MCP 说明和 skill 目录首轮存在、第二轮正文消失，是当前确定性不适配点。需要保存实际内容或在每次请求边界重新注入；仅记录“曾发送过这个名字”不满足续轮要求。
 - 上下文占用已有正向证据：运行内工具循环、跨用户 turn 和数据库重开样本都保留完整历史，并区分 provider 输入锚点、下一请求投影和累计计费。DeepSeek Harness 的 token-meter 同样区分这些概念；其 UI 分项是启发式组成且不要求与 provider 投影相加一致，本系统的分项守恒属于自身实现选择，不能把它写成参考项目的共同保证。真实 tokenizer 误差和全部压缩/附件路径仍待验证。
 
@@ -1529,10 +1531,26 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：Codex `core/src/tools/orchestrator.rs::ToolOrchestrator` 将审批、sandbox 选择和尝试封装在统一路径，传递同一 ToolCtx 的 cancellation 和有效权限；受限 sandbox 不可满足时拒绝，扩大权限路径也要核对允许条件。Claude `tools/BashTool/BashTool.tsx` 将执行权限交给 `bashToolHasPermission` 并由受控 shell 路径执行；不能因为命令是测试/构建就绕过工具权限。本轮只阅读参考源码，不主张它们具有与本系统相同的自动完成计划，也不声称其所有内部 helper 都受同一边界保护。
 - 修复方向（未实施）：自动验证与普通命令应共享已经解析的执行目标、有效环境、权限/审批和 SandboxBackend seam；配置的 backend 不可用或拒绝时明确返回验证不可执行/失败，不回退为宿主直接运行。自动触发不是额外授权，`--offline`、命令名白名单或输出静默都不代替隔离。复用既有 RuntimeCommandExecutor/受控进程实现及 `VerificationDispatcher::standard_with_executor()` seam，不另造“可信验证执行器”；完成计划与单文件 decorator 都应绑定同一运行的执行配置。回归需覆盖 backend 拒绝/不可用、工作区外写入、网络禁用、远程工程、单文件验证和完整验证、取消/超时，并确保无构建系统或未修改文件的普通对话不启动构建。本批只增加审计测试与文档，没有修复这两处生产入口。
 
+### H-66：Flash 开启 DeepSeek 原生搜索后，本地搜索函数被替换为该模型会忽略的原生工具
+
+**级别：中（P2）；范围：启用 web feature、搜索 enabled 且 provider=DeepSeekFirst、有效模型为 deepseek-flash 的 Responses 请求。** 桌面启用了 web feature；搜索设置默认 enabled=true、provider=DeepSeekFirst。本项是能力选择与实际请求契约不一致，不声称所有模型或所有搜索配置均失效。
+
+- 官方依据（2026-10-22 核对）：[DeepSeek Responses 指南](https://api-docs.deepseek.com/guides/responses_api/) 的 Tools 表明确：服务端 web_search 支持 deepseek-v4-pro，在 deepseek-flash 上忽略。这不是返回 400 的承诺；忽略可能不产生显式错误，不能把模型请求成功当作搜索可用。
+- 生产链：`model_runtime.rs::select_run_model()` 和 `build_model_client()` 仅按全局搜索设置计算 native_web_search，没有核对所选模型能力；`tool_runtime.rs::register_web_tools()` 原本注册了可调用的本地 WebSearchTool。`deepagent-models/src/client.rs::apply_defaults()` 随后按名称将所有 web_search schema 的 kind 改成 web_search；Responses serializer 因而发送原生 `{type:web_search}`，不再发送 function 的 name/parameters。当前客户端仍有外部搜索链，但没有作为可调用函数出现在该次请求里。
+- 复现新增 `tests/kernel_v2_e2e/search_capability.rs`。使用正式 SettingsService、ChatService、Kernel、ToolRegistry、ModelClient 及实际请求序列化；模型 transport 为记录请求并立即返回答案的离线 fixture。Chat/Reasoner 两个角色均固定为所测模型；禁用 deferred tool search，排除 schema 按需隐藏。每组严格核对实际 wire 的 model、仅一次请求与唯一 succeeded 终态。没有调用搜索工具、没有公网请求，也没有使用真实凭据。
+- 正常对照：Pro+DeepSeekFirst 开启为 `(native,callable_function)=(true,false)`；Flash+DuckDuckGo 开启为 `(false,true)`；Flash+DeepSeekFirst 关闭为 `(false,false)`。默认测试 `supported_native_and_external_search_keep_their_wire_contracts` 通过。这只验证请求契约，不代表已在线验收搜索结果。
+- 显式探针 `audit_flash_keeps_callable_search_when_native_is_unsupported` 先执行上述三组，再执行 Flash+DeepSeekFirst 开启；实际 `(true,false)`，期望不发送不支持的原生工具并保留现有外部函数入口 `(false,true)`，断言明确失败。执行 `cargo test -p deepagent-app-core --features web --test kernel_v2_e2e search_capability::audit_flash_keeps_callable_search_when_native_is_unsupported --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.66s。期望的 fallback 是本系统现有能力的修复选择；若产品选择不回退，也必须明确报告该模型不支持，不能把两种策略都说成参考实现原样行为。
+- 测试夹具修正：首次编译时 ignored 测试直接 await 带 tokio::test 宏的函数，返回值不是 Future；改为两个测试共用普通 async helper 后编译及默认对照通过。该编译错误不是产品缺陷，没有修改生产功能来使探针失败。
+- 已确认后果：在上述默认配置组合中，模型没有本地函数搜索入口，而发送的唯一原生搜索声明又超出官方支持范围；用户选择开启搜索与实际可用能力不一致。涉及实时资料的任务可能因此无法检索或缺少依据。未调用真实 Flash，不能宣称已观察到搜索请求数为零、回答造假或联网质量下降；还需在线任务和搜索计数验收。工具 schema 被其他已有权限/发现策略移除的场景不在本次覆盖内。
+- 成熟实现对照：DeepSeek Harness `packages/web/tool-web/src/search.ts::runSearchQueries()` 将模型可调用工具交给独立 `ctx.web.search(request,signal)`；`packages/web/web/src/index.ts::WebRuntime.search()` 在明确注册/选择的 provider 上执行，无法解析可用 provider 时返回显式错误。该机制使主模型不具备内置搜索时仍可使用外部搜索 seam。本轮未运行参考项目，其 DeepSeek 搜索插件另用辅助模型/协议，不能照搬其默认模型并宣称与当前官方 Responses 限制相同。Codex `core/src/tools/hosted_spec.rs::create_web_search_tool()` 则接收独立的搜索模式与模型工具类型构造声明；本轮只核对该 seam，不据此声称 Codex 自动拦截所有不支持模型。
+- 修复方向（尚未实施）：在既有有效模型/协议能力解析与 provider adapter 边界决定 hosted search 或 callable search，注册定义、路由和设置状态共用同一决定。对不支持原生工具的模型保留显式外部 provider，或明确提示不可用；模型切换、备用模型与子运行均需重新解析。测试应覆盖默认 Flash、Pro、搜索禁用、外部搜索、模型切换，以及实际搜索计数和失败反馈；不新增第二套搜索注册表，不通过删除开关或提示模型“假装联网”绕过问题。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-66 模型搜索能力显式探针（见该节命令） | 约 0.66s 明确失败；三组正常对照成立，Flash+DeepSeekFirst 实际 native=true/callable_function=false；只验证实际请求形状与官方限制，不含真实联网和回答质量 |
+| H-66 搜索契约与共享入口基线 | `cargo test -p deepagent-app-core --features web --test kernel_v2_e2e --offline`：14 passed / 12 ignored，约 1.69s；缺陷探针另行显式失败。`cargo test -p deepagent-models --offline`：81 passed / 2 ignored；包含新增的官方容量元数据发现/目录恢复对照。仅测试与文档，未做公网搜索、真实桌面、全 workspace、Clippy 或前端构建 |
 | H-65 配置后端拒绝与真实宿主构建显式探针（见该节命令） | 初版 A/B 约 1.30s、扩展 A/B/C 约 2.65s，均明确失败；无修改无 canary，.txt 在完成后出现，.rs 在最终采样前已出现；backend 均仅收到并拒绝 1 次显式命令，三组 run=succeeded；未使用真实 OS sandbox |
 | H-65 共享入口回归 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：13 passed / 11 ignored，约 1.84s；包含默认执行的后端拒绝且无修改对照，新增 ignored 已显式失败。fmt、diff 检查通过；本批仅测试与文档，未执行全 workspace、Clippy、真实桌面 sandbox、前端构建或公网供应商测试 |
 | H-64 真实自动构建取消/总时限显式探针（见该节命令） | 两项明确失败、约 6.28s：取消后等待真实 build；5 秒总时限落 budget_exceeded 后原 build.rs 仍写文件。正常对照成功，全部临时构建在断言前放行并完成清理 |
@@ -1785,6 +1803,13 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 参考 DeepSeek Harness 的 `packages/llm/llm-pi-ai/tests/tool-argument-streaming.spec.ts`：其 OpenAI Responses 路由 fixture 同时发送 arguments.done 和 item.done，并核查参数完成行为，说明两事件共存应被正常处理。该参考属于其 pi-ai 的兼容路由，不是官方 DeepSeek Messages 字段；没有把它当成默认 DeepSeek provider 的同构实现，也未运行参考项目测试。
 - 此测试没有装配完整 AppCore/桌面、durable run_actions、真实供应商或网络 SSE 分帧，不证明所有工具幂等/并发取消、异常矛盾参数、截断输出均正确。尤其不关闭 H-18 的截断提交、H-19 的子角色限制或 H-34 的批量超时缺口；也与 Codex 宿主的 cipher_incompatible 无关。本轮仅补正向审计证据，未修改生产行为。
 
+### 后续独立核查：DeepSeek 原生 Responses 合法，当前模型目录容量字段可以被读取
+
+- 2026-10-22 核对[官方 Responses 指南](https://api-docs.deepseek.com/guides/responses_api/)：DeepSeek 原生提供 Responses 入口，支持 Flash/Pro、无状态历史回传和相应工具项。因此不能因本系统默认走 Responses 就认定其错误套用 OpenAI 协议；需要按各字段和模型限制核对，H-05/H-55 的 Chat 问题不能外推成默认 Responses 完全不可用。
+- 同日[官方模型列表](https://api-docs.deepseek.com/api/list-models/) 已公开 context_window、max_output_tokens、modalities、effort 和按协议能力元数据。本仓库 capability.rs/discovery.rs 的“当前只返回 ID”注释已经陈旧，但 ModelInfo 确实反序列化容量与输出上限，resolver 也优先使用 provider 数字；不能仅凭注释列出“容量数字必然丢失”的缺陷。
+- 新增默认测试 `discovery::tests::published_capacity_metadata_survives_discovery_and_catalog_restore`：按官方公开形状提供离线 MockTransport，经生产 ModelDiscovery.discover、ModelCatalog 序列化/反序列化，再交 ModelCapabilityResolver；两项数字保持 1,048,576 / 393,216，source=ProviderMetadata。额外 modality/effort 字段不妨碍容量解析。该测试不证明这些额外字段被本系统保存或使用，也未进行真实网络发现；暂未复现其丢失引起的具体行为，不另立缺陷编号。
+- `cargo test -p deepagent-models --offline`：81 passed / 2 ignored；既有 metadata 优先、Responses reasoning 序列化、图片构造和工具流回归均通过。它们不是全链路图片识别、真实模型能力选择或全部协议兼容性的验收。
+
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
 下表依据已复现的边界归并；优先级不等于所有问题具有相同触发概率。设计收敛在本系统既有内核，不复制参考项目建立第二套运行链。
@@ -1822,6 +1847,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
 | 有效模型参数与输出预算 | H-54 | 既有配置 overlay、模型能力、桌面深度缺省统一解析到最终请求；参考 DeepSeek 本次 effort/maxTokens 优先及 Codex wire 断言 | 显式 effort/输出上限生效；发送前及下一请求预算与 wire 一致；无覆盖保持默认；不支持值明确拒绝；重试和子运行不重新覆盖 |
 | 思考模式的协议转换 | H-55 | 既有 thinking 配置表达开关/强度，由 adapter 显式生成和校验自己的 wire 字段；参考 DeepSeek 分 provider 的 off 映射 | Simple/Medium/Deep 经两协议完整 Agent 路径均可发送；禁用不被默认强度重新启用 |
+| 模型与搜索能力的有效选择 | H-66 | 既有模型/协议能力解析统一 hosted 与 callable search；参考 DeepSeek Harness 的独立 web provider seam，原生能力以当前官方限制为准 | Flash 不被注入会忽略的唯一搜索入口；Pro 原生及外部搜索正常；禁用、切换、备用模型和子运行策略一致，真实搜索数与错误可验证 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |

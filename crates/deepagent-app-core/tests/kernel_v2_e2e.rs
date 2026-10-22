@@ -15,6 +15,10 @@ use deepagent_subagents::WorktreeProvider;
 #[path = "kernel_v2_e2e/build_boundary.rs"]
 mod build_boundary;
 
+#[cfg(feature = "web")]
+#[path = "kernel_v2_e2e/search_capability.rs"]
+mod search_capability;
+
 #[derive(Debug)]
 struct ReplayTransport {
     turns: Mutex<VecDeque<Vec<String>>>,

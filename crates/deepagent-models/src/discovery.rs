@@ -381,6 +381,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn published_capacity_metadata_survives_discovery_and_catalog_restore() {
+        // Shape from DeepSeek's /models documentation (2026-10-22). Extra
+        // modality/effort fields must not prevent capacity metadata parsing.
+        let body = r#"{"object":"list","data":[{
+            "id":"deepseek-flash","object":"model","owned_by":"deepseek",
+            "name":"DeepSeek-V4.1-Flash",
+            "context_window":1048576,"max_output_tokens":393216,
+            "input_modalities":["text","image"],"output_modalities":["text"],
+            "effort":{"supported_levels":["low","high","max"],"default_level":"high"},
+            "api_capabilities":{"anthropic_messages":{"system_prompt_update":"in-history"}}
+        }]}"#;
+        let discovery = ModelDiscovery::deepseek(Arc::new(MockTransport::with_get_json(body)));
+        let catalog = discovery
+            .discover("offline-audit-placeholder")
+            .await
+            .unwrap();
+        let restored: ModelCatalog =
+            serde_json::from_str(&serde_json::to_string(&catalog).unwrap()).unwrap();
+        assert_eq!(restored, catalog);
+        assert_eq!(restored.available[0].context_window, Some(1_048_576));
+        assert_eq!(restored.available[0].max_output_tokens, Some(393_216));
+        let capability =
+            crate::ModelCapabilityResolver::new().resolve_model(&restored.available[0]);
+        assert_eq!(capability.context_window, 1_048_576);
+        assert_eq!(capability.max_output_tokens, 393_216);
+        assert_eq!(
+            capability.capability_source,
+            crate::CapabilitySource::ProviderMetadata
+        );
+    }
+
+    #[tokio::test]
     async fn discover_bad_json_errors() {
         let transport = Arc::new(MockTransport::with_get_json("not json"));
         let discovery = ModelDiscovery::deepseek(transport);
