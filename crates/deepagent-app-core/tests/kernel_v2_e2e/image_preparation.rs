@@ -47,6 +47,13 @@ impl HttpTransport for ImageAnswer {
 }
 
 async fn imported_image_across_turns(seed_plain_turn: bool) -> Vec<usize> {
+    observe_imported_image(seed_plain_turn, false).await.0
+}
+
+async fn observe_imported_image(
+    seed_plain_turn: bool,
+    remove_before_continuation: bool,
+) -> (Vec<usize>, bool) {
     let root = tempfile::tempdir().unwrap();
     let attachments = AttachmentService::new(root.path().join("attachments"));
     // A complete one-pixel PNG, imported through the desktop's production DTO.
@@ -160,21 +167,27 @@ async fn imported_image_across_turns(seed_plain_turn: bool) -> Vec<usize> {
             item: deepagent_core::response_item::ResponseItem::InputMessage { attachments, .. }
         } if attachments.iter().any(|attachment| attachment.id == imported.id)
     )).count();
-    chat.run_in_session(
-        "Refer to the previously attached image.",
-        Some(&session_id),
-        None,
-        None,
-        Vec::new(),
-        None,
-        false,
-        Some("audit-image-continued"),
-        |_| {},
-        |_| {},
-    )
-    .await
-    .unwrap();
-    assert!(path.is_file());
+    if remove_before_continuation {
+        // Only remove this test's own imported temporary file, after the
+        // production session has durably accepted its attachment reference.
+        std::fs::remove_file(&path).unwrap();
+    }
+    let continuation = chat
+        .run_in_session(
+            "Refer to the previously attached image.",
+            Some(&session_id),
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("audit-image-continued"),
+            |_| {},
+            |_| {},
+        )
+        .await;
+    let continuation_succeeded = continuation.is_ok();
+    assert_eq!(path.is_file(), !remove_before_continuation);
     for run in [
         "audit-image-seed",
         "audit-image-first",
@@ -191,14 +204,19 @@ async fn imported_image_across_turns(seed_plain_turn: bool) -> Vec<usize> {
                 .count(),
             1
         );
-        assert!(events
-            .iter()
-            .any(|event| event.event_type == "run_terminal" && event.data["kind"] == "succeeded"));
+        if run != "audit-image-continued" || continuation_succeeded {
+            assert!(events.iter().any(
+                |event| event.event_type == "run_terminal" && event.data["kind"] == "succeeded"
+            ));
+        }
     }
     let counts = counts.lock().unwrap().clone();
-    assert_eq!(counts.len(), if seed_plain_turn { 3 } else { 2 });
-    eprintln!("image-preparation seed_plain={seed_plain_turn} imported_ready=true bytes={} file_still_exists=true native_image_refs={native_images} wire_image_counts={counts:?} all_runs_succeeded=true", imported.size_bytes);
-    counts
+    if !remove_before_continuation {
+        assert!(continuation_succeeded);
+        assert_eq!(counts.len(), if seed_plain_turn { 3 } else { 2 });
+    }
+    eprintln!("image-preparation seed_plain={seed_plain_turn} imported_ready=true bytes={} removed_before_continuation={remove_before_continuation} native_image_refs={native_images} wire_image_counts={counts:?} continuation_succeeded={continuation_succeeded}", imported.size_bytes);
+    (counts, continuation_succeeded)
 }
 
 #[tokio::test]
@@ -216,4 +234,17 @@ async fn audit_new_image_reaches_first_model_request() {
     let initial = imported_image_across_turns(false).await;
     let later = imported_image_across_turns(true).await;
     assert_eq!((initial, later), (vec![1, 1], vec![0, 1, 1]));
+}
+
+#[tokio::test]
+#[ignore = "audit probe: a missing retained image must fail explicitly before sampling"]
+async fn audit_missing_retained_image_is_not_silently_dropped() {
+    let readable = observe_imported_image(false, false).await;
+    assert_eq!(readable, (vec![0, 1], true));
+    let missing = observe_imported_image(false, true).await;
+    assert_eq!(
+        missing,
+        (vec![0], false),
+        "a retained image that disappears must not become a successful text-only request"
+    );
 }
