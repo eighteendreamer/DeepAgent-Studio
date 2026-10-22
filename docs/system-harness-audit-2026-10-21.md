@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、InstructionsLoaded 输入缺字段、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
@@ -1979,6 +1979,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：畸形输出之后若子进程仍存活，当前 SDK 调用可能永久 pending，且没有结构化协议错误可供上层展示。未证明本系统发布的 CLI 会输出非 JSON 到 stdout，也未测量外部集成的触发频率；真实 CLI 健康路径未受此探针覆盖。
 - 收敛方向（尚未实施，本地设计）：沿用现有 reader 与 pending 表；遇到无法解码的 stdout 行时保存脱敏的 decode error，结束 reader 并以同一错误收束全部 pending 请求。增加畸形 JSON、未知 envelope、正常 notification/response 和 EOF 竞争回归；若产品确实允许非协议 stdout，再由 server 将诊断统一写入 stderr，而不是让 reader 猜测并跳过。
 
+### H-102：InstructionsLoaded 外部 hook 缺少兼容输入必需字段
+
+**级别：低（P3，条件性 hooks 兼容缺口）；触发条件：项目声明依赖 Claude Code `InstructionsLoaded` 输入字段的外部 hook，并在会话装配时成功加载指令文件。** hook 仍会被调用；本项是已触发事件的输入 DTO 不兼容，不是该生命周期事件完全未实现。
+
+- 根因与生产路径：`RunAssembler` 以 `HookData::Instructions { paths }` 派发 `HookPoint::InstructionsLoaded`；该类型仅保存路径。`ExternalCommandHook::build_payload()` 因此只序列化 `paths`，加上公共的 `session_id`、`hook_event_name`。正式 ChatService 路径也已触发该 dispatch，但没有传递单文件路径对应的 memory type 或加载原因。
+- 动态复现：Windows ignored 探针 `chat_service::tests::audit_instructions_loaded_hook_receives_required_file_metadata` 建立临时项目和 `CLAUDE.md`，将该项目标记为 hooks trusted，在 `.deepagent/hooks.json` 注册真实 PowerShell command hook，由其把 stdin 写入临时文件。运行正式 ChatService/RunAssembler 并检查 payload，实际为 `{"hook_event_name":"InstructionsLoaded","paths":[".../CLAUDE.md"],"session_id":"..."}`；断言 `file_path` 存在失败（**0 passed / 1 failed**），同样没有 `memory_type`、`load_reason`。没有读取用户配置或发起公网模型请求。
+- 成熟实现对照：Claude Code `entrypoints/sdk/coreSchemas.ts::InstructionsLoadedHookInputSchema` 将 `file_path`、`memory_type`、`load_reason` 定义为必需字段，并允许 `globs`、`trigger_file_path`、`parent_file_path`；`utils/claudemd.ts` 在单个 instruction 文件加载时传递路径、memory type 和 load reason。当前系统聚合成一个 paths 数组，语义也不同；借鉴重点是保留事件所需来源元数据，不要求无条件复制 Claude 的所有记忆加载类别。
+- 影响及限制：按 Claude schema 读取 `file_path` 或按 `load_reason`/`memory_type` 筛选的兼容 hook 会拿不到所需字段，可能跳过处理或由其自身报错。仅证明缺字段，没有测试某个第三方脚本的最终行为，也未测试 compaction reload、nested instructions 和条件规则分别对应何种原因。
+- 收敛方向（尚未实施，本地设计）：扩展现有 `HookData::Instructions` 表达每个来源文件及本系统可确认的类型/原因；在 hook 输入 serializer 内对 Claude 兼容字段做明确映射。若本系统无法确定某个来源语义，不伪造 Claude enum，应定义版本化的本地事件字段或在兼容模式下明确拒绝不完整映射。覆盖 root instructions、nested instructions、重载、多个文件和未知来源，并验证真实 hook stdin。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2006,6 +2016,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-99 Chat `top_logprobs` 默认值显式探针 | `cargo test -p deepagent-models audit_chat_top_logprobs_default_is_rejected_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed；配置 `top_logprobs=5` 后正式 Chat 运行使用合法离线响应完成，transport 被调用一次，证明配置默认未与请求级值共用不支持校验。官方文档要求 `logprobs=true`；无公网调用，桌面默认 Responses 路径不在本项范围 |
 | H-100 SDK initialize 畸形 response 显式探针 | `cargo test -p deepagent-harness-sdk --lib audit_initialize_rejects_response_without_result_or_error --offline -- --ignored --nocapture`：0 passed / 1 failed；实际 `result=None, error=None` 仍返回 Ok 并设置 `initialized=true`。Windows PowerShell 子进程和本地管道 fixture；未启动真实 CLI server、第三方 server 或公网 |
 | H-101 SDK 畸形 stdout 行显式探针 | `cargo test -p deepagent-harness-sdk --lib audit_malformed_server_line_does_not_leave_request_pending --offline -- --ignored --nocapture`：0 passed / 1 failed；畸形行发出并由标记确认后，调用仍 pending、表内保留 1 项，直到 fixture EOF 才释放。Windows PowerShell 子进程和真实本地管道，无 CLI server 或公网 |
+| H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |

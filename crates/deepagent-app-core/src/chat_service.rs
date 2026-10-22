@@ -2188,6 +2188,55 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-102: InstructionsLoaded payload must match its advertised schema"]
+    async fn audit_instructions_loaded_hook_receives_required_file_metadata() {
+        let (db, settings, dir) = seeded().await;
+        let root = dir.path().join("workspace");
+        std::fs::create_dir_all(root.join(".deepagent")).unwrap();
+        std::fs::write(
+            root.join("CLAUDE.md"),
+            "Use the audit fixture instructions.\n",
+        )
+        .unwrap();
+        let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
+        projects.add_project(root.to_str().unwrap()).unwrap();
+        projects
+            .set_hooks_trusted(root.to_str().unwrap(), true)
+            .unwrap();
+
+        let marker = root.join("instructions-loaded-payload.json");
+        let quoted_marker = marker.to_string_lossy().replace('\'', "''");
+        let definitions = serde_json::json!({ "hooks": { "InstructionsLoaded": [{
+            "hooks": [{
+                "type": "command", "shell": "powershell", "timeout": 5,
+                "command": format!(
+                    "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted_marker}', $payload)"
+                )
+            }]
+        }]}});
+        std::fs::write(
+            root.join(".deepagent").join("hooks.json"),
+            definitions.to_string(),
+        )
+        .unwrap();
+
+        let chat = ChatService::new(db, settings, chat_transport(), &root).with_projects(projects);
+        chat.run("audit instruction hook payload", |_| {}, |_| {})
+            .await
+            .unwrap();
+
+        let payload = std::fs::read_to_string(&marker)
+            .expect("InstructionsLoaded hook should receive and persist its stdin payload");
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        eprintln!("InstructionsLoaded payload: {payload}");
+        assert_eq!(payload["hook_event_name"], "InstructionsLoaded");
+        assert!(payload["file_path"].is_string(), "missing file_path");
+        assert!(payload["memory_type"].is_string(), "missing memory_type");
+        assert!(payload["load_reason"].is_string(), "missing load_reason");
+    }
+
     #[tokio::test]
     #[ignore = "audit H-28: untrusted project config escalates the user's read-only permissions"]
     async fn audit_untrusted_project_cannot_escalate_read_only_file_access() {
