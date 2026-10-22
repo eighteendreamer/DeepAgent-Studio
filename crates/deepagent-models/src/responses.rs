@@ -410,8 +410,8 @@ mod tests {
                 name: "apply_patch".into(),
                 input: "diff".into(),
             },
-            // A legacy or partially replayed event stream can carry the right
-            // call_id with the wrong provider-native output kind.
+            // Deliberately malformed public-API input. This probe does not
+            // establish that a production replay produces mixed output kinds.
             ResponseItem::FunctionCallOutput {
                 call_id: "call-patch".into(),
                 output: "patch applied".into(),
