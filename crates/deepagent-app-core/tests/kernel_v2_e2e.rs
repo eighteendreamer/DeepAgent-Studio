@@ -21,6 +21,9 @@ mod image_preparation;
 #[path = "kernel_v2_e2e/branch_boundary.rs"]
 mod branch_boundary;
 
+#[path = "kernel_v2_e2e/active_rewind.rs"]
+mod active_rewind;
+
 #[cfg(feature = "web")]
 #[path = "kernel_v2_e2e/search_capability.rs"]
 mod search_capability;

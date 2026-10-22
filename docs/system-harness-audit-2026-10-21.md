@@ -46,6 +46,7 @@
 | 检查点备份丢失时的回退与分叉 | 正式 rewind/fork 均先恢复健康文件，再删除缺少备份的当前文件后报错；原会话历史和检查点记录未变，分叉未创建 | 已确认 H-72；真实临时文件、正式检查点及 AppService 双入口故障注入，完整备份对照通过；未操作用户文件或真实桌面 |
 | 回退后检查点的分支归属 | 旧分支回退后其检查点仍参与新分支的序号查询；新分支仅回退纯文字尾部，文件却被成功恢复为旧分支内容 | 已确认 H-73；正常 Session/检查点/AppService 两次回退和临时磁盘复现，所有备份完整，无磁盘故障注入或真实桌面操作 |
 | 源事件与原生镜像之间的分支边界 | 以用户 MessageAppended 的 sequence 为保留点，正式 fork/rewind 成功且源消息存在，下一次 ChatService wire 却缺该消息；包含下一条镜像的对照正常 | 已确认 H-74；两个入口各两组、正式恢复及请求序列化离线复现；限定原始序号锚点，未宣称桌面默认最新位置分支同样触发 |
+| 运行中回退与迟到结果提交 | 模型请求已发出但回答未释放时，正式 rewind 成功删除本轮输入；旧回答随后仍写入回退后的历史，原运行成功终结 | 已确认 H-75；真实 ChatService/RunStore/Session/AppService 与可控离线 transport 双组复现，没有真实桌面点击、文件工具或公网请求 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -1656,10 +1657,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：Codex `core/src/thread_rollout_truncation.rs` 通过解释用户/指令 turn 边界来确定有效分支位置，并先应用 rollback 对边界的影响；`truncate_rollout_before_nth_user_message_from_start()` 明确按 user message 位置裁剪。`truncate_rollout_after_turn_id()` 还要求目标 turn 位于当前有效历史、有持久化 TurnStarted 身份且状态不是 InProgress，裁剪到下一个 turn 起点之前；找不到稳定身份或目标仍在进行则明确拒绝。这些机制避免把任意原始记录位置直接等同于完整 turn。Claude 文件快照用稳定 messageId 定位目标（H-73 已述），只能作为语义身份参考，不能视为本轮已验证它的模型历史切割。需要借鉴的是明确逻辑消息/turn 的边界；本系统仍可保留现有 sequence 协议并定义它如何映射到完整提交组，不必照搬参考的 wire 字段。本轮未运行参考测试。
 - 修复方向（尚未实施，本地设计）：在既有事件/恢复入口定义一个逻辑提交组，保存或解析源消息与全部原生镜像的关联；fork/rewind 统一把原始锚点解析为完整语义边界，或在执行前明确拒绝会拆开提交组的锚点。不能只让前端 sequence+1，因为 reasoning、多工具和不同消息的镜像数并不固定。恢复还需区分合法原生边界与不完整镜像，不将原始源事件静默丢弃；完整事务、失败补偿、旧日志兼容及 cursor 协议属于本地设计，复用现有 EventStore。回归应覆盖纯文字/附件/reasoning/tool call/result、旧日志、故障中断、压缩和 raw sequence 用户，检查完整 wire 与持久化一致，而不是只验证 UI 气泡。
 
+### H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史
+
+**级别：高（P1）；范围：同一会话的 ChatService turn 尚在等待模型响应时，通过正式 AppService rewind_session 回退至该 turn 之前。** 这不是 H-74 的源消息/镜像边界，本项使用已完整落盘的前一组 user/assistant 作为保留点；也没有 H-73 的旧分支文件检查点参与。
+
+- 根因与生产路径：桌面 `App.tsx::onRewindSession()` 清除本地 transcript 后直接调用 rewind，没有先请求取消；Tauri `rewind_session` 转发给 AppService。`AppService::rewind_session()` 恢复一个独立 Session、恢复检查点并执行 truncate，不检查 ChatService 持有的输入租约或活动运行。`Session::rewind()` 只重建该对象的投影，正在执行的 turn 仍持有原内存历史和原取消状态。后续 loop_engine 将 provider 原生 items 和回答通过该旧 Session 追加；底层 `session_files::append()` 读取当前 generation，cursor 不匹配时重载尾部并分配新 sequence，没有要求调用者持有回退前同一 generation 的提交资格。文件锁保障单次磁盘操作，却没有将“此 turn 仍属于当前分支”纳入提交条件。
+- 动态证据：新增 `tests/kernel_v2_e2e/active_rewind.rs`。先用正式 Session 建立保留的 user/assistant；启动真实 ChatService、RunAssembler、Kernel 和 ModelAgent。transport 确认实际请求包含本轮测试用户文字后发出 Notify，然后等待另一 Notify，尚不返回回答。此时从正式 RunStore 断言运行已存在且没有 finished_at，原用户事件存在、目标回答不存在。通过正式 AppService 回退到完整保留尾部，返回 Ok，并在释放响应前确认本轮用户文字已不在真实持久化事件中。随后释放包含原生输出 item 的离线响应，原调用返回 Ok；最终用户文字仍不存在，原生/会话回答却出现在保留历史，RunStore 为 succeeded 且只有一个 run_terminal。较早保留的回答仍在。正常对照不回退，使用相同屏障和响应，原输入与回答都保留并成功终结。
+- 执行：`cargo test -p deepagent-app-core --test kernel_v2_e2e active_rewind --offline -- --include-ignored --nocapture`：1 passed / 1 failed，测试体约 0.29s。实验组观测为 `accepted=true, removed_user_before_release=true, old_user_after=false, late_answer_after=true, run_ok=true, terminal=Some("succeeded")`。缺陷测试允许忙时明确拒绝，或协调终止后成功回退；它要求“回退成功丢弃的 turn 不再提交回答”，不强制选用某一种修复策略。该探针默认 ignored，显式失败记录尚未修复的生产缺陷。
+- 影响：回退返回成功后，历史仍会受到已经丢弃的旧运行写入，出现没有对应用户指令的回答和旧运行成功终态；用户看到的“已回退”边界不可靠，后续恢复会读取被迟到结果污染的历史。该边界与模型供应商无关，DeepSeek 也会继承错误上下文。本轮没有执行真实文件修改工具，也没有证明回退后一定会继续发起工具/模型请求，不能把这些更大副作用当作已复现事实。未覆盖运行中 fork、排队输入、多进程、暂停/审批、压缩和真实桌面可达性，不能由本项解释宿主 Codex 的 cipher_incompatible。
+- 成熟实现对照：Claude Code `restored-src/src/screens/REPL.tsx` 的消息编辑快速恢复路径明确先 `onCancel()` 再 `handleRestoreMessage(raw)`，注释直接说明 `rewindConversationTo` 的 setMessages 会与 stream append 竞争。`onCancel()` 终结 query guard 并对本地请求调用 `abortController.abort('user-cancel')`；确认弹窗通过 `MessageSelector` 的 `onPreRestore={onCancel}` 在确认恢复时触发，而取消弹窗不触发。随后 rewind 切消息数组、更新 conversationId、重置 microcompact 等派生状态。已读取这些生产函数，没有运行参考项目；这支持“恢复操作必须协调活动查询”的设计，不能推论该参考已具备本系统所需的跨进程持久化事务或完整迟到结果栅栏。Codex 的有效 turn 截断边界见 H-74，不能将它等同于本轮已查明整个 thread 回退忙态政策。
+- 修复方向（尚未实施，本地设计）：在既有 AppCore/输入租约/RunCoordinator 统一管理同会话的破坏性控制操作，先选择明确的忙态拒绝或“取消并确认退出后回退”政策；控制操作与新输入接纳必须共用所有权边界，避免检查后再被新 turn 抢占。现有事件存储追加应校验运行绑定的分支身份/提交代次，回退后拒绝旧运行的迟到模型、工具和终态投影；运行审计仍保存在既有 RunStore/run_events，不能简单删除审计或只清空 UI。与 H-23/H-73 的派生状态分支身份一并收敛，保留正常顺序追加。回归覆盖请求中、工具/审批/排队中、完成竞争、取消失败及重启，检查真实日志/请求数/副作用与单终态；本轮仅增加证据，不修改生产实现。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-75 活跃 turn 回退显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e active_rewind --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.29s；回退已删除 user，释放响应后旧 answer 仍落盘，运行 succeeded/单终态；仅离线 transport 与临时会话文件 |
+| H-75 消息断言补强与共享入口基线 | 将内容存在检查限定为 MessageAppended/ResponseItemAppended，排除 task 等元数据后显式重跑仍为 1 passed / 1 failed，约 0.28s。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：16 passed / 15 ignored，约 1.59s；fmt、diff 检查通过。本批仅测试和报告，未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-74 源消息分支边界显式探针与对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e branch_boundary --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.66s；两入口 keep=5 丢目标消息、keep=6 保留，正式续聊均 Ok；transport 离线，不含真实供应商或桌面 UI |
 | H-74 终态补强与共享入口基线 | 补充四组续聊均为单个 succeeded 终态、保留日志无待丢弃 assistant 后，显式探针约 0.65s 仍为 1 passed / 1 failed。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：15 passed / 14 ignored，约 1.67s；fmt、diff 检查通过。本批只增加审计测试和文档，未跑全 workspace、Clippy、前端构建、真实桌面或公网模型 |
 | H-73 回退分支检查点显式探针与正常对照 | `cargo test -p deepagent-app-core --test checkpoint_audit branch --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.35s；正常组文件保持 current-branch，旧分支组被恢复为 old-first，两次回退均成功、当前历史不含旧分支。仅临时文件和正式服务，不含真实桌面或模型请求 |
@@ -1985,6 +1999,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 检查点恢复的失败一致性 | H-72 | 既有 CheckpointManager 先验证来源与计划，完成临时替换后提交；参考 Claude 的缺失备份前置检查，跨文件/历史补偿契约为本地设计 | 缺失备份不删除当前文件；部分失败、DB 截断失败及重试可诊断和恢复；rewind/fork、目录与 Windows 文件占用分别验证 |
 | 回退后的派生状态分支身份 | H-23、H-73 | 现有回退事实同时决定事件、检查点恢复资格和笔记覆盖；参考 Claude 的 messageId 快照与 Codex 的有效历史位置，持久化提交/补偿为本地设计 | 丢弃分支不覆盖新文件/摘要；保留前缀仍可回退；同序号替换、重启、fork、多次回退与失败重试可验证 |
 | 源事件与原生镜像的语义提交边界 | H-74 | 现有 Session/EventStore 关联逻辑消息与完整镜像组，分支/回退统一解析语义锚点；参考 Codex 按 turn/message 计算边界，原始 sequence 兼容为本地设计 | 保留的消息完整进入下一 wire；raw 锚点、旧日志、崩溃、附件/reasoning/工具和压缩不拆组，不在 UI 散落 +1 特判 |
+| 活跃运行与回退的提交所有权 | H-75 | 现有输入租约/RunCoordinator 与回退共用同会话所有权，明确拒绝或取消并等待；参考 Claude 恢复前 onCancel，持久化分支提交栅栏为本地设计 | 成功回退不再接收被丢弃 turn 的迟到回答；新接纳、排队、工具/审批、终态及重启保持一致，原审计不删除 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
