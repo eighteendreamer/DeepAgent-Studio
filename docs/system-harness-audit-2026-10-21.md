@@ -13,7 +13,7 @@
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
-| stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；慢连接与终态投影仍待收敛 |
+| stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；stable/dynamic system prefix 的边界与字节稳定性测试通过，但本轮未验证真实供应商 cache hit 比例；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94；H-93/H-94 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
@@ -156,6 +156,8 @@
 - 默认忽略的审查探针 `audit_stalled_outbox_preserves_terminal_notification` 调用生产 `emit()`，将消费者固定在不读取状态，连续产生 256 条事件后发出终态，再恢复读取。
 - 执行：`cargo test -p deepagent-cli audit_stalled_outbox_preserves_terminal_notification --offline -- --ignored --nocapture`。
 - 实际输出：`dropped sequence 257`、`queued=256, terminal_received=false, next_sequence=258`；“必须收到终态”断言失败。该探针是确定性队列复现，并非声称此次真实 DeepSeek 桌面对话发生过管道阻塞。
+- 随后新增真实 OS 管道子进程探针 `app_server::terminal_audit::audit_stdio_slow_output_drops_terminal_on_real_pipe`：子进程用生产 `EventOutbox` writer 排入 1,023 条约 4 KiB 的 `turn.completed` 通知及最后一条 `critical-terminal`；父进程确认队列生成后继续不读 stdout 250 ms，再开始排空真实 Windows 子进程管道。执行 `cargo test -p deepagent-cli --offline audit_stdio_slow_output_drops_terminal_on_real_pipe -- --ignored --nocapture`，结果 `emitted=1024, observed_notifications=272, sequenced_notifications=272, critical_terminal_seen=false, stdout_bytes=1157606`；审计断言通过，表示缺陷已复现而非已修复。
+- 此端到端探针覆盖生产 outbox 与 Windows OS stdout 管道，不含正式 ChatService、RunStore 或 SDK 客户端；因此它确认慢读端可以令 outbox 丢掉终态类型事件，但没有验证同一次真实 run 的数据库终态与客户端状态出现不一致，也没有声称桌面 Tauri 使用该队列。
 
 #### 恢复链核对
 
@@ -1909,6 +1911,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-91 app-server 默认测试基线 | `cargo test -p deepagent-cli app_server::tests --offline`：8 passed / 0 failed / 5 ignored；H-91 为显式 ignored 审计探针，默认通过不代表该交错已修复 |
 | H-92 runtime shutdown 活动 turn 显式探针 | `cargo test -p deepagent-cli terminal_audit::audit_runtime_shutdown_finalizes_in_flight_stdio_turn --offline -- --ignored --nocapture`：0 passed / 1 failed；模型请求确已进入 transport，runtime drop 后 `running_turn` 未终结、`finished_at=None`、`run_terminal=0`；正式 AppCore run 与临时 SQLite |
 | H-92 stdio 子进程 EOF 显式探针 | `cargo test -p deepagent-cli app_server::terminal_audit::audit_stdio_eof_drops_active_turn_in_child_process --offline -- --ignored --nocapture`：0 passed / 1 failed；测试可执行文件子进程运行生产 `run_stdio`，父进程经真实管道完成三次 RPC 并等到 transport 入场标记再关闭 stdin；子进程 exit code 0，SQLite 仍为 `running_turn`、`finished_at=None`、`run_terminal=0`。无发行版 CLI 子进程、Harness SDK 或公网供应商 |
+| H-01 慢消费者真实 stdout 管道显式探针 | `cargo test -p deepagent-cli --offline audit_stdio_slow_output_drops_terminal_on_real_pipe -- --ignored --nocapture`：审计断言通过，表示复现成立；生产 outbox 在真实 Windows 子进程 stdout 管道未读 250 ms 时，1,024 条终态类型通知只收到 272 条，`critical-terminal` 丢失，读取后输出共 1,157,606 字节。探针未运行正式 ChatService/RunStore/SDK；未测试 Tauri |
 | H-93 Chat 命名工具选择请求/默认值显式探针 | `cargo test -p deepagent-models audit_chat_tool_choice --offline -- --ignored --nocapture`：0 passed / 2 failed；request 与 defaults 两路径均序列化为 Responses 形状而非 DeepSeek Chat 形状；仅 adapter/serializer 离线复现，无公网 provider 请求 |
 | H-94 Chat 连续 reasoning item 显式探针 | `cargo test -p deepagent-models audit_chat_projection_preserves_all_reasoning_items --offline -- --ignored --nocapture`：0 passed / 1 failed；输入 `first ` 与 `second`，输出仅含 `second`；仅 adapter/serializer 离线复现，无公网 provider 请求 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |

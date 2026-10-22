@@ -504,6 +504,107 @@ fn audit_stdio_eof_drops_active_turn_in_child_process() {
     );
 }
 
+const STDIO_SLOW_OUTPUT_MARKER_ENV: &str = "DEEPAGENT_AUDIT_STDIO_SLOW_OUTPUT_MARKER";
+
+#[test]
+#[ignore = "audit H-01: fill a real stdout pipe using the production EventOutbox writer"]
+fn audit_stdio_slow_pipe_child_entrypoint() {
+    let Some(marker) = std::env::var_os(STDIO_SLOW_OUTPUT_MARKER_ENV).map(PathBuf::from) else {
+        return;
+    };
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    runtime.block_on(async {
+        let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
+        let outbox = EventOutbox::new(stdout);
+        let payload = "x".repeat(4096);
+        for index in 0..1023 {
+            outbox.emit(HarnessEvent::TurnCompleted {
+                thread_id: Some("slow-pipe-audit".into()),
+                turn_id: Some(format!("turn-{index}")),
+                message: payload.clone(),
+            });
+        }
+        outbox.emit(HarnessEvent::TurnCompleted {
+            thread_id: Some("slow-pipe-audit".into()),
+            turn_id: Some("critical-terminal".into()),
+            message: "final terminal".into(),
+        });
+        std::fs::write(marker, b"events queued").unwrap();
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    });
+}
+
+#[test]
+#[ignore = "audit H-01: a slow stdout consumer must not lose a turn terminal notification"]
+fn audit_stdio_slow_output_drops_terminal_on_real_pipe() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    use std::time::Instant;
+
+    let temporary = tempfile::tempdir().unwrap();
+    let marker = temporary.path().join("events-queued");
+    let executable = std::env::current_exe().unwrap();
+    let mut child = Command::new(executable)
+        .args([
+            "--exact",
+            "app_server::terminal_audit::audit_stdio_slow_pipe_child_entrypoint",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env(STDIO_SLOW_OUTPUT_MARKER_ENV, &marker)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !marker.exists() {
+        assert!(
+            Instant::now() < deadline,
+            "child did not queue its event burst"
+        );
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "child exited before queuing the event burst"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    std::thread::sleep(Duration::from_millis(250));
+
+    let reader = std::thread::spawn(move || {
+        let mut stdout = stdout;
+        let mut bytes = Vec::new();
+        stdout.read_to_end(&mut bytes).expect("drain child stdout");
+        bytes
+    });
+    let status = child.wait().unwrap();
+    assert!(status.success(), "server child exited with {status}");
+    let bytes = reader.join().unwrap();
+    let observed: Vec<Value> = String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .filter(|value: &Value| value["method"] == "harness/event")
+        .collect();
+
+    let sequence_count = observed
+        .iter()
+        .filter(|value| value["eventSequence"].is_number())
+        .count();
+    let critical_terminal_seen = observed
+        .iter()
+        .any(|value| value["params"]["turnId"] == "critical-terminal");
+    eprintln!(
+        "slow stdio output audit: emitted=1024, observed_notifications={}, sequenced_notifications={sequence_count}, critical_terminal_seen={critical_terminal_seen}, stdout_bytes={}",
+        observed.len(),
+        bytes.len()
+    );
+    assert!(
+        sequence_count < 1024 && !critical_terminal_seen,
+        "real stdout backpressure should drop the terminal notification after filling the outbox"
+    );
+}
+
 fn assert_durable_terminal(read: &Value, turn_id: &str, kind: &str) {
     let run = read["runEvents"]
         .as_array()
