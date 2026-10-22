@@ -15,7 +15,7 @@
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | SSH 远端主机身份验证 | 正式 SshService 通过 loopback 连上临时随机服务器密钥；同一地址的 known_hosts 对照拒绝不匹配密钥 | 已确认 H-125；未连接公网或用户服务器 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99、H-118、H-127；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认并修复 H-24、H-29；已确认 H-05、H-18、H-25、H-30、H-49、H-93、H-94、H-98、H-99、H-118、H-127；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、stdio/HTTP 响应无 transport 字节上限、图像工具结果未转为模型多模态内容、一次性测试连接在 initialize/tools/list 阶段无界等待（已修复并验证 30 秒总握手上限）、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认并修复 H-128、H-129；其他已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117、H-126 至 H-127；其他 hooks 和准备边界未完成 |
@@ -738,22 +738,22 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 笔记文本本身包含被撤销的决策，不能仅把 last_summarized_sequence 改小而继续使用旧 summary。采用现有存储里的失效/重新提取策略，或可证明对应保留分支的旧快照；native 与 Message 两条压缩入口应共用同一覆盖校验。
 - 覆盖回退后序号复用、回退期间后台 extraction 晚完成、fork、宿主重启、未达提取阈值、覆盖端点保留/删除以及工具配对。未在本轮修生产 rewind、笔记状态或压缩实现。
 
-### H-24：较长的非 ASCII 供应商错误触发 panic，结构化错误处理被中断
+### H-24：较长的非 ASCII 供应商错误触发 panic，结构化错误处理被中断（已修复）
 
-**级别：中（P2）；范围：启用 http feature 的 ReqwestTransport 非成功响应错误解析。** 本次确认函数 panic，没有证明整个桌面进程退出。
+**状态：已修复。级别：中（P2）；范围：启用 http feature 的 ReqwestTransport 非成功响应错误解析。** 修复前确认函数 panic，但没有证明整个桌面进程退出。
 
 #### 触发与复现
 
-- `crates/deepagent-models/src/reqwest_transport.rs::stream_inner()` 对非成功 HTTP 状态读取 body 后调用 `provider_error()`；后者统一调用 `sanitize_provider_message()`。错误文本超过 2000 字节时，直接 `String::truncate(2000)`，未检查 UTF-8 字符边界。
-- 新增默认忽略探针 `audit_long_unicode_provider_error_remains_structured`，分别给生产 provider_error 输入 HTTP 429 的 JSON error.message 和纯文本 body。文本为 800 个“错”（2400 字节），无密钥或用户数据。
-- 执行：`cargo test -p deepagent-models --features http audit_long_unicode_provider_error_remains_structured --offline -- --ignored --nocapture`。
-- 两种格式均在同一生产 truncate 处触发 `assertion failed: self.is_char_boundary(new_len)`；catch_unwind 记录 `format=json, parser_panicked=true` 和 `format=plain, parser_panicked=true`，最终安全断言失败。测试没有改生产函数，也没有调用外部供应商。
+- 修复前，`crates/deepagent-models/src/reqwest_transport.rs::stream_inner()` 对非成功 HTTP 状态读取 body 后调用 `provider_error()`；后者统一调用 `sanitize_provider_message()`。错误文本超过 2000 字节时，直接 `String::truncate(2000)`，未检查 UTF-8 字符边界。
+- 回归 `audit_long_unicode_provider_error_remains_structured` 继续分别给生产 `provider_error` 输入 HTTP 429 的 JSON error.message 和纯文本 body。文本为 800 个“错”（2400 字节），无密钥或用户数据。
+- 修复：统一按字符边界截断到 2000 个字符，并保留 provider status/code；同时把 Bearer 后继词和嵌入的 `sk-` token 纳入同一脱敏函数。
+- 修复后执行：`cargo test -p deepagent-models --features http reqwest_transport::tests:: --offline -- --nocapture`，JSON 与纯文本两组均 `parser_panicked=false`，回归通过。测试没有调用外部供应商。
 
 #### 后果、成熟实现与修复方向
 
 - 正常应返回包含 HTTP status/code/message 的 CoreError，此时却发生 panic，调用方无法按该返回值分类限流、上下文超限或服务端故障。上层是否捕获任务 panic、如何收尾运行及 UI 具体表现尚未独立验证，不据此宣称桌面崩溃或取消失效。
 - 仓库 Codex `codex-rs/protocol/src/error.rs::truncate_with_ellipsis()` 在截断前向前查找 `is_char_boundary`；UnexpectedResponseError::display_body 的非结构化 body 分支使用它。其 JSON error message 分支另有处理，不能声称该 helper 覆盖它的所有错误文本。
-- 在既有统一错误清理边界实现安全的 Unicode 长度限制，继续保留脱敏和 status/code。覆盖多字节字符恰好跨界、ASCII、空 body、JSON/纯文本、密钥跨截断边界；必要时再验证真实 HTTP→运行终态，不能通过 catch_unwind 静默吞掉生产问题。
+- 该修复保留既有统一错误清理边界，安全处理 Unicode 长度、脱敏和 status/code；真实 HTTP GET 错误现在也复用该 provider 错误路径。完整 Kernel/Tauri 终态仍不由这个单元测试代替。
 
 ### H-25：丢弃供应商 Retry-After，在服务恢复前耗尽限流重试
 
@@ -849,7 +849,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 - DeepSeek Harness `llm-deepseek/src/adapter.ts::generate()` 合并调用者及 consumer AbortSignal，再经 idleWatchdog 传给 request；fetch 的 signal 覆盖请求和返回 body 的消费，非 2xx response.text 也处于同一取消生命周期。finally 取消 consumer；调用者取消映射为 ABORTED。`tests/runtime.spec.ts` 有 outstanding fetch、mid-stream abort 和 idle watchdog 回归；本轮只核查这些源码，没有声称已运行参考项目测试，也不声称它已有完全相同的非 2xx 半正文用例。
 - 本系统收到停止信号后，该分支仍可能继续等待错误正文，UI 的“正在停止”和运行终态随之拖延，且 transport 最终可能上交 HTTP 错误而非取消。它与 H-17 的保存错误 UI 投影、H-25 的 Retry-After 丢失是不同故障点。
-- 这消除了停止等待错误正文时的取消缺口；仍需在后续 H-85 工作中为 `get_json()` 的发现/余额 GET 链路接入同等的 header、body、取消与总时限边界，不能把本项修复扩大为所有 HTTP 请求已经可取消。
+- 这消除了停止等待错误正文时的取消缺口；同一轮后续 H-85 已为 `get_json()` 的发现/余额 GET 链路接入 header、body、取消与总时限边界，但其他 HTTP 客户端仍不能因此被视为自动可取消。
 - 后续验收仍覆盖 4xx/5xx 半正文、慢速错误正文、正文中断、停止与 total timeout 竞争，以及经过 ModelAgent/Kernel 的终态收尾；本次已完成 transport 层 4xx/5xx 半正文回归，未据此宣称 Tauri 终态全链路已完成。
 
 ### H-30：SSE 实际按 data 行解析，合法多行事件失败，未闭合终态帧却被接受
@@ -1816,16 +1816,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 动态验证：新增非 ignored 测试 `reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization`。本机第一个 listener 收到 `Authorization: Bearer audit-secret-placeholder` 并将请求 302 到第二个 listener；第二个 listener 收到实际跟随请求，但没有 `Authorization`，返回 JSON 后调用成功。只使用回环地址和占位 key。
 - 结论与边界：该候选不构成已复现泄露，不新增 H 编号。验证覆盖模型发现/余额共用的 GET transport 与跨端口 origin；没有覆盖自定义 redirect policy 的 `with_client`、任意自定义传输实现或供应商 POST 的其他 transport 行为，不据此宣称所有 provider/网络重定向都安全。
 
-### H-86：模型发现 GET 的错误正文可把反射的 API Key 写入 `/doctor` 会话历史
+### H-86：模型发现 GET 的错误正文可把反射的 API Key 写入 `/doctor` 会话历史（已修复）
 
-**级别：条件性低（P3）；范围：API Key 校验失败且响应正文包含授权值时。** 不能据此声称 DeepSeek 正常错误响应会回显 API Key；漏洞前置条件是供应商或错误网关的正文确实含有该值。DeepSeek 当前模型发现地址固定，不支持这里切换到任意代理 URL，故不把恶意自定义 provider 当作常规触发条件。
+**状态：已修复。级别：条件性低（P3）；范围：API Key 校验失败且响应正文包含授权值时。** 不能据此声称 DeepSeek 正常错误响应会回显 API Key；漏洞前置条件是供应商或错误网关的正文确实含有该值。DeepSeek 当前模型发现地址固定，不支持这里切换到任意代理 URL，故不把恶意自定义 provider 当作常规触发条件。
 
-- 根因与生产路径：`ReqwestTransport::get_json` 对非成功状态读取完整 `response.text()`，再把原文直接格式化进 `CoreError::Other`。同 crate 的流式错误路径会用 `provider_error`/`sanitize_provider_message` 对消息做清理，GET 路径没有复用。`doctor::check_api_key` 又将 transport 错误原样插入 `DiagnosticResult.detail`；正式 `/doctor` 把该 detail 编入回复，而 `slash_runtime::maybe_handle_slash_command` 将回复作为 assistant `MessageAppended` 持久化到 session event log。该会话后续恢复时可能把内容重新带入模型请求。
-- 动态复现：ignored 探针 `reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential` 使用本机 HTTP 服务读取真实 `bearer_auth` 头，并故意在 401 JSON 错误正文反射该值。正式 GET 返回的错误文本含完整 `sk-audit-secret-placeholder`，探针以 **0 passed / 1 failed** 退出。没有真实密钥或公网请求。
-- 诊断传播复现：ignored 探针 `doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors` 通过正式 `check_api_key`，注入同形 transport 错误；`DiagnosticResult.detail` 实际包含完整 key，探针以 **0 passed / 1 failed** 退出。slash 回复到 session 的持久化链路由同文件 `maybe_handle_slash_command` 的正式生产代码确认；本探针未启动完整 slash session，也未验证下一轮 wire 重放。
+- 修复前根因与生产路径：`ReqwestTransport::get_json` 对非成功状态读取完整 `response.text()`，再把原文直接格式化进 `CoreError::Other`。同 crate 的流式错误路径会用 `provider_error`/`sanitize_provider_message` 对消息做清理，GET 路径没有复用。`doctor::check_api_key` 又将 transport 错误原样插入 `DiagnosticResult.detail`；正式 `/doctor` 把该 detail 编入回复，而 `slash_runtime::maybe_handle_slash_command` 将回复作为 assistant `MessageAppended` 持久化到 session event log。该会话后续恢复时可能把内容重新带入模型请求。
+- 修复：GET 非成功响应改为复用结构化 `provider_error`，保留 HTTP status/code 但不原样暴露正文；provider message 统一限制长度并脱敏 Bearer 后继词、常见 `sk-` token 及已知配置 key。`doctor::check_api_key` 在诊断边界再次按当前 key 脱敏，覆盖自定义 `HttpTransport` 返回的原始错误。
+- 修复后动态回归：`reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential` 通过本机 401 服务反射请求 Authorization，测试通过且错误不含完整占位 key；`doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors` 通过正式 `check_api_key` 也通过。两项均无真实密钥、公网请求或用户数据。
 - 成熟实现对照：DeepSeek Harness `packages/credentials/deepseek-account-platform/src/protocol.ts` 明确将协议错误限制为稳定错误码，不暴露响应正文；该账户平台使用不同 endpoint 和 token 类型，此处只借鉴“授权请求错误不转发原始响应正文”的错误边界。当前模型 stream 已有本地 `sanitize_provider_message`，可复用其结构化 provider message/敏感值清理方向，但需对任意 bearer 格式而不只 `sk-` 前缀验证。
-- 影响及限制：仅当远端错误体包含已发送凭据时触发；触发后它会进入可见诊断和持久化聊天记录，后续续聊可能再次放入模型上下文；若用户之后导出或分享该会话，也会扩大凭据接触范围。上游本身已接收密钥，因此本项不是向该上游新增泄露。没有观察到 DeepSeek 当前 `/models` 错误体实际回显密钥，也未实测未来续聊 wire 或会话导出。
-- 收敛方向（尚未实施，本地设计）：授权 GET 错误只保留状态码和经过长度限制、密钥脱敏的结构化错误消息；不可解析或非 JSON 正文不原样展示。脱敏需覆盖完整 Bearer 值、常见 `sk-` token 及跨空白分割场景；回归包括伪造反射正文、标准 DeepSeek error object、纯文本长错误、doctor 回复和会话历史，并确认不回显 key 的同时保留可诊断状态码/错误码。
+- 影响及限制：已阻断本项已复现的“反射 key 进入 GET 错误和 doctor 诊断”路径；上游本身仍会收到用户主动发送的 Authorization，不能据此声称供应商侧不记录密钥。回归覆盖 provider GET 和 doctor 诊断，但没有启动完整 slash session 去验证持久化事件和下一轮 wire，只能把后两者标为代码路径上的间接保护。
+- 后续收敛方向（本地设计）：继续让新诊断入口复用同一脱敏边界；若增加新的凭据类型，应补充其明确 token 形状和持久化/导出回归，不在 UI 层自行拼接原始 provider body。
 
 ### H-87：模型刷新用宿主本地旧快照覆盖另一宿主新设置
 
@@ -2379,8 +2379,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 修改长度 fixture 后复核旧 H-82 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_content_filter_does_not_retry_as_output_limit --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.32s；过滤组仍实际发出 3 次请求并升级/续写，账本断言通过但原因恢复断言失败，不将默认测试通过报告成 H-82 已修复 |
 | H-112/H-113 格式与差异检查 | `cargo fmt --all -- --check` 与 `git diff --check` 通过；本批仅增加 ignored 审计探针与报告，未修改生产行为、未跑 workspace 全量测试、Clippy、桌面构建或真实 Git worktree 子 Agent |
 | Responses `tool_search_call` 候选差异核查 | DeepSeek 官方请求 schema 不提供可触发该 item 的工具类型；AppCore `tool_search` 以普通 function schema 注册。`cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed；`cargo test -p deepagent-models --lib stream::tests --offline`：21 passed。未新增缺陷或测试，未调用公网 provider |
-| H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
-| H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
+| H-86 GET 反射凭据回归 | `cargo test -p deepagent-models --features http reqwest_transport::tests:: --offline -- --nocapture`：通过；本机 401 服务反射 Authorization 后，结构化错误不含完整占位 key |
+| H-86 doctor 诊断传播回归 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --nocapture`：1 passed；正式 `check_api_key` 的 detail 不含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
 | H-85 GET 响应停滞回归 | `cargo test -p deepagent-models --features http reqwest_transport::tests:: --offline -- --nocapture`：8 passed / 2 ignored；头部停滞、200 半截 body、503 半截 body 均在 50ms 预算内收尾，取消版半截 body 在 500ms 内返回 `request cancelled`；仅本机 HTTP，无公网或真实凭据 |
 | H-83 完成后钩子失败显式探针 | `cargo test -p deepagent-cli terminal_audit::audit_final_hook_error_has_one_matching_live_and_durable_terminal --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.32s；实际收到 `turn.completed → turn.failed`，durable 唯一终态为 failed；失败断言准确指出实时多发了 completed |
@@ -2556,8 +2556,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-21 节单项命令 | 真实首次运行及 resume 后契约断言失败；恢复计数为 1，但 schema/phase/label 和 wire 指令均丢失 |
 | H-22 节单项命令 | 真实 DAG 子执行器及文件工具探针失败；wire 声明子目录，产出实际落到临时父目录 |
 | H-23 节单项命令 | 真实 rewind/恢复后探针失败：旧覆盖点 8 被新分支复用，旧 RED 摘要被选为包含新 BLUE 决策前缀的替代候选 |
-| H-24 节单项命令 | JSON 和纯文本两种较长中文错误均在生产 truncate 处 panic，安全断言失败 |
-| `cargo test -p deepagent-models --features http --offline`（新增 H-24 后） | 84 passed / 2 ignored，无常规失败；H-24 已另行显式执行复现 |
+| H-24 provider error 回归 | `cargo test -p deepagent-models --features http reqwest_transport::tests:: --offline -- --nocapture`：JSON 和纯文本两种较长中文错误均 `parser_panicked=false`，回归通过 |
+| `cargo test -p deepagent-models --features http --offline`（H-24/H-85/H-86 修复后） | 单元测试 92 passed / 9 ignored，集成测试 1 passed / 1 ignored；0 failed |
 | H-25 节单项命令 | 真实回环 HTTP 指定等待 3000ms，455ms 后已重试并再次 429，模型循环失败；安全断言失败 |
 | `cargo test -p deepagent-app-core --features web --test audit_provider_retry --offline` | 常规入口 1 ignored，无失败；这是显式 opt-in 的 HTTP 故障探针，不代表限流恢复通过 |
 | H-26 节单项命令 | 真实 Windows hook 进程的顶层 deny 正确拦截；标准嵌套 deny/ask 两组均执行工具且无审批，安全断言失败 |

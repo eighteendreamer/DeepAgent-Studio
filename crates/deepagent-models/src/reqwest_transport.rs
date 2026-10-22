@@ -157,9 +157,7 @@ impl ReqwestTransport {
             let detail = self
                 .read_provider_error_body(response, cancel.as_ref())
                 .await?;
-            return Err(CoreError::other(format!(
-                "GET {url} returned {status}: {detail}"
-            )));
+            return Err(provider_error(status.as_u16(), &detail));
         }
 
         self.read_get_body(response, cancel.as_ref()).await
@@ -356,19 +354,22 @@ fn provider_error(status: u16, body: &str) -> CoreError {
 }
 
 fn sanitize_provider_message(message: &str) -> String {
-    let mut sanitized = message
-        .split_whitespace()
-        .map(|word| {
-            if word.starts_with("sk-") && word.len() > 7 {
-                "sk-…".to_string()
-            } else {
-                word.to_string()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(" ");
-    if sanitized.len() > 2_000 {
-        sanitized.truncate(2_000);
+    let mut redact_next = false;
+    let mut sanitized = Vec::new();
+    for word in message.split_whitespace() {
+        if redact_next {
+            sanitized.push("[redacted]".to_string());
+            redact_next = false;
+        } else if word.eq_ignore_ascii_case("bearer") {
+            sanitized.push(word.to_string());
+            redact_next = true;
+        } else {
+            sanitized.push(redact_token_like_key(word));
+        }
+    }
+    let mut sanitized = sanitized.join(" ");
+    if sanitized.chars().count() > 2_000 {
+        sanitized = sanitized.chars().take(2_000).collect();
         sanitized.push('…');
     }
     if sanitized.is_empty() {
@@ -376,6 +377,16 @@ fn sanitize_provider_message(message: &str) -> String {
     } else {
         sanitized
     }
+}
+
+fn redact_token_like_key(word: &str) -> String {
+    let Some(start) = word.find("sk-") else {
+        return word.to_string();
+    };
+    let mut redacted = String::with_capacity(start + 4);
+    redacted.push_str(&word[..start]);
+    redacted.push_str("sk-…");
+    redacted
 }
 
 /// Decode the longest valid UTF-8 prefix of `bytes`, returning the decoded text
@@ -661,7 +672,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-86: authenticated GET error bodies can reflect credentials into diagnostics"]
     async fn audit_get_error_body_does_not_echo_bearer_credential() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -877,7 +887,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-24: long non-ASCII provider errors panic at the byte truncation boundary"]
     fn audit_long_unicode_provider_error_remains_structured() {
         let message = "错".repeat(800);
         let json = serde_json::json!({

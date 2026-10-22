@@ -170,7 +170,10 @@ async fn check_api_key(settings: &SettingsService) -> DiagnosticResult {
             ),
             Err(e) => DiagnosticResult::error(
                 "API Key",
-                format!("configured but validation failed: {e}"),
+                format!(
+                    "configured but validation failed: {}",
+                    sanitize_diagnostic_error(&e, &key)
+                ),
                 "Re-enter a valid DeepSeek API key in Settings.",
             ),
         },
@@ -181,10 +184,43 @@ async fn check_api_key(settings: &SettingsService) -> DiagnosticResult {
         ),
         Err(e) => DiagnosticResult::error(
             "API Key",
-            format!("could not read secret store: {e}"),
+            format!(
+                "could not read secret store: {}",
+                sanitize_diagnostic_error(&e, "")
+            ),
             "Check encrypted SQLite and OS keychain access, then re-enter the API key.",
         ),
     }
+}
+
+fn sanitize_diagnostic_error(error: &CoreError, configured_key: &str) -> String {
+    let mut detail = error.to_string();
+    if !configured_key.trim().is_empty() {
+        detail = detail.replace(configured_key, "[redacted]");
+    }
+
+    let mut redact_next = false;
+    let mut words = Vec::new();
+    for word in detail.split_whitespace() {
+        if redact_next {
+            words.push("[redacted]".to_string());
+            redact_next = false;
+        } else if word.eq_ignore_ascii_case("bearer") {
+            words.push(word.to_string());
+            redact_next = true;
+        } else if let Some(start) = word.find("sk-") {
+            words.push(format!("{}sk-…", &word[..start]));
+        } else {
+            words.push(word.to_string());
+        }
+    }
+
+    let mut sanitized = words.join(" ");
+    if sanitized.chars().count() > 2_000 {
+        sanitized = sanitized.chars().take(2_000).collect();
+        sanitized.push('…');
+    }
+    sanitized
 }
 
 async fn check_network() -> DiagnosticResult {
@@ -498,7 +534,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-86: provider error text containing a credential reaches doctor diagnostics"]
     async fn audit_api_key_check_redacts_credentials_reflected_by_get_errors() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let secret = "sk-audit-secret-placeholder";
