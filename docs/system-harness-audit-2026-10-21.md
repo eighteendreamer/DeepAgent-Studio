@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 队列丢终态、立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；慢连接与终态投影仍待收敛 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94；H-93/H-94 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；stable/dynamic system prefix 的边界与字节稳定性测试通过，但本轮未验证真实供应商 cache hit 比例；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94；H-93/H-94 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现 | 已确认 H-10、H-11、H-14、H-23、H-31；笔记计数及其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
@@ -2226,6 +2226,13 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - `terminal_audit::reopened_thread_read_keeps_session_and_each_run_cursor_independent` 经正式 dispatcher/spawn_turn 完成同一 session 两轮运行，两轮都只有一个实时完成及一个 durable succeeded；用独立 Database/ServerState reader 重新读取同一磁盘，完整 `thread/read` 与原结果相等。
 - 同一请求中显式设置 sessionAfterSequence 和不同的 runAfterSequences，另将旧 afterSequence/runAfterSequence 设为 u64::MAX 验证优先级；返回结果与各条 stream 单独 `sequence > after` 筛选逐项相等。first run 到末尾后为空、second run 从中段仍可取到终态，runId/stream/streamSequence 关联一致。第一次显式运行通过，测试体共 0.74s（与另外三项合计），不能当作该探针单独耗时。
 - 这是持久化读取和游标优先级的正常证据，不覆盖真实管道断连/背压和 SDK 自动恢复；H-01 的实时丢通知及 ACK 缺口仍保留。独立 reader 建立时原宿主对象仍在，未宣称完成真实进程退出重启验收。
+
+### 后续独立核查：DeepSeek system prompt 保留稳定前缀布局
+
+- `system_context.rs::build_system_manifest()` 将内置 system prompt 与用户选择的 output style 放在 `DYNAMIC_INSTRUCTIONS_BOUNDARY` 之前；cwd、日期及运行环境等易变内容位于边界之后。没有从这一设计直接推断真实供应商必然命中缓存。
+- 执行三项既有生产组装测试：`volatile_context_never_enters_the_cacheable_prefix`、`the_cacheable_prefix_is_byte_identical_between_turns`、`output_style_stays_in_cacheable_prefix_before_boundary`，均为 **1 passed**。这证明测试覆盖的 system prompt 前缀跨样本稳定，不证明整份 Responses wire（包括 input、tools、配置默认值）每轮都相同，也不证明 DeepSeek provider cache 的命中率。
+- 成熟实现对照：DeepSeek Harness `packages/core/agent-loop/tests/request-cache.e2e.ts` 有 key-gated 真实 API 用例，构造多步工具调用和下一轮追问，并断言首个请求之后每个请求均返回 `cacheReadTokens > 0`。本轮只检查该测试的源码，没有运行它，也没有调用 DeepSeek API。
+- 结论：当前证据不支持“system prompt 每轮重写导致稳定前缀丢失”的缺陷，不新增 H 编号。本系统现有可选 live 测试 `real_session_file_responses.rs` 会记录 Responses 请求体及 usage，但该测试不是本轮执行项；live cache hit 比例仍未在本轮实测。
 
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
