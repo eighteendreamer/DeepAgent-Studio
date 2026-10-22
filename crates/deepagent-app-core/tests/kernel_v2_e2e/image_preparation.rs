@@ -46,7 +46,7 @@ impl HttpTransport for ImageAnswer {
     }
 }
 
-async fn imported_image_across_turns() -> Vec<usize> {
+async fn imported_image_across_turns(seed_plain_turn: bool) -> Vec<usize> {
     let root = tempfile::tempdir().unwrap();
     let attachments = AttachmentService::new(root.path().join("attachments"));
     // A complete one-pixel PNG, imported through the desktop's production DTO.
@@ -101,10 +101,30 @@ async fn imported_image_across_turns() -> Vec<usize> {
         }),
         root.path(),
     );
+    let seeded_session = if seed_plain_turn {
+        Some(
+            chat.run_in_session(
+                "Establish a text-only turn before attaching an image.",
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                Some("audit-image-seed"),
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap(),
+        )
+    } else {
+        None
+    };
     let session_id = chat
         .run_in_session_with_attachments(
             "Inspect the attached image for this offline audit.",
-            None,
+            seeded_session.as_deref(),
             None,
             None,
             Vec::new(),
@@ -134,6 +154,12 @@ async fn imported_image_across_turns() -> Vec<usize> {
         )),
         "the first user message must already contain the real attachment reference"
     );
+    let native_images = persisted.iter().filter(|event| matches!(
+        &event.payload,
+        deepagent_core::event::EventPayload::ResponseItemAppended {
+            item: deepagent_core::response_item::ResponseItem::InputMessage { attachments, .. }
+        } if attachments.iter().any(|attachment| attachment.id == imported.id)
+    )).count();
     chat.run_in_session(
         "Refer to the previously attached image.",
         Some(&session_id),
@@ -149,7 +175,14 @@ async fn imported_image_across_turns() -> Vec<usize> {
     .await
     .unwrap();
     assert!(path.is_file());
-    for run in ["audit-image-first", "audit-image-continued"] {
+    for run in [
+        "audit-image-seed",
+        "audit-image-first",
+        "audit-image-continued",
+    ] {
+        if run == "audit-image-seed" && !seed_plain_turn {
+            continue;
+        }
         let events = chat.run_events(run, None).unwrap();
         assert_eq!(
             events
@@ -163,14 +196,14 @@ async fn imported_image_across_turns() -> Vec<usize> {
             .any(|event| event.event_type == "run_terminal" && event.data["kind"] == "succeeded"));
     }
     let counts = counts.lock().unwrap().clone();
-    assert_eq!(counts.len(), 2);
-    eprintln!("image-preparation imported_ready=true bytes={} file_still_exists=true first={} continued={} both_runs_succeeded=true", imported.size_bytes, counts[0], counts[1]);
+    assert_eq!(counts.len(), if seed_plain_turn { 3 } else { 2 });
+    eprintln!("image-preparation seed_plain={seed_plain_turn} imported_ready=true bytes={} file_still_exists=true native_image_refs={native_images} wire_image_counts={counts:?} all_runs_succeeded=true", imported.size_bytes);
     counts
 }
 
 #[tokio::test]
 async fn retained_imported_image_reaches_continuation_request() {
-    let counts = imported_image_across_turns().await;
+    let counts = imported_image_across_turns(false).await;
     assert_eq!(
         counts[1], 1,
         "the same file/resolver must work through retained native history"
@@ -180,5 +213,7 @@ async fn retained_imported_image_reaches_continuation_request() {
 #[tokio::test]
 #[ignore = "audit probe: current turn attachments must reach the first model request"]
 async fn audit_new_image_reaches_first_model_request() {
-    assert_eq!(imported_image_across_turns().await, vec![1, 1]);
+    let initial = imported_image_across_turns(false).await;
+    let later = imported_image_across_turns(true).await;
+    assert_eq!((initial, later), (vec![1, 1], vec![0, 1, 1]));
 }
