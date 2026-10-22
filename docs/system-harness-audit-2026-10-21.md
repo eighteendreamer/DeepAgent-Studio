@@ -20,6 +20,7 @@
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
+| 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -1790,7 +1791,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 动态复现：新增 ignored 探针 `reqwest_transport::tests::audit_get_json_is_bounded_while_waiting_for_headers_and_body`，使用本机 loopback HTTP 服务及无总请求 timeout 的 reqwest Client；服务分别停在响应头之前、200 成功响应体中间、503 错误响应体中间。传输配置的 first-byte、idle、total 都设为 50ms，探针等待 150ms 后记录请求是否仍未完成，再释放响应并等待任务收尾。没有使用真实凭据、DeepSeek 网络或用户数据。
 - 实测：三组 `returned_within_50ms_budget=false`；只有服务补齐响应后，成功请求才返回，错误请求才携带 503 结束。显式运行探针以 **0 passed / 1 failed** 退出，失败断言准确指出 `headers`、`success_body`、`error_body` 均超出配置预算仍 pending。该结果证明流式 timeout 配置没有约束 GET；结合 reqwest 0.12.28 异步 Client 默认无总 timeout 的版本文档，确认生产 `ReqwestTransport::new()` 的默认 GET 也没有总请求截止时间。
 - 成熟实现对照：DeepSeek Harness `packages/credentials/deepseek-account-platform/src/index.ts` 对账户详情请求使用 `AbortSignal.any([lifetime.signal, AbortSignal.timeout(...)])`；`requestTimeoutMs` 与 `balanceTimeoutMs` 默认均为 30 秒，凭据生命周期取消和请求时限共同生效。Codex `codex-rs/agent-identity/src/lib.rs` 对 JWKS 和 registration 请求分别设置 `.timeout(...)`。这些只作为管理类 HTTP 请求应有独立时限/取消边界的参考，不代表它们与模型流式请求的预算相同。
-- 影响及限制：用户在首次模型初始化、刷新模型、API key 诊断或查询余额时，若远端已接收连接但不返回响应头/完整响应体，对应 command 可一直 pending；刷新模型使用同步 `block_on`，会持续占用等待它的 command worker。没有证据说明它会阻塞主 UI 线程、影响已有会话的模型调用，或解释本轮讨论的 Codex `Continuation ...` 错误；该错误按用户最新指示暂不追查。
+- 影响及限制：用户在首次模型初始化、刷新模型、API key 诊断或查询余额时，若远端已接收连接但不返回响应头/完整响应体，对应 command 可一直 pending；刷新模型使用同步 `block_on`，会持续占用该 command 的同步执行路径。本探针没有运行 Tauri，不能据此确定主 UI 的实测阻塞范围或已有会话的模型调用是否受影响；也没有证据解释本轮讨论的 Codex `Continuation ...` 错误，该错误按用户最新指示暂不追查。
 - 收敛方向（尚未实施，本地设计）：在现有 `HttpTransport` seam 为 GET 加入显式总 deadline，并让请求等待可观察生命周期取消；总时限覆盖 headers 与 body 读取，而不是只约束 `.send()`。管理调用应将 timeout/cancel 映射为可识别的设置/诊断错误。回归覆盖无响应头、成功/错误半截 body、取消等待及正常完成；确认 model discovery、余额、doctor 和 CLI/Tauri 调用方均能按时收尾，不改变流式请求的 timeout 语义。
 
 ### 后续独立核查：模型 API 跨 origin 重定向不会转发 Bearer key
@@ -1821,10 +1822,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：在触发竞争时，沙箱模式会被旧值覆盖；`initialize` 从 prior 携带的其他 `AppSettings` 字段同样处于该整文档覆盖边界，但本探针没有逐字段动态验证。将 `ReadOnly` 覆回 `WorkspaceWrite` 会改变新宿主/刷新宿主后续读取到的默认运行限制；运行专属配置、显式权限 profile 或独立沙箱后端仍可能另有限制，本项没有执行工具以证明完整权限提升。当前证据证明的是两个独立 SQLite 连接下的可达覆盖，不证明用户的单进程日常操作已经遇到，也没有验证实际多个 Tauri/CLI 进程间的时序与锁行为。
 - 收敛方向（尚未实施，本地设计）：把已发现模型目录等刷新结果作为字段级变更应用到数据库当前值，禁止网络 await 后将旧缓存整份写回；共享 SQLite 的读改写使用可检测冲突的版本字段/条件更新或等效原子事务，并在冲突时重新基于最新文档合并/重试。进程内互斥只能减少同一宿主竞争，不能取代跨宿主数据库提交边界。回归需使用两个独立文件连接及真实 Primary/Standby 进程，覆盖刷新与模型、沙箱、permission rules、hooks 等字段并发更新、冲突重试、进程退出恢复和普通单宿主刷新。
 
+### H-88：旧模型刷新在退出登录或换 Key 后重新写入旧凭据
+
+**级别：中（P2）；触发条件：模型刷新已经读取旧 Key 并等待网络，另一个可写宿主随后退出登录或完成新 Key 初始化，而旧刷新较晚收到成功的目录响应。** 本项不是加密被破解，也不证明已退出的远端账户能够继续使用；只有旧 Key 在供应商侧仍有效，后续使用它的请求才可能成功。
+
+- 根因与生产路径：`SettingsService::refresh_models` 读取当前凭据后调用 `initialize(&key)`；后者等待目录发现成功，再无条件 `secrets.set(API_KEY_NAME, api_key)`。`clear_key` 只删除存储值，没有撤销在途刷新的提交资格；新 Key 初始化也没有阻止旧刷新晚提交。该写入不依赖 `AppSettings` 缓存，因此与 H-87 不同，单纯刷新设置缓存不能解决。桌面启动时 `App.tsx` 会自动调用 `refreshModels`，退出经 `clear_api_key`，新 Key 经 `initialize_project`；共享数据目录允许 Standby 正常读写，所以不同宿主可以形成此交错。尚未证明同一 Tauri 窗口的同步 command 也能并发执行这组操作。
+- 动态复现：ignored 探针 `settings::tests::audit_refresh_models_does_not_restore_a_superseded_api_key` 分别覆盖 `sign_out` 和 `replace_key`。每组用两个独立文件 SQLite 连接及正式 `SqliteSecretStore`，只有设备包装 Key 的后端使用临时 `MemorySecretStore`，不接触系统凭据。第一服务的刷新在 GateTransport 暂停；第二服务退出或用新占位 Key 成功初始化，并立即核对存储值。释放旧刷新后，第三条新连接重新解密读取。两组均得到 `refresh_succeeded=true credential_preserved=false previous_restored=true configured=true`，严格确认恢复的是旧凭据，而非仅得到任意错误值；探针以 **0 passed / 1 failed** 退出。没有调用公网或使用真实 Key。
+- 成熟实现对照：DeepSeek Harness `packages/credentials/deepseek-account-platform/src/index.ts::signOut` 先 `cancelSignIn` 并等待 attempt.done，再删除凭据；已经进入 committing 的 attempt 则等待其提交完成后再删除。`startSignIn` 等待进行中的 removing；账户查询另捕获 `detailsLifetime`，凭据更新时 abort 旧 lifetime，返回前检查当前 lifetime。该实现采用账户授权流程，与本系统原始 API Key 初始化协议不同，此处只借鉴“撤销与提交共用生命周期所有者、迟到结果无发布资格”的边界；这些进程内对象不直接提供跨宿主数据库栅栏。
+- 影响及限制：已成功退出的本地凭据状态会被恢复，或用户刚保存的新 Key 被旧值覆盖；新连接读到 configured=true。若旧 Key 仍有效，后续运行可能使用旧账户/凭据，影响用户对退出与计费归属的判断；本轮没有发出后续模型请求、测试供应商撤销或验证真实桌面重启。当前 UI 本地 onboarding 标记与后端状态如何表现，仍需 Tauri 验收，不能把本探针写成已自动重新进入工作台。
+- 收敛方向（尚未实施，本地设计）：在现有 SettingsService/SecretStore 边界区分“目录刷新”和“用户显式更换凭据”；刷新不得因为复用初始化就重新保存捕获的旧 Key。撤销/更换与在途操作使用共同凭据代次/提交资格，网络结果提交前对照数据库当前版本；退出也必须推进代次，避免删除后重设相同字符串的 ABA 问题。宿主内取消旧等待可以减少浪费，但跨宿主仍需原子条件提交。回归覆盖退出、换 Key、同值重新登录、两次初始化乱序完成、网络失败及正常顺序操作，验证数据库凭据、配置 view 和真实后续请求所用身份一致；不新增第二套凭据存储。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-88 在途刷新凭据覆盖显式探针 | `cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_does_not_restore_a_superseded_api_key --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.19s；sign_out、replace_key 两组均未保持新状态，第三连接读回 configured=true；正式文件 SQLite 加密存储、临时包装 Key、离线 transport，无公网/真实 Tauri |
+| H-87/H-88 强化凭据身份断言后合跑 | `cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_ --offline -- --ignored --nocapture`：0 passed / 2 failed，约 0.22s；H-87 严格落盘沙箱断言失败，H-88 两组均 previous_restored=true；没有将“凭据缺失或任意不同值”误当作恢复旧凭据 |
+| H-88 默认回归与检查 | `cargo test -p deepagent-app-core --lib settings::tests --offline`：30 passed / 2 ignored，约 0.50s；`cargo test -p deepagent-app-core --lib secret_store::tests --offline`：5 passed，约 0.02s；`cargo fmt --all -- --check`、`git diff --check` 通过。本批只增加审计探针及报告，未运行全 workspace、Clippy、前端构建、真实 Tauri 或跨进程复测；两项缺陷保持未修复 |
 | H-87 多宿主设置覆盖显式探针 | `cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_preserves_other_host_sandbox_mode --offline -- --ignored --nocapture`：0 passed / 1 failed；两个独立 SQLite 文件连接交错写入后，刷新将另一连接成功保存的 `ReadOnly` 覆为旧 `WorkspaceWrite`；第三连接读回确认落盘结果；临时数据库与离线 GateTransport，未启动真实多进程桌面或调用公网 |
 | H-87 默认设置基线与检查 | `cargo test -p deepagent-app-core --lib settings::tests --offline`：30 passed / 1 ignored，约 0.54s；单服务沙箱设置刷新对照通过；`cargo fmt --all -- --check`、`git diff --check` 通过。缺陷探针需显式执行，默认通过不代表已修复；本批仅测试与文档，未跑全 workspace、Clippy、前端构建、真实 Tauri 或多进程测试 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
@@ -2169,6 +2183,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
 | 桌面运行事件与订阅生命周期 | H-41、H-43 | 现有 run_id、完成 payload、订阅就绪屏障和持久化补读统一；参考 Codex thread 通道和持续消费 worker | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能清理新 run |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
+| 共享设置与凭据的提交资格 | H-87、H-88 | 现有 SettingsService/SecretStore 在数据库当前版本上提交字段变更；参考 Codex Session 设置持久化许可与 DeepSeek 账户撤销/登录生命周期，跨宿主版本栅栏为本地设计 | 刷新不覆盖已收紧限制；退出/换 Key 后旧刷新不能写回旧凭据；独立连接、真实主备进程、失败和乱序完成一致 |
 | 启动恢复的规范终态与会话投影 | H-44 | 恢复共用现有幂等终态边界，文件会话投影具备按 run 身份的补偿；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补，不能改错后续 turn |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |

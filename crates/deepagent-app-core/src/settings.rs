@@ -2618,6 +2618,90 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit H-88: an earlier model refresh can restore a removed or replaced credential"]
+    async fn audit_refresh_models_does_not_restore_a_superseded_api_key() {
+        use crate::secret_store::SqliteSecretStore;
+
+        let body =
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#;
+        let mut overwritten_actions = Vec::new();
+        for action in ["sign_out", "replace_key"] {
+            let database_dir = tempfile::tempdir().unwrap();
+            let database_path = database_dir.path().join("credentials.sqlite");
+            let first_db = Arc::new(Database::open(&database_path).unwrap());
+            let wrapping = Arc::new(MemorySecretStore::new());
+            let first_secrets =
+                Arc::new(SqliteSecretStore::new(first_db.clone(), wrapping.clone()));
+            let started = Arc::new(Notify::new());
+            let release = Arc::new(Notify::new());
+            let block_next = Arc::new(AtomicBool::new(false));
+            let first = Arc::new(SettingsService::new(
+                first_db,
+                Arc::new(GateTransport {
+                    body: body.to_string(),
+                    block_next: block_next.clone(),
+                    started: started.clone(),
+                    release: release.clone(),
+                }),
+                first_secrets,
+            ));
+            first.initialize("audit-old-credential").await.unwrap();
+
+            block_next.store(true, Ordering::SeqCst);
+            let refresh = {
+                let first = first.clone();
+                tokio::spawn(async move { first.refresh_models().await })
+            };
+            tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+                .await
+                .expect("model refresh must reach the controlled network wait");
+
+            let second_db = Arc::new(Database::open(&database_path).unwrap());
+            let second = SettingsService::new(
+                second_db.clone(),
+                Arc::new(MockTransport::with_get_json(body)),
+                Arc::new(SqliteSecretStore::new(second_db, wrapping.clone())),
+            );
+            let expected_key = if action == "sign_out" {
+                second.clear_key().unwrap();
+                None
+            } else {
+                second.initialize("audit-new-credential").await.unwrap();
+                Some("audit-new-credential")
+            };
+            assert_eq!(second.api_key().unwrap().as_deref(), expected_key);
+
+            release.notify_one();
+            // Rejecting a stale refresh is valid; it must not restore its key.
+            let refresh_succeeded = refresh.await.unwrap().is_ok();
+            let reopened_db = Arc::new(Database::open(&database_path).unwrap());
+            let reopened = SettingsService::new(
+                reopened_db.clone(),
+                Arc::new(MockTransport::with_get_json(body)),
+                Arc::new(SqliteSecretStore::new(reopened_db, wrapping)),
+            );
+            let reopened_key = reopened.api_key().unwrap();
+            let preserved = reopened_key.as_deref() == expected_key;
+            let restored_previous = reopened_key.as_deref() == Some("audit-old-credential");
+            let configured = reopened.view().unwrap().unwrap().configured;
+            eprintln!(
+                "action={action} refresh_succeeded={refresh_succeeded} credential_preserved={preserved} previous_restored={restored_previous} configured={configured}"
+            );
+            assert!(
+                preserved || restored_previous,
+                "unexpected fixture credential"
+            );
+            if !preserved {
+                overwritten_actions.push(action);
+            }
+        }
+        assert!(
+            overwritten_actions.is_empty(),
+            "a stale refresh restored its credential after: {overwritten_actions:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn runtime_can_read_raw_key() {
         let (svc, _) = service();
         svc.initialize("sk-abcd1234").await.unwrap();
