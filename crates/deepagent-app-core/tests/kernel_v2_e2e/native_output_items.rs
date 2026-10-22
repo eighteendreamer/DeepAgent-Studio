@@ -8,10 +8,11 @@ use deepagent_runtime::events::RuntimeEvent;
 
 struct NativeTextModel {
     parts: Vec<&'static str>,
+    include_deltas: bool,
     requests: Mutex<Vec<serde_json::Value>>,
 }
 
-fn text_item_events(parts: &[&str]) -> Vec<String> {
+fn text_item_events_with_deltas(parts: &[&str], include_deltas: bool) -> Vec<String> {
     let mut events = vec![serde_json::json!({
         "type":"response.created", "response":{"id":"audit-response","status":"in_progress"}
     })
@@ -23,20 +24,31 @@ fn text_item_events(parts: &[&str]) -> Vec<String> {
             "type":"message", "id":id, "role":"assistant", "status":"completed",
             "content":[{"type":"output_text","text":text,"annotations":[]}]
         });
-        events.extend([
+        let mut item_events = vec![
             serde_json::json!({"type":"response.output_item.added", "output_index":index,
                 "item":{"type":"message","id":id,"role":"assistant","status":"in_progress","content":[]}}).to_string(),
-            serde_json::json!({"type":"response.content_part.added","item_id":id,
-                "output_index":index,"content_index":0,
-                "part":{"type":"output_text","text":"","annotations":[]}}).to_string(),
-            serde_json::json!({"type":"response.output_text.delta","item_id":id,
-                "output_index":index,"content_index":0,"delta":text}).to_string(),
-            serde_json::json!({"type":"response.output_text.done","item_id":id,
-                "output_index":index,"content_index":0,"text":text}).to_string(),
-            serde_json::json!({"type":"response.content_part.done","item_id":id,
-                "output_index":index,"content_index":0,"part":item["content"][0]}).to_string(),
+        ];
+        if include_deltas {
+            item_events.extend([
+                serde_json::json!({"type":"response.content_part.added","item_id":id,
+                    "output_index":index,"content_index":0,
+                    "part":{"type":"output_text","text":"","annotations":[]}})
+                .to_string(),
+                serde_json::json!({"type":"response.output_text.delta","item_id":id,
+                    "output_index":index,"content_index":0,"delta":text})
+                .to_string(),
+                serde_json::json!({"type":"response.output_text.done","item_id":id,
+                    "output_index":index,"content_index":0,"text":text})
+                .to_string(),
+                serde_json::json!({"type":"response.content_part.done","item_id":id,
+                    "output_index":index,"content_index":0,"part":item["content"][0]})
+                .to_string(),
+            ]);
+        }
+        item_events.push(
             serde_json::json!({"type":"response.output_item.done","output_index":index,"item":item}).to_string(),
-        ]);
+        );
+        events.extend(item_events);
         output.push(item);
     }
     events.push(
@@ -71,7 +83,10 @@ impl HttpTransport for NativeTextModel {
         } else {
             vec!["AUDIT_CONTINUED"]
         };
-        emit_responses_events(sink, &text_item_events(&parts))
+        emit_responses_events(
+            sink,
+            &text_item_events_with_deltas(&parts, self.include_deltas),
+        )
     }
 }
 
@@ -95,11 +110,13 @@ async fn audit_settings(db: Arc<Database>) -> Arc<SettingsService> {
 
 async fn observe_native_text(
     parts: Vec<&'static str>,
+    include_deltas: bool,
 ) -> (Vec<String>, Vec<String>, String, String) {
     let workspace = tempfile::tempdir().unwrap();
     let db_path = workspace.path().join("state.sqlite");
     let model = Arc::new(NativeTextModel {
         parts,
+        include_deltas,
         requests: Mutex::new(Vec::new()),
     });
     let streamed = Arc::new(Mutex::new(String::new()));
@@ -203,7 +220,7 @@ async fn observe_native_text(
 #[tokio::test]
 async fn native_text_control_single_item_retains_one_copy() {
     let parts = vec!["AUDIT_FIRST|AUDIT_SECOND"];
-    let (persisted, sent, streamed, final_answer) = observe_native_text(parts.clone()).await;
+    let (persisted, sent, streamed, final_answer) = observe_native_text(parts.clone(), true).await;
     assert_eq!(persisted, parts);
     assert_eq!(sent, parts);
     assert_eq!(streamed, parts.concat());
@@ -214,7 +231,7 @@ async fn native_text_control_single_item_retains_one_copy() {
 #[ignore = "audit: multiple completed text items must not receive a joined fallback duplicate"]
 async fn audit_native_text_multiple_items_preserve_exact_provider_content() {
     let parts = vec!["AUDIT_FIRST|", "AUDIT_SECOND"];
-    let (persisted, sent, streamed, final_answer) = observe_native_text(parts.clone()).await;
+    let (persisted, sent, streamed, final_answer) = observe_native_text(parts.clone(), true).await;
     assert_eq!(
         streamed,
         parts.concat(),
@@ -232,4 +249,18 @@ async fn audit_native_text_multiple_items_preserve_exact_provider_content() {
         final_answer, streamed,
         "final text must agree with streamed text"
     );
+}
+
+#[tokio::test]
+#[ignore = "audit: a completed message item without text deltas must not receive an empty fallback message"]
+async fn audit_native_text_done_only_does_not_append_empty_fallback() {
+    let parts = vec!["AUDIT_DONE_ONLY"];
+    let (persisted, sent, streamed, final_answer) = observe_native_text(parts.clone(), false).await;
+    assert_eq!(persisted, parts);
+    assert_eq!(sent, parts);
+    assert!(
+        streamed.is_empty(),
+        "done-only responses have no live deltas"
+    );
+    assert_eq!(final_answer, parts[0]);
 }
