@@ -30,6 +30,10 @@ mod file_version;
 #[path = "kernel_v2_e2e/file_search_policy.rs"]
 mod file_search_policy;
 
+#[cfg(windows)]
+#[path = "kernel_v2_e2e/path_boundary.rs"]
+mod path_boundary;
+
 #[cfg(feature = "web")]
 #[path = "kernel_v2_e2e/search_capability.rs"]
 mod search_capability;
