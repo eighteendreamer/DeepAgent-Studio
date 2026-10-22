@@ -7,11 +7,15 @@ use deepagent_runtime::InputAttachment;
 
 struct ImageAnswer {
     images_per_request: Arc<Mutex<Vec<usize>>>,
+    request_bytes: Option<Arc<Mutex<Vec<usize>>>>,
 }
 
 #[async_trait]
 impl HttpTransport for ImageAnswer {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        if let Some(sizes) = self.request_bytes.as_ref() {
+            sizes.lock().unwrap().push(request.body.len());
+        }
         let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
         assert_eq!(body["model"], "deepseek-flash");
         let images = body["input"]
@@ -44,6 +48,30 @@ impl HttpTransport for ImageAnswer {
             ],
         )
     }
+}
+
+async fn image_settings(db: Arc<Database>) -> Arc<SettingsService> {
+    let settings = Arc::new(SettingsService::new(
+        db,
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(MemorySecretStore::new()),
+    ));
+    settings
+        .initialize("offline-audit-placeholder")
+        .await
+        .unwrap();
+    for role in [ModelRole::Chat, ModelRole::Reasoner] {
+        settings.set_model(role, "deepseek-flash").unwrap();
+    }
+    settings
+        .set_vision_settings(VisionSettings {
+            mode: VisionMode::Off,
+            ..VisionSettings::default()
+        })
+        .unwrap();
+    settings
 }
 
 async fn imported_image_across_turns(seed_plain_turn: bool) -> Vec<usize> {
@@ -79,32 +107,14 @@ async fn observe_imported_image(
     assert!(path.is_file());
     assert_eq!(imported.size_bytes, 68);
     let db = Arc::new(Database::open_in_memory().unwrap());
-    let settings = Arc::new(SettingsService::new(
-        db.clone(),
-        Arc::new(MockTransport::with_get_json(
-            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#,
-        )),
-        Arc::new(MemorySecretStore::new()),
-    ));
-    settings
-        .initialize("offline-audit-placeholder")
-        .await
-        .unwrap();
-    for role in [ModelRole::Chat, ModelRole::Reasoner] {
-        settings.set_model(role, "deepseek-flash").unwrap();
-    }
-    settings
-        .set_vision_settings(VisionSettings {
-            mode: VisionMode::Off,
-            ..VisionSettings::default()
-        })
-        .unwrap();
+    let settings = image_settings(db.clone()).await;
     let counts = Arc::new(Mutex::new(Vec::new()));
     let chat = ChatService::new(
         db.clone(),
         settings,
         Arc::new(ImageAnswer {
             images_per_request: counts.clone(),
+            request_bytes: None,
         }),
         root.path(),
     );
@@ -246,5 +256,129 @@ async fn audit_missing_retained_image_is_not_silently_dropped() {
         missing,
         (vec![0], false),
         "a retained image that disappears must not become a successful text-only request"
+    );
+}
+
+#[cfg(feature = "runtimes")]
+async fn large_image_request(image_count: usize, source: &std::path::Path) -> (Vec<usize>, bool) {
+    let root = tempfile::tempdir().unwrap();
+    let attachments = AttachmentService::new(root.path().join("attachments"));
+    let mut inputs = Vec::new();
+    for index in 0..image_count {
+        let imported = attachments
+            .ingest(AttachmentIngestDto {
+                id: Some(format!("large-{index}")),
+                session_id: None,
+                kind: "image".into(),
+                name: format!("large-{index}.png"),
+                mime: "image/png".into(),
+                source: "picker".into(),
+                local_path: Some(source.to_string_lossy().into_owned()),
+                data_url: None,
+                text: None,
+            })
+            .unwrap();
+        assert_eq!(imported.status, "ready");
+        assert!(imported.size_bytes > 20 * 1024 * 1024);
+        assert!(imported.size_bytes < 32 * 1024 * 1024);
+        inputs.push(InputAttachment::Image {
+            id: imported.id,
+            path: PathBuf::from(imported.original_path.unwrap()),
+            media_type: "image/png".into(),
+        });
+    }
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = image_settings(db.clone()).await;
+    let sizes = Arc::new(Mutex::new(Vec::new()));
+    let counts = Arc::new(Mutex::new(Vec::new()));
+    let chat = ChatService::new(
+        db,
+        settings,
+        Arc::new(ImageAnswer {
+            images_per_request: counts.clone(),
+            request_bytes: Some(sizes.clone()),
+        }),
+        root.path(),
+    );
+    let session = chat
+        .run_in_session_with_attachments(
+            "Keep the imported images for the next turn.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("large-image-first"),
+            inputs,
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+    let continuation = chat
+        .run_in_session(
+            "Compare the previously attached images.",
+            Some(&session),
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("large-image-continued"),
+            |_| {},
+            |_| {},
+        )
+        .await;
+    let sizes = sizes.lock().unwrap().clone();
+    let counts = counts.lock().unwrap().clone();
+    eprintln!("image-budget images={image_count} body_bytes={sizes:?} wire_image_counts={counts:?} continuation_succeeded={}", continuation.is_ok());
+    if continuation.is_ok() {
+        let events = chat.run_events("large-image-continued", None).unwrap();
+        let terminal: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].data["kind"], "succeeded");
+        assert_eq!(counts, vec![0, image_count]);
+    }
+    (sizes, continuation.is_ok())
+}
+
+#[cfg(feature = "runtimes")]
+#[tokio::test]
+#[ignore = "audit probe: individually valid images must respect the total inline body budget"]
+async fn audit_multi_image_request_respects_inline_body_budget() {
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
+
+    let root = tempfile::tempdir().unwrap();
+    let source = root.path().join("large.png");
+    // A real, decodable 2048x2560 RGBA PNG; the library emits valid chunks/CRCs.
+    // Uncompressed pixels exercise byte limits without huge pixel dimensions.
+    PngEncoder::new_with_quality(
+        std::fs::File::create(&source).unwrap(),
+        CompressionType::Uncompressed,
+        FilterType::NoFilter,
+    )
+    .write_image(
+        &vec![127; 2048 * 2560 * 4],
+        2048,
+        2560,
+        image::ExtendedColorType::Rgba8,
+    )
+    .unwrap();
+    let decoded = image::open(&source).unwrap();
+    assert_eq!((decoded.width(), decoded.height()), (2048, 2560));
+    drop(decoded);
+    let one = large_image_request(1, &source).await;
+    assert!(one.1);
+    assert_eq!(one.0.len(), 2);
+    assert!(one.0[1] < 48 * 1024 * 1024);
+    let two = large_image_request(2, &source).await;
+    assert!(
+        two.0.iter().all(|bytes| *bytes <= 48 * 1024 * 1024),
+        "an over-budget inline body reached the model transport"
     );
 }

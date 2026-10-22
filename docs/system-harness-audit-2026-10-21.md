@@ -40,6 +40,7 @@
 | DeepSeek 原生搜索的模型能力选择 | Flash 开启 DeepSeekFirst 时，正式请求只剩官方明确会忽略的原生 web_search，本地 function 搜索描述被替换；Pro、外部搜索、关闭搜索对照成立 | 已确认 H-66；启用桌面同用的 web feature，正式 ChatService/Kernel/序列化离线复现，未实测公网搜索或回答质量 |
 | 当前轮图片与原生输入投影 | 正式导入的可读图片已在用户事件中持久化，本轮实时 Surface 却无图片；已有会话再发新图，下一轮仍无图，原生镜像也未保留附件 | 已确认 H-67；正式 AppCore 两组共五轮、真实附件文件及 wire 对照，模型 transport 为离线原生回答，未测真实识图质量或桌面点击 |
 | 历史图片读取失败的语义 | 相同初始图片在续聊中可正常携带；临时原图丢失后，同一路径静默发送纯文字且运行成功，调用方未收到附件错误 | 已确认 H-68；正式 AppCore/Kernel/文件解析/序列化两组对照，只删除测试自己导入的临时文件，未验证真实桌面提示及其他文件故障 |
+| 多图请求的字节预算 | 两张各约 20 MiB 的合法 PNG 均通过导入和单图限制，续聊实际序列化出 55,977,624 字节请求，超过官方 48 MiB 上限仍交给 transport | 已确认 H-69；真实图片解码、AppCore/Kernel/序列化单图与双图对照，未向公网发送超限图片或验证供应商错误码 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -58,6 +59,7 @@
 - 无状态请求必须重新携带当前有效内容。H-57 的 MCP 说明和 skill 目录首轮存在、第二轮正文消失，是当前确定性不适配点。需要保存实际内容或在每次请求边界重新注入；仅记录“曾发送过这个名字”不满足续轮要求。
 - H-67 显示当前多模态输入也有双源问题：附件虽已落盘，实时 Surface 却由纯文字 goal 创建；Session 自动生成的原生镜像又把带图消息转成纯文字。首条图片可经旧格式兼容转换在下一轮出现，已有原生会话再发的图片则在下一轮仍缺失。应统一当前用户输入的文字、附件与持久化归属，不能用底层图片 serializer 的单测通过替代 AppCore 请求与恢复验收。
 - H-68 是另一处附件语义缺口：即使图片已经能从历史恢复，读取失败仍被 Option 映射成正常纯文字请求，运行可成功。附件恢复、请求准备和错误通知必须区分“没有图片”与“应有图片但不可读”；修复当前输入的归属并不能自动修复这条降级路径。
+- H-69 表明 token 容量不能替代媒体传输预算：两张均符合单图限制的图片在 base64 后已超过请求体上限，却仍进入发送边界。参考 Harness 的请求图像转换、Files/inline 预算及显式 offload，本系统需在既有 provider seam 单独校验字节/图片数量，不能仅提高 context window 或依赖 provider 拒绝。
 - 上下文占用已有正向证据：运行内工具循环、跨用户 turn 和数据库重开样本都保留完整历史，并区分 provider 输入锚点、下一请求投影和累计计费。DeepSeek Harness 的 token-meter 同样区分这些概念；其 UI 分项是启发式组成且不要求与 provider 投影相加一致，本系统的分项守恒属于自身实现选择，不能把它写成参考项目的共同保证。真实 tokenizer 误差和全部压缩/附件路径仍待验证。
 
 ### “能增强模型”的证据与尚未证明的部分
@@ -1576,10 +1578,24 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：DeepSeek Harness `attachment-local/src/store.ts::readImageFile()` 对 ENOENT 抛 `ATTACHMENT_NOT_FOUND`，其他读取失败抛 `ATTACHMENT_READ_FAILED` 并保留 cause，同时检查 digest/metadata。`attachment-local/src/index.ts::readImageRequest()` 经 `readImage()` 读取原图；`llm-deepseek/src/images.ts::prepareImages()` await 该调用再序列化，不把缺失图片映射为无图。它也提供显式 offload 投影，但不能把 offload 与任意读失败等同。本轮只源码核对参考项目，没有运行其测试，协议字段不直接照搬。
 - 修复方向（尚未实施，本地边界设计）：在既有附件解析 seam 返回能区分不适用与失败的结构化结果；有效历史中需要的图片无法读取时，在真实模型请求前通过现有运行错误/终态通知反馈，保留原始事件并提供恢复或显式移除附件的路径。若产品选择文字降级，应由明确策略和可见说明决定，不能用 None 隐式执行。禁止另建附件存储或静默改写用户历史。回归至少包括正常读取、丢失、权限拒绝、空文件/超限、取消和恢复后重试；以实际模型请求计数、错误原因和单终态为准。
 
+### H-69：只限制单张图片，缺少多图序列化后的请求体总预算
+
+**级别：中（P2）；范围：原生 Responses 图片请求包含多个合法本地图片，base64 后的完整请求体超过供应商上限。** 不要求达到上下文 token 压缩阈值；本次只确认本地发送边界缺少总字节保护，未调用真实供应商。
+
+- 官方契约（2026-10-22 实际打开 [DeepSeek Vision](https://api-docs.deepseek.com/guides/vision/)）：inline/base64 图片计入 48 MiB 请求体；单张 inline 图片最多 32 MiB；总原图最多 64 MiB，最多 600 张。Responses 采用相同限制。官方同时提供 Files API 引用，不能据此宣称本系统已经接入该路由。
+- 生产链：`FileAttachmentResolver` 逐图允许非空且不超过 32 MiB 的文件，然后直接读取原始字节并 base64。`request_for_current_history()` 汇集所有可解析 URL；`ResponseRequest::serialize()` 输出全部图片；`ModelClient::stream_response_observed_cancelled()` 对完整请求做 serde_json 序列化后直接构造 TransportRequest，真实 reqwest transport 接收该 body。此链没有根据序列化体积校验 inline 总预算；token pressure 测量与字节传输上限不是同一约束。
+- 动态证据：新增 runtimes feature 下的 ignored 探针，用仓库已依赖的 image 0.25.10 PngEncoder 生成真实 2048×2560 RGBA PNG（Uncompressed、NoFilter），再实际 image::open 解码并核对尺寸。文件大于 20 MiB、小于 32 MiB；不存在损坏 CRC、虚构 data URL 或超大像素尺寸。分别导入一份和两份独立 attachment id，经正式 ChatService 第一轮持久化，再普通续聊。两图低于 Composer 的每次 5 个附件限制，原图合计小于 64 MiB；没有靠超量上传绕过产品限制。
+- 执行 `cargo test -p deepagent-app-core --features runtimes --test kernel_v2_e2e image_preparation::audit_multi_image_request_respects_inline_body_budget --offline -- --ignored --nocapture`：约 4.51s 明确失败。单图实际 body `[41733,28009830]` 字节、wire 图片 `[0,1]`；双图 body `[41787,55977624]`、图片 `[0,2]`。续聊均收到离线回答并写出唯一 succeeded 终态。双图续聊体积约 53.4 MiB，大于 48 MiB（50,331,648 字节）。首轮无图是 H-67，续聊实际出现全部图片才用于本项判断。
+- 影响：符合单图限制的正常多图输入仍可能生成违反 provider 契约的请求，引发失败及重复传输开销；长历史中媒体字节也可能先于 token 容量达到上限。实际确认的是超限 body 已交给 transport，没有测真实 HTTP 状态、自动重试次数、UI 提示、实际计费或内存峰值，不能声称供应商接受了超限请求。600 张限制、64 MiB 原图总量及尺寸分支尚未动态验证。
+- 成熟实现对照：DeepSeek Harness `llm-deepseek/src/request-pricing.ts::resolveRequestImageTarget()` 独立选择请求图片尺寸与编码目标（默认编码目标 2 MiB，不承诺所有图片一定压到目标）；`images.ts::prepareImages()/inlineImages()/assertImagesFit()` 按 raw/base64 表示计算累计大小和数量，超界抛 IMAGE_OFFLOAD_REQUIRED。`adapter.ts` 在 Files 解析与 inline fallback 后、fetch 前执行该准备/校验链；过量媒体需显式 offload，而非默默丢图。它的图片预算并不等同于对整个 JSON body 的严格测量，本系统仍需为文字/工具等 body 部分留余量。本轮未运行参考实现，不把参考的内部默认预算视为官方上限。
+- 修复方向（尚未实施，本地设计）：复用现有附件存储和 provider seam，在请求图像准备时应用明确的编码/尺寸策略，再按目标路由检查实际 inline 字节与完整 body 总量；有已配置 Files 能力时可选择文件引用，否则在发送前明确拒绝或按显式策略 offload，保留原始图片与历史归属。处理重试/备用模型时重算目标路由，不能仅增加 token reserve、静默删除图片或无限重试相同 body。测试覆盖单图/多图、文字与工具 schema 大头、历史累积、边界前后、取消、Files 不可用和恢复重试。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-69 多图 inline 请求体显式探针（见该节命令） | 约 4.51s 明确失败；单图 28,009,830 字节，双图 55,977,624 字节并含全部两图，均到达离线 transport；本地合法 PNG 解码通过，未发公网请求 |
+| H-69 共享入口与条件编译基线 | `cargo test -p deepagent-app-core --features runtimes --test kernel_v2_e2e --offline`：14 passed / 14 ignored，约 1.64s；不带 feature 的同入口：14 passed / 13 ignored，约 1.62s。fmt、diff 检查通过。超限缺陷探针为 ignored 且已单独执行失败；未运行全 workspace、Clippy、前端构建、真实 Tauri 或公网图片模型 |
 | H-68 历史图片丢失显式探针（见该节命令） | 约 0.64s 明确失败；正常组 `[0,1]`、故障组 `[0,0]`，两组续聊均返回 Ok；只删除临时导入原图，未调用真实模型或桌面 UI |
 | H-68 单终态补强与共享入口基线 | 增加对成功调用实际写出 succeeded 单终态的严格断言后，显式探针约 0.73s 再次失败，仍为 `[0,0]` 且成功。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：14 passed / 13 ignored，约 1.61s；fmt、diff 检查通过。未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网视觉模型；默认绿测不代表 H-68 已修复 |
 | H-67 当前图片进入首个请求显式探针（见该节命令） | 约 0.32s 明确失败；两轮 wire 图片数 `[0,1]`，正常历史对照通过；真实图片文件始终存在，两运行均成功。未调用真实视觉模型或桌面 UI |
@@ -1886,6 +1902,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 模型与搜索能力的有效选择 | H-66 | 既有模型/协议能力解析统一 hosted 与 callable search；参考 DeepSeek Harness 的独立 web provider seam，原生能力以当前官方限制为准 | Flash 不被注入会忽略的唯一搜索入口；Pro 原生及外部搜索正常；禁用、切换、备用模型和子运行策略一致，真实搜索数与错误可验证 |
 | 当前多模态用户输入与实时 Surface | H-67 | RunAssembler/ModelAgent 共用同一已接纳消息的文字、附件与持久化归属；参考 DeepSeek Harness 在创建 user message 前完成有序附件接纳 | 首轮与续轮新图均进入本次实际请求；无重复 user item；历史/压缩/重启、系统视觉文本及 meter/wire 一致；不可读附件的行为独立验证 |
 | 附件请求准备的失败语义 | H-68 | 既有 AttachmentDataResolver 区分不适用与读取失败，并在采样前保留结构化错误；参考 DeepSeek Harness 的附件错误和 await 准备链 | 正常图可用；丢失/权限/空文件/超限有明确结果；不静默删除模型图片；恢复、取消、单终态及实际请求数可验证 |
+| 多图路由的传输预算 | H-69 | 复用附件/provider seam，独立控制请求图像编码、inline/Files 字节及数量；参考 Harness 的请求版本和显式 offload，完整 JSON 边界为本地设计 | 合法单图可发；多图和文字/schema 累积不交出超限 body；重试/备用模型、取消、恢复及 Files 降级可验证 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
