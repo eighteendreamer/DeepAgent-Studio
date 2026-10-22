@@ -22,6 +22,7 @@
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
+| Harness SDK 关闭后的请求失败清理 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表 | 已确认 H-90；Windows 真实子进程管道夹具；未通过真实 CLI server 测试关闭交错 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -1843,6 +1844,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响与限制：调用方指定的模型没有被使用，用户或自动化客户端可能误以为请求使用了指定能力，实际却以默认模型完成；预算、能力和预期响应可能不同。探针没有请求真实供应商，因此不报告实际费用、质量或账户侧日志；也未启动 CLI stdio 端到端或 Tauri 桌面。当前证据证明正式 AppCore 请求构造和持久化终态中的确定行为，不证明特定 Harness 客户端已经触发。
 - 收敛方向（尚未实施，本地设计）：保留兼容别名，但只在配置来源明确的适配入口映射；Harness/CLI/SDK 的显式 model 应在本地明确拒绝未知值，或按原值发送并让 provider 决定，不能静默换成目录默认项。错误需说明请求模型及可选目录信息，并维持单一 durable failed 终态。补充 stdio `turn/start` 回归验证指定模型、未知模型、thread 默认和别名导入四条路径。
 
+### H-90：Harness SDK 关闭 writer 后的失败请求残留 pending reply
+
+**级别：低（P3）；触发条件：调用 `HarnessClient::close()` 后，仍保留的克隆继续调用请求 API；或关闭和请求提交发生竞争。** 正常未关闭连接的请求/响应路径不在本项范围内。
+
+- 根因与生产路径：`HarnessClient::call_unchecked` 在写入前先把 request id 和 oneshot sender 插入共享 `pending` 表，然后才取得 stdin mutex。若 `close()` 已把共享 writer 取走，调用会在 `guard.as_mut()` 的 `None` 分支返回 `BrokenPipe`，但该分支没有从 `pending` 删除刚登记的 sender。调用方 future 返回后 receiver 被丢弃，sender 仍保存在 HashMap，直到 stdout reader 收到该 ID 的响应或 EOF 才会移除/清空。后续重复失败调用可以继续堆积。`write_all(line)` 错误路径有显式清理，但 newline 写入和 flush 的 `?` 错误路径同样未清理；本轮动态探针只验证了 writer 已关闭分支。
+- 动态复现与正常基线：新增 Windows ignored 单测 `client::audit_tests::audit_request_after_close_does_not_leak_pending_reply`。使用真实 `cmd.exe` 子进程保持 stdin 管道所有者存活，构造正式 `HarnessClient`、调用其公开 `close()`，再通过公开 `thread_list()` 发请求。返回值确为 BrokenPipe，pending 长度实际为 1；期望值为 0 的探针以 **0 passed / 1 failed** 退出。子进程在测试收尾被杀掉，没有模型、文件副作用、真实 CLI server 或公网。`cargo test -p deepagent-harness-sdk --lib --offline` 的其他 4 项 wire envelope 测试通过；该测试不验证关闭期间真实 server stdout EOF 与该分支的竞态窗口。
+- 成熟实现对照：Codex `app-server-client/src/remote.rs::RemoteAppServerRequestHandle::request_json_rpc` 将请求交给 worker command channel；worker 在注册 pending 后若 websocket 写入失败，会按 request id 删除该项，并在 worker 退出时为所有剩余请求发送错误。其请求所有权在连接 worker 中集中管理。本项只对照请求写失败后的 pending 清理和 worker 生命周期，不声称两者 transport 或协议完全相同。
+- 影响与限制：关闭后请求仍会按预期失败，不会进入 CLI/AppCore 或调用模型；问题限于该 SDK client 实例及其克隆的待处理表，若调用方持续误用关闭后的句柄且 reader 尚未 EOF，内存会随失败次数增加。没有测量生产客户端长期内存影响，也没有证明正常 `HarnessProcess::wait()` 后仍会持续累积；server 通常会在 stdin EOF 后退出并由 reader 清表。
+- 收敛方向（尚未实施，本地设计）：在共享 writer 锁内先验证句柄仍开放，再登记/发送，或在统一发送错误出口无条件按 ID 清理 pending；newline 和 flush 失败也走相同清理路径。回归覆盖 close 后请求、close 与并发调用、JSON 行已部分写入后断管、flush 失败和 reader EOF 收尾，并保持原有 id 匹配与快速响应竞态保护。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1853,6 +1864,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-87 多宿主设置覆盖显式探针 | `cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_preserves_other_host_sandbox_mode --offline -- --ignored --nocapture`：0 passed / 1 failed；两个独立 SQLite 文件连接交错写入后，刷新将另一连接成功保存的 `ReadOnly` 覆为旧 `WorkspaceWrite`；第三连接读回确认落盘结果；临时数据库与离线 GateTransport，未启动真实多进程桌面或调用公网 |
 | H-87 默认设置基线与检查 | `cargo test -p deepagent-app-core --lib settings::tests --offline`：30 passed / 1 ignored，约 0.54s；单服务沙箱设置刷新对照通过；`cargo fmt --all -- --check`、`git diff --check` 通过。缺陷探针需显式执行，默认通过不代表已修复；本批仅测试与文档，未跑全 workspace、Clippy、前端构建、真实 Tauri 或多进程测试 |
 | H-89 显式模型选择探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e model_selection --offline -- --include-ignored --nocapture`：2 passed / 1 failed；未知显式模型实际发送为 `deepseek-v4-flash` 并成功终止，默认与已知显式模型以及非法 provider 对照均通过；临时 SQLite/离线 transport，无公网或完整 CLI stdio/Tauri |
+| H-90 关闭 writer 后 pending 泄漏探针 | `cargo test -p deepagent-harness-sdk --lib audit_request_after_close_does_not_leak_pending_reply --offline -- --ignored --nocapture`：0 passed / 1 failed；BrokenPipe 后 pending=1；Windows 临时 `cmd.exe` 管道 fixture，无真实 CLI server；同 crate 默认单测 4 passed / 1 ignored |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |

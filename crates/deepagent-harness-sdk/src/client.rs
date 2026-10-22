@@ -394,3 +394,43 @@ fn spawn_reader(
         }
     });
 }
+
+#[cfg(all(test, windows))]
+mod audit_tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "audit H-90: a request after close must not leave a pending reply entry"]
+    async fn audit_request_after_close_does_not_leak_pending_reply() {
+        let mut child = tokio::process::Command::new("cmd.exe")
+            .args(["/C", "timeout /t 30 /nobreak > nul"])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a live pipe owner");
+        let stdin = child.stdin.take().expect("piped stdin");
+        let (events, _) = broadcast::channel(1);
+        let client = HarnessClient {
+            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
+            next_id: Arc::new(AtomicI64::new(1)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            events,
+            initialized: Arc::new(Mutex::new(true)),
+        };
+
+        client.close().await;
+        let error = client
+            .thread_list()
+            .await
+            .expect_err("a closed client cannot write another request");
+        assert!(
+            matches!(error, SdkError::Write(ref error) if error.kind() == std::io::ErrorKind::BrokenPipe)
+        );
+        assert_eq!(client.pending.lock().unwrap().len(), 0);
+
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+    }
+}
