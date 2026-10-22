@@ -4407,6 +4407,85 @@ mod tests {
         assert_eq!(session.state().task(task).unwrap().state, TaskState::Failed);
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-116: TaskCompleted hooks must not announce failed tasks as completed"]
+    async fn audit_failed_task_does_not_fire_task_completed_hook() {
+        use deepagent_hooks::{HookDefinitions, SystemHookRunner};
+
+        let mut unexpected = Vec::new();
+        for (label, decision, expected_outcome, expected_state) in [
+            (
+                "completed-control",
+                AgentDecision::Complete("done".into()),
+                RunOutcome::Completed("done".into()),
+                TaskState::Completed,
+            ),
+            (
+                "step-limit",
+                AgentDecision::Continue,
+                RunOutcome::StepLimitReached,
+                TaskState::Failed,
+            ),
+        ] {
+            let db = Database::open_in_memory().unwrap();
+            let clock = FixedClock::new(1);
+            let mut session = Session::create(&db, &clock, Some(label)).unwrap();
+            let task = session.create_task(label).unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let marker = dir.path().join("task-completed.json");
+            let quoted_marker = marker.to_string_lossy().replace('\'', "''");
+            let definitions = HookDefinitions::parse(
+                &serde_json::json!({ "hooks": { "TaskCompleted": [{ "hooks": [{
+                    "type": "command", "shell": "powershell", "timeout": 5,
+                    "command": format!(
+                        "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted_marker}', $payload)"
+                    )
+                }] }] }})
+                .to_string(),
+            )
+            .unwrap();
+            let mut hooks = HookRegistry::new();
+            assert_eq!(
+                definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
+                1
+            );
+            let reg = registry();
+            let config = RuntimeConfig {
+                max_steps: Some(1),
+                ..Default::default()
+            };
+            let engine = RuntimeEngine::new(&reg, Metrics::new(), config).with_hooks(&hooks);
+            let mut agent = ScriptedAgent::new([decision]);
+            let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+            assert_eq!(outcome, expected_outcome);
+            assert_eq!(session.state().task(task).unwrap().state, expected_state);
+
+            let fired = marker.exists();
+            if fired {
+                let payload: serde_json::Value =
+                    serde_json::from_str(&std::fs::read_to_string(&marker).unwrap()).unwrap();
+                eprintln!(
+                    "case={label}, state={expected_state:?}, TaskCompleted payload={payload}"
+                );
+                assert_eq!(payload["hook_event_name"], "TaskCompleted");
+                assert_eq!(payload["task_id"], task.to_string());
+            }
+            if expected_state == TaskState::Completed {
+                assert!(
+                    fired,
+                    "successful control must prove command hook execution"
+                );
+            } else if fired {
+                unexpected.push(label);
+            }
+        }
+        assert!(
+            unexpected.is_empty(),
+            "TaskCompleted was dispatched for tasks that did not complete: {unexpected:?}"
+        );
+    }
+
     #[tokio::test]
     async fn the_default_run_is_not_bounded_by_a_step_count() {
         // Long work is the point of the loop. The previous default of 64 steps

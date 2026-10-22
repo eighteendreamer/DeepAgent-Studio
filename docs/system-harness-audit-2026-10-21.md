@@ -17,7 +17,7 @@
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
-| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-115；其他 hooks 和准备边界未完成 |
+| MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-116；其他 hooks 和准备边界未完成 |
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
@@ -2126,6 +2126,16 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响及限制：严格校验的兼容 hook 会拒绝输入；相同工具和参数被多次调用时，hook 不能可靠关联具体被拒绝的调用及其审计记录。动态验证覆盖权限能力不足的串行正式路径，没有覆盖并行批次、人工拒绝和 HTTP hook；这些生产调用方使用相同不带 ID 的 DTO，但不冒充已经逐项实测。
 - 收敛方向（尚未实施，本地设计）：让现有 PermissionDenied 事件 DTO 接收流水线已确定的调用身份，保留 permission/request 与 denied 的语义差异；验证能力不足、hook 拒绝、人工拒绝、批量调用及重试中 ID 和工具结果保持一一对应，不能从工具名或参数反查身份。
 
+### H-116：步数上限终止的失败任务仍触发 TaskCompleted hook
+
+**级别：中（P2，条件性生命周期缺陷）；触发条件：配置 `TaskCompleted` hook，且显式设置的运行步数上限耗尽。** 默认运行没有步数上限；未配置完成 hook 时没有本项外部脚本副作用。
+
+- 根因与生产路径：`RuntimeEngine::run()` 在循环耗尽时已将任务改为 `Failed` 并发出 `RunFailed`，随后无条件调用 `fire_task_hook(..., TaskCompleted)`。`HookData::Task` 只包含 ID 和 subject，不携带结果状态；外部 hook 无法从这个 payload 判断“失败退出”还是“成功完成”。该调用也位于预算超限和部分取消分支之后，但它们受取消派发条件影响，本次不将源码位置视为已经动态覆盖。
+- 动态复现：Windows ignored 探针 `loop_engine::tests::audit_failed_task_does_not_fire_task_completed_hook` 使用正式 RuntimeEngine、Session 和真实 PowerShell command hook，运行正常完成与显式 `max_steps=1` 两组。成功对照返回 `Completed("done")`、任务 Completed 且脚本收到对应 task_id；上限组只作一次 Continue，返回 `StepLimitReached`、任务 Failed，脚本仍收到 `hook_event_name="TaskCompleted"` 及失败任务的 ID。两组状态断言均通过，“失败不触发完成 hook”断言以 **0 passed / 1 failed** 退出，约 1.09s。仅临时目录/内存 SQLite，无模型或外部服务调用。
+- 成熟实现对照：Claude Code `tools/TaskUpdateTool/TaskUpdateTool.ts` 在 `status !== existingTask.status` 且 `status === 'completed'` 时调用 `executeTaskCompletedHooks`，并在无 blockingErrors 后才写入 completed；`utils/hooks.ts` 将其定义为任务将被标记完成时的事件。本系统的 kernel task 与 Claude 的任务清单不是同一对象，借鉴的是按真实状态转换选择事件的边界，不将两者 ID 或存储强行等同。
+- 影响及限制：按“任务完成”触发通知、归档或后续操作的脚本可能在任务失败时启动。探针没有部署、发送通知或产生真实外部副作用；也没有证明普通 provider error、用户取消或默认无步数上限的运行会触发相同行为。H-83 是完成 hook 报错后的实时/持久化终态冲突，本项是 hook 被派发给已失败任务，两者应分别验收。
+- 收敛方向（尚未实施，本地设计）：在既有 RuntimeEngine/Kernel 收尾边界按真实任务结果定义完成事件，仅成功转换走 TaskCompleted；若需要通用退出通知，应明确现有事件的状态语义及兼容策略，不能继续借完成事件表示任意退出。覆盖成功、显式步数/费用上限、取消、模型失败与 hook 失败，同时核对 task state、规范终态和实际脚本调用数。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2178,6 +2188,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-114 默认基线与格式检查 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`：6 passed / 7 ignored；ignored 包含 H-109、H-112、H-114 和既有子 Agent 审计项。`cargo fmt --all -- --check` 通过；本批仅增加 ignored 审计探针与报告，未修改生产行为、未跑 workspace 全量测试、Clippy、桌面构建或真实 Git worktree 子 Agent |
 | H-115 PermissionDenied payload 显式探针 | `cargo test -p deepagent-runtime --lib audit_permission_denied_hook_includes_tool_call_id --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.65s；权限拦截、工具零执行、Observation/SQLite 的固定 ID 关联全部通过，真实 PowerShell hook 独缺 `tool_use_id` |
 | H-115 默认基线 | `cargo test -p deepagent-runtime --lib loop_engine::tests --offline`：36 passed / 2 ignored，约 3.54s；ignored 包含 H-34、H-115，默认通过不代表缺陷已修复。本批仅测试和报告，未跑 workspace 全量、Clippy、桌面构建、真实 Tauri 或公网供应商 |
+| H-116 TaskCompleted 派发显式探针 | `cargo test -p deepagent-runtime --lib audit_failed_task_does_not_fire_task_completed_hook --offline -- --ignored --nocapture`：0 passed / 1 failed，约 1.09s；正常完成对照与步数上限失败均执行了真实 PowerShell 完成 hook，失败 task_id 与 payload 一致；未验证默认无上限对话或完整桌面 |
+| H-116 默认基线与检查 | `cargo test -p deepagent-runtime --lib loop_engine::tests --offline`：36 passed / 3 ignored，约 5.11s；`cargo fmt --all -- --check` 通过。本批只增加审计测试和报告，未修改生产行为，未跑 workspace 全量、Clippy、桌面构建或真实 Tauri |
 | H-112/H-113 格式与差异检查 | `cargo fmt --all -- --check` 与 `git diff --check` 通过；本批仅增加 ignored 审计探针与报告，未修改生产行为、未跑 workspace 全量测试、Clippy、桌面构建或真实 Git worktree 子 Agent |
 | Responses `tool_search_call` 候选差异核查 | DeepSeek 官方请求 schema 不提供可触发该 item 的工具类型；AppCore `tool_search` 以普通 function schema 注册。`cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed；`cargo test -p deepagent-models --lib stream::tests --offline`：21 passed。未新增缺陷或测试，未调用公网 provider |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
@@ -2540,7 +2552,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 能力目录和使用说明的内容保留与去重 | H-57 | 既有原生 Surface/事件保存实际正文并基于当前内容去重，或每请求从就绪快照注入；参考 Claude 的 MCP/skill 正文附件及 DeepSeek 连接拥有的 system section | 连续 turn 的完整 wire 均保留有效目录/说明；压缩/恢复不因旧身份标记丢正文；断线与配置更新语义一致 |
 | MCP 断线恢复耗尽与能力退役 | H-48 | 探活与工具共用连接身份的恢复 owner/预算，状态驱动下一请求就绪快照；参考 Grok stdio 耗尽后 Unavailable 与注销工具 | 失败耗尽后新发现不含旧工具/说明；普通连续调用不重开启动风暴；显式重试可恢复；不影响其他服务 |
 | 项目配置来源、权限与 hooks 决策 | H-26、H-27、H-28 | 配置 overlay 和独立 hook 文件共用来源授权；有效 profile 明确用户权限上限；参考 Codex 禁用未信任配置层、Claude 的 hook trust gate 与 hookSpecificOutput | 未授权项目配置不能放宽用户只读或审批；更换配置文件不能执行脚本；标准 deny/ask 能实际拦截/审批 |
-| Hook 生命周期与输入/输出契约 | H-102 至 H-115 | 现有 HookData 按事件定义所需上下文，command/HTTP 共用 serializer；参考 Claude 按事件声明输入 schema 和输出处理。真实 session owner、调用 ID、transcript 与结果在派发点传入，压缩 stdout 由 compactor 明确消费 | 正式入口捕获的 payload 可校验且身份正确；普通续聊不误发 SessionEnd；PreCompact 指令进入实际摘要请求；缺字段不能靠任意占位值掩盖 |
+| Hook 生命周期与输入/输出契约 | H-102 至 H-116 | 现有 HookData 按事件定义所需上下文，command/HTTP 共用 serializer；参考 Claude 按事件声明输入 schema 和输出处理。真实 session owner、调用 ID、transcript 与结果在派发点传入，压缩 stdout 由 compactor 明确消费 | 正式入口捕获的 payload 可校验且身份正确；普通续聊不误发 SessionEnd；失败不误发 TaskCompleted；PreCompact 指令进入实际摘要请求；缺字段不能靠任意占位值掩盖 |
 | Provider 流式协议、错误和请求恢复 | H-24、H-25、H-29、H-30 | 既有 transport 内分清字节解码、SSE 帧及 provider JSON；统一错误元数据、重试及正文取消边界；参考 Codex/DeepSeek 的事件解析器及全请求取消 | 标准 SSE 格式等价；半帧不能假完成；Unicode 不 panic；成功/错误正文和重试等待均可取消 |
 | 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
 | 有效模型参数与输出预算 | H-54 | 既有配置 overlay、模型能力、桌面深度缺省统一解析到最终请求；参考 DeepSeek 本次 effort/maxTokens 优先及 Codex wire 断言 | 显式 effort/输出上限生效；发送前及下一请求预算与 wire 一致；无覆盖保持默认；不支持值明确拒绝；重试和子运行不重新覆盖 |
