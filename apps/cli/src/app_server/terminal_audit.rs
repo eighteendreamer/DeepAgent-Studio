@@ -1,10 +1,39 @@
 //! Exercise the real dispatcher/executor and durable read projection without network access.
 
 use super::*;
-use deepagent_app_core::{MemorySecretStore, SettingsService};
-use deepagent_models::{MockTransport, ModelRole};
+use deepagent_app_core::{ApprovalPolicy, MemorySecretStore, SettingsService};
+use deepagent_core::error::Result as CoreResult;
+use deepagent_models::transport::EventSink;
+use deepagent_models::{HttpTransport, MockTransport, ModelRole, TransportRequest};
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
+
+struct ScriptedTransport {
+    responses: Vec<Vec<String>>,
+    next_response: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl HttpTransport for ScriptedTransport {
+    async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> CoreResult<()> {
+        let index = self.next_response.fetch_add(1, Ordering::Relaxed);
+        if let Some(response) = self.responses.get(index).or_else(|| self.responses.last()) {
+            for event in response {
+                if sink.on_event(event)? {
+                    break;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_json(&self, _url: &str, _api_key: &str) -> CoreResult<String> {
+        Ok(json!({"data":[{"id":"deepseek-flash","object":"model",
+            "owned_by":"deepseek"}]})
+        .to_string())
+    }
+}
 
 struct Fixture {
     _temporary: tempfile::TempDir,
@@ -67,11 +96,6 @@ fn function_call(call_id: &str, name: &str, arguments: Value) -> Vec<String> {
 
 impl Fixture {
     async fn new(events: Vec<String>) -> Self {
-        let temporary = tempfile::tempdir().unwrap();
-        let workspace = temporary.path().join("workspace");
-        std::fs::create_dir(&workspace).unwrap();
-        let database_path = temporary.path().join("state.sqlite");
-        let database = Arc::new(Database::open(&database_path).unwrap());
         let transport = Arc::new(MockTransport {
             events,
             get_response: Some(
@@ -80,6 +104,23 @@ impl Fixture {
                 .to_string(),
             ),
         });
+        Self::with_transport(transport).await
+    }
+
+    async fn new_scripted(responses: Vec<Vec<String>>) -> Self {
+        Self::with_transport(Arc::new(ScriptedTransport {
+            responses,
+            next_response: AtomicUsize::new(0),
+        }))
+        .await
+    }
+
+    async fn with_transport(transport: Arc<dyn HttpTransport>) -> Self {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let database_path = temporary.path().join("state.sqlite");
+        let database = Arc::new(Database::open(&database_path).unwrap());
         let settings = Arc::new(SettingsService::new(
             database.clone(),
             transport.clone(),
@@ -336,6 +377,81 @@ async fn audit_tool_approval_emits_one_correlated_event() {
         "one approval generated multiple protocol events"
     );
     assert_eq!(requests[0]["approvalId"], call_id);
+}
+
+#[tokio::test]
+#[ignore = "audit: AutoReview hook ask publishes before the policy auto-allows"]
+async fn audit_auto_review_hook_ask_emits_before_auto_allow() {
+    let call_id = "audit-auto-review-read";
+    let fixture = Fixture::new_scripted(vec![
+        function_call(call_id, "read_file", json!({"path":"safe.txt"})),
+        completed_text("AUDIT_AFTER_AUTO_REVIEW"),
+    ])
+    .await;
+    std::fs::write(fixture.workspace.join("safe.txt"), "safe audit fixture").unwrap();
+    fixture
+        .settings
+        .set_approval_policy(ApprovalPolicy::AutoReview)
+        .unwrap();
+
+    let hook_result =
+        r#"{"permissionDecision":"ask","permissionDecisionReason":"audit hook asks for approval"}"#;
+    let (command, shell) = if cfg!(windows) {
+        (format!("Write-Output '{hook_result}'"), "powershell")
+    } else {
+        (format!("printf '%s' '{hook_result}'"), "sh")
+    };
+    fixture
+        .settings
+        .set_hooks_json(
+            &json!({"hooks":{"PreToolUse":[{"matcher":"read_file","hooks":[{
+                "type":"command","command":command,"shell":shell,"timeout":5
+            }]}]}})
+            .to_string(),
+        )
+        .unwrap();
+
+    let turn_id = fixture.run_turn().await;
+
+    let requests: Vec<_> = fixture
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|event| event["type"] == "approval.requested" && event["turnId"] == turn_id)
+        .cloned()
+        .collect();
+    let tool_result = fixture
+        .events
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| {
+            event["type"] == "item.completed"
+                && event["turnId"] == turn_id
+                && event["item"]["kind"] == "tool_result"
+                && event["item"]["callId"] == call_id
+        })
+        .cloned();
+
+    eprintln!(
+        "AutoReview hook ask audit: requests={requests:?}, tool_result={tool_result:?}, terminals={:?}",
+        fixture.terminals(&turn_id)
+    );
+    assert_eq!(fixture.terminals(&turn_id), ["turn.completed"]);
+    assert_eq!(
+        requests.len(),
+        1,
+        "the auto-allowed hook request should produce one early ToolBlocked projection"
+    );
+    assert_eq!(requests[0]["reason"], "audit hook asks for approval");
+    assert!(
+        requests
+            .iter()
+            .all(|event| event.get("approvalId").is_none()),
+        "the default classifier should auto-allow read_file without entering ChannelApprovalGate"
+    );
+    assert!(tool_result.is_some_and(|event| event["item"]["ok"] == true));
 }
 
 #[tokio::test]

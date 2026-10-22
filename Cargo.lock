@@ -1323,6 +1323,7 @@ dependencies = [
 name = "deepagent-cli"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "crossterm",
  "deepagent-app-core",
  "deepagent-builtins",
