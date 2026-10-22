@@ -14,7 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98；H-93/H-94/H-98 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认 H-05、H-18、H-24、H-25、H-29、H-30、H-49、H-93、H-94、H-98、H-99；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清 | 已确认 H-10、H-11、H-14、H-23、H-31；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、Windows 后代清理、配置变更误取消及断线耗尽后能力未退役均已复现 | 已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48；其他 hooks 和准备边界未完成 |
@@ -1947,6 +1947,17 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：显式请求 JSON 输出的 Chat 调用会在本地失败；仅设置默认值时调用表面成功但模型没有收到 JSON 模式约束。未验证真实供应商下游表现、最终回答格式或实际 Chat 生产调用频率。`select_run_model()` 固定选择 Responses，故不外推为桌面默认请求故障。
 - 收敛方向（尚未实施，本地设计）：在现有 Chat adapter 增加 provider 明确支持的 `response_format` 表达，将 `ResponseRequest.text.format.type=json_object` 和配置默认值统一解析并序列化为 DeepSeek Chat `{ "type": "json_object" }`；对 `json_schema`、未知类型或其余 Responses-only 形状在发送前给出明确的不支持错误。补充请求级、默认值、`text` 模式和不支持模式的 wire/拒绝回归，不改 Messages/Responses 协议。
 
+### H-99：Chat Completions 静默忽略配置中的 top_logprobs 默认值
+
+**级别：低（P3，条件性配置映射缺陷）；触发条件：显式使用 `WireMode::ChatCompletions`，且 `ModelConfig.defaults.top_logprobs` 已配置。** 请求级 `ResponseRequest.top_logprobs` 会在 Chat 转换前被明确拒绝；问题只发生在该值来自客户端默认配置时。当前桌面固定使用 Responses，不覆盖默认桌面运行。
+
+- 根因与生产路径：Chat 分支先将 `ResponseRequest` 交给 `response_to_chat_completion()`，之后才调用 `apply_chat_defaults()`。后者没有处理 `ResponseDefaults.top_logprobs`；前者仅检查请求对象自己的 `top_logprobs`，不会读取客户端 defaults。Chat request 结构及 serializer 也没有 `logprobs` / `top_logprobs` 字段，因此默认配置被绕过校验，正常请求可继续发送。
+- 动态复现：ignored 探针 `client::tests::audit_chat_top_logprobs_default_is_rejected_before_transport` 配置 `top_logprobs=5`，使用合法的离线 SSE 响应运行正式 `ModelClient::stream_response()`。审计断言要求不支持的默认值像请求级值一样在 provider transport 前拒绝；实际请求成功完成，且 transport 调用一次，因此探针以 **0 passed / 1 failed** 退出。没有向公网发送请求。
+- 官方依据（2026-10-22 核对）：DeepSeek [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion) 列出 `logprobs` 和 `top_logprobs`；`top_logprobs` 范围为 0–20，且必须同时设置 `logprobs=true`。所以不能只把 Responses 的 `top_logprobs` 字段原样塞进 Chat 请求来声称语义兼容。
+- 成熟实现对照：DeepSeek Harness 的 `llm-deepseek` 是 Messages serializer，本次搜索未发现对应 Chat `logprobs` 路由；Codex 参考树里关于 OpenAI 模型移除 `top_logprobs` 的说明属于其他模型/provider，不能当作 DeepSeek Chat 限制。就本项而言，DeepSeek 官方字段依赖是唯一直接协议判据；适配器应根据完整能力映射这组参数，或明确拒绝配置。
+- 影响及限制：当调用者期望该配置在 Chat 请求中生效时，系统实际不发字段且仍报告调用成功。当前响应类型也未证明能保留/暴露 token logprob 结果，因此本项不把“应当支持 logprobs”作为结论，只确认默认值被静默忽略。公开 Chat adapter 的生产使用频率和真实设置组合尚未验证。
+- 收敛方向（尚未实施，本地设计）：对 defaults 和 request 先经过同一协议能力校验。第一版若 Chat adapter 尚未支持 `logprobs` 请求与返回数据，就在发送前对 `top_logprobs` 默认值明确报不支持；完整支持时则成对设置 `logprobs=true` 和范围合法的 `top_logprobs`，并验证响应信息的保留。补充请求级拒绝、默认值拒绝及完整支持时的线级形状测试。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1971,6 +1982,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-96 默认探针基线与检查 | `cargo test -p deepagent-runtime --test schedule_audit --offline`：0 passed / 2 ignored；H-42/H-96 均是显式审计探针。`cargo fmt --all -- --check`、`git diff --check` 通过；本批未跑全 workspace、Clippy、桌面构建或真实 Tauri |
 | H-97 scheduler shutdown 与在途 run 显式探针 | `cargo test -p deepagent-app-core --lib audit_scheduler_shutdown_leaves_started_cron_run_active --offline -- --ignored --nocapture`：1 passed，预期复现为 scheduler 已返回、run 未终结、模型取消未观察到；之后通过正式 run cancel 完成清理。真实 CronService/ChatService/RunStore、挂起型离线 transport；未关闭整个 Tauri/CLI 进程、未调用公网或工具 |
 | H-98 Chat JSON 输出请求级与默认值显式探针 | `cargo test -p deepagent-models audit_chat_json_object_format_reaches_provider_request --offline -- --ignored --nocapture`：0 passed / 1 failed，显式 `json_object` 在 transport 前被拒绝；`cargo test -p deepagent-models audit_chat_default_json_object_format_reaches_provider_request --offline -- --ignored --nocapture`：0 passed / 1 failed，正式 Chat 请求到达受控 transport，但 wire 未含 `response_format`。官方 DeepSeek Chat 文档核对支持 `text/json_object`；无公网调用，桌面默认 Responses 路径不在本项范围 |
+| H-99 Chat `top_logprobs` 默认值显式探针 | `cargo test -p deepagent-models audit_chat_top_logprobs_default_is_rejected_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed；配置 `top_logprobs=5` 后正式 Chat 运行使用合法离线响应完成，transport 被调用一次，证明配置默认未与请求级值共用不支持校验。官方文档要求 `logprobs=true`；无公网调用，桌面默认 Responses 路径不在本项范围 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |

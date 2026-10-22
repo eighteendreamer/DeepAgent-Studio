@@ -606,6 +606,61 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: Chat must not silently ignore unsupported top_logprobs defaults"]
+    async fn audit_chat_top_logprobs_default_is_rejected_before_transport() {
+        struct CountingTransport {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+            events: Vec<String>,
+        }
+
+        #[async_trait]
+        impl HttpTransport for CountingTransport {
+            async fn stream(
+                &self,
+                _request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                for event in &self.events {
+                    if sink.on_event(event)? {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut config = ModelConfig::deepseek_chat("test-key");
+        config.defaults.top_logprobs = Some(5);
+        let client = ModelClient::new(
+            Arc::new(CountingTransport {
+                calls: calls.clone(),
+                events: vec![
+                    r#"{"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}"#.into(),
+                    r#"{"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}"#.into(),
+                    r#"{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"choices":[]}"#.into(),
+                    "[DONE]".into(),
+                ],
+            }),
+            config,
+        );
+
+        let result = client
+            .stream_response(ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("Say hello.")],
+            ))
+            .await;
+
+        assert!(
+            result.is_err(),
+            "unsupported top_logprobs default must fail instead of being ignored"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     #[ignore = "audit reproducer: translate Responses defaults to Chat Completions shape"]
     fn audit_chat_tool_choice_translates_default_shape() {
