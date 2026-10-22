@@ -1152,6 +1152,86 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: one-shot MCP connection tests must have a bounded startup deadline"]
+    async fn audit_test_server_is_bounded_while_stdio_initialize_is_pending() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("held-mcp-probe.cjs");
+        let started = dir.path().join("initialize-started");
+        let release = dir.path().join("release-initialize");
+        std::fs::write(
+            &script,
+            r#"
+const fs = require('node:fs');
+const readline = require('node:readline');
+const started = process.argv[2];
+const release = process.argv[3];
+function reply(id, result) {
+  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+}
+readline.createInterface({ input: process.stdin }).on('line', line => {
+  const request = JSON.parse(line);
+  if (request.method === 'initialize') {
+    fs.writeFileSync(started, 'received');
+    const timer = setInterval(() => {
+      if (!fs.existsSync(release)) return;
+      clearInterval(timer);
+      reply(request.id, {
+        protocolVersion: request.params.protocolVersion,
+        capabilities: { tools: {} },
+        serverInfo: { name: 'held-probe', version: '1' }
+      });
+    }, 10);
+  } else if (request.method === 'tools/list') {
+    reply(request.id, { tools: [] });
+  } else if (request.id !== undefined) {
+    reply(request.id, {});
+  }
+});
+"#,
+        )
+        .unwrap();
+
+        let svc = service();
+        let mut dto = stdio_dto("held-probe");
+        dto.command = Some("node".into());
+        dto.args = vec![
+            script.to_string_lossy().into_owned(),
+            started.to_string_lossy().into_owned(),
+            release.to_string_lossy().into_owned(),
+        ];
+        let probe = tokio::spawn(async move { svc.test_server(dto).await });
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !started.exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the real MCP child must receive initialize");
+
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+        let still_pending_after_250ms = !probe.is_finished();
+
+        // Always release and join the child before asserting so the expected
+        // failure cannot leave a fixture process behind.
+        std::fs::write(&release, "release").unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(5), probe)
+            .await
+            .expect("the released MCP probe must finish")
+            .expect("MCP probe task must not panic")
+            .unwrap();
+
+        eprintln!(
+            "MCP one-shot probe audit: still_pending_after_250ms={still_pending_after_250ms}, final_status={}",
+            result.status
+        );
+        assert!(
+            !still_pending_after_250ms,
+            "one-shot MCP test connection must stop waiting within its startup deadline"
+        );
+    }
+
+    #[tokio::test]
     async fn test_server_invalid_config_errors() {
         // An invalid DTO (insecure http url) is rejected before any connection
         // attempt — this is a genuine Err, not a "failed" status.
