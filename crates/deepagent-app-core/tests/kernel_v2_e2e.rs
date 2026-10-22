@@ -12,6 +12,9 @@ use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, Trans
 use deepagent_persistence::Database;
 use deepagent_subagents::WorktreeProvider;
 
+#[path = "kernel_v2_e2e/build_boundary.rs"]
+mod build_boundary;
+
 #[derive(Debug)]
 struct ReplayTransport {
     turns: Mutex<VecDeque<Vec<String>>>,

@@ -36,6 +36,7 @@
 | 可选停滞检测期间的停止 | 主答案之后同步分类不接收取消，取消只能等分类结束再成为 Cancelled | 已确认 H-62；正式 ModelStallClassifier/ModelAgent/Kernel 离线请求对照，正常完成及最终取消映射成立；生产分类超时 20 秒，未实等该上限 |
 | 可选复核/分类的用量归属 | 完整 provider Response 返回 usage 后仅保留判定文本，真实 Finalizer/成本库只保存主调用量 | 已确认 H-63；两条正式模型检查及 SQLite 账本复现，未测真实供应商费用；已有摘要 side_usage 账本能力不因此失效 |
 | 自动完成验证的真实构建生命周期 | 正式发现的 cargo check 已启动 build.rs 后，用户取消仍等待；Kernel 超时落终态后 build.rs 仍可写文件 | 已确认 H-64；Windows 真实临时 Cargo 工程、SystemCommandRunner、ModelAgent/Kernel/SQLite 对照，未覆盖其他构建系统和桌面 UI |
+| 自动验证与宿主命令边界 | 显式 cargo check 经配置后端被拒绝，但 .txt 修改后的完成验证、创建 .rs 后的单文件验证均绕过该后端，真实 build.rs 写到 workspace 外 | 已确认 H-65；完整 ChatService/工具/Kernel/真实 Cargo 与拒绝型 backend 复现；不是实际 Sandboxie/Windows Sandbox 容器逃逸测试 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -1511,10 +1512,29 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 本系统已有可复用能力：`deepagent-builtins/src/bash_tool.rs::SystemExecutor::run_controlled_with_environment()` 已接收取消与 timeout，实际进程使用 kill_on_drop、Windows Job/Unix 进程组及等待分支。另一个外部 hooks runner `deepagent-hooks/src/external_hooks.rs::run_hook_process()` 也已有 kill_on_drop 和 ProcessTreeGuard，runtime `fire_hook()` 已 select 运行取消；因此不列“全部 hooks 都不响应取消”的错误结论。这些源码保护是否覆盖所有 hooks 边界还需独立动态验证，不能用本次构建探针证明。
 - 修复方向（尚未实施）：让既有验证计划接入运行命令执行/权限及进程 owner 边界，传递同一取消树和有效 deadline，每一步开始前与结果提交前均核对取消。无论主动取消、总时限、验证错误或 future drop，均需在有界时间内停止归属进程树并处理输出 reader；不得另造验证执行系统，也不能仅在 Kernel 完成后发 kill。回归需覆盖真实 build.rs/脚本、连续步骤、子孙进程、停止与完成竞态、父进程先退出但管道开放及单终态，并确保正常工程构建仍可完成。本轮只新增审计测试和文档，没有修改生产运行行为。
 
+### H-65：两处自动验证绕过已配置命令后端，显式构建被拒绝后仍可在宿主执行项目脚本并写出工作区
+
+**级别：高（P1）；范围：已识别构建系统的工程，本轮任一创建/修改触发完成验证；不要求用户修改 build.rs 或源码。** 本项与 H-64 的取消归属不同，修好取消也不能修复执行位置；与 H-03 的每轮 backend override 丢失也不同，本次没有任何 backend override，始终使用同一个已配置、确实能拒绝显式命令的后端。
+
+- 生产边界：桌面 `src-tauri/src/lib.rs` 以 `SandboxBackendCommandExecutor(SandboxieBackend, WorkspaceWrite, network=Disabled)` 注入 `ChatService::with_local_command_executor()`，`run_assembler.rs::base_registry_request()` 将其交给普通工具，并可包装 RuntimeCommandExecutor 供应项目环境。但 `discover_verification_plan()` 无条件另建 `SystemCommandRunner`，不接收该执行器、SandboxBackend、环境 broker 或审批对象；`SystemCommandRunner` 直接在宿主 cwd 执行进程。`cargo check --offline` 仍会执行本地 build.rs，`--offline` 不是文件系统/进程隔离。
+- 第二处生产入口：`kernel_runtime.rs::build_kernel_runtime_config()` 装配 `VerificationDecorator`，传入 `VerificationDispatcher::standard()`；后者另建裸 `SystemExecutor`。工具结果在 `ToolPipeline::complete_prepared_inner()` 调用 decorator 后才返回模型；对新建 `.rs` 文件，RustVerifier 直接通过该默认执行器运行 `cargo check --offline --manifest-path ...`，同样没有使用宿主配置的 executor。该路径可发生在模型最终声明完成之前。
+- 真实可达复现：新增 `tests/kernel_v2_e2e/build_boundary.rs`，通过正式 SettingsService、ChatService、ToolRegistry、ModelAgent/Kernel 和 RunStore 执行。只有模型 transport 为离线序列帧、SandboxBackend 为记录并拒绝每个命令的测试实现；该 backend 不启动任何进程，外围仍是正式 SandboxBackendCommandExecutor，断言请求模式为 WorkspaceWrite。临时 Cargo 工程没有外部依赖，build.rs 仅向同一 TempDir 内的 workspace 兄弟文件写 canary；不访问用户目录、不联网、不测试真实 OS 容器。
+- 对照 A：模型显式调用 bash 的 `cargo check --offline --quiet`，backend 被调用 1 次并返回唯一拒绝标记；下一次真实序列化模型请求包含该标记。模型随后结束，本轮没有文件修改；run=succeeded、终态 1 条、canary 不存在。此成功只是模型接受失败结果后结束，不表示显式构建通过。
+- 对照 B：同样的显式命令被拒绝且回到模型；随后使用正式 write_file 写入 `note.txt`，模型声明结束。`.txt` 不触发单文件 Rust verifier，排除另一路校验干扰。backend 仍只收到最初那 1 次调用；真实 note.txt 存在、run=succeeded、终态 1 条，build.rs 的 canary 却出现在 workspace 外。说明完成验证没有使用配置的拒绝后端，而实际执行了宿主构建。每组均使用独立 TempDir；有限 Cargo 构建已返回后才删除目录。
+- 对照 C：显式构建仍由相同 backend 拒绝，然后正式 write_file 新建 `src/added.rs`。transport 在每次真实模型请求发出前检查 canary；此组在第三次请求（文件写入后的下一次采样、最终回答尚未返回）已观察到 canary，backend 仍只调用 1 次，run 最终成功。B 组在同一采样边界 canary=false、最终完成后=true；A 组始终=false。三组区分了单文件 decorator 与最终完成计划两处真实执行入口，不能仅修复其中一处。
+- fixture 修正：最初 C 样本直接覆盖现有 src/lib.rs，未事先 read_file，正式工具的读前改保护正确拒绝，原文件不变。该失败没有作为漏洞证据；改为创建新文件，并严格核对新文件内容，才得到以上 C 对照。没有取消或放宽读前改保护。
+- 配置界限：测试采用 FullAccess **审批策略** 避免额外人工等待，同时显式保留 WorkspaceWrite **sandbox mode** 并在 backend 请求处断言；二者在本系统是独立设置。已证明“配置后端拒绝显式命令却被自动验证绕开”，没有证明“用户点击拒绝审批后系统仍执行”，也没有证明突破实际已建立的 Sandboxie/Windows Sandbox。桌面源码对注入 seam 的使用已核对，但真实桌面隔离软件的验收尚未执行。
+- 可重跑：`cargo test -p deepagent-app-core --test kernel_v2_e2e build_boundary::audit_auto_build_respects_configured_rejecting_backend --offline -- --ignored --nocapture`。初版 A/B 明确失败、约 1.30s；扩展 A/B/C 后再次明确失败、约 2.65s。三组 `backend_calls=1`、`explicit_rejection_in_wire=true`、run_succeeded=true；A `(outside,before_final)=(false,false)`，B `(true,false)`，C `(true,true)`。默认 `build_boundary::` 为 1 passed / 1 ignored；显式探针失败不能描述为修复或通过。
+- 已确认影响：自动完成验证的执行约束与普通命令不同，项目脚本可在主体命令后端拒绝执行时仍进入宿主执行。仅修改说明文件也能触发，因此不能称这些步骤天然“无副作用”。依赖项目脚本，可能读写宿主文件、访问网络、执行任意本地程序；实际复现限于受控 canary 写出 workspace，没有进行凭据读取、联网或破坏性操作。`npm run build` 等其他结构发现命令共享执行器，但尚未逐一动态验证。
+- 成熟实现对照：Codex `core/src/tools/orchestrator.rs::ToolOrchestrator` 将审批、sandbox 选择和尝试封装在统一路径，传递同一 ToolCtx 的 cancellation 和有效权限；受限 sandbox 不可满足时拒绝，扩大权限路径也要核对允许条件。Claude `tools/BashTool/BashTool.tsx` 将执行权限交给 `bashToolHasPermission` 并由受控 shell 路径执行；不能因为命令是测试/构建就绕过工具权限。本轮只阅读参考源码，不主张它们具有与本系统相同的自动完成计划，也不声称其所有内部 helper 都受同一边界保护。
+- 修复方向（未实施）：自动验证与普通命令应共享已经解析的执行目标、有效环境、权限/审批和 SandboxBackend seam；配置的 backend 不可用或拒绝时明确返回验证不可执行/失败，不回退为宿主直接运行。自动触发不是额外授权，`--offline`、命令名白名单或输出静默都不代替隔离。复用既有 RuntimeCommandExecutor/受控进程实现及 `VerificationDispatcher::standard_with_executor()` seam，不另造“可信验证执行器”；完成计划与单文件 decorator 都应绑定同一运行的执行配置。回归需覆盖 backend 拒绝/不可用、工作区外写入、网络禁用、远程工程、单文件验证和完整验证、取消/超时，并确保无构建系统或未修改文件的普通对话不启动构建。本批只增加审计测试与文档，没有修复这两处生产入口。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-65 配置后端拒绝与真实宿主构建显式探针（见该节命令） | 初版 A/B 约 1.30s、扩展 A/B/C 约 2.65s，均明确失败；无修改无 canary，.txt 在完成后出现，.rs 在最终采样前已出现；backend 均仅收到并拒绝 1 次显式命令，三组 run=succeeded；未使用真实 OS sandbox |
+| H-65 共享入口回归 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：13 passed / 11 ignored，约 1.84s；包含默认执行的后端拒绝且无修改对照，新增 ignored 已显式失败。fmt、diff 检查通过；本批仅测试与文档，未执行全 workspace、Clippy、真实桌面 sandbox、前端构建或公网供应商测试 |
 | H-64 真实自动构建取消/总时限显式探针（见该节命令） | 两项明确失败、约 6.28s：取消后等待真实 build；5 秒总时限落 budget_exceeded 后原 build.rs 仍写文件。正常对照成功，全部临时构建在断言前放行并完成清理 |
 | H-64 计划发现与已有受控命令对照 | `cargo test -p deepagent-app-core --lib completion_plan:: --offline -- --nocapture`：8 passed / 2 ignored，约 1.22s；两项 ignored 已显式执行失败。`cargo test -p deepagent-hooks --lib system_runner_timeout_terminates_process_tree_promptly --offline -- --nocapture`：1 passed；`cargo test -p deepagent-builtins --lib system_executor_cancels_running_process_within_two_seconds --offline -- --nocapture`：1 passed，真实 shell 启动后约 11ms 取消退出。fmt、diff 检查通过；本批仅测试/文档，未跑全 workspace、Clippy、桌面构建或真实供应商 |
 | H-63 附属检查用量进入真实成本账本显式探针（见该节命令） | 明确失败：panel 应有 314/24、stall 应有 112/10，实际均仅 11/3；检查完成且无残留，未测真实价格或公网费用 |
@@ -1669,7 +1689,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、各 H 节列出的默认忽略 Rust 缺陷探针、一个显式运行的桌面故障探针、两个默认忽略的宿主隔离集成探针，以及默认运行的取消存储故障、排队取消和 Windows hook 大输入时限测试，未修改生产运行逻辑。各批实际命令及先后关系见上表；没有在每批重复运行全 workspace、Clippy 或前端构建，不能据单项回归宣称全系统通过。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
+审查累计新增内容限于报告、各 H 节列出的默认忽略 Rust 缺陷探针、显式运行的桌面故障探针、宿主隔离集成探针及各节注明的正常对照/回归测试，未修改生产运行逻辑。默认测试包括取消存储故障、排队取消、Windows hook 大输入时限、上下文恢复、真实构建完成与后端拒绝等；完整清单和实际命令以各节及上表为准。没有在每批重复运行全 workspace、Clippy 或前端构建，不能据单项回归宣称全系统通过。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 
@@ -1771,7 +1791,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 | 修复批次 | 关联问题 | 应统一的现有边界 | 首要验收 |
 |---|---|---|---|
-| 执行权限与子运行上下文 | H-03、H-19、H-22 | 有效工具集合、sandbox 选择、执行根、checkpoint 必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致 |
+| 执行权限与子运行上下文 | H-03、H-19、H-22、H-65 | 有效工具集合、sandbox 选择、执行根、checkpoint 与两处自动验证必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd、Codex 的统一命令编排 | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致；配置后端拒绝时单文件/完成验证均不得转为宿主执行 |
 | 可选 WASM 的时钟与调用归属 | H-59 | 既有 WasmSandbox 统一 Engine tick 与 per-Store deadline；参考上游 Wasmtime 及成熟 Agent 的局部 timer 清理 | 顺序与并发调用互不提前超时；成功/失败/取消不遗留误伤；Windows trap 错误不终结宿主；默认未启用路径保持不受影响 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；参考 Codex 的 turn 所属 waiter 和错误事件 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；保存失败可见 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45 | 摘要、prefire、正文、重试、工具和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误 |
