@@ -1838,28 +1838,29 @@ mod tests {
     use deepagent_context::TokenCounter;
 
     #[cfg(windows)]
-    async fn audit_precompact_command(command_tail: &str) -> (serde_json::Value, String) {
+    async fn audit_compaction_hook_command(
+        event: &str,
+        command_tail: &str,
+    ) -> (serde_json::Value, String) {
         use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
         use deepagent_hooks::{HookDefinitions, SystemHookRunner};
 
         let dir = tempfile::tempdir().unwrap();
-        let payload_path = dir.path().join("precompact.json");
+        let payload_path = dir
+            .path()
+            .join(format!("{}-payload.json", event.to_ascii_lowercase()));
         let quoted = payload_path.to_string_lossy().replace('\'', "''");
         let command = format!(
             "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted}', $payload); {command_tail}"
         );
-        let definitions = HookDefinitions::parse(
-            &serde_json::json!({
-                "hooks": {
-                    "PreCompact": [{ "hooks": [{
-                        "type": "command", "shell": "powershell", "timeout": 5,
-                        "command": command
-                    }] }]
-                }
-            })
-            .to_string(),
-        )
-        .unwrap();
+        let mut hook_json = serde_json::json!({ "hooks": {} });
+        hook_json["hooks"][event] = serde_json::json!([{
+            "hooks": [{
+                "type": "command", "shell": "powershell", "timeout": 5,
+                "command": command
+            }]
+        }]);
+        let definitions = HookDefinitions::parse(&hook_json.to_string()).unwrap();
         let mut hooks = HookRegistry::new();
         assert_eq!(
             definitions.register_into(&mut hooks, Arc::new(SystemHookRunner)),
@@ -1908,7 +1909,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "audit H-110: PreCompact payload must satisfy its required input schema"]
     async fn audit_precompact_payload_includes_required_fields() {
-        let (payload, _) = audit_precompact_command("").await;
+        let (payload, _) = audit_compaction_hook_command("PreCompact", "").await;
         eprintln!("PreCompact payload: {payload}");
         assert!(
             matches!(payload["trigger"].as_str(), Some("manual" | "auto"))
@@ -1920,11 +1921,25 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
+    #[ignore = "audit H-110: PostCompact payload must satisfy its required input schema"]
+    async fn audit_postcompact_payload_includes_required_fields() {
+        let (payload, _) = audit_compaction_hook_command("PostCompact", "").await;
+        eprintln!("PostCompact payload: {payload}");
+        assert!(
+            matches!(payload["trigger"].as_str(), Some("manual" | "auto"))
+                && payload["compact_summary"].is_string(),
+            "PostCompact payload misses required schema fields or has an invalid trigger: {payload}"
+        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
     #[ignore = "audit H-111: PreCompact stdout must reach the compaction request"]
     async fn audit_precompact_stdout_is_used_as_compaction_instructions() {
         const INSTRUCTIONS: &str = "AUDIT_CUSTOM_COMPACTION_INSTRUCTIONS";
         let (_, model_request) =
-            audit_precompact_command(&format!("Write-Output '{INSTRUCTIONS}'")).await;
+            audit_compaction_hook_command("PreCompact", &format!("Write-Output '{INSTRUCTIONS}'"))
+                .await;
         eprintln!(
             "precompact_stdout_reaches_model_request={}",
             model_request.contains(INSTRUCTIONS)
