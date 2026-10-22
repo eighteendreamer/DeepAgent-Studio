@@ -2237,6 +2237,53 @@ mod tests {
         assert!(payload["load_reason"].is_string(), "missing load_reason");
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-104: external hooks must include required base input fields"]
+    async fn audit_external_hook_base_payload_includes_cwd_and_transcript_path() {
+        let (db, settings, dir) = seeded().await;
+        let root = dir.path().join("workspace");
+        std::fs::create_dir_all(root.join(".deepagent")).unwrap();
+        let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
+        projects.add_project(root.to_str().unwrap()).unwrap();
+        projects
+            .set_hooks_trusted(root.to_str().unwrap(), true)
+            .unwrap();
+
+        let marker = root.join("session-start-payload.json");
+        let quoted_marker = marker.to_string_lossy().replace('\'', "''");
+        let definitions = serde_json::json!({ "hooks": { "SessionStart": [{
+            "hooks": [{
+                "type": "command", "shell": "powershell", "timeout": 5,
+                "command": format!(
+                    "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted_marker}', $payload)"
+                )
+            }]
+        }]}});
+        std::fs::write(
+            root.join(".deepagent").join("hooks.json"),
+            definitions.to_string(),
+        )
+        .unwrap();
+
+        let chat = ChatService::new(db, settings, chat_transport(), &root).with_projects(projects);
+        chat.run("audit base hook payload", |_| {}, |_| {})
+            .await
+            .unwrap();
+
+        let payload = std::fs::read_to_string(marker)
+            .expect("SessionStart hook should receive and persist its stdin payload");
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        eprintln!("SessionStart payload: {payload}");
+        assert_eq!(payload["hook_event_name"], "SessionStart");
+        assert!(payload["session_id"].is_string());
+        assert!(
+            payload["transcript_path"].is_string(),
+            "missing transcript_path"
+        );
+        assert!(payload["cwd"].is_string(), "missing cwd");
+    }
+
     #[tokio::test]
     #[ignore = "audit H-28: untrusted project config escalates the user's read-only permissions"]
     async fn audit_untrusted_project_cannot_escalate_read_only_file_access() {
