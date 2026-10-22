@@ -1792,10 +1792,18 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：用户在首次模型初始化、刷新模型、API key 诊断或查询余额时，若远端已接收连接但不返回响应头/完整响应体，对应 command 可一直 pending；刷新模型使用同步 `block_on`，会持续占用等待它的 command worker。没有证据说明它会阻塞主 UI 线程、影响已有会话的模型调用，或解释本轮讨论的 Codex `Continuation ...` 错误；该错误按用户最新指示暂不追查。
 - 收敛方向（尚未实施，本地设计）：在现有 `HttpTransport` seam 为 GET 加入显式总 deadline，并让请求等待可观察生命周期取消；总时限覆盖 headers 与 body 读取，而不是只约束 `.send()`。管理调用应将 timeout/cancel 映射为可识别的设置/诊断错误。回归覆盖无响应头、成功/错误半截 body、取消等待及正常完成；确认 model discovery、余额、doctor 和 CLI/Tauri 调用方均能按时收尾，不改变流式请求的 timeout 语义。
 
+### 后续独立核查：模型 API 跨 origin 重定向不会转发 Bearer key
+
+- 候选风险：`ReqwestTransport::get_json` 默认跟随重定向且附带 Bearer key，需确认跳转到另一个 origin 时是否会把凭据交给目标服务器。
+- 源码依据：锁定的 reqwest 0.12.28 默认重定向策略在每次 follow 前调用 `redirect::remove_sensitive_headers`；host 或有效端口变化时删除 `Authorization`、Cookie 等敏感头。DeepSeek Harness `packages/credentials/deepseek-account-platform/src/protocol.ts::fetchProtocol` 对授权请求配置 `redirect: 'error'`，会直接拒绝任何重定向，策略更严格。
+- 动态验证：新增非 ignored 测试 `reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization`。本机第一个 listener 收到 `Authorization: Bearer audit-secret-placeholder` 并将请求 302 到第二个 listener；第二个 listener 收到实际跟随请求，但没有 `Authorization`，返回 JSON 后调用成功。只使用回环地址和占位 key。
+- 结论与边界：该候选不构成已复现泄露，不新增 H 编号。验证覆盖模型发现/余额共用的 GET transport 与跨端口 origin；没有覆盖自定义 redirect policy 的 `with_client`、任意自定义传输实现或供应商 POST 的其他 transport 行为，不据此宣称所有 provider/网络重定向都安全。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
 | H-85 GET 响应停滞显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_json_is_bounded_while_waiting_for_headers_and_body -- --ignored --nocapture`：0 passed / 1 failed，约 0.48s；等待响应头、200 半截 body、503 半截 body 三组均在 150ms 观察期后仍 pending，释放 loopback fixture 后才结束；仅本机 HTTP，无公网或真实凭据 |
 | H-83 完成后钩子失败显式探针 | `cargo test -p deepagent-cli terminal_audit::audit_final_hook_error_has_one_matching_live_and_durable_terminal --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.32s；实际收到 `turn.completed → turn.failed`，durable 唯一终态为 failed；失败断言准确指出实时多发了 completed |
 | H-83/H-84 默认测试基线 | `cargo test -p deepagent-cli terminal_audit --offline`：3 passed / 0 failed / 3 ignored；H-83、H-84 与 AutoReview 补充缺陷探针均需显式运行，默认通过不代表问题已修复 |

@@ -406,6 +406,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cross_origin_redirect_does_not_forward_bearer_authorization() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let redirect_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirect_address = redirect_listener.local_addr().unwrap();
+        let target_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_address = target_listener.local_addr().unwrap();
+        let (first_hop_sent, first_hop_received) = oneshot::channel();
+        let (second_hop_sent, second_hop_received) = oneshot::channel();
+
+        let redirect_server = tokio::spawn(async move {
+            let (mut socket, _) = redirect_listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            first_hop_sent.send(request).unwrap();
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://{target_address}/capture\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let target_server = tokio::spawn(async move {
+            let (mut socket, _) = target_listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            second_hop_sent.send(request).unwrap();
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"ok\":true}",
+                )
+                .await
+                .unwrap();
+        });
+
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .connect_timeout(Duration::from_secs(1))
+            .build()
+            .unwrap();
+        let transport = ReqwestTransport::with_client(client);
+        let body = transport
+            .get_json(
+                &format!("http://{redirect_address}/models"),
+                "audit-secret-placeholder",
+            )
+            .await
+            .unwrap();
+        let first_hop = String::from_utf8(first_hop_received.await.unwrap())
+            .unwrap()
+            .to_ascii_lowercase();
+        let second_hop = String::from_utf8(second_hop_received.await.unwrap())
+            .unwrap()
+            .to_ascii_lowercase();
+        redirect_server.await.unwrap();
+        target_server.await.unwrap();
+
+        assert_eq!(body, r#"{"ok":true}"#);
+        assert!(first_hop.contains("authorization: bearer audit-secret-placeholder"));
+        assert!(!second_hop.contains("authorization:"));
+    }
+
+    #[tokio::test]
     #[ignore = "audit H-29: a stalled HTTP error body does not observe request cancellation"]
     async fn audit_cancel_interrupts_stalled_success_and_error_bodies() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
