@@ -24,7 +24,7 @@
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
 | Harness SDK 关闭后的请求失败清理 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表 | 已确认 H-90；Windows 真实子进程管道夹具；未通过真实 CLI server 测试关闭交错 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
-| 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务，以及派发后记账失败导致重启重触发均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96；真实模型副作用、原子接纳与完整退出边界未完成 |
+| 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录 | 已确认 H-51；服务/工具级确定性交错，完整双会话桌面动态验证未执行 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
@@ -1919,6 +1919,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：故障后当前桌面 cron tick loop 停止，直至应用重启；重启后 one-shot 仍在文件中、recurring 的 fire anchor 仍旧时，同一到期 occurrence 可重新创建会话并再次请求模型。具体费用、工具副作用和重复操作未在探针中发生或量化。该条件需要计划记账写入失败，不能外推为每轮计划都会重复。
 - 收敛方向（尚未实施，本地设计）：以稳定的 task+scheduled-time occurrence identity 接入现有 AppCore 接纳与 RunStore，区分待派发、已接纳、结果未知；同一 occurrence 的重放必须关联或发现既有 run，不能因计划文件写失败而盲目再建会话。计划文件与 SQLite 不能原子提交，必须明确崩溃窗口和人工/自动恢复策略，不宣称外部动作 exactly-once。tick owner 对可恢复 poll 错误要有有界重试和可观测状态；恢复策略需同时验证失败发生在 fire 前、接纳后及标记持久化后。
 
+### H-97：调度器停止不取消或等待已派发的定时运行
+
+**级别：中（P2，生命周期归属缺口）；范围：CronService 已派发 ChatService run 后，scheduler shutdown 而宿主进程仍在运行的窗口。** 不覆盖宿主进程被操作系统终止后的任务恢复语义，也不说明模型供应商会在本探针中产生副作用。
+
+#### 生产路径与可重跑复现
+
+- `CronService::run_tick_loop()` 将 shutdown token 传给 `deepagent_runtime::schedule::run_tick_loop()`。tick loop 只在轮询边界选择 shutdown；到期 callback 在 `CronService::run_tick_loop()` 内对每条任务 `tokio::spawn(ChatService::run_in_session(...))`，不保存 join handle，也未将 scheduler shutdown 派生/连接到该 run 的取消 token。
+- 桌面启动代码创建一个新的 `CancellationToken` 并仅交给 scheduler loop。没有生命周期 owner 保留该 token 来取消或等待独立的 fire 任务。CLI build_chat_service 也装配 CronService，但本结论只验证 AppCore 的 scheduler 与 run 生命周期，不外推 CLI 进程退出表现。
+- 新增默认忽略探针 `cron_service::audit_tests::audit_scheduler_shutdown_leaves_started_cron_run_active`：正式 CronService 读取真实临时 `scheduled-tasks.json` 并触发到期 one-shot；正式 ChatService 使用可控 HttpTransport，等待它确实进入模型流后再停止 tick loop。模型 transport 只等待取消信号，不访问公网或执行工具。
+- 执行 `cargo test -p deepagent-app-core --lib audit_scheduler_shutdown_leaves_started_cron_run_active --offline -- --ignored --nocapture`：**1 passed**，观察到 `scheduler_returned=true run_finished=false model_cancel_observed=false`。这表示 scheduler shutdown 返回后，运行仍未终结且模型取消信号未抵达。随后测试通过正式 `request_cancel(run_id)` 取消 run，并等待 durable terminal，未留下活跃测试任务。
+
+#### 成熟实现对照、影响与边界
+
+- Claude Code `utils/cronScheduler.ts` 暴露 `start()`/`stop()`，`useScheduledTasks.ts` 的 effect cleanup 调用 `scheduler.stop()`；CLI 在输入关闭时也停止 scheduler。它将 fire prompt 放入当前会话的队列，由该会话的 run/进程生命周期管理执行，不等价于本系统为每次 fire 独立创建 ChatService run 的模式。参考证据支持 scheduler 自身必须有显式停止边界，不能据此声称 Claude API 覆盖本系统独立 run 的取消/等待。
+- 当前证据只证明 stopping tick loop 不影响已经派发的模型请求；并未关闭 Tauri 整个 runtime、杀进程、验证启动恢复或真实供应商调用。桌面宿主退出时后台 future 如何被 runtime drop 处理，以及数据库记录如何重启恢复，仍需单独验证。
+- 收敛方向（尚未实施，本地设计）：为 CronService 的 fire 工作建立明确 owner。宿主 shutdown 时停止接纳新 occurrence，再按既有 RunCoordinator 取消/等待已运行项并记录终态；如果产品语义要求 fire 独立于调度器继续运行，则至少要由宿主级任务 supervisor 持有并在重启时恢复/呈现。运行 ID 与稳定 occurrence identity 关联应复用现有 RunStore，不另建任务 store。验收需覆盖 fire 前 shutdown、模型请求中、工具/审批等待、取消审计失败、正常完成竞争、真实桌面退出与重启，且一个 scheduler shutdown 不能影响其他会话或插件宿主任务。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1941,6 +1958,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-95 默认探针基线与检查 | `cargo test -p deepagent-app-core --test recovery_terminal_audit --offline`：0 passed / 2 ignored；两条均为显式审计探针，默认通过不代表问题已修复。`cargo fmt --all -- --check`、`git diff --check` 通过；本批未跑全 workspace、Clippy、桌面构建或真实 Tauri |
 | H-96 派发后记账失败/重启重放显式探针 | `cargo test -p deepagent-runtime --test schedule_audit audit_post_fire_bookkeeping_failure_replays_same_occurrence --offline -- --ignored --nocapture`：1 passed；one-shot 与 recurring 均在 callback 后触发存储错误，重建 scheduler 后 callback count=2。正式 `CronScheduler` 与 Windows 文件权限、临时 workspace；未执行 `ChatService`/模型/工具，也未启动真实桌面 |
 | H-96 默认探针基线与检查 | `cargo test -p deepagent-runtime --test schedule_audit --offline`：0 passed / 2 ignored；H-42/H-96 均是显式审计探针。`cargo fmt --all -- --check`、`git diff --check` 通过；本批未跑全 workspace、Clippy、桌面构建或真实 Tauri |
+| H-97 scheduler shutdown 与在途 run 显式探针 | `cargo test -p deepagent-app-core --lib audit_scheduler_shutdown_leaves_started_cron_run_active --offline -- --ignored --nocapture`：1 passed，预期复现为 scheduler 已返回、run 未终结、模型取消未观察到；之后通过正式 run cancel 完成清理。真实 CronService/ChatService/RunStore、挂起型离线 transport；未关闭整个 Tauri/CLI 进程、未调用公网或工具 |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
