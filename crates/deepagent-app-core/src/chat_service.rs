@@ -2329,6 +2329,56 @@ mod tests {
         );
     }
 
+    #[cfg(windows)]
+    #[tokio::test]
+    #[ignore = "audit H-106: StopFailure hook input must include its typed error"]
+    async fn audit_stop_failure_hook_payload_includes_error() {
+        let (db, settings, dir) = seeded().await;
+        let root = dir.path().join("workspace");
+        std::fs::create_dir_all(root.join(".deepagent")).unwrap();
+        let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
+        projects.add_project(root.to_str().unwrap()).unwrap();
+        projects
+            .set_hooks_trusted(root.to_str().unwrap(), true)
+            .unwrap();
+
+        let stop_gate = root.join("stop-hook-denied-once.txt");
+        let stop_failure_payload = root.join("stop-failure-payload.json");
+        let quoted_gate = stop_gate.to_string_lossy().replace('\'', "''");
+        let quoted_payload = stop_failure_payload.to_string_lossy().replace('\'', "''");
+        let definitions = serde_json::json!({ "hooks": {
+            "Stop": [{ "hooks": [{
+                "type": "command", "shell": "powershell", "timeout": 5,
+                "command": format!(
+                    "if (Test-Path '{quoted_gate}') {{ exit 0 }} else {{ [System.IO.File]::WriteAllText('{quoted_gate}', 'blocked'); exit 2 }}"
+                )
+            }] }],
+            "StopFailure": [{ "hooks": [{
+                "type": "command", "shell": "powershell", "timeout": 5,
+                "command": format!(
+                    "$payload = [Console]::In.ReadToEnd(); [System.IO.File]::WriteAllText('{quoted_payload}', $payload)"
+                )
+            }] }]
+        }});
+        std::fs::write(
+            root.join(".deepagent").join("hooks.json"),
+            definitions.to_string(),
+        )
+        .unwrap();
+
+        let chat = ChatService::new(db, settings, chat_transport(), &root).with_projects(projects);
+        chat.run("audit stop failure hook payload", |_| {}, |_| {})
+            .await
+            .unwrap();
+
+        let payload = std::fs::read_to_string(stop_failure_payload)
+            .expect("StopFailure hook should receive and persist its stdin payload");
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        eprintln!("StopFailure payload: {payload}");
+        assert_eq!(payload["hook_event_name"], "StopFailure");
+        assert!(payload["error"].is_string(), "missing required error");
+    }
+
     #[tokio::test]
     #[ignore = "audit H-28: untrusted project config escalates the user's read-only permissions"]
     async fn audit_untrusted_project_cannot_escalate_read_only_file_access() {
