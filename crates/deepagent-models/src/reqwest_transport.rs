@@ -302,6 +302,110 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "audit H-85: GET requests do not observe the transport timeout budget"]
+    async fn audit_get_json_is_bounded_while_waiting_for_headers_and_body() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::oneshot;
+
+        let mut unbounded = Vec::new();
+        for mode in ["headers", "success_body", "error_body"] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (request_received, received) = oneshot::channel();
+            let (release, released) = oneshot::channel();
+            let mode = mode.to_string();
+            let server_mode = mode.clone();
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut chunk = [0; 1024];
+                loop {
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&chunk[..count]);
+                    assert!(request.len() < 16 * 1024);
+                    if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                request_received.send(()).unwrap();
+
+                let body = if server_mode == "error_body" {
+                    r#"{"error":{"message":"audit failure"}}"#
+                } else {
+                    r#"{"ok":true}"#
+                };
+                if server_mode == "headers" {
+                    released.await.unwrap();
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    socket.write_all(response.as_bytes()).await.unwrap();
+                } else {
+                    let status = if server_mode == "error_body" {
+                        "503 Service Unavailable"
+                    } else {
+                        "200 OK"
+                    };
+                    let headers = format!(
+                        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    socket.write_all(headers.as_bytes()).await.unwrap();
+                    socket.write_all(&body.as_bytes()[..1]).await.unwrap();
+                    released.await.unwrap();
+                    let _ = socket.write_all(&body.as_bytes()[1..]).await;
+                }
+            });
+
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .connect_timeout(Duration::from_secs(1))
+                .build()
+                .unwrap();
+            let transport =
+                ReqwestTransport::with_client(client).with_timeouts(TransportTimeouts {
+                    connect: Duration::from_secs(1),
+                    first_byte: Duration::from_millis(50),
+                    idle: Duration::from_millis(50),
+                    total: Duration::from_millis(50),
+                });
+            let mut operation = tokio::spawn(async move {
+                transport
+                    .get_json(&format!("http://{address}/models"), "audit-placeholder")
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(2), received)
+                .await
+                .unwrap()
+                .unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let returned_within_budget = operation.is_finished();
+            release.send(()).unwrap();
+            let result = tokio::time::timeout(Duration::from_secs(2), &mut operation)
+                .await
+                .unwrap()
+                .unwrap();
+            server.await.unwrap();
+
+            eprintln!(
+                "mode={mode}, returned_within_50ms_budget={returned_within_budget}, result={result:?}"
+            );
+            if !returned_within_budget {
+                unbounded.push(mode);
+            }
+        }
+
+        assert!(
+            unbounded.is_empty(),
+            "GET remained pending beyond the configured 50ms budget: {unbounded:?}"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "audit H-29: a stalled HTTP error body does not observe request cancellation"]
     async fn audit_cancel_interrupts_stalled_success_and_error_bodies() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};

@@ -1781,10 +1781,22 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：客户端可能显示重复审批，或在工具已自动放行时显示一个无法响应的审批提示；无 ID 事件都不能与 `approval/respond` 的 pending approval 对应。本次已复现 `AlwaysAsk` 高风险调用和 `AutoReview` hook Ask/read_file 自动放行；尚未覆盖 AutoReview deny、已有 grant、子 Agent、桌面宿主及其他工具审批路径。
 - 收敛方向（尚未实施，本地设计）：协议层的 `approval.requested` 只由成功注册 pending 的现有 ApprovalGate 通知回调发布，并必须携带可响应的 call ID。`ToolBlocked(needs_approval=true)` 保留为运行时诊断/工具状态，不再被映射成第二个审批请求。回归覆盖 AlwaysAsk 一请求一 ID、自动放行/拒绝不伪造人工请求、session grant 不弹窗、hook Ask、取消清理、响应只解除对应 pending call，以及 stdio/桌面共享 AppCore 后的事件一致性。
 
+### H-85：模型目录与余额 GET 没有总时限，响应头或响应体停滞时请求可无限 pending
+
+**级别：中（P2）；范围：模型初始化/刷新、凭据诊断和账户余额查询。** 这不是普通聊天每轮准备路径的问题，本轮没有证据表明它造成用户报告的聊天前等待。
+
+- 根因与生产路径：`deepagent-models/src/reqwest_transport.rs::ReqwestTransport::get_json` 对 `.send().await` 和随后读取的 `.text().await` 都没有 timeout，也没有取消参数。`TransportTimeouts` 只包裹 `stream`/`stream_cancelled`，不会应用到 GET。项目锁定的 reqwest 0.12.28 异步 `ClientBuilder` 文档明确写明总请求 timeout 默认关闭；本系统 `ReqwestTransport::new` 只设置 connect timeout。`deepagent-models/src/discovery.rs::ModelDiscovery::list_models` 和 `balance.rs::fetch_balance` 均经由该 GET。AppCore 调用方包括 `SettingsService::initialize`/`refresh_models`、`validate_api_key` 和 `query_balance`；桌面 `refresh_models` 的同步 command 用 `state.rt.block_on` 等待刷新，`get_balance` 则是未附加截止时间的 async command。
+- 动态复现：新增 ignored 探针 `reqwest_transport::tests::audit_get_json_is_bounded_while_waiting_for_headers_and_body`，使用本机 loopback HTTP 服务及无总请求 timeout 的 reqwest Client；服务分别停在响应头之前、200 成功响应体中间、503 错误响应体中间。传输配置的 first-byte、idle、total 都设为 50ms，探针等待 150ms 后记录请求是否仍未完成，再释放响应并等待任务收尾。没有使用真实凭据、DeepSeek 网络或用户数据。
+- 实测：三组 `returned_within_50ms_budget=false`；只有服务补齐响应后，成功请求才返回，错误请求才携带 503 结束。显式运行探针以 **0 passed / 1 failed** 退出，失败断言准确指出 `headers`、`success_body`、`error_body` 均超出配置预算仍 pending。该结果证明流式 timeout 配置没有约束 GET；结合 reqwest 0.12.28 异步 Client 默认无总 timeout 的版本文档，确认生产 `ReqwestTransport::new()` 的默认 GET 也没有总请求截止时间。
+- 成熟实现对照：DeepSeek Harness `packages/credentials/deepseek-account-platform/src/index.ts` 对账户详情请求使用 `AbortSignal.any([lifetime.signal, AbortSignal.timeout(...)])`；`requestTimeoutMs` 与 `balanceTimeoutMs` 默认均为 30 秒，凭据生命周期取消和请求时限共同生效。Codex `codex-rs/agent-identity/src/lib.rs` 对 JWKS 和 registration 请求分别设置 `.timeout(...)`。这些只作为管理类 HTTP 请求应有独立时限/取消边界的参考，不代表它们与模型流式请求的预算相同。
+- 影响及限制：用户在首次模型初始化、刷新模型、API key 诊断或查询余额时，若远端已接收连接但不返回响应头/完整响应体，对应 command 可一直 pending；刷新模型使用同步 `block_on`，会持续占用等待它的 command worker。没有证据说明它会阻塞主 UI 线程、影响已有会话的模型调用，或解释本轮讨论的 Codex `Continuation ...` 错误；该错误按用户最新指示暂不追查。
+- 收敛方向（尚未实施，本地设计）：在现有 `HttpTransport` seam 为 GET 加入显式总 deadline，并让请求等待可观察生命周期取消；总时限覆盖 headers 与 body 读取，而不是只约束 `.send()`。管理调用应将 timeout/cancel 映射为可识别的设置/诊断错误。回归覆盖无响应头、成功/错误半截 body、取消等待及正常完成；确认 model discovery、余额、doctor 和 CLI/Tauri 调用方均能按时收尾，不改变流式请求的 timeout 语义。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-85 GET 响应停滞显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_json_is_bounded_while_waiting_for_headers_and_body -- --ignored --nocapture`：0 passed / 1 failed，约 0.48s；等待响应头、200 半截 body、503 半截 body 三组均在 150ms 观察期后仍 pending，释放 loopback fixture 后才结束；仅本机 HTTP，无公网或真实凭据 |
 | H-83 完成后钩子失败显式探针 | `cargo test -p deepagent-cli terminal_audit::audit_final_hook_error_has_one_matching_live_and_durable_terminal --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.32s；实际收到 `turn.completed → turn.failed`，durable 唯一终态为 failed；失败断言准确指出实时多发了 completed |
 | H-83/H-84 默认测试基线 | `cargo test -p deepagent-cli terminal_audit --offline`：3 passed / 0 failed / 3 ignored；H-83、H-84 与 AutoReview 补充缺陷探针均需显式运行，默认通过不代表问题已修复 |
 | H-84 工具审批重复事件显式探针 | `cargo test -p deepagent-cli terminal_audit::audit_tool_approval_emits_one_correlated_event --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.27s；同一 turn 实际收到 2 条审批请求，一条带 call ID、一条无 ID；取消后目标路径不存在。离线 Responses fixture 与临时 SQLite |
