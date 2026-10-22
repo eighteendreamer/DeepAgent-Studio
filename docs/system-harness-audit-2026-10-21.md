@@ -60,6 +60,7 @@
 | Responses incomplete 的原因与恢复策略 | content_filter 与 max_output_tokens 均触发加大输出上限及注入长度恢复提示，离线第三响应完成后运行成功终结 | 已确认 H-82；正式 ChatService/Kernel/ModelAgent/请求序列化/SQLite 终态，长度对照正常；未测试真实供应商过滤或桌面展示 |
 | 运行完成通知与最终钩子的提交边界 | 正式 TaskCompleted prompt hook 输出无效决策 JSON 后，stdio 同一 turn 先通知 completed 再通知 failed，thread/read 保持唯一 failed 终态 | 已确认 H-83；真实 dispatcher/spawn_turn/AppCore/Kernel/磁盘事件及独立 reader；正常钩子和普通模型错误对照正常，未跑真实 stdio 管道或桌面 |
 | 画布云端视频任务的取消等待 | 正式 ChatService/WorkflowAgent/Kernel 与真实本机 HTTP、文件 SQLite、artifact 正常对照；停止在状态接口等待中已受理，但释放响应前运行仍未退出 | 已确认 H-119；未实等生产 60 秒轮询时限，未执行真实云端生成或桌面点击 |
+| 工作流节点事件的持久化通道 | 正式视频工作流实时收到 6 条节点事件；关闭全部原数据库 owner 后重开，规范 run_events 仍为 0 条节点事件；唯一运行成功终态与视频资产均保留 | 已确认 H-120；不等同于所有画布自动保存内容丢失，未验真实桌面崩溃/断线重连 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -2169,10 +2170,23 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响与边界：状态接口慢或半截正文停滞时，用户看到取消受理但同一运行/输入租约仍占用到本次 HTTP 返回或超时。视频提交（120 秒）、下载 headers/chunk（120 秒）和轮询 sleep 也存在前后检查的代码疑点，本探针仅动态覆盖状态请求等待，不将其他阶段或云端计费/撤销效果一并报为已复现。
 - 收敛方向（本地设计，尚未实施）：在现有 CanvasModelBridge/取消树边界贯通可唤醒的取消上下文，覆盖 submit、poll headers/body、退避和下载，不另造运行链路；任务 owner 负责释放本地 HTTP/流式临时文件与唯一终态。明确“停止本地等待”和“供应商支持且成功执行远程取消”是两个独立结果；已提交的云任务保留 provider/account/task 身份供恢复，不能通过直接 drop Future 宣称云任务已撤销。验收需补各阶段取消、截止时间、完成竞争、无迟到请求与终态、临时文件清理、任务恢复及真实桌面。
 
+### H-120：WorkflowAgent 的节点 publisher 绕过持久化事件通道，实时状态与输出无法从 run_events 重放
+
+**级别：高（P1，运行恢复与机器消费）；范围：正式 `ChatService::run_workflow` 的节点生命周期、输出与媒体来源。** 与 H-41/H-43 的前端监听归属/早到事件不同，本项在监听完整且运行正常成功时，规范日志里仍没有节点事件；订阅时序修复本身不能补回不存在的记录。
+
+- 生产根因：`run_workflow_inner` 先用原始 ChannelSink 构建 NodeEventPublisher 并交给 WorkflowAgent；AgentKernel 随后包装 PersistentEventSink，并调用 `agent.set_event_sink(persistent.clone())`。ModelAgent 接收此通道，WorkflowAgent 却继承 trait 的默认 no-op，原 publisher 始终直达实时 ChannelSink，绕开 run_events。既有 PersistentEventSink 已能序列化 `RuntimeEvent::WorkflowNode`，问题是事件没有经过它，不是缺表或缺少新 event store。
+- 动态复现：`cargo test -p deepagent-app-core --test workflow_audit audit_video_node_events_survive_database_reopen --offline -- --ignored --nocapture`，**0 passed / 1 failed**，约 0.18s。复用 H-119 的真实本机 HTTP 与正式网关，运行 start→video-gen→end；正常 submit/status/download 完成，完整收集实时 NodeExecutionEvent，再 drop ChatService、CanvasArtifactService 和原 Database，使用新连接重开临时 SQLite，调用生产 RunStore::events_after 补读。
+- 实际 `live=6, durable_before=0, durable_after=0, terminal=succeeded, artifact_readable=true`。实时视频 Completed 携带 provider/model/job ID、artifact URI 和输出；新连接只保留唯一 succeeded 运行终态及可读取的原视频资产，规范 replay 的节点序列为空，最后与实时序列比较失败。无需模拟断线、故意丢事件、损坏数据库或触发 provider 错误。
+- 成熟实现对照：本系统自己的 Kernel/ModelAgent 已提供“同一事件经持久化后再交实时 delegate”的可复用边界，既有 `kernel_injects_durable_sink_into_streaming_agent` 对照本次亦通过。媒体参考 ArtCraft `generate_video_command.rs::handle_request` 在 enqueue 成功后调用 `insert_into_task_database_with_frontend_payload`；`TaskEnqueueSuccess` 将 provider/provider_job_id/frontend subscriber 等写入 TaskDatabase；Grok 视频后台 polling 按数据库 pending 状态恢复任务。参考的是明确保存任务身份和恢复依据；本系统应接回已有 RunStore/run_events，**不引入 ArtCraft 的另一套任务数据库**。参考源码已查，未运行其桌面或恢复测试。
+- 影响与限制：以 run_events 为依据的断线补读/机器消费者不能重建各节点的状态、结果与媒体来源；UI 即使完整收到事件，也不使规范日志自动完整。CanvasWorkflowStore 是独立的图文档保存入口，界面成功回写并保存的 graph 可能仍持有输出；可选诊断日志也不等于规范 replay。本项没有证明所有画布节点在重启后消失，没有删除媒体资产，也未验证真实桌面崩溃或云端任务重连。
+- 收敛方向（本地设计，尚未实施）：让 WorkflowAgent 在现有 `Agent::set_event_sink` 边界接收 Kernel 的规范 sink，publisher 与派生媒体进度 callback 使用同一运行通道；run_id/graph revision/node/attempt/task/provenance 按既有事件落盘，实时 delegate 继续由同一 owner 转发。恢复用现有游标补读和图投影，避免额外写一份节点日志或在前端拼接伪造历史。验收覆盖正常/失败/取消节点、长任务进度、数据库失败、重开补读与实时顺序及唯一终态。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-120 节点事件重开显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_video_node_events_survive_database_reopen --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.18s；实时 6 条、重开前后规范日志均 0 条；唯一 succeeded 终态和 artifact 字节保留 |
+| H-120 默认基线与持久化 sink 对照 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 5 ignored，约 0.16s；`cargo test -p deepagent-runtime --lib kernel::tests::kernel_injects_durable_sink_into_streaming_agent --offline`：1 passed，约 0.13s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试/报告，未跑 workspace 全量、Clippy、桌面构建或真实崩溃恢复 |
 | H-119 视频 HTTP 取消显式探针与成功对照 | `cargo test -p deepagent-app-core --test workflow_audit media:: --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.48s；取消已受理但 300ms 内未退出，释放响应后唯一 cancelled；成功对照完成下载入库。首次编译有仅用于临时目录保活的字段未读取警告，后改为 `_root`；不作为产品缺陷 |
 | H-119 默认基线与检查 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 4 ignored，约 0.20s；重新编译无上述警告，`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅审计测试与报告，未跑 workspace 全量、Clippy、桌面构建、真实 Tauri 或云端视频 API |
 | H-88 在途刷新凭据覆盖显式探针 | `cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_does_not_restore_a_superseded_api_key --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.19s；sign_out、replace_key 两组均未保持新状态，第三连接读回 configured=true；正式文件 SQLite 加密存储、临时包装 Key、离线 transport，无公网/真实 Tauri |
@@ -2590,6 +2604,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 工作流工具能力与失败传播 | H-38 | 复用现有工具组装和 ToolPipeline，NodeOutcome 保留结构化失败并定义显式容错；参考 DeepSeek isError 保真及现有 DAG 依赖失败传播 | 只读工具能实际运行；未知工具/拒绝/执行失败不冒充成功；节点、下游及 RunStore 语义一致 |
 | 工作流条件可达性与派发 | H-39 | 在现有编译图/WorkflowAgent 统一激活边、跳过边和合流；参考 DeepSeek 程序式工作流只启动实际执行路径的工作 | 未选分支真实执行数为零，嵌套与公共后继正确，不把跳过分支的输出当作已有值 |
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
+| 工作流节点事件与规范回放 | H-120 | WorkflowAgent 的 publisher 接回既有 Kernel 持久化 sink；参考现有 ModelAgent 通道与 ArtCraft 保存媒体任务身份，复用 run_events | 各节点实时事件与重开补读一致，失败/取消/进度也可重放；保留媒体来源和任务身份，不靠图文档偶然自动保存代替运行日志 |
 | 桌面运行事件与订阅生命周期 | H-41、H-43 | 现有 run_id、完成 payload、订阅就绪屏障和持久化补读统一；参考 Codex thread 通道和持续消费 worker | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能清理新 run |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | 共享设置与凭据的提交资格 | H-87、H-88 | 现有 SettingsService/SecretStore 在数据库当前版本上提交字段变更；参考 Codex Session 设置持久化许可与 DeepSeek 账户撤销/登录生命周期，跨宿主版本栅栏为本地设计 | 刷新不覆盖已收紧限制；退出/换 Key 后旧刷新不能写回旧凭据；独立连接、真实主备进程、失败和乱序完成一致 |

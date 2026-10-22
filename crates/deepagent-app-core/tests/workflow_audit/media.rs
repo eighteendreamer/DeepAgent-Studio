@@ -353,3 +353,81 @@ async fn audit_video_cancel_does_not_wait_for_provider_status_response() {
         "accepted cancellation must stop the workflow without waiting for video/status to respond"
     );
 }
+
+#[tokio::test]
+#[ignore = "audit: workflow node status, output and media provenance must survive canonical run replay"]
+async fn audit_video_node_events_survive_database_reopen() {
+    let mut provider = LocalVideoProvider::start("Succeed").await;
+    let fixture = MediaFixture::new(&provider).await;
+    let run_id = "audit-video-node-replay";
+    let mut run = fixture.spawn(run_id);
+    provider.wait_for_poll().await;
+    provider.release_poll.notify_one();
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+    result.unwrap();
+    let live = fixture.live.lock().unwrap().clone();
+    assert!(live.iter().any(|event| {
+        event.node_id == "video"
+            && event.status == NodeExecutionStatus::Completed
+            && event.job_id.as_deref() == Some(TASK_ID)
+            && event.provider_id.is_some()
+            && event.model_id.as_deref() == Some("audit-video-model")
+            && event.artifacts.len() == 1
+    }));
+    let uri = live
+        .iter()
+        .find(|event| event.node_id == "video" && event.status == NodeExecutionStatus::Completed)
+        .unwrap()
+        .artifacts[0]
+        .clone();
+    let durable_before = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap()
+        .iter()
+        .filter(|event| event.event_type == "workflow_node")
+        .count();
+    let MediaFixture {
+        _root: root,
+        db,
+        chat,
+        artifacts,
+        ..
+    } = fixture;
+    drop(chat);
+    drop(artifacts);
+    drop(db);
+    // All original application/database owners have been dropped. This reader
+    // does not borrow the live callback and cannot invent missing node events.
+    let reopened = Arc::new(Database::open(root.path().join("media.db")).unwrap());
+    let stored = RunStore::new(&reopened).events_after(run_id, None).unwrap();
+    let replay: Vec<NodeExecutionEvent> = stored
+        .iter()
+        .filter(|event| event.event_type == "workflow_node")
+        .map(|event| serde_json::from_value(event.data["event"].clone()).unwrap())
+        .collect();
+    let terminals: Vec<_> = stored
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "succeeded");
+    let artifacts = CanvasArtifactService::new(root.path().join("artifacts"), reopened).unwrap();
+    assert_eq!(
+        artifacts
+            .read_bytes(uri.trim_start_matches("artifact://"))
+            .unwrap()
+            .unwrap(),
+        VIDEO_BYTES,
+        "the artifact itself remains durable despite a missing node event"
+    );
+    eprintln!(
+        "video node replay: live={}, durable_before={durable_before}, durable_after={}, terminal=succeeded, artifact_readable=true",
+        live.len(),
+        replay.len()
+    );
+    assert_eq!(
+        replay, live,
+        "canonical run replay must retain the live workflow node events, including task id, output and artifact provenance"
+    );
+}
