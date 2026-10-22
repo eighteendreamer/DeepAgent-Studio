@@ -1432,6 +1432,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 | 命令或实测 | 结果 |
 |---|---|
+| `cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`（权限验证补充时） | 4 passed；搜索后的 schema/执行权限、动态加载、父子发现集合隔离均通过；同批 fmt 和 diff 检查通过 |
 | H-58 附件导入异常身份显式探针（见补充命令） | 明确失败：三组异常均成功覆盖 canary 并写 metadata，分别落在会话桶、附件 root 及 root 外兄弟目录；正常对照成立 |
 | `cargo test -p deepagent-app-core --lib attachment_service::tests --offline`（导入补充时） | 4 passed / 2 ignored；导入本轮显式执行失败，删除此前已显式失败；同批 fmt 与 diff 检查通过 |
 | H-59 WASM 共享 watchdog 显式探针（见该节命令） | 明确失败；独立组有 2 秒/5.5 秒标记，共享组均无且更早退出；Windows 两组 trap 均异常退出，父测试进程正常保留证据 |
@@ -1653,6 +1654,13 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 第一宿主的 ChatService 与所有数据库 owner 离开作用域后，以 `AppService::open` 重开同一数据库；`session_detail.context_usage` 与重开前最后发出的快照逐字段一致。第三轮实际序列化请求同时保留前两轮的完整输入和完整回答；provider 输入 fixture 为 7,500，最终投影 7,513。所有捕获快照的 blocks token 总和均等于 occupancy；第三轮未接入 CostService，不能据此声称三轮计费都已验证。
 - 首次 fixture 的长输入/回答以空格结尾，严格 substring 断言未通过；改为带明确 END 后缀的内容后，仍对完整输入/回答进行严格比较并通过。尚未精确定位末尾空白处理来源，不将此测试数据调整列为产品缺陷。
 - 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：12 passed / 10 ignored；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本项扩展了上节的运行内证据，证明该样本的跨轮次组装与数据库恢复没有把上下文缩减为最近一轮消耗；不证明真实 tokenizer/供应商误差、工具循环/压缩边界、Tauri 面板或完整桌面进程重启已通过。H-05、H-54、H-57 等已确认缺陷仍然独立存在。
+
+### 后续独立验证：延迟工具被发现后仍受 schema 与执行权限约束
+
+- 新增默认测试 `tool_manifest::tests::deferred_discovery_does_not_grant_missing_execution_permissions`。正式 ToolRegistry 注册一个需要 WorkspaceWrite 的 deferred 工具，其实际行为仅增加内存计数；通过正式 register_tool_search_into、live_tool_schema_source 与 ToolExecutionPipeline，使用 read_only 权限执行工具搜索，再显式尝试调用该工具。没有执行文件写入或公网调用。
+- 执行 `cargo test -p deepagent-app-core --lib deferred_discovery_does_not_grant_missing_execution_permissions --offline -- --nocapture`：1 passed。当前搜索确实返回一个匹配并写入 discovered（matches=1 / discovered=1），但只读 live schema 没有该工具；即使 pipeline 设置 auto_approve=true，真实调用仍在 Permission 阶段拒绝，计数为 0。developer 权限对照能够执行，计数变为 1。
+- 这证明该样本下的 discovery 不会增加 PermissionSet 能力，auto approve 也不绕过缺失能力。搜索候选快照本身尚未按 granted 过滤，会显示当前不可执行的名称/描述；本轮没有证据证明这导致真实模型循环失败或泄露敏感内容，不将其等同于执行越权，也不据此新增缺陷编号。该测试没有覆盖自定义角色按工具名限制：H-19 的 schema allowlist 与实际 registry 分裂仍是独立已复现问题。
+- Claude Code `tools/ToolSearchTool/ToolSearchTool.ts::call` 使用 invocation options.tools 作为发现池，`utils/toolSearch.ts` 决定 deferral；Codex `core/src/tools/handlers/tool_search.rs::ToolSearchHandlerCache::get_or_build` 从当前 registry 的 deferred entries 构建搜索视图。这里只对照发现池归属，不声称它们所有权限策略均等价于本系统 PermissionSet。已有 `large_plugin_advertises_one_source_and_loads_only_matches_in_same_run` 与 `cloned_registry_rebinds_search_to_child_discoveries` 还分别验证动态 schema 加载与父子 discovered 集合隔离；本轮执行 `cargo test -p deepagent-app-core --lib tool_manifest::tests --offline`：4 passed。
 
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 

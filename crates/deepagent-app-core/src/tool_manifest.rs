@@ -370,4 +370,102 @@ mod tests {
         assert_eq!(child_discovered.lock().unwrap().len(), 1);
         assert!(parent_discovered.lock().unwrap().is_empty());
     }
+
+    #[tokio::test]
+    async fn deferred_discovery_does_not_grant_missing_execution_permissions() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use deepagent_core::id::SessionId;
+        use deepagent_runtime::tool_pipeline::{ToolExecutionPipeline, ToolPipelineStage};
+        use deepagent_tools::{Permission, ToolInvocation};
+
+        struct WriteCapabilityTool(Arc<AtomicUsize>);
+
+        #[async_trait::async_trait]
+        impl Tool for WriteCapabilityTool {
+            fn descriptor(&self) -> ToolDescriptor {
+                ToolDescriptor {
+                    name: "mcp__audit__write_capability".into(),
+                    description: "Count invocations without touching any files".into(),
+                    parameters: serde_json::json!({"type": "object"}),
+                    risk: RiskLevel::Low,
+                    required_permissions: PermissionSet::from_iter_perms([
+                        Permission::WorkspaceWrite,
+                    ]),
+                }
+            }
+
+            async fn invoke(&self, _: serde_json::Value) -> Result<ToolOutput> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(ToolOutput::success(serde_json::json!({"counted": true})))
+            }
+
+            fn should_defer(&self) -> bool {
+                true
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(WriteCapabilityTool(calls.clone())))
+            .unwrap();
+        let discovered: DiscoveredToolSet = Arc::default();
+        register_tool_search_into(
+            &mut registry,
+            ToolSearchMode::Enabled,
+            discovered.clone(),
+            0,
+        )
+        .unwrap();
+        let visible = live_tool_schema_source(
+            registry.clone(),
+            PermissionSet::read_only(),
+            ToolSearchMode::Enabled,
+            discovered.clone(),
+            0,
+        );
+        let pipeline =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                .with_auto_approve(true);
+        let search = pipeline
+            .execute(ToolInvocation::new(
+                "tool_search",
+                serde_json::json!({"query": "select:mcp__audit__write_capability"}),
+            ))
+            .await
+            .unwrap();
+        assert!(search.output.ok);
+        assert!(visible()
+            .iter()
+            .all(|schema| schema.function.name != "mcp__audit__write_capability"));
+        let denied = pipeline
+            .execute(ToolInvocation::new(
+                "mcp__audit__write_capability",
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert!(!denied.output.ok);
+        assert_eq!(denied.stage, ToolPipelineStage::Permission);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        eprintln!(
+            "Deferred permission audit: matches={} discovered={} readonly_calls={} denied_stage={:?}",
+            search.output.value["matches"].as_array().unwrap().len(),
+            discovered.lock().unwrap().len(),
+            calls.load(Ordering::SeqCst),
+            denied.stage
+        );
+
+        let allowed =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::developer())
+                .execute(ToolInvocation::new(
+                    "mcp__audit__write_capability",
+                    serde_json::json!({}),
+                ))
+                .await
+                .unwrap();
+        assert!(allowed.output.ok);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 }
