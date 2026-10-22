@@ -431,3 +431,59 @@ async fn audit_video_node_events_survive_database_reopen() {
         "canonical run replay must retain the live workflow node events, including task id, output and artifact provenance"
     );
 }
+
+#[test]
+#[ignore = "audit: requires Node and desktop dependencies; actual Rust progress must reach TS resume config"]
+fn audit_desktop_video_progress_keeps_task_id_for_resume() {
+    use std::process::{Command, Stdio};
+
+    use deepagent_runtime::events::ChannelSink;
+    use deepagent_runtime::workflow::NodeEventPublisher;
+
+    let (sink, mut receiver) = ChannelSink::new();
+    let publisher = NodeEventPublisher::new(Arc::new(sink));
+    publisher.emit_job_progress("audit-revision", "video", TASK_ID, "queued");
+    let progress = receiver.try_recv().unwrap();
+    publisher.emit(NodeExecutionEvent {
+        status: NodeExecutionStatus::Completed,
+        outputs: Some(json!({
+            "videoTaskId": TASK_ID,
+            "videoUrl": "artifact://audit-video",
+            "operation": "video_generate",
+            "providerId": "audit-provider",
+            "modelId": "audit-model"
+        })),
+        ..NodeExecutionEvent::new("audit-revision".into(), "video".into())
+    });
+    let completed = receiver.try_recv().unwrap();
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/scripts/audit-video-task-progress.cjs");
+    let mut child = Command::new("node")
+        .arg(script)
+        .arg("--events-from-stdin")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("local Node is required for this opt-in seam audit");
+    serde_json::to_writer(
+        child.stdin.take().unwrap(),
+        &json!({"progress": progress, "completed": completed}),
+    )
+    .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let observed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    eprintln!("desktop video progress: {observed}");
+    assert_eq!(observed["completed"]["storedTaskId"], TASK_ID);
+    assert_eq!(observed["completed"]["resumedTaskId"], TASK_ID);
+    assert_eq!(observed["progress"]["receivedTaskId"], TASK_ID);
+    assert_eq!(
+        observed["progress"]["resumedTaskId"], TASK_ID,
+        "stopping before completion must retain the provider task id in the next real TS workflow request"
+    );
+}
