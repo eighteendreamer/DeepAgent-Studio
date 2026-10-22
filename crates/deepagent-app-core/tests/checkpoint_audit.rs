@@ -264,3 +264,165 @@ async fn audit_capture_failure_does_not_skip_backup_on_write_retry() {
     assert_eq!(observed.restored_count, 1);
     assert_eq!(observed.content_after_restore, "before-retry");
 }
+
+fn record_branch_edit(
+    db: &Arc<Database>,
+    session_id: deepagent_core::id::SessionId,
+    target: &std::path::Path,
+    storage: &std::path::Path,
+    run_id: &str,
+    content: &str,
+) -> (String, u64) {
+    let sequence = EventStore::new(db)
+        .load_session(session_id)
+        .unwrap()
+        .last()
+        .unwrap()
+        .sequence;
+    RunStore::new(db)
+        .create(run_id, &session_id.to_string(), None, 1_000)
+        .unwrap();
+    let checkpoint = CheckpointManager::new(
+        db.clone(),
+        run_id,
+        sequence as i64,
+        target.parent().unwrap(),
+        storage,
+    )
+    .unwrap();
+    checkpoint.capture_before(target).unwrap();
+    std::fs::write(target, content).unwrap();
+    let id = checkpoint.commit().unwrap();
+    RunStore::new(db)
+        .finish(run_id, "succeeded", None, 1_001)
+        .unwrap();
+    (id, sequence)
+}
+
+#[derive(Debug)]
+struct BranchRewindObservation {
+    content: String,
+    restored_paths: usize,
+    kept_sequence: u64,
+    discarded_checkpoint_sequence: Option<u64>,
+}
+
+fn observe_rewind_after_new_branch(discard_old_branch: bool) -> BranchRewindObservation {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let clock = FixedClock::new(1_000);
+    let workspace = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let target = workspace.path().join("branch.txt");
+    std::fs::write(&target, "base").unwrap();
+    let mut session = Session::create(&db, &clock, Some("branch checkpoint audit")).unwrap();
+    let id = session.id();
+    let app = AppService::from_shared(db.clone());
+    let mut discarded_checkpoint_sequence = None;
+    if discard_old_branch {
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("discarded branch first edit"),
+            })
+            .unwrap();
+        record_branch_edit(&db, id, &target, storage.path(), "old-first", "old-first");
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::assistant("discarded branch first answer"),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("discarded branch second edit"),
+            })
+            .unwrap();
+        let (old_checkpoint, sequence) =
+            record_branch_edit(&db, id, &target, storage.path(), "old-second", "old-second");
+        discarded_checkpoint_sequence = Some(sequence);
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::assistant("discarded branch second answer"),
+            })
+            .unwrap();
+        drop(session);
+        app.rewind_session(&id.to_string(), 0).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "base");
+        // Keeping old metadata for audit is not itself a defect. The later
+        // active-branch restore must avoid selecting these retired captures.
+        assert!(CheckpointStore::new(&db)
+            .get(&old_checkpoint)
+            .unwrap()
+            .is_some());
+        session = Session::recover(&db, &clock, id).unwrap();
+    }
+    session
+        .append(EventPayload::MessageAppended {
+            message: Message::user("current branch edit"),
+        })
+        .unwrap();
+    record_branch_edit(
+        &db,
+        id,
+        &target,
+        storage.path(),
+        "current",
+        "current-branch",
+    );
+    session
+        .append(EventPayload::MessageAppended {
+            message: Message::assistant("current branch answer"),
+        })
+        .unwrap();
+    let kept_sequence = EventStore::new(&db)
+        .load_session(id)
+        .unwrap()
+        .last()
+        .unwrap()
+        .sequence;
+    if let Some(sequence) = discarded_checkpoint_sequence {
+        assert!(sequence > kept_sequence);
+    }
+    // The discarded tail in the current branch never changes any file.
+    for message in [
+        Message::user("later current branch question without file edits"),
+        Message::assistant("later current branch answer without file edits"),
+    ] {
+        session
+            .append(EventPayload::MessageAppended { message })
+            .unwrap();
+    }
+    drop(session);
+    let result = app.rewind_session(&id.to_string(), kept_sequence).unwrap();
+    let history = EventStore::new(&db).load_session(id).unwrap();
+    assert_eq!(history.last().unwrap().sequence, kept_sequence);
+    let rendered = serde_json::to_string(&history).unwrap();
+    assert!(rendered.contains("current branch answer"));
+    assert!(!rendered.contains("discarded branch"));
+    assert!(!rendered.contains("later current branch"));
+    BranchRewindObservation {
+        content: std::fs::read_to_string(&target).unwrap(),
+        restored_paths: result.restored_paths.len(),
+        kept_sequence,
+        discarded_checkpoint_sequence,
+    }
+}
+
+#[test]
+fn rewind_over_text_only_tail_preserves_current_branch_file() {
+    let observed = observe_rewind_after_new_branch(false);
+    assert_eq!(observed.content, "current-branch");
+    assert_eq!(observed.restored_paths, 0);
+    assert_eq!(observed.kept_sequence, 4);
+    assert!(observed.discarded_checkpoint_sequence.is_none());
+}
+
+#[test]
+#[ignore = "audit: old-branch checkpoints must not overwrite files on a later branch rewind"]
+fn audit_rewind_does_not_restore_discarded_branch_checkpoints() {
+    let observed = observe_rewind_after_new_branch(true);
+    eprintln!("checkpoint branch audit: {observed:?}");
+    assert_eq!(
+        observed.content, "current-branch",
+        "text-only rewind selected a file backup from the discarded branch"
+    );
+    assert_eq!(observed.restored_paths, 0);
+}

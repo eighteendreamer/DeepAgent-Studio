@@ -44,6 +44,7 @@
 | 历史附件的内容身份 | 导入时已计算并记录 SHA-256；原图文件被另一张合法 PNG 替换后，同一事件附件 ID 在续聊中发送新字节，旧 metadata 未变且运行成功 | 已确认 H-70；真实导入、文件替换、解码、正式续聊和 wire 字节哈希对照，仅操作测试临时文件，未证明非授权写入能力 |
 | 发现能力与请求输入模态 | 官方形状的 input_modalities 在发现/目录恢复中丢失，声明仅文字的 Pro 仍经正式客户端发送 input_image；Flash 图片和 Pro 文字对照正常 | 已确认 H-71；ModelDiscovery/目录 serde/ModelClient/实际序列化离线复现，不含完整 AppCore 图片装配或真实供应商错误 |
 | 检查点备份丢失时的回退与分叉 | 正式 rewind/fork 均先恢复健康文件，再删除缺少备份的当前文件后报错；原会话历史和检查点记录未变，分叉未创建 | 已确认 H-72；真实临时文件、正式检查点及 AppService 双入口故障注入，完整备份对照通过；未操作用户文件或真实桌面 |
+| 回退后检查点的分支归属 | 旧分支回退后其检查点仍参与新分支的序号查询；新分支仅回退纯文字尾部，文件却被成功恢复为旧分支内容 | 已确认 H-73；正常 Session/检查点/AppService 两次回退和临时磁盘复现，所有备份完整，无磁盘故障注入或真实桌面操作 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -86,6 +87,7 @@
 | 运行及附属工作的归属 | 摘要、子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-31/H-45/H-60/H-61/H-64） | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
 | 内容身份与生命周期 | 去重名称没有对应正文、共享可变项目 scope、旧计时器作用到新调用（H-51/H-53/H-57/H-59） | Claude transcript 内容驱动去重及局部 timer cleanup；DeepSeek connection-owned system section；Wasmtime 的 Store deadline 语义 | 能力或记忆漏注入、跨项目污染、调用被无关计时器提前中断 |
 | 文件回退的失败边界 | 备份不可用尚未检查，当前文件已经删除；多文件已部分恢复而历史未变（H-72） | Claude fileHistory 先 stat 备份，已知缺失时不复制或删除当前文件；该机制不等于整个回退事务原子化 | 回退/分叉失败仍丢失当前文件，磁盘与会话处于不同恢复阶段 |
+| 回退后的派生数据归属 | 重用 sequence 后，丢弃分支的笔记覆盖和文件检查点仍可能作用于新分支（H-23/H-73） | Claude 按目标 messageId 定位文件快照；Codex 对有效历史应用 rollback 标记后计算分支位置 | 新分支历史与文件/摘要不一致，已经丢弃的决策或文件内容重新出现 |
 
 表中采用的是已查证的机制级比较，不表示参考项目整体没有其他缺陷；本系统的特定宿主、移动/工作流/WASM 集成，也不能直接以 Codex 同名能力代替验收。后文按问题给出触发、证据、影响及收敛方向，未覆盖项继续保持待审计。
 
@@ -1631,10 +1633,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：`借鉴/claudecode/restored-src/src/utils/fileHistory.ts::restoreBackup()` 先 `stat(backupPath)`；ENOENT 时记录错误并返回，尚未尝试复制，更不先 unlink 当前文件。`applySnapshot()` 仅在明确的 null 备份标记（文件在目标版本不存在）时删除文件；无法解析备份时不触碰文件。其多文件循环也有逐项错误处理，且缺失备份返回后的 changed 标记仍需另行审计；因此这里只借鉴“恢复来源已知不可用时先保留当前文件”的边界，不声称 Claude 提供多文件/历史全局事务或本轮已运行它的测试。当前 Codex 参考树中的 ghost_snapshot 已标记兼容字段，未用旧版快照机制替代当前实现作证。
 - 修复方向（尚未实施，本地设计）：在既有 CheckpointManager 内先解析并验证整个恢复计划的目标、备份边界及源可读性，缺失备份在任何目标删除前明确失败；恢复既存文件/目录时先在受限临时位置构建完整替换，再按平台能力提交，不能先删目标再读源。对中途失败保留逐项结果与可补偿的当前副本，明确 AppService 的文件恢复与事件截断/分支创建提交顺序和重试语义。跨文件、数据库和崩溃恢复的一致性属于本系统需要定义的本地契约，不从 stat 检查推导全局原子性。回归覆盖完整备份、缺失/不合法来源、部分复制失败、DB 截断失败、重试及 Windows 占用，不新建第二套事件或运行存储。
 
+### H-73：回退后的旧分支检查点仍可覆盖新分支文件，调用却返回成功
+
+**级别：高（P1）；范围：同一 session 原地回退后继续，再次调用文件回退。** 本项在所有备份完整、无数据库写入失败、无并发操作的正常流程中复现；不同于 H-72 的缺失备份故障，也不同于 H-23 的摘要水位，实际后果是工作区文件被旧分支覆盖。
+
+- 根因：`AppService::rewind_session()` 恢复检查点后截断会话事件，`Session::rewind()` 允许新事件继续占用旧 sequence；旧 run/checkpoint 元数据仍保留。`CheckpointStore::list_for_session_after_sequence()` 仅按 runs.session_id 和 `c.session_sequence > target` 查询，没有判断 checkpoint 所属事件是否仍在当前分支。后续回退因而可以选中已经丢弃分支的 checkpoint，且所有恢复源有效时不会报错。保留旧记录本身不是缺陷，缺的是恢复查询中的有效分支归属。
+- 动态证据：在 `checkpoint_audit.rs` 新增 `audit_rewind_does_not_restore_discarded_branch_checkpoints`，通过正式 Session 自动生成原生镜像、RunStore、CheckpointManager 和 AppService，在真实临时文件上执行：base → 旧分支 first 修改 old-first → 旧分支 second 修改 old-second → 正式 rewind 到 0 恢复 base → 新分支修改 current-branch，并保留到 assistant 答复的 sequence 4 → 再追加一轮纯文字对话，不再改文件 → 正式 rewind 到 4。两次 rewind 均 Ok，最终文本事件只含保留的新分支、没有旧分支或新尾部，但文件从 current-branch 变成 old-first，restored_paths=1。被误用的旧 second 检查点仍锚定 sequence 6；它的备份是 old-first，当前新分支在 sequence 6 处却是另一轮纯文字输入。各检查点均由正式 capture/commit 创建，旧 run 已显式标为 succeeded；没有伪造 manifest、重写检查点序号或删除备份。
+- 执行：`cargo test -p deepagent-app-core --test checkpoint_audit branch --offline -- --include-ignored --nocapture`：1 passed / 1 failed，测试体约 0.35s。正常对照为没有旧分支的相同新分支流程：纯文字尾部回退保留 current-branch，restored_paths=0；实验组明确输出 `content=old-first, restored_paths=1, kept_sequence=4, discarded_checkpoint_sequence=Some(6)`，保留当前文件断言失败。默认 ignored 探针用于记录缺陷，默认测试通过不表示 H-73 已修复。
+- 影响：用户撤销旧方案、继续编辑后，再回退一轮未修改文件的对话，也可能无错误地把文件恢复为旧方案。模型下一次读工作区时看到的文件与当前事件历史不同，继续编辑、验证或生成产物可能建立在错误版本上；若无其他副本，当前新内容可能丢失。本轮只验证原地 rewind 的顺序调用、单文件和服务入口，没有真实桌面、跨进程重启、fork 继承或并发写入验收；不外推为所有回退都必定误恢复。
+- 成熟实现对照：Claude `fileHistory.ts::fileHistoryRewind()` 通过目标 messageId 使用 `findLast()` 定位 FileHistorySnapshot，再由该快照的 trackedFileBackups 决定每个文件版本；不是把同一会话中所有数字位置更大的历史备份依次恢复。该实现注释明确 rewind 是文件副作用，不修改 FileHistoryState，所以不能声称 Claude 靠删除全部旧快照解决。Codex `core/src/thread_rollout_truncation.rs::user_message_positions_in_rollout()` / `fork_turn_positions_in_rollout()` 先应用 ThreadRolledBack 对有效历史位置的影响，并清除失效后缀，再计算分支位置；这里借鉴的是当前分支身份与历史有效性的处理，不声称当前 Codex 提供同样的文件检查点或本轮已运行参考测试。
+- 修复方向（尚未实施，本地设计）：让现有检查点元数据绑定稳定事件/分支来源，并让回退提交时退役被丢弃后缀的恢复资格；保留原始备份和审计记录，不依赖删除 runs 解决。当前有效前缀的检查点仍需支持继续向前回退，不能简单按“最新 generation”一刀切排除所有旧记录。文件恢复计划、事件截断、分支来源及 H-23 的笔记覆盖应共用同一分支变更事实，在既有持久化边界上定义失败和重试语义。验证包括两次/多次回退、同序号新事件、保留前缀、重启、fork、没有文件修改的尾部及真正的新分支修改，不新增第二套 store。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-73 回退分支检查点显式探针与正常对照 | `cargo test -p deepagent-app-core --test checkpoint_audit branch --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.35s；正常组文件保持 current-branch，旧分支组被恢复为 old-first，两次回退均成功、当前历史不含旧分支。仅临时文件和正式服务，不含真实桌面或模型请求 |
+| H-73 共享检查点入口默认基线 | `cargo test -p deepagent-app-core --test checkpoint_audit --offline`：3 passed / 3 ignored，约 0.21s；fmt、diff 检查通过。新缺陷探针另行显式失败；本批仅测试与文档，未重跑全 workspace、Clippy、桌面构建、真实 Tauri 或公网模型 |
 | H-72 检查点恢复显式探针与正常对照（见该节命令） | 1 passed / 1 failed，约 0.22s；rewind/fork 缺失备份均导致当前文件不可读、健康文件已恢复，原历史和检查点未变；完整备份两入口对照通过。未操作用户文件、未运行真实桌面 |
 | H-72 存在性补强及默认基线 | 补强后显式探针 1 passed / 1 failed，约 0.19s，两个入口 current_file_exists=false。默认 `cargo test -p deepagent-app-core --test checkpoint_audit --offline`：1 passed / 1 ignored；`cargo test -p deepagent-app-core --test checkpoint_audit --lib service::tests --offline`：库测试 405 passed / 10 ignored / 688 filtered，集成因同一名字过滤运行 0 项，已另跑前述集成命令；`cargo test -p deepagent-runtime --lib checkpoint::tests --offline`：5 passed。fmt、diff 检查通过；未跑本批 workspace、Clippy、前端构建、公网模型或真实桌面，生产行为未修改 |
 | 检查点捕获同对象重试的待定证据 | 显式 capture 探针与对照 1 passed / 1 failed，约 0.06s；正式 pipeline/真实文件工具的第二次调用由测试发起，生产普通 loop 同对象重试尚未证明，不新增 H 编号。补充后默认 `cargo test -p deepagent-app-core --test checkpoint_audit --offline`：2 passed / 2 ignored，约 0.21s；fmt、diff 检查通过。仅测试与文档，未再次扩大到 workspace、Clippy、桌面或公网验证 |
@@ -1954,6 +1969,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 历史附件的内容身份 | H-70 | 复用导入摘要与附件存储，把期望身份贯穿引用与请求读取；参考 Harness 的 digest/metadata 校验，旧记录迁移为本地设计 | 正常读取身份一致；合法替换/损坏不借旧 ID 发送；受控转换可追踪；旧会话、重启、取消、实际字节和单终态可验证 |
 | 发现能力与输入模态 | H-71 | 既有 ModelInfo/ModelCapability/provider seam 共用本次有效模型的模态声明；参考 Harness 在准备图片前检查 model inputModalities | 目录/恢复保留能力；文字模型不交出图片请求；未知能力、切模型/fallback/子运行、旧目录和真实请求计数可验证 |
 | 检查点恢复的失败一致性 | H-72 | 既有 CheckpointManager 先验证来源与计划，完成临时替换后提交；参考 Claude 的缺失备份前置检查，跨文件/历史补偿契约为本地设计 | 缺失备份不删除当前文件；部分失败、DB 截断失败及重试可诊断和恢复；rewind/fork、目录与 Windows 文件占用分别验证 |
+| 回退后的派生状态分支身份 | H-23、H-73 | 现有回退事实同时决定事件、检查点恢复资格和笔记覆盖；参考 Claude 的 messageId 快照与 Codex 的有效历史位置，持久化提交/补偿为本地设计 | 丢弃分支不覆盖新文件/摘要；保留前缀仍可回退；同序号替换、重启、fork、多次回退与失败重试可验证 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
