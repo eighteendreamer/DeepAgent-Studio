@@ -1,0 +1,25 @@
+import { build } from "vite";
+import react from "@vitejs/plugin-react";
+import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
+import { resolve } from "node:path";
+import postcss from "../../postcss.config.js";
+
+const root=fileURLToPath(new URL(".",import.meta.url));
+const desktop=fileURLToPath(new URL("../../",import.meta.url));
+const repository=fileURLToPath(new URL("../../../../",import.meta.url));
+const output=resolve(desktop,"target/sidebar-options-20261022/build");
+await build({configFile:false,root,base:"./",plugins:[react()],css:{postcss},build:{outDir:output,emptyOutDir:false,target:"es2020"}});
+let html=await readFile(resolve(output,"index.html"),"utf8");
+const script=html.match(/<script\b[^>]*\bsrc="([^"]+)"[^>]*><\/script>/);
+const css=html.match(/<link\b[^>]*\bhref="([^"]+\.css)"[^>]*>/);
+if(!script||!css)throw Error("Expected one script and stylesheet");
+const javascript=await readFile(resolve(output,script[1]),"utf8");
+const stylesheet=await readFile(resolve(output,css[1]),"utf8");
+html=html.replace(script[0],()=>`<script type="module">${javascript.replace(/<\/script/gi,"<\\/script")}</script>`);
+html=html.replace(css[0],()=>`<style>${stylesheet}</style>`);
+const destination=resolve(repository,".codex/previews");
+await mkdir(destination,{recursive:true});
+const target=resolve(destination,"choice-preview-2026-10-22-sidebar-d-v2.html");
+await writeFile(target,html,"utf8");
+console.log(`Standalone HTML: ${target}`);

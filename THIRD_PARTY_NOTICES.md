@@ -20,8 +20,11 @@ below. An unclassified plugin fails CI.
 | Plugin | Upstream | Version | License | License file | Content hash |
 | --- | --- | --- | --- | --- | --- |
 | `rea` | https://github.com/morluto/rea | Wrapper 0.1.0 / REA 6.4.0 | MIT runtime; Apache-2.0 wrapper | `resources/plugins/rea/LICENSE-REA`, `LICENSE` | `sha256:626043c621490efcaf9ca6fb90c5345cf6734ec819a47efdc73f93dc846aa9ec` |
-| `superpowers` | https://github.com/obra/superpowers | 5.1.3 | MIT | `resources/plugins/superpowers/LICENSE` | `sha256:8f2161157731d3043dce139124f919b46203b84f5211dbbee1aec79103d3fe56` |
+| `superpowers` | https://github.com/obra/superpowers | 5.1.3 | MIT | `resources/plugins/superpowers/LICENSE` | `sha256:185371a2eccc4d17f72186fa0bc339cd77318cdaf8eb84a990427055c2b73aa8` |
 | `wedecode` | https://gitee.com/xiaoshangongzuoshi/wxapkg | 0.9.1 | GPL-3.0-or-later | `resources/plugins/wedecode/LICENSE` | `sha256:7a1c433926537e561ff8300628e86f738f71c43ab47ed8b73e4d0fb102d0d9ac` |
+
+The Superpowers composer icon was restored from the locally installed 5.0.7
+bundle under the same retained MIT license; its skills remain at 5.1.3.
 
 REA's manifest, MCP configuration, original Skill and icon are maintained in the
 bundled resource directory. Its Windows x64 `runtime.zip` and metadata are

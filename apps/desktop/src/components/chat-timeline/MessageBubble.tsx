@@ -7,6 +7,7 @@ import type { ComposerMention, ComposerSkillSelection } from "../../types";
 import { MarkdownText } from "../MarkdownText";
 import { ImagePreviewTrigger } from "../ImagePreviewTrigger";
 import { useMessageEditMotion } from "../ui/useMessageEditMotion";
+import { useMessageSendTarget } from "../ui/MessageSendMotionContext";
 import { TintButton } from "../ui/TintButton";
 import type { ChatBlock } from "./timelineTypes";
 
@@ -154,6 +155,7 @@ export function UserMessageBubble({
   const [draft, setDraft] = useState(block.text.replace(/[\uE000\uE001]/g, ""));
   const { slotRef, shellRef, compactRef, editorRef, textareaRef, actionsRef, editButtonRef } =
     useMessageEditMotion(editing, draft, block);
+  const bubbleRef = useMessageSendTarget(block.source.id ?? block.id);
   const hasVisibleMessage = Boolean(block.text || block.selectedSkills.length > 0 || block.mentions.length > 0);
 
   const cancelEdit = () => {
@@ -174,12 +176,12 @@ export function UserMessageBubble({
   };
 
   return (
-    <div className="group flex w-full flex-col items-end">
+    <div ref={bubbleRef} className="group flex w-full flex-col items-end">
       <AttachmentPreviews block={block} />
       <div ref={slotRef} data-user-message-layout className="relative w-full">
         <div ref={shellRef} data-message-edit-shell data-state={editing ? "open" : "closed"}
           className="morph-menu-shell absolute right-0 top-0 overflow-hidden">
-          <div ref={compactRef} aria-hidden={editing}
+          <div ref={compactRef} data-user-message-id={block.source.id ?? block.id} aria-hidden={editing}
             className={hasVisibleMessage ? `${USER_BUBBLE_READ} text-[15px] leading-relaxed text-text-base` : "absolute right-0 top-0 h-0 w-0 overflow-hidden"}>
             {hasVisibleMessage && <UserInlineContent content={block.text} skills={block.selectedSkills} mentions={block.mentions} />}
           </div>

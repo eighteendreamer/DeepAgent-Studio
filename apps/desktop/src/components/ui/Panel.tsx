@@ -3,7 +3,7 @@ import { cn } from "../shadcn/utils";
 import { FLOATING_MENU } from "./motion";
 
 /**
- * 浮层容器（下拉菜单/弹层面板）—— 统一语言：无边框、bg-elevated-bg + 大扩散阴影。
+ * 浮层容器（下拉菜单/弹层面板）—— 浅色细边线、bg-elevated-bg + 柔和阴影。
  * menu=true 时附加入场动效（方案 H）；模态框等传 menu={false}。
  */
 export const Panel = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement> & { menu?: boolean }>(

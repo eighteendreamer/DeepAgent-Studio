@@ -1,0 +1,18 @@
+:root {
+  --ui-menu-border:color-mix(in srgb, var(--theme-border, #dfe2e7) 75%, transparent);
+}
+/* An inset outline stays inside the existing geometry and keeps the menu's
+   continuous corners without adding a second line or changing its dimensions. */
+.ui-menu-surface {
+  border-width:0;
+  outline:1px solid var(--ui-menu-border);
+  outline-offset:-1px;
+}
+/* A morphing menu paints through its inner shell, not its positioning box. */
+.spring-surface.ui-menu-surface[data-spring-tone="menu"] {
+  outline:none;
+}
+.spring-surface.ui-menu-surface[data-spring-tone="menu"] > [data-spring-shell] {
+  outline:1px solid var(--ui-menu-border);
+  outline-offset:-1px;
+}

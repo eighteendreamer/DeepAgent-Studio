@@ -2,7 +2,7 @@ import { HoverInfo } from "./ui/HoverInfo";
 import { useId } from "react";
 import { Check, ChevronDown, type LucideIcon } from "lucide-react";
 
-import { Slider } from "./ui/Slider";
+import { EffortSlider } from "./ui/EffortSlider";
 
 import { ListItem } from "./ui/ListItem";
 
@@ -224,7 +224,7 @@ export function ModelThinkingSelector({
 
             </div>
 
-            <Slider
+            <EffortSlider
 
               stops={thinkingOptions.map((option) => ({
                 value: option.id,
@@ -237,6 +237,7 @@ export function ModelThinkingSelector({
               onChange={(value) => onChooseThinking(value as ThinkingDepth)}
 
               ariaLabel="推理强度"
+              disabled={disabled}
 
             />
 

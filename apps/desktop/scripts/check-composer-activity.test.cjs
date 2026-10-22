@@ -37,6 +37,8 @@ function renderActivityBar(props) {
     if (cache.has(relative)) return cache.get(relative);
     const exports = compile(relative, { require: specifier => {
       if (!specifier.startsWith(".")) return require(specifier);
+      // CSS imports are handled by Vite and do not affect server-rendered markup.
+      if (specifier.endsWith(".css")) return {};
       const base = path.join(path.dirname(relative), specifier);
       const dependency = [base + ".tsx", base + ".ts"].find(file => fs.existsSync(path.join(root, file)));
       return load(dependency);

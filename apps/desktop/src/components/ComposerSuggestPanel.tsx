@@ -1,4 +1,4 @@
-import { useMemo, type ReactNode } from "react";
+import { useLayoutEffect, useMemo, useRef, type ReactNode } from "react";
 import { Panel } from "./ui/Panel";
 import { HoverInfo } from "./ui/HoverInfo";
 import { MENU_ITEM_ATTR, SlidingMenuList } from "./ui/SlidingMenuList";
@@ -12,6 +12,7 @@ export type ComposerSuggestSection<T> = {
 
 
 interface Props<T> {
+  id: string;
   open: boolean;
   sections: ComposerSuggestSection<T>[];
   selectedIndex: number;
@@ -24,6 +25,7 @@ interface Props<T> {
 }
 
 export function ComposerSuggestPanel<T>({
+  id,
   open,
   sections,
   selectedIndex,
@@ -34,6 +36,8 @@ export function ComposerSuggestPanel<T>({
   onHover,
   className = "",
 }: Props<T>) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const activeId = useMemo(() => {
     let index = 0;
     for (const section of sections) {
@@ -44,13 +48,43 @@ export function ComposerSuggestPanel<T>({
     }
     return "";
   }, [sections, selectedIndex, getKey]);
+
+  useLayoutEffect(() => {
+    const panel = panelRef.current;
+    const anchor = panel?.parentElement;
+    if (!open || !panel || !anchor) return;
+    const resize = () => {
+      const top = anchor.closest(".app-main-surface")?.getBoundingClientRect().top ?? 0;
+      // Leave 8px above/below the shell, plus its two 6px padding gutters.
+      const available = Math.max(0, anchor.getBoundingClientRect().top - Math.max(0, top) - 28);
+      panel.style.setProperty("--suggest-list-height", `${Math.min(320, available)}px`);
+    };
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(anchor);
+    window.addEventListener("resize", resize);
+    return () => { observer.disconnect(); window.removeEventListener("resize", resize); };
+  }, [open]);
+
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    const selected = scroll?.querySelector<HTMLElement>('[aria-selected="true"]');
+    if (!open || !scroll || !selected) return;
+    const bounds = scroll.getBoundingClientRect(), row = selected.getBoundingClientRect();
+    if (row.top < bounds.top) scroll.scrollTop -= bounds.top - row.top;
+    else if (row.bottom > bounds.bottom) scroll.scrollTop += row.bottom - bounds.bottom;
+  }, [open, activeId]);
+
   if (!open) return null;
   return (
     <>
       <Panel
-        className={`absolute inset-x-3 bottom-full z-50 mb-2 max-h-60 w-auto overflow-y-auto p-1.5 ${className}`}
+        ref={panelRef}
+        data-composer-suggest
+        className={`absolute inset-x-0 bottom-full z-50 mb-2 w-auto overflow-hidden p-1.5 ${className}`}
       >
-      <SlidingMenuList activeId={activeId}>
+      <div ref={scrollRef} className="composer-suggest-scroll custom-scrollbar max-h-[var(--suggest-list-height,240px)] overflow-y-auto overscroll-contain">
+      <SlidingMenuList id={id} role="listbox" aria-label={sections.map(section => section.label).join("、")} activeId={activeId} pillClassName="left-0 right-0">
         {sections.map((section, sectionIndex) => {
           let baseIndex = 0;
           for (let i = 0; i < sectionIndex; i += 1) {
@@ -58,7 +92,7 @@ export function ComposerSuggestPanel<T>({
           }
           return (
             <div key={section.key} className={sectionIndex > 0 ? "mt-1" : ""}>
-              <div className="px-4 py-1 text-[12px] font-medium text-text-secondary">
+              <div className="px-2 py-1.5 text-[12px] font-medium text-text-secondary">
                 {section.label}
               </div>
               {section.items.map((item, index) => {
@@ -69,6 +103,10 @@ export function ComposerSuggestPanel<T>({
                   <button
                     key={itemKey}
                     type="button"
+                    role="option"
+                    id={`${id}-option-${flatIndex}`}
+                    aria-selected={selected}
+                    tabIndex={-1}
                     {...{ [MENU_ITEM_ATTR]: itemKey }}
                     onMouseDown={(event) => {
                       event.preventDefault();
@@ -90,6 +128,7 @@ export function ComposerSuggestPanel<T>({
           );
         })}
       </SlidingMenuList>
+      </div>
       </Panel>
     </>
   );

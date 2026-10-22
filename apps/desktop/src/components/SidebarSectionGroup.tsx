@@ -39,10 +39,10 @@ export function SidebarSectionGroup({ section, collapsed, sessionCount, onToggle
   };
   const confirm = (action: "archive" | "remove") => { openingDialog.current = true; setError(""); setConfirmation(action); };
   return <div className="flex flex-col">
-    <div data-custom-contextmenu="1" className="group mb-1 flex min-w-0 items-center justify-between px-2 text-text-secondary"
+    <div data-custom-contextmenu="1" className="sidebar-section-heading group mb-1 flex min-w-0 items-center justify-between px-2"
       onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); setMenuOpen(true); }}>
       <Button variant="ghost" aria-expanded={!collapsed} onClick={onToggle}
-        className="h-auto min-w-0 flex-1 justify-start gap-0.5 rounded-none bg-transparent p-0 text-[12px] font-normal hover:bg-transparent hover:text-text-secondary">
+        className="h-auto min-w-0 flex-1 justify-start gap-1 rounded-none bg-transparent p-0 text-[13px] font-medium hover:bg-transparent hover:text-text-secondary">
         <span className="truncate">{section.name}</span>
         <ChevronDown className={cn("h-3 w-3 shrink-0 transition-transform", collapsed && "-rotate-90")}/>
       </Button>
