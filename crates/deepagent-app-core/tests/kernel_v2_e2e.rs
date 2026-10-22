@@ -39,6 +39,9 @@ mod native_output_items;
 #[path = "kernel_v2_e2e/incomplete_reason.rs"]
 mod incomplete_reason;
 
+#[path = "kernel_v2_e2e/model_selection.rs"]
+mod model_selection;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/path_boundary.rs"]
 mod path_boundary;

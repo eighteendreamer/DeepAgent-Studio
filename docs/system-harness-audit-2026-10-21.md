@@ -21,6 +21,7 @@
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
+| Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态及父任务超时丢子运行收尾均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两真实进程重复触发同一任务已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42；调度持久化故障与完整退出边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -1832,6 +1833,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响及限制：已成功退出的本地凭据状态会被恢复，或用户刚保存的新 Key 被旧值覆盖；新连接读到 configured=true。若旧 Key 仍有效，后续运行可能使用旧账户/凭据，影响用户对退出与计费归属的判断；本轮没有发出后续模型请求、测试供应商撤销或验证真实桌面重启。当前 UI 本地 onboarding 标记与后端状态如何表现，仍需 Tauri 验收，不能把本探针写成已自动重新进入工作台。
 - 收敛方向（尚未实施，本地设计）：在现有 SettingsService/SecretStore 边界区分“目录刷新”和“用户显式更换凭据”；刷新不得因为复用初始化就重新保存捕获的旧 Key。撤销/更换与在途操作使用共同凭据代次/提交资格，网络结果提交前对照数据库当前版本；退出也必须推进代次，避免删除后重设相同字符串的 ABA 问题。宿主内取消旧等待可以减少浪费，但跨宿主仍需原子条件提交。回归覆盖退出、换 Key、同值重新登录、两次初始化乱序完成、网络失败及正常顺序操作，验证数据库凭据、配置 view 和真实后续请求所用身份一致；不新增第二套凭据存储。
 
+### H-89：Harness 显式选择未知模型时静默回退到默认模型
+
+**级别：中（P2）；触发条件：Harness `turn/start` 显式提供的 model 不在当前模型目录中。** 默认模型和目录内显式模型正常；本项不表示普通桌面对话已遇到此问题。
+
+- 根因与生产路径：公开 `TurnStartRequest.model` 由 CLI app-server 优先于 thread 默认模型，并进入 `HarnessRunOverrides`。`RunConfigOverlay` 将其作为显式 `model_override` 传给 `select_run_model`；当前实现先以 `catalog.has_model(id)` 过滤，未知值被丢弃，随后无提示选择该角色的 catalog 默认值。该兼容注释针对 `~/.claude/settings.json` 的 `sonnet/opus` 别名，但 Harness 显式选择也经过同一过滤分支，没有来源区分。正式 `ChatService` 集成探针捕获模型请求序列化 body：请求 `deepseek-audit-not-in-catalog`，实际 wire 为 `deepseek-v4-flash`，没有错误且 durable terminal 为 `succeeded`。
+- 动态复现与对照：`model_selection::audit_unknown_explicit_model_is_rejected_or_sent_without_substitution` 以 **0 passed / 1 failed** 退出，输出 `requested=deepseek-audit-not-in-catalog wire_models=["deepseek-v4-flash"] error_present=false terminal=succeeded`。同一夹具的默认模型与已知显式 Pro 均到达预期 wire；不支持的显式 provider 在任何模型请求前明确失败。测试使用临时文件 SQLite、正式 SettingsService/ChatService/Kernel 与离线传输，没有调用公网、真实模型或完整 stdio server。
+- 成熟实现对照：DeepSeek Harness `packages/llm/llm-pi-ai/src/adapter.ts::modelOf` 对未知 provider/model 返回 `UNKNOWN_MODEL`，请求准备与流式请求共用解析；Codex `models-manager/src/model_info.rs::model_info_from_slug` 的未知 slug 回退仅补能力元数据且保留请求 slug。Codex 的 manager 接口也允许特定实现按明示策略做 provider fallback，因此这里的结论限定为：显式模型不能在没有策略提示时静默变成另一个模型。Claude 别名兼容应在来源明确的设置导入入口解析，而不是对所有显式请求做默认回退。
+- 影响与限制：调用方指定的模型没有被使用，用户或自动化客户端可能误以为请求使用了指定能力，实际却以默认模型完成；预算、能力和预期响应可能不同。探针没有请求真实供应商，因此不报告实际费用、质量或账户侧日志；也未启动 CLI stdio 端到端或 Tauri 桌面。当前证据证明正式 AppCore 请求构造和持久化终态中的确定行为，不证明特定 Harness 客户端已经触发。
+- 收敛方向（尚未实施，本地设计）：保留兼容别名，但只在配置来源明确的适配入口映射；Harness/CLI/SDK 的显式 model 应在本地明确拒绝未知值，或按原值发送并让 provider 决定，不能静默换成目录默认项。错误需说明请求模型及可选目录信息，并维持单一 durable failed 终态。补充 stdio `turn/start` 回归验证指定模型、未知模型、thread 默认和别名导入四条路径。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -1841,6 +1852,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | H-88 默认回归与检查 | `cargo test -p deepagent-app-core --lib settings::tests --offline`：30 passed / 2 ignored，约 0.50s；`cargo test -p deepagent-app-core --lib secret_store::tests --offline`：5 passed，约 0.02s；`cargo fmt --all -- --check`、`git diff --check` 通过。本批只增加审计探针及报告，未运行全 workspace、Clippy、前端构建、真实 Tauri 或跨进程复测；两项缺陷保持未修复 |
 | H-87 多宿主设置覆盖显式探针 | `cargo test -p deepagent-app-core --lib settings::tests::audit_refresh_models_preserves_other_host_sandbox_mode --offline -- --ignored --nocapture`：0 passed / 1 failed；两个独立 SQLite 文件连接交错写入后，刷新将另一连接成功保存的 `ReadOnly` 覆为旧 `WorkspaceWrite`；第三连接读回确认落盘结果；临时数据库与离线 GateTransport，未启动真实多进程桌面或调用公网 |
 | H-87 默认设置基线与检查 | `cargo test -p deepagent-app-core --lib settings::tests --offline`：30 passed / 1 ignored，约 0.54s；单服务沙箱设置刷新对照通过；`cargo fmt --all -- --check`、`git diff --check` 通过。缺陷探针需显式执行，默认通过不代表已修复；本批仅测试与文档，未跑全 workspace、Clippy、前端构建、真实 Tauri 或多进程测试 |
+| H-89 显式模型选择探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e model_selection --offline -- --include-ignored --nocapture`：2 passed / 1 failed；未知显式模型实际发送为 `deepseek-v4-flash` 并成功终止，默认与已知显式模型以及非法 provider 对照均通过；临时 SQLite/离线 transport，无公网或完整 CLI stdio/Tauri |
 | H-86 GET 反射凭据显式探针 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::audit_get_error_body_does_not_echo_bearer_credential -- --ignored --nocapture`：0 passed / 1 failed，约 0.01s；本机 401 服务反射请求 Authorization，生产 GET 错误字符串含完整占位 key |
 | H-86 doctor 诊断传播显式探针 | `cargo test -p deepagent-app-core --lib doctor::tests::audit_api_key_check_redacts_credentials_reflected_by_get_errors --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 `check_api_key` 的 detail 含完整占位 key，临时内存 DB/secret store，无公网 |
 | 模型 API 跨 origin 重定向凭据对照 | `cargo test -p deepagent-models --features http --offline reqwest_transport::tests::cross_origin_redirect_does_not_forward_bearer_authorization -- --nocapture`：1 passed；首跳带占位 Bearer key、302 到另一端口后的第二跳无 Authorization，目标响应成功；仅本机 loopback |
