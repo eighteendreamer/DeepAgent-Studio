@@ -18,6 +18,9 @@ mod build_boundary;
 #[path = "kernel_v2_e2e/image_preparation.rs"]
 mod image_preparation;
 
+#[path = "kernel_v2_e2e/branch_boundary.rs"]
+mod branch_boundary;
+
 #[cfg(feature = "web")]
 #[path = "kernel_v2_e2e/search_capability.rs"]
 mod search_capability;

@@ -45,6 +45,7 @@
 | 发现能力与请求输入模态 | 官方形状的 input_modalities 在发现/目录恢复中丢失，声明仅文字的 Pro 仍经正式客户端发送 input_image；Flash 图片和 Pro 文字对照正常 | 已确认 H-71；ModelDiscovery/目录 serde/ModelClient/实际序列化离线复现，不含完整 AppCore 图片装配或真实供应商错误 |
 | 检查点备份丢失时的回退与分叉 | 正式 rewind/fork 均先恢复健康文件，再删除缺少备份的当前文件后报错；原会话历史和检查点记录未变，分叉未创建 | 已确认 H-72；真实临时文件、正式检查点及 AppService 双入口故障注入，完整备份对照通过；未操作用户文件或真实桌面 |
 | 回退后检查点的分支归属 | 旧分支回退后其检查点仍参与新分支的序号查询；新分支仅回退纯文字尾部，文件却被成功恢复为旧分支内容 | 已确认 H-73；正常 Session/检查点/AppService 两次回退和临时磁盘复现，所有备份完整，无磁盘故障注入或真实桌面操作 |
+| 源事件与原生镜像之间的分支边界 | 以用户 MessageAppended 的 sequence 为保留点，正式 fork/rewind 成功且源消息存在，下一次 ChatService wire 却缺该消息；包含下一条镜像的对照正常 | 已确认 H-74；两个入口各两组、正式恢复及请求序列化离线复现；限定原始序号锚点，未宣称桌面默认最新位置分支同样触发 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -1644,10 +1645,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 成熟实现对照：Claude `fileHistory.ts::fileHistoryRewind()` 通过目标 messageId 使用 `findLast()` 定位 FileHistorySnapshot，再由该快照的 trackedFileBackups 决定每个文件版本；不是把同一会话中所有数字位置更大的历史备份依次恢复。该实现注释明确 rewind 是文件副作用，不修改 FileHistoryState，所以不能声称 Claude 靠删除全部旧快照解决。Codex `core/src/thread_rollout_truncation.rs::user_message_positions_in_rollout()` / `fork_turn_positions_in_rollout()` 先应用 ThreadRolledBack 对有效历史位置的影响，并清除失效后缀，再计算分支位置；这里借鉴的是当前分支身份与历史有效性的处理，不声称当前 Codex 提供同样的文件检查点或本轮已运行参考测试。
 - 修复方向（尚未实施，本地设计）：让现有检查点元数据绑定稳定事件/分支来源，并让回退提交时退役被丢弃后缀的恢复资格；保留原始备份和审计记录，不依赖删除 runs 解决。当前有效前缀的检查点仍需支持继续向前回退，不能简单按“最新 generation”一刀切排除所有旧记录。文件恢复计划、事件截断、分支来源及 H-23 的笔记覆盖应共用同一分支变更事实，在既有持久化边界上定义失败和重试语义。验证包括两次/多次回退、同序号新事件、保留前缀、重启、fork、没有文件修改的尾部及真正的新分支修改，不新增第二套 store。
 
+### H-74：分支边界截在源消息与原生镜像之间，保留的消息不进入下一请求
+
+**级别：中（P2）；范围：fork_session / rewind_session 接受原始事件 sequence 作为 inclusive 保留点，且该点是已有原生历史后的 MessageAppended 源事件。** Harness 的 thread/fork 可显式指定 at_sequence；桌面当前默认使用最新 timeline sequence，本轮未证明该默认选点会落在同一断点，不能外推为所有正常分叉都会丢消息。
+
+- 根因：`Session::append_with_response_projection()` 将 MessageAppended 与随后生成的 ResponseItemAppended 分别追加；前者返回的 sequence 可以成为合法 API 锚点。AppService/Session/EventStore 的分支与截断直接按 `<= target` 保存，既不扩大到完整逻辑消息组，也不拒绝这个边界。恢复时 `input_runtime.rs::indexed_response_items()` 在 first_native 之后只采纳原生事件，保留的源 MessageAppended 不再进入原生模型历史。因而“源日志保留”并不意味着请求 Surface 保留；该问题发生在纯文字上，区别于 H-67 的附件字段丢失。
+- 动态证据：新增 `kernel_v2_e2e/branch_boundary.rs`。以正式 Session 依次追加较早 user/assistant、目标用户消息和待丢弃 assistant；目标源事件 sequence=5，自动镜像=6。通过正式 AppService fork/rewind 分别保留到 5 或 6，严格断言目标 MessageAppended 在保留事件中、尾部 assistant 已不在、实际尾 sequence 等于指定点。随后用真实 ChatService 接纳和恢复、ModelAgent 及正式 Responses 序列化发起下一轮；仅 transport 提供离线原生回答。四组请求均收到较早用户输入和本次继续指令；keep=5 的 Fork/Rewind 都没有目标用户内容，keep=6 的两组都包含目标内容。来源历史由正式 Session 创建，不是前三轮真实模型对话，也未伪造原生镜像。
+- 执行：`cargo test -p deepagent-app-core --test kernel_v2_e2e branch_boundary --offline -- --include-ignored --nocapture`：1 passed / 1 failed，测试体约 0.66s。默认 ignored 的 `audit_branch_at_source_message_preserves_that_message_in_request` 在观察两入口后断言失败，均为 retained_user_sent=false；正常边界对照 retained_user_sent=true。所有继续调用返回 Ok；这不表示真实供应商能凭缺失内容正确回答，未发送公网请求。
+- 影响：机器客户端在 thread/read 提供的源消息 sequence 上建立分支，或调用原始 rewind API 保留至该消息后继续，可能静默丢掉最近保留的用户约束/需求。源记录仍在，检查单纯持久化是否存在不能发现；后续自动镜像也不能补回已经错过的旧消息。未覆盖工具调用/结果切割、压缩边界、运行中分叉、UI 手动选择、跨进程重启及其他协议；不据此解释 Codex 宿主的 cipher_incompatible。
+- 成熟实现对照：Codex `core/src/thread_rollout_truncation.rs` 通过解释用户/指令 turn 边界来确定有效分支位置，并先应用 rollback 对边界的影响；`truncate_rollout_before_nth_user_message_from_start()` 明确按 user message 位置裁剪。`truncate_rollout_after_turn_id()` 还要求目标 turn 位于当前有效历史、有持久化 TurnStarted 身份且状态不是 InProgress，裁剪到下一个 turn 起点之前；找不到稳定身份或目标仍在进行则明确拒绝。这些机制避免把任意原始记录位置直接等同于完整 turn。Claude 文件快照用稳定 messageId 定位目标（H-73 已述），只能作为语义身份参考，不能视为本轮已验证它的模型历史切割。需要借鉴的是明确逻辑消息/turn 的边界；本系统仍可保留现有 sequence 协议并定义它如何映射到完整提交组，不必照搬参考的 wire 字段。本轮未运行参考测试。
+- 修复方向（尚未实施，本地设计）：在既有事件/恢复入口定义一个逻辑提交组，保存或解析源消息与全部原生镜像的关联；fork/rewind 统一把原始锚点解析为完整语义边界，或在执行前明确拒绝会拆开提交组的锚点。不能只让前端 sequence+1，因为 reasoning、多工具和不同消息的镜像数并不固定。恢复还需区分合法原生边界与不完整镜像，不将原始源事件静默丢弃；完整事务、失败补偿、旧日志兼容及 cursor 协议属于本地设计，复用现有 EventStore。回归应覆盖纯文字/附件/reasoning/tool call/result、旧日志、故障中断、压缩和 raw sequence 用户，检查完整 wire 与持久化一致，而不是只验证 UI 气泡。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-74 源消息分支边界显式探针与对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e branch_boundary --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.66s；两入口 keep=5 丢目标消息、keep=6 保留，正式续聊均 Ok；transport 离线，不含真实供应商或桌面 UI |
+| H-74 终态补强与共享入口基线 | 补充四组续聊均为单个 succeeded 终态、保留日志无待丢弃 assistant 后，显式探针约 0.65s 仍为 1 passed / 1 failed。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：15 passed / 14 ignored，约 1.67s；fmt、diff 检查通过。本批只增加审计测试和文档，未跑全 workspace、Clippy、前端构建、真实桌面或公网模型 |
 | H-73 回退分支检查点显式探针与正常对照 | `cargo test -p deepagent-app-core --test checkpoint_audit branch --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.35s；正常组文件保持 current-branch，旧分支组被恢复为 old-first，两次回退均成功、当前历史不含旧分支。仅临时文件和正式服务，不含真实桌面或模型请求 |
 | H-73 共享检查点入口默认基线 | `cargo test -p deepagent-app-core --test checkpoint_audit --offline`：3 passed / 3 ignored，约 0.21s；fmt、diff 检查通过。新缺陷探针另行显式失败；本批仅测试与文档，未重跑全 workspace、Clippy、桌面构建、真实 Tauri 或公网模型 |
 | H-72 检查点恢复显式探针与正常对照（见该节命令） | 1 passed / 1 failed，约 0.22s；rewind/fork 缺失备份均导致当前文件不可读、健康文件已恢复，原历史和检查点未变；完整备份两入口对照通过。未操作用户文件、未运行真实桌面 |
@@ -1970,6 +1984,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 发现能力与输入模态 | H-71 | 既有 ModelInfo/ModelCapability/provider seam 共用本次有效模型的模态声明；参考 Harness 在准备图片前检查 model inputModalities | 目录/恢复保留能力；文字模型不交出图片请求；未知能力、切模型/fallback/子运行、旧目录和真实请求计数可验证 |
 | 检查点恢复的失败一致性 | H-72 | 既有 CheckpointManager 先验证来源与计划，完成临时替换后提交；参考 Claude 的缺失备份前置检查，跨文件/历史补偿契约为本地设计 | 缺失备份不删除当前文件；部分失败、DB 截断失败及重试可诊断和恢复；rewind/fork、目录与 Windows 文件占用分别验证 |
 | 回退后的派生状态分支身份 | H-23、H-73 | 现有回退事实同时决定事件、检查点恢复资格和笔记覆盖；参考 Claude 的 messageId 快照与 Codex 的有效历史位置，持久化提交/补偿为本地设计 | 丢弃分支不覆盖新文件/摘要；保留前缀仍可回退；同序号替换、重启、fork、多次回退与失败重试可验证 |
+| 源事件与原生镜像的语义提交边界 | H-74 | 现有 Session/EventStore 关联逻辑消息与完整镜像组，分支/回退统一解析语义锚点；参考 Codex 按 turn/message 计算边界，原始 sequence 兼容为本地设计 | 保留的消息完整进入下一 wire；raw 锚点、旧日志、崩溃、附件/reasoning/工具和压缩不拆组，不在 UI 散落 +1 特判 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
