@@ -322,7 +322,7 @@ async fn audit_video_cancel_does_not_wait_for_provider_status_response() {
         Ok(joined) => joined.unwrap(),
         Err(_) => finish_run(&mut run).await,
     };
-    let exit_ms = started.elapsed().as_millis();
+    let cancel_to_exit_ms = started.elapsed().as_millis();
     provider.close().await;
     result.unwrap();
     assert!(accepted);
@@ -347,7 +347,7 @@ async fn audit_video_cancel_does_not_wait_for_provider_status_response() {
         2,
         "no download or extra submit after cancellation"
     );
-    eprintln!("video cancellation: accepted={accepted}, signal_ms={signal_ms}, stopped_within_300ms={stopped_before_response}, unfinished_before_response={unfinished_before_response}, exit_after_release_ms={exit_ms}, terminal=cancelled");
+    eprintln!("video cancellation: accepted={accepted}, signal_ms={signal_ms}, stopped_within_300ms={stopped_before_response}, unfinished_before_response={unfinished_before_response}, cancel_to_exit_ms={cancel_to_exit_ms}, terminal=cancelled");
     assert!(
         stopped_before_response,
         "accepted cancellation must stop the workflow without waiting for video/status to respond"
@@ -435,8 +435,6 @@ async fn audit_video_node_events_survive_database_reopen() {
 #[test]
 #[ignore = "audit: requires Node and desktop dependencies; actual Rust progress must reach TS resume config"]
 fn audit_desktop_video_progress_keeps_task_id_for_resume() {
-    use std::process::{Command, Stdio};
-
     use deepagent_runtime::events::ChannelSink;
     use deepagent_runtime::workflow::NodeEventPublisher;
 
@@ -456,6 +454,27 @@ fn audit_desktop_video_progress_keeps_task_id_for_resume() {
         ..NodeExecutionEvent::new("audit-revision".into(), "video".into())
     });
     let completed = receiver.try_recv().unwrap();
+    let observed =
+        desktop_resume_observation(&json!({"progress": progress, "completed": completed}));
+    eprintln!(
+        "desktop video progress: stored={:?}, resumed={:?}; completed: stored={:?}, resumed={:?}",
+        observed["progress"]["storedTaskId"],
+        observed["progress"]["resumedTaskId"],
+        observed["completed"]["storedTaskId"],
+        observed["completed"]["resumedTaskId"]
+    );
+    assert_eq!(observed["completed"]["storedTaskId"], TASK_ID);
+    assert_eq!(observed["completed"]["resumedTaskId"], TASK_ID);
+    assert_eq!(observed["progress"]["receivedTaskId"], TASK_ID);
+    assert_eq!(
+        observed["progress"]["resumedTaskId"], TASK_ID,
+        "stopping before completion must retain the provider task id in the next real TS workflow request"
+    );
+}
+
+fn desktop_resume_observation(fixture: &Value) -> Value {
+    use std::process::{Command, Stdio};
+
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../apps/desktop/scripts/audit-video-task-progress.cjs");
     let mut child = Command::new("node")
@@ -466,24 +485,91 @@ fn audit_desktop_video_progress_keeps_task_id_for_resume() {
         .stderr(Stdio::piped())
         .spawn()
         .expect("local Node is required for this opt-in seam audit");
-    serde_json::to_writer(
-        child.stdin.take().unwrap(),
-        &json!({"progress": progress, "completed": completed}),
-    )
-    .unwrap();
+    serde_json::to_writer(child.stdin.take().unwrap(), fixture).unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(
         output.status.success(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let observed: Value = serde_json::from_slice(&output.stdout).unwrap();
-    eprintln!("desktop video progress: {observed}");
-    assert_eq!(observed["completed"]["storedTaskId"], TASK_ID);
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[tokio::test]
+#[ignore = "audit: editing a completed video's prompt must not silently resume its old provider task"]
+async fn audit_edited_video_prompt_submits_a_new_task() {
+    let mut provider = LocalVideoProvider::start("Succeed").await;
+    let mut fixture = MediaFixture::new(&provider).await;
+    let mut first = fixture.spawn("audit-video-before-edit");
+    provider.wait_for_poll().await;
+    provider.release_poll.notify_one();
+    finish_run(&mut first).await.unwrap();
+    let completed = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.node_id == "video" && event.status == NodeExecutionStatus::Completed)
+        .unwrap()
+        .clone();
+    let original_model = fixture
+        .workflow
+        .definition
+        .nodes
+        .iter()
+        .find(|node| node.id == "video")
+        .unwrap()
+        .config["videoModel"]
+        .clone();
+    let changed_prompt = "audit different video subject";
+    let observed = desktop_resume_observation(&json!({
+        "completed": RuntimeEvent::WorkflowNode { event: completed },
+        "initialData": {"videoModel": original_model, "videoPrompt": "audit local video"},
+        "edit": {"videoPrompt": changed_prompt}
+    }));
     assert_eq!(observed["completed"]["resumedTaskId"], TASK_ID);
-    assert_eq!(observed["progress"]["receivedTaskId"], TASK_ID);
+    let next: WorkflowRequest =
+        serde_json::from_value(observed["edited"]["workflow"].clone()).unwrap();
     assert_eq!(
-        observed["progress"]["resumedTaskId"], TASK_ID,
-        "stopping before completion must retain the provider task id in the next real TS workflow request"
+        next.definition.nodes[0].config["videoPrompt"],
+        changed_prompt
     );
+    fixture.workflow = next;
+    let mut second = fixture.spawn("audit-video-after-edit");
+    provider.wait_for_poll().await;
+    provider.release_poll.notify_one();
+    let result = finish_run(&mut second).await;
+    provider.close().await;
+    result.unwrap();
+    for run_id in ["audit-video-before-edit", "audit-video-after-edit"] {
+        let events = RunStore::new(&fixture.db)
+            .events_after(run_id, None)
+            .unwrap();
+        let terminal: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].data["kind"], "succeeded");
+    }
+    let requests = provider.requests.lock().unwrap();
+    let submits: Vec<_> = requests
+        .iter()
+        .filter(|(line, _)| line.starts_with("POST /v1/video/submit "))
+        .collect();
+    let polls: Vec<_> = requests
+        .iter()
+        .filter(|(line, _)| line.starts_with("POST /v1/video/status "))
+        .collect();
+    assert_eq!(polls.len(), 2);
+    let new_prompt_sent = submits
+        .iter()
+        .any(|(_, body)| body["prompt"] == changed_prompt);
+    eprintln!("edited video: new_prompt_in_ts_request=true, carried_task_id={:?}, submits={}, polls={}, new_prompt_sent={new_prompt_sent}, both_terminals=succeeded",
+        observed["edited"]["resumedTaskId"], submits.len(), polls.len());
+    assert_eq!(
+        submits.len(), 2,
+        "executing the edited prompt must submit a new generation rather than silently polling the previous task"
+    );
+    assert!(new_prompt_sent, "the edited prompt must reach the provider");
 }

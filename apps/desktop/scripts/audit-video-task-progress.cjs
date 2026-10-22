@@ -6,14 +6,14 @@ const { loadTypeScript } = require("./audit-workflow-contract.cjs");
 
 const tick = () => new Promise(setImmediate);
 
-async function inspectResume(event) {
+async function inspectResume(event, initialData = {}, edit = {}) {
   const creative = loadTypeScript("../src/canvas/workflow/store/creativeStore.ts", {
     "../utils/canvasPromptProfile": { canvasPromptProfilePatch: async () => null },
   }).useCreativeStore;
   creative.setState({
     nodes: [{
       id: "video", type: "creative-video-gen", position: { x: 0, y: 0 },
-      data: { kind: "video-gen", status: "idle", videoPrompt: "audit", videoModel: "audit::video" },
+      data: { kind: "video-gen", status: "idle", videoPrompt: "audit", videoModel: "audit::video", ...initialData },
     }],
     edges: [],
   });
@@ -46,8 +46,13 @@ async function inspectResume(event) {
     const data = creative.getState().nodes[0].data;
     assert.equal(data.status, event.event.status, "the event must reach the actual node store");
     const storedTaskId = data.videoTaskId ?? null;
-    await executor.cancelWorkflow("video");
+    if (event.event.status === "completed") {
+      handlers.get("session://completed")({ payload: { run_id: "audit-video-1" } });
+    } else {
+      await executor.cancelWorkflow("video");
+    }
     await running;
+    creative.getState().updateNodeData("video", edit);
     ready = new Promise((resolve) => { listenersReady = resolve; });
     running = executor.runWorkflow("video");
     await ready;
@@ -56,7 +61,10 @@ async function inspectResume(event) {
     handlers.get("session://completed")({ payload: { run_id: "audit-video-2" } });
     await running;
     assert.equal(handlers.size, 0, "both runs must release their listeners");
-    return { receivedTaskId: event.event.job_id, storedTaskId, resumedTaskId: config.videoTaskId ?? null };
+    return {
+      receivedTaskId: event.event.job_id, storedTaskId, resumedTaskId: config.videoTaskId ?? null,
+      workflow: requests[1].workflow,
+    };
   } finally {
     await executor.cancelWorkflow("video");
     await running;
@@ -68,16 +76,19 @@ async function main() {
     throw new Error("opt-in audit only: run the ignored Rust desktop video progress probe");
   }
   const fixture = JSON.parse(readFileSync(0, "utf8"));
-  assert.equal(fixture.progress.type, "workflow_node");
-  assert.equal(fixture.progress.event.status, "running");
-  assert.equal(fixture.progress.event.updates.jobPhase, "queued");
+  if (fixture.progress) {
+    assert.equal(fixture.progress.type, "workflow_node");
+    assert.equal(fixture.progress.event.status, "running");
+    assert.equal(fixture.progress.event.updates.jobPhase, "queued");
+  }
   assert.equal(fixture.completed.event.status, "completed");
   const previousWindow = globalThis.window;
   globalThis.window = { __TAURI_INTERNALS__: {} };
   try {
-    const progress = await inspectResume(fixture.progress);
-    const completed = await inspectResume(fixture.completed);
-    process.stdout.write(JSON.stringify({ progress, completed }));
+    const progress = fixture.progress ? await inspectResume(fixture.progress, fixture.initialData) : undefined;
+    const completed = await inspectResume(fixture.completed, fixture.initialData);
+    const edited = fixture.edit ? await inspectResume(fixture.completed, fixture.initialData, fixture.edit) : undefined;
+    process.stdout.write(JSON.stringify({ progress, completed, edited }));
   } finally {
     if (previousWindow === undefined) delete globalThis.window;
     else globalThis.window = previousWindow;
