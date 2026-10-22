@@ -887,6 +887,60 @@ mod tests {
     }
 
     #[test]
+    fn completed_reasoning_items_do_not_receive_joined_global_fallback() {
+        let mut acc = ResponseAccumulator::new();
+        for (output_index, id, text) in [(0, "rs_1", "first "), (1, "rs_2", "second")] {
+            event(
+                &mut acc,
+                &serde_json::json!({
+                    "type":"response.output_item.added",
+                    "output_index":output_index,
+                    "item":{"type":"reasoning","id":id,"status":"in_progress","content":[]}
+                })
+                .to_string(),
+            );
+            event(
+                &mut acc,
+                &serde_json::json!({
+                    "type":"response.reasoning_text.delta",
+                    "item_id":id,
+                    "output_index":output_index,
+                    "content_index":0,
+                    "delta":text
+                })
+                .to_string(),
+            );
+            event(
+                &mut acc,
+                &serde_json::json!({
+                    "type":"response.output_item.done",
+                    "output_index":output_index,
+                    "item":{"type":"reasoning","id":id,"status":"completed",
+                        "content":[{"type":"reasoning_text","text":text}]}
+                })
+                .to_string(),
+            );
+        }
+        complete(&mut acc);
+
+        let response = acc.finish().unwrap();
+        let reasoning: Vec<_> = response
+            .output_items
+            .iter()
+            .filter_map(|item| match item {
+                ResponseOutputItem::Reasoning { id, content } => {
+                    Some((id.as_deref(), content.as_str()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            reasoning,
+            vec![(Some("rs_1"), "first "), (Some("rs_2"), "second")]
+        );
+    }
+
+    #[test]
     fn merges_fragmented_tool_call_arguments() {
         let mut acc = ResponseAccumulator::new();
         event(

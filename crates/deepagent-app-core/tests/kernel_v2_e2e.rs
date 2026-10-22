@@ -36,6 +36,9 @@ mod file_listing_policy;
 #[path = "kernel_v2_e2e/native_output_items.rs"]
 mod native_output_items;
 
+#[path = "kernel_v2_e2e/incomplete_reason.rs"]
+mod incomplete_reason;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/path_boundary.rs"]
 mod path_boundary;

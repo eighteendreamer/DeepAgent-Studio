@@ -52,7 +52,8 @@
 | 工作区物理路径与 Windows 目录联接 | WorkspaceWrite 下词法位于根目录的 junction 指向根外时，read_file 仍能读取外部临时文件并成功完成 | 已确认 H-78；Windows 临时 workspace/outside、真实 `mklink /J`、正式 ChatService/PathGuard/文件工具与下一 wire 复现，未接触用户目录 |
 | 文件发现与敏感读取名称策略 | read_file 被拒绝的 `.env` 仍通过 `glob("**")` 和 `list_dir` 返回文件名并进入下一实际请求；普通文件名仍可见 | 已确认 H-79；正式 ChatService/中央 hook/文件工具/序列化与普通文件对照，缺陷探针显式失败；仅临时 fixture，无真实凭据或公网传输 |
 | Responses 工具调用类型配对 | 公共 `ResponseRequest` 修复入口只按 call_id 选择已有 output；若外部传入同 call_id 的混合 native kind，错误类型仍进入下一次 wire | H-80 条件性确认；正常 Session 入口的 custom/function 配对对照通过，只有手工构造或未证实的坏历史才触发失败探针；未调用公网供应商 |
-| Responses 多文本 item 与增量去重 | 同一响应的两段完成文本被保留后，整次响应的增量全文又作为第三项加入；最终文本与重启续轮 wire 均重复 | 已确认 H-81；正式 ChatService/ModelClient/SSE 累加器/磁盘存储重开/下一 wire，单 item 对照正常；离线事件，无真实模型频率或计费结论 |
+| Responses 多文本 item 与增量去重 | 同一响应的两段完成文本被保留后，整次响应的增量全文又作为第三项加入；done-only 则额外补空 assistant，均进入恢复后的 wire | 已确认 H-81；正式 ChatService/ModelClient/SSE 累加器/磁盘存储重开/下一 wire，单 item 对照正常；离线事件，无真实模型频率或计费结论 |
+| Responses incomplete 的原因与恢复策略 | content_filter 与 max_output_tokens 均触发加大输出上限及注入长度恢复提示，离线第三响应完成后运行成功终结 | 已确认 H-82；正式 ChatService/Kernel/ModelAgent/请求序列化/SQLite 终态，长度对照正常；未测试真实供应商过滤或桌面展示 |
 
 ## 阶段性架构判断（审计仍在进行）
 
@@ -75,6 +76,7 @@
 - H-70 进一步表明附件路径不是稳定内容身份：即使 metadata 已有导入哈希，请求时不校验仍可在相同历史引用下发送不同图片。DeepSeek Harness 将内容摘要作为 durable ref 并验证读取结果；本系统需把已有摘要接入持久化引用与读取边界，不能只在 UI 导入结果中显示哈希。
 - H-71 补充模型能力契约的另一断点：容量数字能够保留，但 input_modalities 被丢弃，正式客户端也未按目标模型限制图片。能力解析需同时供正常请求、模型切换、备用模型和附件准备使用；不能把 H-66 的搜索特判扩写成分散的模态特判，或仅以模型名称推测能力。
 - H-81 补充 Responses 实时增量与完成 item 的双源问题：同一响应含两个文本 item 时，已保存的两段又被整段 fallback 重复补入；最终回答、持久化和重开后的下一请求一致地保留重复内容。Codex 将 delta 用于活动 item 的流式展示、done item 用于完成处理；本系统需要按 item 身份确认哪些增量尚未由完成项覆盖，不能用整次全文与某一 item 的字符串相等替代归属判断。
+- H-82 表明供应商终态类型还不足以决定恢复方式：官方 `response.incomplete` 的原因包含输出上限和内容过滤，本系统丢掉原因，统一生成 Length，导致后者也升级输出预算并注入“输出到限”的自动续写提示。Codex 保留独立 ContentFilter 类型及对应处理；本系统需在 provider seam 保真原因，再决定是否及如何恢复，不能让通用长度恢复接管所有 incomplete。
 - 上下文占用已有正向证据：运行内工具循环、跨用户 turn 和数据库重开样本都保留完整历史，并区分 provider 输入锚点、下一请求投影和累计计费。DeepSeek Harness 的 token-meter 同样区分这些概念；其 UI 分项是启发式组成且不要求与 provider 投影相加一致，本系统的分项守恒属于自身实现选择，不能把它写成参考项目的共同保证。真实 tokenizer 误差和全部压缩/附件路径仍待验证。
 
 ### “能增强模型”的证据与尚未证明的部分
@@ -1743,10 +1745,24 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 影响：多 item 样本已证明最终保存的回答比流式展示多一份全文，且重复内容随下一轮请求保留；done-only 样本证明空 assistant item 也随恢复进入下一轮 wire。它们会增加上下文内容并可能干扰后续推理。没有公网请求、真实费用、tokenizer 或 UI 截图证据，因此不能给出实际计费增量、所有响应必然翻倍或桌面重复绘制的发生率。会话恢复忠实保留了错误结果，并未修正它。
 - 修复方向（尚未实施，本地设计）：在既有 ResponseAccumulator 内按 provider item_id/output_index（及 content_index）持有增量归属；以完成 item 作为该项规范结果，只为确实缺少 done 的对应项补 fallback。不要直接禁用所有 fallback，已有 delta-only 兼容样本仍需要显式策略；也不能把全局 contains/字符串去重作为替代，否则相同文本的不同合法 item 会被误删。回归覆盖单/多 item、相同内容不同身份、工具/搜索穿插、流式展示与最终结果一致、截断/取消及持久化重开后的 wire，复用同一原生 Surface，不新增第二套历史。
 
+### H-82：Responses 内容过滤被误判为输出到限，触发预算升级和长度续写
+
+**级别：中（P2）；范围：DeepSeek Responses 返回 `response.incomplete`，其中 `response.incomplete_details.reason=content_filter`。** 普通 completed 不受这条原因映射影响；本项不同于 H-18 的截断工具调用提交，也不同于 H-81 的 delta/item 重复。
+
+- 官方契约：2026-10-22 通过 HTTP 实际读取 [DeepSeek Responses API](https://api-docs.deepseek.com/api/create-response)，`incomplete_details.reason` 明确列出 `max_output_tokens` 和 `content_filter` 两个原因，流式终态为 completed/incomplete/failed。在线 web 工具两次返回检索服务 HTTP 500，随后用 PowerShell Invoke-WebRequest 成功读取官方原文并去标签核对；未从第三方推导协议字段。
+- 根因及可达链：`deepagent-models/src/stream.rs::ResponseAccumulator::push_sse_data_observed` 对任何 `response.incomplete` 都设置 `FinishReason::Length`，完全不读取原因；usage 仍解析。正式 `ModelAgent::think_inner` 见 Length 后先将输出上限至少提到 65,536；再次 Length 且没有工具调用时，把部分输出加入原生 Surface，再插入 `MAX_OUTPUT_RECOVERY_PROMPT` 并重新请求。虽已有 `FinishReason::ContentFilter` 分支，此入口无法产生该值。Chat adapter 的现有测试则将 content_filter 显式报告为 provider failure，不能用该测试替代 Responses 验收。
+- 动态证据：新增 `tests/kernel_v2_e2e/incomplete_reason.rs`，通过生产 ChatService→RunAssembler→Kernel→ModelClient/累加器→ModelAgent，在真实临时 SQLite 上读取 run_events。只有底层 transport 提供离线 Responses 事件：先后两次 incomplete，第三次 completed 用于有界结束；每次使用独立 response/item 身份和唯一 sequence，带实际文本 delta、item.done、output 与 usage。两组只改变 incomplete reason，不使用真实危险提示、用户历史或外部工具。
+- 实测：`cargo test -p deepagent-app-core --test kernel_v2_e2e incomplete_reason --offline -- --include-ignored --nocapture` 为 1 passed / 1 failed，首次约 0.50s。长度对照和 content_filter 组均记录 3 次真实序列化请求，上限为 `[16384, 65536, 16384]`；第三次 input 已包含 `AUDIT_PARTIAL`。两组均返回 Ok，且 run_events 各只有一个 `succeeded` 终态。初版过滤探针在请求数应为 1 处失败；随后将断言收紧到“不得走预算升级/长度续写”，避免把本地不重试策略当成通用标准，并严格检查第三请求含 `Output token limit hit. Resume directly` 的实际 user item。确定性缺陷是原因丢失及错误进入长度恢复，不声称所有成熟 Agent 都禁止任何内容过滤重试。
+- 成熟实现对照：Codex `codex-api/src/sse/responses.rs::process_responses_event` 读取 incomplete_details.reason，将 content_filter 映射为独立 `ApiError::ContentFilter`；`api_bridge.rs` 继续保留 `CodexErrorDetails::ContentFilter`。`core/src/responses_retry.rs::handle_response_stream_error` 在 sampling 场景写入专门的 ContentFilterGuidance，再依据独立错误和重试预算判断；不是把该原因当 Length 或提高 max_output_tokens。DeepSeek Harness 的默认 `llm-deepseek/translate.ts::stopReason` 走 Messages 协议，只把明确的 max_tokens 转为 max-tokens，其他不支持原因报 malformed；这是原因保真原则的对照，不是同一 Responses wire 实现。未执行参考项目。
+- 影响：会增加不合适的重试和等待，把“输出长度不足”的错误解释写入续轮上下文；原始内容过滤原因不再到达上层分类与用户诊断。此样本第三次由离线 fixture 主动返回 completed，成功终态仅证明原原因没有成为独立运行失败，不能推断真实供应商会接受续写、过滤必被绕过或存在实际额外收费。本轮没有真实过滤请求、工具副作用、桌面截图或真实 token 账单。
+- 收敛方向（尚未实施，本地设计）：在既有 provider seam 保留 incomplete 原因及已返回 usage，仅明确 max_output_tokens 进入当前长度恢复；内容过滤走独立、有限、可诊断的策略，未知原因不得默认为长度。复用现有 ModelFailure/终态事件，不另造重试器。回归覆盖两种官方原因、未知/缺失原因、部分文本、完整/截断工具调用、取消、重试上限和单终态；是否允许过滤恢复应另定显式产品策略，不能靠换提示词假装输出预算耗尽。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-82 incomplete 原因显式探针及长度对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e incomplete_reason --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.50s；两组请求数/预算/部分文本续写及成功终态相同；过滤组不应走长度恢复的断言失败，仅离线 transport 和临时 SQLite |
+| H-82 收紧断言后的复测及默认基线 | 最终显式探针仍 1 passed / 1 failed，约 0.37s；严格确认预算升级和实际长度续写 user item，未强制过滤一律不能重试。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：22 passed / 22 ignored，约 2.06s；`cargo test -p deepagent-models --offline`：单元 82 passed / 3 ignored、集成 1 passed / 1 ignored。fmt、diff 检查通过；本批仅审计测试与报告，未跑全 workspace、Clippy、桌面构建、真实 Tauri 或公网过滤请求；默认通过不代表忽略问题已修复 |
 | H-77 搜索敏感文件显式探针与正常对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.85s；三组 direct read 均硬拒绝、grep 均成功且敏感 canary 进入下一 wire，普通 *.txt 对照无泄漏；虚构临时文件和离线 transport |
 | H-77 共享集成入口基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：18 passed / 17 ignored，约 1.71s；fmt、diff 检查通过。缺陷探针另行显式失败；本批仅新增测试和报告，未跑全 workspace、Clippy、前端构建、真实 Tauri 或公网模型 |
 | H-78 Windows junction 显式探针与权限对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e path_boundary --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.46s；WorkspaceWrite 直接外部路径拒绝、FullAccess 直接外部路径允许，junction 组仍将 canary 带入下一 wire 且 read_file/tool_completed 成功；Windows 临时文件、离线 transport，无用户路径 |
@@ -2040,6 +2056,12 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 新增默认测试 `discovery::tests::published_capacity_metadata_survives_discovery_and_catalog_restore`：按官方公开形状提供离线 MockTransport，经生产 ModelDiscovery.discover、ModelCatalog 序列化/反序列化，再交 ModelCapabilityResolver；两项数字保持 1,048,576 / 393,216，source=ProviderMetadata。额外 modality/effort 字段不妨碍容量解析。该测试不证明这些额外字段被本系统保存或使用，也未进行真实网络发现；暂未复现其丢失引起的具体行为，不另立缺陷编号。
 - `cargo test -p deepagent-models --offline`：81 passed / 2 ignored；既有 metadata 优先、Responses reasoning 序列化、图片构造和工具流回归均通过。它们不是全链路图片识别、真实模型能力选择或全部协议兼容性的验收。
 
+### 后续独立验证：多个完整 reasoning item 不被全局 delta 额外追加
+
+- 新增 `stream::tests::completed_reasoning_items_do_not_receive_joined_global_fallback`，为两个不同 reasoning 身份分别提供 added、带 item_id/output_index/content_index 的 delta 和完整 done；正式 ResponseAccumulator 保留两个原 ID/内容，没有补出第三份拼接 reasoning。本候选不构成已复现缺陷，不新增 H 编号；不能把文本分支 H-81 自动外推到完整 reasoning 分支。
+- 首次以 `cargo test -p deepagent-models --lib reasoning --offline -- --include-ignored --nocapture` 执行，12 passed / 1 failed；新增候选通过，失败是同时匹配到的旧 H-05 `audit_chat_projection_preserves_tool_turn_narration_and_reasoning`，不能解释为 reasoning item 探针失败。此对照未覆盖空 reasoning done、缺失 done、公开网络或 AppCore 续轮。
+- 将夹具收紧为逐 item 的 added→delta→done 顺序后，默认 `cargo test -p deepagent-models --offline` 的 82 个通过单测包含本对照；只新增测试，生产累加器未修改。
+
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
 下表依据已复现的边界归并；优先级不等于所有问题具有相同触发概率。设计收敛在本系统既有内核，不复制参考项目建立第二套运行链。
@@ -2093,6 +2115,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 | 文件发现名称与读取策略 | H-79 | 现有 WorkspaceRoot/读取策略为 list_dir、glob、grep 提供统一候选可见性；参考 Claude 将 Read deny 转为 glob/grep 排除项 | 被拒绝文件的名称不进入下一 wire；普通文件仍可发现；默认/显式模式、物理路径、配置变更和恢复语义一致 |
 | Responses 工具调用与结果类型不变量 | H-80 | 现有 repair_tool_call_pairs 按 call_id 和原生 kind 共同配对；参考 Codex 分别验证 function/custom 两组并要求对称 | custom/function 结果类型不混用；旧事件、恢复、压缩和取消后的补结果都能在 wire 前明确拒绝或校正 |
 | Responses 增量与完成 item 的内容归属 | H-81 | 现有累加器按 item 身份拥有 delta/completed 状态；参考 Codex 活动 item 的展示增量与完成项提交分离 | 多文本 item 不额外追加全文；相同文本不同 item 不误删；流式、最终、Surface、重开后 wire 一致；兼容 fallback 只覆盖未完成对应项 |
+| Responses incomplete 原因与恢复策略 | H-82 | 既有累加器/ModelFailure 保留原因，长度与过滤分别决策；参考 Codex 独立 ContentFilter 及专门指引 | 仅真实输出到限走预算升级/长度续写；过滤/未知原因有明确有界策略、usage 不丢、单终态及取消成立 |
 | 移动设备快照与操作关联 | H-50 | 在现有 MobileService/SnapshotStore 统一快照身份与设备操作顺序；参考 Codex 的版本栅栏原则，移动实现为本地设计 | 最新引用可执行；旧/未知引用不得下发命令；并发快照/输入和不同设备隔离，None 语义明确 |
 | 项目记忆与检索的运行作用域 | H-51 | 现有 vault/index 按项目绑定稳定运行视图，global 共享；参考 Claude 对目录身份的显式传递，多会话视图为本地设计 | UI/其他会话切项目不改运行内工具、检索和后台工作的目标；不同项目磁盘读写隔离，global 按配置共享 |
 | 知识 vault 的多宿主事务与索引一致性 | H-52 | 既有锁覆盖读取、身份/版本核对与写入，派生索引按提交失效/更新；参考 Claude 写前版本校验，多宿主事务为本地设计 | 不同标题同 slug 不覆盖；同条目冲突可见；真实多宿主、外部编辑和重开磁盘一致 |
