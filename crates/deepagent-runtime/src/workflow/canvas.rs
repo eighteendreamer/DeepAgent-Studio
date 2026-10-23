@@ -185,7 +185,8 @@ pub struct CanvasVideoRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_task_id: Option<String>,
     pub timeout_ms: u64,
-    /// Run cancellation flag; polled between status requests.
+    /// Run cancellation flag; provider submission, polling waits and downloads
+    /// all observe this same signal.
     #[serde(skip)]
     pub cancel: Option<Arc<AtomicBool>>,
     /// Status callback; reported once per phase change.

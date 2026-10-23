@@ -301,7 +301,6 @@ async fn real_video_workflow_stores_the_download_and_one_success_terminal() {
 }
 
 #[tokio::test]
-#[ignore = "audit: cancelling a real video workflow must interrupt a pending status HTTP request"]
 async fn audit_video_cancel_does_not_wait_for_provider_status_response() {
     let mut provider = LocalVideoProvider::start("Failed").await;
     let fixture = MediaFixture::new(&provider).await;

@@ -13,6 +13,9 @@
 //!    module sees a provider payload, and nothing below it sees a node name.
 
 use std::collections::BTreeSet;
+use std::future::Future;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -114,6 +117,12 @@ impl From<deepagent_core::error::CoreError> for CanvasError {
 }
 
 pub type CanvasResult<T> = Result<T, CanvasError>;
+
+#[derive(Clone, Copy)]
+struct VideoCancellation<'a> {
+    flag: Option<&'a Arc<AtomicBool>>,
+    message: &'a str,
+}
 
 /// What a canvas node actually does. Declared per node contract; the route
 /// resolver narrows `auto` to exactly one of these.
@@ -959,6 +968,7 @@ impl CanvasModelGateway {
         api_key: &str,
         body: Value,
         timeout_ms: u64,
+        cancellation: VideoCancellation<'_>,
     ) -> CanvasResult<Value> {
         let mut req = self
             .http
@@ -966,22 +976,36 @@ impl CanvasModelGateway {
             .timeout(Duration::from_millis(timeout_ms.max(1_000)))
             .header(reqwest::header::CONTENT_TYPE, "application/json");
         req = apply_auth_headers(req, candidate.provider.protocol, api_key);
-        let resp = req.body(body.to_string()).send().await.map_err(|e| {
-            CanvasError::new(
-                CanvasErrorCode::TransientFailure,
-                format!(
-                    "{} {endpoint} failed: {e}",
-                    candidate.provider.protocol.as_str()
-                ),
-            )
-        })?;
+        let resp = await_video_operation(
+            async {
+                req.body(body.to_string()).send().await.map_err(|e| {
+                    CanvasError::new(
+                        CanvasErrorCode::TransientFailure,
+                        format!(
+                            "{} {endpoint} failed: {e}",
+                            candidate.provider.protocol.as_str()
+                        ),
+                    )
+                })
+            },
+            cancellation.flag,
+            cancellation.message,
+        )
+        .await?;
         let status = resp.status();
-        let raw = resp.text().await.map_err(|e| {
-            CanvasError::new(
-                CanvasErrorCode::TransientFailure,
-                format!("reading {endpoint} response: {e}"),
-            )
-        })?;
+        let raw = await_video_operation(
+            async {
+                resp.text().await.map_err(|e| {
+                    CanvasError::new(
+                        CanvasErrorCode::TransientFailure,
+                        format!("reading {endpoint} response: {e}"),
+                    )
+                })
+            },
+            cancellation.flag,
+            cancellation.message,
+        )
+        .await?;
         if !status.is_success() {
             return Err(classify_status(status.as_u16(), &raw));
         }
@@ -1002,6 +1026,7 @@ impl CanvasModelGateway {
         &self,
         candidate: &ResolvedCanvasModel,
         request: &CanvasModelRequest,
+        cancel: Option<&Arc<AtomicBool>>,
     ) -> CanvasResult<String> {
         let api_key = provider_api_key(candidate)?;
         let endpoint = endpoint_url(
@@ -1026,7 +1051,17 @@ impl CanvasModelGateway {
             body["image_size"] = json!(size);
         }
         let value = self
-            .post_json(candidate, &endpoint, &api_key, body, request.timeout_ms)
+            .post_json(
+                candidate,
+                &endpoint,
+                &api_key,
+                body,
+                request.timeout_ms,
+                VideoCancellation {
+                    flag: cancel,
+                    message: "Cancelled: video submission was interrupted; provider acceptance may be unknown",
+                },
+            )
             .await?;
         job_field(&value, "requestId").ok_or_else(|| {
             CanvasError::new(
@@ -1042,6 +1077,7 @@ impl CanvasModelGateway {
         candidate: &ResolvedCanvasModel,
         request_id: &str,
         timeout_ms: u64,
+        cancel: Option<&Arc<AtomicBool>>,
     ) -> CanvasResult<CanvasMediaJob> {
         let api_key = provider_api_key(candidate)?;
         let endpoint = endpoint_url(
@@ -1058,6 +1094,10 @@ impl CanvasModelGateway {
                 &api_key,
                 json!({ "requestId": request_id }),
                 timeout_ms,
+                VideoCancellation {
+                    flag: cancel,
+                    message: "Cancelled: video status wait interrupted; rerun with the same task id to keep polling",
+                },
             )
             .await?;
         Ok(CanvasMediaJob {
@@ -1811,14 +1851,44 @@ async fn fetch_binary(url: &str, api_key: Option<&str>) -> CanvasResult<Vec<u8>>
     })
 }
 
+/// Await one video transport step while honoring the run's existing legacy
+/// cancellation bridge. Dropping the request/body future closes the local HTTP
+/// wait; it does not claim that a provider-side job or side effect was undone.
+async fn await_video_operation<F, T>(
+    future: F,
+    cancel: Option<&Arc<AtomicBool>>,
+    cancellation_message: &str,
+) -> CanvasResult<T>
+where
+    F: Future<Output = CanvasResult<T>>,
+{
+    let Some(cancel) = cancel else {
+        return future.await;
+    };
+    if cancel.load(Ordering::Acquire) {
+        return Err(CanvasError::new(
+            CanvasErrorCode::TransientFailure,
+            cancellation_message,
+        ));
+    }
+    tokio::select! {
+        biased;
+        _ = deepagent_runtime::cancellation::wait_for_legacy_flag(cancel.clone()) => {
+            Err(CanvasError::new(
+                CanvasErrorCode::TransientFailure,
+                cancellation_message,
+            ))
+        }
+        result = future => result,
+    }
+}
+
 async fn fetch_video_artifact(
     url: &str,
     artifacts: &crate::canvas_artifact_service::CanvasArtifactService,
-    cancel: Option<&std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    cancel: Option<&Arc<AtomicBool>>,
     task_id: &str,
 ) -> CanvasResult<crate::canvas_artifact_service::CanvasArtifactDto> {
-    use std::sync::atomic::Ordering;
-
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
         .build()
@@ -1828,12 +1898,21 @@ async fn fetch_video_artifact(
                 format!("create video download client: {error}"),
             )
         })?;
-    let response = client.get(url).send().await.map_err(|error| {
-        CanvasError::new(
-            CanvasErrorCode::TransientFailure,
-            format!("download generated video: {error}"),
-        )
-    })?;
+    let cancellation_message =
+        format!("Cancelled: video task `{task_id}` interrupted while downloading; rerun to resume");
+    let response = await_video_operation(
+        async {
+            client.get(url).send().await.map_err(|error| {
+                CanvasError::new(
+                    CanvasErrorCode::TransientFailure,
+                    format!("download generated video: {error}"),
+                )
+            })
+        },
+        cancel,
+        &cancellation_message,
+    )
+    .await?;
     let status = response.status();
     if !status.is_success() {
         return Err(classify_status(
@@ -1860,24 +1939,35 @@ async fn fetch_video_artifact(
         )
         .map_err(|error| CanvasError::new(CanvasErrorCode::ProviderFailure, error.to_string()))?;
     let mut response = response;
-    while let Some(chunk) = response.chunk().await.map_err(|error| {
-        CanvasError::new(
-            CanvasErrorCode::TransientFailure,
-            format!("read generated video stream for task `{task_id}`: {error}"),
+    loop {
+        let chunk = await_video_operation(
+            async {
+                response.chunk().await.map_err(|error| {
+                    CanvasError::new(
+                        CanvasErrorCode::TransientFailure,
+                        format!("read generated video stream for task `{task_id}`: {error}"),
+                    )
+                })
+            },
+            cancel,
+            &cancellation_message,
         )
-    })? {
-        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-            return Err(CanvasError::new(
-                CanvasErrorCode::TransientFailure,
-                format!("Cancelled: video task `{task_id}` interrupted while downloading; rerun to resume"),
-            ));
-        }
+        .await?;
+        let Some(chunk) = chunk else {
+            break;
+        };
         stream.write_chunk(&chunk).map_err(|error| {
             CanvasError::new(
                 CanvasErrorCode::ProviderFailure,
                 format!("store generated video stream for task `{task_id}`: {error}"),
             )
         })?;
+    }
+    if cancel.is_some_and(|flag| flag.load(Ordering::Acquire)) {
+        return Err(CanvasError::new(
+            CanvasErrorCode::TransientFailure,
+            cancellation_message,
+        ));
     }
     stream.finish().map_err(|error| {
         CanvasError::new(
@@ -2373,7 +2463,6 @@ impl CanvasModelBridge for CanvasModelGateway {
     }
 
     async fn generate_video(&self, request: CanvasVideoRequest) -> CoreResult<CanvasVideoResponse> {
-        use std::sync::atomic::Ordering;
         use std::time::Instant;
 
         if request.prompt.trim().is_empty() && request.image_url.is_none() {
@@ -2421,7 +2510,7 @@ impl CanvasModelBridge for CanvasModelGateway {
         {
             Some(existing) => existing.trim().to_string(),
             None => self
-                .submit_media_job(&candidate, &model_request)
+                .submit_media_job(&candidate, &model_request, request.cancel.as_ref())
                 .await
                 .map_err(to_core_error)?,
         };
@@ -2440,7 +2529,7 @@ impl CanvasModelBridge for CanvasModelGateway {
                 )));
             }
             let job = self
-                .poll_media_job(&candidate, &task_id, 60_000)
+                .poll_media_job(&candidate, &task_id, 60_000, request.cancel.as_ref())
                 .await
                 .map_err(to_core_error)?;
             if matches!(
@@ -2468,7 +2557,18 @@ impl CanvasModelBridge for CanvasModelGateway {
                     "TransientFailure: video job `{task_id}` did not finish within {timeout_ms} ms"
                 )));
             }
-            tokio::time::sleep(poll_delay(round)).await;
+            await_video_operation(
+                async {
+                    tokio::time::sleep(poll_delay(round)).await;
+                    Ok(())
+                },
+                request.cancel.as_ref(),
+                &format!(
+                    "Cancelled: video job `{task_id}` polling wait interrupted; rerun with the same task id to keep polling"
+                ),
+            )
+            .await
+            .map_err(to_core_error)?;
             round += 1;
         };
         if job.status == CanvasJobStatus::Failed {
@@ -4099,6 +4199,79 @@ mod tests {
         let record = artifacts.record(&stored.id).expect("record").expect("row");
         assert_eq!(record.byte_size, total_bytes as i64);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn generated_video_download_cancellation_drops_staging_and_http_wait() {
+        use std::sync::atomic::AtomicBool;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+        use tokio::sync::Notify;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let address = listener.local_addr().expect("address");
+        let response_started = Arc::new(Notify::new());
+        let release_server = Arc::new(Notify::new());
+        let started = response_started.clone();
+        let release = release_server.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept download");
+            let mut request = Vec::new();
+            let mut buffer = [0u8; 1024];
+            while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                let count = socket.read(&mut buffer).await.expect("read request");
+                assert_ne!(count, 0, "request ended before headers");
+                request.extend_from_slice(&buffer[..count]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: 1024\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .expect("write response headers");
+            started.notify_one();
+            release.notified().await;
+        });
+
+        let root = tempfile::tempdir().expect("artifact root");
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let artifacts = Arc::new(
+            crate::canvas_artifact_service::CanvasArtifactService::new(root.path(), db)
+                .expect("artifact service"),
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let task_artifacts = artifacts.clone();
+        let task_cancel = cancel.clone();
+        let download = tokio::spawn(async move {
+            fetch_video_artifact(
+                &format!("http://{address}/video.mp4"),
+                task_artifacts.as_ref(),
+                Some(&task_cancel),
+                "cancel-download",
+            )
+            .await
+        });
+
+        tokio::time::timeout(Duration::from_secs(5), response_started.notified())
+            .await
+            .expect("download response must start");
+        cancel.store(true, Ordering::SeqCst);
+        let error = tokio::time::timeout(Duration::from_millis(300), download)
+            .await
+            .expect("cancellation must stop a pending body read")
+            .expect("download task")
+            .expect_err("cancelled download must not publish an artifact");
+        release_server.notify_one();
+        server.await.expect("server task");
+
+        assert!(error.to_string().contains("Cancelled:"));
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .expect("read artifact root")
+                .count(),
+            0,
+            "cancellation must remove the unfinished .part file"
+        );
     }
 
     #[test]
