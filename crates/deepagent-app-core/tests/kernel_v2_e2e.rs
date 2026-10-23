@@ -61,6 +61,12 @@ mod incomplete_reason;
 #[path = "kernel_v2_e2e/model_selection.rs"]
 mod model_selection;
 
+#[path = "kernel_v2_e2e/cache_prefix.rs"]
+mod cache_prefix;
+
+#[path = "kernel_v2_e2e/responses_custom_tool.rs"]
+mod responses_custom_tool;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/path_boundary.rs"]
 mod path_boundary;
