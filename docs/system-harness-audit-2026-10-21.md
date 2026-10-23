@@ -2563,12 +2563,34 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 修复必须复用现有 `RunStore/run_events`、终态和协议投影，不新增 live event store 或补写第二套日志。回归需覆盖普通事件、delta flush、终态写失败、断线重读以及单个事件失败后的 sequence 连续性。
 - 当前仅使用 SQLite trigger、内存数据库、离线 Agent 和真实 Kernel；未运行真实 Tauri、真实 provider、跨进程数据库锁争用或崩溃恢复。生产代码本轮未改，探针保持 ignored。
 
+### H-143：终态持久化失败前已经发布实时完成事件
+
+**级别：高（P1，完成状态与 durable run 状态矛盾）；触发条件：`run_terminal` 的原子终态写入失败。** 用户界面可能先收到 `run_completed`，但数据库中的 `runs.finished_at` 仍为空，重连后该运行不会被视为已完成。
+
+#### 生产链与动态证据
+
+- `AgentKernel::start_prepared()` 在 `RuntimeEngine` 返回成功后先由 `PersistentEventSink` 发出 `RuntimeEvent::RunCompleted`；该事件会进入实时 delegate，并尝试写入普通 `run_events` 行。
+- 随后 `persist_terminal()` 调用 `RunStore::finish_with_event()`，在同一个 SQLite 事务中更新 `runs` 并写入 `run_terminal`。任一写入失败都会回滚终态，Kernel 返回错误；此前已经发出的实时 `run_completed` 没有撤回或 provisional 标记。
+- 新增 ignored 探针 `kernel::tests::audit_terminal_persistence_failure_does_not_claim_live_completion`：真实 `AgentKernel`、`RunStore` 和 SQLite trigger 拦截 `run_terminal`，离线 Agent 正常返回完成。实际实时标签为 `run_started、session_registered、turn_started、run_completed`；数据库没有 `run_terminal`，`finished_at` 仍为空。执行 `cargo test -p deepagent-runtime audit_terminal_persistence_failure_does_not_claim_live_completion --offline -- --ignored --nocapture`，**0 passed / 1 failed（预期暴露缺陷）**。
+
+#### 成熟实现对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/session/session-checkpoint-policy/README.md` 要求 durable checkpoint 成为下一步和工具副作用的前置屏障，拒绝时 fail-closed；`session-persistence/README.md` 将 flush 明确为 durability barrier。终态投影不能在其 durable boundary 失败后继续被当作已提交。
+- **Codex**：`借鉴/codex/codex-rs/core/src/tasks/mod.rs` 在发出终态 turn 事件后显式 `flush_rollout()`，并保留 flush 错误诊断；`借鉴/codex/codex-rs/core/src/session/mod.rs::send_event_raw_with_persistence` 固定规范持久化与实时投递顺序。具体存储不同，但都要求终态可回放边界明确，不能让实时完成替代 durable completion。
+
+#### 后果、修复方向与验证限制
+
+- 前端可能停止 spinner 并显示成功，随后 `thread/read`、重启恢复或运行列表又显示未完成；如果调用方按完成状态允许下一轮输入，还可能并发占用同一会话或重复收尾。
+- 应把 `run_completed` 与 `run_terminal` 收敛为一个可观测提交边界：终态事务成功后再发布完成事件，或明确先发布 provisional 事件并在持久化失败时发送失败/回滚事件。不能依靠 UI 自己猜测，也不能新增第二个终态存储。
+- 修复需覆盖普通成功、终态写失败、终态重复调用、实时重连、进程重启和前端完成通知；当前探针只使用 SQLite trigger、内存数据库和离线 Agent，未覆盖真实 Tauri、真实 provider、崩溃时序或跨进程锁争用。生产代码本轮未改，探针保持 ignored。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
 | H-142 运行事件持久化失败显式探针 | `cargo test -p deepagent-runtime audit_event_persistence_failure_does_not_split_live_and_replay --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；真实 `AgentKernel` + SQLite trigger 让 `tool_completed` durable append 失败，但实时 sink 仍收到该事件；仅临时内存数据库和离线 Agent |
 | H-142 Kernel 默认回归与静态检查 | `cargo test -p deepagent-runtime --lib kernel::tests --offline`：10 passed / 1 ignored / 0 failed；`cargo fmt --all -- --check` 与 `git diff --check` 通过；未运行真实 Tauri、provider 或跨进程故障注入 |
+| H-143 终态持久化失败显式探针 | `cargo test -p deepagent-runtime audit_terminal_persistence_failure_does_not_claim_live_completion --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；实时收到 `run_completed`，但 `run_terminal` 事务回滚且 `finished_at` 为空 |
 | H-141 todo reminder 生命周期显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.47s；正式同一 session 连续 11 次独立用户回合、实际请求 11 次，`reminder_requests=[]`；仅临时内存数据库与离线 transport |
 | H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
 | H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |

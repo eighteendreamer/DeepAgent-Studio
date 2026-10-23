@@ -1166,6 +1166,75 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit: terminal persistence failure must not publish a live completion"]
+    async fn audit_terminal_persistence_failure_does_not_claim_live_completion() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER audit_fail_run_terminal
+                 BEFORE INSERT ON run_events
+                 WHEN NEW.event_type='run_terminal'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected terminal event failure');
+                 END;",
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("terminal persistence audit")).unwrap();
+        let task = session.create_task("finish").unwrap();
+        let registry = ToolRegistry::new();
+        let live = LiveEventLabels::default();
+        let mut agent = ScriptedAgent::new([AgentDecision::Complete("done".into())]);
+        let kernel = AgentKernel::<FixedClock>::new(
+            db.clone(),
+            &registry,
+            Metrics::new(),
+            RuntimeConfig::default(),
+            "run-terminal-persistence-audit",
+        )
+        .with_events(Arc::new(live.clone()));
+
+        let result = kernel
+            .start(RunRequest::new(&mut session, task, &mut agent))
+            .await;
+        assert!(
+            result.is_err(),
+            "terminal persistence failure must be visible"
+        );
+
+        let live_labels = live
+            .labels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let durable_events = RunStore::new(&db)
+            .events_after("run-terminal-persistence-audit", None)
+            .unwrap();
+        let durable_labels: Vec<_> = durable_events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect();
+        let record = RunStore::new(&db)
+            .get("run-terminal-persistence-audit")
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            !live_labels.contains(&"run_completed"),
+            "live completion was published before durable terminal commit: {live_labels:?}"
+        );
+        assert!(!durable_labels.contains(&"run_terminal"));
+        assert!(
+            record.finished_at.is_none(),
+            "live labels={live_labels:?}, durable event labels={durable_labels:?}, record={record:?}"
+        );
+    }
+
     #[test]
     fn persistent_event_sink_advances_run_state_without_rewinding() {
         let db = Arc::new(Database::open_in_memory().unwrap());
