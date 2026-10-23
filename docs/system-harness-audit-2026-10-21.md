@@ -20,6 +20,7 @@
 | MCP 结果内容与客户端元数据 | 正式 MCP 返回公开文本、structuredContent 与仅位于顶层 _meta 的虚构 canary；第一次模型 wire 无 canary，工具返回后的下一请求包含它 | 已确认 H-138；仅本机 stdio + 离线模型；这是客户端/模型投影缺口，不宣称 2024-11-05 基础协议为所有 _meta 提供统一保密保证 |
 | 已执行工具与后置 hook 的结果提交 | 正式 write_file 已写入磁盘且 run_events 有成功 ToolCompleted；PostToolUse prompt 返回无效 JSON 后，session 没有真实结果，重开将动作标为进程重启失败，下一请求只有补造的结果缺失错误 | 已确认 H-139；正常 hook 对照通过；真实临时文件、文件数据库、正式启动恢复与离线模型，不含真实桌面或公网请求 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
+| 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn，以及一个已被替代 turn 重复派生多个新 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter` 和 Responses failed usage 丢失均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
@@ -2516,10 +2517,34 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 与 H-26 共享外部输出解析层，但本项补充的是它尚未动态覆盖的**允许后追加上下文的交付**：顶层 block 正常不能修复内容丢失；仅补嵌套 permissionDecision 同样不能修复普通 stdout 或为非 veto 观察点承载附加内容。应在同一输出契约收敛，避免为每个事件复制 parser。它也与 H-111 的 PreCompact 指令未进入摘要请求不同，本项针对正式主模型输入。
 - 当前仅 Windows、用户作用域的同步 PowerShell UserPromptSubmit、短文本/标准 JSON、单 hook、单轮离线 Responses wire。未动态验证 SessionStart/SubagentStart/工具 hooks、多 hook 合并、HTTP/MCP hooks、取消、长输出、续聊、压缩、数据库重开、真实 Tauri 或真实 DeepSeek，也不据此宣称上述路径同样失败。生产行为未改；缺陷测试保持 ignored，正常对照为默认测试。
 
+### H-141：周期 todo reminder 在独立用户回合之间被重置，长期会话永不触发
+
+**级别：中（P2，长期任务的计划提示缺失）；触发条件：同一 session 通过多个独立用户输入继续对话，期间模型没有调用 `todo_write`。** 单个 `ModelAgent` 内部连续步数的现有单元测试仍可通过；缺陷发生在正式 `ChatService::run_in_session` 为每个用户回合重新组装 agent 的边界。
+
+#### 生产链与动态证据
+
+- `run_assembler.rs` 每次组装正式运行都会调用 `ModelAgent::new(...)`，随后只通过 `with_history(...)`/`with_response_history(...)` 注入持久化会话历史；这两个恢复入口只重建 Surface 和 Message 投影，没有恢复 todo reminder 的两个计数器。
+- `ModelAgent::new()` 将 `turns_since_todo_write` 设为 `0`，将 `turns_since_todo_reminder` 设为阈值；`maybe_inject_todo_reminder()` 只在当前 agent 的模型请求前递增计数。一次普通用户回合通常只经过一次该检查，因此跨回合历史不会累计。
+- 新增 `kernel_v2_e2e/todo_reminder_lifecycle.rs`：使用正式 `ChatService`、`RunAssembler`、`AgentKernel`、同一 session 的 11 个独立输入和离线 Responses transport，捕获每次实际序列化的请求 body。模型每轮都返回成功文本，不调用 todo 工具。
+- 显式执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：**0 passed / 1 failed（缺陷探针预期失败）**，约 1.47 秒；输出 `independent_turns=11 requests=11 reminder_requests=[]`。这证明周期提醒没有从前 10 个已持久化 assistant 回合恢复计数。
+
+#### 成熟实现对照
+
+- **Claude Code**：`借鉴/claudecode/restored-src/src/utils/attachments.ts::getTodoReminderTurnCounts` 每次构造附件都从完整 `messages` 逆向扫描，独立计算最近 `TodoWrite` 和最近 reminder 之后的 assistant 回合数；计数不绑定某个 agent 实例的内存寿命。
+- 本系统现有 `TodoReminderAdapter` 正确读取当前 TodoStore，但它只提供列表快照；计数状态仍在 `ModelAgent` 内存字段中，导致会话恢复能保留计划内容却不能保留 reminder 节奏。这里采用参考实现的生命周期原则，不复制其 TypeScript 结构。
+
+#### 后果、修复方向与验证限制
+
+- 长任务如果每个用户输入都触发一次独立 run，会持续得到新的模型请求却永远不到提醒阈值；用户仍可能看到 todo 列表工具，但不会收到“长期未追踪计划”的周期性提示。本探针没有评估模型最终任务质量，也没有把提醒缺失扩大为 todo 数据丢失。
+- 应在既有 session event/history replay 边界计算两个计数：从最近一次 `todo_write` 对应的原生 tool call 和最近一次周期提醒的原生 reminder item 之后，统计 assistant turns；每次压缩、snip、重启和分支恢复都应使用同一历史过滤规则。运行中的计数可作为缓存，但不能成为唯一事实来源。
+- reminder 注入必须继续走现有原生 Surface 和消息投影，计数恢复不能新建第二个 TodoStore 或独立会话状态表；`todo_write` 仍只重置 write 轴，提醒注入后只重置 reminder 轴。
+- 当前探针使用离线模型和空 Todo 列表，仅验证提醒正文是否进入真实 wire；未覆盖 `todo_write` 后重置、压缩后事件边界、分支回退、并行工具、CLI/SDK 入口及真实 DeepSeek。生产代码未改，缺陷测试保持 ignored。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-141 todo reminder 生命周期显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.47s；正式同一 session 连续 11 次独立用户回合、实际请求 11 次，`reminder_requests=[]`；仅临时内存数据库与离线 transport |
 | H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
 | H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |
 | H-139 后置 hook 失败与重开显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e post_tool_hook_commit --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），最终复测约 0.82s；真实 write_file 成功但无 session 结果、action 留在 Running；重开标为进程重启失败，正式下一 wire 只含同 call_id 的补造失败；正常 hook 保留真实结果。仅临时文件与离线模型 |

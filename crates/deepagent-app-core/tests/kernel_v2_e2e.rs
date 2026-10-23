@@ -52,6 +52,9 @@ mod post_tool_hook_commit;
 #[path = "kernel_v2_e2e/prompt_hook_context.rs"]
 mod prompt_hook_context;
 
+#[path = "kernel_v2_e2e/todo_reminder_lifecycle.rs"]
+mod todo_reminder_lifecycle;
+
 #[path = "kernel_v2_e2e/incomplete_reason.rs"]
 mod incomplete_reason;
 
