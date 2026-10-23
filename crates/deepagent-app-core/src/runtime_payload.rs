@@ -545,4 +545,81 @@ mod tests {
             .last_prompt()
             .contains("- audit-slow-skill: Audit payload readiness"));
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "audit integration: exclusively holds the production disk-preparation gate"]
+    async fn cancelling_blocked_payload_preparation_exits_without_extracting() {
+        let tmp = tempfile::tempdir().unwrap();
+        let source = tmp.path().join("source");
+        let data = tmp.path().join("data");
+        archive(&source, b"verified payload");
+        std::fs::create_dir_all(&data).unwrap();
+        let held_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(data.join(".runtime.lock"))
+            .unwrap();
+        FileExt::lock_exclusive(&held_lock).unwrap();
+
+        let cancel = deepagent_runtime::CancellationTree::new();
+        let worker_cancel = cancel.clone();
+        let worker_source = source.clone();
+        let worker_data = data.clone();
+        let mut worker = tokio::task::spawn_blocking(move || {
+            prepare_runtime_payload_with_cancel(&worker_source, &worker_data, &worker_cancel)
+        });
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                // This isolated probe is the only owner of the production gate.
+                if matches!(
+                    DISK_PREPARATION.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("preparation worker must enter the production disk path");
+
+        let began = Instant::now();
+        cancel.cancel();
+        let completion = tokio::time::timeout(Duration::from_secs(1), &mut worker).await;
+        let promptly_finished = completion.is_ok();
+        FileExt::unlock(&held_lock).unwrap();
+        let result = match completion {
+            Ok(result) => result.unwrap(),
+            Err(_) => worker.await.unwrap(),
+        };
+        let elapsed = began.elapsed();
+        let extracted = data.join("runtime/value.txt").exists();
+        eprintln!(
+            "audit cancelled payload wait: finished_within_1s={promptly_finished}, cancel_to_exit_ms={}, extracted={extracted}, result={result:?}",
+            elapsed.as_millis()
+        );
+        assert!(
+            promptly_finished,
+            "cancelled preparation must exit promptly"
+        );
+        assert!(
+            result.is_err(),
+            "cancelled preparation must not report success"
+        );
+        assert!(
+            result.unwrap_err().to_string().contains("cancelled"),
+            "cancellation should remain distinguishable from archive or lock errors"
+        );
+        assert!(
+            !extracted,
+            "cancelled preparation must not publish extracted files"
+        );
+        assert!(!std::fs::read_dir(&data).unwrap().any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".runtime-stage-")));
+    }
 }
