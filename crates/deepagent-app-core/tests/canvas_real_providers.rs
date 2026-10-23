@@ -541,6 +541,7 @@ async fn video_job_submits_polls_and_downloads() {
             image_url: None,
             size: Some("832x480".to_string()),
             resume_task_id: None,
+            resume_fingerprint: None,
             timeout_ms: 600_000,
             cancel: None,
             on_progress: None,

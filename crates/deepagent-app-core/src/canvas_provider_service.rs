@@ -151,6 +151,10 @@ pub struct CanvasProviderConfig {
     pub protocol: CanvasProtocol,
     /// Base URL, e.g. `https://api.siliconflow.cn/v1`. No endpoint suffix.
     pub base_url: String,
+    /// Opaque credential generation used to invalidate resumable provider jobs
+    /// when the API key changes. It contains no secret material.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub credential_version: String,
     #[serde(default = "default_true")]
     pub enabled: bool,
     /// Optional custom icon (data URL, size-capped).
@@ -490,6 +494,7 @@ fn normalize_provider_input(
         name,
         protocol: CanvasProtocol::from_label(&input.protocol),
         base_url,
+        credential_version: String::new(),
         enabled: input.enabled,
         logo: normalize_logo(input.logo.as_deref())?,
         models,
@@ -562,6 +567,17 @@ impl CanvasProviderService {
             .cloned();
         let mut normalized =
             normalize_provider_input(input, existing.as_ref().map(|p| p.id.clone()))?;
+        let credential_changed = if let Some(new_key) = api_key.as_deref() {
+            self.provider_api_key(&normalized.id)?.as_deref() != Some(new_key)
+        } else {
+            false
+        };
+        normalized.credential_version = match existing.as_ref() {
+            Some(previous) if !credential_changed && !previous.credential_version.is_empty() => {
+                previous.credential_version.clone()
+            }
+            _ => uuid::Uuid::new_v4().to_string(),
+        };
         if normalized.models.is_empty() {
             if let Some(previous) = &existing {
                 normalized.models = previous.models.clone();
@@ -583,9 +599,15 @@ impl CanvasProviderService {
             state.providers.push(normalized.clone());
         }
         self.write_state(&state)?;
-        if let Some(key) = api_key {
-            self.secrets
-                .set(&provider_secret_key(&normalized.id), &key)?;
+        if credential_changed {
+            if let Some(key) = api_key.as_deref() {
+                self.secrets
+                    .set(&provider_secret_key(&normalized.id), key)?;
+            }
+            // Close the small window where a request could observe the new
+            // key alongside the pre-update generation. Tasks created in that
+            // window are intentionally invalidated by this second rotation.
+            normalized.credential_version = self.rotate_credential_version(&normalized.id)?;
         }
         let stored = self.provider_api_key(&normalized.id)?;
         Ok(normalized.to_dto(stored.as_deref()))
@@ -616,13 +638,39 @@ impl CanvasProviderService {
         if api_key.is_empty() {
             return Err(CoreError::invalid("api key is empty"));
         }
-        self.ensure_provider(provider_id)?;
-        self.secrets.set(&provider_secret_key(provider_id), api_key)
+        if self.provider_api_key(provider_id)?.as_deref() == Some(api_key) {
+            return Ok(());
+        }
+        self.rotate_credential_version(provider_id)?;
+        self.secrets
+            .set(&provider_secret_key(provider_id), api_key)?;
+        self.rotate_credential_version(provider_id)?;
+        Ok(())
     }
 
     /// Delete the stored api key for a provider.
     pub fn clear_provider_api_key(&self, provider_id: &str) -> Result<()> {
-        self.secrets.delete(&provider_secret_key(provider_id))
+        self.ensure_provider(provider_id)?;
+        if self.provider_api_key(provider_id)?.is_none() {
+            return Ok(());
+        }
+        self.rotate_credential_version(provider_id)?;
+        self.secrets.delete(&provider_secret_key(provider_id))?;
+        self.rotate_credential_version(provider_id)?;
+        Ok(())
+    }
+
+    fn rotate_credential_version(&self, provider_id: &str) -> Result<String> {
+        let mut state = self.read_state()?;
+        let version = uuid::Uuid::new_v4().to_string();
+        let provider = state
+            .providers
+            .iter_mut()
+            .find(|provider| provider.id == provider_id)
+            .ok_or_else(|| CoreError::not_found(format!("canvas provider `{provider_id}`")))?;
+        provider.credential_version = version.clone();
+        self.write_state(&state)?;
+        Ok(version)
     }
 
     /// Raw api key for backend-internal use only (adapters / routing).
@@ -997,6 +1045,11 @@ mod tests {
 
         svc.set_provider_api_key(&dto.id, "sk-canvas-local-test-9f2c41d7b6e04a51")
             .expect("set key");
+        let first_version = svc
+            .resolve_model(&dto.id, "Qwen/Qwen3-VL-Embedding-8B")
+            .expect("resolve after key set")
+            .provider
+            .credential_version;
         let listed = svc.list_providers().expect("list");
         assert_eq!(listed.len(), 1);
         assert!(listed[0].api_key_set);
@@ -1010,6 +1063,20 @@ mod tests {
             .expect("doc")
             .body;
         assert!(!raw.contains("sk-canvas-local-test"));
+
+        svc.set_provider_api_key(&dto.id, "sk-canvas-replacement")
+            .unwrap();
+        let updated = svc
+            .resolve_model(&dto.id, "Qwen/Qwen3-VL-Embedding-8B")
+            .expect("resolve after key replacement");
+        assert_ne!(updated.provider.credential_version, first_version);
+        assert_eq!(updated.api_key.as_deref(), Some("sk-canvas-replacement"));
+        let raw = DocumentStore::new(&svc.db)
+            .get(CANVAS_COLLECTION, CANVAS_PROVIDERS_ID)
+            .unwrap()
+            .expect("doc")
+            .body;
+        assert!(!raw.contains("sk-canvas-replacement"));
     }
 
     #[test]

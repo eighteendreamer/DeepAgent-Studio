@@ -141,6 +141,9 @@ impl CanvasJobPhase {
 pub struct CanvasJobProgress {
     pub job_id: String,
     pub phase: CanvasJobPhase,
+    /// Opaque binding of this provider job to its exact inputs and provider
+    /// identity. Safe to persist; it never contains credential material.
+    pub resume_fingerprint: String,
 }
 
 /// Callback a node hands the gateway so a job that takes minutes can report
@@ -184,6 +187,10 @@ pub struct CanvasVideoRequest {
     /// Re-poll an already submitted job instead of submitting a second one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_task_id: Option<String>,
+    /// Fingerprint paired with `resume_task_id` when the task was created.
+    /// Missing or mismatched values cause a fresh provider submission.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_fingerprint: Option<String>,
     pub timeout_ms: u64,
     /// Run cancellation flag; provider submission, polling waits and downloads
     /// all observe this same signal.
@@ -203,6 +210,9 @@ pub struct CanvasVideoResponse {
     pub provider_id: String,
     pub model_id: String,
     pub task_id: String,
+    /// Opaque binding of this provider job to its exact inputs and provider
+    /// identity. Safe to persist; it never contains credential material.
+    pub resume_fingerprint: String,
 }
 
 /// An embedding request for one canvas node.
@@ -353,6 +363,7 @@ mod tests {
                 provider_id: "p".to_string(),
                 model_id: "m".to_string(),
                 task_id: "job-fake".to_string(),
+                resume_fingerprint: "fake-fingerprint".to_string(),
             })
         }
 

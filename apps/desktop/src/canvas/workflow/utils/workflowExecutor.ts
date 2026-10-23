@@ -225,6 +225,9 @@ function applyNodeOutputs(
   if (typeof record.videoUrl === "string") patch.videoUrl = record.videoUrl;
   // 供应商作业 id 留在节点上：中断后重跑继续轮询同一个任务。
   if (typeof record.videoTaskId === "string") patch.videoTaskId = record.videoTaskId;
+  if (typeof record.videoTaskFingerprint === "string") {
+    patch.videoTaskFingerprint = record.videoTaskFingerprint;
+  }
   if (typeof record.audioUrl === "string") patch.audioUrl = record.audioUrl;
   if (typeof record.modelId === "string") patch.usedModel = record.modelId;
   return patch;
@@ -244,9 +247,16 @@ function applyNodeEventIdentity(
 ): Record<string, unknown> {
   const jobId = typeof event.job_id === "string" ? event.job_id.trim() : "";
   if (!jobId) return {};
+  const fingerprint =
+    typeof event.resume_fingerprint === "string" ? event.resume_fingerprint.trim() : "";
   const node = getNodesAndEdges(mode).nodes.find((candidate) => candidate.id === nodeId);
   const kind = String((node?.data as { kind?: string } | undefined)?.kind ?? "");
-  return kind === "video-gen" ? { videoTaskId: jobId } : {};
+  return kind === "video-gen"
+    ? {
+        videoTaskId: jobId,
+        ...(fingerprint ? { videoTaskFingerprint: fingerprint } : {}),
+      }
+    : {};
 }
 
 async function runBackendWorkflow(

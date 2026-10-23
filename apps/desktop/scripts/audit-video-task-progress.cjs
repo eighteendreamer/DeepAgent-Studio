@@ -46,6 +46,7 @@ async function inspectResume(event, initialData = {}, edit = {}) {
     const data = creative.getState().nodes[0].data;
     assert.equal(data.status, event.event.status, "the event must reach the actual node store");
     const storedTaskId = data.videoTaskId ?? null;
+    const storedTaskFingerprint = data.videoTaskFingerprint ?? null;
     if (event.event.status === "completed") {
       handlers.get("session://completed")({ payload: { run_id: "audit-video-1" } });
     } else {
@@ -62,7 +63,11 @@ async function inspectResume(event, initialData = {}, edit = {}) {
     await running;
     assert.equal(handlers.size, 0, "both runs must release their listeners");
     return {
-      receivedTaskId: event.event.job_id, storedTaskId, resumedTaskId: config.videoTaskId ?? null,
+      receivedTaskId: event.event.job_id,
+      storedTaskId,
+      resumedTaskId: config.videoTaskId ?? null,
+      storedTaskFingerprint,
+      resumedTaskFingerprint: config.videoTaskFingerprint ?? null,
       workflow: requests[1].workflow,
     };
   } finally {
@@ -80,6 +85,7 @@ async function main() {
     assert.equal(fixture.progress.type, "workflow_node");
     assert.equal(fixture.progress.event.status, "running");
     assert.equal(fixture.progress.event.updates.jobPhase, "queued");
+    assert.equal(typeof fixture.progress.event.resume_fingerprint, "string");
   }
   assert.equal(fixture.completed.event.status, "completed");
   const previousWindow = globalThis.window;

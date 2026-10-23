@@ -122,6 +122,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             image_url: None,
             size: None,
             resume_task_id: None,
+            resume_fingerprint: None,
             timeout_ms: 600_000,
             cancel: None,
             on_progress: None,

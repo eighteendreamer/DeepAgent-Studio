@@ -166,6 +166,7 @@ impl WorkflowAgent {
                 &revision,
                 &node_id,
                 &progress.job_id,
+                &progress.resume_fingerprint,
                 progress.phase.as_str(),
             );
         }))
@@ -882,6 +883,11 @@ impl WorkflowAgent {
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .filter(|value| !value.trim().is_empty()),
+                resume_fingerprint: config
+                    .get("videoTaskFingerprint")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+                    .filter(|value| !value.trim().is_empty()),
                 timeout_ms: 600_000,
                 cancel: self.cancel.clone(),
                 on_progress: self.progress_sink(),
@@ -890,6 +896,7 @@ impl WorkflowAgent {
         Ok(serde_json::json!({
             "videoUrl": response.artifact_uri,
             "videoTaskId": response.task_id,
+            "videoTaskFingerprint": response.resume_fingerprint,
             "mime": response.mime,
             "operation": routed.operation,
             "providerId": response.provider_id,
@@ -1554,6 +1561,7 @@ mod tests {
                 sink.emit(CanvasJobProgress {
                     job_id: "job-77".to_string(),
                     phase: CanvasJobPhase::Queued,
+                    resume_fingerprint: "audit-fingerprint".to_string(),
                 });
             }
             // 模型名带标记即模拟“轮询途中用户点了停止”：翻起真实取消标志再报错。
@@ -1572,6 +1580,7 @@ mod tests {
                 provider_id: "cvp-1".to_string(),
                 model_id: "Wan2.2-T2V-A14B".to_string(),
                 task_id: "job-77".to_string(),
+                resume_fingerprint: "audit-fingerprint".to_string(),
             })
         }
 
@@ -1922,6 +1931,7 @@ mod tests {
         assert_eq!(sent.model_ref, "cvp-1::Wan2.2-T2V-A14B");
         assert_eq!(sent.size.as_deref(), Some("720p"));
         assert_eq!(sent.resume_task_id, None);
+        assert_eq!(sent.resume_fingerprint, None);
     }
 
     #[tokio::test]
@@ -1936,6 +1946,7 @@ mod tests {
                     ("videoModel", json!("cvp-1::Wan2.2-T2V-A14B")),
                     ("prompt", json!("继续上次那条")),
                     ("videoTaskId", json!("job-42")),
+                    ("videoTaskFingerprint", json!("saved-binding")),
                 ]),
             )
             .await
@@ -1948,6 +1959,7 @@ mod tests {
             .expect("one video call");
         // 中断后重跑要接着轮询同一个作业，不能再花一次额度提交新任务。
         assert_eq!(sent.resume_task_id.as_deref(), Some("job-42"));
+        assert_eq!(sent.resume_fingerprint.as_deref(), Some("saved-binding"));
     }
 
     #[tokio::test]

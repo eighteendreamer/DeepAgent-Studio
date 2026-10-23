@@ -63,7 +63,7 @@
 | 画布云端视频任务的取消等待 | 正式 ChatService/WorkflowAgent/Kernel、本机 HTTP、文件 SQLite 与 artifact；状态响应停滞和下载 body 停滞取消均已验证能中断本地等待 | 已修复 H-119；未执行真实云端生成或桌面点击，云端任务撤销仍不在本地保证范围 |
 | 工作流节点事件的持久化通道 | 正式视频工作流实时与重开后回放均得到相同 6 条节点事件；包含 task ID、artifact 来源和运行终态 | 已修复 H-120；未验真实桌面崩溃/断线重连 |
 | 视频运行中 task ID 的前端投影与续跑 | 正式 Rust publisher 的 Running/job_id 经生产 TS executor 保存到节点，停止后下一请求继续携带同一 videoTaskId；Completed 对照保持一致 | 已修复 H-121；实际跨语言事件/序列化探针，Tauri 传输替换为本机内存桥，未发生真实云端重复收费 |
-| 视频修改输入及配置后的执行身份 | 真实 TS/Rust 往返中，修改提示词仍轮询旧任务并 succeeded，新提示词未提交；同一 provider ID 改地址/凭据后，旧 task ID 被发到新地址并 succeeded | 已确认 H-122；本机真实 HTTP、原地址续跑对照；未验真实供应商视频、同地址仅换凭据或云端账号权限 |
+| 视频修改输入及配置后的执行身份 | 修复前真实 TS/Rust 往返曾轮询旧任务；修复后输入/provider 指纹绑定 task，输入或来源变化提交新任务，同输入同来源仍可续跑 | 已修复 H-122；本机 HTTP 往返和指纹单测通过；未验真实供应商视频、远程取消或云端计费 |
 | 本地与 SSH 终端的分页读取 | 真实 Windows ConPTY / SQLite 与正式 SSH session reader 均在 64 KiB 返回上限时将游标推进到全部缓存末尾；未返回后缀仍可从实际末端读出 | 已确认 H-123；小输出对照正常；当前桌面旧读取不使用该游标接口，SSH 网络与其他平台未验证 |
 | 系统视觉发送前图片预处理与停止 | 正式 App submit/stop callback 与 API client 的受控图像请求中，run 尚未进入后端就显示运行；cancel 返回 not_found，释放请求后仍识别下一张并提交主模型 | 已确认 H-124；continued/new 两种会话均复现；使用实际 App 回调但 React/Tauri/provider 为隔离 harness，不是真实窗口/网络 |
 
@@ -2205,21 +2205,28 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-122：视频生成成功后修改提示词仍隐式续跑旧任务，新提示词没有发给供应商却再次成功
 
-**级别：高（P1，输出语义正确性）；范围：已有成功视频的节点修改提示词后再点执行。** 与 H-121 运行中 ID 丢失相反，本项是完成后的旧 ID 无条件保留。两项共同说明需要明确生成意图和任务生命周期，不能用“每次都保留 ID”或“每次都清空 ID”覆盖所有情况。
+**级别：高（P1，输出语义正确性）；状态：已修复并通过本机供应商往返探针。** 范围是视频节点输入或 provider 配置变化后再执行，以及运行中任务停止后以相同输入续跑。与 H-121 运行中 ID 丢失相反，本项原因为完成后的旧 ID 无条件保留。
 
 - 生产路径：VideoGenForm 的提示词 onChange 只传 `{videoPrompt: ...}`；NodeConfigForm 的 handleUpdate 直接交给 creativeStore.updateNodeData 合并，旧 videoTaskId 不失效。workflowExecutor.resetAllStatus 也只改状态，serializer 将该 ID 与新提示词同时发出。`WorkflowAgent::execute_video` 把任意非空 config.videoTaskId 设为 resume_task_id；`CanvasModelGateway::generate_video` 只看是否有 ID 来跳过 submit，未确认任务是否已完成、输入是否改变或本次是否要求续跑。
 - 动态复现：`cargo test -p deepagent-app-core --test workflow_audit audit_edited_video_prompt_submits_a_new_task --offline -- --ignored --nocapture`，**0 passed / 1 failed**，约 0.72s。先用正式 ChatService/Kernel/Gateway 与本机 HTTP 完成第一段视频；把该次真实 Completed 事件交给生产 TS executor/真实 creativeStore，再经同一个 updateNodeData 入口修改 videoPrompt。捕获真实 TS 下一 WorkflowRequest，直接 serde 回正式 Rust 类型并通过同一 ChatService 执行第二次，两个 run 均核对唯一终态。服务器与两个运行在断言前全部回收，没有手工给第二份请求补旧 task ID。
 - 实际 `new_prompt_in_ts_request=true, carried_task_id=audit-video-job, submits=1, polls=2, new_prompt_sent=false, both_terminals=succeeded`。新提示词确实穿过前端序列化并进入后端，供应商却只收到首次 submit；第二次 status 仍查询原任务并再次下载旧任务结果。失败断言要求修改后的输入产生第二次 submit；没有把“参数根本没进入后端”当成根因，也没有把运行成功说成新视频生成成功。
 - 成熟实现对照：ArtCraft `handle_artcraft_video_via_router` 依据本次 prompt/model/reference/resolution 等构造新的 GenerateVideoRequestBuilder，生成入口得到 job token 后交给已保存的 task；独立后台 polling 根据 provider_job_id 查询既有任务。参考的是“提交本次生成意图”和“恢复已提交任务”有各自身份与入口；参考代码未提供可直接照搬到本系统 DAG 的输入失效规则，该规则应作为本地设计验收，不声称参考项目所有编辑/幂等边界都正确。
 - 影响与限制：用户看见新提示词仍得到旧任务结果与 succeeded，无法据状态分辨新指令是否执行；依赖该节点的下游可能继续使用过期产物。样本仅改提示词、用占位视频验证 task/request/asset 轨迹，不评价实际视频内容、模型质量或 UI 截图；供应商/账号、参考图和尺寸变化仍需独立动态验证，不能一并计为已覆盖。
-- 收敛方向（本地设计，尚未实施）：在既有节点/attempt/task 关系中明确“新生成”与“恢复旧任务”的意图，保存输入身份及原 provider/model/account 归属；输入变化或主动重新生成创建新 attempt，显式续跑只使用原任务身份。已完成输出保留为来源资产，新结果提交前标注有效性，旧任务晚事件按 attempt 拒绝覆盖新结果。复用现有 run_events 与图存储，补测修改/未修改/已完成/取消/失败后重跑及实际 submit 次数，和 H-119～H-121 一起验收完整状态机。
+- 修复实现：在既有 `CanvasProviderConfig` 增加不含凭据的随机 `credential_version`，API Key 实际变化时轮换版本；`CanvasModelGateway` 对有效 prompt、model、protocol、endpoint、credential version、size、已解析参考图内容做带长度边界的 HMAC-SHA-256 指纹，密钥只取后端当前 provider 凭据，随后再与 provider task ID 组合为 opaque resume fingerprint。任务 ID 和指纹经现有 `CanvasJobProgress`、`WorkflowNodeEvent`/`run_events`、桌面 executor 与现有画布节点字段成对保存。只有本次后端重算指纹与节点携带值相同才复用 task ID；缺少旧版指纹、输入变化或来源变化时提交新任务，并在 status 前发布新的 id+fingerprint。旧会话无需迁移，旧节点将安全地重新提交，不会把旧 task ID 发给当前供应商。没有新增 task store、节点表或持久化凭据哈希。
+- 修复后真实往返探针：
+  - `cargo test -p deepagent-app-core --test workflow_audit audit_edited_video_prompt_submits_a_new_task --offline -- --ignored --nocapture`：**1 passed**；生产 TS executor/creativeStore 修改提示词并序列化后，正式 Rust WorkflowRequest、ChatService、Kernel、Gateway 运行；供应商收到 `submits=2, polls=2, new_prompt_sent=true`，两次 run 均唯一 `succeeded`，第二次 poll 使用新 task ID。
+  - `cargo test -p deepagent-app-core --test workflow_audit audit_video_resume_submits_new_task_for_replaced_provider_identity --offline -- --ignored --nocapture`：**1 passed**；同一 provider/config 未变化的显式续跑总 submit 仍为 1；更换 endpoint 与占位 Key 后，新 endpoint 收到一次新的 submit 和一次新 task status，`old_task_polled=false`，最终唯一 succeeded。两端均为本机 loopback HTTP，不涉及真实账号。
+  - 输入指纹单元测试覆盖 prompt、model、protocol、endpoint、credential generation/key、size、reference image 和 task ID；含 RFC 4231 HMAC-SHA-256 固定向量校验。持久化值不包含明文 API Key、prompt 或图片内容。H-121 的 NodeEventPublisher→TS store→serializer 配对指纹探针已重跑并通过。
+- 成熟实现对照：ArtCraft `handle_artcraft_video_via_router` 依据本次 prompt/model/reference/resolution 等构造新的 GenerateVideoRequestBuilder，生成入口得到 job token 后交给已保存的 task；独立后台 polling 根据 provider_job_id 查询既有任务。参考的是“提交本次生成意图”和“恢复已提交任务”有各自身份与入口。本系统以现有事件日志和节点投影实现绑定，是本地设计；不声称 ArtCraft 自身实现了本系统的输入失效规则。
+- 影响与剩余边界：修改提示词、模型、尺寸、可解析参考图，或 provider protocol/endpoint/凭据版本后，不会再误用已完成任务；provider 变化也不会向新端点发送旧 ID。兼容旧节点的代价是无法无损续跑其历史远端任务，首次执行会重新提交，原远端任务可能仍在运行并计费。远程 HTTP 图片引用按 URL 字符串参与指纹，若同一 URL 的内容在远端被替换而 URL 不变，本地无法检测内容变化；图像供应商可能在 HTTP 请求后再抓取它。本轮未验证供应商远程取消、旧 attempt 迟到事件覆盖策略、真实云端账户权限或生成质量，也未完成 H-122 之外的全系统审计。
 
-#### 恢复归属补充：同一 provider ID 的地址/凭据替换
+#### 修复前历史复现：同一 provider ID 的地址/凭据替换
 
 - 后续 ignored 探针 `audit_video_resume_rejects_replaced_provider_identity` 复用正式 ChatService/Gateway、SQLite 与两台独立 loopback HTTP。先在 A 完成 submit/status/download，从实际 Completed 取得 ID；显式带 ID 在未变的 A 上续跑，对照确认总 submit 仍为 1。随后通过生产 save_provider 保留原配置 ID，将 base URL 和占位 API Key 改成 B；resolve_model 读回新地址/新凭据，再用相同模型引用与原 task ID 经正式入口恢复。
-- `cargo test -p deepagent-app-core --test workflow_audit audit_video_resume_rejects_replaced_provider_identity --offline -- --ignored --nocapture`：**0 passed / 1 failed**，约 0.41s；`replacement_polled=true, same_old_task=true, api_ok=true, terminal=succeeded`。A 不再收到请求，B 收到携带原 ID 的 status 并下载 B 返回的结果；所有运行和两个本机服务器在最终缺陷断言前回收。此处没有新增 H 编号，归于 H-122 中同一个无输入/来源绑定的 task ID 复用边界。
+- 修复前 `audit_video_resume_rejects_replaced_provider_identity`：**0 passed / 1 failed**，约 0.41s；`replacement_polled=true, same_old_task=true, api_ok=true, terminal=succeeded`。A 不再收到请求，B 收到原 ID 并返回成功。该失败记录保留作修复前证据，不代表当前状态。
 - 代码原因：generate_video 在每次恢复时按当前 model_ref 重新 resolve provider，resume_task_id 只有字符串，没有提交时的 endpoint/account 版本；“同一次调用内不切候选供应商”的保证无法覆盖两次运行间配置替换。参考 ArtCraft 保存任务 provider/provider_job_id 并据此选择 polling；对自定义 endpoint/凭据版本的绑定与变更处置仍需本系统本地设计，不能声称参考项目已验证任意可编辑网关配置。
-- 影响与限制：新地址可能查不到旧任务，也可能把相同字符串解释成另一个任务；本机 B 接受该 ID 的 fixture 证明本系统未校验来源，不证明真实云端任务 ID 必定碰撞或已经发生数据泄漏。样本同时更换地址和占位凭据，并确认生产 resolve 的有效凭据已变化；未分别验证同地址只换 Key、真实账户切换/撤销或新主机认证规则。归属变化应明确拒绝不匹配恢复或重新核对原来源授权；不可自动复用已撤销旧凭据，也不可静默将旧 ID 交给新主机。
+- 修复后探针 `audit_video_resume_submits_new_task_for_replaced_provider_identity`：**1 passed**；原 provider 上未变输入续跑时总 submit=1。修改 base URL 与占位 Key 后，新 provider 收到 submit 新任务、随后 status 只带新 task ID；旧 provider 请求数不增加，`old_task_polled=false`，最终 run 唯一 succeeded。使用两台 loopback fixture，无真实云端账号。
+- 影响及限制：旧节点缺少 fingerprint 时不会自动续跑，第一次再次执行将新建 provider task；原远端任务可能仍运行并产生费用。探针验证了地址与 Key 同时变化，Key generation 另有 provider-service 单测，但未单独以两次完整 HTTP 运行验证“同地址只换 Key”；也未验证真实云端账户撤销、服务商计费、远程取消或数据访问边界。
 
 ### H-123：本地与 SSH 终端的分片读取推进到缓存末尾，未返回的输出被游标跳过
 
@@ -2316,9 +2323,13 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-123 本地终端与 SSH 游标探针 | 本地 `cargo test -p deepagent-app-core --test terminal_audit --offline -- --ignored --nocapture`：0 passed / 1 failed，实际 ConPTY 与 SQLite；SSH `cargo test -p deepagent-ssh audit_ssh_terminal_cursor_preserves_unreturned_output --offline -- --ignored --nocapture`：0 passed / 1 failed，正式 session reader / 受控 transport。两组小输出正常，大输出均在无历史淘汰时跳过保留后缀；生产尚未修改 |
 | H-123 相关正常基线 | `cargo test -p deepagent-ssh -p deepagent-terminal --offline`：SSH 1 passed / 2 ignored（含需真实服务器的既有集成测试），terminal 4 passed；`cargo test -p deepagent-app-core --lib terminal_ --offline`：9 passed，含终端服务、SQLite 租约和取消存储故障回归。未执行本批 workspace 全量、Clippy、桌面 build 或真实 Tauri 点击 |
 | H-124 视觉发送前停止跨层探针 | `RUN_HARNESS_AUDIT=1 node --test scripts/audit-vision-preflight-cancel.test.cjs`：文本对照通过，继续会话/新会话的视觉等待组各 0 passed / 1 failed；释放和 listener 清理完成后，停止失败且第二张图片和主 `start_chat_v2` 仍发出。无真实图片内容、供应商、Tauri 窗口或数据库 |
-| H-122 provider 来源替换补充探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_video_resume_rejects_replaced_provider_identity --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.41s；原地址续跑总 submit=1，替换地址/占位凭据后 B 收到原 task ID 并返回 succeeded；仅本机 HTTP，无真实云端账号 |
+| H-122 修复前 provider 来源替换探针 | `audit_video_resume_rejects_replaced_provider_identity`：0 passed / 1 failed，约 0.41s；替换地址后 B 收到旧 task ID。保留为缺陷证据 |
+| H-122 修复后 provider 来源替换探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_video_resume_submits_new_task_for_replaced_provider_identity --offline -- --ignored --nocapture`：**1 passed**；同来源续跑 submit=1，替换来源后新端点 submit=1/status=1，`old_task_polled=false`，终态 succeeded；仅本机 HTTP |
 | H-122 来源探针默认基线与 fixture 所有权复核 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 8 ignored，约 0.17s；fixture 新增 provider service 保活后，H-120 重开测试显式 drop 该 owner，再按原命令复测仍 0 passed / 1 failed，约 0.17s，实时 6/落盘 0 的结论不变。fmt/diff 检查通过；未跑 workspace、Clippy、桌面构建或真实账号 |
-| H-122 修改提示词后的真实往返显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_edited_video_prompt_submits_a_new_task --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.72s；首次真实本机生成完成事件→生产 TS 修改/序列化→正式 Rust/网关第二次运行，两次 succeeded，仅 1 次 submit/2 次旧任务 poll，新提示词未发给供应商 |
+| H-122 修复前提示词修改探针 | `audit_edited_video_prompt_submits_a_new_task`：0 passed / 1 failed，约 0.72s；只 submit 一次且第二次 poll 旧 ID。保留为缺陷证据 |
+| H-122 修复后提示词修改往返 | `cargo test -p deepagent-app-core --test workflow_audit audit_edited_video_prompt_submits_a_new_task --offline -- --ignored --nocapture`：**1 passed**；真实生产 TS 更新/serializer→正式 Rust 工作流，`submits=2, polls=2, new_prompt_sent=true`，第二次 poll 新 task ID |
+| H-122 输入/provider 指纹单测 | `cargo test -p deepagent-app-core --lib video_resume_identity_covers_effective_inputs_and_provider_generation --offline` 与 `...hmac_sha256_matches_rfc_4231_test_case...`：均 **1 passed**；覆盖 prompt/model/protocol/endpoint/credential version/key/size/reference/task ID，固定 HMAC 向量通过，持久化值不含明文 API Key |
+| H-122 运行中 task/fingerprint 跨层探针 | `cargo test -p deepagent-app-core --test workflow_audit media::audit_desktop_video_progress_keeps_task_id_for_resume --offline -- --ignored --nocapture`：**1 passed**；Running 和 Completed 的 task ID + fingerprint 均通过生产 TS store/serializer 续传 |
 | H-122 默认基线及旧探针复核 | 提取跨语言测试 helper 后，`cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 7 ignored，约 0.17s；H-121 原命令显式复测仍 0 passed / 1 failed，约 0.47s，完成对照保留 ID、进度组仍丢失；未将 helper 重构说成生产修复 |
 | H-122 完成通知对照调整后的复核 | 脚本的 Completed 分支改用本运行完成通知正常结束后，H-122 与 H-121 各自原命令仍均为 0 passed / 1 failed，分别约 0.65s / 0.42s；同一新提示词轨迹及 ID 丢失结论不变。仅审计测试/报告，未跑 workspace 全量、Clippy、完整桌面 build 或真实云端视频生成 |
 | H-119 耗时标注更正后的复核与 H-122 检查 | H-119 原命令再次显式复现，0 passed / 1 failed，约 0.47s；`cancel_to_exit_ms=338` 含 300ms 观察期，最终仍唯一 cancelled。`cargo fmt --all -- --check` 与 `git diff --check` 通过，耗时输出更正没有改变生产行为 |
@@ -2798,6 +2809,6 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 工作流同样已确认能力装配/失败传播（H-38）、路径派发（H-39）、跨语言配置契约（H-40）三个独立断点。不能继续用单个字段别名、前端状态改色或无条件跳过节点修补。应先明确现有版本化节点契约及执行状态机，再逐项接回同一工具注册/权限/Kernel 链路，以跨语言真实请求、节点输出、实际调用数和 RunStore 终态共同验收。本轮未获生产修复授权，以上仍为审计建议。
 
-画布媒体进一步确认 HTTP 等待取消（H-119）、节点 publisher 绕开规范事件日志（H-120）、运行中 task ID 被前端丢弃（H-121）和修改输入却复用已完成任务（H-122）四个不同边界。即使调用名义上经过 Kernel，取消、事件与恢复身份仍可能在 adapter/Agent/UI 内部分裂；修复应先确定现有 run/revision/node/attempt、输入身份与 provider task 的提交和投影关系，再按四个探针分别验收，不能仅补日志、前端字段或取消后的状态颜色。
+画布媒体已分别确认并修复 HTTP 等待取消（H-119）、节点 publisher 绕开规范事件日志（H-120）、运行中 task ID 被前端丢弃（H-121）和修改输入却复用已完成任务（H-122）四个边界。H-122 修复后通过现有 run_events 和画布节点传递 task/fingerprint 配对身份；provider task 只有在后端重算的输入与 provider 指纹匹配时才恢复。仍需继续审计旧 attempt 迟到事件覆盖、真实云端取消和其他未修复项。
 
 Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边界：当前多个不同事件复用过于粗粒度的 HookData，再由两套 serializer 逐项拼字段。后续修复应先建立事件级契约与正式派发点的上下文传递，并统一 command/HTTP 投影；不能逐个补空字符串、固定布尔值或从 message 文本反推 metadata。探针只证明各自记录的路径，不把字段审计当成全部 hook 生命周期已经验收。

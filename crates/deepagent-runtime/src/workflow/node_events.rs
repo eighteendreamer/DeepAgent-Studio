@@ -58,6 +58,9 @@ pub struct NodeExecutionEvent {
     /// be resumed without guessing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub job_id: Option<String>,
+    /// Opaque input/provider binding for a resumable media job.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resume_fingerprint: Option<String>,
 }
 
 impl NodeExecutionEvent {
@@ -79,6 +82,7 @@ impl NodeExecutionEvent {
             model_id: None,
             artifacts: Vec::new(),
             job_id: None,
+            resume_fingerprint: None,
         }
     }
 }
@@ -124,6 +128,7 @@ fn annotate_provenance(event: &mut NodeExecutionEvent) {
     event.provider_id = text("providerId");
     event.model_id = text("modelId");
     event.job_id = text("videoTaskId");
+    event.resume_fingerprint = text("videoTaskFingerprint");
     let mut refs = Vec::new();
     artifact_uri(outputs, &mut refs, 0);
     // Object iteration order is not stable, and replayed events must be.
@@ -182,13 +187,21 @@ impl NodeEventPublisher {
 
     /// Report where a long media job stands. This stays a `Running` event: the
     /// node has not finished, it just learned its provider job id and phase.
-    pub fn emit_job_progress(&self, revision: &str, node_id: &str, job_id: &str, phase: &str) {
+    pub fn emit_job_progress(
+        &self,
+        revision: &str,
+        node_id: &str,
+        job_id: &str,
+        resume_fingerprint: &str,
+        phase: &str,
+    ) {
         let mut updates = BTreeMap::new();
         updates.insert("jobPhase".to_string(), Value::String(phase.to_string()));
         self.emit(NodeExecutionEvent {
             status: NodeExecutionStatus::Running,
             updates,
             job_id: Some(job_id.to_string()),
+            resume_fingerprint: Some(resume_fingerprint.to_string()),
             ..NodeExecutionEvent::new(revision.to_string(), node_id.to_string())
         });
     }
@@ -232,6 +245,7 @@ mod tests {
             model_id: None,
             artifacts: Vec::new(),
             job_id: None,
+            resume_fingerprint: None,
         });
         let emitted = captured.lock().unwrap().clone();
         emitted.expect("event emitted")
@@ -249,11 +263,16 @@ mod tests {
             "providerId": "cvp-1",
             "modelId": "Wan-AI/Wan2.2-T2V-A14B",
             "videoTaskId": "job-77",
+            "videoTaskFingerprint": "opaque-fingerprint",
         })));
         assert_eq!(event.operation.as_deref(), Some("video_generate"));
         assert_eq!(event.provider_id.as_deref(), Some("cvp-1"));
         assert_eq!(event.model_id.as_deref(), Some("Wan-AI/Wan2.2-T2V-A14B"));
         assert_eq!(event.job_id.as_deref(), Some("job-77"));
+        assert_eq!(
+            event.resume_fingerprint.as_deref(),
+            Some("opaque-fingerprint")
+        );
         assert_eq!(
             event.artifacts,
             vec![
@@ -313,7 +332,7 @@ mod tests {
         let cloned_progress_publisher = publisher.clone();
 
         cloned_progress_publisher.set_sink(replacement);
-        publisher.emit_job_progress("rev-1", "video-1", "job-1", "running");
+        publisher.emit_job_progress("rev-1", "video-1", "job-1", "opaque-fingerprint", "running");
 
         assert!(original_last.lock().unwrap().is_none());
         assert_eq!(
@@ -323,6 +342,14 @@ mod tests {
                 .as_ref()
                 .and_then(|event| event.job_id.as_deref()),
             Some("job-1")
+        );
+        assert_eq!(
+            replacement_last
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|event| event.resume_fingerprint.as_deref()),
+            Some("opaque-fingerprint")
         );
     }
 
@@ -341,5 +368,6 @@ mod tests {
         assert_eq!(event.node_id, "llm-1");
         assert!(event.artifacts.is_empty());
         assert_eq!(event.job_id, None);
+        assert_eq!(event.resume_fingerprint, None);
     }
 }

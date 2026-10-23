@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -32,6 +33,10 @@ struct LocalVideoProvider {
 
 impl LocalVideoProvider {
     async fn start(status_after_release: &str) -> Self {
+        Self::start_with_task_id(status_after_release, TASK_ID).await
+    }
+
+    async fn start_with_task_id(status_after_release: &str, task_id_prefix: &str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -41,6 +46,9 @@ impl LocalVideoProvider {
         let arrived = poll_received.clone();
         let release = release_poll.clone();
         let status = status_after_release.to_owned();
+        let task_id_prefix = task_id_prefix.to_owned();
+        let submit_count = Arc::new(AtomicUsize::new(0));
+        let submitted = submit_count.clone();
         let server = tokio::spawn(async move {
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
@@ -48,9 +56,15 @@ impl LocalVideoProvider {
                 captured.lock().unwrap().push((line.clone(), body));
                 let (media_type, payload) =
                     if line.starts_with("POST /v1/video/submit ") {
+                        let sequence = submitted.fetch_add(1, Ordering::SeqCst) + 1;
+                        let task_id = if sequence == 1 {
+                            task_id_prefix.clone()
+                        } else {
+                            format!("{task_id_prefix}-{sequence}")
+                        };
                         (
                             "application/json",
-                            json!({"requestId": TASK_ID}).to_string().into_bytes(),
+                            json!({"requestId": task_id}).to_string().into_bytes(),
                         )
                     } else if line.starts_with("POST /v1/video/status ") {
                         arrived.notify_one();
@@ -262,7 +276,7 @@ async fn finish_run(
 
 #[tokio::test]
 async fn real_video_workflow_stores_the_download_and_one_success_terminal() {
-    let mut provider = LocalVideoProvider::start("Succeed").await;
+    let mut provider = LocalVideoProvider::start_with_task_id("Succeed", TASK_ID).await;
     let fixture = MediaFixture::new(&provider).await;
     let run_id = "audit-video-success";
     let mut run = fixture.spawn(run_id);
@@ -442,12 +456,19 @@ fn audit_desktop_video_progress_keeps_task_id_for_resume() {
 
     let (sink, mut receiver) = ChannelSink::new();
     let publisher = NodeEventPublisher::new(Arc::new(sink));
-    publisher.emit_job_progress("audit-revision", "video", TASK_ID, "queued");
+    publisher.emit_job_progress(
+        "audit-revision",
+        "video",
+        TASK_ID,
+        "audit-fingerprint",
+        "queued",
+    );
     let progress = receiver.try_recv().unwrap();
     publisher.emit(NodeExecutionEvent {
         status: NodeExecutionStatus::Completed,
         outputs: Some(json!({
             "videoTaskId": TASK_ID,
+            "videoTaskFingerprint": "audit-fingerprint",
             "videoUrl": "artifact://audit-video",
             "operation": "video_generate",
             "providerId": "audit-provider",
@@ -471,6 +492,18 @@ fn audit_desktop_video_progress_keeps_task_id_for_resume() {
     assert_eq!(
         observed["progress"]["resumedTaskId"], TASK_ID,
         "stopping before completion must retain the provider task id in the next real TS workflow request"
+    );
+    assert_eq!(
+        observed["progress"]["storedTaskFingerprint"],
+        "audit-fingerprint"
+    );
+    assert_eq!(
+        observed["progress"]["resumedTaskFingerprint"],
+        "audit-fingerprint"
+    );
+    assert_eq!(
+        observed["completed"]["resumedTaskFingerprint"],
+        "audit-fingerprint"
     );
 }
 
@@ -500,7 +533,7 @@ fn desktop_resume_observation(fixture: &Value) -> Value {
 #[tokio::test]
 #[ignore = "audit: editing a completed video's prompt must not silently resume its old provider task"]
 async fn audit_edited_video_prompt_submits_a_new_task() {
-    let mut provider = LocalVideoProvider::start("Succeed").await;
+    let mut provider = LocalVideoProvider::start_with_task_id("Succeed", TASK_ID).await;
     let mut fixture = MediaFixture::new(&provider).await;
     let mut first = fixture.spawn("audit-video-before-edit");
     provider.wait_for_poll().await;
@@ -530,6 +563,10 @@ async fn audit_edited_video_prompt_submits_a_new_task() {
         "edit": {"videoPrompt": changed_prompt}
     }));
     assert_eq!(observed["completed"]["resumedTaskId"], TASK_ID);
+    assert_eq!(
+        observed["completed"]["resumedTaskFingerprint"],
+        observed["completed"]["storedTaskFingerprint"]
+    );
     let next: WorkflowRequest =
         serde_json::from_value(observed["edited"]["workflow"].clone()).unwrap();
     assert_eq!(
@@ -574,13 +611,18 @@ async fn audit_edited_video_prompt_submits_a_new_task() {
         "executing the edited prompt must submit a new generation rather than silently polling the previous task"
     );
     assert!(new_prompt_sent, "the edited prompt must reach the provider");
+    assert_ne!(
+        polls[1].1["requestId"], polls[0].1["requestId"],
+        "the edited run must poll its new task id"
+    );
 }
 
 #[tokio::test]
 #[ignore = "audit: a saved task id must not be sent to a replacement provider endpoint on resume"]
-async fn audit_video_resume_rejects_replaced_provider_identity() {
+async fn audit_video_resume_submits_new_task_for_replaced_provider_identity() {
     let mut original = LocalVideoProvider::start("Succeed").await;
-    let mut replacement = LocalVideoProvider::start("Succeed").await;
+    let mut replacement =
+        LocalVideoProvider::start_with_task_id("Succeed", "replacement-video-job").await;
     let mut fixture = MediaFixture::new(&original).await;
     let mut first = fixture.spawn("audit-video-original-provider");
     original.wait_for_poll().await;
@@ -604,6 +646,19 @@ async fn audit_video_resume_rejects_replaced_provider_identity() {
         .find(|node| node.id == "video")
         .unwrap();
     video.config.insert("videoTaskId".into(), json!(task_id));
+    let fingerprint = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.node_id == "video" && event.status == NodeExecutionStatus::Completed)
+        .unwrap()
+        .resume_fingerprint
+        .clone()
+        .unwrap();
+    video
+        .config
+        .insert("videoTaskFingerprint".into(), json!(fingerprint));
     let model_ref = video.config["videoModel"].as_str().unwrap().to_string();
     let (provider_id, model_id) = model_ref.split_once("::").unwrap();
 
@@ -649,32 +704,38 @@ async fn audit_video_resume_rejects_replaced_provider_identity() {
     let original_requests_before = original.requests.lock().unwrap().len();
     let run_id = "audit-video-replaced-provider-resume";
     let mut resumed = fixture.spawn(run_id);
-    // A corrected implementation may reject the changed identity before any
-    // network request. Observe the run and the replacement listener together.
-    let replacement_polled = tokio::select! {
-        _ = replacement.wait_for_poll() => true,
-        result = &mut resumed => {
-            assert!(result.unwrap().is_err(), "changed identity must not silently succeed");
-            false
-        }
-    };
-    let result = if replacement_polled {
-        replacement.release_poll.notify_one();
-        Some(finish_run(&mut resumed).await)
-    } else {
-        None
-    };
+    // A changed provider identity must submit a fresh task before polling.
+    replacement.wait_for_poll().await;
+    let replacement_requests_before_release = replacement.requests.lock().unwrap().clone();
+    replacement.release_poll.notify_one();
+    let result = finish_run(&mut resumed).await;
     original.close().await;
     replacement.close().await;
-    let foreign_requests = replacement.requests.lock().unwrap();
-    let foreign_task = foreign_requests
+    let replacement_requests = replacement.requests.lock().unwrap();
+    let submits: Vec<_> = replacement_requests
         .iter()
-        .find(|(line, _)| line.starts_with("POST /v1/video/status "))
-        .map(|(_, body)| body["requestId"].clone());
+        .filter(|(line, _)| line.starts_with("POST /v1/video/submit "))
+        .collect();
+    let polls: Vec<_> = replacement_requests
+        .iter()
+        .filter(|(line, _)| line.starts_with("POST /v1/video/status "))
+        .collect();
     assert_eq!(
         original.requests.lock().unwrap().len(),
         original_requests_before
     );
+    assert_eq!(submits.len(), 1, "replacement provider gets a fresh submit");
+    assert_eq!(polls.len(), 1, "only the freshly submitted task is polled");
+    assert_eq!(
+        replacement_requests_before_release[0]
+            .0
+            .split_whitespace()
+            .nth(1),
+        Some("/v1/video/submit"),
+        "submission must happen before any replacement status request"
+    );
+    assert_eq!(polls[0].1["requestId"], "replacement-video-job");
+    assert_ne!(polls[0].1["requestId"], task_id);
     let terminal = RunStore::new(&fixture.db)
         .get(run_id)
         .unwrap()
@@ -689,10 +750,7 @@ async fn audit_video_resume_rejects_replaced_provider_identity() {
             .count(),
         1
     );
-    eprintln!("video provider replacement: unchanged_resume_submits=1, replacement_polled={replacement_polled}, same_old_task={}, api_ok={}, terminal={terminal:?}",
-        foreign_task.as_ref() == Some(&json!(task_id)), result.as_ref().is_some_and(|result| result.is_ok()));
-    assert!(
-        !replacement_polled,
-        "an old task id must not be polled against a replacement provider endpoint/account"
-    );
+    eprintln!("video provider replacement: unchanged_resume_submits=1, replacement_submits={}, replacement_polls={}, old_task_polled=false, api_ok={}, terminal={terminal:?}",
+        submits.len(), polls.len(), result.is_ok());
+    result.unwrap();
 }

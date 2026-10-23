@@ -151,6 +151,8 @@ export interface CreativeNodeData {
   videoDuration?: number;
   videoProgress?: number;
   videoTaskId?: string;
+  /** Backend-generated input/provider binding paired with videoTaskId for safe resume. */
+  videoTaskFingerprint?: string;
   /** 音频节点：方向由用户显式选择，内核不猜。 */
   audioOperation?: "speech_transcribe" | "speech_synthesize";
   audioModel?: string;

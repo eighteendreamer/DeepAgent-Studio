@@ -22,6 +22,7 @@ use async_trait::async_trait;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 
 use deepagent_core::error::Result as CoreResult;
 use deepagent_runtime::workflow::{
@@ -1664,6 +1665,94 @@ fn split_data_url(value: &str) -> Option<(String, String)> {
     Some((mime, data.to_string()))
 }
 
+/// Bind a provider-side task id to the exact effective request and account
+/// configuration that created it. Only the digest crosses the event/UI
+/// boundary; provider credentials and prompts remain inside the gateway.
+fn video_input_fingerprint(
+    candidate: &ResolvedCanvasModel,
+    request: &CanvasVideoRequest,
+    image: Option<&CanvasImageInput>,
+) -> String {
+    let parts = [
+        "deepagent-video-resume-v1",
+        candidate.provider.id.as_str(),
+        candidate.model.id.as_str(),
+        candidate.provider.protocol.as_str(),
+        candidate.provider.base_url.trim().trim_end_matches('/'),
+        candidate.provider.credential_version.as_str(),
+        request.prompt.as_str(),
+        request.size.as_deref().unwrap_or_default(),
+        image
+            .map(|input| input.data_url.as_str())
+            .unwrap_or_default(),
+    ];
+    let parts: Vec<&[u8]> = parts.iter().map(|part| part.as_bytes()).collect();
+    let key = candidate
+        .api_key
+        .as_deref()
+        .filter(|key| !key.is_empty())
+        .unwrap_or(candidate.provider.credential_version.as_str());
+    let mac = hmac_sha256_framed_parts(key.as_bytes(), &parts);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(mac)
+}
+
+fn video_resume_fingerprint(input_fingerprint: &str, task_id: &str) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(hmac_sha256_framed_parts(
+        input_fingerprint.as_bytes(),
+        &[input_fingerprint.as_bytes(), task_id.as_bytes()],
+    ))
+}
+
+#[cfg(test)]
+fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
+    const BLOCK_SIZE: usize = 64;
+    let mut normalized_key = [0u8; BLOCK_SIZE];
+    if key.len() > BLOCK_SIZE {
+        normalized_key[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        normalized_key[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner = Sha256::new();
+    for byte in &normalized_key {
+        inner.update([byte ^ 0x36]);
+    }
+    inner.update(message);
+    hmac_sha256_finish(&normalized_key, inner.finalize())
+}
+
+fn hmac_sha256_framed_parts(key: &[u8], parts: &[&[u8]]) -> [u8; 32] {
+    const BLOCK_SIZE: usize = 64;
+    let mut normalized_key = [0u8; BLOCK_SIZE];
+    if key.len() > BLOCK_SIZE {
+        normalized_key[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        normalized_key[..key.len()].copy_from_slice(key);
+    }
+
+    let mut inner = Sha256::new();
+    for byte in &normalized_key {
+        inner.update([byte ^ 0x36]);
+    }
+    for part in parts {
+        inner.update((part.len() as u64).to_be_bytes());
+        inner.update(part);
+    }
+    hmac_sha256_finish(&normalized_key, inner.finalize())
+}
+
+fn hmac_sha256_finish(
+    normalized_key: &[u8; 64],
+    inner_digest: sha2::digest::Output<Sha256>,
+) -> [u8; 32] {
+    let mut outer = Sha256::new();
+    for byte in normalized_key {
+        outer.update([byte ^ 0x5c]);
+    }
+    outer.update(inner_digest);
+    outer.finalize().into()
+}
+
 async fn parse_output(
     candidate: &ResolvedCanvasModel,
     kind: CanvasRequestKind,
@@ -2492,6 +2581,7 @@ impl CanvasModelBridge for CanvasModelGateway {
             Some(reference) => self.resolve_image_inputs(&[reference.to_string()])?,
             None => Vec::new(),
         };
+        let input_fingerprint = video_input_fingerprint(&candidate, &request, images.first());
         let model_request = CanvasModelRequest {
             operation: CanvasOperation::VideoGenerate,
             prompt: request.prompt.clone(),
@@ -2502,22 +2592,46 @@ impl CanvasModelBridge for CanvasModelGateway {
             audio: CanvasAudioInput::default(),
             timeout_ms: 120_000,
         };
-        // 提交与轮询用同一个供应商：作业 id 只在该账号内有效，切换候选模型无意义。
-        let task_id = match request
+        // Provider task ids are scoped to the account that created them. Resume
+        // only when the saved fingerprint still matches the effective inputs
+        // and current provider credentials/configuration.
+        let saved_task_id = request
             .resume_task_id
             .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let resumable_task_id = saved_task_id.filter(|task_id| {
+            let current = video_resume_fingerprint(&input_fingerprint, task_id);
+            request.resume_fingerprint.as_deref() == Some(current.as_str())
+        });
+        if saved_task_id.is_some() && resumable_task_id.is_none() {
+            tracing::info!(
+                provider_id = %candidate.provider.id,
+                model_id = %candidate.model.id,
+                has_saved_fingerprint = request.resume_fingerprint.is_some(),
+                "saved video task does not match current inputs/provider; submitting a new task"
+            );
+        }
+        let task_id = match resumable_task_id {
             Some(existing) => existing.trim().to_string(),
             None => self
                 .submit_media_job(&candidate, &model_request, request.cancel.as_ref())
                 .await
                 .map_err(to_core_error)?,
         };
+        let resume_fingerprint = video_resume_fingerprint(&input_fingerprint, &task_id);
+        if let Some(sink) = request.on_progress.as_ref() {
+            // Publish identity before the first potentially long status wait.
+            sink.emit(CanvasJobProgress {
+                job_id: task_id.clone(),
+                phase: CanvasJobPhase::Queued,
+                resume_fingerprint: resume_fingerprint.clone(),
+            });
+        }
         let timeout_ms = request.timeout_ms.max(1_000);
         let deadline = Instant::now() + Duration::from_millis(timeout_ms);
         let mut round = 0u32;
-        let mut reported: Option<CanvasJobPhase> = None;
+        let mut reported: Option<CanvasJobPhase> = Some(CanvasJobPhase::Queued);
         let job = loop {
             if request
                 .cancel
@@ -2548,6 +2662,7 @@ impl CanvasModelBridge for CanvasModelGateway {
                     sink.emit(CanvasJobProgress {
                         job_id: task_id.clone(),
                         phase,
+                        resume_fingerprint: resume_fingerprint.clone(),
                     });
                 }
                 reported = Some(phase);
@@ -2598,6 +2713,7 @@ impl CanvasModelBridge for CanvasModelGateway {
             provider_id: candidate.provider.id.clone(),
             model_id: candidate.model.id.clone(),
             task_id,
+            resume_fingerprint,
         })
     }
 
@@ -2772,6 +2888,134 @@ mod tests {
             input_kinds: kinds.to_vec(),
             has_prompt: prompt,
         }
+    }
+
+    fn video_candidate() -> ResolvedCanvasModel {
+        ResolvedCanvasModel {
+            provider: crate::canvas_provider_service::CanvasProviderConfig {
+                id: "provider-1".to_string(),
+                name: "Video provider".to_string(),
+                protocol: CanvasProtocol::OpenAi,
+                base_url: "https://video.example/v1".to_string(),
+                credential_version: "credential-generation-1".to_string(),
+                enabled: true,
+                logo: None,
+                models: vec![],
+            },
+            model: CanvasModelConfig {
+                id: "video-model-1".to_string(),
+                name: "Video model".to_string(),
+                description: String::new(),
+                enabled: true,
+                scenarios: vec![CanvasScenario::VideoGeneration],
+                priority: 0,
+                max_reference_images: None,
+            },
+            api_key: Some("sk-video-test-secret".to_string()),
+        }
+    }
+
+    #[test]
+    fn video_resume_identity_covers_effective_inputs_and_provider_generation() {
+        let candidate = video_candidate();
+        let request = CanvasVideoRequest {
+            model_ref: "provider-1::video-model-1".to_string(),
+            prompt: "a red kite over the sea".to_string(),
+            image_url: Some("artifact://frame-1".to_string()),
+            size: Some("720p".to_string()),
+            resume_task_id: None,
+            resume_fingerprint: None,
+            timeout_ms: 60_000,
+            cancel: None,
+            on_progress: None,
+        };
+        let image = CanvasImageInput {
+            data_url: "data:image/png;base64,AAAA".to_string(),
+        };
+        let fingerprint = video_input_fingerprint(&candidate, &request, Some(&image));
+        assert_eq!(
+            video_input_fingerprint(&candidate, &request, Some(&image)),
+            fingerprint,
+            "unchanged inputs must produce a stable identity"
+        );
+        assert!(!fingerprint.contains("sk-video-test-secret"));
+
+        let mut changed_request = request.clone();
+        changed_request.prompt.push_str(" with a yellow tail");
+        assert_ne!(
+            video_input_fingerprint(&candidate, &changed_request, Some(&image)),
+            fingerprint,
+            "prompt changes must invalidate a saved task"
+        );
+        changed_request = request.clone();
+        changed_request.size = Some("1080p".to_string());
+        assert_ne!(
+            video_input_fingerprint(&candidate, &changed_request, Some(&image)),
+            fingerprint,
+            "size changes must invalidate a saved task"
+        );
+
+        let changed_image = CanvasImageInput {
+            data_url: "data:image/png;base64,BBBB".to_string(),
+        };
+        assert_ne!(
+            video_input_fingerprint(&candidate, &request, Some(&changed_image)),
+            fingerprint,
+            "reference image changes must invalidate a saved task"
+        );
+
+        let mut changed_candidate = candidate.clone();
+        changed_candidate.model.id = "video-model-2".to_string();
+        assert_ne!(
+            video_input_fingerprint(&changed_candidate, &request, Some(&image)),
+            fingerprint,
+            "model changes must invalidate a saved task"
+        );
+        changed_candidate = candidate.clone();
+        changed_candidate.provider.protocol = CanvasProtocol::Gemini;
+        assert_ne!(
+            video_input_fingerprint(&changed_candidate, &request, Some(&image)),
+            fingerprint,
+            "protocol changes must invalidate a saved task"
+        );
+        changed_candidate = candidate.clone();
+        changed_candidate.provider.base_url = "https://other.example/v1".to_string();
+        assert_ne!(
+            video_input_fingerprint(&changed_candidate, &request, Some(&image)),
+            fingerprint,
+            "endpoint changes must invalidate a saved task"
+        );
+        changed_candidate = candidate.clone();
+        changed_candidate.provider.credential_version = "credential-generation-2".to_string();
+        assert_ne!(
+            video_input_fingerprint(&changed_candidate, &request, Some(&image)),
+            fingerprint,
+            "credential changes must invalidate a saved task"
+        );
+        changed_candidate.api_key = Some("sk-another-key".to_string());
+        assert_ne!(
+            video_input_fingerprint(&changed_candidate, &request, Some(&image)),
+            fingerprint,
+            "the persisted identity must be keyed by the current credential"
+        );
+        assert_ne!(
+            video_resume_fingerprint(&fingerprint, "job-1"),
+            video_resume_fingerprint(&fingerprint, "job-2"),
+            "task ids must be part of the persisted resume binding"
+        );
+    }
+
+    #[test]
+    fn hmac_sha256_matches_rfc_4231_test_case() {
+        let mac = hmac_sha256(b"key", b"The quick brown fox jumps over the lazy dog");
+        let hex = mac
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert_eq!(
+            hex,
+            "f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8"
+        );
     }
 
     #[test]
@@ -3165,6 +3409,7 @@ mod tests {
                 name: "P".to_string(),
                 protocol: CanvasProtocol::OpenAi,
                 base_url: "https://x".to_string(),
+                credential_version: String::new(),
                 enabled: true,
                 logo: None,
                 models: vec![],
@@ -3217,6 +3462,7 @@ mod tests {
                 name: "P".to_string(),
                 protocol: CanvasProtocol::OpenAi,
                 base_url: "https://x".to_string(),
+                credential_version: String::new(),
                 enabled: true,
                 logo: None,
                 models: vec![],
@@ -4057,6 +4303,7 @@ mod tests {
             image_url: None,
             size: Some("720p".to_string()),
             resume_task_id: None,
+            resume_fingerprint: None,
             timeout_ms: 20_000,
             cancel: None,
             on_progress: Some(CanvasJobProgressSink::new(move |report| {
@@ -4133,11 +4380,12 @@ mod tests {
         let submits_before = captured_submits(&received);
         let resumed = rt
             .block_on(gateway.generate_video(CanvasVideoRequest {
-                resume_task_id: Some("job-42".to_string()),
+                resume_task_id: Some(done.task_id.clone()),
+                resume_fingerprint: Some(done.resume_fingerprint.clone()),
                 ..base
             }))
             .expect("resumed job");
-        assert_eq!(resumed.task_id, "job-42");
+        assert_eq!(resumed.task_id, done.task_id);
         assert_eq!(
             captured_submits(&received),
             submits_before,
