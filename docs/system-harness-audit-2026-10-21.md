@@ -17,6 +17,7 @@
 | 本地 MCP 子进程环境授权 | 隔离宿主只注入虚构 canary，经正式 transport 完成 initialize/tools/list；空配置仍继承未声明 secret 和小写 token，显式覆盖对照通过 | 已确认 H-135；仅 Windows 本机 stdio，没有读取真实凭据或验证公网外传 |
 | MCP 请求写入背压与取消 | 正式 ChatService/Kernel 发出 512 KiB（初轮 2 MiB）虚构工具参数；真实 Node 读首块后暂停 stdin，取消已受理但写入未结束；释放后完整请求继续到达 | 已确认 H-136；本机管道故障注入，未执行真实远端副作用或桌面按钮操作 |
 | MCP 动态工具目录 | 真实 Node 声明 tools.listChanged，在工具响应前发送变更通知并将目录由 initial_tool 切为 updated_tool；正式宿主未重新发现，下一独立运行的真实序列化 schema 仍为旧工具 | 已确认 H-137；本机 stdio、离线模型；1 秒为测试观察窗口，不是协议规定期限 |
+| MCP 结果内容与客户端元数据 | 正式 MCP 返回公开文本、structuredContent 与仅位于顶层 _meta 的虚构 canary；第一次模型 wire 无 canary，工具返回后的下一请求包含它 | 已确认 H-138；仅本机 stdio + 离线模型；这是客户端/模型投影缺口，不宣称 2024-11-05 基础协议为所有 _meta 提供统一保密保证 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn，以及一个已被替代 turn 重复派生多个新 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter` 和 Responses failed usage 丢失均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
@@ -2442,10 +2443,36 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 在现有 transport/client 的消息分发及 McpService 生命周期内接收通知，按服务有界地重发 tools/list，并经现有权限、名称唯一性和配置代次检查发布新快照。就绪工具定义与调用路由仍引用同一快照，已发出请求保持其版本，下一边界采用新目录；刷新串行化、重复通知合并、失败保留/退役策略及连接替换后的旧结果拒绝属于本地设计，需要明确并验证。不要让会话请求重新建连，也不要另建工具注册表或只刷新设置页面。
 - 后续验收需覆盖新增、删除、同名 schema 更新、通知风暴、刷新失败/超时、禁用及连接代次竞争，并同时检查 schema 和实际调用路由。当前仅 Windows 本机 stdio、同会话连续两个正式 run 与离线模型，未覆盖 HTTP/SSE、真实 Tauri、macOS/Linux、真实 DeepSeek 或其他服务端；默认 ignored 探针保留缺陷，生产行为未改。
 
+### H-138：MCP 结果整对象进入模型上下文，客户端元数据没有独立可见性边界
+
+**级别：中（P2，有条件的数据最小化与上下文隔离风险）；触发条件：MCP 把仅供客户端/UI 使用的数据放在结果顶层 `_meta`，并通过本系统执行工具。** 这不是任意 MCP 元数据天然包含秘密，也不代表本系统已经支持完整 MCP Apps 协议。
+
+#### 生产链与实测
+
+- `ToolCallResult.extra` 以 serde flatten 保留 `structuredContent`、`_meta` 等额外字段；这是必要的无损接收能力。`McpToolAdapter::invoke()` 与 `invoke_with_context()` 随后直接 `serde_json::to_value(result)`，连同这些字段形成 ToolOutput；`ModelAgent::observe()` 将 observation.output 全部包入 `{status,result}` 并序列化为 `FunctionCallOutput`。没有从原始结果到模型可见内容的投影步骤，保存/审计元数据和公开给模型使用了同一个值。
+- 复用 `kernel_v2_e2e/mcp_image_output.rs` 的真实 Node → McpService → ChatService/Kernel → provider wire 夹具，抽取共用结果 fixture，保留 H-127 原图像探针。新增 metadata 探针仅向 Node 返回结果的 `_meta.audit.example/clientState.privateDetail` 写入固定虚构 canary；公开 `content` 文本和 `structuredContent` 各有独立标记，提示、工具参数和首次模型请求没有 canary。
+- 命令：`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_image_output::audit_mcp_client_metadata_is_not_sent_to_model --offline -- --ignored --exact --nocapture`，实际 **0 passed / 1 failed（预期暴露缺口）**，运行约 0.35s。输出 `model_requests=2, public_text_present=true, structured_content_present=true, private_before_tool=false, private_after_tool=true`。正式序列化的下一请求带入客户端 canary；缺陷断言前已经关闭真实 MCP 子进程，没有对公网发送或读取真实凭据。
+
+#### 成熟实现与契约边界
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/mcp/mcp-client/src/tools.ts::createExecutor()` 在校验上游 CallToolResult 后，显式构造只含 content 与可选 structuredContent 的 McpResult；原始调用由调用方提供的 `options.call` 控制，canonical 模型结果不默认包含顶层 `_meta`。这里对照的是原始协议对象与模型结果的职责分离，没有运行参考实现。
+- **Codex**：`借鉴/codex/codex-rs/core/src/tools/context.rs::McpToolOutput` 分别实现 `to_response_item()` 和 `post_tool_use_response()`；前者通过 `response_payload()` 调用 `protocol/src/models.rs::CallToolResult::as_function_call_output_payload()`，从 content 或 structured_content 构造模型输出，不序列化顶层 meta。后者仍能把完整结果交给 hook，metadata capture 另有资格标记。不能说它删除了原始元数据，也不能把正文中受识别的图像/encryptedContent 元信息与顶层 metadata 混为一谈。
+- **Claude Code**：`借鉴/claudecode/restored-src/src/services/mcp/client.ts:1897` 将处理后的 `mcpResult.content` 放入 data，将 `_meta` 与 structuredContent 放入单独 mcpMeta 通道；`McpToolCallError` 同样单独保留 error result 的 `_meta`。这证明其有专门元数据通道，不能把所有消费者的行为都归结为删除元数据；本次仅按已核对源码描述。
+- [OpenAI 插件工具结果文档](https://developers.openai.com/plugins/reference#tool-results)明确区分 content/structuredContent 的模型可见性与 `_meta` 的 component-only 用途；[MCP Apps 模式](https://apps.extensions.modelcontextprotocol.io/api/documents/patterns.html#persisting-view-state)展示用 CallToolResult._meta.viewUUID 恢复 UI 状态。这些属于应用/客户端使用语义，**不能套用为当前客户端声明的 2024-11-05 基础 MCP 对所有元数据的通用强制保密规则**。本项按成熟宿主的数据边界差异记录，不将未来扩展未实现本身算作协议违规。
+
+#### 后果、收敛方向与限制
+
+- 已直接证明：只出现在客户端 metadata 中的内容会进入模型 wire。若实际服务把 UI 明细、内部关联数据或大表放在该通道，将扩大供应商可见数据范围和上下文占用；可能的敏感数据披露和额外 token 成本依赖实际内容，本探针只用短虚构 canary，没有量化计费或证明真实秘密泄漏。
+- 在既有 MCP adapter/工具 observation 边界明确原始结果、宿主元数据和模型内容的投影契约；保留可审计原始数据与所需 provenance，不以“修复”为由丢失本地诊断。模型结果从明确字段构造，typed image/resource、公开 structuredContent、isError 与调用配对均需保留；允许的元数据如何显式进入模型属于本地设计，不应默认序列化整个协议对象，也不另建事件/工具存储。
+- 当前仅 Windows 本机 stdio 与离线模型，未验错误结果、嵌套 metadata、HTTP/SSE、重启回放、真实 MCP Apps UI、真实供应商或 macOS/Linux；不将此探针视为完整数据流安全审查。生产行为未改。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-138 MCP 客户端 metadata 显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_image_output::audit_mcp_client_metadata_is_not_sent_to_model --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 0.35s；仅位于 MCP 结果顶层 _meta 的虚构 canary 在下一正式 wire 出现，公开 content/structuredContent 仍存在；本机真实 Node，无公网发送 |
+| H-138 公开内容对照与原图像探针复核 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_image_output --offline -- --include-ignored --nocapture`：1 passed / 2 failed（两项预期缺陷），约 0.47s；无 _meta 组公开文本/结构化内容保留、canary 不出现；H-138 仍失败；共享夹具的 H-127 仍复现 string output、typed_input_image=false、raw_json_string=true。不能将旧图像缺口当作本轮新增回归 |
+| H-138 默认 Kernel 集成与静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：28 passed / 27 ignored，约 4.01s；`cargo fmt --all -- --check`、`git diff --check` 通过。仅测试和报告；未跑 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或公网供应商 |
 | H-137 MCP 目录变更显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_catalog_change::audit_mcp_list_changed_reaches_next_run --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.70s；服务端确已替换目录并发通知，tools/list 仍仅 1 次，下一独立 run 的正式 wire 继续携带旧工具；真实本机 Node、离线模型，无公网请求 |
 | H-137 不变目录对照及默认集成基线 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_catalog_change --offline -- --nocapture`：1 passed / 1 ignored，约 0.63s；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：27 passed / 26 ignored，约 2.67s。`cargo fmt --all -- --check`、`git diff --check` 通过。仅测试与文档，未跑 workspace 全量、Clippy、桌面 build、真实 Tauri、macOS/Linux 或真实供应商 |
 | H-136 MCP stdin 背压取消显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation::audit_stopping_run_interrupts_backpressured_stdio_write --offline -- --ignored --exact --nocapture`：512 KiB 当前探针 0 passed / 1 failed（预期暴露缺口），约 1.68s；初轮 2 MiB 也同样失败，约 1.32s。正式运行中取消 accepted，但 250ms 后仍等待发送；释放 gate 后完整请求到达，读回终态 cancelled、模型请求 1 次；本机 Node，无公网副作用 |
@@ -2930,6 +2957,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 启动恢复的规范终态、会话投影与诊断归属 | H-44、H-95 | 恢复共用现有幂等终态边界，文件会话投影与 interruption 分类均具备按 run/task 身份的处理；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补；多个 unfinished run 的原因各自对应目标 turn，不能改错后续 turn |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | MCP 运行中的工具目录同步 | H-137 | 既有 client/transport 分发列表变更通知，McpService 在有效配置代次内重新发现并发布同版本 schema/路由；参考 Claude 定向缓存失效和 DeepSeek 串行同步/连接身份检查 | 下一运行看到新增、删除及 schema 更新；刷新失败、重复通知、禁用/替换竞争有界；不在对话路径建连，不只改 UI |
+| MCP 原始结果与模型内容的投影 | H-127、H-138 | 既有 adapter/observation 保留宿主原始结果、独立元数据与 canonical 模型内容；参考 DeepSeek 显式 content/structuredContent 和 Claude mcpMeta 通道 | 客户端 _meta 不默认进入 wire，公开结构化内容和多模态不丢；成功/失败、持久化/回放、provenance 与诊断有明确契约 |
 | MCP 整次调用取消与部分写入状态 | H-128、H-136 | 既有执行 owner 覆盖发送锁、请求写入和响应读取；参考 Codex 外层 dispatch 取消和 DeepSeek 每次调用的 signal，半帧后的连接处置须有明确本地契约 | 背压及锁排队时停止不依赖远端读取；不会复用损坏帧连接；保留结果未知、单终态和工具配对，不影响其他会话取消树 |
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
 | 本地 MCP 子进程环境授权 | H-135 | 现有统一进程启动边界管理基础环境、显式转发/覆盖和不可继承变量；参考 Codex 白名单、DeepSeek 共享清理及 Claude 条件策略，具体默认值为本地设计 | 空配置不隐式获得未授权宿主凭据；显式授权、大小写、代理/CA、首次启动/测试/重连一致；不以环境过滤代替 OS 沙箱 |
