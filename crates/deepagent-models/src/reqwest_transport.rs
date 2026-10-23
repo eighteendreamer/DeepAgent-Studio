@@ -468,6 +468,101 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "explicit harness audit probe for active streams crossing the total deadline"]
+    async fn audit_active_provider_stream_is_not_cut_off_by_total_deadline() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        async fn write_chunk(
+            socket: &mut tokio::net::TcpStream,
+            data: &[u8],
+        ) -> std::io::Result<()> {
+            socket
+                .write_all(format!("{:X}\r\n", data.len()).as_bytes())
+                .await?;
+            socket.write_all(data).await?;
+            socket.write_all(b"\r\n").await
+        }
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (response_started, response_ready) = tokio::sync::oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0; 1024];
+            loop {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+                if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            response_started.send(()).unwrap();
+
+            let mut writes_ok = true;
+            for index in 0..8 {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                let event = format!("data: {{\"type\":\"progress\",\"index\":{index}}}\n\n");
+                if write_chunk(&mut socket, event.as_bytes()).await.is_err() {
+                    writes_ok = false;
+                    break;
+                }
+            }
+            if writes_ok {
+                let _ = write_chunk(&mut socket, b"data: [DONE]\n\n").await;
+                let _ = socket.write_all(b"0\r\n\r\n").await;
+            }
+        });
+
+        let transport =
+            ReqwestTransport::with_client(reqwest::Client::builder().no_proxy().build().unwrap())
+                .with_timeouts(TransportTimeouts {
+                    connect: Duration::from_secs(1),
+                    first_byte: Duration::from_secs(1),
+                    idle: Duration::from_secs(1),
+                    total: Duration::from_millis(250),
+                });
+        let request = TransportRequest {
+            url: format!("http://{address}/responses"),
+            api_key: "audit-placeholder".to_string(),
+            body: "{}".to_string(),
+        };
+        let events = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink_events = events.clone();
+        let mut sink = move |data: &str| {
+            sink_events.lock().unwrap().push(data.to_string());
+            Ok(data == "[DONE]")
+        };
+        let operation = tokio::spawn(async move { transport.stream(request, &mut sink).await });
+        tokio::time::timeout(Duration::from_secs(1), response_ready)
+            .await
+            .unwrap()
+            .unwrap();
+        let result = tokio::time::timeout(Duration::from_secs(2), operation)
+            .await
+            .unwrap()
+            .unwrap();
+        server.await.unwrap();
+        let events = events.lock().unwrap().clone();
+
+        assert!(
+            result.is_ok(),
+            "active provider stream ended after {} progress events and before its terminal event: {result:?}",
+            events.len()
+        );
+        assert_eq!(events.last().map(String::as_str), Some("[DONE]"));
+    }
+
+    #[tokio::test]
     async fn audit_get_json_is_bounded_while_waiting_for_headers_and_body() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
