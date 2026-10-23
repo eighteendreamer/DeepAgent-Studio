@@ -3686,72 +3686,9 @@ mod tests {
     #[test]
     #[ignore = "audit reproducer: a non-empty invalid model reference must not become automatic routing"]
     fn audit_invalid_explicit_model_ref_is_rejected_before_provider_transport() {
-        use std::io::{Read, Write};
-
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        let received_model = Arc::new(std::sync::Mutex::new(None::<String>));
-        let sink = received_model.clone();
-        std::thread::spawn(move || {
-            let Ok((mut stream, _)) = listener.accept() else {
-                return;
-            };
-            let mut buf = [0u8; 2048];
-            let mut text = String::new();
-            loop {
-                match stream.read(&mut buf) {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        text.push_str(&String::from_utf8_lossy(&buf[..n]));
-                        if body_complete(&text) {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-            let head_end = text.find("\r\n\r\n").unwrap_or(text.len());
-            let body = text.get(head_end + 4..).unwrap_or_default();
-            let model = serde_json::from_str::<Value>(body)
-                .ok()
-                .and_then(|value| value["model"].as_str().map(str::to_string));
-            *sink.lock().expect("lock") = model;
-
-            let payload = "{\"choices\":[{\"message\":{\"content\":\"routed\"}}]}";
-            let response = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
-                payload.len()
-            );
-            let _ = stream.write_all(response.as_bytes());
-            let _ = stream.flush();
-        });
-
-        let db = Arc::new(Database::open_in_memory().expect("db"));
-        let providers = Arc::new(CanvasProviderService::new(
-            db,
-            Arc::new(crate::secret_store::MemorySecretStore::default()),
-        ));
-        providers
-            .save_provider(CanvasProviderInput {
-                name: "Non-DeepSeek audit".to_string(),
-                protocol: "openai".to_string(),
-                base_url: format!("http://127.0.0.1:{port}/v1"),
-                enabled: true,
-                models: vec![CanvasModelConfig {
-                    id: "other-text-model".to_string(),
-                    name: "Other text model".to_string(),
-                    description: String::new(),
-                    enabled: true,
-                    scenarios: vec![CanvasScenario::Text],
-                    priority: 0,
-                    max_reference_images: None,
-                }],
-                api_key: Some("sk-audit".to_string()),
-                ..Default::default()
-            })
-            .expect("provider");
-        let gateway = CanvasModelGateway::new(providers);
+        let (base_url, captured_body) = spawn_single_chat_responder("routed");
+        let (gateway, _) = local_text_gateway(base_url, "other-text-model");
 
         let result = rt.block_on(gateway.complete(CanvasCompletionRequest {
             model_ref: "deepseek-chat".to_string(),
@@ -3763,7 +3700,11 @@ mod tests {
             max_tokens: None,
             images: Vec::new(),
         }));
-        let wire_model = received_model.lock().expect("lock").clone();
+        let wire_model = captured_body
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .and_then(|body| body["model"].as_str().map(str::to_string));
         eprintln!(
             "canvas model identity audit: requested=deepseek-chat decoded={:?} wire_model={wire_model:?} result={result:?}",
             decode_model_ref("deepseek-chat")
@@ -3776,6 +3717,47 @@ mod tests {
         assert_eq!(
             wire_model, None,
             "invalid explicit model identity must not reach provider transport"
+        );
+    }
+
+    #[test]
+    #[ignore = "audit reproducer: canvas node generation controls must reach the provider request"]
+    fn audit_canvas_completion_honors_node_temperature_and_output_limit() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let (base_url, captured_body) = spawn_single_chat_responder("configured");
+        let (gateway, provider_id) = local_text_gateway(base_url, "deepseek-flash");
+
+        let response = rt
+            .block_on(gateway.complete(CanvasCompletionRequest {
+                model_ref: format!("{provider_id}::deepseek-flash"),
+                node_kind: String::new(),
+                skill_ids: Vec::new(),
+                system_prompt: None,
+                prompt: "audit controls".to_string(),
+                temperature: Some(0.2),
+                max_tokens: Some(17),
+                images: Vec::new(),
+            }))
+            .expect("the controlled provider returns a valid completion");
+        let body = captured_body
+            .lock()
+            .expect("lock")
+            .clone()
+            .expect("provider request body");
+        eprintln!(
+            "canvas generation controls audit: response_model={} body={body}",
+            response.model_id
+        );
+
+        assert_eq!(
+            body.get("temperature").and_then(Value::as_f64),
+            Some(0.2),
+            "the configured node temperature must reach the provider"
+        );
+        assert_eq!(
+            body.get("max_tokens").and_then(Value::as_u64),
+            Some(17),
+            "the configured node output limit must reach the provider"
         );
     }
 
@@ -4651,6 +4633,76 @@ mod tests {
             .iter()
             .filter(|(line, _)| line.contains("/video/submit"))
             .count()
+    }
+
+    fn spawn_single_chat_responder(
+        answer: &'static str,
+    ) -> (String, Arc<std::sync::Mutex<Option<Value>>>) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let sink = captured.clone();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 2048];
+            let mut text = String::new();
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        text.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        if body_complete(&text) {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let head_end = text.find("\r\n\r\n").unwrap_or(text.len());
+            let body = text.get(head_end + 4..).unwrap_or_default();
+            *sink.lock().expect("lock") = serde_json::from_str(body).ok();
+
+            let payload = json!({ "choices": [{ "message": { "content": answer } }] }).to_string();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+        (format!("http://127.0.0.1:{port}/v1"), captured)
+    }
+
+    fn local_text_gateway(base_url: String, model_id: &str) -> (CanvasModelGateway, String) {
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::secret_store::MemorySecretStore::default()),
+        ));
+        let created = providers
+            .save_provider(CanvasProviderInput {
+                name: "Canvas text audit".to_string(),
+                protocol: "openai".to_string(),
+                base_url,
+                enabled: true,
+                models: vec![CanvasModelConfig {
+                    id: model_id.to_string(),
+                    name: model_id.to_string(),
+                    description: String::new(),
+                    enabled: true,
+                    scenarios: vec![CanvasScenario::Text],
+                    priority: 0,
+                    max_reference_images: None,
+                }],
+                api_key: Some("sk-audit".to_string()),
+                ..Default::default()
+            })
+            .expect("provider");
+        (CanvasModelGateway::new(providers), created.id)
     }
 
     /// True once the headers plus the declared body length have been received.

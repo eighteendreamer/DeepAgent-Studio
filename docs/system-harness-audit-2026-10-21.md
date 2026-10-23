@@ -32,6 +32,7 @@
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
 | 画布工作流模型身份 | 新建 LLM/分类/提取/Agent V2 节点动态生成裸 `deepseek-chat` 默认值；正式 Canvas bridge 将该非空但不可解码的值解释为自动路由，受控 HTTP wire 实际发送 `other-text-model` 并成功返回 | 已确认 H-160；前三类字段进入该模型引用链，Agent V2 另受 H-40 字段契约漂移影响；本机 HTTP provider，无真实 Tauri 或公网请求 |
+| 画布工作流生成参数 | LLM 节点的 `llmTemperature` / `llmMaxTokens` 经 WorkflowAgent 完整进入 CanvasCompletionRequest，但 Canvas gateway 重建内部请求时丢失；正式 Chat wire 只有 model/messages/stream | 已确认 H-161；本机 HTTP provider 与生产 serializer；DeepSeek 思考模式下 temperature 本就不生效，但 max_tokens 仍有效，且其他兼容 provider/非思考模式也受影响 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
@@ -2970,6 +2971,24 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 触发后，用户界面显示/保存的是 `deepseek-chat`，实际请求却可发送给任一 text 候选；模型能力、上下文、价格、授权凭据和数据接收方都可能改变。若没有候选则表现为 `NoCandidateModel`；若候选可用则运行可成功，错误更隐蔽。`WorkflowAgent` 的结果同时保存实际 `providerId/modelId`，但其 `model` 字段在原引用非空时仍写回旧 `model_ref`，消费方若只看 `model` 会继续得到错误身份。真实供应商的请求、计费和数据处理未验证。
 - 根因修复应建立单一类型化选择：`Auto` 只能由空值或显式枚举表达，`Explicit { provider_id, model_id }` 必须完整解码并在本轮不可变 provider snapshot 中精确存在；非空非法/未知值在 transport 前失败并指出节点及原值。新节点默认应改为明确 Auto，不能把某个易过期的供应商模型 ID 当成跨用户默认；历史裸值需要一次版本化迁移或明确失效提示，不能由 `scenarioModelOptions()` 伪装成合法选项。画布 text/image/video/audio/embedding 共用同一解析器，避免只修 `complete()`；H-40 的字段统一需同步处理 Agent V2。验收应覆盖空值自动路由、合法精确引用、裸值/畸形/未知 provider/未知 model、目录刷新、多个供应商、旧图迁移、真实 workflow outcome provenance 和 transport 调用数。
 
+### H-161：画布 LLM 节点的温度和输出上限在 provider adapter 前被丢弃
+
+**级别：高（P1，显式输出/成本边界失效）；触发条件：专业工作流 LLM 节点设置 `llmTemperature` 或 `llmMaxTokens`，并通过已配置的 Canvas provider 执行。** 默认新节点也带 `temperature=0.7`、`maxTokens=4096`，因此参数丢失不是只存在于手工编辑的边缘值；但 DeepSeek 当前默认开启思考模式，官方明确 temperature 在该模式下不生效，所以对 DeepSeek 默认路径的直接高影响项是输出上限。
+
+#### 官方契约、生产路径与动态复现
+
+- DeepSeek [Chat Completions 参数页](https://api-docs.deepseek.com/zh-cn/api/create-chat-completion/)定义 `temperature` 为 0–2 的可选采样参数，并定义 `max_tokens` 为 1–393216 的输出上限；未传 `max_tokens` 时，非思考模式默认 8K，思考模式默认 64K，`reasoning_effort=max` 时默认 128K。该页同时说明思考模式下 temperature 不生效。因此不能把“DeepSeek 默认可能忽略 temperature”误写成“网关可以丢弃这两个不同语义的字段”。
+- 前端 `nodeRegistry.ts` / `nodeSchemas.ts` 的新 LLM 节点默认写入 `llmTemperature=0.7`、`llmMaxTokens=4096`，schema 允许用户分别选择 0–2 和 1–128000。`WorkflowAgent::execute_llm()` 从正式 config 读取它们，并放入 `CanvasCompletionRequest.temperature/max_tokens`。本轮在已有 bridge 单元测试中加入 0.2/17 对照，执行 `cargo test -p deepagent-runtime --lib llm_node_with_explicit_canvas_model_uses_the_bridge --offline -- --nocapture`：**1 passed**，证明前端字段对应的后端节点层没有丢失。
+- 丢失发生在下一层：`CanvasModelGateway::complete()` 将 bridge request 重建为 `CanvasModelRequest`，后者的类型根本没有 temperature/max token 字段；OpenAI-compatible Chat body 固定只组装 `model/messages/stream=false`，Anthropic body 硬编码 `max_tokens=4096`，Gemini Chat body 也没有从节点参数生成对应 generation config。三条 adapter 的静态事实说明这是共享内部 DTO 边界缺失，不是 DeepSeek 名称特判。
+- 新增默认忽略探针 `canvas_model_gateway::tests::audit_canvas_completion_honors_node_temperature_and_output_limit`：精确选择本机 provider 的 `deepseek-flash`，经正式 `CanvasModelBridge::complete()`、provider resolve、OpenAI-compatible serializer 与 HTTP transport 发送 `temperature=0.2/max_tokens=17`。执行 `cargo test -p deepagent-app-core --lib audit_canvas_completion_honors_node_temperature_and_output_limit --offline -- --ignored --nocapture`：**0 passed / 1 failed（预期）**；捕获 body 为 `{"messages":[...],"model":"deepseek-flash","stream":false}`，两个字段都不存在，provider 仍返回成功。这里验证的是本地 wire，不声称真实 DeepSeek 一定生成超过 17 tokens 或产生特定费用。
+
+#### 成熟实现对照、影响与修复方向
+
+- **DeepSeek Harness** 在 provider-neutral generate options 中保留 `maxTokens` / `temperature`，其 DeepSeek serializer 明确使用 `options.maxTokens ?? model.maxTokens ?? connection.maxTokens` 生成 `max_tokens`，并在显式 temperature 存在时发送；model info 的 `defaultMaxTokens` 与同一 connection/model 配置一致。这是“调用配置、能力预算和 wire 在同一 adapter seam 汇合”的成熟对照。
+- **Codex** 没有与本画布一一对应的逐节点温度/上限 UI，本轮不以其普通 turn 配置强行类比，也没有找到可证明其所有派生模型调用都保留这两个字段的单一证据。可借鉴的仍是本系统 H-54 已指出的统一有效请求配置原则，而不是声称 Codex 已完整解决本画布契约。
+- 对 DeepSeek 默认思考路径，用户配置 4096 上限却可能按 provider 默认最多 64K/128K 生成；这会扩大最坏延迟、token 消耗和节点输出体积，并使用户依赖短 JSON/分类结果的工作流得到意外长内容。实际回答可以自然提前结束，故不把每次运行写成必然超额。对关闭思考或其他兼容 provider，temperature 的丢失还会改变用户预期的确定性/随机性。Anthropic 固定 4096 则会反向截断用户显式请求的更大上限。
+- 根因修复应把生成控制加入现有 `CanvasModelRequest`（或统一的 typed generation options），由每个协议 adapter 显式映射、验证或拒绝；不能在 `complete()` 为 DeepSeek 单独拼 JSON。有效 model capability 应限制上限，明确区分“未指定”和显式值；不支持某字段的协议应给出可诊断语义，不能静默丢弃。预算/usage/截断恢复要读取同一有效值。验收覆盖 OpenAI/DeepSeek、Anthropic、Gemini 的实际 body，边界值、思考模式提示、默认/显式优先级、候选 fallback 和节点运行 provenance。
+
 ### 后续独立核查：DeepSeek 自动前缀缓存与 Responses usage
 
 - 官方 [KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)说明缓存由服务端默认构建，只有完整匹配已落盘前缀单元才会命中，且为尽力而为；客户端没有通过 cache key 强制命中的接口。DeepSeek [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)说明该接口无状态，每次请求由客户端在 `input` 回传完整历史。
@@ -3013,6 +3032,9 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-160 前端工作流模型默认探针 | `cd apps/desktop && node --test scripts/audit-workflow-model-identity.test.cjs`：0 passed / 1 failed（预期）；动态执行生产 registry 后，LLM/问题分类/参数提取/Agent V2 的节点默认与 schema 默认均为裸 `deepseek-chat`；首次错误 kind 的 fixture 失败不计入结果，无 Tauri 或公网 |
 | H-160 后端模型身份与 transport 探针 | `cargo test -p deepagent-app-core --lib audit_invalid_explicit_model_ref_is_rejected_before_provider_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；请求 `deepseek-chat` 被解码为 `None`，正式候选路由向本机 HTTP 发送 `model=other-text-model` 并成功返回；无真实供应商 |
 | H-160 隔离与相关回归 | `cargo test -p deepagent-app-core --lib canvas_model_gateway::tests --offline`：41 passed / 1 ignored；`cd apps/desktop && pnpm test:workflow`：78 passed；`cargo fmt --all -- --check` 与限定文件 `git diff --check` 通过。未运行 workspace 全量、Clippy、桌面构建/手动 UI、真实 Tauri 或公网供应商；默认忽略的缺陷未修复 |
+| H-161 工作流节点到 bridge 参数对照 | `cargo test -p deepagent-runtime --lib llm_node_with_explicit_canvas_model_uses_the_bridge --offline -- --nocapture`：1 passed；正式节点 config 的 temperature=0.2/maxTokens=17 原样进入 CanvasCompletionRequest；第一次误加 `--exact` 只得到 0 tests，不算产品验证 |
+| H-161 Canvas provider wire 探针 | `cargo test -p deepagent-app-core --lib audit_canvas_completion_honors_node_temperature_and_output_limit --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；精确 provider/model 请求成功，但本机 HTTP 捕获 body 不含 `temperature` / `max_tokens`；无公网供应商 |
+| H-161 隔离与相关回归 | `cargo test -p deepagent-app-core --lib canvas_model_gateway::tests --offline`：41 passed / 2 ignored；`cargo test -p deepagent-runtime --lib workflow::agent::tests --offline`：28 passed；`cargo fmt --all -- --check` 与限定文件 `git diff --check` 通过。未运行 workspace 全量、Clippy、桌面 build/手动 UI、真实 Tauri 或公网供应商；默认忽略的 H-160/H-161 均未修复 |
 | DeepSeek reasoning serializer 及 prompt cache 前缀复核 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed；`git diff --check -- docs/system-harness-audit-2026-10-21.md`：通过。本地同会话双轮 wire 的 input 前缀、稳定 instructions 与工具顺序断言通过；不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
@@ -3505,6 +3527,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 工作流条件可达性与派发 | H-39 | 在现有编译图/WorkflowAgent 统一激活边、跳过边和合流；参考 DeepSeek 程序式工作流只启动实际执行路径的工作 | 未选分支真实执行数为零，嵌套与公共后继正确，不把跳过分支的输出当作已有值 |
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
 | 工作流模型身份与自动路由边界 | H-160 | 现有 provider/model snapshot 上统一 `Auto` 与精确身份类型；参考 DeepSeek Harness 结构化 pair 和 UNKNOWN_MODEL/NO_ADAPTER，Codex 的独立 provider 身份 | 新节点不写死过期模型；非空非法/未知身份不发网络；空值才自动选择；多供应商、旧图迁移和 outcome provenance 显示实际同一身份 |
+| 工作流模型生成参数贯通 | H-161 | 在现有 CanvasModelRequest 汇合 typed generation options，各协议 adapter 显式映射/拒绝；参考 DeepSeek Harness 的 request→model→connection 优先级 | 节点显式 temperature/output cap 与有效预算及实际 wire 一致；未指定保留 provider/model 默认；DeepSeek/Anthropic/Gemini、fallback 和截断分别验证 |
 | 工作流节点事件与规范回放 | H-120 | WorkflowAgent 的 publisher 接回既有 Kernel 持久化 sink；参考现有 ModelAgent 通道与 ArtCraft 保存媒体任务身份，复用 run_events | 各节点实时事件与重开补读一致，失败/取消/进度也可重放；保留媒体来源和任务身份，不靠图文档偶然自动保存代替运行日志 |
 | 媒体任务身份与节点投影/续跑 | H-121、H-122 | 既有节点事件携带的运行中身份统一投影，后端以 provider/account/task 和输入身份决定新生成或恢复；参考 ArtCraft 的提交与 pending task/provider_job_id 分离，DAG 输入失效为本地设计 | 收到 Running 即可安全保留续跑身份；有效续跑不重复 submit，修改输入的新生成实际提交新请求；旧 attempt 不覆盖新任务，已完成资产保留来源 |
 | 桌面运行事件与订阅生命周期 | H-41、H-43、H-134 | 现有 run_id、完成 payload、运行 owner、订阅就绪屏障和持久化补读统一；参考 Codex thread/turn/item identity 与 ArtCraft 异步 listener owner | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能改写节点或清理新 run |

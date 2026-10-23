@@ -1718,6 +1718,8 @@ mod tests {
                     ("llmModel", json!("cvp-1::gpt-5.6-sol")),
                     ("llmPrompt", json!("write a tagline")),
                     ("llmSystemPrompt", json!("be brief")),
+                    ("llmTemperature", json!(0.2)),
+                    ("llmMaxTokens", json!(17)),
                 ]),
             )
             .await
@@ -1731,6 +1733,8 @@ mod tests {
         assert_eq!(recorded[0].model_ref, "cvp-1::gpt-5.6-sol");
         assert_eq!(recorded[0].prompt, "write a tagline");
         assert_eq!(recorded[0].system_prompt.as_deref(), Some("be brief"));
+        assert_eq!(recorded[0].temperature, Some(0.2));
+        assert_eq!(recorded[0].max_tokens, Some(17));
     }
 
     #[tokio::test]
