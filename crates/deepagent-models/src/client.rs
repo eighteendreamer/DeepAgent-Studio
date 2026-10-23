@@ -831,6 +831,74 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: Responses call ids must be non-empty before transport"]
+    async fn audit_responses_call_ids_are_validated_before_transport() {
+        struct CountingTransport {
+            calls: Arc<AtomicUsize>,
+            events: Vec<String>,
+        }
+
+        #[async_trait]
+        impl HttpTransport for CountingTransport {
+            async fn stream(
+                &self,
+                _request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                for event in &self.events {
+                    if sink.on_event(event)? {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let client = ModelClient::new(
+            Arc::new(CountingTransport {
+                calls: calls.clone(),
+                events: vec![
+                    r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+                        .into(),
+                ],
+            }),
+            ModelConfig::deepseek("audit-placeholder"),
+        );
+        let request = ResponseRequest::from_response_items(
+            "deepseek-flash",
+            None,
+            vec![
+                ResponseInputItem::FunctionCall {
+                    call_id: String::new(),
+                    name: "read_file".into(),
+                    arguments: "{}".into(),
+                },
+                ResponseInputItem::FunctionCallOutput {
+                    call_id: String::new(),
+                    output: "{}".into(),
+                },
+            ],
+        );
+
+        let result = client.stream_response(request).await;
+        eprintln!(
+            "Responses empty call_id audit: result={result:?} transport_calls={}",
+            calls.load(Ordering::SeqCst)
+        );
+        assert!(
+            result.is_err(),
+            "an empty Responses call_id must be rejected before provider transport"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "invalid tool-call identity must not reach the provider"
+        );
+    }
+
     #[test]
     #[ignore = "audit reproducer: translate Responses defaults to Chat Completions shape"]
     fn audit_chat_tool_choice_translates_default_shape() {
