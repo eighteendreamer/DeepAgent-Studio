@@ -42,6 +42,9 @@ mod mcp_image_output;
 #[path = "kernel_v2_e2e/mcp_cancellation.rs"]
 mod mcp_cancellation;
 
+#[path = "kernel_v2_e2e/mcp_catalog_change.rs"]
+mod mcp_catalog_change;
+
 #[path = "kernel_v2_e2e/incomplete_reason.rs"]
 mod incomplete_reason;
 
