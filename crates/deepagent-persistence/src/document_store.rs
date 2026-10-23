@@ -67,6 +67,29 @@ impl<'db> DocumentStore<'db> {
         })
     }
 
+    /// Replace a document body only when it still matches the body that was
+    /// read. This keeps small, automatic document migrations from overwriting
+    /// a concurrent update made by another host process.
+    pub fn replace_body_if_unchanged(
+        &self,
+        collection: &str,
+        id: &str,
+        expected_body: &str,
+        body: &str,
+        now: Timestamp,
+    ) -> Result<bool> {
+        self.db.with_conn(|c| {
+            let changed = c
+                .execute(
+                    "UPDATE documents SET body = ?1, updated_at = ?2
+                     WHERE collection = ?3 AND id = ?4 AND body = ?5",
+                    params![body, now.as_millis(), collection, id, expected_body],
+                )
+                .map_err(map_sqlite)?;
+            Ok(changed == 1)
+        })
+    }
+
     /// Fetch a single document by collection + id.
     pub fn get(&self, collection: &str, id: &str) -> Result<Option<Document>> {
         self.db.with_conn(|c| {
