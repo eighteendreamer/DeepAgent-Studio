@@ -1332,6 +1332,10 @@ impl WorkflowAgent {
 
 #[async_trait]
 impl Agent for WorkflowAgent {
+    fn set_event_sink(&mut self, events: Arc<dyn crate::events::RuntimeEventSink>) {
+        self.publisher.set_sink(events);
+    }
+
     async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
         if self.is_cancelled() {
             return Err(CoreError::other("workflow cancelled"));

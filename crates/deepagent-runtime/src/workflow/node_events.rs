@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -135,20 +135,32 @@ fn annotate_provenance(event: &mut NodeExecutionEvent) {
 
 #[derive(Clone)]
 pub struct NodeEventPublisher {
-    sink: Arc<dyn RuntimeEventSink>,
+    sink: Arc<RwLock<Arc<dyn RuntimeEventSink>>>,
 }
 
 impl Default for NodeEventPublisher {
     fn default() -> Self {
         Self {
-            sink: Arc::new(NullEventSink),
+            sink: Arc::new(RwLock::new(Arc::new(NullEventSink))),
         }
     }
 }
 
 impl NodeEventPublisher {
     pub fn new(sink: Arc<dyn RuntimeEventSink>) -> Self {
-        Self { sink }
+        Self {
+            sink: Arc::new(RwLock::new(sink)),
+        }
+    }
+
+    /// Replace the publisher destination without invalidating clones already
+    /// captured by long-running node progress callbacks.
+    pub fn set_sink(&self, sink: Arc<dyn RuntimeEventSink>) {
+        let mut current = self
+            .sink
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *current = sink;
     }
 
     pub fn emit(&self, mut event: NodeExecutionEvent) {
@@ -160,7 +172,12 @@ impl NodeEventPublisher {
             .collect();
         event.error = event.error.map(|error| scrub_secret_literals(&error));
         annotate_provenance(&mut event);
-        self.sink.emit(RuntimeEvent::WorkflowNode { event });
+        let sink = self
+            .sink
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        sink.emit(RuntimeEvent::WorkflowNode { event });
     }
 
     /// Report where a long media job stands. This stays a `Running` event: the
@@ -284,6 +301,29 @@ mod tests {
         ] {
             assert!(json.get(key).is_none(), "{key} must stay absent");
         }
+    }
+
+    #[test]
+    fn sink_replacement_updates_existing_publisher_clones() {
+        let original = Arc::new(LastEvent::default());
+        let original_last = original.last.clone();
+        let replacement = Arc::new(LastEvent::default());
+        let replacement_last = replacement.last.clone();
+        let publisher = NodeEventPublisher::new(original);
+        let cloned_progress_publisher = publisher.clone();
+
+        cloned_progress_publisher.set_sink(replacement);
+        publisher.emit_job_progress("rev-1", "video-1", "job-1", "running");
+
+        assert!(original_last.lock().unwrap().is_none());
+        assert_eq!(
+            replacement_last
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|event| event.job_id.as_deref()),
+            Some("job-1")
+        );
     }
 
     #[test]

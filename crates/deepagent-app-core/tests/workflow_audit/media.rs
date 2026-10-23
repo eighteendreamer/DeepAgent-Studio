@@ -356,7 +356,6 @@ async fn audit_video_cancel_does_not_wait_for_provider_status_response() {
 }
 
 #[tokio::test]
-#[ignore = "audit: workflow node status, output and media provenance must survive canonical run replay"]
 async fn audit_video_node_events_survive_database_reopen() {
     let mut provider = LocalVideoProvider::start("Succeed").await;
     let fixture = MediaFixture::new(&provider).await;

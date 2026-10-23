@@ -61,7 +61,7 @@
 | Responses incomplete 的原因与恢复策略 | content_filter 与 max_output_tokens 均触发加大输出上限及注入长度恢复提示，离线第三响应完成后运行成功终结 | 已确认 H-82；正式 ChatService/Kernel/ModelAgent/请求序列化/SQLite 终态，长度对照正常；未测试真实供应商过滤或桌面展示 |
 | 运行完成通知与最终钩子的提交边界 | 正式 TaskCompleted prompt hook 输出无效决策 JSON 后，stdio 同一 turn 先通知 completed 再通知 failed，thread/read 保持唯一 failed 终态 | 已确认 H-83；真实 dispatcher/spawn_turn/AppCore/Kernel/磁盘事件及独立 reader；正常钩子和普通模型错误对照正常，未跑真实 stdio 管道或桌面 |
 | 画布云端视频任务的取消等待 | 正式 ChatService/WorkflowAgent/Kernel、本机 HTTP、文件 SQLite 与 artifact；状态响应停滞和下载 body 停滞取消均已验证能中断本地等待 | 已修复 H-119；未执行真实云端生成或桌面点击，云端任务撤销仍不在本地保证范围 |
-| 工作流节点事件的持久化通道 | 正式视频工作流实时收到 6 条节点事件；关闭全部原数据库 owner 后重开，规范 run_events 仍为 0 条节点事件；唯一运行成功终态与视频资产均保留 | 已确认 H-120；不等同于所有画布自动保存内容丢失，未验真实桌面崩溃/断线重连 |
+| 工作流节点事件的持久化通道 | 正式视频工作流实时与重开后回放均得到相同 6 条节点事件；包含 task ID、artifact 来源和运行终态 | 已修复 H-120；未验真实桌面崩溃/断线重连 |
 | 视频运行中 task ID 的前端投影与续跑 | 正式 Rust publisher 发出 Running/job_id，生产 TS executor 与真实 Zustand store 收到后仍不存 ID，停止再提交时 config 缺 videoTaskId；Completed 对照正常 | 已确认 H-121；实际跨语言事件/序列化探针，Tauri 传输替换为本机内存桥，未发生真实云端重复收费 |
 | 视频修改输入及配置后的执行身份 | 真实 TS/Rust 往返中，修改提示词仍轮询旧任务并 succeeded，新提示词未提交；同一 provider ID 改地址/凭据后，旧 task ID 被发到新地址并 succeeded | 已确认 H-122；本机真实 HTTP、原地址续跑对照；未验真实供应商视频、同地址仅换凭据或云端账号权限 |
 | 本地与 SSH 终端的分页读取 | 真实 Windows ConPTY / SQLite 与正式 SSH session reader 均在 64 KiB 返回上限时将游标推进到全部缓存末尾；未返回后缀仍可从实际末端读出 | 已确认 H-123；小输出对照正常；当前桌面旧读取不使用该游标接口，SSH 网络与其他平台未验证 |
@@ -2177,7 +2177,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 成熟实现对照：Codex `codex-rs/core/src/tasks/mod.rs::handle_task_abort` 先 cancel token，再等待任务完成通知或 `GRACEFULL_INTERRUPTION_TIMEOUT_MS=100`，随后 `task.handle.abort()` 并 await `session_task.abort(...)` 的专属清理，最后发布中断生命周期并刷新 rollout。参考的是有 owner 的取消、有限等待和提交顺序，**不是**宣称 Codex 实现本系统的视频协议或能撤销云端任务；只核查参考源码，未运行其全套测试。
 - 影响与边界：本地 submit/poll/download future 现在都响应现有运行取消信号；本地等待停止不等于远程任务停止，供应商若已接受 submit，仍可能继续生成并产生费用。动态覆盖包括状态 HTTP 等待和下载 body 等待；没有逐项故障注入 submit 的响应头/正文及 poll 正文的每一种停滞形态，也未实等生产 60 秒轮询时限、真实云端生成或桌面按钮。
 
-### H-120：WorkflowAgent 的节点 publisher 绕过持久化事件通道，实时状态与输出无法从 run_events 重放
+### H-120：WorkflowAgent 的节点 publisher 绕过持久化事件通道，实时状态与输出无法从 run_events 重放（已修复）
 
 **级别：高（P1，运行恢复与机器消费）；范围：正式 `ChatService::run_workflow` 的节点生命周期、输出与媒体来源。** 与 H-41/H-43 的前端监听归属/早到事件不同，本项在监听完整且运行正常成功时，规范日志里仍没有节点事件；订阅时序修复本身不能补回不存在的记录。
 
@@ -2186,7 +2186,9 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 实际 `live=6, durable_before=0, durable_after=0, terminal=succeeded, artifact_readable=true`。实时视频 Completed 携带 provider/model/job ID、artifact URI 和输出；新连接只保留唯一 succeeded 运行终态及可读取的原视频资产，规范 replay 的节点序列为空，最后与实时序列比较失败。无需模拟断线、故意丢事件、损坏数据库或触发 provider 错误。
 - 成熟实现对照：本系统自己的 Kernel/ModelAgent 已提供“同一事件经持久化后再交实时 delegate”的可复用边界，既有 `kernel_injects_durable_sink_into_streaming_agent` 对照本次亦通过。媒体参考 ArtCraft `generate_video_command.rs::handle_request` 在 enqueue 成功后调用 `insert_into_task_database_with_frontend_payload`；`TaskEnqueueSuccess` 将 provider/provider_job_id/frontend subscriber 等写入 TaskDatabase；Grok 视频后台 polling 按数据库 pending 状态恢复任务。参考的是明确保存任务身份和恢复依据；本系统应接回已有 RunStore/run_events，**不引入 ArtCraft 的另一套任务数据库**。参考源码已查，未运行其桌面或恢复测试。
 - 影响与限制：以 run_events 为依据的断线补读/机器消费者不能重建各节点的状态、结果与媒体来源；UI 即使完整收到事件，也不使规范日志自动完整。CanvasWorkflowStore 是独立的图文档保存入口，界面成功回写并保存的 graph 可能仍持有输出；可选诊断日志也不等于规范 replay。本项没有证明所有画布节点在重启后消失，没有删除媒体资产，也未验证真实桌面崩溃或云端任务重连。
-- 收敛方向（本地设计，尚未实施）：让 WorkflowAgent 在现有 `Agent::set_event_sink` 边界接收 Kernel 的规范 sink，publisher 与派生媒体进度 callback 使用同一运行通道；run_id/graph revision/node/attempt/task/provenance 按既有事件落盘，实时 delegate 继续由同一 owner 转发。恢复用现有游标补读和图投影，避免额外写一份节点日志或在前端拼接伪造历史。验收覆盖正常/失败/取消节点、长任务进度、数据库失败、重开补读与实时顺序及唯一终态。
+- 修复实现：`WorkflowAgent::set_event_sink` 接收 Kernel 已包装为 durable 的规范 sink，并更新既有 `NodeEventPublisher`。publisher 通过共享 sink slot 替换目标，先前捕获 publisher clone 的长任务进度 callback 也自动切换到同一规范事件链；无第二套事件存储或日志。
+- 修复后动态验证：解除 `audit_video_node_events_survive_database_reopen` 的 ignored 标记，正式 ChatService/Kernel/Gateway、本机 HTTP 与文件 SQLite 执行同一成功路径，断开所有旧数据库 owner 后由新连接回放，输出 `live=6, durable_before=6, durable_after=6, terminal=succeeded, artifact_readable=true`，6 条事件与实时对象完全相同，包含视频 task ID、artifact provenance 和节点输出。`workflow::node_events::tests` 的 5 项（含 publisher clone 在替换 sink 后正确投递）全部通过。
+- 影响及限制：规范 run_events 现在能回放该正式视频工作流的实时节点状态、结果和来源字段；本项没有证明桌面重启后所有画布视觉状态必然恢复，没有覆盖数据库写入失败、取消轨迹及同时发生的 publisher 更新，也未执行真实 Tauri 崩溃/断线重连。
 
 ### H-121：前端忽略视频进度事件的 job_id，完成前停止后重跑丢失续跑身份
 
@@ -2301,6 +2303,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-120 durable sink 修复复核 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：3 passed / 6 ignored（取消、成功对照、节点事件重开回放）；`cargo test -p deepagent-runtime --lib workflow::node_events::tests --offline`：5 passed；格式与 diff 检查通过。Runtime Clippy `--no-deps -D warnings` 被未改动的 `model_agent.rs:225 clone_on_copy` 阻断；未运行真实 Tauri/桌面崩溃与断线重连 |
 | H-119 视频运行取消修复 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：2 passed / 7 ignored，包含停滞状态 HTTP 的正式运行取消和正常视频成功对照；`cargo test -p deepagent-app-core --lib canvas_model_gateway::tests --offline`：39 passed，包含下载 body 停滞取消后无临时 artifact；`cargo fmt --all -- --check`、`git diff --check` 通过。完整 AppCore Clippy 受既有 `deepagent-persistence::run_store` explicit-counter-loop 阻断；`--no-deps` 下新增 `post_json` 参数告警已通过 `VideoCancellation` options struct 消除，仍被 context_runtime 的 clone-on-copy、plugin_preparation type-complexity 与 run_assembler too-many-arguments 等既有告警阻断。未执行真实 Tauri、云端视频生成或桌面按钮验证；本地取消不代表撤销云端任务 |
 | H-129 一次性 MCP 测试连接 deadline 修复 | `cargo test -p deepagent-app-core --lib mcp_service::tests::test_server_deadlines_stdio_initialize --offline -- --nocapture` 与 `...test_server_deadlines_stdio_tools_list...`：均 1 passed；正式 MCP 探测路径 + 本机 Node stdio server 分别挂起 initialize、tools/list 至 2 秒 deadline，返回 failed/timeout 并关闭子进程。`cargo test -p deepagent-app-core --lib mcp_service::tests --offline`：26 passed / 1 ignored；`cargo fmt --all -- --check` 通过。未访问公网或用户数据 |
 | H-128 运行取消中的 MCP 工具回归 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation::stopping_run_interrupts_inflight_stdio_mcp_call --offline -- --nocapture`：1 passed；正式 AppCore/Kernel/McpService/stdio 子进程中，取消 accepted=true 后 250ms 内退出、服务端收到 `notifications/cancelled`、工具调用有配对失败结果且模型请求数仍为 1；另有 `cargo test -p deepagent-mcp --features http --offline` 覆盖 HTTP 取消通知，`cargo test -p deepagent-runtime --offline --lib` 覆盖 token 终态 |
@@ -2319,7 +2322,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-119 耗时标注更正后的复核与 H-122 检查 | H-119 原命令再次显式复现，0 passed / 1 failed，约 0.47s；`cancel_to_exit_ms=338` 含 300ms 观察期，最终仍唯一 cancelled。`cargo fmt --all -- --check` 与 `git diff --check` 通过，耗时输出更正没有改变生产行为 |
 | H-121 视频进度跨语言显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_desktop_video_progress_keeps_task_id_for_resume --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.61s；真实 Rust producer 与 TS executor/Zustand/下一请求 serializer，Running 组 task ID 丢失，Completed 对照保留；未发真实云端视频请求 |
 | H-121 默认基线与检查 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 6 ignored，约 0.17s；桌面目录 `pnpm test:workflow`：77 passed，Node runner 约 3.48s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅审计 Rust/脚本及报告，未改 UI/桥接生产类型，未跑完整 pnpm build、workspace、Clippy 或真实 Tauri |
-| H-120 节点事件重开显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_video_node_events_survive_database_reopen --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.18s；实时 6 条、重开前后规范日志均 0 条；唯一 succeeded 终态和 artifact 字节保留 |
+| H-120 节点事件重开显式探针 | `cargo test -p deepagent-app-core --test workflow_audit media::audit_video_node_events_survive_database_reopen --offline -- --exact --nocapture`：1 passed；修复后实时 6 条、规范日志重开前后均 6 条，task ID、artifact 来源和 succeeded 终态保持一致 |
 | H-120 默认基线与持久化 sink 对照 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 5 ignored，约 0.16s；`cargo test -p deepagent-runtime --lib kernel::tests::kernel_injects_durable_sink_into_streaming_agent --offline`：1 passed，约 0.13s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试/报告，未跑 workspace 全量、Clippy、桌面构建或真实崩溃恢复 |
 | H-119 视频 HTTP 取消显式探针与成功对照 | `cargo test -p deepagent-app-core --test workflow_audit media:: --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.48s；取消已受理但 300ms 内未退出，释放响应后唯一 cancelled；成功对照完成下载入库。首次编译有仅用于临时目录保活的字段未读取警告，后改为 `_root`；不作为产品缺陷 |
 | H-119 默认基线与检查 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 4 ignored，约 0.20s；重新编译无上述警告，`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅审计测试与报告，未跑 workspace 全量、Clippy、桌面构建、真实 Tauri 或云端视频 API |
