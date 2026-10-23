@@ -376,6 +376,88 @@ test("cancelling a node run asks the kernel to cancel the same run id it returne
   );
 });
 
+test("running video progress keeps the provider task id for a resumed request", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  const handlers = new Map();
+  const starts = [];
+  let nextRun = 0;
+  const state = {
+    nodes: [{
+      id: "video",
+      type: "creative-video-gen",
+      position: { x: 0, y: 0 },
+      data: { kind: "video-gen", status: "idle", videoPrompt: "audit", videoModel: "audit::video" },
+    }],
+    edges: [],
+    updateNodeData(id, patch) {
+      this.nodes = this.nodes.map((node) =>
+        node.id === id ? { ...node, data: { ...node.data, ...patch } } : node,
+      );
+    },
+  };
+  const executor = loadTypeScript("../src/canvas/workflow/utils/workflowExecutor.ts", {
+    "../store/canvasStore": { useCanvasStore: { getState: () => ({ mode: "creative" }) } },
+    "../store/creativeStore": { useCreativeStore: { getState: () => state } },
+    "../store/professionalStore": {
+      useProfessionalStore: { getState: () => ({ nodes: [], edges: [], updateNodeData: () => {} }) },
+    },
+    "@tauri-apps/api/core": { invoke: async (command, args) => {
+      if (command === "cancel_run") return { accepted: true };
+      assert.equal(command, "start_workflow");
+      starts.push(structuredClone(args.workflow));
+      nextRun += 1;
+      return { run_id: `run_${nextRun}`, session_id: null, accepted: true };
+    } },
+    "@tauri-apps/api/event": { listen: async (name, callback) => {
+      handlers.set(name, callback);
+      return () => {
+        if (handlers.get(name) === callback) handlers.delete(name);
+      };
+    } },
+  });
+
+  let first;
+  let second;
+  try {
+    first = executor.runWorkflow("video");
+    await sleep(30);
+    handlers.get("chat://event")({ payload: {
+      run_id: "run_1",
+      payload: {
+        type: "workflow_node",
+        event: {
+          revision: "rev-1",
+          node_id: "video",
+          status: "running",
+          attempt: 1,
+          elapsed_ms: 0,
+          updates: { jobPhase: "queued" },
+          job_id: "provider-job-42",
+        },
+      },
+    } });
+    assert.equal(state.nodes[0].data.videoTaskId, "provider-job-42");
+    await executor.cancelWorkflow("video");
+    await first;
+
+    second = executor.runWorkflow("video");
+    await sleep(30);
+    assert.equal(
+      starts[1].definition.nodes.find((node) => node.id === "video").config.videoTaskId,
+      "provider-job-42",
+    );
+    handlers.get("session://completed")({ payload: { run_id: "run_2" } });
+    await second;
+  } finally {
+    await executor.cancelWorkflow("video");
+    await first;
+    await second;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
 /** 框选批量接入：一次操作建多条连线，撤销一步回到接入前。 */
 function loadCreativeStore() {
   return loadTypeScript("../src/canvas/workflow/store/creativeStore.ts", {

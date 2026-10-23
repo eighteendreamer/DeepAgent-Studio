@@ -62,7 +62,7 @@
 | 运行完成通知与最终钩子的提交边界 | 正式 TaskCompleted prompt hook 输出无效决策 JSON 后，stdio 同一 turn 先通知 completed 再通知 failed，thread/read 保持唯一 failed 终态 | 已确认 H-83；真实 dispatcher/spawn_turn/AppCore/Kernel/磁盘事件及独立 reader；正常钩子和普通模型错误对照正常，未跑真实 stdio 管道或桌面 |
 | 画布云端视频任务的取消等待 | 正式 ChatService/WorkflowAgent/Kernel、本机 HTTP、文件 SQLite 与 artifact；状态响应停滞和下载 body 停滞取消均已验证能中断本地等待 | 已修复 H-119；未执行真实云端生成或桌面点击，云端任务撤销仍不在本地保证范围 |
 | 工作流节点事件的持久化通道 | 正式视频工作流实时与重开后回放均得到相同 6 条节点事件；包含 task ID、artifact 来源和运行终态 | 已修复 H-120；未验真实桌面崩溃/断线重连 |
-| 视频运行中 task ID 的前端投影与续跑 | 正式 Rust publisher 发出 Running/job_id，生产 TS executor 与真实 Zustand store 收到后仍不存 ID，停止再提交时 config 缺 videoTaskId；Completed 对照正常 | 已确认 H-121；实际跨语言事件/序列化探针，Tauri 传输替换为本机内存桥，未发生真实云端重复收费 |
+| 视频运行中 task ID 的前端投影与续跑 | 正式 Rust publisher 的 Running/job_id 经生产 TS executor 保存到节点，停止后下一请求继续携带同一 videoTaskId；Completed 对照保持一致 | 已修复 H-121；实际跨语言事件/序列化探针，Tauri 传输替换为本机内存桥，未发生真实云端重复收费 |
 | 视频修改输入及配置后的执行身份 | 真实 TS/Rust 往返中，修改提示词仍轮询旧任务并 succeeded，新提示词未提交；同一 provider ID 改地址/凭据后，旧 task ID 被发到新地址并 succeeded | 已确认 H-122；本机真实 HTTP、原地址续跑对照；未验真实供应商视频、同地址仅换凭据或云端账号权限 |
 | 本地与 SSH 终端的分页读取 | 真实 Windows ConPTY / SQLite 与正式 SSH session reader 均在 64 KiB 返回上限时将游标推进到全部缓存末尾；未返回后缀仍可从实际末端读出 | 已确认 H-123；小输出对照正常；当前桌面旧读取不使用该游标接口，SSH 网络与其他平台未验证 |
 | 系统视觉发送前图片预处理与停止 | 正式 App submit/stop callback 与 API client 的受控图像请求中，run 尚未进入后端就显示运行；cancel 返回 not_found，释放请求后仍识别下一张并提交主模型 | 已确认 H-124；continued/new 两种会话均复现；使用实际 App 回调但 React/Tauri/provider 为隔离 harness，不是真实窗口/网络 |
@@ -2190,16 +2190,18 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 修复后动态验证：解除 `audit_video_node_events_survive_database_reopen` 的 ignored 标记，正式 ChatService/Kernel/Gateway、本机 HTTP 与文件 SQLite 执行同一成功路径，断开所有旧数据库 owner 后由新连接回放，输出 `live=6, durable_before=6, durable_after=6, terminal=succeeded, artifact_readable=true`，6 条事件与实时对象完全相同，包含视频 task ID、artifact provenance 和节点输出。`workflow::node_events::tests` 的 5 项（含 publisher clone 在替换 sink 后正确投递）全部通过。
 - 影响及限制：规范 run_events 现在能回放该正式视频工作流的实时节点状态、结果和来源字段；本项没有证明桌面重启后所有画布视觉状态必然恢复，没有覆盖数据库写入失败、取消轨迹及同时发生的 publisher 更新，也未执行真实 Tauri 崩溃/断线重连。
 
-### H-121：前端忽略视频进度事件的 job_id，完成前停止后重跑丢失续跑身份
+### H-121：前端忽略视频进度事件的 job_id，完成前停止后重跑丢失续跑身份（已修复）
 
 **级别：高（P1，媒体任务恢复与重复提交风险）；范围：视频已提交并收到 Queued/Running 进度，但尚未完成。** 与 H-120 的规范日志缺口独立：即使实时事件准确到达前端，当前节点仍不保存 task ID；仅接回持久化 sink 不能自动修复消费方投影。
 
-- 生产契约：`WorkflowAgent::progress_sink` 调用 `NodeEventPublisher::emit_job_progress`，发出 `status=running, job_id=<id>, updates.jobPhase=queued/running`，此时没有 outputs。`workflowExecutor.ts` 的事件处理只读取 status/elapsed/error/outputs；`applyNodeOutputs` 只从 outputs.videoTaskId 提取任务 ID，未读取顶层 job_id/updates，故运行中 task ID 被忽略。成功后 `execute_video` 的 outputs 包含 videoTaskId，恰好绕过缺陷；后端 resume 分支则明确依赖下一请求 config.videoTaskId。
+- 生产契约（修复前）：`WorkflowAgent::progress_sink` 调用 `NodeEventPublisher::emit_job_progress`，发出 `status=running, job_id=<id>, updates.jobPhase=queued/running`，此时没有 outputs。`workflowExecutor.ts` 的事件处理只读取 status/elapsed/error/outputs；`applyNodeOutputs` 只从 outputs.videoTaskId 提取任务 ID，未读取顶层 job_id/updates，故运行中 task ID 被忽略。成功后 `execute_video` 的 outputs 包含 videoTaskId，恰好绕过缺陷；后端 resume 分支则明确依赖下一请求 config.videoTaskId。
 - 可重跑动态探针：`cargo test -p deepagent-app-core --test workflow_audit audit_desktop_video_progress_keeps_task_id_for_resume --offline -- --ignored --nocapture`，**0 passed / 1 failed**，约 0.61s。Rust 用真实 NodeEventPublisher 分别生成 Running/queued 与 Completed 对照事件，通过 JSON stdin 传入 `scripts/audit-video-task-progress.cjs`；脚本加载生产 workflowExecutor 和真实 creativeStore，替换 Tauri invoke/event 为内存桥。最初每组均完整启动→收到事件→停止→再次启动；后续 H-122 复用夹具时将 Completed 对照改为收到本运行完成通知后正常结束，Running 组仍停止，缺陷结论不变。捕获实际生产 TS serializer 输出的下一份 WorkflowRequest，最后释放所有监听和运行 Promise 再断言。
 - 实际输出：进度组 `receivedTaskId=audit-video-job, storedTaskId=null, resumedTaskId=null`；完成组以上三项均为 `audit-video-job`。同时确认对应节点 status 与真实事件一致，证明事件确已交付，失败不来自 H-41 的外部完成串扰或 H-43 的启动订阅竞态。此次没有运行真实 WebView/云端请求，不能把下一请求缺 ID 的证据写成真实供应商已经多收费。
 - 成熟实现对照：ArtCraft 在 enqueue 后将 provider/provider_job_id 写入 TaskDatabase，后台基于 pending 任务取回；前端 `frontend/libs/tauri-api/src/lib/artcraft/task_queue/GetTaskQueue.ts` 的 TaskQueueItem 与投影保留 provider_job_id，身份不依赖 completed_item。参考的是运行中身份与最终产物分离，而非复制其状态表/协议；其视频命令的数据库插入失败仅记日志再继续返回，也不能被当作无故障的完整范本。
 - 影响与边界：用户停止正在排队/生成的视频，再按现有入口重跑，序列化 config 不带恢复 ID；按当前 `generate_video` 分支会再次 submit，旧云端任务可能仍执行，带来重复任务/费用风险。已保存成功输出的 ID 对照正常；本探针不证明云端远程取消、真实重复请求、实际收费、所有画布持久化或账号切换行为。
-- 收敛方向（本地设计，尚未实施）：在现有 run/revision/node/attempt 归属下将进度事件的任务身份与允许的 updates 投影到节点，统一字段含义并接入原有图持久化；取消/失败不能清掉尚可恢复的任务身份。身份还应绑定原 provider/model/account 版本，由后端权威记录驱动恢复，防止旧事件覆盖新任务；不能无校验地 Object.assign 任意 updates，不能把所有 rerun 都隐式当新生成。验收运行中/成功/失败、停止再跑、图重开、旧事件与新 attempt 竞争及供应商切换，核对实际 submit 次数。
+- 修复实现：生产 executor 增加窄映射，只允许 `video-gen` 节点把非空顶层 `job_id` 写成现有 `videoTaskId`；不把后端任意 `updates` 展开进 Zustand。取消时现有状态复位只改 status，不清除此任务身份，因此下一次 serialize 继续携带相同 ID。完成事件仍从 outputs 投影同一字段，兼容旧事件和已有成功路径。
+- 修复后动态验证：原 Rust/TS 跨层探针显式重跑为 **1 passed**，输出 `progress stored=job/resumed=job`，Completed 对照也为同一 ID；生产 Rust publisher、真实 workflowExecutor/creativeStore/serializer 均参与，仅 Tauri event/invoke 用内存桥。桌面默认 `pnpm test:workflow` 新增生产 executor 回归后为 **78 passed**，实际执行 running event→停止→再次提交并断言第二份 workflow config 保留 provider ID。
+- 影响及限制：完成前停止再运行不再因前端丢失 ID而重复 submit；本项没有解决已完成任务修改输入后仍错误续跑（H-122），也没有验证节点图重开、旧 attempt 迟到事件、账号切换、真实 WebView 或云端计费。provider/model/account 归属仍需和 H-122 一并收敛。
 
 ### H-122：视频生成成功后修改提示词仍隐式续跑旧任务，新提示词没有发给供应商却再次成功
 
@@ -2320,8 +2322,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-122 默认基线及旧探针复核 | 提取跨语言测试 helper 后，`cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 7 ignored，约 0.17s；H-121 原命令显式复测仍 0 passed / 1 failed，约 0.47s，完成对照保留 ID、进度组仍丢失；未将 helper 重构说成生产修复 |
 | H-122 完成通知对照调整后的复核 | 脚本的 Completed 分支改用本运行完成通知正常结束后，H-122 与 H-121 各自原命令仍均为 0 passed / 1 failed，分别约 0.65s / 0.42s；同一新提示词轨迹及 ID 丢失结论不变。仅审计测试/报告，未跑 workspace 全量、Clippy、完整桌面 build 或真实云端视频生成 |
 | H-119 耗时标注更正后的复核与 H-122 检查 | H-119 原命令再次显式复现，0 passed / 1 failed，约 0.47s；`cancel_to_exit_ms=338` 含 300ms 观察期，最终仍唯一 cancelled。`cargo fmt --all -- --check` 与 `git diff --check` 通过，耗时输出更正没有改变生产行为 |
-| H-121 视频进度跨语言显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_desktop_video_progress_keeps_task_id_for_resume --offline -- --ignored --nocapture`：0 passed / 1 failed，约 0.61s；真实 Rust producer 与 TS executor/Zustand/下一请求 serializer，Running 组 task ID 丢失，Completed 对照保留；未发真实云端视频请求 |
-| H-121 默认基线与检查 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 6 ignored，约 0.17s；桌面目录 `pnpm test:workflow`：77 passed，Node runner 约 3.48s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。本批仅审计 Rust/脚本及报告，未改 UI/桥接生产类型，未跑完整 pnpm build、workspace、Clippy 或真实 Tauri |
+| H-121 视频进度跨语言显式探针 | `cargo test -p deepagent-app-core --test workflow_audit media::audit_desktop_video_progress_keeps_task_id_for_resume --offline -- --ignored --nocapture`：1 passed；真实 Rust producer 与 TS executor/Zustand/下一请求 serializer 中，Running 和 Completed 两组均保存并续传同一 task ID；未发真实云端视频请求 |
+| H-121 默认前端回归与构建 | 桌面目录 `pnpm test:workflow`：78 passed；新增回归实际运行生产 executor 的 running event→停止→再提交链路，第二份 config 保留 provider ID。`pnpm build` 全部脚本、TypeScript 检查和 Vite production build 通过；Vite 给出既有 browser externalization 与大 chunk 警告。未执行真实 Tauri/WebView 或云端视频生成 |
 | H-120 节点事件重开显式探针 | `cargo test -p deepagent-app-core --test workflow_audit media::audit_video_node_events_survive_database_reopen --offline -- --exact --nocapture`：1 passed；修复后实时 6 条、规范日志重开前后均 6 条，task ID、artifact 来源和 succeeded 终态保持一致 |
 | H-120 默认基线与持久化 sink 对照 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：1 passed / 5 ignored，约 0.16s；`cargo test -p deepagent-runtime --lib kernel::tests::kernel_injects_durable_sink_into_streaming_agent --offline`：1 passed，约 0.13s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试/报告，未跑 workspace 全量、Clippy、桌面构建或真实崩溃恢复 |
 | H-119 视频 HTTP 取消显式探针与成功对照 | `cargo test -p deepagent-app-core --test workflow_audit media:: --offline -- --include-ignored --nocapture`：1 passed / 1 failed，约 0.48s；取消已受理但 300ms 内未退出，释放响应后唯一 cancelled；成功对照完成下载入库。首次编译有仅用于临时目录保活的字段未读取警告，后改为 `_root`；不作为产品缺陷 |

@@ -230,6 +230,25 @@ function applyNodeOutputs(
   return patch;
 }
 
+/**
+ * Project stable provider task identity from the typed node event itself.
+ *
+ * `updates` remains display-oriented and is intentionally not spread into the
+ * store. Only a video generation node may turn the backend job id into the
+ * `videoTaskId` that the next workflow request uses for resume.
+ */
+function applyNodeEventIdentity(
+  mode: "creative" | "professional",
+  nodeId: string,
+  event: Record<string, unknown>,
+): Record<string, unknown> {
+  const jobId = typeof event.job_id === "string" ? event.job_id.trim() : "";
+  if (!jobId) return {};
+  const node = getNodesAndEdges(mode).nodes.find((candidate) => candidate.id === nodeId);
+  const kind = String((node?.data as { kind?: string } | undefined)?.kind ?? "");
+  return kind === "video-gen" ? { videoTaskId: jobId } : {};
+}
+
 async function runBackendWorkflow(
   mode: "creative" | "professional",
   nodes: WorkflowNode[],
@@ -303,6 +322,7 @@ async function runBackendWorkflow(
             inner.outputs !== undefined && inner.outputs !== null
               ? { success: mapped === "completed", outputs: inner.outputs }
               : undefined,
+          ...applyNodeEventIdentity(mode, nodeId, inner),
           ...applyNodeOutputs(mode, inner.outputs),
         });
       })
