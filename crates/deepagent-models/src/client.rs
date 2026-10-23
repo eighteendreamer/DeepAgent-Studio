@@ -991,6 +991,54 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: preserve documented Chat aborted terminal"]
+    async fn audit_chat_aborted_finish_is_not_rejected_as_unknown() {
+        let client = ModelClient::new(
+            Arc::new(MockTransport::new([
+                r#"{"choices":[{"index":0,"delta":{},"finish_reason":"aborted"}],"usage":{"prompt_tokens":9,"completion_tokens":0,"total_tokens":9}}"#.to_string(),
+                "[DONE]".to_string(),
+            ])),
+            ModelConfig::deepseek_chat("audit-placeholder"),
+        );
+
+        let result = client
+            .stream_response(ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("audit aborted terminal")],
+            ))
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "documented Chat finish_reason=aborted must remain a typed terminal: {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: preserve documented Chat insufficient-system-resource terminal"]
+    async fn audit_chat_insufficient_system_resource_finish_is_not_rejected_as_unknown() {
+        let client = ModelClient::new(
+            Arc::new(MockTransport::new([
+                r#"{"choices":[{"index":0,"delta":{},"finish_reason":"insufficient_system_resource"}],"usage":{"prompt_tokens":9,"completion_tokens":0,"total_tokens":9}}"#.to_string(),
+                "[DONE]".to_string(),
+            ])),
+            ModelConfig::deepseek_chat("audit-placeholder"),
+        );
+
+        let result = client
+            .stream_response(ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("audit insufficient resource terminal")],
+            ))
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "documented Chat finish_reason=insufficient_system_resource must remain a typed terminal: {result:?}"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "audit reproducer: keep provider usage from a failed Responses terminal"]
     async fn audit_failed_responses_terminal_emits_included_usage() {
         #[derive(Default)]

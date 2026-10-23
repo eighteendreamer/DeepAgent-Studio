@@ -22,7 +22,7 @@
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn，以及一个已被替代 turn 重复派生多个新 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter` 和 Responses failed usage 丢失均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态和 Responses failed usage 丢失均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、stdio/HTTP 响应无 transport 字节上限、图像工具结果未转为模型多模态内容、一次性测试连接在 initialize/tools/list 阶段无界等待（已修复并验证 30 秒总握手上限）、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认并修复 H-128、H-129；其他已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117、H-126 至 H-127；其他 hooks 和准备边界未完成 |
@@ -2584,6 +2584,27 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 应把 `run_completed` 与 `run_terminal` 收敛为一个可观测提交边界：终态事务成功后再发布完成事件，或明确先发布 provisional 事件并在持久化失败时发送失败/回滚事件。不能依靠 UI 自己猜测，也不能新增第二个终态存储。
 - 修复需覆盖普通成功、终态写失败、终态重复调用、实时重连、进程重启和前端完成通知；当前探针只使用 SQLite trigger、内存数据库和离线 Agent，未覆盖真实 Tauri、真实 provider、崩溃时序或跨进程锁争用。生产代码本轮未改，探针保持 ignored。
 
+### H-144：DeepSeek Chat 合法终态 `aborted` / `insufficient_system_resource` 被当作未知错误
+
+**级别：中（P2，Chat 路由的终态语义和恢复策略错误）；触发条件：调用方使用 `WireMode::ChatCompletions`，DeepSeek 返回官方允许的 `finish_reason=aborted` 或 `finish_reason=insufficient_system_resource`。** 这与 H-132 的 `content_filter` 过滤终态不同，覆盖的是用户/服务端中断和推理资源不足两个独立原因。
+
+#### 生产链与动态证据
+
+- 官方 [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion) 将 `finish_reason` 枚举列为 `stop`、`length`、`content_filter`、`tool_calls`、`insufficient_system_resource` 和 `aborted`；后二者不是未知值。
+- 生产 `ModelClient::stream_response()` 在 Chat 模式进入 `ChatCompletionAccumulator::push_sse_data_observed()`；`map_finish_reason()` 只接受 `stop`、`tool_calls` 和 `length`，其他值统一返回 `CoreError::provider`。因此 provider 的合法终态在 `Response` 组装前被转换为错误，调用方拿不到可区分的终态。
+- 新增两个 opt-in 正式客户端探针：`client::tests::audit_chat_aborted_finish_is_not_rejected_as_unknown` 与 `client::tests::audit_chat_insufficient_system_resource_finish_is_not_rejected_as_unknown`。二者都通过正式 `ModelClient → ChatCompletionAccumulator` 和 `MockTransport` 注入官方形状的终态及 usage，执行结果均为 `0 passed / 1 failed（预期）`：前者返回 `Provider { code: Some("aborted"), message: "model stopped with unsupported finish reason: aborted" }`，后者返回同形状的 `insufficient_system_resource` 错误。没有修改生产解析器，也没有调用公网。
+
+#### 成熟实现对照
+
+- **DeepSeek Harness** 的 `借鉴/deepseek-harness/packages/llm/llm-pi-ai/src/stream.ts::mapStopReason()` 把 `aborted` 映射成独立的 `{ kind: 'aborted', failure: ... }`，而不是与普通 provider error 混用；`token-meter` 仍在观察 usage 后接受 aborted finish，说明终态和用量是两个维度。
+- **Codex** 的 Responses SSE 解析器对 `content_filter` 等供应商终态保留独立错误类别，再由上层决定是否重试；共同原则是保留 provider 原因，不把合法终态压成一个“未知错误”。这里仅采用原因保真和分层恢复原则，不把 Codex 的 Responses 枚举直接套到 DeepSeek Chat。
+
+#### 后果、修复方向与验证限制
+
+- `aborted` 会被误报为不支持的 provider failure，调用方无法区分用户/服务端中断与网络失败；`insufficient_system_resource` 也无法进入有界退避或换模型的专门策略。两者在当前边界都不能稳定形成 `Response`，provider 返回的 usage 也不会随该响应交给上层 `Response` 记账路径。
+- 应在 `FinishReason` 中增加与协议语义对应的终态（或等价的 typed provider outcome），在 Chat adapter 中保留这两个值，并允许无文本终态继续完成 usage 解析；运行层再明确 `aborted` 的取消归属、资源不足的重试预算和最终事件映射。不能把它们误判成 `Length`，也不能无条件自动重试用户主动取消。
+- 本轮只添加缺陷探针和审计记录，生产行为未修改。当前证据是正式 adapter 的离线 wire 复现，未调用真实 DeepSeek、未验证具体供应商在不同模型/非流式模式下的频率，也未覆盖默认 Responses 路由；因此不把该项扩大为桌面默认路径必现。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2591,6 +2612,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-142 运行事件持久化失败显式探针 | `cargo test -p deepagent-runtime audit_event_persistence_failure_does_not_split_live_and_replay --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；真实 `AgentKernel` + SQLite trigger 让 `tool_completed` durable append 失败，但实时 sink 仍收到该事件；仅临时内存数据库和离线 Agent |
 | H-142 Kernel 默认回归与静态检查 | `cargo test -p deepagent-runtime --lib kernel::tests --offline`：10 passed / 1 ignored / 0 failed；`cargo fmt --all -- --check` 与 `git diff --check` 通过；未运行真实 Tauri、provider 或跨进程故障注入 |
 | H-143 终态持久化失败显式探针 | `cargo test -p deepagent-runtime audit_terminal_persistence_failure_does_not_claim_live_completion --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；实时收到 `run_completed`，但 `run_terminal` 事务回滚且 `finished_at` 为空 |
+| H-144 Chat `aborted` 合法终态显式探针 | `cargo test -p deepagent-models audit_chat_aborted_finish_is_not_rejected_as_unknown --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 `ModelClient` 将官方 `finish_reason=aborted` 返回为 `Provider` 未知终态错误；MockTransport，无公网 |
+| H-144 Chat `insufficient_system_resource` 合法终态显式探针 | `cargo test -p deepagent-models audit_chat_insufficient_system_resource_finish_is_not_rejected_as_unknown --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 `ModelClient` 将官方 `finish_reason=insufficient_system_resource` 返回为 `Provider` 未知终态错误；MockTransport，无公网 |
 | H-141 todo reminder 生命周期显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.47s；正式同一 session 连续 11 次独立用户回合、实际请求 11 次，`reminder_requests=[]`；仅临时内存数据库与离线 transport |
 | H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
 | H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |
