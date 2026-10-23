@@ -70,6 +70,9 @@ mod responses_custom_tool;
 #[path = "kernel_v2_e2e/responses_tool_choice.rs"]
 mod responses_tool_choice;
 
+#[path = "kernel_v2_e2e/tool_schema_parameters.rs"]
+mod tool_schema_parameters;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/path_boundary.rs"]
 mod path_boundary;
