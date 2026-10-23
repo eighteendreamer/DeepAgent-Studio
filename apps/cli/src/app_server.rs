@@ -1413,6 +1413,65 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: a replaced turn must not admit multiple steering replacements"]
+    fn audit_repeated_steer_does_not_launch_multiple_replacements() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+        let started =
+            state.handle_request_for_test(rpc_request(2, "thread/start", serde_json::json!({})));
+        let thread_id = started.result()["threadId"].as_str().unwrap().to_owned();
+        let (_, original) = state.dispatch(
+            rpc_request(
+                3,
+                "turn/start",
+                serde_json::json!({"threadId":thread_id, "input":"audit"}),
+            ),
+            None,
+        );
+        let original = original.unwrap();
+        original
+            .chat
+            .admit_run(&original.turn_id, &thread_id)
+            .expect("admit the active turn before steering");
+
+        let (first_response, first_replacement) = state.dispatch(
+            rpc_request(
+                4,
+                "turn/steer",
+                serde_json::json!({"threadId":thread_id, "turnId":original.turn_id,
+                    "input":"first correction"}),
+            ),
+            None,
+        );
+        let (second_response, second_replacement) = state.dispatch(
+            rpc_request(
+                5,
+                "turn/steer",
+                serde_json::json!({"threadId":thread_id, "turnId":original.turn_id,
+                    "input":"duplicate correction"}),
+            ),
+            None,
+        );
+        let first_id = first_response.result()["turnId"].as_str();
+        let second_id = second_response.result()["turnId"].as_str();
+        eprintln!(
+            "audit repeated steer: first_status={}, second_status={}, first_launch={}, second_launch={}, first_id={first_id:?}, second_id={second_id:?}",
+            if first_response.is_success() { "success" } else { "error" },
+            if second_response.is_success() { "success" } else { "error" },
+            first_replacement.is_some(),
+            second_replacement.is_some(),
+        );
+        assert!(
+            first_replacement.is_some(),
+            "first steer must create its replacement"
+        );
+        assert!(
+            second_replacement.is_none(),
+            "a stale replaced turn must not create a second replacement"
+        );
+    }
+
+    #[test]
     fn rejects_requests_before_initialize() {
         let mut state = ServerState::new_for_test();
         let request = rpc_request(1, "thread/list", serde_json::json!({}));
