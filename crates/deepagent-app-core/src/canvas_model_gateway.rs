@@ -3844,6 +3844,217 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: canvas completions must preserve provider usage and DeepSeek cache details"]
+    fn audit_canvas_completion_preserves_provider_usage_and_cache_details() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let provider_payload = deepseek_usage_completion_payload();
+        let (base_url, _) = spawn_single_chat_json_responder(provider_payload.clone());
+        let (gateway, provider_id) = local_text_gateway(base_url, "deepseek-flash");
+
+        let response = rt
+            .block_on(gateway.complete(CanvasCompletionRequest {
+                model_ref: format!("{provider_id}::deepseek-flash"),
+                node_kind: String::new(),
+                skill_ids: Vec::new(),
+                system_prompt: None,
+                prompt: "audit usage".to_string(),
+                temperature: None,
+                max_tokens: None,
+                images: Vec::new(),
+            }))
+            .expect("the controlled provider returns a valid completion");
+        let projected = serde_json::to_value(&response).expect("serializable bridge response");
+        eprintln!(
+            "canvas usage audit: provider_usage={} bridge_response={projected}",
+            provider_payload["usage"]
+        );
+
+        assert_eq!(response.text, "answer");
+        assert_eq!(response.reasoning.as_deref(), Some("reasoning"));
+        assert_eq!(
+            projected
+                .pointer("/usage/prompt_tokens")
+                .and_then(Value::as_u64),
+            Some(100),
+            "provider prompt usage must cross the canvas bridge"
+        );
+        assert_eq!(
+            projected
+                .pointer("/usage/prompt_cache_hit_tokens")
+                .and_then(Value::as_u64),
+            Some(80),
+            "DeepSeek cache-hit usage must remain observable"
+        );
+        assert_eq!(
+            projected
+                .pointer("/usage/prompt_cache_miss_tokens")
+                .and_then(Value::as_u64),
+            Some(20),
+            "DeepSeek cache-miss usage must remain observable"
+        );
+        assert_eq!(
+            projected
+                .pointer("/usage/reasoning_tokens")
+                .and_then(Value::as_u64),
+            Some(12),
+            "DeepSeek reasoning-token usage must remain observable"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: canvas provider usage must reach WorkflowAgent and the existing cost ledger"]
+    async fn audit_canvas_provider_usage_reaches_workflow_run_accounting() {
+        use std::collections::{HashMap, HashSet};
+        use std::sync::Mutex;
+
+        use deepagent_core::clock::SystemClock;
+        use deepagent_runtime::agent::{Agent, AgentDecision};
+        use deepagent_runtime::NullEventSink;
+        use deepagent_session::Session;
+
+        use crate::run_finalizer::{AppRunFinalizer, AppRunFinalizerRequest};
+        use crate::session_memory::SessionMemoryPasses;
+        use crate::tool_manifest::DiscoveredToolSet;
+
+        let (base_url, _) = spawn_single_chat_json_responder(deepseek_usage_completion_payload());
+        let (gateway, provider_id) = local_text_gateway(base_url, "deepseek-flash");
+        let mut llm_config = serde_json::Map::new();
+        llm_config.insert(
+            "model".to_string(),
+            Value::String(format!("{provider_id}::deepseek-flash")),
+        );
+        llm_config.insert(
+            "prompt".to_string(),
+            Value::String("audit usage".to_string()),
+        );
+        let mut agent = workflow_agent_with_canvas_node("text-gen", llm_config, gateway);
+
+        assert!(matches!(
+            agent.think(0, &[]).await.expect("start node"),
+            AgentDecision::Continue
+        ));
+        assert!(matches!(
+            agent.think(1, &[]).await.expect("text model node"),
+            AgentDecision::Continue
+        ));
+        let run_usage = agent.cumulative_usage();
+
+        let db = Arc::new(Database::open_in_memory().expect("ledger database"));
+        let cost = Arc::new(crate::cost_service::CostService::new(db.clone()));
+        let mut session =
+            Session::create(&db, &SystemClock, Some("canvas usage audit")).expect("ledger session");
+        let session_id = session.id().to_string();
+        let discovered: DiscoveredToolSet = Arc::new(Mutex::new(HashSet::new()));
+        let before = HashSet::new();
+        AppRunFinalizer::new(
+            db.clone(),
+            Some(cost.clone()),
+            None,
+            Arc::new(Mutex::new(HashMap::new())),
+            SessionMemoryPasses::default(),
+        )
+        .finalize_after_kernel(
+            &mut session,
+            AppRunFinalizerRequest {
+                session_id: &session_id,
+                run_id: "run_canvas_usage_audit",
+                discovered_before_run: &before,
+                discovered_tools: &discovered,
+                usage: run_usage,
+                side_usage: None,
+                model_name: "deepseek-flash",
+                sink: &NullEventSink,
+                run_succeeded: false,
+                capture_client: None,
+                capture_model: None,
+            },
+        )
+        .expect("production finalizer accepts the workflow accounting value");
+        let ledger = cost.summary(&session_id).expect("cost summary");
+        eprintln!(
+            "canvas workflow usage audit: cumulative_usage={run_usage:?} ledger=({}, {}, {}, {})",
+            ledger.input_tokens,
+            ledger.output_tokens,
+            ledger.cache_hit_tokens,
+            ledger.cache_miss_tokens
+        );
+
+        let usage = run_usage.expect("WorkflowAgent exposes a cumulative usage value");
+        assert_eq!(usage.billed_prompt_tokens, 100);
+        assert_eq!(usage.completion_tokens, 20);
+        assert_eq!(usage.reasoning_tokens, 12);
+        assert_eq!(usage.billed_cache_hit_tokens, 80);
+        assert_eq!(usage.billed_cache_miss_tokens, 20);
+        assert_eq!(ledger.input_tokens, 100);
+        assert_eq!(ledger.output_tokens, 20);
+        assert_eq!(ledger.cache_hit_tokens, 80);
+        assert_eq!(ledger.cache_miss_tokens, 20);
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: the run-level workflow model path must use canonical RunUsage accounting"]
+    async fn audit_run_level_workflow_model_preserves_deepseek_usage_buckets() {
+        use deepagent_models::{MockTransport, ModelClient, ModelConfig};
+        use deepagent_runtime::agent::{Agent, AgentDecision};
+
+        let transport = Arc::new(MockTransport::new([
+            json!({
+                "choices": [{
+                    "delta": {
+                        "content": "answer",
+                        "reasoning_content": "reasoning"
+                    },
+                    "finish_reason": null
+                }]
+            })
+            .to_string(),
+            json!({
+                "choices": [{ "delta": {}, "finish_reason": "stop" }],
+                "usage": deepseek_usage_completion_payload()["usage"]
+            })
+            .to_string(),
+            "[DONE]".to_string(),
+        ]));
+        let client = Arc::new(ModelClient::new(
+            transport,
+            ModelConfig::deepseek_chat("audit-key"),
+        ));
+        let mut config = serde_json::Map::new();
+        config.insert(
+            "llmPrompt".to_string(),
+            Value::String("audit direct usage".to_string()),
+        );
+        let mut agent = workflow_agent_with_node("llm", config)
+            .with_model(client, "deepseek-flash".to_string());
+
+        assert!(matches!(
+            agent.think(0, &[]).await.expect("start node"),
+            AgentDecision::Continue
+        ));
+        assert!(matches!(
+            agent.think(1, &[]).await.expect("run-level model node"),
+            AgentDecision::Continue
+        ));
+        let usage = agent
+            .cumulative_usage()
+            .expect("WorkflowAgent exposes cumulative usage");
+        eprintln!("run-level workflow usage audit: cumulative_usage={usage:?}");
+
+        assert_eq!(usage.prompt_tokens, 100, "latest input gauge is retained");
+        assert_eq!(usage.completion_tokens, 20, "output is retained");
+        assert_eq!(usage.total_tokens, 120, "latest total gauge is retained");
+        assert_eq!(
+            usage.billed_prompt_tokens, 100,
+            "the existing cost ledger reads billed input, not the latest gauge"
+        );
+        assert_eq!(usage.reasoning_tokens, 12);
+        assert_eq!(usage.prompt_cache_hit_tokens, 80);
+        assert_eq!(usage.prompt_cache_miss_tokens, 20);
+        assert_eq!(usage.billed_cache_hit_tokens, 80);
+        assert_eq!(usage.billed_cache_miss_tokens, 20);
+    }
+
+    #[test]
     fn gateway_calls_openai_compatible_endpoints_end_to_end() {
         use std::io::{Read, Write};
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -4717,8 +4928,36 @@ mod tests {
             .count()
     }
 
+    fn deepseek_usage_completion_payload() -> Value {
+        json!({
+            "choices": [{
+                "message": {
+                    "content": "answer",
+                    "reasoning_content": "reasoning"
+                }
+            }],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "prompt_tokens_details": { "cached_tokens": 80 },
+                "prompt_cache_hit_tokens": 80,
+                "prompt_cache_miss_tokens": 20,
+                "completion_tokens_details": { "reasoning_tokens": 12 }
+            }
+        })
+    }
+
     fn spawn_single_chat_responder(
         answer: &'static str,
+    ) -> (String, Arc<std::sync::Mutex<Option<Value>>>) {
+        spawn_single_chat_json_responder(
+            json!({ "choices": [{ "message": { "content": answer } }] }),
+        )
+    }
+
+    fn spawn_single_chat_json_responder(
+        payload: Value,
     ) -> (String, Arc<std::sync::Mutex<Option<Value>>>) {
         use std::io::{Read, Write};
 
@@ -4748,7 +4987,7 @@ mod tests {
             let body = text.get(head_end + 4..).unwrap_or_default();
             *sink.lock().expect("lock") = serde_json::from_str(body).ok();
 
-            let payload = json!({ "choices": [{ "message": { "content": answer } }] }).to_string();
+            let payload = payload.to_string();
             let response = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
                 payload.len()
@@ -4791,6 +5030,13 @@ mod tests {
         kind: &str,
         config: serde_json::Map<String, Value>,
         gateway: CanvasModelGateway,
+    ) -> deepagent_runtime::workflow::WorkflowAgent {
+        workflow_agent_with_node(kind, config).with_canvas_bridge(Arc::new(gateway))
+    }
+
+    fn workflow_agent_with_node(
+        kind: &str,
+        config: serde_json::Map<String, Value>,
     ) -> deepagent_runtime::workflow::WorkflowAgent {
         use deepagent_runtime::workflow::{
             compile, NodeEventPublisher, WorkflowAgent, WorkflowDefinition, WorkflowEdgeSpec,
@@ -4839,7 +5085,6 @@ mod tests {
             None,
             NodeEventPublisher::default(),
         )
-        .with_canvas_bridge(Arc::new(gateway))
     }
 
     /// True once the headers plus the declared body length have been received.
