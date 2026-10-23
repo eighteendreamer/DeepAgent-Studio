@@ -3684,6 +3684,102 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit reproducer: a non-empty invalid model reference must not become automatic routing"]
+    fn audit_invalid_explicit_model_ref_is_rejected_before_provider_transport() {
+        use std::io::{Read, Write};
+
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let received_model = Arc::new(std::sync::Mutex::new(None::<String>));
+        let sink = received_model.clone();
+        std::thread::spawn(move || {
+            let Ok((mut stream, _)) = listener.accept() else {
+                return;
+            };
+            let mut buf = [0u8; 2048];
+            let mut text = String::new();
+            loop {
+                match stream.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        text.push_str(&String::from_utf8_lossy(&buf[..n]));
+                        if body_complete(&text) {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let head_end = text.find("\r\n\r\n").unwrap_or(text.len());
+            let body = text.get(head_end + 4..).unwrap_or_default();
+            let model = serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|value| value["model"].as_str().map(str::to_string));
+            *sink.lock().expect("lock") = model;
+
+            let payload = "{\"choices\":[{\"message\":{\"content\":\"routed\"}}]}";
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = stream.write_all(response.as_bytes());
+            let _ = stream.flush();
+        });
+
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::secret_store::MemorySecretStore::default()),
+        ));
+        providers
+            .save_provider(CanvasProviderInput {
+                name: "Non-DeepSeek audit".to_string(),
+                protocol: "openai".to_string(),
+                base_url: format!("http://127.0.0.1:{port}/v1"),
+                enabled: true,
+                models: vec![CanvasModelConfig {
+                    id: "other-text-model".to_string(),
+                    name: "Other text model".to_string(),
+                    description: String::new(),
+                    enabled: true,
+                    scenarios: vec![CanvasScenario::Text],
+                    priority: 0,
+                    max_reference_images: None,
+                }],
+                api_key: Some("sk-audit".to_string()),
+                ..Default::default()
+            })
+            .expect("provider");
+        let gateway = CanvasModelGateway::new(providers);
+
+        let result = rt.block_on(gateway.complete(CanvasCompletionRequest {
+            model_ref: "deepseek-chat".to_string(),
+            node_kind: String::new(),
+            skill_ids: Vec::new(),
+            system_prompt: None,
+            prompt: "audit".to_string(),
+            temperature: None,
+            max_tokens: None,
+            images: Vec::new(),
+        }));
+        let wire_model = received_model.lock().expect("lock").clone();
+        eprintln!(
+            "canvas model identity audit: requested=deepseek-chat decoded={:?} wire_model={wire_model:?} result={result:?}",
+            decode_model_ref("deepseek-chat")
+        );
+
+        assert!(
+            result.is_err(),
+            "a non-empty invalid model reference must be rejected, not routed automatically"
+        );
+        assert_eq!(
+            wire_model, None,
+            "invalid explicit model identity must not reach provider transport"
+        );
+    }
+
+    #[test]
     fn gateway_calls_openai_compatible_endpoints_end_to_end() {
         use std::io::{Read, Write};
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
