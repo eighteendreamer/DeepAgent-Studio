@@ -2576,11 +2576,18 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | `cargo test -p deepagent-app-core --lib knowledge_service::tests --offline` | 18 passed；项目切换、磁盘重载、draft、检索及离线捕获测试通过 |
 | `cargo test -p deepagent-app-core --lib --offline`（新增 H-22 后） | 1072 passed / 9 ignored，0 failed；忽略项含已知缺陷探针及 opt-in 集成探针，不能将常规通过解释为这些缺陷已修复。输出保存在忽略提交的 target/audit-app-core-20261021.log |
 | `cargo test -p deepagent-app-core --lib subagent_runner::tests --offline`（新增 H-19 后） | 6 passed / 1 ignored；常规角色测试只验证 schema 过滤，没有验证清单外实际调用被拒绝 |
-| `cargo test -p deepagent-runtime --lib model_agent::tests --offline`（新增 H-18 后） | 56 passed / 1 failed / 2 ignored；原有 `time_based_microcompact_clears_stale_tool_results_after_idle` 在 `Instant::now() - 3601s` 处溢出，尚未进入生产 microcompact；单独重跑同样失败。本轮未修改该测试或生产时钟，不能报常规测试全绿，也不据此认定生产压缩故障 |
+| `cargo test -p deepagent-runtime --lib model_agent::tests --offline`（新增 H-18 后，修复前历史） | 56 passed / 1 failed / 2 ignored；原有 `time_based_microcompact_clears_stale_tool_results_after_idle` 在 `Instant::now() - 3601s` 处溢出，尚未进入生产 microcompact；单独重跑同样失败，不能据此认定生产压缩故障 |
+| `cargo test -p deepagent-runtime --offline`（空闲微压缩时钟回归修正后） | unit 269 passed / 14 ignored，稳定性集成 5 passed，schedule audit 2 ignored；0 failed。完整长运行用例超过 60 秒后正常完成 |
 | `cargo test -p deepagent-app-core --lib --offline chat_service::tests`（新增 H-13 后） | 74 passed / 1 ignored；新缺陷探针默认忽略，常规会话服务测试无失败 |
 | `git diff --check` | 通过 |
 
-审查累计新增内容限于报告、各 H 节列出的默认忽略 Rust 缺陷探针、显式运行的桌面故障探针、宿主隔离集成探针及各节注明的正常对照/回归测试，未修改生产运行逻辑。默认测试包括取消存储故障、排队取消、Windows hook 大输入时限、上下文恢复、真实构建完成与后端拒绝等；完整清单和实际命令以各节及上表为准。没有在每批重复运行全 workspace、Clippy 或前端构建，不能据单项回归宣称全系统通过。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
+### 验证基础设施修正：空闲微压缩测试不再依赖系统已运行时长
+
+- 失败测试原先通过 `Instant::now() - 3601s` 伪造空闲时间；本机单调时钟基点不足 3601 秒时，减法在进入生产逻辑前直接 overflow panic。单独精确重跑稳定得到相同 panic，证明这不是 H-25 改动造成的随机失败，也不能用该失败推断生产 micro-compact 已损坏。
+- `maybe_time_based_microcompact()` 现在把当前单调时刻与解析后的阈值传入一个确定性内部边界；该边界使用 `saturating_duration_since` 计算空闲时长。测试以“基准时刻 + 阈值”构造前后两组，不修改进程环境变量，也不依赖机器 uptime。生产配置名、默认 3600 秒阈值、持久化及 Surface replacement 均未改变。
+- 精确执行 `cargo test -p deepagent-runtime --lib model_agent::tests::time_based_microcompact --offline -- --nocapture`：2 passed / 0 failed；随后完整 `cargo test -p deepagent-runtime --offline` 得到上表结果。本项是测试可重复性和时钟边界治理，没有新增 H 缺陷编号，也没有把离线测试扩大为真实长时间桌面缓存命中验收。
+
+审查累计新增内容包括报告、各 H 节列出的默认忽略缺陷探针、显式桌面/宿主隔离探针、正常回归，以及标题明确标记“已修复”项目对应的生产改动；没有把仍标记为“已确认”或“尚未实施”的项目写成已修复。默认测试包括取消存储故障、排队取消、Windows hook 大输入时限、上下文恢复、真实构建完成与后端拒绝等；完整清单和实际命令以各节及上表为准。没有在每批重复运行全 workspace、Clippy 或前端构建，不能据单项回归宣称全系统通过。桌面使用当前源码真实编译产物测试，截图保存在忽略提交的 `target/live-desktop-test-20261021/`（`tool-result.png`、`restart-recall.png`、`cancel-storage-failure.png`）。
 
 ### 后续独立验证：后台 MCP 准备不阻塞聊天
 

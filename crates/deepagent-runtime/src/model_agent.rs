@@ -851,17 +851,29 @@ impl ModelAgent {
     /// prompt cache is cold, so clearing stale tool-result bodies costs nothing
     /// cached and saves context on re-send. Fires at most once per idle gap.
     fn maybe_time_based_microcompact(&mut self) {
+        let threshold_secs = std::env::var("DEEPAGENT_MICROCOMPACT_IDLE_SECS")
+            .ok()
+            .and_then(|raw| raw.trim().parse::<u64>().ok())
+            .unwrap_or(MICROCOMPACT_IDLE_SECS);
+        self.maybe_time_based_microcompact_at(
+            std::time::Instant::now(),
+            std::time::Duration::from_secs(threshold_secs),
+        );
+    }
+
+    fn maybe_time_based_microcompact_at(
+        &mut self,
+        now: std::time::Instant,
+        idle_threshold: std::time::Duration,
+    ) {
         if self.microcompacted_for_current_gap {
             return;
         }
         let Some(last) = self.last_assistant_at else {
             return;
         };
-        let threshold_secs = std::env::var("DEEPAGENT_MICROCOMPACT_IDLE_SECS")
-            .ok()
-            .and_then(|raw| raw.trim().parse::<u64>().ok())
-            .unwrap_or(MICROCOMPACT_IDLE_SECS);
-        if last.elapsed() < std::time::Duration::from_secs(threshold_secs) {
+        let idle = now.saturating_duration_since(last);
+        if idle < idle_threshold {
             return;
         }
         self.microcompacted_for_current_gap = true;
@@ -875,7 +887,7 @@ impl ModelAgent {
         if cleared > 0 {
             tracing::info!(
                 cleared,
-                idle_secs = last.elapsed().as_secs(),
+                idle_secs = idle.as_secs(),
                 "time-based micro-compact cleared stale tool results after idle gap"
             );
         }
@@ -5592,12 +5604,13 @@ mod tests {
     fn time_based_microcompact_clears_stale_tool_results_after_idle() {
         let mut agent = agent_with_stale_tool_result();
         assert_eq!(agent.messages[1].content, "big tool output".repeat(100));
-        // Pretend the last assistant turn was a long time ago.
-        agent.last_assistant_at = Some(
-            std::time::Instant::now() - std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS + 1),
-        );
+        let last = std::time::Instant::now();
+        agent.last_assistant_at = Some(last);
         agent.microcompacted_for_current_gap = false;
-        agent.maybe_time_based_microcompact();
+        agent.maybe_time_based_microcompact_at(
+            last + std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS + 1),
+            std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS),
+        );
         assert_eq!(agent.messages[1].content, "[tool result content cleared]");
         // Idempotent within the same idle gap.
         assert_eq!(agent.clear_stale_tool_results().unwrap(), 0);
@@ -5606,9 +5619,13 @@ mod tests {
     #[test]
     fn time_based_microcompact_noop_before_idle_threshold() {
         let mut agent = agent_with_stale_tool_result();
-        agent.last_assistant_at = Some(std::time::Instant::now());
+        let last = std::time::Instant::now();
+        agent.last_assistant_at = Some(last);
         agent.microcompacted_for_current_gap = false;
-        agent.maybe_time_based_microcompact();
+        agent.maybe_time_based_microcompact_at(
+            last + std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS - 1),
+            std::time::Duration::from_secs(MICROCOMPACT_IDLE_SECS),
+        );
         assert_eq!(agent.messages[1].content, "big tool output".repeat(100));
     }
 }
