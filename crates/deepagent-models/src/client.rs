@@ -991,6 +991,44 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: keep provider usage from a failed Responses terminal"]
+    async fn audit_failed_responses_terminal_emits_included_usage() {
+        #[derive(Default)]
+        struct UsageRecorder(Vec<crate::stream::ModelStreamEvent>);
+
+        impl crate::stream::DeltaObserver for UsageRecorder {
+            fn on_event(&mut self, event: crate::stream::ModelStreamEvent) {
+                self.0.push(event);
+            }
+        }
+
+        let client = client_with(vec![
+            r#"{"type":"response.failed","response":{"status":"failed","error":{"code":"audit_failed","message":"controlled failure"},"usage":{"input_tokens":9,"output_tokens":2,"total_tokens":11,"input_tokens_details":{"cached_tokens":4},"output_tokens_details":{"reasoning_tokens":1}}}}"#.to_string(),
+        ]);
+        let mut observer = UsageRecorder::default();
+
+        let result = client
+            .stream_response_observed(
+                ResponseRequest::new("deepseek-flash", vec![Message::user("audit failure")]),
+                &mut observer,
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "failed terminal should remain a provider error"
+        );
+        assert!(observer.0.iter().any(|event| matches!(
+            event,
+            crate::stream::ModelStreamEvent::Usage { usage }
+                if usage.prompt_tokens == 9
+                    && usage.completion_tokens == 2
+                    && usage.prompt_cache_hit_tokens == 4
+                    && usage.reasoning_tokens == 1
+        )));
+    }
+
+    #[tokio::test]
     async fn invalid_chat_reasoning_effort_is_rejected_before_transport() {
         struct FailIfCalled;
 
