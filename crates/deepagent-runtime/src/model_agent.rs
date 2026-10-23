@@ -2972,6 +2972,9 @@ mod tests {
                 .pop_front()
                 .ok_or_else(|| CoreError::other("no attempt"))?;
             for event in events {
+                if event == "__ERROR_TOTAL_DEADLINE__" {
+                    return Err(CoreError::other("model stream total deadline exceeded"));
+                }
                 if event == "__ERROR_EOF__" {
                     return Err(CoreError::other("unexpected EOF in provider stream"));
                 }
@@ -3027,6 +3030,56 @@ mod tests {
         ));
         // System + user + assistant.
         assert_eq!(agent.conversation().len(), 3);
+    }
+
+    #[tokio::test]
+    #[ignore = "audit follow-up: observe partial text delivery and Surface commit after total deadline"]
+    async fn audit_partial_response_is_streamed_but_not_committed_after_total_deadline() {
+        #[derive(Default)]
+        struct ContentCollector(Mutex<Vec<String>>);
+
+        impl RuntimeEventSink for ContentCollector {
+            fn emit(&self, event: RuntimeEvent) {
+                if let RuntimeEvent::ContentDelta { text } = event {
+                    self.0.lock().unwrap().push(text);
+                }
+            }
+        }
+
+        let attempts = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                vec![
+                    response_text_delta("partial answer"),
+                    "__ERROR_TOTAL_DEADLINE__".into(),
+                ],
+                vec![
+                    response_text_delta("partial answer"),
+                    "__ERROR_TOTAL_DEADLINE__".into(),
+                ],
+                vec![
+                    response_text_delta("partial answer"),
+                    "__ERROR_TOTAL_DEADLINE__".into(),
+                ],
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            attempts.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let mut agent = ModelAgent::new(client, "deepseek-v4-flash", "sys", "do it", vec![]);
+        let events = Arc::new(ContentCollector::default());
+        agent.set_event_sink(events.clone());
+
+        assert!(agent.think(0, &[]).await.is_err());
+        assert_eq!(
+            events.0.lock().unwrap().as_slice(),
+            ["partial answer", "partial answer", "partial answer"]
+        );
+        assert_eq!(attempts.requests.lock().unwrap().len(), 3);
+        assert_eq!(agent.conversation().len(), 2);
+        assert_eq!(agent.response_history.items.len(), 1);
+        assert!(agent.pending_response_items.is_empty());
     }
 
     #[tokio::test]
