@@ -495,6 +495,7 @@ Codex `rmcp-client/src/http_client_adapter.rs` 从 HTTP response headers 读取 
 - 实际输出：`enabled=false, ready_skill_roots=0, new_request_has_disabled_skill=true`；新请求不应包含禁用技能的断言失败。该会话没有历史，不能用“保留过去的技能调用记录”解释本次新注入。
 - 后续收紧探针：插件 fixture 放在独立聊天工作目录之外，仅匹配完整目录条目 `- audit-plugin-skill: Audit plugin readiness`，再次运行仍得到相同失败。排除动态环境中的普通文件路径命中技能名造成误报；不是仅据 body 中出现一个文件夹名称定性。
 - 桌面 `lib.rs::set_plugin_enabled()` 在返回前调用 `sync_plugin_runtime_after_change()` / `sync_plugin_skill_roots()`，是一个宿主特有的补同步路径。本探针明确没有调用这层 Tauri handler；文件 watcher 失效也可能经过共享注册表更新窗口，但尚未独立做 watcher → 桌面 wire 复现，不能扩大结论。
+- 2026-10-23 在 Windows 工作区重跑上述 ignored 探针，仍得到 `enabled=false, ready_skill_roots=0, new_request_has_disabled_skill=true`，断言失败；确认 AppCore 直连边界的问题仍存在，不改变桌面 handler 尚未动态验证的范围。
 
 #### 成熟实现对照
 
@@ -1200,6 +1201,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - `mcp_preparation.rs::prepare_server_with_cancel` 持有按服务器 name 共享的 slot，在取消分支把 `MCP preparation cancelled` 作为 failures 写入同配置 fingerprint 的 CachedRegistry。新一代针对同一 A 等到该 slot 后，由于 fingerprint 未变且 retry_failed=false，直接返回这个宿主取消错误。发布处的 generation 检查能阻止旧 ready 发布，但不能阻止旧任务写坏仍被新代使用的 slot。
 - 默认忽略探针 `mcp_service::preparation::tests::audit_unrelated_config_change_preserves_pending_startup` 使用正式内存数据库、McpService 的 upsert/start_preparation/cached_status/ready_registry 和真实 Node MCP 进程；A 已接收 initialize 后才改变配置，文件 gate 控制响应，不靠 sleep 猜初始化位置。两组只在是否新增 B 上不同，均最终开放 A gate；比较 upsert 规范化之后的前后 A 配置，排除 None→stdio 的 DTO 规范化被误认为业务配置变化。fixture 使用宽松 legacy 握手，隔离已登记的 H-08。
 - 执行 `cargo test -p deepagent-app-core --lib audit_unrelated_config_change_preserves_pending_startup --offline -- --ignored --nocapture`：约 0.25 秒，断言明确失败。无 B 对照：A 配置未变、只启动 1 次、status=connected、ready 工具含 mcp__a__echo。新增 B：A 配置同样未变且只启动 1 次，但 status=failed/error=MCP preparation cancelled，ready 只含 B/mcp__b__echo。随后再次 start_preparation，两个场景均因全局配置相同而 no-op，失败组不会因此重新启动 A。
+- 2026-10-23 重跑同一探针，结果相同：无关配置 B 加入后 A 的配置未变、进程启动数仍为 1，但 A 变为 `failed`、错误为 `MCP preparation cancelled`，快照仅含 B；普通并发共享启动与同配置 no-op 两项基线通过。
 - 断言前主动关闭本地 ready registry；没有公网或真实模型调用。动态证据到宿主状态和实际工具快照为止，未做 Tauri 设置界面操作或下一请求的真实 wire 抓取。正式 attach_mcp_tools 消费该 ready snapshot，所以 A 的能力不会因单纯再发聊天自动回到新请求，这是调用链判断。
 
 #### 参考机制、后果与修复方向
@@ -2684,6 +2686,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 执行：`cargo test -p deepagent-app-core --lib blocked_host_payload_preparation_does_not_block_conversations --offline -- --ignored --nocapture`，1 passed。该探针独占生产全局磁盘准备 gate，应单独运行，默认忽略。
 - 创建真实临时 runtime.zip 与插件技能，在启动宿主前对其 `.runtime.lock` 加 OS 排他锁；随后观察生产 `DISK_PREPARATION` 已被 worker 持有，确认它已经进入运行包准备并等待文件锁。没有替换生产准备函数或虚构 Ready 状态。
 - 保持锁期间两轮真实 ChatService/Kernel + 离线模型在 349ms 内完成；runtime/value.txt 不存在、ready skill_roots 为空、两次实际请求均没有该技能的完整目录条目。释放后校验/解压完成，技能注册表更新；第三个全新会话的实际请求包含该目录条目，且解压内容与原包相同。
+- 2026-10-23 重跑得到相同生命周期结果：两轮对话 384ms，锁持有期间技能未发布、runtime 未解压；释放后后台准备完成并发布技能。该数据是本次单机样本，不作为 P95 指标。
 - 首次探针把 fixture 放在聊天工作目录内，单纯匹配技能名会命中动态环境的文件路径；已把工作目录与 fixture 分开，并改为匹配目录条目后重跑通过。该早期断言失败不认定为产品能力泄漏；H-13 也收紧相同判据并独立重跑，缺陷仍存在。
 - 这是实际文件锁等待边界，没有真的等待 180 秒，也没有对逐文件校验人为注入 180 秒延迟、统计 P95 或验证跨进程安装并发。它支持磁盘准备在宿主后台执行的隔离设计，不能代替完整运行包性能及损坏恢复验收。
 
