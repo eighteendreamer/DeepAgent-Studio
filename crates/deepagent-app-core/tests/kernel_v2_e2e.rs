@@ -67,6 +67,9 @@ mod cache_prefix;
 #[path = "kernel_v2_e2e/responses_custom_tool.rs"]
 mod responses_custom_tool;
 
+#[path = "kernel_v2_e2e/responses_tool_choice.rs"]
+mod responses_tool_choice;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/path_boundary.rs"]
 mod path_boundary;
