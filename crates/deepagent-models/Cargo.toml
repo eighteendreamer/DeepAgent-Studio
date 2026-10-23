@@ -12,7 +12,7 @@ default = []
 # The real network transport (reqwest + rustls). Kept optional so the default
 # build and CI exercise 100% of the streaming/accumulator logic offline via the
 # mock transport, without pulling a TLS stack.
-http = ["dep:reqwest"]
+http = ["dep:reqwest", "dep:time"]
 
 [dependencies]
 deepagent-core.workspace = true
@@ -22,6 +22,7 @@ serde_json.workspace = true
 futures.workspace = true
 tracing.workspace = true
 tokio = { workspace = true }
+time = { workspace = true, optional = true }
 
 reqwest = { version = "0.12", default-features = false, features = [
     "stream",

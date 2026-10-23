@@ -37,6 +37,7 @@ pub fn classify_model_error(error: &CoreError) -> ModelFailureKind {
             status,
             code,
             message,
+            ..
         } => classify_provider(*status, code.as_deref(), message),
         CoreError::Serialization(_) | CoreError::Invalid(_) => ModelFailureKind::InvalidRequest,
         other => classify_unstructured(&other.to_string()),

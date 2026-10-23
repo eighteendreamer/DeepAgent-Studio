@@ -154,10 +154,16 @@ impl ReqwestTransport {
 
         if !response.status().is_success() {
             let status = response.status();
+            let (retry_after_ms, request_id) = provider_response_metadata(&response);
             let detail = self
                 .read_provider_error_body(response, cancel.as_ref())
                 .await?;
-            return Err(provider_error(status.as_u16(), &detail));
+            return Err(provider_error_with_metadata(
+                status.as_u16(),
+                &detail,
+                retry_after_ms,
+                request_id,
+            ));
         }
 
         self.read_get_body(response, cancel.as_ref()).await
@@ -195,10 +201,16 @@ impl ReqwestTransport {
 
         if !response.status().is_success() {
             let status = response.status();
+            let (retry_after_ms, request_id) = provider_response_metadata(&response);
             let detail = self
                 .read_provider_error_body(response, cancel.as_ref())
                 .await?;
-            return Err(provider_error(status.as_u16(), &detail));
+            return Err(provider_error_with_metadata(
+                status.as_u16(),
+                &detail,
+                retry_after_ms,
+                request_id,
+            ));
         }
 
         let mut parser = SseParser::new();
@@ -335,7 +347,17 @@ impl ReqwestTransport {
     }
 }
 
+#[cfg(test)]
 fn provider_error(status: u16, body: &str) -> CoreError {
+    provider_error_with_metadata(status, body, None, None)
+}
+
+fn provider_error_with_metadata(
+    status: u16,
+    body: &str,
+    retry_after_ms: Option<u64>,
+    request_id: Option<String>,
+) -> CoreError {
     let parsed = serde_json::from_str::<serde_json::Value>(body).ok();
     let error = parsed
         .as_ref()
@@ -350,7 +372,76 @@ fn provider_error(status: u16, body: &str) -> CoreError {
         .get("message")
         .and_then(serde_json::Value::as_str)
         .unwrap_or(body);
-    CoreError::provider(Some(status), code, sanitize_provider_message(message))
+    CoreError::provider_with_metadata(
+        Some(status),
+        code,
+        sanitize_provider_message(message),
+        retry_after_ms,
+        request_id,
+    )
+}
+
+fn provider_response_metadata(response: &reqwest::Response) -> (Option<u64>, Option<String>) {
+    let retry_after_ms = response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(parse_retry_after_ms);
+    let request_id = ["request-id", "x-request-id", "x-deepseek-request-id"]
+        .iter()
+        .find_map(|name| response.headers().get(*name))
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.trim().chars().take(256).collect::<String>())
+        .filter(|value| !value.is_empty());
+    (retry_after_ms, request_id)
+}
+
+fn parse_retry_after_ms(value: &str) -> Option<u64> {
+    let value = value.trim();
+    if let Ok(seconds) = value.parse::<u64>() {
+        return seconds.checked_mul(1_000).filter(|delay| *delay > 0);
+    }
+
+    let deadline = parse_http_date(value)?;
+    let remaining = (deadline - time::OffsetDateTime::now_utc()).whole_milliseconds();
+    u64::try_from(remaining).ok().filter(|delay| *delay > 0)
+}
+
+fn parse_http_date(value: &str) -> Option<time::OffsetDateTime> {
+    let imf_fixdate = time::macros::format_description!(
+        "[weekday repr:short], [day] [month repr:short] [year padding:none] [hour]:[minute]:[second] GMT"
+    );
+    let obsolete_rfc850 = time::macros::format_description!(
+        "[weekday repr:long], [day]-[month repr:short]-[year repr:last_two] [hour]:[minute]:[second] GMT"
+    );
+    let obsolete_asctime = time::macros::format_description!(
+        "[weekday repr:short] [month repr:short] [day padding:space] [hour]:[minute]:[second] [year padding:none]"
+    );
+
+    for format in [imf_fixdate, obsolete_rfc850, obsolete_asctime] {
+        let mut parsed = time::parsing::Parsed::new();
+        let Ok(remaining) = parsed.parse_items(value.as_bytes(), format) else {
+            continue;
+        };
+        if !remaining.is_empty() {
+            continue;
+        }
+        if let Some(year) = parsed
+            .year()
+            .or_else(|| parsed.year_last_two().map(i32::from))
+        {
+            let century = match year {
+                0..=68 => 2_000,
+                69..=99 => 1_900,
+                _ => 0,
+            };
+            parsed.set_year(year + century);
+        }
+        if let Ok(deadline) = time::PrimitiveDateTime::try_from(parsed) {
+            return Some(deadline.assume_utc());
+        }
+    }
+    None
 }
 
 fn sanitize_provider_message(message: &str) -> String {
@@ -728,6 +819,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_json_retains_provider_retry_metadata() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut chunk = [0; 1024];
+            loop {
+                let count = socket.read(&mut chunk).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&chunk[..count]);
+                if request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            let body = r#"{"error":{"code":"rate_limit_exceeded","message":"slow down"}}"#;
+            let response = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nRetry-After: 3\r\nX-Request-Id: audit-request-id\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(response.as_bytes()).await.unwrap();
+        });
+
+        let transport =
+            ReqwestTransport::with_client(reqwest::Client::builder().no_proxy().build().unwrap());
+        let error = transport
+            .get_json(&format!("http://{address}/models"), "audit-placeholder")
+            .await
+            .unwrap_err();
+        server.await.unwrap();
+
+        assert!(matches!(
+            error,
+            CoreError::Provider {
+                status: Some(429),
+                retry_after_ms: Some(3_000),
+                ref request_id,
+                ..
+            } if request_id.as_deref() == Some("audit-request-id")
+        ));
+    }
+
+    #[tokio::test]
     async fn audit_cancel_interrupts_stalled_success_and_error_bodies() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
@@ -875,6 +1012,7 @@ mod tests {
                 status: Some(413),
                 ref code,
                 ref message,
+                ..
             } if code.as_deref() == Some("context_length_exceeded")
                 && message == "maximum context window exceeded"
         ));
@@ -884,6 +1022,31 @@ mod tests {
     fn provider_error_redacts_api_key_shaped_tokens() {
         let error = provider_error(401, "bad key sk-secret-value");
         assert!(!error.to_string().contains("secret-value"));
+    }
+
+    #[test]
+    fn parses_bounded_retry_after_seconds_and_http_date() {
+        assert_eq!(parse_retry_after_ms("3"), Some(3_000));
+        assert_eq!(parse_retry_after_ms("0"), None);
+        assert_eq!(parse_retry_after_ms("invalid"), None);
+
+        let formats = [
+            time::macros::format_description!(
+                "[weekday repr:short], [day] [month repr:short] [year padding:none] [hour]:[minute]:[second] GMT"
+            ),
+            time::macros::format_description!(
+                "[weekday repr:long], [day]-[month repr:short]-[year repr:last_two] [hour]:[minute]:[second] GMT"
+            ),
+            time::macros::format_description!(
+                "[weekday repr:short] [month repr:short] [day padding:space] [hour]:[minute]:[second] [year padding:none]"
+            ),
+        ];
+        let future = time::OffsetDateTime::now_utc() + time::Duration::seconds(60);
+        for format in formats {
+            let header = future.format(format).unwrap();
+            let parsed = parse_retry_after_ms(&header).expect("future HTTP date should parse");
+            assert!(parsed > 0 && parsed <= 60_000, "header={header}");
+        }
     }
 
     #[test]

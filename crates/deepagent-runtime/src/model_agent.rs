@@ -2445,12 +2445,27 @@ impl ModelAgent {
                     if stream_activity_seen || self.events.is_some() {
                         emit_attempt_reset(self.events.as_ref(), step, attempt, error.to_string());
                     }
-                    let delay = retry_delay(failure, attempt);
+                    let provider_retry_after_ms = provider_retry_after_ms(&error);
+                    let provider_request_id = provider_request_id(&error);
+                    let Some(delay) =
+                        retry_delay_with_provider(failure, attempt, provider_retry_after_ms)
+                    else {
+                        tracing::warn!(
+                            step,
+                            attempt,
+                            provider_retry_after_ms,
+                            provider_request_id,
+                            "provider retry delay exceeds the local bounded retry policy"
+                        );
+                        return Err(error);
+                    };
                     tracing::warn!(
                         step,
                         attempt,
                         max_attempts = self.max_model_attempts,
                         delay_ms = delay.as_millis() as u64,
+                        provider_retry_after_ms,
+                        provider_request_id,
                         error = %error,
                         failure = ?failure,
                         "retrying classified model stream failure"
@@ -2637,7 +2652,41 @@ async fn wait_for_cancel(cancel: Arc<AtomicBool>) {
     }
 }
 
+#[cfg(test)]
 fn retry_delay(failure: ModelFailureKind, attempt: usize) -> std::time::Duration {
+    retry_delay_with_provider(failure, attempt, None)
+        .expect("local retry delay must always remain bounded")
+}
+
+// Match DeepSeek Harness's default bounded provider retry policy. Longer
+// instructions are escalated instead of being replaced with a premature local
+// retry that would ignore the provider's recovery window.
+const MAX_PROVIDER_RETRY_AFTER_MS: u64 = 10_000;
+
+fn provider_retry_after_ms(error: &CoreError) -> Option<u64> {
+    match error {
+        CoreError::Provider { retry_after_ms, .. } => *retry_after_ms,
+        _ => None,
+    }
+}
+
+fn provider_request_id(error: &CoreError) -> Option<&str> {
+    match error {
+        CoreError::Provider { request_id, .. } => request_id.as_deref(),
+        _ => None,
+    }
+}
+
+fn retry_delay_with_provider(
+    failure: ModelFailureKind,
+    attempt: usize,
+    provider_retry_after_ms: Option<u64>,
+) -> Option<std::time::Duration> {
+    if let Some(delay_ms) = provider_retry_after_ms.filter(|delay_ms| *delay_ms > 0) {
+        return (delay_ms <= MAX_PROVIDER_RETRY_AFTER_MS)
+            .then(|| std::time::Duration::from_millis(delay_ms));
+    }
+
     let base_ms = match failure {
         ModelFailureKind::RateLimited | ModelFailureKind::Overloaded => 500,
         ModelFailureKind::Server => 300,
@@ -2648,7 +2697,7 @@ fn retry_delay(failure: ModelFailureKind, attempt: usize) -> std::time::Duration
     // concurrent retries and avoid thundering-herd storms.
     let jitter_range = capped / 5;
     if jitter_range == 0 {
-        return std::time::Duration::from_millis(capped);
+        return Some(std::time::Duration::from_millis(capped));
     }
     use std::hash::{Hash, Hasher};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -2657,7 +2706,9 @@ fn retry_delay(failure: ModelFailureKind, attempt: usize) -> std::time::Duration
     JITTER_SEQ.fetch_add(1, Ordering::Relaxed).hash(&mut hasher);
     std::thread::current().id().hash(&mut hasher);
     let jitter = hasher.finish() % (jitter_range * 2 + 1);
-    std::time::Duration::from_millis(capped - jitter_range + jitter)
+    Some(std::time::Duration::from_millis(
+        capped - jitter_range + jitter,
+    ))
 }
 
 #[cfg(test)]
@@ -4619,6 +4670,15 @@ mod tests {
                 "attempt {attempt}: {d} not in [{low},{high}]"
             );
         }
+    }
+
+    #[test]
+    fn bounded_provider_retry_after_replaces_local_backoff() {
+        let delay = retry_delay_with_provider(ModelFailureKind::RateLimited, 1, Some(3_000));
+        assert_eq!(delay, Some(std::time::Duration::from_secs(3)));
+
+        let over_cap = retry_delay_with_provider(ModelFailureKind::RateLimited, 1, Some(10_001));
+        assert_eq!(over_cap, None);
     }
 
     #[tokio::test]

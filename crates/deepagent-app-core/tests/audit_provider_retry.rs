@@ -39,7 +39,6 @@ async fn read_request(stream: &mut TcpStream) {
 }
 
 #[tokio::test]
-#[ignore = "audit H-25: provider Retry-After is lost before the retry loop"]
 async fn audit_rate_limit_retry_waits_for_provider_recovery() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();

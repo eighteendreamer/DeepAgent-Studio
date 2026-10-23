@@ -54,6 +54,12 @@ pub enum CoreError {
         status: Option<u16>,
         code: Option<String>,
         message: String,
+        /// Provider-suggested retry delay in milliseconds, when the response
+        /// carried a valid positive `Retry-After` value. The retry policy owns
+        /// the upper bound it is willing to schedule.
+        retry_after_ms: Option<u64>,
+        /// Provider request identity for diagnostics and retry observability.
+        request_id: Option<String>,
     },
 
     /// A catch-all for errors that do not yet have a dedicated variant.
@@ -79,10 +85,25 @@ impl CoreError {
 
     /// Build a structured model-provider error.
     pub fn provider(status: Option<u16>, code: Option<String>, message: impl Into<String>) -> Self {
+        Self::provider_with_metadata(status, code, message, None, None)
+    }
+
+    /// Build a provider error while retaining safe response metadata used by
+    /// retry and diagnostics. Metadata is intentionally not included in the
+    /// user-facing `Display` string.
+    pub fn provider_with_metadata(
+        status: Option<u16>,
+        code: Option<String>,
+        message: impl Into<String>,
+        retry_after_ms: Option<u64>,
+        request_id: Option<String>,
+    ) -> Self {
         Self::Provider {
             status,
             code,
             message: message.into(),
+            retry_after_ms,
+            request_id,
         }
     }
 }

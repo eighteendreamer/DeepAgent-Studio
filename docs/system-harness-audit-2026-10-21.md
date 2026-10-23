@@ -15,7 +15,7 @@
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | SSH 远端主机身份验证 | 正式 SshService 通过 loopback 连上临时随机服务器密钥；同一地址的 known_hosts 对照拒绝不匹配密钥 | 已确认 H-125；未连接公网或用户服务器 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退，以及 EOF 时运行时直接丢弃活动 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认并修复 H-24、H-29；已确认 H-05、H-18、H-25、H-30、H-49、H-93、H-94、H-98、H-99、H-118、H-127；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、SSE 分帧不完整及备用模型输出上限分裂均已复现 | 已确认并修复 H-24、H-25、H-29；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-118、H-127；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、stdio/HTTP 响应无 transport 字节上限、图像工具结果未转为模型多模态内容、一次性测试连接在 initialize/tools/list 阶段无界等待（已修复并验证 30 秒总握手上限）、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认并修复 H-128、H-129；其他已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117、H-126 至 H-127；其他 hooks 和准备边界未完成 |
@@ -755,24 +755,23 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 仓库 Codex `codex-rs/protocol/src/error.rs::truncate_with_ellipsis()` 在截断前向前查找 `is_char_boundary`；UnexpectedResponseError::display_body 的非结构化 body 分支使用它。其 JSON error message 分支另有处理，不能声称该 helper 覆盖它的所有错误文本。
 - 该修复保留既有统一错误清理边界，安全处理 Unicode 长度、脱敏和 status/code；真实 HTTP GET 错误现在也复用该 provider 错误路径。完整 Kernel/Tauri 终态仍不由这个单元测试代替。
 
-### H-25：丢弃供应商 Retry-After，在服务恢复前耗尽限流重试
+### H-25：丢弃供应商 Retry-After，在服务恢复前耗尽限流重试（已修复）
 
-**级别：中（P2）；范围：真实 HTTP 非成功响应到 ModelAgent 的自动重试链路。** 触发条件是供应商实际返回有界 Retry-After；不声称所有 DeepSeek 请求都会返回这个头。
+**级别：中（P2）；范围：真实 HTTP 非成功响应到 ModelAgent 的自动重试链路。状态：已修复并转为常规回归。** 触发条件是供应商实际返回有界 Retry-After；不声称所有 DeepSeek 请求都会返回这个头。
 
 #### 生产路径与实测
 
-- `ReqwestTransport::stream_inner()` 仅取 status 和 body 后返回 provider_error，未保留响应头。CoreError::Provider 仅有 status/code/message，ModelAgent 无法取得建议等待时长或响应头里的 request ID。
-- `ModelAgent::retry_delay()` 对限流使用 500ms 基数、指数退避及 ±20% 抖动；另有限流失败次数上限 2。这一组合使其可能在服务建议的恢复时间前用完尝试次数，而非仅丢失展示信息。
-- 新增默认忽略集成探针 `crates/deepagent-app-core/tests/audit_provider_retry.rs`，真实 localhost TCP HTTP 服务先返回 429、`Retry-After: 3`、`x-request-id` 和结构化错误；第二请求若已过 3 秒返回有效 Chat SSE，否则继续 429。完整读取请求体后才响应，使用独立回环地址及无代理客户端，没有外部密钥或付费请求。
-- 执行：`cargo test -p deepagent-app-core --features web --test audit_provider_retry --offline -- --ignored --nocapture`。实际经过 ReqwestTransport→ModelClient→ModelAgent，记录 `provider_wait_ms=3000, actual_retry_gap_ms=455, provider_recovered=false, agent_ok=false`，最终仍是 HTTP 429，安全断言失败。该数值是一次本机样本，不是 P95 或实际供应商故障率。
-- 两次请求均已由 fixture 接收，生产限流重试确实发生；最终错误保留 status/code/message，但没有服务端响应头的 request ID。测试没有运行完整 Kernel/Tauri，也不将这次失败等同于已观测的用户长等待。
+- 修复前，`ReqwestTransport::stream_inner()` 只取 status/body 后构造 provider error，`CoreError::Provider` 也只有 status/code/message；`ModelAgent` 因此只能用 500ms 基数的本地抖动退避。真实回环探针得到 `provider_wait_ms=3000, actual_retry_gap_ms=455, provider_recovered=false, agent_ok=false`，在供应商恢复前已经耗尽限流尝试。该数值是单次本机样本，不是 P95 或实际供应商故障率。
+- 修复后，流式 POST 和管理 GET 在消费 response 前统一提取 `Retry-After` 及 `request-id` / `x-request-id` / `x-deepseek-request-id`，经既有 provider error 边界保存为 `retry_after_ms`、`request_id`；错误正文仍走 H-29 的有界、可取消读取和既有脱敏。秒数及 RFC 9110 要求接收的三种 HTTP-date 形式有单元回归，零值、非法值和已过期日期不会伪造等待。
+- `ModelAgent` 在现有重试链采用不超过 10,000ms 的供应商建议；更长建议直接把原错误交还调用方，避免忽略恢复窗口后提前重试。没有建议时继续使用原有本地指数退避；实际等待仍在现有取消 `select!` 中，未新增第二套重试或取消机制。重试日志记录经过长度限制的 request ID，用户可见错误文本不回显它。
+- 原 ignored 探针已改为常规回归。执行 `cargo test -p deepagent-app-core --features web --test audit_provider_retry --offline -- --nocapture`，正式经过 ReqwestTransport→ModelClient→ModelAgent，记录 `provider_wait_ms=3000, actual_retry_gap_ms=3018, provider_recovered=true, agent_ok=true`，**1 passed / 0 failed**。fixture 完整读取请求体后才响应，使用独立回环地址及无代理客户端，没有外部密钥或付费请求。
+- 执行 `cargo test -p deepagent-models --features http reqwest_transport::tests:: --offline -- --nocapture`，包括真实 GET 429 元数据、HTTP-date/秒数、凭据脱敏及 H-29 取消回归在内 **12 passed / 0 failed**。本轮没有运行公网供应商、完整 Kernel/Tauri，也没有验证 request ID 的 UI 展示。
 
-#### 成熟实现、影响与修复方向
+#### 成熟实现、影响与修复边界
 
-- DeepSeek Harness `packages/llm/llm-deepseek/src/transport.ts::providerError()` 将 Retry-After 秒数/日期映射为 providerRetryAfterMs，保留三种 request-id 响应头。`llm-retry/tests/retry.spec.ts` 明确验证有界 2000ms 建议被原样采用；超配置上限的建议在 normal mode 下交还错误处理，不盲目等待。always mode 另有本地退避策略。
+- DeepSeek Harness `packages/llm/llm-deepseek/src/transport.ts::providerError()` 将 Retry-After 秒数/日期映射为 providerRetryAfterMs，保留三种 request-id 响应头；`llm-retry/src/index.ts` 在 normal policy 中原样采用有界建议，超过默认 10,000ms 上限时交还错误处理，不盲目等待。其 always mode 另有本地退避策略；本系统没有复制该模式，只对齐当前有界自动重试语义。
 - [RFC 9110 §10.2.3](https://www.rfc-editor.org/rfc/rfc9110.html#section-10.2.3) 说明该头表达客户端应等待多久，值可为秒数或 HTTP-date。这里不是把建议性等待误写成无条件 MUST 协议违规；缺陷是丢失已知恢复信息，导致可恢复请求过早失败。
-- 在既有 provider adapter/CoreError 边界保留经过白名单处理的重试元数据和请求身份；统一策略决定采用有界 provider 等待、向上交还或本地退避。等待继续接入现有取消树，避免为这一问题新建第二套重试链。
-- 增加秒数、日期、负值/非法值、过长建议、取消期间等待、不同 HTTP 状态和请求 ID 脱敏回归。request ID 丢失也削弱跨供应商排障能力，但本次没有验证 UI/日志里所有其他请求追踪来源。
+- 修复保持 provider adapter→`CoreError`→ModelAgent 的单一链路；request ID 丢失造成的跨供应商排障缺口已在重试诊断路径补齐。取消等待由原有 ModelAgent 回归覆盖，但完整 Kernel 停止终态和所有非 Reqwest HTTP 客户端不由本节测试代替。
 
 ### H-26：标准 PreToolUse 输出中的 deny/ask 被忽略，实际工具照常执行
 
@@ -2557,9 +2556,10 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-22 节单项命令 | 真实 DAG 子执行器及文件工具探针失败；wire 声明子目录，产出实际落到临时父目录 |
 | H-23 节单项命令 | 真实 rewind/恢复后探针失败：旧覆盖点 8 被新分支复用，旧 RED 摘要被选为包含新 BLUE 决策前缀的替代候选 |
 | H-24 provider error 回归 | `cargo test -p deepagent-models --features http reqwest_transport::tests:: --offline -- --nocapture`：JSON 和纯文本两种较长中文错误均 `parser_panicked=false`，回归通过 |
-| `cargo test -p deepagent-models --features http --offline`（H-24/H-85/H-86 修复后） | 单元测试 92 passed / 9 ignored，集成测试 1 passed / 1 ignored；0 failed |
-| H-25 节单项命令 | 真实回环 HTTP 指定等待 3000ms，455ms 后已重试并再次 429，模型循环失败；安全断言失败 |
-| `cargo test -p deepagent-app-core --features web --test audit_provider_retry --offline` | 常规入口 1 ignored，无失败；这是显式 opt-in 的 HTTP 故障探针，不代表限流恢复通过 |
+| `cargo test -p deepagent-models --features http --offline`（H-24/H-25/H-85/H-86 修复后） | 单元测试 94 passed / 9 ignored，集成测试 1 passed / 1 ignored；0 failed |
+| H-25 修复前探针 | 真实回环 HTTP 指定等待 3000ms，455ms 后已重试并再次 429，模型循环失败；安全断言失败 |
+| `cargo test -p deepagent-app-core --features web --test audit_provider_retry --offline -- --nocapture`（H-25 修复后） | 真实回环记录 `actual_retry_gap_ms=3018`，供应商恢复且 Agent 成功；1 passed / 0 failed，已是常规回归 |
+| `cargo test -p deepagent-models --features http reqwest_transport::tests:: --offline -- --nocapture`（H-25/H-29/H-85/H-86） | 真实 GET 429 元数据、Retry-After 秒数/日期、凭据脱敏、重定向及成功/错误正文取消/时限等 12 passed / 0 failed |
 | H-26 节单项命令 | 真实 Windows hook 进程的顶层 deny 正确拦截；标准嵌套 deny/ask 两组均执行工具且无审批，安全断言失败 |
 | `cargo test -p deepagent-runtime --lib tool_pipeline::tests --offline`（新增 H-26 后） | 11 passed / 2 ignored；H-16、H-26 已分别显式复现，未修生产行为 |
 | `cargo test -p deepagent-hooks --offline`（H-26 核查时） | 62 passed，无 ignored 或失败；原有 stdout 测试仅覆盖扁平格式等，未覆盖标准嵌套 PreToolUse 决策 |
