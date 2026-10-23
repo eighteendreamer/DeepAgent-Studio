@@ -22,7 +22,7 @@
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn，以及一个已被替代 turn 重复派生多个新 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择字段形状和 Thinking 组合限制、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态、Responses failed usage 丢失、空/重复 `call_id` 和空输入请求边界缺少校验均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144、H-145、H-146、H-147、H-148、H-149、H-150；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择字段形状和 Thinking 组合限制、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态、Responses failed usage 丢失、空/重复 `call_id`、空输入和 malformed function-call 输出边界缺少校验均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144、H-145、H-146、H-147、H-148、H-149、H-150、H-151；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、stdio/HTTP 响应无 transport 字节上限、图像工具结果未转为模型多模态内容、一次性测试连接在 initialize/tools/list 阶段无界等待（已修复并验证 30 秒总握手上限）、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认并修复 H-128、H-129；其他已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117、H-126 至 H-127；其他 hooks 和准备边界未完成 |
@@ -2736,6 +2736,28 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 回归需覆盖空消息、空白 instructions、仅工具输出被修复为空、正常 system-only、正常 user-only、Chat/Responses 分路以及取消/重试/恢复的空 turn；正确失败必须断言 transport 调用数为零。
 - 本轮只增加审计探针和报告，生产校验未修改。证据来自正式模型客户端和受控 transport，未向真实 DeepSeek 发送空请求，也未在完整桌面接纳链路中制造空用户回合；Harness/Codex 的空 turn 处理用于边界对照，不代表两者内部协议完全相同。
 
+### H-151：Responses malformed function call 被填充默认身份并继续提交
+
+**级别：高（P1，条件性错误工具派发/历史污染）；触发条件：provider 流中的 `function_call` 缺失必需的 `call_id` 或 `name`。** 正常 DeepSeek 响应会提供这些字段；本项证明 adapter 对 malformed output 的处理会制造一个看似合法的工具调用，不能把它扩大为正常 provider 输出的常态。
+
+#### 生产路径与动态证据
+
+- DeepSeek 官方 [Responses API](https://api-docs.deepseek.com/api/create-response) 的输出 schema 要求 `function_call` 携带 `call_id`、`name` 和 `arguments`；`call_id` 是后续 `function_call_output` 的关联身份，`name` 是实际工具名。缺失字段不是可用的默认工具调用。
+- 当前生产路径是 provider SSE → `ResponseAccumulator::record_output_item()` / `finish()` → `ModelClient::stream_response()` → `Response` → `ModelAgent` 的工具决策和原生 Surface。`record_output_item()` 对缺失 `call_id`/`id` 使用空字符串，对缺失 `name` 使用 `"tool"`；`finish()` 随后又从同一 builder 生成 `call_stream_0` 的 fallback，导致同一 malformed item 可出现两次，且至少有一项身份非法。
+- 新增 opt-in 正式客户端探针 `client::tests::audit_responses_reject_malformed_function_call_output`。它通过生产 `ModelClient`、真实 `ResponseAccumulator` 和受控 SSE fixture 发送不含 `call_id`、`id`、`name` 的 `function_call` item，再发送正常 `response.completed`。执行 `cargo test -p deepagent-models audit_responses_reject_malformed_function_call_output --offline -- --ignored --nocapture` 得到 **0 passed / 1 failed（预期）**：结果为 `Ok(Response)`，`output_items` 同时包含空 `call_id`/`tool` 和 `call_stream_0`/`tool` 两个 function call。没有调用公网。
+
+#### 成熟实现对照
+
+- **DeepSeek Harness** 的 `借鉴/deepseek-harness/packages/llm/llm-deepseek/src/translate.ts` 在解析工具块时要求 `id` 和 `name` 都是非空字符串，缺失即返回 `malformed('empty tool identity')`；它不会用默认工具名或本地生成的新身份掩盖 provider 输出错误。其共享 assembler 也以带身份的 tool-call block 作为后续 dispatch 的前置条件。
+- **Codex** 的 Responses/session 类型保留调用身份为可选只用于明确的非模型控制消息；正式模型 function call 与 output 的配对校验按身份进行，不把缺失模型字段转换成任意可执行工具。这里借鉴的是“解析失败先终止，不能生成可执行默认调用”的边界，不复制其内部 item 类型。
+
+#### 后果、修复方向与验证限制
+
+- 当前 malformed 响应会被上层当作正常 `CallTool` 候选。空 ID 可能无法匹配任何工具结果，`tool` 默认名可能被权限/路由层当成未知工具；同时 fallback 重复项会污染响应投影、事件和下一轮 repair，造成工具调用数、usage/终态以及模型历史不一致。探针没有执行真实工具，因此只确认错误 item 已进入决策输入，不声称已经产生文件或命令副作用。
+- 应在 `ResponseAccumulator` 的 provider response boundary 统一校验 item：function/custom tool call 必须有非空身份、非空名称和可解析的 arguments 字段；缺失或重复的 item 应返回结构化 malformed provider error，禁止写入 `Response`、ModelAgent Surface 或工具 pipeline。流式 delta 与 `output_item.done` 两条入口必须共享同一校验，不再各自生成 fallback ID；仅对明确的 max-token 截断沿用 H-18 的安全剔除规则。
+- 回归需覆盖缺失/空白 `call_id`、缺失/空白 `name`、只有 item `id`、重复 item.done、增量与 done 混合、合法无参调用、custom tool、取消/截断终态以及错误后的 session replay；断言 malformed response 不产生任何工具决策或持久化 output item。
+- 本轮只增加审计探针和报告，生产 parser 未修改。证据来自正式 adapter 和受控 SSE；未向真实 DeepSeek 发送 malformed response，也未执行实际工具或完整桌面 UI。H-18 专门记录 max-token 截断调用被提交，本项专门记录 provider 字段缺失时 parser 主动制造默认身份。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2752,6 +2774,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-148 Responses 空 `call_id` 显式探针 | `cargo test -p deepagent-models audit_responses_call_ids_are_validated_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 `ResponseRequest`/`ModelClient` 将空 function call/result ID 送达 transport，`transport_calls=1`；受控 transport，无公网 |
 | H-149 Responses 重复 `call_id` 显式探针 | `cargo test -p deepagent-models audit_responses_duplicate_call_ids_are_rejected_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；两个不同 function call 和结果共用一个 ID，正式 adapter 仍返回 `Ok`、`transport_calls=1`，wire 只剩第一组调用/结果；受控 transport，无公网 |
 | H-150 Responses 空 `input`/`instructions` 显式探针 | `cargo test -p deepagent-models audit_responses_require_input_or_instructions_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 将 `input=[]` 且无 instructions 的请求送达 transport，返回 `Ok`、`transport_calls=1`；受控 transport，无公网 |
+| H-151 Responses malformed `function_call` 显式探针 | `cargo test -p deepagent-models audit_responses_reject_malformed_function_call_output --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 将缺少 `call_id`/`name` 的 item 解析为两个 function call（空 ID/默认 `tool` 与 fallback `call_stream_0`），返回 `Ok(Response)`；受控 SSE，无公网 |
 | H-141 todo reminder 生命周期显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.47s；正式同一 session 连续 11 次独立用户回合、实际请求 11 次，`reminder_requests=[]`；仅临时内存数据库与离线 transport |
 | H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
 | H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |

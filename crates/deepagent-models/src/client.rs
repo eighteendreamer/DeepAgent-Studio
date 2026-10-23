@@ -1041,6 +1041,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: malformed Responses function calls must not be accepted"]
+    async fn audit_responses_reject_malformed_function_call_output() {
+        let client = client_with(vec![
+            r#"{"type":"response.output_item.done","item":{"type":"function_call","arguments":"{}"}}"#
+                .into(),
+            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+                .into(),
+        ]);
+
+        let result = client
+            .stream_response(ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("parse tool response")],
+            ))
+            .await;
+        eprintln!("Responses malformed function call audit: result={result:?}");
+        assert!(
+            result.is_err(),
+            "a function_call without call_id and name must be rejected as malformed"
+        );
+    }
+
     #[test]
     #[ignore = "audit reproducer: translate Responses defaults to Chat Completions shape"]
     fn audit_chat_tool_choice_translates_default_shape() {
