@@ -31,8 +31,9 @@
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
-| 画布工作流模型身份 | 新建 LLM/分类/提取/Agent V2 节点动态生成裸 `deepseek-chat` 默认值；正式 Canvas bridge 将该非空但不可解码的值解释为自动路由，受控 HTTP wire 实际发送 `other-text-model` 并成功返回 | 已确认 H-160；前三类字段进入该模型引用链，Agent V2 另受 H-40 字段契约漂移影响；本机 HTTP provider，无真实 Tauri 或公网请求 |
-| 画布工作流生成参数 | LLM 节点的 `llmTemperature` / `llmMaxTokens` 经 WorkflowAgent 完整进入 CanvasCompletionRequest，但 Canvas gateway 重建内部请求时丢失；正式 Chat wire 只有 model/messages/stream | 已确认 H-161；本机 HTTP provider 与生产 serializer；DeepSeek 思考模式下 temperature 本就不生效，但 max_tokens 仍有效，且其他兼容 provider/非思考模式也受影响 |
+| 画布工作流模型身份 | 新建 LLM/分类/提取/Agent V2 节点动态生成裸 `deepseek-chat` 默认值；正式 Canvas bridge 将该非空但不可解码的值解释为自动路由，受控 HTTP wire 实际发送 `other-text-model` 并成功返回 | 已确认 H-160 的前端默认与 gateway 缺口；H-162 证明当前四类专业节点会在更早阶段失败，故尚未证明它们已通过完整工作流把数据发往错误供应商；本机 HTTP provider，无真实 Tauri 或公网请求 |
+| 画布工作流生成参数 | LLM 节点的 `llmTemperature` / `llmMaxTokens` 经 WorkflowAgent 完整进入 CanvasCompletionRequest，但 Canvas gateway 重建内部请求时丢失；正式 Chat wire 只有 model/messages/stream | 已确认 H-161 的 bridge/serializer 缺口；H-162 当前先阻断专业 LLM 节点，创作 text 节点没有这两个 UI 字段；DeepSeek 思考模式下 temperature 本就不生效，但 max_tokens 仍有效 |
+| 专业工作流 AI 节点执行能力 | 前端标为 enabled 的 LLM/Agent V2/问题分类/参数提取节点经正式图编译与 WorkflowAgent 执行：前两者被 Canvas prompt contract 拒绝，后两者没有 executor；四组 provider 调用数均为零 | 已确认 H-162；本机完整 WorkflowAgent→Canvas gateway 路径，无 Tauri/公网；同时收窄 H-160/H-161 的当前可触发范围 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
@@ -2952,28 +2953,28 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 如果 DeepSeek 严格拒绝非法工具声明，同一工具进入可见快照后，即使用户只发普通文本，整轮也可能在采样前失败；deferred MCP 工具尚未发布时，故障可能在发现后的下一轮才出现。若 provider 宽松接收，模型稍后真正调用该工具时才会由 `validate_invocation()` 报“invalid schema”，造成目录可见但永远不可执行。具体服务端拒绝、忽略、计费和错误码均未经真实 API 验证。
 - 根因修复应落在统一能力快照发布边界：MCP 协议反序列化不能把缺失必需 schema 静默等价成 `null`；`McpRegistry` 或统一 `ToolRegistry::register/replace` 应在能力可见前要求对象根并编译 schema，错误需携带 server/tool 来源且只隔离该能力，不能让一个坏工具永久阻断所有普通对话；最终 provider request validation 再做 defense-in-depth。不要仅在调用时保留现有 `validate_invocation()`，也不要为 MCP、WASM、插件分别复制校验。回归应覆盖初始/动态刷新、deferred discovery、replace、Chat/Responses 两路、坏工具隔离、合法复杂 schema 和 transport 调用数为零。
 
-### H-160：画布工作流把非法显式模型引用解释为自动路由，新节点可静默改用另一供应商
+### H-160：Canvas gateway 把非法显式模型引用解释为自动路由，修通专业节点后可静默改用另一供应商
 
-**级别：高（P1，模型/供应商身份与数据目的地错误）；触发条件：新建 LLM、问题分类或参数提取节点，保留默认 `deepseek-chat`，并至少配置一个可服务 text 场景的候选模型。** `agentV2Model` 也生成相同非法默认值，但当前执行器未读取该字段，属于 H-40 的跨语言字段漂移，不能把本项的动态 text bridge 结果直接外推为 Agent V2 的实际路径。
+**级别：高（P1，潜在模型/供应商身份与数据目的地错误）；触发条件：调用 Canvas text bridge 时传入非空裸模型名，并至少配置一个可服务 text 场景的候选模型。** 前端四类专业 AI 节点都生成同样的非法默认值，但 H-162 进一步证明它们当前在更早的 executor/prompt-contract 阶段失败；因此本项是已动态确认的 gateway 缺口和修通节点后的直接风险，不能再声称现版本新建专业节点已经通过完整工作流向错误供应商发出请求。
 
 #### 官方契约、生产路径与动态复现
 
 - 截至本轮查证，DeepSeek [Responses API 参数页](https://api-docs.deepseek.com/zh-cn/api/create-response/)把 `model` 的可能值限定为 `deepseek-flash` / `deepseek-v4-pro`；[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)给出的调用和兼容表也只列这两个值；[获取模型列表](https://api-docs.deepseek.com/zh-cn/api/list-models/)示例返回的 ID 同样只有这两项。因此 `deepseek-chat` 既不是当前 Responses 文档中的合法模型 ID，也不携带本系统画布要求的 provider 身份。这里不把该结论外推到旧版 API 或第三方兼容端点。
 - 前端 `nodeRegistry.ts` 的 `llmModel`、`classifierModel`、`extractorModel`、`agentV2Model` 和 `nodeSchemas.ts::CHAT_MODEL` 都写死 `deepseek-chat`。新增 opt-in Node 探针真实加载、转译并调用生产 `createDefaultNodeData()` / `getNodeDefinition()`，观察到四种新节点的运行默认和 schema 默认全是该裸值；要求模型引用为空（明确自动选择）或满足 `providerId::modelId` 的断言失败。首次探针把节点 kind 误写为 `classifier`，只得到 fixture 错误；改成生产注册名 `question-classifier` 后才得到上述产品行为，未把第一次失败算作缺陷证据。
 - 正式前端契约 `MODEL_REF_SEPARATOR="::"`，`scenarioModelOptions()` 只为已配置模型生成 `providerId::modelId`；但只要 `current` 不在目录内，它就把裸值原样插回选项，标签仍显示 `deepseek-chat`。这让新默认和历史遗留值在选择器中看起来仍可选，没有“失效/待迁移”状态。
-- 后端 `WorkflowAgent::execute_llm()` 确实从前三类字段得到非空 `model_ref`；正式 AppCore 工作流同时挂载 run-level client 与 `CanvasModelGateway`，而非空引用优先走 canvas bridge。`decode_model_ref()` 对任何没有 `::` 的值返回 `None`，`CanvasModelGateway::complete()` 却把这个结果与真正的空引用合并，都调用 `execute(..., None)`；后者从全局 text 场景候选中选模型。显式 `execute_on(provider, model)` 的精确选择边界因此被绕过。
+- `WorkflowAgent::execute_llm()` 可从 LLM/分类/提取字段得到非空 `model_ref`，而正式 AppCore 工作流挂载 `CanvasModelGateway`。但 H-162 证明分类/提取当前没有 executor，LLM 又在 `assemble_system_prompt()` 先被拒绝；这里的静态字段流不能冒充完整可达性。网关本身仍存在确定缺口：`decode_model_ref()` 对任何没有 `::` 的值返回 `None`，`CanvasModelGateway::complete()` 把它与真正空引用合并，都调用 `execute(..., None)`，后者从全局 text 候选中选模型，绕过显式 `execute_on(provider, model)` 边界。
 - 新增默认忽略的 Rust 探针 `canvas_model_gateway::tests::audit_invalid_explicit_model_ref_is_rejected_before_provider_transport`，只配置一个名为 `other-text-model` 的受控非 DeepSeek text 候选，通过正式 provider persistence、`CanvasModelBridge::complete()`、候选解析、OpenAI-compatible serializer 和本机 HTTP listener 发送 `model_ref="deepseek-chat"`。执行 `cargo test -p deepagent-app-core --lib audit_invalid_explicit_model_ref_is_rejected_before_provider_transport --offline -- --ignored --nocapture`：**0 passed / 1 failed（预期）**；日志为 `decoded=None`、`wire_model=Some("other-text-model")`，正式调用返回成功且 provenance 的实际 `model_id` 也是 `other-text-model`。断言要求非法非空身份在网络前失败，所以红色。没有连接真实供应商，也没有证明真实费用或数据泄露已经发生。
 
 #### 成熟实现对照、影响与修复方向
 
 - **DeepSeek Harness** 的 workflow child options 从入口到 subagent 使用结构化 `{ provider, model }`，而 `llm-pi-ai` 的 `PiAiAdapter::modelOf()` 对同一配置快照解析精确 route/model；模型不存在时在 provider I/O 前抛出稳定 `UNKNOWN_MODEL`，测试同时覆盖未知 provider 的 `NO_ADAPTER`。它没有把非空但无法解析的身份重新解释成默认路由，适合作为本项主要对照。
 - **Codex** 也把 `model_provider_id` 与 model slug 分开保存；例如恢复子 Agent 的 provider 时从 `model_providers` 精确查找，缺失就返回 `Model provider ... not found`。本轮没有证明 Codex 对所有任意 model slug 都做目录拒绝，所以只把它作为“供应商身份不与自动选择混用”的有限对照，不宣称是完整现成修复。
-- 触发后，用户界面显示/保存的是 `deepseek-chat`，实际请求却可发送给任一 text 候选；模型能力、上下文、价格、授权凭据和数据接收方都可能改变。若没有候选则表现为 `NoCandidateModel`；若候选可用则运行可成功，错误更隐蔽。`WorkflowAgent` 的结果同时保存实际 `providerId/modelId`，但其 `model` 字段在原引用非空时仍写回旧 `model_ref`，消费方若只看 `model` 会继续得到错误身份。真实供应商的请求、计费和数据处理未验证。
+- 对直接 bridge 调用或 H-162 修复后的专业节点，用户界面显示/保存的是 `deepseek-chat`，实际请求却可发送给任一 text 候选；模型能力、上下文、价格、授权凭据和数据接收方都可能改变。当前完整专业工作流的已确认结果是提前失败而不是误发；若只修 executor 而不同时修本项，才会把潜在身份错误变成可达生产行为。`WorkflowAgent` 的结果还会在原引用非空时把 `model` 写回旧引用，即使 `providerId/modelId` 是实际值。真实供应商请求、计费和数据处理未验证。
 - 根因修复应建立单一类型化选择：`Auto` 只能由空值或显式枚举表达，`Explicit { provider_id, model_id }` 必须完整解码并在本轮不可变 provider snapshot 中精确存在；非空非法/未知值在 transport 前失败并指出节点及原值。新节点默认应改为明确 Auto，不能把某个易过期的供应商模型 ID 当成跨用户默认；历史裸值需要一次版本化迁移或明确失效提示，不能由 `scenarioModelOptions()` 伪装成合法选项。画布 text/image/video/audio/embedding 共用同一解析器，避免只修 `complete()`；H-40 的字段统一需同步处理 Agent V2。验收应覆盖空值自动路由、合法精确引用、裸值/畸形/未知 provider/未知 model、目录刷新、多个供应商、旧图迁移、真实 workflow outcome provenance 和 transport 调用数。
 
 ### H-161：画布 LLM 节点的温度和输出上限在 provider adapter 前被丢弃
 
-**级别：高（P1，显式输出/成本边界失效）；触发条件：专业工作流 LLM 节点设置 `llmTemperature` 或 `llmMaxTokens`，并通过已配置的 Canvas provider 执行。** 默认新节点也带 `temperature=0.7`、`maxTokens=4096`，因此参数丢失不是只存在于手工编辑的边缘值；但 DeepSeek 当前默认开启思考模式，官方明确 temperature 在该模式下不生效，所以对 DeepSeek 默认路径的直接高影响项是输出上限。
+**级别：高（P1，修通节点后的显式输出/成本边界失效）；触发条件：携带 `temperature/max_tokens` 的 completion request 进入已配置 Canvas provider。** 默认专业 LLM 节点也带 `temperature=0.7`、`maxTokens=4096`，但 H-162 证明它当前先在 prompt contract 失败；所以本项动态证明 bridge 到 wire 的参数缺口，不把现版本完整专业节点描述为已经发生超额生成。DeepSeek 当前默认开启思考模式且 temperature 在该模式下不生效，真正的直接高影响项仍是输出上限。
 
 #### 官方契约、生产路径与动态复现
 
@@ -2988,6 +2989,25 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - **Codex** 没有与本画布一一对应的逐节点温度/上限 UI，本轮不以其普通 turn 配置强行类比，也没有找到可证明其所有派生模型调用都保留这两个字段的单一证据。可借鉴的仍是本系统 H-54 已指出的统一有效请求配置原则，而不是声称 Codex 已完整解决本画布契约。
 - 对 DeepSeek 默认思考路径，用户配置 4096 上限却可能按 provider 默认最多 64K/128K 生成；这会扩大最坏延迟、token 消耗和节点输出体积，并使用户依赖短 JSON/分类结果的工作流得到意外长内容。实际回答可以自然提前结束，故不把每次运行写成必然超额。对关闭思考或其他兼容 provider，temperature 的丢失还会改变用户预期的确定性/随机性。Anthropic 固定 4096 则会反向截断用户显式请求的更大上限。
 - 根因修复应把生成控制加入现有 `CanvasModelRequest`（或统一的 typed generation options），由每个协议 adapter 显式映射、验证或拒绝；不能在 `complete()` 为 DeepSeek 单独拼 JSON。有效 model capability 应限制上限，明确区分“未指定”和显式值；不支持某字段的协议应给出可诊断语义，不能静默丢弃。预算/usage/截断恢复要读取同一有效值。验收覆盖 OpenAI/DeepSeek、Anthropic、Gemini 的实际 body，边界值、思考模式提示、默认/显式优先级、候选 fallback 和节点运行 provenance。
+
+### H-162：前端标为可用的四类专业 AI 节点没有可达的正式模型执行链
+
+**级别：阻断（P0，核心工作流能力不可用）；范围：专业画布中的 LLM、Agent V2、问题分类和参数提取节点。** 这不是 H-40 已记录的若干配置字段被删/错读：即使直接构造满足 Rust 图契约的节点配置并使用合法 `providerId::modelId`，四类节点仍在 provider transport 前失败。它也改变 H-160/H-161 的现状判断：当前完整专业工作流会先失败，不能把 gateway 级红色探针写成这些节点已经发生误路由或超额生成。
+
+#### 生产契约与完整链复现
+
+- 前端 `nodeRegistry.ts` 把四类节点全部声明为 `availability: "enabled"`、`executor: "model"`，配置 schema 也允许用户选择模型并填写任务；`graph.rs::output_contract()` 同时接受四种 kind 并声明输出，因此图可正常编译。这两层共同向用户和调用方表达“可执行”，不是灰置的占位能力。
+- 实际 dispatcher `WorkflowAgent::execute_node_inline()` 只把 `llm` / `agent-v2` 送入 `execute_llm()`，完全没有 `question-classifier` / `parameter-extractor` 分支；仓库现有非忽略测试 `registered_kinds_without_an_executor_report_unsupported_node` 甚至把后二者列为预期 `UnsupportedNode`。这证明声明 registry 与执行能力 registry 已分裂。
+- `llm` / `agent-v2` 虽进入 `execute_llm()`，却始终把原 node kind 写入 `CanvasCompletionRequest.node_kind`。`CanvasModelGateway::complete()` 随后调用 `assemble_system_prompt()`；该函数把非空 kind 当作创作节点 profile 查询，而 `canvas_node_contracts()` 只注册创作节点，没有 `llm` 或 `agent-v2`，于是分别返回 `UnsupportedNode: canvas node ... is not registered`。代码注释说专业节点应以空 kind 保留自己的 system prompt，但生产调用方没有建立这个边界。Agent V2 还使用 `agentV2Model/Task/SystemPrompt`，`execute_llm()` 读取的却是 `llmModel/model`、`agentTask/prompt` 和少量 system 字段，字段契约也没有闭合。
+- 新增默认忽略的完整链探针 `canvas_model_gateway::tests::audit_enabled_professional_ai_nodes_reach_the_canvas_provider`：每组使用正式图编译、WorkflowAgent 两个 step、真实 `CanvasModelGateway`、内存 provider 持久化、合法精确模型引用及本机 HTTP listener。执行 `cargo test -p deepagent-app-core --lib audit_enabled_professional_ai_nodes_reach_the_canvas_provider --offline -- --ignored --nocapture`：**0 passed / 1 failed（预期）**。收集完四组再断言，实际为：LLM/Agent V2 均报 gateway `UnsupportedNode`，问题分类/参数提取均报 kernel `UnsupportedNode`，四组 `provider_called=false`。没有公网供应商、Tauri WebView 或真实费用。
+
+#### 成熟实现对照、后果与修复方向
+
+- **DeepSeek Harness** 的程序式 workflow 只在脚本实际执行 `agent()` 时创建 child；`workflow-ptc::readAgentOptions()` 在执行边界解析并拒绝未知/不支持选项，随后通过已有 adapter registry 解析可用模型。它没有与本画布一一对应的四类 UI 节点，但“声明可运行的 agent 调用必须有真实执行路径，未知能力在入口明确拒绝”可作为主要对照。
+- **Codex** 没有本系统这种专业画布节点目录，本轮未找到可诚实声称为现成分类/提取节点的实现，不能强行类比。可对照的是其 thread/turn/model 调用都收敛到同一核心模型 client，而不是由 UI 单独声明一套运行时没有的能力。本项修复仍应复用现有 AgentKernel、Canvas bridge、provider registry、usage 和事件链，不能为四个节点再造第二套运行中心。
+- 已确认后果是四类专业 AI 节点无法完成任何模型请求：用户配置合法模型也只会得到运行失败，分类与提取不可能产生其 schema 承诺的结构化输出，Agent V2 也不具备名称所暗示的工具循环/记忆行为。当前四组 transport 为零，所以不产生本探针所测调用的 provider token 消耗；不能把失败夸大成真实扣费或数据外传。反过来，H-160/H-161 目前是被此阻断缺口遮蔽的后续风险，修复顺序必须联动。
+- 根因修复应先统一“节点声明、配置 schema、可执行 capability、prompt policy、输出 contract”这一份版本化事实：前端 enabled 只能来自后端可执行能力快照，或在实现前明确标为 unsupported；专业一次性 LLM 可复用 Canvas text bridge，但应显式传 `Professional` prompt policy，而不是用空字符串暗号。分类/提取需要在同一 bridge 上组装明确 prompt、校验结构化结果并映射既有 output contract。Agent V2 若承诺工具与记忆，应复用 ModelAgent/ToolPipeline/审批/取消链；若当前仅一轮 completion，就不应冒充 Agent V2。修复必须同时处理 H-160 的模型身份、H-161 的生成参数和后续 usage 归集，避免“修通即暴露”级联缺陷。
+- 验收应从生产 `createDefaultNodeData()` 和 schema 生成四类配置，经 `runWorkflow`/Tauri DTO、图编译、Kernel、真实 bridge 到受控 provider，逐项断言：provider 调用次数、精确模型、prompt/参数、结构化输出、节点事件、终态、usage；Agent V2 另需工具调用、审批、取消和记忆边界。无 executor 的节点必须在添加到画布前可见地禁用，而不是运行时才报错。
 
 ### 后续独立核查：DeepSeek 自动前缀缓存与 Responses usage
 
@@ -3035,6 +3055,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-161 工作流节点到 bridge 参数对照 | `cargo test -p deepagent-runtime --lib llm_node_with_explicit_canvas_model_uses_the_bridge --offline -- --nocapture`：1 passed；正式节点 config 的 temperature=0.2/maxTokens=17 原样进入 CanvasCompletionRequest；第一次误加 `--exact` 只得到 0 tests，不算产品验证 |
 | H-161 Canvas provider wire 探针 | `cargo test -p deepagent-app-core --lib audit_canvas_completion_honors_node_temperature_and_output_limit --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；精确 provider/model 请求成功，但本机 HTTP 捕获 body 不含 `temperature` / `max_tokens`；无公网供应商 |
 | H-161 隔离与相关回归 | `cargo test -p deepagent-app-core --lib canvas_model_gateway::tests --offline`：41 passed / 2 ignored；`cargo test -p deepagent-runtime --lib workflow::agent::tests --offline`：28 passed；`cargo fmt --all -- --check` 与限定文件 `git diff --check` 通过。未运行 workspace 全量、Clippy、桌面 build/手动 UI、真实 Tauri 或公网供应商；默认忽略的 H-160/H-161 均未修复 |
+| H-162 专业 AI 节点完整链探针 | `cargo test -p deepagent-app-core --lib audit_enabled_professional_ai_nodes_reach_the_canvas_provider --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式图编译与 WorkflowAgent 下，LLM/Agent V2 在 Canvas prompt contract 报 UnsupportedNode，问题分类/参数提取在 kernel dispatcher 报 UnsupportedNode，四组本机 provider 调用数均为 0 |
+| H-162 隔离与相关回归 | `cargo test -p deepagent-runtime --lib registered_kinds_without_an_executor_report_unsupported_node --offline -- --nocapture`：1 passed，确认后二者是当前显式预期；`cargo test -p deepagent-app-core --lib canvas_model_gateway::tests --offline`：41 passed / 3 ignored；`cargo fmt --all -- --check` 与限定文件 `git diff --check` 通过。未运行 workspace 全量、Clippy、桌面 build/手动 UI 或公网供应商；缺陷未修复 |
 | DeepSeek reasoning serializer 及 prompt cache 前缀复核 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed；`git diff --check -- docs/system-harness-audit-2026-10-21.md`：通过。本地同会话双轮 wire 的 input 前缀、稳定 instructions 与工具顺序断言通过；不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
@@ -3528,6 +3550,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
 | 工作流模型身份与自动路由边界 | H-160 | 现有 provider/model snapshot 上统一 `Auto` 与精确身份类型；参考 DeepSeek Harness 结构化 pair 和 UNKNOWN_MODEL/NO_ADAPTER，Codex 的独立 provider 身份 | 新节点不写死过期模型；非空非法/未知身份不发网络；空值才自动选择；多供应商、旧图迁移和 outcome provenance 显示实际同一身份 |
 | 工作流模型生成参数贯通 | H-161 | 在现有 CanvasModelRequest 汇合 typed generation options，各协议 adapter 显式映射/拒绝；参考 DeepSeek Harness 的 request→model→connection 优先级 | 节点显式 temperature/output cap 与有效预算及实际 wire 一致；未指定保留 provider/model 默认；DeepSeek/Anthropic/Gemini、fallback 和截断分别验证 |
+| 专业工作流 AI 节点能力闭环 | H-162 | 前端节点目录由后端版本化 executable capability 投影；一次性 LLM/分类/提取复用 Canvas text bridge，Agent V2 复用 ModelAgent/ToolPipeline/审批/取消，不新增运行中心 | enabled 节点从生产前端配置到 provider、结构化输出、事件、终态和 usage 全链可用；未实现能力在添加前明确禁用；修通时同时关闭 H-160/H-161 后续风险 |
 | 工作流节点事件与规范回放 | H-120 | WorkflowAgent 的 publisher 接回既有 Kernel 持久化 sink；参考现有 ModelAgent 通道与 ArtCraft 保存媒体任务身份，复用 run_events | 各节点实时事件与重开补读一致，失败/取消/进度也可重放；保留媒体来源和任务身份，不靠图文档偶然自动保存代替运行日志 |
 | 媒体任务身份与节点投影/续跑 | H-121、H-122 | 既有节点事件携带的运行中身份统一投影，后端以 provider/account/task 和输入身份决定新生成或恢复；参考 ArtCraft 的提交与 pending task/provider_job_id 分离，DAG 输入失效为本地设计 | 收到 Running 即可安全保留续跑身份；有效续跑不重复 submit，修改输入的新生成实际提交新请求；旧 attempt 不覆盖新任务，已完成资产保留来源 |
 | 桌面运行事件与订阅生命周期 | H-41、H-43、H-134 | 现有 run_id、完成 payload、运行 owner、订阅就绪屏障和持久化补读统一；参考 Codex thread/turn/item identity 与 ArtCraft 异步 listener owner | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能改写节点或清理新 run |

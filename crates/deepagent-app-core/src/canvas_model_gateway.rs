@@ -3761,6 +3761,88 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: every enabled professional AI node must have a working backend path"]
+    async fn audit_enabled_professional_ai_nodes_reach_the_canvas_provider() {
+        use deepagent_runtime::agent::{Agent, AgentDecision};
+
+        let cases = [
+            (
+                "llm",
+                vec![
+                    ("llmModel", Value::String("MODEL_REF".to_string())),
+                    ("llmPrompt", Value::String("classify this".to_string())),
+                ],
+            ),
+            (
+                "agent-v2",
+                vec![
+                    ("agentV2Model", Value::String("MODEL_REF".to_string())),
+                    ("agentV2Task", Value::String("complete this".to_string())),
+                ],
+            ),
+            (
+                "question-classifier",
+                vec![
+                    ("classifierModel", Value::String("MODEL_REF".to_string())),
+                    (
+                        "classifierInput",
+                        Value::String("classify this".to_string()),
+                    ),
+                    (
+                        "classifierClasses",
+                        json!([{ "name": "one", "description": "first" }]),
+                    ),
+                ],
+            ),
+            (
+                "parameter-extractor",
+                vec![
+                    ("extractorModel", Value::String("MODEL_REF".to_string())),
+                    ("extractorInput", Value::String("name=Eighteen".to_string())),
+                    (
+                        "extractorParams",
+                        json!([{ "name": "name", "type": "string", "required": true }]),
+                    ),
+                ],
+            ),
+        ];
+        let mut outcomes = Vec::new();
+        for (kind, entries) in cases {
+            let (base_url, captured_body) = spawn_single_chat_responder("answer");
+            let (gateway, provider_id) = local_text_gateway(base_url, "deepseek-flash");
+            let model_ref = format!("{provider_id}::deepseek-flash");
+            let mut config = serde_json::Map::new();
+            for (key, value) in entries {
+                config.insert(
+                    key.to_string(),
+                    if value.as_str() == Some("MODEL_REF") {
+                        Value::String(model_ref.clone())
+                    } else {
+                        value
+                    },
+                );
+            }
+            let mut agent = workflow_agent_with_canvas_node(kind, config, gateway);
+            assert!(matches!(
+                agent.think(0, &[]).await.expect("start node"),
+                AgentDecision::Continue
+            ));
+            let result = agent.think(1, &[]).await;
+            let provider_called = captured_body.lock().expect("lock").is_some();
+            outcomes.push((kind, result.map(|_| ()), provider_called));
+        }
+        eprintln!("professional AI node audit: {outcomes:?}");
+
+        for (kind, result, provider_called) in outcomes {
+            assert!(result.is_ok(), "enabled node {kind} failed: {result:?}");
+            assert!(
+                provider_called,
+                "enabled node {kind} completed without calling its configured provider"
+            );
+        }
+    }
+
     #[test]
     fn gateway_calls_openai_compatible_endpoints_end_to_end() {
         use std::io::{Read, Write};
@@ -4703,6 +4785,61 @@ mod tests {
             })
             .expect("provider");
         (CanvasModelGateway::new(providers), created.id)
+    }
+
+    fn workflow_agent_with_canvas_node(
+        kind: &str,
+        config: serde_json::Map<String, Value>,
+        gateway: CanvasModelGateway,
+    ) -> deepagent_runtime::workflow::WorkflowAgent {
+        use deepagent_runtime::workflow::{
+            compile, NodeEventPublisher, WorkflowAgent, WorkflowDefinition, WorkflowEdgeSpec,
+            WorkflowNodeSpec,
+        };
+
+        let definition = WorkflowDefinition {
+            version: 1,
+            nodes: vec![
+                WorkflowNodeSpec {
+                    id: "start".to_string(),
+                    kind: "start".to_string(),
+                    config: serde_json::Map::new(),
+                },
+                WorkflowNodeSpec {
+                    id: "model".to_string(),
+                    kind: kind.to_string(),
+                    config,
+                },
+                WorkflowNodeSpec {
+                    id: "end".to_string(),
+                    kind: "end".to_string(),
+                    config: serde_json::Map::new(),
+                },
+            ],
+            edges: vec![
+                WorkflowEdgeSpec {
+                    id: "start-model".to_string(),
+                    source: "start".to_string(),
+                    target: "model".to_string(),
+                    source_handle: None,
+                    target_handle: None,
+                },
+                WorkflowEdgeSpec {
+                    id: "model-end".to_string(),
+                    source: "model".to_string(),
+                    target: "end".to_string(),
+                    source_handle: (kind == "question-classifier").then(|| "class-0".to_string()),
+                    target_handle: None,
+                },
+            ],
+        };
+        WorkflowAgent::new(
+            compile(definition).expect("valid audit workflow"),
+            serde_json::Map::new(),
+            None,
+            NodeEventPublisher::default(),
+        )
+        .with_canvas_bridge(Arc::new(gateway))
     }
 
     /// True once the headers plus the declared body length have been received.
