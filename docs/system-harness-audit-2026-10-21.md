@@ -24,7 +24,7 @@
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
-| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130；记忆现有回归通过，其他图执行及重启边界未完成 |
+| CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录 | 已确认 H-51；服务/工具级确定性交错，完整双会话桌面动态验证未执行 |
@@ -2201,7 +2201,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 影响与边界：用户停止正在排队/生成的视频，再按现有入口重跑，序列化 config 不带恢复 ID；按当前 `generate_video` 分支会再次 submit，旧云端任务可能仍执行，带来重复任务/费用风险。已保存成功输出的 ID 对照正常；本探针不证明云端远程取消、真实重复请求、实际收费、所有画布持久化或账号切换行为。
 - 修复实现：生产 executor 增加窄映射，只允许 `video-gen` 节点把非空顶层 `job_id` 写成现有 `videoTaskId`；不把后端任意 `updates` 展开进 Zustand。取消时现有状态复位只改 status，不清除此任务身份，因此下一次 serialize 继续携带相同 ID。完成事件仍从 outputs 投影同一字段，兼容旧事件和已有成功路径。
 - 修复后动态验证：原 Rust/TS 跨层探针显式重跑为 **1 passed**，输出 `progress stored=job/resumed=job`，Completed 对照也为同一 ID；生产 Rust publisher、真实 workflowExecutor/creativeStore/serializer 均参与，仅 Tauri event/invoke 用内存桥。桌面默认 `pnpm test:workflow` 新增生产 executor 回归后为 **78 passed**，实际执行 running event→停止→再次提交并断言第二份 workflow config 保留 provider ID。
-- 影响及限制：完成前停止再运行不再因前端丢失 ID而重复 submit；本项没有解决已完成任务修改输入后仍错误续跑（H-122），也没有验证节点图重开、旧 attempt 迟到事件、账号切换、真实 WebView 或云端计费。provider/model/account 归属仍需和 H-122 一并收敛。
+- 影响及限制：完成前停止再运行不再因前端丢失 ID而重复 submit；本项没有解决已完成任务修改输入后仍错误续跑（H-122），也没有验证节点图重开、账号切换、真实 WebView 或云端计费。旧 attempt 迟到事件已由 H-134 单独复现；provider/model/account 归属仍需和 H-122 一并收敛。
 
 ### H-122：视频生成成功后修改提示词仍隐式续跑旧任务，新提示词没有发给供应商却再次成功
 
@@ -2355,6 +2355,16 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 成熟实现对照：DeepSeek Harness `llm-pi-ai/src/stream.ts` 在 pi-ai `error` event 路径先发 usage，再发 error finish，`tests/convert.spec.ts` 覆盖 usage(1,0) 的错误终态；这是另一 provider adapter 的统一流事件生命周期模式，不声称其处理 DeepSeek Responses wire。Codex Responses adapter 将 `response.failed` 映射为独立 API error，而其 completed/incomplete 分支读取 `resp.usage`；本轮未找到 Codex failed event 将 usage 纳入错误结果的直接证据。
 - 影响与边界：当失败响应确实包含非空 usage，当前运行事件和累计运行 token 统计会少记这部分 provider 报告值；不据此推断所有失败请求都会计费。修复需在既有错误返回边界保留可选 provider usage，并由运行层统一记账，同时维持失败分类、取消和单一终态语义。
 
+### H-134：被替代的画布 run 迟到节点事件可覆盖当前状态
+
+**级别：高（P1，工作流结果与任务身份错误）；触发条件：同一画布运行尚未完成时再次调用 `runWorkflow()`，且旧 run 的异步 Tauri 监听注册晚于新 run 完成。** 新 run 的节点状态已经更新后，旧 run 的合法事件仍可能覆盖它。
+
+- 生产路径：`runWorkflow()` 遇到已有 `_abortController` 时只调用前端 `abort()`，没有按旧 `_currentRunId` 调用 `cancel_run`。`runBackendWorkflow()` 在 `start_workflow` ACK 后才注册 `chat://event` 与 `session://completed`；`listen()` Promise 尚未完成时，abort cleanup 拿不到对应 unlisten。Promise 随后完成仍无条件把旧 listener 写入模块级 `_eventUnlisten` / `_completionUnlisten`。节点回调只验证事件 run_id 等于它闭包中自己的 `ack.run_id`，没有再验证这个 run 仍是当前 owner，所以旧 run 的事件仍会通过过滤并写入共享节点 store。`session://completed` 对 run_id 不作过滤的问题另见 H-41。
+- 动态复现：显式命令 `$env:RUN_HARNESS_AUDIT='1'; pnpm exec node --test --test-name-pattern='a superseded workflow attempt' scripts/audit-workflow-isolation.test.cjs`。探针延迟第一次运行的两条 `listen()` Promise，启动第二次运行并投递其 Running 事件，再放行第一次注册并投递旧 run 的 Completed 事件。实际输出 `staleAttemptOverwroteCurrent=true, cancelRequestsOnSupersede=0`，对应断言 **0 passed / 1 failed（预期暴露缺陷）**。它加载生产 `workflowExecutor.ts`，只替换 Tauri/store 边界；没有启动真实 Kernel、供应商或媒体任务。
+- 成熟实现对照：Codex `app-server-protocol/src/protocol/v2/item.rs` 的 `ItemStartedNotification` / `ItemCompletedNotification` 同时带 `thread_id`、`turn_id` 和 item；`turn.rs` 的开始/完成通知也带 `thread_id` 与 turn。可借鉴在 item 与 turn 两级按 owner identity 归属事件。ArtCraft `frontend/libs/tauri-events/src/lib/events/functional/VideoGenerationCompleteEvent.ts` 将异步 `listen()` Promise 保存在 hook 所有者内，并在组件提前卸载后解除迟到注册的监听；这是 listener 生命周期模式，不负责同一组件内的新旧任务仲裁。
+- 已直接证明：新 run 的节点状态从 Running 被旧 run 的 Completed 改写；重跑路径没有调用 `cancel_run`。`applyNodeOutputs()` 和 `applyNodeEventIdentity()` 也在同一个未按当前 owner 隔离的回调内更新结果及媒体身份字段，但本探针没有单独断言这些字段被旧输出覆盖；没有运行后端任务，不能断言供应商仍在后台生成或产生重复费用。
+- 修复方向：将 controller、run_id、完成状态和两条 unlisten Promise 收进每次运行自己的 owner 对象；开始替代 run 前以旧 run_id 取消旧内核运行；每次异步注册完成时若 owner 已失效就立即 unlisten；节点和完成回调必须同时匹配当前 owner 与事件 run_id，清理只允许释放本 owner 的资源。该边界与 H-41 的外部完成串话、H-43 的订阅就绪竞态独立。本轮只增审计探针和文档，没有改生产行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2366,6 +2376,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-131 活跃模型流固定总期限显式探针 | `cargo test -p deepagent-models --features http reqwest_transport::tests::audit_active_provider_stream_is_not_cut_off_by_total_deadline --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；loopback fixture 每 50ms 发 progress，正式 transport 收到 4 个事件后于 `[DONE]` 前返回总时限错误。`cargo test -p deepagent-runtime audit_partial_response_is_streamed_but_not_committed_after_total_deadline --offline -- --ignored --nocapture`：1 passed；ModelAgent 对三次 deadline failure 都发出 partial delta，最终失败且不提交 assistant item 到 history。均无公网或真实 DeepSeek 请求 |
 | H-132 Chat Completions 内容过滤和 usage 显式探针 | `cargo test -p deepagent-models audit_chat_content_filter_preserves_typed_finish_reason_and_usage --offline -- --ignored --nocapture`：预期 0 passed / 1 failed；正式 `ModelClient::stream_response()` Chat 路由收到无内容 `content_filter` + 9 prompt tokens usage 后，在 finish reason 映射处返回 provider error。`cargo test -p deepagent-models chat_completions::tests --offline`：9 passed；`cargo fmt --all -- --check`、`git diff --check` 通过。MockTransport，无公网 |
 | H-133 Responses failed usage 显式探针 | `cargo test -p deepagent-models audit_failed_responses_terminal_emits_included_usage --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 ModelClient 返回 provider error，但 observer 未收到该终态中 9 input、2 output、4 cached、1 reasoning usage。`cargo test -p deepagent-models --offline`：83 passed / 11 ignored；`tests/modalities_audit.rs`：1 passed / 1 ignored；`cargo fmt --all -- --check`、`git diff --check` 通过。MockTransport，无公网 |
+| H-134 旧画布 run 迟到事件显式探针 | `$env:RUN_HARNESS_AUDIT='1'; pnpm exec node --test --test-name-pattern='a superseded workflow attempt' scripts/audit-workflow-isolation.test.cjs`：预期 0 passed / 1 failed，输出 `staleAttemptOverwroteCurrent=true, cancelRequestsOnSupersede=0`；生产 `workflowExecutor.ts` + 延迟 Tauri listener mock，新 run Running 后旧 run Completed 改写节点；无真实 Kernel/provider/云端任务 |
 | H-128 运行取消中的 MCP 工具回归 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation::stopping_run_interrupts_inflight_stdio_mcp_call --offline -- --nocapture`：1 passed；正式 AppCore/Kernel/McpService/stdio 子进程中，取消 accepted=true 后 250ms 内退出、服务端收到 `notifications/cancelled`、工具调用有配对失败结果且模型请求数仍为 1；另有 `cargo test -p deepagent-mcp --features http --offline` 覆盖 HTTP 取消通知，`cargo test -p deepagent-runtime --offline --lib` 覆盖 token 终态 |
 | H-127 MCP 图像工具结果显式审计探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_image_output::audit_mcp_image_result_is_not_serialized_as_text_json --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；真实本机 Node MCP stdio + 正式 AppCore/Kernel/Responses serializer，下一请求 output 为包含原始图片 JSON/base64 的字符串，无 `input_image` block；离线 provider，无公网 |
 | H-126 stdio MCP 响应大小显式审计探针（本轮复核） | `cargo test -p deepagent-mcp --test response_limit_audit audit_stdio_transport_accepts_oversized_response_line --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 `StdioTransport` 接受并解析 2 MiB JSONL payload，小响应对照通过；本机临时 Node 子进程，无真实插件副作用 |
@@ -2818,7 +2829,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 工作流节点跨语言配置契约 | H-40 | 现有版本化 graph、配置 schema、序列化和执行器统一字段及兼容迁移；参考 DeepSeek 在消费边界拒绝未知/不支持的参数 | 生产前端 schema 合法配置逐项进入正式后端，具体输出符合设置；无效配置拒绝，不能成功返回空默认值 |
 | 工作流节点事件与规范回放 | H-120 | WorkflowAgent 的 publisher 接回既有 Kernel 持久化 sink；参考现有 ModelAgent 通道与 ArtCraft 保存媒体任务身份，复用 run_events | 各节点实时事件与重开补读一致，失败/取消/进度也可重放；保留媒体来源和任务身份，不靠图文档偶然自动保存代替运行日志 |
 | 媒体任务身份与节点投影/续跑 | H-121、H-122 | 既有节点事件携带的运行中身份统一投影，后端以 provider/account/task 和输入身份决定新生成或恢复；参考 ArtCraft 的提交与 pending task/provider_job_id 分离，DAG 输入失效为本地设计 | 收到 Running 即可安全保留续跑身份；有效续跑不重复 submit，修改输入的新生成实际提交新请求；旧 attempt 不覆盖新任务，已完成资产保留来源 |
-| 桌面运行事件与订阅生命周期 | H-41、H-43 | 现有 run_id、完成 payload、订阅就绪屏障和持久化补读统一；参考 Codex thread 通道和持续消费 worker | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能清理新 run |
+| 桌面运行事件与订阅生命周期 | H-41、H-43、H-134 | 现有 run_id、完成 payload、运行 owner、订阅就绪屏障和持久化补读统一；参考 Codex thread/turn/item identity 与 ArtCraft 异步 listener owner | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能改写节点或清理新 run |
 | 多宿主所有权、会话派发与启动恢复 | H-32、H-33 | 数据库打开与有所有权的恢复分离；现有会话租约及运行/动作/子运行共同定义 owner，参考 Claude 存活 owner 保护、Codex thread writer 锁与后台作业有效租约保护 | 第二宿主打开不改变活跃记录；同会话不同时派发，异会话可并行；真正失效 owner 才恢复；原宿主仍可正常完成 |
 | 共享设置与凭据的提交资格 | H-87、H-88 | 现有 SettingsService/SecretStore 在数据库当前版本上提交字段变更；参考 Codex Session 设置持久化许可与 DeepSeek 账户撤销/登录生命周期，跨宿主版本栅栏为本地设计 | 刷新不覆盖已收紧限制；退出/换 Key 后旧刷新不能写回旧凭据；独立连接、真实主备进程、失败和乱序完成一致 |
 | 启动恢复的规范终态、会话投影与诊断归属 | H-44、H-95 | 恢复共用现有幂等终态边界，文件会话投影与 interruption 分类均具备按 run/task 身份的处理；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补；多个 unfinished run 的原因各自对应目标 turn，不能改错后续 turn |
@@ -2862,6 +2873,6 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 工作流同样已确认能力装配/失败传播（H-38）、路径派发（H-39）、跨语言配置契约（H-40）三个独立断点。不能继续用单个字段别名、前端状态改色或无条件跳过节点修补。应先明确现有版本化节点契约及执行状态机，再逐项接回同一工具注册/权限/Kernel 链路，以跨语言真实请求、节点输出、实际调用数和 RunStore 终态共同验收。本轮未获生产修复授权，以上仍为审计建议。
 
-画布媒体已分别确认并修复 HTTP 等待取消（H-119）、节点 publisher 绕开规范事件日志（H-120）、运行中 task ID 被前端丢弃（H-121）和修改输入却复用已完成任务（H-122）四个边界。H-122 修复后通过现有 run_events 和画布节点传递 task/fingerprint 配对身份；provider task 只有在后端重算的输入与 provider 指纹匹配时才恢复。仍需继续审计旧 attempt 迟到事件覆盖、真实云端取消和其他未修复项。
+画布媒体已分别确认并修复 HTTP 等待取消（H-119）、节点 publisher 绕开规范事件日志（H-120）、运行中 task ID 被前端丢弃（H-121）和修改输入却复用已完成任务（H-122）四个边界。H-122 修复后通过现有 run_events 和画布节点传递 task/fingerprint 配对身份；provider task 只有在后端重算的输入与 provider 指纹匹配时才恢复。H-134 已确认旧 attempt 的迟到节点事件可以覆盖新 run 状态；仍需审计真实云端取消和其他未修复项。
 
 Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边界：当前多个不同事件复用过于粗粒度的 HookData，再由两套 serializer 逐项拼字段。后续修复应先建立事件级契约与正式派发点的上下文传递，并统一 command/HTTP 投影；不能逐个补空字符串、固定布尔值或从 message 文本反推 metadata。探针只证明各自记录的路径，不把字段审计当成全部 hook 生命周期已经验收。
