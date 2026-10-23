@@ -362,20 +362,12 @@ fn provider_error_with_metadata(
     let error = parsed
         .as_ref()
         .and_then(|value| value.get("error"))
-        .unwrap_or_else(|| parsed.as_ref().unwrap_or(&serde_json::Value::Null));
-    let code = error
-        .get("code")
-        .and_then(serde_json::Value::as_str)
-        .or_else(|| error.get("type").and_then(serde_json::Value::as_str))
-        .map(str::to_string);
-    let message = error
-        .get("message")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or(body);
-    CoreError::provider_with_metadata(
+        .or(parsed.as_ref());
+    crate::provider_error::from_json_error(
         Some(status),
-        code,
-        sanitize_provider_message(message),
+        error,
+        None,
+        body,
         retry_after_ms,
         request_id,
     )
@@ -442,42 +434,6 @@ fn parse_http_date(value: &str) -> Option<time::OffsetDateTime> {
         }
     }
     None
-}
-
-fn sanitize_provider_message(message: &str) -> String {
-    let mut redact_next = false;
-    let mut sanitized = Vec::new();
-    for word in message.split_whitespace() {
-        if redact_next {
-            sanitized.push("[redacted]".to_string());
-            redact_next = false;
-        } else if word.eq_ignore_ascii_case("bearer") {
-            sanitized.push(word.to_string());
-            redact_next = true;
-        } else {
-            sanitized.push(redact_token_like_key(word));
-        }
-    }
-    let mut sanitized = sanitized.join(" ");
-    if sanitized.chars().count() > 2_000 {
-        sanitized = sanitized.chars().take(2_000).collect();
-        sanitized.push('…');
-    }
-    if sanitized.is_empty() {
-        "provider request failed without an error message".to_string()
-    } else {
-        sanitized
-    }
-}
-
-fn redact_token_like_key(word: &str) -> String {
-    let Some(start) = word.find("sk-") else {
-        return word.to_string();
-    };
-    let mut redacted = String::with_capacity(start + 4);
-    redacted.push_str(&word[..start]);
-    redacted.push_str("sk-…");
-    redacted
 }
 
 /// Decode the longest valid UTF-8 prefix of `bytes`, returning the decoded text

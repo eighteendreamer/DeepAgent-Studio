@@ -199,16 +199,16 @@ impl ResponseAccumulator {
             }
             "response.failed" => {
                 self.saw_terminal = true;
-                return Err(CoreError::provider(
+                let error = value
+                    .get("response")
+                    .and_then(|response| response.get("error"));
+                return Err(crate::provider_error::from_json_error(
                     None,
-                    Some("response_failed".into()),
-                    value
-                        .get("response")
-                        .and_then(|v| v.get("error"))
-                        .and_then(|v| v.get("message"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("Responses API response failed")
-                        .to_string(),
+                    error,
+                    Some("response_failed"),
+                    "Responses API response failed",
+                    None,
+                    None,
                 ));
             }
             _ => {}

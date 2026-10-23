@@ -3399,7 +3399,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-118: response.failed must preserve the code used by overflow recovery"]
     async fn audit_streamed_overflow_recovers_from_provider_code_without_message_keywords() {
         let mut unrecovered = Vec::new();
         for (label, message) in [

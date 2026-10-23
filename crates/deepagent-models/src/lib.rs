@@ -28,6 +28,7 @@ pub mod chat_completions;
 pub mod client;
 pub mod discovery;
 pub mod failure;
+mod provider_error;
 pub mod responses;
 pub mod sse;
 pub mod stream;
