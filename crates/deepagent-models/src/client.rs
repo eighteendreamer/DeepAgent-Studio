@@ -1038,6 +1038,85 @@ mod tests {
         );
     }
 
+    async fn run_chat_thinking_tool_choice(
+        tool_choice: serde_json::Value,
+    ) -> (deepagent_core::error::Result<Response>, usize) {
+        struct CountingTransport {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[async_trait]
+        impl HttpTransport for CountingTransport {
+            async fn stream(
+                &self,
+                _request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                for event in [
+                    r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}"#,
+                    r#"{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"choices":[]}"#,
+                    "[DONE]",
+                ] {
+                    if sink.on_event(event)? {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let client = ModelClient::new(
+            Arc::new(CountingTransport {
+                calls: calls.clone(),
+            }),
+            ModelConfig::deepseek_chat("audit-placeholder"),
+        );
+        let mut request = ResponseRequest::new(
+            "deepseek-flash",
+            vec![Message::user("audit thinking tool choice")],
+        )
+        .with_tools(vec![crate::chat::ToolSchema::function(
+            "lookup",
+            "Look up a value.",
+            serde_json::json!({"type":"object","properties":{}}),
+        )])
+        .with_tool_choice(tool_choice);
+        request.reasoning_effort = Some("high".to_string());
+
+        let result = client.stream_response(request).await;
+        (result, calls.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: reject Chat required tool choice in thinking mode before transport"]
+    async fn audit_chat_thinking_rejects_required_tool_choice_before_transport() {
+        let (result, calls) = run_chat_thinking_tool_choice(serde_json::json!("required")).await;
+
+        assert!(
+            result.is_err(),
+            "DeepSeek Chat thinking mode must reject tool_choice=required before transport"
+        );
+        assert_eq!(calls, 0, "unsupported combination must not reach provider");
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: reject Chat named tool choice in thinking mode before transport"]
+    async fn audit_chat_thinking_rejects_named_tool_choice_before_transport() {
+        let (result, calls) = run_chat_thinking_tool_choice(serde_json::json!({
+            "type": "function",
+            "function": {"name": "lookup"}
+        }))
+        .await;
+
+        assert!(
+            result.is_err(),
+            "DeepSeek Chat thinking mode must reject named tool_choice before transport"
+        );
+        assert_eq!(calls, 0, "unsupported combination must not reach provider");
+    }
+
     #[tokio::test]
     #[ignore = "audit reproducer: keep provider usage from a failed Responses terminal"]
     async fn audit_failed_responses_terminal_emits_included_usage() {
