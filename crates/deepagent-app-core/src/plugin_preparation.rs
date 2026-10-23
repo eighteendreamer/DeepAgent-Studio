@@ -494,3 +494,164 @@ impl PluginService {
         }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs::{FileTimes, OpenOptions};
+    use std::time::SystemTime;
+
+    #[test]
+    #[ignore = "audit probe for plugin watcher cache invalidation"]
+    fn audit_same_size_edits_and_replacements_invalidate_prepared_projection() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin_root = temp.path().join("builtin").join("audit-plugin");
+        let styles = plugin_root.join("output-styles");
+        std::fs::create_dir_all(plugin_root.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(plugin_root.join("skills")).unwrap();
+        std::fs::create_dir_all(&styles).unwrap();
+        std::fs::write(plugin_root.join("skills").join("SKILL.md"), "Audit fixture").unwrap();
+        std::fs::write(
+            plugin_root.join(".codex-plugin").join("plugin.json"),
+            serde_json::json!({
+                "name": "Audit plugin",
+                "version": "0.1.0",
+                "skills": "skills",
+                "outputStyles": "output-styles"
+            })
+            .to_string(),
+        )
+        .unwrap();
+        let style_path = styles.join("concise.md");
+        let original = "# Concise audit\n\nKeep replies short and concrete.";
+        let edited = "# Concise audit\n\nKeep replies clear and specific.";
+        assert_eq!(original.len(), edited.len());
+        std::fs::write(&style_path, original).unwrap();
+
+        let roots = PluginRoots {
+            session: Vec::new(),
+            builtin: temp.path().join("builtin"),
+            workspace: None,
+            personal: temp.path().join("personal"),
+        };
+        let service = Arc::new(PluginService::new(
+            roots.clone(),
+            temp.path().join("app-data"),
+        ));
+        let plugin = crate::plugin_loader::load_plugins(&roots)
+            .into_iter()
+            .find(|plugin| plugin.name == "Audit plugin")
+            .expect("audit plugin fixture should load");
+
+        let cancellation = deepagent_runtime::CancellationTree::new();
+        service
+            .prepare_candidate(&plugin, &cancellation)
+            .expect("initial plugin preparation should succeed");
+        service.start_runtime_watcher();
+        let initial = service
+            .prepare_candidate(&plugin, &cancellation)
+            .expect("plugin preparation after watcher startup should succeed");
+        assert!(initial.output_styles[0]
+            .prompt
+            .contains("short and concrete"));
+
+        let cached_snapshots = service
+            .preparation
+            .verified
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&plugin.id)
+            .expect("prepared projection should be cached before the edit")
+            .0
+            .clone();
+        let original_mtime = std::fs::metadata(&style_path)
+            .unwrap()
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        std::fs::write(&style_path, edited).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&style_path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(original_mtime))
+            .unwrap();
+
+        let snapshots_match = cached_snapshots.iter().all(PathSnapshot::still_matches);
+        assert!(
+            snapshots_match,
+            "the watcher event is required for this edit"
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            let invalidated = !service
+                .preparation
+                .verified
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains_key(&plugin.id);
+            if invalidated {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(!service
+            .preparation
+            .verified
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&plugin.id));
+
+        let refreshed = service
+            .prepare_candidate(&plugin, &cancellation)
+            .expect("edited plugin should prepare after watcher invalidation");
+        assert!(refreshed.output_styles[0]
+            .prompt
+            .contains("clear and specific"));
+
+        let replacement = "# Concise audit\n\nKeep replies plain and specific.";
+        assert_eq!(replacement.len(), edited.len());
+        let replacement_mtime = std::fs::metadata(&style_path)
+            .unwrap()
+            .modified()
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        let staged_path = styles.join(".concise.md.audit-tmp");
+        std::fs::write(&staged_path, replacement).unwrap();
+        OpenOptions::new()
+            .write(true)
+            .open(&staged_path)
+            .unwrap()
+            .set_times(FileTimes::new().set_modified(replacement_mtime))
+            .unwrap();
+        std::fs::remove_file(&style_path).unwrap();
+        std::fs::rename(&staged_path, &style_path).unwrap();
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            let invalidated = !service
+                .preparation
+                .verified
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .contains_key(&plugin.id);
+            if invalidated {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(!service
+            .preparation
+            .verified
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .contains_key(&plugin.id));
+        let replaced = service
+            .prepare_candidate(&plugin, &cancellation)
+            .expect("replaced plugin should prepare after watcher invalidation");
+        assert!(replaced.output_styles[0]
+            .prompt
+            .contains("plain and specific"));
+    }
+}

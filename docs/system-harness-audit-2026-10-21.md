@@ -2806,6 +2806,14 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 首次耗尽组的测试预期误写为通用 failed，账本断言均已通过；核对 `kernel.rs::classify_terminal_error` 发现既有 `max_tokens` 映射为 context_exhausted，改为该约定后重跑。这里不据此声称该终态命名已完成语义审查，也不将测试预期修正计为产品缺陷。
 - 本项不关闭 H-82 的过滤原因丢失、H-14 的未采纳摘要费用遗漏或 H-63 的附属模型调用费用归属问题。仅使用合成 provider usage 与临时数据库，没有真实供应商账单、Tauri UI、在途取消或数据库写入失败验证。
 
+### 后续独立核查：插件文件 watcher 覆盖相同大小与时间戳的变更
+
+- 在 `plugin_preparation::tests::audit_same_size_edits_and_replacements_invalidate_prepared_projection` 中创建临时插件，先通过正式 `prepare_candidate()` 建立运行投影缓存，再启动生产 `RecommendedWatcher`。分别测试了原地编辑和临时文件替换；新旧内容字节长度相等，并将新文件修改时间恢复到旧值，使 `PathSnapshot` 的长度和毫秒级时间戳检查保持匹配。
+- Windows 探针通过。两种改动均由 watcher 事件使插件投影缓存失效，随后 `prepare_candidate()` 重新读取文件并得到新输出样式内容。没有发现“大小及时间戳相同便稳定复用旧能力”的复现证据，因此不新增 Harness 缺陷项。
+- 成熟实现对照：Claude Code `utils/skills/skillChangeDetector.ts` 对技能目录监听 add/change/unlink，并通过 `useSkillsChange.ts` 清除 command/skill 缓存后重新扫描；Grok `prompt/skills.rs::collect_skill_config_dirs()` 明确由技能发现和 watcher 共用同一目录来源。两者支持“变更通知负责失效、统一发现范围”的设计依据；本次只核对源码，不声称它们能消除任意平台文件通知丢失。
+- 验证边界：探针直接观察本系统插件准备投影缓存及重新读取结果，没有组装正式模型请求；AppCore 禁用插件技能残留由 H-13 单独记录且仍未修复。也没有对 macOS/Linux watcher、断开的监视句柄、进程崩溃恢复或真实 Tauri 桌面进行验证。此前的陈旧缓存疑点仍不能扩展到这些未验证条件。
+- 执行：`cargo test -p deepagent-app-core --lib audit_same_size_edits_and_replacements_invalidate_prepared_projection --offline -- --ignored --nocapture`，**1 passed**。该审计探针默认忽略，生产逻辑未修改。
+
 ## 当前工程收敛方向与实施依赖（审计结论，尚未实施）
 
 下表依据已复现的边界归并；优先级不等于所有问题具有相同触发概率。设计收敛在本系统既有内核，不复制参考项目建立第二套运行链。
