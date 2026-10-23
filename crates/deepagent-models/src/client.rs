@@ -981,6 +981,66 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: Responses require input or instructions before transport"]
+    async fn audit_responses_require_input_or_instructions_before_transport() {
+        struct CountingTransport {
+            calls: Arc<AtomicUsize>,
+            body: Arc<std::sync::Mutex<Option<String>>>,
+            events: Vec<String>,
+        }
+
+        #[async_trait]
+        impl HttpTransport for CountingTransport {
+            async fn stream(
+                &self,
+                request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                *self.body.lock().unwrap() = Some(request.body);
+                for event in &self.events {
+                    if sink.on_event(event)? {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let body = Arc::new(std::sync::Mutex::new(None));
+        let client = ModelClient::new(
+            Arc::new(CountingTransport {
+                calls: calls.clone(),
+                body: body.clone(),
+                events: vec![
+                    r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+                        .into(),
+                ],
+            }),
+            ModelConfig::deepseek("audit-placeholder"),
+        );
+
+        let result = client
+            .stream_response(ResponseRequest::new("deepseek-flash", Vec::new()))
+            .await;
+        eprintln!(
+            "Responses empty input audit: result={result:?} transport_calls={} wire_body={:?}",
+            calls.load(Ordering::SeqCst),
+            body.lock().unwrap()
+        );
+        assert!(
+            result.is_err(),
+            "Responses must reject a request with neither input nor instructions"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "an empty Responses request must not reach the provider"
+        );
+    }
+
     #[test]
     #[ignore = "audit reproducer: translate Responses defaults to Chat Completions shape"]
     fn audit_chat_tool_choice_translates_default_shape() {

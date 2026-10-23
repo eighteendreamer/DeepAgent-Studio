@@ -22,7 +22,7 @@
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn，以及一个已被替代 turn 重复派生多个新 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择字段形状和 Thinking 组合限制、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态、Responses failed usage 丢失、空/重复 `call_id` 请求边界缺少校验均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144、H-145、H-146、H-147、H-148、H-149；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择字段形状和 Thinking 组合限制、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态、Responses failed usage 丢失、空/重复 `call_id` 和空输入请求边界缺少校验均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144、H-145、H-146、H-147、H-148、H-149、H-150；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、stdio/HTTP 响应无 transport 字节上限、图像工具结果未转为模型多模态内容、一次性测试连接在 initialize/tools/list 阶段无界等待（已修复并验证 30 秒总握手上限）、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认并修复 H-128、H-129；其他已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117、H-126 至 H-127；其他 hooks 和准备边界未完成 |
@@ -2714,6 +2714,28 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 回归需覆盖同 kind 重复、function/custom 跨 kind 重复、重复 output、恢复/压缩/取消补结果、Responses/Chat 分路以及真实 MCP 工具快照到 wire 的完整路径；同时验证冲突失败不触发 transport，正常唯一 ID 保持原顺序和调用结果配对。
 - 本轮只增加审计探针和报告，生产校验未修改。证据来自正式模型客户端和受控 transport，未向真实 DeepSeek 发送非法请求，也未验证用户历史中实际出现重复 ID 的频率；H-80 记录的是 function/custom output 原生 kind 混配，H-148 记录的是空 `call_id`，本项专门记录非空但重复 ID 导致的静默历史丢失。
 
+### H-150：Responses `input` 与 `instructions` 同时为空仍发送请求
+
+**级别：中高（P1，条件性无效请求）；触发条件：公共请求构造器收到空消息列表且未设置 instructions。** 正常 ChatService turn 会提供用户输入或系统上下文；本项证明的是 Responses adapter 的公共边界允许构造并发送协议上无效的请求，不能把它扩大为每次正常对话都会出现空 turn。
+
+#### 生产路径与动态证据
+
+- DeepSeek 官方 [Responses API](https://api-docs.deepseek.com/api/create-response) 规定 `input` 与 `instructions` 至少提供一个；`input` 可以是字符串或 item 数组，但不能与 instructions 一起缺失。
+- 当前生产路径是 `ResponseRequest::new(model, messages)` → `response_items_from_messages()` → `ModelClient::stream_response()` → `ResponseRequest` 序列化。传入空 `messages` 时，构造器得到 `instructions=None`、`input=[]`；Responses 流式入口只设置默认值和 `stream=true`，没有调用等价的请求校验。
+- 新增 opt-in 正式客户端探针 `client::tests::audit_responses_require_input_or_instructions_before_transport`。它使用真实 `ResponseRequest::new("deepseek-flash", Vec::new())`、生产 `ModelClient` 和受控计数型 transport。执行 `cargo test -p deepagent-models audit_responses_require_input_or_instructions_before_transport --offline -- --ignored --nocapture` 得到 **0 passed / 1 failed（预期）**：结果为 `Ok(Response)`、`transport_calls=1`，捕获 wire 为 `{"model":"deepseek-flash","input":[],"stream":true}`。没有调用公网。
+
+#### 成熟实现对照
+
+- **DeepSeek Harness** 的 AgentLoop 在 `借鉴/deepseek-harness/packages/core/agent-loop/src/agent.ts` 中先经过 `preStep` 决定是否存在有效 messages；初始 decision 为空时结束 turn，不启动 model step。它把空输入当作 loop admission 状态，而不是发送一个空 provider request。
+- **Codex** 的 app-server turn 入口对空输入返回 `input must not be empty`；空用户回合在协议入口被拒绝，避免将无效 payload 推迟到模型服务才暴露。
+
+#### 后果、修复方向与验证限制
+
+- 当前 adapter 会为无有效输入的 turn 消耗一次 provider 请求配额，并可能得到 provider 400；若上层把它当作可重试错误，会重复发送同一个必失败请求。更隐蔽的是，离线/代理 transport 可能返回成功，使运行记录出现没有用户输入的 assistant turn，破坏会话语义和 usage 统计。
+- 应在现有 Responses provider seam 增加请求级校验：`instructions` 非空或 `input` 至少含一个可发送 item；空白 instructions、只有被 repair 丢弃的工具 item、以及取消/恢复产生的空 turn 都应在进入 transport 前得到统一的可回放错误或 no-op 终态。校验不能依赖 provider 返回，也不能用隐式占位文本制造模型输入。
+- 回归需覆盖空消息、空白 instructions、仅工具输出被修复为空、正常 system-only、正常 user-only、Chat/Responses 分路以及取消/重试/恢复的空 turn；正确失败必须断言 transport 调用数为零。
+- 本轮只增加审计探针和报告，生产校验未修改。证据来自正式模型客户端和受控 transport，未向真实 DeepSeek 发送空请求，也未在完整桌面接纳链路中制造空用户回合；Harness/Codex 的空 turn 处理用于边界对照，不代表两者内部协议完全相同。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2729,6 +2751,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-147 DeepSeek 工具 schema 名称显式探针 | `cargo test -p deepagent-models audit_deepseek_tool_schema_names_are_validated_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；Responses 的空名、非法字符、129 字符和重复名均以 `transport_calls=1` 越过正式 adapter，Chat 四组同样到达 transport 后因 fixture 缺 `[DONE]` 结束；受控 transport，无公网 |
 | H-148 Responses 空 `call_id` 显式探针 | `cargo test -p deepagent-models audit_responses_call_ids_are_validated_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 `ResponseRequest`/`ModelClient` 将空 function call/result ID 送达 transport，`transport_calls=1`；受控 transport，无公网 |
 | H-149 Responses 重复 `call_id` 显式探针 | `cargo test -p deepagent-models audit_responses_duplicate_call_ids_are_rejected_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；两个不同 function call 和结果共用一个 ID，正式 adapter 仍返回 `Ok`、`transport_calls=1`，wire 只剩第一组调用/结果；受控 transport，无公网 |
+| H-150 Responses 空 `input`/`instructions` 显式探针 | `cargo test -p deepagent-models audit_responses_require_input_or_instructions_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 将 `input=[]` 且无 instructions 的请求送达 transport，返回 `Ok`、`transport_calls=1`；受控 transport，无公网 |
 | H-141 todo reminder 生命周期显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.47s；正式同一 session 连续 11 次独立用户回合、实际请求 11 次，`reminder_requests=[]`；仅临时内存数据库与离线 transport |
 | H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
 | H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |
