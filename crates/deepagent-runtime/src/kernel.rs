@@ -715,6 +715,56 @@ mod tests {
         events: Option<Arc<dyn RuntimeEventSink>>,
     }
 
+    #[derive(Clone, Default)]
+    struct LiveEventLabels {
+        labels: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl RuntimeEventSink for LiveEventLabels {
+        fn emit(&self, event: RuntimeEvent) {
+            self.labels
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .push(event.label());
+        }
+    }
+
+    struct ToolEventAgent {
+        events: Option<Arc<dyn RuntimeEventSink>>,
+    }
+
+    #[async_trait]
+    impl crate::agent::Agent for ToolEventAgent {
+        fn set_event_sink(&mut self, events: Arc<dyn RuntimeEventSink>) {
+            self.events = Some(events);
+        }
+
+        async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            let events = self.events.as_ref().expect("kernel event sink");
+            events.emit(RuntimeEvent::ToolStarted {
+                name: "audit_tool".into(),
+                call_id: "call-audit".into(),
+                arguments: serde_json::json!({"value": "input"}),
+                tool_kind: None,
+                file_path: None,
+                summary: None,
+                meta: None,
+            });
+            events.emit(RuntimeEvent::ToolCompleted {
+                name: "audit_tool".into(),
+                call_id: "call-audit".into(),
+                ok: true,
+                output: serde_json::json!({"value": "output"}),
+                duration_ms: 1,
+                tool_kind: None,
+                file_path: None,
+                summary: None,
+                meta: None,
+            });
+            Ok(AgentDecision::Complete("done".into()))
+        }
+    }
+
     #[async_trait]
     impl crate::agent::Agent for StreamingAgent {
         fn set_event_sink(&mut self, events: Arc<dyn RuntimeEventSink>) {
@@ -1055,6 +1105,65 @@ mod tests {
         assert!(!events
             .iter()
             .any(|event| event.event_type == "responses_stream_event"));
+    }
+
+    #[tokio::test]
+    #[ignore = "audit: a failed run_events append must not diverge from the live event stream"]
+    async fn audit_event_persistence_failure_does_not_split_live_and_replay() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER audit_fail_tool_completed
+                 BEFORE INSERT ON run_events
+                 WHEN NEW.event_type='tool_completed'
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected tool event failure');
+                 END;",
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("event persistence audit")).unwrap();
+        let task = session.create_task("tool event").unwrap();
+        let registry = ToolRegistry::new();
+        let live = LiveEventLabels::default();
+        let mut agent = ToolEventAgent { events: None };
+        let kernel = AgentKernel::<FixedClock>::new(
+            db.clone(),
+            &registry,
+            Metrics::new(),
+            RuntimeConfig::default(),
+            "run-event-persistence-audit",
+        )
+        .with_events(Arc::new(live.clone()));
+
+        let terminal = kernel
+            .start(RunRequest::new(&mut session, task, &mut agent))
+            .await
+            .unwrap();
+        assert!(terminal.succeeded());
+
+        let live_labels = live
+            .labels
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let durable_events = RunStore::new(&db)
+            .events_after("run-event-persistence-audit", None)
+            .unwrap();
+        let durable_labels: Vec<_> = durable_events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect();
+
+        assert!(live_labels.contains(&"tool_completed"));
+        assert!(
+            durable_labels.contains(&"tool_completed"),
+            "live event labels={live_labels:?}, durable event labels={durable_labels:?}"
+        );
     }
 
     #[test]

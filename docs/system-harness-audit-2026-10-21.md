@@ -2540,10 +2540,35 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - reminder 注入必须继续走现有原生 Surface 和消息投影，计数恢复不能新建第二个 TodoStore 或独立会话状态表；`todo_write` 仍只重置 write 轴，提醒注入后只重置 reminder 轴。
 - 当前探针使用离线模型和空 Todo 列表，仅验证提醒正文是否进入真实 wire；未覆盖 `todo_write` 后重置、压缩后事件边界、分支回退、并行工具、CLI/SDK 入口及真实 DeepSeek。生产代码未改，缺陷测试保持 ignored。
 
+### H-142：运行事件持久化失败被吞掉，实时事件与回放事件发生分叉
+
+**级别：高（P1，事件回放不完整）；触发条件：`run_events` 的单条运行事件写入失败，而运行仍继续向实时 sink 分发事件。** 运行可能显示为成功，但重新连接、重启或 `thread/read` 只能看到持久化成功的前缀，无法重建实时 UI 曾经看到的完整工具生命周期。
+
+#### 生产链与动态证据
+
+- `crates/deepagent-runtime/src/kernel.rs::PersistentEventSink::append()` 调用现有 `RunStore::append_event()`。写入失败时只 `tracing::warn!`，没有把失败返回给 `emit()`，也没有进入运行终态或重试状态。
+- `PersistentEventSink::emit()` 在 `append()` 返回后无条件调用 `self.delegate.emit(event)`。因此同一个 `RuntimeEvent` 的实时投影和 durable `run_events` 投影没有共同的提交边界。
+- 新增 ignored 探针 `kernel::tests::audit_event_persistence_failure_does_not_split_live_and_replay`：使用真实 `AgentKernel::start()`、`RunStore` 和 SQLite trigger，仅拒绝 `tool_completed` 插入；自定义 Agent 通过 Kernel 注入的规范 sink 发送 `ToolStarted`、`ToolCompleted` 后正常完成。实时标签包含 `tool_completed`，数据库事件为 `run_accepted、setup.started、capability.snapshot、setup.completed、run_started、session_registered、turn_started、tool_started、run_completed、run_terminal`，缺少 `tool_completed`。执行：`cargo test -p deepagent-runtime audit_event_persistence_failure_does_not_split_live_and_replay --offline -- --ignored --nocapture`，**0 passed / 1 failed（预期暴露缺陷）**。
+
+#### 成熟实现对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/session/session-checkpoint-policy/README.md` 将 persistence flush 作为模型请求、顶层工具副作用和下一步推导前的共享 durability barrier；checkpoint rejection 采用 fail-closed，未成功落盘时不进入后续模型或工具动作。`借鉴/deepseek-harness/packages/session/session-persistence/README.md` 规定后台写失败要保留顺序、暂停自动路径，并由下一次显式 flush 重试且公开拒绝，而不是继续把失败事件当作已提交。
+- **Codex**：`借鉴/codex/codex-rs/core/src/session/mod.rs::send_event_raw_with_persistence` 保持实时 reduction、规范 append、投递的固定顺序；`借鉴/codex/codex-rs/core/src/tasks/mod.rs` 在终态事件之后显式 flush rollout，再让调用方看到终态。其具体存储实现不同，但共同约束是 durable boundary 不能被实时 delivery 静默越过。
+- **Claude Code**：`借鉴/claudecode/restored-src/src/bridge/replBridge.ts` 对持久化序列和高水位进行单独管理，持续失败时限制 drain 并保留诊断；它的实时 SSE/桥接状态不能替代 transcript 持久化。
+
+#### 后果、修复方向与验证限制
+
+- 不能通过“继续发送实时事件”来掩盖 durable 写失败；否则工具调用可能在 UI 中显示已完成，重连后缺少结果，模型下一轮可能重复或误判该调用。当前探针只证明事件序列分叉，不证明一定发生重复外部副作用。
+- 应在现有 `PersistentEventSink` 边界收敛提交语义：普通事件写入失败时，实时 delegate 不得把该事件宣称为已提交；应保留失败诊断并让运行进入可观测的 persistence-error/终止或受控重试状态。对已经发出的实时事件，协议需要明确其为 provisional，不能让 `thread/read` 假设它已 durable。终态事件必须在所有必需前置事件可回放后再发布。
+- 修复必须复用现有 `RunStore/run_events`、终态和协议投影，不新增 live event store 或补写第二套日志。回归需覆盖普通事件、delta flush、终态写失败、断线重读以及单个事件失败后的 sequence 连续性。
+- 当前仅使用 SQLite trigger、内存数据库、离线 Agent 和真实 Kernel；未运行真实 Tauri、真实 provider、跨进程数据库锁争用或崩溃恢复。生产代码本轮未改，探针保持 ignored。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-142 运行事件持久化失败显式探针 | `cargo test -p deepagent-runtime audit_event_persistence_failure_does_not_split_live_and_replay --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；真实 `AgentKernel` + SQLite trigger 让 `tool_completed` durable append 失败，但实时 sink 仍收到该事件；仅临时内存数据库和离线 Agent |
+| H-142 Kernel 默认回归与静态检查 | `cargo test -p deepagent-runtime --lib kernel::tests --offline`：10 passed / 1 ignored / 0 failed；`cargo fmt --all -- --check` 与 `git diff --check` 通过；未运行真实 Tauri、provider 或跨进程故障注入 |
 | H-141 todo reminder 生命周期显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.47s；正式同一 session 连续 11 次独立用户回合、实际请求 11 次，`reminder_requests=[]`；仅临时内存数据库与离线 transport |
 | H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
 | H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |
