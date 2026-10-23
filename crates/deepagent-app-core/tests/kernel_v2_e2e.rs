@@ -2419,6 +2419,73 @@ async fn audit_skill_catalog_survives_continuation_on_wire() {
 }
 
 #[tokio::test]
+#[ignore = "audit reproducer: Responses reasoning settings must match the DeepSeek contract"]
+async fn audit_responses_reasoning_effort_settings_match_deepseek_contract() {
+    use deepagent_app_core::settings::ResponsesApiSettings;
+
+    let mut panel_matches = Vec::new();
+    for effort in ["none", "low", "high", "max"] {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = SettingsService::new(
+            db,
+            Arc::new(MockTransport::with_get_json(
+                r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        );
+        settings.initialize("sk-audit-placeholder").await.unwrap();
+        let result = settings.set_responses_settings(ResponsesApiSettings {
+            reasoning_effort: Some(effort.to_string()),
+            ..ResponsesApiSettings::default()
+        });
+        let error = result.as_ref().err().map(ToString::to_string);
+        let effective = settings
+            .responses_settings()
+            .unwrap()
+            .effective_reasoning_effort();
+        eprintln!(
+            "Responses panel effort audit: effort={effort} saved={} effective={effective:?} error={error:?}",
+            result.is_ok()
+        );
+        panel_matches.push(result.is_ok() && effective.as_deref() == Some(effort));
+    }
+
+    let mut developer_matches = Vec::new();
+    for effort in ["none", "low", "high", "max", "minimal", "medium", "xhigh"] {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = SettingsService::new(
+            db,
+            Arc::new(MockTransport::with_get_json(
+                r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        );
+        settings.initialize("sk-audit-placeholder").await.unwrap();
+        let raw = serde_json::json!({"reasoning": {"effort": effort}}).to_string();
+        let result = settings.set_responses_developer_json(&raw);
+        let error = result.as_ref().err().map(ToString::to_string);
+        let effective = settings
+            .responses_settings()
+            .unwrap()
+            .effective_reasoning_effort();
+        eprintln!(
+            "Responses developer effort audit: effort={effort} saved={} effective={effective:?} error={error:?}",
+            result.is_ok()
+        );
+        developer_matches.push(result.is_ok() && effective.as_deref() == Some(effort));
+    }
+
+    assert!(
+        panel_matches.into_iter().all(|matched| matched),
+        "the ordinary Responses settings must accept every canonical DeepSeek effort"
+    );
+    assert!(
+        developer_matches.into_iter().all(|matched| matched),
+        "the raw Responses settings must accept every effort spelling accepted by DeepSeek"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit reproducer: saved output ceiling must survive the runtime thinking profile"]
 async fn audit_configured_output_limit_reaches_provider_request() {
     use deepagent_app_core::settings::ResponsesApiSettings;

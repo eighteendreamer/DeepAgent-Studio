@@ -22,7 +22,7 @@
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn，以及一个已被替代 turn 重复派生多个新 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
-| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择字段形状和 Thinking 组合限制、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态、Responses failed usage 丢失、空/重复 `call_id`、空输入、malformed function-call 输出边界及官方 `tool_search_call` 静默丢失均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144、H-145、H-146、H-147、H-148、H-149、H-150、H-151、H-152；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
+| DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择字段形状和 Thinking 组合限制、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态、Responses failed usage 丢失、空/重复 `call_id`、空输入、malformed function-call 输出边界、官方 `tool_search_call` 静默丢失及 Responses 思考强度设置契约不符均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144、H-145、H-146、H-147、H-148、H-149、H-150、H-151、H-152、H-153；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
 | 工具、审批、权限与沙箱 | 工作区拦截、backend override；迟到审批、跨运行审批冲突、审批事件重复且有一条缺少 ID、子 Agent 工具限制失效、未信任项目提权、批量工具绕过超时及读操作越过写屏障 | 已确认 H-03、H-15、H-16、H-19、H-28、H-34、H-35、H-84；其他边界未完成 |
 | MCP、插件与 hooks 生命周期 | MCP 协议、stdio/HTTP 响应无 transport 字节上限、图像工具结果未转为模型多模态内容、一次性测试连接在 initialize/tools/list 阶段无界等待（已修复并验证 30 秒总握手上限）、禁用插件技能残留、标准 hooks 决策忽略、内联项目 hooks 绕过信任、hook 公共输入缺字段及事件专属字段缺失、Pre/PostCompact 输入契约/指令未生效、工作树/FileChanged 字段不兼容、后台通知缺类别、权限拒绝缺调用 ID、步数上限失败仍发完成 hook、API 失败漏发 StopFailure、Windows 后代清理、配置变更误取消、断线耗尽后能力未退役，以及续聊时 SessionEnd 按每个 turn 派发均已复现 | 已确认并修复 H-128、H-129；其他已确认 H-06 至 H-09、H-12、H-13、H-26、H-27、H-46 至 H-48、H-102 至 H-117、H-126 至 H-127；其他 hooks 和准备边界未完成 |
@@ -2781,6 +2781,39 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 回归需覆盖 added/done 去重、client/server execution、结构化 arguments、可空 server call ID、call/output 配对、压缩与重启回放、工具目录变化、取消和 malformed item；真实 provider 验收还需先找到官方可达的启用方式。本轮只确认“收到该官方 item 后会丢失”，没有证明当前 DeepSeek 普通请求能主动触发它，也没有发送真实请求或测量回答质量。
 - 本轮只增加审计探针和报告，未修改生产 parser、Surface 或工具执行行为；H-57/H-137 记录的是已有目录在后续请求中的保留和动态刷新，本项记录的是 provider 原生工具检索协议项根本未进入系统。
 
+### H-153：Responses 思考强度设置拒绝合法值，并把兼容别名呈现为独立档位
+
+**级别：中（P2，配置契约缺口）；触发条件：通过桌面 Responses 高级设置关闭思考，或在开发者 JSON 中使用 DeepSeek 官方接受的 `none`、`minimal`、`xhigh`。** 普通 `ThinkingDepth::Simple` 直接构造 `none`，不经过本项保存校验；其默认 Responses 请求不因本项失败。H-54 另行证明已保存的 Responses 默认值会被桌面深度覆盖，本项只记录保存入口和用户可选语义本身不符合 provider 契约。
+
+#### 生产路径与动态证据
+
+- DeepSeek 官方 [Responses API](https://api-docs.deepseek.com/api/create-response) 定义 `reasoning.effort` 的规范值为 `none / low / high / max`，其中 `none` 关闭思考；同页明确 `minimal` 会映射为 `low`，`medium / xhigh` 会映射为 `high`。官方 [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/) 也把实际模型档位列为 low/high/max，并说明兼容名称的映射。因此 `medium` 不是独立的模型强度，`none` 也不是非法输入。
+- 桌面 `ConfigSettings.tsx` 的 Responses 高级下拉只提供 `low / medium / high / max`：缺少关闭项，却把服务端会映射到 high 的 `medium` 展示成独立档位。普通 DTO 的 `ResponsesApiSettings::validate()` 同样只接受这四个字符串。开发者 JSON 虽直接表示 provider 的 `reasoning.effort`，`validate_developer_responses_fields()` 仍使用同一错误白名单。
+- 新增默认忽略探针 `kernel_v2_e2e::audit_responses_reasoning_effort_settings_match_deepseek_contract`。每个值都新建正式 `SettingsService`、内存数据库和现有模型发现 mock，调用桌面共用的 `set_responses_settings()` 或开发者入口 `set_responses_developer_json()`，再从正式持久化设置读取 effective effort；失败项不会阻止其余值执行。没有绕过 service 直接调用 validator。
+- 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_reasoning_effort_settings_match_deepseek_contract --offline -- --ignored --nocapture`，得到 **0 passed / 1 failed（预期）**：
+
+| 设置入口 | effort | 保存结果 | 保存后的 effective effort |
+|---|---|---|---|
+| 普通 Responses 设置 | none | 拒绝：只允许 low/medium/high/max | 无 |
+| 普通 Responses 设置 | low / high / max | 成功 | 原值 |
+| 开发者 JSON | none | 拒绝：只允许 low/medium/high/max | 无 |
+| 开发者 JSON | minimal | 拒绝 | 无 |
+| 开发者 JSON | medium | 成功 | medium |
+| 开发者 JSON | xhigh | 拒绝 | 无 |
+| 开发者 JSON | low / high / max | 成功 | 原值 |
+
+#### 成熟实现对照
+
+- **DeepSeek Harness** 的 provider 配置在 `packages/llm/llm-deepseek/src/config.ts` 只暴露语义档位 `off / low / high / max`；`model-info.ts` 用同一组档位描述模型能力，`serialize.ts` 在最终 adapter 边界将 off 映射为协议的禁用表达，并拒绝没有声明的语义档位。它不会把 provider 为兼容客户端接受的 `medium` 再包装成一个实际不存在的模型档位。
+- 其通用 `llm-pi-ai` adapter 允许模型声明 `reasoningEfforts` 映射，例如 `off: "none"`，并有实际请求断言证明 UI/Agent 的 off 最终变为 provider wire 的 none。这里借鉴的是“用户语义、模型能力与 wire 拼写分层”，不是复制 Messages API 的 `thinking/output_config` 字段。
+
+#### 后果、修复方向与验证限制
+
+- 直接后果是用户提供官方合法的开发者 JSON 会在本地保存阶段失败，provider 完全收不到请求；桌面高级控件也不能表达该字段定义的关闭思考。选择 medium 时，界面暗示存在介于 low/high 之间的强度，但 DeepSeek 实际按 high 处理，造成性能、延迟与质量预期错误。因为 H-54 当前还会覆盖这些已保存默认值，本轮不能声称 medium 已通过普通聊天 wire 产生了不同费用；两个缺陷需分别修复和回归。
+- 修复应定义一次 provider 可见的有效思考配置：内部语义采用 `off / low / high / max`（或从模型能力目录读取等价 ID），DeepSeek Responses adapter 负责 `off → none`。开发者 JSON 若继续承诺接受 provider 原始字段，应接受官方兼容拼写并在保存边界规范化 `minimal → low`、`medium/xhigh → high`；UI 只展示真实语义档位，或明确显示映射关系。旧设置中的 medium 需兼容读取并迁移为 high，不能让升级后现有配置失效。
+- 回归必须覆盖普通设置、开发者 JSON、旧值迁移、模型能力变化、H-54 的运行覆盖优先级，以及最终真实 wire；关闭模式还需覆盖两协议转换的 H-55。当前探针只验证正式保存与读取，没有发送公网请求、运行模型或验收桌面渲染，因此不把供应商实际延迟/费用变化计为已测结果。
+- 本轮只增加审计探针和报告，未修改生产校验、UI 或 serializer。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2799,6 +2832,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-150 Responses 空 `input`/`instructions` 显式探针 | `cargo test -p deepagent-models audit_responses_require_input_or_instructions_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 将 `input=[]` 且无 instructions 的请求送达 transport，返回 `Ok`、`transport_calls=1`；受控 transport，无公网 |
 | H-151 Responses malformed `function_call` 显式探针 | `cargo test -p deepagent-models audit_responses_reject_malformed_function_call_output --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 将缺少 `call_id`/`name` 的 item 解析为两个 function call（空 ID/默认 `tool` 与 fallback `call_stream_0`），返回 `Ok(Response)`；受控 SSE，无公网 |
 | H-152 Responses `tool_search_call` 显式探针 | `cargo test -p deepagent-models audit_responses_tool_search_call_is_not_silently_dropped --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 返回 `Ok(Response)`，唯一 output item 是空 assistant message，原生调用的 `call_id`、`execution` 和结构化 arguments 全部丢失；受控 SSE，无公网 |
+| H-153 Responses 思考强度设置契约显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_reasoning_effort_settings_match_deepseek_contract --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；普通设置拒绝 canonical `none`，开发者 JSON 拒绝 `none/minimal/xhigh`，`medium` 原样保存；正式 SettingsService 与内存数据库，无公网或模型请求 |
 | H-141 todo reminder 生命周期显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.47s；正式同一 session 连续 11 次独立用户回合、实际请求 11 次，`reminder_requests=[]`；仅临时内存数据库与离线 transport |
 | H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
 | H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |
@@ -3307,6 +3341,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 模型切换的有效请求参数 | H-49 | 有效模型能力、输出上限、budget、meter 和 wire 共用同一次配置解析；参考 Claude 的 fallback 重新进入 callModel 并按新模型重组默认参数 | 小输出容量备用模型可接续；快照预留与 wire 一致；显式覆盖及截断恢复不得重新引入超限字段 |
 | 有效模型参数与输出预算 | H-54 | 既有配置 overlay、模型能力、桌面深度缺省统一解析到最终请求；参考 DeepSeek 本次 effort/maxTokens 优先及 Codex wire 断言 | 显式 effort/输出上限生效；发送前及下一请求预算与 wire 一致；无覆盖保持默认；不支持值明确拒绝；重试和子运行不重新覆盖 |
 | 思考模式的协议转换 | H-55 | 既有 thinking 配置表达开关/强度，由 adapter 显式生成和校验自己的 wire 字段；参考 DeepSeek 分 provider 的 off 映射 | Simple/Medium/Deep 经两协议完整 Agent 路径均可发送；禁用不被默认强度重新启用 |
+| Responses 思考强度设置契约 | H-153 | 用户语义、模型能力与 provider wire 拼写统一在既有模型配置/adapter 边界；参考 DeepSeek Harness 的 off/low/high/max 能力及 per-provider 映射 | canonical 档位可保存并进入实际 wire；兼容别名规范化；旧 medium 可迁移；UI 不展示伪独立档位；与 H-54/H-55 的优先级和两协议转换一起回归 |
 | 模型与搜索能力的有效选择 | H-66 | 既有模型/协议能力解析统一 hosted 与 callable search；参考 DeepSeek Harness 的独立 web provider seam，原生能力以当前官方限制为准 | Flash 不被注入会忽略的唯一搜索入口；Pro 原生及外部搜索正常；禁用、切换、备用模型和子运行策略一致，真实搜索数与错误可验证 |
 | 当前多模态用户输入与实时 Surface | H-67 | RunAssembler/ModelAgent 共用同一已接纳消息的文字、附件与持久化归属；参考 DeepSeek Harness 在创建 user message 前完成有序附件接纳 | 首轮与续轮新图均进入本次实际请求；无重复 user item；历史/压缩/重启、系统视觉文本及 meter/wire 一致；不可读附件的行为独立验证 |
 | 附件请求准备的失败语义 | H-68 | 既有 AttachmentDataResolver 区分不适用与读取失败，并在采样前保留结构化错误；参考 DeepSeek Harness 的附件错误和 await 准备链 | 正常图可用；丢失/权限/空文件/超限有明确结果；不静默删除模型图片；恢复、取消、单终态及实际请求数可验证 |
