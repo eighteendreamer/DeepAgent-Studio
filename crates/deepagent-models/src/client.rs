@@ -964,6 +964,33 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: preserve valid Chat Completions content-filter completion and usage"]
+    async fn audit_chat_content_filter_preserves_typed_finish_reason_and_usage() {
+        let events = vec![
+            r#"{"choices":[{"index":0,"delta":{},"finish_reason":"content_filter"}],"usage":{"prompt_tokens":9,"completion_tokens":0,"total_tokens":9,"prompt_cache_hit_tokens":8,"prompt_cache_miss_tokens":1}}"#.to_string(),
+            "[DONE]".to_string(),
+        ];
+        let client = ModelClient::new(
+            Arc::new(MockTransport::new(events)),
+            ModelConfig::deepseek_chat("audit-placeholder"),
+        );
+
+        let response = client
+            .stream_response(ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("audit filtered request")],
+            ))
+            .await
+            .expect("documented content_filter response should retain its typed result");
+
+        assert_eq!(
+            response.finish_reason,
+            Some(crate::chat::FinishReason::ContentFilter)
+        );
+        assert_eq!(response.usage.unwrap().prompt_tokens, 9);
+    }
+
+    #[tokio::test]
     async fn invalid_chat_reasoning_effort_is_rejected_before_transport() {
         struct FailIfCalled;
 
