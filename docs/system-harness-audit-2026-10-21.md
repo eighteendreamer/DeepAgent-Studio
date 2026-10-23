@@ -2626,6 +2626,27 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 应在 Chat request validation 中根据 `thinking.type=enabled`（或有效 reasoning effort）解析 `tool_choice`：字符串 `required`、对象指定函数都返回结构化 invalid-input，并保证 transport 调用数为零；`auto`、`none` 保留。Responses 路由按其自己的官方支持矩阵独立校验，不能用 Chat 规则污染默认 Responses。
 - 本轮只添加缺陷探针和审计记录，生产行为未修改。当前证据为正式 adapter 的离线调用计数，未向真实 DeepSeek 发送 400 请求，也未覆盖非流式 Chat、其他模型版本或默认 Responses 路径。
 
+### H-146：DeepSeek Chat 用户隔离字段被序列化为 Responses 的 `user`
+
+**级别：中（P2/P3，条件性供应商身份与隔离语义缺失）；触发条件：调用方使用 `WireMode::ChatCompletions` 并为模型客户端配置 `ResponseDefaults.user`。** DeepSeek Chat Completions 要求请求字段为 `user_id`；Responses API 使用 `user`。当前两个协议共用一个默认字段，但 Chat serializer 没有做协议级映射。
+
+#### 生产链与动态证据
+
+- 官方 [DeepSeek Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion) 将用户区分字段定义为 `user_id`，用途包括用户区分、内容安全审查、KV cache 隔离和调度隔离；官方 [Responses API](https://api-docs.deepseek.com/api/create-response) 使用的是 `user`，两者不能按同名字段直接透传。
+- 当前生产路径是 `ModelConfig::deepseek_chat()` → `ResponseDefaults.user` → `ModelClient::apply_chat_defaults()` → `response_to_chat_completion()` → `ChatCompletionRequest::Serialize`。其中 `ChatCompletionRequest` 的序列化实现固定执行 `map.serialize_entry("user", value)`，因此配置值会以 Chat 不识别的 `user` 发出；Responses 路径的 `ResponseRequest` 序列化仍使用 `user`，不属于本项缺陷。
+- 新增 opt-in 正式客户端探针 `client::tests::audit_chat_user_identity_uses_provider_user_id_field`。它通过真实 `ModelClient::stream_response()`、Chat 路由、默认值应用和受控 SSE transport 捕获最终请求体。执行 `cargo test -p deepagent-models audit_chat_user_identity_uses_provider_user_id_field --offline -- --ignored --nocapture` 得到 **0 passed / 1 failed（预期）**；捕获 wire 为 `{"messages":[...],"model":"deepseek-flash","stream":true,"stream_options":{"include_usage":true},"user":"audit-user-123"}`，`user_id` 缺失。没有调用公网。
+
+#### 成熟实现对照
+
+- **DeepSeek Harness** 的 provider adapter 先把统一运行时选项映射到当前协议的 request shape，再由各协议 serializer 输出；其 token-meter、session 和 provider 选项不把不同 provider 的同名/近义字段当成可直接透传的公共 wire。这里应沿用“适配器按协议显式映射”的边界。
+- **Codex** 的后端身份类型也把运行身份作为明确的 `user_id` 语义保存，而不是依赖 UI 文本或一个跨协议的模糊字段。具体字段名和 DeepSeek 协议不同，但共同原则是身份字段必须在 provider 边界保真、可审计、可按宿主隔离。
+
+#### 后果、修复方向与验证限制
+
+- 当前 Chat 请求未必会因此立刻返回错误，但 provider 可能忽略 `user`，导致配置的用户身份没有参与 Chat 路由的用户区分、内容安全审查身份、KV cache 隔离、调度隔离或多用户追踪。不能据此宣称多用户隔离已经生效。
+- 修复应在 Chat adapter 中显式把内部用户身份序列化为 `user_id`，并让 Responses adapter 保持 `user`；不要简单把公共字段改名后同时影响两种协议。需要补充两条协议的 wire 回归、空值省略、Unicode/长度边界和默认值与请求级值优先级测试；若 provider 对身份字段有字符集或长度限制，应在适配器边界给出结构化 invalid-input。
+- 本轮只添加缺陷探针和审计记录，生产行为未修改。证据是正式本地 adapter 的最终请求体捕获，未调用真实 DeepSeek、未验证 provider 对错误字段的具体响应，也未覆盖 Chat 非流式请求、不同账号或多宿主调度；严重级别保持条件性。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2637,6 +2658,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-144 Chat `insufficient_system_resource` 合法终态显式探针 | `cargo test -p deepagent-models audit_chat_insufficient_system_resource_finish_is_not_rejected_as_unknown --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 `ModelClient` 将官方 `finish_reason=insufficient_system_resource` 返回为 `Provider` 未知终态错误；MockTransport，无公网 |
 | H-145 Chat Thinking + `required` tool choice 组合显式探针 | `cargo test -p deepagent-models audit_chat_thinking_rejects_required_tool_choice_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 返回 Ok 且计数 transport 被调用，未在请求前拒绝；MockTransport，无公网 |
 | H-145 Chat Thinking + named tool choice 组合显式探针 | `cargo test -p deepagent-models audit_chat_thinking_rejects_named_tool_choice_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 返回 Ok 且计数 transport 被调用，未在请求前拒绝；MockTransport，无公网 |
+| H-146 Chat 用户身份字段显式探针 | `cargo test -p deepagent-models audit_chat_user_identity_uses_provider_user_id_field --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 Chat wire 发出 `user` 且缺少 DeepSeek 要求的 `user_id`；受控 transport，无公网 |
 | H-141 todo reminder 生命周期显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.47s；正式同一 session 连续 11 次独立用户回合、实际请求 11 次，`reminder_requests=[]`；仅临时内存数据库与离线 transport |
 | H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
 | H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |

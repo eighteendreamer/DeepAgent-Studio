@@ -661,6 +661,66 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: DeepSeek Chat user identity must serialize as user_id"]
+    async fn audit_chat_user_identity_uses_provider_user_id_field() {
+        struct CaptureBodyTransport {
+            body: Arc<std::sync::Mutex<Option<String>>>,
+            events: Vec<String>,
+        }
+
+        #[async_trait]
+        impl HttpTransport for CaptureBodyTransport {
+            async fn stream(
+                &self,
+                request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                *self.body.lock().unwrap() = Some(request.body);
+                for event in &self.events {
+                    if sink.on_event(event)? {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let captured = Arc::new(std::sync::Mutex::new(None));
+        let transport = Arc::new(CaptureBodyTransport {
+            body: captured.clone(),
+            events: vec![
+                r#"{"choices":[{"delta":{"content":"ok"},"finish_reason":null}]}"#
+                    .into(),
+                r#"{"choices":[{"delta":{"content":""},"finish_reason":"stop"}]}"#
+                    .into(),
+                r#"{"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2},"choices":[]}"#
+                    .into(),
+                "[DONE]".into(),
+            ],
+        });
+        let mut config = ModelConfig::deepseek_chat("test-key");
+        config.defaults.user = Some("audit-user-123".into());
+        let client = ModelClient::new(transport, config);
+
+        client
+            .stream_response(ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("audit user identity")],
+            ))
+            .await
+            .unwrap();
+
+        let body = captured.lock().unwrap().clone().unwrap();
+        let wire: serde_json::Value = serde_json::from_str(&body).unwrap();
+        eprintln!("audit chat user identity wire: {wire}");
+        assert_eq!(wire["user_id"], "audit-user-123");
+        assert!(
+            wire.get("user").is_none(),
+            "DeepSeek Chat must not receive the Responses API user field"
+        );
+    }
+
     #[test]
     #[ignore = "audit reproducer: translate Responses defaults to Chat Completions shape"]
     fn audit_chat_tool_choice_translates_default_shape() {
