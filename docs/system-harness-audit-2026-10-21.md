@@ -2688,6 +2688,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 保持锁期间两轮真实 ChatService/Kernel + 离线模型在 349ms 内完成；runtime/value.txt 不存在、ready skill_roots 为空、两次实际请求均没有该技能的完整目录条目。释放后校验/解压完成，技能注册表更新；第三个全新会话的实际请求包含该目录条目，且解压内容与原包相同。
 - 2026-10-23 重跑得到相同生命周期结果：两轮对话 384ms，锁持有期间技能未发布、runtime 未解压；释放后后台准备完成并发布技能。该数据是本次单机样本，不作为 P95 指标。
 - 新增默认忽略的 `runtime_payload::tests::cancelling_blocked_payload_preparation_exits_without_extracting`，使用真实 OS 排他文件锁阻塞生产准备函数；取消后在 14ms 退出，返回 `plugin preparation cancelled`，没有解压文件或遗留 `.runtime-stage-*`。执行 `cargo test -p deepagent-app-core --lib --offline cancelling_blocked_payload_preparation_exits_without_extracting -- --ignored --nocapture`：1 passed。该结果验证 Windows 当前样本的锁等待取消响应，不代表大包解压期间、其他平台或整个桌面停止链的 P95。
+- 新增默认忽略的 `runtime_payload::tests::workspace_switch_does_not_publish_stale_plugin_preparation`：真实 A/B 项目插件均预先启用，A 的 runtime payload 被 OS 文件锁阻塞后切换到 B，再释放 A；正式 `PluginService` 的 ready snapshot 最终只含 B 的技能根，A 的 runtime 未解压。执行 `cargo test -p deepagent-app-core --lib --offline workspace_switch_does_not_publish_stale_plugin_preparation -- --ignored --nocapture`：1 passed，约 2.11 秒。它验证当前 AppCore 项目作用域切换的代次栅栏；没有启动 Tauri 窗口，也不覆盖跨进程并发。
 - 首次探针把 fixture 放在聊天工作目录内，单纯匹配技能名会命中动态环境的文件路径；已把工作目录与 fixture 分开，并改为匹配目录条目后重跑通过。该早期断言失败不认定为产品能力泄漏；H-13 也收紧相同判据并独立重跑，缺陷仍存在。
 - 这是实际文件锁等待边界，没有真的等待 180 秒，也没有对逐文件校验人为注入 180 秒延迟、统计 P95 或验证跨进程安装并发。它支持磁盘准备在宿主后台执行的隔离设计，不能代替完整运行包性能及损坏恢复验收。
 

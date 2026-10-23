@@ -622,4 +622,107 @@ mod tests {
             .to_string_lossy()
             .starts_with(".runtime-stage-")));
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[ignore = "audit integration: exclusively holds the production disk-preparation gate"]
+    async fn workspace_switch_does_not_publish_stale_plugin_preparation() {
+        use crate::{McpService, PluginService};
+        use deepagent_persistence::Database;
+        use std::sync::Arc;
+
+        fn write_plugin(root: &Path, name: &str) {
+            std::fs::create_dir_all(root.join(".codex-plugin")).unwrap();
+            std::fs::create_dir_all(root.join("skills/audit-scope-skill")).unwrap();
+            std::fs::write(
+                root.join(".codex-plugin/plugin.json"),
+                format!(r#"{{"name":"{name}","version":"0.1.0","skills":"skills"}}"#),
+            )
+            .unwrap();
+            std::fs::write(
+                root.join("skills/audit-scope-skill/SKILL.md"),
+                "---\nname: audit-scope-skill\ndescription: Workspace scope probe\n---\nScope check.",
+            )
+            .unwrap();
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace_a = tmp.path().join("project-a");
+        let workspace_b = tmp.path().join("project-b");
+        let plugin_a = workspace_a.join(".deepagent/plugins/scope-a");
+        let plugin_b = workspace_b.join(".deepagent/plugins/scope-b");
+        write_plugin(&plugin_a, "scope-a");
+        write_plugin(&plugin_b, "scope-b");
+        archive(&plugin_a, b"stale project payload");
+
+        let plugins = Arc::new(PluginService::new(
+            crate::plugin_loader::PluginRoots {
+                session: Vec::new(),
+                builtin: tmp.path().join("builtin"),
+                workspace: None,
+                personal: tmp.path().join("personal"),
+            },
+            tmp.path().join("app-data"),
+        ));
+        plugins.set_active_workspace_root(Some(workspace_a.clone()));
+        let listed_a = plugins.list().unwrap();
+        assert_eq!(listed_a.len(), 1);
+        plugins.set_enabled(&listed_a[0].id, true).unwrap();
+        plugins.set_active_workspace_root(Some(workspace_b.clone()));
+        let listed_b = plugins.list().unwrap();
+        assert_eq!(listed_b.len(), 1);
+        plugins.set_enabled(&listed_b[0].id, true).unwrap();
+        plugins.set_active_workspace_root(Some(workspace_a.clone()));
+        let listed_a = plugins.list().unwrap();
+        let data = PathBuf::from(&listed_a[0].data_dir);
+        std::fs::create_dir_all(&data).unwrap();
+        let held_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(data.join(".runtime.lock"))
+            .unwrap();
+        FileExt::lock_exclusive(&held_lock).unwrap();
+
+        let mcp = Arc::new(McpService::new(Arc::new(
+            Database::open_in_memory().unwrap(),
+        )));
+        plugins.start_preparation(mcp, Arc::new(|| {}));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if matches!(
+                    DISK_PREPARATION.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("project A preparation must enter the production payload path");
+
+        assert!(plugins.set_active_workspace_root(Some(workspace_b.clone())));
+        assert!(plugins.ready_snapshot().0.skill_roots.is_empty());
+        FileExt::unlock(&held_lock).unwrap();
+
+        let expected_b = plugin_b.join("skills");
+        tokio::time::timeout(Duration::from_secs(8), async {
+            loop {
+                let roots = plugins.ready_snapshot().0.skill_roots;
+                if roots == vec![expected_b.clone()] {
+                    break roots;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .map_err(|_| "project B preparation did not publish in time")
+        .unwrap();
+        let roots = plugins.ready_snapshot().0.skill_roots;
+        eprintln!("audit workspace switch: ready_skill_roots={roots:?}");
+        assert_eq!(roots, vec![expected_b]);
+        assert!(!roots.iter().any(|root| root.starts_with(&workspace_a)));
+        assert!(!data.join("runtime/value.txt").exists());
+    }
 }
