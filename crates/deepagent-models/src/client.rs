@@ -506,7 +506,7 @@ mod tests {
     use crate::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
     use async_trait::async_trait;
     use deepagent_core::message::Message;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     fn client_with(events: Vec<String>) -> ModelClient {
         let transport = Arc::new(MockTransport::new(events));
@@ -718,6 +718,116 @@ mod tests {
         assert!(
             wire.get("user").is_none(),
             "DeepSeek Chat must not receive the Responses API user field"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: DeepSeek tool names must be validated before transport"]
+    async fn audit_deepseek_tool_schema_names_are_validated_before_transport() {
+        struct CountingTransport {
+            calls: Arc<AtomicUsize>,
+            events: Vec<String>,
+        }
+
+        #[async_trait]
+        impl HttpTransport for CountingTransport {
+            async fn stream(
+                &self,
+                _request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                for event in &self.events {
+                    if sink.on_event(event)? {
+                        break;
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let normal_events = vec![
+            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+                .into(),
+        ];
+        let cases = vec![
+            (
+                "empty",
+                vec![crate::chat::ToolSchema::function(
+                    "",
+                    "invalid empty name",
+                    serde_json::json!({"type":"object"}),
+                )],
+            ),
+            (
+                "illegal-character",
+                vec![crate::chat::ToolSchema::function(
+                    "read.file",
+                    "invalid dot",
+                    serde_json::json!({"type":"object"}),
+                )],
+            ),
+            (
+                "too-long",
+                vec![crate::chat::ToolSchema::function(
+                    "x".repeat(129),
+                    "invalid length",
+                    serde_json::json!({"type":"object"}),
+                )],
+            ),
+            (
+                "duplicate",
+                vec![
+                    crate::chat::ToolSchema::function(
+                        "same_tool",
+                        "first",
+                        serde_json::json!({"type":"object"}),
+                    ),
+                    crate::chat::ToolSchema::function(
+                        "same_tool",
+                        "second",
+                        serde_json::json!({"type":"object"}),
+                    ),
+                ],
+            ),
+        ];
+
+        let mut violations = Vec::new();
+        for wire_mode in [WireMode::Responses, WireMode::ChatCompletions] {
+            for (label, tools) in &cases {
+                let calls = Arc::new(AtomicUsize::new(0));
+                let client = ModelClient::new(
+                    Arc::new(CountingTransport {
+                        calls: calls.clone(),
+                        events: normal_events.clone(),
+                    }),
+                    ModelConfig::deepseek("audit-placeholder").with_wire_mode(wire_mode),
+                );
+                let result = client
+                    .stream_response(
+                        ResponseRequest::new(
+                            "deepseek-flash",
+                            vec![Message::user("validate tool names")],
+                        )
+                        .with_tools(tools.clone()),
+                    )
+                    .await;
+                eprintln!(
+                    "tool schema name audit: mode={wire_mode:?} case={label} result={result:?} transport_calls={}",
+                    calls.load(Ordering::SeqCst)
+                );
+                if result.is_ok() || calls.load(Ordering::SeqCst) != 0 {
+                    violations.push(format!(
+                        "mode={wire_mode:?} case={label} result_ok={} transport_calls={}",
+                        result.is_ok(),
+                        calls.load(Ordering::SeqCst)
+                    ));
+                }
+            }
+        }
+        assert!(
+            violations.is_empty(),
+            "invalid/duplicate tool schemas crossed the provider boundary: {violations:?}"
         );
     }
 

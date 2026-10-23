@@ -2647,6 +2647,29 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 修复应在 Chat adapter 中显式把内部用户身份序列化为 `user_id`，并让 Responses adapter 保持 `user`；不要简单把公共字段改名后同时影响两种协议。需要补充两条协议的 wire 回归、空值省略、Unicode/长度边界和默认值与请求级值优先级测试；若 provider 对身份字段有字符集或长度限制，应在适配器边界给出结构化 invalid-input。
 - 本轮只添加缺陷探针和审计记录，生产行为未修改。证据是正式本地 adapter 的最终请求体捕获，未调用真实 DeepSeek、未验证 provider 对错误字段的具体响应，也未覆盖 Chat 非流式请求、不同账号或多宿主调度；严重级别保持条件性。
 
+### H-147：DeepSeek 工具 schema 名称未按 provider 约束校验，非法、超长和重复名称直接越过请求边界
+
+**级别：高（P1，条件性工具目录/请求阻断）；触发条件：可见工具来自 MCP、插件或其它动态注册源，名称为空、含不允许字符、超过 128 个字符，或在同一次请求中重复。** 普通内置工具名称通常满足约束；本项不是说每个默认桌面会话都会失败，而是一个进入可见快照的异常工具 schema 就可能让整次模型请求被 provider 拒绝。
+
+#### 生产路径与动态证据
+
+- DeepSeek 官方 [Responses API](https://api-docs.deepseek.com/api/create-response) 规定 function 工具名必须非空、最长 128 个字符、匹配 `^[a-zA-Z0-9_-]+$`，并在同一请求中唯一；官方 [Chat Completions API](https://api-docs.deepseek.com/api/create-chat-completion) 对 function 名称使用同样约束。MCP 的服务器名和本地工具名来自外部配置/服务，不能默认视为已经满足该协议约束。
+- 当前生产路径是 `ToolDescriptor.name`/`RemoteTool.namespaced_name` → `ToolSchema::function` → `ResponseRequest.tools` → `ModelClient::stream_response()`；Responses serializer 和 Chat serializer 都直接写入 `tool.function.name`。`McpRegistry::namespaced_name()` 只做 `mcp__{server}__{tool}` 字符串拼接，`ToolRegistry::register()` 只拒绝重复注册名，没有做 provider 字符集、长度或请求内唯一性校验。动态快照合并也不能替代最后的 provider boundary validation。
+- 新增 opt-in 正式客户端探针 `client::tests::audit_deepseek_tool_schema_names_are_validated_before_transport`。它使用真实 `ModelClient`、两种 `WireMode`、正式 request serializer 和计数型 transport，分别构造空名、含点号的 `read.file`、129 个字符名称以及重复 `same_tool`。没有手工调用私有 serializer，也没有公网请求。
+- 执行 `cargo test -p deepagent-models audit_deepseek_tool_schema_names_are_validated_before_transport --offline -- --ignored --nocapture`：**0 passed / 1 failed（预期）**。四种 Responses 输入均返回受控的 `Ok(Response)` 且 `transport_calls=1`；四种 Chat 输入也均 `transport_calls=1`（本 fixture 没有 `[DONE]`，因此在 accumulator 处返回 `stream ended without [DONE]`，但请求已经到达 transport）。这证明非法 schema 没有在请求前被拒绝；不把受控响应误写成 provider 已接受非法名称。
+
+#### 成熟实现对照
+
+- **Codex** 在 `借鉴/codex/codex-rs/codex-mcp/src/mcp/mod.rs::sanitize_responses_api_tool_name` 明确把 MCP 名称中不符合 `^[a-zA-Z0-9_-]+$` 的字符替换为 `_`，空名变为 `_`；`codex-mcp/src/tools.rs` 随后以 128 字节上限截断并给冲突名称追加稳定 hash，同时保留 raw server/tool identity 用于实际路由。它把模型可见名和原始路由名分开，不把外部 MCP 名称原样当作 provider function 名称。
+- **DeepSeek Harness** 的 LLM serializer 通过已装配的工具 registry 生成 provider 工具列表，并把动态 tool addition/removal 作为独立的模型上下文块；这支持“工具身份和模型可见投影分离”的边界。本轮没有把其 Messages serializer 的名称行为夸大成 DeepSeek Responses 的 128 字符验证，也没有运行参考项目测试。
+
+#### 后果、修复方向与验证限制
+
+- 一个非法或重复工具名进入可见集合时，Responses/Chat 请求可能收到确定性的 400；由于工具 schema 在普通文本请求也会随请求发送，用户即使不打算调用该工具也可能无法开始对话。若上层把该错误当作可重试 provider 错误，可能重复发送相同必失败请求；如果只在 `ToolRegistry` 注册阶段拒绝，还可能让整个 MCP 快照在请求组装时才失败，无法定位具体来源。
+- 应在现有 MCP/插件工具快照发布前建立 provider-neutral raw identity 与按协议生成的 model-visible name，但仍在 `ModelClient` 发送前做最终 schema validation。Responses 和 Chat 可共享字符/长度/唯一性规则，却不能共享未经协议确认的字段映射；名称消歧必须同步 schema、调用路由、审批/权限、历史 call name 和诊断来源。对无法安全消歧的项，应让该能力进入管理失败状态并从新请求快照排除，不能静默选择第一个或吞掉注册错误。
+- 回归应覆盖正常名称、空/非法/超长、大小写、跨 server 冲突、同一请求重复、快照刷新/重启、延迟工具发现、Responses/Chat 两路以及真实 MCP `tools/list` 到最终 wire 的完整链路；同时断言原始 MCP call 仍使用 raw name。不能只测 `ToolSchema` JSON 能序列化。
+- 本轮只增加审计探针和文档，生产名称生成与校验未修改。证据来自正式模型客户端和受控 transport，未调用真实 DeepSeek、未启动带非法名称的完整桌面 MCP 配置，也未验证 provider 对每种错误的具体 HTTP body；Chat 组的 accumulator fixture 只用于证明请求越过 transport 边界。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -2659,6 +2682,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-145 Chat Thinking + `required` tool choice 组合显式探针 | `cargo test -p deepagent-models audit_chat_thinking_rejects_required_tool_choice_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 返回 Ok 且计数 transport 被调用，未在请求前拒绝；MockTransport，无公网 |
 | H-145 Chat Thinking + named tool choice 组合显式探针 | `cargo test -p deepagent-models audit_chat_thinking_rejects_named_tool_choice_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 adapter 返回 Ok 且计数 transport 被调用，未在请求前拒绝；MockTransport，无公网 |
 | H-146 Chat 用户身份字段显式探针 | `cargo test -p deepagent-models audit_chat_user_identity_uses_provider_user_id_field --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 Chat wire 发出 `user` 且缺少 DeepSeek 要求的 `user_id`；受控 transport，无公网 |
+| H-147 DeepSeek 工具 schema 名称显式探针 | `cargo test -p deepagent-models audit_deepseek_tool_schema_names_are_validated_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；Responses 的空名、非法字符、129 字符和重复名均以 `transport_calls=1` 越过正式 adapter，Chat 四组同样到达 transport 后因 fixture 缺 `[DONE]` 结束；受控 transport，无公网 |
 | H-141 todo reminder 生命周期显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e todo_reminder_lifecycle::audit_todo_reminder_counts_survive_independent_session_turns --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 1.47s；正式同一 session 连续 11 次独立用户回合、实际请求 11 次，`reminder_requests=[]`；仅临时内存数据库与离线 transport |
 | H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
 | H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |
