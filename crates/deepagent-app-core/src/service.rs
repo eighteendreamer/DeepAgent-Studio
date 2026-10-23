@@ -1368,6 +1368,73 @@ mod tests {
     }
 
     #[test]
+    fn audit_failed_stream_delta_is_not_replayed_as_an_assistant_answer() {
+        use deepagent_core::event::EventPayload;
+        use deepagent_core::message::Message;
+
+        let db = Database::open_in_memory().unwrap();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::create(&db, &clock, Some("partial stream replay")).unwrap();
+        let session_id = session.id().to_string();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("question"),
+            })
+            .unwrap();
+        session
+            .append(EventPayload::RunTerminal {
+                kind: "failed".into(),
+                reason: Some("provider stream deadline exceeded".into()),
+            })
+            .unwrap();
+
+        let runs = RunStore::new(&db);
+        runs.create("run-partial-replay", &session_id, None, 1_000)
+            .unwrap();
+        runs.append_event(
+            "run-partial-replay",
+            1_001,
+            "running_turn",
+            "progress",
+            "content_delta_batch",
+            &serde_json::json!({ "text": "partial provider output", "chunks": 3 }),
+        )
+        .unwrap();
+        runs.append_event(
+            "run-partial-replay",
+            1_002,
+            "finalizing",
+            "completed",
+            "run_failed",
+            &serde_json::json!({ "reason": "provider stream deadline exceeded" }),
+        )
+        .unwrap();
+
+        let durable_run_events = runs.events_after("run-partial-replay", None).unwrap();
+        assert!(durable_run_events.iter().any(|event| {
+            event.event_type == "content_delta_batch"
+                && event.data["text"] == "partial provider output"
+        }));
+
+        let conversation = AppService::new(db)
+            .session_conversation(&session_id)
+            .unwrap();
+        assert_eq!(conversation.len(), 1);
+        assert_eq!(conversation[0].role, "user");
+        assert_eq!(
+            conversation[0]
+                .turn
+                .as_ref()
+                .and_then(|turn| turn.terminal_kind.as_deref()),
+            Some("failed")
+        );
+        assert!(conversation
+            .iter()
+            .flat_map(|message| message.parts.iter())
+            .all(|part| !matches!(part, ConversationPartDto::Text { text } if text.contains("partial provider output"))));
+    }
+
+    #[test]
     fn lists_sessions() {
         let (svc, sid) = seeded_service();
         let sessions = svc.list_sessions().unwrap();
