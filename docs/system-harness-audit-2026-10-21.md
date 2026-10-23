@@ -14,6 +14,7 @@
 |---|---|---|
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | SSH 远端主机身份验证 | 正式 SshService 通过 loopback 连上临时随机服务器密钥；同一地址的 known_hosts 对照拒绝不匹配密钥 | 已确认 H-125；未连接公网或用户服务器 |
+| 本地 MCP 子进程环境授权 | 隔离宿主只注入虚构 canary，经正式 transport 完成 initialize/tools/list；空配置仍继承未声明 secret 和小写 token，显式覆盖对照通过 | 已确认 H-135；仅 Windows 本机 stdio，没有读取真实凭据或验证公网外传 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn，以及一个已被替代 turn 重复派生多个新 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter` 和 Responses failed usage 丢失均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
@@ -2367,10 +2368,36 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 已直接证明：新 run 的节点状态从 Running 被旧 run 的 Completed 改写；重跑路径没有调用 `cancel_run`。`applyNodeOutputs()` 和 `applyNodeEventIdentity()` 也在同一个未按当前 owner 隔离的回调内更新结果及媒体身份字段，但本探针没有单独断言这些字段被旧输出覆盖；没有运行后端任务，不能断言供应商仍在后台生成或产生重复费用。
 - 修复方向：将 controller、run_id、完成状态和两条 unlisten Promise 收进每次运行自己的 owner 对象；开始替代 run 前以旧 run_id 取消旧内核运行；每次异步注册完成时若 owner 已失效就立即 unlisten；节点和完成回调必须同时匹配当前 owner 与事件 run_id，清理只允许释放本 owner 的资源。该边界与 H-41 的外部完成串话、H-43 的订阅就绪竞态独立。本轮只增审计探针和文档，没有改生产行为。
 
+### H-135：stdio MCP 隐式继承宿主凭据，配置环境不是授权边界
+
+**级别：高（P1，有条件的凭据暴露风险）；触发条件：宿主进程环境实际含凭据，并启动了不应获得这些凭据的本地 stdio MCP。** 这是与成熟实现相比的默认环境授权缺口，不是 MCP 协议要求所有实现必须清理环境。
+
+#### 生产路径与动态证据
+
+- 正式宿主准备：`McpService::connect_one_resilient()` → `connect_transport()` → `StdioTransport::spawn()`；测试连接 `probe_with_timeout()` 和 `ConfigReconnectFactory::reconnect()` 也复用后两层。`crates/deepagent-mcp/src/stdio.rs:50` 创建普通 `tokio::process::Command`，仅 `.envs(&config.env)`，没有 `.env_clear()` 或统一环境过滤。显式配置覆盖同名值，并不限制其他宿主变量继承。
+- `stdio.rs` 收集宿主/config 中的敏感值并在 stderr 诊断中脱敏，这是日志保护；该列表没有作为子进程环境策略使用，不能阻止 MCP 在自己的进程中读取凭据。
+- 新增显式探针 `crates/deepagent-mcp/tests/env_inheritance_audit.rs`。外层通过当前测试 exe 启动独立宿主，先清空环境，仅保留运行基础变量，再注入三条随机临时目录 nonce 派生的虚构 canary；不修改父进程环境。隔离宿主通过正式 `connect_transport` / `McpClient` 启动真实 Node stdio fixture，完成 initialize 和 tools/list；fixture 只返回存在性/匹配布尔值，不返回环境原值。
+- 缺陷命令：`cargo test -p deepagent-mcp --test env_inheritance_audit audit_stdio_does_not_inherit_ambient_credentials --offline -- --ignored --exact --nocapture`。实际 **0 passed / 1 failed（预期暴露缺口）**，运行约 0.85s：空 `config.env` 组 `ambient_secret_present=true, ambient_secret_matches=true, lowercase_token_present=true, lowercase_token_matches=true`；普通变量对照及显式覆盖控制断言先通过，随后在“未声明 secret 不应进入 MCP”处失败。小写 token 同样继承由 fixture 观察值直接确认，不能把尚未执行到的后续断言说成独立失败。
+- 正向对照：`cargo test -p deepagent-mcp --test env_inheritance_audit audit_stdio_preserves_explicit_environment_overrides --offline -- --ignored --exact --nocapture`，**1 passed**，运行约 0.34s；显式 secret/普通变量覆盖正确，旧 secret 值不匹配。两组子进程均正常关闭；单次 MCP 请求、Node fixture 和隔离宿主分别有 5s/15s/20s 上限。
+
+#### 成熟实现对照
+
+- **Codex**：`借鉴/codex/codex-rs/rmcp-client/src/utils.rs::create_env_for_mcp_server()` 从基础变量白名单、显式 env_vars、CA 配置及 extra_env 构建最终环境，并过滤不可继承变量；Windows 同名覆盖考虑大小写。`stdio_server_launcher.rs:276` 使用该 builder；这里的 `Command` 是 `codex_utils_pty::Command`，其 `utils/pty/src/child_command.rs:96` 构造器明确 `.env_clear()`，因此白名单不会被普通 Command 的默认继承绕过。只核对参考源码，没有运行 Codex 测试。
+- **DeepSeek Harness**：`packages/mcp/mcp-client/src/transport.ts::buildChildEnv()` 将 `scrubbedParentEnv()` 与显式配置合并；`packages/subprocess/subprocess/src/index.ts` 的基础环境过滤大小写不敏感的 `KEY|PASSWORD|SECRET|TOKEN` 及 `DSH_*`，保留运行/代理所需环境，显式配置在过滤后叠加。这提供了共享启动边界，不是每个 MCP 各写一份过滤。
+- **Claude Code 的差异**：`restored-src/src/services/mcp/client.ts` 同样从 `subprocessEnv()` 再叠加 server env；但 `utils/subprocessEnv.ts` 默认仍继承环境，仅当 `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` 启用时清理列明凭据及 `INPUT_*` 副本，并保留其明确允许的工具凭据。不能声称所有成熟 Agent 默认全面清理，或把该条件策略描述成默认白名单。
+
+#### 影响、修复方向与限制
+
+- 已直接证明：MCP 在未通过 `config.env` 声明时，也能读取宿主实际存在的凭据形态变量。若本地插件/依赖不可信或被替换，可能把这些凭据用于自身请求、日志或外传；这些是触发后的风险，未在本探针中执行。凭据原本不在宿主环境时，本路径不会凭空读取数据库或 keychain；不能据此宣称所有供应商 Key 已泄漏。
+- 在现有统一子进程启动边界定义可解释的继承策略：基础环境、显式授权转发和配置覆盖分层，Windows 名称大小写一致；启动、测试连接和重连共用同一结果。默认白名单或敏感变量清理的取舍属于本地设计，应考虑代理、CA、包管理器及需要明确凭据的 MCP，不能直接把日志 `is_secret_key` 当作授权规则，也不能只在一个调用方加过滤。
+- 后续验收应覆盖空 env、显式转发/覆盖、大小写、代理/CA、重连及普通工具兼容；审计记录和错误中不输出环境值。清理环境并不实现 OS 沙箱，也不能阻止同一 OS 用户下未隔离进程使用其他渠道访问资源。当前仅 Windows 本机生产 transport 复现；未做 macOS/Linux、完整 PluginService/AppCore 到模型 wire、真实用户凭据或公网外传验证。探针默认 ignored，本轮不修改生产环境策略。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-135 stdio MCP 环境继承显式探针 | `cargo test -p deepagent-mcp --test env_inheritance_audit audit_stdio_does_not_inherit_ambient_credentials --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期暴露缺口），约 0.85s；显式覆盖对照命令 `... audit_stdio_preserves_explicit_environment_overrides ...`：1 passed，约 0.34s。隔离宿主只使用虚构 canary，真实 Node 经正式 transport 握手/列工具；未读取真实凭据、未联网外传 |
+| H-135 默认 MCP 基线与静态检查 | `cargo test -p deepagent-mcp --features http --offline`：61 单测、2 真实进程和 1 stderr 诊断测试通过，共 64 passed / 12 ignored；`cargo fmt --all -- --check`、`git diff --check` 通过。本轮仅增加审计测试和报告，未跑 workspace 全量、Clippy、桌面 build、真实 Tauri 或其他平台 |
 | H-120 durable sink 修复复核 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：3 passed / 6 ignored（取消、成功对照、节点事件重开回放）；`cargo test -p deepagent-runtime --lib workflow::node_events::tests --offline`：5 passed；格式与 diff 检查通过。Runtime Clippy `--no-deps -D warnings` 被未改动的 `model_agent.rs:225 clone_on_copy` 阻断；未运行真实 Tauri/桌面崩溃与断线重连 |
 | H-119 视频运行取消修复 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：2 passed / 7 ignored，包含停滞状态 HTTP 的正式运行取消和正常视频成功对照；`cargo test -p deepagent-app-core --lib canvas_model_gateway::tests --offline`：39 passed，包含下载 body 停滞取消后无临时 artifact；`cargo fmt --all -- --check`、`git diff --check` 通过。完整 AppCore Clippy 受既有 `deepagent-persistence::run_store` explicit-counter-loop 阻断；`--no-deps` 下新增 `post_json` 参数告警已通过 `VideoCancellation` options struct 消除，仍被 context_runtime 的 clone-on-copy、plugin_preparation type-complexity 与 run_assembler too-many-arguments 等既有告警阻断。未执行真实 Tauri、云端视频生成或桌面按钮验证；本地取消不代表撤销云端任务 |
 | H-129 一次性 MCP 测试连接 deadline 修复 | `cargo test -p deepagent-app-core --lib mcp_service::tests::test_server_deadlines_stdio_initialize --offline -- --nocapture` 与 `...test_server_deadlines_stdio_tools_list...`：均 1 passed；正式 MCP 探测路径 + 本机 Node stdio server 分别挂起 initialize、tools/list 至 2 秒 deadline，返回 failed/timeout 并关闭子进程。`cargo test -p deepagent-app-core --lib mcp_service::tests --offline`：26 passed / 1 ignored；`cargo fmt --all -- --check` 通过。未访问公网或用户数据 |
@@ -2848,6 +2875,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 启动恢复的规范终态、会话投影与诊断归属 | H-44、H-95 | 恢复共用现有幂等终态边界，文件会话投影与 interruption 分类均具备按 run/task 身份的处理；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补；多个 unfinished run 的原因各自对应目标 turn，不能改错后续 turn |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
+| 本地 MCP 子进程环境授权 | H-135 | 现有统一进程启动边界管理基础环境、显式转发/覆盖和不可继承变量；参考 Codex 白名单、DeepSeek 共享清理及 Claude 条件策略，具体默认值为本地设计 | 空配置不隐式获得未授权宿主凭据；显式授权、大小写、代理/CA、首次启动/测试/重连一致；不以环境过滤代替 OS 沙箱 |
 | MCP 初始化复用与配置代次 | H-47 | 按服务连接身份复用 pending startup，定向取消/失效；全局视图代次不能写坏仍有效的共享 slot | 新增或修改 B 不取消未变 A；禁用/替换 A 才终止旧任务；迟到取消结果不变成新代缓存失败 |
 | MCP 模型可见名称与快照发布 | H-56 | 现有 registry 在发布前统一名称唯一性和 raw owner 路由；参考 Codex 对最终可见名的消歧 | 多快照合并不发布重名；能力冲突不阻塞普通对话；历史和权限匹配保持可解释 |
 | 能力目录和使用说明的内容保留与去重 | H-57 | 既有原生 Surface/事件保存实际正文并基于当前内容去重，或每请求从就绪快照注入；参考 Claude 的 MCP/skill 正文附件及 DeepSeek 连接拥有的 system section | 连续 turn 的完整 wire 均保留有效目录/说明；压缩/恢复不因旧身份标记丢正文；断线与配置更新语义一致 |
