@@ -1064,6 +1064,29 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    #[ignore = "audit reproducer: official tool_search_call output must not be silently dropped"]
+    async fn audit_responses_tool_search_call_is_not_silently_dropped() {
+        let client = client_with(vec![
+            r#"{"type":"response.output_item.done","item":{"type":"tool_search_call","call_id":"search-1","execution":"client","arguments":{"query":"calendar create","limit":1}}}"#
+                .into(),
+            r#"{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}"#
+                .into(),
+        ]);
+
+        let result = client
+            .stream_response(ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("find a calendar tool")],
+            ))
+            .await;
+        eprintln!("Responses tool_search_call audit: result={result:?}");
+        assert!(
+            result.is_err(),
+            "an unsupported official tool_search_call must be rejected instead of silently dropped"
+        );
+    }
+
     #[test]
     #[ignore = "audit reproducer: translate Responses defaults to Chat Completions shape"]
     fn audit_chat_tool_choice_translates_default_shape() {
