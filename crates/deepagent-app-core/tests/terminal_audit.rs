@@ -131,7 +131,6 @@ async fn observe_direct_output(rows: usize) -> ReadObservation {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "audit: a limited terminal read must not acknowledge bytes it did not return"]
 async fn audit_direct_terminal_cursor_preserves_unreturned_output() {
     let small = observe_direct_output(32).await;
     let large = observe_direct_output(1024).await;
@@ -146,8 +145,10 @@ async fn audit_direct_terminal_cursor_preserves_unreturned_output() {
     assert!(large.tail_recoverable, "suffix must still be in memory");
     assert!(large.suffix_bytes > 0);
     assert_eq!(large.persisted_cursor, large.first_cursor);
+    assert_eq!(large.first_cursor, large.first_bytes as u64);
     assert!(
-        large.first_cursor == large.first_bytes as u64 && large.tail_received,
-        "a cursor-following reader skipped retained output: {large:?}"
+        large.tail_received,
+        "the second page must contain the retained tail"
     );
+    assert_eq!(large.next_bytes, large.suffix_bytes);
 }

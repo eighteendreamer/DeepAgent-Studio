@@ -78,8 +78,11 @@ pub struct TerminalInputLease {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TerminalReadChunk {
+    /// Cursor immediately after the bytes returned in `data`. It is not the
+    /// producer's current output position when the response is capped.
     pub cursor: u64,
     pub data: Vec<u8>,
+    /// The requested cursor was older than the retained history.
     pub truncated: bool,
 }
 

@@ -35,7 +35,6 @@ async fn session_with_output(bytes: &[u8]) -> Arc<SshSession> {
 }
 
 #[tokio::test]
-#[ignore = "audit: SSH output cursor must cover only the bytes returned to the caller"]
 async fn audit_ssh_terminal_cursor_preserves_unreturned_output() {
     let small_payload = vec![b's'; 16 * 1024];
     let small = session_with_output(&small_payload).await;
@@ -70,9 +69,7 @@ async fn audit_ssh_terminal_cursor_preserves_unreturned_output() {
     assert_eq!(suffix.data, payload[64 * 1024..]);
     let mut received = first.data;
     received.extend(next.data);
-    assert_eq!(
-        (first.cursor, received.len()),
-        (64 * 1024, payload.len()),
-        "following the returned cursor silently skips retained SSH output"
-    );
+    assert_eq!(first.cursor, 64 * 1024);
+    assert_eq!(received.len(), payload.len());
+    assert_eq!(next.cursor, payload.len() as u64);
 }

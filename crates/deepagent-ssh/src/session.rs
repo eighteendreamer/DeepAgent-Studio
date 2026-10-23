@@ -230,20 +230,30 @@ impl SshSession {
         let current = pty.output_cursor.load(Ordering::Acquire);
         let oldest = history.front().map(|(start, _)| *start).unwrap_or(current);
         let truncated = after_cursor < oldest && oldest > 0;
+        let read_from = after_cursor.max(oldest);
         let mut data = Vec::new();
+        let mut next_cursor = read_from;
         for (start, chunk) in history.iter() {
             let end = *start + chunk.len() as u64;
-            if end > after_cursor {
-                let offset = after_cursor.saturating_sub(*start) as usize;
-                data.extend_from_slice(&chunk[offset.min(chunk.len())..]);
-                if data.len() >= 64 * 1024 {
-                    data.truncate(64 * 1024);
-                    break;
-                }
+            if end <= read_from {
+                continue;
+            }
+            let offset = read_from.saturating_sub(*start) as usize;
+            let offset = offset.min(chunk.len());
+            let remaining = 64 * 1024 - data.len();
+            let take = remaining.min(chunk.len() - offset);
+            data.extend_from_slice(&chunk[offset..offset + take]);
+            next_cursor = (*start + offset as u64) + take as u64;
+            if data.len() == 64 * 1024 {
+                break;
             }
         }
         Some(TerminalReadChunk {
-            cursor: current,
+            cursor: if data.is_empty() {
+                current
+            } else {
+                next_cursor
+            },
             data,
             truncated,
         })

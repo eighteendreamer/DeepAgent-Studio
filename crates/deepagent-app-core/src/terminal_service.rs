@@ -48,8 +48,10 @@ pub struct LocalPtyHandle {
 /// reconnect. Output older than the bounded history is reported as truncated.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PtyReadChunk {
+    /// Cursor immediately after the bytes returned in `data`.
     pub cursor: u64,
     pub data: Vec<u8>,
+    /// The requested cursor was older than the retained history.
     pub truncated: bool,
 }
 
@@ -323,8 +325,9 @@ impl TerminalService {
         self.ptys.read().await.contains_key(pty_id)
     }
 
-    /// Read PTY output after a byte cursor. The history is intentionally
-    /// bounded so a long-running shell cannot grow memory without limit.
+    /// Read PTY output after a byte cursor. The returned cursor acknowledges
+    /// only bytes included in this response; it never advances over a suffix
+    /// that was retained but capped by the response size.
     pub async fn pty_read_with_cursor(
         &self,
         handle: &LocalPtyHandle,
@@ -342,20 +345,30 @@ impl TerminalService {
         let current = state.output_cursor.load(Ordering::Acquire);
         let oldest = history.front().map(|(start, _)| *start).unwrap_or(current);
         let truncated = after_cursor < oldest && oldest > 0;
+        let read_from = after_cursor.max(oldest);
         let mut data = Vec::new();
+        let mut next_cursor = read_from;
         for (start, chunk) in history.iter() {
             let end = *start + chunk.len() as u64;
-            if end > after_cursor {
-                let offset = after_cursor.saturating_sub(*start) as usize;
-                data.extend_from_slice(&chunk[offset.min(chunk.len())..]);
-                if data.len() >= 64 * 1024 {
-                    data.truncate(64 * 1024);
-                    break;
-                }
+            if end <= read_from {
+                continue;
+            }
+            let offset = read_from.saturating_sub(*start) as usize;
+            let offset = offset.min(chunk.len());
+            let remaining = 64 * 1024 - data.len();
+            let take = remaining.min(chunk.len() - offset);
+            data.extend_from_slice(&chunk[offset..offset + take]);
+            next_cursor = (*start + offset as u64) + take as u64;
+            if data.len() == 64 * 1024 {
+                break;
             }
         }
         Ok(PtyReadChunk {
-            cursor: current,
+            cursor: if data.is_empty() {
+                current
+            } else {
+                next_cursor
+            },
             data,
             truncated,
         })
