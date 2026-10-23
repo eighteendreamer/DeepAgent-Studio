@@ -5,70 +5,63 @@
 
 use serde::{Deserialize, Serialize, Serializer};
 
+use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::Message;
 use deepagent_core::response_item::{ResponseInputItem, ResponseOutputItem};
 
-/// DeepSeek Thinking Mode depth exposed to users.
+/// Validate DeepSeek Responses' optional end-user identifier.
 ///
-/// Aligned to the provider's official controls:
-/// - `Simple` => thinking disabled
-/// - `Medium` => thinking enabled with `reasoning_effort=high`
-/// - `Deep` => thinking enabled with `reasoning_effort=max`
+/// The provider accepts 1-512 ASCII letters, digits, hyphens, or underscores.
+/// The error deliberately omits the value so identifiers cannot leak to logs.
+pub fn validate_responses_user_identifier(value: &str) -> Result<()> {
+    let valid = (1..=512).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'));
+    if !valid {
+        return Err(CoreError::invalid(
+            "Responses user must be 1-512 ASCII letters, digits, hyphens, or underscores",
+        ));
+    }
+    Ok(())
+}
+
+/// DeepSeek Responses reasoning effort exposed to users.
+///
+/// The four variants serialize directly to the official Responses values.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ThinkingDepth {
+pub enum ReasoningEffort {
     /// Thinking disabled.
-    Simple,
+    None,
+    /// Thinking enabled at low effort.
+    Low,
     /// Thinking enabled at high effort.
     #[default]
-    Medium,
+    High,
     /// Thinking enabled at maximum effort.
-    Deep,
+    Max,
 }
 
-impl ThinkingDepth {
-    /// Stable label used in settings/UI.
-    pub const fn label(&self) -> &'static str {
+impl ReasoningEffort {
+    /// Stable canonical label used in settings/UI and Responses requests.
+    pub const fn label(self) -> &'static str {
         match self {
-            ThinkingDepth::Simple => "simple",
-            ThinkingDepth::Medium => "medium",
-            ThinkingDepth::Deep => "deep",
+            ReasoningEffort::None => "none",
+            ReasoningEffort::Low => "low",
+            ReasoningEffort::High => "high",
+            ReasoningEffort::Max => "max",
         }
     }
-}
 
-/// Concrete thinking parameters derived from a [`ThinkingDepth`].
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ThinkingConfig {
-    /// Whether reasoning is enabled.
-    pub enabled: bool,
-    /// Responses reasoning effort (`"none"` disables thinking).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub effort: Option<String>,
-    /// Output token ceiling for this depth.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub max_tokens: Option<u32>,
-}
-
-impl ThinkingConfig {
-    /// Derive the request-level config for a depth.
-    pub fn for_depth(depth: ThinkingDepth) -> Self {
-        match depth {
-            ThinkingDepth::Simple => Self {
-                enabled: false,
-                effort: Some("none".to_string()),
-                max_tokens: Some(8_192),
-            },
-            ThinkingDepth::Medium => Self {
-                enabled: true,
-                effort: Some("high".to_string()),
-                max_tokens: Some(16_384),
-            },
-            ThinkingDepth::Deep => Self {
-                enabled: true,
-                effort: Some("max".to_string()),
-                max_tokens: Some(32_768),
-            },
+    /// Parse one of the canonical provider values without accepting aliases.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "low" => Some(Self::Low),
+            "high" => Some(Self::High),
+            "max" => Some(Self::Max),
+            _ => None,
         }
     }
 }
@@ -135,8 +128,8 @@ pub struct ResponseRequest {
     pub temperature: Option<f32>,
     /// Max output tokens.
     pub max_output_tokens: Option<u32>,
-    /// Responses API reasoning effort (`high` / `max`).
-    pub reasoning_effort: Option<String>,
+    /// Responses API reasoning effort (`none` / `low` / `high` / `max`).
+    pub reasoning_effort: Option<ReasoningEffort>,
     /// Advertised tools.
     pub tools: Vec<ToolSchema>,
     /// Responses API tool choice. Omitted means provider default (`auto`).
@@ -183,8 +176,8 @@ impl Serialize for ResponseRequest {
         if let Some(value) = self.top_logprobs {
             map.serialize_entry("top_logprobs", &value)?;
         }
-        if let Some(value) = &self.reasoning_effort {
-            map.serialize_entry("reasoning", &serde_json::json!({"effort": value}))?;
+        if let Some(value) = self.reasoning_effort {
+            map.serialize_entry("reasoning", &serde_json::json!({"effort": value.label()}))?;
         }
         if !self.tools.is_empty() {
             let tools: Vec<serde_json::Value> = self.tools.iter().map(|tool| match tool.kind.as_str() {
@@ -455,14 +448,21 @@ impl ResponseRequest {
         self
     }
 
-    /// Apply a DeepSeek Thinking Mode profile to this request.
-    pub fn with_thinking_depth(mut self, depth: ThinkingDepth) -> Self {
-        let cfg = ThinkingConfig::for_depth(depth);
-        self.reasoning_effort = cfg.effort;
-        if self.max_output_tokens.is_none() {
-            self.max_output_tokens = cfg.max_tokens;
-        }
+    /// Apply the canonical DeepSeek Responses reasoning effort.
+    ///
+    /// `max_output_tokens` remains independent; selecting an effort never
+    /// invents a token ceiling or rewrites an explicit one.
+    pub fn with_reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.reasoning_effort = Some(effort);
         self
+    }
+
+    /// Validate provider-bound fields after defaults have been applied.
+    pub fn validate(&self) -> Result<()> {
+        if let Some(user) = &self.user {
+            validate_responses_user_identifier(user)?;
+        }
+        Ok(())
     }
 }
 
@@ -717,50 +717,60 @@ mod tests {
     }
 
     #[test]
-    fn thinking_depth_flags() {
-        assert_eq!(ThinkingDepth::Simple.label(), "simple");
-        assert_eq!(ThinkingDepth::Medium.label(), "medium");
-        assert_eq!(ThinkingDepth::Deep.label(), "deep");
-        assert_eq!(ThinkingDepth::default(), ThinkingDepth::Medium);
+    fn reasoning_effort_flags() {
+        assert_eq!(ReasoningEffort::None.label(), "none");
+        assert_eq!(ReasoningEffort::Low.label(), "low");
+        assert_eq!(ReasoningEffort::High.label(), "high");
+        assert_eq!(ReasoningEffort::Max.label(), "max");
+        assert_eq!(ReasoningEffort::default(), ReasoningEffort::High);
     }
 
     #[test]
-    fn thinking_config_mapping() {
-        assert_eq!(
-            ThinkingConfig::for_depth(ThinkingDepth::Simple),
-            ThinkingConfig {
-                enabled: false,
-                effort: Some("none".to_string()),
-                max_tokens: Some(8_192)
-            }
-        );
-        assert_eq!(
-            ThinkingConfig::for_depth(ThinkingDepth::Medium)
-                .effort
-                .as_deref(),
-            Some("high")
-        );
-        assert_eq!(
-            ThinkingConfig::for_depth(ThinkingDepth::Deep)
-                .effort
-                .as_deref(),
-            Some("max")
-        );
-        assert_eq!(
-            ThinkingConfig::for_depth(ThinkingDepth::Medium).max_tokens,
-            Some(16_384)
-        );
-        assert_eq!(
-            ThinkingConfig::for_depth(ThinkingDepth::Deep).max_tokens,
-            Some(32_768)
-        );
+    fn reasoning_effort_accepts_only_canonical_values() {
+        for (label, effort) in [
+            ("none", ReasoningEffort::None),
+            ("low", ReasoningEffort::Low),
+            ("high", ReasoningEffort::High),
+            ("max", ReasoningEffort::Max),
+        ] {
+            assert_eq!(ReasoningEffort::parse(label), Some(effort));
+            assert_eq!(
+                serde_json::from_str::<ReasoningEffort>(&format!("\"{label}\"")).unwrap(),
+                effort
+            );
+        }
+        for alias in ["minimal", "medium", "xhigh", "simple", "deep", " HIGH "] {
+            assert!(
+                ReasoningEffort::parse(alias).is_none(),
+                "must reject {alias}"
+            );
+            assert!(
+                serde_json::from_str::<ReasoningEffort>(&format!("\"{alias}\"")).is_err(),
+                "serde must reject {alias}"
+            );
+        }
+    }
+
+    #[test]
+    fn reasoning_effort_serializes_canonical_wire_values() {
+        for effort in [
+            ReasoningEffort::None,
+            ReasoningEffort::Low,
+            ReasoningEffort::High,
+            ReasoningEffort::Max,
+        ] {
+            let request = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
+                .with_reasoning_effort(effort);
+            let value = serde_json::to_value(request).unwrap();
+            assert_eq!(value["reasoning"]["effort"], effort.label());
+        }
     }
 
     #[test]
     fn request_builder_and_serialization() {
         let req = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
             .streaming()
-            .with_thinking_depth(ThinkingDepth::Medium)
+            .with_reasoning_effort(ReasoningEffort::High)
             .with_temperature(0.2)
             .with_tools(vec![ToolSchema::function(
                 "reverse",
@@ -771,18 +781,18 @@ mod tests {
         assert_eq!(json["model"], "deepseek-v4-flash");
         assert_eq!(json["stream"], true);
         assert_eq!(json["reasoning"]["effort"], "high");
-        assert_eq!(json["max_output_tokens"], 16_384);
+        assert!(json.get("max_output_tokens").is_none());
         assert!((json["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
         assert_eq!(json["tools"][0]["name"], "reverse");
     }
 
     #[test]
-    fn simple_thinking_disables_reasoning() {
+    fn none_effort_disables_reasoning() {
         let req = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
-            .with_thinking_depth(ThinkingDepth::Simple);
+            .with_reasoning_effort(ReasoningEffort::None);
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["reasoning"]["effort"], "none");
-        assert_eq!(json["max_output_tokens"], 8_192);
+        assert!(json.get("max_output_tokens").is_none());
     }
 
     #[test]

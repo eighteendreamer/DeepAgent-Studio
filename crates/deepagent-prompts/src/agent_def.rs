@@ -71,25 +71,28 @@ impl PermissionMode {
     }
 }
 
-/// CC agent `effort` — default reasoning depth for the sub-agent.
+/// Agent `effort` — default provider reasoning effort for the sub-agent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EffortLevel {
-    /// Shallow reasoning, low latency.
-    Simple,
-    /// Balanced reasoning.
-    Medium,
-    /// Deep reasoning for hard tasks.
-    Deep,
+    /// Disable reasoning.
+    None,
+    /// Low reasoning effort.
+    Low,
+    /// High reasoning effort.
+    High,
+    /// Maximum reasoning effort.
+    Max,
 }
 
 impl EffortLevel {
     /// Parse a frontmatter `effort:` value.
     pub fn parse(value: &str) -> Option<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "simple" => Some(Self::Simple),
-            "medium" => Some(Self::Medium),
-            "deep" => Some(Self::Deep),
+        match value {
+            "none" => Some(Self::None),
+            "low" => Some(Self::Low),
+            "high" => Some(Self::High),
+            "max" => Some(Self::Max),
             _ => None,
         }
     }
@@ -143,7 +146,7 @@ pub struct AgentDef {
     /// `maxTurns` — max agentic turns, mapped onto the engine's step cap.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_turns: Option<usize>,
-    /// `effort` — default reasoning depth for the child.
+    /// `effort` — default reasoning effort for the child.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<EffortLevel>,
     /// `skills` — skill ids preloaded before the child's first turn.
@@ -258,7 +261,7 @@ mod tests {
         );
     }
 
-    const TEAMMATE: &str = "---\nname: code-reviewer\ndescription: Reviews code diffs\ntools: Read, Grep\ndisallowedTools: Bash, Write\nmodel: inherit\npermissionMode: acceptEdits\nmaxTurns: 12\neffort: deep\nskills: unit-testing\nbackground: true\n---\nYou are a code reviewer.";
+    const TEAMMATE: &str = "---\nname: code-reviewer\ndescription: Reviews code diffs\ntools: Read, Grep\ndisallowedTools: Bash, Write\nmodel: inherit\npermissionMode: acceptEdits\nmaxTurns: 12\neffort: max\nskills: unit-testing\nbackground: true\n---\nYou are a code reviewer.";
 
     #[test]
     fn parses_teammate_frontmatter() {
@@ -270,7 +273,7 @@ mod tests {
         assert!(a.disallows_tools());
         assert_eq!(a.permission_mode, Some(PermissionMode::AcceptEdits));
         assert_eq!(a.max_turns, Some(12));
-        assert_eq!(a.effort, Some(EffortLevel::Deep));
+        assert_eq!(a.effort, Some(EffortLevel::Max));
         assert_eq!(a.skills.as_deref(), Some(&["unit-testing".to_string()][..]));
         assert_eq!(a.background, Some(true));
         // Not declared in this file.
@@ -299,7 +302,8 @@ mod tests {
         );
         // CC accepts `dontAsk`/`plan` but we drop them for sub-agents.
         assert_eq!(PermissionMode::parse("plan"), None);
-        assert_eq!(EffortLevel::parse("medium"), Some(EffortLevel::Medium));
+        assert_eq!(EffortLevel::parse("high"), Some(EffortLevel::High));
+        assert_eq!(EffortLevel::parse("medium"), None);
         assert_eq!(EffortLevel::parse("bogus"), None);
         assert_eq!(
             IsolationChoice::parse("worktree"),

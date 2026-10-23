@@ -19,7 +19,7 @@ use serde::Deserialize;
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_models::chat::ResponseRequest;
-use deepagent_models::{ModelClient, ThinkingDepth};
+use deepagent_models::{ModelClient, ReasoningEffort};
 use deepagent_planner::{PlanDag, PlanNode};
 use deepagent_subagents::{DagScheduler, GitWorktrees};
 
@@ -67,7 +67,7 @@ pub(crate) async fn plan_dag_via_model(
     )
     .streaming()
     .with_max_output_tokens(1024)
-    .with_thinking_depth(ThinkingDepth::Simple);
+    .with_reasoning_effort(ReasoningEffort::None);
     let response = client.stream_response(request).await?;
     let planned = parse_planned_nodes(&response.output_text_projection())?;
     if planned.is_empty() {

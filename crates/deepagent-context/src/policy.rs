@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use deepagent_models::{ModelCapability, ThinkingDepth};
+use deepagent_models::{ModelCapability, ReasoningEffort};
 
 use crate::budget::PromptBudget;
 
@@ -79,19 +79,19 @@ impl ContextPolicy {
     /// Build policy from official/model capability and the active thinking
     /// depth. Thresholds are ratios of the real model budget, not fixed magic
     /// numbers scattered through the app.
-    pub fn for_capability(capability: &ModelCapability, thinking_depth: ThinkingDepth) -> Self {
-        Self::for_capability_with_output(capability, thinking_depth, None)
+    pub fn for_capability(capability: &ModelCapability, reasoning_effort: ReasoningEffort) -> Self {
+        Self::for_capability_with_output(capability, reasoning_effort, None)
     }
 
     /// Build a policy using the output ceiling of the actual request when one
     /// is available. The provider context capacity remains the denominator.
     pub fn for_capability_with_output(
         capability: &ModelCapability,
-        thinking_depth: ThinkingDepth,
+        reasoning_effort: ReasoningEffort,
         requested_output_tokens: Option<usize>,
     ) -> Self {
         let management_window = capability.context_window;
-        let _ = thinking_depth; // Reasoning effort does not change the provider capacity.
+        let _ = reasoning_effort; // Reasoning effort does not change the provider capacity.
         let reserved_output_tokens = requested_output_tokens
             .unwrap_or(capability.max_output_tokens)
             .min(capability.max_output_tokens)
@@ -202,7 +202,7 @@ mod tests {
 
     #[test]
     fn deepseek_policy_uses_provider_window_without_model_name_cap() {
-        let policy = ContextPolicy::for_capability(&cap(), ThinkingDepth::Medium);
+        let policy = ContextPolicy::for_capability(&cap(), ReasoningEffort::High);
         assert_eq!(policy.context_window, 1_000_000);
         assert_eq!(policy.reserved_output_tokens, 384_000);
         assert_eq!(policy.reserved_tool_tokens, 62_500);
@@ -212,17 +212,17 @@ mod tests {
 
     #[test]
     fn output_budget_uses_request_ceiling_not_reasoning_effort() {
-        let medium =
-            ContextPolicy::for_capability_with_output(&cap(), ThinkingDepth::Medium, Some(256_000));
-        let deep =
-            ContextPolicy::for_capability_with_output(&cap(), ThinkingDepth::Deep, Some(256_000));
-        assert_eq!(medium.reserved_output_tokens, deep.reserved_output_tokens);
-        assert_eq!(medium.prompt_budget, deep.prompt_budget);
+        let high =
+            ContextPolicy::for_capability_with_output(&cap(), ReasoningEffort::High, Some(256_000));
+        let max =
+            ContextPolicy::for_capability_with_output(&cap(), ReasoningEffort::Max, Some(256_000));
+        assert_eq!(high.reserved_output_tokens, max.reserved_output_tokens);
+        assert_eq!(high.prompt_budget, max.prompt_budget);
     }
 
     #[test]
     fn autocompact_threshold_reserves_actual_request_output() {
-        let policy = ContextPolicy::for_capability(&cap(), ThinkingDepth::Medium);
+        let policy = ContextPolicy::for_capability(&cap(), ReasoningEffort::High);
         assert_eq!(policy.effective_context_window(), 616_000);
         // threshold = effective − 65,536 Harness-style headroom.
         assert_eq!(policy.autocompact_threshold_tokens(None, None), 550_464);
@@ -235,7 +235,7 @@ mod tests {
 
     #[test]
     fn autocompact_pct_override_is_min_combined_with_default() {
-        let policy = ContextPolicy::for_capability(&cap(), ThinkingDepth::Medium);
+        let policy = ContextPolicy::for_capability(&cap(), ReasoningEffort::High);
         // 50% of usable message capacity is lower than the normal trigger.
         assert_eq!(
             policy.autocompact_threshold_tokens(None, Some(50.0)),
@@ -262,7 +262,7 @@ mod tests {
         let mut small = cap();
         small.context_window = 16_000;
         small.max_output_tokens = 8_000;
-        let policy = ContextPolicy::for_capability(&small, ThinkingDepth::Simple);
+        let policy = ContextPolicy::for_capability(&small, ReasoningEffort::None);
         // effective = 16_000 − 8_000 = 8_000; threshold saturates at 0.
         assert_eq!(policy.effective_context_window(), 8_000);
         assert_eq!(policy.autocompact_threshold_tokens(None, None), 0);
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn one_million_window_with_256k_output_matches_harness_pressure_budget() {
         let policy =
-            ContextPolicy::for_capability_with_output(&cap(), ThinkingDepth::Medium, Some(256_000));
+            ContextPolicy::for_capability_with_output(&cap(), ReasoningEffort::High, Some(256_000));
         assert_eq!(policy.autocompact_threshold_tokens(None, None), 678_464);
         assert_eq!(
             policy.prompt_budget,
@@ -280,7 +280,7 @@ mod tests {
         let mut alias = cap();
         alias.model_id = "deepseek-flash".into();
         let alias_policy =
-            ContextPolicy::for_capability_with_output(&alias, ThinkingDepth::Medium, Some(256_000));
+            ContextPolicy::for_capability_with_output(&alias, ReasoningEffort::High, Some(256_000));
         assert_eq!(alias_policy.auto_compact_at, policy.auto_compact_at);
     }
 }

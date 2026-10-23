@@ -3055,16 +3055,13 @@ fn set_terminal_shell(state: State<'_, AppState>, shell: String) -> Result<Setti
 }
 
 #[tauri::command]
-fn set_thinking_depth(state: State<'_, AppState>, depth: String) -> Result<SettingsView, String> {
-    let parsed = match depth.as_str() {
-        "simple" => deepagent_models::ThinkingDepth::Simple,
-        "medium" => deepagent_models::ThinkingDepth::Medium,
-        "deep" => deepagent_models::ThinkingDepth::Deep,
-        other => return Err(format!("unknown thinking depth: {other}")),
-    };
+fn set_reasoning_effort(state: State<'_, AppState>, effort: String) -> Result<SettingsView, String> {
+    let parsed = deepagent_models::ReasoningEffort::parse(&effort).ok_or_else(|| {
+        format!("unknown reasoning effort '{effort}'; expected none, low, high, or max")
+    })?;
     state
         .settings
-        .set_thinking_depth(parsed)
+        .set_reasoning_effort(parsed)
         .map_err(|e| e.to_string())
 }
 
@@ -7476,7 +7473,7 @@ pub fn run() {
             get_permission_preset_visibility,
             set_permission_preset_visibility,
             set_terminal_shell,
-            set_thinking_depth,
+            set_reasoning_effort,
             set_responses_developer_json,
             get_responses_settings,
             set_responses_settings,

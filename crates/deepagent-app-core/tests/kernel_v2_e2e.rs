@@ -2263,7 +2263,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
 #[ignore = "audit reproducer: explicit Harness reasoning effort must reach the provider request"]
 async fn audit_harness_reasoning_override_reaches_provider_request() {
     use deepagent_app_core::HarnessRunOverrides;
-    use deepagent_models::ThinkingDepth;
+    use deepagent_models::ReasoningEffort;
 
     struct ObservedModel(Mutex<Vec<serde_json::Value>>);
 
@@ -2280,10 +2280,10 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
 
     let mut matched = Vec::new();
     for (depth, requested, expected) in [
-        (ThinkingDepth::Medium, None, "high"),
-        (ThinkingDepth::Medium, Some("max"), "max"),
-        (ThinkingDepth::Simple, Some("max"), "max"),
-        (ThinkingDepth::Deep, Some("low"), "low"),
+        (ReasoningEffort::High, None, "high"),
+        (ReasoningEffort::High, Some("max"), "max"),
+        (ReasoningEffort::None, Some("max"), "max"),
+        (ReasoningEffort::Max, Some("low"), "low"),
     ] {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -2296,7 +2296,7 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
             Arc::new(MemorySecretStore::new()),
         ));
         settings.initialize("sk-audit-placeholder").await.unwrap();
-        settings.set_thinking_depth(depth).unwrap();
+        settings.set_reasoning_effort(depth).unwrap();
         let transport = Arc::new(ObservedModel(Mutex::new(Vec::new())));
         let chat = ChatService::new(db, settings, transport.clone(), root.path());
         chat.run_in_session_with_overrides(
@@ -2419,69 +2419,201 @@ async fn audit_skill_catalog_survives_continuation_on_wire() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: Responses reasoning settings must match the DeepSeek contract"]
-async fn audit_responses_reasoning_effort_settings_match_deepseek_contract() {
+async fn responses_reasoning_effort_settings_accept_only_canonical_values() {
     use deepagent_app_core::settings::ResponsesApiSettings;
 
-    let mut panel_matches = Vec::new();
-    for effort in ["none", "low", "high", "max"] {
-        let db = Arc::new(Database::open_in_memory().unwrap());
-        let settings = SettingsService::new(
-            db,
-            Arc::new(MockTransport::with_get_json(
-                r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
-            )),
-            Arc::new(MemorySecretStore::new()),
-        );
-        settings.initialize("sk-audit-placeholder").await.unwrap();
-        let result = settings.set_responses_settings(ResponsesApiSettings {
-            reasoning_effort: Some(effort.to_string()),
-            ..ResponsesApiSettings::default()
-        });
-        let error = result.as_ref().err().map(ToString::to_string);
-        let effective = settings
-            .responses_settings()
-            .unwrap()
-            .effective_reasoning_effort();
-        eprintln!(
-            "Responses panel effort audit: effort={effort} saved={} effective={effective:?} error={error:?}",
-            result.is_ok()
-        );
-        panel_matches.push(result.is_ok() && effective.as_deref() == Some(effort));
-    }
-
-    let mut developer_matches = Vec::new();
-    for effort in ["none", "low", "high", "max", "minimal", "medium", "xhigh"] {
-        let db = Arc::new(Database::open_in_memory().unwrap());
-        let settings = SettingsService::new(
-            db,
-            Arc::new(MockTransport::with_get_json(
-                r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
-            )),
-            Arc::new(MemorySecretStore::new()),
-        );
-        settings.initialize("sk-audit-placeholder").await.unwrap();
-        let raw = serde_json::json!({"reasoning": {"effort": effort}}).to_string();
-        let result = settings.set_responses_developer_json(&raw);
-        let error = result.as_ref().err().map(ToString::to_string);
-        let effective = settings
-            .responses_settings()
-            .unwrap()
-            .effective_reasoning_effort();
-        eprintln!(
-            "Responses developer effort audit: effort={effort} saved={} effective={effective:?} error={error:?}",
-            result.is_ok()
-        );
-        developer_matches.push(result.is_ok() && effective.as_deref() == Some(effort));
-    }
-
-    assert!(
-        panel_matches.into_iter().all(|matched| matched),
-        "the ordinary Responses settings must accept every canonical DeepSeek effort"
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = SettingsService::new(
+        db,
+        Arc::new(MockTransport::with_get_json(
+            r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(MemorySecretStore::new()),
     );
+    settings.initialize("sk-audit-placeholder").await.unwrap();
+
+    for effort in ["none", "low", "high", "max"] {
+        settings
+            .set_responses_settings(ResponsesApiSettings {
+                reasoning_effort: Some(effort.to_string()),
+                ..ResponsesApiSettings::default()
+            })
+            .unwrap();
+        let effective = settings
+            .responses_settings()
+            .unwrap()
+            .effective_reasoning_effort();
+        assert_eq!(effective, deepagent_models::ReasoningEffort::parse(effort));
+    }
+
+    for alias in ["minimal", "medium", "xhigh", "simple", "deep"] {
+        assert!(
+            settings
+                .set_responses_settings(ResponsesApiSettings {
+                    reasoning_effort: Some(alias.to_string()),
+                    ..ResponsesApiSettings::default()
+                })
+                .is_err(),
+            "ordinary Responses settings must reject {alias}"
+        );
+        let raw = serde_json::json!({"reasoning": {"effort": alias}}).to_string();
+        assert!(
+            settings.set_responses_developer_json(&raw).is_err(),
+            "developer JSON must reject {alias}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn responses_reasoning_effort_settings_reach_provider_wire() {
+    use deepagent_app_core::settings::ResponsesApiSettings;
+    use deepagent_models::ReasoningEffort;
+
+    struct ObservedModel(Mutex<Vec<serde_json::Value>>);
+
+    #[async_trait]
+    impl HttpTransport for ObservedModel {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&request.body)?);
+            emit_responses_events(sink, &response_text("audit complete"))
+        }
+    }
+
+    let root = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = Arc::new(SettingsService::new(
+        db.clone(),
+        Arc::new(MockTransport::with_get_json(
+            r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(MemorySecretStore::new()),
+    ));
+    settings.initialize("sk-audit-placeholder").await.unwrap();
+    settings.set_reasoning_effort(ReasoningEffort::Low).unwrap();
+
+    let mut actual_requests = Vec::new();
+    for effort in ["none", "low", "high", "max"] {
+        settings
+            .set_responses_settings(ResponsesApiSettings {
+                reasoning_effort: Some(effort.to_string()),
+                ..ResponsesApiSettings::default()
+            })
+            .unwrap();
+        let transport = Arc::new(ObservedModel(Mutex::new(Vec::new())));
+        let chat = ChatService::new(db.clone(), settings.clone(), transport.clone(), root.path());
+        chat.run_in_session(
+            "Reply briefly without using tools.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            None,
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+
+        let requests = transport.0.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        let actual = requests[0]["reasoning"]["effort"].as_str().unwrap();
+        assert_eq!(actual, effort, "saved setting must reach provider wire");
+        actual_requests.push(actual.to_string());
+    }
+
+    assert_eq!(actual_requests, ["none", "low", "high", "max"]);
+}
+
+#[tokio::test]
+async fn responses_user_identifier_is_validated_before_transport() {
+    struct ObservedModel(Mutex<Vec<serde_json::Value>>);
+
+    #[async_trait]
+    impl HttpTransport for ObservedModel {
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(serde_json::from_str(&request.body)?);
+            emit_responses_events(sink, &response_text("audit complete"))
+        }
+    }
+
+    let cases = [
+        ("valid-short", "account_1-2".to_string(), true),
+        ("valid-512", "a".repeat(512), true),
+        ("empty", String::new(), false),
+        ("space", "account 1".to_string(), false),
+        ("slash", "account/1".to_string(), false),
+        ("unicode", "用户-1".to_string(), false),
+        ("control", "account\n1".to_string(), false),
+        ("too-long", "a".repeat(513), false),
+    ];
+    let mut matches = Vec::new();
+    for (label, user, should_accept) in cases {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(
+                r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+            )),
+            Arc::new(MemorySecretStore::new()),
+        ));
+        settings.initialize("sk-audit-placeholder").await.unwrap();
+        let raw = serde_json::json!({"user": user}).to_string();
+        let saved = settings.set_responses_developer_json(&raw);
+        let save_error = saved.as_ref().err().map(ToString::to_string);
+
+        let transport = Arc::new(ObservedModel(Mutex::new(Vec::new())));
+        let run = if saved.is_ok() {
+            let chat = ChatService::new(db, settings, transport.clone(), root.path());
+            Some(
+                chat.run_in_session(
+                    "Reply with audit complete without using tools.",
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    false,
+                    None,
+                    |_| {},
+                    |_| {},
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+        let requests = transport.0.lock().unwrap();
+        let wire_user = requests
+            .first()
+            .and_then(|body| body.get("user"))
+            .and_then(serde_json::Value::as_str);
+        let wire_matches = wire_user.is_some_and(|actual| actual == user);
+        let run_ok = run.as_ref().is_some_and(|result| result.is_ok());
+        eprintln!(
+            "Responses user validation: case={label} bytes={} should_accept={should_accept} saved={} run_ok={run_ok} transport_calls={} wire_matches={wire_matches} error={save_error:?}",
+            user.len(),
+            saved.is_ok(),
+            requests.len()
+        );
+        matches.push(if should_accept {
+            saved.is_ok() && run_ok && requests.len() == 1 && wire_matches
+        } else {
+            saved.is_err() && requests.is_empty()
+        });
+    }
+
     assert!(
-        developer_matches.into_iter().all(|matched| matched),
-        "the raw Responses settings must accept every effort spelling accepted by DeepSeek"
+        matches.into_iter().all(|matched| matched),
+        "invalid DeepSeek Responses user identifiers must fail before any provider request"
     );
 }
 
@@ -2490,7 +2622,7 @@ async fn audit_responses_reasoning_effort_settings_match_deepseek_contract() {
 async fn audit_configured_output_limit_reaches_provider_request() {
     use deepagent_app_core::settings::ResponsesApiSettings;
     use deepagent_app_core::RuntimeEvent;
-    use deepagent_models::ThinkingDepth;
+    use deepagent_models::ReasoningEffort;
 
     struct ObservedModel(Mutex<Vec<serde_json::Value>>);
 
@@ -2507,10 +2639,10 @@ async fn audit_configured_output_limit_reaches_provider_request() {
 
     let mut matched = Vec::new();
     for (depth, panel, developer, expected) in [
-        (ThinkingDepth::Medium, None, None, 16_384),
-        (ThinkingDepth::Medium, Some(512), None, 512),
-        (ThinkingDepth::Medium, Some(512), Some(768), 768),
-        (ThinkingDepth::Deep, Some(65_536), None, 65_536),
+        (ReasoningEffort::High, None, None, 16_384),
+        (ReasoningEffort::High, Some(512), None, 512),
+        (ReasoningEffort::High, Some(512), Some(768), 768),
+        (ReasoningEffort::Max, Some(65_536), None, 65_536),
     ] {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -2522,7 +2654,7 @@ async fn audit_configured_output_limit_reaches_provider_request() {
             Arc::new(MemorySecretStore::new()),
         ));
         settings.initialize("sk-audit-placeholder").await.unwrap();
-        settings.set_thinking_depth(depth).unwrap();
+        settings.set_reasoning_effort(depth).unwrap();
         settings
             .set_responses_settings(ResponsesApiSettings {
                 max_output_tokens: panel,

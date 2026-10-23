@@ -383,23 +383,23 @@ pub const AI_SECURITY_REVIEW_SYSTEM_PROMPT: &str = "你是一名软件安全审�
 #[serde(rename_all = "snake_case")]
 pub enum ReviewDepth {
     /// Initial pass run automatically when the install dialog opens. Uses
-    /// `ThinkingDepth::Simple` (16K reasoning budget) and caps the
+    /// `ReasoningEffort::None` (16K reasoning budget) and caps the
     /// response at 2048 tokens total. Optimized for time-to-first-token.
     #[default]
     Initial,
     /// Deeper second pass, triggered when the user explicitly asks for a
     /// re-review (e.g. after a `FAIL` verdict they don't trust). Uses
-    /// `ThinkingDepth::Medium` (32K reasoning budget) and caps the
+    /// `ReasoningEffort::High` (32K reasoning budget) and caps the
     /// response at 3072 tokens total. Slower but more thorough.
     ReReview,
 }
 
 impl ReviewDepth {
-    /// Map this tier to the underlying [`deepagent_models::ThinkingDepth`].
-    pub fn thinking_depth(self) -> deepagent_models::ThinkingDepth {
+    /// Map this tier to the underlying [`deepagent_models::ReasoningEffort`].
+    pub fn reasoning_effort(self) -> deepagent_models::ReasoningEffort {
         match self {
-            ReviewDepth::Initial => deepagent_models::ThinkingDepth::Simple,
-            ReviewDepth::ReReview => deepagent_models::ThinkingDepth::Medium,
+            ReviewDepth::Initial => deepagent_models::ReasoningEffort::None,
+            ReviewDepth::ReReview => deepagent_models::ReasoningEffort::High,
         }
     }
 
@@ -514,7 +514,7 @@ pub fn build_review_user_prompt(scan: &ScanReport) -> String {
 ///   swap normal chat applies is intentionally bypassed for this task.
 /// - **Forces the thinking budget** picked by the supplied [`ReviewDepth`]
 ///   tier (`Simple` for `Initial`, `Medium` for `ReReview`). The user's
-///   global `thinking_depth` setting is ignored — Deep is overkill for a
+///   global `reasoning_effort` setting is ignored — Deep is overkill for a
 ///   structured PASS/FAIL audit.
 /// - **Caps the response** at the tier's `max_output_tokens` so the model
 ///   exits early after emitting the verdict instead of consuming the full
@@ -535,7 +535,7 @@ where
         .run_review_streaming(
             AI_SECURITY_REVIEW_SYSTEM_PROMPT,
             &user_prompt,
-            depth.thinking_depth(),
+            depth.reasoning_effort(),
             depth.max_output_tokens(),
             on_token,
         )
@@ -1085,8 +1085,8 @@ mod tests {
     #[test]
     fn review_depth_initial_picks_simple_thinking() {
         assert_eq!(
-            ReviewDepth::Initial.thinking_depth(),
-            deepagent_models::ThinkingDepth::Simple
+            ReviewDepth::Initial.reasoning_effort(),
+            deepagent_models::ReasoningEffort::None
         );
         assert_eq!(ReviewDepth::Initial.max_output_tokens(), 2048);
     }
@@ -1096,8 +1096,8 @@ mod tests {
     #[test]
     fn review_depth_re_review_picks_medium_thinking() {
         assert_eq!(
-            ReviewDepth::ReReview.thinking_depth(),
-            deepagent_models::ThinkingDepth::Medium
+            ReviewDepth::ReReview.reasoning_effort(),
+            deepagent_models::ReasoningEffort::High
         );
         assert_eq!(ReviewDepth::ReReview.max_output_tokens(), 3072);
     }
@@ -1111,8 +1111,8 @@ mod tests {
     fn review_depth_never_maps_to_deep() {
         for tier in [ReviewDepth::Initial, ReviewDepth::ReReview] {
             assert_ne!(
-                tier.thinking_depth(),
-                deepagent_models::ThinkingDepth::Deep,
+                tier.reasoning_effort(),
+                deepagent_models::ReasoningEffort::Max,
                 "ReviewDepth::{tier:?} must not promote to Deep"
             );
         }

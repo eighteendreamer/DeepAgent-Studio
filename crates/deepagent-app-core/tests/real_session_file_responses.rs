@@ -17,7 +17,7 @@ use deepagent_app_core::{
 };
 use deepagent_core::event::EventPayload;
 use deepagent_core::id::SessionId;
-use deepagent_models::{ReqwestTransport, ThinkingDepth};
+use deepagent_models::{ReasoningEffort, ReqwestTransport};
 use deepagent_persistence::event_store::{EventStore, SessionSearchScope};
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::runtime_log_store::RuntimeLogStore;
@@ -171,16 +171,16 @@ fn cache_divergence(bodies: &[String]) -> Vec<String> {
 #[tokio::test]
 #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
 async fn real_responses_session_replays_tools_skills_files_and_logs() {
-    run_real_responses_session(ThinkingDepth::Simple).await;
+    run_real_responses_session(ReasoningEffort::None).await;
 }
 
 #[tokio::test]
 #[ignore = "hits the real DeepSeek API; run explicitly with --ignored"]
 async fn real_responses_thinking_session_replays_tools_skills_files_and_logs() {
-    run_real_responses_session(ThinkingDepth::Medium).await;
+    run_real_responses_session(ReasoningEffort::High).await;
 }
 
-async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
+async fn run_real_responses_session(reasoning_effort: ReasoningEffort) {
     let Some(key) = deepseek_key() else {
         eprintln!("[skip] no DeepSeek key in env or keychain");
         return;
@@ -209,7 +209,7 @@ async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
         .await
         .expect("live model discovery");
     settings
-        .set_thinking_depth(thinking_depth)
+        .set_reasoning_effort(reasoning_effort)
         .expect("set requested thinking profile");
     settings
         .set_approval_policy(ApprovalPolicy::AutoReview)
@@ -318,7 +318,7 @@ async fn run_real_responses_session(thinking_depth: ThinkingDepth) {
     let session = SessionId::from_str(&session_id).unwrap();
     let store = EventStore::new(&db);
     let events = store.load_session(session).expect("replay file source");
-    if thinking_depth == ThinkingDepth::Medium {
+    if reasoning_effort == ReasoningEffort::High {
         let reasoning_ids: Vec<&str> = events
             .iter()
             .filter_map(|event| match &event.payload {

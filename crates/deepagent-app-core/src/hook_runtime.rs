@@ -12,7 +12,7 @@ use deepagent_hooks::{
     HookCommandResult, HookCommandRunner, HookCommandShell, HookContext, HookData, HookDefinitions,
     HookEvent, HookOutcome, HookRegistry, SystemHookRunner, ToolBatchItem,
 };
-use deepagent_models::{ModelClient, ResponseRequest, ThinkingDepth, ToolSchema};
+use deepagent_models::{ModelClient, ReasoningEffort, ResponseRequest, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent, RuntimeEventSink};
 use deepagent_session::Session;
@@ -42,7 +42,7 @@ pub async fn test_hook_action(
     event: &str,
     matcher: Option<&str>,
     action: HookAction,
-    model: Option<(Arc<ModelClient>, String, ThinkingDepth)>,
+    model: Option<(Arc<ModelClient>, String, ReasoningEffort)>,
     mcp: Option<Arc<deepagent_mcp::McpRegistry>>,
 ) -> Result<HookActionTestResult> {
     let hook_event = HookEvent::parse(event)
@@ -63,10 +63,10 @@ pub async fn test_hook_action(
     // executor only holds a Weak reference.
     let sink: Arc<dyn RuntimeEventSink> = Arc::new(NoopEventSink);
     let host: Arc<dyn HookActionExecutor> = match model {
-        Some((client, model, thinking_depth)) => Arc::new(AppHookActionExecutor {
+        Some((client, model, reasoning_effort)) => Arc::new(AppHookActionExecutor {
             client,
             model,
-            thinking_depth,
+            reasoning_effort,
             mcp,
             agent_registry: Arc::new(ToolRegistry::new()),
             events: Arc::downgrade(&sink),
@@ -225,7 +225,7 @@ pub(crate) struct ObservableHookRunner {
 pub(crate) struct AppHookActionExecutor {
     pub(crate) client: Arc<ModelClient>,
     pub(crate) model: String,
-    pub(crate) thinking_depth: ThinkingDepth,
+    pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) mcp: Option<Arc<deepagent_mcp::McpRegistry>>,
     pub(crate) agent_registry: Arc<ToolRegistry>,
     pub(crate) events: std::sync::Weak<dyn RuntimeEventSink>,
@@ -293,7 +293,7 @@ impl AppHookActionExecutor {
         )
         .with_temperature(0.0)
         .with_max_output_tokens(512)
-        .with_thinking_depth(ThinkingDepth::Simple);
+        .with_reasoning_effort(ReasoningEffort::None);
         let response = self.client.stream_response(request).await?;
         parse_model_hook_decision(&response.output_text_projection())
     }
@@ -331,7 +331,7 @@ impl AppHookActionExecutor {
         let mut session = Session::create(&db, &SystemClock, Some("hook-agent"))?;
         let task = session.create_task(&prompt)?;
         let mut agent = ModelAgent::new(self.client.clone(), model, system, prompt, tools)
-            .with_thinking_depth(self.thinking_depth)
+            .with_reasoning_effort(self.reasoning_effort)
             .with_max_model_attempts(2);
         let config = RuntimeConfig {
             max_steps: Some(6),

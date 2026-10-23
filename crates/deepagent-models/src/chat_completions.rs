@@ -12,7 +12,7 @@ use deepagent_core::response_item::ResponseOutputItem;
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 
-use crate::chat::{FinishReason, Response, ThinkingToggle, ToolSchema, Usage};
+use crate::chat::{FinishReason, ReasoningEffort, Response, ThinkingToggle, ToolSchema, Usage};
 use crate::stream::{DeltaObserver, ModelStreamEvent};
 
 /// A DeepSeek Chat Completions request.
@@ -23,7 +23,7 @@ pub struct ChatCompletionRequest {
     pub stream: bool,
     pub stream_options_include_usage: bool,
     pub thinking: Option<ThinkingToggle>,
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub tools: Vec<ToolSchema>,
     pub temperature: Option<f32>,
     pub max_tokens: Option<u32>,
@@ -56,8 +56,10 @@ impl Serialize for ChatCompletionRequest {
         if let Some(thinking) = &self.thinking {
             map.serialize_entry("thinking", thinking)?;
         }
-        if let Some(effort) = &self.reasoning_effort {
-            map.serialize_entry("reasoning_effort", effort)?;
+        if let Some(effort) = self.reasoning_effort {
+            if effort != ReasoningEffort::None {
+                map.serialize_entry("reasoning_effort", effort.label())?;
+            }
         }
         if !self.tools.is_empty() {
             let tools = self
@@ -119,26 +121,15 @@ impl ChatCompletionRequest {
         self
     }
 
-    pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
-        let effort = effort.into();
-        match effort.as_str() {
-            "off" => {
-                self.thinking = Some(ThinkingToggle {
-                    kind: "disabled".to_string(),
-                });
-                self.reasoning_effort = None;
-            }
-            "low" | "high" | "max" => {
-                self.thinking = Some(ThinkingToggle {
-                    kind: "enabled".to_string(),
-                });
-                self.reasoning_effort = Some(effort);
-            }
-            _ => {
-                self.thinking = None;
-                self.reasoning_effort = Some(effort);
-            }
-        }
+    pub fn with_reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.thinking = Some(ThinkingToggle {
+            kind: if effort == ReasoningEffort::None {
+                "disabled".to_string()
+            } else {
+                "enabled".to_string()
+            },
+        });
+        self.reasoning_effort = Some(effort);
         self
     }
 
@@ -178,21 +169,26 @@ impl ChatCompletionRequest {
     }
 
     pub fn validate(&self) -> Result<()> {
-        if let Some(effort) = self.reasoning_effort.as_deref() {
-            if !matches!(effort, "low" | "high" | "max") {
-                return Err(CoreError::invalid(format!(
-                    "unsupported reasoning effort: {effort}"
-                )));
-            }
-        }
         if self
             .thinking
             .as_ref()
             .is_some_and(|thinking| thinking.kind == "disabled")
-            && self.reasoning_effort.is_some()
+            && self
+                .reasoning_effort
+                .is_some_and(|effort| effort != ReasoningEffort::None)
         {
             return Err(CoreError::invalid(
                 "reasoning effort cannot be enabled when thinking is disabled",
+            ));
+        }
+        if self.reasoning_effort == Some(ReasoningEffort::None)
+            && !self
+                .thinking
+                .as_ref()
+                .is_some_and(|thinking| thinking.kind == "disabled")
+        {
+            return Err(CoreError::invalid(
+                "none reasoning effort requires thinking to be disabled",
             ));
         }
         if self.tools.iter().any(|tool| tool.kind != "function") {
@@ -665,7 +661,7 @@ mod tests {
                 Message::user("Continue."),
             ],
         )
-        .with_reasoning_effort("high")
+        .with_reasoning_effort(ReasoningEffort::High)
         .with_tools(vec![ToolSchema::function(
             "read_file",
             "Read a file",
@@ -693,9 +689,9 @@ mod tests {
     }
 
     #[test]
-    fn off_reasoning_disables_thinking_without_serializing_off_effort() {
+    fn none_reasoning_disables_thinking_without_serializing_effort() {
         let request = ChatCompletionRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
-            .with_reasoning_effort("off");
+            .with_reasoning_effort(ReasoningEffort::None);
 
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["thinking"]["type"], "disabled");
@@ -704,25 +700,20 @@ mod tests {
 
     #[test]
     fn serializes_supported_reasoning_efforts() {
-        for effort in ["low", "high", "max"] {
+        for effort in [
+            ReasoningEffort::Low,
+            ReasoningEffort::High,
+            ReasoningEffort::Max,
+        ] {
             let request =
                 ChatCompletionRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
                     .with_reasoning_effort(effort);
 
             let json = serde_json::to_value(&request).unwrap();
             assert_eq!(json["thinking"]["type"], "enabled");
-            assert_eq!(json["reasoning_effort"], effort);
+            assert_eq!(json["reasoning_effort"], effort.label());
             request.validate().unwrap();
         }
-    }
-
-    #[test]
-    fn rejects_unsupported_reasoning_effort_before_network() {
-        let request = ChatCompletionRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
-            .with_reasoning_effort("medium");
-
-        let error = request.validate().unwrap_err();
-        assert!(error.to_string().contains("unsupported reasoning effort"));
     }
 
     #[test]

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use deepagent_core::clock::SystemClock;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
-use deepagent_models::{ModelClient, ThinkingDepth, ToolSchema};
+use deepagent_models::{ModelClient, ReasoningEffort, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{RuntimeEvent, RuntimeEventSink};
 use deepagent_session::Session;
@@ -40,7 +40,7 @@ pub(crate) struct ChatSubagentRunner {
     pub(crate) transcript_root: PathBuf,
     pub(crate) client: Arc<ModelClient>,
     pub(crate) model: String,
-    pub(crate) thinking_depth: ThinkingDepth,
+    pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) registry: Arc<ToolRegistry>,
     pub(crate) root: PathBuf,
     /// Tool-search mode at the time the parent session built this runner.
@@ -613,9 +613,9 @@ impl ChatSubagentRunner {
         })?;
         let task = session.create_task(&request.prompt)?;
         let sub_model = request.model.clone().unwrap_or_else(|| self.model.clone());
-        let sub_thinking = subagent_thinking_depth(
+        let sub_reasoning_effort = subagent_reasoning_effort(
             subagent_effort_str(agent_profile, &request),
-            self.thinking_depth,
+            self.reasoning_effort,
         )?;
         // Sub-agents run their own model loop; without compaction a long task
         // would only be bounded by the 64-step / 1M-token hard ceilings. Give it
@@ -624,7 +624,7 @@ impl ChatSubagentRunner {
         // dispatch (an empty registry returns `Continue`).
         let context_policy = deepagent_context::ContextPolicy::for_capability(
             &self.client.capability(&sub_model),
-            sub_thinking,
+            sub_reasoning_effort,
         );
         let reactive_compactor: Arc<dyn deepagent_runtime::ReactiveContextCompactor> =
             Arc::new(crate::context_runtime::HookedReactiveContextCompactor::new(
@@ -647,7 +647,7 @@ impl ChatSubagentRunner {
             db: db.clone(),
             session_id: session.id(),
         }))
-        .with_thinking_depth(sub_thinking)
+        .with_reasoning_effort(sub_reasoning_effort)
         .with_reactive_compactor(reactive_compactor)
         .with_proactive_compaction(context_policy.autocompact_threshold_tokens(None, None) as u64)
         .with_context_policy(context_policy, None, None);
@@ -895,18 +895,17 @@ fn subagent_summary(value: &str, max_chars: usize) -> String {
     summary
 }
 
-fn subagent_thinking_depth(
+fn subagent_reasoning_effort(
     effort: Option<&str>,
-    inherited: ThinkingDepth,
-) -> Result<ThinkingDepth> {
+    inherited: ReasoningEffort,
+) -> Result<ReasoningEffort> {
     match effort {
         None => Ok(inherited),
-        Some("simple") => Ok(ThinkingDepth::Simple),
-        Some("medium") => Ok(ThinkingDepth::Medium),
-        Some("deep") => Ok(ThinkingDepth::Deep),
-        Some(value) => Err(CoreError::invalid(format!(
-            "invalid sub-agent effort '{value}'; expected simple, medium, or deep"
-        ))),
+        Some(value) => ReasoningEffort::parse(value).ok_or_else(|| {
+            CoreError::invalid(format!(
+                "invalid sub-agent effort '{value}'; expected none, low, high, or max"
+            ))
+        }),
     }
 }
 
@@ -1252,7 +1251,7 @@ mod tests {
                 deepagent_models::ModelConfig::deepseek("audit-placeholder"),
             )),
             model: "deepseek-flash".into(),
-            thinking_depth: ThinkingDepth::Simple,
+            reasoning_effort: ReasoningEffort::None,
             registry: Arc::new(registry),
             root: root.to_path_buf(),
             tool_search_mode: deepagent_builtins::ToolSearchMode::Disabled,
@@ -1903,7 +1902,7 @@ mod tests {
     #[test]
     fn effort_precedence_request_then_file_then_inherit() {
         let mut file_deep = profile(&[], &[]).unwrap();
-        file_deep.def.effort = Some(deepagent_prompts::EffortLevel::Deep);
+        file_deep.def.effort = Some(deepagent_prompts::EffortLevel::Max);
 
         let request_with_effort = deepagent_builtins::SubagentRequest {
             description: "d".into(),
@@ -1911,7 +1910,7 @@ mod tests {
             subagent_type: None,
             allowed_tools: vec![],
             model: None,
-            effort: Some("simple".into()),
+            effort: Some("none".into()),
             skills: vec![],
             isolation: "shared".into(),
             fork: false,
@@ -1921,7 +1920,7 @@ mod tests {
         };
         assert_eq!(
             subagent_effort_str(Some(&file_deep), &request_with_effort),
-            Some("simple"),
+            Some("none"),
             "per-call effort wins over file default"
         );
         let request_default = deepagent_builtins::SubagentRequest {
@@ -1930,7 +1929,7 @@ mod tests {
         };
         assert_eq!(
             subagent_effort_str(Some(&file_deep), &request_default),
-            Some("deep"),
+            Some("max"),
             "file default applies when no per-call effort"
         );
         assert_eq!(
@@ -1938,6 +1937,16 @@ mod tests {
             None,
             "no file effort, no request effort -> inherit parent"
         );
+    }
+
+    #[test]
+    fn subagent_effort_rejects_noncanonical_values() {
+        for value in ["none", "low", "high", "max"] {
+            assert!(subagent_reasoning_effort(Some(value), ReasoningEffort::None).is_ok());
+        }
+        for alias in ["minimal", "medium", "xhigh", "simple", "deep"] {
+            assert!(subagent_reasoning_effort(Some(alias), ReasoningEffort::None).is_err());
+        }
     }
 }
 
@@ -2337,8 +2346,8 @@ fn permission_set_for_agent(profile: Option<&RuntimeAgentDefinition>) -> Permiss
     }
 }
 
-/// Effective sub-agent reasoning depth: per-call `effort` wins, then the agent
-/// file's declared `effort`, then the parent's inherited depth.
+/// Effective sub-agent reasoning effort: per-call value wins, then the agent
+/// file's declared value, then the parent's inherited effort.
 fn subagent_effort_str<'a>(
     profile: Option<&'a RuntimeAgentDefinition>,
     request: &'a deepagent_builtins::SubagentRequest,
@@ -2347,8 +2356,9 @@ fn subagent_effort_str<'a>(
         .effort
         .as_deref()
         .or_else(|| match profile?.def.effort? {
-            deepagent_prompts::EffortLevel::Simple => Some("simple"),
-            deepagent_prompts::EffortLevel::Medium => Some("medium"),
-            deepagent_prompts::EffortLevel::Deep => Some("deep"),
+            deepagent_prompts::EffortLevel::None => Some("none"),
+            deepagent_prompts::EffortLevel::Low => Some("low"),
+            deepagent_prompts::EffortLevel::High => Some("high"),
+            deepagent_prompts::EffortLevel::Max => Some("max"),
         })
 }

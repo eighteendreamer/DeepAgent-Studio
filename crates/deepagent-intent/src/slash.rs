@@ -247,7 +247,7 @@ impl SlashRegistry {
             ))
             .register_command(SlashCommand::new(
                 "thinking",
-                "查看或设置思考深度：simple、medium、deep",
+                "查看或设置推理强度：none、low、high、max",
                 StaticHandler::new(SlashActionTemplate::Thinking),
             ))
             .register_command(SlashCommand::new(
@@ -643,13 +643,13 @@ mod tests {
         let reg = SlashRegistry::with_builtins();
         let mut ctx = CommandContext::default();
         let out = reg
-            .execute_line("/thinking deep", &mut ctx)
+            .execute_line("/thinking max", &mut ctx)
             .unwrap()
             .unwrap();
         assert_eq!(
             out.action,
             SlashAction::Thinking {
-                depth: Some("deep".into())
+                depth: Some("max".into())
             }
         );
     }

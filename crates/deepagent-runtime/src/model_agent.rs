@@ -17,7 +17,7 @@ use async_trait::async_trait;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::{Message, Role};
 use deepagent_core::response_item::{ResponseInputItem, ResponseOutputItem};
-use deepagent_models::chat::{FinishReason, ThinkingDepth};
+use deepagent_models::chat::{FinishReason, ReasoningEffort};
 use deepagent_models::{
     classify_model_error, DeltaObserver, ModelClient, ModelFailureKind, ModelStreamEvent, Response,
     ResponseRequest, ToolSchema,
@@ -519,8 +519,8 @@ pub struct ModelAgent {
     /// turn, drained by the runtime loop into the append-only session log.
     pending_response_items: Vec<ResponseOutputItem>,
     pending_raw_usage: Vec<serde_json::Value>,
-    /// DeepSeek Thinking Mode depth applied to every request.
-    thinking_depth: ThinkingDepth,
+    /// DeepSeek Responses reasoning effort applied to every request.
+    reasoning_effort: ReasoningEffort,
     /// Provider attempts per turn for transient/empty-stream failures.
     max_model_attempts: usize,
     /// Optional same-endpoint model used once when the primary deployment is
@@ -647,7 +647,7 @@ impl ModelAgent {
             surface_persistence: None,
             pending_response_items: Vec::new(),
             pending_raw_usage: Vec::new(),
-            thinking_depth: ThinkingDepth::default(),
+            reasoning_effort: ReasoningEffort::default(),
             max_model_attempts: 3,
             fallback_model: None,
             reactive_compactor: None,
@@ -935,9 +935,9 @@ impl ModelAgent {
         self
     }
 
-    /// Attach the user's DeepSeek Thinking Mode depth.
-    pub fn with_thinking_depth(mut self, depth: ThinkingDepth) -> Self {
-        self.thinking_depth = depth;
+    /// Attach the user's DeepSeek Responses reasoning effort.
+    pub fn with_reasoning_effort(mut self, effort: ReasoningEffort) -> Self {
+        self.reasoning_effort = effort;
         self
     }
 
@@ -999,7 +999,7 @@ impl ModelAgent {
         Some(
             deepagent_context::ContextPolicy::for_capability_with_output(
                 &capability,
-                self.thinking_depth,
+                self.reasoning_effort,
                 self.request_max_output_override
                     .or(request.max_output_tokens)
                     .map(|value| value as usize),
@@ -1235,7 +1235,7 @@ impl ModelAgent {
         let request = self
             .response_history
             .request(self.model.clone())
-            .with_thinking_depth(self.thinking_depth)
+            .with_reasoning_effort(self.reasoning_effort)
             .with_tools(self.tools.clone());
         self.measure_request(&request)
     }
@@ -2177,7 +2177,7 @@ impl ModelAgent {
 
         let mut request = self
             .request_for_current_history()
-            .with_thinking_depth(self.thinking_depth)
+            .with_reasoning_effort(self.reasoning_effort)
             .with_tools(self.tools.clone());
         let request_started_at = std::time::Instant::now();
 
@@ -2217,7 +2217,7 @@ impl ModelAgent {
                     sink.emit(RuntimeEvent::ModelRequestStarted {
                         step,
                         model: request.model.clone(),
-                        thinking_depth: self.thinking_depth.label().to_string(),
+                        reasoning_effort: self.reasoning_effort.label().to_string(),
                         message_count: self.messages.len(),
                         tool_count: request.tools.len(),
                     });
@@ -2304,7 +2304,7 @@ impl ModelAgent {
                         self.push_message(Message::user(MAX_OUTPUT_RECOVERY_PROMPT));
                         request = self
                             .request_for_current_history()
-                            .with_thinking_depth(self.thinking_depth)
+                            .with_reasoning_effort(self.reasoning_effort)
                             .with_tools(self.tools.clone());
                         max_output_recoveries += 1;
                         emit_attempt_reset(
@@ -2347,7 +2347,7 @@ impl ModelAgent {
                                     }
                                     request = self
                                         .request_for_current_history()
-                                        .with_thinking_depth(self.thinking_depth)
+                                        .with_reasoning_effort(self.reasoning_effort)
                                         .with_tools(self.tools.clone());
                                     continue;
                                 }
@@ -2384,7 +2384,7 @@ impl ModelAgent {
                                     }
                                     request = self
                                         .request_for_current_history()
-                                        .with_thinking_depth(self.thinking_depth)
+                                        .with_reasoning_effort(self.reasoning_effort)
                                         .with_tools(self.tools.clone());
                                     emit_attempt_reset(
                                         self.events.as_ref(),
@@ -3665,7 +3665,7 @@ mod tests {
         };
         let policy = deepagent_context::ContextPolicy::for_capability(
             &capability,
-            deepagent_models::ThinkingDepth::Simple,
+            deepagent_models::ReasoningEffort::None,
         );
         let pack = deepagent_context::ContextPack::new(vec![deepagent_context::ContextBlock {
             kind: deepagent_context::ContextBlockKind::ToolSchemas,
@@ -4308,17 +4308,17 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: all supported thinking depths must map through the selected adapter"]
-    async fn audit_simple_depth_maps_to_chat_thinking_disabled() {
+    async fn reasoning_effort_none_maps_to_chat_thinking_disabled() {
         let mut results = Vec::new();
         for wire_mode in [
             deepagent_models::WireMode::Responses,
             deepagent_models::WireMode::ChatCompletions,
         ] {
-            for depth in [
-                ThinkingDepth::Simple,
-                ThinkingDepth::Medium,
-                ThinkingDepth::Deep,
+            for effort in [
+                ReasoningEffort::None,
+                ReasoningEffort::Low,
+                ReasoningEffort::High,
+                ReasoningEffort::Max,
             ] {
                 let events = match wire_mode {
                     deepagent_models::WireMode::Responses => response_text_completed("done"),
@@ -4335,17 +4335,20 @@ mod tests {
                 let client = Arc::new(ModelClient::new(transport.clone(), config));
                 let mut agent =
                     ModelAgent::new(client, "deepseek-flash", "system", "hello", vec![])
-                        .with_thinking_depth(depth);
+                        .with_reasoning_effort(effort);
                 let outcome = agent.think(0, &[]).await;
                 let requests = transport.requests.lock().unwrap();
                 let last = requests.last();
                 results.push(serde_json::json!({
                     "mode": format!("{wire_mode:?}"),
-                    "depth": format!("{depth:?}"),
+                    "selected_effort": effort.label(),
                     "completed": outcome.is_ok(),
                     "transport_calls": requests.len(),
                     "thinking": last.and_then(|body| body.get("thinking")),
-                    "effort": last.and_then(|body| body.get("reasoning_effort").or_else(|| body.get("reasoning"))),
+                    "wire_effort": last.and_then(|body| {
+                        body.get("reasoning_effort")
+                            .or_else(|| body.get("reasoning"))
+                    }),
                     "error": outcome.err().map(|error| error.to_string()),
                 }));
             }
@@ -4360,13 +4363,19 @@ mod tests {
         );
         assert!(
             results.iter().all(|case| case["completed"] == true),
-            "Simple depth must disable chat thinking instead of failing local request validation"
+            "none effort must disable Chat Completions thinking instead of failing validation"
         );
-        assert_eq!(
-            results[3]["thinking"],
-            serde_json::json!({"type":"disabled"})
-        );
-        assert!(results[3]["effort"].is_null());
+        for case in &results {
+            if case["mode"] == "Responses" {
+                assert_eq!(case["wire_effort"]["effort"], case["selected_effort"]);
+            } else if case["selected_effort"] == "none" {
+                assert_eq!(case["thinking"], serde_json::json!({"type":"disabled"}));
+                assert!(case["wire_effort"].is_null());
+            } else {
+                assert_eq!(case["thinking"], serde_json::json!({"type":"enabled"}));
+                assert_eq!(case["wire_effort"], case["selected_effort"]);
+            }
+        }
     }
 
     #[tokio::test]
@@ -4453,12 +4462,12 @@ mod tests {
                 let client = Arc::new(ModelClient::new(transport.clone(), config));
                 let (sink, mut rx) = crate::events::ChannelSink::new();
                 let mut agent = ModelAgent::new(client, "audit-primary", "system", "goal", vec![])
-                    .with_thinking_depth(ThinkingDepth::Deep)
+                    .with_reasoning_effort(ReasoningEffort::Max)
                     .with_fallback_model(Some("audit-fallback".into()))
                     .with_context_policy(
                         deepagent_context::ContextPolicy::for_capability(
                             &primary,
-                            ThinkingDepth::Deep,
+                            ReasoningEffort::Max,
                         ),
                         None,
                         None,

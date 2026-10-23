@@ -1,5 +1,6 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useId } from "react";
+import { useTranslation } from "react-i18next";
 import { Check, ChevronDown, type LucideIcon } from "lucide-react";
 
 import { EffortSlider } from "./ui/EffortSlider";
@@ -16,13 +17,13 @@ import { cn } from "./shadcn/utils";
 
 
 
-type ThinkingDepth = "simple" | "medium" | "deep";
+type ReasoningEffort = "none" | "low" | "high" | "max";
 
 
 
 type ThinkingOption = {
 
-  id: ThinkingDepth;
+  id: ReasoningEffort;
 
   label: string;
 
@@ -44,7 +45,7 @@ type Props = {
 
   selectedModel: string;
 
-  selectedThinking: ThinkingDepth;
+  selectedThinking: ReasoningEffort;
 
   thinkingOptions: readonly ThinkingOption[];
 
@@ -56,7 +57,7 @@ type Props = {
 
   onChooseModel: (id: string) => void;
 
-  onChooseThinking: (id: ThinkingDepth) => void;
+  onChooseThinking: (id: ReasoningEffort) => void;
 
   triggerClassName?: string;
 
@@ -109,12 +110,13 @@ export function ModelThinkingSelector({
   triggerClassName,
 
 }: Props) {
+  const { t } = useTranslation();
 
   const morphLayoutId = useId().replace(/:/g, "");
 
   const selectedThinkingOption =
 
-    thinkingOptions.find((option) => option.id === selectedThinking) ?? thinkingOptions[1];
+    thinkingOptions.find((option) => option.id === selectedThinking) ?? thinkingOptions[2];
 
   const pillModel = selectedModel ? modelLabel(selectedModel) : selectModelLabel;
 
@@ -220,7 +222,7 @@ export function ModelThinkingSelector({
 
             <div className="mb-2.5 flex items-center text-[12px]">
 
-              <span className="font-medium text-text-base">推理强度</span>
+              <span className="font-medium text-text-base">{t("composer.selectThinking")}</span>
 
             </div>
 
@@ -234,9 +236,9 @@ export function ModelThinkingSelector({
 
               value={selectedThinking}
 
-              onChange={(value) => onChooseThinking(value as ThinkingDepth)}
+              onChange={(value) => onChooseThinking(value as ReasoningEffort)}
 
-              ariaLabel="推理强度"
+              ariaLabel={t("composer.selectThinking")}
               disabled={disabled}
 
             />

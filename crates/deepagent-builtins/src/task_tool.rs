@@ -57,7 +57,7 @@ pub struct SubagentRequest {
     pub allowed_tools: Vec<String>,
     /// Optional provider model override for this child.
     pub model: Option<String>,
-    /// Optional reasoning effort (`simple`, `medium`, or `deep`).
+    /// Optional canonical reasoning effort (`none`, `low`, `high`, or `max`).
     pub effort: Option<String>,
     /// Skill ids whose full instructions must be loaded before the first turn.
     pub skills: Vec<String>,
@@ -340,7 +340,7 @@ impl<R: SubagentRunner> Tool for TaskTool<R> {
                     },
                     "effort": {
                         "type": "string",
-                        "enum": ["simple", "medium", "deep"],
+                        "enum": ["none", "low", "high", "max"],
                         "description": "Optional reasoning effort override."
                     },
                     "skills": {
@@ -931,6 +931,10 @@ mod tests {
         assert!(properties.get("allowed_tools").is_some());
         assert!(properties.get("model").is_some());
         assert!(properties.get("effort").is_some());
+        assert_eq!(
+            properties["effort"]["enum"],
+            serde_json::json!(["none", "low", "high", "max"])
+        );
         assert!(properties.get("skills").is_some());
         assert!(properties["operation"]["enum"]
             .as_array()

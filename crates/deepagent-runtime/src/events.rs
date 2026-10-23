@@ -96,8 +96,8 @@ pub enum RuntimeEvent {
         step: usize,
         /// Target model id.
         model: String,
-        /// User-facing thinking depth label (`simple` / `medium` / `deep`).
-        thinking_depth: String,
+        /// Canonical provider reasoning effort label (`none` / `low` / `high` / `max`).
+        reasoning_effort: String,
         /// Number of messages in the request payload.
         message_count: usize,
         /// Number of tool schemas advertised in this request.

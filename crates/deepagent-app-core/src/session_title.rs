@@ -12,7 +12,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::id::SessionId;
 use deepagent_core::message::Role;
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::{ModelClient, ModelConfig, ModelRole, ThinkingDepth};
+use deepagent_models::{ModelClient, ModelConfig, ModelRole, ReasoningEffort};
 use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
 
@@ -118,7 +118,7 @@ pub async fn generate_session_title(
     )
     .streaming()
     .with_max_output_tokens(48)
-    .with_thinking_depth(ThinkingDepth::Simple);
+    .with_reasoning_effort(ReasoningEffort::None);
     let response = client.stream_response(request).await?;
     let Some(title) = normalize_generated_session_title(&response.output_text_projection()) else {
         return Ok(None);

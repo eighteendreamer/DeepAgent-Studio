@@ -10,7 +10,7 @@ use deepagent_hooks::{
     DecisionSource, Hook, HookActionExecutor, HookCommandRunner, HookContext, HookData,
     HookDefinitions, HookOutcome, HookPoint, HookRegistry, PermissionRulesHook,
 };
-use deepagent_models::{ModelClient, ThinkingDepth};
+use deepagent_models::{ModelClient, ReasoningEffort};
 use deepagent_runtime::RuntimeEventSink;
 use deepagent_tools::ToolRegistry;
 
@@ -29,7 +29,7 @@ pub(crate) struct HookAssemblyRequest<'a> {
     pub(crate) sink: Arc<dyn RuntimeEventSink>,
     pub(crate) client: Arc<ModelClient>,
     pub(crate) model: String,
-    pub(crate) thinking_depth: ThinkingDepth,
+    pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) mcp: Option<Arc<deepagent_mcp::McpRegistry>>,
     pub(crate) registry: &'a ToolRegistry,
     pub(crate) plan: deepagent_builtins::PlanMode,
@@ -60,7 +60,7 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
     let hook_action_executor: Arc<dyn HookActionExecutor> = Arc::new(AppHookActionExecutor {
         client: request.client.clone(),
         model: request.model.clone(),
-        thinking_depth: request.thinking_depth,
+        reasoning_effort: request.reasoning_effort,
         mcp: request.mcp,
         agent_registry: Arc::new(build_hook_agent_registry(request.registry)?),
         events: Arc::downgrade(&request.sink),

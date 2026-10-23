@@ -1,7 +1,7 @@
 import { HoverInfo } from "./ui/HoverInfo";
 import { useState, useRef, useEffect, useCallback, useLayoutEffect, useMemo, useId } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Brain, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Loader2, ShieldHalf } from "lucide-react";
+import { Brain, Check, ChevronDown, CircleAlert, Feather, Hand, Lightbulb, Loader2, ShieldHalf, Sparkles } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
@@ -26,7 +26,7 @@ import {
   searchProjectFiles,
   setActivePermissionPreset,
   setChatModel,
-  setThinkingDepth,
+  setReasoningEffort,
 } from "../api";
 import { message } from "./message";
 import type {
@@ -259,7 +259,7 @@ export function Composer({
   // straight from the backend resolver the runtime itself uses. Keeps the
   // capacity indicator from guessing from the model id.
   const [modelCapabilities, setModelCapabilities] = useState<ModelCapability[]>([]);
-  const [selectedThinking, setSelectedThinking] = useState<"simple" | "medium" | "deep">("medium");
+  const [selectedThinking, setSelectedThinking] = useState<"none" | "low" | "high" | "max">("high");
   const [switching, setSwitching] = useState(false);
   const [slashResults, setSlashResults] = useState<SlashChoice[]>([]);
   const [slashSelected, setSlashSelected] = useState(0);
@@ -284,7 +284,7 @@ export function Composer({
         setModels(s.available_models);
         setModelCapabilities(s.model_capabilities ?? []);
         setSelectedModel(s.chat_model);
-        setSelectedThinking(s.thinking_depth ?? "medium");
+        setSelectedThinking(s.reasoning_effort ?? "high");
       })
       .catch(() => {
         /* browser preview / uninitialized: leave the list empty */
@@ -361,22 +361,23 @@ export function Composer({
   };
 
   const THINKING_OPTIONS = [
-    { id: "simple", label: "composer.thinkingSimple", icon: Feather },
-    { id: "medium", label: "composer.thinkingMedium", icon: Lightbulb },
-    { id: "deep", label: "composer.thinkingDeep", icon: Brain },
+    { id: "none", label: "composer.thinkingNone", icon: Feather },
+    { id: "low", label: "composer.thinkingLow", icon: Lightbulb },
+    { id: "high", label: "composer.thinkingHigh", icon: Brain },
+    { id: "max", label: "composer.thinkingMax", icon: Sparkles },
   ] as const;
 
-  const chooseThinking = async (id: "simple" | "medium" | "deep") => {
+  const chooseThinking = async (id: "none" | "low" | "high" | "max") => {
     if (id === selectedThinking) return;
     const prev = selectedThinking;
     setSelectedThinking(id);
     try {
-      const view = await setThinkingDepth(id);
-      setSelectedThinking(view.thinking_depth ?? id);
+      const view = await setReasoningEffort(id);
+      setSelectedThinking(view.reasoning_effort ?? id);
     } catch (e) {
       setSelectedThinking(prev);
       message.error(t("composer.thinkingSwitchFailed"));
-      console.error("set_thinking_depth failed:", e);
+      console.error("set_reasoning_effort failed:", e);
     }
   };
 
@@ -534,9 +535,10 @@ export function Composer({
 
       if (commandName === "thinking" && (firstSpace >= 0 || exactArgCommand)) {
         const choices = [
-          { id: "simple", title: "simple", description: "简单思考，响应更快", category: "思考" },
-          { id: "medium", title: "medium", description: "中度思考，默认平衡模式", category: "思考" },
-          { id: "deep", title: "deep", description: "深度思考，给复杂任务更多推理预留", category: "思考" },
+          { id: "none", title: "none", description: "关闭推理", category: "推理强度" },
+          { id: "low", title: "low", description: "低推理强度", category: "推理强度" },
+          { id: "high", title: "high", description: "高推理强度", category: "推理强度" },
+          { id: "max", title: "max", description: "最高推理强度", category: "推理强度" },
         ]
           .filter((opt) => opt.title.includes(argQuery) || opt.description.includes(argQuery))
           .map((opt) => ({

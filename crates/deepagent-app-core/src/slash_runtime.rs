@@ -17,7 +17,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::EventPayload;
 use deepagent_core::message::Message;
 use deepagent_intent::{CommandContext, CommandDef, SlashAction, SlashRegistry};
-use deepagent_models::ThinkingDepth;
+use deepagent_models::ReasoningEffort;
 use deepagent_persistence::Database;
 use deepagent_runtime::RuntimeEvent;
 use deepagent_session::Session;
@@ -211,17 +211,17 @@ impl<'a> SlashRuntime<'a> {
                     "关闭"
                 };
                 let settings = self.settings.view()?;
-                let (configured, chat_model, thinking_depth, web_search) = settings
+                let (configured, chat_model, reasoning_effort, web_search) = settings
                     .as_ref()
                     .map(|s| {
                         (
                             s.configured,
                             s.chat_model.as_str(),
-                            s.thinking_depth.as_str(),
+                            s.reasoning_effort.as_str(),
                             web_search_summary(&s.web_search),
                         )
                     })
-                    .unwrap_or((false, "(未初始化)", "medium", "default".to_string()));
+                    .unwrap_or((false, "(未初始化)", "high", "default".to_string()));
                 let approval = self.settings.approval_policy()?.label();
                 SlashPanel::new("状态")
                     .section(SlashSection::new(
@@ -238,7 +238,7 @@ impl<'a> SlashRuntime<'a> {
                         "模型与运行时",
                         vec![
                             kv("聊天模型", chat_model).monospace(),
-                            kv("思考档位", thinking_depth),
+                            kv("思考档位", reasoning_effort),
                             kv("审批策略", approval),
                             kv("网页搜索", web_search),
                         ],
@@ -255,7 +255,7 @@ impl<'a> SlashRuntime<'a> {
                         kv("Base URL", s.base_url.clone()).monospace(),
                         kv("聊天模型", s.chat_model.clone()).monospace(),
                         kv("推理模型", s.reasoner_model.clone()).monospace(),
-                        kv("思考档位", s.thinking_depth.clone()),
+                        kv("思考档位", s.reasoning_effort.clone()),
                         kv("审批策略", s.approval_policy.clone()),
                         kv("网页搜索", web_search_summary(&s.web_search)),
                     ];
@@ -503,15 +503,14 @@ impl<'a> SlashRuntime<'a> {
             }
             SlashAction::Thinking { depth } => match depth {
                 Some(depth) => {
-                    let parsed = parse_thinking_depth(&depth)?;
-                    let view =
-                        self.settings.set_thinking_depth(parsed)?;
-                    format!("Thinking depth set to {}.", view.thinking_depth)
+                    let parsed = parse_reasoning_effort(&depth)?;
+                    let view = self.settings.set_reasoning_effort(parsed)?;
+                    format!("Reasoning effort set to {}.", view.reasoning_effort)
                 }
                 None => {
-                    let depth = self.settings.thinking_depth()?;
+                    let depth = self.settings.reasoning_effort()?;
                     format!(
-                        "Thinking depth is {}. Usage: /thinking <simple|medium|deep>.",
+                        "Reasoning effort is {}. Usage: /thinking <none|low|high|max>.",
                         depth.label()
                     )
                 }
@@ -1147,13 +1146,9 @@ fn collect_agent_items(
     }
 }
 
-fn parse_thinking_depth(depth: &str) -> Result<ThinkingDepth> {
-    match depth.trim().to_ascii_lowercase().as_str() {
-        "simple" => Ok(ThinkingDepth::Simple),
-        "medium" => Ok(ThinkingDepth::Medium),
-        "deep" => Ok(ThinkingDepth::Deep),
-        _ => Err(CoreError::invalid("usage: /thinking <simple|medium|deep>")),
-    }
+fn parse_reasoning_effort(depth: &str) -> Result<ReasoningEffort> {
+    ReasoningEffort::parse(depth)
+        .ok_or_else(|| CoreError::invalid("usage: /thinking <none|low|high|max>"))
 }
 
 /// Format a rule count with an optional inline listing (diagnostics helper).

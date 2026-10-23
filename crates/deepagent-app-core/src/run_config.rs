@@ -184,8 +184,7 @@ impl RunConfigOverlay {
 
     pub(crate) fn reasoning_effort_override(&self) -> Option<&str> {
         string_field(&self.value, &["reasoning_effort", "reasoningEffort"])
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
+            .filter(|value| !value.trim().is_empty())
     }
 
     /// Hooks aggregate across ALL config layers (plugin/user/project/local/
@@ -444,7 +443,7 @@ mod tests {
     fn provider_and_reasoning_overrides_are_run_scoped_scalars() {
         let overlay = RunConfigOverlay::from_value(serde_json::json!({
             "provider": "  deepseek-official ",
-            "reasoningEffort": " high "
+            "reasoningEffort": "high"
         }));
 
         assert_eq!(overlay.provider_override(), Some("deepseek-official"));

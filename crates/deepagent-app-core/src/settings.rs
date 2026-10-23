@@ -22,9 +22,10 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::{bash_prefix_rule, rule_command_prefix, PermissionRules};
 use deepagent_models::balance::{fetch_balance, BalanceResponse};
 use deepagent_models::capability::{ModelCapability, ModelCapabilityResolver};
+use deepagent_models::chat::validate_responses_user_identifier;
 use deepagent_models::discovery::{ModelCatalog, ModelDiscovery};
 use deepagent_models::transport::HttpTransport;
-use deepagent_models::ThinkingDepth;
+use deepagent_models::ReasoningEffort;
 use deepagent_persistence::document_store::DocumentStore;
 use deepagent_persistence::Database;
 
@@ -466,13 +467,17 @@ impl ResponsesApiSettings {
             .or(self.top_logprobs)
     }
 
-    pub fn effective_reasoning_effort(&self) -> Option<String> {
+    pub fn effective_reasoning_effort(&self) -> Option<ReasoningEffort> {
         self.developer
             .get("reasoning")
             .and_then(|value| value.get("effort"))
             .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .or_else(|| self.reasoning_effort.clone())
+            .and_then(ReasoningEffort::parse)
+            .or_else(|| {
+                self.reasoning_effort
+                    .as_deref()
+                    .and_then(ReasoningEffort::parse)
+            })
     }
 
     pub fn effective_text(&self) -> Option<serde_json::Value> {
@@ -532,9 +537,9 @@ impl ResponsesApiSettings {
             }
         }
         if let Some(value) = &self.reasoning_effort {
-            if !matches!(value.as_str(), "low" | "medium" | "high" | "max") {
+            if !matches!(value.as_str(), "none" | "low" | "high" | "max") {
                 return Err(CoreError::invalid(
-                    "Responses reasoning_effort must be low, medium, high, or max",
+                    "Responses reasoning_effort must be none, low, high, or max",
                 ));
             }
         }
@@ -550,8 +555,8 @@ impl ResponsesApiSettings {
                 tool_choice.clone(),
             )]))?;
         }
-        if self.user.as_deref().is_some_and(str::is_empty) {
-            return Err(CoreError::invalid("Responses user must not be empty"));
+        if let Some(user) = &self.user {
+            validate_responses_user_identifier(user)?;
         }
         if !self.developer.is_empty() {
             let raw = serde_json::Value::Object(self.developer.clone()).to_string();
@@ -687,10 +692,10 @@ fn validate_developer_responses_fields(
         }
         if !matches!(
             reasoning.get("effort").and_then(serde_json::Value::as_str),
-            Some("low" | "medium" | "high" | "max")
+            Some("none" | "low" | "high" | "max")
         ) {
             return Err(CoreError::invalid(
-                "Responses reasoning.effort must be low, medium, high, or max",
+                "Responses reasoning.effort must be none, low, high, or max",
             ));
         }
     }
@@ -786,13 +791,11 @@ fn validate_developer_responses_fields(
             ));
         }
     }
-    if object
-        .get("user")
-        .is_some_and(|value| value.as_str().map(str::is_empty).unwrap_or(true))
-    {
-        return Err(CoreError::invalid(
-            "Responses user must be a non-empty string",
-        ));
+    if let Some(value) = object.get("user") {
+        let user = value
+            .as_str()
+            .ok_or_else(|| CoreError::invalid("Responses user must be a string"))?;
+        validate_responses_user_identifier(user)?;
     }
     if object
         .get("verbosity")
@@ -992,9 +995,9 @@ pub struct AppSettings {
     /// the runtime hook registry.
     #[serde(default)]
     pub hooks_json: String,
-    /// User-selected DeepSeek Thinking Mode depth.
+    /// User-selected DeepSeek Responses reasoning effort.
     #[serde(default)]
-    pub thinking_depth: ThinkingDepth,
+    pub reasoning_effort: ReasoningEffort,
     /// Global Responses API controls; system-managed request fields are never
     /// accepted from this object.
     #[serde(default)]
@@ -1212,8 +1215,8 @@ pub struct SettingsView {
     pub sandbox_mode: String,
     /// Current preferred integrated-terminal shell.
     pub terminal_shell: String,
-    /// Current DeepSeek Thinking Mode depth (simple / medium / deep).
-    pub thinking_depth: String,
+    /// Current canonical DeepSeek Responses reasoning effort.
+    pub reasoning_effort: String,
     #[serde(default)]
     pub responses: ResponsesApiSettings,
     /// Current web-search settings.
@@ -1330,6 +1333,93 @@ fn normalize_prefix(prefix: &str) -> String {
     prefix.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn migrate_persisted_reasoning(value: &mut serde_json::Value) -> usize {
+    let Some(settings) = value.as_object_mut() else {
+        return 0;
+    };
+    let legacy_depth_value = settings.remove("thinking_depth");
+    let legacy_depth = legacy_depth_value
+        .as_ref()
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let mut changes = usize::from(legacy_depth_value.is_some());
+    if settings
+        .get("reasoning_effort")
+        .is_some_and(|value| value.as_str().and_then(ReasoningEffort::parse).is_none())
+    {
+        settings.remove("reasoning_effort");
+        changes += 1;
+    }
+    if !settings.contains_key("reasoning_effort") {
+        let migrated = match legacy_depth.as_deref() {
+            Some("simple") => Some(ReasoningEffort::None),
+            Some("medium") => Some(ReasoningEffort::High),
+            Some("deep") => Some(ReasoningEffort::Max),
+            _ => None,
+        };
+        if let Some(effort) = migrated {
+            settings.insert(
+                "reasoning_effort".to_string(),
+                serde_json::Value::String(effort.label().to_string()),
+            );
+            changes += 1;
+        }
+    }
+
+    let Some(responses) = settings
+        .get_mut("responses")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return changes;
+    };
+    if let Some(effort) = responses.get("reasoning_effort") {
+        match effort.as_str() {
+            Some("medium") => {
+                responses.insert(
+                    "reasoning_effort".to_string(),
+                    serde_json::Value::String(ReasoningEffort::High.label().to_string()),
+                );
+                changes += 1;
+            }
+            Some(value) if ReasoningEffort::parse(value).is_none() => {
+                responses.remove("reasoning_effort");
+                changes += 1;
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(developer) = responses
+        .get_mut("developer")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        let effort = developer
+            .get("reasoning")
+            .and_then(|reasoning| reasoning.get("effort"))
+            .and_then(serde_json::Value::as_str);
+        match effort {
+            Some("medium") => {
+                if let Some(reasoning) = developer
+                    .get_mut("reasoning")
+                    .and_then(serde_json::Value::as_object_mut)
+                {
+                    reasoning.insert(
+                        "effort".to_string(),
+                        serde_json::Value::String(ReasoningEffort::High.label().to_string()),
+                    );
+                    changes += 1;
+                }
+            }
+            Some(value) if ReasoningEffort::parse(value).is_none() => {
+                developer.remove("reasoning");
+                changes += 1;
+            }
+            _ => {}
+        }
+    }
+    changes
+}
+
 impl SettingsService {
     /// Build the service from a shared database, an HTTP transport (reaches
     /// DeepSeek for discovery), and a secret store (holds the API key).
@@ -1380,7 +1470,10 @@ impl SettingsService {
                 .as_ref()
                 .map(|s| s.hooks_json.clone())
                 .unwrap_or_default(),
-            thinking_depth: prior.as_ref().map(|s| s.thinking_depth).unwrap_or_default(),
+            reasoning_effort: prior
+                .as_ref()
+                .map(|s| s.reasoning_effort)
+                .unwrap_or_default(),
             responses: prior
                 .as_ref()
                 .map(|s| s.responses.clone())
@@ -1563,9 +1656,37 @@ impl SettingsService {
         }
 
         let store = DocumentStore::new(&self.db);
-        let loaded = match store.get(SETTINGS_COLLECTION, SETTINGS_ID)? {
-            Some(doc) => Some(serde_json::from_str::<AppSettings>(&doc.body)?),
-            None => None,
+        let mut migration_retries = 0;
+        let loaded = loop {
+            let Some(doc) = store.get(SETTINGS_COLLECTION, SETTINGS_ID)? else {
+                break None;
+            };
+            let mut stored: serde_json::Value = serde_json::from_str(&doc.body)?;
+            let changes = migrate_persisted_reasoning(&mut stored);
+            if changes > 0 {
+                let body = serde_json::to_string(&stored)?;
+                if !store.replace_body_if_unchanged(
+                    SETTINGS_COLLECTION,
+                    SETTINGS_ID,
+                    &doc.body,
+                    &body,
+                    Timestamp::from_millis(now_ms()),
+                )? {
+                    migration_retries += 1;
+                    if migration_retries >= 5 {
+                        return Err(CoreError::Persistence(
+                            "settings kept changing while removing obsolete reasoning values"
+                                .to_string(),
+                        ));
+                    }
+                    continue;
+                }
+                tracing::info!(
+                    migrated_fields = changes,
+                    "migrated persisted reasoning settings"
+                );
+            }
+            break Some(serde_json::from_value::<AppSettings>(stored)?);
         };
         *self
             .settings_cache
@@ -1657,8 +1778,8 @@ impl SettingsService {
     }
 
     /// The current DeepSeek Thinking Mode depth.
-    pub fn thinking_depth(&self) -> Result<ThinkingDepth> {
-        Ok(self.load()?.map(|s| s.thinking_depth).unwrap_or_default())
+    pub fn reasoning_effort(&self) -> Result<ReasoningEffort> {
+        Ok(self.load()?.map(|s| s.reasoning_effort).unwrap_or_default())
     }
 
     /// Effective proactive auto-compact reserve buffer override. Precedence:
@@ -2082,11 +2203,11 @@ impl SettingsService {
     }
 
     /// Set the Thinking Mode depth, persisting it. Returns the redacted view.
-    pub fn set_thinking_depth(&self, depth: ThinkingDepth) -> Result<SettingsView> {
+    pub fn set_reasoning_effort(&self, effort: ReasoningEffort) -> Result<SettingsView> {
         let mut settings = self
             .load()?
             .ok_or_else(|| CoreError::not_found("settings not initialized"))?;
-        settings.thinking_depth = depth;
+        settings.reasoning_effort = effort;
         self.save(&settings)?;
         let key = self.secrets.get(API_KEY_NAME)?;
         self.view_with_key(key.as_deref(), &settings)
@@ -2278,7 +2399,7 @@ impl SettingsService {
             approval_policy: settings.approval_policy.label().to_string(),
             sandbox_mode: settings.sandbox_mode.label().to_string(),
             terminal_shell: settings.terminal_shell.label().to_string(),
-            thinking_depth: settings.thinking_depth.label().to_string(),
+            reasoning_effort: settings.reasoning_effort.label().to_string(),
             responses: settings.responses.clone(),
             web_search: self.web_search_settings_view(normalize_web_search_settings(
                 settings.web_search.clone(),
@@ -2541,7 +2662,7 @@ mod tests {
         assert!(view.configured);
         assert_eq!(view.chat_model, "deepseek-v4-flash");
         assert_eq!(view.reasoner_model, "deepseek-v4-pro");
-        assert_eq!(view.thinking_depth, "medium");
+        assert_eq!(view.reasoning_effort, "high");
         assert_eq!(view.api_key_masked, "sk-…1234");
 
         // The key is in the secret store...
@@ -2739,14 +2860,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn thinking_depth_roundtrips_and_survives_refresh() {
+    async fn reasoning_effort_roundtrips_and_survives_refresh() {
         let (svc, _) = service();
         svc.initialize("sk-abcd1234").await.unwrap();
-        let view = svc.set_thinking_depth(ThinkingDepth::Deep).unwrap();
-        assert_eq!(view.thinking_depth, "deep");
-        assert_eq!(svc.thinking_depth().unwrap(), ThinkingDepth::Deep);
+        let view = svc.set_reasoning_effort(ReasoningEffort::Max).unwrap();
+        assert_eq!(view.reasoning_effort, "max");
+        assert_eq!(svc.reasoning_effort().unwrap(), ReasoningEffort::Max);
         let refreshed = svc.refresh_models().await.unwrap();
-        assert_eq!(refreshed.thinking_depth, "deep");
+        assert_eq!(refreshed.reasoning_effort, "max");
     }
 
     #[tokio::test]
@@ -3088,7 +3209,7 @@ mod tests {
             approval_policy: ApprovalPolicy::AlwaysAsk,
             sandbox_mode: SandboxMode::WorkspaceWrite,
             terminal_shell: TerminalShell::default(),
-            thinking_depth: ThinkingDepth::Medium,
+            reasoning_effort: ReasoningEffort::High,
             responses: ResponsesApiSettings::default(),
             permission_rules: PermissionRules::default(),
             hooks_json: String::new(),
@@ -3138,8 +3259,8 @@ fn responses_developer_json_preserves_ineffective_fields() {
     assert_eq!(settings.effective_temperature(), Some(0.4));
     assert_eq!(settings.developer["temperature"], 0.4);
     assert_eq!(
-        settings.effective_reasoning_effort().as_deref(),
-        Some("high")
+        settings.effective_reasoning_effort(),
+        Some(ReasoningEffort::High)
     );
     assert_eq!(settings.effective_user().as_deref(), Some("account-1"));
     assert!(settings.ineffective.contains_key("parallel_tool_calls"));
@@ -3156,6 +3277,140 @@ fn responses_developer_json_uses_official_nested_reasoning_shape() {
         r#"{"reasoning":{"effort":"high","summary":"auto"}}"#
     )
     .is_err());
+}
+
+#[test]
+fn reasoning_effort_rejects_noncanonical_aliases() {
+    for value in ["minimal", "medium", "xhigh", "simple", "deep"] {
+        assert!(ResponsesApiSettings {
+            reasoning_effort: Some(value.to_string()),
+            ..ResponsesApiSettings::default()
+        }
+        .validate()
+        .is_err());
+        assert!(
+            ResponsesApiSettings::from_developer_json(&format!(
+                r#"{{"reasoning":{{"effort":"{value}"}}}}"#
+            ))
+            .is_err(),
+            "developer JSON must reject {value}"
+        );
+        assert!(
+            ReasoningEffort::parse(value).is_none(),
+            "must reject {value}"
+        );
+    }
+    for value in ["none", "low", "high", "max"] {
+        assert!(ResponsesApiSettings::from_developer_json(&format!(
+            r#"{{"reasoning":{{"effort":"{value}"}}}}"#
+        ))
+        .is_ok());
+        assert!(ReasoningEffort::parse(value).is_some());
+    }
+}
+
+#[test]
+fn migration_persists_removal_of_malformed_legacy_reasoning_field() {
+    let mut stored = serde_json::json!({"thinking_depth": true});
+    assert_eq!(migrate_persisted_reasoning(&mut stored), 1);
+    assert!(stored.get("thinking_depth").is_none());
+}
+
+#[test]
+fn responses_user_identifier_validates_both_settings_surfaces() {
+    let max_length = "a".repeat(512);
+    for user in ["A1-_z", max_length.as_str()] {
+        assert!(ResponsesApiSettings {
+            user: Some(user.to_string()),
+            ..ResponsesApiSettings::default()
+        }
+        .validate()
+        .is_ok());
+        assert!(ResponsesApiSettings::from_developer_json(
+            &serde_json::json!({"user": user}).to_string()
+        )
+        .is_ok());
+    }
+
+    let too_long = "a".repeat(513);
+    for user in [
+        "",
+        "account 1",
+        "account/1",
+        "用户-1",
+        "account\n1",
+        too_long.as_str(),
+    ] {
+        assert!(
+            ResponsesApiSettings {
+                user: Some(user.to_string()),
+                ..ResponsesApiSettings::default()
+            }
+            .validate()
+            .is_err(),
+            "ordinary settings must reject {user:?}"
+        );
+        assert!(
+            ResponsesApiSettings::from_developer_json(
+                &serde_json::json!({"user": user}).to_string()
+            )
+            .is_err(),
+            "developer JSON must reject {user:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn load_migrates_legacy_reasoning_and_removes_noncanonical_values() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let svc = SettingsService::new(
+        db.clone(),
+        Arc::new(deepagent_models::transport::MockTransport::with_get_json(
+            r#"{"object":"list","data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"},{"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(crate::secret_store::MemorySecretStore::new()),
+    );
+    svc.initialize("sk-synthetic-test").await.unwrap();
+    let store = DocumentStore::new(&svc.db);
+    let doc = store
+        .get(SETTINGS_COLLECTION, SETTINGS_ID)
+        .unwrap()
+        .unwrap();
+    let mut stored: serde_json::Value = serde_json::from_str(&doc.body).unwrap();
+    stored["thinking_depth"] = serde_json::json!("medium");
+    stored["reasoning_effort"] = serde_json::json!("deep");
+    stored["responses"]["reasoning_effort"] = serde_json::json!("medium");
+    stored["responses"]["developer"] = serde_json::json!({
+        "reasoning": { "effort": "xhigh" },
+        "temperature": 0.4
+    });
+    store
+        .put(
+            SETTINGS_COLLECTION,
+            SETTINGS_ID,
+            &stored.to_string(),
+            None,
+            Timestamp::from_millis(now_ms()),
+        )
+        .unwrap();
+    *svc.settings_cache.lock().unwrap() = None;
+
+    let loaded = svc.load().unwrap().unwrap();
+    assert_eq!(loaded.reasoning_effort, ReasoningEffort::High);
+    assert_eq!(loaded.responses.reasoning_effort.as_deref(), Some("high"));
+    assert!(!loaded.responses.developer.contains_key("reasoning"));
+    assert_eq!(loaded.responses.effective_temperature(), Some(0.4));
+
+    let cleaned = store
+        .get(SETTINGS_COLLECTION, SETTINGS_ID)
+        .unwrap()
+        .unwrap();
+    let cleaned: serde_json::Value = serde_json::from_str(&cleaned.body).unwrap();
+    assert!(cleaned.get("thinking_depth").is_none());
+    assert_eq!(cleaned["reasoning_effort"], "high");
+    assert_eq!(cleaned["responses"]["reasoning_effort"], "high");
+    assert!(cleaned["responses"]["developer"].get("reasoning").is_none());
+    assert_eq!(cleaned["responses"]["developer"]["temperature"], 0.4);
 }
 
 #[test]

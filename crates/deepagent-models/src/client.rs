@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use deepagent_core::error::Result;
 
-use crate::chat::{Response, ResponseRequest};
+use crate::chat::{ReasoningEffort, Response, ResponseRequest};
 use crate::chat_completions::{ChatCompletionAccumulator, ChatCompletionRequest};
 use crate::responses::ResponseInputItem;
 use crate::stream::ResponseAccumulator;
@@ -48,7 +48,7 @@ pub struct ResponseDefaults {
     pub top_p: Option<f32>,
     pub max_output_tokens: Option<u32>,
     pub top_logprobs: Option<u8>,
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub text: Option<serde_json::Value>,
     pub tool_choice: Option<serde_json::Value>,
     pub user: Option<String>,
@@ -178,6 +178,7 @@ impl ModelClient {
         }
         request.stream = true;
         self.apply_defaults(&mut request);
+        request.validate()?;
         log_response_input_pairs(&request);
         // Ask the provider to include a final usage chunk in the stream.
         let body = serde_json::to_string(&request)?;
@@ -224,6 +225,7 @@ impl ModelClient {
         }
         request.stream = true;
         self.apply_defaults(&mut request);
+        request.validate()?;
         log_response_input_pairs(&request);
         let body = serde_json::to_string(&request)?;
         let transport_req = TransportRequest {
@@ -385,8 +387,8 @@ impl ModelClient {
         if request.max_tokens.is_none() {
             request.max_tokens = self.config.defaults.max_output_tokens;
         }
-        if request.reasoning_effort.is_none() {
-            if let Some(effort) = self.config.defaults.reasoning_effort.as_deref() {
+        if request.reasoning_effort.is_none() && request.thinking.is_none() {
+            if let Some(effort) = self.config.defaults.reasoning_effort {
                 *request = request.clone().with_reasoning_effort(effort);
             }
         }
@@ -1251,6 +1253,73 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn rejects_invalid_responses_user_before_transport() {
+        struct CountingTransport(Arc<AtomicUsize>);
+
+        #[async_trait]
+        impl HttpTransport for CountingTransport {
+            async fn stream(
+                &self,
+                _request: TransportRequest,
+                sink: &mut dyn EventSink,
+            ) -> Result<()> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                sink.on_event(
+                    r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                )?;
+                Ok(())
+            }
+        }
+
+        let too_long = "a".repeat(513);
+        for user in [
+            "",
+            "account 1",
+            "account/1",
+            "用户-1",
+            "account\n1",
+            too_long.as_str(),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let client = ModelClient::new(
+                Arc::new(CountingTransport(calls.clone())),
+                ModelConfig::deepseek("audit-placeholder"),
+            );
+            let mut request =
+                ResponseRequest::new("deepseek-flash", vec![Message::user("validate user")]);
+            request.user = Some(user.to_string());
+
+            assert!(client.stream_response(request).await.is_err(), "{user:?}");
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "invalid identifier {user:?} must not reach transport"
+            );
+        }
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let client = ModelClient::new(
+            Arc::new(CountingTransport(calls.clone())),
+            ModelConfig::deepseek("audit-placeholder").with_defaults(ResponseDefaults {
+                user: Some("account/1".to_string()),
+                ..ResponseDefaults::default()
+            }),
+        );
+        assert!(client
+            .stream_response(ResponseRequest::new(
+                "deepseek-flash",
+                vec![Message::user("validate default")],
+            ))
+            .await
+            .is_err());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "invalid configured defaults must not reach transport"
+        );
+    }
+
     struct WaitingTransport {
         entered: Arc<tokio::sync::Notify>,
     }
@@ -1509,7 +1578,7 @@ mod tests {
             serde_json::json!({"type":"object","properties":{}}),
         )])
         .with_tool_choice(tool_choice);
-        request.reasoning_effort = Some("high".to_string());
+        request.reasoning_effort = Some(ReasoningEffort::High);
 
         let result = client.stream_response(request).await;
         (result, calls.load(Ordering::SeqCst))
@@ -1579,34 +1648,5 @@ mod tests {
                     && usage.prompt_cache_hit_tokens == 4
                     && usage.reasoning_tokens == 1
         )));
-    }
-
-    #[tokio::test]
-    async fn invalid_chat_reasoning_effort_is_rejected_before_transport() {
-        struct FailIfCalled;
-
-        #[async_trait]
-        impl HttpTransport for FailIfCalled {
-            async fn stream(
-                &self,
-                _request: TransportRequest,
-                _sink: &mut dyn EventSink,
-            ) -> Result<()> {
-                panic!("transport must not be called for invalid request");
-            }
-        }
-
-        let client = ModelClient::new(
-            Arc::new(FailIfCalled),
-            ModelConfig::deepseek_chat("test-key"),
-        );
-        let error = client
-            .stream_chat_completion(
-                ChatCompletionRequest::new("deepseek-v4-pro", vec![Message::user("hi")])
-                    .with_reasoning_effort("medium"),
-            )
-            .await
-            .unwrap_err();
-        assert!(error.to_string().contains("unsupported reasoning effort"));
     }
 }

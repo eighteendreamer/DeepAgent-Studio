@@ -449,7 +449,7 @@ impl<'a> RunAssembler<'a> {
         )?;
         let client = run_model.client;
         let model = run_model.model;
-        let thinking_depth = run_model.thinking_depth;
+        let reasoning_effort = run_model.reasoning_effort;
         let fallback_model = run_model.fallback_model;
 
         let plan = self.plan_mode_for_session(&session_id_str);
@@ -472,7 +472,7 @@ impl<'a> RunAssembler<'a> {
             .tool_search_auto_threshold()
             .unwrap_or(SettingsService::DEFAULT_TOOL_SEARCH_AUTO_THRESHOLD_CHARS);
         let tool_search_discovered = self.discovered_tools_for_session(&session_id_str);
-        let subagent_thinking_depth = thinking_depth;
+        let subagent_reasoning_effort = reasoning_effort;
 
         let (sink, rx) = ChannelSink::new();
         let sink: Arc<dyn RuntimeEventSink> = Arc::new(sink);
@@ -533,7 +533,7 @@ impl<'a> RunAssembler<'a> {
                 transcript_root: self.tool_results_dir.join("subagents"),
                 client: client.clone(),
                 model: model.clone(),
-                thinking_depth: subagent_thinking_depth,
+                reasoning_effort: subagent_reasoning_effort,
                 registry: sub_registry,
                 root: root.clone(),
                 tool_search_mode,
@@ -674,7 +674,7 @@ impl<'a> RunAssembler<'a> {
             sink: sink.clone(),
             client: client.clone(),
             model: model.clone(),
-            thinking_depth,
+            reasoning_effort,
             mcp: hook_mcp_registry,
             registry: &registry,
             plan: plan.clone(),
@@ -788,7 +788,7 @@ impl<'a> RunAssembler<'a> {
             }
         }
         let prompt_for_model = model_prompt.as_str();
-        let effective_thinking_depth = thinking_depth;
+        let effective_reasoning_effort = reasoning_effort;
         let model_capability = client.capability(&model);
         let requested_output_tokens = client
             .prepare_response_request(deepagent_models::ResponseRequest::from_response_items(
@@ -800,7 +800,7 @@ impl<'a> RunAssembler<'a> {
             .map(|tokens| tokens as usize);
         let context_policy = ContextPolicy::for_capability_with_output(
             &model_capability,
-            effective_thinking_depth,
+            effective_reasoning_effort,
             requested_output_tokens,
         );
 
@@ -1014,7 +1014,7 @@ impl<'a> RunAssembler<'a> {
                 tool_search_discovered.clone(),
                 tool_search_threshold,
             ))
-            .with_thinking_depth(effective_thinking_depth)
+            .with_reasoning_effort(effective_reasoning_effort)
             .with_fallback_model(fallback_model)
             .with_reactive_compactor(reactive_compactor)
             .with_history(history)

@@ -143,7 +143,7 @@ export type SettingsChangedReason =
   | "api_key"
   | "models"
   | "chat_model"
-  | "thinking_depth"
+  | "reasoning_effort"
   | "responses_settings"
   | "terminal_shell"
   | "skill_catalog"
@@ -414,17 +414,17 @@ export async function setChatModel(modelId: string): Promise<SettingsView> {
   throw new Error("switching models requires the desktop app");
 }
 
-/** Set DeepSeek Thinking Mode depth for subsequent chat requests. */
-export async function setThinkingDepth(
-  depth: "simple" | "medium" | "deep"
+/** Set DeepSeek Responses reasoning effort for subsequent chat requests. */
+export async function setReasoningEffort(
+  effort: "none" | "low" | "high" | "max"
 ): Promise<SettingsView> {
   const invoke = getInvoke();
   if (invoke) {
-    const view = await invoke<SettingsView>("set_thinking_depth", { depth });
-    emitSettingsChanged({ reason: "thinking_depth" });
+    const view = await invoke<SettingsView>("set_reasoning_effort", { effort });
+    emitSettingsChanged({ reason: "reasoning_effort" });
     return view;
   }
-  throw new Error("changing thinking depth requires the desktop app");
+  throw new Error("changing reasoning effort requires the desktop app");
 }
 
 /** Validate and persist the global DeepSeek Responses developer JSON. */
@@ -947,9 +947,8 @@ export async function skillMarketAiReviewSubscribe(
 /** Kick off the background AI review task. Tokens / verdict flow through the
  *  events subscribed via {@link skillMarketAiReviewSubscribe}.
  *
- *  Pass `reReview = true` to request a deeper second pass (Medium thinking
- *  budget + 3K reply cap on the backend). The default `false` runs the
- *  faster initial pass (Simple thinking + 2K reply cap). */
+ *  Pass `reReview = true` to request a higher-effort second pass with a 3K
+ *  reply cap. The default `false` runs the faster initial pass with a 2K cap. */
 export async function skillMarketAiReview(
   tempId: string,
   reReview: boolean = false,
@@ -3545,8 +3544,8 @@ const MOCK_COMMANDS: Command[] = [
   { id: "slash.cost", title: "/cost", description: "查看当前会话、当天、本月和累计费用", category: "内置命令", shortcut: null },
   { id: "slash.doctor", title: "/doctor", description: "运行环境诊断，检查配置、数据库、权限和 API Key", category: "内置命令", shortcut: null },
   { id: "slash.help", title: "/help", description: "查看可用的 slash 命令列表", category: "内置命令", shortcut: null },
-  { id: "slash.status", title: "/status", description: "查看当前项目、模型、思考深度和运行状态", category: "内置命令", shortcut: null },
-  { id: "slash.settings", title: "/settings", description: "查看 DeepSeek 配置、模型、权限和思考设置", category: "内置命令", shortcut: null },
+  { id: "slash.status", title: "/status", description: "查看当前项目、模型、推理强度和运行状态", category: "内置命令", shortcut: null },
+  { id: "slash.settings", title: "/settings", description: "查看 DeepSeek 配置、模型、权限和推理强度", category: "内置命令", shortcut: null },
   { id: "slash.config", title: "/config", description: "/settings 的别名，查看当前配置摘要", category: "内置命令", shortcut: null },
   { id: "slash.permissions", title: "/permissions", description: "查看当前工具权限策略和 allow/ask/deny 规则", category: "内置命令", shortcut: null },
   { id: "slash.knowledge", title: "/knowledge", description: "查看项目知识库、草稿、被动注入和自动捕获状态", category: "内置命令", shortcut: null },
@@ -3554,8 +3553,8 @@ const MOCK_COMMANDS: Command[] = [
   { id: "slash.mcp", title: "/mcp", description: "查看已配置的 MCP 服务及启用状态", category: "内置命令", shortcut: null },
   { id: "slash.projects", title: "/projects", description: "查看已打开项目和当前激活项目", category: "内置命令", shortcut: null },
   { id: "slash.sessions", title: "/sessions", description: "查看最近会话列表", category: "内置命令", shortcut: null },
-  { id: "slash.thinking", title: "/thinking", description: "查看或设置思考深度：simple、medium、deep", category: "内置命令", shortcut: null },
-  { id: "slash.effort", title: "/effort", description: "/thinking 的别名，查看或设置思考深度", category: "内置命令", shortcut: null },
+  { id: "slash.thinking", title: "/thinking", description: "查看或设置推理强度：none、low、high、max", category: "内置命令", shortcut: null },
+  { id: "slash.effort", title: "/effort", description: "/thinking 的别名，查看或设置推理强度", category: "内置命令", shortcut: null },
   { id: "slash.plan", title: "/plan", description: "进入只读 Plan 模式，先规划再执行", category: "内置命令", shortcut: null },
   { id: "slash.execute", title: "/execute", description: "退出 Plan 模式，恢复正常执行权限", category: "内置命令", shortcut: null },
   { id: "slash.resume", title: "/resume", description: "按会话 ID 恢复历史会话上下文", category: "内置命令", shortcut: null },

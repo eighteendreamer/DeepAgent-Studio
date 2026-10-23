@@ -183,7 +183,7 @@ fn settings_default() -> AppSettings {
         terminal_shell: Default::default(),
         permission_rules: Default::default(),
         hooks_json: String::new(),
-        thinking_depth: Default::default(),
+        reasoning_effort: Default::default(),
         responses: Default::default(),
         verification_policy: Default::default(),
         web_search: Default::default(),

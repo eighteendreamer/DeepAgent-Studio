@@ -12,7 +12,7 @@ use std::process::Command;
 use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_models::ThinkingDepth;
+use deepagent_models::ReasoningEffort;
 
 use crate::chat_service::ChatService;
 use crate::dto::TranscriptSegmentDto;
@@ -231,7 +231,7 @@ impl SpeechService {
             .run_review_streaming(
                 MINUTES_SYSTEM_PROMPT,
                 &user_prompt,
-                ThinkingDepth::Medium,
+                ReasoningEffort::High,
                 3000,
                 |_tok| {},
             )

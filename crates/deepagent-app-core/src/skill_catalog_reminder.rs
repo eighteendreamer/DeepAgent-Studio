@@ -202,7 +202,7 @@ mod tests {
             terminal_shell: crate::settings::TerminalShell::default(),
             permission_rules: deepagent_hooks::PermissionRules::default(),
             hooks_json: String::new(),
-            thinking_depth: deepagent_models::ThinkingDepth::default(),
+            reasoning_effort: deepagent_models::ReasoningEffort::default(),
             responses: crate::settings::ResponsesApiSettings::default(),
             verification_policy: crate::settings::VerificationPolicy::default(),
             web_search: crate::settings::WebSearchSettings::default(),

@@ -205,7 +205,7 @@ impl ContextUsageSnapshot {
 mod tests {
     use super::*;
     use crate::policy::ContextPolicy;
-    use deepagent_models::{CapabilitySource, ModelCapability, ThinkingDepth};
+    use deepagent_models::{CapabilitySource, ModelCapability, ReasoningEffort};
 
     #[test]
     fn snapshot_sums_blocks_and_keeps_cache_separate() {
@@ -219,7 +219,7 @@ mod tests {
             capability_source: CapabilitySource::BundledOfficialSnapshot,
             fallback_reason: None,
         };
-        let policy = ContextPolicy::for_capability(&cap, ThinkingDepth::Simple);
+        let policy = ContextPolicy::for_capability(&cap, ReasoningEffort::None);
         let pack = ContextPack::new(vec![
             ContextBlock {
                 kind: ContextBlockKind::StablePrefix,

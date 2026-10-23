@@ -73,7 +73,7 @@ CC 的 agent 定义支持以下 frontmatter 字段，本仓库 `AgentDef`（[age
 | `disallowedTools` | **拒绝列表**（负向过滤） | ❌ 无 | **Teammate-1 新增** |
 | `model` | 模型偏好（`inherit` 或命名） | 已有 `ModelPref` | — |
 | `color` | UI 颜色 | 已有 | — |
-| `effort` | 推理深度（`simple/medium/deep` 或整数） | 请求级 `effort` 已支持，agent 文件级 ❌ | **Teammate-1 新增** |
+| `effort` | 推理强度（`none/low/high/max`） | 请求级 `effort` 已支持，agent 文件级 ❌ | **Teammate-1 新增** |
 | `permissionMode` | 权限模式（`PERMISSION_MODES`） | ❌ 无（子代理硬编码 `PermissionSet::developer`） | **Teammate-1 新增** |
 | `maxTurns` | 最大 agentic 轮数 | ❌ 无（`RuntimeConfig.max_steps=64` 全局硬编码） | **Teammate-1 新增** |
 | `skills` | 预加载技能名 | 请求级 `skills` 已支持，agent 文件级 ❌ | **Teammate-1 新增** |
@@ -203,7 +203,7 @@ tools.retain(|tool| {
 
 ### 3.5 effort / skills / background / isolation 文件级默认
 
-- `effort`：`subagent_thinking_depth(agent_profile.def.effort, inherited)` ——请求级 `effort` 覆盖。
+- `effort`：`subagent_reasoning_effort(agent_profile.def.effort, inherited)` ——请求级 `effort` 覆盖。
 - `skills`：`preload_skills(agent_profile.def.skills)` 与请求级 `skills` 取并集。
 - `background`：`start_background` 时若 agent 文件声 `background: true`，`run()` 也走后台上报路径。
 - `isolation`：请求级未显式指定时用 agent 文件默认。

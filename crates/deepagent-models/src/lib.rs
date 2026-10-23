@@ -40,8 +40,8 @@ pub mod reqwest_transport;
 pub use balance::{fetch_balance, BalanceInfo, BalanceResponse, BALANCE_PATH};
 pub use capability::{CapabilitySource, ModelCapability, ModelCapabilityResolver};
 pub use chat::{
-    FinishReason, FunctionSchema, Response, ResponseRequest, ThinkingConfig, ThinkingDepth,
-    ThinkingToggle, ToolSchema, Usage,
+    FinishReason, FunctionSchema, ReasoningEffort, Response, ResponseRequest, ThinkingToggle,
+    ToolSchema, Usage,
 };
 pub use chat_completions::{ChatCompletionAccumulator, ChatCompletionRequest};
 pub use client::{

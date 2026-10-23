@@ -215,9 +215,14 @@ async fn observe_incomplete_reason(
             injected_output_limit_prompt,
             "the real continuation uses output-limit guidance"
         );
+        let escalated_limit = ceilings[1]
+            .as_u64()
+            .expect("the recovery request must set an explicit output ceiling");
         assert!(
-            ceilings[1].as_u64().unwrap() > ceilings[0].as_u64().unwrap(),
-            "the second request really escalated its output ceiling"
+            ceilings[0]
+                .as_u64()
+                .map_or(true, |initial_limit| escalated_limit > initial_limit),
+            "the recovery request must raise a configured ceiling or add one when the provider default was used"
         );
     }
     let escalated_output = ceilings.first().is_some_and(|first| {

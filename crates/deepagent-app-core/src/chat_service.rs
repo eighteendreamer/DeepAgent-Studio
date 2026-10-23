@@ -24,7 +24,7 @@ use deepagent_hooks::Hook;
 use deepagent_models::transport::HttpTransport;
 #[cfg(test)]
 use deepagent_models::ToolSchema;
-use deepagent_models::{ModelClient, ModelConfig, ModelRole, ThinkingDepth};
+use deepagent_models::{ModelClient, ModelConfig, ModelRole, ReasoningEffort};
 use deepagent_persistence::runtime_log_store::{NewRuntimeLogEntry, RuntimeLogStore};
 use deepagent_persistence::Database;
 #[cfg(test)]
@@ -995,7 +995,7 @@ impl ChatService {
     /// Build a model client for the given role from persisted settings + the
     /// stored API key. Thinking depth is a request-parameter concern only; it
     /// does not implicitly swap the selected model role.
-    fn build_model(&self, role: ModelRole) -> Result<(Arc<ModelClient>, String, ThinkingDepth)> {
+    fn build_model(&self, role: ModelRole) -> Result<(Arc<ModelClient>, String, ReasoningEffort)> {
         build_model_client(&self.settings, self.transport.clone(), role)
     }
 
@@ -1010,7 +1010,7 @@ impl ChatService {
     ///
     /// Reuses [`ChatService::build_model`] so model selection (incl. Deep
     /// thinking → reasoner role), API-key resolution, and the persisted
-    /// `ThinkingDepth` profile stay consistent with the regular chat run.
+    /// `ReasoningEffort` profile stay consistent with the regular chat run.
     pub async fn run_oneshot_streaming<F>(
         &self,
         system_prompt: &str,
@@ -1020,14 +1020,14 @@ impl ChatService {
     where
         F: FnMut(&str) + Send + 'static,
     {
-        let (client, model, thinking_depth) = self.build_model(ModelRole::Chat)?;
+        let (client, model, reasoning_effort) = self.build_model(ModelRole::Chat)?;
         let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
             model,
             system_prompt,
             user_prompt,
         )
         .streaming()
-        .with_thinking_depth(thinking_depth);
+        .with_reasoning_effort(reasoning_effort);
 
         struct CallbackObserver<F: FnMut(&str) + Send> {
             on_token: F,
@@ -1060,12 +1060,12 @@ impl ChatService {
     ///    swap that [`Self::build_model`] applies for normal chat is
     ///    intentionally skipped here because skill audits don't benefit
     ///    from that role change.
-    /// 2. **Caller picks the [`ThinkingDepth`]** explicitly (typically
-    ///    `Simple` for the install-dialog initial pass and `Medium` for an
+    /// 2. **Caller picks the [`ReasoningEffort`]** explicitly (typically
+    ///    `None` for the install-dialog initial pass and `High` for an
     ///    explicit re-review). The user's persisted global thinking depth
     ///    is intentionally NOT consulted.
     /// 3. **Output token ceiling is set explicitly** via `max_output_tokens`
-    ///    BEFORE [`with_thinking_depth`][deepagent_models::ResponseRequest::with_thinking_depth]
+    ///    BEFORE [`with_reasoning_effort`][deepagent_models::ResponseRequest::with_reasoning_effort]
     ///    is applied — that helper only fills `max_tokens` when it's still
     ///    `None`, so the explicit ceiling survives and acts as a hard cap
     ///    on the model's combined reasoning + reply budget.
@@ -1073,7 +1073,7 @@ impl ChatService {
         &self,
         system_prompt: &str,
         user_prompt: &str,
-        thinking_depth: ThinkingDepth,
+        reasoning_effort: ReasoningEffort,
         max_output_tokens: u32,
         on_token: F,
     ) -> Result<String>
@@ -1116,9 +1116,7 @@ impl ChatService {
             });
         let client = Arc::new(ModelClient::new(self.transport.clone(), config));
 
-        // Order matters: `with_max_output_tokens` must come BEFORE
-        // `with_thinking_depth` so the explicit cap survives. The depth
-        // helper only fills `max_tokens` when it's still `None`.
+        // Output limits and reasoning effort are independent Responses controls.
         let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
             review_model,
             system_prompt,
@@ -1126,7 +1124,7 @@ impl ChatService {
         )
         .streaming()
         .with_max_output_tokens(max_output_tokens)
-        .with_thinking_depth(thinking_depth);
+        .with_reasoning_effort(reasoning_effort);
 
         struct CallbackObserver<F: FnMut(&str) + Send> {
             on_token: F,
@@ -1654,7 +1652,7 @@ mod tests {
                 ModelConfig::deepseek("test-key"),
             )),
             model: "deepseek-v4-flash".to_string(),
-            thinking_depth: ThinkingDepth::Simple,
+            reasoning_effort: ReasoningEffort::None,
             mcp,
             agent_registry: Arc::new(ToolRegistry::new()),
             events: Arc::downgrade(&sink),
@@ -2032,7 +2030,7 @@ mod tests {
         let thinking_events = Arc::new(std::sync::Mutex::new(Vec::<RuntimeEvent>::new()));
         let thinking_sink = thinking_events.clone();
         chat.run(
-            "/thinking deep",
+            "/thinking max",
             move |ev| {
                 thinking_sink.lock().unwrap().push(ev);
             },
@@ -2040,9 +2038,9 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(settings.thinking_depth().unwrap(), ThinkingDepth::Deep);
+        assert_eq!(settings.reasoning_effort().unwrap(), ReasoningEffort::Max);
         assert!(thinking_events.lock().unwrap().iter().any(|ev| {
-            matches!(ev, RuntimeEvent::RunCompleted { message, .. } if message.contains("deep"))
+            matches!(ev, RuntimeEvent::RunCompleted { message, .. } if message.contains("max"))
         }));
     }
 
@@ -2098,11 +2096,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deep_thinking_keeps_chat_model_and_uses_max_effort() {
+    async fn max_reasoning_keeps_chat_model_without_inventing_output_limit() {
         let (db, settings, dir) = seeded().await;
         settings
-            .set_thinking_depth(ThinkingDepth::Deep)
-            .expect("thinking depth can be updated");
+            .set_reasoning_effort(ReasoningEffort::Max)
+            .expect("reasoning effort can be updated");
 
         let last_body = Arc::new(std::sync::Mutex::new(None));
         let transport = Arc::new(RecordingTransport {
@@ -2120,7 +2118,10 @@ mod tests {
         assert_eq!(json["reasoning"]["effort"], "max");
         assert!(json.get("thinking").is_none());
         assert!(json.get("reasoning_effort").is_none());
-        assert_eq!(json["max_output_tokens"], 32_768);
+        assert!(
+            json.get("max_output_tokens").is_none(),
+            "reasoning effort does not imply an output token ceiling"
+        );
     }
 
     #[tokio::test]

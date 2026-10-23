@@ -1572,7 +1572,7 @@ mod tests {
         let (svc, sid) = seeded_service();
         let policy = deepagent_context::ContextPolicy::for_capability(
             &deepagent_models::ModelCapabilityResolver::new().resolve_model_id("deepseek-flash"),
-            deepagent_models::ThinkingDepth::Medium,
+            deepagent_models::ReasoningEffort::High,
         );
         let mut snapshot = deepagent_context::ContextUsageSnapshot::from_pack(
             &policy,
