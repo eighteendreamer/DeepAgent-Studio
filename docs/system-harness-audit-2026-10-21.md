@@ -35,6 +35,7 @@
 | 画布工作流生成参数 | LLM 节点的 `llmTemperature` / `llmMaxTokens` 经 WorkflowAgent 完整进入 CanvasCompletionRequest，但 Canvas gateway 重建内部请求时丢失；正式 Chat wire 只有 model/messages/stream | 已确认 H-161 的 bridge/serializer 缺口；H-162 当前先阻断专业 LLM 节点，创作 text 节点没有这两个 UI 字段；DeepSeek 思考模式下 temperature 本就不生效，但 max_tokens 仍有效 |
 | 专业工作流 AI 节点执行能力 | 前端标为 enabled 的 LLM/Agent V2/问题分类/参数提取节点经正式图编译与 WorkflowAgent 执行：前两者被 Canvas prompt contract 拒绝，后两者没有 executor；四组 provider 调用数均为零 | 已确认 H-162；本机完整 WorkflowAgent→Canvas gateway 路径，无 Tauri/公网；同时收窄 H-160/H-161 的当前可触发范围 |
 | 工作流模型 usage 与成本归集 | 可执行的创作 text 节点收到完整 DeepSeek Chat usage 后，bridge response、WorkflowAgent 和正式 CostService 账本依次变成无 usage、全零、全零；run-level 旧分支仅保留 prompt/completion/total gauge，billed input、cache 与 reasoning 仍为零 | 已确认 H-163；本机 provider/MockTransport 与正式 finalizer/SQLite 成本库，无公网或真实费用；H-63 仅覆盖复核/分类附属请求，不包含本链 |
+| 画布同步模型请求的运行取消 | 正式 `text-gen` 已进入本机 provider 且响应保持 pending 后，取消被受理但工作流 300ms 内不退出；释放响应后 text 节点发布 Completed，运行却落唯一 cancelled 终态 | 已确认 H-164；动态仅覆盖 text。image/audio/embedding 只确认请求 DTO 与共用 HTTP `call()` 同样没有取消通道，尚未逐项动态复现 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
@@ -72,7 +73,7 @@
 | Responses 多文本 item 与增量去重 | 同一响应的两段完成文本被保留后，整次响应的增量全文又作为第三项加入；done-only 则额外补空 assistant，均进入恢复后的 wire | 已确认 H-81；正式 ChatService/ModelClient/SSE 累加器/磁盘存储重开/下一 wire，单 item 对照正常；离线事件，无真实模型频率或计费结论 |
 | Responses incomplete 的原因与恢复策略 | content_filter 与 max_output_tokens 均触发加大输出上限及注入长度恢复提示，离线第三响应完成后运行成功终结 | 已确认 H-82；正式 ChatService/Kernel/ModelAgent/请求序列化/SQLite 终态，长度对照正常；未测试真实供应商过滤或桌面展示 |
 | 运行完成通知与最终钩子的提交边界 | 正式 TaskCompleted prompt hook 输出无效决策 JSON 后，stdio 同一 turn 先通知 completed 再通知 failed，thread/read 保持唯一 failed 终态 | 已确认 H-83；真实 dispatcher/spawn_turn/AppCore/Kernel/磁盘事件及独立 reader；正常钩子和普通模型错误对照正常，未跑真实 stdio 管道或桌面 |
-| 画布云端视频任务的取消等待 | 正式 ChatService/WorkflowAgent/Kernel、本机 HTTP、文件 SQLite 与 artifact；状态响应停滞和下载 body 停滞取消均已验证能中断本地等待 | 已修复 H-119；未执行真实云端生成或桌面点击，云端任务撤销仍不在本地保证范围 |
+| 画布云端视频任务的取消等待 | 正式 ChatService/WorkflowAgent/Kernel、本机 HTTP、文件 SQLite 与 artifact；视频状态响应停滞和下载 body 停滞取消均已验证能中断本地等待 | 已修复 H-119；结论仅覆盖 video submit/poll/download，不覆盖 text/image/audio/embedding（见 H-164）；未执行真实云端生成或桌面点击，云端任务撤销仍不在本地保证范围 |
 | 工作流节点事件的持久化通道 | 正式视频工作流实时与重开后回放均得到相同 6 条节点事件；包含 task ID、artifact 来源和运行终态 | 已修复 H-120；未验真实桌面崩溃/断线重连 |
 | 视频运行中 task ID 的前端投影与续跑 | 正式 Rust publisher 的 Running/job_id 经生产 TS executor 保存到节点，停止后下一请求继续携带同一 videoTaskId；Completed 对照保持一致 | 已修复 H-121；实际跨语言事件/序列化探针，Tauri 传输替换为本机内存桥，未发生真实云端重复收费 |
 | 视频修改输入及配置后的执行身份 | 修复前真实 TS/Rust 往返曾轮询旧任务；修复后输入/provider 指纹绑定 task，输入或来源变化提交新任务，同输入同来源仍可续跑 | 已修复 H-122；本机 HTTP 往返和指纹单测通过；未验真实供应商视频、远程取消或云端计费 |
@@ -3031,6 +3032,27 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 根因修复应让 Canvas text adapter 在解析 provider JSON 时生成现有 `deepagent_models::Usage`（以及必要的 raw usage），经 `CanvasModelOutput`、`CanvasCompletionResponse` 传回 WorkflowAgent；Agent 只调用唯一的 `RunUsage::record_call()`，不得再维护手写三字段规则。节点 outcome 可投影必要 usage 供声明了 usage 输出的专业节点使用，但成本、预算和持久化必须消费同一 canonical 对象，不能从 UI JSON 反解析。Chat/Anthropic/Gemini 各自 adapter 显式映射支持字段；不存在的 bucket 保持“未知”语义时需评估现有零值类型是否足够，不能把未知伪装成真实 0。
 - 验收应覆盖 bridge 与 run-level 两路、单/多节点、多 attempt/fallback、失败/截断/取消、无 usage 响应、DeepSeek hit+miss/reasoning、Anthropic/Gemini 对应字段、`UsageRecorded.raw_responses_usage`、CostService、UI 和 `max_total_tokens`。每个 provider 已返回的调用只记一次；prompt gauge 与 billed sum、reasoning 子集和 cache bucket 不能重复相加。修 H-162 时必须同时跑本项回归，防止“节点终于可用但预算完全失真”。
 
+### H-164：画布文本请求不在运行取消树内，节点完成态可与运行取消终态分裂
+
+**级别：高（P1，停止可用性与状态一致性）；动态范围：正式 `text-gen` 的 provider 响应等待。** image/audio/embedding 的请求 DTO 和共用 HTTP 边界存在同样的静态缺口，但本轮没有逐项故障注入，不能写成四种模态均已动态复现。视频链已经通过 H-119 单独接入取消，不能用该修复推断其他 Canvas 请求也已覆盖。
+
+#### 生产路径与动态复现
+
+- `CanvasCompletionRequest`、`CanvasImageRequest`、`CanvasAudioRequest` 和 `CanvasEmbeddingRequest` 都没有运行取消字段；它们在 gateway 内重建的 `CanvasModelRequest` 也只有 operation、prompt、输入、size 和 timeout。与视频专用的 `CanvasVideoRequest.cancel` 不同，这四条调用链无法把 `run_assembler` 已有取消 flag 传到 provider wait。
+- `WorkflowAgent` 只覆盖 `Agent::think()`：开始一个 step 时调用 `is_cancelled()`，随后直接 await `bridge.complete()` / `generate_image()` / `run_audio()` / `embed()`。它没有覆盖 `think_cancelled()`；trait 默认实现也只在调用旧 `think()` **之前**检查一次 flag。RuntimeEngine 正在 await 该 decision 时没有另一个 owner 中断 Canvas future。
+- `CanvasModelGateway::call()` 是 text/image/audio/embedding 的共同 provider 边界。生产代码对 `req.body(body).send().await` 和 `resp.bytes().await` 直接等待，只设置 provider timeout；没有像修复后的视频 `await_video_operation` 一样对运行取消做 select。text/embedding 固定 120 秒，image 固定 300 秒，audio 默认 300 秒，因此停止延迟不是只有网络瞬时窗口。
+- 新增默认忽略的完整链探针 `audit_text_cancel_does_not_wait_for_provider_response`：用正式 ChatService、WorkflowAgent、Kernel/RuntimeEngine、运行取消树、CanvasModelGateway、provider 持久化、文件 SQLite 与 RunStore 执行 start→text-gen→end；本机 HTTP listener 在收到真实 `POST /v1/chat/completions` 后记录请求但保持成功响应 pending。只有确认请求已经进入 provider 后才调用 `request_cancel()`，观察 300ms，再释放响应并回收 run/server。
+- 精确命令 `cargo test -p deepagent-app-core --test workflow_audit audit_text_cancel_does_not_wait_for_provider_response --offline -- --ignored --nocapture` 为 **0 passed / 1 failed（预期）**。复核实际 `accepted=true, stopped_within_300ms=false, unfinished_before_response=true, cancel_to_exit_ms=332, requests=1`；332ms 包含 300ms 的响应前观察期，不是释放响应后单独等待 332ms。释放后 run 最终只有一个 `cancelled` 终态，但 text 节点已经发布 `Completed`，没有发布 `Cancelled`，最终断言失败。
+- 这组交错证明的不是“取消请求没有送达”：RunCoordinator 明确返回 accepted，且最终运行确实映射为 cancelled。缺口是节点在入场前的单次取消检查之后失去运行取消身份；provider 返回时它仍提交成功节点结果，RuntimeEngine 后续才看到取消并终结 run，形成节点与运行终态分裂。测试使用成功 JSON 和本机 HTTP，不包含公网 DeepSeek、真实费用或远程任务撤销。
+
+#### 成熟实现对照、影响与修复方向
+
+- **DeepSeek Harness** 的 `llm-deepseek/src/adapter.ts` 明确把一次模型请求定义为“one cancellable lifecycle”：将 consumer signal 与调用者 `options.signal` 合并，同一 signal 传给图片准备、Files API、请求扩展、fetch 和 stream watchdog；generator 收尾还 abort reader 并 await iterator cleanup。该参考实现走 Messages 协议而非本系统的 Canvas/OpenAI-compatible 路径，不能复制字段形状；可对照的是一次模型调用从输入准备到正文消费共享同一取消身份。
+- **Codex** `core/src/tasks/mod.rs::handle_task_abort` 先 cancel turn token，等待任务完成通知或 100ms grace，随后 abort task handle 并调用任务专属 cleanup。它没有本系统的 Canvas 节点，也不证明远端 provider 已取消；这里仅对照“运行 owner 能在协作取消失效时有界收回任务，并在清理后发布中断生命周期”。
+- 动态确认的后果是停止按钮已经显示受理，工作流仍至少等待当前 provider 响应；若 provider 只在 timeout 返回，text 可等至 120 秒，image/audio 静态上限可到 300 秒，但本轮没有实等这些上限。请求已经到达 provider 后，本地取消也不能保证撤回已发生的 token 消耗或服务端副作用。响应随后到达时节点先发布 Completed、run 再标 cancelled，会让实时 UI、run_events replay 和依赖节点状态的机器消费者得到互相矛盾的事实；本探针没有证明 end 或后继节点继续执行，也没有推算真实费用。
+- 根因修复不应给四种模态各写一套 flag 特判。应在现有 Canvas bridge/request 汇合边界携带运行取消身份，使输入引用解析、上传/准备、provider send、响应 headers/body 和必要的 artifact commit 共用一个 cancel-aware helper；video 的现有 helper 可提炼语义，但不同协议的外部副作用与 cleanup 仍需显式处理。取消必须返回可识别的 cancelled outcome，让 WorkflowAgent 发布节点 Cancelled，且不能在 cancel 已发生后提交 Completed，再由 RuntimeEngine 事后改写 run。
+- 验收需要为 text/image/audio/embedding 分别覆盖：请求发送前、headers pending、body pending、输入引用下载/上传、artifact staging、正常成功、provider error、timeout 与取消/响应竞争；检查取消受理后有界退出、无迟到 Completed、唯一运行终态、规范节点事件可 replay、没有半成品，并明确“本地停止”不冒充“远端 provider 已撤销”。H-119 的 video submit/poll/download 回归必须同批保留，防止统一 helper 改造倒退。
+
 ### 后续独立核查：DeepSeek 自动前缀缓存与 Responses usage
 
 - 官方 [KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)说明缓存由服务端默认构建，只有完整匹配已落盘前缀单元才会命中，且为尽力而为；客户端没有通过 cache key 强制命中的接口。DeepSeek [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)说明该接口无状态，每次请求由客户端在 `input` 回传完整历史。
@@ -3083,6 +3105,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-163 WorkflowAgent 与成本账本探针 | `cargo test -p deepagent-app-core --lib audit_canvas_provider_usage_reaches_workflow_run_accounting --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；可执行 text-gen 完成后 RunUsage 九项全 0，正式 AppRunFinalizer/SQLite CostService 的 input/output/hit/miss 也全 0 |
 | H-163 run-level 兼容分支探针 | `cargo test -p deepagent-app-core --lib audit_run_level_workflow_model_preserves_deepseek_usage_buckets --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；Chat accumulator 已返回完整 usage，WorkflowAgent 仅留下 prompt=100/completion=20/total=120，billed prompt、cache 与 reasoning 全为 0 |
 | H-163 隔离与相关回归 | `cargo test -p deepagent-app-core --lib canvas_model_gateway::tests --offline`：41 passed / 6 ignored；`cargo test -p deepagent-runtime --lib workflow::agent::tests --offline`：28 passed；`cargo fmt --all -- --check` 与限定文件 `git diff --check` 通过。未运行 workspace 全量、Clippy、桌面 build/手动 UI、完整 Kernel token-budget 探针或公网供应商；缺陷未修复 |
+| H-164 Canvas text 运行取消显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_text_cancel_does_not_wait_for_provider_response --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式取消 accepted 后 300ms 内未退出且运行记录未完成，释放本机 HTTP 响应后 text 节点 Completed、run 唯一终态 cancelled；动态只覆盖 text |
+| H-164 边界与相关回归 | `CanvasCompletionRequest`/image/audio/embedding DTO 及共用 `CanvasModelGateway::call()` 均无取消输入；H-119 的 video 专用 cancel helper 不经过该边界。`cargo test -p deepagent-app-core --test workflow_audit --offline`：3 passed / 7 ignored；H-119 视频取消精确回归：1 passed，约 49ms 退出。未逐项动态复现 image/audio/embedding、真实 Tauri 或公网 provider |
 | DeepSeek reasoning serializer 及 prompt cache 前缀复核 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed；`git diff --check -- docs/system-harness-audit-2026-10-21.md`：通过。本地同会话双轮 wire 的 input 前缀、稳定 instructions 与工具顺序断言通过；不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
@@ -3559,7 +3583,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
 | 工具实际执行与后置扩展的提交边界 | H-139 | 既有 ToolPipeline/action/Session 保存已执行事实和结果；后置 hook 的反馈、拒绝继续及失败分别投影；参考 Claude 普通工具结果先保留、Codex 区分执行 lifecycle 与 hook outcome | hook 有效/无效/执行错误及重开后，成功副作用不会变成未完成操作；原结果可回放、动作有准确终态、模型配对反馈可解释；不盲目重复执行 |
 | 输入 hook 的附加上下文交付 | H-140、H-26 | 既有 hook 输出结果分开携带决定、改写与上下文，接回当前输入的原生 Surface/会话记录和统一 meter；参考 Claude hook_additional_context 与 Codex 独立 additional_contexts 通道 | 普通 stdout 与合法 additionalContext 在实际 wire 中可见且有来源；拒绝仍不发模型；多 hook 有界合并、恢复可回放，不把 UI 日志或任意输出升级为系统权限 |
-| 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45、H-119 | 摘要、prefire、正文、重试、工具、画布媒体 HTTP 和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误；本地停止不冒充云任务已撤销 |
+| 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45、H-119、H-164 | 摘要、prefire、正文、重试、工具、画布视频 HTTP、其他 Canvas 同步模型请求和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；Canvas 节点不先 Completed 再把 run 标 cancelled；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误；本地停止不冒充云任务已撤销 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
 | 交互终端的分页范围与恢复游标 | H-123 | 既有 TerminalReadChunk / local 与 SSH reader 统一返回终点及淘汰语义；参考 Codex 将 pending 消费与明确 omission 信息分开，字节游标投影为本地设计 | 每页 cursor 不跳过未返回字节；大输出分页可还原；只有真实历史缺口才报告丢失；持久化/恢复不得将生产位置冒充已交付位置 |
 | 可选模型复核与主运行终态一致性 | H-61 | 既有取消树派生复核子 token，面板任务 owner 管理取消与 join，完成提交重查运行取消；参考 Codex 的有界 turn abort 和任务清理 | 取消后不提交成功；总时限/drop 不遗留复核请求；正常 PASS 仍完成，失败反馈有界，取消不当作普通复核失败 |

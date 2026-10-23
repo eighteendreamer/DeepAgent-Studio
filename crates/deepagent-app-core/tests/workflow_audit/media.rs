@@ -118,6 +118,73 @@ impl Drop for LocalVideoProvider {
     }
 }
 
+/// A text provider that accepts the request but withholds the response until
+/// the audit releases it. This isolates cancellation of the provider wait from
+/// request construction and connection setup.
+struct LocalTextProvider {
+    base_url: String,
+    requests: Arc<Mutex<Vec<(String, Value)>>>,
+    request_received: Arc<Notify>,
+    release_response: Arc<Notify>,
+    server: JoinHandle<()>,
+}
+
+impl LocalTextProvider {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let request_received = Arc::new(Notify::new());
+        let release_response = Arc::new(Notify::new());
+        let captured = requests.clone();
+        let arrived = request_received.clone();
+        let release = release_response.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (line, body) = read_request(&mut socket).await;
+            captured.lock().unwrap().push((line, body));
+            arrived.notify_one();
+            release.notified().await;
+            let payload = json!({
+                "choices": [{ "message": { "content": "delayed answer" } }]
+            })
+            .to_string();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            if socket.write_all(header.as_bytes()).await.is_ok() {
+                let _ = socket.write_all(payload.as_bytes()).await;
+            }
+        });
+        Self {
+            base_url: format!("http://{address}/v1"),
+            requests,
+            request_received,
+            release_response,
+            server,
+        }
+    }
+
+    async fn wait_for_request(&self) {
+        tokio::time::timeout(Duration::from_secs(5), self.request_received.notified())
+            .await
+            .expect("the real gateway must reach chat/completions");
+    }
+
+    async fn close(&mut self) {
+        self.release_response.notify_one();
+        let result = (&mut self.server).await;
+        assert!(result.is_ok() || result.unwrap_err().is_cancelled());
+    }
+}
+
+impl Drop for LocalTextProvider {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
 async fn read_request(socket: &mut TcpStream) -> (String, Value) {
     let mut bytes = Vec::new();
     loop {
@@ -166,6 +233,72 @@ struct MediaFixture {
 
 impl MediaFixture {
     async fn new(provider: &LocalVideoProvider) -> Self {
+        Self::with_provider(
+            &provider.base_url,
+            "Audit local video",
+            "audit-video-model",
+            vec![CanvasScenario::VideoGeneration],
+            |provider_id| {
+                serde_json::from_value(json!({
+                    "definition": {
+                        "version": 1,
+                        "nodes": [
+                            {"id":"start","kind":"start"},
+                            {"id":"video","kind":"video-gen","config":{
+                                "prompt":"audit local video",
+                                "videoModel":format!("{provider_id}::audit-video-model")
+                            }},
+                            {"id":"end","kind":"end"}
+                        ],
+                        "edges": [
+                            {"id":"e1","source":"start","target":"video"},
+                            {"id":"e2","source":"video","target":"end"}
+                        ]
+                    }
+                }))
+                .unwrap()
+            },
+        )
+        .await
+    }
+
+    async fn new_text(provider: &LocalTextProvider) -> Self {
+        Self::with_provider(
+            &provider.base_url,
+            "Audit local text",
+            "deepseek-flash",
+            vec![CanvasScenario::Text],
+            |provider_id| {
+                serde_json::from_value(json!({
+                    "definition": {
+                        "version": 1,
+                        "nodes": [
+                            {"id":"start","kind":"start"},
+                            {"id":"text","kind":"text-gen","config":{
+                                "prompt":"audit delayed text",
+                                "model":format!("{provider_id}::deepseek-flash")
+                            }},
+                            {"id":"end","kind":"end"}
+                        ],
+                        "edges": [
+                            {"id":"e1","source":"start","target":"text"},
+                            {"id":"e2","source":"text","target":"end"}
+                        ]
+                    }
+                }))
+                .unwrap()
+            },
+        )
+        .await
+    }
+
+    async fn with_provider(
+        base_url: &str,
+        provider_name: &str,
+        model_id: &str,
+        scenarios: Vec<CanvasScenario>,
+        build_workflow: impl FnOnce(&str) -> WorkflowRequest,
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open(root.path().join("media.db")).unwrap());
         let secrets = Arc::new(MemorySecretStore::new());
@@ -180,16 +313,16 @@ impl MediaFixture {
         let providers = Arc::new(CanvasProviderService::new(db.clone(), secrets));
         let saved = providers
             .save_provider(CanvasProviderInput {
-                name: "Audit local video".into(),
+                name: provider_name.to_string(),
                 protocol: "openai".into(),
-                base_url: provider.base_url.clone(),
+                base_url: base_url.to_string(),
                 enabled: true,
                 models: vec![CanvasModelConfig {
-                    id: "audit-video-model".into(),
-                    name: "Audit video".into(),
+                    id: model_id.to_string(),
+                    name: model_id.to_string(),
                     description: String::new(),
                     enabled: true,
-                    scenarios: vec![CanvasScenario::VideoGeneration],
+                    scenarios,
                     priority: 0,
                     max_reference_images: None,
                 }],
@@ -210,22 +343,7 @@ impl MediaFixture {
         )
         .with_canvas_model(gateway);
         let session = chat.create_session(None).unwrap();
-        let workflow = serde_json::from_value(json!({
-            "definition": {
-                "version": 1,
-                "nodes": [
-                    {"id":"start","kind":"start"},
-                    {"id":"video","kind":"video-gen","config":{
-                        "prompt":"audit local video", "videoModel":format!("{}::audit-video-model",saved.id)
-                    }},
-                    {"id":"end","kind":"end"}
-                ],
-                "edges": [
-                    {"id":"e1","source":"start","target":"video"},
-                    {"id":"e2","source":"video","target":"end"}
-                ]
-            }
-        })).unwrap();
+        let workflow = build_workflow(&saved.id);
         Self {
             _root: root,
             db,
@@ -366,6 +484,68 @@ async fn audit_video_cancel_does_not_wait_for_provider_status_response() {
     assert!(
         stopped_before_response,
         "accepted cancellation must stop the workflow without waiting for video/status to respond"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit: an accepted workflow cancellation must interrupt a pending Canvas text response"]
+async fn audit_text_cancel_does_not_wait_for_provider_response() {
+    let mut provider = LocalTextProvider::start().await;
+    let fixture = MediaFixture::new_text(&provider).await;
+    let run_id = "audit-text-cancel-pending-response";
+    let mut run = fixture.spawn(run_id);
+    provider.wait_for_request().await;
+    let started = Instant::now();
+    let accepted = fixture.chat.request_cancel(run_id).unwrap().accepted;
+    let stopped = tokio::time::timeout(Duration::from_millis(300), &mut run).await;
+    let stopped_before_response = stopped.is_ok();
+    let unfinished_before_response = RunStore::new(&fixture.db)
+        .get(run_id)
+        .unwrap()
+        .unwrap()
+        .finished_at
+        .is_none();
+    provider.release_response.notify_one();
+    let result = match stopped {
+        Ok(joined) => joined.unwrap(),
+        Err(_) => finish_run(&mut run).await,
+    };
+    let cancel_to_exit_ms = started.elapsed().as_millis();
+    provider.close().await;
+    result.unwrap();
+
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    let live = fixture.live.lock().unwrap();
+    let text_completed = live
+        .iter()
+        .any(|event| event.node_id == "text" && event.status == NodeExecutionStatus::Completed);
+    let text_cancelled = live
+        .iter()
+        .any(|event| event.node_id == "text" && event.status == NodeExecutionStatus::Cancelled);
+    let requests = provider.requests.lock().unwrap();
+    eprintln!(
+        "text cancellation: accepted={accepted}, stopped_within_300ms={stopped_before_response}, unfinished_before_response={unfinished_before_response}, cancel_to_exit_ms={cancel_to_exit_ms}, text_completed={text_completed}, text_cancelled={text_cancelled}, requests={}",
+        requests.len()
+    );
+
+    assert!(accepted);
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].0.starts_with("POST /v1/chat/completions "));
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "cancelled");
+    assert!(
+        stopped_before_response,
+        "accepted cancellation must stop the workflow without waiting for a text response"
+    );
+    assert!(
+        !text_completed && text_cancelled,
+        "a cancelled in-flight text node must not publish a completed outcome"
     );
 }
 
