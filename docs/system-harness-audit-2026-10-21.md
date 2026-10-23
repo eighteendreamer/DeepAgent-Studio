@@ -15,6 +15,7 @@
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | SSH 远端主机身份验证 | 正式 SshService 通过 loopback 连上临时随机服务器密钥；同一地址的 known_hosts 对照拒绝不匹配密钥 | 已确认 H-125；未连接公网或用户服务器 |
 | 本地 MCP 子进程环境授权 | 隔离宿主只注入虚构 canary，经正式 transport 完成 initialize/tools/list；空配置仍继承未声明 secret 和小写 token，显式覆盖对照通过 | 已确认 H-135；仅 Windows 本机 stdio，没有读取真实凭据或验证公网外传 |
+| MCP 请求写入背压与取消 | 正式 ChatService/Kernel 发出 512 KiB（初轮 2 MiB）虚构工具参数；真实 Node 读首块后暂停 stdin，取消已受理但写入未结束；释放后完整请求继续到达 | 已确认 H-136；本机管道故障注入，未执行真实远端副作用或桌面按钮操作 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn，以及一个已被替代 turn 重复派生多个新 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter` 和 Responses failed usage 丢失均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
@@ -2306,6 +2307,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 规范与成熟实现对照：MCP 2024-11-05 [Cancellation](https://modelcontextprotocol.io/specification/2024-11-05/basic/utilities/cancellation)定义按 request ID 发送 `notifications/cancelled`，接收端 SHOULD 停止处理并释放资源；该扩展是 optional，所以此处不将“未发送通知”单独称作 MCP 协议必违，而是产品运行取消链未贯通。DeepSeek Harness `packages/core/tools/src/index.ts::ToolExecutionInput` 将每次工具的 `AbortSignal` 设为必需字段，`packages/mcp/mcp-client/src/tools.ts::syncTools` 把 `execution.signal` 与 per-call timeout 一并传入 `client.callTool`。Codex `core/src/tools/parallel.rs` 在工具 dispatch 与 run cancellation 间使用 `tokio::select!`，取消获胜时中止活动 dispatch 并生成 paired aborted result。参考的是取消归属和执行等待边界；不同 MCP SDK 的底层通知实现不作未经验证的推断。
 - 修复实现：沿用现有每工具 child cancellation token，从 `McpToolAdapter::invoke_with_context` 传入 MCP client；stdio 取消时在同一 stdin 写锁内发送无 ID 的 `notifications/cancelled`，写入最多等待 50ms；HTTP 中止当前响应等待，后台按同一 endpoint 和认证 headers 发送取消通知，发送最多等待 100ms；重连等待和重连握手也监听该工具的 child token。Runtime 顺序及并行工具 action 终态统一检查 token 与兼容取消标志，保证取消原因落为 `Cancelled`。配对失败结果说明远端操作结果可能未知，不将通知视作远端副作用回滚。
 - 影响与边界：本机 stdio 与 loopback HTTP 测试证明停止可终止本地工具等待并发送通知。MCP 取消是 optional，远端 server 可以忽略；远程写入等副作用仍可能已经发生。并发 stdio 响应路由继续由现有独立探针跟踪，本次回归未宣称已修复。
+- 后续分阶段复核：上述修复和既有回归覆盖请求已经发完的响应等待阶段；stdio 写入在背压下仍不监听取消，正式运行复现见 H-136。不能将响应阶段通过扩展成整个 transport 生命周期均可及时取消。
 
 ### H-129：设置页的一次性 MCP 测试连接没有启动截止时间（已修复）
 
@@ -2392,10 +2394,35 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 在现有统一子进程启动边界定义可解释的继承策略：基础环境、显式授权转发和配置覆盖分层，Windows 名称大小写一致；启动、测试连接和重连共用同一结果。默认白名单或敏感变量清理的取舍属于本地设计，应考虑代理、CA、包管理器及需要明确凭据的 MCP，不能直接把日志 `is_secret_key` 当作授权规则，也不能只在一个调用方加过滤。
 - 后续验收应覆盖空 env、显式转发/覆盖、大小写、代理/CA、重连及普通工具兼容；审计记录和错误中不输出环境值。清理环境并不实现 OS 沙箱，也不能阻止同一 OS 用户下未隔离进程使用其他渠道访问资源。当前仅 Windows 本机生产 transport 复现；未做 macOS/Linux、完整 PluginService/AppCore 到模型 wire、真实用户凭据或公网外传验证。探针默认 ignored，本轮不修改生产环境策略。
 
+### H-136：stdio MCP 请求写入受背压阻塞时，停止信号无法结束发送等待
+
+**级别：高（P1，停止延迟与取消后的迟到投递）；触发条件：本地 MCP 暂停或足够慢地读取 stdin，请求大小足以让管道写入持续等待，用户在此时停止。** 本探针以 512 KiB 虚构参数确定性制造背压，初轮 2 MiB 同样复现；不代表普通短参数都会触发。
+
+#### 生产路径与动态复现
+
+- 正式路径：`ChatService::run_in_session()` → Kernel/RuntimeEngine → `ToolPipeline::execute_prepared()` → `ToolRegistry::invoke_with_context()` → `McpToolAdapter` / `McpRegistry` → `McpClient::call_tool_with_context()` → 当前连接 transport → `StdioTransport::send_with_context()`。既有 H-128 已贯通 context，但 stdio 的专用实现先 `self.write_request(request).await?`，随后才检查取消并进入监听取消的响应 `select!`。
+- `write_request()` 的 stdin 锁等待、`write_all()` 及 `flush()` 均未监听工具 context。通用 `McpTransport::send_with_context()` 原本有覆盖整个 `send()` 的取消 select，但 stdio override 不经过该默认实现；Runtime 的顺序 ToolPipeline 外面只有工具预算 timeout，没有独立的取消竞速。因此树上的信号已触发，当前执行仍可能等到写入恢复或工具预算到期。默认预算来源为 `ToolExecutionContext::DEFAULT_TIMEOUT`（120s），这里不称其必然永久挂起。
+- 在既有 `kernel_v2_e2e/mcp_cancellation.rs` 共用正式运行夹具增加 ignored 探针，原响应等待测试仍保留。Node 正常完成 initialize/tools/list；接收工具请求首个数据块后暂停 stdin，并原子发布 gate 证明运行已进入实际发送阶段。模型为离线 fixture，工具参数是 512 KiB 重复字符，SQLite/Kernel/McpService/stdio 都使用正式实现。
+- 命令：`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation::audit_stopping_run_interrupts_backpressured_stdio_write --offline -- --ignored --exact --nocapture`。实际 **0 passed / 1 failed（预期暴露缺口）**，运行约 1.68s：`argument_bytes=524288, bytes_read_before_pause=65536, accepted=true, run_still_waiting_after_250ms=true, cancellation_notification_received=false`。恢复读取前服务端未收到完整请求；恢复后 `complete_request_received_after_release=true`，最终终态 `cancelled`、模型请求数 1。初轮使用 2 MiB 参数时也在同一停止断言失败（约 1.32s），其余观察相同。先释放 gate、join 运行并关闭 MCP，随后断言停止等待失败，不留测试子进程。
+
+#### 成熟实现对照
+
+- Codex `借鉴/codex/codex-rs/core/src/tools/parallel.rs::handle_tool_call_with_source()` 将整个 dispatch handle 与 run cancellation 放入 `tokio::select!`；取消时中止并等待活动 dispatch，并生成 paired aborted result。这个外层执行边界不依赖某个具体 transport 是否已经进入响应读取。这里只核对源码，不据此宣称远端操作被回滚或不会收到已经发出的字节。
+- DeepSeek Harness `packages/mcp/mcp-client/src/tools.ts::syncTools()` 把每次工具的 `execution.signal` 与调用 timeout 一起交给 `client.callTool()`；`packages/core/tools/src/index.ts` 要求异步实现观察/转发 signal 并在取消后达到静止状态。对照的是整次调用拥有同一取消上下文；未运行其 SDK 背压测试，也不推断其具体管道中断实现。
+
+#### 后果、修复方向与限制
+
+- 已证明停止受理后本地发送等待仍未退出；释放背压才继续投递完整调用。这会造成 UI 长时间停在停止中，并让服务端在用户停止后仍首次拿到完整工具请求。fixture 只返回文本并写临时标记，没有真实文件修改/网络写入；不能将迟到投递说成已发生真实业务副作用，也没有等满默认 120 秒。
+- 在现有执行 owner 内覆盖锁等待、发送和读取的取消边界；本地停止不能以协议取消通知写入成功为前提。还必须明确部分帧已写入时连接的状态：简单丢弃 `write_all` future 后继续复用同一 newline JSON 管道，可能留下半帧；要按既有连接生命周期决定退役/重建或有界完成，并保留结果未知语义。不能为单个工具另造取消树，也不能取消其他会话的运行。
+- 后续验收需同时覆盖请求未发送、部分写入、stdin 锁排队、响应等待、重复停止、共享连接及重连；保证终态一次、配对失败结果和无新模型步骤。当前仅 Windows 本机故障注入；未覆盖 macOS/Linux、真实 Tauri UI、真实 MCP 副作用、共享服务取消隔离及自然背压发生频率。本轮仅增加测试和报告，生产行为未改。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-136 MCP stdin 背压取消显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation::audit_stopping_run_interrupts_backpressured_stdio_write --offline -- --ignored --exact --nocapture`：512 KiB 当前探针 0 passed / 1 failed（预期暴露缺口），约 1.68s；初轮 2 MiB 也同样失败，约 1.32s。正式运行中取消 accepted，但 250ms 后仍等待发送；释放 gate 后完整请求到达，读回终态 cancelled、模型请求 1 次；本机 Node，无公网副作用 |
+| H-136 原响应等待取消对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation::stopping_run_interrupts_inflight_stdio_mcp_call --offline -- --exact --nocapture`：1 passed，约 0.53s；小参数完整发出后停止可退出等待并发送取消通知，终态 cancelled、模型请求 1 次；用于区分 H-128 已修复的阶段与新增写入阶段缺口 |
+| H-136 Kernel 集成默认基线与静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：26 passed / 25 ignored，约 2.67s；共用夹具的原 MCP 取消回归通过。`cargo fmt --all -- --check`、`git diff --check` 通过。仅审计测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、macOS/Linux 或真实供应商 |
 | H-135 stdio MCP 环境继承显式探针 | `cargo test -p deepagent-mcp --test env_inheritance_audit audit_stdio_does_not_inherit_ambient_credentials --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期暴露缺口），约 0.85s；显式覆盖对照命令 `... audit_stdio_preserves_explicit_environment_overrides ...`：1 passed，约 0.34s。隔离宿主只使用虚构 canary，真实 Node 经正式 transport 握手/列工具；未读取真实凭据、未联网外传 |
 | H-135 默认 MCP 基线与静态检查 | `cargo test -p deepagent-mcp --features http --offline`：61 单测、2 真实进程和 1 stderr 诊断测试通过，共 64 passed / 12 ignored；`cargo fmt --all -- --check`、`git diff --check` 通过。本轮仅增加审计测试和报告，未跑 workspace 全量、Clippy、桌面 build、真实 Tauri 或其他平台 |
 | H-120 durable sink 修复复核 | `cargo test -p deepagent-app-core --test workflow_audit --offline`：3 passed / 6 ignored（取消、成功对照、节点事件重开回放）；`cargo test -p deepagent-runtime --lib workflow::node_events::tests --offline`：5 passed；格式与 diff 检查通过。Runtime Clippy `--no-deps -D warnings` 被未改动的 `model_agent.rs:225 clone_on_copy` 阻断；未运行真实 Tauri/桌面崩溃与断线重连 |
@@ -2874,6 +2901,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 共享设置与凭据的提交资格 | H-87、H-88 | 现有 SettingsService/SecretStore 在数据库当前版本上提交字段变更；参考 Codex Session 设置持久化许可与 DeepSeek 账户撤销/登录生命周期，跨宿主版本栅栏为本地设计 | 刷新不覆盖已收紧限制；退出/换 Key 后旧刷新不能写回旧凭据；独立连接、真实主备进程、失败和乱序完成一致 |
 | 启动恢复的规范终态、会话投影与诊断归属 | H-44、H-95 | 恢复共用现有幂等终态边界，文件会话投影与 interruption 分类均具备按 run/task 身份的处理；参考 Codex 对 stale turn 的一致 Interrupted 投影 | 正常/故障重试/重开后各视图同一终态；一条规范终态；缺失投影可补；多个 unfinished run 的原因各自对应目标 turn，不能改错后续 turn |
 | MCP 连接协议与投递 | H-06、H-07、H-08、H-09、H-12 | 现有 MCP manager/transport 内统一握手、会话头、分页、按 request id 分发；连接恢复与业务重试分离 | 严格 Node/HTTP fixture、乱序双请求、模糊成功写调用不自动重放 |
+| MCP 整次调用取消与部分写入状态 | H-128、H-136 | 既有执行 owner 覆盖发送锁、请求写入和响应读取；参考 Codex 外层 dispatch 取消和 DeepSeek 每次调用的 signal，半帧后的连接处置须有明确本地契约 | 背压及锁排队时停止不依赖远端读取；不会复用损坏帧连接；保留结果未知、单终态和工具配对，不影响其他会话取消树 |
 | 本地 MCP 进程归属与退出 | H-46 | 参考 Codex 服务级 Job/进程组 owner，显式关闭与最后引用释放共用有界清理；不依赖被启动程序自行管理后代 | Node 与非 libuv 根服务均覆盖；close/Drop、父先退出、初始化中断后后代不继续工作；containment 降级有诊断 |
 | 本地 MCP 子进程环境授权 | H-135 | 现有统一进程启动边界管理基础环境、显式转发/覆盖和不可继承变量；参考 Codex 白名单、DeepSeek 共享清理及 Claude 条件策略，具体默认值为本地设计 | 空配置不隐式获得未授权宿主凭据；显式授权、大小写、代理/CA、首次启动/测试/重连一致；不以环境过滤代替 OS 沙箱 |
 | MCP 初始化复用与配置代次 | H-47 | 按服务连接身份复用 pending startup，定向取消/失效；全局视图代次不能写坏仍有效的共享 slot | 新增或修改 B 不取消未变 A；禁用/替换 A 才终止旧任务；迟到取消结果不变成新代缓存失败 |
