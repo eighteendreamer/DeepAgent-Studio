@@ -92,10 +92,13 @@ async function observeStop({ preflight, fresh = false }) {
   const { advanceTurnActivity } = loadTypeScript("../src/components/chat-timeline/processDisclosure.ts");
   const context = {
     ...api, advanceTurnActivity, console,
+    AbortController,
     activeId: fresh ? null : "audit-session", view: fresh ? "start" : "chat",
     activeIdRef: { current: fresh ? null : "audit-session" },
     activePendingRunKey: null, activePendingRunKeyRef: { current: null },
     activeRunIdsRef: { current: new Map() }, runningSessionIds: new Set(),
+    preflightAbortControllersRef: { current: new Map() },
+    runPhaseRef: { current: new Map() },
     pendingNewChatSectionRef: { current: null }, projectSelectionRef: { current: null },
     liveTranscripts: { current: new Map() }, messagesRef: { current: [] },
     messages: [], stoppingRunIds: new Set(), approvals: [], contextUsageByKey: new Map(),
@@ -104,6 +107,7 @@ async function observeStop({ preflight, fresh = false }) {
     localStorage: { getItem: () => null },
     refreshSessions: () => {},
     runUiTransition: (action) => action(),
+    clearQuestionSession: (previous) => previous,
     t: (key, values) => `${key}${values ? JSON.stringify(values) : ""}`,
     message: {
       error: (value) => notifications.push({ kind: "error", value }),
@@ -130,6 +134,7 @@ async function observeStop({ preflight, fresh = false }) {
     context[setter] = (update) => {
       context[state] = typeof update === "function" ? update(context[state]) : update;
       if (setter === "setRunningSessionIds" && context[state].size === 0) settled.resolve();
+      if (setter === "setActivePendingRunKey" && context[state] === null) settled.resolve();
     };
   }
   const priorWindow = globalThis.window;
@@ -151,7 +156,7 @@ async function observeStop({ preflight, fresh = false }) {
     const stoppingBeforeRelease = context.stoppingRunIds.size > 0;
     visionResult.resolve({ model_id: "audit-vision", text: "AUDIT_RECOGNIZED_IMAGE", raw_json: "{}" });
     await submission;
-    await startEntered.promise;
+    if (!preflight) await startEntered.promise;
     await tick();
     const startsAfterStop = calls.filter((call) => call.command === "start_chat_v2").length - startsBeforeStop;
     // Release the actual runChat completion path, including its 100ms delay.
@@ -159,7 +164,7 @@ async function observeStop({ preflight, fresh = false }) {
     if (!preflight) handlers.get("chat://event")?.({ payload: {
       run_id: submitted.runId, payload: { type: "run_cancelled" },
     } });
-    handlers.get("session://completed")({ payload: {
+    if (!preflight) handlers.get("session://completed")({ payload: {
       run_id: submitted.runId, session_id: "audit-session", status: "completed", error: null,
     } });
     await settled.promise;
@@ -169,8 +174,8 @@ async function observeStop({ preflight, fresh = false }) {
       cancelsBeforeRelease, cancelAccepted, stoppingBeforeRelease, visionCallsBeforeStop,
       visionCallsAfterStop: calls.filter((call) => call.command === "vision_recognize_image").length - visionCallsBeforeStop,
       cancelNotFoundVisible: notifications.some((item) => item.kind === "error" && item.value.includes("composer.cancelNotFound")),
-      recognizedTextSubmitted: submitted.prompt.includes("AUDIT_RECOGNIZED_IMAGE"),
-      preflightToolsSubmitted: submitted.preflightTools.length,
+      recognizedTextSubmitted: submitted?.prompt.includes("AUDIT_RECOGNIZED_IMAGE") ?? false,
+      preflightToolsSubmitted: submitted?.preflightTools.length ?? 0,
       listenersAfterFinish: handlers.size,
     };
   } finally {
@@ -201,9 +206,11 @@ for (const fresh of [false, true]) {
     console.log(JSON.stringify(result));
     assert.equal(result.locallyRunning, true, "the UI exposes this turn as active");
     assert.equal(result.startsBeforeStop, 0, "stop occurs before backend admission");
-    assert.equal(result.cancelsBeforeRelease, 1, "execute the actual stop callback and client");
-    assert.equal(result.cancelAccepted, false, "there is no backend registration to cancel yet");
+    assert.equal(result.cancelsBeforeRelease, 0, "preflight stop is handled by the run-local signal");
+    assert.equal(result.cancelAccepted, undefined, "no backend cancel is needed before admission");
     assert.equal(result.listenersAfterFinish, 0, "cleanup the eventual run before the defect assertion");
     assert.equal(result.startsAfterStop, 0, "stopped image preflight must not start a new backend turn");
+    assert.equal(result.visionCallsAfterStop, 0, "the next image must not start after stop");
+    assert.equal(result.cancelNotFoundVisible, false);
   });
 }

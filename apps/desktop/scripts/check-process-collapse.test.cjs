@@ -144,6 +144,8 @@ function liveAccumulator() {
     liveTranscripts, runKey: "session-a", runId: "run-a", runStart: Date.now(), advanceTurnActivity,
     activeRunIdsRef: activeRuns, pendingKey: "pending-a",
     activePendingRunKeyRef: { current: null },
+    preflightAbortControllersRef: { current: new Map() },
+    runPhaseRef: { current: new Map() },
     setRunningSessionIds: update => { running = update(running); },
     setStoppingRunIds: update => { stopping = update(stopping); },
     setActivePendingRunKey: update => update(null), setApprovals: update => update([]),

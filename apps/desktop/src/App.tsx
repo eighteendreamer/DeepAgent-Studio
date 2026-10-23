@@ -366,16 +366,26 @@ function buildPromptWithAttachments(text: string, attachments: ComposerAttachmen
 
 async function recognizeImageAttachmentsOnSend(
   attachments: ComposerAttachment[] = [],
+  signal?: AbortSignal,
 ): Promise<{
   attachments: ComposerAttachment[];
   skipped: boolean;
   failed: boolean;
+  cancelled: boolean;
   error?: string;
   recognizedCount: number;
 }> {
+  const cancelledResult = (recognizedCount = 0) => ({
+    attachments,
+    skipped: false,
+    failed: false,
+    cancelled: true,
+    recognizedCount,
+  });
+  if (signal?.aborted) return cancelledResult();
   const pendingImages = attachments.filter((attachment) => attachment.kind === "image" && !attachment.extractedText);
   if (pendingImages.length === 0) {
-    return { attachments, skipped: true, failed: false, recognizedCount: 0 };
+    return { attachments, skipped: true, failed: false, cancelled: false, recognizedCount: 0 };
   }
 
   let visionSettings;
@@ -397,19 +407,22 @@ async function recognizeImageAttachmentsOnSend(
       ),
       skipped: false,
       failed: true,
+      cancelled: false,
       error: `Vision settings load failed: ${errorMessage}`,
       recognizedCount: 0,
     };
   }
 
+  if (signal?.aborted) return cancelledResult();
   if (visionSettings.mode !== "system" || !visionSettings.auto_analyze_pasted_images) {
-    return { attachments, skipped: true, failed: false, recognizedCount: 0 };
+    return { attachments, skipped: true, failed: false, cancelled: false, recognizedCount: 0 };
   }
 
   const next: ComposerAttachment[] = [];
   const errors: string[] = [];
   let recognizedCount = 0;
   for (const attachment of attachments) {
+    if (signal?.aborted) return cancelledResult(recognizedCount);
     if (attachment.kind !== "image" || attachment.extractedText) {
       next.push(attachment);
       continue;
@@ -427,6 +440,7 @@ async function recognizeImageAttachmentsOnSend(
     }
     try {
       const result = await visionRecognizeImage({ image_path: attachment.originalPath });
+      if (signal?.aborted) return cancelledResult(recognizedCount);
       if (!result.text.trim()) {
         const errorMessage = "Vision API returned an empty result.";
         errors.push(`${attachment.name}: ${errorMessage}`);
@@ -447,6 +461,7 @@ async function recognizeImageAttachmentsOnSend(
         error: undefined,
       });
     } catch (error) {
+      if (signal?.aborted) return cancelledResult(recognizedCount);
       const errorMessage = error instanceof Error ? error.message : String(error);
       console.error("vision recognition failed before send:", error);
       errors.push(`${attachment.name}: ${errorMessage}`);
@@ -462,6 +477,7 @@ async function recognizeImageAttachmentsOnSend(
     attachments: next,
     skipped: false,
     failed: errors.length > 0,
+    cancelled: false,
     error: errors.join("\n"),
     recognizedCount,
   };
@@ -558,6 +574,8 @@ export function App() {
   const activeIdRef = useRef<string | null>(null);
   const activePendingRunKeyRef = useRef<string | null>(null);
   const activeRunIdsRef = useRef<Map<string, string>>(new Map());
+  const preflightAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const runPhaseRef = useRef<Map<string, "preparing" | "starting" | "admitted">>(new Map());
   const projectSelectionRef = useRef<Promise<boolean> | null>(null);
   // Always-current `messages`, so a continuation can read the on-screen thread
   // without taking a stale closure (and without re-creating onSubmit).
@@ -1174,6 +1192,9 @@ export function App() {
       const pendingKey = `__pending__:${runId}`;
       let runKey = continueId ?? pendingKey;
       activeRunIdsRef.current.set(runKey, runId);
+      const preflightController = new AbortController();
+      preflightAbortControllersRef.current.set(runId, preflightController);
+      runPhaseRef.current.set(runId, "preparing");
       if (continueId) {
         setRunningSessionIds((prev) => {
           const next = new Set(prev);
@@ -1902,6 +1923,8 @@ export function App() {
       };
 
       const finishRun = () => {
+        preflightAbortControllersRef.current.delete(runId);
+        runPhaseRef.current.delete(runId);
         scheduleTranscriptRender(runKey, true);
         setStoppingRunIds((prev) => {
           if (!prev.has(runId)) return prev;
@@ -1985,7 +2008,15 @@ export function App() {
             duration_ms: Date.now() - visionStartedAt,
           });
         } else {
-          const visionResult = await recognizeImageAttachmentsOnSend(attachments);
+          const visionResult = await recognizeImageAttachmentsOnSend(
+            attachments,
+            preflightController.signal,
+          );
+          if (visionResult.cancelled || preflightController.signal.aborted) {
+            finalizeCancelled();
+            finishRun();
+            return;
+          }
           replaceLastUserAttachments(visionResult.attachments);
 
           if (visionResult.skipped) {
@@ -2075,6 +2106,12 @@ export function App() {
             }))
         : [];
 
+      if (preflightController.signal.aborted) {
+        finalizeCancelled();
+        finishRun();
+        return;
+      }
+      runPhaseRef.current.set(runId, "starting");
       runChat(
         submittedText,
         onEvent,
@@ -2091,7 +2128,11 @@ export function App() {
         preflightAbortMessage,
         !continueId && requestedPlanMode,
         runAttachments,
-        adoptSession
+        (sid) => {
+          runPhaseRef.current.set(runId, "admitted");
+          adoptSession(sid);
+        },
+        preflightController.signal,
       )
         .then((newSessionId) => {
           if (newSessionId) assignNewSessionSection(newSessionId);
@@ -2168,6 +2209,21 @@ export function App() {
       message.error(t("composer.cancelFailed", { error: String(error) }));
     };
     if (runId) {
+      const phase = runPhaseRef.current.get(runId);
+      const preflightController = preflightAbortControllersRef.current.get(runId);
+      if (phase === "preparing" || phase === "starting") {
+        // The run is visible to the UI but may not have reached AppCore's
+        // admission table yet. Abort the same local signal used by image
+        // preprocessing; runChat will forward it to cancel_run if admission
+        // races this click.
+        preflightController?.abort();
+        if (activeRunIdsRef.current.get(key ?? "") === runId) {
+          setStoppingRunIds((prev) => new Set(prev).add(runId));
+        }
+        message.info(t("composer.stopping"));
+        if (activeId) setQuestionsBySession((prev) => clearQuestionSession(prev, activeId));
+        return;
+      }
       void cancelRun(runId).then((ack) => {
         if (ack.accepted) {
           if (activeRunIdsRef.current.get(key ?? "") === runId) {

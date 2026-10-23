@@ -1391,12 +1391,27 @@ export async function runChat(
    * (before any event streams), so the caller never has to guess or reuse a
    * stale identity while waiting for `session_registered`.
    */
-  onSessionReady?: (sessionId: string) => void
+  onSessionReady?: (sessionId: string) => void,
+  abortSignal?: AbortSignal,
 ): Promise<string> {
   const invoke = getInvoke();
   if (invoke) {
     const mod = await import("@tauri-apps/api/event");
     const actualRunId = runId ?? randomRunId();
+    let admitted = false;
+    let abortRequested = abortSignal?.aborted === true;
+    const cancelAfterAdmission = () => {
+      if (!admitted) return;
+      void cancelRun(actualRunId).catch(() => {
+        // The completion event remains authoritative; the UI will surface any
+        // durable cancellation failure through the normal run error path.
+      });
+    };
+    const onAbort = () => {
+      abortRequested = true;
+      cancelAfterAdmission();
+    };
+    abortSignal?.addEventListener("abort", onAbort, { once: true });
     const unlistenEvent = await mod.listen<RunEventEnvelope<RuntimeEvent> | RuntimeEvent>("chat://event", (e) => {
       const payload = unwrapRunPayload(e.payload, actualRunId);
       if (payload) onEvent(payload);
@@ -1450,11 +1465,14 @@ export async function runChat(
         initialPlanMode,
         attachments,
       });
+      admitted = true;
       if (ack?.session_id) onSessionReady?.(ack.session_id);
+      if (abortRequested || abortSignal?.aborted) cancelAfterAdmission();
       const nextSessionId = await completion;
       if (promptMayChangeSettings(prompt)) emitSettingsChanged({ reason: "slash_settings" });
       return nextSessionId;
     } finally {
+      abortSignal?.removeEventListener("abort", onAbort);
       unlistenEvent();
       unlistenApproval();
       completedCleanup.fn?.();
