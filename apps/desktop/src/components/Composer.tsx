@@ -7,6 +7,7 @@ import { ContextCapacityIndicator } from "./ContextCapacityIndicator";
 import { ComposerSuggestPanel } from "./ComposerSuggestPanel";
 import { ModelThinkingSelector } from "./ModelThinkingSelector";
 import { InputSurface } from "./ui/InputSurface";
+import { useMessageSendMotion } from "./ui/MessageSendMotionContext";
 import { ComposerAttachButton } from "./ComposerAttachButton";
 import { ComposerAttachmentList } from "./ComposerAttachmentList";
 import { MorphingMenuShell } from "./ui/MorphingMenuShell";
@@ -241,11 +242,14 @@ export function Composer({
   const dropdownRef = useRef<HTMLDivElement>(null);
   const approvalDropdownRef = useRef<HTMLDivElement>(null);
   const approvalMorphLayoutId = useId().replace(/:/g, "");
+  const suggestId = useId();
   const lastOverlayCloseSignal = useRef(overlayCloseSignal);
   const lastReportedOverlayOpen = useRef(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const mirrorRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLDivElement>(null);
+  const messageSendMotion = useMessageSendMotion();
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   // Real discovered models + the active chat model, loaded from the backend
   // settings (populated by API-key validation at login).
@@ -925,6 +929,10 @@ export function Composer({
 
   const submitWithAttachments = () => {
     const readyAttachments = attachments.filter((item) => item.status === "ready");
+    const surface = composerRef.current?.querySelector<HTMLElement>("[data-message-composer-surface]");
+    if (textareaRef.current && mirrorRef.current && surface) {
+      messageSendMotion?.prepare(textareaRef.current, mirrorRef.current, surface, draftValue);
+    }
     onSubmit(readyAttachments, selectedSkills, selectedMentions, draftValue);
     if (readyAttachments.length > 0) setAttachments([]);
     if (selectedSkills.length > 0) setSelectedSkills([]);
@@ -1380,6 +1388,7 @@ export function Composer({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.nativeEvent.isComposing) return;
     if (atOpen && e.key === "ArrowDown") {
       e.preventDefault();
       setAtSelected((s) => Math.min(s + 1, atEntries.length - 1));
@@ -1434,14 +1443,16 @@ export function Composer({
   };
 
   return (
-    <div className="group/composer relative w-full">
+    <div ref={composerRef} className="group/composer relative w-full">
       <InputSurface
+        data-message-composer-surface
         className="flex flex-col overflow-visible rounded-[24px] shadow-[0_8px_24px_rgba(31,38,48,0.09)] focus-within:shadow-[0_10px_30px_rgba(31,38,48,0.13)]"
         onDragOver={(event) => event.preventDefault()}
         onDrop={onDrop}
       >
         <div className="relative flex w-full flex-col p-3.5 pb-2.5">
       <ComposerSuggestPanel
+        id={`${suggestId}-at`}
         open={atOpen}
         sections={atSections}
         selectedIndex={atSelected}
@@ -1450,7 +1461,7 @@ export function Composer({
         onHover={setAtSelected}
         renderItem={(item, selected) => (
           <div
-            className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors duration-150 ${
+            className={`grid w-full grid-cols-[18px_minmax(0,1fr)] items-center gap-2.5 px-2 py-2 text-left text-[13px] transition-colors duration-150 ${
               selected ? "font-medium text-text-base" : "text-text-secondary"
             }`}
           >
@@ -1458,9 +1469,9 @@ export function Composer({
               <FontAwesomeIcon icon={["fas", item.icon as any]} className="text-[12px]" />
             </span>
             <span className="min-w-0">
-              <span className="truncate font-medium text-text-base">{item.title}</span>
+              <span className="block truncate font-medium text-text-base">{item.title}</span>
               {item.description && (
-                <span className="ml-2 truncate text-[12px] text-text-secondary">
+                <span className="block truncate text-[12px] text-text-secondary">
                   {item.description}
                 </span>
               )}
@@ -1469,6 +1480,7 @@ export function Composer({
         )}
       />
       <ComposerSuggestPanel
+        id={`${suggestId}-slash`}
         open={slashOpen}
         sections={slashSections}
         selectedIndex={slashSelected}
@@ -1485,7 +1497,7 @@ export function Composer({
         )}
         renderItem={(cmd, selected) => (
           <div
-            className={`grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-4 py-1.5 text-left text-[13px] transition-colors duration-150 ${
+            className={`composer-slash-row grid w-full grid-cols-[130px_minmax(0,1fr)_64px] items-center gap-2.5 px-2 py-2 text-left text-[13px] transition-colors duration-150 ${
               selected ? "font-medium text-text-base" : "text-text-secondary"
             }`}
           >
@@ -1493,7 +1505,7 @@ export function Composer({
             <span className="truncate text-[12px] leading-snug text-text-secondary">
               {cmd.description}
             </span>
-            <span className="truncate text-right text-[11px] text-text-secondary">
+            <span className="composer-slash-category truncate text-right text-[11px] text-text-secondary">
               {cmd.category}
             </span>
           </div>
@@ -1511,6 +1523,7 @@ export function Composer({
       <div className="relative w-full">
         <div
           ref={mirrorRef}
+          data-message-composer-content
           aria-hidden="true"
           className="pointer-events-none absolute inset-0 overflow-hidden custom-scrollbar whitespace-pre-wrap break-words bg-transparent text-sm leading-6 text-text-base"
           style={{
@@ -1523,6 +1536,9 @@ export function Composer({
         <textarea
           ref={textareaRef}
           aria-label={editorPlaceholder}
+          aria-autocomplete="list"
+          aria-controls={atOpen ? `${suggestId}-at` : slashOpen ? `${suggestId}-slash` : undefined}
+          aria-activedescendant={atOpen ? `${suggestId}-at-option-${atSelected}` : slashOpen ? `${suggestId}-slash-option-${slashSelected}` : undefined}
           className={`composer-textarea custom-scrollbar relative z-10 w-full resize-none bg-transparent text-sm leading-6 text-transparent outline-none placeholder-transparent ${
             draftValue ? "" : "composer-textarea--empty"
           }`}

@@ -24,10 +24,10 @@ interface Props {
 }
 
 function capacityTone(ratio: number, isEmptySession: boolean): string {
-  if (isEmptySession) return "#cbd5e1";
+  if (isEmptySession) return "var(--theme-text-secondary, #6b7280)";
   if (ratio >= 0.92) return "#dc4b41";
   if (ratio >= 0.8) return "#d99015";
-  return "#2563eb";
+  return "var(--theme-text-secondary, #6b7280)";
 }
 
 /** Projected next request; legacy snapshots retain their original fallback. */
@@ -111,16 +111,16 @@ export function ContextCapacityIndicator({
           if (!popoverSuppressed) setOpen((value) => !value);
         }}
       >
-        <span className="block h-[26px] w-[26px] shrink-0" aria-hidden="true">
+        <span className="block h-4 w-4 shrink-0" aria-hidden="true">
           <CircularProgressbar
             value={ratio}
             maxValue={1}
-            strokeWidth={11}
+            strokeWidth={12.5}
             className="block h-full w-full [&_.CircularProgressbar-path]:transition-[stroke-dashoffset] [&_.CircularProgressbar-path]:duration-300 motion-reduce:[&_.CircularProgressbar-path]:transition-none"
             styles={buildStyles({
               pathColor: stroke,
-              trailColor: "color-mix(in srgb, var(--theme-text-secondary, #6b7280) 20%, var(--theme-bg, #ffffff))",
-              strokeLinecap: "butt",
+              trailColor: "color-mix(in srgb, var(--theme-text-secondary, #6b7280) 30%, var(--theme-bg, #ffffff))",
+              strokeLinecap: "round",
             })}
           />
         </span>

@@ -85,9 +85,25 @@ choice-preview-*.html
 temp_*.mp4
 video_frames*/
 assets/
+!/apps/desktop/src-tauri/resources/plugins/superpowers/assets/
+!/apps/desktop/src-tauri/resources/plugins/superpowers/assets/superpowers-small.svg
 /apps/desktop/public/file-viewer/
 /apps/desktop/src-tauri/resources/plugins/rea/runtime.zip
 /apps/desktop/src-tauri/resources/plugins/rea/runtime.zip.json
 deepseek-harness/
 /根据deepseek-harness本系统可升级的地方.md
 /docs/兼职项目实际.txt
+
+# Local model exchanges and visual QA evidence; authored preview sources stay tracked.
+/.codex/gemini-context-20261022/
+/.codex/ui-alignment-20261022/
+/.codex/previews/**/*.png
+/.codex/previews/**/*.json
+!/.codex/previews/**/tsconfig.json
+/.codex/previews/**/qa-*.mjs
+/.codex/previews/**/ref-*.mjs
+/.codex/previews/sidebar-d-20261022/inspect-built.mjs
+/.codex/previews/gemini-ui-review-2026-10-22.html
+/.codex/previews/message-edit-motion/check-index.cjs
+/.codex/previews/message-edit-motion/stage-selected.cjs
+/apps/desktop/demos/approval-menu-preview/index.html

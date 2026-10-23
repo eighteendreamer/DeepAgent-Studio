@@ -5,6 +5,7 @@ import {
 import gsap from "gsap";
 import { continuousRadius, computedCornerCurvature } from "../../theme/continuousCorners";
 import { SHARE_MOTION, motionColor, prefersReducedMotion, springEase } from "./springMotion";
+import "./menuSurface.css";
 
 type PopupActions = { unmount: () => void; close: () => void };
 type PopupChange = { isCanceled: boolean; trigger?: Element | null; preventUnmountOnClose: () => void };
@@ -297,7 +298,7 @@ export const SpringSurface = forwardRef<HTMLDivElement, Props>(function SpringSu
     };
   }, [motionTone]);
 
-  return <div {...props} ref={setRef} className={`spring-surface ${className ?? ""}`}>
+  return <div {...props} ref={setRef} data-spring-tone={motionTone} className={`spring-surface ui-menu-surface ${className ?? ""}`}>
     <div ref={surfaceRef} data-spring-shell>
       <div ref={compactRef} aria-hidden="true" className="pointer-events-none absolute" />
       <div ref={bodyRef} className="spring-surface-content">{children}</div>

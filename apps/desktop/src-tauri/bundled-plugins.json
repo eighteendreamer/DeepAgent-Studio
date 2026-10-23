@@ -46,12 +46,13 @@
       "version": "0.1.0"
     },
     {
-      "contentHash": "sha256:8f2161157731d3043dce139124f919b46203b84f5211dbbee1aec79103d3fe56",
+      "contentHash": "sha256:185371a2eccc4d17f72186fa0bc339cd77318cdaf8eb84a990427055c2b73aa8",
       "license": "MIT",
       "licenseFile": "LICENSE",
       "name": "superpowers",
       "notes": [
-        "Complete plugin bundle with skills and scripts."
+        "Complete plugin bundle with skills and scripts.",
+        "Missing composer icon restored from the locally installed 5.0.7 MIT bundle."
       ],
       "upstream": "https://github.com/obra/superpowers",
       "version": "5.1.3"

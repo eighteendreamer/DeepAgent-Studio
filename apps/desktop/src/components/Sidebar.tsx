@@ -1,9 +1,8 @@
 import { HoverInfo } from "./ui/HoverInfo";
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { Archive, ArrowDown, Book, Check, ChevronDown, ChevronRight, Clock, Ellipsis, Folder, FolderPlus, Layers, Puzzle, Search, Server, Shapes, SquarePen, type LucideIcon } from "lucide-react";
+import { Archive, ArrowDown, Check, ChevronDown, Clock, Ellipsis, Folder, FolderPlus, PanelLeft, SquarePen } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import { useSlidingIndicator, SlidingPill } from "./ui/SlidingPill";
 import { SidebarProjectMenu } from "./SidebarProjectMenu";
 import { SidebarSectionGroup } from "./SidebarSectionGroup";
 import { EditProjectDialog, type EditingProject } from "./EditProjectDialog";
@@ -11,7 +10,7 @@ import { SidebarSessionMenu, type SidebarSessionActions } from "./SidebarSession
 import type { SessionMenuOptions } from "./ChatSessionMenu";
 import { useSidebarPreferences } from "./sidebarPreferences";
 import { partitionSidebarSessions, type SidebarSortCriterion } from "./sidebarSessions";
-import { SidebarSettingsMenu } from "./SidebarSettingsMenu";
+import { Button } from "./shadcn/button";
 import { Panel } from "./ui/Panel";
 import { TintButton } from "./ui/TintButton";
 import { PinThumbtackIcon } from "./ui/PinThumbtackIcon";
@@ -27,22 +26,6 @@ import {
   DropdownMenuTrigger,
 } from "./shadcn/dropdown-menu";
 import type { Project, SessionSummary } from "../types";
-
-type SidebarOverflowSurface = "plugins" | "automation" | "canvas" | "remote";
-
-/** 侧栏常驻 4 项之后的入口；新增功能页只需往这里追加。 */
-const SIDEBAR_OVERFLOW_NAV: Array<{
-  id: SidebarOverflowSurface;
-  icon: LucideIcon;
-  labelKey: "plugins" | "automation" | "canvas" | "remote";
-}> = [
-  { id: "plugins", icon: Puzzle, labelKey: "plugins" },
-  { id: "automation", icon: Clock, labelKey: "automation" },
-  { id: "canvas", icon: Shapes, labelKey: "canvas" },
-  { id: "remote", icon: Server, labelKey: "remote" },
-];
-
-const SIDEBAR_OVERFLOW_IDS = new Set<string>(SIDEBAR_OVERFLOW_NAV.map((item) => item.id));
 
 interface Props {
   sessions: SessionSummary[];
@@ -67,33 +50,9 @@ interface Props {
   onEditProject: (path: string, name: string, folder: string) => Promise<void>;
   onAddProjectSection: () => void;
   onArchiveProject: (path: string, name: string) => void;
-  onOpenSearch: () => void;
-  activeSurface?: "skills" | "knowledge" | "plugins" | "automation" | "remote" | null;
-  onOpenSkills: () => void;
-  onOpenKnowledge: () => void;
-  onOpenPlugins: () => void;
-  onOpenAutomation: () => void;
-  onOpenRemote: () => void;
-  onOpenCanvas: () => void;
-  onOpenSettings: () => void;
-  onLogout: () => void;
+  onCollapse: () => void;
   /** Session ids with currently-running agent runs (show spinners). */
   runningSessionIds?: Set<string>;
-}
-
-function NavButton({ icon: Icon, label, active = false, onClick, navId }: { icon: LucideIcon; label: string; active?: boolean; onClick?: () => void; navId: string }) {
-  return (
-    <button
-      data-nav={navId}
-      className={`relative z-[1] w-full flex items-center px-2.5 py-1.5 rounded-md text-sm text-text-base ${
-        active ? "font-medium" : ""
-      }`}
-      onClick={onClick}
-    >
-      <Icon className="h-[18px] w-[18px] shrink-0 text-text-secondary" />
-      <span className="ml-0.5">{label}</span>
-    </button>
-  );
 }
 
 function formatTimeAgo(timestamp: number) {
@@ -163,44 +122,8 @@ function writeRecentCollapsed(collapsed: boolean) {
   window.localStorage.setItem(SIDEBAR_RECENT_COLLAPSED_KEY, collapsed ? "1" : "0");
 }
 
-export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onNewSectionChat, onArchiveSection, onAddProject, onPinSession, onArchiveSession, sessionActions, sessionMenuOptions, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onEditProject, onAddProjectSection, onArchiveProject, onOpenSearch, activeSurface, onOpenSkills, onOpenKnowledge, onOpenPlugins, onOpenAutomation, onOpenRemote, onOpenCanvas, onOpenSettings, onLogout, runningSessionIds }: Props) {
+export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSelect, onSelectProject, onNewChat, onNewSectionChat, onArchiveSection, onAddProject, onPinSession, onArchiveSession, sessionActions, sessionMenuOptions, onArchiveAllSessions, onRemoveProject, onPinProject, onOpenProject, onOpenProjectMap, onEditProject, onAddProjectSection, onArchiveProject, onCollapse, runningSessionIds }: Props) {
   const { t } = useTranslation();
-
-  /* 顶部导航滑动药丸（静默着色）：悬停跟随，离开滑回激活项；无 surface 激活时停靠「新对话」 */
-  const overflowSurfaceActive = Boolean(activeSurface && SIDEBAR_OVERFLOW_IDS.has(activeSurface));
-  const activeNavId = overflowSurfaceActive ? "other" : (activeSurface ?? "new-chat");
-  const overflowNavActions: Record<SidebarOverflowSurface, () => void> = {
-    plugins: onOpenPlugins,
-    automation: onOpenAutomation,
-    canvas: onOpenCanvas,
-    remote: onOpenRemote,
-  };
-  const [overflowNavOpen, setOverflowNavOpen] = useState(false);
-  const overflowCloseTimer = useRef<number | null>(null);
-
-  const openOverflowNav = () => {
-    if (overflowCloseTimer.current != null) {
-      window.clearTimeout(overflowCloseTimer.current);
-      overflowCloseTimer.current = null;
-    }
-    setOverflowNavOpen(true);
-  };
-
-  const scheduleCloseOverflowNav = () => {
-    if (overflowCloseTimer.current != null) window.clearTimeout(overflowCloseTimer.current);
-    overflowCloseTimer.current = window.setTimeout(() => {
-      setOverflowNavOpen(false);
-      overflowCloseTimer.current = null;
-    }, 160);
-  };
-  const {
-    containerRef: topNavRef,
-    containerProps: topNavProps,
-    indicatorStyle: pillStyle,
-  } = useSlidingIndicator({
-    hoverSelector: "[data-nav]",
-    activeSelector: `[data-nav="${activeNavId}"]`,
-  });
 
   const [isMoreMenuOpen, setIsMoreMenuOpen] = useState(false);
   const [isNewProjectMenuOpen, setIsNewProjectMenuOpen] = useState(false);
@@ -222,12 +145,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   const [sortCriterion, setSortCriterion] = useState<SidebarSortCriterion>(() =>
     readSidebarPreference("deepagent:sidebar-sort-criterion", "updated", SIDEBAR_SORT_CRITERIA)
   );
-
-  useEffect(() => {
-    return () => {
-      if (overflowCloseTimer.current != null) window.clearTimeout(overflowCloseTimer.current);
-    };
-  }, []);
 
   useEffect(() => {
     window.localStorage.setItem("deepagent:sidebar-organize-mode", organizeMode);
@@ -366,15 +283,20 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
     organizeMode === "time"
       ? []
       : orderProjectEntries(Object.entries(groupedSessions));
+  const pinnedProjectEntries = projectEntries.filter(([name]) => pinnedProjectNames.has(name));
+  const regularProjectEntries = projectEntries.filter(([name]) => !pinnedProjectNames.has(name));
+  const pinnedRecentSessions = recentSessions.filter(session => session.pinned);
+  const regularRecentSessions = recentSessions.filter(session => !session.pinned);
 
-  const renderSessionItem = (s: SessionSummary, isPinnedSection: boolean = false) => {
+  const renderSessionItem = (s: SessionSummary, isTopLevel: boolean = false) => {
     const active = s.id === activeId;
     const isPinned = s.pinned;
     const isRunning = runningSessionIds?.has(s.id) ?? false;
-    const showActions = isPinned || isPinnedSection;
     return (
       <div
-        key={s.id + (isPinnedSection ? '_pinned' : '')}
+        key={s.id}
+        data-session-id={s.id}
+        data-running={isRunning}
         data-custom-contextmenu={sessionActions ? "1" : undefined}
         onContextMenu={(event) => {
           if (!sessionActions) return;
@@ -383,46 +305,42 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           setActiveProjectMenu(null);
           setSessionMenu({ id: s.id, position: { left: event.clientX, top: event.clientY }, open: true });
         }}
-        onClick={() => onSelect(s.id)}
         className={cn(
-          "group/session flex cursor-pointer items-center rounded-md text-[13px] transition-colors duration-150",
-          isPinnedSection ? "mb-0.5 px-2.5 py-1.5" : "py-1.5 pl-[34px] pr-2.5",
+          "sidebar-session-row group/session relative flex items-center transition-colors duration-150",
           active
-            ? "bg-sidebar-highlight font-medium text-text-base"
-            : "text-text-secondary hover:bg-sidebar-highlight hover:text-text-base",
+            ? "bg-sidebar-highlight text-text-base"
+            : "text-text-base hover:bg-sidebar-highlight",
         )}
       >
-        <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-2">
+        <HoverInfo content={`${s.title?.trim() || t("sidebar.newChat")} · ${formatTimeAgo(s.updated_at)}`} side="right">
+        <Button variant="ghost" onClick={() => onSelect(s.id)} aria-current={active ? "page" : undefined}
+          className={cn("sidebar-session-trigger h-8 min-w-0 w-full justify-start py-1.5 text-sm font-normal text-text-base hover:!bg-transparent",
+            isTopLevel ? "px-2.5" : "pl-[34px] pr-2.5")}>
+        <span className="sidebar-session-content flex min-w-0 flex-1 items-center gap-1.5">
           {isRunning && (
-            <HoverInfo content={t("sidebar.running")}><FontAwesomeIcon
+            <FontAwesomeIcon
               icon={["fas", "circle-notch"]}
               spin
               className="flex-shrink-0 text-[11px] text-blue-500"
-            /></HoverInfo>
+            />
           )}
           {preferences.unread[s.id] && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" aria-label="未读"/>}
-          <span className={cn("truncate", preferences.unread[s.id] && "font-semibold text-text-base")}>{s.title?.trim() || t("sidebar.newChat")}</span>
-        </div>
+          <span className={cn("truncate", preferences.unread[s.id] && "font-medium text-text-base")}>{s.title?.trim() || t("sidebar.newChat")}</span>
+        </span>
+        </Button>
+        </HoverInfo>
 
-        {/* Fixed-width slot: timestamp ↔ actions swap without shifting title */}
-        <div className="relative h-5 w-11 flex-shrink-0">
+        <div className="pointer-events-none absolute right-2 top-1/2 h-5 w-11 -translate-y-1/2">
           {isRunning ? (
             <span className="absolute inset-0 flex items-center justify-end text-[10px] text-blue-500 whitespace-nowrap">
               {t("sidebar.running")}
             </span>
           ) : (
             <>
-              {!isPinnedSection && (
-                <span className="absolute inset-0 flex items-center justify-end text-[10px] text-text-secondary whitespace-nowrap transition-opacity duration-150 group-hover/session:opacity-0">
-                  {formatTimeAgo(s.created_at)}
-                </span>
-              )}
               <div
                 className={cn(
                   "absolute inset-0 flex items-center justify-end gap-0.5 transition-opacity duration-150",
-                  showActions
-                    ? "opacity-100"
-                    : "pointer-events-none opacity-0 group-hover/session:pointer-events-auto group-hover/session:opacity-100",
+                  "pointer-events-none opacity-0 group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100",
                 )}
               >
                 <HoverInfo content={isPinned ? t("sidebar.unpin") : t("sidebar.pin")}><button
@@ -460,7 +378,8 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
       <div key={proj} className="flex flex-col">
         <div
           data-custom-contextmenu="1"
-          className={`flex items-center px-2.5 py-1.5 text-[13px] cursor-pointer hover:bg-sidebar-highlight rounded-md transition-colors group/proj ${activeProjectMenu?.project === proj || nameToPath[proj] === activeProjectPath ? 'bg-sidebar-highlight text-text-base font-medium' : 'text-text-secondary'}`}
+          className={`sidebar-project-row relative flex items-center px-2.5 py-1.5 cursor-pointer hover:bg-sidebar-highlight transition-colors group/proj ${activeProjectMenu?.project === proj || nameToPath[proj] === activeProjectPath ? 'bg-sidebar-highlight text-text-base' : 'text-text-base'}`}
+          data-actions-visible={activeProjectMenu?.project === proj || isProjectPinned}
           onContextMenu={(event) => {
             event.preventDefault();
             event.stopPropagation();
@@ -476,9 +395,9 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           }}
         >
           <FontAwesomeIcon icon={["far", "folder"]} className="w-4 shrink-0 text-left mr-2 text-text-secondary" />
-          <span className="truncate flex-1">{proj}</span>
+          <span className="sidebar-project-title truncate flex-1">{proj}</span>
 
-          <div className={`flex items-center space-x-0.5 transition-opacity ${activeProjectMenu?.project === proj || isProjectPinned ? 'opacity-100' : 'opacity-0 group-hover/proj:opacity-100'}`}>
+          <div className={`absolute right-2 flex items-center space-x-0.5 transition-opacity ${activeProjectMenu?.project === proj || isProjectPinned ? 'opacity-100' : 'pointer-events-none opacity-0 group-hover/proj:pointer-events-auto group-hover/proj:opacity-100 group-focus-within/proj:pointer-events-auto group-focus-within/proj:opacity-100'}`}>
             <HoverInfo content={isProjectPinned ? t("sidebar.unpinProject") : t("sidebar.pinProject")}><button
               type="button"
               className={cn(
@@ -542,7 +461,7 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
         {isExpanded && (
           <div className="flex flex-col mt-0.5 space-y-0.5">
             {projSessions.length === 0 ? (
-              <div className="pl-8 py-1 text-[12px] text-gray-400">{t("sidebar.noChats")}</div>
+              <div className="pl-[34px] py-1 text-[13px] text-text-secondary">{t("sidebar.noChats")}</div>
             ) : (
               projSessions.map((s) => renderSessionItem(s))
             )}
@@ -553,79 +472,36 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
   };
 
   return (
-    <aside className="w-[220px] flex flex-col bg-sidebar-bg h-full no-select flex-shrink-0 pb-2">
-      {/* Top actions：滑动药丸指示器（同设置侧栏），无 surface 激活时停靠「新对话」 */}
-      <div
-        ref={topNavRef}
-        {...topNavProps}
-        className="relative px-3 py-2"
-      >
-        <div className="space-y-0.5">
-          <button
-            data-nav="new-chat"
-            className="relative z-[1] w-full flex items-center px-2.5 py-1.5 rounded-md text-sm text-text-base"
-            onClick={onNewChat}
-          >
-            <SquarePen className="h-[18px] w-[18px] shrink-0 text-text-secondary" />
-            <span className="ml-0.5">{t("sidebar.newChat")}</span>
-          </button>
-          <NavButton icon={Search} label={t("sidebar.search")} navId="search" onClick={onOpenSearch} />
-          <NavButton icon={Layers} label={t("sidebar.skills")} navId="skills" active={activeSurface === "skills"} onClick={onOpenSkills} />
-          <NavButton icon={Book} label={t("sidebar.knowledge")} navId="knowledge" active={activeSurface === "knowledge"} onClick={onOpenKnowledge} />
-          <DropdownMenu open={overflowNavOpen} onOpenChange={setOverflowNavOpen} modal={false}>
-            <DropdownMenuTrigger asChild>
-              <button
-                type="button"
-                data-nav="other"
-                className={`relative z-[1] w-full flex items-center px-2.5 py-1.5 rounded-md text-sm text-text-base ${
-                  overflowSurfaceActive ? "font-medium" : ""
-                }`}
-                onPointerEnter={openOverflowNav}
-                onPointerLeave={scheduleCloseOverflowNav}
-              >
-                <Ellipsis className="h-[18px] w-[18px] shrink-0 text-text-secondary" />
-                <span className="ml-0.5">{t("sidebar.other")}</span>
-                <ChevronRight className="ml-auto h-3 w-3 text-text-secondary" />
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              side="right"
-              align="start"
-              sideOffset={6}
-              className="min-w-[10.5rem]"
-              onPointerEnter={openOverflowNav}
-              onPointerLeave={scheduleCloseOverflowNav}
-            >
-              {SIDEBAR_OVERFLOW_NAV.map((item) => (
-                <DropdownMenuItem
-                  key={item.id}
-                  className={cn(
-                    "gap-2 text-sm",
-                    activeSurface === item.id && "font-medium bg-black/5"
-                  )}
-                  onSelect={() => overflowNavActions[item.id]()}
-                >
-                  <item.icon className="h-4 w-4 shrink-0 text-text-secondary" />
-                  {t(`sidebar.${item.labelKey}`)}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </div>
-
-        {/* 滑动药丸指示器 */}
-        <SlidingPill style={pillStyle} className="bg-sidebar-highlight" />
+    <aside className="app-conversation-sidebar no-select" aria-label={t("sidebar.projectsAndChats")}>
+      <div className="app-conversation-sidebar-header">
+        <strong>DeepAgent</strong>
+        <Button variant="ghost" size="icon" className="h-7 w-7 rounded-md" onClick={onCollapse}
+          aria-label={t("sidebar.collapseSidebar")} title={t("sidebar.collapseSidebar")}>
+          <PanelLeft className="h-4 w-4" />
+        </Button>
+      </div>
+      <div className="px-2 pb-4">
+        <Button variant="ghost" className="h-9 w-full justify-start gap-2 rounded-lg px-2.5 text-sm font-medium text-text-base" onClick={onNewChat}>
+          <SquarePen className="h-4 w-4" />{t("sidebar.newChat")}
+        </Button>
       </div>
 
       {/* Project / session list */}
-      <div className="stable-scrollbar-gutter flex-1 overflow-y-auto px-2 mt-4 space-y-3 pb-2 custom-scrollbar">
+      <div className="stable-scrollbar-gutter min-h-0 flex-1 overflow-y-auto px-2 space-y-5 pb-3 custom-scrollbar">
+        {(pinnedProjectEntries.length > 0 || pinnedRecentSessions.length > 0) && <section aria-label={t("sidebar.pinned")}>
+          <div className="sidebar-section-heading mb-1 flex items-center px-2">{t("sidebar.pinned")}</div>
+          <div className="space-y-0.5">
+            {pinnedProjectEntries.map(([proj, items]) => renderProjectGroup(proj, items))}
+            {pinnedRecentSessions.map(session => renderSessionItem(session, true))}
+          </div>
+        </section>}
         <div className="flex flex-col">
           <div
-            className="flex items-center justify-between px-2 mb-1 text-text-secondary group cursor-pointer select-none"
+            className="sidebar-section-heading flex items-center justify-between px-2 mb-1 group cursor-pointer select-none"
 
             onClick={toggleProjectsSection}
           >
-            <span className="flex items-center gap-0.5 text-[12px]">
+            <span className="flex items-center gap-1">
               {t("sidebar.projects")}
               <ChevronDown
                 className={cn("h-3 w-3 transition-transform", projectsCollapsed && "-rotate-90")}
@@ -741,19 +617,19 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
               )}
               {organizeMode === "time" &&
                 projectSessionsByTime.map((session) => renderSessionItem(session, true))}
-              {projectEntries.map(([proj, projSessions]) => renderProjectGroup(proj, projSessions))}
+              {regularProjectEntries.map(([proj, projSessions]) => renderProjectGroup(proj, projSessions))}
             </div>
           )}
         </div>
 
         <div className="flex flex-col">
           <div
-            className="flex items-center justify-between px-2 mb-1 text-text-secondary group cursor-pointer select-none"
+            className="sidebar-section-heading flex items-center justify-between px-2 mb-1 group cursor-pointer select-none"
 
             onClick={toggleRecentSection}
           >
-            <span className="flex items-center gap-0.5 text-[12px]">
-              {t("sidebar.recentChats")}
+            <span className="flex items-center gap-1">
+              {t("sidebar.recent")}
               <ChevronDown
                 className={cn("h-3 w-3 transition-transform", recentCollapsed && "-rotate-90")}
               />
@@ -810,10 +686,10 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           </div>
           {!recentCollapsed && (
             <div className="space-y-0.5">
-              {recentSessions.length === 0 && (
+              {regularRecentSessions.length === 0 && (
                 <div className="px-2.5 py-1 text-[13px] text-text-secondary">{t("sidebar.noChats")}</div>
               )}
-              {recentSessions.map((session) => renderSessionItem(session))}
+              {regularRecentSessions.map((session) => renderSessionItem(session, true))}
             </div>
           )}
         </div>
@@ -836,11 +712,6 @@ export function Sidebar({ sessions, projects, activeProjectPath, activeId, onSel
           actions={sessionActions} onPin={() => onPinSession(menuSession.id, !menuSession.pinned)}
           onArchive={() => onArchiveSession(menuSession.id)}/>
       )}
-      {/* Bottom settings */}
-      <div className="px-3 pt-2">
-        <SidebarSettingsMenu onOpenSettings={onOpenSettings} onLogout={onLogout} />
-      </div>
-
       <EditProjectDialog
         open={editingProject !== null}
         project={editingProject}

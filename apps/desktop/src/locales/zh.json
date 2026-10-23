@@ -1,5 +1,11 @@
 {
   "sidebar": {
+    "home": "首页",
+    "recent": "最近",
+    "navigation": "功能导航",
+    "projectsAndChats": "项目与对话",
+    "collapseSidebar": "收起项目与对话",
+    "expandSidebar": "展开项目与对话",
     "projects": "项目",
     "recentChats": "最近对话",
     "collapseRecentChats": "收起最近对话",
@@ -871,6 +877,8 @@
     "thinkingSimple": "简单",
     "thinkingMedium": "中度",
     "thinkingDeep": "深度",
+    "effortFaster": "更快",
+    "effortSmarter": "更深入",
     "thinkingSwitchFailed": "切换思考档位失败",
     "send": "发送",
     "stop": "停止",

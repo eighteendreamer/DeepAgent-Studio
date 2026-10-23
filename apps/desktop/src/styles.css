@@ -4,6 +4,11 @@
 
 :root {
   --ui-interactive-radius: 12px;
+  --app-rail-width: 56px;
+  --app-titlebar-height: 32px;
+  --app-nav-button-size: 36px;
+  --app-nav-icon-size: 20px;
+  --app-nav-gap: 10px;
 }
 
 /* One policy for Tailwind, authored CSS, portal surfaces and canvas controls. */
@@ -47,6 +52,149 @@
   html {
     overflow-x: hidden;
   }
+}
+
+/* The context sidebar and work surface share one frame beside the feature rail. */
+.app-workspace {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.app-titlebar-spacer { height: var(--app-titlebar-height); }
+.app-titlebar-navigation {
+  display: flex;
+  align-items: center;
+  gap: var(--app-nav-gap);
+  height: 100%;
+  padding-left: calc((var(--app-rail-width) - var(--app-nav-button-size)) / 2);
+}
+.app-titlebar-navigation .app-titlebar-button {
+  width: var(--app-nav-button-size);
+  height: var(--app-nav-button-size);
+  padding: 0;
+  border-radius: 10px;
+}
+.app-titlebar-button > svg,
+.app-navigation-rail button > svg {
+  width: var(--app-nav-icon-size);
+  height: var(--app-nav-icon-size);
+  flex-shrink: 0;
+}
+.app-navigation-rail {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  width: var(--app-rail-width);
+  padding: 12px 4px 8px;
+  gap: var(--app-nav-gap);
+}
+.app-navigation-rail .app-navigation-home {
+  width: var(--app-nav-button-size);
+  height: var(--app-nav-button-size);
+  padding: 0;
+  border-radius: 10px;
+  color: var(--theme-text-secondary);
+  background: transparent;
+}
+.app-navigation-rail .app-navigation-home:hover,
+.app-navigation-rail .app-navigation-home[aria-current="page"] { color: var(--theme-fg); background: var(--theme-hover); }
+.app-navigation-items, .app-navigation-bottom {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--app-nav-gap);
+  width: var(--app-nav-button-size);
+}
+.app-navigation-bottom { margin-top: auto; }
+.app-navigation-rail .app-navigation-button {
+  width: var(--app-nav-button-size);
+  height: var(--app-nav-button-size);
+  padding: 0;
+  border-radius: 10px;
+  color: var(--theme-text-secondary);
+  background: transparent;
+}
+.app-navigation-button[aria-current="page"] { color: var(--theme-fg); }
+.app-navigation-rail .app-navigation-button:hover { background: var(--theme-hover); color: var(--theme-fg); }
+.app-navigation-rail .app-navigation-items .app-navigation-button:hover { background: transparent; }
+.app-navigation-rail button:focus-visible, .app-conversation-sidebar button:focus-visible {
+  outline: 2px solid var(--theme-accent);
+  outline-offset: 2px;
+}
+.app-content-frame {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--theme-border);
+  border-radius: 24px 24px 0 0;
+}
+.app-sidebar-region { display: flex; min-height: 0; flex-shrink: 0; }
+.app-workspace[data-sidebar-open="true"] .app-sidebar-region { border-right: 1px solid var(--theme-border); }
+.app-conversation-sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 256px;
+  height: 100%;
+  min-height: 0;
+  flex-shrink: 0;
+  padding-top: 12px;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 400;
+}
+.app-conversation-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+  padding: 0 10px 10px 18px;
+  margin-bottom: 8px;
+}
+.app-conversation-sidebar-header strong { font-size: 18px; font-weight: 600; line-height: 26px; letter-spacing: -.025em; }
+.sidebar-section-heading { min-height: 28px; font-size: 13px; font-weight: 500; line-height: 20px; color: var(--theme-text-secondary); }
+.sidebar-project-row { min-height: 34px; border-radius: 8px; font-size: 14px; font-weight: 500; line-height: 20px; }
+.sidebar-project-row:hover .sidebar-project-title,
+.sidebar-project-row:focus-within .sidebar-project-title,
+.sidebar-project-row[data-actions-visible="true"] .sidebar-project-title { padding-right: 64px; }
+.sidebar-session-row { border-radius: 8px; }
+.sidebar-session-trigger { font-size: 14px; line-height: 20px; font-weight: 400; }
+.sidebar-session-row:hover .sidebar-session-content,
+.sidebar-session-row:focus-within .sidebar-session-content,
+.sidebar-session-row[data-running="true"] .sidebar-session-content { padding-right: 44px; }
+.app-content-frame > .app-main-surface {
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+}
+/* The selected variant has no rule underneath the conversation title. */
+.app-chat-header { border-bottom: 0; box-shadow: none; }
+.app-sidebar-backdrop { display: none; }
+@media (max-width: 740px) {
+  :root { --app-rail-width: 48px; --app-titlebar-height: 32px; }
+  .app-navigation-rail { padding-top: 10px; }
+  .app-sidebar-region { position: absolute; inset: 0 auto 0 0; z-index: 80; }
+  .app-workspace[data-sidebar-open="true"] .app-sidebar-region { border-right: 0; }
+  .app-sidebar-region > [data-spring-disclosure] { max-width: calc(100vw - 72px); background: var(--theme-sidebar); box-shadow: 8px 0 30px #0002; }
+  .app-workspace .app-sidebar-backdrop { display: block; position: absolute; inset: 0; width: auto; height: auto; padding: 0; border: 0; border-radius: 0; background: #0006; z-index: 70; }
+  .app-content-frame { border-radius: 22px 22px 0 0; }
+}
+.composer-suggest-scroll { scrollbar-gutter: stable; }
+@media (max-width: 640px) {
+  .composer-slash-row { grid-template-columns: 88px minmax(0, 1fr); }
+  .composer-slash-category { display: none; }
+}
+@media (max-width: 950px) {
+  .app-workspace .composer-toolbar { height: auto; min-height: 32px; flex-wrap: wrap; gap: 6px; }
+  .app-workspace .composer-primary-tools { flex: 1 0 auto; }
+  .app-workspace .composer-model-tools { margin-left: auto; }
 }
 
 /* Hide scrollbar on creative library sidebar */
@@ -437,6 +585,24 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
   animation: floating-menu-item-in 220ms cubic-bezier(0.4, 0, 0.2, 1) 60ms both;
 }
 
+/* These surfaces use GSAP; do not run a second CSS entrance on their children. */
+.spring-surface,
+.spring-surface .floating-menu-panel,
+.spring-surface .floating-menu-item {
+  animation: none !important;
+  transition: none;
+}
+.spring-surface-content { min-width: 0; }
+.spring-settings-section { animation: none !important; }
+.spring-surface[data-state="closed"],
+.spring-surface[data-closed] { pointer-events: none; }
+
+.morph-menu-shell .floating-menu-panel,
+.morph-menu-shell .floating-menu-item {
+  animation: none !important;
+}
+.morph-menu-expanded .morph-menu-content { border-radius: inherit; }
+
 @keyframes floating-menu-panel-in {
   from {
     opacity: 0;
@@ -533,24 +699,6 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
   position: absolute;
   inset: 0;
   z-index: 40;
-/* These surfaces use GSAP; do not run a second CSS entrance on their children. */
-.spring-surface,
-.spring-surface .floating-menu-panel,
-.spring-surface .floating-menu-item {
-  animation: none !important;
-  transition: none;
-}
-.spring-surface-content { min-width: 0; }
-.spring-settings-section { animation: none !important; }
-.spring-surface[data-state="closed"],
-.spring-surface[data-closed] { pointer-events: none; }
-
-.morph-menu-shell .floating-menu-panel,
-.morph-menu-shell .floating-menu-item {
-  animation: none !important;
-}
-.morph-menu-expanded .morph-menu-content { border-radius: inherit; }
-
   width: 100% !important;
   animation: none;
   transition: opacity 180ms ease;
@@ -591,6 +739,11 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
 .right-sidebar-workbench.is-closing > div {
   opacity: 0;
   transition: opacity 220ms ease;
+}
+
+.right-sidebar-workbench[data-spring-panel],
+.right-sidebar-workbench[data-spring-panel] > div {
+  transition: none;
 }
 
 .bottom-panel-workbench {
@@ -689,11 +842,6 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
 .onboarding-brand { width: 80px; height: 80px; border: 0; background: transparent; }
 .onboarding-brand img { width: 80px; height: 80px; object-fit: contain; }
 .onboarding-actions { display: flex; justify-content: center; gap: 12px; margin-top: 32px; }
-.right-sidebar-workbench[data-spring-panel],
-.right-sidebar-workbench[data-spring-panel] > div {
-  transition: none;
-}
-
 .onboarding-actions-connect { margin-top: 24px; }
 .onboarding-primary, .onboarding-back { height: 46px; border-radius: 12px; font-size: 14px; }
 .onboarding-primary { color: var(--theme-bg); background: var(--theme-fg); }
@@ -2228,6 +2376,111 @@ html.theme-translucent-sidebar.dark .bg-sidebar-bg {
   opacity: 0.55;
 }
 
+.reasoning-effort {
+  --effort-ratio: 0;
+  --effort-hue: calc(210 + var(--effort-ratio) * var(--effort-ratio) * 63);
+  min-width: 0;
+}
+
+.reasoning-effort-input { height: 30px; cursor: grab; }
+.reasoning-effort[data-dragging] .reasoning-effort-input { cursor: grabbing; }
+.reasoning-effort-track {
+  position: relative;
+  width: 100%;
+  height: 30px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--theme-fg) 10%, var(--theme-bg));
+}
+
+.reasoning-effort-fill {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  clip-path: inset(0 calc((100% - 32px) * (1 - var(--effort-ratio))) 0 0 round 999px);
+}
+
+.reasoning-effort-fill canvas { width: 100%; height: 100%; }
+.reasoning-effort-dots {
+  position: absolute;
+  inset: 0 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  pointer-events: none;
+  transition: opacity 300ms;
+}
+.reasoning-effort-dots span {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--theme-fg) 30%, transparent);
+}
+.reasoning-effort[data-maximum] .reasoning-effort-dots { opacity: 0; }
+.reasoning-effort-thumb {
+  position: absolute;
+  left: calc((100% - 32px) * var(--effort-ratio) + 3px);
+  top: 2px;
+  width: 26px;
+  height: 26px;
+  border-radius: var(--effort-jelly-left, 50%) var(--effort-jelly-right, 50%)
+    var(--effort-jelly-right, 50%) var(--effort-jelly-left, 50%) / 50%;
+  border: 1px solid color-mix(in srgb, var(--theme-fg) 10%, transparent);
+  background: #fafafa;
+  box-shadow: 0 1px 3px #0002;
+  pointer-events: none;
+  scale: var(--effort-press, 1);
+  transform: translateX(var(--effort-jelly-offset, 0px))
+    skewX(var(--effort-jelly-skew, 0deg))
+    scale(var(--effort-jelly-x, 1), var(--effort-jelly-y, 1));
+  transform-origin: center;
+  transition: border-color 180ms, box-shadow 180ms;
+}
+.reasoning-effort-input:hover .reasoning-effort-thumb {
+  border-color: color-mix(in srgb, var(--theme-fg) 20%, transparent);
+}
+.reasoning-effort[data-dragging] .reasoning-effort-thumb {
+  transition-duration: 0ms;
+  box-shadow: 0 2px 5px #0003;
+}
+.reasoning-effort-input-thumb {
+  display: block;
+  width: 32px;
+  height: 30px;
+  background: transparent;
+  outline: none;
+}
+.reasoning-effort-input:has(:focus-visible) {
+  border-radius: 999px;
+  outline: 2px solid color-mix(in srgb, var(--theme-fg) 60%, transparent);
+  outline-offset: 2px;
+}
+.reasoning-effort-stops {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: center;
+  margin-top: 6px;
+  font-size: 11px;
+}
+.reasoning-effort-stops button {
+  min-width: 32px;
+  justify-self: center;
+  padding: 3px 2px;
+  background: transparent;
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.reasoning-effort-stops button:first-child { justify-self: start; }
+.reasoning-effort-stops button:last-child { justify-self: end; }
+.reasoning-effort-stops button[aria-pressed="true"] { color: hsl(var(--effort-hue) 75% 43%); font-weight: 600; }
+.dark .reasoning-effort-stops button[aria-pressed="true"] { color: hsl(var(--effort-hue) 75% 70%); }
+.reasoning-effort-stops button:focus-visible { outline: 2px solid var(--theme-fg); outline-offset: 2px; }
+.reasoning-effort[data-disabled] { opacity: .5; pointer-events: none; }
+@media (prefers-reduced-motion: reduce) {
+  .reasoning-effort *, .reasoning-effort *::after { transition: none !important; }
+}
+
 .reasoning-slider-track {
   background: #f2f2f2;
   box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.06);
@@ -2583,11 +2836,13 @@ html:not(.dark) .reasoning-slider-fill {
 
 /* ===== tauri-plugin-decorum titlebar ===== */
 div[data-tauri-decorum-tb] {
+  height: var(--app-titlebar-height) !important;
   background: transparent !important;
   border-bottom: none !important;
 }
 
 button.decorum-tb-btn {
+  height: var(--app-titlebar-height) !important;
   color: color-mix(in srgb, var(--theme-fg) 55%, transparent) !important;
   transition: background-color 150ms, color 150ms;
 }

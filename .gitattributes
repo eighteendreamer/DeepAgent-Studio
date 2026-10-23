@@ -1,3 +1,5 @@
 # Bundled REA source hashes must be identical on Windows and CI checkouts.
 apps/desktop/src-tauri/resources/plugins/rea/** text eol=lf
 apps/desktop/src-tauri/resources/plugins/rea/runtime.zip -text
+# Keep the restored Superpowers icon and source hash stable across checkouts too.
+apps/desktop/src-tauri/resources/plugins/superpowers/** text eol=lf

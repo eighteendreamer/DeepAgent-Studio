@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["./main.tsx", "./ShareInvite.tsx"],
+  "exclude": ["dist", "vite.config.ts"]
+}

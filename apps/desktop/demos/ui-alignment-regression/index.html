@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DeepAgent · 界面对齐验证</title>
+    <style>
+      /* Browser fixture for decorum 1.1.1's injected Windows overlay. Native
+         window actions are deliberately absent; App/CustomTitleBar are real. */
+      [data-tauri-decorum-tb] { position:fixed; inset:0 0 auto; display:flex; justify-content:flex-end; height:32px; z-index:1000; }
+      .decorum-tb-btn { position:relative; width:58px; height:32px; display:flex; align-items:center; justify-content:center; border:0; padding:0; background:transparent; font:10px "Segoe Fluent Icons","Segoe MDL2 Assets"; }
+    </style>
+  </head>
+  <body>
+    <div data-tauri-decorum-tb>
+      <div data-tauri-drag-region style="position:absolute;inset:0"></div>
+      <button id="decorum-tb-minimize" class="decorum-tb-btn" aria-label="最小化（验证占位）">&#xE921;</button>
+      <button id="decorum-tb-maximize" class="decorum-tb-btn" aria-label="最大化（验证占位）">&#xE922;</button>
+      <button id="decorum-tb-close" class="decorum-tb-btn" aria-label="关闭（验证占位）">&#xE8BB;</button>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

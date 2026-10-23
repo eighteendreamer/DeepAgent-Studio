@@ -48,6 +48,10 @@ mod mcp_catalog_change;
 #[path = "kernel_v2_e2e/post_tool_hook_commit.rs"]
 mod post_tool_hook_commit;
 
+#[cfg(windows)]
+#[path = "kernel_v2_e2e/prompt_hook_context.rs"]
+mod prompt_hook_context;
+
 #[path = "kernel_v2_e2e/incomplete_reason.rs"]
 mod incomplete_reason;
 

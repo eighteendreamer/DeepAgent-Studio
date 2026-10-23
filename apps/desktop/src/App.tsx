@@ -1,5 +1,7 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { flushSync } from "react-dom";
+import { SpringDisclosure } from "./components/ui/SpringDisclosure";
+import { MessageSendMotionContext, useMessageSendMotionController } from "./components/ui/MessageSendMotionContext";
 import { ProcessStoreContext } from "./components/chat-timeline/ProcessDisclosureContext";
 import {
   advanceTurnActivity,
@@ -71,6 +73,8 @@ import { DesktopUpdateController } from "./components/DesktopUpdateController";
 import { AppContextMenu } from "./components/AppContextMenu";
 import { TrustDialog } from "./components/TrustDialog";
 import { Sidebar } from "./components/Sidebar";
+import { AppNavigationRail } from "./components/AppNavigationRail";
+import { Button } from "./components/shadcn/button";
 import { changeSidebarPreferences, loadSidebarPreferences, useSidebarPreferences } from "./components/sidebarPreferences";
 import { SidebarSectionDialog } from "./components/SidebarSectionDialog";
 import { sessionDeepLink, sessionWorkingDirectory, openSessionTarget } from "./api";
@@ -484,6 +488,7 @@ async function recognizeImageAttachmentsOnSend(
 }
 
 export function App() {
+  const messageSendMotion = useMessageSendMotionController();
   const sidebarPreferences = useSidebarPreferences((state) => state.preferences);
   const [sectionDialogFor, setSectionDialogFor] = useState<{ session: string | null } | null>(null);
   const pendingNewChatSectionRef = useRef<string | null>(null);
@@ -1121,6 +1126,7 @@ export function App() {
       displayText?: string,
     ) => {
       const trimmedText = text.trim();
+      const sendAnimation = messageSendMotion.take(displayText ?? text);
       const skillContext = buildSkillContexts(normalizeSkillSelections(selectedSkills));
       const mentionContext = buildMentionContexts(mentions);
       const contextBlocks = [skillContext, mentionContext].filter((block) => block.trim().length > 0);
@@ -1288,6 +1294,7 @@ export function App() {
         },
       ];
       liveTranscripts.current.set(runKey, seeded);
+      sendAnimation?.bind(`${runId}:user`, continueId ? chatFrameKey : `chat:${pendingKey}`);
       setMessages(seeded);
 
       if (view !== "chat") {
@@ -2163,7 +2170,7 @@ export function App() {
           finishRun();
         });
     },
-    [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey]
+    [activeId, view, refreshSessions, runningSessionIds, activePendingRunKey, messageSendMotion, chatFrameKey]
   );
 
   const onChatSend = useCallback(
@@ -2441,7 +2448,10 @@ export function App() {
     onOpenTarget: (target: string) => { void openSessionTarget(id, target).catch((error) => message.error(String(error))); },
   });
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState(readLeftSidebarOpen);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(() => !window.matchMedia("(max-width: 740px)").matches && readLeftSidebarOpen());
+  const [isCompactLayout, setIsCompactLayout] = useState(() => window.matchMedia("(max-width: 740px)").matches);
+  const mainSurfaceRef = useRef<HTMLElement>(null);
+  const sidebarRegionRef = useRef<HTMLDivElement>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
 
   // Settings State
@@ -2456,10 +2466,41 @@ export function App() {
   } | null>(null);
 
   const toggleLeftSidebar = useCallback(() => {
-    runUiTransition(() => {
-      setIsSidebarOpen((open) => !open);
-    });
+    // SpringDisclosure owns this layout animation. View Transition snapshots
+    // lift the square main surface out of the shared frame's rounded clip.
+    setIsSidebarOpen((open) => !open);
   }, []);
+
+  const dismissLeftSidebar = useCallback(() => {
+    setIsSidebarOpen(false);
+    requestAnimationFrame(() => document.querySelector<HTMLButtonElement>('[data-sidebar-toggle="rail"]')?.focus());
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 740px)");
+    const resize = () => {
+      setIsCompactLayout(media.matches);
+      setIsSidebarOpen(media.matches ? false : readLeftSidebarOpen());
+    };
+    media.addEventListener("change", resize);
+    return () => media.removeEventListener("change", resize);
+  }, []);
+
+  useEffect(() => {
+    const main = mainSurfaceRef.current;
+    if (main) main.inert = isCompactLayout && isSidebarOpen;
+    if (!isCompactLayout || !isSidebarOpen) return;
+    const frame = requestAnimationFrame(() => sidebarRegionRef.current?.querySelector<HTMLButtonElement>("button")?.focus());
+    const escape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !event.defaultPrevented) dismissLeftSidebar();
+    };
+    window.addEventListener("keydown", escape);
+    return () => {
+      if (main) main.inert = false;
+      cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", escape);
+    };
+  }, [isCompactLayout, isSidebarOpen, dismissLeftSidebar]);
 
   const onSelectSettingsCategory = useCallback((categoryId: string) => {
     runUiTransition(() => {
@@ -2468,8 +2509,8 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem(LEFT_SIDEBAR_OPEN_KEY, String(isSidebarOpen));
-  }, [isSidebarOpen]);
+    if (!isCompactLayout) window.localStorage.setItem(LEFT_SIDEBAR_OPEN_KEY, String(isSidebarOpen));
+  }, [isSidebarOpen, isCompactLayout]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2502,6 +2543,7 @@ export function App() {
       : view === "settings"
         ? `settings:${activeSettingsCategory}`
         : view;
+  useLayoutEffect(() => { messageSendMotion.setFrame(viewFrameKey); }, [messageSendMotion, viewFrameKey]);
 
   // A chat frame still waiting for its session has no session identity at all:
   // `activeId` belongs to whatever conversation the user was looking at before
@@ -2511,6 +2553,9 @@ export function App() {
     activePendingRunKey !== null && chatFrameKey === `chat:${activePendingRunKey}`
       ? null
       : activeId;
+
+  const closeCompactSidebar = () => { if (isCompactLayout) setIsSidebarOpen(false); };
+  const navigateFromRail = (next: View) => { navigateTo(activeId, next); closeCompactSidebar(); };
 
   return (
     <div className="bg-sidebar-bg text-text-base font-sans h-screen w-full overflow-hidden flex flex-col relative">
@@ -2527,10 +2572,22 @@ export function App() {
         onForward={goForward}
       />
 
-      <div className="flex-1 flex overflow-hidden">
-        <>
-          {isSidebarOpen && view !== "settings" && view !== "remote" && (
-            <div className="flex h-full w-[220px] flex-shrink-0 overflow-hidden">
+      <div className="app-workspace" data-sidebar-open={isSidebarOpen}>
+        <AppNavigationRail activeSurface={view} sidebarOpen={isSidebarOpen} onToggleSidebar={toggleLeftSidebar}
+          onHome={() => navigateFromRail("start")}
+          onNewChat={() => { onNewChat(); closeCompactSidebar(); }}
+          onOpenSearch={() => { setIsSearchOpen(true); closeCompactSidebar(); }}
+          onOpenSkills={() => navigateFromRail("skills")} onOpenKnowledge={() => navigateFromRail("knowledge")}
+          onOpenPlugins={() => navigateFromRail("plugins")} onOpenAutomation={() => navigateFromRail("automation")}
+          onOpenRemote={() => navigateFromRail("remote")}
+          onOpenCanvas={() => { void openStudioCanvasWindow().catch(error => message.error(`打开无限画板失败：${String(error)}`)); closeCompactSidebar(); }}
+          onOpenSettings={() => navigateFromRail("settings")} onLogout={onLogout} />
+        <div className="app-content-frame">
+        {isCompactLayout && isSidebarOpen && <Button variant="ghost" className="app-sidebar-backdrop" aria-label={t("sidebar.collapseSidebar")} tabIndex={-1} onClick={dismissLeftSidebar} />}
+        <div ref={sidebarRegionRef} id="app-context-sidebar" className="app-sidebar-region">
+        <SpringDisclosure open={isSidebarOpen} axis="width" size={view === "settings" || view === "remote" ? 240 : 256} unmountOnExit>
+          {view !== "settings" && view !== "remote" && (
+            <div className="flex h-full w-full flex-shrink-0 overflow-hidden">
               <Sidebar
                 sessions={sessions}
                 projects={projects}
@@ -2539,10 +2596,11 @@ export function App() {
                 onSelect={(id) => {
                   if (sidebarPreferences.unread[id]) void changeSidebarPreferences({ type: "set_unread", session_id: id, unread: false }).catch((error) => message.error(String(error)));
                   onSelect(id);
+                  closeCompactSidebar();
                 }}
                 sessionMenuOptions={sessionMenuOptions}
                 onSelectProject={onSelectProject}
-                onNewChat={onNewChat}
+                onNewChat={() => { onNewChat(); closeCompactSidebar(); }}
                 onNewSectionChat={onNewSectionChat}
                 onArchiveSection={onArchiveSection}
                 onAddProject={onAddProject}
@@ -2563,32 +2621,12 @@ export function App() {
                 onEditProject={onEditProject}
                 onAddProjectSection={() => setSectionDialogFor({ session: null })}
                 onArchiveProject={onArchiveProject}
-                onOpenSearch={() => setIsSearchOpen(true)}
-                activeSurface={
-                  view === "skills" ||
-                  view === "knowledge" ||
-                  view === "plugins" ||
-                  view === "automation"
-                    ? view
-                    : null
-                }
-                onOpenSkills={() => navigateTo(activeId, "skills")}
-                onOpenKnowledge={() => navigateTo(activeId, "knowledge")}
-                onOpenPlugins={() => navigateTo(activeId, "plugins")}
-                onOpenAutomation={() => navigateTo(activeId, "automation")}
-                onOpenRemote={() => navigateTo(activeId, "remote")}
-                onOpenCanvas={() => {
-                  void openStudioCanvasWindow().catch((error) => {
-                    message.error(`打开无限画板失败：${String(error)}`);
-                  });
-                }}
-                onOpenSettings={() => navigateTo(activeId, "settings")}
-                onLogout={onLogout}
+                onCollapse={dismissLeftSidebar}
                 runningSessionIds={runningSessionIds}
               />
             </div>
           )}
-          {isSidebarOpen && view === "settings" && (
+          {view === "settings" && (
             <div className="flex h-full w-[240px] flex-shrink-0 overflow-hidden">
               <Suspense fallback={<div className="h-full w-[240px] bg-sidebar-bg" />}>
                 <SettingsSidebar
@@ -2599,7 +2637,7 @@ export function App() {
               </Suspense>
             </div>
           )}
-          {isSidebarOpen && view === "remote" && (
+          {view === "remote" && (
             <div className="flex h-full w-[240px] flex-shrink-0 overflow-hidden">
               <Suspense fallback={<div className="h-full w-[240px] bg-sidebar-bg" />}>
                 <RemoteSidebar
@@ -2613,11 +2651,14 @@ export function App() {
               </Suspense>
             </div>
           )}
-        </>
+        </SpringDisclosure>
+        </div>
 
         <main
+          ref={mainSurfaceRef}
           className="app-main-surface relative flex flex-1 overflow-hidden bg-white"
         >
+          <MessageSendMotionContext.Provider value={messageSendMotion}>
           <Suspense fallback={<ViewLoading />}>
             {view === "start" && (
               <div key={viewFrameKey} className="view-frame">
@@ -2704,7 +2745,9 @@ export function App() {
               </div>
             )}
           </Suspense>
+          </MessageSendMotionContext.Provider>
         </main>
+        </div>
       </div>
 
       {/* Overlays */}

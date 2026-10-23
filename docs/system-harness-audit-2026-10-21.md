@@ -19,6 +19,7 @@
 | MCP 动态工具目录 | 真实 Node 声明 tools.listChanged，在工具响应前发送变更通知并将目录由 initial_tool 切为 updated_tool；正式宿主未重新发现，下一独立运行的真实序列化 schema 仍为旧工具 | 已确认 H-137；本机 stdio、离线模型；1 秒为测试观察窗口，不是协议规定期限 |
 | MCP 结果内容与客户端元数据 | 正式 MCP 返回公开文本、structuredContent 与仅位于顶层 _meta 的虚构 canary；第一次模型 wire 无 canary，工具返回后的下一请求包含它 | 已确认 H-138；仅本机 stdio + 离线模型；这是客户端/模型投影缺口，不宣称 2024-11-05 基础协议为所有 _meta 提供统一保密保证 |
 | 已执行工具与后置 hook 的结果提交 | 正式 write_file 已写入磁盘且 run_events 有成功 ToolCompleted；PostToolUse prompt 返回无效 JSON 后，session 没有真实结果，重开将动作标为进程重启失败，下一请求只有补造的结果缺失错误 | 已确认 H-139；正常 hook 对照通过；真实临时文件、文件数据库、正式启动恢复与离线模型，不含真实桌面或公网请求 |
+| 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn，以及一个已被替代 turn 重复派生多个新 turn 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；stable/dynamic system prefix 的边界与字节稳定性测试通过；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、截断调用、命名工具选择协议形状不匹配、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter` 和 Responses failed usage 丢失均已复现 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
@@ -2491,10 +2492,36 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 与 H-83 区分：H-83 是最终完成 hook 报错导致同一 turn 的实时终态冲突；本项两组均唯一终态，缺陷是**工具已执行到 session/action 提交之间**的边界。与 H-103 的 hook 输入字段缺失也不同；即使补齐输入字段，后置执行错误仍须正确收尾。
 - 当前只动态覆盖 Windows、单个串行 write_file、PostToolUse prompt 的有效/无效 JSON、文件数据库重开、正式恢复与离线 provider wire；未覆盖并行组、PostToolUseFailure、FileChanged、取消、HTTP/MCP hook、DB 写入故障、真实 Tauri、macOS/Linux 或真实 DeepSeek。生产代码未改，缺陷探针保持 ignored，默认测试通过不表示该缺口已修复。
 
+### H-140：输入 hook 成功输出的上下文被丢弃，主模型只收到原始输入
+
+**级别：中（P2，条件性的模型上下文缺失）；触发条件：配置的 UserPromptSubmit command hook 以退出码 0 返回普通文本上下文，或标准 `hookSpecificOutput.additionalContext`。** 直接用户输入及顶层拒绝决定的正常对照均成立，不将默认无 hook 对话判定为受影响。
+
+#### 生产链与动态证据
+
+- `hook_assembly.rs::register_user_hooks()` 通过现有 HookDefinitions、ObservableHookRunner 和 SystemHookRunner 注册真实命令。`run_assembler.rs` 在建立当前用户 turn 前调用 `submit_user_prompt()`；后者进入 `RuntimeEngine::submit_prompt()` 和 HookRegistry。该入口的输入改写分支确实会把 effective_prompt 同时交给后续模型装配与记录，不应仅凭代码片段声称改写只进入 task；本轮转而验证参考实现具有明确消费路径的追加上下文契约。
+- `external_hooks.rs::interpret_result()` 将退出码 0 且没有识别到决定的输出变为 `HookOutcome::Continue`。`parse_structured_hook_output()` 没有解析 additionalContext，普通非 JSON 文本也没有上下文承载；HookOutcome 只有决定/输入改写/异步等待，没有与决定并存的追加内容。`submit_prompt()` 对 Continue 返回原始 prompt。ObservableHookRunner 虽然在实时 HookCompleted 中保留 stdout，模型装配并不消费它，所以“命令执行成功、输出可见”不能证明模型收到了内容。
+- 新增 `kernel_v2_e2e/prompt_hook_context.rs`：通过正式 SettingsService 配置用户作用域 hook，真实 PowerShell 读取 stdin 并保存到临时文件，然后输出固定虚构 canary 或标准 JSON。正式 ChatService/RunStore/Kernel 与离线 recording transport 驱动下一实际请求；严格核对 hook stdin 中的事件、session 与 prompt，实时完成事件的唯一性、退出码、完整 stdout、决定，运行终态唯一性，以及实际序列化 wire 和会话 MessageAppended/ResponseItemAppended 中的 canary。
+- 实跑 `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：**1 passed / 1 failed（缺陷探针预期失败）**，测试执行约 2.59s。直接输入对照：hook 退出 0、continued、模型请求 1、wire_context=true、history_context=true。顶层 block 对照：退出 0、blocked、模型请求 0。普通 stdout 和标准 additionalContext 两组：退出 0、continued、模型请求均为 1，但 wire_context=false、history_context=false；四组都记录唯一 succeeded 终态。block 组的 succeeded 描述的是当前已有终结行为，本项不另据此认定新的终态缺陷。
+- HookCompleted 来自正式 live 回调，**没有把它当作已落入 run_events 的 hook 审计记录**。history_context 只检查会话 MessageAppended/ResponseItemAppended，未把日志或 hook 配置中的 canary 冒充模型历史；没有伪造事件、替换生产 parser 或调用公网模型。
+
+#### 成熟实现对照
+
+- **Claude Code**：`借鉴/claudecode/restored-src/src/types/hooks.ts` 明确定义 UserPromptSubmit 的 additionalContext；`utils/hooks.ts` 按 hookEventName 提取该字段。`utils/processUserInput/processUserInput.ts` 先处理 blockingError/preventContinuation，再将 additionalContexts 创建为带 hook 来源的 `hook_additional_context` 消息加入待查询内容。决定与模型可见上下文分别处理，没有用 Continue 抹掉允许后的内容。
+- **Codex**：`借鉴/codex/codex-rs/hooks/src/events/user_prompt_submit.rs` 的 outcome 同时包含 should_stop、stop_reason、additional_contexts 和 hook_events；成功非 JSON stdout 与解析出的 additional_context 均有独立的模型上下文通道，输出过大时经过既有 spiller。`core/src/session/turn.rs` 把该上下文与接纳输入一起记录；`core/src/hook_runtime.rs::record_additional_contexts()` 将其转换为原生 ResponseItem 并经现有 conversation 记录路径写入。此处仅对照仓库源码，未运行参考项目，也不把具体角色或权限策略直接套用到 DeepSeek。
+
+#### 后果、修复方向与验证限制
+
+- 依赖输入 hook 自动补充的项目约定、运行环境或动态检索内容可能在 hook 显示成功的同时对模型不可见。本轮直接证明内容缺失，**没有评测实际回答质量、证明模型忽略了其他已有规则，或证明权限/沙箱被绕过**。用户通过原始输入显式提供同样内容时能够进入请求；原始用户消息未因此被删减。
+- 应在既有 HookOutcome/dispatch/PromptDecision 边界分开承载决定、输入修改、附加上下文与诊断，验证事件类型后有界收集上下文，在同一次用户输入接纳中写入既有原生 Surface 和会话事件，再由统一 meter 计量。多个 hook 的上下文不能因决定优先级而互相覆盖；需要明确来源、长度及允许的信任等级。这是本地收敛设计，不新增提示词存储，不以改写原始用户消息或直接把所有 stdout 提升为 system 指令代替上下文通道，也不能从 UI 日志反向拼接历史。
+- 与 H-26 共享外部输出解析层，但本项补充的是它尚未动态覆盖的**允许后追加上下文的交付**：顶层 block 正常不能修复内容丢失；仅补嵌套 permissionDecision 同样不能修复普通 stdout 或为非 veto 观察点承载附加内容。应在同一输出契约收敛，避免为每个事件复制 parser。它也与 H-111 的 PreCompact 指令未进入摘要请求不同，本项针对正式主模型输入。
+- 当前仅 Windows、用户作用域的同步 PowerShell UserPromptSubmit、短文本/标准 JSON、单 hook、单轮离线 Responses wire。未动态验证 SessionStart/SubagentStart/工具 hooks、多 hook 合并、HTTP/MCP hooks、取消、长输出、续聊、压缩、数据库重开、真实 Tauri 或真实 DeepSeek，也不据此宣称上述路径同样失败。生产行为未改；缺陷测试保持 ignored，正常对照为默认测试。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
 |---|---|
+| H-140 输入 hook 上下文显式探针及对照 | `cargo test -p deepagent-app-core --test kernel_v2_e2e prompt_hook_context --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），执行约 2.59s；真实 PowerShell 成功输出普通文字/标准 additionalContext，两组实际 wire 与会话消息仍无内容；直接输入可见、顶层 block 不发模型。仅临时文件、离线 transport |
+| H-140 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：30 passed / 29 ignored / 0 failed，约 4.59s；`cargo fmt --all -- --check` 与 `git diff --check` 通过。仅测试和报告，未运行 workspace 全量、Clippy、桌面 build、真实 Tauri、其他平台或真实供应商；ignored 缺陷并未修复 |
 | H-139 后置 hook 失败与重开显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e post_tool_hook_commit --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），最终复测约 0.82s；真实 write_file 成功但无 session 结果、action 留在 Running；重开标为进程重启失败，正式下一 wire 只含同 call_id 的补造失败；正常 hook 保留真实结果。仅临时文件与离线模型 |
 | H-139 默认 Kernel 集成及静态检查 | `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：29 passed / 28 ignored / 0 failed，约 4.00s；`cargo fmt --all -- --check`、`git diff --check` 通过。仅测试与报告；未跑 workspace 全量、Clippy、桌面 build、真实 Tauri、macOS/Linux 或真实供应商，默认忽略的缺陷仍未修复 |
 | H-138 MCP 客户端 metadata 显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_image_output::audit_mcp_client_metadata_is_not_sent_to_model --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 0.35s；仅位于 MCP 结果顶层 _meta 的虚构 canary 在下一正式 wire 出现，公开 content/structuredContent 仍存在；本机真实 Node，无公网发送 |
@@ -2962,6 +2989,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 启动恢复的 run/task 诊断归属 | H-44、H-95 | 现有恢复投影按 run 的 task 身份界定历史范围；参考 Codex 按 turn ID 标记 stale turn | 同 session 多个未完成 run 的中断原因各自匹配其 task turn；较新的 user prompt 不改写旧 run 的工具中断原因；重放稳定，且不改变唯一终态 |
 | 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
 | 工具实际执行与后置扩展的提交边界 | H-139 | 既有 ToolPipeline/action/Session 保存已执行事实和结果；后置 hook 的反馈、拒绝继续及失败分别投影；参考 Claude 普通工具结果先保留、Codex 区分执行 lifecycle 与 hook outcome | hook 有效/无效/执行错误及重开后，成功副作用不会变成未完成操作；原结果可回放、动作有准确终态、模型配对反馈可解释；不盲目重复执行 |
+| 输入 hook 的附加上下文交付 | H-140、H-26 | 既有 hook 输出结果分开携带决定、改写与上下文，接回当前输入的原生 Surface/会话记录和统一 meter；参考 Claude hook_additional_context 与 Codex 独立 additional_contexts 通道 | 普通 stdout 与合法 additionalContext 在实际 wire 中可见且有来源；拒绝仍不发模型；多 hook 有界合并、恢复可回放，不把 UI 日志或任意输出升级为系统权限 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45、H-119 | 摘要、prefire、正文、重试、工具、画布媒体 HTTP 和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误；本地停止不冒充云任务已撤销 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
 | 交互终端的分页范围与恢复游标 | H-123 | 既有 TerminalReadChunk / local 与 SSH reader 统一返回终点及淘汰语义；参考 Codex 将 pending 消费与明确 omission 信息分开，字节游标投影为本地设计 | 每页 cursor 不跳过未返回字节；大输出分页可还原；只有真实历史缺口才报告丢失；持久化/恢复不得将生产位置冒充已交付位置 |

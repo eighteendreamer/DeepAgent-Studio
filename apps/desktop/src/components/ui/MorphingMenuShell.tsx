@@ -4,6 +4,7 @@ import { continuousRadius, computedCornerCurvature, CORNER_CURVATURE } from "../
 import { cn } from "../shadcn/utils";
 import { MenuTriggerOpenContext, MorphPanelLayoutContext } from "./MorphPanelLayoutContext";
 import { SHARE_MOTION, motionColor, prefersReducedMotion, springEase } from "./springMotion";
+import "./menuSurface.css";
 
 type Props = {
   open: boolean;
@@ -218,7 +219,7 @@ export function MorphingMenuShell({ open, onOpenChange, layoutId, trigger, class
           <MenuTriggerOpenContext.Provider value={open}>{trigger}</MenuTriggerOpenContext.Provider>
         </div>
         {showPanel && <div ref={panelRef} data-morph-panel aria-hidden={!open} tabIndex={-1}
-          className="morph-menu-expanded absolute left-0 top-0 w-max max-w-[calc(100vw-32px)] rounded-2xl bg-elevated-bg outline-none"
+          className="morph-menu-expanded ui-menu-surface absolute left-0 top-0 w-max max-w-[calc(100vw-32px)] rounded-2xl bg-elevated-bg"
           style={{ opacity: 0, pointerEvents: open ? "auto" : "none" }}>
           <MorphPanelLayoutContext.Provider value={layoutAnimating}>
             <div ref={contentRef} className={cn("morph-menu-content max-w-[calc(100vw-32px)]", !unstyled && "bg-elevated-bg", panelClassName)}>{children}</div>

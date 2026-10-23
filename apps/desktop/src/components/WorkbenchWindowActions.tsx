@@ -1,12 +1,14 @@
 import { BottomPanelIcon, SidebarRightIcon } from "./icons";
 import { Button } from "./shadcn/button";
-import { HoverInfo } from "./ui/HoverInfo";
+import { HoverInfo, HoverInfoGroup } from "./ui/HoverInfo";
+import { cn } from "./shadcn/utils";
 
 interface Props {
   isRightSidebarOpen: boolean;
   onToggleRightSidebar: () => void;
   isBottomPanelOpen: boolean;
   onToggleBottomPanel: () => void;
+  className?: string;
 }
 
 /** Keep window actions on the same 32px row as the workbench tabs. */
@@ -15,10 +17,11 @@ export function WorkbenchWindowActions({
   onToggleRightSidebar,
   isBottomPanelOpen,
   onToggleBottomPanel,
+  className,
 }: Props) {
   const sidebarLabel = isRightSidebarOpen ? "收起侧栏" : "打开右侧栏";
   return (
-    <div className="pointer-events-auto absolute right-6 top-0 z-50 flex h-8 items-center gap-3 text-text-secondary">
+    <HoverInfoGroup><div className={cn("pointer-events-auto absolute right-6 top-0 z-50 flex h-8 items-center gap-3 text-text-secondary", className)}>
       <HoverInfo content={sidebarLabel}>
         <Button
           variant="ghost"
@@ -41,6 +44,6 @@ export function WorkbenchWindowActions({
           <BottomPanelIcon className="text-[15px]" />
         </Button>
       </HoverInfo>
-    </div>
+    </div></HoverInfoGroup>
   );
 }

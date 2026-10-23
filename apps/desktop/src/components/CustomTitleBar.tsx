@@ -22,7 +22,7 @@ interface Props {
 }
 
 const BUTTON_CLASS =
-  "flex h-7 w-7 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-sidebar-highlight hover:text-text-base disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent";
+  "app-titlebar-button text-text-secondary transition-colors hover:bg-sidebar-highlight hover:text-text-base disabled:cursor-default disabled:opacity-35 disabled:hover:bg-transparent";
 
 export function CustomTitleBar({
   onToggleSidebar,
@@ -89,13 +89,13 @@ export function CustomTitleBar({
 
   return (
     <>
-      {/* 32px 占位：根容器是 flex-col，把内容区压到标题栏下方；session 窗口不渲染即不受影响 */}
-      <div className="h-8 shrink-0" />
+      {/* The spacer and native overlay use the same height token. */}
+      <div className="app-titlebar-spacer shrink-0" />
       {slot &&
         createPortal(
           <div
             id={NAV_ROW_ID}
-            className={cn("flex h-full items-center gap-1 pl-3", className)}
+            className={cn("app-titlebar-navigation", className)}
           >
             <HoverInfo content={t("settings.shortcuts.toggleSidebar")}><Button
               variant="ghost"
@@ -105,7 +105,7 @@ export function CustomTitleBar({
 
               aria-label={t("settings.shortcuts.toggleSidebar")}
             >
-              <PanelLeft className="h-4 w-4" />
+              <PanelLeft />
             </Button></HoverInfo>
             <HoverInfo content={t("settings.shortcuts.goBack")}><Button
               variant="ghost"
@@ -116,7 +116,7 @@ export function CustomTitleBar({
 
               aria-label={t("settings.shortcuts.goBack")}
             >
-              <ArrowLeft className="h-4 w-4" />
+              <ArrowLeft />
             </Button></HoverInfo>
             <HoverInfo content={t("settings.shortcuts.goForward")}><Button
               variant="ghost"
@@ -127,7 +127,7 @@ export function CustomTitleBar({
 
               aria-label={t("settings.shortcuts.goForward")}
             >
-              <ArrowRight className="h-4 w-4" />
+              <ArrowRight />
             </Button></HoverInfo>
           </div>,
           slot,

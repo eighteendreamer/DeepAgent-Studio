@@ -1,5 +1,11 @@
 {
   "sidebar": {
+    "home": "Home",
+    "recent": "Recent",
+    "navigation": "Feature navigation",
+    "projectsAndChats": "Projects and chats",
+    "collapseSidebar": "Collapse projects and chats",
+    "expandSidebar": "Expand projects and chats",
     "projects": "Projects",
     "recentChats": "Recent Chats",
     "collapseRecentChats": "Collapse recent chats",
@@ -871,6 +877,8 @@
     "thinkingSimple": "Simple",
     "thinkingMedium": "Medium",
     "thinkingDeep": "Deep",
+    "effortFaster": "Faster",
+    "effortSmarter": "Deeper",
     "thinkingSwitchFailed": "Failed to change thinking level",
     "send": "Send",
     "stop": "Stop",

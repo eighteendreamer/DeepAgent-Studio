@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FocusEvent, type MouseEvent } from "react";
+import gsap from "gsap";
 import { cn } from "../shadcn/utils";
 import { MOTION } from "./motion";
 
@@ -27,12 +28,15 @@ import { MOTION } from "./motion";
 export function useSlidingIndicator({
   hoverSelector,
   activeSelector,
+  followFocus = false,
 }: {
   hoverSelector: string;
   activeSelector: string;
+  followFocus?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const hoveredRef = useRef<Element | null>(null);
+  const focusedRef = useRef<Element | null>(null);
   const [pill, setPill] = useState<{ top: number; height: number } | null>(null);
   /* 首帧禁用过渡：面板打开时滑块直接以最终形态出现（跳过 height 0→67 的过渡），
      下一帧后恢复 class 过渡，hover 跟随/切换行仍平滑 */
@@ -64,8 +68,9 @@ export function useSlidingIndicator({
   }, [activeSelector, positionPillOn]);
 
   const repositionPill = useCallback(() => {
-    if (hoveredRef.current) {
-      positionPillOn(hoveredRef.current);
+    const target = hoveredRef.current ?? focusedRef.current;
+    if (target) {
+      positionPillOn(target);
     } else {
       positionOnActive();
     }
@@ -75,8 +80,9 @@ export function useSlidingIndicator({
      useLayoutEffect：面板打开的首帧（paint 前）就同步测好位置，
      滑块直接以最终形态出现，不会先渲染空状态再过渡 */
   useLayoutEffect(() => {
-    positionOnActive();
-  }, [positionOnActive]);
+    if (followFocus) repositionPill();
+    else positionOnActive();
+  }, [followFocus, positionOnActive, repositionPill]);
 
   /* 容器尺寸变化时重新测量（hover 时跟 hover 行） */
   useEffect(() => {
@@ -100,12 +106,30 @@ export function useSlidingIndicator({
 
   const handleMouseLeave = useCallback(() => {
     hoveredRef.current = null;
-    positionOnActive();
-  }, [positionOnActive]);
+    repositionPill();
+  }, [repositionPill]);
+
+  const handleFocus = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    const target = event.target.closest(hoverSelector);
+    focusedRef.current = target?.matches(":focus-visible") ? target : null;
+    if (focusedRef.current) hoveredRef.current = null;
+    repositionPill();
+  }, [hoverSelector, repositionPill]);
+
+  const handleBlur = useCallback((event: FocusEvent<HTMLDivElement>) => {
+    if (!event.currentTarget.contains(event.relatedTarget)) {
+      focusedRef.current = null;
+      repositionPill();
+    }
+  }, [repositionPill]);
 
   return {
     containerRef,
-    containerProps: { onMouseOver: handleMouseOver, onMouseLeave: handleMouseLeave },
+    containerProps: {
+      onMouseOver: handleMouseOver, onMouseLeave: handleMouseLeave,
+      onFocusCapture: followFocus ? handleFocus : undefined,
+      onBlurCapture: followFocus ? handleBlur : undefined,
+    },
     indicatorStyle: {
       top: pill?.top ?? 0,
       height: pill?.height ?? 0,
@@ -119,13 +143,59 @@ export function useSlidingIndicator({
 /** 静默着色药丸 —— 默认 ui-tint；侧栏传 className="bg-sidebar-highlight" */
 const PILL_BASE = `ui-hover-highlight absolute left-3 right-3 z-0 rounded-md pointer-events-none ${MOTION.standard}`;
 
-export function SlidingPill({ style, className }: { style: CSSProperties; className?: string }) {
+type PillMotion = { duration: number; ease: string; exitDuration: number; enterDuration: number };
+type PillTarget = { top: number; height: number; visible: boolean; immediate: boolean };
+
+function createPillMotion(node: HTMLDivElement, motion: PillMotion) {
+  const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+  const context = gsap.context(() => {}, node);
+  let target: PillTarget = { top: 0, height: 0, visible: false, immediate: true };
+  const paint = () => context.add(() => {
+    gsap.killTweensOf(node);
+    if (media.matches || target.immediate) {
+      gsap.set(node, { y: target.top, height: target.height, opacity: target.visible ? 1 : 0 });
+    } else if (!target.visible) {
+      gsap.to(node, { opacity: 0, duration: motion.exitDuration, overwrite: true });
+    } else if (Number(gsap.getProperty(node, "opacity")) <= .01) {
+      gsap.set(node, { y: target.top, height: target.height, opacity: 0 });
+      gsap.to(node, { opacity: 1, duration: motion.enterDuration, overwrite: true });
+    } else {
+      gsap.to(node, { y: target.top, height: target.height, opacity: 1,
+        duration: motion.duration, ease: motion.ease, overwrite: true });
+    }
+  });
+  const reduce = () => {
+    gsap.killTweensOf(node);
+    context.add(() => gsap.set(node, { y: target.top, height: target.height, opacity: target.visible ? 1 : 0 }));
+  };
+  media.addEventListener("change", reduce);
+  return {
+    moveTo(next: PillTarget) { target = next; paint(); },
+    dispose() { media.removeEventListener("change", reduce); context.revert(); },
+  };
+}
+
+export function SlidingPill({ style, className, motion }: { style: CSSProperties; className?: string; motion?: PillMotion }) {
+  const nodeRef = useRef<HTMLDivElement>(null);
+  const controller = useRef<ReturnType<typeof createPillMotion> | null>(null);
+  useLayoutEffect(() => {
+    if (!motion || !nodeRef.current) return;
+    const instance = createPillMotion(nodeRef.current, motion);
+    controller.current = instance;
+    return () => { instance.dispose(); controller.current = null; };
+  }, [motion]);
+  useLayoutEffect(() => {
+    controller.current?.moveTo({ top: Number(style.top ?? 0), height: Number(style.height ?? 0),
+      visible: Number(style.opacity ?? 0) > 0, immediate: style.transition === "none" });
+  }, [motion, style.top, style.height, style.opacity, style.transition]);
   const hasBgClass = Boolean(className && /\bbg-/.test(className));
+  const { top: _top, height: _height, opacity: _opacity, ...rest } = style;
   return (
     <div
+      ref={nodeRef}
       aria-hidden
-      className={cn(PILL_BASE, !hasBgClass && "bg-ui-tint", className)}
-      style={style}
+      className={cn(PILL_BASE, !hasBgClass && "bg-ui-tint", className, motion && "transition-none")}
+      style={motion ? { ...rest, top: 0, transition: "none", willChange: "transform" } : style}
     />
   );
 }

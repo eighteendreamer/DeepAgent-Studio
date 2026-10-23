@@ -1262,6 +1262,7 @@ export function ChatView({
         }}
       />
       <WorkbenchWindowActions
+        className={isRightSidebarOpen ? undefined : "h-14"}
         isRightSidebarOpen={isRightSidebarOpen}
         onToggleRightSidebar={() => setIsRightSidebarOpen((open) => !open)}
         isBottomPanelOpen={isBottomPanelOpen}
@@ -1271,7 +1272,7 @@ export function ChatView({
       {/* Top half: conversation flow & overlay */}
       <div className="relative flex flex-1 min-h-0 min-w-0 w-full overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <header className="relative flex h-8 w-full flex-shrink-0 items-center justify-between pl-3 pr-6">
+        <header className="app-chat-header relative flex h-14 w-full flex-shrink-0 items-center justify-between pl-5 pr-6">
           <div className="relative min-w-0 flex-1 pr-28">
             <ChatSessionMenu
               {...sessionMenuOptions}
@@ -1333,6 +1334,7 @@ export function ChatView({
 
         <div
           ref={scrollRef}
+          data-chat-scroll
           className="stable-scrollbar-gutter flex-1 min-h-0 overflow-y-auto px-6 py-4"
           style={{ paddingBottom: composerBottomPadding, overflowAnchor: "none" }}
         >

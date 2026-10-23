@@ -11,9 +11,18 @@ export const MOTION = {
   smooth: "transition-all duration-[400ms] ease-out",
 } as const;
 
+/** Selected navigation feel: one interruptible highlight, with a short exit. */
+export const NAVIGATION_MOTION = {
+  duration: 0.22,
+  ease: "back.out(0.7)",
+  exitDuration: 0.07,
+  enterDuration: 0.055,
+  tooltipDelay: 160,
+} as const;
+
 /** 二级浮层菜单（A 视觉 + H 动效）—— 配合 styles.css 中 .floating-menu-panel */
 export const FLOATING_MENU = {
-  panel: "floating-menu-panel",
+  panel: "floating-menu-panel ui-menu-surface",
   item: "floating-menu-item",
   shell:
     "floating-menu-panel rounded-2xl bg-elevated-bg p-1.5 shadow-[0_6px_24px_rgba(0,0,0,0.10)]",
