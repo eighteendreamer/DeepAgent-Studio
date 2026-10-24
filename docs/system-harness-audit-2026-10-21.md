@@ -17,7 +17,7 @@
 | 本地 MCP 子进程环境授权 | 隔离宿主只注入虚构 canary，经正式 transport 完成 initialize/tools/list；空配置仍继承未声明 secret 和小写 token，显式覆盖对照通过 | 已确认 H-135；仅 Windows 本机 stdio，没有读取真实凭据或验证公网外传 |
 | MCP 请求写入背压与取消 | 正式 ChatService/Kernel 发出 512 KiB（初轮 2 MiB）虚构工具参数；真实 Node 读首块后暂停 stdin，取消已受理但写入未结束；释放后完整请求继续到达 | 已确认 H-136；本机管道故障注入，未执行真实远端副作用或桌面按钮操作 |
 | MCP 动态工具目录 | 真实 Node 声明 tools.listChanged，在工具响应前发送变更通知并将目录由 initial_tool 切为 updated_tool；正式宿主未重新发现，下一独立运行的真实序列化 schema 仍为旧工具 | 已确认 H-137；本机 stdio、离线模型；1 秒为测试观察窗口，不是协议规定期限 |
-| MCP 延迟发现与干净重建恢复 | 正式搜索→真实 stdio 工具调用→同会话续聊→所有原宿主服务离开作用域→重开文件数据库；已发现工具及配对结果恢复，新会话不继承发现或 canary | 正向对照通过，不新增缺陷；模型离线回放，不覆盖崩溃、压缩、分叉、权限变更或供应商缓存命中 |
+| MCP 延迟发现与分支恢复 | 正式搜索→真实 stdio 工具调用→续聊→干净重建的正常对照通过，新会话不继承发现；另实测 rewind 删除发现后旧内存仍公开工具，重新搜索并调用成功也未重新落盘发现，重建后隐藏工具 | 新增 H-232（P3）；普通恢复与保留发现的 rewind 对照正常。模型离线回放，不覆盖崩溃、压缩、fork、权限变更或供应商缓存命中 |
 | MCP 结果内容与客户端元数据 | 正式 MCP 返回公开文本、structuredContent 与仅位于顶层 _meta 的虚构 canary；第一次模型 wire 无 canary，工具返回后的下一请求包含它 | 已确认 H-138；仅本机 stdio + 离线模型；这是客户端/模型投影缺口，不宣称 2024-11-05 基础协议为所有 _meta 提供统一保密保证 |
 | 已执行工具与后置 hook 的结果提交 | 正式 write_file 已写入磁盘且 run_events 有成功 ToolCompleted；PostToolUse prompt 返回无效 JSON 后，session 没有真实结果，重开将动作标为进程重启失败，下一请求只有补造的结果缺失错误 | 已确认 H-139；正常 hook 对照通过；真实临时文件、文件数据库、正式启动恢复与离线模型，不含真实桌面或公网请求 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
@@ -4774,7 +4774,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 - location：`run_finalizer.rs::persist_discovered_tools_delta` 将排序后的新增集合写成会话事件；`input_runtime.rs::collect_discovered_tools_from_events` 合并历史增量；`run_assembler.rs` 在装配 manifest 前恢复；`tool_manifest.rs::live_tool_schema_source` 按当前 registry、权限和发现集生成 schema。此前已存在完整恢复链，不能仅从新 ChatService 的空内存 map 推断状态丢失。
 - 成熟 Agent 对照：Claude Code `utils/toolSearch.ts::extractDiscoveredToolNames` 从历史 tool_reference 恢复发现集，压缩边界还携带 preCompactDiscoveredTools；Codex `core/src/tools/handlers/tool_search.rs` 从当前 registry 构建搜索视图并输出 LoadableToolSpec。共同设计依据是把发现状态与可回放历史/有效能力关联，而非仅靠临时搜索缓存。本系统在本样本中的事件恢复达到该基本目标；参考代码只静态核查，未运行其测试，不声称协议实现完全相同。DeepSeek Harness `llm-deepseek/src/serialize.ts` 的 tool_addition/tool_removal 属于其 Messages 路由，不据此要求本系统 Responses 直接采用这些字段。
 - DeepSeek 边界：同日重新读取[Responses 官方指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)和[官方缓存规则](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)。无状态 Responses 需要客户端保留对话；本测试核对的是实际序列化请求与工具发现恢复。官方缓存依赖已落盘前缀完整匹配，且尽力而为；本次 tools JSON 相等并不证明真实 provider 的 prompt 排列、完整请求字节前缀或缓存命中，不生成 cache-hit 数字。
-- 影响与剩余风险：本样本没有发现重建导致工具退回不可见、重复搜索/执行或跨会话状态泄漏，不新增 H 编号。只覆盖完成回合后的干净服务/数据库重建，不覆盖独立宿主进程崩溃、发现后尚未 finalizer 的中断窗口、压缩、分叉/rewind、MCP schema 更新或权限变化；H-137、H-52、H-168、H-219 仍独立存在。本项按“复现即落文档”在首个成功运行后登记，回归结果另行追加。
+- 影响与剩余风险：本样本没有发现重建导致工具退回不可见、重复搜索/执行或跨会话状态泄漏，不新增 H 编号。只覆盖完成回合后的干净服务/数据库重建，不覆盖独立宿主进程崩溃、发现后尚未 finalizer 的中断窗口、压缩、分叉/rewind、MCP schema 更新或权限变化；H-137、H-57、H-168、H-219 仍独立存在。本项按“复现即落文档”在首个成功运行后登记，回归结果另行追加。原记录的 MCP instructions 关联编号 H-52 在本轮核对后更正为 H-57；回退边界后续实测见 H-232，不外推本正向样本。
 - 回归首轮：完整 Kernel 集成测试 **46 passed / 54 ignored**（包含本项）。AppCore lib **1090 passed / 1 failed / 50 ignored**，失败为未修改的 `completion_plan::audit_tests::discovered_real_build_completes_after_release` 在 4 秒内未等到真实 build.rs 的 ready 文件；不能抹去该失败，也尚未证明其根因。随后单独执行 `cargo test -p deepagent-app-core --lib completion_plan::audit_tests::discovered_real_build_completes_after_release --offline -- --exact --nocapture`，**1 passed / 1140 filtered out**，1.25 秒。格式与 diff 检查通过；`cargo clippy -p deepagent-app-core --lib --tests --offline -- -D warnings` 被既有 `models/src/client.rs:355 clone_on_copy` 和 `persistence/src/run_store.rs:127 explicit_counter_loop` 阻断，未修改这些无关代码。
 - 回归复跑：待上述测试结束后执行 `cargo test -p deepagent-app-core --lib --offline --quiet`，**1091 passed / 50 ignored**，6.57 秒。这里只能确认复跑恢复通过，不能据此断言首次失败一定由并发资源竞争导致。本轮无生产逻辑或跨层契约改动，未运行 workspace 全量、前端构建、独立桌面进程及真实 DeepSeek API 验证。
 
@@ -4923,7 +4923,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 | 历史附件的内容身份 | H-70 | 复用导入摘要与附件存储，把期望身份贯穿引用与请求读取；参考 Harness 的 digest/metadata 校验，旧记录迁移为本地设计 | 正常读取身份一致；合法替换/损坏不借旧 ID 发送；受控转换可追踪；旧会话、重启、取消、实际字节和单终态可验证 |
 | 发现能力与输入模态 | H-71 | 既有 ModelInfo/ModelCapability/provider seam 共用本次有效模型的模态声明；参考 Harness 在准备图片前检查 model inputModalities | 目录/恢复保留能力；文字模型不交出图片请求；未知能力、切模型/fallback/子运行、旧目录和真实请求计数可验证 |
 | 检查点恢复的失败一致性 | H-72 | 既有 CheckpointManager 先验证来源与计划，完成临时替换后提交；参考 Claude 的缺失备份前置检查，跨文件/历史补偿契约为本地设计 | 缺失备份不删除当前文件；部分失败、DB 截断失败及重试可诊断和恢复；rewind/fork、目录与 Windows 文件占用分别验证 |
-| 回退后的派生状态分支身份 | H-23、H-73 | 现有回退事实同时决定事件、检查点恢复资格和笔记覆盖；参考 Claude 的 messageId 快照与 Codex 的有效历史位置，持久化提交/补偿为本地设计 | 丢弃分支不覆盖新文件/摘要；保留前缀仍可回退；同序号替换、重启、fork、多次回退与失败重试可验证 |
+| 回退后的派生状态分支身份 | H-23、H-73、H-232 | 现有回退事实同时决定事件、检查点恢复资格、笔记覆盖和工具发现；参考 Claude 的 messageId 快照/当前历史发现集与 Codex 的有效历史位置，持久化提交/补偿为本地设计 | 丢弃分支不覆盖新文件/摘要或污染工具清单；新分支重新发现可持久恢复；保留前缀仍可回退；同序号替换、重启、fork、多次回退与失败重试可验证 |
 | 源事件与原生镜像的语义提交边界 | H-74 | 现有 Session/EventStore 关联逻辑消息与完整镜像组，分支/回退统一解析语义锚点；参考 Codex 按 turn/message 计算边界，原始 sequence 兼容为本地设计 | 保留的消息完整进入下一 wire；raw 锚点、旧日志、崩溃、附件/reasoning/工具和压缩不拆组，不在 UI 散落 +1 特判 |
 | 活跃运行与回退的提交所有权 | H-75 | 现有输入租约/RunCoordinator 与回退共用同会话所有权，明确拒绝或取消并等待；参考 Claude 恢复前 onCancel，持久化分支提交栅栏为本地设计 | 成功回退不再接收被丢弃 turn 的迟到回答；新接纳、排队、工具/审批、终态及重启保持一致，原审计不删除 |
 | 文件读取版本与后续修改资格 | H-76 | 现有 FileStateCache/文件工具统一已读版本、执行时冲突校验和实际写入；参考 Claude 的 stale read 拒绝与检查后不 await，跨进程提交约束为本地设计 | 过期写不覆盖外部改动，重读后正常修改；整文件/部分读取、write/edit/multi_edit、外部编辑与格式化、失败/取消和审计一致 |
@@ -5758,3 +5758,49 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 补严子测试只能由受限环境父测试启动的前置断言后，显式缺陷命令复跑仍为 **0 passed / 1 failed（预期），约 5.06s**；内部 child 约 5.03s，所有观察与正常对照均在最终缺陷断言前完成。`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**43 passed / 52 ignored**，新增两个 ignored 条目分别是父探针和环境受控的子入口，不把它们当作已修复回归。`cargo fmt --all -- --check`、`git diff --check` 通过；实际 Clippy 命令 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `models/src/client.rs:355`（clone_on_copy）和 `persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，不能报告 lint 通过。
 
 按 docs-generator 的证据链约定，首轮真实复现即登记，再追加分类依据、成熟源码对照和验证矩阵。本轮只新增隔离探针、测试入口及审计文档，未改生产代码/权限/配置策略；没有修改或删除用户文件，未提交测试运行产物。未执行全 workspace、Desktop build/UI、真实 DeepSeek、实际 Ruff 可用/报错、缺少必需编译器、其他平台、edit_file/multi_edit 或服务重启测试。本项不会关闭 H-64/H-65/H-230，也不涉及被用户排除的 encrypted-content 错误；全系统目标仍未完成。
+
+### H-232：回退删除发现事件后，原宿主仍公开旧工具，重建宿主则隐藏
+
+**级别：低（P3）；范围：启用延迟工具发现、已完成发现回合后，通过 AppService 原地 rewind 删除该回合，再复用同一 ChatService 续聊。** 已验证的是工具清单与当前分支发现历史不一致、恢复结果依赖旧宿主内存；不是权限提升或工具执行越权。
+
+#### 首轮 Evidence（复现后立即登记）
+
+- Scope：2026-10-24，用户授权的本仓库审计；真实文件数据库与会话事件、真实本机 Node stdio MCP；模型响应离线回放。工具仅回显虚构 canary；未调用公网或读取真实敏感数据，未改生产代码。
+- E-232-rewind：执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e rewind_dis --offline -- --include-ignored --nocapture`，**0 passed / 1 failed（预期）/ 101 filtered out**，测试体 1.01 秒。source_ref：`mcp_discovery_restore::audit_rewind_discarded_discovery_matches_reopened_tool_snapshot`；content_hash=n/a（命令观察，无独立保留数据产物）。正式 discovery→MCP inspect(value=canary) 完成后，正式 rewind 成功删掉发现回合；立即读取与后续续聊后的 ToolsDiscovered 数量均为 0。原宿主续聊的实际请求却仍含 `mcp__discovery_audit__inspect`，其内存发现集也保留该名称；第一宿主服务离开作用域并重开数据库后，新的首请求不再公开该工具，发现事件仍为 0。最后的 warm/cold 一致性断言失败。两个 MCP 实例均先 close_all 再进行最终断言。
+- 本项不是 H-74 的消息/原生镜像切割：保留点取自完整 base user/assistant 的实际尾事件；两次续聊请求均无已舍弃 canary。不是 H-75 的活动运行迟到提交：发现回合已经 succeeded 后才回退，后续回合也各为单一 succeeded 终态。不是 H-23 的笔记压缩或 H-73 的文件检查点误恢复：本探针未使用笔记、压缩或文件写工具。
+
+#### Finding 与 Path
+
+- F-232：category=design，status=validated，confidence=high，evidence_ids=[E-232-rewind]。`run_assembler.rs` 从当前 prior_events 提取发现集后，只在结果非空时向 session 对应的共享 HashSet 插入；从不按当前分支替换/删除旧名称。`service.rs::rewind_session` 截断事件并重开 Session，但没有触达 ChatService 的 discovered_tools。于是空的当前历史集无法清除旧发现；`tool_manifest.rs::live_tool_schema_source` 仍从旧内存集合生成模型可见 schema。`AppRunFinalizer` 又以本轮进入前的旧集为差量基线，未重新搜索的续聊不会将旧名称重新写成发现事件，因此差异可持续到宿主重建。
+- P-232（callflow，关联 E-232-rewind/F-232）：完整 base → 正式 tool_search → live schema 显示 inspect → 真实 MCP 调用一次并完成回合 → ToolsDiscovered 落盘 → rewind 保留 base、删除发现与工具往返 → 原 ChatService 从空 prior discovery 执行仅追加式恢复 → 新请求仍公开 inspect，未重新落盘发现 → 关闭旧 MCP、服务离开作用域 → Database 重开、新 ChatService 从同一当前分支恢复 → schema 不含 inspect。没有手工修改内部发现集合。
+- 已确认后果：用户回退后，模型收到当前分支没有发现依据的工具 schema；相同保留发现历史的继续/恢复行为依赖宿主是否仍持有旧内存。当前样本是一个多余工具，未观察到运行失败、重复副作用、跨会话泄漏或审批绕过。潜在影响是多次回退后旧 schema 累积、额外输入与不一致的搜索需求；真实 token 成本、模型行为及 cache-hit 变化尚未测量，不把潜在影响说成已发生。
+
+#### 成熟实现对照与治理边界
+
+- Claude Code `services/api/claude.ts` 在每次请求前调用 `utils/toolSearch.ts::extractDiscoveredToolNames(messages)`，再据返回集合过滤 deferred tools；该函数新建集合、扫描当前 messages 的 tool_reference，并显式读取压缩边界保存的 preCompactDiscoveredTools。可借鉴的是以当前可回放历史生成派生视图，不能直接复制其 Anthropic tool_reference 字段到 DeepSeek Responses。这里只核对源码，未运行其回退测试或宣称全平台无缺陷。
+- Codex `core/src/thread_rollout_truncation.rs` 在计算用户轮次/分叉位置前应用 ThreadRolledBack 对失效后缀的影响。这里借鉴的是分支有效性先于派生视图的边界，不声称该函数处理 DeepAgent 的工具发现集合。
+- 治理方向（尚未实施，本地设计）：让既有会话事件/分支 generation 成为发现状态的权威，run 装配按有效分支生成集合，或在 rewind/fork 的统一分支变更边界使所有派生视图失效。若产品有意让发现跨回退保留，也必须明确持久化该语义，使冷恢复与热宿主一致；不能只用旧内存充当事实。继续保留 ToolRegistry 权限过滤，不将 discovery 当成授权。完整验收需覆盖保留/删除发现、重新搜索、连续回退、fork、压缩、取消/崩溃及权限变化。
+
+首个缺陷结果已登记；随后执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_discovery_restore --offline -- --include-ignored --nocapture`，**2 passed / 1 failed（预期）/ 99 filtered out**，1.21 秒。保留发现的正常 rewind 组在 warm/cold 均公开 inspect、均有 1 条发现事件；上一轮的普通续聊/重建/新会话隔离对照仍通过。失败仍仅为删除发现组的 warm/cold 不一致。相关全量回归与 lint 检查尚待执行，不以预期代替验证。
+
+#### 增量复现：新分支重新搜索并成功调用后，发现状态仍未落盘
+
+- E-232-rediscovery：沿用同一真实 MCP/数据库夹具，为回退后的新回合显式回放第二次 tool_search 与 inspect，使用新的 `rediscovery-search` / `rediscovery-inspect` call_id，排除旧调用配对冒充成功。再次执行上述模块命令，**2 passed / 2 failed（预期）/ 99 filtered out**，1.35 秒。新增失败为 `audit_rediscovery_after_rewind_survives_reopened_tool_snapshot`；原缺陷仍失败，两项正常对照通过。content_hash=n/a；source_ref 为该测试与命令输出。
+- 新分支实际请求中包含匹配的第二次搜索结果，以及第二次 inspect 的唯一原生调用/输出；Node 报告两次 inspect，参数均为测试 canary。第二次发生于正式 rewind 之后，不是重放旧副作用；该回合 succeeded，但 ToolsDiscovered 仍为 0。重开后新请求仍保留 `rediscovery-search` 与 `rediscovery-inspect` 的往返/canary，却不公开 inspect schema。因此本项不只是“回退后应否保留旧发现”的产品取舍：**保留的新分支已重新搜索成功，其发现状态仍无法恢复**。
+- 根因补充：`ToolSearchTool` 将匹配名称插入同一个 HashSet；旧内存已含该名称，重新搜索不能造成集合增量。`run_assembler.rs` 在本轮开始前克隆该旧集合为 discovered_before_run，finalizer 的差集自然为空；冷恢复只扫描 ToolsDiscovered，不从成功 tool_search 输出补出该名称。F-232 增补 evidence_ids=[E-232-rewind,E-232-rediscovery]，同一根因不另建编号。
+
+| 分支处理 | warm 请求公开 inspect | warm 后发现事件数 | cold 请求公开 inspect | cold 当前历史中的 canary |
+|---|---|---|---|---|
+| 保留完整发现回合（对照） | 是 | 1 | 是 | 保留 |
+| 删除发现回合、不重搜 | 是 | 0 | 否 | 无 |
+| 删除后在新分支重搜并调用 | 是 | 0 | 否 | 保留第二次配对结果 |
+
+已确认影响增加为：重建后模型清单与保留的新分支成功搜索结果不一致，可能需要额外搜索才能继续使用该工具。仍未观察到真实模型因此失败或发出多余调用，不宣称出现死循环、实际计费增加、权限越界或供应商 cache miss。新增两项缺陷探针保持 ignored；正常对照默认执行，测试模型改为显式步骤序列以复用同一序列化夹具，而非新增第二条生产链。
+
+#### 验证收尾与架构结论
+
+- 复核探针不应把当前错误的“重搜后仍为 0”写成必须满足的前置条件：改为记录 warm 实际持久化增量，按该增量核对 cold 恢复，再在最终不变量要求成功重搜的工具可见。修改后同一模块命令仍为 **2 passed / 2 failed（预期）/ 99 filtered out**，1.43 秒；两个失败均到达最后的目标断言，warm/cold、第二次真实调用及当前历史配对观察不变。这样未来正确持久化发现时，探针不会因预先要求旧错误而继续报错。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**47 passed / 56 ignored**，9.41 秒；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored**，9.23 秒。默认绿测不代表两个 ignored 缺陷已修复。
+- `cargo fmt --all -- --check`、`git diff --check` 通过；实际执行 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，仍被未修改的 `models/src/client.rs:355`（clone_on_copy）及 `persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，未报告 lint 通过。测试路径复用原 MCP fixture/注册/请求记录器，没有另起生产 registry 或 store。
+- H-23、H-73、H-232 已分别证明笔记、检查点、工具发现的派生状态没有共同的当前分支身份；H-75 又有活动提交所有权缺口。治理应先定义既有 Session/EventStore 的有效分支与派生视图生命周期，再小步修各 seam；不建议只在桌面按钮里逐个清 map、按名称打补丁或额外建一套运行存储。以上为架构建议，未实施修复。
+- 本轮没有真实 DeepSeek 请求、缓存命中或模型行为实验。该问题属于宿主恢复一致性，不能声称违反某个 DeepSeek wire 参数；工具 schema 变化对供应商内部前缀及真实 cache hit 的影响也未测。只验证 Windows 本机、完成回合后的顺序 rewind/干净服务重建和静态 MCP 目录；未执行全 workspace、Desktop build/UI、独立进程崩溃、并发回退/子运行、fork、压缩、目录/权限变化。用户排除的 encrypted-content 错误不在本轮范围。
