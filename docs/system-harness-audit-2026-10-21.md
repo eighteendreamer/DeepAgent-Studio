@@ -3002,6 +3002,28 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 触发后 provider 可能拒绝整次请求，也可能忽略不支持的 choice 并退化成自动选择；前者会让启用该配置后的所有普通对话在采样前失败，后者会让用户以为已强制 `apply_patch`/搜索但模型可以返回文字或调用别的工具。具体 HTTP 状态、计费和忽略行为未经真实 API 验证，不写成既成事实。
 - 根因修复应把 `serde_json::Value` 收敛为协议级 typed choice（`Auto / None / Required / Function { name }`），输入边界只接受官方形状，并在 defaults 应用后的 `ResponseRequest::validate()` 再做最终校验；指定函数还应验证名称合法且存在于本次最终工具快照。Chat adapter 若继续支持 named function，必须在自己的 serializer 显式转换为 Chat 的嵌套 `function` 形状，不能与 H-93 共用原始 JSON。回归覆盖 request/default/developer JSON、缺失工具、custom/web_search 拒绝、Responses/Chat 分路及 transport 调用数为零。
 
+#### 2026-10-24 增量复现：合法 function choice 形状仍可引用不存在的最终工具
+
+本段补强 H-158 的同一最终请求校验边界，**不新增问题编号，也不把已有 custom/web_search shape 问题再计一项**。本轮未修生产逻辑。与先前证据的差异是：此次 choice 的 type/name 形状本身符合官方声明，但本次最终 `tools` 没有相应的 function。官方 [Responses 参数页](https://api-docs.deepseek.com/zh-cn/api/create-response)说明 named choice 强制调用指定函数；它未明示不存在函数时的具体 HTTP 状态，本段也不虚构服务端响应。
+
+- Scope：只修改 `crates/deepagent-app-core/tests/kernel_v2_e2e/responses_tool_choice.rs` 和本报告。临时 workspace、内存 SQLite、MemorySecretStore、占位 key、受控 HttpTransport；无真实 provider、内网资源访问或工具执行。测试覆盖的是请求发布，不是模型是否服从选择或实际工具执行结果。
+- E-158-linkage（2026-10-24，command，content_hash=n/a）：`audit_responses_named_choice_requires_final_function_tool` 经过正式 ModelClient 的 defaults、最终 validate 和 serializer。三种输入分别为无工具但指定 missing_tool、只有 read_file 却指定 missing_tool、声明 function apply_patch 且同名 function choice（adapter 随后将该工具转成 custom）。request/defaults 两种来源 × 普通/cancel-aware 两种入口共 **12 组，全部 accepted=true，各 transport_calls=1**；每组均断言最终 wire 中不存在 type=function 且 name 相等的项。cancel-aware 组 cancel=false，只证明该入口同样漏验，不声称已测试取消中断。
+- E-158-chat（同日，command，content_hash=n/a）：`audit_saved_named_choice_without_matching_chat_tool_is_rejected` 使用正式 SettingsService 初始化、保存 developer JSON、ChatService/Kernel 组装和 ModelClient 请求。`audit_missing_function_158` 被接受并进入一次正式 wire；同次 wire 确有非空默认工具集，但其中没有该名称。工具选择由已保存设置经 `model_runtime::select_run_model` 注入 defaults，而不是测试手工往最终 request 填值。SQLite 为内存数据库，未验证重启或磁盘恢复。
+- E-158-controls（同日，command，content_hash=n/a）：常规测试 `responses_choice_linkage_normal_controls_reach_transport` 对声明 read_file 的请求验证 auto/none/required/同名 function 四种选择；两种来源和两种入口共 **16 组正常发送一次**，wire 保留 choice 与 function schema。受控 transport 仅返回 completed fixture，因此这些结果不能证明真实 DeepSeek 接受或遵从 required/named choice。
+- 首轮命令 `cargo test -p deepagent-app-core --test kernel_v2_e2e responses_tool_choice:: --offline -- --include-ignored --nocapture`：**1 passed / 3 failed（预期），测试体约 0.21s**；其中一项失败为既有 H-158 custom/web_search 探针，两项为本轮新增最终关联校验探针。缺陷矩阵在末尾统一断言，12 组均完成后才失败。首轮结果返回后即写入本节，再做后续补严与验证，不以计划或源码阅读冒充动态证据。
+
+P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 developer JSON → 有效 tool_choice → model_runtime ResponseDefaults → 本轮可见 ToolSchema → ModelClient::apply_defaults（可能把 apply_patch 改成 custom）→ ResponseRequest::validate（只验 user）→ serializer → transport。F-158-linkage（design，validated，confidence=high，evidence_ids=[E-158-linkage,E-158-chat,E-158-controls]）：设置形状校验不能保证跨字段关联成立；工具权限、目录或 adapter 变换后的**最终 function 快照**才是 choice 可解析性的可信依据。
+
+成熟实现源码对照：Codex 的 `借鉴/codex/codex-rs/core/src/client.rs` 正式请求组装固定 `tool_choice=auto`，`codex-api/src/common.rs` 使用 String 而非任意对象；DeepSeek Harness 的 `packages/llm/llm-deepseek/README.zh.md` 明确不映射 tool_choice，其 GenerateOptions 不暴露该开关。因此两者通过收窄支持面避免此种 dangling named choice，**不是证明它们实现了通用 named-choice 引用校验**。本轮未运行参考工程。
+
+影响仍归入 H-158 的条件性请求/工具强制可靠性问题：普通省略/auto 配置不触发；用户拼错名称、工具不在可见目录，或 provider adapter 更改工具类型时，客户端仍发出无法对应最终 function 的强制选择。已确认的后果是错误配置越过本地可信边界；供应商可能拒绝请求或无法实现强制语义，造成对话不可用/选择无效，但具体状态码、计费、重试和真实模型行为均未实测。apply_patch 组只在公共模型边界构造，不宣称默认 AppCore 注册了该工具；缺失名称组的正式 ChatService 可达性已单独证明。
+
+治理方向（本地设计，未实施）：与 H-158 原有 typed choice 治理合并，在 defaults、工具可见性与 provider kind 投影**全部完成后**由唯一 provider validator 校验 named function 是否存在且唯一；请求级与默认级、普通与 cancel-aware 入口共用它。不要把不存在的强制工具悄悄改成 auto，不用追加 UI 特判或另造工具目录；设置入口可提前校验形状，但不能替代发送时对最终快照的校验。与 H-147 的名称字符/重复约束一起收敛，避免第三套零散 validator。
+
+后续补严：把正式 ChatService 组装提为本测试文件内的同一 helper，新增常规测试 `saved_chat_choice_normal_controls_reach_transport`，对 auto/none/required/同名 read_file 各跑一次已保存设置的正式聊天请求；四组均成功且恰有一次 wire，包含对应 choice 和 read_file function。它们仍只检验线级投影，不检验模拟模型是否服从工具选择。缺陷测试的最终断言同时要求本地报错与 transport=0，避免仅未发送但静默成功也被视为正确。复跑 `cargo test -p deepagent-app-core --test kernel_v2_e2e responses_tool_choice:: --offline -- --include-ignored --test-threads=1`：**2 passed / 3 failed（预期），约 0.84s**；新增两项缺陷与既有一项缺陷保持明确区分。此轮只确认并记录问题，ignored 探针失败不是修复完成，也不应混入默认绿色 CI。
+
+`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored**；最后一次 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**45 passed / 54 ignored**（补正式聊天正常对照前为 44 passed / 54 ignored）。`cargo fmt --all -- --check`、`git diff --check` 通过。实际执行 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，仍被未修改的 `models/src/client.rs:355`（clone_on_copy）及 `persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，未到新增测试的 lint 阶段，不能称为通过。未执行全 workspace、Desktop/Tauri UI、真实 DeepSeek、持久化重开、工具动态撤销或真正取消测试；未改生产权限、协议、数据迁移或模型配置，也未触及用户排除的 encrypted-content 问题。按 docs-generator 的 Evidence → Finding → Path 约定逐次补记；全系统审计仍未完成。
+
 ### H-159：MCP 非法 `inputSchema` 在注册与发布阶段未校验，作为 function `parameters` 进入每次模型请求
 
 **级别：高（P1，条件性工具目录/请求阻断）；触发条件：MCP、WASM 或程序化工具提供缺失、非对象或不可编译的参数 schema，并进入本轮可见工具快照。** 普通内置工具通常使用对象 schema，不代表默认会话必现；但可见集合中的一个异常工具会随普通文本请求一起发送，无需模型先选择调用它。
