@@ -6551,3 +6551,41 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 已执行上述精确 ignored 探针，结果 **0 passed / 1 failed（缺陷预期）**；失败发生在最终图读取之后，输出明确证明陈旧写入被接受且 `first` 节点消失。未修改生产写入逻辑，只新增 test-only 探针。
 - 已执行 `git diff --check`、`cargo fmt --all -- --check`，并复查本节引用的 Rust/TS/JS 路径；本节没有 API、权限、模型、工具或数据库迁移改动。全库 Clippy 仍受报告既有的两个未修改 lint 阻断，不能声称通过。
 - 未启动 Tauri 双窗口、真实前端 WebView、跨进程同时写入压力、进程崩溃/磁盘故障、自动合并、不同 workspace 并发或真实用户图；未运行 Penguin-Magic/DeepSeek Harness 测试，只做源码与其现有测试对照。没有重复 H-202、H-223、H-87，也没有处理用户排除的 `encrypted-content` 报错。
+
+### H-250：画布 artifact 读取不校验持久化摘要，旧 URI 会静默投影替换后的字节
+
+**级别：高（P1，画布媒体内容完整性与模型输入身份）；触发条件：** 一个已写入画布图或节点事件的 `artifact://<id>` 所指向文件，在后续模型请求前被宿主、同步程序、备份恢复或同机其他进程替换，而 SQLite 中的 artifact 记录仍保留原 `digest`。本项是 CanvasArtifactService 的读取/恢复边界，不重复 H-70：H-70 针对 Chat 历史附件的 `AttachmentService` 引用；本项针对画布 artifact index、`CanvasArtifactService::resolve_for_provider` 和画布 provider 输入。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；使用生产 `CanvasArtifactService`、临时 artifact root 和内存 SQLite。原始 PNG、替换 PNG、workspace ID 和 digest 均为虚构数据；没有真实用户文件、模型凭据、Tauri 窗口或公网请求。
+- E-250-first（command，content_hash=n/a）：在 `crates/deepagent-app-core/src/canvas_artifact_service.rs::tests::audit_replaced_canvas_artifact_is_rejected_before_provider_projection` 增加 ignored 故障注入，执行：
+  `cargo test -p deepagent-app-core --lib canvas_artifact_service::tests::audit_replaced_canvas_artifact_is_rejected_before_provider_projection --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（缺陷预期）**。生产输出：`original_bytes=7, replacement_bytes=25, projected_bytes=25, stored_digest=Some("sha256:cdf3cefe7ec6253d1cb4828ab654da6beb8a4727daac0c49dbf26bedf5887f79")`；最终 assertion 证明 provider projection 的 data URL 正是替换后的 25 字节，而不是原始 7 字节，也没有返回 digest mismatch 错误。
+- E-250-callflow：`CanvasArtifactStream::finish()` 在发布时计算 `sha256:<digest>` 并写入 `ArtifactRecord.digest`；但 `CanvasArtifactService::read_bytes()` 只按记录中的绝对 `path` 调用 `std::fs::read`，`resolve_for_provider()` 随后直接把这些字节 base64 编码成 data URL。读取路径没有比较文件长度、重新计算摘要或确认内容仍属于原 artifact。`display_target()` 也会把同一未经验证的记录交给桌面显示路径。
+- E-250-control：完整 artifact import、数据库记录、文件替换和正式 provider projection 均由生产方法执行；fixture 没有直接调用私有 serializer，也没有手工改写 `ArtifactRecord.digest`。失败只来自读取时缺少完整性门禁。
+
+#### 初始 Finding 与 Path
+
+- F-250（category=integrity，status=validated，confidence=high，evidence_ids=[E-250-first]）：摘要字段目前只是导入时的元数据，不是读取资格。任何能在宿主 artifact root 内替换文件内容的恢复、同步、备份还原或同机进程，都能让原 `artifact://id` 在不改变 URI、数据库行或工作流图的情况下指向另一份内容。
+- P-250（callflow）：原始字节导入 → `finish()` 写入 `path` + `digest` → 图/事件仅持久化 `artifact://id` → 外部替换 managed file → `read_bytes(id)` 无校验读取新字节 → `resolve_for_provider(uri)` 生成新 data URL → 下一次 image/text/多模态 provider 请求收到替换内容。最终 URI、记录 ID 和数据库 JSON 都保持合法，只有内容身份发生静默漂移。
+- 已证后果：同一画布节点在重启、重试或续跑时可能把不同图片/音频/视频交给模型或供应商；模型输出与用户原先看到的资产不再对应，缓存/成本归属和审核回放也无法按 artifact digest 解释。探针没有发送真实请求，也没有证明非授权进程已能修改用户目录；它只证明生产读取边界会接受已替换文件。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/attachment/attachment-local/src/file-store.ts` 以 `sha256:<digest>` 作为不可变附件身份和对象路径；`readStoredFile`/`readImageFile` 增量读取并同时核对字节数与重新计算的 SHA-256，内容不匹配时返回 `ATTACHMENT_READ_FAILED`，不会继续构造 provider image request。其测试 `attachment-local/tests/file-store.spec.ts` 明确覆盖“stored object bytes no longer match digest”。这与本系统画布 artifact 的差异是：本系统生成了 digest，但解析 `artifact://` 时仍把数据库 path 当作可信正文。
+- **Codex**：本轮没有找到与本系统 CanvasArtifactService 完全同构的 artifact URI API，因此不宣称 Codex 已动态解决该具体画布路径；其 `ResponseItem`/attachment 设计把可回放引用与请求物化分开，适合作为“请求前仍需验证引用内容”的边界对照，而不是本项的同构实现证据。
+- **DeepSeek 官方 Responses**：官方文档允许 Responses 图片用 `image_url` 或 `file_id`，并要求 `input_image` 的实际内容满足格式和大小限制；官方 API 是无状态的，多轮需要宿主每次回传完整 input。因此 provider 不会替本地 `artifact://id` 记住或校验原始 bytes；完整性必须在本系统 artifact → provider adapter 边界完成。DeepSeek KV Cache 也只按后续请求前缀尽力匹配，不能把命中当成内容身份验证。
+
+#### 影响评估与收敛方向（本地设计，未实施）
+
+- 影响评为 P1：普通用户单进程健康路径不触发；需要 artifact 文件在导入后被替换或恢复不一致。但一旦发生，当前系统不会报错，画布 UI、工作流事件和 provider 请求都继续使用旧 URI 表示新内容，属于静默完整性漂移而非可见读取失败。
+- 在现有 `CanvasArtifactService`/`ArtifactStore` 边界建立唯一的 `read_verified`：按流读取并重新计算 SHA-256，同时核对 `byte_size`、记录的 digest 和允许的 artifact kind；任何不匹配都返回结构化 `artifact_integrity_mismatch`，不得生成 data URL、display target 或模型请求。读取应有界，不能为验证重新制造无界内存峰值。
+- 不要只在 UI 显示 `digest`，也不要把 path 改成 digest 文件名后就视为完成；数据库中的绝对 path 仍可能被替换。可考虑让 digest 成为对象身份、path 只作受控索引，并在恢复/同步后先验证再重新发布记录。验证失败时保留原 URI、来源和诊断，不能静默删除图节点或把错误当作“无附件”。
+- 回归需覆盖：原始文件不变、合法替换、截断、追加、空文件、路径缺失、错误 kind、数据库重开、工作流 image/audio/video 输入、display 与 provider 两条读取路径、并发读取/替换以及取消；断言 digest mismatch 时 provider transport 调用数为零、节点不发布 Completed、run 只有唯一失败/取消终态，并能从事件回放定位原 artifact ID 与期望摘要。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行精确生产 artifact 探针，结果 **0 passed / 1 failed（缺陷预期）**；失败发生在正式 `resolve_for_provider()` 返回替换 bytes 之后，不是测试夹具错误。没有修改生产完整性逻辑，只新增 test-only ignored 探针。
+- 已执行 `git diff --check`；`cargo fmt --all -- --check` 将在本轮提交前复跑。未运行真实 Tauri、真实用户目录、备份软件、跨进程竞态、真实 DeepSeek 请求或供应商账单，也没有访问公网、内网或 metadata 服务。
+- 本项不重复 H-70（Chat 历史附件 digest）、H-165（供应商 URL 第二跳）、H-167/H-248（provider 二进制容量）或用户排除的 `encrypted-content` 报错。

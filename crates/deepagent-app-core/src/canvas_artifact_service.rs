@@ -772,6 +772,50 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-250: canvas artifact reads must verify the stored digest before provider projection"]
+    fn audit_replaced_canvas_artifact_is_rejected_before_provider_projection() {
+        let (_root, service) = service("digest-integrity");
+        let imported = service
+            .import(&CanvasArtifactImport {
+                kind: "image".to_string(),
+                data_url: Some(png_data_url()),
+                local_path: None,
+                file_name: None,
+                media_type: None,
+                workspace_id: Some("audit-workspace".into()),
+            })
+            .expect("import artifact");
+        let original = service
+            .read_bytes(&imported.id)
+            .expect("read original")
+            .expect("original bytes");
+        let replacement = b"\x89PNG\r\n\x1a\naudit-replacement";
+        std::fs::write(&imported.path, replacement).expect("replace managed artifact bytes");
+
+        let projected = service
+            .resolve_for_provider(&imported.uri)
+            .expect("digest mismatch should be a structured artifact error");
+        let projected = projected.expect("artifact reference should resolve");
+        let (_, projected_payload) = projected
+            .split_once(',')
+            .expect("provider projection must be a data URL");
+        let projected_bytes = STANDARD
+            .decode(projected_payload)
+            .expect("decode projected data");
+        eprintln!(
+            "canvas artifact digest audit: original_bytes={}, replacement_bytes={}, projected_bytes={}, stored_digest={:?}",
+            original.len(),
+            replacement.len(),
+            projected_bytes.len(),
+            service.record(&imported.id).expect("record").and_then(|record| record.digest),
+        );
+        assert_ne!(
+            projected_bytes, replacement,
+            "a replaced canvas artifact must not be projected to the provider under the old URI"
+        );
+    }
+
+    #[test]
     fn display_target_resolves_artifacts_and_passes_other_schemes() {
         let (_root, service) = service("display");
         let imported = service
