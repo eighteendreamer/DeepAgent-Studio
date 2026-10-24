@@ -6626,3 +6626,40 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 已执行精确生产探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过，失败由目标隔离断言触发。未修改生产授权逻辑，只新增 test-only ignored 探针。
 - 未运行 workspace 全量、Desktop build/UI、真实多窗口、插件调用方、远程 daemon、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-244、H-250 及此前 H-245～H-249 不重复计数。
+
+### H-252：Canvas artifact 的读取、provider 投影、显示和删除按全局 ID 操作，绕过 workspace 隔离
+
+**级别：高（P1，跨项目媒体泄露与破坏）；触发条件：** 同一数据库和 managed artifact root 中存在多个 workspace 的 canvas artifact，调用方拿到另一个 workspace 的 `artifact://id`（例如来自 H-251 的跨 workspace workflow graph、旧事件或共享插件），随后进入 `read_bytes`、`resolve_for_provider`、`display_target` 或 `delete`。这些方法只接收全局 artifact ID/URI，不接收 caller workspace，也没有比较 `ArtifactRecord.workspace_id`。本项不重复 H-250：H-250 是同一 artifact 文件被替换后缺少 digest 校验；H-252 是 artifact 记录本身没有访问 scope。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；使用正式 `CanvasArtifactService`、内存 SQLite、临时 managed root 与两个虚构 workspace。A/B 字节分别是 `workspace-a-image` 与 `workspace-b-image`，没有真实媒体、用户文件、模型凭据、Tauri 窗口或网络。
+- E-252-first（command，content_hash=n/a）：在 `crates/deepagent-app-core/src/canvas_artifact_service.rs::tests::audit_canvas_artifact_operations_require_workspace_scope` 增加 ignored 故障探针，执行：
+  `cargo test -p deepagent-app-core --lib canvas_artifact_service::tests::audit_canvas_artifact_operations_require_workspace_scope --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（缺陷预期）**。生产输出：`read_exposes_b=true, provider_exposes_b=true, display_exposes_b=true, read_bytes=workspace-b-image, provider_data_url=true, display_path=<managed-root>/art_....png, deleted_other_workspace=true, retained_a=true`。最终隔离断言失败，证明四条正式路径都接受了 B 的全局 ID。
+- E-252-callflow：`CanvasArtifactImport.workspace_id` 只在 `CanvasArtifactStream::finish` 写入 `ArtifactRecord`；`CanvasArtifactService::record/read_bytes/resolve_for_provider/display_target/delete` 均按 id/URI 查全局 `ArtifactStore`。Tauri `canvas_artifact_url` 与 `canvas_artifact_data_url` 只传 reference，`canvas_artifact_import` 也没有为后续读取建立 caller scope；`list(workspace_id, kind)` 虽然有 workspace 过滤，但不能约束其他操作。
+- E-252-control：探针通过生产 import 写入 A/B 记录和文件，再调用生产读取、provider、显示与删除方法；没有手工改 `ArtifactRecord.workspace_id`、SQLite 行或文件路径。删除后 A 记录仍存在，说明不是整库清空误报。
+
+#### 初始 Finding 与 Path
+
+- F-252（category=authorization/isolation，status=validated，confidence=high，evidence_ids=[E-252-first]）：`workspace_id` 是索引字段，不是 artifact 访问资格。只要 URI 被另一条工作流、事件、日志或插件获知，任意同宿主调用方就能把另一个 workspace 的媒体读入内存、投影为 DeepSeek 可消费的 data URL、暴露 managed path，或删除记录与文件。
+- P-252（callflow）：B import → `ArtifactRecord {workspace_id=B, path, digest}` → A-scope graph/event 获得 `artifact://B` → `read_bytes(B)`/`resolve_for_provider(B)` 无 caller scope → provider 输入包含 B bytes；`display_target(B)` 返回 B path；`delete(B)` 移除 B 文件与索引。当前随机 ID 降低盲猜概率，但 H-251 的工作流列表/读取缺陷会直接提供 URI，不能把随机性当作授权。
+- 已证后果：跨项目模型请求可能收到另一 workspace 的图片/音频/视频，桌面 webview 可得到不属于当前项目的文件路径，误操作或插件可删除别的项目媒体。完整性审计、缓存归属和回放会把跨 scope bytes 误记为当前项目输入。本轮没有证明远程网络攻击者可直接调用 Tauri command，也没有将本地 scope 缺陷写成 SSRF/RCE。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **Codex**：`借鉴/codex/codex-rs/state/src/runtime/threads.rs` 的 `ThreadFilterOptions` 显式携带 `project_id`、`cwd_filters`、`archived_only`，并在 `push_thread_filters_with_preview` 的 SQL `WHERE` 中绑定；列表/搜索边界不会先返回全局对象再依赖 UI 过滤。Codex 没有本系统同构 Canvas artifact service，因此这里只借鉴“持久对象查询必须带 owner scope”，不宣称其已覆盖本媒体路径。
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/session-query/session-query-sqlite/src/index.ts` 把 `buildSessionWhere(request.sessionFilters)` 放进 `filtered` CTE，再进行 ranking/limit；可用性、cwd 等身份条件在持久层执行。其 attachment-local store（H-250 已对照）还把摘要身份与读取校验绑定，但本项更关键的是宿主在 materialize 前必须知道 artifact 所属 namespace。成熟 harness 的共同边界是 scope-aware resolver，而不是把全局 ID 当作授权。
+- **DeepSeek 官方 Responses**：[Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api)定义的是无状态 provider；`input_image` 的 `image_url`/`file_id` 不携带本地 workspace ACL，服务端也不会知道 `artifact://id` 属于哪个项目。宿主必须在 artifact → provider adapter 前完成 workspace 资格检查；KV cache 只缓存已发送前缀，不能恢复或隔离本地媒体所有权。
+
+#### 影响评估与收敛方向（本地设计，未实施）
+
+- 影响评为 P1：单项目通常不可见；多项目数据库、H-251 graph 泄露、旧事件重放、插件/脚本持有 URI 时会变成跨项目读写。provider 投影会把泄露扩大到外部供应商和费用账本，删除会造成不可逆媒体丢失。风险边界是本地宿主 workspace 隔离，不是远程服务端漏洞。
+- 在现有 `CanvasArtifactService`/`ArtifactStore` 边界建立唯一 scope-aware API：`read_verified(workspace_id, id)`、`resolve_for_provider(workspace_id, reference)`、`display_target(workspace_id, reference)`、`delete(workspace_id, id)`；读取记录后必须比较规范化 owner，缺失 owner 的旧记录走显式迁移策略，不默认全局可见。跨 scope 访问统一返回 not-found 或结构化 `artifact_scope_denied`，避免 ID 枚举。
+- `canvas_artifact_url`、`canvas_artifact_data_url`、视频 trim/媒体节点执行、导入后的 graph resolver 和所有 Tauri/CLI/SDK DTO 必须传同一 workspace identity；不能只给 `list` 加过滤而留下 provider/display/delete 旁路。删除应先写可审计 tombstone/引用检查，失败不删除文件；跨 workspace graph 的 run admission 应在解析 URI 时阻断。
+- 回归需覆盖：A/B/默认 workspace 的 import/list/read/provider/display/delete；未知 id 与跨 scope 统一错误；H-251 graph→provider 链路；数据库重开、旧记录 workspace 缺失、并发删除/读取、视频 trim、音频转写/合成、display webview、artifact URL command；断言跨 scope 时 provider transport 调用数为零、目标 artifact bytes 不变且错误可回放。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行精确生产 artifact 探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过。没有修改生产授权逻辑，只新增 test-only ignored 探针。
+- 未运行 workspace 全量、Desktop build/UI、真实多窗口、插件/CLI 调用方、远程 daemon、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-250、H-251 及此前 H-245～H-249 不重复计数。

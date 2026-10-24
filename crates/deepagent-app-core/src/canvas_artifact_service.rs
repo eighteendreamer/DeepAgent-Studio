@@ -816,6 +816,72 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-252: canvas artifact reads and deletes must enforce workspace scope"]
+    fn audit_canvas_artifact_operations_require_workspace_scope() {
+        let (_root, service) = service("workspace-scope");
+        let workspace_a = service
+            .import(&CanvasArtifactImport {
+                kind: "image".to_string(),
+                data_url: Some(format!(
+                    "data:image/png;base64,{}",
+                    STANDARD.encode(b"workspace-a-image")
+                )),
+                local_path: None,
+                file_name: None,
+                media_type: None,
+                workspace_id: Some("workspace-a".into()),
+            })
+            .expect("import workspace A artifact");
+        let workspace_b = service
+            .import(&CanvasArtifactImport {
+                kind: "image".to_string(),
+                data_url: Some(format!(
+                    "data:image/png;base64,{}",
+                    STANDARD.encode(b"workspace-b-image")
+                )),
+                local_path: None,
+                file_name: None,
+                media_type: None,
+                workspace_id: Some("workspace-b".into()),
+            })
+            .expect("import workspace B artifact");
+
+        let b_bytes = service
+            .read_bytes(&workspace_b.id)
+            .expect("read workspace B artifact")
+            .expect("workspace B bytes");
+        let b_provider = service
+            .resolve_for_provider(&workspace_b.uri)
+            .expect("resolve workspace B artifact")
+            .expect("provider projection");
+        let b_display = service
+            .display_target(&workspace_b.uri)
+            .expect("display workspace B artifact")
+            .expect("display target");
+        let deleted_b = service
+            .delete(&workspace_b.id)
+            .expect("delete workspace B artifact");
+        let read_exposes_b = b_bytes == b"workspace-b-image";
+        let provider_exposes_b = !b_provider.is_empty();
+        let display_exposes_b = !b_display.id.is_empty();
+        eprintln!(
+            "canvas artifact scope audit: read_exposes_b={}, provider_exposes_b={}, display_exposes_b={}, read_bytes={}, provider_data_url={}, display_path={}, deleted_other_workspace={}, retained_a={}",
+            read_exposes_b,
+            provider_exposes_b,
+            display_exposes_b,
+            String::from_utf8_lossy(&b_bytes),
+            b_provider.starts_with("data:image/png;base64,"),
+            b_display.path,
+            deleted_b,
+            service.record(&workspace_a.id).expect("record A").is_some(),
+        );
+        assert!(
+            !read_exposes_b && !provider_exposes_b && !display_exposes_b && !deleted_b,
+            "workspace-scoped artifact APIs exposed or deleted another workspace's artifact"
+        );
+    }
+
+    #[test]
     fn display_target_resolves_artifacts_and_passes_other_schemes() {
         let (_root, service) = service("display");
         let imported = service
