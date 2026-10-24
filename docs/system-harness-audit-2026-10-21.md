@@ -59,6 +59,7 @@
 | 工作流必填输入 admission | `start.inputVariables` 中完整声明 `required=true`，调用者不提供该输入时，正式运行把它填成 `null` 并记录 `succeeded` | 已确认 H-184；输入校验缺失，必填约束只存在于前端 schema |
 | 工作流输入类型 admission | `start.inputVariables` 声明 `type=number`，调用者却提交字符串时，正式运行原样接受并记录 `succeeded` | 已确认 H-185；类型约束只存在于 schema，未贯通运行边界 |
 | 工作流未声明输入 admission | start 只声明 `known` 时，`WorkflowRequest.inputs.unexpected` 仍被复制到 start 输出并随成功运行继续传播 | 已确认 H-186；输入 allowlist 缺失，未声明字段不是 rejected/ignored，而是进入执行上下文 |
+| 工作流声明默认值 | start 声明可选输入 `default="FALLBACK"` 且调用方省略该字段时，后端写入 `null` 并记录 `succeeded`，未应用前端公开的默认值 | 已确认 H-187；默认值只存在 UI schema，未进入后端 admission/执行计划 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3615,6 +3616,34 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-186 只新增正式审计探针和文档，未修改生产工作流输入边界。
 
+### H-187：工作流声明的输入默认值被静默丢弃，缺失字段变成 `null` 仍成功
+
+**级别：中高（P1，输入语义与可复现性）；触发条件：`start.inputVariables` 声明某个非必填输入并设置 `default`，调用方不在 `WorkflowRequest.inputs` 中提供该字段。** 后端不采用声明的默认值，而是把输入写成 `null`，随后继续执行并记录成功终态。
+
+#### 生产调用链与正式复现
+
+- 桌面 `InputVariableDefinition` 明确公开 `default`，并允许输入变量只声明 `type` 而不设置 `required`；`workflowExecutor.collectInputs()` 也按 `v.default ?? ""` 构造桌面入口的初始请求。这个字段因此是公开工作流契约，不是仅供渲染的注释。
+- Rust `WorkflowDefinition::compile()` 只检查声明名和 `type`，没有校验或编译默认值；`WorkflowAgent::execute_start()` 对每个声明变量执行 `self.inputs.get(name).cloned().unwrap_or(Value::Null)`，完全忽略同一声明中的 `default`。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_declared_default_is_applied_when_input_is_missing`。它通过正式 `ChatService::run_workflow()` 执行 `start → end`，声明 `greeting` 为 `string`、`default="FALLBACK"`，传入空 `inputs`，捕获 start 输出并读取 `RunStore`。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_declared_default_is_applied_when_input_is_missing --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true greeting=Some(Null) run_terminal=Some("succeeded")`；断言默认值必须进入输出，测试以 **0 passed / 1 failed（预期）** 结束。没有模型、工具、网络或文件副作用。
+
+#### DeepSeek 官方契约边界与成熟 Agent 对照
+
+- DeepSeek 官方 [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)只把 `input` 定义为字符串或输入 item 列表，并说明 `input` 与 `instructions` 至少传一个；它没有本地 workflow 变量的 `default`、`required` 或字段类型语义。因此默认值必须在宿主 admission/执行计划中解析，不能指望 DeepSeek provider 补齐。
+- **DeepSeek Harness** 的 `vendor/schemastery/src/index.ts` 在 `Schema.resolve()` 中区分 `required` 和 `meta.default`：缺失值遇到非空 default 会先用 clone 后的默认值，再进入类型/范围 resolver；只有没有默认且非必填时才保留空值。这是本系统应采用的 typed input plan 语义。
+- **Codex** 将配置和工具参数的 schema/默认值保留在宿主侧，并在请求前解析有效配置；公开 Responses 工具 schema 将参数边界作为声明契约，不把缺失字段任意复制到上下文。可迁移原则是“缺省值在 admission 解析一次，之后请求、事件和恢复都使用同一个规范化对象”。
+- **Claude Code** 的成熟工具/插件链以 schema 校验结果作为执行前边界，验证失败需要返回结构化错误而不是继续成功；本系统当前把声明默认值静默替换成 `null`，比显式失败更难发现，也会让下游模型/工具看到错误但类型合法的输入。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，依赖默认值的模板、条件、HTTP body、工具参数或 DeepSeek prompt 会收到 `null`，而运行记录却是 `succeeded`。这会造成错误分支选择、空请求参数、模型输出漂移和重放不可复现；若默认值用于权限/路由/供应商选择，还可能把调用导向错误能力。
+- H-184 只证明缺失 required 没有被拒绝，H-187 进一步证明即使 schema 明确给出合法 fallback，执行器仍丢失语义；H-185 的类型检查也无法弥补这种“值缺失但不失败”的静默错误。
+- 根因修复应在 workflow admission 阶段编译 typed `InputPlan`：逐变量按 `provided → default → required error → typed null` 的明确优先级规范化，并对 default 本身执行声明类型、options、长度/数值范围校验。`execute_start()` 只消费该计划，禁止直接读取原始 `inputs` 或自行产生 `null`。
+- 回归需覆盖显式值优先于 default、显式 `null` 是否允许、default 类型不匹配、default 不在 options、字符串/数值边界、恢复/重放以及 CLI/SDK/Tauri 三入口，并在事件中保留规范化输入来源（provided/default）以便审计。本轮只新增审计，不修改生产输入处理逻辑。
+
+本轮 H-187 只新增正式审计探针和报告，未修改生产工作流输入边界。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3685,6 +3714,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-184 必填工作流输入显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_missing_required_input_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对 `required=true` 缺失字段发布 `customer=null` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-185 输入类型不匹配显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_input_type_mismatch_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对声明 number 的 `count="not-a-number"` 发布字符串值且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-186 未声明输入显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_undeclared_input_is_rejected_or_ignored --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 将 `unexpected="UNDECLARED_CANARY"` 复制进 start 输出且 run=`succeeded`；无模型、工具、网络或文件副作用 |
+| H-187 工作流默认值显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_declared_default_is_applied_when_input_is_missing --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对声明 `default="FALLBACK"` 的缺失输入发布 `greeting=null` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |

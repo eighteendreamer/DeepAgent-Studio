@@ -907,6 +907,70 @@ async fn audit_workflow_undeclared_input_is_rejected_or_ignored() {
 }
 
 #[tokio::test]
+#[ignore = "audit: declared workflow defaults must be applied before execution"]
+async fn audit_workflow_declared_default_is_applied_when_input_is_missing() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start","config":{
+                    "inputVariables":[{
+                        "name":"greeting",
+                        "variable":"greeting",
+                        "type":"string",
+                        "default":"FALLBACK"
+                    }]
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges":[{"id":"e1","source":"start","target":"end"}]
+        },
+        "inputs":{}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-default-input".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-default-input")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let start = events
+        .iter()
+        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
+        .unwrap();
+    let greeting = start
+        .outputs
+        .as_ref()
+        .and_then(|outputs| outputs.get("greeting"))
+        .cloned();
+    eprintln!(
+        "api_ok={} greeting={greeting:?} run_terminal={:?}",
+        result.is_ok(),
+        run.terminal_kind
+    );
+    assert_eq!(
+        greeting,
+        Some(serde_json::json!("FALLBACK")),
+        "a missing optional input with a declared default must use that default"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
