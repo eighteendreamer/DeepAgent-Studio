@@ -33,6 +33,7 @@
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
 | 模型目录刷新与用户选型 | 同一 SettingsService 顺序选择仍在目录中的 Pro，刷新完全相同目录后，下一正式 Responses wire 从 Pro 改成 Flash，新数据库连接也读到 Flash；默认 Flash 对照不变 | 已确认 H-223；正式 SettingsService/ChatService/Kernel/序列化与文件 SQLite，无并发、无公网、无工具执行；不是 H-87 的多宿主旧快照覆盖 |
+| 会话搜索可见性与候选 limit | 较新归档/回收/已关闭项目记录占满候选后，仍有效的活动历史搜不到；回收记录还使模型工具把成功空 results 发进下一 Responses 请求 | 已确认 H-228；桌面同一 AppService 18 组，正式 ChatService/Kernel/wire 9 组及 9 组正常对照；三查询分支，无真实历史/公网/错误决策验证 |
 | Responses 消息角色 provider 校验 | 公开 `ResponseInputItem::Message` 与 `InputMessage` 使用任意字符串 role；`moderator` 经正式 ModelClient 进入 wire，官方四种角色的正向对照通过 | 已确认 H-203；离线 recording transport；普通 AppCore 的 `Role` enum 不产生该非法值，未请求真实 provider |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
 | 画布工作流模型身份 | 新建 LLM/分类/提取/Agent V2 节点动态生成裸 `deepseek-chat` 默认值；正式 Canvas bridge 将该非空但不可解码的值解释为自动路由，受控 HTTP wire 实际发送 `other-text-model` 并成功返回 | 已确认 H-160 的前端默认与 gateway 缺口；H-162 证明当前四类专业节点会在更早阶段失败，故尚未证明它们已通过完整工作流把数据发往错误供应商；本机 HTTP provider，无真实 Tauri 或公网请求 |
@@ -5517,3 +5518,49 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 当前 `ResponseAccumulator` 的 function/custom 参数 delta/done 只按 `item_id/call_id` 查找 builder，DeepSeek Harness 的 `tool-argument-streaming.spec.ts` fixture 则只给 `output_index`；受控事件可以证明本系统会漏掉这类 fixture 的实时参数增量。
 - 但 DeepSeek 官方 Responses 指南明确把完整格式指向 OpenAI Responses 定义；该定义的 `response.function_call_arguments.delta/done` 同时包含 `item_id` 与 `output_index`，官方示例也提供二者。参考仓库的最小 fixture 不能冒充真实 DeepSeek wire，更不能证明官方服务会省略 `item_id`。
 - 即使忽略该不完整 fixture 的 delta/done，合法的后续 `response.output_item.done.item.arguments` 仍会恢复最终参数并生成正确工具调用；已确认的差异仅是丢增量与完成事件延迟，不是执行 `{}` 或错误参数。因此本轮不分配 H 编号、不提升为 DeepSeek 协议缺陷。只有真实供应商样本或正式兼容目标明确允许缺 `item_id` 后，才应以低级别兼容性项重新评估。
+
+### H-228：会话搜索在可见性过滤前截断候选，隐藏记录可挤掉全部有效历史
+
+**级别：中（P2，搜索正确性与历史召回）；状态：应用服务及正式模型工具路径已复现，未修复。** 有效匹配仍在活动列表和权威事件文件中，但排序更靠前的归档、已删除或已关闭项目记录占满搜索候选 limit 后，正式搜索返回成功空数组，而不是继续取有效结果。无需数据库损坏、权限绕过或模型异常。
+
+#### 即时证据（2026-10-24，首轮复现后登记）
+
+- 范围：仅临时数据库及虚构历史，正式 `EventStore` 创建/追加事件、`ArchiveService` 归档/回收、`ProjectService` 关闭项目、`AppService::search_sessions` 搜索；不改真实历史、不请求真实供应商。新增探针 `crates/deepagent-app-core/tests/kernel_v2_e2e/session_search_visibility.rs`，入口为 `kernel_v2_e2e.rs`。
+- E-228-app：`audit_app_search_fills_limit_after_visibility_filter` 为三种隐藏状态分别创建一条较旧有效历史，以及恰好 limit 条较新、内容相同的隐藏候选；使用 `检`（LIKE）、`缓存`（CJK bigram）、`searchneedle`（FTS）查询，limit 分别为 1 和桌面实际使用的 50。三状态 × 两 limit × 三查询，共 **18 组均返回 0 条**，而活动列表仍恰好包含有效历史，权威事件仍可读。limit=1 的九组小样本，扩大至 2 均能返回唯一有效历史，证明不是历史本身未索引或不匹配。源码探针输出是命令证据，content_hash=n/a。
+- 复现命令：`cargo test -p deepagent-app-core --test kernel_v2_e2e session_search_visibility::audit_app_search_fills_limit_after_visibility_filter --offline -- --ignored --exact --nocapture`。首次实际运行使用模块过滤加 `--include-ignored`，本项在最后“每组应返回 1 条”的断言失败；18 组结果已在断言前全部打印。
+- 首轮同模块的模型工具正常对照也失败：fixture 把历史放在 NoProject，而未挂载 ProjectService 的新 ChatService 会把 workspace 路径当作 project。该失败不作为产品证据；按生产边界挂载空 ProjectService 后正常对照恢复，才登记后续模型输入结果，未改搜索生产逻辑。
+- E-228-tool：第二次同模块命令实测 **1 passed / 2 failed（预期）**，约 3.87s。临时文件 SQLite、正式 SettingsService/ChatService/Kernel、离线 Responses transport；模型首次请求发出正式 `session_search`，下一次 request 捕获同 call_id 的 `function_call_output`。三种查询、limit=1/20 共六组删除场景均为工具 `ok=true`、下一请求不含仍有效历史、运行唯一 `succeeded`；未删除的三种查询 limit=1 正常对照均能把匹配历史送入下一请求。由此证明不是仅桌面结果 DTO 丢失，底层回收候选也会影响 Agent 实际上下文。content_hash=n/a。随后扩展默认 limit=10（省略该参数）及结构化 results 断言，最终矩阵和验证见本项末尾追加记录。
+
+#### 生产调用路径与根因
+
+- P-228-app（callflow，关联 E-228-app / H-228）：`SearchModal.tsx` 对输入调用 `searchSessions(query, undefined, 50)` → `api.ts` → Tauri `search_sessions` → `AppService::search_sessions` → `EventStore::search`。本轮直接运行后端同一应用服务，并未点击真实 WebView。
+- `EventStore::search` 的三条 SQL 都先按 project 范围过滤并执行 `LIMIT`，但不排除已回收的会话文件；回收只搬走权威文件，保留 SQLite 元数据/索引以支持恢复。候选选中后才 `read_from`，文件已搬走则空数组，`continue` 丢弃该项，不补下一候选。
+- `AppService::search_sessions` 的注释承诺保留 session-list 的 archive/project visibility；实际却在调用有限额的 `store.search` 后才 `.filter(!archived)` 和 `.filter(registered_projects)`。归档和已关闭项目的项同样吃掉候选名额，随后被丢弃。`repair_search_indexes` 不清理有意保留的回收记录，因此重复搜索也不会自行修复。
+- P-228-tool（callflow，关联 E-228-tool / H-228）：`run_assembler` 解析固定项目身份 → `tool_runtime` 注册 `SessionSearchTool` → 统一工具执行与权限/schema 校验 → `EventStore::search` → 成功空结果 → 下一 Responses wire 的配对 `function_call_output`。工具没有桌面 archive/registered-project 过滤，本轮只将**已删除文件候选**的复现归入该路径，不能声称仅归档的历史在模型工具中也必须隐藏。
+- F-228（design，validated，confidence=high，evidence_ids=[E-228-app, E-228-tool]）：问题是 eligibility 与分页/limit 的顺序，不是“隐藏项被返回”，也不是 H-215 的 Harness 归档接纳缺陷。三种隐藏状态属于同一召回不变量，不拆成三个编号。
+
+#### 成熟实现对照与治理方向（未实施）
+
+- **Codex** `借鉴/codex/codex-rs/state/src/runtime/threads.rs` 的 `push_list_threads_query` 先调用 `push_thread_filters_with_preview`，在 SQL `WHERE` 中加入 `threads.archived=0/1`、cwd/section/search 等过滤，再 `push_thread_order_and_limit`；`list_threads_filters_sections_before_recency_pagination_and_uses_index` 明确验证过滤先于分页。这里只对照过滤与分页的执行顺序；Codex 的 thread 元数据搜索不是本系统正文 FTS，未运行参考工程，不能宣称同构模型会话搜索已实测。
+- **DeepSeek Harness** `packages/session-query/session-query-sqlite/src/index.ts::_querySessions` 将 `buildSessionWhere` / `buildEventWhere` 的谓词放进 `filtered` CTE，再排名、按会话取代表项，最后 `LIMIT/OFFSET`；`query.ts::buildSessionWhere` 可将 cwd、availability 等显式筛选编译为 SQL。`searchSessions` 使用 limit+1 返回 nextCursor，并把查询 fingerprint/generation 编入 cursor。它没有在该处提供本系统同构的 archive marker，availability 的 live/persisted 也不等于“桌面未归档”；借鉴的是**既定过滤先于截断，以及可续读的分页**，不是臆造它已经解决本系统所有隐藏状态。仅源码核对，未运行参考测试。
+- 影响：用户可能把成功空结果误认为没有历史，Agent 可能因此遗漏既有决策、重复询问或重复调查。实际后果取决于下游如何使用检索，本项没有证明模型已作出错误决策、数据丢失或越权泄漏。提高 limit 只能缓解小样本；足够多隐藏候选仍会占满上限，且当前接口没有补页 cursor。
+- 本地设计方向：由现有 session/visibility owner 提供统一 eligible 投影，使归档、回收与项目可见性在排序/limit 前参与查询；若暂时无法合并为 SQL，必须采用有预算的 cursor 补取并明确部分结果状态，而非固定倍数 overfetch。保留恢复所需索引本身合理，不应为搜索正确性而删除权威历史或绕开 ArchiveService 新建状态库。
+- 需要补回归：三查询路径、隐藏项排序前后交错、limit 默认值及上限、全部隐藏、恢复/重新打开项目、同会话多条命中、分页及并发可见性变化。模型工具的 archive/project 语义需单独明确定义，不能把桌面隐藏策略直接当作安全授权规则。
+
+#### 扩展矩阵与本轮验证
+
+2026-10-24 再次执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e session_search_visibility:: --offline -- --include-ignored --nocapture`，最终 **1 passed / 2 failed（预期），约 4.62s**。两个 ignored 测试断言的是应有的搜索行为，显式运行时会失败；默认常规回归跳过它们，不代表缺陷已修复。
+
+| 正式入口与样本 | 查询分支 / limit | 实际观察 | 对照与证据边界 |
+|---|---|---|---|
+| AppService，归档但未回收 | LIKE / CJK / FTS，各 1、50 | 6 组成功空数组，有效历史仍在活动列表 | 小样本 limit 改 2 即找到有效项；未跑真实 WebView |
+| AppService，正式回收 | 同上 | 6 组成功空数组，有效事件仍可读取 | 回收文件确已不在活动位置，不是归档写入失败 |
+| AppService，正式关闭项目 | 同上 | 6 组成功空数组，无项目有效历史仍可见 | 使用 ProjectService 正式增删注册项，没有伪造索引 |
+| ChatService → 模型工具，已回收候选 | 三查询，各显式 1、默认 10、显式 20 | 9 组工具成功，下一 wire 的 `status=ok,result.results=[]`，唯一 succeeded | limit=10 时实际省略参数，验证工具默认值；不把空结果说成工具失败 |
+| 同一模型链，候选未回收 | 同上 | 9 组 results 分别为 1/10/20 条，预期匹配历史均进入下一 wire | 验证搜索/配对结果/模型请求没有整体失效；同一 fixture 与权限装配 |
+
+扩展结构化断言时曾把结果当作裸 `results`，正常对照也失败；核对 `ModelAgent::observe` 后按现有 `{status,result}` 信封解析再跑通，未为探针修改生产 wire。首轮作用域校准和这次解析校准都明确排除为产品问题。
+
+本轮还排除以下候选：用户/assistant 正文被有意保存并进入搜索，未找到“这些正文承诺脱敏”的依据；邻近工具事件只给工具名、call_id 和成败，不展开原始 output，不能报脱敏绕过。`cross_project=true` 是公开 schema 支持且已有正向测试的能力，不能仅因能跨项目就判为越权。续聊仍以 session.project 解析项目，不跟随侧栏当前激活项，未发现该路径的简单作用域漂移。
+
+本轮仅新增探针、测试入口和审计文档，未修生产行为、数据库 schema、模型参数、权限或沙箱；技能采用的 Evidence → Finding → Path 用于保留范围、失败对照与可复跑链。`cargo fmt --all -- --check` 通过；`cargo test -p deepagent-app-core --lib --offline`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**40 passed / 47 ignored**；`cargo test -p deepagent-persistence --lib --offline --quiet`：**67 passed**。未运行全 workspace、桌面 build/UI、真实供应商或多进程/损坏恢复；本轮未重跑 Clippy，不能报告 lint 通过。审计自检：授权范围内、人工核对生产链、正常对照成立、证据及时落文档、影响与未测边界分开记录；全系统审计仍未完成。

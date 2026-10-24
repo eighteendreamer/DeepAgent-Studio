@@ -73,6 +73,9 @@ mod fallback_cost;
 #[path = "kernel_v2_e2e/budget_lifecycle.rs"]
 mod budget_lifecycle;
 
+#[path = "kernel_v2_e2e/session_search_visibility.rs"]
+mod session_search_visibility;
+
 #[path = "kernel_v2_e2e/cache_prefix.rs"]
 mod cache_prefix;
 
