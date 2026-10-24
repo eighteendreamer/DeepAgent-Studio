@@ -1243,6 +1243,54 @@ async fn audit_workflow_requires_an_end_node() {
 }
 
 #[tokio::test]
+#[ignore = "audit: workflow end nodes must be reachable from the start"]
+async fn audit_workflow_requires_a_reachable_end_node() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start","config":{"inputVariables":[]}},
+                {"id":"end","kind":"end"}
+            ],
+            "edges":[]
+        },
+        "inputs":{}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-unreachable-end".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-unreachable-end")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    eprintln!(
+        "api_ok={} node_events={} run_terminal={:?}",
+        result.is_ok(),
+        events.len(),
+        run.terminal_kind
+    );
+    assert!(
+        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
+        "an end node unreachable from start must not produce a successful run"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
