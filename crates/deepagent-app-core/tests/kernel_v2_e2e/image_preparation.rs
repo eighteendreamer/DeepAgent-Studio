@@ -15,6 +15,60 @@ struct ImageUrlAnswer {
     urls_per_request: Arc<Mutex<Vec<Vec<String>>>>,
 }
 
+#[derive(Debug)]
+struct ImageReferenceObservation {
+    request_bytes: usize,
+    inline_urls: Vec<String>,
+    file_ids: Vec<String>,
+}
+
+struct ImageReferenceAnswer {
+    observations: Arc<Mutex<Vec<ImageReferenceObservation>>>,
+}
+
+#[async_trait]
+impl HttpTransport for ImageReferenceAnswer {
+    async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        let parts: Vec<&serde_json::Value> = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["content"].as_array())
+            .flatten()
+            .filter(|part| part["type"] == "input_image")
+            .collect();
+        self.observations
+            .lock()
+            .unwrap()
+            .push(ImageReferenceObservation {
+                request_bytes: request.body.len(),
+                inline_urls: parts
+                    .iter()
+                    .filter_map(|part| part["image_url"].as_str().map(str::to_string))
+                    .collect(),
+                file_ids: parts
+                    .iter()
+                    .filter_map(|part| part["file_id"].as_str().map(str::to_string))
+                    .collect(),
+            });
+        let item = serde_json::json!({
+            "type": "message", "id": "audit-image-file-reference-answer", "role": "assistant",
+            "content": [{"type": "output_text", "text": "Offline image file reference audit."}],
+        });
+        emit_responses_events(
+            sink,
+            &[
+                serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+                serde_json::json!({"type":"response.completed","response":{
+                    "status":"completed","output":[item]
+                }})
+                .to_string(),
+            ],
+        )
+    }
+}
+
 #[async_trait]
 impl HttpTransport for ImageUrlAnswer {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
@@ -419,6 +473,128 @@ async fn audit_unsupported_image_mime_is_rejected_before_transport() {
             .iter()
             .all(|url| !url.starts_with("data:image/svg+xml")),
         "DeepSeek Responses only accepts JPEG, PNG, GIF, or WebP image_url payloads"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit probe: retained images should reuse a DeepSeek Files API identity"]
+async fn audit_retained_image_reuses_deepseek_file_id() {
+    let root = tempfile::tempdir().unwrap();
+    let attachments = AttachmentService::new(root.path().join("attachments"));
+    let imported = attachments
+        .ingest(AttachmentIngestDto {
+            id: Some("audit-file-reference".into()),
+            session_id: None,
+            kind: "image".into(),
+            name: "pixel.png".into(),
+            mime: "image/png".into(),
+            source: "picker".into(),
+            local_path: None,
+            data_url: Some(concat!(
+                "data:image/png;base64,",
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+            ).into()),
+            text: None,
+        })
+        .unwrap();
+    assert_eq!(imported.status, "ready");
+    assert_eq!(imported.size_bytes, 68);
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = image_settings(db.clone()).await;
+    let observations = Arc::new(Mutex::new(Vec::new()));
+    let chat = ChatService::new(
+        db,
+        settings,
+        Arc::new(ImageReferenceAnswer {
+            observations: observations.clone(),
+        }),
+        root.path(),
+    );
+    let session = chat
+        .run_in_session_with_attachments(
+            "Retain this PNG for the file-reference audit.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("audit-file-reference-first"),
+            vec![InputAttachment::Image {
+                id: imported.id,
+                path: PathBuf::from(imported.original_path.unwrap()),
+                media_type: "image/png".into(),
+            }],
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+    for (prompt, run_id) in [
+        (
+            "Use the retained PNG in the first continuation.",
+            "audit-file-reference-second",
+        ),
+        (
+            "Use the same retained PNG again.",
+            "audit-file-reference-third",
+        ),
+    ] {
+        chat.run_in_session(
+            prompt,
+            Some(&session),
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some(run_id),
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+    }
+
+    let observations = observations.lock().unwrap();
+    assert_eq!(observations.len(), 3);
+    assert!(
+        observations[0].inline_urls.is_empty(),
+        "H-67 control changed"
+    );
+    assert!(observations[0].file_ids.is_empty(), "H-67 control changed");
+    let inline_counts: Vec<_> = observations
+        .iter()
+        .map(|item| item.inline_urls.len())
+        .collect();
+    let file_id_counts: Vec<_> = observations
+        .iter()
+        .map(|item| item.file_ids.len())
+        .collect();
+    let request_bytes: Vec<_> = observations.iter().map(|item| item.request_bytes).collect();
+    let repeated_inline_chars = observations[1]
+        .inline_urls
+        .iter()
+        .chain(observations[2].inline_urls.iter())
+        .map(String::len)
+        .sum::<usize>();
+    let same_inline_payload = observations[1].inline_urls == observations[2].inline_urls;
+    eprintln!(
+        "image file-reference audit: inline_counts={inline_counts:?} file_id_counts={file_id_counts:?} request_bytes={request_bytes:?} repeated_inline_chars={repeated_inline_chars} same_inline_payload={same_inline_payload}"
+    );
+    assert!(
+        same_inline_payload,
+        "the control image bytes changed between turns"
+    );
+    assert_eq!(
+        (inline_counts, file_id_counts),
+        (vec![0, 0, 0], vec![0, 1, 1]),
+        "retained images should be uploaded once and reuse the same provider file_id instead of resending complete data URLs"
+    );
+    assert_eq!(
+        observations[1].file_ids, observations[2].file_ids,
+        "the provider file identity must stay stable across unchanged requests"
     );
 }
 
