@@ -657,6 +657,73 @@ async fn audit_workflow_answer_node_renders_frontend_contract() {
 }
 
 #[tokio::test]
+#[ignore = "audit: an enabled variable aggregator must consume declared frontend bindings"]
+async fn audit_workflow_variable_aggregator_consumes_frontend_bindings() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start","config":{
+                    "inputVariables":[
+                        {"name":"first","variable":"first","type":"string"},
+                        {"name":"second","variable":"second","type":"string"}
+                    ]
+                }},
+                {"id":"aggregate","kind":"variable-aggregator","config":{
+                    "aggregatorOutputType":"array",
+                    "aggregatorVariables":["{{#start.first#}}","{{#start.second#}}"]
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"aggregate"},
+                {"id":"e2","source":"aggregate","target":"end"}
+            ]
+        },
+        "inputs":{"first":"FIRST","second":"SECOND"}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-aggregator-contract".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-aggregator-contract")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let aggregate = events
+        .iter()
+        .find(|event| {
+            event.node_id == "aggregate" && event.status == NodeExecutionStatus::Completed
+        })
+        .unwrap();
+    eprintln!(
+        "api_ok={} aggregate_outputs={:?} run_terminal={:?}",
+        result.is_ok(),
+        aggregate.outputs,
+        run.terminal_kind
+    );
+    assert_eq!(
+        aggregate.outputs,
+        Some(serde_json::json!({"output":["FIRST","SECOND"]})),
+        "the enabled aggregator must consume aggregatorVariables"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
