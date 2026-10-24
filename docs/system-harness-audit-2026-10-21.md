@@ -48,7 +48,7 @@
 | Responses 流身份与顺序元数据 | 合法流为 `response.created`/`response.completed` 提供同一 response ID、实际模型和单调序号；正式 ChatService→Kernel 落盘后两条事件仅保留 Runtime envelope 与 event_type | 已确认 H-200；正常连续离线 Responses fixture、正式 run_events；未制造乱序/丢包，也未声称已观察真实供应商流损坏 |
 | 无限画布工作流视口缩放锚点 | 画布已平移后，底栏放大/缩小/重置/滑杆与小地图放大/缩小只改 zoom、不重算平移 offset；缩放前后的视口中心映射到不同世界坐标 | 已确认 H-201；动态执行六个生产 TSX handlers；与 Penguin-Magic 中心锚定按钮缩放及指针锚定滚轮缩放实现对照；没有图数据或运行状态副作用 |
 | 无限画布工作流视口持久化 | 正式图写入只序列化 `nodes/edges`，新 WebView 的 viewport 回到 `{x:0,y:0,zoom:1}`；ReactFlow 初次挂载执行 fitView，没有 per-mode default viewport | 已确认 H-202；动态调用真实 `workflowPersistence` 的读/写/flush 并创建新 store 实例；图节点恢复对照通过；未启动 Tauri WebView |
-| Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，也未证明发行版 server 常规路径会静默不响应 |
+| Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -153,7 +153,7 @@
 |---|---|---|---|
 | 执行身份与控制 | ACK、租约、审批和实际运行的归属未全部统一（H-02/H-15/H-16/H-33） | Codex 按 turn 管理 waiter、thread writer 保护；Claude 活跃 owner/锁保护（见各项源码与探针） | 停止虚假确认、迟到或串运行审批、同会话并发推进 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
-| 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
+| 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
@@ -4351,6 +4351,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-211 Harness SDK 字符串 response ID 显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_string_response_id_does_not_leave_request_pending --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell fixture 返回 `{"jsonrpc":"2.0","id":"1","result":{}}`，`spawn_reader` 将字符串 ID 变为整数 0，`thread/list` 在 fixture 保持连接期间未完成且 pending=1；无真实 CLI server、模型、工具、文件或公网 |
 | H-212 Harness SDK JSON-RPC 版本显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_wrong_jsonrpc_version_does_not_complete_request --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell fixture 返回 `{"jsonrpc":"1.0","id":1,"result":{}}`，`thread/list` 经 `spawn_reader` 直接返回 `Ok(RpcResponse)`，响应 `jsonrpc` 保持为 `1.0`；无真实 CLI server、模型、工具、文件或公网 |
 | H-213 Harness SDK notification method 路由显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_non_harness_notification_method_is_not_emitted_as_event --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell fixture 返回 `method:"other/event"` 但合法 `HarnessEvent` params，reader 忽略 method 并广播为 `ThreadStarted { thread_id: "t-wrong-method" }`；无真实 CLI server、模型、工具、文件或公网 |
+| H-214 Harness SDK 请求后订阅竞态显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_subscribe_after_request_preserves_pre_response_event --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell stdio fixture 对两次 `thread/start` 都先发合法 `harness/event` 再发匹配 response，迟订阅组 response 成功但 300ms 内事件为 `None`，预订阅对照收到 `t-early`；无真实 CLI server、模型、工具、文件或公网 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4749,7 +4750,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 可选 WASM 的时钟与调用归属 | H-59 | 既有 WasmSandbox 统一 Engine tick 与 per-Store deadline；参考上游 Wasmtime 及成熟 Agent 的局部 timer 清理 | 顺序与并发调用互不提前超时；成功/失败/取消不遗留误伤；Windows trap 错误不终结宿主；默认未启用路径保持不受影响 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17、H-84 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；审批通知只由一个 gate owner 发布并携带 call ID；参考 Codex 的 turn 所属 waiter 和单一权限请求 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；一项人工审批只发一条可响应请求；保存失败可见 |
 | Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
-| Harness SDK 通知身份与缺口恢复 | H-01、H-91、H-205 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；参考 DeepSeek Harness 保留完整 notification envelope、Codex 暴露 `Lagged { skipped }` | 连续事件可按实际序号 ACK；7→9 及 broadcast lag 可被发现并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
+| Harness SDK 通知身份、订阅时序与缺口恢复 | H-01、H-91、H-205、H-214 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；提供先建订阅再发请求的 owned run/stream API，参考 DeepSeek Harness `HarnessSession.run()` 的 subscribe-before-prompt 队列与 Codex 的先附加监听再启动操作；不建立无界第二事件库 | 请求响应前通知仍可由该次操作消费；连续事件可按实际序号 ACK；7→9、broadcast lag 和迟订阅均可识别并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
 | 启动恢复的 run/task 诊断归属 | H-44、H-95 | 现有恢复投影按 run 的 task 身份界定历史范围；参考 Codex 按 turn ID 标记 stale turn | 同 session 多个未完成 run 的中断原因各自匹配其 task turn；较新的 user prompt 不改写旧 run 的工具中断原因；重放稳定，且不改变唯一终态 |
 | 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
 | 工具实际执行与后置扩展的提交边界 | H-139 | 既有 ToolPipeline/action/Session 保存已执行事实和结果；后置 hook 的反馈、拒绝继续及失败分别投影；参考 Claude 普通工具结果先保留、Codex 区分执行 lifecycle 与 hook outcome | hook 有效/无效/执行错误及重开后，成功副作用不会变成未完成操作；原结果可回放、动作有准确终态、模型配对反馈可解释；不盲目重复执行 |
@@ -5004,3 +5005,38 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 回归应覆盖：合法 `harness/event`、未知 method 同形 params、空/缺失/非字符串 method、错误 JSON-RPC 版本、未知 HarnessEvent type、错误 params schema、eventSequence 保留、多个不同方法交错，以及 broadcast lag/重连后不会把未知通知计入 ACK 游标。
 
 本轮只新增正式失败探针和审计文档，未修改生产实现；H-205 与 H-212 的证据保持独立。生产修复应把 method 路由、版本校验、eventSequence 和 typed payload 解码统一在 Harness transport 层，不在 UI/SDK 消费者中各自过滤。
+
+### H-214：Harness SDK 请求返回后才订阅会永久丢失先于 response 到达的合法通知
+
+**级别：高（P1，SDK 事件生命周期与终态可达性）；触发条件：** 调用方先 `await thread_start()` / `await turn_start()`，再调用公开 `HarnessClient::subscribe()`，而 server 在匹配 response 之前已经发送合法 `harness/event`。这不是慢消费者溢出：通知到达时尚无 receiver，SDK 的 broadcast 不提供历史重放，随后创建的 receiver 永远看不到该通知。
+
+#### 生产路径与正式复现
+
+- `HarnessProcess::spawn()` 创建 `tokio::sync::broadcast::channel(256)` 后立即丢弃初始 receiver；`spawn_reader()` 收到合法 notification 后调用 `events.send(event)`，并忽略返回值。Tokio broadcast 只向**当时已经存在**的 receiver 交付；没有 receiver 时发送失败，之后 `subscribe()` 从当前尾部开始，不能回读之前的事件。
+- 公开 API 将 `thread_start()`、`turn_start()` 与 `subscribe()` 暴露为互不约束的独立操作，rustdoc 示例按 initialize → thread_start → turn_start 调用，既没有先订阅，也没有 high-level owned turn/stream helper。API 文档没有告知“必须在任何可能产生通知的请求之前订阅”，类型系统也无法阻止错误顺序。
+- server 本身确实允许这种次序：`apps/cli/src/app_server.rs::thread_start()` 先调用 emitter 排队 `ThreadStarted`，再返回 response；事件 writer 与 response writer共享 stdout 锁但由不同任务竞争。`turn/start` 虽先写 response 再 spawn turn，快速失败/完成仍可在调用方恢复调度并执行 `subscribe()` 前发出事件。因此通知先于 response 不是伪造的非法 wire 顺序，SDK 必须能处理。
+- 新增 Windows ignored 探针 `crates/deepagent-harness-sdk/src/client.rs::client::audit_tests::audit_subscribe_after_request_preserves_pre_response_event`。PowerShell fixture 通过真实 stdin/stdout 处理 initialize 和两次正式 `HarnessClient::thread_start()`；两次都严格按“合法 `harness/event` notification → 同 ID 成功 response”发送。第一组在 request 返回后才订阅，第二组在 request 前先订阅，二者使用相同事件形状和 reader。
+- 执行：`cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_subscribe_after_request_preserves_pre_response_event --offline -- --ignored --exact --nocapture`。
+- 实际结果为 **0 passed / 1 failed（预期复现）**：两次 response 均成功，迟订阅组输出 `late_event=None`，预订阅对照输出 `early_event=Some("t-early")`。这排除了 notification 解码失败、method 错误、响应未完成和 broadcast 本身完全失效；失败只由订阅建立时序造成。fixture 不启动真实 CLI server、模型、工具、文件访问或公网。
+
+#### 成熟 Agent 对照
+
+- **DeepSeek Harness** 的 `packages/sdk/client/src/api.ts::HarnessSession.run()` 在调用 `client.prompt()` **之前**先执行 `client.subscribeSessionTree(this.id)`，然后由订阅对象自己的 queue 保存已经到达但尚未 `next()` 消费的通知；`finally` 中统一关闭订阅。它把“订阅就绪 → 发起会产生事件的请求 → 消费到 idle”做成一个高层 owned operation，而不是要求每个调用方自行拼出无竞态顺序。
+- 其 `NotificationSubscriptionImpl.push()` 在没有 waiter 时把通知追加到该订阅的 queue，`next()` 优先消费队列；`sdk-client.spec.ts` 还以 HarnessSession.run 的完整通知收集作为契约。这里引用的是 subscribe-before-request 和 per-subscription queue，不声称 DeepSeek Harness 具备本系统 `eventSequence/thread_read` 的全部恢复语义。
+- **Codex** 的 app-server 路径在执行会话操作前先附加 conversation listener；H-43 已记录其 `ensure_conversation_listener()` 顺序。本项不把 H-43 重复计数为 SDK 缺陷证据：H-43 发生在本系统桌面 chat/canvas 前端，H-214 发生在独立 Rust Harness SDK 的公开 API 与 broadcast 生命周期，修复位置和调用者不同。
+
+#### 影响、边界与根因修复方向
+
+- 丢失 `thread.started` 会让调用方的实时状态与成功 response 不一致；丢失 `turn.started`、审批或 `turn.completed/failed` 时，等待事件终态的 SDK/UI 可能永久等待、漏掉人工审批或错误保留 running 状态。随后 `thread/read` 可能已经显示完成，但 H-205 又使 SDK 缺少 wire sequence，调用方无法准确知道从何处补读。
+- 本次动态样本只直接证明 `ThreadStarted` 丢失，不声称已经在真实 DeepSeek turn 中复现终态或审批丢失；这些后果来自相同无 receiver 丢弃机制和事件类型共享通道。预先订阅是当前可行规避方式，但公开 API/示例没有强制或封装该不变量，因此不能把责任留给每个 SDK 使用者。
+- H-01 是 server outbox 已有消费者但队列满时丢通知；H-205 是已收到合法通知后丢 `eventSequence`；H-214 是 SDK notification 到达时尚无订阅者。扩大 channel 容量、保存 sequence 或修 server 背压都不会单独修复“零 receiver”窗口。
+- 根因修复应在现有 SDK 上提供 owned `start_turn_stream` / `run_turn`（名称可按本地 API 定稿）：内部先创建 receiver，再发送 request；request 成功后按返回的 thread/turn ID 过滤已排队事件，直到唯一终态，并在 drop/错误/取消时释放订阅。底层 `subscribe()` 可以保留，但文档必须明确其 only-from-now 语义。与 H-205 一并接入带 sequence 的通知信封和 `thread/read` durable 补读，不能建立无界的第二事件库或靠全局 Vec 永久缓存所有通知。
+- 回归需覆盖：notification 先于/后于 response、响应与通知同批到达、零 receiver、两个并行 turn、快速成功/失败、审批、broadcast lag、SDK future drop、EOF、重连及 `thread/read` 补读；确保每个 owned operation 只消费自己的 thread/turn 事件，终态一次，且不把较早无关通知错误归属给新请求。
+
+本轮只新增正式失败探针和审计文档，未修改生产 SDK 行为；H-01、H-43、H-205 的既有证据保持独立。
+
+### 本轮排除候选：Responses 工具参数增量仅含 `output_index`
+
+- 当前 `ResponseAccumulator` 的 function/custom 参数 delta/done 只按 `item_id/call_id` 查找 builder，DeepSeek Harness 的 `tool-argument-streaming.spec.ts` fixture 则只给 `output_index`；受控事件可以证明本系统会漏掉这类 fixture 的实时参数增量。
+- 但 DeepSeek 官方 Responses 指南明确把完整格式指向 OpenAI Responses 定义；该定义的 `response.function_call_arguments.delta/done` 同时包含 `item_id` 与 `output_index`，官方示例也提供二者。参考仓库的最小 fixture 不能冒充真实 DeepSeek wire，更不能证明官方服务会省略 `item_id`。
+- 即使忽略该不完整 fixture 的 delta/done，合法的后续 `response.output_item.done.item.arguments` 仍会恢复最终参数并生成正确工具调用；已确认的差异仅是丢增量与完成事件延迟，不是执行 `{}` 或错误参数。因此本轮不分配 H 编号、不提升为 DeepSeek 协议缺陷。只有真实供应商样本或正式兼容目标明确允许缺 `item_id` 后，才应以低级别兼容性项重新评估。

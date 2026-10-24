@@ -829,6 +829,112 @@ mod audit_tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit H-214: subscribing after a request must not lose notifications emitted before its response"]
+    async fn audit_subscribe_after_request_preserves_pre_response_event() {
+        let script = r#"$index = 0
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  $index++
+  if ($index -eq 1) {
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"serverName":"audit","serverVersion":"1"}}')
+  } elseif ($index -eq 2) {
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"harness/event","eventSequence":1,"params":{"type":"thread.started","threadId":"t-late","title":null,"protocolVersion":1}}')
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":2,"result":{"threadId":"t-late","status":"ready"}}')
+  } elseif ($index -eq 3) {
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"harness/event","eventSequence":2,"params":{"type":"thread.started","threadId":"t-early","title":null,"protocolVersion":1}}')
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":3,"result":{"threadId":"t-early","status":"ready"}}')
+  }
+}"#;
+        let mut child = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a local pre-response notification fixture");
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let (events, _) = broadcast::channel(8);
+        let client = HarnessClient {
+            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
+            next_id: Arc::new(AtomicI64::new(1)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            events,
+            initialized: Arc::new(Mutex::new(false)),
+        };
+        spawn_reader(
+            stdout,
+            stderr,
+            client.pending.clone(),
+            client.events.clone(),
+        );
+
+        client
+            .initialize("audit-fixture", "0.1.0")
+            .await
+            .expect("fixture initialize response should be accepted");
+
+        let late_response = client
+            .thread_start(deepagent_harness_protocol::ThreadStartRequest {
+                cwd: None,
+                provider: None,
+                model: None,
+                permission_profile: None,
+                sandbox_backend: None,
+            })
+            .await
+            .expect("late-subscription request should receive its response");
+        let mut late_receiver = client.subscribe();
+        let late_event =
+            tokio::time::timeout(std::time::Duration::from_millis(300), late_receiver.recv()).await;
+        drop(late_receiver);
+
+        let mut early_receiver = client.subscribe();
+        let early_response = client
+            .thread_start(deepagent_harness_protocol::ThreadStartRequest {
+                cwd: None,
+                provider: None,
+                model: None,
+                permission_profile: None,
+                sandbox_backend: None,
+            })
+            .await
+            .expect("early-subscription request should receive its response");
+        let early_event =
+            tokio::time::timeout(std::time::Duration::from_secs(3), early_receiver.recv())
+                .await
+                .expect("pre-existing subscriber should receive the notification")
+                .expect("pre-existing subscriber should not lag");
+
+        client.close().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
+
+        let late_thread_id = late_event
+            .ok()
+            .and_then(Result::ok)
+            .and_then(|event| match event {
+                HarnessEvent::ThreadStarted { thread_id, .. } => Some(thread_id),
+                _ => None,
+            });
+        let early_thread_id = match early_event {
+            HarnessEvent::ThreadStarted { thread_id, .. } => Some(thread_id),
+            _ => None,
+        };
+        eprintln!(
+            "SDK subscription ordering audit: late_result={} late_event={late_thread_id:?} early_result={} early_event={early_thread_id:?}",
+            late_response.result(),
+            early_response.result(),
+        );
+        assert_eq!(early_thread_id.as_deref(), Some("t-early"));
+        assert_eq!(
+            late_thread_id.as_deref(),
+            Some("t-late"),
+            "a legal notification emitted before its matching response must remain observable when the caller subscribes immediately after the request returns"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "audit H-205: SDK notifications must preserve the wire event sequence used by event/ack and gap recovery"]
     async fn audit_sdk_notification_preserves_event_sequence_for_ack_and_gap_detection() {
         let script = r#"$lines = @(
