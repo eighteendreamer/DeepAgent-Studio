@@ -50,6 +50,7 @@
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录；工作流节点声明 `knowledgeBaseId=project` 时仍混入 global 命中 | 已确认 H-51、H-176；H-51 是共享服务身份漂移，H-176 是工作流配置到检索 trait 的作用域契约缺失 |
 | 工作流目标节点与重跑 admission | `target_node_id` 传入不存在的节点时，正式工作流只完成 `start`、跳过 `end`，仍记录 `succeeded` | 已确认 H-177；无效目标未在编译/接纳边界拒绝，属于空执行成功，不是 H-39 的条件分支派发问题 |
+| 专业画布代码节点 | 前端公开 `codeScript`/`codeInputVariables` 并标记 `enabled`，后端只读取未使用的 `code`/`codeVariables`，没有 JavaScript/Python 执行器；明确无效脚本仍完成并返回空对象 | 已确认 H-178；能力注册、配置 schema、运行时 executor 契约断裂，属于静默伪成功 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3352,6 +3353,35 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-177 只新增正式审计探针和文档，未修改生产工作流执行逻辑。
 
+### H-178：专业画布 `code` 节点标记为 enabled，但脚本从未执行且错误被伪造成成功
+
+**级别：高（P1，工作流语义与结果完整性）；触发条件：使用桌面专业画布的 `code` 节点，提交任意 `codeScript`（包括明确无效脚本）和 `codeInputVariables`。** 节点注册表和编辑器把它展示为可用的 JavaScript/Python 执行能力，但运行时没有对应解释器或受控执行边界；触发后节点仍为 `Completed`，输出只是声明变量的默认值或空对象。
+
+#### 生产调用链与正式复现
+
+- `apps/desktop/src/canvas/workflow/utils/nodeRegistry.ts` 将 `code` 注册为 `availability: "enabled"`、`executor: "code"`，并公开 `codeLanguage`、`codeScript`、`codeInputVariables` 与 `codeOutputVariables`。`nodeSchemas.ts` 同样把脚本标成 JavaScript/Python 编辑器字段，因此这是面向用户的已承诺能力，不是隐藏实验字段。
+- `deepagent-runtime::workflow::graph::compile()` 对 `code` 节点的绑定契约使用 `codeInputVariables`，输出契约使用 `codeOutputVariables`；但 `WorkflowAgent::execute_code()` 读取的是 `code` 和 `codeVariables`，把这两个前端字段完全忽略。该函数只把已读取的变量复制到结果，并为声明输出填充空字符串、0、空数组或空对象，没有任何 JavaScript/Python 执行调用、脚本语法校验或失败路径。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_code_node_executes_script_or_fails_loudly`。它通过正式 `ChatService::run_workflow()` 执行 `start → code → end`，提交 `codeLanguage=javascript`、`codeScript="this is intentionally invalid JavaScript; throw new Error('CODE_CANARY')"`、`codeInputVariables=[{name: input, value: SOURCE}]` 和 `codeOutputVariables=[{name: result, type: string}]`，只捕获节点事件和 `RunStore`，不执行系统命令、网络或文件写入。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_code_node_executes_script_or_fails_loudly --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true code_status=Completed code_outputs=Some(Object {}) code_error=None run_terminal=Some("succeeded")`；断言“无效脚本必须失败或不能成功完成”以 **0 passed / 1 failed（预期）** 结束。换言之，脚本中的 `CODE_CANARY` 没有被解析，也没有进入错误消息；这是正式工作流的静默伪成功，不是测试夹具直接调用内部函数。
+
+#### DeepSeek 官方契约边界与成熟 Agent 对照
+
+- DeepSeek 官方 [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)和 [Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)定义的是模型请求、工具 schema、function call 与客户端回传结果；它们不提供本地 JavaScript/Python sandbox，也不会替宿主执行 `codeScript`。因此本问题属于 Harness 的能力声明与执行器契约，不能把一次 DeepSeek 请求成功当成代码节点成功。
+- **Codex** 将命令执行作为显式工具/沙箱能力，由工具注册、权限 profile、审批和执行结果共同定义；没有一个只凭 UI 字段就把任意脚本当作已执行的伪 executor。可迁移的做法是：能力目录必须与实际注册 executor 一致，执行前通过统一权限边界，执行后持久化真实 stdout/stderr/退出码，失败不可映射为正常完成。
+- **Claude Code** 的可执行扩展通过受控工具和 hook 命令注册，命令返回码、输出和 hook 决策是生命周期输入；未安装或不可执行的命令会暴露失败，不会用配置回显替代执行结果。其隔离重点是“声明、授权、实际进程”三者同一条链，而不是在 schema 中承诺语言执行器后静默跳过。
+- **DeepSeek Harness** 的工具/插件边界把 provider、tool schema 和调用者 scope 在装配阶段绑定；未注册的能力在 dispatch 前失败。它可以借鉴“typed capability + fail closed”，但不能直接推断出本系统应新增一个任意代码解释器。
+- `借鉴/better-harness` 中的 JavaScript/Python 代码主要用于静态分析、测试映射和报告生成，不构成本系统这种工作流节点运行时；因此不能把静态解析器依赖误认为已有安全执行环境。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，用户会看到节点成功、工作流成功和空/默认输出。下游节点可能继续使用空值，把错误结果写入 artifact、知识库或外部工具；自动化调度器会跳过重试和告警。更严重的是，用户可能据此误以为脚本已经在沙箱中执行，实际却没有任何计算或审计记录。
+- 该缺口还破坏跨入口一致性：桌面 schema、CLI/SDK 发送的同一工作流声称有脚本能力，但 `WorkflowAgent` 的事件没有 language、script digest、执行器版本、stdout/stderr 或 exit code；恢复/重放无法判断是脚本成功、未执行还是默认值填充。它与 H-162 的“AI 节点标 enabled 但没有 executor”同属能力注册问题，但 H-178 更危险之处是节点明确发布 `Completed` 和成功终态，并把错误结果继续交给下游。
+- 根因修复应先做能力边界决策：如果当前不准备提供受控代码运行时，就把 registry/schema 改为 `unavailable`，并在 compile/admission 返回结构化 `UnsupportedOperation`，不能保留“代码执行”假象。如果要支持，则必须在现有 `ToolRegistry`/权限/`SandboxBackend` 边界下实现语言级执行器：固定 runtime 版本、workspace/网络/时间/资源限制、输入输出 schema、超时/取消、stdout/stderr 截断与审计；禁止把脚本直接交给宿主 shell。
+- 无论选择哪条路径，`codeInputVariables`、`codeScript`、`codeLanguage` 和 `codeOutputVariables` 必须在一个版本化 DTO 中贯通；成功只能来自真实 executor 的结构化结果，语法错误、运行时异常、超时、取消和资源限制都必须产生失败节点与非成功 run 终态。回归需覆盖空脚本、语法错误、输入绑定、类型转换、输出声明、超时、取消、拒绝网络/文件、跨入口序列化以及恢复/重放。
+
+本轮 H-178 只新增正式审计探针和文档，未修改生产代码或启用任意脚本执行器。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3413,6 +3443,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-175 工作流 HTTP 节点网络边界显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_http_node_does_not_bypass_network_approval --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`AgentKernel` 向临时 loopback 发出 1 次 GET，审批回调 0 次，run 为 `succeeded`；仅本机临时服务，无公网或用户数据 |
 | H-176 工作流知识库作用域显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_knowledge_base_id_is_honored --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`KnowledgeService` 在 `knowledgeBaseId=project` 下同时返回 project/global 两条临时文档，run 成功；仅临时 vault 与离线模型，无用户知识或公网 |
 | H-177 工作流未知目标显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unknown_target_node_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`RunStore` 对 `target_node_id=missing-node` 只完成 `start` 却记录 `succeeded`；无模型请求、工具副作用或公网 |
+| H-178 工作流代码节点执行显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_code_node_executes_script_or_fails_loudly --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent` 对明确无效 `codeScript` 发布 `code_status=Completed`、空对象输出且 run=`succeeded`；无脚本解释器、系统命令、网络或文件写入 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |

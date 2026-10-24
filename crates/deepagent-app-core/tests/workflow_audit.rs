@@ -346,6 +346,68 @@ async fn audit_workflow_unknown_target_node_is_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "audit: a code node must execute its declared script or fail loudly"]
+async fn audit_workflow_code_node_executes_script_or_fails_loudly() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"code","kind":"code","config":{
+                    "codeLanguage":"javascript",
+                    "codeScript":"this is intentionally invalid JavaScript; throw new Error('CODE_CANARY')",
+                    "codeInputVariables":[{"name":"input","value":"SOURCE"}],
+                    "codeOutputVariables":[{"name":"result","type":"string"}]
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"code"},
+                {"id":"e2","source":"code","target":"end"}
+            ]
+        }
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-code-execution".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-code-execution")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let code_terminal = events
+        .iter()
+        .find(|event| event.node_id == "code" && event.status.is_terminal())
+        .unwrap();
+    eprintln!(
+        "api_ok={} code_status={:?} code_outputs={:?} code_error={:?} run_terminal={:?}",
+        result.is_ok(),
+        code_terminal.status,
+        code_terminal.outputs,
+        code_terminal.error,
+        run.terminal_kind
+    );
+    assert!(
+        result.is_err() || code_terminal.status == NodeExecutionStatus::Failed,
+        "an invalid declared script must not be reported as a successful code node"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
