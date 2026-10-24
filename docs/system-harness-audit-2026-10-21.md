@@ -23,6 +23,7 @@
 | 流失败前状态工具的预执行提交 | 公共无 hooks Runtime 在 todo 参数/item 完成后真实改共享列表，随后 failed 或断流自动重试成功，均无对应会话往返但状态残留 | 已确认 H-233（P3）；正常完成与 hooks 对照通过；主 AppCore 装配关闭预执行，嵌套子运行的失败流影响未实测；另见 H-234 的正常完成状态隔离实测 |
 | agent-hook 的工具状态隔离 | 正式主运行先写计划，PreToolUse agent-hook 正常调用共享 todo_write，允许/拒绝父读取后主 task_list 均返回 hook 列表，父无对应写入往返 | 已确认 H-234（P3）；两个只读对照通过；不是 H-233 的失败流问题，不外推无此 hook 的默认聊天或其他状态工具 |
 | 模型型 hook 的用量归属与预算 | prompt/多步 agent hook 正常 completed 并含完整 usage，允许或拒绝父工具都只结算主请求；合计费用已过本地预算但下一轮继续实际请求模型 | 已确认 H-235（P2）；无 hook、matcher 未命中和主费用已入账越限三项对照通过；用离线 usage 验证本地账本，不代表真实供应商消费或缓存命中实验 |
+| 工具 pipeline 的模型 hook 取消 | 正式停止已受理，顺序工具前/后置 prompt/agent hook 仍等待；在 agent 首响应前停止，释放后还真执行 task_list 并发下一次 hook 请求 | 已确认 H-236（P2）；UserPromptSubmit/SessionStart 取消及四位置正常允许对照通过，最终取消映射正确；离线供应商 gate，未验证真实计费或公网取消 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
@@ -191,6 +192,7 @@
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
 | 运行及附属工作的归属 | 子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-45/H-60/H-61/H-64）；原生摘要取消已修复 | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
+| 生命周期扩展等待的取消上下文 | pipeline 的 Pre/PostToolUse 直接等待 dispatch，agent-hook 的私有 Runtime 不知父取消；停止后还执行任务读取并发下一 hook 请求（H-236） | Claude prompt/agent hook 组合父 signal 与自身期限并传给查询/工具上下文；Codex 工具 dispatch 与取消竞争，终态结果不盲目覆盖；DeepSeek Harness 明确扩展必须观察调用 signal，不能硬杀同进程代码 | 相同 hook 类型因调用位置不同而停止语义分裂；最终 cancelled 正确仍不能阻止附属步骤继续，取消受理不等于等待被打断 |
 | 内容身份与生命周期 | 去重名称没有对应正文、共享可变项目 scope、旧计时器作用到新调用（H-51/H-53/H-57/H-59） | Claude transcript 内容驱动去重及局部 timer cleanup；DeepSeek connection-owned system section；Wasmtime 的 Store deadline 语义 | 能力或记忆漏注入、跨项目污染、调用被无关计时器提前中断 |
 | 文件回退的失败边界 | 备份不可用尚未检查，当前文件已经删除；多文件已部分恢复而历史未变（H-72） | Claude fileHistory 先 stat 备份，已知缺失时不复制或删除当前文件；该机制不等于整个回退事务原子化 | 回退/分叉失败仍丢失当前文件，磁盘与会话处于不同恢复阶段 |
 | 回退后的派生数据归属 | 重用 sequence 后，丢弃分支的笔记覆盖和文件检查点仍可能作用于新分支（H-23/H-73） | Claude 按目标 messageId 定位文件快照；Codex 对有效历史应用 rollback 标记后计算分支位置 | 新分支历史与文件/摘要不一致，已经丢弃的决策或文件内容重新出现 |
@@ -5954,3 +5956,50 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo fmt --all -- --check`、`git diff --check` 通过。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `models/src/client.rs:355` clone_on_copy 与 `persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未报告 lint 通过。
 - 本轮按 code-audit 核对输入、执行与结算归属，按 docs-generator 即时追加可重跑 Evidence/Finding/Path 与成熟机制对照。只修改 test-only 模块/入口和报告，无生产修复、依赖新增、数据迁移或权限变更；用户原有未跟踪文件保持不动。
 - 未运行全 workspace、Desktop build/UI、真实 DeepSeek 计费/缓存实验、参考工程测试、hook 取消/超时/无效 JSON/真实 provider failure、混合模型、多个并发 hook、数据库重开或其他平台。本轮不对取消树下结论，也不处理 encrypted-content 错误；全系统审计仍未结束。
+
+### H-236：顺序工具 pipeline 的模型 hook 未接入运行取消，停止后仍等待并继续 agent 步骤
+
+**级别：中（P2，可选模型 hook 的停止响应缺口）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 已复现，未修复。不是所有 hooks 均不响应取消，也没有复现取消后主运行误记成功。**
+
+#### 首次即时 Evidence（2026-10-24）
+
+- Scope：用户授权的本仓库审计；临时 workspace/文件数据库、真实 read_file/task_list、正式用户 hooks 和 request_cancel。仅模型 transport 离线，两个 Notify gate 明确标识请求已进入及响应何时放行；没有真实收费、外部资源、用户文件或进程故障注入。本轮仅测试和文档。
+- E-236-first（command，content_hash=n/a）：source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/hook_cancellation.rs`；`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_cancellation --offline -- --include-ignored --nocapture`，**2 passed / 2 failed（预期），2.07s**。两项正常测试覆盖三个事件位置×prompt/agent 的六次允许决策，以及 UserPromptSubmit 两种 hook 的取消。agent 对照先真实调用 task_list，再在第二次请求 gate 等待；第二请求有唯一成功工具结果，不用空 agent 冒充多步执行。
+- E-236-stop：两个缺陷探针首次分别观察顺序 read_file 的 PreToolUse、PostToolUse **prompt** hook。确认模型请求已到 gate、运行尚无终态，再经正式 request_cancel(run_id) 得到 accepted=true；200ms 有界等待后 run 尚未返回、transport wait=1、SQLite terminal_kind=None。只放行已在等待的合法允许决策后，hook 实际消耗该响应（answered=1），HookCompleted=1，主请求数保持 1，最终唯一 cancelled。测试在断言失败前已放行、join 并确认 wait=0，没有残留异步测试任务。200ms 是测试观察窗口，不是产品 SLA 或最坏延迟。
+- E-236-control：UserPromptSubmit 的两种 hook 都在放行前返回、wait=0、唯一 cancelled，answered=0、主模型请求=0；三个位置的六个正常允许样本均有 HookStarted/Completed 配对、主运行 succeeded。初轮两个缺陷测试在 prompt 失败断言处停止，**尚不能将其结果冒充 Pre/PostToolUse agent 也已实测失败**；后续将先收集两种形状再断言。
+
+#### 初始 Finding 与 Path
+
+- F-236（category=design，status=validated，confidence=high，evidence_ids=[E-236-first,E-236-stop,E-236-control]）：`tool_pipeline.rs::fire` 直接 await registry.dispatch，没有与已存在的 cancel/cancel_token 竞争等待；prepare 的 PreToolUse 及 complete_prepared 的 PostToolUse 均使用它。prepare 虽在 hook 返回后再次检查取消并阻止父工具，不能打断正在等待的 hook。相比之下，`RuntimeEngine::fire_hook` 以及 RunAssembler 的 UserPromptSubmit 外层 select 已监听取消；不能因为两个函数职责相近就把后者保护外推到 pipeline。
+- P-236（callflow）：主完整响应请求唯一 read_file → pipeline 前/后置 hook → 模型等待 → 正式取消树已触发 → pipeline 仍 await dispatch → 供应商 gate 释放 → 合法 hook 决策返回 → 主运行才以 cancelled 结束。已确认后果是停止响应延迟、活动运行和模型等待仍占用；没有观察到额外主模型请求、取消后父 read_file 在前置组执行或最终成功误报。生产 hook 默认期限与其他保护的实际竞争需要源码核对，不将 200ms 外推成无限等待。
+- 与 H-61 的脱离父运行 spawn、H-62 的停滞分类、H-64 的 blocking 构建、H-128/H-136 的 MCP transport 分阶段取消不同，本项发生在工具 pipeline 的 hook dispatch 边界；与 H-139 的后置 hook 报错丢已执行结果也不是同一触发/根因。成熟机制比对、agent 扩展和回归结果随后追加；不处理用户排除的 encrypted-content 错误。
+
+#### 增量 Evidence：多步 agent 也等待，前置取消没有执行父工具
+
+- E-236-agent：修改两个缺陷探针，先完整观察 prompt/agent 两组再统一断言。Pre/PostToolUse 的多步 agent 均在真实 task_list 成功后的第二模型请求等待；取消已受理后 200ms 仍 wait=1、无终态，释放后 answered=1，最终唯一 cancelled。前置组父 ToolStarted/ToolCompleted 均为 0；后置组均为 1，父模型请求数均停在 1。F-236 增补 evidence_ids=[E-236-first,E-236-stop,E-236-control,E-236-agent]，不另增编号。
+- 此次扩展同时尝试增加 SessionStart 对照，实跑 **0 passed / 4 failed，4.78s**：两个缺陷测试到达已描述不变量，两个正常测试则因 SessionStart 未触发而在进入 gate 前超时，**这两次超时不是产品取消证据**。排查发现测试先 create_session 再以 continue_session 进入，而 `run_assembler.rs:1078` 明确只对新会话启用 fire_session_start。一次将 matcher 改为通配符未解决该设置错误；已据生产开关改用新会话入口，等待重新验证。正常对照不会在未通过时写成通过。
+- E-236-new-session：改用正式新会话入口后重跑相同命令，**2 passed / 2 failed（预期），2.59s**。八项正常允许场景全部通过；UserPromptSubmit/SessionStart × prompt/agent 四个取消对照均在释放前结束、wait=0、answered=0、主请求=0、唯一 cancelled。两个缺陷探针已完整覆盖 Pre/PostToolUse × prompt/agent 四组，仍保持上述等待观察。SessionStart 先前超时由测试续聊配置解释，不记入新缺陷。
+
+#### 增量 Evidence：停止后 agent-hook 还执行下一步和再次请求模型
+
+- E-236-late-step：增加 gate_before_tool，将 Pre/PostToolUse agent-hook 的 gate 前移到其第一模型请求尚未返回工具调用时。确认进入等待后取消、观察窗口结束，再释放首响应中的 task_list 调用；**停止早于工具调用输出，更早于工具实际执行**。正式私有 hook Runtime 仍执行真实 task_list，第二个 hook 请求包含其唯一成功结果；hook 请求数从释放前 1 增至 2。两组主请求仍为 1，父工具前置组 start/completed=0，后置组=1；最终都为唯一 cancelled。不是把停止前已完成的工具误说成停止后新执行。
+- 同命令实跑 **2 passed / 2 failed（预期），2.75s**，每个缺陷测试先观察 prompt、agent 决策前等待、agent 工具调用前等待三组，再统一断言失败；八项正常允许、四项输入/SessionStart 取消对照继续通过。F-236 增补 E-236-late-step：后果从“等待旧请求”扩展为**停止后继续 hook 的工具/模型步骤**；仅 task_list 无文件/外部副作用，不推断已发生写入、费用数额或供应商后台推理已停止。
+- `hook_runtime.rs::execute_agent` 的私有 Runtime 没有接收父取消树，故 pipeline 未中断等待时它也不知父运行已取消；`execute_prompt` 使用无取消参数的 stream_response。HookActionExecutor 的契约只有 action/payload→HookOutcome，缺少调用所属运行的取消上下文。外层 deadline 不能替代用户取消：ExternalHostHook 为整个动作设 timeout，缺省为 60 秒，本 fixture 设 5 秒；父 Runtime 默认 task_timeout 为 30 分钟。这些是源码上界配置，不是本轮实际等待 60 秒或超时清理的实验。
+
+#### 成熟实现对照与架构方向（源码静态核对，未运行参考工程）
+
+- **Claude**：`借鉴/claudecode/restored-src/src/utils/hooks/execPromptHook.ts` 将调用方 AbortSignal 与 hook timeout 合成为 combinedSignal，再传给公共 queryModelWithoutStreaming；捕获中止后返回明确 cancelled。`execAgentHook.ts` 同样组合父 signal 与 deadline，再让 hookAbortController 进入 agentToolUseContext.abortController，公共 query 和工具由这个上下文推进。借鉴的是**取消来源与附属运行上下文关联**，不是照搬其 TypeScript finally 到 Rust future drop；本轮没有证明它的任意扩展代码都能强制中止。
+- **Codex**：`借鉴/codex/codex-rs/core/src/tools/parallel.rs::handle_tool_call_with_source` 用 invocation token 调用 router，同时以同一 token 的 cancelled() 与 dispatch handle 做 select；未达终态时 abort 并等待任务退出，生成 aborted result 并通知工具中止。已达到 terminal_outcome_reached 或 handle 已结束时取已有结果，避免将真实完成事实盲目改成未执行。它覆盖工具 dispatch owner 的后备边界，不宣称这里有与本系统同名/同协议的 prompt hook。
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/core/tools/src/index.ts` 的 ToolExecutionInput 必须有 signal；tools/pre-execute、tools/post-execute 明确要求异步 listener 观察 exec.signal，around-dispatch 的 signal 替换会与原 caller signal 重新融合。实现 await waterfall、在返回后复查 callerCancelled；**不会通过丢弃 promise 硬杀不合作的同进程扩展**。可借鉴显式取消契约及副作用完成边界，不能把它包装成“任意 hook 卡住也必然即时停止”的已验证事实。
+- **DeepSeek 官方边界**：2026-10-24 联网核对[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)、[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)和[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)。工具执行由宿主负责；Responses 为无状态、多轮需回传历史，本探针使用原生 function_call/function_call_output 成功配对。H-236 不是 DeepSeek 返回非法内容或模型未遵守提示词，取消控制必须由 harness 贯穿；没有用其他供应商的服务端取消接口代替本系统运行 token。参数页首次无尾斜杠请求超时，重试正式尾斜杠地址成功，不作服务异常归因。
+- **建议（本地设计，尚未实施）**：沿用既有 CancellationTree/ToolExecutionContext，统一 hook dispatch 的执行上下文，把父 run/session、child token、有效 deadline 和事件归属传到 HookActionExecutor，再贯穿 prompt ModelClient 与 agent 私有 Runtime；命令/MCP 等扩展也需要其自身资源 owner 参与有界退出。外层取消等待和内层协作停止要配套，不要只在 hook 返回后多检查一个 bool，也不要另造第二套取消中心。
+- 后置 hook 的取消要和 H-139 的事实提交一起设计：父工具已完成时先保证真实结果与 action 状态不丢，再中止附属决策，仍为本次取消提交唯一规范终态；前置取消则不能继续执行父工具。不能简单把整个 post-tool future 丢掉后宣称完整修复。未来验收需覆盖多个/并行 hook、批量工具、模型流中和解析后取消、超时、子工具等待、部分副作用、重开及单终态。
+- 中止对照观察到 HookStarted=1、HookCompleted=0，但前端 App.tsx 的 hook_started 只更新 working、不创建逐 hook 的运行卡片，因此**不据此声称桌面永久 hook spinner**，也没有单独新增 UI 缺陷编号。这里只保留实际事件观察，未做 Desktop 手动验收。
+
+#### 验证收尾与限制
+
+- 测试配置、模型 gate、真实工具结果核验、事件统计与正式运行观察分为 test-only helpers，复用上轮已存在的完整 Responses fixture；响应 ID 按本工作流请求序列区分。整理后显式 `hook_cancellation` 命令为 **2 passed / 2 failed（缺陷预期），2.74s**。提交前进一步让工具结果核验允许“将来正确取消后不进入 hook 下一步”的路径，重跑为 **2 passed / 2 failed，2.64s**；六个场景仍全部呈现缺陷，两个缺陷测试在汇总不变量处失败，八个正常允许和四个输入/SessionStart 取消场景通过。一次 apply_patch 因 rustfmt 后上下文不符而未应用，重读后成功；不把编辑失败当产品证据。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**54 passed / 64 ignored，9.47s**，提交前探针核验调整后再次 **54 passed / 64 ignored，9.64s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，6.71s**。两个新正常测试默认执行，两个缺陷探针 ignored；默认回归通过不是 H-236 已修复。
+- `cargo fmt --all -- --check`、`git diff --check` 通过，Markdown fenced blocks=8（偶数）。实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `models/src/client.rs:355` clone_on_copy、`persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未报告 lint 通过。
+- code-audit 促使区分相似 fire_hook/fire 的真实可达路径，docs-generator 促使首次复现、对照设置错误、agent 增量和最终验证分别追加证据。只新增本测试模块/入口并更新指定报告，没有生产修复、协议/配置/权限变更、数据迁移或真实收费；原有未跟踪文件保持原样。
+- 未运行全 workspace、Desktop build/UI、真实 DeepSeek/HTTP 连接取消、参考工程测试、批量/并行工具、command/http/mcp hooks、hook 自身超时、父总时限、数据库重开或其他平台。不能推断真实供应商后台推理一定被取消、所有扩展都继续执行、永久资源泄漏、具体 UI 卡片、真实收费数额或未来修复安全性。全系统审计仍在继续，用户排除的 encrypted-content 错误未处理。

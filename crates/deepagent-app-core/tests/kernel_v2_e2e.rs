@@ -57,6 +57,9 @@ mod agent_hook_state;
 #[path = "kernel_v2_e2e/hook_usage.rs"]
 mod hook_usage;
 
+#[path = "kernel_v2_e2e/hook_cancellation.rs"]
+mod hook_cancellation;
+
 #[path = "kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
 
