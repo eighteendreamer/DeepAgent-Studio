@@ -528,6 +528,76 @@ async fn audit_workflow_human_input_uses_shared_waiting_lifecycle() {
 }
 
 #[tokio::test]
+#[ignore = "audit: an enabled iteration node must process its declared input array"]
+async fn audit_workflow_iteration_processes_frontend_input_contract() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start","config":{
+                    "inputVariables":[{"name":"items","variable":"items","type":"array"}]
+                }},
+                {"id":"iterate","kind":"iteration","config":{
+                    "inputVariable":"{{#start.items#}}",
+                    "outputVariable":"item",
+                    "parallel":false,
+                    "maxConcurrency":1,
+                    "errorHandling":"terminate",
+                    "flatten":false
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"iterate"},
+                {"id":"e2","source":"iterate","source_handle":"item","target":"end"}
+            ]
+        },
+        "inputs":{"items":["ONE","TWO"]}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-iteration-contract".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-iteration-contract")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let iteration_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.node_id == "iterate")
+        .map(|event| (event.status, event.outputs.clone(), event.error.clone()))
+        .collect();
+    eprintln!(
+        "api_ok={} api_error={:?} iteration_events={iteration_events:?} run_terminal={:?}",
+        result.is_ok(),
+        result.as_ref().err(),
+        run.terminal_kind
+    );
+    assert!(
+        result.is_ok()
+            && iteration_events.iter().any(|(status, outputs, _)| {
+                *status == NodeExecutionStatus::Completed
+                    && *outputs == Some(serde_json::json!({"output":["ONE","TWO"]}))
+            }),
+        "the enabled iteration node must process the frontend inputVariable contract"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
