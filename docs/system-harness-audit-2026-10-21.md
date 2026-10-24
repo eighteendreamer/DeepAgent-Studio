@@ -32,6 +32,7 @@
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
+| 模型目录刷新与用户选型 | 同一 SettingsService 顺序选择仍在目录中的 Pro，刷新完全相同目录后，下一正式 Responses wire 从 Pro 改成 Flash，新数据库连接也读到 Flash；默认 Flash 对照不变 | 已确认 H-223；正式 SettingsService/ChatService/Kernel/序列化与文件 SQLite，无并发、无公网、无工具执行；不是 H-87 的多宿主旧快照覆盖 |
 | Responses 消息角色 provider 校验 | 公开 `ResponseInputItem::Message` 与 `InputMessage` 使用任意字符串 role；`moderator` 经正式 ModelClient 进入 wire，官方四种角色的正向对照通过 | 已确认 H-203；离线 recording transport；普通 AppCore 的 `Role` enum 不产生该非法值，未请求真实 provider |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
 | 画布工作流模型身份 | 新建 LLM/分类/提取/Agent V2 节点动态生成裸 `deepseek-chat` 默认值；正式 Canvas bridge 将该非空但不可解码的值解释为自动路由，受控 HTTP wire 实际发送 `other-text-model` 并成功返回 | 已确认 H-160 的前端默认与 gateway 缺口；H-162 证明当前四类专业节点会在更早阶段失败，故尚未证明它们已通过完整工作流把数据发往错误供应商；本机 HTTP provider，无真实 Tauri 或公网请求 |
@@ -4376,6 +4377,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-220 Harness thread/list 分页显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_thread_list_has_bounded_page --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；创建 120 个真实 thread 后返回 `threads=120`、`serialized_bytes=25009`、`has_continuation=false`；正式 SQLite/dispatcher，无模型、工具、子进程或公网 |
 | H-221 Harness config/read 有效配置显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_config_read_is_not_a_static_protocol_banner --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；thread/start 指定 `deepseek-v4-pro`、`high`、`read_only` 与 `windows_sandbox` 后，正式 `config/read` 仍只返回 `protocolVersion`、`provider`、`transport`，`model/reasoningEffort/permissionProfile/sandboxBackend` 均缺失；正式 SQLite/dispatcher，无模型、工具、子进程或公网 |
 | H-222 Harness thread/start reasoning 贯通显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_thread_start_reasoning_effort_is_not_silently_dropped --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `thread/start` 携带 `reasoningEffort=high` 后无覆盖 `turn/start` 的 `TurnLaunch.overrides.reasoning_effort=None`，但 `turn/start` response 仍成功；正式 SQLite/dispatcher，无模型、工具、子进程或公网 |
+| H-223 模型目录刷新保留选型显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e model_selection::audit_catalog_refresh_preserves_selected_model_on_provider_wire --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期），约 0.69s；默认组 wire `[Flash,Flash]`，显式 Pro 组 `[Pro,Flash]`，重开 SQLite 后分别为 Flash/Flash；四次 run 各有唯一 succeeded，目录两次完全相同且 Pro 仍存在；只有 discovery/模型 transport 是离线夹具 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4780,6 +4782,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | Thread/list 分页与过滤 | H-220 | 沿用 EventStore 的 session 元数据查询，在现有协议增加 limit、排序/过滤和 opaque cursor；默认有界，cursor 绑定排序快照并拒绝重复/篡改；参考 Codex `thread/list` 默认 25、最大 100 与 nextCursor，不把 thread/read 全量历史混入列表 | 列表刷新只扫描/序列化当前页；历史规模增长不会阻塞客户端；归档、workspace、provider、更新时间等筛选可在服务端完成，断线可从 cursor 续读 |
 | 有效配置读取与来源可观测性 | H-221 | `config/read` 在现有 Settings/ThreadConfig/ServerState 汇合边界读取实际生效的 model、reasoning、permission、sandbox 与来源层；保留全局协议 banner 兼容字段，不把配置解析复制到第二套控制面；参考 Codex `ConfigReadParams` 的 `includeLayers`/`cwd` 与恢复响应中的实际 config snapshot | 客户端能确认下一 turn 使用的模型和执行边界；thread override、恢复、权限/沙箱变化不会静默脱离控制面；诊断和审计可将 wire、run_events 与配置来源对应起来；DeepSeek Responses 参数仍由 provider adapter 负责，不把宿主配置误写成官方 API 字段 |
 | Thread 级 reasoning effort 贯通 | H-222 | 扩展现有 `ThreadStartRequest`/`ThreadState`/`HarnessRunOverrides` 的同一配置边界，未知字段不再静默丢弃；`turn/start` 无覆盖时继承线程快照，并在实际 Responses wire 前复用 provider effort 校验；参考 DeepSeek Responses `reasoning.effort`（含兼容别名）与 DeepSeek Harness ACP 的 session config snapshot/prompt pinning、Codex turn 事件中的 reasoning effort | 客户端在 thread 创建时选择的思考模式真正作用于后续 turn；没有“成功但仍用默认 effort”的假成功；每次 turn、重试和工具循环的 effort 可回放、可计费且与 wire 一致；显式 turn 覆盖仍有清晰优先级 |
+| 模型目录与用户选择分离 | H-223 | 在现有 SettingsService/ModelCatalog 边界区分首次自动选型、目录元数据刷新与显式角色选择；刷新保留仍可用的选定 ID，失效模型走可观测的拒绝/迁移策略；参考 Codex remote catalog refresh 与 requested model 分离、DeepSeek Harness ACP 独立 selected/choices 与 prompt snapshot | 相同目录刷新不改变用户选型、下一 wire 或持久化角色；模型下架、别名变更、启动刷新与显式选择竞争有明确语义；复用 H-87 的字段级原子提交和 H-88 的凭据代次，不再由 refresh 调用整份初始化 |
 | JSON-RPC 方法注册与错误分类 | H-217 | 现有 `HarnessRequest` 解析/dispatch seam 维护唯一方法注册表；未知 method 统一返回 `ERR_METHOD_NOT_FOUND`，已知 method 的 payload 解码失败才返回 `ERR_INVALID_PARAMS`；参考 JSON-RPC 2.0 与 Codex `method_not_found()`，不再用 method 字符串形状推断语义 | 未知 `thread/*`、未来扩展和拼写错误均可被 SDK 明确识别；参数错误与能力不存在分离；错误码、日志和重试策略一致；新增方法只需更新一个注册/dispatch seam |
 | Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
 | Harness SDK 通知身份、订阅时序与缺口恢复 | H-01、H-91、H-205、H-214 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；提供先建订阅再发请求的 owned run/stream API，参考 DeepSeek Harness `HarnessSession.run()` 的 subscribe-before-prompt 队列与 Codex 的先附加监听再启动操作；不建立无界第二事件库 | 请求响应前通知仍可由该次操作消费；连续事件可按实际序号 ACK；7→9、broadcast lag 和迟订阅均可识别并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
@@ -5288,6 +5291,41 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 回归应覆盖四个规范值、四个兼容别名、非法/空值、模型能力不支持、thread 默认与 turn 覆盖优先级、resume/fork/restart、并发 config change、工具循环/重试/截断、Responses 与 Chat adapter 分离，以及 recording transport 对最终 `reasoning.effort` 的严格断言。真实 DeepSeek A/B 只用于确认 provider 行为，不替代本地字段贯通测试。
 
 本轮只新增正式失败探针和审计文档，未修改 Harness 生产行为。H-54/H-155/H-221 已分别记录其他层级；H-222 关注 `thread/start` 这一协议入口是否把 DeepSeek reasoning 选择传入后续 turn。
+
+### H-223：刷新相同模型目录会覆盖仍有效的用户选型，下一次 Responses 请求静默换模型
+
+**级别：中（P2，模型选择与能力/成本预期一致性）；触发条件：** 用户用正式 `set_model(Chat, Pro)` 选择非自动默认模型，随后模型目录刷新成功，即使返回的目录完全相同、选中的 Pro 仍存在。无需多宿主、并发、网络故障、未知模型或恢复/steer。
+
+#### 生产路径与动态复现
+
+- `crates/deepagent-app-core/src/settings.rs::set_model()` 校验 ID 在已发现目录中后，修改对应角色并持久化。`refresh_models()` 读取现有 Key 后直接调用 `initialize()`；后者经 `ModelDiscovery::discover()` / `ModelCatalog::auto_select()` 重建整个 catalog，把它原样放入新 `AppSettings.catalog`，没有从 prior 保留角色选择。其他许多设置显式保留 prior，模型选型不在其中。
+- `apps/desktop/src/App.tsx` 的启动 effect 在 `getSettings()` 返回 configured 后调用 `refreshModels()`；Tauri `refresh_models` command 转交同一共享服务。因此正常启动存在自动触发路径；本轮没有启动真实 WebView，不能声称实际桌面重启已被动态验收。
+- 新增默认忽略探针 `model_selection::audit_catalog_refresh_preserves_selected_model_on_provider_wire`，复用既有 `SelectionModel` 记录器。两组均用临时文件 SQLite、MemorySecretStore 占位凭据和同一份两模型 discovery JSON；默认组保持 Flash，实验组调用正式 `set_model(Chat, deepseek-v4-pro)`。每组刷新前后各执行一次完整 ChatService→RunAssembler→Kernel→ModelAgent→ModelClient→Responses serializer，不传逐次 model override；最后释放服务并用新数据库连接读取持久化 catalog。只在 transport 层用固定离线回答，不直接修改 catalog、不伪造运行终态。
+- 2026-10-24 执行：`cargo test -p deepagent-app-core --test kernel_v2_e2e model_selection::audit_catalog_refresh_preserves_selected_model_on_provider_wire --offline -- --ignored --exact --nocapture`。实测 **0 passed / 1 failed（预期暴露缺陷），约 0.69s**：
+
+| 组别 | 刷新前 wire model | 刷新后 wire model | 新连接读取的 chat_model |
+|---|---|---|---|
+| 未手动选型对照 | deepseek-v4-flash | deepseek-v4-flash | deepseek-v4-flash |
+| 显式 Pro | deepseek-v4-pro | deepseek-v4-flash | deepseek-v4-flash |
+
+- 四次运行分别验证唯一 `run_terminal.kind=succeeded`；刷新结果明确仍包含原选定模型。失败断言是“目录刷新不替换仍有效的选型”，不是因为模型请求失败。fixture 中 Flash 的 ID 沿用仓库既有目录样本，不用它宣称当前公网模型 ID 一定相同。
+
+#### 官方与成熟实现对照
+
+- **DeepSeek 官方** [Responses 参数页](https://api-docs.deepseek.com/zh-cn/api/create-response)将 `model` 定义为显式必填请求参数；[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api)又分别限制图片与原生搜索的支持模型。这说明静默换模型不只是下拉框展示差异，也可能改变可用能力；官方没有规定宿主的目录刷新应重置用户偏好。此问题属于本系统配置生命周期，不是 provider 错误或 KV cache 实现缺陷。
+- **Codex** `借鉴/codex/codex-rs/models-manager/src/manager.rs` 将 `refresh_available_models()` / `apply_remote_models()` 的远端目录更新与 `get_default_model(model, policy, ...)` 的用户选择分离；后者有显式 model 时保留，`StaticModelsManager` 即使允许 fallback 也优先保留仍可用的 requested model。`manager_tests.rs::static_manager_preserves_supported_requested_model_when_fallback_is_allowed` 为此提供针对性断言。这里只核对源码/测试，未运行参考项目，也不把 Codex 的未知模型策略移植为 DeepSeek 契约。
+- **DeepSeek Harness** `借鉴/deepseek-harness/packages/acp/acp/src/model-control.ts::AcpModelControl` 把 `selected` 与列出的 `choices` 分开；`state()/options()` 重列目录时使用当前 selection，`set()` 才应用客户端选型。`session.ts::prompt()` 捕获 snapshot 并 pin 到整轮。它不是本系统全局 Settings 的现成实现，可借鉴的是“目录信息、用户意图和本轮快照有不同所有者”，不能因为重列可选项就重新自动选择。
+
+#### 影响、边界与收敛方向
+
+- 已证明的是：用户成功选定 Pro、刷新成功、随后成功运行的真实序列化请求却变成 Flash，且改变已经落盘；单进程正常顺序即可触发。用户可能失去选择的模型能力、质量/延迟/费用预期，后台维护或依赖角色默认值的下次运行也可能受影响；本轮没有测量真实回答质量、费用、cache hit 或其他角色调用，所以这些后果只能作为条件性风险，不写成实测损失。
+- 本探针动态覆盖 Chat 角色、相同目录、无逐次覆盖的独立新 session；未验证 Reasoner 角色、真实桌面、下架/改名、真实 DeepSeek API 或已接纳运行中途被改变。H-87 的跨宿主 stale-write、H-88 的旧凭据恢复、H-89 的未知显式模型回退、H-222 的 thread reasoning 丢失具有不同触发边界，本项不重复计数。
+- 根因修复方向（尚未实施，本地设计）：保留现有 SettingsService/ModelCatalog 与 provider seam，分离首次初始化的自动默认选择、只读目录发现/字段级刷新、用户显式选择。刷新时在原子提交边界保留仍存在的角色 ID；消失/改名时按明确策略拒绝、标记 unavailable 或经用户确认迁移，记录 requested/effective/source/reason，不能无声 auto-select。并发选择与刷新需复用 H-87 的版本/条件更新，不以保存网络等待前的旧偏好替代；目录刷新也不应重新保存凭据（H-88）。
+- 回归应覆盖默认与两角色手动选择、同目录/重排/新增/删除/别名、初始化与显式重新初始化的不同意图、自动启动刷新、刷新失败保留、refresh/set_model 竞争、多宿主、重启读回、逐次覆盖优先级，以及实际 wire/事件/能力元数据与生效选择一致。先定义失效选择的可观测策略，不为每个模型名增加临时特判。
+
+本轮只新增离线正式失败探针与审计记录，未修复生产选型行为，没有协议、权限、沙箱或数据迁移变更。
+
+本轮验证：`cargo fmt --all -- --check` 与 `git diff --check` 通过（首次格式检查提示新增探针两处布局，调整后重跑通过）；上述 H-223 显式探针按预期失败。既有 model-selection 两项正常对照单独执行均为 1 passed；`cargo test -p deepagent-app-core --lib --offline` 为 **1091 passed / 50 ignored**，`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` 为 **35 passed / 37 ignored**。默认忽略的已知缺陷不因常规测试为绿而关闭。本轮没有修改生产行为或前端契约，未执行全 workspace/clippy/桌面构建、真实 UI 或公网模型验收。
 
 ### 本轮排除候选：Responses 工具参数增量仅含 `output_index`
 

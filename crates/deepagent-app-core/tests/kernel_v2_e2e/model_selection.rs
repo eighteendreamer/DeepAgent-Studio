@@ -120,6 +120,90 @@ async fn unsupported_explicit_provider_fails_before_any_model_request() {
 }
 
 #[tokio::test]
+#[ignore = "audit H-223: catalog refresh must preserve a still-available explicit model selection"]
+async fn audit_catalog_refresh_preserves_selected_model_on_provider_wire() {
+    let mut observations = Vec::new();
+    for explicit_selection in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let database_path = root.path().join("state.sqlite");
+        let db = Arc::new(Database::open(&database_path).unwrap());
+        let discovery = Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"},{"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}]}"#,
+        ));
+        let secrets = Arc::new(MemorySecretStore::new());
+        let settings = Arc::new(SettingsService::new(
+            db.clone(),
+            discovery.clone(),
+            secrets.clone(),
+        ));
+        settings
+            .initialize("offline-audit-placeholder")
+            .await
+            .unwrap();
+        let expected = if explicit_selection {
+            settings
+                .set_model(deepagent_models::ModelRole::Chat, KNOWN_OVERRIDE)
+                .unwrap();
+            KNOWN_OVERRIDE
+        } else {
+            DEFAULT_MODEL
+        };
+        let model = Arc::new(SelectionModel::default());
+        let chat = ChatService::new(db, settings.clone(), model.clone(), root.path());
+        for stage in ["before-refresh", "after-refresh"] {
+            if stage == "after-refresh" {
+                let refreshed = settings.refresh_models().await.unwrap();
+                assert!(refreshed.available_models.iter().any(|id| id == expected));
+            }
+            let run_id = format!("audit-refresh-{explicit_selection}-{stage}");
+            chat.run_in_session_with_overrides(
+                "Reply with a short acknowledgement.",
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                false,
+                Some(&run_id),
+                HarnessRunOverrides::default(),
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap();
+            let events = chat.run_events(&run_id, None).unwrap();
+            let terminals: Vec<_> = events
+                .iter()
+                .filter(|event| event.event_type == "run_terminal")
+                .collect();
+            assert_eq!(terminals.len(), 1);
+            assert_eq!(terminals[0].data["kind"], "succeeded");
+        }
+        let wire_models = model.0.lock().unwrap().clone();
+        assert_eq!(wire_models.len(), 2);
+        assert_eq!(wire_models[0], expected, "pre-refresh selection control");
+        drop(chat);
+        drop(settings);
+        let reopened = SettingsService::new(
+            Arc::new(Database::open(&database_path).unwrap()),
+            discovery,
+            secrets,
+        );
+        let persisted_model = reopened.load().unwrap().unwrap().catalog.chat_model;
+        eprintln!(
+            "catalog refresh audit: explicit={explicit_selection} expected={expected} wire={wire_models:?} persisted={persisted_model}"
+        );
+        observations.push((expected, wire_models, persisted_model));
+    }
+    assert!(
+        observations
+            .iter()
+            .all(|(expected, wire, persisted)| { wire[1] == *expected && persisted == expected }),
+        "a discovery-only refresh replaced a still-available selected model: {observations:?}"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit H-89: an explicit unknown model is silently replaced by the catalog default"]
 async fn audit_unknown_explicit_model_is_rejected_or_sent_without_substitution() {
     const REQUESTED: &str = "deepseek-audit-not-in-catalog";
