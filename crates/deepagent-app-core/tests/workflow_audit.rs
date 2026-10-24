@@ -1,10 +1,14 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use deepagent_app_core::{ChatService, MemorySecretStore, SettingsService};
 use deepagent_models::transport::MockTransport;
 use deepagent_persistence::{run_store::RunStore, Database};
 use deepagent_runtime::workflow::{NodeExecutionStatus, WorkflowRequest};
 use deepagent_runtime::RuntimeEvent;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
 
 #[path = "workflow_audit/media.rs"]
 mod media;
@@ -83,6 +87,84 @@ async fn audit_workflow_unknown_tool_propagates_node_and_run_failure() {
         "an execution error cannot be a completed node"
     );
     assert_ne!(run.terminal_kind.as_deref(), Some("succeeded"));
+}
+
+#[tokio::test]
+#[ignore = "audit: workflow http-request must use the shared network permission and approval boundary"]
+async fn audit_workflow_http_node_does_not_bypass_network_approval() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let captured = requests.clone();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        captured.fetch_add(1, Ordering::SeqCst);
+        let mut request = [0u8; 4096];
+        let _ = socket.read(&mut request).await;
+        let response = b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 6\r\nConnection: close\r\n\r\nCANARY";
+        let _ = socket.write_all(response).await;
+        let _ = socket.shutdown().await;
+    });
+
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"request","kind":"http-request","config":{
+                    "httpUrl":format!("http://{address}/private-control"),
+                    "httpMethod":"GET"
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"request"},
+                {"id":"e2","source":"request","target":"end"}
+            ]
+        }
+    }))
+    .unwrap();
+    let approvals = Arc::new(AtomicUsize::new(0));
+    let approval_count = approvals.clone();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(5),
+        chat.run_workflow(
+            workflow,
+            "audit-workflow-http-network-boundary".into(),
+            session,
+            |_| {},
+            move |_| {
+                approval_count.fetch_add(1, Ordering::SeqCst);
+            },
+        ),
+    )
+    .await
+    .expect("workflow must terminate in the audit fixture");
+    let run = RunStore::new(&db)
+        .get("audit-workflow-http-network-boundary")
+        .unwrap()
+        .unwrap();
+    let _ = server.await;
+
+    eprintln!(
+        "api_ok={} error={:?} requests={} approvals={} run_terminal={:?}",
+        result.is_ok(),
+        result.as_ref().err(),
+        requests.load(Ordering::SeqCst),
+        approvals.load(Ordering::SeqCst),
+        run.terminal_kind
+    );
+    assert_eq!(
+        requests.load(Ordering::SeqCst),
+        0,
+        "workflow HTTP must not reach a private/loopback destination without network policy"
+    );
+    assert!(
+        approvals.load(Ordering::SeqCst) > 0,
+        "a network-capable workflow node must route through the approval boundary"
+    );
 }
 
 #[tokio::test]

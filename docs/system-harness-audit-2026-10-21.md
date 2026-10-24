@@ -3267,6 +3267,33 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 回归需覆盖正常成对调用、未完成调用、孤立 output、空/重复 `call_id`、function/custom 混用、`replace_messages` 与 `from_response_items` 两入口、Chat/Responses 分路及 transport 调用数；H-148/H-149 关注空/重复身份，本项关注**公开消息替换入口绕过 repair**，不与其重复。
 - 本轮只新增审计测试和文档，未修改生产修复；默认桌面 `ResponseHistory::request()` 的正常路径仍由 `from_response_items()` 负责 repair，触发面限定为公开 mutator/未来 Harness 或 SDK 复用。
 
+### H-175：工作流 `http-request` 节点绕过统一网络权限与审批边界
+
+**级别：高（P1，工作流网络能力越权）；触发条件：能够提交专业工作流定义的调用者放入 `http-request` 节点，并将 `httpUrl` 指向宿主可达的 loopback、私网或其他未授权网络目标。** 本项与 H-165 的供应商图片 URL 第二跳不同：H-165 是 provider 成功响应驱动的 artifact 下载，本项是工作流定义本身直接触发裸 HTTP 请求；两条链路都必须独立收敛到统一网络策略。
+
+#### 生产路径与正式本机复现
+
+- `ChatService::run_workflow()` 通过既有 `RunAssembler`、`AgentKernel`、取消树、事件 sink 和 `RunStore` 执行 `WorkflowAgent`，但 `run_workflow_inner()` 只构造空的 `ToolRegistry` 与 `WorkflowToolExecutor`。`WorkflowAgent::execute_node_inline()` 对 `http-request` 直接进入 `execute_http_request()`，在那里按节点字段新建 `reqwest::Client`，设置普通 timeout 后调用 `send().await`，读取响应并把 body/status/headers 返回为节点输出。
+- 这条路径没有调用普通聊天使用的 `ToolRegistry`/`PermissionSet`，没有 `ChannelApprovalGate`、`NetworkPolicyController`、`SandboxBackend` 或宿主网络代理；`on_approval` 回调也不会被触发。节点 schema 只校验字段形状，不能把“URL 可写入配置”误认为“网络访问已授权”。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_http_node_does_not_bypass_network_approval`。它通过正式 `ChatService::run_workflow()` 提交 `start → http-request → end`，在临时 `127.0.0.1` 监听一个只返回 `CANARY` 的服务，记录实际 TCP 请求与审批回调次数；没有公网、真实内网、凭据或用户服务。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_http_node_does_not_bypass_network_approval --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true error=None requests=1 approvals=0 run_terminal=Some("succeeded")`，随后断言 `requests == 0` 失败，结果为 **0 passed / 1 failed（预期）**。这证明正式工作流已成功向 loopback 发出请求、未进入审批回调，并且运行仍记为 `succeeded`；不是测试代码直接调用 `reqwest`。本探针只验证访问与授权缺口，不把虚构响应扩展解释为真实敏感数据读取。
+
+#### 官方契约与成熟实现对照
+
+- DeepSeek 官方 [Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)明确说明：模型返回的是工具调用，**具体 function 由用户提供，模型本身不执行函数**；客户端应执行函数，再把 `tool` 结果回传模型。官方 [Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)也把 `input`、工具 item 和输出 item 定义为模型协议数据，并不授予任意宿主 URL 的网络权限。因此把 workflow JSON 的 `httpUrl` 直接升级为宿主出站能力，不是 DeepSeek Responses/Tool Calls 的必然语义，而是本系统新增的执行边界。
+- **DeepSeek Harness** 的 `借鉴/deepseek-harness/packages/web/web-fetch-http/src/provider.ts` 将 Web 抓取封装为显式 provider；`requestOnce()` 先走 `validateFetchUrl()`、解析并校验所有地址，再用 pinned dispatcher 发起请求，redirect 每一跳重新校验且只跟随同源地址。其测试 `packages/web/web-fetch-http/tests/fetch-http.spec.ts` 明确覆盖 loopback 在连接前被拒绝、跨源 redirect 被拒绝、超限与取消。参考项目 README 也将该能力描述为“仅限公网的 HTTP fetch provider”，不是在任意节点里散落 `fetch`。
+- **Codex** 将应用网络策略挂到 HTTP client factory 和 sandbox/approval profile；参考 `借鉴/codex/codex-rs/app-server/src/config_manager.rs` 的 `application_network_policy`、`借鉴/codex/codex-rs/app-server/src/in_process_bootstrap.rs` 的 policy 注入，以及 app-server protocol 中的 network approval amendment。可借鉴的架构是不让单个工作流节点自行新建无策略 client，而是让所有出站请求继承一次运行的有效网络策略；本轮没有运行 Codex 参考测试，也不声称其策略与本系统权限模型字段一一相同。
+
+#### 影响、后果与修复方向
+
+- 触发后，工作流提交者可以让宿主探测或读取本机服务、RFC1918/链路本地/云 metadata 地址，或访问当前网络策略本应阻断的公网目标；请求结果还会进入节点输出、事件与后续模型上下文。当前动态样本只确认 loopback GET 和成功终态，没有读取真实秘密、没有外传、没有模拟 DNS rebinding 或 redirect，因此不把这些潜在后果写成已发生事实。
+- 该缺口还破坏 Harness 的可审计性：UI/CLI/SDK 看到的是一个普通 `WorkflowNode Completed` 和 `run succeeded`，审批中心没有对应记录，网络日志也不带统一 run/permission scope。即使未来只允许“受信 workflow”，当前公开 `WorkflowRequest` 的 admission 并没有把网络 profile 与定义绑定，恢复、重放和远程执行入口会继续继承不明确的权限语义。
+- 根因修复应复用现有工具/权限边界，不能在 `execute_http_request()` 增加几个 hostname 特判。建议在 `run_workflow_inner()` 解析一次不可变的 `RunNetworkContext`（profile、allowlist、approval owner、取消 signal），由统一 `NetworkFetcher`/HTTP tool adapter 执行 URL 校验、DNS 地址 pinning、redirect 重校验、超时/大小/取消和审计；`http-request` 节点只提交 typed request，不持有裸 reqwest client。默认 profile 应拒绝 loopback、私网、link-local、metadata 和未批准 redirect；显式本地开发例外必须是可审计配置，而不是默认放行。
+- 验收应覆盖：无网络 profile、已批准 host、loopback/IPv6/RFC1918/link-local/metadata、DNS 多地址与 rebinding、redirect 到私网、请求/响应超限、取消与重试、工作流恢复/重放、CLI/SDK/Tauri 三种入口。断言未授权目标请求数为零、无 `Completed`/成功终态、审批事件与实际请求一一对应；正常公网例外必须使用同一 fetcher。H-165 的 provider artifact fetch、H-164 的 Canvas 取消和 H-38 的工具失败传播需保持独立回归。
+
+本轮只新增审计探针和文档，未修改生产实现；下一步应在统一网络 fetcher 设计明确后，再决定是否将工作流 HTTP 节点改造成现有 ToolRegistry 的 typed tool，避免出现第三套网络执行链。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3325,6 +3352,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-172 官方范围边界对照 | `cargo test -p deepagent-models --test responses_parameter_bounds_audit audit_documented_responses_parameter_boundaries_reach_transport --offline -- --ignored --nocapture`：1 passed；temperature 0/2、top_p 0/1、top_logprobs 0/20 均进入离线 wire；未调用真实 DeepSeek |
 | H-173 Responses 工具输出图片显式探针 | `cargo test -p deepagent-models --test modalities_audit audit_responses_tool_output_images_are_preserved_before_transport --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `Message::Tool`→`ResponseRequest`→`ModelClient`→recording transport 捕获 `output_image_parts=0`，`function_call_output.output` 为纯字符串；未调用公网或真实图片服务 |
 | H-174 `replace_messages` 工具配对显式探针 | `cargo test -p deepagent-models --test response_repair_audit audit_replace_messages_repairs_dangling_responses_calls_before_transport --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；公开 mutator 后正式 Responses wire 为 `has_call=true, has_output=false`，transport 已被调用；仅离线 recording transport，无公网或工具副作用 |
+| H-175 工作流 HTTP 节点网络边界显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_http_node_does_not_bypass_network_approval --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`AgentKernel` 向临时 loopback 发出 1 次 GET，审批回调 0 次，run 为 `succeeded`；仅本机临时服务，无公网或用户数据 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
