@@ -77,6 +77,7 @@
 | Harness SDK 断线后的事件等待 | 真实本机子进程退出且生产 reader 已清空 pending RPC，保留公开 client 时，既有和新订阅均无断线/关闭结果；丢弃 client 后两者才 Closed | 已确认 H-256（P2）；正常完成通知交付对照通过，Windows stdio fixture；未运行真实 Agent/模型或桌面 |
 | Provider SSE 非法 UTF-8 的故障隔离 | 合法事件后插入一个非法字节，正式 HTTP→ModelClient 不及时拒绝，后续文本和完整终态均未交付；解码器同序列保留 65,537 字节 | 已确认 H-257（P2）；中文/emoji 全切点解码和真实 HTTP 正常对照通过；未测真实供应商、Kernel 或 OOM |
 | CLI TUI 的模型 attempt 回滚 | 正式聊天部分输出后断线并重试成功，runtime及run_events有reset，落盘只有新答案，终端state与实际HistoryCell渲染仍拼入废弃答案和推理 | 已确认 H-258（P2）；无故障/首个delta前断线对照通过，正式ChatService/Kernel/SQLite；未启动真实TTY或公网 |
+| 工具双完成事件的调用身份一致性 | 同一调用的arguments.done为A、output_item.done为B时，正式write_file执行A，原生历史及下一请求却以B配对A的成功结果 | 已确认 H-259（P2）；正式ChatService/Kernel、文件SQLite和真实临时文件；两个正常对照通过，限矛盾provider故障注入，不声称DeepSeek正常流有此问题 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
 | Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
 | Harness thread/list 历史列表 | 创建 120 个真实持久化 thread 后，正式 `thread/list` 一次返回全部 120 条、约 25 KB JSON；请求没有 limit、cursor 或 continuation | 已确认 H-220；正式 SQLite/EventStore/ServerState，无模型、工具、子进程或网络 |
@@ -4887,6 +4888,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 | 工具实际执行与后置扩展的提交边界 | H-139 | 既有 ToolPipeline/action/Session 保存已执行事实和结果；后置 hook 的反馈、拒绝继续及失败分别投影；参考 Claude 普通工具结果先保留、Codex 区分执行 lifecycle 与 hook outcome | hook 有效/无效/执行错误及重开后，成功副作用不会变成未完成操作；原结果可回放、动作有准确终态、模型配对反馈可解释；不盲目重复执行 |
 | 响应提交前预执行的状态归属 | H-233 | 在既有 Tool/Runtime/Session 明确并发与可丢弃预取的独立契约；参考 DeepSeek Harness 成功流先提交再执行，或 Codex 先记录调用、错误后仍收拢结果；不将 Safe 当成无状态证明 | 成功/failed/EOF/自动重试/取消均无不可见任务状态；hooks 有无不改变已执行事实的可审计性；主运行与子代理、agent-hook 的共享实例边界分别验证，不另建存储 |
 | 模型 attempt 的用户视图提交 | H-258 | 复用既有 ModelAttemptReset/ModelRequestStarted，由TUI和Desktop对齐未提交片段的快照/撤回契约；参考Claude的orphaned-message tombstone，不重建retry层 | 部分正文/推理后重试只显示有效attempt；此前已提交工具/叙述及真实compaction/memory标记不丢；实际TTY的tail与scrollback和持久化结果一致 |
+| 流式预处理与最终工具调用身份 | H-259 | 在现有Responses accumulator/ToolAttemptController绑定最终call_id、工具名和语义参数，冲突须显式拒绝，不能仅按ID命中旧prepared调用；参考Codex从同一个OutputItemDone记录历史并构造工具执行 | 相同参数和JSON排版差异正常执行一次；矛盾事件不写文件或产生错配结果；原生历史、审批、action hash、实际执行和续轮wire描述同一调用；无hooks/有hooks均验证 |
 | 输入 hook 的附加上下文交付 | H-140、H-26 | 既有 hook 输出结果分开携带决定、改写与上下文，接回当前输入的原生 Surface/会话记录和统一 meter；参考 Claude hook_additional_context 与 Codex 独立 additional_contexts 通道 | 普通 stdout 与合法 additionalContext 在实际 wire 中可见且有来源；拒绝仍不发模型；多 hook 有界合并、恢复可回放，不把 UI 日志或任意输出升级为系统权限 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45、H-119、H-164 | 摘要、prefire、正文、重试、工具、画布视频 HTTP、其他 Canvas 同步模型请求和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；Canvas 节点不先 Completed 再把 run 标 cancelled；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误；本地停止不冒充云任务已撤销 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
@@ -6877,3 +6879,39 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `ChatState`、App事件路由和scrollback flush共用同一attempt生命周期；若片段可提前flush为不可改终端历史，需要明确定义可撤回区域或用可识别的废弃attempt标记，不把旧片段作为正常最终回答。不要在TUI重新实现重试或改写已正确保存的模型历史。line-mode同样未处理reset属源码旁证，本轮未捕获其stdout，不额外登记第二个缺陷或称其已动态复现。
 - 验收应覆盖正文/推理分别先到、多次重试、重试耗尽/取消、输出上限升级、fallback、工具之前/之后的多step、compaction标记、实际TTY绘制/scrollback与复制。当前只动态验证一次transport断线、一次恢复及两种正常对照；未运行真实HTTP/DeepSeek、真实终端、Desktop、参考项目、workspace全量或生产修复。
 - 验证收尾：`cargo test -p deepagent-cli --offline` **86 passed / 24 ignored**，既有正常协议、终端状态与新正常对照全部通过；已知缺陷ignored测试未自动关闭。`cargo fmt --all -- --check`、`git diff --check`通过。`cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings`未通过，实际报models/client.rs:355的clone_on_copy和persistence/run_store.rs:127的explicit_counter_loop；均核对HEAD含原代码，本轮不修改这两个无关文件，不声称lint全绿。没有运行全workspace、前端构建或手动TTY验证。
+
+### H-259：流式预处理缓存覆盖最终工具参数，实际写入与原生调用历史及续轮上下文发生错配
+
+**级别：中（P2，异常供应商流下的工具调用完整性）；状态：正式 ChatService/ModelClient/ModelAgent/Kernel、文件 SQLite、真实 write_file 已复现，未修复。** 触发前提是同一 item_id/call_id 的 `response.function_call_arguments.done` 与 `response.output_item.done` 给出语义不同的完整参数；本轮是自相矛盾的 provider/兼容网关故障注入，**不是正常 DeepSeek 流，也没有证据证明其官方服务实际发送过这种序列**。不把异常协议本身当成供应商漏洞，登记的是宿主接受冲突后仍成功执行并记录不一致事实。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；仅新增 `crates/deepagent-app-core/tests/kernel_v2_e2e/tool_call_identity.rs` 和主测试文件的模块入口。临时 workspace/文件 SQLite、MemorySecretStore/占位 key；受控 HttpTransport 代替公网，保留正式模型请求序列化、Responses 事件组装、工具注册/权限/hook流水线和运行持久化。只创建临时合成文本，无用户资料、真实凭据、外部服务或生产代码修改；未处理用户排除的 encrypted-content 报错。
+- E-259-first（source_type=command，source_ref=上述 test-only 模块，content_hash=n/a，artifact_path=n/a）：首次执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e tool_call_identity --offline -- --include-ignored --nocapture`，**2 passed / 1 failed（预期），测试0.37s**。故障组输出 `executed={"content":"EARLY","path":"early.txt"} native={"content":"FINAL","path":"final.txt"} early_exists=true final_exists=false action=Completed wire_calls=1 wire_outputs=1 terminal=succeeded`；最终在“成功执行必须与原生历史描述同一调用”的不变量处失败。该结果出现后立即追加本项，没有先修生产实现再补写证据。
+- E-259-stream：第一响应按递增 sequence_number 发 created、空参数 function_call added、arguments.delta/done（A）、output_item.done（B）、含B及usage的completed。A为 `write_file({"path":"early.txt","content":"EARLY"})`，B为 `write_file({"path":"final.txt","content":"FINAL"})`；工具名、item/call ID始终相同。发送两个done后、completed前断言两文件均不存在，排除“响应未提交先写文件”的 H-233 根因；实际副作用发生在正式响应提交后。第二个请求只返回结束文本，没有额外工具指令。
+- E-259-execution：唯一 tool_started 的arguments为A、唯一 tool_completed.ok=true；磁盘 early.txt 字节确为EARLY，final.txt不存在。唯一RunControlStore action为Completed，其 arguments_hash 与生产规则 `sha256(serde_json::to_vec(A))` 一致；唯一 run_terminal=succeeded。没有依靠假工具、手工修改事件或仅凭执行日志推断文件效果。
+- E-259-history：EventStore.load_session 中相同call_id的原生 FunctionCall 唯一且参数为B。正式ModelClient第二次请求的input中，同call_id唯一function_call为B、唯一function_call_output为A的真实成功结果，output.status=ok且result与正式tool_completed.output一致。供应商下一轮收到的是“调用B成功”的配对，宿主实际做的却是A；ID与数量正确不能证明调用内容正确。
+- E-259-controls：相同A=B组、JSON仅空白/键顺序不同但语义相同组，都真实创建final.txt且内容FINAL；实际调用、原生历史、action hash与续轮wire一致，恰好两次模型请求/一次工具调用/唯一succeeded，均通过。正常对照排除了“双done必然重复执行”与“字符串排版差异也必然失败”。
+
+#### Finding 与调用路径
+
+- F-259：severity=medium，category=design，status=validated，confidence=high，evidence_ids=[E-259-first,E-259-stream,E-259-execution,E-259-history,E-259-controls]，location=`crates/deepagent-models/src/stream.rs::ResponseAccumulator::emit_tool_completed`、`crates/deepagent-runtime/src/loop_engine.rs::StreamingToolAttempt::normalized/prepare`。arguments.done首次触发ToolCallCompleted，runtime校验并缓存A；output_item.done把builder及output_items改成B，但completed_emitted阻止再次通知controller。最终响应及AgentDecision取B，normalize_decision却只比较call_id与name，用prepared中的A静默替换B；没有比较语义参数或报告冲突。
+- P-259（path_type=callflow，关联上述E/F）：ChatService.run_in_session → ModelClient/ResponseAccumulator接受A的arguments.done → ModelAgent observer调用ToolAttemptController.prepare缓存A → output_item.done记录B、去重阻止更新通知 → completed/attempt commit → Runtime normalize_decision把B换为A → persist_response_items保存B → 既有pipeline注册A的action并执行write_file → B与A的成功结果按相同call_id进入下一请求。调用身份在模型提交与工具执行之间分叉。
+- AppCore run_assembler已装配hooks，Runtime以 `self.hooks.is_none()` 决定是否投机执行；**关闭投机执行并不关闭prepared缓存与normalize_decision**，所以本项在默认主聊天链也可由矛盾流触发。既有 `responses_dual_completion_keeps_tool_execution_and_gates_consistent` 测试覆盖相同参数及权限/hook拒绝，没有覆盖冲突参数。不是H-233的Safe状态工具预执行残留，不重复其编号。
+
+#### 成熟 Agent 与 DeepSeek 官方依据
+
+- **Codex**：`借鉴/codex/codex-rs/codex-api/src/sse/responses.rs::process_responses_event` 忽略function_call_arguments.delta/done用于此处的语义分派，把output_item.done解析为ResponseEvent::OutputItemDone。`core/src/session/turn.rs`该分支交给`stream_events_utils.rs::handle_output_item_done`；后者从同一个item.clone()经ToolRouter::build_tool_call构建调用，同时record_completed_response_item记录原item，再queue handle_tool_call。`core/src/tools/router.rs`的FunctionCall分支直接把该item的arguments放入ToolPayload::Function。可借鉴的是历史与执行取同一个完整item，避免早期参数缓存覆盖最终调用；**未运行参考工程、不声称Codex显式比较/拒绝本fixture的两组参数，也不声称它会等待整个response.completed才执行**。
+- **DeepSeek 官方**：本轮联网复核[Responses指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)对arguments.done完整参数、output_item.done完成item与响应终态的定义；[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)说明call_id配对以及调用参数属于function_call；[工具指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)明确工具由宿主执行。schema/strict约束不能替代宿主跨事件的调用身份一致性；官方没有规定遇到本轮这种矛盾序列必须选早值或晚值，因此下面的拒绝策略是**本地稳健性设计，不冒充官方强制条款**。
+- [官方KV缓存规则](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)不负责校验宿主工具副作用；修复这里不应调整缓存开关、重排历史或宣称提升命中率。DeepSeek Harness的Messages默认适配没有本项相同的Responses双done证据，不把不同协议链强行作为已验证对照。
+
+#### 影响、根因收敛方向与未覆盖范围
+
+- 已证后果：真实写入A所指文件，而最终原生调用描述B所指文件；action/工具事件与原生历史、后续模型input互相矛盾，但运行仍成功。矛盾流无法证明供应商真正意图是A还是B，缺陷是系统没有拒绝或统一它们。模型可能据错配结果规划后续步骤，审计者也不能只看原生历史还原副作用。触发需要异常供应商或兼容层，因此评P2，不推断正常DeepSeek高频发生、真实用户数据丢失或任意权限突破。
+- **本轮没有验证审批绕过**：权限和hooks实际检查的是被替换后的A，不能因历史为B就声称已经批准B却执行A。本轮是临时新文本的允许写入；未测真实审批交互、命令执行、远程工具、custom_tool_call、无hooks投机路径、重试/取消竞争、重启后恢复、HTTP字节层或真实DeepSeek。
+- 本地设计建议（未实施）：在现有accumulator/controller边界建立call_id、kind、name和语义参数的唯一提交身份。准备阶段只提供可失效缓存；最终完成时按结构化JSON/既有规范化规则核对，不按原始JSON文本比较。矛盾完整事件应结构化报协议冲突并在有副作用执行前拒绝；如支持重新准备，必须同时校准原生历史、权限/hook、action hash与执行，不可静默换参数。custom input等非JSON内容使用其自身协议语义，不硬套JSON。
+- 若无hooks路径已经预执行，不能仅删旧缓存再执行新参数；需要沿H-233的效果归属设计处理已开始/已完成事实，保留正确调用及结果，不能伪造撤回。无需第二套工具注册表、run/event store或新的宿主链。
+- 回归应覆盖相同/等价/矛盾参数、done先后与重复、工具名/类型变化、无效最终JSON、多个call交错、有/无hooks、预执行取消与失败、审批/action持久化及续轮/重启上下文。当前只保留本轮真实链和两个正常对照的证据；全系统审计未完成。
+- 验证过程：定向正式 `kernel_v2_e2e` 默认回归 **81 passed / 78 ignored**；`cargo fmt --all -- --check`、`git diff --check`通过。首次 `cargo test -p deepagent-app-core --offline` 的单元 **1091 passed / 59 ignored**，随后中止于既有host_lock跨进程测试的 `UNIQUE constraint failed: runs.id`。核查该测试以PID构造可复用临时目录、固定live-run ID；未删除旧目录或修改测试，改用唯一全新 `DEEPAGENT_HOST_LOCK_TEST_ROOT` 隔离重跑，host_lock本身 **1 passed / 1 ignored**。这不是H-259证据，不据此另造产品缺陷编号。
+- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 未通过，实际报既有models/client.rs:355的clone_on_copy及persistence/run_store.rs:127的explicit_counter_loop，均已核对HEAD含原代码，不修改无关文件。未运行全workspace、Desktop构建/UI、真实provider或参考工程测试；不声称全量验证通过。
+- 收尾：使用全新host-lock临时根的 `cargo test -p deepagent-app-core --offline -- --quiet` 已完整结束并通过：单元 **1091 passed / 59 ignored**，集成合计 **117 passed / 133 ignored**，doc-test **0**。上述ignored含显式故障探针及真实服务测试，不意味着已知问题修复。code-audit用于定位首个调用身份分叉并验证真实效果，docs-generator要求的Scope/Evidence/Finding/Path已逐项落在本报告；只提交本项测试与文档。

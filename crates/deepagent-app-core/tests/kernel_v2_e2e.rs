@@ -131,6 +131,9 @@ mod responses_tool_choice;
 #[path = "kernel_v2_e2e/tool_schema_parameters.rs"]
 mod tool_schema_parameters;
 
+#[path = "kernel_v2_e2e/tool_call_identity.rs"]
+mod tool_call_identity;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/path_boundary.rs"]
 mod path_boundary;
