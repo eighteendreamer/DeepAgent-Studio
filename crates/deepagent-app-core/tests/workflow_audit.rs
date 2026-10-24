@@ -1594,6 +1594,73 @@ async fn audit_workflow_end_output_matches_declared_type() {
 }
 
 #[tokio::test]
+#[ignore = "audit: an OR condition group must be false when every operand is false"]
+async fn audit_workflow_or_condition_does_not_start_from_true() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"decide","kind":"if-else","config":{"conditions":[{
+                    "id":"true",
+                    "logicalOperator":"or",
+                    "conditions":[
+                        {"left":false,"operator":"is","right":true},
+                        {"left":0,"operator":"gt","right":1}
+                    ]
+                }]}},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"decide"},
+                {"id":"e2","source":"decide","source_handle":"true","target":"end"},
+                {"id":"e3","source":"decide","source_handle":"false","target":"end"}
+            ]
+        },
+        "inputs":{}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-or-condition".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    if event.status.is_terminal() {
+                        capture.lock().unwrap().push(event);
+                    }
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-or-condition")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let decision = events
+        .iter()
+        .find(|event| event.node_id == "decide" && event.status == NodeExecutionStatus::Completed)
+        .and_then(|event| event.outputs.as_ref())
+        .and_then(|outputs| outputs.get("branch"));
+    eprintln!(
+        "api_ok={} decision={decision:?} run_terminal={:?}",
+        result.is_ok(),
+        run.terminal_kind
+    );
+    assert_eq!(
+        decision,
+        Some(&serde_json::Value::String("false".to_string())),
+        "OR must use false as its identity and select true only when at least one operand is true"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();

@@ -52,6 +52,7 @@
 | 工作流目标节点与重跑 admission | `target_node_id` 传入不存在的节点时，正式工作流只完成 `start`、跳过 `end`，仍记录 `succeeded` | 已确认 H-177；无效目标未在编译/接纳边界拒绝，属于空执行成功，不是 H-39 的条件分支派发问题 |
 | 工作流合法目标节点的依赖闭包 | 整图执行时 target 正常得到中间祖先的 `SOURCE_VALUE`；指定同一个合法 target 后，祖先被标记 Skipped，target 因 required output unavailable 失败 | 已确认 H-196；节点运行按钮既不重算依赖闭包，也不加载带 revision 的既有输出快照 |
 | 工作流公开输出类型契约 | end 声明 `count:number`，实际引用 start 的字符串 `NOT_A_NUMBER`；正式运行仍发布 end=Completed、输出 string 并记录 `succeeded` | 已确认 H-197；编译器只验证类型名称，运行时不验证成功输出是否符合声明类型 |
+| 工作流 OR 条件求值 | 使用后端当前原生条件字段，两个 OR 子条件都为 false，条件节点仍输出 `branch=true` 并成功 | 已确认 H-198；OR 累加器错误地从 true 开始；当前 H-39 的双分支派发会掩盖一部分执行范围后果 |
 | 专业画布代码节点 | 前端公开 `codeScript`/`codeInputVariables` 并标记 `enabled`，后端只读取未使用的 `code`/`codeVariables`，没有 JavaScript/Python 执行器；明确无效脚本仍完成并返回空对象 | 已确认 H-178；能力注册、配置 schema、运行时 executor 契约断裂，属于静默伪成功 |
 | 专业画布文档提取节点 | 前端 `document-extractor` 标记 `enabled`，但正式工作流执行到节点即返回 `UnsupportedNode` 并失败 | 已确认 H-179；这是公开能力目录与实际 executor 不一致，和 H-178 的静默成功不同 |
 | 专业画布人工输入节点 | 前端 `human-input` 标记 `enabled` 并提供表单/超时，正式工作流没有进入 `NeedsApproval`、输入租约或可恢复等待态，而是直接 `UnsupportedNode` 失败 | 已确认 H-180；人工输入 schema 与统一人机协作生命周期断裂 |
@@ -3936,6 +3937,34 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-197 只新增正式审计探针和报告，未修改生产工作流类型检查或终态逻辑。
 
+### H-198：OR 条件组从 true 开始累加，所有子条件为 false 仍选择 true 分支
+
+**级别：高（P1，确定性控制流正确性；当前执行范围后果被 H-39 部分掩盖）；触发条件：if-else 使用后端当前支持的 `logicalOperator="or"`，且同组所有比较结果均为 false。** 条件节点不是模型判断，而是宿主确定性逻辑；相同输入必然错误输出 true，不存在采样或供应商差异。
+
+#### 生产调用链与正式复现
+
+- `WorkflowAgent::execute_if_else()` 对每组条件统一执行 `let mut group_result = true`；AND 使用 `group_result && cmp` 时 true 是正确单位元，但 OR 随后执行 `group_result || cmp`，第一次比较前已经为 true，因此任何合法 OR 组都无法变回 false。
+- 函数还读取了顶层 `logicalOperator` 却只赋给未使用变量；本项只登记已经动态证明的组内 OR 单位元错误，不把多组组合语义一并写成已复现问题。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_or_condition_does_not_start_from_true`。为与 H-40 去重，fixture 不使用桌面的 `logic/items/variable` 字段，而直接使用后端当前实际消费的 `logicalOperator/conditions/left/right`；两个比较分别为 `false is true` 与 `0 > 1`，都应为 false。测试只读取条件节点自己的 Completed 输出，不以 H-39 已失效的边派发作为判据。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_or_condition_does_not_start_from_true --offline -- --ignored --exact --nocapture`。
+- 实际结果：`api_ok=true`、`decision=Some(String("true"))`、`run_terminal=Some("succeeded")`；断言期望 `branch="false"`，以 **0 passed / 1 failed（预期）** 结束。无模型、工具、网络、命令或文件副作用。
+
+#### 成熟 Agent/工作流实现对照与 DeepSeek 边界
+
+- Dify 的公开 if-else 节点定义把逻辑操作符收敛为 `and | or` 枚举，并在节点校验中拒绝空 case、空 conditions、缺变量或缺比较操作符；其 workflow builder 也生成明确的 `logical_operator`、`conditions` 与分支 handle。这里引用的是成熟 Agent 工作流的配置/admission 做法，不据此前端代码臆称其后端求值实现细节。
+- DeepSeek Harness 没有与本画布同构的 if-else DAG 节点；其可迁移原则来自 Schemastery 和工具 runtime：有限集合字段先在统一 schema 中解析，成功结果再经过可执行验证器。不能让 `or` 等已声明枚举落到静默默认或未覆盖分支。DeepSeek Responses 也不参与本项，本地控制流必须在调用模型之前确定并可测试。
+- Codex 同样没有可直接对照的通用画布条件节点，因此本项不伪造“Codex 已用某函数解决”。可迁移的成熟工程做法是把条件求值器做成独立纯函数，以 AND 全真、OR 任一真为真，并对 0/1/N 条件和所有操作符做表驱动测试；调度器只消费已验证的 branch ID。
+
+#### 影响、后果与根因修复方向
+
+- 当前 H-39 会无视 branch 并实际派发未选路径，所以本样本的错误 decision 没有额外减少或增加执行节点；它仍污染节点事件、调试视图和任何直接读取该结果的消费者。不能据此声称本轮已观察到仅 true 路径产生网络/工具副作用。
+- 修复 H-39 后若遗漏本项，任意全 false 的 OR 条件都会稳定进入 true 分支，可能调用错误模型、工具、HTTP 或人工审批路径；run 仍成功，审计记录还会把错误决策当作正常业务选择。两个问题必须各自有回归，避免修复调度后才暴露条件求值缺陷。
+- H-40 是 UI 与 Rust 条件字段漂移；H-39 是正确 decision 未约束派发；H-198 是即使直接提供后端原生字段，decision 本身仍算错。修复任意一项都不能替代另两项。
+- 根因修复应提取版本化 `ConditionGroup` DTO 和纯 evaluator：`and => comparisons.all(...)`、`or => comparisons.any(...)`，明确空组是 admission error 而不是借助布尔单位元默认为真/假；拒绝未知 logical operator，不再使用 `_ => and`。删除当前未使用的顶层字段或定义多 case 的 first-match 语义，并统一前端字段迁移。
+- 回归需覆盖 OR 的 FF/FT/TF/TT、AND 的同表、空组、单条件、多组 first-match/else、未知操作符、比较错误、引用缺失，以及在 H-39 修复后的真实分支节点执行集合；事件、UI、CLI/SDK 和 replay 必须报告同一 branch ID。
+
+本轮 H-198 只新增正式审计探针和报告，未修改生产条件求值或分支调度。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -4017,6 +4046,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-195 工作流多个可达终点显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；左右两条 start 可达路径各有 end，实际仅左侧三节点 completed 后 run 即 `succeeded`，右侧分支无任何终态事件；无模型、工具、网络、命令或文件副作用 |
 | H-196 工作流合法目标依赖闭包显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_target_node_keeps_required_ancestor_outputs --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；整图控制组 target 得到 `SOURCE_VALUE` 并成功，指定合法 target 后 source=Skipped、target=Failed、run=`failed`，错误为 required output unavailable；无模型、工具、网络、命令或文件副作用 |
 | H-197 工作流输出类型契约显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_end_output_matches_declared_type --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；end 声明 `count:number`，实际发布 `{"count":"NOT_A_NUMBER"}`、end=Completed、run=`succeeded`；无模型、工具、网络、命令或文件副作用 |
+| H-198 工作流 OR 条件显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_or_condition_does_not_start_from_true --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；两个原生 OR 子条件均为 false，节点却输出 `branch=true`、run=`succeeded`；只验证 decision，不复用 H-39 的错误派发作为判据；无模型、工具、网络、命令或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
