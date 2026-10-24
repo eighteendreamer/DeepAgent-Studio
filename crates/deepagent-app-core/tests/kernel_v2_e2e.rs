@@ -70,6 +70,9 @@ mod pricing_activation;
 #[path = "kernel_v2_e2e/fallback_cost.rs"]
 mod fallback_cost;
 
+#[path = "kernel_v2_e2e/budget_lifecycle.rs"]
+mod budget_lifecycle;
+
 #[path = "kernel_v2_e2e/cache_prefix.rs"]
 mod cache_prefix;
 

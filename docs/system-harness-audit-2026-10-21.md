@@ -42,6 +42,7 @@
 | 成本日历边界与真实预算接纳 | 正式成本库中本日/本月合成历史费用共 13 元、限额 5 元，但 `summary` 按 UTC 日界/epoch 固定 30 天桶只计 1 元；两组完整 ChatService 仍调用模型且各有唯一 succeeded；当前时刻账单的日/月拦截对照正常 | 已确认 H-224；当前宿主 UTC+08、实际系统时间、临时文件 SQLite 与离线 transport，没有修改系统时钟或产生真实扣费 |
 | 首次登录的运行时计价激活 | 未配置启动的报价刷新先结束后，正式 initialize 已持久化 Flash 价格，但既有 CostService 仍空；离线 Responses usage 经正式链路完整入账，费用行 NULL、summary=0，有限预算下第二轮仍成功调用模型 | 已确认 H-225；正式服务生命周期/完整 ChatService/文件 SQLite 与离线 transport；已配置启动、显式刷新同步两组对照可正确计价并阻断第二轮，未运行真实 WebView |
 | 备用模型切换的成本归属 | 正式 ChatService 在受控过载后真实 wire 切换 Flash/Pro，但 finalizer 把完整累计 usage 按初始模型入账；双向切换分别导致下一轮预算误放行/误拦截，混合模型工具运行亦错价 | 已确认 H-226；文件 SQLite、正式模型选型/Responses parser/Kernel/CostService，四组不切换对照正常；仅离线响应与合成费用，没有真实扣费 |
+| 日/月预算的宿主恢复生命周期 | 公开服务设置限额后完整聊天已计费且下一次准入被拒绝；关闭所有数据库/设置/成本 owner 再从同一文件重建，费用与模型报价仍在，限额却都回到 None，下一次聊天重新 dispatch 并 succeeded | 已确认 H-227；日/月分别复现，显式重设的两组对照拒绝；动态为服务重建而非真实 Tauri 重启，没有找到现有前端组件调用 setBudget，不能冒充 UI 用户普遍触发 |
 | 画布同步模型请求的运行取消 | 正式 `text-gen` 已进入本机 provider 且响应保持 pending 后，取消被受理但工作流 300ms 内不退出；释放响应后 text 节点发布 Completed，运行却落唯一 cancelled 终态 | 已确认 H-164；动态仅覆盖 text。image/audio/embedding 只确认请求 DTO 与共用 HTTP `call()` 同样没有取消通道，尚未逐项动态复现 |
 | 画布供应商返回资产的下载边界 | 正常 image-gen 供应商在成功 JSON 中返回 loopback 图片 URL 后，宿主直接第二跳 GET，零审批，并把私网 canary 完整存入 artifact；运行仍 succeeded | 已确认 H-165；正式 WorkflowAgent/Canvas gateway/文件 SQLite/RunStore，本机两台 loopback 服务；没有访问公网、真实内网或元数据服务，也未证明数据已外传给供应商 |
 | DeepSeek Responses 思考模式的 top_p 有效值 | 正式 ModelClient 在 `reasoning.effort=high` 且设置 `top_p=0.2` 时对 Flash、Pro（无工具/有工具）均将 0.2 原样发到 Responses wire；官方对这些组合分别规定 0.95、1.0、0.95 的有效行为 | 已确认 H-166；离线正式 serializer/wire 探针；没有真实 API 调用或回答质量 A/B，不能证明每次输出必然改变 |
@@ -173,6 +174,7 @@
 | 费用周期与预算准入 | 声明的本地本日/本月费用被 UTC 午夜/epoch 固定 30 天桶代替；当前月已达限的历史费用可被漏计，完整 ChatService 仍调用模型（H-224） | Grok billing 显式传递 period type/start/end，Codex 的 provider limit 保留 window/reset 身份；Claude 日期统计按日历日期归组（helper 用 UTC，不能冒充本地日预算）；没有查到可直接移植的同类本地月预算 | 本地限额错误放行；其他日期/时区可能将上期费用带入而误拒绝。日历周期、本地策略和供应商账期未建立明确契约 |
 | 登录配置与计价 owner 一致性 | 首次 initialize 更新 settings 却不激活已有 CostService，正常有价模型仍产生 NULL 费用；有限预算聚合将其当 0 后继续接纳（H-225） | Claude 在公共 usage 处理路径按 resolved model 查询成本规则，并对未知成本显式标记不准确；Grok 从当前认证上下文读取 billing，错误明确返回。它们不是同类 Tauri 初始化实现 | 相同模型/用量因宿主初始化顺序得到不同费用，首次登录后成本与本地限额失真；日志/CostRecorded 的 None 未进入 summary 完整性 |
 | 备用模型与已计费用量归属 | fallback 已更新实际模型，但结算只收到初始 model_name 和无 route 的累计 RunUsage（H-226）；有价完整 usage 仍按错误模型价格快照入账 | Claude fallback 更新 currentModel 并重进 callModel，usage 按本次 resolvedModel 计价；DeepSeek Harness 的 attempt 保留 message.source route，但公开聚合 routes 只是去重集合，不冒充按模型人民币账本 | 便宜→贵低估后误放行，贵→便宜高估后误拒绝；混合模型不能用单一初始/最终模型价还原，费用事件和历史 snapshot 同样错误 |
+| 周期预算的持久作用域 | 日/月限额仅存在 CostService 的 RwLock，set_budget 成功不落盘，启动不恢复；账本保留时重建成本 owner 仍变为无限（H-227） | Codex GoalStore 将 goal 的 token_budget/status/usage 一并写入并查询 SQLite；Grok 从账户后端读取 cap/current_period。两者不是本地人民币日/月预算，可借鉴持久 owner 和明确作用域 | 周期限额实际退化为本进程临时开关，宿主重建后不能继续作为费用保护；调用方若不自行重放配置，会在本期已有费用越限时再次运行 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
@@ -4387,6 +4389,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-224 成本日历与预算接纳探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e cost_calendar:: --offline -- --include-ignored --nocapture`：1 passed / 2 failed（预期），约 0.48s；日/月账本各为 13、周期成本各误为 1、限额 5 仍各 dispatch 一次且唯一 succeeded；当前时刻 12 元日/月对照均在 dispatch 前拒绝。真实系统时间与文件 SQLite；账单为合成历史数据，模型为离线 transport |
 | H-225 首次登录计价激活探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e pricing_activation:: --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期），约 3.15s；首次登录费用 NULL/汇总 0、两次 wire 均 Flash、两次 succeeded，usage/cache 未丢；已配置启动与刷新同步对照各计 0.000616 元、第二轮预算拒绝且总 wire 数 1。临时文件 SQLite，离线模型用量，无真实扣费 |
 | H-226 fallback 成本路由探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e fallback_cost:: --offline -- --include-ignored --nocapture`：1 passed / 3 failed（预期），约 1.28s；四组同模型对照正确；Flash→Pro 实计 0.000616/应计 0.002370 且下一轮放行，反向实计 0.002370/应计 0.000616 且误拦截；Flash 成功工具请求后再切 Pro，累计 input=2000/cache hit=1600，实计 0.001232/应计 0.002986，下一轮仍放行。完整服务与临时文件 SQLite、离线 transport，无真实费用 |
+| H-227 日/月预算服务恢复探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e budget_lifecycle:: --offline -- --include-ignored --nocapture`：1 passed / 2 failed（预期），约 0.98s；关闭旧数据库 owner 后重开同一文件，日/月费用均保留 0.0014，但各自 0.001 限额均恢复为 None，下轮各 dispatch 一次并 succeeded；显式重设日/月对照各零 dispatch。首轮正式模型合成 usage 入账，没有手工插成本行、修改时钟或真实扣费 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4795,6 +4798,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 费用周期与日/月预算边界 | H-224 | 在既有 CostService/CostStore 定义唯一 period resolver，明确本地预算时区、自然日/月或显式账期及起止点；summary 与 admission 复用同一周期；参考 Grok 显式 period 和 Codex reset 身份，不复制供应商账单逻辑 | 本地午夜/月初、UTC、跨年/闰月/夏令时均有可注入时钟的边界回归；历史账本不被重写，周期费用与限额决策一致；不因整数取模无声重置。保留总额、session 用量与既有唯一成本库 |
 | Settings 激活与实时计价一致性 | H-225 | 在既有初始化/设置生效边界统一提交有效模型与价格版本，令 CostService 消费同一 ready snapshot；summary 保留未定价完整性，有限预算采用明确的未知费用策略；参考 Claude 请求时公共计价/不准确标记，不复制其默认模型猜价 | 首次登录、已配置启动、显式刷新和登录切换同样生效；初始化成功后首次调用即可计价；NULL 费用不冒充真实 0；保留原始 usage 和价格来源，历史补算需版本/幂等审计 |
 | 每调用模型身份与成本结算 | H-226 | 在既有 ModelAgent/provider usage→finalizer→CostService 链保留 run/step/attempt 与实际 provider/model、时间和价格版本，按调用或同价 route 分桶结算；总 RunUsage 保持上下文 gauge/运行累计投影，不新增第二成本库；参考 Claude 按本次 resolvedModel 计价和 DeepSeek Harness attempt route | 双向 fallback、混合模型工具循环、重试/截断/取消均按实际有用量请求记一次；wire、费用事件、价格 snapshot、summary 和下轮准入一致；不能只把初始 model_name 改成最终 model_name，未知 route/费用明确标记 |
+| 周期预算配置的持久 owner | H-227 | 在既有应用设置/配置存储中保存有版本的预算策略，由唯一 CostService 在就绪前恢复；set_budget 仅在持久化成功后回报成功；临时覆盖需显式标注作用域，不复制第二预算中心；借鉴 Codex GoalStore 的限额/用量持久归属，不复制 token 单位 | 正常关闭重开、配置更新、明确清空、损坏/不可读配置、账户与数据根切换均有明确策略；历史费用保留时恢复原限额，下轮准入零 dispatch；前端/API 显示持久/临时 scope，不能隐式变成 unlimited |
 | JSON-RPC 方法注册与错误分类 | H-217 | 现有 `HarnessRequest` 解析/dispatch seam 维护唯一方法注册表；未知 method 统一返回 `ERR_METHOD_NOT_FOUND`，已知 method 的 payload 解码失败才返回 `ERR_INVALID_PARAMS`；参考 JSON-RPC 2.0 与 Codex `method_not_found()`，不再用 method 字符串形状推断语义 | 未知 `thread/*`、未来扩展和拼写错误均可被 SDK 明确识别；参数错误与能力不存在分离；错误码、日志和重试策略一致；新增方法只需更新一个注册/dispatch seam |
 | Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
 | Harness SDK 通知身份、订阅时序与缺口恢复 | H-01、H-91、H-205、H-214 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；提供先建订阅再发请求的 owned run/stream API，参考 DeepSeek Harness `HarnessSession.run()` 的 subscribe-before-prompt 队列与 Codex 的先附加监听再启动操作；不建立无界第二事件库 | 请求响应前通知仍可由该次操作消费；连续事件可按实际序号 ACK；7→9、broadcast lag 和迟订阅均可识别并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
@@ -5468,6 +5472,45 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 本轮仅新增审计探针与文档，未修复生产模型/计价行为；未修改协议、前端、权限、沙箱或数据库 schema。`cargo fmt --all -- --check` 与 `git diff --check` 通过；H-226 显式探针初跑及加强账本/事件金额断言后复跑均为 **1 passed / 3 failed（预期），约 1.28s**。`cargo test -p deepagent-app-core --lib --offline`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**38 passed / 43 ignored**。默认忽略的已知缺陷不因正常回归为绿而关闭。
 
 实际尝试 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，**未通过**：已有 `deepagent-models/src/client.rs:355` 的 `clone_on_copy` 和 `deepagent-persistence/src/run_store.rs:127` 的 `explicit_counter_loop` 被 deny warnings 拦截，本轮未修改这些生产文件，也未压制告警；不能声称新增测试已通过完整 Clippy。未执行全 workspace 测试、全 features Clippy、桌面 build/真实 UI、公网故障与真实扣费验收；这里只交付有证据的新增审计项，不宣称全系统通过。
+
+### H-227：日/月限额仅驻留内存，宿主服务重建后历史费用保留但预算静默变为无限
+
+**级别：条件性中（P2，周期预算配置生命周期缺口）；触发条件：** 调用公开 `CostService::set_budget` 或桌面 `set_budget` command 配置过非空日/月限额，随后重建该成本服务，且宿主/外部调用方没有自行重放配置。现有文档/类型把它描述为日/月预算，却没有明确标注“仅本进程有效”；也没有找到当前前端组件使用 `setBudget`，因此不声称已有预算设置按钮、真实 UI 操作丢失或所有用户都受影响。此为本系统架构能力缺口，不是 DeepSeek 协议违约。
+
+#### 生产路径与复现证据（确认后即时记录）
+
+- `crates/deepagent-app-core/src/cost_service.rs::CostService` 的预算 owner 为 `RwLock<BudgetConfig>`，`new(db)` 总是使用 `BudgetConfig::default()`（daily_limit/monthly_limit 都为 None），`set_budget()` 只替换内存值且返回 `()`，不写共享 Database、SettingsService 或外部配置。费用与价格 snapshot 则写入持久 costs 表，两个生命周期不一致。
+- `apps/desktop/src-tauri/src/lib.rs::set_budget` 调用上述 setter 后直接返回 `summary("")`，没有落盘或 scope/expiry 提示；启动装配重新 `CostService::new(service.shared_database())`，只从 settings 恢复 pricing 并后台刷新价格，没有恢复预算。`api.ts::setBudget` 只是 invoke 桥接；当前检索 `apps/desktop/src` 只有该定义和预算类型/默认 summary，没有业务组件调用者，不把导出的桥接当作已存在的交互入口。
+- `run_assembler.rs` 只在 `self.cost` 存在时调用 `cost.check_budget()`；后者两个限额都为 None 即直接 `Ok(())`。本项探针在重建前后都挂载同一个类型的 CostService，排除了“没装配成本服务”的另一种机制。现有 `DeepAgent_Studio_Official/docs/security/budget.md` 列出配置日/月预算及运行前拒绝超限，但未提供持久化或宿主重建作用域说明；本项不把其中没有写出的重启保证当成已经承诺的正式协议。
+- 新增 `crates/deepagent-app-core/tests/kernel_v2_e2e/budget_lifecycle.rs`。临时文件 SQLite、正式 Settings/Cost/ChatService，discovery 仅 canonical Flash；初始化后同步已有价格，日/月分别设置限额 0.001 元。离线 Responses 返回 input=1000、output=100、total=1100，正式链路记录 miss=1000、hit=0，按已存在闲时快照计 0.0014 元。未手工插入费用行、删除配置、改系统时间或发真实请求。
+- 每组首轮从零费用正常接纳、唯一 succeeded；紧接第二轮在正式准入门得到对应 daily/monthly budget exhausted，模型总请求仍为 1。探针确认 session/today/month 费用均为 0.0014，证明当前周期的成本与限额已实际生效，而非只设置后不运行。
+- 随后等待已知 session-memory pass 收束、drop ChatService/SettingsService/CostService，并断言旧 Database 的 Arc strong count 为 1 后 drop，确保旧连接 owner 关闭。再从同一个 state.sqlite 文件构造新 Database、SettingsService、CostService，仿照桌面启动仅恢复 settings.view 的报价，不再 initialize。fixture 的占位凭据后端跨两次装配保留，模拟外置凭据存储，未保留旧 settings/cost/database handle。**这是服务/文件重开，不是真实 OS 进程终止或 WebView 自动化。**
+- 2026-10-24 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e budget_lifecycle:: --offline -- --include-ignored --nocapture`：**1 passed / 2 failed（预期），约 0.98s**；一项正常测试覆盖日/月两组显式重设对照。首次编译曾把 SettingsView 当作 AppSettings 使用而误写 `view.catalog`，核对真实类型后改为 `view.chat_model` 再运行；编译错误属于探针，不作为产品缺陷证据。成功运行结果如下：
+
+| 重建场景 | 重建前费用 / 有效限额 | 重建后旧费用 | 重建后 budget | 后续正式聊天 |
+|---|---|---|---|---|
+| 日预算，按当前启动链恢复 | 0.0014 / daily=0.001，已拒绝一次 | 0.0014 | daily=None、monthly=None | 无错误，1 次 dispatch，唯一 succeeded |
+| 月预算，按当前启动链恢复 | 0.0014 / monthly=0.001，已拒绝一次 | 0.0014 | daily=None、monthly=None | 无错误，1 次 dispatch，唯一 succeeded |
+| 日预算，显式重设对照 | 0.0014 / daily=0.001 | 0.0014 | daily=0.001 | daily budget exhausted，0 dispatch |
+| 月预算，显式重设对照 | 0.0014 / monthly=0.001 | 0.0014 | monthly=0.001 | monthly budget exhausted，0 dispatch |
+
+- 四组重开时均恢复恰好一条历史成本行，input=1000、output=100、miss=1000；两组未重设随后总成本增为 0.0028，说明实际新调用继续正常入账，**不是历史账本被清零或金额未定价**。两组失败发生在“配置/下轮准入仍有限”的断言，明确恢复调用和唯一终态在该断言前已观察到。恢复 summary 诚实显示 budget=None，所以不能称后端把已保存限额伪装成仍然生效；缺的是持久化及生命周期语义，而不是返回假限额。
+
+#### 成熟实现与官方边界
+
+- **Codex** `借鉴/codex/codex-rs/state/src/runtime/goals.rs::GoalStore` 的 `replace_thread_goal_snapshot` / `replace_thread_goal` 将 `token_budget`、`tokens_used`、status 和 goal 身份写入 SQLite，同一 `get_thread_goal` 从持久表读取；事务失败会返回错误，不只修改进程内预算副本。`state/src/model/thread_goal.rs` 保留 typed budget/status；`app-server/tests/suite/v2/thread_resume.rs::thread_goal_set_preserves_budget_limited_same_objective` 确认更新同一目标不清掉已限制状态和预算，`thread_goal_set_edits_objective_without_resetting_usage` 核对持久状态与用量不被编辑重置。这里只读源码/测试，未运行参考工程；**它是 goal token budget，不是本系统人民币日/月限额，也不把这些测试冒充参考项目的进程重启验收。** 可借鉴的是策略与计量有明确 durable owner、状态变化不是悄悄重置为无限。
+- **Grok Build** `借鉴/grok-build/crates/codegen/xai-grok-shell/src/extensions/billing.rs::handle_get_billing` 从当前认证账户的后端读取 credit config，返回 included/monthly limit、on_demand_cap、current_period 等结构；数据不由本地进程 `new()` 默认值重新定义。网络/状态/解析错误显式返回，不把缺配置表示为确认无限。这是后端额度视图，非本地预算写入/原子准入实现，本轮未请求其服务，不能拿它证明本系统应使用同一供应商 billing API。
+- **DeepSeek 官方** [价格页](https://api-docs.deepseek.com/zh-cn/quick_start/pricing/)按 token 消耗与单价说明账户扣费；[查询余额](https://api-docs.deepseek.com/zh-cn/api/get-user-balance/)只返回可用状态、货币和总/赠金/充值余额，没有替宿主保存本地日/月预算的能力。本系统预算生命周期应由既有应用层定义，不能宣称 DeepSeek 账户余额会自动补上本地限额恢复。测试的 0.0014 是快照×合成用量，不是实际扣款。
+
+#### 影响与根因治理方向（未实施）
+
+- 已配置调用方可能把日/月限额视为跨本期有效，但实际只能保护当前 CostService 生命周期；重建后既有超额历史费用还在，限制却失效，后续任务可继续消耗账户余额。风险成立的前提是调用方使用了当前公开设置入口且未自行重设，不能夸大为当前所有桌面用户都已开启预算保护。若产品本意仅提供进程临时限额，至少应显式说明 scope/expiry，并避免将其作为持久日/月费用保护宣传。
+- 本轮未跑真实 Tauri 启动/退出、UI 点击、异常崩溃、电源故障、多个独立宿主、账户切换、CLI/SDK 生命周期或日/月交界；不报告真实费用损失。H-224 是有配置时周期桶错误，H-225 是报价激活缺失，H-226 是模型归价错；本项在当前时刻、单一模型、完整已定价历史费用前提下仍独立成立，不重复计数。
+- 本地设计方向：在现有应用设置/配置存储边界增加单一预算策略事实来源，保存版本、币种、period/timezone 与账户/数据根作用域；唯一 CostService 在运行准入 ready 前恢复该策略。设置成功只在持久提交后返回；磁盘失败/损坏/读取失败应给明确 unavailable 状态，不静默降为无限。避免在 UI mount、每轮调用或每个宿主入口各写一份“记得重设预算”的补丁，不新增第二成本库/预算中心。
+- 无预算与无法恢复预算应可区分；如果确需临时覆盖，返回其 scope 和有效期，清空限额必须是明确操作。预算字段有效性、并发准入预留和运行中硬停是相邻问题，本轮没有动态验证，不借本项宣称已有这些保证。
+- 回归需覆盖保存后读回、同进程服务重建、真实宿主重启、日/月与双限额、显式清空、非法/损坏配置、写入失败/并发版本、账户和数据根变化，以及“历史费用保留且旧限额恢复→下轮零 dispatch”。历史账本不得被重写；配置默认迁移需区分从未设置与恢复失败。本轮只增加证据，不修改这些生产策略。
+
+本轮仅新增审计探针与文档，没有生产代码、前端契约、权限、沙箱或 schema 变更。`cargo fmt --all -- --check` 与 `git diff --check` 通过；H-227 显式复现为上述 **1 passed / 2 failed（预期）**。`cargo test -p deepagent-app-core --lib --offline`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**39 passed / 45 ignored**。未修复生产行为，默认 ignored 缺陷不能按绿色常规回归关闭。未运行全 workspace、桌面 build/真实 Tauri/UI、真实进程崩溃或供应商扣费；本轮未重跑 Clippy，上轮在未修改的 models client/persistence run_store 既有告警处失败，不能声称已通过 lint 或全系统验收。
 
 ### 本轮排除候选：Responses 工具参数增量仅含 `output_index`
 
