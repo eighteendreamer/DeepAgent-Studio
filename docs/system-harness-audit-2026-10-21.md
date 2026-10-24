@@ -66,6 +66,7 @@
 | Responses 流身份与顺序元数据 | 合法流为 `response.created`/`response.completed` 提供同一 response ID、实际模型和单调序号；正式 ChatService→Kernel 落盘后两条事件仅保留 Runtime envelope 与 event_type | 已确认 H-200；正常连续离线 Responses fixture、正式 run_events；未制造乱序/丢包，也未声称已观察真实供应商流损坏 |
 | 无限画布工作流视口缩放锚点 | 画布已平移后，底栏放大/缩小/重置/滑杆与小地图放大/缩小只改 zoom、不重算平移 offset；缩放前后的视口中心映射到不同世界坐标 | 已确认 H-201；动态执行六个生产 TSX handlers；与 Penguin-Magic 中心锚定按钮缩放及指针锚定滚轮缩放实现对照；没有图数据或运行状态副作用 |
 | 无限画布工作流视口持久化 | 正式图写入只序列化 `nodes/edges`，新 WebView 的 viewport 回到 `{x:0,y:0,zoom:1}`；ReactFlow 初次挂载执行 fitView，没有 per-mode default viewport | 已确认 H-202；动态调用真实 `workflowPersistence` 的读/写/flush 并创建新 store 实例；图节点恢复对照通过；未启动 Tauri WebView |
+| 无限画布工作流陈旧快照写入 | 两个独立 SQLite 连接读取同一画布后，窗口 A 先写入新节点，窗口 B 再以旧完整图快照写入仍返回成功，最终图丢失 A 的节点；当前写入没有 revision/CAS | 已确认 H-244；正式 `CanvasWorkflowStore` 与两个文件 SQLite 连接，离线故障注入；未启动双 Tauri 窗口 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
@@ -6317,3 +6318,41 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 已核对源码调用链：`model_agent.rs` 的 `collect_finished_memory_prefetch`、`adopt_compaction`、`adopt_compacted_history`、`maybe_schedule_memory_prefetch`，以及 `knowledge_service.rs` provider 的 `already_surfaced` 过滤；已核对 DeepSeek Harness compaction checkpoint/replay 文档和本地 Codex/Claude 相关恢复资料。
 - 收尾验证待在本次文档追加后执行：`cargo fmt --all -- --check`、`git diff --check`，并复查 Markdown fences/diff；Clippy 仍受既有 `deepagent-models/src/client.rs:355` `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` `explicit_counter_loop` 阻断，不能宣称全库 lint 通过。
 - 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费/KV cache 实验或参考工程测试；未实施修复。没有重复 H-165、H-241、H-242，也没有处理用户排除的 `encrypted-content` 报错。
+
+### H-244：CanvasWorkflowStore 接受陈旧完整图快照，两个窗口的后写会静默丢失先写编辑
+
+**级别：高（P1，画布编辑数据完整性）；触发条件：同一 live canvas 被两个窗口/宿主读取后，各自保存完整 `nodes/edges` 快照，且较旧快照在较新快照之后提交。状态：正式 `CanvasWorkflowStore`、两个独立文件 SQLite 连接和真实读写路径已复现，未修复。** 本项不涉及 `encrypted-content`，也不是 H-202 的 viewport 未持久化问题。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；只使用临时目录、临时文件 SQLite 和虚构节点 ID `base/first/second`，没有真实用户画布、密钥、模型请求、工具、网络或 Tauri 窗口。
+- E-244-first（command，content_hash=n/a）：在 `crates/deepagent-app-core/src/canvas_workflow_store.rs::tests::audit_current_canvas_rejects_stale_window_snapshot` 增加 ignored 故障探针，执行：
+  `cargo test -p deepagent-app-core --lib canvas_workflow_store::tests::audit_current_canvas_rejects_stale_window_snapshot --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（缺陷预期）**。输出：`stale_accepted=true final_nodes=[base, second]`。
+- E-244-callflow：两个独立 `Database::open(path)` 分别构造两个 `CanvasWorkflowStore`；先写入 `base`，第二个连接读取并保留旧快照；第一个连接写入 `first` 成功；第二个连接再提交基于旧快照增加 `second` 的完整图，`write_current` 仍返回 `Ok`，最终读取只剩 `base/second`，`first` 被覆盖。断言要求陈旧提交必须拒绝，因实际接受而失败。
+
+#### 初始 Finding 与 Path
+
+- F-244（category=design，status=validated，confidence=high，evidence_ids=[E-244-first]）：`CanvasWorkflowDoc` 只有 `id/name/mode/workspace_id/graph/updated_at/current`，没有 revision/etag；`CanvasWorkflowStore::write_current` 每次重新构造完整文档并调用 `DocumentStore::put`，没有携带调用者读取的版本，也没有条件更新。桌面 `workflowPersistence.ts::persist()` 在 500ms 防抖后序列化整个 `{nodes, edges}`，两个窗口各自运行同一路径时没有冲突 token 可以传回或比较。
+- P-244（callflow）：窗口 A、B 读取 revision-0 图 → A 的本地 Zustand 快照加入节点 `first` 并写入 → B 仍持有 revision-0 全图，加入 `second` 后整图写入 → 无 CAS/版本检查的 `put` 替换 A 的文档 → A 的编辑在持久化层消失，两个窗口都曾收到成功写入语义。
+- 这不是 SQLite 单条写入撕裂或 JSON 损坏：最终文档是合法 JSON，失败点是“旧完整快照具备与新快照相同的写入资格”。单进程单窗口串行编辑不触发；只读窗口、不同 workspace id 或没有重叠陈旧快照也不在本次已证范围。
+
+#### 成熟 Agent 与实现对照
+
+- **Penguin-Magic（同类无限画布）**：`G:\Code_UZIP\Penguin-Magic\backend-nodejs\src\services\nodeCanvasStorage.js::updateSnapshot` 为每个文档维护 `revision`，要求调用者提交 `baseRevision`；当前 revision 不匹配即抛出 `REVISION_CONFLICT`，路由 `nodeCanvas.js` 返回 HTTP 409 和当前摘要。其测试 `nodeCanvasStorage.test.ts` 的“旧 revision 的结构保存被拒绝”直接覆盖“第一次保存后旧客户端覆盖”场景。该实现还把 viewport 更新与结构快照分开，避免结构保存把较新的视口回写掉；这里只借鉴冲突检测边界，不把其 JSON 文件原子性当作本系统 SQLite 方案。
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/api/settings-controller/src/index.ts` 的 `update/replace/mutate` 接口显式接受 `expectedRevision`，冲突归一为 `settings/conflict`；`README.zh.md` 也将陈旧写入定义为可操作的 conflict，而不是成功覆盖。虽然对象是设置而非画布，但它证明成熟 Harness 在共享可变状态提交处保留调用者所见版本，并把冲突作为协议结果。
+- **Codex/Claude 边界**：本轮没有找到可直接等同于本项目 live canvas 快照的 Codex/Claude 单文件图存储接口，因此不声称它们已经解决同一画布问题；可借鉴的是 Codex/DeepSeek Harness 对 durable thread/settings 的身份与 revision/continuation 约束，而不是把 UI 成功保存当作权威提交。
+
+#### 根因治理方向与影响评估（本地设计，未实施）
+
+- 在现有 `CanvasWorkflowStore`/`DocumentStore` 边界增加版本字段（或等价 ETag），读响应与写请求携带 `base_revision`；`write_current` 必须做原子 compare-and-swap，陈旧提交返回结构化 conflict 和当前 revision/摘要，不能返回成功。不要只在 Zustand 层比较时间戳，也不要用“最后写入时间”替代版本条件：时钟相同、回拨和重试都会误判。
+- 前端 `workflowPersistence` 要保存后端返回的最新 revision；遇到 conflict 时停止继续用旧快照重试，显示可合并/重新加载的状态，并保留本地未提交图供用户决策。若产品只允许一个活动窗口，应在协议上明确 owner/lease 并让第二窗口只读；不能依靠 UI 偶然只有一个窗口。
+- 复用现有 `DocumentStore`，不新建第二个 graph store；把结构图和 viewport 的独立更新规则、workspace scope、失败重试和窗口关闭 flush 纳入同一版本契约。若需要自动合并，只能在节点/边有稳定 ID、删除与移动语义明确后做类型化 merge，不能把两个 JSON 文本盲目拼接。
+- 已证后果是窗口 A 的合法节点编辑在窗口 B 的陈旧保存后消失，且双方写入调用均可观察为成功；可能造成画布节点、连线、提示词、媒体引用或运行配置丢失，下一次工作流执行读取的图与用户刚编辑的图不一致。本轮没有执行真实用户数据、模型调用、媒体删除或供应商请求，不把这些潜在后果写成已发生。
+- 影响评为 P1：本地单用户需要两个窗口/宿主和重叠编辑，触发面不是所有日常单窗口运行；但一旦触发是静默、可持久化的数据丢失，且当前协议没有冲突提示或恢复凭证。若未来 Harness 远程化或允许多用户共享 workspace，应重新评估为更高隔离风险。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行上述精确 ignored 探针，结果 **0 passed / 1 failed（缺陷预期）**；失败发生在最终图读取之后，输出明确证明陈旧写入被接受且 `first` 节点消失。未修改生产写入逻辑，只新增 test-only 探针。
+- 已执行 `git diff --check`、`cargo fmt --all -- --check`，并复查本节引用的 Rust/TS/JS 路径；本节没有 API、权限、模型、工具或数据库迁移改动。全库 Clippy 仍受报告既有的两个未修改 lint 阻断，不能声称通过。
+- 未启动 Tauri 双窗口、真实前端 WebView、跨进程同时写入压力、进程崩溃/磁盘故障、自动合并、不同 workspace 并发或真实用户图；未运行 Penguin-Magic/DeepSeek Harness 测试，只做源码与其现有测试对照。没有重复 H-202、H-223、H-87，也没有处理用户排除的 `encrypted-content` 报错。

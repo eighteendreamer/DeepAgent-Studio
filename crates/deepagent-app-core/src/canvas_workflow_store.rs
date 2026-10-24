@@ -358,4 +358,48 @@ mod tests {
             )
             .is_err());
     }
+
+    #[test]
+    #[ignore = "audit: a stale canvas window must not overwrite a newer graph snapshot"]
+    fn audit_current_canvas_rejects_stale_window_snapshot() {
+        let root = tempfile::tempdir().expect("temp root");
+        let db_path = root.path().join("canvas.sqlite");
+        let first_db = Arc::new(Database::open(&db_path).expect("first database"));
+        let second_db = Arc::new(Database::open(&db_path).expect("second database"));
+        let first = CanvasWorkflowStore::new(first_db);
+        let second = CanvasWorkflowStore::new(second_db);
+
+        first
+            .write_current("creative", None, &json!({"nodes":[{"id":"base"}]}))
+            .expect("seed");
+        let stale_snapshot = second
+            .read_current("creative", None)
+            .expect("read stale snapshot")
+            .expect("snapshot exists");
+
+        first
+            .write_current(
+                "creative",
+                None,
+                &json!({"nodes":[{"id":"base"},{"id":"first"}]}),
+            )
+            .expect("newer write");
+
+        let mut stale_update = stale_snapshot;
+        stale_update["nodes"] = json!([{"id":"base"},{"id":"second"}]);
+        let stale_result = second.write_current("creative", None, &stale_update);
+        let final_graph = second
+            .read_current("creative", None)
+            .expect("read final graph")
+            .expect("final graph exists");
+        eprintln!(
+            "stale_accepted={} final_nodes={:?}",
+            stale_result.is_ok(),
+            final_graph["nodes"]
+        );
+        assert!(
+            stale_result.is_err(),
+            "a stale canvas snapshot was accepted and overwrote a newer window update"
+        );
+    }
 }
