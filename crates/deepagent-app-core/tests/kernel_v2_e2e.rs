@@ -79,6 +79,9 @@ mod session_search_visibility;
 #[path = "kernel_v2_e2e/session_repair_isolation.rs"]
 mod session_repair_isolation;
 
+#[path = "kernel_v2_e2e/verification_dialect.rs"]
+mod verification_dialect;
+
 #[path = "kernel_v2_e2e/cache_prefix.rs"]
 mod cache_prefix;
 

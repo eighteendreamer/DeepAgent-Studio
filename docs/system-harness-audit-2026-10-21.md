@@ -105,6 +105,7 @@
 | 可选复核/分类的用量归属 | 完整 provider Response 返回 usage 后仅保留判定文本，真实 Finalizer/成本库只保存主调用量 | 已确认 H-63；两条正式模型检查及 SQLite 账本复现，未测真实供应商费用；已有摘要 side_usage 账本能力不因此失效 |
 | 自动完成验证的真实构建生命周期 | 正式发现的 cargo check 已启动 build.rs 后，用户取消仍等待；Kernel 超时落终态后 build.rs 仍可写文件 | 已确认 H-64；Windows 真实临时 Cargo 工程、SystemCommandRunner、ModelAgent/Kernel/SQLite 对照，未覆盖其他构建系统和桌面 UI |
 | 自动验证与宿主命令边界 | 显式 cargo check 经配置后端被拒绝，但 .txt 修改后的完成验证、创建 .rs 后的单文件验证均绕过该后端，真实 build.rs 写到 workspace 外 | 已确认 H-65；完整 ChatService/工具/Kernel/真实 Cargo 与拒绝型 backend 复现；不是实际 Sandboxie/Windows Sandbox 容器逃逸测试 |
+| 单文件验证的配置语法依据 | 带单行/多行注释、尾逗号的 tsconfig.json 经真实 TypeScript 5.9.3 编译成功，默认验证仍报 JSON parse error；Strict 下 action=Failed 且错误进入下一模型请求 | 已确认 H-230；正式 ChatService/Kernel/SQLite/Responses wire 与真实 tsc 对照；未验证真实模型的后续修复选择或全部配置方言 |
 | DeepSeek 原生搜索的模型能力选择 | Flash 开启 DeepSeekFirst 时，正式请求只剩官方明确会忽略的原生 web_search，本地 function 搜索描述被替换；Pro、外部搜索、关闭搜索对照成立 | 已确认 H-66；启用桌面同用的 web feature，正式 ChatService/Kernel/序列化离线复现，未实测公网搜索或回答质量 |
 | 当前轮图片与原生输入投影 | 正式导入的可读图片已在用户事件中持久化，本轮实时 Surface 却无图片；已有会话再发新图，下一轮仍无图，原生镜像也未保留附件 | 已确认 H-67；正式 AppCore 两组共五轮、真实附件文件及 wire 对照，模型 transport 为离线原生回答，未测真实识图质量或桌面点击 |
 | 历史图片读取失败的语义 | 相同初始图片在续聊中可正常携带；临时原图丢失后，同一路径静默发送纯文字且运行成功，调用方未收到附件错误 | 已确认 H-68；正式 AppCore/Kernel/文件解析/序列化两组对照，只删除测试自己导入的临时文件，未验证真实桌面提示及其他文件故障 |
@@ -5611,3 +5612,51 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 回归：`cargo test -p deepagent-app-core --lib --offline --quiet` 为 **1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet` 为 **42 passed / 49 ignored**；`cargo test -p deepagent-persistence --lib --offline --quiet` 为 **67 passed**。补上启动前重新注入截断的对照后，显式缺陷模块复跑仍为 **2 passed / 2 failed（预期），约 1.67s**。正常测试不关闭两个默认 ignored 的已复现问题。`cargo fmt --all -- --check` 与 `git diff --check` 均通过；`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被本轮未修改的 `models/src/client.rs:355`（clone_on_copy）和 `persistence/src/run_store.rs:127`（explicit_counter_loop）既有告警阻断，不能报告 lint 通过。
 
 本轮只有审计探针、测试入口与文档变化，未改生产恢复逻辑、协议、权限或沙箱；测试原文件自动还原，未删除真实数据。依照 docs-generator 的证据链要求即时登记，再追加对照与扩展，未另建生产状态中心。未执行全 workspace、桌面 build/真实 UI、真实 CLI 启动、OS 崩溃、供应商或硬件存储测试；源码对照不等于参考工程动态验收。全系统目标仍未完成。
+
+### H-230：单文件验证只按扩展名选择严格 JSON，合法 TypeScript 配置被误报并在 Strict 模式记为失败动作
+
+**级别：中（P2，验证正确性与 Agent 反馈污染）；状态：正式聊天工具链及真实编译器对照已复现，未修复。** 默认 Enabled 模式把 TypeScript 接受的带注释 `tsconfig.json` 告诉模型为 `JSON parse error` 并要求修复；Strict 模式进一步把已成功写盘的工具结果改为错误，持久化 action 为 Failed。缺陷在于验证器的语法依据与实际配置消费者不一致，不是要求关闭验证，也不意味着 JSON 普通数据文件应接受任意注释。
+
+#### 即时证据（2026-10-24，首个编译器对照完成后登记）
+
+- Scope：仅临时目录、文件 SQLite、虚构 TypeScript 项目、正式 SettingsService/ChatService/Kernel 与离线 Responses transport；没有公网模型、真实用户配置或生产代码修改。测试在 `typescript-project/tsconfig.json` 写入配置，根目录不含构建描述，隔离独立完成验证，避免全局 tsc/PATH 影响本项判断。
+- E-230-wire（command，content_hash=n/a）：`crates/deepagent-app-core/tests/kernel_v2_e2e/verification_dialect.rs` 经合法 `write_file` 创建配置，断言磁盘字节与模型参数完全一致，并在下一次真实生成的 Responses wire 中检查同 call_id 唯一 `function_call_output`。单行注释配置在 Enabled 下工具 ok=true 但包含 `JSON parse error`，Strict 下工具 ok=false、wire 的 `status=error`、`RunControlStore` action=Failed。运行最终由模拟模型给出文本后唯一 succeeded；本项不另把“工具错误后模型仍可继续”报为运行伪成功。
+- E-230-tsc（command，content_hash=n/a）：同一探针对写盘后的完全相同文件运行 `node <仓库>/apps/desktop/node_modules/typescript/lib/tsc.js --noEmit --pretty false --project <临时配置路径>`，本机 Node v22.22.1、TypeScript 5.9.3；严格 JSON 和单行注释两组真实编译 exit=0。不是手写宽松 parser 伪造合法性。[TypeScript 官方 1.8 发布说明](https://www.typescriptlang.org/docs/handbook/release-notes/typescript-1-8.html#allow-comments-in-tsconfigjson)明确允许单行与多行注释。
+- E-230-control：同模块正常对照已通过：严格 JSON 在 Disabled/Enabled/Strict 均 ok=true、无 parse error、action=Completed；真正缺右括号的配置在 Strict 下被拒绝；禁用验证的单行注释配置正常。首轮命令仍在扩展多行注释、尾逗号和真实非法配置的编译对照，以下结果后续即时追加，不提前宣称全部通过。
+
+复现命令（显式缺陷测试依赖已安装的 desktop TypeScript 和 PATH 上的 Node；不自动安装或联网）：
+
+```powershell
+cargo test -p deepagent-app-core --test kernel_v2_e2e verification_dialect:: --offline -- --include-ignored --nocapture
+```
+
+#### 生产 Path、根因与影响
+
+- P-230（callflow，关联 E-230-wire/E-230-tsc）：RunAssembler 的有效 VerificationPolicy → `kernel_runtime.rs` 的标准 VerificationDispatcher/VerificationDecorator → 正常 `write_file` 完成磁盘写入 → `JsonVerifier::handles` 仅以 `.json` 匹配 → `serde_json::from_str` → `Failed` → 默认模式附带错误修复指令；Strict 模式还翻转 ok → ToolPipeline 选择失败 hook 路由、持久化 Failed action → 下一模型请求收到错误结果。`TypeScriptVerifier` 匹配 ts/tsx/js/jsx/mts/cts，不匹配配置 `.json`，不能接管 tsconfig.json；本轮未安装 hook，不声称观察到外部 hook 命令执行。
+- F-230（design，validated，confidence=high，evidence_ids=[E-230-wire,E-230-tsc,E-230-control]）：验证器应依据文件角色和配置消费者的真实语法，而不是以通用扩展名覆盖已被官方工具接受的语法。与 H-65 命令后端绕过、H-64 进程生命周期、H-139 后置 hook 异常跳过提交不同，本项无命令拒绝/取消/hook 报错，直接是错误的确定性验证结果。
+- 已验证影响是合法配置被要求修复、Strict 下动作与模型反馈为失败但字节已写入；可能诱导模型删除解释性注释或重复修改、增加无效轮次并削弱对真实诊断的信任。未实测真实 DeepSeek 是否服从错误修复指令，未证明实际发生注释丢失、无限循环或全运行失败；这些仅是潜在后果。它是 harness 质量问题，不是 DeepSeek API 缺陷。
+
+#### 成熟实现对照与治理方向（源码查证，未实施）
+
+- Claude Code 的 `借鉴/claudecode/restored-src/src/tools/FileWriteTool/FileWriteTool.ts` 在真实写入后向已配置 LSP 发 didChange/didSave，写入结果仍映射为成功创建/更新；`services/diagnosticTracking.ts` 从 IDE 的 getDiagnostics 获取语言诊断，而不是给全部 `.json` 强加一个语法。`utils/json.ts` 另外区分 safeParseJSON 与面向 VS Code 配置的 safeParseJSONC，说明严格 JSON 与配置方言是不同职责。不是声称所有语言服务一定可用或其诊断永不误报，也未在该工程运行本样本。
+- Codex 的 `借鉴/codex/codex-rs/apply-patch/src/lib.rs` 对 AddFile 写入原始 contents 后记录 AppliedPatchChange，再汇总 AffectedPaths；本地文件写入分支不因 `.json` 扩展名重新解析内容。它还以 delta.exact 标记写入失败时变更记录是否精确，保持文件操作事实的独立性。这里对照的是文件变更事实与语法验证的职责分离，不是宣称 Codex 自动完成了本样本的 TypeScript 验收，也未运行参考工程。
+- 本地设计方向：在现有 VerificationDispatcher 内统一“路径/文件角色 → 语法与项目验证器”的选择，让 TypeScript 配置依据其消费者验证，或明确报告不支持该方言而非错误断言代码损坏；普通 JSON 仍严格检查。不能通过对所有 JSON 全局宽松解析、删除用户注释、增设第二套验证链路解决。写入事实、诊断状态和是否要求恢复应分别可审计，不把验证失败误解为写盘未发生。
+- 后续回归应涵盖 tsconfig 自定义命名/extends、VS Code JSONC、普通 package.json 的严格语法、实际无效配置、所有写入/编辑入口、三种策略及重开后的结果；未验证的方言不在本项扩张为已复现。
+
+#### 扩展结果与本轮验证
+
+首轮完整命令最终 **1 passed / 1 failed（预期），测试体约 13.36s**；缺陷断言在所有十组审计运行与五次真实编译对照完成后才触发，没有用中途失败截断矩阵。正常测试另有五组应用运行；真实编译对照只对每个方言的 Strict 组运行一次，Enabled 与其使用完全相同内容，不把它说成十次编译。
+
+| 写入的 tsconfig.json | 真实 tsc 退出码 | Enabled 的工具/动作 | Strict 的工具/动作 |
+|---|---|---|---|
+| 严格 JSON | 0 | ok=true，无 parse error，Completed | ok=true，无 parse error，Completed |
+| 单行注释 | 0 | ok=true，但附错误修复指令，Completed | ok=false，parse error，Failed |
+| 多行注释 | 0 | ok=true，但附错误修复指令，Completed | ok=false，parse error，Failed |
+| 尾逗号 | 0 | ok=true，但附错误修复指令，Completed | ok=false，parse error，Failed |
+| 缺右括号的实际非法配置 | 2 | ok=true，附错误提示，Completed（预期的 advisory 策略） | ok=false，parse error，Failed（正常拒绝） |
+
+所有组均确认文件字节完整保存、下一正式 wire 的唯一配对工具结果与运行中结果一致、run 只有一个 succeeded 终态。五组正常对照另覆盖严格 JSON 的 Disabled/Enabled/Strict、非法配置 Strict、单行注释 Disabled；常规绿色结果不关闭默认 ignored 的缺陷测试。没有让模型自动改写配置，故不宣称实际发生错误修复或内容丢失。
+
+`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**43 passed / 50 ignored**。`cargo fmt --all -- --check`、`git diff --check` 通过。实际执行的 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `models/src/client.rs:355`（clone_on_copy）、`persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，未到本轮测试检查，不能报告 lint 通过。
+
+本轮仅新增隔离审计测试、测试入口及文档，未修改验证器、配置策略或生产状态；按 docs-generator 的 Evidence → Finding → Path 要求首个真实编译对照后立即登记，再补完整矩阵。未执行全 workspace、Desktop build/UI、真实供应商、自定义 tsconfig/extends、edit_file/multi_edit、重启与 LSP 服务测试。DeepSeek 官方四份接入文档的既有审计结论本轮没有改变，本项不涉及 provider 参数或缓存行为；全系统审计目标仍未完成。
