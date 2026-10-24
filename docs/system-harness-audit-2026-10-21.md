@@ -67,6 +67,7 @@
 | 无限画布工作流视口缩放锚点 | 画布已平移后，底栏放大/缩小/重置/滑杆与小地图放大/缩小只改 zoom、不重算平移 offset；缩放前后的视口中心映射到不同世界坐标 | 已确认 H-201；动态执行六个生产 TSX handlers；与 Penguin-Magic 中心锚定按钮缩放及指针锚定滚轮缩放实现对照；没有图数据或运行状态副作用 |
 | 无限画布工作流视口持久化 | 正式图写入只序列化 `nodes/edges`，新 WebView 的 viewport 回到 `{x:0,y:0,zoom:1}`；ReactFlow 初次挂载执行 fitView，没有 per-mode default viewport | 已确认 H-202；动态调用真实 `workflowPersistence` 的读/写/flush 并创建新 store 实例；图节点恢复对照通过；未启动 Tauri WebView |
 | 无限画布工作流陈旧快照写入 | 两个独立 SQLite 连接读取同一画布后，窗口 A 先写入新节点，窗口 B 再以旧完整图快照写入仍返回成功，最终图丢失 A 的节点；当前写入没有 revision/CAS | 已确认 H-244；正式 `CanvasWorkflowStore` 与两个文件 SQLite 连接，离线故障注入；未启动双 Tauri 窗口 |
+| 画布偏好读取失败后的回退写入 | `canvas_preference_read` 失败被逐项吞掉且 hydration 仍 resolved；随后生产 workspace 设置 mutator 以空回退值写回，覆盖原有未读字段 | 已确认 H-245；正式 `canvasPreferences.ts` + `canvasSettingsStore.ts`，受控 Tauri 读取故障；未访问真实用户偏好 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
@@ -6318,6 +6319,45 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 已核对源码调用链：`model_agent.rs` 的 `collect_finished_memory_prefetch`、`adopt_compaction`、`adopt_compacted_history`、`maybe_schedule_memory_prefetch`，以及 `knowledge_service.rs` provider 的 `already_surfaced` 过滤；已核对 DeepSeek Harness compaction checkpoint/replay 文档和本地 Codex/Claude 相关恢复资料。
 - 收尾验证待在本次文档追加后执行：`cargo fmt --all -- --check`、`git diff --check`，并复查 Markdown fences/diff；Clippy 仍受既有 `deepagent-models/src/client.rs:355` `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` `explicit_counter_loop` 阻断，不能宣称全库 lint 通过。
 - 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费/KV cache 实验或参考工程测试；未实施修复。没有重复 H-165、H-241、H-242，也没有处理用户排除的 `encrypted-content` 报错。
+
+### H-245：画布偏好读取失败后仍完成 hydration，后续 workspace 设置写回会覆盖未读字段
+
+**级别：高（P1，偏好数据完整性）；触发条件：画布偏好文档读取暂时失败，前端继续初始化并随后修改同一文档中的一个字段。状态：正式 `canvasPreferences.ts`、`canvasSettingsStore.ts` 生产模块链路已复现，未修复。** 本项与 H-244 的图快照并发覆盖不同：这里没有第二个写窗口，单窗口在一次读取失败后也会用回退状态覆盖后端文档。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；只使用 Node 受控 Tauri `invoke`、虚构偏好 `{imageDir:"old-images", videoDir:"old-videos"}` 和临时生产模块加载，没有真实用户目录、密钥、模型、网络或文件数据库。
+- E-245-first（command，content_hash=n/a）：新增 `apps/desktop/scripts/audit-canvas-preference-read-failure.test.cjs`，执行：
+  `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-canvas-preference-read-failure.test.cjs`
+  结果为 **0 passed / 1 failed（缺陷预期）**。受控输出：`readFailed=true, hydrationResolved=true, writePayload={"imageDir":"new-images","videoDir":""}, persistedAfter={"imageDir":"new-images","videoDir":""}`。
+- E-245-callflow：生产 `canvasPreferences.ts::hydrateKey("workspace-dirs")` 收到读取异常后仅 `console.error`，外层 `whenCanvasPreferencesReady()` 对每个 key 捕获异常并继续完成；生产 `canvasSettingsStore` 初始 workspace 因 cache 未载入得到空字符串；随后真实 `setWorkspaceDir("imageDir", "new-images")` 调用 `writeCanvasPreference`，防抖 flush 将 `{imageDir:"new-images",videoDir:""}` 写回，原有 `videoDir:"old-videos"` 消失。测试断言要求未读字段保留，因此按实际行为失败。
+- E-245-control：测试不是直接调用内部 helper，而是通过生产 settings store 的公开 mutator；`canvas_settings_read` 也返回合法空 provider/binding DTO，排除模型配置读取失败对该路径的干扰。失败只来自偏好读取异常与后续 workspace 写入。
+
+#### 初始 Finding 与 Path
+
+- F-245（category=design，status=validated，confidence=high，evidence_ids=[E-245-first]）：`canvasPreferences.ts::whenCanvasPreferencesReady()` 在 `hydrateKey` 外层逐 key `try/catch`，读取失败不写入失败状态、不阻止编辑器使用，也不把 key 标记为“不可安全写入”；`readCanvasPreference` 对未载入 key 返回调用方 fallback。`canvasSettingsStore.ts::loadWorkspace()` 将该 fallback 规范化为空目录，`setWorkspaceDir` 再把完整 workspace 对象直接交给 `writeCanvasPreference`。后端 `CanvasPreferencesStore::write` 是无版本的整文档替换，因此旧字段无法从数据库自动合并回来。
+- P-245（callflow）：已有偏好文档 → `canvas_preference_read` 短暂失败 → hydration 仍 resolved → store 以空 workspace 初始化 → 用户只改 imageDir → `writeCanvasPreference`/debounced `canvas_preference_write` → videoDir 等未读字段被空值覆盖 → 后端返回成功，UI 没有冲突或“尚未读取”提示。
+- 该问题不是 H-244 的两个窗口竞态，也不是 H-202 的 viewport 丢失：即使只有一个窗口、没有并发写者，单次读故障即可触发；最终 JSON 合法，损失来自把“读取失败”当成“文档为空”。
+
+#### 成熟 Agent 与实现对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/api/settings-controller/src/index.ts` 将 settings 的读取/更新错误保留为结构化服务错误；`update/replace/mutate` 以 `expectedRevision` 作为提交资格，冲突或 provider failure 不会把未读 namespace 当成空对象成功写回。其 `README.zh.md` 将 `settings/conflict` 与 `settings/rejected` 作为调用方必须处理的结果。这里借鉴的是“状态不可读时禁止无依据替换”，不是把 settings API 当作本系统偏好实现。
+- **Penguin-Magic**：`backend-nodejs/src/services/nodeCanvasStorage.js::readDocument` 对 JSON 解析失败记录错误并返回不可用结果，路由不会把坏文档当作空画布成功保存；其结构保存还要求 `baseRevision`。本轮只把它作为 fail-closed/冲突可见性的参考，没有声称其所有偏好入口都具备同一恢复策略。
+- **Codex/Claude**：本轮没有找到与本项目 workspace preference 完全同构的前端设置入口，因此不宣称它们动态解决该具体字段覆盖；可借鉴的共同边界是持久状态加载失败必须成为可见状态，不能静默降级后继续提交破坏性全量替换。
+
+#### 根因治理方向与影响评估（本地设计，未实施）
+
+- 将偏好 key 的状态区分为 `unloaded`、`loaded-empty`、`loaded-value`、`read-error`；`read-error` 不得被 hydration 视为 ready，所有写入入口在没有成功读取基线时拒绝或暂存为本地 pending，并显示可重试错误。不能只把 fallback 改成 `null`，因为当前 `loadWorkspace()` 会继续把 null 变成合法空对象。
+- 在现有 `CanvasPreferencesStore`/`DocumentStore` 边界增加 revision/CAS 或字段级 patch；若用户确实只修改 `imageDir`，后端必须以当前文档为基线合并，或要求调用者携带成功读取的 base revision。它应与 H-244 的 workflow graph 版本契约统一，但不新增第二个偏好库。
+- `whenCanvasPreferencesReady()` 的失败必须被 `useWorkflowPersistence`/设置 store 感知；关闭前 flush 不能把“读取失败后的 fallback”当作可提交的最新快照。重试成功前，workspace 设置面板应保持旧值/禁用保存，而不是初始化为空字符串。
+- 已证后果是一个本地 workspace 设置改动会擦除同一 preference 文档中用户未修改、但本次读取失败的字段；对 `workspace-dirs` 表现为 videoDir 丢失，类似机制也可能影响 workflow snippets、creative library 或 video-edit-projects 的整文档写回。本轮只动态验证 workspace-dirs，不把其他 key 写成已复现。
+- 影响评为 P1：需要一次偏好读取故障和随后用户编辑，默认健康路径不触发；但后果是静默持久化数据丢失，且当前 UI/协议返回成功，用户难以恢复。若偏好中包含路径、模板或项目引用，后续工作流可能读取错误输出目录或丢失创作资产索引；本轮未执行真实文件写入或资产删除。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行精确生产模块探针，结果 **0 passed / 1 failed（缺陷预期）**；失败来自最终 payload 丢失 `old-videos`，不是测试夹具启动失败。没有修改生产 TypeScript/Rust 逻辑，只新增 test-only 脚本与本报告。
+- 已复核 `canvasPreferences.ts`、`canvasSettingsStore.ts`、`CanvasPreferencesStore::write` 的生产调用链；未运行真实 Tauri WebView、真实 SQLite 故障、磁盘只读/进程崩溃、多个 preference key 并发、自动恢复或用户文件操作。
+- 本轮使用 docs-generator 技能整理 Evidence→Finding→Path；技能索引文件路径在本机缺失（`C:\Users\32734\.codex\skills\reverse\resources\tool-index.md` 不存在），本报告未调用外部图表工具。未运行 Penguin-Magic/DeepSeek Harness 动态测试，没有重复 H-202、H-244、H-87，也没有处理用户排除的 `encrypted-content` 报错。
 
 ### H-244：CanvasWorkflowStore 接受陈旧完整图快照，两个窗口的后写会静默丢失先写编辑
 
