@@ -49,6 +49,7 @@
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录；工作流节点声明 `knowledgeBaseId=project` 时仍混入 global 命中 | 已确认 H-51、H-176；H-51 是共享服务身份漂移，H-176 是工作流配置到检索 trait 的作用域契约缺失 |
+| 工作流目标节点与重跑 admission | `target_node_id` 传入不存在的节点时，正式工作流只完成 `start`、跳过 `end`，仍记录 `succeeded` | 已确认 H-177；无效目标未在编译/接纳边界拒绝，属于空执行成功，不是 H-39 的条件分支派发问题 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3323,6 +3324,34 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-176 只新增正式审计探针和文档，未修改生产检索行为；在 scope DTO、权限归属和兼容迁移规则明确前，不应把忽略 `knowledgeBaseId` 的现状标记为兼容行为。
 
+### H-177：未知 `target_node_id` 被当作空工作流成功，重跑/恢复目标没有 admission 校验
+
+**级别：中（P2，工作流控制完整性与错误终态）；触发条件：调用者通过 `WorkflowRequest.target_node_id` 指定不存在、已删除或版本不匹配的节点。** 该字段是公开 JSON 请求的一部分，桌面序列化器也会发送它；触发后不会执行目标节点及其下游，但运行仍报告 `succeeded`。它与 H-39 的区别是：H-39 讨论已存在条件图的分支可达性，H-177 讨论目标身份根本不在当前图中的 admission 失败。
+
+#### 生产调用链与正式复现
+
+- `apps/desktop/src/canvas/workflow/utils/workflowExecutor.ts` 将 `targetNodeId` 直接序列化为 `WorkflowRequest.target_node_id`。`ChatService::run_workflow()` → `RunAssembler::run_workflow_inner()` 将其原样传入 `WorkflowAgent::new()`。
+- `deepagent-runtime::workflow::compile()` 校验版本、节点/边 ID、拓扑与输出引用，但不接收或验证 `target_node_id`。`WorkflowAgent::think()` 仅用 `target_node_id` 做运行时过滤：节点不是目标且不是 `start` 时，只有在其 `ancestors` 包含目标 ID 时才执行；未知目标不会命中任何祖先集合，因而 `end` 也被标记 `Skipped`。遍历结束后，`think()` 返回 `AgentDecision::Complete("workflow completed")`，AppCore 继续写入成功终态。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_unknown_target_node_is_rejected`。它通过正式 `ChatService::run_workflow()` 执行两节点 `start → end` 图，提交 `target_node_id=missing-node`，收集 `WorkflowNode` 事件并从真实 `RunStore` 读取终态。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unknown_target_node_is_rejected --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true error=None completed_nodes=["start"] run_terminal=Some("succeeded")`；随后断言未知目标必须拒绝，测试以 **0 passed / 1 failed（预期）** 结束。没有模型请求、工具副作用或公网访问；失败来自正式工作流状态机本身。
+
+#### DeepSeek 官方边界与成熟 Agent 对照
+
+- DeepSeek 官方 [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)只定义 Responses 的输入 item、模型响应和工具调用配对；[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)也没有本地 DAG、节点重跑或 `target_node_id` 语义。因此这里不能把 DeepSeek 的 provider 成功响应当作本地 workflow target 已校验的证据；这是宿主 Harness 的控制面契约。
+- **Codex** 在 `借鉴/codex/codex-rs/app-server/src/request_processors/turn_processor.rs` 的 `load_thread()` 中先解析 ID，再从 `thread_manager` 查找；无效格式或不存在的 thread 直接返回 `invalid_request` / `thread not found`，不会创建一个空 turn。工作流目标虽然不是同一字段，但“控制面引用必须在 admission 阶段解析成功”是可迁移的架构原则。
+- **Claude Code** 的 `--resume` 入口先验证 session ID 形状并检查 transcript 是否存在；恢复失败会返回明确错误，而不是启动一个没有历史的成功会话。参考实现的具体错误文本不作为本系统协议，只作为失败语义对照。
+- **DeepSeek Harness** 的 agent loop 没有把任意字符串当作可执行节点；其 scope、provider 和 server 句柄在装配时由 typed identity 绑定，缺失 provider 在调用前失败。它提供的可比点是“运行上下文引用先解析、再执行”，不是为本系统引入新的 DAG 引擎。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，用户界面、CLI 或 SDK 可能看到一次 `succeeded`，但目标节点、下游输出和 end 输出均不存在。对可重跑的媒体/工具工作流，这会把“节点已删除、图版本不匹配、恢复游标过期”误报为成功；自动化调度器可能据此跳过补偿或继续读取空结果。
+- 该行为也破坏事件审计：事件流只有 `start Completed` 与后继 `Skipped`，没有一个明确的 `target_not_found` 失败；RunStore 只保留成功终态，重放方无法区分真正完成和空执行。当前样本只证明错误终态与节点输出缺失，没有声称已经造成外部副作用。
+- 根因修复应在 `compile`/`run_workflow_inner` 的 admission 边界校验目标 ID：目标为空保持全图执行；目标存在才生成不可变的 `TargetPlan`（目标、祖先路径、允许的下游）；未知、重复/版本不匹配目标返回结构化 `InvalidTargetNode`，不启动 `AgentKernel`。运行时仍需以同一计划判断条件边，避免重新按字符串过滤。
+- 验收应覆盖：未知目标、目标为 start/end、目标在条件分支两侧、目标节点已从持久化图删除、恢复时 revision 不匹配、取消/失败/重试和 CLI/SDK/Tauri 三入口。无效目标必须没有成功终态、没有模型/工具/媒体请求，并在节点事件与 RunStore 中保留可诊断错误；有效目标的祖先执行和下游语义要保持现有工作流回归。
+
+本轮 H-177 只新增正式审计探针和文档，未修改生产工作流执行逻辑。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3383,6 +3412,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-174 `replace_messages` 工具配对显式探针 | `cargo test -p deepagent-models --test response_repair_audit audit_replace_messages_repairs_dangling_responses_calls_before_transport --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；公开 mutator 后正式 Responses wire 为 `has_call=true, has_output=false`，transport 已被调用；仅离线 recording transport，无公网或工具副作用 |
 | H-175 工作流 HTTP 节点网络边界显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_http_node_does_not_bypass_network_approval --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`AgentKernel` 向临时 loopback 发出 1 次 GET，审批回调 0 次，run 为 `succeeded`；仅本机临时服务，无公网或用户数据 |
 | H-176 工作流知识库作用域显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_knowledge_base_id_is_honored --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`KnowledgeService` 在 `knowledgeBaseId=project` 下同时返回 project/global 两条临时文档，run 成功；仅临时 vault 与离线模型，无用户知识或公网 |
+| H-177 工作流未知目标显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unknown_target_node_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`RunStore` 对 `target_node_id=missing-node` 只完成 `start` 却记录 `succeeded`；无模型请求、工具副作用或公网 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |

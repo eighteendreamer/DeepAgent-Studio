@@ -286,6 +286,66 @@ async fn audit_workflow_knowledge_base_id_is_honored() {
 }
 
 #[tokio::test]
+#[ignore = "audit: an unknown workflow target node must fail admission instead of succeeding empty"]
+async fn audit_workflow_unknown_target_node_is_rejected() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"end"}
+            ]
+        },
+        "target_node_id":"missing-node"
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-unknown-target".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-unknown-target")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let completed_nodes: Vec<_> = events
+        .iter()
+        .filter(|event| event.status == NodeExecutionStatus::Completed)
+        .map(|event| event.node_id.as_str())
+        .collect();
+    eprintln!(
+        "api_ok={} error={:?} completed_nodes={completed_nodes:?} run_terminal={:?}",
+        result.is_ok(),
+        result.as_ref().err(),
+        run.terminal_kind
+    );
+    assert!(
+        result.is_err(),
+        "an unknown target node must be rejected before an empty workflow can succeed"
+    );
+    assert_ne!(
+        run.terminal_kind.as_deref(),
+        Some("succeeded"),
+        "an unknown target cannot produce a successful run"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
