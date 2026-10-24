@@ -6232,3 +6232,44 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被既有 `deepagent-models/src/client.rs:355` clone_on_copy、`deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断；未修无关生产代码，也未宣称 lint 通过。
 - code-audit 促使比较四种控制操作的真实调用归属、校准可取消模型替身，并检查 SQLite/transcript/唯一终态，排除“仅 flag 返回 true”的弱证据；docs-generator 促使首次有效复现后即时登记，再补参考与回归。新增 test-only subagent_scope.rs、模块入口与本报告；无生产逻辑、公共 API、依赖、权限配置或数据迁移变更，用户原有未跟踪文件保持原样。
 - 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP 取消/计费、参考工程测试或全库自动 SAST；本轮使用针对性源码检索与正式宿主故障注入。未验证跨项目、不同进程、重启、resume 后取消、工具/审批等待、并发竞争或任务先前的副作用。所有临时子任务均在主要断言前收尾；本轮结束不是全系统审计完成，目标保持 active。
+
+### H-242：子 Agent 的 resume 用状态摘要重启空会话，完整已保存结果及工具观察未恢复
+
+**级别：中（P2）；范围：普通 task(operation=resume) 的上下文恢复。状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 和真实 read_file 已复现，未修复。** H-21 已证明请求契约字段丢失，本项验证的是此前明确未验证的子上下文/结果恢复：即使不设置 schema、phase、label，也会发生，不以旧字段问题重复编号。
+
+#### 首次即时 Evidence（2026-10-24）
+
+- Scope：用户授权本地仓库审计，临时 workspace/SQLite、虚构报告与 SYNTHETIC_OBSERVATION_7F3A 文件正文；只替换模型 transport，使用合法 sequenced Responses completed，生产工具/权限与两轮父会话均真实运行。无 shell、外部服务、真实 DeepSeek/费用或用户数据。服务重建组只 drop/recreate ChatService，复用同一已打开 SQLite 和 SettingsService，**不是进程重启或数据库重开**。
+- E-242-first（command，content_hash=n/a）：source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/subagent_resume_context.rs`；`cargo test -p deepagent-app-core --test kernel_v2_e2e subagent_resume_context --offline -- --include-ignored --nocapture`：**2 passed / 3 failed（缺陷预期），2.66s**。10组正式初始→恢复流程，各有两轮父 turn、两次子执行。两个长结果探针各完成 ASCII/中文两组后再统一断言，观察探针完成同服务/重建服务两组后才失败；无活动后台任务遗留。
+- E-242-long：2400字符报告（ASCII=2400字节、中文填充=7148字节），末尾含唯一 SYNTHETIC_REPORT_TAIL_8D2B。首次父模型 task 返回的 result 与完整报告精确相等，子 transcript.summary 和 attempts[0].summary 也与原报告精确相等，排除供应商截断或根本未保存。SQLite status.summary 则恰为前1999字符+省略号。恢复请求的 input 只有1项，保留原任务和 continuation，却没有完整报告及尾标记；同宿主与 ChatService 重建均如此。恢复仍 succeeded、resumed=true、resume_count=1；恢复后 transcript 的初次 attempt 仍保存完整原报告，数据存在却未被恢复入口采用。
+- E-242-observation：子先真实 read_file(evidence.txt)，下个子模型 wire 有唯一配对 function_call/function_call_output，成功结果含虚构 FACT；再返回128字符短报告，报告有意不含 FACT。resume 的 wire 仍完整含短报告，却无 FACT、无原 read 调用/输出，input 仍只有1项。两种服务生命周期均如此；文件内容未改变。这里证明宿主没有交回先前观察，不声称合成模型会自然记住、忘记或产生某个真实错误答案。
+- E-242-controls：128字符短报告在同宿主/服务重建后均完整进入 resume；恰好2000字符的 ASCII 与中文报告均完整恢复（中文组5948字节），说明当前边界按字符而非字节。所有10组均验证原任务/continuation存在、原始和恢复 task 调用/结果唯一配对、每个父 run 恰好一个 succeeded 终态及一对子 started/completed 事件、子 origin/current parent 归属正确、resume_count=1、transcript有两个 attempt；不是 resume 根本不可达或 H-241 的异会话操作。
+
+#### 初始 Finding 与 Path
+
+- F-242（category=design，status=validated，confidence=high，evidence_ids=[E-242-first,E-242-long,E-242-observation,E-242-controls]）：`subagent_runner.rs::run_tracked` 把完整 result 存为 JSON transcript.summary/attempts.summary，但 SubagentRunStore::finish 只保存 subagent_summary(...,2000)；`resume_request` 读取 transcript.request 后，Previous result 却取 record.summary，不取已读 JSON 的完整 summary。`run_active` 为每次执行创建新的内存 Database/Session，只有 fork=true 才加载父历史；resume 明确 fork=false，所以 ModelAgent 收到空 response history+单条拼接 user prompt。原子会话的真实 response items/工具观察随内存会话退出而丢失，结果文件并不是可回放 transcript。
+- P-242（callflow）：task 首次子执行 → 临时内存 Session 记录工具往返/报告 → 完整报告返回父模型并写 JSON，短预览写 SQLite → 后续 turn task(resume) → 从 JSON 只恢复请求字段 → 从 SQLite 恢复2000字符预览 → 新建空子 Session/Surface → 单条 user 拼接“Original task/Previous result/Continuation request” → 无原工具观察及报告尾部，仍回报 resumed/succeeded。
+- 这是运行恢复状态与 UI/status 摘要混用，不是要求每次 resume 必须无条件重发无限历史；有可验证压缩/替换状态也可满足连续性。当前没有这样的子恢复状态契约。H-21 字段持久化修复不能修复本项；仅改读完整 summary 只能修复长结果遗漏，仍不能恢复工具观察。成熟参考、治理边界与收尾随后追加。
+
+#### 成熟 Agent 与 DeepSeek 机制对照（静态源码/官方文档）
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/core/agent-loop/src/index.ts:807–894` 的 `resume()` 先取得持久化写所有权，再读取完整物理事件日志；对未闭合 turn/tool call 追加可回放的关闭事件，随后用全部 persisted events 构造 SessionPreparation。其测试 `借鉴/deepseek-harness/packages/core/agent-loop/tests/resume.spec.ts:1044–1082` 断言新上下文的消息派生结果等于旧 session，并继续 turn 编号；`continuation-activation.ts:625–642` 的子 Agent cold resume 读取 persisted events，折叠 descriptor 后重新 materialize，不把短状态摘要当历史。这里借鉴的是“可继续执行的事件/消息历史必须持久化并回放”，不是宣称其所有 provider 或压缩策略与本系统相同。
+- **Codex**：`借鉴/codex/codex-rs/core/src/agent/control/spawn.rs:1368–1390` 的 `resume_single_agent_from_rollout` 调用 `load_agent_model_context`，把持久化 history items 全量放入 `InitialHistory::Resumed`；`load_agent_model_context` 对 Legacy/Paginated 两种模式都从 thread store 读取模型上下文，而不是读取 UI 摘要。Codex 的 rollout/history 也有自己的截断和历史模式，因此本轮只把“恢复模型上下文与状态摘要分离”作为对照，不断言其无界保留全部原文。
+- **Claude Code**：`借鉴/claudecode/restored-src/src/tools/AgentTool/resumeAgent.ts:50–80,145–218` 并行读取 agent transcript 与 metadata，将过滤后的完整 `transcript.messages` 作为 `promptMessages` 传给新的 agent；`getAgentTranscript` 不是 `summary` 字段的 2000 字符 UI 预览。其恢复还重建 tool-result replacement/worktree 元数据。本系统当前只有 request + bounded summary 进入恢复提示，未达到同类“消息/工具观察可回放”边界。
+- **DeepSeek 官方 Responses 约束**：Responses API 参数文档在 `/responses` 说明服务端无状态，多轮对话每次请求必须由客户端回传完整 `input`；`previous_response_id`、`conversation`、`store` 均不支持。Responses 指南同时说明 KV cache 只对请求前缀尽力匹配，不能替宿主恢复未发送的旧 tool/output item。故本项不是可由 DeepSeek 自动记忆或缓存命中弥补的 provider 差异；恢复前必须由宿主构造正确的 function_call/function_call_output 历史，并保持配对。
+
+#### 根因治理方向与影响评估（本地设计，未实施）
+
+- 将 `SubagentRunStore.summary` 明确降级为列表/通知预览，不能继续作为 resume source of truth。恢复应从现有 transcript/event/surface 持久化读取一份可版本化的 `ResponseInputItem` 或等价消息历史；每个 function_call 必须与 function_call_output 成对，tool observation、reasoning（按 provider 支持范围）、内容替换和压缩边界要有明确 replay contract。若需要压缩，应持久化“压缩后的可回放历史 + replacement metadata”，而不是静默截取字符串。
+- 生产实现应继续复用现有 `ChatSubagentRunner`、`SubagentRunStore`、`SessionSurfaceStore` 和 `RunStore`，不要新建第二个子 Agent runtime。建议先在 writer 记录 schema/version、完整 response items、tool outputs 与 compaction/replacement marker，再让 `resume_request` 或恢复的 `Session` 从同一记录生成 DeepSeek Responses input；状态接口和 Notification 仍使用 bounded summary。必须兼容旧 transcript：缺失完整历史时应返回显式 `NOT_RESUMABLE`/需要重新启动，而不是伪装成连续恢复。
+- 影响条件：子任务已完成并被允许 resume，且此前结果超过 2000 个 Unicode 字符，或此前执行过工具但其观察未被最终摘要完整复述。短于等于 2000 字符且摘要已包含全部事实的任务不触发；首次运行、普通 `status`、新建子任务也不触发。本轮未证明自动泄露、跨会话越权、真实模型必然答错或真实收费数额。
+- 已证后果：恢复请求继续返回 succeeded/resumed，但模型输入实际只含原任务、2000 字符摘要和 continuation；报告尾部和工具输出不在 wire，模型可能重复工作、误判完成状态或基于缺失事实继续执行。若工具观察包含安全/编译/测试结果，恢复后的模型可能把“未观察到”误当“未发生”；本轮没有执行恢复后的写入、命令或外部交易，不把潜在副作用写成已发生。
+- 影响评为 P2（本地单用户、需要显式 resume 的连续性缺陷）；若子 Agent 用于长审计、长代码修改或未来暴露为远程多用户服务，影响可升为高，因为恢复成功态与真实上下文分裂。修复验收应覆盖 2000/2001 字符、Unicode 字节边界、多个工具调用、图片/文件结果、压缩、旧 transcript、服务重建/数据库重开、并发 resume、取消/失败尾部和恢复后再次 resume。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 显式 `cargo test -p deepagent-app-core --test kernel_v2_e2e subagent_resume_context --offline -- --include-ignored --nocapture`：**2 passed / 3 failed（缺陷预期），4.05s**。两个正常对照（短结果、恰好 2000 字符）通过；长结果和真实 read_file 观察的三个不变量失败。失败发生在报告/SQLite/transcript/父模型/恢复 wire 与父终态检查均完成之后，临时子运行已收尾。
+- 之前同轮的默认 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**79 passed / 77 ignored**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored**。默认套件不执行本轮 ignored 缺陷探针，不能把它解释为 H-242 已通过。
+- `cargo fmt --all -- --check`、`git diff --check` 通过；本轮没有修改生产逻辑、公共 API、权限、模型配置或持久化 schema。实际 Clippy 仍被未修改的 `deepagent-models/src/client.rs:355` `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` `explicit_counter_loop` 阻断，未声称 lint 通过。
+- code-audit 促使把“完整结果在磁盘存在”“status 摘要边界”“恢复 wire 内容”“工具调用/结果配对”分别断言；docs-generator 促使在首次长结果与观察复现后立即登记，再补成熟实现对照。新增 test-only `subagent_resume_context.rs`、模块入口与本报告，用户原有未跟踪文件保持原样。
+- 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费或参考工程测试；未验证数据库重开、真实进程崩溃、并发 resume、压缩 replacement、图片/大工具输出和恢复后副作用。官方 API 文档已联网核对，真实 provider 行为未宣称。全系统审计仍 active，未处理用户排除的 encrypted-content 报错。

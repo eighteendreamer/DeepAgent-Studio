@@ -75,6 +75,9 @@ mod hook_once;
 #[path = "kernel_v2_e2e/subagent_scope.rs"]
 mod subagent_scope;
 
+#[path = "kernel_v2_e2e/subagent_resume_context.rs"]
+mod subagent_resume_context;
+
 #[path = "kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
 
