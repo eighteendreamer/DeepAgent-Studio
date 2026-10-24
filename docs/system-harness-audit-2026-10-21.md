@@ -46,6 +46,7 @@
 | Responses 数值参数最终校验 | AppCore 设置解析拒绝越界值，但公共 ModelClient 对显式 request 和 ResponseDefaults 都把 `temperature=2.1`、`top_p=1.1`、`top_logprobs=21` 原样送入 transport | 已确认 H-172；离线正式 ModelClient wire 探针；限定为越过设置层直接构造调用，不代表常规桌面设置当前可触发；未请求真实 provider |
 | Responses 流身份与顺序元数据 | 合法流为 `response.created`/`response.completed` 提供同一 response ID、实际模型和单调序号；正式 ChatService→Kernel 落盘后两条事件仅保留 Runtime envelope 与 event_type | 已确认 H-200；正常连续离线 Responses fixture、正式 run_events；未制造乱序/丢包，也未声称已观察真实供应商流损坏 |
 | 无限画布工作流视口缩放锚点 | 画布已平移后，底栏放大/缩小/重置/滑杆与小地图放大/缩小只改 zoom、不重算平移 offset；缩放前后的视口中心映射到不同世界坐标 | 已确认 H-201；动态执行六个生产 TSX handlers；与 Penguin-Magic 中心锚定按钮缩放及指针锚定滚轮缩放实现对照；没有图数据或运行状态副作用 |
+| 无限画布工作流视口持久化 | 正式图写入只序列化 `nodes/edges`，新 WebView 的 viewport 回到 `{x:0,y:0,zoom:1}`；ReactFlow 初次挂载执行 fitView，没有 per-mode default viewport | 已确认 H-202；动态调用真实 `workflowPersistence` 的读/写/flush 并创建新 store 实例；图节点恢复对照通过；未启动 Tauri WebView |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
@@ -4044,6 +4045,29 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-201 只新增 opt-in 生产 handler 审计探针和报告，未修改生产画布行为。
 
+### H-202：工作流图持久化不包含视口，重启后用户的画布导航状态无法恢复
+
+**级别：低（P3，画布编辑连续性）；触发条件：用户平移/缩放创作或专业画布、修改图并等待保存，然后重启/重新挂载桌面应用。** 图节点与连线仍会恢复；丢失的是相机平移/缩放状态，ReactFlow 会按当前 `fitView` 设置重新计算初始视图。本项不影响工作流执行输入或已保存图数据。
+
+#### 生产路径与动态证据
+
+- 正式 `workflowPersistence.ts::persist()` 只从 creative/professional store 生成 `{nodes, edges}` 并调用 `canvas_workflow_state_write`；`normalizeGraph()` 也只返回这两项。`useWorkflowPersistence()` 在数据库 hydration 完成后才挂载 `WorkflowCanvasInner`，但不载入 viewport。`canvasStore.ts` 的 viewport 是模块内 Zustand 初始值 `{x:0,y:0,zoom:1}`；`CanvasApp.tsx` 的 `onMove` 只更新该内存 state，没有找到它进入 graph persistence 或独立 preference 的其它生产写入路径。
+- 正式 `<ReactFlow>` 配置 `fitView`、没有 `defaultViewport`。当前锁定的 `@xyflow/react` 12.11.2 源码将该 prop 作为初始 `fitViewQueued` 交给 store，按 nodes bounds 与容器尺寸计算 viewport；这与恢复“上次镜头”不同。没有声称真实像素位置或 WebView 启动时序已做 UI 验收。
+- 新增 opt-in `apps/desktop/scripts/audit-workflow-viewport-persistence.test.cjs`。它直接加载正式 `workflowPersistence.ts` 和生产 CanvasStore，在受控 Tauri boundary 记录实际 `canvas_workflow_state_write` 数据；在写入前将正式 viewport 设为 `{x:-975,y:-430,zoom:1.65}`，同时创建一个真实 store 图节点，再 flush。之后创建第二个生产 store 实例模拟全新 WebView，调用正式 hydration，并从生产 `CanvasApp.tsx` AST 读取 ReactFlow 的实际 props。执行 `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-viewport-persistence.test.cjs` 得到 **0 passed / 1 failed（预期）**：写入图键为 `['edges','nodes']`、`persistedViewport=null`；新 store viewport 为 `{x:0,y:0,zoom:1}`，但图节点 `audit-node` 正常恢复；ReactFlow props 为 `{fitView:true,defaultViewport:false}`。因此失败只针对导航状态恢复；没有 Tauri 窗口、文件数据库或节点图数据外部副作用。
+
+#### 无限画布参考对照
+
+- **Penguin-Magic NodeCanvas** 在 `services/api/nodeCanvas.ts::NodeCanvasDocument` 将 viewport 纳入每个画布文档，`nodeCanvasStorage.js::normalizeDocument()` 持久化并归一化 viewport，`applyCanvasDocument()` 读回时通过 `commitViewport(source.viewport.canvasOffset, source.viewport.scale)` 应用；另有 viewport 变化后的 debounce 写入。也就是说，同一用户有多个画布时视口有明确的文档身份，而不是只有图内容持久化。
+- Codex 与 DeepSeek Harness 没有可直接比较的无限画布 camera contract；不将它们虚构成 viewport 保存方案。本项是桌面工作流画布的状态持久化选择，不是 DeepSeek Responses/缓存/工具协议问题。
+
+#### 后果与修复方向
+
+- 图被正确恢复，所以不存在数据丢失；但用户重开后无法回到上次聚焦的区域，ReactFlow 重新 fit 整张图时，散布较远的大图可能以较小比例显示，仍需再次 zoom/pan。创作与专业两个 mode 当前只共享一份内存 viewport，也没有各自的 per-mode camera snapshot；当前探针证明重启丢失，不单独定性 mode 切换的视觉效果。
+- 根因是持久化契约把可编辑图数据当成完整画布文档，camera 被当作临时 UI state。建议在现有每 mode 的 canvas-workflow document 中增加可选且向后兼容的 viewport，保存时随 `onMove` debounce、恢复时在 ReactFlow fitView 完成/尺寸确定后应用；ReactFlow `setViewport` 和 Zustand state 必须同步，旧记录缺 viewport 时继续保留现有 fitView 首开行为。不得因为相机位置变化而触发图节点历史或改变 workflow revision/语义。
+- 回归覆盖 creative/professional 分别保存、关闭/重启、旧数据无 viewport 迁移、尺寸变化时保持合理的 world center、空图与 fitView、窗口关闭前 flush 以及用户持续操作时的 debounce 写入顺序。当前未改生产逻辑，未执行完整桌面 UI/屏幕验证。
+
+本轮 H-202 只新增 opt-in 生产持久化探针和报告，未修改生产 viewport 或 graph contract。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -4129,6 +4153,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-199 工作流多 case ELSE 端口显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_multi_case_condition_keeps_else_handle --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；两个 case 都不匹配且显式连接 executor 定义的 `false` fallback，正式编译以 invalid source handle 拒绝，run=`failed`；无模型、工具、网络、命令或文件副作用 |
 | H-200 Responses lifecycle identity/sequence 显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e native_output_items::audit_responses_lifecycle_retains_provider_identity_and_sequence --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正常 `response.created`/`response.completed` fixture 含同一 response ID、provider model 与序号 0/7，但正式 `run_events` 仅保留 Runtime envelope 和两个 `event_type`，provider 字段全部丢失；run 仍成功，无公网/工具副作用 |
 | H-201 无限画布缩放焦点显式探针 | `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-zoom-anchor.test.cjs`：0 passed / 1 failed（预期）；动态执行底栏 zoom-in/out/reset/滑杆与小地图 zoom-in/out 六个生产 handlers；平移后中心世界坐标随缩放漂移；无 Tauri、图数据写入或模型请求 |
+| H-202 无限画布视口重启恢复显式探针 | `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-viewport-persistence.test.cjs`：0 passed / 1 failed（预期）；真实生产 persistence 写入只含 `nodes/edges`，全新 store viewport 回到 `{0,0,1}`，节点 `audit-node` 恢复、ReactFlow 启用 fitView 且未设置 defaultViewport；Tauri transport 为内存替身，无真实 WebView |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
