@@ -51,6 +51,7 @@
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录；工作流节点声明 `knowledgeBaseId=project` 时仍混入 global 命中 | 已确认 H-51、H-176；H-51 是共享服务身份漂移，H-176 是工作流配置到检索 trait 的作用域契约缺失 |
 | 工作流目标节点与重跑 admission | `target_node_id` 传入不存在的节点时，正式工作流只完成 `start`、跳过 `end`，仍记录 `succeeded` | 已确认 H-177；无效目标未在编译/接纳边界拒绝，属于空执行成功，不是 H-39 的条件分支派发问题 |
 | 工作流合法目标节点的依赖闭包 | 整图执行时 target 正常得到中间祖先的 `SOURCE_VALUE`；指定同一个合法 target 后，祖先被标记 Skipped，target 因 required output unavailable 失败 | 已确认 H-196；节点运行按钮既不重算依赖闭包，也不加载带 revision 的既有输出快照 |
+| 工作流公开输出类型契约 | end 声明 `count:number`，实际引用 start 的字符串 `NOT_A_NUMBER`；正式运行仍发布 end=Completed、输出 string 并记录 `succeeded` | 已确认 H-197；编译器只验证类型名称，运行时不验证成功输出是否符合声明类型 |
 | 专业画布代码节点 | 前端公开 `codeScript`/`codeInputVariables` 并标记 `enabled`，后端只读取未使用的 `code`/`codeVariables`，没有 JavaScript/Python 执行器；明确无效脚本仍完成并返回空对象 | 已确认 H-178；能力注册、配置 schema、运行时 executor 契约断裂，属于静默伪成功 |
 | 专业画布文档提取节点 | 前端 `document-extractor` 标记 `enabled`，但正式工作流执行到节点即返回 `UnsupportedNode` 并失败 | 已确认 H-179；这是公开能力目录与实际 executor 不一致，和 H-178 的静默成功不同 |
 | 专业画布人工输入节点 | 前端 `human-input` 标记 `enabled` 并提供表单/超时，正式工作流没有进入 `NeedsApproval`、输入租约或可恢复等待态，而是直接 `UnsupportedNode` 失败 | 已确认 H-180；人工输入 schema 与统一人机协作生命周期断裂 |
@@ -3906,6 +3907,35 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-196 只新增正式审计探针和报告，未修改生产 target-node 执行或状态恢复逻辑。
 
+### H-197：end 的输出类型声明只校验类型名称，成功结果可违反公开契约
+
+**级别：高（P1，机器协议可靠性与下游数据完整性）；触发条件：end 的输出引用解析为与 `outputVariables[].type` 不一致的 JSON 值。** 工作流定义向 UI、持久化数据和未来 Harness/SDK 暴露类型声明，但运行时把它当作目录元数据：即使声明 `number`，实际 string 仍以成功终态交付。
+
+#### 生产调用链与正式复现
+
+- `deepagent-runtime::workflow::graph::output_names()` 在编译图时调用 `validate_type()`，只确认声明的类型字符串属于支持集合并收集输出名；它既不保存可供运行时执行的输出 schema，也不检查实际值。
+- `WorkflowAgent::execute_end()` 读取 `outputVariables[].variable/value`，调用 `values::resolve()` 后直接插入结果。该路径不读取同一声明的 `type`，节点完成与 run 终态也没有后置 schema gate。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_end_output_matches_declared_type`。定义同时提供 `name` 与 `variable`，绕开 H-40 已记录的跨层字段漂移，仅测试类型约束：start 输入 `raw:string`，end 声明 `count:number`，值引用 `{{#start.raw#}}`，请求输入为 `"NOT_A_NUMBER"`。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_end_output_matches_declared_type --offline -- --ignored --exact --nocapture`。
+- 实际结果：`api_ok=true`、`end_status=Some(Completed)`、`end_outputs={"count":"NOT_A_NUMBER"}`、`run_terminal=Some("succeeded")`；断言要求拒绝运行、end 失败或 `count` 为 JSON number，以 **0 passed / 1 failed（预期）** 结束。探针没有模型、工具、网络、命令或文件副作用。
+
+#### DeepSeek 官方语义与成熟 Agent 对照
+
+- DeepSeek Responses 官方参数文档把 `text.format.type=json_schema` 描述为按提供的 JSON Schema 生成结构化响应；本项的 end 是宿主本地工作流输出，不会由 provider 替宿主校验。因此可迁移原则不是把 Responses 字段生搬到 DAG，而是在宿主承诺结构化契约的最终交付边界执行等价的值/schema 验证。
+- DeepSeek Harness 的 `packages/core/tools/src/index.ts` 为每个成功工具值调用 `validateJsonSchemaValue(tool.output.schema, detached, 'value')`；有 violation 时拒绝规范化成功结果。`packages/core/tools/src/json-schema.ts` 提供实际 schema/value 验证器。其直接对象是工具输出而非工作流 end，但证明同一成熟 Harness 将输出 schema 视为运行时约束，不是只验证 schema 本身语法。
+- Codex `hooks/src/engine/output_parser.rs::structured_output_rejects_invalid_shapes_and_types` 覆盖错误字段类型和形状，`command_runner_tests.rs::async_hook_marks_invalid_structured_output_as_failed` 进一步断言异步结构化输出不匹配时状态为 Failed。其 hook 协议与本系统 workflow 不同；可迁移不变量是机器消费的结构化结果必须先验证，再发布成功。
+- Penguin-Magic 的计划执行会先验证计划对象和 operation 支持集合，但未发现其提供可直接引用的通用 DAG end 输出类型验证；因此不把它写成已解决本项，只作为“机器对象不可无验证进入执行链”的弱对照。
+
+#### 影响、后果与根因修复方向
+
+- CLI JSONL、未来 stdio Harness/TypeScript SDK、工作流嵌套调用和自动化消费者会按声明生成类型或反序列化；一次类型漂移即可造成客户端解码失败、错误分支、数值计算异常或把本应失败的 run 继续传给后续副作用节点。
+- UI 若把输出声明用于组件选择或格式化，错误成功可能表现为渲染异常；更严重的是持久化 replay 仍会忠实重放这个“成功的错误值”，使在线与恢复后都稳定错误，而非瞬时展示问题。
+- H-185 检查 start 输入的实际类型；H-197 检查 end 对外输出的实际类型。两者共享“声明未成为 runtime contract”的设计根因，但生产边界、受影响消费者和失败后果不同；只修输入 admission 不能修复输出漂移。
+- 根因修复应把工作流变量类型编译成单一 `ValueContract`/JSON Schema 表示，由 start admission、节点输出和 end publication 共用；end 在发布 Completed 和 run succeeded **之前** 验证完整对象，错误必须带 node ID、变量名、expected/actual type 并进入唯一 Failed 终态。不要只在 UI 或 SDK 解码处补校验。
+- 若产品希望字符串到数字等隐式转换，必须在定义中版本化并形成确定的 coercion 规则；默认应 fail closed，避免不同宿主各自转换。回归需覆盖全部标量、array/object/null、引用值、常量值、缺失 required、额外输出、嵌套 schema、重放/恢复，以及 UI/CLI/SDK 对同一失败的统一投影。
+
+本轮 H-197 只新增正式审计探针和报告，未修改生产工作流类型检查或终态逻辑。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3986,6 +4016,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-194 工作流声明顺序稳定性显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_execution_scope_is_not_node_order_dependent --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；相同节点/边仅交换数组位置，completed 集合分别为 `start,end` 与 `start,orphan,end`，两个 run 都为 `succeeded`；无模型、工具、网络、命令或文件副作用 |
 | H-195 工作流多个可达终点显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；左右两条 start 可达路径各有 end，实际仅左侧三节点 completed 后 run 即 `succeeded`，右侧分支无任何终态事件；无模型、工具、网络、命令或文件副作用 |
 | H-196 工作流合法目标依赖闭包显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_target_node_keeps_required_ancestor_outputs --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；整图控制组 target 得到 `SOURCE_VALUE` 并成功，指定合法 target 后 source=Skipped、target=Failed、run=`failed`，错误为 required output unavailable；无模型、工具、网络、命令或文件副作用 |
+| H-197 工作流输出类型契约显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_end_output_matches_declared_type --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；end 声明 `count:number`，实际发布 `{"count":"NOT_A_NUMBER"}`、end=Completed、run=`succeeded`；无模型、工具、网络、命令或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |

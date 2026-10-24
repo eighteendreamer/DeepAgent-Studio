@@ -1526,6 +1526,74 @@ async fn audit_workflow_target_node_keeps_required_ancestor_outputs() {
 }
 
 #[tokio::test]
+#[ignore = "audit: successful workflow outputs must match their declared types"]
+async fn audit_workflow_end_output_matches_declared_type() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start","config":{"inputVariables":[{
+                    "name":"raw",
+                    "variable":"raw",
+                    "type":"string"
+                }]}},
+                {"id":"end","kind":"end","config":{"outputVariables":[{
+                    "name":"count",
+                    "variable":"count",
+                    "type":"number",
+                    "value":"{{#start.raw#}}"
+                }]}}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"end"}
+            ]
+        },
+        "inputs":{"raw":"NOT_A_NUMBER"}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-end-output-type".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    if event.status.is_terminal() {
+                        capture.lock().unwrap().push(event);
+                    }
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-end-output-type")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let end = events.iter().find(|event| event.node_id == "end");
+    let count = end
+        .and_then(|event| event.outputs.as_ref())
+        .and_then(|outputs| outputs.get("count"));
+    eprintln!(
+        "api_ok={} end_status={:?} end_outputs={:?} run_terminal={:?}",
+        result.is_ok(),
+        end.map(|event| event.status),
+        end.and_then(|event| event.outputs.as_ref()),
+        run.terminal_kind
+    );
+    assert!(
+        result.is_err()
+            || end.is_some_and(|event| event.status == NodeExecutionStatus::Failed)
+            || count.is_some_and(serde_json::Value::is_number),
+        "a workflow cannot succeed with an output value that violates its declared type"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
