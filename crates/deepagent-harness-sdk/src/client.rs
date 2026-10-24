@@ -796,6 +796,39 @@ mod audit_tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: notifications from methods other than harness/event must not be exposed as Harness events"]
+    async fn audit_non_harness_notification_method_is_not_emitted_as_event() {
+        let script = r#"[Console]::Out.WriteLine('{"jsonrpc":"2.0","method":"other/event","params":{"type":"thread.started","threadId":"t-wrong-method","title":null,"protocolVersion":1}}'); Start-Sleep -Seconds 30"#;
+        let mut child = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a local non-harness-notification fixture");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let (events, _) = broadcast::channel(8);
+        let mut receiver = events.subscribe();
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        spawn_reader(stdout, stderr, pending, events.clone());
+
+        let observed =
+            tokio::time::timeout(std::time::Duration::from_millis(300), receiver.recv()).await;
+
+        let _ = child.kill().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+            .await
+            .expect("fixture should exit when terminated");
+
+        assert!(
+            observed.is_err(),
+            "notification method other/event must not be exposed as a Harness event: observed={observed:?}"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "audit H-205: SDK notifications must preserve the wire event sequence used by event/ack and gap recovery"]
     async fn audit_sdk_notification_preserves_event_sequence_for_ack_and_gap_detection() {
         let script = r#"$lines = @(

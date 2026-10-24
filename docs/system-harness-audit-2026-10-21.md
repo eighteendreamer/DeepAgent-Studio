@@ -48,7 +48,7 @@
 | Responses 流身份与顺序元数据 | 合法流为 `response.created`/`response.completed` 提供同一 response ID、实际模型和单调序号；正式 ChatService→Kernel 落盘后两条事件仅保留 Runtime envelope 与 event_type | 已确认 H-200；正常连续离线 Responses fixture、正式 run_events；未制造乱序/丢包，也未声称已观察真实供应商流损坏 |
 | 无限画布工作流视口缩放锚点 | 画布已平移后，底栏放大/缩小/重置/滑杆与小地图放大/缩小只改 zoom、不重算平移 offset；缩放前后的视口中心映射到不同世界坐标 | 已确认 H-201；动态执行六个生产 TSX handlers；与 Penguin-Magic 中心锚定按钮缩放及指针锚定滚轮缩放实现对照；没有图数据或运行状态副作用 |
 | 无限画布工作流视口持久化 | 正式图写入只序列化 `nodes/edges`，新 WebView 的 viewport 回到 `{x:0,y:0,zoom:1}`；ReactFlow 初次挂载执行 fitView，没有 per-mode default viewport | 已确认 H-202；动态调用真实 `workflowPersistence` 的读/写/flush 并创建新 store 实例；图节点恢复对照通过；未启动 Tauri WebView |
-| Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，也未证明发行版 server 常规路径会静默不响应 |
+| Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，也未证明发行版 server 常规路径会静默不响应 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -4350,6 +4350,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-210 Responses 非单调 sequence 显式探针 | `cargo test -p deepagent-models --test responses_sequence_audit audit_non_monotonic_responses_sequence_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；同一响应发送 `sequence_number=0,0,4,2`（重复、跳号、逆序），正式 `ModelClient → ResponseAccumulator` 仍返回 `Ok(Response)`、`finish_reason=Stop`，未拒绝或标记流损坏；受控离线 transport，无真实供应商、工具、文件或公网 |
 | H-211 Harness SDK 字符串 response ID 显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_string_response_id_does_not_leave_request_pending --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell fixture 返回 `{"jsonrpc":"2.0","id":"1","result":{}}`，`spawn_reader` 将字符串 ID 变为整数 0，`thread/list` 在 fixture 保持连接期间未完成且 pending=1；无真实 CLI server、模型、工具、文件或公网 |
 | H-212 Harness SDK JSON-RPC 版本显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_wrong_jsonrpc_version_does_not_complete_request --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell fixture 返回 `{"jsonrpc":"1.0","id":1,"result":{}}`，`thread/list` 经 `spawn_reader` 直接返回 `Ok(RpcResponse)`，响应 `jsonrpc` 保持为 `1.0`；无真实 CLI server、模型、工具、文件或公网 |
+| H-213 Harness SDK notification method 路由显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_non_harness_notification_method_is_not_emitted_as_event --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell fixture 返回 `method:"other/event"` 但合法 `HarnessEvent` params，reader 忽略 method 并广播为 `ThreadStarted { thread_id: "t-wrong-method" }`；无真实 CLI server、模型、工具、文件或公网 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4975,3 +4976,31 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 回归应覆盖：正确 `2.0` response/notification、`1.0`、缺失字段、空字符串、数字版本、大小写变体、版本错误的 error response，以及错误版本不应移除/完成 pending、EOF 清理仍能释放请求。还需验证 server 发送错误版本后，SDK 不应把 `initialized` 标记为 true，也不应允许后续请求伪装成功。
 
 本轮只新增正式失败探针和审计文档，未修改生产实现；H-100、H-207、H-211 的既有证据保持独立。正式修复应把版本校验、ID 类型、result/error 互斥和 pending 清理收敛到同一个 Harness JSON-RPC transport 边界。
+
+### H-213：Harness SDK 忽略 notification method，任意通知可伪装成 Harness 事件
+
+**级别：高（P1，事件路由、状态污染与控制面可信边界）；触发条件：** stdio server 或同一 stdout 上的中间组件发送一个 JSON-RPC notification，其 `method` 不是 Harness 协议规定的 `harness/event`，但 `params` 恰好符合任一 `HarnessEvent` 结构。当前 SDK reader 忽略 method，只反序列化 params，因此会把该通知广播为正式 Harness 事件。
+
+#### 生产路径与正式复现
+
+- 当前协议 DTO `RpcNotification` 同时保留 `jsonrpc`、`method`、`eventSequence` 和 `params`，说明 method 本来是 wire identity 的一部分；`transport.rs::WireMessage::Notification` 的注释也明确它应是 `harness/event`。但是 `client.rs::spawn_reader()` 在匹配 notification 后直接执行 `serde_json::from_value::<HarnessEvent>(notification.params)`，没有检查 `notification.method == "harness/event"`，随后把事件发送到公开 broadcast channel。
+- 这不是 serde untagged 分类造成的偶然现象：notification 已正确解码为 `RpcNotification`，错误发生在 reader 丢弃 method 后的事件投影边界。任何未来控制通知、诊断通知、插件通知或意外 stdout 数据，只要 params 与当前事件 enum 同形，就会进入同一订阅流。
+- 新增正式 Windows ignored 探针 `crates/deepagent-harness-sdk/src/client.rs::client::audit_tests::audit_non_harness_notification_method_is_not_emitted_as_event`。PowerShell fixture 通过真实 stdout 输出 `{"jsonrpc":"2.0","method":"other/event","params":{"type":"thread.started","threadId":"t-wrong-method","title":null,"protocolVersion":1}}`，保持进程存活 30 秒；测试订阅正式 `HarnessClient` 使用的 broadcast reader，并观察 300ms。
+- 执行：`cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_non_harness_notification_method_is_not_emitted_as_event --offline -- --ignored --exact --nocapture`。
+- 实际结果：探针为 **0 passed / 1 failed（预期复现）**，SDK 收到 `observed=Ok(Ok(ThreadStarted { thread_id: "t-wrong-method", title: None, protocol_version: 1 }))`。fixture 没有使用 `harness/event`，所以该事件只能来自生产 reader 忽略 method 的行为；没有真实 CLI server、模型、工具、用户文件或公网。
+
+#### 成熟 Agent 对照
+
+- **DeepSeek Harness** 的 `packages/sdk/protocol/src/transport.ts` 把 notification handler 明确定义为 `(method, params)`，入站处理调用 `notificationHandler?.(method, objectParams(frame.params))`，不会在 transport 层丢掉 method。其 `HarnessSdkNotificationMap` 再用 `session.event`、`session.status`、`subagent.started`、`subagent.finished` 等方法名索引各自 payload，README 也把 method→type 映射列为协议契约。
+- **Codex** 的 app-server protocol 将 `ServerNotification` 建模为按 method 判别的 typed enum/envelope，生产分发以 `ServerNotification::TurnStarted`、`ItemCompleted` 等具体变体工作；调用方不会只看 params 的内部 shape 猜通知类型。这里引用的是其 method-owned typed dispatch，不声称 Codex 的每个通知都与本系统 `harness/event` 同形。
+- 成熟实现共同保留“方法名决定 payload schema”这一 JSON-RPC 路由边界。DeepAgent 当前把 method 和 params 解耦，等于允许 payload 的内部 `type` 字段绕过外层协议路由。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，调用方可能收到并处理并不存在的 `thread.started`、`turn.completed`、审批、工具、终态或配置相关事件。即使当前 fixture 只伪造只读的 ThreadStarted，前端/SDK 消费者通常依据事件流更新本地状态、结束 spinner、提示审批、ACK 游标或启动补读；错误事件会造成状态污染、错误 UI 和恢复游标偏移。
+- 若未来在同一 stdout 增加独立 notification 方法，当前实现会产生确定性的命名空间冲突：一个新方法的 payload 只要含有与 HarnessEvent 相同的 `type` 字段，就会被旧 SDK 误解释。这会破坏协议可扩展性，使新增通知无法做到向后兼容隔离。
+- 本项与 H-205 不同：H-205 是合法 `harness/event` notification 的外层 `eventSequence` 被丢失；H-213 是非法/其他 method 的 notification 被错误接纳。与 H-212 也不同：H-212 检查 response 的 JSON-RPC 版本，本项检查 notification 的 method 路由，即使版本为正确 `2.0` 仍会触发。
+- 根因修复应在单一 notification decode/dispatch seam 中先验证 `jsonrpc == "2.0"` 和 method，再按 method 选择 typed payload decoder。当前只支持 `harness/event` 时，其他 method 应明确忽略或生成可观察的 UnknownNotification 诊断，不得进入 `HarnessEvent` channel。若未来支持多方法，应定义版本化 typed notification enum，而不是继续只反序列化 params。
+- 回归应覆盖：合法 `harness/event`、未知 method 同形 params、空/缺失/非字符串 method、错误 JSON-RPC 版本、未知 HarnessEvent type、错误 params schema、eventSequence 保留、多个不同方法交错，以及 broadcast lag/重连后不会把未知通知计入 ACK 游标。
+
+本轮只新增正式失败探针和审计文档，未修改生产实现；H-205 与 H-212 的证据保持独立。生产修复应把 method 路由、版本校验、eventSequence 和 typed payload 解码统一在 Harness transport 层，不在 UI/SDK 消费者中各自过滤。
