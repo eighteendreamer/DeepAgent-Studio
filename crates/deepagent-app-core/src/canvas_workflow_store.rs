@@ -388,6 +388,52 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-255: named workflow ids must not collide with reserved current canvas slots"]
+    fn audit_named_workflow_cannot_overwrite_or_delete_current_slot() {
+        let store = store();
+        let current_id = current_workflow_id("creative", Some("workspace-a")).expect("current id");
+        store
+            .write_current(
+                "creative",
+                Some("workspace-a"),
+                &json!({"nodes":[{"id":"live-only"}]}),
+            )
+            .expect("write live canvas");
+
+        let overwrite = store.save_workflow(
+            Some(&current_id),
+            "named-collision",
+            "creative",
+            Some("workspace-a"),
+            &json!({"nodes":[{"id":"named-overwrite"}]}),
+        );
+        let live_after_overwrite = store
+            .read_current("creative", Some("workspace-a"))
+            .expect("read live canvas")
+            .map(|graph| graph["nodes"].clone());
+        let delete_result = store
+            .delete_workflow(&current_id)
+            .expect("delete collision id");
+        let live_after_delete = store
+            .read_current("creative", Some("workspace-a"))
+            .expect("read live canvas after delete");
+        eprintln!(
+            "canvas workflow id collision audit: overwrite_ok={}, live_after_overwrite={:?}, delete_ok={}, live_after_delete_present={}",
+            overwrite.is_ok(),
+            live_after_overwrite,
+            delete_result,
+            live_after_delete.is_some(),
+        );
+        assert!(
+            overwrite.is_err()
+                && live_after_overwrite == Some(json!([{"id":"live-only"}]))
+                && !delete_result
+                && live_after_delete.is_some(),
+            "named workflow APIs must reject reserved current canvas ids"
+        );
+    }
+
+    #[test]
     fn rejects_unknown_mode_bad_id_and_oversized_graph() {
         let store = store();
         let mode_error = store

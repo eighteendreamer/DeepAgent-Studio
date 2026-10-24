@@ -6737,3 +6737,39 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 已执行精确生产删除探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过。未修改删除生产逻辑，只新增 test-only ignored 探针。
 - 未运行 workspace 全量、Desktop build/UI、真实 SQLite 多进程锁竞争、磁盘/权限故障、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-250～H-253 只作为相邻边界对照，不重复计数。
+
+### H-255：命名工作流 ID 可占用 `current:<mode>:<workspace>`，覆盖或删除 live canvas slot
+
+**级别：高（P1，画布数据破坏与恢复边界）；触发条件：** 调用 `save_workflow(Some(id), ...)` 或 `delete_workflow(id)` 时，`id` 取 live canvas 的保留格式 `current:<mode>:<workspace>`。`validate_token` 为了允许 workspace/current key 中的冒号而接受该字符串；命名工作流 API 没有拒绝 `current:` 前缀，也没有把 live 与 named collection 使用不同的 key 类型/表。该问题不重复 H-244：H-244 是两个窗口的陈旧完整快照覆盖；H-255 在单线程、无并发下即可用命名 API 破坏 live slot。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；使用正式 `CanvasWorkflowStore`、内存 SQLite、workspace `workspace-a` 与合成 graph。没有真实项目、Tauri 窗口、模型凭据或网络。
+- E-255-first（command，content_hash=n/a）：在 `crates/deepagent-app-core/src/canvas_workflow_store.rs::tests::audit_named_workflow_cannot_overwrite_or_delete_current_slot` 增加 ignored 探针，执行：
+  `cargo test -p deepagent-app-core --lib canvas_workflow_store::tests::audit_named_workflow_cannot_overwrite_or_delete_current_slot --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（缺陷预期）**。生产输出：`overwrite_ok=true, live_after_overwrite=Some([{id:"named-overwrite"}]), delete_ok=true, live_after_delete_present=false`；最终断言要求命名 API 拒绝保留 ID，实际却先覆盖再删除。
+- E-255-callflow：`current_workflow_id("creative", "workspace-a")` 生成 `current:creative:workspace-a` → `write_current` 持久化 `current=true` → `save_workflow(Some(current_id), ...)` 通过 `validate_token`，以 `current=false` 的 named doc 对同一 collection/id 执行 `DocumentStore::put` → `read_current` 读到 named graph；随后 `delete_workflow(current_id)` 直接删除该文档，live slot 不再存在。
+- E-255-control：探针只使用公开 `write_current/read_current/save_workflow/delete_workflow`，没有直接插入/删除 SQLite 文档；同一 id 的碰撞由生产 key 生成和校验逻辑自然产生。
+
+#### 初始 Finding 与 Path
+
+- F-255（category=namespace/integrity，status=validated，confidence=high，evidence_ids=[E-255-first]）：live slot 与 named workflow 共用字符串 key 空间，却只有 `current` 布尔字段区分类型；任何能提交 workflow id 的调用方都能将 live 文档降级为 named 或直接移除。返回值仍是成功 meta/bool，UI 可能把已丢失的当前画布当作正常保存/删除。
+- P-255（callflow）：live graph → reserved key → named save overwrites row and flips `current=true` to `false` → subsequent list may expose the former live slot as named workflow → delete removes row → `read_current` returns None. 这是单调用者、单数据库、无并发的确定性数据破坏。
+- 已证后果：用户正在编辑的 live canvas 节点和 edges 可被一个带冲突 id 的保存请求替换；删除后重启无法恢复该 live slot，相关 artifact URI、模型配置与未导出的画布状态失去入口。探针未模拟 UI 是否会生成该 id，也未把“普通随机 UUID”写成必然碰撞；风险来自公开 API 接受保留格式以及未来导入/插件/重试复用 id。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **Codex**：本轮没有找到与本系统“live slot + named library 共表”同构的 Codex API；其 thread/session 类型和持久 key 由专用 store 方法管理，列表/归档/删除操作不以通用字符串覆盖另一种生命周期对象。可迁移原则是把身份空间做成 typed key/枚举或在存储层拒绝保留前缀，而不是仅靠 `current` 布尔字段。
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/api/session-controller/README.zh.md` 将 Session、Workspace、Agent、Job 作为不同 namespace/owner seam；Remote method 按 session/job identity 解析，job 不可见时返回 `job/not-found`，不会把一个 projection key 解释成另一类生命周期对象。它没有本系统同构的 canvas slot，但体现了“不同对象种类不能共享可重用裸字符串 ID”。
+- **DeepSeek 官方 Responses**：[Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response)只定义 provider response/input 身份，不知道本地 canvas slot；因此 H-255 是宿主持久化命名空间缺陷，不能由 `response_id`、KV cache 或 tool call 配对自动修复。live graph 一旦被误覆盖，后续无状态请求只能忠实发送错误的新 graph。
+
+#### 影响评估与收敛方向（本地设计，未实施）
+
+- 影响评为 P1：普通 UI 生成的随机 `wf-UUID` 不会触发；导入/复制/插件/重试/手写 SDK 若复用 `current:` 格式即可在单次调用中覆盖或删除当前画布。触发后没有 revision/conflict，也没有 live slot 的专门恢复路径，属于直接数据丢失。
+- 在现有 `CanvasWorkflowStore` 边界拆分 key 类型：live slot 与 named workflow 使用不同 collection 或 typed `WorkflowId` enum；`save_workflow/load_workflow/delete_workflow` 一律拒绝 `current:` 前缀和任何 live-id 形状，live API 只能通过 `write_current/read_current` 操作。不要仅在前端过滤，因为 Tauri/CLI/SDK/导入仍可调用后端。
+- 迁移旧库时先扫描 `current=true`/`current:` 碰撞，保留 live 文档并给同名 named workflow 分配新 id；对碰撞请求返回结构化 `reserved_workflow_id`，不覆写、不删除。回归需覆盖 current→named 保存、current 删除、跨 workspace current key、导入/复制/重试以及 H-244 stale write，断言 live graph、`current` 标记和 list 结果保持一致。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行精确生产 ID 碰撞探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过。未修改生产 key/命名空间逻辑，只新增 test-only ignored 探针。
+- 未运行 workspace 全量、Desktop build/UI、真实导入/复制/插件调用、数据库迁移、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-244、H-251 及 H-254 只作为相邻边界对照，不重复计数。
