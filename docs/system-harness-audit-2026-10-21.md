@@ -74,6 +74,7 @@
 | 画布语音转写远程输入绕过网络边界 | `speech_transcribe.audio_reference` 可直接填写 `http(s)`；正式 gateway 先裸 GET loopback 资源，再把其字节上传给 provider，没有审批或统一网络策略 | 已确认 H-249；正式 `CanvasModelGateway::run_audio`、本机 loopback provider/input；未访问真实内网或公网 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
+| Harness SDK 断线后的事件等待 | 真实本机子进程退出且生产 reader 已清空 pending RPC，保留公开 client 时，既有和新订阅均无断线/关闭结果；丢弃 client 后两者才 Closed | 已确认 H-256（P2）；正常完成通知交付对照通过，Windows stdio fixture；未运行真实 Agent/模型或桌面 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
 | Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
 | Harness thread/list 历史列表 | 创建 120 个真实持久化 thread 后，正式 `thread/list` 一次返回全部 120 条、约 25 KB JSON；请求没有 limit、cursor 或 continuation | 已确认 H-220；正式 SQLite/EventStore/ServerState，无模型、工具、子进程或网络 |
@@ -6773,3 +6774,39 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 已执行精确生产 ID 碰撞探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过。未修改生产 key/命名空间逻辑，只新增 test-only ignored 探针。
 - 未运行 workspace 全量、Desktop build/UI、真实导入/复制/插件调用、数据库迁移、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-244、H-251 及 H-254 只作为相邻边界对照，不重复计数。
+
+### H-256：SDK reader 已确认 EOF，事件订阅仍无期限等待，断线后新订阅也无法得知生产者消失
+
+**级别：中（P2，Harness SDK 的连接生命周期与等待可终结性）；状态：生产 SDK reader/公开 client 方法和真实 Windows stdio 子进程已复现，未修复。** 触发条件是服务端在 turn 已接纳/已开始后退出或关闭 stdout、尚未交付 turn 终态，调用方仍保留 `HarnessClient`（例如为后续恢复使用）。这不是 H-214 的迟订阅：失败组在 initialize/turn_start 之前已经订阅；也不是 H-204 的在线静默 RPC：本项 producer 已退出，RPC 等待确实已经报错并释放。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库审计。只新增 test-only 模块 `crates/deepagent-harness-sdk/src/client_disconnect_audit.rs` 与 client.rs 测试模块入口；使用本机有限 PowerShell 协议 producer、虚构 thread/turn ID、占位输入，无真实模型、凭据、用户文件或外部网络。fixture 不启动真实 DeepAgent run，也不伪造 RunStore 终态。
+- E-256-first（source_type=command，source_ref=上述测试模块，content_hash=n/a，artifact_path=n/a）：执行 `cargo test -p deepagent-harness-sdk --lib disconnect_audit --offline -- --include-ignored --nocapture`，结果 **1 passed / 1 failed（预期），0.43s**。失败探针为 `client::disconnect_audit::audit_eof_settles_existing_and_late_event_subscribers`；输出 `exit=7 pending=0 terminal=false existing_settled=false late_settled=false`。正常完成通知对照输出 `terminal=true`，其交付断言通过。
+- E-256-barrier：fixture 按顺序接收 initialize、turn/start，返回合法 response，并发送唯一 `turn.started`；已有订阅确实收到该事件。随后公开 `thread_list()` 发出第三个 RPC，producer 读到后直接 exit=7，不返回第三个 response。生产 `spawn_reader()` 到 EOF 后 `pending.clear()`，所以第三个调用真实返回 `SdkError::ResponseChannelClosed`；探针同时确认 pending=0、child.wait() 确认 exit=7。此 barrier 排除了“reader 尚未发现 EOF”与“producer 仍存活”的混杂因素。
+- E-256-waits：在上述 barrier 后，既有 receiver 和通过公开 `client.subscribe()` 新建的 receiver 并行等待，各 200ms 都没有返回事件、错误或 Closed。200ms 仅为有界观察窗口，不是产品 SLA；无期限结论还由 sender 所有权和没有后续关闭路径的源码支撑。随后显式 drop(client)，两个 receiver 都在 3 秒界内返回 `RecvError::Closed`，证明剩余 reader 并未持续持有 sender，阻止关闭的是已无生产者的公开 client。
+- E-256-control：相同 producer 在退出前额外发送合法 `turn.completed` 时，既有订阅先收到 started 再收到 completed，正常对照通过。它只证明 EOF 前已收到的终态可交付，不证明未收到终态的运行可自动恢复；对照 producer 同样按计划 exit=7，不冒充正常 server graceful shutdown。
+
+#### Finding 与调用路径
+
+- F-256：severity=medium，category=design，status=validated，confidence=high，evidence_ids=[E-256-first,E-256-barrier,E-256-waits,E-256-control]，location=`crates/deepagent-harness-sdk/src/client.rs::HarnessClient.events/subscribe/spawn_reader`。`HarnessClient` 每个克隆都持有 `broadcast::Sender<HarnessEvent>`；reader EOF 只清空 RPC pending，没有关闭事件生产端、设置共享连接终态或发布 typed disconnect。`subscribe()` 无条件调用 sender.subscribe，因此 producer 消失后新 receiver 也表现为在线等待。
+- P-256（path_type=callflow）：合法 turn/start response 与 turn.started → server stdout EOF → reader 清空 pending，RPC 得到 ResponseChannelClosed → reader 退出但 client.events Sender 仍存活 → existing.recv()/新 subscribe().recv() 都无后续生产者且不 Closed → 只有调用者丢弃全部 client sender 才可关闭流。没有新建第二套 event store；本项也不是 server 的 turn 持久化丢失证据。
+- 已证后果：以公开订阅等待 turn 完成的 SDK consumer，不能仅靠这条流区分“模型还在运行”和“宿主已经消失”。调用方若没有另设进程监控/超时，就无法从 recv 获得触发错误展示、重连或 thread/read 的信号。保留 client 以恢复是常见生命周期，不能要求收到一个永不返回的 recv 后才知道应丢 client。探针没有证明真实 UI 已卡死、持久化数据丢失、外部工具仍执行或真实费用继续发生。
+
+#### 成熟 Agent 与 DeepSeek 对照（源码和现有测试，未运行参考工程）
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/sdk/client/src/client.ts` 定义 `TransportClosedError`；child `exit` 调用 `failSubscriptions()`，`NotificationSubscriptionImpl.fail()` 拒绝已有 waiter，并使后续 next() 失败；已排队通知先 drain，再抛连接错误。`subscribe()` 在 exitCode/closeTask/spawnError 已存在时创建 born-failed 订阅。`tests/sdk-client.spec.ts` 的 `subscriptions created after termination are born failed` 与 `closes subscriptions with the runtime and rejects parked waiters` 明确覆盖新/旧订阅；另测 runtime death 保留已到达队列。可借鉴的是独立于 client handle 存活的连接终态，以及先交付已收到事实再结束等待。
+- **Codex**：`借鉴/codex/codex-rs/app-server-client/src/lib.rs::AppServerEvent` 单独表达 `Disconnected { message }`，而非把断线伪装成服务端 turn.failed；`remote.rs` 在 close frame、读取错误和流 None 时交付该事件。`remote_disconnect_surfaces_as_event` 测试明确断言它可被 next_event 消费。该 Codex 对照是 WebSocket remote client，不宣称已测试其 stdio 或其所有客户端；可迁移原则是连接生命周期也必须成为订阅的可观察结果。
+- **DeepSeek 官方边界**：2026-10-25 联网复核 [Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)与[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)。供应商 SSE 的 completed/incomplete/failed 与本机 Harness stdio 的存活不是同一个终态；无状态 Responses 也不会替 SDK 恢复本地 run。H-256 是宿主 SDK 控制面契约，不是 provider SSE 解析、KV cache 或工具格式错误。无需调整 reasoning/strict/cache 参数，恢复应读取现有 durable session/run 状态。
+
+#### 影响与根因收敛建议（本地设计，尚未实施）
+
+- 按本机 SDK 调用前提评 P2：异常退出、服务升级、stdout 关闭或读取失败时，依赖事件的编排可能长期等待并保留任务；自动恢复没有可靠触发信号。不能从 200ms 样本声称发生 OOM、大额费用或某个具体业务超时。
+- 在现有 SDK transport owner 建立唯一共享连接状态，收拢 EOF、读取错误、显式 close 与 child exit；事件流应返回 typed transport error/Disconnected 或关闭，并使 EOF 后新订阅立即失败。可保留 client handle 供诊断，但不能由 handle 的 Sender 存活决定连接是否在线。必须先 drain 已接收事件，不用丢弃终态队列换取关闭。
+- 断线只表示本机 transport 不可用，不能据此伪造每个 run 的 failed/cancelled；以现有 RunStore/thread/read 查询和启动恢复核对运行事实，结果未知时明确标记，不自动重发 turn/start 或有副作用的工具。沿用 H-205 的带序号信封、H-214 的 owned stream 与既有 durable cursor，不能另建无限历史缓冲。
+- 回归应覆盖：既有 parked receiver、EOF 后新订阅、多个 client clone、完成/审批通知与 EOF 同批、未完成 turn 的 EOF、stdout 读取错误、进程存活但 stdout 关闭、显式 close、stderr 诊断、重连后独立流与 thread/read 补读；确保 pending RPC 与订阅由同一连接终态收尾，且正常终态不被断线改写。
+
+#### 验证时间线与未覆盖范围
+
+- 首次精确模块命令 **1 passed / 1 failed（预期）** 后立即追加本项；没有先修生产实现再反推证据。随后 `cargo test -p deepagent-harness-sdk --offline`：单元 **5 passed / 12 ignored**，正式 stdio e2e **6 passed**，doc-test **1 passed**；`cargo fmt --all -- --check`、`git diff --check` 均通过。e2e 只作为已有正常协议回归，不把它计作 H-256 的真实 server 故障注入。
+- 未运行真实 deepagent server/SDK 端到端、完整 ChatService/Kernel/RunStore、Desktop build/UI、真实供应商、参考工程、跨平台或 OS 杀进程实验；真实子进程故障由本机 producer 的显式 exit 实现。用户排除的 encrypted-content 问题未处理，全系统审计仍未完成。

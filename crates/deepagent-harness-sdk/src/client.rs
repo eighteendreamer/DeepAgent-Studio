@@ -396,6 +396,10 @@ fn spawn_reader(
 }
 
 #[cfg(all(test, windows))]
+#[path = "client_disconnect_audit.rs"]
+mod disconnect_audit;
+
+#[cfg(all(test, windows))]
 mod audit_tests {
     use super::*;
 
