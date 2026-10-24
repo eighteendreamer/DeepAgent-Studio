@@ -2005,6 +2005,58 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-222: thread/start reasoning effort must reach the next turn"]
+    fn audit_thread_start_reasoning_effort_is_not_silently_dropped() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        let mut state = ServerState::new_for_test_with_database(database, workspace.clone());
+        initialize(&mut state);
+
+        let (started, _) = state.dispatch(
+            rpc_request(
+                2,
+                "thread/start",
+                serde_json::json!({
+                    "cwd": workspace,
+                    "provider": "deepseek-official",
+                    "model": "deepseek-v4-pro",
+                    "reasoningEffort": "high"
+                }),
+            ),
+            None,
+        );
+        let thread_id = started.result()["threadId"]
+            .as_str()
+            .expect("thread/start returns threadId")
+            .to_owned();
+        let (turn, launch) = state.dispatch(
+            rpc_request(
+                3,
+                "turn/start",
+                serde_json::json!({
+                    "threadId": thread_id,
+                    "input": "audit reasoning override"
+                }),
+            ),
+            None,
+        );
+        let reasoning_effort = launch
+            .as_ref()
+            .and_then(|launch| launch.overrides.reasoning_effort.as_deref());
+        eprintln!(
+            "thread/start reasoning audit: response_success={}, reasoning_effort={reasoning_effort:?}",
+            turn.is_success()
+        );
+        assert_eq!(
+            reasoning_effort,
+            Some("high"),
+            "thread/start reasoningEffort was accepted but dropped before turn/start"
+        );
+    }
+
+    #[test]
     fn fileless_legacy_row_is_not_resumable_or_readable() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);
