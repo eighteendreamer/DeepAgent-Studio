@@ -1,0 +1,77 @@
+//! Audit that every public Responses history mutation keeps tool-call pairs valid.
+
+use std::sync::{Arc, Mutex};
+
+use async_trait::async_trait;
+use deepagent_core::error::Result;
+use deepagent_core::message::{Message, ToolCall};
+use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
+use deepagent_models::{ModelClient, ModelConfig, ResponseRequest};
+
+#[derive(Default)]
+struct RecordingTransport {
+    requests: Mutex<Vec<serde_json::Value>>,
+}
+
+#[async_trait]
+impl HttpTransport for RecordingTransport {
+    async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push(serde_json::from_str(&request.body)?);
+        for event in [
+            r#"{"type":"response.output_text.delta","delta":"offline"}"#,
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+        ] {
+            if sink.on_event(event)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
+fn dangling_tool_messages() -> Vec<Message> {
+    vec![
+        Message::user("Continue the interrupted operation."),
+        Message::assistant("").with_tool_calls(vec![ToolCall {
+            id: "audit-dangling-call".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({"path": "note.txt"}),
+        }]),
+    ]
+}
+
+#[tokio::test]
+#[ignore = "audit reproducer: public replace_messages must preserve Responses tool-call repair"]
+async fn audit_replace_messages_repairs_dangling_responses_calls_before_transport() {
+    let transport = Arc::new(RecordingTransport::default());
+    let client = ModelClient::new(
+        transport.clone(),
+        ModelConfig::deepseek("offline-audit-placeholder"),
+    );
+
+    // `ResponseRequest::new` uses from_response_items and therefore supplies a
+    // paired failure output. The public mutation method must preserve that
+    // same provider-boundary invariant after replacing the message projection.
+    let mut request = ResponseRequest::new("deepseek-flash", vec![Message::user("seed")]);
+    request.replace_messages(&dangling_tool_messages());
+    client.stream_response(request).await.unwrap();
+
+    let requests = transport.requests.lock().unwrap();
+    let input = requests[0]["input"].as_array().unwrap();
+    let has_call = input
+        .iter()
+        .any(|item| item["type"] == "function_call" && item["call_id"] == "audit-dangling-call");
+    let has_output = input.iter().any(|item| {
+        item["type"] == "function_call_output" && item["call_id"] == "audit-dangling-call"
+    });
+    eprintln!(
+        "Responses replace_messages repair audit: has_call={has_call} has_output={has_output} input={input:?}"
+    );
+    assert!(
+        has_call && has_output,
+        "dangling calls must be repaired before transport"
+    );
+}

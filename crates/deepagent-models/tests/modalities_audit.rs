@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use deepagent_core::error::Result;
-use deepagent_core::message::MessageAttachment;
+use deepagent_core::message::{Message, MessageAttachment, ToolCall};
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
 use deepagent_models::{
     ModelCatalog, ModelClient, ModelConfig, ModelDiscovery, ModelRole, ResponseInputItem,
@@ -152,6 +152,66 @@ async fn sample_image_role(role: &str) -> RoleImageObservation {
         image_parts,
         content_was_string,
     }
+}
+
+#[tokio::test]
+#[ignore = "audit probe: Responses tool outputs may carry input_image content blocks"]
+async fn audit_responses_tool_output_images_are_preserved_before_transport() {
+    let transport = Arc::new(RoleImageTransport::default());
+    let client = ModelClient::new(
+        transport.clone(),
+        ModelConfig::deepseek("offline-audit-placeholder"),
+    );
+    let image_result =
+        Message::tool_result("call-image", "screenshot ready").with_attachments(vec![
+            MessageAttachment {
+                id: "tool-image".into(),
+                kind: "image".into(),
+                media_type: Some("image/png".into()),
+                path: None,
+            },
+        ]);
+    let request = ResponseRequest::new(
+        "deepseek-flash",
+        vec![
+            Message::user("Inspect the screenshot returned by the tool."),
+            Message::assistant("").with_tool_calls(vec![ToolCall {
+                id: "call-image".into(),
+                name: "take_screenshot".into(),
+                arguments: serde_json::json!({}),
+            }]),
+            image_result,
+        ],
+    );
+    client
+        .stream_response_cancelled(request, Arc::new(AtomicBool::new(false)))
+        .await
+        .unwrap();
+
+    let requests = transport.requests.lock().unwrap();
+    let output = requests[0]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["type"] == "function_call_output")
+        .unwrap();
+    let output_image_parts = output["output"]
+        .as_array()
+        .map(|parts| {
+            parts
+                .iter()
+                .filter(|part| part["type"] == "input_image")
+                .count()
+        })
+        .unwrap_or_default();
+    eprintln!(
+        "Responses tool-output image audit: output_image_parts={output_image_parts}, wire_output={}",
+        output["output"]
+    );
+    assert_eq!(
+        output_image_parts, 1,
+        "a tool result image attachment was reduced to text before the Responses request"
+    );
 }
 
 async fn sample(model: &str, with_image: bool) -> Observation {
