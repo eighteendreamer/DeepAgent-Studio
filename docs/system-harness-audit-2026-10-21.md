@@ -6273,3 +6273,45 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo fmt --all -- --check`、`git diff --check` 通过；本轮没有修改生产逻辑、公共 API、权限、模型配置或持久化 schema。实际 Clippy 仍被未修改的 `deepagent-models/src/client.rs:355` `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` `explicit_counter_loop` 阻断，未声称 lint 通过。
 - code-audit 促使把“完整结果在磁盘存在”“status 摘要边界”“恢复 wire 内容”“工具调用/结果配对”分别断言；docs-generator 促使在首次长结果与观察复现后立即登记，再补成熟实现对照。新增 test-only `subagent_resume_context.rs`、模块入口与本报告，用户原有未跟踪文件保持原样。
 - 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费或参考工程测试；未验证数据库重开、真实进程崩溃、并发 resume、压缩 replacement、图片/大工具输出和恢复后副作用。官方 API 文档已联网核对，真实 provider 行为未宣称。全系统审计仍 active，未处理用户排除的 encrypted-content 报错。
+
+### H-243：原生 compaction 移除 memory 摘录后，memory 去重状态未释放，后续检索无法重新注入
+
+**级别：中（P2，compaction 后的相关记忆连续性缺陷）；状态：正式 `ModelAgent`、`ModelClient`、`RelevantMemoryProvider` 与请求 wire 已复现，未修复。** 这不是重复 H-168 的 instructions 前缀问题，也不是 H-242 的子 Agent resume 摘要问题；本项专门验证 compaction 对运行内存检索去重状态的失配。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权的本仓库审计；使用正式 `crates/deepagent-runtime/src/model_agent.rs` 测试 harness、离线 `AttemptTransport`、脚本化 `RelevantMemoryProvider` 和合成 memory block。没有真实用户文件、密钥、外部网络、真实 DeepSeek 请求或生产数据。
+- E-243-first（command，content_hash=n/a）：`cargo test -p deepagent-runtime model_agent::tests::audit_compaction_releases_removed_memories_for_retrieval --offline -- --ignored --exact --nocapture`。测试确实进入正式 `ModelAgent::think`、正式 `ModelAgent::adopt_compaction`、正式 `ModelClient` request wire 和 provider 去重参数；结果为 **0 passed / 1 failed（缺陷预期）**，失败断言为 `a removed memory excerpt must be eligible for retrieval after compaction`。
+- E-243-wire：测试输出为：
+  `memory compaction audit: initially_injected=1 provider_calls=2 dedup_after=1 excerpt_in_final_wire=false`
+  `memory compaction audit: initially_injected=12 provider_calls=1 dedup_after=12 excerpt_in_final_wire=false`
+  第一组证明 compaction 后确实再次发起了 provider 查询，但旧 id 仍在 `already_surfaced`，provider 按正式去重契约过滤掉被移除的摘录；第二组还显示达到 `MAX_SURFACED_MEMORIES_PER_RUN` 后，后续查询被 cap 直接阻止，旧摘录既不能恢复也不能释放预算。最终 wire 不含 `AUDIT_RETRIEVABLE_MEMORY_0`。
+- E-243-control：已有 `relevant_memory_prefetch_injects_on_next_turn` 与 `seeded_surfaced_memories_stop_reinjection_on_next_run` 对照通过，说明普通新查询和跨运行持久去重本身可工作；失败只在“memory 已注入 → compaction 从 Surface 移除 → 新查询需要重新检索”这个序列。
+
+#### 初始 Finding 与 Path
+
+- F-243（category=design，status=validated，confidence=high，evidence_ids=[E-243-first,E-243-wire,E-243-control]）：`collect_finished_memory_prefetch()` 在把 memory block 注入 `<system-reminder>` 时将 id 加入 `surfaced_memory_ids`；`adopt_compaction()` 通过 `adopt_compacted_history()` 替换 `response_history` 和消息投影，却没有依据新 Surface 清除已经被替换掉的 memory id。下一轮 `maybe_schedule_memory_prefetch()` 将这组过期 id 作为 `already` 传给 provider；达到 cap 时甚至不会启动 provider。
+- P-243（callflow）：prefetch → `surfaced_memory_ids.insert(id)` → durable `MemoriesInjected` 可记录 → native compaction 替换 `response_history`，移除 memory reminder → `surfaced_memory_ids` 不变 → 新用户查询 → provider 收到旧 id 并过滤 → 新 Responses input 无该 memory。DeepSeek Responses 是无状态接口，宿主没有把摘录放入当前 `input` 时，供应商不会从 `previous_response_id`、conversation 或 KV cache 反向恢复它。
+- 直接后果是“成功完成 compaction + 成功发起后续请求”掩盖了检索失败：模型继续运行，但缺少此前被宿主主动注入、随后又从 Surface 删除的证据。可能造成重复工作、基于缺失记忆的判断或额外工具调用；本轮只证明 wire 缺少摘录，没有声称真实模型必然答错、真实费用增加或发生数据破坏。
+
+#### 成熟 Agent 与 DeepSeek 机制对照（静态源码/官方文档，未冒充参考工程动态实跑）
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/compaction/compaction/README.md:12,73–97,142–150` 明确把 compaction 视为 Surface replacement，同时把完整 shadowed 内容留在 append-only session log；`src/checkpoint.ts` 用稳定 `compactionId` 标识 replacement，`src/types.ts` 记录 `shadowedSeqs`/`shadowedRange`。其关键可借鉴点是：Surface 改写与 durable identity/replay 同步，不能只改一份内存消息列表后继续使用旧的“已展示”状态。本轮未声称该工程有与本项目相同的 memory provider 去重实现。
+- **DeepSeek Harness tool-result pruner**：`借鉴/deepseek-harness/packages/compaction/compaction-tool-result-pruner/README.md:12,77–82` 要求 replacement 引用 `sourceEventSeqs`，原始结果留在日志并可精确 replay。该设计说明任何“已注入/已观察”判定都应绑定可回放的 source identity 或当前 Surface generation；本系统的 `surfaced_memory_ids: HashSet<String>` 没有 compaction generation、Surface membership 或 source event 关联。
+- **Codex / Claude Code**：本轮只核对到它们的 compaction/resume 资料，未找到可直接证明“被 compaction 移除的相关 memory id 会如何重新检索”的同构实现，因此不把它们写成已解决该具体缺陷。可确认的共同架构原则是恢复/压缩后的模型上下文必须由持久历史或明确 replacement 重新 materialize，而不是把 UI/运行时摘要当作模型历史；这与本项要求 memory 去重状态随 Surface replacement 重算相一致。
+- **DeepSeek 官方 Responses/KV cache**：官方 Responses 约束为无状态，多轮请求需宿主在每轮 `input` 中提供历史；KV cache 只对重复完整前缀尽力命中，`input_tokens_details.cached_tokens` 只反映已发送前缀命中。故缓存不能补回被宿主删除且未重新注入的 memory block。
+
+#### 根因治理方向与影响评估（本地设计，未实施）
+
+- 不要在 `adopt_compaction()` 里做“清空全部 memory 去重”的临时特判；应让 memory injection 拥有可回放的 source/Surface identity，或在 compaction replacement 后从当前 `response_history`（以及已持久化的 `MemoriesInjected`/replacement 元数据）重建“仍在模型 Surface 中”的 ids。只有仍存在于当前 Surface 的 id 才能进入 provider 的 `already`，跨运行 resume 也必须使用同一规则。
+- `MAX_SURFACED_MEMORIES_PER_RUN` 应定义为当前 Surface 的预算，还是整个 session 的历史去重预算，必须在协议/持久化层明确；如果是前者，compaction 移除 memory 后应释放相应预算，否则达到上限会使后续检索永久停摆。修复应复用现有 `ResponseHistory`、`MemoriesInjected` 事件和 compaction 事件，不新增第二套 memory store。
+- 触发条件是：相关记忆已被后台预取并注入，随后发生 native/proactive/reactive compaction，compaction 结果移除了该 reminder，之后出现新的多词用户查询。未触发条件包括没有 memory provider、compaction 保留该 reminder、未达到新查询 guard、或 memory 从未注入。
+- 影响评为 P2：本地单用户下属于上下文正确性和检索可用性缺陷；若 memory 承载构建约束、测试事实或安全操作前提，后续模型可能在“请求成功”表象下遗漏关键证据。没有证据支持把它评级为权限绕过、SSRF、数据泄露或供应商故障。
+- 回归应覆盖：1/`MAX_SURFACED_MEMORIES_PER_RUN` 个 memory；compaction 保留/删除 reminder 两种结果；多次 compaction；tool-result prune 与 summary replacement；restart/resume 后 event replay；provider 返回重复/排序变化；以及 compaction 与 prefetch 并发完成。断言必须同时检查 `already`、最终 DeepSeek wire、event ids 和 cap 释放，而不是只看请求是否成功。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行：`cargo test -p deepagent-runtime model_agent::tests::audit_compaction_releases_removed_memories_for_retrieval --offline -- --ignored --exact --nocapture`，结果 **0 passed / 1 failed（缺陷预期）**；失败来自目标不变量，未修改生产逻辑或把失败改成通过。
+- 已核对源码调用链：`model_agent.rs` 的 `collect_finished_memory_prefetch`、`adopt_compaction`、`adopt_compacted_history`、`maybe_schedule_memory_prefetch`，以及 `knowledge_service.rs` provider 的 `already_surfaced` 过滤；已核对 DeepSeek Harness compaction checkpoint/replay 文档和本地 Codex/Claude 相关恢复资料。
+- 收尾验证待在本次文档追加后执行：`cargo fmt --all -- --check`、`git diff --check`，并复查 Markdown fences/diff；Clippy 仍受既有 `deepagent-models/src/client.rs:355` `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` `explicit_counter_loop` 阻断，不能宣称全库 lint 通过。
+- 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费/KV cache 实验或参考工程测试；未实施修复。没有重复 H-165、H-241、H-242，也没有处理用户排除的 `encrypted-content` 报错。
