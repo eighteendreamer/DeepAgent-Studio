@@ -1860,6 +1860,68 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-219: tool/list must expose a run-scoped capability snapshot"]
+    fn audit_tool_list_is_not_scoped_to_thread_capabilities() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace_a = temporary.path().join("workspace-a");
+        let workspace_b = temporary.path().join("workspace-b");
+        std::fs::create_dir(&workspace_a).unwrap();
+        std::fs::create_dir(&workspace_b).unwrap();
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        let mut state = ServerState::new_for_test_with_database(database, workspace_a.clone());
+        initialize(&mut state);
+
+        let first = state.handle_request_for_test(rpc_request(
+            2,
+            "thread/start",
+            serde_json::json!({
+                "cwd": workspace_a,
+                "permissionProfile": "read_only",
+                "sandboxBackend": "direct"
+            }),
+        ));
+        let first_thread_id = first.result()["threadId"]
+            .as_str()
+            .expect("first thread id")
+            .to_owned();
+        let first_tools =
+            state.handle_request_for_test(rpc_request(3, "tool/list", serde_json::json!({})));
+
+        let second = state.handle_request_for_test(rpc_request(
+            4,
+            "thread/start",
+            serde_json::json!({
+                "cwd": workspace_b,
+                "permissionProfile": "full_access",
+                "sandboxBackend": "windows_sandbox"
+            }),
+        ));
+        let second_thread_id = second.result()["threadId"]
+            .as_str()
+            .expect("second thread id")
+            .to_owned();
+        let second_tools =
+            state.handle_request_for_test(rpc_request(5, "tool/list", serde_json::json!({})));
+        let first_tool_value = first_tools.result()["tools"].clone();
+        let second_tool_value = second_tools.result()["tools"].clone();
+        eprintln!(
+            "tool/list capability audit: first_thread={first_thread_id}, second_thread={second_thread_id}, first_tools={}, second_tools={}, first_has_snapshot={}, second_has_snapshot={}, identical_tools={}",
+            first_tool_value.as_array().map_or(0, Vec::len),
+            second_tool_value.as_array().map_or(0, Vec::len),
+            first_tools.result().get("snapshotId").is_some(),
+            second_tools.result().get("snapshotId").is_some(),
+            first_tool_value == second_tool_value
+        );
+
+        assert!(
+            first_tools.result().get("snapshotId").is_some()
+                && second_tools.result().get("snapshotId").is_some()
+                && first_tool_value != second_tool_value,
+            "tool/list returned one global tool array without a thread/run capability snapshot"
+        );
+    }
+
+    #[test]
     fn fileless_legacy_row_is_not_resumable_or_readable() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);

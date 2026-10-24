@@ -53,6 +53,7 @@
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
+| Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -160,6 +161,7 @@
 | Thread 生命周期响应原子性 | 冷 source 的 fork 已持久化 child，但成功响应未使 child 可立即接纳 turn（H-216） | DeepSeek Harness fork 在返回前 await `agents.create`，客户端声明同步可寻址；Codex 构造并注册 live fork、附加 listener，并明确 response 到达即 usable | 客户端收到成功后首个 turn 失败；重试 fork 可留下多个非预期分支 |
 | JSON-RPC 方法错误分类 | 未知 namespaced method 由字符串是否含 `/` 决定为 Invalid params，而非按方法注册表返回 Method not found（H-217） | JSON-RPC 规范将 `-32601` 定义为 method 不存在、`-32602` 定义为参数无效；Codex 对 unsupported/unknown operation 使用独立 `method_not_found()` | SDK/代理按错误码选择重试、降级或兼容路径时得到错误结论；未知扩展与参数错误无法区分 |
 | 历史读取与响应预算 | `thread/read` 将完整 session events 与每个 run 的 events/actions/approvals/artifacts/graph 聚合到单个 JSON response，无 page size、响应字节预算或 continuation（H-218） | DeepSeek Harness `SessionHistoryController.page()` 按消息对齐分页并有 500 条上限；Codex 将 full-history hydration 标为 deprecated，改用 `thread/turns/list` 与 `thread/items/list` 分页 | 长历史在 app-server、SDK、CLI 或 UI 同时占用内存并阻塞单次响应；断线重试放大成本，无法在有限预算内恢复或只取窗口 |
+| 能力目录与运行作用域 | `tool/list` 只调用一个 `ChatService::tool_descriptors()`，没有 thread/run、workspace、permission、sandbox、MCP 代次或 schema hash；不同线程得到相同静态数组（H-219） | Warp 根据 execution mode/session/feature flag 动态协商能力；Codex 将工具、permission profile、sandbox/root 等作为 thread/turn 配置与可回放快照；项目自身升级方案也要求 run-scoped capability snapshot | 客户端把全局目录误当作本次 run 的可执行能力；backend、权限或 MCP 变化后模型可能生成当前入口不能执行的工具，历史重放无法确认当时工具面 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
@@ -4366,6 +4368,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-216 CLI 默认测试基线 | `cargo test -p deepagent-cli --offline`：85 passed / 17 ignored / 0 failed；H-215/H-216 审计探针默认忽略，绿色基线不表示任一缺陷已修复；本轮仅新增 H-216 测试与文档 |
 | H-217 Harness JSON-RPC 方法错误分类显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_unknown_namespaced_method_is_not_reported_as_invalid_params --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；`thread/does-not-exist` 返回 `-32602`，未知无斜杠 method 返回 `-32601`，已知 `thread/start` 坏参数返回 `-32602`；无模型、工具、文件或公网 |
 | H-218 Harness thread/read 历史分页显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_thread_read_has_bounded_history_page --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；600 条消息样本返回 `events=1201`、`serialized_bytes=1570066`、`has_continuation=false`；正式 SQLite/dispatcher，无模型、工具、文件、子进程或公网 |
+| H-219 Harness tool/list 作用域显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_tool_list_is_not_scoped_to_thread_capabilities --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；`read_only/direct` 与 `full_access/windows_sandbox` 两个 thread 均返回 `28` 个相同工具，`first_has_snapshot=false`、`second_has_snapshot=false`；无模型、工具执行、子进程或公网 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4766,6 +4769,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 归档状态与运行接纳 | H-215 | 复用现有 `ArchiveService`、`ServerState` 与运行协调边界，把唯一 durable archive 状态投影到 `thread/list`、`thread/resume`、`turn/start`、`turn/steer` 等 admission；归档活动 turn 时明确拒绝、先取消并有界等待或 archived-pending 的单一契约；参考 DeepSeek Harness pre-step gate 与 Codex archive teardown，不新增第二套归档或运行中心 | archive 成功后默认列表不再公开 thread，所有新运行入口拒绝；活动 turn 的归档结果可审计且终态唯一；显式 unarchive/restore 后才可恢复；进程重启、迟到 follow-up、subagent lineage 与并发 archive/start 均不能绕过 |
 | Thread create/resume/fork 的就绪提交 | H-216 | `thread/fork` 复用现有 `ThreadState` 构造与 AppCore fork 结果，在成功 response 前原子安装可接纳的 child；从 durable cold source 重建有效 workspace/config 时共用 resume 的单一解析边界；参考 DeepSeek Harness await agent creation 与 Codex live fork/listener，不增加第二份 thread store | fork response 后无需隐式补一轮 resume 即可 start；持久化失败与内存安装失败不返回假成功或遗留无主 child；热/冷 source、重启、配置、并发 fork/start 与失败补偿一致 |
 | Thread/read 历史分页与预算 | H-218 | 在现有 EventStore/RunStore 投影上增加 message-aligned page、明确 page size/字节预算和 opaque continuation；保留 after-sequence 作为增量读取，不把全量聚合塞进单个 response；参考 DeepSeek Harness `SessionHistoryController.page()` 的 500 条上限与 Codex 的 turns/items 分页 | 长历史读取不会一次性构造无界 JSON；调用方能按 cursor 续读、只恢复所需窗口；超预算能以明确 continuation/错误结束，避免 SDK/UI 内存峰值和断线重试放大 |
+| Run-scoped capability snapshot | H-219 | 保留兼容 `tool/list`，在现有 run assembler/ToolRegistry/MCP lifecycle 边界生成带 thread/run、workspace、permission profile、sandbox backend、MCP/config 代次、tool schema hash 和风险/来源的 snapshot；在 `turn/start` 或独立 resolve response 中返回并与 run_events 关联；参考 Warp 动态 capability negotiation、Codex thread/turn 配置快照，不新增第二套 registry | 客户端和模型能知道本次 run 的实际工具面；能力变化可审计、重放可复原；sandbox/权限/MCP 失败显示为明确 degradation，不把全局存在误认为当前可执行 |
 | JSON-RPC 方法注册与错误分类 | H-217 | 现有 `HarnessRequest` 解析/dispatch seam 维护唯一方法注册表；未知 method 统一返回 `ERR_METHOD_NOT_FOUND`，已知 method 的 payload 解码失败才返回 `ERR_INVALID_PARAMS`；参考 JSON-RPC 2.0 与 Codex `method_not_found()`，不再用 method 字符串形状推断语义 | 未知 `thread/*`、未来扩展和拼写错误均可被 SDK 明确识别；参数错误与能力不存在分离；错误码、日志和重试策略一致；新增方法只需更新一个注册/dispatch seam |
 | Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
 | Harness SDK 通知身份、订阅时序与缺口恢复 | H-01、H-91、H-205、H-214 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；提供先建订阅再发请求的 owned run/stream API，参考 DeepSeek Harness `HarnessSession.run()` 的 subscribe-before-prompt 队列与 Codex 的先附加监听再启动操作；不建立无界第二事件库 | 请求响应前通知仍可由该次操作消费；连续事件可按实际序号 ACK；7→9、broadcast lag 和迟订阅均可识别并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
@@ -5165,6 +5169,34 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 回归应覆盖：空/小历史、恰好上限、超上限、单个超大 event、多个 run 的独立 cursor、actions/approvals/artifacts/graph 的预算、断线续读、重启后 cursor、历史追加与 cursor 稳定性、重复/篡改 cursor、旧客户端兼容以及 SDK/CLI/Tauri 只渲染当前页的内存上限。
 
 本轮只新增正式失败探针和审计文档，未修改生产 `thread/read` 行为。H-01/H-205 关注通知序号与 ACK/恢复身份，H-73 关注分叉 sequence 边界；它们不覆盖本项“冷历史 response 无界聚合”的内存与分页契约。
+
+### H-219：`tool/list` 是无作用域的静态目录，无法描述当前 run 的实际能力
+
+**级别：中高（P1/P2 之间，能力发现与审计契约）；触发条件：** 同一 Harness 进程中存在多个 workspace、权限 profile、sandbox backend 或动态 MCP/config 代次，客户端调用 `tool/list` 作为下一次 `turn/start` 的能力依据。当前 `ToolListRequest` 没有 thread/run 参数，响应也没有能力快照身份。
+
+#### 生产路径与正式复现
+
+- `apps/cli/src/app_server.rs::tool_list()` 从 `self.threads.values().next()` 任意取一个已加载 thread 的 `ChatService`，否则使用 `base_chat`，然后直接调用 `chat.tool_descriptors()`。HashMap 迭代顺序不是协议稳定的选择，返回值没有 workspace、permission profile、sandbox backend、MCP/config 代次、schema hash、风险或来源。
+- `ChatService::tool_descriptors()` 本身只构造基础 registry 并以 `PermissionSet::developer()` 生成静态 descriptors。正式 run 则由 `run_assembler` 结合 workspace、运行配置、MCP/plugin snapshot、tool search 和 policy gate 组装本次工具集；两者不是同一个 run-scoped snapshot。
+- 新增默认忽略探针 `app_server::tests::audit_tool_list_is_not_scoped_to_thread_capabilities`：在真实文件 workspace-a/workspace-b 上启动两个 thread，分别指定 `read_only/direct` 与 `full_access/windows_sandbox`，在第一个和第二个 thread 建立后各调用一次正式 `tool/list`。
+- 执行：`cargo test -p deepagent-cli app_server::tests::audit_tool_list_is_not_scoped_to_thread_capabilities --offline -- --ignored --exact --nocapture`。
+- 实际结果为 **0 passed / 1 failed（预期复现）**，输出 `first_tools=28, second_tools=28, first_has_snapshot=false, second_has_snapshot=false, identical_tools=true`，并记录了两个不同 thread ID。探针没有启动模型、执行工具、创建子进程或访问网络；失败断言只要求不同运行上下文产生可识别的能力快照，不把“工具数组必须不同”当作唯一证据。
+
+#### 成熟 Agent 与架构对照
+
+- **Warp 参考实现**按 execution mode、session type、feature flag 和 Computer Use 开关动态生成 `supported_tools`。能力是一次运行的协商结果，不是全局 registry 的静态列表。项目已有《基于 Warp 证据的底层升级技术方案》3.3 节也明确指出当前 `tool/list` 缺少 run-scoped snapshot、schema hash、风险、并发安全、sandbox capability、来源和版本。
+- **Codex** 将 permission profile、sandbox/root、thread/turn 配置和 MCP/plugin 相关能力放在 thread/turn 控制面，并在恢复、fork、turn 启动时保存可解释的配置快照。其 app-server 协议把工具能力和执行上下文拆成可查询、可回放的控制面字段，客户端不需要从一个无上下文工具数组猜当前运行边界。
+- **DeepSeek Harness** 的 agent/session controller 将工具注册、MCP 连接代次和 per-turn signal 绑定到 session/agent owner；工具目录变化会更新对应连接/目录状态。DeepSeek Responses API 本身不定义 `tool/list`，本项属于宿主 Harness 的能力协商和执行一致性问题。
+
+#### 影响、边界与根因修复方向
+
+- 已动态证明的后果是：客户端无法从 `tool/list` 判断返回的 28 个工具属于哪个 workspace、哪个权限 profile 或哪个 sandbox；当多个 thread 并存时，服务端甚至通过 HashMap 任意选择一个 ChatService。目录没有 snapshot identity，无法把一次模型请求的工具面与后续 `run_events`、重放或失败诊断关联起来。
+- 本探针没有证明模型已经调用了不可用工具，也没有证明某个具体 MCP 工具一定会被错误执行。实际后果取决于 run assembler、policy gate 和动态 MCP/plugin 状态；已确认的是协议缺少让客户端避免这种误判所需的机器可读信息。
+- 根因修复应沿现有 `RunAssembler`、`ToolRegistry`、MCP lifecycle 和 `run_events` 边界生成唯一 capability snapshot：至少包含 thread/run、canonical workspace、permission profile/hash、sandbox backend/capabilities、MCP/config 代次、工具 schema hash、风险、来源和是否需要审批。`tool/list` 可保持兼容作为全局目录，但 `turn/start` response 或新增 `capabilities/resolve` 必须返回本次 run 的 snapshot ID 与工具投影。
+- 快照需在运行接纳前确定并和实际 registry、policy gate、工具 schema 一致；动态目录变化、权限/沙箱切换、MCP 降级和 fallback 要生成新代次或明确拒绝，不能继续复用静态全局数组。历史重放读取保存的 snapshot，不能用当前 registry 重新解释过去的工具面。
+- 回归应覆盖：单 thread、多 workspace、多 permission profile、多 sandbox backend、MCP 初始/刷新/失败、plugin/skill enablement、tool search、fork/resume、重启、fallback、schema hash 变化、snapshot 过期、并发 `tool/list` 与 `turn/start`，以及客户端看到 snapshot 后实际模型 wire 与 ToolRegistry 的一一对应。
+
+本轮只新增正式失败探针和审计文档，未修改 `tool/list` 或运行装配行为。H-07/H-137 关注 MCP 目录分页与动态刷新，H-57 关注目录正文在后续模型请求中的保留；H-219 关注 Harness 控制面没有把实际能力投影为有身份、有版本的 run-scoped snapshot。
 
 ### 本轮排除候选：Responses 工具参数增量仅含 `output_index`
 
