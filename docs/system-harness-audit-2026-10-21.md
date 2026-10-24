@@ -52,6 +52,7 @@
 | 工作流目标节点与重跑 admission | `target_node_id` 传入不存在的节点时，正式工作流只完成 `start`、跳过 `end`，仍记录 `succeeded` | 已确认 H-177；无效目标未在编译/接纳边界拒绝，属于空执行成功，不是 H-39 的条件分支派发问题 |
 | 专业画布代码节点 | 前端公开 `codeScript`/`codeInputVariables` 并标记 `enabled`，后端只读取未使用的 `code`/`codeVariables`，没有 JavaScript/Python 执行器；明确无效脚本仍完成并返回空对象 | 已确认 H-178；能力注册、配置 schema、运行时 executor 契约断裂，属于静默伪成功 |
 | 专业画布文档提取节点 | 前端 `document-extractor` 标记 `enabled`，但正式工作流执行到节点即返回 `UnsupportedNode` 并失败 | 已确认 H-179；这是公开能力目录与实际 executor 不一致，和 H-178 的静默成功不同 |
+| 专业画布人工输入节点 | 前端 `human-input` 标记 `enabled` 并提供表单/超时，正式工作流没有进入 `NeedsApproval`、输入租约或可恢复等待态，而是直接 `UnsupportedNode` 失败 | 已确认 H-180；人工输入 schema 与统一人机协作生命周期断裂 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3411,6 +3412,35 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-179 只新增正式审计探针和文档，未修改生产代码或宣称文档提取已实现。
 
+### H-180：专业画布 `human-input` 节点不进入统一人工输入/审批生命周期
+
+**级别：高（P1，交互式工作流可恢复性）；触发条件：在专业画布使用标记为 `enabled` 的“人工审批”节点，等待用户填写表单后继续下游。** 前端公开了字段、提示和超时配置，但运行时没有等待、通知、提交、取消或恢复协议；节点直接失败为未实现。
+
+#### 生产调用链与正式复现
+
+- `apps/desktop/src/canvas/workflow/utils/nodeRegistry.ts` 将 `human-input` 注册为 `availability: "enabled"`、`executor: "human"`，输出 `action`；`nodeSchemas.ts` 提供 `humanInputFields`、`humanInputPrompt` 和 `timeoutSeconds`。UI 组件也按这些字段渲染人工审批节点。
+- `deepagent-runtime::workflow::graph::source_handles()` 为人工输入生成 `action-0..N` 与 `timeout` 分支，`output_contract()` 声明 `action`，所以工作流图的控制流契约向调用者表达了“等待用户决定后继续”。但 `WorkflowAgent::execute_node_inline()` 没有 `human-input` 分支，实际只返回 `UnsupportedNode`。
+- 这条缺口尤其明显，因为系统已有 `AgentDecision::NeedsApproval`、`InputLeaseRegistry`、`input_runtime` 和统一 approval bridge；工作流节点没有复用这些边界，也没有产生可被桌面/CLI/SDK 消费的等待事件。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_human_input_uses_shared_waiting_lifecycle`。它用合法的 `action-0` 后继边执行 `start → human-input → end`，提交一个必填 boolean 字段和 30 秒超时，通过正式 `ChatService::run_workflow()` 捕获节点事件并读取 `RunStore`。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_human_input_uses_shared_waiting_lifecycle --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=false api_error=Some("invalid input: UnsupportedNode: kernel has no executor for node kind \`human-input\`") review_events=[(Running, None, None), (Failed, None, Some("invalid input: UnsupportedNode: kernel has no executor for node kind \`human-input\`"))] run_terminal=Some("failed")`；探针以 **0 passed / 1 failed（预期）** 结束。第一次探针遗漏 `source_handle`，先被图 admission 拒绝；补成合法 `action-0` 后才得到上述执行器证据，未把构造错误算入缺陷。
+
+#### DeepSeek 官方契约边界与成熟 Agent 对照
+
+- DeepSeek 官方 [Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)只描述模型响应和客户端继续提交输入；它没有本地表单、审批或等待节点语义。若模型需要人工确认，宿主必须持久化自己的 pending state，不能把“请求成功”当成用户已回答。
+- **Codex** 的 app-server/turn 体系把 approval request 绑定到具体 turn/call，并有 `AskForApproval`、permission profile 和可恢复的等待事件；未得到用户决定时工具不执行，晚到/跨 run 的决定会被拒绝。这个模式比直接把节点标记 failed 更适合工作流，但需要沿用本系统已有审批作用域和事件 store，而不是新建第二套表单中心。
+- **Claude Code** 通过 `AskUserQuestion`/hook 交互让 agent 停在需要用户回答的阶段，回答成为下一次 agent 输入；用户拒绝、超时和取消都进入显式分支。具体 UI 协议不能直接复制，但“pending → answer/deny/timeout → resume”状态机是本系统缺少的。
+- **DeepSeek Harness** 的 provider loop 只负责模型与工具调用，人工状态由宿主 scope/turn 管理；这再次说明人工输入是 Harness 控制面能力，而非 DeepSeek Responses 字段。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，用户在画布上配置的人工审批无法出现表单或通知，工作流直接失败；自动化任务不会等待用户、不会在回答后恢复下游节点，且 `timeoutSeconds` 完全无效。对需要人工确认的发布、外部发送和高风险工具流程，这会让用户改用绕过审批的替代路径，或把工作流误判为基础设施故障。
+- 事件审计也不完整：只有 `Running → Failed`，没有字段定义、请求 ID、作用域、过期时间、用户回答或拒绝原因。CLI/SDK/Tauri 不能统一展示 pending 状态，重启后无法恢复等待中的工作流。
+- 根因修复应复用现有 `AgentDecision::NeedsApproval`/`InputLeaseRegistry`/RunStore：在节点进入时生成不可变 `HumanInputRequest`（run、node、revision、字段 schema、timeout、scope），持久化并发出唯一 `RunAwaitingInput` 事件；UI、CLI、SDK 通过统一 `input/respond` 路由提交答案，按 run/node/revision 校验后恢复同一 agent。超时、取消、拒绝和重复回答必须是幂等终态，并撤销待处理租约。
+- 如果短期不实现该状态机，应把 registry 改成 `reserved`，在保存/compile 阶段明确拒绝，而不是继续向用户承诺可用。回归需覆盖多字段校验、action 分支、timeout、取消、重启恢复、跨 run 迟到回答、并发输入租约和下游事件顺序。
+
+本轮 H-180 只新增正式审计探针和文档，未修改生产人工输入或审批逻辑。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3474,6 +3504,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-177 工作流未知目标显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unknown_target_node_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`RunStore` 对 `target_node_id=missing-node` 只完成 `start` 却记录 `succeeded`；无模型请求、工具副作用或公网 |
 | H-178 工作流代码节点执行显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_code_node_executes_script_or_fails_loudly --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent` 对明确无效 `codeScript` 发布 `code_status=Completed`、空对象输出且 run=`succeeded`；无脚本解释器、系统命令、网络或文件写入 |
 | H-179 文档提取节点执行显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_enabled_document_extractor_has_executor --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent` 对 enabled `document-extractor` 返回 `UnsupportedNode`，节点 failed、run=`failed`；无模型请求或文件解析副作用 |
+| H-180 人工输入生命周期显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_human_input_uses_shared_waiting_lifecycle --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent` 对合法 `action-0` 图边仍返回 `UnsupportedNode`，节点 failed、run=`failed`，没有等待/输入事件 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |

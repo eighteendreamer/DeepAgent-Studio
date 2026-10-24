@@ -468,6 +468,66 @@ async fn audit_workflow_enabled_document_extractor_has_executor() {
 }
 
 #[tokio::test]
+#[ignore = "audit: an enabled human-input node must enter the shared input/approval lifecycle"]
+async fn audit_workflow_human_input_uses_shared_waiting_lifecycle() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"review","kind":"human-input","config":{
+                    "humanInputPrompt":"Approve this audit fixture?",
+                    "humanInputFields":[{"name":"approved","type":"boolean","label":"Approved","required":true}],
+                    "timeoutSeconds":30
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"review"},
+                {"id":"e2","source":"review","source_handle":"action-0","target":"end"}
+            ]
+        }
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-human-input".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-human-input")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let review_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.node_id == "review")
+        .map(|event| (event.status, event.outputs.clone(), event.error.clone()))
+        .collect();
+    eprintln!(
+        "api_ok={} api_error={:?} review_events={review_events:?} run_terminal={:?}",
+        result.is_ok(),
+        result.as_ref().err(),
+        run.terminal_kind
+    );
+    assert!(
+        result.is_ok(),
+        "an enabled human-input node must enter a shared waiting/input lifecycle instead of failing"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
