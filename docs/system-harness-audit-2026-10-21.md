@@ -76,6 +76,7 @@
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness SDK 断线后的事件等待 | 真实本机子进程退出且生产 reader 已清空 pending RPC，保留公开 client 时，既有和新订阅均无断线/关闭结果；丢弃 client 后两者才 Closed | 已确认 H-256（P2）；正常完成通知交付对照通过，Windows stdio fixture；未运行真实 Agent/模型或桌面 |
 | Provider SSE 非法 UTF-8 的故障隔离 | 合法事件后插入一个非法字节，正式 HTTP→ModelClient 不及时拒绝，后续文本和完整终态均未交付；解码器同序列保留 65,537 字节 | 已确认 H-257（P2）；中文/emoji 全切点解码和真实 HTTP 正常对照通过；未测真实供应商、Kernel 或 OOM |
+| CLI TUI 的模型 attempt 回滚 | 正式聊天部分输出后断线并重试成功，runtime及run_events有reset，落盘只有新答案，终端state与实际HistoryCell渲染仍拼入废弃答案和推理 | 已确认 H-258（P2）；无故障/首个delta前断线对照通过，正式ChatService/Kernel/SQLite；未启动真实TTY或公网 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
 | Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
 | Harness thread/list 历史列表 | 创建 120 个真实持久化 thread 后，正式 `thread/list` 一次返回全部 120 条、约 25 KB JSON；请求没有 limit、cursor 或 continuation | 已确认 H-220；正式 SQLite/EventStore/ServerState，无模型、工具、子进程或网络 |
@@ -4885,6 +4886,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 | 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
 | 工具实际执行与后置扩展的提交边界 | H-139 | 既有 ToolPipeline/action/Session 保存已执行事实和结果；后置 hook 的反馈、拒绝继续及失败分别投影；参考 Claude 普通工具结果先保留、Codex 区分执行 lifecycle 与 hook outcome | hook 有效/无效/执行错误及重开后，成功副作用不会变成未完成操作；原结果可回放、动作有准确终态、模型配对反馈可解释；不盲目重复执行 |
 | 响应提交前预执行的状态归属 | H-233 | 在既有 Tool/Runtime/Session 明确并发与可丢弃预取的独立契约；参考 DeepSeek Harness 成功流先提交再执行，或 Codex 先记录调用、错误后仍收拢结果；不将 Safe 当成无状态证明 | 成功/failed/EOF/自动重试/取消均无不可见任务状态；hooks 有无不改变已执行事实的可审计性；主运行与子代理、agent-hook 的共享实例边界分别验证，不另建存储 |
+| 模型 attempt 的用户视图提交 | H-258 | 复用既有 ModelAttemptReset/ModelRequestStarted，由TUI和Desktop对齐未提交片段的快照/撤回契约；参考Claude的orphaned-message tombstone，不重建retry层 | 部分正文/推理后重试只显示有效attempt；此前已提交工具/叙述及真实compaction/memory标记不丢；实际TTY的tail与scrollback和持久化结果一致 |
 | 输入 hook 的附加上下文交付 | H-140、H-26 | 既有 hook 输出结果分开携带决定、改写与上下文，接回当前输入的原生 Surface/会话记录和统一 meter；参考 Claude hook_additional_context 与 Codex 独立 additional_contexts 通道 | 普通 stdout 与合法 additionalContext 在实际 wire 中可见且有来源；拒绝仍不发模型；多 hook 有界合并、恢复可回放，不把 UI 日志或任意输出升级为系统权限 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45、H-119、H-164 | 摘要、prefire、正文、重试、工具、画布视频 HTTP、其他 Canvas 同步模型请求和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；Canvas 节点不先 Completed 再把 run 标 cancelled；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误；本地停止不冒充云任务已撤销 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
@@ -6842,3 +6844,36 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 确定跨chunk carry最多3字节；SSE单帧与总响应预算需在同一transport/parser边界统一设计，具体阈值为本地资源策略，不冒充DeepSeek官方限额。本项不另拆“无界缓冲”编号；H-30的完整事件分帧应协同验收，但编码分类与SSE帧边界是不同层次。
 - 回归应覆盖2/3/4字节字符各切点、非法首字节/延续字节/过长编码、EOF不足字符、合法事件前后注入、正常终态前取消、错误与deadline竞争、两种provider wire mode及Kernel终态/usage投影。本轮只验证Responses、生产字节解码和本机HTTP；未运行ChatCompletions故障组、Kernel/RunStore、Desktop、真实DeepSeek、参考项目测试、跨平台或压力测试。未授权实施生产修复。
 - 验证收尾：`cargo test -p deepagent-models --features http --offline` 通过，单元 **96 passed / 25 ignored**，集成 **1 passed / 15 ignored**，doc-test **0**；默认忽略的已知缺陷探针未因此关闭。`cargo fmt --all -- --check`、`git diff --check` 通过。定向 `cargo clippy -p deepagent-models --features http --all-targets --offline -- -D warnings` 未通过，报既有 `client.rs:355` 对 Copy 类型调用 clone（clone_on_copy）；已用 `git show HEAD:crates/deepagent-models/src/client.rs` 确认原提交含同一行，不修改无关生产代码，不称 lint 全绿。未运行全workspace/全量Clippy或Desktop构建。
+
+### H-258：CLI TUI 忽略模型 attempt 回滚，重试成功后仍把废弃答案和推理拼入最终显示
+
+**级别：中（P2，模型重试后的用户可见正确性）；状态：正式 ChatService/ModelAgent/Kernel、文件 SQLite、生产 TUI state 与 HistoryCell 渲染已复现，未修复。** 触发需要模型已发送部分正文或推理，随后出现可重试传输错误，下一 attempt 成功。不是 Harness 丢通知，也不是运行时没有回滚信号；本项在消费信号的终端视图边界。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；只新增 `apps/cli/src/tui/state_retry_audit.rs` 及 state.rs 的 test-only 模块入口。临时 workspace、文件 SQLite、MemorySecretStore和占位key；受控 HttpTransport 替代公网provider，完整保留生产请求序列化、Responses accumulator、重试与Runtime事件链。不调用用户工具、真实模型、系统凭据或外部网络，不修改生产行为。
+- E-258-first（source_type=command，source_ref=上述test-only模块，content_hash=n/a，artifact_path=n/a）：`cargo test -p deepagent-cli retry_audit --offline -- --include-ignored --nocapture` 得到 **1 passed / 1 failed（预期），0.80s**。目标组输出 `first=DisconnectAfterDelta attempts=2 resets=1 completed=["有效答案：乙。"] persisted=["有效答案：乙。"] assistant="已废弃答案：甲。有效答案：乙。" reasoning="已废弃推理。有效推理。"`；最终仅“不应保留被废弃片段”的断言失败。
+- E-258-producer：首个正式请求依次返回带response身份的created、推理和文本delta，然后transport返回合成connection错误；下次请求返回不同response身份、有效文本item和合法completed/usage，各attempt序号重新递增。测试确认恰好两次provider请求，且Runtime事件顺序为旧文本→step=0/attempt=1的ModelAttemptReset→新文本→唯一RunCompleted，新终态message只含乙。没有手造reset或成功事件喂给TUI。
+- E-258-durable：同一生产回调把每条RuntimeEvent直接交给ChatState.on_runtime，同时记录原始事件；`chat.run_events`确认唯一run_terminal=succeeded及一个model_attempt_reset；EventStore.load_session里的assistant ResponseItem仅有乙。故障不是最终模型消息或原生历史被旧答案污染，持久化已提供正确事实，消费方没有遵守回滚语义。
+- E-258-view：完成后state.busy=false、streaming为空；调用生产drain_flushable得到的Assistant/Reasoning cells均含旧+新文本。再用真实HistoryCell.to_lines(100)生成终端行，旧答案仍存在，未依靠源码正则或自制renderer推断。未启动真正的交互TTY/ratatui事件循环，也未捕获真实屏幕像素；已证明的是实际屏幕所用state/cell渲染结果。
+- E-258-controls：同一路径无故障时requests=1/reset=0；首个delta之前断线时requests=2/reset=1。两组终端正文和推理均只有有效内容，唯一succeeded及持久化断言也通过。说明问题需要废弃attempt已产生可见片段，不把所有重试泛化成失败。
+
+#### Finding 与路径
+
+- F-258：severity=medium，category=design，status=validated，confidence=high，evidence_ids=[E-258-first,E-258-producer,E-258-durable,E-258-view,E-258-controls]，location=`apps/cli/src/tui/state.rs::ChatState::on_runtime/commit_streaming`。ContentDelta/ReasoningDelta只append字符串，ModelRequestStarted/ModelAttemptReset落入通用忽略分支；RunCompleted因streaming非空，把累计串提交为Assistant并忽略正确message。与RuntimeEvent对reset“消费者必须丢弃本attempt增量”的现有契约冲突。
+- P-258（path_type=callflow）：ChatService.run_in_session → ModelAgent.think_inner/stream_model_attempt → 部分delta进入TUI streaming/reasoning → 可重试错误 → emit_attempt_reset已实时/持久化发出 → TUI忽略 → 下一attempt继续append → Kernel交付正确RunCompleted → commit_streaming发布错误合并串到scrollback。原生ResponseItem及run终态均正常，错误由终端投影引入。
+- 已证影响：用户可在运行成功后读到互相矛盾的废弃+有效答案，旧推理与新答案被显示为同一段输出；看到的内容不同于系统实际保存并用于后续对话的内容。可能误导用户按废弃结论操作、复制错误回答或误判模型不稳定，实际决策与业务损失未测试。没有证据表明该路径执行了旧工具调用、污染了provider历史、产生重复费用或破坏文件。
+
+#### 成熟 Agent、本系统已有正确边界与 DeepSeek 对照
+
+- **Claude Code**：`借鉴/claudecode/restored-src/src/query.ts` 的streamingFallbackOccured分支为orphaned assistant messages逐一yield tombstone，清理旧assistant/tool结果与streaming executor；`screens/REPL.tsx`的tombstone回调把对应message从UI移除并removeTranscriptMessage(uuid)。这里是流式fallback机制，不是本系统同款Rust重试，参考来源为仓库restored-src而非本轮运行官方发行版；可借鉴点是失败attempt的撤回必须落实到UI与transcript，不只在运行时生成信号。
+- **Codex**：`借鉴/codex/codex-rs/tui/src/chatwidget/protocol.rs`明确消费ErrorNotification.will_retry，交给streaming.rs::on_stream_error更新重连状态；`tests/status_and_layout.rs::stream_error_updates_status_indicator`及`tests/app_server.rs::live_app_server_stream_recovery_restores_previous_status_header`验证重试提示及恢复后的状态复原。只证明其重试可见性由终端显式处理，**未核实其在同款部分流重试下如何撤回已打印正文，不把它写成已动态解决本项**。
+- **本系统Desktop**：`apps/desktop/src/App.tsx`在model_request_started记录modelAttemptBaseParts，在model_attempt_reset恢复该快照并保留真实compaction/memory标记；model_request_completed才释放快照。Runtime已有`retry_resets_visible_deltas_from_failed_attempt`回归，Harness project_runtime_event的通用Runtime payload也保留reset。因此不需另建retry层、event store或修改provider协议；缺口是CLI消费者未对齐既有生命周期契约。Desktop分支本轮仅源码核查，未做UI动态验收。
+- **DeepSeek官方边界**：本轮联网复核[Responses参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)的无状态input与语义化终态，以及[错误码说明](https://api-docs.deepseek.com/zh-cn/quick_start/error_codes/)对500/503重试的建议。供应商不会替宿主撤回已展示的本地片段；本项与KV cache/tool schema无关，不声称真实DeepSeek发生了fixture中的断线。正式自动重试是合理能力，问题是attempt提交与视图提交未共用边界。
+
+#### 根因收敛建议与验证边界（本地设计，未实施）
+
+- 让TUI在现有模型请求开始时保存本step的未提交正文/推理基线，reset只回滚当前attempt内容；保留之前已提交的工具叙述、真实工具结果和compaction/memory事实。不要只在RunCompleted强制用message覆盖，因为这样仍会在重试期间展示错误拼接，也会丢失多step中真实的中间内容。
+- `ChatState`、App事件路由和scrollback flush共用同一attempt生命周期；若片段可提前flush为不可改终端历史，需要明确定义可撤回区域或用可识别的废弃attempt标记，不把旧片段作为正常最终回答。不要在TUI重新实现重试或改写已正确保存的模型历史。line-mode同样未处理reset属源码旁证，本轮未捕获其stdout，不额外登记第二个缺陷或称其已动态复现。
+- 验收应覆盖正文/推理分别先到、多次重试、重试耗尽/取消、输出上限升级、fallback、工具之前/之后的多step、compaction标记、实际TTY绘制/scrollback与复制。当前只动态验证一次transport断线、一次恢复及两种正常对照；未运行真实HTTP/DeepSeek、真实终端、Desktop、参考项目、workspace全量或生产修复。
+- 验证收尾：`cargo test -p deepagent-cli --offline` **86 passed / 24 ignored**，既有正常协议、终端状态与新正常对照全部通过；已知缺陷ignored测试未自动关闭。`cargo fmt --all -- --check`、`git diff --check`通过。`cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings`未通过，实际报models/client.rs:355的clone_on_copy和persistence/run_store.rs:127的explicit_counter_loop；均核对HEAD含原代码，本轮不修改这两个无关文件，不声称lint全绿。没有运行全workspace、前端构建或手动TTY验证。

@@ -10,6 +10,10 @@ use deepagent_runtime::RuntimeEvent;
 
 use super::history::HistoryCell;
 
+#[cfg(test)]
+#[path = "state_retry_audit.rs"]
+mod retry_audit;
+
 /// Outcome text a tool cell carries until the matching completion arrives.
 pub const TOOL_RUNNING: &str = "running";
 
