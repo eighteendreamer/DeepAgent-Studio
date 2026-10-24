@@ -64,6 +64,9 @@ mod model_selection;
 #[path = "kernel_v2_e2e/cost_calendar.rs"]
 mod cost_calendar;
 
+#[path = "kernel_v2_e2e/pricing_activation.rs"]
+mod pricing_activation;
+
 #[path = "kernel_v2_e2e/cache_prefix.rs"]
 mod cache_prefix;
 
