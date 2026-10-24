@@ -54,6 +54,7 @@
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
 | Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
+| Harness thread/list 历史列表 | 创建 120 个真实持久化 thread 后，正式 `thread/list` 一次返回全部 120 条、约 25 KB JSON；请求没有 limit、cursor 或 continuation | 已确认 H-220；正式 SQLite/EventStore/ServerState，无模型、工具、子进程或网络 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -162,6 +163,7 @@
 | JSON-RPC 方法错误分类 | 未知 namespaced method 由字符串是否含 `/` 决定为 Invalid params，而非按方法注册表返回 Method not found（H-217） | JSON-RPC 规范将 `-32601` 定义为 method 不存在、`-32602` 定义为参数无效；Codex 对 unsupported/unknown operation 使用独立 `method_not_found()` | SDK/代理按错误码选择重试、降级或兼容路径时得到错误结论；未知扩展与参数错误无法区分 |
 | 历史读取与响应预算 | `thread/read` 将完整 session events 与每个 run 的 events/actions/approvals/artifacts/graph 聚合到单个 JSON response，无 page size、响应字节预算或 continuation（H-218） | DeepSeek Harness `SessionHistoryController.page()` 按消息对齐分页并有 500 条上限；Codex 将 full-history hydration 标为 deprecated，改用 `thread/turns/list` 与 `thread/items/list` 分页 | 长历史在 app-server、SDK、CLI 或 UI 同时占用内存并阻塞单次响应；断线重试放大成本，无法在有限预算内恢复或只取窗口 |
 | 能力目录与运行作用域 | `tool/list` 只调用一个 `ChatService::tool_descriptors()`，没有 thread/run、workspace、permission、sandbox、MCP 代次或 schema hash；不同线程得到相同静态数组（H-219） | Warp 根据 execution mode/session/feature flag 动态协商能力；Codex 将工具、permission profile、sandbox/root 等作为 thread/turn 配置与可回放快照；项目自身升级方案也要求 run-scoped capability snapshot | 客户端把全局目录误当作本次 run 的可执行能力；backend、权限或 MCP 变化后模型可能生成当前入口不能执行的工具，历史重放无法确认当时工具面 |
+| Thread 列表与控制面规模 | `thread/list` 直接枚举 `EventStore::list_sessions()` 并把所有 session 放进一个 response，没有 limit/cursor/filter/快照语义（H-220） | Codex `thread/list` 默认 25、上限 100，支持 sort/filter 与 opaque cursor；列表和 thread/read、turns/items hydration 分开 | 大量历史 thread 让 app-server、SDK 和 UI 每次刷新都承担全量扫描与 JSON 解析；列表刷新延迟和内存随历史增长，断线重试放大负载 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
@@ -4369,6 +4371,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-217 Harness JSON-RPC 方法错误分类显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_unknown_namespaced_method_is_not_reported_as_invalid_params --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；`thread/does-not-exist` 返回 `-32602`，未知无斜杠 method 返回 `-32601`，已知 `thread/start` 坏参数返回 `-32602`；无模型、工具、文件或公网 |
 | H-218 Harness thread/read 历史分页显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_thread_read_has_bounded_history_page --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；600 条消息样本返回 `events=1201`、`serialized_bytes=1570066`、`has_continuation=false`；正式 SQLite/dispatcher，无模型、工具、文件、子进程或公网 |
 | H-219 Harness tool/list 作用域显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_tool_list_is_not_scoped_to_thread_capabilities --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；`read_only/direct` 与 `full_access/windows_sandbox` 两个 thread 均返回 `28` 个相同工具，`first_has_snapshot=false`、`second_has_snapshot=false`；无模型、工具执行、子进程或公网 |
+| H-220 Harness thread/list 分页显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_thread_list_has_bounded_page --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；创建 120 个真实 thread 后返回 `threads=120`、`serialized_bytes=25009`、`has_continuation=false`；正式 SQLite/dispatcher，无模型、工具、子进程或公网 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4770,6 +4773,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | Thread create/resume/fork 的就绪提交 | H-216 | `thread/fork` 复用现有 `ThreadState` 构造与 AppCore fork 结果，在成功 response 前原子安装可接纳的 child；从 durable cold source 重建有效 workspace/config 时共用 resume 的单一解析边界；参考 DeepSeek Harness await agent creation 与 Codex live fork/listener，不增加第二份 thread store | fork response 后无需隐式补一轮 resume 即可 start；持久化失败与内存安装失败不返回假成功或遗留无主 child；热/冷 source、重启、配置、并发 fork/start 与失败补偿一致 |
 | Thread/read 历史分页与预算 | H-218 | 在现有 EventStore/RunStore 投影上增加 message-aligned page、明确 page size/字节预算和 opaque continuation；保留 after-sequence 作为增量读取，不把全量聚合塞进单个 response；参考 DeepSeek Harness `SessionHistoryController.page()` 的 500 条上限与 Codex 的 turns/items 分页 | 长历史读取不会一次性构造无界 JSON；调用方能按 cursor 续读、只恢复所需窗口；超预算能以明确 continuation/错误结束，避免 SDK/UI 内存峰值和断线重试放大 |
 | Run-scoped capability snapshot | H-219 | 保留兼容 `tool/list`，在现有 run assembler/ToolRegistry/MCP lifecycle 边界生成带 thread/run、workspace、permission profile、sandbox backend、MCP/config 代次、tool schema hash 和风险/来源的 snapshot；在 `turn/start` 或独立 resolve response 中返回并与 run_events 关联；参考 Warp 动态 capability negotiation、Codex thread/turn 配置快照，不新增第二套 registry | 客户端和模型能知道本次 run 的实际工具面；能力变化可审计、重放可复原；sandbox/权限/MCP 失败显示为明确 degradation，不把全局存在误认为当前可执行 |
+| Thread/list 分页与过滤 | H-220 | 沿用 EventStore 的 session 元数据查询，在现有协议增加 limit、排序/过滤和 opaque cursor；默认有界，cursor 绑定排序快照并拒绝重复/篡改；参考 Codex `thread/list` 默认 25、最大 100 与 nextCursor，不把 thread/read 全量历史混入列表 | 列表刷新只扫描/序列化当前页；历史规模增长不会阻塞客户端；归档、workspace、provider、更新时间等筛选可在服务端完成，断线可从 cursor 续读 |
 | JSON-RPC 方法注册与错误分类 | H-217 | 现有 `HarnessRequest` 解析/dispatch seam 维护唯一方法注册表；未知 method 统一返回 `ERR_METHOD_NOT_FOUND`，已知 method 的 payload 解码失败才返回 `ERR_INVALID_PARAMS`；参考 JSON-RPC 2.0 与 Codex `method_not_found()`，不再用 method 字符串形状推断语义 | 未知 `thread/*`、未来扩展和拼写错误均可被 SDK 明确识别；参数错误与能力不存在分离；错误码、日志和重试策略一致；新增方法只需更新一个注册/dispatch seam |
 | Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
 | Harness SDK 通知身份、订阅时序与缺口恢复 | H-01、H-91、H-205、H-214 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；提供先建订阅再发请求的 owned run/stream API，参考 DeepSeek Harness `HarnessSession.run()` 的 subscribe-before-prompt 队列与 Codex 的先附加监听再启动操作；不建立无界第二事件库 | 请求响应前通知仍可由该次操作消费；连续事件可按实际序号 ACK；7→9、broadcast lag 和迟订阅均可识别并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
@@ -5197,6 +5201,32 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 回归应覆盖：单 thread、多 workspace、多 permission profile、多 sandbox backend、MCP 初始/刷新/失败、plugin/skill enablement、tool search、fork/resume、重启、fallback、schema hash 变化、snapshot 过期、并发 `tool/list` 与 `turn/start`，以及客户端看到 snapshot 后实际模型 wire 与 ToolRegistry 的一一对应。
 
 本轮只新增正式失败探针和审计文档，未修改 `tool/list` 或运行装配行为。H-07/H-137 关注 MCP 目录分页与动态刷新，H-57 关注目录正文在后续模型请求中的保留；H-219 关注 Harness 控制面没有把实际能力投影为有身份、有版本的 run-scoped snapshot。
+
+### H-220：`thread/list` 无界返回全部 session，缺少列表分页与服务端过滤
+
+**级别：中（P2，控制面规模与客户端刷新稳定性）；触发条件：** app-server 的 durable session 数量超过一个普通列表窗口，客户端周期性调用 `thread/list` 刷新历史、恢复入口或归档视图。当前 `ThreadListRequest` 是空结构，服务端没有 limit、cursor、排序、workspace/provider/archived 过滤或快照语义。
+
+#### 生产路径与正式复现
+
+- `apps/cli/src/app_server.rs::thread_list()` 直接调用 `EventStore::list_sessions()`，将查询返回的全部 session 映射成 JSON，再一次性放入 `threads` 数组。没有服务端 page size，也没有把“是否还有下一页”写入 response。
+- 新增默认忽略探针 `app_server::tests::audit_thread_list_has_bounded_page`：在真实文件 workspace 和 SQLite 数据库中，经正式 `ServerState` dispatcher 连续执行 120 次 `thread/start`，再调用正式 `thread/list`；每个 thread 都有真实持久化 session row 和 session 文件。
+- 执行：`cargo test -p deepagent-cli app_server::tests::audit_thread_list_has_bounded_page --offline -- --ignored --exact --nocapture`。
+- 实际结果为 **0 passed / 1 failed（预期复现）**，输出 `threads=120, serialized_bytes=25009, has_continuation=false`。没有启动模型、工具、子进程或网络；失败断言只要求默认列表有界并提供 continuation，不把某个具体页大小冒充本系统已存在的协议契约。
+
+#### 成熟 Agent 对照
+
+- **Codex** 的 `ThreadListParams` 明确支持 opaque `cursor`、可选 `limit`、排序键/方向、provider/source/archived/section/project/cwd/search 等过滤；实现将默认页大小设为 25、最大 100，并从 thread store 返回 `next_cursor` 与 backwards cursor。列表只承担 thread metadata，详情和 turns/items 另行分页读取。
+- **DeepSeek Harness** 的 session controller 将 session catalog、history page 和 live follow 分开；其客户端 session manager 接受列表变化和分页历史，避免把所有冷历史内容当作一次列表响应。这里采用的是控制面和历史读取分离的架构原则；本轮没有把未找到的 DeepSeek session catalog 默认页大小写成事实。
+- **DeepSeek Responses API** 不定义宿主 session list；H-220 只属于 Harness 控制面，不应通过模型请求参数或缓存设置修复。
+
+#### 影响、边界与根因修复方向
+
+- 已动态证明的直接后果是：每次列表刷新都会扫描和序列化全部 session metadata；session 数量增加后，服务端 response、SDK 解析和 UI 列表 diff 都按总量增长。25 KB 样本没有造成超时，因此不声称当前规模已导致崩溃；问题是协议没有提供有界刷新机制。
+- 归档、workspace、provider 和更新时间筛选目前只能由客户端拿到全量后自行处理；这会增加本地内存和跨进程传输，也使不同客户端的排序/过滤语义不一致。H-215 的归档可见性错误仍独立存在，本项不把它重复计数。
+- 修复应在现有 `EventStore::list_sessions()` 查询边界增加 limit/cursor、稳定排序键和可选服务端 filters，响应返回 opaque `nextCursor`；cursor 绑定排序快照/最后一行键、过滤条件和协议版本，拒绝跨查询复用、重复 cursor 和无界循环。默认页大小与最大值需要作为本地协议常量并在 SDK/CLI/Tauri DTO 中同步。
+- 列表分页不能替代 H-218 的 thread history 分页，也不能让客户端为恢复而下载所有 run events；列表只返回 metadata，详情、事件和控制投影继续沿现有 `thread/read` 或新的分页视图读取。回归覆盖空列表、恰好边界、超页、插入/归档并发、排序稳定性、cursor 重启、过滤组合和旧客户端兼容。
+
+本轮只新增正式失败探针和审计文档，未修改 `thread/list` 生产行为。H-218 关注单 thread 的历史 response 无界，H-220 关注跨 thread 的 session catalog 无界；两者查询对象和修复接口不同。
 
 ### 本轮排除候选：Responses 工具参数增量仅含 `output_index`
 

@@ -1922,6 +1922,44 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-220: thread/list must return a bounded page with an opaque continuation"]
+    fn audit_thread_list_has_bounded_page() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        let mut state = ServerState::new_for_test_with_database(database, workspace.clone());
+        initialize(&mut state);
+
+        for index in 0..120 {
+            let response = state.handle_request_for_test(rpc_request(
+                index + 2,
+                "thread/start",
+                serde_json::json!({"cwd": workspace}),
+            ));
+            assert!(response.is_success(), "thread/start {index} failed");
+        }
+        let listed =
+            state.handle_request_for_test(rpc_request(200, "thread/list", serde_json::json!({})));
+        let threads = listed.result()["threads"]
+            .as_array()
+            .expect("thread/list returns threads");
+        let serialized_bytes = serde_json::to_vec(&listed).unwrap().len();
+        let has_continuation =
+            listed.result().get("nextCursor").is_some() || listed.result().get("hasMore").is_some();
+        eprintln!(
+            "thread/list audit: threads={}, serialized_bytes={}, has_continuation={has_continuation}",
+            threads.len(),
+            serialized_bytes
+        );
+
+        assert!(
+            threads.len() <= 100 && has_continuation,
+            "thread/list materialized all sessions without a bounded page/cursor"
+        );
+    }
+
+    #[test]
     fn fileless_legacy_row_is_not_resumable_or_readable() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);
