@@ -362,6 +362,28 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit: Responses supports system messages in the middle of input history"]
+    fn audit_preserves_mid_history_system_messages_as_input_items() {
+        let messages = vec![
+            Message::system("stable leading rules"),
+            Message::user("first question"),
+            Message::assistant("first answer"),
+            Message::system("updated runtime context"),
+            Message::user("second question"),
+        ];
+
+        let (instructions, items) = response_items_from_messages(&messages);
+        eprintln!("mid-history system audit: instructions={instructions:?}, items={items:?}");
+
+        assert_eq!(instructions.as_deref(), Some("stable leading rules"));
+        assert!(items.iter().any(|item| matches!(
+            item,
+            ResponseItem::Message { role, content }
+                if role == "system" && content == "updated runtime context"
+        )));
+    }
+
+    #[test]
     fn repairs_missing_tool_outputs_without_poisoning_next_request() {
         let items = vec![
             ResponseItem::FunctionCall {
