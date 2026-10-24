@@ -20,6 +20,7 @@
 | MCP 延迟发现与分支恢复 | 正式搜索→真实 stdio 工具调用→续聊→干净重建的正常对照通过，新会话不继承发现；另实测 rewind 删除发现后旧内存仍公开工具，重新搜索并调用成功也未重新落盘发现，重建后隐藏工具 | 新增 H-232（P3）；普通恢复与保留发现的 rewind 对照正常。模型离线回放，不覆盖崩溃、压缩、fork、权限变更或供应商缓存命中 |
 | MCP 结果内容与客户端元数据 | 正式 MCP 返回公开文本、structuredContent 与仅位于顶层 _meta 的虚构 canary；第一次模型 wire 无 canary，工具返回后的下一请求包含它 | 已确认 H-138；仅本机 stdio + 离线模型；这是客户端/模型投影缺口，不宣称 2024-11-05 基础协议为所有 _meta 提供统一保密保证 |
 | 已执行工具与后置 hook 的结果提交 | 正式 write_file 已写入磁盘且 run_events 有成功 ToolCompleted；PostToolUse prompt 返回无效 JSON 后，session 没有真实结果，重开将动作标为进程重启失败，下一请求只有补造的结果缺失错误 | 已确认 H-139；正常 hook 对照通过；真实临时文件、文件数据库、正式启动恢复与离线模型，不含真实桌面或公网请求 |
+| 流失败前状态工具的预执行提交 | 公共无 hooks Runtime 在 todo 参数/item 完成后真实改共享列表，随后 failed 或断流自动重试成功，均无对应会话往返但状态残留 | 已确认 H-233（P3）；正常完成与 hooks 对照通过；主 AppCore 装配关闭预执行，嵌套子运行仅静态核查，未实测其父状态影响 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
@@ -4859,6 +4860,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 | 启动恢复的 run/task 诊断归属 | H-44、H-95 | 现有恢复投影按 run 的 task 身份界定历史范围；参考 Codex 按 turn ID 标记 stale turn | 同 session 多个未完成 run 的中断原因各自匹配其 task turn；较新的 user prompt 不改写旧 run 的工具中断原因；重放稳定，且不改变唯一终态 |
 | 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
 | 工具实际执行与后置扩展的提交边界 | H-139 | 既有 ToolPipeline/action/Session 保存已执行事实和结果；后置 hook 的反馈、拒绝继续及失败分别投影；参考 Claude 普通工具结果先保留、Codex 区分执行 lifecycle 与 hook outcome | hook 有效/无效/执行错误及重开后，成功副作用不会变成未完成操作；原结果可回放、动作有准确终态、模型配对反馈可解释；不盲目重复执行 |
+| 响应提交前预执行的状态归属 | H-233 | 在既有 Tool/Runtime/Session 明确并发与可丢弃预取的独立契约；参考 DeepSeek Harness 成功流先提交再执行，或 Codex 先记录调用、错误后仍收拢结果；不将 Safe 当成无状态证明 | 成功/failed/EOF/自动重试/取消均无不可见任务状态；hooks 有无不改变已执行事实的可审计性；主运行与子代理、agent-hook 的共享实例边界分别验证，不另建存储 |
 | 输入 hook 的附加上下文交付 | H-140、H-26 | 既有 hook 输出结果分开携带决定、改写与上下文，接回当前输入的原生 Surface/会话记录和统一 meter；参考 Claude hook_additional_context 与 Codex 独立 additional_contexts 通道 | 普通 stdout 与合法 additionalContext 在实际 wire 中可见且有来源；拒绝仍不发模型；多 hook 有界合并、恢复可回放，不把 UI 日志或任意输出升级为系统权限 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45、H-119、H-164 | 摘要、prefire、正文、重试、工具、画布视频 HTTP、其他 Canvas 同步模型请求和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；Canvas 节点不先 Completed 再把 run 标 cancelled；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误；本地停止不冒充云任务已撤销 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
@@ -5804,3 +5806,49 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo fmt --all -- --check`、`git diff --check` 通过；实际执行 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，仍被未修改的 `models/src/client.rs:355`（clone_on_copy）及 `persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，未报告 lint 通过。测试路径复用原 MCP fixture/注册/请求记录器，没有另起生产 registry 或 store。
 - H-23、H-73、H-232 已分别证明笔记、检查点、工具发现的派生状态没有共同的当前分支身份；H-75 又有活动提交所有权缺口。治理应先定义既有 Session/EventStore 的有效分支与派生视图生命周期，再小步修各 seam；不建议只在桌面按钮里逐个清 map、按名称打补丁或额外建一套运行存储。以上为架构建议，未实施修复。
 - 本轮没有真实 DeepSeek 请求、缓存命中或模型行为实验。该问题属于宿主恢复一致性，不能声称违反某个 DeepSeek wire 参数；工具 schema 变化对供应商内部前缀及真实 cache hit 的影响也未测。只验证 Windows 本机、完成回合后的顺序 rewind/干净服务重建和静态 MCP 目录；未执行全 workspace、Desktop build/UI、独立进程崩溃、并发回退/子运行、fork、压缩、目录/权限变化。用户排除的 encrypted-content 错误不在本轮范围。
+
+### H-233：无 hooks 的公共 Runtime 将并发安全等同于可丢弃预执行，失败响应留下未记录的 Todo 状态
+
+**级别：低（P3，条件性运行一致性缺陷）；状态：真实内置工具与正式模型解析/Runtime 链路已复现，未修复。范围仅为未挂 hooks 的公共 RuntimeEngine；默认 AppCore 两处运行装配均挂 hooks，不据此声称默认 Desktop/CLI/Harness 已触发。**
+
+#### 首轮即时 Evidence（2026-10-24）
+
+- Scope：用户授权的本仓库审计；临时文件 SQLite、真实 `TodoWriteTool`/`TodoStore`/`ToolRegistry`、正式 `ModelClient`/`ResponseAccumulator`/`ModelAgent`/`RuntimeEngine`，离线 Responses transport。没有真实供应商请求、文件写工具、外部服务或生产代码修改。复用 AppCore 已有测试依赖，不新增生产执行链或依赖。
+- E-233-failed（command，content_hash=n/a）：`cargo test -p deepagent-app-core --test runtime_speculation_audit --offline -- --include-ignored --nocapture`，**2 passed / 1 failed（预期），测试体 0.30s**。source_ref：`crates/deepagent-app-core/tests/runtime_speculation_audit.rs::audit_failed_stream_does_not_mutate_real_todo`。预置 original task；模型流完成 todo_write 参数与 item，但尚未发送响应终态。transport 有界等待真实 store 变成 `AUDIT_UNCOMMITTED_TODO` 且 pending_snapshot=true 后，才注入带 error 的完整 `response.failed` 对象。正式解析返回受控错误，无自动重试。显式复用同一 agent/engine 发起后续 run 后，store 仍为 canary、pending=true，但文件数据库中对应 ToolCallRequested/ToolCallCompleted 均为 0，下一实际生成的请求也无对应调用/结果或 canary。最终“失败 attempt 不应留下不可见任务列表变更”断言失败。
+- E-233-controls：同命令正常完成组在响应终态前也观察到真实变更，最终唯一持久化调用/结果各 1，下一 wire 唯一配对；挂空 HookRegistry 的失败组没有提前变更，原列表保留、pending=false、调用/结果均 0。该组仅验证 hooks 对预执行开关的边界，不冒充完整 ChatService 默认链的动态测试。
+- 测试开发中首次编译因调用私有 `ModelAgent::push_message` 失败，未计作产品缺陷；已移除该调用。后续 run 是测试显式复用同一公共 agent/engine，不声称实际新增用户消息或 Kernel 自动恢复。故障 code 为测试自定义、当前分类不可重试；不将此离线序列说成真实 DeepSeek 曾返回该 code/事件组合。
+
+#### Finding 与 Path
+
+- F-233：category=design，status=validated，confidence=high，evidence_ids=[E-233-failed,E-233-controls]。`loop_engine.rs::StreamingToolAttempt::prepare` 在供应商 attempt commit 前，以 Safe、is_concurrency_safe 和权限检查作为提前调用资格。`Tool::is_concurrency_safe` 默认只看 Safe，并没有“无状态/可丢弃/可回滚”契约。真实 todo_write 正是 Safe/read_only，仍会 replace 共享列表、设置 pending_snapshot。attempt abort/Drop 只能取消未结束任务并清空 prepared，不能撤回已完成的共享状态变更；model error 又在会话提交前返回，形成“状态已改、历史无记录”。
+- P-233（callflow，关联 E-233-failed/F-233）：真实内置 todo_write 注册 → ModelClient 解出完整参数 → SinkObserver 通知 prepare → 无 hooks 的 Runtime 提前 invoke → TodoStore 已替换并标 pending → response.failed → ModelAgent abort → 清 prepared/abort handle → Runtime 返回 Err、未持久化决策/工具结果 → 显式后续 run 仍持有新列表但模型历史没有对应往返。
+- 已验证后果仅限共享内存任务列表与可回放会话不一致、pending 标志残留。潜在后果是后续依赖该列表的提醒显示未被记录的计划，或宿主重建时无法从工具往返恢复这次更新；本轮未挂提醒源、未重建宿主验证列表恢复，不能说已发生错误提醒或冷启动数据丢失。未证明文件/网络副作用、权限绕过、真实模型误操作或 durable run_actions 错账。
+- 与 H-18 的截断调用仍提交、H-139 的执行后 hook 异常跳过结果不同：本项在模型响应尚未成功时已经改变状态，且没有后置 hook；普通只读预取丢弃不构成此项缺陷。`run_assembler.rs:1114/1476` 均 with_hooks，当前默认 AppCore 因而关闭该优化；不能以此单项夸大默认产品风险。
+
+首轮复现后立即登记本项，成熟实现的具体边界对照及扩展验证结果随后追加，不把尚未执行的验证写成通过。
+
+#### 增量 Evidence：自动重试成功不能消除先前的隐形变更
+
+- E-233-retry：同一正式链路中，首次参数/item 完成后等待真实 TodoStore/pending 已更新，再令 HttpTransport 返回 `unexpected eof` 受控错误；ModelAgent 使用生产错误分类与有界退避，自行发起第二次请求（测试未手动重跑）。第二个响应只含最终文本、没有 todo 调用，整个 Runtime 返回 Completed。执行同一显式命令，**4 passed / 2 failed（预期），0.53s**；新增失败 `audit_stream_retry_does_not_mutate_real_todo` 到达最终列表不变量断言：early=1，durable_calls=0，durable_results=0，pending=true，第二请求无调用/结果或 canary，但 live_todos 仍为 canary。它不是单纯“错误运行结束时遗留状态”，也会隐藏在成功重试后的正常 Completed 中；同根因归 H-233，不重复编号。
+- 新增 hooks+completed 对照 early=0、最终真实更新且持久化唯一配对；hooks+disconnect 自动重试组 early=0、保留原列表、pending=false。两组通过，说明关闭预执行不阻止成功响应的正常工具执行。四项正常测试默认执行，两项缺陷探针保持 ignored，不拿默认绿测冒充修复。
+
+#### 成熟实现对照与架构治理（均为源码查证，未运行参考工程）
+
+- **DeepSeek Harness**：`packages/core/agent-loop/src/agent.ts:436–538` 的流循环只推入 AssistantStreamAttempt；异常和 error/aborted finish 保存 attempt 并抛错/选择重试；成功路径先 append assistant/message，再取 tool-call、调用 executeToolCalls。`tool-calls.ts::startCall` 又在 scheduler prepare 前 appendToolCall，已启动调用在取消/调度错误时收拢结果。它选择“成功流/助手消息提交先于执行”，不是通过声明低风险来承诺可回滚；值得借鉴这一清晰提交边界，不声称其所有插件都没有副作用问题。
+- **Codex**：`core/src/stream_events_utils.rs::handle_output_item_done` 对可分派调用先 `record_completed_response_item`，再构造 tool future；`core/src/session/turn.rs` 将其放入 in_flight。流遇 Some(Err) 或无 completed 的 EOF 先形成错误 outcome，退出循环后仍 drain_in_flight，收拢的 envelope 通过 record_annotated_conversation_items 保存，再返回 outcome。它允许流式调用，但把“已接纳执行事实”独立于整个供应商流是否成功保存；不是失败时假定工具没有执行。这里只核对这些代码顺序，不将其当成当前仓库故障实验或全场景无丢失证明。
+- **Claude Code**：`Tool.ts::TOOL_DEFAULTS` 将 isConcurrencySafe/isReadOnly 分开，默认均 false；TodoWriteTool 没有覆盖两者，实际会更新 appState。StreamingToolExecutor 的非并发工具也可在空闲时启动；query.ts 的 fallback 会清消息/结果、调用 discard，executor 的 discard 本身只是置标记，不是共享状态回滚。故不能说它已经解决本项“完成副作用撤销”，也不能只照搬其 discard 名称；可参考的是能力维度显式区分与保守默认。本轮没有运行其 TodoWrite 流失败测试。
+- **官方协议依据**：[DeepSeek Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)区分 item/参数完成与响应 completed/incomplete/failed 终态；[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)说明客户端负责回传完整历史及配对 call_id。本项是宿主执行/提交策略缺口，官方文档不提供工具事务回滚保证。本轮 2026-10-24 联网重新核对，未因官方支持 failed 就推断真实供应商必定产生本 fixture 序列，未测试真实缓存或计费。
+- **本地设计建议，尚未实施**：在既有 Tool/ToolPipeline/Session/run_events 边界分离“允许并发”“允许响应提交前预取”“是否改变模型可见状态”。默认不允许状态工具预执行；只读预取可显式声明且失败可丢弃。若继续允许有副作用的提前执行，必须像正式调用一样接纳并持久化调用/结果、收拢取消与失败后的已执行事实；不能只给 todo_write 加名称黑名单、伪造成功配对或新增第二套存储。修改前需决定模型重试保留调用还是禁止未提交副作用，避免重复执行与历史混合。
+
+#### 可达性与未覆盖范围补充
+
+主运行的两处装配确实 with_hooks，但不能因此称项目内所有 Runtime 都禁用预执行：`subagent_runner.rs::run_active` 与 `hook_runtime.rs::execute_agent` 也构建无 hooks 引擎；前者从 registry clone 工具，内置 plan profile 允许 todo_write，后者克隆 Safe 工具作为 agent_registry。这是静态可达性线索，**本轮尚未通过正式 task/agent-hook 工作流复现父会话污染，H-233 实测范围仍是公共 Runtime**；不把嵌套路径的影响算成已经证实。note maintenance 与 prompt gate 亦有独立工具/调用边界，不能一概外推。后续需分别验证这些宿主的工具实例隔离、实际模型清单、父子状态可见性与失败恢复。
+
+进一步核对 run_assembler，子代理初始 registry 由单独的 build_base_tool_registry 创建，并非直接使用主运行的 TodoStore；因此不能把 registry clone 的静态线索说成“已经污染父任务列表”。agent-hook registry 则从主 registry 克隆 Safe 工具，是否通过正式 hook 流程形成可观察状态分裂仍需独立验证。此边界保留在待验收项，不给它附加未经验证的严重性。
+
+#### 本轮验证收尾
+
+- 探针改为有界观察真实状态：等待到 state/pending 改变后才注入失败；若未来正确实现延后执行，观察窗口结束不再被当作产品失败，最终不变量继续判断真实列表/历史。加上后续显式 run 的 timeout 后，同一显式命令复跑为 **4 passed / 2 failed（预期），0.51s**；仍观察 early=1、两个失败都到达最后的列表断言，没有用超时伪造复现。
+- `cargo test -p deepagent-app-core --test runtime_speculation_audit --offline --quiet` 最终复跑：**4 passed / 2 ignored，0.47s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，8.30s**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**47 passed / 56 ignored，9.62s**。
+- `cargo fmt --all -- --check`、`git diff --check` 通过。实际 Clippy `cargo clippy -p deepagent-app-core --test runtime_speculation_audit --offline -- -D warnings` 被未修改的 `models/src/client.rs:355` clone_on_copy 与 `persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未声称 lint 通过。
+- 本轮遵循 docs-generator 的即时证据链记录，修改仅审计测试和报告，无生产修复、权限/协议/数据迁移。未运行全 workspace、Desktop build/UI、真实 DeepSeek、参考工程测试、取消/崩溃、状态提醒消费、正式 task/agent-hook 故障链或其他平台；正常回归不关闭 ignored 缺陷，也不表示全系统审计完成。encrypted-content 错误继续排除。
