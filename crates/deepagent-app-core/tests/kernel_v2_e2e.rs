@@ -45,6 +45,9 @@ mod mcp_cancellation;
 #[path = "kernel_v2_e2e/mcp_catalog_change.rs"]
 mod mcp_catalog_change;
 
+#[path = "kernel_v2_e2e/mcp_discovery_restore.rs"]
+mod mcp_discovery_restore;
+
 #[path = "kernel_v2_e2e/post_tool_hook_commit.rs"]
 mod post_tool_hook_commit;
 
