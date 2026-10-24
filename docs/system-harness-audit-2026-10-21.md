@@ -24,6 +24,7 @@
 | agent-hook 的工具状态隔离 | 正式主运行先写计划，PreToolUse agent-hook 正常调用共享 todo_write，允许/拒绝父读取后主 task_list 均返回 hook 列表，父无对应写入往返 | 已确认 H-234（P3）；两个只读对照通过；不是 H-233 的失败流问题，不外推无此 hook 的默认聊天或其他状态工具 |
 | 模型型 hook 的用量归属与预算 | prompt/多步 agent hook 正常 completed 并含完整 usage，允许或拒绝父工具都只结算主请求；合计费用已过本地预算但下一轮继续实际请求模型 | 已确认 H-235（P2）；无 hook、matcher 未命中和主费用已入账越限三项对照通过；用离线 usage 验证本地账本，不代表真实供应商消费或缓存命中实验 |
 | 工具 pipeline 的模型 hook 取消 | 正式停止已受理，顺序工具前/后置 prompt/agent hook 仍等待；在 agent 首响应前停止，释放后还真执行 task_list 并发下一次 hook 请求 | 已确认 H-236（P2）；UserPromptSubmit/SessionStart 取消及四位置正常允许对照通过，最终取消映射正确；离线供应商 gate，未验证真实计费或公网取消 |
+| agent-hook 的有效权限继承 | 主 read_file 被用户 Read deny 或默认 WorkspaceWrite 的 PathGuard 拒绝；同次运行的 hook 使用同一工具读取相同临时文件，正文进入 hook 下一模型请求 | 已确认 H-237（P1）；显式规则与工作区边界两条探针，未命中/无规则/敏感文件对照通过；无真实敏感数据或公网传输 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
@@ -189,6 +190,7 @@
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
 | 嵌套执行的状态作用域 | 声称 isolated/read-only 的 agent-hook 克隆父工具 Arc，成功 todo_write 直接替换父列表，父工具被拒后同样残留（H-234） | Claude agent-hook 创建唯一 agentId，TodoWrite 按 agentId/sessionId 分区；Codex update_plan 从调用上下文取得 session/turn 发送计划事件（非同类 hook 动态证明） | 决策辅助运行改变主模型的任务状态，父历史缺少对应写入事实；独立 Session 没有实现工具实例隔离 |
+| 嵌套执行的权限继承 | agent-hook 的私有 Runtime 不含父 PermissionRules/PathGuard，实际克隆的主工具却以 FsAccess::Full 构造，主运行拒绝的同一读取仍成功（H-237） | Claude hook 保留父权限上下文并经同一 deny-first 检查；Codex 子运行显式继承有效审批策略与权限快照，角色覆盖只能在父授权内调整 | Safe 工具筛选不等于资源授权；启用 hook 后，用户显式 deny 和默认工作区读取边界不能贯穿附属执行 |
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
 | 运行及附属工作的归属 | 子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-45/H-60/H-61/H-64）；原生摘要取消已修复 | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
@@ -6003,3 +6005,54 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo fmt --all -- --check`、`git diff --check` 通过，Markdown fenced blocks=8（偶数）。实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `models/src/client.rs:355` clone_on_copy、`persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未报告 lint 通过。
 - code-audit 促使区分相似 fire_hook/fire 的真实可达路径，docs-generator 促使首次复现、对照设置错误、agent 增量和最终验证分别追加证据。只新增本测试模块/入口并更新指定报告，没有生产修复、协议/配置/权限变更、数据迁移或真实收费；原有未跟踪文件保持原样。
 - 未运行全 workspace、Desktop build/UI、真实 DeepSeek/HTTP 连接取消、参考工程测试、批量/并行工具、command/http/mcp hooks、hook 自身超时、父总时限、数据库重开或其他平台。不能推断真实供应商后台推理一定被取消、所有扩展都继续执行、永久资源泄漏、具体 UI 卡片、真实收费数额或未来修复安全性。全系统审计仍在继续，用户排除的 encrypted-content 错误未处理。
+
+### H-237：agent-hook 未继承主运行有效权限，被规则或工作区边界拒绝的读取仍将正文交给 hook 模型
+
+**级别：高（P1，条件性用户权限边界失效）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 与真实文件工具已复现，未修复。必须已启用并命中 agent-hook；不是任意聊天都会触发，也不是整个文件沙箱失效。**
+
+#### 首次即时 Evidence（2026-10-24）
+
+- Scope：用户授权的本仓库审计；新建临时 workspace、文件数据库、普通 fixture.txt 和只含同一虚构 canary 的 .env。使用正式用户 permissions/hooks 设置与工具注册，仅替换模型 transport；没有访问真实敏感文件、外部服务或真实 DeepSeek。本轮只补审计测试与文档。
+- E-237-first（command，content_hash=n/a）：source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/hook_permissions.rs`；`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_permissions --offline -- --include-ignored --nocapture`，**3 passed / 1 failed（预期），0.63s**。失败为 ignored 的目标不变量：禁止文件不得进入 hook 模型；其余三项为默认正常对照。
+- E-237-deny：正式 set_permission_rules 保存 deny=[Read]，不使用当前不支持的路径规则语法。主模型先请求 read_file(fixture.txt)，下一请求收到唯一配对 function_call_output，status=error、error_type=hook_denied、原因包含 denied by permission rule，且该请求 input 不含 canary。随后主模型请求允许的 task_list，匹配其 PreToolUse agent-hook；hook 通过真实 read_file 读取同一个文件，其第二次模型请求收到唯一成功工具结果、cache_hit=false、完整 SYNTHETIC_HOOK_READ_CANARY。hook 合法返回 {ok:true}，父 task_list 成功，主运行唯一终态 succeeded。不是只根据 schema 宣称能读，也不是把缓存或模型臆造当文件证据。
+- E-237-controls：同一 deny 配置但 matcher 不命中时 hook 请求=0，主读取仍被拒绝；无 deny 时主读取正常成功、hook 读取成功（因共享 ReadFile cache 返回 FILE_UNCHANGED_STUB，没有据此声称 hook 收到正文）；deny 加命中 hook、目标改为临时虚构 .env 时，主读取仍由规则拒绝，hook 则被工具内部敏感名称检查拒绝，未收到 canary。四个流程均为正式成功运行、唯一 run_terminal；被拒绝的工具可恢复继续，不冒充 run 失败。
+
+#### 初始 Finding 与 Path
+
+- F-237（category=design，status=validated，confidence=high，evidence_ids=[E-237-first,E-237-deny,E-237-controls]）：`hook_assembly.rs::assemble_run_hooks` 将 UI 与配置层权限合并后只给主 HookRegistry 注册 PermissionRulesHook；AppHookActionExecutor 只收到筛选后的 agent_registry，没有有效规则。`hook_runtime.rs::execute_agent` 为私有 Runtime 使用固定 developer PermissionSet，未接入主权限规则或非递归策略 hooks。主运行自身也使用 developer 位权限，实际用户 deny 由 hook 层执行，所以**问题是执行策略上下文没有继承，不是仅凭 developer 名称认定提权**。
+- P-237（callflow）：用户 Read deny → 主 Runtime PermissionRulesHook 拒绝 read_file → 允许的 task_list 触发 agent-hook → 私有 Runtime 没有父规则 → 同一真实 ReadFileTool 内的 WorkspaceRoot 允许普通 workspace 文件 → 正文进入 hook 的下一请求 → hook/父运行正常结束。明确后果是显式拒绝失去端到端保障；若被禁止读取的数据位于工具原本可访问范围，它仍可被附属模型消费，之后再拒绝父工具也无法撤回已发生的读取或模型传输。本次传输只到离线 fixture，未观察真实外传、写入或系统命令执行。
+- 高优先级来自用户 deny 的执行边界被绕过，不等同于无需配置的远程攻击。HookRegistry 只筛选 Safe 并实际限制 dispatch，工具内部路径和敏感文件防护仍存在；不推断全部内置/MCP 工具、全部配置来源或所有事件都已动态验证。
+- 与 H-19 的“子 Agent 仅隐藏 schema、实际 registry 未收窄”不同，本项 agent_registry 已实际筛选；与 H-234 的共享 TodoStore 状态污染、H-236 的取消上下文丢失也分别独立。未处理用户排除的 encrypted-content 错误。成熟权限机制对照、额外边界核对及本轮回归随后追加。
+
+#### 增量观察：新增工作区外对照失败，尚需核对装配边界
+
+- E-237-outside-first：在已存在临时目录下新建 workspace 的同级 outside.txt，添加“工具自身应拦截工作区外读取”的正常对照并重跑相同命令，**3 passed / 2 failed，0.73s**。既有显式 deny 探针仍失败；新对照也失败，hook 实际收到同级文件 canary，而非预期错误。敏感 .env 与未命中/无规则对照继续通过。新对照暂不能视为另一项产品缺陷：需先查实际生产 registry 的 FsAccess 装配，区分测试前提错误与父 sandbox/审批策略丢失。
+- 已看到 `run_assembler.rs` 为主工具 base registry 显式传 FsAccess::Full；因此先前“克隆工具必然自带父 workspace 读取限制”的假设不成立。本条记录真实新增观察；还未验证无 Read deny 时主运行对同级读取的真实决定，不把 outside 成功直接外推成所有父沙箱被绕过，也不新增编号。
+
+#### 增量 Evidence：无显式 Read deny，默认工作区边界也没有进入 hook
+
+- E-237-workspace：明确保存 PermissionPreset::Default，其有效 sandbox 为 WorkspaceWrite；移除 Read deny，再对同一个临时同级 outside.txt 做主/hook 对照。实跑相同命令，**4 passed / 2 failed（预期），0.69s**。主 read_file 收到唯一配对 error/hook_denied，原因 read is blocked by the current sandbox mode，后续两个主请求 input 均无 canary；task_list 触发的 hook 读取同一绝对路径成功，cache_hit=false、正文进入 hook 第二请求。未命中 hook 的同级读取对照正常拦截、hook 请求=0；两个敏感/无限制对照和原始显式 deny 探针保持既有结果。
+- 已将工作区探针从“默认应通过的 in-tool guard 对照”改为 ignored 的权限继承目标不变量，并补充真正的主运行正常拦截对照；不是简单修改预期让错误变绿。F-237 增补 evidence_ids=[E-237-first,E-237-deny,E-237-controls,E-237-outside-first,E-237-workspace]；同根因不另编号。两个缺陷探针都在已核验主拒绝、实际 hook 正文后才失败。
+- 原因追到 `RunAssembler`→`build_main_run_toolset`→`build_base_tool_registry`：主工具实际以 FsAccess::Full 构造，父有效 access 则另传 `assemble_run_hooks`，由 PathGuardHook 在主工具 pipeline 集中执行。`build_hook_agent_registry` 克隆这些工具 Arc，`execute_agent` 的 RuntimeEngine::new 默认 hooks=None，又没有有效 access/PermissionRules；因此不是仅丢自定义 deny，父读取资源边界同样丢失。内置敏感名称拒绝仍由 WorkspaceRoot::resolve_unconfined 保留，本轮 .env 对照已验证。
+- P-237 增补路径：Default/WorkspaceWrite → 主 PathGuard 拒绝同级绝对路径 → hook 私有 Runtime 无 PathGuard → Full-access 的同一个 ReadFileTool 读取同级普通文件 → 正文进入 hook 下一请求。无需 junction、符号链接、路径混淆或额外系统命令。已验证的是应用层工作区读取策略失效，未执行 Sandboxie/Windows Sandbox OS 隔离实验，不宣称操作系统级沙箱逃逸；仅本机虚构内容，未证明真实公网外传。
+
+#### 成熟机制与 DeepSeek 对照（源码/官方文档，未运行参考工程）
+
+- **Claude agent-hook**：`借鉴/claudecode/restored-src/src/utils/hooks/execAgentHook.ts:124–172` 派生 agentToolUseContext，但 getAppState 保留父 toolPermissionContext，只将 mode 改 dontAsk，并添加 transcript 的 session Read allow；query 使用 canUseTool=hasPermissionsToUseTool。继续追到 `utils/permissions/permissions.ts:1158–1182`，先 getDenyRuleForTool，命中直接 deny；该 helper 从保留的 alwaysDenyRules 读取所有来源（约213–220、287–292行）。之后才检查 ask、tool.checkPermissions 和模式/allow。`hasPermissionsToUseTool:503–516` 把 dontAsk 下的 ask 转为 deny，**dontAsk 不是忽略权限的自动允许**。这是与本次裸 Read 工具禁令最直接的机制对照；未执行其多来源权限或路径检查测试，不宣称全面无缺陷。
+- **Codex 子运行**：`借鉴/codex/codex-rs/core/src/agent/child_config.rs::apply_spawn_agent_runtime_overrides` 显式从当前 turn 复制 approval_policy、reviewer、cwd 与 permission_profile_state snapshot；不是仅从旧 config clone 后认为等价。`agent/role.rs::AgentRoleOverrides` 不开放权限/sandbox/provider 字段，build_next_config 在父配置上仅投影允许覆盖项/能力缩减；`role_tests.rs::apply_role_cannot_expand_parent_authority` 对 hostile role 保持父 permissions 的源码断言可作未来本系统回归参考。这里是子运行授权设计对照，不冒充 Codex 有与本系统同协议的 agent-hook，也没有运行参考测试。
+- **DeepSeek 官方边界**：2026-10-24 联网核对[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)与[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)。模型返回工具调用，函数由宿主执行；Responses 的 function_call/function_call_output 支持回传。本探针为正常 completed、合法调用及唯一配对结果，没有依赖非法参数、模型不服从提示词或 provider 异常。Strict/schema 控制格式，不能承载宿主的用户 deny 与文件授权；要增强 DeepSeek 的可靠使用，主循环与 hook 辅助模型必须共享有效执行策略，而非只给它“read-only”提示词。
+
+#### 架构方向与影响边界（本地设计，未实施）
+
+- 沿用现有 RunEnvironment、PermissionRules、PathGuardHook、ToolRegistry/RuntimeEngine，建立非递归的有效策略投影：给 agent-hook 传入父已解析权限/资源范围与来源身份，再与 hook 的更窄能力集合求交。主用户自定义 lifecycle hooks 不应原样递归装到 hook Runtime，否则会重复触发自身；需要区分基础安全策略与扩展回调，而不是再创建第二套权限中心。
+- 不能只把 developer 改为 read_only：ReadFileTool 本来就只要求 ReadOnly 位，且 clone 的工具对象仍为 Full access；也不能只隐藏 read_file schema，实际 dispatch 必须同样拒绝。单独新建一个受限 ReadFileTool 也不能覆盖其他 Safe 资源工具。应复用一个可执行的、run-scoped 策略 owner，明确 deny/ask/allow、managed 来源优先级、附属运行无交互时的处理方式、resource access 及审计归属。
+- H-234/H-235/H-236/H-237 连续暴露附属 Runtime 的状态、成本、取消和权限归属断裂，已经达到项目要求的架构重审阈值。建议统一“嵌套运行执行上下文”的契约，再逐 seam 验证，不为每个 hook 分支各加一个规则列表或取消 bool；仍使用现有内核、持久化、审批和终态机制。本轮没有实施任何生产修复。
+- 影响包括：启用并命中 agent-hook 时，主运行的显式工具禁令和默认工作区读取承诺不能保证覆盖附属模型；已读正文一旦进入供应商请求，后续 hook deny 或父取消不能撤回。P1 适用于这种授权边界失效，不代表当前已访问真实凭据、任意写盘/执行命令或所有 OS 沙箱失效。工作流、command/http/mcp hooks、其他 Safe 工具、项目/插件/managed 规则、ask 审批与其他事件仍需各自动态验证。
+
+#### 验证收尾与未覆盖范围
+
+- 最终 `hook_permissions` 显式命令为 **4 passed / 2 failed（缺陷预期），0.69s**；补充确认受限样本首个 hook 请求也不含 canary，正文首次在真实工具返回后的下一请求出现。移除了强制要求 hook schema 始终展示 read_file 的断言，使未来正确的 schema/dispatch 同步收窄仍可通过目标不变量；两个现存问题依然在“正文不得进入模型”断言失败。Read deny 为工具级禁令，不冒充当前尚未实现的文件路径规则，也不声称其他读取工具已一并受测。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**58 passed / 66 ignored，9.27s**；最终测试断言整理后再跑 **58 passed / 66 ignored，9.26s**。新增四个正常对照默认执行，两个已确认缺陷探针 ignored；默认全绿不表示 H-237 已修复，也没有重复执行旧缺陷的 ignored 探针。
+- `cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，6.27s**；`cargo fmt --all -- --check`、`git diff --check` 通过，Markdown fenced blocks=8（偶数）。实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未报告 lint 通过。
+- code-audit 促使分别验证显式规则与真实资源策略，并纠正“工具 Arc 必然自带父路径边界”的未证假设；docs-generator 促使首轮、失败对照、新边界和收尾逐段即时落文。只新增 test-only `hook_permissions.rs`、测试入口与本报告，无生产权限修改、依赖新增、数据迁移或真实收费；用户既有未跟踪文件不动。
+- 未运行全 workspace、Desktop build/UI、真实 DeepSeek/收费/缓存实验、参考工程、其他 hook 事件、hook deny/取消与本权限缺口的组合、其他工具/配置层/ask 审批、多 hook/并发、数据库重开、操作系统沙箱或其他平台。没有将官方 schema 规则当授权机制，也未把临时 canary 传给外部供应商；全系统审计仍 active，未处理用户排除的 encrypted-content 错误。

@@ -60,6 +60,9 @@ mod hook_usage;
 #[path = "kernel_v2_e2e/hook_cancellation.rs"]
 mod hook_cancellation;
 
+#[path = "kernel_v2_e2e/hook_permissions.rs"]
+mod hook_permissions;
+
 #[path = "kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
 
