@@ -6700,3 +6700,40 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 已执行精确生产分块上传探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过。未改生产上传逻辑，只新增 test-only ignored 探针。
 - 未运行 workspace 全量、Desktop build/UI、真实文件选择器、多窗口/插件上传、远程 daemon、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-251/H-252 只作为组合路径对照，不重复计数。
+
+### H-254：artifact 删除先删文件后删索引，数据库失败会留下永久 dangling URI
+
+**级别：中高（P1，持久化一致性与回放可靠性）；触发条件：** 一个已发布 artifact 的文件删除成功，但 `ArtifactStore::delete` 因数据库锁、约束/trigger、磁盘故障恢复或连接异常失败。`CanvasArtifactService::delete` 当前先执行 `std::fs::remove_file(record.path)`，再删除 SQLite 行；它没有事务、删除意图/tombstone 或失败后的文件恢复。该项不重复 H-250（读取摘要完整性）、H-252（workspace scope）或 H-253（上传 owner 丢失）。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；使用正式 `CanvasArtifactService`、内存 SQLite、临时 managed root 和合成 PNG。通过 SQLite trigger 注入索引删除失败，没有真实用户媒体、模型凭据、Tauri 窗口或网络。
+- E-254-first（command，content_hash=n/a）：在 `crates/deepagent-app-core/src/canvas_artifact_service.rs::tests::audit_artifact_delete_is_atomic_across_file_and_index` 增加 ignored 探针，执行：
+  `cargo test -p deepagent-app-core --lib canvas_artifact_service::tests::audit_artifact_delete_is_atomic_across_file_and_index --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（缺陷预期）**。生产输出：`delete_error=true, file_exists=false, row_exists=true`；最终断言要求失败时 row/file 同时保留，实际得到 DB 行指向不存在路径。
+- E-254-callflow：`CanvasArtifactService::delete(id)` → `record(id)` → `remove_file(path)`（成功）→ `ArtifactStore::delete(id)`（trigger abort）→ `Err` 返回。没有把文件删除与索引删除放进同一可回滚边界，也没有在索引失败后重建原文件。
+- E-254-control：trigger 只阻断 `DELETE FROM artifacts`，import、文件写入、摘要和 record 查询均由生产代码完成；故障不来自测试直接改 row/path。探针结束后临时 root 自动清理，未触碰用户目录。
+
+#### 初始 Finding 与 Path
+
+- F-254（category=consistency，status=validated，confidence=high，evidence_ids=[E-254-first]）：删除 API 的错误结果不代表删除未发生。调用方收到失败后可能重试、继续回放或把 dangling row 当成“媒体存在”；下次 `resolve_for_provider`/`display_target`/视频 trim 才报缺失，且原始 bytes 已无法恢复。
+- P-254（callflow）：artifact row + managed file → delete 文件成功 → index delete 失败 → row 保留、path 不存在、digest/byte_size 仍是旧事实 → 后续任何旧 `artifact://id` 解析都会得到 unreadable/read error。若清理任务重试，日志只看到“文件不存在/删除失败”，不能区分部分提交。
+- 已证后果：画布 graph 和 run_events 仍保留合法 URI，但重启、重放、provider retry 或导出时媒体丢失；失败重试可能重复告警或把记录误标为未清理。它是本地持久化一致性问题，不是供应商请求错误；本轮没有证明真实 SQLite lock 频率或磁盘故障比例，只证明任一索引失败路径会产生不一致。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/attachment/attachment-local/src/file-store.ts` 将附件对象视为不可变、内容寻址的持久对象，读取时对缺失对象返回 `ATTACHMENT_NOT_FOUND`、对内容漂移返回 `ATTACHMENT_CORRUPT`，并在测试中覆盖对象损坏/缺失/写入失败。它没有本系统同构的“SQLite 行 + 外部文件删除” API，不能声称已经提供同一删除事务；可借鉴的是把对象生命周期错误结构化、保留可诊断事实，不能让 row/path 半提交。
+- **Codex**：本轮未找到与 Canvas artifact 删除完全同构的 Codex 文件索引实现，因此不宣称 Codex 已动态解决 H-254。Codex/成熟 harness 的可迁移原则是持久化状态与文件内容的 owner/identity 必须可回放，清理失败应是显式、可重试状态，而不是返回普通错误后留下看似有效的引用。
+- **DeepSeek 官方 Responses/KV Cache**：[Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api)要求宿主在每次无状态请求中重新提供完整 input；provider 不会替本地 `artifact://id` 修复文件。KV cache 命中也不证明 bytes 仍存在，dangling URI 最终只能在宿主 materialize 前失败，无法由 DeepSeek 自动恢复。
+
+#### 影响评估与收敛方向（本地设计，未实施）
+
+- 影响评为 P1：正常数据库路径不触发；锁竞争、迁移、磁盘只读、杀进程或 trigger/约束失败时会出现。后果是画布资产与数据库事实永久分叉，影响 provider 重试、历史回放、导出、清理和成本审计；对已经发送给供应商的请求不做回滚。
+- 优先采用“先写删除意图/tombstone，再在同一 owner scope 下清理文件，最后提交索引删除”的可恢复协议；或反过来先把文件移动到可恢复 trash，再以事务删除 row，只有 commit 成功后才清理 trash。任何阶段失败都保留可重试状态，不能返回普通 bool/Err 让调用方猜测。
+- 在现有 `ArtifactStore`/`CanvasArtifactService` 收敛一个 delete coordinator，记录 artifact id、path、digest、owner、attempt 与状态；`delete`/GC/导入失败回收共用它。读取遇到 tombstone/partial-delete 返回结构化 `artifact_pending_delete`，不静默按“无附件”继续 provider 请求。
+- 回归需覆盖：索引失败、文件删除失败、进程在两步之间退出、重启恢复、重复删除、并发读/删、workspace scope（H-252）、chunked upload（H-253）以及 provider/display/video trim；断言成功时 row/file 一致，失败时可重试且不产生 dangling URI。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行精确生产删除探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过。未修改删除生产逻辑，只新增 test-only ignored 探针。
+- 未运行 workspace 全量、Desktop build/UI、真实 SQLite 多进程锁竞争、磁盘/权限故障、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-250～H-253 只作为相邻边界对照，不重复计数。

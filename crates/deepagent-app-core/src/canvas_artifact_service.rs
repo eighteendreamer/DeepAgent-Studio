@@ -882,6 +882,51 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-254: artifact delete must preserve index and bytes when index deletion fails"]
+    fn audit_artifact_delete_is_atomic_across_file_and_index() {
+        let root = TempRoot::new("delete-atomicity");
+        let db = Arc::new(Database::open_in_memory().expect("database"));
+        let service = CanvasArtifactService::new(&root.dir, db.clone()).expect("service");
+        let imported = service
+            .import(&CanvasArtifactImport {
+                kind: "image".to_string(),
+                data_url: Some(png_data_url()),
+                local_path: None,
+                file_name: None,
+                media_type: None,
+                workspace_id: Some("delete-workspace".into()),
+            })
+            .expect("import artifact");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER audit_block_artifact_delete
+                 BEFORE DELETE ON artifacts
+                 BEGIN SELECT RAISE(ABORT, 'audit delete blocked'); END;",
+            )
+            .map_err(|error| CoreError::other(error.to_string()))?;
+            Ok(())
+        })
+        .expect("install delete failure trigger");
+
+        let delete_result = service.delete(&imported.id);
+        let file_exists = Path::new(&imported.path).exists();
+        let row_exists = service
+            .record(&imported.id)
+            .expect("read failed-delete record")
+            .is_some();
+        eprintln!(
+            "canvas artifact delete atomicity audit: delete_error={}, file_exists={}, row_exists={}",
+            delete_result.is_err(),
+            file_exists,
+            row_exists,
+        );
+        assert!(
+            delete_result.is_err() && file_exists && row_exists,
+            "a failed artifact index deletion must preserve both the row and its bytes"
+        );
+    }
+
+    #[test]
     fn display_target_resolves_artifacts_and_passes_other_schemes() {
         let (_root, service) = service("display");
         let imported = service
