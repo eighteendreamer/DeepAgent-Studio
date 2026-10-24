@@ -68,6 +68,7 @@
 | 无限画布工作流视口持久化 | 正式图写入只序列化 `nodes/edges`，新 WebView 的 viewport 回到 `{x:0,y:0,zoom:1}`；ReactFlow 初次挂载执行 fitView，没有 per-mode default viewport | 已确认 H-202；动态调用真实 `workflowPersistence` 的读/写/flush 并创建新 store 实例；图节点恢复对照通过；未启动 Tauri WebView |
 | 无限画布工作流陈旧快照写入 | 两个独立 SQLite 连接读取同一画布后，窗口 A 先写入新节点，窗口 B 再以旧完整图快照写入仍返回成功，最终图丢失 A 的节点；当前写入没有 revision/CAS | 已确认 H-244；正式 `CanvasWorkflowStore` 与两个文件 SQLite 连接，离线故障注入；未启动双 Tauri 窗口 |
 | 画布偏好读取失败后的回退写入 | `canvas_preference_read` 失败被逐项吞掉且 hydration 仍 resolved；随后生产 workspace 设置 mutator 以空回退值写回，覆盖原有未读字段 | 已确认 H-245；正式 `canvasPreferences.ts` + `canvasSettingsStore.ts`，受控 Tauri 读取故障；未访问真实用户偏好 |
+| 画布偏好 hydration 与提前编辑竞态 | 偏好读取尚未完成时用户先修改 workspace；成功返回的旧文档通过 listener 覆盖新编辑，防抖 flush 随后把旧值重新持久化 | 已确认 H-246；正式偏好 hydration/store，延迟读取故障注入；未启动真实 WebView |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
@@ -6319,6 +6320,44 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 已核对源码调用链：`model_agent.rs` 的 `collect_finished_memory_prefetch`、`adopt_compaction`、`adopt_compacted_history`、`maybe_schedule_memory_prefetch`，以及 `knowledge_service.rs` provider 的 `already_surfaced` 过滤；已核对 DeepSeek Harness compaction checkpoint/replay 文档和本地 Codex/Claude 相关恢复资料。
 - 收尾验证待在本次文档追加后执行：`cargo fmt --all -- --check`、`git diff --check`，并复查 Markdown fences/diff；Clippy 仍受既有 `deepagent-models/src/client.rs:355` `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` `explicit_counter_loop` 阻断，不能宣称全库 lint 通过。
 - 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费/KV cache 实验或参考工程测试；未实施修复。没有重复 H-165、H-241、H-242，也没有处理用户排除的 `encrypted-content` 报错。
+
+### H-246：画布偏好 hydration 完成后会覆盖读取期间的用户编辑
+
+**级别：高（P1，偏好数据完整性）；触发条件：画布偏好首次读取尚未返回时，用户先修改 workspace 目录，随后后端返回修改前的旧文档。状态：正式 `canvasPreferences.ts`、`canvasSettingsStore.ts` 生产模块链路已复现，未修复。** 本项与 H-245 的读取失败回退不同：后端读取成功，缺陷是成功 hydration 没有识别更早的本地 dirty revision。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；只使用 Node 受控 Tauri `invoke`、虚构偏好 `{imageDir:"old-images", videoDir:"old-videos"}` 和延迟 Promise，没有真实用户目录、密钥、模型、网络或文件数据库。
+- E-246-first（command，content_hash=n/a）：新增 `apps/desktop/scripts/audit-canvas-preference-edit-during-hydration.test.cjs`，执行：
+  `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-canvas-preference-edit-during-hydration.test.cjs`
+  结果为 **0 passed / 1 failed（缺陷预期）**。受控输出：`editBeforeRead={"imageDir":"new-images","videoDir":""}`, `stateAfterHydration={"imageDir":"old-images","videoDir":"old-videos"}`, `writePayload={"imageDir":"old-images","videoDir":"old-videos"}`, `persistedAfter={"imageDir":"old-images","videoDir":"old-videos"}`。
+- E-246-callflow：生产模块加载时 `void whenCanvasPreferencesReady()` 启动异步 hydration；`canvasSettingsStore` 的公开 `setWorkspaceDir("imageDir", "new-images")` 在读取 Promise 仍 pending 时先写入 cache、增加 revision 并排队 flush。释放读取后，`hydrateKey` 将旧完整文档直接 `cache.set` 并 `publish`；store listener 用 `loadWorkspace()` 将 Zustand workspace 恢复为旧值，400ms flush 再把旧 cache 写回后端。
+- E-246-control：测试通过生产 store 的公开 mutator 与真实 `writeCanvasPreference`/`flushCanvasPreferences`，只替换 Tauri invoke 以制造延迟；没有直接调用内部 hydration helper，也没有人为改写生产状态。
+
+#### 初始 Finding 与 Path
+
+- F-246（category=concurrency，status=validated，confidence=high，evidence_ids=[E-246-first]）：`canvasPreferences.ts` 的 `revisions` 只由 `writeCanvasPreference` 增加，`hydrateKey` 成功返回时不比较 hydration 开始时的 revision，也不区分“读取前缓存为空”和“读取期间已有本地编辑”；成功读取可以无条件覆盖 dirty cache。`flushKey` 的 revision 检查只保护一次写入期间的后续编辑，不能追回已被 hydration 覆盖的值。
+- P-246（callflow）：模块启动 → backend read pending → 用户编辑 imageDir → cache=`new-images`、dirty/revision=1 → backend 返回旧文档 → `cache.set(old)` + listener 覆盖 UI → debounce flush 发送 old → 后端成功。最终 JSON 合法、没有冲突错误，损失的是用户在读取期间已完成的编辑。
+- 这不是 H-245 的 read-error 回退，也不是 H-244 的两个窗口陈旧写入：单窗口、成功读取、没有第二写者即可触发；只需首屏 hydration 延迟超过一次用户操作窗口。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/api/settings-controller/src/index.ts` 的 `update/replace/mutate` 都要求调用方可携带 `expectedRevision`；底层以读取到的 revision 作为提交资格，陈旧提交返回 `settings/conflict`，不会由一次异步 refresh 静默替换用户尚未提交的本地变更。其控制器测试验证同一 revision 的第二次 update 被拒绝。
+- **Codex**：`借鉴/codex/codex-rs/core/src/context_manager/history.rs` 将用户输入 revision 与 context snapshot 一起维护，异步 guardian/审查请求在交付前比较 revision；新输入会使旧 snapshot 失效。这里借鉴的是“异步读取结果必须带 generation/ownership 检查”，不宣称 Codex 有本项目同构的 workspace preference store。
+- **Penguin-Magic**：同类画布持久化用 `baseRevision`/`REVISION_CONFLICT` 保护结构快照；本项虽是前端 hydration 竞态而非双窗口写入，但同样要求把本地编辑代次传到 durable seam，不能让旧快照无条件回填。
+
+#### 影响评估与修复方向（本地设计，未实施）
+
+- 影响评为 P1：触发需要冷启动/慢磁盘/IPC 阻塞期间用户立即编辑设置，默认快速读取不触发；一旦发生，用户的新目录选择会被 UI 和数据库静默改回旧值，且没有错误提示或冲突记录。若目录已用于后续 artifact 输出，用户会看到设置曾短暂成功但下一次运行仍写入旧路径；本轮未执行真实文件写入。
+- hydration 应捕获开始时的 `revision`/generation；成功返回后若该 key 已 dirty 或 revision 已变化，只能保留本地值并将后端旧文档作为 merge 基线，不能 `cache.set` 覆盖。最小修复是“dirty key 不回填”，更完整的修复是在同一 `CanvasPreferencesStore` 边界做字段 patch/CAS 并返回 conflict。
+- listener 也不应把后端通知当作无条件权威：通知应携带 revision，只有不早于当前本地 generation 才能更新 store。`flushKey` 成功后应以服务端返回文档/版本确认清理 dirty，避免旧 hydration 结果重新成为可提交快照。
+- 回归需覆盖：读取前编辑、读取后编辑、连续两次编辑、读取失败后重试、legacy migration 与关闭前 flush；断言 UI state、cache、最终 payload 和唯一 revision 事件一致。不能只测 hydration 完成或最终写入成功。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行精确生产模块探针，结果 **0 passed / 1 failed（缺陷预期）**；失败来自最终 payload 将 `new-images` 改回 `old-images`，不是测试夹具启动失败。没有修改生产 TypeScript/Rust 逻辑，只新增 test-only 脚本与本报告。
+- 已核对 `canvasPreferences.ts` 的 hydration/cache/revision/flush，以及 `canvasSettingsStore.ts` 的初始化、公开 workspace mutator 与 listener；未运行真实 Tauri WebView、真实 IPC 延迟、多个 preference key 并发、legacy migration、磁盘故障或用户文件操作。
+- 本轮没有重新执行 H-165/H-167，也没有处理用户排除的 `encrypted-content` 报错；H-245 的读取失败覆盖与本项保持独立编号。
 
 ### H-245：画布偏好读取失败后仍完成 hydration，后续 workspace 设置写回会覆盖未读字段
 
