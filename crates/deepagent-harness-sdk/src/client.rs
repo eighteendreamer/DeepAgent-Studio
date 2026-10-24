@@ -614,4 +614,59 @@ mod audit_tests {
             "SDK request should support bounded abandonment and remove canceled pending state; completed_before_release={completed_before_release}, pending_after_caller_cancel={pending_after_caller_cancel}, result_after_eof={request_result:?}"
         );
     }
+
+    #[tokio::test]
+    #[ignore = "audit H-205: SDK notifications must preserve the wire event sequence used by event/ack and gap recovery"]
+    async fn audit_sdk_notification_preserves_event_sequence_for_ack_and_gap_detection() {
+        let script = r#"$lines = @(
+'{"jsonrpc":"2.0","method":"harness/event","eventSequence":7,"params":{"type":"thread.started","threadId":"t-7","title":null,"protocolVersion":1}}',
+'{"jsonrpc":"2.0","method":"harness/event","eventSequence":9,"params":{"type":"thread.started","threadId":"t-9","title":null,"protocolVersion":1}}'
+); foreach ($line in $lines) { [Console]::Out.WriteLine($line) }; Start-Sleep -Seconds 30"#;
+        let mut child = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a local notification-sequence fixture");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let (events, _) = broadcast::channel(8);
+        let mut receiver = events.subscribe();
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        spawn_reader(stdout, stderr, pending, events.clone());
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(3), receiver.recv())
+            .await
+            .expect("first notification should arrive")
+            .expect("first notification should decode");
+        let second = tokio::time::timeout(std::time::Duration::from_secs(3), receiver.recv())
+            .await
+            .expect("second notification should arrive")
+            .expect("second notification should decode");
+        let observed_wire_events = [first, second]
+            .into_iter()
+            .map(|event| serde_json::to_value(event).expect("event serializes"))
+            .collect::<Vec<_>>();
+
+        let _ = child.kill().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+            .await
+            .expect("fixture should exit when terminated");
+
+        let observed_sequences = observed_wire_events
+            .iter()
+            .map(|event| {
+                event
+                    .get("eventSequence")
+                    .and_then(serde_json::Value::as_u64)
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            observed_sequences,
+            vec![Some(7), Some(9)],
+            "SDK notification API must retain the outer eventSequence so consumers can detect the 7 -> 9 gap and ACK the actual sequence; decoded events={observed_wire_events:?}"
+        );
+    }
 }
