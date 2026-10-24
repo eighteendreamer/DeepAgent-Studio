@@ -1801,6 +1801,65 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-218: thread/read must expose a bounded history page instead of materializing the full session"]
+    fn audit_thread_read_has_bounded_history_page() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let database_path = temporary.path().join("deepagent.db");
+        let database = Arc::new(Database::open(&database_path).unwrap());
+        let mut state = ServerState::new_for_test_with_database(database, workspace);
+        initialize(&mut state);
+        let started =
+            state.handle_request_for_test(rpc_request(2, "thread/start", serde_json::json!({})));
+        let thread_id = started.result()["threadId"]
+            .as_str()
+            .expect("thread/start returns a thread id")
+            .to_owned();
+
+        let clock = SystemClock;
+        let mut session = Session::recover(
+            &state.database,
+            &clock,
+            thread_id.parse().expect("session id"),
+        )
+        .unwrap();
+        for index in 0..600 {
+            session
+                .append(deepagent_core::event::EventPayload::MessageAppended {
+                    message: deepagent_core::message::Message::user(format!(
+                        "audit-history-{index}-{}",
+                        "x".repeat(1024)
+                    )),
+                })
+                .unwrap();
+        }
+        drop(session);
+
+        let response = state.handle_request_for_test(rpc_request(
+            3,
+            "thread/read",
+            serde_json::json!({"threadId": thread_id}),
+        ));
+        let events = response.result()["events"]
+            .as_array()
+            .expect("thread/read returns session events");
+        let serialized_bytes = serde_json::to_vec(&response).unwrap().len();
+        let has_continuation = response.result().get("nextCursor").is_some()
+            || response.result().get("hasMore").is_some();
+        eprintln!(
+            "thread/read history audit: events={}, serialized_bytes={}, has_continuation={has_continuation}",
+            events.len(),
+            serialized_bytes
+        );
+
+        assert!(
+            events.len() <= 500 && has_continuation,
+            "thread/read materialized the entire history without a bounded page/cursor"
+        );
+    }
+
+    #[test]
     fn fileless_legacy_row_is_not_resumable_or_readable() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);
