@@ -63,6 +63,7 @@
 | 工作流字符串选项 admission | start 声明 `options=["safe","fast"]` 时，实际输入 `"UNDECLARED_MODE"` 仍进入 start 输出并记录 `succeeded` | 已确认 H-188；枚举约束只存在 UI schema，未进入后端 admission/执行计划 |
 | 工作流数值范围 admission | start 声明 `type=number, minimum=10, maximum=20` 时，实际输入 `3` 仍进入 start 输出并记录 `succeeded` | 已确认 H-189；数值边界只存在 UI schema，未进入后端 admission/执行计划 |
 | 工作流字符串长度 admission | start 声明 `minLength=5,maxLength=8` 时，实际输入单字符字符串仍进入成功路径并记录 `succeeded` | 已确认 H-190；字符串长度约束只存在 UI schema，未进入后端 admission/执行计划 |
+| 工作流图入口结构 | 只有 `end` 节点、没有 `start` 的定义仍被编译、执行并记录 `succeeded` | 已确认 H-191；图编译只禁止多个 start，不要求入口/终点结构完整 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3731,6 +3732,35 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-190 只新增正式审计探针和报告，未修改生产工作流输入边界。
 
+### H-191：工作流图没有入口节点仍可成功完成，结构 admission 缺少 start/end 不变量
+
+**级别：高（P1，执行语义与成功终态可信度）；触发条件：提交一个没有 `start` 节点的合法 DAG（本次样本只有一个 `end` 节点）。** `compile()` 接受该图，`WorkflowAgent` 直接执行可达的拓扑节点，run 最终记录 `succeeded`。
+
+#### 生产调用链与正式复现
+
+- `WorkflowDefinition` 的图契约把 `start` 作为输入声明节点、`end` 作为完成节点；桌面 registry 也把二者作为工作流入口和出口，而不是普通可选业务节点。
+- `compile()` 在遍历节点时只用 `has_start` 检测“最多一个 start”，没有在循环后检查 `has_start == true`，也没有要求至少一个 `end`。没有 start 时，拓扑排序仍然给单节点图生成 order。
+- `WorkflowAgent::think()` 以 `compiled.order[self.step]` 执行任意图节点；遇到 `end` 立即返回 `Complete`，即使从未建立输入上下文。若图既没有 end，也可能在 order 用尽后走通用 `workflow completed` 成功分支。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_requires_a_start_node`。它通过 `ChatService::run_workflow()` 提交只有 `end` 节点的定义，捕获节点事件并读取 `RunStore`。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_requires_a_start_node --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true node_events=2 run_terminal=Some("succeeded")`；断言无 start 的图必须在 admission 失败，测试以 **0 passed / 1 failed（预期）** 结束。没有模型、工具、网络或文件副作用。
+
+#### DeepSeek 官方契约边界与成熟 Agent 对照
+
+- DeepSeek 官方 [Responses API](https://api-docs.deepseek.com/zh-cn/api/create-response/)只接收已构造的 `input`/`instructions`，不定义本地 DAG 的入口、出口或成功语义；“请求发出并返回 response”不能证明宿主工作流结构有效。
+- **Codex** 的 app-server 把 thread/turn 生命周期作为显式 admission：turn 依附已存在 thread，不能凭空把没有上下文的请求标成成功。这里可迁移的原则是先验证运行图的 owner/entry，再允许执行和发布终态。
+- **DeepSeek Harness ACP** 在 prompt/close 入口先完成 admission，并要求 owned activity、更新、持久化和 descendants 达到 quiescence 后才 settlement；本系统的图编译却允许缺失入口并立即成功，缺少同等级的结构和收尾门槛。
+- **Penguin-Magic** 的 canvas-agent 计划、runtime 和 contract tests 将 agent plan、node run started/completed/failed 作为显式契约；本系统不能把任意拓扑遍历完成解释为有入口的工作流成功。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，调用者可以提交没有输入入口的图，得到 `succeeded` 和完成事件；CLI、SDK、桌面和调度器会把没有真正输入/入口的空执行当作成功，跳过告警、重试和人工检查。当前样本只证明成功终态，不包含外部副作用。
+- 缺失 start 会掩盖 H-184 至 H-190 的所有输入校验，因为根本没有 start schema；缺失 end 则会让 `think()` 用“order 用尽”成功分支替代明确的完成节点，重放无法区分正常完成和结构错误。
+- 根因修复应在 `compile()` 形成不可变 `WorkflowShape`：强制恰好一个 start、至少一个 end，要求 start 是入度 0、end 是出度 0，并检查从 start 可达且至少有一条路径到 end；不满足时返回结构化 `InvalidWorkflowGraph`，不能让 agent 进入执行。
+- 回归需覆盖无 start、无 end、多个 start、多个 end、孤立节点、start 不可达、end 不可达、仅循环/空入口以及 target-node 重跑；所有结构错误必须在模型/工具/网络前失败且不发布 `succeeded`。本轮只新增审计，不修改生产图编译逻辑。
+
+本轮 H-191 只新增正式审计探针和报告，未修改生产工作流图结构。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3805,6 +3835,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-188 工作流字符串选项显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_options_are_enforced --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对 `options=["safe","fast"]` 接受 `mode="UNDECLARED_MODE"` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-189 工作流数值范围显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_numeric_bounds_are_enforced --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对范围 `[10,20]` 接受 `retries=3` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-190 工作流字符串长度显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_length_bounds_are_enforced --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对长度 `[5,8]` 接受单字符 `token` 且 run=`succeeded`；节点值按既有规则脱敏，无模型、工具、网络或文件副作用 |
+| H-191 工作流缺失 start 显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_requires_a_start_node --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对只有 `end` 的图发布 2 条节点事件并记录 `succeeded`；无模型、工具、网络或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
