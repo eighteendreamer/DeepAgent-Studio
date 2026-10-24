@@ -51,6 +51,7 @@
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录；工作流节点声明 `knowledgeBaseId=project` 时仍混入 global 命中 | 已确认 H-51、H-176；H-51 是共享服务身份漂移，H-176 是工作流配置到检索 trait 的作用域契约缺失 |
 | 工作流目标节点与重跑 admission | `target_node_id` 传入不存在的节点时，正式工作流只完成 `start`、跳过 `end`，仍记录 `succeeded` | 已确认 H-177；无效目标未在编译/接纳边界拒绝，属于空执行成功，不是 H-39 的条件分支派发问题 |
 | 专业画布代码节点 | 前端公开 `codeScript`/`codeInputVariables` 并标记 `enabled`，后端只读取未使用的 `code`/`codeVariables`，没有 JavaScript/Python 执行器；明确无效脚本仍完成并返回空对象 | 已确认 H-178；能力注册、配置 schema、运行时 executor 契约断裂，属于静默伪成功 |
+| 专业画布文档提取节点 | 前端 `document-extractor` 标记 `enabled`，但正式工作流执行到节点即返回 `UnsupportedNode` 并失败 | 已确认 H-179；这是公开能力目录与实际 executor 不一致，和 H-178 的静默成功不同 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3382,6 +3383,34 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-178 只新增正式审计探针和文档，未修改生产代码或启用任意脚本执行器。
 
+### H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor
+
+**级别：中（P2，公开能力与工作流可用性）；触发条件：在专业画布选择“文档提取”节点并提交工作流。** 前端提供文件变量、数组模式和 `text` 输出，用户可以把它接入图；后端图编译接受该 kind，但运行时没有文档解析器，节点进入 `Failed`，工作流不能完成。
+
+#### 生产调用链与正式复现
+
+- `apps/desktop/src/canvas/workflow/utils/nodeRegistry.ts` 将 `document-extractor` 注册为 `availability: "enabled"`、`executor: "retrieval"`，并声明 `text` 输出；`nodeSchemas.ts` 提供 `docExtractorFileVariable` 和 `docExtractorIsArray` 配置。这是用户可见、可配置的已启用节点，不是 `reserved` 占位节点。
+- `deepagent-runtime::workflow::graph::output_contract()` 为该 kind 接受 `text` 输出，但 `WorkflowAgent::execute_node_inline()` 没有 `document-extractor` 分支；它落入统一的 `UnsupportedNode` 错误。现有 runtime 单测只验证内部错误字符串，未覆盖 AppCore 的真实 run 终态，故本轮补充正式链探针。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_enabled_document_extractor_has_executor`。它通过 `ChatService::run_workflow()` 执行 `start → document-extractor → end`，提交完整的文件变量配置，捕获 `WorkflowNode` 终态并读取 `RunStore`。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_enabled_document_extractor_has_executor --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=false extractor_status=Failed extractor_outputs=None extractor_error=Some("invalid input: UnsupportedNode: kernel has no executor for node kind \`document-extractor\`") run_terminal=Some("failed")`；探针以 **0 passed / 1 failed（预期）** 结束。没有模型请求、文件解析副作用或公网访问；失败由正式运行链报告。
+
+#### DeepSeek 官方契约边界与成熟 Agent 对照
+
+- DeepSeek 官方 [Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)和 [参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)不定义本地文档解析器或工作流节点。即使后续用 DeepSeek 做 OCR/摘要，也必须先有明确的文件读取、格式识别、大小限制和输出 DTO；一次模型请求成功不能证明 `document-extractor` 已实现。
+- **Codex** 的文件读取/命令执行能力以已注册工具、sandbox policy 和权限 profile 为边界；不可用能力在 tool catalog 或 dispatch 阶段失败，不会同时出现在“enabled”目录中。对本系统可迁移的原则是能力目录必须由后端 executable capability 投影生成，或至少在启动时做 registry/executor 一致性校验。
+- **Claude Code** 把文档/代码处理拆成明确的工具或 hook 命令，命令不存在、退出失败或输入不支持都会进入错误路径；它没有把一个尚未接入的解析器作为正常可用节点交给用户。
+- **DeepSeek Harness** 的 provider/tool 绑定也是 typed capability：没有可用 provider 或 tool handler 时在 dispatch 前失败。这里应借鉴 fail-closed 和 capability discovery，而不是把 `executor: "retrieval"` 当作已有实现。
+
+#### 影响、后果与根因修复方向
+
+- 用户会在图设计阶段认为可以上传文件并提取文本，实际运行才收到通用 `UnsupportedNode`；自动化工作流因此失败，后续 LLM、知识入库或回答节点不会运行。由于错误发生在执行中而不是保存/编译时，问题会在生产任务触发后才暴露，浪费排队、审批和模型准备成本。
+- 公开 schema 与运行时 output contract 还会误导 CLI/SDK：同一 JSON 在一个入口能通过 compile，在另一个入口才失败；事件只有 generic error，没有声明“节点尚未启用”或替代能力，恢复/重试不会改变结果。
+- 根因修复有两条合法路径：若尚未准备解析器，把 registry/schema 改为 `reserved` 并在保存或 compile 阶段返回结构化 `UnsupportedOperation`；若确实要支持，新增受控 `DocumentExtractor` trait/adapter，明确 MIME allowlist、最大字节数、页数/CPU/超时/取消、临时文件边界和解析器版本，再由 `WorkflowAgent` 统一执行并输出 `text`、来源和诊断元数据。不要只把 kind 加入 match 后回显 config。
+- 验收需覆盖 PDF、纯文本、图片/OCR、数组输入、空/损坏文件、超限、取消、解析器异常、跨宿主重放和权限拒绝；能力目录、compile、事件和终态必须一致。若由 DeepSeek 参与提取，还需单独验证 Responses 输入的文件/图片格式、usage、缓存和失败重试，不能把 provider adapter 的成功当作本地 extractor 成功。
+
+本轮 H-179 只新增正式审计探针和文档，未修改生产代码或宣称文档提取已实现。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3444,6 +3473,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-176 工作流知识库作用域显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_knowledge_base_id_is_honored --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`KnowledgeService` 在 `knowledgeBaseId=project` 下同时返回 project/global 两条临时文档，run 成功；仅临时 vault 与离线模型，无用户知识或公网 |
 | H-177 工作流未知目标显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unknown_target_node_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`RunStore` 对 `target_node_id=missing-node` 只完成 `start` 却记录 `succeeded`；无模型请求、工具副作用或公网 |
 | H-178 工作流代码节点执行显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_code_node_executes_script_or_fails_loudly --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent` 对明确无效 `codeScript` 发布 `code_status=Completed`、空对象输出且 run=`succeeded`；无脚本解释器、系统命令、网络或文件写入 |
+| H-179 文档提取节点执行显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_enabled_document_extractor_has_executor --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent` 对 enabled `document-extractor` 返回 `UnsupportedNode`，节点 failed、run=`failed`；无模型请求或文件解析副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |

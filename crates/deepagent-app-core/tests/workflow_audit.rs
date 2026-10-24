@@ -408,6 +408,66 @@ async fn audit_workflow_code_node_executes_script_or_fails_loudly() {
 }
 
 #[tokio::test]
+#[ignore = "audit: an enabled document extractor must have a real executor"]
+async fn audit_workflow_enabled_document_extractor_has_executor() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"extract","kind":"document-extractor","config":{
+                    "docExtractorFileVariable":"input_file",
+                    "docExtractorIsArray":false
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"extract"},
+                {"id":"e2","source":"extract","target":"end"}
+            ]
+        }
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-document-extractor".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-document-extractor")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let extractor_terminal = events
+        .iter()
+        .find(|event| event.node_id == "extract" && event.status.is_terminal())
+        .unwrap();
+    eprintln!(
+        "api_ok={} extractor_status={:?} extractor_outputs={:?} extractor_error={:?} run_terminal={:?}",
+        result.is_ok(),
+        extractor_terminal.status,
+        extractor_terminal.outputs,
+        extractor_terminal.error,
+        run.terminal_kind
+    );
+    assert!(
+        result.is_ok() && extractor_terminal.status == NodeExecutionStatus::Completed,
+        "an enabled document-extractor must not fail as an unimplemented node"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
