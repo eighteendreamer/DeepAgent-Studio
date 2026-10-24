@@ -71,6 +71,7 @@
 | 画布偏好 hydration 与提前编辑竞态 | 偏好读取尚未完成时用户先修改 workspace；成功返回的旧文档通过 listener 覆盖新编辑，防抖 flush 随后把旧值重新持久化 | 已确认 H-246；正式偏好 hydration/store，延迟读取故障注入；未启动真实 WebView |
 | 画布 legacy 偏好迁移失败后的源数据丢失 | 迁移先删除 `localStorage` 源，再写后端；后端写入失败时 hydration 吞错且源已不存在，无法重试恢复 | 已确认 H-247；正式 `canvasPreferences.ts` 迁移链，受控后端写入故障；未读取真实用户 localStorage |
 | 画布语音合成响应无字节上限 | `speech_synthesize` 的 provider 响应由 `resp.bytes()` 全量缓冲并直接写入 Audio artifact；32 MiB+1 的本机响应成功持久化 | 已确认 H-248；正式 `CanvasModelGateway::run_audio`、本机 provider、ArtifactService；未测试真实音频服务或 OOM |
+| 画布语音转写远程输入绕过网络边界 | `speech_transcribe.audio_reference` 可直接填写 `http(s)`；正式 gateway 先裸 GET loopback 资源，再把其字节上传给 provider，没有审批或统一网络策略 | 已确认 H-249；正式 `CanvasModelGateway::run_audio`、本机 loopback provider/input；未访问真实内网或公网 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
@@ -6322,6 +6323,44 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 已核对源码调用链：`model_agent.rs` 的 `collect_finished_memory_prefetch`、`adopt_compaction`、`adopt_compacted_history`、`maybe_schedule_memory_prefetch`，以及 `knowledge_service.rs` provider 的 `already_surfaced` 过滤；已核对 DeepSeek Harness compaction checkpoint/replay 文档和本地 Codex/Claude 相关恢复资料。
 - 收尾验证待在本次文档追加后执行：`cargo fmt --all -- --check`、`git diff --check`，并复查 Markdown fences/diff；Clippy 仍受既有 `deepagent-models/src/client.rs:355` `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` `explicit_counter_loop` 阻断，不能宣称全库 lint 通过。
 - 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费/KV cache 实验或参考工程测试；未实施修复。没有重复 H-165、H-241、H-242，也没有处理用户排除的 `encrypted-content` 报错。
+
+### H-249：画布语音转写的远程音频输入绕过统一网络权限与审批
+
+**级别：高（P1，条件性 SSRF / 工作流网络边界缺失）；触发条件：能够提交或恢复 `speech_transcribe` 节点的调用者把 `audio_reference` 设为宿主可达的 `http(s)` URL。状态：正式 `CanvasModelGateway::run_audio` 与本机 provider/input loopback 已复现，未修复。** 本项与 H-165 的供应商返回资产不同：这里不需要恶意 provider，工作流输入本身即可驱动宿主 GET。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；本机一个 loopback 服务同时充当受控输入资源和 OpenAI-compatible 转写 provider，只返回虚构 `PRIVATE_AUDIO_CANARY` 音频与 `{"text":"transcribed"}`；没有公网、真实内网、元数据服务、凭据或用户文件。
+- E-249-first（command，content_hash=n/a）：在 `crates/deepagent-app-core/src/canvas_model_gateway.rs::tests::audit_speech_transcription_remote_reference_bypasses_network_policy` 增加 ignored 探针，执行：
+  `cargo test -p deepagent-app-core --lib canvas_model_gateway::tests::audit_speech_transcription_remote_reference_bypasses_network_policy --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（缺陷预期）**。输出：`private_gets=1, text=Some("transcribed")`；断言要求未授权远程输入不得发出 GET，实际 loopback GET 已发生。
+- E-249-callflow：`CanvasModelGateway::audio_input()` 看到非 `artifact://`、非 `data:` 的 reference 后直接调用 `fetch_binary(&reference, None)`；该 helper 新建裸 `reqwest::Client`，没有 loopback/private/link-local/metadata 校验、DNS pinning、redirect 重校验或 `ChannelApprovalGate`。下载完成后 `run_audio()` 再将 bytes multipart POST 到 provider。整个调用不经过 `ToolRegistry`、`PermissionSet`、`NetworkPolicyController` 或统一 sandbox proxy。
+- E-249-control：测试只替换 provider/input 为同一台临时 loopback 服务，执行真实 `run_audio`、provider 配置解析和 multipart 构建；失败断言在服务端实际请求计数上执行，不是测试代码直接调用 `fetch_binary`。
+
+#### 初始 Finding 与 Path
+
+- F-249（category=network-boundary，status=validated，confidence=high，evidence_ids=[E-249-first]）：公共 `CanvasAudioInput.reference` 的 schema/注释明确接受 `http(s)`，但没有把 URL 解析为经授权的 artifact identity，也没有传入运行的 network profile/approval owner。`audio_input` 是模型调用前的隐式副作用，结果会进入后续 provider body 与事件/模型上下文。
+- P-249（callflow）：用户/工作流 URL → `fetch_binary` GET loopback → 返回音频 bytes → `speech_transcribe` multipart → run 可继续成功。当前样本只证明宿主访问了 loopback 并完成转写，不把 canary 扩展成真实秘密读取或外传；但同一数据流可以指向 RFC1918、link-local 或云 metadata 地址，具体可达性取决于部署网络。
+- 这不是 H-175 `http-request` 节点的裸请求，也不是 H-165 provider 输出 URL：三条链路的输入信任源不同，修复应收敛到同一个网络 fetcher，而不是只给某个节点加 hostname 特判。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/web/web-fetch-http/src/provider.ts` 的 `requestOnce()` 先调用 `validateFetchUrl()`，解析并检查所有地址，再用 pinned dispatcher 发起请求；redirect 每跳重新校验，测试覆盖 loopback、跨源 redirect、超限和取消。它把网络能力封装成显式 provider，不让任意模型/节点直接 `fetch`。
+- **Codex**：本地 Codex 的 network policy/approval seam 将 host、sandbox/profile 与调用 owner 一起传入工具执行；本轮没有找到与 Canvas `audio_reference` 同构的媒体输入入口，因此只借鉴“网络请求必须带权限上下文”的边界，不声称 Codex 已动态覆盖本项。
+- **本系统已有 H-175/H-165**：H-175 已实测工作流 `http-request` 绕过审批，H-165 已实测 provider 图片 URL 第二跳；H-249 证明还有第三条音频输入链路，不能因为前两项已有修复建议就默认覆盖。
+
+#### 影响评估与修复方向（本地设计，未实施）
+
+- 影响评为 P1：触发需要调用者能提交或恢复带远程 reference 的音频节点；一旦触发，宿主可能探测/读取 loopback、RFC1918、链路本地或 metadata 服务，并把响应作为转写输入和后续模型上下文。当前实验未访问真实敏感地址，也未证明外传；后果评估基于已确认的 GET→provider 数据流。
+- `audio_input` 应只接受 `artifact://`、受控 `data:` 或经统一 `ProviderArtifactFetcher` 授权的 URL。Fetcher 必须接收不可变 `RunNetworkContext`（profile、allowlist、approval owner、cancel），在连接前解析并拒绝 loopback/private/link-local/multicast/metadata，固定 DNS 地址或逐次重验，并对每个 redirect 重复检查；默认不能因“这是音频输入”放行。
+- 未批准 URL 应在 provider 请求前返回结构化 `NetworkDenied`/`ApprovalRequired`，不产生 GET、multipart provider 调用、artifact 或成功终态。显式本地开发 profile 可以允许 loopback，但必须是可审计配置并与 H-165/H-175 共用策略。
+- 回归需覆盖 artifact/data URL 对照、IPv4/IPv6 loopback、RFC1918/link-local/metadata、DNS 多地址/rebinding、公开地址 redirect 到私网、scheme/port 变化、审批允许/拒绝、取消和大小预算。断言未授权请求数为零、provider 请求/运行终态与审批一一对应。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行正式 ignored gateway 探针，结果 **0 passed / 1 failed（缺陷预期）**；失败来自 `private_gets=1`，不是本机 fixture 未启动。新增的只有 test-only ignored 测试与本报告，没有修改生产网络逻辑。
+- 已核对 `CanvasAudioInput`、`audio_input`、`fetch_binary` 和 `run_audio`；未运行真实工作流 UI、真实私网/metadata、公网 provider、DNS rebinding、redirect、审批 UI 或跨平台网络栈。
+- 本轮没有重新执行 H-165/H-175，也没有处理用户排除的 `encrypted-content` 报错；H-249 与图片输出、工作流 HTTP 节点保持独立编号。
 
 ### H-248：画布语音合成响应无字节上限，超预算音频被完整缓冲并持久化
 

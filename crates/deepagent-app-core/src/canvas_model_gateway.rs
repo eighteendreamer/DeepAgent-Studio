@@ -4658,6 +4658,93 @@ mod tests {
         let _ = std::fs::remove_dir_all(&artifact_root);
     }
 
+    #[test]
+    #[ignore = "audit reproducer: remote audio references must use the network policy"]
+    fn audit_speech_transcription_remote_reference_bypasses_network_policy() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let get_requests = Arc::new(AtomicUsize::new(0));
+        let seen = get_requests.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming().take(2) {
+                let Ok(mut stream) = stream else { continue };
+                let mut request = [0u8; 4096];
+                let size = stream.read(&mut request).unwrap_or(0);
+                let request_line = String::from_utf8_lossy(&request[..size]);
+                if request_line.starts_with("GET /private.wav") {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    let body = b"ID3\x03\x00PRIVATE_AUDIO_CANARY";
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(body);
+                } else {
+                    let body = br#"{"text":"transcribed"}"#;
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    );
+                    let _ = stream.write_all(head.as_bytes());
+                    let _ = stream.write_all(body);
+                }
+                let _ = stream.flush();
+            }
+        });
+
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::secret_store::MemorySecretStore::default()),
+        ));
+        let created = providers
+            .save_provider(CanvasProviderInput {
+                name: "Local".to_string(),
+                protocol: "openai".to_string(),
+                base_url: format!("http://127.0.0.1:{port}/v1"),
+                enabled: true,
+                models: vec![CanvasModelConfig {
+                    id: "local-transcribe".to_string(),
+                    name: "local-transcribe".to_string(),
+                    description: String::new(),
+                    enabled: true,
+                    scenarios: vec![CanvasScenario::SpeechToText],
+                    priority: 0,
+                    max_reference_images: None,
+                }],
+                api_key: Some("sk-local".to_string()),
+                ..Default::default()
+            })
+            .expect("provider");
+        let gateway = CanvasModelGateway::new(providers);
+        let remote = format!("http://127.0.0.1:{port}/private.wav");
+        let output = rt
+            .block_on(gateway.run_audio(CanvasAudioRequest {
+                model_ref: format!("{}::local-transcribe", created.id),
+                operation: "speech_transcribe".to_string(),
+                text: String::new(),
+                audio_reference: Some(remote),
+                voice: None,
+                format: None,
+                timeout_ms: 5_000,
+            }))
+            .expect("current implementation accepts the remote audio reference");
+        eprintln!(
+            "speech remote reference audit: private_gets={}, text={:?}",
+            get_requests.load(Ordering::SeqCst),
+            output.text
+        );
+        assert_eq!(
+            get_requests.load(Ordering::SeqCst),
+            0,
+            "a remote audio reference must be rejected or pass the network approval boundary"
+        );
+    }
+
     /// 视频作业整链走线：提交拿 requestId、轮询到 Succeed、把一小时内失效的
     /// 供应商 URL 当场下载成 Video 制品；带 resume 任务 id 时不再重复提交。
     #[test]
