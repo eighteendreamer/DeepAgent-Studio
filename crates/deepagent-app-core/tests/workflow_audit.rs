@@ -1361,6 +1361,64 @@ async fn audit_workflow_execution_scope_is_not_node_order_dependent() {
 }
 
 #[tokio::test]
+#[ignore = "audit: multiple reachable end nodes need explicit branch settlement semantics"]
+async fn audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start","config":{"inputVariables":[]}},
+                {"id":"left","kind":"variable-assigner","config":{"assignments":[]}},
+                {"id":"left-end","kind":"end"},
+                {"id":"right","kind":"variable-assigner","config":{"assignments":[]}},
+                {"id":"right-end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"left-1","source":"start","target":"left"},
+                {"id":"left-2","source":"left","target":"left-end"},
+                {"id":"right-1","source":"start","target":"right"},
+                {"id":"right-2","source":"right","target":"right-end"}
+            ]
+        },
+        "inputs":{}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-multiple-reachable-ends".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    if event.status.is_terminal() {
+                        capture.lock().unwrap().push((event.node_id, event.status));
+                    }
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-multiple-reachable-ends")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let right_settled = events.iter().any(|(node_id, _)| node_id == "right");
+    eprintln!(
+        "api_ok={} terminal_events={events:?} run_terminal={:?}",
+        result.is_ok(),
+        run.terminal_kind
+    );
+    assert!(
+        result.is_err() || right_settled,
+        "a successful run cannot leave a statically reachable branch without a terminal event"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();

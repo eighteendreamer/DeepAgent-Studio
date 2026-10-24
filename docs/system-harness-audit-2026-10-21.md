@@ -67,6 +67,7 @@
 | 工作流图终点结构 | 只有 `start` 节点、没有 `end` 的定义仍被编译、执行并记录 `succeeded` | 已确认 H-192；拓扑 order 用尽被当作正常完成，缺少明确 end 终态 |
 | 工作流入口到终点可达性 | `start` 与 `end` 都存在但无连接边时，两个独立根仍按全图拓扑顺序执行并记录 `succeeded` | 已确认 H-193；执行计划不是从 start 出发的可达子图，孤立节点可参与成功运行 |
 | 工作流执行范围的声明顺序稳定性 | 保持节点 ID、配置和边不变，只交换孤立节点与 `end` 的数组位置，完成节点集合从 `start,end` 变为 `start,orphan,end`，两个 run 却都为 `succeeded` | 已确认 H-194；`end` 立即完成整个 Agent，拓扑 ready 的数组下标优先级决定孤立节点执行或静默消失 |
+| 工作流多个可达终点的结算语义 | `start` 分叉到左右两条都可达的普通路径、每条各有 end；正式运行完成左侧 end 后即成功，右侧可达分支没有任何终态事件 | 已确认 H-195；编译允许多个 end，但执行器把遇到的第一个 end 当作全 run 终态，没有 reject、join 或 choice 语义 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3847,6 +3848,33 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-194 只新增正式审计探针和报告，未修改生产工作流调度或终态逻辑。
 
+### H-195：多个可达 end 没有 reject/join/choice 语义，第一个 end 截断正常分支
+
+**级别：高（P1，并行/分支工作流完整性与错误成功）；触发条件：从唯一 start 出发存在两条或更多静态可达路径，并且至少两条路径各自终止于 end。** 编译器只限制 start 至多一个，不限制 end 数量；执行器也没有 join 或“条件互斥终点”计划，任一 end completed 就结束整个 run。
+
+#### 生产调用链与正式复现
+
+- `graph::compile()` 用 `has_start` 拒绝第二个 start，但没有 `has_end`/end count 校验；只限制 end 不能有出边。因此多个 end 会进入同一个 `CompiledWorkflow.order`。
+- `WorkflowAgent::think()` 不检查剩余 reachable 节点、分支状态或 end 身份；节点 kind 为 `end` 时立即返回 `AgentDecision::Complete`。AgentKernel 收到该决策后写入成功终态，order 中其余可达节点不再获得运行机会。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled`。图为 `start → left → left-end` 与 `start → right → right-end` 两条普通默认边，两个分支都从 start 静态可达；节点只用空 assignments，无外部能力。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true terminal_events=[("start", Completed), ("left", Completed), ("left-end", Completed)] run_terminal=Some("succeeded")`；`right` 和 `right-end` 没有 completed/skipped/failed/cancelled，断言“成功 run 不能留下静态可达且未结算的分支”以 **0 passed / 1 failed（预期）** 结束。没有模型、工具、网络、命令或文件副作用。
+
+#### 成熟 Agent 对照与 DeepSeek 边界
+
+- DeepSeek Responses 的 `completed` 只能表示一次模型响应完成，不能替宿主确认所有 workflow branch 已结算。DeepSeek Harness PTC 的 `parallel()` 是显式组合子；`guest.spec.ts` 在并发上限为 1 时仍等待三个 child 依次完成，最终才以完整结果数组和 `stopReason=completed` 结算，不会把第一个 child 完成当作整个 parallel 完成。
+- Codex 的持久化 agent graph 从 root 沿 parent/child 边列举 descendants，并把 status filter 应用于每条 traversed edge；子任务的归属和生命周期是显式边。它没有用“稳定排序中第一个完成的 descendant”替代整棵 root tree 的状态。可迁移原则是先定义聚合语义，再从成员状态推导父级终态。
+- Penguin-Magic 的 canvas agent 计划把所有 step operations 展开并作为一个 `canvas.patch` 发布，之后才发 `session.completed`；计划中的操作集合由 validated plan 决定。它不是通用 DAG join 引擎，但至少不会因为某个画布节点名为 end 就让同计划后续 operation 从事件流中消失。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，批量处理、并行检索、多个媒体生成、左右审阅或“成功/失败各自终点”的画布可能只跑数组顺序靠前的一支，却整体显示成功。未运行分支没有终态事件，自动化无法补偿，用户也无法从 replay 识别截断。
+- 若前一分支只生成草稿而后一分支负责校验、保存或发布，系统会在校验/落盘前宣布完成；若前一分支有外部副作用而后一分支负责清理，清理也不会执行。当前样本仅动态证明空节点分支被截断，没有执行真实外部副作用。
+- H-194 的后续节点是孤立根；H-195 的右分支由 start 明确连接并静态可达，因此不能只用“拒绝孤立节点”修复。必须决定协议：v1 最小安全方案是要求恰好一个 end，且所有可执行路径汇入它；若支持多个 end，则图计划必须把它们标成显式 choice 或 join，choice 由条件边选择且未选分支产生带原因 skipped，join 则等待所有必需 predecessor/branch settled。
+- 成功终态需要从 typed plan 的 settlement 计算，不能在节点 executor 内看到 `kind=end` 就直接返回全局 Complete。回归应覆盖双分支单 end join、双 end 并行、条件互斥双 end、某分支失败/取消、节点数组排列、target-node 与恢复重放，并断言每个计划成员恰好一个 terminal event。
+
+本轮 H-195 只新增正式审计探针和报告，未修改生产工作流终点或分支语义。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3925,6 +3953,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-192 工作流缺失 end 显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_requires_an_end_node --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对只有 `start` 的图发布 2 条节点事件并记录 `succeeded`；无模型、工具、网络或文件副作用 |
 | H-193 工作流不可达 end 显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_requires_a_reachable_end_node --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；start/end 均存在但零边，正式 `WorkflowAgent` 仍发布 4 条节点事件并记录 `succeeded`；无模型、工具、网络或文件副作用 |
 | H-194 工作流声明顺序稳定性显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_execution_scope_is_not_node_order_dependent --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；相同节点/边仅交换数组位置，completed 集合分别为 `start,end` 与 `start,orphan,end`，两个 run 都为 `succeeded`；无模型、工具、网络、命令或文件副作用 |
+| H-195 工作流多个可达终点显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；左右两条 start 可达路径各有 end，实际仅左侧三节点 completed 后 run 即 `succeeded`，右侧分支无任何终态事件；无模型、工具、网络、命令或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
