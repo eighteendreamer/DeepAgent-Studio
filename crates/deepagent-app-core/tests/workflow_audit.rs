@@ -842,6 +842,71 @@ async fn audit_workflow_input_type_mismatch_is_rejected() {
 }
 
 #[tokio::test]
+#[ignore = "audit: undeclared workflow inputs must not enter the start output"]
+async fn audit_workflow_undeclared_input_is_rejected_or_ignored() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start","config":{
+                    "inputVariables":[{
+                        "name":"known",
+                        "variable":"known",
+                        "type":"string",
+                        "required":true
+                    }]
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges":[{"id":"e1","source":"start","target":"end"}]
+        },
+        "inputs":{"known":"KNOWN","unexpected":"UNDECLARED_CANARY"}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-undeclared-input".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-undeclared-input")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let start = events
+        .iter()
+        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
+        .unwrap();
+    let has_undeclared = start
+        .outputs
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|outputs| outputs.contains_key("unexpected"));
+    eprintln!(
+        "api_ok={} has_undeclared={} start_outputs={:?} run_terminal={:?}",
+        result.is_ok(),
+        has_undeclared,
+        start.outputs,
+        run.terminal_kind
+    );
+    assert!(
+        result.is_err() || !has_undeclared,
+        "undeclared input must be rejected or excluded from the workflow output"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
