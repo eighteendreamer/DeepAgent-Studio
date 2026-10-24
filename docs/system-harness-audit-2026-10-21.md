@@ -20,7 +20,8 @@
 | MCP 延迟发现与分支恢复 | 正式搜索→真实 stdio 工具调用→续聊→干净重建的正常对照通过，新会话不继承发现；另实测 rewind 删除发现后旧内存仍公开工具，重新搜索并调用成功也未重新落盘发现，重建后隐藏工具 | 新增 H-232（P3）；普通恢复与保留发现的 rewind 对照正常。模型离线回放，不覆盖崩溃、压缩、fork、权限变更或供应商缓存命中 |
 | MCP 结果内容与客户端元数据 | 正式 MCP 返回公开文本、structuredContent 与仅位于顶层 _meta 的虚构 canary；第一次模型 wire 无 canary，工具返回后的下一请求包含它 | 已确认 H-138；仅本机 stdio + 离线模型；这是客户端/模型投影缺口，不宣称 2024-11-05 基础协议为所有 _meta 提供统一保密保证 |
 | 已执行工具与后置 hook 的结果提交 | 正式 write_file 已写入磁盘且 run_events 有成功 ToolCompleted；PostToolUse prompt 返回无效 JSON 后，session 没有真实结果，重开将动作标为进程重启失败，下一请求只有补造的结果缺失错误 | 已确认 H-139；正常 hook 对照通过；真实临时文件、文件数据库、正式启动恢复与离线模型，不含真实桌面或公网请求 |
-| 流失败前状态工具的预执行提交 | 公共无 hooks Runtime 在 todo 参数/item 完成后真实改共享列表，随后 failed 或断流自动重试成功，均无对应会话往返但状态残留 | 已确认 H-233（P3）；正常完成与 hooks 对照通过；主 AppCore 装配关闭预执行，嵌套子运行仅静态核查，未实测其父状态影响 |
+| 流失败前状态工具的预执行提交 | 公共无 hooks Runtime 在 todo 参数/item 完成后真实改共享列表，随后 failed 或断流自动重试成功，均无对应会话往返但状态残留 | 已确认 H-233（P3）；正常完成与 hooks 对照通过；主 AppCore 装配关闭预执行，嵌套子运行的失败流影响未实测；另见 H-234 的正常完成状态隔离实测 |
+| agent-hook 的工具状态隔离 | 正式主运行先写计划，PreToolUse agent-hook 正常调用共享 todo_write，允许/拒绝父读取后主 task_list 均返回 hook 列表，父无对应写入往返 | 已确认 H-234（P3）；两个只读对照通过；不是 H-233 的失败流问题，不外推无此 hook 的默认聊天或其他状态工具 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
@@ -184,6 +185,7 @@
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
+| 嵌套执行的状态作用域 | 声称 isolated/read-only 的 agent-hook 克隆父工具 Arc，成功 todo_write 直接替换父列表，父工具被拒后同样残留（H-234） | Claude agent-hook 创建唯一 agentId，TodoWrite 按 agentId/sessionId 分区；Codex update_plan 从调用上下文取得 session/turn 发送计划事件（非同类 hook 动态证明） | 决策辅助运行改变主模型的任务状态，父历史缺少对应写入事实；独立 Session 没有实现工具实例隔离 |
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
 | 运行及附属工作的归属 | 子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-45/H-60/H-61/H-64）；原生摘要取消已修复 | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
@@ -5852,3 +5854,51 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo test -p deepagent-app-core --test runtime_speculation_audit --offline --quiet` 最终复跑：**4 passed / 2 ignored，0.47s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，8.30s**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**47 passed / 56 ignored，9.62s**。
 - `cargo fmt --all -- --check`、`git diff --check` 通过。实际 Clippy `cargo clippy -p deepagent-app-core --test runtime_speculation_audit --offline -- -D warnings` 被未修改的 `models/src/client.rs:355` clone_on_copy 与 `persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未声称 lint 通过。
 - 本轮遵循 docs-generator 的即时证据链记录，修改仅审计测试和报告，无生产修复、权限/协议/数据迁移。未运行全 workspace、Desktop build/UI、真实 DeepSeek、参考工程测试、取消/崩溃、状态提醒消费、正式 task/agent-hook 故障链或其他平台；正常回归不关闭 ignored 缺陷，也不表示全系统审计完成。encrypted-content 错误继续排除。
+
+### H-234：声明 isolated/read-only 的 agent-hook 共享主运行 TodoStore，正常完成仍替换父任务列表
+
+**级别：低（P3，需配置 agent 类型 hook 的状态隔离缺陷）；状态：正式 SettingsService/ChatService/Kernel 工作流已复现，未修复。不是 H-233 的流失败预执行：本项所有供应商响应均正常 completed，不依赖断流、重试或失败。**
+
+#### 首轮即时 Evidence（2026-10-24）
+
+- Scope：用户授权的本仓库审计；临时 workspace、文件 SQLite、正式 hook 配置/装配及内置 todo_write/task_list/read_file，只有 Responses transport 使用离线 fixture。没有真实 DeepSeek、外部服务、生产逻辑修改或用户数据。沿用指定报告，不另建重复报告或生产状态中心。
+- E-234-allow（command，content_hash=n/a）：`cargo test -p deepagent-app-core --test kernel_v2_e2e agent_hook_state --offline -- --include-ignored --nocapture`，首跑 **1 passed / 3 failed，0.89s**。source_ref：`crates/deepagent-app-core/tests/kernel_v2_e2e/agent_hook_state.rs`。其中只有 `audit_agent_hook_allow_preserves_parent_plan` 到达目标不变量并构成此轮缺陷证据；两条 deny 测试因测试误将拒绝输出 status 预设为 blocked、实际为 error 而提前失败，不据此登记新的产品问题。其修正与验证随后追加。
+- 正式主运行先 todo_write 写入 `ORIGINAL_PARENT_TODO`，再 read_file 触发唯一的 PreToolUse agent-hook；hook 第一响应请求内置 todo_write 写 `HOOK_TODO_CANARY`，第二响应合法返回 `{"ok":true}`。主运行随后 task_list 并正常结束。实际 hook wire 公开 todo_write，system 明示 supplied read-only tools；hook 第二请求包含其唯一原生调用/成功输出，主第四请求的真实 task_list 输出却已是 canary。主会话 seed/read/list 各唯一持久化调用/结果，hook call_id 对应的父事件数为 0；run succeeded、唯一 run_terminal、HookCompleted=continued。不存在以 sleep 推测是否已执行的时序判断。
+- E-234-control：同配置、同主序列，把 hook 工具换成 task_list 读取。hook 真正读到原列表并成功配对，主最终仍为原列表；该允许组通过。它排除“所有 agent-hook 必然改列表”，但本轮不宣称真实模型一定会选择 todo_write。
+
+#### Finding 与 Path（初始定性）
+
+- F-234：category=design，status=validated，confidence=high，evidence_ids=[E-234-allow,E-234-control]。`hook_assembly.rs::assemble_run_hooks` 从主 registry 构建 hook registry；`hook_runtime.rs::build_hook_agent_registry` 只筛 Safe/排 task 与 shell，随后 clone 工具 Arc。`execute_agent` 虽创建独立内存 Session，却没有为状态工具建立 actor 作用域。TodoWrite 的 Safe/read_only 标识不代表纯读，它实际 replace/mark_pending 同一个 TodoStore。独立历史不等于工具状态隔离，system 的只读承诺没有被能力层兑现。
+- P-234（callflow，关联 E-234-allow/F-234）：父 seed todo → read_file 匹配正式 agent-hook → 从父 registry clone 的 TodoWrite → hook 私有会话正常执行并记录自己的配对 → 修改父共享 TodoStore → 返回合法允许决策 → 父 read_file 完成 → 父 task_list 将 hook 列表发送给主模型 → succeeded，但父工具历史无对应写入事实。
+- 当前已确认后果仅为父计划被 hook 任务替换、主模型实际收到非自身写入的列表、父历史无法解释该变更。触发要求启用 agent-hook 且其模型选择状态工具；无此 hook 的默认聊天未据此证明受影响。未证明文件/网络权限提升、跨用户污染、真实模型误判、真实费用/cache-hit 变化、冷恢复丢失或 UI 显示异常。风险限定 P3，不夸大为任意写入。
+- 与 H-233 的根因区分：即使禁用所有响应提交前预执行，本项在成功响应后的普通工具执行仍会修改同一个实例；治理需处理 actor/工具效果作用域，不能仅修 streaming prepare。
+
+首个已复现结果立即登记。拒绝组修正、成熟实现对照和回归尚待执行，不提前写成通过。
+
+#### 增量 Evidence：最终拒绝父工具也不会撤回 hook 对父计划的改写
+
+- E-234-deny：核对正式 `ModelAgent` 的失败工具 envelope（status=error）及 `ToolPipeline` 的 hook_denied 后修正 fixture 断言，未修改生产逻辑。复跑同一显式命令：**2 passed / 2 failed（预期），1.02s**。两项只读 hook 对照均保留原列表；两项写入探针都到达最终父列表不变量，实际为 canary。
+- deny 写入组的 HookCompleted=blocked，主 read_file 输出为 error 且包含 controlled hook denial、不含目标文件内容，随后主 task_list 仍成功返回 hook canary，整个主 run succeeded。hook 的工具成功输出在其第二请求中唯一配对，父 seed/read/list 各有完整持久化往返，但无 hook call_id。证明父工具的拒绝确实生效，**本项不是 read_file 审批绕过**；隔离失败发生在做决策的 hook 本身，决策为允许或拒绝都受影响。
+- F-234 增补 evidence_ids=[E-234-allow,E-234-control,E-234-deny]；同根因不另编号。所有 fixture 响应均 completed，没有以“运行失败”解释状态残留，也没有将第一轮错误的状态名假设算作缺陷。
+
+| hook 内部操作 | hook 最终决策 | 父 read_file 真实结果 | 父 task_list 真实输出 | 最终隔离断言 |
+|---|---|---|---|---|
+| task_list（对照） | 允许 | ok，含文件内容 | 原列表 | 通过 |
+| task_list（对照） | 拒绝 | error，无文件内容 | 原列表 | 通过 |
+| todo_write（探针） | 允许 | ok，含文件内容 | hook canary | 失败 |
+| todo_write（探针） | 拒绝 | error，无文件内容 | hook canary | 失败 |
+
+#### 成熟实现对照与根因治理（源码查证，未运行参考工程）
+
+- **Claude Code**：仓库参考 `借鉴/claudecode/restored-src/src/utils/hooks/execAgentHook.ts:121–127` 为每次 hook 创建唯一 `hook-agent-${randomUUID()}` 并把 agentId 带入 query 的 ToolUseContext；`tools/TodoWriteTool/TodoWriteTool.ts:65–94` 使用 `context.agentId ?? getSessionId()` 作为 todoKey，读写同一 appState 中不同的 todos[todoKey]。可借鉴的是**同一状态中心、不同执行主体作用域**，不必另建一套全局存储。该参考 hook 并非只读 allowlist：它过滤 ALL_AGENT_DISALLOWED_TOOLS 并使用自己的权限上下文；不能说 Claude 所有 hook 工具都是只读或本轮运行证明其完全隔离。对照仅限 agentId 和 TodoWrite 分区这一具体机制。
+- **Codex**：`借鉴/codex/codex-rs/core/src/tools/handlers/plan.rs::PlanHandler::handle_call` 从 ToolInvocation 解构 session/turn，经 `session.send_event(turn.as_ref(), EventMsg::PlanUpdate(args))` 更新计划；调用的 session/turn 归属是显式上下文，而不是 handler 内的一个共享父 TodoStore。它不是与本系统相同的 agent-hook 测试，不能据此声称 Codex 同场景已通过；可参考的是控制类工具的执行身份随 invocation 传递。
+- **DeepSeek 契约**：2026-10-24 重新联网核对 [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)、[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)与 [Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)。响应/工具往返与宿主执行职责是不同层次：模型提供调用，函数由宿主执行；无状态 Responses 需由客户端回传历史。API 不会替宿主隔离两个 agent 的内存对象。本项不是 DeepSeek 参数不兼容，不使用 Chat Completions 的嵌套工具格式构造 Responses fixture，也没有真实供应商实验。
+- **治理建议，尚未实施（本地设计）**：在既有 Tool/Runtime invocation 边界建立 actor/run 身份与 effect scope，明确风险、可并发、纯读、主体局部状态和父共享状态是不同维度。继续使用现有 registry、Session 与事件设施，不新增第二套状态中心。若 hook 只用于只读检查，应由可执行能力投影排除状态写工具；若允许 hook 管理自己的计划，则以独立 actor 分区而非共享父 TodoStore。只把 permissions 改成 read_only 不足以修复：当前 todo_write 自身要求的正是 read_only；只改 prompt、列工具名称黑名单或关闭流式预执行也不能建立一般隔离契约。
+- 明确授权的父状态更新应作为单独可审计效果，而不是把 hook 私有调用伪装成父模型调用。后续验收应覆盖允许/拒绝/错误/取消、多个 hook 连续运行、并发/嵌套主体、共享只读快照与其他 Safe 状态工具；这些不在本轮实测之中。不以本项单个 TodoStore 推断全部共享工具存在同样问题。
+
+#### 验证收尾与边界
+
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**49 passed / 58 ignored，8.28s**。其中新增的两个只读 hook 对照默认执行、两个真实缺陷探针 ignored；显式 include-ignored 已确认 **2 passed / 2 failed（预期）**，默认绿测不表示 H-234 已修复。
+- `cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，7.91s**。`cargo fmt --all -- --check`、`git diff --check` 通过。实际执行 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，仍被未修改的 `models/src/client.rs:355` clone_on_copy、`persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未声称 lint 通过。
+- 修改仅测试模块、测试入口与本报告。按 code-audit 检查调用可达性和实例作用域，按 docs-generator 在首次复现、deny 增量和收尾分别追加 Evidence/Finding/Path；没有生产修复、协议/配置/权限/数据迁移，也没有提交日志或凭据。与 H-233 区分根因，不重复编号。
+- 未运行全 workspace、Desktop build/UI、真实 DeepSeek、参考工程测试、崩溃/恢复/下一用户回合、并发 hook 或其他平台；不推断实际模型错误决策、UI 污染或跨用户影响。全系统审计仍在继续；用户排除的 encrypted-content 错误未处理。
