@@ -51,6 +51,7 @@
 | 无限画布工作流视口缩放锚点 | 画布已平移后，底栏放大/缩小/重置/滑杆与小地图放大/缩小只改 zoom、不重算平移 offset；缩放前后的视口中心映射到不同世界坐标 | 已确认 H-201；动态执行六个生产 TSX handlers；与 Penguin-Magic 中心锚定按钮缩放及指针锚定滚轮缩放实现对照；没有图数据或运行状态副作用 |
 | 无限画布工作流视口持久化 | 正式图写入只序列化 `nodes/edges`，新 WebView 的 viewport 回到 `{x:0,y:0,zoom:1}`；ReactFlow 初次挂载执行 fitView，没有 per-mode default viewport | 已确认 H-202；动态调用真实 `workflowPersistence` 的读/写/flush 并创建新 store 实例；图节点恢复对照通过；未启动 Tauri WebView |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
+| Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -156,6 +157,7 @@
 | 执行身份与控制 | ACK、租约、审批和实际运行的归属未全部统一（H-02/H-15/H-16/H-33） | Codex 按 turn 管理 waiter、thread writer 保护；Claude 活跃 owner/锁保护（见各项源码与探针） | 停止虚假确认、迟到或串运行审批、同会话并发推进 |
 | 归档状态与运行接纳 | archive marker 未进入活动列表、恢复和 turn admission（H-215） | DeepSeek Harness 以 `ArchivedSessionGate` 在 pre-step 拒绝归档 lineage；Codex 归档前卸载、Shutdown 并 teardown，resume 拒绝 archived thread，恢复需显式 unarchive | 已归档 thread 仍可见并创建新 turn；隐藏/归档语义不能阻止后续运行 |
 | Thread 生命周期响应原子性 | 冷 source 的 fork 已持久化 child，但成功响应未使 child 可立即接纳 turn（H-216） | DeepSeek Harness fork 在返回前 await `agents.create`，客户端声明同步可寻址；Codex 构造并注册 live fork、附加 listener，并明确 response 到达即 usable | 客户端收到成功后首个 turn 失败；重试 fork 可留下多个非预期分支 |
+| JSON-RPC 方法错误分类 | 未知 namespaced method 由字符串是否含 `/` 决定为 Invalid params，而非按方法注册表返回 Method not found（H-217） | JSON-RPC 规范将 `-32601` 定义为 method 不存在、`-32602` 定义为参数无效；Codex 对 unsupported/unknown operation 使用独立 `method_not_found()` | SDK/代理按错误码选择重试、降级或兼容路径时得到错误结论；未知扩展与参数错误无法区分 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
@@ -4360,6 +4362,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-215 CLI 默认测试基线 | `cargo test -p deepagent-cli --offline`：85 passed / 16 ignored / 0 failed；H-215 探针默认忽略，绿色基线不表示缺陷已修复；本轮仅新增审计测试与文档，未修改生产行为或协议 |
 | H-216 Harness 冷分叉 readiness 显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_cold_thread_fork_is_loaded_for_the_next_turn --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；文件 SQLite 经新 `ServerState` 冷启动后，输出 `fork_success=true fork_loaded=false turn_success=false launch=false`；显式 resume 正向对照为 `resume_success=true resumed_turn_success=true resumed_launch=true`；未 spawn turn、调用模型、工具或公网 |
 | H-216 CLI 默认测试基线 | `cargo test -p deepagent-cli --offline`：85 passed / 17 ignored / 0 failed；H-215/H-216 审计探针默认忽略，绿色基线不表示任一缺陷已修复；本轮仅新增 H-216 测试与文档 |
+| H-217 Harness JSON-RPC 方法错误分类显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_unknown_namespaced_method_is_not_reported_as_invalid_params --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；`thread/does-not-exist` 返回 `-32602`，未知无斜杠 method 返回 `-32601`，已知 `thread/start` 坏参数返回 `-32602`；无模型、工具、文件或公网 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4759,6 +4762,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17、H-84 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；审批通知只由一个 gate owner 发布并携带 call ID；参考 Codex 的 turn 所属 waiter 和单一权限请求 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；一项人工审批只发一条可响应请求；保存失败可见 |
 | 归档状态与运行接纳 | H-215 | 复用现有 `ArchiveService`、`ServerState` 与运行协调边界，把唯一 durable archive 状态投影到 `thread/list`、`thread/resume`、`turn/start`、`turn/steer` 等 admission；归档活动 turn 时明确拒绝、先取消并有界等待或 archived-pending 的单一契约；参考 DeepSeek Harness pre-step gate 与 Codex archive teardown，不新增第二套归档或运行中心 | archive 成功后默认列表不再公开 thread，所有新运行入口拒绝；活动 turn 的归档结果可审计且终态唯一；显式 unarchive/restore 后才可恢复；进程重启、迟到 follow-up、subagent lineage 与并发 archive/start 均不能绕过 |
 | Thread create/resume/fork 的就绪提交 | H-216 | `thread/fork` 复用现有 `ThreadState` 构造与 AppCore fork 结果，在成功 response 前原子安装可接纳的 child；从 durable cold source 重建有效 workspace/config 时共用 resume 的单一解析边界；参考 DeepSeek Harness await agent creation 与 Codex live fork/listener，不增加第二份 thread store | fork response 后无需隐式补一轮 resume 即可 start；持久化失败与内存安装失败不返回假成功或遗留无主 child；热/冷 source、重启、配置、并发 fork/start 与失败补偿一致 |
+| JSON-RPC 方法注册与错误分类 | H-217 | 现有 `HarnessRequest` 解析/dispatch seam 维护唯一方法注册表；未知 method 统一返回 `ERR_METHOD_NOT_FOUND`，已知 method 的 payload 解码失败才返回 `ERR_INVALID_PARAMS`；参考 JSON-RPC 2.0 与 Codex `method_not_found()`，不再用 method 字符串形状推断语义 | 未知 `thread/*`、未来扩展和拼写错误均可被 SDK 明确识别；参数错误与能力不存在分离；错误码、日志和重试策略一致；新增方法只需更新一个注册/dispatch seam |
 | Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
 | Harness SDK 通知身份、订阅时序与缺口恢复 | H-01、H-91、H-205、H-214 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；提供先建订阅再发请求的 owned run/stream API，参考 DeepSeek Harness `HarnessSession.run()` 的 subscribe-before-prompt 队列与 Codex 的先附加监听再启动操作；不建立无界第二事件库 | 请求响应前通知仍可由该次操作消费；连续事件可按实际序号 ACK；7→9、broadcast lag 和迟订阅均可识别并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
 | 启动恢复的 run/task 诊断归属 | H-44、H-95 | 现有恢复投影按 run 的 task 身份界定历史范围；参考 Codex 按 turn ID 标记 stale turn | 同 session 多个未完成 run 的中断原因各自匹配其 task turn；较新的 user prompt 不改写旧 run 的工具中断原因；重放稳定，且不改变唯一终态 |
@@ -5103,6 +5107,33 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 回归应覆盖：热/冷 source、真实进程重启、默认/显式 workspace 与有效配置、fork 后立即 start、显式 resume 幂等、安装失败补偿、并发 fork/start、同请求重试与 child 唯一性、归档 source（与 H-215 协同）以及 source/child 各自独立后续运行。
 
 本轮只新增正式失败探针和审计文档，未修改生产 fork 行为。H-73 关注 inclusive sequence 断点导致的历史内容错误；H-216 的 child history 正向对照可恢复并运行，问题仅是成功响应后的 readiness，因此两项不重复。
+
+### H-217：未知 namespaced JSON-RPC method 被误报为 Invalid params
+
+**级别：中（P2，Harness 协议错误分类）；触发条件：** 客户端发送不存在的、包含命名空间斜杠的 method，例如 `thread/does-not-exist`。当前 dispatcher 在 `HarnessRequest` 反序列化失败后，仅凭原始 method 是否包含 `/` 选择 `ERR_INVALID_PARAMS` 或 `ERR_METHOD_NOT_FOUND`。
+
+#### 生产路径与正式复现
+
+- `apps/cli/src/app_server.rs::ServerState::dispatch()` 先把 `{method, params}` 解析为 `HarnessRequest`。解析失败时，代码以 `request.method.contains('/')` 为条件：含 `/` 返回 `ERR_INVALID_PARAMS`（-32602），不含 `/` 返回 `ERR_METHOD_NOT_FOUND`（-32601）。这把“方法不存在”和“已知方法参数坏”混成了字符串形状判断。
+- 该路径不是已知方法参数校验的正常结果：`thread/start` 携带 `{"cwd":42}` 仍返回 -32602；未知无斜杠 method 返回 -32601。只有未知 namespaced method 被分错。
+- 新增默认忽略探针 `app_server::tests::audit_unknown_namespaced_method_is_not_reported_as_invalid_params`，通过正式 `ServerState` dispatcher 发送未知 namespaced method、未知 plain method 和已知方法坏参数三组输入。
+- 执行：`cargo test -p deepagent-cli app_server::tests::audit_unknown_namespaced_method_is_not_reported_as_invalid_params --offline -- --ignored --exact --nocapture`。
+- 实际结果为 **0 passed / 1 failed（预期复现）**，输出 `namespaced=Some(-32602) plain=Some(-32601) known_bad_params=Some(-32602)`；失败只在要求未知 namespaced method 应为 -32601 的断言。没有启动模型、工具、文件写入、子进程或公网请求。
+
+#### 规范与成熟实现对照
+
+- [JSON-RPC 2.0 官方规范](https://www.jsonrpc.org/specification)明确区分：`-32601` 是“Method not found（方法不存在/不可用）”，`-32602` 是“Invalid params（方法参数无效）”；规范示例对不存在的 `foobar` 返回 -32601。方法名是否包含 `/` 不改变这个分类。
+- **Codex** 在 `app-server/src/error_code.rs` 提供独立 `method_not_found()`，在 unsupported operation、未实现方法和配置后端不支持的操作路径显式使用它；参数结构错误则使用 `invalid_params()`。它没有通过 method 字符串是否含命名空间字符推断错误类别。
+- DeepSeek Harness 的远端 API 通过 typed method/command seam 返回结构化错误；本项不把其所有 gateway 错误码强行等同 JSON-RPC 数字码，只借鉴“方法路由与参数校验分层”的边界。
+
+#### 影响、边界与根因修复方向
+
+- 直接后果是客户端、SDK、代理或测试夹具无法可靠区分“服务端不支持/拼写错误的 namespaced method”和“服务端支持该 method 但参数不合法”。兼容层可能错误地重试参数、把未知扩展当成调用者输入错误，或跳过应有的 capability fallback；日志和故障统计也会把协议演进问题归为参数质量问题。
+- 本次没有证明任何真实 SDK 已因该错误码产生错误重试、费用或工具副作用；动态证据只覆盖正式 dispatcher 的 response code。未知 method 的通知路由、批处理与无 id notification 仍需独立回归，不能从本项外推。
+- 根因修复应收敛到现有 `HarnessRequest` 注册/dispatch seam：先按 method 注册表判断是否存在；存在时再解码 params，解码失败返回 -32602；不存在统一返回 -32601，并保留稳定 method 名称和可审计数据。不能继续以 `/`、`.` 或其他命名约定作为方法存在性的代理。
+- 回归应覆盖：已知 method 合法/坏参数、未知 plain/namespaced method、未来扩展命名、空/大小写变体、`rpc.` 保留前缀、notification 无 id、错误 JSON-RPC 版本、批处理（若支持）以及 SDK 对两类错误的映射。新增协议 method 只能更新一个注册/dispatch seam。
+
+本轮只新增正式失败探针和审计文档，未修改生产协议分派。H-213 关注合法 `HarnessEvent` 被错误 notification method 接纳；H-217 关注 request method 的错误码分类，触发层和修复边界不同。
 
 ### 本轮排除候选：Responses 工具参数增量仅含 `output_index`
 

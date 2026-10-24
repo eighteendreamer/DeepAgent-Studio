@@ -1503,6 +1503,40 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-217: unknown namespaced RPC methods must use method-not-found"]
+    fn audit_unknown_namespaced_method_is_not_reported_as_invalid_params() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+
+        let namespaced = state.handle_request_for_test(rpc_request(
+            2,
+            "thread/does-not-exist",
+            serde_json::json!({}),
+        ));
+        let plain =
+            state.handle_request_for_test(rpc_request(3, "does-not-exist", serde_json::json!({})));
+        let known_bad_params = state.handle_request_for_test(rpc_request(
+            4,
+            "thread/start",
+            serde_json::json!({"cwd": 42}),
+        ));
+        eprintln!(
+            "unknown-method audit: namespaced={:?} plain={:?} known_bad_params={:?}",
+            namespaced.error_code(),
+            plain.error_code(),
+            known_bad_params.error_code()
+        );
+
+        assert_eq!(plain.error_code(), Some(ERR_METHOD_NOT_FOUND));
+        assert_eq!(known_bad_params.error_code(), Some(ERR_INVALID_PARAMS));
+        assert_eq!(
+            namespaced.error_code(),
+            Some(ERR_METHOD_NOT_FOUND),
+            "an unknown method was classified from its slash instead of method lookup"
+        );
+    }
+
+    #[test]
     fn event_ack_is_monotonic() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);
