@@ -40,6 +40,7 @@
 | DeepSeek Flash 思考模式的 top_p 有效值 | 正式 ModelClient 在 `reasoning.effort=high` 且设置 `top_p=0.2` 时将 0.2 原样发到 Responses wire；官方称 Flash 思考模式下低于 0.95 按 0.95 处理 | 已确认 H-166；离线正式 serializer/wire 探针；没有真实 API 调用或回答质量 A/B，不能证明每次输出必然改变 |
 | 画布生成图片响应无字节上限 | provider 资产 URL 返回 32 MiB+1 的本机 PNG 响应后，宿主完整缓冲并存入 artifact，image 节点与 run 均 succeeded | 已确认 H-167；和 H-165 共用双 loopback 故障注入，容量边界独立于地址授权；未测试进程内存耗尽或长期磁盘配额 |
 | DeepSeek 多轮缓存与动态 instructions | 工作区结构在第一轮后变化时，第二轮虽完整保留第一轮 `input`，但 leading `instructions` 在抵达历史前已经变化；`<<<DYNAMIC>>>` 只保护基础 system 前缀，不能保护此前会话历史的缓存资格 | 已确认 H-168；正式 AppCore 双轮离线 wire 复现；这是缓存命中潜力、延迟与费用缺口，不是回答正确性缺陷，也未调用真实 provider 证明本次必然 miss |
+| DeepSeek 图片输入格式边界 | 桌面同形入口把 SVG 归为 image 并成功持久化；第二轮正式 Responses wire 原样发送 `data:image/svg+xml;base64,...`，而官方只支持 JPEG/PNG/GIF/WebP | 已确认 H-169；真实 AttachmentService、ChatService、Kernel、ModelClient 与 serializer，离线 transport；未调用真实 provider，未声称已观测其具体错误码 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
@@ -3142,6 +3143,26 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 根因收敛不能简单删除动态上下文。Responses adapter 应保留第一条稳定 system 为 `instructions`，把之后的 workspace/权限/能力快照作为官方允许的中途 system input item 维持在原始历史位置；快照仍需版本化、持久化、可 replay，meter、恢复、压缩、权限更新和工具目录变化必须读取同一个 context version。需真实验证“新 system 是增量还是完整替换”的模型语义，不能仅因字段可发送就照搬 Anthropic `in-history` 的替换规则。若某 provider/model 不能安全表达所需更新，再显式开启新的 request series，并让 usage/诊断显示缓存序列已重启。
 - 验收覆盖：无变化、工作区变化、跨日、权限变化、工具/MCP/skills 增删、压缩前后、进程重开恢复及 provider fallback；逐项断言旧 request 的完整语义输入仍是下一 request 的前缀，动态快照只追加一次且 replay 一致。真实 DeepSeek 集成测试再用 `input_tokens_details.cached_tokens` 对照同长度静态/动态序列；缓存尽力而为，单次 miss 不能直接判定实现失败，应以重复样本和 wire 前缀共同归因。
 
+### H-169：桌面接受任意 `image/*`，不支持的 SVG 被原样发送给 DeepSeek Responses
+
+**级别：中（P2，请求可用性与历史持续失败）；触发条件：用户在桌面 Composer 选择浏览器标记为 `image/*`、但 DeepSeek 不支持的格式，例如 `image/svg+xml`。** 当前普通入口没有格式 allowlist 或真实字节解码；附件进入历史后，后续轮次会继续尝试发送同一无效图片。H-67 会令当前轮图片未进入首次请求，但不能当作保护：本项在第二轮 retained-history 路径已独立复现。
+
+#### 生产路径与完整链复现
+
+- DeepSeek 官方 [Responses 参数页](https://api-docs.deepseek.com/zh-cn/api/create-response/)把 `input_image.image_url` 支持格式明确限定为 JPEG、PNG、GIF、WebP，值可为 HTTP(S) URL 或相应 base64 data URL；“浏览器认为它是 image”不等同于 provider 支持。官方 [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)说明图片限制沿用视觉输入契约。
+- 桌面 `Composer.tsx::addFiles()` 仅用 `file.type.startsWith("image/")` 决定 `kind: "image"`，并把浏览器 MIME 原样交给 `attachmentIngest`。因此 SVG、BMP、TIFF、AVIF 等都走图片分支；`accept` 也未在这个 Composer input 上形成四格式限制。
+- `AttachmentService::ingest()` 原样持久化 `kind`/`mime`；`kind == "image"` 时不解码图片，直接标记 ready。`FileAttachmentResolver::is_resolvable()` 只检查 kind、文件存在及 32 MiB 大小；`data_url()` 优先信任持久化 `media_type`，只有缺失时才按扩展名嗅探四种格式，也没有核对声明 MIME 与真实字节。最终 Responses serializer 把所得字符串作为 `input_image.image_url` 发出。
+- 新增 opt-in `image_preparation::audit_unsupported_image_mime_is_rejected_before_transport`：通过正式 AttachmentService 和桌面同形 `AttachmentIngestDto` 保存一个语法完整的 1×1 SVG，逐字节回读确认落盘内容，再经 Vision Off、ChatService、Kernel、ModelAgent 和 ModelClient 执行首轮带附件及第二轮普通续聊。精确命令 `cargo test -p deepagent-app-core --test kernel_v2_e2e image_preparation::audit_unsupported_image_mime_is_rejected_before_transport --offline -- --ignored --exact --nocapture`：**0 passed / 1 failed（预期）**；记录 `urls_per_request=[[], ["data:image/svg+xml;base64,..."]]`。第一组空数组是已知 H-67 控制，第二轮完整 SVG 到达离线 transport 后运行成功，最终“不允许 SVG 到达 transport”断言失败。
+- 已证事实是本地 provider boundary 发送了官方不支持的格式；fixture 的离线 transport 有意返回成功，故不能声称真实 DeepSeek 已返回某个 HTTP 状态。真实服务可能拒绝请求；若拒绝，因为无效附件仍在持久历史中，普通续聊可能反复失败或需要用户显式移除/分支。未测自动重试次数、桌面错误展示、SVG 大小/复杂度、BMP/TIFF/AVIF 或真实费用。
+
+#### 成熟实现对照与收敛方向
+
+- DeepSeek Harness 的 `attachment-local` 把允许媒体类型固定为 `image/png`、`image/jpeg`、`image/webp`、`image/gif`；保存前 `detectImage()` 解码真实字节，随后比较检测 MIME 与声明 MIME，不一致抛 `IMAGE_TYPE_MISMATCH`，再进行规范化和容量验证。它不是依赖文件扩展名或调用方 MIME。
+- Codex `protocol/src/models.rs::local_image_unsupported_image_format_adds_placeholder` 用真实 SVG 文件验证输入投影：不生成 image item，而是产生明确的“unsupported image `image/svg+xml`”文字占位，保留路径和可诊断原因。这里借鉴的是显式、可见的降级，不要求本系统采用相同文案。
+- Penguin-Magic 的 `NodeCanvasAssetPanel` 对画布资产入口同时用四格式 MIME allowlist、`accept="image/png,image/jpeg,image/webp,image/gif"` 和大小检查；这只覆盖该资产面板，不证明其所有图片入口都安全，但说明无限画布参考项目没有把任意 `image/*` 当成同一 provider 输入格式。
+- 根因修复应在既有 AttachmentService/provider image preparation seam 建立唯一的图片身份与格式验证：后端按真实字节检测格式并与声明 MIME 对照，再按本次有效 provider/model 的支持集决定保留、受控栅格化或明确拒绝；UI `accept` 只作提前反馈，不能替代后端边界。SVG 若提供转换，必须在有尺寸/资源上限的隔离解码器中栅格化为受支持格式，不能仅把 MIME 改成 PNG。错误需要进入现有运行/附件诊断，不能像 H-68 一样静默退化为纯文字成功。
+- 验收覆盖四种支持格式的真实解码与 MIME 一致性、SVG/BMP/TIFF/AVIF、伪造 MIME、扩展名错配、空/损坏/超大图片、当前轮与 retained history、工具结果图片、模型切换/fallback、重启和压缩；断言非法格式 transport 调用数为零、合法格式字节身份稳定。H-67 当前轮投递、H-69 总体积预算、H-70 内容摘要和 H-127 MCP 图像投影需同批保留，不能相互替代。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3192,6 +3213,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-167 provider image 超预算显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_provider_image_download_rejects_oversized_artifact --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；双本机 loopback fixture 返回 32 MiB+1，宿主 `resp.bytes()` 后保存等长 artifact，终态 succeeded。只证明该样本，不宣称实测 OOM/磁盘耗尽；Penguin-Magic 10 MiB 对照也先整体物化 |
 | H-168 动态 instructions 截断历史缓存前缀显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::audit_dynamic_instructions_do_not_cut_off_conversation_cache_prefix --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；第一轮后新增 workspace 文件，第二轮仍保留第一轮 `input`，但 leading instructions 在 byte 12987 已变化，早于历史。仅离线 wire，不证明真实 provider 本次必然 miss |
 | H-168 中途 system serializer 探针 | `cargo test -p deepagent-models responses::tests::audit_preserves_mid_history_system_messages_as_input_items --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；中途 system 被拼入 leading instructions，input 原位置消失。首次不完整测试名配 `--exact` 为 0 tests，不计入证据 |
+| H-169 不支持图片格式显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e image_preparation::audit_unsupported_image_mime_is_rejected_before_transport --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；语法完整 SVG 经正式桌面同形 ingest/历史/Responses 链在第二轮成为 `data:image/svg+xml`，离线 transport 返回成功；未访问公网或伪造 provider 拒绝 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
@@ -3691,6 +3713,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 按模型能力解析有效采样参数 | H-166 | 既有 ModelCapability/Responses adapter 将模型、reasoning effort 与 top_p 解析为同一个有效设置；参考 Codex 模型目录能力随 turn 选择流动，DeepSeek Harness provider profile 明确 adapter 参数边界 | Flash thinking 的 0.94/0.95 边界及 Pro/none/fallback 均与 UI、设置和 wire 一致；规范化需可见，不声称离线 wire 能证明服务端输出 |
 | 生成媒体下载的字节预算与 artifact 配额 | H-167 | 现有 provider/artifact 边界统一流式计数、取消与 staging 清理；参考 Penguin-Magic assets route 的 Content-Length + 实际长度双检查（该实现仍整体缓冲） | image URL 与 inline data 超限均在采满/提交前拒绝；chunked/缺失或谎报长度、并发与总配额有边界；H-165 SSRF 与 H-164 cancellation 独立验收 |
 | 动态上下文与 KV cache 历史前缀 | H-168 | 保持稳定 leading instructions，在 Responses adapter 保留官方允许的中途 system input item；变化快照版本化并追加在已缓存历史之后，参考 DeepSeek Harness 的 in-history 更新与 Codex 的 append-only turn context | 静态与各类动态变化下 wire 前缀、持久化、压缩和恢复一致；不提升/重复旧快照；验证中途 system 语义；真实 DeepSeek 用 cached tokens 重复采样，不把尽力而为缓存当强保证 |
+| Provider 图片格式与内容身份验证 | H-169、H-70 | 既有 AttachmentService/provider preparation 统一真实字节检测、声明 MIME 对照及模型格式能力；参考 DeepSeek Harness decode/normalize、Codex 显式 unsupported projection、Penguin 画布四格式入口 | 四种支持格式正常；SVG/BMP/TIFF/AVIF、伪 MIME/错扩展在 transport 前拒绝或受控转换；当前/历史/工具图片一致，错误可见且不静默去图 |
 | 工作流节点事件与规范回放 | H-120 | WorkflowAgent 的 publisher 接回既有 Kernel 持久化 sink；参考现有 ModelAgent 通道与 ArtCraft 保存媒体任务身份，复用 run_events | 各节点实时事件与重开补读一致，失败/取消/进度也可重放；保留媒体来源和任务身份，不靠图文档偶然自动保存代替运行日志 |
 | 媒体任务身份与节点投影/续跑 | H-121、H-122 | 既有节点事件携带的运行中身份统一投影，后端以 provider/account/task 和输入身份决定新生成或恢复；参考 ArtCraft 的提交与 pending task/provider_job_id 分离，DAG 输入失效为本地设计 | 收到 Running 即可安全保留续跑身份；有效续跑不重复 submit，修改输入的新生成实际提交新请求；旧 attempt 不覆盖新任务，已完成资产保留来源 |
 | 桌面运行事件与订阅生命周期 | H-41、H-43、H-134 | 现有 run_id、完成 payload、运行 owner、订阅就绪屏障和持久化补读统一；参考 Codex thread/turn/item identity 与 ArtCraft 异步 listener owner | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能改写节点或清理新 run |

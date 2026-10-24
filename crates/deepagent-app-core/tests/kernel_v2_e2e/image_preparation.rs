@@ -11,6 +11,41 @@ struct ImageAnswer {
     image_hashes: Option<Arc<Mutex<Vec<Vec<String>>>>>,
 }
 
+struct ImageUrlAnswer {
+    urls_per_request: Arc<Mutex<Vec<Vec<String>>>>,
+}
+
+#[async_trait]
+impl HttpTransport for ImageUrlAnswer {
+    async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        let body: serde_json::Value = serde_json::from_str(&request.body).unwrap();
+        let urls = body["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|item| item["content"].as_array())
+            .flatten()
+            .filter(|part| part["type"] == "input_image")
+            .filter_map(|part| part["image_url"].as_str().map(str::to_string))
+            .collect();
+        self.urls_per_request.lock().unwrap().push(urls);
+        let item = serde_json::json!({
+            "type": "message", "id": "audit-image-mime-answer", "role": "assistant",
+            "content": [{"type": "output_text", "text": "Offline image MIME audit."}],
+        });
+        emit_responses_events(
+            sink,
+            &[
+                serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+                serde_json::json!({"type":"response.completed","response":{
+                    "status":"completed","output":[item]
+                }})
+                .to_string(),
+            ],
+        )
+    }
+}
+
 #[async_trait]
 impl HttpTransport for ImageAnswer {
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
@@ -299,6 +334,92 @@ async fn audit_new_image_reaches_first_model_request() {
     let initial = imported_image_across_turns(false).await;
     let later = imported_image_across_turns(true).await;
     assert_eq!((initial, later), (vec![1, 1], vec![0, 1, 1]));
+}
+
+#[tokio::test]
+#[ignore = "audit probe: unsupported image MIME types must be rejected before transport"]
+async fn audit_unsupported_image_mime_is_rejected_before_transport() {
+    use base64::Engine as _;
+
+    const SVG: &[u8] = br#"<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"><rect width="1" height="1" fill="red"/></svg>"#;
+    let root = tempfile::tempdir().unwrap();
+    let attachments = AttachmentService::new(root.path().join("attachments"));
+    let imported = attachments
+        .ingest(AttachmentIngestDto {
+            id: Some("audit-svg".into()),
+            session_id: None,
+            kind: "image".into(),
+            name: "pixel.svg".into(),
+            mime: "image/svg+xml".into(),
+            source: "picker".into(),
+            local_path: None,
+            data_url: Some(format!(
+                "data:image/svg+xml;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(SVG)
+            )),
+            text: None,
+        })
+        .unwrap();
+    assert_eq!(imported.status, "ready");
+    let path = PathBuf::from(imported.original_path.unwrap());
+    assert_eq!(std::fs::read(&path).unwrap(), SVG);
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = image_settings(db.clone()).await;
+    let urls = Arc::new(Mutex::new(Vec::new()));
+    let chat = ChatService::new(
+        db,
+        settings,
+        Arc::new(ImageUrlAnswer {
+            urls_per_request: urls.clone(),
+        }),
+        root.path(),
+    );
+    let session = chat
+        .run_in_session_with_attachments(
+            "Retain this SVG attachment for the MIME audit.",
+            None,
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("audit-svg-first"),
+            vec![InputAttachment::Image {
+                id: imported.id,
+                path,
+                media_type: "image/svg+xml".into(),
+            }],
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+    chat.run_in_session(
+        "Use the retained attachment.",
+        Some(&session),
+        None,
+        None,
+        Vec::new(),
+        None,
+        false,
+        Some("audit-svg-continued"),
+        |_| {},
+        |_| {},
+    )
+    .await
+    .unwrap();
+
+    let urls = urls.lock().unwrap().clone();
+    eprintln!("image MIME audit: urls_per_request={urls:?}");
+    assert_eq!(urls.len(), 2);
+    assert!(urls[0].is_empty(), "H-67 control unexpectedly changed");
+    assert!(
+        urls[1]
+            .iter()
+            .all(|url| !url.starts_with("data:image/svg+xml")),
+        "DeepSeek Responses only accepts JPEG, PNG, GIF, or WebP image_url payloads"
+    );
 }
 
 #[tokio::test]
