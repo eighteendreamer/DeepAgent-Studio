@@ -1661,6 +1661,57 @@ async fn audit_workflow_or_condition_does_not_start_from_true() {
 }
 
 #[tokio::test]
+#[ignore = "audit: multi-case conditions must retain the executor's false fallback handle"]
+async fn audit_workflow_multi_case_condition_keeps_else_handle() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"decide","kind":"if-else","config":{"conditions":[
+                    {"id":"red","logicalOperator":"and","conditions":[
+                        {"left":"green","operator":"is","right":"red"}
+                    ]},
+                    {"id":"blue","logicalOperator":"and","conditions":[
+                        {"left":"green","operator":"is","right":"blue"}
+                    ]}
+                ]}},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"decide"},
+                {"id":"e2","source":"decide","source_handle":"false","target":"end"}
+            ]
+        },
+        "inputs":{}
+    }))
+    .unwrap();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-multi-case-else".into(),
+            session,
+            |_| {},
+            |_| {},
+        )
+        .await;
+    let terminal = RunStore::new(&db)
+        .get("audit-workflow-multi-case-else")
+        .unwrap()
+        .and_then(|run| run.terminal_kind);
+    eprintln!(
+        "api_ok={} error={:?} run_terminal={terminal:?}",
+        result.is_ok(),
+        result.as_ref().err()
+    );
+    assert!(
+        result.is_ok(),
+        "a multi-case condition must allow the false branch that its executor returns when no case matches"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();

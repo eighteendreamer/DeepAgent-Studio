@@ -53,6 +53,7 @@
 | 工作流合法目标节点的依赖闭包 | 整图执行时 target 正常得到中间祖先的 `SOURCE_VALUE`；指定同一个合法 target 后，祖先被标记 Skipped，target 因 required output unavailable 失败 | 已确认 H-196；节点运行按钮既不重算依赖闭包，也不加载带 revision 的既有输出快照 |
 | 工作流公开输出类型契约 | end 声明 `count:number`，实际引用 start 的字符串 `NOT_A_NUMBER`；正式运行仍发布 end=Completed、输出 string 并记录 `succeeded` | 已确认 H-197；编译器只验证类型名称，运行时不验证成功输出是否符合声明类型 |
 | 工作流 OR 条件求值 | 使用后端当前原生条件字段，两个 OR 子条件都为 false，条件节点仍输出 `branch=true` 并成功 | 已确认 H-198；OR 累加器错误地从 true 开始；当前 H-39 的双分支派发会掩盖一部分执行范围后果 |
+| 工作流多 case 的 ELSE 端口 | 两个 case 均不匹配时 executor 定义返回 `false`，但 UI 与 graph compiler 在 case 数大于 1 时都不提供 `false` handle；显式 ELSE 边被 admission 拒绝 | 已确认 H-199；分支结果集合与可连接 source handle 集合不闭合 |
 | 专业画布代码节点 | 前端公开 `codeScript`/`codeInputVariables` 并标记 `enabled`，后端只读取未使用的 `code`/`codeVariables`，没有 JavaScript/Python 执行器；明确无效脚本仍完成并返回空对象 | 已确认 H-178；能力注册、配置 schema、运行时 executor 契约断裂，属于静默伪成功 |
 | 专业画布文档提取节点 | 前端 `document-extractor` 标记 `enabled`，但正式工作流执行到节点即返回 `UnsupportedNode` 并失败 | 已确认 H-179；这是公开能力目录与实际 executor 不一致，和 H-178 的静默成功不同 |
 | 专业画布人工输入节点 | 前端 `human-input` 标记 `enabled` 并提供表单/超时，正式工作流没有进入 `NeedsApproval`、输入租约或可恢复等待态，而是直接 `UnsupportedNode` 失败 | 已确认 H-180；人工输入 schema 与统一人机协作生命周期断裂 |
@@ -3965,6 +3966,35 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-198 只新增正式审计探针和报告，未修改生产条件求值或分支调度。
 
+### H-199：多 case 条件删除 false 端口，但 executor 无匹配时仍返回 false
+
+**级别：高（P1，控制流完整性与协议 admission）；触发条件：if-else 定义两个以上 case，并需要在所有 case 均不匹配时连接 ELSE 路径。** UI 不渲染 `false` source handle，Rust 编译器也拒绝协议调用者显式提交该边；executor 自己却把 `false` 作为无匹配时的规范结果，生产方与消费者的有限集合不闭合。
+
+#### 生产调用链与正式复现
+
+- `WorkflowNodeShell.tsx::getNodeSourceHandles()` 在 conditions 数量不超过 1 时返回 `true/false`，超过 1 时只返回每个 condition ID；因此桌面用户无法从多 case 节点连接 ELSE。
+- `workflow::graph::source_handles()` 复制同一规则：`conditions.len() > 1` 时只返回 group IDs。任何导入、CLI 或未来 Harness 请求即使手写 `source_handle="false"`，也会在编译期被 `requires a valid source handle` 拒绝。
+- `WorkflowAgent::execute_if_else()` 遍历所有组后如果没有命中，明确返回 `{"__branch":"false"}`；`node_output_value_inline()` 再公开为 `{"branch":"false"}`。这是 executor 可产生但图协议无法消费的状态。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_multi_case_condition_keeps_else_handle`：两个 AND case 分别检查 `green == red` 与 `green == blue`，均为 false；图显式把 `false` handle 连到 end，经正式 `ChatService::run_workflow` 提交。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_multi_case_condition_keeps_else_handle --offline -- --ignored --exact --nocapture`。
+- 实际结果：`api_ok=false`、错误 `edge e2 requires a valid source handle for node decide`、`run_terminal=Some("failed")`；断言多 case 必须允许 executor 的 false fallback，以 **0 passed / 1 failed（预期）** 结束。失败发生在 admission，无模型、工具、网络、命令或文件副作用。
+
+#### 成熟 Agent/工作流实现对照与 DeepSeek 边界
+
+- Dify 的公开 if-else 节点结构把可连接 `_targetBranches` 与求值 `cases` 分开；默认显式保留 `true` 与 `false` 分支，builder 也把 case ID 作为 source handle 公开。其 `checkValid` 拒绝空 case/conditions。可迁移原则是从统一的 branch descriptor 同时生成编辑器 handle、图校验与 executor 结果，且 fallback 是一等分支；本报告不从前端源码推断其后端的全部调度语义。
+- DeepSeek Harness 与 Codex 都没有同构画布节点，因此不伪造直接实现对照。它们可迁移的协议原则是有限集合由单一 typed source 定义，生产方不能发出 consumer schema/enum 不接受的值；本项在调用 DeepSeek 前已经失败，和 Responses 参数、缓存或模型推理无关。
+- 本系统已经有 `source_handles()` 作为静态集合，问题是 executor 另写了一套 branch 产生规则。成熟设计应让编译后的 node contract 同时携带合法输出 IDs 与 fallback，executor 只能返回该集合成员，UI 也从同一版本化描述投影。
+
+#### 影响、后果与根因修复方向
+
+- 当前桌面用户无法表达标准 IF/ELIF/ELSE；协议调用者尝试补上 ELSE 会让整个 run 在执行前失败。若省略 ELSE，无匹配决策没有合法下游语义；同时 H-39 目前还会错误执行其他路径，进一步掩盖缺口，不能把“图仍有输出”当作 fallback 已工作。
+- H-40 会先删除桌面 conditions，H-39 会忽略选中 handle，H-198 会算错 OR，H-199 则是即使字段、求值和派发都修复，多 case 的可产生结果仍无法连线。四项需要分层回归，不能用一次条件节点重写后只测 happy path。
+- 若未来调度器严格按 handle 派发而不修本项，无匹配时可能没有 successor、end 不可达或被错误结算成功；若改为默认取最后一个 case，又会把显式条件 case 偷偷当 ELSE。fallback 必须在协议中有独立 ID、显示标签和 replay 事件。
+- 根因修复应定义唯一 `BranchContract { cases, fallback }`：UI、serializer、compiler 和 evaluator 全部投影它。最小兼容方案是在任意 case 数量下始终加入保留的 `false` handle，并禁止 case ID 与 `false/true` 保留字冲突；若采用 Dify 风格动态 case IDs，则迁移旧 `true/false` 图并版本化。
+- 回归需覆盖 0/1/N case、全部不匹配、首个/中间/末个匹配、fallback 接线、case ID 重复或保留字冲突、导入旧图、H-39 修复后的执行集合、节点事件与重放，以及 UI/CLI/SDK 对同一 branch 目录的一致投影。
+
+本轮 H-199 只新增正式审计探针和报告，未修改生产 source handle、条件执行或 UI。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -4047,6 +4077,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-196 工作流合法目标依赖闭包显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_target_node_keeps_required_ancestor_outputs --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；整图控制组 target 得到 `SOURCE_VALUE` 并成功，指定合法 target 后 source=Skipped、target=Failed、run=`failed`，错误为 required output unavailable；无模型、工具、网络、命令或文件副作用 |
 | H-197 工作流输出类型契约显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_end_output_matches_declared_type --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；end 声明 `count:number`，实际发布 `{"count":"NOT_A_NUMBER"}`、end=Completed、run=`succeeded`；无模型、工具、网络、命令或文件副作用 |
 | H-198 工作流 OR 条件显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_or_condition_does_not_start_from_true --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；两个原生 OR 子条件均为 false，节点却输出 `branch=true`、run=`succeeded`；只验证 decision，不复用 H-39 的错误派发作为判据；无模型、工具、网络、命令或文件副作用 |
+| H-199 工作流多 case ELSE 端口显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_multi_case_condition_keeps_else_handle --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；两个 case 都不匹配且显式连接 executor 定义的 `false` fallback，正式编译以 invalid source handle 拒绝，run=`failed`；无模型、工具、网络、命令或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
