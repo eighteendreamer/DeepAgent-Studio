@@ -48,7 +48,7 @@
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
-| 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录 | 已确认 H-51；服务/工具级确定性交错，完整双会话桌面动态验证未执行 |
+| 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录；工作流节点声明 `knowledgeBaseId=project` 时仍混入 global 命中 | 已确认 H-51、H-176；H-51 是共享服务身份漂移，H-176 是工作流配置到检索 trait 的作用域契约缺失 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3294,6 +3294,35 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮只新增审计探针和文档，未修改生产实现；下一步应在统一网络 fetcher 设计明确后，再决定是否将工作流 HTTP 节点改造成现有 ToolRegistry 的 typed tool，避免出现第三套网络执行链。
 
+### H-176：工作流 `knowledgeBaseId` 是死字段，知识检索节点无条件混合 project/global vault
+
+**级别：中（P2，工作流上下文越权与配置失效）；触发条件：工作流定义使用 `knowledge-retrieval` 节点并声明某个 `knowledgeBaseId`，同时当前运行的 `KnowledgeService` 中存在 project 与 global 两个 vault 的相似命中。** 如果 global vault 被当作共享上下文，这仍然是“选择 project 但返回 global”的明确契约违约；如果调用者把该字段当作隔离边界，混入内容还可能造成跨作用域知识泄露。当前动态样本只证明两类文档同时进入节点输出，不把文档内容扩展解释为真实机密。
+
+#### 生产调用链与正式复现
+
+- 桌面节点 schema `apps/desktop/src/canvas/workflow/utils/nodeSchemas.ts` 暴露 `knowledgeBaseId`、`knowledgeTopK`、`queryVariable` 与 `scoreThreshold`。该字段会随工作流 JSON 进入后端，但没有对应的枚举、owner 或 scope 约束。
+- `WorkflowAgent::execute_knowledge_retrieval()` 只读取 `queryVariable`、`knowledgeTopK` 和 `scoreThreshold`，随后调用 `KnowledgeRetriever::search(query, limit)`；trait 没有 base/scope 参数。
+- `RunAssembler::run_workflow_inner()` 将共享 `KnowledgeService` 包装成 `WorkflowKnowledgeRetriever`。其 `search()` 固定调用 `self.service.search(query, None, limit)`；`KnowledgeService::search()` 再把 project/global vault 载入的统一索引一起查询。`KnowledgeBase::search()` 只支持 `kind` 过滤，不支持 `Scope` 过滤。因此 `knowledgeBaseId` 在生产调用链上没有任何消费方。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_knowledge_base_id_is_honored`。探针在临时 project/global vault 各写入一条包含同一查询词的文档，通过正式 `ChatService::run_workflow()` 执行 `start → knowledge-retrieval → end`，设置 `knowledgeBaseId=project`，捕获真实 `WorkflowNode::Completed` 输出。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_knowledge_base_id_is_honored --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true error=None knowledge_base_id=project titles=["Global-only runbook", "Project-only runbook"]`；随后断言 `knowledgeBaseId=project` 不应返回 global 文档，测试以 **0 passed / 1 failed（预期）** 结束。运行成功且节点完成，说明这是静默的作用域失效，不是后端不可用。
+
+#### DeepSeek 官方契约边界与成熟 Agent 对照
+
+- DeepSeek 官方 [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)说明 Responses 是无状态接口，客户端必须在每次 `input` 中回传完整历史；[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)描述的是输入 item、工具调用和模型输出，不定义本地 knowledge-base、vault 或项目 scope。官方 [Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)明确具体 function 由用户提供并由客户端执行。因此 H-176 是本系统 workflow contract 的缺口，不能把 DeepSeek API 的字段语义臆造为本地知识库权限。
+- **DeepSeek Harness** 的 `借鉴/deepseek-harness/packages/mcp/mcp-resources` 为 server/resource 解析保留调用 agent 的 scope；工具在调用者 scope 中解析 provider，缺失或不可见 server 在 dispatch 前失败，不能把所有 server 合并进一个全局列表。该设计可借鉴的是“声明的 scope 必须贯穿发现、解析和执行”，不是把 MCP 字段直接复制为本系统的 knowledge schema。
+- **Codex** 的 app-server/workspace 与 permission profile 将运行身份、工作区和能力策略作为一次运行的显式上下文；memory 相关入口按 thread/workspace 选择，而不是让一个共享可变服务在节点执行时自行决定可见集合。这里的可比点是执行上下文绑定和统一的 policy seam，本轮没有把 Codex 的字段当作本系统兼容协议，也没有运行其参考测试。
+- **Claude Code** 的记忆目录按项目根解析，项目记忆与用户级记忆的来源边界在装配阶段明确。它解决的是“当前项目身份决定哪些记忆可见”，不是通过提示词让模型自行过滤。本系统当前只在 `KnowledgeService::activate_project()` 处理项目身份，workflow retrieval 没有等价的显式 scope 入口。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，画布用户选择的 knowledge base 不决定检索集合；模型上下文可能同时收到未选择的 global/project 文档，导致回答引用错误项目的 runbook、把不同环境的配置混在一起，或在 global 预期共享但 workflow 期望隔离时暴露不应进入该节点的内容。当前探针只观测到标题和 excerpt 混合、run 成功，不声称已读取真实敏感信息。
+- 这会破坏 Harness 的可审计性：UI/CLI/SDK 看到的是配置中明确写入的 `knowledgeBaseId`，但 `WorkflowNode::Completed` 没有返回实际 scope/base 身份，重放、恢复和跨宿主运行也无法证明同一知识集合被使用。H-51 不覆盖此项：H-51 的根因是共享 `KnowledgeService` 激活后运行身份漂移；H-176 的根因是节点公开配置到 backend retriever trait 完全没有 scope 参数，即使服务身份稳定也会混合两个 vault。
+- 根因修复应在现有 runtime/app-core seam 收敛：将 `knowledgeBaseId` 解析为一次运行不可变的 `KnowledgeScope`（至少 project、global，或显式 base ID），扩展 `KnowledgeRetriever::search` 为带 scope/base 的 typed 请求，由 `KnowledgeService`/`KnowledgeBase` 在候选检索前过滤 scope；节点输出和审计事件携带实际 scope、base revision 与命中来源。未知/无权 base 必须在 dispatch 前失败，不能静默回退到混合索引。
+- 恢复、重放、被取消的重试以及 CLI/SDK/Tauri 入口必须复用同一 scope snapshot；passive memory、`knowledge_search` 工具和 workflow 节点是否共享集合要显式定义，不能因为共用 `KnowledgeService` 就隐式获得全量可见性。回归需覆盖 project-only、global-only、explicit mixed、未知 base、空/旧字段迁移、跨项目运行、重启和命中排序，断言节点输出、事件与实际磁盘来源一致。
+
+本轮 H-176 只新增正式审计探针和文档，未修改生产检索行为；在 scope DTO、权限归属和兼容迁移规则明确前，不应把忽略 `knowledgeBaseId` 的现状标记为兼容行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3353,6 +3382,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-173 Responses 工具输出图片显式探针 | `cargo test -p deepagent-models --test modalities_audit audit_responses_tool_output_images_are_preserved_before_transport --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `Message::Tool`→`ResponseRequest`→`ModelClient`→recording transport 捕获 `output_image_parts=0`，`function_call_output.output` 为纯字符串；未调用公网或真实图片服务 |
 | H-174 `replace_messages` 工具配对显式探针 | `cargo test -p deepagent-models --test response_repair_audit audit_replace_messages_repairs_dangling_responses_calls_before_transport --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；公开 mutator 后正式 Responses wire 为 `has_call=true, has_output=false`，transport 已被调用；仅离线 recording transport，无公网或工具副作用 |
 | H-175 工作流 HTTP 节点网络边界显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_http_node_does_not_bypass_network_approval --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`AgentKernel` 向临时 loopback 发出 1 次 GET，审批回调 0 次，run 为 `succeeded`；仅本机临时服务，无公网或用户数据 |
+| H-176 工作流知识库作用域显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_knowledge_base_id_is_honored --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ChatService`/`WorkflowAgent`/`KnowledgeService` 在 `knowledgeBaseId=project` 下同时返回 project/global 两条临时文档，run 成功；仅临时 vault 与离线模型，无用户知识或公网 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |

@@ -2,7 +2,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use deepagent_app_core::{ChatService, MemorySecretStore, SettingsService};
+use deepagent_app_core::{
+    ChatService, KnowledgeDraftDto, KnowledgeService, MemorySecretStore, SettingsService,
+};
 use deepagent_models::transport::MockTransport;
 use deepagent_persistence::{run_store::RunStore, Database};
 use deepagent_runtime::workflow::{NodeExecutionStatus, WorkflowRequest};
@@ -164,6 +166,122 @@ async fn audit_workflow_http_node_does_not_bypass_network_approval() {
     assert!(
         approvals.load(Ordering::SeqCst) > 0,
         "a network-capable workflow node must route through the approval boundary"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit: workflow knowledge-retrieval must honor the selected knowledge base scope"]
+async fn audit_workflow_knowledge_base_id_is_honored() {
+    let root = tempfile::tempdir().unwrap();
+    let global_root = root.path().join("global");
+    let knowledge = Arc::new(KnowledgeService::open(root.path(), &global_root).unwrap());
+    knowledge
+        .save(KnowledgeDraftDto {
+            title: "Project-only runbook".into(),
+            body: "scope-audit-needle project vault result".into(),
+            kind: Some("note".into()),
+            tags: Vec::new(),
+            scope: Some("project".into()),
+            source_session: None,
+            tier: None,
+            importance: None,
+        })
+        .unwrap();
+    knowledge
+        .save(KnowledgeDraftDto {
+            title: "Global-only runbook".into(),
+            body: "scope-audit-needle global vault result".into(),
+            kind: Some("note".into()),
+            tags: Vec::new(),
+            scope: Some("global".into()),
+            source_session: None,
+            tier: None,
+            importance: None,
+        })
+        .unwrap();
+
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = Arc::new(SettingsService::new(
+        db.clone(),
+        Arc::new(MockTransport::with_get_json(
+            r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+        )),
+        Arc::new(MemorySecretStore::new()),
+    ));
+    settings.initialize("sk-audit-placeholder").await.unwrap();
+    let chat = ChatService::new(
+        db.clone(),
+        settings,
+        Arc::new(MockTransport::default()),
+        root.path(),
+    )
+    .with_knowledge(knowledge);
+    let session = chat.create_session(None).unwrap();
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"retrieve","kind":"knowledge-retrieval","config":{
+                    "knowledgeBaseId":"project",
+                    "knowledgeTopK":10,
+                    "queryVariable":"scope-audit-needle",
+                    "scoreThreshold":0
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"retrieve"},
+                {"id":"e2","source":"retrieve","target":"end"}
+            ]
+        }
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-knowledge-scope".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let events = events.lock().unwrap();
+    let retrieval = events
+        .iter()
+        .find(|event| event.node_id == "retrieve" && event.status == NodeExecutionStatus::Completed)
+        .and_then(|event| event.outputs.clone())
+        .expect("knowledge retrieval must publish a completed output");
+    let documents = retrieval["documents"]
+        .as_array()
+        .expect("knowledge retrieval documents must be an array");
+    let titles: Vec<_> = documents
+        .iter()
+        .filter_map(|document| document["title"].as_str())
+        .collect();
+    eprintln!(
+        "api_ok={} error={:?} knowledge_base_id=project titles={titles:?} output={retrieval}",
+        result.is_ok(),
+        result.as_ref().err()
+    );
+    assert!(
+        result.is_ok(),
+        "workflow execution failed: {:?}",
+        result.err()
+    );
+    assert!(
+        titles.iter().any(|title| *title == "Project-only runbook"),
+        "selected project knowledge must be returned"
+    );
+    assert!(
+        !titles.iter().any(|title| *title == "Global-only runbook"),
+        "knowledgeBaseId=project must exclude the global vault"
     );
 }
 
