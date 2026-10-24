@@ -30,6 +30,7 @@
 | 持久化、崩溃恢复、并发与输入租约 | 取消存储故障不挡信号；排队取消推进；桌面吞掉保存失败、备用宿主误终结活跃子记录、双宿主同会话同时发模型、完整工具结果引用结束即失效、启动恢复缺少终态投影，以及同一 session 多 run 的中断原因串扰均已复现 | 已确认 H-17、H-32、H-33、H-36、H-44、H-95；完整恢复及并发压力未完成 |
 | 共享设置的多宿主提交 | 两条独立文件 SQLite 连接下，刷新模型用宿主缓存的旧完整设置覆盖另一服务已成功收紧的沙箱默认值 | 已确认 H-87；第三个新连接读回落盘结果，未启动真实双进程桌面 |
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
+| Responses 消息角色 provider 校验 | 公开 `ResponseInputItem::Message` 与 `InputMessage` 使用任意字符串 role；`moderator` 经正式 ModelClient 进入 wire，官方四种角色的正向对照通过 | 已确认 H-203；离线 recording transport；普通 AppCore 的 `Role` enum 不产生该非法值，未请求真实 provider |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
 | 画布工作流模型身份 | 新建 LLM/分类/提取/Agent V2 节点动态生成裸 `deepseek-chat` 默认值；正式 Canvas bridge 将该非空但不可解码的值解释为自动路由，受控 HTTP wire 实际发送 `other-text-model` 并成功返回 | 已确认 H-160 的前端默认与 gateway 缺口；H-162 证明当前四类专业节点会在更早阶段失败，故尚未证明它们已通过完整工作流把数据发往错误供应商；本机 HTTP provider，无真实 Tauri 或公网请求 |
 | 画布工作流生成参数 | LLM 节点的 `llmTemperature` / `llmMaxTokens` 经 WorkflowAgent 完整进入 CanvasCompletionRequest，但 Canvas gateway 重建内部请求时丢失；正式 Chat wire 只有 model/messages/stream | 已确认 H-161 的 bridge/serializer 缺口；H-162 当前先阻断专业 LLM 节点，创作 text 节点没有这两个 UI 字段；DeepSeek 思考模式下 temperature 本就不生效，但 max_tokens 仍有效 |
@@ -4068,6 +4069,25 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-202 只新增 opt-in 生产持久化探针和报告，未修改生产 viewport 或 graph contract。
 
+### H-203：Responses `message` 的公开字符串角色缺少 provider 边界校验
+
+**级别：低（P3，条件性公共 API 协议缺口）；触发条件：调用者、历史导入器或未来 Harness/SDK 直接构造 `ResponseInputItem::Message` / `InputMessage`，并提供 Responses 不支持的 `role` 字符串。** 当前桌面普通消息由 `deepagent_core::message::Role` 的四个变体产生，通常路径不会生成任意 role；本项不表示日常聊天已发送非法角色。
+
+#### 官方契约、生产路径与离线复现
+
+- 2026-10-24 实际打开 DeepSeek 官方 [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)：`message` 支持的角色仅为 `user`、`assistant`、`system`、`developer`，其中 `developer` 视同 `user`；[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)亦将同一集合列入输入兼容性。工具结果使用独立 `function_call_output` / `custom_tool_call_output` item，不应借用一个任意 message role 表示。
+- `deepagent_core::response_item::ResponseInputItem::{Message, InputMessage}` 将 `role` 定义为 `String`。`ResponseRequest::validate()` 仅验证可选 `user` 标识，没有验证 message role；`response_input_items_to_wire()` 把字符串原样写入 JSON。因此通过公开 `deepagent_models::ResponseInputItem` / `ResponseRequest::from_response_items()` 构造时，非法值不会在 serializer 前失败。普通应用消息经 `deepagent_core::message::Role::as_str()` 转换，正常桌面生产路径只有四种本地角色；风险在 provider DTO、外部反序列化或未来复用。
+- 新增 opt-in 正式 ModelClient 探针 `crates/deepagent-models/tests/responses_input_role_audit.rs::audit_invalid_responses_message_roles_are_rejected_before_transport`，分别为 `Message` 与 `InputMessage` 提供 `role="moderator"`，经过公开 request constructor、正式 ModelClient、最终 serializer 到 recording transport。执行 `cargo test -p deepagent-models --test responses_input_role_audit --offline -- --include-ignored --nocapture` 得到 **1 passed / 1 failed（预期）**：非法组为 `message_error=false, input_message_error=false, transport_calls=2, wire_roles=["moderator","moderator"]`；同一命令的官方角色控制为 **1 passed**，按顺序观察到 `user/assistant/system/developer`。离线 fixture 的成功只证明调用抵达传输边界，不证明 DeepSeek 服务端会接受或以何种错误拒绝该请求。
+
+#### 成熟实现对照、后果与收敛方向
+
+- DeepSeek Harness 的 `packages/llm/llm-deepseek/src/wire-types.ts` 把其 Messages 路由的 `WireMessage.role` 限定为 TypeScript 字面量联合，而不是任意字符串。这是 provider adapter 持有角色集合的实现模式；该文件对应的 Messages 协议没有 Responses 的 `developer` 角色，不能照抄它的集合到 DeepSeek Responses。
+- Codex 参考树的 `protocol/src/models.rs::ResponseInputItem::Message` 同样以 `String` 表示 wire role，因此没有证据表明 Codex 的该协议 DTO 已经消除此处校验缺口。Codex 对内容块和会话项使用更丰富的 typed model，但不把它误报为 role validator。
+- 若无效 role 触发，供应商可能拒绝整个请求，也可能忽略/改变这条消息的输入语义；本轮没有真实 API 结果，故不能断言具体响应码或输入处理方式。可确定的宿主后果是调用者无法在 provider boundary 得到本地明确错误，协议错误被延迟到网络之后；对未来 SDK/导入路径可能造成一次无效请求或上下文缺项。没有证据表明普通桌面用户会触发、会发生权限绕过或必然产生费用。
+- 修复应留在现有 Responses adapter：对 `Message` / `InputMessage` 仅接受官方四种角色，其他 item 类型继续按各自结构验证；在 `ModelClient` transport 前给出不回显敏感内容的协议错误。不要把 core 持久化类型立即改成封闭枚举而破坏历史兼容；provider 边界可先校验，若之后需要 typed DTO，再以版本化迁移解决。验收覆盖四种合法角色、空值/未知值、两种 message variant、Chat 与 Responses 路由分离、历史反序列化和 transport 调用数为零。
+
+本轮 H-203 仅新增 opt-in 审计探针与本报告，没有改生产校验行为；服务端接受性仍待真实 DeepSeek 请求验证。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -4154,6 +4174,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-200 Responses lifecycle identity/sequence 显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e native_output_items::audit_responses_lifecycle_retains_provider_identity_and_sequence --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正常 `response.created`/`response.completed` fixture 含同一 response ID、provider model 与序号 0/7，但正式 `run_events` 仅保留 Runtime envelope 和两个 `event_type`，provider 字段全部丢失；run 仍成功，无公网/工具副作用 |
 | H-201 无限画布缩放焦点显式探针 | `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-zoom-anchor.test.cjs`：0 passed / 1 failed（预期）；动态执行底栏 zoom-in/out/reset/滑杆与小地图 zoom-in/out 六个生产 handlers；平移后中心世界坐标随缩放漂移；无 Tauri、图数据写入或模型请求 |
 | H-202 无限画布视口重启恢复显式探针 | `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-viewport-persistence.test.cjs`：0 passed / 1 failed（预期）；真实生产 persistence 写入只含 `nodes/edges`，全新 store viewport 回到 `{0,0,1}`，节点 `audit-node` 恢复、ReactFlow 启用 fitView 且未设置 defaultViewport；Tauri transport 为内存替身，无真实 WebView |
+| H-203 Responses 输入 role 显式探针及合法对照 | `cargo test -p deepagent-models --test responses_input_role_audit --offline -- --include-ignored --nocapture`：1 passed / 1 failed（预期）；`Message` 和 `InputMessage` 的 `moderator` 均通过正式 ModelClient 到达 recording transport；`user/assistant/system/developer` 四种官方角色对照通过；无公网，未观察真实 provider 错误行为 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
