@@ -72,6 +72,9 @@ mod hook_dedup;
 #[path = "kernel_v2_e2e/hook_once.rs"]
 mod hook_once;
 
+#[path = "kernel_v2_e2e/subagent_scope.rs"]
+mod subagent_scope;
+
 #[path = "kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
 

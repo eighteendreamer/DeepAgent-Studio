@@ -6191,3 +6191,44 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 本轮 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**74 passed / 73 ignored，14.66s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，7.55s**。`cargo fmt --all -- --check`、`git diff --check` 通过，Markdown fenced blocks=8（偶数）。实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断，不报告 lint 通过。
 - code-audit 促使将 matcher/if 的未匹配与实际执行分别验证，并用单 action 和真实落盘排除旧去重/缓存问题；docs-generator 促使首轮复现后立即登记，再补成熟机制和收尾。仅新增 test-only hook_once.rs、模块入口与本报告，无生产权限/协议/配置变更、依赖新增或数据迁移。原有未跟踪文件保持原样。
 - 未运行全 workspace、Desktop build/UI、真实供应商/费用/模型质量或参考工程；未动态覆盖 command/http/mcp action、其他生命周期事件、once 失败/超时/取消、并发、会话重建与重启等边界。未访问真实用户文件，未处理用户排除的 encrypted-content 错误；全系统审计保持 active，不将本轮结束宣称为全面完成。
+
+### H-241：普通 task 的取消操作遗漏会话归属校验，另一会话可停止不属于自己的后台子 Agent
+
+**级别：中（P2）；范围：同一 ChatService 宿主中，模型经 task(operation=cancel) 使用另一个会话的有效后台子任务 ID。状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 与后台子运行已复现，未修复。** 不是多租户网络攻击或 OS 沙箱逃逸；需要目标仍活动且调用方已获得有效 ID，本轮由受控 fixture 提供该 ID，不声称已证明 ID 泄露或可猜测。
+
+#### 首次即时 Evidence（2026-10-24）
+
+- Scope：用户授权的本地仓库审计，只使用临时 workspace、临时 SQLite、虚构提示词和离线 Responses 模型 transport；无 shell、真实供应商、用户数据或外部服务。仅新增测试与文档，不改生产取消、权限、会话或工具逻辑。
+- E-241-first（command，content_hash=n/a）：source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/subagent_scope.rs`；`cargo test -p deepagent-app-core --test kernel_v2_e2e subagent_scope --offline -- --include-ignored --nocapture`：**3 passed / 1 failed（缺陷预期），1.75s**。四个样本各执行一个 owner turn、一个 controller turn及一个真实后台子任务；仅模型 I/O 被替换，task 参数经过正式 schema/权限与生产 runner。失败断言在后台已终结、transcript 和事件检查完毕之后触发。
+- E-241-foreign：会话 A 经正常 task(background=true) 建立子任务并完成自己的 turn；子模型请求真实进入等待。会话 B 与 A 的 session ID 不同、共享同一宿主，依次发 task(status/resume/cleanup/cancel/status)。前三项均返回 error，正文包含 another conversation；cancel 却返回 ok、cancel_accepted=true。未释放子响应前：A 的 durable 子记录已经 cancelled、等待 future=0、正常响应计数=0，最终仍 cancelled。A 的事件日志中恰好一个子终态事件和一个 notification，transcript.state=cancelled；B 没有该子记录。不是只看到一个 accepted 字段就宣称停止。
+- E-241-controls：①同会话的后续 turn 使用相同 ID，status 正常返回 running，running 子不能 resume/cleanup，cancel 成功且未释放响应就终结为 cancelled，父两个 turn 均各自唯一 succeeded；②另一会话只查询、不取消，status/resume/cleanup 均拒绝，目标持续 running，释放响应后正常 succeeded；③另一会话取消虚构不存在 ID，cancel_accepted=false，真实目标保持 running、释放后正常 succeeded。四组父运行均各有唯一 succeeded 终态，子 transcript 与 SQLite 状态一致。
+- 夹具校准：第一版只实现 HttpTransport::stream，继承默认 stream_cancelled，导致同会话对照等待响应释放才取消；它不符合本轮取消模型 I/O 的测试契约，**不能作为生产停止缺陷证据**。校准版显式实现 stream_cancelled，使用项目既有 wait_for_legacy_flag 与 select 丢弃等待 future；修正公开模块路径后上述正式命令得到3/1结果。生产 reqwest 或真实 DeepSeek 的服务端取消未测试，不以替身等待行为登记新问题。
+
+#### 初始 Finding 与 Path
+
+- F-241（category=design，status=validated，confidence=high，evidence_ids=[E-241-first,E-241-foreign,E-241-controls]）：`ChatService.subagent_controls` 为整个宿主共享的 ID→AtomicBool 表；`run_assembler.rs` 把同一表交给各 turn 的 ChatSubagentRunner。`subagent_runner.rs::status/resume/cleanup` 都先加载 durable record，再用 ensure_resume_lineage 比较当前 parent 与 origin_parent 的 session_id；`cancel` 却直接查表并 flag.swap(true)，没有加载记录或验证调用会话。TaskTool 将此结果作为正常 cancel_accepted 返回。根因是模型侧控制操作没有复用既有 durable lineage admission，不是取消标志无法工作。
+- P-241（callflow）：会话 A → task(background=true) → 宿主共享 controls 表保留子 ID → A 正常完成而子继续等待 → 会话 B 持有该 ID → task(status/resume/cleanup) 拒绝 → task(cancel) 直接查全宿主表 → A 子取消标志置位 → 正式 runner 终结 A 子、落 SQLite/transcript/事件 → B 自己的 turn 仍成功。
+- 与 H-45 的父总时限 drop 前台子任务、H-32 的备用宿主重开数据库误终结，以及 H-236 的模型 hook 取消上下文丢失不同；本项是**普通模型工具入口的控制作用域不一致**。本轮没有重跑这些旧问题，也没有处理用户排除的 encrypted-content 报错。成熟参考与回归结果随后追加。
+
+#### 成熟 Agent 与 DeepSeek 机制对照（静态源码/官方文档）
+
+- **DeepSeek Harness 的同类控制边界**：`借鉴/deepseek-harness/packages/subagent/tool-subagent-control/src/index.ts:75–122` 的 interrupt_agent 只取 exec.agent 这个真实调用者，将 `{kind:'ancestor', agent:caller}` 交给唯一 subagent service，不从模型参数接受调用者身份。`subagent/subagent/src/continuation-activation.ts:283–325` 先校验 caller 是 registry 中的 exact live Agent，拒绝 self，再校验目标 activation.ancestry 包含该 caller；不相关调用者抛 UNAUTHORIZED，不触发 agent.cancel。用户控制另用 kind=user，核对目标 durable direct parentSession。可借鉴的是**ID 负责寻址，authority 负责授权，模型与用户控制共享执行边界但不共享无限作用域**。
+- 该参考的 `subagent/subagent/tests/continuation.spec.ts:3657–3743` 已有源码测试：错误用户 parent 被拒绝且 cancel spy=0，真实直接/深层 ancestor 可中断，self/sibling/stale/unrelated caller 被拒绝且目标未取消。本轮只阅读其源码和测试，未安装依赖或运行参考工程；本系统没有普通子 Agent 递归，不能照搬参考树模型后声称当前必须支持深层委派。
+- **Codex 对照的适用范围**：`借鉴/codex/codex-rs/core/src/tools/handlers/multi_agents_v2/interrupt_agent.rs` 将 session.thread_id 作为 caller 传入 AgentControl.interrupt，而不只传 target；`core/src/agent/control.rs:91–98` 明确 handles 共用其 tree 的 LocalAgentRuntime；`control/api.rs:197–218` 在 V2 进入 interrupt_spawned_agent，后者先 ensure_agent_known，并拒绝 root/self、要求 agent_path，再中断。`control/runtime_context.rs:25–29` 的 known 来自现有 registry。它提供“带 caller 的统一控制 API、tree registry 和明确模式”的架构参考，**不能说它使用与本系统相同的 session_id 相等校验**：target.rs 对直接 ID 不做祖先判断，V1/Disabled 路径也保留直接 ID 中断；本轮没有动态证明其所有跨树、重开和远程 backend 边界。因此本项直接授权正例使用 DeepSeek Harness，不把 Codex 描绘成任何模式都实现严格 ancestor-only。
+- **DeepSeek 官方边界**：2026-10-24 联网核对[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)与[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)。具体工具由宿主执行，模型调用通过 function_call / function_call_output 往返；本轮只注入合法 task 参数和正常 completed 流，每个 controller 调用都验证唯一调用/输出配对。供应商 strict/schema 只能约束形状，不能判断本机 durable 子任务属于哪个会话；thinking、KV cache 或换模型无法替代这项宿主鉴权。未测试真实模型是否会自行选择跨会话取消，也未将固定 fixture 决策当作模型行为概率。
+
+#### 根因治理方向与影响评估（本地设计，未实施）
+
+- 在现有子任务控制边界统一使用 caller authority + target ID，复用 SubagentRunStore / RunStore / origin_parent_run_id 与既有 ensure_resume_lineage；模型侧 cancel 至少应与 status/resume/cleanup 的会话作用域一致。需要先验证归属再触碰活动 flag，不因“ID 很难猜”跳过授权，也不能只在 TaskTool 描述里提醒。无需另建取消表、事件库或子任务管理器。
+- 当前 `ChatService::cancel_subagent` 与 Desktop Tauri cancel_subagent/前端 cancelSubagent 是用户在宿主侧主动控制的另一入口；代码只接收 ID，允许用户停止自己的其他会话后台工作本身未必错误。本轮**没有把全宿主用户控制判作漏洞**，也没实测桌面点击。设计上应明确 host-user 与 model-session 两种 authority，通过既有共享实现做不同 admission；不能简单给全部入口套“当前 turn ID 必须相同”，否则正常同会话后续 turn 停止会被破坏，本轮正向用例已覆盖这种正常需求。
+- 触发条件为同一运行宿主中有活动后台子任务，另一会话具有 task 权限并持有该 ID。ID 可经用户粘贴/模型上下文等进入另一会话是合理使用风险，但本轮未证明自动泄露、枚举或攻击者可远程接入。无有效 ID、目标终结或不共享 controls 表的独立宿主，不在本项已证影响范围内。
+- 已证后果是无归属的模型控制中断另一会话的正常后台工作，其正常模型结果未生成，原 owner 接收到 cancelled 持久化记录及通知；并非伪造终态。潜在业务后果为研究/生成/构建类委派被意外停止、重复劳动或已投入资源浪费；若目标先前有副作用，其取消不等于回滚，但本轮没有执行写入、命令或外部交易，不能宣称已造成数据破坏、具体费用或泄露。按当前本地单用户前提评 P2；若未来暴露多用户远程宿主，必须重新评估隔离与严重度，不能直接沿用该评级。
+- 回归应覆盖同会话跨 turn、不同会话/项目、unknown/terminal、首次与重复取消、并发完成/取消、resume 后 owner 变更、origin lineage 保留、重建宿主、审批/工具等待与模型等待，以及用户全局停止的明确授权。当前只动态验证同 workspace 的双会话和上述四个样本，不将未覆盖的 sibling/descendant 或跨项目行为当作已证事实。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 增强 cancel_accepted/state 的结构化字段断言后，显式 `cargo test -p deepagent-app-core --test kernel_v2_e2e subagent_scope --offline -- --include-ignored --nocapture` 再跑 **3 passed / 1 failed（缺陷预期），1.78s**；跨会话仍 accepted=true、release 前 cancelled/waiting=0/answered=0。同会话正常取消、跨会话其他操作拒绝和不存在 ID 三个对照均通过；目标不变量 ignored，后续修复可直接启用，未将当前错误行为固化为默认正确断言。
+- 最终 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**77 passed / 74 ignored，12.12s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，8.10s**。默认全套不执行历史 ignored 探针，不能视作那些问题已修复。`cargo fmt --all -- --check`、`git diff --check` 通过；报告 Markdown fences=8、H-241 标题恰好1个。
+- 实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被既有 `deepagent-models/src/client.rs:355` clone_on_copy、`deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断；未修无关生产代码，也未宣称 lint 通过。
+- code-audit 促使比较四种控制操作的真实调用归属、校准可取消模型替身，并检查 SQLite/transcript/唯一终态，排除“仅 flag 返回 true”的弱证据；docs-generator 促使首次有效复现后即时登记，再补参考与回归。新增 test-only subagent_scope.rs、模块入口与本报告；无生产逻辑、公共 API、依赖、权限配置或数据迁移变更，用户原有未跟踪文件保持原样。
+- 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP 取消/计费、参考工程测试或全库自动 SAST；本轮使用针对性源码检索与正式宿主故障注入。未验证跨项目、不同进程、重启、resume 后取消、工具/审批等待、并发竞争或任务先前的副作用。所有临时子任务均在主要断言前收尾；本轮结束不是全系统审计完成，目标保持 active。
