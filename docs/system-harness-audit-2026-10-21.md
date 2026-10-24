@@ -26,6 +26,7 @@
 | 工具 pipeline 的模型 hook 取消 | 正式停止已受理，顺序工具前/后置 prompt/agent hook 仍等待；在 agent 首响应前停止，释放后还真执行 task_list 并发下一次 hook 请求 | 已确认 H-236（P2）；UserPromptSubmit/SessionStart 取消及四位置正常允许对照通过，最终取消映射正确；离线供应商 gate，未验证真实计费或公网取消 |
 | agent-hook 的有效权限继承 | 主 read_file 被用户 Read deny 或默认 WorkspaceWrite 的 PathGuard 拒绝；同次运行的 hook 使用同一工具读取相同临时文件，正文进入 hook 下一模型请求 | 已确认 H-237（P1）；显式规则与工作区边界两条探针，未命中/无规则/敏感文件对照通过；无真实敏感数据或公网传输 |
 | agent-hook 的已读状态归属 | 主/hook 双向首次读取均可能收到另一个上下文造成的空桩；只有 hook 读过也能让主 write_file 覆盖原文 | 已确认 H-238（P2）；五个正常对照、三个缺陷探针；真实临时文件与离线模型，不是服务端 KV cache 实验 |
+| 模型型 hook 的身份与调度去重 | 同 matcher/prompt 但条件不同的后项被首项吞掉，适用的校验器请求为0；仅模型不同时只运行首模型 | 已确认 H-239（P2）；prompt/agent 两类型均复现，六类正常对照通过；离线固定决策，不是模型能力 A/B |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
@@ -193,6 +194,7 @@
 | 嵌套执行的状态作用域 | 声称 isolated/read-only 的 agent-hook 克隆父工具 Arc，成功 todo_write 直接替换父列表，父工具被拒后同样残留（H-234） | Claude agent-hook 创建唯一 agentId，TodoWrite 按 agentId/sessionId 分区；Codex update_plan 从调用上下文取得 session/turn 发送计划事件（非同类 hook 动态证明） | 决策辅助运行改变主模型的任务状态，父历史缺少对应写入事实；独立 Session 没有实现工具实例隔离 |
 | 嵌套执行的权限继承 | agent-hook 的私有 Runtime 不含父 PermissionRules/PathGuard，实际克隆的主工具却以 FsAccess::Full 构造，主运行拒绝的同一读取仍成功（H-237） | Claude hook 保留父权限上下文并经同一 deny-first 检查；Codex 子运行显式继承有效审批策略与权限快照，角色覆盖只能在父授权内调整 | Safe 工具筛选不等于资源授权；启用 hook 后，用户显式 deny 和默认工作区读取边界不能贯穿附属执行 |
 | 文件缓存与模型观察凭证 | FileStateCache 将共享磁盘快照、已交付正文和写前已读合成路径级状态，独立 hook/主上下文互相串用（H-238） | Claude 普通子 Agent 将历史 fork 与 cache clone 配套，但其 agent-hook 静态存在相似共享风险；DeepSeek Harness 的可选 observation policy 以 session owner 分隔版本凭证 | 可以共享磁盘字节，不能因此认定每个模型都见过；读取成功空桩造成证据缺失，写前兜底也可能放过盲写 |
+| 扩展策略的行为身份 | HookRegistry 在判断条件前以遗漏 if/model 的 key 保留首项，正常配置也会静默漏执行（H-239） | Claude 的 hook 去重 key 包含 if 与插件/技能来源，但同样未含 model，不能当双模型方案正例；Codex 对不支持的 prompt/agent hook 给出加载警告 | 配置已保存不等于策略被执行；仅换声明顺序即可改变工具是否被拒，调度层应能解释匹配与去重结果 |
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
 | 运行及附属工作的归属 | 子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-45/H-60/H-61/H-64）；原生摘要取消已修复 | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
@@ -6106,3 +6108,46 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo fmt --all -- --check` 首次发现 summarize 签名排版差异，按提示仅调整该测试函数后重新检查通过；`git diff --check` 通过，Markdown fenced blocks=8（偶数）。实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断，不宣称 lint 通过，也没有顺手修生产逻辑。
 - code-audit 促使从正文缺失继续核查同一缓存的写前使用方，并保留无 hook/自身已读两个反向对照；docs-generator 促使首次、写前增量、参考反证与收尾分段入文。仅新增 test-only hook_file_cache.rs、模块入口和本报告，无生产逻辑/依赖/配置/数据库迁移变更；用户原有未跟踪文件不动。
 - 未运行全 workspace、Desktop build/UI、真实 DeepSeek/费用/质量/服务端缓存实验、参考工程测试、其他 hook 事件或并发、多 hook、其他编辑工具、部分内容/压缩/rewind/重启等组合。临时内容均为虚构，未读取真实敏感数据或传给真实供应商。全系统审计仍 active，未处理用户排除的 encrypted-content 错误。
+
+### H-239：hook 去重忽略条件与模型，不适用的声明可吞掉实际校验器
+
+**级别：中（P2，显式多 hook 配置的校验缺失）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 read_file 已复现，未修复。仅模型 transport 为离线 Responses fixture，不代表真实模型判断质量差异。**
+
+#### 首次即时 Evidence（2026-10-24）
+
+- Scope：用户授权的本仓库审计。临时 workspace 内只有 fixture.txt 与 SYNTHETIC_DEDUP_FILE_BODY，默认权限；正式保存两个 PreToolUse/read_file 配置，两个 action 的合法性与持久化后 action_count 均验证通过。主模型发起正常读取；fixture 将 Flash hook 固定为允许、Pro hook 固定为拒绝，仅用于观察调度，不声称 Pro 天然比 Flash 更严格。无真实供应商、用户数据、系统命令、断流或取消。
+- E-239-first（command，content_hash=n/a）：source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/hook_dedup.rs`；`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_dedup --offline -- --include-ignored --nocapture`：**6 passed / 2 failed（缺陷预期），2.20s**。两个缺陷测试在 prompt 样本首次目标断言失败，尚未执行它们循环中的 agent 样本；六类正常对照的 prompt/agent 均已执行，不混淆覆盖范围。
+- E-239-condition：相同 matcher、prompt、model=Pro 的两个组，前组 if=write_file（本次不适用），后组 if=read_file（适用）。真实 hook 模型请求为 **0**、HookCompleted 为0；真实 read_file 成功，其唯一配对 function_call_output 为 ok，完整虚构正文进入主下一请求。没有供应商拒绝、无效 JSON 或超时来解释校验缺失，运行唯一 succeeded。
+- E-239-model：同 matcher/prompt 的两个 prompt hooks，仅 model 不同，先 Flash 后 Pro。只发 **1次 Flash** hook 请求，正常允许；Pro 请求没有发出，真实读取成功，正文进入父请求。该静默丢失并非设置不接受 Pro：单独 Pro hook 的正常对照确实发 Pro 请求，合法 deny 拦住读取、正文未进入父请求。
+- E-239-controls：完全相同的两条 Flash 配置合并执行一次；单独 Pro deny 正常拦截；只给第二条提示词增加后缀，Flash/Pro 都执行且最终拒绝；条件组也只改变第二条提示词后，适用的 Pro 执行并拒绝；仅交换两个条件组的顺序也能拒绝；单独不适用条件则没有模型请求、读取允许。六种各覆盖 prompt/agent，全部通过。所有运行文件均未改、父均收到唯一工具结果并结束为唯一 succeeded，工具拒绝不冒充运行失败。
+
+#### 初始 Finding 与 Path
+
+- F-239（category=design，status=validated，confidence=high，evidence_ids=[E-239-first,E-239-condition,E-239-model,E-239-controls]）：`deepagent-hooks/src/registry.rs::HookRegistry::dispatch` 在调用 hook.run 前按 dedup_key 保留首项；`external_hooks.rs::ExternalHostHook::dedup_key` 仅包括 event/matcher/type/command/prompt/agent，遗漏 group.if_condition 与 action.model。条件直到 run 内才判断，因此保留下来的首项可不适用，真正适用的后项却已被删除。模型也是明确影响实际请求的配置，不是显示字段；AppHookActionExecutor 明确按 action.model 路由，但丢失的 action 无机会到达它。
+- P-239（callflow）：有效设置保存两项 → 正式装配注册两项 → dispatch 相同不完整 key 只保留第一项 → 第一项条件不符直接 Continue（或仅第一模型允许）→ 后项从未执行/未留下 HookCompleted → 父工具继续读取 → 正文进入主下一请求。已证后果为配置校验器被静默跳过，不推断真实外传、任意写权限提升或 OS 沙箱逃逸。
+- 与 H-26（已执行兼容 hook 的结构化 deny 被忽略）、H-237（已启动 hook 的权限继承）不同，本项发生在 hook 自身运行之前。同一根因两个字段缺失合并编号；command/http/mcp 的其他身份字段只列后续核查，未实测不追加已确认后果。成熟对照、agent 缺陷样本与回归收尾随后补充。
+
+#### 增量 Evidence：agent 同样复现，两类模型 hook 均未执行完整策略
+
+- E-239-agent：调整两个缺陷测试，让 prompt/agent 都正式运行完再汇总目标不变量，不改变预期，也不修改生产。相同显式命令再次实跑：**6 passed / 2 failed（缺陷预期），2.37s**。条件组的 agent 请求仍为0、工具 ok、正文进入父请求；双模型 agent 只请求 Flash 一次、Pro 未请求，工具同样 ok。六类正常对照仍各自跑完 prompt/agent 并通过，共16个独立正式运行。
+- F-239 增补 evidence_ids=[E-239-first,E-239-condition,E-239-model,E-239-controls,E-239-agent]；P-239 对 prompt/agent 两类都成立。agent 样本只需直接合法返回 JSON 决策，没有让附属模型执行工具，因此不依赖之前共享缓存、权限或 todo 的缺陷。所有真实读取只针对同一个临时普通文件，未产生写盘副作用。
+
+#### 成熟 Agent 与 DeepSeek 机制对照（源码/官方文档，未运行参考工程）
+
+- **Claude 对条件身份的处理**：`借鉴/claudecode/restored-src/src/utils/hooks.ts:1731–1792` 的 getIfCondition 明确将不同 if 条件视为不同 hook，command/prompt/agent/http 的 dedup payload 均含该条件；去重后再做 if 过滤，不会因忽略条件把不适用与适用项合成一项。本系统 if 位于 group，而参考实现位于 action，字段层次不同，借鉴的是条件属于行为身份，不直接复制其 schema。
+- **来源边界与必须保留的反证**：同文件 hookDedupKey（约1445–1457行）以前缀 pluginRoot/skillRoot 分隔来源，避免不同插件的同模板路径互相吞掉；settings 相同 key 使用 Map 的末项，而本系统 HashSet 保留首项。更重要的是，Claude 的 prompt/agent key 也没有 model，故只能作为条件/来源身份的正例，**不能声称它解决本轮双模型配置丢失**。未实跑参考实现，不据此登记其产品漏洞；改首项为末项也不能保证两个独立模型策略都执行。
+- **Codex 的能力边界不是等价正例**：`借鉴/codex/codex-rs/hooks/src/engine/discovery.rs:637–655` 明确警告并跳过当前不支持的 prompt/agent hook，不能据此说它已实现同类双模型策略。其支持的 handler 使用 source/event/group_index/handler_index 生成配置 key；hook_hash（约776–792行）序列化正规化的 group 与具体 handler 形成信任身份。`engine/mod.rs:291–322` 对 bundled executor cleanup 的去重限定 event、MCP environment、server/tool，而非全体通用 callback 的显示名称。这些是“明确能力/来源/身份边界”的参考，不冒充其 trust hash 等同运行去重或所有字段都已覆盖。
+- **DeepSeek 官方边界**：2026-10-24 联网复核[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)及[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)。函数由宿主执行，Responses 提供正常 function_call/function_call_output 往返；本轮两模型都是当前指南列举的模型名称。是否启动哪个生命周期校验器属于宿主调度契约，strict/schema、思考强度与 KV cache 都无法补救一个根本没发出的 hook 请求。固定允许/拒绝只验证该契约，未测试真实供应商或做 Flash/Pro 质量比较。
+
+#### 根因治理方向与影响（本地设计，尚未实施）
+
+- 在既有 HookRegistry/HookDefinitions 边界定义正规化的行为身份，至少覆盖本轮已证的条件和模型；区分“同一来源重复注册同一策略”与“不同策略恰好同提示词”。身份应以类型化/结构化数据比较，而不是继续在分隔符拼接串后逐个补字段；来源、默认值展开与后端实际执行参数必须有清晰契约。先决定适用性再去重是一种可行设计，但仍须完整行为身份，单改顺序不能解决双模型丢失。
+- 不应简单禁用去重，因为相同配置经多来源装配时原本需要避免重复副作用；也不应靠用户改提示词、换顺序或复制动作类型绕过。明确冲突是保留独立策略、报配置错误还是显式 override；在没有 override 声明时不能静默认为两个不同 model 的 action 等价。执行审计最好能说明 loaded/matched/deduplicated/skipped 及其来源，不打印完整提示词、环境值或凭据。未来验收应保留六类正常对照和两个目标不变量，再覆盖来源合并、once、超时/默认值与其他 action 类型。
+- 影响条件是存在产生 key 碰撞的多 hook 配置，不是默认无 hook 的所有会话。已证后果为指定校验器无请求、无结果事件，真实读取与父上下文交付继续成功；若用户把该 hook 当审批/业务验证补充，其限制可能未实施。真实决策质量、费用变化、用户敏感数据外传、真实写入损失及其他工具仍未验证。P2 基于显式执行契约与纵深校验失效，不宣称任意访问默认权限本来禁止的文件。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 最终显式 `cargo test -p deepagent-app-core --test kernel_v2_e2e hook_dedup --offline -- --include-ignored --nocapture`：**6 passed / 2 failed（缺陷预期），2.37s**，16个正式工作流全部执行后，两个汇总断言失败。六项正常对照默认执行，两个已确认缺陷的目标不变量 ignored；未改变预期让缺陷变绿，也没有重新跑旧问题的 ignored 探针。
+- 本轮 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**69 passed / 71 ignored，11.32s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，8.08s**。`cargo fmt --all -- --check`、`git diff --check` 通过，Markdown fenced blocks=8（偶数）。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未报告 lint 通过。
+- code-audit 促使把“未发出模型请求”与“已执行后忽略决定”区分，并分别验证条件、模型和反向对照；docs-generator 促使首轮 prompt 证据、随后 agent 增量与参考实现反证即时落文。仅新增 test-only hook_dedup.rs、测试入口与本报告；无生产调度/权限/协议修改、依赖增加或数据迁移，不动原有未跟踪文件。
+- 未运行全 workspace、Desktop build/UI、真实 DeepSeek/计费/模型质量实验或参考工程；未动态覆盖其他事件、command/http/mcp action、多来源/插件碰撞、once、超时差异、真实审批以及其他平台。未将静态相似性写成已复现结果，未处理用户排除的 encrypted-content 错误；全系统目标保持 active。

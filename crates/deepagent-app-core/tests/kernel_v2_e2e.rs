@@ -66,6 +66,9 @@ mod hook_permissions;
 #[path = "kernel_v2_e2e/hook_file_cache.rs"]
 mod hook_file_cache;
 
+#[path = "kernel_v2_e2e/hook_dedup.rs"]
+mod hook_dedup;
+
 #[path = "kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
 
