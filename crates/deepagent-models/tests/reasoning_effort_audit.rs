@@ -8,7 +8,7 @@ use deepagent_core::message::Message;
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
 use deepagent_models::{
     ModelCatalog, ModelClient, ModelConfig, ModelDiscovery, ModelRole, ReasoningEffort,
-    ResponseDefaults, ResponseRequest,
+    ResponseDefaults, ResponseRequest, ToolSchema,
 };
 
 const CATALOG: &str = r#"{"object":"list","data":[{
@@ -112,5 +112,93 @@ async fn audit_flash_thinking_mode_top_p_below_floor_reaches_wire_unchanged() {
         wire_top_p,
         Some(0.2),
         "in DeepSeek Flash thinking mode, a configured top_p below 0.95 is normalized by the provider; local config and wire should not imply that 0.2 is effective"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit reproducer: DeepSeek model/reasoning/tool combinations do not all honor explicit top_p"]
+async fn audit_model_specific_top_p_rules_reach_wire() {
+    let transport = Arc::new(AuditTransport::default());
+    let config =
+        ModelConfig::deepseek("offline-audit-placeholder").with_defaults(ResponseDefaults {
+            reasoning_effort: Some(ReasoningEffort::High),
+            top_p: Some(0.2),
+            ..ResponseDefaults::default()
+        });
+    let client = ModelClient::new(transport.clone(), config);
+
+    let without_tools =
+        ResponseRequest::new("deepseek-v4-pro", vec![Message::user("Reply briefly.")]);
+    client.stream_response(without_tools).await.unwrap();
+
+    let with_tool = ResponseRequest::new("deepseek-v4-pro", vec![Message::user("Reply briefly.")])
+        .with_tools(vec![ToolSchema::function(
+            "read_file",
+            "Read a file.",
+            serde_json::json!({"type":"object","properties":{},"additionalProperties":false}),
+        )]);
+    client.stream_response(with_tool).await.unwrap();
+
+    let pro_without_thinking =
+        ResponseRequest::new("deepseek-v4-pro", vec![Message::user("Reply briefly.")])
+            .with_reasoning_effort(ReasoningEffort::None);
+    client.stream_response(pro_without_thinking).await.unwrap();
+
+    let flash_without_thinking =
+        ResponseRequest::new("deepseek-flash", vec![Message::user("Reply briefly.")])
+            .with_reasoning_effort(ReasoningEffort::None);
+    client
+        .stream_response(flash_without_thinking)
+        .await
+        .unwrap();
+
+    let requests = transport.requests.lock().unwrap();
+    let observed: Vec<_> = requests
+        .iter()
+        .map(|request| {
+            (
+                request["model"].as_str(),
+                request["tools"]
+                    .as_array()
+                    .is_some_and(|tools| !tools.is_empty()),
+                request["reasoning"]["effort"].as_str(),
+                request["top_p"].as_f64(),
+            )
+        })
+        .collect();
+    let documented_effective_top_p = [1.0, 0.95, 0.2, 1.0];
+    eprintln!(
+        "thinking top_p audit: configured_top_p=0.2, requests={observed:?}, documented_effective_top_p=[pro_without_tools:{}, pro_with_tools:{}, pro_none:{}, flash_none:{}]",
+        documented_effective_top_p[0],
+        documented_effective_top_p[1],
+        documented_effective_top_p[2],
+        documented_effective_top_p[3]
+    );
+
+    assert_eq!(observed.len(), 4);
+    assert_eq!(
+        observed[0],
+        (Some("deepseek-v4-pro"), false, Some("high"), Some(0.2))
+    );
+    assert_eq!(
+        observed[1],
+        (Some("deepseek-v4-pro"), true, Some("high"), Some(0.2))
+    );
+    assert_eq!(
+        observed[2],
+        (Some("deepseek-v4-pro"), false, Some("none"), Some(0.2))
+    );
+    assert_eq!(
+        observed[3],
+        (Some("deepseek-flash"), false, Some("none"), Some(0.2))
+    );
+    assert!(
+        observed
+            .iter()
+            .zip(documented_effective_top_p)
+            .all(|((_, _, _, configured_wire_value), effective_value)| {
+                *configured_wire_value == Some(effective_value)
+            }),
+        "DeepSeek Pro thinking ignores configured top_p (effective 1.0 without tools and 0.95 with tools), and Flash non-thinking also ignores it (effective 1.0); the Pro non-thinking control uses configured 0.2"
     );
 }
