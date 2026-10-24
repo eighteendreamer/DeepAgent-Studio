@@ -337,6 +337,57 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-251: named canvas workflows must enforce workspace scope on list/load/delete"]
+    fn audit_named_workflows_require_workspace_scope() {
+        let store = store();
+        let workspace_a = store
+            .save_workflow(
+                None,
+                "workspace-a-secret",
+                "creative",
+                Some("workspace-a"),
+                &json!({"nodes":[{"id":"a-only"}]}),
+            )
+            .expect("save workspace A");
+        let workspace_b = store
+            .save_workflow(
+                None,
+                "workspace-b-secret",
+                "creative",
+                Some("workspace-b"),
+                &json!({"nodes":[{"id":"b-only"}]}),
+            )
+            .expect("save workspace B");
+
+        let listed = store.list_workflows().expect("list workflows");
+        let loaded_b = store
+            .load_workflow(&workspace_b.id)
+            .expect("load workspace B")
+            .expect("workspace B exists");
+        let deleted_b = store
+            .delete_workflow(&workspace_b.id)
+            .expect("delete workspace B");
+        let list_exposes_b = listed.iter().any(|item| item.id == workspace_b.id);
+        let load_exposes_b = loaded_b.workspace_id.as_deref() == Some("workspace-b");
+        eprintln!(
+            "canvas workflow scope audit: listed_ids={:?}, list_exposes_b={}, loaded_workspace={:?}, load_exposes_b={}, deleted_other_workspace={}, retained_a_id={}",
+            listed.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
+            list_exposes_b,
+            loaded_b.workspace_id,
+            load_exposes_b,
+            deleted_b,
+            store
+                .load_workflow(&workspace_a.id)
+                .expect("load workspace A")
+                .is_some(),
+        );
+        assert!(
+            !list_exposes_b && !load_exposes_b && !deleted_b,
+            "workspace-scoped canvas APIs exposed or deleted another workspace's workflow"
+        );
+    }
+
+    #[test]
     fn rejects_unknown_mode_bad_id_and_oversized_graph() {
         let store = store();
         let mode_error = store

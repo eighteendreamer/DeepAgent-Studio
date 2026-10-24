@@ -6589,3 +6589,40 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 已执行精确生产 artifact 探针，结果 **0 passed / 1 failed（缺陷预期）**；失败发生在正式 `resolve_for_provider()` 返回替换 bytes 之后，不是测试夹具错误。没有修改生产完整性逻辑，只新增 test-only ignored 探针。
 - 已执行 `git diff --check`；`cargo fmt --all -- --check` 将在本轮提交前复跑。未运行真实 Tauri、真实用户目录、备份软件、跨进程竞态、真实 DeepSeek 请求或供应商账单，也没有访问公网、内网或 metadata 服务。
 - 本项不重复 H-70（Chat 历史附件 digest）、H-165（供应商 URL 第二跳）、H-167/H-248（provider 二进制容量）或用户排除的 `encrypted-content` 报错。
+
+### H-251：命名画布工作流保存了 workspace_id，但库查询、读取和删除没有 workspace 访问边界
+
+**级别：高（P1，跨项目工作流泄露与破坏）；触发条件：** 同一宿主数据库中存在多个 workspace/project，命名工作流由 `canvas_workflow_save` 写入不同 `workspace_id`，随后任一窗口、插件或调用方使用公开的 `canvas_workflow_list`、`canvas_workflow_load(id)` 或 `canvas_workflow_delete(id)`。保存接口接受 workspace 身份，但后续三个库操作没有接收调用者 workspace，也没有在 SQL/文档层比较 `CanvasWorkflowDoc.workspace_id`。本项不重复 H-244：H-244 是同一 live canvas 的陈旧快照覆盖；H-251 是不同 workspace 的可见性与删除隔离。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；使用正式 `CanvasWorkflowStore`、内存 SQLite 和两个虚构 workspace。图内容仅为 `a-only`/`b-only`，没有真实项目文件、用户数据、Tauri 窗口、模型凭据或网络。
+- E-251-first（command，content_hash=n/a）：在 `crates/deepagent-app-core/src/canvas_workflow_store.rs::tests::audit_named_workflows_require_workspace_scope` 增加 ignored 故障探针，执行：
+  `cargo test -p deepagent-app-core --lib canvas_workflow_store::tests::audit_named_workflows_require_workspace_scope --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（缺陷预期）**。生产输出：`listed_ids=[wf-...A, wf-...B], list_exposes_b=true, loaded_workspace=Some("workspace-b"), load_exposes_b=true, deleted_other_workspace=true, retained_a_id=true`。失败来自最终隔离不变量，不是夹具造假：同一 `CanvasWorkflowStore` 的 `list_workflows()` 返回 A/B 两条，`load_workflow(B)` 返回 B 的完整文档，`delete_workflow(B)` 返回 `true`；A 仍可读取。
+- E-251-callflow：Tauri `canvas_workflow_save`（`apps/desktop/src-tauri/src/lib.rs`）将 `workspace_id` 传入 `save_workflow`；但 `canvas_workflow_list` 无 workspace 参数，`canvas_workflow_load` 与 `canvas_workflow_delete` 只接受 `id`。服务实现 `list_workflows()` 对 collection 全量 `DocumentStore::list` 后仅过滤 `current=false`，`load_workflow()` 直接按 id 取文档，`delete_workflow()` 直接按 id 删除，均未比较 `CanvasWorkflowDoc.workspace_id`。
+- E-251-control：探针只调用公开保存、列表、读取和删除方法，没有手工改 SQLite 行或绕过 `DocumentStore`；workspace 字段由生产 `save_workflow` 写入。故障只来自缺少 scope 资格检查。
+
+#### 初始 Finding 与 Path
+
+- F-251（category=authorization/isolation，status=validated，confidence=high，evidence_ids=[E-251-first]）：`workspace_id` 目前是可回显的元数据而非访问控制条件。知道另一个 workflow id（列表本身已经泄露 id/name）即可跨 workspace 读取完整 graph，或删除另一项目的命名工作流；调用成功且没有 conflict/forbidden 结果。
+- P-251（callflow）：workspace A/B 分别 `save_workflow(..., workspace_id)` → 同库 `canvas_workflows` 文档 → A 窗口调用 `canvas_workflow_list` 得到 A+B → 以 B 的 id 调用 `canvas_workflow_load` 得到 B graph，或调用 `canvas_workflow_delete` 移除 B。当前 live canvas 的 `current:<mode>:<workspace>` key 有 workspace 分隔，因此本项只针对 named workflow library，不把 live slot 误算进来。
+- 已证后果：多项目用户可在一个项目界面看到其他项目的工作流名称和更新时间，并读取其中的节点提示词、供应商配置引用、artifact URI、知识库/工具参数；误点删除会破坏另一个项目的可复用流程。因为 workspace id 没有进入 DTO/list 参数，也没有审计事件，本地调用方无法区分“找不到”与“无权访问”。本轮没有证明恶意远程进程能调用 Tauri command，也没有将本地多项目缺陷夸大为公网越权。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **Codex**：`借鉴/codex/codex-rs/state/src/runtime/threads.rs` 的 `ThreadFilterOptions` 把 `cwd_filters`、`project_id`、`archived_only` 等身份过滤作为列表查询参数；`push_thread_filters_with_preview` 在 `LIMIT` 前编译为 SQL `WHERE threads.project_id = ?`/cwd/archived 条件。它的对照价值是：列表边界在存储查询处强制表达，而不是先返回全局集合再由 UI 猜测当前项目。这里未声称 Codex 的所有删除路径都等价于本项目 workspace ACL，也未运行参考工程。
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/session-query/session-query-sqlite/src/index.ts::_querySessions` 把 `buildSessionWhere(request.sessionFilters)` 放进 `filtered` CTE，再做排名和 `LIMIT/OFFSET`；`cwd`/availability 等筛选由查询请求显式携带。其 settings-controller 还把写操作绑定到明确 namespace，并用 revision/conflict 处理过期提交。该项目没有本系统同名 workflow library，但可借鉴的边界是“查询/写入 API 必须携带作用域或命名空间，过滤发生在持久层”，不能靠桌面调用方后过滤。
+- **DeepSeek 官方 Responses**：[Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api)说明接口无状态，多轮 input 由宿主自行维护；provider 不知道本地 workspace，也不会替宿主判断哪个 graph 可读。因此 H-251 是宿主授权/持久化缺陷，不是 DeepSeek 参数能自动修复的问题。若跨 workspace graph 被读出，后续 graph 中的 prompt、artifact URI 或工具配置会作为宿主 input 进入模型请求；KV cache 只对已发送前缀尽力复用，不能提供 workspace 隔离。
+
+#### 影响评估与收敛方向（本地设计，未实施）
+
+- 影响评为 P1：单项目、单窗口且没有其他 workspace 时通常不可见；多项目共用数据库、项目切换、插件调用或误操作时会发生跨项目信息泄露和可恢复性差的删除。名称/graph 可能包含敏感提示词、内部路径、artifact 引用或供应商设置，删除还会让后续工作流加载失败。不是远程 SSRF/RCE，风险边界是本地宿主内的 workspace 隔离。
+- 在现有 `CanvasWorkflowStore`/Tauri command 边界建立唯一 scope-aware API：`list_workflows(workspace_id)`、`load_workflow(id, workspace_id)`、`delete_workflow(id, workspace_id)`；读取到文档后必须比较规范化 workspace，缺失 scope 的旧文档只允许显式迁移/默认 workspace 策略，不得当作全局可见。跨 workspace 的存在性应统一返回 not-found 或结构化 `workflow_scope_denied`，避免 id 枚举。
+- `save_workflow(Some(id), ...)` 也必须在覆盖前按 workspace 做 compare-and-swap/ownership check，不能让 A 以已知 B 的 id 覆盖 B；删除应先写审计事件或可恢复 tombstone，再从库中移除。前端列表、加载、删除、导入导出和 run admission 必须都传同一 workspace identity，不允许 UI 端再做二次过滤。
+- 回归需覆盖：A/B/默认 workspace 的 list/load/delete/overwrite；未知 id 与跨 scope 的统一错误；数据库重开、旧文档缺失 workspace、workspace 切换中的并发调用、Tauri command DTO 与前端类型；并断言跨 scope 时 provider/tool/workflow run 不会接收到被读出的 graph，删除失败不改变目标文档。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行精确生产探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过，失败由目标隔离断言触发。未修改生产授权逻辑，只新增 test-only ignored 探针。
+- 未运行 workspace 全量、Desktop build/UI、真实多窗口、插件调用方、远程 daemon、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-244、H-250 及此前 H-245～H-249 不重复计数。
