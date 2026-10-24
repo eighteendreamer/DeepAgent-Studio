@@ -29,6 +29,30 @@ struct ModalityTransport {
     requests: Mutex<Vec<(String, usize)>>,
 }
 
+#[derive(Default)]
+struct RoleImageTransport {
+    requests: Mutex<Vec<serde_json::Value>>,
+}
+
+#[async_trait]
+impl HttpTransport for RoleImageTransport {
+    async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+        self.requests
+            .lock()
+            .unwrap()
+            .push(serde_json::from_str(&request.body).unwrap());
+        for event in [
+            r#"{"type":"response.output_text.delta","delta":"Offline image-role audit."}"#,
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+        ] {
+            if sink.on_event(event)? {
+                break;
+            }
+        }
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl HttpTransport for ModalityTransport {
     async fn get_json(&self, url: &str, _key: &str) -> Result<String> {
@@ -66,6 +90,68 @@ struct Observation {
     accepted: bool,
     requests: Vec<(String, usize)>,
     modalities_retained: bool,
+}
+
+#[derive(Debug)]
+struct RoleImageObservation {
+    accepted: bool,
+    transport_calls: usize,
+    image_parts: usize,
+    content_was_string: bool,
+}
+
+async fn sample_image_role(role: &str) -> RoleImageObservation {
+    let transport = Arc::new(RoleImageTransport::default());
+    let client = ModelClient::new(
+        transport.clone(),
+        ModelConfig::deepseek("offline-audit-placeholder"),
+    );
+    let request = ResponseRequest::from_response_items(
+        "deepseek-flash",
+        None,
+        vec![ResponseInputItem::InputMessage {
+            role: role.into(),
+            content: "Interpret this role-scoped image.".into(),
+            attachments: vec![MessageAttachment {
+                id: "role-image".into(),
+                kind: "image".into(),
+                media_type: Some("image/png".into()),
+                path: None,
+            }],
+        }],
+    )
+    .with_attachment_data_urls(BTreeMap::from([(
+        "role-image".into(),
+        concat!(
+            "data:image/png;base64,",
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+ip1sAAAAASUVORK5CYII="
+        )
+        .into(),
+    )]));
+    let accepted = client
+        .stream_response_cancelled(request, Arc::new(AtomicBool::new(false)))
+        .await
+        .is_ok();
+    let requests = transport.requests.lock().unwrap();
+    let image_parts = requests
+        .iter()
+        .filter_map(|body| body["input"].as_array())
+        .flatten()
+        .filter_map(|item| item["content"].as_array())
+        .flatten()
+        .filter(|part| part["type"] == "input_image")
+        .count();
+    let content_was_string = requests
+        .first()
+        .and_then(|body| body["input"].as_array())
+        .and_then(|input| input.first())
+        .is_some_and(|item| item["content"].is_string());
+    RoleImageObservation {
+        accepted,
+        transport_calls: requests.len(),
+        image_parts,
+        content_was_string,
+    }
 }
 
 async fn sample(model: &str, with_image: bool) -> Observation {
@@ -145,5 +231,33 @@ async fn audit_declared_input_modalities_constrain_requests() {
     assert!(
         text_only.modalities_retained && !text_only.accepted && text_only.requests.is_empty(),
         "declared input modalities were lost and an unsupported image request reached transport"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit probe: Responses image roles must follow the DeepSeek contract"]
+async fn audit_responses_image_roles_preserve_or_reject_content() {
+    let developer = sample_image_role("developer").await;
+    let assistant = sample_image_role("assistant").await;
+    eprintln!("responses image-role audit: developer={developer:?} assistant={assistant:?}");
+    assert_eq!(
+        (
+            developer.accepted,
+            developer.transport_calls,
+            developer.image_parts,
+            developer.content_was_string,
+        ),
+        (true, 1, 1, false),
+        "DeepSeek Responses treats developer as user, so its input_image must not be discarded"
+    );
+    assert_eq!(
+        (
+            assistant.accepted,
+            assistant.transport_calls,
+            assistant.image_parts,
+            assistant.content_was_string,
+        ),
+        (false, 0, 0, false),
+        "an assistant image must be rejected before transport instead of becoming a successful text-only request"
     );
 }
