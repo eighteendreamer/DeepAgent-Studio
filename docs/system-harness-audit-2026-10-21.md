@@ -1066,6 +1066,20 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 修复应复用现有 ArtifactStore 和 session/run 归属，明确临时中间文件与被历史引用的结果资产的不同生命周期。后者按引用与保留策略清理；清理需同步索引、可见状态和恢复语义，失败需可诊断。目录身份、原子写入和同 call_id 跨运行的边界也需覆盖，不能只在某个调用方改一个 cleanup 开关后宣称完整解决。
 - 验收应覆盖 turn 结束、继续对话、重启、取消、并行结果、保存失败和受控保留期回收；同一历史引用在允许保留期内必须指向相同完整内容。本轮未修改生产生命周期。
 
+#### 2026-10-24 增量复现：不同 run 的同名 `call_id` 覆盖完整结果
+
+本段仍归入 H-36，**不新增 H 编号**。它与“turn 结束删除”是不同根因：即使把 `cleanup_on_run_end` 关闭，workspace 级 `output_dir` 仍以清洗后的 `call_id` 作为唯一文件名，没有 session/run 命名空间或内容寻址。
+
+- E-36-collision（2026-10-24，command，content_hash=n/a）：新增 ignored 单元探针 `tool_budget::tests::audit_same_call_id_from_two_runs_does_not_overwrite_saved_result`，直接调用生产 `apply_tool_result_budget()`；同一临时 workspace 目录、不同 `session_id`（`session_a`/`session_b`）、相同合法非空 `call_id=provider_call_1`，先写 `AUDIT_A`，再写 `AUDIT_B`。两次返回的 `saved_path` 均为同一个 `provider_call_1.txt`；第二次读回含 `AUDIT_B`，第一条模型可见引用因此不再指向自己的完整字节。未调用公网、未改用户文件、未手工覆盖文件。
+- 复现命令：`cargo test -p deepagent-runtime tool_budget::tests::audit_same_call_id_from_two_runs_does_not_overwrite_saved_result --offline -- --ignored --exact --nocapture`；结果 **0 passed / 1 failed（预期）**，输出 `first_path=...provider_call_1.txt second_path=...provider_call_1.txt first_has_a=true after_second_has_b=true`。失败断言要求两次路径不同，矩阵完成后才失败。
+- 触发边界是两个并存或交错 run 共享同一 `tool_results_dir` 且 provider/fixture 使用相同 call id；DeepSeek 官方只在 Responses 输入配对契约中要求 call_id 非空且唯一（本次官方文档未承诺跨会话全局唯一），所以本项不声称正常 DeepSeek 必然重复 id。它证明宿主没有建立自己的 run-scoped identity，不能把 provider 的偶然唯一性当作文件隔离。
+
+P-36-collision（callflow，关联 E-36-collision）：Responses function_call call_id → `ToolExecutionPipeline` → `apply_tool_result_budget(config.output_dir, session_id, tool, call_id, output)` → `result_path(sanitize(call_id))` → 共享 workspace 文件 → 第二 run 覆盖第一 run 的 artifact 字节。F-36-collision（design，validated，confidence=high，evidence_ids=[E-36-collision]）：函数签名接收 `_session_id` 却不用于路径，说明隔离信息已到达预算边界但被丢弃；ArtifactStore 记录的是路径而非内容摘要，覆盖后索引仍看似存在。
+
+成熟实现对照：Claude Code `toolResultStorage.ts::getToolResultsDir()` 将项目和 session id 放入目录，并以 `wx` 避免同一 tool-use id 反复覆盖；本系统当前使用 workspace `.deepagent/tool_results`，`result_path()` 只拼接清洗后的 call id，且 `persist_full_output()` 使用覆盖式 `write`。Codex 工具输出通常由调用/消息身份携带并由宿主生命周期管理，本轮未找到可直接证明其跨 run 文件布局的单一实现，故不把 Codex 写成已验证解决本项。
+
+后果：第一 run 的 `saved_path` 仍存在但内容已变成第二 run 的结果；模型回读、artifact 预览、重启后的历史恢复可能出现跨会话数据混淆。若第二结果含敏感内容，会把其暴露给持有第一引用的上下文；本探针只验证内容覆盖，没有把它扩写成任意文件写入或权限绕过。修复应使用现有 session/run 归属生成不可碰撞路径（至少 `run_id/session_id + call_id`），并在 ArtifactStore 写入原子、唯一 id 与 digest；保留期清理要按同一 owner 删除。不要只把 `write` 换成 `wx`：那会把第二 run 变成保存失败，仍无法满足两个历史引用可回读。
+
 ### H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上
 
 **级别：高（P1）；范围：Cron 触发的后台会话发生需要人工决策的工具调用。** 用户已有授权或自动策略允许的操作不一定触发；本项不是绕过审批执行命令，而是审批无人接收导致运行无法继续。与 H-15 的“终态后迟到授权”是不同生命周期阶段。

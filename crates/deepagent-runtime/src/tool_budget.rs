@@ -237,4 +237,52 @@ mod tests {
 
         assert!(!file.exists());
     }
+
+    #[tokio::test]
+    #[ignore = "audit H-36 extension: workspace-scoped result paths collide across runs"]
+    async fn audit_same_call_id_from_two_runs_does_not_overwrite_saved_result() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = ToolResultBudgetConfig {
+            max_tokens: 2,
+            preview_tokens: 1,
+            output_dir: dir.path().to_path_buf(),
+            cleanup_on_run_end: false,
+            ..Default::default()
+        };
+        let first = apply_tool_result_budget(
+            &config,
+            "session_a",
+            "remote_tool",
+            "provider_call_1",
+            ToolOutput::success(serde_json::json!({"source":"run-a","tail":"AUDIT_A"})),
+        )
+        .await;
+        let first_path = PathBuf::from(first.value["saved_path"].as_str().unwrap());
+        let first_bytes = tokio::fs::read_to_string(&first_path).await.unwrap();
+
+        let second = apply_tool_result_budget(
+            &config,
+            "session_b",
+            "remote_tool",
+            "provider_call_1",
+            ToolOutput::success(serde_json::json!({"source":"run-b","tail":"AUDIT_B"})),
+        )
+        .await;
+        let second_path = PathBuf::from(second.value["saved_path"].as_str().unwrap());
+        let second_bytes = tokio::fs::read_to_string(&second_path).await.unwrap();
+        eprintln!(
+            "H-36 path collision: first_path={} second_path={} first_has_a={} after_second_has_b={}",
+            first_path.display(),
+            second_path.display(),
+            first_bytes.contains("AUDIT_A"),
+            second_bytes.contains("AUDIT_B")
+        );
+
+        assert_ne!(
+            first_path, second_path,
+            "saved result paths must be run-scoped"
+        );
+        assert!(first_bytes.contains("AUDIT_A"));
+        assert!(second_bytes.contains("AUDIT_B"));
+    }
 }
