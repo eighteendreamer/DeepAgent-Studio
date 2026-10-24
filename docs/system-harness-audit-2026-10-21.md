@@ -27,6 +27,7 @@
 | agent-hook 的有效权限继承 | 主 read_file 被用户 Read deny 或默认 WorkspaceWrite 的 PathGuard 拒绝；同次运行的 hook 使用同一工具读取相同临时文件，正文进入 hook 下一模型请求 | 已确认 H-237（P1）；显式规则与工作区边界两条探针，未命中/无规则/敏感文件对照通过；无真实敏感数据或公网传输 |
 | agent-hook 的已读状态归属 | 主/hook 双向首次读取均可能收到另一个上下文造成的空桩；只有 hook 读过也能让主 write_file 覆盖原文 | 已确认 H-238（P2）；五个正常对照、三个缺陷探针；真实临时文件与离线模型，不是服务端 KV cache 实验 |
 | 模型型 hook 的身份与调度去重 | 同 matcher/prompt 但条件不同的后项被首项吞掉，适用的校验器请求为0；仅模型不同时只运行首模型 | 已确认 H-239（P2）；prompt/agent 两类型均复现，六类正常对照通过；离线固定决策，不是模型能力 A/B |
+| 一次性 hook 的触发资格 | 单个 once 写校验器被先前不匹配的 read 消耗，之后首次写请求没有任何 hook 模型请求，临时新文件实际生成 | 已确认 H-240（P2）；matcher/if 两种不匹配、prompt/agent 两类型均复现，五类正常对照通过；无真实用户文件 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
@@ -195,6 +196,7 @@
 | 嵌套执行的权限继承 | agent-hook 的私有 Runtime 不含父 PermissionRules/PathGuard，实际克隆的主工具却以 FsAccess::Full 构造，主运行拒绝的同一读取仍成功（H-237） | Claude hook 保留父权限上下文并经同一 deny-first 检查；Codex 子运行显式继承有效审批策略与权限快照，角色覆盖只能在父授权内调整 | Safe 工具筛选不等于资源授权；启用 hook 后，用户显式 deny 和默认工作区读取边界不能贯穿附属执行 |
 | 文件缓存与模型观察凭证 | FileStateCache 将共享磁盘快照、已交付正文和写前已读合成路径级状态，独立 hook/主上下文互相串用（H-238） | Claude 普通子 Agent 将历史 fork 与 cache clone 配套，但其 agent-hook 静态存在相似共享风险；DeepSeek Harness 的可选 observation policy 以 session owner 分隔版本凭证 | 可以共享磁盘字节，不能因此认定每个模型都见过；读取成功空桩造成证据缺失，写前兜底也可能放过盲写 |
 | 扩展策略的行为身份 | HookRegistry 在判断条件前以遗漏 if/model 的 key 保留首项，正常配置也会静默漏执行（H-239） | Claude 的 hook 去重 key 包含 if 与插件/技能来源，但同样未含 model，不能当双模型方案正例；Codex 对不支持的 prompt/agent hook 给出加载警告 | 配置已保存不等于策略被执行；仅换声明顺序即可改变工具是否被拒，调度层应能解释匹配与去重结果 |
+| 一次性策略的消耗阶段 | OnceHook 在 matcher/if 判断前置 fired，首次无关 dispatch 也永久消耗执行机会（H-240） | Claude skill once hook 在匹配后执行，只由真实结果的 onHookSuccess 回调移除；其 success/deny 消耗语义不能直接照搬 | 声称只执行一次的校验可能一次都没执行；应区分跳过、实际启动、决定与消耗，不以一个 Continue 代替所有事实 |
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
 | 运行及附属工作的归属 | 子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-45/H-60/H-61/H-64）；原生摘要取消已修复 | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
@@ -6151,3 +6153,41 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 本轮 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**69 passed / 71 ignored，11.32s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，8.08s**。`cargo fmt --all -- --check`、`git diff --check` 通过，Markdown fenced blocks=8（偶数）。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未报告 lint 通过。
 - code-audit 促使把“未发出模型请求”与“已执行后忽略决定”区分，并分别验证条件、模型和反向对照；docs-generator 促使首轮 prompt 证据、随后 agent 增量与参考实现反证即时落文。仅新增 test-only hook_dedup.rs、测试入口与本报告；无生产调度/权限/协议修改、依赖增加或数据迁移，不动原有未跟踪文件。
 - 未运行全 workspace、Desktop build/UI、真实 DeepSeek/计费/模型质量实验或参考工程；未动态覆盖其他事件、command/http/mcp action、多来源/插件碰撞、once、超时差异、真实审批以及其他平台。未将静态相似性写成已复现结果，未处理用户排除的 encrypted-content 错误；全系统目标保持 active。
+
+### H-240：一次性 hook 被不匹配的工具提前消耗，首次实际写入没有经过校验
+
+**级别：中（P2，显式 once hook 的执行语义失效）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 read_file/write_file 已复现，未修复。模型 transport 为离线正常 Responses fixture。**
+
+#### 首次即时 Evidence（2026-10-24）
+
+- Scope：用户授权仓库内审计。新建临时 workspace，只有 primer.txt 与虚构正文 SYNTHETIC_UNRELATED_READ；target.txt 初始不存在，写入内容也是虚构文本。Default 权限，只有一个 PreToolUse action，排除 H-239 的多项去重碰撞。prompt/agent hook 的模型 fixture 固定返回合法 deny，仅用来观察执行链，不是真实 DeepSeek 决策/计费实验；无 shell、外部服务、取消或异常响应。
+- E-240-first（command，content_hash=n/a）：source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/hook_once.rs`；`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_once --offline -- --include-ignored --nocapture`：**5 passed / 2 failed（缺陷预期），1.90s**。七类样本各自完整执行 prompt/agent 后才做汇总目标断言，共14个正式运行；五类正常对照通过。
+- E-240-matcher：正式保存 matcher=write_file、once=true。父模型先 read_file(primer.txt)，真实读取成功并返回虚构正文；随后首次 write_file(target.txt)。hook 模型请求=0、PreToolUse HookCompleted=0；父下一 wire 中该写调用的唯一 function_call_output 为 ok，真实磁盘 target.txt 等于 SYNTHETIC_WRITE_WITHOUT_ONCE_REVIEW。prompt/agent 两类均如此，运行各自唯一 succeeded；不是只看到 schema 就声称写入，也不是误把先前已执行过的 hook 视为失效。
+- E-240-condition：仅把 matcher 改为 *、添加 if=write_file，保留 once=true；同一先读后写流程也出现请求=0、工具 ok、真实目标文件生成。只有一个 action，条件未匹配的读取不应消耗首次真正适用的写校验机会。本样本与 matcher 样本同根因，不另编号。
+- E-240-controls：①直接以写工具开始、once=true：prompt/agent 都实际请求 hook 一次、得到合法 deny、工具 error/hook_denied、目标不存在；②先读后写但 matcher 组 once=false：实际请求一次并拒绝写；③条件组 once=false：同样拒绝；④两个匹配写调用、once=true：第一调用拒绝、第二调用允许，hook 恰好一次，验证“真正执行后消耗”这一正常语义；⑤两个匹配写调用、once=false：两次均拒绝、目标不存在。每项都验证唯一调用/结果配对，primer 原文不变，运行各自唯一 succeeded；工具拒绝不等于运行失败。
+
+#### 初始 Finding 与 Path
+
+- F-240（category=design，status=validated，confidence=high，evidence_ids=[E-240-first,E-240-matcher,E-240-condition,E-240-controls]）：`deepagent-hooks/src/external_hooks.rs::HookDefinitions::register_into_with_host` 将带 matcher/if 的完整 ExternalHostHook 放进 OnceHook；`OnceHook::run:1161–1165` 先 fired.swap(true)，再 inner.run(ctx)。内部 matcher/condition 检查这时才运行；不匹配返回 Continue，wrapper 却已永久消耗本实例机会。HookMatcherGroup::once 注释承诺 first execution 后跳过，但实际是 first dispatch，不是 first applicable execution。现有 once_hook_fires_only_once 单测只有不带 matcher/条件的计数 inner，不能覆盖这个边界。
+- P-240（callflow）：单个 once 写校验器注册 → 无关 read 的 BeforeToolUse dispatch → OnceHook 提前置 fired → 内部 matcher/if 不匹配、实际 host 未执行 → 后续首次 write dispatch 直接 Continue → 真实新文件成功写入。与 H-239 的错误行为身份/多项去重不同，即使修复 dedup，本项单 action 仍成立；与 H-237 的 hook 运行后权限继承也不同。
+- 已证后果为校验器从未运行但写操作实际发生，父原本具备 workspace 写权限，不宣称凭空越权或操作系统沙箱逃逸。只读过另一个临时文件，不涉及 H-238 的共享“已读”状态；target 初始不存在，本来不需要 read-before-edit。成熟参考、治理方向和本轮回归随后补充，不把未实测的 command/http/mcp 或跨 turn/重启行为登记为已确认后果。
+
+#### 成熟 Agent 与 DeepSeek 机制对照（静态源码/官方文档）
+
+- **Claude 的直接可比机制是 skill session hook**：`借鉴/claudecode/restored-src/src/utils/hooks/registerSkillHooks.ts:10–12,35–51` 将 skill hooks 注册为 session hook，once=true 时设置 onHookSuccess 回调，在实际成功后 removeSessionHook。`utils/hooks.ts:2004–2013` 先 getMatchingHooks，列表为空便返回；匹配函数先过滤 matcher（约1680行）、再过滤 if（约1822行），只有留下的项进入执行。约2918–2921行仅对真实结果 outcome=success 调用回调。由此可参考的是**不匹配不构成执行，也不应触发消耗回调**，不是把每次事件经过 wrapper 当成触发。
+- **语义边界必须保留**：Claude 这里是 skill/session 注册，本系统是通用 group.once 的 AtomicBool wrapper；其 success 限定与本系统“实际执行即消耗（包括拒绝）”的现有正常对照并非完全一致。本轮不主张把拒绝是否消耗、失败重试、session 生命周期照搬，也未动态跑参考项目。该项优先使用有同类 once 能力的 Claude 作机制对照，没有给 Codex 或 DeepSeek Harness 编造等价一次性 hook API。
+- **DeepSeek 官方边界**：2026-10-24 联网核对[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)和[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)。具体函数由宿主执行，工具往返可通过 function_call/function_call_output 表达。本轮主请求均正常 completed、调用和返回唯一配对；问题不是模型不遵守 JSON schema，而是宿主从未发出应该执行的 hook 模型请求。改 thinking、strict、采样或 KV cache 不能修复错误的触发资格。没有测真实 DeepSeek 请求/计费/质量，也不把离线固定 deny 宣称为真实模型一定会拒绝。
+
+#### 根因治理方向与影响评估（本地设计，未实施）
+
+- 应在既有 HookRegistry/Hook trait 边界区分适用性、执行、决定与一次性状态的提交。可以设计先做无副作用匹配，再按显式 once owner 原子领取实际执行机会；跳过项不领取。现有 Continue 同时表示“不匹配”与“执行后允许”，所以只把 fired.swap 移到 inner.run 返回之后仍无法区分，也会引入并发重复执行窗口；不能据 Continue 猜是否执行，更不能每个 action 各写一套 matcher/once 状态机。
+- 明确 once 的 owner 与 lifetime，以及真正启动后允许/拒绝/超时/取消/失败是否消耗。若需要 Ready/Claimed/Consumed 这类阶段，应在现有 hook 执行上下文收敛，并与可观测的 matched/skipped/started/completed 状态协调，不新建 run store/审批中心。本轮没有验证跨 turn 重建、重启、skill/plugin 动态注册或并发，故只提出后续验收要求，不能宣称当前问题是持久化一次性保证失效或未来实现可做到任意副作用 exactly-once。
+- 影响条件是启用了带 matcher/if 的 once hook，且第一次到达相应生命周期点的工具不匹配。正常“先读取了解，再写入”的工具顺序即可触发，无需恶意参数、多 hook、断流或异常供应商。已证后果为真实新文件写入，预定校验器的请求与结果事件均为0；若其用于首次写入检查或业务前置任务，这些保障可能完全没有执行。尚未验证真实数据损失、外部操作或其他工具；默认无此 hook 的运行不受本项证明覆盖。
+- H-239 是配置身份错误，本项是运行状态提交阶段错误，单独修其中一个不能推断另一个已解决；两项共同表明扩展调度不能只剩一个通用 Continue/deny 值。建议先补齐单一 hook 生命周期契约，再逐 action/入口验收，不为 matcher、if、once 继续叠加互不一致的临时条件。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 显式 `cargo test -p deepagent-app-core --test kernel_v2_e2e hook_once --offline -- --include-ignored --nocapture`：**5 passed / 2 failed（缺陷预期），1.90s**。两个缺陷探针均在 prompt/agent 实际结果收集完成后，因“目标已写且 hook 从未执行”失败。五项正常对照默认执行、两个目标不变量 ignored；没有重新运行其他历史问题的 ignored 探针，也没有修改生产逻辑或断言来消除失败。
+- 本轮 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**74 passed / 73 ignored，14.66s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，7.55s**。`cargo fmt --all -- --check`、`git diff --check` 通过，Markdown fenced blocks=8（偶数）。实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断，不报告 lint 通过。
+- code-audit 促使将 matcher/if 的未匹配与实际执行分别验证，并用单 action 和真实落盘排除旧去重/缓存问题；docs-generator 促使首轮复现后立即登记，再补成熟机制和收尾。仅新增 test-only hook_once.rs、模块入口与本报告，无生产权限/协议/配置变更、依赖新增或数据迁移。原有未跟踪文件保持原样。
+- 未运行全 workspace、Desktop build/UI、真实供应商/费用/模型质量或参考工程；未动态覆盖 command/http/mcp action、其他生命周期事件、once 失败/超时/取消、并发、会话重建与重启等边界。未访问真实用户文件，未处理用户排除的 encrypted-content 错误；全系统审计保持 active，不将本轮结束宣称为全面完成。
