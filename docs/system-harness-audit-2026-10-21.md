@@ -57,6 +57,7 @@
 | 专业画布直接回答节点 | 前端 `answer` 公开 `answerTemplate`/`answerVariables`，正式运行时 `execute_answer()` 读取另一套 `text`/`variables`，配置的答案变成空字符串但 run 仍成功 | 已确认 H-182；用户可见输出契约断裂，属于静默空结果 |
 | 专业画布变量聚合节点 | 前端 `variable-aggregator` 公开 `aggregatorVariables`，正式运行时只读取 `variables`；合法绑定被静默丢弃，节点输出空数组但 run 仍成功 | 已确认 H-183；数据变换输出契约断裂，属于静默丢数据 |
 | 工作流必填输入 admission | `start.inputVariables` 中完整声明 `required=true`，调用者不提供该输入时，正式运行把它填成 `null` 并记录 `succeeded` | 已确认 H-184；输入校验缺失，必填约束只存在于前端 schema |
+| 工作流输入类型 admission | `start.inputVariables` 声明 `type=number`，调用者却提交字符串时，正式运行原样接受并记录 `succeeded` | 已确认 H-185；类型约束只存在于 schema，未贯通运行边界 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3557,6 +3558,34 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-184 只新增正式审计探针和文档，未修改生产输入校验逻辑。
 
+### H-185：工作流 `start` 不校验输入类型，声明 number 却接受任意字符串
+
+**级别：高（P1，类型安全与下游行为）；触发条件：工作流输入声明 `type=number`、`required=true`，调用者提交字符串或其他不兼容 JSON 类型。** 后端不会在工作流 admission 或 start executor 处拒绝，错误值继续进入条件、模板、模型和工具节点。
+
+#### 生产调用链与正式复现
+
+- 桌面 start schema 允许声明 `string/number/boolean/object/array/file`，`WorkflowNodeSpec` 和 `WorkflowRequest.inputs` 也能完整携带这些字段；因此本项不依赖 UI 丢字段或旧 DTO。
+- `graph::output_names()` 只读取声明名和类型做静态输出集合校验，不对 `WorkflowRequest.inputs` 做 JSON 类型检查；`WorkflowAgent::execute_start()` 直接 clone 输入值，不读取声明的 `type`、`required`、`options`、长度或数值边界。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_input_type_mismatch_is_rejected`。它通过正式 `ChatService::run_workflow()` 执行完整 `start → end` 图，声明 `count` 为 number，提交 `inputs.count="not-a-number"`，捕获 start 输出并读取 `RunStore`。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_input_type_mismatch_is_rejected --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true start_outputs=Some(Object {"count": String("not-a-number")}) run_terminal=Some("succeeded")`；断言类型不匹配必须拒绝，测试以 **0 passed / 1 failed（预期）** 结束。没有模型、工具、网络或文件副作用。
+
+#### DeepSeek 官方契约边界与成熟 Agent 对照
+
+- DeepSeek 官方 [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)要求请求字段满足 provider 的 JSON 形状，但不会知道本地 workflow 变量的业务类型。宿主应在进入 provider/tool loop 之前完成类型校验，不能把字符串 number 当作合法模型输入。
+- **Codex** 的工具 schema/参数验证在工具执行前进行，参数类型错误会形成工具错误并阻止执行；app-server 的请求边界也拒绝非法控制面字段。可迁移的是“schema 是可执行约束，不是仅 UI 提示”。
+- **Claude Code** 的工具输入由 JSON schema 和命令参数边界校验，缺少/错误类型进入错误或重新询问，不以原值继续执行；其 schema 名称和 UI 不属于本系统协议。
+- **DeepSeek Harness** 在 provider 配置与工具 resolver 边界保留 typed validation，公开 SDK、agent 创建和 server initialize 都不能绕过同一校验。这个原则比只在桌面表单校验更符合多宿主 Harness。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，条件比较可能因字符串/数字差异走错分支，模板渲染得到错误文本，模型收到不符合业务 schema 的上下文，工具/HTTP 节点可能构造错误请求；run 仍成功，调用者无法定位输入错误。当前样本只证明字符串进入 start，不声称已造成外部副作用。
+- 该缺口与 H-184 共同表明 start schema 没有形成后端 `InputPlan`；H-184 是缺失值，H-185 是已存在但错误类型，两个不变量需分别回归。显式 JSON `null`、可选默认值和字符串空值也不能混用。
+- 根因修复应在 `run_workflow_inner()` admission 编译 typed input plan，严格校验类型、required/default、枚举、长度、数字范围和 file/artifact 引用，返回结构化 `InvalidWorkflowInput`；start executor 只消费已验证的值，不再直接 clone 任意 Map。
+- 回归需覆盖所有类型、整数/浮点边界、null、数组元素类型、对象字段、文件引用、默认值、恢复/重放和 CLI/SDK/Tauri 三入口，确认错误发生在模型/工具/媒体调用前并持久化可诊断原因。本轮只新增审计，不修改生产输入校验。
+
+本轮 H-185 只新增正式审计探针和文档，未修改生产输入类型处理逻辑。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3625,6 +3654,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-182 直接回答节点输出显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_answer_node_renders_frontend_contract --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对 `answerTemplate="EXPECTED_ANSWER"` 发布 `answer=""` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-183 变量聚合节点输出显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_variable_aggregator_consumes_frontend_bindings --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对两个前端绑定发布 `output=[]` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-184 必填工作流输入显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_missing_required_input_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对 `required=true` 缺失字段发布 `customer=null` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
+| H-185 输入类型不匹配显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_input_type_mismatch_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对声明 number 的 `count="not-a-number"` 发布字符串值且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
