@@ -1088,6 +1088,65 @@ async fn audit_workflow_numeric_bounds_are_enforced() {
 }
 
 #[tokio::test]
+#[ignore = "audit: declared workflow string length bounds must constrain inputs"]
+async fn audit_workflow_string_length_bounds_are_enforced() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start","config":{
+                    "inputVariables":[{
+                        "name":"token",
+                        "variable":"token",
+                        "type":"string",
+                        "minLength":5,
+                        "maxLength":8
+                    }]
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges":[{"id":"e1","source":"start","target":"end"}]
+        },
+        "inputs":{"token":"x"}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-string-length-bounds".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-string-length-bounds")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let start = events
+        .iter()
+        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
+        .and_then(|event| event.outputs.clone());
+    eprintln!(
+        "api_ok={} start_outputs={start:?} run_terminal={:?}",
+        result.is_ok(),
+        run.terminal_kind
+    );
+    assert!(
+        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
+        "a string shorter than its declared minimum must not produce a successful run"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();

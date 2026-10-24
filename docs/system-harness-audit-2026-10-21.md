@@ -62,6 +62,7 @@
 | 工作流声明默认值 | start 声明可选输入 `default="FALLBACK"` 且调用方省略该字段时，后端写入 `null` 并记录 `succeeded`，未应用前端公开的默认值 | 已确认 H-187；默认值只存在 UI schema，未进入后端 admission/执行计划 |
 | 工作流字符串选项 admission | start 声明 `options=["safe","fast"]` 时，实际输入 `"UNDECLARED_MODE"` 仍进入 start 输出并记录 `succeeded` | 已确认 H-188；枚举约束只存在 UI schema，未进入后端 admission/执行计划 |
 | 工作流数值范围 admission | start 声明 `type=number, minimum=10, maximum=20` 时，实际输入 `3` 仍进入 start 输出并记录 `succeeded` | 已确认 H-189；数值边界只存在 UI schema，未进入后端 admission/执行计划 |
+| 工作流字符串长度 admission | start 声明 `minLength=5,maxLength=8` 时，实际输入单字符字符串仍进入成功路径并记录 `succeeded` | 已确认 H-190；字符串长度约束只存在 UI schema，未进入后端 admission/执行计划 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3702,6 +3703,34 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-189 只新增正式审计探针和报告，未修改生产工作流输入边界。
 
+### H-190：工作流 `minLength/maxLength` 不参与 admission，越界字符串成功传播
+
+**级别：中高（P1，输入约束与资源/提示词边界）；触发条件：`start.inputVariables` 声明字符串长度范围，调用方提交范围外的字符串。** 后端不拒绝越界值，仍继续执行并记录成功。
+
+#### 生产调用链与正式复现
+
+- 桌面 `InputVariableDefinition` 与 start schema 公开 `minLength`、`maxLength`，并将二者限定为字符串输入的长度约束。
+- Rust `WorkflowDefinition::compile()` 不解析这两个字段，`WorkflowAgent::execute_start()` 直接复制 `self.inputs`；没有字符数/Unicode scalar 数量检查，也没有超限错误。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_string_length_bounds_are_enforced`。它通过 `ChatService::run_workflow()` 执行 `start → end`，声明 `token` 长度 `[5,8]`，提交单字符字符串，捕获节点事件并读取 `RunStore`。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_length_bounds_are_enforced --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true start_outputs=Some(Object {"token": String("<redacted>")}) run_terminal=Some("succeeded")`；事件层对字符串做了既有脱敏，终态仍证明越界输入未被拒绝，测试以 **0 passed / 1 failed（预期）** 结束。没有模型、工具、网络或文件副作用。
+
+#### DeepSeek 官方契约边界与成熟 Agent 对照
+
+- DeepSeek 官方 Responses 文档只规定 provider 输入 item 与模型参数，不知道本地 workflow 的字符串长度；长度预算、上下文占用和业务字段限制必须由宿主执行。
+- **DeepSeek Harness** 的 schemastery `checkWithinRange()` 对 string length 使用 schema metadata 的 min/max，并在 resolver 中抛出 `ValidationError`；长度不是只供表单展示的提示。
+- **Codex** 对用户输入和工具 schema 设置明确字节/字符预算，并在宿主边界限制工具输入大小；成熟 harness 会在模型或工具调用前拒绝/截断并留下结构化原因，而不是成功后让下游自行猜测。
+- **Claude Code** 的工具和插件 schema 由执行前校验消费，越界参数进入工具前应产生 validation error；本系统目前把单字符值作为成功输入，缺少可观测的 fail-closed 行为。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，过短或过长值可以进入模板、条件、HTTP、工具和 DeepSeek prompt；过长输入会扩大 token/成本，过短输入可能绕过业务标识最小长度。当前样本只证明成功传播，没有执行外部副作用。
+- H-190 与 H-189 都是合法 JSON 类型但越过业务范围；H-188 是枚举边界，三类约束应分别在同一 typed plan 中验证，不能只依赖前端控件。
+- 根因修复应定义长度单位（建议 Unicode scalar 值，同时另设 UTF-8 byte budget），在 provided/default 解析后统一检查 min/max；超界返回结构化 `InvalidWorkflowInput`，并在日志中只记录长度和字段名，不能回显敏感值。
+- 回归需覆盖刚好边界、两侧越界、Unicode 多字节/组合字符、默认值越界、空字符串、恢复/重放和 CLI/SDK/Tauri 三入口，并断言 provider/工具调用前没有非法值。本轮只新增审计，不修改生产输入边界。
+
+本轮 H-190 只新增正式审计探针和报告，未修改生产工作流输入边界。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3775,6 +3804,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-187 工作流默认值显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_declared_default_is_applied_when_input_is_missing --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对声明 `default="FALLBACK"` 的缺失输入发布 `greeting=null` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-188 工作流字符串选项显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_options_are_enforced --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对 `options=["safe","fast"]` 接受 `mode="UNDECLARED_MODE"` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-189 工作流数值范围显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_numeric_bounds_are_enforced --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对范围 `[10,20]` 接受 `retries=3` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
+| H-190 工作流字符串长度显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_length_bounds_are_enforced --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对长度 `[5,8]` 接受单字符 `token` 且 run=`succeeded`；节点值按既有规则脱敏，无模型、工具、网络或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
