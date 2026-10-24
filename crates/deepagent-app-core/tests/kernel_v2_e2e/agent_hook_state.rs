@@ -1,6 +1,7 @@
 //! A successful, isolated/read-only agent hook must not replace the parent's plan.
 //! Only the provider transport is a fixture; tools and run assembly are production.
 
+use super::responses_fixture::{call, completed, text};
 use super::*;
 use deepagent_core::event::EventPayload;
 use deepagent_core::id::SessionId;
@@ -23,54 +24,6 @@ const HOOK_CALL: &str = "audit-private-hook-tool";
 
 fn todos(content: &str) -> Value {
     json!([{"content":content,"status":"pending","active_form":format!("Tracking {content}")}])
-}
-
-fn call(id: &str, name: &str, arguments: Value) -> Value {
-    json!({"type":"function_call","id":format!("item-{id}"),"status":"completed",
-        "call_id":id,"name":name,"arguments":arguments.to_string()})
-}
-
-fn text(id: &str, value: &str) -> Value {
-    json!({"type":"message","id":id,"role":"assistant","status":"completed",
-        "content":[{"type":"output_text","text":value,"annotations":[]}]})
-}
-
-fn completed(id: &str, item: Value) -> Vec<String> {
-    let mut added = item.clone();
-    added["status"] = json!("in_progress");
-    if item["type"] == "function_call" {
-        added["arguments"] = json!("");
-    } else {
-        added["content"] = json!([]);
-    }
-    let mut events = vec![
-        json!({"type":"response.created","response":{"id":id,"object":"response",
-            "created_at":1,"model":"deepseek-flash","status":"in_progress","output":[]}}),
-        json!({"type":"response.output_item.added","output_index":0,"item":added}),
-    ];
-    if item["type"] == "function_call" {
-        events.extend([
-            json!({"type":"response.function_call_arguments.delta","output_index":0,
-                "item_id":item["id"],"delta":item["arguments"]}),
-            json!({"type":"response.function_call_arguments.done","output_index":0,
-                "item_id":item["id"],"arguments":item["arguments"]}),
-        ]);
-    }
-    events.extend([
-        json!({"type":"response.output_item.done","output_index":0,"item":item}),
-        json!({"type":"response.completed","response":{"id":id,"object":"response",
-            "created_at":1,"model":"deepseek-flash","status":"completed","output":[item],
-            "usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18},
-            "error":null,"incomplete_details":null}}),
-    ]);
-    events
-        .into_iter()
-        .enumerate()
-        .map(|(sequence, mut event)| {
-            event["sequence_number"] = sequence.into();
-            event.to_string()
-        })
-        .collect()
 }
 
 struct HookStateModel {
@@ -117,7 +70,15 @@ impl HttpTransport for HookStateModel {
                 _ => panic!("unexpected parent model continuation {index}"),
             }
         };
-        emit_responses_events(sink, &completed(&format!("response-{hook}-{index}"), item))
+        emit_responses_events(
+            sink,
+            &completed(
+                &format!("response-{hook}-{index}"),
+                "deepseek-flash",
+                item,
+                json!({"input_tokens":12,"output_tokens":6,"total_tokens":18}),
+            ),
+        )
     }
 }
 

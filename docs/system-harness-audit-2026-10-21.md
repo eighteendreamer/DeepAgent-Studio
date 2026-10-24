@@ -22,6 +22,7 @@
 | 已执行工具与后置 hook 的结果提交 | 正式 write_file 已写入磁盘且 run_events 有成功 ToolCompleted；PostToolUse prompt 返回无效 JSON 后，session 没有真实结果，重开将动作标为进程重启失败，下一请求只有补造的结果缺失错误 | 已确认 H-139；正常 hook 对照通过；真实临时文件、文件数据库、正式启动恢复与离线模型，不含真实桌面或公网请求 |
 | 流失败前状态工具的预执行提交 | 公共无 hooks Runtime 在 todo 参数/item 完成后真实改共享列表，随后 failed 或断流自动重试成功，均无对应会话往返但状态残留 | 已确认 H-233（P3）；正常完成与 hooks 对照通过；主 AppCore 装配关闭预执行，嵌套子运行的失败流影响未实测；另见 H-234 的正常完成状态隔离实测 |
 | agent-hook 的工具状态隔离 | 正式主运行先写计划，PreToolUse agent-hook 正常调用共享 todo_write，允许/拒绝父读取后主 task_list 均返回 hook 列表，父无对应写入往返 | 已确认 H-234（P3）；两个只读对照通过；不是 H-233 的失败流问题，不外推无此 hook 的默认聊天或其他状态工具 |
+| 模型型 hook 的用量归属与预算 | prompt/多步 agent hook 正常 completed 并含完整 usage，允许或拒绝父工具都只结算主请求；合计费用已过本地预算但下一轮继续实际请求模型 | 已确认 H-235（P2）；无 hook、matcher 未命中和主费用已入账越限三项对照通过；用离线 usage 验证本地账本，不代表真实供应商消费或缓存命中实验 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
@@ -182,6 +183,7 @@
 | 登录配置与计价 owner 一致性 | 首次 initialize 更新 settings 却不激活已有 CostService，正常有价模型仍产生 NULL 费用；有限预算聚合将其当 0 后继续接纳（H-225） | Claude 在公共 usage 处理路径按 resolved model 查询成本规则，并对未知成本显式标记不准确；Grok 从当前认证上下文读取 billing，错误明确返回。它们不是同类 Tauri 初始化实现 | 相同模型/用量因宿主初始化顺序得到不同费用，首次登录后成本与本地限额失真；日志/CostRecorded 的 None 未进入 summary 完整性 |
 | 备用模型与已计费用量归属 | fallback 已更新实际模型，但结算只收到初始 model_name 和无 route 的累计 RunUsage（H-226）；有价完整 usage 仍按错误模型价格快照入账 | Claude fallback 更新 currentModel 并重进 callModel，usage 按本次 resolvedModel 计价；DeepSeek Harness 的 attempt 保留 message.source route，但公开聚合 routes 只是去重集合，不冒充按模型人民币账本 | 便宜→贵低估后误放行，贵→便宜高估后误拒绝；混合模型不能用单一初始/最终模型价还原，费用事件和历史 snapshot 同样错误 |
 | 周期预算的持久作用域 | 日/月限额仅存在 CostService 的 RwLock，set_budget 成功不落盘，启动不恢复；账本保留时重建成本 owner 仍变为无限（H-227） | Codex GoalStore 将 goal 的 token_budget/status/usage 一并写入并查询 SQLite；Grok 从账户后端读取 cap/current_period。两者不是本地人民币日/月预算，可借鉴持久 owner 和明确作用域 | 周期限额实际退化为本进程临时开关，宿主重建后不能继续作为费用保护；调用方若不自行重放配置，会在本期已有费用越限时再次运行 |
+| 附属模型请求的已发生成本 | 无效摘要、失败响应、模型型 hook 在不同边界丢失已返回 usage（H-14/H-133/H-235） | Claude prompt hook 与 agent hook 都进入公共 API 消费层，流 usage 到达时归集 session/model 成本；本系统已有 record_usage_cost 与 SideCall，尚未贯穿 hook | 已完成响应的费用/缓存用量不完整；下一轮预算基于偏低账本继续放行，决策是否采用不应决定成本是否存在 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
@@ -5902,3 +5904,53 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，7.91s**。`cargo fmt --all -- --check`、`git diff --check` 通过。实际执行 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，仍被未修改的 `models/src/client.rs:355` clone_on_copy、`persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未声称 lint 通过。
 - 修改仅测试模块、测试入口与本报告。按 code-audit 检查调用可达性和实例作用域，按 docs-generator 在首次复现、deny 增量和收尾分别追加 Evidence/Finding/Path；没有生产修复、协议/配置/权限/数据迁移，也没有提交日志或凭据。与 H-233 区分根因，不重复编号。
 - 未运行全 workspace、Desktop build/UI、真实 DeepSeek、参考工程测试、崩溃/恢复/下一用户回合、并发 hook 或其他平台；不推断实际模型错误决策、UI 污染或跨用户影响。全系统审计仍在继续；用户排除的 encrypted-content 错误未处理。
+
+### H-235：模型型生命周期 hook 的成功 usage 未交回会话账本，漏计费用后下一轮预算仍放行
+
+**级别：中（P2，需启用 prompt/agent hook 的用量完整性与预算接纳缺陷）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 与 CostService 已复现，未修复。供应商响应全部 completed 且完整携带 usage，没有真实收费请求。**
+
+#### 首轮即时 Evidence（2026-10-24）
+
+- Scope：用户授权的本仓库审计；临时 workspace 与文件数据库、真实 read_file/task_list、正式用户 hook 配置与主运行结算/下一轮预算接纳。只有模型 HTTP transport 是离线 fixture；不读取真实密钥、用户历史或外部资源。本轮仅测试和报告，不修生产行为。
+- E-235-main（command，content_hash=n/a）：`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_usage --offline -- --include-ignored --nocapture`，**2 passed / 2 failed（预期），0.70s**。source_ref：`crates/deepagent-app-core/tests/kernel_v2_e2e/hook_usage.rs`。主运行两次响应分别请求 read_file、输出最终答复；匹配 PreToolUse 的 prompt hook 一次合法 JSON 决策，agent hook 先 task_list 再合法 JSON 决策。每次响应正常 completed，均报告 input=1000、cached=800、output=100、total=1100。主读取真实成功、hook=continued，主 run 唯一 succeeded。agent 的第二请求包含其真实 task_list 成功结果，未用空私有 Runtime 冒充多步调用。
+- E-235-ledger：按设置中当前加载的 Flash 报价单次本地估算为 ￥0.000616，显式激活同一个 CostService，预算设为 2.5 次费用（￥0.001540）。prompt 组实际完成 3 次，应合计 ￥0.001848；agent 组完成 4 次，应合计 ￥0.002464。但两组第一轮的 CostSummary、文件 SQLite 历史费用求和、实时 CostRecorded 求和均只有 ￥0.001232；汇总输入/输出/cache-hit/cache-miss 均仅为主运行的 2000/200/1600/400。实时 Usage 仅报告主模型的两次输入，父 UsageRecorded 的 raw usage 数量也是 2。持久 prompt_tokens=1000 是现有上下文 gauge，**不以它不是累计数单独报错**。
+- E-235-admission：在同一服务、同一数据库和同一日内立即发起下一轮，两个 hook 组均没有 daily budget exhausted，transport 实际多收到一次主请求并完成；这不是只看配置推测误放行。下一轮不读文件、没有再次触发 hook。无 hook 与 agent matcher=write_file（实际只调用 read_file）的两项对照均正确记录两次费用，下一轮也按未达限语义正常运行。
+
+| 第一轮配置 | 实际有完整 usage 的响应数 | 账本计入输入 tokens | 应合计本地费用 | 实际费用 | 下一轮实际请求数 |
+|---|---|---|---|---|---|
+| 无 hook（对照） | 2 | 2000 | ￥0.001232 | ￥0.001232 | 1（正确放行） |
+| matcher 未命中（对照） | 2 | 2000 | ￥0.001232 | ￥0.001232 | 1（正确放行） |
+| prompt hook | 3 | 2000 | ￥0.001848 | ￥0.001232 | 1（本应拒绝） |
+| 两步 agent hook | 4 | 2000 | ￥0.002464 | ￥0.001232 | 1（本应拒绝） |
+
+#### Finding 与 Path（初始定性）
+
+- F-235：category=design，status=validated，confidence=high，evidence_ids=[E-235-main,E-235-ledger,E-235-admission]。`hook_runtime.rs::execute_prompt` 获得完整 Response 后只提取文本解析决策；`execute_agent` 的独立 ModelAgent/Runtime 完成后只返回 Completed 文本，未把 RunUsage/raw usage 交回父结算。`HookActionExecutor` 的返回契约只有 HookOutcome，外层 execute 只发 hook 生命周期事件。`run_finalizer.rs` 接收主 usage 和已有 compaction side_usage，无法从 hook 决策恢复已丢弃的供应商用量。共享 ModelClient 并不自动接入会话账本。
+- P-235（callflow，关联 E-235-main/F-235）：父 read_file → 正式 PreToolUse 模型 hook → 正常收到 hook usage → prompt 提取文本/agent 返回私有 Completed → HookOutcome=Continue → 主读取和最终回答 → finalizer 只归集主用量 → CostService/SQLite 缺少 hook 费用 → 下一轮 RunAssembler::check_budget 读到偏低总额 → 继续实际请求模型。
+- 已确认后果是本地会话费用及缓存用量低报、同一已完成运行的完整本地估算越限却继续接纳下一轮；样本 prompt 漏记三分之一的请求费用，agent 漏记一半。它不证明真实用户已超支，也不证明缓存构建错误、真实 cache-hit 下降、供应商收费与本地报价完全相等或 UI 具体表现。未启用模型 hook 的对照正常，不能泛化为所有运行漏计。
+- 与 H-14 的无效摘要丢 side_usage、H-133 的 failed 响应丢 usage、H-225 的报价 owner 未激活、H-226 的 fallback 错误归价、H-227 的预算未持久化不同：本项完整成功、同一模型、报价已显式加载、没有重建预算 owner。无需异常或模型切换即可触发。与 H-234 的父状态实例共享亦是不同根因。
+
+首次复现后立即登记；成熟实现对照、共享测试夹具回归和扩展边界随后追加，不把尚未执行的验证写成通过。
+
+#### 增量 Evidence：拒绝决策照样漏计，已入账费用则能正常触发预算拒绝
+
+- E-235-denial：扩展为 prompt/agent 各自返回合法 deny 的正常完成响应，父 read_file 的下一 wire 输出确为 error、含 controlled audit denial 且没有文件内容，HookCompleted=blocked；主随后正常回答，唯一 run_terminal=succeeded。再次执行相同显式命令：**3 passed / 4 failed（预期），0.90s**。两项新增 deny 探针仍分别只记主运行 ￥0.001232，少于包含 hook 的 ￥0.001848/￥0.002464，下一轮仍发出一次请求；原两个允许组也仍失败。F-235 增补 evidence_ids=[E-235-main,E-235-ledger,E-235-admission,E-235-denial,E-235-budget-control]，同根因不新增编号。
+- E-235-budget-control：新增无 hook 的已入账越限对照，预算降为 1.5 次费用（￥0.000924）。第一轮两次主请求正确记录 ￥0.001232，第二轮真实返回 daily budget exhausted，transport 新请求数为 0，该测试通过。证明预算功能并非全局没开启；hook 漏记使其输入数据偏低。其余无 hook/未命中对照通过，四项缺陷都到达最后的完整费用/用量与下一轮接纳不变量，未以编译或 fixture 错误当作复现。
+- 测试代码维护：将 H-234 已有的完整 Responses item/终态/sequence builder 移至 test-only `kernel_v2_e2e/responses_fixture.rs`，允许传入 model/usage，本轮和 H-234 共用；不新增生产协议链。H-234 的既有断言未更改，后续回归需验证其观察仍一致。一次 apply_patch 上下文因 rustfmt 后不匹配而未应用，重新读取后成功；不属于产品失败或测试结果。
+
+#### 成熟实现对照与架构治理（源码查证，未运行参考工程）
+
+- **Claude prompt hook**：`借鉴/claudecode/restored-src/src/utils/hooks/execPromptHook.ts` 带 querySource=hook_prompt 调用 `queryModelWithoutStreaming`；`services/api/claude.ts:709–748` 的这个包装继续消费公共 queryModel 生成器后才返回助手消息，不因调用者只需要 JSON 决策就绕过公共处理。流的 message_delta 在解析出最终 usage 后调用 calculateUSDCost/addToTotalSessionCost，再继续产出；非流 fallback 在 finally 中登记 usage，以免 consumer 在 yield 处退出漏计（约 2250 与 2820 行）。
+- **Claude agent hook**：`utils/hooks/execAgentHook.ts:166–174` 经 query、querySource=hook_agent；`query.ts` 默认选 productionDeps，`query/deps.ts:35` 将 callModel 绑定到同一 `queryModelWithStreaming`/queryModel。`cost-tracker.ts::addToTotalSessionCost` 统一更新 model usage、总会话成本和 token counters。可参考的是**在公共供应商消费层捕获用量，hook 结果是否被采用不是费用存在条件**。其账本是自己的 USD/session/model 状态，不冒充本系统同构 SQLite/CNY/日预算实现，未运行它的拒绝/取消或落盘恢复测试，也不宣称无其他计费缺陷。
+- **DeepSeek 官方依据**：2026-10-24 重新联网核对 [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)与[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)，使用它们明确的 input_tokens、input_tokens_details.cached_tokens、output_tokens、output_tokens_details.reasoning_tokens、total_tokens。fixture 的 cached=800 是合成输入，不是测得的真实命中率。[缓存规则](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)描述服务端前缀单元及尽力命中机制；本项没有验证或否定这些规则，只验证已返回的缓存用量能否保留到宿主账本，不能将漏记说成缓存构建错误。
+- **本系统已有能力与建议（本地设计，未实施）**：`run_finalizer.rs::record_usage_cost` 已用于主运行及 compaction side_usage，CostOrigin::SideCall 已能区别附属费用；应该沿这一个成本 owner 接入 hook，而非新建 hook 私账。公共模型消费/运行上下文应保留父 session/run、主体/用途、实际 provider/model route、attempt 身份及 raw/normalized usage，再由统一幂等归集点提交现有账本。模型回答、审批决策、摘要是否采用与已发生成本必须分开；不要把 hook tokens 混入主上下文容量 gauge，也不能同时在底层和 finalizer 重复记账。
+- H-14、H-133、H-235 已是第三类“结果未采用/不同运行边界导致已发生 usage 消失”的证据。按项目重复问题治理规则，应先统一请求成本归属和提交契约，再逐 seam 接入；不建议继续逐个分支加一个无身份累加器。未来验收需覆盖 hook 允许/拒绝/无效 JSON/错误/取消、重试与混合模型、多个/并发 hook、报价不可用、持久化失败及重开，不把本轮两个正常响应形状冒充全覆盖。
+
+#### 验证收尾与未覆盖范围
+
+- 为避免一个超长观察函数，测试拆分为配置、首次执行核验、实时统计、持久统计与两轮工作流观察，复用同一 fixture。拆分期间一次编译因 raw_calls/history 代码块留错作用域而失败，修正后再跑上述显式 hook_usage 命令：**3 passed / 4 failed（预期），0.91s**。四项失败均保持相同已返回 usage、账本漏计与下一轮实际放行观察；没有将编译错误纳入缺陷证据。
+- 已重跑共享 builder 的 `cargo test -p deepagent-app-core --test kernel_v2_e2e agent_hook_state --offline -- --include-ignored --nocapture`：**2 passed / 2 failed（H-234 既有预期），0.68s**，状态观察与上一轮一致。没有用抽取 fixture 的机会改变旧探针的不变量。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**52 passed / 62 ignored，8.30s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，7.40s**。新增三项正常对照默认执行，四项缺陷探针 ignored，默认回归通过不表示费用缺陷已修复。
+- `cargo fmt --all -- --check`、`git diff --check` 通过。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `models/src/client.rs:355` clone_on_copy 与 `persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未报告 lint 通过。
+- 本轮按 code-audit 核对输入、执行与结算归属，按 docs-generator 即时追加可重跑 Evidence/Finding/Path 与成熟机制对照。只修改 test-only 模块/入口和报告，无生产修复、依赖新增、数据迁移或权限变更；用户原有未跟踪文件保持不动。
+- 未运行全 workspace、Desktop build/UI、真实 DeepSeek 计费/缓存实验、参考工程测试、hook 取消/超时/无效 JSON/真实 provider failure、混合模型、多个并发 hook、数据库重开或其他平台。本轮不对取消树下结论，也不处理 encrypted-content 错误；全系统审计仍未结束。

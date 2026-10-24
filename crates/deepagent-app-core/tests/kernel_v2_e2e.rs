@@ -54,6 +54,12 @@ mod post_tool_hook_commit;
 #[path = "kernel_v2_e2e/agent_hook_state.rs"]
 mod agent_hook_state;
 
+#[path = "kernel_v2_e2e/hook_usage.rs"]
+mod hook_usage;
+
+#[path = "kernel_v2_e2e/responses_fixture.rs"]
+mod responses_fixture;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/prompt_hook_context.rs"]
 mod prompt_hook_context;
