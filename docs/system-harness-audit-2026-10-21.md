@@ -75,6 +75,7 @@
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness SDK 断线后的事件等待 | 真实本机子进程退出且生产 reader 已清空 pending RPC，保留公开 client 时，既有和新订阅均无断线/关闭结果；丢弃 client 后两者才 Closed | 已确认 H-256（P2）；正常完成通知交付对照通过，Windows stdio fixture；未运行真实 Agent/模型或桌面 |
+| Provider SSE 非法 UTF-8 的故障隔离 | 合法事件后插入一个非法字节，正式 HTTP→ModelClient 不及时拒绝，后续文本和完整终态均未交付；解码器同序列保留 65,537 字节 | 已确认 H-257（P2）；中文/emoji 全切点解码和真实 HTTP 正常对照通过；未测真实供应商、Kernel 或 OOM |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
 | Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
 | Harness thread/list 历史列表 | 创建 120 个真实持久化 thread 后，正式 `thread/list` 一次返回全部 120 条、约 25 KB JSON；请求没有 limit、cursor 或 continuation | 已确认 H-220；正式 SQLite/EventStore/ServerState，无模型、工具、子进程或网络 |
@@ -6810,3 +6811,34 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 首次精确模块命令 **1 passed / 1 failed（预期）** 后立即追加本项；没有先修生产实现再反推证据。随后 `cargo test -p deepagent-harness-sdk --offline`：单元 **5 passed / 12 ignored**，正式 stdio e2e **6 passed**，doc-test **1 passed**；`cargo fmt --all -- --check`、`git diff --check` 均通过。e2e 只作为已有正常协议回归，不把它计作 H-256 的真实 server 故障注入。
 - 未运行真实 deepagent server/SDK 端到端、完整 ChatService/Kernel/RunStore、Desktop build/UI、真实供应商、参考工程、跨平台或 OS 杀进程实验；真实子进程故障由本机 producer 的显式 exit 实现。用户排除的 encrypted-content 问题未处理，全系统审计仍未完成。
+
+### H-257：SSE 把确定非法的 UTF-8 当成未收齐字符，后续字节持续滞留且错误被误报为缺少终态
+
+**级别：中（P2，供应商传输异常的隔离与诊断）；状态：生产解码器及真实 HTTP→ModelClient 已复现，未修复。** 触发需要供应商、兼容网关或响应处理链输出非法 UTF-8；不是合法中文分块就会失败，不声称 DeepSeek 官方正常响应存在此字节。与 H-30 的多 data 行/CR/半帧问题不同，本项使用普通单 data 行和完整空行边界，故障发生在 SSE parser 之前。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权源码审计；本机 `127.0.0.1:0` 有限 HTTP chunked fixture、占位 key、合成文本和 64 KiB 注释尾部。只新增 `crates/deepagent-models/src/reqwest_utf8_audit.rs` 与 reqwest_transport.rs 的 test-only 模块入口；无真实模型、用户资料、外部网络或生产逻辑修改。未处理用户排除的 encrypted-content 报错。
+- E-257-first（source_type=command，source_ref=上述 test-only 模块，content_hash=n/a，artifact_path=n/a）：执行 `cargo test -p deepagent-models --features http --lib utf8_audit --offline -- --include-ignored --nocapture`，结果 **1 passed / 1 failed（预期），0.16s**。失败探针输出 `retained=65537 early=false text="before|" error=Responses stream ended without a terminal response event`。本轮首次构建曾因测试误用不存在的 Response.content 字段编译失败；核对 chat.rs 后改为正式 output_text_projection()，该构建失败不计作缺陷证据。
+- E-257-http：fixture 校验真实请求为 POST /responses、stream=true、model=deepseek-flash；先发送合法 `before|` delta，等待正式 DeltaObserver 回执，确认生产 reader 已活跃，才发送 `0xff`、16×4096 字节合法 SSE 注释及 `after|` delta。保持连接开放时，150ms 有界观察内调用未结束；放行后发送完整 response.completed（含 id/status/model/output/usage），再结束 HTTP chunked body。正式 ModelClient 最终仍报缺少终态，observer 只收到 `before|`。150ms 是观察窗而非产品 SLA；未及时失败的根因由确定非法字节无法被任何后续字节补全、且源码无该错误出口共同支撑。
+- E-257-retention：同一测试直接调用生产 decode_utf8_prefix，按生产 `extend→decode→drain` 顺序，把 `0xff` 后接16×4096字节合成 ASCII。每轮返回空文本、consumed=0，最终 pending=65,537。这是解码器同序列的动态证据，**不把它写成对 HTTP 内部 Vec 的内存采样**，也未制造 OOM；HTTP 后续内容不交付由 E-257-http 独立验证。
+- E-257-control：正常对照对“中”“🙂”“中文🙂”逐一验证所有二段字节切点，未完整字符最多保留3字节，后续补全不丢失；同一真实 HTTP 路径按中文字符中间切分 HTTP chunk，最终 observer 与 Response.output_text_projection 均为 `before|中文🙂|`、finish_reason=Stop、usage保留。TCP/reqwest可能合并 chunk，因此确定性切点证明来自直接解码测试，不声称网络必然保持每个写入边界。
+
+#### Finding 与调用路径
+
+- F-257：severity=medium，category=design，status=validated，confidence=high，evidence_ids=[E-257-first,E-257-http,E-257-retention,E-257-control]，location=`crates/deepagent-models/src/reqwest_transport.rs::decode_utf8_prefix/stream_inner`。decode_utf8_prefix 对全部 Utf8Error 只使用 valid_up_to，没有判断 error_len；不可恢复的非法字节被留在 pending 首部。后续每次 decode 都在相同位置失败，stream_inner 仍继续读取/追加；EOF 时也不检查 pending 是否为空。transport 返回 Ok，ModelClient 的 accumulator.finish 才上报无终态，掩盖真正的编码故障。
+- P-257（path_type=callflow）：ModelClient.stream_response_observed → ReqwestTransport.stream_inner → 合法 delta 可交付 → 非法 byte进入pending → decode返回0且drain无进展 → 后续注释/文本/终态只追加、不进入SseParser → HTTP EOF → transport仍Ok → accumulator.finish 报缺少终态。E-257-http/E-257-retention支撑这一调用路径，不是用 MockTransport 绕过真实字节层。
+- 已证后果是响应后半段不交付、终态及其 usage丢失、故障原因变成泛化缺终态；保留缓冲随后续数据增长。默认 idle=45s、total=300s 以及取消路径仍存在，因此不是“绝对无法停止”或无时限流。慢速持续字节可重置idle但仍受total约束；高吞吐异常流可能放大宿主内存，尚未实测 OOM、真实费用、自动重试或UI卡死。
+
+#### 成熟实现与官方依据
+
+- **Codex**：`借鉴/codex/codex-rs/agent-message-board-client/src/client.rs::notifications` 在 eventsource parser 之前逐字节检查UTF-8，error_len().is_some()立即返回transport错误，只有最多3字节未完整codepoint跨chunk保留；同时对parser缓冲前的frame bytes设界。这里是远程 board notification SSE，并非Codex模型provider，也未运行参考工程；可借鉴的是“不把确定非法字节当可恢复尾部”的流边界，不照搬其服务配额。
+- **Rust 官方**：[Utf8Error::error_len](https://doc.rust-lang.org/std/str/struct.Utf8Error.html#method.error_len) 区分非法序列长度与流末尾尚不完整的序列。valid_up_to只说明此前合法，不说明剩余数据以后可恢复。根因不是Rust解码器bug，而是宿主未消费其错误分类。
+- **DeepSeek 官方**：本轮联网复核 [Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 的语义化SSE与completed/incomplete/failed终态，以及[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)的无状态边界。H-257属于宿主异常字节处理，不能据此称合法DeepSeek响应不兼容；不会通过调整reasoning、tool schema或KV cache修复。正确拒绝非法编码应保留原始故障分类，而非接受损坏工具参数或伪造成功终态。
+
+#### 收敛建议与验证边界（本地设计，未实施）
+
+- 在既有 transport seam 分清合法前缀、可等待的不足字符与不可恢复UTF-8；后者立即返回结构化编码错误、丢弃/关闭该响应，不把后续内容继续追加到孤立pending。EOF若仍有不足字符也必须明确报编码截断。避免无条件lossy替换，否则损坏JSON、工具名/参数可能被改写后继续执行。
+- 确定跨chunk carry最多3字节；SSE单帧与总响应预算需在同一transport/parser边界统一设计，具体阈值为本地资源策略，不冒充DeepSeek官方限额。本项不另拆“无界缓冲”编号；H-30的完整事件分帧应协同验收，但编码分类与SSE帧边界是不同层次。
+- 回归应覆盖2/3/4字节字符各切点、非法首字节/延续字节/过长编码、EOF不足字符、合法事件前后注入、正常终态前取消、错误与deadline竞争、两种provider wire mode及Kernel终态/usage投影。本轮只验证Responses、生产字节解码和本机HTTP；未运行ChatCompletions故障组、Kernel/RunStore、Desktop、真实DeepSeek、参考项目测试、跨平台或压力测试。未授权实施生产修复。
+- 验证收尾：`cargo test -p deepagent-models --features http --offline` 通过，单元 **96 passed / 25 ignored**，集成 **1 passed / 15 ignored**，doc-test **0**；默认忽略的已知缺陷探针未因此关闭。`cargo fmt --all -- --check`、`git diff --check` 通过。定向 `cargo clippy -p deepagent-models --features http --all-targets --offline -- -D warnings` 未通过，报既有 `client.rs:355` 对 Copy 类型调用 clone（clone_on_copy）；已用 `git show HEAD:crates/deepagent-models/src/client.rs` 确认原提交含同一行，不修改无关生产代码，不称 lint 全绿。未运行全workspace/全量Clippy或Desktop构建。

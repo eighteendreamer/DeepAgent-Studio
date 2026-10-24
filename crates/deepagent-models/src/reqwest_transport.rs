@@ -451,6 +451,10 @@ fn decode_utf8_prefix(bytes: &[u8]) -> (String, usize) {
     }
 }
 
+#[cfg(test)]
+#[path = "reqwest_utf8_audit.rs"]
+mod utf8_audit;
+
 fn is_cancelled(cancel: Option<&Arc<AtomicBool>>) -> bool {
     cancel
         .map(|flag| flag.load(Ordering::Relaxed))
