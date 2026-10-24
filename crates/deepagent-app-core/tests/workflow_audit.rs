@@ -1419,6 +1419,113 @@ async fn audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled() {
 }
 
 #[tokio::test]
+#[ignore = "audit: running a valid target node must preserve its declared ancestor inputs"]
+async fn audit_workflow_target_node_keeps_required_ancestor_outputs() {
+    fn workflow(target_node_id: Option<&str>) -> WorkflowRequest {
+        serde_json::from_value(serde_json::json!({
+            "definition": {
+                "version": 1,
+                "nodes": [
+                    {"id":"start","kind":"start","config":{"inputVariables":[]}},
+                    {"id":"source","kind":"variable-assigner","config":{"assignments":[{
+                        "variable":"output",
+                        "inputType":"constant",
+                        "value":["SOURCE_VALUE"]
+                    }]}},
+                    {"id":"target","kind":"list-operator","config":{
+                        "input":"{{#source.output#}}",
+                        "action":"limit",
+                        "orderBy":"",
+                        "limit":0
+                    }},
+                    {"id":"end","kind":"end"}
+                ],
+                "edges": [
+                    {"id":"e1","source":"start","target":"source"},
+                    {"id":"e2","source":"source","target":"target"},
+                    {"id":"e3","source":"target","target":"end"}
+                ]
+            },
+            "inputs":{},
+            "target_node_id":target_node_id
+        }))
+        .unwrap()
+    }
+
+    let (_full_root, full_db, full_chat, full_session) = workflow_fixture().await;
+    let full_events = Arc::new(Mutex::new(Vec::new()));
+    let full_capture = full_events.clone();
+    let full_result = full_chat
+        .run_workflow(
+            workflow(None),
+            "audit-workflow-target-baseline".into(),
+            full_session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    if event.status.is_terminal() {
+                        full_capture.lock().unwrap().push(event);
+                    }
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let full_terminal = RunStore::new(&full_db)
+        .get("audit-workflow-target-baseline")
+        .unwrap()
+        .unwrap()
+        .terminal_kind;
+    assert!(full_result.is_ok(), "the complete workflow is the control");
+
+    let (_target_root, target_db, target_chat, target_session) = workflow_fixture().await;
+    let target_events = Arc::new(Mutex::new(Vec::new()));
+    let target_capture = target_events.clone();
+    let target_result = target_chat
+        .run_workflow(
+            workflow(Some("target")),
+            "audit-workflow-valid-target".into(),
+            target_session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    if event.status.is_terminal() {
+                        target_capture.lock().unwrap().push(event);
+                    }
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let target_terminal = RunStore::new(&target_db)
+        .get("audit-workflow-valid-target")
+        .unwrap()
+        .unwrap()
+        .terminal_kind;
+    let full_events = full_events.lock().unwrap();
+    let target_events = target_events.lock().unwrap();
+    let full_target = full_events
+        .iter()
+        .find(|event| event.node_id == "target")
+        .and_then(|event| event.outputs.clone());
+    let targeted_target = target_events.iter().find(|event| event.node_id == "target");
+    let targeted_summary: Vec<_> = target_events
+        .iter()
+        .map(|event| (event.node_id.as_str(), event.status, event.error.as_deref()))
+        .collect();
+    eprintln!(
+        "full_ok={} full_target={full_target:?} full_terminal={full_terminal:?} targeted_ok={} targeted_events={targeted_summary:?} targeted_terminal={target_terminal:?}",
+        full_result.is_ok(),
+        target_result.is_ok(),
+    );
+    assert!(
+        target_result.is_ok()
+            && targeted_target.is_some_and(|event| {
+                event.status == NodeExecutionStatus::Completed && event.outputs == full_target
+            }),
+        "a valid target-node run must retain the ancestor data needed by that node"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();

@@ -50,6 +50,7 @@
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录；工作流节点声明 `knowledgeBaseId=project` 时仍混入 global 命中 | 已确认 H-51、H-176；H-51 是共享服务身份漂移，H-176 是工作流配置到检索 trait 的作用域契约缺失 |
 | 工作流目标节点与重跑 admission | `target_node_id` 传入不存在的节点时，正式工作流只完成 `start`、跳过 `end`，仍记录 `succeeded` | 已确认 H-177；无效目标未在编译/接纳边界拒绝，属于空执行成功，不是 H-39 的条件分支派发问题 |
+| 工作流合法目标节点的依赖闭包 | 整图执行时 target 正常得到中间祖先的 `SOURCE_VALUE`；指定同一个合法 target 后，祖先被标记 Skipped，target 因 required output unavailable 失败 | 已确认 H-196；节点运行按钮既不重算依赖闭包，也不加载带 revision 的既有输出快照 |
 | 专业画布代码节点 | 前端公开 `codeScript`/`codeInputVariables` 并标记 `enabled`，后端只读取未使用的 `code`/`codeVariables`，没有 JavaScript/Python 执行器；明确无效脚本仍完成并返回空对象 | 已确认 H-178；能力注册、配置 schema、运行时 executor 契约断裂，属于静默伪成功 |
 | 专业画布文档提取节点 | 前端 `document-extractor` 标记 `enabled`，但正式工作流执行到节点即返回 `UnsupportedNode` 并失败 | 已确认 H-179；这是公开能力目录与实际 executor 不一致，和 H-178 的静默成功不同 |
 | 专业画布人工输入节点 | 前端 `human-input` 标记 `enabled` 并提供表单/超时，正式工作流没有进入 `NeedsApproval`、输入租约或可恢复等待态，而是直接 `UnsupportedNode` 失败 | 已确认 H-180；人工输入 schema 与统一人机协作生命周期断裂 |
@@ -3875,6 +3876,36 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-195 只新增正式审计探针和报告，未修改生产工作流终点或分支语义。
 
+### H-196：合法 target-node 运行跳过必需祖先，正常节点因缺少中间输出失败
+
+**级别：高（P1，节点重跑/恢复可用性与数据依赖完整性）；触发条件：用户点击任一依赖非 start 中间节点输出的节点运行按钮。** 桌面把该节点 ID 作为 `target_node_id` 提交完整图；运行时保留 start、目标及目标的后代，却把目标的其他祖先全部跳过。请求中没有上一轮节点输出快照，因此目标引用必然缺失。
+
+#### 生产调用链与正式复现
+
+- `ConfigForms.tsx` 等节点面板直接调用 `runWorkflow(nodeId)`；`workflowExecutor.ts` 重置所有节点状态，把当前图、start 默认输入和 `target_node_id` 发送给 `start_workflow`，没有附带已完成节点输出、对应 workflow revision 或 artifact snapshot。
+- `WorkflowAgent::think()` 的过滤条件方向相反于依赖闭包：对非 target、非 start 节点，只有“当前节点的 ancestors 包含 target”才执行。因此 target 的 descendants 被保留，而 target 自己依赖的 intermediate ancestors 被标记 `Skipped`。
+- 编译器已经验证 target 对祖先输出的引用合法，但执行时 `values::resolve()` 只查本次 `self.outputs`。被跳过祖先没有输出，target 以 `workflow reference: required output is unavailable` 失败。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_target_node_keeps_required_ancestor_outputs`。控制图为 `start → source(variable-assigner) → target(list-operator) → end`，target 显式引用 `{{#source.output#}}`；先整图运行，再用同一定义指定 target。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_target_node_keeps_required_ancestor_outputs --offline -- --ignored --exact --nocapture`。
+- 实际结果：控制组 `full_ok=true`，target 输出 `result=["SOURCE_VALUE"]`，run=`succeeded`；目标组将 source 标记 `Skipped`，target 标记 `Failed`，错误为 `required output is unavailable`，run=`failed`；断言合法 target 运行必须保留所需 ancestor 数据，以 **0 passed / 1 failed（预期）** 结束。没有模型、工具、网络、命令或文件副作用。
+
+#### 成熟 Agent 对照与 DeepSeek 边界
+
+- DeepSeek Responses 的响应续接能力不能替代本地 DAG 节点输出、artifact 与 revision；本项目若调用 provider，也必须先由 Harness 构造完整目标输入。把缺失依赖留到 provider/节点执行时报错不是 DeepSeek 兼容策略。
+- DeepSeek Harness 的 continuation 基准先持久化 session history，再以同一 durable session identity resume，并验证恢复后的 history/tool continuation；它选择“恢复已验证状态”。其 workflow 文档又明确当前脚本没有 journaling/resume，而不是暴露一个看似可重跑、实际丢上下文的入口。
+- Codex 的 resume 会 materialize/读取 thread rollout；app-server 对不存在的 thread 直接报错。其核心原则是恢复输入来自对应持久化身份，不能仅凭一个目标 ID 构造缺历史的“续跑”。对本系统可迁移为 `(workflow_revision, node_id, dependency_snapshot)` 的显式身份。
+- Penguin-Magic 将 `runNodeIntent` 定义成独立画布操作，并为该节点发布 `node.run.started/completed/failed`；计划架构说明它延迟交给既有节点执行链。它不是本系统的 DAG 重跑实现，但至少把“运行一个节点的 intent/draft”与“裁剪整图后假设输入仍存在”分开建模。
+
+#### 影响、后果与根因修复方向
+
+- 所有消费中间 LLM、工具、检索、模板、媒体或变量节点输出的下游节点，单节点运行都可能稳定失败；若节点恰好只依赖 start 或常量则成功，造成看似随机的功能差异。用户会误以为节点本身、provider 或 artifact 损坏。
+- source 被发布为 Skipped、target 为 Failed，整次 run 为 failed，但 UI 的节点按钮没有说明这是缺少依赖闭包；反复点击只会重复同一失败。若未来静默用 null/default 补齐，则风险会从明显失败转为错误成功。
+- H-177 是不存在 target 未拒绝；H-196 是 target 确实存在、编译引用也合法，却因执行计划方向错误而失败。校验 ID 不能修复依赖缺失。
+- 根因修复需先明确两种模式并版本化：`recompute` 从 start 执行 target 的全部必需 ancestors 后在 target 处停止（或按产品定义继续 descendants）；`resume` 则必须加载同一 workflow revision、节点配置 digest、上游 outputs/artifacts 和权限快照，任何 stale/missing dependency fail closed。当前请求没有这些字段，最小可行方案是生成 ancestor closure，而不是当前 descendant filter。
+- 回归需覆盖 target 依赖 start、单层/多层祖先、分支祖先、工具/模型/artifact 输出、祖先失败或取消、revision 变化、输出已过期、target 为 start/end、恢复重放及 UI/CLI/SDK 一致性；断言每个跳过原因和数据来源均可审计。
+
+本轮 H-196 只新增正式审计探针和报告，未修改生产 target-node 执行或状态恢复逻辑。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3954,6 +3985,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-193 工作流不可达 end 显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_requires_a_reachable_end_node --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；start/end 均存在但零边，正式 `WorkflowAgent` 仍发布 4 条节点事件并记录 `succeeded`；无模型、工具、网络或文件副作用 |
 | H-194 工作流声明顺序稳定性显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_execution_scope_is_not_node_order_dependent --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；相同节点/边仅交换数组位置，completed 集合分别为 `start,end` 与 `start,orphan,end`，两个 run 都为 `succeeded`；无模型、工具、网络、命令或文件副作用 |
 | H-195 工作流多个可达终点显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；左右两条 start 可达路径各有 end，实际仅左侧三节点 completed 后 run 即 `succeeded`，右侧分支无任何终态事件；无模型、工具、网络、命令或文件副作用 |
+| H-196 工作流合法目标依赖闭包显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_target_node_keeps_required_ancestor_outputs --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；整图控制组 target 得到 `SOURCE_VALUE` 并成功，指定合法 target 后 source=Skipped、target=Failed、run=`failed`，错误为 required output unavailable；无模型、工具、网络、命令或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
