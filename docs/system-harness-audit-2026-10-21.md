@@ -45,6 +45,7 @@
 | Responses 图片角色契约 | 合法 `developer` 图片被静默降为纯文本；官方禁止的 `assistant` 图片也被去图后成功发送，provider adapter 没有按 Responses 角色矩阵保留或拒绝内容 | 已确认 H-171；公开 ResponseRequest/ResponseInputItem→ModelClient→wire 离线复现；普通桌面当前只产生 user 图片，故触发面明确限定为 provider seam、未来 Harness/SDK 或导入历史 |
 | Responses 数值参数最终校验 | AppCore 设置解析拒绝越界值，但公共 ModelClient 对显式 request 和 ResponseDefaults 都把 `temperature=2.1`、`top_p=1.1`、`top_logprobs=21` 原样送入 transport | 已确认 H-172；离线正式 ModelClient wire 探针；限定为越过设置层直接构造调用，不代表常规桌面设置当前可触发；未请求真实 provider |
 | Responses 流身份与顺序元数据 | 合法流为 `response.created`/`response.completed` 提供同一 response ID、实际模型和单调序号；正式 ChatService→Kernel 落盘后两条事件仅保留 Runtime envelope 与 event_type | 已确认 H-200；正常连续离线 Responses fixture、正式 run_events；未制造乱序/丢包，也未声称已观察真实供应商流损坏 |
+| 无限画布工作流视口缩放锚点 | 画布已平移后，底栏放大/缩小/重置/滑杆与小地图放大/缩小只改 zoom、不重算平移 offset；缩放前后的视口中心映射到不同世界坐标 | 已确认 H-201；动态执行六个生产 TSX handlers；与 Penguin-Magic 中心锚定按钮缩放及指针锚定滚轮缩放实现对照；没有图数据或运行状态副作用 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
@@ -4020,6 +4021,29 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-200 只新增 `#[ignore]` 审计探针和报告，未修改生产事件 DTO 或解析行为。
 
+### H-201：工作流画布缩放控件改变 zoom 却保留平移偏移，视口焦点随每次缩放跳动
+
+**级别：低（P3，桌面画布导航一致性）；触发条件：画布已平移到非原点后，使用底栏放大/缩小、底栏比例滑杆或小地图放大/缩小。** 问题仅影响视图定位；没有证据显示节点坐标、工作流定义、运行事件或模型请求因此变化。
+
+#### 生产路径与动态证据
+
+- `workflow/components/BottomBar.tsx` 的 `handleZoomIn`、`handleZoomOut` 与 `handleSlider` 对现有 `viewport` 展开后只替换 `zoom`，再分别调用 `onViewportChange` 与 `rfInstance.setViewport()`；`workflow/components/MiniMap.tsx::changeZoom` 同样读取当前 viewport 并只替换 `zoom`。这几条交互都保留旧的 `x/y` 平移量。
+- React Flow 使用 `screen = world * zoom + translation` 这一 viewport 仿射变换；本仓库锁定的 `@xyflow/system` 发行源码将 viewport 映射为 translate/scale transform，反算世界坐标为 `(screen - translation) / zoom`。因此 zoom 改变而 translation 不变时，中心看到的世界点会变化。`CanvasApp.tsx` 的 Ctrl/Meta+wheel 路径另有按鼠标锚点重算 x/y 的代码；该路径不是本项复现范围，表明现有画布已经存在正确锚定模式。
+- 新增 opt-in 探针 `apps/desktop/scripts/audit-workflow-zoom-anchor.test.cjs`，用 TypeScript AST 提取并执行当前生产 TSX 中的六个原始 handler，只替换它们的闭包依赖与 React Flow 实例，不手写生产 zoom handler。尺寸为 1000×600、起始 viewport `{x:-500,y:-240,zoom:1}`，使常规缩放前中心世界坐标为 `(1000,540)`。执行 `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-zoom-anchor.test.cjs` 得到 **0 passed / 1 failed（预期）**：底栏与小地图 zoom-in/滑杆后中心变为 `(909.09,490.91)`；zoom-out 后变为 `(1111.11,600)`；底栏 reset 以 zoom=1.5 的非默认 viewport 为输入，同样未保留 `(766.67,440)` 的中心点。六条生产 handler 均存在焦点漂移。该测试验证的是实际 handler 参数与最终 viewport，不是只对 source 文本做字符串匹配；但没有启动 Tauri/WebView 或进行像素截图检查。
+
+#### 无限画布参考对照
+
+- **Penguin-Magic NodeCanvas** 的 `components/NodeCanvas/index.tsx::zoomAtViewportCenter()` 先以视口中心和旧 `offset/scale` 求出中心世界点，再用新 scale 反算新 offset；代码注释明确该函数供底部工具栏与小地图共用。**Penguin-Magic InfiniteCanvas** 的滚轮缩放以鼠标世界点为锚，重新计算 offset 后提交 viewport。两种交互策略分别对应底栏/小地图固定中心与滚轮指针位置，本系统现有 Ctrl/Meta+wheel 与其设计一致，但按钮路径没有对应的中心锚定。
+- Codex 与 DeepSeek Harness 不提供本系统这种桌面无限画布控件，故不把它们声称为直接 UI 对照；这项属于桌面交互实现质量，不是 DeepSeek API/缓存/工具协议差异。Penguin 的实现用于本项已明确限定的本地参考对照，不意味着其代码可以直接复制。
+
+#### 后果与修复方向
+
+- 用户在非原点视区点一次放大，视口中心立即移动约 90.91 个世界单位；缩小一次则向相反方向移动约 111.11 个单位。连续调整滑杆或放大/缩小会让当前关注节点从屏幕中心漂开，需要再次平移或调用 fitView。图数据和运行不变，影响是可重复的导航跳动而非数据损坏；鼠标锚定滚轮、重新定位或 fitView 是当前可用替代路径。
+- 根因是缩放控制在组件里各自只更新标量 zoom，而没有共同的 camera/viewport 转换策略。建议在 Canvas 父层提供单一 `zoomAtViewportCenter(nextZoom)`，底栏和 MiniMap 共用它；在父层依据容器尺寸求旧世界中心并重算 x/y，一次同时更新 React Flow 和 CanvasStore，避免出现 UI/React Flow 两份行为。若以后给小地图本身加入点击导航，应另明确其点击位置锚点，不能与本项中心缩放混为一谈。
+- 回归覆盖底栏 +/-、比例滑杆、小地图 +/- 在正负平移及不同当前 zoom 下保持世界中心不变，并确保 Ctrl/Meta+wheel 仍保持鼠标下世界点不动；兼顾 zoom clamp、尺寸变化和空节点 fitView。当前未做生产修复，未启动 WebView 做视觉验证。
+
+本轮 H-201 只新增 opt-in 生产 handler 审计探针和报告，未修改生产画布行为。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -4104,6 +4128,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-198 工作流 OR 条件显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_or_condition_does_not_start_from_true --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；两个原生 OR 子条件均为 false，节点却输出 `branch=true`、run=`succeeded`；只验证 decision，不复用 H-39 的错误派发作为判据；无模型、工具、网络、命令或文件副作用 |
 | H-199 工作流多 case ELSE 端口显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_multi_case_condition_keeps_else_handle --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；两个 case 都不匹配且显式连接 executor 定义的 `false` fallback，正式编译以 invalid source handle 拒绝，run=`failed`；无模型、工具、网络、命令或文件副作用 |
 | H-200 Responses lifecycle identity/sequence 显式探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e native_output_items::audit_responses_lifecycle_retains_provider_identity_and_sequence --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正常 `response.created`/`response.completed` fixture 含同一 response ID、provider model 与序号 0/7，但正式 `run_events` 仅保留 Runtime envelope 和两个 `event_type`，provider 字段全部丢失；run 仍成功，无公网/工具副作用 |
+| H-201 无限画布缩放焦点显式探针 | `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-zoom-anchor.test.cjs`：0 passed / 1 failed（预期）；动态执行底栏 zoom-in/out/reset/滑杆与小地图 zoom-in/out 六个生产 handlers；平移后中心世界坐标随缩放漂移；无 Tauri、图数据写入或模型请求 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
