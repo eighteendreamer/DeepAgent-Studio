@@ -63,6 +63,9 @@ mod hook_cancellation;
 #[path = "kernel_v2_e2e/hook_permissions.rs"]
 mod hook_permissions;
 
+#[path = "kernel_v2_e2e/hook_file_cache.rs"]
+mod hook_file_cache;
+
 #[path = "kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
 

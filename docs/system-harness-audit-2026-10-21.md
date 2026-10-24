@@ -25,6 +25,7 @@
 | 模型型 hook 的用量归属与预算 | prompt/多步 agent hook 正常 completed 并含完整 usage，允许或拒绝父工具都只结算主请求；合计费用已过本地预算但下一轮继续实际请求模型 | 已确认 H-235（P2）；无 hook、matcher 未命中和主费用已入账越限三项对照通过；用离线 usage 验证本地账本，不代表真实供应商消费或缓存命中实验 |
 | 工具 pipeline 的模型 hook 取消 | 正式停止已受理，顺序工具前/后置 prompt/agent hook 仍等待；在 agent 首响应前停止，释放后还真执行 task_list 并发下一次 hook 请求 | 已确认 H-236（P2）；UserPromptSubmit/SessionStart 取消及四位置正常允许对照通过，最终取消映射正确；离线供应商 gate，未验证真实计费或公网取消 |
 | agent-hook 的有效权限继承 | 主 read_file 被用户 Read deny 或默认 WorkspaceWrite 的 PathGuard 拒绝；同次运行的 hook 使用同一工具读取相同临时文件，正文进入 hook 下一模型请求 | 已确认 H-237（P1）；显式规则与工作区边界两条探针，未命中/无规则/敏感文件对照通过；无真实敏感数据或公网传输 |
+| agent-hook 的已读状态归属 | 主/hook 双向首次读取均可能收到另一个上下文造成的空桩；只有 hook 读过也能让主 write_file 覆盖原文 | 已确认 H-238（P2）；五个正常对照、三个缺陷探针；真实临时文件与离线模型，不是服务端 KV cache 实验 |
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
@@ -191,6 +192,7 @@
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
 | 嵌套执行的状态作用域 | 声称 isolated/read-only 的 agent-hook 克隆父工具 Arc，成功 todo_write 直接替换父列表，父工具被拒后同样残留（H-234） | Claude agent-hook 创建唯一 agentId，TodoWrite 按 agentId/sessionId 分区；Codex update_plan 从调用上下文取得 session/turn 发送计划事件（非同类 hook 动态证明） | 决策辅助运行改变主模型的任务状态，父历史缺少对应写入事实；独立 Session 没有实现工具实例隔离 |
 | 嵌套执行的权限继承 | agent-hook 的私有 Runtime 不含父 PermissionRules/PathGuard，实际克隆的主工具却以 FsAccess::Full 构造，主运行拒绝的同一读取仍成功（H-237） | Claude hook 保留父权限上下文并经同一 deny-first 检查；Codex 子运行显式继承有效审批策略与权限快照，角色覆盖只能在父授权内调整 | Safe 工具筛选不等于资源授权；启用 hook 后，用户显式 deny 和默认工作区读取边界不能贯穿附属执行 |
+| 文件缓存与模型观察凭证 | FileStateCache 将共享磁盘快照、已交付正文和写前已读合成路径级状态，独立 hook/主上下文互相串用（H-238） | Claude 普通子 Agent 将历史 fork 与 cache clone 配套，但其 agent-hook 静态存在相似共享风险；DeepSeek Harness 的可选 observation policy 以 session owner 分隔版本凭证 | 可以共享磁盘字节，不能因此认定每个模型都见过；读取成功空桩造成证据缺失，写前兜底也可能放过盲写 |
 | 文件操作的实际资源边界 | “读过”未绑定所读版本，搜索遍历未继承直接读取的敏感路径拒绝（H-76/H-77） | Claude 在写入执行时复查读取版本，将 Read deny 规则同时投影为 grep/glob 排除项 | 外部已保存修改被覆盖；被禁止的文件内容仍可经搜索进入模型请求 |
 | 物理路径与沙箱边界 | WorkspaceRoot/PathGuard 只按词法路径判断，Windows junction 后的真实读取目标未重新校验（H-78） | Claude 权限检查同时检查原路径和 realpath/symlink 链；Codex 依赖其 sandbox/backend 边界而非模型工具的词法字符串 | WorkspaceWrite 可读取项目外内容，配置的工作区隔离失效；FullAccess/普通外部读取语义仍需单独区分 |
 | 运行及附属工作的归属 | 子运行、输出 reader、复核和真实构建验证没有一致的取消/退出 owner（H-45/H-60/H-61/H-64）；原生摘要取消已修复 | Codex turn token、有限 grace、任务 abort 和专属清理，输出 reader 截止后显式处理句柄 | 停止等待、父终态后附属工作仍存活、取消后错误落成功终态 |
@@ -6056,3 +6058,51 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，6.27s**；`cargo fmt --all -- --check`、`git diff --check` 通过，Markdown fenced blocks=8（偶数）。实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未报告 lint 通过。
 - code-audit 促使分别验证显式规则与真实资源策略，并纠正“工具 Arc 必然自带父路径边界”的未证假设；docs-generator 促使首轮、失败对照、新边界和收尾逐段即时落文。只新增 test-only `hook_permissions.rs`、测试入口与本报告，无生产权限修改、依赖新增、数据迁移或真实收费；用户既有未跟踪文件不动。
 - 未运行全 workspace、Desktop build/UI、真实 DeepSeek/收费/缓存实验、参考工程、其他 hook 事件、hook deny/取消与本权限缺口的组合、其他工具/配置层/ask 审批、多 hook/并发、数据库重开、操作系统沙箱或其他平台。没有将官方 schema 规则当授权机制，也未把临时 canary 传给外部供应商；全系统审计仍 active，未处理用户排除的 encrypted-content 错误。
+
+### H-238：agent-hook 与主模型共享“已读”状态，首次读取变空桩且写前凭证串用
+
+**级别：中（P2，配置 agent-hook 后的读取证据缺失与写前检查失效）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 ReadFileTool 已双向复现，WriteFileTool 已实际覆盖临时文件，未修复。不是 DeepSeek 服务端 KV 缓存问题。**
+
+#### 首次即时 Evidence（2026-10-24）
+
+- Scope：用户授权的本仓库审计；普通临时 workspace、单行 fixture.txt 与虚构正文 SYNTHETIC_FILE_BODY_NOT_IN_PROMPT，无用户文件/真实凭据。保存 Default 权限与 task_list 的 PreToolUse agent-hook；仅模型 transport 为正常完成的离线 Responses fixture，无拒绝、断流、取消、外部文件变化或真实供应商调用。本轮只审计测试与报告。
+- E-238-first（command，content_hash=n/a）：source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/hook_file_cache.rs`；`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_file_cache --offline -- --include-ignored --nocapture`，**3 passed / 2 failed（预期），0.90s**。两个 ignored 探针验证各自首次读取必须把正文交付给自己的模型历史，而不是把另一个上下文看过当作自己看过。
+- E-238-parent-first：主模型先真实 read_file(fixture.txt)，下一请求收到正文；之后 task_list 触发独立 agent-hook。hook 首次调用相同 read_file 参数，得到 status=ok、cache_hit=true、unchanged_stub=true、returned_lines=0，content 只含 FILE_UNCHANGED_STUB。**hook 的全部两个请求（含 instructions 和完整 input）均无正文 canary**；主模型曾收到正文，不能据此声称 hook 也有该历史。hook 正常返回允许，主 task_list 继续成功、run 唯一 succeeded；不把固定离线允许决策冒充真实 DeepSeek 已因缺证据作出错误判断。
+- E-238-hook-first：主模型先 task_list，hook 首次真实读取收到正文；hook 的允许 JSON 不含正文，返回父运行后，主模型才首次请求 read_file。主读取同样成功但返回空桩，主模型全部三个请求均无正文 canary，hook 则确实见过。两向探针均在核对唯一 function_call/function_call_output 配对和成功状态后才因正文缺失失败；文件始终未修改，运行各自唯一 succeeded。
+- E-238-controls：同一主上下文连续两次相同读取时，第二次为空桩但完整先前正文仍在该模型历史，正常通过；没有主预读的单独 hook 首次读取正常得到正文、cache_hit=false；主先读、hook 显式传 offset=1（同一单行内容，区别于缺省参数）时，cache_hit=true 仍交付正文，两个上下文均含 canary。后者是范围参数改变可绕过错误去重的对照，不是依赖模型主动变换参数的可靠修复。
+
+#### 初始 Finding 与 Path
+
+- F-238（category=design，status=validated，confidence=high，evidence_ids=[E-238-first,E-238-parent-first,E-238-hook-first,E-238-controls]）：`file_tools.rs::file_tools` 为文件工具建立一个共享 FileStateCache；ReadFileTool::invoke 用文件 metadata 与 path→last_read(offset,limit) 判定返回空桩，缓存没有调用方上下文身份。`hook_runtime.rs::build_hook_agent_registry` 克隆原工具 Arc，而 execute_agent 每次创建独立数据库/Session/ModelAgent；其 prompt 只有 hook 模板和生命周期 JSON，不继承父对话正文。缓存复用的“磁盘字节未变”与“当前模型上下文已见此范围”被当成同一事实。
+- P-238（callflow）：上下文 A 的真实读取 → 共享缓存记录 last_read → 独立上下文 B 的首次同参数读取 → 文件未变使 cache_hit=true → 返回“你已读过”的空桩 → B 请求历史始终无文件正文。A/B 可以分别为主模型/hook，顺序颠倒也成立。本轮不依赖 H-237 的权限丢失，也没有使用 H-234 的状态写工具；H-76 的旧版本覆盖是另一个独立不变量。
+- 直接后果是独立审查/决策或主任务缺少自己请求的文件证据，却收到成功工具结果；可能追加重复读取、无依据判断或受限六步内过早结束。这些业务后果为风险推导，尚未做真实模型质量、token/费用或通过率 A/B；已证事实仅为正常工具输出和完整 wire 的正文缺失。成熟实现对照与 read-before-edit 状态是否同样串用随后核验，不在未实测前登记其他后果。
+
+#### 增量 Evidence：hook 的“已读”还错误满足父模型写前读取要求
+
+- E-238-write：扩展同一正式测试模块，主模型先 task_list→hook 读取，随后主模型**没有调用 read_file，也没有在任何请求中收到原正文**，直接 write_file 覆盖同一个已存在文件。真实 write_file 返回 status=ok，磁盘完整变为另一段虚构 replacement，原 canary 消失；父请求始终无原正文，hook 确实收到原正文，最终唯一 succeeded。没有让 hook 调用写工具，没有额外授予文件权限，也没有外部文件改动或依赖读空桩后重试。
+- 两项新增正常对照：同一主流程把 hook matcher 改为不命中，主 write_file 被 read-before-edit 检查明确拒绝、原文件完整保留；主模型自己先 read_file、再写则成功，正文已进入主历史、replacement 正常落盘。`cargo test -p deepagent-app-core --test kernel_v2_e2e hook_file_cache --offline -- --include-ignored --nocapture`：**5 passed / 3 failed（预期），0.95s**；原三个正常读取对照和两个正文缺失探针结果保持不变。
+- F-238 增补 evidence_ids=[E-238-first,E-238-parent-first,E-238-hook-first,E-238-controls,E-238-write]。同一个 FileStateCache::entries.contains_key 同时充当“当前模型已读”的写前凭证，ReadFileTool/WriteFileTool 又共享同一 cache Arc；缺少上下文归属使 hook 的观察自动授予父模型写前资格。P-238 增补：hook 私有 Session 的 read → 共享缓存 entries 已存在 → 父 write_file 通过 has_been_read → 原内容未进入父历史但已被覆盖。这是同根因的第二类后果，不另增编号。
+- 写样本中的父模型原本具有 workspace 写权限，故不将其描述为凭空提权或 H-237 的权限绕过；失效的是公开“先读当前内容再覆写”的执行保障。可能使盲目整文件替换不再被工具兜底拒绝，已确认临时文件实际覆盖；未验证真实用户数据损失、备份不可恢复或任意其他编辑工具。H-76 是同一 actor 看过旧版本后覆盖外部新版本，本项没有外部变更、父 actor 从未见过原文，治理维度不同。
+
+#### 成熟实现与官方机制对照（静态源码，不冒充参考工程实跑）
+
+- **Claude 普通子 Agent 的配套边界**：`借鉴/claudecode/restored-src/src/tools/AgentTool/runAgent.ts:368–378` 将 forkContextMessages 过滤后并入 initialMessages；只有传入 forkContextMessages 才 clone 父 readFileState，否则创建新的空 cache。`utils/fileStateCache.ts::cloneFileStateCache` 创建独立容器再 dump/load，不是共享同一个可变 cache。可借鉴的是“继承观察状态必须与继承消息上下文配套”，不是只要有父子关系就认定双方看过同一内容。`tools/FileReadTool/FileReadTool.ts:523–570` 的同范围/同 mtime 去重明确假设原 Read 结果仍在上下文；`services/compact/compact.ts:517–522` 在压缩时保存旧状态后清空 cache，随后重建 attachments，说明上下文改写也需协调观察状态。
+- **必须保留的反证：Claude 同类 agent-hook 不能当作已解决的正例**。`utils/hooks/execAgentHook.ts:69–73` 只创建 [userMessage]，忽略传入的 _messages；约124行展开父 toolUseContext，未覆盖 readFileState。结合其 Read 去重源码，这里静态存在相似共享风险。尚未动态运行该参考工程，既不宣称 Claude hook 已解决，也不据此登记其产品漏洞。普通 AgentTool 的设计可借鉴，但不能替同类 hook 背书。
+- **DeepSeek Harness 的读取与观察 owner**：`借鉴/deepseek-harness/packages/fs/tool-fs/src/read.ts::applyReadTool` 每次 execute 都 resolve/stat、readText 或 streamText、buildWindow 后返回行正文；不因其他 actor 读过就返回“你已读”空桩。成功后发 fs/observed。`packages/fs/fs-observation-policy/src/index.ts` 使用 WeakMap<owner,Map<targetKey,observation>>，owner 为 actor.agent.session；不同 owner 不共享观察，无法解析 owner 时不授予替换凭证。自己见过 present 才生成 replaceIfVersion，否则 write 为 createIfAbsent；edit 未观察则 FS_NOT_OBSERVED。`tests/policy.spec.ts:157–178` 专门断言 A 观察不授权 B edit，以及 A/B 写意图不同。
+- **组合前提不能省略**：上述 observation policy 是可选插件。`tool-fs/src/write.ts:108–130` 通过 fs/write-intent 取得 guard 并交给 provider；未安装 policy 时默认 undefined，属于 unconditional 写入，不能声称所有 DeepSeek Harness 组合天然具有 read-before-edit。版本/no-clobber 还需 provider 原子执行。上述只完成源码及测试断言阅读，未安装或运行参考项目，也未证明其读取观察等同“供应商已成功收到正文”。
+- **DeepSeek 官方边界**：2026-10-24 再次联网核对[上下文硬盘缓存](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)与[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)。前者按重复完整前缀单元匹配，后者说明接口无状态，不支持 previous_response_id/conversation/store。这不是让独立 hook 自动继承父历史的机制。由此判断：宿主只回传空桩而未提供正文时，不能指望供应商缓存补回缺失证据。本地工具 cache_hit 与供应商 usage 的缓存 token 指标是不同层次，本轮未测真实命中率、计费或模型质量。
+
+#### 根因治理方向与影响评估（本地设计，未实施）
+
+- 将可共享的磁盘字节快照与有归属的上下文观察凭证分开。后者至少关联 context owner、文件版本、交付范围以及仍存活的消息证据；工具执行成功不能无条件等同当前模型已经看过。新独立 hook 应没有父 seen-content，完整 fork 才能与消息历史一起显式投影；压缩、回退、裁剪和工具结果提交失败都应协调失效/重建。复用现有 ToolExecutionContext、Session 与 pipeline 边界，不另造运行系统或持久化中心。
+- 不能仅清空所有共享 cache：会丢失同上下文正常去重，也不能表达并发 owner；不能只移除空桩分支，因为 has_been_read 仍会放过盲写；不能只改 write_file，因为同 helper 的 edit_file/multi_edit 仍需同一契约。后两种编辑工具只完成源码可达性核查，未实跑，不把它们算成新增已复现后果。未来回归应保留本轮五个正常对照和三个目标不变量，并覆盖多 hook、并发、部分读取、压缩/恢复及失败提交。
+- 影响限定在会复用工具对象但不共享消息历史的上下文。本轮证明命中的 agent-hook 与父模型双向发生，不泛化为没有 hook 的所有聊天。已证后果为成功读取缺正文、未见原文仍真实覆写；潜在后果为审查漏证据、盲目覆盖、额外重复工具调用，具体错误决策概率及费用增量未测。P2 基于正确性与写前防误操作承诺失效，不是无权限写入、真实数据丢失或操作系统沙箱逃逸。
+- H-234～H-238 已同时暴露“该继承的执行策略/取消/费用没有贯穿，而不该共享的可变状态/观察凭证共享”的嵌套运行边界问题。建议先定义统一的附属运行上下文所有权契约，再沿既有内核逐 seam 验证；不要继续给各 hook 添加孤立特判。本轮只补审计测试与报告，不实施生产修复。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 测试辅助函数拆分为正式运行/终态验证与 wire 观察汇总后，显式 `cargo test -p deepagent-app-core --test kernel_v2_e2e hook_file_cache --offline -- --include-ignored --nocapture` 再跑：**5 passed / 3 failed（缺陷预期），0.92s**。三个失败分别为独立 hook 必须获得正文、独立父模型必须获得正文、未见原文的父模型不得通过写前兜底；真实输出仍为空桩/成功覆盖，未修改测试预期掩盖问题。五个正常对照默认执行，三个目标不变量 ignored，不影响默认 CI；默认全绿不表示已修复。
+- 本轮实际 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**63 passed / 69 ignored，10.68s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored，6.94s**。没有重跑其他历史问题的 ignored 故障探针；本轮显式重跑只用于验证新增 H-238 测试整理未改变证据。
+- `cargo fmt --all -- --check` 首次发现 summarize 签名排版差异，按提示仅调整该测试函数后重新检查通过；`git diff --check` 通过，Markdown fenced blocks=8（偶数）。实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断，不宣称 lint 通过，也没有顺手修生产逻辑。
+- code-audit 促使从正文缺失继续核查同一缓存的写前使用方，并保留无 hook/自身已读两个反向对照；docs-generator 促使首次、写前增量、参考反证与收尾分段入文。仅新增 test-only hook_file_cache.rs、模块入口和本报告，无生产逻辑/依赖/配置/数据库迁移变更；用户原有未跟踪文件不动。
+- 未运行全 workspace、Desktop build/UI、真实 DeepSeek/费用/质量/服务端缓存实验、参考工程测试、其他 hook 事件或并发、多 hook、其他编辑工具、部分内容/压缩/rewind/重启等组合。临时内容均为虚构，未读取真实敏感数据或传给真实供应商。全系统审计仍 active，未处理用户排除的 encrypted-content 错误。
