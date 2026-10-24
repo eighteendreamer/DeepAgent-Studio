@@ -67,6 +67,9 @@ mod cost_calendar;
 #[path = "kernel_v2_e2e/pricing_activation.rs"]
 mod pricing_activation;
 
+#[path = "kernel_v2_e2e/fallback_cost.rs"]
+mod fallback_cost;
+
 #[path = "kernel_v2_e2e/cache_prefix.rs"]
 mod cache_prefix;
 
