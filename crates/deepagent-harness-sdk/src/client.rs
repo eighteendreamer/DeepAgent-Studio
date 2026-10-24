@@ -531,4 +531,87 @@ mod audit_tests {
             "malformed server output should fail the request before EOF: completed={completed_before_eof}, pending={pending_before_eof}"
         );
     }
+
+    #[tokio::test]
+    #[ignore = "audit reproducer: an unresponsive but connected server must not block SDK requests indefinitely"]
+    async fn audit_unresponsive_server_request_has_a_bounded_wait() {
+        let marker = std::env::temp_dir().join(format!(
+            "deepagent-harness-sdk-audit-timeout-{}-{}.marker",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let marker_literal = marker.to_string_lossy().replace('\'', "''");
+        let script = format!(
+            "$null = [Console]::In.ReadLine(); [System.IO.File]::WriteAllText('{marker_literal}', 'request-received'); Start-Sleep -Seconds 30"
+        );
+        let mut child = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a local unresponsive-server fixture");
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let (events, _) = broadcast::channel(1);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let client = HarnessClient {
+            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
+            next_id: Arc::new(AtomicI64::new(1)),
+            pending: pending.clone(),
+            events,
+            initialized: Arc::new(Mutex::new(true)),
+        };
+
+        let request_client = client.clone();
+        let mut request = tokio::spawn(async move { request_client.thread_list().await });
+        let marker_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !marker.exists() && tokio::time::Instant::now() < marker_deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(
+            marker.exists(),
+            "fixture must receive the valid SDK request"
+        );
+
+        let completed_before_release =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut request)
+                .await
+                .is_ok();
+        let caller_cancelled = !completed_before_release;
+        let cancelled_join = if caller_cancelled {
+            request.abort();
+            Some((&mut request).await)
+        } else {
+            None
+        };
+        let pending_after_caller_cancel = pending.lock().unwrap().len();
+
+        let _ = child.kill().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+            .await
+            .expect("fixture should exit when terminated");
+        let request_result = if let Some(cancelled_join) = cancelled_join {
+            format!("caller-abandoned: {cancelled_join:?}")
+        } else {
+            format!(
+                "{:?}",
+                tokio::time::timeout(std::time::Duration::from_secs(3), &mut request)
+                    .await
+                    .expect("EOF should release the pending request")
+            )
+        };
+        let _ = std::fs::remove_file(marker);
+
+        assert!(
+            completed_before_release && pending_after_caller_cancel == 0,
+            "SDK request should support bounded abandonment and remove canceled pending state; completed_before_release={completed_before_release}, pending_after_caller_cancel={pending_after_caller_cancel}, result_after_eof={request_result:?}"
+        );
+    }
 }

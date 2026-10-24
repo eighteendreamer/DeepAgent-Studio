@@ -48,7 +48,7 @@
 | Responses 流身份与顺序元数据 | 合法流为 `response.created`/`response.completed` 提供同一 response ID、实际模型和单调序号；正式 ChatService→Kernel 落盘后两条事件仅保留 Runtime envelope 与 event_type | 已确认 H-200；正常连续离线 Responses fixture、正式 run_events；未制造乱序/丢包，也未声称已观察真实供应商流损坏 |
 | 无限画布工作流视口缩放锚点 | 画布已平移后，底栏放大/缩小/重置/滑杆与小地图放大/缩小只改 zoom、不重算平移 offset；缩放前后的视口中心映射到不同世界坐标 | 已确认 H-201；动态执行六个生产 TSX handlers；与 Penguin-Magic 中心锚定按钮缩放及指针锚定滚轮缩放实现对照；没有图数据或运行状态副作用 |
 | 无限画布工作流视口持久化 | 正式图写入只序列化 `nodes/edges`，新 WebView 的 viewport 回到 `{x:0,y:0,zoom:1}`；ReactFlow 初次挂载执行 fitView，没有 per-mode default viewport | 已确认 H-202；动态调用真实 `workflowPersistence` 的读/写/flush 并创建新 store 实例；图节点恢复对照通过；未启动 Tauri WebView |
-| Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
+| Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留 | 已确认 H-90、H-100、H-101、H-204；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，也未证明发行版 server 常规路径会静默不响应 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -4088,6 +4088,25 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-203 仅新增 opt-in 审计探针与本报告，没有改生产校验行为；服务端接受性仍待真实 DeepSeek 请求验证。
 
+### H-204：Harness SDK 对无响应但未断开的 RPC 无期限等待，调用取消后 pending 不回收
+
+**级别：中（P2，条件性 SDK 可用性与请求所有权缺口）；触发条件：SDK 已写出一个合法 RPC 请求，对端保持 stdout/连接打开但长期不回对应 JSON-RPC response；调用方通过 abort/drop 取消等待，或未设置外部 deadline。** 这不是 CLI 默认路径必然故障的证据；若对端及时响应或关闭 stdout，现有行为可正常返回/报错。
+
+#### 正式 SDK 路径与本机复现
+
+- `HarnessClient::call_unchecked()` 在 `rx.await` 上直接等待，没有 per-request deadline、取消 token 或取消时的 pending 清理；`spawn_reader()` 只会在匹配响应到达时 remove request id，或 stdout EOF 时统一 clear。SDK 的公开 `thread_list()`/`config_read()` 等调用走同一路径。请求如果已写出后调用 future 被 drop，oneshot receiver 会消失，但共享 `pending` 中的 sender 仍然保留；Harness protocol 没有在该 client seam 提供取消这条服务器操作的消息。
+- 新增 opt-in Windows 子进程探针 `client::audit_tests::audit_unresponsive_server_request_has_a_bounded_wait`。PowerShell fixture 从真实 stdin 管道读到合法请求后先写临时 marker，再保持 stdout 打开 30 秒、不发送 response。测试确认 SDK `thread_list()` 在 300ms 外层观察 deadline 内仍未完成；取消 request task 后 `pending_after_caller_cancel=1`。随后 fixture 被测试明确终止，stdout EOF 才使等待结束为 `ResponseChannelClosed { id: 1 }`。命令 `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_unresponsive_server_request_has_a_bounded_wait --offline -- --ignored --exact --nocapture` 为 **0 passed / 1 failed（预期复现）**；失败观测为 `completed_before_release=false, pending_after_caller_cancel=1`。该 fixture 不运行真实 CLI server、模型、工具、用户文件或公网服务。
+- H-101 的触发输入是 reader 收到不可解码 stdout 行后继续忽略；H-204 的 fixture 没有发任何非法/非协议字节，问题在请求成功写出但一直没有响应时 SDK 缺少等待期限和 waiter abandonment 清理。两者可共存，但不把同一 malformed-line 现象重复登记。
+
+#### 成熟实现对照、后果与收敛方向
+
+- DeepSeek Harness `packages/sdk/client/src/client.ts::request()` 支持 client-wide 或 per-call `requestTimeoutMs`；期限到达时通过 `AbortController` 中止等待，并由 `packages/sdk/protocol/src/transport.ts::JsonRpcLineTransport.request()` 的 abort handler 删除 pending id。README 明确 initialize 有单独 deadline，request timeout 为可选配置；这证明其支持显式有界请求和本地 pending 回收，不代表它会自动取消 server 端已接纳的工作。
+- Codex `app-server-client/src/remote.rs::RemoteAppServerRequestHandle::request_json_rpc()` 也直接 await oneshot，没有据此声称 Codex 已解决每条 RPC 的超时。该文件确实给 connect、initialize、shutdown 设置 deadline，并在 worker 退出时 settle 全部 pending；此处只借鉴其连接生命周期收束边界。比较结果是本系统至少应提供可配置 request deadline/cancel ownership，而不应虚称每个成熟 agent 都使用相同的请求超时设计。
+- 触发时，依赖 SDK promise 的 Harness 调用方可能无限挂起；若上层反复用外层 timeout/drop 处理，且 server 保持连接并永不响应，pending sender 会按被放弃请求数量增长直到同 ID response 或 EOF。超时发生在请求写出之后时，服务端是否已接纳操作未知，不能安全自动重试 `thread/start`、`turn/start` 等潜在有副作用请求；应把“结果未知”交给调用方并允许 `thread/read` 等读回查询。当前探针仅以 `thread/list` 验证 SDK 等待，不证明实际 CLI server 有此死锁或内存持续增长量。
+- 收敛方向（尚未实施，本地设计）：在现有 SDK call 层引入 request options / timeout，给 initialize 与普通 RPC 可分别配置 deadline；使用 RAII pending registration，成功匹配、写失败、deadline、调用 future drop、reader EOF 均由一个 owner 按 ID 只移除/完成一次。超时错误应携带安全的 method/id 和“请求结果可能未知”语义，不自动重放已写请求；协议若以后需要远端取消，应定义独立版本化 cancel contract，不能把丢弃 Rust future 误当成服务器取消。测试覆盖发送前取消、写入中失败、已发送未答、超时后迟到回复、EOF 竞争、重复取消以及副作用请求的读回恢复。
+
+本轮 H-204 仅新增 opt-in 审计探针与报告，没有改生产 SDK 行为；deadline 用例的 300ms 仅为测试观察窗，不是产品超时配置。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -4250,6 +4269,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-99 Chat `top_logprobs` 默认值显式探针 | `cargo test -p deepagent-models audit_chat_top_logprobs_default_is_rejected_before_transport --offline -- --ignored --nocapture`：0 passed / 1 failed；配置 `top_logprobs=5` 后正式 Chat 运行使用合法离线响应完成，transport 被调用一次，证明配置默认未与请求级值共用不支持校验。官方文档要求 `logprobs=true`；无公网调用，桌面默认 Responses 路径不在本项范围 |
 | H-100 SDK initialize 畸形 response 显式探针 | `cargo test -p deepagent-harness-sdk --lib audit_initialize_rejects_response_without_result_or_error --offline -- --ignored --nocapture`：0 passed / 1 failed；实际 `result=None, error=None` 仍返回 Ok 并设置 `initialized=true`。Windows PowerShell 子进程和本地管道 fixture；未启动真实 CLI server、第三方 server 或公网 |
 | H-101 SDK 畸形 stdout 行显式探针 | `cargo test -p deepagent-harness-sdk --lib audit_malformed_server_line_does_not_leave_request_pending --offline -- --ignored --nocapture`：0 passed / 1 failed；畸形行发出并由标记确认后，调用仍 pending、表内保留 1 项，直到 fixture EOF 才释放。Windows PowerShell 子进程和真实本地管道，无 CLI server 或公网 |
+| H-204 SDK 对端静默时的请求 deadline / abandonment 显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_unresponsive_server_request_has_a_bounded_wait --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；对端收到合法请求并保持 stdout 打开，300ms 内 SDK 未完成；取消调用 task 后 pending=1；仅 fixture EOF 才释放。Windows PowerShell 子进程，无真实 CLI server 或公网 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4647,6 +4667,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 执行权限与子运行上下文 | H-03、H-19、H-22、H-65 | 有效工具集合、sandbox 选择、执行根、checkpoint 与两处自动验证必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd、Codex 的统一命令编排 | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致；配置后端拒绝时单文件/完成验证均不得转为宿主执行 |
 | 可选 WASM 的时钟与调用归属 | H-59 | 既有 WasmSandbox 统一 Engine tick 与 per-Store deadline；参考上游 Wasmtime 及成熟 Agent 的局部 timer 清理 | 顺序与并发调用互不提前超时；成功/失败/取消不遗留误伤；Windows trap 错误不终结宿主；默认未启用路径保持不受影响 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17、H-84 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；审批通知只由一个 gate owner 发布并携带 call ID；参考 Codex 的 turn 所属 waiter 和单一权限请求 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；一项人工审批只发一条可响应请求；保存失败可见 |
+| Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
 | 启动恢复的 run/task 诊断归属 | H-44、H-95 | 现有恢复投影按 run 的 task 身份界定历史范围；参考 Codex 按 turn ID 标记 stale turn | 同 session 多个未完成 run 的中断原因各自匹配其 task turn；较新的 user prompt 不改写旧 run 的工具中断原因；重放稳定，且不改变唯一终态 |
 | 机器终态与最终钩子的提交边界 | H-83 | 复用既有 Kernel 终态提交和协议投影；答案/钩子进度与最终结果分开，参考 Codex 的统一完成状态与 Claude 更新前执行钩子 | hook 正常/失败/取消、provider error、DB 故障及补读一致；同一 turn 只发布一个与 durable 结果相符的最终状态 |
 | 工具实际执行与后置扩展的提交边界 | H-139 | 既有 ToolPipeline/action/Session 保存已执行事实和结果；后置 hook 的反馈、拒绝继续及失败分别投影；参考 Claude 普通工具结果先保留、Codex 区分执行 lifecycle 与 hook outcome | hook 有效/无效/执行错误及重开后，成功副作用不会变成未完成操作；原结果可回放、动作有准确终态、模型配对反馈可解释；不盲目重复执行 |
