@@ -19,6 +19,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 const VIDEO_BYTES: &[u8] = b"\0\0\0\x14ftypmp42audit-video";
+const PRIVATE_IMAGE_BYTES: &[u8] = b"\x89PNG\r\n\x1a\naudit-private-network-canary";
 const TASK_ID: &str = "audit-video-job";
 
 /// Only the provider is a fixture: the application still uses its real HTTP
@@ -185,6 +186,81 @@ impl Drop for LocalTextProvider {
     }
 }
 
+/// An image provider that returns a URL pointing at a second loopback server.
+/// The second server stands in for a host-private control plane or metadata
+/// endpoint and records whether the application follows the provider URL.
+struct LocalImageProvider {
+    base_url: String,
+    provider_requests: Arc<Mutex<Vec<(String, Value)>>>,
+    private_requests: Arc<Mutex<Vec<String>>>,
+    provider_server: JoinHandle<()>,
+    private_server: JoinHandle<()>,
+}
+
+impl LocalImageProvider {
+    async fn start() -> Self {
+        let private_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let private_address = private_listener.local_addr().unwrap();
+        let private_requests = Arc::new(Mutex::new(Vec::new()));
+        let private_captured = private_requests.clone();
+        let private_server = tokio::spawn(async move {
+            let (mut socket, _) = private_listener.accept().await.unwrap();
+            let (line, _) = read_request(&mut socket).await;
+            private_captured.lock().unwrap().push(line);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                PRIVATE_IMAGE_BYTES.len()
+            );
+            socket.write_all(header.as_bytes()).await.unwrap();
+            socket.write_all(PRIVATE_IMAGE_BYTES).await.unwrap();
+        });
+
+        let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_address = provider_listener.local_addr().unwrap();
+        let provider_requests = Arc::new(Mutex::new(Vec::new()));
+        let provider_captured = provider_requests.clone();
+        let provider_server = tokio::spawn(async move {
+            let (mut socket, _) = provider_listener.accept().await.unwrap();
+            let (line, body) = read_request(&mut socket).await;
+            provider_captured.lock().unwrap().push((line, body));
+            let payload = json!({
+                "data": [{
+                    "url": format!("http://{private_address}/host-private.png")
+                }]
+            })
+            .to_string();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            socket.write_all(header.as_bytes()).await.unwrap();
+            socket.write_all(payload.as_bytes()).await.unwrap();
+        });
+
+        Self {
+            base_url: format!("http://{provider_address}/v1"),
+            provider_requests,
+            private_requests,
+            provider_server,
+            private_server,
+        }
+    }
+
+    async fn close(&mut self) {
+        let provider_result = (&mut self.provider_server).await;
+        let private_result = (&mut self.private_server).await;
+        assert!(provider_result.is_ok() || provider_result.unwrap_err().is_cancelled());
+        assert!(private_result.is_ok() || private_result.unwrap_err().is_cancelled());
+    }
+}
+
+impl Drop for LocalImageProvider {
+    fn drop(&mut self) {
+        self.provider_server.abort();
+        self.private_server.abort();
+    }
+}
+
 async fn read_request(socket: &mut TcpStream) -> (String, Value) {
     let mut bytes = Vec::new();
     loop {
@@ -229,6 +305,7 @@ struct MediaFixture {
     providers: Arc<CanvasProviderService>,
     workflow: WorkflowRequest,
     live: Arc<Mutex<Vec<NodeExecutionEvent>>>,
+    approvals: Arc<AtomicUsize>,
 }
 
 impl MediaFixture {
@@ -292,6 +369,37 @@ impl MediaFixture {
         .await
     }
 
+    async fn new_image(provider: &LocalImageProvider) -> Self {
+        Self::with_provider(
+            &provider.base_url,
+            "Audit local image",
+            "audit-image-model",
+            vec![CanvasScenario::ImageGeneration],
+            |provider_id| {
+                serde_json::from_value(json!({
+                    "definition": {
+                        "version": 1,
+                        "nodes": [
+                            {"id":"start","kind":"start"},
+                            {"id":"image","kind":"image-gen","config":{
+                                "prompt":"audit provider image URL",
+                                "operation":"image_generate",
+                                "imageModel":format!("{provider_id}::audit-image-model")
+                            }},
+                            {"id":"end","kind":"end"}
+                        ],
+                        "edges": [
+                            {"id":"e1","source":"start","target":"image"},
+                            {"id":"e2","source":"image","target":"end"}
+                        ]
+                    }
+                }))
+                .unwrap()
+            },
+        )
+        .await
+    }
+
     async fn with_provider(
         base_url: &str,
         provider_name: &str,
@@ -344,6 +452,7 @@ impl MediaFixture {
         .with_canvas_model(gateway);
         let session = chat.create_session(None).unwrap();
         let workflow = build_workflow(&saved.id);
+        let approvals = Arc::new(AtomicUsize::new(0));
         Self {
             _root: root,
             db,
@@ -353,6 +462,7 @@ impl MediaFixture {
             providers,
             workflow,
             live: Arc::new(Mutex::new(Vec::new())),
+            approvals,
         }
     }
 
@@ -362,6 +472,7 @@ impl MediaFixture {
         let session = self.session.clone();
         let run_id = run_id.to_string();
         let live = self.live.clone();
+        let approvals = self.approvals.clone();
         tokio::spawn(async move {
             chat.run_workflow(
                 workflow,
@@ -372,7 +483,9 @@ impl MediaFixture {
                         live.lock().unwrap().push(event);
                     }
                 },
-                |_| {},
+                move |_| {
+                    approvals.fetch_add(1, Ordering::SeqCst);
+                },
             )
             .await
         })
@@ -546,6 +659,62 @@ async fn audit_text_cancel_does_not_wait_for_provider_response() {
     assert!(
         !text_completed && text_cancelled,
         "a cancelled in-flight text node must not publish a completed outcome"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit: a provider-controlled image URL must not fetch a host-private destination"]
+async fn audit_provider_image_url_cannot_fetch_loopback_resource() {
+    let mut provider = LocalImageProvider::start().await;
+    let fixture = MediaFixture::new_image(&provider).await;
+    let run_id = "audit-image-provider-url-ssrf";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+    result.unwrap();
+
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    let live = fixture.live.lock().unwrap();
+    let image = live
+        .iter()
+        .find(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Completed)
+        .expect("the production image node must complete before checking its artifact");
+    let artifact_uri = image
+        .artifacts
+        .first()
+        .expect("the image node must publish its stored artifact");
+    let stored = fixture
+        .artifacts
+        .read_bytes(artifact_uri.trim_start_matches("artifact://"))
+        .unwrap()
+        .unwrap();
+    let provider_requests = provider.provider_requests.lock().unwrap();
+    let private_requests = provider.private_requests.lock().unwrap();
+    let approvals = fixture.approvals.load(Ordering::SeqCst);
+    eprintln!(
+        "provider image URL: provider_requests={}, private_requests={private_requests:?}, approvals={approvals}, terminal={}, artifact_bytes={}, canary_stored={}",
+        provider_requests.len(),
+        terminals[0].data["kind"],
+        stored.len(),
+        stored == PRIVATE_IMAGE_BYTES
+    );
+
+    assert_eq!(provider_requests.len(), 1);
+    assert!(provider_requests[0]
+        .0
+        .starts_with("POST /v1/images/generations "));
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "succeeded");
+    assert_eq!(approvals, 0);
+    assert!(
+        private_requests.is_empty() && stored != PRIVATE_IMAGE_BYTES,
+        "an untrusted provider response must not make the host fetch and persist a loopback resource"
     );
 }
 

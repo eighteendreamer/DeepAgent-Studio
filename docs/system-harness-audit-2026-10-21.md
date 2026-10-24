@@ -36,6 +36,7 @@
 | 专业工作流 AI 节点执行能力 | 前端标为 enabled 的 LLM/Agent V2/问题分类/参数提取节点经正式图编译与 WorkflowAgent 执行：前两者被 Canvas prompt contract 拒绝，后两者没有 executor；四组 provider 调用数均为零 | 已确认 H-162；本机完整 WorkflowAgent→Canvas gateway 路径，无 Tauri/公网；同时收窄 H-160/H-161 的当前可触发范围 |
 | 工作流模型 usage 与成本归集 | 可执行的创作 text 节点收到完整 DeepSeek Chat usage 后，bridge response、WorkflowAgent 和正式 CostService 账本依次变成无 usage、全零、全零；run-level 旧分支仅保留 prompt/completion/total gauge，billed input、cache 与 reasoning 仍为零 | 已确认 H-163；本机 provider/MockTransport 与正式 finalizer/SQLite 成本库，无公网或真实费用；H-63 仅覆盖复核/分类附属请求，不包含本链 |
 | 画布同步模型请求的运行取消 | 正式 `text-gen` 已进入本机 provider 且响应保持 pending 后，取消被受理但工作流 300ms 内不退出；释放响应后 text 节点发布 Completed，运行却落唯一 cancelled 终态 | 已确认 H-164；动态仅覆盖 text。image/audio/embedding 只确认请求 DTO 与共用 HTTP `call()` 同样没有取消通道，尚未逐项动态复现 |
+| 画布供应商返回资产的下载边界 | 正常 image-gen 供应商在成功 JSON 中返回 loopback 图片 URL 后，宿主直接第二跳 GET，零审批，并把私网 canary 完整存入 artifact；运行仍 succeeded | 已确认 H-165；正式 WorkflowAgent/Canvas gateway/文件 SQLite/RunStore，本机两台 loopback 服务；没有访问公网、真实内网或元数据服务，也未证明数据已外传给供应商 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
@@ -3053,6 +3054,33 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 根因修复不应给四种模态各写一套 flag 特判。应在现有 Canvas bridge/request 汇合边界携带运行取消身份，使输入引用解析、上传/准备、provider send、响应 headers/body 和必要的 artifact commit 共用一个 cancel-aware helper；video 的现有 helper 可提炼语义，但不同协议的外部副作用与 cleanup 仍需显式处理。取消必须返回可识别的 cancelled outcome，让 WorkflowAgent 发布节点 Cancelled，且不能在 cancel 已发生后提交 Completed，再由 RuntimeEngine 事后改写 run。
 - 验收需要为 text/image/audio/embedding 分别覆盖：请求发送前、headers pending、body pending、输入引用下载/上传、artifact staging、正常成功、provider error、timeout 与取消/响应竞争；检查取消受理后有界退出、无迟到 Completed、唯一运行终态、规范节点事件可 replay、没有半成品，并明确“本地停止”不冒充“远端 provider 已撤销”。H-119 的 video submit/poll/download 回归必须同批保留，防止统一 helper 改造倒退。
 
+### H-165：图片供应商可令宿主下载任意私网 URL，并把响应作为成功 artifact 保存
+
+**级别：高（P1，条件性 SSRF / 宿主网络边界缺失）；触发条件：已配置的 image-gen 供应商或兼容网关在成功响应中返回指向 loopback、私网、链路本地或云元数据地址的 `data[0].url`。** 本项审计测试本身是正常且安全的本机故障注入：只绑定两台 `127.0.0.1` 临时服务和虚构 canary，不访问公网、真实内网、云元数据或用户服务。
+
+#### 生产路径与完整工作流复现
+
+- `CanvasModelGateway::parse_output()` 处理 image generation/edit 成功响应时，若没有 `b64_json` / inline data，就直接读取 provider 给出的 `url` 并调用 `fetch_binary(url, None)`。该 URL 不要求与已配置 provider 同源，也没有由用户配置的 artifact host allowlist。
+- `fetch_binary()` 新建一个宿主 `reqwest::Client`，对字符串执行 GET；只检查最终 HTTP status，然后 `resp.bytes()` 整体读入。它没有拒绝 loopback、RFC1918、链路本地/metadata 地址，没有把 DNS 解析结果绑定到已验证地址，也没有为每次 redirect 重验目标；仓库锁定的 `reqwest 0.12.28` 在未设置 redirect policy 时默认最多跟随 10 跳，当前 builder 正是这个默认配置。该调用不经过 ToolRegistry、PermissionSet、ChannelApprovalGate 或沙箱网络代理。
+- 返回字节只需让 `sniff_image_mime()` 识别，随后 `generate_image()` 就通过现有 CanvasArtifactService 保存并发布 Completed；下载来源身份没有进入 artifact policy。H-164 已覆盖此同步请求链的取消缺口，本项独立聚焦目的地址授权，不用“加取消”代替 SSRF 修复。
+- 新增默认忽略探针 `audit_provider_image_url_cannot_fetch_loopback_resource`：正式 ChatService、WorkflowAgent、Kernel/RuntimeEngine、CanvasModelGateway、provider 持久化、文件 SQLite、RunStore、节点事件与 artifact store 执行 start→image-gen→end。第一台 loopback 服务是正常 OpenAI-compatible image provider，收到正式 `POST /v1/images/generations` 后返回第二台 loopback 服务的 `/host-private.png`；第二台只记录请求并返回带 PNG 魔数的虚构 canary。
+- 精确命令 `cargo test -p deepagent-app-core --test workflow_audit audit_provider_image_url_cannot_fetch_loopback_resource --offline -- --ignored --nocapture` 为 **0 passed / 1 failed（预期）**。实际 `provider_requests=1, private_requests=["GET /host-private.png HTTP/1.1"], approvals=0, terminal="succeeded", artifact_bytes=36, canary_stored=true`。测试在完整收尾、读回 RunStore 与 artifact 后才以“私网服务不得被访问、canary 不得被保存”断言失败。
+- 这证明正常可达的供应商响应能够驱动宿主发出第二跳私网 GET 并持久化响应，不是测试代码直接调用 `fetch_binary()`。测试没有模拟 DNS rebinding/redirect、没有读取真实秘密，也没有证明 canary 被再次发给供应商。潜在外传需要后续节点或其他消费方把 artifact 再发送出去；本轮只把已动态确认的内部访问与持久化作为事实。
+
+#### 官方边界、成熟实现与后果
+
+- DeepSeek 官方 [Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)和[使用指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)允许**请求输入**中的 `input_image.image_url` 由 provider 获取；这不是让本地客户端信任**响应输出**中的任意 URL。Canvas image generation 是本系统额外的 provider 集成，不能用 DeepSeek 输入协议为宿主第二跳下载背书。
+- **DeepSeek Harness** 的 `llm-deepseek/src/images.ts::prepareImages()` 从已有 AttachmentStore 按 durable attachment identity 读取请求图片，并执行模型模态、角色、字节和数量预算；adapter 的 `imageAccess` 也只解析宿主已有附件。它没有本系统的图片生成输出下载，不能称其已通过同款 SSRF 测试；可借鉴的是 provider 请求只消费有 owner 的资产身份，不把 provider 返回的字符串自动升级为宿主网络授权。
+- **Codex** 没有本系统的 Canvas image-gen 下载器；其 network proxy 把目标域、managed allowlist、阻断观察和 network approval 组织为同一策略边界，在需要审批且未硬拒绝时由 policy decider 决定。这里对照的是“外部数据不能绕过运行的网络策略直接使用宿主网络”，不是复制 Codex 的进程代理实现。
+- [OWASP SSRF Prevention Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Server_Side_Request_Forgery_Prevention_Cheat_Sheet.html)将服务端根据不可信 URL 下载图片列为典型 SSRF 场景，建议优先 allowlist；必须支持任意公网地址时，至少在连接时拒绝 loopback、私网、链路本地和 metadata 地址，并禁用 redirect 或对每个 redirect 重新执行同一验证。单纯检查 `http(s)` scheme 或最初 hostname 不足以抵抗 redirect 与 DNS rebinding。
+- 已确认后果是供应商能使桌面宿主访问用户自己未配置的本机/私网 HTTP 目标，并将响应保存为成功图片 artifact。实际环境中这可能用于探测内部服务、访问 metadata、触发不应由外部供应商决定的 GET，或把私网响应交给后续节点；但本轮没有执行这些真实动作，因此不声称已经取得凭据、触发真实副作用或完成外传。
+
+#### 根因修复与验收
+
+- 在现有 CanvasArtifactService/provider seam 内建立唯一的 `ProviderArtifactFetcher`，不要让 image/video/audio 各自新建裸 reqwest client。下载策略由可信本地配置决定：优先使用 provider 配置的 HTTPS artifact host allowlist/CDN 列表；若业务必须接受任意公网 URL，则在连接时校验所有解析地址为全局可路由地址，拒绝 userinfo、loopback、私网、链路本地、multicast 与 metadata 主机，并对每次 redirect、重试和备用地址重复校验。开发环境确需 loopback 时使用显式、可审计的本地 provider profile，不把例外设为默认。
+- 该边界同时继承现有运行取消树、连接/首字节/idle/总时限、响应字节上限和流式 artifact staging；验证 Content-Type 与实际魔数，不在完整 body 读入后才发现超限。下载日志只能记录脱敏来源身份，URL query/userinfo 不进入普通事件。若选择审批未知 host，复用既有 ChannelApprovalGate 与 run scope，不能另造第二套授权中心。
+- 验收覆盖 IPv4/IPv6 loopback、RFC1918、link-local/metadata、十进制/十六进制等地址表示、DNS 多地址与 rebinding、公开地址重定向到私网、跨 scheme/port、provider/CDN allowlist、正常 inline base64、合法公网 artifact、取消和超限清理。断言未授权目标请求数为零、无 artifact/Completed、唯一失败终态；显式本地开发例外和已批准公网目标则可成功。视频 H-119/H-122 及 H-164 的取消回归需同批保留。
+
 ### 后续独立核查：DeepSeek 自动前缀缓存与 Responses usage
 
 - 官方 [KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)说明缓存由服务端默认构建，只有完整匹配已落盘前缀单元才会命中，且为尽力而为；客户端没有通过 cache key 强制命中的接口。DeepSeek [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)说明该接口无状态，每次请求由客户端在 `input` 回传完整历史。
@@ -3107,6 +3135,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-163 隔离与相关回归 | `cargo test -p deepagent-app-core --lib canvas_model_gateway::tests --offline`：41 passed / 6 ignored；`cargo test -p deepagent-runtime --lib workflow::agent::tests --offline`：28 passed；`cargo fmt --all -- --check` 与限定文件 `git diff --check` 通过。未运行 workspace 全量、Clippy、桌面 build/手动 UI、完整 Kernel token-budget 探针或公网供应商；缺陷未修复 |
 | H-164 Canvas text 运行取消显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_text_cancel_does_not_wait_for_provider_response --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式取消 accepted 后 300ms 内未退出且运行记录未完成，释放本机 HTTP 响应后 text 节点 Completed、run 唯一终态 cancelled；动态只覆盖 text |
 | H-164 边界与相关回归 | `CanvasCompletionRequest`/image/audio/embedding DTO 及共用 `CanvasModelGateway::call()` 均无取消输入；H-119 的 video 专用 cancel helper 不经过该边界。`cargo test -p deepagent-app-core --test workflow_audit --offline`：3 passed / 7 ignored；H-119 视频取消精确回归：1 passed，约 49ms 退出。未逐项动态复现 image/audio/embedding、真实 Tauri 或公网 provider |
+| H-165 provider 返回 URL 的宿主第二跳显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_provider_image_url_cannot_fetch_loopback_resource --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 image-gen provider 返回第二台 loopback URL 后，宿主 GET `/host-private.png`，零审批，36 字节 canary 完整入库且 run succeeded；仅本机临时服务 |
+| H-165 边界与相关回归 | 生产 `parse_output → fetch_binary → CanvasArtifactService` 直接消费 provider URL；`Cargo.lock` 与本地依赖源码确认 `reqwest 0.12.28` 默认最多跟随 10 跳。`cargo test -p deepagent-app-core --test workflow_audit --offline`：3 passed / 8 ignored；H-119 视频取消精确回归：1 passed，约 58ms 退出；H-164 文本取消显式探针仍为 0 passed / 1 failed（预期）。未动态覆盖 redirect/DNS rebinding、IPv6、真实私网/metadata、后续 artifact 外传或真实恶意供应商 |
 | DeepSeek reasoning serializer 及 prompt cache 前缀复核 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed；`git diff --check -- docs/system-harness-audit-2026-10-21.md`：通过。本地同会话双轮 wire 的 input 前缀、稳定 instructions 与工具顺序断言通过；不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
@@ -3602,6 +3632,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 工作流模型生成参数贯通 | H-161 | 在现有 CanvasModelRequest 汇合 typed generation options，各协议 adapter 显式映射/拒绝；参考 DeepSeek Harness 的 request→model→connection 优先级 | 节点显式 temperature/output cap 与有效预算及实际 wire 一致；未指定保留 provider/model 默认；DeepSeek/Anthropic/Gemini、fallback 和截断分别验证 |
 | 专业工作流 AI 节点能力闭环 | H-162 | 前端节点目录由后端版本化 executable capability 投影；一次性 LLM/分类/提取复用 Canvas text bridge，Agent V2 复用 ModelAgent/ToolPipeline/审批/取消，不新增运行中心 | enabled 节点从生产前端配置到 provider、结构化输出、事件、终态和 usage 全链可用；未实现能力在添加前明确禁用；修通时同时关闭 H-160/H-161 后续风险 |
 | 工作流 provider usage 与预算/成本统一 | H-163 | Canvas adapter 保留 canonical Usage/raw usage，WorkflowAgent 两路只用 RunUsage::record_call；参考 DeepSeek Harness 的 usage chunk/attempt meter 与 Codex completed usage 累计 | text 与 usage 同次提交；prompt gauge/billed sum、cache/reasoning、route 均正确；UsageRecorded、CostService、节点输出和 token budget 一致且不重复计账 |
+| Provider 返回资产的下载授权与 SSRF 边界 | H-165 | CanvasArtifactService/provider 配置下统一受控 fetcher，可信配置决定 artifact host allowlist；参考 Codex network policy/approval、DeepSeek Harness owner-bound attachment 与 OWASP 连接时地址校验 | 未授权 loopback/私网/link-local/metadata 及 redirect 请求数为零；DNS/多地址、大小、类型、取消、staging 与日志脱敏一致；合法 CDN/显式本地开发 profile 可审计成功 |
 | 工作流节点事件与规范回放 | H-120 | WorkflowAgent 的 publisher 接回既有 Kernel 持久化 sink；参考现有 ModelAgent 通道与 ArtCraft 保存媒体任务身份，复用 run_events | 各节点实时事件与重开补读一致，失败/取消/进度也可重放；保留媒体来源和任务身份，不靠图文档偶然自动保存代替运行日志 |
 | 媒体任务身份与节点投影/续跑 | H-121、H-122 | 既有节点事件携带的运行中身份统一投影，后端以 provider/account/task 和输入身份决定新生成或恢复；参考 ArtCraft 的提交与 pending task/provider_job_id 分离，DAG 输入失效为本地设计 | 收到 Running 即可安全保留续跑身份；有效续跑不重复 submit，修改输入的新生成实际提交新请求；旧 attempt 不覆盖新任务，已完成资产保留来源 |
 | 桌面运行事件与订阅生命周期 | H-41、H-43、H-134 | 现有 run_id、完成 payload、运行 owner、订阅就绪屏障和持久化补读统一；参考 Codex thread/turn/item identity 与 ArtCraft 异步 listener owner | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能改写节点或清理新 run |
