@@ -1960,6 +1960,51 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-221: config/read must expose effective model and execution configuration"]
+    fn audit_config_read_is_not_a_static_protocol_banner() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let database = Arc::new(Database::open_in_memory().unwrap());
+        let mut state = ServerState::new_for_test_with_database(database, workspace.clone());
+        initialize(&mut state);
+
+        let started = state.handle_request_for_test(rpc_request(
+            2,
+            "thread/start",
+            serde_json::json!({
+                "cwd": workspace,
+                "provider": "deepseek-official",
+                "model": "deepseek-v4-pro",
+                "reasoningEffort": "high",
+                "permissionProfile": "read_only",
+                "sandboxBackend": "windows_sandbox"
+            }),
+        ));
+        assert!(started.is_success());
+        let config =
+            state.handle_request_for_test(rpc_request(3, "config/read", serde_json::json!({})));
+        let result = config.result().clone();
+        eprintln!(
+            "config/read audit: keys={:?}, provider={:?}, model={:?}, reasoning={:?}, permission={:?}, sandbox={:?}",
+            result.as_object().map(|object| object.keys().cloned().collect::<Vec<_>>()),
+            result.get("provider"),
+            result.get("model"),
+            result.get("reasoningEffort"),
+            result.get("permissionProfile"),
+            result.get("sandboxBackend")
+        );
+
+        assert!(
+            result.get("model").is_some()
+                && result.get("reasoningEffort").is_some()
+                && result.get("permissionProfile").is_some()
+                && result.get("sandboxBackend").is_some(),
+            "config/read returned only static protocol metadata and no effective execution configuration"
+        );
+    }
+
+    #[test]
     fn fileless_legacy_row_is_not_resumable_or_readable() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);

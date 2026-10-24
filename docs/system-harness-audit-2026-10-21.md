@@ -55,6 +55,7 @@
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
 | Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
 | Harness thread/list 历史列表 | 创建 120 个真实持久化 thread 后，正式 `thread/list` 一次返回全部 120 条、约 25 KB JSON；请求没有 limit、cursor 或 continuation | 已确认 H-220；正式 SQLite/EventStore/ServerState，无模型、工具、子进程或网络 |
+| Harness config/read 有效配置可观测性 | thread 已指定模型、reasoning、permission 和 sandbox 后，正式 `config/read` 仍只返回 `protocolVersion`、固定 `provider` 和 `transport` 三个字段 | 已确认 H-221；正式 ServerState/Settings/dispatcher，无模型、工具、子进程或网络 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -4372,6 +4373,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-218 Harness thread/read 历史分页显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_thread_read_has_bounded_history_page --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；600 条消息样本返回 `events=1201`、`serialized_bytes=1570066`、`has_continuation=false`；正式 SQLite/dispatcher，无模型、工具、文件、子进程或公网 |
 | H-219 Harness tool/list 作用域显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_tool_list_is_not_scoped_to_thread_capabilities --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；`read_only/direct` 与 `full_access/windows_sandbox` 两个 thread 均返回 `28` 个相同工具，`first_has_snapshot=false`、`second_has_snapshot=false`；无模型、工具执行、子进程或公网 |
 | H-220 Harness thread/list 分页显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_thread_list_has_bounded_page --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；创建 120 个真实 thread 后返回 `threads=120`、`serialized_bytes=25009`、`has_continuation=false`；正式 SQLite/dispatcher，无模型、工具、子进程或公网 |
+| H-221 Harness config/read 有效配置显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_config_read_is_not_a_static_protocol_banner --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；thread/start 指定 `deepseek-v4-pro`、`high`、`read_only` 与 `windows_sandbox` 后，正式 `config/read` 仍只返回 `protocolVersion`、`provider`、`transport`，`model/reasoningEffort/permissionProfile/sandboxBackend` 均缺失；正式 SQLite/dispatcher，无模型、工具、子进程或公网 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4774,6 +4776,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | Thread/read 历史分页与预算 | H-218 | 在现有 EventStore/RunStore 投影上增加 message-aligned page、明确 page size/字节预算和 opaque continuation；保留 after-sequence 作为增量读取，不把全量聚合塞进单个 response；参考 DeepSeek Harness `SessionHistoryController.page()` 的 500 条上限与 Codex 的 turns/items 分页 | 长历史读取不会一次性构造无界 JSON；调用方能按 cursor 续读、只恢复所需窗口；超预算能以明确 continuation/错误结束，避免 SDK/UI 内存峰值和断线重试放大 |
 | Run-scoped capability snapshot | H-219 | 保留兼容 `tool/list`，在现有 run assembler/ToolRegistry/MCP lifecycle 边界生成带 thread/run、workspace、permission profile、sandbox backend、MCP/config 代次、tool schema hash 和风险/来源的 snapshot；在 `turn/start` 或独立 resolve response 中返回并与 run_events 关联；参考 Warp 动态 capability negotiation、Codex thread/turn 配置快照，不新增第二套 registry | 客户端和模型能知道本次 run 的实际工具面；能力变化可审计、重放可复原；sandbox/权限/MCP 失败显示为明确 degradation，不把全局存在误认为当前可执行 |
 | Thread/list 分页与过滤 | H-220 | 沿用 EventStore 的 session 元数据查询，在现有协议增加 limit、排序/过滤和 opaque cursor；默认有界，cursor 绑定排序快照并拒绝重复/篡改；参考 Codex `thread/list` 默认 25、最大 100 与 nextCursor，不把 thread/read 全量历史混入列表 | 列表刷新只扫描/序列化当前页；历史规模增长不会阻塞客户端；归档、workspace、provider、更新时间等筛选可在服务端完成，断线可从 cursor 续读 |
+| 有效配置读取与来源可观测性 | H-221 | `config/read` 在现有 Settings/ThreadConfig/ServerState 汇合边界读取实际生效的 model、reasoning、permission、sandbox 与来源层；保留全局协议 banner 兼容字段，不把配置解析复制到第二套控制面；参考 Codex `ConfigReadParams` 的 `includeLayers`/`cwd` 与恢复响应中的实际 config snapshot | 客户端能确认下一 turn 使用的模型和执行边界；thread override、恢复、权限/沙箱变化不会静默脱离控制面；诊断和审计可将 wire、run_events 与配置来源对应起来；DeepSeek Responses 参数仍由 provider adapter 负责，不把宿主配置误写成官方 API 字段 |
 | JSON-RPC 方法注册与错误分类 | H-217 | 现有 `HarnessRequest` 解析/dispatch seam 维护唯一方法注册表；未知 method 统一返回 `ERR_METHOD_NOT_FOUND`，已知 method 的 payload 解码失败才返回 `ERR_INVALID_PARAMS`；参考 JSON-RPC 2.0 与 Codex `method_not_found()`，不再用 method 字符串形状推断语义 | 未知 `thread/*`、未来扩展和拼写错误均可被 SDK 明确识别；参数错误与能力不存在分离；错误码、日志和重试策略一致；新增方法只需更新一个注册/dispatch seam |
 | Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
 | Harness SDK 通知身份、订阅时序与缺口恢复 | H-01、H-91、H-205、H-214 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；提供先建订阅再发请求的 owned run/stream API，参考 DeepSeek Harness `HarnessSession.run()` 的 subscribe-before-prompt 队列与 Codex 的先附加监听再启动操作；不建立无界第二事件库 | 请求响应前通知仍可由该次操作消费；连续事件可按实际序号 ACK；7→9、broadcast lag 和迟订阅均可识别并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
@@ -5227,6 +5230,33 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 列表分页不能替代 H-218 的 thread history 分页，也不能让客户端为恢复而下载所有 run events；列表只返回 metadata，详情、事件和控制投影继续沿现有 `thread/read` 或新的分页视图读取。回归覆盖空列表、恰好边界、超页、插入/归档并发、排序稳定性、cursor 重启、过滤组合和旧客户端兼容。
 
 本轮只新增正式失败探针和审计文档，未修改 `thread/list` 生产行为。H-218 关注单 thread 的历史 response 无界，H-220 关注跨 thread 的 session catalog 无界；两者查询对象和修复接口不同。
+
+### H-221：`config/read` 只返回静态协议 banner，无法读取有效执行配置
+
+**级别：中高（P1/P2 之间，控制面可观测性、恢复与权限/沙箱诊断）；触发条件：** 客户端先用 `thread/start` 指定模型、reasoning effort、permission profile 和 sandbox backend，再调用公开 `config/read` 以确认后续 turn 的实际配置。当前返回值只描述协议/宿主 banner，不包含有效执行配置或配置来源。
+
+#### 生产路径与正式复现
+
+- `apps/cli/src/app_server.rs::config_read()` 通过正式 `ServerState` dispatcher 返回固定的 `protocolVersion`、`provider` 和 `transport`。它没有接收 thread/cwd 参数，也没有从活动 thread 的有效 `ThreadConfig`、Settings overlay、permission profile 或 sandbox backend 读取值。
+- 新增默认忽略探针 `app_server::tests::audit_config_read_is_not_a_static_protocol_banner`：使用真实文件 workspace、内存 SQLite、`ServerState::new_for_test_with_database()` 和正式初始化，先调用 `thread/start`，请求明确指定 `deepseek-v4-pro`、`reasoningEffort=high`、`permissionProfile=read_only`、`sandboxBackend=windows_sandbox`，随后调用正式 `config/read`。
+- 执行：`cargo test -p deepagent-cli app_server::tests::audit_config_read_is_not_a_static_protocol_banner --offline -- --ignored --exact --nocapture`。
+- 实际结果：**0 passed / 1 failed（预期复现）**。输出为 `keys=Some(["protocolVersion", "provider", "transport"]), provider=Some(String("deepseek-official")), model=None, reasoning=None, permission=None, sandbox=None`。断言只要求有效配置字段可被读取，没有把 thread override 必须直接混入全局 response 当作既有协议契约。探针未启动模型、工具、子进程或网络。
+
+#### 成熟 Agent 与 DeepSeek 对照
+
+- **Codex** 的 app-server `ConfigReadParams` 支持 `includeLayers` 和可选 `cwd`，配置读取路径返回实际解析后的配置/来源层；`thread_processor` 的恢复路径也会校核请求覆盖与实际 `ThreadConfigSnapshot`，并把有效配置带回控制面。可借鉴的是“读取有效配置必须与解析/执行使用同一 snapshot”，不是照搬 Codex 的字段名或权限语义。
+- **DeepSeek Harness** 的 Responses/session controller 不定义宿主 `config/read`；其 provider profile、model adapter 和 agent/session owner 仍把模型参数、工具/信号与连接上下文作为运行时状态。因而 H-221 属于本系统 Harness 控制面可观测性缺口，不是 DeepSeek API 要求 `config/read` 的证据。
+- **DeepSeek Responses API** 的 `model`、`reasoning`、工具和其他 request 参数仍应由 provider adapter 按官方 schema 投影；`config/read` 应报告宿主解析出的有效值/来源，不能把宿主字段伪装成 Responses 请求字段，也不能用它替代最终 wire 校验。
+
+#### 影响、边界与根因修复方向
+
+- 已动态证明的直接后果是：客户端收到成功的 `config/read` 后，无法知道下一次 turn 是否会使用 `deepseek-v4-pro`、`high`、`read_only` 或 `windows_sandbox`。恢复、SDK/CLI 展示、审计日志和权限/沙箱故障诊断只能依赖本地请求记忆或猜测；当 settings、thread override、项目来源或宿主 backend 变化时，控制面没有机器可读的生效值确认。
+- 本探针没有证明 `thread/start` 的指定值已经在执行器中被错误应用，也没有证明当前请求一定会发往错误模型或越过权限。它证明的是读取接口无论请求配置为何都返回同一静态形状；H-03/H-04/H-27/H-28/H-54 分别覆盖配置实际应用、恢复和信任边界，不能用 H-221 重复计数。
+- 根因修复应复用现有 Settings、ThreadConfig、permission/sandbox resolver 和 run admission，在 `config/read` 增加明确的 scope（全局、thread 或 cwd）以及有效配置 snapshot/version、来源层和受限的可序列化字段；不得在 app-server 再实现一套配置合并。若保留无参数兼容调用，应至少返回全局有效默认与“需要 thread scope”的可解释结果，而不是静态 banner 冒充完整配置。
+- `config/read` 与 `turn/start` 必须读取同一解析 snapshot，或返回 snapshot ID 并让 turn admission 校验其仍有效；敏感 secret、完整 prompt 和机器路径应脱敏。变更、恢复、fork、归档、权限/沙箱降级和 provider fallback 都应留下来源/版本及可审计诊断。DeepSeek `model`、reasoning、tool choice 和 usage/cache 信息仍在 provider seam 保持原生结构，不应被 UI/CLI DTO 压平。
+- 回归应覆盖：全局与 thread scope、cwd/project layer、显式/默认模型、reasoning effort、permission profile、sandbox backend、MCP/plugin 代次、恢复/fork、未信任项目配置、fallback、重启、并发 config/read 与 turn/start、旧客户端字段兼容，以及实际 provider wire 与返回 snapshot 的一致性。应同时验证不泄露 API key、token、完整 instructions 或敏感 host path。
+
+本轮只新增正式失败探针和审计文档，未修改 `config/read` 生产行为。H-217 关注未知方法错误分类，H-218/H-220 关注无界历史/列表响应；H-221 关注有效执行配置没有进入控制面可观测性，触发对象和修复边界不同。
 
 ### 本轮排除候选：Responses 工具参数增量仅含 `output_index`
 
