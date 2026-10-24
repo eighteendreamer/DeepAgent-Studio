@@ -1291,6 +1291,76 @@ async fn audit_workflow_requires_a_reachable_end_node() {
 }
 
 #[tokio::test]
+#[ignore = "audit: equivalent workflow graphs must not change scope with node declaration order"]
+async fn audit_workflow_execution_scope_is_not_node_order_dependent() {
+    async fn run_variant(nodes: serde_json::Value, run_id: &str) -> (Vec<String>, Option<String>) {
+        let (_root, db, chat, session) = workflow_fixture().await;
+        let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+            "definition": {
+                "version": 1,
+                "nodes": nodes,
+                "edges": [
+                    {"id":"e1","source":"start","target":"end"}
+                ]
+            },
+            "inputs":{}
+        }))
+        .unwrap();
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let capture = events.clone();
+        chat.run_workflow(
+            workflow,
+            run_id.into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    if event.status == NodeExecutionStatus::Completed {
+                        capture.lock().unwrap().push(event.node_id);
+                    }
+                }
+            },
+            |_| {},
+        )
+        .await
+        .unwrap();
+        let terminal = RunStore::new(&db)
+            .get(run_id)
+            .unwrap()
+            .unwrap()
+            .terminal_kind;
+        let completed = events.lock().unwrap().clone();
+        (completed, terminal)
+    }
+
+    let (end_first, end_first_terminal) = run_variant(
+        serde_json::json!([
+            {"id":"start","kind":"start","config":{"inputVariables":[]}},
+            {"id":"end","kind":"end"},
+            {"id":"orphan","kind":"variable-assigner","config":{"assignments":[]}}
+        ]),
+        "audit-workflow-end-before-orphan",
+    )
+    .await;
+    let (orphan_first, orphan_first_terminal) = run_variant(
+        serde_json::json!([
+            {"id":"start","kind":"start","config":{"inputVariables":[]}},
+            {"id":"orphan","kind":"variable-assigner","config":{"assignments":[]}},
+            {"id":"end","kind":"end"}
+        ]),
+        "audit-workflow-orphan-before-end",
+    )
+    .await;
+
+    eprintln!(
+        "end_first={end_first:?} terminal={end_first_terminal:?} orphan_first={orphan_first:?} terminal={orphan_first_terminal:?}"
+    );
+    assert_eq!(
+        end_first, orphan_first,
+        "reordering the same logical graph must not change which nodes execute"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
