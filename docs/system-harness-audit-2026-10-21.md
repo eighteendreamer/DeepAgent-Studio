@@ -34,6 +34,7 @@
 | 在途刷新与凭据撤销/替换 | 正式 SQLite 加密存储下，另一连接已退出或换 Key，旧模型刷新返回后仍写回旧凭据，并读回 configured=true | 已确认 H-88；两个独立数据库连接和第三连接回读，未验证真实 Tauri 多进程操作 |
 | 模型目录刷新与用户选型 | 同一 SettingsService 顺序选择仍在目录中的 Pro，刷新完全相同目录后，下一正式 Responses wire 从 Pro 改成 Flash，新数据库连接也读到 Flash；默认 Flash 对照不变 | 已确认 H-223；正式 SettingsService/ChatService/Kernel/序列化与文件 SQLite，无并发、无公网、无工具执行；不是 H-87 的多宿主旧快照覆盖 |
 | 会话搜索可见性与候选 limit | 较新归档/回收/已关闭项目记录占满候选后，仍有效的活动历史搜不到；回收记录还使模型工具把成功空 results 发进下一 Responses 请求 | 已确认 H-228；桌面同一 AppService 18 组，正式 ChatService/Kernel/wire 9 组及 9 组正常对照；三查询分支，无真实历史/公网/错误决策验证 |
+| 会话文件故障隔离与启动 | B 的不可恢复无效帧令 A 的 scoped 搜索和模型检索报错，关闭全部 owner 后 Database::open 也失败；只还原 B 即恢复 | 已确认 H-229；临时文件 SQLite、三查询、正式 ChatService/Kernel/wire 与文件重开；健康/可恢复尾帧对照正常，未跑真实宿主进程或硬件故障 |
 | Responses 消息角色 provider 校验 | 公开 `ResponseInputItem::Message` 与 `InputMessage` 使用任意字符串 role；`moderator` 经正式 ModelClient 进入 wire，官方四种角色的正向对照通过 | 已确认 H-203；离线 recording transport；普通 AppCore 的 `Role` enum 不产生该非法值，未请求真实 provider |
 | Harness 显式模型选择 | 未知模型被正式 AppCore 请求静默替换为 catalog 默认模型，运行仍以 succeeded 终止 | 已确认 H-89；实际捕获序列化 wire model；未调用公网供应商或启动真实 stdio/Tauri |
 | 画布工作流模型身份 | 新建 LLM/分类/提取/Agent V2 节点动态生成裸 `deepseek-chat` 默认值；正式 Canvas bridge 将该非空但不可解码的值解释为自动路由，受控 HTTP wire 实际发送 `other-text-model` 并成功返回 | 已确认 H-160 的前端默认与 gateway 缺口；H-162 证明当前四类专业节点会在更早阶段失败，故尚未证明它们已通过完整工作流把数据发往错误供应商；本机 HTTP provider，无真实 Tauri 或公网请求 |
@@ -5564,3 +5565,49 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 本轮还排除以下候选：用户/assistant 正文被有意保存并进入搜索，未找到“这些正文承诺脱敏”的依据；邻近工具事件只给工具名、call_id 和成败，不展开原始 output，不能报脱敏绕过。`cross_project=true` 是公开 schema 支持且已有正向测试的能力，不能仅因能跨项目就判为越权。续聊仍以 session.project 解析项目，不跟随侧栏当前激活项，未发现该路径的简单作用域漂移。
 
 本轮仅新增探针、测试入口和审计文档，未修生产行为、数据库 schema、模型参数、权限或沙箱；技能采用的 Evidence → Finding → Path 用于保留范围、失败对照与可复跑链。`cargo fmt --all -- --check` 通过；`cargo test -p deepagent-app-core --lib --offline`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**40 passed / 47 ignored**；`cargo test -p deepagent-persistence --lib --offline --quiet`：**67 passed**。未运行全 workspace、桌面 build/UI、真实供应商或多进程/损坏恢复；本轮未重跑 Clippy，不能报告 lint 通过。审计自检：授权范围内、人工核对生产链、正常对照成立、证据及时落文档、影响与未测边界分开记录；全系统审计仍未完成。
+
+### H-229：单会话文件损坏经全库搜索修复阻断无关项目搜索与数据库启动
+
+**级别：中（P2，条件性宿主可用性）；状态：正式应用服务与文件重开已复现，未修复。** 一个历史会话的权威文件出现当前解码器不能恢复的无效压缩帧后，限定另一项目的搜索也会失败，且关闭旧服务后无法重新打开整个数据库。文件损坏的报错本身正确，缺陷是可重建搜索索引的同步修复成为所有项目检索和宿主启动的强依赖，缺少单会话故障隔离。
+
+#### 即时证据（2026-10-24，首轮复现后登记）
+
+- 授权范围：仅临时目录、文件 SQLite 和虚构 A/B 两项目历史；测试将 B 的正常 `.v1.jsonl.zst` 文件尾追加一个 `0xff` 字节，模拟不可恢复的外部/存储文件损坏，并保留原字节用于还原。不是制造真实磁盘故障，不将该注入声称为正常崩溃写入必然产生的字节。未读取真实历史，未访问供应商。
+- E-229-app（command，content_hash=n/a）：新增 `crates/deepagent-app-core/tests/kernel_v2_e2e/session_repair_isolation.rs`。正式 `EventStore` 创建两项目历史，只有 A 含查询词；注入前 A 的 LIKE（`检`）、CJK bigram（`缓存`）、FTS（`repairneedle`）搜索均返回唯一正常命中。注入后，正式 `AppService::search_sessions(query, Some(A), 10)` 三组均返回 `invalid zstd frame` 错误，而 A 的权威事件仍可直接读回一条。B 不匹配查询且不在请求项目 scope 内，排除“请求本来就在读坏会话”的解释。
+- E-229-open（command，content_hash=n/a）：同一测试 drop AppService，确认旧 Database 的 Arc strong count 为 1，再 drop 最后 owner，使用同文件 `Database::open` 重开失败且保留同类错误。随后只恢复 B 文件原始字节，`AppService::open` 及 A 的三组搜索全部恢复；没有删除 SQLite、清空索引、重建 A 或修改配置。属于真实文件连接生命周期测试，**不是真实 Tauri/OS 进程重启**。
+- 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e session_repair_isolation:: --offline -- --include-ignored --nocapture`：**1 passed / 1 failed（预期），约 0.24s**。失败在完整观察搜索和重开、且已还原文件并确认恢复后的最终不变量断言，不是编译错误。正常测试覆盖健康 B 和仅附加四字节 zstd magic 的可恢复截断尾帧，两组均搜索正常、数据库重开正常。
+- E-229-tool（command，content_hash=n/a）：随后扩展同文件探针，经正式 SettingsService、ChatService、Kernel 与离线 Responses transport。A 的运行/工具注册装配成功、首次模型 request 抵达 transport 后，才注入 B 文件故障；模型返回合法 `session_search` 调用，下一正式 wire 收到配对的 `status=error` 和 `invalid zstd frame`，三种查询都不能拿到 A 的正常历史。健康/可恢复截断各三组均收到 `status=ok` 和唯一 A 历史。显式断言新 run 的 session.project=A，避免把 fixture 项目绑定错误当作隔离缺陷。
+- 扩展后执行同命令为 **2 passed / 2 failed（预期），约 1.79s**；三组故障模型运行在模拟模型给出最终文本后均为唯一 succeeded。这只表明工具错误被传给模型且运行可以继续，**不是独立的“工具错误必须令整个 run 失败”缺陷**，也没实测模型因此作出错误决策。还原 B 后 A 搜索恢复。首次扩展编译曾误把 `run_in_session` 的 String 返回值当 DTO 取 `.session_id`；核对真实签名后改为解析返回字符串，编译错误不作为产品证据。
+
+#### 生产路径与根因
+
+- P-229-search（callflow，关联 E-229-app / H-229）：桌面 `search_sessions` → `AppService::search_sessions` → `EventStore::search` 首先调用无 scope 的 `repair_search_indexes()` → 遍历全部 `session_file_state` → B 的物理 byte_size 与投影不同 → `session_files::load` → `decode_frames` 返回无效帧错误 → `?` 终止全部搜索；A 的 SQL scope 尚未执行。
+- P-229-open（callflow，关联 E-229-open / H-229）：Desktop setup 的 `AppService::open` → `Database::open` → cutover maintenance / orphan recovery → 同一 `repair_search_indexes()?` → 返回错误，Database 不会交给后续服务。CLI 的具体错误展示和真实桌面启动 UI 尚未动态验证，不能宣称已观察真实界面崩溃。
+- P-229-tool（callflow，关联 E-229-tool / H-229）：固定项目 A 的 `SessionSearchTool` → 无 scope 的 repair → B 解码失败 → 统一工具错误 observation → 下一 Responses `function_call_output`。模型请求与工具调用均为离线正式链路，没有将故障归因于 DeepSeek 响应或参数。
+- `repair_search_indexes` 同时服务即时搜索和 `Database::open`，其同步全库循环既没有项目条件，也没有 per-session 降级/隔离结果；任一 `load`/锁/投影错误均以 `?` 传播。本轮只动态验证无效压缩帧，锁争用、权限拒绝、坏 SQLite、多个坏会话仍属未测候选。
+- F-229（design，validated，confidence=high，evidence_ids=[E-229-app,E-229-open,E-229-tool]）：应保持坏会话不可用且显式报错，但不应强迫正常 A 的 scoped 查询及整个宿主启动先成功修复 B。本项区别于 H-228 的 limit 顺序问题：没有隐藏记录或候选挤占，本项在查询 SQL 前即失败。
+
+#### 成熟实现对照（源码查证，未运行参考工程）
+
+- **Claude Code** `借鉴/claudecode/restored-src/src/utils/agenticSessionSearch.ts` 对每个 lite log 的 `loadFullLog` 单独 try/catch；加载失败时 `logError` 并退回该 log 的元数据，其他日志继续加入搜索，而不是让 Promise.all 因一条记录失败直接拒绝。该函数最外层失败仍会返回空数组，故不把它宣称为“所有异常都可靠且有完整性标记”；这里只借鉴**单会话读取失败的隔离粒度**。语义模型搜索不是本系统 FTS，也不是压缩尾帧恢复实现。
+- **Codex** `借鉴/codex/codex-rs/rollout/src/list.rs::build_thread_item` 将单文件 `read_head_summary` 的错误转为默认 summary，没有有效 session meta 时返回 None；`FilesByCreatedAtVisitor::visit` 只对 Some item 入列，继续遍历其他 rollout。`read_head_summary` 遇到普通不可解析 JSONL 行会继续，但对未知规范 history_mode 有专门拒绝规则；不能照搬其容错为“任意坏事件可以跳过并继续执行”。本系统的权威回放仍应保序严格，隔离的是列表/搜索/投影维护，不是静默修造事件历史。
+- Codex `rollout/src/state_db.rs::init` 还提供初始化失败发 startup warning 并返回 None 的入口（另有严格返回 Result 的 `try_init`），说明可选投影存储有显式降级 seam；这里只证明源码存在该能力，不外推所有宿主均无条件使用降级，更不声称同一损坏样本已在 Codex 启动通过。**本系统 Database 同时承载 run、审批、设置等权威状态，不能因此把整库改为可选或另起内存 run store。** 应在既有 Database 内拆清搜索派生投影的维护责任与必要启动不变量。
+
+#### 影响与治理方向（未实施）
+
+- 触发前提是至少一个会话文件出现不能按已有尾帧恢复规则处理的损坏，不能夸大为每次中断或正常使用都会触发。触发后已验证：无关项目会话正文检索不可用、同数据根数据库重开失败；普通消息直接读取仍成功不代表宿主重启可恢复。未证明 A 数据损坏、文件被删除或实际用户数据丢失。
+- 本地设计方向：在现有 EventStore/会话文件 owner 内定义单会话 unavailable/quarantine 状态，严格区分可恢复截断、不可恢复损坏与全局 SQLite/schema 错误；保留原文件并可审计，不自动截掉未知坏尾。启动不应以所有可重建搜索投影修复成功为门槛，优先恢复可服务状态，再以有预算、可取消的任务修复可重建投影；scoped 搜索只依赖相关会话，部分结果必须明确携带不完整/错误状态，不能静默冒充完整结果。
+- 后续回归需补真正帧校验失败、坏会话匹配查询、同项目、归档/回收、隔离状态持久化、直接读取坏会话的显式错误、后台修复取消，以及真实 Desktop/CLI 启动。已覆盖健康/可恢复尾帧/无效帧、其他项目、不匹配、搜索及启动前损坏、模型首个 request 后损坏、单文件还原恢复；不把范围外场景写成已通过。
+
+#### 验证矩阵与交付边界
+
+| B 文件状态 | A 的 scoped 应用服务搜索（三查询） | 关闭全部 owner 后 Database::open | A 的模型工具（三查询） |
+|---|---|---|---|
+| 健康 | 三组唯一正确历史 | 正常 | 三组下一 wire 都有正确历史 |
+| 可恢复截断尾帧 | 三组唯一正确历史 | 正常；测试在关闭前重新注入截断，验证启动自身恢复 | 三组下一 wire 都有正确历史 |
+| 不可恢复无效帧 | 三组显式 invalid zstd frame，A 仍可直接读取 | 错误，无法交付 Database | 三组下一 wire 为配对工具错误，A 历史未召回 |
+| 只还原 B 原始字节 | 三组恢复，A 和 SQLite 未重建 | AppService::open 恢复正常 | 每组结束后应用服务复查恢复，不宣称真实模型已自动重试 |
+
+回归：`cargo test -p deepagent-app-core --lib --offline --quiet` 为 **1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet` 为 **42 passed / 49 ignored**；`cargo test -p deepagent-persistence --lib --offline --quiet` 为 **67 passed**。补上启动前重新注入截断的对照后，显式缺陷模块复跑仍为 **2 passed / 2 failed（预期），约 1.67s**。正常测试不关闭两个默认 ignored 的已复现问题。`cargo fmt --all -- --check` 与 `git diff --check` 均通过；`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被本轮未修改的 `models/src/client.rs:355`（clone_on_copy）和 `persistence/src/run_store.rs:127`（explicit_counter_loop）既有告警阻断，不能报告 lint 通过。
+
+本轮只有审计探针、测试入口与文档变化，未改生产恢复逻辑、协议、权限或沙箱；测试原文件自动还原，未删除真实数据。依照 docs-generator 的证据链要求即时登记，再追加对照与扩展，未另建生产状态中心。未执行全 workspace、桌面 build/真实 UI、真实 CLI 启动、OS 崩溃、供应商或硬件存储测试；源码对照不等于参考工程动态验收。全系统目标仍未完成。
