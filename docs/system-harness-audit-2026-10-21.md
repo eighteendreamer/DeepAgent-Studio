@@ -60,6 +60,7 @@
 | 工作流输入类型 admission | `start.inputVariables` 声明 `type=number`，调用者却提交字符串时，正式运行原样接受并记录 `succeeded` | 已确认 H-185；类型约束只存在于 schema，未贯通运行边界 |
 | 工作流未声明输入 admission | start 只声明 `known` 时，`WorkflowRequest.inputs.unexpected` 仍被复制到 start 输出并随成功运行继续传播 | 已确认 H-186；输入 allowlist 缺失，未声明字段不是 rejected/ignored，而是进入执行上下文 |
 | 工作流声明默认值 | start 声明可选输入 `default="FALLBACK"` 且调用方省略该字段时，后端写入 `null` 并记录 `succeeded`，未应用前端公开的默认值 | 已确认 H-187；默认值只存在 UI schema，未进入后端 admission/执行计划 |
+| 工作流字符串选项 admission | start 声明 `options=["safe","fast"]` 时，实际输入 `"UNDECLARED_MODE"` 仍进入 start 输出并记录 `succeeded` | 已确认 H-188；枚举约束只存在 UI schema，未进入后端 admission/执行计划 |
 | 知识库多宿主写入一致性 | 两个正式服务持有旧索引，依次保存不同标题但同 slug 的笔记，两次成功却只剩后一条；主动刷新对照保留两条 | 已确认 H-52；独立服务/真实磁盘复现，未启动两个桌面进程 |
 | 压缩后的后台记忆去重与预算 | 原生 adoption 移除摘录后，旧 ID 仍阻止再次注入；12 条旧记录使后续预取停止 | 已确认 H-53；同运行 adoption/wire 探针，未覆盖真实摘要模型和回放 |
 | 每轮模型参数优先级 | 显式 effort 及持久化输出上限经正式 ChatService 执行后，实际请求仍服从桌面深度，输出预算也随阶段变化 | 已确认 H-54；共享 AppCore 入口、事件回调及真实序列化，未调用公网供应商 |
@@ -3644,6 +3645,34 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-187 只新增正式审计探针和报告，未修改生产工作流输入边界。
 
+### H-188：工作流字符串 `options` 不参与 admission，非法枚举值成功进入执行上下文
+
+**级别：中高（P1，输入约束与路由安全）；触发条件：`start.inputVariables` 声明 `type="string"` 与 `options=["safe","fast"]`，调用方提交列表之外的值。** 后端不拒绝，也不标记输入无效，而是将任意字符串继续传播并记录成功终态。
+
+#### 生产调用链与正式复现
+
+- 桌面 `InputVariableDefinition.options?: string[]` 与 start schema 的 `options` 字段明确表达字符串枚举，UI 会用它生成可选值控件；该字段不是未知扩展字段。
+- Rust `WorkflowDefinition::compile()` 的 `validate_type()` 只接受 `string/number/boolean/object/array/file`，没有读取 `options`；`WorkflowAgent::execute_start()` 直接 clone `self.inputs` 中的值，没有枚举检查。
+- 新增正式 ignored 探针 `crates/deepagent-app-core/tests/workflow_audit.rs::audit_workflow_string_options_are_enforced`。它通过 `ChatService::run_workflow()` 执行 `start → end`，声明 `mode` 的选项为 `safe/fast`，提交 `mode="UNDECLARED_MODE"`，捕获 start 输出并读取 `RunStore`。
+- 精确命令：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_options_are_enforced --offline -- --ignored --exact --nocapture`。
+- 实际输出：`api_ok=true start_outputs=Some(Object {"mode": String("UNDECLARED_MODE")}) run_terminal=Some("succeeded")`；断言非法枚举必须拒绝或使 run 失败，测试以 **0 passed / 1 failed（预期）** 结束。没有模型、工具、网络或文件副作用。
+
+#### DeepSeek 官方契约边界与成熟 Agent 对照
+
+- DeepSeek 官方 [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)把本地工作流值最终当作 `input` 内容；文档没有声明宿主自定义的 `options` 语义。provider 不会知道 `safe/fast` 是业务 allowlist，必须在本地 admission 先做 exact match。
+- **DeepSeek Harness** 的 schemastery 将约束放在 schema resolver，而不是只用于 UI：字符串/数字 resolver 会检查元数据的边界，`const`/union 等 schema 会对不匹配值抛 `ValidationError`。迁移到本系统应把 `options` 编译为字符串 enum/union，并在 provider、工具和 HTTP 节点前复用同一结果。
+- **Codex** 的工具参数通过 JSON Schema 发布，模型可见字段和允许值属于工具输入契约；宿主在执行工具前依据 schema/类型做边界处理，而不是把任意字符串当作已验证参数。相同原则适用于 workflow start 的业务枚举。
+- **Claude Code** 的工具/插件输入以 schema 校验为执行门槛，参数不符合声明时应产生结构化 validation error；本系统当前把非法 option 作为成功数据继续下游，缺少成熟 agent 的 fail-closed 行为。
+
+#### 影响、后果与根因修复方向
+
+- 触发后，非法模式会进入条件节点、模板、HTTP 请求、工具参数或 DeepSeek prompt；若 `options` 控制 provider、权限、执行策略或业务分支，调用者可以绕过 UI 选择器注入未声明模式。当前样本只证明值传播和成功终态，没有执行外部副作用。
+- H-185 证明“类型错误”可成功，H-188 进一步证明即使值的 JSON 类型正确，枚举语义仍完全未校验；H-187 的 default 处理也不能替代 options 检查。
+- 根因修复应在同一个 typed `InputPlan` 中编译 `options` 为 exact string set，定义大小写、Unicode 规范化和空字符串策略；提供值和 default 都必须先过 enum 检查，失败返回结构化 `InvalidWorkflowInput`，不得降级成 `null` 或继续成功。
+- 回归需覆盖合法首尾值、非法值、大小写/Unicode 近似、空数组/重复 options、default 不在 options、恢复/重放和 CLI/SDK/Tauri 三入口，并断言 provider/工具调用前没有非法值。本轮只新增审计，不修改生产输入边界。
+
+本轮 H-188 只新增正式审计探针和报告，未修改生产工作流输入边界。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -3715,6 +3744,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-185 输入类型不匹配显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_input_type_mismatch_is_rejected --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对声明 number 的 `count="not-a-number"` 发布字符串值且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-186 未声明输入显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_undeclared_input_is_rejected_or_ignored --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 将 `unexpected="UNDECLARED_CANARY"` 复制进 start 输出且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | H-187 工作流默认值显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_declared_default_is_applied_when_input_is_missing --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对声明 `default="FALLBACK"` 的缺失输入发布 `greeting=null` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
+| H-188 工作流字符串选项显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_options_are_enforced --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `WorkflowAgent` 对 `options=["safe","fast"]` 接受 `mode="UNDECLARED_MODE"` 且 run=`succeeded`；无模型、工具、网络或文件副作用 |
 | DeepSeek reasoning serializer 及静态 prompt cache 前缀对照 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed。本地同会话、环境不变时，双轮 wire 的 input 前缀、instructions 与工具顺序断言通过；该对照不覆盖 H-168 的动态变化，也不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
