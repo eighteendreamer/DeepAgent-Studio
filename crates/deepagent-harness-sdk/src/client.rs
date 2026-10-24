@@ -654,6 +654,76 @@ mod audit_tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: a decoded JSON-RPC response with a non-integer id must not strand the matching request"]
+    async fn audit_string_response_id_does_not_leave_request_pending() {
+        let marker = std::env::temp_dir().join(format!(
+            "deepagent-harness-sdk-audit-string-id-{}-{}.marker",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let marker_literal = marker
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('\'', "''");
+        let script = format!(
+            "$null = [Console]::In.ReadLine(); [Console]::Out.WriteLine('{{\"jsonrpc\":\"2.0\",\"id\":\"1\",\"result\":{{}}}}'); [System.IO.File]::WriteAllText('{marker_literal}', 'response-sent'); Start-Sleep -Seconds 30"
+        );
+        let mut child = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a local string-id response fixture");
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let (events, _) = broadcast::channel(1);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let client = HarnessClient {
+            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
+            next_id: Arc::new(AtomicI64::new(1)),
+            pending: pending.clone(),
+            events,
+            initialized: Arc::new(Mutex::new(true)),
+        };
+
+        let request_client = client.clone();
+        let mut request = tokio::spawn(async move { request_client.thread_list().await });
+        let marker_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !marker.exists() && tokio::time::Instant::now() < marker_deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(marker.exists(), "fixture must emit its string-id response");
+
+        let completed_before_eof =
+            tokio::time::timeout(std::time::Duration::from_millis(300), &mut request)
+                .await
+                .is_ok();
+        let pending_before_eof = pending.lock().unwrap().len();
+        if !completed_before_eof {
+            request.abort();
+            let _ = (&mut request).await;
+        }
+
+        let _ = child.kill().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+            .await
+            .expect("fixture should exit when terminated");
+        let _ = std::fs::remove_file(marker);
+
+        assert!(
+            completed_before_eof && pending_before_eof == 0,
+            "decoded JSON-RPC responses with a non-integer id must complete or reject the pending request before EOF: completed={completed_before_eof}, pending={pending_before_eof}"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "audit H-205: SDK notifications must preserve the wire event sequence used by event/ack and gap recovery"]
     async fn audit_sdk_notification_preserves_event_sequence_for_ack_and_gap_detection() {
         let script = r#"$lines = @(
