@@ -1639,6 +1639,83 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-216: a successful cold thread fork must be ready for turn/start"]
+    fn audit_cold_thread_fork_is_loaded_for_the_next_turn() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path().join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        let database_path = temporary.path().join("deepagent.db");
+
+        let source_thread_id = {
+            let database = Arc::new(Database::open(&database_path).unwrap());
+            let mut original = ServerState::new_for_test_with_database(database, workspace.clone());
+            initialize(&mut original);
+            let started = original.handle_request_for_test(rpc_request(
+                2,
+                "thread/start",
+                serde_json::json!({"cwd": workspace}),
+            ));
+            started.result()["threadId"].as_str().unwrap().to_owned()
+        };
+
+        let database = Arc::new(Database::open(&database_path).unwrap());
+        let mut restarted = ServerState::new_for_test_with_database(database, workspace);
+        initialize(&mut restarted);
+        assert!(!restarted.threads.contains_key(&source_thread_id));
+
+        let forked = restarted.handle_request_for_test(rpc_request(
+            2,
+            "thread/fork",
+            serde_json::json!({"threadId": source_thread_id}),
+        ));
+        let forked_thread_id = forked.result()["threadId"]
+            .as_str()
+            .expect("successful fork returns a thread id")
+            .to_owned();
+        let fork_loaded = restarted.threads.contains_key(&forked_thread_id);
+        let (turn, launch) = restarted.dispatch(
+            rpc_request(
+                3,
+                "turn/start",
+                serde_json::json!({"threadId": forked_thread_id, "input": "continue the fork"}),
+            ),
+            None,
+        );
+        let resumed = restarted.handle_request_for_test(rpc_request(
+            4,
+            "thread/resume",
+            serde_json::json!({"threadId": forked_thread_id}),
+        ));
+        let (turn_after_resume, launch_after_resume) = restarted.dispatch(
+            rpc_request(
+                5,
+                "turn/start",
+                serde_json::json!({"threadId": forked_thread_id, "input": "continue after resume"}),
+            ),
+            None,
+        );
+        eprintln!(
+            "cold-fork audit: fork_success={} fork_loaded={fork_loaded} turn_success={} launch={} resume_success={} resumed_turn_success={} resumed_launch={}",
+            forked.is_success(),
+            turn.is_success(),
+            launch.is_some(),
+            resumed.is_success(),
+            turn_after_resume.is_success(),
+            launch_after_resume.is_some()
+        );
+
+        assert!(forked.is_success());
+        assert!(
+            resumed.is_success() && turn_after_resume.is_success() && launch_after_resume.is_some(),
+            "explicitly resuming the durable fork should make the positive control runnable"
+        );
+        assert!(
+            fork_loaded && turn.is_success() && launch.is_some(),
+            "thread/fork returned success but the new thread was not ready for turn/start"
+        );
+    }
+
+    #[test]
     #[ignore = "audit H-215: an archived thread must not accept a new turn before explicit restore"]
     fn audit_archived_thread_does_not_accept_new_turn() {
         let mut state = ServerState::new_for_test();

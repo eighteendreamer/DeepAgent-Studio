@@ -23,6 +23,7 @@
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | Harness thread 归档生命周期 | 正式 `thread/archive` 已成功并写入 durable archive marker 后，同一 dispatcher 的 `thread/list` 仍公开该 thread，随后 `turn/start` 仍返回成功并创建 `TurnLaunch` | 已确认 H-215；未实际 spawn turn、调用模型或工具；重启后 `thread/resume` 仅完成静态路径核查 |
+| Harness 冷分叉响应就绪性 | 文件 SQLite 中的 source 在新 ServerState 尚未加载时，正式 `thread/fork` 成功创建 durable child，但 child 未进入活动 map，紧接的 `turn/start` 被拒绝；显式 `thread/resume` 后正向对照可运行 | 已确认 H-216；只创建 `TurnLaunch` 对照，未 spawn turn、调用模型或工具 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；同一 AppCore 会话双轮 wire 测试确认完整 Responses input 回传、稳定 instructions 前缀逐字节相同、未变工具 schema 顺序相同；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、Responses 工具输出图片附件被静默降为文本、截断调用、命名工具选择字段形状和 Thinking 组合限制、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态、Responses failed usage 丢失、空/重复 `call_id`、空输入、malformed function-call 输出边界、官方 `tool_search_call` 静默丢失、Responses 兼容 effort 别名拒绝、模型目录丢失 model-level effort、条件性 `apply_patch` custom schema 超出文档明示 shape、Responses named `tool_choice` 接受官方不支持类型、MCP 非对象 `inputSchema` 原样进入 function `parameters`、end-user 标识符未校验、Responses 响应身份/序号未进入运行事件、非单调 `sequence_number` 被接受，以及温度/top_p/top_logprobs 越界值可通过公开 ModelClient 进入 wire 均已核查 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144、H-145、H-146、H-147、H-148、H-149、H-150、H-151、H-152、H-154、H-155、H-156、H-157、H-158、H-159、H-172、H-173、H-174、H-200、H-208、H-209、H-210、H-211、H-212；H-153 的规范值请求链已修复，别名缺口见 H-155；H-156 默认工具集不触发且未证明 provider 拒绝；H-157 仅为按公开元数据形状复现的条件性风险，当前官方模型触发情况未知；H-158 已证明两种不支持的对象进入 wire，未向真实 provider 验证其拒绝/忽略方式；H-159 已证明三类非法 MCP schema 进入 wire，未向真实 provider 验证其具体错误；H-172 的当前 AppCore 设置入口已有范围校验，问题限定于公共 ModelClient/ResponseDefaults 边界；H-173 证明公共消息/Responses 类型无法保留工具输出图片，但未证明当前默认工具已有可达图片附件生产路径；H-174 限定于公开 `replace_messages` mutator/未来 Harness 或 SDK 复用，不代表默认桌面路径已触发；H-200 的正常答案不受影响，但 provider 关联与流完整性诊断不可回放；H-208 限定于能到达 Responses parser 的畸形/截断终态，不代表 DeepSeek 正常服务会主动返回该对象；H-209 限定于能到达 Responses parser 的缺失 output-message role，不代表正常供应商响应会省略该字段；H-210 限定于能到达 Responses parser 的重复、跳号或逆序 sequence，不代表正常 DeepSeek 服务会主动发送非法序列；H-211 限定于 JSON-RPC server 返回字符串 response id，不代表当前默认 server 一定使用该 id 形状；H-212 限定于 JSON-RPC server 返回非 `2.0` 的响应版本，不代表当前默认 server 一定发送错误版本；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | Responses reasoning 与 user 标识 | H-153/H-154 的规范值贯通与 user 标识符校验已修复；本轮复核发现开发者 JSON 拒绝官方兼容 effort 别名，且 thinking guide 与 endpoint schema 对强度字段有差异；模型目录会丢失模型级支持档位 | H-153 仅关闭规范值贯通缺陷；H-155 已确认设置校验缺口，真实服务端对 guide 字段差异未验证；H-154 已修复；H-157 仅证明未来模型能力收窄时的条件性风险，当前官方模型档位无触发证据 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
@@ -154,6 +155,7 @@
 |---|---|---|---|
 | 执行身份与控制 | ACK、租约、审批和实际运行的归属未全部统一（H-02/H-15/H-16/H-33） | Codex 按 turn 管理 waiter、thread writer 保护；Claude 活跃 owner/锁保护（见各项源码与探针） | 停止虚假确认、迟到或串运行审批、同会话并发推进 |
 | 归档状态与运行接纳 | archive marker 未进入活动列表、恢复和 turn admission（H-215） | DeepSeek Harness 以 `ArchivedSessionGate` 在 pre-step 拒绝归档 lineage；Codex 归档前卸载、Shutdown 并 teardown，resume 拒绝 archived thread，恢复需显式 unarchive | 已归档 thread 仍可见并创建新 turn；隐藏/归档语义不能阻止后续运行 |
+| Thread 生命周期响应原子性 | 冷 source 的 fork 已持久化 child，但成功响应未使 child 可立即接纳 turn（H-216） | DeepSeek Harness fork 在返回前 await `agents.create`，客户端声明同步可寻址；Codex 构造并注册 live fork、附加 listener，并明确 response 到达即 usable | 客户端收到成功后首个 turn 失败；重试 fork 可留下多个非预期分支 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
@@ -4356,6 +4358,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-214 Harness SDK 请求后订阅竞态显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_subscribe_after_request_preserves_pre_response_event --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell stdio fixture 对两次 `thread/start` 都先发合法 `harness/event` 再发匹配 response，迟订阅组 response 成功但 300ms 内事件为 `None`，预订阅对照收到 `t-early`；无真实 CLI server、模型、工具、文件或公网 |
 | H-215 Harness 归档后运行接纳显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_archived_thread_does_not_accept_new_turn --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ServerState` dispatcher 依次完成 `thread/start`、`thread/archive`、`thread/list`、`turn/start`，输出 `archive_success=true durable_archived=true still_listed=true turn_success=true launch=true`；只创建 `TurnLaunch`，未 spawn turn、调用模型、工具或公网 |
 | H-215 CLI 默认测试基线 | `cargo test -p deepagent-cli --offline`：85 passed / 16 ignored / 0 failed；H-215 探针默认忽略，绿色基线不表示缺陷已修复；本轮仅新增审计测试与文档，未修改生产行为或协议 |
+| H-216 Harness 冷分叉 readiness 显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_cold_thread_fork_is_loaded_for_the_next_turn --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；文件 SQLite 经新 `ServerState` 冷启动后，输出 `fork_success=true fork_loaded=false turn_success=false launch=false`；显式 resume 正向对照为 `resume_success=true resumed_turn_success=true resumed_launch=true`；未 spawn turn、调用模型、工具或公网 |
+| H-216 CLI 默认测试基线 | `cargo test -p deepagent-cli --offline`：85 passed / 17 ignored / 0 failed；H-215/H-216 审计探针默认忽略，绿色基线不表示任一缺陷已修复；本轮仅新增 H-216 测试与文档 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4754,6 +4758,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 可选 WASM 的时钟与调用归属 | H-59 | 既有 WasmSandbox 统一 Engine tick 与 per-Store deadline；参考上游 Wasmtime 及成熟 Agent 的局部 timer 清理 | 顺序与并发调用互不提前超时；成功/失败/取消不遗留误伤；Windows trap 错误不终结宿主；默认未启用路径保持不受影响 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17、H-84 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；审批通知只由一个 gate owner 发布并携带 call ID；参考 Codex 的 turn 所属 waiter 和单一权限请求 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；一项人工审批只发一条可响应请求；保存失败可见 |
 | 归档状态与运行接纳 | H-215 | 复用现有 `ArchiveService`、`ServerState` 与运行协调边界，把唯一 durable archive 状态投影到 `thread/list`、`thread/resume`、`turn/start`、`turn/steer` 等 admission；归档活动 turn 时明确拒绝、先取消并有界等待或 archived-pending 的单一契约；参考 DeepSeek Harness pre-step gate 与 Codex archive teardown，不新增第二套归档或运行中心 | archive 成功后默认列表不再公开 thread，所有新运行入口拒绝；活动 turn 的归档结果可审计且终态唯一；显式 unarchive/restore 后才可恢复；进程重启、迟到 follow-up、subagent lineage 与并发 archive/start 均不能绕过 |
+| Thread create/resume/fork 的就绪提交 | H-216 | `thread/fork` 复用现有 `ThreadState` 构造与 AppCore fork 结果，在成功 response 前原子安装可接纳的 child；从 durable cold source 重建有效 workspace/config 时共用 resume 的单一解析边界；参考 DeepSeek Harness await agent creation 与 Codex live fork/listener，不增加第二份 thread store | fork response 后无需隐式补一轮 resume 即可 start；持久化失败与内存安装失败不返回假成功或遗留无主 child；热/冷 source、重启、配置、并发 fork/start 与失败补偿一致 |
 | Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
 | Harness SDK 通知身份、订阅时序与缺口恢复 | H-01、H-91、H-205、H-214 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；提供先建订阅再发请求的 owned run/stream API，参考 DeepSeek Harness `HarnessSession.run()` 的 subscribe-before-prompt 队列与 Codex 的先附加监听再启动操作；不建立无界第二事件库 | 请求响应前通知仍可由该次操作消费；连续事件可按实际序号 ACK；7→9、broadcast lag 和迟订阅均可识别并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
 | 启动恢复的 run/task 诊断归属 | H-44、H-95 | 现有恢复投影按 run 的 task 身份界定历史范围；参考 Codex 按 turn ID 标记 stale turn | 同 session 多个未完成 run 的中断原因各自匹配其 task turn；较新的 user prompt 不改写旧 run 的工具中断原因；重放稳定，且不改变唯一终态 |
@@ -5069,6 +5074,35 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 回归应覆盖：空闲/活动 thread 归档、普通列表与显式 archived 列表、同连接及重启后 resume、start/steer、归档与 start 并发、迟到 follow-up、subagent lineage、取消超时/保存失败、幂等 archive、显式 unarchive 后恢复，以及事件/终态只提交一次。
 
 本轮只新增正式失败探针和审计文档，未修改生产归档行为。该项不与 H-92 的 server EOF 活动 turn 丢弃、H-130 的 steer 替代 turn 重复派生或 H-214 的 SDK 订阅竞态合并计数；三者的触发条件、状态所有者和修复边界均不同。
+
+### H-216：Harness 冷分叉返回成功但新 thread 未加载，首个 `turn/start` 被拒绝
+
+**级别：中（P2，thread 生命周期响应原子性）；触发条件：** source thread 已持久化但不在当前 `ServerState.threads` 中，例如 app-server 重启后客户端直接调用 `thread/fork`，没有先对 source 执行 `thread/resume`。分叉写入成功，响应也返回新 ID，但 child 没有成为可运行的已加载 thread。
+
+#### 生产路径与正式复现
+
+- `thread_fork()` 先通过 `EventStore::event_count()` 和 `AppService::fork_session()` 从 durable history 创建 child；这条持久化路径不要求 source 已在内存加载，因此冷 source 可以成功分叉。
+- 持久化成功后，代码才执行 `self.threads.get(&params.thread_id).cloned()`。只有 source 已加载时才复制其 `ChatService`、workspace、provider/model、permission profile 与 sandbox backend，并把 child 插入 `self.threads`；source 冷启动未加载时，这个分支静默跳过。
+- 随后的成功 response 不反映安装是否发生，无条件返回新 `threadId`。`turn_start()` 则只接受 `self.threads` 中已加载的 ID，所以客户端按自然顺序执行 `thread/fork` → `turn/start` 会得到 `thread is not loaded`，且没有 `TurnLaunch`。
+- 新增默认忽略探针 `app_server::tests::audit_cold_thread_fork_is_loaded_for_the_next_turn`：先用文件 SQLite 和第一个正式 `ServerState` 创建 source，销毁该宿主；再以同一数据库构造新的 `ServerState`，确认 source 不在活动 map 后执行正式 fork 与 start。随后显式 `thread/resume` child 并再次 start，作为持久化 child 可用的正向对照。
+- 执行：`cargo test -p deepagent-cli app_server::tests::audit_cold_thread_fork_is_loaded_for_the_next_turn --offline -- --ignored --exact --nocapture`。
+- 实际结果为 **0 passed / 1 failed（预期复现）**：`fork_success=true fork_loaded=false turn_success=false launch=false`；显式恢复后 `resume_success=true resumed_turn_success=true resumed_launch=true`。这将根因收窄为 fork 成功提交与活动 thread 安装分裂，而不是 AppService 没有生成有效历史。探针只检查 launch，不 spawn turn，不调用模型、工具或网络。
+
+#### 成熟 Agent 对照
+
+- **DeepSeek Harness** 的 `SessionCommandController.fork()` 读取 source prefix 后，先 `await agents.create({ sessionId: childId, seed, ... })`，创建失败就返回错误；只有 agent 已创建并完成可选 workspace attach 后才返回 child ID。客户端 `ClientSessions.fork()` 的文档明确继承 create 的“synchronous-addressability guarantee”，返回后 child 已进入 catalog 且可 retain；UI 随后直接打开 child session。这里借鉴的是创建 readiness 与成功响应同属一次提交，不要求采用相同的 Agent registry。
+- **Codex** 的 `thread/fork` 在返回前由 thread manager 创建 `forked_thread`，自动附加 conversation listener，再发送 response；源码明确注释“the new thread is usable as soon as the response arrives”。Codex 还把 `thread/fork followed by turn/start` 作为公开建议流程，说明额外 resume 不是该成功响应的隐含前置步骤。
+- DeepSeek 官方 Responses API 不定义 thread/fork；本项属于宿主 Harness 的线程生命周期契约，与 provider 的 reasoning、cache 或工具调用格式无关。
+
+#### 影响、边界与根因修复方向
+
+- 已动态证明的直接后果是：冷 source 的 fork response 为成功并产生 durable child，但客户端无法直接在返回的新 ID 上开始 turn。若 SDK/UI 把成功视为可用并立即提交输入，首个输入会失败；若调用方把失败解释为 fork 未发生而重试，则每次都可能再创建一个 durable child，造成重复分支与会话列表污染。
+- 当前规避方式是先显式 resume child；探针对该路径的正向控制已经通过。但协议和成功响应没有声明这一步，热 source 又不需要它，形成依赖进程内加载历史的非确定行为，不能把规避步骤当作稳定契约。
+- 本次没有通过真实 stdio/SDK 执行、没有并发请求，也没有断言 child 的 provider/permission/sandbox 是否正确恢复。H-04 已单独证明 resume 丢覆盖配置，因此“自动调用现有 resume”也不是完整根因修复；必须共用一套可验证的有效配置重建边界。
+- 根因修复应让 start/resume/fork 的成功语义统一为“返回的 thread 已可接纳后续协议操作”。冷 fork 应从 durable source/result 构造并安装 child `ThreadState`，在 response 前完成；若持久化已成功但内存安装失败，应执行明确补偿或返回带 child identity 的部分失败，不能无声成功，也不能靠客户端猜测并重复 fork。
+- 回归应覆盖：热/冷 source、真实进程重启、默认/显式 workspace 与有效配置、fork 后立即 start、显式 resume 幂等、安装失败补偿、并发 fork/start、同请求重试与 child 唯一性、归档 source（与 H-215 协同）以及 source/child 各自独立后续运行。
+
+本轮只新增正式失败探针和审计文档，未修改生产 fork 行为。H-73 关注 inclusive sequence 断点导致的历史内容错误；H-216 的 child history 正向对照可恢复并运行，问题仅是成功响应后的 readiness，因此两项不重复。
 
 ### 本轮排除候选：Responses 工具参数增量仅含 `output_index`
 
