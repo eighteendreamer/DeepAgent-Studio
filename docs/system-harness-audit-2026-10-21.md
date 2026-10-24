@@ -22,6 +22,7 @@
 | 输入 hook 的模型上下文输出 | 正式 UserPromptSubmit PowerShell 命令成功返回普通文字或标准 additionalContext，实时 HookCompleted 保留原 stdout，但下一正式 wire 与会话消息均没有该内容；直接输入和拒绝决定对照正常 | 已确认 H-140；Windows 真实子进程、临时输入捕获文件与离线模型；未覆盖其他 hook 事件、续聊或重启 |
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
+| Harness thread 归档生命周期 | 正式 `thread/archive` 已成功并写入 durable archive marker 后，同一 dispatcher 的 `thread/list` 仍公开该 thread，随后 `turn/start` 仍返回成功并创建 `TurnLaunch` | 已确认 H-215；未实际 spawn turn、调用模型或工具；重启后 `thread/resume` 仅完成静态路径核查 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；同一 AppCore 会话双轮 wire 测试确认完整 Responses input 回传、稳定 instructions 前缀逐字节相同、未变工具 schema 顺序相同；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、Responses 工具输出图片附件被静默降为文本、截断调用、命名工具选择字段形状和 Thinking 组合限制、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态、Responses failed usage 丢失、空/重复 `call_id`、空输入、malformed function-call 输出边界、官方 `tool_search_call` 静默丢失、Responses 兼容 effort 别名拒绝、模型目录丢失 model-level effort、条件性 `apply_patch` custom schema 超出文档明示 shape、Responses named `tool_choice` 接受官方不支持类型、MCP 非对象 `inputSchema` 原样进入 function `parameters`、end-user 标识符未校验、Responses 响应身份/序号未进入运行事件、非单调 `sequence_number` 被接受，以及温度/top_p/top_logprobs 越界值可通过公开 ModelClient 进入 wire 均已核查 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144、H-145、H-146、H-147、H-148、H-149、H-150、H-151、H-152、H-154、H-155、H-156、H-157、H-158、H-159、H-172、H-173、H-174、H-200、H-208、H-209、H-210、H-211、H-212；H-153 的规范值请求链已修复，别名缺口见 H-155；H-156 默认工具集不触发且未证明 provider 拒绝；H-157 仅为按公开元数据形状复现的条件性风险，当前官方模型触发情况未知；H-158 已证明两种不支持的对象进入 wire，未向真实 provider 验证其拒绝/忽略方式；H-159 已证明三类非法 MCP schema 进入 wire，未向真实 provider 验证其具体错误；H-172 的当前 AppCore 设置入口已有范围校验，问题限定于公共 ModelClient/ResponseDefaults 边界；H-173 证明公共消息/Responses 类型无法保留工具输出图片，但未证明当前默认工具已有可达图片附件生产路径；H-174 限定于公开 `replace_messages` mutator/未来 Harness 或 SDK 复用，不代表默认桌面路径已触发；H-200 的正常答案不受影响，但 provider 关联与流完整性诊断不可回放；H-208 限定于能到达 Responses parser 的畸形/截断终态，不代表 DeepSeek 正常服务会主动返回该对象；H-209 限定于能到达 Responses parser 的缺失 output-message role，不代表正常供应商响应会省略该字段；H-210 限定于能到达 Responses parser 的重复、跳号或逆序 sequence，不代表正常 DeepSeek 服务会主动发送非法序列；H-211 限定于 JSON-RPC server 返回字符串 response id，不代表当前默认 server 一定使用该 id 形状；H-212 限定于 JSON-RPC server 返回非 `2.0` 的响应版本，不代表当前默认 server 一定发送错误版本；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | Responses reasoning 与 user 标识 | H-153/H-154 的规范值贯通与 user 标识符校验已修复；本轮复核发现开发者 JSON 拒绝官方兼容 effort 别名，且 thinking guide 与 endpoint schema 对强度字段有差异；模型目录会丢失模型级支持档位 | H-153 仅关闭规范值贯通缺陷；H-155 已确认设置校验缺口，真实服务端对 guide 字段差异未验证；H-154 已修复；H-157 仅证明未来模型能力收窄时的条件性风险，当前官方模型档位无触发证据 |
 | 上下文、压缩、记忆 | 预取生命周期、压缩回放、压缩计费、旧笔记覆盖新分支及同步摘要取消缺口均已复现；真实笔记提取请求计数假设错误已澄清；原生摘要取消已接入运行取消树并通过回归 | 已确认并修复 H-31；已确认 H-10、H-11、H-14、H-23；其他压缩边界仍在核查 |
@@ -152,6 +153,7 @@
 | 边界 | 本系统已复现差距 | 参考实现中的具体机制 | 触发后的主要后果 |
 |---|---|---|---|
 | 执行身份与控制 | ACK、租约、审批和实际运行的归属未全部统一（H-02/H-15/H-16/H-33） | Codex 按 turn 管理 waiter、thread writer 保护；Claude 活跃 owner/锁保护（见各项源码与探针） | 停止虚假确认、迟到或串运行审批、同会话并发推进 |
+| 归档状态与运行接纳 | archive marker 未进入活动列表、恢复和 turn admission（H-215） | DeepSeek Harness 以 `ArchivedSessionGate` 在 pre-step 拒绝归档 lineage；Codex 归档前卸载、Shutdown 并 teardown，resume 拒绝 archived thread，恢复需显式 unarchive | 已归档 thread 仍可见并创建新 turn；隐藏/归档语义不能阻止后续运行 |
 | 有效配置与信任 | 请求覆盖、恢复、项目来源和实际 executor 条件分裂（H-03/H-04/H-27/H-28/H-54） | Codex 对恢复有效配置做校核、禁用未信任项目配置层；Claude hooks 信任检查 | 配置静默变化、用户限制未落实到实际执行 |
 | 事件与恢复 | 慢消费者丢通知、订阅未就绪、恢复缺规范终态、恢复原因未按 run/task 隔离，以及最终钩子失败前已通知完成、审批由两条路径重复通知（H-01/H-43/H-44/H-83/H-84/H-95/H-214） | Codex 明确背压/断连、持续消费、按 turn 身份恢复 stale 状态及统一携带错误的 turn 完成通知；DeepSeek Harness 高层 run 在发 prompt 前建立带队列的订阅；审批从单个权限请求发出带关联身份的 server request | UI/SDK 长期等待、提前结束、恢复诊断归错 run、重复提示或审批请求无法关联 |
 | 工具副作用与结果 | 不确定结果重发、写屏障被跨越、结果资产过早回收（H-06/H-35/H-36） | Codex 限定通用可重试方法与串行执行边界；Claude 按会话保留完整结果 | 重复外部操作、读取到错误时序数据、后续请求失去证据 |
@@ -4352,6 +4354,8 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-212 Harness SDK JSON-RPC 版本显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_wrong_jsonrpc_version_does_not_complete_request --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell fixture 返回 `{"jsonrpc":"1.0","id":1,"result":{}}`，`thread/list` 经 `spawn_reader` 直接返回 `Ok(RpcResponse)`，响应 `jsonrpc` 保持为 `1.0`；无真实 CLI server、模型、工具、文件或公网 |
 | H-213 Harness SDK notification method 路由显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_non_harness_notification_method_is_not_emitted_as_event --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell fixture 返回 `method:"other/event"` 但合法 `HarnessEvent` params，reader 忽略 method 并广播为 `ThreadStarted { thread_id: "t-wrong-method" }`；无真实 CLI server、模型、工具、文件或公网 |
 | H-214 Harness SDK 请求后订阅竞态显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_subscribe_after_request_preserves_pre_response_event --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 Windows PowerShell stdio fixture 对两次 `thread/start` 都先发合法 `harness/event` 再发匹配 response，迟订阅组 response 成功但 300ms 内事件为 `None`，预订阅对照收到 `t-early`；无真实 CLI server、模型、工具、文件或公网 |
+| H-215 Harness 归档后运行接纳显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_archived_thread_does_not_accept_new_turn --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；正式 `ServerState` dispatcher 依次完成 `thread/start`、`thread/archive`、`thread/list`、`turn/start`，输出 `archive_success=true durable_archived=true still_listed=true turn_success=true launch=true`；只创建 `TurnLaunch`，未 spawn turn、调用模型、工具或公网 |
+| H-215 CLI 默认测试基线 | `cargo test -p deepagent-cli --offline`：85 passed / 16 ignored / 0 failed；H-215 探针默认忽略，绿色基线不表示缺陷已修复；本轮仅新增审计测试与文档，未修改生产行为或协议 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
@@ -4749,6 +4753,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 执行权限与子运行上下文 | H-03、H-19、H-22、H-65 | 有效工具集合、sandbox 选择、执行根、checkpoint 与两处自动验证必须来自同一已解析执行配置；参考 Claude 的有效工具池与子 cwd、Codex 的统一命令编排 | 清单外调用不能执行；两个子目录同名写入隔离；声明 sandbox 与实际 backend 一致；配置后端拒绝时单文件/完成验证均不得转为宿主执行 |
 | 可选 WASM 的时钟与调用归属 | H-59 | 既有 WasmSandbox 统一 Engine tick 与 per-Store deadline；参考上游 Wasmtime 及成熟 Agent 的局部 timer 清理 | 顺序与并发调用互不提前超时；成功/失败/取消不遗留误伤；Windows trap 错误不终结宿主；默认未启用路径保持不受影响 |
 | 接纳、终态与审批生命周期 | H-02、H-15、H-16、H-17、H-84 | Harness 复用 AppCore admission；审批身份带运行作用域；执行停止与保存错误分别投影；审批通知只由一个 gate owner 发布并携带 call ID；参考 Codex 的 turn 所属 waiter 和单一权限请求 | ACK 后立即取消不发模型；终态后旧审批无效；两 run 同 call_id 独立；一项人工审批只发一条可响应请求；保存失败可见 |
+| 归档状态与运行接纳 | H-215 | 复用现有 `ArchiveService`、`ServerState` 与运行协调边界，把唯一 durable archive 状态投影到 `thread/list`、`thread/resume`、`turn/start`、`turn/steer` 等 admission；归档活动 turn 时明确拒绝、先取消并有界等待或 archived-pending 的单一契约；参考 DeepSeek Harness pre-step gate 与 Codex archive teardown，不新增第二套归档或运行中心 | archive 成功后默认列表不再公开 thread，所有新运行入口拒绝；活动 turn 的归档结果可审计且终态唯一；显式 unarchive/restore 后才可恢复；进程重启、迟到 follow-up、subagent lineage 与并发 archive/start 均不能绕过 |
 | Harness SDK 请求期限与 waiter 所有权 | H-90、H-100、H-101、H-204 | 现有 SDK request/pending 表共用 RAII owner 和可配置 deadline；响应、写失败、future drop、超时、EOF 均按 id 收束一次；参考 DeepSeek Harness 可配置 requestTimeout + AbortSignal pending removal，并保持对 Codex per-RPC timeout 能力的诚实边界 | 对端静默时调用按配置期限返回；调用取消不遗留 pending；迟到响应/EOF 竞态不误配；请求已写后的结果未知不自动重放有副作用操作 |
 | Harness SDK 通知身份、订阅时序与缺口恢复 | H-01、H-91、H-205、H-214 | 现有 `RpcNotification` 外层序号、SDK 公开订阅项和 `thread/read` durable cursor 统一为带 sequence 的通知信封；提供先建订阅再发请求的 owned run/stream API，参考 DeepSeek Harness `HarnessSession.run()` 的 subscribe-before-prompt 队列与 Codex 的先附加监听再启动操作；不建立无界第二事件库 | 请求响应前通知仍可由该次操作消费；连续事件可按实际序号 ACK；7→9、broadcast lag 和迟订阅均可识别并转为 durable 补读；不把裸业务事件或事件计数冒充已交付游标；旧 DTO 兼容反序列化 |
 | 启动恢复的 run/task 诊断归属 | H-44、H-95 | 现有恢复投影按 run 的 task 身份界定历史范围；参考 Codex 按 turn ID 标记 stale turn | 同 session 多个未完成 run 的中断原因各自匹配其 task turn；较新的 user prompt 不改写旧 run 的工具中断原因；重放稳定，且不改变唯一终态 |
@@ -5034,6 +5039,36 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 回归需覆盖：notification 先于/后于 response、响应与通知同批到达、零 receiver、两个并行 turn、快速成功/失败、审批、broadcast lag、SDK future drop、EOF、重连及 `thread/read` 补读；确保每个 owned operation 只消费自己的 thread/turn 事件，终态一次，且不把较早无关通知错误归属给新请求。
 
 本轮只新增正式失败探针和审计文档，未修改生产 SDK 行为；H-01、H-43、H-205 的既有证据保持独立。
+
+### H-215：Harness 归档状态未进入活动列表与运行接纳，已归档 thread 仍可创建 turn
+
+**级别：中（P2，Harness 控制面与运行接纳）；触发条件：** 客户端对已加载 thread 成功调用 `thread/archive`，随后在同一 app-server 生命周期中执行 `thread/list` 或 `turn/start`。归档 marker 已持久化，但 server 内存中的 thread 与运行入口没有观察该状态。
+
+#### 生产路径与正式复现
+
+- `apps/cli/src/app_server.rs::thread_archive()` 只调用 `ArchiveService::archive_session()` 并返回 `archived=true`。它没有从 `ServerState.threads` 移除 thread，没有给内存状态附加 archived 标记，也没有拒绝或停止该 thread 的活动 turn。
+- `ArchiveService` 将归档实现为 document-store 中独立的 visibility index；`archive_session()` 不删除原事件流，`is_archived()` 可稳定读回 marker。这种保留事件的存储设计本身不是问题，缺口在于 Harness 的控制面没有把同一个 marker 纳入接纳判定。
+- `thread_list()` 直接枚举 `EventStore::list_sessions()`，未读取 `ArchiveService::archived_ids()`，所以 archive 成功后 thread 仍出现在普通活动列表。`turn_start()` 只检查 `ServerState.threads` 是否仍有条目，随后登记 `TurnState` 并构造 `TurnLaunch`；archive 没有删除该条目，因此新 turn 被继续接纳。
+- `thread_resume()` 的静态生产路径同样只从 `EventStore` 查 session/event 并重新插入 `ServerState.threads`，未检查 archive marker。由于本次动态探针复用同一已加载 dispatcher，没有覆盖进程重启后的 resume，故这里只记录静态可达缺口，不把它写成动态结果。
+- 新增默认忽略探针 `apps/cli/src/app_server.rs::app_server::tests::audit_archived_thread_does_not_accept_new_turn`，通过正式 dispatcher 依次执行 `thread/start`、`thread/archive`、`thread/list` 与 `turn/start`；并另用 `ArchiveService::is_archived()` 排除归档写入失败。
+- 执行：`cargo test -p deepagent-cli app_server::tests::audit_archived_thread_does_not_accept_new_turn --offline -- --ignored --exact --nocapture`。
+- 实际结果为 **0 passed / 1 failed（预期复现）**，输出 `archive_success=true durable_archived=true still_listed=true turn_success=true launch=true`。失败首先断言普通列表不应继续返回已归档 thread；同一输出同时证明 `turn/start` 返回成功且创建了 `TurnLaunch`。探针没有 spawn 该 launch、调用模型、执行工具、访问网络或制造外部副作用。
+
+#### 成熟 Agent 对照
+
+- **DeepSeek Harness** 的 `packages/api/session-controller/src/archived-session-gate.ts` 注册 `agent/pre-step` gate；当前 session 或 subagent lineage 中任一 session 已归档时返回 `{ kind: 'reject' }`，不发起模型 request。源码还明确覆盖归档后的迟到 settlement 与 queued follow-up；活动工作由各 owner 停止，gate 负责防止再次进入。`archived-session-gate.host.spec.ts` 验证归档时 reject、gate 卸载后 enter。这里借鉴的是“durable archive 状态进入每步 admission”，不是照搬其插件结构。
+- **Codex** 的 `thread_archive_response()` 在落持久化归档前调用 `prepare_thread_for_archive()`；后者通过 `remove_thread_for_client()` 卸载活动 thread，提交并等待 Shutdown，再执行 teardown。其 resume 读取到 `archived_at` 后明确报错，要求先执行 unarchive；协议同时提供 `thread/unarchive`。这使列表可见性、内存加载状态、运行停止与恢复资格由同一生命周期收束。
+- DeepSeek 官方 Responses API 不定义 thread archive/list/resume；H-215 是宿主 Harness 的控制面与运行接纳缺陷，不能归因于 provider，也不应以调整模型参数修复。
+
+#### 影响、边界与根因修复方向
+
+- 已动态证明的直接后果是：调用方收到 archive 成功后，普通活动列表仍可见该 thread，且新 `turn/start` 仍被接受并创建可运行 launch。归档因此只是旁路标签，不构成执行边界；依赖归档来隐藏、冻结或阻止自动 follow-up 的客户端会得到错误保证。
+- 本次没有实际运行新 turn，故不声称模型已经产生额外费用、工具已经执行副作用，也不声称归档活动 turn 后它必然继续。桌面 UI、真实 stdio 子进程、SDK 和重启后 resume 尚未动态覆盖；这些必须作为后续回归，而不是从本探针外推为事实。
+- 当前 Harness 协议暴露 `thread/archive`，却没有对应 `thread/unarchive`；如果修复只是在所有入口拒绝 archived thread，客户端将缺少正式恢复路径。根因修复必须先定义显式 restore/unarchive 契约，再把现有 `ArchiveService` 作为唯一状态源接入 list、resume、start、steer 及其他能触发 step 的入口。
+- 对已有活动 turn，归档必须选择并统一一种可验证语义：拒绝归档、先取消并有界等待后归档，或记录 archived-pending 并在清理完成后提交。不能继续“marker 成功但运行 owner 不知情”，也不能在 Harness 内新建第二套取消、run store 或 archive registry。
+- 回归应覆盖：空闲/活动 thread 归档、普通列表与显式 archived 列表、同连接及重启后 resume、start/steer、归档与 start 并发、迟到 follow-up、subagent lineage、取消超时/保存失败、幂等 archive、显式 unarchive 后恢复，以及事件/终态只提交一次。
+
+本轮只新增正式失败探针和审计文档，未修改生产归档行为。该项不与 H-92 的 server EOF 活动 turn 丢弃、H-130 的 steer 替代 turn 重复派生或 H-214 的 SDK 订阅竞态合并计数；三者的触发条件、状态所有者和修复边界均不同。
 
 ### 本轮排除候选：Responses 工具参数增量仅含 `output_index`
 

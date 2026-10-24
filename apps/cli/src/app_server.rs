@@ -1639,6 +1639,57 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-215: an archived thread must not accept a new turn before explicit restore"]
+    fn audit_archived_thread_does_not_accept_new_turn() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+        let started =
+            state.handle_request_for_test(rpc_request(2, "thread/start", serde_json::json!({})));
+        let thread_id = started.result()["threadId"].as_str().unwrap().to_owned();
+
+        let archived = state.handle_request_for_test(rpc_request(
+            3,
+            "thread/archive",
+            serde_json::json!({"threadId": thread_id}),
+        ));
+        let durable_archived = ArchiveService::new(state.database.clone())
+            .is_archived(&thread_id)
+            .expect("read the durable archive marker");
+        let listed =
+            state.handle_request_for_test(rpc_request(4, "thread/list", serde_json::json!({})));
+        let still_listed = listed.result()["threads"]
+            .as_array()
+            .expect("thread/list threads array")
+            .iter()
+            .any(|thread| thread["threadId"] == thread_id);
+
+        let (turn, launch) = state.dispatch(
+            rpc_request(
+                5,
+                "turn/start",
+                serde_json::json!({"threadId": thread_id, "input": "must stay archived"}),
+            ),
+            None,
+        );
+        eprintln!(
+            "archived-thread audit: archive_success={} durable_archived={durable_archived} still_listed={still_listed} turn_success={} launch={}",
+            archived.is_success(),
+            turn.is_success(),
+            launch.is_some()
+        );
+
+        assert!(archived.is_success() && durable_archived);
+        assert!(
+            !still_listed,
+            "thread/list kept returning a thread after thread/archive reported success"
+        );
+        assert!(
+            !turn.is_success() && launch.is_none(),
+            "turn/start created a runnable turn after the same connection successfully archived the thread"
+        );
+    }
+
+    #[test]
     fn fileless_legacy_row_is_not_resumable_or_readable() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);
