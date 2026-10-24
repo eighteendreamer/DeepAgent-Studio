@@ -81,3 +81,36 @@ async fn audit_model_effort_metadata_constrains_responses_request() {
         "the discovered model declares only low effort, but the catalog discarded that capability and the Responses request still sent high"
     );
 }
+
+#[tokio::test]
+#[ignore = "audit reproducer: DeepSeek Flash thinking-mode top_p below 0.95 is normalized by the provider"]
+async fn audit_flash_thinking_mode_top_p_below_floor_reaches_wire_unchanged() {
+    let transport = Arc::new(AuditTransport::default());
+    let config =
+        ModelConfig::deepseek("offline-audit-placeholder").with_defaults(ResponseDefaults {
+            reasoning_effort: Some(ReasoningEffort::High),
+            top_p: Some(0.2),
+            ..ResponseDefaults::default()
+        });
+    let client = ModelClient::new(transport.clone(), config);
+    client
+        .stream_response(ResponseRequest::new(
+            "deepseek-flash",
+            vec![Message::user("Reply briefly.")],
+        ))
+        .await
+        .unwrap();
+
+    let requests = transport.requests.lock().unwrap();
+    let wire_effort = requests[0]["reasoning"]["effort"].as_str();
+    let wire_top_p = requests[0]["top_p"].as_f64();
+    eprintln!(
+        "flash top_p audit: wire_effort={wire_effort:?}, configured_top_p=0.2, wire_top_p={wire_top_p:?}, documented_effective_top_p=0.95"
+    );
+    assert_eq!(wire_effort, Some("high"));
+    assert_ne!(
+        wire_top_p,
+        Some(0.2),
+        "in DeepSeek Flash thinking mode, a configured top_p below 0.95 is normalized by the provider; local config and wire should not imply that 0.2 is effective"
+    );
+}

@@ -37,6 +37,7 @@
 | 工作流模型 usage 与成本归集 | 可执行的创作 text 节点收到完整 DeepSeek Chat usage 后，bridge response、WorkflowAgent 和正式 CostService 账本依次变成无 usage、全零、全零；run-level 旧分支仅保留 prompt/completion/total gauge，billed input、cache 与 reasoning 仍为零 | 已确认 H-163；本机 provider/MockTransport 与正式 finalizer/SQLite 成本库，无公网或真实费用；H-63 仅覆盖复核/分类附属请求，不包含本链 |
 | 画布同步模型请求的运行取消 | 正式 `text-gen` 已进入本机 provider 且响应保持 pending 后，取消被受理但工作流 300ms 内不退出；释放响应后 text 节点发布 Completed，运行却落唯一 cancelled 终态 | 已确认 H-164；动态仅覆盖 text。image/audio/embedding 只确认请求 DTO 与共用 HTTP `call()` 同样没有取消通道，尚未逐项动态复现 |
 | 画布供应商返回资产的下载边界 | 正常 image-gen 供应商在成功 JSON 中返回 loopback 图片 URL 后，宿主直接第二跳 GET，零审批，并把私网 canary 完整存入 artifact；运行仍 succeeded | 已确认 H-165；正式 WorkflowAgent/Canvas gateway/文件 SQLite/RunStore，本机两台 loopback 服务；没有访问公网、真实内网或元数据服务，也未证明数据已外传给供应商 |
+| DeepSeek Flash 思考模式的 top_p 有效值 | 正式 ModelClient 在 `reasoning.effort=high` 且设置 `top_p=0.2` 时将 0.2 原样发到 Responses wire；官方称 Flash 思考模式下低于 0.95 按 0.95 处理 | 已确认 H-166；离线正式 serializer/wire 探针；没有真实 API 调用或回答质量 A/B，不能证明每次输出必然改变 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
@@ -3081,6 +3082,23 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 该边界同时继承现有运行取消树、连接/首字节/idle/总时限、响应字节上限和流式 artifact staging；验证 Content-Type 与实际魔数，不在完整 body 读入后才发现超限。下载日志只能记录脱敏来源身份，URL query/userinfo 不进入普通事件。若选择审批未知 host，复用既有 ChannelApprovalGate 与 run scope，不能另造第二套授权中心。
 - 验收覆盖 IPv4/IPv6 loopback、RFC1918、link-local/metadata、十进制/十六进制等地址表示、DNS 多地址与 rebinding、公开地址重定向到私网、跨 scheme/port、provider/CDN allowlist、正常 inline base64、合法公网 artifact、取消和超限清理。断言未授权目标请求数为零、无 artifact/Completed、唯一失败终态；显式本地开发例外和已批准公网目标则可成功。视频 H-119/H-122 及 H-164 的取消回归需同批保留。
 
+### H-166：DeepSeek Flash 思考模式下低于 0.95 的 top_p 会被服务端规范化，设置值不等于有效采样值
+
+**级别：中（P2，条件性采样配置不生效）；触发条件：选择 `deepseek-flash`，有效 reasoning effort 为 `low/high/max`，并配置 `top_p < 0.95`。** reasoning 为 `none` 或 top_p 不低于 0.95 时，不触发本项。该项不表示 API 请求失败，也不声称答案必然不同。
+
+#### 官方规则与生产 wire 复现
+
+- DeepSeek 官方 [Responses 指南兼容性表](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)明确：`deepseek-flash` 的 `top_p` 仅在思考模式生效，有效范围 0.95–1.0，低于 0.95 按 0.95 处理；非思考模式恒为 1.0，传入值被忽略。官方 [Create Response 参数页](https://api-docs.deepseek.com/zh-cn/api/create-response/)也说明 Responses 默认 reasoning 行为开启，`low/high/max` 开启思考，`none` 关闭思考。
+- 本系统设置层 `ResponsesApiSettings::validate()` 只检查 `top_p ∈ [0,1]`；`model_runtime::select_run_model()` 将用户有效 top_p 与 reasoning effort 分别注入 `ResponseDefaults`，`ModelClient::apply_defaults()` 不按模型/effort 校验或规范化，Responses serializer 原样发出这两个字段。因此 UI/设置中显示的 0.2 并不是 DeepSeek Flash 思考模式实际采用的有效 top_p。
+- 新增 opt-in `crates/deepagent-models/tests/reasoning_effort_audit.rs::audit_flash_thinking_mode_top_p_below_floor_reaches_wire_unchanged`，走正式 `ModelClient::stream_response()` 与 Responses serializer，使用离线 `AuditTransport` 捕获请求。精确命令 `cargo test -p deepagent-models --test reasoning_effort_audit audit_flash_thinking_mode_top_p_below_floor_reaches_wire_unchanged --offline -- --ignored --nocapture`：**0 passed / 1 failed（预期）**；实测 `wire_effort=high`、配置 `top_p=0.2`、wire `top_p=0.2`，与官方有效值 0.95 冲突。此测试验证本地配置与实际发出的 wire，不伪造服务端采样结果。
+
+#### 成熟实现对照、影响和修复方向
+
+- DeepSeek Harness `packages/llm/llm-pi-ai/src/adapter.ts` 显式映射 reasoning effort，并在请求构造中只按 adapter/模型 profile 提供的参数发送；其 provider/model profile 机制把 wire 能力留在 provider seam。这里是参数适配边界的设计对照，未找到其对 DeepSeek Flash `top_p < 0.95` 作同款钳位/拒绝的实现，不能称其已解决同一规则。
+- Codex 的模型目录带每模型 supported/default reasoning effort，turn 请求使用所选模型能力构造有效参数；这是模型能力随选择流动的架构对照，不是 DeepSeek top_p 规则的同协议处理证据。
+- 触发时 DeepSeek 官方会把采样有效值规范化为 0.95，而 UI、保存配置和请求日志仍呈现 0.2；用户无法凭本地回显判断真实有效设置，实验复现性和参数预期失真。未证明该规范化造成 API 错误、额外费用或特定回答质量变化。
+- 收敛方向：在现有模型能力/Responses adapter 边界计算一次 `EffectiveSamplingConfig`，依据所选模型与最终 reasoning effort 明确拒绝、提示并规范化，或在 UI 展示“Flash 思考模式下有效 top_p 下限 0.95”；不得悄悄将 wire 变成另一数值而不反馈。fallback 切换到 Pro、关闭思考、developer JSON 覆盖、重试与运行设置展示都必须使用同一解析结果。回归覆盖 Flash thinking 的 0.94/0.95/1.0、Flash none、Pro thinking/non-thinking 及备用模型；只用受控 wire 测试证明本地契约，服务端有效行为仍以官方文档为依据。
+
 ### 后续独立核查：DeepSeek 自动前缀缓存与 Responses usage
 
 - 官方 [KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)说明缓存由服务端默认构建，只有完整匹配已落盘前缀单元才会命中，且为尽力而为；客户端没有通过 cache key 强制命中的接口。DeepSeek [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)说明该接口无状态，每次请求由客户端在 `input` 回传完整历史。
@@ -3137,6 +3155,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-164 边界与相关回归 | `CanvasCompletionRequest`/image/audio/embedding DTO 及共用 `CanvasModelGateway::call()` 均无取消输入；H-119 的 video 专用 cancel helper 不经过该边界。`cargo test -p deepagent-app-core --test workflow_audit --offline`：3 passed / 7 ignored；H-119 视频取消精确回归：1 passed，约 49ms 退出。未逐项动态复现 image/audio/embedding、真实 Tauri 或公网 provider |
 | H-165 provider 返回 URL 的宿主第二跳显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_provider_image_url_cannot_fetch_loopback_resource --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 image-gen provider 返回第二台 loopback URL 后，宿主 GET `/host-private.png`，零审批，36 字节 canary 完整入库且 run succeeded；仅本机临时服务 |
 | H-165 边界与相关回归 | 生产 `parse_output → fetch_binary → CanvasArtifactService` 直接消费 provider URL；`Cargo.lock` 与本地依赖源码确认 `reqwest 0.12.28` 默认最多跟随 10 跳。`cargo test -p deepagent-app-core --test workflow_audit --offline`：3 passed / 8 ignored；H-119 视频取消精确回归：1 passed，约 58ms 退出；H-164 文本取消显式探针仍为 0 passed / 1 failed（预期）。未动态覆盖 redirect/DNS rebinding、IPv6、真实私网/metadata、后续 artifact 外传或真实恶意供应商 |
+| H-166 Flash 思考模式 `top_p` 显式探针 | `cargo test -p deepagent-models --test reasoning_effort_audit audit_flash_thinking_mode_top_p_below_floor_reaches_wire_unchanged --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；配置 0.2 与 high effort 均经正式 ModelClient 到达离线捕获的 wire。官方规则说明有效值按 0.95 处理；未调用真实 API，未测回答质量 |
 | DeepSeek reasoning serializer 及 prompt cache 前缀复核 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed；`git diff --check -- docs/system-harness-audit-2026-10-21.md`：通过。本地同会话双轮 wire 的 input 前缀、稳定 instructions 与工具顺序断言通过；不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
@@ -3633,6 +3652,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 专业工作流 AI 节点能力闭环 | H-162 | 前端节点目录由后端版本化 executable capability 投影；一次性 LLM/分类/提取复用 Canvas text bridge，Agent V2 复用 ModelAgent/ToolPipeline/审批/取消，不新增运行中心 | enabled 节点从生产前端配置到 provider、结构化输出、事件、终态和 usage 全链可用；未实现能力在添加前明确禁用；修通时同时关闭 H-160/H-161 后续风险 |
 | 工作流 provider usage 与预算/成本统一 | H-163 | Canvas adapter 保留 canonical Usage/raw usage，WorkflowAgent 两路只用 RunUsage::record_call；参考 DeepSeek Harness 的 usage chunk/attempt meter 与 Codex completed usage 累计 | text 与 usage 同次提交；prompt gauge/billed sum、cache/reasoning、route 均正确；UsageRecorded、CostService、节点输出和 token budget 一致且不重复计账 |
 | Provider 返回资产的下载授权与 SSRF 边界 | H-165 | CanvasArtifactService/provider 配置下统一受控 fetcher，可信配置决定 artifact host allowlist；参考 Codex network policy/approval、DeepSeek Harness owner-bound attachment 与 OWASP 连接时地址校验 | 未授权 loopback/私网/link-local/metadata 及 redirect 请求数为零；DNS/多地址、大小、类型、取消、staging 与日志脱敏一致；合法 CDN/显式本地开发 profile 可审计成功 |
+| 按模型能力解析有效采样参数 | H-166 | 既有 ModelCapability/Responses adapter 将模型、reasoning effort 与 top_p 解析为同一个有效设置；参考 Codex 模型目录能力随 turn 选择流动，DeepSeek Harness provider profile 明确 adapter 参数边界 | Flash thinking 的 0.94/0.95 边界及 Pro/none/fallback 均与 UI、设置和 wire 一致；规范化需可见，不声称离线 wire 能证明服务端输出 |
 | 工作流节点事件与规范回放 | H-120 | WorkflowAgent 的 publisher 接回既有 Kernel 持久化 sink；参考现有 ModelAgent 通道与 ArtCraft 保存媒体任务身份，复用 run_events | 各节点实时事件与重开补读一致，失败/取消/进度也可重放；保留媒体来源和任务身份，不靠图文档偶然自动保存代替运行日志 |
 | 媒体任务身份与节点投影/续跑 | H-121、H-122 | 既有节点事件携带的运行中身份统一投影，后端以 provider/account/task 和输入身份决定新生成或恢复；参考 ArtCraft 的提交与 pending task/provider_job_id 分离，DAG 输入失效为本地设计 | 收到 Running 即可安全保留续跑身份；有效续跑不重复 submit，修改输入的新生成实际提交新请求；旧 attempt 不覆盖新任务，已完成资产保留来源 |
 | 桌面运行事件与订阅生命周期 | H-41、H-43、H-134 | 现有 run_id、完成 payload、运行 owner、订阅就绪屏障和持久化补读统一；参考 Codex thread/turn/item identity 与 ArtCraft 异步 listener owner | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能改写节点或清理新 run |
