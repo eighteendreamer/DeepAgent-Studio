@@ -14,7 +14,9 @@ struct NativeTextModel {
 
 fn text_item_events_with_deltas(parts: &[&str], include_deltas: bool) -> Vec<String> {
     let mut events = vec![serde_json::json!({
-        "type":"response.created", "response":{"id":"audit-response","status":"in_progress"}
+        "type":"response.created", "response":{
+            "id":"audit-response","status":"in_progress","model":"deepseek-flash"
+        }
     })
     .to_string()];
     let mut output = Vec::new();
@@ -53,7 +55,7 @@ fn text_item_events_with_deltas(parts: &[&str], include_deltas: bool) -> Vec<Str
     }
     events.push(
         serde_json::json!({"type":"response.completed","response":{
-            "id":"audit-response","status":"completed","output":output,
+            "id":"audit-response","status":"completed","model":"deepseek-flash","output":output,
             "usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18}
         }})
         .to_string(),
@@ -263,4 +265,63 @@ async fn audit_native_text_done_only_does_not_append_empty_fallback() {
         "done-only responses have no live deltas"
     );
     assert_eq!(final_answer, parts[0]);
+}
+
+#[tokio::test]
+#[ignore = "audit: durable Responses lifecycle events must retain provider response identity and sequence"]
+async fn audit_responses_lifecycle_retains_provider_identity_and_sequence() {
+    let workspace = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    let settings = audit_settings(db.clone()).await;
+    let model = Arc::new(NativeTextModel {
+        parts: vec!["AUDIT_IDENTITY"],
+        include_deltas: true,
+        requests: Mutex::new(Vec::new()),
+    });
+    let chat = ChatService::new(db, settings, model, workspace.path());
+    let run_id = "audit-responses-provider-identity";
+    chat.run_in_session(
+        "Audit Responses provider identity retention.",
+        None,
+        None,
+        None,
+        Vec::new(),
+        None,
+        false,
+        Some(run_id),
+        |_| {},
+        |_| {},
+    )
+    .await
+    .unwrap();
+
+    let lifecycle = chat
+        .run_events(run_id, None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| {
+            event.event_type == "responses_stream_event"
+                && matches!(
+                    event.data["event_type"].as_str(),
+                    Some("response.created" | "response.completed")
+                )
+        })
+        .map(|event| event.data)
+        .collect::<Vec<_>>();
+    eprintln!("responses-identity audit: lifecycle={lifecycle:?}");
+    assert_eq!(
+        lifecycle.len(),
+        2,
+        "created and completed must both be durable"
+    );
+    assert!(
+        lifecycle.iter().all(|event| {
+            event["response_id"] == "audit-response"
+                && event["provider_model"] == "deepseek-flash"
+                && event["sequence_number"].is_u64()
+        }),
+        "provider identity and monotonic sequence must survive the formal run-event projection"
+    );
+    assert_eq!(lifecycle[0]["sequence_number"], 0);
+    assert_eq!(lifecycle[1]["sequence_number"], 7);
 }
