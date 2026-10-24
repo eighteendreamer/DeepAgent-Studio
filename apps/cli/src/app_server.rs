@@ -1522,6 +1522,24 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "audit H-01 follow-up: event/ack must reject sequences that were never emitted and bind to a replay cursor"]
+    fn audit_event_ack_rejects_unemitted_sequence() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+
+        let response = state.handle_request_for_test(rpc_request(
+            2,
+            "event/ack",
+            serde_json::json!({ "eventSequence": u64::MAX }),
+        ));
+
+        assert!(
+            response.error_code().is_some(),
+            "event/ack accepted a sequence that no notification emitted: response={response:?}"
+        );
+    }
+
+    #[test]
     fn thread_start_read_and_fork_use_persisted_session_stream() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);

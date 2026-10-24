@@ -222,6 +222,7 @@
 - `event_ack()` 只保存进程内 `last_event_ack`，检查单调性；没有重发、缺口恢复或映射逻辑。
 - Rust SDK `client.rs::spawn_reader()` 只把通知的 `params` 转为 `HarnessEvent`，丢掉 envelope 上的 `event_sequence`。订阅端不能据此直接检测服务器丢通知；SDK 自己的 broadcast 慢消费者可能收到 `Lagged`，那是另一层行为，不能混同。
 - `thread/read` **可以**按 session/run 的持久化游标恢复事件及运行状态。因此不能称持久化历史已经丢失；但它不是 connection `event_sequence` 的重放接口，SDK 未自动触发或转换这条恢复链。
+- 后续直接调用生产 `ServerState::dispatch()` 做边界验证：在本连接尚未发出任何通知时提交 `event/ack(eventSequence=u64::MAX)`，服务端仍返回 `status=accepted` 并回显该值。执行 `cargo test -p deepagent-cli app_server::tests::audit_event_ack_rejects_unemitted_sequence --offline -- --ignored --exact --nocapture` 得到 **0 passed / 1 failed（预期复现）**，失败响应为 `acknowledgedEventSequence=18446744073709551615`。这不是新的 H 编号，而是 H-01 已记录的 ACK 无绑定缺口的更强证据：ACK 没有校验已分配/已交付范围，也没有把确认游标接入 `thread/read` 或 outbox；探针未启动模型、工具或公网服务。
 
 #### 成熟实现对照
 
@@ -4285,6 +4286,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-92 runtime shutdown 活动 turn 显式探针 | `cargo test -p deepagent-cli terminal_audit::audit_runtime_shutdown_finalizes_in_flight_stdio_turn --offline -- --ignored --nocapture`：0 passed / 1 failed；模型请求确已进入 transport，runtime drop 后 `running_turn` 未终结、`finished_at=None`、`run_terminal=0`；正式 AppCore run 与临时 SQLite |
 | H-92 stdio 子进程 EOF 显式探针 | `cargo test -p deepagent-cli app_server::terminal_audit::audit_stdio_eof_drops_active_turn_in_child_process --offline -- --ignored --nocapture`：0 passed / 1 failed；测试可执行文件子进程运行生产 `run_stdio`，父进程经真实管道完成三次 RPC 并等到 transport 入场标记再关闭 stdin；子进程 exit code 0，SQLite 仍为 `running_turn`、`finished_at=None`、`run_terminal=0`。无发行版 CLI 子进程、Harness SDK 或公网供应商 |
 | H-01 慢消费者真实 stdout 管道显式探针 | `cargo test -p deepagent-cli --offline audit_stdio_slow_output_drops_terminal_on_real_pipe -- --ignored --nocapture`：审计断言通过，表示复现成立；生产 outbox 在真实 Windows 子进程 stdout 管道未读 250 ms 时，1,024 条终态类型通知只收到 272 条，`critical-terminal` 丢失，读取后输出共 1,157,606 字节。探针未运行正式 ChatService/RunStore/SDK；未测试 Tauri |
+| H-01 ACK 边界后续显式探针 | `cargo test -p deepagent-cli app_server::tests::audit_event_ack_rejects_unemitted_sequence --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；无任何已发通知时 ACK `u64::MAX` 仍返回 accepted，证明 ACK 未绑定已分配事件或 durable replay cursor；生产 ServerState/SQLite 内存数据库，无模型、工具或公网 |
 | H-93 Chat 命名工具选择请求/默认值显式探针 | `cargo test -p deepagent-models audit_chat_tool_choice --offline -- --ignored --nocapture`：0 passed / 2 failed；request 与 defaults 两路径均序列化为 Responses 形状而非 DeepSeek Chat 形状；仅 adapter/serializer 离线复现，无公网 provider 请求 |
 | H-94 Chat 连续 reasoning item 显式探针 | `cargo test -p deepagent-models audit_chat_projection_preserves_all_reasoning_items --offline -- --ignored --nocapture`：0 passed / 1 failed；输入 `first ` 与 `second`，输出仅含 `second`；仅 adapter/serializer 离线复现，无公网 provider 请求 |
 | H-95 同一 session 多 run 的恢复分类显式探针 | `cargo test -p deepagent-app-core --test recovery_terminal_audit audit_recovery_classifies_each_run_from_its_own_task_turn --offline -- --ignored --nocapture`：0 passed / 1 failed；旧 run 的 tool interruption 被分类为 `interrupted_prompt`，最新 run 的 `interrupted_prompt` 分类正确；正式 AppService/SQLite 内存数据库与 session projection，无真实进程崩溃或桌面验收 |
