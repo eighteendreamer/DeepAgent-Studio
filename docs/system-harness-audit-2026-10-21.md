@@ -38,6 +38,7 @@
 | 画布同步模型请求的运行取消 | 正式 `text-gen` 已进入本机 provider 且响应保持 pending 后，取消被受理但工作流 300ms 内不退出；释放响应后 text 节点发布 Completed，运行却落唯一 cancelled 终态 | 已确认 H-164；动态仅覆盖 text。image/audio/embedding 只确认请求 DTO 与共用 HTTP `call()` 同样没有取消通道，尚未逐项动态复现 |
 | 画布供应商返回资产的下载边界 | 正常 image-gen 供应商在成功 JSON 中返回 loopback 图片 URL 后，宿主直接第二跳 GET，零审批，并把私网 canary 完整存入 artifact；运行仍 succeeded | 已确认 H-165；正式 WorkflowAgent/Canvas gateway/文件 SQLite/RunStore，本机两台 loopback 服务；没有访问公网、真实内网或元数据服务，也未证明数据已外传给供应商 |
 | DeepSeek Flash 思考模式的 top_p 有效值 | 正式 ModelClient 在 `reasoning.effort=high` 且设置 `top_p=0.2` 时将 0.2 原样发到 Responses wire；官方称 Flash 思考模式下低于 0.95 按 0.95 处理 | 已确认 H-166；离线正式 serializer/wire 探针；没有真实 API 调用或回答质量 A/B，不能证明每次输出必然改变 |
+| 画布生成图片响应无字节上限 | provider 资产 URL 返回 32 MiB+1 的本机 PNG 响应后，宿主完整缓冲并存入 artifact，image 节点与 run 均 succeeded | 已确认 H-167；和 H-165 共用双 loopback 故障注入，容量边界独立于地址授权；未测试进程内存耗尽或长期磁盘配额 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF | 已确认 H-90、H-100、H-101；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
@@ -3099,6 +3100,24 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 触发时 DeepSeek 官方会把采样有效值规范化为 0.95，而 UI、保存配置和请求日志仍呈现 0.2；用户无法凭本地回显判断真实有效设置，实验复现性和参数预期失真。未证明该规范化造成 API 错误、额外费用或特定回答质量变化。
 - 收敛方向：在现有模型能力/Responses adapter 边界计算一次 `EffectiveSamplingConfig`，依据所选模型与最终 reasoning effort 明确拒绝、提示并规范化，或在 UI 展示“Flash 思考模式下有效 top_p 下限 0.95”；不得悄悄将 wire 变成另一数值而不反馈。fallback 切换到 Pro、关闭思考、developer JSON 覆盖、重试与运行设置展示都必须使用同一解析结果。回归覆盖 Flash thinking 的 0.94/0.95/1.0、Flash none、Pro thinking/non-thinking 及备用模型；只用受控 wire 测试证明本地契约，服务端有效行为仍以官方文档为依据。
 
+### H-167：画布图片下载无响应字节上限，超预算数据被完整缓冲并持久化
+
+**级别：中（P2，条件性内存/磁盘资源消耗）；触发条件：image-gen 供应商返回可达 URL，且该 URL 响应体显著大于合理图片预算。** 这与 H-165 的“目的地址是否获授权”是独立控制：即使目标是允许访问的公网 CDN，也仍需限制响应体大小；反过来，设置大小上限不会使 loopback/私网访问因此变得安全。
+
+#### 生产路径与本机容量复现
+
+- `CanvasModelGateway::parse_output()` 对 provider `url` 调用 `fetch_binary()`；该 helper 只检查 HTTP status，随后 `resp.bytes()` 将整个响应物化为 `Vec<u8>`，没有依据 `Content-Length` 提前拒绝，也没有增量读取计数/硬上限。结果经 `generate_image()` 调用 `CanvasArtifactService::import_bytes()`；通用 `ArtifactStore` 不按 Image 类型限制字节数。图片嗅探只需要前缀签名，不能形成大小边界。
+- 本系统 `FileAttachmentResolver` 为用户输入图片设置了 32 MiB 单图上限，但这只是输入请求预算，不是供应商生成图片的正式输出契约；本项用它作本地可比较的现存边界，不推导 DeepSeek 或所有图片供应商都规定 32 MiB 输出限制。Canvas artifact/import 与磁盘配额没有发现等价硬限制。
+- 扩展 H-165 的双 loopback fixture 后新增 opt-in `audit_provider_image_download_rejects_oversized_artifact`。供应商服务返回 32 MiB+1 字节、前 8 字节具有 PNG signature 的受控响应，完整经过真实 image-gen workflow、Canvas gateway、ArtifactService、SQLite 和 RunStore。精确命令 `cargo test -p deepagent-app-core --test workflow_audit audit_provider_image_download_rejects_oversized_artifact --offline -- --ignored --nocapture`：**0 passed / 1 failed（预期）**；记录 `private_requests=1, configured_input_limit=33554432, response_bytes=33554433, artifact_bytes=33554433, terminal="succeeded"`。断言在完整读取并回放 artifact 后失败，说明不是测试本身直接写文件。
+- 该实验只证明 32 MiB+1 的完整缓冲和持久化，未测较大 payload 下的峰值 RSS、系统 OOM、磁盘耗尽、并发放大或长期累积。潜在后果是多个大响应/并发生成造成额外内存拷贝与工作区 artifact 膨胀，桌面宿主变慢、写盘失败或被操作系统终止；这些后果的阈值尚未实测，不能声称已触发。
+
+#### 无限画布对照与收敛方向
+
+- 本地参考项目 Penguin-Magic 的 `backend-nodejs/src/routes/assets.js::downloadRemoteImageToUserAssets()` 先检查响应 `Content-Length`，再检查实际 `arrayBuffer` 长度，超过 `config.MAX_FILE_SIZE` 返回 413；`backend-nodejs/src/config.js` 将其设为 10 MiB。它展示了“响应声明与实际字节都要受限”的资产导入契约，但同样先完整读取 arrayBuffer，因此不是内存有界流式下载的证明。该路径属于用户资产保存路由，不宣称 NodeCanvas 每个模型下载器都复用它。
+- Codex / DeepSeek Harness 没有本系统 Canvas image-gen 输出下载器，不能伪称存在同款实现。可迁移的原则是由 artifact/adapter 边界统一实施有类型的响应预算，并将限制结果明确反馈给节点运行，而不是让一个模型 URL 决定宿主资源消耗。
+- 在现有 CanvasArtifactService/provider seam 定义明确的 image output byte budget；下载优先检查声明长度，但不能信任或依赖 `Content-Length`，必须按流累计并在超过预算的第一个 chunk 时中止、清理 staging、不得创建 artifact/Completed。inline base64 JSON 同样在解码前估算并在解码后硬性校验，避免只约束 URL 下载。单文件限制与 workspace 总配额/并发预算分开设计；budget 需按真实供应商图像格式和工作流确定，不直接把用户输入附件 32 MiB 或 Penguin 的 10 MiB 照搬为通用规格。
+- 验收覆盖长度缺失/谎报/超限、chunked 超限、刚好等于预算、inline base64 超限、网络取消、写盘失败及多节点并发；检查内存行为为流式有界、无超限 artifact、staging 清理、节点失败和唯一 run 终态。H-165 地址授权与 H-164 取消回归需分别保留，互不替代。
+
 ### 后续独立核查：DeepSeek 自动前缀缓存与 Responses usage
 
 - 官方 [KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)说明缓存由服务端默认构建，只有完整匹配已落盘前缀单元才会命中，且为尽力而为；客户端没有通过 cache key 强制命中的接口。DeepSeek [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)说明该接口无状态，每次请求由客户端在 `input` 回传完整历史。
@@ -3156,6 +3175,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-165 provider 返回 URL 的宿主第二跳显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_provider_image_url_cannot_fetch_loopback_resource --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；正式 image-gen provider 返回第二台 loopback URL 后，宿主 GET `/host-private.png`，零审批，36 字节 canary 完整入库且 run succeeded；仅本机临时服务 |
 | H-165 边界与相关回归 | 生产 `parse_output → fetch_binary → CanvasArtifactService` 直接消费 provider URL；`Cargo.lock` 与本地依赖源码确认 `reqwest 0.12.28` 默认最多跟随 10 跳。`cargo test -p deepagent-app-core --test workflow_audit --offline`：3 passed / 8 ignored；H-119 视频取消精确回归：1 passed，约 58ms 退出；H-164 文本取消显式探针仍为 0 passed / 1 failed（预期）。未动态覆盖 redirect/DNS rebinding、IPv6、真实私网/metadata、后续 artifact 外传或真实恶意供应商 |
 | H-166 Flash 思考模式 `top_p` 显式探针 | `cargo test -p deepagent-models --test reasoning_effort_audit audit_flash_thinking_mode_top_p_below_floor_reaches_wire_unchanged --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；配置 0.2 与 high effort 均经正式 ModelClient 到达离线捕获的 wire。官方规则说明有效值按 0.95 处理；未调用真实 API，未测回答质量 |
+| H-167 provider image 超预算显式探针 | `cargo test -p deepagent-app-core --test workflow_audit audit_provider_image_download_rejects_oversized_artifact --offline -- --ignored --nocapture`：0 passed / 1 failed（预期）；双本机 loopback fixture 返回 32 MiB+1，宿主 `resp.bytes()` 后保存等长 artifact，终态 succeeded。只证明该样本，不宣称实测 OOM/磁盘耗尽；Penguin-Magic 10 MiB 对照也先整体物化 |
 | DeepSeek reasoning serializer 及 prompt cache 前缀复核 | `cargo test -p deepagent-models --lib reasoning_effort_serializes_canonical_wire_values --offline -- --nocapture`：1 passed；`cargo test -p deepagent-app-core --lib cacheable_prefix --offline -- --nocapture`：3 passed；`cargo test -p deepagent-app-core --test kernel_v2_e2e cache_prefix::consecutive_session_requests_preserve_responses_prefix_on_wire --offline -- --exact --nocapture`：1 passed；`git diff --check -- docs/system-harness-audit-2026-10-21.md`：通过。本地同会话双轮 wire 的 input 前缀、稳定 instructions 与工具顺序断言通过；不保证真实 provider cache 命中。 |
 | H-154 修复前 Responses `user` 探针 | `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_responses_user_identifier_is_validated_before_transport --offline -- --ignored --nocapture`：修复前 0 passed / 1 failed（预期）；非法值越过设置校验并进入离线 wire |
 | H-154 设置和最终 provider 边界验证 | settings DTO/developer JSON 测试、ModelClient 直达 transport 测试及 ChatService→ModelClient 集成测试均通过；非法 identifier 的 transport 调用数为 0，合法 1/512 字符边界各发送一次；未访问公网 |
@@ -3653,6 +3673,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 工作流 provider usage 与预算/成本统一 | H-163 | Canvas adapter 保留 canonical Usage/raw usage，WorkflowAgent 两路只用 RunUsage::record_call；参考 DeepSeek Harness 的 usage chunk/attempt meter 与 Codex completed usage 累计 | text 与 usage 同次提交；prompt gauge/billed sum、cache/reasoning、route 均正确；UsageRecorded、CostService、节点输出和 token budget 一致且不重复计账 |
 | Provider 返回资产的下载授权与 SSRF 边界 | H-165 | CanvasArtifactService/provider 配置下统一受控 fetcher，可信配置决定 artifact host allowlist；参考 Codex network policy/approval、DeepSeek Harness owner-bound attachment 与 OWASP 连接时地址校验 | 未授权 loopback/私网/link-local/metadata 及 redirect 请求数为零；DNS/多地址、大小、类型、取消、staging 与日志脱敏一致；合法 CDN/显式本地开发 profile 可审计成功 |
 | 按模型能力解析有效采样参数 | H-166 | 既有 ModelCapability/Responses adapter 将模型、reasoning effort 与 top_p 解析为同一个有效设置；参考 Codex 模型目录能力随 turn 选择流动，DeepSeek Harness provider profile 明确 adapter 参数边界 | Flash thinking 的 0.94/0.95 边界及 Pro/none/fallback 均与 UI、设置和 wire 一致；规范化需可见，不声称离线 wire 能证明服务端输出 |
+| 生成媒体下载的字节预算与 artifact 配额 | H-167 | 现有 provider/artifact 边界统一流式计数、取消与 staging 清理；参考 Penguin-Magic assets route 的 Content-Length + 实际长度双检查（该实现仍整体缓冲） | image URL 与 inline data 超限均在采满/提交前拒绝；chunked/缺失或谎报长度、并发与总配额有边界；H-165 SSRF 与 H-164 cancellation 独立验收 |
 | 工作流节点事件与规范回放 | H-120 | WorkflowAgent 的 publisher 接回既有 Kernel 持久化 sink；参考现有 ModelAgent 通道与 ArtCraft 保存媒体任务身份，复用 run_events | 各节点实时事件与重开补读一致，失败/取消/进度也可重放；保留媒体来源和任务身份，不靠图文档偶然自动保存代替运行日志 |
 | 媒体任务身份与节点投影/续跑 | H-121、H-122 | 既有节点事件携带的运行中身份统一投影，后端以 provider/account/task 和输入身份决定新生成或恢复；参考 ArtCraft 的提交与 pending task/provider_job_id 分离，DAG 输入失效为本地设计 | 收到 Running 即可安全保留续跑身份；有效续跑不重复 submit，修改输入的新生成实际提交新请求；旧 attempt 不覆盖新任务，已完成资产保留来源 |
 | 桌面运行事件与订阅生命周期 | H-41、H-43、H-134 | 现有 run_id、完成 payload、运行 owner、订阅就绪屏障和持久化补读统一；参考 Codex thread/turn/item identity 与 ArtCraft 异步 listener owner | 外部会话终态不影响画布；ACK 前完成/快速失败不丢终态及节点结果；监听失败不先派发；停止仍能发送对应取消；旧回调不能改写节点或清理新 run |

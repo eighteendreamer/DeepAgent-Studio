@@ -199,6 +199,10 @@ struct LocalImageProvider {
 
 impl LocalImageProvider {
     async fn start() -> Self {
+        Self::start_with_image_bytes(PRIVATE_IMAGE_BYTES.to_vec()).await
+    }
+
+    async fn start_with_image_bytes(image_bytes: Vec<u8>) -> Self {
         let private_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let private_address = private_listener.local_addr().unwrap();
         let private_requests = Arc::new(Mutex::new(Vec::new()));
@@ -209,10 +213,10 @@ impl LocalImageProvider {
             private_captured.lock().unwrap().push(line);
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                PRIVATE_IMAGE_BYTES.len()
+                image_bytes.len()
             );
             socket.write_all(header.as_bytes()).await.unwrap();
-            socket.write_all(PRIVATE_IMAGE_BYTES).await.unwrap();
+            socket.write_all(&image_bytes).await.unwrap();
         });
 
         let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -715,6 +719,58 @@ async fn audit_provider_image_url_cannot_fetch_loopback_resource() {
     assert!(
         private_requests.is_empty() && stored != PRIVATE_IMAGE_BYTES,
         "an untrusted provider response must not make the host fetch and persist a loopback resource"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit: provider image downloads must enforce a bounded artifact size"]
+async fn audit_provider_image_download_rejects_oversized_artifact() {
+    const MAX_INPUT_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+    let mut oversized_image = vec![b'x'; MAX_INPUT_IMAGE_BYTES + 1];
+    oversized_image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut provider = LocalImageProvider::start_with_image_bytes(oversized_image.clone()).await;
+    let fixture = MediaFixture::new_image(&provider).await;
+    let run_id = "audit-image-provider-size-limit";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+    result.unwrap();
+
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    let live = fixture.live.lock().unwrap();
+    let image = live
+        .iter()
+        .find(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Completed)
+        .expect("the production image node must complete before checking its artifact");
+    let artifact_uri = image
+        .artifacts
+        .first()
+        .expect("the image node must publish its stored artifact");
+    let stored = fixture
+        .artifacts
+        .read_bytes(artifact_uri.trim_start_matches("artifact://"))
+        .unwrap()
+        .unwrap();
+    let private_requests = provider.private_requests.lock().unwrap();
+    eprintln!(
+        "provider image size audit: private_requests={}, configured_input_limit={MAX_INPUT_IMAGE_BYTES}, response_bytes={}, artifact_bytes={}, terminal={}",
+        private_requests.len(),
+        oversized_image.len(),
+        stored.len(),
+        terminals[0].data["kind"]
+    );
+    assert_eq!(private_requests.len(), 1);
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "succeeded");
+    assert!(
+        stored.len() <= MAX_INPUT_IMAGE_BYTES,
+        "provider image response larger than the established single-image budget must not be completely stored"
     );
 }
 
