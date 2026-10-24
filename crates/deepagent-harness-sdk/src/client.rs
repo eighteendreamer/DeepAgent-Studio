@@ -707,4 +707,65 @@ mod audit_tests {
             "SDK notification API must retain the outer eventSequence so consumers can detect the 7 -> 9 gap and ACK the actual sequence; decoded events={observed_wire_events:?}"
         );
     }
+
+    #[tokio::test]
+    #[ignore = "audit H-207: thread/start success results must validate the required threadId"]
+    async fn audit_thread_start_rejects_success_result_without_thread_id() {
+        let script = r#"$index = 0
+while (($line = [Console]::In.ReadLine()) -ne $null) {
+  $index++
+  if ($index -eq 1) {
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"serverName":"audit","serverVersion":"1"}}')
+  } else {
+    [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":2,"result":{}}')
+  }
+}"#;
+        let mut child = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a local malformed-result fixture");
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let (events, _) = broadcast::channel(8);
+        let client = HarnessClient {
+            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
+            next_id: Arc::new(AtomicI64::new(1)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            events,
+            initialized: Arc::new(Mutex::new(false)),
+        };
+        spawn_reader(
+            stdout,
+            stderr,
+            client.pending.clone(),
+            client.events.clone(),
+        );
+
+        client
+            .initialize("audit-fixture", "0.1.0")
+            .await
+            .expect("fixture initialize response should be accepted");
+        let result = client
+            .thread_start(deepagent_harness_protocol::ThreadStartRequest {
+                cwd: None,
+                provider: None,
+                model: None,
+                permission_profile: None,
+                sandbox_backend: None,
+            })
+            .await;
+
+        let _ = child.kill().await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait()).await;
+
+        assert!(
+            result.is_err(),
+            "thread/start must reject a successful result without threadId, got {result:?}"
+        );
+    }
 }

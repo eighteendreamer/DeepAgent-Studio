@@ -48,7 +48,7 @@
 | Responses 流身份与顺序元数据 | 合法流为 `response.created`/`response.completed` 提供同一 response ID、实际模型和单调序号；正式 ChatService→Kernel 落盘后两条事件仅保留 Runtime envelope 与 event_type | 已确认 H-200；正常连续离线 Responses fixture、正式 run_events；未制造乱序/丢包，也未声称已观察真实供应商流损坏 |
 | 无限画布工作流视口缩放锚点 | 画布已平移后，底栏放大/缩小/重置/滑杆与小地图放大/缩小只改 zoom、不重算平移 offset；缩放前后的视口中心映射到不同世界坐标 | 已确认 H-201；动态执行六个生产 TSX handlers；与 Penguin-Magic 中心锚定按钮缩放及指针锚定滚轮缩放实现对照；没有图数据或运行状态副作用 |
 | 无限画布工作流视口持久化 | 正式图写入只序列化 `nodes/edges`，新 WebView 的 viewport 回到 `{x:0,y:0,zoom:1}`；ReactFlow 初次挂载执行 fitView，没有 per-mode default viewport | 已确认 H-202；动态调用真实 `workflowPersistence` 的读/写/flush 并创建新 store 实例；图节点恢复对照通过；未启动 Tauri WebView |
-| Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留 | 已确认 H-90、H-100、H-101、H-204；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，也未证明发行版 server 常规路径会静默不响应 |
+| Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留 | 已确认 H-90、H-100、H-101、H-204、H-207；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，也未证明发行版 server 常规路径会静默不响应 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
 | 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
@@ -4155,6 +4155,30 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-206 仅新增 opt-in SDK 审计探针与本报告，没有修改生产握手行为；版本协商和 typed result 解码尚未实施。
 
+### H-207：Harness SDK 对 `thread/start` 成功结果缺少必填 `threadId` 校验
+
+**级别：中（P2，条件性 SDK 协议完整性与错误隔离缺口）；触发条件：** 对端对合法 `thread/start` 请求返回 JSON-RPC 成功响应，但 `result` 不是本方法约定的包含非空 `threadId` 的对象，例如返回 `{}`。当前 SDK 会把该响应交给调用方并报告成功；正常的本系统 CLI server 不会主动生成该结果，风险来自版本漂移、代理/第三方 Harness 实现、错误响应映射或未来方法扩展。
+
+#### 正式 SDK 路径与本机复现
+
+- `crates/deepagent-harness-protocol/src/requests.rs` 定义 `thread/start` 请求，但没有与之对应的 typed result DTO；`apps/cli/src/app_server.rs::thread_start()` 的正式成功结果包含 `threadId`，并立即发布 `thread.started` 事件。`crates/deepagent-harness-sdk/src/client.rs::HarnessClient::thread_start()` 只调用通用 `call()`，返回未解码的 `RpcResponse`。
+- 通用 `call_unchecked()` 仅在 `response.error` 非空时返回 `SdkError::Rpc`，只要 JSON-RPC `error` 为空就返回 `Ok(response)`；它不会按 method 检查 `result` 的对象形状、`threadId` 字符串或非空约束。现有 SDK e2e 测试也由调用方自行执行 `response.result()["threadId"].as_str().expect(...)`，说明协议校验已经泄漏到每个消费者。
+- 新增 Windows ignored 探针 `client::audit_tests::audit_thread_start_rejects_success_result_without_thread_id`。探针启动本机 PowerShell 子进程和真实 stdin/stdout 管道：第一次请求返回合法 initialize result（`protocolVersion=1`），第二次对正式 `thread_start()` 返回合法 JSON-RPC `result={}`。执行：
+
+  `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_thread_start_rejects_success_result_without_thread_id --offline -- --ignored --exact --nocapture`
+
+  实际结果为 **0 passed / 1 failed（预期复现）**，生产观测：`thread/start ... got Ok(RpcResponse { jsonrpc: "2.0", id: Number(2), result: Some(Object {}), error: None })`。fixture 没有模型、工具、用户文件、真实 CLI server 或公网副作用。
+- H-206 的输入是 initialize 结果中的协议版本/身份不兼容，重点是连接握手是否进入 Ready；H-207 的 initialize 已合法通过，缺陷发生在后续方法成功结果的 schema 边界。H-100 的输入同时缺少 JSON-RPC `result` 与 `error`，而 H-207 明确具有 `result={}`，因此不合并。H-204 的静默连接不参与本项，fixture 对每个请求都立即返回。
+
+#### 成熟实现对照、后果与收敛方向
+
+- DeepSeek Harness 的 `packages/sdk/client/src/client.ts::initialize()` 会校验握手对象；其 `session/prompt` 等方法还校验 method-specific result（例如必须存在字符串 `messageId`），错误结果会转为 `SdkProtocolError`，不会把 raw JSON 的存在当作业务成功。其协议 README 也将各方法的 result 类型列为 wire contract，而不是把校验责任交给每个调用者。
+- Codex app-server 使用 typed protocol notification/request models，测试辅助层按具体通知方法反序列化后才交给调用方；本次没有找到与本系统 `thread/start` 同名的 Rust SDK 方法，因此不声称 Codex 已实现相同字段名校验。可迁移的成熟原则是：方法结果和请求一样属于协议边界，不能只由 JSON-RPC envelope 的 error 位决定成功。
+- 触发后，调用方会拿到一个“成功但没有线程身份”的响应。如果它把 `Ok` 当作 admission receipt，可能把空/默认 ID 继续传给 `turn/start`、`thread/read` 或 UI/SDK 状态；常见后果是后续请求以错误线程运行、立即收到无效线程错误，或在客户端先写入已接纳状态后等待永远不会到来的 `thread.started`。本探针没有继续发送副作用请求，因此不把具体数据破坏或模型调用写成已发生事实。
+- 根因修复应留在现有 SDK/protocol seam：为每个公开方法定义版本化 typed result（至少先覆盖 `initialize`、`thread/start`、`thread/resume`、`turn/start`、`approval/respond`、`event/ack`），在 `call()` 返回前按 method 解码并拒绝缺字段、错误类型和空 ID；错误需带 method、expected shape 和实际摘要，同时保持 `RpcResponse` 原始诊断信息。调用方不应各自调用 `result()[...]` 猜 schema。回归需覆盖正确结果、缺字段、错误类型、空字符串、RPC error、迟到 response 和旧版本兼容策略；不能把校验复制到 CLI、桌面和 SDK 三套入口。
+
+本轮 H-207 仅新增 opt-in SDK 审计探针与本报告，没有修改生产 SDK/protocol 行为；方法级 result DTO 与统一校验尚未实施。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |
@@ -4320,6 +4344,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | H-101 SDK 畸形 stdout 行显式探针 | `cargo test -p deepagent-harness-sdk --lib audit_malformed_server_line_does_not_leave_request_pending --offline -- --ignored --nocapture`：0 passed / 1 failed；畸形行发出并由标记确认后，调用仍 pending、表内保留 1 项，直到 fixture EOF 才释放。Windows PowerShell 子进程和真实本地管道，无 CLI server 或公网 |
 | H-204 SDK 对端静默时的请求 deadline / abandonment 显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_unresponsive_server_request_has_a_bounded_wait --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；对端收到合法请求并保持 stdout 打开，300ms 内 SDK 未完成；取消调用 task 后 pending=1；仅 fixture EOF 才释放。Windows PowerShell 子进程，无真实 CLI server 或公网 |
 | H-205 SDK 通知外层 eventSequence 丢失显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_sdk_notification_preserves_event_sequence_for_ack_and_gap_detection --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；真实 PowerShell stdout 输出 eventSequence=7、9，经生产 `spawn_reader` 后公开事件序列化结果均无 eventSequence，无法观察 7→9 缺口；无模型、工具、用户文件或公网 |
+| H-207 SDK `thread/start` 成功结果 schema 显式探针 | `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_thread_start_rejects_success_result_without_thread_id --offline -- --ignored --exact --nocapture`：0 passed / 1 failed（预期）；initialize 合法通过后，正式 `thread_start()` 对 `result={}` 返回 Ok，缺少 `threadId` 未被拒绝；Windows PowerShell 子进程与本地管道，无真实 CLI server、模型、工具或公网 |
 | H-102 InstructionsLoaded 外部 hook payload 显式探针 | `cargo test -p deepagent-app-core --lib audit_instructions_loaded_hook_receives_required_file_metadata --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 ChatService 装配实际运行 Windows PowerShell hook，payload 有 `paths` 但缺 `file_path`、`memory_type`、`load_reason`；临时项目和离线模型 transport |
 | H-103 Pre/Post tool hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_hooks_include_call_id_and_result --offline -- --ignored --nocapture`：0 passed / 1 failed；正式 pipeline 发出 provider ID，但 hook stdin 缺 `tool_use_id`；Post `tool_response={"ok":true}`，真实 fixture 结果 `{"value":"audit"}` 未传递；Windows PowerShell hook、无模型/公网 |
 | H-103 PostToolUseFailure hook 输入显式探针 | `cargo test -p deepagent-runtime --lib audit_external_tool_failure_hook_includes_call_id_and_error --offline -- --ignored --nocapture`：0 passed / 1 failed；正式失败工具执行后收到 hook，stdin 缺 `tool_use_id` 与标准 `error`，只含 `tool_response={"ok":false}`；Windows PowerShell hook，无模型/公网 |
