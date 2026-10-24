@@ -724,6 +724,65 @@ async fn audit_workflow_variable_aggregator_consumes_frontend_bindings() {
 }
 
 #[tokio::test]
+#[ignore = "audit: missing required workflow input must fail admission instead of becoming null"]
+async fn audit_workflow_missing_required_input_is_rejected() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start","config":{
+                    "inputVariables":[{
+                        "name":"customer",
+                        "variable":"customer",
+                        "type":"string",
+                        "required":true
+                    }]
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges":[{"id":"e1","source":"start","target":"end"}]
+        },
+        "inputs":{}
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-required-input".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-required-input")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let start = events
+        .iter()
+        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
+        .unwrap();
+    eprintln!(
+        "api_ok={} start_outputs={:?} run_terminal={:?}",
+        result.is_ok(),
+        start.outputs,
+        run.terminal_kind
+    );
+    assert!(
+        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
+        "a missing required input must not become a successful null-valued workflow input"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
