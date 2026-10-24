@@ -598,6 +598,65 @@ async fn audit_workflow_iteration_processes_frontend_input_contract() {
 }
 
 #[tokio::test]
+#[ignore = "audit: an enabled answer node must render its declared frontend template"]
+async fn audit_workflow_answer_node_renders_frontend_contract() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"answer","kind":"answer","config":{
+                    "answerTemplate":"EXPECTED_ANSWER",
+                    "answerVariables":[]
+                }},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"answer"},
+                {"id":"e2","source":"answer","target":"end"}
+            ]
+        }
+    }))
+    .unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "audit-workflow-answer-contract".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    let run = RunStore::new(&db)
+        .get("audit-workflow-answer-contract")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let answer = events
+        .iter()
+        .find(|event| event.node_id == "answer" && event.status == NodeExecutionStatus::Completed)
+        .unwrap();
+    eprintln!(
+        "api_ok={} answer_outputs={:?} run_terminal={:?}",
+        result.is_ok(),
+        answer.outputs,
+        run.terminal_kind
+    );
+    assert_eq!(
+        answer.outputs,
+        Some(serde_json::json!({"answer":"EXPECTED_ANSWER"})),
+        "the enabled answer node must render answerTemplate instead of an empty fallback"
+    );
+}
+
+#[tokio::test]
 #[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
