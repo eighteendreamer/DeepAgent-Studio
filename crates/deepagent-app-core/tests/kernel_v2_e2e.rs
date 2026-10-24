@@ -82,6 +82,10 @@ mod session_repair_isolation;
 #[path = "kernel_v2_e2e/verification_dialect.rs"]
 mod verification_dialect;
 
+#[cfg(windows)]
+#[path = "kernel_v2_e2e/verification_toolchain.rs"]
+mod verification_toolchain;
+
 #[path = "kernel_v2_e2e/cache_prefix.rs"]
 mod cache_prefix;
 

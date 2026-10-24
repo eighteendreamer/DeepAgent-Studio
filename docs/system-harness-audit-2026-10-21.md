@@ -106,6 +106,7 @@
 | 自动完成验证的真实构建生命周期 | 正式发现的 cargo check 已启动 build.rs 后，用户取消仍等待；Kernel 超时落终态后 build.rs 仍可写文件 | 已确认 H-64；Windows 真实临时 Cargo 工程、SystemCommandRunner、ModelAgent/Kernel/SQLite 对照，未覆盖其他构建系统和桌面 UI |
 | 自动验证与宿主命令边界 | 显式 cargo check 经配置后端被拒绝，但 .txt 修改后的完成验证、创建 .rs 后的单文件验证均绕过该后端，真实 build.rs 写到 workspace 外 | 已确认 H-65；完整 ChatService/工具/Kernel/真实 Cargo 与拒绝型 backend 复现；不是实际 Sandboxie/Windows Sandbox 容器逃逸测试 |
 | 单文件验证的配置语法依据 | 带单行/多行注释、尾逗号的 tsconfig.json 经真实 TypeScript 5.9.3 编译成功，默认验证仍报 JSON parse error；Strict 下 action=Failed 且错误进入下一模型请求 | 已确认 H-230；正式 ChatService/Kernel/SQLite/Responses wire 与真实 tsc 对照；未验证真实模型的后续修复选择或全部配置方言 |
+| 可选检查器缺失与源码失败分类 | Python py_compile 真实成功、ruff 未安装，shell 返回 Ok+非零；默认验证错误要求修复，Strict 的成功写盘 action=Failed | 已确认 H-231；受限 PATH 仅作用于隔离子进程，真实 Python/PowerShell、正式聊天 wire 与禁用/真语法错误对照；未测试其他平台/检查器 |
 | DeepSeek 原生搜索的模型能力选择 | Flash 开启 DeepSeekFirst 时，正式请求只剩官方明确会忽略的原生 web_search，本地 function 搜索描述被替换；Pro、外部搜索、关闭搜索对照成立 | 已确认 H-66；启用桌面同用的 web feature，正式 ChatService/Kernel/序列化离线复现，未实测公网搜索或回答质量 |
 | 当前轮图片与原生输入投影 | 正式导入的可读图片已在用户事件中持久化，本轮实时 Surface 却无图片；已有会话再发新图，下一轮仍无图，原生镜像也未保留附件 | 已确认 H-67；正式 AppCore 两组共五轮、真实附件文件及 wire 对照，模型 transport 为离线原生回答，未测真实识图质量或桌面点击 |
 | 历史图片读取失败的语义 | 相同初始图片在续聊中可正常携带；临时原图丢失后，同一路径静默发送纯文字且运行成功，调用方未收到附件错误 | 已确认 H-68；正式 AppCore/Kernel/文件解析/序列化两组对照，只删除测试自己导入的临时文件，未验证真实桌面提示及其他文件故障 |
@@ -4816,6 +4817,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 | 停滞检测的取消与结果采纳 | H-62 | 既有模型取消入口及运行 token 覆盖分类等待、nudge 注入与重入；参考 Grok 分类 generation/idle 核对和 Codex turn abort | 分类中停止及时退出；取消不被 fail-open 吞成继续采样；无延迟新请求；最终取消映射保持正确 |
 | 附属模型调用的费用归属 | H-63 | 复用现有 SideCall/CostService，模型响应归属传递保留真实模型和 usage，独立于文本/判定采纳；参考 Claude 公共调用路径记录 usage | panel/classifier 成功或不采纳均记已返回量；缓存/模型准确；缺价保留 tokens；不误加上下文 gauge、不重复记账 |
 | 自动构建验证的执行归属 | H-64 | 既有 VerificationPlan 接回受控命令、运行取消和有效截止；参考 Codex ExecExpiration 与进程组清理，不靠 spawn_blocking 丢 future 停进程 | 真实 build.rs 在取消/总时限/drop 后有界退出，终态后无迟到写入；后续步骤不启动；正常验证和单终态保持 |
+| 验证依据、检查器状态与文件操作事实 | H-230、H-231 | 既有 VerificationDispatcher/命令 seam 统一文件角色、检查器发现与结构化结果；参考 Claude 的语言服务生命周期/诊断分离、Codex 的 AppliedPatchChange 与 Harness 的基础设施错误分类 | 合法配置不因通用后缀误判；可选检查器不可用不伪装源码错误；真实语法/检查错误仍拒绝；写盘事实、诊断和恢复决策分别可回放，不新增第二套执行器 |
 | 子运行产物与恢复 | H-20、H-21 | 现有 SubagentRunStore / transcript / 工作树所有权的交付契约；参考 Claude 先检查变化再清理、恢复有效 metadata | 文件可定位并交给下游后才清理；恢复不丢原输出契约；重启后仍能定位 |
 | 模型可见工具结果资产的生命周期 | H-36 | 现有 ArtifactStore 与 session/run 归属统一完整副本、preview 引用和保留期；参考 Claude 会话结果目录与按年龄回收 | 正常结束、取消和重启后引用在保留期内仍可读；索引与文件一致；回收可诊断 |
 | 附件存储身份与写入/删除范围 | H-58 | 既有 AttachmentService 统一有效单组件身份、会话归属和精确附件读写/删除；参考本仓库 ledger 组件验证及 Claude 宿主会话/UUID 文件身份 | 异常 id/session 在写入前拒绝；不覆盖或删除桶/root/兄弟数据；正常导入/幂等删除、junction/竞态和重开分别验证 |
@@ -5660,3 +5662,49 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_dialect:: --o
 `cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**43 passed / 50 ignored**。`cargo fmt --all -- --check`、`git diff --check` 通过。实际执行的 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `models/src/client.rs:355`（clone_on_copy）、`persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，未到本轮测试检查，不能报告 lint 通过。
 
 本轮仅新增隔离审计测试、测试入口及文档，未修改验证器、配置策略或生产状态；按 docs-generator 的 Evidence → Finding → Path 要求首个真实编译对照后立即登记，再补完整矩阵。未执行全 workspace、Desktop build/UI、真实供应商、自定义 tsconfig/extends、edit_file/multi_edit、重启与 LSP 服务测试。DeepSeek 官方四份接入文档的既有审计结论本轮没有改变，本项不涉及 provider 参数或缓存行为；全系统审计目标仍未完成。
+
+### H-231：可选 ruff 未安装时真实 shell 返回非零结果，被 Python 验证器误报为源代码失败
+
+**级别：中（P2，环境故障分类与反馈可靠性）；状态：真实 Python/PowerShell 与正式聊天链已复现，未修复。** PythonVerifier 明示 py_compile 成功后 ruff 只是可选检查，缺失应允许已完成的语法验证通过；但真实 SystemExecutor 在 shell 已启动、其中的 ruff 命令不存在时返回 `Ok(CommandOutcome { exit_code: Some(1), ... })`，不是 spawn Err。生产代码因此报告文件验证失败，Strict 还将成功写盘的 action 记为 Failed。现有“无 ruff 则通过”单测模拟的是错误的执行边界，没覆盖真实返回形状。
+
+#### 即时 Evidence（2026-10-24，首轮完整本机复现后登记）
+
+- Scope：`crates/deepagent-app-core/tests/kernel_v2_e2e/verification_toolchain.rs` 仅运行当前测试二进制的隔离子进程、临时 Python 文件、文件 SQLite 与离线模型；子进程 PATH 只保留已核验 Python 的目录、从父 PATH 找到的 PowerShell 7 目录及 Windows System32，不含 ruff。未改全局 PATH、注册表、用户解释器或源码，也未安装依赖。当前 WindowsApps 的 python 别名实测不可执行，所以通过产品提供的依赖路径发现接口找到并确认可运行的 Python 3.12.14；没有把别名错误误报为本项产品缺陷。
+- E-231-process（command，content_hash=n/a）：正式 SystemExecutor 对 `python -m py_compile <临时 source.py>` 返回 exit=0，并实际创建 `__pycache__`；随后同一真实执行器运行 `ruff --version` 返回 **Ok outcome、exit=1、stderr 含 ruff**，没有发生外层 shell spawn 失败。末尾将临时源码替换为真正非法 Python，真实 py_compile 返回非零并有 SyntaxError，排除检查器根本不工作的解释。
+- E-231-wire（command，content_hash=n/a）：同一受限环境中用标准 SettingsService/ChatService/Kernel 连跑 Disabled、Enabled、Strict 三组；每组由合法 write_file 写 `answer = 42`，磁盘字节均完全一致。Disabled 为 ok=true、action=Completed、无 ruff 错误；Enabled 为 ok=true、action=Completed，却附带文件验证失败与修复指令；Strict 为 ok=false、action=Failed。下一正式 Responses wire 的唯一同 call_id `function_call_output` 分别为 ok/ok/error，且错误组确有 ruff 信息；不是只检查验证器返回值或手造模型结果。
+- E-231-run：三组模拟模型均在看到结果后直接给出最终文本，每组恰有一个 succeeded 终态。本项不把“工具错误后运行仍可继续”另登记为问题，也不声称真实 DeepSeek 已被诱导修改源码。父测试 **0 passed / 1 failed（预期），约 5.52s**，隔离子测试执行完上述全部对照后在最终不变量失败，约 5.50s；两者是一套父子探针，不按两个独立产品问题计算。
+
+复现命令（Windows；需用发现并实际核验的本机 Python 绝对路径填入变量，不自动安装工具）：
+
+```powershell
+$env:DEEPAGENT_AUDIT_PYTHON = 'C:/Users/32734/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe'
+cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::audit_missing_optional_ruff_is_not_a_source_failure --offline -- --ignored --exact --nocapture
+```
+
+#### Path 与 Finding
+
+- P-231（callflow，关联 E-231-process/E-231-wire）：真实 write_file → kernel_runtime 标准 VerificationDecorator → PythonVerifier → SystemExecutor 经平台 shell 执行 py_compile（成功）→ 无条件执行 `ruff check <path>` → shell 可启动但 ruff 不存在，返回 Ok+非零 → PythonVerifier 的 `Ok(o)` 分支判为 Failed → 默认模式发“Fix this before continuing”；Strict 翻转 ok、持久化 Failed action → 下一模型 wire 为配对错误。纯 `.py` 临时项目无根构建描述，本项不受独立完成验证或 H-65 的自定义后端影响。
+- F-231（design，validated，confidence=high，evidence_ids=[E-231-process,E-231-wire,E-231-run]）：验证器把“shell 运行失败”和“嵌套工具不存在”混成同一种代码不合格，而现有缺失工具单测把后者模拟为 Err。`python_verifier_passes_when_compile_clean_and_no_ruff` 的 MockExecutor 返回 `Err("ruff: not found")`，只会触发生产代码最后的 Passed 分支，未验证真实 shell 状态。与 H-230 的合法配置方言被错误解析不同，本项使用普通合法 Python，无配置方言差异，根因是执行结果分类错误。
+- 已确认后果是环境缺少**可选**检查器就产生错误修复反馈，以及 Strict 下失败动作与真实写盘事实分裂；潜在后果包括重复修改、额外模型轮次和要求无谓安装依赖。没有观察到真实模型的修改/安装、无限循环、源代码丢失或整轮失败。没有验证缺少必需 Python/cargo/tsc 的行为，不将相邻同类猜测加入已确认范围。
+
+#### 成熟实现对照与治理方向（源码查证，未运行参考工程）
+
+- Claude Code 的 `借鉴/claudecode/restored-src/src/services/lsp/LSPClient.ts` 等待真正的 spawn 成功/错误事件，明确处理 ENOENT；`LSPServerInstance.ts` 将启动失败保存为 server 的 error 状态与 lastError。`passiveFeedback.ts` 对注册错误使用独立 registrationErrors，而文件诊断来自服务器的 publishDiagnostics。它把服务生命周期故障和源文件诊断分开，不把缺少语言服务伪装成语法错误；不据此宣称该系统在所有异常下都会给用户完整反馈。
+- DeepSeek Harness 的 `借鉴/deepseek-harness/packages/sandbox/sandbox/src/diagnostics.ts` 区分启动失败（具体 executable、cwd 与 ENOENT/EACCES 证据）和已退出进程的 runner infrastructure failure；后者按明确退出码/签名规则分类，而不是任意非零都归为业务失败。这里借鉴的是**基础设施结果有独立类型和证据**，该模块处理 sandbox runner，未声称它实现了本系统的 Python/ruff 可选验证。
+- 本地设计方向：收敛到既有命令/验证 seam，令工具发现、spawn 错误、检查进程非零、超时/取消、语法诊断各有可信来源。可选 ruff 在确认为 unavailable 时保留已成功 py_compile，并明确“lint 未运行”；真正 Ruff 诊断非零仍报告失败。不要对所有非零放行、只用任意 stderr 子串掩盖错误、自动安装依赖或增加第二套执行器；使用直接 argv 执行时还必须接回既有审批/命令后端和取消能力，避免再次触发 H-64/H-65。
+- 回归应覆盖真实未安装、存在但无法执行、可用且通过/发现问题、配置错误、spawn/cwd 故障、超时/取消、语言环境与不同 shell、本地/托管 Python、所有写入/编辑入口及重开后的状态。当前只实测 Windows PowerShell 7、Python 3.12.14、缺少 ruff、合法/非法源文件和三种策略；其余不得当作通过。
+
+#### 本轮验证与交付边界
+
+| 对照 | 实际结果 | 证明范围 |
+|---|---|---|
+| 合法 Python，真实 py_compile | exit=0，生成 __pycache__ | 源码语法确实可由实际解释器接受 |
+| 未安装 ruff，真实 SystemExecutor | 返回 Ok，exit=1，stderr 含 ruff | 外层 shell 成功创建，缺失命令不表现为 Rust Err |
+| Disabled，正式 write_file | ok=true，Completed，下一 wire 无 ruff 错误 | 写入、模型请求、权限装配和结果配对的正常对照 |
+| Enabled，正式 write_file | ok=true，Completed，但文件被要求修复 | 默认配置同样存在误导性诊断，不只影响 Strict |
+| Strict，正式 write_file | ok=false，Failed，下一 wire 为 error | 误分类进入动作持久化与模型输入，而不是只在日志中出现 |
+| 实际非法 Python，真实 py_compile | 非零，SyntaxError | 真正语法错误的编译对照正常；不冒充正式 ChatService 非法源码测试 |
+
+补严子测试只能由受限环境父测试启动的前置断言后，显式缺陷命令复跑仍为 **0 passed / 1 failed（预期），约 5.06s**；内部 child 约 5.03s，所有观察与正常对照均在最终缺陷断言前完成。`cargo test -p deepagent-app-core --lib --offline --quiet`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**43 passed / 52 ignored**，新增两个 ignored 条目分别是父探针和环境受控的子入口，不把它们当作已修复回归。`cargo fmt --all -- --check`、`git diff --check` 通过；实际 Clippy 命令 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `models/src/client.rs:355`（clone_on_copy）和 `persistence/src/run_store.rs:127`（explicit_counter_loop）阻断，不能报告 lint 通过。
+
+按 docs-generator 的证据链约定，首轮真实复现即登记，再追加分类依据、成熟源码对照和验证矩阵。本轮只新增隔离探针、测试入口及审计文档，未改生产代码/权限/配置策略；没有修改或删除用户文件，未提交测试运行产物。未执行全 workspace、Desktop build/UI、真实 DeepSeek、实际 Ruff 可用/报错、缺少必需编译器、其他平台、edit_file/multi_edit 或服务重启测试。本项不会关闭 H-64/H-65/H-230，也不涉及被用户排除的 encrypted-content 错误；全系统目标仍未完成。
