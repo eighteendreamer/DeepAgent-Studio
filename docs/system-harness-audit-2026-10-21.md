@@ -4135,6 +4135,26 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 本轮 H-205 仅新增 opt-in 审计探针与本报告，没有修改生产协议或 SDK API；缺口恢复的最终策略和版本兼容方案尚未实施。
 
+### H-206：Harness SDK 接受协议版本不兼容的 initialize 结果并进入已初始化状态
+
+**级别：中（P2，条件性协议兼容与错误隔离缺口）；触发条件：SDK 对端返回合法 JSON-RPC response，`result` 存在且 `error` 为空，但结果中的 `protocolVersion` 与客户端支持版本不一致，或缺少本系统 initialize 结果所需的身份字段。** 正常的本系统 CLI app-server 返回版本 1，本项不是默认服务必然错误；风险在版本漂移、错误二进制、代理转发到其他 Harness 服务或第三方实现时。
+
+#### 正式 SDK 路径与本机复现
+
+- 本地协议在 `crates/deepagent-harness-protocol/src/requests.rs` 将 `PROTOCOL_VERSION` 固定为 `1`；生产 `apps/cli/src/app_server.rs::initialize()` 的成功结果同时发布 `protocolVersion`、`serverName`、`serverVersion` 和 capabilities。也就是说，initialize 的 result 不是任意 JSON，而是后续请求能够安全解释的版本/身份协商边界。
+- `crates/deepagent-harness-sdk/src/client.rs::HarnessClient::initialize()` 只检查 `RpcResponse.error` 是否存在：`call_unchecked()` 返回任何无 error 的 `RpcResponse` 后，函数直接写入 `initialized=true`，没有读取或校验 result 的 `protocolVersion`、`serverName`、`serverVersion`，也没有将不兼容结果转换为 `SdkError`。随后所有公开 `call()` 方法都会因为该布尔值而放行。
+- 新增 Windows ignored 探针 `client::audit_tests::audit_initialize_rejects_incompatible_protocol_result`。它启动本机 PowerShell 子进程，通过真实 stdin/stdout 管道读取合法 initialize 请求，再返回合法 JSON-RPC：`{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":999,"serverName":"future-server","serverVersion":"9.9.9"}}`。该响应没有 malformed JSON、没有缺少 `result`、也没有 RPC error。执行 `cargo test -p deepagent-harness-sdk --lib client::audit_tests::audit_initialize_rejects_incompatible_protocol_result --offline -- --ignored --exact --nocapture` 得到 **0 passed / 1 failed（预期复现）**；生产观测为 `result=Ok(RpcResponse { ... protocolVersion: 999 ... })` 且 `initialized=true`。没有启动真实第三方服务、模型、工具、用户文件或公网。
+- H-100 的触发器是 response 同时缺少 `result` 和 `error`，重点是 JSON-RPC envelope 合法性；H-206 的 fixture 具有完整 result，只是协议版本不兼容，故不合并为同一问题。H-204 的静默连接也不参与本项，fixture 已立即返回 response。
+
+#### 成熟实现对照、后果与收敛方向
+
+- DeepSeek Harness `packages/sdk/client/src/client.ts::initialize()` 在 request 成功后校验 result 是对象，并要求 `serverInfo.name` 与 `serverInfo.version` 都是字符串；不满足就抛出 `SdkProtocolError`，不会把客户端当作可用。其后续 API 还对 method-specific result（例如 prompt 的 `messageId`）做结构校验，说明握手和方法结果都属于 SDK 协议边界，而不是把 raw JSON 直接当成功。
+- Codex `app-server-client` 使用 typed request/response 和初始化后的 server metadata；本次没有找到与本系统同名的 `protocolVersion` 校验，因此不声称 Codex 已实现同一数字版本策略。可迁移的架构原则是：握手必须产生可验证的连接能力快照，方法结果必须按对应 DTO 解码，不能只看 JSON-RPC error 位。
+- 触发后，SDK 会把不兼容服务标记为已初始化，后续 `thread/start`、`turn/start`、`approval/respond` 等请求可能进入一个字段/终态语义不同的对端。可确定的后果是兼容性错误被延迟到业务调用后，且 SDK 无法在连接建立处给出明确的版本错误；如果对端恰好复用相同方法名但改变参数或事件含义，调用方可能把错误 payload 当作正常 Harness 状态。该探针没有继续向 fixture 发送副作用请求，因此不把具体数据破坏或模型调用写成已发生事实。
+- 根因修复应留在现有 SDK handshake seam：解析 initialize result 的版本化 typed DTO，至少要求 `protocolVersion == PROTOCOL_VERSION`、非空 server identity 和必要 capability 字段；不兼容时保持 `initialized=false`，清理 pending，并返回带 expected/actual 的结构化协议错误。旧服务若需要兼容，应在协议版本协商中明确向后兼容范围，不应静默接受任意数字。回归需覆盖正确版本、未知更高/更低版本、缺字段、错误类型、RPC error、迟到 response，以及 initialize 失败后公开调用仍被 `NotInitialized` 拒绝；不能把此校验分散到每个业务方法。
+
+本轮 H-206 仅新增 opt-in SDK 审计探针与本报告，没有修改生产握手行为；版本协商和 typed result 解码尚未实施。
+
 ## 本次验证与交付边界
 
 | 命令或实测 | 结果 |

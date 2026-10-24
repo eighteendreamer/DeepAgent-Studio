@@ -473,6 +473,44 @@ mod audit_tests {
     }
 
     #[tokio::test]
+    #[ignore = "audit reproducer: initialize must reject an incompatible protocol result"]
+    async fn audit_initialize_rejects_incompatible_protocol_result() {
+        let script = r#"$null = [Console]::In.ReadLine(); [Console]::Out.WriteLine('{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":999,"serverName":"future-server","serverVersion":"9.9.9"}}')"#;
+        let mut child = tokio::process::Command::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command", script])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .expect("spawn a local incompatible-protocol fixture");
+        let stdin = child.stdin.take().expect("piped stdin");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let (events, _) = broadcast::channel(1);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let client = HarnessClient {
+            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
+            next_id: Arc::new(AtomicI64::new(1)),
+            pending,
+            events,
+            initialized: Arc::new(Mutex::new(false)),
+        };
+
+        let result = client.initialize("audit-fixture", "0.1.0").await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+            .await
+            .expect("fixture should exit after its one response");
+        let initialized = *client.initialized.lock().unwrap();
+
+        assert!(
+            result.is_err() && !initialized,
+            "incompatible protocol result must not authorize SDK calls: result={result:?}, initialized={initialized}"
+        );
+    }
+
+    #[tokio::test]
     #[ignore = "audit reproducer: malformed server output must fail pending SDK calls"]
     async fn audit_malformed_server_line_does_not_leave_request_pending() {
         let marker = std::env::temp_dir().join(format!(
