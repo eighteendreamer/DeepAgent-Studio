@@ -69,6 +69,7 @@
 | 无限画布工作流陈旧快照写入 | 两个独立 SQLite 连接读取同一画布后，窗口 A 先写入新节点，窗口 B 再以旧完整图快照写入仍返回成功，最终图丢失 A 的节点；当前写入没有 revision/CAS | 已确认 H-244；正式 `CanvasWorkflowStore` 与两个文件 SQLite 连接，离线故障注入；未启动双 Tauri 窗口 |
 | 画布偏好读取失败后的回退写入 | `canvas_preference_read` 失败被逐项吞掉且 hydration 仍 resolved；随后生产 workspace 设置 mutator 以空回退值写回，覆盖原有未读字段 | 已确认 H-245；正式 `canvasPreferences.ts` + `canvasSettingsStore.ts`，受控 Tauri 读取故障；未访问真实用户偏好 |
 | 画布偏好 hydration 与提前编辑竞态 | 偏好读取尚未完成时用户先修改 workspace；成功返回的旧文档通过 listener 覆盖新编辑，防抖 flush 随后把旧值重新持久化 | 已确认 H-246；正式偏好 hydration/store，延迟读取故障注入；未启动真实 WebView |
+| 画布 legacy 偏好迁移失败后的源数据丢失 | 迁移先删除 `localStorage` 源，再写后端；后端写入失败时 hydration 吞错且源已不存在，无法重试恢复 | 已确认 H-247；正式 `canvasPreferences.ts` 迁移链，受控后端写入故障；未读取真实用户 localStorage |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
@@ -6320,6 +6321,44 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 已核对源码调用链：`model_agent.rs` 的 `collect_finished_memory_prefetch`、`adopt_compaction`、`adopt_compacted_history`、`maybe_schedule_memory_prefetch`，以及 `knowledge_service.rs` provider 的 `already_surfaced` 过滤；已核对 DeepSeek Harness compaction checkpoint/replay 文档和本地 Codex/Claude 相关恢复资料。
 - 收尾验证待在本次文档追加后执行：`cargo fmt --all -- --check`、`git diff --check`，并复查 Markdown fences/diff；Clippy 仍受既有 `deepagent-models/src/client.rs:355` `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` `explicit_counter_loop` 阻断，不能宣称全库 lint 通过。
 - 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费/KV cache 实验或参考工程测试；未实施修复。没有重复 H-165、H-241、H-242，也没有处理用户排除的 `encrypted-content` 报错。
+
+### H-247：画布 legacy 偏好迁移在后端写入失败时先删源数据，导致不可重试丢失
+
+**级别：高（P1，迁移数据完整性）；触发条件：旧版 `localStorage` 中存在尚未迁移的画布偏好，新的 `canvas_preference_read` 返回空，随后 `canvas_preference_write` 失败。状态：正式 `canvasPreferences.ts` 生产迁移链已复现，未修复。** 本项不是 H-245 的读取失败回退，也不是 H-246 的 hydration/编辑竞态；它发生在 legacy 到数据库的单次迁移中。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；只使用虚构 legacy workspace JSON、内存 `localStorage` double 和受控 Tauri `invoke`，没有读取真实用户 profile、密钥、模型、网络或数据库。
+- E-247-first（command，content_hash=n/a）：新增 `apps/desktop/scripts/audit-canvas-preference-legacy-migration-loss.test.cjs`，执行：
+  `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-canvas-preference-legacy-migration-loss.test.cjs`
+  结果为 **0 passed / 1 failed（缺陷预期）**。输出：`legacyAfter=null, cacheLoaded=false`，并打印生产路径的 `simulated migration write failure`。
+- E-247-callflow：`hydrateKey("workspace-dirs")` 读取后端空值，读取 legacy JSON；随后先执行 `forgetLegacy(key)`（`localStorage.removeItem`），再 `await invoke("canvas_preference_write", ...)`。写入失败被 `whenCanvasPreferencesReady()` 的逐 key `catch` 记录并吞掉；cache 没有写入，legacy 源也已被删除，下一次 `whenCanvasPreferencesReady()` 只复用已 resolved 的 hydration Promise，无法再次迁移。
+- E-247-control：测试加载并执行真实 `hydrateKey` 所在模块的公开 `whenCanvasPreferencesReady()`，只替换外部 invoke/storage；断言要求失败后源仍可重试，未直接调用 `forgetLegacy` 或手工清空数据。
+
+#### 初始 Finding 与 Path
+
+- F-247（category=data-loss，status=validated，confidence=high，evidence_ids=[E-247-first]）：迁移的删除顺序与提交顺序相反。`forgetLegacy` 位于后端写入之前，且没有事务、备份或迁移状态标记；后端暂时不可写时，唯一尚存的 legacy 副本被删除。`hydrateKey` 失败后也没有 `cache.set` 或 retryable error state。
+- P-247（callflow）：legacy `workflow-workspace` → backend read=null → parse legacy → **removeItem** → backend write error → outer catch/log only → no cache/no source → later startup sees neither backend document nor legacy source。错误日志对用户不可见，数据丢失没有 artifact、事件或审计记录。
+- 该项即使没有用户编辑、并发窗口或陈旧快照也能触发；只需首次升级时数据库写入失败（锁、磁盘只读、权限、进程退出或 IPC 错误）。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/api/settings-controller/src/index.ts` 将 provider 写入异常转换为结构化 `settings/rejected`，调用方只有在写入成功并取得新的 namespace view 后才可认为状态迁移完成；同一控制器通过 revision/conflict 让失败保持可重试，而不是先清除旧状态。这里借鉴的是“旧状态保留到新状态确认提交”的迁移边界，并非声称其使用浏览器 localStorage。
+- **Codex**：`借鉴/codex/codex-rs/config/src/loader/` 与 `借鉴/codex/codex-rs/core/src/config/config_loader_tests.rs` 保留 layered source/parse error 作为显式加载结果；配置层解析或刷新失败不会把旧层静默当作已删除的新配置。其具体配置格式不同，但体现了“新快照未成功 materialize 前保留旧来源”。
+- **Penguin-Magic**：`backend-nodejs/src/services/nodeCanvasStorage.js` 的文档更新先写临时/原子结果并要求 revision；迁移/保存失败返回错误，不把旧文档作为已完成迁移删除。该对照只用于持久化提交顺序，不把其文件存储实现当作本系统数据库方案。
+
+#### 影响评估与修复方向（本地设计，未实施）
+
+- 影响评为 P1：只在升级兼容路径、旧数据存在且后端写入失败时触发，频率低于普通设置编辑；但后果是 legacy 偏好（目录、模板、片段或项目索引）静默丢失且没有第二副本，重试/重启无法恢复。真实用户文件本身不会被本项删除，但后续工作流会失去路径或资产索引。本轮未读取真实 profile 或执行文件操作。
+- 迁移必须先成功写入 backend，再删除 legacy；更稳妥的是写入带 `migration_id/source_hash` 的 durable marker，确认读回内容与 source 等价后才清理源。写失败必须保留 legacy 并让 hydration 返回结构化可重试错误，不把整个 hydration 标成成功。
+- 对 creative-library 的图片升级还应把 artifact 导入和偏好写入纳入可恢复状态机：部分图片已导入时记录 source hash/目标 artifact，重试不能重复扣写或删掉仍未迁移的条目。不能用单个 `try/catch` 把迁移、清理和常规 hydration 混在一起。
+- 回归需覆盖：backend write 失败后重试成功、进程在 write 前/后退出、legacy JSON 损坏、artifact 导入部分成功、重复启动幂等、多个 key 中单 key 失败以及清理后读回校验；断言 source、cache、backend 文档和迁移 marker 的一致性。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行精确生产迁移探针，结果 **0 passed / 1 failed（缺陷预期）**；失败来自 `legacyAfter=null`，不是测试夹具启动失败。没有修改生产 TypeScript/Rust 逻辑，只新增 test-only 脚本与本报告。
+- 已复核 `canvasPreferences.ts::hydrateKey`、`forgetLegacy`、`whenCanvasPreferencesReady` 的顺序；未运行真实 Tauri WebView、真实 localStorage、磁盘只读/锁竞争、创意库图片 artifact 部分失败或多进程升级。
+- 本轮没有重新执行 H-165/H-167，也没有处理用户排除的 `encrypted-content` 报错；H-245/H-246 的偏好加载问题保持独立编号。
 
 ### H-246：画布偏好 hydration 完成后会覆盖读取期间的用户编辑
 
