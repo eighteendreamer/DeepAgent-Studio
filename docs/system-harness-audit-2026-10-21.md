@@ -70,6 +70,7 @@
 | 画布偏好读取失败后的回退写入 | `canvas_preference_read` 失败被逐项吞掉且 hydration 仍 resolved；随后生产 workspace 设置 mutator 以空回退值写回，覆盖原有未读字段 | 已确认 H-245；正式 `canvasPreferences.ts` + `canvasSettingsStore.ts`，受控 Tauri 读取故障；未访问真实用户偏好 |
 | 画布偏好 hydration 与提前编辑竞态 | 偏好读取尚未完成时用户先修改 workspace；成功返回的旧文档通过 listener 覆盖新编辑，防抖 flush 随后把旧值重新持久化 | 已确认 H-246；正式偏好 hydration/store，延迟读取故障注入；未启动真实 WebView |
 | 画布 legacy 偏好迁移失败后的源数据丢失 | 迁移先删除 `localStorage` 源，再写后端；后端写入失败时 hydration 吞错且源已不存在，无法重试恢复 | 已确认 H-247；正式 `canvasPreferences.ts` 迁移链，受控后端写入故障；未读取真实用户 localStorage |
+| 画布语音合成响应无字节上限 | `speech_synthesize` 的 provider 响应由 `resp.bytes()` 全量缓冲并直接写入 Audio artifact；32 MiB+1 的本机响应成功持久化 | 已确认 H-248；正式 `CanvasModelGateway::run_audio`、本机 provider、ArtifactService；未测试真实音频服务或 OOM |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
@@ -6321,6 +6322,43 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 已核对源码调用链：`model_agent.rs` 的 `collect_finished_memory_prefetch`、`adopt_compaction`、`adopt_compacted_history`、`maybe_schedule_memory_prefetch`，以及 `knowledge_service.rs` provider 的 `already_surfaced` 过滤；已核对 DeepSeek Harness compaction checkpoint/replay 文档和本地 Codex/Claude 相关恢复资料。
 - 收尾验证待在本次文档追加后执行：`cargo fmt --all -- --check`、`git diff --check`，并复查 Markdown fences/diff；Clippy 仍受既有 `deepagent-models/src/client.rs:355` `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` `explicit_counter_loop` 阻断，不能宣称全库 lint 通过。
 - 未运行 workspace 全量、Desktop build/UI、真实 DeepSeek/HTTP/计费/KV cache 实验或参考工程测试；未实施修复。没有重复 H-165、H-241、H-242，也没有处理用户排除的 `encrypted-content` 报错。
+
+### H-248：画布语音合成响应无字节上限，超预算音频被完整缓冲并持久化
+
+**级别：中（P2，条件性内存/磁盘资源消耗）；触发条件：`speech_synthesize` 供应商返回成功的二进制音频，响应体超过宿主可接受的媒体预算。状态：正式 `CanvasModelGateway::run_audio`、本机 provider、`CanvasArtifactService` 已复现，未修复。** 本项与 H-167 的 image-gen URL 下载独立：H-167 走 `fetch_binary` 第二跳，本项是模型 POST 的二进制响应直接进入 `call()`。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；本机 `127.0.0.1` TCP fixture 返回虚构 `ID3` 前缀加 `32 MiB + 1` 字节，正式 provider/config、`CanvasModelGateway::run_audio`、SQLite artifact store 全链运行；没有公网、真实音频、用户文件或密钥。
+- E-248-first（command，content_hash=n/a）：在 `crates/deepagent-app-core/src/canvas_model_gateway.rs::tests::audit_speech_synthesis_output_rejects_oversized_artifact` 增加 ignored 探针，执行：
+  `cargo test -p deepagent-app-core --lib canvas_model_gateway::tests::audit_speech_synthesis_output_rejects_oversized_artifact --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（缺陷预期）**。输出：`configured_input_limit=33554432, response_bytes=33554433, artifact_bytes=33554433`；断言要求超预算被拒绝，实际在 artifact 读取后失败。
+- E-248-callflow：`CanvasModelGateway::call()` 对 `SpeechSynthesize` 和 JSON 分支统一执行 `resp.bytes().await`，没有 `Content-Length` 预检、流式累计上限或取消中的 staging 清理；`run_audio()` 将成功 bytes 交给 `CanvasArtifactService::import_bytes()` 并返回 `artifact://`。因此响应完整物化后才被持久化，节点和 run 仍可成功。
+- E-248-control：fixture 只响应一个请求，使用现有 provider `openai`/`TextToSpeech` 配置和正式 artifact API；测试断言在真实 artifact bytes 上执行，不是手工把响应写进数据库。
+
+#### 初始 Finding 与 Path
+
+- F-248（category=resource-boundary，status=validated，confidence=high，evidence_ids=[E-248-first]）：音频输出没有类型级 byte budget。已有 `FileAttachmentResolver` 的 32 MiB 单图输入限制不能自动约束合成输出；`CanvasArtifactService` 接受任意 `Vec<u8>`，`call()` 也不使用 response header 作上限判断。
+- P-248（callflow）：provider 200 + `Content-Length=33554433` → `resp.bytes()` 分配完整 body → `run_audio` 导入 artifact → `Audio` 节点返回 Completed/run succeeded。大响应会经历 reqwest buffer、`bytes.to_vec()`/artifact 写入等多次内存或磁盘拷贝；本轮只实测持久化结果，没有把峰值 RSS 或 OOM 写成已发生事实。
+- 这不是 H-167 的地址授权/redirect，也不是 H-164 的取消缺口；即使 provider 地址已获授权、没有第二跳和取消，资源边界仍然缺失。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **Penguin-Magic**：`backend-nodejs/src/routes/assets.js::downloadRemoteImageToUserAssets()` 对用户资产响应同时检查 `Content-Length` 与实际 `arrayBuffer` 长度，超出 `config.MAX_FILE_SIZE` 返回 413。它是图片资产路由且仍会完整读取后检查，不能直接替代本系统音频流式实现，但证明 artifact 导入边界应有可见的类型/大小拒绝。
+- **DeepSeek Harness / Codex**：本地参考工程没有与本系统 Canvas TTS artifact 完全同构的 provider 音频下载器，不能声称它们已经解决 H-248。可迁移的共同原则是 provider adapter 只向上交付受约束的 typed result，资源预算不应由模型返回的任意 body 决定；DeepSeek Responses 的 usage/cache 规则也不会替宿主限制二进制媒体大小。
+
+#### 影响评估与修复方向（本地设计，未实施）
+
+- 影响评为 P2：触发需要供应商成功返回超预算音频；正常短语音不受影响。后果是并发合成可放大内存峰值、临时/最终 artifact 磁盘占用和 SQLite 元数据增长，可能导致桌面卡顿、写盘失败或宿主被系统终止；本轮没有压测并发或制造 OOM。
+- 在 `CanvasModelGateway`/`CanvasArtifactService` 之间定义 `AudioOutputBudget`，优先检查可信度有限的 `Content-Length`，随后通过 `bytes_stream()` 分块累计，在超过预算的第一个 chunk 中止并清理 staging；不能依赖 header，也不能等 `resp.bytes()` 完成后再判断。预算应独立于用户输入附件预算，并可按 provider/model/format 配置。
+- 成功路径只在 staging 完整、魔数/MIME 校验和预算检查通过后 commit artifact；超限、取消、写盘失败都必须返回明确节点失败和单一 run 终态，不能留下可见半制品。视频已有 `begin_stream` 路径，可抽取为唯一媒体流导入边界，避免再造第三套限制。
+- 回归需覆盖缺失/谎报 `Content-Length`、chunked 超限、刚好等于预算、压缩/多格式、取消、重试/fallback、多节点并发、进程重启清理；H-167 image、H-164 canvas cancel 仍需分别保留。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行正式 ignored 探针，结果 **0 passed / 1 failed（缺陷预期）**；失败来自 `artifact_bytes=33554433`，不是本机服务未启动。新增的只有 test-only ignored 测试与本报告，没有修改生产执行逻辑。
+- 已核对 `CanvasModelGateway::call`、`run_audio` 和 `CanvasArtifactService`；未运行真实音频供应商、Tauri WebView、并发生成、磁盘配额、OOM、压缩音频或跨平台 HTTP 行为。
+- 本轮没有重新执行 H-165/H-167，也没有处理用户排除的 `encrypted-content` 报错；H-248 只记录语音合成响应预算缺口。
 
 ### H-247：画布 legacy 偏好迁移在后端写入失败时先删源数据，导致不可重试丢失
 

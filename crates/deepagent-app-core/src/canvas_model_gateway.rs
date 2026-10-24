@@ -4570,6 +4570,94 @@ mod tests {
         let _ = std::fs::remove_dir_all(&artifact_root);
     }
 
+    #[test]
+    #[ignore = "audit reproducer: speech synthesis output must obey an artifact byte budget"]
+    fn audit_speech_synthesis_output_rejects_oversized_artifact() {
+        use std::io::{Read, Write};
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = listener.local_addr().expect("addr").port();
+        let configured_input_limit = 32 * 1024 * 1024usize;
+        let audio = {
+            let mut bytes = Vec::with_capacity(configured_input_limit + 1);
+            bytes.extend_from_slice(b"ID3\x03\x00");
+            bytes.resize(configured_input_limit + 1, 0x41);
+            bytes
+        };
+        let response_audio = audio.clone();
+        std::thread::spawn(move || {
+            if let Some(Ok(mut stream)) = listener.incoming().next() {
+                let mut request = [0u8; 4096];
+                let _ = stream.read(&mut request);
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    response_audio.len()
+                );
+                let _ = stream.write_all(head.as_bytes());
+                let _ = stream.write_all(&response_audio);
+                let _ = stream.flush();
+            }
+        });
+
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let artifact_root = std::env::temp_dir().join(format!(
+            "deepagent-gateway-audio-limit-{}",
+            std::process::id()
+        ));
+        let artifacts = Arc::new(
+            crate::canvas_artifact_service::CanvasArtifactService::new(&artifact_root, db.clone())
+                .expect("artifact service"),
+        );
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::secret_store::MemorySecretStore::default()),
+        ));
+        let created = providers
+            .save_provider(CanvasProviderInput {
+                name: "Local".to_string(),
+                protocol: "openai".to_string(),
+                base_url: format!("http://127.0.0.1:{port}/v1"),
+                enabled: true,
+                models: vec![CanvasModelConfig {
+                    id: "local-voice".to_string(),
+                    name: "local-voice".to_string(),
+                    description: String::new(),
+                    enabled: true,
+                    scenarios: vec![CanvasScenario::TextToSpeech],
+                    priority: 0,
+                    max_reference_images: None,
+                }],
+                api_key: Some("sk-local".to_string()),
+                ..Default::default()
+            })
+            .expect("provider");
+        let gateway = CanvasModelGateway::new(providers).with_artifacts(artifacts.clone());
+        let spoken = rt
+            .block_on(gateway.run_audio(CanvasAudioRequest {
+                model_ref: format!("{}::local-voice", created.id),
+                operation: "speech_synthesize".to_string(),
+                text: "audit".to_string(),
+                audio_reference: None,
+                voice: None,
+                format: Some("mp3".to_string()),
+                timeout_ms: 5_000,
+            }))
+            .expect("current implementation accepts the oversized response");
+        let uri = spoken.audio_url.expect("artifact reference");
+        let id = uri.trim_start_matches("artifact://");
+        let artifact = artifacts.read_bytes(id).expect("read").expect("bytes");
+        eprintln!(
+            "speech output audit: configured_input_limit={configured_input_limit}, response_bytes={}, artifact_bytes={}",
+            audio.len(),
+            artifact.len()
+        );
+        assert!(
+            artifact.len() <= configured_input_limit,
+            "speech synthesis output exceeded the configured comparable media budget"
+        );
+        let _ = std::fs::remove_dir_all(&artifact_root);
+    }
+
     /// 视频作业整链走线：提交拿 requestId、轮询到 Succeed、把一小时内失效的
     /// 供应商 URL 当场下载成 Video 制品；带 resume 任务 id 时不再重复提交。
     #[test]
