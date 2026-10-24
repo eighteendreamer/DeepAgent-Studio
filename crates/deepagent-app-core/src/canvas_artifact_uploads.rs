@@ -313,4 +313,50 @@ mod tests {
             0
         );
     }
+
+    #[test]
+    #[ignore = "audit H-253: chunked canvas uploads must persist the caller workspace"]
+    fn audit_chunked_upload_preserves_workspace_ownership() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let db = Arc::new(Database::open_in_memory().expect("database"));
+        let service =
+            Arc::new(CanvasArtifactService::new(dir.path(), db).expect("artifact service"));
+        let uploads = CanvasArtifactUploads::new(service.clone());
+        let id = uploads
+            .apply(ArtifactUploadAction::Begin {
+                kind: "video".into(),
+                mime: "video/mp4".into(),
+                name: "workspace-owned.mp4".into(),
+                size: 4,
+            })
+            .expect("begin")
+            .as_str()
+            .expect("upload id")
+            .to_string();
+        uploads
+            .apply(ArtifactUploadAction::Write {
+                id: id.clone(),
+                offset: 0,
+                bytes: vec![1, 2, 3, 4],
+            })
+            .expect("write");
+        let dto = uploads
+            .apply(ArtifactUploadAction::Finish { id })
+            .expect("finish");
+        let artifact_id = dto["id"].as_str().expect("artifact id");
+        let record = service
+            .record(artifact_id)
+            .expect("record")
+            .expect("published record");
+        eprintln!(
+            "canvas chunked upload ownership audit: dto_workspace_id={:?}, record_workspace_id={:?}, byte_size={}",
+            dto["workspaceId"],
+            record.workspace_id,
+            record.byte_size,
+        );
+        assert!(
+            record.workspace_id.is_some(),
+            "a chunked canvas upload must retain the caller workspace instead of publishing an unowned artifact"
+        );
+    }
 }

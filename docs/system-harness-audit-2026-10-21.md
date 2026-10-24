@@ -6663,3 +6663,40 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 已执行精确生产 artifact 探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过。没有修改生产授权逻辑，只新增 test-only ignored 探针。
 - 未运行 workspace 全量、Desktop build/UI、真实多窗口、插件/CLI 调用方、远程 daemon、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-250、H-251 及此前 H-245～H-249 不重复计数。
+
+### H-253：分块 canvas artifact 上传丢失 workspace 所有权，发布出无主媒体
+
+**级别：中高（P1，媒体生命周期与项目隔离）；触发条件：** 前端/桌面使用 `canvas_artifact_upload` 的 `Begin` 或 `BeginStreaming` 分块上传路径，而不是一次性 `canvas_artifact_import`。`ArtifactUploadAction` 没有 workspace 字段，`CanvasArtifactUploads::apply` 创建 `CanvasArtifactStream` 时固定传 `workspace_id=None`；完成后 artifact 记录和 DTO 都没有 owner。该问题不同于 H-252：H-252 是已有 workspace owner 的读/写操作不检查 scope；H-253 是上传创建阶段直接丢掉 owner。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；使用正式 `CanvasArtifactUploads`、`CanvasArtifactService`、内存 SQLite 与临时 managed root。上传内容是 4 个合成字节，没有真实用户文件、媒体、模型凭据、Tauri 窗口或网络。
+- E-253-first（command，content_hash=n/a）：在 `crates/deepagent-app-core/src/canvas_artifact_uploads.rs::tests::audit_chunked_upload_preserves_workspace_ownership` 增加 ignored 探针，执行：
+  `cargo test -p deepagent-app-core --lib canvas_artifact_uploads::tests::audit_chunked_upload_preserves_workspace_ownership --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（缺陷预期）**。生产输出：`dto_workspace_id=Null, record_workspace_id=None, byte_size=4`；失败来自 owner 必须存在的最终断言。
+- E-253-callflow：Tauri `canvas_artifact_upload` 只接收 `ArtifactUploadAction`；`Begin`/`BeginStreaming` → `CanvasArtifactUploads::apply` → `artifacts.begin_stream(kind, mime, name, None)` → `CanvasArtifactStream::finish` 写入 `ArtifactRecord.workspace_id=None`。`canvas_artifact_import` 的一次性路径虽然允许携带 `workspace_id`，两条入口因此产生不同所有权语义。
+- E-253-control：探针通过公开 begin/write/finish action 完成一条真实 staged upload，再用生产 `record()` 读取持久化行；没有手工补写 workspace 字段或伪造 DTO。
+
+#### 初始 Finding 与 Path
+
+- F-253（category=integrity/ownership，status=validated，confidence=high，evidence_ids=[E-253-first]）：分块上传生成的 artifact 永久无主。`list_for_workspace` 按 workspace 查询时无法找到它，项目级配额/清理/导出无法可靠归属；一旦 URI 流入 graph 或事件，H-252 的全局 resolver 又会使“无主”变成任何调用方都可读取/删除的共享对象。
+- P-253（callflow）：canvas upload UI → `Begin(kind,mime,name,size)`（无 workspace）→ staging file → `Finish` → `ArtifactRecord {workspace_id: None}` → DTO `workspaceId: null` → graph/provider/display/delete 继续只携带 `artifact://id`。服务既不能从 DTO 推断 owner，也不能在后续 scope check 时恢复最初 workspace。
+- 已证后果：用户上传成功但切换 workspace 后在当前项目列表消失，后台清理/配额统计遗漏；导入导出或共享 graph 将无主 URI 带入另一项目，媒体可能被错误发送给 DeepSeek 或被任意 scope 的删除路径回收。探针没有证明 UI 一定会把 B 上传到 A，也没有将无主记录直接写成数据泄露；泄露链需结合 H-252 的 resolver 缺口。
+
+#### 成熟 Agent 与 DeepSeek 机制对照
+
+- **DeepSeek Harness**：其 API 结构把 Workspace Controller、Workspace Files、Session/Attachment/Scope 分成显式 owner seam；`借鉴/deepseek-harness/packages/api/session-controller/README.zh.md` 说明 file upload 凭证会在交付前解析并确认属于同一 Agent，`job.kill({ sessionId, jobId })` 对不可见 job 返回 `job/not-found`。这类设计的关键是上传/引用凭证在创建时绑定 owner，不能完成后再靠裸 ID 猜归属。DeepSeek Harness 的 attachment-local store 还用 `sha256:<digest>` 做稳定内容身份，但 digest 不替代 workspace owner。
+- **Codex**：本轮没有找到与 canvas chunk upload 完全同构的 Codex 媒体 API；其 thread state/list 查询显式保留 `project_id`/cwd 过滤，说明持久对象在创建和查询时均有项目上下文。这里不宣称 Codex 已动态覆盖本入口，只将 owner 随生命周期贯通作为架构对照。
+- **DeepSeek 官方 Responses**：[Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response)把 `input_image` 内容交给宿主组装，provider 不理解本地 workspace。无主 artifact 一旦被 adapter 解析成 `image_url`/data URL，DeepSeek 只会按收到的 input 处理，不能替宿主追回上传来源、项目配额或权限。
+
+#### 影响评估与收敛方向（本地设计，未实施）
+
+- 影响评为 P1：单项目短期表现为列表/配额遗漏；多 workspace、重启、导出或 H-252 读取旁路时升级为媒体越权和不可解释删除。它还会破坏“每个 provider 输入都有 workspace/source 证据”的审计链，成本归属和缓存命中诊断无法对应项目。
+- `ArtifactUploadAction::Begin/BeginStreaming` 必须携带规范化 workspace identity，Tauri command 从当前活动项目/调用上下文取得并绑定到 `CanvasArtifactStream`；不要接受客户端 finish 时再补写 owner，也不要用 `None` 表示“当前 workspace”。无 owner 的历史记录应进入显式迁移/隔离区，不能自动加入所有项目。
+- 上传会话表应持有 owner，并在每个 `Write/Finish/Abort` 校验 upload id 与 owner/调用者匹配；finish 事务同时写 artifact row、owner、size、digest。DTO、list、provider/display/delete、导出和 run admission 统一使用同一 scope。对跨 scope 或无主 URI 返回结构化 `artifact_scope_denied`/`artifact_unowned`，provider transport 不得被调用。
+- 回归需覆盖：一次性 import 与 chunked upload 的 owner 一致性；A/B/默认 workspace 的 list/read/provider/display/delete；上传会话被另一 workspace/窗口 finish、超时回收、重启恢复、重复 id、失败回滚；以及 H-251 graph→H-252 resolver 链路的 provider 调用数为零。
+
+#### 本轮验证收尾与未覆盖范围
+
+- 已执行精确生产分块上传探针，结果 **0 passed / 1 failed（缺陷预期）**；`cargo fmt --all` 在探针修改后执行通过。未改生产上传逻辑，只新增 test-only ignored 探针。
+- 未运行 workspace 全量、Desktop build/UI、真实文件选择器、多窗口/插件上传、远程 daemon、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-251/H-252 只作为组合路径对照，不重复计数。
