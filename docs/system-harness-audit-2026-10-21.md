@@ -7005,3 +7005,29 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 触发后，恶意或损坏的前端/插件 payload 可删除同一 session 的全部附件，或把新附件写到 attachment root 的父目录并覆盖同名 sibling 文件。若附件 root 与其他本地状态相邻，后果可能是用户可见附件丢失、跨会话污染、后续模型读取错误内容或 metadata 指向根外路径；本轮没有触碰真实用户目录，也没有证明任意文件系统路径可被指定。
 - 根因修复应在单一 attachment identity seam 完成：拒绝空值、`.`、`..`、路径分隔符、控制字符和 canonicalization 后不位于 root 的身份；最好由后端生成不可变 opaque id（如 UUID/digest），前端 id 只作为显示/幂等键，不参与目录层级。`remove` 必须要求解析目标是 `root/<validated-session>/<validated-id>` 的单个目录，禁止对 bucket/root 本身执行递归删除；`ingest` 应先做 root containment 与“目标为新/同一 attachment”的校验，再写入，并在失败时不产生 metadata。
 - 回归需覆盖空/点/双点、Unicode/Windows 分隔符、绝对路径、尾随点空格、同名重试、符号链接/junction、删除 bucket/root、session 切换和并发 ingest/remove；所有失败都应返回结构化 invalid identity，且 root 外 canary、其他 attachment 与 metadata 保持不变。未实施生产修复，未运行真实桌面 UI/跨平台 NTFS junction 或真实用户目录。
+
+### H-265：TypeScript SDK 自动替换已退出进程，却沿用旧握手状态，新进程首条业务请求被拒绝
+
+**级别：中（P2，进程故障后的 SDK 恢复正确性）；状态：正式 TypeScript SDK 和真实本机 stdio 子进程已复现，未修复。** 触发条件是一个已经 initialize 成功的 SDK 子进程退出，调用方捕获传输错误后仍使用同一个 DeepAgent 对象发起下一请求，且没有先显式调用 reconnect()。H-263/H-264 是已撤销的重复登记，不复用其编号；本项不重复 H-256（Rust SDK 断线后事件等待不结束）或 H-04（server 恢复配置丢失）。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权本仓库审计；仅新增 `packages/sdk/tests/restart-audit.test.mjs`，用生产 `DeepAgent`、`StdioTransport` 和真实 Node 子进程管道。测试启动的服务按进程分别记录收到的方法名和 PID，拒绝 initialize 前的业务请求；无真实模型、工具、用户数据或网络。生产 TypeScript、Rust 和协议未改。
+- E-265-first（source_type=command，source_ref=`restart-audit.test.mjs`）：在 `packages/sdk` 执行 `pnpm build` 通过，然后 `$env:RUN_HARNESS_AUDIT='1'; node --test tests/restart-audit.test.mjs`，得到 **1 passed / 1 failed（缺陷预期），总计约335ms**。正常对照调用显式 reconnect()，两代真实进程的方法记录为 `[[initialize,thread/start,audit/exit],[initialize,thread/list]]`，list 成功返回空数组。故障组不调用 reconnect()，记录为 `[[initialize,thread/start,audit/exit],[thread/list]]`，新进程返回 `HarnessRpcError(-32001, initialize must precede business requests)`。
+- E-265-order：audit/exit 由 fixture 明确以 exit code=23 退出，不发送 response；测试 await 正式 SDK exit callback 对该 pending 请求发出的 HarnessTransportError，因此下一请求必在旧 child 已被清空后发出。不是用 sleep 猜测退出，也不是模拟一个仍存活的旧服务。日志按实际 PID 分组，确认发生了第二次真实 spawn。
+- E-265-boundary：`apps/cli/src/app_server.rs::ServerState::dispatch` 本身也在 `!initialized && method != initialize` 时返回 ERR_NOT_INITIALIZED。因此 fixture 的接纳规则与生产 server 一致；本轮没有启动真实 Rust app-server，不把夹具的错误文字/数值冒充真实 server 的实测输出。
+
+#### Finding、调用路径与后果
+
+- F-265：severity=medium，category=connection-lifecycle，status=validated，confidence=high，location=`packages/sdk/src/index.ts::StdioTransport::ensureStarted`、`DeepAgent::initialize/reconnect`。child exit 回调清空 transport.child 并拒绝 pending；下次 ensureStarted 在未 closed 时无条件 spawn。但 DeepAgent.initialized 只在显式 reconnect() 中重置，transport 没有把连接代次失效通知给这一握手 owner。新进程与旧进程共享了没有代次的初始化布尔值。
+- P-265（path_type=callflow）：第一次 initialize 成功 → SDK.initialized=true → 旧 child 退出/传输请求失败 → transport.child=undefined → 调用方重试 listThreads → initialize() 因旧布尔值直接返回 → transport 自动 spawn 新 child → 首条 wire 为 thread/list → 新 server 以未初始化拒绝。之后仍保持 initialized=true，普通业务重试不能自行修正；用户必须知道并调用显式 reconnect() 或重建 SDK 实例。
+- 已证后果是故障恢复后的只读请求失败，并额外创建了一个尚未握手的 app-server；并未证明副作用被重发、会话数据丢失、费用产生或模型请求发生。turn/start、resumeThread 等共用 request() 边界，源码上具有同样的握手风险，但本轮仅动态验证 startThread 之前的健康链及退出后的 listThreads，不冒充已经逐方法实测。健康进程和显式 reconnect 正常对照不受影响。
+
+#### 成熟实现对照与收敛方向（本地设计，未实施）
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/sdk/client/src/client.ts::request` 在 exitCode/spawnError 已存在时抛出 TransportClosedError，不继续把业务请求写给一个透明重建、未握手的 runtime。它选择“原连接已终结，显式建立新的 client 生命周期”，不是本系统自动重建策略；可借鉴的是握手状态不能脱离进程身份。本轮只核查参考源码，未运行参考工程。
+- **本系统已有正常路径**：DeepAgent.reconnect() 同时关闭旧 transport、清 initialized 并创建新 transport；本轮对照已证明它能在新进程先发 initialize，再发业务请求。应把同一失效规则放到唯一连接生命周期，不在每个业务方法里临时补发 initialize。
+- 选择一种明确策略：退出后让旧 transport 永久 failed，后续业务直接报 TransportClosed，要求显式 reconnect；或者支持透明重建，但必须将 initializePromise、协议能力和已加载 thread 资格绑定 connection generation，先完成该代握手和必要 resume，再允许业务请求。并发调用需共享同一代握手，旧代迟到 exit/response 不得重置或完成新代状态；初始化失败应保持新代未就绪，禁止无限自动重启。
+- DeepSeek Responses、reasoning 和 KV cache 发生在 provider 请求层，无法替本机 SDK 新进程完成 Harness initialize；本项是控制面恢复问题，不据此宣称 DeepSeek wire 不兼容。故障后也不应自动重发结果未知的 turn/start、approval/respond 等副作用操作；连接恢复与业务重试分别定义。
+- 后续验收应覆盖 initialize 前/后退出、spawn error、stdin/stdout 先关闭、显式 close、多个并发恢复请求、旧代迟到回调、thread resume、运行中退出的 durable 查询和未知副作用。当前未执行真实 Rust server、完整 Runtime/RunStore、Desktop UI、真实 DeepSeek、跨平台或压力测试；未修改生产逻辑。
+- 验证收尾：`packages/sdk` 的 `pnpm test`（包含 tsc build）**5 passed**；`node --test tests/restart-audit.test.mjs` 默认 **1 passed / 1 skipped**，显式开启故障探针时 **1 passed / 1 failed（预期）**。`cargo fmt --all -- --check` 和 `git diff --check` 通过。未运行全 workspace/Clippy/前端构建；本轮仅 test-only JavaScript 与 Markdown。code-audit 用于核对首个失效边界及真实进程顺序，不把“手工 reconnect 可用”当作自动恢复正确。
