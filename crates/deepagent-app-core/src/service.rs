@@ -32,8 +32,9 @@ use crate::{ArchiveService, ProjectService, SessionStateService};
 
 /// Elect this process as the data root's primary host, or mark it standby.
 ///
-/// A lock failure is reported and treated as primary: keeping crash clean-up
-/// working is the lesser harm, and the reason stays in the log.
+/// A lock failure is reported and treated as primary for compatibility. This
+/// role is not recovery authorization: each session still needs its dispatch
+/// and activity gates, and any failure acquiring those is propagated.
 fn claim_host(db: &Database) -> HostRole {
     match host_lock::claim(db.data_root()) {
         Ok(role) => role,
@@ -95,9 +96,9 @@ impl AppService {
     /// it makes the persisted state truthful and prevents stale running tasks
     /// from blocking cancellation/UI state on the next boot.
     ///
-    /// A standby host must not run this: its own rows look non-terminal while the
-    /// primary host is still executing them, and closing them out would fail a live
-    /// run in the other process.
+    /// Standby hosts skip the startup sweep. Primary is not sufficient proof of
+    /// inactivity either: standby hosts and other services may dispatch turns.
+    /// Reserve each idle session through the very same gates as admission.
     pub fn recover_unfinished_runs(&self) -> Result<Vec<RunRecoveryDto>> {
         if let HostRole::Standby { holder } = &self.host {
             tracing::warn!(
@@ -108,88 +109,98 @@ impl AppService {
         }
         let clock = SystemClock;
         let recovery_now = now_millis();
-        // Recover the durable control projection before finalizing lifecycle
-        // rows. This closes the crash window where `runs` is repaired but a
-        // running action, expired approval, or stale execution lease remains
-        // visible to the next process.
-        let control_recovery = RunControlStore::new(&self.db).recover(recovery_now)?;
+        let revoked_leases = RunControlStore::new(&self.db).revoke_expired_leases(recovery_now)?;
         let store = RunStore::new(&self.db);
-        let runs = store.unfinished()?;
         let mut recovered = Vec::new();
-        for run in runs {
-            let reason = format!(
-                "run was not terminal when the application started; previous state was {}",
-                run.state
-            );
-            let checkpoint_ids: Vec<String> = CheckpointStore::new(&self.db)
-                .list_for_run(&run.id)
-                .map(|records| records.into_iter().map(|record| record.id).collect())
-                .unwrap_or_default();
-            let mut interruption: Option<String> = None;
-            if let Ok(session_id) = SessionId::from_str(&run.session_id) {
-                if let Ok(events) = EventStore::new(&self.db).load_session(session_id) {
-                    interruption = classify_interruption(&events).map(str::to_string);
-                }
-                if let Ok(mut session) = Session::recover(&self.db, &clock, session_id) {
-                    if let Some(task_id) = run
-                        .task_id
-                        .as_deref()
-                        .and_then(|task_id| TaskId::from_str(task_id).ok())
-                    {
-                        if session
-                            .state()
-                            .task(task_id)
-                            .is_some_and(|task| task.state.is_active())
+        for session_id in store.recovery_sessions(recovery_now)? {
+            let id = SessionId::from_str(&session_id).map_err(|error| {
+                CoreError::Persistence(format!("invalid recovery session: {error}"))
+            })?;
+            let Some(scope) = EventStore::new(&self.db).try_begin_recovery(id)? else {
+                tracing::info!(%session_id, "startup recovery skipped: session has an active owner");
+                continue;
+            };
+            let mut control_recovery = scope.recover_controls(recovery_now)?;
+            control_recovery.revoked_leases = revoked_leases;
+            scope.cancel_orphaned_children(recovery_now)?;
+            // Both handles outlive task/session writes and the outer terminal.
+            // Re-read under ownership, never finalize an earlier stale snapshot.
+            for run in scope.unfinished_runs()? {
+                let reason = format!(
+                    "run was not terminal when the application started; previous state was {}",
+                    run.state
+                );
+                let checkpoint_ids: Vec<String> = CheckpointStore::new(&self.db)
+                    .list_for_run(&run.id)
+                    .map(|records| records.into_iter().map(|record| record.id).collect())
+                    .unwrap_or_default();
+                let mut interruption: Option<String> = None;
+                if let Ok(session_id) = SessionId::from_str(&run.session_id) {
+                    if let Ok(events) = EventStore::new(&self.db).load_session(session_id) {
+                        interruption = classify_interruption(&events).map(str::to_string);
+                    }
+                    if let Ok(mut session) = Session::recover(&self.db, &clock, session_id) {
+                        if let Some(task_id) = run
+                            .task_id
+                            .as_deref()
+                            .and_then(|task_id| TaskId::from_str(task_id).ok())
                         {
-                            if let Err(error) = session.transition_task(task_id, TaskState::Failed)
+                            if session
+                                .state()
+                                .task(task_id)
+                                .is_some_and(|task| task.state.is_active())
                             {
-                                tracing::warn!(
-                                    run_id = %run.id,
-                                    task_id = %task_id,
-                                    error = %error,
-                                    "failed to mark recovered task failed"
-                                );
+                                if let Err(error) =
+                                    session.transition_task(task_id, TaskState::Failed)
+                                {
+                                    tracing::warn!(
+                                        run_id = %run.id,
+                                        task_id = %task_id,
+                                        error = %error,
+                                        "failed to mark recovered task failed"
+                                    );
+                                }
                             }
                         }
                     }
                 }
+                store.append_event(
+                    &run.id,
+                    recovery_now,
+                    "finalizing",
+                    "completed",
+                    "run_recovered_after_startup",
+                    &serde_json::json!({
+                        "session_id": run.session_id.clone(),
+                        "task_id": run.task_id.clone(),
+                        "previous_state": run.state.clone(),
+                        "terminal_kind": "failed",
+                        "reason": reason,
+                        "interruption": interruption,
+                        // Phase D: incremental checkpoint commits keep backups
+                        // reachable across a crash. Surface them so the UI (or a
+                        // later auto-resume) can offer rolling files back to the
+                        // pre-run state via the standard rewind path.
+                        "checkpoint_ids": checkpoint_ids,
+                        "has_file_backups": !checkpoint_ids.is_empty(),
+                        "control_recovery": {
+                            "failed_running_actions": control_recovery.failed_running_actions,
+                            "expired_approvals": control_recovery.expired_approvals,
+                            "revoked_leases": control_recovery.revoked_leases,
+                        },
+                    }),
+                )?;
+                store.finish(&run.id, "failed", Some(&reason), recovery_now)?;
+                recovered.push(RunRecoveryDto {
+                    run_id: run.id,
+                    session_id: run.session_id,
+                    task_id: run.task_id,
+                    previous_state: run.state,
+                    terminal_kind: "failed".to_string(),
+                    terminal_reason: reason,
+                    interruption,
+                });
             }
-            store.append_event(
-                &run.id,
-                recovery_now,
-                "finalizing",
-                "completed",
-                "run_recovered_after_startup",
-                &serde_json::json!({
-                    "session_id": run.session_id.clone(),
-                    "task_id": run.task_id.clone(),
-                    "previous_state": run.state.clone(),
-                    "terminal_kind": "failed",
-                    "reason": reason,
-                    "interruption": interruption,
-                    // Phase D: incremental checkpoint commits keep backups
-                    // reachable across a crash. Surface them so the UI (or a
-                    // later auto-resume) can offer rolling files back to the
-                    // pre-run state via the standard rewind path.
-                    "checkpoint_ids": checkpoint_ids,
-                    "has_file_backups": !checkpoint_ids.is_empty(),
-                    "control_recovery": {
-                        "failed_running_actions": control_recovery.failed_running_actions,
-                        "expired_approvals": control_recovery.expired_approvals,
-                        "revoked_leases": control_recovery.revoked_leases,
-                    },
-                }),
-            )?;
-            store.finish(&run.id, "failed", Some(&reason), recovery_now)?;
-            recovered.push(RunRecoveryDto {
-                run_id: run.id,
-                session_id: run.session_id,
-                task_id: run.task_id,
-                previous_state: run.state,
-                terminal_kind: "failed".to_string(),
-                terminal_reason: reason,
-                interruption,
-            });
         }
         Ok(recovered)
     }

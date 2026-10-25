@@ -806,12 +806,14 @@ impl<'db> RunControlStore<'db> {
         })
     }
 
-    pub fn recover(&self, now: i64) -> Result<RunControlRecovery> {
+    /// Only the session recovery scope may authorize abandoned-action recovery.
+    pub(crate) fn recover_session(&self, session_id: &str, now: i64) -> Result<RunControlRecovery> {
         self.db.with_conn(|connection| {
             in_immediate_transaction(connection, || {
                 let running = collect_pairs(
                     connection,
-                    "SELECT run_id,call_id FROM run_actions WHERE state='running'",
+                    "SELECT a.run_id,a.call_id FROM run_actions a JOIN runs r ON r.id=a.run_id WHERE a.state='running' AND r.session_id=?1",
+                    session_id,
                 )?;
                 for (run_id, call_id) in &running {
                     connection
@@ -833,24 +835,30 @@ impl<'db> RunControlStore<'db> {
                     )?;
                 }
 
-                let expiring = collect_approval_ids(connection, now)?;
+                let expiring = collect_approval_ids(connection, session_id, now)?;
                 for approval_id in &expiring {
                     if let Some(record) = get_approval_from(connection, approval_id)? {
                         expire_approval(connection, &record, now)?;
                     }
                 }
-                let revoked = connection
-                    .execute(
-                        "UPDATE execution_leases SET revoked_at=?1,revoke_reason='expired' WHERE revoked_at IS NULL AND expires_at<=?1",
-                        [now],
-                    )
-                    .map_err(map_sqlite)?;
                 Ok(RunControlRecovery {
                     failed_running_actions: running.len() as u64,
                     expired_approvals: expiring.len() as u64,
-                    revoked_leases: revoked as u64,
+                    revoked_leases: 0,
                 })
             })
+        })
+    }
+
+    /// Expiry is independently authoritative, unlike a connection opening.
+    /// SQLite serializes this conditional update with concurrent renewal; no
+    /// unexpired run/terminal lease is revoked on account of a host restart.
+    pub fn revoke_expired_leases(&self, now: i64) -> Result<u64> {
+        self.db.with_conn(|connection| {
+            connection.execute(
+                "UPDATE execution_leases SET revoked_at=?1,revoke_reason='expired' WHERE revoked_at IS NULL AND expires_at<=?1",
+                [now],
+            ).map(|count| count as u64).map_err(map_sqlite)
         })
     }
 }
@@ -1162,23 +1170,31 @@ fn in_immediate_transaction<T>(
     }
 }
 
-fn collect_pairs(connection: &Connection, sql: &str) -> Result<Vec<(String, String)>> {
+fn collect_pairs(
+    connection: &Connection,
+    sql: &str,
+    session_id: &str,
+) -> Result<Vec<(String, String)>> {
     let mut statement = connection.prepare(sql).map_err(map_sqlite)?;
     let rows = statement
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map([session_id], |row| Ok((row.get(0)?, row.get(1)?)))
         .map_err(map_sqlite)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(map_sqlite)
 }
 
-fn collect_approval_ids(connection: &Connection, now: i64) -> Result<Vec<String>> {
+fn collect_approval_ids(
+    connection: &Connection,
+    session_id: &str,
+    now: i64,
+) -> Result<Vec<String>> {
     let mut statement = connection
         .prepare(
-            "SELECT approval_id FROM run_approvals WHERE state='pending' AND expires_at IS NOT NULL AND expires_at<=?1",
+            "SELECT a.approval_id FROM run_approvals a JOIN runs r ON r.id=a.run_id WHERE a.state='pending' AND a.expires_at IS NOT NULL AND a.expires_at<=?1 AND r.session_id=?2",
         )
         .map_err(map_sqlite)?;
     let rows = statement
-        .query_map([now], |row| row.get(0))
+        .query_map(params![now, session_id], |row| row.get(0))
         .map_err(map_sqlite)?;
     rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(map_sqlite)
@@ -1512,7 +1528,7 @@ mod tests {
         store
             .transition_action("run-1", "running", RunActionState::Running, 4, None, None)
             .unwrap();
-        let recovery = store.recover(50).unwrap();
+        let recovery = store.recover_session("session-1", 50).unwrap();
         assert_eq!(recovery.failed_running_actions, 1);
         assert_eq!(
             store

@@ -1,10 +1,9 @@
 //! Primary-host election for one data root.
 //!
-//! [`crate::AppService::recover_unfinished_runs`] closes out every non-terminal
-//! run it finds in the database. That is only correct while exactly one host owns
-//! the data root — and the desktop shell, the TUI and a headless `run` all open the
-//! same SQLite file, so a naive second host would mark the first host's live run
-//! failed at startup.
+//! [`crate::AppService::recover_unfinished_runs`] limits its startup sweep to
+//! primary hosts, then reserves idle sessions with the admission dispatch gate.
+//! Primary election alone is not proof that a run is abandoned: standby hosts
+//! also execute turns, and services can be reopened within the primary process.
 //!
 //! A process therefore takes an OS advisory lock on `<data root>/host.lock` and
 //! keeps it for its whole lifetime. The kernel drops it when the process exits or

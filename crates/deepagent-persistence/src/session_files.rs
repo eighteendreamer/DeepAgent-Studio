@@ -697,19 +697,34 @@ pub(crate) fn try_lock_session_control(
     session_id: SessionId,
     exclusive: bool,
 ) -> Result<SessionLock> {
-    try_lock_session_scope(root, session_id, "control.lock", exclusive)
+    require_session_scope(root, session_id, "control.lock", exclusive)
 }
 
 pub(crate) fn try_lock_session_dispatch(root: &Path, session_id: SessionId) -> Result<SessionLock> {
-    try_lock_session_scope(root, session_id, "dispatch.lock", true)
+    require_session_scope(root, session_id, "dispatch.lock", true)
 }
 
-fn try_lock_session_scope(
+fn require_session_scope(
     root: &Path,
     session_id: SessionId,
     scope: &str,
     exclusive: bool,
 ) -> Result<SessionLock> {
+    try_lock_session_scope(root, session_id, scope, exclusive)?.ok_or_else(|| {
+        CoreError::invalid(format!(
+            "session {session_id} is busy ({scope}); wait for its owner to finish"
+        ))
+    })
+}
+
+/// Contention is an ordinary skipped recovery, not an I/O failure. Never infer
+/// contention from an error string or suppress lock-open/permission failures.
+pub(crate) fn try_lock_session_scope(
+    root: &Path,
+    session_id: SessionId,
+    scope: &str,
+    exclusive: bool,
+) -> Result<Option<SessionLock>> {
     let file = open_session_lock(root, session_id, scope)?;
     let result = if exclusive {
         FileExt::try_lock_exclusive(&file)
@@ -717,15 +732,13 @@ fn try_lock_session_scope(
         FileExt::try_lock_shared(&file)
     };
     match result {
-        Ok(()) => Ok(SessionLock { file }),
+        Ok(()) => Ok(Some(SessionLock { file })),
         Err(error)
             if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
                 || error.kind() == std::io::ErrorKind::WouldBlock =>
         {
             tracing::info!(%session_id, scope, exclusive, "session access refused while busy");
-            Err(CoreError::invalid(format!(
-                "session {session_id} is busy ({scope}); wait for its owner to finish"
-            )))
+            Ok(None)
         }
         Err(error) => Err(CoreError::Persistence(format!(
             "acquire session {session_id} {scope}: {error}"

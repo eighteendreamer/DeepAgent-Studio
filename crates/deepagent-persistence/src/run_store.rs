@@ -217,6 +217,23 @@ impl<'db> RunStore<'db> {
         })
     }
 
+    /// Includes controls left behind after their parent became terminal. A
+    /// snapshot is only a candidate list, never authorization to recover.
+    pub fn recovery_sessions(&self, now: i64) -> Result<Vec<String>> {
+        self.db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT DISTINCT r.session_id FROM runs r
+                 WHERE r.finished_at IS NULL
+                    OR EXISTS (SELECT 1 FROM run_actions a WHERE a.run_id=r.id AND a.state='running')
+                    OR EXISTS (SELECT 1 FROM run_approvals a WHERE a.run_id=r.id AND a.state='pending' AND a.expires_at<=?1)
+                    OR EXISTS (SELECT 1 FROM subagent_runs c WHERE c.parent_run_id=r.id AND c.state='running' AND c.finished_at IS NULL)
+                 ORDER BY r.session_id",
+            ).map_err(map_sqlite)?;
+            let rows = statement.query_map([now], |row| row.get(0)).map_err(map_sqlite)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite)
+        })
+    }
+
     pub fn unfinished(&self) -> Result<Vec<RunRecord>> {
         self.db.with_conn(|conn| {
             let mut stmt = conn

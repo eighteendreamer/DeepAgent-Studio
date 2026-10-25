@@ -103,9 +103,9 @@ impl<'db> SubagentRunStore<'db> {
         })
     }
 
-    /// Close child runs left active by a previous process. This is called only
-    /// when an on-disk database is opened, before a new runtime can start work.
-    pub fn cancel_orphaned(&self, at: i64) -> Result<usize> {
+    /// Called only through an idle session's held recovery scope. Scope by the
+    /// current parent, not origin: a resumed child belongs to its new owner.
+    pub(crate) fn cancel_orphaned_for_session(&self, session_id: &str, at: i64) -> Result<usize> {
         self.db.with_conn(|connection| {
             connection
                 .execute(
@@ -114,8 +114,9 @@ impl<'db> SubagentRunStore<'db> {
                          summary=COALESCE(summary, 'Interrupted because DeepAgent restarted'),
                          updated_at=?1,
                          finished_at=?1
-                     WHERE state='running' AND finished_at IS NULL",
-                    [at],
+                     WHERE state='running' AND finished_at IS NULL
+                       AND parent_run_id IN (SELECT id FROM runs WHERE session_id=?2)",
+                    params![at, session_id],
                 )
                 .map_err(map_sqlite)
         })
@@ -261,7 +262,7 @@ mod tests {
                 .unwrap();
         }
 
-        assert_eq!(store.cancel_orphaned(10).unwrap(), 1);
+        assert_eq!(store.cancel_orphaned_for_session("s1", 10).unwrap(), 1);
         let orphan = store.get("running").unwrap().unwrap();
         assert_eq!(orphan.state, "cancelled");
         assert_eq!(orphan.finished_at, Some(10));

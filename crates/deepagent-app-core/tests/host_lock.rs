@@ -133,11 +133,10 @@ fn run_state(database: &Database, run_id: &str) -> String {
         .unwrap_or_else(|| "missing".to_string())
 }
 
-/// Audit probe: run explicitly; the invariant currently fails in production.
+/// Regression from the original failing audit probe.
 /// The existing subprocess fixture opens the file database and performs the
 /// normal standby recovery path while this process still owns the OS lock.
 #[test]
-#[ignore = "audit: opening a standby database mutates the primary's live control records"]
 fn audit_standby_open_preserves_live_actions_and_subagents() {
     let directory = tempfile::tempdir().expect("isolated audit data root");
     let root = directory.path();

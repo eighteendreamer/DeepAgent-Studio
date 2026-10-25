@@ -70,13 +70,8 @@ impl Database {
         db.run_session_file_cutover_maintenance()?;
         event_store::EventStore::new(&db).recover_orphaned_session_files()?;
         event_store::EventStore::new(&db).repair_search_indexes()?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis()
-            .min(i64::MAX as u128) as i64;
-        run_control::RunControlStore::new(&db).recover(now)?;
-        subagent_store::SubagentRunStore::new(&db).cancel_orphaned(now)?;
+        // Opening a connection is not evidence that any runtime owner died.
+        // Lifecycle recovery is explicitly guarded by session dispatch ownership.
         Ok(db)
     }
 
@@ -254,7 +249,7 @@ mod tests {
     }
 
     #[test]
-    fn reopening_disk_database_cancels_orphaned_subagents() {
+    fn reopening_preserves_children_until_explicit_owned_recovery() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("restart.db");
         {
@@ -262,15 +257,15 @@ mod tests {
             db.with_conn(|connection| {
                 connection
                     .execute(
-                        "INSERT INTO sessions (id, created_at, updated_at) VALUES ('s1', 1, 1)",
-                        [],
+                        "INSERT INTO sessions (id, created_at, updated_at) VALUES (?1, 1, 1)",
+                        [SessionId::nil().to_string()],
                     )
                     .map_err(map_sqlite)?;
                 Ok(())
             })
             .unwrap();
             run_store::RunStore::new(&db)
-                .create("parent", "s1", None, 1)
+                .create("parent", &SessionId::nil().to_string(), None, 1)
                 .unwrap();
             subagent_store::SubagentRunStore::new(&db)
                 .create(&subagent_store::SubagentRunRecord {
@@ -291,6 +286,20 @@ mod tests {
         }
 
         let reopened = Database::open(&path).unwrap();
+        assert_eq!(
+            subagent_store::SubagentRunStore::new(&reopened)
+                .get("child")
+                .unwrap()
+                .unwrap()
+                .state,
+            "running"
+        );
+        let scope = event_store::EventStore::new(&reopened)
+            .try_begin_recovery(SessionId::nil())
+            .unwrap()
+            .unwrap();
+        assert_eq!(scope.cancel_orphaned_children(10).unwrap(), 1);
+        assert_eq!(scope.cancel_orphaned_children(11).unwrap(), 0);
         let child = subagent_store::SubagentRunStore::new(&reopened)
             .get("child")
             .unwrap()
@@ -301,7 +310,7 @@ mod tests {
     }
 
     #[test]
-    fn reopening_disk_database_recovers_run_controls_without_replaying_actions() {
+    fn reopening_preserves_actions_until_explicit_owned_recovery_without_replay() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("control-restart.db");
         {
@@ -309,15 +318,15 @@ mod tests {
             db.with_conn(|connection| {
                 connection
                     .execute(
-                        "INSERT INTO sessions (id,created_at,updated_at) VALUES ('s1',1,1)",
-                        [],
+                        "INSERT INTO sessions (id,created_at,updated_at) VALUES (?1,1,1)",
+                        [SessionId::nil().to_string()],
                     )
                     .map_err(map_sqlite)?;
                 Ok(())
             })
             .unwrap();
             run_store::RunStore::new(&db)
-                .create("run-1", "s1", Some("turn-1"), 1)
+                .create("run-1", &SessionId::nil().to_string(), Some("turn-1"), 1)
                 .unwrap();
             let controls = run_control::RunControlStore::new(&db);
             controls
@@ -356,6 +365,26 @@ mod tests {
         }
 
         let reopened = Database::open(&path).unwrap();
+        assert_eq!(
+            run_control::RunControlStore::new(&reopened)
+                .get_action("run-1", "call-1")
+                .unwrap()
+                .unwrap()
+                .state,
+            run_control::RunActionState::Running
+        );
+        let scope = event_store::EventStore::new(&reopened)
+            .try_begin_recovery(SessionId::nil())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            scope.recover_controls(10).unwrap().failed_running_actions,
+            1
+        );
+        assert_eq!(
+            scope.recover_controls(11).unwrap().failed_running_actions,
+            0
+        );
         let action = run_control::RunControlStore::new(&reopened)
             .get_action("run-1", "call-1")
             .unwrap()

@@ -51,6 +51,39 @@ pub struct SessionDispatchGuard {
     _lock: session_files::SessionLock,
 }
 
+/// An idle session reserved against admission and history rewrites for the
+/// entire recovery, including lifecycle terminal writes. This is not a probe:
+/// both OS handles stay held until this scope is dropped.
+#[must_use]
+pub struct SessionRecovery<'db> {
+    db: &'db Database,
+    session_id: SessionId,
+    _activity: session_files::SessionLock,
+    _dispatch: session_files::SessionLock,
+}
+
+impl SessionRecovery<'_> {
+    pub fn recover_controls(&self, now: i64) -> Result<crate::run_control::RunControlRecovery> {
+        crate::run_control::RunControlStore::new(self.db)
+            .recover_session(&self.session_id.to_string(), now)
+    }
+
+    pub fn cancel_orphaned_children(&self, now: i64) -> Result<usize> {
+        crate::subagent_store::SubagentRunStore::new(self.db)
+            .cancel_orphaned_for_session(&self.session_id.to_string(), now)
+    }
+
+    /// Re-read only after acquiring ownership: another runtime may have
+    /// finished between candidate discovery and lock acquisition.
+    pub fn unfinished_runs(&self) -> Result<Vec<crate::run_store::RunRecord>> {
+        Ok(crate::run_store::RunStore::new(self.db)
+            .list_for_session(&self.session_id.to_string())?
+            .into_iter()
+            .filter(|run| run.finished_at.is_none())
+            .collect())
+    }
+}
+
 /// Exclusive history-control scope. No new run or raw append can enter until
 /// this scope ends. It deliberately does not hold the SQLite/event-I/O mutex.
 #[must_use]
@@ -141,6 +174,31 @@ impl<'db> EventStore<'db> {
                 session_id,
             )?,
         })
+    }
+
+    /// Share the exact admission gates and acquisition order. `None` means a
+    /// live dispatcher/history controller owns the session; real errors escape.
+    pub fn try_begin_recovery(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Option<SessionRecovery<'db>>> {
+        let root = self.db.session_files_root();
+        let Some(activity) =
+            session_files::try_lock_session_scope(&root, session_id, "control.lock", false)?
+        else {
+            return Ok(None);
+        };
+        let Some(dispatch) =
+            session_files::try_lock_session_scope(&root, session_id, "dispatch.lock", true)?
+        else {
+            return Ok(None);
+        };
+        Ok(Some(SessionRecovery {
+            db: self.db,
+            session_id,
+            _activity: activity,
+            _dispatch: dispatch,
+        }))
     }
 
     /// Refuse busy history control atomically, rather than check a registry
