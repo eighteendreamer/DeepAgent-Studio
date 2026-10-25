@@ -24,6 +24,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| Git 事实在 UI 与模型上下文的投影 | 临时真实 Git 仓库的修改/删除被模型上下文误报 clean，长路径首字节丢失；同一 GitService 正确列出路径，三类正常控制通过 | 新增 H-282（P3）；正式 ChatService/Kernel/ModelClient 请求及内存 run_events，无模型真实决策、用户文件覆盖或磁盘重开验证 |
 | MCP 初始化结果与 Ready 发布门槛 | 六类不完整/错误版本的initialize成功结果经真实stdio，设置页probe与宿主均connected；工具进入正式Responses schema并实际调用，结果进入下一wire | 新增 H-277（P2，条件性协议兼容/诊断缺口）；完整握手和显式JSON-RPC错误两类对照通过；不重复H-07/H-08，不推断线上服务必定返回异常握手 |
 | MCP hook 决策正文与展示截断 | 真实 stdio 服务返回完整合法拒绝 JSON，100/8192 字符阻止写入；8193/10000 字符及8193字符中文拒绝均变 continued，临时文件实际写入，下一模型 wire 为成功工具结果 | 新增 H-276（P2，条件性策略失效）；正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 MCP 与文件工具；离线模型，不外推默认无 hook 聊天 |
 | MCP hook 的发现 schema 与执行契约 | 同一严格工具的缺必填、非法枚举、多余字段，正常 ToolRegistry 路径均在 transport 前拒绝；正式设置页 hook 测试入口经配置解析、注册、PreToolUse 派发后却逐项 continued、各发送1次 tools/call | 新增 H-275（P3）；合法静态参数与既有拒绝决策对照通过；内存 transport，不外推真实 server 副作用或全部模型 MCP 调用 |
@@ -7668,3 +7669,58 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 本节曾把 H-168 的既有失败探针当作新发现，现已更正；未修改生产逻辑，当前 ignored 探针仍保持故障预期。后续验证与治理统一归入 H-168，不以重复运行增加发现数。
 - 本轮补充的 wire 级输出来自测试内 `ResponseRequest::new`，不是手工拼接 JSON；首位 system/工具历史的既有对照 `responses::tests::maps_tool_roundtrip_to_responses_items` 实际 **1 passed / 0 failed**。故障探针仍为 **0 passed / 1 failed（预期）**，未把预期失败误报成回归通过。
 - 本轮未执行 workspace 全量、Desktop build/UI、真实 DeepSeek 请求、KV cache 命中实验或参考工程测试；未访问公网、内网、用户文件，也未处理用户排除的 encrypted-content 问题。
+
+### H-282：Git 状态整体 trim 破坏首条未暂存路径，正式模型上下文可把脏工作区报告为 clean
+
+**级别：低（P3，模型上下文事实准确性）；状态：三个故障场景已通过正式请求复现，未修复。** 本项是 Git 事实投影，不是 H-168 的动态前缀缓存问题，也不涉及工作区越界或已发生的文件覆盖。登记前已检索报告中的 `GitContext`、`git_context`、`porcelain` 及脏/干净状态相关记录，未发现同一解析根因的既有条目。
+
+#### 首次即时 Evidence（2026-10-25，复现后先登记）
+
+- Scope：自有仓库的审计测试；仅操作新建 TempDir 内的 Git 仓库与合成文件，使用进程级虚构提交身份，无公网、真实凭据或用户文件。只新增测试，不修改生产逻辑或持久 Git 配置。
+- E-282-first（source_type=command，content_hash=n/a）：`crates/deepagent-app-core/tests/kernel_v2_e2e/git_context.rs::audit_unstaged_git_context_preserves_dirty_state_and_paths_on_wire` 经真实 Git、正式 `GitService::changes`、`SettingsService`、`ChatService`、Kernel 与 `ModelClient` 捕获实际序列化请求。执行命令：`cargo test -p deepagent-app-core --test kernel_v2_e2e git_context:: --offline -- --include-ignored --nocapture`。
+- 命令尚在继续执行其他矩阵时，首条实测输出已经为：`Unstaged/a: raw_status=" M a\0", desktop_paths=["a"], model_paths=[], model_dirty=false, wire_git_block="# Git\n- Branch: master\n- Working tree: clean\n"`。该样本同时验证模型请求恰为 1 次、`run_events` 中的 `run_terminal` 恰为 1 条且为 `succeeded`、运行前后真实 Git 状态未变。事件库为内存 SQLite，未验证磁盘重开；不是手工重建错误 prompt，也不是只调用 parser 的单元断言。
+- 首个干净仓库控制输出与真实状态一致；其余删除/长路径和未跟踪/已暂存控制正在同一测试中执行，本条首次记录不提前宣称它们的最终结果。
+
+#### 初始 Finding 与调用路径
+
+- F-282（category=context-projection，status=validated，confidence=high，evidence_ids=[E-282-first]）：`deepagent-workspace/src/git.rs::git_output` 对整个 stdout 调用 `trim()`；当首条 porcelain 记录为 ` M a` 时，状态首列空格被删除，`detect_git_context` 再按 `line.get(3..)` 取路径得到空串，过滤后用 `!changed_files.is_empty()` 推导出错误的 clean 状态。`GitContext::to_prompt_block()` 没有独立核对真实 dirty 状态。
+- P-282（path_type=callflow）：临时仓库保留真实未暂存修改 → 正式 `context_runtime` 调用 `build_system_manifest` → `detect_git_context` 错误解析首条记录 → `deepagent.git_context` 渲染为 clean → `ModelClient` 的 Responses `instructions` 实际携带错误事实；同一仓库的桌面 `GitService::changes` 正确报告 `a`，说明同一产品已出现两套 Git 状态解释不一致。
+- 当前确认后果是模型输入事实错误，而不是模型已删除文件、覆盖用户改动或执行危险 Git 命令；测试 provider 只返回固定成功文本，未运行真实 DeepSeek 决策实验。
+
+#### 同轮增量 Evidence：三个故障样本与三个正常控制均已执行
+
+- E-282-matrix（source_type=command，content_hash=n/a，同上命令）：完整结果 **1 passed / 1 failed（缺陷预期）**，测试体 4.15 秒；编译 1 分 47 秒。不是“3 个测试失败”：ignored 探针先收集三个场景，最后以一个总断言失败，另一个默认控制测试覆盖三个场景并通过。每个场景各自使用新临时仓库、新服务和一次正式模型请求。
+
+| 实际 Git 状态（NUL 以 `\0` 展示） | 桌面 GitService 路径 | 模型 GitContext 路径 | 实际 wire 中的工作区状态 |
+|---|---|---|---|
+| 干净：空输出 | 空 | 空 | clean（正确控制） |
+| 未跟踪：`?? a\0` | `a` | `a` | uncommitted changes present（正确控制） |
+| 已暂存新文件：`A  a\0` | `a` | `a` | uncommitted changes present（正确控制） |
+| 未暂存修改：` M a\0` | `a` | 空 | clean（错误） |
+| 未暂存删除：` D a\0` | `a` | 空 | clean（错误） |
+| 未暂存修改：` M src/main.rs\0` | `src/main.rs` | `rc/main.rs` | dirty 标志正确，但路径错误 |
+
+- 该根因作用于 stdout 最前面被 `trim()` 删除的状态空格，不是“每行都删首字符”。后续记录、多个文件组合、重命名、冲突、空格/非 ASCII 路径、submodule、Git 命令失败或超时，尚未纳入动态矩阵；不由本表推断它们全部失败或全部通过。
+
+#### 成熟 Agent、本系统已有正确边界与 DeepSeek 对照
+
+- **Codex（静态源码，未运行参考工程）：** `借鉴/codex/codex-rs/git-utils/src/status.rs::get_has_changes_in_repo` 在 Git 命令成功后用 `!output.stdout.is_empty()` 判断 dirty，不依赖截取后的 changed-files 列表；命令失败返回 `None`，不是 clean。可迁移的是“仓库是否脏”与“展示多少条/是否解析出路径”分离，不能把该函数当作 Codex 已验证全部路径解码的证据。
+- **Claude Code（静态源码，未运行参考工程）：** `借鉴/claudecode/restored-src/src/utils/git.ts::getIsClean` 单独使用 `stdout.trim().length === 0`，` M a` 去空白后仍非空，因而不需要先成功解析文件名才能认定脏。其 `getChangedFiles` 另有按空格拆分的实现，本轮不将它泛化为所有路径形状都正确的参考；这里只有 clean 判定的直接机制对照。
+- **本系统已有正确实现（本轮已动态对照）：** `deepagent-app-core/src/git_service.rs::compute_changes` 请求 `status --porcelain=v1 -z --untracked-files=all`，`git_stdout_checked` 保留原始输出，`parse_status_z` 再按 NUL 记录和两列状态解释。相同六个场景的实际 `GitService::changes` 结果均与真实 Git 一致；模型链却另用 `deepagent-workspace` 的全局 trim/固定偏移解析，造成同一产品 UI 与模型事实分叉。
+- **官方协议依据：** [Git status 文档](https://git-scm.com/docs/git-status#_porcelain_format_version_1)将 porcelain v1 定义为两列状态加路径，明确推荐 NUL 分隔的 `-z` 供机器解析；状态空格不是可任意去除的排版。[DeepSeek Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)规定 `instructions` 是模型上下文的第一条 system 消息。这里不是 DeepSeek 角色、reasoning 或缓存参数不兼容，而是宿主把错误 Git 事实作为 system 上下文交给模型；请求成功不等于事实投影正确。
+
+#### 影响与根因收敛方向（本地设计，未实施）
+
+- **实际影响与级别：** 普通未暂存改动即可触发，不需要异常供应商响应或特殊权限；常见 ASCII 长路径会少掉首字符，一字符路径的单条修改/删除会让模型看到错误 clean。模型可能围绕不存在的截断路径安排读取，遗漏原有改动或作出不准确的提交/交付说明，需要后续工具自查才能纠偏。后半句是风险推断；本轮没有让模型执行 Git 变更或证明数据损失，因此按 P3，而不是权限漏洞或 P1 数据破坏登记。
+- **架构缺口：** UI 与模型上下文分别解释同一 Git 协议；通用“返回 trimmed 字符串”的 helper 同时承担普通单值命令和带固定列的机器记录，跨越了不同输出契约。只给 `a` 或 `src/` 加特判不能治理这个边界。
+- **收敛方向：** 在现有 `deepagent-workspace` 等底层 seam 中收口一个保留字节/记录边界的 Git 状态采集与纯解析器，由 AppCore UI DTO 和模型 GitContext 分别投影同一个结构化事实；不能让底层反向依赖 AppCore，也不复制第二套 parser。脏状态在路径展示截断前由真实成功状态确定；命令失败/无法解析应明确为未知/不可用，不能静默等同 clean。分支/单值输出可按各自契约 trim，porcelain 记录不得共用无差别 trim。
+- **验收方向：** 保留本轮真实 Git→桌面 DTO→正式模型 wire 对照，扩展多个文件、首项/非首项、暂存与未暂存混合、删除、重命名、冲突、带空格/非 ASCII 路径、repo 子目录、worktree、Git 失败与预算限制；再验证 CLI/SDK/Desktop 是否消费同一份事实。默认最多展示 10 条不能改变 has_uncommitted，错误态也不能伪装成 clean。暂未实施这些治理或扩大验证范围。
+
+#### 本轮验证收尾与限制
+
+- 环境：Windows，`git version 2.54.0.windows.1`；真实本机 Git 与离线 Responses transport。探针首次有效执行为上述 **1 passed / 1 failed（预期）**，随后没有为增加发现数量重跑故障矩阵。
+- `cargo test -p deepagent-workspace --offline`：**11 passed / 0 failed**，doc-tests 为 0；已有测试只有干净仓库和新增未跟踪文件，未覆盖本轮首条未暂存状态。
+- 格式化后 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**91 passed / 0 failed / 86 ignored**，测试体 14.32 秒。新正常控制在默认套件通过；H-282 探针继续显式 ignore，默认绿色不代表缺陷已修复。
+- 首次 `cargo fmt --all -- --check` 只报告新增测试排版；运行 `cargo fmt --all` 后再次检查通过。`git diff --check` 通过，仅有既有换行策略的 LF/CRLF 提示。
+- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` **失败**：未修改的 `deepagent-models/src/client.rs:355` 命中 `clone_on_copy`，未修改的 `deepagent-persistence/src/run_store.rs:127` 命中 `explicit_counter_loop`。没有为让本轮 lint 通过而修改无关生产逻辑，也不能声称已完成整个 target 的 lint 验收。
+- 本轮仅增加 `kernel_v2_e2e/git_context.rs`、注册该测试模块并追加本报告。未运行全 workspace、独立 Desktop/CLI/SDK 流程、前端构建、参考工程、跨平台、真实 DeepSeek 决策/费用或磁盘重开；没有兼容性、配置、数据迁移、权限或沙箱行为变更。

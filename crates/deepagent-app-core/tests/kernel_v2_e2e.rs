@@ -137,6 +137,9 @@ mod verification_toolchain;
 #[path = "kernel_v2_e2e/cache_prefix.rs"]
 mod cache_prefix;
 
+#[path = "kernel_v2_e2e/git_context.rs"]
+mod git_context;
+
 #[path = "kernel_v2_e2e/responses_custom_tool.rs"]
 mod responses_custom_tool;
 
