@@ -8,7 +8,7 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 9 | H-286、H-72、H-73、H-75、H-76、H-20、H-22、H-23、H-33，均限所列本机验收；前八项提交见明细，H-33本次独立提交后回填hash |
+| 本阶段已修复并验收 | 9 | H-286、H-72、H-73、H-75、H-76、H-20、H-22、H-23、H-33，均限所列本机验收；前八项提交见明细，H-33修复提交 `8ed5d82e` |
 | 历史已修复跳过 | 17 | 原报告有实现及修复后验收；本轮不重复修复/冒称重验 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
@@ -20,7 +20,7 @@
 
 ## H-33 本轮实施与验收明细（2026-10-26）
 
-**当前状态：已修复并验收，限原报告列明的Windows本机范围。** 以下按执行顺序保留中间状态，不把中间绿色当作最终源码验收。代码/测试与两份文档一起独立提交，取得hash后另行回填。
+**当前状态：已修复并验收，限原报告列明的Windows本机范围。** 以下按执行顺序保留中间状态，不把中间绿色当作最终源码验收。代码/测试与两份文档已一起独立提交 `8ed5d82e`；本次另做文档回填，不amend、不推送。
 
 H-33即时记录（2026-10-26）：原双进程探针先实测失败（E-H33-20261026-01，0 passed/1 failed，0.47s），再接入既有EventStore独占dispatch scope与RunCoordinator admission/outer registration；本地队列共享owner，输入租约移至outer生命周期，等待Future丢弃清理队列。首轮 `cargo test -p deepagent-app-core --test host_session_audit --offline -j 1 -- --nocapture` 为1 passed/0 ignored（3.44s，E-H33-20261026-02）：竞争宿主无模型派发、无run记录，父正常完成后可续聊。新增的异session并行、本地队列打断、失败/Future abort、真实进程退出接管尚在验证，不据首轮绿色关闭H-33。H-32及崩溃run终态恢复仍独立；没有改schema/供应商/前端/权限边界。
 
@@ -34,7 +34,7 @@ workspace最终退出1：既有H-306（prompts27 passed/1 failed，`creative.vid
 
 最终验收：`cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet` 退出0（runtime284/16、stabilization5、tokenizer1/1、schedule0/2，session14，两crate doc-tests0）。两crate普通lib no-deps clippy退出0（AppCore既有10warning、persistence既有1warning）；all-targets普通no-deps lint因既有`mcp_discovery_restore.rs:433 panicking_unwrap`退出1。两个新增/修改集成测试分别用`cargo clippy -p deepagent-app-core --test host_session_audit --offline -j 1 --no-deps`及`cargo clippy -p deepagent-persistence --test session_control --offline -j 1 --no-deps`检查，均退出0且无新增测试告警。完整workspace/严格lint仍失败；未屏蔽告警，相关失败路径git diff确认未改。最终fmt/diff与306行台账唯一性/无缺号/列数检查通过。
 
-实现/兼容性：独占dispatch锁与既有shared activity/history control锁职责分开，admit前取得、outer收尾后释放，同coordinator队列共享Arc/Weak索引；input lease在登记时即交outer并处理被丢弃等待项。复用既有内核、运行/事件存储、审批/取消；无schema/供应商/DeepSeek协议/前端DTO变更。参考Codex writer-before-recovery及guard生命周期，队列共享是适配本内核的本地设计。协作宿主须全部升级；无跨宿主取消转发，不保证Future abort后全部外部副作用静止；崩溃旧run终态仍由独立H-32/H-44处理，未归并关闭。Linux/macOS、网络文件系统、真实UI/供应商与副作用验收未跑。按code-audit人工核对调用链并按docs-generator即时证据链记录；本项hash待独立commit取得。
+实现/兼容性：独占dispatch锁与既有shared activity/history control锁职责分开，admit前取得、outer收尾后释放，同coordinator队列共享Arc/Weak索引；input lease在登记时即交outer并处理被丢弃等待项。复用既有内核、运行/事件存储、审批/取消；无schema/供应商/DeepSeek协议/前端DTO变更。参考Codex writer-before-recovery及guard生命周期，队列共享是适配本内核的本地设计。协作宿主须全部升级；无跨宿主取消转发，不保证Future abort后全部外部副作用静止；崩溃旧run终态仍由独立H-32/H-44处理，未归并关闭。Linux/macOS、网络文件系统、真实UI/供应商与副作用验收未跑。按code-audit人工核对调用链并按docs-generator即时证据链记录；本项修复提交 `8ed5d82e`，此次仅文档回填，整体goal未完成。
 
 ## 总体工时、排序与不确定性
 
@@ -329,7 +329,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-30：SSE 实际按 data 行解析，合法多行事件失败，未闭合终态帧却被接受](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-31：同步原生压缩的摘要请求没有运行取消信号，停止必须等摘要返回（已修复）](system-harness-audit-2026-10-21.md) | P1 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
 | [H-32：备用宿主打开数据库先执行无所有权恢复，误终结主宿主的工具动作和子 Agent](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-33：输入租约仅限 ChatService 内存，两宿主可同时推进同一会话](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-26，限所列Windows本机范围；H-32/H-44仍独立待修 | EventStore独占dispatch在admit前取得，outer registration持有；同coordinator队列共享；input lease登记即归outer，等待项drop清理 | 原探针0/1；最终workspace AppCore1131/78、host_session5/0、E2E107/90、persistence67/session_control9通过；runtime/session补跑通过。完整workspace因H-306失败，严格/all-target lint既有失败；命令与限制见本节和原项E-01～04 | 本次独立提交后回填hash | 协作宿主须全部升级；无跨宿主取消转发、崩溃终态/外部副作用静止承诺，其他平台/UI/供应商未验；余量计入总工时区间 |
+| [H-33：输入租约仅限 ChatService 内存，两宿主可同时推进同一会话](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-26，限所列Windows本机范围；H-32/H-44仍独立待修 | EventStore独占dispatch在admit前取得，outer registration持有；同coordinator队列共享；input lease登记即归outer，等待项drop清理 | 原探针0/1；最终workspace AppCore1131/78、host_session5/0、E2E107/90、persistence67/session_control9通过；runtime/session补跑通过。完整workspace因H-306失败，严格/all-target lint既有失败；命令与限制见本节和原项E-01～04 | `8ed5d82e` | 协作宿主须全部升级；无跨宿主取消转发、崩溃终态/外部副作用静止承诺，其他平台/UI/供应商未验；余量计入总工时区间 |
 | [H-34：并行工具绕过统一执行流水线，单工具超时保护在批量调用时失效](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
