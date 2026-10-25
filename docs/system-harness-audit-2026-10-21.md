@@ -7579,3 +7579,38 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 本轮只使用临时目录、合成 canary 和本机 Windows `mklink /J`；没有用户文件、密钥、真实工作区、真实模型或公网请求。故障探针已经在断言前删除 junction，未留持久链接。
 - 本轮新增 H-279 文档证据，尚未修改生产逻辑；完整 workspace、Desktop build、真实 DeepSeek、Linux/macOS 物理链接和 TOCTOU 压力验证未执行。显式探针保持 `#[ignore]`，默认绿色不代表该沙箱边界已修复。
+### H-280：敏感文件被 read_file 拒绝，但 list_dir/glob 仍把文件名交给模型
+
+**级别：中（P2，条件性敏感资源存在性/目录枚举泄露）；状态：正式 Kernel → ChatService → read_file/list_dir/glob 链路与文件数据库事件已复现，未修复。** 触发条件是工作区内存在被 WorkspaceRoot 敏感名策略拒绝的文件（例如 .env），模型随后调用发现工具。当前证据是文件名与可见性泄露，不是文件内容泄露；普通可读文件的发现能力仍需保留。
+
+#### 即时 Evidence（2026-10-25）
+
+- 正式探针为 crates/deepagent-app-core/tests/kernel_v2_e2e/file_listing_policy.rs::audit_file_discovery_does_not_send_denied_file_names_to_model。临时 workspace 只含合成 .env 和 visible.txt；模型先经生产 read_file 读取 .env，得到 sensitive 拒绝，再分别调用正式 list_dir 与 glob，最后检查下一次 Responses 请求中的工具结果。
+- 执行：cargo test -p deepagent-app-core --test kernel_v2_e2e file_listing_policy::audit_file_discovery_does_not_send_denied_file_names_to_model --offline -- --include-ignored --nocapture --exact，结果 0 passed / 1 failed（缺陷预期）。两组真实输出均为：direct_read_denied=true, listing_ok=true, hidden_name_sent=true, visible_name_sent=true；最终断言“拒绝文件名不得进入模型上下文”失败。
+- 同文件控制测试 file_discovery_control_reports_visible_file 通过，说明不是把所有目录发现结果丢弃后才“通过”；普通 visible.txt 仍能被模型看到。测试使用内存 SQLite 与离线 Responses transport，无真实密钥、用户文件或公网。
+
+#### 根因、触发条件与后果
+
+- F-280（category=policy-consistency，status=validated，confidence=high；evidence_ids=[E-280-listing,E-280-control]）：WorkspaceRoot::is_sensitive 只在 resolve_read/resolve_write 路径被调用。ListDirTool::invoke 对 read_dir 返回的每个 entry 直接序列化 name；GlobTool::walk_collect 只跳过固定目录和点目录，不调用 is_sensitive；GrepTool 也从同一未过滤的 walk_collect 读文件。发现工具没有共享 direct-read 的 sensitive-file policy。
+- P-280：workspace 含 .env → 模型调用 read_file(".env") 被拒绝 → 模型改用 list_dir/glob("**") → .env 名称进入 function_call_output 与下一次 DeepSeek wire。泄露可确认凭据/配置文件是否存在、目录命名和项目结构，并为后续 shell/MCP/路径猜测提供 oracle；本轮没有读取 .env 正文，也没有证明模型因此自动获得凭据。
+- 这是独立于 H-279 的策略一致性缺陷：H-279 是 junction 让允许的路径解析到 root 外；H-280 是已明确拒绝的名称仍通过其他工具进入模型。两者都位于文件工具边界，但修复 H-279 的 canonical path 不能自动修复 H-280。
+- 影响范围是敏感文件名枚举及 grep 的潜在正文读取尝试。若产品明确允许“看到名字但不能读内容”，可将级别降为低；当前代码注释把敏感文件描述为“model must not read or rewrite”，且测试不变量要求 discovery 与 direct read 一致，因此按 P2 登记，不夸大为内容泄露或权限提升。
+
+#### 成熟 Agent 与官方/参考对照
+
+- DeepSeek Harness：借鉴/deepseek-harness/packages/api/workspace-files/src/index.ts 的 list/list.spec.ts 明确把 .hidden 普通隐藏文件列出；它的 read API 重点是 workspace scope、symlink 类型和大小限制，并没有本系统这组 .env/credential deny-list。因而不能声称它已经解决 H-280；可迁移的边界是所有 workspace-file 操作共用 Host 解析和结构化错误，若产品需要敏感名保密，则应在 Host discovery 层另加统一 policy，而不是只在 read 入口加规则。实际运行参考测试 `pnpm exec vitest run packages/api/workspace-files/tests/list.spec.ts`：1 个文件、14 项通过。
+- Claude Code：恢复源码显示其工具权限/危险路径判断集中在 Bash/PowerShell 的命令解析和审批层，本轮没有找到与本系统 list_dir/glob 同构且声明“拒绝敏感文件名”的实现；因此只记录为“未找到直接对照”，不把其 shell deny 规则冒充目录发现解决方案。
+- Codex：本轮未找到可直接等同本系统 built-in list_dir/glob 的公开同构接口，也不声称 Codex 对 .env 文件名有相同策略。成熟架构可借鉴的是把 filesystem capability/sandbox policy 放在一个宿主边界，所有 file enumeration 与 read/edit 共用同一 policy snapshot。
+- DeepSeek 官方：Tool Calls 指南说明宿主负责执行函数调用；Responses API 只会把宿主回传的工具结果作为下一轮输入。模型参数、strict、reasoning 和 KV cache 不会替宿主判断“某个文件名是否应出现在目录结果”，所以本项必须在本地 discovery seam 修复。
+
+#### 治理方向（本地设计，未实施）
+
+- 将敏感文件判断提升为唯一 FileVisibilityPolicy，由 read_file、list_dir、glob、grep、move、copy、delete 共同调用；目录枚举遇到敏感 entry 时默认过滤，或返回不带名称的计数/受控占位符，不能一边拒绝正文一边把精确 basename 交给模型。
+- 过滤必须在模型可见结果生成前执行，且与权限 profile/sandbox mode 绑定；不要只在 UI 隐藏，也不要靠 system prompt 告诉模型“不要读取”。如果产品确实需要人工诊断敏感名存在性，应走显式 approval/审计通道，不复用普通模型工具输出。
+- walk_collect 还应在遍历前应用同一物理路径/reparse 校验（配合 H-279），避免一个工具过滤、另一个工具跟随链接；grep 不能因“只返回行”而绕过敏感策略。
+- 回归应覆盖敏感 basename、敏感目录组件、大小写/Unicode 变体、点文件、glob/list/grep/直接 read、ReadAnywhere/Full profile 的明确差异、workspace 变更和事件/replay。默认 Workspace 下拒绝项的名称、内容和可推断路径都不应进入 provider wire，除非显式产品契约允许。
+
+#### 回归记录（持续追加）
+
+- 本轮只新增 H-280 文档证据，未修改生产逻辑；显式故障探针保持 #[ignore]，默认测试绿色不代表策略已统一。
+- 尚未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实敏感文件或跨平台文件系统测试；未处理用户排除的 encrypted-content 问题。后续修复应同时重跑 H-280 与 H-279，避免只修 direct-read 而留下 discovery 绕过。
