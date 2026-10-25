@@ -7242,3 +7242,48 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 与 H-96/H-97 统一调度生命周期 owner：复用现有运行与宿主能力呈现调度 loop 状态，观察其 Result 与异常终结，定义停止/恢复入口；不能仅无限重启同一坏输入形成 panic 风暴，也不能另造审批、取消或 RunStore。H-270 的读取身份、H-271 的日历计算错误、H-96 的派发后落账错误属于不同故障阶段，需同一契约下分开诊断，不能统一吞成“本轮没有任务”。
 - 后续回归应包含所有不可能月日组合、可行闰日、受限 DoW 的 OR 语义、大步长/溢出边界、Date::MAX 邻界、无匹配/搜索耗尽、坏任务不同顺序、已有文件重开、审批及在途 run 与 scheduler 恢复。当前未测试大步长、DST/时区切换、完整桌面重启、release、真实模型或外部任务副作用；两个日期合为同一根因，不重复登记为两个缺陷。
 - 常规验证：`cargo test -p deepagent-app-core --lib cron_service:: --offline` **4 passed / 8 ignored**，含本轮两个对照及 H-270 两个对照；三个本轮未修复缺陷探针默认 ignored。`cargo test -p deepagent-runtime --lib schedule:: --offline` **19 passed**；`cargo test -p deepagent-builtins --lib cron_tools:: --offline` **7 passed**。首次 rustfmt 检查提示新测试两处多行断言格式，已仅调整测试格式；最终 `cargo fmt --all -- --check`、`git diff --check` 通过。未运行全 workspace、Clippy、前端构建或 SAST 扫描，本轮没有生产行为修改。code-audit 使本轮同时核查成功接纳、真实后台任务终结、持久触发与删除恢复，避免把输入字段合法等同于任务可运行。
+
+### H-272：日/月限额只有 run 准入保护，已取得越限用量后正常工具循环仍继续请求模型
+
+**级别：中（P2，条件性费用控制能力缺口）；状态：正式 ChatService 工具循环、已激活报价、文件 SQLite 与后续准入已验证，未修复。** 这是运行内停发能力缺失，不是 DeepSeek 协议错误，也不把当前仅承诺“new run”检查的 check_budget 函数本身说成实现错误。若把 BudgetConfig 的 maximum daily/monthly spend 当作本期消费保护，现有实现不足；若产品明确只提供新 run 准入限制，则必须显式呈现这个边界，不能当作全程硬上限。
+
+#### 首次即时记录与探针修正（2026-10-25）
+
+- 2026-10-25，新增 `tests/kernel_v2_e2e/inflight_budget.rs`，正式 SettingsService/ChatService、文件 SQLite 与已激活 CostService；仅 Responses transport 离线，合成报价使 input=1000、output=10、cached=0 的每次响应精确计 ￥1，不是官方报价或真实扣款。第一响应调用只读 task_list，第二响应最终回答。分别设置日/月 ￥0.5 限额；另有 ￥3 限额和预先经 CostService.record 入账 ￥1 的对照。
+- 首次编译因 CostRecordRequest 不在 crate 根导出而失败，核对 public cost_service 模块后修正导入；这是测试代码错误，不是产品缺陷。首次格式检查也仅提示新测试格式，已运行 rustfmt 格式化该文件。
+- 第一次可执行命令：`cargo test -p deepagent-app-core --test kernel_v2_e2e inflight_budget:: --offline -- --include-ignored --nocapture --test-threads=1`，**1 passed / 3 failed，1.08s**。预先入账对照通过，日/月均0 dispatch；低限额两组均实际2 dispatch、第二请求带配对工具结果、最终费用2元、唯一 succeeded、下一轮 budget exhausted 且0新dispatch。
+- **上述三次失败不能直接作为预期缺陷复现结果**：高限额正常对照同样失败，失败点是探针错误假设“第二 transport 入口前 UI Usage 回调必已收到一次”，实际入口计数为0，而 run 完成后为2。运行事件会异步转发，不能以 UI 回调未消费推断 Runtime 尚未取得供应商 usage。随后取消该错误的固定计数断言，只保留诊断值；未加 sleep、未调整生产调度或预算逻辑。保留原始试验身份，不把第一次结果改写成已全部通过对照。
+
+#### 修正后的正式 Evidence
+
+- E-272-loop：再次执行相同显式命令，**2 passed / 2 failed（缺陷预期），1.37s**。高限额和预先入账两项正常测试均通过，每项覆盖日/月两组；两项低限额故障均在最后“只能有1次模型dispatch”的不变量失败，实际2次。全部组已完成 run、账本读取、后续准入与临时目录清理，非超时、编译失败或 fixture 解析错误。
+- E-272-usage：复用已有 `responses_fixture::{call,completed,text}`，完整 response 带 id/object/created_at/model/status/output/usage、递增 sequence_number，第一响应 completed、调用 task_list，第二请求中存在相同 call_id 的 function_call/function_call_output。每次均 input=1000、output=10、cached=0、total=1010；最终真实 Usage 回调2次，费用事件恰好 Some(2.0)，单条成本行累计 input=2000/output=20/miss=2000/hit=0。没有重试、fallback、hook、compaction、换模型、重建 owner 或异常供应商响应。
+
+| 正式链路样本（日/月各一组） | 准入前已记费用 / 限额 | 实际模型请求 | 第二请求时账本 / check_budget | run 结果 / 最终费用 | 紧接下一轮 |
+|---|---|---|---|---|---|
+| 低限额，故障 | ￥0 / ￥0.5 | 2 | ￥0 / 允许；首响应已完成，工具结果已配对 | 唯一 succeeded / ￥2 | 对应 budget exhausted；0新请求 |
+| 高限额，对照 | ￥0 / ￥3 | 2 | ￥0 / 允许 | 唯一 succeeded / ￥2 | 本组未发下一轮 |
+| 预先正常入账，对照 | ￥1 / ￥0.5 | 0 | 未进入transport | 准入报对应 budget exhausted；唯一 failed / ￥1 | 再次拒绝；0新请求 |
+
+- E-272-order：第二 transport 入口的 UI Usage 计数实际仍为0，不主张“UI已经显示第一笔费用”。确定 Runtime 已取得第一笔 usage 的依据是正式完成响应携带 usage、后续配对工具结果和 `ModelAgent` 的真实消费顺序：`stream_model_attempt` 成功 → `record_provider_response_usage` 同步 `self.usage.record_call` → 处理本次响应并继续工具循环。该调用在任何下一轮 model request 之前，不依赖异步 UI pump；最终2条 Usage 与正确的累计账本也验证了 parser 消费这两次 usage。`RunAssembler` 使用 ChannelSink 并另起 event pump，解释了首次测试的错误时序假设，不新增所谓“UI事件丢失”编号。
+
+#### 根因、影响与去重
+
+- F-272（category=design，status=validated，confidence=high；evidence_ids=[E-272-loop,E-272-usage,E-272-order]）：`CostService::check_budget` 只查询持久费用汇总；生产调用位于 `RunAssembler::run` 的 accept_input_turn 之前。`ModelAgent::record_provider_response_usage` 虽立即累计 RunUsage 并发 Usage，但未向预算 owner 提交运行中消费、也没有下一次付费请求的费用 gate。`AppRunFinalizer::finalize_after_kernel→record_run_cost→record_usage_cost` 最后才将主运行 billed totals 计入唯一账本。
+- P-272：零费用准入成功 → 首次 completed 已取得￥1对应用量、超过￥0.5限额 → task_list正常执行 → 下一请求只有最终账本可查，仍为0，运行内无预算 gate → 第二次模型请求 → run结束一次性准确记￥2 → 下一run才触发 budget exhausted。**最终入账没有漏记**；不是把 RunUsage 的上下文 gauge 误当累计 input，也不涉及 cache-hit 定价错误。
+- 超过限额的第一请求本身不能事后撤销，本轮也不要求供应商在费用尚未知时精确预测成本；可避免的缺口是**已收到完整用量后仍继续发出新的付费请求**。本轮仅两次请求，证明新增一次请求，没有进行长循环、并发放大、真实收费或频率测量。不声称全系统无任何步数、取消或其他运行上限，但这些都不是已配置的人民币日/月预算保护。
+- 风险在长工具循环、自动任务或较高输出成本下更明显：调用方可能以为本期余额越限会让在途 Agent 停止，实际只阻止随后新 run；本轮后果为正常 succeeded、追加第二请求并最终超额记账。影响评P2，前提是使用当前公开 BudgetConfig/with_cost 接口并期待运行内消费保护；没有配置预算的用户不构成该策略失效，不报告真实损失金额。
+- H-224 是周期桶，H-225 是首次报价激活，H-226 是 fallback归价，H-227 是限额生命周期，H-235 是模型hook漏记。这里使用当前时刻、单模型、已激活合成报价、不重启、完整主用量，最终金额准确；这些前置缺陷均无需触发。日/月为同一根因，不拆成两个编号。公开 DTO/后端模块名称为 maximum spend，但 helper明确仅承诺 new run，故本项以**相对成熟Agent的运行内预算能力缺口**登记，不伪称已有全程硬上限契约被某个函数违反。
+
+#### 成熟实现与 DeepSeek 官方对照
+
+- **Claude Code**：本地参考 `借鉴/claudecode/restored-src/src/QueryEngine.ts` 的 `for await (const message of query(...))` 消费循环中检查 `maxBudgetUsd !== undefined && getTotalCost() >= maxBudgetUsd`，命中后返回 `result/subtype=error_max_budget_usd`、包含实际 total_cost_usd/usage/modelUsage，并 return，检查不只发生在开始执行 query 前。`services/api/claude.ts` 处理流式 message_delta 时 calculateUSDCost 并 addToTotalSessionCost；`cost-tracker.ts` 更新模型用量后调用 bootstrap/state.ts::addToTotalCostState，getTotalCost 重导出同一 getTotalCostUSD。共同点是**消费响应时更新费用，并在仍在运行的query消费循环里检查**。
+- 以上是参考源码调用链核查，**未运行完整 Claude Code**，不声称其任何并发、工具副作用或预取路径都能零超支。它是 USD/session预算，非本系统CNY/日月账户预算；可借鉴运行内反馈与显式终止原因，不能直接复制其全局状态，也不将它包装成同构SQLite/并发预留方案。本轮没有发现并验证 Codex 与本系统完全同构的人民币日/月gate，不编造 Codex 已有此实现。
+- **DeepSeek官方**：[Responses参数](https://api-docs.deepseek.com/zh-cn/api/create-response/)明确usage是该响应的输入、输出、缓存命中与总token统计；[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)由宿主执行工具再继续请求。官方协议不会替宿主完成本地日/月预算控制。这里供应商usage已足以在首响应后按当前报价估算消费，问题是Harness没有把运行内计量反馈到下一次dispatch；不是要求DeepSeek额外返回本地budget字段，也不是缓存协议不兼容。文档于2026-10-25联网复核，探针金额是人为合成报价×合成用量，不是当日官方报价或实际扣款。
+
+#### 治理方向（本地设计，未实施）
+
+- 在既有唯一 CostService/Provider seam 与 RuntimeEngine 之间定义运行中计量和dispatch前检查契约，保留日/月/账户作用域；每次已取得的usage形成可幂等识别的计量，不只等run最终账本。运行内检查必须读取已结算加在途已测消费；仅在每轮再次调用当前 check_budget 仍会看到旧账本，不能解决根因。
+- 若选择逐请求入账，finalizer需按已结算身份归并，不能再对相同billed totals重复扣算；若选择保留finalizer汇总，需由同一owner维护活动消费并定义原子结算/释放。不能在UI收到Usage后另写第二套预算中心，也不能在Desktop、CLI、SDK各补一段。报价缺失、换模型、附属调用、取消与重试应有明确状态和记账归属；不把本轮未测的并发预留一起宣称已解决。
+- 达限后停止**新的付费请求**，沿既有RunPhase/TerminalKind产生单一可审计原因，保留已取得工具输出、usage与可恢复会话；不将预算停发伪装为正常回答或吞错误。是否立即阻止已授权本地工具、副作用如何处理需要明确产品契约；本轮只用了只读task_list，没有据此验证写操作/审批。
+- 回归应覆盖首响应越限/恰好等限、零cache/部分cache、首调用超额后不发下一请求、每步不同模型报价、usage缺失、失败/取消/重试、hook/compaction/子Agent、并发run、周期切换、重启/崩溃及正确的唯一结算。若只保留admission语义，UI/协议文档需明确“限制新run，不会中止在途run”；不能把改文案称为已实现硬限额。
