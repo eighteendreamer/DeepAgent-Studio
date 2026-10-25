@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| 主运行后标题请求的成本与预算归属 | 正式ChatService主运行成功且无标题后，标题真实派发并持久化；SQLite重开仍仅主用量；同服务普通run已被预算拦截时标题仍派发 | H-63补充证据（P2），不另计新编号；空历史/手动命名控制通过；仅离线合成usage/报价，未运行Tauri或真实供应商 |
 | DeepSeek 官方离线 tokenizer 与上下文压力计量 | 固定摘要的官方tokenizer实测四类合成文本；中文/符号在共享meter与正式ModelAgent均漏过54272压力阈值，英文与低压力代码控制正常 | 新增H-297（P3）；原始文本离线基准，不冒称当前线上Flash/Pro精确计数；无真实provider拒绝、费用或质量下降实测 |
 | MCP 工具执行错误的事件、持久化与模型输入 | 同一正式 ChatService 夹具的 isError=false/true/缺省三样本；文件 SQLite 重开后核对工具完成事件、action、会话原始结果及下一请求唯一关联结果 | 本轮排误，不新增 H 编号：true 保持 Failed/error，false及缺省保持 Completed/ok；不关闭 H-38/H-127/H-138/H-139/H-278，不代表整个MCP通过 |
 | DeepSeek 模型目录的部分容量字段合并 | 正式发现和 catalog 往返保留 max_output_tokens=8192，context_window 缺失后 resolver 却返回384000/32000并进入 ContextPolicy；完整元数据与全缺失控制正常 | 新增 H-296（P3，部分元数据条件）；当前官方示例不触发，未实测线上响应、真实压缩或 provider 拒绝 |
@@ -1698,6 +1699,8 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 ### H-63：对抗复核和停滞分类丢弃已返回的 usage，现有会话成本账本漏记附属请求
 
 **级别：中（P2）；范围：开启上述可选复核/分类，附属模型请求成功并返回 usage。** 默认关闭开关不能代替开启后的成本正确性；不把这两条链路外推为所有后台模型请求都漏计。
+
+2026-10-25另以正式ChatService验证了主运行结束后的标题入口，作为本项补充证据登记于文末；该入口不依赖上述可选开关。原节的复核/分类覆盖范围保持不变，不将未测附属调用一概判为失败。
 
 - `verification_panel.rs::ModelSkepticSpawner::spawn` 得到 Response 后只返回 output_text_projection；`stall_classifier.rs::ModelStallClassifier::classify` 只解析 output_text_projection，均未转交 response.usage。对应 traits 仅提供文本/判定，不能把 usage 带回 RuntimeEngine/ModelAgent。ModelClient 的非取消 stream_response 只组装 Response，本身没有数据库/会话费用记录。`run_assembler.rs` 向正式 AppRunFinalizer 传递的 usage 和 side_usage 均来自主 agent，未取得上述附属响应。
 - 扩展共享离线 transport，让主模型的真实 response.completed 带 usage=input_tokens 11、output_tokens 3、total_tokens 14；每个检查请求真实终帧带 101/7/108。通过生产 ModelClient/累积器，而非直接给 finalizer 填想要的统计数字。保留主回答、正常判定和生命周期对照；在 Kernel 返回后按生产组装的同样来源传 `agent.cumulative_usage()` / `agent.side_usage()`，调用真实 AppRunFinalizer、CostService 和同一真实 SQLite costs 表，读取 CostSummary。
@@ -8446,3 +8449,37 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo clippy -p deepagent-context -p deepagent-runtime --tests --offline -- -D warnings`实际退出1，仍被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop阻断，不报告lint通过、不关闭lint或改无关代码。`cargo fmt --all -- --check`与`git diff --check`通过，人工核对报告、脚本、两测试及共享fixture。
 - 独立复核该离线基准时，在自己的Python环境执行 `python -m pip install --target target/audit-deepseek-tokenizer/python-packages --no-deps --only-binary=:all: tokenizers==0.23.3`；从上文官方链接下载并解压tokenizer到同一target目录，再执行 `python scripts/audit_deepseek_tokenizer.py --tokenizer target/audit-deepseek-tokenizer/unpacked/deepseek_v4_tokenizer/tokenizer.json --python-packages target/audit-deepseek-tokenizer/python-packages --check`。下载内容变化会因摘要不匹配被明确拒绝，不默默接受新版计数。
 - 本轮只新增两个测试target、合成fixture、离线复核脚本并追加报告；没有修改生产Rust、Cargo依赖/lock、协议、配置、权限、沙箱、前端或数据格式，不提交下载包、二进制wheel或target产物，用户原有未跟踪项保持不动。未跑整个workspace、完整AppCore/Desktop、真实provider或参考工程；不声称全系统审计完成。
+
+### H-63 补充证据：正式主运行结束后的会话标题请求同样脱离成本与预算 owner（2026-10-25）
+
+**首次有效复现后即时记录；P2、未修复。不新增 H-298：这是 H-63/H-235 已识别的附属模型消费归属缺口的新生产入口，不是新的成本存储根因。** 原 H-63 的动态覆盖仅为复核与分类，本轮扩展到标题；没有重跑这些已登记探针，也没有处理 encrypted-content 报错。
+
+- 新增 `crates/deepagent-app-core/tests/kernel_v2_e2e/session_title_usage.rs`，复用已有完整 Responses fixture。调用正式 SettingsService、ChatService、ModelClient、主运行 finalizer、CostService 和文件 SQLite；仅使用临时目录、离线 HttpTransport 与合成 usage。明确配置每百万 token 1 CNY 的合成报价（所有输入/输出分类相同），不引用或伪造官方价格。
+- 首次测试编译因测试作者误写 Timestamp 的模块路径失败；查当前 `deepagent-core/src/clock.rs` 后修正导入。这不是生产缺陷，不作为复现证据。随后首次有效命令 `cargo test -p deepagent-app-core --test kernel_v2_e2e session_title_usage --offline -- --include-ignored --nocapture`：**1 passed / 1 failed（预期），测试体0.70秒，编译31.82秒**。
+- 先由 `create_session(None)` 和正常 `run_in_session` 完成主运行，验证唯一 succeeded 终态、主调用已入账、会话仍 title=None。因此不是靠直接插入异常历史、手工清除标题制造可达性。随后调用桌面使用的 `maybe_generate_session_title`，真实序列化第二个请求，确认 max_output_tokens=48、reasoning.effort=none，并成功持久化“离线标题计量验收”。
+- 主请求返回 input/output=1000/100、cached=800；标题成功返回2000/7、cached=1500。普通无预算场景实际请求2次，但账本只有1行，input/output/cached/missed=1000/100/800/200、总价0.0011；正确合计应为3000/107/2300/700、0.003107。独立连接重新打开文件库后仍一致缺少标题量，不是仅UI缓存或实时显示延迟。
+- 已耗预算场景：主运行后设置 daily_limit=0.0005，`check_budget` 与同一个ChatService的下一次普通run均明确报 daily budget exhausted，且没有新增模型请求；紧接着标题入口仍实际派发第二次请求、成功保存标题，账本仍只有主请求一行。证明该入口没有共享已生效的预算接纳，**不声称预算能预知尚未返回的费用或保证运行内硬停止**。
+- 空历史控制0请求/0行，已有用户标题控制仅主运行1请求/1行、标题入口返回None且用户标题不变，均通过。新故障探针保持正确期望与ignore，不把观察到的漏账改写为正常通过。后续补充成熟实现对照、影响和默认回归结果。
+
+#### 根因与成熟实现的实际边界
+
+- 当前 `session_title.rs::generate_session_title`从正式事件历史构造标题请求，但只消费`output_text_projection`并返回Option<String>，`response.usage`没有转交任何成本owner；`ChatService::maybe_generate_session_title`只传db/settings/transport，不传已有CostService。ModelClient负责请求和响应组装，本身不是会话账本，不会自动为任意调用写costs。普通run的`run_assembler.rs`明确执行`cost.check_budget`，标题入口没有经过该接纳点。
+- `apps/desktop/src-tauri/src/lib.rs`在`run_in_session`返回并发送`session://completed`后调用上述helper，再发送`session://title-updated`。所以主finalizer已经结束，事后把量只累加到旧agent对象不能可靠提交；需要按附属请求身份独立归集。本轮动态执行该正式helper，但未启动Tauri UI，桌面先后顺序为静态调用证据；没有测试重命名竞态、取消、超时或供应商错误，不能从本项顺便登记这些问题。
+- **Claude Code（本地恢复源码，静态对照）**：`借鉴/claudecode/restored-src/src/utils/sessionTitle.ts::generateSessionTitle`用querySource=generate_session_title调用公共`queryHaiku`，不是另起裸HTTP；`services/api/claude.ts::queryHaiku`经`queryModelWithoutStreaming`继续消费公共queryModel生成器。其message_delta在yield前用真实usage和模型调用`calculateUSDCost/addToTotalSessionCost`，非流式fallback在finally归集。因此标题函数只返回字符串不等于它丢成本，关键在公共消费层是否已归集。没有运行恢复工程，不宣称其能满足本系统SQLite归属或每项预算契约。
+- **Codex（本地源码，静态对照）**：`借鉴/codex/codex-rs/tui/src/app/thread_title.rs`为标题配置独立模型/用途`ThreadSource::Feature(thread_title)`，经`temporary_structured_request.rs`复用现有app-server的ThreadStart/TurnStart/TurnInterrupt和临时ephemeral thread，而不是UI直接创建供应商client。其取消、工具隔离、输入截断等是可读设计，但本轮未动态验证；尤其不能把“经过临时thread”冒称“费用一定归到原可见会话”或已经有本系统每日人民币预算。这里借鉴的是附属任务也走统一运行入口和明确用途身份，而非建议照搬另建本系统run store。
+- **DeepSeek Harness（本地源码，静态对照）**：`packages/session/session-title-llm/src/index.ts::generateSessionTitleWithLlm`传递精确provider/model、sessionId、purpose=session-title与deadline signal，经公共ctx.llm.stream消费；另记title-llm-request并配置maxInputBytes/maxOutputTokens。它的返回值同样主要为标题与来源；所读`token-meter/src/usage-projection.ts`只归集assistant/message和assistant/attempt，并不足以证明标题已进入完整费用账本。只能借鉴明确的归属与调用策略字段，不能伪称该参考已完全解决本项。
+- **DeepSeek官方**：[Responses参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)当前定义input_tokens、input_tokens_details.cached_tokens、output_tokens和total_tokens，max_output_tokens只限制输出，不代表标题输入免费。测试完整返回这些合成字段，cached=1500不是实测缓存命中率；本文没有把漏账归咎于模型、API或KV缓存构建。
+
+#### 影响、治理方向与验收范围
+
+- 已实证的影响是成功的标题附属请求没有进入会话token/cache/费用事实，且不服从已经生效的预算接纳；正常完成一个无标题会话即具有触发路径，不依赖可选复核/hook。单次标题输出上限48，不代表输入也有48token限制；当前实现最多取前三条user及间隔assistant，未见按输入bytes/token截断。但本轮没有长上下文/真实服务端计量测试，**不能据此定量估算生产费用、频次或超窗失败**。成功标题后会有非空title而短路后续请求，也不能描述为每turn必然无限重复。
+- P2沿用H-63的成本事实/预算一致性定级，不升级为数据泄漏、执行权限绕过或服务端实际超额扣费；没有真实API key、真实收费、公网请求或用户对话。测试内0.0011/0.003107只用于可计算的合成价对照，不代表真实DeepSeek账单。
+- 本地设计建议：H-14/H-63/H-133/H-235和本次标题证据已反复说明治理点是**公共模型消费的归属与结算契约**。在现有provider seam/CostService/SideCall内明确父session/run、purpose、实际模型路由、attempt、raw/normalized usage和幂等身份；所有附属调用在dispatch前共用预算接纳、usage到达后独立于标题是否采用提交既有账本。不要为标题单建ledger/审批/取消体系，也不要仅在字符串返回后临时猜token或改成一个无来源的总量加法。
+- 主运行终态之后的附属任务必须有可审计生命周期，预算耗尽时标题可退回现有命名行为而不改写主run成功。标题完成、空输出、被手动标题取代、超时/取消、错误终帧有usage、重试与持久化失败均需验收；账本提交不能依赖最终显示了哪个标题，不能把附属量混为主上下文占用或在底层/主finalizer重复结算。本轮只验证正常completed、普通预算拒绝、空历史与提前手动命名，不声称这些后续场景已通过。
+
+#### 本轮回归与交付边界
+
+- 初次有效故障探针后先写入事实，再做参考对照与回归。新增探针只显式执行一次，未重跑H-63原复核/分类、H-235 hook或其他已知失败项。之后将测试装配与普通预算拒绝对照提取为小型helper；没有改生产行为或把失败断言改为接受漏账。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`首次 **98 passed / 93 ignored / 0 failed，15.30秒**；测试helper拆分并格式化后同命令 **98 passed / 93 ignored / 0 failed，14.19秒，编译30.22秒**。默认回归包括本轮空历史/用户命名控制，新增故障项仍ignored；不把默认全绿说成漏账修复。
+- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`退出1，因未修改的`deepagent-models/src/client.rs:355` clone_on_copy和`deepagent-persistence/src/run_store.rs:127` explicit_counter_loop阻断。没有关闭lint或顺手修改这两处代码。`cargo fmt --all -- --check`、`git diff --check`均通过。
+- 本轮仅新增标题集成测试、注册测试模块与更新本报告。未运行全workspace、整个AppCore单元/其他集成target、Tauri/前端构建或手动UI、真实模型/账单，以及参考工程测试；没有生产修复、配置/协议/权限/沙箱变更或数据迁移。测试数据库均位于自动清理临时目录，既有用户未跟踪文件不读取、不暂存；全系统审计继续保持未完成。
