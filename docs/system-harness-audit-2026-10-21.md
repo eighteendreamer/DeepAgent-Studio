@@ -12,6 +12,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| 模型摘要的采用资格与冷恢复 | 空对象、无关对象、全空字段均被当作成功摘要，下一真实 wire 与文件重开后的 Surface 不含旧事实；原始事件与记录路径仍保留 | 新增 H-268（P2）；正常结构化摘要和非 JSON heuristic 降级对照通过，未测试真实 DeepSeek 产生异常摘要的频率或模型按记录指针恢复 |
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | SSH 远端主机身份验证 | 正式 SshService 通过 loopback 连上临时随机服务器密钥；同一地址的 known_hosts 对照拒绝不匹配密钥 | 已确认 H-125；未连接公网或用户服务器 |
 | 本地 MCP 子进程环境授权 | 隔离宿主只注入虚构 canary，经正式 transport 完成 initialize/tools/list；空配置仍继承未声明 secret 和小写 token，显式覆盖对照通过 | 已确认 H-135；仅 Windows 本机 stdio，没有读取真实凭据或验证公网外传 |
@@ -7108,3 +7109,35 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - **本地治理建议，未实施**：沿既有 CLI transport 建立唯一活动进程 owner，在 generator finally 和显式 close 中复用有界终止/等待与 reader 清理；明确 concurrent runJsonl、close 后调用、信号/解析错误、正常终态后 session-memory 等待的所有权。若要求业务可恢复取消，应优先通过现有 Harness turn/interrupt、取消树和 RunStore 收尾；一段宽泛 child.kill 不能替代协议级取消，也不能用另建运行中心解决。
 - 这是宿主 SDK 资源生命周期问题，不是 DeepSeek Responses/tool/cache 字段问题；provider 的流式协议不能自动替应用回收本机 CLI。验收需保留完整消费对照，并覆盖 for-await break（本轮与显式 iterator.return 均已验证）、malformed JSON、close 期间读取、并发迭代、取消/强制终止升级、进程树、持久化终态及真实 CLI 离线运行。当前只确认本机直接 child 的后置工作，未运行真实 Rust CLI、Runtime/RunStore、桌面、模型、跨平台或参考工程。
 - 验证收尾：`pnpm test`（含 build）**5 passed**，`pnpm typecheck` 通过；最终新探针默认 **1 passed / 4 skipped**，显式开启为 **1 passed / 4 failed（预期复现）**。`cargo fmt --all -- --check`、`git diff --check` 通过；未运行 workspace 测试、Clippy 或桌面构建，本轮只有 test-only JavaScript 与 Markdown。code-audit 促使本轮用后置文件握手证明实际工作仍在继续，而非只凭缺少 finally 或进程 PID 就登记问题；全系统目标仍未完成。
+
+### H-268：结构化摘要接受空对象与无关 JSON，绕过降级后持续遮蔽原历史
+
+**级别：中（P2，条件性上下文完整性）；状态：正式 ModelAgent/原生压缩、下一模型请求及文件数据库重开已复现，未修复。** 前提是需要模型摘要的历史超过压缩阈值，供应商正常 completed，但摘要正文为 `{}`、无关 JSON 对象或全部为空的既定字段。不是正常摘要必然丢事实，也不是原始事件被删除；本项与 H-14 的未采用摘要 usage 丢失、H-11 的重复文本边界定位不同。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：新增 test-only `crates/deepagent-app-core/src/context_summary_audit.rs`，由 `context_runtime.rs` 的 cfg(test) 子模块加载。真实文件 SQLite/Session、ModelAgent、HookedReactiveContextCompactor、keep-window、请求序列化及恢复投影；供应商使用既有 ScriptedTransport 回放，不访问真实用户数据或公网，不改生产逻辑。
+- E-268-setup：初次探针未装配生产使用的 snip 用户标签，导致正常对照与故障组都先停在 live/replay 全等断言（0 passed / 5 failed）。这不是本项缺陷证据。补齐既有 `with_snip_tool` 装配，并将记录指针断言按实际中文格式校正后才复跑；没有修改产品以制造成功对照。
+- E-268-first：`cargo test -p deepagent-app-core --lib context_runtime::summary_audit --offline -- --include-ignored --nocapture`，**2 passed / 3 failed（预期），测试体0.51s**。三故障组均输出 `split=20, tokens=68739->14384, boundaries=1, raw_fact=true, summary_fact=false, wire_fact=false, replay_fact=false, side_usage=120+18`。在首轮24条唯一历史的第二条置入虚构进度事实，断言其处于被摘要区域且不在尾部；真实摘要请求确实收到它。压缩返回后，正式下一请求没有事实，所有数据库 owner 关闭后重开，恢复结果与该 wire 全等且仍无事实。
+- E-268-controls：正常结构化摘要显式携带同一事实，结果 `tokens=68739->11543`；非 JSON 文本触发既有 heuristic fallback，结果 `tokens=68739->14398`。两组均 `boundaries=1, raw_fact=true, summary_fact=true, wire_fact=true, replay_fact=true`，通过完整断言。各组真实摘要 usage 均进入 side_usage，不复报 H-14。
+- E-268-preservation：三故障组的原始 ResponseItemAppended 仍含事实，摘要仍附带未压缩原始事件的路径。已证明的是**活动模型上下文及恢复视图遮蔽该事实**，不是不可恢复的数据库删除；未测试模型是否会主动使用指针找回内容，也没有证明真实 DeepSeek 返回这些正文的频率或其后续任务质量。
+
+#### Finding 与调用路径
+
+- F-268（category=design，status=validated，confidence=high）：`crates/deepagent-context/src/model_compactor.rs::SummaryJson` 的所有字段带 serde(default)，缺字段被补空、未知字段被忽略；`parse_summary_json` 只要求反序列化成功。`try_model_summary` 将这些对象视作 Some，`merge_into_prior` 再注入最新旧用户输入作为 fallback goal；因此不是 None，不触发已存在的 heuristic fallback。上层将固定标题、goal 和记录指针包装成非空字符串，无法再靠字符串非空区分“模型没有生成摘要”。
+- P-268：ModelAgent 阈值检查 → `compact_response_items_inner` → `summarize_response_item_zone_cancelled` → ModelCompactor 正常完成/解析空结构 → 包装成 TaskSummary → 仅以 `tokens_after < tokens_before` 判定有效 → `record_native_boundary` 写 ContextCompacted → 采用替换历史 → 主请求不含旧事实 → SQLite重开按同一边界继续遮蔽。短并不等于保留了可继续任务的检查点。
+- 条件触发后，已完成工作、待办、决策或失败经验可能从直接可见上下文消失，后续可能重复工作、重复走死路或遗漏约束；本次只验证一个确定事实的可见性，不声称已发生真实工具误操作、损失或供应商计费异常。尾部、系统 instructions 和原始记录仍在，因此严重度不按不可逆数据丢失上调。
+
+#### 成熟实现对照及 DeepSeek 适配意义
+
+- **Grok Build，退化摘要在重建前被拒绝**：`借鉴/grok-build/crates/common/xai-grok-compaction/src/code_compaction/summary.rs::is_degenerate_summary` 先清理模型输出，再按 `config.rs::MIN_SUMMARY_SEED_CHARS=500` 判断过短；`sample.rs::sample_summary_with_retries` 将空/退化摘要作为有限重试，耗尽返回 SampleRetryError::Empty。`compact.rs::apply_full_replace_compaction` 在采样成功后才 assemble，错误路径不会返回一份假成功的新历史。三种本轮注入正文均短于其当前阈值；这是源码判断，未运行参考工程。长度门槛不能保证语义完整，更不建议为本系统的短 JSON 摘要照搬500字符。
+- **Codex，限定 post-turn 分支**：`借鉴/codex/codex-rs/core/src/compact.rs` 在 PostTurn 阶段取 assistant summary 后过滤 trim 为空的值，缺少摘要则返回错误，在 replace_compacted_history 之前停止；非 PostTurn 分支仍有 unwrap_or_default，不能宣称 Codex 所有路径都拒绝空摘要。它也不是 JSON 摘要解析器，不据此声称它会识别 `{}` 的语义。
+- **DeepSeek Harness，摘要内容检查与提交分开**：`借鉴/deepseek-harness/packages/compaction/compaction-basic/src/summarizer.ts::summarizeWithLlm` 在 framing 前要求至少一个非空文本块，拒绝截断/错误/aborted；`region.ts::compactSurfaceRegion` 先完成 summarizeCompaction 与稳定性检查，再进入 commitCompactionBody。纯文本 `{}` 仍非空，不能声称此检查直接解决本系统的 JSON 字段缺省；可借鉴的是在注入固定标题前检验真实摘要，以及摘要失败不进入成功替换提交。
+- DeepSeek 官方 [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)明确其为无状态接口，历史由客户端回传；[指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)中 completed 是响应生成完成的终态，不是本地检查点语义有效的证明。推论：客户端采用空检查点后，不能依靠服务端保存的旧会话自动补全遗漏；这不是 DeepSeek 不兼容缺陷，而是 Harness 降低模型连续工作的可靠性。本轮未测 KV cache 命中率，不以缓存能够命中推导上下文仍完整。
+
+#### 治理方向（本地设计，未实施）
+
+- 在已有 ModelCompactor/TaskSummary 边界区分解析成功与可采用摘要，避免任意对象经默认字段和 fallback goal 伪装成有效检查点。缺失必要字段、完全无模型生成的任务状态，应走明确失败/既有降级；不能只在最终包装字符串上检查非空，因为标题、goal和记录路径总能让它非空。哪些最小字段必须存在、是否允许无进度的 goal-only 摘要，需要按当前任务与原始区域定义，不能武断要求每个 section 都非空。
+- 在既有压缩提交链复用唯一 validator，采用前同时验证内容资格、体积收益、工具配对与历史边界；不要为 native/legacy/prefire 各复制一套判定。失败时保留原 Surface/边界，或明确采用经过校验的保守 fallback，并按已有 H-14 的请求归属治理保留已发生 usage；不得因拒绝摘要而丢账，也不能把启发式降级宣称为无损摘要。
+- 回归至少包括本轮三类空对象、空白字段/数组、缺键与类型错误、合法无某类进度、只有 goal、正常摘要、heuristic fallback、notes 复用、prefire、取消/截断、工具尾部、边界写入失败和数据库重开。当前仅实跑主动阈值的正式 ModelAgent→原生摘要链；没有动态覆盖 compatibility compact、prefire、notes 复用、完整 ChatService/桌面、真实供应商或参考项目。后续验证不得据本轮样本宣布这些分支已正确。
+- 验证收尾：最终同一显式故障命令增加 `--test-threads=1`，仍 **2 passed / 3 failed（预期），2.14s**，三故障组均到达最终事实保留断言。`cargo test -p deepagent-app-core --lib context_runtime:: --offline` 为 **26 passed / 9 ignored**（新缺陷探针默认 ignored，不冒充修复）；`cargo test -p deepagent-context --offline` 为 **54 passed**；`cargo fmt --all -- --check`、`git diff --check` 通过。未运行全 workspace、Clippy、桌面构建或 SAST 扫描，本轮只新增 test-only 装配/探针和 Markdown。code-audit 使本轮分开记录测试装配失败、可重复的产品行为和潜在业务后果；生产逻辑未修，全系统审计仍在进行。

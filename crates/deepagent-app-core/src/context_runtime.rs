@@ -2048,6 +2048,10 @@ or updated resources.\n\n<invoked-skills>\n",
 }
 
 #[cfg(test)]
+#[path = "context_summary_audit.rs"]
+mod summary_audit;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use deepagent_context::TokenCounter;
