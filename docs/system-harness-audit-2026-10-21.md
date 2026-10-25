@@ -6976,7 +6976,9 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 修复应在同一个 repair 边界选择单一策略：按整批先建 call 索引，再按 `call_id`/类型配对；若 output 先于 call 仍违反本地有序历史契约，应返回结构化 `MalformedHistory` 并阻止发送，或在明确保留真实 output 的同时重新排序。不能继续依赖扫描时序、无诊断地合成失败。function/custom 类型、重复 ID、孤立 output、压缩/replay、重启和 `replace_messages` 两入口需共用该校验。
 - 未验证真实桌面恢复、真实 DeepSeek 400 行为、跨进程迁移或生产修复；本项不与 H-80（function/custom 类型混配）、H-149（重复 call_id）或 H-174（公开 replace_messages 绕过 repair）重复：H-261 专门是**同 ID、同类型、但 output 先于 call 导致真实结果被静默替换**。
 
-### H-262：附件身份清洗保留 `.`/`..`，空 ID 与父级 bucket 可删除或覆盖附件根外目录
+### H-58 的 2026-10-25 复核归档（原 H-262，撤销独立计数）
+
+**编号校正（2026-10-25）：** 以下删除与导入探针及同一 sanitize_segment 根因，已完整登记于 H-58 及其“导入覆盖”补充节。此前 3f08928a 再次编号为 H-262 是重复登记，不是新发现；本节只保留该轮复核的来源与输出，不再计入独立问题。原 E-262/F-262/P-262 标签仅为追溯旧记录，不代表独立缺陷。另一次重复 H-264 已由 5ac2924e 撤销，原 H-126 仍为唯一对应项。
 
 **级别：高（P1，条件性本地附件完整性/隔离边界）；状态：正式 `AttachmentService` 的 ingest/remove 与 Tauri command 边界复现，未修复。** 触发条件是调用方提交 `AttachmentIngestDto.id`、`session_id` 或 `attachment_remove` 的 `id`/`session_id` 为 `.`、`..`、空字符串或等价的父级路径片段。这里不需要公网、模型或真实用户文件；探针只在临时目录建立 canary。
 
@@ -6991,7 +6993,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - F-262：severity=high，category=integrity/isolation，status=validated，confidence=high，location=`crates/deepagent-app-core/src/attachment_service.rs::sanitize_segment`、`AttachmentService::ingest`、`AttachmentService::remove`。`sanitize_segment` 允许 `.`，因此 `".."` 保持为路径父组件；空值在 ingest 侧 fallback 为新 id，但 remove 侧只拼接空段，最终目标就是 `root/session_bucket`。服务随后对该目标调用 `fs::create_dir_all`、`fs::write` 或 `fs::remove_dir_all`，没有拒绝保留段、canonicalize 后的 root containment 检查，也没有确认目标必须是单个 attachment directory。
 - P-262-remove（path_type=callflow）：Tauri `attachment_remove(session_id,id)` → `AttachmentService::remove` → `sanitize_segment` → `root.join(bucket).join(id)` → `remove_dir_all`。`id=""`/`.` 使目标成为整个 session bucket；`session_id=".."` 使目标离开 attachment root。
 - P-262-ingest（path_type=callflow）：Tauri `attachment_ingest(AttachmentIngestDto)` → `AttachmentService::ingest` → `sanitize_segment` → `create_dir_all`/`persist_original`/`write_metadata`。`session_id=".."` 让持久化目录落在 root 的父级，随后同名 `canary.txt` 被真实覆盖；返回 DTO 还把该越界路径当成成功的 `storage_dir`。
-- 这不是 H-250/H-252/H-253/H-254 的 canvas artifact 索引、digest 或 workspace scope 问题，也不是 H-169 的图片 MIME 校验；H-262 专门是 composer attachment 的路径身份边界。当前探针证明的是可控 DTO 到本地临时目录的删除/覆盖，不把它扩大为任意系统文件读写或远程利用。
+- 这不是 H-250/H-252/H-253/H-254 的 canvas artifact 索引、digest 或 workspace scope 问题，也不是 H-169 的图片 MIME 校验；本项归属已有 H-58 的 composer attachment 路径身份边界。当前探针证明的是可控 DTO 到本地临时目录的删除/覆盖，不把它扩大为任意系统文件读写或远程利用。
 
 #### 官方与成熟 Agent 对照
 
