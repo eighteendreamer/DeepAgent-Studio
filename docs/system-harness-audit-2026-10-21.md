@@ -847,7 +847,7 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 ### H-20：DAG 成功节点的工作树被强制删除，文件未交付给主目录或下游
 
-**已修复并验收（2026-10-26；Windows / Git 2.54.0.windows.1；独立修复提交生成后回填）。** 取消 scheduler 自动删除；以独立临时 index 生成 commit-tree 快照及只创建、不解引用的宿主 ref，下游在 merge-tree 无冲突合并后的 detached 基线运行，冲突/发布失败明确失败且保留源文件。唯一工作树名复用既有子运行 id，路径随原 SubagentRunStore 原子创建，沿原 run_events 重放；恢复原树、缺目录拒绝、显式 cleanup 及清理后拒绝退回父目录均验收。报告与 UI summary 同源投影路径/id/revision；不改主目录、源 index 或源 HEAD，不新增数据库/审批/取消链。该快照组合为本地设计，成熟参考仅支持产出保留原则。
+**已修复并验收（2026-10-26；Windows / Git 2.54.0.windows.1；修复提交 `ae193ea8`）。** 取消 scheduler 自动删除；以独立临时 index 生成 commit-tree 快照及只创建、不解引用的宿主 ref，下游在 merge-tree 无冲突合并后的 detached 基线运行，冲突/发布失败明确失败且保留源文件。唯一工作树名复用既有子运行 id，路径随原 SubagentRunStore 原子创建，沿原 run_events 重放；恢复原树、缺目录拒绝、显式 cleanup 及清理后拒绝退回父目录均验收。报告与 UI summary 同源投影路径/id/revision；不改主目录、源 index 或源 HEAD，不新增数据库/审批/取消链。该快照组合为本地设计，成熟参考仅支持产出保留原则。
 
 本项最终证据：subagents **25 passed / 0 failed / 0 ignored**（原探针已转默认），AppCore lib **1106 passed / 0 failed / 80 ignored**，kernel_v2_e2e **107 passed / 0 failed / 90 ignored**；fmt/diff 检查通过。subagents 全 target 严格 lint 通过；workspace 仍失败于独立 H-306，AppCore 严格 lint 仍被未修改文件诊断阻断（含 no-deps 的10项），普通 lib lint 退出0并保留 warning，不声明严格全绿。前后命令与中间失败逐条保存在 [修复进度](system-harness-repair-progress.md)。
 
