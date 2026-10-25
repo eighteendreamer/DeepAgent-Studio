@@ -3299,6 +3299,14 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 - 在现有 CanvasArtifactService/provider seam 定义明确的 image output byte budget；下载优先检查声明长度，但不能信任或依赖 `Content-Length`，必须按流累计并在超过预算的第一个 chunk 时中止、清理 staging、不得创建 artifact/Completed。inline base64 JSON 同样在解码前估算并在解码后硬性校验，避免只约束 URL 下载。单文件限制与 workspace 总配额/并发预算分开设计；budget 需按真实供应商图像格式和工作流确定，不直接把用户输入附件 32 MiB 或 Penguin 的 10 MiB 照搬为通用规格。
 - 验收覆盖长度缺失/谎报/超限、chunked 超限、刚好等于预算、inline base64 超限、网络取消、写盘失败及多节点并发；检查内存行为为流式有界、无超限 artifact、staging 清理、节点失败和唯一 run 终态。H-165 地址授权与 H-164 取消回归需分别保留，互不替代。
 
+### DeepSeek Responses 无状态字段复核：未发现误用（排除项，2026-10-25）
+
+本轮重新核对官方 [Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)与[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)：DeepSeek Responses 是无状态接口，服务端不保存会话；多轮必须由客户端在每次请求的 `input` 中回传完整历史。官方不提供 OpenAI 风格的 `previous_response_id`、`conversation`、`store`、`prompt_cache_key` 或 `prompt_cache_retention` 作为本地会话续接/缓存控制手段。
+
+源码静态核查确认 `deepagent-models::ResponseRequest` 只序列化 DeepSeek 当前支持的 `model`、`instructions`、`input`、采样/推理参数、工具、`text` 与 `user`；全局搜索没有发现上述状态字段被加入 Responses wire。正式 `cache_prefix::cold_cache_run` 还通过 `next.get("previous_response_id").is_none()` 断言冷重建请求不会偷偷依赖服务端历史。此项不是动态供应商调用，不能据此证明真实服务端缓存命中率；它只排除了“误把 OpenAI/Codex 状态字段带入 DeepSeek”这一架构错误。
+
+这一区分很重要：本报告的 H-168 仍然成立，因为它关注的是宿主把易变 context 放在顶层 `instructions`、导致历史前缀之前发生变化；不能通过添加 DeepSeek 不支持的缓存 key 或 previous-response 字段规避。KV Cache 指南只说明服务端自动、尽力而为地匹配完整前缀单元，缓存命中仍应以返回 usage 观察。
+
 ### H-168：易变 instructions 位于历史之前，动态变化截断多轮 KV cache 前缀
 
 **级别：中（P2，持续性性能/费用问题）；触发条件：同一 Responses 会话连续请求之间，工作区结构、日期、权限、插件/MCP/skills 或其他 leading dynamic instructions 发生变化。** 该缺口不改变本地保存的会话历史，也没有证据表明它会直接令回答错误；影响是上一轮完整历史不能继续作为本轮的相同请求前缀，因而降低 DeepSeek 自动缓存可复用范围，并可能增加首 token 延迟与未命中输入费用。
