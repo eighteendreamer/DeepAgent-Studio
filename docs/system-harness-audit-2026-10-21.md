@@ -7005,3 +7005,37 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 触发后，恶意或损坏的前端/插件 payload 可删除同一 session 的全部附件，或把新附件写到 attachment root 的父目录并覆盖同名 sibling 文件。若附件 root 与其他本地状态相邻，后果可能是用户可见附件丢失、跨会话污染、后续模型读取错误内容或 metadata 指向根外路径；本轮没有触碰真实用户目录，也没有证明任意文件系统路径可被指定。
 - 根因修复应在单一 attachment identity seam 完成：拒绝空值、`.`、`..`、路径分隔符、控制字符和 canonicalization 后不位于 root 的身份；最好由后端生成不可变 opaque id（如 UUID/digest），前端 id 只作为显示/幂等键，不参与目录层级。`remove` 必须要求解析目标是 `root/<validated-session>/<validated-id>` 的单个目录，禁止对 bucket/root 本身执行递归删除；`ingest` 应先做 root containment 与“目标为新/同一 attachment”的校验，再写入，并在失败时不产生 metadata。
 - 回归需覆盖空/点/双点、Unicode/Windows 分隔符、绝对路径、尾随点空格、同名重试、符号链接/junction、删除 bucket/root、session 切换和并发 ingest/remove；所有失败都应返回结构化 invalid identity，且 root 外 canary、其他 attachment 与 metadata 保持不变。未实施生产修复，未运行真实桌面 UI/跨平台 NTFS junction 或真实用户目录。
+
+### H-264：MCP stdio/HTTP 响应没有传输级字节上限，超大 JSON 会先完整物化再交给协议解析
+
+**级别：高（P1，条件性资源耗尽与运行隔离）；状态：正式 `StdioTransport`、`HttpTransport` 和本机故障注入服务已复现，未修复。** 触发条件是已配置的 MCP server 返回超过本地预算的单行 JSON-RPC 或 HTTP JSON/SSE body。该 server 可以是被攻陷、错误配置或用户显式接入的第三方 MCP；本轮只使用本机临时服务，没有真实远程 MCP 或用户数据。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权仓库内审计；使用现有 `crates/deepagent-mcp/tests/response_limit_audit.rs` ignored 探针、临时 Node stdio server 和 `127.0.0.1:0` HTTP server。小响应 payload 为 16 字节，大响应为 2 MiB；没有修改生产代码、没有真实工具副作用或公网访问。
+- E-264-stdio（source_type=command，source_ref=`response_limit_audit::audit_stdio_transport_accepts_oversized_response_line`）：执行
+  `cargo test -p deepagent-mcp --test response_limit_audit audit_stdio_transport_accepts_oversized_response_line --offline -- --ignored --exact --nocapture`，结果 **0 passed / 1 failed（缺陷预期）**。正式子进程 stdout 返回的 2 MiB JSON 行被 `StdioTransport` 接受，输出 `small_payload_bytes=16, accepted_payload_bytes=2097152, audit_limit_bytes=1048576`，断言在“accepted response must be <= 1 MiB”处失败。
+- E-264-http（source_type=command，source_ref=`response_limit_audit::audit_http_transport_accepts_oversized_response_body`）：执行
+  `cargo test -p deepagent-mcp --features http --test response_limit_audit audit_http_transport_accepts_oversized_response_body --offline -- --ignored --exact --nocapture`，结果 **0 passed / 1 failed（缺陷预期）**。正式本机 HTTP server 返回 2 MiB JSON body，`HttpTransport` 接受完整 payload，输出 `requests=[(41, 64), (41, 2097200)], small_payload_bytes=16, accepted_payload_bytes=2097152, audit_limit_bytes=1048576`。
+- E-264-control：两组均先通过正式 transport，再由测试读取已解析的 `JsonRpcResponse` 计算 payload；没有直接调用私有 parser 或手工构造成功响应。失败点是传输层没有在达到预算前拒绝，而不是 JSON-RPC schema 校验误报。
+
+#### Finding 与调用路径
+
+- F-264：severity=high，category=availability/resource-boundary，status=validated，confidence=high，location=`crates/deepagent-mcp/src/stdio.rs::StdioTransport::read_response`、`crates/deepagent-mcp/src/http.rs::HttpTransport::send`。stdio 路径每轮创建无容量上限的 `String` 后调用 `AsyncBufReadExt::read_line`；HTTP 路径调用 `response.text()`，随后把整个 body 交给 SSE/JSON 解析。两处都没有检查 `Content-Length`、累计读取字节数、单行上限或 SSE 总体预算。
+- P-264-stdio（path_type=callflow）：MCP child stdout → `read_line` 扩容到完整 JSON 行 → `serde_json::from_str` → `JsonRpcResponse` → `McpClient::call/list_tools/call_tool`。服务端可以持续输出一个超大但合法的 line，宿主在解析完成前无法交付、取消或释放该响应。
+- P-264-http（path_type=callflow）：HTTP response headers/body → `response.text()` 完整 UTF-8 物化 → `parse_sse_response` 或 `serde_json::from_str` → MCP tool result。chunked/无 `Content-Length` 响应同样没有累计上限；内容类型检查不提供资源预算。
+- 已证后果是单个 MCP 响应可超过预期 1 MiB 预算并占用宿主内存、JSON/UTF-8 临时副本和后续工具结果存储；在并发工具调用或多个恶意响应下，峰值会按请求数叠加。没有实测 OOM、进程崩溃、真实费用或桌面卡死，因此不把这些写成已发生结果；60 秒 HTTP timeout 和调用方取消只能限制时间，不能替代大小上限。
+
+#### 成熟 Agent 与 DeepSeek 对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/web/web-fetch-http/src/provider.ts` 接收解析后的 `maxResponseBytes`，读取过程中累计响应字节，超过预算立即抛出 `response exceeds the maximum ... bytes`；这不是 MCP 实现，但它展示了网络响应必须在物化前受 transport/provider 预算约束，而不是只在上层 token 统计。其限制是 web fetch，不应声称已覆盖本系统 MCP。
+- **Claude Code**：`借鉴/claudecode/restored-src/src/utils/mcpValidation.ts` 对 MCP instructions/description 设置 `MAX_MCP_OUTPUT_TOKENS=25000`，并在 client 层截断超长 server instructions/描述；这是模型上下文预算，不能替代原始字节上限，但说明 MCP 输出需要显式预算和可观测截断/拒绝策略。本轮未运行 Claude 发行版。
+- **Codex**：`借鉴/codex/codex-rs/code-mode-host/src/peer.rs` 在 IPC response/frame 边界显式拒绝超过 frame limit 的消息；`core-plugins/src/remote_bundle.rs` 先检查 `content_length`，再用有界读取下载内容。两者体现了“协议帧/下载体先限长、后解析”的成熟边界，本轮未运行参考工程，也不宣称 Codex 的 MCP 路径与本项完全同构。
+- **DeepSeek 官方**：Responses/Tool Calls 文档定义模型工具调用和宿主回传结果，但没有替宿主 MCP server 规定本地响应上限；Responses API 是无状态的，KV cache 只影响请求前缀复用，不能缓解宿主在 MCP transport 中先物化超大 body 的内存峰值。因此 H-264 是本系统 MCP transport 的资源边界缺口，不是 DeepSeek tool schema、reasoning 或 cache 参数问题。
+
+#### 影响评估与收敛方向（本地设计，未实施）
+
+- 建立单一 transport 级 `max_response_bytes`（按 server/profile 可配置但必须有安全默认值），在 stdio 中使用有界 `read_until`/缓冲计数，在 HTTP 中先拒绝过大的 `Content-Length`，并对 chunked/SSE 在读取过程中累计计数；超过预算返回结构化 `mcp_response_too_large`，关闭/回收本次响应，不继续解析或执行工具结果。不能只限制最终 `ToolCallResult.text()`，因为峰值已经在 transport 层发生。
+- SSE 还需同时限制单帧、累计 body、事件数量和通知队列；JSON 解析与错误诊断也应有独立上限，避免把超大 body 再复制进错误字符串。取消、deadline 和 close 路径必须能打断正在读取的 bounded stream，并保留 server/request ID 便于审计。
+- 回归需覆盖：`Content-Length` 超限、chunked 无长度、单行超限、多帧累计超限、合法边界值、UTF-8 分段、通知+响应混合、stdio 无换行长行、并发请求、取消/超时竞争、错误体脱敏以及 MCP tool result 不落库。断言超限时 transport 调用返回结构化错误、工具执行次数为零、run 只有一个明确失败/取消终态，且后续小请求可按产品策略重建或继续。
+- 本轮没有实施生产修复，未运行真实 MCP server、跨平台管道压力、桌面 UI、全 workspace 测试或 OOM/压力实验；仅记录已复现的 2 MiB 本机样本。该项不重复 H-165/H-167 的 provider image 第二跳/二进制大小边界，也不重复 H-218/H-220 的 Harness 历史/列表分页。
