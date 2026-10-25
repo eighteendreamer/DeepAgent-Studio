@@ -1,0 +1,33 @@
+{
+  "source_url": "https://cdn.deepseek.com/api-docs/deepseek_v4_tokenizer.zip",
+  "archive_sha256": "e7310d1dafe0a86d8a5629fe78a7c763760f651db9b8682718a1781dcd6fe495",
+  "tokenizer_sha256": "89085f12ef79460ac5f66d1119325ddfc694b4ab209d80bbd81d35f081dc9614",
+  "tokenizers_version": "0.23.3",
+  "counting_mode": "raw text, add_special_tokens=false; not a rendered provider request or online usage",
+  "samples": [
+    {
+      "name": "english_prose",
+      "text": "The agent reads a file, checks the evidence, and reports the result.\n",
+      "repeat": 5000,
+      "offline_tokens": 75000
+    },
+    {
+      "name": "chinese_prose",
+      "text": "请保留工具调用结果并核对每一步证据。",
+      "repeat": 10000,
+      "offline_tokens": 100000
+    },
+    {
+      "name": "unicode_symbols",
+      "text": "🧪🔧📁✅",
+      "repeat": 8000,
+      "offline_tokens": 56000
+    },
+    {
+      "name": "rust_with_chinese_comments",
+      "text": "// 校验运行事件，保留原始错误和工具结果\nfn verify(value: &str) -> bool { !value.is_empty() }\n",
+      "repeat": 1500,
+      "offline_tokens": 43500
+    }
+  ]
+}

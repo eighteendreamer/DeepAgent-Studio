@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| DeepSeek 官方离线 tokenizer 与上下文压力计量 | 固定摘要的官方tokenizer实测四类合成文本；中文/符号在共享meter与正式ModelAgent均漏过54272压力阈值，英文与低压力代码控制正常 | 新增H-297（P3）；原始文本离线基准，不冒称当前线上Flash/Pro精确计数；无真实provider拒绝、费用或质量下降实测 |
 | MCP 工具执行错误的事件、持久化与模型输入 | 同一正式 ChatService 夹具的 isError=false/true/缺省三样本；文件 SQLite 重开后核对工具完成事件、action、会话原始结果及下一请求唯一关联结果 | 本轮排误，不新增 H 编号：true 保持 Failed/error，false及缺省保持 Completed/ok；不关闭 H-38/H-127/H-138/H-139/H-278，不代表整个MCP通过 |
 | DeepSeek 模型目录的部分容量字段合并 | 正式发现和 catalog 往返保留 max_output_tokens=8192，context_window 缺失后 resolver 却返回384000/32000并进入 ContextPolicy；完整元数据与全缺失控制正常 | 新增 H-296（P3，部分元数据条件）；当前官方示例不触发，未实测线上响应、真实压缩或 provider 拒绝 |
 | TypeScript SDK 并发会话的审批与流收尾 | 同一正式 SDK 实例的 A handler 待答，B 已收到唯一 turn.completed 但下一次 next 未结束；解除 A 后同一个 next 才 done；无审批/已答控制正常 | 新增 H-295（P2）；本机真实 stdio、合成对端，未修生产逻辑；未证明服务端 B 未完成、权限突破或真实模型后果 |
@@ -8397,3 +8398,51 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline -- --test-threads=1` 退出0：**97 passed / 0 failed / 92 ignored，93.23秒**。新测试进入默认回归，未打开既有故障探针；本轮没有用旧失败探针重新登记问题。
 - 实际执行 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，退出1，仍被本轮未修改的 `deepagent-models/src/client.rs:355` clone_on_copy、`deepagent-persistence/src/run_store.rs:127` explicit_counter_loop阻断；不报告lint通过、不顺手修改生产逻辑或关闭lint。
 - `cargo fmt --all -- --check`、`git diff --check`通过，已人工核对测试与报告diff。只修改既有MCP测试夹具及本报告；code-audit技能要求的人工核实和证据区分，使本轮记录为排误而不是虚构缺陷。未改生产协议、配置、权限、沙箱、前端或数据迁移，用户原有未跟踪项未动。未运行整个workspace、AppCore其他target、Desktop build/UI、真实供应商或参考工程；不声称全系统审计完成。
+
+## 2026-10-25 增量调研：DeepSeek 离线 tokenizer 与上下文估算（首次证据）
+
+- 去重：此前“真实上下文占用”段落已静态对照固定字符密度并明确精确tokenizer误差未测，本轮补该空白；不重跑H-168/H-296或其他既有故障探针。仅新增合成样本/离线脚本/测试，不修改生产计量逻辑，不请求模型、不读取凭据与用户数据。
+- 2026-10-25实际读取[官方Token用量页](https://api-docs.deepseek.com/zh-cn/quick_start/token_usage/)，取得其当前直接下载链接 `https://cdn.deepseek.com/api-docs/deepseek_v4_tokenizer.zip`。下载1911504字节，SHA-256=`e7310d1dafe0a86d8a5629fe78a7c763760f651db9b8682718a1781dcd6fe495`；其中tokenizer.json为6367096字节，SHA-256=`89085f12ef79460ac5f66d1119325ddfc694b4ab209d80bbd81d35f081dc9614`。下载与解压文件均在忽略提交的 `target/audit-deepseek-tokenizer/`。
+- 官方包附带的Python例子使用transformers；本轮未执行包内代码或trust_remote_code，而将已查证的 `tokenizers==0.23.3` 二进制wheel单独安装到target下，用其Tokenizer.from_file读取该JSON，对原始文本encode(add_special_tokens=false)。不安装到项目或全局Python环境，不新增Rust依赖。包内tokenizer_config.json的model_max_length=16384及模板未明确证明与线上当前Flash/Pro完全相同，**不把文件名当版本匹配保证，也不使用该值替代线上上下文容量**。
+- 首次执行 `scripts/audit_deepseek_tokenizer.py --tokenizer target/audit-deepseek-tokenizer/unpacked/deepseek_v4_tokenizer/tokenizer.json --python-packages target/audit-deepseek-tokenizer/python-packages` 退出0，四样本均完整encode/decode往返一致。英文345000字符→75000 token；中文180000字符/540000 UTF-8字节→100000；Unicode符号32000字符/120000字节→56000；含中文注释Rust112500字符/166500字节→43500。结果已立即固定到测试fixture；它们是**该官方离线文件的原始文本token数，不是完整请求token、真实provider usage或费用**。
+- 正在用正式HeuristicTokenizer、Surface meter及ContextPolicy核对这些样本是否低估、是否跨越压力阈值；在这一步执行前不预填产品故障或通过结果。官方约0.3/0.6的换算只是粗略说明，未被当作样本的精确答案。
+
+### H-297：默认字符密度计数低估官方离线文本，冷计量可漏过既定压缩压力阈值
+
+**级别：低（P3，离线基准与条件性压力可靠性缺口）；状态：正式计量/策略边界已复现，未修复。当前线上tokenizer对应关系、真实provider拒绝及模型质量影响未验证。**
+
+- 首次执行 `cargo test -p deepagent-context --test deepseek_tokenizer_audit --offline -- --include-ignored --nocapture`：**1 passed / 2 failed（预期），测试体0.02秒，编译1.10秒**。两个缺陷探针要求不低估该官方离线文本、且不漏掉其已跨过的共享压力阈值，均保留正确期望，不反转为确认错误的通过断言。
+- 正式HeuristicTokenizer实测：英文86250（离线75000，正常保守控制），中文45000（离线100000），Unicode符号8000（离线56000），含中文注释Rust28125（离线43500）。三份低估分别为55%、约85.71%、约35.34%；仅为固定样本，不能推广为所有中文/代码的固定误差率。
+- 同一正式measure_response_surface→ContextMeter冷投影将单user消息计为86258/45008/8008/28133（各加8结构估算）。在明确标识的合成能力128000窗口/8192输出下，正式ContextPolicy阈值54272；中文、符号原始文本的离线token已过阈值，但宿主估计未过。含中文Rust虽被低估，在此阈值下两种值都未过，不能称该样本漏触发；英文正常跨阈值。
+- 默认通过项另外确认：显式注入相同Surface的离线token数作为校准锚点，计量能原样保留它。这是计量公式控制，不伪造为真实provider返回。后续继续核对实际ModelAgent调用边界、参考实现、影响与回归；本段在后续执行前即时落盘。
+
+#### 实际请求入口增量（验证后即时追加）
+
+- `cargo test -p deepagent-runtime --test tokenizer_pressure_audit --offline -- --include-ignored --nocapture` 首次 **1 passed / 1 failed（预期），测试体0.05秒，编译3.96秒**。使用正式ModelClient/ModelAgent、同一合成capability与8192输出配置；真实序列化请求经离线HttpTransport，并逐字核对原始user正文，fixture完整返回带序号的Responses终态。无工具、hook或权限改动。
+- compactor只记录是否到达AutoCompactThreshold并返回None，不伪造成功摘要或压缩效果。英文样本在第一次dispatch前调用compactor一次；中文/符号均0次，仍各将完整正文发入transport一次；低于54272的代码控制为0次。该增量确认漏判已到实际请求入口，不只是独立计数器或UI显示差异。响应usage=1/1是明确合成值，只供正常结束，不用作原文精确token证据。
+- 测试没有运行ChatService/Kernel落盘、真正摘要模型、Tauri或线上provider，也未故意令provider返回溢出错误。中文100000及符号56000的离线文本计数在此128000/8192合成容量下仍不等价于已超出provider最大输入；当前证明的是漏过预设压力阈值，**不是已复现上下文溢出、run失败或内容丢失**。
+
+#### 根因、成熟 Agent 对照与 DeepSeek 边界
+
+- `deepagent-context/src/tokenizer.rs::HeuristicTokenizer::count`统一用Unicode标量数除以4、以空白词数作下限；中文和无空白多字节符号不会得到与字节长度对应的保护。其“intentionally conservative / never under-estimate”注释与上述官方离线样本矛盾。`meter.rs::measure_response_surface`硬选该counter，虽然generic测试seam存在，生产默认并未注入模型对应tokenizer。
+- `ContextMeter`只在同header指纹已有回答时用provider输入锚点加启发式delta；冷启动无锚点或header变化会回到全量启发式。`ModelAgent::new`创建默认meter，`with_context_snapshot`只赋展示快照、不恢复meter；`run_assembler.rs`每轮组装该Agent并挂正式ContextPolicy/compactor。`maybe_proactive_compact`在estimate<threshold时直接跳过，随后实际请求出站；providerusage校准要等响应回来。本轮动态证明ModelAgent冷入口，跨ChatService独立轮次/重启与header失效后果仅为静态可达条件，不冒称这些场景已端到端跑过。
+- **Codex，静态对照**：`借鉴/codex/codex-rs/utils/string/src/truncate.rs::approx_token_count`按UTF-8字节/4，而不是Unicode标量/4；`core/src/context_manager/history.rs::estimate_token_count`明确标注粗略下界、不是tokenizer精确值。按该公式推导本轮中文估计135000，比本系统45000更保守；但符号仍只有30000，低于离线56000，**不能宣称简单换成字节/4即解决全部问题，也不声称Codex使用DeepSeek精确tokenizer或已运行该工程**。
+- **DeepSeek Harness，静态对照**：`packages/llm/token-meter/src/estimate.ts`同样固定CHARS_PER_TOKEN=4（JS字符串长度），`projection.ts`与README明确承认CJK/schema低估，并区分provider锚定占用、启发式组成和累计计费；README说明压缩读取measure()而非直接把UI比例当决策。它的session fold/匹配envelope锚定减少已测量内容的偏差，不保证冷请求或新增片段的精确token。因而本项是可借鉴其**显式误差、来源与校准边界**，不是伪称所有成熟Agent已杜绝此类低估。
+- **DeepSeek官方**：[Token用量页](https://api-docs.deepseek.com/zh-cn/quick_start/token_usage/)强调不同模型分词不同、实际以返回usage为准。[官方deepseek-recipe tokenizer文档](https://github.com/deepseek-ai/deepseek-recipe/blob/main/docs/tokenizer.zh.md)要求tokenizer与模型匹配，区分原始文本与完整对话渲染/特殊token及图片调整，再核对prompt加输出容量；这是根治可借鉴的正式provider边界，但本轮只执行CDN包原文分词，**未执行recipe完整prompt编码或验证其与生产API模板等价**。[Responses参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)要求无状态回传完整历史，不能因本地低估就只计最新消息；[KV缓存规则](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)定义前缀复用，缓存命中不免除输入容量。本项不证明缓存实现错误或缓存命中率变化。
+
+#### 影响与根治建议（本地设计，未实施）
+
+- 已证实的后果是：同一原文在官方离线基准中已跨指定压力线，正式宿主却低估并在实际ModelAgent入口跳过压缩尝试。这会令压力显示/自动压缩时机依赖语言与字符分布；首次请求、长新增工具结果及校准失效时可能尤其明显。单纯降低全局阈值会让英文更早压缩，单纯扩大窗口也不消除比例误差，不能当根因修复。
+- 条件性潜在后果：当线上tokenizer与该基准相符、误差超过预留空间时，可能推迟到provider拒绝后才做反应式压缩，增加失败请求、等待和上下文恢复压力；若恢复失败则可能结束run。**本轮没有实际provider超窗、额外收费、摘要信息丢失、质量A/B或默认Flash/Pro全链路证据**，样本是重复的合成文本，不能给生产触发频率或真实成本定量。P3而非P1/P2体现仍有provider锚定、headroom和反应式恢复，以及线上版本对应关系未证实。
+- 在现有TokenCounter/provider seam收敛计量，不新增另一套预算/事件store：为明确匹配的DeepSeek版本提供可校验摘要的离线tokenizer与模板计数；原文、特殊token、工具schema/调用、reasoning和图片分别按实际请求投影计价，明确哪些只是近似。无匹配tokenizer时采用经多语言基准校准的保守策略与不确定性标识，不承诺字符/4必然不低估；不要把tokenizer_config的model_max_length当服务端容量。
+- 已测provider锚点应与模型版本、规范请求header、Surface版本绑定并可追溯；新增/替换增量也需有模型适配计量，指纹失效时不能伪装成已有精确观测。是否持久化并重放锚点需在既有Surface/run_events边界设计并测试，不按内容猜锚点、不新建并行账本。保留现有取消、usage归集和溢出恢复作为兜底，不能用故意触发真实错误代替请求前压力控制。
+- 后续验收需覆盖真实Flash/Pro版本匹配、自然多语言语料与代码/JSON、工具schema、长工具结果、首请求/已校准/续turn/重建/header变化、完整prompt模板、输入+输出边界与恢复；当前四样本、meter与一次ModelAgent请求只覆盖其中一部分，未覆盖项保持待验。
+
+#### 本轮回归、重跑方式与交付
+
+- 离线脚本增加 `--check` 后实际退出0，重新分词并逐项比对固定计数、JSON摘要、tokenizers版本与四份原文encode/decode往返；`python -m py_compile scripts/audit_deepseek_tokenizer.py`通过。脚本只读本地tokenizer/合成fixture，既不获取凭据、发模型请求，也不写项目源文件。
+- `cargo test -p deepagent-context --offline` 退出0：单元54 passed，新集成1 passed/2 ignored，doc-tests0，合计 **55 passed / 0 failed / 2 ignored**。`cargo test -p deepagent-runtime --offline -- --test-threads=1` 退出0：单元274 passed/16 ignored，e2e_stabilization 5 passed，schedule_audit 2 ignored，新集成1 passed/1 ignored，doc-tests0；合计 **280 passed / 0 failed / 19 ignored**。稳定性测试体111.13秒；没有打开既有ignored故障探针。
+- 在补充实际wire的model/max_output_tokens断言、调整测试命名与格式后，两新target默认再验证，分别 **1 passed/2 ignored、1 passed/1 ignored**；三条本轮新缺陷探针均保留ignored及正确期望，各仅显式执行一次，没有为交付重复故障或改为通过。
+- `cargo clippy -p deepagent-context -p deepagent-runtime --tests --offline -- -D warnings`实际退出1，仍被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop阻断，不报告lint通过、不关闭lint或改无关代码。`cargo fmt --all -- --check`与`git diff --check`通过，人工核对报告、脚本、两测试及共享fixture。
+- 独立复核该离线基准时，在自己的Python环境执行 `python -m pip install --target target/audit-deepseek-tokenizer/python-packages --no-deps --only-binary=:all: tokenizers==0.23.3`；从上文官方链接下载并解压tokenizer到同一target目录，再执行 `python scripts/audit_deepseek_tokenizer.py --tokenizer target/audit-deepseek-tokenizer/unpacked/deepseek_v4_tokenizer/tokenizer.json --python-packages target/audit-deepseek-tokenizer/python-packages --check`。下载内容变化会因摘要不匹配被明确拒绝，不默默接受新版计数。
+- 本轮只新增两个测试target、合成fixture、离线复核脚本并追加报告；没有修改生产Rust、Cargo依赖/lock、协议、配置、权限、沙箱、前端或数据格式，不提交下载包、二进制wheel或target产物，用户原有未跟踪项保持不动。未跑整个workspace、完整AppCore/Desktop、真实provider或参考工程；不声称全系统审计完成。
