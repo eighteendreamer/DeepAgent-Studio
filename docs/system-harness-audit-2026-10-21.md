@@ -8086,3 +8086,39 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 #### 同轮未登记项
 
 - 文件编码审查确认 `read_file` 的公开契约明确为 UTF-8，读失败不会成功获得新的已读资格；没有仅凭不支持 UTF-16/非 UTF-8 登记“数据损坏”。混合换行、BOM 与 NUL 的具体字节保真仍需独立复现，本轮没有用静态疑点编造结果。
+
+### H-290：画布供应商保存先提交配置、后写密钥，密钥持久化失败后发布新配置与旧凭据的混合身份
+
+**级别：中（P2，条件性 provider 身份/配置原子性缺陷）；状态：正式 `CanvasProviderService`、文件 SQLite 和故障注入 `SecretStore` 已复现，未修复。** 触发条件是编辑一个已有画布供应商并同时更换 endpoint/API key，provider secret 写入在配置文档提交后失败。不是正常保存必现，也不是密钥明文泄露；本项关注失败返回与 durable 配置不一致。
+
+#### 即时 Evidence（2026-10-25，首次有效复现后立即登记）
+
+- Scope：仅自有仓库审计；独立 tempfile、文件 SQLite、合成 provider/model、`MemorySecretStore` 包装的 fail-once `SecretStore`。旧/新 URL 使用 `.invalid` 保留域名，不发起网络请求；API key 是 `old-key`/`new-key` 合成值。没有用户配置、公网、内网、模型请求或真实凭据。
+- 测试文件：`crates/deepagent-app-core/tests/canvas_provider_transaction_audit.rs`。测试只调用公开 `CanvasProviderService::save_provider` 与 `resolve_model`，没有直接改文档表或 secret 表。先成功保存 `audit-provider`（`http://old.invalid/v1` + `old-key`），再让下一次 `SecretStore::set` 确定失败，提交同一 provider 的 `http://new.invalid/v1` + `new-key`。
+- 精确命令：`cargo test -p deepagent-app-core --test canvas_provider_transaction_audit audit_provider_save_is_atomic_across_config_and_secret --offline -- --ignored --exact --nocapture`。结果 **0 passed / 1 failed（预期缺陷）**；正式输出为 `result_error=true base_url=http://new.invalid/v1 credential_version=<new UUID> api_key=Some("old-key")`，最终断言在“失败保存不得发布新配置”处失败。该失败发生在 `save_provider` 已返回错误之后重新通过公开 `resolve_model` 读取持久化状态，不是只检查内存变量。
+- 当前正常控制：首次 provider 保存成功，随后 `resolve_model` 同时得到旧 endpoint 与 `old-key`；故障注入只让第二次 secret 写失败，未伪造配置读取或手工修正结果。测试保持 `#[ignore]`，不把预期失败混入默认绿色回归。
+
+#### 根因与生产调用链
+
+- `CanvasProviderService::save_provider` 先读取完整 provider 文档、生成新的 `credential_version`，把新的 `CanvasProviderState` 通过 `DocumentStore::put` 写入；只有文档成功后，才调用 `self.secrets.set(provider_secret_key, key)`。`set` 失败直接向调用者返回错误，但没有恢复旧 provider 文档。
+- 因而故障后的状态是：`provider.base_url`、model 列表、enabled 状态和 credential generation 已切到新版本；secret store 仍保存旧 key。`resolve_model` 随后会把这两者一起返回给 `CanvasModelGateway::execute_on`/`generate_video` 等调用方。若旧 key 对新 endpoint 仍被接受，可能向错误账户/租户发请求；若被拒绝，调用方看到的是普通 provider 失败，但配置页已显示新 endpoint，重试不会回到一个一致的旧配置。
+- 同一方法还在 secret 写成功后再次 `rotate_credential_version`；这能让成功更新的任务指纹失效，但不能补救第一阶段 secret 写失败。`remove_provider` 也采用“先写文档、后删 secret”的 best-effort 清理，但本项只登记 `save_provider` 的可执行混合身份，不把删除清理另拆编号。
+- 这不是 H-88：H-88 是 SettingsService 的模型目录刷新/凭据代次竞争把旧 API key 恢复到全局 DeepSeek 设置；H-290 是 Canvas provider 单次保存的跨文档/secret 提交顺序，触发条件是 secret 持久化错误，且新 endpoint 已 durable 发布。也不是 H-122：H-122 的 credential generation 用于视频任务 resume 身份，本项在 provider 保存 API 返回错误后即可成立。
+
+#### 成熟 Agent、DeepSeek 边界与对照
+
+- **DeepSeek Harness（本地源码/规范静态对照，未运行同构 provider 保存）：** `借鉴/deepseek-harness/packages/AGENTS.md` 要求“只在 commit point 发布状态”，并要求一个异步操作由单一 lifecycle/transaction 管理；其 workspace registry 在第二次写失败时回滚内存缓存与顺序，双重回滚失败时留下可恢复 marker，而不是把半提交状态当作普通错误。该项目没有本系统的 Canvas provider+secret pair，不能声称它已动态解决 H-290；可迁移的是配置和凭据必须以同一提交点发布，失败需保留旧状态或显式 pending。
+- **Codex（本地参考文档/源码静态对照，未运行）：** `借鉴/codex/codex-rs/app-server/README.md` 的 Bedrock credential 约定明确写出 setup/login 失败时“不改变 configuration or saved credentials”，并要求凭据身份在保存成功后才可观测；其账号/路由通知也在认证 owner 仍有效且保存完成后发布。该对照不是本系统同名实现，但直接体现成熟 agent 对“配置成功”和“凭据成功”采用一致发布语义。
+- **DeepSeek 官方边界：** [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)和[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)只规定模型请求无状态、工具由宿主执行；[KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)只描述重复请求前缀命中。它们不会把本地 provider endpoint 与 API key 事务化，也不会修复宿主已发布的新配置/旧凭据混合状态。H-290 是本地 provider/secret 提交边界，不是 DeepSeek reasoning、tool schema 或缓存命中问题。
+
+#### 影响、修复方向与限制
+
+- 已确认后果是调用者收到保存错误后，重新解析同一 provider 得到 `new endpoint + old key + new credential_version`；这会让 UI/重试/视频 resume 指纹与真实可用凭据不一致。若 endpoint 更换到仍接受旧 key 的兼容网关，可能把旧账户凭据用于新地址；本轮没有发起任何请求，未证明真实跨账户访问、数据泄露、收费或远端副作用。
+- 定级 P2：需要 secret backend 写入失败（磁盘/加密主密钥/权限/设备 keychain 等条件性故障），普通成功保存不触发；但失败返回却留下可执行的不一致 durable 状态，且错误恢复没有自动回滚或 pending 标记。它不等同于权限提升，也不把旧 key 暴露给 UI DTO。
+- 根治应在现有 `CanvasProviderService` 边界收敛为单一提交协议：先准备/验证新 provider 与 secret，再以同一 durable 事务或可恢复 pending marker 发布两者；secret 写失败时保留旧 provider 文档和旧 credential generation。若底层 SQLite secret 与 DocumentStore 不能共享原子事务，则使用版本化 `provider_update_pending`/恢复器，提交后才更新 provider 文档，启动/下一次读取时完成或回滚；不能只把 `?` 改成日志告警。
+- 成功后再轮换 credential generation，并让 `resolve_model` 只返回同一版本的 endpoint/key；已有视频 resume fingerprint、Canvas gateway 和 artifact/工作流链路继续复用这一身份，不另建 provider registry 或 secret store。回归需覆盖新建/更新、secret set 失败、文档写失败、第二次 generation 轮换失败、重启恢复、并发更新、清 key/删 provider 及旧任务 resume；断言失败保存后 provider DTO、secret、generation 三者仍成组一致。
+
+#### 验证进度
+
+- 本轮只新增上述 test-only 故障探针和本节文档，没有修改生产逻辑、数据库 schema、权限或模型协议。`cargo fmt --all` 已执行；故障命令结果按上文为 **0 passed / 1 failed（预期）**。
+- 尚未执行完整 workspace、Desktop build/UI、真实 SecretStore/keychain、真实 DeepSeek、provider HTTP 或多进程崩溃恢复；这些未执行项不被本项动态证据替代。用户已有未跟踪文件保持不动，未调查用户排除的 `encrypted-content` 问题。
