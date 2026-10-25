@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_persistence::event_store::{EventStore, SessionActivityGuard};
 use deepagent_persistence::run_control::RunControlStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
@@ -159,14 +160,21 @@ impl RunCoordinator {
     /// Reserve both durable identity and cancellation before transport ACK.
     /// Session aliases are attached only after the input lease is acquired.
     pub fn admit(&self, run_id: &str, session_id: &str) -> Result<()> {
+        let id = session_id
+            .parse()
+            .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
+        // Acquire before durable admission/snapshot recovery, and retain it in
+        // the existing registration through outer failure/terminal projection.
+        let activity = EventStore::new(&self.db).acquire_activity(id)?;
         let mut admissions = self.admissions.lock().unwrap_or_else(|p| p.into_inner());
         RunStore::new(&self.db).create(run_id, session_id, None, now_millis())?;
-        let registration = ActiveRunRegistration::new(
+        let mut registration = ActiveRunRegistration::new(
             self.cancellations.clone(),
             self.run_ids.clone(),
             run_id.to_owned(),
             None,
         );
+        registration._session_activity = Some(activity);
         admissions.insert(run_id.to_owned(), registration);
         Ok(())
     }
@@ -265,6 +273,7 @@ pub(crate) struct ActiveRunRegistration {
     run_id: String,
     cancellation: Arc<deepagent_runtime::CancellationTree>,
     keys: Mutex<Vec<String>>,
+    _session_activity: Option<SessionActivityGuard>,
 }
 
 impl ActiveRunRegistration {
@@ -280,6 +289,7 @@ impl ActiveRunRegistration {
             run_id: run_id.clone(),
             cancellation: Arc::new(deepagent_runtime::CancellationTree::new()),
             keys: Mutex::new(Vec::new()),
+            _session_activity: None,
         };
         registration.add_alias(run_id);
         if let Some(session_id) = session_id {
@@ -351,6 +361,71 @@ mod tests {
     use deepagent_persistence::event_store::EventStore;
     use deepagent_persistence::run_control::{NewRunAction, NewRunApproval, RunActionState};
     use deepagent_persistence::run_store::RunStore;
+
+    #[test]
+    fn admission_owns_history_through_cancel_and_outer_terminal_projection() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = deepagent_core::clock::FixedClock::new(1_000);
+        let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        let id = session.id();
+        let coordinator = RunCoordinator::new(db.clone());
+        let store = EventStore::new(&db);
+        coordinator.admit("first", &id.to_string()).unwrap();
+        coordinator.admit("queued", &id.to_string()).unwrap();
+        assert!(store.begin_control(id).is_err());
+        let first = coordinator.take_admission("first").unwrap();
+        assert!(coordinator.request_cancel("first").unwrap().accepted);
+        assert!(store.begin_control(id).is_err());
+        let terminal = deepagent_runtime::KernelTerminal {
+            kind: deepagent_runtime::TerminalKind::Cancelled,
+            message: None,
+            reason: None,
+        };
+        assert!(deepagent_runtime::kernel::persist_terminal(
+            &db,
+            "first",
+            &terminal,
+            &first.cancellation(),
+        )
+        .unwrap());
+        // The durable run is already terminal, but its outer session projection
+        // has not happened. A check of unfinished runs would race this window.
+        assert!(store.begin_control(id).is_err());
+        session
+            .append(deepagent_core::event::EventPayload::RunTerminal {
+                kind: "cancelled".into(),
+                reason: None,
+            })
+            .unwrap();
+        drop(first);
+        assert!(
+            store.begin_control(id).is_err(),
+            "queued admission still owns history"
+        );
+        drop(coordinator.take_admission("queued").unwrap());
+        store.begin_control(id).unwrap().truncate_after(0).unwrap();
+    }
+
+    #[test]
+    fn exclusive_control_refuses_admission_before_creating_a_run() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = deepagent_core::clock::FixedClock::new(1_000);
+        let session = deepagent_session::Session::create(&db, &clock, None).unwrap();
+        let id = session.id();
+        let coordinator = RunCoordinator::new(db.clone());
+        let control = EventStore::new(&db).begin_control(id).unwrap();
+        let error = coordinator.admit("refused", &id.to_string()).unwrap_err();
+        assert!(error.to_string().contains("is busy"));
+        assert!(RunStore::new(&db).get("refused").unwrap().is_none());
+        assert!(!coordinator.request_cancel("refused").unwrap().accepted);
+        drop(control);
+        coordinator.admit("refused", &id.to_string()).unwrap();
+        let registration = coordinator.take_admission("refused").unwrap();
+        // Duplicate durable admission fails, but its temporary lock must drop.
+        assert!(coordinator.admit("refused", &id.to_string()).is_err());
+        drop(registration);
+        drop(EventStore::new(&db).begin_control(id).unwrap());
+    }
 
     #[test]
     fn cancellation_does_not_wait_for_a_durable_run() {

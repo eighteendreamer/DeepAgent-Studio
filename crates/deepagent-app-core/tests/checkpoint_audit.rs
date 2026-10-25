@@ -1002,3 +1002,57 @@ fn legacy_branch_binding_failure_rolls_back_metadata_and_allows_retry() {
     assert_eq!(fixture.content(), "base");
     assert_eq!(fixture.tail(), 0);
 }
+
+#[test]
+fn busy_history_control_refuses_before_touching_workspace_or_checkpoint_metadata() {
+    for fork in [false, true] {
+        let mut fixture = BranchFixture::new();
+        let (checkpoint_id, _, _) = fixture.edit("busy-control-edit", "current");
+        // Legacy metadata makes even an otherwise successful preflight have a
+        // visible mutation. Busy refusal must happen before that preflight.
+        let checkpoint_before = fixture.make_legacy(&checkpoint_id);
+        let history_before = fixture.history();
+        let sessions_before = EventStore::new(&fixture.db).list_sessions().unwrap().len();
+        let activity = EventStore::new(&fixture.db)
+            .acquire_activity(fixture.session_id)
+            .unwrap();
+        let app = AppService::from_shared(fixture.db.clone());
+        let result = if fork {
+            app.fork_session(&fixture.session_id.to_string(), 0)
+                .map(|_| ())
+        } else {
+            app.rewind_session(&fixture.session_id.to_string(), 0)
+                .map(|_| ())
+        };
+        assert!(result.unwrap_err().to_string().contains("is busy"));
+        assert_eq!(fixture.content(), "current");
+        assert_eq!(fixture.history(), history_before);
+        assert_eq!(
+            CheckpointStore::new(&fixture.db)
+                .get(&checkpoint_id)
+                .unwrap()
+                .unwrap(),
+            checkpoint_before
+        );
+        assert_eq!(
+            EventStore::new(&fixture.db).list_sessions().unwrap().len(),
+            sessions_before
+        );
+        drop(activity);
+        drop(app);
+        fixture.reopen();
+        let app = AppService::from_shared(fixture.db.clone());
+        if fork {
+            let child = app
+                .fork_session(&fixture.session_id.to_string(), 0)
+                .unwrap();
+            assert!(!child.new_session_id.is_empty());
+            assert_eq!(fixture.history(), history_before);
+        } else {
+            app.rewind_session(&fixture.session_id.to_string(), 0)
+                .unwrap();
+            assert_eq!(fixture.tail(), 0);
+        }
+        assert_eq!(fixture.content(), "base");
+    }
+}

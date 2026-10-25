@@ -16,7 +16,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::{Event, EventPayload};
 use deepagent_core::id::{SessionId, TaskId};
 use deepagent_core::response_item::ResponseItem;
-use deepagent_persistence::event_store::{EventStore, SessionRecord};
+use deepagent_persistence::event_store::{EventStore, SessionActivityGuard, SessionRecord};
 use deepagent_persistence::Database;
 
 pub use state::SessionState;
@@ -263,6 +263,13 @@ impl<'db, C: Clock> Session<'db, C> {
     /// The session id.
     pub fn id(&self) -> SessionId {
         self.id
+    }
+
+    /// Protect a direct runtime invocation against concurrent rewind. AppCore
+    /// holds the same shared gate from admission; embedders hold this guard
+    /// through their final session write, not just through a model request.
+    pub fn acquire_activity(&self) -> Result<SessionActivityGuard> {
+        EventStore::new(self.db).acquire_activity(self.id)
     }
 
     /// Directory holding this session's authoritative event log.

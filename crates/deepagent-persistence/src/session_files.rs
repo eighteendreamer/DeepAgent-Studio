@@ -684,9 +684,46 @@ fn current_generation(root: &Path, session_id: SessionId) -> Result<Option<(u64,
 }
 
 pub(crate) fn lock_session(root: &Path, session_id: SessionId) -> Result<SessionLock> {
+    let file = open_session_lock(root, session_id, "lock")?;
+    lock_exclusive_with_timeout(&file)?;
+    Ok(SessionLock { file })
+}
+
+/// The lifecycle gate is separate from the short event-I/O lock: a running
+/// turn must still be able to append while it holds shared lifecycle access.
+/// Both locks live outside the replaceable session directory/generations.
+pub(crate) fn try_lock_session_control(
+    root: &Path,
+    session_id: SessionId,
+    exclusive: bool,
+) -> Result<SessionLock> {
+    let file = open_session_lock(root, session_id, "control.lock")?;
+    let result = if exclusive {
+        FileExt::try_lock_exclusive(&file)
+    } else {
+        FileExt::try_lock_shared(&file)
+    };
+    match result {
+        Ok(()) => Ok(SessionLock { file }),
+        Err(error)
+            if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
+                || error.kind() == std::io::ErrorKind::WouldBlock =>
+        {
+            tracing::info!(%session_id, exclusive, "session control access refused while busy");
+            Err(CoreError::invalid(format!(
+                "session {session_id} is busy; wait for active runs or history control to finish"
+            )))
+        }
+        Err(error) => Err(CoreError::Persistence(format!(
+            "acquire session {session_id} control lock: {error}"
+        ))),
+    }
+}
+
+fn open_session_lock(root: &Path, session_id: SessionId, suffix: &str) -> Result<File> {
     let lock_root = root.parent().unwrap_or(root).join("locks").join("sessions");
     fs::create_dir_all(&lock_root).map_err(io_error)?;
-    let path = lock_root.join(format!("{session_id}.lock"));
+    let path = lock_root.join(format!("{session_id}.{suffix}"));
     let deadline = Instant::now() + SESSION_LOCK_TIMEOUT;
     let file = loop {
         match OpenOptions::new()
@@ -709,8 +746,7 @@ pub(crate) fn lock_session(root: &Path, session_id: SessionId) -> Result<Session
             Err(error) => return Err(io_error(error)),
         }
     };
-    lock_exclusive_with_timeout(&file)?;
-    Ok(SessionLock { file })
+    Ok(file)
 }
 
 fn lock_exclusive_with_timeout(file: &File) -> Result<()> {

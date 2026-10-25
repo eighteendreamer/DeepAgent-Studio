@@ -12,17 +12,51 @@ use tokio::sync::Notify;
 const OLD_USER: &str = "audit-active-rewind-discarded-user-85fa";
 const OLD_ANSWER: &str = "audit-active-rewind-late-answer-85fa";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Ending {
+    Success,
+    ProviderFailure,
+    Cancelled,
+}
+
 struct HeldAnswer {
     started: Arc<Notify>,
     release: Arc<Notify>,
+    ending: Ending,
 }
 
 #[async_trait]
 impl HttpTransport for HeldAnswer {
+    async fn stream_cancelled(
+        &self,
+        request: TransportRequest,
+        sink: &mut dyn EventSink,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<()> {
+        // The trait's compatibility default only checks BEFORE stream(). This
+        // barrier transport must implement the in-flight flag contract, like
+        // the real HTTP transport, for a real cancellation-path regression.
+        tokio::select! {
+            result = self.stream(request, sink) => result,
+            () = async {
+                while !cancel.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            } => Err(CoreError::other("request cancelled")),
+        }
+    }
+
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
         assert!(request.body.contains(OLD_USER));
         self.started.notify_one();
         self.release.notified().await;
+        if self.ending == Ending::ProviderFailure {
+            return Err(CoreError::provider(
+                Some(400),
+                Some("fixture_rejection".into()),
+                "offline history-control fixture rejection",
+            ));
+        }
         let item = serde_json::json!({
             "type":"message", "id":"audit-active-rewind-answer", "role":"assistant",
             "content":[{"type":"output_text","text":OLD_ANSWER}],
@@ -61,7 +95,7 @@ struct Observation {
     old_answer_after: bool,
 }
 
-async fn observe_active_turn(rewind: bool) -> Observation {
+async fn observe_active_turn(rewind: bool, ending: Ending) -> Observation {
     let db = Arc::new(Database::open_in_memory().unwrap());
     let clock = FixedClock::new(1_000);
     let mut session = Session::create(&db, &clock, Some("active rewind audit")).unwrap();
@@ -105,6 +139,7 @@ async fn observe_active_turn(rewind: bool) -> Observation {
         Arc::new(HeldAnswer {
             started: started.clone(),
             release: release.clone(),
+            ending,
         }),
         workspace.path(),
     ));
@@ -138,12 +173,38 @@ async fn observe_active_turn(rewind: bool) -> Observation {
     assert!(history_contains(&db, &session_id, OLD_USER));
     assert!(!history_contains(&db, &session_id, OLD_ANSWER));
 
-    let rewind_accepted = rewind
-        && AppService::from_shared(db.clone())
-            .rewind_session(&session_id, keep)
-            .is_ok();
+    let before = serde_json::to_value(
+        EventStore::new(&db)
+            .load_session(session_id.parse().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    let rewind_accepted = if rewind {
+        let result = AppService::from_shared(db.clone()).rewind_session(&session_id, keep);
+        if let Err(error) = &result {
+            assert!(error.to_string().contains("is busy"), "{error}");
+            assert_eq!(
+                serde_json::to_value(
+                    EventStore::new(&db)
+                        .load_session(session_id.parse().unwrap())
+                        .unwrap()
+                )
+                .unwrap(),
+                before,
+            );
+        }
+        result.is_ok()
+    } else {
+        false
+    };
     let discarded_before_release = !history_contains(&db, &session_id, OLD_USER);
-    release.notify_one();
+    if ending == Ending::Cancelled {
+        assert!(chat.request_cancel("audit-active-rewind").unwrap().accepted);
+        // Do not release the response: prove the real cancellation path drops
+        // the wait and returns its history ownership, not a successful reply.
+    } else {
+        release.notify_one();
+    }
     let result = tokio::time::timeout(Duration::from_secs(5), task)
         .await
         .expect("the released turn must finish")
@@ -173,7 +234,7 @@ async fn observe_active_turn(rewind: bool) -> Observation {
         old_answer_after: history_contains(&db, &session_id, OLD_ANSWER),
     };
     eprintln!(
-        "active rewind audit: rewind={rewind}, accepted={}, removed_user_before_release={}, old_user_after={}, late_answer_after={}, run_ok={}, terminal={:?}",
+        "active rewind audit: ending={ending:?}, rewind={rewind}, accepted={}, removed_user_before_release={}, old_user_after={}, late_answer_after={}, run_ok={}, terminal={:?}",
         observation.rewind_accepted,
         observation.discarded_before_release,
         observation.old_user_after,
@@ -182,15 +243,52 @@ async fn observe_active_turn(rewind: bool) -> Observation {
         terminal.terminal_kind,
     );
     if !rewind_accepted {
-        result.unwrap();
-        assert_eq!(terminal.terminal_kind.as_deref(), Some("succeeded"));
+        match ending {
+            Ending::Success => {
+                result.unwrap();
+                assert_eq!(terminal.terminal_kind.as_deref(), Some("succeeded"));
+            }
+            Ending::ProviderFailure => {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("fixture rejection"));
+                assert_eq!(terminal.terminal_kind.as_deref(), Some("failed"));
+            }
+            Ending::Cancelled => {
+                result.unwrap();
+                assert_eq!(terminal.terminal_kind.as_deref(), Some("cancelled"));
+            }
+        }
+    }
+    if rewind {
+        // Busy rejection is temporary: once the real invocation (including its
+        // outer terminal projection) exits, rewind succeeds and stays clean.
+        AppService::from_shared(db.clone())
+            .rewind_session(&session_id, keep)
+            .unwrap();
+        assert!(!history_contains(&db, &session_id, OLD_USER));
+        assert!(!history_contains(&db, &session_id, OLD_ANSWER));
+        let record = RunStore::new(&db)
+            .get("audit-active-rewind")
+            .unwrap()
+            .unwrap();
+        assert!(record.finished_at.is_some());
+        assert_eq!(
+            chat.run_events("audit-active-rewind", None)
+                .unwrap()
+                .iter()
+                .filter(|event| event.event_type == "run_terminal")
+                .count(),
+            1
+        );
     }
     observation
 }
 
 #[tokio::test]
 async fn held_model_answer_without_rewind_preserves_its_user() {
-    let observed = observe_active_turn(false).await;
+    let observed = observe_active_turn(false, Ending::Success).await;
     assert!(!observed.rewind_accepted);
     assert!(!observed.discarded_before_release);
     assert!(observed.old_user_after);
@@ -198,9 +296,8 @@ async fn held_model_answer_without_rewind_preserves_its_user() {
 }
 
 #[tokio::test]
-#[ignore = "audit: an accepted rewind must fence writes from the discarded active turn"]
 async fn audit_active_rewind_does_not_commit_the_discarded_turn_answer() {
-    let observed = observe_active_turn(true).await;
+    let observed = observe_active_turn(true, Ending::Success).await;
     assert!(
         !observed.rewind_accepted
             || (observed.discarded_before_release
@@ -208,4 +305,22 @@ async fn audit_active_rewind_does_not_commit_the_discarded_turn_answer() {
                 && !observed.old_answer_after),
         "accepted rewind allowed the discarded active turn to write into the kept history"
     );
+}
+
+#[tokio::test]
+async fn active_rewind_after_provider_failure_releases_history_ownership() {
+    let observed = observe_active_turn(true, Ending::ProviderFailure).await;
+    assert!(!observed.rewind_accepted);
+    assert!(!observed.discarded_before_release);
+    assert!(observed.old_user_after);
+    assert!(!observed.old_answer_after);
+}
+
+#[tokio::test]
+async fn active_rewind_after_real_cancellation_releases_history_ownership() {
+    let observed = observe_active_turn(true, Ending::Cancelled).await;
+    assert!(!observed.rewind_accepted);
+    assert!(!observed.discarded_before_release);
+    assert!(observed.old_user_after);
+    assert!(!observed.old_answer_after);
 }

@@ -2,27 +2,27 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-286/H-72 已交付，本轮仅 H-73。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-286/H-72/H-73 已交付，本轮仅 H-75。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 3 | H-286、H-72、H-73，均限 Windows 本机所列验收；提交分别为 `56b9e7b9`、`d08c776c`、`d40eef9a` |
+| 本阶段已修复并验收 | 4 | H-286、H-72、H-73、H-75，均限 Windows 本机所列验收；前三项提交分别为 `56b9e7b9`、`d08c776c`、`d40eef9a`，H-75 尚未提交，创建后回填 |
 | 历史已修复跳过 | 17 | 原报告有实现及修复后验收；本轮不重复修复/冒称重验 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-73 已完成所列本机行为验收；未夹带下一项 |
-| 待修复 | 277 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-75 本机所列行为验收结束，未将全量既有失败或未验平台算通过 |
+| 待修复 | 276 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **277（全部待修复）**；不提供完成率。三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。历史修复依原报告状态跳过，但不虚构其 commit ID：尚未逐项重新定位的历史 hash 明确留为“未重新定位”，保留原文验收来源。
+有效未关闭条目当前为 **276（276 待修复、0 修复中）**；不提供完成率。四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。历史修复依原报告状态跳过，但不虚构其 commit ID：尚未逐项重新定位的历史 hash 明确留为“未重新定位”，保留原文验收来源。
 
 ## 总体工时、排序与不确定性
 
-暂估剩余 **200–400 小时有效修复、测试和文档交付时间**，是基于当前有效未关闭规模、跨层 owner/授权/持久化问题与多数单项需原输入回归的初始规划区间，不是将每项假定为相同难度。前三项复杂度不同，且尚无独立计量的有效工时，不能据此虚构可靠吞吐或机械扣减工时；继续在首批 3–5 项窗口按实际样本与剩余根因分组校准，不编造精确结束日期。不以对话跨度或编译等待伪造工时样本。
+暂估剩余 **200–400 小时有效修复、测试和文档交付时间**，是基于当前有效未关闭规模、跨层 owner/授权/持久化问题与多数单项需原输入回归的初始规划区间，不是将每项假定为相同难度。前四项复杂度不同，且尚无独立计量的有效工时，不能据此虚构可靠吞吐或机械扣减工时；继续在首批 3–5 项窗口按实际样本与剩余根因分组校准，不编造精确结束日期。不以对话跨度或编译等待伪造工时样本。
 
-设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。下一项拟核对 H-75（活动运行被回退后仍能迟到提交回答），延续分支变更的运行所有权边界，先复核原探针；不将 H-73 的 checkpoint 过滤当作 H-75 已修。
+设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。下一项拟核对 H-76（旧读取版本成功覆盖外部改动），因其直接影响用户文件完整性，按 A2 优先于 P2 的 H-74 历史投影；先复核原探针，不在本项修改。H-33/H-23 仍独立待修，不因 H-75 的控制锁关闭。
 
 ## H-286 本轮实施与验收明细
 
@@ -97,6 +97,36 @@ H-72 当前实施记录（2026-10-26）：修复前执行 `cargo test -p deepage
 证据链：E-H73-01 是修复前 HEAD `78fbbba6` 的原 branch 命令与 old-first/1 path 失败观察；E-H73-02 是最终 checkpoint_audit 命令的 17 passed/1 ignored，以及 checkpoint 专项 14 passed/0 ignored（source_type=command，observed_at=2026-10-26，content_hash/artifact_path=n/a；未另存敏感请求或命令日志）。F-H73（severity=P1，status=validated，confidence=high，location=checkpoint_store.rs::list_for_session_after_sequence）由两条证据确认缺陷与本机修复，不扩为整个系统通过。P-H73（path_type=callflow）：manager 创建冻结源身份 → 既有 manifest 落盘 → 对照当前权威事件筛选 → H-72 恢复事务 → 原 rewind/fork 提交；步骤关联 E-H73-02，原错选路径关联 E-H73-01。范围/授权见本文开头，timeline 为本节逐步追加记录。
 
 最终 `cargo fmt --all -- --check`、`git diff --check`、`git diff --cached --check` 退出 0；台账校验 Rows=306、Unique=306、Missing=[]、BadColumns=0，已修复 3 / 历史跳过 17 / 归并 7 / 撤销 2 / 待修复 277，修复中与阻塞待处理均 0。独立提交 `d40eef9a` 仅含本项 6 个文件；用户原有未跟踪项不读、不改、不暂存。下一项 H-75 仍须原探针复核，整体 goal 保持 active。
+
+## H-75 本轮实施与验收明细（2026-10-26）
+
+当前状态：**已修复并验收，限 Windows 本机后端行为及前端生产回调/构建；真实 Tauri 手动交互未验**。以下为逐步追加的当时记录，不抹去中间失败；尚未提交，创建独立提交后回填。原探针在 HEAD `1a3c7192` 已复现（1 passed / 1 failed / 0 ignored，0.28s），不重复登记。额外源码核对确认 run_inner 的输入租约先释放，外层仍可能补写 Session RunTerminal，因此仅保护模型请求或内层运行不足。
+
+本地设计首版：通过现有 session 文件锁设施提供共享活动/独占控制 scope；保护附着现有 RunCoordinator admission 与 ActiveRunRegistration 生命周期，不新增输入调度 registry、运行/事件存储或数据库迁移。AppService 在恢复文件前获取独占 scope，原始 truncate 通过同一边界，append 与直连 Kernel/RuntimeEngine 也接入；忙时拒绝，不自动取消。fork 也会恢复同一工作区，故复用同一互斥规则，但不关闭 H-74 等独立问题。
+
+即时验证：`cargo test -p deepagent-persistence --test session_control --offline -j 1 -- --nocapture` 首跑 **6 passed / 1 failed / 0 ignored**。跨 handle、真实子进程共享/独占、强制退出后释放均通过；故障回归在仍保留故意创建的 g2 阻断目录时读取日志而失败（5000ms 打开超时），已改为移除该空临时目录后核对历史，待重跑。即时丢弃 must_use guard 的测试警告已调整，尚未称严格 lint 通过。原失败及中间结果保留，其他平台、真实 UI、完整 workspace 仍未验收。
+
+首版原探针复测：`cargo test -p deepagent-app-core --test kernel_v2_e2e active_rewind --offline -j 1 -- --nocapture`，**2 passed / 0 failed / 0 ignored**，0.33s；忙时明确拒绝且历史未动，实际 invocation 结束后回退成功，两种回答投影均被移除，原 run 单终态保留。持久化同一专项修正后 **7 passed / 0 failed / 0 ignored**，5.09s。并发编译期间一次 cargo fmt 遇 Windows 源码映射 error 1224，未完成，待 rustc 退出后单独重跑；不把该次随后的测试成功算作格式成功。新增直接 RuntimeEngine/Kernel、接纳与检查点回归尚待验。
+
+调用方补强：桌面生产回调在后端返回之前删除 liveTranscripts 并清屏，busy 错误只提示、不恢复原屏幕。先执行 `node --test --test-name-pattern='rewind refusal' scripts/check-session-control.test.cjs`（apps/desktop）得到 **0 passed / 1 failed**，实际 messages=[] 而非原对象。只将失效缓存/清屏移到 await rewindSession 成功之后；同一文件 AST 提取、转译、实际执行回调，拒绝/请求中不变、成功刷新、等待时切换会话、空会话四项 **4 passed / 0 failed / 0 skipped**。该配套修复归属 H-75，不另计问题。已经接入前端 build 回归门，尚待完整 pnpm build；没有改 Tauri/SDK DTO、组件样式或添加新控件，真实 Desktop 手动交互未验。
+
+四 crate 实跑 `cargo test -p deepagent-persistence -p deepagent-session -p deepagent-runtime -p deepagent-app-core --offline -j 1 -- --quiet` 退出 **0**，编译 5m20s：AppCore lib 1104 passed/71 ignored，checkpoint_audit 18 passed/1 ignored，kernel_v2_e2e 103 passed/91 ignored，persistence lib 67 passed，session_control 8 passed（含子进程 helper 测试，另有 16 次真实线程抢占），runtime lib 284 passed/16 ignored，e2e_stabilization 5 passed，session lib 14 passed，四 crate doc-tests 均 0；各组 0 failed。feature 合并范围不同，不把与 workspace 的测试数量差异当作删测试。本命令编译的 E2E 是追加 provider failure/cancel 两项之前的版本，因此新两项正在专项重跑；不冒称该命令已覆盖后加测试。源码格式随后单独 cargo fmt 已退出 0，前端完整 build 与 workspace/lint 尚待。
+
+最终追加故障项首次专项 `cargo test -p deepagent-app-core --test kernel_v2_e2e active_rewind --offline -j 1 -- --nocapture` 为 **3 passed / 1 failed / 0 ignored**：正常/回退/供应商 400 失败正常，取消用例在未释放离线 transport 时等待 5s 超时。核对 HttpTransport::stream_cancelled，兼容默认仅在 stream 之前检查取消；本屏障夹具此前没有实现实时 flag 处理，不能据此宣称真实 HTTP 取消有缺陷。已在同一离线 transport 实现取消感知 seam（不改生产取消机制），待重跑；保留该夹具失败证据，不通过释放成功响应冒充取消。前端 `pnpm build` 已退出 **0**（包括新增回调 4 项、tsc 与 Vite），Vite 46.70s，有第三方浏览器 externalization/大 chunk 警告，未声称零告警或实际 Tauri 点击验收。
+
+取消感知夹具修正后，最终 active_rewind 专项 **4 passed / 0 failed / 0 ignored**（0.33s）：正常、不取消的 busy 拒绝、供应商 400 failed、实时 flag 取消四条正式 ChatService 链均通过；后两组无回答落盘，原 RunStore 为 failed/cancelled 且 run_events 单终态，实际调用退出后回退成功。已开始 `cargo test --workspace --offline -j 1 -- --quiet`，仍不将本项先标验收完成。
+
+最终 workspace 实录：上述命令编译 **6m52s** 后运行，退出 **1**。AppCore lib **1104 passed/80 ignored**、checkpoint_audit **18 passed/1 ignored**、kernel_v2_e2e **105 passed/91 ignored**（已含最终四种 active_rewind 场景）、builtins **292 passed/1 ignored**、persistence lib **67 passed**、session_control **8 passed**，这些组均 0 failed；之后 prompts lib **27 passed/1 failed**，既有 H-306 的 `creative.video-edit.v1.defaultUserPrompt` 为空。Cargo 早停，后续 target 不计本次 workspace 通过；前述四 crate 退出 0 已独立验证 runtime/session，但不能替代全 workspace 结果。
+
+最终 lint 实录：`cargo clippy -p deepagent-persistence -p deepagent-session -p deepagent-runtime -p deepagent-app-core --all-targets --offline --no-deps -j 1 -- -D warnings` 退出 **1**，被未修改的 `run_store.rs:127 explicit_counter_loop` 阻断。随后四 crate `--lib` 普通 lint（不带 `-- -D warnings`）退出 **0**，仍有既有 run_store/model_agent/context_runtime/plugin_preparation/run_assembler warnings；`cargo clippy -p deepagent-persistence --test session_control --offline --no-deps -j 1` 退出 **0**，仅带同一生产库 run_store 告警，没有本项测试文件告警。没有叠加豁免、顺手修基线或冒称严格/all-targets/全依赖 lint 通过。
+
+补充目标 lint：`cargo clippy -p deepagent-runtime --tests --offline --no-deps -j 1` 退出 **0**，带既有 model_agent/schedule_audit warnings；`cargo clippy -p deepagent-app-core --test checkpoint_audit --test kernel_v2_e2e --offline --no-deps -j 1` 退出 **1**，被未修改的 `mcp_discovery_restore.rs:433 panicking_unwrap` 阻断，另有既有 responses_custom_tool 布尔断言 warning，不把两个 target 记通过。最终 `cargo fmt --all -- --check`、`git diff --check` 退出 **0**；暂存后仍须检查新文件与台账。
+
+边界复核：共享活动 scope 只协调同一 session 的运行与 rewind/会恢复工作区的 AppService fork，不替代 InputLeaseRegistry，不解决 H-33 多宿主之间的运行互斥。取消只是设置状态，所有权必须由真实执行退出后释放；等待中的 admission 仍算忙。直接嵌入方若跨调用持有历史快照，应在恢复快照前获取 EventStore activity 并持有到最后写入；本项不使任意旧 Session 自动刷新，也没有给离线/外部直接写日志的代码补分支身份。不同 session 共享 workspace、后台笔记/知识派生状态（H-23）、脱离 Future 生命周期的本地进程或 native 副作用，不在本次动态证明范围。锁是 fs2 协作式并发边界，不是沙箱；旧版本宿主不识别新控制锁，因此不能混跑新旧二进制获得本项保证。不改事件格式、DB schema、供应商字段或 DTO，新增空 control.lock 文件沿用稳定锁目录保留。
+
+证据链：E-H75-01 为原 HEAD `1a3c7192` active_rewind 命令与迟到回答失败观察；E-H75-02 为最终同一专项 4 passed/0 ignored、四 crate 回归及持久化控制 8 项；E-H75-03 为桌面回调原拒绝场景 0 passed/1 failed、修正后 4 passed/0 skipped 和 pnpm build 退出 0；E-H75-04 为上述全量及 lint 实际退出和基线阻断。source_type=command，observed_at=2026-10-26，content_hash/artifact_path=n/a，未额外保存敏感模型日志。F-H75（severity=P1，category=design，status=validated，confidence=high，location=RunCoordinator::admit / AppService::rewind_session / EventStore 控制 scope）由 E-H75-01 证明缺陷，E-H75-02/03 证明上述本机行为，E-H75-04 保留全量未通过边界。P-H75（path_type=callflow）：接纳取得共享 scope → 原调度/快照恢复 → 原 Kernel/工具循环 → 外层失败/终态投影 → 释放活动保护 → 独占检查点恢复与 truncate；每步关联 E-H75-02，桌面成功后刷新关联 E-H75-03，原失败路径关联 E-H75-01。范围/授权见文首，时间线为本节按执行顺序追加记录。code-audit 影响是人工复核完整写入生命周期；docs-generator 影响是将原失败、夹具错误、本机验收与未验范围分离留档，未用扫描结果代替复现。
+
+交付前校验：Rows=306、Unique=306、Missing=[]、BadColumns=0；已修复 4 / 历史跳过 17 / 归并 7 / 撤销 2 / 待修复 276 / 修复中 0。显式暂存本项 15 个文件（含两个新增测试文件），`git diff --cached --check` 通过；用户原有五类未跟踪项不读、不改、不暂存。尚未创建提交，此刻不猜填 hash；提交后另做文档回填，不 amend、不推送。下一项 H-76 只排队，未开始复现或修改；整体 goal 保持 active。
 
 ## 按 H 编号的一一对应台账
 
@@ -179,7 +209,7 @@ H-72 当前实施记录（2026-10-26）：修复前执行 `cargo test -p deepage
 | [H-72：检查点备份缺失时，失败的回退或分叉仍删除当前文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针修复前失败、修复后默认通过；不重复登记 | 全 checkpoint 准备/发布/历史提交与补偿边界；共用 no-replace 原语 | 详见本节命令表：checkpoint 13 passed，AppCore audit 8 passed/2 ignored，相关库/端到端通过；workspace/H-306 和 lint 基线限制保留 | `d08c776c` | Windows 本机行为验收；断电/其他 OS/UI 未验，补偿失败有恢复路径；不关闭 H-73/H-75/H-285/H-287；本项本地剩余 0，环境另计 |
 | [H-73：回退后的旧分支检查点仍可覆盖新分支文件，调用却返回成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针修复前失败，修复后取消 ignore 并通过 | manifest 冻结稳定 source EventId，按权威有效历史筛选；保留旧记录/前缀恢复，旧格式身份不明时拒绝 | audit 17 passed/1 unrelated ignored；checkpoint 14 passed；runtime/session、AppCore/持久化相关回归通过；workspace H-306 与 lint 基线未绿，详见本节 | `d40eef9a` | Windows 本机验收；旧格式可能需人工核对，H-75/祖先快照继承/其他 OS/UI 不在关闭范围；本项本地剩余 0，环境另计 |
 | [H-74：分支边界截在源消息与原生镜像之间，保留的消息不进入下一请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原 HEAD 1a3c7192 为 1 passed/1 failed，原证据保留 | 复用会话锁：admission 至外层投影持共享 scope，rewind/fork 持独占 scope，忙时拒绝；桌面成功后才清屏 | active_rewind 默认 4 passed/0 ignored；四 crate 测试及 pnpm build 退出 0；workspace/严格 lint 既有失败及实际命令见 H-75 明细 | 尚未提交，独立提交创建后回填 | 限 Windows 后端及回调/构建；真实 UI/其他 OS 未验；H-33/H-23/跨 session 副作用未解决；下一项 H-76，总区间 200–400 有效工时 |
 | [H-76：文件写入只验证“曾经读过”，外部已保存的改动仍被旧内容成功覆盖](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-77：grep 未继承敏感文件读取拒绝，普通搜索可将被禁止的内容送入模型请求](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-78：Windows 工作区目录联接绕过词法路径限制，read_file 读取根目录外文件](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

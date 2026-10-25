@@ -476,6 +476,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         task: TaskId,
         agent: &mut dyn Agent,
     ) -> Result<KernelTerminal> {
+        let _session_activity = session.acquire_activity()?;
         let run_id = self.handle.run_id.clone();
         let session_id = session.id().to_string();
         let task_id = task.to_string();
@@ -699,6 +700,95 @@ mod tests {
     use deepagent_core::clock::FixedClock;
 
     struct HangingAgent;
+
+    struct HistoryControlProbe {
+        db: Arc<Database>,
+        session_id: deepagent_core::id::SessionId,
+        calls: usize,
+    }
+
+    #[async_trait]
+    impl crate::agent::Agent for HistoryControlProbe {
+        async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            let error = deepagent_persistence::event_store::EventStore::new(&self.db)
+                .truncate_after(self.session_id, 0)
+                .unwrap_err();
+            assert!(error.to_string().contains("is busy"), "{error}");
+            self.calls += 1;
+            Ok(AgentDecision::Complete("kept while running".into()))
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_runtime_and_kernel_hold_history_control_until_they_return() {
+        for kernel_mode in [false, true] {
+            let db = Arc::new(Database::open_in_memory().unwrap());
+            let clock = FixedClock::new(1);
+            let mut session = Session::create(&db, &clock, None).unwrap();
+            let task = session.create_task("finish").unwrap();
+            let id = session.id();
+            let mut agent = HistoryControlProbe {
+                db: db.clone(),
+                session_id: id,
+                calls: 0,
+            };
+            let registry = ToolRegistry::new();
+            // The reverse race: history control wins before runtime entry. No
+            // agent step/task transition/run record may be fabricated.
+            let control = deepagent_persistence::event_store::EventStore::new(&db)
+                .begin_control(id)
+                .unwrap();
+            let kernel = AgentKernel::<FixedClock>::new(
+                db.clone(),
+                &registry,
+                Metrics::new(),
+                RuntimeConfig::default(),
+                "control-probe",
+            );
+            let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default());
+            let error = if kernel_mode {
+                kernel
+                    .start_prepared(&mut session, task, &mut agent)
+                    .await
+                    .unwrap_err()
+            } else {
+                engine
+                    .run(&mut session, task, &mut agent)
+                    .await
+                    .unwrap_err()
+            };
+            assert!(error.to_string().contains("is busy"));
+            assert_eq!(agent.calls, 0);
+            assert_eq!(session.state().task(task).unwrap().state, TaskState::Queued);
+            assert!(RunStore::new(&db).get("control-probe").unwrap().is_none());
+            drop(control);
+            if kernel_mode {
+                let terminal = kernel
+                    .start_prepared(&mut session, task, &mut agent)
+                    .await
+                    .unwrap();
+                assert_eq!(terminal.kind, TerminalKind::Succeeded);
+                assert_eq!(
+                    RunStore::new(&db)
+                        .events_after("control-probe", None)
+                        .unwrap()
+                        .iter()
+                        .filter(|event| event.event_type == "run_terminal")
+                        .count(),
+                    1
+                );
+            } else {
+                assert_eq!(
+                    engine.run(&mut session, task, &mut agent).await.unwrap(),
+                    RunOutcome::Completed("kept while running".into())
+                );
+            }
+            assert_eq!(agent.calls, 1);
+            deepagent_persistence::event_store::EventStore::new(&db)
+                .truncate_after(id, 0)
+                .unwrap();
+        }
+    }
 
     #[async_trait]
     impl crate::agent::Agent for HangingAgent {

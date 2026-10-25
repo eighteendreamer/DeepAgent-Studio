@@ -8,8 +8,10 @@
 |---|---|---|
 | H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交 `56b9e7b9` |
 | H-72 | 已修复并验收（2026-10-26，Windows 本机范围） | 全计划暂存/发布/历史提交及补偿；原探针默认通过，checkpoint 13 passed、AppCore audit 8 passed/2 ignored；workspace 被 H-306 阻断、严格 lint 有既有告警，详见原项及台账；修复提交 `d08c776c` |
+| H-73 | 已修复并验收（2026-10-26，Windows 本机范围） | 检查点绑定源 EventId 并按当前分支验证，旧格式未知归属保守拒绝；checkpoint_audit 17 passed/1 ignored，范围及失败见原项；修复提交 `d40eef9a` |
+| H-75 | 已修复并验收（2026-10-26，限本机后端行为及前端回调/构建） | 活动共享/控制独占 scope，忙时拒绝回退；正式原探针及成功/失败/取消共 4 passed/0 ignored；四 crate 测试与 pnpm build 通过；workspace/严格 lint 仍有既有失败，真实 Tauri 点击未验；尚未提交，创建独立提交后回填 |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **2**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **278**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-73，不在本轮夹带修改。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **4**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **276**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-76（旧读取版本覆盖外部改动），按 A2 用户文件完整性排序，不在 H-75 中夹带修改。
 
 初始工时估算为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；首批几项完成后按实际吞吐和剩余问题状态重新校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -1931,6 +1933,28 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 - 修复方向（尚未实施，本地设计）：在既有事件/恢复入口定义一个逻辑提交组，保存或解析源消息与全部原生镜像的关联；fork/rewind 统一把原始锚点解析为完整语义边界，或在执行前明确拒绝会拆开提交组的锚点。不能只让前端 sequence+1，因为 reasoning、多工具和不同消息的镜像数并不固定。恢复还需区分合法原生边界与不完整镜像，不将原始源事件静默丢弃；完整事务、失败补偿、旧日志兼容及 cursor 协议属于本地设计，复用现有 EventStore。回归应覆盖纯文字/附件/reasoning/tool call/result、旧日志、故障中断、压缩和 raw sequence 用户，检查完整 wire 与持久化一致，而不是只验证 UI 气泡。
 
 ### H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史
+
+当前状态（2026-10-26）：**已修复并验收，限本机后端行为及桌面生产回调/构建**。以下时间线保留当时的失败和未验状态，原始审计段落按修复前快照阅读；原探针现已取消 ignore。完整 workspace/严格 lint 未全绿，真实 Tauri 手动操作、其他 OS 未验，不能宣称整个系统通过。尚未提交，独立提交创建后回填。
+
+修复前复核（2026-10-26，HEAD `1a3c7192`）：`cargo test -p deepagent-app-core --test kernel_v2_e2e active_rewind --offline -j 1 -- --include-ignored --nocapture` 为 **1 passed / 1 failed / 0 ignored**（测试体 0.28s）。实验组仍为 `accepted=true, removed_user_before_release=true, old_user_after=false, late_answer_after=true, run_ok=true, terminal=Some("succeeded")`。这是原问题重验，不计新发现；当前修复中，保留以下原始审计证据。
+
+实施时间线（2026-10-26，尚未验收）：选定忙时明确拒绝策略。现有 RunCoordinator admission 开始前获取共享会话控制锁，保护随 ActiveRunRegistration 延续至外层终态补写结束；AppService rewind/fork 在恢复检查点之前获取同一文件的独占锁，原始 truncate 也通过独占 scope，append/Kernel/RuntimeEngine 共用该边界。独立控制锁不占用短期事件 I/O 锁，避免运行自身追加死锁；仍由 InputLeaseRegistry 调度，不新增 registry/store 或数据库迁移。此为本地持久化并发设计，参考实现只支持“恢复必须协调活动查询”，不声称其提供相同锁。首跑 `cargo test -p deepagent-persistence --test session_control --offline -j 1 -- --nocapture` 为 **6 passed / 1 failed / 0 ignored**：独立 handle、真实子进程共享/独占及强制退出用例通过；失败来自故障夹具仍保留故意创建的 g2 目录时即读取日志，触发 5000ms 打开失败。已调整为清除该临时阻断目录后再核对未提交历史，尚待重跑；另修正测试中即时丢弃 must_use guard 的警告。该中间结果不能当作最终修复通过。
+
+首版复测：原 `active_rewind` 命令不再 include ignored，**2 passed / 0 failed / 0 ignored**，0.33s；运行中 `accepted=false, removed_user_before_release=false`，原输入/回答按正常运行保留，实际 invocation 结束后再次回退成功且两者均从历史移除，run_events 单终态仍保留。持久化控制专项修正后 **7 passed / 0 failed / 0 ignored**，5.09s；预期 panic 由 catch_unwind 捕获，未冒充故障通过。并发 rustc 映射源码期间一次 `cargo fmt --all` 遇 Windows error 1224，格式动作未完成；将待编译退出后单独重跑，不将后续测试成功当作该次格式成功。尚待新增直接 runtime、检查点、接纳竞态与全量回归。
+
+桌面调用方回归：生产 onRewindSession 在 await 之前清屏，busy 返回后画面已空。新增实际生产回调 AST 执行测试，修复前拒绝专项 **0 passed / 1 failed**（messages 实为 []）；将清缓存/清屏后移到后端成功之后，四种回调场景 **4 passed / 0 failed / 0 skipped**，已纳入 pnpm build。没有新增控件或改协议；实际 Tauri 窗口交互尚未验证，不能用回调测试冒充点击验收。后台滚动笔记/知识提取分支一致性仍属 H-23 等独立条目，不能用本项保护主运行终态冒称已解决。
+
+四 crate 回归命令 `cargo test -p deepagent-persistence -p deepagent-session -p deepagent-runtime -p deepagent-app-core --offline -j 1 -- --quiet` 退出 0：AppCore lib 1104 passed/71 ignored、checkpoint_audit 18 passed/1 ignored、kernel_v2_e2e 103 passed/91 ignored、persistence 67 passed、session_control 8 passed、runtime 284 passed/16 ignored、e2e_stabilization 5 passed、session 14 passed，均 0 failed。新增源码直接运行入口、取消标记尚未退出、RunStore 已终态而 Session 尚未投影、排队 admission、反向接纳拒绝及检查点前置拒绝已覆盖；此时 E2E 二进制尚不含后来追加的 provider failure/cancel 两项，另行重跑。仍不将 ignored、全部其他平台、完整 workspace 或真实 UI 计作通过。
+
+故障专项中间结果：追加 provider failure/cancel 两项后同一 active_rewind 命令为 **3 passed / 1 failed / 0 ignored**，取消夹具等未释放 transport 超时。HttpTransport::stream_cancelled 的兼容默认只预检 flag，本夹具缺少真实 HTTP transport 的进行中取消实现，故该失败不登记为产品网络缺陷；已在夹具补实时 flag seam，待重跑，未改生产取消机制或用完成回答冒充取消。`pnpm build` 已退出 0（含新增 4 项、tsc/Vite；第三方 externalization/大 chunk 警告保留，未实际点击 Tauri）。
+
+最终 active_rewind 专项在补齐取消感知夹具后为 **4 passed / 0 failed / 0 ignored**（0.33s）：provider 400 组 terminal=failed、取消组 terminal=cancelled，均没有迟到回答；实际调用退出后回退成功且既有 run_events 单终态保留。已进入 workspace/lint 验证，未以此局部通过关闭全系统任务。
+
+最终全量/静态检查实录：`cargo test --workspace --offline -j 1 -- --quiet` 编译 6m52s，退出 **1**；AppCore lib **1104 passed/80 ignored**、checkpoint_audit **18 passed/1 ignored**、kernel_v2_e2e **105 passed/91 ignored**（含最终四种 active_rewind 场景）、builtins **292 passed/1 ignored**、persistence **67 passed**、session_control **8 passed**，这些组均 0 failed。到 prompts lib 时 **27 passed/1 failed**，再次被未修改的 H-306 空 `creative.video-edit.v1.defaultUserPrompt` 阻断；Cargo 早停，之后的 target 不算本次 workspace 通过。此前四 crate 命令已独立覆盖 runtime/session，不用它伪装全 workspace 绿色。
+
+严格 `cargo clippy -p deepagent-persistence -p deepagent-session -p deepagent-runtime -p deepagent-app-core --all-targets --offline --no-deps -j 1 -- -D warnings` 退出 **1**，被未修改的 `run_store.rs:127 explicit_counter_loop` 阻断，不增加 lint allow。另执行四 crate 的 `--lib` 普通 lint（其余参数相同、不带 `-- -D warnings`）退出 **0**，仍有既有 run_store/model_agent/context_runtime/plugin_preparation/run_assembler 告警；`cargo clippy -p deepagent-persistence --test session_control --offline --no-deps -j 1` 退出 **0**，仅带同一 run_store 生产库告警。没有报告本项修改文件告警，不等于严格/all-targets 或全依赖 lint 通过。真实 Tauri 手动点击、其他 OS 及新旧版本宿主混跑未验。
+
+补充目标 lint：`cargo clippy -p deepagent-runtime --tests --offline --no-deps -j 1` 退出 **0**，带既有 model_agent 与 schedule_audit 告警；`cargo clippy -p deepagent-app-core --test checkpoint_audit --test kernel_v2_e2e --offline --no-deps -j 1` 退出 **1**，在未修改的 `mcp_discovery_restore.rs:433 panicking_unwrap` 被阻断，另有既有 responses_custom_tool 布尔断言告警，不把两个目标假记通过。最终 `cargo fmt --all -- --check`、`git diff --check` 退出 **0**。本项不解决 H-33 双宿主运行互斥、H-23 派生笔记分支、跨 session 共用工作区或游离 native/后台副作用；锁为协作边界而非沙箱，旧版本宿主不能混跑取得保证。嵌入方长期保留快照须在恢复前持 activity 至最后写入，任意旧 Session 不自动刷新。没有 schema/event/DTO/供应商字段变更。
 
 **级别：高（P1）；范围：同一会话的 ChatService turn 尚在等待模型响应时，通过正式 AppService rewind_session 回退至该 turn 之前。** 这不是 H-74 的源消息/镜像边界，本项使用已完整落盘的前一组 user/assistant 作为保留点；也没有 H-73 的旧分支文件检查点参与。
 

@@ -839,6 +839,9 @@ impl AppService {
     pub fn fork_session(&self, session_id: &str, at_seq: u64) -> Result<ForkResultDto> {
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+        // Fork also restores this workspace. Keep the same exclusive scope
+        // across checkpoint publication and history commit as rewind.
+        let _control = EventStore::new(&self.db).begin_control(id)?;
         self.restore_checkpoints_after(session_id, at_seq, |restored_paths| {
             let new_id = SessionId::new();
             EventStore::new(&self.db).fork_session(id, new_id, at_seq, SystemClock.now())?;
@@ -858,12 +861,13 @@ impl AppService {
     pub fn rewind_session(&self, session_id: &str, to_seq: u64) -> Result<RewindResultDto> {
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
+        let control = EventStore::new(&self.db).begin_control(id)?;
         let clock = SystemClock;
         // Validate recoverability before touching files. Avoid a fallible
         // projection reload after the authoritative truncate has committed.
         Session::recover(&self.db, &clock, id)?;
         self.restore_checkpoints_after(session_id, to_seq, |restored_paths| {
-            let removed = EventStore::new(&self.db).truncate_after(id, to_seq)?;
+            let removed = control.truncate_after(to_seq)?;
             Ok(RewindResultDto {
                 session_id: session_id.to_string(),
                 kept_through: to_seq,

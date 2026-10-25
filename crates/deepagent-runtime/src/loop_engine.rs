@@ -680,6 +680,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         task: TaskId,
         agent: &mut dyn Agent,
     ) -> Result<RunOutcome> {
+        let _session_activity = session.acquire_activity()?;
         let session_id = session.id();
         let run_started_at = std::time::Instant::now();
 

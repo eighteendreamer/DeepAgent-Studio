@@ -33,6 +33,32 @@ pub struct EventStore<'db> {
     db: &'db Database,
 }
 
+/// Shared, process-scoped permission to use a session's current history.
+/// Keep this guard through the last session write, including terminal/failure
+/// projection. It does not schedule inputs; InputLeaseRegistry still does that.
+#[must_use]
+pub struct SessionActivityGuard {
+    _lock: session_files::SessionLock,
+}
+
+/// Exclusive history-control scope. No new run or raw append can enter until
+/// this scope ends. It deliberately does not hold the SQLite/event-I/O mutex.
+#[must_use]
+pub struct SessionControl<'db> {
+    db: &'db Database,
+    session_id: SessionId,
+    _lock: session_files::SessionLock,
+}
+
+impl SessionControl<'_> {
+    /// Commit a rewind without recursively acquiring the exclusive gate. An
+    /// error still means the authoritative prefix has not been published, as
+    /// required by workspace checkpoint compensation.
+    pub fn truncate_after(&self, keep_through: Sequence) -> Result<u64> {
+        EventStore::new(self.db).truncate_after_in_control(self.session_id, keep_through)
+    }
+}
+
 /// A summary row describing a persisted session.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SessionRecord {
@@ -80,6 +106,34 @@ impl<'db> EventStore<'db> {
     /// Wrap a database handle.
     pub fn new(db: &'db Database) -> Self {
         Self { db }
+    }
+
+    /// Reserve history before recovering a run's model/session snapshot.
+    /// Compatible with other admitted/queued runs; exclusive control is
+    /// refused until every owner releases its guard, including on cancellation.
+    pub fn acquire_activity(&self, session_id: SessionId) -> Result<SessionActivityGuard> {
+        Ok(SessionActivityGuard {
+            _lock: session_files::try_lock_session_control(
+                &self.db.session_files_root(),
+                session_id,
+                false,
+            )?,
+        })
+    }
+
+    /// Refuse busy history control atomically, rather than check a registry
+    /// and race a newly admitted run. The same file gate spans Database handles
+    /// and cooperating host processes. It is advisory, not an OS sandbox.
+    pub fn begin_control(&self, session_id: SessionId) -> Result<SessionControl<'db>> {
+        Ok(SessionControl {
+            db: self.db,
+            session_id,
+            _lock: session_files::try_lock_session_control(
+                &self.db.session_files_root(),
+                session_id,
+                true,
+            )?,
+        })
     }
 
     /// Create a new session row in [`SessionMode::Normal`]. The caller still
@@ -158,6 +212,7 @@ impl<'db> EventStore<'db> {
         payload: EventPayload,
         now: Timestamp,
     ) -> Result<Event> {
+        let _activity = self.acquire_activity(session_id)?;
         let _io = self.db.lock_session_io()?;
         let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
         if self
@@ -999,6 +1054,14 @@ impl<'db> EventStore<'db> {
     /// session's `ended_at` is cleared (the session is "reopened") and
     /// `updated_at` is reset to the timestamp of the new tail event.
     pub fn truncate_after(&self, session_id: SessionId, keep_through: Sequence) -> Result<u64> {
+        self.begin_control(session_id)?.truncate_after(keep_through)
+    }
+
+    fn truncate_after_in_control(
+        &self,
+        session_id: SessionId,
+        keep_through: Sequence,
+    ) -> Result<u64> {
         let _io = self.db.lock_session_io()?;
         let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
         if self.get_session(session_id)?.is_none() {

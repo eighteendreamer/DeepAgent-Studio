@@ -2342,9 +2342,10 @@ export function App() {
     async (toSeq: number, sessionId = activeId) => {
       if (!sessionId) return;
       try {
+        // A busy/failed rewind must leave the streaming view untouched.
+        await rewindSession(sessionId, toSeq);
         liveTranscripts.current.delete(sessionId);
         if (activeIdRef.current === sessionId) setMessages([]);
-        await rewindSession(sessionId, toSeq);
         const [nextDetail] = await Promise.all([
           getSessionDetail(sessionId),
           refreshSessions(),
