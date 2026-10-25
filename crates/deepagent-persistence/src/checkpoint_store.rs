@@ -1,10 +1,27 @@
 //! Durable metadata for run-scoped workspace checkpoints.
 
-use deepagent_core::error::Result;
+use std::collections::HashMap;
+
+use deepagent_core::error::{CoreError, Result};
+use deepagent_core::id::{EventId, SessionId};
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-use crate::{map_sqlite, Database};
+use crate::{event_store::EventStore, map_sqlite, run_store::RunStore, session_files, Database};
+
+/// Stable identity of the source event, not its reusable numeric position.
+/// Stored inside the existing manifest; no SQLite schema migration is needed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CheckpointAnchor {
+    pub session_id: SessionId,
+    pub event_id: EventId,
+}
+
+#[derive(Deserialize)]
+struct ManifestAnchor {
+    #[serde(default)]
+    branch_anchor: Option<CheckpointAnchor>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CheckpointRecord {
@@ -23,6 +40,29 @@ pub struct CheckpointStore<'db> {
 impl<'db> CheckpointStore<'db> {
     pub const fn new(db: &'db Database) -> Self {
         Self { db }
+    }
+
+    /// Resolve once when a manager is created, before its first file mutation.
+    /// Detached managers without a run may be used for local evidence, but
+    /// cannot persist a checkpoint (the existing run FK still applies).
+    pub fn capture_anchor(&self, run_id: &str, sequence: i64) -> Result<Option<CheckpointAnchor>> {
+        let Some(run) = RunStore::new(self.db).get(run_id)? else {
+            return Ok(None);
+        };
+        let session_id = run.session_id.parse::<SessionId>()?;
+        let event = EventStore::new(self.db)
+            .load_session(session_id)?
+            .into_iter()
+            .find(|event| i64::try_from(event.sequence).ok() == Some(sequence))
+            .ok_or_else(|| {
+                CoreError::Persistence(format!(
+                    "checkpoint source event missing: run {run_id}, sequence {sequence}"
+                ))
+            })?;
+        Ok(Some(CheckpointAnchor {
+            session_id,
+            event_id: event.id,
+        }))
     }
 
     pub fn put(&self, record: &CheckpointRecord) -> Result<()> {
@@ -94,23 +134,38 @@ impl<'db> CheckpointStore<'db> {
         })
     }
 
+    /// Select only checkpoints whose source identity is still in the active
+    /// history. Legacy metadata can be bound only against generation 1; this
+    /// deliberately refuses ambiguous automatic recovery after a rewrite.
+    /// The gate covers qualification/backfill, not the later workspace restore
+    /// or an entire running turn (active-turn exclusion is a separate boundary).
     pub fn list_for_session_after_sequence(
         &self,
         session_id: &str,
         after_sequence: i64,
     ) -> Result<Vec<CheckpointRecord>> {
+        let session_id = session_id.parse::<SessionId>()?;
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        let current = session_files::load(&self.db.session_files_root(), session_id)?
+            .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
+        let active: HashMap<_, _> = current
+            .events
+            .iter()
+            .map(|event| (event.sequence as i64, event.id))
+            .collect();
         self.db.with_conn(|conn| {
             let mut stmt = conn
                 .prepare(
                     "SELECT c.id, c.run_id, c.session_sequence, c.workspace_root, c.manifest, c.created_at
                      FROM checkpoints c
                      INNER JOIN runs r ON r.id = c.run_id
-                     WHERE r.session_id = ?1 AND c.session_sequence > ?2
+                     WHERE r.session_id = ?1
                      ORDER BY c.session_sequence DESC, c.created_at DESC",
                 )
                 .map_err(map_sqlite)?;
             let rows = stmt
-                .query_map(params![session_id, after_sequence], |row| {
+                .query_map([session_id.to_string()], |row| {
                     Ok(CheckpointRecord {
                         id: row.get(0)?,
                         run_id: row.get(1)?,
@@ -121,8 +176,79 @@ impl<'db> CheckpointStore<'db> {
                     })
                 })
                 .map_err(map_sqlite)?;
-            rows.collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(map_sqlite)
+            let records = rows.collect::<std::result::Result<Vec<_>, _>>().map_err(map_sqlite)?;
+            drop(stmt);
+            let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
+            let mut selected = Vec::new();
+            for mut record in records {
+                let Some(anchor) = restore_anchor(
+                    &tx, &mut record, session_id, current.generation, &active, after_sequence,
+                )? else {
+                    continue;
+                };
+                if record.session_sequence > after_sequence
+                    && anchor.session_id == session_id
+                    && active.get(&record.session_sequence) == Some(&anchor.event_id)
+                {
+                    selected.push(record);
+                }
+            }
+            tx.commit().map_err(map_sqlite)?;
+            Ok(selected)
         })
     }
+}
+
+fn restore_anchor(
+    tx: &rusqlite::Transaction<'_>,
+    record: &mut CheckpointRecord,
+    session_id: SessionId,
+    generation: u64,
+    active: &HashMap<i64, EventId>,
+    after_sequence: i64,
+) -> Result<Option<CheckpointAnchor>> {
+    let source = serde_json::from_str::<ManifestAnchor>(&record.manifest).map_err(|error| {
+        CoreError::Persistence(format!("checkpoint {} anchor: {error}", record.id))
+    })?;
+    if let Some(anchor) = source.branch_anchor {
+        return Ok(Some(anchor));
+    }
+    if generation != 1 {
+        if record.session_sequence <= after_sequence {
+            return Ok(None);
+        }
+        // An unbound capture might still be needed. Silently skipping it could
+        // truncate history while retaining the wrong files, so fail preflight.
+        return Err(CoreError::Persistence(format!(
+            "legacy checkpoint {} has no branch identity after session rewrite; automatic restore refused",
+            record.id
+        )));
+    }
+    let Some(event_id) = active.get(&record.session_sequence) else {
+        if record.session_sequence <= after_sequence {
+            return Ok(None);
+        }
+        return Err(CoreError::Persistence(format!(
+            "legacy checkpoint {} has no branch identity: source event missing; automatic restore refused",
+            record.id
+        )));
+    };
+    // Bind ALL surviving legacy captures against the never-rewritten original
+    // log, including the prefix, so a later deeper rewind remains possible.
+    let anchor = CheckpointAnchor {
+        session_id,
+        event_id: *event_id,
+    };
+    let mut manifest: serde_json::Value = serde_json::from_str(&record.manifest)
+        .map_err(|error| CoreError::Persistence(error.to_string()))?;
+    manifest["branch_anchor"] =
+        serde_json::to_value(&anchor).map_err(|error| CoreError::Persistence(error.to_string()))?;
+    record.manifest = serde_json::to_string(&manifest)
+        .map_err(|error| CoreError::Persistence(error.to_string()))?;
+    tx.execute(
+        "UPDATE checkpoints SET manifest=?2 WHERE id=?1",
+        params![record.id, record.manifest],
+    )
+    .map_err(map_sqlite)?;
+    Ok(Some(anchor))
 }

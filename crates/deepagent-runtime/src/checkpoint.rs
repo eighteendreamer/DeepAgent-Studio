@@ -5,7 +5,9 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_persistence::checkpoint_store::{CheckpointRecord, CheckpointStore};
+use deepagent_persistence::checkpoint_store::{
+    CheckpointAnchor, CheckpointRecord, CheckpointStore,
+};
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +23,8 @@ struct CheckpointEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CheckpointManifest {
+    #[serde(default)]
+    branch_anchor: Option<CheckpointAnchor>,
     storage_dir: String,
     entries: Vec<CheckpointEntry>,
     #[serde(default)]
@@ -48,6 +52,7 @@ pub struct CheckpointManager {
     id: String,
     run_id: String,
     session_sequence: i64,
+    branch_anchor: Option<CheckpointAnchor>,
     workspace_root: PathBuf,
     storage_dir: PathBuf,
     captured: Mutex<HashSet<PathBuf>>,
@@ -74,6 +79,8 @@ impl CheckpointManager {
         workspace_root: impl AsRef<Path>,
         checkpoint_root: impl AsRef<Path>,
     ) -> Result<Self> {
+        let run_id = run_id.into();
+        let branch_anchor = CheckpointStore::new(&db).capture_anchor(&run_id, session_sequence)?;
         let id = format!("chk_{}", deepagent_core::id::EventId::new());
         let workspace_root = normalize_path(workspace_root.as_ref());
         let storage_dir = checkpoint_root.as_ref().join(&id);
@@ -83,8 +90,9 @@ impl CheckpointManager {
         Ok(Self {
             db,
             id,
-            run_id: run_id.into(),
+            run_id,
             session_sequence,
+            branch_anchor,
             workspace_root,
             storage_dir,
             captured: Mutex::new(HashSet::new()),
@@ -156,6 +164,7 @@ impl CheckpointManager {
 
     pub fn commit(&self) -> Result<String> {
         let manifest = CheckpointManifest {
+            branch_anchor: self.branch_anchor.clone(),
             storage_dir: self.storage_dir.to_string_lossy().to_string(),
             entries: self
                 .entries
@@ -367,21 +376,54 @@ fn now_millis() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepagent_core::clock::FixedClock;
+    use deepagent_core::event::EventPayload;
     use deepagent_persistence::run_store::RunStore;
+    use deepagent_session::Session;
+
+    fn checkpoint_run(db: &Database, run_id: &str, sequence: u64) {
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(db, &clock, Some("checkpoint test")).unwrap();
+        for _ in 0..sequence {
+            session
+                .append(EventPayload::Note {
+                    text: "padding".into(),
+                })
+                .unwrap();
+        }
+        RunStore::new(db)
+            .create(run_id, &session.id().to_string(), None, 1)
+            .unwrap();
+    }
+
+    #[test]
+    fn manager_rejects_missing_source_before_allocating_checkpoint_storage() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        checkpoint_run(&db, "source-run", 0);
+        let workspace = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        for sequence in [-1, 1] {
+            let error = CheckpointManager::new(
+                db.clone(),
+                "source-run",
+                sequence,
+                workspace.path(),
+                storage.path(),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("source event missing"));
+        }
+        assert_eq!(std::fs::read_dir(storage.path()).unwrap().count(), 0);
+        assert!(CheckpointStore::new(&db)
+            .list_for_run("source-run")
+            .unwrap()
+            .is_empty());
+    }
 
     #[test]
     fn restore_reverts_modified_deleted_and_created_files() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO sessions (id, created_at, updated_at) VALUES ('s1', 1, 1)",
-                [],
-            )
-            .map_err(|error| CoreError::Persistence(error.to_string()))?;
-            Ok(())
-        })
-        .unwrap();
-        RunStore::new(&db).create("r1", "s1", None, 1).unwrap();
+        checkpoint_run(&db, "r1", 0);
         let workspace = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         let modified = workspace.path().join("modified.txt");
@@ -420,16 +462,7 @@ mod tests {
     #[test]
     fn incremental_commit_survives_crash_without_final_commit() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO sessions (id, created_at, updated_at) VALUES ('s1', 1, 1)",
-                [],
-            )
-            .map_err(|error| CoreError::Persistence(error.to_string()))?;
-            Ok(())
-        })
-        .unwrap();
-        RunStore::new(&db).create("r1", "s1", None, 1).unwrap();
+        checkpoint_run(&db, "r1", 7);
         let workspace = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         let file = workspace.path().join("work.txt");
@@ -483,16 +516,7 @@ mod tests {
     #[test]
     fn external_worktree_evidence_is_deduplicated_and_persisted() {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        db.with_conn(|conn| {
-            conn.execute(
-                "INSERT INTO sessions (id, created_at, updated_at) VALUES ('s1', 1, 1)",
-                [],
-            )
-            .map_err(|error| CoreError::Persistence(error.to_string()))?;
-            Ok(())
-        })
-        .unwrap();
-        RunStore::new(&db).create("parent", "s1", None, 1).unwrap();
+        checkpoint_run(&db, "parent", 0);
         let workspace = tempfile::tempdir().unwrap();
         let storage = tempfile::tempdir().unwrap();
         let checkpoint =

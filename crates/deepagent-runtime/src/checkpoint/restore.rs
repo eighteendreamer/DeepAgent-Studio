@@ -417,6 +417,7 @@ mod tests {
                 session_sequence: 1,
                 workspace_root: self.workspace.path().to_string_lossy().to_string(),
                 manifest: serde_json::to_string(&CheckpointManifest {
+                    branch_anchor: None,
                     storage_dir: storage_dir.to_string_lossy().to_string(),
                     entries,
                     external_evidence: vec![],

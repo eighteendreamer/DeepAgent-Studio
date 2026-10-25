@@ -593,7 +593,6 @@ fn rewind_over_text_only_tail_preserves_current_branch_file() {
 }
 
 #[test]
-#[ignore = "audit: old-branch checkpoints must not overwrite files on a later branch rewind"]
 fn audit_rewind_does_not_restore_discarded_branch_checkpoints() {
     let observed = observe_rewind_after_new_branch(true);
     eprintln!("checkpoint branch audit: {observed:?}");
@@ -602,4 +601,404 @@ fn audit_rewind_does_not_restore_discarded_branch_checkpoints() {
         "text-only rewind selected a file backup from the discarded branch"
     );
     assert_eq!(observed.restored_paths, 0);
+}
+
+/// File-backed fixture: all operations use the public production facade and
+/// real capture/commit. Only legacy-format and storage-fault tests alter SQL.
+struct BranchFixture {
+    db: Arc<Database>,
+    data: tempfile::TempDir,
+    workspace: tempfile::TempDir,
+    storage: tempfile::TempDir,
+    session_id: deepagent_core::id::SessionId,
+}
+
+impl BranchFixture {
+    fn new() -> Self {
+        let data = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(data.path().join("branch.sqlite")).unwrap());
+        let session_id = Session::create(&db, &FixedClock::new(1_000), Some("branch regression"))
+            .unwrap()
+            .id();
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::write(workspace.path().join("branch.txt"), "base").unwrap();
+        Self {
+            db,
+            data,
+            workspace,
+            storage: tempfile::tempdir().unwrap(),
+            session_id,
+        }
+    }
+
+    fn target(&self) -> std::path::PathBuf {
+        self.workspace.path().join("branch.txt")
+    }
+
+    fn text(&self, content: &str) -> u64 {
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::recover(&self.db, &clock, self.session_id).unwrap();
+        for message in [Message::user(content), Message::assistant("answer")] {
+            session
+                .append(EventPayload::MessageAppended { message })
+                .unwrap();
+        }
+        self.tail()
+    }
+
+    fn edit(&self, run_id: &str, content: &str) -> (String, u64, u64) {
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::recover(&self.db, &clock, self.session_id).unwrap();
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user(run_id),
+            })
+            .unwrap();
+        let (checkpoint, anchor_sequence) = record_branch_edit(
+            &self.db,
+            self.session_id,
+            &self.target(),
+            self.storage.path(),
+            run_id,
+            content,
+        );
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::assistant("edit done"),
+            })
+            .unwrap();
+        (checkpoint, anchor_sequence, self.tail())
+    }
+
+    fn tail(&self) -> u64 {
+        EventStore::new(&self.db)
+            .load_session(self.session_id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .sequence
+    }
+
+    fn history(&self) -> serde_json::Value {
+        serde_json::to_value(
+            EventStore::new(&self.db)
+                .load_session(self.session_id)
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn content(&self) -> String {
+        std::fs::read_to_string(self.target()).unwrap()
+    }
+
+    fn rewind(&self, sequence: u64) {
+        AppService::from_shared(self.db.clone())
+            .rewind_session(&self.session_id.to_string(), sequence)
+            .unwrap();
+    }
+
+    fn reopen(&mut self) {
+        let replacement = Arc::new(Database::open_in_memory().unwrap());
+        drop(std::mem::replace(&mut self.db, replacement));
+        self.db = Arc::new(Database::open(self.data.path().join("branch.sqlite")).unwrap());
+    }
+
+    fn make_legacy(&self, id: &str) -> deepagent_persistence::checkpoint_store::CheckpointRecord {
+        let store = CheckpointStore::new(&self.db);
+        let mut record = store.get(id).unwrap().unwrap();
+        let mut manifest: serde_json::Value = serde_json::from_str(&record.manifest).unwrap();
+        manifest.as_object_mut().unwrap().remove("branch_anchor");
+        manifest["legacy_extra"] = serde_json::json!({"preserve": true});
+        record.manifest = manifest.to_string();
+        store.put(&record).unwrap();
+        record
+    }
+}
+
+#[test]
+fn branch_rewind_keeps_surviving_prefix_across_reopen_and_reused_sequences() {
+    let mut fixture = BranchFixture::new();
+    let (prefix, _, prefix_tail) = fixture.edit("prefix", "prefix-content");
+    let (discarded, old_sequence, _) = fixture.edit("discarded", "old-content");
+    let old_record = CheckpointStore::new(&fixture.db)
+        .get(&discarded)
+        .unwrap()
+        .unwrap();
+    fixture.rewind(prefix_tail);
+    assert_eq!(fixture.content(), "prefix-content");
+    fixture.reopen();
+    let (current, new_sequence, current_tail) = fixture.edit("current", "new-content");
+    assert_eq!(old_sequence, new_sequence);
+    let store = CheckpointStore::new(&fixture.db);
+    let current_record = store.get(&current).unwrap().unwrap();
+    let old_manifest: serde_json::Value = serde_json::from_str(&old_record.manifest).unwrap();
+    let current_manifest: serde_json::Value =
+        serde_json::from_str(&current_record.manifest).unwrap();
+    assert_ne!(
+        old_manifest["branch_anchor"],
+        current_manifest["branch_anchor"]
+    );
+    // Qualification must precede backup I/O: a retired branch with a missing
+    // backup must neither block nor participate in a current-branch restore.
+    let retired_backup =
+        std::path::PathBuf::from(old_manifest["entries"][0]["backup"].as_str().unwrap());
+    assert!(retired_backup.starts_with(fixture.storage.path()));
+    std::fs::remove_file(retired_backup).unwrap();
+    fixture.text("text-only tail");
+    fixture.rewind(current_tail);
+    assert_eq!(fixture.content(), "new-content");
+    fixture.reopen();
+    fixture.rewind(prefix_tail);
+    assert_eq!(fixture.content(), "prefix-content");
+    fixture.rewind(0);
+    assert_eq!(fixture.content(), "base");
+    assert_eq!(fixture.tail(), 0);
+    let store = CheckpointStore::new(&fixture.db);
+    assert_eq!(store.get(&discarded).unwrap().unwrap(), old_record);
+    assert_eq!(store.get(&current).unwrap().unwrap(), current_record);
+    assert!(store.get(&prefix).unwrap().is_some());
+    assert_eq!(store.list_for_run("discarded").unwrap().len(), 1);
+}
+
+#[test]
+fn branch_fork_filters_discarded_captures_and_separates_child_runs() {
+    let mut fixture = BranchFixture::new();
+    fixture.edit("old-first", "old-first");
+    let (old_checkpoint, _, _) = fixture.edit("old-second", "old-second");
+    fixture.rewind(0);
+    let (_, _, kept) = fixture.edit("source-current", "source-current");
+    fixture.text("source text tail");
+    let source_id = fixture.session_id;
+    let source_history = fixture.history();
+    let fork = AppService::from_shared(fixture.db.clone())
+        .fork_session(&source_id.to_string(), kept)
+        .unwrap();
+    assert!(fork.restored_paths.is_empty());
+    assert_eq!(fixture.content(), "source-current");
+    assert_eq!(fixture.history(), source_history);
+    fixture.session_id = fork.new_session_id.parse().unwrap();
+    assert_eq!(fixture.tail(), kept);
+    assert!(fixture.history().to_string().contains("source-current"));
+    assert!(!fixture.history().to_string().contains("source text tail"));
+    let (child_checkpoint, _, _) = fixture.edit("child", "child-content");
+    fixture.reopen();
+    fixture.rewind(kept);
+    assert_eq!(fixture.content(), "source-current");
+    let store = CheckpointStore::new(&fixture.db);
+    assert!(store.get(&old_checkpoint).unwrap().is_some());
+    assert!(store.get(&child_checkpoint).unwrap().is_some());
+    assert!(store
+        .list_for_session_after_sequence(&source_id.to_string(), 0)
+        .unwrap()
+        .iter()
+        .all(|record| record.run_id != "child"));
+    fixture.session_id = source_id;
+    assert_eq!(fixture.history(), source_history);
+}
+
+#[test]
+fn branch_anchor_is_fixed_before_first_capture_on_a_reused_sequence() {
+    let fixture = BranchFixture::new();
+    let old_sequence = fixture.text("old turn");
+    let old_event = EventStore::new(&fixture.db)
+        .load_session(fixture.session_id)
+        .unwrap()
+        .pop()
+        .unwrap();
+    RunStore::new(&fixture.db)
+        .create(
+            "delayed-capture",
+            &fixture.session_id.to_string(),
+            None,
+            1_000,
+        )
+        .unwrap();
+    let manager = CheckpointManager::new(
+        fixture.db.clone(),
+        "delayed-capture",
+        old_sequence as i64,
+        fixture.workspace.path(),
+        fixture.storage.path(),
+    )
+    .unwrap();
+    fixture.rewind(0);
+    assert_eq!(fixture.text("new turn"), old_sequence);
+    manager.capture_before(fixture.target()).unwrap();
+    std::fs::write(fixture.target(), "new-content").unwrap();
+    let record = CheckpointStore::new(&fixture.db)
+        .get(manager.id())
+        .unwrap()
+        .unwrap();
+    let manifest: serde_json::Value = serde_json::from_str(&record.manifest).unwrap();
+    assert_eq!(
+        manifest["branch_anchor"]["event_id"],
+        serde_json::to_value(old_event.id).unwrap()
+    );
+    fixture.rewind(0);
+    assert_eq!(fixture.content(), "new-content");
+}
+
+#[test]
+fn branch_manager_never_rebinds_its_anchor_when_committed_after_rewind() {
+    let fixture = BranchFixture::new();
+    fixture.text("original turn");
+    RunStore::new(&fixture.db)
+        .create("late-manager", &fixture.session_id.to_string(), None, 1_000)
+        .unwrap();
+    let manager = CheckpointManager::new(
+        fixture.db.clone(),
+        "late-manager",
+        fixture.tail() as i64,
+        fixture.workspace.path(),
+        fixture.storage.path(),
+    )
+    .unwrap();
+    manager.capture_before(fixture.target()).unwrap();
+    let original = CheckpointStore::new(&fixture.db)
+        .get(manager.id())
+        .unwrap()
+        .unwrap();
+    fixture.rewind(0);
+    fixture.text("replacement turn");
+    std::fs::write(fixture.target(), "replacement-content").unwrap();
+    manager.commit().unwrap();
+    let updated = CheckpointStore::new(&fixture.db)
+        .get(manager.id())
+        .unwrap()
+        .unwrap();
+    assert_eq!(updated.manifest, original.manifest);
+    fixture.rewind(0);
+    assert_eq!(fixture.content(), "replacement-content");
+}
+
+#[test]
+fn legacy_branch_binding_preserves_unknown_fields_and_surviving_prefix() {
+    let fixture = BranchFixture::new();
+    let (prefix, _, prefix_tail) = fixture.edit("legacy-prefix", "prefix");
+    let (tail, _, _) = fixture.edit("legacy-tail", "tail");
+    fixture.make_legacy(&prefix);
+    fixture.make_legacy(&tail);
+    fixture.rewind(prefix_tail);
+    assert_eq!(fixture.content(), "prefix");
+    for id in [&prefix, &tail] {
+        let record = CheckpointStore::new(&fixture.db).get(id).unwrap().unwrap();
+        let manifest: serde_json::Value = serde_json::from_str(&record.manifest).unwrap();
+        assert!(manifest["branch_anchor"]["event_id"].is_string());
+        assert_eq!(manifest["legacy_extra"]["preserve"], true);
+    }
+    fixture.text("reuse removed sequence without edits");
+    fixture.rewind(prefix_tail);
+    assert_eq!(fixture.content(), "prefix");
+    fixture.rewind(0);
+    assert_eq!(fixture.content(), "base");
+}
+
+#[test]
+fn legacy_branch_with_unknown_identity_refuses_both_operations_without_mutation() {
+    use deepagent_core::error::CoreError;
+    let mut fixture = BranchFixture::new();
+    let (old, _, _) = fixture.edit("unknown-old", "old");
+    fixture.rewind(0);
+    let legacy = fixture.make_legacy(&old);
+    fixture.edit("new-branch", "new-content");
+    // SQLite is only a projection. A stale generation=1 must not authorize
+    // guessing identity from a reused sequence in the actual generation=2 log.
+    fixture
+        .db
+        .with_conn(|conn| {
+            conn.execute("UPDATE session_file_state SET generation=1", [])
+                .map_err(|error| CoreError::Persistence(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+    let before = fixture.history();
+    for operation in [Operation::Rewind, Operation::Fork] {
+        let app = AppService::from_shared(fixture.db.clone());
+        let result = match operation {
+            Operation::Rewind => app
+                .rewind_session(&fixture.session_id.to_string(), 0)
+                .map(|_| ()),
+            Operation::Fork => app
+                .fork_session(&fixture.session_id.to_string(), 0)
+                .map(|_| ()),
+        };
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("no branch identity"));
+        assert_eq!(fixture.content(), "new-content");
+        assert_eq!(fixture.history(), before);
+        assert_eq!(app.list_sessions().unwrap().len(), 1);
+        assert_eq!(
+            CheckpointStore::new(&fixture.db)
+                .get(&old)
+                .unwrap()
+                .unwrap(),
+            legacy
+        );
+    }
+    fixture.reopen();
+    assert_eq!(fixture.content(), "new-content");
+    assert_eq!(fixture.history(), before);
+    // Explicit checkpoint-by-ID recovery stays available for operator review;
+    // rejecting automatic branch qualification does not destroy old backups.
+    CheckpointManager::restore(&fixture.db, &old).unwrap();
+    assert_eq!(fixture.content(), "base");
+}
+
+#[test]
+fn legacy_branch_without_source_event_refuses_even_in_original_generation() {
+    let fixture = BranchFixture::new();
+    let (id, _, _) = fixture.edit("missing-legacy-source", "current");
+    let mut record = fixture.make_legacy(&id);
+    record.session_sequence = fixture.tail() as i64 + 10;
+    CheckpointStore::new(&fixture.db).put(&record).unwrap();
+    let before = fixture.history();
+    let error = AppService::from_shared(fixture.db.clone())
+        .rewind_session(&fixture.session_id.to_string(), 0)
+        .unwrap_err();
+    assert!(error.to_string().contains("source event missing"));
+    assert_eq!(fixture.content(), "current");
+    assert_eq!(fixture.history(), before);
+    assert_eq!(
+        CheckpointStore::new(&fixture.db).get(&id).unwrap().unwrap(),
+        record
+    );
+}
+
+#[test]
+fn legacy_branch_binding_failure_rolls_back_metadata_and_allows_retry() {
+    use deepagent_core::error::CoreError;
+    let mut fixture = BranchFixture::new();
+    let (prefix, _, _) = fixture.edit("binding-prefix", "prefix");
+    let (tail, _, _) = fixture.edit("binding-tail", "tail");
+    let old_prefix = fixture.make_legacy(&prefix);
+    let old_tail = fixture.make_legacy(&tail);
+    let before = fixture.history();
+    fixture.db.with_conn(|conn| {
+        conn.execute_batch("CREATE TEMP TRIGGER reject_anchor BEFORE UPDATE ON checkpoints WHEN OLD.run_id='binding-prefix' BEGIN SELECT RAISE(ABORT, 'injected anchor write failure'); END;").map_err(|error| CoreError::Persistence(error.to_string()))?;
+        Ok(())
+    }).unwrap();
+    let error = AppService::from_shared(fixture.db.clone())
+        .rewind_session(&fixture.session_id.to_string(), 0)
+        .unwrap_err();
+    assert!(error.to_string().contains("injected anchor write failure"));
+    assert_eq!(fixture.content(), "tail");
+    assert_eq!(fixture.history(), before);
+    let store = CheckpointStore::new(&fixture.db);
+    assert_eq!(store.get(&prefix).unwrap().unwrap(), old_prefix);
+    assert_eq!(store.get(&tail).unwrap().unwrap(), old_tail);
+    fixture
+        .db
+        .with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER reject_anchor")
+                .map_err(|error| CoreError::Persistence(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+    fixture.reopen();
+    fixture.rewind(0);
+    assert_eq!(fixture.content(), "base");
+    assert_eq!(fixture.tail(), 0);
 }

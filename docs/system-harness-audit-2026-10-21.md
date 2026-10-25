@@ -1886,14 +1886,38 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 
 ### H-73：回退后的旧分支检查点仍可覆盖新分支文件，调用却返回成功
 
-**级别：高（P1）；范围：同一 session 原地回退后继续，再次调用文件回退。** 本项在所有备份完整、无数据库写入失败、无并发操作的正常流程中复现；不同于 H-72 的缺失备份故障，也不同于 H-23 的摘要水位，实际后果是工作区文件被旧分支覆盖。
+**修复状态（2026-10-26）：已修复并验收，限 Windows 本机以下范围。** 本轮修改 CheckpointStore 的有效分支筛选与 CheckpointManager 的来源冻结；不新建 store，不改生产 schema、协议/UI DTO、权限或沙箱。代码、测试和两份文档将独立提交，hash 随后回填；整体任务仍未完成。
+
+修复前复核（2026-10-26）：原探针 `cargo test -p deepagent-app-core --test checkpoint_audit branch --offline -j 1 -- --include-ignored --nocapture` 在当时 HEAD `78fbbba6` 重现为 **1 passed / 1 failed / 0 ignored**，测试体 0.32 秒。实际观测仍为 `content=old-first, restored_paths=1, kept_sequence=4, discarded_checkpoint_sequence=Some(6)`。这是原缺陷复核，不计新发现；本轮只处理 H-73，保留下面原始审计证据。
+
+即时实现/验证记录：CheckpointManager 创建时冻结既有 source EventId，在现有 manifest 增加可缺省的 branch_anchor；恢复选择对照权威当前日志中的同序号 EventId，不按最新 generation 一刀切、不删除旧 run/checkpoint。首版执行 `cargo test -p deepagent-app-core --test checkpoint_audit --offline -j 1 -- --nocapture` 为 **9 passed / 0 failed / 1 ignored**；原 H-73 已移除 ignore，实际 `content=current-branch, restored_paths=0`，H-72 默认故障回归也通过。唯一 ignored 是另一个未处理的 capture retry 探针，不计通过。该结果早于新增分支/旧格式回归，不作为最终验收。
+
+新增回归首次编译遇到 fixture 的临时 FixedClock 借用 E0716，测试未执行；改为命名 clock 后同一命令为 **16 passed / 0 failed / 1 ignored**，测试体 5.55s。包含连续回退/同序号替换/保留前缀/文件 SQLite 重开、fork source 筛选与 child 自有检查点隔离、manager 首次捕获前及重复提交后的身份冻结、旧格式补齐/未知字段保留、实际文件代际而非过期 SQLite cursor 判定、未知归属对两个入口无副作用拒绝、metadata 更新失败事务回滚与重试。最后补的“旧格式 source 不存在”保守拒绝以及已淘汰备份缺失的回归仍待最终执行；不以夹具错误当作新增产品缺陷。
+
+最终分支专项执行（2026-10-26）：`cargo test -p deepagent-app-core --test checkpoint_audit --offline -j 1 -- --nocapture`，**17 passed / 0 failed / 1 ignored**，测试体 5.61s；最后两类输入已执行通过。本项原缺陷默认执行；未处理的 capture retry 仍 ignored、不算通过。后续 workspace/runtime/lint 验证结果继续追加。
+
+全 workspace 实跑 `cargo test --workspace --offline -j 1 -- --quiet`：编译 6m56s，AppCore lib **1102 passed / 80 ignored**、checkpoint_audit **17 passed / 1 ignored**、kernel_v2_e2e **102 passed / 92 ignored**、builtins **292 passed / 1 ignored**、persistence **67 passed**，这些组均 0 failed；CLI、harness protocol/SDK 的默认回归也执行无失败。随后再次被既有 H-306 阻断：prompts **27 passed / 1 failed**，`creative.video-edit.v1` 的 defaultUserPrompt 为空。命令退出 1，**不是 workspace 全绿**；Cargo 早停，后续 target 不视为通过，也不在 H-73 中顺手修复 H-306。
+
+补跑 `cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet` 退出 0：runtime lib **283 passed / 16 ignored**、e2e_stabilization **5 passed**、tokenizer 正常项 **1 passed / 1 ignored**、schedule **2 ignored**、session **14 passed**；doc-tests 均 0。这里 ignored 仍不算通过；仅补足两个相关 crate，不冒称早停后的全部 workspace target 已验。
+
+单独 `cargo test -p deepagent-runtime --lib checkpoint:: --offline -j 1 -- --nocapture`：**14 passed / 0 failed / 0 ignored**（0.14s），包含本项 source 缺失前置拒绝和全部 H-72 补偿回归；日志中的 injected commit panic 被 catch_unwind 按预期捕获，测试通过。严格 `cargo clippy -p deepagent-persistence -p deepagent-runtime -p deepagent-app-core --all-targets --offline --no-deps -j 1 -- -D warnings` 退出 1，被未修改的 persistence/run_store.rs:127 `explicit_counter_loop` 阻断；未修改源码豁免或修复无关告警，不宣称严格 lint 通过。
+
+普通 lint（同上命令不带 `-- -D warnings`）也未全通过：检查到三个 crate 的生产库，报告既有 run_store/model_agent/context_runtime/plugin_preparation/run_assembler 告警，随后在未修改的 `tests/kernel_v2_e2e/mcp_discovery_restore.rs:433` 命中默认 deny 的 `panicking_unwrap` 而退出 1，另有 responses_custom_tool.rs 的 bool 比较告警。未把它归因于本项，未继续叠加 lint 豁免；新旧错误均保留，不以普通 lint 替代严格结果。
+
+聚焦 `cargo clippy -p deepagent-app-core --test checkpoint_audit --offline --no-deps -j 1` 退出 0，仅继承既有生产库 warnings，未报告本项修改文件告警；不能替代 all-targets/严格 lint。最终格式、diff 和台账校验另记于修复进度文档。
+
+兼容性/残余：新增 branch_anchor 位于原 manifest，旧格式仍可显式按 ID 核对/恢复。未重写 generation 1 在既有 metadata 事务内补齐全部可证明来源（包括保留前缀），保留未知字段；相关旧记录若已缺少分支身份证据或 source 不存在，则在文件/历史变更前明确拒绝自动恢复，补齐失败整批回滚。仅旧版 header/project 重写也可能触发保守拒绝；新格式对照稳定 EventId，不会因代际变化一刀切丢掉有效前缀。没有对生产数据库执行迁移。Windows 文件 SQLite 重开及正式服务入口已验；其他 OS、跨进程强杀/断电、真实 UI/供应商、完整特性组合未验，未执行 pnpm build（未改前端/桥接）。H-75 活动运行竞争、H-23 笔记水位、H-285 锚点政策、H-287 DACL 与 fork 全祖先文件快照继承均不在本项关闭范围。旧 run/checkpoint 不因自动恢复资格退役而被删除，H-72 补偿契约不变。
+
+证据链（授权/范围见[修复进度](system-harness-repair-progress.md)，本节按时间追加）：E-H73-01=HEAD `78fbbba6` 原 branch 命令的 old-first/1 path 失败；E-H73-02=最终 checkpoint_audit 17 passed/1 ignored 与 checkpoint 14 passed/0 ignored 的命令观察（source_type=command，observed_at=2026-10-26，content_hash/artifact_path=n/a）。F-H73：severity=P1，status=validated，confidence=high，location=checkpoint_store.rs::list_for_session_after_sequence，evidence_ids=[E-H73-01,E-H73-02]；修复验证限本机，不扩为全量通过。P-H73（callflow）=manager 冻结源事件 → 原 manifest 持久化 → 当前权威事件身份筛选 → H-72 文件恢复事务 → 原事件截断/fork 提交（E-H73-02）；原错选路径由 E-H73-01 支持。稳定身份/有效历史原则已重新核对下面的本地成熟实现，具体旧格式拒绝/事务补齐是本地设计；未运行参考项目测试。
+
+**原始审计记录（保留；上方是逐步追加的修复验证，不把历史失败改写为成功）。级别：高（P1）；范围：同一 session 原地回退后继续，再次调用文件回退。** 本项在所有备份完整、无数据库写入失败、无并发操作的正常流程中复现；不同于 H-72 的缺失备份故障，也不同于 H-23 的摘要水位，实际后果是工作区文件被旧分支覆盖。
 
 - 根因：`AppService::rewind_session()` 恢复检查点后截断会话事件，`Session::rewind()` 允许新事件继续占用旧 sequence；旧 run/checkpoint 元数据仍保留。`CheckpointStore::list_for_session_after_sequence()` 仅按 runs.session_id 和 `c.session_sequence > target` 查询，没有判断 checkpoint 所属事件是否仍在当前分支。后续回退因而可以选中已经丢弃分支的 checkpoint，且所有恢复源有效时不会报错。保留旧记录本身不是缺陷，缺的是恢复查询中的有效分支归属。
 - 动态证据：在 `checkpoint_audit.rs` 新增 `audit_rewind_does_not_restore_discarded_branch_checkpoints`，通过正式 Session 自动生成原生镜像、RunStore、CheckpointManager 和 AppService，在真实临时文件上执行：base → 旧分支 first 修改 old-first → 旧分支 second 修改 old-second → 正式 rewind 到 0 恢复 base → 新分支修改 current-branch，并保留到 assistant 答复的 sequence 4 → 再追加一轮纯文字对话，不再改文件 → 正式 rewind 到 4。两次 rewind 均 Ok，最终文本事件只含保留的新分支、没有旧分支或新尾部，但文件从 current-branch 变成 old-first，restored_paths=1。被误用的旧 second 检查点仍锚定 sequence 6；它的备份是 old-first，当前新分支在 sequence 6 处却是另一轮纯文字输入。各检查点均由正式 capture/commit 创建，旧 run 已显式标为 succeeded；没有伪造 manifest、重写检查点序号或删除备份。
 - 执行：`cargo test -p deepagent-app-core --test checkpoint_audit branch --offline -- --include-ignored --nocapture`：1 passed / 1 failed，测试体约 0.35s。正常对照为没有旧分支的相同新分支流程：纯文字尾部回退保留 current-branch，restored_paths=0；实验组明确输出 `content=old-first, restored_paths=1, kept_sequence=4, discarded_checkpoint_sequence=Some(6)`，保留当前文件断言失败。默认 ignored 探针用于记录缺陷，默认测试通过不表示 H-73 已修复。
 - 影响：用户撤销旧方案、继续编辑后，再回退一轮未修改文件的对话，也可能无错误地把文件恢复为旧方案。模型下一次读工作区时看到的文件与当前事件历史不同，继续编辑、验证或生成产物可能建立在错误版本上；若无其他副本，当前新内容可能丢失。本轮只验证原地 rewind 的顺序调用、单文件和服务入口，没有真实桌面、跨进程重启、fork 继承或并发写入验收；不外推为所有回退都必定误恢复。
 - 成熟实现对照：Claude `fileHistory.ts::fileHistoryRewind()` 通过目标 messageId 使用 `findLast()` 定位 FileHistorySnapshot，再由该快照的 trackedFileBackups 决定每个文件版本；不是把同一会话中所有数字位置更大的历史备份依次恢复。该实现注释明确 rewind 是文件副作用，不修改 FileHistoryState，所以不能声称 Claude 靠删除全部旧快照解决。Codex `core/src/thread_rollout_truncation.rs::user_message_positions_in_rollout()` / `fork_turn_positions_in_rollout()` 先应用 ThreadRolledBack 对有效历史位置的影响，并清除失效后缀，再计算分支位置；这里借鉴的是当前分支身份与历史有效性的处理，不声称当前 Codex 提供同样的文件检查点或本轮已运行参考测试。
-- 修复方向（尚未实施，本地设计）：让现有检查点元数据绑定稳定事件/分支来源，并让回退提交时退役被丢弃后缀的恢复资格；保留原始备份和审计记录，不依赖删除 runs 解决。当前有效前缀的检查点仍需支持继续向前回退，不能简单按“最新 generation”一刀切排除所有旧记录。文件恢复计划、事件截断、分支来源及 H-23 的笔记覆盖应共用同一分支变更事实，在既有持久化边界上定义失败和重试语义。验证包括两次/多次回退、同序号新事件、保留前缀、重启、fork、没有文件修改的尾部及真正的新分支修改，不新增第二套 store。
+- 原审计修复方向（当时尚未实施，本地设计；当前实现/验证见上）：让现有检查点元数据绑定稳定事件/分支来源，并让回退提交时退役被丢弃后缀的恢复资格；保留原始备份和审计记录，不依赖删除 runs 解决。当前有效前缀的检查点仍需支持继续向前回退，不能简单按“最新 generation”一刀切排除所有旧记录。文件恢复计划、事件截断、分支来源及 H-23 的笔记覆盖应共用同一分支变更事实，在既有持久化边界上定义失败和重试语义。验证包括两次/多次回退、同序号新事件、保留前缀、重启、fork、没有文件修改的尾部及真正的新分支修改，不新增第二套 store。
 
 ### H-74：分支边界截在源消息与原生镜像之间，保留的消息不进入下一请求
 
