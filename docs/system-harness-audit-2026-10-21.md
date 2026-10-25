@@ -24,6 +24,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| 原生文件移动的失败提交边界 | 正式 move_path 将文件覆盖移动到自身父目录，返回 failure 却删除源和无关 sibling；三个平级/拒绝对照正常；文件 SQLite 重开及正式检查点显式恢复成功 | 新增 H-286（P1，授权 overwrite+祖先目标条件）；未修复，检查点可恢复但工具失败不自动还原；无用户数据或公网 |
 | Harness 分叉锚点资格与检查点数值边界 | 正式模型工具循环实际读取/写入临时文件并完成；不存在的 tail+1 仍成功复制全部历史；`i64::MAX+1`/`u64::MAX` 额外把文件恢复到旧内容，而 child 仍保留完整成功写入历史 | 新增 H-285（P2，显式非法序号条件）；默认/真实 tail/起点三项对照通过；正式 dispatcher/AppCore/Kernel/CheckpointManager、文件 SQLite、离线模型，无用户文件或公网 |
 | Git 事实在 UI 与模型上下文的投影 | 临时真实 Git 仓库的修改/删除被模型上下文误报 clean，长路径首字节丢失；同一 GitService 正确列出路径，三类正常控制通过 | 新增 H-282（P3）；正式 ChatService/Kernel/ModelClient 请求及内存 run_events，无模型真实决策、用户文件覆盖或磁盘重开验证 |
 | MCP 初始化结果与 Ready 发布门槛 | 六类不完整/错误版本的initialize成功结果经真实stdio，设置页probe与宿主均connected；工具进入正式Responses schema并实际调用，结果进入下一wire | 新增 H-277（P2，条件性协议兼容/诊断缺口）；完整握手和显式JSON-RPC错误两类对照通过；不重复H-07/H-08，不推断线上服务必定返回异常握手 |
@@ -7876,3 +7877,56 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `ServerState::resolve_workspace()` 接受客户端目录并做存在/目录/canonicalize 检查；仅据“能选择 server 启动目录之外的目录”不能认定越权，因为当前 stdio 契约未声明启动目录是不可更改的唯一授权根。
 - Codex `app-server-protocol/src/protocol/v2/thread.rs::ThreadStartParams` 暴露 cwd/runtime workspace roots，`request_processors/thread_processor.rs::thread_start_task()` 根据有效权限和项目 trust 处理配置；DeepSeek Harness ACP `src/index.ts::newSession()`/`validateWorkspaceParams()` 接受绝对 cwd，resume 则检查其与既有会话目录一致。这支持“工作目录选择与资源授权要分别核验”，不是本系统所有后续文件权限已正确的证明。
 - 只完成静态契约对照，未新增该候选的故障测试或 H 编号；既有 H-27/H-28/H-78/H-283 的具体执行边界问题仍保留，不能因本排除项视作已修复。
+
+### H-286：`move_path` 覆盖目标前先递归删除，移到源的祖先目录时失败却删除源和无关文件
+
+**级别：高（P1，条件性文件数据破坏）；状态：正式 ChatService/Kernel/工具流水线及文件数据库重开已复现，未修复。** 前提是工具已获得写入许可，显式 `overwrite=true` 且 destination 是 source 的祖先目录。不是权限绕过，也不是正常平级文件移动必现。正常自动检查点是实际有效的恢复手段，不能描述成永久不可恢复。
+
+#### 即时 Evidence（2026-10-25，首次复现后立即登记）
+
+- Scope：仅本仓库授权审计、独立 tempfile 根下的 `workspace/payload`、两个合成文本文件及根外侧的临时 SQLite。没有公网、真实模型、用户文件、符号链接或目录联接。测试先明确验证 payload 是 workspace 的严格子目录、source 位于 payload，故障的递归删除目标不是 workspace/data root。临时 fixture 在测试结束时自动清理；没有删除工作树用户数据。
+- 新增 `crates/deepagent-app-core/tests/kernel_v2_e2e/move_failure.rs`，经测试入口模块注册。正式链为 `SettingsService`（显式 FullAccess）→ `ChatService::run_in_session` → Kernel/ToolPipeline → 注册的 `move_path` → 下一次真实序列化 Responses input。仅底层 HttpTransport 用离线合成 Responses；created/item/done/completed、usage、item ID 和单调 sequence 均齐全。正文响应附匹配文本 delta，排除 H-81 的 done-only fallback。每组恰好两次请求，下一请求含唯一配对工具结果，没有手工伪造 run/event/checkpoint。
+- E-286-first（source_type=command，content_hash=n/a）：`cargo test -p deepagent-app-core --test kernel_v2_e2e move_failure:: --offline -- --include-ignored --nocapture`，**1 passed / 1 failed（缺陷预期）**，测试体 1.04 秒。三个正常/拒绝场景在一个默认测试内完成，故障探针默认 ignored 并显式执行。各组独立临时资源，断言前已收集失败后磁盘状态、重开数据库并完成恢复验证。
+
+| destination / overwrite | ToolCompleted.ok | 移动结束后的 source | 无关 sibling | target 文本 | 重开后正式检查点恢复 |
+|---|---|---|---|---|---|
+| 已有平级 `target.txt` / false | false | 原文保留 | 原文保留 | 原目标原文 | 成功 |
+| 已有平级 `target.txt` / true | true | 已移走 | 原文保留 | source 原文 | 成功，原 target 也恢复 |
+| 源父目录 `payload` / false | false | 原文保留 | 原文保留 | 目录，非文本 | 成功 |
+| 源父目录 `payload` / true | false | **不存在** | **不存在** | 整个 payload 已不存在 | **成功，但需显式调用恢复** |
+
+- 故障下一 wire 的工具结果为 `status=error`，错误只报告 `move failed: 系统找不到指定的路径。 (os error 3)`，并附通用“更正参数/换工具重试”提示，没有告诉模型目标目录、源和 sibling 已被删除。工具失败被正确配对，没有被伪造成成功；离线模型随后正常回复，各组只有一个 `run_terminal=succeeded`。这表示运行可在收到真实工具失败后完成，不以“单工具失败必须令整个 run 失败”作为标准。
+- 释放原 ChatService/Database owner 后，从同一文件数据库重新读取 `tool_completed`，ok 与首次结果一致；调用生产 `CheckpointManager::restore` 后 source/sibling 字节恢复，平级目标控制组亦恢复原 target。故障磁盘缺失是在恢复**之前**采样，不是恢复逻辑制造的；这也直接排除了“仅工具模拟错误、磁盘没变”的误报。
+
+#### 根因、跨层契约与去重
+
+- `crates/deepagent-builtins/src/file_tools.rs::MovePathTool::invoke` 只拒绝 workspace root、source==destination、源不存在和无覆盖许可；没有拒绝 `source.starts_with(destination)` 的祖先覆盖关系，也未在破坏目标前建立可提交的移动计划。
+- destination 存在且 overwrite=true 时，它先根据目录类型调用 `remove_dir_all(destination)`，再创建 parent，最后才 `tokio::fs::rename(source,destination)`。本例删除目标时已经删除其内部 source 和 sibling，rename 于是失败。返回 failure 不会撤销先前删除；这是同一顺序调用的确定性失败，不依赖竞态、磁盘故障、跨盘或权限异常。
+- 正式 `ToolPipeline::execute_prepared` 会对 move 的 source/destination 都 `capture_before`；这是有效保护，不能写成没有检查点。流水线与 Kernel 没有因该工具返回失败自动恢复文件，本例正常 run 结束后仍是缺失状态，直到测试显式恢复。checkpoint 是应急恢复边界，不等于 move 自身具有失败原子性。
+- 与 H-72/H-73/H-285 不同：没有缺备份、分支锚点、序号转换或回退调用，所有检查点健康，问题发生在普通文件移动工具。与 H-76/H-260 不同：没有陈旧 read 凭证或 compaction。未为“先删目标”和“源位于目标内”分别编号；它们是同一破坏性提交顺序的触发与结果。
+
+#### 成熟 Agent 与 DeepSeek 对照（本地静态阅读，未运行参考工程）
+
+- **Codex**：`借鉴/codex/codex-rs/apply-patch/src/lib.rs` 的 `Hunk::UpdateFile { move_path, .. }` 路径先派生完整新内容，再 `write_file_with_missing_parent_retry` 写目标；成功后才以非 recursive 的 remove 移除原文件，不先递归删除一个已存在的目标目录。`test_failed_move_returns_committed_destination_delta` 明确测试目标已写但删除源失败，返回 `AppliedPatchDelta` 描述实际已提交目标，源仍保留。它不是同名任意文件/目录移动工具，也**不是整个 patch 事务保证**；可借鉴的是先发布可用目标、失败携带实际副作用，而不是“失败无副作用”的空泛承诺。
+- **DeepSeek Harness**：`packages/fs/fs-local/src/fsio.ts::writeFileAtomic` 先在 sibling staging 写入并 sync，再发布；异常只清理自己创建的 staging，不先 rm 业务目标。`tests/fsio.spec.ts` 的 `cleans up the temp file when the final rename fails` 用已有目录作为目标验证拒绝并清理临时文件。其 `packages/fs/fs/README.md` 明示该 seam **不提供 delete/rename/copy**，所以不能声称已实现与本项目 move_path 相同的祖先路径校验；对照仅支持“失败发布与业务数据清理要分开”的机制原则。
+- **DeepSeek 官方**：[Responses API 参数](https://api-docs.deepseek.com/zh-cn/api/create-response/)要求宿主验证模型生成的工具参数；[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)把工具调用表示为 function_call。schema 中字符串路径及 overwrite 布尔合法，不意味着文件关系可执行。本问题属于宿主语义验证与提交边界，不是 DeepSeek 未理解路径，也不是 KV cache 能解决的问题。本轮未请求真实供应商、未推测模型产生该参数的频率。
+
+#### 影响、根因治理方向与限制（尚未实施）
+
+- 已证明一次失败的授权移动会同时移除源及目标目录内的无关 sibling；在实际项目中若选中较大的祖先目录，破坏面取决于目录内容。定级依据是工具失败仍真实删除文件且默认不自动恢复，**不是远程攻击、权限提升或所有移动必然丢数据**。健康检查点可显式恢复，当前样本不支持“永久丢失”；备份空间不足、恢复失败或跨宿主等额外后果未测，不把它们当作已成立事实。
+- 本地设计：在既有 MovePathTool/文件操作边界先统一解析规范目标、源/目标类型及祖先关系，拒绝不可执行的自包含移动；覆盖文件与覆盖目录应有明确不同契约。不要只补一条 starts_with 就宣称修复所有移动失败，因为正常平级移动也可能在先删目标之后因 OS/跨设备/权限失败。
+- 同一 owner 应先制定并验证替换计划，再通过有平台依据的原子替换或可恢复 staging/备份提交；失败需返回结构化的实际变更和恢复引用。保留 ToolPipeline 的权限/审批、动作日志和既有 CheckpointManager，不另造回退中心，也不把恢复责任压给模型重试。目录合并、跨卷及覆盖的具体支持范围须显式定义，不能猜测 rename 提供了所有平台的事务语义。
+- 后续回归至少覆盖新目标、现有文件/非空目录、overwrite 两值、同路径、祖先/后代、大小写别名、跨卷、目标占用、rename 失败、取消、检查点重开与恢复，并同时断言源/目标/无关文件及 durable 副作用一致。本轮只在 Windows 的正式 AppCore 工具链验证上述四组，未跑 Desktop/CLI 动态入口、参考项目测试、跨平台或跨卷；未修改生产逻辑/公共契约/权限/数据格式。
+
+#### 验证进度（持续追加）
+
+- 首次正式执行：默认对照 **1 passed**，显式缺陷探针 **1 failed（预期）**；ignored 不计入默认绿色。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**93 passed / 0 failed / 88 ignored**（181 tests，测试体 14.76 秒）。包含本轮正常对照与既有原生 move/delete 的成功证据测试；没有重跑本轮 ignored 缺陷或把已知缺陷当作修复。
+- 首次 `cargo fmt --all -- --check` 指出新增测试的布局差异，执行 `cargo fmt --all` 后复查通过；`git diff --check` 通过，工作树只新增/修改测试入口、该测试文件和本文档，用户已有未跟踪文件保持不动。
+- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 未通过，被未修改的 `deepagent-models/src/client.rs:355 clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127 explicit_counter_loop` 阻断。没有修改生产代码来消除无关告警，也不把它写成 lint 已通过。
+- 未执行完整 workspace、前端构建/截图或真实供应商测试；本轮没有生产行为、前端类型、权限、配置或迁移变更，验证范围为正式 AppCore 集成测试 binary、格式和文档 diff。code-audit skill 的人工可达性/误报要求使本条同时保留了真实磁盘破坏与有效检查点恢复证据，而非只据模式搜索定性。
+
+#### 同轮排除与暂停候选
+
+- 多个完成 message 后补全局全文已是 H-81，不重复编号；同一 message 中多个 output_text parts 在现有 helper 内已按顺序拼接，仅凭该现象不登记新问题。没有重复运行 H-81 以冒充本轮新证据。
+- 搜索引用/citation 候选只有“内部类型不保留 annotations”的静态线索；当前已读取的 DeepSeek 官方 schema 没有足够的非空 citation 结构依据，不能把 OpenAI 的 url_citation 输入形状当作已证实的 DeepSeek 正常响应。未造 fixture、未登记问题，待官方明确契约或真实脱敏样本再审。用户排除的 encrypted-content 问题未调查。
