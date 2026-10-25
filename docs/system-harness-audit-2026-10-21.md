@@ -7507,3 +7507,39 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 最终文件版本的 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**90 passed / 85 ignored，9.94s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1101 passed / 71 ignored，6.49s**。显式 H-277 命令保持 **2 passed / 1 failed（缺陷预期），3.35s**；失败探针完成六组异常样本后统一断言，两个正常对照通过。
 - `node crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_initialize_contract_reference.mjs`：**8 个参考 SDK 样本全部符合预期**；合法握手连接并发送 initialized，其余七类拒绝且不发送 initialized。`cargo fmt --all -- --check`、`git diff --check`通过；只读进程检查在测试收尾后为 `active_initialize_contract_mcp_fixture_processes=0`（本轮脚本未留子进程）。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`仍被未修改的 `models/src/client.rs:355` clone_on_copy 与 `persistence/src/run_store.rs:127` explicit_counter_loop阻断；本轮未修改这些文件，不把 lint 阻断归入H-277，也不声称 clippy 全绿。未运行完整 workspace、Desktop build/UI、真实 DeepSeek 计费/缓存、外部 MCP 或真实副作用；本轮未处理用户排除的 encrypted-content 问题，全系统审计仍未结束。
+
+### H-278：MCP 传输在工具结果未知时自动重放 `tools/call`，单次逻辑变更可实际执行两次
+
+**级别：高（P1/P2，条件性副作用重复执行）；状态：正式 `StdioTransport` + `ConfigReconnectFactory` + `ReconnectingTransport` + `McpClient` 真实 Node 进程已复现，未修复。** 触发条件是 MCP 服务在收到 `tools/call` 后已经完成副作用，但在返回 JSON-RPC 结果前进程断开。宿主把“响应丢失”当成“请求未执行”，重连后自动重发相同 request。不是所有查询工具都会造成可见损害，也不是已证明真实外部服务一定不幂等。
+
+#### 即时 Evidence（2026-10-25）
+
+- 新增 test-only `crates/deepagent-mcp/tests/reconnect_unknown_outcome.rs`，使用临时 Node stdio 服务和临时 effect log。第一代服务收到 `tools/call` 后先追加一条持久化 `effect`，随后退出而不返回响应；`ConfigReconnectFactory` 重启第二代服务并完成 initialize，生产 `ReconnectingTransport` 随后重试原 request。
+- 执行：`cargo test -p deepagent-mcp --test reconnect_unknown_outcome audit_reconnect_does_not_replay_unknown_outcome_tool_call --offline -- --include-ignored --nocapture --exact`，结果 **0 passed / 1 failed（缺陷预期）**。真实输出：`result_ok=true, effect_count=2`；断言要求同一个逻辑 `tools/call` 的 effect_count 必须为 1，失败位置为测试第110行。
+- 该探针不是只测 mock：实际走 `StdioTransport::spawn`、真实 Node 子进程、`ConfigReconnectFactory::reconnect`、`McpClient::initialize`、`McpClient::call_tool` 和 `ReconnectingTransport::send`；服务进程在 `client.close()` 后由生产 transport 回收，未访问公网、真实凭据或用户数据。
+
+#### 根因、触发条件与后果
+
+- F-278（category=execution-boundary，status=validated，confidence=high；evidence_ids=[E-278-stdio]）：`crates/deepagent-mcp/src/reconnect.rs::ReconnectingTransport::send` 在首次 `send` 返回 transport-closed 错误后，对同一 `JsonRpcRequest` 无条件调用 `factory.reconnect()`，再执行 `fresh.send(request)`；它没有区分“写入失败/请求未到达”和“服务端已处理但响应丢失”的未知结果状态。
+- P-278：模型生成一次调用 → MCP 服务执行不可逆/非幂等副作用 → 响应丢失 → 宿主重连并重放同一 JSON-RPC id/参数 → 服务再次执行 → 模型收到成功结果。单次写入可能变成两次、扣款/发送/创建类动作可能重复；若第二次失败，模型还可能只看到错误而无法知道第一次已生效。
+- 本轮证据只证明 effect log 从1变为2、重放请求最终成功；没有声称真实账单、邮件、文件或外部数据库已经重复，也没有把查询类工具误报为高风险。影响取决于远端工具是否幂等、是否有去重键及副作用发生在响应前还是响应后。
+- 与 H-236 的取消上下文缺失不同：H-236 是取消后仍等待/不通知 MCP；本项没有取消，单个正常工具调用在连接故障窗口被自动重放。与 H-265 的 SDK 新进程握手失效也不同：本项是已建立 MCP 连接内的请求结果不确定性，不是 TypeScript SDK 的连接代次。
+
+#### 成熟 Agent 与官方对照
+
+- **DeepSeek Harness（源码静态核查）**：`借鉴/deepseek-harness/packages/mcp/mcp-client/src/connection.ts` 的 supervisor 在传输关闭后重建 `Client`、重新 `connect` 并重新同步工具注册；工具执行由 `tools.ts::createMcpToolDefinition` 直接调用当前 `Client.callTool`，本轮未找到在“响应未知”时自动重发同一个 `callTool` 的逻辑。其可迁移原则是让当前调用失败并把连接恢复交给 supervisor，避免宿主把未知结果猜成未执行；本轮未运行 DeepSeek Harness 的真实外部副作用，不能宣称它对所有工具提供幂等保证。
+- **Codex（源码静态对照）**：MCP/RMCP 工具 dispatch 在 transport/tool error 时把错误交给上层 turn，重连/重建连接与具体工具调用分离；本轮未找到“连接断开后自动 retry 同一副作用工具”的直接实现，也未运行 Codex 真实 server，因此只记录为架构对照，不把静态搜索当动态证明。
+- **MCP 官方**：[Tools 规范](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)定义 `tools/call` 的 request/result 形状及 `isError`，没有给 JSON-RPC transport 断开后的 exactly-once 或自动重试语义；因此宿主不能把连接错误自行解释为“工具未执行”。工具是否幂等、去重键如何设计，应成为宿主与服务的显式契约。
+- **DeepSeek 官方**：[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)明确模型只返回函数调用，具体函数由用户/宿主提供并执行。Responses/思考模式不会替宿主判断一次本地工具请求是否已经产生副作用；修改 `thinking`、`strict` 或 KV cache 不能修复本地重放边界。
+
+#### 治理方向（本地设计，未实施）
+
+- 将 transport failure 分成至少两类：写入/flush 前确定未发送，可按策略重试；写入已完成、读取响应失败或连接在服务端处理窗口断开，必须标记 **unknown outcome**，默认不自动重放副作用 `tools/call`，而是把未知结果作为工具错误交给 Runtime/模型并触发人工或服务端查询。
+- 在现有唯一 `McpClient`/`ReconnectingTransport` 边界携带请求阶段与幂等能力声明，不在每个 UI/CLI/SDK 入口单独补判断。对于明确声明幂等、带稳定 deduplication key 的工具，才允许受控重试；JSON-RPC id 不能单独充当跨进程去重键，因为重连后服务端通常没有旧进程状态。
+- 若产品必须恢复结果，优先增加 MCP 工具级 query/status 或服务端幂等 token，使“查询前一次调用结果”和“重新提交新操作”可区分；不要仅把 retry 次数设为1或扩大 backoff，这只能降低概率，不能消除重复副作用。
+- 回归应覆盖：写入失败（确定未达）、flush 后断开、服务端已应用但响应丢失、响应延迟超时、幂等与非幂等工具、重复 JSON-RPC id、重连成功/失败、取消竞态、工具审批与单一终态/审计事件。验收标准是未知结果不会静默变成成功二次执行，且模型能看到可恢复的 `unknown outcome` 事实。
+
+#### 回归记录（持续追加）
+
+- 本轮仅新增上述真实进程审计探针和本报告；未修改生产逻辑、公共协议、模型参数、权限或沙箱配置。显式探针保持 `#[ignore]`，默认测试绿色不代表 H-278 已修复。
+- 本轮尚未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实外部 MCP 或真实副作用服务；未处理用户排除的 encrypted-content 问题。后续若修复 H-278，应重跑该故障样本并补“确定未发送可重试”正常对照，避免把所有断线都粗暴改成永久失败。
