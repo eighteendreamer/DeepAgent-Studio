@@ -9,7 +9,8 @@
 //!
 //! On a sub-agent failure the scheduler stops launching dependents of the
 //! failed node (they can never satisfy their dependencies) but reports a full
-//! [`ScheduleReport`]. Worktrees are always cleaned up.
+//! [`ScheduleReport`]. Worktrees are retained until explicit cleanup; successful
+//! outputs become immutable dependency baselines, never implicit main-tree edits.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,7 +20,7 @@ use deepagent_core::error::Result;
 use deepagent_planner::PlanDag;
 
 use crate::subagent::{context_for, SubAgentExecutor, SubAgentResult};
-use crate::worktree::WorktreeProvider;
+use crate::worktree::{WorktreeOutput, WorktreeProvider};
 
 /// The result of scheduling an entire plan.
 #[derive(Debug, Clone, PartialEq)]
@@ -87,7 +88,7 @@ impl<'a> DagScheduler<'a> {
             // topological layer no node depends on another, so every read of
             // `results`/`failed`/`skipped` here observes only prior layers and
             // the partition is independent of intra-layer execution order.
-            let mut runnable: Vec<(String, Vec<String>)> = Vec::new();
+            let mut runnable: Vec<(String, Vec<String>, Vec<WorktreeOutput>)> = Vec::new();
             for node_id in layer {
                 let node = dag.node(&node_id).expect("layer node exists in dag");
 
@@ -108,36 +109,54 @@ impl<'a> DagScheduler<'a> {
                     .iter()
                     .filter_map(|d| results.get(d).map(|r| r.summary.clone()))
                     .collect();
-                runnable.push((node_id, upstream));
+                let inputs = node
+                    .depends_on
+                    .iter()
+                    .filter_map(|d| results.get(d).and_then(|r| r.output.clone()))
+                    .collect();
+                runnable.push((node_id, upstream, inputs));
             }
 
             // Fan-out: run the layer's independent nodes concurrently, bounded
-            // by `max_concurrency`. Each node gets its own worktree, always torn
-            // down before its future resolves (even on executor failure).
-            let node_runs = runnable.into_iter().map(|(node_id, upstream)| async move {
+            // by `max_concurrency`. Retention is intentional, including on
+            // failure or future drop: cleanup must not destroy the only output.
+            let node_runs = runnable.into_iter().map(|(node_id, upstream, inputs)| async move {
                 let node = dag.node(&node_id).expect("layer node exists in dag");
-                let worktree = match self.worktrees.create(&node_id).await {
+                let name = format!("sub_{}", deepagent_core::id::EventId::new());
+                let worktree = match self.worktrees.create_from(&name, &inputs).await {
                     Ok(worktree) => worktree,
-                    Err(error) => return (node_id, Err(error)),
+                    Err(error) => return (node_id.clone(), SubAgentResult::failure(
+                        node_id, format!("workspace preparation failed (planned worktree {name}): {error}")
+                    )),
                 };
-                let ctx = context_for(node, worktree, upstream);
-                let exec_result = self.executor.execute(ctx).await;
-                let _ = self.worktrees.remove(&node_id).await;
-                (node_id, exec_result)
+                let ctx = context_for(node, worktree.clone(), upstream);
+                let mut result = match self.executor.execute(ctx).await {
+                    Ok(result) => result,
+                    Err(error) => SubAgentResult::failure(&node_id, error.to_string()),
+                };
+                result.output = Some(WorktreeOutput { worktree: worktree.clone(), revision: None });
+                if result.ok {
+                    match self.worktrees.snapshot(&worktree).await {
+                        Ok(output) => result.output = Some(output),
+                        Err(error) => {
+                            result.ok = false;
+                            result.summary.push_str(&format!("\nOutput publication failed; worktree retained: {error}"));
+                        }
+                    }
+                }
+                (node_id, result)
             });
-            let mut layer_results: Vec<(String, Result<SubAgentResult>)> =
-                futures::stream::iter(node_runs)
-                    .buffer_unordered(self.max_concurrency)
-                    .collect()
-                    .await;
+            let mut layer_results: Vec<(String, SubAgentResult)> = futures::stream::iter(node_runs)
+                .buffer_unordered(self.max_concurrency)
+                .collect()
+                .await;
 
             // Fan-in: aggregate in a stable (node-id) order so the recorded
             // results and any propagated error do not depend on completion
             // timing. `results`/`failed` are ordered collections anyway, but a
             // deterministic order also fixes *which* error surfaces first.
             layer_results.sort_by(|(a, _), (b, _)| a.cmp(b));
-            for (node_id, exec_result) in layer_results {
-                let result = exec_result?;
+            for (node_id, result) in layer_results {
                 if !result.ok {
                     failed.insert(node_id.clone());
                 }
@@ -208,8 +227,11 @@ mod tests {
         assert!(pos("architect") < pos("frontend"));
         assert!(pos("review") > pos("database"));
 
-        // All worktrees were cleaned up.
-        assert!(worktrees.active().is_empty());
+        assert_eq!(worktrees.active().len(), 5);
+        assert!(report
+            .results
+            .values()
+            .all(|result| result.output.is_some()));
     }
 
     /// Records the peak number of sub-agents executing at the same instant.
@@ -308,8 +330,8 @@ mod tests {
             .await
             .unwrap();
         let paths = executor.seen_paths.lock().unwrap().clone();
-        assert!(paths.contains(&"/tmp/wt/a".to_string()));
-        assert!(paths.contains(&"/tmp/wt/b".to_string()));
+        assert_eq!(paths.len(), 2);
+        assert!(paths.iter().all(|path| path.starts_with("/tmp/wt/sub_")));
         // Distinct worktrees -> no clobbering.
         assert_ne!(paths[0], paths[1]);
     }
@@ -346,12 +368,11 @@ mod tests {
         let mut skipped = report.skipped.clone();
         skipped.sort();
         assert_eq!(skipped, vec!["b".to_string(), "c".to_string()]);
-        // Worktrees cleaned up even on failure.
-        assert!(worktrees.active().is_empty());
+        // Failed outputs remain inspectable; blocked nodes get no workspace.
+        assert_eq!(worktrees.active().len(), 1);
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: successful DAG worktree changes must survive cleanup"]
     async fn audit_successful_dag_preserves_files_for_handoff() {
         use crate::worktree::GitWorktrees;
         use std::path::{Path, PathBuf};
@@ -396,6 +417,14 @@ mod tests {
                     assert_eq!(ctx.upstream_results, vec!["Created generated.txt"]);
                     *self.consumer_saw_file.lock().unwrap() =
                         Some(root.join("generated.txt").is_file());
+                    assert_eq!(
+                        std::fs::read_to_string(root.join("generated.txt")).unwrap(),
+                        "uncommitted task output"
+                    );
+                    assert_eq!(
+                        std::fs::read_to_string(root.join("README.md")).unwrap(),
+                        "modified by producer"
+                    );
                     // Record visibility without choosing the real downstream agent's response.
                     Ok(SubAgentResult::success(
                         ctx.node_id,
@@ -446,9 +475,11 @@ mod tests {
         let main_has_file = repo.join("generated.txt").is_file();
         let main_readme = std::fs::read_to_string(repo.join("README.md")).unwrap();
         eprintln!("audit DAG handoff: all_succeeded={}, producer_retained={producer_retained}, consumer_saw_file={consumer_saw_file}, main_has_file={main_has_file}, main_readme={main_readme:?}", report.all_succeeded);
-        assert!(
-            producer_retained || main_has_file,
-            "successful producer files were removed without retention or integration"
-        );
+        assert!(producer_retained && consumer_saw_file);
+        assert!(!main_has_file);
+        assert_eq!(main_readme, "original");
+        let output = report.results["produce"].output.as_ref().unwrap();
+        assert_eq!(Path::new(&output.worktree.path), producer_path);
+        assert!(output.revision.is_some());
     }
 }

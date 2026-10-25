@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use deepagent_core::error::Result;
 use deepagent_planner::PlanNode;
 
-use crate::worktree::Worktree;
+use crate::worktree::{Worktree, WorktreeOutput};
 
 /// The isolated execution context handed to a sub-agent.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,15 +41,31 @@ pub struct SubAgentResult {
     pub ok: bool,
     /// A short summary of what it produced (fed to downstream agents).
     pub summary: String,
+    /// Retained output, including on executor/publication failure.
+    pub output: Option<WorktreeOutput>,
 }
 
 impl SubAgentResult {
+    /// Shared human/UI projection; dependency summaries remain plain model text.
+    pub fn delivery_summary(&self) -> String {
+        let mut summary = self.summary.trim().to_string();
+        if let Some(output) = &self.output {
+            summary.push_str(&format!(
+                "\nRetained worktree: {}\nChild id (resume/cleanup): {}\nOutput revision: {}\nNot integrated into the main workspace.",
+                output.worktree.path, output.worktree.name,
+                output.revision.as_deref().unwrap_or("not published")
+            ));
+        }
+        summary
+    }
+
     /// A successful result.
     pub fn success(node_id: impl Into<String>, summary: impl Into<String>) -> Self {
         Self {
             node_id: node_id.into(),
             ok: true,
             summary: summary.into(),
+            output: None,
         }
     }
 
@@ -59,6 +75,7 @@ impl SubAgentResult {
             node_id: node_id.into(),
             ok: false,
             summary: summary.into(),
+            output: None,
         }
     }
 }

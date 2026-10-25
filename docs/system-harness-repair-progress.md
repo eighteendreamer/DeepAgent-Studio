@@ -2,27 +2,27 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-286/H-72/H-73/H-75 已交付，本轮仅 H-76。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-286/H-72/H-73/H-75/H-76 已交付，本轮仅 H-20。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 5 | H-286、H-72、H-73、H-75、H-76，均限所列本机验收；提交为 `56b9e7b9`、`d08c776c`、`d40eef9a`、`8eea7bd5`、`b7cdfcc8` |
+| 本阶段已修复并验收 | 6 | H-286、H-72、H-73、H-75、H-76、H-20，均限所列本机验收；前五项提交为 `56b9e7b9`、`d08c776c`、`d40eef9a`、`8eea7bd5`、`b7cdfcc8`；H-20 随本轮独立提交生成后回填 |
 | 历史已修复跳过 | 17 | 原报告有实现及修复后验收；本轮不重复修复/冒称重验 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-76 所列本机验收结束，不将全量既有失败或其他平台未验算通过 |
-| 待修复 | 275 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-20 所列本机行为验收已结束；不将全量既有失败、严格 lint 阻断或其他平台算通过 |
+| 待修复 | 274 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **275（275 待修复、0 修复中）**；不提供完成率。五项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。历史修复依原报告状态跳过，但不虚构其 commit ID：尚未逐项重新定位的历史 hash 明确留为“未重新定位”，保留原文验收来源。
+有效未关闭条目当前为 **274（274 待修复、0 修复中）**；不提供完成率。六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。历史修复依原报告状态跳过，但不虚构其 commit ID：尚未逐项重新定位的历史 hash 明确留为“未重新定位”，保留原文验收来源。
 
 ## 总体工时、排序与不确定性
 
 暂估剩余 **200–400 小时有效修复、测试和文档交付时间**，是基于当前有效未关闭规模、跨层 owner/授权/持久化问题与多数单项需原输入回归的初始规划区间，不是将每项假定为相同难度。前五项复杂度不同，且尚无独立计量的有效工时，不能据此虚构可靠吞吐或机械扣减工时；继续按实际样本与剩余根因分组滚动校准，不编造精确结束日期。不以对话跨度或编译等待伪造工时样本。
 
-设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。下一项拟核对 H-20（DAG 成功节点的工作树被清理，产出未交付），因其已有直接数据损失证据，优先于纯展示/历史投影问题；按当前代码复核后再动手，不按 H 编号机械选容易项。H-33/H-23/H-78/H-238/H-260/H-287 仍独立待修，不因本项或 H-75 的锁关闭。
+设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。H-20 所列产出交付/保留验收结束；下一项拟核对 H-22（DAG 子运行文件工具仍绑定父目录），因它直接影响实际写入与权限/执行根一致性，也是完整 DAG 文件工具链可用的前置条件。先核对其当前代码和原探针，不机械按编号或容易程度选项。H-33/H-23/H-78/H-238/H-260/H-287 仍独立待修，不因本项或 H-75 的锁关闭。
 
 ## H-286 本轮实施与验收明细
 
@@ -176,6 +176,36 @@ Workspace 实录：`cargo test --workspace --offline -j 1 -- --quiet` **退出 1
 
 限制仍保留：每次 read/stub 实际读取字节，增加磁盘 I/O，未做性能 benchmark；OS 临时根下零内容 sidecar 为稳定锁身份保留，不能在其他 owner 活动时直接删除，未实现通用回收器。5 秒锁争用会返回 busy，不无限等待。gate 持有期间的取消测试观测未结束 Future 并设置取消，不声称精确定位 blocking 线程已进入哪条 native 指令；超时丢弃 Future 或已进入 syscall 不保证后台工作被撤销。最后比较/rename 间隙、不同临时根/旧二进制/非协作 delete/move/shell、hardlink/网络文件系统、H-78/H-238/H-260/H-287 均未因此关闭。未跑其他 OS、MSRV、断电事务、真实编辑器/DeepSeek/参考工程或 UI；本项无前端变更，不虚构 UI 验收。
 
+## H-20 本轮实施与验收明细（2026-10-26）
+
+**状态：已修复并验收，限 Windows / Git 2.54.0.windows.1 的下述本机行为；修复提交待本轮生成后回填。** 根因修复是收敛工作树产出所有权：不再由 scheduler 无条件强制删除，成功文件通过快照进入依赖节点基线，失败/取消遗留仍保留，既有子记录可重开定位/恢复/显式清理。报告和 UI 使用同一输出定位投影，不修改主目录、不建第二套存储。H-22、H-21 等独立问题未关闭；不宣称完整 DAG 工具执行、全 workspace 或严格 AppCore lint 已通过。以下按实际发生顺序保留中间失败，不由最终结果覆盖历史。
+
+当前 HEAD `10229dd8` 原探针实跑：`cargo test -p deepagent-subagents audit_successful_dag_preserves_files_for_handoff --offline -j 1 -- --ignored --nocapture`，**0 passed / 1 failed / 0 ignored**，0.70s。`all_succeeded=true, producer_retained=false, consumer_saw_file=false, main_has_file=false, main_readme="original"`，仍删除了未提交产出；只用临时Git仓库，不触及本项目工作树，不计新发现。正在核对工作树所有权/产出交付边界，尚未实施生产修复，不提前标通过。
+
+实施中（未验收）：沿用现有 WorktreeProvider 保存节点目录，以独立临时 index 生成 Git 快照和宿主 ref；下游对依赖快照做无工作副本的合并，再创建 detached 工作树，冲突不执行下游、不修改主目录。唯一工作树名同时作为既有子运行 id，路径落原 SubagentRunStore；报告使用既有 summary 投影定位信息，显式 cleanup 才删除工作树及输出 ref。此快照组合协议是本地设计；成熟参考仅证明保留未知/有变化产出原则，不能冒充其现成 DAG 协议。ignored 文件仍在源目录，不承诺 Git 快照传递；H-22 工具根绑定不在本轮关闭。
+
+首版实际结果：`cargo fmt --all` 退出0；`cargo test -p deepagent-subagents --offline -j 1 -- --nocapture` **14 passed / 0 failed / 0 ignored**，doc-tests 0。原 H-20 探针已取消 ignore，并加强为下游读取 tracked/untracked 的真实字节；观测 `producer_retained=true, consumer_saw_file=true, main_has_file=false, main_readme="original"`。只证明首版调度/提供器，尚未覆盖多依赖冲突、恢复定位、显式清理和 AppCore 编译；本项仍修复中。
+
+扩展首次实跑同一命令 **21 passed / 2 failed / 0 ignored**：`snapshot_preserves_source_index_head_and_main_dirty_state`、`diamond_fan_in_combines_outputs_without_reapplying_common_changes` 的 LF 严格断言分别读到 CRLF。根因是本机 Git checkout 换行策略；夹具补 `.gitattributes: * -text` 以固定本测试的字节语义，不修改本项目或全局 Git config。生产语义仍遵循仓库 attributes/filters，不保证对这些转换后的文件逐字节复制。
+
+后续实际结果：subagents 全 crate 先 **23 passed**，加入 Git 锁定工作树的显式清理失败回归后 **24 passed / 0 failed / 0 ignored**，doc-tests 0。首轮 `cargo clippy -p deepagent-subagents --all-targets --offline --no-deps -j 1 -- -D warnings` 被本轮两处测试的 `cloned_ref_to_slice_refs` 阻断，已按诊断改为 `std::slice::from_ref`，等待重验。AppCore 原 `subagent_runner::tests::` 选择器 **7 passed / 7 ignored**，不算新增验收；新增重开测试首次误用短名加 `--exact` 导致 **0 tests / 1177 filtered out**，不计通过，接下来用完整路径重跑。
+
+完整路径实跑 `cargo test -p deepagent-app-core --lib subagent_runner::tests::dag_outputs_reopen_through_existing_child_store_and_cleanup_exact_tree --offline -j 1 -- --exact --nocapture` **1 passed / 0 failed / 0 ignored**，测试体2.21s：生产 DAG executor/子模型循环（离线文字响应）→原子运行记录→文件 SQLite 真正关闭重开→原目录恢复→显式清理只删除目标树与其 ref。没有使用模型文件工具来证明 H-22。上述 subagents 严格 lint 重跑退出0。随后额外补充 shared DAG transcript 的 `workspace {version:1, kind:dag, path}` 标记及“显式清理后恢复拒绝”断言；这部分尚待最终全量重验，不把旧一次通过视为新代码通过。
+
+实现边界：首次工作树创建时冻结主仓库 HEAD，Git 输出快照包含已跟踪文件当前工作副本、删除和非 ignored 新文件；源 index 的暂存版本、源 HEAD 及主工作区不移动。输出 ref 使用 `--no-deref` 且只允许首次创建，已有 ref 明确失败；宿主诊断保留有界合并冲突路径。子执行成功但发布失败是节点交付失败，不篡改已落盘的子执行成功状态。工作树与快照会占用磁盘，需用户经既有 task.cleanup 显式清理；清理会丢弃该目录中未另行交付的 ignored 文件，不能承诺可恢复。自动交付不覆盖 ignored 文件、submodule 内部工作副本、外部路径、仓库过滤器处理之外的字节身份；不自动合入主目录，不新增 Git 推送。未来丢弃/取消的回归只证明保留产出，不证明 OS 子进程树全部退出或断电原子性。恢复 metadata 是现有 transcript 的可选版本化字段，旧记录保持原兼容行为，无数据库 schema 迁移、无新 run/event/tool/审批存储；Rust WorktreeProvider 新方法与 SubAgentResult.output 的本仓库消费方同步更新，未验证仓库外 source consumers。
+
+workspace 首轮实际结果：`cargo test --workspace --offline -j 1 -- --quiet` 编译5m16s；AppCore **1105 passed / 1 failed / 80 ignored**，测试体14.26s，退出1。未修改的 `completion_plan::audit_tests::discovered_real_build_completes_after_release` 等不到临时 `build-started` 标记；后续 target 未执行，不算通过。该命令编译期间还追加了本项引用保护及边界断言，因此不能当作最终源码验收，最终冻结源码后重新运行串行测试。台账检查首次正则只接受全角冒号、漏匹配 `H-305 撤销`；修正后实测306行/306唯一编号/无缺号/每行8列，当前状态5已修复、17历史跳过、7归并、2撤销、1修复中、274待修复。
+
+冻结源码后的 `cargo test --workspace --offline -j 1 -- --quiet --test-threads=1`，编译5m12s，AppCore lib **1106 passed / 0 failed / 80 ignored**（48.22s），包含本轮最终的 SQLite 重开/事件路径重放/目录不可用拒绝/清理后恢复拒绝与报告/UI summary 投影测试。此前窗口失败在此串行运行通过，但不抹去首轮失败或声称已确定其全部调度根因；workspace 此时仍在运行 kernel_v2_e2e，尚未列全量通过。
+
+同一最终 workspace 后续实际结果：kernel_v2_e2e **107 passed / 0 failed / 90 ignored**（78.24s），builtins **312 passed / 0 failed / 1 ignored**（74.37s），CLI **88 passed / 0 failed / 27 ignored**；进程此时仍未结束，不将 ignored 或后续未运行项作通过。
+
+最终测试已结束：上述串行 workspace **退出1**，最终停在未修改的 H-306：`canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`，`creative.video-edit.v1` 的 `defaultUserPrompt` 为空；prompts **27 passed / 1 failed**。persistence lib **67 passed**、session_control **8 passed**；未到达的 runtime 等 target 不算通过。单独执行最终 `cargo test -p deepagent-subagents --offline -j 1 -- --nocapture` **25 passed / 0 failed / 0 ignored**（3.61s）、doc-tests 0，含引用不可覆写/不解引用、清理失败、diamond、多输入冲突、字节交付、源 index/HEAD 保持、并发身份、执行/发布失败及 Future drop。最终 `cargo clippy -p deepagent-subagents --all-targets --offline -j 1 -- -D warnings` **退出0**，含该 crate 依赖检查。`cargo clippy -p deepagent-app-core --all-targets --offline -j 1 -- -D warnings` **退出1**：未修改的 models/client.rs:355 `clone_on_copy` 阻断；不加 allow、不夹带修复。AppCore 自身 no-deps 严格 lint 尚在运行，未提前标通过。
+
+最终 lint 收尾：`cargo clippy -p deepagent-app-core --lib --offline --no-deps -j 1 -- -D warnings` 和对应 `--all-targets` 命令均 **退出1**，在未修改的 context_runtime.rs（8处 clone_on_copy）、plugin_preparation.rs:14（type_complexity）、run_assembler.rs:1687（too_many_arguments）共10项诊断处阻断。`git diff --exit-code HEAD --` 这些文件及 models/client.rs、canvas_prompt.rs 无差异；不改它们、不 suppress lint。`cargo clippy -p deepagent-app-core --lib --offline --no-deps -j 1` **退出0，保留同10项 warning**，不能替代严格通过。最终 `cargo fmt --all -- --check` 与 `git diff --check` 均退出0；换行提示为仓库 CRLF 规则，不是内容检查失败。
+
+未执行：Linux/macOS/MSRV、真实 DeepSeek 或其他供应商、真实 Desktop UI、断电事务、完整 Git submodule/LFS/自定义 filter 场景、性能/磁盘占用 benchmark、全 features lint。主机验证仅 Windows、真实 Git 与离线模型 transport；没有前端或 Tauri DTO 变更，不虚构 UI 构建/截图通过。技能只用于人工调用链复核及 Evidence→Finding→Path 的即时记录，不声称运行 Semgrep/CodeQL、真实参考项目或平台安全扫描。总体剩余仍为200–400有效小时初估，尚无独立工时样本，不从本轮编译/串行等待或对话跨度推算吞吐。工作树显式清理测试只删除一次性 TempDir 内测试树；本项目既有用户文件与未跟踪项未操作。
+
 ## 按 H 编号的一一对应台账
 
 “待修复”仅表示未关闭，既有条件性风险和未验范围仍按原项保留；不是预先认定本轮能复现，也不是授权跳过先复核步骤。历史/归并/撤销行的修复摘要和验收字段说明其不适用原因，不冒充新修复。
@@ -202,7 +232,7 @@ Workspace 实录：`cargo test --workspace --offline -j 1 -- --quiet` **退出 1
 | [H-17：桌面收到取消后的保存失败，却因对话已 settled 而静默丢弃错误](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-18：输出上限重试后仍截断时，未完成工具调用被补参数并提交](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-19：子 Agent 的工具限制只过滤 schema，实际执行仍可调用被排除的工具](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-20：DAG 成功节点的工作树被强制删除，文件未交付给主目录或下游](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-20：DAG 成功节点的工作树被强制删除，文件未交付给主目录或下游](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针在10229dd8复现；保留原始失败 | 保留节点树；独立index快照与依赖合并；既有子记录/事件定位、恢复/清理 | subagents 25 passed/0 ignored；AppCore lib1106 passed/80 ignored；kernel107 passed/90 ignored；fmt通过；workspace及AppCore严格lint既有阻断详见明细 | 随本轮独立提交生成后回填 | 仅本机行为；H-22独立；Git属性/ignored/submodule/磁盘保留边界见明细；剩余274项计入总区间 |
 | [H-21：子 Agent 恢复遗漏原始输出契约，schema、phase、label 全部丢失](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-22：DAG 子运行只改变声明的工作目录，文件工具仍绑定父工作区](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-23：回退会话后旧笔记仍按复用序号宣称覆盖，压缩候选会替换新分支](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

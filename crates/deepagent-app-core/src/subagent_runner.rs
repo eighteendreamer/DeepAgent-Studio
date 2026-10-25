@@ -97,7 +97,7 @@ impl ChatSubagentRunner {
         cancel_token: Option<CancellationToken>,
     ) -> Result<deepagent_builtins::SubagentOutcome> {
         let subagent_id = format!("sub_{}", deepagent_core::id::EventId::new());
-        let persist = self.begin_tracking(&subagent_id, &request, false)?;
+        let persist = self.begin_tracking(&subagent_id, &request, false, None)?;
         self.run_tracked(subagent_id, request, cancel, cancel_token, persist, false)
             .await
     }
@@ -107,6 +107,7 @@ impl ChatSubagentRunner {
         subagent_id: &str,
         request: &deepagent_builtins::SubagentRequest,
         background: bool,
+        worktree_path: Option<&str>,
     ) -> Result<bool> {
         let transcript_path = self.transcript_root.join(format!("{subagent_id}.json"));
         let created_at = subagent_now_ms();
@@ -132,7 +133,7 @@ impl ChatSubagentRunner {
                         .clone()
                         .unwrap_or_else(|| "general".to_string()),
                     transcript_path: Some(transcript_path.to_string_lossy().to_string()),
-                    worktree_path: None,
+                    worktree_path: worktree_path.map(str::to_string),
                     summary: None,
                     created_at,
                     updated_at: created_at,
@@ -234,6 +235,22 @@ impl ChatSubagentRunner {
         persist: bool,
     ) -> Result<(PathBuf, bool)> {
         if request.isolation != "worktree" {
+            // DAG workspaces are scheduler-owned but recorded in the same
+            // child store. Resume must reuse them, not switch to the parent.
+            // false leaves cleanup to an explicit task.cleanup.
+            if persist {
+                if let Some(path) =
+                    deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db)
+                        .get(subagent_id)?
+                        .and_then(|record| record.worktree_path)
+                {
+                    let path = PathBuf::from(path);
+                    if !path.is_dir() {
+                        return Err(CoreError::not_found("retained DAG worktree is missing"));
+                    }
+                    return Ok((path, false));
+                }
+            }
             return Ok((self.root.clone(), false));
         }
         if !persist {
@@ -415,6 +432,17 @@ impl ChatSubagentRunner {
             )
             .await;
         if persist {
+            // Optional versioned metadata in the existing transcript, not a
+            // second workspace store. It prevents resume-after-cleanup from
+            // silently running this DAG child in the parent workspace.
+            let workspace = if request.isolation == "shared" {
+                deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db)
+                    .get(&subagent_id)?
+                    .and_then(|record| record.worktree_path)
+                    .map(|path| serde_json::json!({"version": 1, "kind": "dag", "path": path}))
+            } else {
+                None
+            };
             let current_attempt = serde_json::json!({
                 "request": {
                     "description": request.description,
@@ -441,6 +469,7 @@ impl ChatSubagentRunner {
                 "subagent_id": subagent_id,
                 "parent_run_id": self.parent_run_id,
                 "request": current_attempt["request"].clone(),
+                "workspace": workspace,
                 "state": state,
                 "summary": summary,
                 "created_at": created_at,
@@ -787,6 +816,12 @@ impl ChatSubagentRunner {
             .map_err(|error| {
                 CoreError::Persistence(format!("invalid sub-agent transcript: {error}"))
             })?;
+        if transcript["workspace"]["kind"].as_str() == Some("dag") && record.worktree_path.is_none()
+        {
+            return Err(CoreError::not_found(
+                "DAG worktree was explicitly cleaned up; cannot resume in the parent workspace",
+            ));
+        }
         let saved = transcript
             .get("request")
             .and_then(serde_json::Value::as_object)
@@ -939,7 +974,7 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
             return Err(CoreError::other("parent run is already cancelled"));
         }
         let subagent_id = format!("sub_{}", deepagent_core::id::EventId::new());
-        let persist = self.begin_tracking(&subagent_id, &request, true)?;
+        let persist = self.begin_tracking(&subagent_id, &request, true, None)?;
         if !persist {
             return Err(CoreError::other(
                 "background sub-agents require Agent Kernel v2 persistence",
@@ -1107,11 +1142,25 @@ impl deepagent_subagents::SubAgentExecutor for DagSubagentExecutor {
             label: Some(context.node_id.clone()),
             schema: None,
         };
+        // The existing child id also names its worktree, so durable lookup,
+        // resume and explicit cleanup agree on the same managed resource.
+        let id = context.worktree.name.clone();
+        let persist =
+            self.runner
+                .begin_tracking(&id, &request, false, Some(&context.worktree.path))?;
+        self.runner
+            .emit_subagent_event(RuntimeEvent::WorktreeCreated {
+                subagent_id: id.clone(),
+                path: context.worktree.path.clone(),
+            });
         let runner = self
             .runner
             .clone()
             .with_root(PathBuf::from(context.worktree.path.clone()));
-        match runner.run_inner(request, None).await {
+        match runner
+            .run_tracked(id, request, None, None, persist, false)
+            .await
+        {
             Ok(outcome) => Ok(deepagent_subagents::SubAgentResult::success(
                 context.node_id,
                 subagent_summary(&outcome.result, 2000),
@@ -1217,16 +1266,25 @@ mod tests {
         transport: Arc<dyn deepagent_models::transport::HttpTransport>,
     ) -> ChatSubagentRunner {
         let db = Arc::new(Database::open_in_memory().unwrap());
-        let clock = SystemClock;
-        let session = Session::create(&db, &clock, Some("audit parent")).unwrap();
-        deepagent_persistence::run_store::RunStore::new(&db)
-            .create(
+        audit_child_runner_with_db(root, transport, db)
+    }
+
+    fn audit_child_runner_with_db(
+        root: &Path,
+        transport: Arc<dyn deepagent_models::transport::HttpTransport>,
+        db: Arc<Database>,
+    ) -> ChatSubagentRunner {
+        let runs = deepagent_persistence::run_store::RunStore::new(&db);
+        if runs.get("audit-parent").unwrap().is_none() {
+            let session = Session::create(&db, &SystemClock, Some("audit parent")).unwrap();
+            runs.create(
                 "audit-parent",
                 &session.id().to_string(),
                 None,
                 subagent_now_ms(),
             )
             .unwrap();
+        }
         let settings = Arc::new(crate::settings::SettingsService::new(
             db.clone(),
             transport.clone(),
@@ -1477,7 +1535,9 @@ mod tests {
             schema: None,
         };
         let subagent_id = "sub_audit_notification";
-        assert!(runner.begin_tracking(subagent_id, &request, true).unwrap());
+        assert!(runner
+            .begin_tracking(subagent_id, &request, true, None)
+            .unwrap());
         runner
             .run_tracked(
                 subagent_id.to_string(),
@@ -1706,6 +1766,163 @@ mod tests {
     #[derive(Default)]
     struct AuditResumeTransport {
         requests: std::sync::Mutex<Vec<serde_json::Value>>,
+    }
+
+    #[tokio::test]
+    async fn dag_outputs_reopen_through_existing_child_store_and_cleanup_exact_tree() {
+        use deepagent_builtins::SubagentRunner;
+        use deepagent_persistence::subagent_store::SubagentRunStore;
+        use deepagent_planner::{PlanDag, PlanNode};
+        use deepagent_subagents::{DagScheduler, GitWorktrees};
+
+        fn git(root: &Path, args: &[&str]) -> String {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(root)
+                .args([
+                    "-c",
+                    "user.name=DAG Fixture",
+                    "-c",
+                    "user.email=dag@example.invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .expect("Git required");
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("repo");
+        std::fs::create_dir(&root).unwrap();
+        git(&root, &["init"]);
+        std::fs::write(root.join("base.txt"), "main remains unchanged").unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-m", "fixture"]);
+        let original_head = git(&root, &["rev-parse", "HEAD"]);
+        let db_path = temp.path().join("state.sqlite");
+        let transport = Arc::new(AuditResumeTransport::default());
+        let report = {
+            let db = Arc::new(Database::open(&db_path).unwrap());
+            let mut runner = audit_child_runner_with_db(&root, transport.clone(), db.clone());
+            runner.transcript_root = temp.path().join("transcripts");
+            let provider = GitWorktrees::new(&root, runner.worktree_base());
+            let dag = PlanDag::new([
+                PlanNode::new("first", "Return a short result"),
+                PlanNode::new("next", "Return a short result").depends_on(["first".to_string()]),
+            ])
+            .unwrap();
+            let executor = DagSubagentExecutor::new(runner);
+            let report = DagScheduler::new(&executor, &provider)
+                .run(&dag)
+                .await
+                .unwrap();
+            assert!(report.all_succeeded);
+            let records = SubagentRunStore::new(&db)
+                .list_for_parent("audit-parent")
+                .unwrap();
+            assert_eq!(records.len(), 2);
+            for result in report.results.values() {
+                let output = result.output.as_ref().unwrap();
+                let record = records
+                    .iter()
+                    .find(|record| record.id == output.worktree.name)
+                    .unwrap();
+                assert_eq!(
+                    record.worktree_path.as_deref(),
+                    Some(output.worktree.path.as_str())
+                );
+                assert_eq!(record.state, "succeeded");
+                assert!(Path::new(record.transcript_path.as_ref().unwrap()).is_file());
+                assert_eq!(
+                    git(
+                        &root,
+                        &[
+                            "rev-parse",
+                            &format!("refs/deepagent/dag-output/{}", record.id)
+                        ]
+                    ),
+                    output.revision.as_ref().unwrap().as_str()
+                );
+            }
+            report
+        }; // Close all original database owners before reopening.
+        let db = Arc::new(Database::open(&db_path).unwrap());
+        let mut runner = audit_child_runner_with_db(&root, transport.clone(), db.clone());
+        runner.transcript_root = temp.path().join("transcripts");
+        let first = report.results["first"].output.as_ref().unwrap();
+        let next = report.results["next"].output.as_ref().unwrap();
+        let store = SubagentRunStore::new(&db);
+        let record = store.get(&first.worktree.name).unwrap().unwrap();
+        assert_eq!(
+            record.worktree_path.as_deref(),
+            Some(first.worktree.path.as_str())
+        );
+        let replay = deepagent_persistence::run_store::RunStore::new(&db)
+            .events_after("audit-parent", None)
+            .unwrap();
+        for output in [first, next] {
+            assert!(replay
+                .iter()
+                .any(|event| event.event_type == "worktree_created"
+                    && event.data["subagent_id"].as_str() == Some(output.worktree.name.as_str())
+                    && event.data["path"].as_str() == Some(output.worktree.path.as_str())));
+        }
+        let request = runner.resume_request(&record, "Continue").unwrap();
+        let held = temp.path().join("temporarily_unavailable_worktree");
+        std::fs::rename(&first.worktree.path, &held).unwrap();
+        assert!(runner
+            .execution_root(&record.id, &request, true)
+            .await
+            .is_err());
+        std::fs::rename(&held, &first.worktree.path).unwrap();
+        let (restored_root, auto_cleanup) = runner
+            .execution_root(&record.id, &request, true)
+            .await
+            .unwrap();
+        assert_eq!(restored_root, PathBuf::from(&first.worktree.path));
+        assert!(!auto_cleanup);
+        runner
+            .resume(&record.id, "Continue", Default::default())
+            .await
+            .unwrap();
+        assert_eq!(store.get(&record.id).unwrap().unwrap().resume_count, 1);
+        assert!(runner.cleanup(&record.id).await.unwrap());
+        assert!(!Path::new(&first.worktree.path).exists());
+        assert!(Path::new(&next.worktree.path).is_dir());
+        assert!(store
+            .get(&record.id)
+            .unwrap()
+            .unwrap()
+            .worktree_path
+            .is_none());
+        assert!(git(
+            &root,
+            &[
+                "for-each-ref",
+                &format!("refs/deepagent/dag-output/{}", record.id)
+            ]
+        )
+        .is_empty());
+        assert!(runner.cleanup(&next.worktree.name).await.unwrap());
+        let cleaned = store.get(&record.id).unwrap().unwrap();
+        assert!(runner
+            .resume_request(&cleaned, "Continue")
+            .unwrap_err()
+            .to_string()
+            .contains("explicitly cleaned up"));
+        assert_eq!(git(&root, &["rev-parse", "HEAD"]), original_head);
+        assert_eq!(
+            std::fs::read_to_string(root.join("base.txt")).unwrap(),
+            "main remains unchanged"
+        );
+        assert_eq!(transport.requests.lock().unwrap().len(), 3);
     }
 
     #[async_trait::async_trait]

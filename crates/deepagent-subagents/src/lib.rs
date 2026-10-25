@@ -22,6 +22,9 @@ pub mod scheduler;
 pub mod subagent;
 pub mod worktree;
 
+#[cfg(test)]
+mod handoff_tests;
+
 pub use scheduler::{DagScheduler, ScheduleReport};
 pub use subagent::{context_for, SubAgentContext, SubAgentExecutor, SubAgentResult};
-pub use worktree::{GitWorktrees, InMemoryWorktrees, Worktree, WorktreeProvider};
+pub use worktree::{GitWorktrees, InMemoryWorktrees, Worktree, WorktreeOutput, WorktreeProvider};

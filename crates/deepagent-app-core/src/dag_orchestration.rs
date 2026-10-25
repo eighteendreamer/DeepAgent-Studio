@@ -36,7 +36,7 @@ const PLAN_SYSTEM_PROMPT: &str = concat!(
     "- depends_on lists ids that MUST finish before this node; keep the graph acyclic.\n",
     "- Subtasks with no ordering constraint MUST have empty depends_on so they run in parallel.\n",
     "- Prefer 2-6 nodes. Each goal must be fully self-contained: a sub-agent sees only that ",
-    "goal and the summaries of its upstream dependencies, nothing else.\n",
+    "goal, upstream summaries, and an isolated baseline containing upstream file outputs.\n",
 );
 
 /// One planned subtask as emitted by the model.
@@ -167,7 +167,7 @@ fn format_report(dag: &PlanDag, report: &deepagent_subagents::ScheduleReport) ->
                 "\n- [{}] {}: {}",
                 if result.ok { "ok" } else { "failed" },
                 node.id,
-                result.summary.trim()
+                result.delivery_summary()
             ));
         } else if report.skipped.contains(&node.id) {
             out.push_str(&format!(
@@ -212,7 +212,7 @@ fn build_dag_execution_data(
                 if let Some(result) = report.results.get(&node.id) {
                     // Node executed
                     let status = if result.ok { "done" } else { "failed" };
-                    let summary = Some(result.summary.trim().to_string());
+                    let summary = Some(result.delivery_summary());
                     let error = if !result.ok {
                         Some(result.summary.clone())
                     } else {
@@ -258,6 +258,36 @@ fn build_dag_execution_data(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn report_and_ui_share_retained_output_location() {
+        use deepagent_subagents::{ScheduleReport, SubAgentResult, Worktree, WorktreeOutput};
+        let dag = PlanDag::new([PlanNode::new("node", "Deliver files")]).unwrap();
+        let mut result = SubAgentResult::success("node", "done");
+        result.output = Some(WorktreeOutput {
+            worktree: Worktree {
+                name: "sub_fixture".into(),
+                path: "/fixture/output".into(),
+            },
+            revision: Some("fixture_revision".into()),
+        });
+        let report = ScheduleReport {
+            results: [("node".to_string(), result)].into_iter().collect(),
+            skipped: Vec::new(),
+            all_succeeded: true,
+        };
+        let text = format_report(&dag, &report);
+        let ui = build_dag_execution_data(&dag, &report, 1, 2);
+        for expected in [
+            "/fixture/output",
+            "sub_fixture",
+            "fixture_revision",
+            "Not integrated",
+        ] {
+            assert!(text.contains(expected));
+            assert!(ui.nodes[0].summary.as_ref().unwrap().contains(expected));
+        }
+    }
 
     #[test]
     fn parses_plain_json_array() {

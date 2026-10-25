@@ -847,6 +847,30 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 
 ### H-20：DAG 成功节点的工作树被强制删除，文件未交付给主目录或下游
 
+**已修复并验收（2026-10-26；Windows / Git 2.54.0.windows.1；独立修复提交生成后回填）。** 取消 scheduler 自动删除；以独立临时 index 生成 commit-tree 快照及只创建、不解引用的宿主 ref，下游在 merge-tree 无冲突合并后的 detached 基线运行，冲突/发布失败明确失败且保留源文件。唯一工作树名复用既有子运行 id，路径随原 SubagentRunStore 原子创建，沿原 run_events 重放；恢复原树、缺目录拒绝、显式 cleanup 及清理后拒绝退回父目录均验收。报告与 UI summary 同源投影路径/id/revision；不改主目录、源 index 或源 HEAD，不新增数据库/审批/取消链。该快照组合为本地设计，成熟参考仅支持产出保留原则。
+
+本项最终证据：subagents **25 passed / 0 failed / 0 ignored**（原探针已转默认），AppCore lib **1106 passed / 0 failed / 80 ignored**，kernel_v2_e2e **107 passed / 0 failed / 90 ignored**；fmt/diff 检查通过。subagents 全 target 严格 lint 通过；workspace 仍失败于独立 H-306，AppCore 严格 lint 仍被未修改文件诊断阻断（含 no-deps 的10项），普通 lib lint 退出0并保留 warning，不声明严格全绿。前后命令与中间失败逐条保存在 [修复进度](system-harness-repair-progress.md)。
+
+残余边界：H-22 文件工具父根绑定、H-21 原始恢复契约均未关闭，不据此宣称完整 DAG 可用。Git 快照遵循 attributes/filters，仅传递 Git 可表示的当前 tracked/非ignored文件；ignored、submodule 内部工作副本、外部路径不作自动交付保证，但源树仍保留。保留目录/ref 有磁盘成本，用户显式清理可删除未另存的 ignored 内容；没有自动主目录合入、后台推送或用户数据清理。未跑其他 OS/MSRV、真实模型供应商/UI、断电/进程树退出/性能与全部 filter/submodule 场景；以下保留原始审计及实施时间线，不以最终结果改写原失败。
+
+最终测试结果（2026-10-26）：冻结源码的串行 workspace **退出1**，停在既有 H-306（prompts **27 passed / 1 failed**，`creative.video-edit.v1.defaultUserPrompt` 为空）；不声称全量通过。另跑最终 subagents 全 crate **25 passed / 0 failed / 0 ignored**、doc-tests 0，原探针默认执行且真实读取依赖文件；其全 target 严格 lint（含依赖）退出0。AppCore 全依赖严格 lint 被未修改的 models/client.rs:355 `clone_on_copy` 阻断；自身 no-deps lint 仍运行。本轮不修这两个独立问题；完整命令、前后失败及残余见 [修复进度](system-harness-repair-progress.md)。
+
+最终 workspace 继续执行到 kernel_v2_e2e **107 passed / 0 failed / 90 ignored**、builtins **312 passed / 0 failed / 1 ignored**、CLI **88 passed / 0 failed / 27 ignored**；进程仍运行，尚无整套通过结论。
+
+最终源码中间验收：`cargo test --workspace --offline -j 1 -- --quiet --test-threads=1` 的 AppCore lib **1106 passed / 0 failed / 80 ignored**（48.22s），包含最终新增的两项默认回归；workspace 仍在运行，不能列全量通过。新测试覆盖 SQLite 重开、既有 worktree_created 事件重放、缺目录拒绝、恢复与精确清理、显式清理后恢复拒绝，以及报告/UI summary 同源定位；离线文字模型不证明 H-22 的文件工具根绑定正确。
+
+workspace 首轮未通过（保留原结果）：`cargo test --workspace --offline -j 1 -- --quiet`，AppCore **1105 passed / 1 failed / 80 ignored**。未修改的 `completion_plan::audit_tests::discovered_real_build_completes_after_release` 未在夹具窗口内观察到 `build-started`；后续 target 未运行。编译期间还追加本项边界断言/引用保护，故最终版本必须重验，不能用此前绿色覆盖全量失败。
+
+AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reopen_through_existing_child_store_and_cleanup_exact_tree` 配 `--exact` 实跑 **1 passed / 0 failed / 0 ignored**（2.21s）；经真实 scheduler/生产 DAG executor 和离线文字模型响应，确认既有子记录在 SQLite 关闭重开后定位、恢复和精确清理。此测试不执行模型文件工具，不关闭 H-22。subagents 严格 lint 重验退出0。后续增加 transcript 版本化工作树标记以拒绝显式清理后退回父目录，仍需最终重验。
+
+后续结果：固定夹具 Git 属性后 subagents 23 项通过，再补实际 Git worktree lock 的清理失败回归后 **24 passed / 0 failed / 0 ignored**。首轮严格 lint 检出本轮两处测试不必要 clone，已修正待重验。AppCore 新增 SQLite 重开测试首次因短名配 `--exact` 选中0项，明确不作验收；后续须完整限定名执行。
+
+扩展首次验收保留失败：同一 subagents 全 crate 命令 **21 passed / 2 failed / 0 ignored**；两项在 Windows checkout 读到 CRLF 而断言 LF。测试仓库补 `.gitattributes: * -text`，不修改真实仓库或全局 config；生产快照沿用 Git attributes/filters 语义，不声称所有过滤后的内容仍逐字节相同。
+
+实施中首版结果（2026-10-26，未最终验收）：`cargo test -p deepagent-subagents --offline -j 1 -- --nocapture` **14 passed / 0 failed / 0 ignored**；原探针已转默认并检查下游真实文件字节，观测 `producer_retained=true, consumer_saw_file=true, main_has_file=false, main_readme="original"`。首版保留工作树，用独立 index/commit-tree/ref 发布快照，经 merge-tree 组合依赖后创建下游树；不改主目录。快照组合为本地设计，依据 [Git merge-tree](https://git-scm.com/docs/git-merge-tree)、[commit-tree](https://git-scm.com/docs/git-commit-tree)、[read-tree](https://git-scm.com/docs/git-read-tree)、[update-ref](https://git-scm.com/docs/git-update-ref)；不是声称 Claude 有相同协议。AppCore 与复杂场景尚未验收，H-22 独立保留；下述原始失败证据不删。
+
+修复前当前 HEAD `10229dd8` 复核（2026-10-26）：`cargo test -p deepagent-subagents audit_successful_dag_preserves_files_for_handoff --offline -j 1 -- --ignored --nocapture`，**0 passed / 1 failed / 0 ignored**，测试体0.70s。仍为 `all_succeeded=true, producer_retained=false, consumer_saw_file=false, main_has_file=false, main_readme="original"`；成功产出被清理，原探针末尾保留/交付断言失败。本次只使用原独立临时Git仓库，不重复登记发现；当前进入根因设计与跨层调用核对，尚未修改生产逻辑或验收。
+
 **级别：高（P1）；范围：plan_execute 的 DAG 工作树调度。** 本项用真实临时 Git 仓库复现未提交文件和修改丢失；没有删除本项目或用户工作树。
 
 #### 触发与复现
