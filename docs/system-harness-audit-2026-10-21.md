@@ -23,6 +23,10 @@
 
 ## 覆盖进度
 
+| 本轮核查边界（增量） | 实际证据 | 结论与限制 |
+|---|---|---|
+| 成功文件操作与最终净变化的完成验收 | 正式 ChatService 创建后删除、读取后同内容写回均成功且最终状态正确，仍各发送2个含 completion_blocked 的额外模型请求，最终 fail-open；持久创建/删除对照正常 | 新增 H-294（P3）；两个正常行为期望探针保持 ignored 且显式执行失败，未修生产逻辑，未证明真实模型会据错误反馈重复改文件 |
+
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
 | 画布场景声明变更后的绑定资格 | 正式 save_model/save_provider 撤销 Text 后重开文件 SQLite，旧绑定仍让 bridge 实际请求 formerly-text，合成 400 截断健康候选；清绑定后相同请求成功 | 新增 H-292（P2，旧 binding 条件）；未修复；默认有效/disabled/无绑定控制通过，参考工程仅静态对照，无真实供应商或 UI 实测 |
@@ -8234,3 +8238,44 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 去重和限制：不重跑 H-26、H-259、H-275/H-276 探针，不新增 H-294。没有验证外部 command/MCP hook 输出解析、多个 hook 的 Ask/Modify 合并、批量并发、持久化 action hash、原生历史、审批拒绝/取消、真实 UI 或 AppCore 装配。因此这里只排除**单个原生 hook、有效工具注册、串行 pipeline**的上述假设，不关闭任何既有问题，也不将静态看到的邻近差异登记为已复现漏洞。
 - 验证进度：首次格式检查只指出新增测试布局，待 rustfmt 后复核；另一个新增“合法改写不能授予缺失能力”的对照和 runtime 回归尚在执行，结果后续追加。生产逻辑未修改。
 - 后续实际结果：`cargo test -p deepagent-runtime --lib audit_valid_rewrite_does_not_grant_missing_capabilities --offline -- --nocapture` **1 passed / 0 failed**，合法新参数在空能力集合下返回 `permission_denied`（stage=Permission），审批/工具执行均0；证明 Modify 不等于授予缺失能力。`cargo test -p deepagent-runtime --offline` 全命令成功：单元 **274 passed / 16 ignored**，e2e_stabilization **5 passed**（59.40秒），schedule_audit **0 passed / 2 ignored**，doc-tests 0；合计 **279 passed / 0 failed / 18 ignored**。既有缺陷探针保持默认 ignored，不将绿色默认回归称为它们已修复。`cargo fmt --all` 后 `cargo fmt --all -- --check` 与 `git diff --check` 通过。未跑 workspace/AppCore 全量、Clippy、Desktop build/UI 或真实供应商；只修改本节文档和 pipeline 的测试区域，无配置、协议、权限或数据迁移变更。
+
+### H-294：完成门把每次成功文件操作强制转换为最终净变化，临时创建后删除被误判未完成并额外请求模型
+
+**级别：低（P3，完成验收的操作历史与最终状态语义混淆）；状态：正式 ChatService/ModelClient/Kernel、文件 SQLite 和真实临时文件已复现，未修复。** 不要求 hook 改写、异常供应商、并发或失败工具；本轮用户目标明确要求“创建临时文件后删除，最终文件不存在”。默认完成策略被设为空不消除 runtime 自动推导的要求。本项不重复 H-259 的流式参数冲突，也不属于 H-230/H-231 的单文件验证器误报。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- E-294-first（source_type=command，source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/completion_net_effect.rs`，content_hash=n/a，artifact_path=n/a）：首次执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e completion_net_effect --offline -- --include-ignored --nocapture`，**1 passed / 1 failed（预期），测试体0.65秒**。故障组 `CreateThenDelete` 实测 `requests=5 blocked_inputs=2 evidence_failures=4 failed_open=true completed_actions=2 terminal=succeeded`。故障断言为“已完成的临时操作不应被反馈为未完成”，期望0、实际2。此结果出现后立即追加本项，未先改生产代码或把缺陷断言改成绿色。
+- E-294-files：正式 write_file 实际写入唯一临时 `audit-scratch.txt`，下一次模型 transport 回调先读回并核对完整 CONTENT，再返回正式 delete_path 调用；结束时目标不存在、同目录 `keep.txt` 字节仍为 untouched。所有文件/SQLite 均在 tempfile 独立目录内，未删除仓库、用户文件或现有产物；没有 shell 命令、网络服务、真实凭据或公网供应商请求。
+- E-294-lifecycle：两个真实工具均唯一 `tool_completed.ok=true`，RunControlStore 两项 action 均 Completed，唯一 run_terminal 为 succeeded。每次候选结束的 completion_evidence 都把该路径记为 Unchanged（共3组）。工具真实成功与用户要求的最终状态同时成立，仍触发完成失败；不是以模型口头成功代替文件验证。
+- E-294-wire：复用既有 `responses_fixture` 完整、带递增 sequence_number 的 Responses 成功事件，正常 function_call 参数在双 done 一致。第1/2个响应执行创建/删除，原本第3个文本响应即可结束；实际第4/5个序列化模型请求的 input 含 `completion_blocked`。因此5次而非3次模型请求直接来自宿主完成反馈；fixture 只再次返回相同完成文本，没有根据反馈重建或误删文件。持久化 Note 含 completion gate failed open，4条失败验证事件包含3次证据拒绝及1次预算耗尽放行，不把它们误称为4次模型重试。
+- E-294-controls：只创建并保留文件、只删除运行前已存在文件，均 `requests=2 blocked_inputs=0 evidence_failures=0 failed_open=false`；真实文件状态、单个 Completed action 和唯一 succeeded 终态均通过。故障样本所创建的临时文件已在该正式工作流中删除，临时目录由 tempfile 清理，未触及用户未跟踪文件。
+- E-294-idempotent（同根因增量，不新增编号）：增加 `audit_successful_same_content_write_does_not_reopen_completion`，运行前文件已含目标完整内容，正式 read_file 成功后再由正式 write_file 写回相同内容。首次执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e completion_net_effect::audit_successful_same_content_write --offline -- --ignored --nocapture`，**0 passed / 1 failed（预期），测试体0.48秒**；实测同为 `requests=5 blocked_inputs=2 evidence_failures=4 failed_open=true completed_actions=2 terminal=succeeded`，三次净证据均 Unchanged；磁盘正文与目标逐字一致，sentinel不变。这证明不止“先建后删”组合，合法幂等写回也会触发。未把正确的“无需伪造内容变化”失败断言改成确认缺陷的通过断言。
+
+#### 根因与生产路径（首轮源码核查）
+
+- `RuntimeEngine::run` 对成功 CallTool/CallTools 将每次工具参数加入 tool_effects；在 Complete/CompleteMessage 两分支用 `CompletionPolicy::from_tool_effects` 自动生成要求，再合并显式策略。`completion.rs` 为同一路径同时追加 CreateOrModify 与 Delete 要求，并没有按用户最终目标或后续操作消解旧要求。
+- `CheckpointManager::capture_before` 每路径只保留运行最初快照；`mutation_evidence` 比较这个快照与运行当前状态。原本不存在、创建后又删除的路径正确得到 Unchanged；这不是检查点计算错误。错误发生在把“曾经成功操作的所有效果”与“最终净变化”要求逐项相等的验收边界。
+- `completion_evidence_feedback` 将缺失效果包装为失败观察及“Perform and verify the requested filesystem operation”恢复提示，交给 ModelAgent 进入下一次真实序列化 input；默认 max_completion_retries=2，第三次失败才 fail-open 接受答复。`kernel_runtime.rs::build_kernel_runtime_config` 虽传入空 CompletionPolicy，仍装配正式 checkpoint，所以默认主聊天可到达该路径。未修改生产默认值。
+
+#### 调研与后续验证进度
+
+- 已静态读取 Codex `core/src/session/turn.rs` 的 needs_follow_up / run_turn_stop_hooks 收尾，以及 Grok `session/acp_session_impl/stop_gate.rs` 的显式 hook 继续条件与上限；详细对照、官方边界、影响和根治建议继续追加。首次只登记上述已完成的动态证据，不预填未跑回归。
+
+#### 成熟 Agent 与 DeepSeek 官方边界
+
+- **Codex（静态对照）**：`借鉴/codex/codex-rs/core/src/session/turn.rs` 约653行在没有 needs_follow_up 时调用 `run_turn_stop_hooks`；只有 stop_outcome.should_block 且存在可交付 continuation_fragments，才写入 hook 提示并继续。约2990行在响应结束时保留 usage/diff 通知及 end_turn/follow-up 身份；`core/src/hook_runtime.rs::run_turn_stop_hooks` 构造明确的 StopRequest（含 stop_hook_active 等）。这些读取区间没有本系统式的“成功 write/delete 逐条自动变成最终 diff 必须满足的目标”规则。借鉴点是将真实工具结果、最终 diff 和明确的继续要求分开，而非把所有中间副作用保留当作完成前提。**未运行 Codex 同样的文件场景，不声称排除其所有工具、插件或用户配置 hook 的误报。**
+- **Grok（静态对照）**：`借鉴/grok-build/crates/codegen/xai-grok-shell/src/session/acp_session_impl/stop_gate.rs::run_stop_gate` 没启用 hook 时直接 AllowStop；有 hook 时由明确的 wants_continuation() 及 blocks/additional_context 决定继续，8次上限用于防止持续阻止结束。它的上限不证明本系统错误的“不留净变化=没完成”判据合理；相同的 fail-open 策略也不能消除此前已经发出的两次无谓请求。未运行参考工程。
+- **DeepSeek**：本轮实际打开 [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)及[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)，Responses 无状态，宿主负责完整历史；[工具指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)说明实际工具由宿主执行。它们没有规定每次成功写入必须在 turn 最终留下 Created/Modified，也没有要求同内容写回必须制造变化。因此这是宿主验收策略缺陷，不是 DeepSeek function schema、reasoning 参数或模型“没有遵守任务”。
+- [官方 KV cache](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)只在完整匹配已落盘前缀单元时复用输入；缓存命中也不能省去不必要的新采样或校正错误的完成反馈。本次模型 transport 是离线合成、usage 是固定测试值；没有测真实缓存、费用或延迟，不能把两次额外调用直接换算成线上 token/金额或宣称缓存失效。
+
+#### 影响、定级与根治建议（本地设计，未实施）
+
+- 已证明：在最终文件状态满足指令、工具均成功的情况下，宿主给模型发送2次错误的 completion_blocked 反馈；第3次拒绝后又留下 fail-open Note 并成功结束，验证事件会给使用者/日志留下“证据不足”的错误诊断。两个场景正常所需3次主模型请求变为5次。真实供应商下会增加请求与生成成本、等待时间，但本次没有请求真实服务，不推算费用或响应时间。
+- 潜在后果：错误恢复提示要求继续进行文件操作，真实模型可能尝试重建已要求删除的临时文件，或为了出现 Modified 而无谓修改已正确的内容；这与用户最终目标相反。但本轮 fixture 只重复最终答复，**没有实测真实模型决策、重复文件操作、内容损失、无限循环或权限突破**，不能将潜在风险写成已发生。P3依据是自动重试有界、运行仍成功、未出现数据损坏；若后续实测造成错误变更，再依据新增证据调整影响。
+- 根因修复应分开三种事实：①工具动作确实成功/失败（现有 ToolCallCompleted / run_actions）；②运行最终净变化（现有 checkpoint MutationEvidence）；③任务明确要求的最终后置条件。不能把①机械地转成要求②逐项保留，更不能用 prompt 关键词猜测③；不应为临时文件加特判、把 Unchanged 全部伪装 Modified、降低模型诚实要求或扩大 fail-open 次数。
+- 优先在现有 CompletionPolicy/RuntimeEngine 边界取消这种自动强推的最终变更要求，保留工具原始结果与真实净证据供模型、明确策略及 Stop/验证器消费。若产品确需机器可验收的最终目标，必须来自明确契约并能表达存在/不存在、目标内容相等、允许无变化及临时操作生命周期；有序效果归约只能作为事实投影，不能自行推导用户目标。错误反馈只能依据真实违反的契约发出；复用唯一 event store、检查点、权限、审批与取消链，不新增第二套“完成状态库”。
+- 回归至少包括持久创建/修改/删除、合法同内容写回、创建后删除、修改后恢复、移动后继续移动/删除、多次操作同路径、拒绝/失败工具、明确配置的真实后置条件与取消；验收同时看最终字节/路径、tool/action终态、完成反馈和实际模型请求数。当前只动态覆盖本节四个场景，其他是待测要求。
+- 本轮默认 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` 已完成：**96 passed / 0 failed / 92 ignored，测试体13.81秒**。两个新增故障探针保持 ignored，绿色默认回归不表示H-294已修复；后续格式检查及扩大回归结果继续追加。
+- 扩大验证完成：`cargo test -p deepagent-app-core --offline -- --test-threads=1` **全命令退出0**，覆盖 AppCore 默认单元、全部默认集成与 doc-tests；其中 kernel_v2_e2e 为 **96 passed / 0 failed / 92 ignored，73.85秒**，没有启用全部既有 ignored 故障探针。工具返回的中间长日志被截断，本节不凭上一轮数字拼造本轮全套累计计数。未使用旧提交的结果冒充本轮验证。
+- 交付前在 rustfmt 后显式重跑 `cargo test -p deepagent-app-core --test kernel_v2_e2e completion_net_effect --offline -- --include-ignored --nocapture`：**1 passed / 2 failed（两个已知缺陷预期），测试体0.75秒**；两个正常场景仍通过，两故障场景仍各5次请求、2个含反馈的续轮、4条失败验证及 fail-open。此重跑只验证新增探针最终内容，不新增发现。`cargo fmt --all -- --check`、`git diff --check`通过。未运行整个 workspace、Clippy、Desktop build/UI、真实 DeepSeek 或参考工程；本轮只新增测试模块/入口和审计文档，生产逻辑、公共协议、权限、沙箱、配置及数据迁移均未修改。

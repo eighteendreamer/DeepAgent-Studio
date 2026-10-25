@@ -165,6 +165,9 @@ mod tool_schema_parameters;
 #[path = "kernel_v2_e2e/tool_call_identity.rs"]
 mod tool_call_identity;
 
+#[path = "kernel_v2_e2e/completion_net_effect.rs"]
+mod completion_net_effect;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/path_boundary.rs"]
 mod path_boundary;
