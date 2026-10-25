@@ -10,20 +10,22 @@
 
 ## 2026-10-25 编号与证据复核
 
-最近三次登记重复使用了既有问题的同一探针、触发条件和根因，撤销独立计数，不代表问题已修复：
+以下登记重复使用了既有问题的同一探针、触发条件和根因，撤销独立计数，不代表问题已修复：
 
 | 撤销编号 | 唯一保留项 | 重复依据与原登记提交 |
 |---|---|---|
 | H-279 | H-78 | 同一 `path_boundary` junction 探针、canary 与正式读取路径；`cbc58ef3` |
 | H-280 | H-79 | 同一 `file_listing_policy` 探针及 `.env` 发现结果；`b8644d3c` |
 | H-281 | H-168 | H-168 已包含同一中间 system serializer 探针、重排根因及输出；`7a590897` 只增加构造器 wire 日志，没有新增行为断言或默认宿主复现 |
+| H-291 | H-126 | 同一 `response_limit_audit.rs`、16-byte/2 MiB 样本和 MCP 读取边界；`f021e362` 已由 `97fd4a7d` 撤销独立编号 |
 
-文末对应章节保留为复核归档，原 E/F/P 标签仅用于追溯。撤销 H-281 的独立 P1 定级；其具体模型决策后果未验证，不能从 serializer 测试外推为默认 Desktop 故障。H-280 关于 Claude Code“未找到直接对照”的说法也已按 H-79 和本地源码校正。本次仅核对文档、源码和提交差异，未重跑这三项已知失败探针。
+文末对应章节保留为复核归档，原 E/F/P 标签仅用于追溯。撤销 H-281 的独立 P1 定级；其具体模型决策后果未验证，不能从 serializer 测试外推为默认 Desktop 故障。H-280 关于 Claude Code“未找到直接对照”的说法也已按 H-79 和本地源码校正。编号更正只核对文档、源码和提交差异，未为撤销编号重跑已知失败探针。
 
 ## 覆盖进度
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| 画布场景声明变更后的绑定资格 | 正式 save_model/save_provider 撤销 Text 后重开文件 SQLite，旧绑定仍让 bridge 实际请求 formerly-text，合成 400 截断健康候选；清绑定后相同请求成功 | 新增 H-292（P2，旧 binding 条件）；未修复；默认有效/disabled/无绑定控制通过，参考工程仅静态对照，无真实供应商或 UI 实测 |
 | 计划模式的会话恢复与写入限制 | /plan 和 set_plan_mode 两入口的热续聊均阻止真实写入；关闭文件 SQLite/重建 ChatService 后同一会话 plan=false，正式 write_file 创建临时文件；/plan 历史仍进入 wire | 新增 H-288（P2，服务重建条件）；未修复；显式重设、退出和其他会话对照通过；离线模型及合成临时文件，不归入供应商缓存问题 |
 | CodeGraph 定义变更后的增量调用解析 | 正式 `CodeGraph::index_all/sync/callers` 先得到 caller→target；只改定义文件将旧边级联删除；定义恢复但 caller 未改时，调用边仍为 0 | 新增 H-289（P2，增量索引一致性）；未修复；临时 Rust fixture 与 SQLite，无模型/公网；触碰 caller 的对照恢复为 1，全量重建未单独复测 |
 | Windows 内容编辑的文件访问控制元数据 | 正式 write_file/edit_file/multi_edit 均成功写正文，却将受保护的单条 DACL 替换为继承规则；文件 SQLite 重开后检查点恢复正文但不恢复原策略；只读及默认继承 ACL 写入对照正常 | 新增 H-287（P2，自定义/受保护 ACL 文件条件）；未修复，仅合成临时文件；未验证其他账户访问、真实数据泄漏、跨平台或 staging 读取 |
@@ -8131,3 +8133,48 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 上一轮默认 `cargo test -p deepagent-mcp --offline` 的 55 passed 是 **lib 测试小计**；还包括 `liveness_real_process` 的 2 passed 与 `stdio_diagnostics` 的 1 passed，全部默认测试合计 **58 passed / 0 failed / 11 ignored**，doc-tests 0。ignored 缺陷没有修复。
 - 上一轮新读取的 Codex `http-client/src/transport.rs`、DeepSeek Harness `web-fetch-http` / `lsp-stdio` 只证明其他 HTTP/LSP seam 提供可选有界读取；**不能证明所有 MCP transport 默认已经受限**，也不能据此把其配置数值规定为本系统 MCP 规范。沿用 H-126 对参考范围和本地设计的限制。
 - 本更正仅修改审计文档，未改生产实现、测试或既有编号引用；不重写 Git 历史。后续按“生产根因 + 测试身份 + 已有 H 条目”三项去重，同根因的新证据归并原条目。
+
+### H-292：画布场景声明撤销后旧绑定仍参与实际调用，非瞬时失败阻断健康候选
+
+**级别：中（P2，条件性模型路由/配置失效缺陷）；状态：公开配置服务、文件 SQLite 重开及正式 `CanvasModelBridge::complete` 已复现，未修复。** 模型保持 enabled，但移除 Text 场景后，其旧 Text binding 仍可将文本请求发给该模型；若供应商返回不支持操作的 HTTP 400，健康备用模型不会被调用。不是“所有 400 都应 fallback”，根因是请求前资格过滤缺失。
+
+#### 即时 Evidence（2026-10-25，首次有效复现后立即登记）
+
+- 新测试：`crates/deepagent-app-core/tests/canvas_scenario_binding_audit.rs`；独立 tempfile/文件 SQLite、`MemorySecretStore`、合成 key 与文本、一台 `127.0.0.1:0` HTTP fixture。没有真实供应商、用户配置或用户数据；请求读取有 64 KiB 上限、3 秒交换期限，桥接有 5 秒测试期限，fixture 在最终缺陷断言前 abort 并 await 回收。
+- 去重已检索报告的 scenario、场景绑定、候选及 `candidates_for_scenario`：H-160 是非法显式 model_ref 的静默自动路由，H-161 是参数丢弃，H-290 是 secret 写失败的跨提交不一致，均不是本项的顺序配置变更/资格失效。H-291 保持撤销，不重用该编号。
+- 精确命令：`cargo test -p deepagent-app-core --test canvas_scenario_binding_audit audit_revoked_scenario_is_not_dispatched_through_stale_binding --offline -- --ignored --exact --nocapture`。首次结果 **0 passed / 1 failed（预期缺陷）**，两个场景均完成、测试体 0.20 秒；不是两个测试失败。
+- 两组均先保存 `formerly-text`、`healthy-text` 的 Text 声明和有序全局 bindings，正式 bridge 请求成功选择前者。之后分别通过 `save_model` 撤销为 `[]`、通过 `save_provider` 改为 `[Embedding]`；关闭并重开数据库，确认新场景和旧 bindings 都已持久化。重新保存相同 bindings 正确报错，但 `candidates_for_scenario(Text)` 仍为 `["formerly-text", "healthy-text"]`。
+- 两组实际 wire 均仅收到 `POST /v1/chat/completions HTTP/1.1`、`model="formerly-text"`；合成供应商返回 HTTP 400 后 bridge 返回 `ProviderFailure`，没有调用 `healthy-text`。仅用公开 API 清除 bindings、不改 endpoint/key/模型声明，下一次 bridge 请求即成功调用 `healthy-text`。最终断言输出 `revoked scenario still dispatched; provider-update flags=[false, true]`。
+- 以上是正式桥接/API 的动态验证；Desktop UI 的设置调用链仅做静态核对，不冒充 UI 实测。测试默认 ignored，不把已知缺陷当作绿色回归。本次首次证据落盘后再补参考实现和治理细节。
+
+#### 根因与可达性
+
+- `CanvasModelConfig.scenarios` 明确约定空数组为“not selectable”；`normalize_model` 保留场景声明。`save_bindings` 验证 model 当前声明包含目标 scenario，但 `save_model` / `save_provider` 更新 provider 文档后不更新独立的 binding 文档。这里没有并发、secret 故障或手工改数据库，正常顺序 API 已足够触发。
+- `canvas_provider_service.rs::candidates_for_scenario` 的 bindings 分支只检查 binding enabled、scenario 标签匹配、provider enabled 与 model enabled，再调用不含 scenario 参数的 `resolve_model`；缺少 `model.scenarios.contains(&scenario)`。extras 分支却有此检查，同一方法产生两种资格规则。重复解析 enabled 状态不等于重新验证场景资格。
+- `CanvasModelGateway::execute` 只增加 reference-image 数量过滤，随后对不合格候选也调用 provider。正式 `CanvasModelBridge::complete` 在空 model_ref 时进入该候选链；本轮测试刻意使用空值，避免与 H-160 的非法非空引用自动路由混淆。HTTP 400 属非瞬时 `ProviderFailure`，因此直接终止，没有进入后面的健康候选；错误分类本身符合既有“仅瞬时故障 fallback”的契约。
+- Desktop 静态链路是 `canvasSettingsStore.ts::setModelScenarios` → `updateProviderModels` → `updateProvider` / `schedulePersist` → `canvas_provider_save` → 正式 `save_provider`；修改场景不同时提交 bindings。`setScenarioBinding` 单独调用 `canvas_bindings_save`。`canvas_model_save` 另直接转发 `save_model`，两个保存边界均由本轮动态证据覆盖。未启动 Desktop，不能据此宣称所有专业 workflow 节点均已可调用；H-162 的 executor 缺口仍成立。
+- 本项也不同于 H-71：H-71 是模型目录丢弃官方 input modality、未按输入图像能力投影；H-292 是 Canvas 自己承诺的 scenario allowlist 在配置更新后被旧 binding 绕过。两者可借鉴共同能力快照原则，但不是同一生产根因或同一复现。
+
+#### 成熟实现对照与 DeepSeek 契约边界
+
+- **DeepSeek Harness（本地静态源码/测试对照，本轮未运行）：** `packages/llm/llm-deepseek/src/adapter.ts::prepareCall` 取一次当前 connection，使用它解析 `modelInfo`，并把同一 connection 绑定给 stream；`model-info.ts::modelInfo` 从该 generation 的 catalog 生成 effective capabilities。`packages/llm/llm/src/index.ts::prepareCall` 验证并冻结 resolved config/model modalities；dispatch 前按该次 `modelInfo.inputModalities` 将文字模型的图片投影为文本，并拒绝 prepared config 被改动。它不是“每个字段随时读最新”，而是**每次新调用建立一致快照、已准备调用固定快照**，避免资格校验和真正 dispatch 用不同配置。
+- 对应 `llm-deepseek/tests/prepared-call.spec.ts::keeps the prepared credential reference and endpoint after configuration changes` 明确区分旧 prepared call 与新调用；`tests/adapter.spec.ts` 的 capability-change/resume 测试验证更新后按新 systemPromptUpdate 能力重建请求。后者是 system-prompt capability，不是本项目 Canvas scenario。可迁移的是发请求前解析有效能力/同代次绑定，不声称该参考工程已有同构 Canvas binding 或本轮动态证明了它解决 H-292。
+- **Codex（本地静态源码，本轮未运行）：** `core/src/session/turn.rs` 在采样输入及后续模型循环用当次 `step_context.settings.model_info.input_modalities` 调用 `ContextManager::for_prompt`；`context_manager/history.rs::normalize_history` 再统一调用 `strip_images_when_unsupported` / `strip_audio_when_unsupported`。它把当前 turn 的能力投影放在模型边界，而非只信历史保存时的合法性。这里是输入模态处理，不是 Canvas 场景候选；不能把“剥离不支持的图片”直接复制成“所有不支持的 operation 都降级为文字”。
+- **Penguin-Magic（本地静态查证，未运行）：** `services/ai/modelTasks.ts::resolveTaskProvider` 在每次任务发送前从 store 重新检查 provider 存在、enabled 与 credential；Gemini adapter 保存 `supportedActions` 元数据。但本轮已读链路未证明存在与本项目相同的 stale scenario-binding 校验，因此不把它列为“已经解决”的证据。
+- **DeepSeek 官方边界：** [Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)明确模型/内容支持范围，且 Responses 无状态、历史由客户端回传；[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)描述请求/流协议；[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)描述模型提议与宿主工具执行；[KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)只对完整匹配的已落盘前缀单元命中缓存。这些都不会代宿主维护 Canvas binding 的资格失效。本轮发的是本机 OpenAI-compatible Chat 请求，未调用真实 DeepSeek Responses，不能将合成 HTTP 400 描述为 DeepSeek 官方实际拒绝或 reasoning/cache 参数违规。
+
+#### 影响、定级与根治方向（本地设计，未实施）
+
+- 已证明：用户撤销 Text 场景的配置已 durable 保存且重新打开可见，但后续新调用仍向该模型发送文本；合成不支持错误让请求失败，健康备用未被使用。若该模型/网关接受请求，可能形成与当前场景配置相违背的选型、计费与结果来源；这是条件性推断，本轮没有测真实收费或数据泄露，也不把场景分类开关夸大为访问控制/沙箱权限。
+- P2 依据：需先有 binding，再变更模型场景并保持 enabled；禁用模型、未绑定模型和正常有效绑定均可正确处理，所以不是所有画布请求必现。影响持久跨重开，反复重试仍按同一旧绑定执行；用户必须修正/删除绑定或禁用模型才能恢复资格一致性。
+- 在现有 `CanvasProviderService` 统一定义当前 scenario eligibility，bindings 只表达优先顺序，不能授予超出 model declaration 的能力；绑定和 extras 应用同一判定。`save_model` / `save_provider` 的 binding 清理可改善配置体验，但仅做清理不足以守住旧数据、workspace bindings 和并发更新：真正 dispatch 仍需基于一次一致 provider/binding generation 的资格快照。
+- Gateway 自动候选应先排除无资格模型再执行；显式模型的场景约束应单独明确并在同一资格边界验证，拒绝时给出可定位原因。**不能通过“遇到任意 400/401 都换下一家”补救**，否则可能把本应拒绝的输入扩散给其他 provider。保留已有 transient-only fallback、既有 registry/bridge，不另造路由链。
+- 回归需覆盖六种场景、全局/workspace binding、多 provider、空/非空撤销、优先级、disabled/removed 模型、重开、旧数据、并发配置代次、显式 model_ref、正常支持恢复；断言不仅看候选列表，也看实际 wire、所选模型 provenance 和备用是否不当调用。本轮仅覆盖 Text 的两种撤销路径，不推断其他五类已动态复现。
+
+#### 验证进度（持续追加）
+
+- 新默认控制 `current_scenario_controls_accept_valid_and_skip_disabled_or_unbound_models` 通过：有效 bindings 优先选择前者、disabled 前者被跳过、无 binding 时空 scenarios 前者被排除，且重新保存非法 binding 被拒绝；各阶段核对正式 HTTP 路径和 model。`cargo test -p deepagent-app-core --test canvas_scenario_binding_audit --offline`：**1 passed / 0 failed / 1 ignored**；未为增加数量重复执行上述 ignored 故障探针。
+- `cargo fmt --all -- --check` 首次指出本轮新测试布局差异，执行 `cargo fmt --all` 后复查通过；仅本轮测试和文档发生变更。`cargo clippy -p deepagent-app-core --test canvas_scenario_binding_audit --offline -- -D warnings` 被既有 `deepagent-models/src/client.rs:355` 的 `clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127` 的 `explicit_counter_loop` 阻断，未修改或隐藏这些告警。
+- 首次 `cargo test -p deepagent-app-core --offline` 在 lib 阶段为 **1100 passed / 1 failed / 71 ignored**，失败是既有 `completion_plan::audit_tests::discovered_real_build_completes_after_release` 未在期限内生成 `build-started`，因此该次尚未进入 integration tests；不能报告整 crate 全通过。该测试随后以全限定名 `--lib ... -- --exact --nocapture` 单独复核 **1 passed / 0 failed**。超时根因未定，不据此新增发现或认定本轮新测试导致。
+- 随后 `cargo test -p deepagent-app-core --offline -- --test-threads=1` 完整通过：lib **1101 passed / 0 failed / 71 ignored**，`kernel_v2_e2e` **95 passed / 0 failed / 90 ignored**，其余 integration 合计 **37 passed / 0 failed / 57 ignored**；全部默认测试总计 **1233 passed / 0 failed / 218 ignored**，doc-tests 0。串行结果不抹去首轮并行夹具超时，也不代表 ignored 缺陷已修复。
+- 尚未执行 workspace 全量、Desktop build/UI、真实供应商/DeepSeek 或参考工程测试；本轮没有生产行为、schema、权限或沙箱变更。
