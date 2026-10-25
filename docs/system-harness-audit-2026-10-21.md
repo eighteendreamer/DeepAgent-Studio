@@ -28,6 +28,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| 内置提示词目录与本地 video-edit 的字段约束 | 默认 prompts lib 测试首次失败；正式公开 catalog 返回错误，21 个单项 resolver 与 graph contract 验证均成功 | 新增 H-306（P3）；已注册全量 Tauri command 仅静态接线，当前前端走单项接口，不声称全画布不可用；根 workspace 35 members 与额外 3 入口已登记覆盖层级 |
 | 桌面端多请求工具回合的实时/重载用量语义 | 生产 `App.tsx` 的 live last-wins 映射与生产 `mapConversationToChatMessages` 映射执行同一合成两请求样本：实时 output=30/reasoning=25，重载 output=50/reasoning=37，total均330 | 新增H-299（P3，正常工具回合+查看/重载条件）；费用账本未被本项改变，未测试真实UI窗口 |
 | DeepSeek 正常主工具循环的推理/cache计量与持久保真 | 两次正式模型响应夹一次真实task_list；有/无usage细分两样本的live/run_events原始usage均恰有2份，关闭服务后文件重开保留，会话累计输出50、推理37/0，账本输入400 | 排误增量，无新H编号；合成分桶差异价格下费用0.00101/0.002，不重复收费reasoning；不关闭H-63/H-133/H-163/H-235/H-273/H-274，不验证真实收费/缓存命中 |
 | Harness 有效读取游标的数值表示域 | 正常 tail/i64最大值共12项观察为空增量；i64最大值+1/u64最大值在公共、run专用、per-run入口及独立重开reader中，12项均回传20条旧run事件 | 新增H-298（P3，显式超域参数条件）；只读历史未变，无工具重执行；不重复H-218分页或H-285分叉恢复 |
@@ -8852,3 +8853,94 @@ Tool Calls 的 strict Beta 文档使用 `/beta`、Chat 嵌套 `function.strict=t
 ### 本轮验证边界
 
 本轮只改报告。实际 `cargo test -p deepagent-models --offline`、`cargo fmt --all -- --check`、`git diff --check` 均退出 **0**，已人工复核本轮文档 diff；提交结果见本轮交付。没有运行全 workspace、clippy、Desktop build/真实 UI、参考工程测试、Semgrep/CodeQL 全库扫描或真实供应商；这些不属于本轮文档变更的完成证明。用户原有未跟踪文件没有读取、暂存或修改。没有重跑 H-06/H-165/H-278/H-305 故障测试。
+
+## 2026-10-25 模块封账增量：首次执行记录
+
+**E-cover-01（source_type=command，content_hash=n/a，首次结果先登记）**：执行 `cargo test -p deepagent-intent -p deepagent-planner -p deepagent-tracing -p deepagent-observation -p deepagent-prompts -p deepagent-security -p deepagent-mobile-core -p deepagent-mobile-protocol -p deepagent-mobile-ios --lib --offline`，退出 **1**。intent **11 passed**、mobile-core **5 passed**、mobile-ios **19 passed**、mobile-protocol **82 passed**、observation **16 passed**、planner **11 passed**；prompts **27 passed / 1 failed**。Cargo 在 prompts 失败后停止，不能将 tracing/security 算为已执行通过。
+
+- 失败测试：`canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`，位置 `crates/deepagent-prompts/src/canvas_prompt.rs:310`；输出为 `Invalid("canvas prompt profile creative.video-edit.v1 has an empty defaultUserPrompt")`（略去原输出中包裹 profile ID 的反引号，不改错误含义）。没有显式启用 ignored 探针。
+- 暂不新增 H 编号：需要继续核对该 validator 的生产消费方、video-edit 的真实默认输入语义和现有 H-122/画布契约项；可能是测试约束与合法 contract-only/用户输入路径不一致，也可能是实际配置缺陷。单个测试失败不证明默认视频编辑必然失败。
+- 本次测试均为这些 crate 的 lib target，没有启动默认数据根 CLI、桌面或真实供应商；后续来源检查和结论持续追加，不预填“修复/全绿”。
+
+### H-306：本地视频编辑的空默认提示词使公开画布提示词目录整体不可读
+
+**级别：低（P3，内置资源/全量目录校验漂移）；状态：正式公开 AppCore 函数已复现，未修复。** 不声称默认画布全部不能运行：现有前端节点调用的是单项 `canvas_prompt_resolve`，不是此全量目录 command。
+
+#### 首次有效 Evidence（复现后即时追加）
+
+- **E-306-catalog（source_type=command，content_hash=n/a）**：新增纯离线 test-only `crates/deepagent-app-core/tests/canvas_prompt_catalog_audit.rs`，直接调用正式 `canvas_prompt_catalog`，不构造 AppCore、不打开数据库或用户配置。执行 `cargo test -p deepagent-app-core --test canvas_prompt_catalog_audit --offline -- --include-ignored --nocapture`，结果 **1 passed / 1 failed（缺陷预期）**；输出 `bundled_profiles=21 catalog_ok=false`，错误指向 `creative.video-edit.v1` 的空 `defaultUserPrompt`。
+- **E-306-control（同次执行）**：正式 `validate_canvas_node_contracts` 成功；21 个已注册节点各自 `resolve_canvas_prompt` 均成功。video-edit 默认用户提示词为空，text-gen 非空，输出 `individual_nodes=21 local_editor_prompt_empty=true text_prompt_present=true`。这直接限制影响范围为全量目录读取，不是所有单项解析失败。
+- 默认 prompts crate 自带测试也已在 E-cover-01 首次失败，不是只由新探针自定断言。`video-edit.json` 明确 `promptUsage=local_editor`、只管理时间线和导出资产、不调用云模型，却配置空默认用户提示词；validator 没有依据 usage 区分而统一拒空。
+
+#### Finding 与生产调用路径
+
+- **F-306（status=validated，confidence=high，evidence_ids=[E-306-catalog,E-306-control,E-cover-01]）**：`deepagent-prompts/src/canvas_prompt.rs::validate_canvas_prompts` 对每个 profile 的 system/default user prompt 一律要求非空，和内置 local-editor 资源冲突。`deepagent-app-core/src/canvas_node_contract.rs::canvas_prompt_catalog` 在返回任何条目前先调用全局 validator，一个内置 profile 即阻止全部 21 条 contracts/profiles 和 skills 返回。
+- **P-306（path_type=callflow）**：已注册 Tauri command `canvas_prompt_profiles_read` → `canvas_prompt_catalog` → `validate_canvas_prompts` → local-editor 空默认提示词 → 整体 Err；Tauri wrapper 直接将错误转为 String。真实桌面 WebView 未启动，因此 command 只完成静态接线核对，动态证据终点是正式公开 AppCore 函数。
+- 当前生产前端 `canvas/workflow/utils/canvasPromptProfile.ts` 逐节点调用 `canvas_prompt_resolve`；源码搜索未找到全量 command 的前端调用方。不能据此声称当前设置页已崩溃、模型请求被阻止或视频导出失败。CI 声明执行 `cargo test --workspace`，本轮 prompts 默认 lib 失败是本机实测；未声称远端 CI 本轮实际执行失败。
+- 与 H-122 的视频 job 身份及 H-300 的 embedding 图注册缺失不同：本项不执行媒体任务，不调用 provider，graph contracts 正常；问题在提示词资源与全量目录准入规则之间。
+
+#### 成熟实现对照、影响与根因治理
+
+- **Penguin-Magic（仅静态阅读）**：`G:/Code_UZIP/Penguin-Magic/services/systemPromptProfiles.ts` 的 `isProfile` 只把 `systemPrompt` 定义成字符串，而 `loadSystemPromptProfiles` 对列表逐项过滤；没有要求所有 profile 都有非空用户提示词。它不是本系统节点目录的同构实现，但提供了“字段规则由内容语义决定、单项与列表处理分开”的参考。不能照搬其 catch 后空数组降级，否则会把损坏静默隐藏；没有运行参考项目，也不声称它具备本系统全部契约校验。
+- **本系统已有正常边界**：`resolve_canvas_prompt` 和前端 `PROMPT_FIELD` 已将本地无提示词字段的节点与模型输入节点区分，前端只给模型输入节点填默认值。正确单项控制表明无需另建目录/注册表；应让现有 validator 使用同一份 usage/executor 语义。
+- **DeepSeek 边界**：本项在本地资源校验阶段发生，没有模型请求；Responses 的 instructions/input 约束不能用来要求一个不调用模型的时间线编辑器也提供用户 prompt。修改 reasoning、缓存或 provider 不能解决本项。
+- **已证后果**：当前内置资源导致全量目录函数返回错误；本机默认 prompts lib 测试失败。**条件性后果**：任何依赖该已公开 command 的新设置页/SDK/外部消费者无法取得包括健康节点在内的整个目录；尚未找到当前前端此类调用，因此不把条件性后果写成已发生。影响限定为 P3，不与 H-300 的真实工作流不可达混为一谈。
+- **治理方向（本地设计，未实施）**：在现有 prompt profile/CanvasExecutorKind 边界明确 model-input、local-editor、contract-only 的字段需求，按类型校验；本地节点允许没有用户 prompt，但保留身份、版本、长度、技能关联和必要系统说明校验。对真正坏的模型 profile 仍报明确错误，不通过给 local editor 硬塞无意义文案掩盖语义冲突。若目录要求全量强一致，内置资源应在构建/默认测试时验收；若将来允许部分就绪，目录须显式返回逐项状态，不能悄悄过滤。
+- **邻近静态线索（不新增编号）**：`CREATIVE_NODE_KINDS` 与嵌入资源现为 21 项，但原测试在 validator 后仍断言 profiles 长度为 20；由于 validator 先失败，本次没有执行到该断言，不能把它写成第二个已执行失败。修复本根因时应以注册表导出的集合验证数量和一一对应，而非更新另一处魔法数字。
+
+#### 验证进度与限制
+
+- 补跑之前被 Cargo 早停跳过的 `cargo test -p deepagent-tracing -p deepagent-security --lib --offline`：**23 passed / 0 failed**（tracing 11、security 12）。与首次九 crate 命令分开记录，不覆盖 prompts 的真实失败。
+- H-306 缺陷探针默认 ignored，正常控制默认执行；未修改生产 validator、资源、协议或前端。没有启动真实 Tauri/WebView、执行视频编辑、访问网络、用户数据库/凭据或默认 CLI；没有重跑既有故障探针。
+- 实际 `cargo test -p deepagent-app-core --test canvas_prompt_catalog_audit --offline`：**1 passed / 0 failed / 1 ignored**，退出 0。这不覆盖先前显式故障失败，也不表示 prompts crate 默认失败已修复。`cargo fmt --all -- --check`、`git diff --check` 均退出 0。
+
+### 模块级覆盖矩阵：按实际 workspace 边界封账
+
+依据当前根 `Cargo.toml` 的 **35 个 members**，另列独立 Tauri workspace、桌面前端与 TypeScript SDK。每行是“已有证据覆盖到哪一层”，不是模块全功能认证；旧 H 项只引用其原始证据，未在本轮重跑。状态含义：**D**=正式调用链有动态样本，**U**=本轮 lib/纯函数测试，**S**=本轮静态接线核查；这些均不意味着没有问题。未做的真实 provider、平台和 UI 条件保留在最后一列。
+
+<!-- module-coverage:start -->
+| 模块根 | 职责与实际证据 | 状态 | 未被该证据证明的边界 |
+|---|---|---|---|
+| `crates/deepagent-core` | 事件、消息、原生 response item 与状态类型；H-05/H-74/H-200 及正常主工具循环使用这些跨层类型 | D（既有）/S | 单独 serde 正确不证明所有生产/消费方一致，版本迁移仍需各入口验证 |
+| `crates/deepagent-tracing` | 本轮 11 个 lib 测试通过；CLI main 选择 stderr，RunAssembler 生成 trace ID/carrier | U/S | 未做 OTLP 导出、跨进程 trace 连续性、所有日志脱敏和全链费用守恒验收 |
+| `crates/deepagent-persistence` | RunStore、run_events、session 文件与 SQLite 投影；H-32/H-44/H-142/H-143/H-298 及文件重开正常对照 | D（既有）/S | 不等于任意断电/磁盘满/多文件事务和所有迁移组合均恢复正确 |
+| `crates/deepagent-session` | 事件 replay、原生历史、fork/rewind；H-11/H-23/H-72～H-75/H-285，冷恢复前缀正常样本 | D（既有）/S | 非法历史修复与分支/并发提交仍受已登记问题约束 |
+| `crates/deepagent-context` | Surface、压缩、meter 与 tokenizer；H-10/H-14/H-53/H-168/H-268/H-269/H-297 | D（既有） | 官方离线 tokenizer 样本不是线上所有模型模板的精确 token oracle |
+| `crates/deepagent-memory` | 检索/排序/embedding 原语，由 knowledge 复用；H-51/H-53 及既有记忆对照 | D（组合，既有）/S | 没有固定语料的召回率/排序质量或线上 embedding 质量 A/B |
+| `crates/deepagent-knowledge` | Markdown vault、project/global 作用域及派生索引；H-51/H-52/H-176 | D（既有）/S | 没有证明并发宿主更新、全量知识迁移与检索质量已通过 |
+| `crates/deepagent-tools` | Tool/Registry、schema、permission、WASM seam；H-19/H-34/H-35/H-59/H-159/H-275 | D（既有）/S | wasm 为可选 feature；仅 schema/risk 不足以代表资源授权或串行屏障 |
+| `crates/deepagent-builtins` | 文件、命令、搜索、任务与 git 等工具；H-65/H-76～H-79/H-237/H-260/H-286/H-287 | D（既有）/S | 不是所有工具/操作系统组合；SecretScanner 仅确认 git commit 接线，不等于全局出站 DLP |
+| `crates/deepagent-intent` | slash/模板命令，不是语义意图分类器；本轮 11 个 lib 测试，核对 AppCore slash_runtime 消费 | U/S；H-288 为既有 D | 模板渲染成功不证明 allowed-tools、所有 slash/自动调用与权限恢复完整 |
+| `crates/deepagent-skills` | scanner/loader/registry/marketplace；H-13/H-57 的真实能力目录及失效链 | D（既有）/S | 技能安装源、依赖供应链和所有平台文件布局未完整认证 |
+| `crates/deepagent-prompts` | agent/command 解析和创作 profile；本轮 27 passed/1 failed，H-306 直接公开目录复现 | U/D/S | 退役 builder 测试不是生产 ContextAssembler 验收；profile 存在不代表节点实际模型能力可用 |
+| `crates/deepagent-runtime` | Kernel/loop/tool pipeline、审批、取消、工作流、调度；H-15/H-34/H-35/H-44/H-45/H-64/H-128 等 | D（既有）/S | 取消 accepted 不代表进程/网络/远端副作用已经结束，各工具和附属请求仍须对应证据 |
+| `crates/deepagent-models` | Responses/Chat adapter、stream、usage、HTTP；既有多项参数/终态探针及上轮默认离线测试通过 | D（既有）/S | 不等于全部真实 Flash/Pro 参数、限流、缓存命中收益和质量实测 |
+| `crates/deepagent-hooks` | 事件 payload、结构化决策、once/matcher、外部/模型/MCP 扩展；H-26/H-27/H-102～H-117/H-234～H-240/H-276 | D（既有）/S | 不同 dispatch 位置不能互相代替取消/权限/结果提交验收 |
+| `crates/deepagent-workspace` | 文件树、README/manifest 和 Git 上下文；H-282/H-283 正式下一 wire | D（既有）/S | 自动上下文不是工具权限的天然延伸，未证明任意仓库规模和文件系统布局均有界 |
+| `crates/deepagent-verification` | CommandRunner、Verifier/Reflection/Healing；H-64/H-65/H-230/H-231 正式真实构建/检查器 | D（既有）/S | SystemCommandRunner 的独立流程不能被宣称自动继承配置 sandbox/取消 |
+| `crates/deepagent-planner` | PlanDag 验证与策略模板；本轮 11 个 lib 测试；正式 dag_orchestration 使用模型规划而非默认 canned 模板 | U/S；H-20/H-22 为既有 D | DAG 拓扑有效不代表任务分解质量；模型规划请求的 owner/费用沿既有附属请求问题单独验收 |
+| `crates/deepagent-subagents` | DAG 层调度、结果、worktree；H-19～H-22/H-45/H-241/H-242 | D（既有）/S | 没有从“隔离工作树对象已创建”推断工具路径、交付及恢复均隔离 |
+| `crates/deepagent-observation` | timeline/stats/transcript 的事件 fold；本轮 16 个 lib 测试 | U/S；既有正常 usage/重开证据为组合 D | fold 正确不能修复源事件丢失/双终态；SessionStats 本身不是完整 provider 费用账本 |
+| `crates/deepagent-security` | SecretScanner 与可组合 CiGate；本轮 12 个 lib 测试；git_tools 中有 scanner 消费 | U/S | 搜索未见 CiGate 生产装配；不声称全局日志/模型请求自动扫描，也不据此新增“承诺外的缺功能”漏洞 |
+| `crates/deepagent-app-core` | 共享宿主装配、配置、控制、成本、画布和恢复；已有正式 ChatService/Kernel/SQLite 证据，本轮 H-306 | D（既有+本轮）/S | AppCore 不是整库一次通过；已确认问题的影响仍按具体入口/配置限定 |
+| `crates/deepagent-harness-protocol` | 机器 DTO 与 RuntimeEvent 单向投影；H-02/H-91/H-200/H-205/H-217/H-222 | D（组合，既有）/S | DTO 可序列化不代表 admission、ACK、durable event 和实际 executor 原子一致 |
+| `crates/deepagent-harness-sdk` | Rust stdio client/pending/event 与 process wrapper；H-90/H-100/H-101/H-204～H-214/H-256，H-305 已撤销 | D（既有）/S | 文档化 Drop 不 kill 是契约，不以人为期待定缺陷；真实 CLI 必须独立数据根 |
+| `crates/deepagent-mcp` | stdio/HTTP transport、握手、发现、adapter/reconnect；H-06～H-09/H-12/H-126～H-129/H-135～H-138/H-277 | D（既有）/S | 真实 stdio fixture 不代表所有外部 MCP；HTTP session/取消/未知结果分别验收 |
+| `crates/deepagent-codegraph` | tree-sitter/索引、调用解析与投影；H-289 正式增量索引与查询 | D（既有）/S | 未认证所有语言 heuristic、超大仓库、watcher 丢通知与跨版本索引升级 |
+| `crates/deepagent-ssh` | SSH 会话、host key、远端终端；H-123/H-125 本机 SSH 证据 | D（既有） | 不等于真实远端系统权限、断网/进程树和跨平台终端全部验收 |
+| `crates/deepagent-terminal` | 共享 session/lease/backend 契约；H-293 的 Windows ConPTY、文件 SQLite 与过期租约 | D（既有）/S | 短 TTL 注入不是等待默认 30 分钟实钟；真实 SSH backend 与多消费者仍有条件限制 |
+| `crates/deepagent-vision` | 本地图片元数据/颜色/ASCII/可选 OCR；H-124 取消前处理与附件路径 | D（既有）/S | OCR 可选，未做真实多语种识别准确率、所有图像格式/超大解码资源压力评测 |
+| `crates/deepagent-mobile-core` | 设备、能力、错误和资产引用类型；本轮 5 个 lib 测试 | U/S；H-50 为既有组合 D | 域类型正确不证明真实设备操作或 capability 宣称与 backend 一致 |
+| `crates/deepagent-mobile-protocol` | snapshot/input、网络/资产、remote-Mac DTO；本轮 82 个 lib 测试 | U/S；H-50 为既有组合 D | 字段/版本往返不是端到端鉴权、超时、快照资格或真机网络采集验收 |
+| `crates/deepagent-mobile-runtime` | backend、registry、operation、snapshot、RemoteMac abstractions；H-50 正式操作链，既有 runtime 默认 67 passed 记录 | D（既有）/S | remote transport/session 的 fake 测试不能代表真实 Mac 通道；operation 的取消需平台执行证据 |
+| `crates/deepagent-mobile-android` | ADB runner/parser/设备操作；H-50 记录器与已登记 baseline | D（离线 runner，既有） | 真实 ADB/设备/并发输入及 UI 变化时序未验收；不把 Android 单元测试当真机通过 |
+| `crates/deepagent-mobile-ios` | 公开导出 FakeIosBackend、simctl parser、IosToolResolver；本轮 19 个 lib 测试；AppMobileService::init 当前只注册 Android | U/S | 未找到默认宿主注册的真实 iOS backend；不是已完成 iOS 功能，不据 fake 测试宣称能操作真机/Remote Mac |
+| `apps/cli` | TUI、JSONL、stdio app-server；H-01/H-02/H-04/H-83/H-91/H-92/H-130/H-258/H-284 | D（既有）/S | 新一轮未启动默认 CLI；真实模型、TTY 与宿主进程退出验收须保持独立数据根 |
+| `apps/desktop/src-tauri` | 独立 workspace/command、事件与审批桥；真实桌面基线，H-17/H-43/H-124 及 H-306 静态 command 接线 | D（既有）/S | 根 workspace 测试不覆盖此 workspace；本轮未构建或启动 WebView |
+| `apps/desktop` | React/TS、画布与偏好、用量投影；H-41/H-43/H-134/H-201/H-202/H-244～H-247/H-299 等生产映射探针 | D（函数/映射，既有）/S | 函数执行不等于浏览器实际交互/布局验收；本轮未 pnpm build 或双窗口手测 |
+| `packages/sdk` | TypeScript SDK 的 RPC/stream/JSONL；H-214/H-265～H-267/H-295 的正式 SDK 与本机夹具 | D（既有）/S | 真实 stdio 对端仍是合成；不宣称 SDK 与全部真实 Rust server/版本组合通过 |
+<!-- module-coverage:end -->
+
+**本轮静态排误与能力限制**：intent 的注释明确不是语义分类器，不能因无 classifier 判缺功能；planner 的 canned HeuristicPlanner 是无模型基础测试，生产 AppCore 明确使用 `plan_dag_via_model`，不能误报“正式计划只用固定模板”。tracing 已有 trace context 和本地日志/counter，不能说没有观测；同时 OTLP 和端到端连续性未获得运行证据。iOS/Remote Mac 有 DTO、resolver 与 fake，却没有默认宿主真实 backend 的证据，报告必须标注未完成/未验，不能把这些测试通过当可发布承诺。
+
+**E-cover-02（source_type=command，content_hash=n/a，文档完整性而非功能覆盖率）**：PowerShell 从根 Cargo `members` 段提取路径，和本节标记区间中的首列表格路径作集合比对，实际结果 `WorkspaceMembers=35, MatrixRows=38, Missing=空, Duplicates=空`；额外三根恰为 `apps/desktop/src-tauri,apps/desktop,packages/sdk`。这只证明模块登记无遗漏，不证明 38 个模块都已通过全部行为。前节剩余清单第一项“覆盖封账”现已完成登记；根因治理优先级与最终结论核对仍待收尾，不能据矩阵完整便把总体 goal 标 complete。
