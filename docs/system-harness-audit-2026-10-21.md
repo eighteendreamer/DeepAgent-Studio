@@ -12,6 +12,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| MCP 初始化结果与 Ready 发布门槛 | 六类不完整/错误版本的initialize成功结果经真实stdio，设置页probe与宿主均connected；工具进入正式Responses schema并实际调用，结果进入下一wire | 新增 H-277（P2，条件性协议兼容/诊断缺口）；完整握手和显式JSON-RPC错误两类对照通过；不重复H-07/H-08，不推断线上服务必定返回异常握手 |
 | MCP hook 决策正文与展示截断 | 真实 stdio 服务返回完整合法拒绝 JSON，100/8192 字符阻止写入；8193/10000 字符及8193字符中文拒绝均变 continued，临时文件实际写入，下一模型 wire 为成功工具结果 | 新增 H-276（P2，条件性策略失效）；正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 MCP 与文件工具；离线模型，不外推默认无 hook 聊天 |
 | MCP hook 的发现 schema 与执行契约 | 同一严格工具的缺必填、非法枚举、多余字段，正常 ToolRegistry 路径均在 transport 前拒绝；正式设置页 hook 测试入口经配置解析、注册、PreToolUse 派发后却逐项 continued、各发送1次 tools/call | 新增 H-275（P3）；合法静态参数与既有拒绝决策对照通过；内存 transport，不外推真实 server 副作用或全部模型 MCP 调用 |
 | 定时调度的日历可满足性与故障隔离 | 正常 cron_create 接受 2 月/4 月 31 日，正式 Runtime tick 与实际时钟 AppCore tick 均 panic；文件不变，重建 scheduler 仍 panic，删除坏计划后健康任务可派发 | 新增 H-271（P2）；正常月末、闰日对照通过；未运行完整桌面或 release 构建 |
@@ -7472,3 +7473,37 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 增补中文边界后，同一显式故障命令最终 **2 passed / 1 failed（缺陷预期），2.92s**。恰好8192字符中文、24528 UTF-8字节正常blocked且未写文件；8193字符中文、24531字节仍continued并写入。三个长拒绝故障样本观察一致，正常样本共五组，确认是8192字符截断而非8192字节传输限制。Node实际版本v22.22.1。
 - 最终文件版本重跑 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**88 passed / 84 ignored，10.09s**；`cargo fmt --all -- --check`和`git diff --check`通过（仅Git的Windows行尾提示）。只读进程核查 `active_decision_size_mcp_fixture_processes=0`，测试服务已关闭；所有故障断言均在资源收尾后执行，没有遗留服务继续操作。
 - 本轮仅新增测试模块、模块入口和本报告；未改生产逻辑、公共协议、模型参数、权限或沙箱配置，不需要数据迁移。按code-audit技能核查完整输入→解析→控制决定→真实文件与下一wire的可达性，没有运行Semgrep/CodeQL全仓扫描或以搜索结果代替复现。未运行完整workspace、Desktop build/UI、参考工程完整测试、真实DeepSeek计费/缓存或外部MCP服务；未覆盖HTTP、多content、ask及多个并发hook，未处理用户排除的encrypted-content问题。全系统审计仍未结束。
+
+### H-277：MCP initialize 结果未校验，缺失必填字段或协商不支持版本仍发布 Ready 并执行工具
+
+**级别：中（P2，条件性协议兼容与诊断缺口）；状态：正式 SettingsService/McpService/ChatService/Kernel、文件 SQLite、真实 Node stdio 已复现，未修复。合法握手正常，显式JSON-RPC错误被隔离；不宣称默认所有MCP连接均异常或已获得额外文件/命令权限。**
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权本仓库审计；仅临时Node stdio服务、文件数据库、合成工具/结果与离线主模型。`McpService::test_server`先检查未保存配置并关闭独立进程，再通过upsert/start_preparation运行真实宿主准备，最后正常ChatService/Kernel实际调用发布的MCP工具。服务不要求initialized通知，以隔离已知H-08；单页目录，不重跑H-07。测试权限预设为FullAccess、tool_search关闭，避免审批/延迟发现混杂，不意味着生产默认放行。
+- E-277-first：source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_initialize_contract.rs`；`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_initialize_contract --offline -- --include-ignored --nocapture --test-threads=1`：**2 passed / 1 failed（缺陷预期），3.35s**。首次编译成功；故障探针完成六组观察并关闭各测试registry后才统一断言，非首样本失败就虚称其余完成。
+- E-277-invalid：initialize的JSON-RPC成功result分别为**空对象、只缺protocolVersion、只缺capabilities、只缺serverInfo、protocolVersion为数字42、protocolVersion为合成不支持值2099-01-01**。对照所余字段均相同。六组设置页probe与宿主status全部connected、ready_servers=1；每个宿主进程实际收到1次tools/list与1次tools/call。正式首个Responses wire包含`mcp__initialize_audit__inspect`，次请求有同call_id的唯一成功function_call_output及合成marker；主模型请求2次，文件SQLite唯一终态succeeded。
+- E-277-controls：完整握手（返回客户端所请求的2024-11-05、tools能力、完整serverInfo）同样正常connected、发现/执行各1次；显式initialize JSON-RPC error=-32602时两入口均failed、Ready为空，tools/list与tools/call均0，主运行仍可做普通文本答复，首wire无该工具且模型请求仅1次。证明不是任意连接错误都被忽略，也不是测试硬编码必须调用不可见工具。
+- F-277（category=design，status=validated，confidence=high，evidence_ids=[E-277-first,E-277-invalid,E-277-controls]）：`McpClient::initialize`只`call("initialize", params)`并返回任意Value；`call_inner`只处理error及result是否存在，不解析InitializeResult契约或检查协商版本。`McpService::connect_one_resilient`只从init取可选instructions；后续发现成功就发布connected/Ready。`probe_with_timeout`也直接接tools/list。结果是“收到任意成功result并能列工具”替代“已完成兼容性协商”。配置重连工厂同样使用该入口，但本轮尚未动态验证重连。
+- 本项不是H-206的Harness SDK initialize（另一个协议/客户端），也不是H-08漏发initialized通知、H-07分页或H-129启动超时；本轮返回很快且JSON-RPC envelope有效，问题在MCP initialize的业务result。官方要求强度、成熟实现及最终回归继续追加，不把一个协议问题拆成六个编号。
+
+#### 同轮已执行参考对照
+
+- E-277-reference：新增可重跑脚本`crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_initialize_contract_reference.mjs`，只加载`借鉴/deepseek-harness/packages/mcp/mcp-client`已经安装的真实`@modelcontextprotocol/client` **2.0.0**，不修改参考工程/SDK，不复制SDK解析逻辑。`node crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_initialize_contract_reference.mjs`实际通过：合法结果connect成功并发送initialized；空对象、三个缺字段、数字版本、不支持版本及显式JSON-RPC错误均connect失败且不发initialized。对同六种result，真实SDK与本系统行为存在可运行对照。
+- 此参考实验使用SDK的linked InMemoryTransport、legacy协商路径，并显式将支持版本限制为本系统当前2024-11-05，以隔离SDK2的modern/server-discover机制。它验证真实SDK连接门槛，不是完整DeepSeek Harness supervisor、真实stdio、HTTP、远端取消或收费实验；脚本依赖本地参考工程已安装该SDK，未新增项目生产依赖。参考框架实际`connection.ts::connectGeneration`通过Client.connect成功后才enqueueSync工具；本轮对该装配仅静态核对，不冒充跑过整套框架。
+
+#### 成熟实现、协议依据与影响
+
+- **DeepSeek Harness / MCP SDK**：真实 SDK `@modelcontextprotocol/client` 2.0.0 的 `_legacyHandshake` 对 initialize result 执行 `result !== undefined`、支持版本集合检查，并通过 `InitializeResultSchema` 校验；随后才保存 capabilities/serverInfo、发送 `notifications/initialized`。本地脚本实际结果为 valid=`connected=true, initialized=true`；empty/missing-version/missing-capabilities/missing-info/wrong-version-type/unsupported/error 全部 `connected=false, initialized=false`。Harness 的 `connection.ts::connectGeneration` 只在 `client.connect` 成功后才 `enqueueSync`，因此不会把失败协商的工具注册到运行时。它是成熟参考的真实 SDK 对照，不等于 DeepSeek 官方规定了本系统所有 serverInfo 额外字段或该版本集合。
+- **Codex**：`借鉴/codex/codex-rs/rmcp-client/src/rmcp_client.rs::McpClient::initialize` 从已完成握手的 peer 读取 `peer_info()`；缺少 server info 直接返回 `handshake succeeded but server info was missing`，状态不会进入 Ready。其具体 `rmcp` 版本协商与本系统固定2024-11-05并不完全同构，本轮只使用该源码证明成熟实现把初始化结果作为强类型连接门槛，未声称 Codex 覆盖这里每个 malformed JSON 形状。
+- **Claude Code**：恢复源码的 MCP client 使用官方 SDK `Client.connect`，工具/资源查询在连接成功后才执行；本轮未运行 Claude 二进制，不把静态导入和调用点冒充动态异常握手测试。
+- **MCP 规范**：2024-11-05 [Lifecycle](https://modelcontextprotocol.io/specification/2024-11-05/basic/lifecycle)规定 initialize 是能力/版本协商，服务端成功结果包含 protocolVersion、capabilities、serverInfo；成功后客户端才发 initialized；若客户端不支持服务端版本应断开。同步核对[Tools](https://modelcontextprotocol.io/specification/2024-11-05/server/tools)：tools/list 属于正常操作，不应被用来掩盖尚未完成的初始化。因而本项是协议状态门槛缺失，不是 DeepSeek 模型生成或 Responses 参数问题。
+- **DeepSeek官方**：工具调用指南说明具体函数由宿主执行，模型只返回调用；本轮的异常来自 MCP 宿主连接状态，不能靠 thinking、strict、Responses cache 或改变工具描述修复。这个结论是将官方“宿主负责执行”与本地调用链相结合的推导，不虚构 DeepSeek 对 MCP initialize 的专门实现。
+- 影响前提：配置了 MCP server，server 返回 JSON-RPC 成功 envelope 但 initialize result 不完整或版本不受支持。当前可观察后果是设置页误报 connected、Ready 快照包含工具、模型看到工具并实际发起 `tools/call`；本轮 server 返回合成文本，未证明真实外部写入、费用、数据泄露或越权。若真实 server 依赖协商能力/版本差异，可能出现协议错误、错误工具语义或难以诊断的后续失败；按条件性 P2，而非默认全局故障。
+- 治理方向（本地设计，未实施）：在现有 `McpClient::initialize` 解析强类型 result，校验 JSON-RPC envelope、protocolVersion 属于支持集合、capabilities/serverInfo 必填形状，并在初始化成功后发送 initialized；只把成功握手的 client 交给 `list_tools`/Ready。失败必须关闭该 transport、保留结构化原因、禁止半成品工具快照发布；重连复用同一门槛。不要在 `McpService`、UI、CLI 各写一套版本判断，也不要把 `tools/list` 成功当作握手成功。
+
+#### H-277 最终验证
+
+- 最终文件版本的 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**90 passed / 85 ignored，9.94s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1101 passed / 71 ignored，6.49s**。显式 H-277 命令保持 **2 passed / 1 failed（缺陷预期），3.35s**；失败探针完成六组异常样本后统一断言，两个正常对照通过。
+- `node crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_initialize_contract_reference.mjs`：**8 个参考 SDK 样本全部符合预期**；合法握手连接并发送 initialized，其余七类拒绝且不发送 initialized。`cargo fmt --all -- --check`、`git diff --check`通过；只读进程检查在测试收尾后为 `active_initialize_contract_mcp_fixture_processes=0`（本轮脚本未留子进程）。
+- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`仍被未修改的 `models/src/client.rs:355` clone_on_copy 与 `persistence/src/run_store.rs:127` explicit_counter_loop阻断；本轮未修改这些文件，不把 lint 阻断归入H-277，也不声称 clippy 全绿。未运行完整 workspace、Desktop build/UI、真实 DeepSeek 计费/缓存、外部 MCP 或真实副作用；本轮未处理用户排除的 encrypted-content 问题，全系统审计仍未结束。
