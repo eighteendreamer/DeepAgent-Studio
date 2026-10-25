@@ -911,7 +911,7 @@ AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reop
 
 ### H-22：DAG 子运行只改变声明的工作目录，文件工具仍绑定父工作区
 
-**2026-10-26 状态：已修复并验收，限下述 Windows 本机范围；本项独立提交后回填 hash。** 原失败与中间过程均保留；完整 workspace 和严格/all-targets lint 没有通过状态。
+**2026-10-26 状态：已修复并验收，限下述 Windows 本机范围；修复提交 `c0c127e3`。** 原失败与中间过程均保留；完整 workspace 和严格/all-targets lint 没有通过状态。本次仅文档回填，不 amend、不推送。
 
 2026-10-26 修复前复核（E-H22-before，source=当前 HEAD `666540d8` 的本机测试输出，content_hash=n/a）：接回原进程而非重复启动，命令 `cargo test -p deepagent-app-core --lib subagent_runner::tests::audit_dag_child_rebinds_file_tools_to_assigned_worktree --offline -j 1 -- --exact --ignored --nocapture`，**0 passed / 1 failed**。实际 `child_ok=true, wire_names_child=true, parent_output=Some("hidden tool executed"), child_output=None`，断言 `DAG child wrote through the parent-bound tool registry` 失败。F-H22 保持 validated/high confidence；P-H22 为生产 DAG executor → with_root 改比较根 → run_active 跳过 registry 重绑 → 真实 write_file 写入 parent。只使用一次性目录、离线模型 transport，未操作用户文件、第三方或真实凭据。当前状态修复中，尚无修复后验收。
 
