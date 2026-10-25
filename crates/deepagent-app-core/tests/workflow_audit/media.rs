@@ -39,6 +39,19 @@ impl LocalVideoProvider {
     }
 
     async fn start_with_task_id(status_after_release: &str, task_id_prefix: &str) -> Self {
+        Self::start_with_task_id_and_video_bytes(
+            status_after_release,
+            task_id_prefix,
+            VIDEO_BYTES.to_vec(),
+        )
+        .await
+    }
+
+    async fn start_with_task_id_and_video_bytes(
+        status_after_release: &str,
+        task_id_prefix: &str,
+        video_bytes: Vec<u8>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -49,6 +62,7 @@ impl LocalVideoProvider {
         let release = release_poll.clone();
         let status = status_after_release.to_owned();
         let task_id_prefix = task_id_prefix.to_owned();
+        let video_bytes = video_bytes;
         let submit_count = Arc::new(AtomicUsize::new(0));
         let submitted = submit_count.clone();
         let server = tokio::spawn(async move {
@@ -78,7 +92,7 @@ impl LocalVideoProvider {
                     }).to_string().into_bytes())
                     } else {
                         assert_eq!(line, "GET /clip.mp4 HTTP/1.1");
-                        ("video/mp4", VIDEO_BYTES.to_vec())
+                        ("video/mp4", video_bytes.clone())
                     };
                 let header = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -775,6 +789,60 @@ async fn real_video_workflow_stores_the_download_and_one_success_terminal() {
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[1].1["requestId"], TASK_ID);
+}
+
+#[tokio::test]
+#[ignore = "audit: provider video downloads must enforce a bounded artifact size"]
+async fn audit_provider_video_download_rejects_oversized_artifact() {
+    let configured_limit = 32 * 1024 * 1024;
+    let response_bytes = configured_limit + 1;
+    let mut oversized = vec![0u8; response_bytes];
+    oversized[..12].copy_from_slice(b"\0\0\0\x14ftypmp42");
+    let mut provider = LocalVideoProvider::start_with_task_id_and_video_bytes(
+        "Succeed",
+        "audit-video-oversized",
+        oversized,
+    )
+    .await;
+    let fixture = MediaFixture::new(&provider).await;
+    let run_id = "audit-video-oversized-download";
+    let mut run = fixture.spawn(run_id);
+    provider.wait_for_poll().await;
+    provider.release_poll.notify_one();
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+    let image = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.node_id == "video" && event.status == NodeExecutionStatus::Completed)
+        .cloned();
+    let artifact_bytes = image
+        .as_ref()
+        .and_then(|event| event.artifacts.first())
+        .and_then(|uri| {
+            fixture
+                .artifacts
+                .read_bytes(uri.trim_start_matches("artifact://"))
+                .ok()
+        })
+        .flatten()
+        .map(|bytes| bytes.len());
+    let terminal = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event_type == "run_terminal")
+        .and_then(|event| event.data["kind"].as_str().map(str::to_owned));
+    eprintln!(
+        "video download size: configured_input_limit={configured_limit}, response_bytes={response_bytes}, artifact_bytes={artifact_bytes:?}, terminal={terminal:?}, result_ok={}",
+        result.is_ok()
+    );
+    assert!(
+        result.is_err() && artifact_bytes.is_none() && terminal.as_deref() != Some("succeeded"),
+        "provider video downloads must be rejected before artifact persistence"
+    );
 }
 
 #[tokio::test]

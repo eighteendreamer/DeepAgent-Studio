@@ -99,6 +99,7 @@
 | 画布同步模型请求的运行取消 | 正式 `text-gen` 已进入本机 provider 且响应保持 pending 后，取消被受理但工作流 300ms 内不退出；释放响应后 text 节点发布 Completed，运行却落唯一 cancelled 终态 | 已确认 H-164；动态仅覆盖 text。image/audio/embedding 只确认请求 DTO 与共用 HTTP `call()` 同样没有取消通道，尚未逐项动态复现 |
 | Embedding 工作流能力可达性 | 正式 `WorkflowAgent`/`CanvasModelGateway`/文件 SQLite 链路执行 embedding 节点时，在 provider 前返回 `unknown workflow node kind (neither professional nor creative)`，loopback `/v1/embeddings` 请求数为 0 | 新增 H-300（P1，当前 embedding 节点未注册）；已有 runtime embedding executor/bridge 单元路径不能替代 graph/canvas contract 可达性；未继续声称 embedding 取消已动态覆盖 |
 | 画布 audio 合成取消不打断 provider 响应 | 正式 `audio`/`speech_synthesize` 已进入本机 `/v1/audio/speech` 且响应保持 pending；取消 accepted 后 300ms 内未退出，释放响应后 audio 节点发布 Completed，run 才落 cancelled | 新增 H-301（P1）；audio 已有 graph/contract 注册，缺口在共用 Canvas HTTP 调用没有贯穿取消身份；仅 loopback 合成 provider，未访问公网或真实供应商 |
+| 画布视频下载无字节上限 | 正式 video submit→status→download 返回 32 MiB+1 的本机 MP4 响应后，宿主完整缓冲并写入 artifact，video 节点与 run 均 succeeded | 新增 H-302（P1/P2 资源边界）；下载与 image/audio 共用无上限 `resp.bytes()`，仅 loopback 合成 provider，未测试 OOM/磁盘耗尽 |
 | 画布供应商返回资产的下载边界 | 正常 image-gen 供应商在成功 JSON 中返回 loopback 图片 URL 后，宿主直接第二跳 GET，零审批，并把私网 canary 完整存入 artifact；运行仍 succeeded | 已确认 H-165；正式 WorkflowAgent/Canvas gateway/文件 SQLite/RunStore，本机两台 loopback 服务；没有访问公网、真实内网或元数据服务，也未证明数据已外传给供应商 |
 | DeepSeek Responses 思考模式的 top_p 有效值 | 正式 ModelClient 在 `reasoning.effort=high` 且设置 `top_p=0.2` 时对 Flash、Pro（无工具/有工具）均将 0.2 原样发到 Responses wire；官方对这些组合分别规定 0.95、1.0、0.95 的有效行为 | 已确认 H-166；离线正式 serializer/wire 探针；没有真实 API 调用或回答质量 A/B，不能证明每次输出必然改变 |
 | 画布生成图片响应无字节上限 | provider 资产 URL 返回 32 MiB+1 的本机 PNG 响应后，宿主完整缓冲并存入 artifact，image 节点与 run 均 succeeded | 已确认 H-167；和 H-165 共用双 loopback 故障注入，容量边界独立于地址授权；未测试进程内存耗尽或长期磁盘配额 |
@@ -8706,3 +8707,25 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 #### 本轮边界
 
 - 本项只新增 ignored 复现和文档，没有修改生产逻辑。没有重复 H-165，也没有访问真实内网、元数据服务或公网；embedding 仍受 H-300 的注册缺陷阻塞，不能把 embedding 取消外推为已验证。
+
+### H-302：画布视频下载没有类型级字节上限
+
+**级别：中高（P1/P2，资源边界）；状态：正式工作流路径已复现，未修复。** 触发条件是视频 provider 的状态结果返回可下载 URL，且该 URL 响应体超过宿主应接受的单个视频 artifact 预算。该项与 H-167/H-248 的 image/audio 输出边界同类，但本轮独立覆盖 video submit→status→download 链路，不把其他模态证据外推。
+
+#### 即时 Evidence（2026-10-25）
+
+- 新增并执行 `crates/deepagent-app-core/tests/workflow_audit/media.rs::audit_provider_video_download_rejects_oversized_artifact`。测试通过正式 `ChatService`、`WorkflowAgent`、`CanvasModelGateway`、视频任务 submit/status/download、ArtifactService、RunStore 和文件 SQLite；唯一替身是绑定 loopback 的 provider，返回 32 MiB+1 的合成 MP4 响应。
+- 命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_provider_video_download_rejects_oversized_artifact --offline -- --ignored --nocapture --exact`。按缺陷预期失败，实际输出：`configured_input_limit=33554432, response_bytes=33554433, artifact_bytes=Some(33554433), terminal=Some("succeeded"), result_ok=true`。
+- 复现含义：video 下载完整缓冲并持久化为等长 artifact，节点发布 Completed，run 落 succeeded；审计断言要求超预算在 artifact 前被拒绝，因此失败。没有制造 OOM、磁盘耗尽或并发压力，不能把这些未测后果写成已发生。
+- 生产链核对：视频下载路径和 image/audio 一样使用 `reqwest::Response::bytes()` 后再调用 artifact import；`CanvasArtifactService::import_bytes` 没有按 `ArtifactKind::Video` 强制单文件上限。现有用户输入图片的 32 MiB 限制不能自动约束 provider 生成视频输出。
+
+#### 成熟 Agent 对照、影响与治理方向
+
+- **Penguin-Magic** 的远程资产路由在保存用户资产前同时检查 `Content-Length` 和实际 `arrayBuffer` 长度，并返回 413；它仍会整体物化响应，不能直接证明流式内存有界，但说明资产导入应有可见的类型/大小拒绝边界。**DeepSeek Harness** 的媒体准备链在 provider fetch 前按表示形式累计图片预算，超界返回显式 offload/拒绝；本系统应借鉴“先定义能力预算、超界不写 artifact”的结构，而不是把 image 输入限制误当作 video 输出限制。
+- **Codex** 的 app-server/工具边界把请求资源与生命周期分开管理，未找到与本系统画布 video artifact 同构的固定上限实现；因此不把 Codex 普通 turn 限制冒称为视频下载已解决。
+- 影响是中高：已配置 provider 或恶意/故障 provider 可让单次运行把大响应复制到内存、临时缓冲和 artifact，多个并发视频会线性放大桌面内存与磁盘压力，随后可能拖慢 UI、写盘失败或触发进程级资源耗尽。当前样本只证实 32 MiB+1 已被接受，未证明具体崩溃阈值、真实服务费用或远端任务行为。
+- 根治方向是给 `ArtifactKind::Video` 定义独立、可配置且可审计的输出预算；下载优先参考 `Content-Length`，但必须按流累计并在第一个超限 chunk 中止、清理 staging、不得发布 Completed 或 artifact。视频任务 submit/status/download 应把预算、取消 token 和最终提交点放在同一媒体 helper；image/audio 也应复用这条边界，并保留正常成功对照。
+
+#### 本轮边界
+
+- 本项只新增 ignored 复现与文档，没有修改生产逻辑。没有访问公网、真实供应商、用户文件或内网；H-167/H-248 仍分别保留为 image/audio 证据，不能合并成“所有媒体已验证”。
