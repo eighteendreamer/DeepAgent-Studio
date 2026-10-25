@@ -27,7 +27,7 @@
 | 流失败前状态工具的预执行提交 | 公共无 hooks Runtime 在 todo 参数/item 完成后真实改共享列表，随后 failed 或断流自动重试成功，均无对应会话往返但状态残留 | 已确认 H-233（P3）；正常完成与 hooks 对照通过；主 AppCore 装配关闭预执行，嵌套子运行的失败流影响未实测；另见 H-234 的正常完成状态隔离实测 |
 | agent-hook 的工具状态隔离 | 正式主运行先写计划，PreToolUse agent-hook 正常调用共享 todo_write，允许/拒绝父读取后主 task_list 均返回 hook 列表，父无对应写入往返 | 已确认 H-234（P3）；两个只读对照通过；不是 H-233 的失败流问题，不外推无此 hook 的默认聊天或其他状态工具 |
 | 模型型 hook 的用量归属与预算 | prompt/多步 agent hook 正常 completed 并含完整 usage，允许或拒绝父工具都只结算主请求；合计费用已过本地预算但下一轮继续实际请求模型 | 已确认 H-235（P2）；无 hook、matcher 未命中和主费用已入账越限三项对照通过；用离线 usage 验证本地账本，不代表真实供应商消费或缓存命中实验 |
-| 工具 pipeline 的模型 hook 取消 | 正式停止已受理，顺序工具前/后置 prompt/agent hook 仍等待；在 agent 首响应前停止，释放后还真执行 task_list 并发下一次 hook 请求 | 已确认 H-236（P2）；UserPromptSubmit/SessionStart 取消及四位置正常允许对照通过，最终取消映射正确；离线供应商 gate，未验证真实计费或公网取消 |
+| hook 取消上下文与 MCP 对端通知 | 正式停止后顺序工具前/后置 prompt/agent/MCP hook 仍等待；agent 首响应释放后还执行 task_list 并发下一请求；真实 stdio MCP 的输入/启动 hook 虽已本地 cancelled，对端仍未收到取消且释放后完成原请求 | 已确认 H-236（P2）；新增四个MCP位置与同服务普通工具取消对照，未增加缺陷编号；最终取消映射正确，无真实外部副作用或收费实验 |
 | agent-hook 的有效权限继承 | 主 read_file 被用户 Read deny 或默认 WorkspaceWrite 的 PathGuard 拒绝；同次运行的 hook 使用同一工具读取相同临时文件，正文进入 hook 下一模型请求 | 已确认 H-237（P1）；显式规则与工作区边界两条探针，未命中/无规则/敏感文件对照通过；无真实敏感数据或公网传输 |
 | agent-hook 的已读状态归属 | 主/hook 双向首次读取均可能收到另一个上下文造成的空桩；只有 hook 读过也能让主 write_file 覆盖原文 | 已确认 H-238（P2）；五个正常对照、三个缺陷探针；真实临时文件与离线模型，不是服务端 KV cache 实验 |
 | 模型型 hook 的身份与调度去重 | 同 matcher/prompt 但条件不同的后项被首项吞掉，适用的校验器请求为0；仅模型不同时只运行首模型 | 已确认 H-239（P2）；prompt/agent 两类型均复现，六类正常对照通过；离线固定决策，不是模型能力 A/B |
@@ -6015,9 +6015,9 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 本轮按 code-audit 核对输入、执行与结算归属，按 docs-generator 即时追加可重跑 Evidence/Finding/Path 与成熟机制对照。只修改 test-only 模块/入口和报告，无生产修复、依赖新增、数据迁移或权限变更；用户原有未跟踪文件保持不动。
 - 未运行全 workspace、Desktop build/UI、真实 DeepSeek 计费/缓存实验、参考工程测试、hook 取消/超时/无效 JSON/真实 provider failure、混合模型、多个并发 hook、数据库重开或其他平台。本轮不对取消树下结论，也不处理 encrypted-content 错误；全系统审计仍未结束。
 
-### H-236：顺序工具 pipeline 的模型 hook 未接入运行取消，停止后仍等待并继续 agent 步骤
+### H-236：hook 缺少父运行取消上下文，工具流水线仍等待，MCP 对端未获取消
 
-**级别：中（P2，可选模型 hook 的停止响应缺口）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 已复现，未修复。不是所有 hooks 均不响应取消，也没有复现取消后主运行误记成功。**
+**级别：中（P2，可选模型/MCP hook 的取消生命周期缺口）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 已复现，后续补充真实 stdio MCP 对端证据，未修复。不是所有 hooks 均不响应取消，也没有复现取消后主运行误记成功。**
 
 #### 首次即时 Evidence（2026-10-24）
 
@@ -6061,6 +6061,47 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo fmt --all -- --check`、`git diff --check` 通过，Markdown fenced blocks=8（偶数）。实际 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 被未修改的 `models/src/client.rs:355` clone_on_copy、`persistence/src/run_store.rs:127` explicit_counter_loop 阻断，未报告 lint 通过。
 - code-audit 促使区分相似 fire_hook/fire 的真实可达路径，docs-generator 促使首次复现、对照设置错误、agent 增量和最终验证分别追加证据。只新增本测试模块/入口并更新指定报告，没有生产修复、协议/配置/权限变更、数据迁移或真实收费；原有未跟踪文件保持原样。
 - 未运行全 workspace、Desktop build/UI、真实 DeepSeek/HTTP 连接取消、参考工程测试、批量/并行工具、command/http/mcp hooks、hook 自身超时、父总时限、数据库重开或其他平台。不能推断真实供应商后台推理一定被取消、所有扩展都继续执行、永久资源泄漏、具体 UI 卡片、真实收费数额或未来修复安全性。全系统审计仍在继续，用户排除的 encrypted-content 错误未处理。
+
+#### 2026-10-25 增量：真实 stdio MCP hook 的宿主取消与对端取消分裂（不另增编号）
+
+- E-236-mcp-first：新增 `crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_hook_cancellation.rs`，正式 SettingsService 用户 hook、McpService 准备、ChatService/Kernel、临时文件 SQLite、真实 read_file 与 Node v22.22.1 stdio 服务。只有主模型 transport 是离线 Responses fixture；MCP server 对匹配请求ID的 `notifications/cancelled` 会清理等待、停止回包，否则等待测试 release 后记录完成并返回合法 `{ok:true}`。参数 schema 为 object，所有 hook 参数合法，不依赖 H-275。
+- 复现后立即记录：`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_hook_cancellation --offline -- --include-ignored --nocapture --test-threads=1`：**1 passed / 1 failed（缺陷预期），3.82s**。一项正常测试实际覆盖四个事件，另一 ignored 探针先完整收集四组取消再统一断言，非在首组失败后虚称其他组已测。首次编译有新增 Observation.event 只用于 Debug 的 dead_code 警告，后续清理，不报告零警告。
+- E-236-mcp-input：UserPromptSubmit、SessionStart 的正式取消均 accepted；主 run 在释放server前已结束、SQLite唯一终态为 cancelled、主请求为0、HookCompleted为0。但额外250ms通知观察后server仍未收到取消；释放gate后，两组server均实际记录原请求完成并尝试返回结果。**本地future停止不等于对端请求停止**，修正了将原模型hook外层drop对照外推到所有扩展资源的潜在误解；没有证明宿主采纳了迟到结果。
+- E-236-mcp-tool：PreToolUse、PostToolUse 在正式停止后250ms仍未结束、SQLite无终态；均未收到取消通知。释放后server正常完成、HookCompleted=1，父run才落唯一 cancelled。主请求均1；前置父read_file start/completed=0，后置为1，与先前模型hook的pipeline等待缺口一致。四组都在断言前 release、join并 `ready.close_all()`等待真实Node退出；不留故障服务继续运行。
+- E-236-mcp-controls：不取消时四事件均正常释放并succeeded，HookCompleted=1；输入/启动各1次主请求，工具前/后各2次主请求和1次read_file。取消样本没有追加主请求、前置组没有取消后执行父文件读取、没有误报succeeded。服务端“完成”只指临时测试marker与合法回包，不代表真实数据库/文件写入业务或费用。本轮继续核对普通MCP取消正常对照、参考实现、协议边界与最终验证后追加结果。
+
+#### 同日补充对照、根因与影响界定
+
+- E-236-mcp-peer-control：不配置任何hook，让正常主模型通过正式ToolRegistry/McpToolAdapter调用**同一服务实现、同一review工具、同一stdio传输**。确认请求到达且未响应后再取消：run在release前结束、唯一cancelled，server收到 `notifications/cancelled`，requestId与原tools/call一致；release后没有完成marker。普通主工具有唯一配对ToolCompleted，主请求数1。测试用 `ordinary-tool-control`只是fixture的路由标记，不是新增hook事件或生产协议。所有样本使用相同ToolSearchMode::Disabled，排除未发现工具对照失效。
+- 增加同服务对照并清理新增dead_code警告后，显式 `mcp_hook_cancellation` 命令为 **2 passed / 1 failed（缺陷预期），4.31s**；正常测试覆盖四个事件和普通工具取消，故障测试覆盖四个事件的取消。同一server确实会响应通知，不能以“server不支持取消”解释hook组无通知；但该结果仍不代表任意真实server都能被强制停止。
+
+| 路径（正式取消已受理） | release前宿主run结束 | release前SQLite终态 | server收到匹配取消 | release后server完成原请求 | 父请求数 / 父读取完成数 |
+|---|---|---|---|---|---|
+| UserPromptSubmit MCP hook | 是 | cancelled | 否 | 是 | 0 / 0 |
+| SessionStart MCP hook | 是 | cancelled | 否 | 是 | 0 / 0 |
+| PreToolUse MCP hook | 否（250ms观察） | 无 | 否 | 是 | 1 / 0 |
+| PostToolUse MCP hook | 否（250ms观察） | 无 | 否 | 是 | 1 / 1 |
+| 普通模型MCP工具，同服务对照 | 是 | cancelled | 是 | 否 | 1 / 0（唯一MCP工具结果另计） |
+
+- F-236增加evidence_ids=[E-236-mcp-first,E-236-mcp-input,E-236-mcp-tool,E-236-mcp-controls,E-236-mcp-peer-control]。根因仍是附属调用缺少父运行执行上下文：`HookActionExecutor`只有action/payload，`execute_mcp()`走 `McpRegistry::invoke → McpClient::call_tool → StdioTransport::send`；普通工具则 `invoke_with_context → call_tool_with_context → send_with_context`，后者才在cancel分支调用 `notify_cancelled_bounded(request_id)`。UserPromptSubmit的RunAssembler外层select与SessionStart的RuntimeEngine::fire_hook外层select能drop本地等待，但没有触发plain send的远端通知；pipeline::fire直接await又连外层drop保护也没有。
+- 这是H-236的同一上下文缺口在MCP扩展上的新增证据，不另登记H-276；H-128已经接通的普通MCP adapter取消在本轮同服务对照继续正常，不能将其状态回写成“未修复”。H-136是大请求写入背压，本轮参数很小、server已完整收到请求；不重复计数。H-275是schema边界，本轮inputSchema允许正式payload，无非法参数。
+- 后果分两层：工具前/后置仍占用宿主活动run与server等待；输入/启动位置宿主虽可显示规范cancelled，外部请求却仍继续。若真实服务关联耗时计算或外部操作，可能继续消耗资源或完成业务动作，但本轮只记录虚构结果marker，没有真实外部写入、收费或数据损失。250ms为探针观察窗，不是产品SLA；本fixture hook timeout=5s，生产缺省60s，本轮没有测其耗尽或推断永久泄漏。晚到回包不等于宿主采纳，未测试共享连接上下一请求的晚包处理，不将现有H-09等问题一并放大。
+
+#### 增量参考与治理约束
+
+- **DeepSeek Harness**：`packages/mcp/mcp-client/src/tools.ts::syncTools`将ToolExecution.signal显式传入 `client.callTool(...,{signal:execution.signal,...})`。本轮实际运行参考测试 `pnpm exec vitest run packages/mcp/mcp-client/tests/mcp-client.spec.ts -t 'passes abort signal to callTool'`：**1 passed / 52 skipped，2.25s**，它验证signal身份贯通，不是实际stdio取消或所有hook退出的集成证明。
+- **Claude Code**：`services/mcp/client.ts`从工具context.abortController.signal传给 `callMCPToolWithUrlElicitationRetry`，最终调用SDK `client.callTool`的options.signal；`utils/hooks/execAgentHook.ts`将父signal与timeout组合到hookAbortController，再进入agent工具上下文。可借鉴调用方取消→附属agent→MCP请求的显式契约；本轮仅静态核查，没运行完整Claude或宣称它有同名mcp_tool hook。
+- **Codex**：再次核查 `core/src/tools/parallel.rs` 的invocation token竞争、abort+join和已达终态结果保留。它说明工具dispatch owner需要收尾且不能抹除已完成事实；本轮没有验证其旧版MCP SDK在任意future drop时的远端通知，不用“Codex abort了Rust任务”冒充“server肯定停止”。直接可运行的远端通知正常证据来自本系统自己的普通MCP链，不需要编造参考行为。
+- **协议依据**：2026-10-25联网核查本系统当前版本的[MCP 2024-11-05 cancellation](https://modelcontextprotocol.io/specification/2024-11-05/basic/utilities/cancellation)：取消是可选能力，通知针对已发出且仍在处理的requestId；接收者应停止/释放，但完成、未知或不可取消的请求允许忽略，存在完成/取消竞争。故本地治理契约应是**取消信号贯通、尽力发出正确通知与有界收尾、远端结果未知显式保留**，不是“发送通知就保证撤销业务副作用”。[DeepSeek工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)说明具体函数由宿主执行；本缺口属于harness生命周期，不是改模型thinking/strict或KV cache即可解决的协议兼容问题。
+- **治理补充（本地设计，未实施）**：把父run的CancellationTree/ToolExecutionContext与deadline显式传到统一hook owner及MCP调用，并让原始请求owner有机会完成取消通知和有界清理；仅在pipeline外再加select，会重现输入/启动位置“本地终态完成、远端继续”的半修复。不能为取消一个hook直接close_all/杀共享MCP server，这会影响其他并发run；应按真实requestId取消，连接关闭由既有McpService资源owner负责。后置仍须先保留已经执行的真实工具结果，沿单一终态路径收尾，不重新引入H-139。
+
+#### MCP 增量最终验证
+
+- 将新测试整理为 fixture / observe 辅助函数后，最终显式运行 `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_hook_cancellation --offline -- --include-ignored --nocapture --test-threads=1`：**2 passed / 1 failed（缺陷预期），4.35s**。两个默认正常测试分别验证同服务普通工具取消、四个 hook 位置正常释放；ignored 缺陷探针完整观察四个位置后才断言。没有修复生产路径，不能将故障探针失败写成“全通过”。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**86 passed / 83 ignored，9.72s**；`cargo test -p deepagent-app-core --lib --offline --quiet`：**1101 passed / 71 ignored，6.46s**。这些为本轮最终文件版本的默认回归结果，不替换上文历史轮次的原始数量。
+- `cargo fmt --all -- --check`、`git diff --check` 通过；Git 提示 Windows 工作副本行尾转换，不是内容检查失败。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 未通过，被未修改的 `models/src/client.rs:355` 的 clone_on_copy 与 `persistence/src/run_store.rs:127` 的 explicit_counter_loop 阻断，不声称 lint 全绿。
+- 测试收尾后只读进程检查为 `active_hook_mcp_fixture_processes=0`；每组均释放 gate、等待 run、关闭所属测试 registry，没有遗留本轮 Node 故障服务。参考 DeepSeek Harness 的 signal 单测结果见上节；未运行完整 workspace、Desktop 构建或 UI 手测。
+- 尚未覆盖本轮MCP hook自身超时、HTTP传输、并行多hook、server拒绝取消/部分完成、共享server并发、重启恢复、真实Tauri或真实DeepSeek计费；新的正常/故障样本不替代这些待测边界。仍只变更测试、模块入口与审计文档，没有生产修复、权限/公共协议变更，也未处理用户排除的encrypted-content问题。
 
 ### H-237：agent-hook 未继承主运行有效权限，被规则或工作区边界拒绝的读取仍将正文交给 hook 模型
 
