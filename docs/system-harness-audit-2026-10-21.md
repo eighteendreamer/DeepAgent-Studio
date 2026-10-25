@@ -12,6 +12,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| 摘要正文与草稿控制标记的边界 | 两正文经 JSON 解码完全等价，字面 analysis 标签组丢失片段、Unicode 转义组保留；下一 wire 和文件重开结果一致 | 新增 H-269（P3）；另有其他标签和真正前置草稿对照，不外推所有摘要或所有私有草稿处理 |
 | 模型摘要的采用资格与冷恢复 | 空对象、无关对象、全空字段均被当作成功摘要，下一真实 wire 与文件重开后的 Surface 不含旧事实；原始事件与记录路径仍保留 | 新增 H-268（P2）；正常结构化摘要和非 JSON heuristic 降级对照通过，未测试真实 DeepSeek 产生异常摘要的频率或模型按记录指针恢复 |
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
 | SSH 远端主机身份验证 | 正式 SshService 通过 loopback 连上临时随机服务器密钥；同一地址的 known_hosts 对照拒绝不匹配密钥 | 已确认 H-125；未连接公网或用户服务器 |
@@ -7141,3 +7142,35 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 在既有压缩提交链复用唯一 validator，采用前同时验证内容资格、体积收益、工具配对与历史边界；不要为 native/legacy/prefire 各复制一套判定。失败时保留原 Surface/边界，或明确采用经过校验的保守 fallback，并按已有 H-14 的请求归属治理保留已发生 usage；不得因拒绝摘要而丢账，也不能把启发式降级宣称为无损摘要。
 - 回归至少包括本轮三类空对象、空白字段/数组、缺键与类型错误、合法无某类进度、只有 goal、正常摘要、heuristic fallback、notes 复用、prefire、取消/截断、工具尾部、边界写入失败和数据库重开。当前仅实跑主动阈值的正式 ModelAgent→原生摘要链；没有动态覆盖 compatibility compact、prefire、notes 复用、完整 ChatService/桌面、真实供应商或参考项目。后续验证不得据本轮样本宣布这些分支已正确。
 - 验证收尾：最终同一显式故障命令增加 `--test-threads=1`，仍 **2 passed / 3 failed（预期），2.14s**，三故障组均到达最终事实保留断言。`cargo test -p deepagent-app-core --lib context_runtime:: --offline` 为 **26 passed / 9 ignored**（新缺陷探针默认 ignored，不冒充修复）；`cargo test -p deepagent-context --offline` 为 **54 passed**；`cargo fmt --all -- --check`、`git diff --check` 通过。未运行全 workspace、Clippy、桌面构建或 SAST 扫描，本轮只新增 test-only 装配/探针和 Markdown。code-audit 使本轮分开记录测试装配失败、可重复的产品行为和潜在业务后果；生产逻辑未修，全系统审计仍在进行。
+
+### H-269：摘要草稿清理在解析 JSON 前删除字符串内的合法 analysis 标签及正文
+
+**级别：低（P3，条件性摘要内容完整性）；状态：正式原生压缩、下一请求和文件数据库重开已复现，未修复。** 触发条件是摘要需要保存模板/协议/提示词中的字面量 `<analysis>…</analysis>`，模型将它放在合法 JSON 的字段字符串中。不是 H-268 的空/缺字段对象：本轮摘要五个字段齐全，含 completed、pending 和 decisions，原始 JSON 明确含有应保留的事实，宿主清理才删掉它。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：扩展既有 `context_summary_audit.rs`，将历史事实参数化以复用同一正式链；旧 H-268 样本仍使用原 FACT。新 fixture 的历史记录为 `Created <analysis>AUDIT_SUMMARY_LITERAL_269</analysis>`，摘要 completed 中逐字保存此文本；使用离线 ScriptedTransport、真实 Session/文件 SQLite、ModelAgent/HookedReactiveContextCompactor、正式 wire 和重开投影，不读取用户记录、不修改生产逻辑。
+- E-269-first：`cargo test -p deepagent-app-core --lib literal_summary --offline -- --include-ignored --nocapture --test-threads=1`，**3 passed / 1 failed（预期），1.69s**。字面标签组 `split=20, tokens=68745->11557, boundaries=1, raw_fact=true, summary_fact=false, wire_fact=false, replay_fact=false, side_usage=120+18`；最终事实保留断言失败。真实摘要请求已收到原始字面量，下一请求和所有数据库 owner 关闭后重开的 Surface 均不含它，二者仍完全相等。源事件和原始记录路径保留，不是不可逆删除。
+- E-269-equivalent：同一 JSON 正文只将 `<` 写成合法 `\u003c` 转义，测试先用 serde_json 验证两正文解析后的 Value 完全相等，再走相同生产链。该组 `tokens=68745->11569`，raw/summary/wire/replay 四事实标记全部 true。由此排除“摘要模型漏写”“所有标签都会被清理”或 JSON 语义不同；只是等价编码差异就改变了宿主保存的摘要语义。
+- E-269-controls：字面 `<summary>…</summary>` 正文对照为 `tokens=68745->11568`，正常事实与一个真正前置 `<analysis>` 草稿的对照为 `tokens=68739->11563`，均完整保存目标事实并通过。三对照已先独立执行为 **3 passed**；含故障组再跑仍通过。此处前置草稿对照只断言检查点可用；不单凭它宣称所有私有草稿均不会泄漏。
+
+#### 根因与边界
+
+- F-269（category=design，status=validated，confidence=high）：`model_compactor.rs::parse_summary_json` 在尝试反序列化**之前**无条件 `strip_analysis`；后者用字符串 find 搜索任意位置的标签，不识别 JSON 字符串、转义或顶层草稿边界。合法 completed 文本被改成 `Created ` 后仍是合法 JSON，反序列化成功且 merge 修剪空白，不触发 fallback；上层摘要更小、边界提交和冷恢复均正常执行，错误内容因此持续生效。
+- P-269：供应商完整正文 → `Response::output_text_projection` → parse_summary_json → 全文 strip_analysis 删除引号内片段 → 解析修改后的对象 → TaskSummary → 体积检查通过 → ContextCompacted → 真实主请求/冷恢复均缺片段。代码当前只投影 assistant Message，Reasoning item 不进入 output_text_projection；不能把这个字面量误当成实际供应商 reasoning item。
+- 后果限定为需要精确保留此类模板/协议文本时的检查点损坏，可能使后续模型改错标记、重复排查或遗漏已有进展；本轮未执行真实模板生成/工具修改、未测真实 DeepSeek 生成这种摘要的频率，不上调为通用数据丢失或权限问题。
+
+#### 成熟实现对照与 DeepSeek 边界
+
+- **Grok Build**：`借鉴/grok-build/crates/common/xai-grok-compaction/src/code_compaction/summary.rs::format_compact_summary` 增加 is_leading 判定。本轮样本没有 summary wrapper，而 analysis 之前已有非空 JSON 前缀，因此该分支会 break，不删除标签内事实；随后 neutralize_compaction_control_tokens 将控制标签的 `<` 加零宽字符。其 `keeps_sections_on_section6_instruction_echo` 等测试明确关注正文引用控制标记不能吞掉后续章节。可借鉴“删除前判断包装位置”；它不是 JSON parser，含 summary wrapper 时又有另一套判定，不据此保证任意混合标签都可靠；零宽转换也不是逐字节保真，不能照搬到本系统模板值或声称已运行参考测试。
+- **Codex**：`compact.rs` 通过 `session/turn.rs::get_last_assistant_message_from_turn` → `stream_events_utils.rs::last_assistant_message_from_item/raw_assistant_output_text_from_item` 获取 assistant Message 文本，不以任意 analysis 标签区分 Reasoning。该 helper 仍会移除 citation markup，plan_mode 为 true 时还移除 plan blocks，因此不宣称 Codex 的所有标记均原样保留；这里对照的是它没有本项这条全文 analysis 删除规则。本轮为源码核查，不是运行 Codex 的动态结论。
+- **DeepSeek Harness**：`packages/compaction/compaction-basic/src/summarizer.ts::summaryText` 过滤类型为 text 的块，reasoning 等其他 block 不作为检查点正文；没有在所保留的 text 内用 analysis 字符串切掉片段。它请求 Markdown 检查点而非本系统 JSON，不证明其可直接处理本轮 JSON 契约，也不借其结构化块保证模型不会把草稿写在正文中。
+- DeepSeek 官方 [Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)分别定义 reasoning_text 与 output_text 事件，以及 reasoning/message 输出 item。本系统现有 `Response::output_text_projection` 已按 Message/Reasoning 类型隔离；摘要提示词允许额外前置 analysis 草稿属于本地约定，不是供应商协议要求。应保留官方结构化边界，并把该本地容错约定限定为顶层/前置包装，不能据标签拼写擅自删除 JSON 字符串正文。
+
+#### 治理与验证（本地设计，未实施）
+
+- 在现有 parser 先尝试完整 JSON，成功时不再对字符串内数据做草稿删除；只有确实存在非 JSON 前置包装时，才按明确位置剥离该包装，再解析剩余对象。解析失败可沿用受控 fallback；不能用全局 Unicode 转义绕过作为生产修复，也不能把去标签后的“仍能解析”当成原输入未变。
+- 配合 H-268 收敛同一个摘要解析/采用边界，但保留两项独立不变量：有效 JSON 的字符串值不能被损坏；空/无效检查点不能借标题/goal 包装成功。仅补必要字段检查不会修复本项，因为字段完整且 completed 删除后仍有非空文本；仅补本项先解析也不会自动拒绝 H-268 的空对象。
+- 后续回归应含字面/Unicode 等价编码、重复/嵌套标签、中文/多字节邻接、字符串中未闭合标签、真正前置草稿、fence/prose、错误 JSON、截断/取消、冷恢复与 prefire。当前没有动态覆盖未闭合/嵌套、prefire、完整 ChatService、桌面、真实供应商或参考工程。
+- 验证收尾：`cargo test -p deepagent-app-core --lib context_runtime:: --offline` **29 passed / 10 ignored**，新故障探针默认 ignored；`cargo test -p deepagent-context --offline` **54 passed**，含既有前置草稿与 malformed 降级测试。`cargo fmt --all -- --check` 和 `git diff --check` 通过。未执行全 workspace、Clippy、桌面构建或 SAST 扫描；只修改审计测试与文档，未修复生产逻辑。code-audit 促使本轮用 JSON 语义等价对照隔离宿主变换，而非将模型返回的内容一概归为模型质量问题。
+- 本轮排除项：对 `crates/apps/packages` 全部 ModelCompactor 调用方查证，生产 context_runtime 两入口均传 TaskSummary::default；run_assembler 的旧摘要 helper 为 cfg(test)，同样传 default。merge_into_prior 的追加式 pending 合并仍可作为公共 API 契约候选，但没有当前真实聊天传入非空 prior 的证据，故不登记“旧待办必然残留”的新缺陷。
