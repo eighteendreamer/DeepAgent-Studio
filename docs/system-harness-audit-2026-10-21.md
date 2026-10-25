@@ -7005,4 +7005,3 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 触发后，恶意或损坏的前端/插件 payload 可删除同一 session 的全部附件，或把新附件写到 attachment root 的父目录并覆盖同名 sibling 文件。若附件 root 与其他本地状态相邻，后果可能是用户可见附件丢失、跨会话污染、后续模型读取错误内容或 metadata 指向根外路径；本轮没有触碰真实用户目录，也没有证明任意文件系统路径可被指定。
 - 根因修复应在单一 attachment identity seam 完成：拒绝空值、`.`、`..`、路径分隔符、控制字符和 canonicalization 后不位于 root 的身份；最好由后端生成不可变 opaque id（如 UUID/digest），前端 id 只作为显示/幂等键，不参与目录层级。`remove` 必须要求解析目标是 `root/<validated-session>/<validated-id>` 的单个目录，禁止对 bucket/root 本身执行递归删除；`ingest` 应先做 root containment 与“目标为新/同一 attachment”的校验，再写入，并在失败时不产生 metadata。
 - 回归需覆盖空/点/双点、Unicode/Windows 分隔符、绝对路径、尾随点空格、同名重试、符号链接/junction、删除 bucket/root、session 切换和并发 ingest/remove；所有失败都应返回结构化 invalid identity，且 root 外 canary、其他 attachment 与 metadata 保持不变。未实施生产修复，未运行真实桌面 UI/跨平台 NTFS junction 或真实用户目录。
-
