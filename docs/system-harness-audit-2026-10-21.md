@@ -92,7 +92,7 @@
 | Harness config/read 有效配置可观测性 | thread 已指定模型、reasoning、permission 和 sandbox 后，正式 `config/read` 仍只返回 `protocolVersion`、固定 `provider` 和 `transport` 三个字段 | 已确认 H-221；正式 ServerState/Settings/dispatcher，无模型、工具、子进程或网络 |
 | Harness thread/start 的 DeepSeek reasoning 配置贯通 | `thread/start` 请求携带 `reasoningEffort=high` 后，正式 `turn/start` 无覆盖的 launch 仍为 `reasoning_effort=None`；请求字段被 Serde 静默忽略 | 已确认 H-222；正式 ServerState/dispatcher，未启动模型、工具、子进程或网络 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
-| 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发，以及 scheduler 停止后已派发 run 仍活跃均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
+| 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发、scheduler 停止后已派发 run 仍活跃，以及单坏行隐去全部健康计划、后续创建覆盖旧记录均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97、H-270；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录；工作流节点声明 `knowledgeBaseId=project` 时仍混入 global 命中 | 已确认 H-51、H-176；H-51 是共享服务身份漂移，H-176 是工作流配置到检索 trait 的作用域契约缺失 |
 | 工作流目标节点与重跑 admission | `target_node_id` 传入不存在的节点时，正式工作流只完成 `start`、跳过 `end`，仍记录 `succeeded` | 已确认 H-177；无效目标未在编译/接纳边界拒绝，属于空执行成功，不是 H-39 的条件分支派发问题 |
@@ -7174,3 +7174,35 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 后续回归应含字面/Unicode 等价编码、重复/嵌套标签、中文/多字节邻接、字符串中未闭合标签、真正前置草稿、fence/prose、错误 JSON、截断/取消、冷恢复与 prefire。当前没有动态覆盖未闭合/嵌套、prefire、完整 ChatService、桌面、真实供应商或参考工程。
 - 验证收尾：`cargo test -p deepagent-app-core --lib context_runtime:: --offline` **29 passed / 10 ignored**，新故障探针默认 ignored；`cargo test -p deepagent-context --offline` **54 passed**，含既有前置草稿与 malformed 降级测试。`cargo fmt --all -- --check` 和 `git diff --check` 通过。未执行全 workspace、Clippy、桌面构建或 SAST 扫描；只修改审计测试与文档，未修复生产逻辑。code-audit 促使本轮用 JSON 语义等价对照隔离宿主变换，而非将模型返回的内容一概归为模型质量问题。
 - 本轮排除项：对 `crates/apps/packages` 全部 ModelCompactor 调用方查证，生产 context_runtime 两入口均传 TaskSummary::default；run_assembler 的旧摘要 helper 为 cfg(test)，同样传 default。merge_into_prior 的追加式 pending 合并仍可作为公共 API 契约候选，但没有当前真实聊天传入非空 prior 的证据，故不登记“旧待办必然残留”的新缺陷。
+
+### H-270：一条计划记录解码失败使全部健康任务不可见，正常创建随后覆盖并删除旧任务
+
+**级别：中（P2，条件性计划数据丢失）；状态：正式 CronService/cron_create、文件计划存储及重新构造 store 已复现，未修复。** 前提是 `.deepagent/scheduled-tasks.json` 仍为合法 JSON，包含两条健康任务和一条缺少必需字段或字段类型错误的记录；不是当前正确 writer 会自行产生坏行的证据。没有多进程、文件权限故障或并发写入。与 H-42 的重复派发、H-96 的派发后记账失败、H-97 的已派发 run 生命周期不同。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：新增 test-only `crates/deepagent-app-core/src/cron_store_audit.rs`，由 cron_service.rs 的 cfg(test) 模块加载。先用正式 CronService.create 创建两个循环计划，再在测试自己临时文件中追加一条坏记录；公开 CronService.list、生产 CronScheduler.poll、真实 CronCreateTool→CronService.create→ScheduledTaskStore.add/write，最后释放 service 并重新构造 store 检查实际磁盘。poll callback 只记录 ID，不启动 ChatService run、模型、工具或网络；没有真实用户文件。
+- E-270-first：`cargo test -p deepagent-app-core --lib cron_service::store_audit --offline -- --include-ignored --nocapture --test-threads=1`，**2 passed / 3 failed（预期），0.32s**。三组分别是坏行缺 prompt、createdAt 为字符串、可选 lastFiredAt 为字符串；全部观测 `listed=0, due_callbacks=0, create_ok=true, reopened=1, healthy_raw_after_create=false, healthy_reopened=false`。故障组已完成所有正式操作，再停在最终数据保留断言，不用编译错误或超时冒充缺陷。
+- E-270-controls：完全健康文档、仅追加非法 cron 字符串的一行，两组均 `listed=2, due_callbacks=2, create_ok=true, reopened=3, healthy_raw_after_create=true, healthy_reopened=true`。due_at 用当前本地日历时间加两分钟注入 poll，未实际等待定时到期，也没有模拟宿主时区切换；健康任务均在七天有效期内。
+- E-270-loss-boundary：list 后字节与注入后文件全等；再次创建前，直接解析磁盘 JSON 仍有两个健康 ID。只有随后普通 cron_create 成功返回 scheduled=true 后，实际文件和重建 store 才只剩新任务。因而最初是健康任务被隐去/不参与到期扫描，后续才发生真实持久记录覆盖，不能混称读取动作直接删除了文件。
+
+#### 根因与影响
+
+- F-270（category=design，status=validated，confidence=high）：`deepagent-runtime/src/schedule/store.rs::read` 先将整个 CronFile.tasks 解码为 Vec<ScheduledTask>；任意行缺字段或类型错误都会让整个反序列化失败，直接 Ok(Vec::new())，根本到不了后续逐任务校验/跳过逻辑。`add` 将此“读取失败的空回退”当作完整可写基线，push 新任务后 write 整文档，没有错误或部分读取身份。
+- P-270：合法 JSON 的单条坏记录 → CronFile 强类型全表解码失败 → read 返回成功空表 → CronService.list 成功显示0、scheduler.poll 成功无派发 → 模型/用户正常调用 cron_create → add 读空/append/write → 原来健康记录从实际 JSON 消失 → store重建无法找回。本路径未创建第二套计划存储或另一个 scheduler。
+- 条件触发时，原本无关且健康的任务会全部漏调度；再次创建任务会把它们从唯一计划文档中抹掉，后续仅修复坏行或重启不能从该文档恢复旧计划。外部备份/用户手工记录是否能恢复未测，不能声称所有备份也被删除；也未执行真实提醒/模型副作用或测量坏记录出现频率。
+- 与 H-245 的画布偏好 read-error→fallback→覆盖属于同一架构性错误语义，但本项是独立计划文件 owner、反序列化边界与调度后果；不合并掉真实受影响模块，也不重复计为三个不同坏字段问题。
+
+#### 成熟实现对照与适用边界
+
+- **Claude Code，单行故障隔离**：`借鉴/claudecode/restored-src/src/utils/cronTasks.ts::readCronTasks` 先解析普通 JSON 对象、确认 tasks 为数组，再逐行检查 id/cron/prompt 为字符串、createdAt 为数字；坏行 continue，不令健康行一起消失。lastFiredAt 只有数字才加入返回对象，错误类型被忽略；cron 表达式也逐行验证。这能在源码层面对照本轮合法外层 JSON 的三类字段故障。参考工程未运行；它对整份 JSON 无法解析或读取异常仍返回空表，addCronTask 仍然 read→push→write，因此不能声称它解决了所有文件损坏后的覆盖风险，也不能照搬其静默降级作为完整治理。
+- **Codex，错误读取不作为可覆盖基线**：`借鉴/codex/codex-rs/config/src/marketplace_edit.rs::read_or_create_document` 仅在 NotFound 时新建 DocumentMut，其他读取错误直接返回 Err，TOML 解析失败映射 InvalidData；`record_user_marketplace` 用 `?` 接收读取结果，在成功后才 upsert/write。因此已存在但无法正确解析的文件不会因该编辑入口被当空文档覆盖。这不是同类 Cron 实现，本轮也未运行 Codex 工程；只借鉴“缺失”和“损坏/读取失败”在写入边界必须区分，不能据此宣称其所有配置编辑都具有相同保证或已解决并发/原子落盘问题。
+- **本系统实现偏差**：store.rs 顶部及 read 的注释宣称缺字段记录会逐行跳过，但当前 Vec<ScheduledTask> 的全表强类型解码发生在逐行检查之前。已有非法 cron 字符串对照通过，不能验证缺字段/错类型也会隔离；本轮补齐的三类样本揭示的是容错边界与文字契约不一致，而非仅缺一条日志。
+- **DeepSeek 关系**：该问题位于本地计划持久化，发生在模型请求之前，和供应商 Responses 字段、reasoning、KV cache 没有直接协议关系。已证明的是 Harness 丢失可供后续执行的调度输入，不能指望调整模型参数恢复被覆盖的计划；本轮未测试真实 DeepSeek 的计划创建质量或缓存命中率。
+
+#### 治理与验证收尾（本地设计，未实施）
+
+- 复用现有 ScheduledTaskStore，先验证外层文档，再逐行解码/校验并返回明确诊断；区分 missing、loaded-empty、partial、corrupt 与 read-error，不能将失败身份压平成成功空 Vec。坏行原始内容需要保留或隔离，日志不得直接泄露 prompt；仅跳过坏行后无条件重写会丢弃未识别数据，并不是完整修复。
+- 无可靠完整基线时，普通 add 不得盲目整表覆盖。可在既有 store 层拒绝写入并报告修复/恢复需求，或在可证明的保留式合并与备份边界内写入；选择应形成单一读写契约，由 CLI、Desktop 和工具共同复用，不新增第二套计划存储或调度器。并发锁、原子文件替换和 occurrence 接纳仍需与 H-42/H-96 一起治理，不能说本轮已验证这些机制。
+- 后续回归至少覆盖缺字段、必需/可选字段错类型、未知字段、单坏行与多坏行、整文档截断、tasks 类型错误、缺失/空文件、读取失败、创建/删除/mark_fired 写入、版本迁移及重启。当前只动态覆盖本节五组样本与 store 重建；没有启动完整 tick loop、真实 ChatService run、桌面、外部提醒或真实模型，也没有运行全 workspace、Clippy 或 SAST 扫描。
+- 实际验证：首次显式故障命令见 E-270-first，**2 passed / 3 failed（预期）**，未重复登记为三个缺陷；`cargo test -p deepagent-app-core --lib cron_service::store_audit --offline` **2 passed / 3 ignored**，三个未修复探针默认 ignored。`cargo test -p deepagent-runtime --lib schedule:: --offline` **19 passed**；`cargo test -p deepagent-builtins --lib cron_tools:: --offline` **7 passed**；`cargo fmt --all -- --check`、`git diff --check` 通过。code-audit 使本轮沿正式工具→服务→文件写入核实数据丢失边界，并保留只读阶段与故障注入来源的限制；只新增 test-only 模块/探针及审计文档，生产逻辑未修，全系统审计仍在进行。
