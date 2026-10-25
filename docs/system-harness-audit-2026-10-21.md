@@ -8717,7 +8717,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 新增并执行 `crates/deepagent-app-core/tests/workflow_audit/media.rs::audit_provider_video_download_rejects_oversized_artifact`。测试通过正式 `ChatService`、`WorkflowAgent`、`CanvasModelGateway`、视频任务 submit/status/download、ArtifactService、RunStore 和文件 SQLite；唯一替身是绑定 loopback 的 provider，返回 32 MiB+1 的合成 MP4 响应。
 - 命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_provider_video_download_rejects_oversized_artifact --offline -- --ignored --nocapture --exact`。按缺陷预期失败，实际输出：`configured_input_limit=33554432, response_bytes=33554433, artifact_bytes=Some(33554433), terminal=Some("succeeded"), result_ok=true`。
 - 复现含义：video 下载完整缓冲并持久化为等长 artifact，节点发布 Completed，run 落 succeeded；审计断言要求超预算在 artifact 前被拒绝，因此失败。没有制造 OOM、磁盘耗尽或并发压力，不能把这些未测后果写成已发生。
-- 生产链核对：视频下载路径和 image/audio 一样使用 `reqwest::Response::bytes()` 后再调用 artifact import；`CanvasArtifactService::import_bytes` 没有按 `ArtifactKind::Video` 强制单文件上限。现有用户输入图片的 32 MiB 限制不能自动约束 provider 生成视频输出。
+- 生产链核对：视频下载路径已经使用 `begin_stream()` 与 `response.chunk()` 逐块写入 artifact staging，但该流式循环没有累计字节预算，`CanvasArtifactService` 也没有按 `ArtifactKind::Video` 强制单文件上限；因此它不会像 image/audio 那样一次性 `resp.bytes()`，却仍可无限增长到终止/磁盘耗尽。现有用户输入图片的 32 MiB 限制不能自动约束 provider 生成视频输出。
 
 #### 成熟 Agent 对照、影响与治理方向
 
