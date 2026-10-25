@@ -13,6 +13,7 @@ use deepagent_persistence::Database;
 use deepagent_runtime::{InputEnvelope, InputLeaseRegistry, LeaseDecision};
 use deepagent_session::Session;
 
+use crate::run_coordinator::ActiveRunRegistration;
 use crate::runtime_event_log::append_runtime_log;
 
 pub(crate) struct InputLeaseGuard {
@@ -27,7 +28,6 @@ pub(crate) struct AcceptedInputTurn<'db, C: Clock> {
     pub(crate) response_history: Vec<ResponseInputItem>,
     pub(crate) prior_events: Vec<Event>,
     pub(crate) session_id: String,
-    pub(crate) lease: InputLeaseGuard,
 }
 
 /// Model-only reminder appended once before the next user input after an
@@ -73,7 +73,7 @@ pub(crate) async fn accept_input_turn<'db, C, F>(
     env_mode: Option<&str>,
     project: Option<&str>,
     normalized_input: InputEnvelope,
-    cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+    registration: &ActiveRunRegistration,
     cancel_active: F,
 ) -> Result<AcceptedInputTurn<'db, C>>
 where
@@ -102,7 +102,12 @@ where
         ..normalized_input.clone()
     };
     let lease_decision = input_leases.acquire(&session_id, run_id, session_input);
-    let lease = InputLeaseGuard::new(input_leases.clone(), session_id.clone(), run_id.to_string());
+    registration.retain_input_lease(InputLeaseGuard::new(
+        input_leases.clone(),
+        session_id.clone(),
+        run_id.to_string(),
+    ));
+    let cancel_flag = registration.flag();
 
     match lease_decision {
         LeaseDecision::Acquired => {
@@ -198,7 +203,6 @@ where
         history,
         prior_events,
         session_id,
-        lease,
     })
 }
 
@@ -218,6 +222,9 @@ impl InputLeaseGuard {
 
 impl Drop for InputLeaseGuard {
     fn drop(&mut self) {
+        // A dropped waiting Future owns a queue entry, not the active lease.
+        // Remove that entry before it can be promoted into an orphan owner.
+        let _ = self.registry.remove_queued(&self.session_id, &self.run_id);
         let _ = self.registry.release(&self.session_id, &self.run_id);
     }
 }
@@ -1032,12 +1039,60 @@ mod tests {
     use deepagent_runtime::{InputIngress, InputMode};
 
     #[tokio::test]
+    async fn dropping_waiting_input_removes_queue_entry_before_owner_release() {
+        use std::time::Duration;
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let coordinator = crate::run_coordinator::RunCoordinator::new(db.clone());
+        let clock = SystemClock;
+        let session = Session::create(&db, &clock, None).unwrap();
+        let sid = session.id().to_string();
+        let leases = Arc::new(InputLeaseRegistry::default());
+        let input = InputIngress::normalize(
+            Some(sid.clone()),
+            "workspace",
+            "input",
+            InputMode::Prompt,
+            Vec::new(),
+        )
+        .unwrap();
+        leases.acquire(&sid, "owner", input.clone());
+        {
+            let registration = coordinator.register("dropped", None);
+            let waiting = accept_input_turn(
+                &db,
+                &clock,
+                leases.clone(),
+                None,
+                "dropped",
+                Some(&sid),
+                None,
+                None,
+                input.clone(),
+                &registration,
+                |_| true,
+            );
+            tokio::pin!(waiting);
+            tokio::select! {
+                _ = &mut waiting => panic!("must be queued"),
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            }
+            assert_eq!(leases.queued_position(&sid, "dropped"), Some(1));
+            leases.acquire(&sid, "follower", input);
+        }
+        assert!(leases.queued_position(&sid, "dropped").is_none());
+        leases.release(&sid, "owner");
+        assert!(leases.is_active_run(&sid, "follower"));
+    }
+
+    #[tokio::test]
     async fn cancelling_queued_input_before_or_after_promotion_does_not_strand_follower() {
-        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::time::Duration;
 
         for cancel_before_promotion in [true, false] {
-            let db = Database::open_in_memory().unwrap();
+            let db = Arc::new(Database::open_in_memory().unwrap());
+            let coordinator = crate::run_coordinator::RunCoordinator::new(db.clone());
             let clock = SystemClock;
             let session = Session::create(&db, &clock, None).unwrap();
             let sid = session.id().to_string();
@@ -1054,44 +1109,49 @@ mod tests {
                 leases.acquire(&sid, "owner", input.clone()),
                 LeaseDecision::Acquired
             );
-            let cancel = Arc::new(AtomicBool::new(false));
+            let registration = coordinator.register("cancelled", None);
+            let cancel = registration.flag();
             let interrupted = AtomicUsize::new(0);
-            let waiting = accept_input_turn(
-                &db,
-                &clock,
-                leases.clone(),
-                None,
-                "cancelled",
-                Some(&sid),
-                None,
-                None,
-                input.clone(),
-                cancel.clone(),
-                |run| {
-                    assert_eq!(run, "owner");
-                    interrupted.fetch_add(1, Ordering::SeqCst);
-                    true
-                },
-            );
-            tokio::pin!(waiting);
-            tokio::select! {
-                _ = &mut waiting => panic!("queued input must wait behind the owner"),
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+            {
+                let waiting = accept_input_turn(
+                    &db,
+                    &clock,
+                    leases.clone(),
+                    None,
+                    "cancelled",
+                    Some(&sid),
+                    None,
+                    None,
+                    input.clone(),
+                    &registration,
+                    |run| {
+                        assert_eq!(run, "owner");
+                        interrupted.fetch_add(1, Ordering::SeqCst);
+                        true
+                    },
+                );
+                tokio::pin!(waiting);
+                tokio::select! {
+                    _ = &mut waiting => panic!("queued input must wait behind the owner"),
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {}
+                }
+                assert_eq!(leases.queued_position(&sid, "cancelled"), Some(1));
+                assert_eq!(
+                    leases.acquire(&sid, "follower", input.clone()),
+                    LeaseDecision::Queued { position: 2 }
+                );
+                cancel.store(true, Ordering::Release);
+                if !cancel_before_promotion {
+                    leases.release(&sid, "owner");
+                    assert!(leases.is_active_run(&sid, "cancelled"));
+                }
+                assert!(tokio::time::timeout(Duration::from_secs(1), &mut waiting)
+                    .await
+                    .expect("queued cancellation must be bounded")
+                    .is_err());
             }
-            assert_eq!(leases.queued_position(&sid, "cancelled"), Some(1));
-            assert_eq!(
-                leases.acquire(&sid, "follower", input.clone()),
-                LeaseDecision::Queued { position: 2 }
-            );
-            cancel.store(true, Ordering::Release);
-            if !cancel_before_promotion {
-                leases.release(&sid, "owner");
-                assert!(leases.is_active_run(&sid, "cancelled"));
-            }
-            assert!(tokio::time::timeout(Duration::from_secs(1), &mut waiting)
-                .await
-                .expect("queued cancellation must be bounded")
-                .is_err());
+            // The outer registration, not inner recovery, ends ownership.
+            drop(registration);
             assert_eq!(interrupted.load(Ordering::SeqCst), 1);
             assert!(leases.queued_position(&sid, "cancelled").is_none());
             if cancel_before_promotion {
@@ -2308,8 +2368,53 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_history_recovery_retains_local_lease_until_outer_drop() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let coordinator = crate::run_coordinator::RunCoordinator::new(db.clone());
+        let registration = coordinator.register("recovery-failed", None);
+        let clock = SystemClock;
+        let sid = SessionId::new().to_string();
+        let leases = Arc::new(InputLeaseRegistry::default());
+        let input = InputIngress::normalize(
+            Some(sid.clone()),
+            "workspace",
+            "input",
+            InputMode::Prompt,
+            Vec::new(),
+        )
+        .unwrap();
+        let result = accept_input_turn(
+            &db,
+            &clock,
+            leases.clone(),
+            None,
+            "recovery-failed",
+            Some(&sid),
+            None,
+            None,
+            input.clone(),
+            &registration,
+            |_| false,
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "missing session must fail history recovery"
+        );
+        assert!(leases.is_active_run(&sid, "recovery-failed"));
+        assert_eq!(
+            leases.acquire(&sid, "follower", input),
+            LeaseDecision::Queued { position: 1 }
+        );
+        drop(registration);
+        assert!(leases.is_active_run(&sid, "follower"));
+    }
+
+    #[tokio::test]
     async fn accept_turn_creates_session_and_holds_lease_until_drop() {
-        let db = Database::open_in_memory().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let coordinator = crate::run_coordinator::RunCoordinator::new(db.clone());
+        let registration = coordinator.register("run_test", None);
         let clock = SystemClock;
         let leases = Arc::new(InputLeaseRegistry::default());
         let input = InputIngress::normalize(
@@ -2331,7 +2436,7 @@ mod tests {
             Some("remote"),
             Some("G:/Code/Kotlin_code"),
             input,
-            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            &registration,
             |_| false,
         )
         .await
@@ -2347,6 +2452,8 @@ mod tests {
         assert!(leases.is_active_run(&accepted.session_id, "run_test"));
         let session_id = accepted.session_id.clone();
         drop(accepted);
+        assert!(leases.is_active_run(&session_id, "run_test"));
+        drop(registration);
         assert!(!leases.is_active_run(&session_id, "run_test"));
     }
 }

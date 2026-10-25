@@ -41,6 +41,16 @@ pub struct SessionActivityGuard {
     _lock: session_files::SessionLock,
 }
 
+/// Exclusive dispatch ownership across independent coordinators/processes.
+/// Separate from history control: the owner may append while holding this
+/// guard. Keep it alive through outer terminal projection. Lock files have
+/// stable identities and are not unlinked on release; process exit closes the
+/// OS handle, so there is no expiring TTL that can admit a second live owner.
+#[must_use]
+pub struct SessionDispatchGuard {
+    _lock: session_files::SessionLock,
+}
+
 /// Exclusive history-control scope. No new run or raw append can enter until
 /// this scope ends. It deliberately does not hold the SQLite/event-I/O mutex.
 #[must_use]
@@ -117,6 +127,18 @@ impl<'db> EventStore<'db> {
                 &self.db.session_files_root(),
                 session_id,
                 false,
+            )?,
+        })
+    }
+
+    /// Claim the session before durable admission or snapshot recovery. Local
+    /// queues may share the returned guard, never acquire another OS handle.
+    /// Retain `acquire_activity` separately to exclude history control too.
+    pub fn acquire_dispatch(&self, session_id: SessionId) -> Result<SessionDispatchGuard> {
+        Ok(SessionDispatchGuard {
+            _lock: session_files::try_lock_session_dispatch(
+                &self.db.session_files_root(),
+                session_id,
             )?,
         })
     }

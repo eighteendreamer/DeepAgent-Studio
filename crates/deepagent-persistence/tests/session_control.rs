@@ -35,6 +35,40 @@ fn assert_busy<T>(result: deepagent_core::error::Result<T>) {
 }
 
 #[test]
+fn dispatch_owner_refuses_competitors_without_blocking_append_or_other_sessions() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("dispatch.db");
+    let db = Database::open(&path).unwrap();
+    let second = Database::open(&path).unwrap();
+    let id = seed(&db);
+    let other = seed(&db);
+    let store = EventStore::new(&db);
+    let second_store = EventStore::new(&second);
+    let owner = store.acquire_dispatch(id).unwrap();
+    assert_busy(second_store.acquire_dispatch(id));
+    let other_owner = second_store.acquire_dispatch(other).unwrap();
+    store
+        .append(
+            id,
+            EventPayload::SessionEnded { reason: None },
+            Timestamp::from_millis(3),
+        )
+        .unwrap();
+    assert_eq!(store.load_session(id).unwrap().len(), 4);
+    drop(owner);
+    let owner = second_store.acquire_dispatch(id).unwrap();
+    assert_busy(store.acquire_dispatch(id));
+    drop(owner);
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _owner = store.acquire_dispatch(id).unwrap();
+        panic!("fixture dispatch owner unwinds");
+    }));
+    assert!(caught.is_err());
+    drop(second_store.acquire_dispatch(id).unwrap());
+    drop(other_owner);
+}
+
+#[test]
 fn activity_allows_append_but_refuses_control_until_every_owner_exits() {
     let db = Database::open_in_memory().unwrap();
     let id = seed(&db);

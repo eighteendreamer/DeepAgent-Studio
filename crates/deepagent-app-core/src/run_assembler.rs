@@ -397,7 +397,7 @@ impl<'a> RunAssembler<'a> {
             env_mode,
             session_project.as_deref(),
             normalized_input.clone(),
-            cancellation.flag(),
+            cancellation,
             |active_run| {
                 let found = coordinator
                     .request_cancel(active_run)
@@ -424,7 +424,6 @@ impl<'a> RunAssembler<'a> {
         let response_history = accepted_turn.response_history;
         let prior_events = accepted_turn.prior_events;
         let session_id_str = accepted_turn.session_id;
-        let _input_lease = accepted_turn.lease;
         cancellation.add_alias(session_id_str.clone());
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled during preparation"));
@@ -1353,7 +1352,7 @@ impl<'a> RunAssembler<'a> {
             None,
             session_project.as_deref(),
             normalized_input,
-            cancellation.flag(),
+            cancellation,
             |active_run| {
                 self.coordinator
                     .request_cancel(active_run)
@@ -1364,7 +1363,6 @@ impl<'a> RunAssembler<'a> {
         .await?;
         let mut session = accepted_turn.session;
         let session_id = accepted_turn.session_id;
-        let _input_lease = accepted_turn.lease;
         cancellation.add_alias(session_id.clone());
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled during workflow preparation"));

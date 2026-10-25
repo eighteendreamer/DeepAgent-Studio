@@ -5,16 +5,18 @@
 //! cross-transport control signals that must survive a client disconnect.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_persistence::event_store::{EventStore, SessionActivityGuard};
+use deepagent_core::id::SessionId;
+use deepagent_persistence::event_store::{EventStore, SessionActivityGuard, SessionDispatchGuard};
 use deepagent_persistence::run_control::RunControlStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use serde::Serialize;
 
 use crate::approval_bridge::PendingApprovals;
+use crate::input_runtime::InputLeaseGuard;
 use crate::question_bridge::PendingQuestions;
 
 pub(crate) type CancellationMap =
@@ -28,6 +30,7 @@ pub struct RunCoordinator {
     cancellations: CancellationMap,
     run_ids: Arc<Mutex<HashMap<String, String>>>,
     admissions: Arc<Mutex<HashMap<String, ActiveRunRegistration>>>,
+    session_owners: Arc<Mutex<HashMap<SessionId, Weak<SessionDispatchGuard>>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +59,7 @@ impl RunCoordinator {
             cancellations: Arc::new(Mutex::new(HashMap::new())),
             run_ids: Arc::new(Mutex::new(HashMap::new())),
             admissions: Arc::new(Mutex::new(HashMap::new())),
+            session_owners: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -166,6 +170,24 @@ impl RunCoordinator {
         // Acquire before durable admission/snapshot recovery, and retain it in
         // the existing registration through outer failure/terminal projection.
         let activity = EventStore::new(&self.db).acquire_activity(id)?;
+        // Reentrancy belongs to this coordinator's queue, not a PID or the
+        // whole process. Independent ChatServices must still conflict. Weak
+        // entries cannot extend ownership beyond the last admitted run.
+        let owner = {
+            let mut owners = self
+                .session_owners
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            owners.retain(|_, owner| owner.strong_count() > 0);
+            match owners.get(&id).and_then(Weak::upgrade) {
+                Some(owner) => owner,
+                None => {
+                    let owner = Arc::new(EventStore::new(&self.db).acquire_dispatch(id)?);
+                    owners.insert(id, Arc::downgrade(&owner));
+                    owner
+                }
+            }
+        };
         let mut admissions = self.admissions.lock().unwrap_or_else(|p| p.into_inner());
         RunStore::new(&self.db).create(run_id, session_id, None, now_millis())?;
         let mut registration = ActiveRunRegistration::new(
@@ -175,6 +197,7 @@ impl RunCoordinator {
             None,
         );
         registration._session_activity = Some(activity);
+        registration._session_dispatch = Some(owner);
         admissions.insert(run_id.to_owned(), registration);
         Ok(())
     }
@@ -273,7 +296,9 @@ pub(crate) struct ActiveRunRegistration {
     run_id: String,
     cancellation: Arc<deepagent_runtime::CancellationTree>,
     keys: Mutex<Vec<String>>,
+    input_lease: Mutex<Option<InputLeaseGuard>>,
     _session_activity: Option<SessionActivityGuard>,
+    _session_dispatch: Option<Arc<SessionDispatchGuard>>,
 }
 
 impl ActiveRunRegistration {
@@ -289,7 +314,9 @@ impl ActiveRunRegistration {
             run_id: run_id.clone(),
             cancellation: Arc::new(deepagent_runtime::CancellationTree::new()),
             keys: Mutex::new(Vec::new()),
+            input_lease: Mutex::new(None),
             _session_activity: None,
+            _session_dispatch: None,
         };
         registration.add_alias(run_id);
         if let Some(session_id) = session_id {
@@ -316,6 +343,14 @@ impl ActiveRunRegistration {
 
     pub(crate) fn flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
         self.cancellation.legacy_flag()
+    }
+
+    /// Inner execution may return before terminal/failure projection writes
+    /// the session. Do not wake the local next input in that window either.
+    pub(crate) fn retain_input_lease(&self, lease: InputLeaseGuard) {
+        let mut held = self.input_lease.lock().unwrap_or_else(|p| p.into_inner());
+        debug_assert!(held.is_none(), "one input lease per run registration");
+        *held = Some(lease);
     }
 
     pub(crate) fn cancellation(&self) -> deepagent_runtime::CancellationTree {
@@ -369,11 +404,31 @@ mod tests {
         let mut session = deepagent_session::Session::create(&db, &clock, None).unwrap();
         let id = session.id();
         let coordinator = RunCoordinator::new(db.clone());
+        let competitor = RunCoordinator::new(db.clone());
         let store = EventStore::new(&db);
         coordinator.admit("first", &id.to_string()).unwrap();
         coordinator.admit("queued", &id.to_string()).unwrap();
+        let leases = Arc::new(deepagent_runtime::InputLeaseRegistry::default());
+        let input = deepagent_runtime::InputIngress::normalize(
+            Some(id.to_string()),
+            "workspace",
+            "input",
+            deepagent_runtime::InputMode::Prompt,
+            Vec::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            leases.acquire(&id.to_string(), "first", input.clone()),
+            deepagent_runtime::LeaseDecision::Acquired
+        );
+        leases.acquire(&id.to_string(), "queued", input);
         assert!(store.begin_control(id).is_err());
         let first = coordinator.take_admission("first").unwrap();
+        first.retain_input_lease(InputLeaseGuard::new(
+            leases.clone(),
+            id.to_string(),
+            "first".into(),
+        ));
         assert!(coordinator.request_cancel("first").unwrap().accepted);
         assert!(store.begin_control(id).is_err());
         let terminal = deepagent_runtime::KernelTerminal {
@@ -391,6 +446,9 @@ mod tests {
         // The durable run is already terminal, but its outer session projection
         // has not happened. A check of unfinished runs would race this window.
         assert!(store.begin_control(id).is_err());
+        assert!(competitor.admit("competitor", &id.to_string()).is_err());
+        assert!(RunStore::new(&db).get("competitor").unwrap().is_none());
+        assert!(leases.is_active_run(&id.to_string(), "first"));
         session
             .append(deepagent_core::event::EventPayload::RunTerminal {
                 kind: "cancelled".into(),
@@ -398,12 +456,58 @@ mod tests {
             })
             .unwrap();
         drop(first);
+        assert!(leases.is_active_run(&id.to_string(), "queued"));
+        assert!(competitor.admit("competitor", &id.to_string()).is_err());
         assert!(
             store.begin_control(id).is_err(),
             "queued admission still owns history"
         );
         drop(coordinator.take_admission("queued").unwrap());
         store.begin_control(id).unwrap().truncate_after(0).unwrap();
+        competitor.admit("competitor", &id.to_string()).unwrap();
+    }
+
+    #[test]
+    fn dispatch_owner_spans_connections_and_local_queue_but_not_other_sessions() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("owner.db");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let second_db = Arc::new(Database::open(&path).unwrap());
+        let clock = deepagent_core::clock::FixedClock::new(1_000);
+        let id = deepagent_session::Session::create(&db, &clock, None)
+            .unwrap()
+            .id();
+        let other = deepagent_session::Session::create(&db, &clock, None)
+            .unwrap()
+            .id();
+        let owner = RunCoordinator::new(db.clone());
+        let competitor = RunCoordinator::new(second_db.clone());
+        owner.admit("first", &id.to_string()).unwrap();
+        owner.clone().admit("queued", &id.to_string()).unwrap();
+        let active = owner.take_admission("first").unwrap();
+        active.add_alias(id.to_string());
+        let before = serde_json::to_value(EventStore::new(&db).load_session(id).unwrap()).unwrap();
+        let error = competitor.admit("refused", &id.to_string()).unwrap_err();
+        assert!(error.to_string().contains("is busy (dispatch.lock)"));
+        assert!(RunStore::new(&second_db).get("refused").unwrap().is_none());
+        assert!(!competitor.request_cancel("first").unwrap().accepted);
+        assert!(!competitor.request_cancel(&id.to_string()).unwrap().accepted);
+        assert!(!active.cancellation().is_cancelled());
+        assert_eq!(
+            serde_json::to_value(EventStore::new(&second_db).load_session(id).unwrap()).unwrap(),
+            before
+        );
+        competitor.admit("other", &other.to_string()).unwrap();
+        drop(active);
+        assert!(competitor.admit("refused", &id.to_string()).is_err());
+        drop(owner.take_admission("queued").unwrap());
+        competitor.admit("refused", &id.to_string()).unwrap();
+        drop(competitor.take_admission("refused").unwrap());
+        // Durable admission errors must not leave a strong owner in the map.
+        assert!(owner.admit("first", &id.to_string()).is_err());
+        competitor
+            .admit("after-admission-error", &id.to_string())
+            .unwrap();
     }
 
     #[test]

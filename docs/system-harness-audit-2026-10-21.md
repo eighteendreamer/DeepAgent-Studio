@@ -14,8 +14,9 @@
 | H-20 | 已修复并验收（2026-10-26，Windows 本机所列行为） | DAG产出保留/依赖交付；修复提交 `ae193ea8`，范围见原项与台账 |
 | H-22 | 已修复并验收（2026-10-26，Windows 本机所列行为） | DAG子运行执行根与工具绑定；修复提交 `c0c127e3`，范围见原项与台账 |
 | H-23 | 已修复并验收（2026-10-26，Windows 本机范围） | 来源身份/快照、私有提取文件与activity gate；专项41、原探针1、三入口wire1通过；修复提交 `b3614d8c` |
+| H-33 | 已修复并验收（2026-10-26，Windows 本机所列范围） | 接纳前独占dispatch owner，outer持有本地/跨宿主租约；含原双进程探针的5个正式场景默认通过，AppCore1131/78、persistence67/session_control9通过；完整workspace/严格lint既有失败见原项；本次独立提交后回填hash |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **8**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **272（均待修复）**；306 是历史编号槽位，不是有效未修数量。本轮仅H-23，已完成下述Windows本机范围验收；整体goal未完成。下一项先复核H-33的跨宿主会话所有权及其与H-32的边界，不机械挑选已修复的H-24。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **9**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **271（均待修复）**；306 是历史编号槽位，不是有效未修数量。本轮仅H-33，已完成下述Windows本机范围验收；整体goal未完成。下一项准备复核H-32的无所有权启动恢复；H-33不使H-32/H-44自动关闭。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -1156,6 +1157,33 @@ AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reop
 - 验收需包括两进程持锁运行、次宿主仅查询、次宿主也运行、主宿主真正退出后接管、同进程重复打开，以及运行/动作/审批/子运行的共同恢复边界。本轮没有修改生产恢复行为，完整崩溃与多宿主压力测试仍未完成。
 
 ### H-33：输入租约仅限 ChatService 内存，两宿主可同时推进同一会话
+
+#### 2026-10-26 修复过程与本机验收（H-33）
+
+**当前状态：已修复并验收，限以下Windows本机范围。** 下列即时记录中的“尚未修改/待重验/进行中”保留其发生时状态；最终结果见本节末，原始失败不删除。代码/测试及两份文档将独立提交，hash取得后另做文档回填。
+
+- 授权范围：仅本仓库临时目录、文件 SQLite、独立本机测试进程及离线模型 transport，不访问真实内网、供应商或凭据；不处理 H-165 或用户排除的 encrypted-content 错误。
+- E-H33-20261026-01（command；content_hash=n/a）：在 HEAD `cd8d47e5` 执行 `cargo test -p deepagent-app-core --test host_session_audit audit_two_hosts_cannot_dispatch_the_same_session_concurrently --offline -j 1 -- --exact --ignored --nocapture`，退出 1，0 passed / 1 failed，测试体 0.47s。实测 `child_role=standby parent_pending=true child_reached_model=true parent_state=Some("running_turn") child_state=Some("running_turn") child_sees_parent_input=true child_sees_parent_answer=false parent_result_ok=true`，子进程退出 0 且子调用成功。两个 fixture 已在断言前释放和回收。
+- F-H33（P1；validated；confidence=high；evidence_ids=[E-H33-20261026-01]）：当前接纳链仍允许竞争宿主按未完成历史推进同会话；本次不证明工具竞争或事件文件损坏。
+- P-H33（callflow）：正式 AppService/ChatService 接纳 → 父 transport barrier → 独立 Standby 恢复同 session → 子模型派发，见 E-H33-20261026-01。修复将沿现有接纳/租约与 outer terminal 生命周期核对；H-32 尚独立待修，未决定归并。
+- 上一交接中的原探针执行未保留可取回结果；本轮先确认无相关遗留进程后才执行上述一次有效复核，不将未知结果算作复现或通过。尚未修改生产代码，尚无修复验收结论。
+
+即时实施记录（同日，后续验证进行中）：
+
+- 实现沿现有 `session_files`/`EventStore` 增加独占 dispatch scope，锁文件不删除、无TTL；在 `RunCoordinator::admit` durable create之前取得，现有 registration跨outer terminal持有。同coordinator排队接纳共享Arc，Weak索引不延长owner寿命；不同coordinator/进程同session冲突，异session独立。保留既有shared activity/history control门，未新建store、执行器或取消中心；没有修改供应商、DeepSeek协议、前端或数据库schema。借鉴的是Codex writer-before-recovery与guard生命周期，不复制业务代码；本地队列共享与双scope为适配既有架构的本地设计。
+- 本地输入租约移至既有outer registration持有，聊天/工作流两入口同步；等待Future丢弃时清除队列项，避免被提升为无主输入。跨宿主取消仍明确not-accepted，不伪称转发成功。H-32仍独立未关闭；进程退出解锁不等于崩溃run终态恢复。
+- E-H33-20261026-02：首轮 `cargo test -p deepagent-app-core --test host_session_audit --offline -j 1 -- --nocapture` 退出0，1 passed / 0 ignored，3.44s。原探针已移除ignore；`child_reached_model=false child_state=None`，子结果为 `is busy (dispatch.lock)`，父正常成功，独立coordinator随后续聊看到父回答且无拒绝输入。此时尚未加入后续四个正式场景，不把它们算作已测。
+- E-H33-20261026-03：加入四个场景后以同一命令重跑，退出0，5 passed / 0 ignored，3.49s。正式ChatService验证异session两请求同时pending、本地后续输入自动打断前run并成功收尾（cancelled/succeeded）、准备失败后重新派发、Future abort后另一coordinator可接管，以及独立进程持有真实模型请求时竞争拒绝、kill/wait后无需TTL可派发。失败输入未进入会话；跨宿主取消父run/session均not-accepted。崩溃旧run仍未终结的断言也通过，明确不是本项恢复成果。尚待底层/全量回归与lint，不据5项绿色关闭。
+- 中间版本整组：`cargo test -p deepagent-app-core -p deepagent-persistence --offline -j 1 -- --quiet` 退出0；AppCore lib 1130 passed/69 ignored，kernel_v2_e2e 107/90，checkpoint 18/1，host_session 5/0，workflow 4/41；persistence lib 67 passed、session_control 9 passed，两crate doc-tests 0。coordinator专项10 passed（含outer终态窗口与独立连接拒绝）。这些结果对应第一版交接时机，不替代下列完善后的重验。
+- 自查后完善：第一版本地input lease在`accept_input_turn`成功返回后才交outer registration，若历史恢复本身失败仍会提前释放。本轮将registration传入既有accept seam，在registry登记租约时即交outer持有；聊天/工作流同步，不新增参数数量。新增“真实缺失session恢复失败后仍持有本地租约，outer drop才提升follower”回归；已有新会话测试改为断言drop accepted并不释放，drop outer才释放。后续workspace/专项需按此版本重新验证，尚未宣称通过。
+- 兼容性及验收边界：Desktop两个启动入口已静态核对复用`admit_run`且在ACK前传播错误，未改Tauri command/DTO；CLI/工作流仍由RunAssembler接入同一coordinator。冲突沿现有CoreError返回busy，不新增机器协议错误类型。该锁是本地协作式文件锁，不是OS沙箱，也不支持向其他宿主转发排队/取消；所有竞争宿主必须升级后才有共同契约。稳定dispatch锁文件不在正常释放时删除，避免inode/句柄身份分裂；不新增清理器。没有跑Linux/macOS、共享网络文件系统、真实供应商或Desktop UI；没有用工具副作用验证Future abort后的外部工作全部静止，不能由离线transport/OS句柄释放推断这一点。H-32、H-44及其他独立副作用/取消问题仍保留，不归并或冒称修复。
+- 完善后即时回归：`cargo test --workspace --offline -j 1 -- --quiet` 已编译完成（7m00s），AppCore lib 1131 passed/78 ignored，host_session 5 passed/0 ignored（3.72s），kernel_v2_e2e 107/90、checkpoint18/1、workflow4/41。新缺失session恢复失败、本地等待Future丢弃/取消、outer终态窗口与连接互斥均在此AppCore lib默认集内；此时workspace后续crate及lint仍在运行，尚无全库成功结论。
+- workspace最终退出1：既有H-306，`canvas_prompt::tests::every_node_kind_owns_exactly_one_profile` 因 `creative.video-edit.v1` 的空 `defaultUserPrompt` 失败（prompts27 passed/1 failed）。此前builtins312/1、CLI88/27、protocol12 passed、SDK5/12及stdio6 passed、models96/25、persistence67 passed/session_control9 passed均通过；此后的runtime/session等target及全库doc-tests未执行，另行补跑相关部分，不把全库失败覆盖成通过。
+- 严格 `cargo clippy -p deepagent-app-core -p deepagent-persistence --lib --offline -j 1 --no-deps -- -D warnings` 退出1，被本轮未改的 `persistence/src/run_store.rs:127` 既有 `explicit_counter_loop` 阻断；AppCore严格lint尚未因此完成。普通lib lint与相关补跑进行中，不顺手修改该基线。
+- 最终补验：`cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet` 退出0，runtime lib284 passed/16 ignored、e2e_stabilization5 passed（58.59s）、tokenizer_pressure1/1、schedule0/2；session14 passed，两crate doc-tests0。全workspace其余未执行targets/doc-tests仍不记通过。
+- 最终lint：`cargo clippy -p deepagent-app-core -p deepagent-persistence --lib --offline -j 1 --no-deps` 退出0，AppCore保留既有10 warning（context_runtime八处clone_on_copy、plugin_preparation类型复杂度、未修改函数base_registry_request参数数），persistence保留run_store一处warning。`cargo clippy -p deepagent-app-core -p deepagent-persistence --all-targets --offline -j 1 --no-deps` 退出1，既有`kernel_v2_e2e/mcp_discovery_restore.rs:433 panicking_unwrap`阻断。另行 `cargo clippy -p deepagent-app-core --test host_session_audit --offline -j 1 --no-deps` 与 `cargo clippy -p deepagent-persistence --test session_control --offline -j 1 --no-deps` 均退出0，未报告本轮测试的新增告警。失败路径已用git diff核对未改，不降低/屏蔽lint、不顺手修其他问题。
+- E-H33-20261026-04（command；content_hash=n/a）：以上最终workspace实际已执行部分、相关补跑和定向lint，结合E-01原失败与E-02/03中间结果，验证当前正式接纳/历史恢复之前已取得唯一跨宿主owner、本地队列保留、终态窗口不释放、失败/取消/abort/进程退出不留下永久锁。原探针已转默认，未以ignore冒充通过。`cargo fmt --all -- --check`、diff及306行唯一性/无缺号/列数检查通过；所有观察只用合成本机fixture。遵循code-audit人工调用链核对与docs-generator逐次证据记录，不复制参考业务代码或另造运行链。
+- 本项验收结论：解决所列同session多宿主派发竞争及其租约生命周期；全库仍未通过、跨平台/真实UI/供应商/外部副作用静止未验。无schema迁移、无DeepSeek协议变更；协作宿主须全部升级；H-32/H-44及其他独立问题不关闭。修复提交hash尚待本次独立commit取得。
 
 **级别：高（P1）；范围：独立 CLI/桌面宿主共用数据目录，并同时继续同一个 session。** 与 H-32 不同，本项不需要工具或子 Agent；即使父动作表为空，父运行也未被启动恢复终结，两个模型循环仍可并发执行。
 

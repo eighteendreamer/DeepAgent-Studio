@@ -2,7 +2,8 @@
 //! Model responses are held at a filesystem barrier; no external API is used.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -54,6 +55,31 @@ impl HttpTransport for GatedModel {
         }
         Ok(())
     }
+
+    async fn stream_cancelled(
+        &self,
+        request: TransportRequest,
+        sink: &mut dyn EventSink,
+        cancel: Arc<AtomicBool>,
+    ) -> Result<()> {
+        tokio::select! {
+            result = self.stream(request, sink) => result,
+            _ = async {
+                while !cancel.load(Ordering::Acquire) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            } => Err(CoreError::other("fixture request cancelled")),
+        }
+    }
+}
+
+struct ChildOwner(Child);
+
+impl Drop for ChildOwner {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 async fn chat_for(app: &AppService, root: &Path, label: &'static str) -> ChatService {
@@ -93,7 +119,6 @@ async fn run_turn(chat: ChatService, session_id: String, run_id: &'static str) -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[ignore = "audit: session dispatch ownership must cover independent host processes"]
 async fn audit_two_hosts_cannot_dispatch_the_same_session_concurrently() {
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
         let root = PathBuf::from(root);
@@ -102,6 +127,13 @@ async fn audit_two_hosts_cannot_dispatch_the_same_session_concurrently() {
         assert!(app.recover_unfinished_runs().unwrap().is_empty());
         std::fs::write(root.join("child-role"), "standby").unwrap();
         let chat = chat_for(&app, &root, "child").await;
+        assert!(!chat.request_cancel("audit-parent-run").unwrap().accepted);
+        assert!(
+            !chat
+                .request_cancel(&std::env::var(CHILD_SESSION).unwrap())
+                .unwrap()
+                .accepted
+        );
         let result = run_turn(
             chat,
             std::env::var(CHILD_SESSION).unwrap(),
@@ -122,14 +154,16 @@ async fn audit_two_hosts_cannot_dispatch_the_same_session_concurrently() {
     let mut parent = tokio::spawn(run_turn(chat, session_id.clone(), "audit-parent-run"));
     assert!(wait_for_file(&root.join("parent-request.json"), Duration::from_secs(10)).await);
 
-    let mut child = Command::new(std::env::current_exe().unwrap())
-        .args(["--exact", TEST, "--ignored", "--test-threads=1"])
-        .env(CHILD_ROOT, root)
-        .env(CHILD_SESSION, &session_id)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = ChildOwner(
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", TEST, "--test-threads=1"])
+            .env(CHILD_ROOT, root)
+            .env(CHILD_SESSION, &session_id)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let child_reached_model =
         wait_for_file(&root.join("child-request.json"), Duration::from_secs(3)).await;
     let parent_still_pending = !parent.is_finished();
@@ -159,12 +193,12 @@ async fn audit_two_hosts_cannot_dispatch_the_same_session_concurrently() {
     };
     let deadline = Instant::now() + Duration::from_secs(10);
     let child_status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
+        if let Some(status) = child.0.try_wait().unwrap() {
             break Some(status);
         }
         if Instant::now() >= deadline {
-            child.kill().unwrap();
-            child.wait().unwrap();
+            child.0.kill().unwrap();
+            child.0.wait().unwrap();
             break None;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -192,4 +226,202 @@ async fn audit_two_hosts_cannot_dispatch_the_same_session_concurrently() {
         !child_reached_model,
         "a second host must not dispatch a concurrent model turn into the same session"
     );
+    assert!(
+        child_state.is_none(),
+        "conflict must precede durable admission"
+    );
+    assert!(child_result.contains("is busy"), "{child_result}");
+    assert!(parent_result.is_ok(), "owner must finish normally");
+
+    // An independent coordinator can resume only after the owner has finished.
+    let resumed = chat_for(&app, root, "resumed").await;
+    run_turn(resumed, session_id, "audit-resumed-run")
+        .await
+        .unwrap();
+    let request = std::fs::read_to_string(root.join("resumed-request.json")).unwrap();
+    assert!(request.contains("audit-parent-answer"));
+    assert!(!request.contains("audit-child-run:"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn independent_services_can_dispatch_different_sessions_concurrently() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir(root.join("workspace")).unwrap();
+    let app = AppService::open(root.join("deepagent.db")).unwrap();
+    let first = chat_for(&app, root, "first").await;
+    let second = chat_for(&app, root, "second").await;
+    let sid1 = first.create_session(None).unwrap();
+    let sid2 = second.create_session(None).unwrap();
+    let turn1 = tokio::spawn(run_turn(first, sid1, "different-first"));
+    let turn2 = tokio::spawn(run_turn(second, sid2, "different-second"));
+    let first_dispatched =
+        wait_for_file(&root.join("first-request.json"), Duration::from_secs(10)).await;
+    let second_dispatched =
+        wait_for_file(&root.join("second-request.json"), Duration::from_secs(3)).await;
+    let both_pending = !turn1.is_finished() && !turn2.is_finished();
+    std::fs::write(root.join("release"), "release").unwrap();
+    let result1 = turn1.await.unwrap();
+    let result2 = turn2.await.unwrap();
+    host_lock::release(root);
+    assert!(first_dispatched && second_dispatched && both_pending);
+    assert!(result1.is_ok() && result2.is_ok());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn local_queue_interrupts_owner_and_remains_owned_until_follower_finishes() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir(root.join("workspace")).unwrap();
+    let app = AppService::open(root.join("deepagent.db")).unwrap();
+    let chat = chat_for(&app, root, "local").await;
+    let competitor = chat_for(&app, root, "competitor").await;
+    let sid = chat.create_session(None).unwrap();
+    let owner = tokio::spawn(run_turn(chat.clone(), sid.clone(), "local-owner"));
+    assert!(wait_for_file(&root.join("local-request.json"), Duration::from_secs(10)).await);
+    let follower = tokio::spawn(run_turn(chat, sid.clone(), "local-follower"));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let follower_dispatched = loop {
+        let request = std::fs::read_to_string(root.join("local-request.json")).unwrap_or_default();
+        if request.contains("local-follower:") {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    let refused = run_turn(competitor, sid, "local-competitor").await;
+    std::fs::write(root.join("release"), "release").unwrap();
+    assert!(owner.await.unwrap().is_ok());
+    assert!(follower.await.unwrap().is_ok());
+    host_lock::release(root);
+    assert!(follower_dispatched);
+    assert!(refused.unwrap_err().to_string().contains("is busy"));
+    let store = RunStore::new(app.database());
+    assert_eq!(
+        store
+            .get("local-owner")
+            .unwrap()
+            .unwrap()
+            .terminal_kind
+            .as_deref(),
+        Some("cancelled")
+    );
+    assert_eq!(
+        store
+            .get("local-follower")
+            .unwrap()
+            .unwrap()
+            .terminal_kind
+            .as_deref(),
+        Some("succeeded")
+    );
+    assert!(store.get("local-competitor").unwrap().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_setup_and_aborted_future_release_dispatch_ownership() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir(root.join("workspace")).unwrap();
+    let app = AppService::open(root.join("deepagent.db")).unwrap();
+    let chat = chat_for(&app, root, "aborted").await;
+    let sid = chat.create_session(None).unwrap();
+    // InputIngress rejects whitespace before history recovery/model dispatch.
+    let failed = chat
+        .run_in_session(
+            "   ",
+            Some(&sid),
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            Some("failed-setup"),
+            |_| {},
+            |_| {},
+        )
+        .await;
+    assert!(failed.is_err());
+    assert_eq!(
+        RunStore::new(app.database())
+            .get("failed-setup")
+            .unwrap()
+            .unwrap()
+            .terminal_kind
+            .as_deref(),
+        Some("failed")
+    );
+    assert!(!root.join("aborted-request.json").exists());
+    let owner = tokio::spawn(run_turn(chat.clone(), sid.clone(), "future-abort"));
+    assert!(wait_for_file(&root.join("aborted-request.json"), Duration::from_secs(10)).await);
+    owner.abort();
+    assert!(owner.await.unwrap_err().is_cancelled());
+    assert!(!chat.request_cancel("future-abort").unwrap().accepted);
+    let resumed = chat_for(&app, root, "after-abort").await;
+    assert!(!resumed.request_cancel("future-abort").unwrap().accepted);
+    std::fs::write(root.join("release"), "release").unwrap();
+    run_turn(resumed, sid, "after-future-abort").await.unwrap();
+    host_lock::release(root);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn killed_owner_process_releases_dispatch_without_ttl() {
+    const ROOT: &str = "DEEPAGENT_DISPATCH_CRASH_ROOT";
+    if let Some(root) = std::env::var_os(ROOT) {
+        let root = PathBuf::from(root);
+        let app = AppService::open(root.join("deepagent.db")).unwrap();
+        let chat = chat_for(&app, &root, "crash-owner").await;
+        let sid = chat.create_session(None).unwrap();
+        std::fs::write(root.join("crash-session"), &sid).unwrap();
+        run_turn(chat, sid, "crash-owner-run").await.unwrap();
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    std::fs::create_dir(root.join("workspace")).unwrap();
+    let mut child = ChildOwner(
+        Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "killed_owner_process_releases_dispatch_without_ttl",
+                "--test-threads=1",
+            ])
+            .env(ROOT, root)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(
+        wait_for_file(
+            &root.join("crash-owner-request.json"),
+            Duration::from_secs(10)
+        )
+        .await
+    );
+    let app = AppService::open(root.join("deepagent.db")).unwrap();
+    assert!(matches!(app.host_role(), HostRole::Standby { .. }));
+    let sid = std::fs::read_to_string(root.join("crash-session")).unwrap();
+    let chat = chat_for(&app, root, "after-crash").await;
+    let error = run_turn(chat.clone(), sid.clone(), "before-crash")
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("is busy"));
+    assert!(!root.join("after-crash-request.json").exists());
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    std::fs::write(root.join("release"), "release").unwrap();
+    run_turn(chat, sid, "after-crash").await.unwrap();
+    assert!(root.join("after-crash-request.json").is_file());
+    // This tests OS ownership release, not repair of the crashed run's durable
+    // terminal. Startup recovery/terminal consistency remain separate H items.
+    assert!(RunStore::new(app.database())
+        .get("crash-owner-run")
+        .unwrap()
+        .unwrap()
+        .finished_at
+        .is_none());
+    host_lock::release(root);
 }

@@ -697,7 +697,20 @@ pub(crate) fn try_lock_session_control(
     session_id: SessionId,
     exclusive: bool,
 ) -> Result<SessionLock> {
-    let file = open_session_lock(root, session_id, "control.lock")?;
+    try_lock_session_scope(root, session_id, "control.lock", exclusive)
+}
+
+pub(crate) fn try_lock_session_dispatch(root: &Path, session_id: SessionId) -> Result<SessionLock> {
+    try_lock_session_scope(root, session_id, "dispatch.lock", true)
+}
+
+fn try_lock_session_scope(
+    root: &Path,
+    session_id: SessionId,
+    scope: &str,
+    exclusive: bool,
+) -> Result<SessionLock> {
+    let file = open_session_lock(root, session_id, scope)?;
     let result = if exclusive {
         FileExt::try_lock_exclusive(&file)
     } else {
@@ -709,13 +722,13 @@ pub(crate) fn try_lock_session_control(
             if error.raw_os_error() == fs2::lock_contended_error().raw_os_error()
                 || error.kind() == std::io::ErrorKind::WouldBlock =>
         {
-            tracing::info!(%session_id, exclusive, "session control access refused while busy");
+            tracing::info!(%session_id, scope, exclusive, "session access refused while busy");
             Err(CoreError::invalid(format!(
-                "session {session_id} is busy; wait for active runs or history control to finish"
+                "session {session_id} is busy ({scope}); wait for its owner to finish"
             )))
         }
         Err(error) => Err(CoreError::Persistence(format!(
-            "acquire session {session_id} control lock: {error}"
+            "acquire session {session_id} {scope}: {error}"
         ))),
     }
 }
