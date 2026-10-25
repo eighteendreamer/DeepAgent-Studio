@@ -6,7 +6,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交取得后回填 |
+| H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交 `56b9e7b9` |
 
 逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **1**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **279**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-72，不在本轮夹带修改。
 
@@ -7952,6 +7952,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 #### 2026-10-26 修复方式、验收与残余限制
 
+- 修复提交：`56b9e7b9`（代码、测试与当时两份文档一起提交）；最终去重后的源码重跑两组默认测试、格式与 no-deps 严格 lint 仍通过，结果与下文一致。后续 hash 记录单独文档提交，不 amend、不推送。
 - 本轮只修 H-286。`MovePathTool` 仍复用原 ToolPipeline 的权限、检查点、结果提交与缓存；私有 `deepagent-builtins/src/file_move.rs` 仅承接原生文件提交，不增加第二套工具/运行/恢复中心。先以实际路径身份拒绝自身、workspace root 及祖先/后代关系，再将旧目标 rename 到专属 sibling staging；源发布失败则恢复旧目标，不再先递归删除业务目标。文件、非空目录及原有跨类型覆盖保持可用；跨卷仍明确失败，不暗中 copy/delete。
 - 发布、staging 和恢复全部使用 no-replace native rename，防止覆盖竞争期间新出现的目标。Windows 使用不含 `REPLACE_EXISTING/COPY_ALLOWED` 的 `MoveFileExW`；Linux/Android 使用 `renameat2` 的 `NOREPLACE`，macOS 使用 `renamex_np` 的 `EXCL`；没有能力时显式返回失败。依据为 [Microsoft MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)、[Linux renameat2](https://man7.org/linux/man-pages/man2/rename.2.html)、[Apple XNU 声明](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/stdio.h)及锁定的 windows-sys 0.59/libc 0.2.186 源码，不猜测普通 rename 拥有 no-clobber 语义。
 - staging 在容纳旧目标之前就取消自动递归析构清理，恢复失败/panic 不会由 TempDir Drop 删除唯一旧副本。恢复失败返回 `destination_restored=false/restore_error/recovery_path`；发布已提交但清理失败返回真实 `moved/verified` 加 warning，避免把已提交动作伪装成失败诱发重试。三阶段放在同一个 blocking 本地操作中，丢弃异步等待不会在文件操作之间触发隐式清理；这不等于强行取消已启动 native 调用。
