@@ -76,6 +76,7 @@
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness SDK 断线后的事件等待 | 真实本机子进程退出且生产 reader 已清空 pending RPC，保留公开 client 时，既有和新订阅均无断线/关闭结果；丢弃 client 后两者才 Closed | 已确认 H-256（P2）；正常完成通知交付对照通过，Windows stdio fixture；未运行真实 Agent/模型或桌面 |
 | TypeScript SDK 的 CLI JSONL 进程终态 | 真实子进程只输出部分事件或零条事件后 exit=23，公开 runJsonl 仍无异常结束；成功对照正常 | 已确认 H-266（P2）；正式 SDK 与本机 Node CLI fixture，未运行真实 Rust CLI/模型；stdout.end 提前结束假设未获证实 |
+| TypeScript SDK 的 CLI JSONL 进程归属 | return、for-await break、解析失败及 close 后，直接 child 仍存活并处理后置 probe 写 canary；完整消费对照正常 | 已确认 H-267（P2）；正式 SDK 与本机 Node fixture，测试自身回收全部进程；未测真实模型、工具副作用或进程树 |
 | Provider SSE 非法 UTF-8 的故障隔离 | 合法事件后插入一个非法字节，正式 HTTP→ModelClient 不及时拒绝，后续文本和完整终态均未交付；解码器同序列保留 65,537 字节 | 已确认 H-257（P2）；中文/emoji 全切点解码和真实 HTTP 正常对照通过；未测真实供应商、Kernel 或 OOM |
 | CLI TUI 的模型 attempt 回滚 | 正式聊天部分输出后断线并重试成功，runtime及run_events有reset，落盘只有新答案，终端state与实际HistoryCell渲染仍拼入废弃答案和推理 | 已确认 H-258（P2）；无故障/首个delta前断线对照通过，正式ChatService/Kernel/SQLite；未启动真实TTY或公网 |
 | 工具双完成事件的调用身份一致性 | 同一调用的arguments.done为A、output_item.done为B时，正式write_file执行A，原生历史及下一请求却以B配对A的成功结果 | 已确认 H-259（P2）；正式ChatService/Kernel、文件SQLite和真实临时文件；两个正常对照通过，限矛盾provider故障注入，不声称DeepSeek正常流有此问题 |
@@ -7054,3 +7055,29 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 触发后，一次性自动化可能把空结果或半截答案交给下游、把任务标记为正常消费结束、漏掉告警或失败重试；若下游另有严格终态检查，影响会受限。本次没有证明真实业务已经误提交、产生账单或丢失持久化数据。它是宿主 SDK 的进程结果边界，不是 DeepSeek 模型协议错误；不能靠修改 Responses/tool/cache 参数修复。
 - **本地治理建议，未实施**：在现有 `CliJsonlTransport` 单一边界记录 spawn/exit/close，读取完输出后验证退出结果，把非零状态及受控 stderr 上下文映射为稳定传输错误；明确与 `turn.failed`/`turn.interrupted` 等业务终态的关系，不凭 EOF 合成成功。后续回归至少覆盖零退出正常终态、空/部分输出后非零退出、已有失败事件的非零退出、启动失败、signal、取消和迭代提前结束。迭代器资源清理只列为后续检查，尚未动态登记为本项另一项已复现缺陷。
 - 验证收尾：`pnpm test`（含 build）**5 passed**；`pnpm typecheck` 通过；新探针默认 **1 passed / 3 skipped**；显式故障复核 **1 passed / 3 failed（预期），node 测试进程 exit=1**，与首次观测一致。`cargo fmt --all -- --check` 与 `git diff --check` 通过。本轮只增加测试与文档，未运行 workspace/Clippy/桌面构建/真实 DeepSeek/跨平台，也未实施生产修复；code-audit 要求的人工可达性及实际故障验证已经执行，不将未证实的提前 EOF 假设登记为另一缺陷。
+
+### H-267：TypeScript SDK 的 CLI JSONL 缺少进程 owner 收尾，停止迭代、解析失败和 close 后仍执行后台工作
+
+**级别：中（P2，一次性运行的资源归属与停止契约）；状态：公开 TypeScript SDK 与真实本机 CLI fixture 已复现，未修复。** 触发条件是 SDK 启动的 CLI 尚在工作，调用方提前退出异步迭代、遇到无效 JSONL，或显式关闭 DeepAgent。正常完整消费对照不触发。本项不重复 H-266：即使补上非零退出校验，迭代提前离开时仍必须清理尚未退出的进程；也不是 H-46 的 MCP 后代进程树或 H-64 的自动构建验证，本项连 SDK 直接拥有的 CLI 根进程都没有回收。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：新增 `packages/sdk/tests/jsonl-lifecycle-audit.test.mjs` 与 `jsonl-lifecycle-fixture.mjs`，通过公开 `DeepAgent.runJsonl()`、异步迭代器与 `DeepAgent.close()` 运行真实本机 Node 子进程；只访问测试临时目录，不联网、不调用真实模型或工具。没有修改生产逻辑。
+- E-267-first：`packages/sdk` 执行 `pnpm build` 通过，然后 `$env:RUN_HARNESS_AUDIT='1'; node --test tests/jsonl-lifecycle-audit.test.mjs` 得到 **1 passed / 3 failed（预期），约775ms，测试进程 exit=1**。正常完整消费收到 `item.updated`、`turn.completed`，close 后 `aliveAfterClose=false, workAfterClose=false`；故障三组 `return`、`malformed`、`close` 均为 `aliveAfterClose=true, workAfterClose=true`。return 组的 `iterator.return()` 已明确返回 `done=true`；malformed 组已明确捕获正式 `HarnessTransportError`，随后各组都 await 公开 close。
+- E-267-break：随后补充调用方原生 `for await (...) { break; }` 用例，不只依赖显式 iterator.return；相同命令得到 **1 passed / 4 failed（预期），约802ms，测试进程 exit=1**。新增 break 组同样为 `aliveAfterClose=true, workAfterClose=true`；其余对照和故障组观测不变。原三组首次结果保留，不用后续数量改写首次证据。
+- E-267-order：fixture 启动后写真实 PID；**测试仅在 return/解析失败/close 已返回后**才创建 probe 文件。子进程随后读取这个新文件并写带相同 PID 的 probe-ack，父测试再用 `process.kill(pid,0)` 证实进程仍存活。因此不是仅看到旧心跳、缓冲输出或残留 PID，也没有根据固定 sleep 猜测“可能还在工作”。250ms 是等待新 ack 的观察上限，不是进程强制停止契约。
+- E-267-cleanup：测试在抛出缺陷断言前统一写 release、归还迭代器并轮询确认该 fixture PID 已消失，才删除临时目录；fixture 自带 5 秒退出 watchdog，清理等待上限 6.5 秒。没有杀用户进程、残留后台 fixture 或修改真实文件；本轮没有测试进程树、远程作业或 OS 杀进程的回滚行为。
+
+#### Finding、调用路径与成熟实现对照
+
+- F-267：severity=medium，category=owned-process-lifecycle，status=validated，confidence=high，location=`packages/sdk/src/index.ts::CliJsonlTransport.run`、`DeepAgent.close`。child 是 generator 内的局部变量，CLI transport 不保存活动 child、没有 close 方法；run 的读取循环没有 try/finally。提前 return 绕过循环后的 `stderr.close()`，无效 JSONL 则从 catch 抛出并绕过同一收尾，二者均没有 kill/wait。外层 DeepAgent.close 只处理 stdio transport，cliTransport 被忽略，因此显式 close 也无法补救。
+- P-267-return/error（path_type=callflow）：`runJsonl()` → spawn CLI → 收到首事件后 iterator.return / for-await break / JSON.parse 抛错 → generator 退出 → 没有进程终止与等待 → `DeepAgent.close()` 对 cliTransport 无操作 → CLI 收到后置 probe 并写新 ack。close-only 组不先 return，仍得到同样结果；四种触发都是同一 child owner 缺失的表现，合并为一个问题。
+- **Codex**：`借鉴/codex/sdk/typescript/src/exec.ts::CodexExec.run` 在 `try` 中逐行 yield，并在 `finally` 中 `rl.close()`、移除 child listeners、对未 killed 的 child 调用 kill；spawn 还接收调用方 signal。提前 return 或消费抛错都会进入 finally，这与仅在正常循环结束后写清理代码不同。本轮核查参考源码、未运行 Codex，不将其直接 child.kill 描述成任意 Windows 进程树清理或远程请求撤销保证。
+- **生产边界限制**：`apps/cli/src/main.rs::run` 的 ChatService 调用由 CLI 进程自身驱动，末尾还有独立的 session-memory 等待；SDK 的消费退出没有向这条运行链发送 interrupt/cancel。此处说明为什么必须明确控制面停止，**不声称本次 Node fixture 已经复现真实 DeepSeek 继续计费、真实工具继续写用户文件或持久化状态损坏**。业务终态与进程回收应分别观察，不能把强杀进程当作 RunStore 已安全收尾。
+
+#### 影响、后果与治理方向
+
+- 直接证据是调用方已放弃或已收到解析错误后，自己启动的 CLI 根进程仍执行新的文件写入；在真实运行中，可能继续消耗模型/CPU/内存、占用数据库或工作区资源，或继续尚未完成的工具动作。反复启动又放弃可积累进程；宿主是否因管道仍被持有而延迟退出，本轮没有单独做外层宿主退出实验。若 CLI 自行很快退出，残留时间有限；不能把每次正常运行都判为泄漏。
+- **本地治理建议，未实施**：沿既有 CLI transport 建立唯一活动进程 owner，在 generator finally 和显式 close 中复用有界终止/等待与 reader 清理；明确 concurrent runJsonl、close 后调用、信号/解析错误、正常终态后 session-memory 等待的所有权。若要求业务可恢复取消，应优先通过现有 Harness turn/interrupt、取消树和 RunStore 收尾；一段宽泛 child.kill 不能替代协议级取消，也不能用另建运行中心解决。
+- 这是宿主 SDK 资源生命周期问题，不是 DeepSeek Responses/tool/cache 字段问题；provider 的流式协议不能自动替应用回收本机 CLI。验收需保留完整消费对照，并覆盖 for-await break（本轮与显式 iterator.return 均已验证）、malformed JSON、close 期间读取、并发迭代、取消/强制终止升级、进程树、持久化终态及真实 CLI 离线运行。当前只确认本机直接 child 的后置工作，未运行真实 Rust CLI、Runtime/RunStore、桌面、模型、跨平台或参考工程。
+- 验证收尾：`pnpm test`（含 build）**5 passed**，`pnpm typecheck` 通过；最终新探针默认 **1 passed / 4 skipped**，显式开启为 **1 passed / 4 failed（预期复现）**。`cargo fmt --all -- --check`、`git diff --check` 通过；未运行 workspace 测试、Clippy 或桌面构建，本轮只有 test-only JavaScript 与 Markdown。code-audit 促使本轮用后置文件握手证明实际工作仍在继续，而非只凭缺少 finally 或进程 PID 就登记问题；全系统目标仍未完成。
