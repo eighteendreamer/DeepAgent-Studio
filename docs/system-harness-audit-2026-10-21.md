@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| DeepSeek 正常主工具循环的推理/cache计量与持久保真 | 两次正式模型响应夹一次真实task_list；有/无usage细分两样本的live/run_events原始usage均恰有2份，关闭服务后文件重开保留，会话累计输出50、推理37/0，账本输入400 | 排误增量，无新H编号；合成分桶差异价格下费用0.00101/0.002，不重复收费reasoning；不关闭H-63/H-133/H-163/H-235/H-273/H-274，不验证真实收费/缓存命中 |
 | Harness 有效读取游标的数值表示域 | 正常 tail/i64最大值共12项观察为空增量；i64最大值+1/u64最大值在公共、run专用、per-run入口及独立重开reader中，12项均回传20条旧run事件 | 新增H-298（P3，显式超域参数条件）；只读历史未变，无工具重执行；不重复H-218分页或H-285分叉恢复 |
 | Pro原生搜索项的热续轮与冷恢复 | 完整SSE搜索生命周期经正式ChatService落盘；同宿主/重开SQLite新实例的实际下一请求均保留唯一completed搜索项的id/status/action，且没有本地函数result | 排误增量，无新H编号；原生生命周期可从run_events读回、查询正文不进入诊断摘要；合成响应，不验真实搜索效果/引用/收费，不关闭H-66/H-152/H-200 |
 | 干净服务重建后的DeepSeek请求前缀 | 正式list_dir及回答落盘后丢弃第一套服务并重开SQLite；新实例续聊的32工具数组/schema、14180字节instructions与旧3项native历史前缀均保持 | 排误增量，无新H编号；同日、工作区/配置未变且无额外MCP/技能/附件；离线wire条件成立，不宣称真实缓存命中或关闭H-168 |
@@ -8579,3 +8580,33 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo test -p deepagent-persistence --offline`：**67 passed / 0 failed / 0 ignored，1.62 秒**；doc-tests 为 0。`cargo fmt --all -- --check` 与 `git diff --check` 通过；Git 的 LF→CRLF 工作副本提示不是测试失败。
 - `cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings` 退出 1：仍由未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 和 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断。未屏蔽 lint 或顺手改生产代码，不能称 Clippy 通过。
 - 仅新增 CLI 测试 helper/两项测试及本报告；没有生产逻辑、协议、权限、沙箱、配置、依赖或持久化格式变更。code-audit 技能用于入口/数据流/人工复现与证据分层，本轮采用已定位边界的确定性测试，未运行全仓库自动 SAST、workspace 全测、UI/真实供应商、真实 stdio 客户端或参考工程测试。用户既有未跟踪项不读取、不暂存；全系统审计继续保持未完成。
+
+### DeepSeek 正常主工具循环的推理与缓存计量：原始样本、累计账本和文件重开对照（2026-10-25）
+
+**首次有效验证后即时落盘；排误增量，不分配新H编号。** 既有 `usage_contract.rs` 的正常对照仅含单次输入3/cache2/输出0，H-273/H-274则是畸形数值；H-235/H-63/H-163为附属入口/工作流漏账。本轮不重跑这些已登记失败探针，新增完整普通主运行的多响应/非零reasoning及缓存分桶证据。
+
+- 扩展 `crates/deepagent-app-core/tests/kernel_v2_e2e/usage_contract.rs`，正式SettingsService/ChatService/AgentKernel/ModelClient经离线transport收到两次完整、连续序号的completed响应：第一次调用task_list，宿主实际执行后第二次请求确认恰有唯一配对结果，再返回最终答案。文件SQLite与工作区分离，没有直接调用finalizer或手工注入RunUsage。
+- 第一份合成usage为 input/output/total=100/20/120，第二份300/30/330。有细分组分别cached=80/250、reasoning=12/25；无细分组省略两种details对象，验证当前适配缺省为0并按完整输入推导miss，同时原始JSON仍保留“未提供”而非伪造provider报告的0。本轮只考察计量字段，不测试模型生成的真实推理正文。
+- 首次命令 `cargo test -p deepagent-app-core --test kernel_v2_e2e main_tool_loop_ --offline -- --nocapture`：**2 passed / 0 failed，0.38秒，编译31.33秒**。两组均只有2次模型请求、2次live Usage、2条持久run Usage及唯一succeeded终态；两份raw_responses_usage与输入样本逐值相等，没有因done/completed各记一份而翻倍。
+- 账本按run聚合为1行，累计input=400/output=50；有细分组hit/miss=330/70，无细分组0/400。显式合成价格hit=1、miss=4、output=8（每百万tokens）得0.00101/0.002，与唯一CostRecorded及CostSummary相等；37个reasoning已含在50个output中，没有再次作为额外output收费。价格与usage不是线上报价/实际消耗，不能据此推断生产节费比例。
+- 丢弃ChatService/SettingsService/CostService/transport及原Database后重新打开文件库，run_events全量逐值不变；会话恰有一条UsageRecorded，其raw数组仍为原顺序2样本。该事件按现有明确契约保留最新prompt/total/cache（300/330、250/50或0/300），累计completion/reasoning（50/37或50/0）；**它不是所有字段都累加的费用总量，也不等同于一份原始provider usage**。新CostService读取的完整summary与关闭前相等；本轮没有启动第二个操作系统进程。
+
+#### 官方契约、成熟实现与架构判断
+
+- **DeepSeek官方**：本轮重新联网核对[Responses参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)，区分input_tokens、input_tokens_details.cached_tokens、output_tokens、output_tokens_details.reasoning_tokens和输入+输出的total_tokens。reasoning细分用于解释输出，不能在总输出上重复加一份。本轮没有以Chat的prompt_cache_hit_tokens替换Responses字段；没有依据合成cache计数声称验证了服务端缓存构建或命中率。
+- **本系统现有正向设计**：`deepagent-models/src/stream.rs::parse_response_usage`解析Responses字段并推导miss；`model_agent.rs::record_provider_response_usage`发出每请求RuntimeEvent::Usage、保存raw，并通过唯一`RunUsage::record_call`区分最近prompt/cache与累计计费。`loop_engine.rs`将原始样本数组写入UsageRecorded；`run_finalizer.rs::cost_request_for`按billed_prompt/cache与累计completion形成现有账本的一行，total按累计input+output构造，不再加reasoning。本轮实测支持普通成功工具循环采用这条统一链，无需为DeepSeek再建一个计费器。
+- **Codex，静态源码对照**：`借鉴/codex/codex-rs/codex-api/src/sse/responses.rs::ResponseCompletedUsage`显式映射cache与reasoning，`protocol/src/protocol.rs::TokenUsageInfo`分别保存`last_token_usage/total_token_usage`，`append_last_usage`对累计结构做逐字段累加再替换last；`TokenUsageRecord`另含response/turn/thread身份。可借鉴两套语义在类型上分离及每响应归属，不是把本系统hybrid UsageRecorded误当作一份完整累计usage。本轮未运行Codex，不证明其人民币报价或DeepSeek附属任务入账已经解决。
+- **DeepSeek Harness，静态源码对照**：`packages/llm/token-meter/src/usage-projection.ts`用turn/step replacement slot处理同attempt最终样本替换，retry-started结束替换范围；独立contextPressure投影保留最新输入压力。`turn-usage.ts::normalizeUsage/aggregateAttempts`校验reasoning不大于output，再对attempt做分桶累加；可选reasoning/cache只有所有参与样本已知时才给精确合计，不把未知当已知零。本系统本轮无details时的0是兼容投影缺省，**不能证明provider实际没有推理或缓存**，但保留raw使缺失仍可追溯。该差异值得在未来DTO语义治理中明确，本轮没有据此另外登记未经下游实测的显示缺陷。
+
+#### 对现有问题的约束与后续验收
+
+- 这两组只证明普通成功主循环的计量保留和数学归集；不能关闭H-63/H-235的附属请求漏账、H-133的failed usage丢失、H-163的工作流分支漏计或H-273/H-274的异常计数校验，也不覆盖retry/fallback/取消/持久化失败。合理治理仍是让其他入口复用既有provider usage/归属/结算边界，不照搬另一套store或用字符串猜tokens。
+- 与成熟Agent相比，现有hybrid UsageRecorded的字段语义需要消费者知道哪些是latest、哪些是sum；Codex的双结构以及DeepSeek Harness的pressure/usage投影拆分更显式。这是本轮静态架构可维护性观察，不是新复现的运行失败。若未来治理机器协议，优先在版本化投影中明确request sample、run billed totals和context pressure，并测试旧客户端，不擅自修改历史字段含义。
+- 费用当前按run汇总一行，不是两份provider响应各一行；原始样本的完整保留不等于已有逐响应计费身份/幂等结算。H-200的响应身份缺口仍独立存在。未测试真实模型、真实账单、缓存淘汰、推理质量/延迟、桌面footer、SDK渲染或参考工程，不把本轮排误扩大为“成本子系统全部通过”。
+
+#### 本轮回归与交付
+
+- 首测两项通过并即时记录后，拆分live/session/run断言helper，补充唯一成功task_list的durable完成事件检查。整理样本时曾因 `json!` 内未括起的数组索引表达式导致一次编译失败，改用zip绑定局部值解决；这是新增测试代码错误，不是产品缺陷，也没有把断言改成接受异常行为。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`在整理后 **101 passed / 0 failed / 93 ignored，19.01秒，编译30.50秒**；增加工具成功断言后再运行 **101 passed / 0 failed / 93 ignored，15.40秒，编译30.41秒**。没有启用本报告既有ignored失败探针，不把正常默认回归说成旧缺陷已修复。
+- `cargo fmt --all -- --check`和`git diff --check`通过。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`退出1，仍被未修改的models/client.rs:355 clone_on_copy及persistence/run_store.rs:127 explicit_counter_loop阻断，没有屏蔽lint或改无关生产代码。
+- code-audit技能用于核对provider→主运行→持久化→费用的同一数据流，并明确区分本系统实测、参考静态设计与未覆盖条件。本轮只扩展既有usage_contract测试与本报告，无生产/协议/权限/沙箱/依赖/数据迁移变更。未执行全workspace/完整AppCore其他target、全仓SAST、web feature回归、前端/真实UI或真实provider测试；用户原有未跟踪项保持不读取、不暂存，全系统审计仍未完成。
