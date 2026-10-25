@@ -19,6 +19,7 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 const VIDEO_BYTES: &[u8] = b"\0\0\0\x14ftypmp42audit-video";
+const AUDIO_BYTES: &[u8] = b"ID3audit-audio-payload";
 const PRIVATE_IMAGE_BYTES: &[u8] = b"\x89PNG\r\n\x1a\naudit-private-network-canary";
 const TASK_ID: &str = "audit-video-job";
 
@@ -327,6 +328,108 @@ impl Drop for LocalPendingImageProvider {
     }
 }
 
+/// An audio provider that accepts speech synthesis but withholds the binary
+/// response. This isolates cancellation of the shared audio HTTP read from
+/// artifact persistence and output parsing.
+struct LocalPendingAudioProvider {
+    base_url: String,
+    request_received: Arc<Notify>,
+    release_response: Arc<Notify>,
+    server: JoinHandle<()>,
+}
+
+impl LocalPendingAudioProvider {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let request_received = Arc::new(Notify::new());
+        let release_response = Arc::new(Notify::new());
+        let arrived = request_received.clone();
+        let release = release_response.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (line, _) = read_request(&mut socket).await;
+            assert!(line.starts_with("POST /v1/audio/speech "));
+            arrived.notify_one();
+            release.notified().await;
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                AUDIO_BYTES.len()
+            );
+            if socket.write_all(header.as_bytes()).await.is_ok() {
+                let _ = socket.write_all(AUDIO_BYTES).await;
+            }
+        });
+        Self {
+            base_url: format!("http://{address}/v1"),
+            request_received,
+            release_response,
+            server,
+        }
+    }
+
+    async fn wait_for_request(&self) {
+        tokio::time::timeout(Duration::from_secs(5), self.request_received.notified())
+            .await
+            .expect("the real audio gateway must receive the synthesis request");
+    }
+
+    async fn close(&mut self) {
+        self.release_response.notify_one();
+        let result = (&mut self.server).await;
+        assert!(result.is_ok() || result.unwrap_err().is_cancelled());
+    }
+}
+
+impl Drop for LocalPendingAudioProvider {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+/// An embeddings provider that accepts the request but withholds the JSON
+/// response. Embeddings have no artifact download, so this isolates the
+/// shared provider HTTP cancellation boundary itself.
+struct LocalPendingEmbeddingProvider {
+    base_url: String,
+    request_received: Arc<Notify>,
+    server: JoinHandle<()>,
+}
+
+impl LocalPendingEmbeddingProvider {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let request_received = Arc::new(Notify::new());
+        let arrived = request_received.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (line, _) = read_request(&mut socket).await;
+            assert!(line.starts_with("POST /v1/embeddings "));
+            arrived.notify_one();
+            let payload = json!({"data":[{"embedding":[0.1, 0.2, 0.3]}]}).to_string();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            if socket.write_all(header.as_bytes()).await.is_ok() {
+                let _ = socket.write_all(payload.as_bytes()).await;
+            }
+        });
+        Self {
+            base_url: format!("http://{address}/v1"),
+            request_received,
+            server,
+        }
+    }
+}
+
+impl Drop for LocalPendingEmbeddingProvider {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
 async fn read_request(socket: &mut TcpStream) -> (String, Value) {
     let mut bytes = Vec::new();
     loop {
@@ -457,6 +560,69 @@ impl MediaFixture {
                         "edges": [
                             {"id":"e1","source":"start","target":"image"},
                             {"id":"e2","source":"image","target":"end"}
+                        ]
+                    }
+                }))
+                .unwrap()
+            },
+        )
+        .await
+    }
+
+    async fn new_embedding(provider: &LocalPendingEmbeddingProvider) -> Self {
+        Self::with_provider(
+            &provider.base_url,
+            "Audit local embedding",
+            "audit-embedding-model",
+            vec![CanvasScenario::Embedding],
+            |provider_id| {
+                serde_json::from_value(json!({
+                    "definition": {
+                        "version": 1,
+                        "nodes": [
+                            {"id":"start","kind":"start"},
+                            {"id":"embedding","kind":"embeddings","config":{
+                                "texts":["audit embedding"],
+                                "embeddingModel":format!("{provider_id}::audit-embedding-model")
+                            }},
+                            {"id":"end","kind":"end"}
+                        ],
+                        "edges": [
+                            {"id":"e1","source":"start","target":"embedding"},
+                            {"id":"e2","source":"embedding","target":"end"}
+                        ]
+                    }
+                }))
+                .unwrap()
+            },
+        )
+        .await
+    }
+
+    async fn new_audio(provider: &LocalPendingAudioProvider) -> Self {
+        Self::with_provider(
+            &provider.base_url,
+            "Audit local audio",
+            "audit-audio-model",
+            vec![CanvasScenario::TextToSpeech],
+            |provider_id| {
+                serde_json::from_value(json!({
+                    "definition": {
+                        "version": 1,
+                        "nodes": [
+                            {"id":"start","kind":"start"},
+                            {"id":"audio","kind":"audio","config":{
+                                "operation":"speech_synthesize",
+                                "prompt":"audit delayed audio",
+                                "audioModel":format!("{provider_id}::audit-audio-model"),
+                                "audioVoice":"alloy",
+                                "audioFormat":"mp3"
+                            }},
+                            {"id":"end","kind":"end"}
+                        ],
+                        "edges": [
+                            {"id":"e1","source":"start","target":"audio"},
+                            {"id":"e2","source":"audio","target":"end"}
                         ]
                     }
                 }))
@@ -770,6 +936,89 @@ async fn real_image_workflow_stores_one_successful_artifact() {
         "image normal control: artifact_bytes={}, terminal=succeeded",
         PRIVATE_IMAGE_BYTES.len()
     );
+}
+
+#[tokio::test]
+#[ignore = "audit: an enabled embedding workflow must reach its registered provider"]
+async fn audit_embedding_workflow_reaches_registered_provider() {
+    let provider = LocalPendingEmbeddingProvider::start().await;
+    let fixture = MediaFixture::new_embedding(&provider).await;
+    let run_id = "audit-embedding-provider-reachability";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    let provider_called = tokio::time::timeout(
+        Duration::from_millis(50),
+        provider.request_received.notified(),
+    )
+    .await
+    .is_ok();
+    eprintln!(
+        "embedding provider reachability: result={result:?}, provider_called={provider_called}"
+    );
+    drop(provider);
+    assert!(
+        result.is_ok(),
+        "an enabled embedding workflow must not fail before provider dispatch"
+    );
+    assert!(
+        provider_called,
+        "the configured embedding provider must receive a request"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit: an accepted workflow cancellation must interrupt a pending Canvas audio response"]
+async fn audit_audio_cancel_does_not_wait_for_provider_response() {
+    let provider = LocalPendingAudioProvider::start().await;
+    let fixture = MediaFixture::new_audio(&provider).await;
+    let run_id = "audit-audio-cancel-pending-response";
+    let mut run = fixture.spawn(run_id);
+    provider.wait_for_request().await;
+    let started = Instant::now();
+    let accepted = fixture.chat.request_cancel(run_id).unwrap().accepted;
+    let stopped = tokio::time::timeout(Duration::from_millis(300), &mut run).await;
+    let stopped_before_response = stopped.is_ok();
+    let unfinished_before_response = RunStore::new(&fixture.db)
+        .get(run_id)
+        .unwrap()
+        .unwrap()
+        .finished_at
+        .is_none();
+    provider.release_response.notify_one();
+    let result = match stopped {
+        Ok(joined) => joined.unwrap(),
+        Err(_) => finish_run(&mut run).await,
+    };
+    let cancel_to_exit_ms = started.elapsed().as_millis();
+    let mut provider = provider;
+    provider.close().await;
+    let events = fixture.live.lock().unwrap().clone();
+    let audio_completed = events
+        .iter()
+        .any(|event| event.node_id == "audio" && event.status == NodeExecutionStatus::Completed);
+    let audio_cancelled = events
+        .iter()
+        .any(|event| event.node_id == "audio" && event.status == NodeExecutionStatus::Cancelled);
+    let terminals = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect::<Vec<_>>();
+    eprintln!(
+        "audio cancellation: accepted={accepted}, stopped_within_300ms={stopped_before_response}, unfinished_before_response={unfinished_before_response}, cancel_to_exit_ms={cancel_to_exit_ms}, audio_completed={audio_completed}, audio_cancelled={audio_cancelled}, terminal={:?}, result_ok={}",
+        terminals.first().and_then(|event| event.data["kind"].as_str()),
+        result.is_ok()
+    );
+    assert!(accepted);
+    assert!(
+        stopped_before_response,
+        "accepted cancellation must stop a pending audio provider response"
+    );
+    assert!(!audio_completed);
+    assert!(audio_cancelled);
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "cancelled");
 }
 
 #[tokio::test]

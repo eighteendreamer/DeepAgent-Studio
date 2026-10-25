@@ -97,6 +97,8 @@
 | 备用模型切换的成本归属 | 正式 ChatService 在受控过载后真实 wire 切换 Flash/Pro，但 finalizer 把完整累计 usage 按初始模型入账；双向切换分别导致下一轮预算误放行/误拦截，混合模型工具运行亦错价 | 已确认 H-226；文件 SQLite、正式模型选型/Responses parser/Kernel/CostService，四组不切换对照正常；仅离线响应与合成费用，没有真实扣费 |
 | 日/月预算的宿主恢复生命周期 | 公开服务设置限额后完整聊天已计费且下一次准入被拒绝；关闭所有数据库/设置/成本 owner 再从同一文件重建，费用与模型报价仍在，限额却都回到 None，下一次聊天重新 dispatch 并 succeeded | 已确认 H-227；日/月分别复现，显式重设的两组对照拒绝；动态为服务重建而非真实 Tauri 重启，没有找到现有前端组件调用 setBudget，不能冒充 UI 用户普遍触发 |
 | 画布同步模型请求的运行取消 | 正式 `text-gen` 已进入本机 provider 且响应保持 pending 后，取消被受理但工作流 300ms 内不退出；释放响应后 text 节点发布 Completed，运行却落唯一 cancelled 终态 | 已确认 H-164；动态仅覆盖 text。image/audio/embedding 只确认请求 DTO 与共用 HTTP `call()` 同样没有取消通道，尚未逐项动态复现 |
+| Embedding 工作流能力可达性 | 正式 `WorkflowAgent`/`CanvasModelGateway`/文件 SQLite 链路执行 embedding 节点时，在 provider 前返回 `unknown workflow node kind (neither professional nor creative)`，loopback `/v1/embeddings` 请求数为 0 | 新增 H-300（P1，当前 embedding 节点未注册）；已有 runtime embedding executor/bridge 单元路径不能替代 graph/canvas contract 可达性；未继续声称 embedding 取消已动态覆盖 |
+| 画布 audio 合成取消不打断 provider 响应 | 正式 `audio`/`speech_synthesize` 已进入本机 `/v1/audio/speech` 且响应保持 pending；取消 accepted 后 300ms 内未退出，释放响应后 audio 节点发布 Completed，run 才落 cancelled | 新增 H-301（P1）；audio 已有 graph/contract 注册，缺口在共用 Canvas HTTP 调用没有贯穿取消身份；仅 loopback 合成 provider，未访问公网或真实供应商 |
 | 画布供应商返回资产的下载边界 | 正常 image-gen 供应商在成功 JSON 中返回 loopback 图片 URL 后，宿主直接第二跳 GET，零审批，并把私网 canary 完整存入 artifact；运行仍 succeeded | 已确认 H-165；正式 WorkflowAgent/Canvas gateway/文件 SQLite/RunStore，本机两台 loopback 服务；没有访问公网、真实内网或元数据服务，也未证明数据已外传给供应商 |
 | DeepSeek Responses 思考模式的 top_p 有效值 | 正式 ModelClient 在 `reasoning.effort=high` 且设置 `top_p=0.2` 时对 Flash、Pro（无工具/有工具）均将 0.2 原样发到 Responses wire；官方对这些组合分别规定 0.95、1.0、0.95 的有效行为 | 已确认 H-166；离线正式 serializer/wire 探针；没有真实 API 调用或回答质量 A/B，不能证明每次输出必然改变 |
 | 画布生成图片响应无字节上限 | provider 资产 URL 返回 32 MiB+1 的本机 PNG 响应后，宿主完整缓冲并存入 artifact，image 节点与 run 均 succeeded | 已确认 H-167；和 H-165 共用双 loopback 故障注入，容量边界独立于地址授权；未测试进程内存耗尽或长期磁盘配额 |
@@ -8660,3 +8662,47 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 已证后果：停止按钮返回 accepted 后，工作流仍等待 provider；响应到达时实时/持久 node event 可显示 image Completed，而 run terminal 随后是 cancelled，机器消费者和 UI 会看到矛盾状态。当前样本没有证明真实供应商扣费、云端图片任务撤销、下游 end 节点继续执行或 artifact 被错误保留；这些仍是未覆盖边界。
 - 对照边界：DeepSeek Responses/Tool Calls 文档只定义无状态输入和宿主执行函数，不替宿主中断本地 HTTP；成熟 Agent 的可迁移做法仍是把取消身份贯穿 provider request、响应读取和提交点，并在未知外部结果时显式标记，而不是让完成事件覆盖取消。H-119 的 video 专用 cancel-aware helper 已修复 video，本证据说明该语义尚未收敛到 text/image/audio/embedding 共用 gateway。
 - 本轮已补 image 正常成功控制；仍未运行 audio/embedding 取消或真实 Tauri 点击，不能把 image 证据外推到其他模态。
+
+### H-300：Embedding 工作流执行器存在，但画布契约/图注册表没有注册 embedding 节点
+
+**级别：高（P1，条件性能力不可达）；状态：正式工作流路径已复现，未修复。** 触发条件是用户创建或导入一个声明为 enabled 的 embedding 工作流节点。这里不是把 embedding provider 的取消缺口冒充已复现：工作流在进入 provider 前就被图编译/契约门拒绝，因此 H-164 的 embedding 取消尚未形成可达动态证据。
+
+#### 即时 Evidence（2026-10-25）
+
+- 新增并执行 `crates/deepagent-app-core/tests/workflow_audit/media.rs::audit_embedding_workflow_reaches_registered_provider`。夹具使用正式 `MediaFixture`、`ChatService::run_workflow`、`WorkflowAgent`、`CanvasModelGateway`、文件 SQLite 和一个仅绑定 loopback 的合成 `/v1/embeddings` provider；provider 记录请求并返回合成向量，不读取用户文件、不使用公网或凭据。
+- 正常可达性探针命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_embedding_workflow_reaches_registered_provider --offline -- --ignored --nocapture --exact`。首次有效执行得到 **0 passed / 1 failed（缺陷预期）**，实际：`run_outcome=Err(Invalid("unknown workflow node kind (neither professional nor creative)")), provider_called=false`。失败发生在 `WorkflowAgent`/graph compile 入口，loopback provider 没有收到任何请求。
+- 生产链核对：`WorkflowAgent::execute_node_inline()` 已有 `"embeddings" => execute_embedding()` 分支，`CanvasModelGateway::embed()` 也能构造 `/v1/embeddings` 并解析向量；但 `canvas_node_contracts()` 没有 `embeddings` 条目，`WorkflowDefinition` 的 graph registry 也没有将其列入 creative/professional 合法 kind。因此完整工作流无法到达已有 executor。不能把 runtime 单元测试里使用 fake bridge 的 `embedding_node_returns_dimensions_without_vectors` 当成 provider 可达性证明。
+- 这条证据同时解释了本轮原计划的 embedding 取消测试为何不能成立：取消前 provider 请求根本没有建立；已删除该无效探针，不把入口拒绝误写成 HTTP 取消缺陷。
+
+#### 成熟 Agent 对照、影响与治理方向
+
+- **DeepSeek Harness**：其 workflow/agent capability 由可执行 adapter registry 生成，入口解析未知能力时返回结构化 unsupported，而不是在 UI 声明后直到运行中才出现“未知 kind”。本轮只作源码设计对照，未运行其 embedding workflow。
+- **Codex**：没有同构的画布 embedding 节点，但其 thread/turn 能力均从实际可调用的核心 provider/tool registry 暴露；不能把 Codex 的普通模型能力表冒称已解决本系统画布注册问题。
+- 已证后果是：embedding 节点无法保存为可运行的正式工作流闭环，不能产生向量、维度、节点事件或成功终态；当前故障在 provider 前失败，因此本样本没有 token、网络或外部副作用。若只补 graph 注册而不核对 provider scenario、usage、取消和输出 contract，修通后还可能暴露 H-163/H-164 的后续缺口。
+- 根治应让 `canvas_node_contracts`、`CREATIVE_NODE_KINDS`、graph registry、前端 node registry、`WorkflowAgent` executor 和 `CanvasModelGateway` 共用一份版本化 capability。要么把 embedding 明确注册为 `Embedding` executor 并定义 prompt/profile、输入/输出 contract、provider scenario、usage 和取消语义；要么在前端将它标为 unsupported，不能继续显示 enabled。验收必须从真实画布 DTO 经 graph compile、WorkflowAgent、provider wire、向量输出、run_events 和成本链闭环；之后再单独验证挂起请求的取消。
+
+#### 本轮边界
+
+- 本项只新增 ignored 可达性探针和本段报告，没有修改生产注册表或执行器。未宣称 embedding provider 正常成功、取消或真实 DeepSeek 行为；audio 的注册/执行和取消也仍未完成动态覆盖。
+
+### H-301：Audio 合成取消没有打断共享 Canvas HTTP 响应
+
+**级别：高（P1，运行控制与状态一致性）；状态：正式工作流路径已复现，未修复。** 触发条件是用户在 `audio` 节点的语音合成请求已经发出、供应商迟迟不返回时点击停止/发送取消。这个问题与 H-165 的 URL 第二跳不同：本轮没有下载供应商返回的 URL，也没有访问内网或公网，只验证 provider 响应读取是否受取消控制。
+
+#### 即时 Evidence（2026-10-25）
+
+- 新增并执行 `crates/deepagent-app-core/tests/workflow_audit/media.rs::audit_audio_cancel_does_not_wait_for_provider_response`。夹具仍使用正式 `ChatService::run_workflow`、`WorkflowAgent`、`CanvasModelGateway`、文件 SQLite、RunStore 和一个只绑定 `127.0.0.1` 的合成 `/v1/audio/speech` provider；provider 收到请求后保持响应 pending，释放后返回合成 `audio/mpeg` 字节。没有读取用户文件、没有公网调用、没有凭据。
+- 命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_audio_cancel_does_not_wait_for_provider_response --offline -- --ignored --nocapture --exact`。测试按缺陷预期失败，实际输出：`accepted=true, stopped_within_300ms=false, unfinished_before_response=true, cancel_to_exit_ms=325, audio_completed=true, audio_cancelled=false, terminal=Some("cancelled"), result_ok=true`。
+- 复现含义：取消请求被接受，但 pending 的 `/v1/audio/speech` 读取没有在 300ms 内结束；释放 provider 后 audio 节点先发布 `Completed`，随后 run 才唯一落 `cancelled` 终态。探针断言 `stopped_before_response`、`!audio_completed` 和 `audio_cancelled`，因此以失败退出并保留了可审计证据。
+- 生产链核对：`canvas_node_contracts()`、runtime graph registry 和 `WorkflowAgent::execute_audio()` 都已注册/可达；`CanvasModelGateway::run_audio()` 最终进入共用 `call()`，而 `call()` 对 `reqwest` 的发送与 `resp.bytes()` 没有接收本次 run 的取消 token。故本项不是能力注册缺失，也不是音频 artifact 解析问题，而是取消边界未贯穿共享 HTTP 读取。
+
+#### 成熟 Agent 对照、影响与治理方向
+
+- **Codex app-server** 在 `借鉴/codex/codex-rs/app-server-client/src/lib.rs` 的请求 worker 中把可取消请求与响应通道生命周期绑定，通道关闭会放弃等待；`app-server-transport/src/transport/{stdio,websocket,unix_socket}.rs` 使用 `CancellationToken` 并在断连时取消/abort 入站与出站任务。可迁移的设计点是：取消必须拥有请求级身份，并覆盖发送、等待响应、事件发布三个阶段，而不是只在 run finalizer 设置终态。
+- **DeepSeek Responses/Tool Calls** 文档只规定模型请求、工具调用和流式事件的供应商协议，不替宿主取消本地 HTTP。因而不能把“DeepSeek 支持流式/工具”当作本系统已解决取消；本缺陷属于宿主 harness 的生命周期编排。
+- 影响是 P1：停止按钮的可预测性失效；provider 慢或挂起时，用户会看到停止已受理但任务继续占用连接/线程，释放后还可能出现已取消 run 中的 Completed audio 节点和已写入 artifact。真实供应商扣费、云端任务撤销和内存泄漏未在本地样本中证明，不能扩大结论。
+- 根治方向是把 `CancellationToken`（或等价 request guard）从 `run_workflow` 贯穿 `WorkflowAgent`、`CanvasModelGateway::run_audio`、共用 `call()`、`resp.bytes()` 和 artifact/节点提交点；取消后所有晚到输出必须丢弃并只发布一次 Cancelled。image、text、audio、embedding 应共享同一实现，不再为每种模态各写特判。验收要同时检查 provider 收到请求、取消期间 run 未完成、节点无 Completed、artifact 未提交、唯一 terminal=cancelled，并保留正常成功对照。
+
+#### 本轮边界
+
+- 本项只新增 ignored 复现和文档，没有修改生产逻辑。没有重复 H-165，也没有访问真实内网、元数据服务或公网；embedding 仍受 H-300 的注册缺陷阻塞，不能把 embedding 取消外推为已验证。
