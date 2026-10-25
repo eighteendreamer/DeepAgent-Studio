@@ -9,6 +9,8 @@ use deepagent_persistence::checkpoint_store::{CheckpointRecord, CheckpointStore}
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 
+mod restore;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct CheckpointEntry {
     path: String,
@@ -244,46 +246,27 @@ impl CheckpointManager {
     }
 
     pub fn restore(db: &Database, checkpoint_id: &str) -> Result<Vec<PathBuf>> {
-        let record = CheckpointStore::new(db)
-            .get(checkpoint_id)?
-            .ok_or_else(|| CoreError::invalid(format!("checkpoint not found: {checkpoint_id}")))?;
-        let root = normalize_path(Path::new(&record.workspace_root));
-        let manifest: CheckpointManifest = serde_json::from_str(&record.manifest)
-            .map_err(|error| CoreError::Persistence(error.to_string()))?;
-        let storage_dir = normalize_path(Path::new(&manifest.storage_dir));
-        let mut restored = Vec::new();
-        // Reverse order handles nested paths without a child restore being
-        // overwritten by an earlier parent snapshot.
-        for entry in manifest.entries.iter().rev() {
-            let target = normalize_path(Path::new(&entry.path));
-            if !target.starts_with(&root) {
-                return Err(CoreError::invalid(format!(
-                    "checkpoint path escapes workspace: {}",
-                    target.display()
-                )));
-            }
-            remove_existing(&target)?;
-            if entry.existed {
-                let backup =
-                    entry.backup.as_ref().map(PathBuf::from).ok_or_else(|| {
-                        CoreError::Persistence("missing checkpoint backup".into())
-                    })?;
-                let backup = normalize_path(&backup);
-                if !backup.starts_with(&storage_dir) {
-                    return Err(CoreError::invalid("checkpoint backup escapes storage"));
-                }
-                if entry.was_dir {
-                    copy_directory(&backup, &target)?;
-                } else {
-                    if let Some(parent) = target.parent() {
-                        std::fs::create_dir_all(parent).map_err(fs_error)?;
-                    }
-                    std::fs::copy(&backup, &target).map_err(fs_error)?;
-                }
-            }
-            restored.push(target);
-        }
-        Ok(restored)
+        Self::restore_many_with(db, &[checkpoint_id.to_owned()], Ok)
+    }
+
+    /// Restore checkpoints in caller-selected order, then commit their matching
+    /// history change. `finalize` must return Err only before its authoritative
+    /// commit; an Err compensates workspace publication. No crash atomicity or
+    /// exclusion of unrelated workspace writers is implied.
+    pub fn restore_many_with<T>(
+        db: &Database,
+        checkpoint_ids: &[String],
+        finalize: impl FnOnce(Vec<PathBuf>) -> Result<T>,
+    ) -> Result<T> {
+        let records = checkpoint_ids
+            .iter()
+            .map(|id| {
+                CheckpointStore::new(db)
+                    .get(id)?
+                    .ok_or_else(|| CoreError::invalid(format!("checkpoint not found: {id}")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        restore::RestoreTransaction::run(&records, finalize)
     }
 
     fn confined(&self, path: &Path) -> Result<PathBuf> {
@@ -368,15 +351,6 @@ fn directory_entries(path: &Path) -> Result<Vec<(std::ffi::OsString, PathBuf)>> 
             Ok((entry.file_name(), entry.path()))
         })
         .collect()
-}
-
-fn remove_existing(path: &Path) -> Result<()> {
-    if path.is_dir() {
-        std::fs::remove_dir_all(path).map_err(fs_error)?;
-    } else if path.exists() {
-        std::fs::remove_file(path).map_err(fs_error)?;
-    }
-    Ok(())
 }
 
 fn fs_error(error: std::io::Error) -> CoreError {

@@ -7,8 +7,9 @@
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
 | H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交 `56b9e7b9` |
+| H-72 | 已修复并验收（2026-10-26，Windows 本机范围） | 全计划暂存/发布/历史提交及补偿；原探针默认通过，checkpoint 13 passed、AppCore audit 8 passed/2 ignored；workspace 被 H-306 阻断、严格 lint 有既有告警，详见原项及台账；提交后回填 |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **1**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **279**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-72，不在本轮夹带修改。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **2**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **278**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-73，不在本轮夹带修改。
 
 初始工时估算为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；首批几项完成后按实际吞吐和剩余问题状态重新校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -209,7 +210,7 @@
 | 多图请求的字节预算 | 两张各约 20 MiB 的合法 PNG 均通过导入和单图限制，续聊实际序列化出 55,977,624 字节请求，超过官方 48 MiB 上限仍交给 transport | 已确认 H-69；真实图片解码、AppCore/Kernel/序列化单图与双图对照，未向公网发送超限图片或验证供应商错误码 |
 | 历史附件的内容身份 | 导入时已计算并记录 SHA-256；原图文件被另一张合法 PNG 替换后，同一事件附件 ID 在续聊中发送新字节，旧 metadata 未变且运行成功 | 已确认 H-70；真实导入、文件替换、解码、正式续聊和 wire 字节哈希对照，仅操作测试临时文件，未证明非授权写入能力 |
 | 发现能力与请求输入模态 | 官方形状的 input_modalities 在发现/目录恢复中丢失，声明仅文字的 Pro 仍经正式客户端发送 input_image；Flash 图片和 Pro 文字对照正常 | 已确认 H-71；ModelDiscovery/目录 serde/ModelClient/实际序列化离线复现，不含完整 AppCore 图片装配或真实供应商错误 |
-| 检查点备份丢失时的回退与分叉 | 正式 rewind/fork 均先恢复健康文件，再删除缺少备份的当前文件后报错；原会话历史和检查点记录未变，分叉未创建 | 已确认 H-72；真实临时文件、正式检查点及 AppService 双入口故障注入，完整备份对照通过；未操作用户文件或真实桌面 |
+| 检查点备份丢失时的回退与分叉 | 审计时两入口失败后丢失当前文件；2026-10-26 修复后缺备份在全计划发布前拒绝，当前两文件和历史均保留；覆盖提交失败补偿与文件 SQLite 重开/重试 | H-72 已完成 Windows 本机行为验收；原始失败证据保留，不等于断电/并发全事务；全量和 lint 限制见原项 |
 | 回退后检查点的分支归属 | 旧分支回退后其检查点仍参与新分支的序号查询；新分支仅回退纯文字尾部，文件却被成功恢复为旧分支内容 | 已确认 H-73；正常 Session/检查点/AppService 两次回退和临时磁盘复现，所有备份完整，无磁盘故障注入或真实桌面操作 |
 | 源事件与原生镜像之间的分支边界 | 以用户 MessageAppended 的 sequence 为保留点，正式 fork/rewind 成功且源消息存在，下一次 ChatService wire 却缺该消息；包含下一条镜像的对照正常 | 已确认 H-74；两个入口各两组、正式恢复及请求序列化离线复现；限定原始序号锚点，未宣称桌面默认最新位置分支同样触发 |
 | 运行中回退与迟到结果提交 | 模型请求已发出但回答未释放时，正式 rewind 成功删除本轮输入；旧回答随后仍写入回退后的历史，原运行成功终结 | 已确认 H-75；真实 ChatService/RunStore/Session/AppService 与可控离线 transport 双组复现，没有真实桌面点击、文件工具或公网请求 |
@@ -1855,14 +1856,33 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 
 ### H-72：检查点备份缺失时，失败的回退或分叉仍删除当前文件
 
-**级别：高（P1）；范围：AppService 的 rewind_session / fork_session 共用文件恢复路径。** 触发条件是某份已经记录的检查点备份在恢复时不可用；本轮明确复现的是备份文件丢失，不代表普通回退每次都会失败。
+2026-10-26 修复前复核：原名探针 `cargo test -p deepagent-app-core --test checkpoint_audit audit_missing_backup_preserves_current_file_on_failed_rewind_and_fork --offline -j 1 -- --include-ignored --exact --nocapture` 为 **0 passed / 1 failed**（测试体 0.16 秒）；两个入口均输出 current_file_exists=false，健康文件已回到 before，历史与 checkpoint 未改、session 数仍 1。随后进入修复，保留以下实施时间线及原始审计证据；当前状态见最终验收。
+
+修复中即时证据（2026-10-26，按实施顺序保留，不代替下方最终验收）：
+
+- **E-H72-repair-01（source_type=command，content_hash=n/a）**：原探针修复后显式执行 **1 passed**，rewind/fork 均 current_file_exists=true，分别保留 first-after/second-after，history_unchanged/checkpoint_unchanged=true、session_count=1。随后故障探针移除 ignore，默认执行；不是用跳过后的绿色代替验收。
+- **E-H72-repair-02（source_type=command，content_hash=n/a）**：`cargo test -p deepagent-runtime --lib checkpoint::restore::tests --offline -j 1 -- --nocapture` 首批 **7 passed**。`cargo test -p deepagent-app-core --test checkpoint_audit --offline -j 1 -- --nocapture` **8 passed / 2 ignored**，含正常完整备份、缺失较旧 checkpoint、两入口的文件 SQLite 重开/重试、fork INSERT 和延迟 FK 的真实 COMMIT 失败与无残留 child。ignored 是原有未编号 capture 重试契约及 H-73，不作通过。最后还追加了目录部分复制失败及路径展示兼容；最终整组结果待记录。
+- **E-H72-repair-03（source_type=command，content_hash=n/a）**：`cargo test -p deepagent-app-core --lib restore_commit_seam_compensates_files_when_history_rewrite_fails_after_publication --offline -j 1 -- --nocapture` **1 passed（5.12 秒）**。在共享 private commit seam 中断言工作文件已回到 before 后，才创建临时 session 下一代路径阻断，让真实 EventStore 读取/截断返回错误；文件被补偿到 current，移除阻断后历史 JSON 与原值相等，公开 rewind 重试成功。它不是整条 public 入口的并发注入，也不是 SQLite projection 失败测试。另一个 public history 阻断用例实际命中前置 recover，已改为对应的 preflight 名称，不混淆证据终点。
+- **F-H72-repair（status=in_progress，evidence_ids=E-H72-repair-01/02/03）**：现有 CheckpointManager 先解析所有被选 checkpoint、准备最小非重叠目标的完整替换树，随后以共享 no-replace rename 发布并暂存当前副本；AppService 两入口在同一边界完成历史提交，普通失败反向补偿，补偿失败显式保留 recovery 目录。fork 必须完整暂存前缀再事务性写投影/发布，避免逐条复制留下半个 child；rewind 复用当前文件代际的权威提交，不把其后的 SQLite 投影失败当作未提交。
+- **P-H72-repair（path_type=callflow）**：AppService 选择原有 checkpoint → CheckpointManager 全计划校验/准备（E-01/02）→ 发布并保留当前副本 → 既有 EventStore 历史提交或补偿（E-02/03）→ 成功后清理。不是新建 run/event/checkpoint store。强杀/断电、外部并发写、补偿也失败以及 Windows ACL 不属于已验证的全事务承诺；H-73/H-75/H-287 不在本项关闭。全 workspace 单线程回归正在执行，尚未给出最终验收或修复 commit。
+
+#### 2026-10-26 最终修复与验收
+
+**状态：已修复并验收（Windows 本机所列行为范围）；修复提交在取得 hash 后回填。** `CheckpointManager::restore` 与 AppService 的多 checkpoint 恢复现在统一走私有 `checkpoint/restore.rs`：校验全计划并构建最终替换树后，才发布目标且保留当前版本；文件或历史提交失败则补偿，补偿也失败时保留副本并明确返回 recovery 目录。`persistence::fs_commit` 提供原 H-286 原语的唯一共享实现，文件移动与恢复共用。fork 不再逐事件发布半个 child，改为完整前缀暂存及事务投影/发布，延迟 FK 的 COMMIT 失败会撤下派生文件；rewind 保留原有“文件代际为权威、SQLite 为可重建投影”的语义，消除发布后再 reload 造成的假未提交。没有新建 store、公共 UI/协议 DTO 或生产数据迁移。
+
+- `cargo test -p deepagent-runtime --lib checkpoint:: --offline -j 1 -- --nocapture`：**13 passed / 0 failed / 0 ignored**。原故障探针已转默认；`cargo test -p deepagent-app-core --test checkpoint_audit --offline -j 1 -- --nocapture` 为 **8 passed / 2 ignored**，两 ignored 不属本项关闭。文件 SQLite 的缺失较旧 checkpoint、fork INSERT/COMMIT 失败、重开无残留分支、故障排除后的正式重试均通过。共享 private commit seam 的发布后真实 history 错误也通过，不能冒称整个 public 方法的并发注入。
+- `cargo test --workspace --offline -j 1 -- --quiet`：编译 **6m23s**，AppCore lib **1102 passed/80 ignored**、kernel_v2_e2e **102 passed/92 ignored**、builtins **292 passed/1 ignored**、persistence **67 passed**；随后 prompts lib **27 passed/1 failed**，被既有 H-306 的空视频提示词阻断，命令退出 1。不是全量通过；未执行的后续 target 不算通过。补跑 `cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet` 退出 0：runtime lib **282 passed/16 ignored**、稳定性端到端 **5 passed**、session **14 passed**；其他默认探针/ignored 与 doc-tests 详见台账。
+- 格式/diff 检查通过。四个受影响 crate 的 `--all-targets --offline --no-deps -j 1 -- -D warnings` 严格 clippy 被未修改的 run_store.rs `explicit_counter_loop` 阻断；命令级单项豁免后遇到 model_agent.rs `clone_on_copy`，再豁免后遇到 plugin_preparation.rs `type_complexity` 和 run_assembler.rs `too_many_arguments`。三次后停止叠加豁免，没有改无关代码或源文件 lint allow，没有严格 lint 通过结论。完整命令在 [修复台账](system-harness-repair-progress.md)。
+- 兼容性/残余：Windows 本机已验；其他 OS 构建运行、磁盘写满、真实跨卷、强杀/断电及 Desktop UI 未验。不支持 no-replace 的平台/文件系统明确失败；链接树、workspace root、与 checkpoint storage 重叠的目标不危险降级。失败补偿保留原错误类别和日志；补偿也失败/panic 可能需按保留目录人工恢复。fork COMMIT 与撤下派生分支双重失败可能残留 derived child，错误标出位置；清理失败只 warning。不是文件系统/SQLite 的崩溃原子事务或并发锁，不关闭 H-73/H-75/H-285/H-287。
+
+**原始审计记录：级别高（P1）；范围为 AppService 的 rewind_session / fork_session 共用文件恢复路径。** 触发条件是某份已经记录的检查点备份在恢复时不可用；原审计明确复现的是备份文件丢失，不代表普通回退每次都会失败。以下失败证据不改写为修复后状态。
 
 - 根因：`deepagent-runtime/src/checkpoint.rs::CheckpointManager::restore()` 逆序遍历条目，对每个 target 先执行 `remove_existing()`，然后才检查 backup 字段、备份路径边界并复制内容。源备份不存在时，复制返回错误，当前 target 已被删除。`deepagent-app-core/src/service.rs::restore_checkpoints_after()` 没有恢复已处理文件的补偿；rewind 在文件恢复成功后才截断事件，fork 在成功后才创建分支。因而 Err 不代表工作区未变。
 - 动态证据：新增 `deepagent-app-core/tests/checkpoint_audit.rs`，使用真实 Session、RunStore、CheckpointManager、CheckpointStore 和正式 AppService；两个临时文件分别从 first-before / second-before 修改为 first-after / second-after。按正式 capture 顺序记录后，仅删除测试自己 storage 下第一项的备份文件，不修改 manifest 或生产函数。逆序恢复先处理健康第二项，再遇到第一项缺失。Rewind 和 Fork 各使用全新的内存数据库及临时目录，均返回 Err；first.txt 已不存在，second.txt 已变回 second-before；源会话的完整事件 JSON 与检查点记录保持相等，session 数仍为 1，未创建 fork。补充存在性断言后重跑约 0.19s 仍为 1 passed / 1 failed，两个入口均明确输出 current_file_exists=false，排除单纯读取失败。Tauri 同名 command 确实调用这些 AppService 方法；本轮只查证桥接，未点击桌面执行回退。
 - 执行：`cargo test -p deepagent-app-core --test checkpoint_audit --offline -- --include-ignored --nocapture`，1 passed / 1 failed，测试体约 0.22s。正常对照覆盖两个入口：完整备份均恢复两份 before 内容；rewind 改变原历史但不增会话，fork 保留原历史并新建会话。缺陷探针 `audit_missing_backup_preserves_current_file_on_failed_rewind_and_fork` 在同次执行中观察两个入口后，因“当前文件必须保留”断言失败。该探针默认 ignored，不能把默认基线绿测说成缺陷已修复。
 - 后果：备份被外部清理、丢失或不可访问时，用户点击回退/分叉可能收到失败却失去当前工作内容；已有健康文件又可能回到过去版本，原历史仍描述回退前状态。若该文件没有其他副本，当前新内容不能靠已丢失的备份恢复。本轮没有测试磁盘写满、Windows 文件占用、目录备份缺损、并发写入或恶意 manifest，不把它概括成所有恢复错误都具有相同后果，也不宣称数据库已损坏。
 - 成熟实现对照：`借鉴/claudecode/restored-src/src/utils/fileHistory.ts::restoreBackup()` 先 `stat(backupPath)`；ENOENT 时记录错误并返回，尚未尝试复制，更不先 unlink 当前文件。`applySnapshot()` 仅在明确的 null 备份标记（文件在目标版本不存在）时删除文件；无法解析备份时不触碰文件。其多文件循环也有逐项错误处理，且缺失备份返回后的 changed 标记仍需另行审计；因此这里只借鉴“恢复来源已知不可用时先保留当前文件”的边界，不声称 Claude 提供多文件/历史全局事务或本轮已运行它的测试。当前 Codex 参考树中的 ghost_snapshot 已标记兼容字段，未用旧版快照机制替代当前实现作证。
-- 修复方向（尚未实施，本地设计）：在既有 CheckpointManager 内先解析并验证整个恢复计划的目标、备份边界及源可读性，缺失备份在任何目标删除前明确失败；恢复既存文件/目录时先在受限临时位置构建完整替换，再按平台能力提交，不能先删目标再读源。对中途失败保留逐项结果与可补偿的当前副本，明确 AppService 的文件恢复与事件截断/分支创建提交顺序和重试语义。跨文件、数据库和崩溃恢复的一致性属于本系统需要定义的本地契约，不从 stat 检查推导全局原子性。回归覆盖完整备份、缺失/不合法来源、部分复制失败、DB 截断失败、重试及 Windows 占用，不新建第二套事件或运行存储。
+- 原审计修复建议（当时尚未实施；现实现与验收见上方，本地设计）：在既有 CheckpointManager 内先解析并验证整个恢复计划的目标、备份边界及源可读性，缺失备份在任何目标删除前明确失败；恢复既存文件/目录时先在受限临时位置构建完整替换，再按平台能力提交，不能先删目标再读源。对中途失败保留逐项结果与可补偿的当前副本，明确 AppService 的文件恢复与事件截断/分支创建提交顺序和重试语义。跨文件、数据库和崩溃恢复的一致性属于本系统需要定义的本地契约，不从 stat 检查推导全局原子性。回归覆盖完整备份、缺失/不合法来源、部分复制失败、DB 截断失败、重试及 Windows 占用，不新建第二套事件或运行存储。
 
 ### H-73：回退后的旧分支检查点仍可覆盖新分支文件，调用却返回成功
 

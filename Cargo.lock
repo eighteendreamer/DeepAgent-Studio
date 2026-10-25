@@ -1305,6 +1305,7 @@ dependencies = [
  "deepagent-hooks",
  "deepagent-mobile-core",
  "deepagent-mobile-protocol",
+ "deepagent-persistence",
  "deepagent-security",
  "deepagent-skills",
  "deepagent-tools",
@@ -1599,6 +1600,7 @@ version = "0.1.0"
 dependencies = [
  "deepagent-core",
  "fs2",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
@@ -1606,6 +1608,7 @@ dependencies = [
  "tempfile",
  "time",
  "tracing",
+ "windows-sys 0.59.0",
  "zstd",
 ]
 

@@ -134,7 +134,6 @@ fn complete_backups_restore_both_files_through_rewind_and_fork() {
 }
 
 #[test]
-#[ignore = "audit: a missing backup must not destroy the current workspace file"]
 fn audit_missing_backup_preserves_current_file_on_failed_rewind_and_fork() {
     let observations = [Operation::Rewind, Operation::Fork].map(|operation| {
         let observed = observe(operation, true);
@@ -155,7 +154,185 @@ fn audit_missing_backup_preserves_current_file_on_failed_rewind_and_fork() {
             Some("first-after"),
             "{operation:?}: restoration failed but destroyed the current file"
         );
+        assert_eq!(observed.healthy_target.as_deref(), Some("second-after"));
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum RestoreFault {
+    MissingOlderBackup,
+    RewindPublication,
+    ForkInsert,
+    ForkCommit,
+}
+
+fn exercise_durable_failure_and_retry(operation: Operation, fault: RestoreFault) {
+    use deepagent_core::error::CoreError;
+    let data = tempfile::tempdir().unwrap();
+    let db_path = data.path().join("audit.sqlite");
+    let db = Arc::new(Database::open(&db_path).unwrap());
+    let clock = FixedClock::new(1_000);
+    let workspace = tempfile::tempdir().unwrap();
+    let storage = tempfile::tempdir().unwrap();
+    let first = workspace.path().join("first");
+    let second = workspace.path().join("second");
+    std::fs::write(&first, "first-before").unwrap();
+    std::fs::write(&second, "second-before").unwrap();
+    let mut session = Session::create(&db, &clock, Some("durable restore failure")).unwrap();
+    let id = session.id();
+    let mut checkpoints = Vec::new();
+    for (index, target) in [&first, &second].into_iter().enumerate() {
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::user(format!("edit-{index}")),
+            })
+            .unwrap();
+        let sequence = EventStore::new(&db)
+            .load_session(id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .sequence;
+        let run_id = format!("restore-run-{index}");
+        RunStore::new(&db)
+            .create(&run_id, &id.to_string(), None, 1_000)
+            .unwrap();
+        let checkpoint = CheckpointManager::new(
+            db.clone(),
+            &run_id,
+            sequence as i64,
+            workspace.path(),
+            storage.path(),
+        )
+        .unwrap();
+        checkpoint.capture_before(target).unwrap();
+        checkpoints.push(checkpoint.commit().unwrap());
+        RunStore::new(&db)
+            .finish(&run_id, "succeeded", None, 1_001)
+            .unwrap();
+    }
+    session
+        .append(EventPayload::MessageAppended {
+            message: Message::assistant("edits finished"),
+        })
+        .unwrap();
+    drop(session);
+    std::fs::write(&first, "first-current").unwrap();
+    std::fs::write(&second, "second-current").unwrap();
+    let before = serde_json::to_value(EventStore::new(&db).load_session(id).unwrap()).unwrap();
+    let mut deleted_backup = None;
+    let mut blocked_generation = None;
+    match fault {
+        RestoreFault::MissingOlderBackup => {
+            let record = CheckpointStore::new(&db)
+                .get(&checkpoints[0])
+                .unwrap()
+                .unwrap();
+            let manifest: serde_json::Value = serde_json::from_str(&record.manifest).unwrap();
+            let path = std::path::PathBuf::from(manifest["entries"][0]["backup"].as_str().unwrap());
+            assert!(path.starts_with(storage.path()));
+            let bytes = std::fs::read(&path).unwrap();
+            std::fs::remove_file(&path).unwrap();
+            deleted_backup = Some((path, bytes));
+        }
+        RestoreFault::RewindPublication => {
+            // Current fixture has one generation. Obstruct only the next
+            // generation's publication, not the readable source history.
+            let path = db
+                .session_transcript_dir(id)
+                .join("session.g000002.v1.jsonl.zst");
+            assert!(path.starts_with(data.path()));
+            std::fs::create_dir(&path).unwrap();
+            blocked_generation = Some(path);
+        }
+        RestoreFault::ForkInsert => {
+            db.with_conn(|connection| { connection.execute_batch("CREATE TEMP TRIGGER reject_fork BEFORE INSERT ON sessions BEGIN SELECT RAISE(ABORT, 'injected fork insert failure'); END;").map_err(|error| CoreError::Persistence(error.to_string()))?; Ok(()) }).unwrap();
+        }
+        RestoreFault::ForkCommit => {
+            // A deferred FK fails at COMMIT, after the complete prefix was
+            // published, exercising its unpublish path rather than INSERT.
+            db.with_conn(|connection| { connection.execute_batch("CREATE TABLE audit_commit_guard (session_id TEXT REFERENCES sessions(id) DEFERRABLE INITIALLY DEFERRED); CREATE TRIGGER reject_fork_commit AFTER INSERT ON sessions BEGIN INSERT INTO audit_commit_guard VALUES ('missing-audit-session'); END;").map_err(|error| CoreError::Persistence(error.to_string()))?; Ok(()) }).unwrap();
+        }
+    }
+    let app = AppService::from_shared(db.clone());
+    let result = match operation {
+        Operation::Rewind => app.rewind_session(&id.to_string(), 0).map(|_| ()),
+        Operation::Fork => app.fork_session(&id.to_string(), 0).map(|_| ()),
+    };
+    let error = result.expect_err("injected failure must not be reported as success");
+    eprintln!("durable restore {operation:?}/{fault:?}: {error}");
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "first-current");
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), "second-current");
+    if let Some(path) = blocked_generation {
+        std::fs::remove_dir(path).unwrap();
+    }
+    assert_eq!(
+        serde_json::to_value(EventStore::new(&db).load_session(id).unwrap()).unwrap(),
+        before
+    );
+    assert_eq!(app.list_sessions().unwrap().len(), 1);
+    if let Some((path, bytes)) = deleted_backup {
+        std::fs::write(path, bytes).unwrap();
+    }
+    db.with_conn(|connection| { connection.execute_batch("DROP TRIGGER IF EXISTS reject_fork; DROP TRIGGER IF EXISTS reject_fork_commit; DROP TABLE IF EXISTS audit_commit_guard;").map_err(|error| CoreError::Persistence(error.to_string()))?; Ok(()) }).unwrap();
+    drop(app);
+    drop(db);
+    let db = Arc::new(Database::open(&db_path).unwrap());
+    let app = AppService::from_shared(db.clone());
+    // Restart must not resurrect a header-only/partially-copied failed child.
+    assert_eq!(app.list_sessions().unwrap().len(), 1);
+    assert_eq!(
+        serde_json::to_value(EventStore::new(&db).load_session(id).unwrap()).unwrap(),
+        before
+    );
+    for checkpoint in &checkpoints {
+        assert!(CheckpointStore::new(&db).get(checkpoint).unwrap().is_some());
+    }
+    match operation {
+        Operation::Rewind => {
+            app.rewind_session(&id.to_string(), 0).unwrap();
+            assert_eq!(app.list_sessions().unwrap().len(), 1);
+        }
+        Operation::Fork => {
+            let fork = app.fork_session(&id.to_string(), 0).unwrap();
+            assert_eq!(app.list_sessions().unwrap().len(), 2);
+            assert_eq!(
+                app.session_detail(&fork.new_session_id).unwrap().summary.id,
+                fork.new_session_id
+            );
+        }
+    }
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "first-before");
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), "second-before");
+    assert!(std::fs::read_dir(workspace.path())
+        .unwrap()
+        .all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".deepagent-restore-")));
+}
+
+#[test]
+fn missing_backup_in_older_checkpoint_preserves_files_history_and_retry_after_reopen() {
+    for operation in [Operation::Rewind, Operation::Fork] {
+        exercise_durable_failure_and_retry(operation, RestoreFault::MissingOlderBackup);
+    }
+}
+
+#[test]
+fn unreadable_rewind_history_rejects_before_file_changes_and_allows_retry() {
+    exercise_durable_failure_and_retry(Operation::Rewind, RestoreFault::RewindPublication);
+}
+
+#[test]
+fn fork_sqlite_insert_failure_compensates_files_without_resurrecting_partial_child() {
+    exercise_durable_failure_and_retry(Operation::Fork, RestoreFault::ForkInsert);
+}
+
+#[test]
+fn fork_sqlite_commit_failure_unpublishes_child_and_compensates_files() {
+    exercise_durable_failure_and_retry(Operation::Fork, RestoreFault::ForkCommit);
 }
 
 #[derive(Debug)]

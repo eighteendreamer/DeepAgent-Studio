@@ -16,6 +16,7 @@ http = ["dep:reqwest", "dep:url"]
 
 [dependencies]
 deepagent-core.workspace = true
+deepagent-persistence.workspace = true
 deepagent-codegraph.workspace = true
 deepagent-security.workspace = true
 deepagent-tools.workspace = true

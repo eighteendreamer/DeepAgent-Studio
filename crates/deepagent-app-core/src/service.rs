@@ -839,14 +839,15 @@ impl AppService {
     pub fn fork_session(&self, session_id: &str, at_seq: u64) -> Result<ForkResultDto> {
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
-        let clock = SystemClock;
-        let restored_paths = self.restore_checkpoints_after(session_id, at_seq)?;
-        let forked = Session::fork(&self.db, &clock, id, at_seq)?;
-        Ok(ForkResultDto {
-            new_session_id: forked.id().to_string(),
-            source_session_id: session_id.to_string(),
-            forked_at: at_seq,
-            restored_paths,
+        self.restore_checkpoints_after(session_id, at_seq, |restored_paths| {
+            let new_id = SessionId::new();
+            EventStore::new(&self.db).fork_session(id, new_id, at_seq, SystemClock.now())?;
+            Ok(ForkResultDto {
+                new_session_id: new_id.to_string(),
+                source_session_id: session_id.to_string(),
+                forked_at: at_seq,
+                restored_paths,
+            })
         })
     }
 
@@ -858,30 +859,42 @@ impl AppService {
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         let clock = SystemClock;
-        let mut session = Session::recover(&self.db, &clock, id)?;
-        let restored_paths = self.restore_checkpoints_after(session_id, to_seq)?;
-        let removed = session.rewind(to_seq)?;
-        Ok(RewindResultDto {
-            session_id: session_id.to_string(),
-            kept_through: to_seq,
-            events_removed: removed,
-            restored_paths,
+        // Validate recoverability before touching files. Avoid a fallible
+        // projection reload after the authoritative truncate has committed.
+        Session::recover(&self.db, &clock, id)?;
+        self.restore_checkpoints_after(session_id, to_seq, |restored_paths| {
+            let removed = EventStore::new(&self.db).truncate_after(id, to_seq)?;
+            Ok(RewindResultDto {
+                session_id: session_id.to_string(),
+                kept_through: to_seq,
+                events_removed: removed,
+                restored_paths,
+            })
         })
     }
 
-    fn restore_checkpoints_after(&self, session_id: &str, sequence: u64) -> Result<Vec<String>> {
+    fn restore_checkpoints_after<T>(
+        &self,
+        session_id: &str,
+        sequence: u64,
+        finalize: impl FnOnce(Vec<String>) -> Result<T>,
+    ) -> Result<T> {
         let checkpoints = CheckpointStore::new(&self.db)
             .list_for_session_after_sequence(session_id, sequence as i64)?;
-        let mut restored_paths = Vec::new();
-        for checkpoint in checkpoints {
-            for path in CheckpointManager::restore(&self.db, &checkpoint.id)? {
+        let ids = checkpoints
+            .into_iter()
+            .map(|checkpoint| checkpoint.id)
+            .collect::<Vec<_>>();
+        CheckpointManager::restore_many_with(&self.db, &ids, |paths| {
+            let mut restored_paths = Vec::new();
+            for path in paths {
                 let rendered = path.to_string_lossy().to_string();
                 if !restored_paths.contains(&rendered) {
                     restored_paths.push(rendered);
                 }
             }
-        }
-        Ok(restored_paths)
+            finalize(restored_paths)
+        })
     }
 
     /// Export a session's transcript in `format` ("markdown"/"md" or "json").
@@ -1215,6 +1228,67 @@ mod tests {
     use super::*;
     use deepagent_core::clock::FixedClock;
     use deepagent_session::Session;
+
+    #[test]
+    fn restore_commit_seam_compensates_files_when_history_rewrite_fails_after_publication() {
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1_000);
+        let workspace = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let target = workspace.path().join("file");
+        std::fs::write(&target, "before").unwrap();
+        let mut session = Session::create(&db, &clock, Some("restore commit seam")).unwrap();
+        let id = session.id();
+        session
+            .append(deepagent_core::event::EventPayload::MessageAppended {
+                message: deepagent_core::message::Message::user("edit"),
+            })
+            .unwrap();
+        let sequence = EventStore::new(&db)
+            .load_session(id)
+            .unwrap()
+            .last()
+            .unwrap()
+            .sequence;
+        RunStore::new(&db)
+            .create("restore-seam", &id.to_string(), None, 1_000)
+            .unwrap();
+        let checkpoint = CheckpointManager::new(
+            db.clone(),
+            "restore-seam",
+            sequence as i64,
+            workspace.path(),
+            storage.path(),
+        )
+        .unwrap();
+        checkpoint.capture_before(&target).unwrap();
+        checkpoint.commit().unwrap();
+        std::fs::write(&target, "current").unwrap();
+        let before = serde_json::to_value(EventStore::new(&db).load_session(id).unwrap()).unwrap();
+        let blocked = db
+            .session_transcript_dir(id)
+            .join("session.g000002.v1.jsonl.zst");
+        let service = AppService::from_shared(db.clone());
+        // The private shared commit seam is used by BOTH public operations.
+        // Introduce the real filesystem fault only after workspace publication,
+        // so this cannot accidentally prove just the public preflight rejection.
+        let result = service.restore_checkpoints_after(&id.to_string(), 0, |paths| {
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
+            assert_eq!(paths, vec![target.to_string_lossy().to_string()]);
+            std::fs::create_dir(&blocked).unwrap();
+            EventStore::new(&db).truncate_after(id, 0).map(|_| ())
+        });
+        let error = result.unwrap_err().to_string();
+        assert!(error.contains("session file"), "{error}");
+        std::fs::remove_dir(&blocked).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "current");
+        assert_eq!(
+            serde_json::to_value(EventStore::new(&db).load_session(id).unwrap()).unwrap(),
+            before
+        );
+        service.rewind_session(&id.to_string(), 0).unwrap();
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
+    }
 
     fn seeded_service() -> (AppService, String) {
         let db = Database::open_in_memory().unwrap();

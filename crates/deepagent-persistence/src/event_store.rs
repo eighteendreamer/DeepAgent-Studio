@@ -930,22 +930,64 @@ impl<'db> EventStore<'db> {
             return Err(CoreError::not_found(format!("session {source_id}")));
         }
 
-        // Create the new session row first (carry title + mode + project forward).
-        self.create_session_full(
-            new_id,
-            record.title.as_deref(),
-            record.mode,
-            record.project.as_deref(),
-            now,
-        )?;
-
-        // Copy the prefix, re-appending each payload with its original
-        // timestamp so the forked timeline reads identically. `append` assigns
-        // gapless sequences starting at 0, which mirrors the source ordering.
-        for ev in events.iter().filter(|e| e.sequence <= until_seq) {
-            self.append(new_id, ev.payload.clone(), ev.timestamp)?;
+        let events = events
+            .into_iter()
+            .filter(|event| event.sequence <= until_seq)
+            .enumerate()
+            .map(|(sequence, event)| Event {
+                id: EventId::new(),
+                session_id: new_id,
+                sequence: sequence as u64,
+                timestamp: event.timestamp,
+                payload: event.payload,
+            })
+            .collect::<Vec<_>>();
+        let _io = self.db.lock_session_io()?;
+        let root = self.db.session_files_root();
+        let _file_lock = session_files::lock_session(&root, new_id)?;
+        if self.get_session(new_id)?.is_some()
+            || session_files::current_cursor(&root, new_id)?.is_some()
+        {
+            return Err(CoreError::invalid(format!(
+                "fork target already exists: {new_id}"
+            )));
         }
-        Ok(())
+        let (staging, prepared) = session_files::prepare_fork(
+            &root,
+            SessionFileHeader {
+                id: new_id,
+                title: record.title.clone(),
+                mode: record.mode,
+                project: record.project.clone(),
+                created_at: now,
+            },
+            events,
+        )?;
+        let destination = session_files::session_dir(&root, new_id);
+        self.db.with_conn(|connection| {
+            let tx = connection.unchecked_transaction().map_err(map_sqlite)?;
+            let updated_at = prepared.events.last().map_or(now.as_millis(), |event| event.timestamp.as_millis());
+            let ended_at = prepared.events.iter().rev().find_map(|event| matches!(event.payload, EventPayload::SessionEnded { .. }).then_some(event.timestamp.as_millis()));
+            tx.execute("INSERT INTO sessions (id, title, mode, project, created_at, updated_at, ended_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![new_id.to_string(), record.title, record.mode.label(), record.project, now.as_millis(), updated_at, ended_at]).map_err(map_sqlite)?;
+            let last_sequence = prepared.events.last().map(|event| event.sequence as i64);
+            tx.execute("INSERT INTO session_file_state (session_id, generation, last_sequence, byte_size, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![new_id.to_string(), prepared.generation as i64, last_sequence, prepared.byte_len as i64, updated_at]).map_err(map_sqlite)?;
+            replace_search_index(&tx, new_id, &prepared.events)?;
+            tx.execute("INSERT INTO session_search_cursors (session_id, generation, last_sequence, dirty, updated_at) VALUES (?1, ?2, ?3, 0, ?4)",
+                params![new_id.to_string(), prepared.generation as i64, last_sequence, updated_at]).map_err(map_sqlite)?;
+            crate::fs_commit::rename_no_replace(staging.path(), &destination).map_err(|error| CoreError::Persistence(format!("publish fork prefix: {error}")))?;
+            if let Err(error) = tx.commit() {
+                // A failed SQLite commit must not leave an active partial child
+                // for startup discovery. The staged prefix is derived data;
+                // source history and workspace recovery copies remain intact.
+                if let Err(rollback) = crate::fs_commit::rename_no_replace(&destination, staging.path()) {
+                    return Err(CoreError::Persistence(format!("fork metadata commit failed: {error}; unpublish failed: {rollback}; derived fork retained at {}", destination.display())));
+                }
+                return Err(map_sqlite(error));
+            }
+            Ok(())
+        })
     }
 
     /// Discard every event of `session_id` with sequence strictly greater than

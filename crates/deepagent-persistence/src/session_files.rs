@@ -88,8 +88,7 @@ pub(crate) fn create(root: &Path, header: SessionFileHeader) -> Result<LoadedSes
         )));
     }
 
-    write_generation(&path, generation, &header, &[])?;
-    let byte_len = fs::metadata(&path).map_err(io_error)?.len();
+    let byte_len = write_generation(&path, generation, &header, &[])?;
     Ok(LoadedSessionFile {
         generation,
         header,
@@ -111,6 +110,42 @@ pub(crate) fn load(root: &Path, session_id: SessionId) -> Result<Option<LoadedSe
         (Ok(loaded), Ok(())) => Ok(Some(loaded)),
         (Err(error), _) | (Ok(_), Err(error)) => Err(error),
     }
+}
+
+/// Prepare a complete fork prefix without publishing a partially-created
+/// session. The caller holds the new session lock and publishes this directory
+/// only after all metadata/index writes have succeeded in its transaction.
+pub(crate) fn prepare_fork(
+    root: &Path,
+    header: SessionFileHeader,
+    events: Vec<Event>,
+) -> Result<(tempfile::TempDir, LoadedSessionFile)> {
+    let target = session_dir(root, header.id);
+    let parent = target
+        .parent()
+        .ok_or_else(|| CoreError::invalid("session path has no parent"))?;
+    fs::create_dir_all(parent).map_err(io_error)?;
+    let staging = tempfile::Builder::new()
+        .prefix(".fork-")
+        .tempdir_in(parent)
+        .map_err(io_error)?;
+    let generation = 1;
+    let byte_len = write_generation(
+        &generation_path(staging.path(), generation),
+        generation,
+        &header,
+        &events,
+    )?;
+    Ok((
+        staging,
+        LoadedSessionFile {
+            generation,
+            header,
+            events,
+            byte_len,
+            recovered_tail_bytes: 0,
+        },
+    ))
 }
 
 pub(crate) fn current_cursor(
@@ -236,8 +271,7 @@ pub(crate) fn rewrite_prefix(
     let generation = current.generation + 1;
     let dir = session_dir(root, session_id);
     let path = generation_path(&dir, generation);
-    write_generation(&path, generation, &current.header, &kept)?;
-    let byte_len = fs::metadata(&path).map_err(io_error)?.len();
+    let byte_len = write_generation(&path, generation, &current.header, &kept)?;
     Ok((
         LoadedSessionFile {
             generation,
@@ -267,8 +301,7 @@ pub(crate) fn rewrite_header_project(
     let mut header = current.header.clone();
     header.project = Some(project.to_string());
     let path = generation_path(&session_dir(root, session_id), generation);
-    write_generation(&path, generation, &header, &current.events)?;
-    let byte_len = fs::metadata(&path).map_err(io_error)?.len();
+    let byte_len = write_generation(&path, generation, &header, &current.events)?;
     Ok(LoadedSessionFile {
         generation,
         header,
@@ -577,13 +610,13 @@ fn write_generation(
     generation: u64,
     header: &SessionFileHeader,
     events: &[Event],
-) -> Result<()> {
+) -> Result<u64> {
     let parent = path
         .parent()
         .ok_or_else(|| CoreError::Persistence("session path has no parent".into()))?;
     fs::create_dir_all(parent).map_err(io_error)?;
     let temp = path.with_extension(format!("tmp-{}-{}", std::process::id(), now_nanos()));
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<u64> {
         let mut file = OpenOptions::new()
             .create_new(true)
             .write(true)
@@ -609,8 +642,11 @@ fn write_generation(
                 .map_err(io_error)?;
         }
         file.sync_all().map_err(io_error)?;
+        // No fallible inspection after publication: callers need Err to mean
+        // the old authoritative generation is still in effect.
+        let byte_len = file.metadata().map_err(io_error)?.len();
         fs::rename(&temp, path).map_err(io_error)?;
-        Ok(())
+        Ok(byte_len)
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temp);

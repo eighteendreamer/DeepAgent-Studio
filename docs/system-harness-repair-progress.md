@@ -2,27 +2,27 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；本轮仅 H-286。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-286 已交付，本轮仅 H-72。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 1 | H-286，Windows 本机原输入/正常控制与正式工具链验收；修复提交 `56b9e7b9` |
+| 本阶段已修复并验收 | 2 | H-286、H-72，均限 Windows 本机所列验收；H-286 提交 `56b9e7b9`，H-72 提交后回填 |
 | 历史已修复跳过 | 17 | 原报告有实现及修复后验收；本轮不重复修复/冒称重验 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 本轮只处理 H-286，未夹带下一项 |
-| 待修复 | 279 | 执行前仍要核对当前代码、触发条件和原始测试；不是 279 项本轮重新验证未修 |
+| 修复中 | 0 | 本轮 H-72 已完成所列本机行为验收；未夹带下一项 |
+| 待修复 | 278 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **279（全部为待修复）**；不提供完成率。H-286 的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。历史修复依原报告状态跳过，但不虚构其 commit ID：尚未逐项重新定位的历史 hash 明确留为“未重新定位”，保留原文验收来源。
+有效未关闭条目当前为 **278（全部待修复）**；不提供完成率。H-286/H-72 的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。历史修复依原报告状态跳过，但不虚构其 commit ID：尚未逐项重新定位的历史 hash 明确留为“未重新定位”，保留原文验收来源。
 
 ## 总体工时、排序与不确定性
 
-暂估剩余 **200–400 小时有效修复、测试和文档交付时间**，是基于当前有效未关闭规模、跨层 owner/授权/持久化问题与多数单项需原输入回归的初始规划区间，不是将每项假定为相同难度。首项完成仍不足以建立可靠吞吐；首批 3–5 项后重新按实际有效工时与剩余根因分组校准，不编造精确结束日期。
+暂估剩余 **200–400 小时有效修复、测试和文档交付时间**，是基于当前有效未关闭规模、跨层 owner/授权/持久化问题与多数单项需原输入回归的初始规划区间，不是将每项假定为相同难度。前两项仍不足以建立可靠吞吐；首批 3–5 项后重新按实际有效工时与剩余根因分组校准，不编造精确结束日期。本项未单独记录可审计的有效工时，不以对话跨度或编译等待伪造工时样本。
 
-设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。下一项拟核对 H-72（检查点备份缺失时回退仍删除当前文件），届时先复核旧探针，不承诺它已修复。
+设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。下一项拟核对 H-73（回退后的旧分支检查点覆盖新分支文件），届时先复核旧探针，不承诺它已修复。
 
 ## H-286 本轮实施与验收明细
 
@@ -48,6 +48,32 @@
 本轮未执行 Linux/macOS/Android 动态或交叉编译、真实跨卷故障、掉电/崩溃恢复和真实 Desktop UI；主机仅安装 Windows 与 Android Rust targets，不能由 Windows 测试推断这些平台通过。case-alias 已在 Windows 测试；Unix symlink-parent 回归存在但本机不执行。没有修改 SandboxBackend、数据库 schema 或公共 command/DTO。
 
 `cargo fmt --all -- --check`、`git diff --cached --check` 与 306 行台账唯一性/集合/列数校验通过。最终源码移除重复前置判断后，重新运行 builtins/AppCore 两组测试，仍分别为 292 passed/1 ignored、102 passed/92 ignored；格式与 no-deps 严格 lint 再次通过。新增文档首次暂存检查发现一个 EOF 空行，移除后暂存检查通过。代码、测试及两份文档已作为本项独立提交 `56b9e7b9`；本次仅补文档记录，不反复 amend。H-286 标记为“已修复并验收”限上述 Windows 本机正式路径；完整 workspace、全依赖 lint 和其他平台没有通过状态，整个修复任务仍未完成。文档技能的证据链要求用于区分原失败、本机验收及未验范围；人工核对归并/撤销，不把历史证据冒充本轮重验。
+
+## H-72 本轮实施与验收明细
+
+H-72 当前实施记录（2026-10-26）：修复前执行 `cargo test -p deepagent-app-core --test checkpoint_audit audit_missing_backup_preserves_current_file_on_failed_rewind_and_fork --offline -j 1 -- --include-ignored --exact --nocapture`，**0 passed / 1 failed**，测试体 0.16 秒。rewind/fork 均为 failed=true、current_file_exists=false、healthy_target=second-before、history_unchanged=true、checkpoint_unchanged=true、session_count=1。仅使用原临时 fixture；不以本次重验当作新发现。
+
+恢复实现现位于既有 CheckpointManager 的私有 restore 模块：解析全部 checkpoint 后先构建最终替换树，重叠路径保持原恢复顺序；当前工作副本以 no-replace rename 保留到历史提交成功，普通失败则反向补偿，补偿失败保留 recovery 目录并报错。no-replace 原语从 H-286 私有模块提至现有 persistence 共享模块，两处共用，不复制平台分支。AppService 两入口接入同一准备/发布/提交边界；fork 的完整前缀先暂存，在同一 SQLite 事务中写投影后发布，COMMIT 失败撤下派生分支；rewind 以原有文件代际发布为事实，避免发布后 reload 失败被误当作未提交。没有迁移生产数据库或修改公共 DTO。
+
+即时验收时间线（保留中间失败，不代表最终版本反复失败）：原 H-72 探针修复后 **1 passed**，两入口当前两文件均为 after，历史与 checkpoint 未改。恢复层首批 **7 passed**；公开 AppCore `checkpoint_audit` **8 passed / 2 ignored**，覆盖完整备份、缺失旧 checkpoint、文件 SQLite 重开/重试、fork INSERT 与延迟 FK 的真实 COMMIT 失败及无残留子会话。两个 ignored 是未独立编号的 capture 同对象重试契约探针及 H-73，不作本项通过，也不误记为 H-65。首次恢复单测暴露空 suffix 被拼成文件尾斜杠，已改正后原 5 项全部通过。一条历史目录阻断测试实际命中 public preflight，已改名避免假称晚期补偿，并另补私有共享提交 seam 的发布后故障用例。
+
+最终本机结果如下；没有把局部绿色写成 workspace 全绿：
+
+| 实际命令 | 结果 | 覆盖与限制 |
+|---|---|---|
+| `cargo test -p deepagent-runtime --lib checkpoint:: --offline -j 1 -- --nocapture` | 13 passed / 0 failed / 0 ignored | 原 5 项及新增 8 项；含目录部分复制失败、Windows 占用导致发布失败、完整/非法计划、重叠目录、多检查点、提交失败补偿、补偿失败保留副本与 panic；预期 panic 被 catch_unwind 捕获，不是测试失败 |
+| `cargo test -p deepagent-app-core --test checkpoint_audit --offline -j 1 -- --nocapture` | 8 passed / 0 failed / 2 ignored | 原故障默认执行；其他 ignored 不作通过；最终源码也在下一行 workspace 中同结果 |
+| `cargo test --workspace --offline -j 1 -- --quiet` | 退出 1，未全绿；编译 6m23s | AppCore lib 1102 passed/80 ignored，kernel_v2_e2e 102 passed/92 ignored，builtins 292 passed/1 ignored，persistence 67 passed；后到 prompts lib 27 passed/1 failed，被既有 H-306 空 `creative.video-edit.v1.defaultUserPrompt` 阻断。之后未运行 target 不算通过；没有修改该问题 |
+| `cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet` | 退出 0 | 补跑前述早停未执行模块：runtime lib 282 passed/16 ignored、e2e_stabilization 5 passed、tokenizer 正常项 1 passed/1 ignored、schedule 2 ignored；session 14 passed；两 crate doc-tests 均 0 |
+| `cargo test -p deepagent-app-core --lib restore_commit_seam_compensates_files_when_history_rewrite_fails_after_publication --offline -j 1 -- --nocapture` | 1 passed；最终源码另在 workspace AppCore lib 通过 | 共享 private seam 在发布文件后才引入真实 history 故障并验证补偿，不冒称 public 并发故障注入或 SQLite 投影错误 |
+| `cargo clippy -p deepagent-persistence -p deepagent-runtime -p deepagent-builtins -p deepagent-app-core --all-targets --offline --no-deps -j 1 -- -D warnings` | 退出 1，未通过 | 未修改的 persistence/run_store.rs:127 `explicit_counter_loop` 阻断 |
+| 上条命令尾部追加 `-A clippy::explicit_counter_loop` | 退出 1，未通过 | 继续遇到未修改的 runtime/model_agent.rs:225 `clone_on_copy` |
+| 再追加 `-A clippy::clone_on_copy` | 退出 1，未通过 | 继续遇到未修改的 AppCore/plugin_preparation.rs:14 `type_complexity`、run_assembler.rs:1687 `too_many_arguments`；三次后停止叠加豁免，源码没有加入 lint allow，不伪称四 crate 严格 lint 通过 |
+| `cargo fmt --all -- --check`、`git diff --check` | 退出 0 | 最终源码格式与差异检查；暂存后仍须检查新文件 |
+
+兼容性与残余：不新增外部版本或生产 schema/DTO，仅将已锁定 tempfile 提为 runtime 正式依赖，把既有 libc/windows-sys 发布原语收敛到 persistence。Windows 已验，Linux/macOS/Android 构建运行、真实跨卷、磁盘写满、强杀/断电与真实 UI 未验。未知平台/不支持 no-replace 的文件系统显式失败；symbolic-link 恢复树、workspace root 及与 checkpoint storage 重叠的恢复目标明确拒绝，不危险降级。文件系统和 SQLite 不是崩溃原子事务；回滚也失败会保留旧当前副本并报告恢复目录，panic 只保证不由析构删除唯一副本，不保证自动完成补偿；fork COMMIT 失败且撤下派生分支也失败时，错误标出保留目录，可能需人工清理/恢复。清理失败只记录 warning，不把已提交恢复假报失败。外部并发/活动运行、分支身份、非法锚点及 Windows DACL 仍分别受 H-75/H-73/H-285/H-287 约束，未在本项关闭。
+
+本项已完成上述 Windows 行为验收，代码、测试和两份文档一起独立提交，hash 提交后补录；整体修复 goal 仍 active。code-audit 要求人工核对源头和真实故障，docs-generator 要求区分原始失败、共享 seam 和 public 入口证据，避免将前置拒绝或 ignored 算成补偿通过。
 
 ## 按 H 编号的一一对应台账
 
@@ -127,7 +153,7 @@
 | [H-69：只限制单张图片，缺少多图序列化后的请求体总预算](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-70：导入哈希未绑定模型历史引用，图片替换后同一附件 ID 静默发送新内容](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-71：发现目录丢弃官方输入模态，文字模型仍收到原生图片请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-72：检查点备份缺失时，失败的回退或分叉仍删除当前文件](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-72：检查点备份缺失时，失败的回退或分叉仍删除当前文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针修复前失败、修复后默认通过；不重复登记 | 全 checkpoint 准备/发布/历史提交与补偿边界；共用 no-replace 原语 | 详见本节命令表：checkpoint 13 passed，AppCore audit 8 passed/2 ignored，相关库/端到端通过；workspace/H-306 和 lint 基线限制保留 | 待本项代码/测试/文档提交后补录 | Windows 本机行为验收；断电/其他 OS/UI 未验，补偿失败有恢复路径；不关闭 H-73/H-75/H-285/H-287；本项本地剩余 0，环境另计 |
 | [H-73：回退后的旧分支检查点仍可覆盖新分支文件，调用却返回成功](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-74：分支边界截在源消息与原生镜像之间，保留的消息不进入下一请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

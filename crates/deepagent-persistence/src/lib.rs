@@ -20,6 +20,7 @@ pub mod checkpoint_store;
 pub mod cost_store;
 pub mod document_store;
 pub mod event_store;
+pub mod fs_commit;
 pub mod managed_file_store;
 pub mod migrations;
 pub mod run_control;
