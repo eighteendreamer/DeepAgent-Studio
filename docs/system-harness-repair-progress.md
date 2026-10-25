@@ -8,7 +8,7 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 11 | H-286、H-72、H-73、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44，均限所列本机验收；前十项提交见明细，H-44待独立提交 |
+| 本阶段已修复并验收 | 11 | H-286、H-72、H-73、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44，均限所列本机验收；前十项提交见明细，H-44修复提交`3d247d1a` |
 | 历史已修复跳过 | 17 | 原报告有实现及修复后验收；本轮不重复修复/冒称重验 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
@@ -20,7 +20,7 @@
 
 ## H-44 本轮即时记录与验收（2026-10-26）
 
-**当前状态：已修复并验收，限下述Windows本机范围；独立提交待记录。** 以下为逐步追加的历史状态，保留首轮失败与中间结果，不将中间“尚待”改写为当时已完成。
+**当前状态：已修复并验收，限下述Windows本机范围；修复提交`3d247d1a`。** 以下为逐步追加的历史状态，保留首轮失败与中间结果，不将中间“尚待”改写为当时已完成；本次仅另做hash回填，不amend、不推送。
 
 E-H44-20261026-01：HEAD `75a1b3e6`执行`cargo test -p deepagent-app-core --test recovery_terminal_audit audit_startup_recovery_preserves_one_replayable_terminal --offline -j 1 -- --exact --ignored --nocapture`退出1，0 passed/1 failed（0.34s）。正常恢复及SQL故障后重试/重开均run_kind=failed但run_terminals/session_terminals=0、conversation_turn_kind=null；故障重试recovery_markers从1变2。H-32修复不覆盖本根因；证据/调用路径即时写入原项，尚未修改生产代码，需统一终态边界、跨存储补偿、按run归属且可重试。H-95等独立问题不归并；仅本地合成数据，无网络/用户数据。
 
@@ -57,6 +57,8 @@ E-H44-20261026-09：第二轮冻结源码`cargo test --workspace --offline -j 1 
 E-H44-20261026-10：`cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet --test-threads=4`退出0（编译54.84s）：runtime284 passed/16 ignored、stabilization5 passed（57.04s）、tokenizer1 passed/1 ignored、schedule0/2，session14 passed，两个crate doc-tests均0。`cargo test -p deepagent-core -p deepagent-persistence -p deepagent-app-core --doc --offline -j 1 -- --quiet`退出0，三crate各0文档测试，不冒称执行了文档行为样例。最后fmt-check、diff-check退出0。至此相关生产边界及全部本轮默认回归已实际验证；完整workspace与严格lint仍有E-06/E-08/E-09所列失败。
 
 验收结论（2026-10-26）：H-44在上述Windows本机、临时SQLite/文件与离线transport范围已修复并验收；F-H44修复依据E-01原失败及E-07～10最终专项/跨层结果。P-H44-repair（callflow）：现有RunStore统一SQL终态事务 → 既有EventStore按权威文件及run/task身份幂等投影 → run_events v1确认 → Primary持有session owner后补偿未确认记录；每步由上述故障/重开/正常链路回归覆盖。不是恢复模型自动续跑，也不保证任意断电或所有外部副作用停止。无生产数据迁移、不推送；本轮15个相关文件待独立修复提交，hash随后另行回填。本阶段新增1项、累计11已验收/17历史跳过/7归并/2撤销/269有效待修，整体goal仍active。下一项H-78未启动。剩余200–400有效小时仍为未独立计量校准的粗估，环境/构建等待另计，不机械扣减。
+
+交付核对：修复提交`3d247d1a`仅含本项15个文件（代码、测试及当时两份文档），`cargo fmt --all -- --check`、`git diff --check`、`git diff --cached --check`均退出0。台账Rows=306、Unique=306、Missing=[]、BadColumns=0，11已验收/17历史跳过/7归并/2撤销/269待修/修复中0。所有本轮测试/lint进程已结束；原有五类未跟踪项未读、未改、未暂存。当前仅另做hash回填，不amend、不推送；下一项H-78尚未复现或修改，整体goal未完成。
 
 ## H-32 本轮实施与验收明细（2026-10-26）
 
@@ -404,7 +406,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-41：其他会话完成会清掉当前画布运行监听和停止入口](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-42：定时调度没有跨进程所有权，同一触发时段可重复派发一次性和循环任务](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-43：运行启动先于事件订阅就绪，提前终态丢失后前端持续等待](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 2026-10-26，原失败保留，E-H44-20261026-01～10 | 统一规范终态事务，run/task身份文件投影，既有ledger确认与重开幂等补偿；正常kernel/setup/workflow接回同一边界 | 原探针默认通过；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；workspace H-306/严格lint失败保留，见明细 | 待独立提交 | 无schema迁移；外部last()消费者与Rust构造方需适配；跨平台/断电/真实UI未验，H-95不归并；总区间200–400有效小时初估 |
+| [H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 2026-10-26，原失败保留，E-H44-20261026-01～10 | 统一规范终态事务，run/task身份文件投影，既有ledger确认与重开幂等补偿；正常kernel/setup/workflow接回同一边界 | 原探针默认通过；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；workspace H-306/严格lint失败保留，见明细 | `3d247d1a` | 无schema迁移；外部last()消费者与Rust构造方需适配；跨平台/断电/真实UI未验，H-95不归并；总区间200–400有效小时初估 |
 | [H-45：父 Kernel 总时限直接丢弃执行 Future，前台子 Agent 没有取消和持久化收尾](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-46：Windows MCP transport 只终止直接进程，非 libuv 服务的普通后代仍继续运行](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-47：新增无关 MCP 配置会取消未变服务的初始化，并将宿主取消缓存为该服务失败](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

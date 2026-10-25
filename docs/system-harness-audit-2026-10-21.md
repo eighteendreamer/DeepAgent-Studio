@@ -16,9 +16,9 @@
 | H-23 | 已修复并验收（2026-10-26，Windows 本机范围） | 来源身份/快照、私有提取文件与activity gate；专项41、原探针1、三入口wire1通过；修复提交 `b3614d8c` |
 | H-33 | 已修复并验收（2026-10-26，Windows 本机所列范围） | 接纳前独占dispatch owner，outer持有本地/跨宿主租约；含原双进程探针的5个正式场景默认通过，AppCore1131/78、persistence67/session_control9通过；完整workspace/严格lint既有失败见原项；修复提交 `8ed5d82e` |
 | H-32 | 已修复并验收（2026-10-26，Windows 本机所列范围） | 打开与恢复分离，session activity/dispatch scope授权定向恢复；原探针默认通过，host_lock2/0、owned_recovery7/0、AppCore1131/78、persistence67/session_control9及runtime/session补跑通过；完整workspace/严格lint既有失败保留；修复提交 `c015bc8f` |
-| H-44 | 已修复并验收（2026-10-26，Windows本机所列范围） | 统一规范终态事务、run/task身份文件投影与幂等补偿；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；完整workspace H-306/严格lint失败与边界见原项；修复提交待独立记录 |
+| H-44 | 已修复并验收（2026-10-26，Windows本机所列范围） | 统一规范终态事务、run/task身份文件投影与幂等补偿；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；完整workspace H-306/严格lint失败与边界见原项；修复提交`3d247d1a` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **11**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **269（均待修复）**；306 是历史编号槽位，不是有效未修数量。本轮仅H-44，原失败保留，已完成所列本机范围验收，待独立提交；完整workspace和严格lint仍有真实失败，未将其他独立问题归并关闭。下一项H-78尚未启动，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **11**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **269（均待修复）**；306 是历史编号槽位，不是有效未修数量。本轮仅H-44，原失败保留，已完成所列本机范围验收并独立提交`3d247d1a`；完整workspace和严格lint仍有真实失败，未将其他独立问题归并关闭。下一项H-78尚未启动，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -1448,7 +1448,7 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 
 #### 2026-10-26 修复过程与验收（H-44，Windows本机范围）
 
-**当前状态：已修复并验收，独立提交待记录；以下逐步记录保留当时失败与未完成状态。**
+**当前状态：已修复并验收，修复提交`3d247d1a`；以下逐步记录保留当时失败与未完成状态。本次仅另做hash回填，不amend、不推送。**
 
 - 范围：本仓库合成临时SQLite/会话文件及正式AppService恢复，不访问真实供应商、内网、凭据或用户数据。不重做H-165/加密内容报错；H-95 interruption分类等独立问题不归并。
 - E-H44-20261026-01（command；content_hash=n/a）：HEAD `75a1b3e6`，`cargo test -p deepagent-app-core --test recovery_terminal_audit audit_startup_recovery_preserves_one_replayable_terminal --offline -j 1 -- --exact --ignored --nocapture`退出1，0 passed/1 failed，0.34s。正常恢复重开后run_kind=failed、recovery_markers=1、run_terminals=0、session_terminals=0、conversation_turn_kind=null；注入finished_at更新故障并重试后markers=2，其余同样缺失。此时H-32已修，不影响该独立复现。
@@ -1480,6 +1480,8 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 
 - E-H44-20261026-10：`cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet --test-threads=4`退出0（编译54.84s）：runtime284 passed/16 ignored、stabilization5 passed（57.04s）、tokenizer1 passed/1 ignored、schedule0/2，session14 passed，两个crate doc-tests均0。`cargo test -p deepagent-core -p deepagent-persistence -p deepagent-app-core --doc --offline -j 1 -- --quiet`退出0，三crate各0文档测试，不冒称执行了文档行为样例。最后fmt-check、diff-check退出0。至此相关生产边界及全部本轮默认回归已实际验证；完整workspace与严格lint仍有E-06/E-08/E-09所列失败。
 - 验收结论（2026-10-26）：H-44在上述Windows本机、临时SQLite/文件与离线transport范围已修复并验收；F-H44修复依据E-01原失败及E-07～10最终专项/跨层结果。P-H44-repair（callflow）：现有RunStore统一SQL终态事务 → 既有EventStore按权威文件及run/task身份幂等投影 → run_events v1确认 → Primary持有session owner后补偿未确认记录；每步由上述故障/重开/正常链路回归覆盖。不是恢复模型自动续跑，也不保证任意断电或所有外部副作用停止。无生产数据迁移、不推送；本轮15个相关文件待独立修复提交，hash随后另行回填。本阶段新增1项、累计11已验收/17历史跳过/7归并/2撤销/269有效待修，整体goal仍active。下一项H-78未启动。剩余200–400有效小时仍为未独立计量校准的粗估，环境/构建等待另计，不机械扣减。
+
+- 交付核对：修复提交`3d247d1a`仅含本项15个文件（代码、测试及当时两份文档），`cargo fmt --all -- --check`、`git diff --check`、`git diff --cached --check`均退出0。台账Rows=306、Unique=306、Missing=[]、BadColumns=0，11已验收/17历史跳过/7归并/2撤销/269待修/修复中0。所有本轮测试/lint进程已结束；原有五类未跟踪项未读、未改、未暂存。当前仅另做hash回填，不amend、不推送；下一项H-78尚未复现或修改，整体goal未完成。
 
 以下为修复前原审计记录，保留首次失败、成熟实现对照及当时建议；当前状态以上述验收和台账为准。
 
