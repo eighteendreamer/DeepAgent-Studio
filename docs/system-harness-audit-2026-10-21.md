@@ -51,6 +51,7 @@
 | 跨独立用户回合的 todo reminder 生命周期 | 同一 session 连续 11 次正式 ChatService/Kernel 请求，每次重新组装 ModelAgent；模型每轮均成功返回，但任何实际 wire 请求都没有周期提醒 | 已确认 H-141；真实 session 事件恢复与离线 provider；未修改生产行为 |
 | stdio Harness / SDK 事件交付与恢复 | 事件队列在确定性消费者停读和真实 Windows 子进程 stdout 管道背压下均丢失通知；另有立即中断窗口、恢复丢覆盖配置、最终钩子失败时先完成后失败、审批事件重复且有一条缺少 ID、并发生产时实时事件序号倒退、EOF 时运行时直接丢弃活动 turn、一个已被替代 turn 重复派生多个新 turn，以及 SDK 丢弃通知外层 eventSequence 均已复现；两轮各自游标和独立磁盘补读对照正常 | 已确认 H-01、H-02、H-04、H-83、H-84、H-91、H-92、H-130、H-205；通知丢失尚无自动恢复，H-44 的恢复终态投影仍未修复 |
 | Harness thread 归档生命周期 | 正式 `thread/archive` 已成功并写入 durable archive marker 后，同一 dispatcher 的 `thread/list` 仍公开该 thread，随后 `turn/start` 仍返回成功并创建 `TurnLaunch` | 已确认 H-215；未实际 spawn turn、调用模型或工具；重启后 `thread/resume` 仅完成静态路径核查 |
+| Harness 同一 thread 并发 `turn/start` | 第一个运行已进入离线模型请求后，第二个正式 `turn/start` 仍返回独立 `status=started`；随后 AppCore 输入租约排队并自动取消第一个，两个模型请求均进入 transport，终态为 first interrupted / second completed | 新增 H-284（P1，控制面语义与重复请求）；正式 `ServerState`/`spawn_turn`/`ChatService`/`InputLeaseRegistry`，模型 transport 为本机取消感知 fixture；未访问公网、未执行工具或真实供应商请求 |
 | Harness 冷分叉响应就绪性 | 文件 SQLite 中的 source 在新 ServerState 尚未加载时，正式 `thread/fork` 成功创建 durable child，但 child 未进入活动 map，紧接的 `turn/start` 被拒绝；显式 `thread/resume` 后正向对照可运行 | 已确认 H-216；只创建 `TurnLaunch` 对照，未 spawn turn、调用模型或工具 |
 | DeepSeek 请求、reasoning、工具协议、usage | 真实请求和 usage 返回；三轮真实 session 请求观察到 cache hit 为 12288 / 2944 / 13184 tokens（仅为本次样本）；同一 AppCore 会话双轮 wire 测试确认完整 Responses input 回传、稳定 instructions 前缀逐字节相同、未变工具 schema 顺序相同；Chat 工具投影拆分、MCP 图像工具结果被序列化为普通 JSON 文本、Responses 工具输出图片附件被静默降为文本、截断调用、命名工具选择字段形状和 Thinking 组合限制、连续 reasoning item 丢段、JSON 输出模式拒绝/静默丢弃、top_logprobs 默认值静默忽略、错误解析/重试/取消缺口、流内错误丢码阻断溢出恢复、固定 300 秒 stream deadline、SSE 分帧不完整、备用模型输出上限分裂，以及 Chat `content_filter`、合法 `aborted`/`insufficient_system_resource` 终态、Responses failed usage 丢失、空/重复 `call_id`、空输入、malformed function-call 输出边界、官方 `tool_search_call` 静默丢失、Responses 兼容 effort 别名拒绝、模型目录丢失 model-level effort、条件性 `apply_patch` custom schema 超出文档明示 shape、Responses named `tool_choice` 接受官方不支持类型、MCP 非对象 `inputSchema` 原样进入 function `parameters`、end-user 标识符未校验、Responses 响应身份/序号未进入运行事件、非单调 `sequence_number` 被接受，以及温度/top_p/top_logprobs 越界值可通过公开 ModelClient 进入 wire 均已核查 | 已确认并修复 H-24、H-25、H-29、H-118；已确认 H-05、H-18、H-30、H-49、H-93、H-94、H-98、H-99、H-127、H-131、H-132、H-133、H-144、H-145、H-146、H-147、H-148、H-149、H-150、H-151、H-152、H-154、H-155、H-156、H-157、H-158、H-159、H-172、H-173、H-174、H-200、H-208、H-209、H-210、H-211、H-212；H-153 的规范值请求链已修复，别名缺口见 H-155；H-156 默认工具集不触发且未证明 provider 拒绝；H-157 仅为按公开元数据形状复现的条件性风险，当前官方模型触发情况未知；H-158 已证明两种不支持的对象进入 wire，未向真实 provider 验证其拒绝/忽略方式；H-159 已证明三类非法 MCP schema 进入 wire，未向真实 provider 验证其具体错误；H-172 的当前 AppCore 设置入口已有范围校验，问题限定于公共 ModelClient/ResponseDefaults 边界；H-173 证明公共消息/Responses 类型无法保留工具输出图片，但未证明当前默认工具已有可达图片附件生产路径；H-174 限定于公开 `replace_messages` mutator/未来 Harness 或 SDK 复用，不代表默认桌面路径已触发；H-200 的正常答案不受影响，但 provider 关联与流完整性诊断不可回放；H-208 限定于能到达 Responses parser 的畸形/截断终态，不代表 DeepSeek 正常服务会主动返回该对象；H-209 限定于能到达 Responses parser 的缺失 output-message role，不代表正常供应商响应会省略该字段；H-210 限定于能到达 Responses parser 的重复、跳号或逆序 sequence，不代表正常 DeepSeek 服务会主动发送非法序列；H-211 限定于 JSON-RPC server 返回字符串 response id，不代表当前默认 server 一定使用该 id 形状；H-212 限定于 JSON-RPC server 返回非 `2.0` 的响应版本，不代表当前默认 server 一定发送错误版本；H-93/H-94/H-98/H-99 均不覆盖默认 Responses 路由 |
 | Responses reasoning 与 user 标识 | H-153/H-154 的规范值贯通与 user 标识符校验已修复；本轮复核发现开发者 JSON 拒绝官方兼容 effort 别名，且 thinking guide 与 endpoint schema 对强度字段有差异；模型目录会丢失模型级支持档位 | H-153 仅关闭规范值贯通缺陷；H-155 已确认设置校验缺口，真实服务端对 guide 字段差异未验证；H-154 已修复；H-157 仅证明未来模型能力收窄时的条件性风险，当前官方模型档位无触发证据 |
@@ -7773,3 +7774,49 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo fmt --all -- --check`：通过；`git diff --check`：通过（工作树已有换行风格提示，不是内容错误）。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`：失败于未修改的既有告警 `deepagent-models/src/client.rs:355 clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127 explicit_counter_loop`；没有为本轮审计修改无关生产代码。
 - 仍未执行完整 workspace、独立 Desktop/CLI/SDK 流程、前端构建、参考工程测试、跨平台、真实 DeepSeek 决策/费用或磁盘重开；没有兼容性、配置、数据迁移、权限或沙箱行为变更。未处理用户排除的 encrypted-content 问题。
+
+### H-284：同一 Harness thread 的第二个 `turn/start` 被确认成独立 started，实际输入租约随后取消第一个运行
+
+**级别：中高（P1，Harness 控制面与运行身份语义）；触发条件：同一 thread 的第一个 turn 已进入模型请求但尚未终态，客户端再次发送 `turn/start`。** 本项不是“两个模型同时持有同一 session 租约”：AppCore 会把第二个输入排队并请求取消前一个；缺口在于 Harness 在排队/替代关系尚未确定时，已经向客户端确认了两个独立的 `started` turn。
+
+#### 即时 Evidence（2026-10-25，复现后立即登记）
+
+- Scope：自有仓库的正式 app-server dispatcher、`spawn_turn`、ChatService、InputLeaseRegistry 和临时文件 SQLite；模型 transport 是本机取消感知 fixture，只返回固定 Responses `response.completed`，没有公网、真实 DeepSeek 请求、工具、审批或用户文件。
+- E-284-first（source_type=command，content_hash=n/a）：新增 `apps/cli/src/app_server/terminal_audit.rs::audit_concurrent_turn_start_does_not_ack_two_independent_started_turns`。执行：`cargo test -p deepagent-cli audit_concurrent_turn_start_does_not_ack_two_independent_started_turns --offline -- --ignored --nocapture`。
+- 实际结果：**0 passed / 1 failed（预期暴露缺口）**，生产链输出：`first_ack=started second_ack=started`、两个不同 turn ID、`model_requests=2`、`first_terminals=["turn.interrupted"]`、`second_terminals=["turn.completed"]`。测试只在两个任务完成并释放临时资源后，按预期在“第二个响应不应仍是独立 started”断言处失败。
+- 复现顺序是：正式 `turn/start` 返回第一个 `TurnLaunch` → `spawn_turn` 使其进入 transport → 再次正式 `turn/start` 返回第二个 `TurnLaunch` → 第二个 `accept_input_turn` 发现同 session 已有 active lease，记录 queued 并调用 `RunCoordinator::request_cancel(active_run)` → 第一个产生 `turn.interrupted`、释放 lease → 第二个继续进入 transport 并产生 `turn.completed`。因此不是只调用私有 `turn_start()` 或手工构造 JSON。
+
+#### 生产根因与去重边界
+
+- `apps/cli/src/app_server.rs::ServerState::turn_start()` 只检查 thread 是否加载，生成新 `turn_id`，插入 `TurnState { active: true }`，并立即返回 `status: "started"` 与 `TurnLaunch`；它不查看同一 thread 是否已经有 active/cancelling turn，也没有返回 queued、busy、replaces 或 steered 关系。
+- 真实执行在稍后的 `run_stdio()`/`spawn_turn()` 中才进入 `ChatService::run_in_session_with_overrides()`。`input_runtime::accept_input_turn()` 的现有策略是“排队第二输入并取消当前 active run”，这是一条有效的 AppCore 本地策略，但 Harness 响应没有把该策略投影给客户端，也没有把两个 `TurnLaunch` 合并为一个活动 owner。
+- 这与 H-02 不同：H-02 是单个 `turn/start` ACK 与执行接纳之间的立即 `turn/interrupt` 窗口；本项要求第二次 `turn/start`，并确认两个请求各自产生模型请求和不同终态。
+- 这与 H-130 不同：H-130 是同一旧 `turnId` 重复 `turn/steer` 从已替代 turn 派生多个 replacement；本项不调用 `turn/steer`，而是普通客户端把同一 thread 当作可再次 `turn/start`，协议没有忙态/排队结果。
+- 这与 H-33 的跨宿主并发不同：本探针只使用一个 ServerState/一个 ChatService；同一进程内的 lease 能够串行化，但仍无法修复 ACK 对运行关系的错误描述。
+
+#### 成熟 Agent 与 DeepSeek Harness 对照
+
+- **Codex（静态源码，未运行参考工程）：** `借鉴/codex/codex-rs/core/src/codex_thread.rs::start_or_steer_turn()` 明确返回 `TurnInputSubmission::{Started, Steered, NotSubmitted}`；`start_turn_if_idle()` 在不能从 idle 启动时返回 `NotSubmitted`，不静默创建第二个独立活动 turn。`借鉴/codex/codex-rs/app-server/src/request_processors/turn_processor.rs` 对 `turn/start` 匹配 `Started` 与 `Steered`，内部保留 `started` 布尔值和同一 turn 身份。这里借鉴的是活动 owner 与提交结果的显式语义，不声称 Codex 与本系统必须采用相同的排队策略。
+- **DeepSeek Harness（静态源码，未运行参考工程）：** `借鉴/deepseek-harness/packages/core/agent/src/runtime-types.ts` 将 `steer()` 定义为提交给最近 step；idle driver 才开始 turn，running driver 在下一 step 边界消费 inbox，取消或 disposal 可以丢弃待处理 steering。其 SDK `HarnessSession.run()` 先取得入队 receipt，再收集到整个 agent idle；`prompt()` 返回的是排队回执而不是虚假的独立完成归属。可迁移的是“入队、活动区间和最终收束”分层，不能把它当作本项目 JSON-RPC 字段的直接规范。
+- **DeepSeek 官方边界：** Responses API 是无状态请求；每次宿主决定发送什么输入并承担会话/运行身份。官方 Responses、Tool Calls 和 KV cache 文档没有为本地 `turn/start` 并发或排队定义语义，因此本项是 Harness 本地协议与 AppCore 执行边界的设计缺口，不把供应商行为误写成根因。
+
+#### 影响与后果
+
+- 客户端、SDK 或自动重试器会把两个成功 ACK 当作两个独立可运行 turn；实际第一个被第二个隐式取消，客户端若未订阅完整事件，可能只看到第二个结果而误以为第一条输入正常完成，或因丢失 `turn.interrupted` 重新提交同一输入。
+- 已直接观察到两个模型请求均进入 transport，因而可产生额外 token/费用与一次不必要的取消请求；本次 fixture 没有真实供应商计费，不能把本地请求次数直接写成真实账单。
+- 若第一个 turn 在取消前已经执行了工具、写文件或审批等待，第二个请求的“普通 start”会改变前一个运行的生命周期，而不是单纯排队。工具副作用、迟到事件和审批结果的具体后果已有其他条目覆盖，本项不重复宣称它们在本次 fixture 中发生。
+- 该问题不会绕过现有 `InputLeaseRegistry`、PermissionRules 或 Sandbox backend；它是控制面 ACK、运行 owner 和自动取消策略不一致，属于可靠性/可审计性问题，不是本机测试本身的攻击行为。
+
+#### 治理方向（本地设计，未实施）
+
+- 在现有 `ServerState`/AppCore admission 边界只保留一个可信的 thread 活动 owner。第二个 `turn/start` 必须在同一临界区得到明确结果：忙态拒绝、显式 queued（返回 position/owner）或显式替代（返回 `replacesTurnId`）；不能先返回独立 `started`，再由下层隐式取消。
+- 不新增第二套队列或运行存储：复用现有 `RunCoordinator`、`InputLeaseRegistry`、RunStore/run_events 和 `turn/read`。若产品选择自动替代，应先记录 continuation/owner 关系，再向客户端返回可回放的 replacement 身份；若选择排队，客户端应能知道排队请求何时被提升或取消。
+- 将 `TurnState.active: bool` 收敛为至少 active/queued/cancelling/replaced/terminal 的受控状态，所有 `turn/start`、`turn/interrupt`、`turn/steer` 和 EOF 收尾共用一次性 claim；请求重试不得再创建第二个 launch。
+- 回归必须覆盖：同 thread 第二次 start、响应丢失后的重试、第一轮模型/工具/审批/排队各阶段的第二次 start、不同 thread 并行、取消与终态竞争、重启后 stale turn，以及事件和 durable run 的唯一终态。必须同时断言 ACK 语义、模型请求次数、InputLease 变化和 `thread/read` 回放，不能只检查 JSON 状态字符串。
+
+#### 验证收尾与限制
+
+- 测试夹具编译修正后，正式命令实际完成并得到上述 **0 passed / 1 failed（预期）**；未把这个故障探针纳入默认绿色测试，也未修改生产逻辑。
+- 验证收尾：`cargo fmt --all -- --check` 通过，`git diff --check` 通过；默认 `cargo test -p deepagent-cli app_server:: --offline` 为 **11 passed / 0 failed / 24 ignored**。`cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings` 未通过，阻断仍来自未修改的 `crates/deepagent-models/src/client.rs:355 clone_on_copy` 与 `crates/deepagent-persistence/src/run_store.rs:127 explicit_counter_loop`。
+- workspace 全量测试、Desktop build、真实 DeepSeek、真实 MCP/工具副作用、跨进程场景和参考项目测试不由本项结果代替；本轮未修改生产逻辑。
+- 本项只登记已观察到的两个本地模型 transport 请求和终态分裂；不宣称真实供应商已收费、文件已改变、审批已越权或两个运行曾同时持有同一 session lease。

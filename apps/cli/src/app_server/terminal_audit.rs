@@ -2,7 +2,7 @@
 
 use super::*;
 use deepagent_app_core::{ApprovalPolicy, MemorySecretStore, SettingsService};
-use deepagent_core::error::Result as CoreResult;
+use deepagent_core::error::{CoreError, Result as CoreResult};
 use deepagent_models::transport::EventSink;
 use deepagent_models::{HttpTransport, MockTransport, ModelRole, TransportRequest};
 use serde_json::{json, Value};
@@ -248,6 +248,67 @@ struct BlockingTurnTransport {
     started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
     release: tokio::sync::Notify,
     marker_path: Option<PathBuf>,
+}
+
+/// Keep the first admitted model request pending until the second request has
+/// entered the real transport.  The first request observes the production
+/// cancellation flag; the second only completes after the test releases it.
+/// This makes the app-server ACK/lease semantic split deterministic without a
+/// provider or network dependency.
+struct ConcurrentTurnTransport {
+    requests: AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl ConcurrentTurnTransport {
+    fn new() -> Self {
+        Self {
+            requests: AtomicUsize::new(0),
+            entered: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl HttpTransport for ConcurrentTurnTransport {
+    async fn stream(
+        &self,
+        _request: TransportRequest,
+        _sink: &mut dyn EventSink,
+    ) -> CoreResult<()> {
+        panic!("audit transport must use the cancellation-aware stream path")
+    }
+
+    async fn stream_cancelled(
+        &self,
+        _request: TransportRequest,
+        sink: &mut dyn EventSink,
+        cancel: Arc<std::sync::atomic::AtomicBool>,
+    ) -> CoreResult<()> {
+        self.requests.fetch_add(1, Ordering::SeqCst);
+        self.entered.notify_waiters();
+        loop {
+            if cancel.load(Ordering::Acquire) {
+                return Err(CoreError::other("audit turn cancelled"));
+            }
+            tokio::select! {
+                _ = self.release.notified() => {
+                    sink.on_event(r#"{"type":"response.output_text.delta","delta":"released"}"#)?;
+                    sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+                    return Ok(());
+                }
+                _ = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+        }
+    }
+
+    async fn get_json(&self, _url: &str, _api_key: &str) -> CoreResult<String> {
+        Ok(json!({"data":[{"id":"deepseek-flash","object":"model",
+            "owned_by":"deepseek"}]})
+        .to_string())
+    }
 }
 
 #[async_trait::async_trait]
@@ -653,6 +714,115 @@ async fn provider_error_has_one_matching_live_and_durable_terminal() {
     let turn_id = fixture.run_turn().await;
     assert_durable_terminal(&fixture.read(), &turn_id, "failed");
     assert_eq!(fixture.terminals(&turn_id), ["turn.failed"]);
+}
+
+#[tokio::test]
+#[ignore = "audit H-284: concurrent turn/start must expose busy or queued semantics"]
+async fn audit_concurrent_turn_start_does_not_ack_two_independent_started_turns() {
+    let transport = Arc::new(ConcurrentTurnTransport::new());
+    let fixture = Fixture::with_transport(transport.clone()).await;
+    let emitter: EventEmitter = {
+        let events = fixture.events.clone();
+        Arc::new(move |event| {
+            events
+                .lock()
+                .unwrap()
+                .push(serde_json::to_value(event).unwrap());
+        })
+    };
+
+    let (first_response, first_launch) = fixture.state.lock().unwrap().dispatch(
+        rpc(
+            "turn/start",
+            json!({"threadId":fixture.thread_id,"input":"first audit turn"}),
+        ),
+        None,
+    );
+    assert!(first_response.is_success());
+    assert_eq!(first_response.result()["status"], "started");
+    let first_id = first_response.result()["turnId"]
+        .as_str()
+        .expect("first turn id")
+        .to_owned();
+    spawn_turn(
+        fixture.state.clone(),
+        emitter.clone(),
+        first_launch.expect("first turn launch"),
+    );
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if transport.requests.load(Ordering::SeqCst) >= 1 {
+                break;
+            }
+            transport.entered.notified().await;
+        }
+    })
+    .await
+    .expect("first turn must reach the model transport");
+
+    let (second_response, second_launch) = fixture.state.lock().unwrap().dispatch(
+        rpc(
+            "turn/start",
+            json!({"threadId":fixture.thread_id,"input":"second audit turn"}),
+        ),
+        None,
+    );
+    assert!(second_response.is_success());
+    assert_eq!(second_response.result()["status"], "started");
+    let second_id = second_response.result()["turnId"]
+        .as_str()
+        .expect("second turn id")
+        .to_owned();
+    assert_ne!(first_id, second_id);
+    spawn_turn(
+        fixture.state.clone(),
+        emitter,
+        second_launch.expect("second turn launch"),
+    );
+
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            if transport.requests.load(Ordering::SeqCst) >= 2 {
+                break;
+            }
+            transport.entered.notified().await;
+        }
+    })
+    .await
+    .expect("queued second turn must eventually reach the model transport");
+
+    transport.release.notify_waiters();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let done = {
+                let state = fixture.state.lock().unwrap();
+                state.turns.get(&first_id).is_some_and(|turn| !turn.active)
+                    && state.turns.get(&second_id).is_some_and(|turn| !turn.active)
+            };
+            if done {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("both turn tasks must reach a terminal state");
+
+    let first_terminals = fixture.terminals(&first_id);
+    let second_terminals = fixture.terminals(&second_id);
+    eprintln!(
+        "concurrent turn/start audit: first_ack=started second_ack=started first_id={first_id} second_id={second_id} model_requests={} first_terminals={first_terminals:?} second_terminals={second_terminals:?}",
+        transport.requests.load(Ordering::SeqCst)
+    );
+
+    assert!(
+        second_response.error_code().is_some()
+            || second_response.result()["status"] != "started"
+            || second_response.result().get("queued").is_some()
+            || second_response.result().get("replacesTurnId").is_some(),
+        "same-thread turn/start returned two independent started ACKs; the second run is only cancelled/queued later by InputLeaseRegistry"
+    );
 }
 
 #[tokio::test]
