@@ -113,6 +113,10 @@ impl CronBackend for CronService {
 mod store_audit;
 
 #[cfg(test)]
+#[path = "cron_calendar_audit.rs"]
+mod calendar_audit;
+
+#[cfg(test)]
 mod audit_tests {
     use super::*;
     use crate::{ApprovalPolicy, MemorySecretStore, SettingsService};

@@ -12,6 +12,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| 定时调度的日历可满足性与故障隔离 | 正常 cron_create 接受 2 月/4 月 31 日，正式 Runtime tick 与实际时钟 AppCore tick 均 panic；文件不变，重建 scheduler 仍 panic，删除坏计划后健康任务可派发 | 新增 H-271（P2）；正常月末、闰日对照通过；未运行完整桌面或 release 构建 |
 | 摘要正文与草稿控制标记的边界 | 两正文经 JSON 解码完全等价，字面 analysis 标签组丢失片段、Unicode 转义组保留；下一 wire 和文件重开结果一致 | 新增 H-269（P3）；另有其他标签和真正前置草稿对照，不外推所有摘要或所有私有草稿处理 |
 | 模型摘要的采用资格与冷恢复 | 空对象、无关对象、全空字段均被当作成功摘要，下一真实 wire 与文件重开后的 Surface 不含旧事实；原始事件与记录路径仍保留 | 新增 H-268（P2）；正常结构化摘要和非 JSON heuristic 降级对照通过，未测试真实 DeepSeek 产生异常摘要的频率或模型按记录指针恢复 |
 | Windows Tauri → AppCore → DeepSeek | 当前源码编译、真实连接、连续对话、取消和数据库终态 | 已获得基线，仍需故障注入与边界验证 |
@@ -92,7 +93,7 @@
 | Harness config/read 有效配置可观测性 | thread 已指定模型、reasoning、permission 和 sandbox 后，正式 `config/read` 仍只返回 `protocolVersion`、固定 `provider` 和 `transport` 三个字段 | 已确认 H-221；正式 ServerState/Settings/dispatcher，无模型、工具、子进程或网络 |
 | Harness thread/start 的 DeepSeek reasoning 配置贯通 | `thread/start` 请求携带 `reasoningEffort=high` 后，正式 `turn/start` 无覆盖的 launch 仍为 `reasoning_effort=None`；请求字段被 Serde 静默忽略 | 已确认 H-222；正式 ServerState/dispatcher，未启动模型、工具、子进程或网络 |
 | CLI / SDK / 桌面 / 工作流与子 Agent 一致性 | 子 Agent 工具限制、DAG 文件交付、工作流装配/调度/配置、完成事件串话、订阅竞态、旧画布 run 的迟到节点事件覆盖新状态、父任务超时丢子运行收尾，以及 app-server 旧 turn 重复创建 steer 替代运行均已复现 | 已确认 H-19 至 H-22、H-38 至 H-41、H-43、H-45、H-130、H-134；记忆现有回归通过，其他图执行及重启边界未完成 |
-| 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发、scheduler 停止后已派发 run 仍活跃，以及单坏行隐去全部健康计划、后续创建覆盖旧记录均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97、H-270；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
+| 定时任务与无人值守运行 | Cron 不可达审批、两进程重复触发同一任务、派发后记账失败重启重触发、scheduler 停止后已派发 run 仍活跃、单坏行隐去全部健康计划并在创建后覆盖旧记录，以及日历不可能计划终止调度任务均已复现；基础 cron/store 回归通过 | 已确认 H-37、H-42、H-96、H-97、H-270、H-271；真实模型副作用、原子接纳与宿主进程退出恢复边界未完成 |
 | 移动设备操作与 UI 快照 | 正式 MobileService/Android backend 接受已被替代和未知快照，登记 ID 与返回 ID 不一致 | 已确认 H-50；底层命令 runner 为离线记录器，真机及并发输入未验收 |
 | 项目记忆与知识检索作用域 | 捕获 A 项目的正式工具/检索后端后激活 B，原后端实际读取 B 并将 project 记忆写入 B 的磁盘目录；工作流节点声明 `knowledgeBaseId=project` 时仍混入 global 命中 | 已确认 H-51、H-176；H-51 是共享服务身份漂移，H-176 是工作流配置到检索 trait 的作用域契约缺失 |
 | 工作流目标节点与重跑 admission | `target_node_id` 传入不存在的节点时，正式工作流只完成 `start`、跳过 `end`，仍记录 `succeeded` | 已确认 H-177；无效目标未在编译/接纳边界拒绝，属于空执行成功，不是 H-39 的条件分支派发问题 |
@@ -7206,3 +7207,38 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 无可靠完整基线时，普通 add 不得盲目整表覆盖。可在既有 store 层拒绝写入并报告修复/恢复需求，或在可证明的保留式合并与备份边界内写入；选择应形成单一读写契约，由 CLI、Desktop 和工具共同复用，不新增第二套计划存储或调度器。并发锁、原子文件替换和 occurrence 接纳仍需与 H-42/H-96 一起治理，不能说本轮已验证这些机制。
 - 后续回归至少覆盖缺字段、必需/可选字段错类型、未知字段、单坏行与多坏行、整文档截断、tasks 类型错误、缺失/空文件、读取失败、创建/删除/mark_fired 写入、版本迁移及重启。当前只动态覆盖本节五组样本与 store 重建；没有启动完整 tick loop、真实 ChatService run、桌面、外部提醒或真实模型，也没有运行全 workspace、Clippy 或 SAST 扫描。
 - 实际验证：首次显式故障命令见 E-270-first，**2 passed / 3 failed（预期）**，未重复登记为三个缺陷；`cargo test -p deepagent-app-core --lib cron_service::store_audit --offline` **2 passed / 3 ignored**，三个未修复探针默认 ignored。`cargo test -p deepagent-runtime --lib schedule:: --offline` **19 passed**；`cargo test -p deepagent-builtins --lib cron_tools:: --offline` **7 passed**；`cargo fmt --all -- --check`、`git diff --check` 通过。code-audit 使本轮沿正式工具→服务→文件写入核实数据丢失边界，并保留只读阶段与故障注入来源的限制；只新增 test-only 模块/探针及审计文档，生产逻辑未修，全系统审计仍在进行。
+
+### H-271：正常创建的日历不可能计划触发日期搜索 panic，终止整个调度任务且重建后再次触发
+
+**级别：中（P2，持久输入导致调度子系统失效）；状态：正式工具创建、Runtime tick、真实时钟 AppCore tick 及文件 store 重建已复现，未修复。** 输入是 `0 0 31 2 *` 或 `0 0 31 4 *`，分别要求 2 月/4 月 31 日；五个字段各自合法，但日历上无匹配。无需直接写坏 JSON、缺字段、并发、故障文件权限或异常系统时钟。不是 H-270 的全表解码失败，也不是 H-96 的派发后落账失败。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：新增 test-only `crates/deepagent-app-core/src/cron_calendar_audit.rs`。每组均经真实 CronCreateTool→CronService→ScheduledTaskStore，依次创建候选计划和健康的每分钟循环计划；两次工具均成功返回 scheduled=true、list=2。仅临时 workspace 与内存 SQLite，无真实用户计划、命令或网络；没有手改计划字段。
+- E-271-first：`cargo test -p deepagent-app-core --lib cron_service::calendar_audit --offline -- --include-ignored --nocapture --test-threads=1`，**2 passed / 3 failed（预期），测试体0.52s**。两种不可能日期在生产 Runtime run_tick_loop 的首个 tick 均产生 JoinError panic，`cron.rs:244` 的 `expect("first-of-month valid")` 失败，原因为 `ComponentRange { name: "year", ... }`。每组均 `create_ok=true, loop_panicked=true, healthy_fired=false, reopen_panicked=true, after_delete_callbacks=1`。Runtime 使用当前本地时间加两分钟作为注入时钟，callback 只记 ID；健康任务确实到期但因前置坏计划未被遍历。
+- E-271-appcore：第三故障组调用真正的 `Arc<CronService>::run_tick_loop`，使用其实际宿主时钟及原始 fire→ChatService 装配，不替换该 loop；首个 tick 同样在日期搜索处 panic，await 的 JoinHandle 已终结，不是只凭观察超时判定停止。该组没有向 AppCore fire callback 注入 ID 计数器，不能把其打印的 healthy_fired=false 当成独立 callback 计数证据；panic 位于第一条记录的 is_due 计算、在 fire 之前，计划文件仍与运行前逐字节相等。
+- E-271-persistence：三故障组在 loop 终结后，正式 list 仍为2且文件字节未变；重新构造 CronScheduler 后 poll，同一输入再次在相同位置 panic。测试以 catch_unwind 收集第二次失败，随后经真实 CronDeleteTool 删除坏计划，重建的 scheduler 在相同注入时间成功派发一次健康 ID。说明不是健康计划本身无效，也不是重建 owner 能消除持久触发源；未启动第二个完整桌面进程。
+- E-271-controls：`0 0 30 4 *`、`0 0 29 2 *` 两组均 `loop_panicked=false, healthy_fired=true, reopen_panicked=false`；健康任务已正常记录 lastFiredAt，删除候选后同一时间不再重复派发（after_delete_callbacks=0）。故障与对照均完成清理，再停在最终不变量；三个失败均非编译失败或挂起。
+- E-271-reference：在 apps/desktop 用现有 Node/TypeScript，将 `借鉴/claudecode/restored-src/src/utils/cron.ts` 原始全文经 transpileModule 转成 CommonJS、只在内存加载，执行其原 parseCronExpression/computeNextCronRun，from 为本地 `2026-10-25 12:00`。两种不可能日期均解析成功并返回 null，耗时约163/167ms；闰日返回 `2028-02-29 00:00`，正常4月月末返回 `2027-04-30 00:00`。未修改参考源码，也未运行完整 Claude Code 或其 scheduler。
+
+#### 根因、调用路径与影响
+
+- F-271（category=design，status=validated，confidence=high）：`cron.rs::next_local_match` 用 `366 * 24 * 60` 限制循环**次数**，但月/日/小时不匹配时每轮会跳过整月/整日/整小时，不是真实366天的上限。对于不可能的月日组合，日期持续前移，在次数耗尽前先超出当前 time::Date 的年份范围；`first_of_next_month` 对 Date::from_calendar_date 使用 expect，将正常“无匹配”变成 panic。当前锁定 time 0.3.47 的本地 date.rs 也明确说明年份有范围且受 large-dates feature 影响；本轮不以某个猜测的 feature 或年份作为触发依据，而以实际 ComponentRange/year 及调用点为证。
+- P-271：CronCreateTool 只校验 cron/prompt 非空 → CronService.create→store.add 正常持久化并返回成功 → store.read 的 parse_5_field 只校验各字段集合，允许本轮表达式 → scheduler.poll→is_due→next_local_match→日期 helper expect panic → 整个 run_tick_loop future 异常终结。poll 的循环没有按任务隔离本地输入错误；循环计划七天过期的检查又位于 is_due 之后，不能先清理掉这条输入来避开日期搜索。
+- AppCore/Runtime 动态证据说明的是当前测试构建中 scheduler task 已 panic 终结，不是整个应用进程崩溃。桌面启动处 `apps/desktop/src-tauri/src/lib.rs` 的 tauri::async_runtime::spawn 只在 run_tick_loop 返回 Err 时打印错误，未持有返回 handle、没有接管/重启逻辑；panic 不是该 Result::Err。此处只核查桌面装配源码，没有启动完整 Tauri 或验证 release/panic=abort 行为。
+- 已证明的调度后果：坏记录排在健康任务之前时，同一次 poll 中健康任务未派发；该调度 future 终结后不会继续后续 tick。原计划文件仍在、list 仍能列出，故不是 H-270 的健康记录删除。重新构造 scheduler 仍被同一持久输入触发，删除坏计划是本轮已验证的恢复条件；只删除而不重新启动已经终结的后台 loop，不会自动让原 future 复活。没有测量实际业务漏提醒数量或真实模型费用。
+- 这是 Harness 本地调度的输入可执行性与任务故障隔离缺口，不是 DeepSeek Responses/reasoning/KV cache 协议不兼容。模型或用户正常调用已注册工具即可生成触发输入，不依赖供应商异常 JSON；改工具描述或要求模型“不要生成不存在日期”不能替代运行时的总函数边界。本轮没有请求真实 DeepSeek，也不推断它生成这种输入的概率。
+
+#### 成熟实现对照及限制
+
+- **Claude Code 的原始计算 helper 已动态对照**，见 E-271-reference：两类不可能日期返回 null，而不是抛出异常。其 `cron.ts::computeNextCronRun` 实际也使用相同的迭代次数上限及月/日跳跃，不能称它实现了严格366天窗口；本轮163/167ms是单次本机 helper 样本，不是其调度性能保证，也不说明重复计算没有开销。Rust 参考迁移时必须重新检查目标语言/日期库的范围和失败类型，不能把 JS Date 上的无异常行为当作 Rust expect 的依据。
+- **Claude 的 scheduler 接纳无匹配结果**：`cronTasks.ts::jitteredNextCronRunMs/oneShotJitteredNextCronRunMs` 在 nextCronRunMs 为 null 时直接返回 null；`cronScheduler.ts::process` 将其映射为 Infinity，`now < next` 时跳过当前任务，继续处理其他记录。这里是源码核查，未动态运行完整 scheduler；Infinity 是该 TypeScript 实现的内部表示，不建议移植为本系统持久化字段。可借鉴的是“无下一时刻”是单条计划状态，而不是终止整条调度循环。
+- **本系统已有可用边界**：is_due 原本能把 epoch 无法转换、cron 解析失败和 next=None 处理为 false；不需要第二套 scheduler。缺口在 next_local_match 声明返回 Option，却仍有可以由普通持久输入到达的 expect。简单 catch_unwind 后无日志地返回 false 会掩盖失效计划；只在创建工具检查也不能覆盖已有文件、迁移和其他调用方。
+
+#### 治理与验证收尾（本地设计，未实施）
+
+- 在现有 cron evaluator 中使用可失败的日期推进，保证正常输入域内“无匹配/超范围”经类型返回而不是 panic；明确搜索日历范围与计算工作量的独立预算，不能因日/月跳跃而把次数当分钟。保持现有闰日、DOM/DOW OR、严格晚于 anchor 等契约；已有测试明确允许2025锚点找到2028闰日，不可为修正注释就擅自把合法远期任务截断为366天。
+- 在统一 CronService/store 接纳边界校验语法及可执行性，向调用者返回可诊断的无匹配计划状态，不能先返回 scheduled=true 再让扫描器崩溃。已有持久任务仍需在每条 poll 中隔离其解析/计算错误、保留可恢复数据并投递脱敏诊断；将其删除或隔离需要产品明确策略，不能静默抹掉用户计划。
+- 与 H-96/H-97 统一调度生命周期 owner：复用现有运行与宿主能力呈现调度 loop 状态，观察其 Result 与异常终结，定义停止/恢复入口；不能仅无限重启同一坏输入形成 panic 风暴，也不能另造审批、取消或 RunStore。H-270 的读取身份、H-271 的日历计算错误、H-96 的派发后落账错误属于不同故障阶段，需同一契约下分开诊断，不能统一吞成“本轮没有任务”。
+- 后续回归应包含所有不可能月日组合、可行闰日、受限 DoW 的 OR 语义、大步长/溢出边界、Date::MAX 邻界、无匹配/搜索耗尽、坏任务不同顺序、已有文件重开、审批及在途 run 与 scheduler 恢复。当前未测试大步长、DST/时区切换、完整桌面重启、release、真实模型或外部任务副作用；两个日期合为同一根因，不重复登记为两个缺陷。
+- 常规验证：`cargo test -p deepagent-app-core --lib cron_service:: --offline` **4 passed / 8 ignored**，含本轮两个对照及 H-270 两个对照；三个本轮未修复缺陷探针默认 ignored。`cargo test -p deepagent-runtime --lib schedule:: --offline` **19 passed**；`cargo test -p deepagent-builtins --lib cron_tools:: --offline` **7 passed**。首次 rustfmt 检查提示新测试两处多行断言格式，已仅调整测试格式；最终 `cargo fmt --all -- --check`、`git diff --check` 通过。未运行全 workspace、Clippy、前端构建或 SAST 扫描，本轮没有生产行为修改。code-audit 使本轮同时核查成功接纳、真实后台任务终结、持久触发与删除恢复，避免把输入字段合法等同于任务可运行。
