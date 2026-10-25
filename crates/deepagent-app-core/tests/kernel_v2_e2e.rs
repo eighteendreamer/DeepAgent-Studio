@@ -179,6 +179,10 @@ mod path_boundary;
 #[path = "kernel_v2_e2e/search_capability.rs"]
 mod search_capability;
 
+#[cfg(feature = "web")]
+#[path = "kernel_v2_e2e/native_search_history.rs"]
+mod native_search_history;
+
 #[derive(Debug)]
 struct ReplayTransport {
     turns: Mutex<VecDeque<Vec<String>>>,

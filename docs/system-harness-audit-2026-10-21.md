@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| Pro原生搜索项的热续轮与冷恢复 | 完整SSE搜索生命周期经正式ChatService落盘；同宿主/重开SQLite新实例的实际下一请求均保留唯一completed搜索项的id/status/action，且没有本地函数result | 排误增量，无新H编号；原生生命周期可从run_events读回、查询正文不进入诊断摘要；合成响应，不验真实搜索效果/引用/收费，不关闭H-66/H-152/H-200 |
 | 干净服务重建后的DeepSeek请求前缀 | 正式list_dir及回答落盘后丢弃第一套服务并重开SQLite；新实例续聊的32工具数组/schema、14180字节instructions与旧3项native历史前缀均保持 | 排误增量，无新H编号；同日、工作区/配置未变且无额外MCP/技能/附件；离线wire条件成立，不宣称真实缓存命中或关闭H-168 |
 | 主运行后标题请求的成本与预算归属 | 正式ChatService主运行成功且无标题后，标题真实派发并持久化；SQLite重开仍仅主用量；同服务普通run已被预算拦截时标题仍派发 | H-63补充证据（P2），不另计新编号；空历史/手动命名控制通过；仅离线合成usage/报价，未运行Tauri或真实供应商 |
 | DeepSeek 官方离线 tokenizer 与上下文压力计量 | 固定摘要的官方tokenizer实测四类合成文本；中文/符号在共享meter与正式ModelAgent均漏过54272压力阈值，英文与低压力代码控制正常 | 新增H-297（P3）；原始文本离线基准，不冒称当前线上Flash/Pro精确计数；无真实provider拒绝、费用或质量下降实测 |
@@ -8509,3 +8510,33 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 首测通过并写入记录后，补充断言“首次无Settings、冷恢复已有Settings”，确保恢复不会以再次initialize掩盖配置丢失。格式化后实际运行`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**99 passed / 0 failed / 93 ignored，14.35秒，编译30.04秒**；包括新增冷恢复与既有同宿主正向测试，没有启用H-168或其他已登记ignored故障探针。
 - `cargo fmt --all -- --check`、`git diff --check`通过。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`退出1，仍被未修改的`deepagent-models/src/client.rs:355` clone_on_copy和`deepagent-persistence/src/run_store.rs:127` explicit_counter_loop阻断；不报告lint通过或修改无关生产代码。
 - 仅扩展既有cache_prefix测试模块和本报告，不新增生产缓存实现/依赖/配置，不改协议、权限、沙箱或持久化格式。没有全workspace/完整AppCore其他target、UI构建、实际桌面/跨进程重启、参考工程或真实provider测试；未执行测试不视为通过。用户原有未跟踪项保持不读取、不暂存，全系统审计仍未完成。
+
+### DeepSeek 原生搜索项的正式运行、落盘与冷恢复：当前样本保真（2026-10-25，排误增量）
+
+**首次有效验证后即时记录；不分配新H编号，不关闭H-66或H-152/H-200。** H-66是Flash错误启用原生搜索，本轮明确选官方支持的deepseek-v4-pro；H-152是另一类tool_search_call被丢弃，本轮只验证web_search_call。此前ModelAgent续步与事件history replay的局部单元测试已有保留搜索项的证据，不能把“未做完整AppCore冷恢复”误写成已存在丢失。
+
+- 新增`crates/deepagent-app-core/tests/kernel_v2_e2e/native_search_history.rs`，在现有kernel集成target中仅对web feature注册。正式SettingsService启用DeepSeekFirst、Chat/Reasoner明确Pro、禁用延迟工具搜索；实际出站确认model=deepseek-v4-pro且有原生web_search声明。所有模型响应均经离线HttpTransport和正式Responses解析器，没有实际搜索、外部网页、真实Key或用户数据。
+- 合成fixture完整发送created、output_item.added、原生in_progress/searching/completed、output_item.done、最终assistant item和completed，事件序号连续；搜索项使用固定id、completed状态及含中英文两条合成查询的action。该action形状也由本系统既有stream测试与Codex参考roundtrip样本支持；**不是从线上DeepSeek捕获的真实响应，不代表官方已保证action所有子字段的schema**。
+- 首次命令`cargo test -p deepagent-app-core --features web --test kernel_v2_e2e native_search_history --offline -- --nocapture`实际 **2 passed / 0 failed，测试体0.47秒，编译1分01秒**。热续轮和全部应用服务/数据库/模型实例丢弃后干净重建两组均通过；冷恢复只保留测试SecretStore模拟持久凭据，Settings必须已存在而不能重新initialize掩盖丢失。
+- 两组第一轮均仅1次模型请求、唯一succeeded终态；事件历史只有一个completed WebSearchCall，id/status/action完整相等，搜索后的assistant正文正常存在。续轮也仅派发1次模型请求，实际input共5项且恰有一个原样搜索项、位于首轮assistant答案前，没有产生搜索id对应的function_call_output。冷组独立重开SQLite后再次核对同一session记录及run_events，不依赖第一套agent内存。
+- 原生搜索生命周期的in_progress/searching/completed及最终action_type=search/queries_count=2均进入正式run_events，冷恢复可再读；这些诊断事件不含合成查询正文。没有发出本地tool_started或调用本地工具执行器。这证明“模型可见历史保留必要原生项、诊断只留结构摘要”两条边界在该样本正常，不能把诊断不含查询正文当作搜索history丢失，也不能把provider原生操作当作宿主函数工具应补一条result。
+
+#### 生产边界与成熟实现对照
+
+- `deepagent-models/src/stream.rs`将原生搜索的added/status/done投影为WebSearchCall事件，只有done item进入最终output_items；`ResponseItem::WebSearchCall`结构保留id/status及原始JSON action。`loop_engine.rs`把CompleteItems作为权威输出提交一次，避免同时再提交pending drain。`input_runtime::response_items_from_events`恢复原生项，`chat.rs`按原类型重新序列化；没有经过只保留普通文本的UI历史投影。这是已有内核能力正常工作的证据，不需要另起搜索结果存储或第二套协议事件。
+- `model_agent.rs`向RuntimeEvent投影搜索id/status/action_type/queries_count，刻意不放查询正文；会话ResponseItem事件则保留模型续聊需要的action。本项只核对这些明示字段，不证明provider未建模的额外字段、网页正文或citation annotations均保真。run_events搜索摘要正常也不修复H-200的Responses总体响应身份/sequence缺失。
+- **DeepSeek官方**：[Responses指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)明示Pro原生web_search及对应生命周期，并说明先前web_search_call可回传以还原搜索上下文；[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)接受该原生input类型。保留这一项比只保存最终自然语言答案更符合无状态续聊契约。本轮只验证宿主收到合成项后的转交，不验证服务端是否能凭该合成id还原任何搜索结果。
+- **Codex，静态参考**：`借鉴/codex/codex-rs/protocol/src/models.rs::ResponseItem::WebSearchCall`是独立原生类型，`roundtrips_web_search_call_actions`覆盖search/open_page/find_in_page等action；`core/src/context_manager/history.rs::is_api_message`明确保留该项用于API历史；`event_mapping.rs`另映射成TurnItem::WebSearch，并不要求宿主伪造普通FunctionCallOutput。本系统此处的原生history与显示摘要分离方向合理。本轮没有运行参考工程或验证所有action形态，也不把Codex全部action视为DeepSeek官方明确支持。
+- **Claude Code，静态参考**：`借鉴/claudecode/restored-src/src/tools/WebSearchTool/WebSearchTool.ts::makeOutputFromSearchResponse`识别Anthropic的server_tool_use/web_search_tool_result/text块，把工具结果的关联id及title/url结构化保留，并区分错误结果，不是将整段回复当普通无类型文本。但其外层是本地WebSearchTool封装、原生协议也不同，不能把这些字段名与执行拓扑直接移植为DeepSeek Responses校验规则。可借鉴的是provider seam内保留原生语义、对外再投影视图，而非强行统一成Chat函数结果。
+- 本轮没有找到可直接证明DeepSeek Harness同一Responses原生搜索回放链的源码对照；其其他provider/搜索插件能力不在此冒充等价实现。成熟参考是设计依据，不替代本系统动态测试或官方契约。
+
+#### 影响与未覆盖条件
+
+- 当前两样本中，搜索完成项既不丢失、也不重复、更不变成本地待执行工具；无需为本次排误安排生产修复。若未来在持久化/兼容投影中仅保存答案而丢掉原生项，才可能导致恢复后缺少可还原搜索上下文；这是需要回归防护的条件性风险，**本轮没有复现这个后果**。
+- 未验证真实Pro原生搜索、实际资料/网页内容、引用来源、查询质量、费用/缓存命中、所有action、多个搜索项、incomplete/failed/取消、compaction/rewind/fork、provider未知扩展字段或Tauri展示。新测试只有一项completed搜索+最终答案的热/冷续轮，不用它宣布原生搜索子系统全部通过；H-66的Flash能力选择与H-152的tool_search_call丢弃仍独立待修。
+
+#### 本轮回归与交付
+
+- 首次两项正向实测后先落盘，再格式化并补齐对照。`cargo test -p deepagent-app-core --features web --test kernel_v2_e2e --offline`实际 **102 passed / 0 failed / 94 ignored，15.11秒，编译28.76秒**；包含新增热/冷搜索回放及原生/外部搜索能力正向控制，H-66失败探针保持ignored。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`实际 **99 passed / 0 failed / 93 ignored，20.75秒，编译28.58秒**，确认不启用web时不会错误编译依赖该功能的测试模块。
+- `cargo fmt --all -- --check`与`git diff --check`通过；`cargo clippy -p deepagent-app-core --features web --test kernel_v2_e2e --offline -- -D warnings`退出1，仍被未修改的models/client.rs:355 clone_on_copy及persistence/run_store.rs:127 explicit_counter_loop阻断。不屏蔽lint、不改无关代码、不报告Clippy通过。
+- 本轮仅新增原生搜索测试模块、在既有集成target中按web feature注册并更新报告，没有生产Rust/依赖/配置/协议/权限/沙箱/数据格式变更。未运行整个workspace、其他AppCore target、真实Tauri/前端、操作系统进程重启、参考工程或真实provider；全系统审计仍未完成。用户既有未跟踪项保持不读取、不暂存。
