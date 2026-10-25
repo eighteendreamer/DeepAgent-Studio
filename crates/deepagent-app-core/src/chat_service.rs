@@ -1406,6 +1406,8 @@ mod tests {
     use crate::settings::SandboxMode;
     use deepagent_context::ContextSourceKind;
     use deepagent_hooks::{HookAction, HookActionType};
+    use deepagent_mcp::protocol::{JsonRpcRequest, JsonRpcResponse, JSONRPC_VERSION};
+    use deepagent_mcp::McpTransport;
     use deepagent_models::transport::{EventSink, MockTransport, TransportRequest};
     use std::str::FromStr;
 
@@ -1433,6 +1435,56 @@ mod tests {
             sink.on_event(r#"{"type":"response.output_text.delta","delta":"dynamic reply"}"#)?;
             sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
             Ok(())
+        }
+    }
+
+    #[derive(Debug, Default, Clone)]
+    struct RecordingMcpTransport {
+        requests: Arc<std::sync::Mutex<Vec<JsonRpcRequest>>>,
+    }
+
+    impl RecordingMcpTransport {
+        fn requests(&self) -> Vec<JsonRpcRequest> {
+            self.requests.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl McpTransport for RecordingMcpTransport {
+        async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+            self.requests.lock().unwrap().push(request.clone());
+            let result = match request.method.as_str() {
+                "tools/list" => serde_json::json!({
+                    "tools": [{
+                        "name": "check",
+                        "description": "check policy",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "decision": {"type": "string", "enum": ["allow", "deny"]},
+                                "hook_input": {"type": "object"}
+                            },
+                            "required": ["decision"],
+                            "additionalProperties": false
+                        }
+                    }]
+                }),
+                "tools/call" => serde_json::json!({
+                    "content": [{"type": "text", "text": "{\"ok\":true}"}],
+                    "isError": false
+                }),
+                method => {
+                    return Err(CoreError::other(format!(
+                        "unexpected MCP method in audit probe: {method}"
+                    )))
+                }
+            };
+            Ok(JsonRpcResponse {
+                jsonrpc: JSONRPC_VERSION.to_string(),
+                id: request.id,
+                result: Some(result),
+                error: None,
+            })
         }
     }
 
@@ -1696,6 +1748,143 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcome.deny_reason(), Some("MCP policy denied"));
+    }
+
+    #[tokio::test]
+    async fn mcp_hook_schema_valid_static_arguments_reach_connected_tool() {
+        let (registry, transport) = mcp_schema_audit_fixture().await;
+        let result =
+            dispatch_mcp_schema_audit_action(registry, serde_json::json!({"decision":"allow"}))
+                .await;
+        assert_eq!(result.outcome, "continued");
+        let calls: Vec<_> = transport
+            .requests()
+            .into_iter()
+            .filter(|request| request.method == "tools/call")
+            .collect();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(
+            calls[0].params,
+            Some(serde_json::json!({
+                "name":"check",
+                "arguments": {
+                    "decision":"allow",
+                    "hook_input":mcp_schema_audit_payload()
+                }
+            }))
+        );
+    }
+
+    async fn mcp_schema_audit_fixture(
+    ) -> (Arc<deepagent_mcp::McpRegistry>, Arc<RecordingMcpTransport>) {
+        let transport = Arc::new(RecordingMcpTransport::default());
+        let mut registry = deepagent_mcp::McpRegistry::new();
+        registry
+            .register(
+                "policy",
+                Arc::new(deepagent_mcp::McpClient::new(transport.clone())),
+            )
+            .await
+            .unwrap();
+        (Arc::new(registry), transport)
+    }
+
+    fn mcp_schema_audit_payload() -> serde_json::Value {
+        serde_json::json!({
+            "session_id":deepagent_core::id::SessionId::nil().to_string(),
+            "hook_event_name":"PreToolUse",
+            "tool_name":"bash",
+            "tool_input":{"command":"echo hook-test"}
+        })
+    }
+
+    async fn dispatch_mcp_schema_audit_action(
+        registry: Arc<deepagent_mcp::McpRegistry>,
+        arguments: serde_json::Value,
+    ) -> crate::hook_runtime::HookActionTestResult {
+        crate::hook_runtime::test_hook_action(
+            "PreToolUse",
+            None,
+            HookAction {
+                action_type: HookActionType::McpTool,
+                command: "mcp__policy__check".to_string(),
+                arguments,
+                ..HookAction::default()
+            },
+            Some((
+                Arc::new(ModelClient::new(
+                    chat_transport(),
+                    ModelConfig::deepseek("test-key"),
+                )),
+                "deepseek-v4-flash".to_string(),
+                ReasoningEffort::None,
+            )),
+            Some(registry),
+        )
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    #[ignore = "audit H-275: MCP hook invocation must honor discovered inputSchema"]
+    async fn audit_mcp_hook_bypasses_discovered_input_schema() {
+        let payload = mcp_schema_audit_payload();
+        let cases = [
+            ("missing required", serde_json::Value::Null, payload.clone()),
+            (
+                "invalid enum",
+                serde_json::json!({"decision":"unknown"}),
+                serde_json::json!({"decision":"unknown","hook_input":payload}),
+            ),
+            (
+                "unknown property",
+                serde_json::json!({"decision":"allow","extra":true}),
+                serde_json::json!({"decision":"allow","extra":true,"hook_input":payload}),
+            ),
+        ];
+        let mut observations = Vec::new();
+        for (label, static_arguments, expected_arguments) in cases {
+            let (registry, transport) = mcp_schema_audit_fixture().await;
+            let mut tools = ToolRegistry::new();
+            for adapter in deepagent_mcp::adapters_for(registry.clone()) {
+                tools.register(adapter).unwrap();
+            }
+            let normal_error = tools
+                .invoke(
+                    "mcp__policy__check",
+                    expected_arguments.clone(),
+                    &PermissionSet::developer(),
+                    false,
+                )
+                .await
+                .expect_err("normal tool path accepted invalid schema");
+            assert!(normal_error.to_string().contains("input validation failed"));
+            assert!(transport
+                .requests()
+                .iter()
+                .all(|request| request.method != "tools/call"));
+
+            let hook_result = dispatch_mcp_schema_audit_action(registry, static_arguments).await;
+            let calls: Vec<_> = transport
+                .requests()
+                .into_iter()
+                .filter(|request| request.method == "tools/call")
+                .collect();
+            for call in &calls {
+                assert_eq!(
+                    call.params,
+                    Some(serde_json::json!({"name":"check","arguments":expected_arguments}))
+                );
+            }
+            observations.push((label, hook_result.outcome, calls.len()));
+        }
+        eprintln!("H-275 (case, hook_outcome, remote_calls): {observations:?}");
+        assert!(
+            observations
+                .iter()
+                .all(|(_, outcome, calls)| outcome == "error" && *calls == 0),
+            "invalid MCP hook arguments must be rejected before remote dispatch: {observations:?}"
+        );
     }
 
     #[tokio::test]

@@ -12,6 +12,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| MCP hook 的发现 schema 与执行契约 | 同一严格工具的缺必填、非法枚举、多余字段，正常 ToolRegistry 路径均在 transport 前拒绝；正式设置页 hook 测试入口经配置解析、注册、PreToolUse 派发后却逐项 continued、各发送1次 tools/call | 新增 H-275（P3）；合法静态参数与既有拒绝决策对照通过；内存 transport，不外推真实 server 副作用或全部模型 MCP 调用 |
 | 定时调度的日历可满足性与故障隔离 | 正常 cron_create 接受 2 月/4 月 31 日，正式 Runtime tick 与实际时钟 AppCore tick 均 panic；文件不变，重建 scheduler 仍 panic，删除坏计划后健康任务可派发 | 新增 H-271（P2）；正常月末、闰日对照通过；未运行完整桌面或 release 构建 |
 | 摘要正文与草稿控制标记的边界 | 两正文经 JSON 解码完全等价，字面 analysis 标签组丢失片段、Unicode 转义组保留；下一 wire 和文件重开结果一致 | 新增 H-269（P3）；另有其他标签和真正前置草稿对照，不外推所有摘要或所有私有草稿处理 |
 | 模型摘要的采用资格与冷恢复 | 空对象、无关对象、全空字段均被当作成功摘要，下一真实 wire 与文件重开后的 Surface 不含旧事实；原始事件与记录路径仍保留 | 新增 H-268（P2）；正常结构化摘要和非 JSON heuristic 降级对照通过，未测试真实 DeepSeek 产生异常摘要的频率或模型按记录指针恢复 |
@@ -7348,3 +7349,49 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 在现有 Responses provider adapter 单一入口使用 checked conversion：拒绝负数、非整数、超过 `u32::MAX` 或字段路径缺失造成的不可解释缺省；将原始 usage 作为脱敏诊断上下文保留，但 invalid usage 不得投递到 `RunUsage`、CostService 或预算快照。
 - 解析成功后再做 H-273 的关系检查：`cached_tokens <= input_tokens`、`total_tokens >= input_tokens + output_tokens`，并检查 reasoning 不超过 output；所有拒绝沿现有失败/终态路径只落一个可审计结果。
 - 回归应覆盖 `u32::MAX` 恰好边界、`u32::MAX+1`、每个字段分别超界、聚合溢出、负数/浮点/字符串、completed/incomplete/failed 以及拒绝后无 `Usage`/`CostRecorded`/预算可用基线。只在 `Usage` 结构改成 `u64` 而不加关系校验，或在账本层把截断值“猜测修正”，都不能替代 provider boundary 的 fail-closed。
+
+### H-275：MCP hook 直接调用绕过 discovered inputSchema，非法参数仍发送到工具
+
+**级别：低至中（P3，条件性 hook 参数契约缺口）；状态：正式 AppHookActionExecutor/McpRegistry/McpClient 链路已复现，未修复。** 仅 MCP transport 为内存 recording fixture，不连接外部服务；不表示正常模型 MCP 工具链也缺少校验。
+
+#### 即时 Evidence（2026-10-25，复现后先登记）
+
+- `crates/deepagent-app-core/src/chat_service.rs` 新增 test-only `RecordingMcpTransport` 和 ignored 探针 `audit_mcp_hook_bypasses_discovered_input_schema`。正式 `McpRegistry::register()` 经 `tools/list` 发现严格 object schema：必须有 `decision: allow|deny`，禁止未知字段。
+- E-275-direct：第一条对照把 `{"hook_event_name":"PreToolUse"}` 传给正式 `ToolRegistry::invoke()`，工具由 `adapters_for()` 从同一 MCP registry 装配；调用返回错误，recording transport 尚无 `tools/call`。再把同一参数传给正式 `AppHookActionExecutor::execute_mcp()`，它接受 `{"ok":true}` 工具结果并返回，实际记录 `tools/call` 的 params 为 `{"name":"check","arguments":{"hook_event_name":"PreToolUse"}}`。必需字段缺失且多余字段仍被发到 transport。
+- 实际命令 `cargo test -p deepagent-app-core --lib audit_mcp_hook_bypasses_discovered_input_schema --offline -- --include-ignored --nocapture`：**1 passed，0.01s**。此初版是验证坏行为存在的 characterization 断言，不是缺陷已修复或目标不变量通过；后续补正常静态参数对照和拒绝型回归断言。初次带短名 `--exact` 的执行是0 tests，不计复现；误尝试 `--test chat_service` 报不存在该目标，也不计验证。
+- 调用链已人工追到首个边界差异：主工具链 `ToolRegistry::validate_invocation()` 编译 descriptor schema 并校验；`McpToolAdapter::descriptor()` 使用发现的 `RemoteTool.input_schema`。hook 则直接 `registry.invoke()`，后者仅检查名字及归属，再调用 `McpClient::call_tool()`，未校验 schema。本轮不修改生产行为；成熟实现对照、补充样本和最终验证继续记在本节。
+
+#### 补充正式入口验证（同日，初次登记后追加）
+
+- 将最终探针接入生产 `hook_runtime::test_hook_action()`（设置页后端现有 hook 测试入口），不另造调度器：`HookDefinitions::parse/validate → register_into_with_host → HookRegistry::dispatch → ExternalHostHook → HookActionExecutor::execute → execute_mcp → McpRegistry → McpClient → recording transport`。仍不启动 Tauri UI、主聊天 run 或真实 MCP 子进程。`PreToolUse` 的 `bash/echo hook-test` 只作为生产 helper 构造的生命周期数据，**没有执行 shell 命令**。
+- 发现的 schema 追加可选 `hook_input: object`，以兼容生产静态参数包装；`decision`仍必填、只允许 `allow|deny`、禁止其余顶层属性。最终 payload 由正式 hook serializer 生成，含 nil session_id、PreToolUse、tool_name=bash、tool_input.command=echo hook-test；探针核对实际 tools/call 的完整参数，非仅按返回文本推断调用发生。
+- E-275-control：合法对照 `arguments={"decision":"allow"}`，正式入口生成 `{"decision":"allow","hook_input":<正式payload>}`，返回 continued，恰好1次 `tools/call`，测试通过。既有 `mcp_hook_invokes_connected_tool_and_honors_decision` 的远程 `{ok:false,reason:...}` 拒绝决定对照也通过，因此不是 hook 完全不执行或完全不解析决策。
+- E-275-dispatch：故障矩阵为不设静态参数（缺必填）、`decision=unknown`（非法枚举）、`decision=allow,extra=true`（多余字段）。对每一项，先将**最终实际要发送的参数对象**传给同一目录装配的 `ToolRegistry::invoke()`，均得到 `input validation failed` 且 tools/call=0；再经正式 hook 测试入口调用，各得到 **continued、tools/call=1**。只采用能够解析为正常 `{ok:true}` 的受控工具响应，未伪装外部 server 已严格校验。
+- 将初版“坏行为存在”断言转换为目标不变量：“三类错误必须 outcome=error 且远端调用数=0”，保持 ignored 以不把已知审计缺陷当默认套件回归。命令 `cargo test -p deepagent-app-core --lib mcp_hook --offline -- --include-ignored --nocapture --test-threads=1`：**2 passed / 1 failed（缺陷预期），0.01s**，三个坏样本都在最终汇总前实际运行。初次 characterization 与当前失败型测试不是互相矛盾的两份结果。
+
+#### 根因、触发条件与后果
+
+- F-275（category=execution-boundary，status=validated，confidence=high；evidence_ids=[E-275-direct,E-275-dispatch,E-275-control]）：`deepagent-hooks::validate_mcp_action()`只校验工具名非空与静态 arguments 是对象/null，不掌握已连接工具 schema；运行时 `AppHookActionExecutor::execute_mcp()`合并参数后直接调用 `McpRegistry::invoke()`。后者持有 `RemoteTool.input_schema`，但两个 invoke 方法都不验证；`McpClient`只构造 JSON-RPC。已有的 schema gate 只位于另一路 `ToolRegistry`，因此校验是**调用路径的偶然属性**，不是远程工具执行边界的不变量。
+- P-275：合法 hook 配置 → 正式生命周期 payload/静态参数包装 → 不满足已发现 schema 的对象 → 工具远端调用仍发出 → 受控工具返回允许 → hook continued。配置错误不需要模型生成错误参数、供应商断流、权限提权或恶意输入。生产注入的 `hook_input`也必须参与校验；只在设置保存前检查静态 arguments 不足以证明最终调用合法。
+- 影响前提：用户启用了 MCP hook、目标工具已连接，且最终参数不符合声明的 schema。若远端严格校验，通常导致远端错误、hook 失败和不必要的外部调用；若远端宽松接受/使用默认值，可能错过所需业务校验或执行非预期分支。本轮**只证实非法参数发出且受控返回后 continued**，未证明任何真实 server 的误写入、敏感数据外传、审批绕过或主 run 最终成功，不将假设后果当实测结果。按参数契约与可靠性缺口评P3，真实副作用等级需按具体 server 另测。
+- 与 H-104/H-110 等兼容 hook payload 缺字段不同：本项不要求兼容 Claude 的事件字段，使用 MCP tools/list 自己声明的 inputSchema。也不是 H-237 的 agent-hook 权限继承问题；本项不改变权限、不用模型子运行。正常主模型 MCP 路径已有 schema 校验，本轮对照确认其生效，不据此宣称所有 MCP 参数都未经校验。
+
+#### 成熟 Agent 与 DeepSeek 官方对照（含不支持结论的证据）
+
+- **DeepSeek Harness，可借鉴的设计**：`借鉴/deepseek-harness/packages/core/tools/src/schema.ts::defineTool`在生成的 `execute()` 内先调用 `validateJsonSchemaValue`，违反 schema 就抛 `ToolArgsError`，之后才进入用户 executor。其 `packages/core/tools/tests/tools.spec.ts` 的 `defineTool validation` 测试组覆盖缺必填、合法调用和结构化 INVALID_ARGS 错误。实跑 `pnpm exec vitest run packages/core/tools/tests/tools.spec.ts -t 'defineTool validation'`：**11 passed / 129 skipped**（2.91s），不是该文件全部140项通过，更不是全项目通过。可迁移原则是把校验绑定到工具执行入口，而非只放在某个模型调用者。
+- **DeepSeek Harness，并非 MCP 同构解法**：同组测试 `raw-registered tools are NOT validated by defineTool (MCP keeps its own)`明确让缺必填的 raw tool 进入 execute。`packages/mcp/mcp-client/src/tools.ts::createMcpToolDefinition/createExecutor`直接保留 upstream inputSchema，并将对象参数交给 options.call；该处没有复用 defineTool 的输入 schema gate，还对非对象参数回退 `{}`以让 server 报错。上述11项包含这个 raw 工具对照。因此不能据此声称该参考在 MCP hook 场景已经解决 H-275；其远端参数验证责任与本系统正常主链策略不同。
+- **Claude Code**：`借鉴/claudecode/restored-src/src/services/tools/toolExecution.ts`在执行前做 `tool.inputSchema.safeParse()`及可选 `validateInput`，可借鉴明确的边界失败结果；但 `tools/MCPTool/MCPTool.ts`的 inputSchema 是 `z.object({}).passthrough()`，`services/mcp/client.ts`另将发现 schema 放在 `inputJSONSchema`。不能把前者的 zod 校验误写成对每个远端 discovered schema 的完整校验。本轮只读核查，未运行完整 Claude Code。
+- **Codex**：`借鉴/codex/codex-rs/core/src/tools/handlers/mcp.rs::handle_call`通向 `core/src/mcp_tool_call.rs::handle_mcp_tool_call`，后者先解析 arguments JSON，再进入已准备的 MCP 调用；本轮没有在该调用点证明对 discovered input_schema 的通用完整校验，也没有找到与本系统 mcp_tool 生命周期 action 完全同构的测试。因此不声称“Codex已解决本项”，不把 JSON 语法解析当 schema 约束校验。
+- **DeepSeek官方**：2026-10-25联网复核[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)：模型本身不执行函数，strict是模型生成 Function 调用的格式约束；[Responses参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)以 JSON Schema 描述 function parameters。这里的参数由宿主生命周期和配置生成，根本不经过模型 strict 生成；提高 thinking、开启 strict 或调整缓存不能修复该执行路径差异。本轮不把当前工具指南未逐字出现的“调用前必须验证所有参数”当成直接引文；统一校验建议依据本系统已有主工具契约与参考 defineTool 的设计，而非虚构官方 MCP hook 规范。
+
+#### 治理方向（本地设计，未实施）
+
+- 让已发现工具的 schema 校验成为复用的执行边界能力，覆盖主模型、hook 与公开 McpRegistry 调用；可在既有 deepagent-tools 提取共享 validator，由 MCP 执行边界复用，保留错误字段路径与结构化上下文。不要在 UI、CLI、SDK 或 hook 内各写一次 validator，也不要新增第二套 registry/审批中心；需要明确哪些 API 允许接收已验证调用，避免双重编译和不同规则漂移。
+- 校验最终合并对象，包括宿主注入的 hook_input；schema与工具目录绑定，同一代工具名/归属/schema/调用一起使用。若上游 schema 不支持或本身非法，应显式报不支持/拒绝，不能只校验能理解的部分后宣称全部通过，也不能默默删除 hook_input、多余字段或猜测默认 decision。
+- 错误沿既有 HookStarted/HookCompleted 与 HookRegistry 错误路径传播，不把非法输入改写成 `{ok:true}`。本项不扩展或替代权限判断、审批与取消；这些保持独立且统一。回归补缺必填/枚举/类型/未知字段、合法 raw/static、hook_input冲突、未知或断线工具、目录刷新、server严格/宽松两类、真实stdio/HTTP、取消与主run终态；本轮未声称覆盖这些未测组合。
+
+#### 验证与边界
+
+- 当前新增内容仅 test-only fixture、合法对照、ignored缺陷探针与本文；没有生产行为、公共协议、依赖、UI、权限或沙箱变更。采用代码审计 skill 的数据流人工核查与可达性验证要求，未运行 Semgrep/CodeQL 全仓扫描；不拿搜索命中当复现。
+- 交付前最终重跑 `cargo test -p deepagent-app-core --lib mcp_hook --offline -- --nocapture --test-threads=1`为 **2 passed / 1 ignored**；`cargo test -p deepagent-tools --lib --offline`为 **24 passed**（含 schema 校验、权限与审批正常测试）。`cargo fmt --all -- --check`与`git diff --check`均通过；Git仅提示现有Windows行尾转换，不是格式错误。最终入口的显式故障命令结果为上文 **2 passed / 1 failed（缺陷预期）**，绝不将其计作修复通过。
+- 未运行完整workspace测试、全特性clippy、Desktop build/UI、真实DeepSeek、真实外部MCP或任何真实副作用。没有测试供应商费用、缓存命中、线上发生率；全系统目标仍未完成。本轮未处理用户排除的 encrypted-content 问题。
