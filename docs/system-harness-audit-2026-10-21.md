@@ -7287,3 +7287,34 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 若选择逐请求入账，finalizer需按已结算身份归并，不能再对相同billed totals重复扣算；若选择保留finalizer汇总，需由同一owner维护活动消费并定义原子结算/释放。不能在UI收到Usage后另写第二套预算中心，也不能在Desktop、CLI、SDK各补一段。报价缺失、换模型、附属调用、取消与重试应有明确状态和记账归属；不把本轮未测的并发预留一起宣称已解决。
 - 达限后停止**新的付费请求**，沿既有RunPhase/TerminalKind产生单一可审计原因，保留已取得工具输出、usage与可恢复会话；不将预算停发伪装为正常回答或吞错误。是否立即阻止已授权本地工具、副作用如何处理需要明确产品契约；本轮只用了只读task_list，没有据此验证写操作/审批。
 - 回归应覆盖首响应越限/恰好等限、零cache/部分cache、首调用超额后不发下一请求、每步不同模型报价、usage缺失、失败/取消/重试、hook/compaction/子Agent、并发run、周期切换、重启/崩溃及正确的唯一结算。若只保留admission语义，UI/协议文档需明确“限制新run，不会中止在途run”；不能把改文案称为已实现硬限额。
+
+### H-273：Responses cached_tokens 超过 input_tokens 仍被接受并按低价记账
+
+**级别：低至中（P2/P3，条件性供应商 usage 完整性与费用观测缺口）；状态：正式 ChatService/ModelClient/CostService/SQLite 链路已复现，未修复。** 触发条件是 provider 返回结构上可解析、但内部不一致的 usage：`input_tokens=3`、`input_tokens_details.cached_tokens=8`、`total_tokens=3`。这不是正常 DeepSeek usage 的发生率或真实扣费证明；它是 provider adapter 必须守住的边界，防止错误数据被当成可信账单。
+
+#### 即时 Evidence（2026-10-25）
+
+- 新增 test-only `crates/deepagent-app-core/tests/kernel_v2_e2e/usage_contract.rs`，装配正式 SettingsService、ChatService、ModelClient、Responses SSE accumulator、Runtime usage/finalizer、文件 SQLite CostStore；只有 HTTP transport 是离线 fixture。合成报价为 cache hit ￥100/百万、miss ￥1000/百万、output ￥0，不是官方报价。
+- 一致对照使用 `input=3, cached=2, output=0, total=3`：正式 run 唯一 succeeded，1 次 provider request，Usage 事件 1 次，账本 `input=3/hit=2/miss=1/session_cost=￥0.0012`，CostRecorded 同额；该对照通过。
+- 故障样本只把 cached 改为 8，其他响应身份、文本、完成终态和 wire 序列不变。执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract:: --offline -- --include-ignored --nocapture --test-threads=1`，**1 passed / 1 failed（预期），0.45s**。实际观察：`result_error=None`、`calls=1`、唯一正常完成、`input=3/hit=8/miss=0`、单条成本行 `￥0.0008`、Usage 事件 1 次；失败点是“应在费用归集前拒绝”。没有重试、fallback、工具、真实密钥、真实供应商或公网。
+- 首次加入父测试模块后运行 `cargo fmt --all -- --check` 通过；探针只修改测试和本审计文档，不改变生产逻辑。
+
+#### 根因、影响与数据流
+
+- F-273（category=provider-boundary，status=validated，confidence=high；evidence_ids=[E-273-usage]）：`crates/deepagent-models/src/stream.rs::parse_response_usage` 将 `input_tokens` 与 `cached_tokens` 各自 `as_u64() as u32`，只用 `saturating_sub` 计算 miss；没有检查 `cached_tokens <= input_tokens`、`total_tokens >= input+output` 或字段是否在可表示范围内。于是内部矛盾被压成一个普通 `Usage`，`ModelAgent::record_provider_response_usage` 立即发布，`RunUsage`/finalizer/CostService 将 hit=8 当成真实计费维度。
+- P-273：DeepSeek Responses 完成事件 → parser 接受矛盾 usage → Runtime 正常 completed → CostService 使用 hit 单价而不是 miss 单价 → 账本少记费用，并把错误 cache 命中率提供给 UI/预算/审计。样本中合成应至少按 3 个输入 token 的边界计量，实际按 8 个 cache-hit token 计价；这里不声称某个“正确金额”一定是 0.0012，因为供应商若报告矛盾数据，宿主应优先标记 invalid/unknown，而不是自行猜测修正。
+- 这不是 H-133 的 failed 终态 usage 丢失：本项是 completed 成功响应的 usage 被错误接受；也不是 H-163/H-235 的 usage 没有跨工作流或 hook 归集：本项 usage 已完整进入唯一账本，只是输入不变量未校验。H-272 的运行内预算 gate 也不需要触发，本轮没有设置预算；两者可叠加但根因不同。
+- 影响限定为 provider/代理/中间层返回畸形 usage 的情况。后果包括低估成本、错误显示缓存效果、在预算保护中留下错误基线；本轮没有真实扣款或账户余额损失证据。若故障响应被重复重放，错误账本还会继续污染日/月汇总；没有据此声称所有 DeepSeek 请求都会发生。
+
+#### 成熟 Agent 与官方对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/llm/token-meter/src/turn-usage.ts::normalizeUsage` 对 usage 先做 `isCount` 非负/安全整数校验，再把 uncached input、cacheRead、cacheWrite 合成 `knownPrompt`；若有 total，要求 `total-output >= knownPrompt`，完整 cache bucket 时还要求 exact prompt 与 knownPrompt 一致，否则返回 `undefined`（fail closed）。它的统一 TokenUsage 语义把 `inputTokens`定义为未缓存输入、cacheRead 单独表示命中，与本系统把 DeepSeek `input_tokens`作为总输入的字段映射不同；可迁移的边界原则是“矛盾 usage 不进入正式 usage/账本”，不能把字段命名直接复制。
+- 该参考源码的测试 `packages/llm/token-meter/tests/turn-usage.spec.ts` 明确覆盖 negative/fractional/unsafe、cache bucket、total below known prompt、contradictory complete buckets、reasoning exceeds output 等失败关闭场景。本机执行 `pnpm exec vitest run packages/llm/token-meter/tests/turn-usage.spec.ts`，结果为 **1 个测试文件、47 项通过**（2026-10-25）；源码和测试文件均只读核查。
+- **DeepSeek 官方**：[Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)规定 usage 的 `input_tokens`、`input_tokens_details.cached_tokens`、`output_tokens`、`total_tokens`分别表示本次输入、缓存命中细分、输出和总量；[KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)把缓存命中作为输入缓存观察维度。文档没有授权宿主把 `cached_tokens > input_tokens` 当成合法计量，也没有替宿主做本地账本校验。
+- **Codex** 对照仅作为类型/保真边界：`codex-api/src/sse/responses.rs` 将 Responses usage 解析为 typed `TokenUsage`，保留 input/cached/output/reasoning/total 字段；本轮没有找到它在该位置校验 DeepSeek 同名不变量，也不把 Codex 包装成已经解决本项的直接证据。
+
+#### 治理方向（本地设计，未实施）
+
+- 在现有 provider adapter 的单一 usage 解析边界加入 checked 解析：拒绝负数、非整数、超出宿主表示范围、`cached_tokens > input_tokens`、`total_tokens < input_tokens + output_tokens`；必要时保留 raw usage 供诊断，但不能把 invalid 数值投递给 `RunUsage`/CostService。错误应保留 provider event、字段路径和脱敏摘要，并沿现有失败/终态路径只落一个结果。
+- 不要在 CostService 中再次“猜测修正”已经污染的 Usage；否则会产生第二套 provider 语义。若兼容未来供应商新增字段，应在 provider adapter 显式版本化映射，保留合法缺省与 unknown 状态，不能把缺字段自动补零后继续声称可计费。
+- 回归应覆盖正常 zero/partial/full cache、hit 等于 input、hit 大于 input、total 不一致、output/reasoning 不一致、负数/浮点/超大整数、failed/incomplete/重试及 raw usage 脱敏；并验证拒绝样本不会产生 succeeded、CostRecorded 或预算可用的错误基线。仅修 UI 展示或将 hit clamp 到 input 都不能替代边界拒绝。

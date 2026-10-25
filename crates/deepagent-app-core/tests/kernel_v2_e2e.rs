@@ -109,6 +109,9 @@ mod budget_lifecycle;
 #[path = "kernel_v2_e2e/inflight_budget.rs"]
 mod inflight_budget;
 
+#[path = "kernel_v2_e2e/usage_contract.rs"]
+mod usage_contract;
+
 #[path = "kernel_v2_e2e/session_search_visibility.rs"]
 mod session_search_visibility;
 
