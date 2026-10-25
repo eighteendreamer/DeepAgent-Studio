@@ -228,6 +228,59 @@ struct LocalTextProvider {
     server: JoinHandle<()>,
 }
 
+/// A text provider that returns a large non-2xx body. The body is synthetic;
+/// the fixture exists to observe whether the Canvas gateway bounds error
+/// responses before classifying them.
+struct LocalErrorTextProvider {
+    base_url: String,
+    sent_bytes: Arc<AtomicUsize>,
+    server: JoinHandle<()>,
+}
+
+impl LocalErrorTextProvider {
+    async fn start(response_bytes: usize) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let sent_bytes = Arc::new(AtomicUsize::new(0));
+        let sent = sent_bytes.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (line, _) = read_request(&mut socket).await;
+            assert!(line.starts_with("POST /v1/chat/completions "));
+            let body = vec![b'E'; response_bytes];
+            let header = format!(
+                "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            if socket.write_all(header.as_bytes()).await.is_ok() {
+                for chunk in body.chunks(64 * 1024) {
+                    if socket.write_all(chunk).await.is_err() {
+                        break;
+                    }
+                    sent.fetch_add(chunk.len(), Ordering::SeqCst);
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                }
+            }
+        });
+        Self {
+            base_url: format!("http://{address}/v1"),
+            sent_bytes,
+            server,
+        }
+    }
+
+    async fn close(&mut self) {
+        let result = (&mut self.server).await;
+        assert!(result.is_ok() || result.unwrap_err().is_cancelled());
+    }
+}
+
+impl Drop for LocalErrorTextProvider {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
 impl LocalTextProvider {
     async fn start() -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -649,6 +702,36 @@ impl MediaFixture {
                             {"id":"start","kind":"start"},
                             {"id":"text","kind":"text-gen","config":{
                                 "prompt":"audit delayed text",
+                                "model":format!("{provider_id}::deepseek-flash")
+                            }},
+                            {"id":"end","kind":"end"}
+                        ],
+                        "edges": [
+                            {"id":"e1","source":"start","target":"text"},
+                            {"id":"e2","source":"text","target":"end"}
+                        ]
+                    }
+                }))
+                .unwrap()
+            },
+        )
+        .await
+    }
+
+    async fn new_error_text(provider: &LocalErrorTextProvider) -> Self {
+        Self::with_provider(
+            &provider.base_url,
+            "Audit local text error",
+            "deepseek-flash",
+            vec![CanvasScenario::Text],
+            |provider_id| {
+                serde_json::from_value(json!({
+                    "definition": {
+                        "version": 1,
+                        "nodes": [
+                            {"id":"start","kind":"start"},
+                            {"id":"text","kind":"text-gen","config":{
+                                "prompt":"audit oversized provider error",
                                 "model":format!("{provider_id}::deepseek-flash")
                             }},
                             {"id":"end","kind":"end"}
@@ -1117,6 +1200,46 @@ async fn audit_text_cancel_does_not_wait_for_provider_response() {
     assert!(
         !text_completed && text_cancelled,
         "a cancelled in-flight text node must not publish a completed outcome"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit: Canvas provider error responses must be bounded before classification"]
+async fn audit_canvas_provider_error_body_is_bounded() {
+    let response_bytes = 32 * 1024 * 1024 + 1;
+    let mut provider = LocalErrorTextProvider::start(response_bytes).await;
+    let fixture = MediaFixture::new_error_text(&provider).await;
+    let run_id = "audit-canvas-error-body-budget";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminal = events
+        .iter()
+        .find(|event| event.event_type == "run_terminal")
+        .and_then(|event| event.data["kind"].as_str())
+        .unwrap_or("missing");
+    let live = fixture.live.lock().unwrap();
+    let text_error = live
+        .iter()
+        .find(|event| event.node_id == "text" && event.status == NodeExecutionStatus::Failed)
+        .and_then(|event| event.error.clone());
+    let error_len = text_error.as_ref().map(|error| error.len()).unwrap_or(0);
+    let sent_bytes = provider.sent_bytes.load(Ordering::SeqCst);
+    eprintln!(
+        "canvas error body: response_bytes={response_bytes}, sent_bytes={sent_bytes}, error_message_bytes={error_len}, terminal={terminal}, result_ok={}",
+        result.is_ok()
+    );
+    assert!(
+        result.is_err() && terminal != "succeeded" && text_error.is_some(),
+        "provider error must fail the node and run"
+    );
+    assert!(
+        sent_bytes < response_bytes,
+        "the gateway must stop an oversized error response before the provider sends the complete body"
     );
 }
 

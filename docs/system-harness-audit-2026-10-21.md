@@ -8753,3 +8753,25 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 #### 本轮边界
 
 - 本项只新增 ignored 双 loopback 复现与文档，没有修改生产网络或权限逻辑；没有访问真实内网、元数据服务、公网或用户数据，也没有重复 image 的 H-165 canary。验收仍需正常 video 下载对照、拒绝 loopback、拒绝 redirect-to-private、审批允许的显式例外和取消/超限组合。
+
+### H-304：Canvas provider 非 2xx 错误正文在分类前无界缓冲
+
+**级别：中高（P1/P2，条件性资源边界）；状态：正式 text 工作流路径已复现，未修复。** 触发条件是 Canvas provider 对一次模型请求返回非 2xx，并把超出宿主错误诊断预算的正文持续发送。该项与 H-302 的成功视频 artifact 流不同：这里响应会进入失败分类路径；也与 H-303 的 provider URL 第二跳不同：本轮只有一次 provider POST，没有后续 URL 下载或内网访问。
+
+#### 即时 Evidence（2026-10-25）
+
+- 新增并执行 `crates/deepagent-app-core/tests/workflow_audit/media.rs::audit_canvas_provider_error_body_is_bounded`。测试使用正式 `ChatService`、`WorkflowAgent`、`CanvasModelGateway`、文件 SQLite、RunStore 和一个只绑定 `127.0.0.1` 的合成 text provider；provider 返回 HTTP 500 和 `32 MiB + 1` 字节的纯合成正文。没有真实供应商、凭据、用户文件或公网/私网访问。
+- 命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_canvas_provider_error_body_is_bounded --offline -- --ignored --nocapture --exact`。按缺陷预期失败，实际输出：`response_bytes=33554433, sent_bytes=33554433, error_message_bytes=446, terminal=failed, result_ok=false`。
+- 复现含义：provider 已完整发送 33,554,433 字节后，工作流才以 failed 终止；错误对象最终只保留约 446 字节的 400 字符诊断片段。探针断言宿主应在超出错误预算时中止读取，因此以失败退出并保留了“完整正文已被接收、随后才截短分类”的证据。未测试 OOM、磁盘耗尽或并发放大，不能把这些后果写成已发生。
+- 生产链核对：`CanvasModelGateway::call()` 对 JSON、音频及其他同步 Canvas 请求统一先执行 `resp.bytes().await`，再把完整字节转换为 `String`，最后才在非 2xx 分支调用 `classify_status()`；`classify_status()` 虽只取前 400 个字符，但这发生在完整 body 已物化之后。`post_json()` 和模型目录探测也分别使用 `resp.text().await`，共享同一类无界错误/控制面正文风险。
+
+#### 成熟 Agent 对照、影响与治理方向
+
+- **Codex** 的 transport/app-server 边界把响应读取、取消和错误元数据放在请求生命周期内；可迁移的设计点是错误对象只携带有界摘要，同时底层 reader 在达到预算时停止并关闭响应，而不是先把任意 provider body 读入内存再截断。未找到与本系统 Canvas provider 错误正文完全同构的 Codex 动态样本，因此不声称 Codex 已证明本项不存在。
+- **DeepSeek Harness** 的 provider adapter/响应事件模型把供应商错误映射成结构化状态，模型正文、reasoning、usage 和工具事件分开传递；这支持“错误摘要与原始响应分离、每个流有预算”的边界。DeepSeek Responses、参数、Tool Calls 和 KV Cache 官方文档定义的是供应商协议与缓存/工具语义，不规定宿主错误正文上限，不能把官方协议能力当作本地资源治理。
+- 影响是中高：故障供应商、兼容网关或被污染的 endpoint 可以在一次失败请求中强迫桌面宿主分配超大响应缓冲；并发失败会线性放大峰值，造成 UI 卡顿、连接占用、分配失败或进程级资源压力。当前证据只证明 32 MiB+1 错误正文被完整接收，未证明具体崩溃阈值、真实服务计费或跨请求持久化泄露。
+- 根治方向是在现有 Canvas HTTP adapter/transport 边界增加统一 `ResponseBodyBudget`：先用可信 `Content-Length` 做快速拒绝，但必须对 `bytes_stream()`/chunk 累计设硬上限，在第一个超限 chunk 立即关闭响应并返回结构化 `response_body_too_large`；错误对象仅保留固定 UTF-8 摘要、HTTP 状态、provider/model/attempt 和截断标志。`call()`、`post_json()`、模型目录、音频二进制及视频控制面应复用同一 reader；取消、超时和预算超限都必须在 artifact/节点提交前收束，不能在各模态各自保留 `resp.bytes()`/`resp.text()`。
+
+#### 本轮边界
+
+- 本项只新增 ignored 复现与审计记录，没有修改生产 transport；没有访问公网、真实内网、云元数据或用户数据，也没有重复 H-165/H-303 的第二跳 URL 测试。验收应补充：小错误正文正常保留、恰好预算、超预算中止、无 `Content-Length` 的 chunked 响应、Unicode 截断、取消/超时、重试分类和模型目录/视频控制面共用预算。
