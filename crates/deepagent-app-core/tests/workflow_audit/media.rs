@@ -265,6 +265,68 @@ impl Drop for LocalImageProvider {
     }
 }
 
+/// An image provider that accepts the generation request but withholds its
+/// response. This isolates cancellation of the image provider HTTP wait from
+/// URL materialization and artifact persistence.
+struct LocalPendingImageProvider {
+    base_url: String,
+    request_received: Arc<Notify>,
+    release_response: Arc<Notify>,
+    server: JoinHandle<()>,
+}
+
+impl LocalPendingImageProvider {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let request_received = Arc::new(Notify::new());
+        let release_response = Arc::new(Notify::new());
+        let arrived = request_received.clone();
+        let release = release_response.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (line, _) = read_request(&mut socket).await;
+            assert!(line.starts_with("POST /v1/images/generations "));
+            arrived.notify_one();
+            release.notified().await;
+            use base64::Engine as _;
+            let image = base64::engine::general_purpose::STANDARD.encode(PRIVATE_IMAGE_BYTES);
+            let payload = json!({"data":[{"b64_json":image}]}).to_string();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            if socket.write_all(header.as_bytes()).await.is_ok() {
+                let _ = socket.write_all(payload.as_bytes()).await;
+            }
+        });
+        Self {
+            base_url: format!("http://{address}/v1"),
+            request_received,
+            release_response,
+            server,
+        }
+    }
+
+    async fn wait_for_request(&self) {
+        tokio::time::timeout(Duration::from_secs(5), self.request_received.notified())
+            .await
+            .expect("the real image gateway must receive the generation request");
+    }
+
+    async fn close(&mut self) {
+        self.release_response.notify_one();
+        let result = (&mut self.server).await;
+        assert!(result.is_ok() || result.unwrap_err().is_cancelled());
+    }
+}
+
+impl Drop for LocalPendingImageProvider {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
 async fn read_request(socket: &mut TcpStream) -> (String, Value) {
     let mut bytes = Vec::new();
     loop {
@@ -664,6 +726,132 @@ async fn audit_text_cancel_does_not_wait_for_provider_response() {
         !text_completed && text_cancelled,
         "a cancelled in-flight text node must not publish a completed outcome"
     );
+}
+
+#[tokio::test]
+async fn real_image_workflow_stores_one_successful_artifact() {
+    let mut provider = LocalImageProvider::start().await;
+    let fixture = MediaFixture::new_image(&provider).await;
+    let run_id = "audit-image-normal-control";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+    result.unwrap();
+    let image = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Completed)
+        .cloned()
+        .expect("normal image control must complete");
+    let uri = image
+        .artifacts
+        .first()
+        .expect("the image node must publish its stored artifact")
+        .to_owned();
+    assert_eq!(
+        fixture
+            .artifacts
+            .read_bytes(uri.trim_start_matches("artifact://"))
+            .unwrap()
+            .unwrap(),
+        PRIVATE_IMAGE_BYTES
+    );
+    let terminal = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect::<Vec<_>>();
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].data["kind"], "succeeded");
+    eprintln!(
+        "image normal control: artifact_bytes={}, terminal=succeeded",
+        PRIVATE_IMAGE_BYTES.len()
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit: an accepted workflow cancellation must interrupt a pending Canvas image response"]
+async fn audit_image_cancel_does_not_wait_for_provider_response() {
+    let mut provider = LocalPendingImageProvider::start().await;
+    let original = LocalImageProvider::start().await;
+    let fixture = MediaFixture::new_image(&original).await;
+    // Rebind the saved provider to the pending loopback endpoint while keeping
+    // the production workflow and gateway construction unchanged.
+    let current = fixture
+        .providers
+        .provider(
+            fixture.workflow.definition.nodes[1].config["imageModel"]
+                .as_str()
+                .unwrap()
+                .split("::")
+                .next()
+                .unwrap(),
+        )
+        .unwrap();
+    fixture
+        .providers
+        .save_provider(CanvasProviderInput {
+            id: current.id,
+            name: current.name,
+            protocol: "openai".into(),
+            base_url: provider.base_url.clone(),
+            enabled: true,
+            models: current.models,
+            api_key: Some("sk-audit-image-pending".into()),
+            ..Default::default()
+        })
+        .unwrap();
+    let run_id = "audit-image-cancel-pending-response";
+    let mut run = fixture.spawn(run_id);
+    provider.wait_for_request().await;
+    let accepted = fixture.chat.request_cancel(run_id).unwrap().accepted;
+    let started = Instant::now();
+    let stopped = tokio::time::timeout(Duration::from_millis(300), &mut run).await;
+    let stopped_before_response = stopped.is_ok();
+    let unfinished_before_response = RunStore::new(&fixture.db)
+        .get(run_id)
+        .unwrap()
+        .unwrap()
+        .finished_at
+        .is_none();
+    provider.release_response.notify_one();
+    let result = match stopped {
+        Ok(joined) => joined.unwrap(),
+        Err(_) => finish_run(&mut run).await,
+    };
+    let cancel_to_exit_ms = started.elapsed().as_millis();
+    drop(original);
+    provider.close().await;
+    let events = fixture.live.lock().unwrap().clone();
+    let image_completed = events
+        .iter()
+        .any(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Completed);
+    let image_cancelled = events
+        .iter()
+        .any(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Cancelled);
+    let terminals = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect::<Vec<_>>();
+    eprintln!(
+        "image cancellation: accepted={accepted}, stopped_within_300ms={stopped_before_response}, unfinished_before_response={unfinished_before_response}, cancel_to_exit_ms={cancel_to_exit_ms}, image_completed={image_completed}, image_cancelled={image_cancelled}, terminal={:?}, result_ok={}",
+        terminals.first().and_then(|event| event.data["kind"].as_str()),
+        result.is_ok()
+    );
+    assert!(accepted);
+    assert!(
+        stopped_before_response,
+        "accepted cancellation must stop a pending image provider response"
+    );
+    assert!(!image_completed);
+    assert!(image_cancelled);
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "cancelled");
 }
 
 #[tokio::test]

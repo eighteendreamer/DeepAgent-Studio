@@ -8649,3 +8649,14 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - Path：`ConfigReconnectFactory::reconnect` 确实重建 transport 并调用 `McpClient::initialize`，但 `McpClient::initialize` 仍只检查 JSON-RPC `result` 存在，不解析 initialize 业务结果；因此重连后的 transport 与首次连接一样会把非法协商当成 ready。影响是断线恢复后可能再次发布或继续使用不受支持/不完整能力的 MCP 连接，错误被延迟到 `tools/list` 或 `tools/call`，诊断与首次连接不一致；本轮未执行真实外部副作用。
 - 对照不变：真实 `@modelcontextprotocol/client` 2.0.0 的握手会在重连建立后校验版本、能力和 serverInfo，再发送 `initialized`；Codex `rmcp-client` 也把握手结果作为 Ready 门槛。本补充只证明本系统重连分支与已记录的首次分支共享缺陷，不声称参考工程对所有重连竞态都有动态保证。
 - 未修改生产逻辑；仅新增 ignored 测试和本段文档。后续修复必须让首次连接与重连复用同一强类型 initialize validator，并同时回归合法重连、六类非法响应、显式 JSON-RPC error、工具发现和连接状态，不得只修 `McpService` 首次准备路径。
+
+#### H-164 image 模态补充证据（2026-10-25）
+
+- 去重：H-164 原先已用正式 text-gen 证明 Canvas text provider 等待不响应时取消不能打断；本段只扩展同一取消边界到 image-gen，不新增编号，也不把 audio/embedding 尚未执行的静态推导写成动态事实。
+- 新增 `workflow_audit::media::audit_image_cancel_does_not_wait_for_provider_response`，使用正式 `MediaFixture`、`ChatService::run_workflow`、`WorkflowAgent`、`CanvasModelGateway`、文件 SQLite、RunStore 和运行取消树。唯一外部夹具是两台 loopback 监听中的一台 image provider；它收到正式 `POST /v1/images/generations` 后不返回，直到测试释放，不使用公网、凭据或用户文件。
+- 首次有效命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_image_cancel_does_not_wait_for_provider_response --offline -- --ignored --nocapture --exact`，结果 **0 passed / 1 failed（缺陷预期）**。实际输出：`accepted=true, stopped_within_300ms=false, unfinished_before_response=true, cancel_to_exit_ms=346, image_completed=true, image_cancelled=false, terminal=Some("cancelled"), result_ok=true`。取消之后 provider 仍被释放才收尾；image 节点先记 Completed，run 只有最终 cancelled 终态。
+- 正常对照 `cargo test -p deepagent-app-core --test workflow_audit media::real_image_workflow_stores_one_successful_artifact --offline -- --nocapture --exact`：**1 passed / 0 failed**，真实 image-gen 请求、URL 第二跳和 artifact 读取均完成，输出 `artifact_bytes=36, terminal=succeeded`。因此故障组不是 image provider/fixture 无法完成，而是取消期间缺少中断与节点状态门。
+- F-164-image（category=cancellation/lifecycle，status=validated，confidence=high，evidence_id=E-164-image）：`WorkflowAgent::execute_node_inline` 进入 `image-gen` 后直接 await `CanvasModelGateway::generate_image`；image 请求与共享 `CanvasModelGateway::call` 没有运行取消 token。`WorkflowAgent` 只在 step 开始处检查 flag，不能打断已经建立的 image HTTP 等待，也没有在 provider 返回后把已接受的取消转换为节点 Cancelled。
+- 已证后果：停止按钮返回 accepted 后，工作流仍等待 provider；响应到达时实时/持久 node event 可显示 image Completed，而 run terminal 随后是 cancelled，机器消费者和 UI 会看到矛盾状态。当前样本没有证明真实供应商扣费、云端图片任务撤销、下游 end 节点继续执行或 artifact 被错误保留；这些仍是未覆盖边界。
+- 对照边界：DeepSeek Responses/Tool Calls 文档只定义无状态输入和宿主执行函数，不替宿主中断本地 HTTP；成熟 Agent 的可迁移做法仍是把取消身份贯穿 provider request、响应读取和提交点，并在未知外部结果时显式标记，而不是让完成事件覆盖取消。H-119 的 video 专用 cancel-aware helper 已修复 video，本证据说明该语义尚未收敛到 text/image/audio/embedding 共用 gateway。
+- 本轮已补 image 正常成功控制；仍未运行 audio/embedding 取消或真实 Tauri 点击，不能把 image 证据外推到其他模态。
