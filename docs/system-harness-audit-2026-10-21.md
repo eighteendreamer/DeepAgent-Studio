@@ -7543,3 +7543,39 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 本轮仅新增上述真实进程审计探针和本报告；未修改生产逻辑、公共协议、模型参数、权限或沙箱配置。显式探针保持 `#[ignore]`，默认测试绿色不代表 H-278 已修复。
 - 本轮尚未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实外部 MCP 或真实副作用服务；未处理用户排除的 encrypted-content 问题。后续若修复 H-278，应重跑该故障样本并补“确定未发送可重试”正常对照，避免把所有断线都粗暴改成永久失败。
+
+### H-279：工作区文件工具仅做词法 containment，Windows junction 可把 `read_file` 引到工作区外
+
+**级别：高（P1，条件性工作区沙箱越界读取）；状态：正式 Kernel → ChatService → `read_file` → `WorkspaceRoot` 链路与真实 Windows junction 已复现，未修复。** 触发条件是攻击者/插件/同机进程能在工作区内创建 directory junction（或其他 reparse point），随后模型读取该链接下的相对路径。普通 `..`、工作区外绝对路径和无链接目录仍按现有规则处理；本轮只证明读取越界，不扩大为写入越界或任意系统文件读取。
+
+#### 即时 Evidence（2026-10-25）
+
+- 复用了现有正式探针 `crates/deepagent-app-core/tests/kernel_v2_e2e/path_boundary.rs::audit_read_file_does_not_follow_workspace_junction_outside_root`，没有直接调用内部 resolver。测试在两个临时目录中创建 `workspace\linked` → `outside` 的 Windows junction，outside 文件内容为合成 canary `AUDIT_JUNCTION_OUTSIDE_6c1e`。
+- 执行：`cargo test -p deepagent-app-core --test kernel_v2_e2e path_boundary::audit_read_file_does_not_follow_workspace_junction_outside_root --offline -- --include-ignored --nocapture --exact`，结果 **0 passed / 1 failed（缺陷预期）**。正式输出：`ReadObservation { content_returned: true, tool_completed_ok: Some(true), tool_blocked: false }`；断言要求工作区模式拒绝越界，实际把 outside canary 交给模型。
+- 同文件的正常对照 `direct_outside_read_obeys_workspace_and_full_access_policies` 通过：`WorkspaceWrite` 下直接工作区外路径被 blocked，`FullAccess` 下显式外部路径按产品策略可读。因此缺陷来自链接解析缺失，而不是整个 `FsAccess` 枚举失效。
+
+#### 根因、触发条件与后果
+
+- F-279（category=sandbox-boundary，status=validated，confidence=high；evidence_ids=[E-279-junction,E-279-control]）：`crates/deepagent-builtins/src/fs_guard.rs::WorkspaceRoot::resolve` 对相对输入只执行 `root.join(candidate)`、敏感名检查和 `joined.starts_with(&self.root)`；没有 `lstat`/`canonicalize`/realpath containment，也没有拒绝 junction/reparse/symlink。`ReadFileTool::invoke` 随后对这个词法路径调用 `tokio::fs::metadata`/`read_to_string`，Windows 文件系统自动跟随 junction。
+- P-279：模型给出 `linked/outside.txt` → `WorkspaceRoot::resolve` 认为路径仍在 root → `metadata/read_to_string` 跟随 junction → outside canary 进入 `function_call_output`、run event 和下一次 DeepSeek 请求。若链接目标是源码、配置、私有文档或另一个项目，工作区权限与模型可见边界被绕过；本轮没有读取真实用户文件、凭据或公网资源。
+- 影响仅限 `FsAccess::Workspace`/`ReadOnly` 等依赖 root confinement 的读路径；`ReadAnywhere`/`Full` 本来就允许外部读，不能用它们掩盖默认模式的越界。`write_file`、`edit_file`、`delete` 也复用同一 `resolve`，源码上具有同类风险，但本轮只把真实 `read_file` 证据登记为 H-279，不虚称写入已经动态复现。
+- 与 H-260 的 FileStateCache 代次不同：H-260 是压缩后旧读取资格继续授权；H-279 在首次读取前就绕过物理工作区边界。与 H-250/H-252 的 Canvas artifact digest/workspace scope 不同：本项是通用文件工具和沙箱根路径解析。
+
+#### 成熟 Agent 与官方/参考对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/api/workspace-files/src/index.ts` 在读取前先用 `lstat` 检查请求项类型，再通过 Host `resolve` 做物理目标解析；`locateFile` 对最终 entry 要求是 regular file，symlink/junction 会以 `not-regular-file` 拒绝。其 `read.spec.ts` 有真实 symlink 指向 workspace 外和指回 workspace 内的拒绝测试，说明“词法 prefix 通过”不能替代链接类型/物理路径检查。本轮没有把其 Node `dsh-fs` 实现复制到 Rust，也未声称它已覆盖 Windows 每种 reparse 类型之外的所有竞态。
+- **Claude Code**：恢复源码的 `memdir/teamMemPaths.ts` 明确使用“最深已存在祖先的 realpath”再做 containment，并将 symlink escape、dangling link、loop 作为错误；PowerShell/Bash path validation 还同时检查原始路径与解析路径。这里仅借鉴“先解析物理路径再比较、对不存在尾部保留已存在祖先检查”的边界原则，不把其 shell 审批逻辑冒充本系统文件工具实现。
+- **Codex**：本轮未找到与本项目 `WorkspaceRoot` 同构的 Rust 文件工具 API，不能声称 Codex 已动态覆盖该 junction 输入；可迁移的架构原则是把 workspace/sandbox 根约束放在唯一宿主文件边界，而不是依靠 UI 或模型提示词。不要把 Codex 的 OS sandbox 存在本身当成此处的直接证据。
+- **DeepSeek 官方**：Responses/Tool Calls 文档说明模型返回工具调用、具体函数由宿主执行；DeepSeek 不会替宿主解析本地 Windows 路径或判断 junction 是否越界。因此修改 reasoning、strict、Responses cache 或工具 schema 不能修复 H-279，必须在本地文件工具 seam 收口。
+
+#### 治理方向（本地设计，未实施）
+
+- 在现有唯一 `WorkspaceRoot` 边界增加物理 containment：先 canonicalize/realpath 根目录；对已存在的每个路径组件执行 `lstat`/reparse 检查，拒绝目标解析到 root 外的 junction、symlink、mount/reparse point；对尚不存在的写路径 canonicalize 最深已存在祖先，再把剩余词法组件拼回并重新比较。不要只把 `starts_with` 改成字符串规范化，也不要只在 `read_file` 单点补丁，所有读写/删除/复制/list/glob 都必须共用同一 resolver。
+- 对链接策略做明确产品契约：默认 Workspace/ReadOnly 可以选择“拒绝所有链接”或“仅允许解析后仍在 root 内”；无论选择哪种，错误应带结构化 `workspace_path_escape`/`reparse_point` 原因，不能让模型得到外部正文后再靠提示词自律。
+- 需要同时考虑 TOCTOU：校验和打开之间若攻击者可替换 junction，Windows 应优先使用句柄相对打开、`FILE_FLAG_OPEN_REPARSE_POINT`/等价安全 API，或在受控沙箱中拒绝可变 reparse point；仅 `canonicalize` 后再 `read_to_string` 只能解决静态链接，不能宣称抗并发替换。
+- 回归应覆盖：目录 junction、文件 symlink、reparse point、链接回 root、dangling link、`..` + link 组合、大小写/8.3 别名、绝对路径、缺失尾部写入、list/glob/grep/read/write/edit/delete/copy，以及验证与打开之间的替换竞态。默认 Workspace 下任何 root 外 canary 都不得进入 tool output、run event 或下一次 DeepSeek wire。
+
+#### 回归记录（持续追加）
+
+- 本轮只使用临时目录、合成 canary 和本机 Windows `mklink /J`；没有用户文件、密钥、真实工作区、真实模型或公网请求。故障探针已经在断言前删除 junction，未留持久链接。
+- 本轮新增 H-279 文档证据，尚未修改生产逻辑；完整 workspace、Desktop build、真实 DeepSeek、Linux/macOS 物理链接和 TOCTOU 压力验证未执行。显式探针保持 `#[ignore]`，默认绿色不代表该沙箱边界已修复。
