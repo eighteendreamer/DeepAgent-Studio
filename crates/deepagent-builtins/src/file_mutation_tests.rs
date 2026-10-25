@@ -1,0 +1,651 @@
+use super::*;
+use crate::file_cache::FileStateCache;
+use crate::file_tools::{EditFileTool, MultiEditTool, ReadFileTool, WriteFileTool};
+use deepagent_tools::Tool;
+use serde_json::json;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+const INITIAL: &str = "owner=initial\nvalue=old\n";
+const EXTERNAL: &str = "owner=external\nvalue=old\n";
+
+struct Files {
+    _dir: tempfile::TempDir,
+    root: WorkspaceRoot,
+    cache: SharedFileStateCache,
+}
+
+impl Files {
+    fn new(content: &str) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shared.txt"), content).unwrap();
+        Self {
+            root: WorkspaceRoot::new(dir.path()),
+            _dir: dir,
+            cache: Arc::new(Mutex::new(FileStateCache::new())),
+        }
+    }
+
+    fn path(&self) -> std::path::PathBuf {
+        self.root.path().join("shared.txt")
+    }
+    fn disk(&self) -> String {
+        std::fs::read_to_string(self.path()).unwrap()
+    }
+    fn reader(&self) -> ReadFileTool {
+        ReadFileTool::with_cache(self.root.clone(), self.cache.clone())
+    }
+
+    async fn read(&self) {
+        let result = self
+            .reader()
+            .invoke(json!({"path":"shared.txt"}))
+            .await
+            .unwrap();
+        assert!(result.ok, "{result:?}");
+    }
+
+    async fn change(&self, tool: usize, owner: &str) -> ToolOutput {
+        match tool {
+            0 => WriteFileTool::with_cache(self.root.clone(), self.cache.clone())
+                .invoke(
+                    json!({"path":"shared.txt", "content":owner.replace("value=old", "value=new")}),
+                )
+                .await
+                .unwrap(),
+            1 => EditFileTool::with_cache(self.root.clone(), self.cache.clone())
+                .invoke(json!({"path":"shared.txt", "old":"value=old", "new":"value=new"}))
+                .await
+                .unwrap(),
+            _ => MultiEditTool::with_cache(self.root.clone(), self.cache.clone())
+                .invoke(
+                    json!({"path":"shared.txt", "edits":[{"old":"value=old", "new":"value=new"}]}),
+                )
+                .await
+                .unwrap(),
+        }
+    }
+}
+
+fn no_staging(root: &Path) {
+    assert!(!std::fs::read_dir(root).unwrap().any(|entry| entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".deepagent-write-")));
+}
+
+#[tokio::test]
+async fn every_mutation_preserves_external_edits_until_fresh_read() {
+    for tool in 0..3 {
+        let files = Files::new(INITIAL);
+        files.read().await;
+        std::fs::write(files.path(), EXTERNAL).unwrap();
+        let stale = files.change(tool, INITIAL).await;
+        assert!(!stale.ok, "tool={tool}: {stale:?}");
+        assert!(stale.value["error"]
+            .as_str()
+            .unwrap()
+            .contains("FILE_CHANGED_SINCE_READ"));
+        assert_eq!(files.disk(), EXTERNAL);
+        files.read().await;
+        assert!(files.change(tool, EXTERNAL).await.ok);
+        assert_eq!(files.disk(), EXTERNAL.replace("value=old", "value=new"));
+        no_staging(files.root.path());
+    }
+}
+
+#[tokio::test]
+async fn identical_metadata_cannot_hide_different_content_or_return_a_stale_stub() {
+    const SAME_LENGTH: &str = "owner=changed\nvalue=old\n";
+    for tool in 0..3 {
+        let files = Files::new(INITIAL);
+        files.read().await;
+        let previous = std::fs::metadata(files.path()).unwrap();
+        assert_eq!(INITIAL.len(), SAME_LENGTH.len());
+        std::fs::write(files.path(), SAME_LENGTH).unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(files.path())
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(previous.modified().unwrap()))
+            .unwrap();
+        let current = std::fs::metadata(files.path()).unwrap();
+        assert_eq!(current.len(), previous.len());
+        assert_eq!(current.modified().unwrap(), previous.modified().unwrap());
+        assert!(!files.change(tool, INITIAL).await.ok);
+        assert_eq!(files.disk(), SAME_LENGTH);
+        let read = files
+            .reader()
+            .invoke(json!({"path":"shared.txt"}))
+            .await
+            .unwrap();
+        assert!(read.ok);
+        assert_ne!(read.value["unchanged_stub"], true);
+        assert!(read.value["content"]
+            .as_str()
+            .unwrap()
+            .contains("owner=changed"));
+        assert!(files.change(tool, SAME_LENGTH).await.ok);
+        assert_eq!(files.disk(), SAME_LENGTH.replace("value=old", "value=new"));
+    }
+}
+
+#[tokio::test]
+async fn timestamp_changes_alone_do_not_revoke_an_identical_observed_version() {
+    let files = Files::new(INITIAL);
+    files.read().await;
+    let time = std::fs::metadata(files.path()).unwrap().modified().unwrap();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(files.path())
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(time + Duration::from_secs(2)))
+        .unwrap();
+    assert!(files.change(0, INITIAL).await.ok);
+    assert_eq!(files.disk(), INITIAL.replace("value=old", "value=new"));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn native_publication_failure_preserves_version_and_allows_retry_without_reread() {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+    let files = Files::new(INITIAL);
+    files.read().await;
+    let owner = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(files.path())
+        .unwrap();
+    let result = files.change(0, INITIAL).await;
+    assert!(!result.ok, "{result:?}");
+    assert!(result.value["error"]
+        .as_str()
+        .unwrap()
+        .contains("write failed"));
+    assert_eq!(files.disk(), INITIAL);
+    no_staging(files.root.path());
+    drop(owner);
+    assert!(files.change(0, INITIAL).await.ok);
+    assert_eq!(files.disk(), INITIAL.replace("value=old", "value=new"));
+}
+
+#[tokio::test]
+async fn deleted_observed_file_is_not_silently_recreated() {
+    for tool in 0..3 {
+        let files = Files::new(INITIAL);
+        files.read().await;
+        std::fs::remove_file(files.path()).unwrap();
+        let result = files.change(tool, INITIAL).await;
+        assert!(!result.ok);
+        assert!(result.value["error"]
+            .as_str()
+            .unwrap()
+            .contains("FILE_CHANGED_SINCE_READ"));
+        assert!(!files.path().exists());
+    }
+}
+
+#[tokio::test]
+async fn cached_bytes_without_delivered_window_cannot_authorize_writes() {
+    let files = Files::new(INITIAL);
+    files.cache.lock().unwrap().store(
+        files.path(),
+        INITIAL.into(),
+        &std::fs::metadata(files.path()).unwrap(),
+    );
+    assert!(!files.change(0, INITIAL).await.ok);
+    assert_eq!(files.disk(), INITIAL);
+}
+
+#[tokio::test]
+async fn partial_reads_authorize_only_the_delivered_ranges() {
+    let files = Files::new("visible\nhidden\ntail\n");
+    let read = files
+        .reader()
+        .invoke(json!({"path":"shared.txt", "limit":1}))
+        .await
+        .unwrap();
+    assert_eq!(read.value["truncated"], true);
+    let stub = files
+        .reader()
+        .invoke(json!({"path":"shared.txt", "limit":1}))
+        .await
+        .unwrap();
+    assert_eq!(stub.value["unchanged_stub"], true);
+    assert_eq!(stub.value["truncated"], true);
+    assert_eq!(stub.value["next_offset"], 2);
+    let write = WriteFileTool::with_cache(files.root.clone(), files.cache.clone());
+    let result = write
+        .invoke(json!({"path":"shared.txt", "content":"replacement"}))
+        .await
+        .unwrap();
+    assert!(!result.ok);
+    assert!(result.value["error"]
+        .as_str()
+        .unwrap()
+        .contains("FILE_RANGE_NOT_READ"));
+    let edit = EditFileTool::with_cache(files.root.clone(), files.cache.clone());
+    assert!(
+        !edit
+            .invoke(json!({"path":"shared.txt", "old":"hidden", "new":"lost"}))
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(files.disk(), "visible\nhidden\ntail\n");
+    assert!(
+        edit.invoke(json!({"path":"shared.txt", "old":"visible", "new":"edited"}))
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(files.disk(), "edited\nhidden\ntail\n");
+}
+
+#[tokio::test]
+async fn paginated_reads_allow_full_replacement_only_after_complete_coverage() {
+    let original = (0..2002)
+        .map(|index| format!("line {index}\n"))
+        .collect::<String>();
+    let files = Files::new(&original);
+    files.read().await; // actual default is 2000, not the full cached body.
+    let write = WriteFileTool::with_cache(files.root.clone(), files.cache.clone());
+    assert!(
+        !write
+            .invoke(json!({"path":"shared.txt", "content":"new"}))
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(files.disk(), original);
+    assert!(
+        files
+            .reader()
+            .invoke(json!({"path":"shared.txt", "offset":2001}))
+            .await
+            .unwrap()
+            .ok
+    );
+    assert!(
+        write
+            .invoke(json!({"path":"shared.txt", "content":"new"}))
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(files.disk(), "new");
+}
+
+#[tokio::test]
+async fn changed_version_does_not_inherit_observed_windows() {
+    let files = Files::new("first\nsecond\n");
+    files
+        .reader()
+        .invoke(json!({"path":"shared.txt", "limit":1}))
+        .await
+        .unwrap();
+    std::fs::write(files.path(), "FIRST\nsecond\n").unwrap();
+    files
+        .reader()
+        .invoke(json!({"path":"shared.txt", "offset":2}))
+        .await
+        .unwrap();
+    let write = WriteFileTool::with_cache(files.root.clone(), files.cache.clone());
+    assert!(
+        !write
+            .invoke(json!({"path":"shared.txt", "content":"new"}))
+            .await
+            .unwrap()
+            .ok
+    );
+    assert_eq!(files.disk(), "FIRST\nsecond\n");
+}
+
+#[tokio::test]
+async fn multi_edit_preserves_unseen_ranges_and_tracks_unicode_crlf_offsets() {
+    let files = Files::new("可见一\r\n隐藏二\r\n可见三\r\n");
+    for offset in [1, 3] {
+        files
+            .reader()
+            .invoke(json!({"path":"shared.txt", "offset":offset,"limit":1}))
+            .await
+            .unwrap();
+    }
+    let edit = MultiEditTool::with_cache(files.root.clone(), files.cache.clone());
+    let rejected = edit
+        .invoke(json!({"path":"shared.txt", "edits":[
+            {"old":"可见一","new":"更长的一\n新增行"}, {"old":"隐藏二", "new":"不应修改"}
+        ]}))
+        .await
+        .unwrap();
+    assert!(!rejected.ok);
+    assert_eq!(files.disk(), "可见一\r\n隐藏二\r\n可见三\r\n");
+    let accepted = edit.invoke(json!({"path":"shared.txt", "edits":[
+        {"old":"可见一","new":"更长的一\n新增行"}, {"old":"新增行", "new":"新行"}, {"old":"可见三", "new":"末行"}
+    ]})).await.unwrap();
+    assert!(accepted.ok, "{accepted:?}");
+    assert_eq!(files.disk(), "更长的一\r\n新行\r\n隐藏二\r\n末行\r\n");
+}
+
+#[tokio::test]
+async fn replace_all_must_not_modify_unseen_occurrences() {
+    let files = Files::new("match\nmatch\n");
+    files
+        .reader()
+        .invoke(json!({"path":"shared.txt", "limit":1}))
+        .await
+        .unwrap();
+    let edit = EditFileTool::with_cache(files.root.clone(), files.cache.clone());
+    let result = edit
+        .invoke(json!({"path":"shared.txt","old":"match","new":"changed","replace_all":true}))
+        .await
+        .unwrap();
+    assert!(!result.ok);
+    assert_eq!(files.disk(), "match\nmatch\n");
+}
+
+#[tokio::test]
+async fn empty_observed_file_can_be_written_but_invalid_utf8_cannot() {
+    let files = Files::new("");
+    files.read().await;
+    assert!(files.change(0, INITIAL).await.ok);
+    std::fs::write(files.path(), [0xff, 0xfe]).unwrap();
+    assert!(
+        !files
+            .reader()
+            .invoke(json!({"path":"shared.txt"}))
+            .await
+            .unwrap()
+            .ok
+    );
+    assert!(!files.change(0, INITIAL).await.ok);
+    assert_eq!(std::fs::read(files.path()).unwrap(), [0xff, 0xfe]);
+}
+
+#[test]
+fn a_change_during_staging_is_detected_before_publication() {
+    let files = Files::new(INITIAL);
+    let result = publish_checked(
+        &files.path(),
+        Some(INITIAL),
+        b"new",
+        || std::fs::write(files.path(), EXTERNAL),
+        publish,
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("FILE_CHANGED_SINCE_READ"));
+    assert_eq!(files.disk(), EXTERNAL);
+    no_staging(files.root.path());
+}
+
+#[test]
+fn a_new_target_created_after_final_check_is_never_clobbered() {
+    let files = Files::new(INITIAL);
+    let destination = files.root.path().join("new.txt");
+    let result = publish_checked(
+        &destination,
+        None,
+        b"new",
+        || Ok(()),
+        |source, destination, replace| {
+            assert!(!replace);
+            std::fs::write(destination, EXTERNAL)?;
+            publish(source, destination, replace)
+        },
+    );
+    assert!(result.is_err());
+    assert_eq!(std::fs::read_to_string(destination).unwrap(), EXTERNAL);
+    no_staging(files.root.path());
+}
+
+#[test]
+fn preparation_publication_and_unwind_failures_preserve_disk_and_remove_staging() {
+    let files = Files::new(INITIAL);
+    assert!(publish_checked(
+        &files.path(),
+        Some(INITIAL),
+        b"new",
+        || Err(io::Error::other("fixture preparation failure")),
+        publish
+    )
+    .is_err());
+    assert!(publish_checked(
+        &files.path(),
+        Some(INITIAL),
+        b"new",
+        || Ok(()),
+        |_, _, _| Err(io::Error::other("fixture publish failure"))
+    )
+    .is_err());
+    let panic = std::panic::catch_unwind(|| {
+        let _ = publish_checked(
+            &files.path(),
+            Some(INITIAL),
+            b"new",
+            || panic!("fixture after staging"),
+            publish,
+        );
+    });
+    assert!(panic.is_err());
+    assert_eq!(files.disk(), INITIAL);
+    no_staging(files.root.path());
+}
+
+#[tokio::test]
+async fn independent_caches_cannot_both_publish_the_same_observed_version() {
+    for _ in 0..12 {
+        let files = Files::new(INITIAL);
+        files.read().await;
+        let second_cache = Arc::new(Mutex::new(FileStateCache::new()));
+        let reader = ReadFileTool::with_cache(files.root.clone(), second_cache.clone());
+        assert!(
+            reader
+                .invoke(json!({"path":"shared.txt"}))
+                .await
+                .unwrap()
+                .ok
+        );
+        let first = WriteFileTool::with_cache(files.root.clone(), files.cache.clone());
+        let second = WriteFileTool::with_cache(files.root.clone(), second_cache);
+        let (first, second) = tokio::join!(
+            first.invoke(json!({"path":"shared.txt", "content":"first writer"})),
+            second.invoke(json!({"path":"shared.txt", "content":"second writer"})),
+        );
+        let (first, second) = (first.unwrap(), second.unwrap());
+        assert_ne!(first.ok, second.ok);
+        assert_eq!(
+            files.disk(),
+            if first.ok {
+                "first writer"
+            } else {
+                "second writer"
+            }
+        );
+    }
+}
+
+struct ChildOwner(std::process::Child);
+impl Drop for ChildOwner {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+#[tokio::test]
+async fn file_mutation_child() {
+    let Some(root) = std::env::var_os("DEEPAGENT_MUTATION_TEST_ROOT") else {
+        return;
+    };
+    let root = std::path::PathBuf::from(root);
+    let lock_only = std::env::var_os("DEEPAGENT_MUTATION_TEST_LOCK_ONLY")
+        .map(|_| lock_path_operation(&root.join("shared.txt")).unwrap());
+    if lock_only.is_some() {
+        std::fs::write(root.join("child-ready"), b"ready").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !root.join("child-go").exists() {
+            assert!(Instant::now() < deadline);
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        return;
+    }
+    let cache = Arc::new(Mutex::new(FileStateCache::new()));
+    let read = ReadFileTool::with_cache(WorkspaceRoot::new(&root), cache.clone());
+    assert!(read.invoke(json!({"path":"shared.txt"})).await.unwrap().ok);
+    std::fs::write(root.join("child-ready"), b"ready").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !root.join("child-go").exists() {
+        assert!(
+            Instant::now() < deadline,
+            "parent did not release child fixture"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let result = WriteFileTool::with_cache(WorkspaceRoot::new(&root), cache)
+        .invoke(json!({"path":"shared.txt", "content":"child writer"}))
+        .await
+        .unwrap();
+    if !result.ok {
+        assert!(result.value["error"]
+            .as_str()
+            .unwrap()
+            .contains("FILE_CHANGED_SINCE_READ"));
+    }
+    std::fs::write(
+        root.join("child-outcome"),
+        if result.ok { "ok" } else { "conflict" },
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn independent_host_processes_cannot_both_commit_the_same_version() {
+    let files = Files::new(INITIAL);
+    files.read().await;
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "file_mutation::tests::file_mutation_child",
+            "--nocapture",
+        ])
+        .env("DEEPAGENT_MUTATION_TEST_ROOT", files.root.path())
+        .env_remove("DEEPAGENT_MUTATION_TEST_LOCK_ONLY")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut child = ChildOwner(child);
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !files.root.path().join("child-ready").exists() {
+        assert!(
+            child.0.try_wait().unwrap().is_none(),
+            "child exited before observation barrier"
+        );
+        assert!(Instant::now() < deadline, "child did not read fixture");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    std::fs::write(files.root.path().join("child-go"), b"go").unwrap();
+    let result = WriteFileTool::with_cache(files.root.clone(), files.cache.clone())
+        .invoke(json!({"path":"shared.txt", "content":"parent writer"}))
+        .await
+        .unwrap();
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(Instant::now() < deadline, "child did not finish mutation");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    };
+    assert!(status.success());
+    let child_ok =
+        std::fs::read_to_string(files.root.path().join("child-outcome")).unwrap() == "ok";
+    assert_ne!(result.ok, child_ok);
+    assert_eq!(
+        files.disk(),
+        if result.ok {
+            "parent writer"
+        } else {
+            "child writer"
+        }
+    );
+}
+
+#[test]
+fn actual_process_owner_excludes_competitors_and_releases_on_forced_exit() {
+    let files = Files::new(INITIAL);
+    let child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "file_mutation::tests::file_mutation_child",
+            "--nocapture",
+        ])
+        .env("DEEPAGENT_MUTATION_TEST_ROOT", files.root.path())
+        .env("DEEPAGENT_MUTATION_TEST_LOCK_ONLY", "1")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut child = ChildOwner(child);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !files.root.path().join("child-ready").exists() {
+        assert!(child.0.try_wait().unwrap().is_none());
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let conflict = match lock_path_operation(&files.path()) {
+        Ok(_) => panic!("live child owner was not excluded"),
+        Err(error) => error,
+    };
+    assert_eq!(conflict.kind(), io::ErrorKind::WouldBlock);
+    child.0.kill().unwrap();
+    child.0.wait().unwrap();
+    drop(lock_path_operation(&files.path()).unwrap());
+    assert_eq!(files.disk(), INITIAL);
+}
+
+#[tokio::test]
+async fn cancellation_before_entry_and_while_waiting_does_not_publish() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let files = Files::new(INITIAL);
+    files.read().await;
+    let flag = Arc::new(AtomicBool::new(true));
+    let context = ToolExecutionContext::new(flag.clone());
+    let write = WriteFileTool::with_cache(files.root.clone(), files.cache.clone());
+    let result = write
+        .invoke_with_context(
+            json!({"path":"shared.txt", "content":"no"}),
+            context.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(!result.ok);
+    assert_eq!(files.disk(), INITIAL);
+    flag.store(false, Ordering::Release);
+    let operation = lock_path_operation(&files.path()).unwrap();
+    let pending = tokio::spawn(async move {
+        write
+            .invoke_with_context(json!({"path":"shared.txt", "content":"also no"}), context)
+            .await
+            .unwrap()
+    });
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    assert!(!pending.is_finished());
+    flag.store(true, Ordering::Release);
+    drop(operation);
+    let result = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!result.ok);
+    assert!(result.value["error"]
+        .as_str()
+        .unwrap()
+        .contains("FILE_OPERATION_CANCELLED"));
+    assert_eq!(files.disk(), INITIAL);
+    no_staging(files.root.path());
+    assert!(files.change(0, INITIAL).await.ok);
+}

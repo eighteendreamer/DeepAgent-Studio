@@ -50,6 +50,7 @@ pub mod codegraph_tools;
 pub mod cron_tools;
 pub mod file_cache;
 mod file_move;
+mod file_mutation;
 pub mod file_tools;
 pub mod fs_guard;
 pub mod git_tools;

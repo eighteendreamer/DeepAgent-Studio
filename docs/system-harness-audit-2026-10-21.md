@@ -10,10 +10,11 @@
 | H-72 | 已修复并验收（2026-10-26，Windows 本机范围） | 全计划暂存/发布/历史提交及补偿；原探针默认通过，checkpoint 13 passed、AppCore audit 8 passed/2 ignored；workspace 被 H-306 阻断、严格 lint 有既有告警，详见原项及台账；修复提交 `d08c776c` |
 | H-73 | 已修复并验收（2026-10-26，Windows 本机范围） | 检查点绑定源 EventId 并按当前分支验证，旧格式未知归属保守拒绝；checkpoint_audit 17 passed/1 ignored，范围及失败见原项；修复提交 `d40eef9a` |
 | H-75 | 已修复并验收（2026-10-26，限本机后端行为及前端回调/构建） | 活动共享/控制独占 scope，忙时拒绝回退；正式原探针及成功/失败/取消共 4 passed/0 ignored；四 crate 测试与 pnpm build 通过；workspace/严格 lint 仍有既有失败，真实 Tauri 点击未验；修复提交 `8eea7bd5` |
+| H-76 | 已修复并验收（2026-10-26，Windows 本机所列行为） | 三 mutation 统一当前版本/观察窗口/提交复核与路径协作；专项20通过、正式原链3通过/0忽略；workspace相关与runtime/session通过，完整workspace/严格lint既有失败及残余见原项；提交后另回填hash |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **4**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **276**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-76（旧读取版本覆盖外部改动），按 A2 用户文件完整性排序，不在 H-75 中夹带修改。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **5**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **275**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-20（DAG 成功产出被清理且未交付），按直接数据损失风险排序，不在本轮 H-76 中夹带修改。
 
-初始工时估算为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；首批几项完成后按实际吞吐和剩余问题状态重新校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
+初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；前五项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
 ## 当前交付状态（2026-10-25 收尾）
 
@@ -1966,6 +1967,40 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 - 修复方向（尚未实施，本地设计）：在既有 AppCore/输入租约/RunCoordinator 统一管理同会话的破坏性控制操作，先选择明确的忙态拒绝或“取消并确认退出后回退”政策；控制操作与新输入接纳必须共用所有权边界，避免检查后再被新 turn 抢占。现有事件存储追加应校验运行绑定的分支身份/提交代次，回退后拒绝旧运行的迟到模型、工具和终态投影；运行审计仍保存在既有 RunStore/run_events，不能简单删除审计或只清空 UI。与 H-23/H-73 的派生状态分支身份一并收敛，保留正常顺序追加。回归覆盖请求中、工具/审批/排队中、完成竞争、取消失败及重启，检查真实日志/请求数/副作用与单终态；本轮仅增加证据，不修改生产实现。
 
 ### H-76：文件写入只验证“曾经读过”，外部已保存的改动仍被旧内容成功覆盖
+
+**当前状态：已修复并验收（2026-10-26，限所列 Windows 本机行为）；修复提交待本轮独立提交后另回填。** write/edit/multi 统一校验当前字节与工具已输出窗口、暂存后再次比较，再发布并失效缓存；四工具使用稳定路径协作 gate，复用既有执行/权限/持久结果边界，不另建工具链。最终正式原链 **3 passed/0 failed/0 ignored**，原故障已转默认；mutation 专项 **20 passed**。真实字节内容不一致时拒绝并保持外部修改，重读后成功。以下保留当时失败与阶段记录，不用局部绿色替代完整 workspace。
+
+交付前格式、工作区/暂存 diff 检查退出 0；只暂存本项 9 文件。306 行台账唯一、无缺号且列数正确，已修复5/历史跳过17/归并7/撤销2/待修复275/修复中0；用户原有未跟踪内容未动。所有测试进程已结束，尚未修改下一项 H-20，不推送、不建 PR。
+
+最终补跑：`cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet` **退出 0**，runtime lib **284 passed/16 ignored**、e2e_stabilization **5 passed**（54.68s）、tokenizer **1 passed/1 ignored**、schedule **2 ignored**、session **14 passed**、doc-tests 均 0。完整 workspace 与严格/E2E lint 的既有失败见以下实录；其他 OS/MSRV、真实供应商/UI、性能及 crash 事务未验。code-audit 的人工调用链复核及 docs-generator 的证据链要求使原失败、错误断言和最终验收分别保留，未重跑参考工程。
+
+选定 E2E lint 实录：`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline --no-deps -j 1` **退出 1**，未修改的 `mcp_discovery_restore.rs:433 panicking_unwrap` 默认 deny 阻断，另有 responses_custom_tool 既有布尔比较 warning。没有报告本项 file_version 告警，但整个 target lint 未过；不增加豁免。
+
+Workspace 实录：`cargo test --workspace --offline -j 1 -- --quiet` **退出 1**；Finished 7m01s 含排队，不作有效修复工时。AppCore lib **1104 passed/80 ignored**、正式 kernel_v2_e2e **107 passed/90 ignored**、checkpoint_audit **18 passed/1 ignored**、builtins **312 passed/1 ignored**、persistence lib **67 passed**、session_control **8 passed**，各组 0 failed。之后 prompts lib 为 **27 passed/1 failed**，被既有 H-306 空 `creative.video-edit.v1.defaultUserPrompt` 阻断；后续未运行 target 不计通过，补跑 runtime/session。普通生产 lib lint（persistence/AppCore，`--offline --no-deps -j 1`）退出 0，但仍有既有警告，不冒充严格/all-targets 成功。
+
+聚焦严格 lint：`cargo clippy -p deepagent-builtins --all-targets --offline --no-deps -j 1 -- -D warnings` **退出 0**；不替代 persistence/AppCore 或全依赖严格 lint。workspace 与普通生产 lib lint 此时仍在执行，不将排队等待算有效修复工时。
+
+人工复核边界：四工具统一复用 ToolExecutionContext/路径 gate，三种 mutation 仅有一个版本校验/准备/发布/失效实现；原有工具参数、成功字段、权限/审批、provider、协议 DTO、schema 和前端不改。整文件替换需当前完整窗口，局部编辑追踪范围；每次 read/stub 实际读取字节，性能尚未 benchmark。5 秒锁竞争显式 busy；OS 临时根的稳定 sidecar 不自动删除，未提供通用回收器。取消测试证明持 gate 期间设取消后不发布，不声称精确定位 blocking native 指令；超时/Future 丢弃不等于撤销后台任务。最终比较/rename 间隙、旧二进制/不同临时根/非协作 writer、hardlink/网络文件系统、其他 OS/MSRV/断电、真实供应商/编辑器/UI 均有限制或未验。H-78/H-238/H-260/H-287 保持独立未关闭。
+
+以下先列最近一次专项/契约校验进展，随后保留修复前与首版实录；“尚待”均指该条记录当时状态，最终验收另列。
+
+修正契约断言后同一 AppCore 专项：**3 passed / 0 failed / 0 ignored**，测试体 1.74s、编译 1m03s。write/edit/multi 陈旧版本均明确失败且外部完整正文保留，重读后成功；正式下一 wire 与重开 SQLite 的唯一原生结果按基础 envelope 完整比对通过，action 的 failed/completed 和单 succeeded run 终态均核对。单工具冲突不强制整 run 失败。本次不证明真实 DeepSeek 质量或所有恢复场景。
+
+严格 lint 实录：`cargo clippy -p deepagent-persistence -p deepagent-builtins -p deepagent-app-core --all-targets --offline --no-deps -j 1 -- -D warnings` 退出 1，被未修改的 `persistence/src/run_store.rs:127 explicit_counter_loop` 阻断。不加豁免、不顺手修改，不将此命令写成通过；workspace 仍在执行。
+
+相等断言查证：`deepagent-session/src/lib.rs::response_items_for_payload` 保存基础 status/error；`deepagent-runtime/src/model_agent.rs` 的 observation 投影及既有 `failed_observation_is_fed_back_with_recovery_hint` 测试显式追加 tool/recovery_hint。这是既有热请求包装差异，不是 H-76 冲突正文丢失。专项断言改为成功完整相等、失败完整基础 envelope 相等并额外检查 tool/非空 hint；不删错误检查、不修改上述生产投影，待重跑。
+
+最终严格相等 E2E 首跑：`cargo test -p deepagent-app-core --test kernel_v2_e2e file_version --offline -j 1 -- --nocapture`，**1 passed / 2 failed / 0 ignored**（0.86s，编译 1m54s）。持久化结果保留 status/error，下一 wire 多了 tool/recovery_hint，两处完整 JSON 相等断言失败；正常 write 两组通过。此时不能声称最终验收通过，先查生产投影契约，不改生产实现迁就断言。
+
+交接前最新专项实录（2026-10-26）：`cargo test -p deepagent-builtins --lib file_mutation:: --offline -j 1 -- --nocapture` 为 **20 passed / 0 failed / 0 ignored**，测试体 5.07s、编译 17.24s；含一个 subprocess helper，不是 20 个独立故障。新增独立进程实际持锁、竞争者等待 5 秒后 WouldBlock、强杀并回收 owner 后重取锁，以及入口前/等待 gate 期间取消不发布、正常重试成功。覆盖最后的 context/cache mutex 修改，预期 panic 已捕获；AppCore 最终严格 wire/persisted equality 与 workspace/lint 尚待，不提前关闭。
+
+修复前复核（2026-10-26，HEAD `4c885044`）：`cargo test -p deepagent-app-core --test kernel_v2_e2e file_version --offline -j 1 -- --include-ignored --nocapture`，**1 passed / 1 failed / 0 ignored**，测试体 0.88s。陈旧读取组 `write_ok=true, external_owner_preserved=false, model_value_written=true`；未改动与重新读取两组正常对照通过。仅在原临时工作区复核，不新增发现、不操作用户文件；当前进入根因修复，尚未验收。
+
+首版实施时间线：read/write/edit/multi_edit 在共享观察版本/窗口覆盖及同步提交边界中运行，按实际字节判断 stale/stub；完整替换需完整读取，局部编辑需覆盖修改范围，成功仍失效旧凭证。persistence 既有依赖提供稳定路径协作锁，暂存后再次比较再发布；这是本地设计，不是对任意外部写入的 CAS，最终比较/rename 间隙、旧宿主及不同临时根仍有限制。未改权限、供应商、事件/DTO 或新增依赖。首版 `cargo test -p deepagent-builtins --lib file_ --offline -j 1 -- --nocapture` 为 **56 passed/0 failed/0 ignored**（0.73s，含筛选命中的一个既有 bash 测试）；残留未用 PathBuf 告警已清理待重跑。原探针、追加故障和并发验收尚待，不能据此关闭。
+
+首版正式原探针同命令复测为 **2 passed / 0 failed / 0 ignored**（0.66s，编译 2m05s）：陈旧组 write_ok=false、外部 owner 保留、模型 value 未写入；未修改和重读对照仍成功。此后才追加独立窗口/元数据伪新鲜/暂存故障/并发宿主回归，并扩展正式探针核对 edit/multi_edit、下一 wire 的错误以及文件 SQLite 重开；后加内容尚待执行，不把本次两项通过夸为完整验收。测试使用的 FileTimes/set_times 已查 [Rust 官方文档](https://doc.rust-lang.org/std/fs/struct.FileTimes.html)，不引入新的 crate 依赖。
+
+首批新增专项实际 **18 passed/0 failed/0 ignored**（`cargo test -p deepagent-builtins --lib file_mutation:: --offline -j 1 -- --nocapture`，0.24s，含一个 process helper）；覆盖元数据伪新鲜、窗口范围、Unicode/CRLF、暂存/发布失败、no-replace 竞争及独立缓存/子进程正式文件工具。扩展正式 E2E 默认执行 **3 passed/0 failed/0 ignored**（1.55s），三种 mutation 拒绝陈旧版本、重读正常，下一 wire/durable action/新 SQLite 句柄结果已核对。之后又补实际 owner 排他/强杀、等待取消和持久化结果严格相等，尚待最终重跑；窗口凭证不认证 Runtime 截断、actor 或压缩后的可见性（H-238/H-260）。取消复用 ToolExecutionContext，不能中止已进入的 native syscall，不新增取消机制。
 
 **级别：高（P1）；范围：同一 ChatService 运行内通过 read_file 读取已有文件后，用户编辑器、格式化器或其他本地写入者保存该文件，随后模型使用旧版本调用 write_file 全量替换。** 不依赖多个 Agent 同时运行、保持文件长度/mtime 不变或低概率的写入瞬间竞争；本轮不是 H-52 的知识 vault 多实例去重与存储锁问题，也不是 H-35 的批量工具顺序问题。
 

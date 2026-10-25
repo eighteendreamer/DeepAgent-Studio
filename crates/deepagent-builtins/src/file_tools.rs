@@ -3,17 +3,17 @@
 //! sensitive files). Each tool declares the right [`RiskLevel`] and required
 //! [`Permission`] so the capability registry gates it.
 
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 
 use deepagent_core::error::Result;
 use deepagent_tools::permission::{Permission, PermissionSet, RiskLevel};
-use deepagent_tools::{Tool, ToolDescriptor, ToolOutput};
+use deepagent_tools::{Tool, ToolDescriptor, ToolExecutionContext, ToolOutput};
 
-use crate::file_cache::{CachedFile, FileStateCache};
+use crate::file_cache::{FileStateCache, SharedFileStateCache};
+use crate::file_mutation::{self, Mutation, Replacement};
 use crate::fs_guard::WorkspaceRoot;
 use crate::glob_match::glob_match;
 
@@ -32,112 +32,8 @@ fn arg_usize(args: &serde_json::Value, key: &str) -> Option<std::result::Result<
     Some(Err(format!("'{key}' must be a positive integer")))
 }
 
-fn dominant_newline(content: &str) -> &'static str {
-    if content.contains("\r\n") {
-        "\r\n"
-    } else {
-        "\n"
-    }
-}
-
-fn adapt_newlines(value: &str, newline: &str) -> String {
-    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
-    if newline == "\n" {
-        normalized
-    } else {
-        normalized.replace('\n', newline)
-    }
-}
-
-async fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let path = path.to_path_buf();
-    let bytes = bytes.to_vec();
-    tokio::task::spawn_blocking(move || atomic_write_sync(&path, &bytes))
-        .await
-        .map_err(|error| std::io::Error::other(format!("atomic write join failed: {error}")))?
-}
-
-fn atomic_write_sync(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| std::io::Error::other("file path has no parent"))?;
-    std::fs::create_dir_all(parent)?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(".deepagent-write-")
-        .tempfile_in(parent)?;
-    temp.write_all(bytes)?;
-    temp.flush()?;
-    temp.as_file().sync_all()?;
-    let (file, temp_path) = temp
-        .keep()
-        .map_err(|error| std::io::Error::other(error.to_string()))?;
-    drop(file);
-    let result = replace_atomically(&temp_path, path);
-    if result.is_err() {
-        let _ = std::fs::remove_file(&temp_path);
-    }
-    result
-}
-
-#[cfg(not(windows))]
-fn replace_atomically(source: &Path, destination: &Path) -> std::io::Result<()> {
-    std::fs::rename(source, destination)
-}
-
-#[cfg(windows)]
-fn replace_atomically(source: &Path, destination: &Path) -> std::io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-type SharedFileStateCache = Arc<Mutex<FileStateCache>>;
-
 fn new_shared_cache() -> SharedFileStateCache {
     Arc::new(Mutex::new(FileStateCache::new()))
-}
-
-fn cached_read(
-    cache: &SharedFileStateCache,
-    path: &Path,
-    metadata: &std::fs::Metadata,
-) -> Option<CachedFile> {
-    cache
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .get_fresh(path, metadata)
-}
-
-fn cache_store(
-    cache: &SharedFileStateCache,
-    path: PathBuf,
-    content: String,
-    metadata: &std::fs::Metadata,
-) -> CachedFile {
-    cache
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .store(path, content, metadata)
 }
 
 fn cache_invalidate(cache: &SharedFileStateCache, path: &Path) {
@@ -146,42 +42,6 @@ fn cache_invalidate(cache: &SharedFileStateCache, path: &Path) {
         .unwrap_or_else(|p| p.into_inner())
         .invalidate(path);
 }
-
-fn cache_last_read_matches(
-    cache: &SharedFileStateCache,
-    path: &Path,
-    offset: Option<usize>,
-    limit: Option<usize>,
-) -> bool {
-    cache
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .last_read_matches(path, offset, limit)
-}
-
-fn cache_record_read(
-    cache: &SharedFileStateCache,
-    path: &Path,
-    offset: Option<usize>,
-    limit: Option<usize>,
-) {
-    cache
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .record_read(path, offset, limit);
-}
-
-fn cache_has_been_read(cache: &SharedFileStateCache, path: &Path) -> bool {
-    cache
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .has_been_read(path)
-}
-
-/// Failure message for the read-before-edit invariant. Mirrors Claude Code's
-/// wording so the model recognizes the pattern and self-corrects.
-const READ_BEFORE_EDIT_MSG: &str =
-    "You must call read_file on this path before editing it. This guarantees you've seen the current contents.";
 
 /// Sentinel content returned by `read_file` when the model re-reads an
 /// unchanged file with the same `(offset, limit)` parameters. Replaces the
@@ -304,6 +164,15 @@ impl Tool for ReadFileTool {
     }
 
     async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
+        self.invoke_with_context(args, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn invoke_with_context(
+        &self,
+        args: serde_json::Value,
+        context: ToolExecutionContext,
+    ) -> Result<ToolOutput> {
         let Some(path) = arg_str(&args, "path") else {
             return Ok(ToolOutput::failure("missing 'path'"));
         };
@@ -323,57 +192,60 @@ impl Tool for ReadFileTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
-        let metadata = match tokio::fs::metadata(&resolved).await {
-            Ok(m) => m,
-            Err(e) => return Ok(ToolOutput::failure(format!("metadata failed: {e}"))),
-        };
-        let (cached, cache_hit) = match cached_read(&self.cache, &resolved, &metadata) {
-            Some(file) => (file, true),
-            None => match tokio::fs::read_to_string(&resolved).await {
-                Ok(content) => {
-                    let metadata = match tokio::fs::metadata(&resolved).await {
-                        Ok(m) => m,
-                        Err(e) => return Ok(ToolOutput::failure(format!("metadata failed: {e}"))),
+        let root = self.root.clone();
+        let cache = self.cache.clone();
+        tokio::task::spawn_blocking(move || {
+            if context.is_cancelled() {
+                return ToolOutput::failure("FILE_OPERATION_CANCELLED: no read observation recorded");
+            }
+            let _operation = match deepagent_persistence::fs_commit::lock_path_operation(&resolved) {
+                Ok(guard) => guard,
+                Err(error) => return ToolOutput::failure(format!("file operation lock failed: {error}")),
+            };
+            // Metadata is not content identity: editors can preserve both
+            // timestamp and length. Always compare actual bytes before a stub
+            // or a newly delivered observation can authorize a later edit.
+            let current = match std::fs::read_to_string(&resolved) {
+                Ok(content) => content,
+                Err(error) => return ToolOutput::failure(format!("read failed: {error}")),
+            };
+            if context.is_cancelled() {
+                return ToolOutput::failure("FILE_OPERATION_CANCELLED: no read observation recorded");
+            }
+            let mut cache = cache.lock().unwrap_or_else(|p| p.into_inner());
+            let (cached, cache_hit) = match cache.matching_content(&resolved, &current) {
+                Some(file) => (file, true),
+                None => {
+                    let metadata = match std::fs::metadata(&resolved) {
+                        Ok(metadata) => metadata,
+                        Err(error) => return ToolOutput::failure(format!("metadata failed: {error}")),
                     };
-                    (
-                        cache_store(&self.cache, resolved.clone(), content, &metadata),
-                        false,
-                    )
+                    (cache.store(resolved.clone(), current, &metadata), false)
                 }
-                Err(e) => return Ok(ToolOutput::failure(format!("read failed: {e}"))),
-            },
-        };
-
-        // FILE_UNCHANGED_STUB: when the cache hit *and* the previous read used
-        // the exact same (offset, limit), the model has seen this content and
-        // doesn't need it again. Returning the stub saves tokens and prevents
-        // accidental re-thinking on stale data.
-        let unchanged = cache_hit && cache_last_read_matches(&self.cache, &resolved, offset, limit);
-        if unchanged {
-            return Ok(ToolOutput::success(serde_json::json!({
-                "path": self.root.relativize(&resolved),
+            };
+            let (content, returned_lines, next_offset, truncated, message) =
+                read_window(&cached.content, cached.line_count, offset, limit);
+            let unchanged = cache_hit && cache.last_read_matches(&resolved, offset, limit);
+            if unchanged {
+                return ToolOutput::success(serde_json::json!({
+                "path": root.relativize(&resolved),
                 "content": FILE_UNCHANGED_STUB,
                 "lines": cached.line_count,
                 "offset": offset.unwrap_or(1),
                 "limit": limit,
                 "returned_lines": 0,
-                "truncated": false,
-                "next_offset": serde_json::Value::Null,
+                "truncated": truncated,
+                "next_offset": next_offset,
                 "cache_hit": true,
                 "content_hash": cached.content_hash,
                 "unchanged_stub": true,
                 "message": "file unchanged since last read with same offset/limit; content omitted to save tokens",
-            })));
-        }
-
-        let (content, returned_lines, next_offset, truncated, message) =
-            read_window(&cached.content, cached.line_count, offset, limit);
-
-        // Record this read so a subsequent identical call returns the stub.
-        cache_record_read(&self.cache, &resolved, offset, limit);
-
-        Ok(ToolOutput::success(serde_json::json!({
-            "path": self.root.relativize(&resolved),
+                }));
+            }
+            cache.record_read(&resolved, offset, limit);
+            cache.record_window(&resolved, offset.unwrap_or(1), returned_lines);
+            ToolOutput::success(serde_json::json!({
+            "path": root.relativize(&resolved),
             "content": content,
             "lines": cached.line_count,
             "offset": offset.unwrap_or(1),
@@ -384,7 +256,8 @@ impl Tool for ReadFileTool {
             "cache_hit": cache_hit,
             "content_hash": cached.content_hash,
             "message": message,
-        })))
+            }))
+        }).await.map_err(|error| deepagent_core::error::CoreError::other(format!("file read join failed: {error}")))
     }
 }
 
@@ -414,7 +287,7 @@ impl Tool for WriteFileTool {
             description:
                 "Create or overwrite a file within the workspace. Args: { path, content }.\n\
                 - Creating a NEW file (path does not exist): no prior read required.\n\
-                - Overwriting an EXISTING file: you must call read_file on this path first in this session, otherwise the call fails. This forces you to see the current contents before clobbering them.".into(),
+                - Overwriting an EXISTING file requires read_file coverage of the entire current version (page through large files). Changed or deleted files cause a conflict; read again before retrying. Successful writes invalidate that read authority.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -429,6 +302,15 @@ impl Tool for WriteFileTool {
     }
 
     async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
+        self.invoke_with_context(args, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn invoke_with_context(
+        &self,
+        args: serde_json::Value,
+        context: ToolExecutionContext,
+    ) -> Result<ToolOutput> {
         let (Some(path), Some(content)) = (arg_str(&args, "path"), arg_str(&args, "content"))
         else {
             return Ok(ToolOutput::failure("missing 'path' or 'content'"));
@@ -437,38 +319,14 @@ impl Tool for WriteFileTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
-        let file_exists = tokio::fs::metadata(&resolved).await.is_ok();
-        // Read-before-edit invariant: only when the file already exists.
-        // Brand-new files don't require a prior read.
-        if file_exists && !cache_has_been_read(&self.cache, &resolved) {
-            return Ok(ToolOutput::failure(READ_BEFORE_EDIT_MSG));
-        }
-        let old_lines = if file_exists {
-            tokio::fs::read_to_string(&resolved)
-                .await
-                .map(|c| c.lines().count())
-                .unwrap_or(0)
-        } else {
-            0
-        };
-        if let Some(parent) = resolved.parent() {
-            if let Err(e) = tokio::fs::create_dir_all(parent).await {
-                return Ok(ToolOutput::failure(format!("mkdir failed: {e}")));
-            }
-        }
-        match atomic_write(&resolved, content.as_bytes()).await {
-            Ok(()) => {
-                cache_invalidate(&self.cache, &resolved);
-                let new_lines = content.lines().count();
-                Ok(ToolOutput::success(serde_json::json!({
-                    "path": self.root.relativize(&resolved),
-                    "bytes": content.len(),
-                    "lines_added": new_lines.saturating_sub(old_lines),
-                    "lines_removed": old_lines.saturating_sub(new_lines),
-                })))
-            }
-            Err(e) => Ok(ToolOutput::failure(format!("write failed: {e}"))),
-        }
+        file_mutation::apply(
+            self.root.clone(),
+            self.cache.clone(),
+            resolved,
+            Mutation::Write(content.to_owned()),
+            context,
+        )
+        .await
     }
 }
 
@@ -498,7 +356,7 @@ impl Tool for EditFileTool {
             name: "edit_file".into(),
             description:
                 "Replace an exact string in a file. Args: { path, old, new, replace_all? }.\n\
-                - INVARIANT: you must call read_file on this path first in this session. The cache is shared across read_file/edit_file/multi_edit/write_file, so a single read suffices for all subsequent edits to that path.\n\
+                - INVARIANT: read_file must have delivered the changed ranges of the current file version. External changes cause a conflict; read again and regenerate the edit. Successful writes invalidate prior read authority.\n\
                 - `old` must match exactly (whitespace, indentation). Do NOT include the cat -n line-number prefix from read_file output.\n\
                 - Pick the smallest unique `old` (2–4 surrounding lines is usually enough). If `old` matches multiple times, pass `replace_all: true` (typical for variable renames) or extend `old` with more context.".into(),
             parameters: serde_json::json!({
@@ -521,6 +379,15 @@ impl Tool for EditFileTool {
     }
 
     async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
+        self.invoke_with_context(args, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn invoke_with_context(
+        &self,
+        args: serde_json::Value,
+        context: ToolExecutionContext,
+    ) -> Result<ToolOutput> {
         let (Some(path), Some(old), Some(new)) = (
             arg_str(&args, "path"),
             arg_str(&args, "old"),
@@ -537,46 +404,21 @@ impl Tool for EditFileTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
-        if !cache_has_been_read(&self.cache, &resolved) {
-            return Ok(ToolOutput::failure(READ_BEFORE_EDIT_MSG));
-        }
-        let content = match tokio::fs::read_to_string(&resolved).await {
-            Ok(c) => c,
-            Err(e) => return Ok(ToolOutput::failure(format!("read failed: {e}"))),
-        };
-        let newline = dominant_newline(&content);
-        let old = adapt_newlines(old, newline);
-        let new = adapt_newlines(new, newline);
-        let count = content.matches(&old).count();
-        if count == 0 {
-            return Ok(ToolOutput::failure(
-                "the 'old' string was not found after normalizing line endings",
-            ));
-        }
-        if count > 1 && !replace_all {
-            return Ok(ToolOutput::failure(format!(
-                "old_string appears {count} times in this file. Provide more context (more surrounding lines) to uniquely identify the match, or pass replace_all: true to replace every occurrence."
-            )));
-        }
-        let updated = if replace_all {
-            content.replace(&old, &new)
-        } else {
-            content.replacen(&old, &new, 1)
-        };
-        match atomic_write(&resolved, updated.as_bytes()).await {
-            Ok(()) => {
-                cache_invalidate(&self.cache, &resolved);
-                let old_lines = content.lines().count();
-                let new_lines = updated.lines().count();
-                Ok(ToolOutput::success(serde_json::json!({
-                    "path": self.root.relativize(&resolved),
-                    "replacements": if replace_all { count } else { 1 },
-                    "lines_added": new_lines.saturating_sub(old_lines),
-                    "lines_removed": old_lines.saturating_sub(new_lines),
-                })))
-            }
-            Err(e) => Ok(ToolOutput::failure(format!("write failed: {e}"))),
-        }
+        file_mutation::apply(
+            self.root.clone(),
+            self.cache.clone(),
+            resolved,
+            Mutation::Edit {
+                edits: vec![Replacement {
+                    old: old.to_owned(),
+                    new: new.to_owned(),
+                    all: replace_all,
+                }],
+                multi: false,
+            },
+            context,
+        )
+        .await
     }
 }
 
@@ -608,7 +450,7 @@ impl Tool for MultiEditTool {
             name: "multi_edit".into(),
             description: "Apply an ordered list of exact-string replacements to a single file \
                 atomically (all-or-nothing). Args: { path, edits: [{ old, new, replace_all? }] }.\n\
-                - INVARIANT: you must call read_file on this path first in this session.\n\
+                - INVARIANT: read_file must cover every changed range of the current version; changes require re-reading. Successful writes invalidate prior read authority.\n\
                 - Each edit's `old` matches against the result of all preceding edits — chain edits when later ones depend on earlier rewrites.\n\
                 - If any edit fails (string not found / ambiguous match without replace_all) NOTHING is written."
                 .into(),
@@ -640,6 +482,15 @@ impl Tool for MultiEditTool {
     }
 
     async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
+        self.invoke_with_context(args, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn invoke_with_context(
+        &self,
+        args: serde_json::Value,
+        context: ToolExecutionContext,
+    ) -> Result<ToolOutput> {
         let Some(path) = arg_str(&args, "path") else {
             return Ok(ToolOutput::failure("missing 'path'"));
         };
@@ -654,19 +505,7 @@ impl Tool for MultiEditTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
-        if !cache_has_been_read(&self.cache, &resolved) {
-            return Ok(ToolOutput::failure(READ_BEFORE_EDIT_MSG));
-        }
-        let mut content = match tokio::fs::read_to_string(&resolved).await {
-            Ok(c) => c,
-            Err(e) => return Ok(ToolOutput::failure(format!("read failed: {e}"))),
-        };
-
-        let initial_lines = content.lines().count();
-
-        // Apply edits in order against an in-memory copy; only persist if every
-        // edit succeeds (atomic).
-        let mut total_replacements = 0usize;
+        let mut replacements = Vec::with_capacity(edits.len());
         for (i, edit) in edits.iter().enumerate() {
             let (Some(old), Some(new)) = (arg_str(edit, "old"), arg_str(edit, "new")) else {
                 return Ok(ToolOutput::failure(format!(
@@ -677,43 +516,23 @@ impl Tool for MultiEditTool {
                 .get("replace_all")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            let newline = dominant_newline(&content);
-            let old = adapt_newlines(old, newline);
-            let new = adapt_newlines(new, newline);
-            let count = content.matches(&old).count();
-            if count == 0 {
-                return Ok(ToolOutput::failure(format!(
-                    "edit[{i}]: the 'old' string was not found after normalizing line endings (no edits applied)"
-                )));
-            }
-            if count > 1 && !replace_all {
-                return Ok(ToolOutput::failure(format!(
-                    "edit[{i}]: old_string appears {count} times. Provide more context or pass replace_all: true (no edits applied)"
-                )));
-            }
-            content = if replace_all {
-                total_replacements += count;
-                content.replace(&old, &new)
-            } else {
-                total_replacements += 1;
-                content.replacen(&old, &new, 1)
-            };
+            replacements.push(Replacement {
+                old: old.to_owned(),
+                new: new.to_owned(),
+                all: replace_all,
+            });
         }
-
-        match atomic_write(&resolved, content.as_bytes()).await {
-            Ok(()) => {
-                cache_invalidate(&self.cache, &resolved);
-                let final_lines = content.lines().count();
-                Ok(ToolOutput::success(serde_json::json!({
-                    "path": self.root.relativize(&resolved),
-                    "edits_applied": edits.len(),
-                    "replacements": total_replacements,
-                    "lines_added": final_lines.saturating_sub(initial_lines),
-                    "lines_removed": initial_lines.saturating_sub(final_lines),
-                })))
-            }
-            Err(e) => Ok(ToolOutput::failure(format!("write failed: {e}"))),
-        }
+        file_mutation::apply(
+            self.root.clone(),
+            self.cache.clone(),
+            resolved,
+            Mutation::Edit {
+                edits: replacements,
+                multi: true,
+            },
+            context,
+        )
+        .await
     }
 }
 

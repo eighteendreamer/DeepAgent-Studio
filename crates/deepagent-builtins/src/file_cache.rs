@@ -8,15 +8,16 @@
 //!   path in `read_file`: when the model re-reads the same file with the same
 //!   offset/limit and the cached content hasn't been invalidated by a write,
 //!   the tool returns a short stub instead of the full body.
-//! - [`FileStateCache::has_been_read`] supports the read-before-edit invariant
-//!   for `edit_file` / `multi_edit` / `write_file`: an entry is created the
-//!   moment `read_file` succeeds, so checking `entries.contains_key(path)` is
-//!   equivalent to "the model has seen this file in this session".
+//! - Cached bytes alone do not authorize editing: successful reads record the
+//!   delivered windows. Mutations compare those bytes with the current file
+//!   and restrict edits to observed ranges; full replacement needs full coverage.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 /// A cached text file snapshot.
@@ -38,13 +39,30 @@ struct CacheEntry {
     /// `(offset, limit)` of the most recent read_file invocation that matched
     /// this entry. `None` until the first call to [`FileStateCache::record_read`].
     last_read: Option<(Option<usize>, Option<usize>)>,
+    observed: Vec<Range<usize>>,
+}
+
+pub(crate) type SharedFileStateCache = Arc<Mutex<FileStateCache>>;
+
+#[derive(Clone)]
+pub(crate) struct ObservedFile {
+    pub content: String,
+    pub ranges: Vec<Range<usize>>,
+}
+
+impl ObservedFile {
+    pub fn covers(&self, range: &Range<usize>) -> bool {
+        self.ranges
+            .iter()
+            .any(|seen| seen.start <= range.start && seen.end >= range.end)
+    }
 }
 
 /// Per-run cache keyed by resolved file path.
 ///
-/// The cache stores the full UTF-8 content plus cheap metadata. Reads can reuse
-/// content when `len` and `modified` still match; write/edit tools invalidate
-/// entries after successful writes.
+/// The cache stores full UTF-8 content and delivered ranges. Metadata freshness
+/// is only an optimization hint for external callers; production read/mutate
+/// paths compare actual bytes. Successful mutations invalidate entries.
 #[derive(Debug, Default)]
 pub struct FileStateCache {
     entries: HashMap<PathBuf, CacheEntry>,
@@ -56,7 +74,8 @@ impl FileStateCache {
         Self::default()
     }
 
-    /// Return a cached snapshot when filesystem metadata still matches.
+    /// Return a metadata-fresh candidate, not proof of unchanged content or
+    /// edit authority. Callers must compare current bytes for either purpose.
     pub fn get_fresh(&self, path: &Path, metadata: &std::fs::Metadata) -> Option<CachedFile> {
         let entry = self.entries.get(path)?;
         if entry.len == metadata.len() && entry.modified == metadata.modified().ok() {
@@ -87,6 +106,7 @@ impl FileStateCache {
                 modified: metadata.modified().ok(),
                 len: metadata.len(),
                 last_read: None,
+                observed: Vec::new(),
             },
         );
         file
@@ -97,11 +117,61 @@ impl FileStateCache {
         self.entries.remove(path);
     }
 
-    /// Whether this path has been read at least once in this session and the
-    /// entry still exists (i.e. no intervening write has invalidated it).
-    /// Used by edit/multi_edit/write to enforce read-before-edit.
+    /// Whether a successful read, rather than just a cache load, was recorded.
+    /// This is not a version check and must not alone authorize a mutation.
     pub fn has_been_read(&self, path: &Path) -> bool {
-        self.entries.contains_key(path)
+        self.entries
+            .get(path)
+            .is_some_and(|entry| entry.last_read.is_some())
+    }
+
+    pub(crate) fn observed(&self, path: &Path) -> Option<ObservedFile> {
+        let entry = self.entries.get(path)?;
+        entry.last_read?;
+        Some(ObservedFile {
+            content: entry.file.content.clone(),
+            ranges: entry.observed.clone(),
+        })
+    }
+
+    pub(crate) fn matching_content(&self, path: &Path, content: &str) -> Option<CachedFile> {
+        let entry = self.entries.get(path)?;
+        (entry.file.content == content).then(|| entry.file.clone())
+    }
+
+    /// Record only the actual window delivered by the tool, including its raw
+    /// line terminators. Repeated windows accumulate only for identical bytes.
+    pub(crate) fn record_window(&mut self, path: &Path, start_line: usize, lines: usize) {
+        let Some(entry) = self.entries.get_mut(path) else {
+            return;
+        };
+        let mut start = 0;
+        let mut end = 0;
+        for (index, line) in entry.file.content.split_inclusive('\n').enumerate() {
+            if index < start_line.saturating_sub(1) {
+                start += line.len();
+            }
+            if index < start_line.saturating_sub(1).saturating_add(lines) {
+                end += line.len();
+            }
+        }
+        if lines == 0 && !entry.file.content.is_empty() {
+            return;
+        }
+        entry.observed.push(start..end);
+        entry.observed.sort_by_key(|range| range.start);
+        let mut merged: Vec<Range<usize>> = Vec::new();
+        for range in entry.observed.drain(..) {
+            if let Some(previous) = merged
+                .last_mut()
+                .filter(|previous| previous.end >= range.start)
+            {
+                previous.end = previous.end.max(range.end);
+            } else {
+                merged.push(range);
+            }
+        }
+        entry.observed = merged;
     }
 
     /// Record `(offset, limit)` as the most recent successful `read_file`
@@ -198,12 +268,14 @@ mod tests {
     }
 
     #[test]
-    fn has_been_read_tracks_store() {
+    fn cached_bytes_are_not_a_successful_read() {
         let dir = tempdir().unwrap();
         let (path, meta) = write_and_meta(dir.path(), "a.txt", "hello");
         let mut cache = FileStateCache::new();
         assert!(!cache.has_been_read(&path));
         cache.store(path.clone(), "hello".into(), &meta);
+        assert!(!cache.has_been_read(&path));
+        cache.record_read(&path, None, None);
         assert!(cache.has_been_read(&path));
     }
 
