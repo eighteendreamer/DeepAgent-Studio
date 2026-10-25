@@ -26,6 +26,7 @@
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
 | 画布场景声明变更后的绑定资格 | 正式 save_model/save_provider 撤销 Text 后重开文件 SQLite，旧绑定仍让 bridge 实际请求 formerly-text，合成 400 截断健康候选；清绑定后相同请求成功 | 新增 H-292（P2，旧 binding 条件）；未修复；默认有效/disabled/无绑定控制通过，参考工程仅静态对照，无真实供应商或 UI 实测 |
+| 共享终端租约过期后的存活 PTY | 注入 2 秒 TTL 的正式 DirectTerminalSessionBackend：租约过期后共享 write/resize/signal/takeover/release/close 全拒绝，真实 PTY 仍可用且 legacy host 写入成功 | 新增 H-293（P2，配置了共享 terminal_session 且超过 TTL）；未修复；真实 Windows ConPTY 与文件 SQLite，默认 30 分钟 TTL 未等待实钟 |
 | 计划模式的会话恢复与写入限制 | /plan 和 set_plan_mode 两入口的热续聊均阻止真实写入；关闭文件 SQLite/重建 ChatService 后同一会话 plan=false，正式 write_file 创建临时文件；/plan 历史仍进入 wire | 新增 H-288（P2，服务重建条件）；未修复；显式重设、退出和其他会话对照通过；离线模型及合成临时文件，不归入供应商缓存问题 |
 | CodeGraph 定义变更后的增量调用解析 | 正式 `CodeGraph::index_all/sync/callers` 先得到 caller→target；只改定义文件将旧边级联删除；定义恢复但 caller 未改时，调用边仍为 0 | 新增 H-289（P2，增量索引一致性）；未修复；临时 Rust fixture 与 SQLite，无模型/公网；触碰 caller 的对照恢复为 1，全量重建未单独复测 |
 | Windows 内容编辑的文件访问控制元数据 | 正式 write_file/edit_file/multi_edit 均成功写正文，却将受保护的单条 DACL 替换为继承规则；文件 SQLite 重开后检查点恢复正文但不恢复原策略；只读及默认继承 ACL 写入对照正常 | 新增 H-287（P2，自定义/受保护 ACL 文件条件）；未修复，仅合成临时文件；未验证其他账户访问、真实数据泄漏、跨平台或 staging 读取 |
@@ -8178,3 +8179,48 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 首次 `cargo test -p deepagent-app-core --offline` 在 lib 阶段为 **1100 passed / 1 failed / 71 ignored**，失败是既有 `completion_plan::audit_tests::discovered_real_build_completes_after_release` 未在期限内生成 `build-started`，因此该次尚未进入 integration tests；不能报告整 crate 全通过。该测试随后以全限定名 `--lib ... -- --exact --nocapture` 单独复核 **1 passed / 0 failed**。超时根因未定，不据此新增发现或认定本轮新测试导致。
 - 随后 `cargo test -p deepagent-app-core --offline -- --test-threads=1` 完整通过：lib **1101 passed / 0 failed / 71 ignored**，`kernel_v2_e2e` **95 passed / 0 failed / 90 ignored**，其余 integration 合计 **37 passed / 0 failed / 57 ignored**；全部默认测试总计 **1233 passed / 0 failed / 218 ignored**，doc-tests 0。串行结果不抹去首轮并行夹具超时，也不代表 ignored 缺陷已修复。
 - 尚未执行 workspace 全量、Desktop build/UI、真实供应商/DeepSeek 或参考工程测试；本轮没有生产行为、schema、权限或沙箱变更。
+
+### H-293：共享终端租约过期后真实 PTY 存活但没有续租、接管或清理路径
+
+**级别：中（P2，条件性共享终端生命周期缺口）；状态：正式 `DirectTerminalSessionBackend`、真实 Windows ConPTY、文件 SQLite 及短 TTL 故障注入已复现，未修复。** 生产构造器把共享终端租约 TTL 固定为 30 分钟；共享协议暴露 open/write/read/resize/signal/takeover/release/close，但没有 `renew` 或“过期租约重新取得当前 session 控制权”的入口。
+
+#### Evidence 与登记过程（2026-10-25）
+
+- 新测试：`crates/deepagent-app-core/tests/terminal_lease_liveness_audit.rs`（Windows-only）。使用正式 `TerminalService`、`DirectTerminalSessionBackend::with_lease_persistence`、`SqliteTerminalLeaseStore`、真实 `portable-pty` CommandPrompt、独立临时目录和文件 SQLite；TTL 只在测试注入为 2 秒，未修改生产常量。shell 只写入 synthetic marker 文件，无用户文件、网络或外部服务。
+- 精确命令：`cargo test -p deepagent-app-core --test terminal_lease_liveness_audit audit_active_terminal_lease_expiry_preserves_control_or_cleanup --offline -- --ignored --exact --nocapture`。**首次有效结果是 0 passed / 1 failed（预期缺陷），测试体 2.38 秒**；正式输出：过期后 `durable_valid=false`，`write/resize/interrupt/takeover/release/close` 全为 `InvalidLease` 或 stale transfer，`final_command=false`，`available_after_close=true`，legacy liveness probe 为 true。失败的是“共享控制/恢复/close 不应遗留可用 PTY”的期望，不是 fixture 错误。
+- 证据修正：随后一度误把上述期望称为“断言写反”，改为确认 `available=true` 后重跑 **1 passed / 0 failed（2.39 秒）**，观测到完全相同的缺陷。这不是产品修复或绿色回归，也不是第二个发现。首轮失败后没有立即落盘，而是先改断言再登记，不符合本报告的即时记录要求；现明确保留这一过程，不冒称首次失败后立即登记。已恢复最后的正常行为期望，并去掉强制要求缺陷现象的前置断言，使未来的续租修复能够通过探针；不把首轮真实失败隐藏为测试错误。
+- 触发序列：打开共享 session 得到 User lease；在 2 秒期间真实写入 `initial.txt`、`middle.txt` 并通过生产 `backend.read` 推进输出；无 renew；租约过期后重开 SQLite store 验证旧 epoch 已失效，再逐一调用共享操作。所有断言前，测试用独立 host `pty_close` 做有界清理并确认 `pty_exists=false`。
+- 正常控制：同一夹具存在 `explicit_store_renewal_keeps_shared_terminal_controllable`（默认测试，未忽略），调用当前公开的 `SqliteTerminalLeaseStore::renew` 保持 lease，初始/中段/最终命令、read、resize、signal、takeover、release、close 全部成功；这证明 PTY 和 lease backend 本身可工作，故障是共享协议没有把续租能力暴露给宿主。
+- 这不是默认 `TerminalPlugin` 的直接 UI 复现：`apps/desktop/src/components/plugins/TerminalPlugin.tsx` 仍使用 legacy `local_pty_*` API。H-293 限定于已注册的 `terminal_session_*` 协议（Tauri command 与 `apps/desktop/src/api.ts` 已暴露），不能外推为当前所有终端窗口 30 分钟必坏。
+
+#### 根因与可达性
+
+- `SqliteTerminalLeaseStore::renew` 已存在，但 `TerminalLeasePersistence`/`TerminalLeaseRegistry` 没有 renew 方法；`DirectTerminalSessionBackend` 也没有 renew operation。Tauri 只有 `terminal_session_open/write/read/resize/takeover/release/close`，TypeScript API 同样没有 `terminalSessionRenew`。
+- `RunControlStore::validate_fence` 要求 `expires_at > now`；过期后 `validate_scope` 先拒绝所有需要 lease 的共享操作。`takeover` 虽然不要求调用者携带 lease，但它从进程内 map 取出旧 lease，再调用 `transfer_lease`；SQLite 会以 `stale_or_mismatched_lease` 拒绝，不能从“已知 session id + 当前 holder”重新分配 epoch。`close` 也先走同一校验，因此不能清理仍存活的 PTY。
+- `recovery_status` 只检查 cursor 与 `pty_exists`，不验证或恢复 lease；因此它可以报告 `available=true`，同时所有共享控制操作均不可用。生产 legacy `pty_write` 仍能操作同一 PTY，这揭示的是协议边界分裂，不是 PTY 自动退出。
+- 生产 Tauri 初始化调用 `with_sqlite_lease_store`，由该构造器传入 `DEFAULT_TERMINAL_LEASE_TTL_MS = 30 * 60 * 1_000`；短 TTL 仅为了在测试内确定性触发同一状态机，未把 2 秒作为产品配置或标准。静态推导：使用该共享协议长期打开的 session 若没有外部显式 renew，在默认租约到期时会进入同一状态；本轮未等待真实 30 分钟。
+- 去重：已搜索报告的 `terminal_lease`、`SqliteTerminalLeaseStore`、`TerminalLeasePersistence`、租约过期与 terminal expiry，既有 H-123 是输出游标越过未返回字节，H-33 是聊天输入租约跨宿主接纳；没有使用或重跑它们的故障探针。本项根因是 PTY 控制租约期限与活进程回收脱节，不把“所有租约相关缺陷”视为同一项，也不借此重编号旧问题。
+
+#### 成熟 Agent 对照与 DeepSeek 边界
+
+- **DeepSeek Harness（本地静态源码对照，未运行同构 Rust backend）：** `packages/api/terminal-controller/src/terminal.ts` 把 terminal process 生命周期与 follower/attachment 分离；`retention.ts` 用显式 `TerminalRetentionPolicy`、holder 集合、活动观察和可重试 cleanup 管理无人值守回收。已读代码的具体保证是：存在 retain holder 时不安排无人值守清理；显式 close 先标记 closing，终止并等待 drain，失败保留可重试 cleanup。本轮没有证明它在所有故障下绝无孤儿进程，也没有同构 SQLite lease 实现；可迁移的是把控制权与 owner 清理放进同一 lifecycle。
+- **Codex（本地静态源码/测试对照，未运行同构终端租约）：** `core/src/unified_exec/process_manager.rs` 将 process entry 的 `last_used`、交互锁和终止状态纳入统一 manager；prune 不会在 `write_stdin` 或 terminal event 持有 interaction lock 时驱逐，并提供 `terminate_all_processes`/显式 process terminate。它没有本项目 SQLite epoch lease，但说明成熟实现把存活进程和控制/清理 owner 放在同一 manager，避免“状态可见却没有控制路径”。
+- 对照测试只做静态核对：DeepSeek Harness `tests/retention.spec.ts` 覆盖两个窗口 retain、busy/unknown 活动不回收、清理失败重试和 dispose 等待；Codex `process_manager_tests.rs::pruning_does_not_evict_live_process_while_exited_process_is_finalizing` 覆盖已退出进程持锁发布终态时不误驱逐另一活进程。它们证明参考工程有对应生命周期测试契约，不是本轮运行结果，更不等同于同构 TTL 缺口已经实测解决。
+- **DeepSeek 官方边界：** [Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)说明 API 无状态、历史由宿主回传；[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)说明实际函数由宿主执行；[KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)描述完整前缀单元命中。它们不规定本地 PTY lease、renew 或 orphan cleanup。H-293 是 Harness 宿主生命周期缺口，不是 DeepSeek 请求字段、工具 schema 或缓存命中问题。
+
+#### 影响、定级与根治方向（本地设计，未实施）
+
+- 已证明后果：共享协议调用者在 lease 到期后无法继续输入、调整窗口、发送中断、接管或正常关闭；同一个真实 shell 仍可运行，`recovery_status` 将其报告为 available，且 legacy host API 还能写入。结果是共享控制面失去操作能力与 PTY 滞留风险；本轮没有实际远程客户端或持续后台作业，不能外推其资源占用量、收费或任务后果。
+- P2 依据：需启用共享 `terminal_session`、session 存活超过 TTL 且没有额外 renew；默认 TTL 很长，当前默认 TerminalPlugin 尚未切到该协议，所以不是普通短交互必现。影响可持续到进程重启/独立 host cleanup，且 stale lease 不能通过现有公开 session id 自助恢复。
+- 根治应在现有 `TerminalLeasePersistence`/`TerminalLeaseRegistry`/`DirectTerminalSessionBackend` 单一边界补足生命周期协议：增加带当前 lease/epoch 的 `renew`，并规定 renew 失败后的显式 `recover_or_close`（例如由当前 host owner 通过 session identity 受控取得新 epoch，或可靠地终止并清除 PTY）；Tauri/SDK/CLI 共享同一 DTO、事件和审计原因。不能只把 TTL 拉长，也不能让 legacy `pty_write` 成为隐式旁路。
+- lease 过期、回收、接管和 cleanup 应以同一 durable generation 发布：过期时要么自动标记 session orphaned 并由 owner 重试 cleanup，要么保留可审计的 recovery token；`recovery_status` 必须同时表达 process availability 与 control availability，不能只返回 PTY 存在。回归需覆盖正常 renew、续租竞态、跨进程重开、过期后受控接管、过期 close、PTY 已退出、cleanup 失败重试及 legacy API 禁止旁路。
+
+#### 验证进度（持续追加）
+
+- 本轮格式检查首次发现新测试布局差异，执行 `cargo fmt --all` 后 `cargo fmt --all -- --check` 通过；格式变化不改生产路径或断言语义。随后默认 `explicit_store_renewal_keeps_shared_terminal_controllable` **1 passed / 0 failed**，输出确认 renew 后 durable lease 有效、六项共享操作均成功并正常 close。生产代码、Tauri command、权限、沙箱和 DeepSeek adapter 均未修改。
+- 最终恢复期望断言并排除“最终 marker 与 Ctrl-C 竞争”的夹具风险后，`cargo test -p deepagent-app-core --test terminal_lease_liveness_audit --offline -- --include-ignored --nocapture`：**1 passed / 1 failed（过期缺陷预期）**，测试体 2.42 秒；这是修正审计断言后的交付验证，不计新增发现。默认忽略标记仍保留。
+- `cargo test -p deepagent-terminal --offline`：**4 passed / 0 failed**，doc-tests 0；`cargo test -p deepagent-app-core --lib terminal_ --offline`：**9 passed / 0 failed**（筛选结果含既有 run-coordinator 终态测试，不把 9 都称为 PTY 专属测试）。本轮没有跑整个 AppCore/workspace、Clippy、Desktop build/UI、实际 30 分钟等待或参考工程测试，不能沿用上一轮全 crate 的结果冒充本轮执行。
+
+#### 同轮静态排除
+
+- `question_bridge.rs` 的 `PendingGuard` 会在 wait 被 drop 时 abandon，`resolve` 同时核对 session 归属；已有 tests 覆盖 abandoned wait 和错误 session。未仅凭“人工等待无 timeout”登记缺陷，因为其契约明确由取消/回答结束；本轮没有为该边界新增动态证据，也不声称所有问答 UI/恢复路径已通过。
