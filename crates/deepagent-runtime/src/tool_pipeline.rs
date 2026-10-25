@@ -1723,6 +1723,109 @@ mod tests {
         assert_eq!(tool_calls.load(Ordering::SeqCst), 1);
     }
 
+    struct AuditInputRewrite(serde_json::Value);
+
+    #[async_trait]
+    impl Hook for AuditInputRewrite {
+        fn name(&self) -> &str {
+            "audit-input-rewrite"
+        }
+
+        async fn run(&self, context: &HookContext) -> Result<HookOutcome> {
+            assert_eq!(context.point, HookPoint::BeforeToolUse);
+            Ok(HookOutcome::modify(self.0.clone()))
+        }
+    }
+
+    struct AuditApprovalInputs(Arc<Mutex<Vec<serde_json::Value>>>);
+
+    #[async_trait]
+    impl ApprovalGate for AuditApprovalInputs {
+        async fn request(&self, request: ApprovalRequest) -> ApprovalDecision {
+            self.0.lock().unwrap().push(request.arguments);
+            ApprovalDecision::Allow
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_rewritten_input_is_validated_before_approval_and_execution() {
+        for (label, replacement, valid) in [
+            ("valid", serde_json::json!({"value":"rewritten"}), true),
+            ("wrong-type", serde_json::json!({"value":42}), false),
+            ("missing-required", serde_json::json!({}), false),
+            (
+                "extra-property",
+                serde_json::json!({"value":"rewritten", "extra":true}),
+                false,
+            ),
+        ] {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let approvals = Arc::new(Mutex::new(Vec::new()));
+            let registry = registry(RiskLevel::High, calls.clone());
+            let mut hooks = HookRegistry::new();
+            hooks.register(
+                HookPoint::BeforeToolUse,
+                Arc::new(AuditInputRewrite(replacement.clone())),
+            );
+            let result =
+                ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::read_only())
+                    .with_hooks(Some(&hooks))
+                    .with_approvals(Arc::new(AuditApprovalInputs(approvals.clone())))
+                    .execute(ToolInvocation::new(
+                        "counting",
+                        serde_json::json!({"value":"original"}),
+                    ))
+                    .await
+                    .unwrap();
+            assert_eq!(result.output.ok, valid, "{label}");
+            assert_eq!(calls.load(Ordering::SeqCst), usize::from(valid), "{label}");
+            let approvals = approvals.lock().unwrap();
+            if valid {
+                assert_eq!(*approvals, vec![replacement.clone()], "{label}");
+                assert_eq!(result.arguments, replacement, "{label}");
+                assert_eq!(result.output.value, replacement, "{label}");
+            } else {
+                assert!(approvals.is_empty(), "{label}");
+                assert_eq!(result.stage, ToolPipelineStage::PreToolUse, "{label}");
+                assert_eq!(result.output.value["error_type"], "hook_validation_error");
+            }
+            eprintln!(
+                "rewrite audit: case={label} ok={} approvals={} executions={}",
+                result.output.ok,
+                approvals.len(),
+                calls.load(Ordering::SeqCst)
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_valid_rewrite_does_not_grant_missing_capabilities() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let approvals = Arc::new(Mutex::new(Vec::new()));
+        let registry = registry(RiskLevel::High, calls.clone());
+        let mut hooks = HookRegistry::new();
+        hooks.register(
+            HookPoint::BeforeToolUse,
+            Arc::new(AuditInputRewrite(serde_json::json!({"value":"rewritten"}))),
+        );
+        let result =
+            ToolExecutionPipeline::new(&registry, SessionId::new(), PermissionSet::empty())
+                .with_hooks(Some(&hooks))
+                .with_approvals(Arc::new(AuditApprovalInputs(approvals.clone())))
+                .execute(ToolInvocation::new(
+                    "counting",
+                    serde_json::json!({"value":"original"}),
+                ))
+                .await
+                .unwrap();
+        assert!(!result.output.ok);
+        assert_eq!(result.stage, ToolPipelineStage::Permission);
+        assert_eq!(result.output.value["error_type"], "permission_denied");
+        assert_eq!(result.arguments, serde_json::json!({"value":"rewritten"}));
+        assert!(approvals.lock().unwrap().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
     #[tokio::test]
     #[ignore = "audit H-26: standard hookSpecificOutput decisions silently become Continue"]
     async fn audit_standard_external_hook_decisions_gate_actual_tool_dispatch() {

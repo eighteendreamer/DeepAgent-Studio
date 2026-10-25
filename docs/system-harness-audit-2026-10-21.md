@@ -8224,3 +8224,13 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 #### 同轮静态排除
 
 - `question_bridge.rs` 的 `PendingGuard` 会在 wait 被 drop 时 abandon，`resolve` 同时核对 session 归属；已有 tests 覆盖 abandoned wait 和错误 session。未仅凭“人工等待无 timeout”登记缺陷，因为其契约明确由取消/回答结束；本轮没有为该边界新增动态证据，也不声称所有问答 UI/恢复路径已通过。
+
+### 审计续查：单一 PreToolUse 参数改写的校验、审批与执行（2026-10-25，不新增 H 编号）
+
+- 初始假设是“hook 修改参数后没有重新校验，审批仍展示旧参数”。本轮沿 `RuntimeEngine::execute_tool_with_before_and_speculative → ToolExecutionPipeline::prepare → request_approval → execute_prepared` 核对：Modify 分支再次调用 `ToolRegistry::validate_invocation`，随后权限能力检查、ApprovalRequest.arguments 和 PreparedToolInvocation.arguments 均使用有效参数。不能从 hook 功能复杂或已有邻近缺陷推断该假设成立。
+- 首次动态证据：新增仅位于 `#[cfg(test)]` 的 `audit_rewritten_input_is_validated_before_approval_and_execution`，使用正式 HookRegistry 派发单个原生 Hook、正式 ToolRegistry schema 校验/能力检查和 ToolExecutionPipeline；可记录参数的 ApprovalGate 代替 UI、CountingTool 返回实际接收的参数。执行 `cargo test -p deepagent-runtime --lib audit_rewrit --offline -- --nocapture`，**1 passed / 0 failed，测试体0.01秒**。合法改写 `original → rewritten`：恰好一次审批、一次执行，审批参数、pipeline结果参数、工具返回参数均为 rewritten；改写为错误类型、缺必填项、多余字段三组：均返回 `hook_validation_error`，stage=PreToolUse，审批和执行次数均为0。本段在首轮有效结果后追加，未等待全量回归结束才补写。
+- 成熟实现对照：静态读取 `借鉴/claudecode/restored-src/src/services/tools/toolExecution.ts` 约835行的 `hookUpdatedInput` 消费及约1128行的 permission updatedInput 消费；`utils/hooks.ts` 约2849行分别承载权限行为与更新输入。本轮已测的“单个改写被继续交给审批和执行”与这一分层方向一致。没有运行参考工程，不声称本系统与 Claude 全部 hook 合并/权限语义等价。
+- 官方边界：本轮实际打开 [DeepSeek Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)，具体函数由宿主执行；供应商 strict schema 不代替本地 hook 改写后的重新校验。本次没有发送真实 DeepSeek 请求，不能据此认证 Responses、reasoning 或 KV cache 行为。
+- 去重和限制：不重跑 H-26、H-259、H-275/H-276 探针，不新增 H-294。没有验证外部 command/MCP hook 输出解析、多个 hook 的 Ask/Modify 合并、批量并发、持久化 action hash、原生历史、审批拒绝/取消、真实 UI 或 AppCore 装配。因此这里只排除**单个原生 hook、有效工具注册、串行 pipeline**的上述假设，不关闭任何既有问题，也不将静态看到的邻近差异登记为已复现漏洞。
+- 验证进度：首次格式检查只指出新增测试布局，待 rustfmt 后复核；另一个新增“合法改写不能授予缺失能力”的对照和 runtime 回归尚在执行，结果后续追加。生产逻辑未修改。
+- 后续实际结果：`cargo test -p deepagent-runtime --lib audit_valid_rewrite_does_not_grant_missing_capabilities --offline -- --nocapture` **1 passed / 0 failed**，合法新参数在空能力集合下返回 `permission_denied`（stage=Permission），审批/工具执行均0；证明 Modify 不等于授予缺失能力。`cargo test -p deepagent-runtime --offline` 全命令成功：单元 **274 passed / 16 ignored**，e2e_stabilization **5 passed**（59.40秒），schedule_audit **0 passed / 2 ignored**，doc-tests 0；合计 **279 passed / 0 failed / 18 ignored**。既有缺陷探针保持默认 ignored，不将绿色默认回归称为它们已修复。`cargo fmt --all` 后 `cargo fmt --all -- --check` 与 `git diff --check` 通过。未跑 workspace/AppCore 全量、Clippy、Desktop build/UI 或真实供应商；只修改本节文档和 pipeline 的测试区域，无配置、协议、权限或数据迁移变更。
