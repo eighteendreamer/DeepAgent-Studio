@@ -8789,3 +8789,31 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 #### 本轮边界
 
 - 本项只新增 ignored 复现与审计记录，没有修改生产 transport；没有访问公网、真实内网、云元数据或用户数据，也没有重复 H-165/H-303 的第二跳 URL 测试。验收应补充：小错误正文正常保留、恰好预算、超预算中止、无 `Content-Length` 的 chunked 响应、Unicode 截断、取消/超时、重试分类和模型目录/视频控制面共用预算。
+
+### H-305：Rust Harness SDK 丢弃 `HarnessProcess` owner 后，保留的 client clone 仍可驱动孤儿 server
+
+**级别：中（P2，Harness SDK 进程所有权与资源生命周期）；状态：正式 SDK、真实本机 `deepagent-cli server --transport stdio` 和真实管道已复现，未修复。** 触发条件是调用方从 `HarnessProcess::spawn()` 取得 `HarnessClient` clone，随后丢弃 `HarnessProcess` 而继续保留 clone（例如把 client 交给另一个任务、请求超时后只丢 owner、或异常路径绕过 `HarnessProcess::wait()`）。这不是 encrypted-content 问题，也不是 H-256 的“server 已经 EOF 但订阅等待不结束”：本项中 server 仍活着且可处理新的 RPC。
+
+#### 即时 Evidence（2026-10-25）
+
+- 新增 `crates/deepagent-harness-sdk/tests/e2e_stdio.rs::audit_dropping_process_with_retained_client_does_not_orphan_server`。测试使用正式 `HarnessProcess::spawn`、正式 `HarnessClient::initialize`/`thread_list`、编译出的真实 CLI 二进制和 Windows stdio 管道；没有模型调用、工具执行、凭据、用户文件或外部网络。
+- 命令：`cargo test -p deepagent-harness-sdk --test e2e_stdio audit_dropping_process_with_retained_client_does_not_orphan_server --offline -- --ignored --nocapture --exact`。结果为 **0 passed / 1 failed（缺陷预期）**，实际输出 `drop-owner audit: retained_client_request_success=true`；`drop(process)` 后保留的 clone 仍能成功完成 `thread/list`，证明 child server 没有随 owner 丢弃而终止。
+- `HarnessProcess` 的生产注释已经明确写出 `tokio::Child` drop 默认不会 kill；实现也没有 `Drop`、共享 process owner、终止 token 或“owner 丢失后让所有 client clone 失效”的代次门。`HarnessProcess::wait()` 是唯一显式关闭路径，但 API 类型本身不能强制调用方走该路径。
+- 测试断言失败后仍调用 `client.close()`，让 server 收到 stdin EOF 并在测试结束前退出；因此本轮没有留下测试孤儿进程。测试没有把“进程仍能处理一次 RPC”扩大成永久泄漏、CPU 泄漏或真实工具副作用。
+
+#### 根因、影响与边界
+
+- `HarnessProcess` 同时持有 `Child` 和可 clone 的 `HarnessClient`。`HarnessClient` 的 stdin、pending 表、reader 和事件 sender 都通过 `Arc` 共享；丢弃 `HarnessProcess` 只 drop 本地 `Child` handle，不会 kill OS child，而任一 clone 仍保留 `ChildStdin` 时，server 的 `run_stdio` 继续读循环。于是“process owner 已不可用”与“控制面仍可写入”两种状态并存。
+- 已证后果是 orphan server 可继续接受读请求并保留自己的数据库/reader/runtime；如果 clone 没有后续 `close()`，server 的生命周期不再由创建它的 owner 管理。多次异常路径或 SDK 客户端池会累积后台进程、stdout reader、数据库句柄和临时工作目录锁，后续调用方还可能误把旧 client 当作健康连接。当前样本未测数量级、内存峰值、运行中的模型 turn 或 Windows 作业树后代，因此不声称必然 OOM、费用或命令副作用。
+- 这不是“显式 `HarnessProcess::wait()` 后仍泄漏”：正常对照 `process_exits_when_stdin_closes` 仍通过。问题是所有权契约只能靠文档提醒，clone 跨任务/异常 drop 时没有强制收尾和断线事件；也不与 H-90/H-204 的 pending RPC 清理或 H-256 的 EOF 订阅终结重复。
+
+#### 成熟 Agent 对照与治理方向
+
+- **Codex**：`借鉴/codex/codex-rs/app-server-client/src/lib.rs` 将连接断开建模为公开 `AppServerEvent::Disconnected`，客户端 worker 统一拥有请求/事件生命周期；其进程执行侧 `UnifiedExecProcessManager::terminate_all_processes` 由 manager 负责批量终止，而不是让一个可复制的轻量句柄决定 child 是否继续存活。可迁移的是“transport owner、断线状态和清理动作必须由单一 manager 负责”，不是照搬 Codex 的进程实现。
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/api/terminal-controller/src/retention.ts` 以 `TerminalRetention` 持有 holder 集合、closing/disposed 状态和可重试 `terminate()`；`dispose()` 会先关闭生命周期、等待观察与 process cleanup，失败会保留重试任务。它允许显式 retain，但不会因某个 UI/stream handle 被丢弃就把 owned process 脱离控制。
+- **DeepSeek 官方 Responses API**：Responses 是无状态供应商请求；官方文档没有规定本地 stdio child 或 SDK owner 的生命周期，因此 H-305 属于宿主 Harness 设计，不能靠 `reasoning`、tool call 或 KV cache 参数修复。模型调用若在 orphan server 上继续发生，供应商协议本身无法告诉客户端这是旧代连接。
+- 根治应在现有 SDK seam 收敛：让 `HarnessProcess` 内部持有共享 `ProcessOwner`/`CancellationToken`，`HarnessClient` clone 只借用该代次；owner drop/显式 close 时终止 child、等待 reader/child 有界收尾，并向所有 clone 的请求/事件流交付 `Closed/Disconnected`。若确实要支持独立脱离 owner，必须提供显式 `detach`，返回新的受管生命周期，而不是把普通 `Drop` 当作隐式 detach。回归需覆盖：clone 保留、clone 先 drop、owner 先 drop、并发 request、pending request、事件订阅、显式 wait、server 已退出、Windows 子进程树与清理超时。
+
+#### 本轮边界
+
+- 本项只新增正式失败探针和文档，没有修改 SDK/CLI 生产行为；没有启动模型、工具、MCP、桌面或远程传输，也没有读取用户数据、访问公网/内网或调查用户排除的 `encrypted-content` 报错。该项是资源/控制面生命周期缺陷，不应被错误归类为网络攻击测试。

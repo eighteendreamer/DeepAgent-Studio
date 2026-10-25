@@ -216,6 +216,43 @@ async fn process_exits_when_stdin_closes() {
     assert!(status.success(), "server exits cleanly, got {status}");
 }
 
+#[tokio::test]
+#[ignore = "audit H-305: dropping HarnessProcess with a retained client must not orphan the server"]
+async fn audit_dropping_process_with_retained_client_does_not_orphan_server() {
+    let bin = cli_binary();
+    let process = HarnessProcess::spawn(&bin, &temp_workspace("drop-owner"))
+        .await
+        .expect("spawn cli server");
+    let client = process.client();
+    client
+        .initialize("drop-owner-test", "0.1.0")
+        .await
+        .expect("initialize");
+
+    // The public owner is gone, but a clone is still retained by the caller.
+    // A robust process owner should terminate or explicitly detach the child;
+    // keeping the pipe alive must not silently keep the server running.
+    drop(process);
+
+    let response = client
+        .thread_list()
+        .await
+        .expect("retained client request should not outlive process owner");
+    eprintln!(
+        "drop-owner audit: retained_client_request_success={} result={}",
+        response.is_success(),
+        response.result()
+    );
+    assert!(
+        !response.is_success(),
+        "dropping HarnessProcess left a live server reachable through a retained client"
+    );
+
+    // Close the shared stdin so the fixture server can exit before the test
+    // returns even when the defect assertion fails.
+    client.close().await;
+}
+
 #[test]
 fn cli_binary_path_resolves_for_platform() {
     let bin = cli_binary();
