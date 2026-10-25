@@ -10,7 +10,7 @@
 
 ## 2026-10-25 编号与证据复核
 
-以下登记重复使用了既有问题的同一探针、触发条件和根因，撤销独立计数，不代表问题已修复：
+以下登记重复覆盖了既有问题的触发条件和根因，撤销独立计数，不代表问题已修复。同一探针的重复登记与不同测试层级的证据补强，分别在表中说明：
 
 | 撤销编号 | 唯一保留项 | 重复依据与原登记提交 |
 |---|---|---|
@@ -18,6 +18,7 @@
 | H-280 | H-79 | 同一 `file_listing_policy` 探针及 `.env` 发现结果；`b8644d3c` |
 | H-281 | H-168 | H-168 已包含同一中间 system serializer 探针、重排根因及输出；`7a590897` 只增加构造器 wire 日志，没有新增行为断言或默认宿主复现 |
 | H-291 | H-126 | 同一 `response_limit_audit.rs`、16-byte/2 MiB 样本和 MCP 读取边界；`f021e362` 已由 `97fd4a7d` 撤销独立编号 |
+| H-278 | H-06 | 同一 `ReconnectingTransport::send` 未知结果重放根因；后续真实 stdio/Node/effect log 是原 mock 探针的可达性补强，不是独立缺陷 |
 
 文末对应章节保留为复核归档，原 E/F/P 标签仅用于追溯。撤销 H-281 的独立 P1 定级；其具体模型决策后果未验证，不能从 serializer 测试外推为默认 Desktop 故障。H-280 关于 Claude Code“未找到直接对照”的说法也已按 H-79 和本地源码校正。编号更正只核对文档、源码和提交差异，未为撤销编号重跑已知失败探针。
 
@@ -34,7 +35,7 @@
 | 干净服务重建后的DeepSeek请求前缀 | 正式list_dir及回答落盘后丢弃第一套服务并重开SQLite；新实例续聊的32工具数组/schema、14180字节instructions与旧3项native历史前缀均保持 | 排误增量，无新H编号；同日、工作区/配置未变且无额外MCP/技能/附件；离线wire条件成立，不宣称真实缓存命中或关闭H-168 |
 | 主运行后标题请求的成本与预算归属 | 正式ChatService主运行成功且无标题后，标题真实派发并持久化；SQLite重开仍仅主用量；同服务普通run已被预算拦截时标题仍派发 | H-63补充证据（P2），不另计新编号；空历史/手动命名控制通过；仅离线合成usage/报价，未运行Tauri或真实供应商 |
 | DeepSeek 官方离线 tokenizer 与上下文压力计量 | 固定摘要的官方tokenizer实测四类合成文本；中文/符号在共享meter与正式ModelAgent均漏过54272压力阈值，英文与低压力代码控制正常 | 新增H-297（P3）；原始文本离线基准，不冒称当前线上Flash/Pro精确计数；无真实provider拒绝、费用或质量下降实测 |
-| MCP 工具执行错误的事件、持久化与模型输入 | 同一正式 ChatService 夹具的 isError=false/true/缺省三样本；文件 SQLite 重开后核对工具完成事件、action、会话原始结果及下一请求唯一关联结果 | 本轮排误，不新增 H 编号：true 保持 Failed/error，false及缺省保持 Completed/ok；不关闭 H-38/H-127/H-138/H-139/H-278，不代表整个MCP通过 |
+| MCP 工具执行错误的事件、持久化与模型输入 | 同一正式 ChatService 夹具的 isError=false/true/缺省三样本；文件 SQLite 重开后核对工具完成事件、action、会话原始结果及下一请求唯一关联结果 | 本轮排误，不新增 H 编号：true 保持 Failed/error，false及缺省保持 Completed/ok；不关闭 H-38/H-127/H-138/H-139/H-06，不代表整个MCP通过 |
 | DeepSeek 模型目录的部分容量字段合并 | 正式发现和 catalog 往返保留 max_output_tokens=8192，context_window 缺失后 resolver 却返回384000/32000并进入 ContextPolicy；完整元数据与全缺失控制正常 | 新增 H-296（P3，部分元数据条件）；当前官方示例不触发，未实测线上响应、真实压缩或 provider 拒绝 |
 | TypeScript SDK 并发会话的审批与流收尾 | 同一正式 SDK 实例的 A handler 待答，B 已收到唯一 turn.completed 但下一次 next 未结束；解除 A 后同一个 next 才 done；无审批/已答控制正常 | 新增 H-295（P2）；本机真实 stdio、合成对端，未修生产逻辑；未证明服务端 B 未完成、权限突破或真实模型后果 |
 | 成功文件操作与最终净变化的完成验收 | 正式 ChatService 创建后删除、读取后同内容写回均成功且最终状态正确，仍各发送2个含 completion_blocked 的额外模型请求，最终 fail-open；持久创建/删除对照正常 | 新增 H-294（P3）；两个正常行为期望探针保持 ignored 且显式执行失败，未修生产逻辑，未证明真实模型会据错误反馈重复改文件 |
@@ -477,6 +478,7 @@ DeepSeek Harness `packages/llm/llm-deepseek/src/serialize.ts::assistant()` 将�
 - 探针 `reconnect::tests::audit_disconnect_after_tool_effect_does_not_replay_mutation` 通过真实 McpClient 调用合成 `append_record` 工具。第一个 mock transport 先增加副作用计数，再返回 `broken pipe` 模拟响应丢失；重连后的 transport 增加同一计数并成功返回。没有执行真实外部写操作。
 - 执行：`cargo test -p deepagent-mcp audit_disconnect_after_tool_effect --offline -- --ignored --nocapture`。
 - 实际输出：`result_ok=true, applied_effects=2`；期望只执行一次的断言失败。客户端看到成功，但逻辑操作已经执行两次。现有重连测试只模拟执行前断线，未覆盖执行成功但回包丢失。
+- 后续真实进程补强保留在文末“原 H-278”归档：`ConfigReconnectFactory` 重启真实 Node 服务后，同一个逻辑调用的临时 effect log 有两条记录。该证据增强本项的生产接线可达性，不新增独立编号。2026-10-25 本次编号复核只阅读两个探针和生产代码，没有为归并重跑故障测试。
 
 #### 成熟实现对照
 
@@ -7566,7 +7568,9 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `node crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_initialize_contract_reference.mjs`：**8 个参考 SDK 样本全部符合预期**；合法握手连接并发送 initialized，其余七类拒绝且不发送 initialized。`cargo fmt --all -- --check`、`git diff --check`通过；只读进程检查在测试收尾后为 `active_initialize_contract_mcp_fixture_processes=0`（本轮脚本未留子进程）。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`仍被未修改的 `models/src/client.rs:355` clone_on_copy 与 `persistence/src/run_store.rs:127` explicit_counter_loop阻断；本轮未修改这些文件，不把 lint 阻断归入H-277，也不声称 clippy 全绿。未运行完整 workspace、Desktop build/UI、真实 DeepSeek 计费/缓存、外部 MCP 或真实副作用；本轮未处理用户排除的 encrypted-content 问题，全系统审计仍未结束。
 
-### H-278：MCP 传输在工具结果未知时自动重放 `tools/call`，单次逻辑变更可实际执行两次
+### H-06 的真实进程补强归档（原 H-278，撤销独立计数）
+
+**2026-10-25 编号更正：** 下述真实 stdio 证据与 H-06 的 mock 证据覆盖同一个 `ReconnectingTransport::send` 根因、同一“已生效但响应丢失”的故障窗口及同一重复副作用后果。真实进程补强有价值，但不是第二个问题；唯一保留项为 H-06，沿用其 P1 定级。以下原始 E/F/P 标签和当轮执行记录保留供追溯，不代表独立缺陷或本轮重新执行。生产逻辑未修复。
 
 **级别：高（P1/P2，条件性副作用重复执行）；状态：正式 `StdioTransport` + `ConfigReconnectFactory` + `ReconnectingTransport` + `McpClient` 真实 Node 进程已复现，未修复。** 触发条件是 MCP 服务在收到 `tools/call` 后已经完成副作用，但在返回 JSON-RPC 结果前进程断开。宿主把“响应丢失”当成“请求未执行”，重连后自动重发相同 request。不是所有查询工具都会造成可见损害，也不是已证明真实外部服务一定不幂等。
 
@@ -7599,8 +7603,8 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 #### 回归记录（持续追加）
 
-- 本轮仅新增上述真实进程审计探针和本报告；未修改生产逻辑、公共协议、模型参数、权限或沙箱配置。显式探针保持 `#[ignore]`，默认测试绿色不代表 H-278 已修复。
-- 本轮尚未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实外部 MCP 或真实副作用服务；未处理用户排除的 encrypted-content 问题。后续若修复 H-278，应重跑该故障样本并补“确定未发送可重试”正常对照，避免把所有断线都粗暴改成永久失败。
+- 原登记轮仅新增上述真实进程审计探针和本报告；未修改生产逻辑、公共协议、模型参数、权限或沙箱配置。显式探针保持 `#[ignore]`，默认测试绿色不代表 H-06 已修复。
+- 原登记轮尚未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实外部 MCP 或真实副作用服务；未处理用户排除的 encrypted-content 问题。后续若修复 H-06，应重跑该故障样本并补“确定未发送可重试”正常对照，避免把所有断线都粗暴改成永久失败。本次归并不重跑该样本。
 
 ### H-78 的 2026-10-25 复核归档（原 H-279，撤销独立计数）
 
@@ -8395,7 +8399,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 ### 范围、去重与首次执行记录
 
 - 本轮仅审计与测试，未修改生产逻辑。复用 `tests/kernel_v2_e2e/mcp_image_output.rs` 的真实本机 Node stdio 服务、正式 SettingsService/McpService/ChatService/Kernel；模型由离线 HttpTransport 回放完整带 sequence_number 的 Responses 事件。临时文件 SQLite，全部内容为合成数据，无真实凭据及公网模型请求，不读取用户原有未跟踪文件。
-- 检验假设为“服务通过成功 JSON-RPC envelope 返回 isError=true，后续是否错误记成功或向模型隐藏错误”。已有 adapter 单测正确映射 `ok=!is_error`，不足以直接断言全链路，但也不能据疑点登记缺陷。与 H-38 的 WorkflowAgent 包装、H-127 图片投影、H-138 私有_meta、H-139 后置hook失败和 H-278 未知结果重放去重；本轮不启用这些既有 ignored 故障探针。
+- 检验假设为“服务通过成功 JSON-RPC envelope 返回 isError=true，后续是否错误记成功或向模型隐藏错误”。已有 adapter 单测正确映射 `ok=!is_error`，不足以直接断言全链路，但也不能据疑点登记缺陷。与 H-38 的 WorkflowAgent 包装、H-127 图片投影、H-138 私有_meta、H-139 后置hook失败和 H-06 未知结果重放去重；本轮不启用这些既有 ignored 故障探针。
 - 首次执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_image_output::mcp_execution_error --offline -- --nocapture`：**0 passed / 1 failed，测试体0.84秒，编译32.78秒**。成功控制已通过并打印2次模型请求、Completed action和succeeded终态。错误样本在读取 `wire["result"]["isError"]` 时得到Null；此前工具事件=false、持久化会话事件=false、action=Failed、原始正文/结构化数据保留、wire.status=error均已通过。
 - 追查 `ModelAgent::record_observation` 确认现有契约是成功正文放 `result`、失败正文放 `error`，并非两个分支都放 `result`。首次失败属于新测试对宿主 envelope 的错误假设，**不是产品错误被吞的证据**。仅更正测试读取现有字段，仍要求错误状态、原始isError、正文、结构化数据和唯一call_id结果全部保留；不修改生产输出、不反转正确期望。此处在后续验证前即时记录，暂不预填通过结果。
 
@@ -8802,3 +8806,49 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 原成熟 Agent 对照引用的是 Codex 的连接/执行进程管理和 DeepSeek Harness 的 terminal retention，并非同构 SDK 的 Drop 契约；它们不能证明本项目必须 kill-on-drop。原“多次异常会累积进程/锁”等后果没有独立测量，撤销为已证后果。
 - 原故障命令为 **0 passed / 1 failed**；正常关闭对照为 **1 passed**，当时默认 e2e 为 **6 passed / 1 ignored**。这些结果只说明测试执行过，不足以将人为断言升级成缺陷。更正没有改动任何 SDK/CLI 生产代码，不关闭 H-90、H-204 或 H-256，也不重新触发 encrypted-content 问题。
 - 更正后实际执行：`cargo test -p deepagent-harness-sdk --lib --offline` 为 **5 passed / 0 failed / 12 ignored**，`cargo fmt --all -- --check` 与 `git diff --check` 通过。本次未重跑使用默认数据根的真实 CLI e2e、已登记故障探针、workspace 全量、桌面或公网模型；不以默认单测为绿声称全系统已通过。
+
+## 2026-10-25 收尾复核：去重、DeepSeek 适配边界与剩余交付
+
+本节不是新一轮漏洞编号，也不是全系统验收通过。使用 code-audit 核对既有探针、生产调用链及参考实现，用 docs-generator 区分观察、结论和未覆盖条件；只更新本报告，不修生产行为、不新增探针、不启动默认数据根的 CLI。
+
+### 本轮实际 Evidence 与调用路径
+
+- **E-close-01（source_type=file，content_hash=n/a）**：阅读 `crates/deepagent-mcp/src/reconnect.rs` 的两个 send 分支和原单测，以及 `crates/deepagent-mcp/tests/reconnect_unknown_outcome.rs`。前者重连后执行 `fresh.send(request)`，后者使用同一 wrapper，以真实 Node 服务在响应前退出构造同一未知结果窗口。可重查命令：`rg -n 'fresh.send|audit_disconnect_after_tool_effect' crates/deepagent-mcp/src/reconnect.rs`，再阅读上述测试文件。本轮不重跑任何一个失败探针。
+- **F-close-01（status=validated，category=report-correction，severity=n/a，confidence=high，evidence_ids=[E-close-01]）**：原 H-278 是 H-06 的生产接线补强，而非独立根因。已归并，保留两种证据及旧标签。不能用测试层级不同来增加独立问题数。
+- **P-close-01（path_type=callflow，evidence=E-close-01）**：`McpClient::call_tool` → `ReconnectingTransport::send` → 服务已生效但未回包 → `ConfigReconnectFactory::reconnect` → `fresh.send` 重放。它与 H-06 一致；新增真实 stdio 可达性不改变根因身份。
+- **E-close-02（source_type=web，content_hash=n/a）**：本轮重新联网读取用户指定的 [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)、[参数页](https://api-docs.deepseek.com/zh-cn/api/create-response/)、[KV Cache](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/) 和 [Tool Calls](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)。指南首次请求超时，随后重试取得正文；没有把抓取失败当成官方不支持。
+- **E-close-03（source_type=file，content_hash=n/a）**：阅读 `.github/workflows/ci.yml`、根 Cargo 配置及模型/AppCore crate manifest、`apps/desktop/package.json`。当前 CI 有三平台 workspace 默认测试、可选 HTTP 构建和前端 build；不能说“没有 CI”。本轮看到的已知缺陷探针仍有 `#[ignore]`，默认测试不等于显式缺陷样本已通过。审计阶段保留预期失败探针是证据策略，不能单独算新的产品漏洞。
+- **E-close-04（source_type=command，content_hash=n/a）**：实际运行 `cargo test -p deepagent-models --offline`，退出码 **0**、无失败，存在 ignored 审计探针；没有传 `--ignored` 或 `--include-ignored`。范围仅模型 crate 默认单元/集成/doc-tests，不包含 HTTP feature、AppCore 全量、真实 provider 或 UI。没有据此关闭任何已有 H 项。
+
+### 针对 DeepSeek 的三个不同结论
+
+| 要回答的问题 | 已有依据与本轮官方复核 | 可以下的结论；仍不能下的结论 |
+|---|---|---|
+| 是否能正确接入模型及工具 | 已有真实桌面基线、正常工具循环/冷恢复、reasoning/cache usage 落盘对照；provider seam 集中在模型 crate | 部分正式链路可用；不能说完整参数、异常终态、模态和各入口均兼容，仍受 H-05/H-18/H-54/H-66/H-158/H-171/H-172 等约束 |
+| 是否正确利用供应商缓存 | 官方为自动、尽力而为的完整前缀单元匹配；已有真实命中样本及不变配置下的冷恢复 wire 前缀证据；H-168 动态 instructions 仍成立 | 存在缓存利用能力，也存在可避免的前缀扰动；不能从 JSON 前缀相同推算实际命中 token、线上省钱比例或冷恢复必定命中 |
+| 是否增强实际任务表现 | 工具、检索、恢复和编排提供环境能力；但尚无固定任务集的同模型成对结果 | 能确认扩展了可执行能力；不能量化总体成功率提升、成本优势，不能声称优于 Codex 或 DeepSeek Harness |
+
+Responses 的无状态历史必须由客户端维护，不能把 OpenAI 的 `previous_response_id`、服务端 conversation/store 或缓存 key/retention 当作 DeepSeek 的恢复/缓存方案。官方忽略 `parallel_tool_calls`、`max_tool_calls`，因此本地并发、写屏障和工具调用预算仍是宿主责任，不是增加这两个字段就能修复。源码 `deepagent-tools/src/lib.rs::Tool::is_concurrency_safe` 和 `deepagent-runtime/src/loop_engine.rs` 已有宿主调度边界；H-34/H-35 记录的是该边界的期限/时序缺口，本轮不重复编号。`max_steps` 也不能不加说明地等同于一轮响应中的工具调用数量上限。
+
+Tool Calls 的 strict Beta 文档使用 `/beta`、Chat 嵌套 `function.strict=true`；本轮未在 Responses 指南和参数页找到同样承诺。因此不登记“Responses 未加 strict”缺陷，不把 strict 当权限、幂等、取消或副作用隔离。即便模型输出完全符合 schema，宿主仍须校验资源权限和执行状态。
+
+### 成熟实现对照的可迁移部分与界限
+
+- **Codex**：本轮实际阅读 `借鉴/codex/codex-rs/rmcp-client/src/rmcp_client.rs::run_service_operation_with_transient_retries/is_retryable_tools_list_error`，后者对 label 非 `tools/list` 直接返回 false；这支持 H-06 的“连接恢复与业务重试分离”建议，不代表所有 Codex 重试都被禁止，也没有执行其测试。
+- **DeepSeek Harness**：阅读 `packages/mcp/mcp-client/src/tools.ts`，工具定义把执行 signal/timeout 传给当前 client 的 `callTool`；`connection.ts` 的 supervisor 拥有连接代次。借鉴的是 owner 与连接恢复边界，不宣称提供所有外部工具的 exactly-once。
+- **验证组织**：阅读 `借鉴/deepseek-harness/vitest.expected.config.ts` 与 `vitest.bench.config.ts`，前者组织 assembled expected-output 样本，后者单 worker、禁止文件并行以控制性能测量互扰。这说明功能契约与性能实测应分别组织；不是本系统缺少同名文件就有漏洞，也不是这些性能样本已经证明模型任务质量。未运行参考项目。
+- **报告可信度**：阅读 `借鉴/better-harness/templates/style/audit-scorecard.md`，其要求范围、证据、例外与治理可追溯。采用这一原则，但未建立量化评分模型，所以本报告不编造总分、成熟度百分比或无依据的有效问题总数。
+
+### 剩余交付清单与停止扩展规则
+
+| 剩余交付 | 完成条件 | 不得冒充已完成的部分 |
+|---|---|---|
+| 模块覆盖封账 | 按根 workspace members、独立 Tauri workspace、前端、Rust/TS SDK 和画布列出已证/静态/未验边界，并关联现有 H 项或正常对照；未审项显式留下 | 不把 crate 存在、编译通过、文件名搜索或兄弟模块通过当作行为覆盖 |
+| 根因级治理顺序 | 将既有问题按单一 owner/有效配置、事件提交与恢复、统一工具边界、provider adapter、画布契约/资源预算收敛；每组给出真实回归入口及关闭条件 | 不把每个 H 项都当成独立架构重写，不把修复建议当已修复 |
+| 最终结论与残余限制 | 回答合理性、DeepSeek 适配、增强证据、成熟 Agent 差距及触发后果；核对编号、引用和本轮验证，提交相关文档 | 真实供应商收益/质量 A/B、其他平台沙箱、移动真机、完整 UI 故障验收没有证据时继续标为未验证 |
+
+现有问题修复全部完成不是“分析报告完成”的前提；反之，交出报告也不等于系统可靠性验收通过。收尾阶段不再为相同根因扩展相邻样本而新增编号；只有会改变影响判断、发现新的执行边界或否定旧结论时才追加实验，并先与全文去重。本轮尚未完成上表第一项的逐模块封账，不能声称只剩提交或将总体 goal 标记 complete。剩余耗时应以这三项的实际推进更新；真实 provider/平台验收另计，不能承诺在无凭据或无设备时自动完成。
+
+### 本轮验证边界
+
+本轮只改报告。实际 `cargo test -p deepagent-models --offline`、`cargo fmt --all -- --check`、`git diff --check` 均退出 **0**，已人工复核本轮文档 diff；提交结果见本轮交付。没有运行全 workspace、clippy、Desktop build/真实 UI、参考工程测试、Semgrep/CodeQL 全库扫描或真实供应商；这些不属于本轮文档变更的完成证明。用户原有未跟踪文件没有读取、暂存或修改。没有重跑 H-06/H-165/H-278/H-305 故障测试。
