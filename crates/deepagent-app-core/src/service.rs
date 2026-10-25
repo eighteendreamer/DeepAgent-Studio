@@ -120,6 +120,15 @@ impl AppService {
                 tracing::info!(%session_id, "startup recovery skipped: session has an active owner");
                 continue;
             };
+            if EventStore::new(&self.db)
+                .trashed_session_deleted_at(id)?
+                .is_some()
+            {
+                // User recycling is not a crashed projection. Wait for an
+                // explicit restore rather than recreating the source file.
+                tracing::info!(%session_id, "startup recovery deferred: session is recycled");
+                continue;
+            }
             let mut control_recovery = scope.recover_controls(recovery_now)?;
             control_recovery.revoked_leases = revoked_leases;
             scope.cancel_orphaned_children(recovery_now)?;
@@ -134,42 +143,23 @@ impl AppService {
                     .list_for_run(&run.id)
                     .map(|records| records.into_iter().map(|record| record.id).collect())
                     .unwrap_or_default();
-                let mut interruption: Option<String> = None;
-                if let Ok(session_id) = SessionId::from_str(&run.session_id) {
-                    if let Ok(events) = EventStore::new(&self.db).load_session(session_id) {
-                        interruption = classify_interruption(&events).map(str::to_string);
-                    }
-                    if let Ok(mut session) = Session::recover(&self.db, &clock, session_id) {
-                        if let Some(task_id) = run
-                            .task_id
-                            .as_deref()
-                            .and_then(|task_id| TaskId::from_str(task_id).ok())
-                        {
-                            if session
-                                .state()
-                                .task(task_id)
-                                .is_some_and(|task| task.state.is_active())
-                            {
-                                if let Err(error) =
-                                    session.transition_task(task_id, TaskState::Failed)
-                                {
-                                    tracing::warn!(
-                                        run_id = %run.id,
-                                        task_id = %task_id,
-                                        error = %error,
-                                        "failed to mark recovered task failed"
-                                    );
-                                }
-                            }
-                        }
+                let events = EventStore::new(&self.db).load_session(id)?;
+                let interruption = classify_interruption(&events).map(str::to_string);
+                let mut session = Session::recover(&self.db, &clock, id)?;
+                if let Some(task_id) = run.task_id.as_deref().map(TaskId::from_str).transpose()? {
+                    let task = session.state().task(task_id).ok_or_else(|| {
+                        CoreError::Persistence(format!(
+                            "recovery run {} has no task {task_id} in its session",
+                            run.id
+                        ))
+                    })?;
+                    if task.state.is_active() {
+                        session.transition_task(task_id, TaskState::Failed)?;
                     }
                 }
-                store.append_event(
+                store.finish_recovered(
                     &run.id,
-                    recovery_now,
-                    "finalizing",
-                    "completed",
-                    "run_recovered_after_startup",
+                    &reason,
                     &serde_json::json!({
                         "session_id": run.session_id.clone(),
                         "task_id": run.task_id.clone(),
@@ -189,8 +179,8 @@ impl AppService {
                             "revoked_leases": control_recovery.revoked_leases,
                         },
                     }),
+                    recovery_now,
                 )?;
-                store.finish(&run.id, "failed", Some(&reason), recovery_now)?;
                 recovered.push(RunRecoveryDto {
                     run_id: run.id,
                     session_id: run.session_id,
@@ -200,6 +190,14 @@ impl AppService {
                     terminal_reason: reason,
                     interruption,
                 });
+            }
+            // Terminal rows remain candidates until the authoritative session
+            // file has been projected and acknowledged. Keep ownership through
+            // this compensation, including when the original process died
+            // after its SQL commit or file append.
+            for run_id in store.pending_terminal_projections(&session_id)? {
+                store.repair_legacy_recovered_terminal(&run_id)?;
+                EventStore::new(&self.db).project_run_terminal(&run_id, clock.now())?;
             }
         }
         Ok(recovered)
@@ -603,8 +601,41 @@ impl AppService {
                             .unwrap_or_else(|| format!("{session_id}:{task_id}"));
                     }
                 }
-                EventPayload::RunTerminal { kind, reason } => {
-                    if let Some((_, turn)) = turns.last_mut() {
+                EventPayload::RunTerminal {
+                    run_id,
+                    task_id,
+                    kind,
+                    reason,
+                } => {
+                    let target = match (run_id, task_id) {
+                        (Some(run_id), Some(task_id)) => {
+                            match run_ids.get(&task_id.to_string()) {
+                                Some(expected) if expected != run_id => {
+                                    tracing::warn!(%run_id, %task_id, "ignoring terminal with conflicting task identity");
+                                    continue;
+                                }
+                                Some(_) => Some(run_id.clone()),
+                                // Fork copies task-bearing history, not source
+                                // run ownership. Target its explicit task-local
+                                // turn without inventing a local run record.
+                                None => Some(format!("{session_id}:{task_id}")),
+                            }
+                        }
+                        (Some(run_id), None) => Some(run_id.clone()),
+                        (None, Some(task_id)) => Some(
+                            run_ids
+                                .get(&task_id.to_string())
+                                .cloned()
+                                .unwrap_or_else(|| format!("{session_id}:{task_id}")),
+                        ),
+                        (None, None) => None,
+                    };
+                    let turn = if let Some(target) = target {
+                        turns.iter_mut().find(|(_, turn)| turn.id == target)
+                    } else {
+                        turns.last_mut()
+                    };
+                    if let Some((_, turn)) = turn {
                         turn.terminal_kind = Some(kind.clone());
                         if turn.final_answer.is_none() {
                             turn.final_answer = reason.clone();
@@ -1377,6 +1408,8 @@ mod tests {
                 .unwrap();
             session
                 .append(EventPayload::RunTerminal {
+                    run_id: None,
+                    task_id: None,
                     kind: kind.into(),
                     reason: Some("terminal detail".into()),
                 })
@@ -1423,6 +1456,8 @@ mod tests {
         }
         session
             .append(EventPayload::RunTerminal {
+                run_id: None,
+                task_id: None,
                 kind: "cancelled".into(),
                 reason: None,
             })
@@ -1472,6 +1507,8 @@ mod tests {
             .unwrap();
         session
             .append(EventPayload::RunTerminal {
+                run_id: None,
+                task_id: None,
                 kind: "failed".into(),
                 reason: Some("provider stream deadline exceeded".into()),
             })

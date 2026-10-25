@@ -443,16 +443,15 @@ mod tests {
             &first.cancellation(),
         )
         .unwrap());
-        // The durable run is already terminal, but its outer session projection
-        // has not happened. A check of unfinished runs would race this window.
+        // The terminal and its session projection are durable, but outer
+        // finalization still owns the session. Unfinished-runs checks race it.
         assert!(store.begin_control(id).is_err());
         assert!(competitor.admit("competitor", &id.to_string()).is_err());
         assert!(RunStore::new(&db).get("competitor").unwrap().is_none());
         assert!(leases.is_active_run(&id.to_string(), "first"));
         session
-            .append(deepagent_core::event::EventPayload::RunTerminal {
-                kind: "cancelled".into(),
-                reason: None,
+            .append(deepagent_core::event::EventPayload::Note {
+                text: "outer finalization still owns history".into(),
             })
             .unwrap();
         drop(first);
@@ -610,11 +609,18 @@ mod tests {
         let events = RunStore::new(&db)
             .events_after("run-1", None)
             .expect("events");
-        assert_eq!(events.len(), 4);
+        assert_eq!(events.len(), 5);
         assert_eq!(events[0].event_type, "run_accepted");
         assert_eq!(events[1].event_type, "cancel.requested");
         assert_eq!(events[2].event_type, "cancel.propagated");
         assert_eq!(events[1].data["alias"], session_alias);
+        assert_eq!(events[3].event_type, "run_terminal");
+        assert_eq!(events[4].event_type, "session_terminal_projected");
+        let projected = EventStore::new(&db).load_session(session_id).unwrap();
+        assert_eq!(projected.iter().filter(|event| matches!(&event.payload,
+            deepagent_core::event::EventPayload::RunTerminal { run_id: Some(run_id), kind, .. }
+                if run_id == "run-1" && kind == "cancelled"
+        )).count(), 1);
 
         drop(registration);
         assert!(
@@ -732,9 +738,15 @@ mod tests {
                 "run_accepted",
                 "cancel.requested",
                 "cancel.propagated",
-                "run_terminal"
+                "run_terminal",
+                "session_terminal_projected"
             ]
         );
+        let projected = EventStore::new(&db).load_session(session_id).unwrap();
+        assert_eq!(projected.iter().filter(|event| matches!(&event.payload,
+            deepagent_core::event::EventPayload::RunTerminal { run_id: Some(run_id), kind, .. }
+                if run_id == "audit-fault-run" && kind == "cancelled"
+        )).count(), 1);
         assert_eq!(
             store
                 .get("audit-fault-run")

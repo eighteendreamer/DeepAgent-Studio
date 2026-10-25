@@ -2,21 +2,61 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；本轮仅H-32，累计十项已完成所列本机范围验收。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；本轮仅H-44，累计十一项已完成所列本机范围验收。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 10 | H-286、H-72、H-73、H-75、H-76、H-20、H-22、H-23、H-33、H-32，均限所列本机验收；前九项提交见明细，H-32修复提交 `c015bc8f` |
+| 本阶段已修复并验收 | 11 | H-286、H-72、H-73、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44，均限所列本机验收；前十项提交见明细，H-44待独立提交 |
 | 历史已修复跳过 | 17 | 原报告有实现及修复后验收；本轮不重复修复/冒称重验 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-32本机范围验收结束；整体goal仍active |
-| 待修复 | 270 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-44本机范围已验收；完整workspace/严格lint仍有所列失败，整体goal仍active |
+| 待修复 | 269 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **270（均待修复）**；不提供完成率。十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。历史修复依原报告状态跳过，但不虚构其 commit ID：尚未逐项重新定位的历史 hash 明确留为“未重新定位”，保留原文验收来源。
+有效未关闭条目当前为 **269（均待修复）**；不提供完成率。十一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。历史修复依原报告状态跳过，但不虚构其 commit ID：尚未逐项重新定位的历史 hash 明确留为“未重新定位”，保留原文验收来源。
+
+## H-44 本轮即时记录与验收（2026-10-26）
+
+**当前状态：已修复并验收，限下述Windows本机范围；独立提交待记录。** 以下为逐步追加的历史状态，保留首轮失败与中间结果，不将中间“尚待”改写为当时已完成。
+
+E-H44-20261026-01：HEAD `75a1b3e6`执行`cargo test -p deepagent-app-core --test recovery_terminal_audit audit_startup_recovery_preserves_one_replayable_terminal --offline -j 1 -- --exact --ignored --nocapture`退出1，0 passed/1 failed（0.34s）。正常恢复及SQL故障后重试/重开均run_kind=failed但run_terminals/session_terminals=0、conversation_turn_kind=null；故障重试recovery_markers从1变2。H-32修复不覆盖本根因；证据/调用路径即时写入原项，尚未修改生产代码，需统一终态边界、跨存储补偿、按run归属且可重试。H-95等独立问题不归并；仅本地合成数据，无网络/用户数据。
+
+实施前边界核对：会话终态增加可选 `run_id` / `task_id`，旧JSON默认无身份仍可读取，现有Tauri/SDK DTO不变；新增身份终态只按身份定位，不能回退污染最新turn。正常kernel、准备失败、workflow及启动恢复共用RunStore规范提交与EventStore文件投影。恢复标记与规范终态同一SQL事务；现有run_events中的规范终态作为待投影来源，文件落盘后追加幂等`session_terminal_projected`确认（本地设计，不宣称参考项目使用相同存储协议），无需schema迁移/第二套store。投影在既有session I/O与OS文件锁内读取权威文件去重，不能只看SQLite游标；恢复候选包含未确认投影及历史仅finish但带恢复标记的终态。历史无身份终态仅在明确task区间内复用；缺失/冲突不猜归属。原有重复恢复标记不改写历史，新事务不再增加重复。尚未实施或通过验收，H-95独立保留。
+
+E-H44-20261026-02：首版`cargo test -p deepagent-app-core --test recovery_terminal_audit audit_startup_recovery_preserves_one_replayable_terminal --offline -j 1 -- --exact --nocapture`退出0，1 passed/0 ignored（测试0.34s，编译1m26s）。两组均markers/run_terminals/session_terminals各1、conversation_turn_kind=failed，原探针已转默认；不再使用`--ignored`伪称执行。此结果只验首版原场景，文件/确认故障、多run、旧格式、正常kernel/workflow与全组/lint仍待，H-44不关闭。
+
+E-H44-20261026-03：追加7项后`cargo test -p deepagent-app-core --test recovery_terminal_audit --offline -j 1 -- --nocapture`退出0，8 passed/1 ignored（0.56s，编译1m22s），唯一ignored仍是独立H-95。实际临时文件暂不可用后规范SQL终态保留并由重开补齐；文件已写但cursor/ack的SQL trigger拒绝，分别经同进程竞争收尾和重开均无重复、且不覆盖先提交成功；多遗留run及后来成功turn归属、历史重复恢复marker不改写/只补规范终态、旧无身份terminal复用、冲突/缺task拒绝均通过。首次`cargo fmt --all`遇os error1224未成功，尚待重试；新增并发/活跃owner及正常链路强化验证、全组/lint仍待，不宣称最终验收。
+
+中间失败实录：追加startup-ack/并发/活跃owner测试后，组合`cargo test -p deepagent-app-core --test recovery_terminal_audit --test owned_recovery --test host_lock --test host_session_audit --offline -j 1 -- --nocapture --test-threads=4`退出1，新增集成测试错误调用crate私有`take_admission`（E0624），测试体未执行，不算回归通过。保留私有边界，改用公开admit持有coordinator、drop释放（已有owned_recovery相同用法），不为测试扩大生产API。此前fmt/diff重试退出0；本次还将正常kernel、preflight和workflow终态断言补强，须重新实测。
+
+E-H44-20261026-04：上项修正后组合命令另加`--test workflow_audit`退出0：host_lock2/0（1.20s）、host_session5/0（3.56s）、owned_recovery7/0（5.15s）、recovery_terminal11/1（0.75s）、workflow5/41（0.40s）。startup自身ack失败重开补偿、独立连接并发文件去重、pending投影受活跃owner阻挡及正常workflow新增断言通过；其他ignored不计通过。后续兼容性核对发现，历史rewind可合法移除task但保留run ledger，不能将这种缺task一律当损坏阻断启动：改为只保存带身份的历史终态、不重建消息/turn；冲突或格式非法身份仍拒绝。recycle则保留待投影状态，用户明确restore后再补，不自动复活。新增两项正式历史控制回归待跑，故E-04不是最终源码验收；原E-03的拒绝缺task为首版当时结果，保留不改写。
+
+跨层补核：fork正式原语保留payload/task但不复制源run表；新增keyed terminal不能因子session无源run记录而丢弃，也不能将源run当作子session执行所有权。消费者改按显式task定位其既有`child_session:task`历史turn，若存在本地run/task绑定则必须匹配。增加正式AppService fork/继续子会话对照，验证状态保留、稳定重读、不克隆源run、不改源会话。五crate整组当前正在运行；此项追加晚于该命令启动，因此该轮即使绿色也不冒称最终冻结源码验收，后续需重新确认。
+
+E-H44-20261026-05：五crate组合`cargo test -p deepagent-app-core -p deepagent-core -p deepagent-persistence -p deepagent-session -p deepagent-runtime --offline -j 1 -- --quiet --test-threads=4`退出1（编译6m05s、AppCore17.45s）：AppCore1130 passed/2 failed/69 ignored，后续targets未执行。两项run_coordinator取消回归的旧精确事件断言仍只期望4条，本轮新增文件投影确认后实际5条，差异恰为`session_terminal_projected`；调整为完整5条顺序精确校验，并加强文件中对应cancelled终态仍恰好一条，不过滤/放宽成“至少包含”。这次是本轮变更需要同步的测试契约，不归咎既有基线或环境。后续冻结源码重新跑整组/workspace。
+
+E-H44-20261026-06：最终源码首轮`cargo test --workspace --offline -j 1 -- --quiet --test-threads=4`退出1（编译8m48s）：AppCore1132 passed/78 ignored（17.03s），此前两项取消回归已通过；checkpoint18/1等先行targets通过，但golden_trace为1 passed/2 failed（0.36s），旧fixture及tool测试仍要求run_terminal为最后一条，实际其后新增session_terminal_projected。后续recovery/runtime等targets未执行，不计通过；须先核对正式事件消费者与协议，再同步完整契约，不能过滤确认事件掩盖差异。严格`cargo clippy --all-targets --all-features --offline -j 1 -- -D warnings`退出1，在未修改的deepagent-models/src/client.rs:355命中clone_on_copy；不修改无关源码或声称全库lint通过。两命令均已结束，H-44仍未验收提交。
+
+契约核对与测试同步（尚待实跑）：Desktop取消判定按event_type查run_terminal，stdio turn/stream原样序列化各run ledger并保留sequence，协议Runtime事件使用开放字符串，未发现正式生产消费者要求canonical必须为最后一条；旧假设位于golden测试。明确新增v1投影确认是终态之后的ledger元数据，不是第二个outcome，也不隐藏或重编号。同步完整simple fixture及tool尾部精确两条，强化所有golden场景的唯一终态/唯一确认、连续sequence、terminal游标之后仍可补读确认、确认关联真实会话event id/sequence及run/task/kind/reason断言；外部依赖last()判定结果的消费者须改按event_type。当前只改测试与Rust契约注释，尚不记验收。新增格式检查发现一处数组需换行（退出1），后续格式化再验，不抹去失败。
+
+中间夹具编译失败：golden/recovery组合命令在golden_trace.rs:88报E0308，新增断言误把&StoredRunEvent再次取引用，两个target均未执行。改为比较Option<&StoredRunEvent>，不改生产代码或放宽断言；待格式化后重跑。
+
+E-H44-20261026-07：修正夹具并`cargo fmt --all`退出0后，`cargo test -p deepagent-app-core --test golden_trace --test recovery_terminal_audit --offline -j 1 -- --nocapture --test-threads=4`退出0：golden3 passed/0 ignored（0.27s）、recovery14 passed/1 ignored（0.95s）；fork/recycle/rewind三项最终补强均通过，原探针两组marker/canonical/session各1、turn=failed，H-95仍独立ignored。确认关联文件身份及terminal游标续读均实测通过；随后fmt-check与diff-check退出0。全库第二轮及相关lint待结果，仍不将本机专项当整体通过。
+
+E-H44-20261026-08（lint阶段）：`cargo clippy -p deepagent-core -p deepagent-persistence -p deepagent-session -p deepagent-runtime -p deepagent-app-core --lib --offline --no-deps -j 1 -- -D warnings`退出1，core/persistence/session检查后在未修改的runtime/model_agent.rs:225遇clone_on_copy。未增加无关allow/修复；普通相关库lint及专项测试lint另行验证，不替代严格全库结果。
+
+最终验收边界核对（待全组结果）：本轮无schema迁移、新store或新运行链，不改DeepSeek参数、审批/沙箱、Tauri命令/视图DTO或前端。旧session JSON可读，新增可选字段对手写Rust枚举构造方是源码契约变化，仓库构造方已同步；run ledger新增v1确认，外部消费者不可依赖last()是outcome。只补带旧recovery marker的finish-only历史形态，不声称修复任意损坏/未知终态。文件与SQLite非跨介质原子事务，确认前失败需显式重试或后续Primary恢复；busy会话跳过、recycle须用户restore；强杀/断电、磁盘写满、跨平台/网络FS、真实供应商/Tauri手动交互未验。按code-audit人工追链与临时SQL/文件故障、docs-generator即时证据链记录；参考Codex仅借鉴idle时将InProgress turn按身份投影Interrupted，未运行参考测试，也不声称同一存储协议。
+
+E-H44-20261026-08补验：同五crate普通lib no-deps clippy（上条去掉`-- -D warnings`）退出0；runtime既有1/AppCore既有10 warnings，无本轮新增生产告警（run_assembler告警为未改的base_registry_request）。`cargo clippy -p deepagent-app-core --test golden_trace --test recovery_terminal_audit --test workflow_audit --offline --no-deps -j 1`退出0；golden/recovery无新增告警，workflow有既有media.rs:148 redundant_locals及旧段manual_contains共3项。普通lint完成不替代严格/all-features结果，也未修改无关行或新增豁免。
+
+E-H44-20261026-09：第二轮冻结源码`cargo test --workspace --offline -j 1 -- --quiet --test-threads=4`编译6m52s后退出1。AppCore1132/78（18.18s）、golden3/0、host_lock2/0、host_session5/0、owned_recovery7/0、recovery14/1、workflow5/41、checkpoint18/1、kernel E2E107/90、core41、persistence67/session_control9、CLI88/27、protocol12、SDK5/12+stdio6、builtins312/1及models96/25均无失败（斜线后为ignored，不计通过）。到prompts时既有H-306再次27 passed/1 failed，canvas_prompt.rs:310的creative.video-edit.v1.defaultUserPrompt为空，完整workspace未通过；后续runtime/session及全库doc-tests未执行，须补跑相关targets，不将未执行项算通过。H-44新增回归没有失败，不扩修H-306。
+
+E-H44-20261026-10：`cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet --test-threads=4`退出0（编译54.84s）：runtime284 passed/16 ignored、stabilization5 passed（57.04s）、tokenizer1 passed/1 ignored、schedule0/2，session14 passed，两个crate doc-tests均0。`cargo test -p deepagent-core -p deepagent-persistence -p deepagent-app-core --doc --offline -j 1 -- --quiet`退出0，三crate各0文档测试，不冒称执行了文档行为样例。最后fmt-check、diff-check退出0。至此相关生产边界及全部本轮默认回归已实际验证；完整workspace与严格lint仍有E-06/E-08/E-09所列失败。
+
+验收结论（2026-10-26）：H-44在上述Windows本机、临时SQLite/文件与离线transport范围已修复并验收；F-H44修复依据E-01原失败及E-07～10最终专项/跨层结果。P-H44-repair（callflow）：现有RunStore统一SQL终态事务 → 既有EventStore按权威文件及run/task身份幂等投影 → run_events v1确认 → Primary持有session owner后补偿未确认记录；每步由上述故障/重开/正常链路回归覆盖。不是恢复模型自动续跑，也不保证任意断电或所有外部副作用停止。无生产数据迁移、不推送；本轮15个相关文件待独立修复提交，hash随后另行回填。本阶段新增1项、累计11已验收/17历史跳过/7归并/2撤销/269有效待修，整体goal仍active。下一项H-78未启动。剩余200–400有效小时仍为未独立计量校准的粗估，环境/构建等待另计，不机械扣减。
 
 ## H-32 本轮实施与验收明细（2026-10-26）
 
@@ -64,7 +104,7 @@ workspace最终退出1：既有H-306（prompts27 passed/1 failed，`creative.vid
 
 暂估剩余 **200–400 小时有效修复、测试和文档交付时间**，是基于当前有效未关闭规模、跨层 owner/授权/持久化问题与多数单项需原输入回归的初始规划区间，不是将每项假定为相同难度。已交付项复杂度不同，且尚无独立计量的有效工时，不能据此虚构可靠吞吐或机械扣减工时；继续按实际样本与剩余根因分组滚动校准，不编造精确结束日期。不以对话跨度或编译等待伪造工时样本。
 
-设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。本轮H-32验收结束；下一项准备复核H-44启动恢复绕过统一终态边界，H-32所有权修复不等于会话规范终态投影已修。先核对当前代码和原探针，不机械选已修复的H-24。H-44/H-78/H-238/H-260/H-287等仍独立待修。
+设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。本轮H-44已完成所列本机范围验收，独立提交后准备复核H-78的Windows联接路径授权边界；下一项尚未启动原探针/修改。H-32所有权与H-44终态投影分别验收、不归并。H-78/H-238/H-260/H-287等仍独立待修。
 
 ## H-286 本轮实施与验收明细
 
@@ -364,7 +404,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-41：其他会话完成会清掉当前画布运行监听和停止入口](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-42：定时调度没有跨进程所有权，同一触发时段可重复派发一次性和循环任务](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-43：运行启动先于事件订阅就绪，提前终态丢失后前端持续等待](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 2026-10-26，原失败保留，E-H44-20261026-01～10 | 统一规范终态事务，run/task身份文件投影，既有ledger确认与重开幂等补偿；正常kernel/setup/workflow接回同一边界 | 原探针默认通过；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；workspace H-306/严格lint失败保留，见明细 | 待独立提交 | 无schema迁移；外部last()消费者与Rust构造方需适配；跨平台/断电/真实UI未验，H-95不归并；总区间200–400有效小时初估 |
 | [H-45：父 Kernel 总时限直接丢弃执行 Future，前台子 Agent 没有取消和持久化收尾](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-46：Windows MCP transport 只终止直接进程，非 libuv 服务的普通后代仍继续运行](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-47：新增无关 MCP 配置会取消未变服务的初始化，并将宿主取消缓存为该服务失败](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

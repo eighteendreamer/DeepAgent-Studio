@@ -189,6 +189,8 @@ mod tests {
                 tags: vec!["u1".into()],
             },
             EventPayload::RunTerminal {
+                run_id: None,
+                task_id: None,
                 kind: "succeeded".into(),
                 reason: None,
             },

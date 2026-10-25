@@ -38,6 +38,44 @@ async fn workflow_fixture() -> (tempfile::TempDir, Arc<Database>, ChatService, S
 }
 
 #[tokio::test]
+async fn workflow_projects_one_identity_bound_session_terminal() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {"version":1, "nodes":[{"id":"start","kind":"start"},{"id":"end","kind":"end"}],
+            "edges":[{"id":"edge","source":"start","target":"end"}]}
+    })).unwrap();
+    chat.run_workflow(
+        workflow,
+        "workflow-projection".into(),
+        session.clone(),
+        |_| {},
+        |_| {},
+    )
+    .await
+    .unwrap();
+    let store = RunStore::new(&db);
+    let record = store.get("workflow-projection").unwrap().unwrap();
+    assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
+    let events = deepagent_persistence::event_store::EventStore::new(&db)
+        .load_session(session.parse().unwrap())
+        .unwrap();
+    assert_eq!(events.iter().filter(|event| matches!(&event.payload,
+        deepagent_core::event::EventPayload::RunTerminal { run_id: Some(run), task_id: Some(task), kind, .. }
+            if run == "workflow-projection" && record.task_id.as_deref() == Some(task.to_string().as_str()) && kind == "succeeded"
+    )).count(), 1);
+    let ledger = store.events_after("workflow-projection", None).unwrap();
+    for event_type in ["run_terminal", "session_terminal_projected"] {
+        assert_eq!(
+            ledger
+                .iter()
+                .filter(|event| event.event_type == event_type)
+                .count(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
 #[ignore = "audit: a failed workflow tool node must not publish completed and a successful run"]
 async fn audit_workflow_unknown_tool_propagates_node_and_run_failure() {
     let (_root, db, chat, session) = workflow_fixture().await;

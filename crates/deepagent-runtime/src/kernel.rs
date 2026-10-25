@@ -646,14 +646,19 @@ pub fn persist_terminal(
     terminal: &KernelTerminal,
     cancellation: &CancellationTree,
 ) -> Result<bool> {
-    RunStore::new(db).finish_with_event(
+    let changed = RunStore::new(db).finish_with_event(
         run_id,
         terminal.kind.label(),
         terminal.reason.as_deref(),
         &crate::redaction::scrub_secrets_value(serde_json::to_value(terminal)?),
         cancellation.requested_by().as_deref(),
         now_ms(),
-    )
+    )?;
+    deepagent_persistence::event_store::EventStore::new(db).project_run_terminal(
+        run_id,
+        deepagent_core::clock::Timestamp::from_millis(now_ms()),
+    )?;
+    Ok(changed)
 }
 
 fn classify_terminal_error(error: &CoreError) -> TerminalKind {
@@ -955,7 +960,28 @@ mod tests {
         assert_eq!(terminal.kind, TerminalKind::Succeeded);
         let record = RunStore::new(&db).get("run-v2").unwrap().unwrap();
         assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
+        let session_events = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap();
+        assert_eq!(
+            session_events
+                .iter()
+                .filter(|event| matches!(&event.payload,
+                    deepagent_core::event::EventPayload::RunTerminal {
+                        run_id: Some(run_id), task_id: Some(found), kind, ..
+                    } if run_id == "run-v2" && *found == task && kind == "succeeded"
+                ))
+                .count(),
+            1
+        );
         let events = RunStore::new(&db).events_after("run-v2", None).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "session_terminal_projected")
+                .count(),
+            1
+        );
         assert!(events.len() >= 4);
         assert!(events
             .iter()

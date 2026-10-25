@@ -2093,6 +2093,28 @@ mod tests {
         let store = deepagent_persistence::event_store::EventStore::new(&db);
         let id = deepagent_core::id::SessionId::from_str(&session_id).unwrap();
         let persisted = store.load_session(id).unwrap();
+        assert_eq!(
+            persisted
+                .iter()
+                .filter(|event| matches!(&event.payload,
+                    EventPayload::RunTerminal { run_id: Some(run_id), task_id: Some(_), kind, .. }
+                        if run_id == "test-run-preflight-abort" && kind == "succeeded"
+                ))
+                .count(),
+            1
+        );
+        let conversation = crate::AppService::from_shared(db.clone())
+            .session_conversation(&session_id)
+            .unwrap();
+        let user_turn = conversation
+            .iter()
+            .find(|message| message.role == "user")
+            .unwrap()
+            .turn
+            .as_ref()
+            .unwrap();
+        assert_eq!(user_turn.id, "test-run-preflight-abort");
+        assert_eq!(user_turn.terminal_kind.as_deref(), Some("succeeded"));
         assert!(persisted.iter().any(|event| matches!(
             &event.payload,
             EventPayload::ToolCallCompleted { call_id, ok, .. }

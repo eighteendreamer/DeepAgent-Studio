@@ -19,7 +19,7 @@
 use deepagent_core::clock::Timestamp;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::{Event, EventPayload, Sequence};
-use deepagent_core::id::{EventId, SessionId};
+use deepagent_core::id::{EventId, SessionId, TaskId};
 use deepagent_core::message::Role;
 use deepagent_core::session_mode::SessionMode;
 use rusqlite::{params, OptionalExtension};
@@ -295,6 +295,75 @@ impl<'db> EventStore<'db> {
         let _activity = self.acquire_activity(session_id)?;
         let _io = self.db.lock_session_io()?;
         let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        self.append_locked(session_id, payload, now)
+    }
+
+    /// Project the committed run outcome, never a finalizer's competing proposal.
+    /// File inspection, deduplication, append and ledger acknowledgement share
+    /// the existing session lock. The file is authoritative even if SQLite's
+    /// cursor failed to advance after a successful append.
+    pub fn project_run_terminal(&self, run_id: &str, now: Timestamp) -> Result<()> {
+        let store = crate::run_store::RunStore::new(self.db);
+        let run = store
+            .get(run_id)?
+            .ok_or_else(|| CoreError::not_found(format!("run {run_id}")))?;
+        let Some(terminal) = store.terminal_to_project(run_id)? else {
+            return Ok(());
+        };
+        let kind = terminal
+            .get("kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                CoreError::Persistence(format!("run {run_id} has an invalid terminal kind"))
+            })?;
+        if run.finished_at.is_none() || run.terminal_kind.as_deref() != Some(kind) {
+            return Err(CoreError::Persistence(format!(
+                "run {run_id} terminal conflicts with its run record"
+            )));
+        }
+        let reason = terminal.get("reason").and_then(serde_json::Value::as_str);
+        let session_id: SessionId = run.session_id.parse()?;
+        let task_id: Option<TaskId> = run.task_id.as_deref().map(str::parse).transpose()?;
+        let _activity = self.acquire_activity(session_id)?;
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        let loaded = session_files::load(&self.db.session_files_root(), session_id)?
+            .ok_or_else(|| CoreError::not_found(format!("session file {session_id}")))?;
+        verify_contiguous(&loaded.events, session_id, 0)?;
+        if let Some(task_id) = task_id {
+            if !loaded.events.iter().any(|event| {
+                matches!(&event.payload,
+                EventPayload::TaskCreated { task_id: found, .. } if *found == task_id)
+            }) {
+                // Rewind may remove a task but retain its run ledger. Preserve
+                // the keyed outcome, never its removed messages or turn.
+                tracing::info!(%run_id, %task_id, "projecting terminal for task absent from current history");
+            }
+        }
+        let existing = find_terminal_projection(&loaded.events, run_id, task_id, kind, reason)?;
+        let event = match existing {
+            Some(event) => event,
+            None => self.append_locked(
+                session_id,
+                EventPayload::RunTerminal {
+                    run_id: Some(run_id.to_owned()),
+                    task_id,
+                    kind: kind.to_owned(),
+                    reason: reason.map(str::to_owned),
+                },
+                now,
+            )?,
+        };
+        store.confirm_terminal_projection(run_id, &event, now.as_millis())
+    }
+
+    /// Caller owns the activity, I/O and per-session file guards.
+    fn append_locked(
+        &self,
+        session_id: SessionId,
+        payload: EventPayload,
+        now: Timestamp,
+    ) -> Result<Event> {
         if self
             .get_session(session_id)
             .map_err(|error| CoreError::Persistence(format!("read session metadata: {error}")))?
@@ -1551,8 +1620,67 @@ fn parse_mode(s: &str) -> SessionMode {
     }
 }
 
-/// Defensive check that the loaded stream has contiguous sequences starting
-/// at `from`. Guards against corruption / partial writes.
+/// Resolve a keyed projection or an unambiguous legacy task-local projection.
+fn find_terminal_projection(
+    events: &[Event],
+    run_id: &str,
+    task_id: Option<TaskId>,
+    kind: &str,
+    reason: Option<&str>,
+) -> Result<Option<Event>> {
+    let mut current_task = None;
+    let mut keyed = None;
+    let mut legacy = None;
+    for event in events {
+        match &event.payload {
+            EventPayload::MessageAppended { message } if message.role == Role::User => {
+                current_task = None
+            }
+            EventPayload::TaskCreated { task_id, .. } => current_task = Some(*task_id),
+            EventPayload::RunTerminal {
+                run_id: id,
+                task_id: task,
+                kind: found_kind,
+                reason: found_reason,
+            } => {
+                let is_keyed = id.as_deref() == Some(run_id);
+                let is_legacy =
+                    id.is_none() && task.is_none() && task_id.is_some() && current_task == task_id;
+                if !is_keyed && !is_legacy {
+                    continue;
+                }
+                if found_kind != kind
+                    || found_reason.as_deref() != reason
+                    || (is_keyed && *task != task_id)
+                {
+                    return Err(CoreError::Persistence(format!(
+                        "conflicting session terminal for run {run_id}"
+                    )));
+                }
+                if is_keyed {
+                    if keyed.replace(event.clone()).is_some() {
+                        return Err(CoreError::Persistence(format!(
+                            "duplicate session terminal for run {run_id}"
+                        )));
+                    }
+                } else if legacy.replace(event.clone()).is_some() {
+                    return Err(CoreError::Persistence(format!(
+                        "ambiguous legacy terminal for run {run_id}"
+                    )));
+                }
+            }
+            _ => {}
+        }
+    }
+    if keyed.is_some() && legacy.is_some() {
+        return Err(CoreError::Persistence(format!(
+            "ambiguous terminal projections for run {run_id}"
+        )));
+    }
+    Ok(keyed.or(legacy))
+}
+
+/// Defensive check for gaps/corruption in an authoritative file prefix.
 fn verify_contiguous(events: &[Event], session_id: SessionId, from: Sequence) -> Result<()> {
     for (i, e) in events.iter().enumerate() {
         let expected = from + i as Sequence;

@@ -254,21 +254,12 @@ impl<'a> RunAssembler<'a> {
             message: None,
             reason: result.as_ref().err().map(ToString::to_string),
         };
-        if deepagent_runtime::kernel::persist_terminal(
+        deepagent_runtime::kernel::persist_terminal(
             &db,
             &run_id,
             &terminal,
             &cancellation.cancellation(),
-        )? {
-            let id = session_id
-                .parse()
-                .map_err(|e| CoreError::invalid(format!("session id: {e}")))?;
-            let mut session = deepagent_session::Session::recover(&db, &SystemClock, id)?;
-            session.append(EventPayload::RunTerminal {
-                kind: terminal.kind.label().to_owned(),
-                reason: terminal.reason,
-            })?;
-        }
+        )?;
         if cancellation.cancellation().is_cancelled() {
             Ok(session_id)
         } else {
@@ -825,6 +816,11 @@ impl<'a> RunAssembler<'a> {
                 .with_attachments(message_attachments(&self.attachments)),
         })?;
         let task = session.create_task(&prompt_to_record)?;
+        deepagent_persistence::run_store::RunStore::new(self.db).bind_task(
+            &run_id,
+            &session_id,
+            &task.to_string(),
+        )?;
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled before preflight results"));
         }
@@ -1096,12 +1092,7 @@ impl<'a> RunAssembler<'a> {
             .clone();
 
         let verification_plan = crate::completion_plan::discover_verification_plan(&root);
-        let (run_result, run_succeeded, terminal_kind, terminal_reason): (
-            Result<()>,
-            bool,
-            Option<String>,
-            Option<String>,
-        ) = {
+        let (run_result, run_succeeded): (Result<()>, bool) = {
             let mut kernel = AgentKernel::<SystemClock>::new(
                 self.db.clone(),
                 &registry,
@@ -1137,33 +1128,11 @@ impl<'a> RunAssembler<'a> {
             {
                 Ok(terminal) => {
                     let succeeded = terminal.succeeded();
-                    let kind = terminal.kind.label().to_string();
-                    let reason = terminal.reason.clone();
-                    (
-                        terminal.into_completion_result(),
-                        succeeded,
-                        Some(kind),
-                        reason,
-                    )
+                    (terminal.into_completion_result(), succeeded)
                 }
-                Err(error) => {
-                    let reason = error.to_string();
-                    (Err(error), false, Some("failed".to_string()), Some(reason))
-                }
+                Err(error) => (Err(error), false),
             }
         };
-
-        // Project the run terminal into the session stream so replaying the
-        // session log alone reconstructs the run outcome (closes the two-log
-        // gap; `runs`/`run_events` remain the run-local authority).
-        if let Some(kind) = terminal_kind {
-            if let Err(error) = session.append(EventPayload::RunTerminal {
-                kind,
-                reason: terminal_reason,
-            }) {
-                tracing::warn!(%error, "failed to record RunTerminal event");
-            }
-        }
 
         // Persist model-invoked history snips so a restart reconstructs the same
         // (snipped) working history instead of resurrecting removed segments.
@@ -1277,21 +1246,12 @@ impl<'a> RunAssembler<'a> {
             message: None,
             reason: result.as_ref().err().map(ToString::to_string),
         };
-        if deepagent_runtime::kernel::persist_terminal(
+        deepagent_runtime::kernel::persist_terminal(
             &db,
             &run_id,
             &terminal,
             &cancellation.cancellation(),
-        )? {
-            let id = session_id
-                .parse()
-                .map_err(|e| CoreError::invalid(format!("session id: {e}")))?;
-            let mut session = deepagent_session::Session::recover(&db, &SystemClock, id)?;
-            session.append(EventPayload::RunTerminal {
-                kind: terminal.kind.label().to_owned(),
-                reason: terminal.reason,
-            })?;
-        }
+        )?;
         if cancellation.cancellation().is_cancelled() {
             Ok(session_id)
         } else {

@@ -18,8 +18,10 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use deepagent_app_core::{AppService, ChatService, MemorySecretStore, SettingsService};
 use deepagent_core::error::{CoreError, Result};
+use deepagent_core::event::EventPayload;
 use deepagent_models::transport::{EventSink, HttpTransport, MockTransport, TransportRequest};
-use deepagent_persistence::run_store::StoredRunEvent;
+use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::run_store::{RunStore, StoredRunEvent};
 use deepagent_persistence::Database;
 
 // ---- golden trace ----------------------------------------------------------
@@ -63,7 +65,9 @@ fn assert_terminal_invariants(chat: &ChatService, run_id: &str) {
         );
     }
 
-    // 2. Exactly one terminal event, and it is the last non-delta event.
+    // 2. Exactly one outcome, followed by one durable file-projection ack.
+    // The ack is ledger metadata, not another terminal outcome. Keep both
+    // visible to replay clients, with their original gapless sequences.
     let terminals: Vec<&StoredRunEvent> = events
         .iter()
         .filter(|event| event.event_type == "run_terminal")
@@ -73,6 +77,48 @@ fn assert_terminal_invariants(chat: &ChatService, run_id: &str) {
         1,
         "run {run_id} must have exactly one run_terminal event"
     );
+    let acknowledgements: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "session_terminal_projected")
+        .collect();
+    assert_eq!(acknowledgements.len(), 1);
+    let terminal = terminals[0];
+    let ack = acknowledgements[0];
+    assert_eq!(ack.sequence, terminal.sequence + 1);
+    assert_eq!(events.last(), Some(ack));
+    assert_eq!(ack.phase, "terminal");
+    assert_eq!(ack.data["version"], 1);
+    let db = chat.database();
+    let store = RunStore::new(&db);
+    let record = store.get(run_id).unwrap().unwrap();
+    assert_eq!(ack.data["session_id"], record.session_id);
+    assert_eq!(
+        store.events_after(run_id, Some(terminal.sequence)).unwrap(),
+        vec![ack.clone()],
+        "replay from the terminal cursor must still deliver the ack"
+    );
+    let session_events = EventStore::new(&db)
+        .load_session(record.session_id.parse().unwrap())
+        .unwrap();
+    let file_event = session_events
+        .iter()
+        .find(|event| ack.data["session_event_id"] == event.id.to_string())
+        .expect("ack must identify a committed session event");
+    assert_eq!(ack.data["session_sequence"], file_event.sequence);
+    match &file_event.payload {
+        EventPayload::RunTerminal {
+            run_id: Some(found),
+            task_id,
+            kind,
+            reason,
+        } => {
+            assert_eq!(found, run_id);
+            assert_eq!(task_id.map(|task| task.to_string()), record.task_id);
+            assert_eq!(terminal.data["kind"], *kind);
+            assert_eq!(terminal.data["reason"], serde_json::json!(reason));
+        }
+        other => panic!("projection ack identified a non-terminal event: {other:?}"),
+    }
 
     // 3. Tool pairing: every tool_started has a tool_completed or
     //    tool_blocked with the same call id — no orphans in either direction.
@@ -236,6 +282,7 @@ async fn golden_trace_simple_answer_matches_fixture() {
         "verifying:completion_evidence",
         "finalizing:run_completed",
         "terminal:run_terminal",
+        "terminal:session_terminal_projected",
     ];
     assert_eq!(
         trace, expected,
@@ -307,8 +354,11 @@ async fn golden_trace_tool_call_run_holds_invariants() {
         .expect("trace must contain tool_completed");
     assert!(started_at < completed_at);
     assert_eq!(
-        trace.last().map(String::as_str),
-        Some("terminal:run_terminal")
+        &trace[trace.len() - 2..],
+        [
+            "terminal:run_terminal",
+            "terminal:session_terminal_projected"
+        ]
     );
     assert_terminal_invariants(&chat, &run_id);
     std::fs::remove_dir_all(root).unwrap();

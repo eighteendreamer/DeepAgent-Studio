@@ -20,6 +20,10 @@ pub struct RunRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// Ordered ledger record. `run_terminal` is the unique committed outcome,
+/// not necessarily the final record: a versioned `session_terminal_projected`
+/// acknowledgement may follow it. Replay consumers must keep that record and
+/// use `event_type`, not the last array entry, to identify the outcome.
 pub struct StoredRunEvent {
     pub run_id: String,
     pub sequence: u64,
@@ -32,6 +36,32 @@ pub struct StoredRunEvent {
 
 pub struct RunStore<'db> {
     db: &'db Database,
+}
+
+// The canonical terminal doubles as a durable projection intent. Confirmation
+// lives in the same ledger, never in a second store or a rebuildable file cursor.
+const PENDING_TERMINAL_PROJECTION: &str = "r.finished_at IS NOT NULL
+    AND EXISTS (SELECT 1 FROM run_events e WHERE e.run_id=r.id
+                AND e.event_type IN ('run_terminal', 'run_recovered_after_startup'))
+    AND NOT EXISTS (SELECT 1 FROM run_events e WHERE e.run_id=r.id
+                    AND e.event_type='session_terminal_projected')";
+
+fn insert_run_event(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    now: i64,
+    phase: &str,
+    event_type: &str,
+    data: &serde_json::Value,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO run_events (run_id, sequence, timestamp, phase, status, event_type, data)
+         SELECT ?1, COALESCE(MAX(sequence), -1) + 1, ?2, ?3, 'completed', ?4, ?5
+         FROM run_events WHERE run_id=?1",
+        params![run_id, now, phase, event_type, data.to_string()],
+    )
+    .map_err(map_sqlite)?;
+    Ok(())
 }
 
 impl<'db> RunStore<'db> {
@@ -105,6 +135,49 @@ impl<'db> RunStore<'db> {
         cancel_alias: Option<&str>,
         now: i64,
     ) -> Result<bool> {
+        self.commit_terminal(
+            run_id,
+            terminal_kind,
+            reason,
+            terminal,
+            cancel_alias,
+            None,
+            now,
+        )
+    }
+
+    /// Recovery uses the very same terminal transaction as normal execution.
+    /// A failed UPDATE or event INSERT cannot leave an extra recovery marker.
+    pub fn finish_recovered(
+        &self,
+        run_id: &str,
+        reason: &str,
+        recovery: &serde_json::Value,
+        now: i64,
+    ) -> Result<bool> {
+        let terminal = serde_json::json!({"kind":"failed", "message":null, "reason":reason});
+        self.commit_terminal(
+            run_id,
+            "failed",
+            Some(reason),
+            &terminal,
+            None,
+            Some(recovery),
+            now,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn commit_terminal(
+        &self,
+        run_id: &str,
+        terminal_kind: &str,
+        reason: Option<&str>,
+        terminal: &serde_json::Value,
+        cancel_alias: Option<&str>,
+        recovery: Option<&serde_json::Value>,
+        now: i64,
+    ) -> Result<bool> {
         self.db.with_conn(|conn| {
             let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
             let changed = tx.execute(
@@ -114,10 +187,15 @@ impl<'db> RunStore<'db> {
             if changed == 0 {
                 return Ok(false);
             }
-            let mut sequence: i64 = tx.query_row(
-                "SELECT COALESCE(MAX(sequence), -1) + 1 FROM run_events WHERE run_id=?1",
-                [run_id], |row| row.get(0),
-            ).map_err(map_sqlite)?;
+            if let Some(recovery) = recovery {
+                let has_marker: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM run_events WHERE run_id=?1 AND event_type='run_recovered_after_startup')",
+                    [run_id], |row| row.get(0),
+                ).map_err(map_sqlite)?;
+                if !has_marker {
+                    insert_run_event(&tx, run_id, now, "finalizing", "run_recovered_after_startup", recovery)?;
+                }
+            }
             let mut events = Vec::new();
             if let Some(alias) = cancel_alias {
                 events.push(("control", "cancel.requested", serde_json::json!({"alias": alias})));
@@ -125,14 +203,82 @@ impl<'db> RunStore<'db> {
             }
             events.push(("terminal", "run_terminal", terminal.clone()));
             for (phase, event_type, data) in events {
-                tx.execute(
-                    "INSERT INTO run_events (run_id, sequence, timestamp, phase, status, event_type, data) VALUES (?1, ?2, ?3, ?4, 'completed', ?5, ?6)",
-                    params![run_id, sequence, now, phase, event_type, data.to_string()],
-                ).map_err(map_sqlite)?;
-                sequence += 1;
+                insert_run_event(&tx, run_id, now, phase, event_type, &data)?;
             }
             tx.commit().map_err(map_sqlite)?;
             Ok(true)
+        })
+    }
+
+    /// Repair only the old startup-recovery shape (finished row + recovery
+    /// marker, no canonical event). Preserve the committed kind/reason/time.
+    pub fn repair_legacy_recovered_terminal(&self, run_id: &str) -> Result<()> {
+        self.db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
+            let legacy: Option<(String, Option<String>, i64)> = tx.query_row(
+                "SELECT terminal_kind, terminal_reason, finished_at FROM runs r
+                 WHERE id=?1 AND finished_at IS NOT NULL AND terminal_kind IS NOT NULL
+                 AND EXISTS(SELECT 1 FROM run_events WHERE run_id=r.id AND event_type='run_recovered_after_startup')
+                 AND NOT EXISTS(SELECT 1 FROM run_events WHERE run_id=r.id AND event_type='run_terminal')",
+                [run_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            ).optional().map_err(map_sqlite)?;
+            if let Some((kind, reason, now)) = legacy {
+                insert_run_event(&tx, run_id, now, "terminal", "run_terminal",
+                    &serde_json::json!({"kind":kind, "message":null, "reason":reason}))?;
+            }
+            tx.commit().map_err(map_sqlite)
+        })
+    }
+
+    /// Called only after the authoritative session file contains the outcome.
+    /// Retrying after an acknowledgement failure does not duplicate the ack.
+    pub(crate) fn confirm_terminal_projection(
+        &self,
+        run_id: &str,
+        event: &deepagent_core::event::Event,
+        now: i64,
+    ) -> Result<()> {
+        self.db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
+            let confirmed: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM run_events WHERE run_id=?1 AND event_type='session_terminal_projected')",
+                [run_id], |row| row.get(0),
+            ).map_err(map_sqlite)?;
+            if !confirmed {
+                insert_run_event(&tx, run_id, now, "terminal", "session_terminal_projected",
+                    &serde_json::json!({"version":1, "session_id":event.session_id.to_string(),
+                        "session_sequence":event.sequence, "session_event_id":event.id.to_string()}))?;
+            }
+            tx.commit().map_err(map_sqlite)
+        })
+    }
+
+    pub fn pending_terminal_projections(&self, session_id: &str) -> Result<Vec<String>> {
+        self.db.with_conn(|conn| {
+            let sql = format!("SELECT r.id FROM runs r WHERE r.session_id=?1 AND ({PENDING_TERMINAL_PROJECTION}) ORDER BY r.created_at, r.id");
+            let mut statement = conn.prepare(&sql).map_err(map_sqlite)?;
+            let rows = statement.query_map([session_id], |row| row.get(0)).map_err(map_sqlite)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite)
+        })
+    }
+
+    /// Read only the terminal/outbox records, not every persisted model delta.
+    pub(crate) fn terminal_to_project(&self, run_id: &str) -> Result<Option<serde_json::Value>> {
+        self.db.with_conn(|conn| {
+            let confirmed: bool = conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM run_events WHERE run_id=?1 AND event_type='session_terminal_projected')",
+                [run_id], |row| row.get(0),
+            ).map_err(map_sqlite)?;
+            if confirmed { return Ok(None); }
+            let mut statement = conn.prepare(
+                "SELECT data FROM run_events WHERE run_id=?1 AND event_type='run_terminal' ORDER BY sequence"
+            ).map_err(map_sqlite)?;
+            let rows = statement.query_map([run_id], |row| row.get::<_, String>(0)).map_err(map_sqlite)?;
+            let terminals = rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite)?;
+            match terminals.as_slice() {
+                [terminal] => Ok(Some(serde_json::from_str(terminal).map_err(|error| CoreError::Persistence(format!("run {run_id} invalid terminal: {error}")))?)),
+                _ => Err(CoreError::Persistence(format!("run {run_id} requires exactly one canonical terminal, found {}", terminals.len()))),
+            }
         })
     }
 
@@ -221,14 +367,15 @@ impl<'db> RunStore<'db> {
     /// snapshot is only a candidate list, never authorization to recover.
     pub fn recovery_sessions(&self, now: i64) -> Result<Vec<String>> {
         self.db.with_conn(|conn| {
-            let mut statement = conn.prepare(
+            let sql = format!(
                 "SELECT DISTINCT r.session_id FROM runs r
                  WHERE r.finished_at IS NULL
+                    OR ({PENDING_TERMINAL_PROJECTION})
                     OR EXISTS (SELECT 1 FROM run_actions a WHERE a.run_id=r.id AND a.state='running')
                     OR EXISTS (SELECT 1 FROM run_approvals a WHERE a.run_id=r.id AND a.state='pending' AND a.expires_at<=?1)
                     OR EXISTS (SELECT 1 FROM subagent_runs c WHERE c.parent_run_id=r.id AND c.state='running' AND c.finished_at IS NULL)
-                 ORDER BY r.session_id",
-            ).map_err(map_sqlite)?;
+                 ORDER BY r.session_id");
+            let mut statement = conn.prepare(&sql).map_err(map_sqlite)?;
             let rows = statement.query_map([now], |row| row.get(0)).map_err(map_sqlite)?;
             rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_sqlite)
         })

@@ -37,14 +37,32 @@ pub(crate) struct AcceptedInputTurn<'db, C: Clock> {
 const ABORTED_TURN_REMINDER: &str = "The previous turn was aborted by the user. A tool or command may have executed only partially. Inspect the current workspace and process state before retrying. Do not assume the previous operation did not happen.";
 
 fn latest_terminal_was_cancelled(events: &[Event]) -> bool {
-    events
-        .iter()
-        .rev()
-        .find_map(|event| match &event.payload {
-            EventPayload::RunTerminal { kind, .. } => Some(kind == "cancelled"),
-            _ => None,
-        })
-        .unwrap_or(false)
+    let mut latest_task = None;
+    let mut cancelled = false;
+    for event in events {
+        match &event.payload {
+            EventPayload::MessageAppended { message } if message.role == Role::User => {
+                latest_task = None;
+                cancelled = false;
+            }
+            EventPayload::TaskCreated { task_id, .. } => {
+                latest_task = Some(*task_id);
+                cancelled = false;
+            }
+            EventPayload::RunTerminal {
+                run_id,
+                task_id,
+                kind,
+                ..
+            } if (run_id.is_none() && task_id.is_none())
+                || (task_id.is_some() && *task_id == latest_task) =>
+            {
+                cancelled = kind == "cancelled";
+            }
+            _ => {}
+        };
+    }
+    cancelled
 }
 
 fn append_abort_reminder_if_needed(
@@ -1208,12 +1226,99 @@ mod tests {
     }
 
     #[test]
+    fn delayed_terminal_does_not_change_the_latest_turn_abort_reminder() {
+        let sid = SessionId::nil();
+        let older = deepagent_core::id::TaskId::new();
+        let latest = deepagent_core::id::TaskId::new();
+        let mut events = vec![
+            event(
+                sid,
+                0,
+                EventPayload::TaskCreated {
+                    task_id: older,
+                    goal: "older".into(),
+                },
+            ),
+            event(
+                sid,
+                1,
+                EventPayload::MessageAppended {
+                    message: Message::user("latest"),
+                },
+            ),
+            event(
+                sid,
+                2,
+                EventPayload::TaskCreated {
+                    task_id: latest,
+                    goal: "latest".into(),
+                },
+            ),
+            event(
+                sid,
+                3,
+                EventPayload::RunTerminal {
+                    run_id: Some("latest".into()),
+                    task_id: Some(latest),
+                    kind: "cancelled".into(),
+                    reason: None,
+                },
+            ),
+            event(
+                sid,
+                4,
+                EventPayload::RunTerminal {
+                    run_id: Some("older".into()),
+                    task_id: Some(older),
+                    kind: "failed".into(),
+                    reason: None,
+                },
+            ),
+        ];
+        assert!(latest_terminal_was_cancelled(&events));
+        events.push(event(
+            sid,
+            5,
+            EventPayload::RunTerminal {
+                run_id: Some("latest".into()),
+                task_id: Some(latest),
+                kind: "succeeded".into(),
+                reason: None,
+            },
+        ));
+        events.push(event(
+            sid,
+            6,
+            EventPayload::RunTerminal {
+                run_id: Some("older".into()),
+                task_id: Some(older),
+                kind: "cancelled".into(),
+                reason: None,
+            },
+        ));
+        assert!(!latest_terminal_was_cancelled(&events));
+        events.push(event(
+            sid,
+            7,
+            EventPayload::RunTerminal {
+                run_id: Some("pre-input-failure".into()),
+                task_id: None,
+                kind: "cancelled".into(),
+                reason: None,
+            },
+        ));
+        assert!(!latest_terminal_was_cancelled(&events));
+    }
+
+    #[test]
     fn abort_reminder_is_projected_only_after_latest_cancelled_terminal() {
         let sid = SessionId::nil();
         let cancelled = vec![event(
             sid,
             0,
             EventPayload::RunTerminal {
+                run_id: None,
+                task_id: None,
                 kind: "cancelled".into(),
                 reason: Some("cancelled by user".into()),
             },
@@ -1237,6 +1342,8 @@ mod tests {
             sid,
             1,
             EventPayload::RunTerminal {
+                run_id: None,
+                task_id: None,
                 kind: "succeeded".into(),
                 reason: None,
             },

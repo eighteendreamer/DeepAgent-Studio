@@ -172,6 +172,12 @@ pub enum EventPayload {
     /// (the `runs`/`run_events` tables remain the run-local authority; this
     /// closes the two-log gap).
     RunTerminal {
+        /// Stable run identity. Absent only on legacy session events.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run_id: Option<String>,
+        /// The task bound to the run, if preparation reached task admission.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        task_id: Option<TaskId>,
         /// Terminal kind label (e.g. `succeeded` / `cancelled` / `max_turns`).
         kind: String,
         /// Optional reason / message.
@@ -307,6 +313,35 @@ impl EventPayload {
 mod tests {
     use super::*;
     use crate::message::Message;
+
+    #[test]
+    fn terminal_identity_is_optional_for_legacy_json_and_roundtrips() {
+        let legacy: EventPayload = serde_json::from_value(serde_json::json!({
+            "type":"run_terminal", "kind":"failed", "reason":"interrupted"
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            EventPayload::RunTerminal {
+                run_id: None,
+                task_id: None,
+                ..
+            }
+        ));
+        let value = serde_json::to_value(&legacy).unwrap();
+        assert!(value.get("run_id").is_none());
+        assert!(value.get("task_id").is_none());
+        let keyed = EventPayload::RunTerminal {
+            run_id: Some("run-1".into()),
+            task_id: Some(TaskId::new()),
+            kind: "succeeded".into(),
+            reason: None,
+        };
+        assert_eq!(
+            serde_json::from_value::<EventPayload>(serde_json::to_value(&keyed).unwrap()).unwrap(),
+            keyed
+        );
+    }
 
     #[test]
     fn memories_injected_round_trips_and_reports_its_kind() {
