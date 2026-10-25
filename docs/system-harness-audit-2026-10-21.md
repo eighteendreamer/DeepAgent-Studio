@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| DeepSeek 模型目录的部分容量字段合并 | 正式发现和 catalog 往返保留 max_output_tokens=8192，context_window 缺失后 resolver 却返回384000/32000并进入 ContextPolicy；完整元数据与全缺失控制正常 | 新增 H-296（P3，部分元数据条件）；当前官方示例不触发，未实测线上响应、真实压缩或 provider 拒绝 |
 | TypeScript SDK 并发会话的审批与流收尾 | 同一正式 SDK 实例的 A handler 待答，B 已收到唯一 turn.completed 但下一次 next 未结束；解除 A 后同一个 next 才 done；无审批/已答控制正常 | 新增 H-295（P2）；本机真实 stdio、合成对端，未修生产逻辑；未证明服务端 B 未完成、权限突破或真实模型后果 |
 | 成功文件操作与最终净变化的完成验收 | 正式 ChatService 创建后删除、读取后同内容写回均成功且最终状态正确，仍各发送2个含 completion_blocked 的额外模型请求，最终 fail-open；持久创建/删除对照正常 | 新增 H-294（P3）；两个正常行为期望探针保持 ignored 且显式执行失败，未修生产逻辑，未证明真实模型会据错误反馈重复改文件 |
 
@@ -8319,3 +8320,42 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `pnpm test` 成功：包含正式 `pnpm build`，现有 SDK **5 passed / 0 failed**；`pnpm typecheck` 成功。两个新 mjs 分别执行 `node --check` 均成功；新审计文件默认运行 **2 passed / 0 failed / 1 skipped，154.50ms**。故障测试仍以正确行为为期望，只有 RUN_HARNESS_AUDIT=1 才启用，不把默认跳过写成修复通过。
 - 在 SDK 目录显式列出全部六个 `*.test.mjs` 执行 `node --test`，未设置 RUN_HARNESS_AUDIT：**11 passed / 0 failed / 11 skipped，463.07ms**。运行的是各文件默认正常控制，既有已知故障探针全部跳过；没有重复旧探针申请新编号。原 `pnpm test` 只指定 sdk.test.mjs，所以不能声称新增控制已自动纳入该脚本或 CI。
 - 本轮仅新增两个测试文件及更新报告；未修改 SDK 生产逻辑、Rust、Tauri、公共协议、权限、沙箱或配置。没有执行 Rust workspace、Clippy、Desktop build/UI、真实 CLI/AppCore/DeepSeek 或参考工程动态测试；这些不在本轮仅 JS 夹具及文档的直接变更范围内。报告 diff 和 Markdown 表格/标题已核对，`git diff --check` 通过；提交仅包含报告与两个新测试文件，用户原有未跟踪文件保留、不读取、不暂存。
+
+### H-296：模型能力解析以 context_window 是否存在决定整份元数据来源，单独公布的输出上限被 fallback 覆盖
+
+**级别：低（P3，部分模型目录元数据条件下的能力合并缺口）；状态：正式发现、catalog 序列化往返、ModelClient capability 和 ContextPolicy 已离线复现，未修复。** 触发条件是 `/models` 某项提供 max_output_tokens 而不提供 context_window。当前官方示例同时给出两个字段，完整元数据对照正常；没有证据表明当前线上 Flash/Pro 会返回该部分元数据，更不能描述为默认会话必然压缩错误。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- E-296-first（source_type=command，source_ref=`crates/deepagent-app-core/tests/model_capability_partial_audit.rs`，content_hash=n/a，artifact_path=n/a）：首次执行 `cargo test -p deepagent-app-core --test model_capability_partial_audit --offline -- --include-ignored --nocapture`，**2 passed / 1 failed（预期），编译2.01秒，测试体0.00秒**。同一个失败测试收集两项差异后统一断言：只公布 max_output_tokens=8192 时，deepseek-flash 解析为384000，未知合成模型 audit-capacity-model 解析为32000。此处在首次有效输出后立即落盘，未反转断言或修改生产逻辑。
+- E-296-retention：离线 transport 只接收一次正式 `https://api.deepseek.com/models` GET；ModelDiscovery.discover 后对整个 ModelCatalog 做 serde roundtrip，逐项确认 context_window=None、max_output_tokens=Some(8192) 仍在。因此不是目录 parser 或持久化丢字段；`ModelConfig::from_catalog → ModelClient::capability` 才换成 snapshot/fallback 数字。transport.stream 主动报错以禁止误发推理请求；无公网、真实 Key、用户数据、文件操作或模型收费。
+- E-296-policy：同一正式 ContextPolicy::for_capability（无显式请求输出覆盖）对 flash 样本产生 reserved_output=384000、prompt_budget=553500；保留已公布8192而其余输入不变时，对应计算为8192/929308，差375808。未知模型对应32000/88000，对照8192/111808，差23808。这些是实际策略函数的 token 数值，不是 tokenizer 测量、已发生的压缩次数或线上费用。
+- E-296-controls：完整官方示例容量1048576/393216原样保留；相同 flash id 的完整1048576/8192及未知id的131072/8192同样保留。完全没有两个字段时维持既有 fallback（flash=1000000/384000、未知=128000/32000）。正常两测试通过，证明本项限定于部分字段合并，不是所有供应商数字都会丢失。
+
+#### 首轮根因、依据与待完成核查
+
+- `deepagent-models/src/capability.rs::provider_metadata_capability` 以 `let context_window = context_window?` 作为进入条件；context 缺失即返回None，调用方继而整体使用 official_snapshot_capability 或 fallback，已存在的 max_output_tokens 没有逐字段合并。`ModelConfig::from_catalog` 把这一结果装入 capabilities，ModelClient 查到后直接返回，错误随后进入 ContextPolicy。
+- 本轮实际读取 [DeepSeek 获取模型列表](https://api-docs.deepseek.com/zh-cn/api/list-models/)：context_window 与 max_output_tokens 是独立字段，schema未标 required；当前示例两者均有。只提供输出上限的样本是依照该可选字段契约构造的条件性输入，不冒称真实供应商返回。与H-157的effort元数据被parser丢弃不同，这里输出数字在catalog中完好，错误发生于resolver的整对象择源；不重跑H-157/H-49旧探针。
+- 已读 DeepSeek Harness `llm-deepseek/src/model-info.ts` 的 contextWindow 与 maxTokens 独立fallback，以及 Codex models-manager 的已有模型描述/配置覆盖边界；成熟对照、影响与根治建议、后续验证继续核查追加，不预填尚未执行的结果。
+
+#### 实际调用方、成熟 Agent 对照与 DeepSeek 边界
+
+- `run_assembler.rs` 从 `client.capability(&model)` 取得能力，并结合 prepare_response_request 的实际输出配置调用 `ContextPolicy::for_capability_with_output`；`settings.rs::effective_max_output_tokens` 允许None。`subagent_runner.rs` 为子模型直接调用 `ContextPolicy::for_capability`，再把阈值和policy交给同一个 ModelAgent。上述是实际生产调用方；本轮动态探针止于这些公开构件，**没有启动完整 ChatService/Kernel 或子Agent任务**，不把静态可达性冒充端到端压缩复现。
+- **DeepSeek Harness（静态对照）**：`借鉴/deepseek-harness/packages/llm/llm-deepseek/src/model-info.ts::modelInfo` 分别用 `configured?.contextWindow ?? connection.defaultContextWindow` 和 `configured?.maxTokens ?? connection.maxTokens`，缺少context不影响已配置maxTokens；`types.ts::DeepSeekCatalogModel` 也分别声明两个可选字段。它的maxTokens是adapter配置的每次请求输出上限，不等同本项目从 `/models` 取得的服务端硬上限；本轮不声称它已动态消费同构目录响应。可迁移原则是缺字段时逐字段补齐，不因无关字段缺失抛弃已有事实。未运行参考测试。
+- **Codex（静态对照）**：`借鉴/codex/codex-rs/models-manager/src/manager.rs::construct_model_info` 在找到remote描述时保留 `..remote`，仅更新slug与fallback标记；未找到整个模型时才调用 `model_info_from_slug`。`model_info.rs::with_config_overrides` 逐项更新显式配置，context override还受max_context_window限制；`model_info_tests.rs` 覆盖无override保持原对象及有override按上限收敛。其模型schema没有本次同名max_output_tokens字段组合，不能写成同构问题已验证解决；可对照的是已知模型元数据不因某个可选属性为空而整份回退。
+- **官方边界**：[Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)的max_output_tokens包含可见文本和思维链，[模型列表](https://api-docs.deepseek.com/zh-cn/api/list-models/)区分上下文总容量与服务端允许输出上限。因此需要区分“供应商硬容量”“请求本次输出值”和“缺字段估计”。[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)要求无状态完整历史；[KV Cache](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)复用输入前缀，不纠正宿主错误预算，也不能把缓存token从容量中直接扣掉。[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)不规定本地能力合并规则。本项不涉及工具schema不合法、reasoning丢失或缓存命中率实测。
+
+#### 影响、定级与根治建议（本地设计，未实施）
+
+- 已证明的直接后果是目录样本中明确提供的一个容量字段被覆盖，错误数字进入同一正式预算策略；无请求覆盖的两样本把输出预留抬高375808/23808 token，从而缩小prompt_budget。resolver还将部分已提供元数据的结果整体标为BundledOfficialSnapshot/ConservativeFallback，无法从单一source看出“此输出值本应来自provider”。这些提供值均为离线样本，不是本轮线上查询结果。
+- 由源码推导，若后续长会话依赖这些值决定主动压缩或片段接纳，可能比尊重已知输出上限更早压缩/舍弃可选上下文；若显式请求输出值不大于8192，输出预留差异可以不触发。当前没有构造足够长的真实历史、调用摘要模型或发送超过容量的请求，故不声称已发生信息丢失、额外收费、provider 400或线上性能下降；本次也没有证明服务端输出超出8192。P3体现可选字段条件、当前官方完整示例正常、以及后果主要为预算可靠性而非权限或数据破坏。
+- 根治应保持现有 `ModelCapabilityResolver → ModelConfig.capabilities → ContextPolicy` 单一边界：每个字段分别按已解析provider值、明确匹配的版本化官方快照、保守fallback取得，只有字段自身缺失时补值；随后统一验证正数、合理容量组合及数字转换，不用重新序列化整个catalog修补。值来源若混合，应由现有capability元数据表达混合/逐字段来源或明确缺失说明，不得仍把整份结果标成纯官方或纯未知。此来源表达属于本地设计建议，尚未实施，不预设必须新增crate或另一份能力库。
+- 供应商硬上限与本次请求输出配置应各自保留，ContextPolicy按实际请求和可靠硬容量计算；显式请求超过已知硬上限时需要可定位的验证/明确策略，不可用本项预算修复代替完整provider validator。回归应覆盖full/context-only/output-only/none、已知与未知model、catalog恢复、主备切换、主/子Agent、请求输出override与容量更新；本轮动态只覆盖full/output-only/none及当前策略函数，其他为待补验收。
+
+#### 后续验证进度
+
+- 首次 `cargo fmt --all -- --check` 只发现新测试的一处换行，执行 `cargo fmt --all` 后新target默认运行 **2 passed / 0 failed / 1 ignored**。缺陷测试保留正确期望与ignored；没有为交付将缺陷断言反转，完整元数据的三个样本均保留为正常控制。
+- `cargo test -p deepagent-models --offline` 成功：单元83 passed/23 ignored，集成共2 passed/17 ignored，doc-tests0；合计 **85 passed / 0 failed / 40 ignored**。`cargo test -p deepagent-context --offline` **54 passed / 0 failed**，doc-tests0。未启用既有ignored探针，不使用旧发现重编号。
+- 实际执行 `cargo clippy -p deepagent-app-core --test model_capability_partial_audit --offline -- -D warnings`，退出1，被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断；不能报告lint通过，也未顺手修改生产代码绕过它们。
+- `cargo test -p deepagent-app-core --offline -- --test-threads=1` 已在同一进程完成，**全命令退出0**，覆盖默认单元、集成和doc-tests，包含新target的正常控制；没有启用所有既有ignored故障探针。长输出中段被工具截断，不拼造本轮AppCore累计测试总数，也不拿旧提交计数替代。新target格式化后的默认 **2 passed / 1 ignored** 另有完整未截断输出。
+- `cargo fmt --all -- --check` 与 `git diff --check`最终通过。仅新增此测试文件和报告，未修改生产Rust、协议、配置、权限、沙箱、数据格式或前端；用户原有未跟踪文件保持不动。不重跑已登记故障探针、不重复计算H-157/H-49；本项首次故障探针只显式执行一次。未运行整个workspace、Desktop build/UI、真实DeepSeek模型或参考工程，不声称全系统审计已完成。
