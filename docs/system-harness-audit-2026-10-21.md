@@ -24,6 +24,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| 计划模式的会话恢复与写入限制 | /plan 和 set_plan_mode 两入口的热续聊均阻止真实写入；关闭文件 SQLite/重建 ChatService 后同一会话 plan=false，正式 write_file 创建临时文件；/plan 历史仍进入 wire | 新增 H-288（P2，服务重建条件）；未修复；显式重设、退出和其他会话对照通过；离线模型及合成临时文件，不归入供应商缓存问题 |
 | Windows 内容编辑的文件访问控制元数据 | 正式 write_file/edit_file/multi_edit 均成功写正文，却将受保护的单条 DACL 替换为继承规则；文件 SQLite 重开后检查点恢复正文但不恢复原策略；只读及默认继承 ACL 写入对照正常 | 新增 H-287（P2，自定义/受保护 ACL 文件条件）；未修复，仅合成临时文件；未验证其他账户访问、真实数据泄漏、跨平台或 staging 读取 |
 | 原生文件移动的失败提交边界 | 正式 move_path 将文件覆盖移动到自身父目录，返回 failure 却删除源和无关 sibling；三个平级/拒绝对照正常；文件 SQLite 重开及正式检查点显式恢复成功 | 新增 H-286（P1，授权 overwrite+祖先目标条件）；未修复，检查点可恢复但工具失败不自动还原；无用户数据或公网 |
 | Harness 分叉锚点资格与检查点数值边界 | 正式模型工具循环实际读取/写入临时文件并完成；不存在的 tail+1 仍成功复制全部历史；`i64::MAX+1`/`u64::MAX` 额外把文件恢复到旧内容，而 child 仍保留完整成功写入历史 | 新增 H-285（P2，显式非法序号条件）；默认/真实 tail/起点三项对照通过；正式 dispatcher/AppCore/Kernel/CheckpointManager、文件 SQLite、离线模型，无用户文件或公网 |
@@ -7979,3 +7980,64 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**94 passed / 0 failed / 89 ignored**（183 tests，测试体 14.25 秒），包含本轮正常对照；没有重复执行已知故障探针冒充新增证据。`cargo fmt --all -- --check`、`git diff --check` 均通过。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 未通过，仍被未修改的 `crates/deepagent-models/src/client.rs:355 clone_on_copy` 与 `crates/deepagent-persistence/src/run_store.rs:127 explicit_counter_loop` 阻断，未进入本测试目标的完整 lint，不宣称 lint 通过。
 - 未执行 workspace 全量、Desktop build/截图、真实 DeepSeek、其他操作系统或参考工程测试；本轮只增加测试入口/fixture 和审计文档，无生产契约、权限配置或数据迁移变更。code-audit 的人工可达性与误报核对要求使本项区分了夹具环境失败、正式成功写入、真实 DACL 变化及有效正文恢复，不以静态 API 搜索代替证据。用户已有未跟踪文件不纳入提交。
+
+### H-288：计划模式只存在服务内存，恢复同一会话后静默失去写入限制
+
+**级别：中（P2，服务重建后的协作状态与执行策略不一致）；状态：正式 ChatService/Kernel/文件工具及文件 SQLite 重开已复现，未修复。** 必须先启用该 session 的计划模式、随后关闭并重建宿主服务；不是同服务正常续聊必现，也不描述为绕过 read_only 权限、审批或 SandboxBackend。
+
+#### 即时 Evidence（2026-10-25，首次复现后立即登记）
+
+- Scope：自有仓库授权审计，独立 tempfile workspace、文件 SQLite、合成正文与离线 Responses transport；无用户文件、公网、真实 DeepSeek、命令执行或外部服务。新建目标按每次调用使用唯一文件名，不依赖 H-76 的旧读资格或已有文件覆盖。
+- 新增 `crates/deepagent-app-core/tests/kernel_v2_e2e/plan_lifecycle.rs`，正式 `SettingsService` 默认权限 → `ChatService` → Kernel/ToolPipeline → `write_file` → 下一真实序列化 Responses input。入口分别为生产 `/plan` 命令和桌面 Tauri 直接复用的 `ChatService::set_plan_mode`；没有手工改 SQL 或构造 checkpoint。
+- 首次命令：`cargo test -p deepagent-app-core --test kernel_v2_e2e plan_lifecycle:: --offline -- --include-ignored --nocapture --test-threads=1`。故障探针中的两组已完成，均为 `cold_mode_before_reapply=false`、`mode=false`、`ok=true`、`written=true`；随后在“恢复后仍应限制写入”的最终断言失败。两组在重开前各有连续两轮 mode=true、工具拒绝、目标不存在的正常热续聊验证。
+- `/plan` 组 `prior_plan_in_wire=true`：重开后首次请求仍有原来的“Entered Plan mode”历史声明，却没有恢复实际约束。setter 组该标记 false，与入口不写对话声明相符。每次尝试恰好两个模型请求，唯一 call/output 配对，结果 status 与真实文件一致；所有尝试均只有一个 succeeded 运行终态（模型观察工具拒绝后仍可正常回答，不要求单工具拒绝必然终结整个 run）。
+- 已等待原服务的 session memory passes 收尾，drop ChatService/SettingsService 后断言旧 Database Arc 仅余 fixture owner，再退出作用域真正关闭 DB；随后重开同一个文件，设置读取仍为原模型，没有重置 settings。仅合成 transport 的观察计数器与 fixture secret backend 跨服务保留，不复用旧 plan map。
+- 此时组合命令的正常控制测试仍在执行；其最终结果、更多参考与收尾验证将在实际得到后补充，不把未完成对照提前写成通过。
+
+#### 对照完成后的追加证据
+
+- E-288-first（source_type=command，content_hash=n/a）：上述同一命令最终 **1 passed / 1 failed（故障探针预期）**，测试体 4.98 秒。默认正常控制与 ignored 故障探针各一项；没有先重跑已知故障再另作“新发现”登记。
+
+| 场景 | 入口 / 恢复操作 | 当前计划模式 | 下一 wire 工具结果 | 实际新文件 |
+|---|---|---|---|---|
+| 原服务连续两轮（两入口各验证） | /plan 或 set_plan_mode(true)，不重建 | true | error，含 Plan mode 拒绝 | 均不存在 |
+| 重开（故障） | /plan，无显式退出/重设 | **false** | **ok** | **创建，合成正文完整** |
+| 重开（故障） | set_plan_mode(true)，无显式退出/重设 | **false** | **ok** | **创建，合成正文完整** |
+| 重开后显式重设（两入口各验证） | set_plan_mode(true) | true | error，含 Plan mode 拒绝 | 不存在 |
+| 合法退出 | /plan 后正式 /execute | false | ok | 创建，正文完整 |
+| 独立会话 | 原 session 仍 plan=true，另一新 session 未启用 | false | ok | 创建，正文完整 |
+
+- 重设对照重开之前也独立执行了两次热拒绝；故障与对照使用各自临时数据库，没有先由失败组残留目标影响对照。不因合法退出/其他 session 允许写入就认定权限失效；只有没有退出的同一会话恢复丢状态登记为问题。
+
+#### 根因、跨层核对与去重
+
+- `crates/deepagent-app-core/src/chat_service.rs` 在构造时为 `plan_modes` 创建空 HashMap；`plan_mode_for_session()` 使用 `or_default()` 创建 inactive 原子标志，`is_plan_mode()` 对缺项返回 false，`set_plan_mode()` 只更新该内存标志。`run_assembler.rs` 自己的同名 helper 也只从 map 取默认值，没有从 prior_events 恢复计划状态；`initial_plan_mode` 仅在**非续聊**时设 true，不是已存会话恢复协议。
+- `slash_runtime.rs::apply_slash_action` 对 EnterPlanMode/ExitPlanMode 改同一内存 map；随后只把命令和自然语言回复保存成普通消息。核心 `EventPayload` 没有计划状态变更项，现有 `SessionStarted.mode: SessionMode` 表示 Normal/Resumed/BackgroundTask 等运行入口，不包含 Plan，不能误认为已持久化该 flag。自然语言“Entered Plan mode”可以回放，不等于恢复受控状态。
+- `hook_assembly.rs` 将这个 flag 交给真正阻止非 plan-safe 工具的 `PlanModeHook`，`kernel_runtime.rs`/`plan_mode_reminder.rs` 又用同 flag 控制结果提醒。因此丢失的不只是 UI 标签：正式流水线执行约束实际消失，原指示与当前行为分裂。
+- 跨层消费者：Tauri `get_plan_mode`/`set_plan_mode` 直接转发 ChatService；`apps/desktop/src/App.tsx` 激活会话时调用 getPlanMode 并设置显示状态。此次未启动 Tauri/WebView，不能将源码调用关系当作桌面重启截图证据；已实测的是它们共用的 AppCore 方法、真实会话恢复和文件副作用。
+- 与 H-04 不重复：H-04 是 app-server ThreadState 的 provider/model/permission/sandbox 在同进程 resume/steer 被覆盖，本项不调用该 dispatcher，也不改变任何这些覆盖值；根因是 AppCore 独立 plan map 没有 durable 状态。与 H-227 的全局费用限额内存丢失相似但属于另一领域的不变量，治理应采用同样的“实际状态可恢复”原则，不以同一测试重复编号。两种入口合并为一个 H-288。
+
+#### 成熟 Agent 与 DeepSeek 官方边界
+
+- **DeepSeek Harness（本地源码和测试静态对照，未运行）：** `借鉴/deepseek-harness/packages/plan/plan-mode/src/index.ts::planProjectionDefinition` 将 `plan/mode {active}` 作为 whole-value replace 事件，恢复时 fold session log，以最后值为准；还跟踪 command/run、command/done 的 pending 选择，在被接受的 pre-step 提交而非靠会话文本猜测。`tests/projection.spec.ts` 包含冷 registry 从 log 恢复 pending 的测试，`tests/plan-mode.spec.ts` 覆盖空 log/最后值及 seeded resume 状态。`README.md` 明确恢复/fork/compaction 的可回放计划状态。
+- **重要差异：** 该参考项目将 plan 作为协作指导，所有工具仍可调用，强制限制由 sandbox/approval 独立承担；本系统却明确提供 PlanModeHook 硬拒绝。因此这里只借鉴状态来源和恢复机制，不能声称参考项目以同一个硬门禁测试证明阻止 write_file。是否采用软指导还是硬限制是本地产品选择，但显示、模型指导、执行和恢复必须一致。
+- **Codex（本地静态对照，未运行）：** `core/src/session/turn_input_tests.rs::prepared_user_updates_merge_with_settings_at_turn_start` 明确断言 session、turn_context 及 initial_settings 的 collaboration mode 一致，模式与本次模型设置共同解析，不只依赖普通对话里的声明。该项测试不是冷恢复测试，故不把它作为“Codex 同输入重启后必定保留硬写门禁”的证明；本项直接的 durable 参考是上面的 DeepSeek Harness plan projection。
+- **官方依据（本轮联网复核）：** [Responses API 参数](https://api-docs.deepseek.com/zh-cn/api/create-response/)说明会话无状态、宿主每次回传完整 input；[Tool Calls](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)说明函数由宿主执行；[KV cache](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)是前缀缓存，不是宿主计划状态存储。即使发送的旧历史或缓存一致，也不能重建本地 map 的硬拒绝。本 fixture 不测真实模型是否会遵守旧计划文本，更不把该遗漏归因于 DeepSeek 模型能力。
+
+#### 影响与治理方向（本地设计，未实施）
+
+- 已证明的影响是同一 session 在没有 /execute 或 exit 工具调用时，服务重建改变实际写入资格，随后一次正常格式 write_file 成功产生磁盘副作用。用户若以为此前的“只规划”仍有效，可能在恢复后得到非预期编辑；本轮没有覆盖已有用户文件、运行 shell、Git 提交或真实模型自主决策，不外推已经发生那些后果。
+- P2 的限制：需要服务重建且调用方未重新设计划状态，热续聊对照正常；默认权限本来允许写新文件，未证明权限提权。计划门禁本就允许显式退出，不能以它替代正式权限/沙箱。风险来自恢复时没有显式选择、事件或诊断地丢掉承诺的状态，而不是模型可在合法退出后写文件。
+- 在现有 session 事件/状态投影增加版本化协作模式变更，以单一 replay 结果初始化会话 flag，供 slash、工具、Tauri、Harness 和 hook/reminder 共用；不解析任意自然语言“Entered Plan mode”来补恢复，不增设第二个会话库。写入 durable 事件成功后再确认状态切换；恢复不完整需明确返回缺口或要求确认，不能默认假装用户已退出。
+- 有效 run/turn 配置应绑定当次模式来源及状态代次；并发切换在既有租约/运行控制边界确定何时生效。回归覆盖用户 setter、slash、enter/exit 工具、initial_plan_mode、连续 turn、服务重建、fork/rewind/compaction、合法退出、不同会话、持久化失败和恢复后权限组合。本轮只验证上表所列路径，不将尚未测过的 fork/并发当作已确认故障。
+
+#### 验证进度（持续追加）
+
+- 本轮只新增审计 fixture、入口和文档，没有修生产逻辑；已确认的失败探针保持 ignored。`cargo fmt --all -- --check`、`git diff --check` 均通过，用户已有未跟踪文件不纳入提交。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**95 passed / 0 failed / 90 ignored**（185 tests，测试体 13.51 秒）；本轮默认对照通过，故障探针不计入默认绿色，也没有因默认测试通过宣称 H-288 已修复。
+- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `crates/deepagent-models/src/client.rs:355 clone_on_copy` 与 `crates/deepagent-persistence/src/run_store.rs:127 explicit_counter_loop` 阻断；未完成该目标完整 lint。
+- 未执行完整 workspace、真实进程重启/双宿主、Tauri UI/构建、真实 DeepSeek、参考工程测试或 fork/rewind/compaction 的计划模式探针。关闭旧 DB owner 和重建正式服务是本项已验证的恢复边界，不用它冒充所有启动路径。无生产契约、配置、权限或数据迁移变更；code-audit 技能的人工验证要求落实为同会话/跨会话对照、真实文件状态及下一 wire 核验。
+
+#### 同轮未登记项
+
+- 文件编码审查确认 `read_file` 的公开契约明确为 UTF-8，读失败不会成功获得新的已读资格；没有仅凭不支持 UTF-16/非 UTF-8 登记“数据损坏”。混合换行、BOM 与 NUL 的具体字节保真仍需独立复现，本轮没有用静态疑点编造结果。

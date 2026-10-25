@@ -34,6 +34,9 @@ mod move_failure;
 #[path = "kernel_v2_e2e/file_metadata.rs"]
 mod file_metadata;
 
+#[path = "kernel_v2_e2e/plan_lifecycle.rs"]
+mod plan_lifecycle;
+
 #[path = "kernel_v2_e2e/file_search_policy.rs"]
 mod file_search_policy;
 
