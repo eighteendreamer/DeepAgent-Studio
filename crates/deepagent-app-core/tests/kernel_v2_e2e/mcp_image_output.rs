@@ -1,9 +1,17 @@
 //! MCP result projection must preserve model content and separate client metadata.
 
+use super::responses_fixture::{call, completed, text};
 use super::*;
 use deepagent_app_core::{McpServerDto, McpService, PermissionPreset};
 use deepagent_builtins::ToolSearchMode;
+use deepagent_core::event::EventPayload;
+use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::run_control::{RunActionState, RunControlStore};
+use deepagent_persistence::run_store::RunStore;
 use std::time::Duration;
+
+const CALL: &str = "audit-image-call";
+const RUN: &str = "audit-mcp-image-result";
 
 struct McpOutputModel {
     calls: AtomicUsize,
@@ -17,15 +25,18 @@ impl HttpTransport for McpOutputModel {
             .lock()
             .unwrap()
             .push(serde_json::from_str(&request.body).unwrap());
-        let events = match self.calls.fetch_add(1, Ordering::AcqRel) {
-            0 => response_function_call(
-                "audit-image-call",
-                "mcp__image_output__get_image",
-                serde_json::json!({}),
-            ),
-            1 => response_text("MCP result received."),
+        let index = self.calls.fetch_add(1, Ordering::AcqRel);
+        let item = match index {
+            0 => call(CALL, "mcp__image_output__get_image", serde_json::json!({})),
+            1 => text("audit-mcp-final", "MCP result received."),
             _ => return Err(CoreError::other("unexpected model request")),
         };
+        let events = completed(
+            &format!("audit-mcp-response-{index}"),
+            "deepseek-v4-flash",
+            item,
+            serde_json::json!({"input_tokens":20,"output_tokens":5,"total_tokens":25}),
+        );
         emit_responses_events(sink, &events)
     }
 }
@@ -69,6 +80,65 @@ async fn audit_mcp_image_result_is_not_serialized_as_text_json() {
 #[tokio::test]
 async fn mcp_public_text_and_structured_result_reach_the_model() {
     assert_metadata_projection(false).await;
+}
+
+#[tokio::test]
+async fn mcp_execution_error_is_preserved_through_events_storage_and_model_input() {
+    for flag in [Some(false), Some(true), None] {
+        const MARKER: &str = "audit-mcp-execution-result";
+        let mut result = serde_json::json!({
+            "content": [{"type":"text", "text":MARKER}],
+            "structuredContent": {"audit":"retained"}
+        });
+        if let Some(flag) = flag {
+            result["isError"] = flag.into();
+        }
+        let observed = mcp_result_observation(result).await;
+        let expected_ok = flag != Some(true);
+        assert_eq!(observed.event_ok, expected_ok);
+        assert_eq!(observed.session_ok, expected_ok);
+        assert_eq!(
+            observed.action_state,
+            if expected_ok {
+                RunActionState::Completed
+            } else {
+                RunActionState::Failed
+            }
+        );
+        assert_eq!(observed.session_output["isError"], !expected_ok);
+        assert_eq!(observed.session_output["content"][0]["text"], MARKER);
+        assert_eq!(
+            observed.session_output["structuredContent"]["audit"],
+            "retained"
+        );
+        let outputs: Vec<_> = observed.requests[1]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "function_call_output" && item["call_id"] == CALL)
+            .collect();
+        assert_eq!(
+            outputs.len(),
+            1,
+            "one result must remain paired with the call"
+        );
+        let wire: serde_json::Value =
+            serde_json::from_str(outputs[0]["output"].as_str().unwrap()).unwrap();
+        assert_eq!(wire["status"], if expected_ok { "ok" } else { "error" });
+        let payload = &wire[if expected_ok { "result" } else { "error" }];
+        assert_eq!(payload["isError"], !expected_ok);
+        assert_eq!(payload["content"][0]["text"], MARKER);
+        assert_eq!(payload["structuredContent"]["audit"], "retained");
+        if !expected_ok {
+            assert_eq!(payload["error"], MARKER);
+        }
+        assert_eq!(
+            observed.terminal_kind, "succeeded",
+            "the model may acknowledge a failed tool and finish the turn"
+        );
+        eprintln!("MCP error semantics: isError={flag:?} model_requests={} event_ok={} session_ok={} action={:?} wire_status={} terminal={} sqlite_reopened=true",
+            observed.requests.len(), observed.event_ok, observed.session_ok, observed.action_state, wire["status"], observed.terminal_kind);
+    }
 }
 
 #[tokio::test]
@@ -119,6 +189,19 @@ async fn assert_metadata_projection(include_meta: bool) {
 }
 
 async fn mcp_result_requests(result: serde_json::Value) -> Vec<serde_json::Value> {
+    mcp_result_observation(result).await.requests
+}
+
+struct McpResultObservation {
+    requests: Vec<serde_json::Value>,
+    event_ok: bool,
+    session_ok: bool,
+    session_output: serde_json::Value,
+    action_state: RunActionState,
+    terminal_kind: String,
+}
+
+async fn mcp_result_observation(result: serde_json::Value) -> McpResultObservation {
     let root = tempfile::tempdir().unwrap();
     let script = root.path().join("image-result-mcp.cjs");
     std::fs::write(
@@ -151,7 +234,8 @@ setTimeout(() => process.exit(2), 15000).unref();
     )
     .unwrap();
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db_path = root.path().join("mcp-result.sqlite");
+    let db = Arc::new(Database::open(&db_path).unwrap());
     let settings = Arc::new(SettingsService::new(
         db.clone(),
         Arc::new(MockTransport::with_get_json(
@@ -194,7 +278,7 @@ setTimeout(() => process.exit(2), 15000).unref();
         calls: AtomicUsize::new(0),
         requests: Mutex::new(Vec::new()),
     });
-    let chat = ChatService::new(db, settings, model.clone(), root.path()).with_mcp(mcp);
+    let chat = ChatService::new(db.clone(), settings, model.clone(), root.path()).with_mcp(mcp);
     let outcome = tokio::time::timeout(
         Duration::from_secs(5),
         chat.run_in_session(
@@ -205,14 +289,57 @@ setTimeout(() => process.exit(2), 15000).unref();
             Vec::new(),
             None,
             false,
-            Some("audit-mcp-image-result"),
+            Some(RUN),
             |_| {},
             |_| {},
         ),
     )
     .await;
     ready.close_all().await.unwrap();
-    outcome.expect("the MCP result run must finish").unwrap();
+    let session = outcome.expect("the MCP result run must finish").unwrap();
+    let live = chat.run_events(RUN, None).unwrap();
+    let live_tools: Vec<_> = live
+        .iter()
+        .filter(|event| event.event_type == "tool_completed" && event.data["call_id"] == CALL)
+        .collect();
+    assert_eq!(live_tools.len(), 1);
+    let event_ok = live_tools[0].data["ok"].as_bool().unwrap();
+    drop(chat);
+    drop(db);
+    let reopened = Database::open(&db_path).unwrap();
+    let events = RunStore::new(&reopened).events_after(RUN, None).unwrap();
+    let stored_tools: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "tool_completed" && event.data["call_id"] == CALL)
+        .collect();
+    assert_eq!(stored_tools.len(), 1);
+    assert_eq!(stored_tools[0].data["ok"], event_ok);
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    let terminal_kind = terminals[0].data["kind"].as_str().unwrap().to_owned();
+    let actions = RunControlStore::new(&reopened).list_actions(RUN).unwrap();
+    assert_eq!(actions.len(), 1);
+    assert_eq!(actions[0].call_id, CALL);
+    let history = EventStore::new(&reopened)
+        .load_session(session.parse().unwrap())
+        .unwrap();
+    let completions: Vec<_> = history
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::ToolCallCompleted {
+                call_id,
+                ok,
+                output,
+                ..
+            } if call_id == CALL => Some((*ok, output.clone())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(completions.len(), 1);
+    let (session_ok, session_output) = completions.into_iter().next().unwrap();
 
     let requests = model.requests.lock().unwrap().clone();
     assert_eq!(
@@ -220,5 +347,12 @@ setTimeout(() => process.exit(2), 15000).unref();
         2,
         "the tool result must be followed by a model request"
     );
-    requests
+    McpResultObservation {
+        requests,
+        event_ok,
+        session_ok,
+        session_output,
+        action_state: actions[0].state,
+        terminal_kind,
+    }
 }

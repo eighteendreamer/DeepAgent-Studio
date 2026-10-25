@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| MCP 工具执行错误的事件、持久化与模型输入 | 同一正式 ChatService 夹具的 isError=false/true/缺省三样本；文件 SQLite 重开后核对工具完成事件、action、会话原始结果及下一请求唯一关联结果 | 本轮排误，不新增 H 编号：true 保持 Failed/error，false及缺省保持 Completed/ok；不关闭 H-38/H-127/H-138/H-139/H-278，不代表整个MCP通过 |
 | DeepSeek 模型目录的部分容量字段合并 | 正式发现和 catalog 往返保留 max_output_tokens=8192，context_window 缺失后 resolver 却返回384000/32000并进入 ContextPolicy；完整元数据与全缺失控制正常 | 新增 H-296（P3，部分元数据条件）；当前官方示例不触发，未实测线上响应、真实压缩或 provider 拒绝 |
 | TypeScript SDK 并发会话的审批与流收尾 | 同一正式 SDK 实例的 A handler 待答，B 已收到唯一 turn.completed 但下一次 next 未结束；解除 A 后同一个 next 才 done；无审批/已答控制正常 | 新增 H-295（P2）；本机真实 stdio、合成对端，未修生产逻辑；未证明服务端 B 未完成、权限突破或真实模型后果 |
 | 成功文件操作与最终净变化的完成验收 | 正式 ChatService 创建后删除、读取后同内容写回均成功且最终状态正确，仍各发送2个含 completion_blocked 的额外模型请求，最终 fail-open；持久创建/删除对照正常 | 新增 H-294（P3）；两个正常行为期望探针保持 ignored 且显式执行失败，未修生产逻辑，未证明真实模型会据错误反馈重复改文件 |
@@ -8359,3 +8360,40 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 实际执行 `cargo clippy -p deepagent-app-core --test model_capability_partial_audit --offline -- -D warnings`，退出1，被未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 与 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断；不能报告lint通过，也未顺手修改生产代码绕过它们。
 - `cargo test -p deepagent-app-core --offline -- --test-threads=1` 已在同一进程完成，**全命令退出0**，覆盖默认单元、集成和doc-tests，包含新target的正常控制；没有启用所有既有ignored故障探针。长输出中段被工具截断，不拼造本轮AppCore累计测试总数，也不拿旧提交计数替代。新target格式化后的默认 **2 passed / 1 ignored** 另有完整未截断输出。
 - `cargo fmt --all -- --check` 与 `git diff --check`最终通过。仅新增此测试文件和报告，未修改生产Rust、协议、配置、权限、沙箱、数据格式或前端；用户原有未跟踪文件保持不动。不重跑已登记故障探针、不重复计算H-157/H-49；本项首次故障探针只显式执行一次。未运行整个workspace、Desktop build/UI、真实DeepSeek模型或参考工程，不声称全系统审计已完成。
+
+## 2026-10-25 增量排误：MCP 工具执行错误的跨层状态保真（不分配 H 编号）
+
+### 范围、去重与首次执行记录
+
+- 本轮仅审计与测试，未修改生产逻辑。复用 `tests/kernel_v2_e2e/mcp_image_output.rs` 的真实本机 Node stdio 服务、正式 SettingsService/McpService/ChatService/Kernel；模型由离线 HttpTransport 回放完整带 sequence_number 的 Responses 事件。临时文件 SQLite，全部内容为合成数据，无真实凭据及公网模型请求，不读取用户原有未跟踪文件。
+- 检验假设为“服务通过成功 JSON-RPC envelope 返回 isError=true，后续是否错误记成功或向模型隐藏错误”。已有 adapter 单测正确映射 `ok=!is_error`，不足以直接断言全链路，但也不能据疑点登记缺陷。与 H-38 的 WorkflowAgent 包装、H-127 图片投影、H-138 私有_meta、H-139 后置hook失败和 H-278 未知结果重放去重；本轮不启用这些既有 ignored 故障探针。
+- 首次执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_image_output::mcp_execution_error --offline -- --nocapture`：**0 passed / 1 failed，测试体0.84秒，编译32.78秒**。成功控制已通过并打印2次模型请求、Completed action和succeeded终态。错误样本在读取 `wire["result"]["isError"]` 时得到Null；此前工具事件=false、持久化会话事件=false、action=Failed、原始正文/结构化数据保留、wire.status=error均已通过。
+- 追查 `ModelAgent::record_observation` 确认现有契约是成功正文放 `result`、失败正文放 `error`，并非两个分支都放 `result`。首次失败属于新测试对宿主 envelope 的错误假设，**不是产品错误被吞的证据**。仅更正测试读取现有字段，仍要求错误状态、原始isError、正文、结构化数据和唯一call_id结果全部保留；不修改生产输出、不反转正确期望。此处在后续验证前即时记录，暂不预填通过结果。
+
+### 更正夹具后的实际结果（首次有效验证后即时追加）
+
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_image_output:: --offline -- --nocapture` 完整退出0：**2 passed / 0 failed / 2 ignored，测试体1.35秒，编译37.77秒**。其中新测试内部顺序执行三份样本，不把它们虚报为三个测试；另一通过项为既有公开text/structured result正常控制，两个既有故障探针保持ignored。
+
+| 服务结果 isError | 正式 run_events 工具ok | 重开SQLite会话工具ok | action | 下一真实序列化input正文 | 唯一运行终态 |
+|---|---|---|---|---|---|
+| false | true | true | Completed | status=ok，result.isError=false | succeeded |
+| true | false | false | Failed | status=error，error.isError=true，原始错误text保留 | succeeded |
+| 缺省 | true | true | Completed | status=ok，result.isError=false | succeeded |
+
+- 三样本均恰好2次模型请求；下一请求同CALL仅1条function_call_output，文本marker和structuredContent.audit均逐字段保留。事件、action和会话结果在调用正式close_all、丢弃ChatService与本地DB句柄后，以新Database连接重新读取；工具完成、action和run_terminal各仅1条。该证据是**同进程干净关闭后的文件存储重开**，不是独立进程重启或崩溃恢复；没有声称所有后台句柄/子进程已被独立审计为reaped。
+- 本样本中工具错误后固定模型回应“MCP result received.”，允许整个turn正常结束；工具失败的完整结构已交给模型，不能仅凭run_terminal=succeeded认定工具错误被吞。没有真实模型推理实验，不声称模型一定正确理解或完成原业务目标。
+- 当前MCP adapter为Medium且未覆盖Tool::is_concurrency_safe，默认只对Safe工具允许并行，所以本轮覆盖正式串行路径，不外推并行、hook、取消、超时、JSON-RPC error、断线重试、HTTP transport或UI卡片。structuredContent在本项目2024-11-05协商形状下作为保留扩展核对，未声称该旧版规范要求此字段。
+
+### 生产链、成熟实现和官方对照
+
+- 当前系统：`deepagent-mcp/src/protocol.rs::ToolCallResult` 对isError使用默认false并保留额外字段；`adapter.rs::invoke/invoke_with_context`均将ToolOutput.ok置为!is_error。`tool_pipeline.rs`发出output.ok，按ok选择AfterToolUse/PostToolUseFailure及Completed/Failed；`loop_engine.rs`将原始结果和ok写入ToolCallCompleted。`model_agent.rs::record_observation`在失败envelope中保留obs.output，再关联原call_id交给provider。动态验证支持此链正确，不分配H-297，不提出无依据的生产修复。
+- **Codex，静态对照**：`借鉴/codex/codex-rs/protocol/src/models.rs::CallToolResult::success`为is_error != Some(true)，`from_error_text`构造Some(true)；`core/src/tools/context.rs::McpToolOutput`调用该成功判定并投影结果；`core/src/mcp_tool_call.rs::sanitize_mcp_tool_result_for_model`在变换内容时保留is_error。这与本系统错误标记保真的原则一致，wire及事件类型不同，未运行Codex证明动态等价。
+- **Claude Code，静态对照**：`借鉴/claudecode/restored-src/src/services/mcp/client.ts`处理isError时提取text详情并抛McpToolCallError，之后才进入成功日志/内容处理。**DeepSeek Harness，静态对照**：`借鉴/deepseek-harness/packages/core/agent-loop/src/tool-calls.ts::appendToolResult`将result.isError与callId进入工具消息、持久化tool/result并关联call事件。两者分别用异常或结构化消息传播失败，不要求本系统复制其内部类型；未运行参考工程。
+- [MCP 2024-11-05 Tools规范](https://modelcontextprotocol.io/specification/2024-11-05/server/tools)及[2025-06-18版本](https://modelcontextprotocol.io/specification/2025-06-18/server/tools)均区分JSON-RPC协议错误与result内isError=true的工具执行错误；成功envelope不能替代工具成功判定。[DeepSeek Tool Calls指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)说明具体函数由宿主执行；[Responses指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)提供function_call/function_call_output关联与带序号的流式事件边界。status/error/result是本系统的正文envelope，不冒称DeepSeek顶层参数或供应商错误规范；本轮不涉及KV Cache命中率。
+
+### 本轮回归与交付边界
+
+- `cargo test -p deepagent-mcp --offline` 退出0：单元55 passed/4 ignored，集成3 passed/7 ignored，doc-tests0；合计 **58 passed / 0 failed / 11 ignored**。其中JSON-RPC错误等既有单测通过，但不能据此声称新增端到端测试覆盖协议错误分支。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline -- --test-threads=1` 退出0：**97 passed / 0 failed / 92 ignored，93.23秒**。新测试进入默认回归，未打开既有故障探针；本轮没有用旧失败探针重新登记问题。
+- 实际执行 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，退出1，仍被本轮未修改的 `deepagent-models/src/client.rs:355` clone_on_copy、`deepagent-persistence/src/run_store.rs:127` explicit_counter_loop阻断；不报告lint通过、不顺手修改生产逻辑或关闭lint。
+- `cargo fmt --all -- --check`、`git diff --check`通过，已人工核对测试与报告diff。只修改既有MCP测试夹具及本报告；code-audit技能要求的人工核实和证据区分，使本轮记录为排误而不是虚构缺陷。未改生产协议、配置、权限、沙箱、前端或数据迁移，用户原有未跟踪项未动。未运行整个workspace、AppCore其他target、Desktop build/UI、真实供应商或参考工程；不声称全系统审计完成。
