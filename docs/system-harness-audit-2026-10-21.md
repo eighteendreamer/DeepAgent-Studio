@@ -25,6 +25,7 @@
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
 | 计划模式的会话恢复与写入限制 | /plan 和 set_plan_mode 两入口的热续聊均阻止真实写入；关闭文件 SQLite/重建 ChatService 后同一会话 plan=false，正式 write_file 创建临时文件；/plan 历史仍进入 wire | 新增 H-288（P2，服务重建条件）；未修复；显式重设、退出和其他会话对照通过；离线模型及合成临时文件，不归入供应商缓存问题 |
+| CodeGraph 定义变更后的增量调用解析 | 正式 `CodeGraph::index_all/sync/callers` 先得到 caller→target；只改定义文件将旧边级联删除；定义恢复但 caller 未改时，调用边仍为 0 | 新增 H-289（P2，增量索引一致性）；未修复；临时 Rust fixture 与 SQLite，无模型/公网；触碰 caller 的对照恢复为 1，全量重建未单独复测 |
 | Windows 内容编辑的文件访问控制元数据 | 正式 write_file/edit_file/multi_edit 均成功写正文，却将受保护的单条 DACL 替换为继承规则；文件 SQLite 重开后检查点恢复正文但不恢复原策略；只读及默认继承 ACL 写入对照正常 | 新增 H-287（P2，自定义/受保护 ACL 文件条件）；未修复，仅合成临时文件；未验证其他账户访问、真实数据泄漏、跨平台或 staging 读取 |
 | 原生文件移动的失败提交边界 | 正式 move_path 将文件覆盖移动到自身父目录，返回 failure 却删除源和无关 sibling；三个平级/拒绝对照正常；文件 SQLite 重开及正式检查点显式恢复成功 | 新增 H-286（P1，授权 overwrite+祖先目标条件）；未修复，检查点可恢复但工具失败不自动还原；无用户数据或公网 |
 | Harness 分叉锚点资格与检查点数值边界 | 正式模型工具循环实际读取/写入临时文件并完成；不存在的 tail+1 仍成功复制全部历史；`i64::MAX+1`/`u64::MAX` 额外把文件恢复到旧内容，而 child 仍保留完整成功写入历史 | 新增 H-285（P2，显式非法序号条件）；默认/真实 tail/起点三项对照通过；正式 dispatcher/AppCore/Kernel/CheckpointManager、文件 SQLite、离线模型，无用户文件或公网 |
@@ -8037,6 +8038,50 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**95 passed / 0 failed / 90 ignored**（185 tests，测试体 13.51 秒）；本轮默认对照通过，故障探针不计入默认绿色，也没有因默认测试通过宣称 H-288 已修复。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 仍被未修改的 `crates/deepagent-models/src/client.rs:355 clone_on_copy` 与 `crates/deepagent-persistence/src/run_store.rs:127 explicit_counter_loop` 阻断；未完成该目标完整 lint。
 - 未执行完整 workspace、真实进程重启/双宿主、Tauri UI/构建、真实 DeepSeek、参考工程测试或 fork/rewind/compaction 的计划模式探针。关闭旧 DB owner 和重建正式服务是本项已验证的恢复边界，不用它冒充所有启动路径。无生产契约、配置、权限或数据迁移变更；code-audit 技能的人工验证要求落实为同会话/跨会话对照、真实文件状态及下一 wire 核验。
+
+### H-289：CodeGraph 定义文件变更后不会重新连接未修改 caller 的调用边
+
+**级别：中（P2，增量索引一致性与影响分析失真）；状态：正式 `CodeGraph` facade、临时 SQLite 和 Rust fixture 已复现，未修复。** 触发条件是先完成全量索引，随后只修改被调用函数所在文件；caller 文件本身没有内容变化。它不是网络、模型权限或工具执行漏洞，也不代表所有增量同步都会失效。
+
+#### 即时 Evidence（2026-10-25，首次复现后立即登记）
+
+- Scope：自有仓库授权审计，`tempfile::TempDir`、合成 Rust 源文件和 CodeGraph 自己创建的 `.understand-anything/codegraph.db`；没有用户文件、模型请求、公网、命令执行或外部服务。
+- 新增 `crates/deepagent-codegraph/tests/incremental_resolution_audit.rs`。测试只经过公开 `CodeGraph::open`、`index_all`、`sync`、`callers`，没有直接操作 SQLite 表或绕过 resolver。
+- 初始 fixture：`src/caller.rs` 的 `caller()` 调用 `target()`；`src/target.rs` 定义 `target()`。全量索引后 `callers("target", 10)` 返回 1 个 caller。
+- 第一次只修改定义文件，将 `target()` 改名为 `renamed()`；`sync()` 后旧边消失，`callers("target", 10)` 返回 0，说明目标节点删除触发了外键级联。
+- 第二次仍只修改定义文件，将其恢复为 `target()`；`sync()` 后 `callers("target", 10)` 仍为 0。故障探针输出：`initial_callers=1, restored_callers=0, after_caller_touch=1`。
+- 控制：随后仅给 caller 文件增加一个空行并再次 `sync()`，`callers("target", 10)` 恢复为 1。说明 caller 的 parked unresolved reference 仍在，缺口是定义变化没有使依赖它的未修改 caller 重新解析。
+- 可重跑命令：
+  `cargo test -p deepagent-codegraph --test incremental_resolution_audit audit_definition_change_reconnects_unchanged_caller --offline -- --ignored --exact --nocapture`
+  结果为 **0 passed / 1 failed（预期故障探针）**；失败断言为“restoring a changed definition must re-resolve unchanged callers”，观测值为 `left: 0, right: 1`。测试保持 ignored，不把已知缺陷伪装成默认绿色。
+
+#### 根因与生产调用链
+
+- `crates/deepagent-codegraph/src/lib.rs::CodeGraph::sync` 先对 `change.deleted`/`change.modified` 调用 `GraphStore::delete_file_cascade`，该删除会清掉被修改定义节点及其入边；随后只对 `touched` 文件重新提取，并调用 `Resolver::resolve_for_files(&changed_files)`。
+- `Resolver::resolve_for_files` 只读取这些文件的 `unresolved_refs`；未修改的 `src/caller.rs` 不在列表中，所以它的 `target` 引用不会再次运行 `name_matcher`。定义恢复后，新 target 节点存在，但没有新的 `calls` 边。
+- 这不是“旧边悬挂到已删除节点”：外键级联在第一次修改时正确删掉旧边；问题是依赖关系失效集合不完整，导致查询、`impact`、`explore` 和任何使用 calls 边的项目图投影都可能少报 caller。
+- 现有注释把增量解析描述为“只处理 changed files 的 call refs”，但没有维护“定义变更影响哪些 caller”的反向依赖或全量重解析门槛。`unresolved_refs` 保留已解析引用的设计使得恢复定义时可以重建边，但当前调度没有触发它。
+
+#### 成熟 Agent / 参考设计对照
+
+- **DeepSeek Harness（本地源码静态对照，未运行）：** `借鉴/deepseek-harness/packages/AGENTS.md` 要求“只在 commit point 发布状态”，并让 cache、prompt、UI 和 query view 都从一个权威状态派生；其 workspace/plan 等插件把派生缓存失效作为显式生命周期，而不是只根据当前调用方是否改动来猜测。该仓库没有与本项目 tree-sitter/SQLite 调用图同构的实现，因此不能声称它已经动态解决 H-289；可借鉴的是权威提交点和显式失效集合原则。
+- **Codex（本地源码静态对照，未运行）：** `借鉴/codex/codex-rs/agent-graph-store` 的 store 契约强调稳定、可合并的持久化图读写，但没有发现与本项目 symbol-call 增量解析同构的 resolver。不能把 Codex 的 agent graph store 当作“调用边自动失效”证据；本项属于本地 CodeGraph 设计缺口。
+- **Warp 增量同步规格（本地静态参考，未运行）：** `借鉴/warp/specs/APP-3788/TECH-incremental-sync.md` 把 watcher mutation 先计算、再应用，并明确只发送“实际应用的 mutation”，避免客户端树与服务端分叉。它不是调用图实现，但说明增量协议必须从权威变更结果生成更新，不能只按表面 touched 集合推断依赖闭包。
+- **Kun repo-map（本地静态参考，未运行）：** `借鉴/Kun/kun/src/adapters/tool/builtin-repo-map-tool.ts` 每次构建 repo map 都从当前文件发现结果生成完整索引，并以 `gitHead`/TTL 作为缓存身份；没有把定义文件变化当作只更新该文件的调用图补丁。它提供的是较保守的全量/缓存失效边界，不是对本项目 calls resolver 的直接证明。
+
+#### 影响与治理方向（本地设计，未实施）
+
+- 已证明后果：在定义经历“改名/删除后恢复”或等价 ABI 变化后，CodeGraph 的 `callers` 返回空，`impact` 可能漏掉直接影响者，`explore`/项目图也可能缺少调用链。若 Harness 用这些结果决定要读取、测试或修改哪些文件，模型会得到不完整的依赖上下文；本轮没有把该缺口外推为必然错误代码修改或真实 DeepSeek 决策。
+- P2 依据：需要定义文件发生变化且 caller 未同步变化；普通“caller 与 target 同时修改”会触发 caller 重解析，首次全量索引也正确。它不破坏原文件、不绕过权限、不产生网络副作用，但会让影响分析产生静默 false negative，属于代码理解与 Harness 上下文完整性问题。
+- 根治方向应在现有 `CodeGraph::sync`/`Resolver` 边界收敛：根据被删除/修改的 callable 定义，查询其旧/新名称、文件和 qualified name 的反向 unresolved/calls 依赖，把受影响 caller 文件加入同一批次重解析；无法安全计算依赖闭包时，应显式回退到一次全量 call resolution，而不是继续返回看似成功的部分图。不要另建第二个图数据库或在 `callers` 查询层临时补边。
+- 变更与解析应保持同一事务/可观察版本：先完成节点和引用更新，再发布新的 graph generation/changed set；失败时保留旧图或标记不完整，避免模型在半更新图上继续做影响判断。缓存/投影应以该 generation 失效，不能只看单文件 content hash。
+- 回归应覆盖：定义重命名、删除后恢复、签名/qualified name 改变、同名多定义、caller 与 target 同批变化、跨语言 import/call、连续 sync、进程重开、`callers/callees/impact/explore` 与 UA JSON 投影。正常无变化 sync 仍应保持 O(1) 级别的 no-op，不因修复简单地每次全量重建。
+
+#### 验证进度（持续追加）
+
+- 本轮新增仅为上述 ignored 审计 fixture 与文档；没有修改生产实现、权限配置、数据库 schema 或 DeepSeek 请求协议。
+- `cargo test -p deepagent-codegraph --offline`：**138 passed / 0 failed**（库测试）与 **5 passed / 0 failed**（既有 `index_pipeline`）；故障探针按上文单独运行并按预期失败。
+- `cargo fmt --all -- --check`、`git diff --check` 已通过；未执行 workspace 全量、Desktop 构建、真实 DeepSeek 或参考工程测试；本项只需要本地正式 CodeGraph facade 即可证明边一致性缺口。
 
 #### 同轮未登记项
 
