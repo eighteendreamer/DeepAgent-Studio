@@ -21,6 +21,8 @@
 
 文末对应章节保留为复核归档，原 E/F/P 标签仅用于追溯。撤销 H-281 的独立 P1 定级；其具体模型决策后果未验证，不能从 serializer 测试外推为默认 Desktop 故障。H-280 关于 Claude Code“未找到直接对照”的说法也已按 H-79 和本地源码校正。编号更正只核对文档、源码和提交差异，未为撤销编号重跑已知失败探针。
 
+另撤销 H-305 的独立定级和计数：该探针把明确文档化的 SDK Drop 行为误作缺陷，且没有验证清理和数据根隔离。完整更正保留在文末，原提交 `23d71291` 不改写；不是新发现或已完成修复。
+
 ## 覆盖进度
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
@@ -8790,30 +8792,13 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 本项只新增 ignored 复现与审计记录，没有修改生产 transport；没有访问公网、真实内网、云元数据或用户数据，也没有重复 H-165/H-303 的第二跳 URL 测试。验收应补充：小错误正文正常保留、恰好预算、超预算中止、无 `Content-Length` 的 chunked 响应、Unicode 截断、取消/超时、重试分类和模型目录/视频控制面共用预算。
 
-### H-305：Rust Harness SDK 丢弃 `HarnessProcess` owner 后，保留的 client clone 仍可驱动孤儿 server
+### H-305 撤销：SDK Drop 行为符合已有文档，原探针不能证明独立缺陷
 
-**级别：中（P2，Harness SDK 进程所有权与资源生命周期）；状态：正式 SDK、真实本机 `deepagent-cli server --transport stdio` 和真实管道已复现，未修复。** 触发条件是调用方从 `HarnessProcess::spawn()` 取得 `HarnessClient` clone，随后丢弃 `HarnessProcess` 而继续保留 clone（例如把 client 交给另一个任务、请求超时后只丢 owner、或异常路径绕过 `HarnessProcess::wait()`）。这不是 encrypted-content 问题，也不是 H-256 的“server 已经 EOF 但订阅等待不结束”：本项中 server 仍活着且可处理新的 RPC。
+**2026-10-25 证据更正：撤销独立 P2 定级及缺陷计数；不是修复完成。** 原提交 `23d71291` 保留在 Git 历史中供追溯，本次删除其新增的不合格测试，不重跑该探针，也不复用 H-305 编号。
 
-#### 即时 Evidence（2026-10-25）
-
-- 新增 `crates/deepagent-harness-sdk/tests/e2e_stdio.rs::audit_dropping_process_with_retained_client_does_not_orphan_server`。测试使用正式 `HarnessProcess::spawn`、正式 `HarnessClient::initialize`/`thread_list`、编译出的真实 CLI 二进制和 Windows stdio 管道；没有模型调用、工具执行、凭据、用户文件或外部网络。
-- 命令：`cargo test -p deepagent-harness-sdk --test e2e_stdio audit_dropping_process_with_retained_client_does_not_orphan_server --offline -- --ignored --nocapture --exact`。结果为 **0 passed / 1 failed（缺陷预期）**，实际输出 `drop-owner audit: retained_client_request_success=true`；`drop(process)` 后保留的 clone 仍能成功完成 `thread/list`，证明 child server 没有随 owner 丢弃而终止。
-- `HarnessProcess` 的生产注释已经明确写出 `tokio::Child` drop 默认不会 kill；实现也没有 `Drop`、共享 process owner、终止 token 或“owner 丢失后让所有 client clone 失效”的代次门。`HarnessProcess::wait()` 是唯一显式关闭路径，但 API 类型本身不能强制调用方走该路径。
-- 测试断言失败后仍调用 `client.close()`，让 server 收到 stdin EOF 并在测试结束前退出；因此本轮没有留下测试孤儿进程。测试没有把“进程仍能处理一次 RPC”扩大成永久泄漏、CPU 泄漏或真实工具副作用。
-
-#### 根因、影响与边界
-
-- `HarnessProcess` 同时持有 `Child` 和可 clone 的 `HarnessClient`。`HarnessClient` 的 stdin、pending 表、reader 和事件 sender 都通过 `Arc` 共享；丢弃 `HarnessProcess` 只 drop 本地 `Child` handle，不会 kill OS child，而任一 clone 仍保留 `ChildStdin` 时，server 的 `run_stdio` 继续读循环。于是“process owner 已不可用”与“控制面仍可写入”两种状态并存。
-- 已证后果是 orphan server 可继续接受读请求并保留自己的数据库/reader/runtime；如果 clone 没有后续 `close()`，server 的生命周期不再由创建它的 owner 管理。多次异常路径或 SDK 客户端池会累积后台进程、stdout reader、数据库句柄和临时工作目录锁，后续调用方还可能误把旧 client 当作健康连接。当前样本未测数量级、内存峰值、运行中的模型 turn 或 Windows 作业树后代，因此不声称必然 OOM、费用或命令副作用。
-- 这不是“显式 `HarnessProcess::wait()` 后仍泄漏”：正常对照 `process_exits_when_stdin_closes` 仍通过。问题是所有权契约只能靠文档提醒，clone 跨任务/异常 drop 时没有强制收尾和断线事件；也不与 H-90/H-204 的 pending RPC 清理或 H-256 的 EOF 订阅终结重复。
-
-#### 成熟 Agent 对照与治理方向
-
-- **Codex**：`借鉴/codex/codex-rs/app-server-client/src/lib.rs` 将连接断开建模为公开 `AppServerEvent::Disconnected`，客户端 worker 统一拥有请求/事件生命周期；其进程执行侧 `UnifiedExecProcessManager::terminate_all_processes` 由 manager 负责批量终止，而不是让一个可复制的轻量句柄决定 child 是否继续存活。可迁移的是“transport owner、断线状态和清理动作必须由单一 manager 负责”，不是照搬 Codex 的进程实现。
-- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/api/terminal-controller/src/retention.ts` 以 `TerminalRetention` 持有 holder 集合、closing/disposed 状态和可重试 `terminate()`；`dispose()` 会先关闭生命周期、等待观察与 process cleanup，失败会保留重试任务。它允许显式 retain，但不会因某个 UI/stream handle 被丢弃就把 owned process 脱离控制。
-- **DeepSeek 官方 Responses API**：Responses 是无状态供应商请求；官方文档没有规定本地 stdio child 或 SDK owner 的生命周期，因此 H-305 属于宿主 Harness 设计，不能靠 `reasoning`、tool call 或 KV cache 参数修复。模型调用若在 orphan server 上继续发生，供应商协议本身无法告诉客户端这是旧代连接。
-- 根治应在现有 SDK seam 收敛：让 `HarnessProcess` 内部持有共享 `ProcessOwner`/`CancellationToken`，`HarnessClient` clone 只借用该代次；owner drop/显式 close 时终止 child、等待 reader/child 有界收尾，并向所有 clone 的请求/事件流交付 `Closed/Disconnected`。若确实要支持独立脱离 owner，必须提供显式 `detach`，返回新的受管生命周期，而不是把普通 `Drop` 当作隐式 detach。回归需覆盖：clone 保留、clone 先 drop、owner 先 drop、并发 request、pending request、事件订阅、显式 wait、server 已退出、Windows 子进程树与清理超时。
-
-#### 本轮边界
-
-- 本项只新增正式失败探针和文档，没有修改 SDK/CLI 生产行为；没有启动模型、工具、MCP、桌面或远程传输，也没有读取用户数据、访问公网/内网或调查用户排除的 `encrypted-content` 报错。该项是资源/控制面生命周期缺陷，不应被错误归类为网络攻击测试。
+- 原动态观察确实为 `drop(process)` 后保留的 client 可成功调用 `thread/list`，但 `crates/deepagent-harness-sdk/src/client.rs` 的 `HarnessProcess` 文档明确声明：Drop 不终止 server，owner 应调用 `wait()`。失败断言要求的 kill-on-drop 是审计者自行设定的期望，不是已查证的项目契约；当前没有证明遵循 `wait()` 的调用方也会泄漏，也没有证明某个生产调用方违反了收尾责任。因此这只能作为可选生命周期设计评议，不能直接登记成已复现产品缺陷。
+- 原测试把 `client.close().await` 放在失败断言之后；实际 panic 会跳过该语句。“断言失败后仍调用 close”“已确认子进程退出”的原结论不成立。clone 随栈展开被释放可能关闭管道，但未保存 child handle、未 wait/查询进程退出，不能把推测当作清理证据。
+- 原夹具只指定了临时工作目录，没有指定隔离数据根；实际 `thread/list` 返回了既有会话元数据，故“没有读取用户数据”的原表述错误。此处不再复制返回内容；未执行用户历史清理或生产数据恢复，也没有证据可以认定 CLI 启动恢复完全未影响既有状态。后续真实 CLI 测试必须先确认独立数据根、隔离配置/资产/凭据，再启动进程；只有临时 cwd 不足以证明隔离。
+- 原成熟 Agent 对照引用的是 Codex 的连接/执行进程管理和 DeepSeek Harness 的 terminal retention，并非同构 SDK 的 Drop 契约；它们不能证明本项目必须 kill-on-drop。原“多次异常会累积进程/锁”等后果没有独立测量，撤销为已证后果。
+- 原故障命令为 **0 passed / 1 failed**；正常关闭对照为 **1 passed**，当时默认 e2e 为 **6 passed / 1 ignored**。这些结果只说明测试执行过，不足以将人为断言升级成缺陷。更正没有改动任何 SDK/CLI 生产代码，不关闭 H-90、H-204 或 H-256，也不重新触发 encrypted-content 问题。
+- 更正后实际执行：`cargo test -p deepagent-harness-sdk --lib --offline` 为 **5 passed / 0 failed / 12 ignored**，`cargo fmt --all -- --check` 与 `git diff --check` 通过。本次未重跑使用默认数据根的真实 CLI e2e、已登记故障探针、workspace 全量、桌面或公网模型；不以默认单测为绿声称全系统已通过。
