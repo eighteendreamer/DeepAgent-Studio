@@ -8639,3 +8639,13 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 在不改变既有后端历史字段兼容性的前提下，给桌面消费增加显式的 `last_request_*` 与 `turn_total_*` 投影，或让重载映射显示与热态相同的请求级值，并在另一个位置展示累计值；不得继续让同名 `completion_tokens` 在两条路径代表不同含义。应覆盖单请求、多工具多请求、重试/取消、失败终态、重载、分叉和旧DTO。
 - 本轮仅新增桌面审计脚本与报告，未修生产UI/DTO。随后实际运行 `pnpm --dir apps/desktop build`：**成功，Vite built in 44.42s**；构建同时通过项目既有脚本、TypeScript检查和Vite打包，但输出了第三方Node内置模块 externalized 及大chunk warning，本轮未把这些既有构建警告冒充H-299。未运行真实Tauri窗口、截图验收、真实provider或SDK消费；用户既有未跟踪项保持不读取、不暂存，全系统审计仍未完成。
+
+#### H-277 重连路径补充证据（2026-10-25）
+
+- 去重：这是 H-277 同一根因在 `ConfigReconnectFactory::reconnect` 上的补充，不新增 H 编号；此前 H-277 已动态覆盖首次设置页 probe 与 `McpService::start_preparation`，但明确未覆盖重连握手。
+- 新增 `crates/deepagent-mcp/tests/reconnect_initialize_contract.rs`，使用正式 `ConfigReconnectFactory`、`connect_transport`、`McpClient::initialize` 和临时 Node stdio 服务。合法响应包含 `protocolVersion=2024-11-05`、`capabilities`、`serverInfo`；故障组分别返回空对象、缺版本、缺 capabilities、缺 serverInfo、数字版本和合成不支持版本。
+- 正常控制：`cargo test -p deepagent-mcp --test reconnect_initialize_contract valid_reconnect_initialize_is_accepted --offline -- --nocapture --exact` → **1 passed / 0 failed**。
+- 故障探针：`cargo test -p deepagent-mcp --test reconnect_initialize_contract audit_reconnect_rejects_invalid_initialize_results --offline -- --ignored --nocapture --exact` → **0 passed / 1 failed（缺陷预期）**；实测六组均返回 `Ok(transport)`：`[("empty", true), ("missing-version", true), ("missing-capabilities", true), ("missing-info", true), ("wrong-version-type", true), ("unsupported", true)]`。每个返回的 transport 均能被关闭，未遗留子进程。
+- Path：`ConfigReconnectFactory::reconnect` 确实重建 transport 并调用 `McpClient::initialize`，但 `McpClient::initialize` 仍只检查 JSON-RPC `result` 存在，不解析 initialize 业务结果；因此重连后的 transport 与首次连接一样会把非法协商当成 ready。影响是断线恢复后可能再次发布或继续使用不受支持/不完整能力的 MCP 连接，错误被延迟到 `tools/list` 或 `tools/call`，诊断与首次连接不一致；本轮未执行真实外部副作用。
+- 对照不变：真实 `@modelcontextprotocol/client` 2.0.0 的握手会在重连建立后校验版本、能力和 serverInfo，再发送 `initialized`；Codex `rmcp-client` 也把握手结果作为 Ready 门槛。本补充只证明本系统重连分支与已记录的首次分支共享缺陷，不声称参考工程对所有重连竞态都有动态保证。
+- 未修改生产逻辑；仅新增 ignored 测试和本段文档。后续修复必须让首次连接与重连复用同一强类型 initialize validator，并同时回归合法重连、六类非法响应、显式 JSON-RPC error、工具发现和连接状态，不得只修 `McpService` 首次准备路径。
