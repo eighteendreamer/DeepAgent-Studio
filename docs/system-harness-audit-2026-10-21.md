@@ -7318,3 +7318,33 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 在现有 provider adapter 的单一 usage 解析边界加入 checked 解析：拒绝负数、非整数、超出宿主表示范围、`cached_tokens > input_tokens`、`total_tokens < input_tokens + output_tokens`；必要时保留 raw usage 供诊断，但不能把 invalid 数值投递给 `RunUsage`/CostService。错误应保留 provider event、字段路径和脱敏摘要，并沿现有失败/终态路径只落一个结果。
 - 不要在 CostService 中再次“猜测修正”已经污染的 Usage；否则会产生第二套 provider 语义。若兼容未来供应商新增字段，应在 provider adapter 显式版本化映射，保留合法缺省与 unknown 状态，不能把缺字段自动补零后继续声称可计费。
 - 回归应覆盖正常 zero/partial/full cache、hit 等于 input、hit 大于 input、total 不一致、output/reasoning 不一致、负数/浮点/超大整数、failed/incomplete/重试及 raw usage 脱敏；并验证拒绝样本不会产生 succeeded、CostRecorded 或预算可用的错误基线。仅修 UI 展示或将 hit clamp 到 input 都不能替代边界拒绝。
+
+### H-274：Responses token 计数超过宿主 u32 宽度后静默截断，账本可被压成零
+
+**级别：中（P2，条件性 provider usage 完整性、费用与预算保护缺口）；状态：正式 ChatService/ModelClient/CostService/SQLite 链路已复现，未修复。** 触发条件是 provider、兼容网关或中间层返回超过 `u32::MAX` 的 JSON 整数；这不是声称 DeepSeek 正常请求会产生四十亿级 token，而是宿主在面对不可信/错误 usage 时没有 fail closed。
+
+#### 即时 Evidence（2026-10-25）
+
+- 在 `crates/deepagent-app-core/tests/kernel_v2_e2e/usage_contract.rs` 新增 ignored 探针 `audit_oversized_usage_counts_are_rejected_before_cost_accounting`。装配与 H-273 相同的正式 SettingsService、ChatService、ModelClient、Responses SSE accumulator、Runtime usage/finalizer、文件 SQLite CostStore；唯一替身是离线 `HttpTransport`，报价仍为测试专用值。
+- 故障响应保持其他字段一致，只把 `input_tokens` 设为 `4_294_967_296`、`output_tokens=1`、`total_tokens=4_294_967_297`、`cached_tokens=0`。执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract::audit_oversized_usage_counts_are_rejected_before_cost_accounting --offline -- --include-ignored --nocapture --exact`，结果 **0 passed / 1 failed（预期），33.16s**。
+- 真实观察：`result_error=None`、`calls=1`、`summary.input_tokens=0`、`summary.output_tokens=1`、`ledger_rows=1`、`usage_events=1`、`costs=[￥0.0]`，运行正常完成。失败点是“超出宿主 `u32` 的 provider usage 应在费用归集前拒绝”。没有重试、fallback、工具、真实密钥、真实供应商或公网。
+- H-273 的正常 cached usage 对照仍通过；本项独立于 `cached_tokens > input_tokens`，即使缓存命中为零也能触发。探针只修改测试与本报告，未修改生产逻辑。
+
+#### 根因、影响与数据流
+
+- F-274（category=provider-boundary，status=validated，confidence=high；evidence_ids=[E-274-width]）：`crates/deepagent-models/src/stream.rs::parse_response_usage` 对 `input_tokens`、`output_tokens`、`reasoning_tokens`、`total_tokens` 先 `as_u64()`，随后直接 `as u32`。Rust 的窄化转换丢弃高位；解析器再把值封装成普通 `Usage`，没有检查原始整数是否可由宿主类型表示。
+- P-274：Responses `usage` → 无界 `u64` → `as u32` 截断 → `ModelAgent::record_provider_response_usage` → `RunUsage`/CostService/SQLite。样本中四十亿输入 token 变成 0，miss 也变成 0，运行被标记为成功且账本可写入零成本；若日/月预算依赖该账本，后续请求会使用错误的可用额度。这里不声称真实 DeepSeek 账户会按宿主的零值扣费，只确认本地费用与预算观测被污染。
+- 影响限定为畸形、代理错误或恶意中间层 usage；正常上下文窗口远低于 `u32::MAX` 时不触发。后果可包括费用少记、缓存/上下文指标失真、预算保护失效和审计数据不可解释；本轮没有真实扣款或账户余额损失证据。
+- 与 H-273 区分：H-273 是合法宽度内的字段关系矛盾（cached 大于 input）；H-274 是单个字段超出宿主表示范围后被截断。两者都应在同一 provider adapter 边界拒绝，但不能用 clamp 或 CostService 二次修正替代解析边界。
+
+#### 成熟 Agent 与官方对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/llm/token-meter/src/turn-usage.ts::isCount` 要求计数为非负 `Number.isSafeInteger`，`safeSum` 对聚合溢出返回 `undefined`；其 `turn-usage.spec.ts` 覆盖 `Number.MAX_SAFE_INTEGER` 与求和超出安全范围并 fail closed。本系统的 `Usage` 公共类型是 `u32`，因此至少必须在 adapter 中拒绝 `>u32::MAX`，不能把 JSON 数字直接窄化。
+- **Codex**：`借鉴/codex/codex-rs/codex-api/src/sse/responses.rs::ResponseCompletedUsage` 以 `i64` 保留 Responses 字段，再映射到 typed `TokenUsage`，没有在反序列化点把任意 JSON 整数静默压成 `u32`。本轮没有把 Codex 的类型保留误写成完整不变量校验；可迁移原则是“先保留/校验原始宽度，再进入内部账本”。
+- **DeepSeek 官方**：[Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)将 `input_tokens`、`output_tokens`、`total_tokens`声明为必需整数，并说明 `total_tokens`是输入加输出；`cached_tokens`与 `reasoning_tokens`是细分整数。文档定义了字段语义，没有授权宿主把超出内部表示范围的整数截断后继续记账。KV Cache 文档也只把命中作为输入缓存观测维度，不替宿主完成本地数值校验。
+
+#### 治理方向（本地设计，未实施）
+
+- 在现有 Responses provider adapter 单一入口使用 checked conversion：拒绝负数、非整数、超过 `u32::MAX` 或字段路径缺失造成的不可解释缺省；将原始 usage 作为脱敏诊断上下文保留，但 invalid usage 不得投递到 `RunUsage`、CostService 或预算快照。
+- 解析成功后再做 H-273 的关系检查：`cached_tokens <= input_tokens`、`total_tokens >= input_tokens + output_tokens`，并检查 reasoning 不超过 output；所有拒绝沿现有失败/终态路径只落一个可审计结果。
+- 回归应覆盖 `u32::MAX` 恰好边界、`u32::MAX+1`、每个字段分别超界、聚合溢出、负数/浮点/字符串、completed/incomplete/failed 以及拒绝后无 `Usage`/`CostRecorded`/预算可用基线。只在 `Usage` 结构改成 `u64` 而不加关系校验，或在账本层把截断值“猜测修正”，都不能替代 provider boundary 的 fail-closed。

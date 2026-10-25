@@ -155,3 +155,24 @@ async fn audit_inconsistent_cached_usage_is_rejected_before_cost_accounting() {
     assert_eq!(observed.ledger_rows, 0);
     assert!(observed.costs.is_empty());
 }
+
+#[tokio::test]
+#[ignore = "audit H-274: provider token counts wider than the host Usage type must not be truncated"]
+async fn audit_oversized_usage_counts_are_rejected_before_cost_accounting() {
+    let oversized_input = u64::from(u32::MAX) + 1;
+    let observed = observe(json!({
+        "input_tokens": oversized_input,
+        "input_tokens_details": {"cached_tokens": 0},
+        "output_tokens": 1,
+        "total_tokens": oversized_input + 1
+    }))
+    .await;
+    eprintln!("usage contract oversized response: {observed:?}");
+    assert!(
+        observed.result_error.is_some(),
+        "provider usage wider than host u32 was silently truncated: {observed:?}"
+    );
+    assert_eq!(observed.calls, 1);
+    assert_eq!(observed.ledger_rows, 0);
+    assert!(observed.costs.is_empty());
+}
