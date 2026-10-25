@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| TypeScript SDK 并发会话的审批与流收尾 | 同一正式 SDK 实例的 A handler 待答，B 已收到唯一 turn.completed 但下一次 next 未结束；解除 A 后同一个 next 才 done；无审批/已答控制正常 | 新增 H-295（P2）；本机真实 stdio、合成对端，未修生产逻辑；未证明服务端 B 未完成、权限突破或真实模型后果 |
 | 成功文件操作与最终净变化的完成验收 | 正式 ChatService 创建后删除、读取后同内容写回均成功且最终状态正确，仍各发送2个含 completion_blocked 的额外模型请求，最终 fail-open；持久创建/删除对照正常 | 新增 H-294（P3）；两个正常行为期望探针保持 ignored 且显式执行失败，未修生产逻辑，未证明真实模型会据错误反馈重复改文件 |
 
 | 范围 | 当前证据 | 审查状态 |
@@ -8279,3 +8280,42 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 本轮默认 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` 已完成：**96 passed / 0 failed / 92 ignored，测试体13.81秒**。两个新增故障探针保持 ignored，绿色默认回归不表示H-294已修复；后续格式检查及扩大回归结果继续追加。
 - 扩大验证完成：`cargo test -p deepagent-app-core --offline -- --test-threads=1` **全命令退出0**，覆盖 AppCore 默认单元、全部默认集成与 doc-tests；其中 kernel_v2_e2e 为 **96 passed / 0 failed / 92 ignored，73.85秒**，没有启用全部既有 ignored 故障探针。工具返回的中间长日志被截断，本节不凭上一轮数字拼造本轮全套累计计数。未使用旧提交的结果冒充本轮验证。
 - 交付前在 rustfmt 后显式重跑 `cargo test -p deepagent-app-core --test kernel_v2_e2e completion_net_effect --offline -- --include-ignored --nocapture`：**1 passed / 2 failed（两个已知缺陷预期），测试体0.75秒**；两个正常场景仍通过，两故障场景仍各5次请求、2个含反馈的续轮、4条失败验证及 fail-open。此重跑只验证新增探针最终内容，不新增发现。`cargo fmt --all -- --check`、`git diff --check`通过。未运行整个 workspace、Clippy、Desktop build/UI、真实 DeepSeek 或参考工程；本轮只新增测试模块/入口和审计文档，生产逻辑、公共协议、权限、沙箱、配置及数据迁移均未修改。
+
+### H-295：TypeScript SDK 以客户端全局审批屏障结束单个 turn，另一会话的待答审批会阻塞已完成流
+
+**级别：中（P2，条件性 SDK 并发会话隔离与收尾缺口）；状态：公开 TypeScript SDK API、真实 Node 子进程 stdio 已复现，未修复。** 需同一个 DeepAgent 实例服务两个会话，配置 onApproval，且会话 A 的 handler 尚未返回。会话 B 不需要审批，已独立收到 turn.completed；缺陷发生在 B 的下一个 iterator.next() / for-await 循环收尾，不是 B 的终态通知丢失，也没有证明宿主 turn B 未完成。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- E-295-first（source_type=command，source_ref=`packages/sdk/tests/approval-isolation-audit.test.mjs` 与 `approval-isolation-fixture.mjs`，content_hash=n/a，artifact_path=n/a）：先执行 `pnpm build` 成功构建当前 SDK；随后在 SDK 目录执行 `$env:RUN_HARNESS_AUDIT='1'; node --test tests/approval-isolation-audit.test.mjs`，**2 passed / 1 failed（预期），总耗时203.48ms**。故障组 `waiting` 输出 `finishedBeforeRelease=false finishedAfterRelease=true approvalsBefore=0 approvalsAfter=1 terminalB=turn.completed`，threadA/threadB 分别为 thread-1/thread-2；失败断言为已独立完成的B不应等A审批，期望true、实际false。本段在首次有效复现后立即追加，未修改生产代码或将失败期望反转。
+- E-295-boundary：使用正式构建后的 `DeepAgent.startThread` 两次，A经 Thread.run 接纳，B经 Thread.runStreamed 消费；只有 stdio对端替换为可控本机协议fixture，不 monkey-patch SDK、不读取私有approvalTasks。所有RPC都正常应答，两个thread/turn ID不同；A的approval.requested携带明确A身份，用户handler保持待答；B没有任何approval.requested，fixture只允许处于running而非waiting_approval的turn发完成。
+- E-295-delivery：B的第一个iterator.next确实拿到唯一turn.completed，threadId/turnId均属于B；消费端再请求下一项，经过一次真实管道RPC barrier后仍未完成。此时服务端快照为A waiting_approval、B completed、approvalResponses=0。解除A的handler并正常发出/确认一次approval/respond后，B相同next才返回done=true；没有向B追加第二个终态或替换其ID。
+- E-295-controls：没有审批任务（none）和A审批已回答（answered）两组，B的next均在观察屏障前done=true，唯一完成事件仍可见。故障组也最终正常结束，因此不是任意高层流都不能结束。test用turn/start之后的管道barrier再显式发送B终态，排除了H-214早到通知丢失；对端全程存活并响应，排除了H-204无响应请求和H-256 EOF不结束的触发条件。
+- Scope：用户授权自有仓库SDK审计，仅本机Node/stdin/stdout及合成审批，未运行真实CLI/AppCore/model/tool、未访问公网、未使用凭据或用户文件；测试结束释放handler、收完iterator并调用正式agent.close。该方法发送子进程kill但不等待exit，本项未单独验证reap，不用“调用close”冒充已验证进程回收。没有真实权限授予；handler返回false，fixture仅记录approval/respond。两个辅助文件为测试夹具，不修改生产运行链。
+
+#### 首轮源码定位与后续核查
+
+- `packages/sdk/src/index.ts::DeepAgent.createStdioTransport` 为所有审批创建Promise并加入实例级 `approvalTasks: Set<Promise<void>>`；`waitForPendingApprovals` 对全Set做Promise.all。`Thread.runStreamed` 在yield当前turn终态后调用 `this.agent.waitForPendingApprovals()`，未按threadId/turnId筛选；事件队列本身虽然按turnId过滤，收尾等待却回到全局。根因是所有权在该等待边界丢失，不是审批应被自动回答。
+- 成熟对照、官方协议边界、影响范围、根治建议和后续回归结果继续核查后追加；不预填未执行的验证。未将本项等同于H-15的运行终态后迟到审批仍授予权限，后者在AppCore服务端，本项在TypeScript客户端且B没有审批。
+
+#### 成熟 Agent 对照与 DeepSeek 官方边界（后续核查）
+
+- **Codex TypeScript SDK（静态源码）**：`借鉴/codex/sdk/typescript/src/thread.ts::runStreamedInternal` 为每次运行持有独立 `this._exec.run(...)` generator，传入本次 signal，在 finally 中清理本次 schema 文件；`src/exec.ts::run` 每次 spawn 对应子进程。这条流没有在终态后等待 SDK 实例所有会话审批的屏障。可借鉴的是运行资源与收尾归属一致；其 exec/进程式传输不同于本项目共享 app-server，不应直接复制为每 turn 重启服务，也不能声称参考 SDK 在本轮同一 fixture 动态通过。
+- **Codex app-server（更接近共享连接的静态对照）**：`借鉴/codex/codex-rs/app-server/src/bespoke_event_handling.rs` 约785行构造审批参数时明确携带 thread_id、turn_id、item_id/approval_id，并为该请求持有独立回调接收端；约185行处理 TurnComplete 时通过 `ThreadScopedOutgoingMessageSender::abort_pending_server_requests` 清理当前 thread 绑定的 pending，再发其终态。`outgoing_message.rs` 约143～231行把 thread_id 保存在 sender，send_request 绑定该身份，abort 调用 `cancel_requests_for_thread(self.thread_id, ...)`，不是对共享连接所有会话做全局 join。`emit_turn_completed_with_status` 还保留 thread 与 turn 身份。本轮只静态查证这一作用域，不宣称该项目所有审批/重连竞态都已验证；本系统也不应照搬终态时全局拒绝其他会话审批。
+- **DeepSeek Harness（静态源码）**：`借鉴/deepseek-harness/packages/sdk/client/src/client.ts::subscribe/subscribeSessionTree` 为每个订阅保存独立 queue、waiters、filter 和 failure，按 session/后代身份筛选；`NotificationSubscriptionImpl.close` 只 unsubscribe、清空该订阅队列并结束该订阅等待，filter 抛错也只失败该订阅。客户端全局 close 另有明确生命周期。它没有与本项目相同的 runStreamed 终态后自动审批 join，不能把独立订阅模式写成同构审批测试；可以借鉴的是局部流收尾和客户端整体 drain/close 分开。
+- **本系统协议契约核对**：`crates/deepagent-harness-protocol/src/events.rs` 已在 ApprovalRequested 与 TurnCompleted/Failed/Interrupted 中承载 threadId/turnId，SDK ApprovalHandler 也收到这些身份；fixture 使用完整且互不相同的身份。现有字段在协议中是可选的，如何处理缺失归属还需明确，但本次不是“对端未给身份”引起，无需再造审批中心来取得归属。
+- **DeepSeek 官方**：本轮重新打开用户指定的四页。[Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)规定无状态请求及 call_id 配对，[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)说明具体函数由宿主提供；两者不规定本机 SDK 的 onApproval Promise 所有权。[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)的 response.completed 是供应商响应终态，不等同于本系统 turn.completed 或 JavaScript iterator 的 done。[KV cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)讨论输入前缀复用，无法解除宿主等待另一个会话的 Promise。H-295 属于 provider 无关的 Harness 客户端边界，不能归咎于 DeepSeek reasoning、缓存或工具参数不兼容；本次未请求真实模型。
+
+#### 影响、定级与根治建议（本地设计，未实施）
+
+- 已证明后果：A 的人工审批等待传染给无审批且已经完成的 B；B 的 for-await 自然耗尽及循环之后的返回/后续调度会被延后，直到被捕获的 A 审批任务结束。动态观测只覆盖一个确定的待答窗口及解除后的恢复，未等待无限时间；“若 handler 一直不返回，则该等待没有自身结束条件”来自 Promise.all 源码推导，不伪称实测永久挂死。
+- P2 依据是同实例并发会话间的完成隔离失效，可能阻塞 SDK 自动化调度或让上层误认为 B 未结束；不是默认单会话必现。B 的终态已经交付，直接处理终态并 break 的消费者可避开该等待；无 onApproval、没有未决审批、A 已回答或不同 DeepAgent 实例不具备本次触发组合。实测正常对照仅为无审批任务及 A 已回答，无 handler/不同实例等为源码边界推导。`Thread.run` 只返回接纳后的 Turn，不在这里自然耗尽事件流，不能把其立即返回也说成受本项阻塞。
+- 静态上该全局屏障同样位于 turn.failed/turn.interrupted 分支，但本次动态只发 turn.completed，不把失败/中断、断线、模型收费、真实工具副作用或跨用户权限影响算作已复现。也未通过此测试认证 SDK 取消、服务端终态幂等或进程回收正确。
+- 根因修复应在现有 DeepAgent/Thread 边界保留审批任务的 `(threadId, turnId, approvalId)` 所有权：单 turn 流只等待契约要求的自身收尾，或明确规定终态到达即可结束局部流；客户端全局等待可以保留为显式 drain 操作，不能隐含嵌在每个流的终态。若协议允许无归属审批，应显式分类并报告/交给连接级 owner，不能静默拖住所有 turn。不能以自动批准/拒绝 A、清空全局 Set、取消其他会话或为 B 再发一个终态掩盖问题。
+- 需要统一说明终态、取消、订阅 return、审批 handler 异常、RPC 回答失败以及 client.close 对任务所有权的处理；复用现有审批路由和事件，不新增第二套审批状态。回归应覆盖 A 待答/B 完成、同 turn 必要收尾、两 turn 同时审批、失败/中断终态、缺失归属、handler 异常及 close/reconnect。当前只完成三组基本场景，其余是后续修复验收要求。
+
+#### 后续验证与交付边界
+
+- `pnpm test` 成功：包含正式 `pnpm build`，现有 SDK **5 passed / 0 failed**；`pnpm typecheck` 成功。两个新 mjs 分别执行 `node --check` 均成功；新审计文件默认运行 **2 passed / 0 failed / 1 skipped，154.50ms**。故障测试仍以正确行为为期望，只有 RUN_HARNESS_AUDIT=1 才启用，不把默认跳过写成修复通过。
+- 在 SDK 目录显式列出全部六个 `*.test.mjs` 执行 `node --test`，未设置 RUN_HARNESS_AUDIT：**11 passed / 0 failed / 11 skipped，463.07ms**。运行的是各文件默认正常控制，既有已知故障探针全部跳过；没有重复旧探针申请新编号。原 `pnpm test` 只指定 sdk.test.mjs，所以不能声称新增控制已自动纳入该脚本或 CI。
+- 本轮仅新增两个测试文件及更新报告；未修改 SDK 生产逻辑、Rust、Tauri、公共协议、权限、沙箱或配置。没有执行 Rust workspace、Clippy、Desktop build/UI、真实 CLI/AppCore/DeepSeek 或参考工程动态测试；这些不在本轮仅 JS 夹具及文档的直接变更范围内。报告 diff 和 Markdown 表格/标题已核对，`git diff --check` 通过；提交仅包含报告与两个新测试文件，用户原有未跟踪文件保留、不读取、不暂存。
