@@ -8,6 +8,18 @@
 - 每项问题需具备触发条件、生产路径、可重跑验证、参考实现、影响及修复方向。尚未覆盖的模块不视为通过。
 - 测试密钥、完整请求、用户历史和机器私有配置不进入文档。运行数据位于忽略提交的 `target/`。
 
+## 2026-10-25 编号与证据复核
+
+最近三次登记重复使用了既有问题的同一探针、触发条件和根因，撤销独立计数，不代表问题已修复：
+
+| 撤销编号 | 唯一保留项 | 重复依据与原登记提交 |
+|---|---|---|
+| H-279 | H-78 | 同一 `path_boundary` junction 探针、canary 与正式读取路径；`cbc58ef3` |
+| H-280 | H-79 | 同一 `file_listing_policy` 探针及 `.env` 发现结果；`b8644d3c` |
+| H-281 | H-168 | H-168 已包含同一中间 system serializer 探针、重排根因及输出；`7a590897` 只增加构造器 wire 日志，没有新增行为断言或默认宿主复现 |
+
+文末对应章节保留为复核归档，原 E/F/P 标签仅用于追溯。撤销 H-281 的独立 P1 定级；其具体模型决策后果未验证，不能从 serializer 测试外推为默认 Desktop 故障。H-280 关于 Claude Code“未找到直接对照”的说法也已按 H-79 和本地源码校正。本次仅核对文档、源码和提交差异，未重跑这三项已知失败探针。
+
 ## 覆盖进度
 
 | 范围 | 当前证据 | 审查状态 |
@@ -7544,7 +7556,9 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 本轮仅新增上述真实进程审计探针和本报告；未修改生产逻辑、公共协议、模型参数、权限或沙箱配置。显式探针保持 `#[ignore]`，默认测试绿色不代表 H-278 已修复。
 - 本轮尚未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实外部 MCP 或真实副作用服务；未处理用户排除的 encrypted-content 问题。后续若修复 H-278，应重跑该故障样本并补“确定未发送可重试”正常对照，避免把所有断线都粗暴改成永久失败。
 
-### H-279：工作区文件工具仅做词法 containment，Windows junction 可把 `read_file` 引到工作区外
+### H-78 的 2026-10-25 复核归档（原 H-279，撤销独立计数）
+
+**编号校正（2026-10-25）：** `cbc58ef3` 使用的 `path_boundary.rs::audit_read_file_does_not_follow_workspace_junction_outside_root`、权限对照、canary、生产链和根因已完整登记于 H-78，不是新发现。以下保留该次复测记录；原 E-279/F-279/P-279 标签仅为追溯，不代表独立缺陷或新增复现。本次去重未重新执行探针。
 
 **级别：高（P1，条件性工作区沙箱越界读取）；状态：正式 Kernel → ChatService → `read_file` → `WorkspaceRoot` 链路与真实 Windows junction 已复现，未修复。** 触发条件是攻击者/插件/同机进程能在工作区内创建 directory junction（或其他 reparse point），随后模型读取该链接下的相对路径。普通 `..`、工作区外绝对路径和无链接目录仍按现有规则处理；本轮只证明读取越界，不扩大为写入越界或任意系统文件读取。
 
@@ -7558,15 +7572,15 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - F-279（category=sandbox-boundary，status=validated，confidence=high；evidence_ids=[E-279-junction,E-279-control]）：`crates/deepagent-builtins/src/fs_guard.rs::WorkspaceRoot::resolve` 对相对输入只执行 `root.join(candidate)`、敏感名检查和 `joined.starts_with(&self.root)`；没有 `lstat`/`canonicalize`/realpath containment，也没有拒绝 junction/reparse/symlink。`ReadFileTool::invoke` 随后对这个词法路径调用 `tokio::fs::metadata`/`read_to_string`，Windows 文件系统自动跟随 junction。
 - P-279：模型给出 `linked/outside.txt` → `WorkspaceRoot::resolve` 认为路径仍在 root → `metadata/read_to_string` 跟随 junction → outside canary 进入 `function_call_output`、run event 和下一次 DeepSeek 请求。若链接目标是源码、配置、私有文档或另一个项目，工作区权限与模型可见边界被绕过；本轮没有读取真实用户文件、凭据或公网资源。
-- 影响仅限 `FsAccess::Workspace`/`ReadOnly` 等依赖 root confinement 的读路径；`ReadAnywhere`/`Full` 本来就允许外部读，不能用它们掩盖默认模式的越界。`write_file`、`edit_file`、`delete` 也复用同一 `resolve`，源码上具有同类风险，但本轮只把真实 `read_file` 证据登记为 H-279，不虚称写入已经动态复现。
-- 与 H-260 的 FileStateCache 代次不同：H-260 是压缩后旧读取资格继续授权；H-279 在首次读取前就绕过物理工作区边界。与 H-250/H-252 的 Canvas artifact digest/workspace scope 不同：本项是通用文件工具和沙箱根路径解析。
+- 影响仅限 `FsAccess::Workspace`/`ReadOnly` 等依赖 root confinement 的读路径；`ReadAnywhere`/`Full` 本来就允许外部读，不能用它们掩盖默认模式的越界。`write_file`、`edit_file`、`delete` 也复用同一 `resolve`，源码上具有同类风险，但本次复测仍只有 H-78 已登记的真实 `read_file` 证据，不虚称写入已经动态复现。
+- 与 H-260 的 FileStateCache 代次不同：H-260 是压缩后旧读取资格继续授权；H-78 在首次读取前就绕过物理工作区边界。与 H-250/H-252 的 Canvas artifact digest/workspace scope 不同：本项是通用文件工具和沙箱根路径解析；这些差异不构成在 H-78 之外再次编号的理由。
 
 #### 成熟 Agent 与官方/参考对照
 
 - **DeepSeek Harness**：`借鉴/deepseek-harness/packages/api/workspace-files/src/index.ts` 在读取前先用 `lstat` 检查请求项类型，再通过 Host `resolve` 做物理目标解析；`locateFile` 对最终 entry 要求是 regular file，symlink/junction 会以 `not-regular-file` 拒绝。其 `read.spec.ts` 有真实 symlink 指向 workspace 外和指回 workspace 内的拒绝测试，说明“词法 prefix 通过”不能替代链接类型/物理路径检查。本轮没有把其 Node `dsh-fs` 实现复制到 Rust，也未声称它已覆盖 Windows 每种 reparse 类型之外的所有竞态。
 - **Claude Code**：恢复源码的 `memdir/teamMemPaths.ts` 明确使用“最深已存在祖先的 realpath”再做 containment，并将 symlink escape、dangling link、loop 作为错误；PowerShell/Bash path validation 还同时检查原始路径与解析路径。这里仅借鉴“先解析物理路径再比较、对不存在尾部保留已存在祖先检查”的边界原则，不把其 shell 审批逻辑冒充本系统文件工具实现。
 - **Codex**：本轮未找到与本项目 `WorkspaceRoot` 同构的 Rust 文件工具 API，不能声称 Codex 已动态覆盖该 junction 输入；可迁移的架构原则是把 workspace/sandbox 根约束放在唯一宿主文件边界，而不是依靠 UI 或模型提示词。不要把 Codex 的 OS sandbox 存在本身当成此处的直接证据。
-- **DeepSeek 官方**：Responses/Tool Calls 文档说明模型返回工具调用、具体函数由宿主执行；DeepSeek 不会替宿主解析本地 Windows 路径或判断 junction 是否越界。因此修改 reasoning、strict、Responses cache 或工具 schema 不能修复 H-279，必须在本地文件工具 seam 收口。
+- **DeepSeek 官方**：Responses/Tool Calls 文档说明模型返回工具调用、具体函数由宿主执行；DeepSeek 不会替宿主解析本地 Windows 路径或判断 junction 是否越界。因此修改 reasoning、strict、Responses cache 或工具 schema 不能修复 H-78，必须在本地文件工具 seam 收口。
 
 #### 治理方向（本地设计，未实施）
 
@@ -7578,8 +7592,11 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 #### 回归记录（持续追加）
 
 - 本轮只使用临时目录、合成 canary 和本机 Windows `mklink /J`；没有用户文件、密钥、真实工作区、真实模型或公网请求。故障探针已经在断言前删除 junction，未留持久链接。
-- 本轮新增 H-279 文档证据，尚未修改生产逻辑；完整 workspace、Desktop build、真实 DeepSeek、Linux/macOS 物理链接和 TOCTOU 压力验证未执行。显式探针保持 `#[ignore]`，默认绿色不代表该沙箱边界已修复。
-### H-280：敏感文件被 read_file 拒绝，但 list_dir/glob 仍把文件名交给模型
+- 该次仅追加 H-78 的复测记录，未修改生产逻辑；完整 workspace、Desktop build、真实 DeepSeek、Linux/macOS 物理链接和 TOCTOU 压力验证未执行。显式探针保持 `#[ignore]`，默认绿色不代表该沙箱边界已修复。
+
+### H-79 的 2026-10-25 复核归档（原 H-280，撤销独立计数）
+
+**编号校正（2026-10-25）：** `b8644d3c` 使用的 `file_listing_policy.rs`、`.env`/`visible.txt`、两类发现工具和下一 wire 观察，已完整登记于 H-79。以下只保留复测来源和输出；原 E-280/F-280/P-280 标签仅为追溯。本次去重未重跑探针，也未新增独立缺陷。
 
 **级别：中（P2，条件性敏感资源存在性/目录枚举泄露）；状态：正式 Kernel → ChatService → read_file/list_dir/glob 链路与文件数据库事件已复现，未修复。** 触发条件是工作区内存在被 WorkspaceRoot 敏感名策略拒绝的文件（例如 .env），模型随后调用发现工具。当前证据是文件名与可见性泄露，不是文件内容泄露；普通可读文件的发现能力仍需保留。
 
@@ -7593,13 +7610,13 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - F-280（category=policy-consistency，status=validated，confidence=high；evidence_ids=[E-280-listing,E-280-control]）：WorkspaceRoot::is_sensitive 只在 resolve_read/resolve_write 路径被调用。ListDirTool::invoke 对 read_dir 返回的每个 entry 直接序列化 name；GlobTool::walk_collect 只跳过固定目录和点目录，不调用 is_sensitive；GrepTool 也从同一未过滤的 walk_collect 读文件。发现工具没有共享 direct-read 的 sensitive-file policy。
 - P-280：workspace 含 .env → 模型调用 read_file(".env") 被拒绝 → 模型改用 list_dir/glob("**") → .env 名称进入 function_call_output 与下一次 DeepSeek wire。泄露可确认凭据/配置文件是否存在、目录命名和项目结构，并为后续 shell/MCP/路径猜测提供 oracle；本轮没有读取 .env 正文，也没有证明模型因此自动获得凭据。
-- 这是独立于 H-279 的策略一致性缺陷：H-279 是 junction 让允许的路径解析到 root 外；H-280 是已明确拒绝的名称仍通过其他工具进入模型。两者都位于文件工具边界，但修复 H-279 的 canonical path 不能自动修复 H-280。
+- 这是 H-79 已登记的策略一致性缺陷，与 H-78 的 junction 物理越界不同；修复 H-78 的 canonical path 不能自动修复 H-79，但不能据此把两项分别重复编号。
 - 影响范围是敏感文件名枚举及 grep 的潜在正文读取尝试。若产品明确允许“看到名字但不能读内容”，可将级别降为低；当前代码注释把敏感文件描述为“model must not read or rewrite”，且测试不变量要求 discovery 与 direct read 一致，因此按 P2 登记，不夸大为内容泄露或权限提升。
 
 #### 成熟 Agent 与官方/参考对照
 
-- DeepSeek Harness：借鉴/deepseek-harness/packages/api/workspace-files/src/index.ts 的 list/list.spec.ts 明确把 .hidden 普通隐藏文件列出；它的 read API 重点是 workspace scope、symlink 类型和大小限制，并没有本系统这组 .env/credential deny-list。因而不能声称它已经解决 H-280；可迁移的边界是所有 workspace-file 操作共用 Host 解析和结构化错误，若产品需要敏感名保密，则应在 Host discovery 层另加统一 policy，而不是只在 read 入口加规则。实际运行参考测试 `pnpm exec vitest run packages/api/workspace-files/tests/list.spec.ts`：1 个文件、14 项通过。
-- Claude Code：恢复源码显示其工具权限/危险路径判断集中在 Bash/PowerShell 的命令解析和审批层，本轮没有找到与本系统 list_dir/glob 同构且声明“拒绝敏感文件名”的实现；因此只记录为“未找到直接对照”，不把其 shell deny 规则冒充目录发现解决方案。
+- DeepSeek Harness：借鉴/deepseek-harness/packages/api/workspace-files/src/index.ts 的 list/list.spec.ts 明确把 .hidden 普通隐藏文件列出；它的 read API 重点是 workspace scope、symlink 类型和大小限制，并没有本系统这组 .env/credential deny-list。因而不能声称它已经解决 H-79；可迁移的边界是所有 workspace-file 操作共用 Host 解析和结构化错误，若产品需要敏感名保密，则应在 Host discovery 层另加统一 policy，而不是只在 read 入口加规则。该次记录的参考测试为 `pnpm exec vitest run packages/api/workspace-files/tests/list.spec.ts`：1 个文件、14 项通过；本次去重未重跑参考工程。
+- Claude Code（2026-10-25 校正）：原“未找到直接对照”与 H-79 及本地源码不符。`restored-src/src/tools/GlobTool/GlobTool.ts:137`、`GrepTool/GrepTool.ts:235` 调用 `checkReadPermissionForTool()`；`utils/glob.ts:87` 与 `GrepTool/GrepTool.ts:414` 使用 `getFileReadIgnorePatterns()`，将 Read deny 规则投影为发现/搜索排除项。这是可查证的机制对照，不等于它默认具有本系统同一敏感名清单，也不代表已动态验证其所有规则组合。
 - Codex：本轮未找到可直接等同本系统 built-in list_dir/glob 的公开同构接口，也不声称 Codex 对 .env 文件名有相同策略。成熟架构可借鉴的是把 filesystem capability/sandbox policy 放在一个宿主边界，所有 file enumeration 与 read/edit 共用同一 policy snapshot。
 - DeepSeek 官方：Tool Calls 指南说明宿主负责执行函数调用；Responses API 只会把宿主回传的工具结果作为下一轮输入。模型参数、strict、reasoning 和 KV cache 不会替宿主判断“某个文件名是否应出现在目录结果”，所以本项必须在本地 discovery seam 修复。
 
@@ -7607,35 +7624,37 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 将敏感文件判断提升为唯一 FileVisibilityPolicy，由 read_file、list_dir、glob、grep、move、copy、delete 共同调用；目录枚举遇到敏感 entry 时默认过滤，或返回不带名称的计数/受控占位符，不能一边拒绝正文一边把精确 basename 交给模型。
 - 过滤必须在模型可见结果生成前执行，且与权限 profile/sandbox mode 绑定；不要只在 UI 隐藏，也不要靠 system prompt 告诉模型“不要读取”。如果产品确实需要人工诊断敏感名存在性，应走显式 approval/审计通道，不复用普通模型工具输出。
-- walk_collect 还应在遍历前应用同一物理路径/reparse 校验（配合 H-279），避免一个工具过滤、另一个工具跟随链接；grep 不能因“只返回行”而绕过敏感策略。
+- walk_collect 还应在遍历前应用同一物理路径/reparse 校验（配合 H-78），避免一个工具过滤、另一个工具跟随链接；grep 不能因“只返回行”而绕过敏感策略。
 - 回归应覆盖敏感 basename、敏感目录组件、大小写/Unicode 变体、点文件、glob/list/grep/直接 read、ReadAnywhere/Full profile 的明确差异、workspace 变更和事件/replay。默认 Workspace 下拒绝项的名称、内容和可推断路径都不应进入 provider wire，除非显式产品契约允许。
 
 #### 回归记录（持续追加）
 
-- 本轮只新增 H-280 文档证据，未修改生产逻辑；显式故障探针保持 #[ignore]，默认测试绿色不代表策略已统一。
-- 尚未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实敏感文件或跨平台文件系统测试；未处理用户排除的 encrypted-content 问题。后续修复应同时重跑 H-280 与 H-279，避免只修 direct-read 而留下 discovery 绕过。
+- 该次仅追加 H-79 的复测记录，未修改生产逻辑；显式故障探针保持 #[ignore]，默认测试绿色不代表策略已统一。
+- 尚未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实敏感文件或跨平台文件系统测试；未处理用户排除的 encrypted-content 问题。后续修复应同时验证唯一问题 H-79 与 H-78，避免只修 direct-read 而留下 discovery 绕过。
 
-### H-281：Responses 历史中的中间 `system` 消息被提升到 instructions，改变消息顺序
+### H-168 的 2026-10-25 serializer 复核归档（原 H-281，撤销独立计数与 P1 定级）
 
-**级别：中高（P1，条件性上下文语义与缓存前缀破坏）；状态：正式 DeepSeek Responses serializer 的 ignored 探针已复现，未修复。** 触发条件是持久化会话在首条系统消息之后又追加运行时上下文/策略更新，并在后续请求通过 `ResponseRequest::new` 从 `Message` 历史重建 Responses input。当前适配器把所有 `Role::System` 文本收集到顶层 `instructions`，因此位于历史中间的更新被移动到请求最前面；它不再保持原来位于 user/assistant 之间的顺序。
+**编号校正（2026-10-25）：** H-168 已明确记录同一 `audit_preserves_mid_history_system_messages_as_input_items`、同一输入顺序、合并 instructions 的根因及完全相同的失败输出。`7a590897` 只在既有测试中增加 `ResponseRequest::new` 的 wire 日志，没有新增行为断言或正式 ChatService 复现；不能再登记为独立 H-281。原 E-281/F-281/P-281 标签仅用于追溯。
+
+**证据边界：** 保留 H-168 原有 P2 及其已验证范围，撤销本节此前独立 P1 定级。当前复测只证明公共 `Message` → Responses serializer 会把中间 `system` 合并进 leading `instructions`，不证明默认 Desktop 每轮都走该构造器，也没有证明模型因此作出错误权限决策或实际缓存下降。运行时还存在直接构造原生 `ResponseInputItem` 的路径，不能把构造器测试替代宿主调用链验证。
 
 #### 即时 Evidence（2026-10-25）
 
 - 静态查证：`crates/deepagent-models/src/responses.rs::response_items_from_messages` 对每条 `Role::System` 都执行 `instructions.push(...)`，循环结束后用 `instructions.join("\\n\\n")` 生成唯一顶层 `instructions`；只有非 system 消息才进入有序 `input`。`crates/deepagent-models/src/chat.rs::ResponseRequest::new` 直接调用该转换，故这是公共 Responses 请求边界，不是 UI 专用投影。
 - 官方契约核对：[Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)说明 `instructions` 会作为**第一条 system 消息**，而输入 item 列表仍支持 `message`，角色包含 `system`；[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)同样明确 `instructions` 是第一条 system 消息、`input` 可含有序 system message。因而历史中的后续 system 更新不能等价替换为顶层首条 instructions。
-- 首次正式探针：`cargo test -p deepagent-models --lib responses::tests::audit_preserves_mid_history_system_messages_as_input_items --offline -- --ignored --exact --nocapture`，结果 **0 passed / 1 failed（预期暴露缺陷）**。真实生产函数输出：`instructions=Some("stable leading rules\\n\\nupdated runtime context")`，`items=[Message(user="first question"), Message(assistant="first answer"), Message(user="second question")]`；进一步经生产 `ResponseRequest::new` 序列化的 wire 为 `instructions="stable leading rules\\n\\nupdated runtime context"`，`input` 只有 user/assistant/user 三项，没有中间 `system` item。缺陷断言要求 `instructions` 仅为首条规则且 `input` 含 `Message {role:"system", content:"updated runtime context"}`。测试只使用内存值和生产 serializer，没有公网、模型调用、用户历史或工具副作用。
+- 既有探针复测：`cargo test -p deepagent-models --lib responses::tests::audit_preserves_mid_history_system_messages_as_input_items --offline -- --ignored --exact --nocapture`，结果 **0 passed / 1 failed（预期暴露缺陷）**。真实生产函数输出：`instructions=Some("stable leading rules\\n\\nupdated runtime context")`，`items=[Message(user="first question"), Message(assistant="first answer"), Message(user="second question")]`；进一步经生产 `ResponseRequest::new` 序列化的 wire 为 `instructions="stable leading rules\\n\\nupdated runtime context"`，`input` 只有 user/assistant/user 三项，没有中间 `system` item。缺陷断言要求 `instructions` 仅为首条规则且 `input` 含 `Message {role:"system", content:"updated runtime context"}`。测试只使用内存值和生产 serializer，没有公网、模型调用、用户历史或工具副作用。本次去重没有再次执行。
 
 #### 根因、触发条件与后果
 
-- F-281（category=provider-history-projection，status=validated，confidence=high；evidence_ids=[E-281-first]）：`Message` 历史的时间顺序被 `Role::System` 分支拆成一个全局字符串；`ResponseRequest::new`/`replace_messages` 每轮都会重复该重排。最终 wire 的 `instructions` 只有一个首位 system，`input` 丢失中间 system item，导致模型看到的更新规则在所有旧历史之前生效。
-- P-281：当中间 system 内容是 workspace 动态指令、工具策略、审批/权限上下文或会话阶段更新时，模型可能把后来的局部更新误当成从会话开始就存在的全局规则，改变对前面 user/assistant 事实的解释；同一会话的重放、分支和不同入口可能产生不同决策。将易变内容移入首位还会改变 DeepSeek 的可复用前缀边界并放大 H-168 的 cache-prefix 问题，但 H-281 的独立证据是**消息顺序/语义重排**，不把 H-168 重复计数。
+- 原 F-281（合并归 H-168，不独立计数；evidence_ids=[E-281-first]）：`Role::System` 分支把 `Message` 序列拆成一个全局 instructions 字符串与其余 input；在该转换边界丢失中间 system 的原始位置。此处确认的是序列化行为，不是“所有入口每轮都会重排”，更不是模型错误决策已发生。
+- 原 P-281（调用路径）：测试内 `Message` 序列 → `response_items_from_messages()` / `ResponseRequest::new()` → 序列化 wire。具体 workspace/权限更新在默认宿主中的可达性、重放/分支决策变化及实际模型语义仍需另行验证。该序列化根因和原位置丢失已包含于 H-168，不构成新问题；此前声称“不把 H-168 重复计数”不成立。
 - 本探针没有向真实 DeepSeek 发送请求，不能声称某个具体模型必然输出错误，也没有测量真实 cache hit 变化；已确认的是 provider wire 失去原始顺序，属于请求构造层缺陷。
 
 #### 成熟 Agent 与官方/参考对照
 
 - **DeepSeek Harness**：`借鉴/deepseek-harness/packages/compaction/compaction-basic/README.md` 明确区分 surface node 0 的系统提示与历史中追加的 `system/message`：后者是普通历史，压缩/回放时保留其历史位置；只有首位系统头作为稳定前缀。这与本系统把所有 system 合并成 instructions 的行为不同。该参考没有被当作 DeepSeek 服务端实现证明，只用于验证成熟 harness 的顺序与缓存边界设计。
 - **Codex**：`借鉴/codex/codex-rs/core/tests/suite/client.rs` 与 `codex_protocol::models::ResponseItem::Message { role: "system", ... }` 的测试/构造保留 system message 作为 response item；其历史和 compaction 测试按 item 顺序处理，而不是把所有 system 文本拼成一个全局字段。本轮未运行 Codex provider，不宣称其每条路由都与本系统同构。
-- **Claude Code**：本轮未找到与 DeepSeek Responses `instructions` 字段完全同构的公开 adapter；其成熟做法是把会话中的系统/开发者更新作为带来源和生命周期的上下文事件，而不是在 UI 投影阶段静默重排。不能把 Claude 的消息格式当作 DeepSeek wire 规范。
+- **Claude Code**：该次没有给出与 DeepSeek Responses `instructions` 字段同构的 adapter 证据；撤回未定位具体实现的泛化比较，不把 Claude 的消息格式当作 DeepSeek wire 规范。
 - **DeepSeek 官方边界**：Responses API 是无状态的，客户端每轮需回传完整 `input`；官方文档允许 `input` 中出现 system message，同时规定顶层 `instructions` 是第一条 system。模型、reasoning、tool schema 或 KV cache 参数不会替宿主恢复历史顺序，因此本项必须在 serializer seam 修复。
 
 #### 治理方向（本地设计，未实施）
@@ -7646,6 +7665,6 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 #### 回归记录（持续追加）
 
-- 首次失败结果已先登记本节，未修改生产逻辑；当前 ignored 探针仍保持故障预期。后续补充 wire 级断言、正常单 system 对照和多 system 顺序矩阵后再决定是否修复。
+- 本节曾把 H-168 的既有失败探针当作新发现，现已更正；未修改生产逻辑，当前 ignored 探针仍保持故障预期。后续验证与治理统一归入 H-168，不以重复运行增加发现数。
 - 本轮补充的 wire 级输出来自测试内 `ResponseRequest::new`，不是手工拼接 JSON；首位 system/工具历史的既有对照 `responses::tests::maps_tool_roundtrip_to_responses_items` 实际 **1 passed / 0 failed**。故障探针仍为 **0 passed / 1 failed（预期）**，未把预期失败误报成回归通过。
 - 本轮未执行 workspace 全量、Desktop build/UI、真实 DeepSeek 请求、KV cache 命中实验或参考工程测试；未访问公网、内网、用户文件，也未处理用户排除的 encrypted-content 问题。
