@@ -416,6 +416,50 @@ impl Drop for LocalImageProvider {
     }
 }
 
+/// An image provider that returns an inline base64 payload instead of a URL.
+/// This covers the alternate parse_output branch without a second-hop server.
+struct LocalInlineImageProvider {
+    base_url: String,
+    server: JoinHandle<()>,
+}
+
+impl LocalInlineImageProvider {
+    async fn start(image_bytes: Vec<u8>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let (line, _) = read_request(&mut socket).await;
+            assert!(line.starts_with("POST /v1/images/generations "));
+            use base64::Engine as _;
+            let encoded = base64::engine::general_purpose::STANDARD.encode(image_bytes);
+            let payload = json!({"data":[{"b64_json":encoded}]}).to_string();
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                payload.len()
+            );
+            if socket.write_all(header.as_bytes()).await.is_ok() {
+                let _ = socket.write_all(payload.as_bytes()).await;
+            }
+        });
+        Self {
+            base_url: format!("http://{address}/v1"),
+            server,
+        }
+    }
+
+    async fn close(&mut self) {
+        let result = (&mut self.server).await;
+        assert!(result.is_ok() || result.unwrap_err().is_cancelled());
+    }
+}
+
+impl Drop for LocalInlineImageProvider {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
 /// An image provider that accepts the generation request but withholds its
 /// response. This isolates cancellation of the image provider HTTP wait from
 /// URL materialization and artifact persistence.
@@ -764,6 +808,37 @@ impl MediaFixture {
                                 "prompt":"audit provider image URL",
                                 "operation":"image_generate",
                                 "imageModel":format!("{provider_id}::audit-image-model")
+                            }},
+                            {"id":"end","kind":"end"}
+                        ],
+                        "edges": [
+                            {"id":"e1","source":"start","target":"image"},
+                            {"id":"e2","source":"image","target":"end"}
+                        ]
+                    }
+                }))
+                .unwrap()
+            },
+        )
+        .await
+    }
+
+    async fn new_inline_image(provider: &LocalInlineImageProvider) -> Self {
+        Self::with_provider(
+            &provider.base_url,
+            "Audit local inline image",
+            "audit-inline-image-model",
+            vec![CanvasScenario::ImageGeneration],
+            |provider_id| {
+                serde_json::from_value(json!({
+                    "definition": {
+                        "version": 1,
+                        "nodes": [
+                            {"id":"start","kind":"start"},
+                            {"id":"image","kind":"image-gen","config":{
+                                "prompt":"audit oversized inline image",
+                                "operation":"image_generate",
+                                "imageModel":format!("{provider_id}::audit-inline-image-model")
                             }},
                             {"id":"end","kind":"end"}
                         ],
@@ -1557,6 +1632,56 @@ async fn audit_provider_image_download_rejects_oversized_artifact() {
     assert!(
         stored.len() <= MAX_INPUT_IMAGE_BYTES,
         "provider image response larger than the established single-image budget must not be completely stored"
+    );
+}
+
+#[tokio::test]
+#[ignore = "audit: inline provider image payloads must enforce a bounded artifact size"]
+async fn audit_provider_inline_image_rejects_oversized_artifact() {
+    const MAX_IMAGE_BYTES: usize = 32 * 1024 * 1024;
+    let response_bytes = MAX_IMAGE_BYTES + 1;
+    let mut oversized_image = vec![b'x'; response_bytes];
+    oversized_image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    let mut provider = LocalInlineImageProvider::start(oversized_image).await;
+    let fixture = MediaFixture::new_inline_image(&provider).await;
+    let run_id = "audit-inline-image-size-limit";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminal = events
+        .iter()
+        .find(|event| event.event_type == "run_terminal")
+        .and_then(|event| event.data["kind"].as_str())
+        .unwrap_or("missing");
+    let image = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Completed)
+        .cloned();
+    let artifact_bytes = image
+        .as_ref()
+        .and_then(|event| event.artifacts.first())
+        .and_then(|uri| {
+            fixture
+                .artifacts
+                .read_bytes(uri.trim_start_matches("artifact://"))
+                .ok()
+        })
+        .flatten()
+        .map(|bytes| bytes.len());
+    eprintln!(
+        "inline image size: response_bytes={response_bytes}, artifact_bytes={artifact_bytes:?}, terminal={terminal}, result_ok={}",
+        result.is_ok()
+    );
+    assert!(
+        result.is_err() && artifact_bytes.is_none() && terminal != "succeeded",
+        "inline provider image payloads must be rejected before artifact persistence"
     );
 }
 

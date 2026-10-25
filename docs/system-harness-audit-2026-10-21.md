@@ -3299,6 +3299,12 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 - 在现有 CanvasArtifactService/provider seam 定义明确的 image output byte budget；下载优先检查声明长度，但不能信任或依赖 `Content-Length`，必须按流累计并在超过预算的第一个 chunk 时中止、清理 staging、不得创建 artifact/Completed。inline base64 JSON 同样在解码前估算并在解码后硬性校验，避免只约束 URL 下载。单文件限制与 workspace 总配额/并发预算分开设计；budget 需按真实供应商图像格式和工作流确定，不直接把用户输入附件 32 MiB 或 Penguin 的 10 MiB 照搬为通用规格。
 - 验收覆盖长度缺失/谎报/超限、chunked 超限、刚好等于预算、inline base64 超限、网络取消、写盘失败及多节点并发；检查内存行为为流式有界、无超限 artifact、staging 清理、节点失败和唯一 run 终态。H-165 地址授权与 H-164 取消回归需分别保留，互不替代。
 
+#### 2026-10-25 inline `b64_json` 路径补充复现
+
+- 新增并执行 `crates/deepagent-app-core/tests/workflow_audit/media.rs::audit_provider_inline_image_rejects_oversized_artifact`。唯一外部夹具是绑定 `127.0.0.1` 的合成 image provider，直接在 `/v1/images/generations` 返回带 PNG signature 的 `32 MiB + 1` 原始字节 base64；没有 URL 第二跳、真实供应商、用户文件或公网访问。
+- 命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_provider_inline_image_rejects_oversized_artifact --offline -- --ignored --nocapture --exact`。按缺陷预期失败，实际输出：`response_bytes=33554433, artifact_bytes=Some(33554433), terminal=succeeded, result_ok=true`。
+- 这证明 `parse_output()` 的 `b64_json → base64 decode → import_bytes` 分支同样没有独立输出预算；它与 URL 下载的 H-167 证据共享“图片生成输出不受类型级 byte budget 约束”的根因，但不依赖 H-165 的第二跳网络缺口。当前只确认超预算字节进入 artifact，未测试 OOM、并发放大或磁盘耗尽。
+
 ### DeepSeek Responses 无状态字段复核：未发现误用（排除项，2026-10-25）
 
 本轮重新核对官方 [Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)与[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)：DeepSeek Responses 是无状态接口，服务端不保存会话；多轮必须由客户端在每次请求的 `input` 中回传完整历史。官方不提供 OpenAI 风格的 `previous_response_id`、`conversation`、`store`、`prompt_cache_key` 或 `prompt_cache_retention` 作为本地会话续接/缓存控制手段。
