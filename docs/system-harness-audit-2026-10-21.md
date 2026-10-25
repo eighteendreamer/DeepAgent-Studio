@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| 桌面端多请求工具回合的实时/重载用量语义 | 生产 `App.tsx` 的 live last-wins 映射与生产 `mapConversationToChatMessages` 映射执行同一合成两请求样本：实时 output=30/reasoning=25，重载 output=50/reasoning=37，total均330 | 新增H-299（P3，正常工具回合+查看/重载条件）；费用账本未被本项改变，未测试真实UI窗口 |
 | DeepSeek 正常主工具循环的推理/cache计量与持久保真 | 两次正式模型响应夹一次真实task_list；有/无usage细分两样本的live/run_events原始usage均恰有2份，关闭服务后文件重开保留，会话累计输出50、推理37/0，账本输入400 | 排误增量，无新H编号；合成分桶差异价格下费用0.00101/0.002，不重复收费reasoning；不关闭H-63/H-133/H-163/H-235/H-273/H-274，不验证真实收费/缓存命中 |
 | Harness 有效读取游标的数值表示域 | 正常 tail/i64最大值共12项观察为空增量；i64最大值+1/u64最大值在公共、run专用、per-run入口及独立重开reader中，12项均回传20条旧run事件 | 新增H-298（P3，显式超域参数条件）；只读历史未变，无工具重执行；不重复H-218分页或H-285分叉恢复 |
 | Pro原生搜索项的热续轮与冷恢复 | 完整SSE搜索生命周期经正式ChatService落盘；同宿主/重开SQLite新实例的实际下一请求均保留唯一completed搜索项的id/status/action，且没有本地函数result | 排误增量，无新H编号；原生生命周期可从run_events读回、查询正文不进入诊断摘要；合成响应，不验真实搜索效果/引用/收费，不关闭H-66/H-152/H-200 |
@@ -8610,3 +8611,31 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`在整理后 **101 passed / 0 failed / 93 ignored，19.01秒，编译30.50秒**；增加工具成功断言后再运行 **101 passed / 0 failed / 93 ignored，15.40秒，编译30.41秒**。没有启用本报告既有ignored失败探针，不把正常默认回归说成旧缺陷已修复。
 - `cargo fmt --all -- --check`和`git diff --check`通过。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`退出1，仍被未修改的models/client.rs:355 clone_on_copy及persistence/run_store.rs:127 explicit_counter_loop阻断，没有屏蔽lint或改无关生产代码。
 - code-audit技能用于核对provider→主运行→持久化→费用的同一数据流，并明确区分本系统实测、参考静态设计与未覆盖条件。本轮只扩展既有usage_contract测试与本报告，无生产/协议/权限/沙箱/依赖/数据迁移变更。未执行全workspace/完整AppCore其他target、全仓SAST、web feature回归、前端/真实UI或真实provider测试；用户原有未跟踪项保持不读取、不暂存，全系统审计仍未完成。
+
+### H-299：桌面端工具循环的实时用量与会话重载显示不一致
+
+**2026-10-25，首次有效复现后即时记录；P3、未修复。** 这是桌面显示/DTO语义缺陷，不是新的供应商计费缺陷；与H-63/H-133/H-163/H-235的账本归属问题不同，也不重复上一轮“后端原始usage与CostSummary正确”的排误证据。
+
+#### 正式生产映射复现
+
+- 新增 `apps/desktop/scripts/audit-live-reload-turn-usage.test.cjs`，通过 TypeScript AST 提取并执行生产 `App.tsx::mapConversationToChatMessages`，同时按生产 `addUsage` 分支读取实际赋值规则；没有模拟Tauri窗口、provider、凭据或用户数据库。
+- 合成样本沿用上一轮已动态验证的两次主请求：第一次工具请求 output=20/reasoning=12、第二次工具结果后的最终请求 output=30/reasoning=25；持久 `UsageRecorded` 的本地契约为累计 completion/reasoning=50/37、latest prompt/total/cache=300/330/250/50。
+- 实际命令 `node --test apps/desktop/scripts/audit-live-reload-turn-usage.test.cjs`：**1 passed / 0 failed，339.561 ms**。输出为：`live output=30, reloaded output=50, live reasoning=25, reloaded reasoning=37, total=330`。断言执行了生产重载映射而非复制一个独立实现，确认差异来自两条真实前端消费语义。
+- 触发条件是正常的多请求工具回合，并在回合实时完成后查看，再通过会话详情/重载得到持久消息。单请求回合不会触发，因为累计值与最后一次值相同；纯后台账本/成本查询也不会触发。
+
+#### 根因、影响与边界
+
+- `App.tsx::addUsage` 处理每个 `usage` 事件时按最新请求写入 assistant message：`completionTokens=u.completion`、`reasoningTokens=u.reasoning`、`totalTokens=prompt+completion`。这与其注释“per-turn, not cumulative”一致。
+- `App.tsx::mapConversationToChatMessages` 消费后端 `ConversationUsageDto` 时直接写入 `completion_tokens`、`reasoning_tokens`；后端 `UsageRecorded` 由 `RunUsage` 按整轮累计 output/reasoning、并保留最新 prompt/total/cache。于是同一 `ChatMessage` 在热态和冷态的 footer 语义不一致：实时显示最后一次请求，重载显示整轮累计输出。当前 `TurnFooter` 可见地显示 output 和 total；reasoning 目前未单独显示，但已进入DTO且未来消费者同样会看到差异。
+- 本轮只确认显示/语义漂移，未确认真实桌面窗口截图或用户是否会在每次工具回合后重载；不改变SQLite账本金额、不重复发模型请求、不执行工具，也不构成权限问题。P3依据是正常工作流下可见指标不稳定和跨宿主/SDK消费者难以解释；若调用方用该字段做“本轮输出”分析，则会把多次请求累计值误标成最后请求值或反之。
+
+#### 成熟 Agent 对照与治理方向
+
+- **Codex，静态源码**：`借鉴/codex/codex-rs/protocol/src/protocol.rs` 将 `TokenUsageInfo` 明确拆成 `last_token_usage` 与 `total_token_usage`，`TokenUsageRecord` 还带 response/turn/thread 身份；UI/协议消费者可以选择明确语义，不依赖一个混合字段猜测。可借鉴的是把“最后一次请求”和“整轮/线程累计”分成不同类型或字段，不是简单把本系统重载值改成任一方而丢失另一语义。
+- **DeepSeek Harness，静态源码**：`packages/llm/token-meter/src/turn-usage.ts` 对每个 attempt 做 `normalizeUsage`，再以 `aggregateAttempts` 生成整轮 aggregate；`usage-projection.ts` 的 replacement slot 区分同一步流式样本与 retry。它没有把 aggregate 当成 last sample 返回给同一显示字段。可借鉴分层：`last_request_usage`、`turn_billed_usage`、`context_pressure` 各自命名并在wire/DTO中版本化。
+- **DeepSeek官方**：Responses usage 是一次响应的 input/output/reasoning/cache统计，不规定宿主如何把多个无状态请求合并到桌面 footer；官方文档的无状态要求反而使宿主必须显式定义“请求级”与“会话级”边界。本项不是改DeepSeek cache/reasoning参数即可解决的问题。
+
+#### 验收建议与交付边界
+
+- 在不改变既有后端历史字段兼容性的前提下，给桌面消费增加显式的 `last_request_*` 与 `turn_total_*` 投影，或让重载映射显示与热态相同的请求级值，并在另一个位置展示累计值；不得继续让同名 `completion_tokens` 在两条路径代表不同含义。应覆盖单请求、多工具多请求、重试/取消、失败终态、重载、分叉和旧DTO。
+- 本轮仅新增桌面审计脚本与报告，未修生产UI/DTO。随后实际运行 `pnpm --dir apps/desktop build`：**成功，Vite built in 44.42s**；构建同时通过项目既有脚本、TypeScript检查和Vite打包，但输出了第三方Node内置模块 externalized 及大chunk warning，本轮未把这些既有构建警告冒充H-299。未运行真实Tauri窗口、截图验收、真实provider或SDK消费；用户既有未跟踪项保持不读取、不暂存，全系统审计仍未完成。
