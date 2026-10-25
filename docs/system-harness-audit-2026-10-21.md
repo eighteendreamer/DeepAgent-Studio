@@ -13,7 +13,7 @@
 | H-76 | 已修复并验收（2026-10-26，Windows 本机所列行为） | 三 mutation 统一当前版本/观察窗口/提交复核与路径协作；专项20通过、正式原链3通过/0忽略；workspace相关与runtime/session通过，完整workspace/严格lint既有失败及残余见原项；修复提交 `b7cdfcc8` |
 | H-20 | 已修复并验收（2026-10-26，Windows 本机所列行为） | DAG产出保留/依赖交付；修复提交 `ae193ea8`，范围见原项与台账 |
 | H-22 | 已修复并验收（2026-10-26，Windows 本机所列行为） | DAG子运行执行根与工具绑定；修复提交 `c0c127e3`，范围见原项与台账 |
-| H-23 | 已修复并验收（2026-10-26，Windows 本机范围） | 来源身份/快照、私有提取文件与activity gate；专项41、原探针1、三入口wire1通过；修复提交随本项交付后回填 |
+| H-23 | 已修复并验收（2026-10-26，Windows 本机范围） | 来源身份/快照、私有提取文件与activity gate；专项41、原探针1、三入口wire1通过；修复提交 `b3614d8c` |
 
 逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **8**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **272（均待修复）**；306 是历史编号槽位，不是有效未修数量。本轮仅H-23，已完成下述Windows本机范围验收；整体goal未完成。下一项先复核H-33的跨宿主会话所有权及其与H-32的边界，不机械挑选已修复的H-24。
 
@@ -951,7 +951,7 @@ AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reop
 
 ### H-23：回退会话后旧笔记仍按复用序号宣称覆盖，压缩候选会替换新分支
 
-**当前状态：2026-10-26 已修复并验收，限下述Windows本机范围；修复提交随本项交付后回填。** 下文“尚未验收/中间版本”为当时实录，不覆盖本段最终状态。E-H23-after（source_type=command，source_ref=当前SessionMemoryStore/Extractor、context_runtime与service测试；content_hash/artifact_path=n/a）：最终 `cargo test -p deepagent-app-core --lib session_memory::tests --offline -j 1 --quiet` **41 passed/0 failed/0 ignored**（0.98s）；`cargo test -p deepagent-app-core --lib context_runtime::tests::branch_note_is_shared_by_all_compactors_and_stale_note_falls_back_on_wire --offline -j 1 -- --exact --nocapture` **1 passed/0 failed/0 ignored**（0.15s），正常三入口使用note不调模型、rewind后三入口实际fallback请求含BLUE不含RED；原正式探针1 passed见下。普通lib/no-deps clippy退出0、保留既有10 warning；严格及all-targets未通过，workspace的H-306阻断保留。F-H23：P1、validated/high confidence，原失败由E-H23-before支持，本机修复由E-H23-after支持。P-H23（callflow）：权威事件快照 → 来源session/尾EventId验证 → 既有activity gate → 私有working笔记/原受限工具 → 带来源的SQLite提交 → 可读文件导出；压缩和提取水位共用来源规则。
+**当前状态：2026-10-26 已修复并验收，限下述Windows本机范围；修复提交 `b3614d8c`。** 下文“尚未验收/中间版本”为当时实录，不覆盖本段最终状态。E-H23-after（source_type=command，source_ref=当前SessionMemoryStore/Extractor、context_runtime与service测试；content_hash/artifact_path=n/a）：最终 `cargo test -p deepagent-app-core --lib session_memory::tests --offline -j 1 --quiet` **41 passed/0 failed/0 ignored**（0.98s）；`cargo test -p deepagent-app-core --lib context_runtime::tests::branch_note_is_shared_by_all_compactors_and_stale_note_falls_back_on_wire --offline -j 1 -- --exact --nocapture` **1 passed/0 failed/0 ignored**（0.15s），正常三入口使用note不调模型、rewind后三入口实际fallback请求含BLUE不含RED；原正式探针1 passed见下。普通lib/no-deps clippy退出0、保留既有10 warning；严格及all-targets未通过，workspace的H-306阻断保留。F-H23：P1、validated/high confidence，原失败由E-H23-before支持，本机修复由E-H23-after支持。P-H23（callflow）：权威事件快照 → 来源session/尾EventId验证 → 既有activity gate → 私有working笔记/原受限工具 → 带来源的SQLite提交 → 可读文件导出；压缩和提取水位共用来源规则。
 
 兼容性与限制：Rust `save`新增显式事件快照参数，仓内消费方已同步，外部直接调用需更新；不改DeepSeek参数/协议、UI DTO或SQL schema。旧JSON无source状态不能继续证明覆盖，旧文件不是下一次提取的基线，会在门槛满足后重新提取，可能增加模型费用。提取期间回退返回busy；来源保留的前缀仍可使用，不按任何generation变化全部作废。SQLite是已提交summary的权威，文件是导出，保存与导出不是崩溃原子事务。未验断电/磁盘满、其他OS/DACL、真实供应商/参考工程/UI、性能或任意外部篡改；强杀可能残留working目录。H-33跨宿主提取/运行互斥、H-63失败费用归集、H-260读授权等未因此关闭。code-audit促成对spawn_blocking生命周期的额外追查，docs-generator用于保留原始失败、首版通过不足与最终验收的区别。
 
