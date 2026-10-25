@@ -42,7 +42,10 @@ pub(crate) struct ChatSubagentRunner {
     pub(crate) model: String,
     pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) registry: Arc<ToolRegistry>,
+    /// Workspace used to construct `registry`; never changed by DAG assignment.
     pub(crate) root: PathBuf,
+    /// Per-execution scheduler assignment, including runs without persistence.
+    pub(crate) assigned_worktree: Option<PathBuf>,
     /// Tool-search mode at the time the parent session built this runner.
     /// Captured per-runner (not per-call) so swapping the user setting
     /// mid-run doesn't change behavior of an in-flight sub-agent.
@@ -74,11 +77,10 @@ pub(crate) struct ChatSubagentRunner {
 }
 
 impl ChatSubagentRunner {
-    /// Re-root this runner at `root` (builder). Used by the DAG orchestrator to
-    /// run a node's sub-agent inside the scheduler-owned worktree instead of the
-    /// runner provisioning its own — so worktree isolation has a single owner.
-    pub(crate) fn with_root(mut self, root: PathBuf) -> Self {
-        self.root = root;
+    /// Assign a scheduler-owned workspace without changing the registry's
+    /// source root. The normal execution path then rebinds workspace tools.
+    pub(crate) fn with_assigned_worktree(mut self, root: PathBuf) -> Self {
+        self.assigned_worktree = Some(root);
         self
     }
 
@@ -238,18 +240,19 @@ impl ChatSubagentRunner {
             // DAG workspaces are scheduler-owned but recorded in the same
             // child store. Resume must reuse them, not switch to the parent.
             // false leaves cleanup to an explicit task.cleanup.
-            if persist {
-                if let Some(path) =
-                    deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db)
-                        .get(subagent_id)?
-                        .and_then(|record| record.worktree_path)
-                {
-                    let path = PathBuf::from(path);
-                    if !path.is_dir() {
-                        return Err(CoreError::not_found("retained DAG worktree is missing"));
-                    }
-                    return Ok((path, false));
+            let retained = if persist {
+                deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db)
+                    .get(subagent_id)?
+                    .and_then(|record| record.worktree_path)
+                    .map(PathBuf::from)
+            } else {
+                None
+            };
+            if let Some(path) = retained.or_else(|| self.assigned_worktree.clone()) {
+                if !path.is_dir() {
+                    return Err(CoreError::not_found("retained DAG worktree is missing"));
                 }
+                return Ok((path, false));
             }
             return Ok((self.root.clone(), false));
         }
@@ -1156,7 +1159,7 @@ impl deepagent_subagents::SubAgentExecutor for DagSubagentExecutor {
         let runner = self
             .runner
             .clone()
-            .with_root(PathBuf::from(context.worktree.path.clone()));
+            .with_assigned_worktree(PathBuf::from(context.worktree.path.clone()));
         match runner
             .run_tracked(id, request, None, None, persist, false)
             .await
@@ -1172,6 +1175,10 @@ impl deepagent_subagents::SubAgentExecutor for DagSubagentExecutor {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "subagent_workspace_tests.rs"]
+mod workspace_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1261,7 +1268,7 @@ mod tests {
         }
     }
 
-    fn audit_child_runner(
+    pub(super) fn audit_child_runner(
         root: &Path,
         transport: Arc<dyn deepagent_models::transport::HttpTransport>,
     ) -> ChatSubagentRunner {
@@ -1269,7 +1276,7 @@ mod tests {
         audit_child_runner_with_db(root, transport, db)
     }
 
-    fn audit_child_runner_with_db(
+    pub(super) fn audit_child_runner_with_db(
         root: &Path,
         transport: Arc<dyn deepagent_models::transport::HttpTransport>,
         db: Arc<Database>,
@@ -1312,6 +1319,7 @@ mod tests {
             reasoning_effort: ReasoningEffort::None,
             registry: Arc::new(registry),
             root: root.to_path_buf(),
+            assigned_worktree: None,
             tool_search_mode: deepagent_builtins::ToolSearchMode::Disabled,
             tool_search_auto_threshold: 10_000,
             parent_discovered_snapshot: Default::default(),
@@ -2014,7 +2022,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: DAG tool paths must use the assigned worktree, not parent root"]
     async fn audit_dag_child_rebinds_file_tools_to_assigned_worktree() {
         use deepagent_subagents::{SubAgentContext, SubAgentExecutor, Worktree};
 

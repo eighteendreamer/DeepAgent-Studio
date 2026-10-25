@@ -536,6 +536,7 @@ impl<'a> RunAssembler<'a> {
                 reasoning_effort: subagent_reasoning_effort,
                 registry: sub_registry,
                 root: root.clone(),
+                assigned_worktree: None,
                 tool_search_mode,
                 tool_search_auto_threshold: tool_search_threshold,
                 parent_discovered_snapshot,

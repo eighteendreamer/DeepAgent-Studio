@@ -911,6 +911,10 @@ AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reop
 
 ### H-22：DAG 子运行只改变声明的工作目录，文件工具仍绑定父工作区
 
+**2026-10-26 状态：已修复并验收，限下述 Windows 本机范围；本项独立提交后回填 hash。** 原失败与中间过程均保留；完整 workspace 和严格/all-targets lint 没有通过状态。
+
+2026-10-26 修复前复核（E-H22-before，source=当前 HEAD `666540d8` 的本机测试输出，content_hash=n/a）：接回原进程而非重复启动，命令 `cargo test -p deepagent-app-core --lib subagent_runner::tests::audit_dag_child_rebinds_file_tools_to_assigned_worktree --offline -j 1 -- --exact --ignored --nocapture`，**0 passed / 1 failed**。实际 `child_ok=true, wire_names_child=true, parent_output=Some("hidden tool executed"), child_output=None`，断言 `DAG child wrote through the parent-bound tool registry` 失败。F-H22 保持 validated/high confidence；P-H22 为生产 DAG executor → with_root 改比较根 → run_active 跳过 registry 重绑 → 真实 write_file 写入 parent。只使用一次性目录、离线模型 transport，未操作用户文件、第三方或真实凭据。当前状态修复中，尚无修复后验收。
+
 **级别：高（P1）；范围：DagSubagentExecutor 到 ChatSubagentRunner 的工作区绑定。** 本项与 H-20 分开：H-20 是调度器删除已写入工作树的产出；本项是实际工具可能根本没有写入所分配的工作树。
 
 #### 触发与复现
@@ -928,6 +932,19 @@ AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reop
 - 本系统已有 run_active() 的 registry 重绑分支，应让工作区绑定与实际 registry 来源保持明确关系，避免 with_root 修改比较基准后跳过重绑。文件、命令、权限、checkpoint、项目查询和模型环境需核对同一有效工作区；保留已有 session_search 会话项目约束，不全局 chdir 或修改共享父 registry。
 - 覆盖两个并行子目录写同名文件、父目录不变、相对和绝对路径、sandbox/审批、工具搜索、恢复及普通 task 与 DAG 一致性。H-19、H-20、H-22 显示同一子运行上下文在 schema、工具根、产物所有权处分裂，后续应围绕既有 runner 的有效执行配置统一治理，不逐个增加路径特判。
 - 本轮只增加审计证据，没有修生产工具根或删除逻辑。
+
+#### 2026-10-26 修复过程与本机验收（H-22）
+
+范围仅本项；H-19 的 schema/dispatch 限制、H-21 的恢复字段和其他 H 项不因本项关闭。以上“只增加审计证据”及默认忽略命令描述原审计阶段，修复前段落的“修复中”也是当时状态，不覆盖本次最终验收。
+
+- 实现：保持 ChatSubagentRunner.root 为构造 registry 时的来源目录，DAG 分配目录改为每个 clone 的 assigned_worktree；execution_root 统一读取既有子记录或临时 assignment 并检查目录存在。既有 run_active 根据有效根与来源根的真实差异重绑文件/命令/代码查询工具，模型环境和 checkpoint 使用同一有效根；保留 session_search 父项目锚定，不全局 chdir、不更改共享父 registry，不新增存储/审批/工具中心。
+- E-H22-original-after（content_hash=n/a）：原探针取消 ignore，完整路径 `--exact --nocapture` 实跑 **1 passed / 0 failed / 0 ignored**；真实 `parent_output=None, child_output=Some("hidden tool executed")`。原失败 E-H22-before 保留，不把修复后结果覆盖为原先不存在问题。
+- E-H22-suite（content_hash=n/a）：冻结源码后 `cargo test -p deepagent-app-core --lib subagent_runner:: --offline -j 1 -- --nocapture --test-threads=1` **18 passed / 0 failed / 6 ignored**，含9项新增默认 workspace 回归与原探针。覆盖 read/edit/write/grep、相对/绝对路径、真实 shell cwd、checkpoint 真恢复、父目录不变、并发持久化/临时 DAG、分配目录缺失前置失败、普通 task shared/worktree 对照、deferred 工具发现和父审批 Deny、UI 切项目后 session_search 锚定。
+- P-H22-after（callflow）：实际 DagScheduler/GitWorktrees → 生产 DagSubagentExecutor → 离线模型返回完整工具调用 → WriteFileTool 在 producer 子树写真实字节 → Git 快照进入 consumer 基线 → ReadFileTool 实际读到上游字节并写 consumer 文件 → 所有原 SQLite owner 释放后重开 → 原 SubagentRunStore 定位/真实模型工具 resume 仍写该子树 → 显式 cleanup。测试断言 parent 文件、HEAD 和 index 不变。此项不再将两个独立 fixture 拼称完整交付；但计划使用固定 PlanDag，没有启动真实供应商或模型规划模块。
+- 中间验证保留：首轮新增回归 **15 passed / 2 failed / 6 ignored**，次轮 **17 passed / 1 failed / 6 ignored**；命令夹具误选非白名单 Get-Location，及将 checkpoint 越界终止误期望为可继续的 tool result，均查明后分别修正观测/断言。另直接复现既有 PowerShell exit wrapper 下 pwd 仅空行，而 echo $PWD.Path 输出真实目录；只修改测试观测，不修改 shell、权限或白名单，不算本项修复成果。完整命令及过程见 [修复进度](system-harness-repair-progress.md)。
+- 限制：Windows/本机 Git、离线 Responses transport 和 Direct 模式；没有真实 DeepSeek、Desktop UI、Sandboxie/Windows Sandbox、其他 OS、断电/强杀或完整特性验收。未运行 Semgrep/CodeQL 或参考 agent；技能用于人工调用链核对与即时证据链记录。H-78 路径联接、H-33 跨宿主租约等独立问题保留，不把执行目录修复宣称为完整 OS 隔离。
+- 最终全量与限制：`cargo test --workspace --offline -j 1 -- --quiet --test-threads=1` **退出1**，AppCore lib **1116 passed / 79 ignored**、kernel_v2_e2e **107 passed / 90 ignored**、builtins **312 passed / 1 ignored**、CLI **88 passed / 27 ignored**、persistence **67 passed** 和 session_control **8 passed**；最终 prompts **27 passed / 1 failed**，为既有 H-306 的空 defaultUserPrompt。后续 workspace target/doc-tests 未执行。另跑 `cargo test -p deepagent-runtime -p deepagent-subagents --offline -j 1 -- --quiet --test-threads=1` **退出0**，runtime lib **284 passed / 16 ignored**、稳定性 **5 passed**、subagents **25 passed**；其他 ignored 及 doc-tests 详见进度，不算新验收。
+- lint/格式：全依赖严格 all-targets 被未改 models/client.rs:355 阻断；no-deps 严格 all-targets 被10项既有 lib 诊断阻断；普通 all-targets 又被既有 mcp_discovery_restore.rs:433 的 panicking_unwrap 阻断，均未通过。普通 lib/no-deps **退出0但保留10项 warning**。`cargo fmt --all -- --check` 与 `git diff --check` 退出0。未变更上述既有诊断代码、前端/桥接或公共协议，不绕过 hook、不添加 allow；本项验收不表示整个系统完成。
 
 ### H-23：回退会话后旧笔记仍按复用序号宣称覆盖，压缩候选会替换新分支
 
