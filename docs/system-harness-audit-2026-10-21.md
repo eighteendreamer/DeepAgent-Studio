@@ -73,6 +73,7 @@
 | 画布语音合成响应无字节上限 | `speech_synthesize` 的 provider 响应由 `resp.bytes()` 全量缓冲并直接写入 Audio artifact；32 MiB+1 的本机响应成功持久化 | 已确认 H-248；正式 `CanvasModelGateway::run_audio`、本机 provider、ArtifactService；未测试真实音频服务或 OOM |
 | 画布语音转写远程输入绕过网络边界 | `speech_transcribe.audio_reference` 可直接填写 `http(s)`；正式 gateway 先裸 GET loopback 资源，再把其字节上传给 provider，没有审批或统一网络策略 | 已确认 H-249；正式 `CanvasModelGateway::run_audio`、本机 loopback provider/input；未访问真实内网或公网 |
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
+| H-214 的 TypeScript 高层流增量 | runStreamed 已先订阅，但 turnId 赋值前过滤掉早到事件；即便 response 在前，同批 delta/完成事件仍被丢弃，raw onEvent 却完整收到 | 归入 H-214，不新增编号；受控晚发对照通过，两个真实 stdio 故障组复现；未运行真实 Rust server 或 DeepSeek |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness SDK 断线后的事件等待 | 真实本机子进程退出且生产 reader 已清空 pending RPC，保留公开 client 时，既有和新订阅均无断线/关闭结果；丢弃 client 后两者才 Closed | 已确认 H-256（P2）；正常完成通知交付对照通过，Windows stdio fixture；未运行真实 Agent/模型或桌面 |
 | TypeScript SDK 的 CLI JSONL 进程终态 | 真实子进程只输出部分事件或零条事件后 exit=23，公开 runJsonl 仍无异常结束；成功对照正常 | 已确认 H-266（P2）；正式 SDK 与本机 Node CLI fixture，未运行真实 Rust CLI/模型；stdout.end 提前结束假设未获证实 |
@@ -5175,6 +5176,18 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 - 回归需覆盖：notification 先于/后于 response、响应与通知同批到达、零 receiver、两个并行 turn、快速成功/失败、审批、broadcast lag、SDK future drop、EOF、重连及 `thread/read` 补读；确保每个 owned operation 只消费自己的 thread/turn 事件，终态一次，且不把较早无关通知错误归属给新请求。
 
 本轮只新增正式失败探针和审计文档，未修改生产 SDK 行为；H-01、H-43、H-205 的既有证据保持独立。
+
+#### 2026-10-25 TypeScript 增量：先订阅但先过滤后排队，response-first 同批事件仍丢失
+
+**归档与范围：** 这是 H-214 的跨 SDK 补充，不新增问题编号，也不把原 Rust broadcast 原因改写为 TypeScript 机制。新增 `packages/sdk/tests/early-events-audit.test.mjs`、`early-events-fixture.mjs`，只使用公开 `DeepAgent.startThread()`、`Thread.runStreamed()`、`onEvent` 与现有 `requestForTest()`；fixture 为本机真实 Node stdio 子进程，无网络、真实模型、工具、用户文件或生产逻辑改动。
+
+- **首次即时证据 E-214-ts（2026-10-25）：** `packages/sdk` 执行 `pnpm build` 通过；`$env:RUN_HARNESS_AUDIT='1'; node --test tests/early-events-audit.test.mjs` 为 **1 passed / 2 failed（预期复现），约226ms，测试进程 exit=1**。controlled 对照先返回 turn/start response，再经父端 barrier 后显式 release 两条通知，raw observer 与高层 stream 均收到 `[item.updated,turn.completed]`、正常完成。event-first 和 response-first 故障组各用一次 stdout.write 写完整 JSONL 批次；在后置 barrier response 已读到后，两组均观测 `raw=[item.updated,turn.completed], streamed=[], finished=false`。
+- **response-first 的意义：** 该组 wire 顺序严格为成功的 `turn/start` response → content delta → `turn.completed`，没有要求服务端提前发送 turn 事件。当前 `apps/cli/src/app_server.rs::run_stdio` 也先 await write_response 再 spawn_turn；操作系统/Node 可以将相邻写入作为同一读取批次交付，不存在“一定等调用方 continuation 执行完才到达通知”的协议保证。本次实际证明本机 Node fixture 单次写出的 response-first 批次触发丢失；没有启动真实 Rust app-server，不把真实 server 必然产生相同分块写成实测。
+- **第一个错误边界：** `Thread.runStreamed` 确实在 `this.run()` 前调用 subscribe，但 handler 只在 `turnId && eventTurnId === turnId` 时 queue.push。turnId 要等多层 await 返回后才赋值；stdio readline 同批同步处理多行时，response 只是 resolve pending Promise，紧随的 notification 已调用 handler，而赋值 continuation 尚未执行。故事件已到 SDK、已有订阅者，却在身份尚未知时被过滤掉，队列完全未获得原始 delta/terminal。只把 Rust subscribe 前移、增大队列或让服务端先发 response，都不能单独解决这个 TS 窗口。
+- **观察与清理：** fixture 的 turn/start 已处理 stderr 标记与随后 `audit/barrier` 往返共同确认原始 stdout 批次已被 SDK 读取，非用 sleep 猜测事件是否到达。故障状态记录后，测试才通过 audit/release 发一条标注 `cleanup terminal` 的重复终态以释放 parked stream；高层 stream 只收到该清理通知，原 `original terminal` 永未交付。重复终态仅是测试收尾，不被当作合法业务双终态要求或缺陷成因。最后 fixture 用 audit/exit 自行退出，生产 transport exit callback 拒绝 pending 后才 await close；另有 6 秒自行退出 watchdog。
+- **成熟实现再核对：** `借鉴/deepseek-harness/packages/sdk/client/src/api.ts::HarnessSession.run` 在 prompt 前 subscribeSessionTree，`client.ts::NotificationSubscriptionImpl.push/next` 将 matching 通知先入订阅队列；prompt 返回 messageId 后才从已经保留的队列中寻找本次 inbox receipt，再消费至 idle。此处可迁移的是“先按已知 session 收集、请求返回后关联”，不是把其 receipt/session.status 协议直接套到本项目 turnId。参考源码已核查，未运行参考工程。
+- **影响与本地治理补充，未实施：** TS 增量已经直接观测合法 content delta 与完成通知同时丢失，且在后置观察点 stream 仍未结束，比原 Rust ThreadStarted 样本多覆盖了高层终态等待；没有无限期放任挂起或运行真实 DeepSeek，因此只称“若无额外后续终态/错误收束，可一直等待”，不声称真实付费 run 已发生。应在现有 owned stream seam 内暂存身份确认前的候选事件，response 返回后按 thread/turn 过滤并按序排入同一队列，同时定义有界暂存、并发请求关联、RPC 失败、断线和取消的统一收尾；不能建立永久全局无界历史，也不能在每个调用方增加定时 sleep。SDK 传输生命周期不由 DeepSeek Responses/tool/cache 参数修复。
+- **验证收尾：** `pnpm test`（含 build）**5 passed**、`pnpm typecheck` 通过；新探针默认 **1 passed / 2 skipped**，显式故障组 **1 passed / 2 failed（预期）**。`cargo fmt --all -- --check`、`git diff --check` 通过。未运行 workspace、Clippy、桌面构建或真实 provider，本轮只有 test-only JavaScript 与 Markdown；code-audit 用 raw/owned 双观察和后置 RPC barrier 排除“服务端没发送/未解码”的误判，全系统审计目标仍未完成。
 
 ### H-215：Harness 归档状态未进入活动列表与运行接纳，已归档 thread 仍可创建 turn
 
