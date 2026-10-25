@@ -99,7 +99,8 @@
 | 画布同步模型请求的运行取消 | 正式 `text-gen` 已进入本机 provider 且响应保持 pending 后，取消被受理但工作流 300ms 内不退出；释放响应后 text 节点发布 Completed，运行却落唯一 cancelled 终态 | 已确认 H-164；动态仅覆盖 text。image/audio/embedding 只确认请求 DTO 与共用 HTTP `call()` 同样没有取消通道，尚未逐项动态复现 |
 | Embedding 工作流能力可达性 | 正式 `WorkflowAgent`/`CanvasModelGateway`/文件 SQLite 链路执行 embedding 节点时，在 provider 前返回 `unknown workflow node kind (neither professional nor creative)`，loopback `/v1/embeddings` 请求数为 0 | 新增 H-300（P1，当前 embedding 节点未注册）；已有 runtime embedding executor/bridge 单元路径不能替代 graph/canvas contract 可达性；未继续声称 embedding 取消已动态覆盖 |
 | 画布 audio 合成取消不打断 provider 响应 | 正式 `audio`/`speech_synthesize` 已进入本机 `/v1/audio/speech` 且响应保持 pending；取消 accepted 后 300ms 内未退出，释放响应后 audio 节点发布 Completed，run 才落 cancelled | 新增 H-301（P1）；audio 已有 graph/contract 注册，缺口在共用 Canvas HTTP 调用没有贯穿取消身份；仅 loopback 合成 provider，未访问公网或真实供应商 |
-| 画布视频下载无字节上限 | 正式 video submit→status→download 返回 32 MiB+1 的本机 MP4 响应后，宿主完整缓冲并写入 artifact，video 节点与 run 均 succeeded | 新增 H-302（P1/P2 资源边界）；下载与 image/audio 共用无上限 `resp.bytes()`，仅 loopback 合成 provider，未测试 OOM/磁盘耗尽 |
+| 画布视频下载无字节上限 | 正式 video submit→status→download 返回 32 MiB+1 的本机 MP4 响应后，宿主完整写入 artifact，video 节点与 run 均 succeeded | 新增 H-302（P1/P2 资源边界）；视频虽逐块流式写入但无累计预算，image/audio 另有无上限 `resp.bytes()`，仅 loopback 合成 provider，未测试 OOM/磁盘耗尽 |
+| 画布视频 provider URL 第二跳绕过网络审批 | 正式 video submit→status 返回 loopback 下载 URL 后，`fetch_video_artifact` 直接 GET，私网 canary 进入 artifact，approval=0，run succeeded | 新增 H-303（P1，条件性 SSRF/网络边界）；独立双 loopback provider/资源服务，未访问真实内网、公网或元数据服务 |
 | 画布供应商返回资产的下载边界 | 正常 image-gen 供应商在成功 JSON 中返回 loopback 图片 URL 后，宿主直接第二跳 GET，零审批，并把私网 canary 完整存入 artifact；运行仍 succeeded | 已确认 H-165；正式 WorkflowAgent/Canvas gateway/文件 SQLite/RunStore，本机两台 loopback 服务；没有访问公网、真实内网或元数据服务，也未证明数据已外传给供应商 |
 | DeepSeek Responses 思考模式的 top_p 有效值 | 正式 ModelClient 在 `reasoning.effort=high` 且设置 `top_p=0.2` 时对 Flash、Pro（无工具/有工具）均将 0.2 原样发到 Responses wire；官方对这些组合分别规定 0.95、1.0、0.95 的有效行为 | 已确认 H-166；离线正式 serializer/wire 探针；没有真实 API 调用或回答质量 A/B，不能证明每次输出必然改变 |
 | 画布生成图片响应无字节上限 | provider 资产 URL 返回 32 MiB+1 的本机 PNG 响应后，宿主完整缓冲并存入 artifact，image 节点与 run 均 succeeded | 已确认 H-167；和 H-165 共用双 loopback 故障注入，容量边界独立于地址授权；未测试进程内存耗尽或长期磁盘配额 |
@@ -8729,3 +8730,26 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 #### 本轮边界
 
 - 本项只新增 ignored 复现与文档，没有修改生产逻辑。没有访问公网、真实供应商、用户文件或内网；H-167/H-248 仍分别保留为 image/audio 证据，不能合并成“所有媒体已验证”。
+
+### H-303：画布视频 provider URL 第二跳绕过网络审批
+
+**级别：高（P1，条件性网络边界）；状态：正式 video 工作流路径已复现，未修复。** 触发条件是已配置的 video provider 在 `video/status` 成功结果中返回一个宿主可访问的下载 URL。当前宿主随后直接下载该 URL；本轮用第二台 loopback 服务模拟 host-private 资源，只在本机验证是否发生第二跳，不访问真实内网、云元数据或公网。
+
+#### 即时 Evidence（2026-10-25）
+
+- 新增并执行 `crates/deepagent-app-core/tests/workflow_audit/media.rs::audit_provider_video_url_cannot_fetch_loopback_resource`。夹具使用正式 `ChatService`、`WorkflowAgent`、视频 submit/status、`fetch_video_artifact`、ArtifactService、RunStore 和文件 SQLite；一台 loopback 服务冒充 provider，另一台 loopback 服务只返回合成 MP4 canary。
+- 命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_provider_video_url_cannot_fetch_loopback_resource --offline -- --ignored --nocapture --exact`。按安全边界预期失败，实际输出：`private_requests=["GET /host-private.mp4 HTTP/1.1"], approvals=0, terminal=succeeded, artifact_bytes=23, canary_stored=true`。
+- 这证明正式 video provider URL 被直接二跳 GET，响应被写入 artifact，运行仍 succeeded；没有审批事件。测试没有使用真实供应商凭据、用户文件或外部网络，且只在确认第二跳后登记本项。
+- 生产链核对：`generate_video()` 取成功 job 的 `video_url` 后调用 `fetch_video_artifact()`；该函数新建 reqwest client 并 `client.get(url)`，只处理 HTTP 状态、MIME 和流式 artifact 写入，没有调用统一 network permission/approval seam，也没有校验 loopback/private/redirect 目标。H-165 的 image URL 问题不覆盖这个独立 video downloader 路径；H-249 是 audio transcription 的远程输入，触发点不同。
+
+#### 成熟 Agent 对照、影响与治理方向
+
+- **Codex** 的命令、文件和网络能力从 permission profile、approval reviewer 与 sandbox/host seam 进入执行；provider 返回的任意 URL 不应凭字符串类型自动获得新的网络能力。其 app-server 传输层也把请求生命周期和身份绑定，不能把一个外部结果当作新的可信权限。
+- **DeepSeek Harness** 的工具/host adapter 将外部资源解析留在宿主能力边界，并在 provider/adapter 侧区分可信配置与模型产生的值；可迁移原则是“模型/provider 输出是数据，不是授权”。本轮未运行参考工程的 video adapter，不把静态源码写成动态保证。
+- **DeepSeek 官方 Responses/Tool Calls/KV Cache** 文档不规定本地 URL 下载、SSRF 防护或审批；官方只规定模型返回调用/结果后由宿主执行。因此 reasoning、strict、缓存前缀都不能修复本地 video URL 的权限缺口。
+- 影响是 P1：若供应商、兼容网关或被污染的响应让 URL 指向 loopback、私网、重定向链或本机控制面，宿主可在无用户批准下读取并持久化响应，随后把内容暴露给工作流下游、artifact 查看器或下一次模型输入。当前证据只证明本机 canary 被读取和存储，不证明真实数据已泄露或已访问云元数据。
+- 根治方向是让所有 provider-controlled URL 统一进入既有网络策略：解析并固定重定向前后的目标，拒绝 loopback、link-local、私网、Unix/特殊 scheme 和未获批准的 host；每个二跳带上 operation、provider、run、风险类别和审批上下文；下载流同时复用 H-302 的字节预算与 H-301/H-164 的取消 token。image、video、audio 的下载/输入不能各自新建裸 reqwest client。
+
+#### 本轮边界
+
+- 本项只新增 ignored 双 loopback 复现与文档，没有修改生产网络或权限逻辑；没有访问真实内网、元数据服务、公网或用户数据，也没有重复 image 的 H-165 canary。验收仍需正常 video 下载对照、拒绝 loopback、拒绝 redirect-to-private、审批允许的显式例外和取消/超限组合。

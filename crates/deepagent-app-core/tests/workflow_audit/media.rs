@@ -33,6 +33,89 @@ struct LocalVideoProvider {
     server: JoinHandle<()>,
 }
 
+/// A video provider whose completed-job URL points at a second loopback
+/// service. This is separate from the normal video fixture so the second-hop
+/// fetch can be observed independently from submit/status traffic.
+struct LocalVideoUrlProvider {
+    base_url: String,
+    private_requests: Arc<Mutex<Vec<String>>>,
+    provider_server: JoinHandle<()>,
+    private_server: JoinHandle<()>,
+}
+
+impl LocalVideoUrlProvider {
+    async fn start() -> Self {
+        let private_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let private_address = private_listener.local_addr().unwrap();
+        let private_requests = Arc::new(Mutex::new(Vec::new()));
+        let private_captured = private_requests.clone();
+        let private_server = tokio::spawn(async move {
+            let (mut socket, _) = private_listener.accept().await.unwrap();
+            let (line, _) = read_request(&mut socket).await;
+            private_captured.lock().unwrap().push(line);
+            let header = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                VIDEO_BYTES.len()
+            );
+            socket.write_all(header.as_bytes()).await.unwrap();
+            socket.write_all(VIDEO_BYTES).await.unwrap();
+        });
+
+        let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let provider_address = provider_listener.local_addr().unwrap();
+        let download_url = format!("http://{private_address}/host-private.mp4");
+        let provider_server = tokio::spawn(async move {
+            let mut submitted = false;
+            loop {
+                let (mut socket, _) = provider_listener.accept().await.unwrap();
+                let (line, _) = read_request(&mut socket).await;
+                let payload = if line.starts_with("POST /v1/video/submit ") {
+                    submitted = true;
+                    json!({"requestId":"audit-video-url"}).to_string()
+                } else {
+                    assert!(submitted);
+                    assert!(line.starts_with("POST /v1/video/status "));
+                    json!({
+                        "status": "Succeed",
+                        "reason": "audit provider finished",
+                        "results": {"videos": [{"url": download_url}]}
+                    })
+                    .to_string()
+                };
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    payload.len()
+                );
+                if socket.write_all(header.as_bytes()).await.is_ok() {
+                    let _ = socket.write_all(payload.as_bytes()).await;
+                }
+            }
+        });
+        Self {
+            base_url: format!("http://{provider_address}/v1"),
+            private_requests,
+            provider_server,
+            private_server,
+        }
+    }
+
+    async fn close(&mut self) {
+        self.provider_server.abort();
+        self.private_server.abort();
+        let provider_result = (&mut self.provider_server).await;
+        let private_result = (&mut self.private_server).await;
+        assert!(provider_result.is_ok() || provider_result.unwrap_err().is_cancelled());
+        assert!(private_result.is_ok() || private_result.unwrap_err().is_cancelled());
+    }
+}
+
+impl Drop for LocalVideoUrlProvider {
+    fn drop(&mut self) {
+        self.provider_server.abort();
+        self.private_server.abort();
+    }
+}
+
 impl LocalVideoProvider {
     async fn start(status_after_release: &str) -> Self {
         Self::start_with_task_id(status_after_release, TASK_ID).await
@@ -522,6 +605,36 @@ impl MediaFixture {
         .await
     }
 
+    async fn new_video_url(provider: &LocalVideoUrlProvider) -> Self {
+        Self::with_provider(
+            &provider.base_url,
+            "Audit local video URL",
+            "audit-video-model",
+            vec![CanvasScenario::VideoGeneration],
+            |provider_id| {
+                serde_json::from_value(json!({
+                    "definition": {
+                        "version": 1,
+                        "nodes": [
+                            {"id":"start","kind":"start"},
+                            {"id":"video","kind":"video-gen","config":{
+                                "prompt":"audit video provider URL",
+                                "videoModel":format!("{provider_id}::audit-video-model")
+                            }},
+                            {"id":"end","kind":"end"}
+                        ],
+                        "edges": [
+                            {"id":"e1","source":"start","target":"video"},
+                            {"id":"e2","source":"video","target":"end"}
+                        ]
+                    }
+                }))
+                .unwrap()
+            },
+        )
+        .await
+    }
+
     async fn new_text(provider: &LocalTextProvider) -> Self {
         Self::with_provider(
             &provider.base_url,
@@ -789,6 +902,51 @@ async fn real_video_workflow_stores_the_download_and_one_success_terminal() {
     let requests = provider.requests.lock().unwrap();
     assert_eq!(requests.len(), 3);
     assert_eq!(requests[1].1["requestId"], TASK_ID);
+}
+
+#[tokio::test]
+#[ignore = "audit: a provider-controlled video URL must not fetch a host-private destination"]
+async fn audit_provider_video_url_cannot_fetch_loopback_resource() {
+    let mut provider = LocalVideoUrlProvider::start().await;
+    let fixture = MediaFixture::new_video_url(&provider).await;
+    let run_id = "audit-video-provider-url-ssrf";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+    result.unwrap();
+
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminal = events
+        .iter()
+        .find(|event| event.event_type == "run_terminal")
+        .and_then(|event| event.data["kind"].as_str())
+        .unwrap_or("missing");
+    let video = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| event.node_id == "video" && event.status == NodeExecutionStatus::Completed)
+        .cloned()
+        .expect("video node must complete before checking second-hop evidence");
+    let stored = fixture
+        .artifacts
+        .read_bytes(video.artifacts[0].trim_start_matches("artifact://"))
+        .unwrap()
+        .unwrap();
+    let private_requests = provider.private_requests.lock().unwrap().clone();
+    eprintln!(
+        "provider video URL: private_requests={private_requests:?}, approvals={}, terminal={terminal}, artifact_bytes={}, canary_stored={}",
+        fixture.approvals.load(Ordering::SeqCst),
+        stored.len(),
+        stored == VIDEO_BYTES
+    );
+    assert!(
+        private_requests.is_empty() && stored != VIDEO_BYTES,
+        "provider-controlled video URL must not fetch a host-private destination"
+    );
 }
 
 #[tokio::test]
