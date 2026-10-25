@@ -78,6 +78,7 @@
 | Provider SSE 非法 UTF-8 的故障隔离 | 合法事件后插入一个非法字节，正式 HTTP→ModelClient 不及时拒绝，后续文本和完整终态均未交付；解码器同序列保留 65,537 字节 | 已确认 H-257（P2）；中文/emoji 全切点解码和真实 HTTP 正常对照通过；未测真实供应商、Kernel 或 OOM |
 | CLI TUI 的模型 attempt 回滚 | 正式聊天部分输出后断线并重试成功，runtime及run_events有reset，落盘只有新答案，终端state与实际HistoryCell渲染仍拼入废弃答案和推理 | 已确认 H-258（P2）；无故障/首个delta前断线对照通过，正式ChatService/Kernel/SQLite；未启动真实TTY或公网 |
 | 工具双完成事件的调用身份一致性 | 同一调用的arguments.done为A、output_item.done为B时，正式write_file执行A，原生历史及下一请求却以B配对A的成功结果 | 已确认 H-259（P2）；正式ChatService/Kernel、文件SQLite和真实临时文件；两个正常对照通过，限矛盾provider故障注入，不声称DeepSeek正常流有此问题 |
+| 上下文压缩后的文件编辑资格 | 正式压缩 helper 清掉旧 read_file 输出后，同一生产 file_tools 共享缓存仍允许未重读的 write_file 覆盖已有文件 | 已确认 H-260（P2）；真实临时文件、正式压缩投影与 file_tools；故障探针 0 passed / 1 failed（预期），与 H-76 的外部修改场景不同 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
 | Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
 | Harness thread/list 历史列表 | 创建 120 个真实持久化 thread 后，正式 `thread/list` 一次返回全部 120 条、约 25 KB JSON；请求没有 limit、cursor 或 continuation | 已确认 H-220；正式 SQLite/EventStore/ServerState，无模型、工具、子进程或网络 |
@@ -4889,6 +4890,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 | 响应提交前预执行的状态归属 | H-233 | 在既有 Tool/Runtime/Session 明确并发与可丢弃预取的独立契约；参考 DeepSeek Harness 成功流先提交再执行，或 Codex 先记录调用、错误后仍收拢结果；不将 Safe 当成无状态证明 | 成功/failed/EOF/自动重试/取消均无不可见任务状态；hooks 有无不改变已执行事实的可审计性；主运行与子代理、agent-hook 的共享实例边界分别验证，不另建存储 |
 | 模型 attempt 的用户视图提交 | H-258 | 复用既有 ModelAttemptReset/ModelRequestStarted，由TUI和Desktop对齐未提交片段的快照/撤回契约；参考Claude的orphaned-message tombstone，不重建retry层 | 部分正文/推理后重试只显示有效attempt；此前已提交工具/叙述及真实compaction/memory标记不丢；实际TTY的tail与scrollback和持久化结果一致 |
 | 流式预处理与最终工具调用身份 | H-259 | 在现有Responses accumulator/ToolAttemptController绑定最终call_id、工具名和语义参数，冲突须显式拒绝，不能仅按ID命中旧prepared调用；参考Codex从同一个OutputItemDone记录历史并构造工具执行 | 相同参数和JSON排版差异正常执行一次；矛盾事件不写文件或产生错配结果；原生历史、审批、action hash、实际执行和续轮wire描述同一调用；无hooks/有hooks均验证 |
+| 压缩与文件事实/编辑资格边界 | H-260 | 压缩提交点同时清理或版本化 `FileStateCache` 的已读资格；参考 Claude 压缩时保存近期文件状态用于恢复，并清空旧 `readFileState`，不能让模型看不到的旧事实继续授权写入 | 压缩后旧输出只作为持久化原始证据，不再直接满足覆盖资格；需要编辑时重新读取或恢复有界、可见的文件快照；重启/replay/工具缓存保持同一代次 |
 | 输入 hook 的附加上下文交付 | H-140、H-26 | 既有 hook 输出结果分开携带决定、改写与上下文，接回当前输入的原生 Surface/会话记录和统一 meter；参考 Claude hook_additional_context 与 Codex 独立 additional_contexts 通道 | 普通 stdout 与合法 additionalContext 在实际 wire 中可见且有来源；拒绝仍不发模型；多 hook 有界合并、恢复可回放，不把 UI 日志或任意输出升级为系统权限 |
 | 运行取消覆盖所有等待与统一工具调度 | H-10、H-29、H-31、H-34、H-35、H-45、H-119、H-164 | 摘要、prefire、正文、重试、工具、画布视频 HTTP、其他 Canvas 同步模型请求和前台子任务属于现有取消树；共用 ToolPipeline、deadline 与串行屏障；区分执行 Future 丢弃、外部工作清理与持久化收尾 | 各等待中停止及时退出；父超时保留 budget_exceeded 且前台子工作有界收尾；串并行超时一致；Canvas 节点不先 Completed 再把 run 标 cancelled；跨写屏障的读取不提前；任务有 owner；取消不假成功或吞保存错误；本地停止不冒充云任务已撤销 |
 | 命令输出读取与缓冲生命周期 | H-60 | 既有 SystemExecutor 共用 reader owner、drain 截止和输出保留预算；参考 Codex 显式 abort reader 及 Claude 清理输出监听/受控文件 | 正常 EOF 释放；单/双管道开放时有界停止 reader，返回后迟到输出不增长孤立缓冲；取消/drop 清理，合法后台服务的输出策略明确 |
@@ -6915,3 +6917,33 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 验证过程：定向正式 `kernel_v2_e2e` 默认回归 **81 passed / 78 ignored**；`cargo fmt --all -- --check`、`git diff --check`通过。首次 `cargo test -p deepagent-app-core --offline` 的单元 **1091 passed / 59 ignored**，随后中止于既有host_lock跨进程测试的 `UNIQUE constraint failed: runs.id`。核查该测试以PID构造可复用临时目录、固定live-run ID；未删除旧目录或修改测试，改用唯一全新 `DEEPAGENT_HOST_LOCK_TEST_ROOT` 隔离重跑，host_lock本身 **1 passed / 1 ignored**。这不是H-259证据，不据此另造产品缺陷编号。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 未通过，实际报既有models/client.rs:355的clone_on_copy及persistence/run_store.rs:127的explicit_counter_loop，均已核对HEAD含原代码，不修改无关文件。未运行全workspace、Desktop构建/UI、真实provider或参考工程测试；不声称全量验证通过。
 - 收尾：使用全新host-lock临时根的 `cargo test -p deepagent-app-core --offline -- --quiet` 已完整结束并通过：单元 **1091 passed / 59 ignored**，集成合计 **117 passed / 133 ignored**，doc-test **0**。上述ignored含显式故障探针及真实服务测试，不意味着已知问题修复。code-audit用于定位首个调用身份分叉并验证真实效果，docs-generator要求的Scope/Evidence/Finding/Path已逐项落在本报告；只提交本项测试与文档。
+
+### H-260：上下文压缩清掉模型可见文件结果后，旧 FileStateCache 仍授权覆盖已有文件
+
+**级别：中（P2，压缩后工具事实与编辑资格不一致）；状态：生产压缩投影 helper 与正式 `file_tools` 真实复现，未修复。** 触发条件是文件先被 `read_file` 成功读取，随后旧工具结果被 micro-compact/context compaction 清成 stub，再在同一运行中直接 `write_file` 覆盖已有文件。与 H-76 不同，本项不需要外部修改文件、时间竞争或相同长度时间戳；仅由宿主主动撤回模型可见事实即可触发。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权源码审计；只新增 `crates/deepagent-app-core/src/context_runtime.rs` 的 ignored test。临时 workspace、真实临时文件和正式 `deepagent_builtins::file_tools`；无用户数据、凭据、外部网络或生产逻辑改动。未处理用户排除的 encrypted-content 报错。
+- E-260-first（source_type=command，source_ref=上述 test-only 模块，content_hash=n/a，artifact_path=n/a）：执行 `cargo test -p deepagent-app-core --lib context_runtime::tests::audit_compaction_clears_model_output_but_not_file_edit_cache --offline -- --ignored --nocapture`，**0 passed / 1 failed（预期）**。输出：`compaction_file_cache: model_output_cleared=true write_without_reread=true disk=after`；断言随后失败于“compaction must revoke stale read-before-edit authorization”。失败不是编译或超时，而是故障不变量被真实行为违反。
+- E-260-surface：测试通过正式 `micro_compact_response_item_outputs` 将旧 `FunctionCallOutput` 的完整内容替换为 `{"status":"cleared",...}`，并断言压缩结果已无旧正文；这对应当前 context runtime 的模型 Surface 变换，不是手工改字符串后声称发生压缩。
+- E-260-tool：同一批正式 `file_tools(WorkspaceRoot)` 中的 `read_file` 与 `write_file` 共享一个 `FileStateCache`。先调用生产 `read_file(existing.txt)`，再完成压缩投影，不重新读取，直接调用生产 `write_file(existing.txt,"after")`；返回 `ok=true`，磁盘真实内容为 `after`。生产 write 检查的是 `cache_has_been_read`，而不是当前模型 Surface 是否仍保留可见的 read 结果。
+- E-260-control：测试没有外部改写文件，文件先后内容长度/路径均稳定；覆盖资格来自同一运行内合法 read，压缩是唯一中间变化。故障不是 H-76 的 stale external write，而是“模型不可见事实仍被当作当前编辑资格”。本轮未宣称真实桌面 UI 已触发该顺序，只证明正式压缩与工具边界组合可达。
+
+#### Finding 与调用路径
+
+- F-260：severity=medium，category=design，status=validated，confidence=high，evidence_ids=[E-260-first,E-260-surface,E-260-tool,E-260-control]，location=`crates/deepagent-app-core/src/context_runtime.rs::micro_compact_response_item_outputs`、`crates/deepagent-builtins/src/file_tools.rs::WriteFileTool::invoke`、`FileStateCache::has_been_read`。压缩只替换 provider-facing `FunctionCallOutput`，不通知或清理 file-tool cache；write_file 对已存在路径只看 cache 是否曾读过，因此旧资格跨越模型 Surface 代次继续有效。
+- P-260（path_type=callflow）：read_file → shared FileStateCache 记录 path → context micro-compact/context-surface patch 清除旧 tool output → ModelAgent 下一请求看不到原文件内容 → write_file → cache_has_been_read=true → atomic_write 覆盖已有文件 → 运行可继续成功。模型可见历史、编辑资格和磁盘事实不再同代。
+
+#### 成熟 Agent、DeepSeek 与影响
+
+- **Claude Code**：参考 `借鉴/claudecode/restored-src/src/services/compact/compact.ts` 在压缩前保存 `preCompactReadFileState`，随后明确 `context.readFileState.clear()`，再仅恢复有限近期文件 attachment；`microCompact.ts` 也把旧 tool result 做有界清理。可借鉴的是清理模型上下文时同步重置“已读事实”状态，而不是继续把旧缓存当作无限期编辑授权。本轮未运行 Claude 发行版，不声称其所有写入路径与本系统完全相同。
+- **Codex**：本轮未找到与本系统 FileStateCache 同名的可直接等价实现；不虚构 Codex 已解决该具体问题。可迁移原则仍是把工具调用、模型可见历史和 durable turn 身份绑定，而不是用一个未版本化进程缓存跨越上下文边界。
+- **DeepSeek 官方**：Responses API 是无状态请求，客户端每轮回传 `input`；工具由宿主执行，官方不会管理本地 read-before-edit 资格。官方 KV cache 只说明输入前缀匹配，不会使宿主撤回/保留的文件事实自动同步。因此 H-260 是本地工具/上下文设计问题，不是 DeepSeek API 或缓存命中缺陷。
+- 已证后果：压缩后模型可能基于 stub 或不再可见的旧内容继续覆盖文件；在需要先重新读取、重新审查或重新审批的产品语义下，这会造成“模型看不到但宿主仍允许”的错误事实边界。当前探针只写临时文件，未证明真实用户数据损坏、绕过 workspace 权限或必然发生错误决策。
+
+#### 收敛方向与验证边界
+
+- 本地设计建议（未实施）：将 FileStateCache 绑定 `context_surface_version`/read generation；ContextSurfacePatched、完整 compaction、branch rewind、session resume 时清除或降级旧 read/edit资格。若要保留近期文件状态，应把路径、内容摘要/版本和可见恢复 attachment 一起持久化，并明确它仍满足哪一种编辑资格；不能只恢复 cache key。
+- 回归应覆盖完整/微压缩、原生 Responses compaction、压缩失败保留原 Surface、重启/replay、分支回退、同路径 read/edit/multi_edit/write、外部修改、权限变化及多宿主。压缩后的覆盖若无重新读取应失败；显式恢复且模型收到受控文件快照后才可按产品定义允许。
+- 未验证真实桌面交互、长时间自动压缩阈值、真实 DeepSeek 服务、Codex 运行、跨进程 FileStateCache、审批 UI 或生产修复；不把本机 helper 的 0/1 结果扩大为这些结论。
