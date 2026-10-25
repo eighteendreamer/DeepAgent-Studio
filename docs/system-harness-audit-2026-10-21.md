@@ -7,7 +7,7 @@
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
 | H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交 `56b9e7b9` |
-| H-72 | 已修复并验收（2026-10-26，Windows 本机范围） | 全计划暂存/发布/历史提交及补偿；原探针默认通过，checkpoint 13 passed、AppCore audit 8 passed/2 ignored；workspace 被 H-306 阻断、严格 lint 有既有告警，详见原项及台账；提交后回填 |
+| H-72 | 已修复并验收（2026-10-26，Windows 本机范围） | 全计划暂存/发布/历史提交及补偿；原探针默认通过，checkpoint 13 passed、AppCore audit 8 passed/2 ignored；workspace 被 H-306 阻断、严格 lint 有既有告警，详见原项及台账；修复提交 `d08c776c` |
 
 逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **2**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **278**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-73，不在本轮夹带修改。
 
@@ -1868,7 +1868,7 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 
 #### 2026-10-26 最终修复与验收
 
-**状态：已修复并验收（Windows 本机所列行为范围）；修复提交在取得 hash 后回填。** `CheckpointManager::restore` 与 AppService 的多 checkpoint 恢复现在统一走私有 `checkpoint/restore.rs`：校验全计划并构建最终替换树后，才发布目标且保留当前版本；文件或历史提交失败则补偿，补偿也失败时保留副本并明确返回 recovery 目录。`persistence::fs_commit` 提供原 H-286 原语的唯一共享实现，文件移动与恢复共用。fork 不再逐事件发布半个 child，改为完整前缀暂存及事务投影/发布，延迟 FK 的 COMMIT 失败会撤下派生文件；rewind 保留原有“文件代际为权威、SQLite 为可重建投影”的语义，消除发布后再 reload 造成的假未提交。没有新建 store、公共 UI/协议 DTO 或生产数据迁移。
+**状态：已修复并验收（Windows 本机所列行为范围）；修复提交 `d08c776c`（代码、测试及当时两份文档），hash 回填另做文档提交。** `CheckpointManager::restore` 与 AppService 的多 checkpoint 恢复现在统一走私有 `checkpoint/restore.rs`：校验全计划并构建最终替换树后，才发布目标且保留当前版本；文件或历史提交失败则补偿，补偿也失败时保留副本并明确返回 recovery 目录。`persistence::fs_commit` 提供原 H-286 原语的唯一共享实现，文件移动与恢复共用。fork 不再逐事件发布半个 child，改为完整前缀暂存及事务投影/发布，延迟 FK 的 COMMIT 失败会撤下派生文件；rewind 保留原有“文件代际为权威、SQLite 为可重建投影”的语义，消除发布后再 reload 造成的假未提交。没有新建 store、公共 UI/协议 DTO 或生产数据迁移。
 
 - `cargo test -p deepagent-runtime --lib checkpoint:: --offline -j 1 -- --nocapture`：**13 passed / 0 failed / 0 ignored**。原故障探针已转默认；`cargo test -p deepagent-app-core --test checkpoint_audit --offline -j 1 -- --nocapture` 为 **8 passed / 2 ignored**，两 ignored 不属本项关闭。文件 SQLite 的缺失较旧 checkpoint、fork INSERT/COMMIT 失败、重开无残留分支、故障排除后的正式重试均通过。共享 private commit seam 的发布后真实 history 错误也通过，不能冒称整个 public 方法的并发注入。
 - `cargo test --workspace --offline -j 1 -- --quiet`：编译 **6m23s**，AppCore lib **1102 passed/80 ignored**、kernel_v2_e2e **102 passed/92 ignored**、builtins **292 passed/1 ignored**、persistence **67 passed**；随后 prompts lib **27 passed/1 failed**，被既有 H-306 的空视频提示词阻断，命令退出 1。不是全量通过；未执行的后续 target 不算通过。补跑 `cargo test -p deepagent-runtime -p deepagent-session --offline -j 1 -- --quiet` 退出 0：runtime lib **282 passed/16 ignored**、稳定性端到端 **5 passed**、session **14 passed**；其他默认探针/ignored 与 doc-tests 详见台账。
