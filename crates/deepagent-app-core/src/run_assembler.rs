@@ -1904,6 +1904,8 @@ mod compaction_source_tests {
     async fn a_covered_note_compacts_without_calling_the_model() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = deepagent_core::id::SessionId::new();
+        let (events, history) = transcript();
+        let events = crate::session_memory::testing::persist_events(&db, session, &events);
         SessionMemoryStore::new(db.clone())
             .save(
                 session,
@@ -1915,9 +1917,9 @@ mod compaction_source_tests {
                     initialized: true,
                     updated_at: 1,
                 },
+                &events[..=2],
             )
             .unwrap();
-        let (events, history) = transcript();
 
         // The client would fail loudly if consulted, so success proves the note
         // carried the summary.

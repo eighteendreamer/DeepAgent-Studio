@@ -191,29 +191,14 @@ impl HookedReactiveContextCompactor {
         zone: &[ResponseInputItem],
     ) -> (String, deepagent_models::Usage) {
         let store = crate::session_memory::SessionMemoryStore::new(self.db.clone());
-        if let (Ok(Some(state)), Ok(events)) = (
-            store.load(self.session_id),
-            deepagent_persistence::event_store::EventStore::new(&self.db)
-                .load_session(self.session_id),
-        ) {
-            if let Some(covered) = state.last_summarized_sequence {
-                if !zone.is_empty()
-                    && !state.summary.trim().is_empty()
-                    && zone.iter().all(|item| {
-                        crate::input_runtime::sequence_of_response_item(&events, item)
-                            .is_some_and(|seq| seq <= covered)
-                    })
-                {
-                    let summary = crate::input_runtime::with_transcript_pointer(
-                        format!(
-                            "Session notes maintained during this conversation:\n{}",
-                            state.summary
-                        ),
-                        &self.db.session_transcript_dir(self.session_id),
-                    );
-                    return (summary, deepagent_models::Usage::default());
-                }
-            }
+        if let Some(note) =
+            crate::session_memory::note_for_response_zone(&store, self.session_id, zone)
+        {
+            let summary = crate::input_runtime::with_transcript_pointer(
+                format!("Session notes maintained during this conversation:\n{note}"),
+                &self.db.session_transcript_dir(self.session_id),
+            );
+            return (summary, deepagent_models::Usage::default());
         }
         let rendered = zone
             .iter()
@@ -272,29 +257,14 @@ impl HookedReactiveContextCompactor {
             ));
         }
         let store = crate::session_memory::SessionMemoryStore::new(self.db.clone());
-        if let (Ok(Some(state)), Ok(events)) = (
-            store.load(self.session_id),
-            deepagent_persistence::event_store::EventStore::new(&self.db)
-                .load_session(self.session_id),
-        ) {
-            if let Some(covered) = state.last_summarized_sequence {
-                if !zone.is_empty()
-                    && !state.summary.trim().is_empty()
-                    && zone.iter().all(|item| {
-                        crate::input_runtime::sequence_of_response_item(&events, item)
-                            .is_some_and(|seq| seq <= covered)
-                    })
-                {
-                    let summary = crate::input_runtime::with_transcript_pointer(
-                        format!(
-                            "Session notes maintained during this conversation:\n{}",
-                            state.summary
-                        ),
-                        &self.db.session_transcript_dir(self.session_id),
-                    );
-                    return Ok((summary, deepagent_models::Usage::default()));
-                }
-            }
+        if let Some(note) =
+            crate::session_memory::note_for_response_zone(&store, self.session_id, zone)
+        {
+            let summary = crate::input_runtime::with_transcript_pointer(
+                format!("Session notes maintained during this conversation:\n{note}"),
+                &self.db.session_transcript_dir(self.session_id),
+            );
+            return Ok((summary, deepagent_models::Usage::default()));
         }
         let rendered = zone
             .iter()
@@ -2055,6 +2025,113 @@ mod summary_audit;
 mod tests {
     use super::*;
     use deepagent_context::TokenCounter;
+
+    #[tokio::test]
+    async fn branch_note_is_shared_by_all_compactors_and_stale_note_falls_back_on_wire() {
+        use crate::session_memory::testing::{
+            scripted_client_with_transport, unreachable_client, ScriptedTransport,
+        };
+        use crate::session_memory::{SessionMemoryState, SessionMemoryStore};
+        use deepagent_core::clock::SystemClock;
+        use deepagent_core::event::EventPayload;
+        use deepagent_persistence::event_store::EventStore;
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let mut session = deepagent_session::Session::create(&db, &SystemClock, None).unwrap();
+        let sid = session.id();
+        for message in [
+            Message::user("Stable task"),
+            Message::assistant("Discarded RED decision"),
+        ] {
+            session
+                .append(EventPayload::MessageAppended { message })
+                .unwrap();
+        }
+        let events = EventStore::new(&db).load_session(sid).unwrap();
+        let store = SessionMemoryStore::new(db.clone());
+        store
+            .save(
+                sid,
+                &SessionMemoryState {
+                    summary: "Discarded RED decision".into(),
+                    last_summarized_sequence: events.last().map(|event| event.sequence),
+                    initialized: true,
+                    ..Default::default()
+                },
+                &events,
+            )
+            .unwrap();
+        let make_compactor = |client| {
+            HookedReactiveContextCompactor::new(
+                client,
+                "deepseek-chat".into(),
+                Arc::new(HookRegistry::new()),
+                sid,
+                db.clone(),
+            )
+        };
+        let history = crate::input_runtime::model_history_from_events(&events);
+        let (_, items) = deepagent_models::response_items_from_messages(&history);
+        let compactor = make_compactor(unreachable_client());
+        let (text, usage) = compactor.summarize_response_item_zone(&items).await;
+        assert!(text.contains("RED"));
+        assert_eq!(usage, deepagent_models::Usage::default());
+        let (text, usage) = compactor
+            .summarize_response_item_zone_cancelled(&items, None)
+            .await
+            .unwrap();
+        assert!(text.contains("RED"));
+        assert_eq!(usage, deepagent_models::Usage::default());
+        let (text, usage) = compactor.summarize_zone(&history).await;
+        assert!(text.contains("RED"));
+        assert_eq!(usage, deepagent_models::Usage::default());
+
+        drop(session);
+        crate::service::AppService::from_shared(db.clone())
+            .rewind_session(&sid.to_string(), 0)
+            .unwrap();
+        let mut session = deepagent_session::Session::recover(&db, &SystemClock, sid).unwrap();
+        for message in [
+            Message::user("Replacement BLUE decision"),
+            Message::assistant("Keep BLUE only"),
+        ] {
+            session
+                .append(EventPayload::MessageAppended { message })
+                .unwrap();
+        }
+        let events = EventStore::new(&db).load_session(sid).unwrap();
+        let history = crate::input_runtime::model_history_from_events(&events);
+        let (_, items) = deepagent_models::response_items_from_messages(&history);
+        for path in ["native", "cancelled_native", "message"] {
+            let (client, wire) = scripted_client_with_transport(vec![ScriptedTransport::text(
+                r#"{"goal":"Keep BLUE","completed":["BLUE decision"]}"#,
+            )]);
+            let compactor = make_compactor(client);
+            let (summary, usage) = match path {
+                "native" => compactor.summarize_response_item_zone(&items).await,
+                "cancelled_native" => compactor
+                    .summarize_response_item_zone_cancelled(
+                        &items,
+                        Some(Arc::new(AtomicBool::new(false))),
+                    )
+                    .await
+                    .unwrap(),
+                _ => compactor.summarize_zone(&history).await,
+            };
+            assert!(summary.contains("BLUE"), "{path}: {summary}");
+            assert!(!summary.contains("RED"), "{path}: {summary}");
+            assert!(
+                usage.prompt_tokens > 0,
+                "{path} must actually use the model fallback"
+            );
+            let request = wire.last_prompt();
+            assert!(request.contains("BLUE"), "{path}: {request}");
+            assert!(
+                !request.contains("RED"),
+                "{path}: stale note leaked into the model wire"
+            );
+        }
+    }
 
     #[tokio::test]
     #[ignore = "audit: context compaction must not leave stale file-edit authorization"]

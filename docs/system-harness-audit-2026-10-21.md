@@ -11,10 +11,13 @@
 | H-73 | 已修复并验收（2026-10-26，Windows 本机范围） | 检查点绑定源 EventId 并按当前分支验证，旧格式未知归属保守拒绝；checkpoint_audit 17 passed/1 ignored，范围及失败见原项；修复提交 `d40eef9a` |
 | H-75 | 已修复并验收（2026-10-26，限本机后端行为及前端回调/构建） | 活动共享/控制独占 scope，忙时拒绝回退；正式原探针及成功/失败/取消共 4 passed/0 ignored；四 crate 测试与 pnpm build 通过；workspace/严格 lint 仍有既有失败，真实 Tauri 点击未验；修复提交 `8eea7bd5` |
 | H-76 | 已修复并验收（2026-10-26，Windows 本机所列行为） | 三 mutation 统一当前版本/观察窗口/提交复核与路径协作；专项20通过、正式原链3通过/0忽略；workspace相关与runtime/session通过，完整workspace/严格lint既有失败及残余见原项；修复提交 `b7cdfcc8` |
+| H-20 | 已修复并验收（2026-10-26，Windows 本机所列行为） | DAG产出保留/依赖交付；修复提交 `ae193ea8`，范围见原项与台账 |
+| H-22 | 已修复并验收（2026-10-26，Windows 本机所列行为） | DAG子运行执行根与工具绑定；修复提交 `c0c127e3`，范围见原项与台账 |
+| H-23 | 已修复并验收（2026-10-26，Windows 本机范围） | 来源身份/快照、私有提取文件与activity gate；专项41、原探针1、三入口wire1通过；修复提交随本项交付后回填 |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **5**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **275**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-20（DAG 成功产出被清理且未交付），按直接数据损失风险排序，不在本轮 H-76 中夹带修改。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **8**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **272（均待修复）**；306 是历史编号槽位，不是有效未修数量。本轮仅H-23，已完成下述Windows本机范围验收；整体goal未完成。下一项先复核H-33的跨宿主会话所有权及其与H-32的边界，不机械挑选已修复的H-24。
 
-初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；前五项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
+初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
 ## 当前交付状态（2026-10-25 收尾）
 
@@ -948,13 +951,29 @@ AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reop
 
 ### H-23：回退会话后旧笔记仍按复用序号宣称覆盖，压缩候选会替换新分支
 
+**当前状态：2026-10-26 已修复并验收，限下述Windows本机范围；修复提交随本项交付后回填。** 下文“尚未验收/中间版本”为当时实录，不覆盖本段最终状态。E-H23-after（source_type=command，source_ref=当前SessionMemoryStore/Extractor、context_runtime与service测试；content_hash/artifact_path=n/a）：最终 `cargo test -p deepagent-app-core --lib session_memory::tests --offline -j 1 --quiet` **41 passed/0 failed/0 ignored**（0.98s）；`cargo test -p deepagent-app-core --lib context_runtime::tests::branch_note_is_shared_by_all_compactors_and_stale_note_falls_back_on_wire --offline -j 1 -- --exact --nocapture` **1 passed/0 failed/0 ignored**（0.15s），正常三入口使用note不调模型、rewind后三入口实际fallback请求含BLUE不含RED；原正式探针1 passed见下。普通lib/no-deps clippy退出0、保留既有10 warning；严格及all-targets未通过，workspace的H-306阻断保留。F-H23：P1、validated/high confidence，原失败由E-H23-before支持，本机修复由E-H23-after支持。P-H23（callflow）：权威事件快照 → 来源session/尾EventId验证 → 既有activity gate → 私有working笔记/原受限工具 → 带来源的SQLite提交 → 可读文件导出；压缩和提取水位共用来源规则。
+
+兼容性与限制：Rust `save`新增显式事件快照参数，仓内消费方已同步，外部直接调用需更新；不改DeepSeek参数/协议、UI DTO或SQL schema。旧JSON无source状态不能继续证明覆盖，旧文件不是下一次提取的基线，会在门槛满足后重新提取，可能增加模型费用。提取期间回退返回busy；来源保留的前缀仍可使用，不按任何generation变化全部作废。SQLite是已提交summary的权威，文件是导出，保存与导出不是崩溃原子事务。未验断电/磁盘满、其他OS/DACL、真实供应商/参考工程/UI、性能或任意外部篡改；强杀可能残留working目录。H-33跨宿主提取/运行互斥、H-63失败费用归集、H-260读授权等未因此关闭。code-audit促成对spawn_blocking生命周期的额外追查，docs-generator用于保留原始失败、首版通过不足与最终验收的区别。
+
+原探针修复后显式执行（去除ignore）：`cargo test -p deepagent-app-core --lib service::tests::audit_rewind_rejects_session_note_from_discarded_branch --offline -j 1 -- --exact --nocapture` **1 passed / 0 failed / 0 ignored**（1.90s）；相同场景现为 `replacement=None, drops_new_branch=false`。Workspace实跑仍退出1：本项AppCore 1128 passed/78 ignored（workspace keychain条件）、E2E107/90、checkpoint18/1、builtins312/1、CLI88/27、persistence67/session_control8均通过，之后被既有H-306 prompts27 passed/1 failed空prompt阻断，不能称全workspace成功。补跑runtime/session/persistence命令整体退出0，runtime284/16、e2e_stabilization5、session14；完整命令与限制见台账H-23明细。普通all-targets/no-deps lint仍由既有mcp_discovery_restore:433 panicking_unwrap阻断；不夹带修独立问题。
+
+最终源码阶段追加：全lib `cargo test -p deepagent-app-core --lib --offline -j 1 --quiet` **1128 passed / 0 failed / 69 ignored**（9.56s），含staged pin在Future被abort后仍继续的真实spawn_blocking写入隔离（注入Tool共享seam）、SQLite trigger拒绝正式提取保存时不发布working编辑。fmt check/diff check退出0；严格AppCore lib/no-deps lint退出1，既有8处clone_on_copy、1处type_complexity、1处too_many_arguments阻断，没有添加豁免。Workspace/所有target仍待结果，不提前关闭H-23。
+
+取消边界补强（未作为额外H计数）：首版 `cargo test -p deepagent-app-core --lib --offline -j 1` **1126 passed / 0 failed / 69 ignored**（9.54s），包含原探针及三条 compaction wire 回归；这是中间版本结果。随后源码复核发现底层 `file_mutation::apply` 使用 `spawn_blocking`，Future丢弃不保证 native 写入停止，故不能仅凭 activity guard 声称全部取消窗口安全。现改为每个pass独立临时笔记，既有 PinnedFileTool 校验逻辑路径后映射宿主私有路径，继续用原 read/edit 工具、RuntimeEngine与权限；完成后保存带source状态并以tempfile导出可读笔记。旧最终文件不作为输入，失联阻塞写最多触及自己working目录。中断可能遗留临时工作目录，权威baseline仍为已验证SQLite状态；当前版本正在重验，不把首版整库通过套用到新代码。
+
+阶段实测追加：`cargo test -p deepagent-app-core --lib session_memory::tests --offline -j 1 -- --nocapture` 扩展后 **39 passed / 0 failed / 0 ignored**，2.27s。包含 safe cursor 留存而来源尾事件删除、明确拒绝旧快照 save/提取、旧90k token水位重置、新 BLUE 模型请求中无 RED、legacy/父笔记副本拒绝、文件 SQLite 关闭重开、真实 read/edit 已完成但尚未发布时跨 Database handle 控制拒绝，以及 success/failure/abort 后释放与旧文件不进入新请求。首次 fmt 的 Windows 文件映射占用重试后 `cargo fmt --all` 退出0；最终格式检查仍待执行。上述非全系统通过，原正式探针和新 native 模型请求测试正在与 AppCore 全 lib 一起验收。
+
+实施中记录：本轮以 `session_id + 来源快照尾 EventId/sequence` 绑定整个提取输入，而非只绑定 safe cursor；Message 与两条 native compaction 共用验证，旧无 source 行不证明覆盖。提取获取既有 activity guard 后复核 caller 快照，持有至编辑/发布结束；期间 rewind 返回 busy。每次编辑前从已验证的 SQLite summary（无有效状态则模板）准备文件，旧分支/中断文件不作为下一提取基线。token 预筛也验证来源，代价是读取权威历史，不再宣称只读廉价 cursor。首次编译因 save 新增显式 snapshot 参数而有 7 处测试调用未同步，退出1；随后将旧伪造历史夹具接入实际 EventStore 并同步调用，仍在测试中，不提前宣称通过。Claude 参考仅静态核对其按 message.uuid 找切点、找不到则放弃摘要；本地 source envelope/活动锁方案是复用现有边界的本地设计，不是复制其实现。
+
+2026-10-26 修复前 E-H23-before（source=修复前 HEAD `5b0c7468` 本机输出，content_hash=n/a）：`cargo test -p deepagent-app-core --lib service::tests::audit_rewind_rejects_session_note_from_discarded_branch --offline -j 1 -- --exact --ignored --nocapture` **0 passed / 1 failed**，测试体0.32s。实际 `keep=4, old_covered=8, current_tail=12, replacement=Some((4,"Discarded decision: use RED")), drops_new_branch=true`。F-H23 保持 validated/high confidence；P-H23 为正式 rewind → 原事件被截断、新分支复用 sequence → 旧 SessionMemoryState 未失效 → compaction_from_note 把旧 RED 笔记当作 BLUE 新分支覆盖。只用临时 SQLite/确定性笔记，无供应商网络或用户数据。当前修复中，尚无修复后验收。
+
 **级别：高（P1）；触发条件：已有会话笔记，回退到其覆盖点之前，再继续到足够的新事件，且笔记尚未重新生成。** 这是“历史分支身份”缺失，不是简单的重复消息内容匹配问题 H-11。
 
 #### 触发与复现
 
 - `AppService::rewind_session()` 恢复 checkpoint、截断事件日志并重新打开会话，没有同步失效 SessionMemoryState。`Session::rewind()` 允许新事件从保留尾部连续追加，所以被删掉的 sequence 会被新分支重新占用。
 - 笔记覆盖状态只记录 last_summarized_sequence，没有事件 ID 或分支代次；`compaction_from_note()` 把当前消息 sequence <= 旧覆盖值视为已总结。native `summarize_response_item_zone()` 也有同样的只比较 sequence 的覆盖判断，后者本次只做代码核对，未独立动态验证。
-- 默认忽略探针 `service::tests::audit_rewind_rejects_session_note_from_discarded_branch` 建立真实 Session，先写稳定前缀，再写旧分支 RED 决策；为其保存有效的 note 状态 fixture，覆盖到 sequence=8。调用正式 AppService::rewind_session 保留到 4，然后通过 Session::recover 追加新的 BLUE 分支，事件到 12。
+- 原审计时默认忽略的探针 `service::tests::audit_rewind_rejects_session_note_from_discarded_branch` 建立真实 Session，先写稳定前缀，再写旧分支 RED 决策；为其保存有效的 note 状态 fixture，覆盖到 sequence=8。调用正式 AppService::rewind_session 保留到 4，然后通过 Session::recover 追加新的 BLUE 分支，事件到 12。本轮修复后已转默认执行，保留以下原始失败实录。
 - 执行：`cargo test -p deepagent-app-core --lib audit_rewind_rejects_session_note_from_discarded_branch --offline -- --ignored --nocapture`。
 - 先确认当前模型历史已没有 RED，说明 rewind 本身确实删掉旧分支；随后调用生产 compaction_from_note，实际得到 `Some((4,"Discarded decision: use RED"))`，且将被替换的前缀已经包含 BLUE 新决策。要求拒绝旧分支 note 的断言失败：`keep=4, old_covered=8, current_tail=12, drops_new_branch=true`。
 - 本次验证到真实 rewind/恢复及压缩候选选择，没有向真实供应商发送该候选，也没有实际提交 ContextCompacted。笔记是确定性持久化 fixture，不是自然模型提取，故不涉及摘要质量；首次编译探针因缺少测试 import 失败，补齐后才得到上述产品行为证据。

@@ -30,9 +30,10 @@ use deepagent_builtins::{note_edit_tools, WorkspaceRoot};
 use deepagent_core::clock::{Clock, SystemClock, Timestamp};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::event::{Event, EventPayload, Sequence};
-use deepagent_core::id::SessionId;
+use deepagent_core::id::{EventId, SessionId};
 use deepagent_core::message::Message;
 use deepagent_models::{ModelClient, ToolSchema};
+use deepagent_persistence::event_store::EventStore;
 use deepagent_persistence::Database;
 use deepagent_runtime::agent::RunUsage;
 use deepagent_runtime::{Agent, ModelAgent, RunOutcome, RuntimeConfig, RuntimeEngine};
@@ -42,8 +43,8 @@ use deepagent_tools::{Tool, ToolDescriptor, ToolOutput};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 
-/// Collection holding the note's cursor state; the note text itself is a file
-/// next to the session's other artifacts.
+/// Collection holding the committed summary, cursors and source identity. The
+/// readable file beside the session's artifacts is an export, not authority.
 const SESSION_MEMORY_COLLECTION: &str = "session_memory";
 
 /// Template written when a note is first created.
@@ -65,6 +66,44 @@ pub struct SessionMemoryState {
     pub initialized: bool,
     /// Last update (Unix ms).
     pub updated_at: i64,
+}
+
+/// The entire extraction input, not just the safe compaction cursor: an unsafe
+/// pass can learn facts beyond that cursor. Event identity survives append and
+/// header updates but not deletion/replacement of the source branch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct MemorySource {
+    session_id: SessionId,
+    sequence: Sequence,
+    event_id: EventId,
+}
+
+#[derive(Serialize, Deserialize)]
+struct StoredMemory {
+    #[serde(flatten)]
+    state: SessionMemoryState,
+    #[serde(default)]
+    source: Option<MemorySource>,
+}
+
+impl StoredMemory {
+    fn valid_for(&self, session_id: SessionId, events: &[Event]) -> bool {
+        self.source.as_ref().is_some_and(|source| {
+            source.session_id == session_id
+                && events.iter().any(|event| {
+                    event.session_id == session_id
+                        && event.sequence == source.sequence
+                        && event.id == source.event_id
+                })
+                && [
+                    self.state.last_summarized_sequence,
+                    self.state.tool_cursor_sequence,
+                ]
+                .into_iter()
+                .flatten()
+                .all(|cursor| cursor <= source.sequence)
+        })
+    }
 }
 
 /// Thresholds for scheduling a pass. Defaults follow the reference values.
@@ -168,14 +207,25 @@ pub fn advance_cursors(
 pub struct PinnedFileTool {
     inner: Arc<dyn Tool>,
     allowed_path: PathBuf,
+    target_path: PathBuf,
 }
 
 impl PinnedFileTool {
     /// Wrap `inner`, permitting only `allowed_path`.
     pub fn new(inner: Arc<dyn Tool>, allowed_path: impl Into<PathBuf>) -> Self {
+        let allowed_path = allowed_path.into();
         Self {
             inner,
-            allowed_path: allowed_path.into(),
+            target_path: allowed_path.clone(),
+            allowed_path,
+        }
+    }
+
+    fn staged(inner: Arc<dyn Tool>, allowed_path: &Path, target_path: &Path) -> Self {
+        Self {
+            inner,
+            allowed_path: allowed_path.to_path_buf(),
+            target_path: target_path.to_path_buf(),
         }
     }
 
@@ -210,7 +260,7 @@ impl Tool for PinnedFileTool {
         self.inner.descriptor()
     }
 
-    async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
+    async fn invoke(&self, mut args: serde_json::Value) -> Result<ToolOutput> {
         let requested = self
             .requested(&args)
             .ok_or_else(|| CoreError::invalid("file tool called without a 'path' argument"))?;
@@ -220,6 +270,10 @@ impl Tool for PinnedFileTool {
                 self.allowed_path.display()
             )));
         }
+        // The model addresses the logical note; only the host chooses the
+        // private working file. A detached blocking edit cannot reach a later
+        // pass or the published note even if its Future is dropped.
+        args["path"] = serde_json::json!(self.target_path);
         self.inner.invoke(args).await
     }
 }
@@ -263,8 +317,20 @@ impl SessionMemoryStore {
         self.db.session_memory_path(session_id)
     }
 
-    /// Load the persisted cursors, if any.
+    /// Load only memory whose source still belongs to the authoritative history.
+    /// Legacy rows without a source are retained for diagnosis, not trusted.
     pub fn load(&self, session_id: SessionId) -> Result<Option<SessionMemoryState>> {
+        let event_store = EventStore::new(&self.db);
+        let _activity = event_store.acquire_activity(session_id)?;
+        let events = event_store.load_session(session_id)?;
+        self.load_for_snapshot(session_id, &events)
+    }
+
+    fn load_for_snapshot(
+        &self,
+        session_id: SessionId,
+        events: &[Event],
+    ) -> Result<Option<SessionMemoryState>> {
         let key = session_id.to_string();
         self.db.with_conn(|conn| {
             let body: Option<String> = conn
@@ -276,15 +342,56 @@ impl SessionMemoryStore {
                 .optional()
                 .map_err(|error| CoreError::Persistence(error.to_string()))?;
             let Some(body) = body else { return Ok(None) };
-            let state: SessionMemoryState = serde_json::from_str(&body)
+            let stored: StoredMemory = serde_json::from_str(&body)
                 .map_err(|error| CoreError::Serialization(format!("session memory: {error}")))?;
-            Ok(Some(state))
+            if !stored.valid_for(session_id, events) {
+                tracing::debug!(%session_id, "session memory source is absent from current snapshot");
+                return Ok(None);
+            }
+            Ok(Some(stored.state))
         })
     }
 
-    /// Persist the cursors (the caller serialises passes per session).
-    pub fn save(&self, session_id: SessionId, state: &SessionMemoryState) -> Result<()> {
-        let body = serde_json::to_string(state)
+    /// A caller holding an older snapshot must never stamp it as the new branch.
+    /// Appends are compatible; rewind or changed event identities are not.
+    fn snapshot_is_current(&self, session_id: SessionId, events: &[Event]) -> Result<bool> {
+        let current = EventStore::new(&self.db).load_session(session_id)?;
+        Ok(!events.is_empty()
+            && events.len() <= current.len()
+            && events == &current[..events.len()])
+    }
+
+    /// Persist cursors with their explicit extraction input. The caller still
+    /// serialises passes; the shared activity gate prevents concurrent rewind.
+    pub fn save(
+        &self,
+        session_id: SessionId,
+        state: &SessionMemoryState,
+        events: &[Event],
+    ) -> Result<()> {
+        let _activity = EventStore::new(&self.db).acquire_activity(session_id)?;
+        if !self.snapshot_is_current(session_id, events)? {
+            return Err(CoreError::invalid(
+                "session memory snapshot is no longer current",
+            ));
+        }
+        let tail = events
+            .last()
+            .ok_or_else(|| CoreError::invalid("session memory snapshot is empty"))?;
+        let stored = StoredMemory {
+            state: state.clone(),
+            source: Some(MemorySource {
+                session_id,
+                sequence: tail.sequence,
+                event_id: tail.id,
+            }),
+        };
+        if !stored.valid_for(session_id, events) {
+            return Err(CoreError::invalid(
+                "session memory cursor exceeds source snapshot",
+            ));
+        }
+        let body = serde_json::to_string(&stored)
             .map_err(|error| CoreError::Serialization(format!("session memory: {error}")))?;
         let key = session_id.to_string();
         let now = SystemClock.now().as_millis();
@@ -497,7 +604,13 @@ pub fn compaction_from_note(
     events: &[Event],
     history: &[Message],
 ) -> Option<(usize, String)> {
-    let state = store.load(session_id).ok()??;
+    let _activity = EventStore::new(&store.db)
+        .acquire_activity(session_id)
+        .ok()?;
+    if !store.snapshot_is_current(session_id, events).ok()? {
+        return None;
+    }
+    let state = store.load_for_snapshot(session_id, events).ok()??;
     let covered = state.last_summarized_sequence?;
     if state.summary.trim().is_empty() {
         return None;
@@ -519,6 +632,26 @@ pub fn compaction_from_note(
         return None;
     }
     Some((split, state.summary))
+}
+
+/// Native and cancellation-aware compaction use the same source/coverage rule.
+pub(crate) fn note_for_response_zone(
+    store: &SessionMemoryStore,
+    session_id: SessionId,
+    zone: &[deepagent_models::ResponseInputItem],
+) -> Option<String> {
+    let event_store = EventStore::new(&store.db);
+    let _activity = event_store.acquire_activity(session_id).ok()?;
+    let events = event_store.load_session(session_id).ok()?;
+    let state = store.load_for_snapshot(session_id, &events).ok()??;
+    let covered = state.last_summarized_sequence?;
+    (!zone.is_empty()
+        && !state.summary.trim().is_empty()
+        && zone.iter().all(|item| {
+            crate::input_runtime::sequence_of_response_item(&events, item)
+                .is_some_and(|sequence| sequence <= covered)
+        }))
+    .then_some(state.summary)
 }
 
 /// Runs the extraction pass over a registry containing nothing but the pinned
@@ -547,12 +680,8 @@ impl SessionMemoryExtractor {
         self
     }
 
-    /// Cheap pre-filter for hosts that must read a large session log to build
-    /// the transcript: load only the cursor row and ask whether the token
-    /// prerequisite could open the gate at all. The token condition is hard in
-    /// both branches of [`ExtractionGate::decide`], so if even the most
-    /// permissive tool-call count cannot fire it, no pass is possible and the
-    /// read is skipped.
+    /// Token pre-filter using validated memory. Reading history is necessary:
+    /// a discarded branch's token watermark must not suppress initialization.
     pub fn might_be_due(&self, session_id: SessionId, total_tokens: u64) -> Result<bool> {
         let state = SessionMemoryStore::new(self.db.clone()).load(session_id)?;
         Ok(self
@@ -578,8 +707,17 @@ impl SessionMemoryExtractor {
         total_tokens: u64,
         last_turn_has_tool_call: bool,
     ) -> Result<ExtractionOutcome> {
+        // Hold the existing cross-host history gate across *all* file edits and
+        // publication. A control request gets busy until the pass really exits.
+        let _activity = EventStore::new(&self.db).acquire_activity(session_id)?;
         let store = SessionMemoryStore::new(self.db.clone());
-        let state = store.load(session_id)?;
+        if events.is_empty() && history.is_empty() {
+            return Ok(ExtractionOutcome::skipped("gate_wait"));
+        }
+        if !store.snapshot_is_current(session_id, events)? {
+            return Ok(ExtractionOutcome::skipped("stale_snapshot"));
+        }
+        let state = store.load_for_snapshot(session_id, events)?;
         let cursor = state
             .as_ref()
             .and_then(|state| state.tool_cursor_sequence)
@@ -635,11 +773,32 @@ impl SessionMemoryExtractor {
             .join("\n");
 
         let note_path = store.memory_path(session_id);
-        let note = ensure_note(&note_path)?;
-        let prompt = build_extraction_prompt(&note_path, &note, &transcript);
+        let parent = note_path
+            .parent()
+            .ok_or_else(|| CoreError::invalid("session note has no parent"))?;
+        std::fs::create_dir_all(parent).map_err(|error| {
+            CoreError::Persistence(format!("create session note directory: {error}"))
+        })?;
+        let working = tempfile::Builder::new()
+            .prefix(".session-note-")
+            .tempdir_in(parent)
+            .map_err(|error| {
+                CoreError::Persistence(format!("create session note working directory: {error}"))
+            })?;
+        let working_note = working.path().join("session-memory.md");
+        ensure_note(&working_note)?;
+        // SQLite's validated summary is the committed baseline. The file may
+        // contain an old branch, a legacy note, or an interrupted pass's edits.
+        // None of those may feed the next extraction merely because it exists.
+        let note = state
+            .as_ref()
+            .map_or(NOTE_TEMPLATE, |state| state.summary.as_str());
+        std::fs::write(&working_note, note)
+            .map_err(|error| CoreError::Persistence(format!("prepare session note: {error}")))?;
+        let prompt = build_extraction_prompt(&note_path, note, &transcript);
 
         let permissions = PermissionSet::developer();
-        let registry = note_registry(&note_path, &permissions)?;
+        let registry = note_registry_at(&note_path, &working_note, &permissions)?;
         let tools = registry
             .visible_to(&permissions)
             .into_iter()
@@ -713,7 +872,7 @@ impl SessionMemoryExtractor {
             });
         }
 
-        let written = std::fs::read_to_string(&note_path)
+        let written = std::fs::read_to_string(&working_note)
             .map_err(|error| CoreError::Persistence(format!("read back session note: {error}")))?;
         // Editing the note is the whole job. If the agent declared completion
         // without changing a byte, the note cannot be trusted to cover the
@@ -735,7 +894,23 @@ impl SessionMemoryExtractor {
             SystemClock.now(),
         );
         advanced.summary = written;
-        store.save(session_id, &advanced)?;
+        store.save(session_id, &advanced, events)?;
+        // SQLite remains the committed baseline if exporting the readable file
+        // fails or the process stops here. Never read that export as authority.
+        let _writer = deepagent_knowledge::file_lock::acquire(
+            &deepagent_knowledge::file_lock::sidecar(&note_path),
+            deepagent_knowledge::file_lock::WAIT,
+            "publish session note",
+        )?;
+        let mut export = tempfile::NamedTempFile::new_in(parent).map_err(|error| {
+            CoreError::Persistence(format!("stage session note export: {error}"))
+        })?;
+        std::io::Write::write_all(&mut export, advanced.summary.as_bytes()).map_err(|error| {
+            CoreError::Persistence(format!("write session note export: {error}"))
+        })?;
+        export.persist(&note_path).map_err(|error| {
+            CoreError::Persistence(format!("publish session note export: {error}"))
+        })?;
 
         Ok(ExtractionOutcome {
             extracted: covered,
@@ -751,17 +926,30 @@ impl SessionMemoryExtractor {
 
 /// Registry holding nothing but the note's `read_file` + `edit_file` pair, each
 /// pinned to `note_path` and visible under `permissions`.
+#[cfg(test)]
 fn note_registry(
     note_path: &Path,
     permissions: &PermissionSet,
 ) -> Result<deepagent_tools::ToolRegistry> {
-    let root = note_path
+    note_registry_at(note_path, note_path, permissions)
+}
+
+fn note_registry_at(
+    note_path: &Path,
+    working_note: &Path,
+    permissions: &PermissionSet,
+) -> Result<deepagent_tools::ToolRegistry> {
+    let root = working_note
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .to_path_buf();
     let mut registry = deepagent_tools::ToolRegistry::new();
     for tool in note_edit_tools(WorkspaceRoot::new(root)) {
-        registry.register(Arc::new(PinnedFileTool::new(tool, note_path.to_path_buf())))?;
+        registry.register(Arc::new(PinnedFileTool::staged(
+            tool,
+            note_path,
+            working_note,
+        )))?;
     }
     // A pinned tool that the granted permissions would hide is a silent failure
     // waiting to happen, so refuse to build such a registry at all.
@@ -786,6 +974,40 @@ pub(crate) mod testing {
     use deepagent_core::error::{CoreError, Result};
     use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
     use deepagent_models::{ModelClient, ModelConfig};
+
+    /// Persist sparse test inputs through the real authoritative event store.
+    /// Padding carries no model-visible content. Returned IDs are real, not
+    /// synthetic identities that a provenance check could accidentally trust.
+    pub(crate) fn persist_events(
+        db: &deepagent_persistence::Database,
+        session: deepagent_core::id::SessionId,
+        seeds: &[deepagent_core::event::Event],
+    ) -> Vec<deepagent_core::event::Event> {
+        use deepagent_core::clock::Timestamp;
+        use deepagent_core::event::EventPayload;
+        let store = deepagent_persistence::event_store::EventStore::new(db);
+        store
+            .create_session(session, None, Timestamp::from_millis(1))
+            .unwrap();
+        for sequence in 0..=seeds.last().map_or(0, |event| event.sequence) {
+            let payload = seeds
+                .iter()
+                .find(|event| event.sequence == sequence)
+                .map(|event| event.payload.clone())
+                .unwrap_or(EventPayload::SessionStarted {
+                    title: None,
+                    mode: Default::default(),
+                });
+            store
+                .append(
+                    session,
+                    payload,
+                    Timestamp::from_millis(1_000 + sequence as i64),
+                )
+                .unwrap();
+        }
+        store.load_session(session).unwrap()
+    }
 
     pub(crate) struct ScriptedTransport {
         turns: Mutex<VecDeque<Vec<String>>>,
@@ -936,7 +1158,9 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    use super::testing::{scripted_client, scripted_client_with_transport, ScriptedTransport};
+    use super::testing::{
+        persist_events, scripted_client, scripted_client_with_transport, ScriptedTransport,
+    };
     use async_trait::async_trait;
     use deepagent_core::id::EventId;
     use deepagent_core::message::ToolCall;
@@ -970,6 +1194,474 @@ mod tests {
     }
 
     // ---- gate -------------------------------------------------------------
+
+    fn branch_note() -> SessionMemoryState {
+        SessionMemoryState {
+            summary: "Discarded decision: RED".into(),
+            last_summarized_sequence: Some(1),
+            tool_cursor_sequence: Some(2),
+            tokens_at_last_extraction: 90_000,
+            initialized: true,
+            updated_at: 1,
+        }
+    }
+
+    fn branch_events(db: &Database, session: SessionId) -> Vec<Event> {
+        persist_events(
+            db,
+            session,
+            &[
+                message_event(1, "Stable task"),
+                message_event(2, "Discarded decision: RED"),
+                message_event(3, "Later tail"),
+            ],
+        )
+    }
+
+    #[test]
+    fn source_tail_not_safe_cursor_decides_branch_validity() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = SessionId::new();
+        let events = branch_events(&db, session);
+        let store = SessionMemoryStore::new(db.clone());
+        // An unsafe pass learned RED at 2, while the safe cursor stayed at 1.
+        store.save(session, &branch_note(), &events[..=2]).unwrap();
+        EventStore::new(&db).truncate_after(session, 2).unwrap();
+        assert!(
+            store.load(session).unwrap().is_some(),
+            "source prefix survives"
+        );
+        EventStore::new(&db).truncate_after(session, 1).unwrap();
+        EventStore::new(&db)
+            .append(
+                session,
+                EventPayload::MessageAppended {
+                    message: Message::user("Replacement decision: BLUE"),
+                },
+                ts(5),
+            )
+            .unwrap();
+        assert!(
+            store.load(session).unwrap().is_none(),
+            "safe cursor survived but source did not"
+        );
+        assert!(
+            store.save(session, &branch_note(), &events[..=2]).is_err(),
+            "late save must not re-stamp the old snapshot as BLUE"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_snapshot_is_rejected_before_file_or_model_work() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = SessionId::new();
+        let events = branch_events(&db, session);
+        let history = crate::input_runtime::model_history_from_events(&events);
+        EventStore::new(&db).truncate_after(session, 1).unwrap();
+        let store = SessionMemoryStore::new(db.clone());
+        let outcome =
+            SessionMemoryExtractor::new(db.clone(), testing::unreachable_client(), "model")
+                .run_if_due(session, &history, &events, 100_000, false)
+                .await
+                .unwrap();
+        assert_eq!(outcome, ExtractionOutcome::skipped("stale_snapshot"));
+        assert!(!store.memory_path(session).exists());
+    }
+
+    #[tokio::test]
+    async fn rewind_resets_watermarks_and_rebuilds_file_without_discarded_facts() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = SessionId::new();
+        let events = branch_events(&db, session);
+        let store = SessionMemoryStore::new(db.clone());
+        store.save(session, &branch_note(), &events[..=2]).unwrap();
+        let note_path = store.memory_path(session);
+        ensure_note(&note_path).unwrap();
+        std::fs::write(&note_path, "Discarded decision: RED").unwrap();
+        EventStore::new(&db).truncate_after(session, 1).unwrap();
+        EventStore::new(&db)
+            .append(
+                session,
+                EventPayload::MessageAppended {
+                    message: Message::user("Replacement decision: BLUE"),
+                },
+                ts(5),
+            )
+            .unwrap();
+        let events = EventStore::new(&db).load_session(session).unwrap();
+        let history = crate::input_runtime::model_history_from_events(&events);
+        let (client, transport) = scripted_client_with_transport(vec![
+            ScriptedTransport::call(
+                "read",
+                "read_file",
+                serde_json::json!({"path":"session-memory.md"}),
+            ),
+            ScriptedTransport::call(
+                "edit",
+                "edit_file",
+                serde_json::json!({
+                    "path":"session-memory.md", "old":"(nothing recorded yet)", "new":"Decision: BLUE"
+                }),
+            ),
+            ScriptedTransport::text("done"),
+        ]);
+        let extractor = SessionMemoryExtractor::new(db.clone(), client, "deepseek-chat");
+        assert!(!extractor.might_be_due(session, 9_999).unwrap());
+        assert!(
+            extractor.might_be_due(session, 10_000).unwrap(),
+            "old 90k watermark is invalid"
+        );
+        let outcome = extractor
+            .run_if_due(session, &history, &events, 10_000, false)
+            .await
+            .unwrap();
+        assert!(outcome.extracted, "{outcome:?}");
+        let prompt = transport.last_prompt();
+        assert!(prompt.contains("BLUE"), "{prompt}");
+        assert!(
+            !prompt.contains("RED"),
+            "old file leaked into new model request: {prompt}"
+        );
+        let saved = store.load(session).unwrap().unwrap();
+        assert_eq!(saved.tool_cursor_sequence, Some(2));
+        assert_eq!(saved.last_summarized_sequence, Some(2));
+        assert_eq!(saved.tokens_at_last_extraction, 10_000);
+        assert!(!saved.summary.contains("RED"));
+        assert_eq!(std::fs::read_to_string(note_path).unwrap(), saved.summary);
+    }
+
+    #[test]
+    fn legacy_row_and_copied_parent_memory_are_not_trusted() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let parent = SessionId::new();
+        let events = branch_events(&db, parent);
+        let store = SessionMemoryStore::new(db.clone());
+        store.save(parent, &branch_note(), &events[..=2]).unwrap();
+        let child = SessionId::new();
+        EventStore::new(&db)
+            .fork_session(parent, child, 2, ts(6))
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute("INSERT INTO documents(id,collection,body,created_at,updated_at) SELECT ?1,collection,body,created_at,updated_at FROM documents WHERE collection=?2 AND id=?3",
+                rusqlite::params![child.to_string(), SESSION_MEMORY_COLLECTION, parent.to_string()])
+                .map_err(|error| CoreError::Persistence(error.to_string()))?;
+            Ok(())
+        }).unwrap();
+        assert!(store.load(child).unwrap().is_none());
+        let raw = serde_json::to_string(&branch_note()).unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE documents SET body=?1 WHERE collection=?2 AND id=?3",
+                rusqlite::params![raw, SESSION_MEMORY_COLLECTION, parent.to_string()],
+            )
+            .map_err(|error| CoreError::Persistence(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            store.load(parent).unwrap().is_none(),
+            "legacy sequence-only state is unproven"
+        );
+    }
+
+    #[test]
+    fn provenance_survives_database_close_reopen_and_rejects_reused_sequences() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("memory.sqlite");
+        let session = SessionId::new();
+        {
+            let db = Arc::new(Database::open(&path).unwrap());
+            let events = branch_events(&db, session);
+            SessionMemoryStore::new(db)
+                .save(session, &branch_note(), &events[..=2])
+                .unwrap();
+        }
+        {
+            let db = Arc::new(Database::open(&path).unwrap());
+            assert!(SessionMemoryStore::new(db.clone())
+                .load(session)
+                .unwrap()
+                .is_some());
+            EventStore::new(&db).truncate_after(session, 1).unwrap();
+            EventStore::new(&db)
+                .append(
+                    session,
+                    EventPayload::MessageAppended {
+                        message: Message::user("Replacement decision: BLUE"),
+                    },
+                    ts(9),
+                )
+                .unwrap();
+        }
+        let db = Arc::new(Database::open(&path).unwrap());
+        assert!(SessionMemoryStore::new(db).load(session).unwrap().is_none());
+    }
+
+    struct PausedNoteTransport {
+        inner: Arc<ScriptedTransport>,
+        calls: std::sync::atomic::AtomicUsize,
+        entered: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+        fail: bool,
+    }
+
+    #[async_trait]
+    impl deepagent_models::transport::HttpTransport for PausedNoteTransport {
+        async fn stream(
+            &self,
+            request: deepagent_models::transport::TransportRequest,
+            sink: &mut dyn deepagent_models::transport::EventSink,
+        ) -> Result<()> {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
+                // Both real pinned read/edit tools have finished, publication
+                // has not. This is not merely a lock-only unit test.
+                self.entered.notify_one();
+                self.release.notified().await;
+                if self.fail {
+                    return Err(CoreError::other("injected note completion failure"));
+                }
+            }
+            self.inner.stream(request, sink).await
+        }
+    }
+
+    async fn check_extraction_control_gate(mode: &str) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("gate.sqlite");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let session = SessionId::new();
+        let events = branch_events(&db, session);
+        let history = crate::input_runtime::model_history_from_events(&events);
+        let (_, inner) = scripted_client_with_transport(vec![
+            ScriptedTransport::call(
+                "read",
+                "read_file",
+                serde_json::json!({"path":"session-memory.md"}),
+            ),
+            ScriptedTransport::call(
+                "edit",
+                "edit_file",
+                serde_json::json!({
+                    "path":"session-memory.md", "old":"(nothing recorded yet)", "new":"Uncommitted RED"
+                }),
+            ),
+            ScriptedTransport::text("done"),
+        ]);
+        let transport = Arc::new(PausedNoteTransport {
+            inner,
+            calls: Default::default(),
+            entered: Default::default(),
+            release: Default::default(),
+            fail: mode == "failure",
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            deepagent_models::ModelConfig::deepseek("sk-synthetic-test-key"),
+        ));
+        let extractor = SessionMemoryExtractor::new(db.clone(), client, "deepseek-chat");
+        let task = tokio::spawn(async move {
+            extractor
+                .run_if_due(session, &history, &events, 100_000, false)
+                .await
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            transport.entered.notified(),
+        )
+        .await
+        .expect("pass reached completion after editing the real note");
+        let store = SessionMemoryStore::new(db.clone());
+        assert!(
+            !store.memory_path(session).exists(),
+            "unpublished edits stay private"
+        );
+        let working_note = std::fs::read_dir(store.memory_path(session).parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("session-memory.md"))
+            .find(|path| path.is_file())
+            .expect("the pass has a private working note");
+        assert!(std::fs::read_to_string(working_note)
+            .unwrap()
+            .contains("Uncommitted RED"));
+        let other = Database::open(&path).unwrap();
+        assert!(
+            EventStore::new(&other).begin_control(session).is_err(),
+            "a different database handle cannot rewind a pass that can still publish"
+        );
+        if mode == "abort" {
+            task.abort();
+            assert!(task.await.unwrap_err().is_cancelled());
+        } else {
+            transport.release.notify_one();
+            let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), task)
+                .await
+                .unwrap()
+                .unwrap();
+            if mode == "success" {
+                assert!(outcome.unwrap().extracted);
+            } else {
+                assert!(outcome.is_err() || !outcome.unwrap().extracted);
+            }
+        }
+        if mode != "success" {
+            assert!(
+                store.load(session).unwrap().is_none(),
+                "failed/aborted edits cannot claim coverage"
+            );
+        }
+        EventStore::new(&other).truncate_after(session, 1).unwrap();
+        assert!(store.load(session).unwrap().is_none());
+        EventStore::new(&other)
+            .append(
+                session,
+                EventPayload::MessageAppended {
+                    message: Message::user("Replacement decision: BLUE"),
+                },
+                ts(8),
+            )
+            .unwrap();
+        let events = EventStore::new(&db).load_session(session).unwrap();
+        let history = crate::input_runtime::model_history_from_events(&events);
+        let (client, wire) =
+            scripted_client_with_transport(vec![ScriptedTransport::text("no edit")]);
+        SessionMemoryExtractor::new(db.clone(), client, "deepseek-chat")
+            .run_if_due(session, &history, &events, 10_000, false)
+            .await
+            .unwrap();
+        assert!(
+            !wire.last_prompt().contains("RED"),
+            "unpublished or invalidated edits must not feed the new branch"
+        );
+        assert_eq!(
+            std::fs::read_to_string(store.memory_path(session)).unwrap(),
+            NOTE_TEMPLATE
+        );
+    }
+
+    #[tokio::test]
+    async fn extraction_holds_control_gate_through_real_edit_and_publication() {
+        check_extraction_control_gate("success").await;
+    }
+
+    #[tokio::test]
+    async fn aborted_extraction_releases_control_and_cannot_poison_next_branch() {
+        check_extraction_control_gate("abort").await;
+    }
+
+    #[tokio::test]
+    async fn failed_extraction_releases_control_and_cannot_poison_next_branch() {
+        check_extraction_control_gate("failure").await;
+    }
+
+    struct DetachedNoteWriter {
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<Mutex<std::sync::mpsc::Receiver<()>>>,
+        finished: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl Tool for DetachedNoteWriter {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "edit_file".into(),
+                description: "late writer fixture".into(),
+                parameters: serde_json::json!({"type":"object"}),
+                risk: deepagent_tools::permission::RiskLevel::Low,
+                required_permissions: PermissionSet::developer(),
+            }
+        }
+
+        async fn invoke(&self, args: serde_json::Value) -> Result<ToolOutput> {
+            let path = PathBuf::from(args["path"].as_str().unwrap());
+            let entered = self.entered.clone();
+            let release = self.release.clone();
+            let finished = self.finished.clone();
+            tokio::task::spawn_blocking(move || {
+                entered.notify_one();
+                release.lock().unwrap().recv().unwrap();
+                std::fs::write(path, "LATE RED").unwrap();
+                finished.notify_one();
+            })
+            .await
+            .unwrap();
+            Ok(ToolOutput::success(serde_json::json!({})))
+        }
+    }
+
+    /// A shared activity guard cannot own a detached native write. The existing
+    /// wrapper's physical mapping must keep such a late write on its old file.
+    #[tokio::test]
+    async fn staged_pin_isolates_a_blocking_write_after_its_future_is_aborted() {
+        let dir = tempfile::tempdir().unwrap();
+        let published = dir.path().join("session-memory.md");
+        let old_working = dir.path().join("old-pass.md");
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let finished = Arc::new(tokio::sync::Notify::new());
+        let (release, receiver) = std::sync::mpsc::channel();
+        let tool = PinnedFileTool::staged(
+            Arc::new(DetachedNoteWriter {
+                entered: entered.clone(),
+                release: Arc::new(Mutex::new(receiver)),
+                finished: finished.clone(),
+            }),
+            &published,
+            &old_working,
+        );
+        let task = tokio::spawn(async move {
+            tool.invoke(serde_json::json!({"path":"session-memory.md"}))
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), entered.notified())
+            .await
+            .unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        std::fs::write(&published, "NEW BLUE").unwrap();
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), finished.notified())
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(old_working).unwrap(), "LATE RED");
+        assert_eq!(std::fs::read_to_string(published).unwrap(), "NEW BLUE");
+    }
+
+    #[tokio::test]
+    async fn rejected_state_commit_never_publishes_the_private_edit() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = SessionId::new();
+        let events = branch_events(&db, session);
+        let history = crate::input_runtime::model_history_from_events(&events);
+        let store = SessionMemoryStore::new(db.clone());
+        let note_path = store.memory_path(session);
+        ensure_note(&note_path).unwrap();
+        std::fs::write(&note_path, "previous export").unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TRIGGER reject_note BEFORE INSERT ON documents WHEN NEW.collection='session_memory' BEGIN SELECT RAISE(FAIL, 'injected note commit failure'); END;")
+                .map_err(|error| CoreError::Persistence(error.to_string()))
+        }).unwrap();
+        let client = scripted_client(vec![
+            ScriptedTransport::call(
+                "read",
+                "read_file",
+                serde_json::json!({"path":"session-memory.md"}),
+            ),
+            note_edit(&note_path),
+            ScriptedTransport::text("done"),
+        ]);
+        let result = SessionMemoryExtractor::new(db.clone(), client, "deepseek-chat")
+            .run_if_due(session, &history, &events, 10_000, false)
+            .await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("injected note commit failure"));
+        assert!(store.load(session).unwrap().is_none());
+        assert_eq!(
+            std::fs::read_to_string(note_path).unwrap(),
+            "previous export"
+        );
+        assert!(EventStore::new(&db).begin_control(session).is_ok());
+    }
 
     #[test]
     fn no_note_yet_waits_until_the_context_is_big_enough() {
@@ -1011,9 +1703,8 @@ mod tests {
     }
 
     #[test]
-    fn cheap_pre_filter_follows_only_the_token_prerequisite() {
-        // Hosts use this to decide whether reading the session log is worth it,
-        // so it must be true whenever ANY branch of the real gate could fire.
+    fn validated_pre_filter_follows_the_token_prerequisite() {
+        // It must be true whenever ANY branch of the real gate could fire.
         let db = Arc::new(Database::open_in_memory().unwrap());
         let extractor =
             SessionMemoryExtractor::new(db.clone(), scripted_client(vec![]), "deepseek-chat");
@@ -1031,8 +1722,15 @@ mod tests {
     }
 
     fn store_state(db: &Arc<Database>, session: &SessionId, state: &SessionMemoryState) {
+        let end = state
+            .last_summarized_sequence
+            .into_iter()
+            .chain(state.tool_cursor_sequence)
+            .max()
+            .unwrap_or(0);
+        let events = persist_events(db, *session, &[message_event(end, "fixture")]);
         SessionMemoryStore::new(db.clone())
-            .save(*session, state)
+            .save(*session, state, &events)
             .unwrap();
     }
 
@@ -1139,31 +1837,35 @@ mod tests {
     }
 
     /// The gate measures context growth, not new content. A note that already
-    /// covers everything — the shape left behind by a rewind, or by a pass whose
-    /// cut point sits past the surviving stream — must not buy a round trip, and
+    /// covers everything in the same valid source prefix must not buy a round trip, and
     /// must not even create the note file.
     #[tokio::test]
     async fn nothing_uncovered_buys_no_model_call_and_no_note() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let store = SessionMemoryStore::new(db.clone());
         let session = SessionId::new();
+        let events = persist_events(
+            &db,
+            session,
+            &[message_event(1, "decide the storage layout")],
+        );
         store
             .save(
                 session,
                 &SessionMemoryState {
                     summary: "- already folded".to_string(),
-                    last_summarized_sequence: Some(9),
-                    tool_cursor_sequence: Some(9),
+                    last_summarized_sequence: Some(1),
+                    tool_cursor_sequence: Some(1),
                     tokens_at_last_extraction: 12_000,
                     initialized: true,
                     updated_at: 1,
                 },
+                &events,
             )
             .unwrap();
 
         // Eight thousand tokens of growth, so the token condition is satisfied:
         // only the empty uncovered window can stop this pass.
-        let events = vec![message_event(1, "decide the storage layout")];
         let outcome = SessionMemoryExtractor::new(
             db.clone(),
             testing::unreachable_client(),
@@ -1231,7 +1933,7 @@ mod tests {
                 .run_if_due(
                     session,
                     &[Message::user("decide the storage layout")],
-                    &[tool_call(1), tool_call(2), tool_call(3)],
+                    &persist_events(&db, session, &[tool_call(1), tool_call(2), tool_call(3)]),
                     12_000,
                     true,
                 )
@@ -1322,7 +2024,7 @@ mod tests {
 
     // ---- compaction hand-off ---------------------------------------------
 
-    fn note_covering(db: &Arc<Database>, session: SessionId, covered: Sequence) {
+    fn note_covering(db: &Arc<Database>, session: SessionId, covered: Sequence, events: &[Event]) {
         SessionMemoryStore::new(db.clone())
             .save(
                 session,
@@ -1334,6 +2036,7 @@ mod tests {
                     initialized: true,
                     updated_at: 1,
                 },
+                events,
             )
             .unwrap();
     }
@@ -1364,8 +2067,9 @@ mod tests {
     fn a_note_that_covers_the_prefix_becomes_the_compaction_summary() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = SessionId::new();
-        note_covering(&db, session, 2);
         let (events, history) = three_turn_transcript();
+        let events = persist_events(&db, session, &events);
+        note_covering(&db, session, 2, &events[..=2]);
         let store = SessionMemoryStore::new(db.clone());
 
         let (split, block) = compaction_from_note(&store, session, &events, &history)
@@ -1378,8 +2082,9 @@ mod tests {
     fn a_note_is_refused_when_it_cannot_place_everything_it_drops() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = SessionId::new();
-        note_covering(&db, session, 99);
         let (events, history) = three_turn_transcript();
+        let events = persist_events(&db, session, &events);
+        note_covering(&db, session, 2, &events[..=2]);
         // A message with no matching event may be newer than the note, so the
         // prefix cannot be proven covered and the summarizing call must stay.
         let mut unmappable = history.clone();
@@ -1392,8 +2097,9 @@ mod tests {
     fn a_note_that_covers_nothing_droppable_is_refused() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = SessionId::new();
-        note_covering(&db, session, 0);
         let (events, history) = three_turn_transcript();
+        let events = persist_events(&db, session, &events);
+        note_covering(&db, session, 0, &events[..=0]);
         let store = SessionMemoryStore::new(db.clone());
         assert!(
             compaction_from_note(&store, session, &events, &history).is_none(),
@@ -1579,7 +2285,8 @@ mod tests {
             initialized: true,
             updated_at: 5,
         };
-        store.save(session, &saved).unwrap();
+        let events = persist_events(&db, session, &[message_event(13, "fixture")]);
+        store.save(session, &saved, &events).unwrap();
         assert_eq!(store.load(session).unwrap(), Some(saved.clone()));
 
         // Update, not duplicate: one row per session.
@@ -1587,7 +2294,7 @@ mod tests {
             tokens_at_last_extraction: 26_000,
             ..saved
         };
-        store.save(session, &updated).unwrap();
+        store.save(session, &updated, &events).unwrap();
         assert_eq!(store.load(session).unwrap(), Some(updated));
         let count: i64 = db
             .with_conn(|conn| {
@@ -1733,7 +2440,7 @@ mod tests {
         let extractor =
             SessionMemoryExtractor::new(db.clone(), client, "deepseek-chat").with_gate(gate);
         let history = vec![Message::user("decide the storage layout")];
-        let events = vec![tool_call(1), tool_call(2), tool_call(3)];
+        let events = persist_events(&db, session, &[tool_call(1), tool_call(2), tool_call(3)]);
         let outcome = extractor
             .run_if_due(
                 session,
@@ -1787,7 +2494,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let events = vec![tool_call(1), tool_call(2)];
+        let events = persist_events(&db, session, &[tool_call(1), tool_call(2)]);
         let outcome = extractor
             .run_if_due(
                 session,
@@ -1845,7 +2552,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let events = vec![tool_call(1), tool_call(2)];
+        let events = persist_events(&db, session, &[tool_call(1), tool_call(2)]);
         let outcome = extractor
             .run_if_due(
                 session,
@@ -1900,7 +2607,7 @@ mod tests {
             .run_if_due(
                 session,
                 &[Message::user("decide the storage layout")],
-                &[tool_call(1), tool_call(2)],
+                &persist_events(&db, session, &[tool_call(1), tool_call(2)]),
                 12_000,
                 false,
             )
@@ -1955,6 +2662,14 @@ mod tests {
         let db = Arc::new(Database::open_in_memory().unwrap());
         let session = SessionId::new();
         let store = SessionMemoryStore::new(db.clone());
+        let events = persist_events(
+            &db,
+            session,
+            &[
+                message_event(1, "first decision: one vault"),
+                message_event(5, "second decision: files hold bodies"),
+            ],
+        );
         store
             .save(
                 session,
@@ -1966,13 +2681,10 @@ mod tests {
                     summary: "# Session notes\n\n- first decision recorded\n".to_string(),
                     ..Default::default()
                 },
+                &events[..=1],
             )
             .unwrap();
 
-        let events = vec![
-            message_event(1, "first decision: one vault"),
-            message_event(5, "second decision: files hold bodies"),
-        ];
         let history = vec![
             Message::user("first decision: one vault"),
             Message::user("second decision: files hold bodies"),
@@ -1988,8 +2700,8 @@ mod tests {
                 "edit_file",
                 serde_json::json!({
                     "path": "session-memory.md",
-                    "old": "(nothing recorded yet)",
-                    "new": "- files hold bodies",
+                    "old": "- first decision recorded",
+                    "new": "- first decision recorded\n- files hold bodies",
                 }),
             ),
             ScriptedTransport::text("note updated"),
@@ -2095,7 +2807,7 @@ mod tests {
         .run_if_due(
             session,
             &[Message::user("ignore the note")],
-            &[],
+            &persist_events(&db, session, &[message_event(1, "ignore the note")]),
             12_000,
             true,
         )

@@ -2371,7 +2371,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: rewinding must invalidate notes from the discarded branch"]
     fn audit_rewind_rejects_session_note_from_discarded_branch() {
         use crate::session_memory::{compaction_from_note, SessionMemoryState, SessionMemoryStore};
         use deepagent_core::{event::EventPayload, message::Message};
@@ -2422,6 +2421,7 @@ mod tests {
                     initialized: true,
                     updated_at: 1_000,
                 },
+                &EventStore::new(&db).load_session(id).unwrap(),
             )
             .unwrap();
         drop(session);

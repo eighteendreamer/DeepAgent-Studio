@@ -315,8 +315,8 @@ impl AppRunFinalizer {
         let _guard = guard;
         let session_id = session_key.to_string();
         let extractor = SessionMemoryExtractor::new(self.db.clone(), client, model.clone());
-        // Reading the session log means decompressing the whole transcript, so
-        // do it only when the token prerequisite could actually open the gate.
+        // The pre-filter validates cursor provenance against history; an old
+        // branch's token watermark cannot postpone extraction on a new branch.
         let might_be_due = match extractor.might_be_due(session_key, context_tokens) {
             Ok(might_be_due) => might_be_due,
             Err(error) => {
