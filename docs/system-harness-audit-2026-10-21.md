@@ -9,7 +9,7 @@
 | H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交 `56b9e7b9` |
 | H-72 | 已修复并验收（2026-10-26，Windows 本机范围） | 全计划暂存/发布/历史提交及补偿；原探针默认通过，checkpoint 13 passed、AppCore audit 8 passed/2 ignored；workspace 被 H-306 阻断、严格 lint 有既有告警，详见原项及台账；修复提交 `d08c776c` |
 | H-73 | 已修复并验收（2026-10-26，Windows 本机范围） | 检查点绑定源 EventId 并按当前分支验证，旧格式未知归属保守拒绝；checkpoint_audit 17 passed/1 ignored，范围及失败见原项；修复提交 `d40eef9a` |
-| H-75 | 已修复并验收（2026-10-26，限本机后端行为及前端回调/构建） | 活动共享/控制独占 scope，忙时拒绝回退；正式原探针及成功/失败/取消共 4 passed/0 ignored；四 crate 测试与 pnpm build 通过；workspace/严格 lint 仍有既有失败，真实 Tauri 点击未验；尚未提交，创建独立提交后回填 |
+| H-75 | 已修复并验收（2026-10-26，限本机后端行为及前端回调/构建） | 活动共享/控制独占 scope，忙时拒绝回退；正式原探针及成功/失败/取消共 4 passed/0 ignored；四 crate 测试与 pnpm build 通过；workspace/严格 lint 仍有既有失败，真实 Tauri 点击未验；修复提交 `8eea7bd5` |
 
 逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **4**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **276**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-76（旧读取版本覆盖外部改动），按 A2 用户文件完整性排序，不在 H-75 中夹带修改。
 
@@ -1934,7 +1934,7 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 
 ### H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史
 
-当前状态（2026-10-26）：**已修复并验收，限本机后端行为及桌面生产回调/构建**。以下时间线保留当时的失败和未验状态，原始审计段落按修复前快照阅读；原探针现已取消 ignore。完整 workspace/严格 lint 未全绿，真实 Tauri 手动操作、其他 OS 未验，不能宣称整个系统通过。尚未提交，独立提交创建后回填。
+当前状态（2026-10-26）：**已修复并验收，限本机后端行为及桌面生产回调/构建**。以下时间线保留当时的失败和未验状态，原始审计段落按修复前快照阅读；原探针现已取消 ignore。完整 workspace/严格 lint 未全绿，真实 Tauri 手动操作、其他 OS 未验，不能宣称整个系统通过。代码、测试和当时两份文档一并独立提交为 `8eea7bd5`；本次只回填文档，不 amend、不推送。
 
 修复前复核（2026-10-26，HEAD `1a3c7192`）：`cargo test -p deepagent-app-core --test kernel_v2_e2e active_rewind --offline -j 1 -- --include-ignored --nocapture` 为 **1 passed / 1 failed / 0 ignored**（测试体 0.28s）。实验组仍为 `accepted=true, removed_user_before_release=true, old_user_after=false, late_answer_after=true, run_ok=true, terminal=Some("succeeded")`。这是原问题重验，不计新发现；当前修复中，保留以下原始审计证据。
 

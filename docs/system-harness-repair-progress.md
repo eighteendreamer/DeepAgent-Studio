@@ -8,7 +8,7 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 4 | H-286、H-72、H-73、H-75，均限 Windows 本机所列验收；前三项提交分别为 `56b9e7b9`、`d08c776c`、`d40eef9a`，H-75 尚未提交，创建后回填 |
+| 本阶段已修复并验收 | 4 | H-286、H-72、H-73、H-75，均限 Windows 本机所列验收；提交分别为 `56b9e7b9`、`d08c776c`、`d40eef9a`、`8eea7bd5` |
 | 历史已修复跳过 | 17 | 原报告有实现及修复后验收；本轮不重复修复/冒称重验 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
@@ -100,7 +100,7 @@ H-72 当前实施记录（2026-10-26）：修复前执行 `cargo test -p deepage
 
 ## H-75 本轮实施与验收明细（2026-10-26）
 
-当前状态：**已修复并验收，限 Windows 本机后端行为及前端生产回调/构建；真实 Tauri 手动交互未验**。以下为逐步追加的当时记录，不抹去中间失败；尚未提交，创建独立提交后回填。原探针在 HEAD `1a3c7192` 已复现（1 passed / 1 failed / 0 ignored，0.28s），不重复登记。额外源码核对确认 run_inner 的输入租约先释放，外层仍可能补写 Session RunTerminal，因此仅保护模型请求或内层运行不足。
+当前状态：**已修复并验收，限 Windows 本机后端行为及前端生产回调/构建；真实 Tauri 手动交互未验**。以下为逐步追加的当时记录，不抹去中间失败；代码、测试和当时两份文档已一并独立提交 `8eea7bd5`，本次只回填文档，不 amend、不推送。原探针在 HEAD `1a3c7192` 已复现（1 passed / 1 failed / 0 ignored，0.28s），不重复登记。额外源码核对确认 run_inner 的输入租约先释放，外层仍可能补写 Session RunTerminal，因此仅保护模型请求或内层运行不足。
 
 本地设计首版：通过现有 session 文件锁设施提供共享活动/独占控制 scope；保护附着现有 RunCoordinator admission 与 ActiveRunRegistration 生命周期，不新增输入调度 registry、运行/事件存储或数据库迁移。AppService 在恢复文件前获取独占 scope，原始 truncate 通过同一边界，append 与直连 Kernel/RuntimeEngine 也接入；忙时拒绝，不自动取消。fork 也会恢复同一工作区，故复用同一互斥规则，但不关闭 H-74 等独立问题。
 
@@ -127,6 +127,8 @@ H-72 当前实施记录（2026-10-26）：修复前执行 `cargo test -p deepage
 证据链：E-H75-01 为原 HEAD `1a3c7192` active_rewind 命令与迟到回答失败观察；E-H75-02 为最终同一专项 4 passed/0 ignored、四 crate 回归及持久化控制 8 项；E-H75-03 为桌面回调原拒绝场景 0 passed/1 failed、修正后 4 passed/0 skipped 和 pnpm build 退出 0；E-H75-04 为上述全量及 lint 实际退出和基线阻断。source_type=command，observed_at=2026-10-26，content_hash/artifact_path=n/a，未额外保存敏感模型日志。F-H75（severity=P1，category=design，status=validated，confidence=high，location=RunCoordinator::admit / AppService::rewind_session / EventStore 控制 scope）由 E-H75-01 证明缺陷，E-H75-02/03 证明上述本机行为，E-H75-04 保留全量未通过边界。P-H75（path_type=callflow）：接纳取得共享 scope → 原调度/快照恢复 → 原 Kernel/工具循环 → 外层失败/终态投影 → 释放活动保护 → 独占检查点恢复与 truncate；每步关联 E-H75-02，桌面成功后刷新关联 E-H75-03，原失败路径关联 E-H75-01。范围/授权见文首，时间线为本节按执行顺序追加记录。code-audit 影响是人工复核完整写入生命周期；docs-generator 影响是将原失败、夹具错误、本机验收与未验范围分离留档，未用扫描结果代替复现。
 
 交付前校验：Rows=306、Unique=306、Missing=[]、BadColumns=0；已修复 4 / 历史跳过 17 / 归并 7 / 撤销 2 / 待修复 276 / 修复中 0。显式暂存本项 15 个文件（含两个新增测试文件），`git diff --cached --check` 通过；用户原有五类未跟踪项不读、不改、不暂存。尚未创建提交，此刻不猜填 hash；提交后另做文档回填，不 amend、不推送。下一项 H-76 只排队，未开始复现或修改；整体 goal 保持 active。
+
+提交后回填：本项独立修复提交为 `8eea7bd5`，恰含上述 15 个文件；此段与表头、H-75 行、原审计状态同步更新，保留前段提交前的真实时间线。未推送、未创建 PR，未改动用户原有未跟踪项。剩余有效待修复 276；总工时仍为 200–400 有效小时初估，环境等待另计，没有足以机械校准吞吐的有效工时记录。
 
 ## 按 H 编号的一一对应台账
 
@@ -209,7 +211,7 @@ H-72 当前实施记录（2026-10-26）：修复前执行 `cargo test -p deepage
 | [H-72：检查点备份缺失时，失败的回退或分叉仍删除当前文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针修复前失败、修复后默认通过；不重复登记 | 全 checkpoint 准备/发布/历史提交与补偿边界；共用 no-replace 原语 | 详见本节命令表：checkpoint 13 passed，AppCore audit 8 passed/2 ignored，相关库/端到端通过；workspace/H-306 和 lint 基线限制保留 | `d08c776c` | Windows 本机行为验收；断电/其他 OS/UI 未验，补偿失败有恢复路径；不关闭 H-73/H-75/H-285/H-287；本项本地剩余 0，环境另计 |
 | [H-73：回退后的旧分支检查点仍可覆盖新分支文件，调用却返回成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针修复前失败，修复后取消 ignore 并通过 | manifest 冻结稳定 source EventId，按权威有效历史筛选；保留旧记录/前缀恢复，旧格式身份不明时拒绝 | audit 17 passed/1 unrelated ignored；checkpoint 14 passed；runtime/session、AppCore/持久化相关回归通过；workspace H-306 与 lint 基线未绿，详见本节 | `d40eef9a` | Windows 本机验收；旧格式可能需人工核对，H-75/祖先快照继承/其他 OS/UI 不在关闭范围；本项本地剩余 0，环境另计 |
 | [H-74：分支边界截在源消息与原生镜像之间，保留的消息不进入下一请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原 HEAD 1a3c7192 为 1 passed/1 failed，原证据保留 | 复用会话锁：admission 至外层投影持共享 scope，rewind/fork 持独占 scope，忙时拒绝；桌面成功后才清屏 | active_rewind 默认 4 passed/0 ignored；四 crate 测试及 pnpm build 退出 0；workspace/严格 lint 既有失败及实际命令见 H-75 明细 | 尚未提交，独立提交创建后回填 | 限 Windows 后端及回调/构建；真实 UI/其他 OS 未验；H-33/H-23/跨 session 副作用未解决；下一项 H-76，总区间 200–400 有效工时 |
+| [H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原 HEAD 1a3c7192 为 1 passed/1 failed，原证据保留 | 复用会话锁：admission 至外层投影持共享 scope，rewind/fork 持独占 scope，忙时拒绝；桌面成功后才清屏 | active_rewind 默认 4 passed/0 ignored；四 crate 测试及 pnpm build 退出 0；workspace/严格 lint 既有失败及实际命令见 H-75 明细 | `8eea7bd5` | 限 Windows 后端及回调/构建；真实 UI/其他 OS 未验；H-33/H-23/跨 session 副作用未解决；下一项 H-76，总区间 200–400 有效工时 |
 | [H-76：文件写入只验证“曾经读过”，外部已保存的改动仍被旧内容成功覆盖](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-77：grep 未继承敏感文件读取拒绝，普通搜索可将被禁止的内容送入模型请求](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-78：Windows 工作区目录联接绕过词法路径限制，read_file 读取根目录外文件](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
