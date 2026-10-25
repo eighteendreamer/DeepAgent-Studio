@@ -8122,3 +8122,38 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 本轮只新增上述 test-only 故障探针和本节文档，没有修改生产逻辑、数据库 schema、权限或模型协议。`cargo fmt --all` 已执行；故障命令结果按上文为 **0 passed / 1 failed（预期）**。
 - 尚未执行完整 workspace、Desktop build/UI、真实 SecretStore/keychain、真实 DeepSeek、provider HTTP 或多进程崩溃恢复；这些未执行项不被本项动态证据替代。用户已有未跟踪文件保持不动，未调查用户排除的 `encrypted-content` 问题。
+
+### H-291：MCP stdio/HTTP 响应没有传输层字节上限，超大 JSON 在解析前被完整缓冲
+
+**级别：中（P2，条件性资源耗尽与模型上下文放大）；状态：正式 `StdioTransport`、可选 `HttpTransport` 和本机合成 fixture 已复现，未修复。** 触发条件是 MCP 服务返回超过预期大小的单行或 HTTP body；本轮只用 2 MiB 合成 payload 验证行为，不连接公网、真实内网或真实 MCP 服务，也不把它描述成远程代码执行。
+
+#### 即时 Evidence（2026-10-25，首次复现后立即登记）
+
+- Scope：仅本仓库授权审计。stdio 场景在 `tempfile::TempDir` 中写入一个 Node fixture，通过 `StdioTransport::spawn` 启动本机子进程；HTTP 场景在 `127.0.0.1:0` 启动一次性 Tokio listener，通过 `HttpTransport::with_url` 发送请求。响应内容只是重复字符组成的 JSON 字符串；没有用户文件、真实凭据、模型请求或公网访问。
+- 测试文件：`crates/deepagent-mcp/tests/response_limit_audit.rs`。测试调用公开 transport API，不直接调用 `BufReader`、`reqwest::Response` 或手工改生产状态。先发送 16-byte 小响应作可用性控制，再发送 2 MiB 响应，最后才断言传输层应拒绝超过 1 MiB 的 body。
+- 精确命令（stdio）：`cargo test -p deepagent-mcp --test response_limit_audit --offline -- --include-ignored --nocapture`。结果 **0 passed / 1 failed（预期缺陷）**；生产输出为 `small_payload_bytes=16, accepted_payload_bytes=2097152, audit_limit_bytes=1048576`，失败断言为 `stdio transport accepted a 2097152-byte response payload without a transport-level limit`。
+- 精确命令（stdio + HTTP）：`cargo test -p deepagent-mcp --features http --test response_limit_audit --offline -- --include-ignored --nocapture`。结果 **0 passed / 2 failed（预期缺陷）**；HTTP 观测为 `requests=[(41, 64), (41, 2097200)]`、`accepted_payload_bytes=2097152`，同样完整接受超出 1 MiB 阈值的响应。两次失败均发生在公开 `send` 返回成功、`JsonRpcResponse` 已构造之后，不是 fixture 自己绕过 transport。
+
+#### 根因、调用链与影响边界
+
+- `crates/deepagent-mcp/src/stdio.rs::StdioTransport::read_response` 使用 `BufRead::read_line(&mut String)`，没有行长度或累计字节上限；只要 JSON 可解析且 id 匹配，就把整行交给 `serde_json`。
+- `crates/deepagent-mcp/src/http.rs::HttpTransport::send` 在状态码检查后直接调用 `response.text().await`，再把完整字符串交给 SSE 解析或 `serde_json::from_str`；没有检查 `Content-Length`，也没有对 chunked body 做累计限制。60 秒 request timeout 只限制时间，不限制内存。
+- 因此一个已获准连接的 MCP server 可以把单次工具结果、`tools/list` schema 或 SSE 通知放大到任意可分配大小；当前 transport 会在 JSON 解析前同时持有 body 字符串与解析对象，随后上层还可能把结果投影到 Harness/模型输入。这里已经证明“无上限完整缓冲”，但没有据 2 MiB 样本外推到系统崩溃、系统级 OOM 或所有调用路径都必然走模型上下文。
+- 这不是 H-12（Streamable HTTP session header）、H-158/H-275（tool schema/choice 校验）或 H-272（usage budget）：那些问题关注协议身份、schema/工具选择和 token 记账；H-291 是 transport 在 JSON 解析之前缺少 byte cap。也不是用户排除的 `encrypted-content` 报错。
+
+#### 成熟 Agent 与 DeepSeek 对照
+
+- **Codex（本地源码静态对照，未运行参考工程）：** `借鉴/codex/codex-rs/http-client/src/transport.rs` 的 `ReqwestTransport` 将可选 `response_body_limit_bytes` 传入 `bounded_response_stream`/`bounded_response_bytes`；函数先检查 `Content-Length`，对 chunked 响应按剩余字节逐块拒绝，并返回结构化 `ResponseTooLarge`。`transport_limit_tests.rs` 覆盖刚好到上限、超限和 chunked 超限。它说明成熟 agent 把响应上限放在通用 HTTP transport，而不是等待 JSON parser 或模型上下文层兜底。
+- **DeepSeek Harness（本地源码静态对照，未运行参考工程）：** `借鉴/deepseek-harness/packages/web/web-fetch-http/src/index.ts` 默认配置 `maxResponseBytes=5_000_000`、`maxBodyChars=100_000`；`provider.ts::readCapped` 同时处理声明长度与流式读取，并把超限标为 `truncated`/错误路径。`packages/lsp/lsp-stdio/src/index.ts` 为每个语言服务器配置 `maxMessageBytes`，启动时拒绝非正整数，framing 层在消息超过上限时失败。其具体上限不等于 MCP 必须采用的数值，但展示了 stdio 与 HTTP 两个边界都必须各自限流，且配置错误要 fail loud。
+- **DeepSeek 官方边界：** [Responses API 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)和[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)要求宿主提交/执行工具结果，但没有为本地 MCP transport 提供 body 上限或内存策略；[KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)只描述请求前缀缓存。不能把模型 token 上限当作网络/进程内存上限，亦不能把超大工具结果留给 DeepSeek 拒绝来代替宿主边界。
+
+#### 影响、治理方向与限制
+
+- 影响等级为 P2：在正常授权的 MCP 连接上，异常或失控服务返回的大 body 会先占用 transport 缓冲和 JSON parse 内存；并发请求会线性放大，随后还可能增加事件、日志和模型输入成本。当前证据只证明 2 MiB 已被接受，未测试更大尺寸、并发放大、OOM、SSE 长流或真实模型计费，不把这些未测后果写成已发生事实。
+- 根因修复应在既有 `McpTransport` 边界提供统一、可配置且有默认值的 `max_response_bytes`，stdio 按单行/累计读取限制，HTTP 同时检查 `Content-Length` 与 chunked/SSE 增量；超限时关闭/取消 body、返回结构化 `ResponseTooLarge`，并保留请求 id、server 名和 transport 类型，不能先把 body 读入字符串再截断。工具 schema、tool result 和普通响应可以共享 transport cap，但模型上下文还需要独立的 token/字符预算，不应互相替代。
+- 配置入口、CLI/SDK/桌面端应共用同一 cap DTO 和错误码；默认值必须经过实际工具结果大小与日志脱敏验证，不能只在 UI 设置。回归应覆盖：stdio 超长单行、通知夹带超长行、HTTP `Content-Length` 超限、chunked 超限、SSE 多帧累计超限、刚好等于上限、取消时 body 释放、重连后旧响应及错误日志不泄露 payload。
+
+#### 验证进度
+
+- 本轮只追加本节文档；现有 `response_limit_audit.rs` 已是 ignored 故障探针，没有修改生产实现或公共协议。`cargo test -p deepagent-mcp --offline` 通过（55 passed / 0 failed，另有既有 ignored 测试），`cargo fmt --all -- --check` 与 `git diff --check` 均通过。
+- 尚未执行完整 workspace、Desktop/SDK 动态入口、真实 MCP server、真实 DeepSeek、并发/OOM 或跨平台验证；这些未执行项不被本机 2 MiB fixture 证据替代。用户已有未跟踪文件保持不动。
