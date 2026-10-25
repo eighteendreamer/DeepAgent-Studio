@@ -1,5 +1,17 @@
 # DeepAgent Studio 全系统 Harness 审查
 
+## 修复阶段当前进度（2026-10-26）
+
+用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
+
+| 问题 | 当前修复状态 | 本轮证据 / 提交 |
+|---|---|---|
+| H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交取得后回填 |
+
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **1**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **279**；306 是历史编号槽位，不是有效未修数量。下一项拟复核 H-72，不在本轮夹带修改。
+
+初始工时估算为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；首批几项完成后按实际吞吐和剩余问题状态重新校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
+
 ## 当前交付状态（2026-10-25 收尾）
 
 本阶段的**分析报告已完成，生产缺陷并未全部修复，系统也未通过全功能可靠性验收**。现有内核值得保留，主要差距是跨入口、跨运行和附属执行未始终遵守同一份有效配置、资源授权、生命周期与持久提交边界；不是再加一层提示词就能解决。DeepSeek 正常主链可用，也已提供环境操作能力，但完整协议兼容、稳定缓存收益及总体任务质量提升不能据此全部宣称成立。
@@ -57,7 +69,7 @@
 | 计划模式的会话恢复与写入限制 | /plan 和 set_plan_mode 两入口的热续聊均阻止真实写入；关闭文件 SQLite/重建 ChatService 后同一会话 plan=false，正式 write_file 创建临时文件；/plan 历史仍进入 wire | 新增 H-288（P2，服务重建条件）；未修复；显式重设、退出和其他会话对照通过；离线模型及合成临时文件，不归入供应商缓存问题 |
 | CodeGraph 定义变更后的增量调用解析 | 正式 `CodeGraph::index_all/sync/callers` 先得到 caller→target；只改定义文件将旧边级联删除；定义恢复但 caller 未改时，调用边仍为 0 | 新增 H-289（P2，增量索引一致性）；未修复；临时 Rust fixture 与 SQLite，无模型/公网；触碰 caller 的对照恢复为 1，全量重建未单独复测 |
 | Windows 内容编辑的文件访问控制元数据 | 正式 write_file/edit_file/multi_edit 均成功写正文，却将受保护的单条 DACL 替换为继承规则；文件 SQLite 重开后检查点恢复正文但不恢复原策略；只读及默认继承 ACL 写入对照正常 | 新增 H-287（P2，自定义/受保护 ACL 文件条件）；未修复，仅合成临时文件；未验证其他账户访问、真实数据泄漏、跨平台或 staging 读取 |
-| 原生文件移动的失败提交边界 | 正式 move_path 将文件覆盖移动到自身父目录，返回 failure 却删除源和无关 sibling；三个平级/拒绝对照正常；文件 SQLite 重开及正式检查点显式恢复成功 | 新增 H-286（P1，授权 overwrite+祖先目标条件）；未修复，检查点可恢复但工具失败不自动还原；无用户数据或公网 |
+| 原生文件移动的失败提交边界 | 审计时正式 move_path 覆盖移动到自身父目录会删除源和 sibling；2026-10-26 原输入现直接拒绝且两文件保留，平级替换和检查点重开对照通过 | H-286 已修复并完成 Windows 本机验收；不是所有平台/断电事务保证，全量验证限制见该项修复记录；原失败证据保留 |
 | Harness 分叉锚点资格与检查点数值边界 | 正式模型工具循环实际读取/写入临时文件并完成；不存在的 tail+1 仍成功复制全部历史；`i64::MAX+1`/`u64::MAX` 额外把文件恢复到旧内容，而 child 仍保留完整成功写入历史 | 新增 H-285（P2，显式非法序号条件）；默认/真实 tail/起点三项对照通过；正式 dispatcher/AppCore/Kernel/CheckpointManager、文件 SQLite、离线模型，无用户文件或公网 |
 | Git 事实在 UI 与模型上下文的投影 | 临时真实 Git 仓库的修改/删除被模型上下文误报 clean，长路径首字节丢失；同一 GitService 正确列出路径，三类正常控制通过 | 新增 H-282（P3）；正式 ChatService/Kernel/ModelClient 请求及内存 run_events，无模型真实决策、用户文件覆盖或磁盘重开验证 |
 | MCP 初始化结果与 Ready 发布门槛 | 六类不完整/错误版本的initialize成功结果经真实stdio，设置页probe与宿主均connected；工具进入正式Responses schema并实际调用，结果进入下一wire | 新增 H-277（P2，条件性协议兼容/诊断缺口）；完整握手和显式JSON-RPC错误两类对照通过；不重复H-07/H-08，不推断线上服务必定返回异常握手 |
@@ -7936,7 +7948,18 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 ### H-286：`move_path` 覆盖目标前先递归删除，移到源的祖先目录时失败却删除源和无关文件
 
-**级别：高（P1，条件性文件数据破坏）；状态：正式 ChatService/Kernel/工具流水线及文件数据库重开已复现，未修复。** 前提是工具已获得写入许可，显式 `overwrite=true` 且 destination 是 source 的祖先目录。不是权限绕过，也不是正常平级文件移动必现。正常自动检查点是实际有效的恢复手段，不能描述成永久不可恢复。
+**级别：高（P1，条件性文件数据破坏）；状态：2026-10-26 已修复并验收（Windows 本机正式链及原失败输入）；原始失败证据保留。** 修复前提是工具已获得写入许可，显式 `overwrite=true` 且 destination 是 source 的祖先目录。不是权限绕过，也不是正常平级文件移动必现。正常自动检查点是实际有效的恢复手段，不能描述成永久不可恢复。
+
+#### 2026-10-26 修复方式、验收与残余限制
+
+- 本轮只修 H-286。`MovePathTool` 仍复用原 ToolPipeline 的权限、检查点、结果提交与缓存；私有 `deepagent-builtins/src/file_move.rs` 仅承接原生文件提交，不增加第二套工具/运行/恢复中心。先以实际路径身份拒绝自身、workspace root 及祖先/后代关系，再将旧目标 rename 到专属 sibling staging；源发布失败则恢复旧目标，不再先递归删除业务目标。文件、非空目录及原有跨类型覆盖保持可用；跨卷仍明确失败，不暗中 copy/delete。
+- 发布、staging 和恢复全部使用 no-replace native rename，防止覆盖竞争期间新出现的目标。Windows 使用不含 `REPLACE_EXISTING/COPY_ALLOWED` 的 `MoveFileExW`；Linux/Android 使用 `renameat2` 的 `NOREPLACE`，macOS 使用 `renamex_np` 的 `EXCL`；没有能力时显式返回失败。依据为 [Microsoft MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw)、[Linux renameat2](https://man7.org/linux/man-pages/man2/rename.2.html)、[Apple XNU 声明](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/stdio.h)及锁定的 windows-sys 0.59/libc 0.2.186 源码，不猜测普通 rename 拥有 no-clobber 语义。
+- staging 在容纳旧目标之前就取消自动递归析构清理，恢复失败/panic 不会由 TempDir Drop 删除唯一旧副本。恢复失败返回 `destination_restored=false/restore_error/recovery_path`；发布已提交但清理失败返回真实 `moved/verified` 加 warning，避免把已提交动作伪装成失败诱发重试。三阶段放在同一个 blocking 本地操作中，丢弃异步等待不会在文件操作之间触发隐式清理；这不等于强行取消已启动 native 调用。
+- **修复前复核**：再次执行原 `cargo test -p deepagent-app-core --test kernel_v2_e2e move_failure:: --offline -- --include-ignored --nocapture`，**1 passed / 1 failed**，source/sibling 均缺失；先保留此结果再修改。**修复后原链**：移除故障探针 ignore，以 `cargo test -p deepagent-app-core --test kernel_v2_e2e move_failure:: --offline -- --nocapture` 得 **2 passed / 0 ignored**；祖先输入仍返回真实失败，但 source/sibling 都保留，平级替换、唯一配对工具结果、文件数据库重开及检查点恢复正常。
+- **补充回归**：首次私有 move seam **11 passed**；最终 `cargo test -p deepagent-builtins --offline -j 1 -- --quiet` 为 **292 passed / 0 failed / 1 ignored**、doc-tests 0，包含新增竞争目标正常控制，以及真实 Windows 源文件占用导致 native 发布失败、恢复旧目标的默认工具测试。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline -j 1 -- --quiet` 为 **102 passed / 0 failed / 92 ignored**。其他问题的 ignored 不算通过。覆盖 stage/publish/rollback/cleanup 失败、panic、同路径/祖先/后代、大小写 alias、文件和非空目录、无覆盖许可及目标竞争；Unix symlink-parent 测试存在但本机不执行。
+- **格式与 lint**：`cargo fmt --all -- --check`、`git diff --check` 通过；`cargo clippy -p deepagent-builtins --all-targets --offline --no-deps -- -D warnings` 退出 0。包含依赖的同范围严格 clippy 被未修改的 `models/client.rs:355 clone_on_copy` 阻断，不顺手改无关代码，也不写成全依赖 lint 通过。
+- **全量限制**：首次 `cargo test --workspace --offline -- --quiet` 默认并行编译发生内存分配失败，退出 1；随后 `cargo test --workspace --offline -j 1 -- --quiet` 编译完成，但 AppCore lib **1100 passed / 1 failed / 80 ignored**，既有真实 Cargo 构建夹具未在 4 秒内创建 started 标记，Cargo 早停。该夹具不注册文件工具；独立原名复测 **1 passed（1.18 秒）**，具体调度/资源成因未进一步确认。保留全量失败，不以孤立绿色覆盖它，更不把未运行模块算通过。
+- **未验与兼容性**：本机只完成 Windows 动态验收；没有执行 Linux/macOS/Android 构建/运行、真实跨卷、断电/进程强杀和真实 Desktop UI。三次 rename 不是 crash-atomic 事务；强杀后可能保留 staging，恢复失败也可能需按返回位置人工恢复。未知平台/不支持 no-replace 的文件系统现在显式拒绝，不会冒险降级。未增加依赖、schema/DTO、数据库迁移或修改 SandboxBackend；本项不关闭 H-72/H-73/H-76/H-78/H-260/H-287。提交及逐编号状态见 [修复台账](system-harness-repair-progress.md)。
 
 #### 即时 Evidence（2026-10-25，首次复现后立即登记）
 

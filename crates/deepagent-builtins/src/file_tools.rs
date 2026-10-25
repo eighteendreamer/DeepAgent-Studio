@@ -836,7 +836,7 @@ impl Tool for MovePathTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: "move_path".into(),
-            description: "Rename or move a file/directory using native filesystem APIs. Args: { source, destination, overwrite? }. Prefer this over shell mv/move/Rename-Item. Success is returned only after source absence and destination existence are verified.".into(),
+            description: "Rename or move a file/directory using native filesystem APIs. Args: { source, destination, overwrite? }. Prefer this over shell mv/move/Rename-Item. Source and destination cannot contain each other. Existing targets require overwrite=true and are retained until publication succeeds; failed rollback reports a recovery_path. Cross-volume copy is not supported. Success is returned only after source absence and destination existence are verified.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -870,66 +870,29 @@ impl Tool for MovePathTool {
             Ok(path) => path,
             Err(error) => return Ok(ToolOutput::failure(error.to_string())),
         };
-        if source == self.root.path() || destination == self.root.path() {
-            return Ok(ToolOutput::failure(
-                "moving or replacing the workspace root is forbidden",
+        let root = self.root.clone();
+        let move_source = source.clone();
+        let move_destination = destination.clone();
+        // Keep staging, publication, and rollback in one non-abortable local
+        // operation: dropping an async wait must not drop a data-owning TempDir
+        // between two filesystem awaits. This does not promise remote cancel
+        // or crash atomicity; the native commit reports its actual result.
+        let output = tokio::task::spawn_blocking(move || {
+            crate::file_move::move_path(&root, &move_source, &move_destination, overwrite)
+        })
+        .await
+        .unwrap_or_else(|error| {
+            let mut output = ToolOutput::failure(format!(
+                "move worker failed; inspect source and destination before retrying: {error}"
             ));
-        }
-        if source == destination {
-            return Ok(ToolOutput::failure(
-                "source and destination must be different",
-            ));
-        }
-        if tokio::fs::symlink_metadata(&source).await.is_err() {
-            return Ok(ToolOutput::failure(format!(
-                "move source does not exist: {}",
-                self.root.relativize(&source)
-            )));
-        }
-        if tokio::fs::symlink_metadata(&destination).await.is_ok() {
-            if !overwrite {
-                return Ok(ToolOutput::failure(
-                    "destination already exists; pass overwrite=true to replace it",
-                ));
-            }
-            let metadata = match tokio::fs::symlink_metadata(&destination).await {
-                Ok(metadata) => metadata,
-                Err(error) => return Ok(ToolOutput::failure(format!("metadata failed: {error}"))),
-            };
-            let removed = if metadata.is_dir() {
-                tokio::fs::remove_dir_all(&destination).await
-            } else {
-                tokio::fs::remove_file(&destination).await
-            };
-            if let Err(error) = removed {
-                return Ok(ToolOutput::failure(format!(
-                    "failed to replace destination: {error}"
-                )));
-            }
-        }
-        if let Some(parent) = destination.parent() {
-            if let Err(error) = tokio::fs::create_dir_all(parent).await {
-                return Ok(ToolOutput::failure(format!("mkdir failed: {error}")));
-            }
-        }
-        if let Err(error) = tokio::fs::rename(&source, &destination).await {
-            return Ok(ToolOutput::failure(format!("move failed: {error}")));
-        }
-        let source_absent = tokio::fs::symlink_metadata(&source).await.is_err();
-        let destination_exists = tokio::fs::symlink_metadata(&destination).await.is_ok();
-        if !source_absent || !destination_exists {
-            return Ok(ToolOutput::failure(
-                "move returned successfully but filesystem verification failed",
-            ));
-        }
+            output.value["outcome_unknown"] = true.into();
+            output
+        });
+        // Invalidate even on failed rollback: a retained backup or concurrent
+        // target means the pre-operation cache cannot be treated as current.
         cache_invalidate(&self.cache, &source);
         cache_invalidate(&self.cache, &destination);
-        Ok(ToolOutput::success(serde_json::json!({
-            "source": self.root.relativize(&source),
-            "destination": self.root.relativize(&destination),
-            "moved": true,
-            "verified": true,
-        })))
+        Ok(output)
     }
 }
 
@@ -2067,5 +2030,39 @@ mod tests {
             "content"
         );
         assert_eq!(output.value["verified"], true);
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn move_path_locked_source_restores_existing_destination() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+
+        let (dir, root) = temp_root();
+        let source = dir.path().join("locked.txt");
+        let destination = dir.path().join("target.txt");
+        std::fs::write(&source, "source bytes").unwrap();
+        std::fs::write(&destination, "previous bytes").unwrap();
+        // Omit FILE_SHARE_DELETE: the real OS refuses publication, after the
+        // unrelated target has been staged, exercising the production rollback.
+        let handle = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+            .open(&source)
+            .unwrap();
+        let output = MovePathTool::new(root)
+            .invoke(serde_json::json!({
+                "source": "locked.txt", "destination": "target.txt", "overwrite": true,
+            }))
+            .await
+            .unwrap();
+        assert!(!output.ok, "{output:?}");
+        assert_eq!(output.value["destination_restored"], true);
+        assert_eq!(std::fs::read_to_string(&source).unwrap(), "source bytes");
+        assert_eq!(
+            std::fs::read_to_string(&destination).unwrap(),
+            "previous bytes"
+        );
+        drop(handle);
     }
 }

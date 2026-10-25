@@ -245,7 +245,6 @@ async fn move_controls_preserve_data_on_rejection_and_support_normal_replacement
 }
 
 #[tokio::test]
-#[ignore = "audit: move failure must not delete the source's ancestor directory"]
 async fn audit_move_to_ancestor_does_not_destroy_source_and_unrelated_sibling() {
     let result = observe("payload", true).await;
     assert!(
