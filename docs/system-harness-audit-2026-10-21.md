@@ -12,6 +12,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| MCP hook 决策正文与展示截断 | 真实 stdio 服务返回完整合法拒绝 JSON，100/8192 字符阻止写入；8193/10000 字符及8193字符中文拒绝均变 continued，临时文件实际写入，下一模型 wire 为成功工具结果 | 新增 H-276（P2，条件性策略失效）；正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 MCP 与文件工具；离线模型，不外推默认无 hook 聊天 |
 | MCP hook 的发现 schema 与执行契约 | 同一严格工具的缺必填、非法枚举、多余字段，正常 ToolRegistry 路径均在 transport 前拒绝；正式设置页 hook 测试入口经配置解析、注册、PreToolUse 派发后却逐项 continued、各发送1次 tools/call | 新增 H-275（P3）；合法静态参数与既有拒绝决策对照通过；内存 transport，不外推真实 server 副作用或全部模型 MCP 调用 |
 | 定时调度的日历可满足性与故障隔离 | 正常 cron_create 接受 2 月/4 月 31 日，正式 Runtime tick 与实际时钟 AppCore tick 均 panic；文件不变，重建 scheduler 仍 panic，删除坏计划后健康任务可派发 | 新增 H-271（P2）；正常月末、闰日对照通过；未运行完整桌面或 release 构建 |
 | 摘要正文与草稿控制标记的边界 | 两正文经 JSON 解码完全等价，字面 analysis 标签组丢失片段、Unicode 转义组保留；下一 wire 和文件重开结果一致 | 新增 H-269（P3）；另有其他标签和真正前置草稿对照，不外推所有摘要或所有私有草稿处理 |
@@ -7436,3 +7437,38 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 当前新增内容仅 test-only fixture、合法对照、ignored缺陷探针与本文；没有生产行为、公共协议、依赖、UI、权限或沙箱变更。采用代码审计 skill 的数据流人工核查与可达性验证要求，未运行 Semgrep/CodeQL 全仓扫描；不拿搜索命中当复现。
 - 交付前最终重跑 `cargo test -p deepagent-app-core --lib mcp_hook --offline -- --nocapture --test-threads=1`为 **2 passed / 1 ignored**；`cargo test -p deepagent-tools --lib --offline`为 **24 passed**（含 schema 校验、权限与审批正常测试）。`cargo fmt --all -- --check`与`git diff --check`均通过；Git仅提示现有Windows行尾转换，不是格式错误。最终入口的显式故障命令结果为上文 **2 passed / 1 failed（缺陷预期）**，绝不将其计作修复通过。
 - 未运行完整workspace测试、全特性clippy、Desktop build/UI、真实DeepSeek、真实外部MCP或任何真实副作用。没有测试供应商费用、缓存命中、线上发生率；全系统目标仍未完成。本轮未处理用户排除的 encrypted-content 问题。
+
+### H-276：MCP hook 在解析前截断完整拒绝 JSON，超过展示上限后静默放行真实写入
+
+**级别：中（P2，已启用 MCP 校验 hook 的条件性策略失效）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 Node stdio 服务与 write_file 已复现，未修复。不是所有 hook 或默认聊天均放行，也不是文件权限/沙箱全面失效。**
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权的本仓库防御性审计；只读源码检查及临时目录内真实 MCP 服务、文件数据库、合成目标文件。仅主模型 transport 用离线 Responses fixture，真实 SettingsService 注册 PreToolUse mcp_tool hook，matcher=write_file；默认权限预设，目标是尚不存在的工作区内 target.txt，不涉及用户文件、真实凭据、外部服务或付费请求。
+- E-276-first：source_ref=`crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_hook_decision_size.rs`；`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_hook_decision_size --offline -- --include-ignored --nocapture --test-threads=1`：**2 passed / 1 failed（缺陷预期），2.56s**。故障探针先完成三个样本、关闭各自 MCP 服务，再统一断言；不是首个断言失败后把其余样本算作已测。运行前 `cargo fmt --all` 已执行，首次编译成功。
+- E-276-deny：完整响应都是合法 `{"ok":false,"reason":"<合成说明>"}`，生产公开 `parse_structured_hook_output` 对每份原始完整字符串均解析为 Deny。真实服务通过单个 text content 返回它，isError=false、发现 schema=object且参数合法。**8193字符ASCII、10000字符ASCII、8193字符中文（24531 UTF-8字节）**三份拒绝均在正式运行中变为 HookCompleted.outcome=continued，target.txt 真实创建且内容等于合成正文，下一正式序列化 Responses 请求含同call_id的唯一成功 function_call_output。
+- E-276-controls：100字符与**恰好8192字符**的拒绝响应均得到 blocked，目标文件未创建，下一wire唯一配对工具结果为hook_denied；100字符与8193字符的允许响应都正常continued且写入。所有样本主模型请求均2次，最终SQLite唯一run_terminal=succeeded，表示模型在获知工具结果后正常完成，不把“工具被拒绝”误要求为整个run失败。
+- F-276（category=design，status=validated，confidence=high，evidence_ids=[E-276-first,E-276-deny,E-276-controls]）：`AppHookActionExecutor::execute_mcp` 先 `bounded_hook_text(&result.text(), 8_192)`，超长则追加 `...[truncated]`；再解析被破坏的JSON，失败走 `unwrap_or(HookOutcome::Continue)`。`ToolCallResult::text()`已拼出完整正文，没有网络截断或server提供无效JSON；这是宿主把展示预览当控制协议解析输入。正式写路径的阻断决定因解释文字长度跨过上限而改变。
+- 与H-26的标准嵌套决策字段未识别不同：本项使用现有解析器原本支持的顶层ok=false，短响应正常拒绝；与H-275的输入schema未校验不同，本项输入全合法；与H-236的取消不同，本项没有取消/超时；不重复登记这些根因。成熟实现对照、额外边界和最终回归随后追加。
+
+#### 成熟实现与官方依据
+
+- **Codex（本地源码静态对照）**：`借鉴/codex/codex-rs/core/src/hook_mcp_executor.rs::CoreHookMcpExecutor::execute` 拼接完整text content并返回；`hooks/src/engine/mcp_runner.rs::run_mcp_tool` 将完整字符串作为HandlerRunResult.stdout，`engine/dispatcher.rs::execute_handlers_with_metadata` 交给事件parser。`events/pre_tool_use.rs::parse_completed` 对原stdout调用 `engine/output_parser.rs::parse_pre_tool_use`，后者使用serde解析完整JSON及结构化拒绝理由；`run`在获得should_block后才将额外上下文交给output_spiller。这体现**控制决定先解析，模型展示文本随后限额/溢出保存**，不把展示预览重新解释成控制协议。Codex使用decision/block或hookSpecificOutput等自身wire shape，不声称它支持本系统的顶层ok=false，也未运行完整Codex、真实MCP或证明任意畸形响应都会阻断；其部分错误路径同样不等于should_block。
+- **Claude Code（本地恢复源码静态对照）**：`借鉴/claudecode/restored-src/src/utils/hooks/execPromptHook.ts`对完整fullResponse依次safeParseJSON、hookResponseSchema.safeParse，再按parsed.data.ok=false生成blocking结果；`hookHelpers.ts::hookResponseSchema`中reason为可选string，未在该schema引入8192字符上限。普通command路径的`utils/hooks.ts::validateHookJson/parseHookOutput`同样解析完整trimmed文本。这里只借鉴控制解析与展示分离，不冒充相同mcp_tool接口的端到端证明；该参考对部分无效输出返回non_blocking_error，也不能被夸大成“所有错误均fail-closed”。
+- **DeepSeek官方**：2026-10-25联网核对[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)：具体函数由宿主执行，strict约束模型生成的函数参数。本项中主模型只产生合法write_file调用，拒绝来自本机MCP；模型的thinking、strict或供应商缓存无法修复宿主把拒绝结果截坏的问题。此结论是执行边界推导，不虚构官方有“8192字符hook JSON协议”的规定。
+- **MCP官方**：同期核对[2024-11-05 tools](https://modelcontextprotocol.io/specification/2024-11-05/server/tools)，工具结果以content文本与isError等字段表达；本系统自行解释文本中的ok/reason为hook决策，**并非MCP标准拒绝字段**。本fixture返回完整合法MCP结果，本地hook协议及其大小处置才是问题所在。
+
+#### 影响与治理方向（本地设计，未实施）
+
+- 触发前提：用户已配置并命中MCP校验hook，远端成功返回本系统支持的拒绝JSON，完整正文超过8192个Unicode字符。单纯解释更详细就能让同一拒绝从blocked变为continued；此次真实后果是临时新文件写入，以及模型下一请求收到成功工具结果。若hook承担业务策略校验，相应操作可能在已拒绝情况下继续；本轮没有证明跨workspace、任意命令、真实用户数据泄露或其他高风险工具效果，也不推断线上发生频率。因为是可选校验扩展且仍有其他权限边界，按条件性P2登记，不标全局P1。
+- Harness应让完整决策对象与展示预览有不同职责：在既有统一hook解析边界验证完整、受明确资源预算约束的输出，先保留控制结果，再对reason/日志/UI的展示投影做限长。若整个控制输出超过可接受预算，应显式呈现过大/无效状态，并由统一策略决定阻断或请求人工处理，不能把宿主制造的截断当成允许。不能简单取消全部大小上限，也不能只为ok=false增加字符串搜索特判（会误读嵌套值、转义文本及未知shape）。
+- 本系统`parse_model_hook_decision`也先截断，但失败会报错；MCP则默认为Continue，暴露同类控制契约在扩展类型间不一致。结合H-26/H-275，已应重审统一hook输入/输出协议边界，而不是每个调用方再补一套大小、字段或错误处理特判。本轮不把prompt/agent超长行为登记为已动态复现，也不擅自修改生产策略。
+- 后续验收应覆盖limit-1/limit/limit+1、中文/转义/多content、前置deny/ask/allow/修改、错误结果、合法plain text、畸形JSON、超预算、事件展示与durable回放；仍复用既有HookOutcome、HookRegistry、权限/审批和唯一终态，不增第二套控制中心。
+
+#### 回归记录（持续追加）
+
+- 初轮正式E2E默认套件 **88 passed / 84 ignored，9.72s**；AppCore单元测试 **1101 passed / 71 ignored，6.47s**。故障探针保持ignored，默认绿色不代表H-276修复。
+- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`未通过：未修改的`models/src/client.rs:355` clone_on_copy及`persistence/src/run_store.rs:127` explicit_counter_loop阻断；相应文件diff为空，不把它们作为本轮新缺陷或宣称lint通过。随后补充恰好8192字符中文的正常拒绝对照，以区分字符上限与字节上限，最终结果继续追加。
+- 增补中文边界后，同一显式故障命令最终 **2 passed / 1 failed（缺陷预期），2.92s**。恰好8192字符中文、24528 UTF-8字节正常blocked且未写文件；8193字符中文、24531字节仍continued并写入。三个长拒绝故障样本观察一致，正常样本共五组，确认是8192字符截断而非8192字节传输限制。Node实际版本v22.22.1。
+- 最终文件版本重跑 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**88 passed / 84 ignored，10.09s**；`cargo fmt --all -- --check`和`git diff --check`通过（仅Git的Windows行尾提示）。只读进程核查 `active_decision_size_mcp_fixture_processes=0`，测试服务已关闭；所有故障断言均在资源收尾后执行，没有遗留服务继续操作。
+- 本轮仅新增测试模块、模块入口和本报告；未改生产逻辑、公共协议、模型参数、权限或沙箱配置，不需要数据迁移。按code-audit技能核查完整输入→解析→控制决定→真实文件与下一wire的可达性，没有运行Semgrep/CodeQL全仓扫描或以搜索结果代替复现。未运行完整workspace、Desktop build/UI、参考工程完整测试、真实DeepSeek计费/缓存或外部MCP服务；未覆盖HTTP、多content、ask及多个并发hook，未处理用户排除的encrypted-content问题。全系统审计仍未结束。

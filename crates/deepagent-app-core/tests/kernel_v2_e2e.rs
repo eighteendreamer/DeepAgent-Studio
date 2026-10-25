@@ -63,6 +63,9 @@ mod hook_cancellation;
 #[path = "kernel_v2_e2e/mcp_hook_cancellation.rs"]
 mod mcp_hook_cancellation;
 
+#[path = "kernel_v2_e2e/mcp_hook_decision_size.rs"]
+mod mcp_hook_decision_size;
+
 #[path = "kernel_v2_e2e/hook_permissions.rs"]
 mod hook_permissions;
 
