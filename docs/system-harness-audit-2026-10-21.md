@@ -6975,3 +6975,33 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 影响集中在恢复、SDK/插件导入、旧事件迁移和手工 `ResponseRequest` 构造；正常生产链生成的 call→output 顺序不触发。触发后，模型会看到宿主合成的失败，而不是实际工具结果，可能重复读取/重复执行、错误判断前一步失败，或因错误结果继续走错误分支；当前证据没有证明真实用户数据已被覆盖或 DeepSeek 服务已返回 400。
 - 修复应在同一个 repair 边界选择单一策略：按整批先建 call 索引，再按 `call_id`/类型配对；若 output 先于 call 仍违反本地有序历史契约，应返回结构化 `MalformedHistory` 并阻止发送，或在明确保留真实 output 的同时重新排序。不能继续依赖扫描时序、无诊断地合成失败。function/custom 类型、重复 ID、孤立 output、压缩/replay、重启和 `replace_messages` 两入口需共用该校验。
 - 未验证真实桌面恢复、真实 DeepSeek 400 行为、跨进程迁移或生产修复；本项不与 H-80（function/custom 类型混配）、H-149（重复 call_id）或 H-174（公开 replace_messages 绕过 repair）重复：H-261 专门是**同 ID、同类型、但 output 先于 call 导致真实结果被静默替换**。
+
+### H-262：附件身份清洗保留 `.`/`..`，空 ID 与父级 bucket 可删除或覆盖附件根外目录
+
+**级别：高（P1，条件性本地附件完整性/隔离边界）；状态：正式 `AttachmentService` 的 ingest/remove 与 Tauri command 边界复现，未修复。** 触发条件是调用方提交 `AttachmentIngestDto.id`、`session_id` 或 `attachment_remove` 的 `id`/`session_id` 为 `.`、`..`、空字符串或等价的父级路径片段。这里不需要公网、模型或真实用户文件；探针只在临时目录建立 canary。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权源码审计；只运行已有 `crates/deepagent-app-core/src/attachment_service.rs` 的 ignored 探针，没有改生产逻辑。fixture 使用 `tempfile` 临时目录，canary 内容为测试自有字符串；无凭据、无网络、无真实桌面会话。
+- E-262-remove：执行 `cargo test -p deepagent-app-core --lib attachment_service::tests::audit_attachment_removal_stays_inside_one_attachment --offline -- --ignored --exact --nocapture`，结果 **0 passed / 1 failed（预期）**。生产输出：`normal result=Ok(true) first=false second=true outside_root=true`；`empty-id result=Ok(true) first=false second=false outside_root=true`；`dot-id result=Ok(true) first=false second=false outside_root=true`；`parent-bucket result=Ok(true) first=true second=true outside_root=false`。也就是说，空 id 和 `.` 被归一为当前 session bucket 并递归删除整个 bucket；`session_id=".."` 则把目标解析到附件根的父目录并删除 sibling `unrelated`。
+- E-262-ingest：执行 `cargo test -p deepagent-app-core --lib attachment_service::tests::audit_attachment_import_stays_inside_one_attachment --offline -- --ignored --exact --nocapture`，结果 **0 passed / 1 failed（预期）**。生产输出：`dot-id accepted=true overwritten=true metadata=true outside_root=false`、`parent-id accepted=true overwritten=true metadata=true outside_root=false`、`parent-bucket accepted=true overwritten=true metadata=true outside_root=true`。导入没有拒绝 `.`/`..`；`session_id=".."` 直接在附件根外的 sibling 目录写入/覆盖 canary，并写入 metadata。
+
+#### Finding 与调用路径
+
+- F-262：severity=high，category=integrity/isolation，status=validated，confidence=high，location=`crates/deepagent-app-core/src/attachment_service.rs::sanitize_segment`、`AttachmentService::ingest`、`AttachmentService::remove`。`sanitize_segment` 允许 `.`，因此 `".."` 保持为路径父组件；空值在 ingest 侧 fallback 为新 id，但 remove 侧只拼接空段，最终目标就是 `root/session_bucket`。服务随后对该目标调用 `fs::create_dir_all`、`fs::write` 或 `fs::remove_dir_all`，没有拒绝保留段、canonicalize 后的 root containment 检查，也没有确认目标必须是单个 attachment directory。
+- P-262-remove（path_type=callflow）：Tauri `attachment_remove(session_id,id)` → `AttachmentService::remove` → `sanitize_segment` → `root.join(bucket).join(id)` → `remove_dir_all`。`id=""`/`.` 使目标成为整个 session bucket；`session_id=".."` 使目标离开 attachment root。
+- P-262-ingest（path_type=callflow）：Tauri `attachment_ingest(AttachmentIngestDto)` → `AttachmentService::ingest` → `sanitize_segment` → `create_dir_all`/`persist_original`/`write_metadata`。`session_id=".."` 让持久化目录落在 root 的父级，随后同名 `canary.txt` 被真实覆盖；返回 DTO 还把该越界路径当成成功的 `storage_dir`。
+- 这不是 H-250/H-252/H-253/H-254 的 canvas artifact 索引、digest 或 workspace scope 问题，也不是 H-169 的图片 MIME 校验；H-262 专门是 composer attachment 的路径身份边界。当前探针证明的是可控 DTO 到本地临时目录的删除/覆盖，不把它扩大为任意系统文件读写或远程利用。
+
+#### 官方与成熟 Agent 对照
+
+- **Claude Code**：`借鉴/claudecode/restored-src/src/bridge/inboundAttachments.ts` 的 `sanitizeFileName` 先用 `basename` 去除目录组件，再只保留安全字符；`bridge/sessionRunner.ts` 与 `utils/tasks.ts::sanitizePathComponent` 明确把 `../`、斜杠和路径遍历组件视为非法。其边界原则是“用户/外部身份不是路径”，而不是把 `..` 当作可接受的清洗结果。本轮未运行 Claude 发行版，不声称其所有附件删除入口同样实现。
+- **Codex**：`借鉴/codex/codex-rs/attachment-store` 将附件以 opaque `file_id` 交给 `AttachmentStore`，解析接口按 `file_id` 查元数据，不把调用方字符串直接拼接到宿主文件路径；其 `AttachmentMetadata`/`AttachmentStoreErrorKind::NotFound` 还把不存在身份作为可分类错误。本轮未运行参考工程，结论限于源码边界。
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/attachment/attachment-local/src/file-store.ts` 以 `sha256:<digest>` 作为不可变文件身份，并在读取时核对字节数和摘要；它不把外部 attachment id 当作可遍历目录。该对照说明 DeepSeek 集成应把 attachment identity 与 provider wire/materialization 解耦，不能让 `session_id`/`id` 直接决定文件系统父子关系。
+- **DeepSeek 官方**：Responses API 与 KV cache 文档只定义 provider 输入和前缀复用，不赋予 `artifact://` 或本地附件 id 文件系统语义。此问题发生在 provider 之前的宿主持久化边界；调整 `input_image`、`file_id` 或 cache 参数不能修复。
+
+#### 影响、后果与治理方向
+
+- 触发后，恶意或损坏的前端/插件 payload 可删除同一 session 的全部附件，或把新附件写到 attachment root 的父目录并覆盖同名 sibling 文件。若附件 root 与其他本地状态相邻，后果可能是用户可见附件丢失、跨会话污染、后续模型读取错误内容或 metadata 指向根外路径；本轮没有触碰真实用户目录，也没有证明任意文件系统路径可被指定。
+- 根因修复应在单一 attachment identity seam 完成：拒绝空值、`.`、`..`、路径分隔符、控制字符和 canonicalization 后不位于 root 的身份；最好由后端生成不可变 opaque id（如 UUID/digest），前端 id 只作为显示/幂等键，不参与目录层级。`remove` 必须要求解析目标是 `root/<validated-session>/<validated-id>` 的单个目录，禁止对 bucket/root 本身执行递归删除；`ingest` 应先做 root containment 与“目标为新/同一 attachment”的校验，再写入，并在失败时不产生 metadata。
+- 回归需覆盖空/点/双点、Unicode/Windows 分隔符、绝对路径、尾随点空格、同名重试、符号链接/junction、删除 bucket/root、session 切换和并发 ingest/remove；所有失败都应返回结构化 invalid identity，且 root 外 canary、其他 attachment 与 metadata 保持不变。未实施生产修复，未运行真实桌面 UI/跨平台 NTFS junction 或真实用户目录。
