@@ -1,5 +1,14 @@
 # DeepAgent Studio 全系统 Harness 审查
 
+## 当前交付状态（2026-10-25 收尾）
+
+本阶段的**分析报告已完成，生产缺陷并未全部修复，系统也未通过全功能可靠性验收**。现有内核值得保留，主要差距是跨入口、跨运行和附属执行未始终遵守同一份有效配置、资源授权、生命周期与持久提交边界；不是再加一层提示词就能解决。DeepSeek 正常主链可用，也已提供环境操作能力，但完整协议兼容、稳定缓存收益及总体任务质量提升不能据此全部宣称成立。
+
+- 先读文末[最终结论、治理顺序与验收边界](#audit-final-handoff)，再按其中 H 编号查看原始复现；[模块矩阵](#audit-module-coverage)登记了 35 个根 workspace member 与 3 个额外入口各自的动态/单元/静态证据和未验条件。
+- 后续历史章节中的“仍在进行”“剩余交付”是当轮记录；当前状态以本节和文末收尾为准，不改写首次失败、撤销和修复记录。
+- H-305 是撤销误报，H-278 等归并项不是独立问题，部分早期问题已有修复记录。**最大编号 H-306 既不等于有效问题数，也不等于未修复数量**；本报告不提供未经逐项状态台账核算的总数或成熟度分数。
+- 下一阶段可以进入分批修复。真实供应商质量/收益评测、其他平台沙箱、移动真机和完整 UI 故障验收仍需单独安排，不作为本次已完成的实验。
+
 ## 审查口径
 
 - 开始日期：2026-10-21；基线提交：`e70504e`。
@@ -8894,6 +8903,8 @@ Tool Calls 的 strict Beta 文档使用 `/beta`、Chat 嵌套 `function.strict=t
 - H-306 缺陷探针默认 ignored，正常控制默认执行；未修改生产 validator、资源、协议或前端。没有启动真实 Tauri/WebView、执行视频编辑、访问网络、用户数据库/凭据或默认 CLI；没有重跑既有故障探针。
 - 实际 `cargo test -p deepagent-app-core --test canvas_prompt_catalog_audit --offline`：**1 passed / 0 failed / 1 ignored**，退出 0。这不覆盖先前显式故障失败，也不表示 prompts crate 默认失败已修复。`cargo fmt --all -- --check`、`git diff --check` 均退出 0。
 
+<a id="audit-module-coverage"></a>
+
 ### 模块级覆盖矩阵：按实际 workspace 边界封账
 
 依据当前根 `Cargo.toml` 的 **35 个 members**，另列独立 Tauri workspace、桌面前端与 TypeScript SDK。每行是“已有证据覆盖到哪一层”，不是模块全功能认证；旧 H 项只引用其原始证据，未在本轮重跑。状态含义：**D**=正式调用链有动态样本，**U**=本轮 lib/纯函数测试，**S**=本轮静态接线核查；这些均不意味着没有问题。未做的真实 provider、平台和 UI 条件保留在最后一列。
@@ -8944,3 +8955,71 @@ Tool Calls 的 strict Beta 文档使用 `/beta`、Chat 嵌套 `function.strict=t
 **本轮静态排误与能力限制**：intent 的注释明确不是语义分类器，不能因无 classifier 判缺功能；planner 的 canned HeuristicPlanner 是无模型基础测试，生产 AppCore 明确使用 `plan_dag_via_model`，不能误报“正式计划只用固定模板”。tracing 已有 trace context 和本地日志/counter，不能说没有观测；同时 OTLP 和端到端连续性未获得运行证据。iOS/Remote Mac 有 DTO、resolver 与 fake，却没有默认宿主真实 backend 的证据，报告必须标注未完成/未验，不能把这些测试通过当可发布承诺。
 
 **E-cover-02（source_type=command，content_hash=n/a，文档完整性而非功能覆盖率）**：PowerShell 从根 Cargo `members` 段提取路径，和本节标记区间中的首列表格路径作集合比对，实际结果 `WorkspaceMembers=35, MatrixRows=38, Missing=空, Duplicates=空`；额外三根恰为 `apps/desktop/src-tauri,apps/desktop,packages/sdk`。这只证明模块登记无遗漏，不证明 38 个模块都已通过全部行为。前节剩余清单第一项“覆盖封账”现已完成登记；根因治理优先级与最终结论核对仍待收尾，不能据矩阵完整便把总体 goal 标 complete。
+
+<a id="audit-final-handoff"></a>
+
+## 2026-10-25 最终结论、治理顺序与验收边界
+
+### 范围与证据口径
+
+本节是既有逐项调查的交付汇总，**不新增 H 编号，不把历史探针重跑当进展，不修改生产逻辑**。分析快照为 `73b95833` 所包含的源码、探针和报告；本轮只编辑本报告。后续修复后必须重新确认相应 H 项状态，不能永久沿用本节的未修判断。
+
+- **授权与范围（auth / in_scope）**：用户授权当前仓库的系统审计、参考工程机制对比和隔离本机验证；本阶段包含 Harness、DeepSeek adapter、运行/工具/审批、持久化、上下文、MCP/hooks、宿主、SDK、画布和移动边界。没有把静态读过的参考工程当作已动态验收。
+- **网络边界（network_profile）**：官方文档联网读取；已有动态故障测试的网络边界以各项原文为准。本轮不启动服务、不访问真实内网、不读取真实凭据、不启动默认数据根 CLI，也不调查用户排除的 encrypted-content 故障。
+- **E-final-01（source_type=file，content_hash=n/a）**：核对原 H-02/H-03/H-06/H-34～H-36/H-142/H-143/H-165/H-168/H-286/H-300 等章节的触发、正常控制、证据终点及限制，并核对当前 `ChatService::admit_run`、`RunEnvironment`、`PersistentEventSink`、`record_usage_cost` 的既有落点。本节治理条目引用原 H 项的独立复现，不声称这次重新执行过它们。复查入口：`rg -n 'admit_run|struct RunEnvironment|struct PersistentEventSink|record_usage_cost' crates/deepagent-app-core/src crates/deepagent-runtime/src`。
+- **E-final-02（source_type=file，content_hash=n/a）**：再次核对 Codex `rmcp-client/src/rmcp_client.rs::is_retryable_tools_list_error` 的非 `tools/list` 返回 false，DeepSeek Harness `session-checkpoint-policy/README.md` 的 fail-closed flush/unknown-outcome 契约，以及 Claude Code `toolResultStorage.ts` 和 `cleanup.ts` 的结果存储/保留期机制。它们支持对应机制比较，不是三套产品的全局安全认证。
+- **E-final-03（source_type=web，content_hash=n/a）**：本轮再次取得用户四份官方文档正文，确认无状态历史回传、Responses SSE 终态、工具执行由宿主负责、Beta strict 的明确入口、自动前缀缓存和尽力而为规则。下面协议结论分别引用对应页面；本轮没有发模型请求。
+- **P-final-01（path_type=callflow）**：请求配置/能力声明 → AppCore 接纳与有效环境 → Kernel/ToolPipeline/provider → 真实副作用和 usage → RunStore/run_events/结果资产 → CLI/SDK/UI 投影及重开恢复。各组原 H 项证明的是该路径上具体边界的不一致；“某一层类型或测试成功”不能替代其余边界的证据。
+
+### 对用户问题的直接回答
+
+**Harness 编写是否合理？** 方向合理、完成度不均。共享 Kernel、RunStore、审批和 provider seam 已经能够支撑正常闭环，不应抛弃重造；问题是 Harness ACK、嵌套 Runtime、画布、自动验证及部分恢复链没有全部复用这些边界的完整语义。新增入口越多，这种组合不一致越容易扩散。具体成立条件、动态后果和参考路径见各 H 项，而不是仅凭目录结构判断。
+
+**是否符合 DeepSeek？** 默认 Responses 的正常链已获得真实基线，正常工具历史、usage 与部分冷恢复也有证据；但不能判为“完全符合”。完整历史必须客户端回传，流必须按 completed/incomplete/failed 区分，工具调用与结果必须保持关联；Chat 和 Responses 的 schema/终态也不能混用。这是当前审查异常路径与历史投影的依据。[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)、[Responses 参数](https://api-docs.deepseek.com/zh-cn/api/create-response/)。H-05/H-18/H-49/H-54/H-57/H-66/H-158/H-171/H-172 等仍各有边界缺口；不能用普通聊天成功覆盖这些条件。
+
+**工具定义与缓存是否正确？** 正常内置工具样本可用，不代表所有 MCP schema、截断调用和附属执行均安全；strict Beta 文档的 `/beta` 与嵌套 `function.strict` 不能直接当作 Responses 的服务端保证，更不能代替宿主授权和参数语义校验。[Tool Calls](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)。缓存利用也不是全部错误：静态环境下 wire 前缀稳定、重开保持及三轮真实 cache-hit 样本都已记录；H-168 则证明动态 leading instructions 会破坏历史前缀的继续复用资格。官方缓存是自动、完整单元匹配且尽力而为，不能承诺某次必命中，也不能由 wire 差异推断线上零命中。[KV Cache](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)。
+
+**能否增强模型使用？** 能提供裸模型没有的环境操作、检索、编排与恢复能力，已有正式链路证据；但这与“总体任务成功率提高多少”是两个问题。没有同模型、同任务、同工具/权限条件的成对评测，因此没有总体增强幅度、成本优势或胜过 Codex 的结论。缓存改善也不能直接等同推理质量提高。可靠性缺陷可能抵消能力收益，必须先解决执行事实与模型可见事实的一致性。
+
+**相比成熟 Agent，核心设计缺陷是什么？** 不是工具数量少，而是授权、执行 owner、提交事实和投影还没有端到端统一。成熟实现可借鉴的是“同一上下文穿透、统一工具派发、明确 unknown outcome、持久屏障、有身份的历史/资产、实际路由计量”，不是简单移植其字段或复制第二套运行链。参考项目同样存在能力差异和局限，本文没有假设它们无缺陷。
+
+### 根因级治理队列与关闭条件
+
+下面是**修复依赖顺序和建议批次**，不修改原 H 项定级，也不把同组多个问题合并计数。A 优先保护授权和用户文件；B 固化执行/持久事实；C 贯通 provider、账本与画布；D 完成历史、缓存及客户端投影。组间会交叉，例如 H-51 的跨项目作用域应随 A 修，不能因列在上下文组而延后；画布网络授权同样属于 A，而非等到全部 UI 修完。
+
+| 批次 / 根因组 | 已证触发与后果；影响限制 | 成熟机制与现有内核收敛点 | 关闭所需的真实回归 |
+|---|---|---|---|
+| A1：有效授权与实际执行目标一致 | 显式 sandbox backend、未信任项目配置、子运行/hook、自动上下文或 provider 第二跳会走不同授权链（H-03/H-19/H-22/H-27/H-28/H-65/H-165/H-237/H-283）。可能突破用户声明的资源边界；H-165 已证本机第二跳与 artifact 保存，未证真实秘密外传；不是全部工具默认无权限 | Codex 的有效配置/父权限继承/网络策略、Claude 的项目信任和路径规则。收敛到现有 RunEnvironment、ToolPipeline、PathGuard、SandboxBackend 与审批路由；自动上下文和资产下载也消费同一资源授权，不另建权限中心 | 主运行/子运行/hook/自动验证/上下文/媒体下载逐入口核对相同 deny；并发 workspace 不串目标；显式 backend 不可用要拒绝；未授权二跳请求数为零，批准目标和本地开发 profile 正常 |
+| A2：文件操作、观察凭证与恢复提交 | 陈旧“读过”、备份缺失、旧分支检查点、祖先覆盖移动及 Windows DACL 替换（H-72/H-73/H-76/H-260/H-286/H-287）。已证旧修改被覆盖、失败移动删除无关文件及 ACL 变化；H-286 健康检查点可显式恢复，不能称永久丢失 | Claude 写前版本复核/fileHistory，Codex patch 返回已提交 delta，DeepSeek Harness staging 发布原则。复用现有文件工具、FileStateCache 和 CheckpointManager，统一版本/分支身份及实际副作用；不是另造回退服务，也不假设参考机制提供全事务 | 同时断言源、目标、无关文件、内容版本、元数据与历史；覆盖外部修改、压缩、缺备份、分支、失败发布和重开恢复。Windows ACL 与跨平台/跨卷语义分别验收，不能只检查最终正文 |
+| B1：单 owner 接纳、取消、审批与 durable 终态 | start ACK 后立即停、同 thread 并发 start、双宿主、审批晚答、落盘失败/重启（H-01/H-02/H-15/H-16/H-33/H-44/H-83/H-91/H-142/H-143/H-284）。已证确认与实际接纳分裂、实时/回放不一致等；不是所有正常运行都失败 | Codex turn waiter/thread writer 与明确控制结果；DeepSeek Harness checkpoint/flush 屏障。复用 ChatService::admit_run、InputLeaseRegistry、RunStore/run_events、TerminalKind 和统一审批。终态提交与对外通知要有共同边界 | ACK 可见后立刻 interrupt、两宿主竞争、迟到/串 run 审批、慢消费者、单条事件和终态写失败、重开 reader；检验信号送达、只一次接纳/终态及 live/replay 顺序，不只断言响应文字 |
+| B2：统一工具调度与未知结果处理 | 多工具触发并行分支、串行写屏障、已生效后断线、后置 hook 失败、结果回收（H-06/H-34/H-35/H-36/H-139）。已证副作用重复、顺序/超时分裂、成功写入结果丢失及持久引用失效；不能从本地 fixture 推断外部服务实际损失金额 | Codex 共用 dispatch/锁屏障并限制通用重试方法，DeepSeek Harness unknown-outcome/通用 deadline，Claude session 结果保留期。所有模式复用 ToolPipeline；连接重建不自动等于业务重发；已有结果提交先于可失败的辅助步骤 | 单/多工具相同 deadline 和取消；write→read 及多屏障；执行前断线与执行后丢包分别断言副作用次数；hook 报错仍保存真实结果；跨 turn/重开后引用可读，受控回收同步索引 |
+| C1：一份有效模型能力和请求配置 | resume/steer、fallback、桌面覆盖、搜索开关、部分元数据、公共 ModelClient（H-04/H-49/H-54/H-66/H-158/H-171/H-172/H-296）。配置可静默失效或进入不支持的 wire；个别非法参数仅证已发送，未证真实服务端具体反应 | Codex 实际 config snapshot 与恢复校核，DeepSeek Harness provider serializer/capability seam。收敛在现有 deepagent-models 与有效环境解析，供请求、meter、工具选择和恢复共用；不把供应商分支散到 UI/工具 | 官方合法/非法形状分别测试 Chat/Responses；完整、部分、缺省能力；显式覆盖与 fallback 后核对实际 wire/预算/返回配置。保留正常主链，不用一个供应商成功覆盖其他 adapter |
+| C2：所有模型请求拥有费用与预算 owner | 标题/规划/复核/hook/工作流、失败响应、fallback、初始化与预算重建（H-63/H-133/H-163/H-224～H-227/H-235/H-272～H-274）。已返回 usage 可能漏记、错价或限额失效；正常主工具循环的正确计量不关闭附属请求缺口 | Claude 公共 API usage 归集/实际模型计价，Grok 明确账期，Codex 持久预算身份；不是可直接移植的同币种日/月账本。复用 CostService、record_usage_cost 与已有 side-call owner，按 attempt/实际 route 保留用量、价格及完整性 | 成功/失败/取消但已返回 usage 都入账；采用或丢弃回答不改变已发生成本；混合路由逐请求核对；初始化、重开、周期边界、未知报价不能被静默当 0；账本与预算准入共用口径 |
+| C3：画布能力、provider 与资产生命周期同契约 | DTO/schema漂移、绑定过期、embedding 缺注册、媒体取消/预算/第二跳/错误 body、目录校验（H-38～H-40/H-162/H-164/H-165/H-244～H-248/H-290/H-292/H-300～H-304/H-306）。可能节点假成功、能力不可达、停止不结束或缓冲无界；H-306 仅全量目录，H-300 在请求前失败，两者不能夸大为全部画布失效 | Penguin-Magic 提供工作流/媒体/profile 参考，非同构安全认证；Codex 网络策略和 DeepSeek Harness 类型化资产/预算提供机制参考。收敛现有版本化节点契约、CanvasModelGateway、CanvasArtifactService，复用运行授权/取消/usage；非 DeepSeek 官方生图能力 | 真实前端 DTO→graph→executor→合成 provider→资产/usage→run_events→重开闭环；取消每个阶段、超限中止和清理、绑定资格失效、enabled 与 executor 一致；本地编辑器字段按 usage 校验，不塞伪 prompt |
+| D1：历史、内容身份、记忆作用域与缓存序列 | 重复内容锚点、分叉/压缩、共享项目 scope、空摘要、动态 instructions、启发式计量（H-11/H-23/H-51/H-52/H-53/H-57/H-168/H-268/H-269/H-297）。可遮蔽历史、跨项目污染或失去能力正文；缓存项已证构造差异，未量化线上费用/延迟/质量损失 | Claude transcript/稳定消息身份，DeepSeek Harness connection-owned 内容与历史内更新，Codex prompt-caching 前缀测试。复用 Session/Surface、知识服务、内容版本和 provider adapter，保留稳定身份与原始证据，不新增第二套历史 | 项目切换/并发隔离随 A 验收；分叉、rewind、压缩、重复回答、目录更新、冷恢复核对下一真实 wire；空摘要拒收且原始事实可恢复；缓存需同时有 wire 对照和重复真实 usage 样本，不能只看字节相同 |
+| D2：SDK/UI 的控制与事件投影 | 无响应 RPC、并发审批、断连、订阅时机、实时与重载映射（H-204～H-214/H-256/H-265～H-267/H-295/H-299）。可造成 pending/stream 不结束、通知缺失或显示不同；H-299 不改变账本，H-305 文档化 Drop 行为不是缺陷 | Codex/DeepSeek Harness 的请求身份、先订阅后运行、取消收尾与明确连接代次；具体参考路径见原项。Rust/TS SDK 与 UI 只投影统一协议事实，不能自己发明另一终态/审批解释 | 同实例并发 thread、慢/迟到/失联响应、审批 handler 挂起、完成后 stream 结束、关闭 pending 回收；live 与重开从同一规范事件还原。真实窗口和各版本 server 兼容另做，纯函数探针不能替代 |
+
+上表“关闭”必须逐项对应原探针的触发条件和正常控制。审计阶段 ignored 的预期失败测试不是通过凭据；修复后应先证明原输入不再触发，再按风险提升为默认回归/专门 CI 套件。没有修好的其他 H 项不因同组某项绿色而自动关闭；已经修复的 H-24/H-25/H-29 等也不因本表存在同类组而重新标为未修。
+
+### 下一阶段的准入、限制与需求核对
+
+建议从 A1/A2 的最小真实闭环开始，随后完成 B1/B2，避免先扩大工具和宿主入口再承担更多不一致路径。C/D 中直接涉及跨项目数据或网络授权的部分前移。每个修复批次沿用“原失败输入 → 单根因改动 → 正常/失败回归 → 相关跨层构建 → 更新状态 → 独立 commit”，不在本次审计文档交付中擅自实施。
+
+| 用户要求 | 本次交付 | 不能据此声称 |
+|---|---|---|
+| 逐点考察而非扫一遍 | 原章节持续记录正式路径、合成/真实边界、失败和正常控制；38 行模块矩阵声明各自覆盖层级 | 没有完成所有输入、平台和规模组合的穷尽验证 |
+| 不造假、复现即写文档 | 首次执行与 fixture 错误分开；撤销/归并留痕；H-306 默认失败先记 E-cover-01 再追生产可达性 | 测试失败不自动等于产品漏洞；参考工程静态阅读不等于动态证明 |
+| 成熟 Agent 怎么解决、影响和后果 | 各 H 项机制级对照及条件性影响，本节收敛为九组现有内核治理和关闭条件 | 没有通用“复制 Codex 即修好”，没有无依据可靠性总分 |
+| DeepSeek 四份文档与增强依据 | 协议、缓存、工具定义分别核实，正常基线和异常缺口分别保留 | 未做固定任务集同模型成对质量评测；不承诺缓存收益或任务表现胜出 |
+| 子系统和画布参考 | 根 workspace、独立 Tauri/前端/TS SDK 边界齐备；Penguin-Magic 对照限定同类机制 | iOS fake、平台 parser、参考项目源码和前端函数测试都不是设备/真实 UI 验收 |
+| MD、每轮 commit、何时结束 | 本轮完成同一报告的结论与治理交付，不继续无限追加相邻样本；提交标识见本轮交付回复 | 报告完成不是修复完成，也不是授权自动进入生产修改或推送 |
+
+**残余验收明确保留**：真实 DeepSeek Flash/Pro 各参数与异常服务行为、固定任务质量/费用/延迟评测、真实缓存重复样本对照、其他平台沙箱与文件语义、移动真机/Remote Mac、完整 UI 故障交互、超大规模/断电/多宿主压力与所有可选 feature 组合。本轮没有执行这些项目，不给它们“通过”状态；后续应由实际部署范围决定验证优先级。它们不妨碍交付这份有边界的架构与缺陷分析，也不能被报告完成状态掩盖。
+
+### 本轮实际验证与交付状态
+
+**E-final-04（source_type=command，content_hash=n/a）**：实际执行 PowerShell 文档结构检查：从根 Cargo `members` 数组提取路径，与 module-coverage 标记区间首列作集合比对；从本收尾章节提取不同 H 编号，逐个确认全文存在对应标题；检查新增两个 HTML anchor 的唯一性和治理表行/列数。结果为 `WorkspaceMembers=35, MatrixRows=38, Missing=空, Duplicates=0, ExtraRoots=apps/desktop/src-tauri,apps/desktop,packages/sdk, FinalDistinctHRefs=81, MissingHHeadings=空, GovernanceRows=9, BadColumnRows=0`，两个 anchor 各出现一次，脚本退出 0。该检查证明引用可定位和登记完整，**不证明每个问题仍未修或功能通过**，具体状态仍以原项及后续回归为准。
+
+实际执行 `git diff --check` 退出 0，并完整阅读 `git diff -- docs/system-harness-audit-2026-10-21.md`，确认只增加当前状态/导航、矩阵 anchor 和本收尾章节，没有改写历史复现。提交前仅暂存本报告，既有五类未跟踪文件保持不动。本轮未执行 Rust 编译/测试/clippy、前端 build、真实 UI、默认 CLI、真实 provider 或旧 ignored 探针：本轮无行为、类型、依赖或协议改动，采用文档结构与 diff 验证，不用上轮测试结果冒充本轮运行。
+
+本阶段分析报告至此完成，可进入用户选择的修复阶段。没有新增配置、数据迁移、权限/沙箱改变或外部服务修改；原始缺陷、条件性风险和未验边界继续有效，完成状态不代表它们被修复。code-audit 的人工可达性/排误要求保留了撤销与影响限制，docs-generator 的分层交付要求促成了文首结论导航和本节关闭条件，而不是另造一份与原证据脱节的报告。
