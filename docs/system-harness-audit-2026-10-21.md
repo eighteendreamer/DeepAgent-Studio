@@ -24,6 +24,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| Harness 分叉锚点资格与检查点数值边界 | 正式模型工具循环实际读取/写入临时文件并完成；不存在的 tail+1 仍成功复制全部历史；`i64::MAX+1`/`u64::MAX` 额外把文件恢复到旧内容，而 child 仍保留完整成功写入历史 | 新增 H-285（P2，显式非法序号条件）；默认/真实 tail/起点三项对照通过；正式 dispatcher/AppCore/Kernel/CheckpointManager、文件 SQLite、离线模型，无用户文件或公网 |
 | Git 事实在 UI 与模型上下文的投影 | 临时真实 Git 仓库的修改/删除被模型上下文误报 clean，长路径首字节丢失；同一 GitService 正确列出路径，三类正常控制通过 | 新增 H-282（P3）；正式 ChatService/Kernel/ModelClient 请求及内存 run_events，无模型真实决策、用户文件覆盖或磁盘重开验证 |
 | MCP 初始化结果与 Ready 发布门槛 | 六类不完整/错误版本的initialize成功结果经真实stdio，设置页probe与宿主均connected；工具进入正式Responses schema并实际调用，结果进入下一wire | 新增 H-277（P2，条件性协议兼容/诊断缺口）；完整握手和显式JSON-RPC错误两类对照通过；不重复H-07/H-08，不推断线上服务必定返回异常握手 |
 | MCP hook 决策正文与展示截断 | 真实 stdio 服务返回完整合法拒绝 JSON，100/8192 字符阻止写入；8193/10000 字符及8193字符中文拒绝均变 continued，临时文件实际写入，下一模型 wire 为成功工具结果 | 新增 H-276（P2，条件性策略失效）；正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 MCP 与文件工具；离线模型，不外推默认无 hook 聊天 |
@@ -7820,3 +7821,58 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 验证收尾：`cargo fmt --all -- --check` 通过，`git diff --check` 通过；默认 `cargo test -p deepagent-cli app_server:: --offline` 为 **11 passed / 0 failed / 24 ignored**。`cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings` 未通过，阻断仍来自未修改的 `crates/deepagent-models/src/client.rs:355 clone_on_copy` 与 `crates/deepagent-persistence/src/run_store.rs:127 explicit_counter_loop`。
 - workspace 全量测试、Desktop build、真实 DeepSeek、真实 MCP/工具副作用、跨进程场景和参考项目测试不由本项结果代替；本轮未修改生产逻辑。
 - 本项只登记已观察到的两个本地模型 transport 请求和终态分裂；不宣称真实供应商已收费、文件已改变、审批已越权或两个运行曾同时持有同一 session lease。
+
+### H-285：Harness 接受不存在的分叉锚点，超出有符号范围后恢复旧文件却复制完整成功历史
+
+**级别：中（P2，条件性数据一致性缺陷）；触发条件：** 客户端显式传入不存在的 `thread/fork.atSequence`；当值超过 `i64::MAX` 且源会话有文件检查点时，可发生不符合请求位置的文件恢复。默认不传锚点及指定真实尾序号的本轮对照均正常，不把异常整数输入推断为默认流程必现。
+
+#### 即时 Evidence（2026-10-25，首次复现后立即登记）
+
+- Scope：自有仓库、临时 workspace/文件 SQLite、正式 `ServerState::dispatch` → `spawn_turn` → `ChatService`/Kernel → `read_file`/`write_file` → 自动检查点，随后正式 `thread/fork`。模型仅使用离线 ScriptedTransport，返回读取、写入、完成三个响应；只使用合成正文，没有网络、真实用户文件、凭据或手工拼造检查点。
+- 测试文件：`apps/cli/src/app_server/terminal_audit.rs`。每个场景使用独立 fixture；先确认文件从 `before-fork-audit` 变成 `after-fork-audit`、运行只有 `turn.completed`、正式检查点存在且锚点大于 0。之后比较 fork 前后源历史、child 全部 payload/sequence/timestamp、会话增量、恢复路径和实际磁盘正文。
+- E-285-control（source_type=command，content_hash=n/a）：`cargo test -p deepagent-cli app_server::terminal_audit::fork_existing_boundaries_keep_history_and_file_horizon_aligned --offline -- --exact --nocapture`：**1 passed / 0 failed**。三组均 tail=17；默认与显式 17 均 `restored_paths=0`、保留 after、child 复制完整历史；显式 0 正确 `restored_paths=1`、恢复 before、child 不再包含全部历史；源历史始终不变。
+- E-285-first（source_type=command，content_hash=n/a）：`cargo test -p deepagent-cli app_server::terminal_audit::audit_fork_nonexistent_sequence_does_not_restore_completed_writes --offline -- --ignored --exact --nocapture`：**0 passed / 1 failed（预期暴露缺陷）**，约 1.59 秒。三组已全部执行、独立资源已释放，才在最终期望拒绝断言处失败；不是在首次异常后省略其他场景。
+
+| 显式 atSequence（源 tail=17） | RPC success | 恢复路径数 | fork 后磁盘正文 | child 复制完整历史 | 新增会话数 |
+|---|---|---|---|---|---|
+| 18（tail+1） | true | 0 | after-fork-audit | true | 1 |
+| 9223372036854775808（i64::MAX+1） | true | 1 | before-fork-audit | true | 1 |
+| 18446744073709551615（u64::MAX） | true | 1 | before-fork-audit | true | 1 |
+
+所有异常场景的源事件历史均未变化；这并不表示 workspace 未变化。首次尝试运行正常对照时误用了短测试名配合 `--exact`，实际 **0 tests**，不计为验证；上面的全限定名命令才执行了测试。
+
+#### 生产根因与去重
+
+- `ThreadForkRequest.at_sequence` 为 `Option<u64>`，反序列化允许上述大整数。`ServerState::thread_fork()` 只检查源事件数非零；对显式锚点没有 `<= tail`/实际事件存在性检查，就交给 `AppService::fork_session()`。
+- 消费方核对：Rust SDK `HarnessClient::thread_fork()` 直接序列化同一 `ThreadForkRequest`，因此无需 JavaScript 数字舍入就能提交精确的大整数；桌面 Tauri 的 fork/rewind 同样转交 AppService，但本轮没有动态运行该入口，也不声称普通 UI 会生成这些值。
+- `AppService::fork_session()` **先**调用 `restore_checkpoints_after()`；该 helper 将 `sequence as i64` 后交给 `CheckpointStore::list_for_session_after_sequence()` 的 `c.session_sequence > ?2`。`i64::MAX+1` 转为负下界，`u64::MAX` 转为 -1，因而把源 session 的非负锚点检查点也选入恢复。本 fixture 实际恢复了正常写入前的备份。
+- 随后的 `EventStore::fork_session()` 只筛选 `event.sequence <= until_seq`，没有要求锚点存在。超大值复制全部事件，并返回成功；于是文件已回到 before，source/child 却仍保留正常成功写入事实。tail+1 对照也被成功接受，但没有产生符号转换导致的恢复，隔离了两层根因。
+- 与 H-72 不同：所有备份健康，恢复本身成功，不涉及缺失备份后的先删文件。与 H-73 不同：没有旧分支检查点或 rewind 后复用序号。与 H-74 不同：锚点不在源事件/原生镜像中间，而是根本不存在。与 H-216 不同：源 thread 已热加载，child 也进入活动表；并非冷分叉 readiness。以上三个数值分组合为一项准入/表示边界问题，不按样本重复编号。
+
+#### 成熟 Agent 与 DeepSeek 对照
+
+- **DeepSeek Harness（本地静态源码，未运行）：** `借鉴/deepseek-harness/packages/api/session-controller/src/commands.ts::SessionCommandController.fork()` 先用 `SessionSeq()` 拒绝非安全整数，再检查 `source.events[boundary]?.seq === boundary`，不存在就返回 `session/fork-unavailable`；之后才构造 seed、解析 workspace 和创建 child。`tests/session-fork.host.spec.ts` 明确覆盖 `atSeq: 999` 越过尾部并返回不存在。`core/session/src/fork.ts::buildForkSeed()` 的前提也是调用方已验证真实连续事件锚点。这里直接借鉴的是**在 workspace/child 副作用前验证存在性及数值表示**，不是仅在 JSON 层接受任意无符号整数。
+- **Claude Code（本地静态源码，未运行）：** `借鉴/claudecode/restored-src/src/utils/fileHistory.ts::fileHistoryRewind()` 先以 `messageId` 查找真实 snapshot；不存在时抛错，之后才调用 `applySnapshot()`。不是同一种 Harness 分叉协议，可借鉴恢复计划先绑定真实锚点的顺序。
+- **Codex（本地静态源码，未运行）：** `core/src/thread_manager.rs::fork_history_from_snapshot()` 使用 `ForkSnapshot` 和有效历史截断边界，而不是把同一未校验 u64 分别转换后用于 SQL 文件恢复与事件复制。未找到与本项目 `sequence as i64` + workspace checkpoint 恢复完全同构的路径，不声称已运行 Codex 验证相同输入，也不把它列为同输入的动态反例。
+- **DeepSeek 官方边界：** [Responses API 参数](https://api-docs.deepseek.com/zh-cn/api/create-response/) 和 [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 定义模型请求与历史回传，不定义本地分叉/文件恢复；[Tool Calls](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/) 中工具由宿主执行。[KV cache](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/) 不会校验本地检查点位置。本问题属于宿主历史/磁盘边界，不归咎于 DeepSeek 推理或缓存。
+
+#### 影响与治理方向（未实施）
+
+- 已证明的后果是：一次返回成功的 fork 能撤销此前正常完成的临时文件写入，同时保留含该写入的完整会话事实。后续模型或用户若依赖会话历史判断磁盘状态，会面对互相矛盾的证据；本轮未运行 child 后续模型决策，不能声称已导致二次盲写。
+- 触发需要显式异常整数，合法默认流程未复现，因此不标 P1，不描述为默认必然数据丢失。大量检查点、目录恢复、多宿主和真实外部编辑的具体后果未实测；已观察文件回退足以证明不能将未校验锚点交给有副作用恢复。
+- 在现有 AppService 统一解析 source/branch anchor：先验证源存在、锚点为真实事件且在持久层可表示范围，再生成唯一恢复计划；Harness/桌面共用该边界，而不是每个入口补一个上限特判。`u64→i64` 使用 checked conversion，非法位置在恢复任何文件、创建 child 前返回明确参数错误。
+- 将“解析锚点、选择检查点、复制历史”绑定同一 generation/稳定切点；合法恢复失败的事务/补偿仍由 H-72 治理，本轮不另建存储或执行链。回归覆盖默认、0、tail、tail+1、i64 两侧边界、u64::MAX、空源、冷热加载、多检查点、目录、恢复失败、重开和并发追加，并同时检查无非法文件副作用、无新会话、source 不变及 child 历史一致。
+
+#### 验证进度（持续追加）
+
+- 首轮实际正常对照 **1 passed**、故障探针 **1 failed（预期）**；仅新增审计测试与文档，没有修生产逻辑，ignored 探针仍不计入默认绿色。
+- `cargo test -p deepagent-cli --offline`：**87 passed / 0 failed / 26 ignored**（113 tests，测试体 2.37 秒）；包含本轮三场景正常对照，不包含 H-285 故障探针。首次格式检查指出本轮新增代码布局差异，执行 `cargo fmt --all` 后再检查；未借此改动其他文件。
+- 收尾 `cargo fmt --all -- --check` 与 `git diff --check` 均通过；diff 只涉及上述测试文件及本文档。Git 的 LF/CRLF 提示不是内容校验失败，用户已有未跟踪文件保持不动。
+- `cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings`：未通过，阻断于未修改的 `crates/deepagent-models/src/client.rs:355 clone_on_copy` 与 `crates/deepagent-persistence/src/run_store.rs:127 explicit_counter_loop`。不把既有告警误写为本轮修复，也没有调整无关生产代码。
+- 未执行完整 workspace、Desktop/SDK 动态流程、真实 DeepSeek、参考工程测试、重开及跨平台验证；无生产契约、权限、配置或数据迁移改动。本轮 skill 要求的人工可达性和误报核对已落实到正式工具与磁盘观察，不以模式搜索代替复现。
+
+#### 同轮排除项：`thread/start.cwd` 不单独登记漏洞
+
+- `ServerState::resolve_workspace()` 接受客户端目录并做存在/目录/canonicalize 检查；仅据“能选择 server 启动目录之外的目录”不能认定越权，因为当前 stdio 契约未声明启动目录是不可更改的唯一授权根。
+- Codex `app-server-protocol/src/protocol/v2/thread.rs::ThreadStartParams` 暴露 cwd/runtime workspace roots，`request_processors/thread_processor.rs::thread_start_task()` 根据有效权限和项目 trust 处理配置；DeepSeek Harness ACP `src/index.ts::newSession()`/`validateWorkspaceParams()` 接受绝对 cwd，resume 则检查其与既有会话目录一致。这支持“工作目录选择与资源授权要分别核验”，不是本系统所有后续文件权限已正确的证明。
+- 只完成静态契约对照，未新增该候选的故障测试或 H 编号；既有 H-27/H-28/H-78/H-283 的具体执行边界问题仍保留，不能因本排除项视作已修复。

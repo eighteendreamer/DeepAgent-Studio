@@ -1112,3 +1112,165 @@ async fn reopened_thread_read_keeps_session_and_each_run_cursor_independent() {
     }
     eprintln!("cursor audit: two durable runs, independent cursors and file-backed reread matched");
 }
+
+#[derive(Debug, Clone, Copy)]
+enum ForkBoundary {
+    Latest,
+    Tail,
+    Start,
+    PastTail,
+    SignedOverflow,
+    Maximum,
+}
+
+#[derive(Debug)]
+struct ForkBoundaryObservation {
+    boundary: ForkBoundary,
+    requested: Option<u64>,
+    tail: u64,
+    success: bool,
+    restored_paths: usize,
+    content: String,
+    source_history_unchanged: bool,
+    child_copied_full_history: bool,
+    sessions_added: usize,
+}
+
+async fn observe_fork_boundary(boundary: ForkBoundary) -> ForkBoundaryObservation {
+    let fixture = Fixture::new_scripted(vec![
+        function_call("fork-read", "read_file", json!({"path":"fork-state.txt"})),
+        function_call(
+            "fork-write",
+            "write_file",
+            json!({"path":"fork-state.txt","content":"after-fork-audit"}),
+        ),
+        completed_text("The temporary file was updated."),
+    ])
+    .await;
+    fixture
+        .settings
+        .set_active_permission_preset(deepagent_app_core::PermissionPreset::FullAccess)
+        .unwrap();
+    let path = fixture.workspace.join("fork-state.txt");
+    std::fs::write(&path, "before-fork-audit").unwrap();
+    let turn_id = fixture.run_turn().await;
+    assert_eq!(fixture.terminals(&turn_id), ["turn.completed"]);
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "after-fork-audit");
+    let database = fixture.state.lock().unwrap().database.clone();
+    let checkpoints = deepagent_persistence::checkpoint_store::CheckpointStore::new(&database)
+        .list_for_run(&turn_id)
+        .unwrap();
+    assert_eq!(checkpoints.len(), 1);
+    assert!(checkpoints[0].session_sequence > 0);
+    assert!(checkpoints[0].manifest.contains("fork-state.txt"));
+    let source_id = fixture.thread_id.parse().unwrap();
+    let store = EventStore::new(&database);
+    let before = serde_json::to_value(store.load_session(source_id).unwrap()).unwrap();
+    let tail = before.as_array().unwrap().last().unwrap()["sequence"]
+        .as_u64()
+        .unwrap();
+    let sessions_before = store.list_sessions().unwrap().len();
+    let requested = match boundary {
+        ForkBoundary::Latest => None,
+        ForkBoundary::Tail => Some(tail),
+        ForkBoundary::Start => Some(0),
+        ForkBoundary::PastTail => Some(tail + 1),
+        ForkBoundary::SignedOverflow => Some(i64::MAX as u64 + 1),
+        ForkBoundary::Maximum => Some(u64::MAX),
+    };
+    let mut params = json!({"threadId":fixture.thread_id});
+    if let Some(sequence) = requested {
+        params["atSequence"] = json!(sequence);
+    }
+    let (response, launch) = fixture
+        .state
+        .lock()
+        .unwrap()
+        .dispatch(rpc("thread/fork", params), None);
+    assert!(launch.is_none());
+    let child_copied_full_history = response.is_success() && {
+        let child_id = response.result()["threadId"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let child = store.load_session(child_id).unwrap();
+        let source = store.load_session(source_id).unwrap();
+        child.len() == source.len()
+            && child.iter().zip(&source).all(|(left, right)| {
+                left.sequence == right.sequence
+                    && left.timestamp == right.timestamp
+                    && left.payload == right.payload
+            })
+    };
+    ForkBoundaryObservation {
+        boundary,
+        requested,
+        tail,
+        success: response.is_success(),
+        restored_paths: response
+            .result
+            .as_ref()
+            .and_then(|result| result["restoredPaths"].as_array())
+            .map_or(0, Vec::len),
+        content: std::fs::read_to_string(&path).unwrap(),
+        source_history_unchanged: before
+            == serde_json::to_value(store.load_session(source_id).unwrap()).unwrap(),
+        child_copied_full_history,
+        sessions_added: store.list_sessions().unwrap().len() - sessions_before,
+    }
+}
+
+#[tokio::test]
+async fn fork_existing_boundaries_keep_history_and_file_horizon_aligned() {
+    for boundary in [
+        ForkBoundary::Latest,
+        ForkBoundary::Tail,
+        ForkBoundary::Start,
+    ] {
+        let observed = observe_fork_boundary(boundary).await;
+        eprintln!("fork boundary control: {observed:?}");
+        assert!(observed.success && observed.source_history_unchanged);
+        assert_eq!(observed.sessions_added, 1);
+        match boundary {
+            ForkBoundary::Start => {
+                assert_eq!(observed.content, "before-fork-audit");
+                assert_eq!(observed.restored_paths, 1);
+                assert!(!observed.child_copied_full_history);
+            }
+            _ => {
+                assert_eq!(observed.content, "after-fork-audit");
+                assert_eq!(observed.restored_paths, 0);
+                assert!(observed.child_copied_full_history);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "audit H-285: reject nonexistent fork boundaries before restoring workspace files"]
+async fn audit_fork_nonexistent_sequence_does_not_restore_completed_writes() {
+    let mut observations = Vec::new();
+    for boundary in [
+        ForkBoundary::PastTail,
+        ForkBoundary::SignedOverflow,
+        ForkBoundary::Maximum,
+    ] {
+        let observed = observe_fork_boundary(boundary).await;
+        eprintln!(
+            "fork boundary audit: boundary={:?}, requested={:?}, tail={}, {observed:?}",
+            observed.boundary, observed.requested, observed.tail
+        );
+        observations.push(observed);
+    }
+    for observed in observations {
+        assert!(
+            !observed.success
+                && observed.sessions_added == 0
+                && observed.restored_paths == 0
+                && observed.content == "after-fork-audit"
+                && observed.source_history_unchanged,
+            "nonexistent fork boundary must fail before workspace/history mutation: {observed:?}"
+        );
+    }
+}
