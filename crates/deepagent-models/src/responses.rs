@@ -373,7 +373,11 @@ mod tests {
         ];
 
         let (instructions, items) = response_items_from_messages(&messages);
-        eprintln!("mid-history system audit: instructions={instructions:?}, items={items:?}");
+        let request = crate::chat::ResponseRequest::new("deepseek-flash", messages.clone());
+        let wire = serde_json::to_value(&request).expect("serialize Responses request");
+        eprintln!(
+            "mid-history system audit: instructions={instructions:?}, items={items:?}, wire={wire}"
+        );
 
         assert_eq!(instructions.as_deref(), Some("stable leading rules"));
         assert!(items.iter().any(|item| matches!(

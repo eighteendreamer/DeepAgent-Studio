@@ -7614,3 +7614,38 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 本轮只新增 H-280 文档证据，未修改生产逻辑；显式故障探针保持 #[ignore]，默认测试绿色不代表策略已统一。
 - 尚未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实敏感文件或跨平台文件系统测试；未处理用户排除的 encrypted-content 问题。后续修复应同时重跑 H-280 与 H-279，避免只修 direct-read 而留下 discovery 绕过。
+
+### H-281：Responses 历史中的中间 `system` 消息被提升到 instructions，改变消息顺序
+
+**级别：中高（P1，条件性上下文语义与缓存前缀破坏）；状态：正式 DeepSeek Responses serializer 的 ignored 探针已复现，未修复。** 触发条件是持久化会话在首条系统消息之后又追加运行时上下文/策略更新，并在后续请求通过 `ResponseRequest::new` 从 `Message` 历史重建 Responses input。当前适配器把所有 `Role::System` 文本收集到顶层 `instructions`，因此位于历史中间的更新被移动到请求最前面；它不再保持原来位于 user/assistant 之间的顺序。
+
+#### 即时 Evidence（2026-10-25）
+
+- 静态查证：`crates/deepagent-models/src/responses.rs::response_items_from_messages` 对每条 `Role::System` 都执行 `instructions.push(...)`，循环结束后用 `instructions.join("\\n\\n")` 生成唯一顶层 `instructions`；只有非 system 消息才进入有序 `input`。`crates/deepagent-models/src/chat.rs::ResponseRequest::new` 直接调用该转换，故这是公共 Responses 请求边界，不是 UI 专用投影。
+- 官方契约核对：[Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)说明 `instructions` 会作为**第一条 system 消息**，而输入 item 列表仍支持 `message`，角色包含 `system`；[参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)同样明确 `instructions` 是第一条 system 消息、`input` 可含有序 system message。因而历史中的后续 system 更新不能等价替换为顶层首条 instructions。
+- 首次正式探针：`cargo test -p deepagent-models --lib responses::tests::audit_preserves_mid_history_system_messages_as_input_items --offline -- --ignored --exact --nocapture`，结果 **0 passed / 1 failed（预期暴露缺陷）**。真实生产函数输出：`instructions=Some("stable leading rules\\n\\nupdated runtime context")`，`items=[Message(user="first question"), Message(assistant="first answer"), Message(user="second question")]`；进一步经生产 `ResponseRequest::new` 序列化的 wire 为 `instructions="stable leading rules\\n\\nupdated runtime context"`，`input` 只有 user/assistant/user 三项，没有中间 `system` item。缺陷断言要求 `instructions` 仅为首条规则且 `input` 含 `Message {role:"system", content:"updated runtime context"}`。测试只使用内存值和生产 serializer，没有公网、模型调用、用户历史或工具副作用。
+
+#### 根因、触发条件与后果
+
+- F-281（category=provider-history-projection，status=validated，confidence=high；evidence_ids=[E-281-first]）：`Message` 历史的时间顺序被 `Role::System` 分支拆成一个全局字符串；`ResponseRequest::new`/`replace_messages` 每轮都会重复该重排。最终 wire 的 `instructions` 只有一个首位 system，`input` 丢失中间 system item，导致模型看到的更新规则在所有旧历史之前生效。
+- P-281：当中间 system 内容是 workspace 动态指令、工具策略、审批/权限上下文或会话阶段更新时，模型可能把后来的局部更新误当成从会话开始就存在的全局规则，改变对前面 user/assistant 事实的解释；同一会话的重放、分支和不同入口可能产生不同决策。将易变内容移入首位还会改变 DeepSeek 的可复用前缀边界并放大 H-168 的 cache-prefix 问题，但 H-281 的独立证据是**消息顺序/语义重排**，不把 H-168 重复计数。
+- 本探针没有向真实 DeepSeek 发送请求，不能声称某个具体模型必然输出错误，也没有测量真实 cache hit 变化；已确认的是 provider wire 失去原始顺序，属于请求构造层缺陷。
+
+#### 成熟 Agent 与官方/参考对照
+
+- **DeepSeek Harness**：`借鉴/deepseek-harness/packages/compaction/compaction-basic/README.md` 明确区分 surface node 0 的系统提示与历史中追加的 `system/message`：后者是普通历史，压缩/回放时保留其历史位置；只有首位系统头作为稳定前缀。这与本系统把所有 system 合并成 instructions 的行为不同。该参考没有被当作 DeepSeek 服务端实现证明，只用于验证成熟 harness 的顺序与缓存边界设计。
+- **Codex**：`借鉴/codex/codex-rs/core/tests/suite/client.rs` 与 `codex_protocol::models::ResponseItem::Message { role: "system", ... }` 的测试/构造保留 system message 作为 response item；其历史和 compaction 测试按 item 顺序处理，而不是把所有 system 文本拼成一个全局字段。本轮未运行 Codex provider，不宣称其每条路由都与本系统同构。
+- **Claude Code**：本轮未找到与 DeepSeek Responses `instructions` 字段完全同构的公开 adapter；其成熟做法是把会话中的系统/开发者更新作为带来源和生命周期的上下文事件，而不是在 UI 投影阶段静默重排。不能把 Claude 的消息格式当作 DeepSeek wire 规范。
+- **DeepSeek 官方边界**：Responses API 是无状态的，客户端每轮需回传完整 `input`；官方文档允许 `input` 中出现 system message，同时规定顶层 `instructions` 是第一条 system。模型、reasoning、tool schema 或 KV cache 参数不会替宿主恢复历史顺序，因此本项必须在 serializer seam 修复。
+
+#### 治理方向（本地设计，未实施）
+
+- 将“首位稳定系统头”和“历史中的 system 更新”分成两个明确来源：只有产品明确声明的稳定头进入 `instructions`；其余 system 消息按原 sequence 生成 `ResponseItem::Message { role: "system" }`。`response_items_from_messages` 与 `replace_messages` 共用同一版本化投影，不能在不同入口各自拼接。
+- 在现有 request boundary 增加顺序回归：首位 system、多个中间 system、tool call 前后 system、分支/rewind、压缩重开、CLI/SDK/Desktop 三入口，断言 wire item 序列、持久化原生历史和重放完全一致；对稳定头不变而中间更新变化的请求分别检查 cache-prefix 预期，不把缓存命中当作语义正确性的替代。
+- 修复应保持 DeepSeek 官方兼容性：`instructions` 至多承载一个明确首位 system，历史 system 使用 `message` item；若某一 provider 不接受中间 system，应在 provider adapter 中显式转换并记录语义损失，不能在公共历史层静默合并。
+
+#### 回归记录（持续追加）
+
+- 首次失败结果已先登记本节，未修改生产逻辑；当前 ignored 探针仍保持故障预期。后续补充 wire 级断言、正常单 system 对照和多 system 顺序矩阵后再决定是否修复。
+- 本轮补充的 wire 级输出来自测试内 `ResponseRequest::new`，不是手工拼接 JSON；首位 system/工具历史的既有对照 `responses::tests::maps_tool_roundtrip_to_responses_items` 实际 **1 passed / 0 failed**。故障探针仍为 **0 passed / 1 failed（预期）**，未把预期失败误报成回归通过。
+- 本轮未执行 workspace 全量、Desktop build/UI、真实 DeepSeek 请求、KV cache 命中实验或参考工程测试；未访问公网、内网、用户文件，也未处理用户排除的 encrypted-content 问题。
