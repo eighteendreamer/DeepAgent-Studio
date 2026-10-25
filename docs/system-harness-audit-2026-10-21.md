@@ -75,6 +75,7 @@
 | Harness SDK 请求生命周期与协议验证 | 关闭 stdin 后，仍存活的客户端克隆调用返回 BrokenPipe，但 request id 留在 pending reply 表；initialize 接受既无 `result` 也无 `error` 的非法 JSON-RPC response 并标记已初始化；`thread/start` 对缺少 `threadId` 的成功结果仍返回 Ok；畸形 stdout 行被忽略后请求一直 pending 到 EOF；对端收到合法请求后静默且保持连接时，SDK 调用没有期限，调用方取消后 pending 仍保留；字符串 JSON-RPC response id 被强制转成整数 0，真实响应无法关联到 pending 请求；非 `2.0` 的 JSON-RPC response 仍被当作成功交付；任意 notification method 只要 params 可解码为 HarnessEvent 就会被公开广播；调用方在请求返回后才订阅时，请求响应前已到达的合法通知永久丢失 | 已确认 H-90、H-100、H-101、H-204、H-207、H-211、H-212、H-213、H-214；Windows 子进程夹具；未验证真实第三方 server 对畸形响应/输出的兼容行为，H-214 另有预先订阅正常对照 |
 | Harness JSON-RPC 方法分派 | 未知无斜杠 method 返回 `-32601`，但未知 namespaced method 因包含 `/` 被误报为 `-32602`；已知方法坏参数仍正确返回 `-32602` | 已确认 H-217；正式 `ServerState` dispatcher，无模型、工具、文件或网络副作用 |
 | Harness SDK 断线后的事件等待 | 真实本机子进程退出且生产 reader 已清空 pending RPC，保留公开 client 时，既有和新订阅均无断线/关闭结果；丢弃 client 后两者才 Closed | 已确认 H-256（P2）；正常完成通知交付对照通过，Windows stdio fixture；未运行真实 Agent/模型或桌面 |
+| TypeScript SDK 的 CLI JSONL 进程终态 | 真实子进程只输出部分事件或零条事件后 exit=23，公开 runJsonl 仍无异常结束；成功对照正常 | 已确认 H-266（P2）；正式 SDK 与本机 Node CLI fixture，未运行真实 Rust CLI/模型；stdout.end 提前结束假设未获证实 |
 | Provider SSE 非法 UTF-8 的故障隔离 | 合法事件后插入一个非法字节，正式 HTTP→ModelClient 不及时拒绝，后续文本和完整终态均未交付；解码器同序列保留 65,537 字节 | 已确认 H-257（P2）；中文/emoji 全切点解码和真实 HTTP 正常对照通过；未测真实供应商、Kernel 或 OOM |
 | CLI TUI 的模型 attempt 回滚 | 正式聊天部分输出后断线并重试成功，runtime及run_events有reset，落盘只有新答案，终端state与实际HistoryCell渲染仍拼入废弃答案和推理 | 已确认 H-258（P2）；无故障/首个delta前断线对照通过，正式ChatService/Kernel/SQLite；未启动真实TTY或公网 |
 | 工具双完成事件的调用身份一致性 | 同一调用的arguments.done为A、output_item.done为B时，正式write_file执行A，原生历史及下一请求却以B配对A的成功结果 | 已确认 H-259（P2）；正式ChatService/Kernel、文件SQLite和真实临时文件；两个正常对照通过，限矛盾provider故障注入，不声称DeepSeek正常流有此问题 |
@@ -7033,3 +7034,23 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - DeepSeek Responses、reasoning 和 KV cache 发生在 provider 请求层，无法替本机 SDK 新进程完成 Harness initialize；本项是控制面恢复问题，不据此宣称 DeepSeek wire 不兼容。故障后也不应自动重发结果未知的 turn/start、approval/respond 等副作用操作；连接恢复与业务重试分别定义。
 - 后续验收应覆盖 initialize 前/后退出、spawn error、stdin/stdout 先关闭、显式 close、多个并发恢复请求、旧代迟到回调、thread resume、运行中退出的 durable 查询和未知副作用。当前未执行真实 Rust server、完整 Runtime/RunStore、Desktop UI、真实 DeepSeek、跨平台或压力测试；未修改生产逻辑。
 - 验证收尾：`packages/sdk` 的 `pnpm test`（包含 tsc build）**5 passed**；`node --test tests/restart-audit.test.mjs` 默认 **1 passed / 1 skipped**，显式开启故障探针时 **1 passed / 1 failed（预期）**。`cargo fmt --all -- --check` 和 `git diff --check` 通过。未运行全 workspace/Clippy/前端构建；本轮仅 test-only JavaScript 与 Markdown。code-audit 用于核对首个失效边界及真实进程顺序，不把“手工 reconnect 可用”当作自动恢复正确。
+
+### H-266：TypeScript SDK 的 CLI JSONL 迭代忽略非零退出，部分输出或空输出均无错误结束
+
+**级别：中（P2，一次性自动化的失败传播）；状态：正式 TypeScript SDK 与真实本机 Node CLI 子进程已复现，未修复。** 触发条件是 `runJsonl()` 启动的进程输出零条或部分合法事件后以非零状态退出，没有交付业务终态；调用方依赖迭代正常结束判断传输成功。与 H-265 的 stdio 进程换代握手、H-256 的 Rust SDK 断线后订阅不结束不同：本项是独立 `cli-jsonl` 入口将失败进程作为无异常 EOF 交付，不重复登记同一现象。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：只新增 `packages/sdk/tests/jsonl-exit-audit.test.mjs` 与 `jsonl-exit-fixture.mjs`，通过公开 `DeepAgent.runJsonl()` 启动真实 Node 子进程；fixture 校验收到生产 SDK 拼接的 `run --json audit prompt` 参数，在临时目录写 PID/退出钩子状态。没有真实模型、工具、用户数据或网络，未修改生产代码。
+- E-266-first：`packages/sdk` 执行 `pnpm build` 通过；首次 `$env:RUN_HARNESS_AUDIT='1'; node --test tests/jsonl-exit-audit.test.mjs` 为 **1 passed / 3 failed（缺陷预期），约540ms**。正常对照记录 `code=0`、`events=[item.updated,turn.completed]` 且无异常。故障组一记录 `code=23`、`events=[item.updated]`；故障组二记录 `code=23`、`events=[]`；两组 stderr 均收到 `audit fixture failure: code 23`，但 SDK 都没有抛出任何异常。退出码取自该子进程的同步 `exit` 钩子，不是根据输出内容猜测。
+- E-266-negative：另一个保留进程存活、先执行 `process.stdout.end()` 的故障组，在 release 文件尚未写入且 `process.kill(pid,0)` 确认进程存活时，观察到 `completedBeforeRelease=false`。**本次 Windows 管道没有证实“stdout.end 会令 SDK 提前结束”**；该用例最终失败在 release 后 exit=23 仍无异常，而不是提前结束断言。不得将源码没有等待 exit 的事实扩大为已经实测 stdout/进程解耦。测试无论成功/失败均释放 gate，fixture 另有 5 秒自行退出上限。
+
+#### Finding、对照与影响
+
+- F-266：severity=medium，category=process-result-propagation，status=validated，confidence=high，location=`packages/sdk/src/index.ts::CliJsonlTransport.run`（468–500）。该方法只监听 `child.once("error")` 记录启动错误，没有监听或验证子进程的 `exit` code/signal；stdout 的 readline 迭代结束后只检查启动错误。已成功启动但返回非零的进程不会走 `error` 分支，因而异常丢失。
+- P-266（path_type=callflow）：`DeepAgent.runJsonl()` → `CliJsonlTransport.run()` → `spawn(command,[...,run,--json,prompt])` → 合法 JSON 事件交付/空输出 → 子进程 exit=23 → readline 结束 → `exitError` 未设置 → 异步迭代正常返回。调用方的 `try/catch` 无法区别本次失败与正常执行；只有自行检查事件终态的调用方才能另行发现不完整结果，SDK 没有代为提供这一保证。
+- **Codex 源码对照**：`借鉴/codex/sdk/typescript/src/exec.ts::CodexExec.run` 注册 `exitPromise`，在读完 stdout 后等待 `{code,signal}`，非零 code 或 signal 则连同 stderr 抛出错误；`finally` 关闭 readline 并终止自己拥有的 child。这里只核查本地参考源码，未运行 Codex；不声称其清理保证覆盖整个进程树。
+- **生产可达性与限制**：`apps/cli/src/main.rs::main` 对参数解析错误执行 `exit(2)`，对顶层执行错误执行 `exit(1)`；`run()` 在 `build_chat_service()` 的 `?` 失败时尚未建立 runtime 事件回调。因此非零状态与业务 terminal event 是不同层次的事实，不能假设每种宿主错误必有 turn.failed。本轮没有启动真实 Rust CLI 或注入真实数据库/凭据故障，不将上述静态路径写成端到端实测。
+- 触发后，一次性自动化可能把空结果或半截答案交给下游、把任务标记为正常消费结束、漏掉告警或失败重试；若下游另有严格终态检查，影响会受限。本次没有证明真实业务已经误提交、产生账单或丢失持久化数据。它是宿主 SDK 的进程结果边界，不是 DeepSeek 模型协议错误；不能靠修改 Responses/tool/cache 参数修复。
+- **本地治理建议，未实施**：在现有 `CliJsonlTransport` 单一边界记录 spawn/exit/close，读取完输出后验证退出结果，把非零状态及受控 stderr 上下文映射为稳定传输错误；明确与 `turn.failed`/`turn.interrupted` 等业务终态的关系，不凭 EOF 合成成功。后续回归至少覆盖零退出正常终态、空/部分输出后非零退出、已有失败事件的非零退出、启动失败、signal、取消和迭代提前结束。迭代器资源清理只列为后续检查，尚未动态登记为本项另一项已复现缺陷。
+- 验证收尾：`pnpm test`（含 build）**5 passed**；`pnpm typecheck` 通过；新探针默认 **1 passed / 3 skipped**；显式故障复核 **1 passed / 3 failed（预期），node 测试进程 exit=1**，与首次观测一致。`cargo fmt --all -- --check` 与 `git diff --check` 通过。本轮只增加测试与文档，未运行 workspace/Clippy/桌面构建/真实 DeepSeek/跨平台，也未实施生产修复；code-audit 要求的人工可达性及实际故障验证已经执行，不将未证实的提前 EOF 假设登记为另一缺陷。
