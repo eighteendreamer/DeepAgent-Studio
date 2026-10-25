@@ -24,6 +24,7 @@
 
 | 范围 | 当前证据 | 审查状态 |
 |---|---|---|
+| Windows 内容编辑的文件访问控制元数据 | 正式 write_file/edit_file/multi_edit 均成功写正文，却将受保护的单条 DACL 替换为继承规则；文件 SQLite 重开后检查点恢复正文但不恢复原策略；只读及默认继承 ACL 写入对照正常 | 新增 H-287（P2，自定义/受保护 ACL 文件条件）；未修复，仅合成临时文件；未验证其他账户访问、真实数据泄漏、跨平台或 staging 读取 |
 | 原生文件移动的失败提交边界 | 正式 move_path 将文件覆盖移动到自身父目录，返回 failure 却删除源和无关 sibling；三个平级/拒绝对照正常；文件 SQLite 重开及正式检查点显式恢复成功 | 新增 H-286（P1，授权 overwrite+祖先目标条件）；未修复，检查点可恢复但工具失败不自动还原；无用户数据或公网 |
 | Harness 分叉锚点资格与检查点数值边界 | 正式模型工具循环实际读取/写入临时文件并完成；不存在的 tail+1 仍成功复制全部历史；`i64::MAX+1`/`u64::MAX` 额外把文件恢复到旧内容，而 child 仍保留完整成功写入历史 | 新增 H-285（P2，显式非法序号条件）；默认/真实 tail/起点三项对照通过；正式 dispatcher/AppCore/Kernel/CheckpointManager、文件 SQLite、离线模型，无用户文件或公网 |
 | Git 事实在 UI 与模型上下文的投影 | 临时真实 Git 仓库的修改/删除被模型上下文误报 clean，长路径首字节丢失；同一 GitService 正确列出路径，三类正常控制通过 | 新增 H-282（P3）；正式 ChatService/Kernel/ModelClient 请求及内存 run_events，无模型真实决策、用户文件覆盖或磁盘重开验证 |
@@ -7930,3 +7931,51 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 - 多个完成 message 后补全局全文已是 H-81，不重复编号；同一 message 中多个 output_text parts 在现有 helper 内已按顺序拼接，仅凭该现象不登记新问题。没有重复运行 H-81 以冒充本轮新证据。
 - 搜索引用/citation 候选只有“内部类型不保留 annotations”的静态线索；当前已读取的 DeepSeek 官方 schema 没有足够的非空 citation 结构依据，不能把 OpenAI 的 url_citation 输入形状当作已证实的 DeepSeek 正常响应。未造 fixture、未登记问题，待官方明确契约或真实脱敏样本再审。用户排除的 encrypted-content 问题未调查。
+
+### H-287：Windows 内容原子替换丢失目标文件 DACL，成功编辑及检查点恢复均未保留原访问控制策略
+
+**级别：中（P2，条件性文件权限元数据完整性缺陷）；状态：正式 ChatService/Kernel/工具流水线及文件数据库重开已复现，未修复。** 前提为目标文件具有自定义/受保护 DACL，工具已获得正常内容写入许可。默认继承 ACL 的本轮写入对照正常，不描述为所有文件默认泄漏、权限提升或沙箱绕过。
+
+#### 即时 Evidence（2026-10-25，首次有效复现后立即登记）
+
+- Scope：仅授权仓库审计；每组独立 tempfile 下的 `workspace/fixture.txt`、合成 before/after 正文、文件 SQLite。ACL 初始化只修改这一个临时文件：停止继承、去掉继承项、保留当前运行用户 FullControl，重新读取确认 protected=true、规则数=1。没有更改真实项目文件、父目录、其他账户或系统策略；临时 fixture 测试结束自动清理。输出只记录布尔值与规则数，不打印 SID/SDDL。
+- 测试文件：`crates/deepagent-app-core/tests/kernel_v2_e2e/file_metadata.rs`，Windows-only 模块。正式路径为 `SettingsService` 默认设置 → `ChatService::run_in_session` → Kernel/ToolPipeline → 注册的 `read_file` → 指定内容工具 → 下一模型请求。只有 HttpTransport 使用离线 Responses fixture，未直接调用文件工具或手工伪造 checkpoint/run events。每组恰好三个请求，文本完成附匹配 delta、sequence 单调；下一 wire 唯一配对工具结果为 `status=ok`，durable action `ok=true`，唯一 `run_terminal=succeeded`。
+- E-287-first（source_type=command，content_hash=n/a）：`cargo test -p deepagent-app-core --test kernel_v2_e2e file_metadata:: --offline -- --include-ignored --nocapture --test-threads=1`：**1 passed / 1 failed（缺陷预期）**，测试体 5.54 秒。三个故障场景全部完成磁盘采样及重开恢复后，才在最终“策略应保持”断言处失败；不是只测第一种工具后推断其余工具。故障探针默认 ignored。
+
+| 场景 | 写后正文 | protected 前→后 | DACL 规则数 前→后 | 写后 DACL 等于原值 | 重开后正式检查点恢复正文 / 原 DACL |
+|---|---|---|---|---|---|
+| 受保护文件，只读对照 | before 不变 | true→true | 1→1 | true | before / true（空检查点不改文件） |
+| 默认继承文件，write_file 对照 | after | false→false | 16→16 | true | before / true |
+| 受保护文件，write_file | after | true→false | 1→16 | **false** | before / **false** |
+| 受保护文件，edit_file | after | true→false | 1→16 | **false** | before / **false** |
+| 受保护文件，multi_edit | after | true→false | 1→16 | **false** | before / **false** |
+
+- 每组先释放原 ChatService/Database owner，再从同一文件 SQLite 获取正式检查点并调用生产 `CheckpointManager::restore`；before 正文已逐字验证。DACL 用 `GetSecurityDescriptorSddlForm(Access)` 完整比较，不仅比较条目数量。16 是本机临时目录继承策略的实测值，不是产品常量，也不能单凭数量判断每条 ACE 的主体或权限。
+- **夹具失败不作产品证据：** 继承的首轮组合执行两项都因 PowerShell `Get-Acl` 自动加载失败，未进入产品链；直接测试 binary 复查同样失败；显式 Import-Module 诊断得到 ObjectSecurity 类型数据成员重复。停止该路线，改用经本机反射与微软文档确认的 Windows PowerShell/.NET Framework `System.IO.File.GetAccessControl/SetAccessControl`，不依赖该 cmdlet 模块。上表只来自改后实际跑到正式工具的执行，前三次夹具失败不登记为 Harness 缺陷。
+
+#### 根因、边界与去重
+
+- `crates/deepagent-builtins/src/file_tools.rs::atomic_write_sync` 在目标父目录创建 `.deepagent-write-*` 临时文件，写入/flush/sync 后调用 Windows `replace_atomically`；后者使用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`，未读取、复制或合并既有目标 DACL。`write_file`、`edit_file`、`multi_edit` 共用此 helper，所以按一个元数据提交边界问题登记，不按三个工具重复编号。
+- 生产替换路径只承诺内容原子发布，实际用新文件身份取代原文件；本机采样证明原 protected DACL 消失并回到目录继承。微软 [MoveFileExW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-movefileexw) 的跨卷安全描述符说明不能冒充本例同卷证据；本项同卷结论来自上表实测。
+- `crates/deepagent-runtime/src/checkpoint.rs::CheckpointEntry` 只记录 path/existed/was_dir/backup，没有原 DACL；capture/restore 通过文件复制，restore 先 remove_existing 再重建目标。本 fixture 正文恢复有效但原策略未恢复，故当前检查点不能据“已恢复正文”宣称完整恢复了原文件访问边界。未另造一个 H 编号重复计数该恢复后果。
+- 与 H-76/H-260 的读取资格、H-78 的 junction 边界、H-286 的失败移动删除不同：没有外部修改、链接、祖先覆盖、取消或工具失败，正常已读后成功编辑即触发。没有修改 PermissionRules/SandboxBackend，也不把“内容写入获准”理解成“用户要求重置 ACL”。
+
+#### 成熟 Agent 与官方文档对照
+
+- **DeepSeek Harness（本地静态源码及测试，未运行参考工程）：** `借鉴/deepseek-harness/packages/fs/fs-local/src/fsio.ts::writeFileAtomic` 创建 staging 后，在写入任何正文前把已有目标 DACL 复制到空 temp；Windows 已有目标使用 `replaceFileWin32` 发布；目标在 staging 期间消失时，已复制 DACL 随 rename 保留。`src/win32.ts::copyFileDaclWin32` 用 GetFileSecurityW/SetFileSecurityW 并保护 staging 免受父目录继承，`replaceFileWin32` 调用 ReplaceFileW 且不忽略 ACL 合并错误。其 `tests/fsio.spec.ts` 有 staged/最终 DACL 检查和“先 copy、后写、再 replace”的顺序测试。这里对照的是平台文件提交 seam，不声称参考工程已在本机通过，也不推断其所有 checkpoint 都保留 ACL。
+- **Windows 官方：** [ReplaceFileW](https://learn.microsoft.com/en-us/windows/win32/api/winbase/nf-winbase-replacefilew) 明确列出保留 DACL 等目标属性，并说明忽略 ACL 合并错误的标志可使调用成功却不保留 ACL；不能只把 MoveFileExW 换个函数名就视为完整修复，仍需处理已存在/新建、失败状态、写前 staging 权限及恢复契约。[File.GetAccessControl](https://learn.microsoft.com/en-us/dotnet/api/system.io.file.getaccesscontrol?view=netframework-4.8.1) / [SetAccessControl](https://learn.microsoft.com/en-us/dotnet/api/system.io.file.setaccesscontrol?view=netframework-4.8.1) 是本轮采样夹具依据，不是生产修复实现。
+- **DeepSeek 官方边界：** [Tool Calls](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/) 说明工具函数由宿主执行。模型输出正确的文件内容参数不能保证宿主保留 Windows 文件策略；Responses reasoning 或 KV cache 不能修复这个本地文件提交问题。这里没有把 OpenAI/Codex 的供应商字段套给 DeepSeek。
+
+#### 影响与治理方向（本地设计，未实施）
+
+- 已观察后果是原本 owner-only 的受保护文件变成继承策略，工具、下一 wire 和运行终态均显示成功，检查点恢复也未还原该策略。若父目录允许更多主体读取/修改，这会扩大文件访问面；若有特定显式授权/拒绝规则，也可能破坏协作或合规约束。这些条件性后果是基于策略变化的推论，本轮没有让其他账户读文件、使用真实秘密或证明提权/数据外传。
+- 影响评为 P2：目标需有特定 ACL，且原工具写入已获许可；默认继承 ACL 对照无变化。但用户仅要求内容编辑时，访问控制静默改变并不合理，成功内容写入不能替代元数据完整性保证。未实测 staging 内容读取、Linux mode/xattr、owner/SACL、硬链接、EFS/ADS 或进程崩溃，不据 Windows DACL 结果声称这些全已确认。
+- 在现有文件提交 helper 统一表达新建/替换及平台元数据策略；对已有目标先安全获取并应用必要策略于 staging，再写内容/同步并通过受控发布保留目标语义。不能在三个工具里各补一套 ACL 分支。读取或保留失败要明确失败及保留原目标，不能静默降级为继承。
+- 检查点应明确“仅内容”或“含访问元数据”的恢复契约；若用于撤销编辑前状态，就在既有 manifest 的版本化字段中保存必要访问策略并统一恢复，不新增第二套 checkpoint。回归覆盖默认继承/显式 Allow/Deny/受保护 ACL、只读/写/edit/multi_edit、首次创建、发布失败、重开恢复与 staging 可见性；跨平台行为独立验证。
+
+#### 验证进度（持续追加）
+
+- 首次有效执行为上述 **1 passed / 1 failed（预期）**；没有修生产逻辑，没有将 ignored 故障探针伪装成绿色。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**94 passed / 0 failed / 89 ignored**（183 tests，测试体 14.25 秒），包含本轮正常对照；没有重复执行已知故障探针冒充新增证据。`cargo fmt --all -- --check`、`git diff --check` 均通过。
+- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 未通过，仍被未修改的 `crates/deepagent-models/src/client.rs:355 clone_on_copy` 与 `crates/deepagent-persistence/src/run_store.rs:127 explicit_counter_loop` 阻断，未进入本测试目标的完整 lint，不宣称 lint 通过。
+- 未执行 workspace 全量、Desktop build/截图、真实 DeepSeek、其他操作系统或参考工程测试；本轮只增加测试入口/fixture 和审计文档，无生产契约、权限配置或数据迁移变更。code-audit 的人工可达性与误报核对要求使本项区分了夹具环境失败、正式成功写入、真实 DACL 变化及有效正文恢复，不以静态 API 搜索代替证据。用户已有未跟踪文件不纳入提交。

@@ -30,6 +30,10 @@ mod file_version;
 #[path = "kernel_v2_e2e/move_failure.rs"]
 mod move_failure;
 
+#[cfg(windows)]
+#[path = "kernel_v2_e2e/file_metadata.rs"]
+mod file_metadata;
+
 #[path = "kernel_v2_e2e/file_search_policy.rs"]
 mod file_search_policy;
 
