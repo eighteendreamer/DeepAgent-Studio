@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| 干净服务重建后的DeepSeek请求前缀 | 正式list_dir及回答落盘后丢弃第一套服务并重开SQLite；新实例续聊的32工具数组/schema、14180字节instructions与旧3项native历史前缀均保持 | 排误增量，无新H编号；同日、工作区/配置未变且无额外MCP/技能/附件；离线wire条件成立，不宣称真实缓存命中或关闭H-168 |
 | 主运行后标题请求的成本与预算归属 | 正式ChatService主运行成功且无标题后，标题真实派发并持久化；SQLite重开仍仅主用量；同服务普通run已被预算拦截时标题仍派发 | H-63补充证据（P2），不另计新编号；空历史/手动命名控制通过；仅离线合成usage/报价，未运行Tauri或真实供应商 |
 | DeepSeek 官方离线 tokenizer 与上下文压力计量 | 固定摘要的官方tokenizer实测四类合成文本；中文/符号在共享meter与正式ModelAgent均漏过54272压力阈值，英文与低压力代码控制正常 | 新增H-297（P3）；原始文本离线基准，不冒称当前线上Flash/Pro精确计数；无真实provider拒绝、费用或质量下降实测 |
 | MCP 工具执行错误的事件、持久化与模型输入 | 同一正式 ChatService 夹具的 isError=false/true/缺省三样本；文件 SQLite 重开后核对工具完成事件、action、会话原始结果及下一请求唯一关联结果 | 本轮排误，不新增 H 编号：true 保持 Failed/error，false及缺省保持 Completed/ok；不关闭 H-38/H-127/H-138/H-139/H-278，不代表整个MCP通过 |
@@ -8483,3 +8484,28 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`首次 **98 passed / 93 ignored / 0 failed，15.30秒**；测试helper拆分并格式化后同命令 **98 passed / 93 ignored / 0 failed，14.19秒，编译30.22秒**。默认回归包括本轮空历史/用户命名控制，新增故障项仍ignored；不把默认全绿说成漏账修复。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`退出1，因未修改的`deepagent-models/src/client.rs:355` clone_on_copy和`deepagent-persistence/src/run_store.rs:127` explicit_counter_loop阻断。没有关闭lint或顺手修改这两处代码。`cargo fmt --all -- --check`、`git diff --check`均通过。
 - 本轮仅新增标题集成测试、注册测试模块与更新本报告。未运行全workspace、整个AppCore单元/其他集成target、Tauri/前端构建或手动UI、真实模型/账单，以及参考工程测试；没有生产修复、配置/协议/权限/沙箱变更或数据迁移。测试数据库均位于自动清理临时目录，既有用户未跟踪文件不读取、不暂存；全系统审计继续保持未完成。
+
+### DeepSeek 缓存冷恢复边界：正常工具历史在干净服务重建后保持前缀（2026-10-25，排误增量）
+
+**首次有效验证后即时落盘；不新增缺陷编号，不关闭H-168。** 去重确认动态instructions变化已由H-168覆盖，本轮没有重跑其失败探针；此前默认cache_prefix测试只验证同一ChatService内连续两轮，本轮新增的是关闭应用服务/数据库后恢复同一会话的实际wire边界。
+
+- 在`crates/deepagent-app-core/tests/kernel_v2_e2e/cache_prefix.rs`增加`clean_reconstruction_preserves_cache_prefix_with_a_real_tool_roundtrip`。真实文件SQLite和会话事件持久化；先经正式ChatService/Kernel/ModelClient执行一次list_dir，确认实际工具结果含合成文件名，再正常回答。工作区与数据库分离，避免测试自己的日志/SQLite变化误触发H-168。
+- 完成第一轮后丢弃第一套ChatService/SettingsService/Database/模型transport实例，重新打开同一文件库并组装新实例，再以同一session续聊。只有测试用SecretStore（代替持久凭据）和用于比对的已发请求值被保留，不把原agent/工具上下文作为恢复依据；没有启动第二个操作系统进程或模拟崩溃。
+- 首次命令`cargo test -p deepagent-app-core --test kernel_v2_e2e clean_reconstruction_preserves_cache_prefix_with_a_real_tool_roundtrip --offline -- --nocapture`：**1 passed / 0 failed，测试体0.51秒，编译29.20秒**。恢复后仅发1次请求；32个工具的JSON数组顺序与schema值保持相同，14180字节instructions逐字相同，model/reasoning/max_output_tokens/tool_choice/user均相等。第一轮工具后请求的3个native input item原样成为恢复请求6个item的前缀，后部仍含首轮正式答案和新输入，没有靠previous_response_id引用服务端状态。
+- 该样本支持“默认无额外MCP/技能/附件、工作区及配置未变、同日干净恢复的普通工具历史具有缓存前缀复用条件”，不支持“真实DeepSeek已经命中缓存”或“所有重启均无差异”。provider回包usage=10/2是明确合成值，不测命中率、费用、首token延迟或精确token数量；请求字段比较发生在解析后的JSON语义层，instructions单独按字符串字节相等，不冒称HTTP原始JSON对象键顺序逐字相等。
+
+#### 官方规则与成熟Agent对照：哪些可以借鉴，哪些不能照搬
+
+- [DeepSeek KV缓存规则](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)要求完整匹配已落盘的前缀单元，构建与保留为尽力机制；完整前缀不变是有利条件，不是宿主能承诺的命中结果。本轮保留了旧请求的完整input前缀，但没有provider真实cache usage，不能根据字符串相等推导命中token数或节费比例。
+- [DeepSeek Responses指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)明确无状态、previous_response_id/conversation/store不支持，prompt_cache_key/prompt_cache_retention也不支持、缓存自动管理。本轮完整恢复并回传历史且未发previous_response_id符合这一边界；**不能把未实现OpenAI缓存key或服务端conversation列为DeepSeek适配缺陷，也不能用添加这些被忽略的字段修复H-168**。
+- 当前系统`ToolRegistry`使用BTreeMap，`visible_to/iter_specs`按该有序容器遍历；这为工具顺序稳定提供现成设计，动态出站样本支持其默认内置工具路径正常。`run_assembler`从持久事件恢复native history，provider projection再生成完整请求。这里的优势是已有统一事件/工具边界，不需要另建“缓存会话store”。没有因此宣称额外MCP、技能热变更或schema来源都已验证。
+- **Claude Code，静态参考**：`借鉴/claudecode/restored-src/src/services/api/claude.ts::should1hCacheTTL`把资格与allowlist锁定在bootstrap会话状态，注释明确避免计费模式/配置更新改变TTL而破坏缓存；说明成熟实现把缓存敏感请求字段的会话稳定性当作显式设计。但这是其provider的cache_control/TTL能力，不是DeepSeek支持的协议，也不证明跨进程重启会保留其bootstrap状态。
+- **Codex，静态参考**：`借鉴/codex/codex-rs/core/src/client.rs::responses_request_properties_match`显式逐项比较model/instructions/tools/tool_choice/reasoning等字段，且穷尽解构要求新增字段重新决定复用规则。该函数服务于WebSocket continuation属性兼容性，不是本系统测试的DeepSeek磁盘缓存判定；可以借鉴“请求envelope的兼容条件可审计、可测试”，不能照搬其previous_response_id/prompt_cache_key依赖或称其已证明本系统缓存命中。
+- **DeepSeek Harness，静态参考**：`packages/llm/token-meter/README.md`区分durable log重放计量、provider usage锚点与启发式组成，明确后者不是精确计费或缓存命中依据。可借鉴这种证据分层：本轮wire不变、服务端缓存实际命中、账本入账是三个独立验收项，不能用任一项代替其余两项。未运行参考工程。
+- 后续验收仍需独立覆盖配置/工具schema变更、MCP与技能声明、压缩/回退/分叉、图片/原生搜索、跨日与真实服务端缓存淘汰。发生有效配置变化不应该为了“缓存稳定”冻结旧权限或错误模型；应在既有provider adapter和持久事件边界明确合理失效，并准确区分主动失效与不必要的动态前缀变化。本轮不实施生产改造，不重复H-168已有故障。
+
+#### 本轮验证与交付
+
+- 首测通过并写入记录后，补充断言“首次无Settings、冷恢复已有Settings”，确保恢复不会以再次initialize掩盖配置丢失。格式化后实际运行`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**99 passed / 0 failed / 93 ignored，14.35秒，编译30.04秒**；包括新增冷恢复与既有同宿主正向测试，没有启用H-168或其他已登记ignored故障探针。
+- `cargo fmt --all -- --check`、`git diff --check`通过。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`退出1，仍被未修改的`deepagent-models/src/client.rs:355` clone_on_copy和`deepagent-persistence/src/run_store.rs:127` explicit_counter_loop阻断；不报告lint通过或修改无关生产代码。
+- 仅扩展既有cache_prefix测试模块和本报告，不新增生产缓存实现/依赖/配置，不改协议、权限、沙箱或持久化格式。没有全workspace/完整AppCore其他target、UI构建、实际桌面/跨进程重启、参考工程或真实provider测试；未执行测试不视为通过。用户原有未跟踪项保持不读取、不暂存，全系统审计仍未完成。
