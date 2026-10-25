@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use deepagent_core::error::Result;
 use deepagent_core::message::{Message, ToolCall};
+use deepagent_core::response_item::ResponseInputItem;
 use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
 use deepagent_models::{ModelClient, ModelConfig, ResponseRequest};
 
@@ -73,5 +74,33 @@ async fn audit_replace_messages_repairs_dangling_responses_calls_before_transpor
     assert!(
         has_call && has_output,
         "dangling calls must be repaired before transport"
+    );
+}
+
+#[test]
+#[ignore = "audit reproducer: out-of-order Responses output must not be replaced by synthetic failure"]
+fn audit_late_tool_call_does_not_discard_real_earlier_output() {
+    let items = vec![
+        ResponseInputItem::FunctionCallOutput {
+            call_id: "audit-late-call".into(),
+            output: "REAL_TOOL_RESULT".into(),
+        },
+        ResponseInputItem::FunctionCall {
+            call_id: "audit-late-call".into(),
+            name: "read_file".into(),
+            arguments: "{}".into(),
+        },
+    ];
+    let request = ResponseRequest::from_response_items("deepseek-flash", None, items);
+    let wire = serde_json::to_value(&request).unwrap();
+    let input = wire["input"].as_array().unwrap();
+    let output = input.iter().find(|item| {
+        item["type"] == "function_call_output" && item["call_id"] == "audit-late-call"
+    });
+    eprintln!("late_tool_output_repair: input={input:?}");
+    assert_eq!(
+        output.and_then(|item| item["output"].as_str()),
+        Some("REAL_TOOL_RESULT"),
+        "repair must not replace a durable tool result with a synthetic failure"
     );
 }

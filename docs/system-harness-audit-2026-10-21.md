@@ -79,6 +79,7 @@
 | CLI TUI 的模型 attempt 回滚 | 正式聊天部分输出后断线并重试成功，runtime及run_events有reset，落盘只有新答案，终端state与实际HistoryCell渲染仍拼入废弃答案和推理 | 已确认 H-258（P2）；无故障/首个delta前断线对照通过，正式ChatService/Kernel/SQLite；未启动真实TTY或公网 |
 | 工具双完成事件的调用身份一致性 | 同一调用的arguments.done为A、output_item.done为B时，正式write_file执行A，原生历史及下一请求却以B配对A的成功结果 | 已确认 H-259（P2）；正式ChatService/Kernel、文件SQLite和真实临时文件；两个正常对照通过，限矛盾provider故障注入，不声称DeepSeek正常流有此问题 |
 | 上下文压缩后的文件编辑资格 | 正式压缩 helper 清掉旧 read_file 输出后，同一生产 file_tools 共享缓存仍允许未重读的 write_file 覆盖已有文件 | 已确认 H-260（P2）；真实临时文件、正式压缩投影与 file_tools；故障探针 0 passed / 1 failed（预期），与 H-76 的外部修改场景不同 |
+| Responses 工具结果乱序修复 | 历史中 output 先于同 call_id 的 function_call 时，正式 repair 丢弃真实结果并合成“tool result missing”失败结果；下一 wire 仍成功发送但模型看到错误事实 | 已确认 H-261（P2，条件性恢复/导入历史缺陷）；公开 `ResponseRequest::from_response_items` 与正式 serializer，故障探针 0 passed / 1 failed（预期），未请求真实 provider |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
 | Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
 | Harness thread/list 历史列表 | 创建 120 个真实持久化 thread 后，正式 `thread/list` 一次返回全部 120 条、约 25 KB JSON；请求没有 limit、cursor 或 continuation | 已确认 H-220；正式 SQLite/EventStore/ServerState，无模型、工具、子进程或网络 |
@@ -6947,3 +6948,30 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 本地设计建议（未实施）：将 FileStateCache 绑定 `context_surface_version`/read generation；ContextSurfacePatched、完整 compaction、branch rewind、session resume 时清除或降级旧 read/edit资格。若要保留近期文件状态，应把路径、内容摘要/版本和可见恢复 attachment 一起持久化，并明确它仍满足哪一种编辑资格；不能只恢复 cache key。
 - 回归应覆盖完整/微压缩、原生 Responses compaction、压缩失败保留原 Surface、重启/replay、分支回退、同路径 read/edit/multi_edit/write、外部修改、权限变化及多宿主。压缩后的覆盖若无重新读取应失败；显式恢复且模型收到受控文件快照后才可按产品定义允许。
 - 未验证真实桌面交互、长时间自动压缩阈值、真实 DeepSeek 服务、Codex 运行、跨进程 FileStateCache、审批 UI 或生产修复；不把本机 helper 的 0/1 结果扩大为这些结论。
+
+### H-261：Responses 历史中乱序工具结果被 repair 静默替换为合成失败
+
+**级别：中（P2，条件性历史恢复/导入完整性缺陷）；状态：公开 Responses repair 与正式 serializer 已复现，未修复。** 触发条件是持久化恢复、SDK 导入或公共调用方提供一个 `function_call_output` 先于同 `call_id` 的 `function_call` 的历史序列。本项不是声称 DeepSeek 正常 SSE 会主动发送该顺序，而是验证宿主在面对坏序列时没有保持真实工具结果或明确拒绝。
+
+#### 首次即时 Evidence（2026-10-25）
+
+- Scope：用户授权源码审计；只新增 `crates/deepagent-models/tests/response_repair_audit.rs` 的 ignored test。输入是两个内存 `ResponseInputItem`，无模型、工具执行、用户文件、凭据或网络。
+- E-261-first（source_type=command，source_ref=`response_repair_audit::audit_late_tool_call_does_not_discard_real_earlier_output`，content_hash=n/a）：执行 `cargo test -p deepagent-models --test response_repair_audit audit_late_tool_call_does_not_discard_real_earlier_output --offline -- --ignored --exact --nocapture`，结果 **0 passed / 1 failed（预期）**。正式 wire 输出为：`function_call(call_id=audit-late-call,name=read_file)`，随后 `function_call_output(call_id=audit-late-call, output={"status":"error","error":"tool result missing; ..."})`；输入中的真实 `REAL_TOOL_RESULT` 已不可见。
+- E-261-control：同一 `ResponseRequest::from_response_items` 与 serializer 对正常顺序 `[function_call, function_call_output("REAL_TOOL_RESULT")]` 保持配对；本探针唯一变量是 output 先到。没有把“provider 拒绝”伪装成已观测事实，失败点是本地 repair 已经替换内容。
+
+#### Finding 与调用路径
+
+- F-261：severity=medium，category=design，status=validated，confidence=high，location=`crates/deepagent-models/src/responses.rs::repair_tool_call_pairs`。第一遍扫描按当前遍历顺序把先出现的 output 放入 `orphan_outputs`；稍后才发现同 ID 的 call，因此该 output 不进入 `outputs`。第二遍为 call 合成 `tool result missing`，最后因 `emitted_outputs` 已占用而跳过原始 orphan。结果同时改变了工具结果内容和原始次序，却没有 error/diagnostic 返回。
+- P-261（path_type=callflow）：导入/恢复坏序列 → `ResponseRequest::from_response_items` → `repair_tool_call_pairs` 把早到 output 视为 orphan → 合成失败 output → `ModelClient` 正常序列化并发送 → 下一轮模型获得“工具失败”而不是持久化的真实结果。历史事件/原始 JSON 仍可能保存真实结果，模型 Surface 与 durable evidence 由此分叉。
+
+#### 官方与成熟 Agent 对照
+
+- **DeepSeek 官方 Responses**：参数文档规定 input 是有序 item 列表，`function_call` 与 `function_call_output` 通过非空 `call_id` 配对；工具指南的往返也是先返回函数调用、宿主执行后再把结果回传。官方没有要求宿主把乱序历史自动改成失败，因此这里的“拒绝或保留真实结果”是本地恢复策略，不冒充 DeepSeek 强制错误码。[Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)、[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)
+- **Codex**：`借鉴/codex/codex-rs/core/src/context_manager/normalize.rs` 先收集整批 call ID，再检测 orphan output；缺失结果时插入明确的 `aborted`，并对真正没有对应 call 的 output 记录错误/删除，而不是按扫描顺序把一个稍后可对应的结果改写成失败。其 typed `ResponseItem` 维持 function/custom 类型边界。本轮未运行 Codex 测试，不声称其所有恢复入口都具备相同语义。
+- **DeepSeek Harness**：本轮未找到与本系统 `repair_tool_call_pairs` 完全同构的公共函数；不虚构其已解决该乱序案例。可借鉴的是其 typed session/history 边界：坏历史应显式分类，不能静默把模型可见事实改成另一个成功可发送的事实。
+
+#### 影响、后果与治理方向
+
+- 影响集中在恢复、SDK/插件导入、旧事件迁移和手工 `ResponseRequest` 构造；正常生产链生成的 call→output 顺序不触发。触发后，模型会看到宿主合成的失败，而不是实际工具结果，可能重复读取/重复执行、错误判断前一步失败，或因错误结果继续走错误分支；当前证据没有证明真实用户数据已被覆盖或 DeepSeek 服务已返回 400。
+- 修复应在同一个 repair 边界选择单一策略：按整批先建 call 索引，再按 `call_id`/类型配对；若 output 先于 call 仍违反本地有序历史契约，应返回结构化 `MalformedHistory` 并阻止发送，或在明确保留真实 output 的同时重新排序。不能继续依赖扫描时序、无诊断地合成失败。function/custom 类型、重复 ID、孤立 output、压缩/replay、重启和 `replace_messages` 两入口需共用该校验。
+- 未验证真实桌面恢复、真实 DeepSeek 400 行为、跨进程迁移或生产修复；本项不与 H-80（function/custom 类型混配）、H-149（重复 call_id）或 H-174（公开 replace_messages 绕过 repair）重复：H-261 专门是**同 ID、同类型、但 output 先于 call 导致真实结果被静默替换**。
