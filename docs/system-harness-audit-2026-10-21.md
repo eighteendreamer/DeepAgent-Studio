@@ -1886,7 +1886,7 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 
 ### H-73：回退后的旧分支检查点仍可覆盖新分支文件，调用却返回成功
 
-**修复状态（2026-10-26）：已修复并验收，限 Windows 本机以下范围。** 本轮修改 CheckpointStore 的有效分支筛选与 CheckpointManager 的来源冻结；不新建 store，不改生产 schema、协议/UI DTO、权限或沙箱。代码、测试和两份文档将独立提交，hash 随后回填；整体任务仍未完成。
+**修复状态（2026-10-26）：已修复并验收，限 Windows 本机以下范围。** 本轮修改 CheckpointStore 的有效分支筛选与 CheckpointManager 的来源冻结；不新建 store，不改生产 schema、协议/UI DTO、权限或沙箱。代码、测试和两份文档已独立提交 `d40eef9a`；本次另做文档回填，不 amend、不推送；整体任务仍未完成。
 
 修复前复核（2026-10-26）：原探针 `cargo test -p deepagent-app-core --test checkpoint_audit branch --offline -j 1 -- --include-ignored --nocapture` 在当时 HEAD `78fbbba6` 重现为 **1 passed / 1 failed / 0 ignored**，测试体 0.32 秒。实际观测仍为 `content=old-first, restored_paths=1, kept_sequence=4, discarded_checkpoint_sequence=Some(6)`。这是原缺陷复核，不计新发现；本轮只处理 H-73，保留下面原始审计证据。
 
