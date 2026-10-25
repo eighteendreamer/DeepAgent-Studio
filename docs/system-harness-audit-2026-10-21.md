@@ -83,6 +83,7 @@
 | 工具双完成事件的调用身份一致性 | 同一调用的arguments.done为A、output_item.done为B时，正式write_file执行A，原生历史及下一请求却以B配对A的成功结果 | 已确认 H-259（P2）；正式ChatService/Kernel、文件SQLite和真实临时文件；两个正常对照通过，限矛盾provider故障注入，不声称DeepSeek正常流有此问题 |
 | 上下文压缩后的文件编辑资格 | 正式压缩 helper 清掉旧 read_file 输出后，同一生产 file_tools 共享缓存仍允许未重读的 write_file 覆盖已有文件 | 已确认 H-260（P2）；真实临时文件、正式压缩投影与 file_tools；故障探针 0 passed / 1 failed（预期），与 H-76 的外部修改场景不同 |
 | Responses 工具结果乱序修复 | 历史中 output 先于同 call_id 的 function_call 时，正式 repair 丢弃真实结果并合成“tool result missing”失败结果；下一 wire 仍成功发送但模型看到错误事实 | 已确认 H-261（P2，条件性恢复/导入历史缺陷）；公开 `ResponseRequest::from_response_items` 与正式 serializer，故障探针 0 passed / 1 failed（预期），未请求真实 provider |
+| H-172 的 Responses text.format 增量 | 设置层有格式校验，公共 ModelClient 最终边界却将5种非法格式经请求/defaults和普通/cancel-aware入口全部发出；12条合法路径对照通过 | 归入 H-172（P3），不新增编号；20条非法 wire 路径由离线记录器确认，未验证真实供应商拒绝、计费或默认桌面触发 |
 | Harness thread/read 历史读取 | 对含 600 条消息的持久化 thread，正式 `thread/read` 一次返回 1201 条 session events、约 1.57 MiB JSON；没有页大小、`nextCursor` 或 `hasMore` | 已确认 H-218；正式 SQLite/EventStore/ServerState，未启动模型、工具、子进程或网络 |
 | Harness tool/list 能力作用域 | 两个不同 workspace、`read_only/direct` 与 `full_access/windows_sandbox` thread 连续调用 `tool/list`，均返回相同 28 个工具；响应没有 thread/run 身份、snapshot ID、schema hash 或 backend 条件 | 已确认 H-219；正式 ServerState/ChatService dispatcher，无模型、工具执行、子进程或网络 |
 | Harness thread/list 历史列表 | 创建 120 个真实持久化 thread 后，正式 `thread/list` 一次返回全部 120 条、约 25 KB JSON；请求没有 limit、cursor 或 continuation | 已确认 H-220；正式 SQLite/EventStore/ServerState，无模型、工具、子进程或网络 |
@@ -3350,6 +3351,19 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 - 同一 DeepSeek Harness serializer 将显式 `temperature` 直接映射到 Messages wire；本地搜索没有找到它对 `temperature` 或 `topP` 做同等范围验证。Codex 本地参考树也没有为 DeepSeek Responses 的这些字段提供可比较的 provider validator，因此不声称它解决了相同协议问题。此处协议范围仍以 DeepSeek 官方文档为准。
 - 越界值触发时，系统会把违反官方参数范围的请求交给供应商；供应商可能拒绝请求或按自身行为处理，但本次离线验证无法确认真实结果。最直接的后果是该 turn 可能变成 provider 错误，或实际采样行为与本地配置预期不一致；没有证据表明它会绕过权限、导致必然扣费或对合法桌面设置产生影响。条件性和低频触发使其定为 P3，而非安全漏洞。
 - 收敛方向（尚未实施，本地设计）：让 `ResponseRequest::validate()` 在 `ModelClient` 应用 defaults 后验证同一套 Responses 数值边界，确保 request 与 `ResponseDefaults` 共用唯一 validator；Chat 路由继续通过其协议 capability 明确支持/拒绝，而不是把 Responses 限制误用于不同协议。保留 UI/AppCore 提前反馈，但 provider seam 必须是最终可信边界。加入 request/defaults 两种来源的 transport-zero 负例及合法边界正例，并覆盖普通、cancel-aware 和未来 Harness/SDK 入口。
+
+#### 2026-10-25 增量：同一最终校验缺口也影响 Responses 结构化输出格式
+
+**归档、级别与范围：** 保留 H-172 原始数值参数证据，将本次 `text.format` 作为同一 provider-validator 缺位的新增约束覆盖，不新增编号。仍按 **P3，条件性公共 API 配置可靠性** 处理，不将默认桌面设置或安全权限判为失效。只新增 `crates/deepagent-models/tests/responses_text_format_audit.rs`，未改生产代码、供应商、配置、凭据或权限。
+
+- **官方核对（2026-10-25）：** [Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)在 text.format 下给出 `text`、`json_object`、`json_schema` 三种类型；json_schema 要求 name 和 object schema。[Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)说明 text.format 受支持。这里不把 [Tool Calls 的 Beta strict](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)要求直接移植到当前 Responses endpoint，也不把不影响格式的 verbosity 视为格式校验失败。
+- **首次即时 E-172-text：** 执行 `cargo test -p deepagent-models --test responses_text_format_audit --offline -- --include-ignored --nocapture`，为 **1 passed / 1 failed（预期复现），编译约9.07秒、测试约0.01秒，命令 exit=1**。合法对照覆盖 text/json_object/具备 name 和 object schema 的 json_schema，分别走 request/defaults × ordinary/cancel-aware，共 **12 条真实序列化路径**，均恰有1次 transport 调用，text 与输入逐值相等。
+- **故障矩阵：** 5 种输入为 format 非对象、未知类型 xml、json_schema 缺 name、缺 schema、schema 为数组；每种同样走 request/defaults × ordinary/cancel-aware。**20 条路径全部 `rejected=false, transport_calls=1`**，记录的 wire.text 均与故障输入完全一致。失败测试逐条收集后只做一个总断言，因此不是“20 个测试失败”，也不是仅因断言首项提前退出而推测其他入口。
+- **观察边界：** 使用正式 ModelClient、apply_defaults、validate、serializer 与 ResponseAccumulator，只有 HttpTransport 是离线记录器；它合成完整成功终帧仅为让调用收束，不校验/伪装真实 provider 接纳非法输入。未运行公网、真实模型、工具或用户数据；cancel-aware 入口的 flag=false，只验证同一最终校验路径，不声称本轮验证了运行中取消。
+- **首错边界与设置层对照：** `settings.rs::validate_developer_responses_fields` 已要求 text/format 为对象、类型有效，json_schema 有非空 name 与 object schema；`ResponsesApiSettings::validate` 也调用该规则。公开 `ResponseRequest::with_text` 与 `ResponseDefaults.text` 则直接接受 Value；ModelClient 在 apply_defaults 后虽调用 `request.validate()`，后者只检查 user。公共入口因此跳过了设置层原有约束。设置层结论本轮来自源码核对，不冒充新增端到端桌面保存实测。
+- **Codex 对照：** `借鉴/codex/codex-rs/codex-api/src/common.rs::TextFormat/TextControls/create_text_param_for_request` 使用 enum 格式类型和具名字段；正常 helper 从 output_schema 构造 JsonSchema，自动提供 `codex_output_schema` 名称并携带 schema/strict。对应 `core/src/client_common_tests.rs` 明确断言这些 wire 字段。可借鉴的是 typed 格式壳与统一构造路径；其中 schema 仍是 Value，不把它夸大为已解决所有 JSON Schema 语义校验、也不照搬 OpenAI 的完整能力为 DeepSeek 保证。本轮未运行参考工程。
+- **影响与收敛补充：** 若嵌入者或未来 Harness provider adapter 绕开 SettingsService 直接构建请求，会把无法表达已声明输出契约的配置发给供应商；可能导致请求失败或得不到期望的结构化结果，后续解析/自动化中断。真实 provider 的拒绝码、计费、重试与静默处理未验证，不把离线成功结果当作模型违反 schema 的证据。与原 H-172 一并将格式壳约束放到最终 adapter validator，defaults 合并后只校验一次；UI 可提前反馈，但不另造第二套互不一致的规则。JSON Schema 子集/语义验证需单独按实际协议定义，不能仅因“schema 是对象”就宣称 schema 有效。
+- **验证收尾：** `cargo test -p deepagent-models --offline` 整体通过，**85 passed / 40 ignored**（含新 target 默认 **1 passed / 1 ignored**）；显式新 target 为 **1 passed / 1 failed（预期）**。首次 fmt check 只提示新增测试的3处排版，运行 cargo fmt 后 `cargo fmt --all -- --check` 与 `git diff --check` 通过，无生产文件被格式化改动。实际执行 `cargo clippy -p deepagent-models --test responses_text_format_audit --offline -- -D warnings`，被未修改 `src/client.rs:355` 的既有 clone_on_copy 拒绝，不能报告 lint 通过。未运行全 workspace、桌面构建、真实 DeepSeek、跨平台或参考工程。code-audit 将判断限定为可达的 provider wire 及已读设置规则，不把公网返回行为、模型不服从 schema 或默认 UI 失效写成复现结果。
 
 ### H-173：Responses 工具输出图片无法保留，公共消息边界静默降为纯文本
 
