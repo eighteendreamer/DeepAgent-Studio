@@ -7724,3 +7724,52 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 首次 `cargo fmt --all -- --check` 只报告新增测试排版；运行 `cargo fmt --all` 后再次检查通过。`git diff --check` 通过，仅有既有换行策略的 LF/CRLF 提示。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` **失败**：未修改的 `deepagent-models/src/client.rs:355` 命中 `clone_on_copy`，未修改的 `deepagent-persistence/src/run_store.rs:127` 命中 `explicit_counter_loop`。没有为让本轮 lint 通过而修改无关生产逻辑，也不能声称已完成整个 target 的 lint 验收。
 - 本轮仅增加 `kernel_v2_e2e/git_context.rs`、注册该测试模块并追加本报告。未运行全 workspace、独立 Desktop/CLI/SDK 流程、前端构建、参考工程、跨平台、真实 DeepSeek 决策/费用或磁盘重开；没有兼容性、配置、数据迁移、权限或沙箱行为变更。
+
+### H-283：Read deny 只拦工具，自动工作区上下文仍在首次请求发送 README 与清单摘要
+
+**级别：中（P2，条件性的数据可见性/权限表达设计缺口）；状态：正式链路已复现，未修复。** 必须区分契约：当前 `PermissionRules` 明确按工具调用匹配，`Read` deny 在本次测试中正常拦截了 `read_file`，没有规则引擎失效或审批被绕过的证据。本项确认的是：工具级拒绝不是模型数据可见性边界，宿主自动预读不接收同一有效读取策略；不能把现有工具禁令误当作全局文件保密承诺。
+
+#### 即时 Evidence（2026-10-25，承接已完成执行，未为登记重新运行探针）
+
+- Scope：用户授权的自有系统本地防御性审计；新建 TempDir、合成 canary、新建文件 SQLite（位于临时 workspace 外）。沿正式 `SettingsService`、`ChatService`、Kernel、`ModelClient`、文件工具和 `run_events` 执行；仅模型 transport 是离线记录器。没有公网请求、真实凭据、用户文件或生产逻辑修改。
+- E-283-first（source_type=command，content_hash=n/a）：执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e workspace_context_policy:: --offline -- --include-ignored --nocapture`，结果 **1 passed / 1 failed（缺口预期），177 filtered**；测试体 1.48 秒、编译 57.15 秒，进程退出码 1。证据来自上一执行段已返回的结果，本段不将其伪装为一次新执行。
+- 测试文件：`crates/deepagent-app-core/tests/kernel_v2_e2e/workspace_context_policy.rs`。每场景新建服务与 workspace；初始用户输入没有 canary；第一次捕获真实序列化请求后，离线 provider 提议 `read_file`，随后第二次请求携带真实工具结果。两个故障场景由同一 ignored 测试收集后统一断言，不能记成两个测试失败。
+
+| 合成文件/规则 | 首次 instructions 含 canary | 首次 input 含 canary | 后续 instructions 含 canary | 实际工具结果含 canary | blocked / 成功读取 / 审批事件 |
+|---|---|---|---|---|---|
+| notes.txt / 允许 | 否 | 否 | 否 | 是 | 0 / 1 / 0 |
+| notes.txt / Read deny | 否 | 否 | 否 | 否 | 1 / 0 / 0 |
+| README.md / 允许 | 是 | 否 | 是 | 是 | 0 / 1 / 0 |
+| package.json / 允许 | 是 | 否 | 是 | 是 | 0 / 1 / 0 |
+| README.md / Read deny | 是 | 否 | 是 | 否 | 1 / 0 / 0 |
+| package.json / Read deny | 是 | 否 | 是 | 否 | 1 / 0 / 0 |
+
+- `README.md` 的正文含合成标记 `audit-workspace-context-canary-8d2e`；`package.json` 将该标记放在 `name` 字段，故后者验证的是项目名摘要，而不是整个 JSON 或任意 manifest 字段都会被发送。普通 `notes.txt` 正文不被自动预载，说明不是测试先把 canary 塞进用户历史。
+- 故障断言：`automatic context disclosed denied file contents: ["Readme", "Package"]`。各场景均确认请求恰为两次、只有一个与 call_id 配对的真实工具结果、唯一 `run_terminal` 且为 `succeeded`、原文件内容未变；deny 的 `tool_blocked` 原因含 `permission rule`，对应成功读取为 0。工具拒绝后正常结束不是运行失败。
+- 证据边界：canary 已进入宿主实际交给 transport 的 `instructions`，不是手工复刻 prompt 或只测 scanner 的单元断言；没有向真实 DeepSeek 发送，因此不声称真实数据外传或模型据此作出了错误决定。无审批事件符合显式工具 deny/普通读取的控制结果，不能单独作为审批缺陷证据。
+
+#### 初始 Finding 与调用路径
+
+- F-283（category=design，status=validated，confidence=high，evidence_ids=[E-283-first]）：`system_context.rs::build_system_manifest` 自动调用 `WorkspaceScanner::scan`；scanner 直接读取 README 和清单，`WorkspaceSnapshot::to_context_block` 将摘要渲染进 `deepagent.workspace_structure`，随后成为正式模型请求的 system 上下文。该入口没有有效 `PermissionRules` 或资源可见性策略参数；`PermissionRulesHook` 只在 `BeforeToolUse` 处理 `HookData::Tool`。因此工具禁令正常生效时，自动上下文仍可先于工具调用交付同一文件的信息。
+- P-283（path_type=callflow）：保存默认权限 preset 与裸 `Read` deny → `context_runtime` 构建 system manifest → scanner 自动读取临时 README/清单 → 首次 Responses `instructions` 已含 canary（E-283-first）→ 模型提议 read_file → 正式权限 hook 拒绝且工具结果无 canary → 后续请求的 instructions 仍含 canary（E-283-first/F-283）。后续工具拒绝不能撤回先前交付的上下文。
+- 去重：H-77 是 grep 读取候选，H-79 是 list/glob 文件名发现，H-237 是 agent-hook 私有 Runtime 未继承父权限；本项是**首次模型请求前、未经过工具 dispatch 的宿主自动上下文预读**。它们可以共用未来的资源策略治理，但不是同一探针、同一执行入口或同一根因位置。登记前检索未见同构条目。
+
+#### 影响、成熟 Agent 对照与治理方向
+
+- **影响与触发条件：** 只要根目录存在 README 或受 scanner 识别的 manifest，自动上下文就可能在第一次模型请求前读取并发送其摘要；普通 `notes.txt` 不会被该 enrichment 预载。若用户把 `Read` deny 理解为“模型不可见”，模型仍能获得 README 正文片段、清单名称摘要和文件树事实，并在工具拒绝后继续依据这些事实推理。当前已证明的是 wire 可见性，不是公网外传、凭据泄露或实际文件修改；因此按条件性 P2，而不是把它定成已发生的高危泄露。
+- **Claude Code（静态源码，未运行参考工程）：** `借鉴/claudecode/restored-src/src/utils/attachments.ts` 的 `generateFileAttachment()` 在读取文件前调用 `isFileReadDenied(filename, toolPermissionContext)`；大文件截断分支再次检查，随后复用 `FileReadTool.validateInput()` / `FileReadTool.call()`。`getOpenedFileFromIDE`、`processAtMentionedFiles` 与 `getChangedFiles` 也在附件/变更进入模型前检查同一 deny helper。它提供了直接可迁移的边界：任何非工具消息附件或自动上下文读取，都必须在“构造模型可见内容”之前复用有效读取权限。不能据此声称 Claude 的 README scanner 与本系统同构，也没有运行其全部权限组合。
+- **Codex（静态源码，未找到同构 workspace scanner）：** 本轮在 `借鉴/codex/codex-rs` 中确认的 `CodexHomeUserInstructionsProvider` 只读取明确的 `AGENTS.md`/`AGENTS.override.md` 指令源，并把失败与上次成功值分开处理；`core/src/context/environment_context.rs` 暴露的是有边界的环境扫描配置。没有找到“读取 README/manifest 摘要并受 Read deny 控制”的同构实现，因此不把 Codex 的指令加载当作已解决本项的证据。可借鉴的是显式来源、拥有者和失败状态，不是凭文件名推导全局可见性。
+- **DeepSeek Harness（静态参考，未运行）：** 已查到其 Workspace Controller、Workspace Files、Session/Attachment/Scope 分离的 owner seam；本轮没有发现可直接证明其自动 README 预读与 Read deny 绑定的同构测试。因此本项的治理不能伪装成“DeepSeek 官方已经替宿主做了权限过滤”。
+- **DeepSeek 官方边界：** Responses API 是无状态的，`instructions` 作为第一条 system 消息，宿主需把要给模型的上下文放进请求；Tool Calls 指南明确函数由用户/宿主提供并执行，模型本身不执行具体函数。官方 API、reasoning、strict schema 与 KV cache 都不会替本地 scanner 判断某个文件内容是否可见。[Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)、[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)
+- **后果：** 如果被拒绝的 README/manifest 含内部路径、部署信息、密钥提示或用户不希望交给模型的业务摘要，后续 `read_file` deny 只能阻止再次读取，不能撤回第一次请求已发送的内容；若使用真实 provider，这会扩大模型输入面和审计范围。此次只用合成 canary 与离线 transport，没有证明真实秘密被发送。
+- **治理方向（本地设计，未实施）：** 在现有 workspace scanner 与 context runtime 之间引入 run-scoped、可审计的 `ResourceVisibilityPolicy`/读取授权快照；README、manifest 摘要、tree/name discovery 和直接 `read_file` 在生成模型可见 block 前统一判定。若产品确实希望“结构感知”默认开启，应明确定义允许来源（例如仅公开 manifest 字段、脱敏 README）并在 wire/日志中标注来源与过滤结果；若 `Read` deny 只承诺工具级拒绝，应在设置和协议文档中明确，不把它呈现成全局保密开关。策略变化要绑定 context version，后续请求、重放和审批使用同一快照；不能在 prompt 中写“不要看”代替宿主过滤。
+- **验收方向：** 增加 README/manifest、普通文件、敏感后缀与隐藏目录、文件名/内容两层可见性，默认/显式 deny、allow、ask、sandbox profile，CLI/SDK/Desktop 三入口和恢复/重放矩阵；断言被拒内容既不在首次 `instructions`，也不在后续 history、工具结果、日志摘要或错误信息中。保留本轮控制：允许读取仍能到达真实工具结果，普通文件自动上下文仍不无故泄露，工具 deny 仍产生 `tool_blocked`。
+
+#### 验证进度（持续追加）
+
+- 已确认上述六个场景和一次命令结果；没有为增加发现数量重复运行 ignored 故障探针。
+- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**92 passed / 0 failed / 87 ignored**，179 tests，测试体 18.73 秒。H-283 的普通/允许控制在默认套件通过；H-283 故障探针仍显式 ignore，默认绿色不代表自动上下文已受权限过滤。
+- `cargo test -p deepagent-workspace --offline`：**11 passed / 0 failed**，doc-tests **0 passed / 0 failed**。这覆盖 scanner/snapshot 既有控制，但没有修生产权限边界。
+- `cargo fmt --all -- --check`：通过；`git diff --check`：通过（工作树已有换行风格提示，不是内容错误）。
+- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`：失败于未修改的既有告警 `deepagent-models/src/client.rs:355 clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127 explicit_counter_loop`；没有为本轮审计修改无关生产代码。
+- 仍未执行完整 workspace、独立 Desktop/CLI/SDK 流程、前端构建、参考工程测试、跨平台、真实 DeepSeek 决策/费用或磁盘重开；没有兼容性、配置、数据迁移、权限或沙箱行为变更。未处理用户排除的 encrypted-content 问题。
