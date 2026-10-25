@@ -1113,6 +1113,132 @@ async fn reopened_thread_read_keeps_session_and_each_run_cursor_independent() {
     eprintln!("cursor audit: two durable runs, independent cursors and file-backed reread matched");
 }
 
+fn cursor_range_response() -> Vec<String> {
+    let item = json!({"type":"message","id":"cursor-range-item","role":"assistant",
+        "status":"completed","content":[{"type":"output_text","text":"AUDIT_CURSOR_RANGE_COMPLETE","annotations":[]}]});
+    [
+        json!({"type":"response.created","response":{"id":"cursor-range-response",
+            "object":"response","created_at":1,"model":"deepseek-flash","status":"in_progress","output":[]}}),
+        json!({"type":"response.output_item.added","output_index":0,
+            "item":{"type":"message","id":"cursor-range-item","role":"assistant","status":"in_progress","content":[]}}),
+        json!({"type":"response.output_item.done","output_index":0,"item":item}),
+        json!({"type":"response.completed","response":{"id":"cursor-range-response",
+            "object":"response","created_at":1,"model":"deepseek-flash","status":"completed",
+            "output":[item],"usage":{"input_tokens":12,"output_tokens":6,"total_tokens":18},
+            "error":null,"incomplete_details":null}}),
+    ].into_iter().enumerate().map(|(sequence, mut event)| {
+        event["sequence_number"] = sequence.into();
+        event.to_string()
+    }).collect()
+}
+
+#[derive(Debug)]
+struct CursorRangeObservation {
+    field: &'static str,
+    after: u64,
+    reopened: bool,
+    error: Option<i32>,
+    session_events: usize,
+    run_events: usize,
+}
+
+fn cursor_range_read(
+    state: &mut ServerState,
+    thread: &str,
+    run: &str,
+    field: &'static str,
+    after: u64,
+    reopened: bool,
+) -> CursorRangeObservation {
+    let mut params = json!({"threadId":thread});
+    params[field] = if field == "runAfterSequences" {
+        json!({run:after})
+    } else {
+        json!(after)
+    };
+    let (response, launch) = state.dispatch(rpc("thread/read", params), None);
+    assert!(launch.is_none());
+    let result = response.result();
+    let observed = CursorRangeObservation {
+        field,
+        after,
+        reopened,
+        error: response.error_code(),
+        session_events: result["events"].as_array().map_or(0, Vec::len),
+        run_events: result["runEvents"].as_array().map_or(0, |runs| {
+            runs.iter()
+                .map(|run| run["events"].as_array().unwrap().len())
+                .sum()
+        }),
+    };
+    eprintln!("cursor range: field={}, after={}, reopened={}, error={:?}, session_events={}, run_events={}",
+        observed.field, observed.after, observed.reopened, observed.error, observed.session_events, observed.run_events);
+    observed
+}
+
+async fn cursor_range_observations(overflow: bool) -> Vec<CursorRangeObservation> {
+    let fixture = Fixture::new(cursor_range_response()).await;
+    let run = fixture.run_turn().await;
+    let full = fixture.read();
+    assert_durable_terminal(&full, &run, "succeeded");
+    let events = full["runEvents"].as_array().unwrap()[0]["events"]
+        .as_array()
+        .unwrap();
+    assert!(events.len() > 1);
+    let tail = events.last().unwrap()["streamSequence"].as_u64().unwrap();
+    let afters = if overflow {
+        vec![i64::MAX as u64 + 1, u64::MAX]
+    } else {
+        vec![tail, i64::MAX as u64]
+    };
+    let mut observations = Vec::new();
+    for reopened in [false, true] {
+        let mut independent_reader = fixture.reopened_state();
+        let mut live = fixture.state.lock().unwrap();
+        let state = if reopened {
+            &mut independent_reader
+        } else {
+            &mut live
+        };
+        for field in ["afterSequence", "runAfterSequence", "runAfterSequences"] {
+            for after in &afters {
+                observations.push(cursor_range_read(
+                    state,
+                    &fixture.thread_id,
+                    &run,
+                    field,
+                    *after,
+                    reopened,
+                ));
+            }
+        }
+        let unchanged = dispatch(state, "thread/read", json!({"threadId":fixture.thread_id}));
+        assert_eq!(
+            unchanged, full,
+            "cursor queries must not mutate durable history"
+        );
+    }
+    observations
+}
+
+#[tokio::test]
+async fn durable_tail_and_in_range_future_cursors_do_not_replay_run_events() {
+    for observed in cursor_range_observations(false).await {
+        assert_eq!(observed.error, None);
+        assert_eq!(observed.run_events, 0, "{observed:?}");
+    }
+}
+
+#[tokio::test]
+#[ignore = "H-298: a u64 cursor outside SQLite i64 range must not wrap and replay old run events"]
+async fn audit_out_of_storage_range_cursors_never_rewind_run_history() {
+    let observations = cursor_range_observations(true).await;
+    assert!(observations.iter().all(|observed| {
+        observed.error == Some(ERR_INVALID_PARAMS)
+            || (observed.error.is_none() && observed.run_events == 0)
+    }), "out-of-range cursors must be rejected or return no later events, never rewind: {observations:?}");
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ForkBoundary {
     Latest,

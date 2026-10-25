@@ -25,6 +25,7 @@
 
 | 本轮核查边界（增量） | 实际证据 | 结论与限制 |
 |---|---|---|
+| Harness 有效读取游标的数值表示域 | 正常 tail/i64最大值共12项观察为空增量；i64最大值+1/u64最大值在公共、run专用、per-run入口及独立重开reader中，12项均回传20条旧run事件 | 新增H-298（P3，显式超域参数条件）；只读历史未变，无工具重执行；不重复H-218分页或H-285分叉恢复 |
 | Pro原生搜索项的热续轮与冷恢复 | 完整SSE搜索生命周期经正式ChatService落盘；同宿主/重开SQLite新实例的实际下一请求均保留唯一completed搜索项的id/status/action，且没有本地函数result | 排误增量，无新H编号；原生生命周期可从run_events读回、查询正文不进入诊断摘要；合成响应，不验真实搜索效果/引用/收费，不关闭H-66/H-152/H-200 |
 | 干净服务重建后的DeepSeek请求前缀 | 正式list_dir及回答落盘后丢弃第一套服务并重开SQLite；新实例续聊的32工具数组/schema、14180字节instructions与旧3项native历史前缀均保持 | 排误增量，无新H编号；同日、工作区/配置未变且无额外MCP/技能/附件；离线wire条件成立，不宣称真实缓存命中或关闭H-168 |
 | 主运行后标题请求的成本与预算归属 | 正式ChatService主运行成功且无标题后，标题真实派发并持久化；SQLite重开仍仅主用量；同服务普通run已被预算拦截时标题仍派发 | H-63补充证据（P2），不另计新编号；空历史/手动命名控制通过；仅离线合成usage/报价，未运行Tauri或真实供应商 |
@@ -8540,3 +8541,41 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 首次两项正向实测后先落盘，再格式化并补齐对照。`cargo test -p deepagent-app-core --features web --test kernel_v2_e2e --offline`实际 **102 passed / 0 failed / 94 ignored，15.11秒，编译28.76秒**；包含新增热/冷搜索回放及原生/外部搜索能力正向控制，H-66失败探针保持ignored。`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`实际 **99 passed / 0 failed / 93 ignored，20.75秒，编译28.58秒**，确认不启用web时不会错误编译依赖该功能的测试模块。
 - `cargo fmt --all -- --check`与`git diff --check`通过；`cargo clippy -p deepagent-app-core --features web --test kernel_v2_e2e --offline -- -D warnings`退出1，仍被未修改的models/client.rs:355 clone_on_copy及persistence/run_store.rs:127 explicit_counter_loop阻断。不屏蔽lint、不改无关代码、不报告Clippy通过。
 - 本轮仅新增原生搜索测试模块、在既有集成target中按web feature注册并更新报告，没有生产Rust/依赖/配置/协议/权限/沙箱/数据格式变更。未运行整个workspace、其他AppCore target、真实Tauri/前端、操作系统进程重启、参考工程或真实provider；全系统审计仍未完成。用户既有未跟踪项保持不读取、不暂存。
+
+### H-298：Harness 超出存储表示域的读取游标回绕，错误重放全部旧 run events
+
+**2026-10-25，首次有效复现后即时记录；P3、条件性读取正确性缺陷，未修复。** 本轮不是重跑 H-218 的无界分页、H-205 的 SDK 通知身份或 H-285 的分叉文件恢复；没有调用 fork/rewind，没有修改用户文件或生产实现。
+
+#### 正式调用与首次实测
+
+- 在 `apps/cli/src/app_server/terminal_audit.rs` 复用既有正式 Fixture，经离线 Responses transport、ChatService/Kernel 完成唯一 succeeded run，再通过 `ServerState::dispatch` 实际调用 `thread/read`。会话与 run 记录落在临时文件 SQLite；不手工插入极大事件序号，极大值只作为读取请求参数。
+- 正常对照命令 `cargo test -p deepagent-cli durable_tail_and_in_range_future_cursors_do_not_replay_run_events --offline -- --nocapture`：**1 passed / 0 failed，0.40 秒**。真实 run tail=19；tail 和 `i64::MAX` 两种读取值，在 `afterSequence`、`runAfterSequence`、`runAfterSequences[真实runId]` 三种入口，以及当前服务/独立重开连接与 ServerState 两种状态下，12 项观察均返回 0 条 run events、无 RPC 错误。
+- 首次故障命令 `cargo test -p deepagent-cli audit_out_of_storage_range_cursors_never_rewind_run_history --offline -- --ignored --nocapture`：**0 passed / 1 failed（预期），0.32 秒**。`i64::MAX+1=9223372036854775808` 和 `u64::MAX=18446744073709551615` 在上述三入口、两状态的 **12 项观察全部成功返回 20 条旧 run events，而不是拒绝或空增量**。该失败探针只显式执行一次，默认保持 ignored。
+- 公共 `afterSequence` 入口同时返回 session events=0、run events=20，两个流对同一未来游标出现不一致；单独 run 游标入口未设置 session 游标，session events=11 属于正常全量会话投影，不是额外缺陷。每组读取后再次无游标读取与初始完整结果逐值相等，证明这些读取没有改变持久历史；不能据此声称会重复执行工具。
+- “重开”明确指独立数据库连接和新 ServerState，原 Fixture 仍存活，不是全部服务退出、操作系统进程重启或崩溃恢复。此前误用过滤串 `cursor_range` 只编译并运行 **0 tests**，是测试选择失误，不计入有效行为验证、不登记为产品问题。
+
+#### 根因、影响与证据边界
+
+- `deepagent-harness-protocol/src/requests.rs::ThreadReadRequest` 接受 `Option<u64>` 及每 run 的 u64 map；`apps/cli/src/app_server.rs::thread_read` 解析公共/专用/每 run 覆盖后，将有效游标传给 `RunStore::events_after`。`deepagent-persistence/src/run_store.rs:289` 使用 `after.map(|v| v as i64).unwrap_or(-1)` 绑定 SQLite 查询 `sequence > ?2`，未检查表示域。两个边界值分别成为负最小值和 -1，于是所有正常非负序号都符合查询。
+- session 流在内存按 u64 比较，没有这一缩窄，故公共游标只倒退 run 流。既有 `reopened_thread_read_keeps_session_and_each_run_cursor_independent` 虽含 `u64::MAX`，却由正常 session/per-run 覆盖值遮蔽，不能覆盖本次有效超域游标。
+- 触发要求调用方显式提供超出 i64 表示域的值；本轮不证明正常增长的生产序号、官方 SDK 默认参数或普通用户操作会自然到达该值。可能的后果是恢复客户端把旧运行状态/工具显示再次应用、重复下载历史、放大 H-218 的响应成本；是否出现 UI 重复、状态覆盖或重试循环取决于消费者去重，**本轮未动态验证这些下游后果**。
+- 不是权限扩大、数据写入、模型调用或工具副作用复发；返回仍来自目标 thread 的已有 run。P3依据是异常游标条件下增量读取契约破坏，不能夸大为自然发生的数据破坏或高危攻击链。DeepSeek 官方 Responses API 不规定宿主 Harness 游标，本项不应通过改 reasoning/cache/模型参数修复。
+
+#### 成熟 Agent 如何处理可借鉴的边界
+
+- **DeepSeek Harness，静态源码对照**：`借鉴/deepseek-harness/packages/api/session-controller/src/history.ts::SessionHistoryController.page` 首先执行 `validatePageRequest`，再构造 `SessionSeq/SessionLogOffset`、加载历史；校验使用 `Number.isSafeInteger` 并限制 throughSeq/beforeSeq 的合法下界、拒绝负零，之后也拒绝超出 sourceCursor 的 throughSeq。借鉴点是先检查协议数值是否可由实现精确表达，再交给存储/分页运算。它是反向 page API，不是本系统 forward-after API；其 2^53-1 安全整数域也不是 Rust/SQLite 必须照搬的上限。本轮没有测试该参考工程，不能声称其所有 follow/读取入口均已验证。
+- **Codex，静态源码对照**：`借鉴/codex/codex-rs/app-server/src/request_processors/thread_processor.rs::paginate_thread_turns` 在非空 turns 分支解析包含 turn_id/include_anchor 的字符串 cursor，解析失败返回 invalid_request；找不到锚点也明确返回 `invalid cursor: anchor turn is no longer present`，不把它当成起点。其分页不经过本系统这样的 u64→SQLite i64 比较。空 turns 分支会在解析 cursor 前直接返回空页，不能笼统声称所有情况下都会验证 cursor。可借鉴稳定锚点及拒绝无效锚点，不要求把现有增量序号全部换成 Codex 的分页格式。
+- 本轮未找到并核实 Claude Code 的同类整数游标实现，故不据其泛化能力补齐结论。两种相关参考足以支持表示域检查与明确失败语义，但不替代本系统的动态证据。
+
+#### 根因治理建议与验收
+
+- 在既有 `RunStore::events_after` 的存储适配边界消除未检查的缩窄，避免仅在 CLI 外层修一处而保留 `ChatService::run_events` 等共享调用入口（后者经全局调用搜索及源码核对，本轮没有单独动态测试）。在协议边界明确超域策略：拒绝为 InvalidParams，或统一定义未来游标为空增量；二者均不得回绕，错误不能误报成内部数据库故障。session/run/per-run 的规则与覆盖优先级需形成一个可信实现。
+- 本地设计，不新增第二事件库、不用猜测事件量去截断补洞，也不以饱和转换偷偷改变未定义的协议语义。应明确可表示数值范围；若未来 TypeScript 客户端支持更大序号，则另外定义无损 wire 表示，而不是把 JS number 精度问题与当前 Rust 缩窄混为一项已经复现的故障。
+- 回归应包括 None、0、真实 tail、普通未来值、i64最大值及其+1、u64最大值，公共/专用/per-run覆盖、多run与文件重开，保证大游标不返回更早事件，且不改历史、不触发执行。当前新增测试只覆盖本节列明的单 run、四个游标值、三个参数入口及两种读取状态，无游标读作为历史不变对照；不能宣称上述完整验收矩阵已经通过。
+
+#### 本轮回归与交付边界
+
+- 首次故障有效执行后先写入本报告，再补参考对照与格式整理；新增故障探针保持正常行为期望，不改成接受旧事件重放。`cargo test -p deepagent-cli --offline`：**88 passed / 0 failed / 27 ignored，测试体 3.66 秒，编译 10.38 秒**；其中包含新增正常游标对照，H-298 及既有故障探针未启用。
+- `cargo test -p deepagent-persistence --offline`：**67 passed / 0 failed / 0 ignored，1.62 秒**；doc-tests 为 0。`cargo fmt --all -- --check` 与 `git diff --check` 通过；Git 的 LF→CRLF 工作副本提示不是测试失败。
+- `cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings` 退出 1：仍由未修改的 `deepagent-models/src/client.rs:355` clone_on_copy 和 `deepagent-persistence/src/run_store.rs:127` explicit_counter_loop 阻断。未屏蔽 lint 或顺手改生产代码，不能称 Clippy 通过。
+- 仅新增 CLI 测试 helper/两项测试及本报告；没有生产逻辑、协议、权限、沙箱、配置、依赖或持久化格式变更。code-audit 技能用于入口/数据流/人工复现与证据分层，本轮采用已定位边界的确定性测试，未运行全仓库自动 SAST、workspace 全测、UI/真实供应商、真实 stdio 客户端或参考工程测试。用户既有未跟踪项不读取、不暂存；全系统审计继续保持未完成。
