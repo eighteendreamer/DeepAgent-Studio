@@ -1907,7 +1907,7 @@ E-H41-20261027-05（独立提交与范围）：生产修复、隔离回归测试
 - **E-H42-20261027-03（双进程回归）**：H-42 探针转为默认测试；`cargo test -p deepagent-runtime --test schedule_audit --offline -- --nocapture` 退出 0，H-42 双进程和生命周期探针共 `2 passed / 0 failed / 1 ignored`（唯一 ignored 为独立 H-96）。one-shot/recurring 双进程均为 `same_task_fired_in_two_processes=false`；生命周期探针在独立子进程持锁期间确认 competing poll 不派发，并在 owner 正常退出及被 `kill` 后确认主进程可重新取得锁并完成 occurrence。
 - **E-H42-20261027-04（跨层验证）**：`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 为 `302 passed / 11 ignored`；`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 为 `1159 passed / 63 ignored`；`cargo check -p deepagent-runtime -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 均通过。严格 Runtime clippy 仍被未修改的 `model_agent.rs:282 clone_on_copy` 阻断，不将基线失败写成通过。
 - **E-H42-20261027-05（边界）**：本修复只证明两个本机进程不会在“同一持久 occurrence 的判断→fire→记账”窗口内重复接纳；fire 后进程在记账前崩溃、落盘失败、已接纳运行的恢复和 scheduler 停止后的在途运行仍分别属于 H-96/H-97，不能由计划锁保证 exactly-once。真实 DeepSeek/供应商、工具副作用、其他 OS、断电和完整 workspace 未执行。
-- **E-H42-20261027-06（修复提交）**：生产锁、回归测试和本轮文档在独立修复提交中创建；hash 取得后只回填本条与进度台账，不 amend、不推送、不创建 PR。修复前的“本轮仅增加探针、未修改生产调度”历史记录保留不改写。
+- **E-H42-20261027-06（修复提交）**：生产锁、回归测试和本轮文档已在独立修复提交 `75992c8bf12fb2a5c24acf3251ffa52627ffacb1`（`【fix】修复H-42调度跨进程所有权`）中创建；本次只回填真实 hash，不 amend、不推送、不创建 PR。修复前的“本轮仅增加探针、未修改生产调度”历史记录保留不改写。
 
 ### H-43：运行启动先于事件订阅就绪，提前终态丢失后前端持续等待
 
