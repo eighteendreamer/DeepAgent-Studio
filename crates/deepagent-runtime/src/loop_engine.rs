@@ -60,16 +60,6 @@ impl VerificationPlan {
     }
 }
 
-/// A tool call whose I/O already completed concurrently, ready to have its
-/// events recorded in order (see [`RuntimeEngine::record_parallel_result`]).
-struct CompletedToolCall {
-    call_id: String,
-    tool_name: String,
-    arguments: serde_json::Value,
-    result: Result<deepagent_tools::ToolOutput>,
-    duration_ms: u64,
-}
-
 /// Why a run stopped.
 #[derive(Debug, Clone, PartialEq)]
 pub enum RunOutcome {
@@ -1257,6 +1247,38 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         )
     }
 
+    /// Build the one canonical tool pipeline used by both serial and parallel
+    /// dispatch. The scheduler must not recreate any of these controls in its
+    /// own branch.
+    fn tool_pipeline(
+        &self,
+        session_id: deepagent_core::id::SessionId,
+    ) -> crate::tool_pipeline::ToolExecutionPipeline<'_> {
+        let cancel = self
+            .cancel
+            .clone()
+            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        crate::tool_pipeline::ToolExecutionPipeline::new(
+            self.registry,
+            session_id,
+            self.config.permissions.clone(),
+        )
+        .with_hooks(self.hooks)
+        .with_approvals(self.approvals.clone())
+        .with_events(self.events.clone())
+        .with_auto_approve(self.config.auto_approve)
+        .with_execution_controls(cancel, self.config.tool_timeout)
+        .with_execution_token(self.cancel_token.clone())
+        .with_result_policy(
+            self.config.tool_result_budget.clone(),
+            self.config.tool_result_decorator.clone(),
+            Default::default(),
+        )
+        .with_checkpoint(self.config.checkpoint.clone())
+        .with_artifact_persistence(self.config.artifact_persistence.clone())
+        .with_action_persistence(self.config.action_persistence.clone())
+    }
+
     /// Whether this run actually created or modified files. The build/type
     /// verification plan is gated on this FACT (not on prompt keywords):
     /// aligns with Claude Code running verification only when non-trivial
@@ -1526,47 +1548,28 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         }
         // Partition: read-only/concurrency-safe tools can have their I/O run in
         // parallel; everything else runs sequentially for safety + ordering.
-        // Validate and run each candidate's PreToolUse gate before starting
-        // any parallel I/O. Outcomes are retained so blocked/ask calls do not
-        // execute the same hook twice when they fall back to serial handling.
-        let mut preflight: std::collections::HashMap<usize, HookOutcome> =
-            std::collections::HashMap::new();
+        // Prepare each parallel candidate through the canonical pipeline before
+        // starting any I/O. The old branch only ran validation + BeforeToolUse
+        // and then called the registry directly, bypassing permission,
+        // deadline, cancellation and result finalization.
+        let mut prepared_parallel: std::collections::HashMap<
+            usize,
+            crate::tool_pipeline::ToolPreparation,
+        > = std::collections::HashMap::new();
         let mut parallel_idx = Vec::new();
         for (i, invocation) in invocations.iter_mut().enumerate() {
             if !self.is_parallel_safe(&invocation.name, &invocation.arguments) {
                 continue;
             }
-            let validated = match self
-                .registry
-                .validate_invocation(&invocation.name, invocation.arguments.clone())
-            {
-                Ok(validated) => validated,
-                Err(_) => continue,
-            };
-            invocation.arguments = validated.arguments;
-            let outcome = self
-                .fire_hook(
-                    session_id,
-                    HookPoint::BeforeToolUse,
-                    HookData::before_tool(invocation.name.clone(), invocation.arguments.clone()),
-                )
+            let preparation = self
+                .tool_pipeline(session_id)
+                .prepare(invocation.clone(), None)
                 .await?;
-            if let HookOutcome::Modify { updated_input, .. } = &outcome {
-                match self
-                    .registry
-                    .validate_invocation(&invocation.name, updated_input.clone())
-                {
-                    Ok(validated) => invocation.arguments = validated.arguments,
-                    Err(_) => {
-                        preflight.insert(i, outcome);
-                        continue;
-                    }
-                }
-            }
-            if matches!(outcome, HookOutcome::Continue | HookOutcome::Modify { .. }) {
+            if let crate::tool_pipeline::ToolPreparation::Ready(prepared) = &preparation {
+                invocation.arguments = prepared.arguments.clone();
                 parallel_idx.push(i);
             }
-            preflight.insert(i, outcome);
+            prepared_parallel.insert(i, preparation);
         }
         let mut batch_inputs = invocations
             .iter()
@@ -1582,23 +1585,35 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         // Fast path: nothing parallelizable → just run them in order.
         if parallel_idx.len() <= 1 {
             let mut out = Vec::with_capacity(invocations.len());
-            for inv in invocations {
-                let outcome = preflight.remove(&out.len());
+            for (index, inv) in invocations.into_iter().enumerate() {
                 let early = inv
                     .id
                     .as_ref()
                     .and_then(|call_id| speculative.remove(call_id));
-                out.push(
-                    self.execute_tool_with_before_and_speculative(
-                        session,
-                        session_id,
-                        inv,
-                        outcome,
-                        early,
-                        provider_tool_calls_persisted,
-                    )
-                    .await?,
-                );
+                if let Some(preparation) = prepared_parallel.remove(&index) {
+                    out.push(
+                        self.execute_prepared_in_session(
+                            session,
+                            session_id,
+                            preparation,
+                            early,
+                            provider_tool_calls_persisted,
+                        )
+                        .await?,
+                    );
+                } else {
+                    out.push(
+                        self.execute_tool_with_before_and_speculative(
+                            session,
+                            session_id,
+                            inv,
+                            None,
+                            early,
+                            provider_tool_calls_persisted,
+                        )
+                        .await?,
+                    );
+                }
             }
             for (index, observation) in out.iter().enumerate() {
                 if let Some(input) = batch_inputs.get_mut(index) {
@@ -1625,142 +1640,51 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             return Ok(out);
         }
 
-        // Pre-assign call ids and emit ToolStarted for EVERY parallel tool up
-        // front, so the UI shows them all as "running" immediately — not only
-        // after they finish. (This is what makes parallel `task` sub-agents and
-        // batched reads show live progress instead of flipping to "completed"
-        // all at once at the very end.)
         use futures::stream::{FuturesUnordered, StreamExt};
         let parallel_set: std::collections::HashSet<usize> = parallel_idx.iter().copied().collect();
-
-        let mut call_ids: std::collections::HashMap<usize, String> =
-            std::collections::HashMap::new();
+        // Concurrently execute the prepared calls through the canonical
+        // pipeline. It owns the timeout, cancellation, action state, result
+        // budget, events and hooks; this branch only controls overlap.
+        let mut futs = FuturesUnordered::new();
         for &i in &parallel_idx {
-            let inv = &invocations[i];
-            let call_id = inv
+            let preparation = prepared_parallel
+                .remove(&i)
+                .expect("parallel preparation present");
+            let call_id = invocations[i]
                 .id
                 .clone()
                 .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
-            if let Some(persistence) = self.config.action_persistence.as_ref() {
-                persistence.transition(
-                    &call_id,
-                    deepagent_persistence::run_control::RunActionState::Prepared,
-                    None,
-                    None,
-                )?;
-                persistence.transition(
-                    &call_id,
-                    deepagent_persistence::run_control::RunActionState::Running,
-                    None,
-                    None,
-                )?;
-            }
-            let metadata = tool_ui_metadata(&inv.name, &inv.arguments, None);
-            self.emit(RuntimeEvent::ToolStarted {
-                name: inv.name.clone(),
-                call_id: call_id.clone(),
-                arguments: inv.arguments.clone(),
-                tool_kind: metadata.tool_kind,
-                file_path: metadata.file_path,
-                summary: metadata.summary,
-                meta: metadata.meta,
-            });
-            call_ids.insert(i, call_id);
-        }
-
-        // Concurrently invoke the parallel-safe tools' I/O (no session access).
-        let mut futs = FuturesUnordered::new();
-        for &i in &parallel_idx {
-            let inv = &invocations[i];
-            let call_id = call_ids[&i].clone();
-            let name = inv.name.clone();
-            let args = inv.arguments.clone();
-            let metadata_args = args.clone();
-            let registry = self.registry;
-            let perms = self.config.permissions.clone();
-            let auto = self.config.auto_approve;
-            let execution_context = self
-                .execution_context()
-                .with_timeout(self.config.tool_timeout);
-            let result_policy = self.tool_result_policy(session_id);
             let early = speculative.remove(&call_id);
+            let pipeline = self.tool_pipeline(session_id);
             futs.push(async move {
-                let invoke = || async {
-                    let started = std::time::Instant::now();
-                    let result = registry
-                        .invoke_with_context(&name, args, &perms, auto, execution_context)
-                        .await;
-                    (result, started.elapsed().as_millis() as u64)
-                };
-                let (raw_result, duration_ms) = match early {
-                    Some(early) => match early.handle.await {
-                        Ok(completed) => completed,
-                        Err(_) => invoke().await,
+                let result = match preparation {
+                    crate::tool_pipeline::ToolPreparation::Ready(prepared) => match early {
+                        Some(early) => match early.handle.await {
+                            Ok((result, duration_ms)) => {
+                                pipeline
+                                    .complete_prepared(prepared, result, duration_ms)
+                                    .await
+                            }
+                            Err(_) => pipeline.execute_prepared(prepared).await,
+                        },
+                        None => pipeline.execute_prepared(prepared).await,
                     },
-                    None => invoke().await,
+                    crate::tool_pipeline::ToolPreparation::Blocked(blocked) => {
+                        if let Some(early) = early {
+                            early.handle.abort();
+                        }
+                        Ok(blocked)
+                    }
                 };
-                let result = match raw_result {
-                    Ok(out) => Ok(result_policy.apply(&name, &call_id, out).await),
-                    Err(e) => Err(e),
-                };
-                (i, call_id, name, metadata_args, result, duration_ms)
+                (i, result)
             });
         }
         let mut results: std::collections::HashMap<
             usize,
-            (String, String, Result<deepagent_tools::ToolOutput>, u64),
+            Result<crate::tool_pipeline::ToolPipelineResult>,
         > = std::collections::HashMap::new();
-        // Drain completions AS THEY ARRIVE and emit ToolCompleted immediately,
-        // so each parallel tool flips to ok/error the moment it actually
-        // finishes (live, out-of-order progress) — the session-log append still
-        // happens deterministically below in the model's original order.
-        while let Some((i, call_id, name, arguments, result, duration_ms)) = futs.next().await {
-            if let Some(persistence) = self.config.action_persistence.as_ref() {
-                match &result {
-                    Ok(output) if output.ok => persistence.transition(
-                        &call_id,
-                        deepagent_persistence::run_control::RunActionState::Completed,
-                        None,
-                        None,
-                    )?,
-                    _ if self.is_cancelled() => persistence
-                        .cancel(&call_id, "parallel tool execution observed cancellation")?,
-                    _ => persistence.fail(&call_id, "parallel tool execution failed")?,
-                }
-            }
-            let (ok, value) = match &result {
-                Ok(out) => (out.ok, out.value.clone()),
-                Err(e) => (false, serde_json::json!({ "error": e.to_string() })),
-            };
-            let la = value
-                .get("lines_added")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
-            let lr = value
-                .get("lines_removed")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize;
-            let metadata = tool_ui_metadata(&name, &arguments, Some(&value));
-            self.emit(RuntimeEvent::ToolCompleted {
-                name: name.clone(),
-                call_id: call_id.clone(),
-                ok,
-                output: value,
-                duration_ms,
-                tool_kind: metadata.tool_kind.clone(),
-                file_path: metadata.file_path.clone(),
-                summary: metadata.summary,
-                meta: metadata.meta,
-            });
-
-            // Record file edit if this was a successful file write/edit operation
-            if ok {
-                if let Some(ref path) = metadata.file_path {
-                    self.record_file_edit(&name, path, metadata.tool_kind.as_deref(), la, lr);
-                }
-            }
-
-            results.insert(i, (call_id, name, result, duration_ms));
+        while let Some((i, result)) = futs.next().await {
+            results.insert(i, result);
         }
 
         // Now stitch observations back together in the model's original order,
@@ -1770,19 +1694,24 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let mut observations = Vec::with_capacity(invocations.len());
         for (i, inv) in invocations.into_iter().enumerate() {
             if parallel_set.contains(&i) {
-                let (call_id, tool_name, result, duration_ms) =
-                    results.remove(&i).expect("parallel result present");
+                let result = results.remove(&i).expect("parallel result present")?;
                 observations.push(
-                    self.record_parallel_result(
+                    self.record_pipeline_result(
                         session,
                         session_id,
-                        CompletedToolCall {
-                            call_id,
-                            tool_name,
-                            arguments: inv.arguments,
-                            result,
-                            duration_ms,
-                        },
+                        result,
+                        provider_tool_calls_persisted,
+                    )
+                    .await?,
+                );
+            } else if let Some(crate::tool_pipeline::ToolPreparation::Blocked(blocked)) =
+                prepared_parallel.remove(&i)
+            {
+                observations.push(
+                    self.record_pipeline_result(
+                        session,
+                        session_id,
+                        blocked,
                         provider_tool_calls_persisted,
                     )
                     .await?,
@@ -1793,7 +1722,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                         session,
                         session_id,
                         inv,
-                        preflight.remove(&i),
+                        None,
                         provider_tool_calls_persisted,
                     )
                     .await?,
@@ -1903,27 +1832,27 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         }
     }
 
-    /// Record the request + completion events for a tool whose I/O already ran
-    /// concurrently (in [`RuntimeEngine::execute_tools`]), returning its
-    /// [`Observation`]. The live `ToolStarted`/`ToolCompleted` UI events were
-    /// already emitted by `execute_tools` (up front / as each finished); this
-    /// only writes the append-only session log (in deterministic call order)
-    /// and fires the AfterToolUse hook. Skips the BeforeToolUse gate (only
-    /// invoked for parallel-safe tools that don't need approval).
-    async fn record_parallel_result(
+    /// Record the durable session projection for a result already finalized by
+    /// the canonical [`ToolExecutionPipeline`]. Runtime events, result policy,
+    /// action state and post-execution hooks are owned by that pipeline; this
+    /// method only performs the model-order append and common observation
+    /// projection.
+    async fn record_pipeline_result(
         &self,
         session: &mut Session<'a, C>,
         session_id: deepagent_core::id::SessionId,
-        completed: CompletedToolCall,
+        result: crate::tool_pipeline::ToolPipelineResult,
         provider_tool_calls_persisted: bool,
     ) -> Result<Observation> {
-        let CompletedToolCall {
+        let crate::tool_pipeline::ToolPipelineResult {
             call_id,
-            tool_name,
+            name: tool_name,
             arguments,
-            result,
+            output,
             duration_ms,
-        } = completed;
+            stage,
+            ..
+        } = result;
         self.metrics.incr(names::TOOL_CALLS, 1);
         let requested = EventPayload::ToolCallRequested {
             call: ToolCall {
@@ -1938,10 +1867,8 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             session.append(requested)?;
         }
 
-        let (ok, value) = match result {
-            Ok(out) => (out.ok, out.value),
-            Err(e) => (false, serde_json::json!({ "error": e.to_string() })),
-        };
+        let ok = output.ok;
+        let value = output.value;
         if !ok {
             self.metrics.incr(names::TOOL_FAILURES, 1);
         }
@@ -1951,16 +1878,21 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             output: value.clone(),
             duration_ms,
         })?;
-        self.fire_hook(
-            session_id,
-            if ok {
-                HookPoint::AfterToolUse
-            } else {
-                HookPoint::PostToolUseFailure
-            },
-            HookData::after_tool(tool_name.clone(), arguments, ok),
-        )
-        .await?;
+        if !ok && stage != crate::tool_pipeline::ToolPipelineStage::Execution {
+            self.fire_hook(
+                session_id,
+                HookPoint::PermissionDenied,
+                HookData::Permission {
+                    tool: tool_name.clone(),
+                    arguments: arguments.clone(),
+                    reason: value["error"]
+                        .as_str()
+                        .unwrap_or("tool blocked")
+                        .to_string(),
+                },
+            )
+            .await?;
+        }
         Ok(Observation {
             tool: tool_name,
             ok,
@@ -1968,6 +1900,47 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             output: value,
             call_id: Some(call_id),
         })
+    }
+
+    async fn execute_prepared_in_session(
+        &self,
+        session: &mut Session<'a, C>,
+        session_id: deepagent_core::id::SessionId,
+        preparation: crate::tool_pipeline::ToolPreparation,
+        speculative: Option<SpeculativeToolExecution>,
+        provider_tool_calls_persisted: bool,
+    ) -> Result<Observation> {
+        let result = match preparation {
+            crate::tool_pipeline::ToolPreparation::Ready(prepared) => {
+                let pipeline = self.tool_pipeline(session_id);
+                let result = match speculative {
+                    Some(speculative) => match speculative.handle.await {
+                        Ok((result, duration_ms)) => {
+                            pipeline
+                                .complete_prepared(prepared, result, duration_ms)
+                                .await?
+                        }
+                        Err(_) => pipeline.execute_prepared(prepared).await?,
+                    },
+                    None => pipeline.execute_prepared(prepared).await?,
+                };
+                result
+            }
+            crate::tool_pipeline::ToolPreparation::Blocked(blocked) => {
+                if let Some(speculative) = speculative {
+                    speculative
+                        .cancel
+                        .store(true, std::sync::atomic::Ordering::Release);
+                    if let Some(token) = speculative.token.as_ref() {
+                        token.cancel();
+                    }
+                    speculative.handle.abort();
+                }
+                blocked
+            }
+        };
+        self.record_pipeline_result(session, session_id, result, provider_tool_calls_persisted)
+            .await
     }
 
     /// Execute one tool invocation, recording request + completion events and
@@ -2037,29 +2010,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         speculative: Option<SpeculativeToolExecution>,
         provider_tool_calls_persisted: bool,
     ) -> Result<Observation> {
-        let cancel = self
-            .cancel
-            .clone()
-            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
-        let pipeline = crate::tool_pipeline::ToolExecutionPipeline::new(
-            self.registry,
-            session_id,
-            self.config.permissions.clone(),
-        )
-        .with_hooks(self.hooks)
-        .with_approvals(self.approvals.clone())
-        .with_events(self.events.clone())
-        .with_auto_approve(self.config.auto_approve)
-        .with_execution_controls(cancel, self.config.tool_timeout)
-        .with_execution_token(self.cancel_token.clone())
-        .with_result_policy(
-            self.config.tool_result_budget.clone(),
-            self.config.tool_result_decorator.clone(),
-            Default::default(),
-        )
-        .with_checkpoint(self.config.checkpoint.clone());
-        let pipeline = pipeline.with_artifact_persistence(self.config.artifact_persistence.clone());
-        let pipeline = pipeline.with_action_persistence(self.config.action_persistence.clone());
+        let pipeline = self.tool_pipeline(session_id);
 
         if self.is_cancelled() {
             if let Some(speculative) = speculative {

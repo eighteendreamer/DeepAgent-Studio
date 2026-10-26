@@ -1567,6 +1567,15 @@ E-H28-20261027-10（独立提交与真实 hash 回填）：修复代码、正式
 
 ### H-34：并行工具绕过统一执行流水线，单工具超时保护在批量调用时失效
 
+**当前状态：修复中（2026-10-27）。**
+
+E-H34-20261027-01（原始探针真实复核）：HEAD 0bcccc43、生产代码未改时，续读既有进程78709，隔离临时数据根并清除继承DB路径的 `cargo test -p deepagent-runtime --lib loop_engine::tests::audit_parallel_tools_preserve_serial_deadline_and_cancellation --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` 原生命令退出101，0 passed/1 failed/0 ignored（0.96秒，编译27.01秒）。真实输出：单工具started=1、finished_by_deadline=true、stopped_after_cancel=true、budget_errors=1；双工具started=2、finished_by_deadline=false、stopped_after_cancel=false、budget_errors=0；探针先release回收再断言失败，无遗留测试Future。当前仅确认同一兼容工具串并行期限/取消差异，尚未修改生产代码或取得修复验收；不重复H-36、不合并H-35写屏障、不触碰用户数据或真实供应商。本项转修复中，37已验收/18历史跳过/7归并/2撤销/241待修/1修复中，即242有效未关闭；整体goal保持active。
+E-H34-20261027-02（根因修复，尚未创建提交）：并行分支改为先通过既有 `ToolExecutionPipeline::prepare`，再在 `FuturesUnordered` 中调用同一 pipeline 的 `execute_prepared`/`complete_prepared`；调度器只保留并发与模型顺序配对。串行与并行现在共用 `tool_timeout` 外层 `tokio::time::timeout`、运行取消上下文、bounded_by_run_timeout opt-out、action state、结果预算/Artifact、RuntimeEvent、After/Failure hook 和权限/审批准备。新增 `tool_pipeline` 构造边界与 `record_pipeline_result`，移除并行分支自己的 registry.invoke、Started/Completed、action transition、结果 policy 和后置 hook 副本；prepare 产生的 blocked 结果也在模型顺序中配对落盘。仅修改 `crates/deepagent-runtime/src/loop_engine.rs`，不改 H-35 串行写屏障，不扩权限，不把 Future 丢弃宣称为外部副作用已停止。
+
+E-H34-20261027-03（修复后正式回归）：生产代码冻结后再次运行 `cargo test -p deepagent-runtime --lib loop_engine::tests::audit_parallel_tools_preserve_serial_deadline_and_cancellation --offline -j 1 -- --ignored --exact --nocapture --test-threads=1`，退出0，1 passed/0 failed/0 ignored（0.45秒）；真实输出单工具 `started=1 finished_by_deadline=true stopped_after_cancel=true budget_errors=1`，双工具 `started=2 finished_by_deadline=true stopped_after_cancel=true budget_errors=2`。随后 `cargo test -p deepagent-runtime --lib loop_engine::tests --offline -j 1 -- --nocapture --test-threads=1` 退出0，37 passed/0 failed/3 ignored（6.93秒，另含本项及既有审计 ignored）；`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出0，301 passed/0 failed/11 ignored（13.32秒）。`cargo fmt --all -- --check` 与 `git diff --check` 退出0。H-34 探针只使用内存 SQLite、ScriptedAgent 和本地 GatedRead，不访问真实供应商、网络、内网、凭据或用户文件。
+
+E-H34-20261027-04（验收边界）：本项在 Windows 本机 RuntimeEngine/ToolPipeline 范围关闭前，仍须完成独立修复提交及 hash 回填。已证单/双兼容工具的期限、取消与成对失败结果；并行调度仍不等同于能硬杀不合作的外部进程/网络副作用，`bounded_by_run_timeout=false` 的子运行/人工等待仍按其自有契约等待；流式 speculative 的工具取消/期限另有既有边界。H-35 串行写屏障未合并，AppCore/真实桌面、其他 OS、真实供应商和外部资源清理未由本项宣称通过。严格 clippy 当前仍被未改 `deepagent-models/src/client.rs:355` 的 clone-on-copy 基线阻断。
+
 **级别：高（P1）；范围：同一步至少两个通过校验和 PreToolUse 的 concurrency-safe 工具。** 需工具执行没有主动响应 ToolExecutionContext，例如仅实现 Tool::invoke 的合法兼容工具；不代表每个内置工具都会挂起。这个问题与模型取消缺口 H-29/H-31 位于不同等待边界。
 
 #### 分叉路径与对照复现
