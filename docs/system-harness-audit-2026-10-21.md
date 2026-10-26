@@ -33,7 +33,7 @@
 | H-03 | 已修复并验收（2026-10-27，所列Windows本机/AppCore与CLI路由范围） | 原始Direct误路由失败保留；不可变backend registry按run解析，显式不可用拒绝，Direct兼容路径保留；AppCore路由1、registry8、CLI配置3及桌面Tauri cargo check通过，见E-H03-01～06；修复提交待回填 |
 | H-05 | 已修复并验收（2026-10-27，离线DeepSeek adapter、Chat wire投影与Runtime重组范围） | 原始assistant工具响应拆分失败保留；Chat使用原始item顺序合并同一assistant的reasoning/文本/单多工具调用，Responses仍使用repaired配对；projection4、models lib89、runtime lib286通过，见E-H05-01～04；修复提交`6bc2d66013c6116a8b2ea2c454fa29f3c854090d` |
 | H-14 | 已修复并验收（2026-10-27，离线 mock provider 与 Runtime/AppCore side ledger 范围） | 无效摘要仍保留原上下文但已归集 provider usage；AppCore 探针、Runtime 对照、全组及边界见本项修复记录；修复提交`74e6759c` |
-| H-26 | 已修复并验收（2026-10-27，Windows 本机外部 hook 进程与 ToolExecutionPipeline 范围） | 标准嵌套 PreToolUse deny/ask 已进入统一工具门禁；原始失败、真实调度回归及未验边界见本项修复记录；修复提交待回填 |
+| H-26 | 已修复并验收（2026-10-27，Windows 本机外部 hook 进程与 ToolExecutionPipeline 范围） | 标准嵌套 PreToolUse deny/ask 已进入统一工具门禁；原始失败、真实调度回归及未验边界见本项修复记录；修复提交`42bd83b0` |
 
 逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **34**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **245（245待修复）**；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
