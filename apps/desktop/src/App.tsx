@@ -34,6 +34,7 @@ import {
   getSettings,
   refreshModels,
   runChat,
+  RunCompletionError,
   cancelRun,
   resolveApproval,
   listenQuestions,
@@ -1188,6 +1189,8 @@ export function App() {
       // Wall-clock start of this run, for the "total time" footer metric.
       const runStart = Date.now();
       let modelAttemptBaseParts: MessagePart[] | null = null;
+      let observedTerminal: RuntimeEvent["type"] | null = null;
+      let settledErrorReported = false;
 
       // The run's session key for the live transcript. Until the backend
       // announces the real id (session_registered), a new run buffers under a
@@ -1619,6 +1622,39 @@ export function App() {
         }, true);
       };
 
+      // A cancelled/settled turn can still report a later persistence failure
+      // through session://completed. Keep the execution result (including its
+      // cancelled tool cards) and append one explicit storage diagnostic rather
+      // than silently discarding the rejected completion promise.
+      const appendSettledRunError = (detail: string) => {
+        if (settledErrorReported) return;
+        settledErrorReported = true;
+        const text = `运行已停止，但结果未保存：${detail}`;
+        updateTranscript((prev) => {
+          const next = [...prev];
+          const lastIdx = next.length - 1;
+          if (lastIdx < 0 || next[lastIdx].role !== "assistant") return prev;
+          const msg = next[lastIdx];
+          const parts = [...(msg.parts ?? []), { kind: "text" as const, text, tone: "error" as const }];
+          next[lastIdx] = {
+            ...msg,
+            parts,
+            content: parts
+              .filter((part): part is Extract<MessagePart, { kind: "text" }> => part.kind === "text")
+              .map((part) => part.text)
+              .join("\n")
+              .trim(),
+            tone: "error",
+            turn: {
+              ...advanceTurnActivity(msg.turn, "settled")!,
+              finalAnswer: text,
+            },
+            runMs: Date.now() - runStart,
+          };
+          return next;
+        }, true);
+      };
+
       // Summarize a tool's JSON output into a short one-line detail string.
       const summarizeWebSearch = (output: Record<string, unknown>): string => {
         if (typeof output.error === "string") return output.error.slice(0, 200);
@@ -1907,6 +1943,7 @@ export function App() {
             break;
           }
           case "run_completed":
+            observedTerminal = "run_completed";
             // Reconcile streamed content with the authoritative final message.
             finalize(
               String(event.message ?? ""),
@@ -1915,9 +1952,11 @@ export function App() {
             );
             break;
           case "run_failed":
+            observedTerminal = "run_failed";
             finalize(`run failed: ${String(event.reason ?? "unknown error")}`, "error");
             break;
           case "run_cancelled": {
+            observedTerminal = "run_cancelled";
             const editedFiles = Array.isArray(event.edited_files)
               ? (event.edited_files as EditedFile[])
               : undefined;
@@ -2163,7 +2202,15 @@ export function App() {
         .catch((err) => {
           const transcript = liveTranscripts.current.get(runKey) ?? [];
           const last = transcript[transcript.length - 1];
-          if (last?.turn?.phase !== "settled") finalize(`error: ${String(err)}`, "error");
+          if (last?.turn?.phase !== "settled") {
+            finalize(`error: ${String(err)}`, "error");
+          } else if (
+            err instanceof RunCompletionError &&
+            err.status === "failed" &&
+            observedTerminal !== "run_failed"
+          ) {
+            appendSettledRunError(err.message);
+          }
         })
         .finally(() => {
           mutateParts((parts) => parts, "settled");

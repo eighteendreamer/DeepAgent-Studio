@@ -122,6 +122,7 @@ function liveAccumulator() {
     "upsertTool",
     "finalize",
     "finalizeCancelled",
+    "appendSettledRunError",
     "onEvent",
     "finishRun",
   ];
@@ -152,10 +153,11 @@ function liveAccumulator() {
     scheduleTranscriptRender() {}, console: { log() {} },
     asObjectRecord: value => value, summarize: (_, output) => String(output ?? ""),
   });
-  const script = "let modelAttemptBaseParts = null;\n" + names.map(name => `const ${name} = ${declarations.get(name)};`).join("\n") + "\nglobalThis.dispatch = onEvent; globalThis.finish = finishRun;";
+  const script = "let modelAttemptBaseParts = null;\nlet observedTerminal = null;\nlet settledErrorReported = false;\n" + names.map(name => `const ${name} = ${declarations.get(name)};`).join("\n") + "\nglobalThis.dispatch = onEvent; globalThis.finish = finishRun; globalThis.appendSettledRunError = appendSettledRunError;";
   vm.runInContext(ts.transpileModule(script, { compilerOptions: { target: ts.ScriptTarget.ES2020 } }).outputText, context);
   return {
     dispatch: context.dispatch, finish: context.finish,
+    appendError: context.appendSettledRunError,
     latest: () => liveTranscripts.current.get("session-a")[1],
     user: () => liveTranscripts.current.get("session-a")[0],
     replace: messages => liveTranscripts.current.set("session-a", messages),
@@ -214,6 +216,22 @@ test("cancelled tool-only runs settle; successful final text is not duplicated",
   const sections = deriveTurnSections(groupTurns(chatMessagesToBlocks([other.user(), other.latest()]))[0], false);
   assert.equal(sections.assistantContentBlocks.length, 1);
   assert.equal(sections.processBlocks.length, 0);
+});
+
+test("a settled cancellation keeps its execution result and surfaces a late persistence error once", () => {
+  const live = liveAccumulator();
+  live.dispatch({ type: "tool_started", name: "shell", call_id: "c1" });
+  live.dispatch({ type: "run_cancelled" });
+  live.appendError("persistence error: audit injected cancel audit storage failure");
+  live.appendError("duplicate persistence error");
+  assert.equal(live.latest().turn.phase, "settled");
+  assert.equal(live.latest().parts[0].tool.status, "error");
+  assert.equal(live.latest().parts.filter((part) => part.kind === "text").length, 1);
+  assert.match(live.latest().content, /audit injected cancel audit storage failure/);
+  assert.doesNotMatch(live.latest().content, /duplicate persistence error/);
+  assert.equal(live.latest().tone, "error");
+  const blocks = chatMessagesToBlocks([live.user(), live.latest()]);
+  assert.equal(blocks.some((block) => block.kind === "assistant" && /audit injected cancel audit storage failure/.test(block.text)), true);
 });
 
 test("turn keys survive prepending history and phase changes", () => {

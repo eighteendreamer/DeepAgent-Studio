@@ -8,6 +8,7 @@
 |---|---|---|
 | H-15 | 已修复并验收（2026-10-26，所列Windows本机范围） | 原失败保留；两scope取消/健康、并发、五种终态入口及故障回滚专项通过，见E-H15-01～09；全仓既有基线失败与未验边界见E-H15-08 |
 | H-16 | 已修复并验收（2026-10-26，所列Windows本机范围） | 原重复provider call_id失败已消除；两run各有独立审批，旧provider-id记录仍可回答；见E-H16-01～03，修复提交`da73a472a843638d524067e93d6d59f145263114` |
+| H-17 | 已修复并验收（2026-10-26，所列前端/受控事件范围） | settled后仍显示一次保存失败诊断，正常取消不误报；受控事件、API状态和桌面构建通过，原真实WebView故障注入未重跑，见E-H17-01～03，修复提交待回填 |
 | H-01 | 已修复并验收（2026-10-26，所列Windows本机范围） | 唯一outbox显式故障断连、原取消收尾与持久化游标补读；CLI112/23 ignored、正式Rust SDK隔离6及TS正式1通过；全仓两个失败target及旧lint保留，见E-H01-01～13；修复提交`8b7a43d2` |
 | H-04 | 已修复并验收（2026-10-26，所列Windows本机范围） | 共享配置持久化于现有会话header，resume/fork/steer继承；CLI102/25 ignored、共享存储及正式TS SDK1/隔离Rust SDK6通过；全仓两失败target及严格lint基线保留，见E-H04-01～15；修复提交`9bc625f6` |
 | H-02 | 已修复并验收（2026-10-26，所列Windows本机范围） | ACK前统一admit，interrupt核对accepted；CLI97/27 ignored、真实stdio32轮及ACK失败收尾通过；SDK隔离根6通过；全workspace两失败target、严格lint基线与未验边界见E-H02-01～15；修复提交`f777dc82` |
@@ -30,7 +31,7 @@
 | H-08 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `McpTransport`统一支持无 ID notification，initialize 成功后发送 `notifications/initialized`；严格 stdio、HTTP fixture、MCP全组和AppCore MCP筛选通过；E-H08-01～04，修复提交`2dc9fdf6` |
 | H-09 | 已修复并验收（2026-10-26，Windows本机MCP/AppCore范围） | 单stdout reader、pending/oneshot与连接唯一wire ID；原探针转默认通过，stdio12/0 ignored、正式消费者1；全workspace唯一H-306失败及AppCore严格lint阻断见E-H09-01～09，修复提交`46ba0fd7` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **23**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **256（256待修复）**；306是历史编号槽位。H-15、H-16均在所列Windows本机范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **24**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **255（255待修复）**；306是历史编号槽位。H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -969,7 +970,7 @@ E-H16-20261026-03（范围边界与未通过项目）：尝试执行CLI中原有
 
 ### H-17：桌面收到取消后的保存失败，却因对话已 settled 而静默丢弃错误
 
-**级别：中（P2）；触发条件：取消已被模型执行循环观察，但取消审计或终态保存失败。** 此项不是取消信号被数据库挡住；停止本身已经生效，缺陷在执行状态与保存状态的 UI 投影。
+**级别：中（P2）；触发条件：取消已被模型执行循环观察，但取消审计或终态保存失败。当前状态：2026-10-26 已修复并验收（所列前端/受控事件范围）。** 此项不是取消信号被数据库挡住；停止本身已经生效，缺陷在执行状态与保存状态的 UI 投影。以下原始真实桌面失败保留。
 
 #### 真实桌面复现
 
@@ -998,6 +999,16 @@ node apps/desktop/scripts/audit-cancel-storage.cjs
 - 用户无法区分“执行已停止”和“停止结果未保存”，也没有管理/恢复提示；重新打开或重启时可能看到未收尾记录。本次没有据此断言下一次启动一定重复执行工具或恢复成何种终态。
 - 在现有运行与通知链路中独立表达执行结果和保存诊断，允许 settled 后追加一次、按 run/session 隔离的保存错误；不能把 cancelled 再改成“执行未停止”，也不能为避免错误而提前谎报 durable terminal。
 - 覆盖正常取消与取消错误去重、错误晚于 settled、切换会话后错误、终态保存重试以及重启恢复。若改事件/DTO，沿用同一 run_events/RunStore 边界同步消费方。本轮只增加审计探针和报告，未修生产 UI。
+
+#### 2026-10-26 修复记录
+
+`runChat()`现在用`RunCompletionError`保留`session://completed`的`status/run_id/error`，App在已收到`run_cancelled`或其他终态后，若完成状态为`failed`且尚未收到`run_failed`，只追加一次“运行已停止，但结果未保存”错误文本，保留取消后的工具卡和settled状态；正常`cancelled`完成不会误报。该诊断只存在于当前live transcript，不伪造`run_terminal`或把未落盘运行标为成功。
+
+E-H17-20261026-01（原始失败证据）：沿用本节前述隔离Tauri WebView故障注入，真实桌面收到`run_cancelled`及failed `session://completed`，DOM在1.2秒内没有保存错误，`visibleStorageError=false`；数据库保持`state=finalizing, terminal_kind=NULL, finished_at=NULL`。该证据来自修复前快照，未改写。
+
+E-H17-20261026-02（受控生产链回归）：`pnpm test:process-collapse`退出0，13 passed，新增用例直接抽取生产`App.tsx`的`finalizeCancelled`、`appendSettledRunError`和事件路由，验证取消后的工具卡保留、错误文本可映射为可见assistant block、重复错误只追加一次；`pnpm test:run-completion-error`退出0，2 passed，使用生产`api.ts::runChat`和受控Tauri event/invoke transport，验证failed completion保留错误详情、`status=cancelled`保持可区分。`pnpm exec tsc --noEmit`退出0；完整`pnpm build`退出0（既有Vite大chunk externalize warning，无新增错误）。
+
+E-H17-20261026-03（边界与未执行项目）：本轮没有启动真实桌面、真实测试模型或重新安装SQLite故障trigger；原因是当前环境没有`AUDIT_DATA_ROOT`、`AUDIT_PLAYWRIGHT_MODULE`、`AUDIT_CDP_URL`，且不引入真实凭据/付费模型请求。受控测试覆盖同一生产源码与事件/完成链，但不等于重新取得WebView截图或证明所有重启/切换会话时序。H-17在“前端源代码、受控事件、TypeScript构建”范围验收，真实桌面故障注入保留为后续增强验收边界。
 
 ### H-18：输出上限重试后仍截断时，未完成工具调用被补参数并提交
 

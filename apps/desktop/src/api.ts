@@ -1264,6 +1264,24 @@ interface RunEventEnvelope<T> {
 }
 
 /**
+ * The runtime may have stopped execution successfully while persisting the
+ * terminal outcome failed. Keep the completion status attached to the error so
+ * the UI can distinguish an expected cancellation from a cancelled run whose
+ * durable result is missing.
+ */
+export class RunCompletionError extends Error {
+  readonly runId: string;
+  readonly status: string;
+
+  constructor(payload: { run_id: string; status: string; error?: string | null }) {
+    super(payload.error ?? `chat run ${payload.status}`);
+    this.name = "RunCompletionError";
+    this.runId = payload.run_id;
+    this.status = payload.status;
+  }
+}
+
+/**
  * Normalize a `chat://event` payload. The desktop publishes a run envelope
  * (`{run_id, payload}`) and only older builds / the browser preview publish the
  * bare event, so reading `envelope.type` yields `undefined` and every consumer
@@ -1444,7 +1462,7 @@ export async function runChat(
               if (e.payload.status === "completed" && e.payload.session_id) {
                 resolve(e.payload.session_id);
               } else {
-                reject(new Error(e.payload.error ?? "chat run failed"));
+                reject(new RunCompletionError(e.payload));
               }
             }, 100);
           })
