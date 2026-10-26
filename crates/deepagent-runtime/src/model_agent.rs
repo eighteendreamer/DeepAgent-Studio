@@ -48,6 +48,44 @@ pub struct ReactiveCompaction {
     pub usage: deepagent_models::Usage,
 }
 
+/// Outcome of a compaction attempt on the provider-native surface.
+///
+/// A provider call can complete successfully even when its replacement is
+/// rejected (for example, the summary is not smaller or a post-compaction hook
+/// declines it).  `compaction` describes only the replacement that may be
+/// adopted; `observed_usage` carries spend that is not already attached to an
+/// adopted [`ReactiveCompaction`].  Keeping the two values separate prevents a
+/// paid-but-discarded response from being represented by the same `None` as a
+/// compactor that never made a provider request.
+#[derive(Debug)]
+pub struct CompactionOutcome {
+    pub compaction: Option<ReactiveCompaction>,
+    pub observed_usage: deepagent_models::Usage,
+}
+
+impl CompactionOutcome {
+    pub fn none() -> Self {
+        Self {
+            compaction: None,
+            observed_usage: deepagent_models::Usage::default(),
+        }
+    }
+
+    pub fn adopted(compaction: ReactiveCompaction) -> Self {
+        Self {
+            compaction: Some(compaction),
+            observed_usage: deepagent_models::Usage::default(),
+        }
+    }
+
+    pub fn observed(usage: deepagent_models::Usage) -> Self {
+        Self {
+            compaction: None,
+            observed_usage: usage,
+        }
+    }
+}
+
 /// A compaction failure can still carry provider usage when cancellation
 /// arrives after a summary response has completed but before the summary is
 /// durably adopted. The run bills that spend while preserving its prior
@@ -147,6 +185,25 @@ pub trait ReactiveContextCompactor: Send + Sync {
         )
         .await
         .map_err(|error| CompactionFailure::new(error, deepagent_models::Usage::default()))
+    }
+
+    /// Accounted native-surface compaction.  The compatibility default keeps
+    /// existing compactors source-compatible; provider-native implementations
+    /// that can observe usage after declining a replacement should override it.
+    async fn compact_response_items_accounted(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        trigger: CompactionTrigger,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
+        let compaction = self
+            .compact_response_items_cancelled(instructions, items, trigger, cancel)
+            .await?;
+        Ok(match compaction {
+            Some(compaction) => CompactionOutcome::adopted(compaction),
+            None => CompactionOutcome::none(),
+        })
     }
 
     /// Prefire pass-1 (Grok two-pass): summarize the stable prefix of
@@ -1438,7 +1495,7 @@ impl ModelAgent {
         }
 
         match compactor
-            .compact_response_items_cancelled(
+            .compact_response_items_accounted(
                 self.response_history.instructions.as_deref(),
                 &self.response_history.items,
                 CompactionTrigger::AutoCompactThreshold,
@@ -1446,11 +1503,17 @@ impl ModelAgent {
             )
             .await
         {
-            Ok(Some(compacted)) => self.adopt_compaction(
-                compacted,
-                deepagent_core::compaction_strategy::PROACTIVE_THRESHOLD,
-            ),
-            Ok(None) => self.record_proactive_compaction_failure(step, "compactor returned none"),
+            Ok(outcome) => {
+                self.side_usage.record_call(&outcome.observed_usage);
+                if let Some(compacted) = outcome.compaction {
+                    self.adopt_compaction(
+                        compacted,
+                        deepagent_core::compaction_strategy::PROACTIVE_THRESHOLD,
+                    );
+                } else {
+                    self.record_proactive_compaction_failure(step, "compactor returned none");
+                }
+            }
             Err(error) => {
                 self.side_usage.record_call(&error.usage);
                 if classify_model_error(&error.error) == ModelFailureKind::Cancelled {
@@ -2399,7 +2462,7 @@ impl ModelAgent {
                         reactive_compaction_attempted = true;
                         if let Some(compactor) = self.reactive_compactor.as_ref() {
                             match compactor
-                                .compact_response_items_cancelled(
+                                .compact_response_items_accounted(
                                     self.response_history.instructions.as_deref(),
                                     &self.response_history.items,
                                     CompactionTrigger::ContextOverflow,
@@ -2407,36 +2470,40 @@ impl ModelAgent {
                                 )
                                 .await
                             {
-                                Ok(Some(compacted)) => {
-                                    // The compactor's durable boundary is its
-                                    // commit point. Adopt it before honoring a
-                                    // cancellation that raced with that write,
-                                    // so replay and the live Surface stay aligned.
-                                    self.adopt_compaction(
-                                        compacted.clone(),
-                                        deepagent_core::compaction_strategy::REACTIVE_MODEL,
-                                    );
-                                    if cancel.as_ref().is_some_and(|flag| {
-                                        flag.load(std::sync::atomic::Ordering::Acquire)
-                                    }) {
-                                        return Err(CoreError::other("request cancelled by user"));
+                                Ok(outcome) => {
+                                    self.side_usage.record_call(&outcome.observed_usage);
+                                    if let Some(compacted) = outcome.compaction {
+                                        // The compactor's durable boundary is its
+                                        // commit point. Adopt it before honoring a
+                                        // cancellation that raced with that write,
+                                        // so replay and the live Surface stay aligned.
+                                        self.adopt_compaction(
+                                            compacted.clone(),
+                                            deepagent_core::compaction_strategy::REACTIVE_MODEL,
+                                        );
+                                        if cancel.as_ref().is_some_and(|flag| {
+                                            flag.load(std::sync::atomic::Ordering::Acquire)
+                                        }) {
+                                            return Err(CoreError::other(
+                                                "request cancelled by user",
+                                            ));
+                                        }
+                                        request = self
+                                            .request_for_current_history()
+                                            .with_reasoning_effort(self.reasoning_effort)
+                                            .with_tools(self.tools.clone());
+                                        emit_attempt_reset(
+                                            self.events.as_ref(),
+                                            step,
+                                            attempt,
+                                            format!(
+                                                "context overflow recovered by compaction ({} -> {} estimated tokens)",
+                                                compacted.tokens_before, compacted.tokens_after
+                                            ),
+                                        );
+                                        continue;
                                     }
-                                    request = self
-                                        .request_for_current_history()
-                                        .with_reasoning_effort(self.reasoning_effort)
-                                        .with_tools(self.tools.clone());
-                                    emit_attempt_reset(
-                                        self.events.as_ref(),
-                                        step,
-                                        attempt,
-                                        format!(
-                                            "context overflow recovered by compaction ({} -> {} estimated tokens)",
-                                            compacted.tokens_before, compacted.tokens_after
-                                        ),
-                                    );
-                                    continue;
                                 }
-                                Ok(None) => {}
                                 Err(compaction_error)
                                     if classify_model_error(&compaction_error.error)
                                         == ModelFailureKind::Cancelled

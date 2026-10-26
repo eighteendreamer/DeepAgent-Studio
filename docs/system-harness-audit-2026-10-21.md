@@ -946,6 +946,15 @@ Codex `core/src/compact.rs` 在压缩流收到 `ResponseEvent::Completed` 时，
 - 保留摘要必须更小的保护，不通过强行采用更大的摘要修复记账；同一请求用量只能归集一次。后续覆盖无效摘要、post-hook 拒绝/失败、持久化失败、fallback、prefire stale、用户取消和重试。
 - 此缺陷探针默认忽略，生产行为未修改；hook/持久化失败的漏记属于相邻待验证分支，本次没有据此独立定性。
 
+#### 修复与验收（2026-10-27）
+
+- 根因修复：在既有 `ReactiveContextCompactor` 协议上增加 `CompactionOutcome`，把“可采用的 replacement”和“已观察但未采用的 provider usage”分开表达。`HookedReactiveContextCompactor` 在摘要不更小、`PostCompact` 拒绝/询问等正常返回 `None` 的路径携带已返回的 `summary_usage`；成功 adoption 的 usage 仍只放在 `ReactiveCompaction`，由 `ModelAgent::adopt_compaction()` 归集一次。`ModelAgent` 的 proactive 与 reactive 原生压缩均消费该 outcome，未新增账本，也未放宽“摘要必须更小”的保护。旧 compactor 通过 trait 默认桥接保持兼容。
+- 原始失败已保留：未修复快照执行 `cargo test -p deepagent-app-core --lib audit_ineffective_native_compaction_still_accounts_summary_usage --offline -- --ignored --nocapture` 时记录的 `model_calls=2, summary_usage=120+18, main_billed=120, side_usage=None, adopted=false` 不被覆盖；本轮未重新伪造旧失败，而是在同一正式探针上验证修复。
+- 修复后探针：`cargo test -p deepagent-app-core --lib audit_ineffective_native_compaction_still_accounts_summary_usage --offline -- --nocapture` 退出 0，`1 passed / 0 failed`；输出 `model_calls=2, summary_usage=120+18, main_billed=120, side_usage=Some(... billed_prompt_tokens=120, completion_tokens=18 ...), adopted=false`，原文仍保留且无 `ContextCompacted` 事件。
+- 正常对照：`cargo test -p deepagent-runtime --lib context_overflow_compacts_once_then_retries_clean_request --offline -- --nocapture` 退出 0，成功 adoption 的摘要 usage 仍计入 side ledger、没有进入主 turn usage；未发生重复归集。
+- 跨层验证：`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（289 passed/13 ignored）；`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（1142 passed/66 ignored）；`cargo check -p deepagent-runtime -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。严格 clippy 仍被既有基线阻断（Runtime `model_agent.rs:282 clone_on_copy`；AppCore context_runtime 8、plugin_preparation 1、run_assembler 1），本轮未修改基线。
+- 边界：本轮未独立验证 `PostCompact` 失败、持久化失败、用户取消与真实供应商收费；这些路径仍依赖已有 `CompactionFailure` usage 传播和后续专项，不能据本项绿色扩大结论。未访问真实内网、凭据或外部服务。
+
 ### H-15：审批等待被取消后未清理，运行终态后仍接受迟到回答并授予跨调用权限
 
 **级别：高（P1）；范围：工具已进入人工审批，用户取消运行，然后对旧审批提交 tool_session 等扩大作用域回答。** 本次验证取消本身有效、命令没有执行；问题是已结束运行的审批生命周期及迟到授权。

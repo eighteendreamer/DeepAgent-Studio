@@ -59,9 +59,10 @@ pub use input::{
 pub use kernel::{AgentKernel, KernelTerminal, RunHandle, RunPhase, RunRequest, TerminalKind};
 pub use loop_engine::{PromptDecision, RunOutcome, RuntimeConfig, RuntimeEngine, VerificationPlan};
 pub use model_agent::{
-    AttachmentDataResolver, CompactionFailure, CompactionTrigger, ContextSurfacePersistence,
-    ModelAgent, PrefireNote, ReactiveCompaction, ReactiveContextCompactor, RelevantMemory,
-    RelevantMemoryProvider, TodoReminderSnapshot, TodoReminderSource,
+    AttachmentDataResolver, CompactionFailure, CompactionOutcome, CompactionTrigger,
+    ContextSurfacePersistence, ModelAgent, PrefireNote, ReactiveCompaction,
+    ReactiveContextCompactor, RelevantMemory, RelevantMemoryProvider, TodoReminderSnapshot,
+    TodoReminderSource,
 };
 pub use phase::LoopPhase;
 pub use schedule::{

@@ -16,7 +16,8 @@ use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistr
 use deepagent_models::{ModelClient, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
-    CompactionFailure, CompactionTrigger, PrefireNote, ReactiveCompaction, ReactiveContextCompactor,
+    CompactionFailure, CompactionOutcome, CompactionTrigger, PrefireNote, ReactiveCompaction,
+    ReactiveContextCompactor,
 };
 
 use crate::knowledge_service::KnowledgeService;
@@ -310,7 +311,7 @@ impl HookedReactiveContextCompactor {
         items: &[ResponseInputItem],
         trigger: CompactionTrigger,
         cancel: Option<Arc<AtomicBool>>,
-    ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+    ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
         if cancel
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::Acquire))
@@ -326,10 +327,10 @@ impl HookedReactiveContextCompactor {
             .unwrap_or_else(|p| p.into_inner())
             .admit()
         {
-            return Ok(None);
+            return Ok(CompactionOutcome::none());
         }
         let Some(split) = pairing_safe_response_item_compaction_split(items) else {
-            return Ok(None);
+            return Ok(CompactionOutcome::none());
         };
         let before = self
             .dispatch_compaction_hook(
@@ -346,7 +347,7 @@ impl HookedReactiveContextCompactor {
             )
             .await?;
         if matches!(before, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
-            return Ok(None);
+            return Ok(CompactionOutcome::none());
         }
         let count = |items: &[ResponseInputItem]| self.measure_native_items(instructions, items);
         let tokens_before = count(items);
@@ -365,7 +366,7 @@ impl HookedReactiveContextCompactor {
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
                 .record_ineffective();
-            return Ok(None);
+            return Ok(CompactionOutcome::observed(summary_usage));
         }
         let post = self
             .dispatch_compaction_hook(
@@ -382,7 +383,7 @@ impl HookedReactiveContextCompactor {
             )
             .await?;
         if matches!(post, HookOutcome::Deny { .. } | HookOutcome::Ask { .. }) {
-            return Ok(None);
+            return Ok(CompactionOutcome::observed(summary_usage));
         }
         if cancel
             .as_ref()
@@ -407,7 +408,7 @@ impl HookedReactiveContextCompactor {
             .record_success();
         let messages =
             deepagent_models::messages_from_response_items(instructions, &compacted_items);
-        Ok(Some(ReactiveCompaction {
+        Ok(CompactionOutcome::adopted(ReactiveCompaction {
             messages,
             response_items: Some(compacted_items),
             tokens_before,
@@ -851,6 +852,7 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
     ) -> Result<Option<ReactiveCompaction>> {
         self.compact_response_items_inner(instructions, items, trigger, None)
             .await
+            .map(|outcome| outcome.compaction)
             .map_err(|failure| failure.error)
     }
 
@@ -861,6 +863,18 @@ impl ReactiveContextCompactor for HookedReactiveContextCompactor {
         trigger: CompactionTrigger,
         cancel: Option<Arc<AtomicBool>>,
     ) -> std::result::Result<Option<ReactiveCompaction>, CompactionFailure> {
+        self.compact_response_items_inner(instructions, items, trigger, cancel)
+            .await
+            .map(|outcome| outcome.compaction)
+    }
+
+    async fn compact_response_items_accounted(
+        &self,
+        instructions: Option<&str>,
+        items: &[ResponseInputItem],
+        trigger: CompactionTrigger,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> std::result::Result<CompactionOutcome, CompactionFailure> {
         self.compact_response_items_inner(instructions, items, trigger, cancel)
             .await
     }
@@ -2710,7 +2724,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: paid summary usage must survive an ineffective compaction"]
     async fn audit_ineffective_native_compaction_still_accounts_summary_usage() {
         use crate::session_memory::testing::{scripted_client_with_transport, ScriptedTransport};
         use deepagent_runtime::{Agent, ModelAgent};
