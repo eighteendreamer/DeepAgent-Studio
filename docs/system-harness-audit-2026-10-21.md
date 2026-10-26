@@ -7,7 +7,7 @@
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
 | H-15 | 已修复并验收（2026-10-26，所列Windows本机范围） | 原失败保留；两scope取消/健康、并发、五种终态入口及故障回滚专项通过，见E-H15-01～09；全仓既有基线失败与未验边界见E-H15-08 |
-| H-16 | 已修复并验收（2026-10-26，所列Windows本机范围） | 原重复provider call_id失败已消除；两run各有独立审批，旧provider-id记录仍可回答；见E-H16-01～03，修复提交待回填 |
+| H-16 | 已修复并验收（2026-10-26，所列Windows本机范围） | 原重复provider call_id失败已消除；两run各有独立审批，旧provider-id记录仍可回答；见E-H16-01～03，修复提交`da73a472a843638d524067e93d6d59f145263114` |
 | H-01 | 已修复并验收（2026-10-26，所列Windows本机范围） | 唯一outbox显式故障断连、原取消收尾与持久化游标补读；CLI112/23 ignored、正式Rust SDK隔离6及TS正式1通过；全仓两个失败target及旧lint保留，见E-H01-01～13；修复提交`8b7a43d2` |
 | H-04 | 已修复并验收（2026-10-26，所列Windows本机范围） | 共享配置持久化于现有会话header，resume/fork/steer继承；CLI102/25 ignored、共享存储及正式TS SDK1/隔离Rust SDK6通过；全仓两失败target及严格lint基线保留，见E-H04-01～15；修复提交`9bc625f6` |
 | H-02 | 已修复并验收（2026-10-26，所列Windows本机范围） | ACK前统一admit，interrupt核对accepted；CLI97/27 ignored、真实stdio32轮及ACK失败收尾通过；SDK隔离根6通过；全workspace两失败target、严格lint基线与未验边界见E-H02-01～15；修复提交`f777dc82` |
@@ -965,7 +965,7 @@ E-H16-20261026-01（原始探针复现）：HEAD `96c323d8`、生产未改时执
 
 E-H16-20261026-02（生产修复与回归）：`ToolActionPersistence`现在以长度分隔的`approval:v1:{run_id.len()}:{run_id}:{call_id.len()}:{call_id}`作为全库审批身份；`run_actions`和审批行仍保存原始provider `call_id`，因此模型工具调用/结果关联不变。内存审批、持久化回答、AppCore DTO、CLI及app-server回答入口统一传递新approval ID；没有action persistence的兼容路径继续使用原始call id。旧库中历史上以provider id为`approval_id`的记录仍可直接回答，未新增表或迁移。原探针转默认测试并通过：`cargo test -p deepagent-runtime audit_distinct_runs_can_approve_the_same_provider_call_id_independently --offline -j 1 -- --nocapture`退出0，1 passed，输出`first_state=Denied, second_action=Received, second_approval=Ok("approval:v1:17:run-action-second:20:provider-call-reused"), first_approvals=1, second_approvals=1`。另有`cargo test -p deepagent-runtime --offline -j 1 -- --quiet --test-threads=1`退出0（285 passed、15 ignored；e2e stabilization 5 passed），`cargo test -p deepagent-persistence --offline -j 1 -- --quiet --test-threads=1`退出0（76+9 passed），`cargo test -p deepagent-app-core --test kernel_v2_e2e approval_ --offline -j 1 -- --quiet --test-threads=1`退出0（2 passed），`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0（112 passed、23 ignored）；`cargo fmt --all -- --check`与`git diff --check`均退出0。新增持久化回归覆盖旧provider-id记录回答、同run幂等及两run独立审批，正常批准/拒绝和H-15 scope/取消用例保持通过。
 
-E-H16-20261026-03（范围边界与未通过项目）：尝试执行CLI中原有的ignored审批事件审计`cargo test -p deepagent-cli audit_tool_approval_emits_one_correlated_event --offline -j 1 -- --ignored --nocapture`退出1，观察到同一审批产生两条`approval.requested`，其中一条没有`approvalId`；这是原报告已登记的重复审批事件边界（H-84相关），不是H-16跨run身份修复的失败，未将其改动或计入本项验收。`cargo clippy -p deepagent-runtime -p deepagent-persistence --all-targets --offline -j 1 --no-deps -- -D warnings`仍被既有`deepagent-runtime/src/model_agent.rs:225 clone_on_copy`阻断，未发现本轮新增告警。未执行真实供应商、真实命令、OS进程重启或全workspace全绿；旧记录兼容仅验证文件/内存SQLite回答，不等于迁移所有外部客户端缓存。H-16在上述本机范围关闭，修复提交待独立提交后回填。
+E-H16-20261026-03（范围边界与未通过项目）：尝试执行CLI中原有的ignored审批事件审计`cargo test -p deepagent-cli audit_tool_approval_emits_one_correlated_event --offline -j 1 -- --ignored --nocapture`退出1，观察到同一审批产生两条`approval.requested`，其中一条没有`approvalId`；这是原报告已登记的重复审批事件边界（H-84相关），不是H-16跨run身份修复的失败，未将其改动或计入本项验收。`cargo clippy -p deepagent-runtime -p deepagent-persistence --all-targets --offline -j 1 --no-deps -- -D warnings`仍被既有`deepagent-runtime/src/model_agent.rs:225 clone_on_copy`阻断，未发现本轮新增告警。未执行真实供应商、真实命令、OS进程重启或全workspace全绿；旧记录兼容仅验证文件/内存SQLite回答，不等于迁移所有外部客户端缓存。H-16在上述本机范围关闭，修复提交`da73a472a843638d524067e93d6d59f145263114`。
 
 ### H-17：桌面收到取消后的保存失败，却因对话已 settled 而静默丢弃错误
 
