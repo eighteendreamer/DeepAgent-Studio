@@ -6,7 +6,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-04 | 已修复并验收（2026-10-26，所列Windows本机范围） | 共享配置持久化于现有会话header，resume/fork/steer继承；CLI102/25 ignored、共享存储及正式TS SDK1/隔离Rust SDK6通过；全仓两失败target及严格lint基线保留，见E-H04-01～14；修复提交待回填 |
+| H-04 | 已修复并验收（2026-10-26，所列Windows本机范围） | 共享配置持久化于现有会话header，resume/fork/steer继承；CLI102/25 ignored、共享存储及正式TS SDK1/隔离Rust SDK6通过；全仓两失败target及严格lint基线保留，见E-H04-01～15；修复提交`9bc625f6` |
 | H-02 | 已修复并验收（2026-10-26，所列Windows本机范围） | ACK前统一admit，interrupt核对accepted；CLI97/27 ignored、真实stdio32轮及ACK失败收尾通过；SDK隔离根6通过；全workspace两失败target、严格lint基线与未验边界见E-H02-01～15；修复提交`f777dc82` |
 | H-06 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 连接恢复与业务请求重试分离；未知结果结构化保留并禁止自动重放；MCP、HTTP、AppCore正式链路通过；完整workspace仅既有H-306失败，Linux真实stdio因无Node未执行；E-H06-01～06，修复提交`5ba4ee83` |
 | H-74 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 同一Projection帧提交源/派生项；分支和检查点共用有效末端；正式分支6、checkpoint1、stdio1定向通过，完整workspace唯一失败H-306，严格AppCore lint既有10项未绿；E-H74-01～16，修复提交`1dbac424` |
@@ -479,7 +479,7 @@ Codex 的 `app-server/src/request_processors/thread_processor.rs` 将请求 sand
 
 ### H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置
 
-**当前状态（2026-10-26）：已修复并验收，限下列Windows本机离线/临时数据范围。** 版本化显式覆盖保存于现有权威会话header，恢复/分叉保留，steer继承当前turn已合并覆盖；原始失败与中间失败保留，测试与兼容性边界见E-H04-01～14，修复提交待回填。下文触发描述为修复前证据，并非当前生产仍清空配置。
+**当前状态（2026-10-26）：已修复并验收，限下列Windows本机离线/临时数据范围。** 版本化显式覆盖保存于现有权威会话header，恢复/分叉保留，steer继承当前turn已合并覆盖；原始失败与中间失败保留，测试与兼容性边界见E-H04-01～15，修复提交`9bc625f6`。下文触发描述为修复前证据，并非当前生产仍清空配置。
 
 **级别：高（P1）；范围：stdio `thread/resume` 后未重新指定覆盖值的运行。** 与 H-03 区分：本项影响权限 profile、模型和 provider 的生命周期，甚至同一宿主内重新附着也会触发。
 
@@ -538,6 +538,8 @@ E-H04-20261026-12（隔离Rust SDK对照及清理边界修正）：最终二进�
 E-H04-20261026-13（最终workspace终态与SDK复核）：沿原handle完成`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`，退出1，最终仅两个失败target：Rust SDK e2e_stdio（2 passed/4 failed，继承环境initialize ResponseChannelClosed）和deepagent-prompts lib（27 passed/1 failed，H-306）；其余默认target及doc-tests通过，ignored不算已验。包括AppCore1132/78 ignored、kernel127/86 ignored、CLI102/25 ignored、core42、persistence71/control9、session20、runtime284/16 ignored及stabilization5通过。最新reasoning合并/词法作用域的CLI102通过另见E-10，不用全仓较早快照替代。测试清理改用官方有界异步退避后，最新正式二进制的TS SDK`node --test tests/server-configuration.test.mjs`退出0，1 passed/0 skipped（0.49s），主配置断言未降低，生产SDK.close未修改；保留E-11清理失败。`cargo fmt --all -- --check`和`git diff --check`均退出0。全仓与严格lint未全绿，隔离SDK6通过不代表旧数据根初始化根因已修。
 
 E-H04-20261026-14（本项验收、兼容性与剩余范围）：已逐段审查本项生产diff与3个新增文件；原resume/steer探针取消ignore并默认通过，冷恢复/热冷fork/逐次隔离/steer五字段继承、真实AppCore模型wire及read_only拒写与显式full_access正常写入、存储rewind/项目移动/重开/orphan恢复均有实测。H-04在所列Windows本机范围标为已修复并验收，不把E-11失败、E-13全仓失败或E-10严格lint基线删去。本项16文件复用原Session/文件header/AppCore运行边界，未新增DB表、迁移、依赖、第二套store或配置解析器；旧创建API与HarnessRunOverrides公开别名保留，start/resume仅增加configuration返回。只固定显式覆盖，缺项仍走当前host/project设置；legacy null无法找回历史已丢内存值，旧binary可能忽略新header，降级不保证限制保留。配置读取复用全会话reader，大历史IO尚未压测。H-03实际backend路由、H-49 reasoning wire、H-130重复steer、H-222线程reasoning入口、H-216冷fork readiness独立未关闭；冷fork测试显式resume child，不冒充其已修。未验其他OS、真实DeepSeek、UI、全部feature组合，未改Tauri/前端故未跑desktop pnpm build。本轮新增1，累计20已验收、18历史跳过、7归并、2撤销、259待修、0修复中；整体goal继续active。下一项准备按风险复核H-01关键事件队列丢失，尚未开始。全部剩余200–400有效小时仍是跨层复现/修复/验收未校准粗估，锁等待、编译、设备/环境另计，不按本轮墙钟机械扣减。修复hash待独立提交后另行回填，不amend、不推送。
+
+E-H04-20261026-15（独立提交与真实hash回填）：修复提交`9bc625f6`（【fix】持久化H-04线程配置并保留替换运行覆盖）已创建，仅含本项16个文件，代码、默认回归和当时两份文档一并提交；暂存清单精确核对、cached diff --check通过。实际PowerShell台账校验为306行/306唯一编号/无缺号/每行8列，20已修复并验收、18历史跳过、7归并、2撤销、259待修，两份E-H04-01～14逐字一致。本次只回填真实hash并单独提交两份文档，不amend、不推送、不创建PR；原有五类未跟踪项未读取、修改或暂存。整体goal继续active，下一项H-01尚未开始；全部剩余200–400有效小时仍未校准粗估，设备/编译/环境等待另计。
 
 ### H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应
 
