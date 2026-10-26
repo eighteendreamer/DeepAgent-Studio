@@ -1773,7 +1773,7 @@ E-H38-20261027-04（独立提交与范围）：代码、回归测试及当时两
 
 ### H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发
 
-**当前状态：修复中（2026-10-27）。**
+**当前状态：已修复并验收（2026-10-27，限本机离线 workflow graph/Runtime/AppCore 范围）。**
 
 **级别：高（P1）；范围：正式工作流的 if-else 控制流。** 图编译校验了 source_handle 的有效性，但运行时没有根据已选分支筛选可执行边，拓扑可排序不等于路径可以执行。
 
@@ -1787,6 +1787,8 @@ E-H38-20261027-04（独立提交与范围）：代码、回归测试及当时两
 E-H39-20261027-01（当前代码原始探针复核）：在 H-38 已提交、H-39 尚未修改的 HEAD `ee739aca` 执行上述原生命令，退出1，0 passed/1 failed/0 ignored（测试体0.22秒）。真实输出为 `choose_true=true ... unselected_started=true ... terminal=Some("succeeded")` 与 `choose_true=false ... unselected_started=true ... terminal=Some("succeeded")`；断言失败。两组均使用正式 workflow graph、ChatService、WorkflowAgent、Kernel、事件泵和 RunStore，仅执行模板节点，无模型、命令、网络、媒体供应商或用户文件。本轮只复核 H-39，不合并 H-195/H-198。
 
 E-H39-20261027-02（修复后正式探针）：WorkflowAgent 新增节点终态表和激活前驱判断；普通边要求已完成前驱，`if-else` 边还必须匹配已完成条件节点输出的 `branch` 与 `source_handle`。未选路径发出带原因的 `Skipped`，公共后继只要有一条已激活边即可执行。执行 `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unselected_branch_is_not_dispatched --offline -j 1 -- --exact --nocapture --test-threads=1` 退出0，1 passed/0 failed/0 ignored（测试体0.25秒）；`choose_true=true/false` 两组均为 `unselected_started=false`、`unselected_output=None`、终态 `succeeded`，并断言未选节点有 `Skipped` 事件。未启动模型、命令、网络或媒体供应商。
+
+E-H39-20261027-03（独立提交与范围）：生产修复、回归测试及当时两份文档已在提交 `f7bc2f43`（`【fix】修复H-39条件分支派发`）中创建；随后仅回填本台账与本报告的真实 hash，不 amend、不推送、不创建 PR。关闭范围为 Windows 本机离线 workflow graph→WorkflowAgent→AgentKernel→RunStore：条件输出只激活匹配的 source handle，未选节点有 Skipped 终态，共享后继可由选中路径进入。未验 Tauri UI、其他 OS、真实 DeepSeek/供应商、跨进程重开、多个 end/join、H-198 OR 求值和 H-40 字段映射。
 
 #### 参考机制、影响与修复方向
 

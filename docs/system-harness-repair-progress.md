@@ -8,15 +8,15 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 41 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 42 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 1 | H-39 当前正在修复并等待正式验收 |
+| 修复中 | 0 | 当前没有已进入修复但尚未验收的条目 |
 | 待修复 | 237 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **238（237待修复、1修复中）**；不提供完成率。四十一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **237（237待修复、0修复中）**；不提供完成率。四十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -264,13 +264,15 @@ E-H38-20261027-04（独立提交与范围）：代码、回归测试及当时两
 
 ## H-39 本轮即时记录（2026-10-27）
 
-**当前状态：修复中。** 本轮只处理条件边激活与未选分支派发，不合并 H-195 多终点、H-198 OR 求值或 H-40 前端字段映射。
+**当前状态：已修复并验收（2026-10-27，限本机离线 workflow graph/Runtime/AppCore 范围）。** 本轮只处理条件边激活与未选分支派发，不合并 H-195 多终点、H-198 OR 求值或 H-40 前端字段映射。
 
 E-H39-20261027-01（当前代码原始探针复核）：在 H-38 已提交、H-39 尚未修改的 HEAD `ee739aca` 执行 `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unselected_branch_is_not_dispatched --offline -j 1 -- --ignored --exact --nocapture --test-threads=1`，退出1，0 passed/1 failed/0 ignored（测试体0.22秒）。真实输出为 `choose_true=true ... unselected_started=true ... terminal=Some("succeeded")` 与 `choose_true=false ... unselected_started=true ... terminal=Some("succeeded")`；断言失败。两组均使用正式 workflow graph、ChatService、WorkflowAgent、Kernel、事件泵和 RunStore，仅执行模板节点，无模型、命令、网络、媒体供应商或用户文件。本轮只复核 H-39，不合并 H-195/H-198。
 
 E-H39-20261027-02（根因修复阶段）：WorkflowAgent 新增节点终态表和激活前驱判断；普通边要求已完成前驱，`if-else` 边还必须匹配已完成条件节点输出的 `branch` 与 `source_handle`。未选路径发出带原因的 `Skipped`，公共后继只要有一条已激活边即可执行；未改编译图、RunStore、Kernel 或第二套调度器。修复后正式探针与工作流回归待完成。
 
 E-H39-20261027-03（修复后正式探针）：`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unselected_branch_is_not_dispatched --offline -j 1 -- --exact --nocapture --test-threads=1` 退出0，1 passed/0 failed/0 ignored（测试体0.25秒）；`choose_true=true/false` 两组均为 `unselected_started=false`、`unselected_output=None`、终态 `succeeded`，并确认未选节点收到 `Skipped` 事件。
+
+E-H39-20261027-04（独立提交与范围）：生产修复、回归测试及当时两份文档已在提交 `f7bc2f43`（`【fix】修复H-39条件分支派发`）中创建；本次仅回填真实 hash，不 amend、不推送、不创建 PR。关闭范围为 Windows 本机离线 workflow graph→WorkflowAgent→AgentKernel→RunStore；多个 end/join、H-198 OR 求值、H-40 字段映射、Tauri/其他 OS/真实供应商/跨进程重开仍未验。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -1117,7 +1119,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列Windows本机资产保留范围；原始失败及E-01～13保留 | 唯一不覆盖发布与真实digest索引；统一输出处理；正式GC保护active/trash/fork，最后引用过期后回收 | 最终persistence84/control9、Runtime301/11 ignored、正式资产5/0 ignored、fmt/CLI通过；完整workspace仅H-306失败，严格lint既有阻断，详见E-08～11 | `2a18d9d8` | 外置结果不隐式扩权；旧未索引资产/配额/外部目录竞争/其他平台与UI等限制见E-07/11/12；余量计入总工时区间 |
 | [H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H37-20261027-01～05保留原始失败、根因修复、正式回归、边界与提交回填；不合并H-15/H-42/H-96/H-97 | CronService 无交互审批回调直接通过同一 PendingApprovals waiter 送出 Deny；不改为 FullAccess，不绕过 PolicyGate、权限、ToolPipeline 或 RunStore | H-37探针1 passed；cron_service审计组1 passed/1 ignored；approval_bridge23 passed；Runtime schedule19 passed；AppCore lib1159 passed/63 ignored；fmt/diff通过；严格clippy仅既有10项阻断 | `e930066df12949bb7cdb0229b1cd1e5ceaf136b7` | 限所列Windows本机定时链与AlwaysAsk正式范围；其他OS/UI/真实供应商、崩溃接管、周期规模及H-97在途运行残余见E-H37-04 |
 | [H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H38-20261027-01～04保留原始失败、根因、回归、范围与真实hash；不合并H-39 | 工作流复用RunEnvironment、base_registry_request与build_base_tool_registry；WorkflowToolExecutor保留ToolOutput.ok，WorkflowAgent对工具错误返回节点失败并停止下游；无显式容错字段，默认失败传播 | E-H38-20261027-02～03：Runtime workflow 67 passed；tool_runtime 2 passed；workflow_audit 8 passed/40 ignored；fmt/diff通过；严格no-deps clippy被既有告警阻断，完整workspace未执行 | `85dadf3bc2bff6a778077bb422c2dd14e32ea0b8` | 限本机离线 workflow graph→WorkflowAgent→AgentKernel→RunStore 与共享基础工具注册；未验Tauri/其他OS/真实供应商/跨进程重开，余项见E-H38-04 |
-| [H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发](system-harness-audit-2026-10-21.md) | P1 | 修复中 | 无跳过依据；E-H39-20261027-01保留当前代码原始失败；不合并H-195/H-198 | WorkflowAgent仅按静态拓扑order执行，未消费if-else输出的branch与edge.source_handle；本轮在同一执行器内增加节点终态与激活前驱判断，未选边发Skipped，共享后继仍可由已选边进入 | E-H39-20261027-01原探针失败；修复后回归待执行 | 待本项独立提交后回填 | 仅处理条件边激活与Skipped事件；多end/join、OR求值、UI字段映射仍独立；预计剩余0.5～1.5小时（回归、提交与文档），环境等待另计 |
+| [H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H39-20261027-01～04保留原始失败、根因、回归、范围与真实hash；不合并H-195/H-198 | WorkflowAgent维护节点终态，按已完成前驱激活普通边；if-else边必须匹配branch与source_handle，未选节点发布Skipped，共享后继按任一激活边进入 | E-H39-20261027-02～03：正式探针1 passed；Runtime workflow 67 passed；AppCore workflow_audit 9 passed/39 ignored；fmt/diff通过；严格clippy被既有告警阻断 | `f7bc2f43` | 限本机离线 workflow graph→WorkflowAgent→AgentKernel→RunStore；未验多个end/join、OR求值、Tauri/其他OS/真实供应商/跨进程重开，余项见E-H39-04 |
 | [H-40：专业工作流配置在前端序列化被删除或被后端按另一套字段读取](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-41：其他会话完成会清掉当前画布运行监听和停止入口](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-42：定时调度没有跨进程所有权，同一触发时段可重复派发一次性和循环任务](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
