@@ -62,7 +62,7 @@ E-H17-20261026-03（边界与未执行项目）：当前环境没有`AUDIT_DATA_
 
 ## H-18 本轮即时记录（2026-10-27）
 
-**当前状态：已修复并验收（离线 Chat/Responses accumulator 与 Runtime 提交边界范围）。** 原始失败保留；最终范围见原审计报告 H-18 的 E-H18-01～03，修复提交 hash 待独立提交后回填。
+**当前状态：已修复并验收（离线 Chat/Responses accumulator 与 Runtime 提交边界范围）。** 原始失败保留；最终范围见原审计报告 H-18 的 E-H18-01～04，修复提交`e17dbc0d3709baf599e077ad32b01798af5898ba`。
 
 E-H18-01（原始探针复现）：生产未改时执行`cargo test -p deepagent-runtime audit_output_limit_does_not_dispatch_unfinished_tool_calls --offline -- --ignored --nocapture`，退出1。Chat/Responses 两种协议、空参数/半截 JSON 四组均在第二次 length 后提交`CallTool`；原生 Surface 各有一个`truncated-call`，空参数补成`{}`，半截 JSON为`__invalid_tool_arguments__`。只使用生产 ModelClient、离线 transport 和记录型 attempt controller，未执行真实工具或访问供应商。
 
@@ -72,7 +72,7 @@ E-H18-03（修复验收）：`cargo test -p deepagent-runtime audit_output_limit
 
 E-H18-04（lint 边界）：`cargo clippy -p deepagent-models -p deepagent-runtime --all-targets --offline -j 1 --no-deps -- -D warnings`退出1，仅命中未修改的`crates/deepagent-models/src/client.rs:355` `clone_on_copy`基线；本轮未新增诊断，不为H-18顺手修改无关代码，也不把严格 lint 失败写成通过。
 
-H-18在所列离线协议/提交边界范围内关闭；不合并H-05、H-82或H-208。代码、回归测试和两份文档将在同一独立修复提交中提交，取得 commit ID 后再做单独文档 hash 回填，不 amend、不推送；下一项按台账继续，整体 goal 仍 active。
+H-18在所列离线协议/提交边界范围内关闭；不合并H-05、H-82或H-208。代码、回归测试和两份文档已在独立修复提交`e17dbc0d3709baf599e077ad32b01798af5898ba`中提交；本次仅回填真实 commit ID，随后另做文档提交，不 amend、不推送；下一项按台账继续，整体 goal 仍 active。
 
 ## H-01 本轮即时记录（2026-10-26）
 
@@ -828,7 +828,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-15：审批等待被取消后未清理，运行终态后仍接受迟到回答并授予跨调用权限](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H15-01～09保留原失败及逐次验证 | waiter所有权/回答互斥；原终态事务取消Pending审批，拒绝终态run/action与取消信号后授权 | AppCore专项25、正式取消/健康2、persistence75+9、CLI构建、隔离Rust SDK6、正式TS SDK1通过；全仓和严格AppCore lint保留既有基线失败，不阻断本项范围验收 | `76483eb5` | H-16身份冲突独立；DB重开非OS进程重启；真实供应商/真实命令未执行；总体200–400有效小时未校准初估 |
 | [H-16：审批直接以 provider call_id 为全库身份，不同运行之间产生幂等冲突](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H16-01～03保留原失败、生产修复、回归及边界；不与H-15合并 | 以长度分隔的`approval:v1:{run_id.len()}:{run_id}:{call_id.len()}:{call_id}`作为审批主身份，原provider call_id留在关联字段；兼容旧provider-id记录回答 | 原探针默认通过；runtime全组285/15 ignored、persistence76+9、AppCore approval2、CLI112/23 ignored、fmt/diff通过；严格clippy被既有model_agent clone_on_copy阻断；CLI重复事件ignored审计仍失败，归H-84边界 | `da73a472a843638d524067e93d6d59f145263114` | 限所列Windows本机、离线SQLite及协议消费者；未验真实供应商、OS重启、全workspace全绿；下一项按原报告优先级复核 |
 | [H-17：桌面收到取消后的保存失败，却因对话已 settled 而静默丢弃错误](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H17-01～03保留真实WebView原失败、生产链回归与环境边界 | `runChat`保留完成失败状态；App在settled后一次性追加保存诊断，不伪造durable终态，正常cancelled不误报 | `pnpm test:process-collapse`13 passed、`test:run-completion-error`2 passed、tsc及完整pnpm build通过；真实WebView/SQLite trigger未重跑，环境变量缺失 | `5d13cb15eb616aef8275ab833d82a94f798d9579` | 验收限前端源代码、受控事件和构建；真实桌面故障注入、重启/跨会话时序仍待增强验收；下一项按原报告优先级复核 |
-| [H-18：输出上限重试后仍截断时，未完成工具调用被补参数并提交](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始 ignored 探针在本轮先复现失败；无跳过依据 | Chat/Responses accumulator 在 length/incomplete 终态过滤未完成 builder；保留文本与正常完成调用；ModelAgent 续写/Surface/replay 共用该提交边界 | 原始失败、修复方式、离线范围与限制见原报告 H-18 的 E-H18-01～03；修复后 runtime 探针默认通过，models 全组与新增回归通过，fmt/diff 通过；未验真实 DeepSeek、桌面重启、其他 OS | 修复提交待独立提交后回填 | 未完成调用不再进入执行候选或原生 replay；真实供应商异常终态、真实工具副作用与跨会话恢复仍需后续专项；下一项按台账优先级继续，剩余工时为未校准总区间 |
+| [H-18：输出上限重试后仍截断时，未完成工具调用被补参数并提交](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始 ignored 探针在本轮先复现失败；无跳过依据 | Chat/Responses accumulator 在 length/incomplete 终态过滤未完成 builder；保留文本与正常完成调用；ModelAgent 续写/Surface/replay 共用该提交边界 | 原始失败、修复方式、离线范围与限制见原报告 H-18 的 E-H18-01～04；修复后 runtime 探针默认通过，models 全组与新增回归通过，fmt/diff 通过；未验真实 DeepSeek、桌面重启、其他 OS | `e17dbc0d3709baf599e077ad32b01798af5898ba` | 未完成调用不再进入执行候选或原生 replay；真实供应商异常终态、真实工具副作用与跨会话恢复仍需后续专项；下一项按台账优先级继续，剩余工时为未校准总区间 |
 | [H-19：子 Agent 的工具限制只过滤 schema，实际执行仍可调用被排除的工具](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-20：DAG 成功节点的工作树被强制删除，文件未交付给主目录或下游](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针在10229dd8复现；保留原始失败 | 保留节点树；独立index快照与依赖合并；既有子记录/事件定位、恢复/清理 | subagents 25 passed/0 ignored；AppCore lib1106 passed/80 ignored；kernel107 passed/90 ignored；fmt通过；workspace及AppCore严格lint既有阻断详见明细 | ae193ea8 | 仅本机行为；H-22独立；Git属性/ignored/submodule/磁盘保留边界见明细；剩余274项计入总区间 |
 | [H-21：子 Agent 恢复遗漏原始输出契约，schema、phase、label 全部丢失](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

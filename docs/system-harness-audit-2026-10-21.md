@@ -1045,7 +1045,7 @@ E-H18-03（回归与验收）：新增 Chat length 保留文本且不发 `ToolCa
 
 E-H18-04（lint 边界）：`cargo clippy -p deepagent-models -p deepagent-runtime --all-targets --offline -j 1 --no-deps -- -D warnings` 退出1，仅命中未改的 `crates/deepagent-models/src/client.rs:355` `clone_on_copy` 基线；本轮 diff 未新增该诊断，未为 H-18 顺手修改无关代码，也不把严格 lint 失败写成通过。
 
-H-18 在上述本机离线模型协议与 Runtime 提交边界范围内已修复并验收。修复提交 hash 在独立提交后回填；H-05 的 Chat/Responses 历史投影、H-82 的其他 incomplete 原因、H-208 的 malformed parser 输入仍各自独立，不因本项关闭。
+H-18 在上述本机离线模型协议与 Runtime 提交边界范围内已修复并验收。修复提交为 `e17dbc0d3709baf599e077ad32b01798af5898ba`；H-05 的 Chat/Responses 历史投影、H-82 的其他 incomplete 原因、H-208 的 malformed parser 输入仍各自独立，不因本项关闭。
 
 ### H-19：子 Agent 的工具限制只过滤 schema，实际执行仍可调用被排除的工具
 
