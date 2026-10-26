@@ -1705,7 +1705,7 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 
 ### H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上
 
-**当前状态：修复中（2026-10-27）。**
+**当前状态：已修复并验收（2026-10-27，限所列 Windows 本机 CronService→ChatService→ChannelApprovalGate→RunStore 范围；修复提交 `e930066df12949bb7cdb0229b1cd1e5ceaf136b7`）。**
 
 **级别：高（P1）；范围：Cron 触发的后台会话发生需要人工决策的工具调用。** 用户已有授权或自动策略允许的操作不一定触发；本项不是绕过审批执行命令，而是审批无人接收导致运行无法继续。与 H-15 的“终态后迟到授权”是不同生命周期阶段。
 
@@ -1723,7 +1723,9 @@ E-H37-20261027-02（根因修复）：`CronService::run_tick_loop()` 的 fire �
 
 E-H37-20261027-03（修复后正式回归）：`cargo test -p deepagent-app-core --lib audit_unattended_cron_does_not_leave_an_unreachable_approval --offline -j 1 -- --nocapture --test-threads=1` 退出0，1 passed/0 failed/0 ignored；输出为 `cron_task_removed=true scheduler_stopped=true pending=0 run_finished_before_cancel=true terminal_kind=Some("failed") command_calls=0`。`cargo test -p deepagent-app-core --lib cron_service::audit_tests --offline -j 1 -- --nocapture --test-threads=1` 退出0，1 passed/0 failed/1 ignored（仅保留独立 H-97 scheduler shutdown 探针）；`cargo test -p deepagent-app-core --lib approval_bridge::tests --offline -j 1 -- --nocapture --test-threads=1` 为23 passed/0 failed；`cargo test -p deepagent-runtime --lib schedule:: --offline -j 1 -- --nocapture --test-threads=1` 为19 passed/0 failed；冻结修复代码后 `cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 为1159 passed/63 ignored/0 failed（测试体74.91秒）。`cargo fmt --all -- --check`、`git diff --check`退出0；严格 `cargo clippy -p deepagent-app-core --lib --offline -j 1 --no-deps -- -D warnings` 仍被未修改的 context_runtime.rs clone-on-copy、plugin_preparation.rs type-complexity、run_assembler.rs too-many-arguments 共10项既有告警阻断，未出现本项新增诊断。命令执行计数始终为0，pending审批为0，RunStore finished_at已写入；测试仅用临时计划、内存SQLite、离线MockTransport和拒绝型executor，不访问真实供应商、网络、内网、凭据或用户文件。
 
-E-H37-20261027-04（验收边界）：H-37在 Windows 本机 CronService→ChatService→ChannelApprovalGate→RunStore 及 AlwaysAsk 的正式定时链范围内已通过，待本项独立修复提交后关闭；拒绝发生在工具执行前，计划 one-shot 仍按现有 scheduler 记账移除，运行以 failed 终态结束而不留下 pending waiter。既有 approval_bridge 23项回归覆盖 AlwaysAsk 委托、AutoReview Allow/Ask/Deny 及 FullAccess 对照；本项不把 AutoReview 的既有分类规则改成自动放行，也不合并 H-15 终态后迟到回答、H-42 跨进程重复派发、H-96 记账失败重放或 H-97 scheduler 停止后的在途运行。其他 OS/UI/真实供应商、进程崩溃接管、周期任务规模和真实外部副作用未验；scheduler shutdown 不会因此自动取消已派生运行。
+E-H37-20261027-04（验收边界）：H-37在 Windows 本机 CronService→ChatService→ChannelApprovalGate→RunStore 及 AlwaysAsk 的正式定时链范围内已通过；拒绝发生在工具执行前，计划 one-shot 仍按现有 scheduler 记账移除，运行以 failed 终态结束而不留下 pending waiter。既有 approval_bridge 23项回归覆盖 AlwaysAsk 委托、AutoReview Allow/Ask/Deny 及 FullAccess 对照；本项不把 AutoReview 的既有分类规则改成自动放行，也不合并 H-15 终态后迟到回答、H-42 跨进程重复派发、H-96 记账失败重放或 H-97 scheduler 停止后的在途运行。其他 OS/UI/真实供应商、进程崩溃接管、周期任务规模和真实外部副作用未验；scheduler shutdown 不会因此自动取消已派生运行。
+
+E-H37-20261027-05（独立提交与真实 hash 回填）：本项生产修复、回归测试与当时两份文档已进入独立提交 `e930066df12949bb7cdb0229b1cd1e5ceaf136b7`（`【fix】修复H-37无人值守审批悬挂`），仅本项相关 CronService、审计回归和文档；未推送、未创建PR。提交前保留 E-H37-01 原始失败及 E-H37-02～04 的根因、回归和边界；此次只回填真实 hash、将 H-37 从待修复移入已修复并验收，不amend、不重复修复 H-15/H-42/H-96/H-97；原有五类未跟踪项未读取、修改或暂存。H-37仅在E-H37-04所列 Windows 本机范围关闭，整体goal保持active，下一项按原优先级复核 H-38。
 
 
 

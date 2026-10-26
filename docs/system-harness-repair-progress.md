@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十九项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计四十项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 39 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 40 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有已进入修复但尚未验收的条目 |
-| 待修复 | 240 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 239 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **240（240待修复、0修复中）**；不提供完成率。三十九项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **239（239待修复、0修复中）**；不提供完成率。四十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -238,7 +238,7 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 
 ## H-37 本轮即时记录（2026-10-27）
 
-**当前状态：修复中。** 原审计已确认无人值守审批回调为空；本轮先复核失败，再收敛到统一的“无交互审批必须立即拒绝”入口，不改 H-15 的终态后迟到回答边界。
+**当前状态：已修复并验收（所列 Windows 本机 CronService→ChatService→ChannelApprovalGate→RunStore 范围；修复提交 `e930066df12949bb7cdb0229b1cd1e5ceaf136b7`）。** 原审计已确认无人值守审批回调为空；本轮先复核失败，再收敛到统一的“无交互审批必须立即拒绝”入口，不改 H-15 的终态后迟到回答边界。
 
 E-H37-20261027-01（本轮原始探针复核）：在生产代码未修改的 HEAD `fe55822b` 执行 `cargo test -p deepagent-app-core --lib audit_unattended_cron_does_not_leave_an_unreachable_approval --offline -j 1 -- --ignored --nocapture --test-threads=1`，退出1，0 passed/1 failed/0 ignored（测试体0.55秒）；真实输出为 `cron_task_removed=true scheduler_stopped=true pending=1 run_finished_before_cancel=false command_calls=0`，失败断言为 `unattended work must reject or expose approval; an empty notifier cannot answer it`。正式 CronService tick、磁盘计划文件、ChatService、AlwaysAsk、离线 MockTransport 与计数型命令执行器均参与；随后测试显式 request_cancel 并等待终态清理，无遗留后台任务，不访问真实供应商、网络、内网、凭据或用户文件。本轮只确认 H-37 当前仍失败，尚未修改生产实现，不合并 H-15/H-42/H-96/H-97。
 
@@ -246,7 +246,9 @@ E-H37-20261027-02（根因修复）：`CronService::run_tick_loop()` 的 fire �
 
 E-H37-20261027-03（修复后正式回归）：`cargo test -p deepagent-app-core --lib audit_unattended_cron_does_not_leave_an_unreachable_approval --offline -j 1 -- --nocapture --test-threads=1` 退出0，1 passed/0 failed/0 ignored；输出为 `cron_task_removed=true scheduler_stopped=true pending=0 run_finished_before_cancel=true terminal_kind=Some("failed") command_calls=0`。`cargo test -p deepagent-app-core --lib cron_service::audit_tests --offline -j 1 -- --nocapture --test-threads=1` 退出0，1 passed/0 failed/1 ignored（仅保留独立 H-97 scheduler shutdown 探针）；`cargo test -p deepagent-app-core --lib approval_bridge::tests --offline -j 1 -- --nocapture --test-threads=1` 为23 passed/0 failed；`cargo test -p deepagent-runtime --lib schedule:: --offline -j 1 -- --nocapture --test-threads=1` 为19 passed/0 failed；冻结修复代码后 `cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 为1159 passed/63 ignored/0 failed（测试体74.91秒）。`cargo fmt --all -- --check`、`git diff --check`退出0；严格 `cargo clippy -p deepagent-app-core --lib --offline -j 1 --no-deps -- -D warnings` 仍被未修改的 context_runtime.rs clone-on-copy、plugin_preparation.rs type-complexity、run_assembler.rs too-many-arguments 共10项既有告警阻断，未出现本项新增诊断。命令执行计数始终为0，pending审批为0，RunStore finished_at已写入；测试仅用临时计划、内存SQLite、离线MockTransport和拒绝型executor，不访问真实供应商、网络、内网、凭据或用户文件。
 
-E-H37-20261027-04（验收边界）：H-37在 Windows 本机 CronService→ChatService→ChannelApprovalGate→RunStore 及 AlwaysAsk 的正式定时链范围内已通过，待本项独立修复提交后关闭；拒绝发生在工具执行前，计划 one-shot 仍按现有 scheduler 记账移除，运行以 failed 终态结束而不留下 pending waiter。既有 approval_bridge 23项回归覆盖 AlwaysAsk 委托、AutoReview Allow/Ask/Deny 及 FullAccess 对照；本项不把 AutoReview 的既有分类规则改成自动放行，也不合并 H-15 终态后迟到回答、H-42 跨进程重复派发、H-96 记账失败重放或 H-97 scheduler 停止后的在途运行。其他 OS/UI/真实供应商、进程崩溃接管、周期任务规模和真实外部副作用未验；scheduler shutdown 不会因此自动取消已派生运行。
+E-H37-20261027-04（验收边界）：H-37在 Windows 本机 CronService→ChatService→ChannelApprovalGate→RunStore 及 AlwaysAsk 的正式定时链范围内已通过；拒绝发生在工具执行前，计划 one-shot 仍按现有 scheduler 记账移除，运行以 failed 终态结束而不留下 pending waiter。既有 approval_bridge 23项回归覆盖 AlwaysAsk 委托、AutoReview Allow/Ask/Deny 及 FullAccess 对照；本项不把 AutoReview 的既有分类规则改成自动放行，也不合并 H-15 终态后迟到回答、H-42 跨进程重复派发、H-96 记账失败重放或 H-97 scheduler 停止后的在途运行。其他 OS/UI/真实供应商、进程崩溃接管、周期任务规模和真实外部副作用未验；scheduler shutdown 不会因此自动取消已派生运行。
+
+E-H37-20261027-05（独立提交与真实 hash 回填）：本项生产修复、回归测试与当时两份文档已进入独立提交 `e930066df12949bb7cdb0229b1cd1e5ceaf136b7`（`【fix】修复H-37无人值守审批悬挂`），仅本项相关 CronService、审计回归和文档；未推送、未创建PR。提交前保留 E-H37-01 原始失败及 E-H37-02～04 的根因、回归和边界；此次只回填真实 hash、将 H-37 从待修复移入已修复并验收，不amend、不重复修复 H-15/H-42/H-96/H-97；原有五类未跟踪项未读取、修改或暂存。H-37仅在E-H37-04所列 Windows 本机范围关闭，整体goal保持active，下一项按原优先级复核 H-38。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -1091,7 +1093,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-34：并行工具绕过统一执行流水线，单工具超时保护在批量调用时失效](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H34-20261027-01～05保留原始失败、统一pipeline修复、回归、边界与提交回填 | 并行先prepare，执行与收尾统一走ToolExecutionPipeline；调度器只管理并发和顺序 | H-34探针1 passed；loop_engine 37 passed/3 ignored，Runtime 301 passed/11 ignored，fmt/diff通过；严格clippy被models既有告警阻断 | `a3b636b2f59ca6756503daffb4bd77cf54964d85` | 限所列Windows本机RuntimeEngine/ToolPipeline；不合并H-35，不重做H-36，残余边界见E-H34-04 |
 | [H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H35-20261027-01～05保留原始失败、根因修复、正式回归、边界与提交回填；不合并H-34/H-36 | 按模型原始调用序列切分连续并行安全组与串行屏障；屏障先完成后才准备/派发下一组；组内复用ToolExecutionPipeline、期限、取消、权限、审批、结果与事件边界 | H-35探针1 passed；H-34保护探针1 passed；Runtime301 passed/11 ignored；fmt/diff通过；严格clippy仅被未修改的model_agent.rs:282既有告警阻断 | `870e2f58544ac8c0e63031cb8610dd8d81fcd627` | 限所列Windows本机RuntimeEngine/AppCore正式文件工具；不保证错误并行声明、其他OS/UI/真实供应商或外部副作用硬终止，残余见E-H35-04 |
 | [H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列Windows本机资产保留范围；原始失败及E-01～13保留 | 唯一不覆盖发布与真实digest索引；统一输出处理；正式GC保护active/trash/fork，最后引用过期后回收 | 最终persistence84/control9、Runtime301/11 ignored、正式资产5/0 ignored、fmt/CLI通过；完整workspace仅H-306失败，严格lint既有阻断，详见E-08～11 | `2a18d9d8` | 外置结果不隐式扩权；旧未索引资产/配额/外部目录竞争/其他平台与UI等限制见E-07/11/12；余量计入总工时区间 |
-| [H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H37-20261027-01～05保留原始失败、根因修复、正式回归、边界与提交回填；不合并H-15/H-42/H-96/H-97 | CronService 无交互审批回调直接通过同一 PendingApprovals waiter 送出 Deny；不改为 FullAccess，不绕过 PolicyGate、权限、ToolPipeline 或 RunStore | H-37探针1 passed；cron_service审计组1 passed/1 ignored；approval_bridge23 passed；Runtime schedule19 passed；AppCore lib1159 passed/63 ignored；fmt/diff通过；严格clippy仅既有10项阻断 | `e930066df12949bb7cdb0229b1cd1e5ceaf136b7` | 限所列Windows本机定时链与AlwaysAsk正式范围；其他OS/UI/真实供应商、崩溃接管、周期规模及H-97在途运行残余见E-H37-04 |
 | [H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-40：专业工作流配置在前端序列化被删除或被后端按另一套字段读取](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
