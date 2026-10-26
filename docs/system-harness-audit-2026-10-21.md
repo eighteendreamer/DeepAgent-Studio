@@ -21,7 +21,7 @@
 | H-44 | 已修复并验收（2026-10-26，Windows本机所列范围） | 统一规范终态事务、run/task身份文件投影与幂等补偿；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；完整workspace H-306/严格lint失败与边界见原项；修复提交`3d247d1a` |
 | H-78 | 已修复并验收（2026-10-26，所列本机范围） | 共享物理路径授权与Windows操作边界；最终证据见本项E-H78-73及台账，原失败保留，修复提交`c6947508`；H-279不重复计数 |
 | H-79 | 已修复并验收（2026-10-26，所列本机范围） | 目录名称发现与读取授权统一；最终证据及限制见本项与台账，修复提交`79519de6` |
-| H-07 | 已修复并验收（2026-10-26，MCP/AppCore本机范围，提交hash待回填） | `ToolsListResult`保留不透明`nextCursor`，`McpClient::list_tools()`统一有界汇总分页；MCP全组77 passed/2 ignored，AppCore正式MCP筛选14 passed/13 ignored；E-H07-01～03 |
+| H-07 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `ToolsListResult`保留不透明`nextCursor`，`McpClient::list_tools()`统一有界汇总分页；MCP全组77 passed/2 ignored，AppCore正式MCP筛选14 passed/13 ignored；E-H07-01～04，修复提交`e525b6de` |
 
 逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。本次按306行台账实核：本阶段累计修复 **16**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **263（263待修复、0修复中）**；306是历史编号槽位。H-07仅在MCP/AppCore所列本机范围验收，未把ignored测试或完整workspace当作全绿；提交hash待下一条文档回填记录写入，整体goal仍active。
 
@@ -576,6 +576,8 @@ E-H07-20261026-01：在未修改源码、未读取或暂存原有未跟踪项的
 E-H07-20261026-02（根因修复与边界回归）：`ToolsListResult` 新增仅按 MCP wire 名称 `nextCursor` 映射的可选字段；`McpClient::list_tools()` 在同一入口循环请求后续页，原样回传 cursor，累计工具数并在成功终页后一次性返回。最大页数 100、工具总数 2048、cursor 64 KiB；重复 cursor、超长 cursor、无界页链和工具总数超限均返回结构化 `CoreError::Invalid`，空页带 cursor继续，transport/解析/取消错误不被吞掉。没有在 registry 或 AppCore 另造分页路径。
 
 E-H07-20261026-03（最终本机验收，提交hash待回填）：`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0，lib 77 passed/2 ignored，真实liveness2、HTTP未知结果1、reconnect initialize1、reconnect unknown2、stdio diagnostics1均通过，doc-tests0；其中原分页探针已转默认并通过。`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp --offline -j 1 -- --quiet --test-threads=1`退出0，14 passed/13 ignored，证明正式 AppCore MCP消费方使用同一分页结果。`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0；`cargo fmt --all -- --check`与`git diff --check`退出0。该验收未访问真实插件、真实凭据、真实供应商或外部服务；未据此宣称完整workspace、其他平台或真实分页服务全绿。
+
+E-H07-20261026-04（提交 hash 回填）：代码、回归测试与当时两份记录已在独立提交 `e525b6de` 创建；本次只回填该真实 hash，不 amend、不推送、不触碰原有未跟踪项。H-07 状态保持“已修复并验收”，范围仍限 E-H07-01～03 所列本机验证。
 
 ### H-08：MCP 初始化缺少 initialized 通知，严格服务端无法进入就绪状态
 
