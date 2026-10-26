@@ -360,7 +360,15 @@ impl ChatCompletionAccumulator {
             if self.finish_reason.is_none() {
                 self.finish_reason = Some(FinishReason::Stop);
             }
-            self.complete_tool_calls(observer);
+            // A length terminal means the provider stopped while generating
+            // the current assistant turn.  Chat Completions has no separate
+            // `arguments.done` event, so a tool-call builder cannot be
+            // distinguished from a call whose JSON was cut off.  Do not
+            // promote such builders to completed calls: doing so would make
+            // the runtime prepare/commit an invocation that never finished.
+            if self.finish_reason != Some(FinishReason::Length) {
+                self.complete_tool_calls(observer);
+            }
             if self.content.is_empty() && self.reasoning.is_empty() && self.tool_calls.is_empty() {
                 return Err(CoreError::provider(
                     None,
@@ -512,16 +520,22 @@ impl ChatCompletionAccumulator {
                 content: self.reasoning,
             });
         }
-        for (index, builder) in self.tool_calls {
-            output_items.push(ResponseOutputItem::FunctionCall {
-                call_id: builder.id.unwrap_or_else(|| format!("call_stream_{index}")),
-                name: builder.name.unwrap_or_else(|| "tool".to_string()),
-                arguments: if builder.arguments.trim().is_empty() {
-                    "{}".to_string()
-                } else {
-                    builder.arguments
-                },
-            });
+        // There is no explicit tool-call completion event in this protocol.
+        // A length terminal therefore invalidates every still-buffered call;
+        // retain only text/reasoning so a retry can continue the turn without
+        // replaying a fabricated `{}` or malformed argument object.
+        if self.finish_reason != Some(FinishReason::Length) {
+            for (index, builder) in self.tool_calls {
+                output_items.push(ResponseOutputItem::FunctionCall {
+                    call_id: builder.id.unwrap_or_else(|| format!("call_stream_{index}")),
+                    name: builder.name.unwrap_or_else(|| "tool".to_string()),
+                    arguments: if builder.arguments.trim().is_empty() {
+                        "{}".to_string()
+                    } else {
+                        builder.arguments
+                    },
+                });
+            }
         }
         if !self.content.is_empty() || output_items.is_empty() {
             output_items.push(ResponseOutputItem::Message {
@@ -827,6 +841,34 @@ mod tests {
             response.raw_usage.as_ref().unwrap()["prompt_cache_hit_tokens"],
             4
         );
+    }
+
+    #[test]
+    fn length_terminal_drops_unfinished_tool_calls_but_keeps_text() {
+        let mut accumulator = ChatCompletionAccumulator::new();
+        let mut observer = RecordingObserver::default();
+        accumulator
+            .push_sse_data_observed(
+                r#"{"choices":[{"delta":{"content":"partial","tool_calls":[{"index":0,"id":"cut","type":"function","function":{"name":"write_file","arguments":""}}]},"finish_reason":null}]}"#,
+                &mut observer,
+            )
+            .unwrap();
+        accumulator
+            .push_sse_data_observed(
+                r#"{"choices":[{"delta":{},"finish_reason":"length"}]}"#,
+                &mut observer,
+            )
+            .unwrap();
+        accumulator.push_sse_data("[DONE]").unwrap();
+
+        let response = accumulator.finish().unwrap();
+        assert_eq!(response.finish_reason, Some(FinishReason::Length));
+        assert_eq!(response.output_text_projection(), "partial");
+        assert!(response.tool_invocations_from_items().is_empty());
+        assert!(!observer
+            .events
+            .iter()
+            .any(|event| matches!(event, ModelStreamEvent::ToolCallCompleted { .. })));
     }
 
     #[derive(Default)]

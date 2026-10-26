@@ -1034,6 +1034,19 @@ E-H17-20261026-03（边界与未执行项目）：本轮没有启动真实桌面
 - 在同一模型响应提交边界统一处理终态与调用完整性；截断恢复的保留集合应同时决定决策、原生 Surface、stream attempt commit 及 durable replay，避免仅 UI 隐藏调用。借鉴 Harness 保留可安全续写文本、剔除截断调用并同步 replay 的方式。
 - 保留正常完成的无参调用、既有权限/审批和调用配对；新增多调用中途截断、第二次 length、无法升级输出上限、Responses 未闭合 item、取消与截断交错及重启测试。本轮未改生产模型或工具逻辑。
 
+#### H-18 修复记录（2026-10-27）
+
+E-H18-01（原始探针复现，生产未改）：执行
+`cargo test -p deepagent-runtime audit_output_limit_does_not_dispatch_unfinished_tool_calls --offline -- --ignored --nocapture`，退出1。Chat 与 Responses 的空参数/半截 JSON 四组均在第二次 `length` 后产生 `Ok(CallTool(...))`；Chat 事件为 `begin:1 → prepare → abort:1 → begin:2 → prepare → commit:2`，Responses 为 `begin:1 → abort:1 → begin:2 → commit:2`，原生 Surface 各保留一个 `truncated-call`。空参数被补成 `{}`，半截 JSON 进入 `__invalid_tool_arguments__` 哨兵；没有执行真实工具或访问真实供应商。该段保留原失败事实，不改写为当前结果。
+
+E-H18-02（根因修复）：在 `ChatCompletionAccumulator` 中，`finish_reason=length` 的 `[DONE]` 不再完成或输出尚未闭合的 tool-call builder；仍保留已经收到的文本/推理，供上限升级或续写使用。Responses `ResponseAccumulator::finish()` 仅在 `response.incomplete` 下过滤未收到 `item.done`/`arguments.done` 的 builder，明确完成的调用及正常 `response.completed` 的兼容 fallback 不变。这样同一 provider response boundary 同时决定 observer prepare、`Response.output_items`、ModelAgent 重试和原生 replay，不靠 UI 隐藏调用。原 H-18 探针已取消 `ignore`，作为默认回归。
+
+E-H18-03（回归与验收）：新增 Chat length 保留文本且不发 `ToolCallCompleted`、Responses incomplete 丢弃未完成 item 的模型层测试；保留正常 Chat/Responses 多工具调用和无参完成调用对照。修复后 `cargo test -p deepagent-runtime audit_output_limit_does_not_dispatch_unfinished_tool_calls --offline -- --nocapture` 退出0，1 passed；四组均请求3次（两次截断后进入安全续写，第三次正常文本），`native_calls=0`、决策为 `CompleteItems`、attempt 均为 `abort` 后再 `commit`。`cargo test -p deepagent-runtime --offline -j 1 -- --quiet --test-threads=1` 退出0（lib 286 passed/14 ignored，e2e_stabilization 5 passed，其余审计夹具按原状态）；`cargo test -p deepagent-models --offline` 退出0（83 passed、23 ignored；各集成审计夹具的原有 ignored 保留），新增两个定向回归均通过；`cargo fmt --all -- --check`、`git diff --check` 退出0。未执行真实 DeepSeek、真实工具副作用、桌面重启/跨会话和其他操作系统验收；这些不是本项离线协议边界的已验证范围。
+
+E-H18-04（lint 边界）：`cargo clippy -p deepagent-models -p deepagent-runtime --all-targets --offline -j 1 --no-deps -- -D warnings` 退出1，仅命中未改的 `crates/deepagent-models/src/client.rs:355` `clone_on_copy` 基线；本轮 diff 未新增该诊断，未为 H-18 顺手修改无关代码，也不把严格 lint 失败写成通过。
+
+H-18 在上述本机离线模型协议与 Runtime 提交边界范围内已修复并验收。修复提交 hash 在独立提交后回填；H-05 的 Chat/Responses 历史投影、H-82 的其他 incomplete 原因、H-208 的 malformed parser 输入仍各自独立，不因本项关闭。
+
 ### H-19：子 Agent 的工具限制只过滤 schema，实际执行仍可调用被排除的工具
 
 **级别：高（P1）；范围：ChatSubagentRunner 的内置只读角色、请求 allowlist 和角色 denylist。** 本项实际写入了临时文件，不只是观察模型 schema；没有触碰用户文件，也没有调用真实供应商或系统命令。

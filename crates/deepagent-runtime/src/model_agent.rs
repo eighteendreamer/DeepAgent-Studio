@@ -4514,7 +4514,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: max-token truncation must not commit unfinished tool calls"]
+    // Regression for H-18: the original audit fixture now runs by default so
+    // the max-token recovery boundary cannot silently regress.
     async fn audit_output_limit_does_not_dispatch_unfinished_tool_calls() {
         let mut dispatched = Vec::new();
         for wire_mode in [

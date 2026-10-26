@@ -401,6 +401,17 @@ impl ResponseAccumulator {
         }
         let mut fallback_items = Vec::new();
         for builder in self.tool_calls.drain(..) {
+            // Responses exposes explicit argument/item completion events.  A
+            // length terminal proves that any builder without one is only a
+            // partial stream fragment, so it must not be synthesized into an
+            // executable `{}`/partial JSON call.  For a completed response we
+            // retain the historical fallback for providers that put the full
+            // arguments on `output_item.added` but omit the separate done
+            // event; that compatibility path cannot turn a truncated turn
+            // into a call because it is disabled for `response.incomplete`.
+            if self.terminal == Some(FinishReason::Length) && !builder.completed_emitted {
+                continue;
+            }
             let id = builder
                 .id
                 .unwrap_or_else(|| format!("call_stream_{}", builder.index));
@@ -1245,6 +1256,31 @@ mod tests {
                 .and_then(serde_json::Value::as_u64),
             Some(4)
         );
+    }
+
+    #[test]
+    fn incomplete_response_drops_added_but_unfinished_tool_call() {
+        let mut acc = ResponseAccumulator::new();
+        event(
+            &mut acc,
+            r#"{"type":"response.output_item.added","item":{"type":"function_call","id":"item_cut","call_id":"call_cut","name":"write_file","arguments":""}}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.function_call_arguments.delta","item_id":"item_cut","delta":"{\"path\":"}"#,
+        );
+        event(
+            &mut acc,
+            r#"{"type":"response.incomplete","response":{"status":"incomplete"}}"#,
+        );
+
+        let response = acc.finish().unwrap();
+        assert_eq!(response.finish_reason, Some(FinishReason::Length));
+        assert!(response.tool_invocations_from_items().is_empty());
+        assert!(!response.output_items.iter().any(|item| matches!(
+            item,
+            ResponseOutputItem::FunctionCall { call_id, .. } if call_id == "call_cut"
+        )));
     }
 
     #[test]
