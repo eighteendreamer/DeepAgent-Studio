@@ -169,6 +169,31 @@ pub(crate) struct RunAssembler<'a> {
 }
 
 impl<'a> RunAssembler<'a> {
+    /// Keep the shared skill registry on the same immutable plugin generation
+    /// that this run captured for tools, hooks and prompt projection. A plugin
+    /// toggle invalidates the ready snapshot synchronously, while the
+    /// background preparation callback may publish the empty/next roots later;
+    /// synchronizing at the run boundary closes that stale-registry window.
+    fn sync_plugin_skill_snapshot(
+        &self,
+        projection: Option<&crate::plugin_runtime::PluginRuntimeProjection>,
+    ) -> Result<()> {
+        let (Some(skills), Some(projection)) = (self.skills.as_ref(), projection) else {
+            return Ok(());
+        };
+        let changed = skills
+            .lock()
+            .map_err(|_| CoreError::other("skills service mutex poisoned"))?
+            .sync_plugin_roots(projection.skill_roots.clone())?;
+        if changed {
+            self.skill_catalog_state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
+        }
+        Ok(())
+    }
+
     /// Attach this turn's structured attachments (builder style).
     pub(crate) fn with_attachments(
         mut self,
@@ -350,6 +375,7 @@ impl<'a> RunAssembler<'a> {
         let plugin_projection = plugin_snapshot
             .as_ref()
             .map(|(projection, _)| projection.clone());
+        self.sync_plugin_skill_snapshot(plugin_projection.as_ref())?;
         let legacy_sandboxie_executor = self
             .sandbox_backend_registry
             .is_none()

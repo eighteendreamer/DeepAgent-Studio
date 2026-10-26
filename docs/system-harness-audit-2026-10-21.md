@@ -911,7 +911,14 @@ Claude Code `services/plugins/pluginOperations.ts::setPluginEnabledOp()` 在写 
 
 - 新请求向模型声明已经不就绪/禁用的技能，造成模型选错能力；register_skill_tool 也可能复制旧 registry。探针直接证明新目录注入，没有调用禁用技能或验证任何权限绕过。
 - 禁用与能力失效属于 AppCore 插件生命周期，不能只在 Tauri command 补同步。使该请求的 skills catalog、SkillTool registry、MCP/hook/Agent 投影来自同一份可验证就绪代次，或在统一边界进行同步失效/快照读取。
-- 不为解决竞态重新把插件校验和连接放回会话路径；未就绪能力应缺省不可见。补 AppCore/CLI/Desktop、watcher、禁用与新请求交错、多插件及准备失败用例。此探针默认忽略，生产逻辑未修改。
+- 不为解决竞态重新把插件校验和连接放回会话路径；未就绪能力应缺省不可见。补 AppCore/CLI/Desktop、watcher、禁用与新请求交错、多插件及准备失败用例。原始记录中此探针默认忽略，生产逻辑未修改；以下追加修复验收。
+
+#### 修复与验收（2026-10-27）
+
+- 根因修复：`SkillsService` 新增 `sync_plugin_roots()`，在根目录实际变化时重载并返回 changed；`RunAssembler` 在捕获本次 `PluginRuntimeProjection` 后、构建 SkillTool registry 与模型上下文前，强制把共享技能注册表同步到同一 ready generation，变化时清空 catalog delta 状态。`ChatService::start_plugin_preparation()` 的后台发布回调也复用同一 changed 语义并清空 catalog 状态。插件投影、技能目录、工具 registry 因而共用一个请求边界，不在每个 UI/CLI 调用方另造同步链路。
+- 修复后原探针：`cargo test -p deepagent-app-core audit_disabled_plugin_skills_do_not_enter_new_model_request --offline -- --ignored --nocapture` 退出 0，`1 passed / 0 failed`；输出 `enabled=false, ready_skill_roots=0, new_request_has_disabled_skill=false`。探针仍使用独立临时插件目录、生产 ChatService/Kernel 和离线固定 transport；未调用桌面 Tauri handler，也未执行插件技能。
+- 交叉验证：`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（`1141 passed / 0 failed / 67 ignored`）；`cargo check -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。AppCore 严格 clippy 仍被未改的 10 个基线告警阻断（context_runtime 8、plugin_preparation 1、run_assembler 1），本轮未顺手修复。
+- 残余限制：已验证 AppCore 直连的禁用→新请求窗口和既有正常技能测试；未执行真实插件外部副作用、桌面命令、文件 watcher 竞态、多插件并行准备、准备失败、CLI/其他 OS 或完整 workspace。修复只同步已捕获 generation，不承诺对运行中已创建的旧 registry 热更新。
 
 ### H-14：无效压缩保留原上下文时，已完成摘要请求的 usage 一同被丢弃
 

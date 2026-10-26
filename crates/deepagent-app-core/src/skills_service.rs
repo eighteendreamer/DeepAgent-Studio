@@ -195,11 +195,20 @@ impl SkillsService {
     /// they changed. Plugin skills are registered after workspace skills, so an
     /// enabled plugin can intentionally override a lower-priority same-id skill.
     pub fn set_plugin_roots(&mut self, roots: Vec<PathBuf>) -> Result<usize> {
+        self.sync_plugin_roots(roots)?;
+        Ok(self.manager.registry().len())
+    }
+
+    /// Replace plugin roots and report whether the visible registry changed.
+    /// Hosts use the boolean to invalidate per-session catalog deltas without
+    /// re-announcing skills on every ordinary turn.
+    pub fn sync_plugin_roots(&mut self, roots: Vec<PathBuf>) -> Result<bool> {
         if self.plugin_roots == roots {
-            return Ok(self.manager.registry().len());
+            return Ok(false);
         }
         self.plugin_roots = roots;
-        self.reload()
+        self.reload()?;
+        Ok(true)
     }
 
     /// List all known skills as DTOs (sorted by id).

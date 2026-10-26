@@ -402,12 +402,21 @@ impl ChatService {
             mcp.start_preparation();
             if let Some(plugins) = &self.plugins {
                 let skills = self.skills.clone();
+                let skill_catalog_state = self.skill_catalog_state.clone();
                 let weak = Arc::downgrade(plugins);
                 plugins.start_preparation(mcp.clone(), Arc::new(move || {
                     if let (Some(plugins), Some(skills)) = (weak.upgrade(), skills.as_ref()) {
                         if let Ok(mut skills) = skills.lock() {
-                            if let Err(error) = skills.set_plugin_roots(plugins.ready_snapshot().0.skill_roots) {
-                                tracing::error!(%error, "failed to publish plugin skill snapshot");
+                            match skills.sync_plugin_roots(plugins.ready_snapshot().0.skill_roots) {
+                                Ok(true) => {
+                                    if let Ok(mut state) = skill_catalog_state.lock() {
+                                        state.clear();
+                                    }
+                                }
+                                Ok(false) => {}
+                                Err(error) => {
+                                    tracing::error!(%error, "failed to publish plugin skill snapshot");
+                                }
                             }
                         }
                     }

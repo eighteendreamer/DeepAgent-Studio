@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十一项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十二项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 31 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 32 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有正在收敛的本轮独立项；下一项仍需按原报告逐项复核 |
-| 待修复 | 248 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 247 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **248（248待修复）**；不提供完成率。三十一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **247（247待修复）**；不提供完成率。三十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -91,6 +91,20 @@ E-H12-20261027-03（正式回归）：`cargo test -p deepagent-mcp --features ht
 E-H12-20261027-04（全组与边界）：`cargo test -p deepagent-mcp --features http --offline -j 1 -- --quiet --test-threads=1` 退出 0（lib89 passed/1 ignored，protocol_audit2 passed，其余 targets/doc-tests无失败）；`cargo check -p deepagent-mcp --features http --offline -j 1`、`cargo clippy -p deepagent-mcp --features http --all-targets --offline -j 1 --no-deps -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。未验真实远程服务、SSE 多帧、并发初始化、过期404自动重建、进程重启、其他OS或完整workspace；session过期恢复保持独立待处理。
 
 E-H12-20261027-05（独立提交与真实 hash 回填）：代码、回归测试和当时两份文档已在独立提交 `6e9934d1a6350367f6ddf89570ca7abf87c3d82f`（`【fix】修复H-12 HTTP会话头传递`）中创建；本次只回填真实 hash 并另做文档提交，不 amend、不推送、不触碰既有未跟踪项。H-12 的本机范围已验收，整体 goal 仍 active；下一项按风险/依赖继续核对 H-13。全部剩余有效修复工时继续沿未校准的 200–400 小时区间估算，编译/设备/环境等待另计。
+
+## H-13 本轮即时记录（2026-10-27）
+
+**当前状态：已修复并验收（限 AppCore 直连 PluginService + ChatService、离线 transport）。** 本轮只处理插件禁用后的技能 ready generation 与共享 SkillsService/SkillTool registry 不一致，不合并桌面 Tauri 专属同步、watcher 竞态、MCP/Hooks/Agent 投影或 H-14 usage；原始失败保留。
+
+E-H13-20261027-01（原始复现）：生产代码未修复时执行 `cargo test -p deepagent-app-core --lib audit_disabled_plugin_skills_do_not_enter_new_model_request --offline -- --ignored --nocapture`，退出 1；输出 `enabled=false, ready_skill_roots=0, new_request_has_disabled_skill=true`。公共 `PluginService::set_enabled(false)` 已清空 ready projection，但新 ChatService/Kernel 请求仍从旧 SkillsService registry 注入完整技能目录；无真实模型、插件技能或外部系统副作用。
+
+E-H13-20261027-02（根因修复）：新增 `SkillsService::sync_plugin_roots()` 返回 roots 是否实际变化；`RunAssembler` 在捕获本次 `PluginRuntimeProjection` 后、注册 SkillTool 和构建模型上下文前同步共享 registry，变化时清空 catalog delta。后台 preparation changed 回调复用同一 changed 语义。插件投影、工具 registry 和目录提醒在同一 run generation 内，不把连接/校验搬回会话路径。
+
+E-H13-20261027-03（正式回归）：`cargo test -p deepagent-app-core audit_disabled_plugin_skills_do_not_enter_new_model_request --offline -- --ignored --nocapture` 退出 0，`1 passed / 0 failed`；输出 `new_request_has_disabled_skill=false`。原 `#[ignore]` 仍保留为显式审计探针（通过命令打开），未将本地 fixture 误称默认 CI 通过。
+
+E-H13-20261027-04（全组与边界）：`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（1141 passed/67 ignored）；`cargo check -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。AppCore 严格 clippy 仍被既有 10 个基线告警阻断（context_runtime 8、plugin_preparation 1、run_assembler 1），未修改或屏蔽。未验真实插件副作用、桌面命令、watcher 竞态、多插件并行准备、CLI、其他 OS 或完整 workspace。
+
+E-H13-20261027-05（提交状态）：代码、回归测试和本条两份文档将在本轮第一个独立修复提交中创建；取得真实 hash 后只回填本条记录并另做文档提交，不 amend、不推送、不触碰既有未跟踪项。H-13 的本机范围已验收，整体 goal 仍 active；下一项按风险/依赖继续核对 H-14。全部剩余有效修复工时继续沿未校准的 200–400 小时区间估算，编译/设备/环境等待另计。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -911,7 +925,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-10：运行结束后预取压缩任务仍继续执行，结果及 usage 无处归集](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H10-20261027-01～05保留原始失败、修复、回归及边界；不合并H-11/H-14/H-31 | 统一 Agent 收尾 hook；Kernel 在终态 finalizer 前 abort+join prefire 并归集 note/failure/cache usage；Drop 作为最后 abort 边界 | Runtime 原探针1 passed、usage回归1 passed；runtime lib289/13 ignored、AppCore lib1140/68 ignored、AppCore check、fmt/diff通过；runtime严格clippy受既有clone_on_copy阻断 | `c3f7affd83ac78f51e6490550a17b1ecf3b25622` | 限离线 mock compactor 与 Windows 本机生产收尾链路；未验真实DeepSeek/供应商费用、桌面/重启/其他OS/完整workspace；下一项H-11，总体剩余200–400有效小时粗估 |
 | [H-11：以消息内容反查压缩边界，重复回答会让恢复重新带回已摘要的历史](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H11-20261027-01～05保留原始失败、修复、回归及边界；不合并H-05/H-14/H-23/H-53 | 原生压缩用完整尾部连续唯一匹配解析 durable sequence；重复完整尾部 fail closed，避免猜测旧切点；复用现有 event log/ContextCompacted | 原探针修复后1 passed；AppCore lib1141/67 ignored、check、fmt/diff通过；AppCore严格clippy仅既有10个基线告警 | `1c8fe37d3f56d618cfeb7d3734e486f7fc93fc85` | 限本机内存SQLite与生产compactor/replay；未验真实DeepSeek/大窗口费用、桌面重启、跨平台、完整workspace；下一项H-12，总体剩余200–400有效小时粗估 |
 | [H-12：Streamable HTTP 未保存初始化分配的 session header，有状态远程服务后续请求失败](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H12-20261027-01～05保留原始失败、修复、回归及边界；不合并H-06/H-08/H-126/H-127 | HttpTransport 持有动态 session 状态；成功响应捕获 header，JSON/initialized/cancel通知回带同一状态；不改变认证配置 | 原探针修复后1 passed；MCP http全组89/1 ignored、protocol_audit2 passed、check/clippy/fmt/diff通过 | `6e9934d1a6350367f6ddf89570ca7abf87c3d82f` | 限本机 http feature 与 JSON fixture；未验真实远程/SSE多帧/并发初始化/过期404重建/重启/其他OS/完整workspace；下一项H-13，总体剩余200–400有效小时粗估 |
-| [H-13：AppCore 插件就绪快照与共享技能注册表不同步，新请求可继续声明已禁用技能](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-13：AppCore 插件就绪快照与共享技能注册表不同步，新请求可继续声明已禁用技能](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H13-20261027-01～05保留原始失败、修复、回归及边界；不合并桌面同步、watcher或其他能力投影 | RunAssembler 按本次 PluginRuntimeProjection 同步 SkillsService roots；roots变化清空 catalog delta；后台回调复用 changed 语义 | 原探针修复后1 passed；AppCore lib1141/67 ignored、check、fmt/diff通过；AppCore严格clippy仅既有10个基线告警 | 待首个独立修复提交后回填 | 限AppCore直连和离线transport；未验真实插件副作用/桌面/watcher/多插件并行/CLI/其他OS/完整workspace；下一项H-14，总体剩余200–400有效小时粗估 |
 | [H-14：无效压缩保留原上下文时，已完成摘要请求的 usage 一同被丢弃](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-15：审批等待被取消后未清理，运行终态后仍接受迟到回答并授予跨调用权限](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H15-01～09保留原失败及逐次验证 | waiter所有权/回答互斥；原终态事务取消Pending审批，拒绝终态run/action与取消信号后授权 | AppCore专项25、正式取消/健康2、persistence75+9、CLI构建、隔离Rust SDK6、正式TS SDK1通过；全仓和严格AppCore lint保留既有基线失败，不阻断本项范围验收 | `76483eb5` | H-16身份冲突独立；DB重开非OS进程重启；真实供应商/真实命令未执行；总体200–400有效小时未校准初估 |
 | [H-16：审批直接以 provider call_id 为全库身份，不同运行之间产生幂等冲突](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H16-01～03保留原失败、生产修复、回归及边界；不与H-15合并 | 以长度分隔的`approval:v1:{run_id.len()}:{run_id}:{call_id.len()}:{call_id}`作为审批主身份，原provider call_id留在关联字段；兼容旧provider-id记录回答 | 原探针默认通过；runtime全组285/15 ignored、persistence76+9、AppCore approval2、CLI112/23 ignored、fmt/diff通过；严格clippy被既有model_agent clone_on_copy阻断；CLI重复事件ignored审计仍失败，归H-84边界 | `da73a472a843638d524067e93d6d59f145263114` | 限所列Windows本机、离线SQLite及协议消费者；未验真实供应商、OS重启、全workspace全绿；下一项按原报告优先级复核 |
