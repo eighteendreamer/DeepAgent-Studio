@@ -3,6 +3,8 @@
 //! sensitive files). Each tool declares the right [`RiskLevel`] and required
 //! [`Permission`] so the capability registry gates it.
 
+use std::collections::HashSet;
+use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -205,10 +207,14 @@ impl Tool for ReadFileTool {
             // Metadata is not content identity: editors can preserve both
             // timestamp and length. Always compare actual bytes before a stub
             // or a newly delivered observation can authorize a later edit.
-            let current = match std::fs::read_to_string(&resolved) {
-                Ok(content) => content,
+            let mut file = match root.open_read(&resolved) {
+                Ok(file) => file,
                 Err(error) => return ToolOutput::failure(format!("read failed: {error}")),
             };
+            let mut current = String::new();
+            if let Err(error) = file.read_to_string(&mut current) {
+                return ToolOutput::failure(format!("read failed: {error}"));
+            }
             if context.is_cancelled() {
                 return ToolOutput::failure("FILE_OPERATION_CANCELLED: no read observation recorded");
             }
@@ -216,7 +222,7 @@ impl Tool for ReadFileTool {
             let (cached, cache_hit) = match cache.matching_content(&resolved, &current) {
                 Some(file) => (file, true),
                 None => {
-                    let metadata = match std::fs::metadata(&resolved) {
+                    let metadata = match file.metadata() {
                         Ok(metadata) => metadata,
                         Err(error) => return ToolOutput::failure(format!("metadata failed: {error}")),
                     };
@@ -590,47 +596,53 @@ impl Tool for DeletePathTool {
                 "deleting the workspace root is forbidden",
             ));
         }
-        let metadata = match tokio::fs::symlink_metadata(&resolved).await {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(ToolOutput::failure(format!(
-                    "delete target does not exist: {}",
-                    self.root.relativize(&resolved)
-                )))
-            }
-            Err(error) => return Ok(ToolOutput::failure(format!("metadata failed: {error}"))),
-        };
-        let kind = if metadata.is_dir() {
-            "directory"
-        } else {
-            "file"
-        };
-        let result = if metadata.is_dir() {
-            if !recursive {
-                return Ok(ToolOutput::failure(
-                    "target is a directory; pass recursive=true to delete it",
-                ));
-            }
-            tokio::fs::remove_dir_all(&resolved).await
-        } else {
-            tokio::fs::remove_file(&resolved).await
-        };
-        if let Err(error) = result {
-            return Ok(ToolOutput::failure(format!("delete failed: {error}")));
+        let root = self.root.clone();
+        let operation_path = resolved.clone();
+        let output =
+            tokio::task::spawn_blocking(move || delete_entry(&root, &operation_path, recursive))
+                .await
+                .unwrap_or_else(|error| {
+                    ToolOutput::failure(format!("delete worker failed: {error}"))
+                });
+        if output.ok {
+            cache_invalidate(&self.cache, &resolved);
         }
-        if tokio::fs::symlink_metadata(&resolved).await.is_ok() {
-            return Ok(ToolOutput::failure(
-                "delete returned successfully but the target still exists",
-            ));
-        }
-        cache_invalidate(&self.cache, &resolved);
-        Ok(ToolOutput::success(serde_json::json!({
-            "path": self.root.relativize(&resolved),
-            "deleted": true,
-            "kind": kind,
-            "verified_absent": true,
-        })))
+        Ok(output)
     }
+}
+
+fn delete_entry(root: &WorkspaceRoot, resolved: &Path, recursive: bool) -> ToolOutput {
+    let target = match root.entry_target(resolved, false) {
+        Ok(target) => target,
+        Err(error) => return ToolOutput::failure(format!("delete authorization failed: {error}")),
+    };
+    let physical_root = match root.read_identity(root.path()) {
+        Ok(path) => path,
+        Err(error) => return ToolOutput::failure(format!("workspace identity failed: {error}")),
+    };
+    if target.path() == physical_root {
+        return ToolOutput::failure("deleting the workspace root is forbidden");
+    }
+    let is_directory = match target.delete_entry(recursive) {
+        Ok(is_directory) => is_directory,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return ToolOutput::failure(format!(
+                "delete target does not exist: {}",
+                root.relativize(resolved)
+            ))
+        }
+        Err(error) => return ToolOutput::failure(format!("delete failed: {error}")),
+    };
+    let kind = if is_directory { "directory" } else { "file" };
+    if std::fs::symlink_metadata(target.path()).is_ok() {
+        return ToolOutput::failure("delete returned successfully but the target still exists");
+    }
+    ToolOutput::success(serde_json::json!({
+        "path": root.relativize(resolved),
+        "deleted": true,
+        "kind": kind,
+        "verified_absent": true,
+    }))
 }
 
 /// `move_path` - rename or move one path without shell-specific commands.
@@ -749,21 +761,32 @@ impl Tool for ListDirTool {
             Ok(p) => p,
             Err(e) => return Ok(ToolOutput::failure(e.to_string())),
         };
-        let mut rd = match tokio::fs::read_dir(&resolved).await {
-            Ok(rd) => rd,
-            Err(e) => return Ok(ToolOutput::failure(format!("read_dir failed: {e}"))),
-        };
-        let mut entries = Vec::new();
-        while let Ok(Some(e)) = rd.next_entry().await {
-            let is_dir = e.file_type().await.map(|t| t.is_dir()).unwrap_or(false);
-            let name = e.file_name().to_string_lossy().to_string();
-            entries.push(serde_json::json!({ "name": name, "dir": is_dir }));
-        }
-        entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-        Ok(ToolOutput::success(serde_json::json!({
-            "path": self.root.relativize(&resolved),
-            "entries": entries,
-        })))
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || {
+            let snapshot = match root.read_directory(&resolved) {
+                Ok(snapshot) => snapshot,
+                Err(error) => return ToolOutput::failure(format!("read_dir failed: {error}")),
+            };
+            let mut entries: Vec<_> = snapshot
+                .entries
+                .into_iter()
+                .map(|entry| {
+                    serde_json::json!({
+                        "name": entry.name.to_string_lossy(),
+                        "dir": entry.is_dir && !entry.is_link,
+                    })
+                })
+                .collect();
+            entries.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
+            ToolOutput::success(serde_json::json!({
+                "path": root.relativize(&resolved),
+                "entries": entries,
+            }))
+        })
+        .await
+        .map_err(|error| {
+            deepagent_core::error::CoreError::other(format!("directory read join failed: {error}"))
+        })
     }
 }
 
@@ -803,15 +826,25 @@ impl Tool for GlobTool {
         let Some(pattern) = arg_str(&args, "pattern") else {
             return Ok(ToolOutput::failure("missing 'pattern'"));
         };
-        let mut matches = Vec::new();
-        let root = self.root.path().to_path_buf();
-        walk_collect(&root, &root, pattern, &mut matches, self.max_results);
-        matches.sort();
-        Ok(ToolOutput::success(serde_json::json!({
-            "pattern": pattern,
-            "matches": matches,
-            "truncated": matches.len() >= self.max_results,
-        })))
+        let pattern = pattern.to_owned();
+        let root = self.root.clone();
+        let max_results = self.max_results;
+        tokio::task::spawn_blocking(move || {
+            let mut matches = Vec::new();
+            if let Err(error) = walk_collect(&root, &pattern, &mut matches, max_results) {
+                return ToolOutput::failure(format!("glob traversal failed: {error}"));
+            }
+            matches.sort();
+            ToolOutput::success(serde_json::json!({
+                "pattern": pattern,
+                "matches": matches,
+                "truncated": matches.len() >= max_results,
+            }))
+        })
+        .await
+        .map_err(|error| {
+            deepagent_core::error::CoreError::other(format!("glob traversal join failed: {error}"))
+        })
     }
 }
 
@@ -856,22 +889,46 @@ impl Tool for GrepTool {
         let Some(query) = arg_str(&args, "query") else {
             return Ok(ToolOutput::failure("missing 'query'"));
         };
-        let pattern = arg_str(&args, "glob").unwrap_or("**");
-        let root = self.root.path().to_path_buf();
-
-        let mut files = Vec::new();
-        walk_collect(&root, &root, pattern, &mut files, 5000);
-
+        let pattern = arg_str(&args, "glob").unwrap_or("**").to_owned();
+        let root = self.root.clone();
+        let files = tokio::task::spawn_blocking(move || {
+            let mut files = Vec::new();
+            walk_collect(&root, &pattern, &mut files, 5000)?;
+            Ok::<_, std::io::Error>(files)
+        })
+        .await
+        .map_err(|error| {
+            deepagent_core::error::CoreError::other(format!("grep traversal join failed: {error}"))
+        })?;
+        let files = match files {
+            Ok(files) => files,
+            Err(error) => {
+                return Ok(ToolOutput::failure(format!(
+                    "grep traversal failed: {error}"
+                )))
+            }
+        };
         let mut hits = Vec::new();
         for rel in &files {
             if hits.len() >= self.max_results {
                 break;
             }
-            let full = root.join(rel);
-            // Skip unreadable / binary-ish files quietly.
-            let Ok(content) = tokio::fs::read_to_string(&full).await else {
-                continue;
-            };
+            let root = self.root.clone();
+            let path = root.path().join(rel);
+            // Keep the established per-file async boundary: abandoning grep
+            // must not leave a worker reading all remaining file contents.
+            let content = tokio::task::spawn_blocking(move || {
+                let mut file = root.open_read(&path)?;
+                let mut content = String::new();
+                file.read_to_string(&mut content)?;
+                Ok::<_, std::io::Error>(content)
+            })
+            .await
+            .map_err(|error| {
+                deepagent_core::error::CoreError::other(format!("grep read join failed: {error}"))
+            })?;
+            // Preserve the established skip-unreadable/non-UTF8 policy.
+            let Ok(content) = content else { continue };
             for (i, line) in content.lines().enumerate() {
                 if line.contains(query) {
                     hits.push(serde_json::json!({
@@ -903,39 +960,71 @@ const SKIP_DIRS: &[&str] = &[
     "__pycache__",
 ];
 
-/// Recursively collect workspace-relative, forward-slashed paths matching
-/// `pattern`. Bounded by `limit`.
-fn walk_collect(root: &Path, dir: &Path, pattern: &str, out: &mut Vec<String>, limit: usize) {
-    if out.len() >= limit {
-        return;
+/// Depth-first discovery using the same physical authorization and directory
+/// handles as explicit reads. Track only active ancestry so normal aliases are
+/// still visible, but junction loops cannot recurse forever. Use an explicit
+/// stack rather than the Rust call stack for deep workspace trees.
+fn walk_collect(
+    root: &WorkspaceRoot,
+    pattern: &str,
+    out: &mut Vec<String>,
+    limit: usize,
+) -> std::io::Result<()> {
+    enum Step {
+        Visit(std::path::PathBuf, bool, bool),
+        Leave(std::path::PathBuf),
     }
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    let mut entries: Vec<_> = rd.filter_map(|e| e.ok()).collect();
-    entries.sort_by_key(|e| e.file_name());
-    for entry in entries {
+    let mut pending = vec![Step::Visit(root.path().to_owned(), true, false)];
+    let mut ancestry = HashSet::new();
+    while let Some(step) = pending.pop() {
         if out.len() >= limit {
-            return;
+            break;
         }
-        let path = entry.path();
-        let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() {
-            if SKIP_DIRS.contains(&name.as_str()) || name.starts_with('.') {
+        let (path, is_dir, is_link) = match step {
+            Step::Leave(identity) => {
+                ancestry.remove(&identity);
                 continue;
             }
-            walk_collect(root, &path, pattern, out, limit);
+            Step::Visit(path, is_dir, is_link) => (path, is_dir, is_link),
+        };
+        let is_root = path == root.path();
+        let physical = match root.read_identity(&path) {
+            Ok(physical) => physical,
+            Err(error) if is_root => return Err(error),
+            Err(_) => continue,
+        };
+        let is_dir =
+            is_dir || (is_link && std::fs::metadata(&physical).is_ok_and(|meta| meta.is_dir()));
+        if is_dir {
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if !is_root && (SKIP_DIRS.contains(&name.as_ref()) || name.starts_with('.')) {
+                continue;
+            }
+            let mut snapshot = match root.read_directory(&path) {
+                Ok(snapshot) => snapshot,
+                Err(error) if is_root => return Err(error),
+                Err(_) => continue,
+            };
+            if !ancestry.insert(snapshot.identity.clone()) {
+                continue;
+            }
+            pending.push(Step::Leave(snapshot.identity));
+            snapshot.entries.sort_by(|a, b| a.name.cmp(&b.name));
+            for entry in snapshot.entries.into_iter().rev() {
+                pending.push(Step::Visit(
+                    path.join(entry.name),
+                    entry.is_dir,
+                    entry.is_link,
+                ));
+            }
         } else {
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = root.relativize(&path);
             if glob_match(pattern, &rel) {
                 out.push(rel);
             }
         }
     }
+    Ok(())
 }
 
 /// Register all file tools into a registry over the given root (helper).
@@ -1013,7 +1102,7 @@ mod tests {
             .invoke(serde_json::json!({"path": "src/a.txt", "content": "hello"}))
             .await
             .unwrap();
-        assert!(out.ok);
+        assert!(out.ok, "{out:?}");
 
         let r = ReadFileTool::new(root.clone());
         let out = r
@@ -1447,6 +1536,62 @@ mod tests {
         assert!(out.ok);
         let entries = out.value["entries"].as_array().unwrap();
         assert!(entries.iter().any(|e| e["name"] == "a.txt"));
+    }
+
+    #[tokio::test]
+    async fn discovery_preserves_sorted_depth_first_limits_and_reports_invalid_root() {
+        let (_d, root) = temp_root();
+        std::fs::create_dir(root.path().join("a")).unwrap();
+        for path in ["b.txt", "a/z.txt", "a/a.txt"] {
+            std::fs::write(root.path().join(path), "MATCH fixture").unwrap();
+        }
+        for directory in [".hidden", "target", "node_modules"] {
+            std::fs::create_dir(root.path().join(directory)).unwrap();
+            std::fs::write(
+                root.path().join(directory).join("hidden.txt"),
+                "MATCH fixture",
+            )
+            .unwrap();
+        }
+        let glob = GlobTool {
+            root: root.clone(),
+            max_results: 2,
+        }
+        .invoke(serde_json::json!({"pattern": "**/*.txt"}))
+        .await
+        .unwrap();
+        assert!(glob.ok);
+        assert_eq!(
+            glob.value["matches"],
+            serde_json::json!(["a/a.txt", "a/z.txt"])
+        );
+        assert_eq!(glob.value["truncated"], true);
+        let grep = GrepTool {
+            root: root.clone(),
+            max_results: 2,
+        }
+        .invoke(serde_json::json!({"query": "MATCH"}))
+        .await
+        .unwrap();
+        assert!(grep.ok);
+        assert_eq!(grep.value["hits"][0]["file"], "a/a.txt");
+        assert_eq!(grep.value["hits"][1]["file"], "a/z.txt");
+        assert_eq!(grep.value["truncated"], true);
+        let invalid = WorkspaceRoot::new(root.path().join("b.txt"));
+        assert!(
+            !GlobTool::new(invalid.clone())
+                .invoke(serde_json::json!({"pattern":"**"}))
+                .await
+                .unwrap()
+                .ok
+        );
+        assert!(
+            !GrepTool::new(invalid)
+                .invoke(serde_json::json!({"query":"MATCH"}))
+                .await
+                .unwrap()
+                .ok
+        );
     }
 
     #[test]

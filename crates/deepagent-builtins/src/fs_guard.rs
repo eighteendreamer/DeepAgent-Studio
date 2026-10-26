@@ -7,9 +7,18 @@
 //! guard, applied inside the tools themselves so the boundary holds regardless
 //! of how the tool is invoked.
 
+use std::io;
 use std::path::{Component, Path, PathBuf};
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_persistence::fs_commit::canonicalize_with_missing_suffix as physical_with_missing_suffix;
+
+#[cfg(windows)]
+mod windows;
+
+mod root;
+mod write;
+pub(crate) use write::{StagedWrite, WriteTarget};
 
 /// How broadly file tools may reach outside the workspace root. Drives the
 /// approval-policy → filesystem mapping:
@@ -37,6 +46,20 @@ pub enum FsAccess {
 pub struct WorkspaceRoot {
     root: PathBuf,
     access: FsAccess,
+    anchor: std::sync::Arc<std::result::Result<root::RootAnchor, (io::ErrorKind, String)>>,
+}
+
+/// Internal filesystem observation, not a protocol/UI DTO. The directory entry
+/// type is the entry's own type; links may be followed only after authorization.
+pub(crate) struct DirectoryEntry {
+    pub name: std::ffi::OsString,
+    pub is_dir: bool,
+    pub is_link: bool,
+}
+
+pub(crate) struct DirectorySnapshot {
+    pub identity: PathBuf,
+    pub entries: Vec<DirectoryEntry>,
 }
 
 /// File/dir names that are refused outright (credentials, secrets, and
@@ -95,9 +118,14 @@ impl WorkspaceRoot {
     /// required to exist (tools create files under it). Defaults to
     /// [`FsAccess::Workspace`] (fully confined).
     pub fn new(root: impl Into<PathBuf>) -> Self {
+        let root = root.into();
+        let anchor = std::sync::Arc::new(
+            root::RootAnchor::capture(&root).map_err(|error| (error.kind(), error.to_string())),
+        );
         Self {
-            root: root.into(),
+            root,
             access: FsAccess::Workspace,
+            anchor,
         }
     }
 
@@ -155,6 +183,8 @@ impl WorkspaceRoot {
                 "access to sensitive file is denied: {input}"
             )));
         }
+        self.check_physical(&joined, false)
+            .map_err(|error| CoreError::invalid(format!("path authorization failed: {error}")))?;
         Ok(joined)
     }
 
@@ -200,7 +230,176 @@ impl WorkspaceRoot {
             )));
         }
 
+        self.check_physical(&joined, true)
+            .map_err(|error| CoreError::invalid(format!("path authorization failed: {error}")))?;
         Ok(joined)
+    }
+
+    /// Open the authorized content, not a second string-path lookup after the
+    /// check. On Windows the native open refuses reparse traversal in every
+    /// component; intended links have already been resolved and authorized.
+    pub(crate) fn open_read(&self, path: &Path) -> io::Result<std::fs::File> {
+        let _root_pin = self.pin_root(matches!(
+            self.access,
+            FsAccess::ReadOnly | FsAccess::Workspace
+        ))?;
+        let physical = self.read_identity(path)?;
+        open_physical_read(&physical)
+    }
+
+    fn open_write_observation(&self, path: &Path) -> io::Result<Option<std::fs::File>> {
+        let _root_pin = self.pin_root(self.access != FsAccess::Full)?;
+        let physical = self.write_identity(path)?;
+        // A missing actual file is an observation. Authorization errors,
+        // including dangling-link NotFound, are never converted to absence.
+        match open_physical_read(&physical) {
+            Ok(file) => Ok(Some(file)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(crate) fn read_identity(&self, path: &Path) -> io::Result<PathBuf> {
+        let confined = matches!(self.access, FsAccess::ReadOnly | FsAccess::Workspace);
+        self.check_physical(path, confined)
+    }
+
+    fn write_identity(&self, path: &Path) -> io::Result<PathBuf> {
+        if self.access == FsAccess::ReadOnly {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "file writes are denied",
+            ));
+        }
+        self.check_physical(path, self.access != FsAccess::Full)
+    }
+
+    /// Keep final entry replacement semantics while reading its authorized
+    /// content (a file link may point elsewhere inside the authorized root).
+    pub(crate) fn write_target(
+        &self,
+        path: &Path,
+        create_parents: bool,
+    ) -> io::Result<WriteTarget> {
+        self.entry_target(path, create_parents)
+            .map(|target| target.observe_through(self.clone(), path.to_path_buf()))
+    }
+
+    /// Namespace mutations retain the final entry (including a link), while
+    /// authorizing and pinning its physical parent through the same boundary.
+    pub(crate) fn entry_target(
+        &self,
+        path: &Path,
+        create_parents: bool,
+    ) -> io::Result<WriteTarget> {
+        let _root_pin = self.pin_root(self.access != FsAccess::Full)?;
+        self.write_identity(path)?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| io::Error::other("entry has no parent"))?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| io::Error::other("entry has no name"))?;
+        let physical_parent = self.write_identity(parent)?;
+        let target = WriteTarget::open(physical_parent.join(name), create_parents)?;
+        if self.write_identity(parent)? != physical_parent {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "entry parent identity changed",
+            ));
+        }
+        self.write_identity(path)?;
+        Ok(target)
+    }
+
+    /// Enumerate the same authorized directory handle that was opened, rather
+    /// than re-opening its mutable pathname after authorization on Windows.
+    pub(crate) fn read_directory(&self, path: &Path) -> io::Result<DirectorySnapshot> {
+        let _root_pin = self.pin_root(matches!(
+            self.access,
+            FsAccess::ReadOnly | FsAccess::Workspace
+        ))?;
+        let identity = self.read_identity(path)?;
+        #[cfg(windows)]
+        let entries = windows::read_directory(&identity)?;
+        #[cfg(not(windows))]
+        let entries = std::fs::read_dir(&identity)?
+            .map(|entry| {
+                let entry = entry?;
+                let kind = entry.file_type()?;
+                Ok(DirectoryEntry {
+                    name: entry.file_name(),
+                    is_dir: kind.is_dir(),
+                    is_link: kind.is_symlink(),
+                })
+            })
+            .collect::<io::Result<Vec<_>>>()?;
+        Ok(DirectorySnapshot { identity, entries })
+    }
+
+    /// Physical preflight shared by the hook and explicit file tools. This is
+    /// not an operation guard for string-based mutation or recursive traversal.
+    fn check_physical(&self, path: &Path, confined: bool) -> io::Result<PathBuf> {
+        let _root_pin = self.pin_root(confined)?;
+        let absolute = std::path::absolute(path)?;
+        let root = std::path::absolute(&self.root)?;
+        if is_sensitive(path) || (confined && !absolute.starts_with(&root)) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "input path is sensitive or escapes the workspace",
+            ));
+        }
+        let physical_root = if confined {
+            self.root_anchor()?.physical.clone()
+        } else {
+            physical_with_missing_suffix(&root)?
+        };
+        let physical = physical_with_missing_suffix(&absolute)?;
+        let check = |candidate: &Path, traversing_ancestor: bool| -> io::Result<()> {
+            if is_sensitive(candidate) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "access to sensitive physical path is denied",
+                ));
+            }
+            if confined
+                && !candidate.starts_with(&physical_root)
+                && !(traversing_ancestor && physical_root.starts_with(candidate))
+            {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "physical path escapes the workspace",
+                ));
+            }
+            Ok(())
+        };
+        check(&physical, false)?;
+        // The root's own alias is trusted symmetrically; below it every link
+        // target must be examined, including hops hidden within one component.
+        let start = match absolute.strip_prefix(&root) {
+            Ok(relative) => physical_root.join(relative),
+            Err(_) => absolute,
+        };
+        if check_link_chain(&start, check)? != physical {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "physical path changed during authorization",
+            ));
+        }
+        Ok(physical)
+    }
+
+    fn pin_root(&self, confined: bool) -> io::Result<Option<root::RootPin>> {
+        if !confined {
+            return Ok(None);
+        }
+        self.root_anchor()?.pin(&self.root).map(Some)
+    }
+
+    fn root_anchor(&self) -> io::Result<&root::RootAnchor> {
+        self.anchor.as_ref().as_ref().map_err(|(kind, message)| {
+            io::Error::new(*kind, format!("workspace root capture failed: {message}"))
+        })
     }
 
     /// The path relative to the root (for display), or the input if outside.
@@ -210,6 +409,105 @@ impl WorkspaceRoot {
             .to_string_lossy()
             .replace('\\', "/")
     }
+}
+
+fn open_physical_read(physical: &Path) -> io::Result<std::fs::File> {
+    #[cfg(windows)]
+    {
+        windows::open_read(physical)
+    }
+    #[cfg(not(windows))]
+    {
+        // No operation-time no-follow protection is claimed for Unix here.
+        std::fs::File::open(physical)
+    }
+}
+
+/// Walk immediate link targets before canonicalizing the next ordinary entry.
+/// This validates policy representations, not an atomic filesystem snapshot;
+/// callers still open/pin the authorized identity at their operation boundary.
+fn check_link_chain(
+    path: &Path,
+    check: impl Fn(&Path, bool) -> io::Result<()>,
+) -> io::Result<PathBuf> {
+    use std::collections::VecDeque;
+
+    // Like the reference permission walker, bound link expansion separately
+    // from path depth. Do not silently accept an incomplete chain at the limit.
+    const MAX_LINK_HOPS: usize = 40;
+    enum Step {
+        Component(std::ffi::OsString),
+        LinkTargetEnd,
+    }
+    let mut hops = 0;
+    let mut pending: VecDeque<_> = path
+        .components()
+        .map(|component| Step::Component(component.as_os_str().to_os_string()))
+        .collect();
+    let mut resolved = PathBuf::new();
+    while let Some(step) = pending.pop_front() {
+        let part = match step {
+            Step::Component(part) => part,
+            Step::LinkTargetEnd => {
+                // Traversing ancestors is necessary to reach an absolute
+                // target, but the target itself must satisfy containment
+                // before the original path suffix can return to the root.
+                resolved = physical_with_missing_suffix(&resolved)?;
+                check(&resolved, false)?;
+                continue;
+            }
+        };
+        let component = Path::new(&part).components().next().expect("one component");
+        match component {
+            Component::Prefix(_) | Component::RootDir => resolved.push(&part),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                resolved.pop();
+                check(&resolved, true)?;
+            }
+            Component::Normal(_) => {
+                resolved.push(&part);
+                let metadata = match std::fs::symlink_metadata(&resolved) {
+                    Ok(metadata) => Some(metadata),
+                    Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(error),
+                };
+                if metadata.is_some_and(|metadata| metadata.file_type().is_symlink()) {
+                    check(&resolved, true)?;
+                    hops += 1;
+                    if hops > MAX_LINK_HOPS {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "file link chain exceeds the authorization limit",
+                        ));
+                    }
+                    let target = std::fs::read_link(&resolved)?;
+                    resolved.pop();
+                    let target = resolved.join(target);
+                    if is_sensitive(&target) {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "access to sensitive intermediate link target is denied",
+                        ));
+                    }
+                    pending = target
+                        .components()
+                        .map(|component| Step::Component(component.as_os_str().to_os_string()))
+                        .chain(std::iter::once(Step::LinkTargetEnd))
+                        .chain(pending)
+                        .collect();
+                    resolved.clear();
+                } else {
+                    resolved = physical_with_missing_suffix(&resolved)?;
+                    check(&resolved, true)?;
+                }
+            }
+        }
+    }
+    // A bare filesystem/volume root has no Normal component to normalize it.
+    resolved = physical_with_missing_suffix(&resolved)?;
+    check(&resolved, false)?;
+    Ok(resolved)
 }
 
 /// Whether any component of the path is a sensitive credential file.
@@ -308,3 +606,15 @@ mod tests {
         assert!(r.resolve_write("src/lib.rs").is_err());
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "fs_guard_windows_tests.rs"]
+mod windows_tests;
+
+#[cfg(all(test, windows))]
+#[path = "fs_guard_namespace_tests.rs"]
+mod namespace_tests;
+
+#[cfg(all(test, unix))]
+#[path = "fs_guard_unix_tests.rs"]
+mod unix_tests;

@@ -3,6 +3,7 @@ use crate::file_cache::FileStateCache;
 use crate::file_tools::{EditFileTool, MultiEditTool, ReadFileTool, WriteFileTool};
 use deepagent_tools::Tool;
 use serde_json::json;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -367,12 +368,13 @@ async fn empty_observed_file_can_be_written_but_invalid_utf8_cannot() {
 #[test]
 fn a_change_during_staging_is_detected_before_publication() {
     let files = Files::new(INITIAL);
+    let target = files.root.write_target(&files.path(), false).unwrap();
     let result = publish_checked(
-        &files.path(),
+        &target,
         Some(INITIAL),
         b"new",
         || std::fs::write(files.path(), EXTERNAL),
-        publish,
+        StagedWrite::publish,
     );
     assert!(result
         .unwrap_err()
@@ -386,15 +388,16 @@ fn a_change_during_staging_is_detected_before_publication() {
 fn a_new_target_created_after_final_check_is_never_clobbered() {
     let files = Files::new(INITIAL);
     let destination = files.root.path().join("new.txt");
+    let target = files.root.write_target(&destination, false).unwrap();
     let result = publish_checked(
-        &destination,
+        &target,
         None,
         b"new",
         || Ok(()),
-        |source, destination, replace| {
+        |source, target, replace| {
             assert!(!replace);
-            std::fs::write(destination, EXTERNAL)?;
-            publish(source, destination, replace)
+            std::fs::write(&destination, EXTERNAL)?;
+            source.publish(target, replace)
         },
     );
     assert!(result.is_err());
@@ -405,16 +408,17 @@ fn a_new_target_created_after_final_check_is_never_clobbered() {
 #[test]
 fn preparation_publication_and_unwind_failures_preserve_disk_and_remove_staging() {
     let files = Files::new(INITIAL);
+    let target = files.root.write_target(&files.path(), false).unwrap();
     assert!(publish_checked(
-        &files.path(),
+        &target,
         Some(INITIAL),
         b"new",
         || Err(io::Error::other("fixture preparation failure")),
-        publish
+        StagedWrite::publish
     )
     .is_err());
     assert!(publish_checked(
-        &files.path(),
+        &target,
         Some(INITIAL),
         b"new",
         || Ok(()),
@@ -423,11 +427,11 @@ fn preparation_publication_and_unwind_failures_preserve_disk_and_remove_staging(
     .is_err());
     let panic = std::panic::catch_unwind(|| {
         let _ = publish_checked(
-            &files.path(),
+            &target,
             Some(INITIAL),
             b"new",
             || panic!("fixture after staging"),
-            publish,
+            StagedWrite::publish,
         );
     });
     assert!(panic.is_err());

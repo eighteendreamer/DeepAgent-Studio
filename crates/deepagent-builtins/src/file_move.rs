@@ -9,10 +9,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
-use deepagent_persistence::fs_commit::rename_no_replace;
+use deepagent_persistence::fs_commit::{canonicalize_with_missing_suffix, rename_no_replace};
 use deepagent_tools::ToolOutput;
 
-use crate::fs_guard::WorkspaceRoot;
+use crate::fs_guard::{WorkspaceRoot, WriteTarget};
 
 pub(super) fn move_path(
     root: &WorkspaceRoot,
@@ -20,14 +20,38 @@ pub(super) fn move_path(
     destination: &Path,
     overwrite: bool,
 ) -> ToolOutput {
-    move_with(
-        root,
-        source,
-        destination,
+    // Reject ancestry before creating any missing destination parents. The
+    // same rule is checked again by the existing commit boundary after pins.
+    if let Err(error) = validate_move(root.path(), source, destination) {
+        return ToolOutput::failure(format!("invalid move: {error}"));
+    }
+    let source_target = match root.entry_target(source, false) {
+        Ok(target) => target,
+        Err(error) => return ToolOutput::failure(format!("source authorization failed: {error}")),
+    };
+    let destination_target = match root.entry_target(destination, true) {
+        Ok(target) => target,
+        Err(error) => {
+            return ToolOutput::failure(format!("destination authorization failed: {error}"))
+        }
+    };
+    let physical_root = match root.read_identity(root.path()) {
+        Ok(path) => WorkspaceRoot::new(path).with_access(root.access()),
+        Err(error) => return ToolOutput::failure(format!("workspace identity failed: {error}")),
+    };
+    let mut output = move_with(
+        &physical_root,
+        source_target.path(),
+        destination_target.path(),
         overwrite,
         rename_no_replace,
         |path| fs::remove_dir_all(path),
-    )
+    );
+    if output.ok {
+        output.value["source"] = root.relativize(source).into();
+        output.value["destination"] = root.relativize(destination).into();
+    }
+    output
 }
 
 fn move_with(
@@ -58,7 +82,7 @@ fn move_with(
         return ToolOutput::failure(format!("mkdir failed: {error}"));
     }
     let backup = if destination_exists {
-        match stage_destination(destination, parent, &mut rename) {
+        match stage_destination(root, destination, parent, &mut rename) {
             Ok(backup) => Some(backup),
             Err(error) => return ToolOutput::failure(format!("cannot stage destination: {error}")),
         }
@@ -66,7 +90,7 @@ fn move_with(
         None
     };
     if let Err(error) = rename(source, destination) {
-        return failed_publication(root, destination, backup.as_deref(), error, &mut rename);
+        return failed_publication(root, destination, backup, error, &mut rename);
     }
 
     let source_absent = matches!(
@@ -91,6 +115,7 @@ fn move_with(
         "verified": true,
     }));
     if let Some(backup) = backup {
+        let backup = backup.release_guard();
         if let Err(error) = cleanup(&backup) {
             // Publication has committed. Do not misreport it as a failed move,
             // or remove the new target to hide a secondary cleanup failure.
@@ -135,51 +160,82 @@ fn entry_identity(path: &Path) -> io::Result<PathBuf> {
                 .ok_or_else(|| io::Error::other("path has no name"))?;
             Ok(fs::canonicalize(parent)?.join(name))
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => resolve_missing_path(path),
-        Err(error) => Err(error),
-    }
-}
-
-fn resolve_missing_path(path: &Path) -> io::Result<PathBuf> {
-    match fs::canonicalize(path) {
-        Ok(path) => Ok(path),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let parent = path
-                .parent()
-                .ok_or_else(|| io::Error::other("path has no parent"))?;
-            let name = path
-                .file_name()
-                .ok_or_else(|| io::Error::other("path has no name"))?;
-            Ok(resolve_missing_path(parent)?.join(name))
+            canonicalize_with_missing_suffix(path)
         }
         Err(error) => Err(error),
     }
 }
 
+struct StagedDestination {
+    path: PathBuf,
+    _guard: WriteTarget,
+}
+
+impl std::ops::Deref for StagedDestination {
+    type Target = Path;
+
+    fn deref(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl StagedDestination {
+    fn release_guard(self) -> PathBuf {
+        let Self { path, _guard } = self;
+        drop(_guard);
+        path
+    }
+}
+
 fn stage_destination(
+    root: &WorkspaceRoot,
     destination: &Path,
     parent: &Path,
     rename: &mut impl FnMut(&Path, &Path) -> io::Result<()>,
-) -> io::Result<PathBuf> {
+) -> io::Result<StagedDestination> {
     // Disable automatic recursive cleanup BEFORE any business data enters the
     // directory. Errors/panics must not drop the only remaining old target.
     let staging = tempfile::Builder::new()
         .prefix(".deepagent-move-")
         .tempdir_in(parent)?
         .keep();
+    // Pin the new private namespace before any previous target enters it.
+    // Rollback and publication keep the pin; cleanup drops it only when the
+    // standard library's no-follow recursive removal takes over.
+    let guard = match root.entry_target(&staging.join("previous"), false) {
+        Ok(guard) => guard,
+        Err(error) => {
+            if let Err(cleanup_error) = fs::remove_dir(&staging) {
+                tracing::warn!(error = %cleanup_error, "empty move staging cleanup failed");
+            }
+            return Err(error);
+        }
+    };
+    // A link may have replaced the fresh name before the pin was acquired.
+    // Subsequent I/O uses the pinned physical parent, never that mutable alias.
+    let staging = guard
+        .path()
+        .parent()
+        .expect("validated staging parent")
+        .to_path_buf();
     if let Err(error) = rename(destination, &staging.join("previous")) {
+        drop(guard);
         if let Err(cleanup_error) = fs::remove_dir(&staging) {
             tracing::warn!(error = %cleanup_error, "empty move staging cleanup failed");
         }
         return Err(error);
     }
-    Ok(staging)
+    Ok(StagedDestination {
+        path: staging,
+        _guard: guard,
+    })
 }
 
 fn failed_publication(
     root: &WorkspaceRoot,
     destination: &Path,
-    backup: Option<&Path>,
+    backup: Option<StagedDestination>,
     error: io::Error,
     rename: &mut impl FnMut(&Path, &Path) -> io::Result<()>,
 ) -> ToolOutput {
@@ -188,6 +244,7 @@ fn failed_publication(
         match rename(&backup.join("previous"), destination) {
             Ok(()) => {
                 output.value["destination_restored"] = true.into();
+                let backup = backup.release_guard();
                 if let Err(error) = fs::remove_dir(backup) {
                     tracing::warn!(error = %error, "empty move staging cleanup failed");
                 }
@@ -324,6 +381,48 @@ mod tests {
             |_| panic!("no business data may be cleaned on stage failure"),
         );
         assert!(!output.ok);
+        assert_eq!(read_entry(&source, false), SOURCE);
+        assert_eq!(read_entry(&destination, false), PREVIOUS);
+        assert!(staging_dirs(root.path()).is_empty());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn staging_parent_stays_pinned_through_publication_failure_and_rollback() {
+        let (_dir, root, source, destination) = fixture();
+        write_entry(&source, false, SOURCE);
+        write_entry(&destination, false, PREVIOUS);
+        let mut pin_checks = 0;
+        let output = move_with(
+            &root,
+            &source,
+            &destination,
+            true,
+            |from, to| {
+                if to.file_name().is_some_and(|name| name == "previous")
+                    || from.file_name().is_some_and(|name| name == "previous")
+                {
+                    let parent = if to.file_name().is_some_and(|name| name == "previous") {
+                        to.parent()
+                    } else {
+                        from.parent()
+                    }
+                    .unwrap();
+                    let error = fs::rename(parent, root.path().join("parked-staging")).unwrap_err();
+                    assert_eq!(error.raw_os_error(), Some(32));
+                    pin_checks += 1;
+                }
+                if from == source {
+                    Err(io::Error::other("injected publication failure"))
+                } else {
+                    rename_no_replace(from, to)
+                }
+            },
+            |_| panic!("failed publication must restore previous data"),
+        );
+        assert!(!output.ok);
+        assert_eq!(output.value["destination_restored"], true);
+        assert_eq!(pin_checks, 2);
         assert_eq!(read_entry(&source, false), SOURCE);
         assert_eq!(read_entry(&destination, false), PREVIOUS);
         assert!(staging_dirs(root.path()).is_empty());

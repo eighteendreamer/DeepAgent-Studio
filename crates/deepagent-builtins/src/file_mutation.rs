@@ -1,13 +1,11 @@
 //! One observed-version/commit boundary for write, edit and multi-edit.
 
-use std::io::{self, Write};
-use std::path::Path;
-
-use deepagent_persistence::fs_commit::{lock_path_operation, rename_no_replace};
+use deepagent_persistence::fs_commit::lock_path_operation;
 use deepagent_tools::{ToolExecutionContext, ToolOutput};
+use std::io::{self, Write};
 
 use crate::file_cache::{ObservedFile, SharedFileStateCache};
-use crate::fs_guard::WorkspaceRoot;
+use crate::fs_guard::{StagedWrite, WorkspaceRoot, WriteTarget};
 
 pub(crate) const READ_BEFORE_EDIT_MSG: &str =
     "You must call read_file on this path before editing it.";
@@ -41,20 +39,6 @@ pub(crate) async fn apply(
         if context.is_cancelled() {
             return ToolOutput::failure("FILE_OPERATION_CANCELLED: no content was written");
         }
-        // Only new-file writes may create parents. Checking an existing read
-        // or a stale deletion must not turn metadata errors into "new file".
-        if matches!(mutation, Mutation::Write(_))
-            && !cache
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .has_been_read(&path)
-        {
-            if let Some(parent) = path.parent() {
-                if let Err(error) = std::fs::create_dir_all(parent) {
-                    return ToolOutput::failure(format!("mkdir failed: {error}"));
-                }
-            }
-        }
         let _operation = match lock_path_operation(&path) {
             Ok(guard) => guard,
             Err(error) => {
@@ -71,7 +55,16 @@ pub(crate) async fn apply(
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .observed(&path);
-        let before = match read_current(&path) {
+        let target = match root.write_target(
+            &path,
+            matches!(mutation, Mutation::Write(_)) && observed.is_none(),
+        ) {
+            Ok(target) => target,
+            Err(error) => {
+                return ToolOutput::failure(format!("write authorization failed: {error}"))
+            }
+        };
+        let before = match target.read_current() {
             Ok(content) => content,
             Err(error) => return ToolOutput::failure(format!("read failed: {error}")),
         };
@@ -91,7 +84,7 @@ pub(crate) async fn apply(
         let old_lines = before.as_deref().unwrap_or_default().lines().count();
         let new_lines = content.lines().count();
         match publish_checked(
-            &path,
+            &target,
             before.as_deref(),
             content.as_bytes(),
             || {
@@ -103,7 +96,7 @@ pub(crate) async fn apply(
                     Ok(())
                 }
             },
-            publish,
+            StagedWrite::publish,
         ) {
             Ok(()) => {
                 cache
@@ -206,77 +199,25 @@ fn apply_replacement(seen: &mut ObservedFile, edit: &Replacement) -> Result<usiz
     Ok(count)
 }
 
-fn read_current(path: &Path) -> io::Result<Option<String>> {
-    match std::fs::read_to_string(path) {
-        Ok(content) => Ok(Some(content)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
 fn publish_checked(
-    path: &Path,
+    target: &WriteTarget,
     expected: Option<&str>,
     bytes: &[u8],
     before_commit: impl FnOnce() -> io::Result<()>,
-    commit: impl FnOnce(&Path, &Path, bool) -> io::Result<()>,
+    commit: impl FnOnce(StagedWrite, &WriteTarget, bool) -> io::Result<()>,
 ) -> io::Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::other("file path has no parent"))?;
-    let mut temp = tempfile::Builder::new()
-        .prefix(".deepagent-write-")
-        .tempfile_in(parent)?;
-    temp.write_all(bytes)?;
-    temp.flush()?;
-    temp.as_file().sync_all()?;
-    let temp_path = temp.into_temp_path();
+    let mut temp = target.stage()?;
+    temp.file_mut().write_all(bytes)?;
+    temp.file_mut().flush()?;
+    temp.file_mut().sync_all()?;
     before_commit()?;
     // Recheck after potentially slow preparation, not only before staging.
     // No await separates this comparison from publication. This is not a
     // filesystem CAS against non-cooperating writers in the final syscall gap.
-    if read_current(path)?.as_deref() != expected {
+    if target.read_current()?.as_deref() != expected {
         return Err(io::Error::other(STALE_READ_MSG));
     }
-    commit(&temp_path, path, expected.is_some())
-}
-
-fn publish(source: &Path, destination: &Path, replace: bool) -> io::Result<()> {
-    if !replace {
-        return rename_no_replace(source, destination);
-    }
-    replace_atomically(source, destination)
-}
-
-#[cfg(not(windows))]
-fn replace_atomically(source: &Path, destination: &Path) -> io::Result<()> {
-    std::fs::rename(source, destination)
-}
-
-#[cfg(windows)]
-fn replace_atomically(source: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(Some(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            destination.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
+    commit(temp, target, expected.is_some())
 }
 
 #[cfg(test)]

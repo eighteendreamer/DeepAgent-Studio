@@ -547,7 +547,10 @@ impl<'a> RunAssembler<'a> {
 
         let mut base = self.base_registry_request(
             &root,
-            deepagent_builtins::FsAccess::Full,
+            // Hooks and actual I/O must enforce the same effective profile.
+            // Implicit glob/grep traversal has no path argument for the hook
+            // to inspect; the file tools cannot be constructed as Full here.
+            access,
             effective_env_mode,
             connection_id,
             Some(local_execution_mode),

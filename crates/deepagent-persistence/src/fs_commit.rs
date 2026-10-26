@@ -15,8 +15,8 @@ pub struct PathOperationGuard {
 }
 
 /// Serialize cooperating file operations across caches and host processes.
-/// The parent must already exist. Canonicalizing it also shares ownership for
-/// ordinary parent aliases; this is not a path-authorization or sandbox check.
+/// The deepest existing parent determines ownership even before directories
+/// are created. This is advisory coordination, not path authorization.
 pub fn lock_path_operation(path: &Path) -> io::Result<PathOperationGuard> {
     use sha2::{Digest, Sha256};
     use std::time::{Duration, Instant};
@@ -27,7 +27,7 @@ pub fn lock_path_operation(path: &Path) -> io::Result<PathOperationGuard> {
     let name = path
         .file_name()
         .ok_or_else(|| io::Error::other("file path has no name"))?;
-    let identity = std::fs::canonicalize(parent)?.join(name);
+    let identity = canonicalize_with_missing_suffix(parent)?.join(name);
     #[cfg(windows)]
     let identity = std::path::PathBuf::from(identity.to_string_lossy().to_lowercase());
     let digest = Sha256::digest(identity.as_os_str().as_encoded_bytes());
@@ -54,6 +54,37 @@ pub fn lock_path_operation(path: &Path) -> io::Result<PathOperationGuard> {
                     ));
                 }
                 std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+/// Resolve through the deepest existing ancestor without creating anything.
+/// A dangling link is an error, not a missing directory to be manufactured.
+/// Callers still need their own authorization and operation-time I/O boundary.
+pub fn canonicalize_with_missing_suffix(path: &Path) -> io::Result<std::path::PathBuf> {
+    let mut ancestor = path;
+    let mut suffix = Vec::new();
+    loop {
+        match std::fs::canonicalize(ancestor) {
+            Ok(mut physical) => {
+                for name in suffix.into_iter().rev() {
+                    physical.push(name);
+                }
+                return Ok(physical);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                match std::fs::symlink_metadata(ancestor) {
+                    Ok(_) => return Err(error),
+                    Err(metadata_error) if metadata_error.kind() == io::ErrorKind::NotFound => {}
+                    Err(metadata_error) => return Err(metadata_error),
+                }
+                let name = ancestor.file_name().ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "path has no final component")
+                })?;
+                suffix.push(name.to_os_string());
+                ancestor = ancestor.parent().ok_or(error)?;
             }
             Err(error) => return Err(error),
         }
@@ -128,4 +159,21 @@ pub fn rename_no_replace(_source: &Path, _destination: &Path) -> io::Result<()> 
         io::ErrorKind::Unsupported,
         "native no-replace move is unavailable on this platform",
     ))
+}
+
+#[cfg(test)]
+mod path_identity_tests {
+    use super::*;
+
+    #[test]
+    fn missing_parent_identity_is_stable_after_creation_and_does_not_create_paths() {
+        let temp = tempfile::tempdir().unwrap();
+        let parent = temp.path().join("new").join("nested");
+        let before = canonicalize_with_missing_suffix(&parent).unwrap();
+        let guard = lock_path_operation(&parent.join("file.txt")).unwrap();
+        assert!(!parent.exists());
+        std::fs::create_dir_all(&parent).unwrap();
+        assert_eq!(before, std::fs::canonicalize(&parent).unwrap());
+        drop(guard);
+    }
 }
