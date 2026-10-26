@@ -20,7 +20,7 @@
 
 ## H-02 本轮即时记录（2026-10-26）
 
-**当前状态：已修复并验收（所列Windows本机范围）。** 原失败和中间结果见E-01～13；修复提交待本轮独立提交后回填。
+**当前状态：已修复并验收（所列Windows本机范围）。** 原失败和中间结果见E-01～15；修复提交`f777dc82`，本次单独回填真实hash。
 
 E-H02-20261026-01（原始探针复现）：生产代码未改时执行`cargo test -p deepagent-cli audit_interrupt_after_start_ack_reaches_cancellation --offline -- --ignored --nocapture`，退出1，0 passed/1 failed/0 ignored（编译1m05s、测试0.20s）。实际`status="cancelling", active_registration=false, durable_runs=0`，ACK后的中断未送达任何执行侧注册。当前turn_start只插内存TurnState，run_stdio先写响应再spawn；turn_interrupt忽略request_cancel().accepted。状态转修复中，仅修H-02接纳/取消交付，复用ChatService::admit_run与RunCoordinator::take_admission，不修改H-04覆盖配置、H-01事件队列或另建取消链。原有未跟踪项不读取、不修改、不暂存。
 
@@ -49,6 +49,8 @@ E-H02-20261026-12（最终断言复跑与workspace终态）：修正真实item.s
 E-H02-20261026-13（本机范围验收与限制）：最终新断言源码再次执行`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0，97 passed/27 ignored（构建检查0.55s、测试5.33s）；`cargo fmt --all -- --check`与`git diff --check`均退出0。原H-02探针已转默认，6个接纳/取消用例和真实stdio父测试均默认执行，子进程ignored helper由父测试显式运行。生产仅修改CLI app-server：started ACK前调用既有admit_run，原执行器消费同一admission；interrupt按已提交终态及accepted确认；ACK写失败等待同一执行器取消收尾；早期取消只投影原durable结果、不另写终态。本项在所列Windows本机离线/临时数据范围标为已修复并验收，原失败不删；完整workspace仍有E-12两类失败、严格CLI lint仍有E-07既有告警，不等于全仓通过。DTO/schema、AppCore生产代码、前端、模型参数、权限与沙箱配置均未改，无数据迁移。未执行其他OS、真实DeepSeek、真实UI或所有feature组合，无前端改动故未跑pnpm build。H-01通知满队列、H-04配置保留及H-92宿主退出仍独立未关闭，已开始的不可撤销工具副作用不因本项回滚。本轮新增1，累计19已验收、18历史跳过、7归并、2撤销、260待修、0修复中；整体goal继续active。下一项准备复核H-04，尚未实施。剩余200–400有效小时仍为未校准跨层复现/修复/验收粗估，编译、设备与环境等待另计，不据本项机械扣减。
 
 E-H02-20261026-14（提交前结构核对）：实际PowerShell校验两份文档，台账306行/306唯一编号、无缺号/重复、每行8列；状态为19已修复并验收、18历史跳过、7归并、2撤销、260待修复，合计306。E-H02-01～13两份文档逐字一致；最终fmt与diff检查退出0。已逐段阅读生产diff及新增admission_tests.rs，检查启动、队列、取消、重开与真实stdio断言；仅本项5文件准备暂存，不读取、修改或暂存原有未跟踪项。尚未生成修复hash，取得后另做文档回填提交，不amend、不推送、不创建PR。
+
+E-H02-20261026-15（独立提交与真实hash回填）：修复提交`f777dc82`（【fix】修复H-02接纳确认与立即中断交付）已创建，含CLI生产边界、默认回归与当时两份文档共5文件；暂存清单与cached diff --check均通过。此处仅回填真实hash并单独提交两份文档，不amend、不推送、不创建PR。H-02维持所列Windows本机范围已验收，E-08/12的SDK继承环境失败、H-306及严格CLI lint基线均保留，不把隔离对照当作旧根根因已修；总体19已验收、18历史跳过、7归并、2撤销、260待修，整体goal继续active。下一项H-04尚未实施；剩余200–400有效小时为未校准初估，环境等待另计。
 
 ## H-09 本轮即时记录（2026-10-26）
 
@@ -690,7 +692,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | H 编号、原标题与原报告链接 | 优先级 | 当前状态 | 归并目标 / 跳过依据 | 根因与修复摘要 | 测试命令、结果 / 未执行验收 | 修复 commit ID | 残余、下一步与剩余工时 |
 |---|---|---|---|---|---|---|---|
 | [H-01：stdio 事件队列满时丢弃关键通知，连接仍表现正常](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H02-01原始失败保留，原探针转默认通过；限所列Windows本机范围 | ACK前复用admit_run/执行消费同一admission；interrupt核对终态及accepted；ACK失败同执行器收尾；补早期取消投影 | E-H02-01～13：CLI97 passed/27 ignored、真实stdio32轮、最终事件断言通过、build/fmt/diff通过；SDK隔离根6 passed；全workspace两失败target，严格CLI lint既有告警未绿 | 待本轮独立提交后回填 | H-01/H-04/H-92仍独立未修，其他OS/真实DeepSeek/UI未验；下一项H-04；总体200–400有效小时初估 |
+| [H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H02-01原始失败保留，原探针转默认通过；限所列Windows本机范围 | ACK前复用admit_run/执行消费同一admission；interrupt核对终态及accepted；ACK失败同执行器收尾；补早期取消投影 | E-H02-01～15：CLI97 passed/27 ignored、真实stdio32轮、最终事件断言通过、build/fmt/diff通过；SDK隔离根6 passed；全workspace两失败target，严格CLI lint既有告警未绿 | `f777dc82` | H-01/H-04/H-92仍独立未修，其他OS/真实DeepSeek/UI未验；下一项H-04；总体200–400有效小时初估 |
 | [H-03：Harness 的逐次沙箱 backend 选择未进入实际执行路由](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

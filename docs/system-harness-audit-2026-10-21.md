@@ -6,7 +6,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-02 | 已修复并验收（2026-10-26，所列Windows本机范围） | ACK前统一admit，interrupt核对accepted；CLI97/27 ignored、真实stdio32轮及ACK失败收尾通过；SDK隔离根6通过；全workspace两失败target、严格lint基线与未验边界见E-H02-01～13；提交待回填 |
+| H-02 | 已修复并验收（2026-10-26，所列Windows本机范围） | ACK前统一admit，interrupt核对accepted；CLI97/27 ignored、真实stdio32轮及ACK失败收尾通过；SDK隔离根6通过；全workspace两失败target、严格lint基线与未验边界见E-H02-01～15；修复提交`f777dc82` |
 | H-06 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 连接恢复与业务请求重试分离；未知结果结构化保留并禁止自动重放；MCP、HTTP、AppCore正式链路通过；完整workspace仅既有H-306失败，Linux真实stdio因无Node未执行；E-H06-01～06，修复提交`5ba4ee83` |
 | H-74 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 同一Projection帧提交源/派生项；分支和检查点共用有效末端；正式分支6、checkpoint1、stdio1定向通过，完整workspace唯一失败H-306，严格AppCore lint既有10项未绿；E-H74-01～16，修复提交`1dbac424` |
 | H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交 `56b9e7b9` |
@@ -389,7 +389,7 @@
 
 ### H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认
 
-**当前修复状态（2026-10-26）：已修复并验收（所列Windows本机范围）。** start/steer ACK前复用统一接纳，原执行器消费同一admission，中断按实际accepted确认；原始失败保留，最终证据与限制见E-H02-01～13，修复提交待回填。完整workspace和严格lint未全绿。
+**当前修复状态（2026-10-26）：已修复并验收（所列Windows本机范围）。** start/steer ACK前复用统一接纳，原执行器消费同一admission，中断按实际accepted确认；原始失败保留，最终证据与限制见E-H02-01～15，修复提交`f777dc82`。完整workspace和严格lint未全绿。
 
 **级别：高（P1）；范围：stdio `turn/start` / `turn/interrupt`；桌面 `start_chat_v2` 已采用更早的接纳，不能据此认定桌面同样失败。**
 
@@ -448,6 +448,8 @@ E-H02-20261026-12（最终断言复跑与workspace终态）：修正真实item.s
 E-H02-20261026-13（本机范围验收与限制）：最终新断言源码再次执行`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0，97 passed/27 ignored（构建检查0.55s、测试5.33s）；`cargo fmt --all -- --check`与`git diff --check`均退出0。原H-02探针已转默认，6个接纳/取消用例和真实stdio父测试均默认执行，子进程ignored helper由父测试显式运行。生产仅修改CLI app-server：started ACK前调用既有admit_run，原执行器消费同一admission；interrupt按已提交终态及accepted确认；ACK写失败等待同一执行器取消收尾；早期取消只投影原durable结果、不另写终态。本项在所列Windows本机离线/临时数据范围标为已修复并验收，原失败不删；完整workspace仍有E-12两类失败、严格CLI lint仍有E-07既有告警，不等于全仓通过。DTO/schema、AppCore生产代码、前端、模型参数、权限与沙箱配置均未改，无数据迁移。未执行其他OS、真实DeepSeek、真实UI或所有feature组合，无前端改动故未跑pnpm build。H-01通知满队列、H-04配置保留及H-92宿主退出仍独立未关闭，已开始的不可撤销工具副作用不因本项回滚。本轮新增1，累计19已验收、18历史跳过、7归并、2撤销、260待修、0修复中；整体goal继续active。下一项准备复核H-04，尚未实施。剩余200–400有效小时仍为未校准跨层复现/修复/验收粗估，编译、设备与环境等待另计，不据本项机械扣减。
 
 E-H02-20261026-14（提交前结构核对）：实际PowerShell校验两份文档，台账306行/306唯一编号、无缺号/重复、每行8列；状态为19已修复并验收、18历史跳过、7归并、2撤销、260待修复，合计306。E-H02-01～13两份文档逐字一致；最终fmt与diff检查退出0。已逐段阅读生产diff及新增admission_tests.rs，检查启动、队列、取消、重开与真实stdio断言；仅本项5文件准备暂存，不读取、修改或暂存原有未跟踪项。尚未生成修复hash，取得后另做文档回填提交，不amend、不推送、不创建PR。
+
+E-H02-20261026-15（独立提交与真实hash回填）：修复提交`f777dc82`（【fix】修复H-02接纳确认与立即中断交付）已创建，含CLI生产边界、默认回归与当时两份文档共5文件；暂存清单与cached diff --check均通过。此处仅回填真实hash并单独提交两份文档，不amend、不推送、不创建PR。H-02维持所列Windows本机范围已验收，E-08/12的SDK继承环境失败、H-306及严格CLI lint基线均保留，不把隔离对照当作旧根根因已修；总体19已验收、18历史跳过、7归并、2撤销、260待修，整体goal继续active。下一项H-04尚未实施；剩余200–400有效小时为未校准初估，环境等待另计。
 
 ### H-03：Harness 的逐次沙箱 backend 选择未进入实际执行路由
 
