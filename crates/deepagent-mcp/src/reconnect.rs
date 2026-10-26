@@ -21,9 +21,9 @@
 //! with no background service loop and no event bus, so a proactive poller has
 //! nothing to poll. Instead we reconnect **reactively**: when a `send` fails
 //! with a transport-closed error, we rebuild the transport (bounded backoff)
-//! and retry the request. The recovery outcome — a crashed MCP server is
-//! transparently respawned so the run keeps moving — is the same; only the
-//! trigger differs (send-failure vs. background poll).
+//! before a subsequent request is dispatched. A failed business request is
+//! never replayed: its remote outcome may be unknown. Only the protocol's
+//! `ping` and `tools/list` control requests get one retry after recovery.
 //!
 //! Non-transport errors (a JSON-RPC error from a healthy server, a bad
 //! request) are returned unchanged: only genuine transport failures trigger a
@@ -59,6 +59,9 @@ pub const DEFAULT_RECONNECT_BACKOFF: [Duration; 3] = [
 /// warrant a reconnect. Matches the messages produced by [`crate::stdio`] and
 /// [`crate::http`] transports plus common OS pipe/socket failures.
 pub fn is_transport_closed_error(error: &deepagent_core::error::CoreError) -> bool {
+    if matches!(error, CoreError::RemoteOutcomeUnknown { .. }) {
+        return false;
+    }
     let msg = error.to_string().to_ascii_lowercase();
     [
         "closed the connection",
@@ -81,7 +84,7 @@ pub fn is_transport_closed_error(error: &deepagent_core::error::CoreError) -> bo
 
 /// Builds a fresh, ready-to-use (handshake-completed) transport when the live
 /// one dies. Implementations must return a transport on which `initialize` has
-/// already succeeded, so the caller can immediately retry its request.
+/// already succeeded, so the caller can dispatch a new request.
 #[async_trait]
 pub trait ReconnectFactory: Send + Sync {
     /// Reconnect: build a new transport and complete the MCP `initialize`
@@ -126,9 +129,15 @@ impl ReconnectFactory for ConfigReconnectFactory {
 /// A [`McpTransport`] that transparently rebuilds its inner transport (bounded
 /// backoff) when a request fails with a transport-closed error.
 pub struct ReconnectingTransport {
-    inner: Mutex<Arc<dyn McpTransport>>,
+    inner: Mutex<ConnectionState>,
     factory: Arc<dyn ReconnectFactory>,
     backoff: Vec<Duration>,
+}
+
+struct ConnectionState {
+    transport: Arc<dyn McpTransport>,
+    disconnected: bool,
+    closed: bool,
 }
 
 impl ReconnectingTransport {
@@ -136,7 +145,11 @@ impl ReconnectingTransport {
     /// using the default Grok-aligned backoff.
     pub fn new(inner: Arc<dyn McpTransport>, factory: Arc<dyn ReconnectFactory>) -> Self {
         Self {
-            inner: Mutex::new(inner),
+            inner: Mutex::new(ConnectionState {
+                transport: inner,
+                disconnected: false,
+                closed: false,
+            }),
             factory,
             backoff: DEFAULT_RECONNECT_BACKOFF.to_vec(),
         }
@@ -147,52 +160,32 @@ impl ReconnectingTransport {
         self.backoff = backoff;
         self
     }
-}
 
-#[async_trait]
-impl McpTransport for ReconnectingTransport {
-    async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
-        // Fast path: try the live transport.
-        let current = self.inner.lock().await.clone();
-        match current.send(request).await {
-            Ok(response) => return Ok(response),
-            Err(error) if is_transport_closed_error(&error) => {
-                tracing::warn!(
-                    error = %error,
-                    "MCP transport closed mid-request; attempting bounded reconnect"
-                );
-            }
-            // A JSON-RPC error or malformed-request failure from a healthy
-            // server is a real result, not a connectivity problem — surface it.
-            Err(error) => return Err(error),
+    /// Serialize recovery and publish one initialized generation. No business
+    /// request is held by the factory. Cancellation drops this future while
+    /// leaving the old generation marked disconnected for the next caller.
+    async fn ready_transport(&self) -> Result<Arc<dyn McpTransport>> {
+        let mut state = self.inner.lock().await;
+        if state.closed {
+            return Err(CoreError::other("MCP transport is closed"));
         }
-
-        // Recovery path: bounded backoff respawn + retry (Grok mcp_restart).
-        let mut last_error = deepagent_core::error::CoreError::other(
-            "MCP transport closed; reconnect not attempted",
-        );
+        if !state.disconnected {
+            return Ok(state.transport.clone());
+        }
+        let mut last_error = CoreError::other("MCP transport closed; reconnect not attempted");
         for (idx, wait) in self.backoff.iter().enumerate() {
             let attempt = idx + 1;
             tokio::time::sleep(*wait).await;
             match self.factory.reconnect().await {
                 Ok(fresh) => {
-                    tracing::info!(attempt, "MCP transport reconnected; retrying request");
-                    *self.inner.lock().await = fresh.clone();
-                    match fresh.send(request).await {
-                        Ok(response) => return Ok(response),
-                        Err(error) if is_transport_closed_error(&error) => {
-                            // Reconnected but died again before/at the retry —
-                            // keep trying within the budget.
-                            last_error = error;
-                            continue;
-                        }
-                        Err(error) => return Err(error),
-                    }
+                    tracing::info!(attempt, "MCP connection restored for subsequent dispatch");
+                    state.transport = fresh.clone();
+                    state.disconnected = false;
+                    return Ok(fresh);
                 }
                 Err(error) => {
                     tracing::warn!(attempt, error = %error, "MCP reconnect attempt failed");
                     last_error = error;
-                    continue;
                 }
             }
         }
@@ -201,6 +194,67 @@ impl McpTransport for ReconnectingTransport {
             "MCP reconnect budget exhausted; surfacing transport error"
         );
         Err(last_error)
+    }
+
+    async fn send_request(
+        &self,
+        request: &JsonRpcRequest,
+        context: ToolExecutionContext,
+    ) -> Result<JsonRpcResponse> {
+        // These are protocol-defined control operations, not guesses based on
+        // a tool name or untrusted readOnly annotations. All other methods
+        // receive exactly one dispatch, including initialize and tools/call.
+        let attempts = if matches!(request.method.as_str(), "ping" | "tools/list") {
+            2
+        } else {
+            1
+        };
+        for attempt in 0..attempts {
+            let current = tokio::select! {
+                biased;
+                _ = context.cancelled() => return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH)),
+                result = self.ready_transport() => result?,
+            };
+            if context.is_cancelled() {
+                return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
+            }
+            let error = match current.send_with_context(request, context.clone()).await {
+                Ok(response) => return Ok(response),
+                Err(error) => error,
+            };
+            let disconnected = is_transport_closed_error(&error);
+            if disconnected {
+                let mut state = self.inner.lock().await;
+                // A delayed failure from an older generation must not retire
+                // the replacement published by another concurrent request.
+                if Arc::ptr_eq(&state.transport, &current) {
+                    state.disconnected = true;
+                }
+                tracing::warn!(method = %request.method, request_id = request.id,
+                    "MCP connection lost; failed business request will not be replayed");
+            }
+            if request.method == "tools/call"
+                && (disconnected || error.to_string() == MCP_CANCELLED_UNKNOWN_OUTCOME)
+            {
+                return Err(CoreError::RemoteOutcomeUnknown {
+                    method: request.method.clone(),
+                    request_id: request.id,
+                    source: Box::new(error),
+                });
+            }
+            if !disconnected || context.is_cancelled() || attempt + 1 == attempts {
+                return Err(error);
+            }
+        }
+        unreachable!("at least one dispatch attempt")
+    }
+}
+
+#[async_trait]
+impl McpTransport for ReconnectingTransport {
+    async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+        self.send_request(request, ToolExecutionContext::default())
+            .await
     }
 
     async fn send_with_context(
@@ -208,73 +262,22 @@ impl McpTransport for ReconnectingTransport {
         request: &JsonRpcRequest,
         context: ToolExecutionContext,
     ) -> Result<JsonRpcResponse> {
-        if context.is_cancelled() {
-            return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
-        }
-        let current = self.inner.lock().await.clone();
-        match current.send_with_context(request, context.clone()).await {
-            Ok(response) => return Ok(response),
-            Err(_) if context.is_cancelled() => {
-                return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME));
-            }
-            Err(error) if is_transport_closed_error(&error) => {
-                tracing::warn!(
-                    error = %error,
-                    "MCP transport closed mid-request; attempting bounded reconnect"
-                );
-            }
-            Err(error) => return Err(error),
-        }
-
-        let mut last_error = CoreError::other("MCP transport closed; reconnect not attempted");
-        for (idx, wait) in self.backoff.iter().enumerate() {
-            let attempt = idx + 1;
-            tokio::select! {
-                biased;
-                _ = context.cancelled() => return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME)),
-                _ = tokio::time::sleep(*wait) => {}
-            }
-            let reconnected = tokio::select! {
-                biased;
-                _ = context.cancelled() => return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME)),
-                result = self.factory.reconnect() => result,
-            };
-            match reconnected {
-                Ok(fresh) => {
-                    if context.is_cancelled() {
-                        return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME));
-                    }
-                    tracing::info!(attempt, "MCP transport reconnected; retrying request");
-                    *self.inner.lock().await = fresh.clone();
-                    match fresh.send_with_context(request, context.clone()).await {
-                        Ok(response) => return Ok(response),
-                        Err(_) if context.is_cancelled() => {
-                            return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME));
-                        }
-                        Err(error) if is_transport_closed_error(&error) => {
-                            last_error = error;
-                            continue;
-                        }
-                        Err(error) => return Err(error),
-                    }
-                }
-                Err(error) => {
-                    tracing::warn!(attempt, error = %error, "MCP reconnect attempt failed");
-                    last_error = error;
-                }
-            }
-        }
-        tracing::warn!(
-            attempts = self.backoff.len(),
-            "MCP reconnect budget exhausted; surfacing transport error"
-        );
-        Err(last_error)
+        self.send_request(request, context).await
     }
 
     async fn close(&self) -> Result<()> {
-        self.inner.lock().await.close().await
+        let transport = {
+            let mut state = self.inner.lock().await;
+            state.closed = true;
+            state.transport.clone()
+        };
+        transport.close().await
     }
 }
+
+#[cfg(test)]
+#[path = "reconnect_boundary_tests.rs"]
+mod boundary_tests;
 
 #[cfg(test)]
 mod tests {
@@ -287,7 +290,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: reconnect must not repeat a tool whose outcome is unknown"]
     async fn audit_disconnect_after_tool_effect_does_not_replay_mutation() {
         struct AppliedThenDisconnected {
             effects: Arc<AtomicUsize>,
@@ -346,6 +348,10 @@ mod tests {
             1,
             "a lost reply must not cause an unknown-outcome mutation to be applied twice"
         );
+        assert!(matches!(
+            result,
+            Err(CoreError::RemoteOutcomeUnknown { .. })
+        ));
     }
 
     /// A factory that hands out a fresh healthy MockTransport each reconnect,
@@ -366,7 +372,7 @@ mod tests {
                 ));
             }
             Ok(Arc::new(MockTransport::new().with_result(
-                "tools/call",
+                "ping",
                 serde_json::json!({"content":[{"type":"text","text":"healed"}],"isError":false}),
             )))
         }
@@ -412,7 +418,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconnects_and_retries_after_transport_death() {
+    async fn reconnects_and_retries_control_ping_after_transport_death() {
         // Inner dies immediately (fail after 0 sends), factory heals on the
         // first reconnect.
         let inner = Arc::new(
@@ -423,7 +429,7 @@ mod tests {
             fail_first: 0,
         });
         let t = ReconnectingTransport::new(inner, factory.clone()).with_backoff(fast_backoff());
-        let resp = t.send(&req()).await.unwrap();
+        let resp = t.send(&JsonRpcRequest::new(1, "ping", None)).await.unwrap();
         assert_eq!(resp.result.unwrap()["content"][0]["text"], "healed");
         assert_eq!(factory.calls.load(Ordering::SeqCst), 1);
     }
@@ -439,7 +445,7 @@ mod tests {
             fail_first: 2,
         });
         let t = ReconnectingTransport::new(inner, factory.clone()).with_backoff(fast_backoff());
-        let resp = t.send(&req()).await.unwrap();
+        let resp = t.send(&JsonRpcRequest::new(1, "ping", None)).await.unwrap();
         assert_eq!(resp.result.unwrap()["content"][0]["text"], "healed");
         assert_eq!(factory.calls.load(Ordering::SeqCst), 3);
     }
@@ -455,7 +461,10 @@ mod tests {
             fail_first: 999,
         });
         let t = ReconnectingTransport::new(inner, factory.clone()).with_backoff(fast_backoff());
-        let error = t.send(&req()).await.unwrap_err();
+        let error = t
+            .send(&JsonRpcRequest::new(1, "ping", None))
+            .await
+            .unwrap_err();
         assert!(is_transport_closed_error(&error));
         assert_eq!(factory.calls.load(Ordering::SeqCst), 3);
     }
@@ -470,8 +479,30 @@ mod tests {
             fail_first: 0,
         });
         let t = ReconnectingTransport::new(inner, factory.clone()).with_backoff(fast_backoff());
-        let error = t.send(&req()).await.unwrap_err();
+        let error = t
+            .send(&JsonRpcRequest::new(1, "ping", None))
+            .await
+            .unwrap_err();
         assert!(!is_transport_closed_error(&error));
+        assert_eq!(factory.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn tool_json_rpc_error_is_authoritative_not_unknown() {
+        let inner = Arc::new(MockTransport::new().with_result(
+            "tools/call",
+            serde_json::json!({"content":[],"isError":true}),
+        ));
+        let factory = Arc::new(CountingFactory {
+            calls: AtomicUsize::new(0),
+            fail_first: 0,
+        });
+        let t = ReconnectingTransport::new(inner, factory.clone()).with_backoff(fast_backoff());
+        let response = t
+            .send(&JsonRpcRequest::new(1, "tools/call", None))
+            .await
+            .unwrap();
+        assert_eq!(response.result.unwrap()["isError"], true);
         assert_eq!(factory.calls.load(Ordering::SeqCst), 0);
     }
 }

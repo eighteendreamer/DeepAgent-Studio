@@ -2,8 +2,8 @@
 //!
 //! The first generation applies a `tools/call` mutation and exits before the
 //! JSON-RPC response reaches the client.  The production reconnect wrapper
-//! respawns the server and retries the same request, so the fixture's durable
-//! effect counter records two applications for one logical call.
+//! must report the unknown outcome without replaying that request. A later,
+//! independent call recovers the connection before dispatch.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -52,12 +52,20 @@ fn node_available() -> bool {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: reconnect must not replay an unknown-outcome mutation"]
 async fn audit_reconnect_does_not_replay_unknown_outcome_tool_call() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
-        return;
-    }
+    assert_unknown_outcome(false).await;
+}
+
+#[tokio::test]
+async fn context_call_recovers_for_a_new_request_without_replaying_the_old_one() {
+    assert_unknown_outcome(true).await;
+}
+
+async fn assert_unknown_outcome(with_context: bool) {
+    assert!(
+        node_available(),
+        "Node is required for the real-process regression"
+    );
 
     let dir = tempfile::tempdir().expect("tempdir");
     let script = dir.path().join("server.js");
@@ -96,10 +104,19 @@ async fn audit_reconnect_does_not_replay_unknown_outcome_tool_call() {
         .await
         .expect("initialize");
 
-    let result = client
-        .call_tool("append_record", serde_json::json!({"value":"audit"}))
-        .await;
-    client.close().await.expect("close");
+    let result = if with_context {
+        client
+            .call_tool_with_context(
+                "append_record",
+                serde_json::json!({"value":"audit"}),
+                deepagent_tools::ToolExecutionContext::default(),
+            )
+            .await
+    } else {
+        client
+            .call_tool("append_record", serde_json::json!({"value":"audit"}))
+            .await
+    };
 
     let effect_count = std::fs::read_to_string(&effects)
         .expect("effect log")
@@ -113,4 +130,19 @@ async fn audit_reconnect_does_not_replay_unknown_outcome_tool_call() {
         effect_count, 1,
         "one logical tools/call must not be applied twice after its reply is lost"
     );
+    assert!(matches!(
+        result,
+        Err(deepagent_core::error::CoreError::RemoteOutcomeUnknown { .. })
+    ));
+    let next = client
+        .call_tool("append_record", serde_json::json!({"value":"independent"}))
+        .await;
+    client.close().await.expect("close");
+    assert!(!next.expect("new request on recovered generation").is_error);
+    let after = std::fs::read_to_string(&effects).unwrap().lines().count();
+    assert_eq!(
+        after, 2,
+        "one old effect and one independently requested effect"
+    );
+    eprintln!("MCP recovered independent request: context={with_context}, total_effects={after}");
 }

@@ -2,21 +2,35 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-74已完成所列Windows/Linux本机范围验收，累计十四项已验收，提交hash见本项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-06、H-74已完成所列Windows/Linux本机范围验收，累计十五项已验收，提交hash见本项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 14 | H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 15 | H-06、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有已进入实现但尚未完成验收的条目 |
-| 待修复 | 265 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 264 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **265（265待修复、0修复中）**；不提供完成率。十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **264（264待修复、0修复中）**；不提供完成率。十五项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-06 本轮即时记录（2026-10-26）
+
+当前状态：已修复并验收（限所列Windows/Linux本机范围）。范围限MCP连接恢复与未知结果工具调用的重放边界，复用既有transport/client/registry/adapter及运行工具结果，不改其他MCP审计条目。
+
+E-H06-20261026-01（未改源码的原探针复现）：HEAD=d6fa75c3，tracked工作树干净，原有未跟踪项不读改或暂存。`cargo test -p deepagent-mcp audit_disconnect_after_tool_effect --offline -- --ignored --nocapture`退出1：0 passed/1 failed，result_ok=true、applied_effects=2（测试0.01s）。随后`cargo test -p deepagent-mcp --test reconnect_unknown_outcome audit_reconnect_does_not_replay --offline -- --ignored --nocapture`退出1：0 passed/1 failed，result_ok=true、effect_count=2（0.26s）。后者实际启动本机Node服务，副作用仅写临时目录；两条原探针均证明一次逻辑调用回包丢失后被重发。生产接线connect_one_resilient及上下文/无上下文两份重试循环已核对；当前尚未修改生产代码或完成验收。
+
+E-H06-20261026-02（根因实现与首轮验证，尚未整项验收）：已将send/send_with_context收敛到同一send_request；失败tools/call只派发一次，返回CoreError::RemoteOutcomeUnknown保留method/request_id/source，adapter沿既有ToolOutput保留outcome=unknown、retryable=false及核实远端状态提示。下次独立调用在派发前有界恢复；仅协议ping/tools/list允许一次恢复后重试，不依据工具名称或readOnly注解。连接代际用Arc身份复核并串行发布，旧代迟到失败不得退役新连接。首轮reconnect单元7 passed/1 ignored（原副作用探针result_ok=false、applied_effects=1）；新增并发测试首编译因tokio::join借用临时request的E0716退出1，已改为具名请求。随后`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0：lib69 passed/3 ignored、真实liveness2、reconnect_initialize_contract1 passed/1 ignored、原unknown-outcome及上下文真实进程2、diagnostics1通过；其余ignored审计未冒充已执行。新增边界涵盖执行前/后断线、连续三代丢回包、并发共享重连、旧代迟到错误、调用前/等待回包/重连中取消及关闭后禁止恢复。AppCore正式链路与严格lint仍在执行/排队，没有修复提交。
+
+E-H06-20261026-03（正式入口通过、严格lint与Linux环境失败）：`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_unknown_outcome --offline -j 1 -- --nocapture --test-threads=1`退出0，2 passed/0 ignored（编译3m29s、测试2.07s）。经McpService→真实Node→模型工具调用→ToolPipeline，丢回包与正常对照均恰一条primary副作用、一次tool_completed/action/终态；SQLite重开和下一Responses wire保留unknown/retryable=false/method/request_id，未知工具记Failed而模型可确认并完成run，随后独立调用恢复成功。`cargo clippy -p deepagent-core -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0。Linux固定1.96.0环境执行core/mcp全features全组，core41和mcp69/3通过，但原及上下文真实进程两条因Node缺失显式失败（退出1），其他旧liveness有环境跳过，不能视为真实运行。正在为临时Linux测试准备Node，不修改项目依赖；首次WSL内联脚本路径变量未保留，curl输出路径落到根目录并因无写权限失败（退出1，未安装成功），改用独立命令及明确临时路径。Windows完整workspace已启动，尚无终态，不冒充全量通过。
+
+E-H06-20261026-04（真实HTTP补强与环境处理）：为排除底层reqwest POST行为与mock差异，新增feature=http的本机TCP fixture：先记录primary效果，再在HTTP响应头前断开；后续独立调用必须依次initialize、tools/call，只能产生primary/independent各一次。首次Linux专项退出1，原因是夹具使用127.0.0.1，而现有ConfigReconnectFactory配置校验仅允许localhost明文URL；核对config.rs:145后将夹具改用localhost，不修改生产校验。`cargo test -p deepagent-mcp --test reconnect_http_unknown_outcome --all-features --locked --offline -j 4 -- --nocapture`在固定Linux环境退出0，1 passed（0.01s）；新增文件首轮fmt --check报排版差异，已cargo fmt --all，最终格式仍需重验。Linux Node直接下载90s超时；Windows下载又出现unexpected EOF，命令虽退出0，但仅获得13,881,164字节、SHA256与官方不符，未解包或执行。已改为同一临时文件断点续传并以官方SHA256作为执行前门槛，未安装项目依赖。Windowsworkspace已完成10m58s编译并进入测试，尚未得到全量终态；该运行开始后仅新增上述独立http专项文件，所有生产行为及原有验收测试源码保持不变，此新增target将单独执行全features及lint。
+
+E-H06-20261026-05（最终验收）：`cargo fmt --all -- --check`及`git diff --check`退出0；`cargo test -p deepagent-core -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0，core41 passed、MCP70 passed/3 ignored，包含真实HTTP1、真实stdio2、liveness2、unknown-outcome上下文2及新增边界测试；`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_unknown_outcome --offline -j 1 -- --quiet --test-threads=1`退出0，2 passed/0 ignored；`cargo clippy -p deepagent-core -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0。先前Windows `cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`已完成，唯一失败target为既有H-306 `deepagent-prompts`（27 passed/1 failed，`creative.video-edit.v1`空defaultUserPrompt）；AppCore全仓严格lint仍被既有10项告警阻断，未将其算作H-06失败。Linux真实stdio因环境没有Node且下载校验未完成，未冒充跨平台真实进程验收；Windows真实stdio及Linux真实HTTP已通过。H-06在上述本机边界完成验收，无真实供应商、真实凭据或外部服务操作。
 
 ## H-74 本轮即时记录（2026-10-26）
 
@@ -599,7 +613,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-03：Harness 的逐次沙箱 backend 选择未进入实际执行路由](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 归并H-278只补强同项；限所列Windows/Linux本机范围 | 连接恢复与业务请求重试分离；tools/call单次派发并返回RemoteOutcomeUnknown，adapter/事件/持久化/wire保留unknown且retryable=false；ping/tools/list才可受限重试 | E-H06-01～05：原两探针各2次副作用失败；修复后MCP70/3 ignored、HTTP1、真实stdio2、AppCore2、相关workspace消费者通过；全workspace唯一既有H-306失败，Linux真实stdio因无Node未执行 | 待本项代码提交后回填 | 未验证Linux真实stdio、真实供应商、多进程外部服务；不自动核实远端状态，调用方须先核实再重试；本项已完成所列本机边界验收，计数进入15项 |
 | [H-07：MCP 工具发现忽略分页，只发布首页工具且不报不完整](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-08：MCP 初始化缺少 initialized 通知，严格服务端无法进入就绪状态](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-09：stdio MCP 并发回包按读取者筛选，其他请求的响应会被永久丢弃](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

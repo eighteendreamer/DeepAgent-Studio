@@ -55,6 +55,9 @@ mod session_title_usage;
 #[path = "kernel_v2_e2e/mcp_cancellation.rs"]
 mod mcp_cancellation;
 
+#[path = "kernel_v2_e2e/mcp_unknown_outcome.rs"]
+mod mcp_unknown_outcome;
+
 #[path = "kernel_v2_e2e/mcp_catalog_change.rs"]
 mod mcp_catalog_change;
 

@@ -6,6 +6,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-06 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 连接恢复与业务请求重试分离；未知结果结构化保留并禁止自动重放；MCP、HTTP、AppCore正式链路通过；完整workspace仅既有H-306失败，Linux真实stdio因无Node未执行；E-H06-01～05，修复提交待回填 |
 | H-74 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 同一Projection帧提交源/派生项；分支和检查点共用有效末端；正式分支6、checkpoint1、stdio1定向通过，完整workspace唯一失败H-306，严格AppCore lint既有10项未绿；E-H74-01～16，修复提交`1dbac424` |
 | H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交 `56b9e7b9` |
 | H-72 | 已修复并验收（2026-10-26，Windows 本机范围） | 全计划暂存/发布/历史提交及补偿；原探针默认通过，checkpoint 13 passed、AppCore audit 8 passed/2 ignored；workspace 被 H-306 阻断、严格 lint 有既有告警，详见原项及台账；修复提交 `d08c776c` |
@@ -18,9 +19,10 @@
 | H-33 | 已修复并验收（2026-10-26，Windows 本机所列范围） | 接纳前独占dispatch owner，outer持有本地/跨宿主租约；含原双进程探针的5个正式场景默认通过，AppCore1131/78、persistence67/session_control9通过；完整workspace/严格lint既有失败见原项；修复提交 `8ed5d82e` |
 | H-32 | 已修复并验收（2026-10-26，Windows 本机所列范围） | 打开与恢复分离，session activity/dispatch scope授权定向恢复；原探针默认通过，host_lock2/0、owned_recovery7/0、AppCore1131/78、persistence67/session_control9及runtime/session补跑通过；完整workspace/严格lint既有失败保留；修复提交 `c015bc8f` |
 | H-44 | 已修复并验收（2026-10-26，Windows本机所列范围） | 统一规范终态事务、run/task身份文件投影与幂等补偿；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；完整workspace H-306/严格lint失败与边界见原项；修复提交`3d247d1a` |
-| H-78 | 修复中（2026-10-26） | 原失败及正式目录首测失败均保留；共享预检/native句柄读与枚举/主注册access一致性已接入，builtins327 passed/1 ignored、正式path_boundary5 passed/0 ignored及相关消费者回归通过；写入/条目/完整链等未完成，无修复提交，H-279不重复计数 |
+| H-78 | 已修复并验收（2026-10-26，所列本机范围） | 共享物理路径授权与Windows操作边界；最终证据见本项E-H78-73及台账，原失败保留，修复提交`c6947508`；H-279不重复计数 |
+| H-79 | 已修复并验收（2026-10-26，所列本机范围） | 目录名称发现与读取授权统一；最终证据及限制见本项与台账，修复提交`79519de6` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段新增修复 **11**、历史已修复跳过 **17**、归并 **7**、撤销 **2**、有效未关闭 **269（268待修复、H-78修复中）**；306 是历史编号槽位，不是有效未修数量。H-44已完成所列本机范围验收并独立提交`3d247d1a`；当前H-78已接入共享物理预检、Windows句柄读/枚举与主注册access一致性，目录阶段回归通过，写入/条目/完整链等仍待，不计新增修复。完整workspace和全依赖严格lint此前真实失败保留，本项最终全量尚未执行；未将其他独立问题归并关闭，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。本次按306行台账实核：本阶段累计修复 **15**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **264（264待修复）**；306是历史编号槽位。H-06限所列Windows/Linux本机范围验收：受影响crate、真实HTTP、正式AppCore和workspace相关消费者通过；完整workspace唯一失败仍是既有H-306，AppCore全仓严格lint仍受既有10项告警阻断，Linux真实stdio因无Node未执行，均不冒充全量通过。修复提交待取得后回填，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -502,6 +504,18 @@ DeepSeek Harness `packages/llm/llm-deepseek/src/serialize.ts::assistant()` 将�
 - 补充含文本的单/多工具响应、reasoning 多块、重启回放、压缩边界和取消中断测试，并核对真实 wire；不能通过填造 reasoning 来满足校验。
 
 ### H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用
+
+**2026-10-26 已修复并验收（限所列Windows/Linux本机范围）；原失败证据继续保留。**
+
+E-H06-20261026-01（未改源码的原探针复现）：HEAD=d6fa75c3，tracked工作树干净，原有未跟踪项不读改或暂存。`cargo test -p deepagent-mcp audit_disconnect_after_tool_effect --offline -- --ignored --nocapture`退出1：0 passed/1 failed，result_ok=true、applied_effects=2（测试0.01s）。随后`cargo test -p deepagent-mcp --test reconnect_unknown_outcome audit_reconnect_does_not_replay --offline -- --ignored --nocapture`退出1：0 passed/1 failed，result_ok=true、effect_count=2（0.26s）。后者实际启动本机Node服务，副作用仅写临时目录；两条原探针均证明一次逻辑调用回包丢失后被重发。生产接线connect_one_resilient及上下文/无上下文两份重试循环已核对；当前尚未修改生产代码或完成验收。
+
+E-H06-20261026-02（根因实现与首轮验证，尚未整项验收）：已将send/send_with_context收敛到同一send_request；失败tools/call只派发一次，返回CoreError::RemoteOutcomeUnknown保留method/request_id/source，adapter沿既有ToolOutput保留outcome=unknown、retryable=false及核实远端状态提示。下次独立调用在派发前有界恢复；仅协议ping/tools/list允许一次恢复后重试，不依据工具名称或readOnly注解。连接代际用Arc身份复核并串行发布，旧代迟到失败不得退役新连接。首轮reconnect单元7 passed/1 ignored（原副作用探针result_ok=false、applied_effects=1）；新增并发测试首编译因tokio::join借用临时request的E0716退出1，已改为具名请求。随后`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0：lib69 passed/3 ignored、真实liveness2、reconnect_initialize_contract1 passed/1 ignored、原unknown-outcome及上下文真实进程2、diagnostics1通过；其余ignored审计未冒充已执行。新增边界涵盖执行前/后断线、连续三代丢回包、并发共享重连、旧代迟到错误、调用前/等待回包/重连中取消及关闭后禁止恢复。AppCore正式链路与严格lint仍在执行/排队，没有修复提交。
+
+E-H06-20261026-03（正式入口通过、严格lint与Linux环境失败）：`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_unknown_outcome --offline -j 1 -- --nocapture --test-threads=1`退出0，2 passed/0 ignored（编译3m29s、测试2.07s）。经McpService→真实Node→模型工具调用→ToolPipeline，丢回包与正常对照均恰一条primary副作用、一次tool_completed/action/终态；SQLite重开和下一Responses wire保留unknown/retryable=false/method/request_id，未知工具记Failed而模型可确认并完成run，随后独立调用恢复成功。`cargo clippy -p deepagent-core -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0。Linux固定1.96.0环境执行core/mcp全features全组，core41和mcp69/3通过，但原及上下文真实进程两条因Node缺失显式失败（退出1），其他旧liveness有环境跳过，不能视为真实运行。正在为临时Linux测试准备Node，不修改项目依赖；首次WSL内联脚本路径变量未保留，curl输出路径落到根目录并因无写权限失败（退出1，未安装成功），改用独立命令及明确临时路径。Windows完整workspace已启动，尚无终态，不冒充全量通过。
+
+E-H06-20261026-04（真实HTTP补强与环境处理）：为排除底层reqwest POST行为与mock差异，新增feature=http的本机TCP fixture：先记录primary效果，再在HTTP响应头前断开；后续独立调用必须依次initialize、tools/call，只能产生primary/independent各一次。首次Linux专项退出1，原因是夹具使用127.0.0.1，而现有ConfigReconnectFactory配置校验仅允许localhost明文URL；核对config.rs:145后将夹具改用localhost，不修改生产校验。`cargo test -p deepagent-mcp --test reconnect_http_unknown_outcome --all-features --locked --offline -j 4 -- --nocapture`在固定Linux环境退出0，1 passed（0.01s）；新增文件首轮fmt --check报排版差异，已cargo fmt --all，最终格式仍需重验。Linux Node直接下载90s超时；Windows下载又出现unexpected EOF，命令虽退出0，但仅获得13,881,164字节、SHA256与官方不符，未解包或执行。已改为同一临时文件断点续传并以官方SHA256作为执行前门槛，未安装项目依赖。Windowsworkspace已完成10m58s编译并进入测试，尚未得到全量终态；该运行开始后仅新增上述独立http专项文件，所有生产行为及原有验收测试源码保持不变，此新增target将单独执行全features及lint。
+
+E-H06-20261026-05（最终验收）：`cargo fmt --all -- --check`及`git diff --check`退出0；`cargo test -p deepagent-core -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0，core41 passed、MCP70 passed/3 ignored，包含真实HTTP1、真实stdio2、liveness2、unknown-outcome上下文2及新增边界测试；`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_unknown_outcome --offline -j 1 -- --quiet --test-threads=1`退出0，2 passed/0 ignored；`cargo clippy -p deepagent-core -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0。先前Windows `cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`已完成，唯一失败target为既有H-306 `deepagent-prompts`（27 passed/1 failed，`creative.video-edit.v1`空defaultUserPrompt）；AppCore全仓严格lint仍被既有10项告警阻断，未将其算作H-06失败。Linux真实stdio因环境没有Node且下载校验未完成，未冒充跨平台真实进程验收；Windows真实stdio及Linux真实HTTP已通过。H-06在上述本机边界完成验收，无真实供应商、真实凭据或外部服务操作。
 
 **级别：高（P1）；范围：使用 `ReconnectingTransport` 的 MCP 调用。** 不是一般的“连接重建有问题”，而是连接恢复与业务操作重试没有分开。
 

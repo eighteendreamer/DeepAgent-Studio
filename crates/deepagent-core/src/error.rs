@@ -62,6 +62,16 @@ pub enum CoreError {
         request_id: Option<String>,
     },
 
+    /// A remote operation was attempted but no authoritative result arrived.
+    /// Connection recovery cannot prove that repeating it is safe.
+    #[error("remote outcome unknown for {method} (request {request_id}); do not automatically retry; verify the remote state first: {source}")]
+    RemoteOutcomeUnknown {
+        method: String,
+        request_id: u64,
+        #[source]
+        source: Box<CoreError>,
+    },
+
     /// A catch-all for errors that do not yet have a dedicated variant.
     #[error("{0}")]
     Other(String),
