@@ -938,6 +938,8 @@ E-H15-20261026-07（正式健康对照通过与全量启动）：`cargo test -p 
 
 E-H15-20261026-08（最终范围验收与基线边界）：`cargo build -p deepagent-cli --offline -j 1`退出0；隔离数据根的`cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 1 -- --nocapture --test-threads=1`退出0，6 passed/0 ignored；使用同一正式binary的`node --test packages/sdk/tests/server-configuration.test.mjs`退出0，1 passed/0 skipped。`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`退出1，但 H-15 相关 target 均通过；失败仅为既有 `deepagent-app-core --lib` fixture 未创建 `build-started`、Rust SDK 继承环境的4项 `initialize: ResponseChannelClosed`，以及 H-306 `deepagent-prompts` 空 `creative.video-edit.v1.defaultUserPrompt`。`cargo clippy -p deepagent-persistence --all-targets --offline -j 1 --no-deps -- -D warnings`退出0；AppCore 严格 lint 仍仅既有10项（8 clone_on_copy、type_complexity、too_many_arguments），本轮无新增告警。完整workspace不作为H-15全绿条件；H-15在所列本机范围验收，未做真实OS进程重启、真实供应商或真实命令执行。
 
+E-H15-20261026-09（独立提交与真实hash回填）：代码、回归测试与当时两份文档已在独立提交`76483eb5d5f8dd260fc6ae0dcc6273b94a6ce430`创建；本次只回填该真实hash，不amend、不推送、不触碰原有未跟踪项。H-15台账及原报告顶部状态同步为已修复并验收，E-H15-01～08保留原始失败、过程证据、全仓基线和未验边界；E-H15-09不新增验收成果。
+
 ### H-16：审批直接以 provider call_id 为全库身份，不同运行之间产生幂等冲突
 
 **级别：中（P2）；触发条件：两个独立运行收到相同的 provider tool-call id，且都需要审批。** 不声称真实供应商在本次桌面样本中返回了重复 ID；这是宿主在缺少全库唯一保证时的身份边界缺陷，与 H-15 的终态清理不同。
