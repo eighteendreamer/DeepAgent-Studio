@@ -877,7 +877,14 @@ Codex `rmcp-client/src/http_client_adapter.rs` 从 HTTP response headers 读取 
 - 初始化 HTTP 本身成功，但后续工具发现或调用被拒，远程工具无法进入就绪快照；不能把错误仅归因于 API Key 或服务宕机。本次只测试本机 fixture，没有使用用户凭据或外部 MCP。
 - 在现有 transport/client 边界拥有动态会话状态，安全读取并带回标识；配置凭据与 session header 分开，错误及日志不得泄漏真实会话标识。
 - 同时明确支持的协议版本、协商/拒绝规则及 legacy SSE 的不同连接流程；当前固定的 2024-11-05 版本不应让代码注释中的 Streamable HTTP 支持声明替代真实兼容测试。
-- 补初始化、普通调用、ping、并发请求、过期 404、重建及关闭测试；恢复会话不能绕过 H-06 的副作用未知结果限制。此探针仅在 http feature 下编译，默认忽略，生产 transport 尚未修复。
+- 补初始化、普通调用、ping、并发请求、过期 404、重建及关闭测试；恢复会话不能绕过 H-06 的副作用未知结果限制。原始探针仅在 http feature 下编译且默认忽略，生产 transport 尚未修复；以下追加修复验收。
+
+#### 修复与验收（2026-10-27）
+
+- 根因修复：`HttpTransport` 增加由 `Mutex<Option<String>>` 保护的动态 session 状态；每次 HTTP 请求（JSON-RPC、`notifications/initialized`、取消通知）在构造 wire 前读取当前 `Mcp-Session-Id`，每个成功响应收到合法 session header 后更新状态。配置 headers 与服务端分配的会话分开保存，不在日志中输出会话值；不新增 MCP client 或 registry 链路，也不改变 stdio/无状态 HTTP 行为。
+- 修复后原探针：`cargo test -p deepagent-mcp --features http --test protocol_audit audit_http_initialization_retains_session_header --offline -- --nocapture` 退出 0，`1 passed / 0 failed`；输出 `received=[("initialize", false), ("tools/list", true)]`、`discovery=Ok(...)`，并已移除 `#[ignore]` 转为默认回归。fixture 仍只监听本机随机端口，未使用真实凭据或外部 MCP。
+- 交叉验证：`cargo test -p deepagent-mcp --features http --offline -j 1 -- --quiet --test-threads=1` 退出 0（lib `89 passed / 1 ignored`，protocol_audit `2 passed`，其余 integration/doc tests 无失败）；`cargo check -p deepagent-mcp --features http --offline -j 1`、`cargo clippy -p deepagent-mcp --features http --all-targets --offline -j 1 --no-deps -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。
+- 残余限制：本轮验证的是本机 JSON 响应的 session 传递，未覆盖真实远程服务、SSE 多帧、并发初始化、过期 404 自动重建、进程重启、其他 OS 或完整 workspace；当前仍没有自动重新初始化策略，session 过期恢复保持独立问题边界。
 
 ### H-13：AppCore 插件就绪快照与共享技能注册表不同步，新请求可继续声明已禁用技能
 

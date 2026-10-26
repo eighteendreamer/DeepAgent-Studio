@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十一项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 30 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 31 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有正在收敛的本轮独立项；下一项仍需按原报告逐项复核 |
-| 待修复 | 249 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 248 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **249（249待修复）**；不提供完成率。三十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **248（248待修复）**；不提供完成率。三十一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -77,6 +77,20 @@ E-H11-20261027-03（正式回归）：`cargo test -p deepagent-app-core audit_na
 E-H11-20261027-04（构建、格式与边界）：`cargo check -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。`cargo clippy -p deepagent-app-core --lib --offline -j 1 --no-deps -- -D warnings` 仍被既有 10 个基线告警阻断（context_runtime 8、plugin_preparation 1、run_assembler 1），本轮未修改或屏蔽。未执行真实 DeepSeek/真实大窗口费用、桌面重启、跨平台、完整 workspace 或所有多次重复尾部组合。
 
 E-H11-20261027-05（独立提交与真实 hash 回填）：代码、回归测试和当时两份文档已在独立提交 `1c8fe37d3f56d618cfeb7d3734e486f7fc93fc85`（`【fix】修复H-11压缩边界身份`）中创建；本次只回填真实 hash 并另做文档提交，不 amend、不推送、不触碰既有未跟踪项。H-11 的本机范围已验收，整体 goal 仍 active；下一项按风险/依赖继续核对 H-12。全部剩余有效修复工时继续沿未校准的 200–400 小时区间估算，编译/设备/环境等待另计。
+
+## H-12 本轮即时记录（2026-10-27）
+
+**当前状态：已修复并验收（限本机 `http` feature、reqwest JSON fixture 与 HttpTransport session 传递）。** 本轮只处理 Streamable HTTP 初始化后服务端分配的 `Mcp-Session-Id` 未被回带，不合并 H-06 副作用未知结果、H-08 initialized 通知、H-126/127 HTTP 重连或过期 session 恢复；原始失败保留。
+
+E-H12-20261027-01（原始复现）：在生产代码未修复时执行 `cargo test -p deepagent-mcp --features http --test protocol_audit audit_http_initialization_retains_session_header --offline -- --ignored --nocapture`，退出 1；输出 `received=[("initialize", false), ("tools/list", false)]`、`discovery=Err(...400 Bad Request: missing Mcp-Session-Id)`。本机随机端口 TCP fixture 只验证 header，不访问真实凭据或外部 MCP。
+
+E-H12-20261027-02（根因修复）：`HttpTransport` 新增 `Mutex<Option<String>>` 动态 session 状态；每次 JSON 请求、initialized 通知和取消通知构造时读取当前 header，成功响应中的合法 `Mcp-Session-Id` 写回状态。配置认证 headers 与会话状态分离，session 值不写日志，不新增 client/registry/重连链路。
+
+E-H12-20261027-03（正式回归）：`cargo test -p deepagent-mcp --features http --test protocol_audit audit_http_initialization_retains_session_header --offline -- --nocapture` 退出 0，`1 passed / 0 failed`；输出 `received=[("initialize", false), ("tools/list", true)]`、`discovery=Ok(...)`，原 `#[ignore]` 已移除并转为默认回归。
+
+E-H12-20261027-04（全组与边界）：`cargo test -p deepagent-mcp --features http --offline -j 1 -- --quiet --test-threads=1` 退出 0（lib89 passed/1 ignored，protocol_audit2 passed，其余 targets/doc-tests无失败）；`cargo check -p deepagent-mcp --features http --offline -j 1`、`cargo clippy -p deepagent-mcp --features http --all-targets --offline -j 1 --no-deps -- -D warnings`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。未验真实远程服务、SSE 多帧、并发初始化、过期404自动重建、进程重启、其他OS或完整workspace；session过期恢复保持独立待处理。
+
+E-H12-20261027-05（提交状态）：代码、回归测试和本条两份文档将在本轮第一个独立修复提交中创建；取得真实 hash 后只回填本条记录并另做文档提交，不 amend、不推送、不触碰既有未跟踪项。H-12 的本机范围已验收，整体 goal 仍 active；下一项按风险/依赖继续核对 H-13。全部剩余有效修复工时继续沿未校准的 200–400 小时区间估算，编译/设备/环境等待另计。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -896,7 +910,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-09：stdio MCP 并发回包按读取者筛选，其他请求的响应会被永久丢弃](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原始探针E-01失败保留，转默认后通过；限Windows本机Node/McpService范围 | 单stdout reader与pending/oneshot分派、RAII清理、连接唯一wire ID/还原逻辑ID、写入中断退役；上限1024 | E-H09-01～09：stdio12 passed/0 ignored；MCP全特性89/1 ignored；正式消费者1；MCP严格lint通过；全workspace唯一H-306失败，AppCore严格lint既有10处阻断 | `46ba0fd7` | 其他OS/真实插件/DeepSeek/UI未验，通知沿用忽略；HTTP session/响应上限/子孙进程不在范围；下一项H-02，总体200–400有效小时初估 |
 | [H-10：运行结束后预取压缩任务仍继续执行，结果及 usage 无处归集](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H10-20261027-01～05保留原始失败、修复、回归及边界；不合并H-11/H-14/H-31 | 统一 Agent 收尾 hook；Kernel 在终态 finalizer 前 abort+join prefire 并归集 note/failure/cache usage；Drop 作为最后 abort 边界 | Runtime 原探针1 passed、usage回归1 passed；runtime lib289/13 ignored、AppCore lib1140/68 ignored、AppCore check、fmt/diff通过；runtime严格clippy受既有clone_on_copy阻断 | `c3f7affd83ac78f51e6490550a17b1ecf3b25622` | 限离线 mock compactor 与 Windows 本机生产收尾链路；未验真实DeepSeek/供应商费用、桌面/重启/其他OS/完整workspace；下一项H-11，总体剩余200–400有效小时粗估 |
 | [H-11：以消息内容反查压缩边界，重复回答会让恢复重新带回已摘要的历史](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H11-20261027-01～05保留原始失败、修复、回归及边界；不合并H-05/H-14/H-23/H-53 | 原生压缩用完整尾部连续唯一匹配解析 durable sequence；重复完整尾部 fail closed，避免猜测旧切点；复用现有 event log/ContextCompacted | 原探针修复后1 passed；AppCore lib1141/67 ignored、check、fmt/diff通过；AppCore严格clippy仅既有10个基线告警 | `1c8fe37d3f56d618cfeb7d3734e486f7fc93fc85` | 限本机内存SQLite与生产compactor/replay；未验真实DeepSeek/大窗口费用、桌面重启、跨平台、完整workspace；下一项H-12，总体剩余200–400有效小时粗估 |
-| [H-12：Streamable HTTP 未保存初始化分配的 session header，有状态远程服务后续请求失败](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-12：Streamable HTTP 未保存初始化分配的 session header，有状态远程服务后续请求失败](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H12-20261027-01～05保留原始失败、修复、回归及边界；不合并H-06/H-08/H-126/H-127 | HttpTransport 持有动态 session 状态；成功响应捕获 header，JSON/initialized/cancel通知回带同一状态；不改变认证配置 | 原探针修复后1 passed；MCP http全组89/1 ignored、protocol_audit2 passed、check/clippy/fmt/diff通过 | 待首个独立修复提交后回填 | 限本机 http feature 与 JSON fixture；未验真实远程/SSE多帧/并发初始化/过期404重建/重启/其他OS/完整workspace；下一项H-13，总体剩余200–400有效小时粗估 |
 | [H-13：AppCore 插件就绪快照与共享技能注册表不同步，新请求可继续声明已禁用技能](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-14：无效压缩保留原上下文时，已完成摘要请求的 usage 一同被丢弃](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-15：审批等待被取消后未清理，运行终态后仍接受迟到回答并授予跨调用权限](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H15-01～09保留原失败及逐次验证 | waiter所有权/回答互斥；原终态事务取消Pending审批，拒绝终态run/action与取消信号后授权 | AppCore专项25、正式取消/健康2、persistence75+9、CLI构建、隔离Rust SDK6、正式TS SDK1通过；全仓和严格AppCore lint保留既有基线失败，不阻断本项范围验收 | `76483eb5` | H-16身份冲突独立；DB重开非OS进程重启；真实供应商/真实命令未执行；总体200–400有效小时未校准初估 |

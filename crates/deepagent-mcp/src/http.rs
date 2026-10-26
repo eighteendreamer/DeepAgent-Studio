@@ -14,6 +14,7 @@
 //! server frames its reply, which this transport detects from the response
 //! content type.
 
+use std::sync::Mutex;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -33,6 +34,10 @@ pub struct HttpTransport {
     client: reqwest::Client,
     url: String,
     headers: Vec<(String, String)>,
+    /// Server-assigned Streamable HTTP session. It is connection state rather
+    /// than a configured credential, so it must be captured from initialize
+    /// responses and replayed on subsequent requests.
+    session_id: Mutex<Option<String>>,
 }
 
 impl HttpTransport {
@@ -59,6 +64,7 @@ impl HttpTransport {
             client,
             url,
             headers,
+            session_id: Mutex::new(None),
         })
     }
 
@@ -73,6 +79,7 @@ impl HttpTransport {
             client,
             url: url.into(),
             headers,
+            session_id: Mutex::new(None),
         })
     }
 }
@@ -93,6 +100,7 @@ impl McpTransport for HttpTransport {
                 "MCP server returned {status}: {detail}"
             )));
         }
+        self.capture_session_id(response.headers());
 
         let content_type = response
             .headers()
@@ -148,6 +156,7 @@ impl McpTransport for HttpTransport {
                 response.status()
             )));
         }
+        self.capture_session_id(response.headers());
         response.bytes().await.map_err(|e| {
             CoreError::other(format!("reading MCP notification response failed: {e}"))
         })?;
@@ -165,7 +174,32 @@ impl HttpTransport {
         for (key, value) in &self.headers {
             builder = builder.header(key.as_str(), value.as_str());
         }
+        if let Some(session_id) = self
+            .session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+        {
+            builder = builder.header("mcp-session-id", session_id);
+        }
         builder.json(body)
+    }
+
+    fn capture_session_id(&self, headers: &reqwest::header::HeaderMap) {
+        let Some(value) = headers.get("mcp-session-id") else {
+            return;
+        };
+        let Ok(value) = value.to_str() else {
+            tracing::debug!("MCP HTTP response carried an invalid session header");
+            return;
+        };
+        if value.is_empty() {
+            return;
+        }
+        *self
+            .session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(value.to_owned());
     }
 
     /// Send a fire-and-forget MCP cancellation notification. It must not keep
@@ -174,6 +208,11 @@ impl HttpTransport {
         let client = self.client.clone();
         let url = self.url.clone();
         let headers = self.headers.clone();
+        let session_id = self
+            .session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
         tokio::spawn(async move {
             let notification = serde_json::json!({
                 "jsonrpc": JSONRPC_VERSION,
@@ -189,6 +228,9 @@ impl HttpTransport {
                 .header("accept", "application/json, text/event-stream");
             for (key, value) in &headers {
                 builder = builder.header(key.as_str(), value.as_str());
+            }
+            if let Some(session_id) = session_id {
+                builder = builder.header("mcp-session-id", session_id);
             }
 
             match tokio::time::timeout(

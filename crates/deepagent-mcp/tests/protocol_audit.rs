@@ -8,7 +8,6 @@ use deepagent_mcp::{McpClient, McpServerConfig, StdioTransport};
 
 #[cfg(feature = "http")]
 #[tokio::test]
-#[ignore = "audit reproducer: Streamable HTTP must retain the server-assigned session header"]
 async fn audit_http_initialization_retains_session_header() {
     use deepagent_mcp::{protocol::JsonRpcRequest, McpTransport};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
