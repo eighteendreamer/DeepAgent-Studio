@@ -578,6 +578,14 @@ impl ChatSubagentRunner {
                 sub_registry.replace(spec.tool.clone());
             }
         }
+        // The tool list is an execution capability boundary, not merely a
+        // prompt/schema hint.  Build the same restricted registry that will
+        // feed both ModelAgent's schemas and RuntimeEngine's dispatch.  A
+        // hidden write tool must therefore resolve as UnknownTool rather than
+        // remaining callable through the cloned parent registry.
+        if !request.fork {
+            retain_runtime_agent_tools(&mut sub_registry, agent_profile, &request.allowed_tools)?;
+        }
         let mode = effective_tool_search_mode(
             &sub_registry,
             self.tool_search_mode,
@@ -606,9 +614,14 @@ impl ChatSubagentRunner {
         let schema_source = Arc::new(move || {
             let mut tools = schema_source();
             if !schema_fork {
-                apply_runtime_agent_tool_filter(&mut tools, schema_agent_profile.as_ref());
-                if let Some(allowlist) = runtime_agent_tool_allowlist(&schema_allowed_tools) {
-                    tools.retain(|tool| allowlist.contains(&tool.function.name));
+                if schema_allowed_tools.is_empty() {
+                    apply_runtime_agent_tool_filter(&mut tools, schema_agent_profile.as_ref());
+                } else {
+                    apply_runtime_agent_tool_filter_with_request(
+                        &mut tools,
+                        schema_agent_profile.as_ref(),
+                        &schema_allowed_tools,
+                    );
                 }
             }
             tools
@@ -1185,6 +1198,7 @@ mod tests {
     use super::*;
     use deepagent_models::ToolSchema;
     use deepagent_prompts::AgentDef;
+    use deepagent_tools::{RiskLevel, Tool, ToolDescriptor, ToolOutput};
 
     fn profile(tools: &[&str], disallowed: &[&str]) -> Option<RuntimeAgentDefinition> {
         let def = AgentDef {
@@ -1215,6 +1229,33 @@ mod tests {
             .iter()
             .map(|name| ToolSchema::function(*name, "desc", serde_json::Value::Null))
             .collect()
+    }
+
+    struct DeferredWriteTool;
+
+    #[async_trait::async_trait]
+    impl Tool for DeferredWriteTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: "write_file".into(),
+                description: "deferred audit write capability".into(),
+                parameters: serde_json::json!({"type": "object"}),
+                risk: RiskLevel::Low,
+                required_permissions: PermissionSet::from_iter_perms([Permission::WorkspaceWrite]),
+            }
+        }
+
+        async fn invoke(&self, _: serde_json::Value) -> Result<ToolOutput> {
+            Ok(ToolOutput::success(serde_json::json!({"unexpected": true})))
+        }
+
+        fn should_defer(&self) -> bool {
+            true
+        }
+
+        fn discovery_source(&self) -> Option<&str> {
+            Some("audit-mcp")
+        }
     }
 
     #[derive(Default)]
@@ -1715,7 +1756,8 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: child tool restrictions must also constrain actual dispatch"]
+    // Regression for H-19: profile/allowlist restrictions must constrain the
+    // registry used by RuntimeEngine, not only the advertised schemas.
     async fn audit_read_only_subagent_rejects_tools_hidden_by_its_profile() {
         let mut unexpected_writes = Vec::new();
         for scope in ["explore", "plan", "request_allowlist", "profile_denylist"] {
@@ -1769,6 +1811,40 @@ mod tests {
             unexpected_writes.iter().all(|wrote| !wrote),
             "child executed tools excluded by declared restrictions: {unexpected_writes:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn unrestricted_subagent_keeps_declared_write_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let transport = Arc::new(AuditChildWriteTransport::default());
+        let runner = audit_child_runner(dir.path(), transport.clone());
+        let outcome = runner
+            .run_inner(
+                deepagent_builtins::SubagentRequest {
+                    description: "audit unrestricted child".into(),
+                    prompt: "Create the requested file".into(),
+                    subagent_type: None,
+                    allowed_tools: Vec::new(),
+                    model: None,
+                    effort: None,
+                    skills: Vec::new(),
+                    isolation: "shared".into(),
+                    fork: false,
+                    phase: None,
+                    label: None,
+                    schema: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let written = std::fs::read_to_string(dir.path().join("audit-child.txt")).unwrap();
+        let seen = transport.tools_seen.lock().unwrap();
+        assert_eq!(written, "hidden tool executed");
+        assert!(seen
+            .iter()
+            .all(|tools| tools.iter().any(|name| name == "write_file")));
+        assert_eq!(outcome.tool_use_count, 1);
     }
 
     #[derive(Default)]
@@ -2089,6 +2165,25 @@ mod tests {
         let mut schemas = allowlist_profile_tools(&["bash"]);
         apply_runtime_agent_tool_filter(&mut schemas, None);
         assert_eq!(schemas.len(), 1);
+    }
+
+    #[test]
+    fn registry_filter_removes_deferred_disallowed_capability_before_search() {
+        let mut registry = ToolRegistry::new();
+        registry.register(Arc::new(DeferredWriteTool)).unwrap();
+        let profile = profile(&[], &["Write"]);
+        retain_runtime_agent_tools(&mut registry, profile.as_ref(), &[]).unwrap();
+        assert!(registry.get("write_file").is_none());
+        let discovered: DiscoveredToolSet = Arc::default();
+        assert!(register_tool_search_into(
+            &mut registry,
+            deepagent_builtins::ToolSearchMode::Enabled,
+            discovered,
+            0,
+        )
+        .unwrap()
+        .is_empty());
+        assert!(registry.get("tool_search").is_none());
     }
 
     #[test]
@@ -2455,22 +2550,76 @@ pub(crate) fn apply_runtime_agent_tool_filter(
     tools: &mut Vec<ToolSchema>,
     agent_profile: Option<&RuntimeAgentDefinition>,
 ) {
+    apply_runtime_agent_tool_filter_with_request(tools, agent_profile, &[]);
+}
+
+fn apply_runtime_agent_tool_filter_with_request(
+    tools: &mut Vec<ToolSchema>,
+    agent_profile: Option<&RuntimeAgentDefinition>,
+    request_allowed_tools: &[String],
+) {
     let Some(agent) = agent_profile else {
+        if let Some(allowlist) = runtime_agent_tool_allowlist(request_allowed_tools) {
+            tools.retain(|tool| allowlist.contains(&tool.function.name));
+        }
         return;
     };
-    let allowlist = runtime_agent_tool_allowlist(&agent.def.tools);
-    // Negative allowlist (`disallowedTools`). Independent of the positive list,
-    // so a tool can be dropped even when the profile's `tools:` would keep it.
+    let request_allowlist = runtime_agent_tool_allowlist(request_allowed_tools);
+    tools.retain(|tool| {
+        runtime_agent_tool_is_allowed(&tool.function.name, agent, request_allowlist.as_ref())
+    });
+}
+
+/// Apply the profile and per-request allowlist to the actual registry used by
+/// `RuntimeEngine`.  Rebuilding through the existing `ToolRegistry` keeps all
+/// validation, permissions, hooks and approval logic on the original route;
+/// it only removes capabilities that this child is not allowed to resolve.
+fn retain_runtime_agent_tools(
+    registry: &mut ToolRegistry,
+    agent_profile: Option<&RuntimeAgentDefinition>,
+    request_allowed_tools: &[String],
+) -> Result<()> {
+    let request_allowlist = runtime_agent_tool_allowlist(request_allowed_tools);
+    let retained: Vec<_> = registry
+        .iter_specs()
+        .filter(|spec| {
+            let request_allowed = request_allowlist
+                .as_ref()
+                .map_or(true, |set| set.contains(&spec.descriptor.name));
+            request_allowed
+                && agent_profile.map_or(true, |agent| {
+                    runtime_agent_tool_is_allowed(
+                        &spec.descriptor.name,
+                        agent,
+                        request_allowlist.as_ref(),
+                    )
+                })
+        })
+        .map(|spec| spec.tool.clone())
+        .collect();
+    let mut filtered = ToolRegistry::new();
+    for tool in retained {
+        filtered.register(tool)?;
+    }
+    *registry = filtered;
+    Ok(())
+}
+
+fn runtime_agent_tool_is_allowed(
+    tool_name: &str,
+    agent: &RuntimeAgentDefinition,
+    request_allowlist: Option<&std::collections::HashSet<String>>,
+) -> bool {
+    let profile_allowlist = runtime_agent_tool_allowlist(&agent.def.tools);
     let disallowed =
         runtime_agent_tool_allowlist(agent.def.disallowed_tools.as_deref().unwrap_or_default());
-    tools.retain(|tool| {
-        allowlist
+    profile_allowlist
+        .as_ref()
+        .map_or(true, |set| set.contains(tool_name))
+        && request_allowlist.map_or(true, |set| set.contains(tool_name))
+        && !disallowed
             .as_ref()
-            .map_or(true, |set| set.contains(&tool.function.name))
-            && !disallowed
-                .as_ref()
-                .is_some_and(|set| set.contains(&tool.function.name))
-    });
+            .is_some_and(|set| set.contains(tool_name))
 }
 
 fn runtime_agent_tool_allowlist(

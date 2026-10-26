@@ -1067,6 +1067,18 @@ H-18 在上述本机离线模型协议与 Runtime 提交边界范围内已修复
 - 角色限制需与父权限取交集，避免只读角色获得更宽的写权限；保留原有文件边界、审批及沙箱校验，不建立第二套工具执行器。覆盖 alias、deferred/MCP 工具、角色 denylist、空 allowlist、后台子运行和恢复后的限制一致性。
 - 本轮仅增加审计测试和报告，未修改生产权限或工具路由。
 
+#### H-19 修复记录（2026-10-27）
+
+E-H19-01（原始失败证据）：沿用原审计记录中的正式 ignored 探针；生产 `run_active()` 只在 `ModelAgent` 的 schema source 中应用 profile/请求 allowlist，而 `RuntimeEngine` 仍接收完整 `sub_registry`。explore、plan、请求 `allowed_tools=[Read]` 和 profile `disallowedTools=[Write]` 四组 wire schema 均没有 `write_file`，但模型返回完整 `write_file` 调用后仍成功执行，在各自临时目录写入 `audit-child.txt`。原证据只触碰临时目录，不访问真实凭据/供应商。
+
+E-H19-02（根因修复）：在现有 `ToolRegistry` 边界新增统一 capability 收敛：非 fork 子运行先按 profile 正 allowlist、profile denylist 与请求 allowlist 的交集重建实际 `sub_registry`，随后才注册 `tool_search` 和生成 schema。这样 schema 与 RuntimeEngine dispatch 共享同一 registry；被隐藏的工具会解析为 `UnknownTool`，不会到达权限/审批/工具执行。fork 继续保留显式的完整工具池语义；未限制的普通子 Agent 保留原工具能力。没有新增执行器、权限模型或第二套 registry。
+
+E-H19-03（回归与验收）：原探针已取消 `ignore` 并默认运行。修复后执行 `cargo test -p deepagent-app-core --lib subagent_runner::tests::audit_read_only_subagent_rejects_tools_hidden_by_its_profile --offline -j 1 -- --nocapture --test-threads=1` 退出0，1 passed；四组均 `written=None`，相应 wire schema 仍不含 `write_file`。`cargo test -p deepagent-app-core --lib subagent_runner:: --offline -j 1 -- --quiet --test-threads=1` 退出0（21 passed/5 ignored）；新增 unrestricted 正常对照、deferred capability 过滤测试通过。`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出0（1139 passed/68 ignored）；`cargo fmt --all -- --check`、`git diff --check` 退出0。未执行真实 DeepSeek、真实 UI、其他 OS、外部 MCP 服务或真实用户文件验收；这些不属于本项临时离线范围。
+
+E-H19-04（lint 边界）：`cargo clippy -p deepagent-app-core --lib --offline -j 1 --no-deps -- -D warnings` 仍退出1，除本轮新增函数在修正 dead-code 后无新增诊断外，仅有未修改的 `context_runtime.rs` 既有 `clone_on_copy`、`plugin_preparation.rs` `type_complexity`、`run_assembler.rs` `too_many_arguments` 等基线；本轮不顺手改无关 lint。
+
+H-19 在上述 Windows 本机、临时目录、离线模型 transport 与 AppCore dispatch 范围内已修复并验收。修复提交 hash 在独立提交后回填；H-22 的工作区根绑定、H-26 hooks 决策和 H-84 审批事件重复仍独立。
+
 ### H-20：DAG 成功节点的工作树被强制删除，文件未交付给主目录或下游
 
 **已修复并验收（2026-10-26；Windows / Git 2.54.0.windows.1；修复提交 `ae193ea8`）。** 取消 scheduler 自动删除；以独立临时 index 生成 commit-tree 快照及只创建、不解引用的宿主 ref，下游在 merge-tree 无冲突合并后的 detached 基线运行，冲突/发布失败明确失败且保留源文件。唯一工作树名复用既有子运行 id，路径随原 SubagentRunStore 原子创建，沿原 run_events 重放；恢复原树、缺目录拒绝、显式 cleanup 及清理后拒绝退回父目录均验收。报告与 UI summary 同源投影路径/id/revision；不改主目录、源 index 或源 HEAD，不新增数据库/审批/取消链。该快照组合为本地设计，成熟参考仅支持产出保留原则。
