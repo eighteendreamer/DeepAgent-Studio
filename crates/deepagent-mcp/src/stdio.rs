@@ -2,19 +2,20 @@
 //! newline-delimited JSON-RPC 2.0 over its stdin/stdout.
 //!
 //! This is the most common MCP transport (npx-packaged servers, custom local
-//! servers). Each request writes one JSON line to the child's stdin and reads
-//! lines from stdout until the response with the matching id arrives (skipping
-//! any notifications). The child is terminated on [`McpTransport::close`].
+//! servers). A single reader dispatches stdout responses to pending requests by
+//! id. Request waiters never own the reader. The child is terminated on
+//! [`McpTransport::close`].
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
-use tokio::sync::Mutex;
+use tokio::sync::{oneshot, Mutex};
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::redaction::{is_secret_key, scrub_secret_literals};
@@ -29,12 +30,159 @@ use crate::transport::{
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 const STDERR_LIMIT: usize = 8 * 1024;
+const MAX_PENDING_REQUESTS: usize = 1024;
+
+type ResponseSender = oneshot::Sender<std::result::Result<JsonRpcResponse, String>>;
+
+#[derive(Default)]
+struct ResponseDispatcher {
+    state: StdMutex<DispatchState>,
+}
+
+#[derive(Default)]
+struct DispatchState {
+    pending: HashMap<u64, PendingResponse>,
+    terminal_error: Option<String>,
+}
+
+struct PendingResponse {
+    sender: ResponseSender,
+    identity: Arc<()>,
+}
+
+impl ResponseDispatcher {
+    fn register(&self, id: u64, sender: ResponseSender) -> Result<PendingRequest<'_>> {
+        let mut state = self.state.lock().expect("MCP dispatcher poisoned");
+        if let Some(reason) = &state.terminal_error {
+            return Err(CoreError::other(reason));
+        }
+        if state.pending.contains_key(&id) {
+            return Err(CoreError::invalid("duplicate pending MCP request id"));
+        }
+        if state.pending.len() >= MAX_PENDING_REQUESTS {
+            return Err(CoreError::invalid("MCP pending request limit exceeded"));
+        }
+        let identity = Arc::new(());
+        state.pending.insert(
+            id,
+            PendingResponse {
+                sender,
+                identity: identity.clone(),
+            },
+        );
+        Ok(PendingRequest {
+            dispatcher: self,
+            id,
+            identity,
+        })
+    }
+
+    fn check_open(&self) -> Result<()> {
+        let state = self.state.lock().expect("MCP dispatcher poisoned");
+        match &state.terminal_error {
+            Some(reason) => Err(CoreError::other(reason)),
+            None => Ok(()),
+        }
+    }
+
+    fn deliver(&self, response: JsonRpcResponse) {
+        let sender = self
+            .state
+            .lock()
+            .expect("MCP dispatcher poisoned")
+            .pending
+            .remove(&response.id);
+        if let Some(pending) = sender {
+            let _ = pending.sender.send(Ok(response));
+        }
+        // Unknown and late ids are discarded, never buffered for a future request.
+    }
+
+    fn finish(&self, reason: &str) {
+        let pending = {
+            let mut state = self.state.lock().expect("MCP dispatcher poisoned");
+            if state.terminal_error.is_some() {
+                return;
+            }
+            state.terminal_error = Some(reason.to_string());
+            std::mem::take(&mut state.pending)
+        };
+        for (_, pending) in pending {
+            let _ = pending.sender.send(Err(reason.to_string()));
+        }
+    }
+}
+
+/// Removing a waiter must also happen when its future is dropped by a caller's
+/// timeout/abort, without spawning cleanup or cancelling other requests.
+struct PendingRequest<'a> {
+    dispatcher: &'a ResponseDispatcher,
+    id: u64,
+    identity: Arc<()>,
+}
+
+impl Drop for PendingRequest<'_> {
+    fn drop(&mut self) {
+        let mut state = self
+            .dispatcher
+            .state
+            .lock()
+            .expect("MCP dispatcher poisoned");
+        if state
+            .pending
+            .get(&self.id)
+            .is_some_and(|pending| Arc::ptr_eq(&pending.identity, &self.identity))
+        {
+            state.pending.remove(&self.id);
+        }
+    }
+}
+
+/// A partially written JSON line cannot be resumed by another request. Retire
+/// this connection if a write future is dropped before write+flush completes.
+struct MessageWrite<'a> {
+    dispatcher: &'a ResponseDispatcher,
+    complete: bool,
+}
+
+impl Drop for MessageWrite<'_> {
+    fn drop(&mut self) {
+        if !self.complete {
+            self.dispatcher
+                .finish("MCP connection lost during message write");
+        }
+    }
+}
+
+async fn dispatch_responses(stdout: ChildStdout, dispatcher: Arc<ResponseDispatcher>) {
+    let mut reader = BufReader::new(stdout);
+    loop {
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) => {
+                dispatcher.finish("MCP server closed the connection");
+                return;
+            }
+            Err(error) => {
+                dispatcher.finish(&format!("read from MCP server failed: {error}"));
+                return;
+            }
+            Ok(_) => {
+                if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(line.trim()) {
+                    dispatcher.deliver(response);
+                }
+            }
+        }
+    }
+}
 
 /// A stdio transport backed by a spawned child process.
 pub struct StdioTransport {
     child: Mutex<Child>,
     stdin: Mutex<ChildStdin>,
-    stdout: Mutex<BufReader<ChildStdout>>,
+    dispatcher: Arc<ResponseDispatcher>,
+    reader_task: tokio::task::JoinHandle<()>,
+    next_wire_id: AtomicU64,
     stderr: Arc<StdMutex<VecDeque<u8>>>,
     stderr_task: Mutex<tokio::task::JoinHandle<()>>,
     secrets: Vec<String>,
@@ -105,10 +253,14 @@ impl StdioTransport {
         secrets.sort_by_key(|value| std::cmp::Reverse(value.len()));
         secrets.dedup();
 
+        let dispatcher = Arc::new(ResponseDispatcher::default());
+        let reader_task = tokio::spawn(dispatch_responses(stdout, dispatcher.clone()));
         Ok(Self {
             child: Mutex::new(child),
             stdin: Mutex::new(stdin),
-            stdout: Mutex::new(BufReader::new(stdout)),
+            dispatcher,
+            reader_task,
+            next_wire_id: AtomicU64::new(1),
             stderr,
             stderr_task: Mutex::new(stderr_task),
             secrets,
@@ -161,22 +313,11 @@ impl StdioTransport {
     }
 
     async fn send_cancelled_notification(&self, request_id: u64, reason: &str) -> Result<()> {
-        let line = serde_json::json!({
-            "jsonrpc": crate::protocol::JSONRPC_VERSION,
-            "method": "notifications/cancelled",
-            "params": { "requestId": request_id, "reason": reason }
-        });
-        let mut wire = serde_json::to_string(&line)?;
-        wire.push('\n');
-        let mut stdin = self.stdin.lock().await;
-        stdin
-            .write_all(wire.as_bytes())
-            .await
-            .map_err(|error| CoreError::other(format!("write MCP cancellation failed: {error}")))?;
-        stdin
-            .flush()
-            .await
-            .map_err(|error| CoreError::other(format!("flush MCP cancellation failed: {error}")))
+        self.write_notification(
+            "notifications/cancelled",
+            Some(serde_json::json!({ "requestId": request_id, "reason": reason })),
+        )
+        .await
     }
 
     async fn notify_cancelled_bounded(&self, request_id: u64) {
@@ -194,20 +335,30 @@ impl StdioTransport {
         }
     }
 
-    async fn write_request(&self, request: &JsonRpcRequest) -> Result<()> {
-        let mut line = serde_json::to_string(request)?;
+    async fn write_message<T: serde::Serialize + Sync>(&self, message: &T) -> Result<()> {
+        let mut line = serde_json::to_string(message)?;
         line.push('\n');
         let mut stdin = self.stdin.lock().await;
+        self.dispatcher.check_open()?;
+        let mut write = MessageWrite {
+            dispatcher: &self.dispatcher,
+            complete: false,
+        };
         if let Err(error) = stdin.write_all(line.as_bytes()).await {
+            self.dispatcher
+                .finish("write to MCP server failed; connection lost");
             return Err(self
                 .disconnect_error(&format!("write to MCP server failed: {error}"))
                 .await);
         }
         if let Err(error) = stdin.flush().await {
+            self.dispatcher
+                .finish("flush to MCP server failed; connection lost");
             return Err(self
                 .disconnect_error(&format!("flush to MCP server failed: {error}"))
                 .await);
         }
+        write.complete = true;
         Ok(())
     }
 
@@ -216,49 +367,68 @@ impl StdioTransport {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<()> {
-        let mut line = serde_json::to_string(&JsonRpcNotification::new(method, params))?;
-        line.push('\n');
-        let mut stdin = self.stdin.lock().await;
-        if let Err(error) = stdin.write_all(line.as_bytes()).await {
-            return Err(self
-                .disconnect_error(&format!("write MCP notification failed: {error}"))
-                .await);
-        }
-        if let Err(error) = stdin.flush().await {
-            return Err(self
-                .disconnect_error(&format!("flush MCP notification failed: {error}"))
-                .await);
-        }
-        Ok(())
+        self.write_message(&JsonRpcNotification::new(method, params))
+            .await
     }
 
-    async fn read_response(&self, request_id: u64) -> Result<JsonRpcResponse> {
-        let mut reader = self.stdout.lock().await;
-        loop {
-            let mut buf = String::new();
-            let n = reader.read_line(&mut buf).await.map_err(|error| {
-                CoreError::other(format!("read from MCP server failed: {error}"))
-            })?;
-            if n == 0 {
-                return Err(self
-                    .disconnect_error("MCP server closed the connection")
-                    .await);
-            }
-            let trimmed = buf.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            if let Ok(response) = serde_json::from_str::<JsonRpcResponse>(trimmed) {
-                if response.id == request_id {
-                    return Ok(response);
+    async fn send_request(
+        &self,
+        request: &JsonRpcRequest,
+        context: ToolExecutionContext,
+    ) -> Result<JsonRpcResponse> {
+        if context.is_cancelled() {
+            return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
+        }
+        // Different clients (including reconnect initialization) can share a
+        // transport. Allocate ids per connection so a late response cannot
+        // satisfy a new caller that reused a client-local id.
+        let wire_id = self
+            .next_wire_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+            .map_err(|_| CoreError::other("MCP request id space exhausted"))?;
+        let mut wire_request = request.clone();
+        wire_request.id = wire_id;
+        tracing::trace!(
+            request_id = request.id,
+            wire_id,
+            "MCP stdio request correlation"
+        );
+        let (sender, receiver) = oneshot::channel();
+        let pending = match self.dispatcher.register(wire_id, sender) {
+            Ok(pending) => pending,
+            Err(CoreError::Other(reason)) => return Err(self.disconnect_error(&reason).await),
+            Err(error) => return Err(error),
+        };
+        let dispatch = async {
+            self.write_message(&wire_request).await?;
+            match receiver.await {
+                Ok(Ok(mut response)) => {
+                    response.id = request.id;
+                    Ok(response)
                 }
+                Ok(Err(reason)) => Err(self.disconnect_error(&reason).await),
+                Err(_) => Err(CoreError::other(
+                    "MCP response dispatcher closed the connection",
+                )),
             }
+        };
+        tokio::select! {
+            biased;
+            _ = context.cancelled() => {
+                drop(pending);
+                self.notify_cancelled_bounded(wire_id).await;
+                Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME))
+            }
+            result = dispatch => result,
         }
     }
 }
 
 impl Drop for StdioTransport {
     fn drop(&mut self) {
+        self.dispatcher
+            .finish("MCP transport closed the connection");
+        self.reader_task.abort();
         self.stderr_task.get_mut().abort();
         // Dropping the last client during cancellation or config replacement
         // must not orphan its child process.
@@ -269,8 +439,8 @@ impl Drop for StdioTransport {
 #[async_trait]
 impl McpTransport for StdioTransport {
     async fn send(&self, request: &JsonRpcRequest) -> Result<JsonRpcResponse> {
-        self.write_request(request).await?;
-        self.read_response(request.id).await
+        self.send_request(request, ToolExecutionContext::default())
+            .await
     }
 
     async fn send_with_context(
@@ -278,24 +448,7 @@ impl McpTransport for StdioTransport {
         request: &JsonRpcRequest,
         context: ToolExecutionContext,
     ) -> Result<JsonRpcResponse> {
-        if context.is_cancelled() {
-            return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
-        }
-        let request_id = request.id;
-        self.write_request(request).await?;
-        if context.is_cancelled() {
-            self.notify_cancelled_bounded(request_id).await;
-            return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME));
-        }
-
-        tokio::select! {
-            biased;
-            _ = context.cancelled() => {
-                self.notify_cancelled_bounded(request_id).await;
-                Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME))
-            }
-            result = self.read_response(request_id) => result,
-        }
+        self.send_request(request, context).await
     }
 
     async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<()> {
@@ -303,6 +456,9 @@ impl McpTransport for StdioTransport {
     }
 
     async fn close(&self) -> Result<()> {
+        self.dispatcher
+            .finish("MCP transport closed the connection");
+        self.reader_task.abort();
         let mut child = self.child.lock().await;
         let _ = child.start_kill();
         child
@@ -319,7 +475,6 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    #[ignore = "audit reproducer: concurrent MCP replies must be routed by request ID"]
     async fn audit_out_of_order_concurrent_replies_reach_both_callers() {
         let dir = tempfile::tempdir().unwrap();
         let script = dir.path().join("reordered-replies.cjs");
@@ -360,18 +515,25 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
                 .await
             }
         });
-        // Observe the first caller owning the reader before issuing the second
-        // request; this fixes the interleaving instead of relying on a sleep.
+        // Observe the first registered waiter before issuing the second
+        // request. Both responses still have to reach their original callers.
         tokio::time::timeout(Duration::from_secs(2), async {
             loop {
-                if transport.stdout.try_lock().is_err() {
+                if !transport
+                    .dispatcher
+                    .state
+                    .lock()
+                    .unwrap()
+                    .pending
+                    .is_empty()
+                {
                     break;
                 }
                 tokio::task::yield_now().await;
             }
         })
         .await
-        .expect("first request must reach the response reader");
+        .expect("first request must register its waiter");
 
         let second = tokio::time::timeout(
             Duration::from_secs(1),
@@ -402,3 +564,7 @@ readline.createInterface({ input: process.stdin }).on('line', line => {
         assert!(StdioTransport::spawn(&cfg).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "stdio_dispatch_tests.rs"]
+mod dispatch_tests;

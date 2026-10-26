@@ -2,21 +2,41 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-06、H-74已完成所列Windows/Linux本机范围验收，累计十五项已验收，提交hash见本项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计十八项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 17 | H-06、H-07、H-08、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 18 | H-06、H-07、H-08、H-09、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有已进入实现但尚未完成验收的条目 |
-| 待修复 | 262 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 261 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **262（262待修复、0修复中）**；不提供完成率。十七项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **261（261待修复、0修复中）**；不提供完成率。十八项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-09 本轮即时记录（2026-10-26）
+
+**当前状态：已修复并验收（所列Windows本机范围）。** 仅处理 stdio MCP 并发 JSON-RPC 响应按 request ID 分派；原始失败、修复过程、实际验收和残余限制见E-01～07。修复commit待生成后另做真实hash回填。
+
+E-H09-20261026-01：在未修改源码、未读取或暂存原有未跟踪项的前提下，执行 `cargo test -p deepagent-mcp audit_out_of_order_concurrent_replies_reach_both_callers --offline -- --ignored --nocapture`，退出 1（0 passed / 1 failed，测试体约 1.03s）。实际输出 `first=Ok(... id: 10 ...)`、`second=Err(Elapsed(()))`；fixture 已按逆序写出 id=11 与 id=10，A 的 `read_response(10)` 将 id=11 丢弃，B 随后没有任何 reader 能再取得该响应。该结果确认 H-09 仍由当前生产 `StdioTransport` 触发，状态转为“修复中”；本条只记录原始失败，不把 ignored 探针或后续设计当作已修复。
+
+E-H09-20261026-02（实现草稿审查与首轮专项）：撤下未验收的“缓存其他 ID 回包”草稿，因为其仍允许慢请求独占 reader，不能作为根因修复。改为每个 StdioTransport 一个后台 stdout reader + 共享 pending/oneshot 分派器；发送前登记，Future 丢弃/取消时 RAII 移除 waiter，EOF/关闭/写失败唤醒全部 waiter；未知/迟到 ID 直接丢弃而不缓存。连接内生成唯一 wire ID 并在返回时还原调用方 ID，避免多个 McpClient 或取消后复用逻辑 ID 错收迟到回包；取消通知使用对应 wire ID。所有写入共用同一 write+flush 边界，中途丢弃不完整写入则退役连接，避免后续 JSON 行粘连。pending 上限1024。本地设计沿用 Codex pending_requests/oneshot 的关联机制，未执行参考工程。首次 fmt 因声明的 stdio_dispatch_tests.rs 尚未创建而失败，创建文件后 fmt通过；`cargo test -p deepagent-mcp --lib stdio --offline -j 1 -- --nocapture --test-threads=1`退出0，10 passed/0 ignored（0.53s），含原乱序探针、慢调用与ping并存、交错通知、取消/abort、迟到回包、同逻辑ID复用、EOF及并发close。仍待半行读取/实际timeout与完整消费者验收，尚未关闭H-09。
+
+E-H09-20261026-03（分帧/写中断回归与消费者准备）：新增半行响应+调用方真实timeout后复用逻辑ID、服务端逐段完成响应的回归，及8MiB请求在真实stdin阻塞时abort、连接退役且不再写新JSON的回归；取消测试额外核对服务端收到的requestId等于实际wire ID。首编译因select内借用临时marker路径触发E0716，已改具名路径；第二个请求改为独立任务并等待服务端marker，避免用本地登记误推已发送。重跑`cargo test -p deepagent-mcp --lib stdio --offline -j 1 -- --nocapture --test-threads=1`退出0，12 passed/0 ignored（1.16s）。新增独立AppCore公开McpService→准备/registry→adapter真实Node乱序用例，MCP all-features与正式消费者仍在执行，尚未宣称完整验收。
+
+E-H09-20261026-04（正式消费者与MCP全特性验收）：`cargo test -p deepagent-app-core --test mcp_stdio_dispatch --offline -j 1 -- --nocapture --test-threads=1`退出0，1 passed/0 ignored（编译1m59s、测试0.29s）。真实Node fixture通过公开McpService测试连接、配置与准备、ready_registry、adapters_for调用，确认严格initialized握手后slow已到服务端，再让fast先回、slow后回，两个ToolOutput保持各自文本。`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0：lib89 passed/1 ignored、liveness2、protocol_audit1 passed/1 ignored、HTTP未知结果1、重连initialize1、重连unknown2、stdio diagnostics1及其余默认target通过，doc-tests0。上述运行后只增加不含参数的logical/wire ID trace；最新源码的`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0（9.95s）。完整workspace已启动但仍在编译；AppCore专项严格lint等待同一build锁。未把局部通过当作全仓通过，H-09保持修复中。
+
+E-H09-20261026-05（严格AppCore lint真实阻断）：`cargo clippy -p deepagent-app-core --test mcp_stdio_dispatch --offline -j 1 --no-deps -- -D warnings`退出1，在AppCore lib阶段被10处既有告警阻断：context_runtime.rs的8处clone_on_copy、plugin_preparation.rs的type_complexity、run_assembler.rs的too_many_arguments；这些生产文件不在H-09改动范围，未屏蔽告警或顺手修改，不能宣称AppCore专项严格lint通过。完整workspace编译8m00s后开始运行，AppCore lib1132 passed/78 ignored、checkpoint19 passed/1 ignored，其余仍在执行；当前没有完整workspace结论。
+
+E-H09-20261026-06（workspace运行中出现既有H-306失败）：同一完整workspace进程中，AppCore正式乱序消费者1 passed、kernel_v2_e2e127 passed/86 ignored、builtins352 passed/4 ignored、CLI89 passed/27 ignored、MCP默认lib82 passed/1 ignored及真实liveness2、重连unknown2、stdio diagnostics1均通过。prompts lib实际27 passed/1 failed：`canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`在canvas_prompt.rs:310报`creative.video-edit.v1`的defaultUserPrompt为空，与台账既有H-306一致。命令带--no-fail-fast，runtime及后续仍在运行，最终退出码尚未取得；不能称全仓通过。未修改H-306或绕过该失败。
+
+E-H09-20261026-07（最终验收与范围）：`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`最终退出1，唯一失败target为`-p deepagent-prompts --lib`的既有H-306（27 passed/1 failed）；其余默认执行target与doc-tests通过。最新源码包含ID trace：AppCore lib1132 passed/78 ignored、kernel127/86 ignored、正式乱序消费者1/0 ignored、builtins352/4 ignored、CLI89/27 ignored、MCP默认lib82/1 ignored、runtime284/16 ignored、stabilization5、persistence69/control9、session20；不能把ignored或全workspace当作全绿。H-09在所列Windows本机Node/McpService范围验收完成，原失败及E-01～06保留；MCP全特性和严格lint结果见E-04，AppCore严格lint阻断见E-05。单reader不持有transport自身，无Arc自循环；waiter清理与连接终结同步，保留H-06不重发及逻辑ID错误上下文。公共trait/DTO/schema未改，stdio wire ID现在由连接分配，调用方返回ID保持原值；pending同时最多1024，超限显式失败；未知/迟到response丢弃，通知仍沿用原忽略行为。本项不解决响应字节上限、子孙进程生命周期或HTTP session管理；其他OS、真实插件/DeepSeek/UI未验，无前端/Tauri变更故未跑pnpm build。仅提交stdio实现、两份回归文件与两份文档共5文件。本轮新增1，累计18已验收、18历史跳过、7归并、2撤销、261待修、0修复中；整体goal继续active。下一项准备复核P1 H-02的接纳与立即中断窗口，尚未实施。全部剩余200–400有效小时仍为未校准初估，按261项跨层复现/根因修复/验收规模评估，依赖和归并会改变范围，编译（本次workspace8m00s）/锁/设备/环境等待另计，不据本项机械扣减。
+
+E-H09-20261026-08（提交前核对）：最终`cargo fmt --all -- --check`退出0，`git diff --check`退出0。306行台账为306唯一编号、无缺号、每行8列：18已修复并验收、18历史跳过、7归并、2撤销、261待修复；E-H09-01～07两份文档逐字一致。全workspace仅一条失败汇总及一个失败target，与E-06/07一致。AppCore lint阻断的三个生产文件及prompts目录与HEAD无diff。原有未跟踪项未读取、修改或暂存；本轮仅5文件准备独立提交，hash将在后续文档提交回填，不amend、不推送。
 
 ## H-08 本轮即时记录（2026-10-26）
 
@@ -643,7 +663,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 归并H-278只补强同项；限所列Windows/Linux本机范围 | 连接恢复与业务请求重试分离；tools/call单次派发并返回RemoteOutcomeUnknown，adapter/事件/持久化/wire保留unknown且retryable=false；ping/tools/list才可受限重试 | E-H06-01～06：原两探针各2次副作用失败；修复后MCP70/3 ignored、HTTP1、真实stdio2、AppCore2、相关workspace消费者通过；全workspace唯一既有H-306失败，Linux真实stdio因无Node未执行 | `5ba4ee83` | 未验证Linux真实stdio、真实供应商、多进程外部服务；不自动核实远端状态，调用方须先核实再重试；本项已完成所列本机边界验收，计数进入15项 |
 | [H-07：MCP 工具发现忽略分页，只发布首页工具且不报不完整](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始探针 E-H07-20261026-01 复现后，分页探针转默认通过 | `ToolsListResult.next_cursor`保留不透明 cursor；`McpClient::list_tools()`统一有界汇总，100页/2048工具/64KiB cursor，重复 cursor拒绝；registry/AppCore复用同一入口 | E-H07-01～04：原始0 passed/1 failed；修复后MCP lib77/2 ignored、AppCore MCP14/13 ignored、MCP no-deps严格lint及fmt/diff通过；未验完整workspace/其他平台/真实供应商 | `e525b6de` | 限所列MCP/AppCore本机范围；不把ignored、完整workspace或真实服务当作通过 |
 | [H-08：MCP 初始化缺少 initialized 通知，严格服务端无法进入就绪状态](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始探针 E-H08-20261026-01 复现后转默认通过 | 新增 `JsonRpcNotification`/`McpTransport::notify()`；initialize 成功后统一发送无 ID通知；stdio、HTTP、ReconnectingTransport复用同一边界 | E-H08-01～04：原始0 passed/1 failed；修复后严格stdio1、MCP lib79/2 ignored、AppCore MCP14/13 ignored、HTTP notification与H-06 fixture通过；未验完整workspace/其他平台/H-12 session header | `2dc9fdf6` | 限所列本机协议范围；H-12 HTTP session管理仍独立待修，不把真实第三方服务当作通过 |
-| [H-09：stdio MCP 并发回包按读取者筛选，其他请求的响应会被永久丢弃](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-09：stdio MCP 并发回包按读取者筛选，其他请求的响应会被永久丢弃](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原始探针E-01失败保留，转默认后通过；限Windows本机Node/McpService范围 | 单stdout reader与pending/oneshot分派、RAII清理、连接唯一wire ID/还原逻辑ID、写入中断退役；上限1024 | E-H09-01～07：stdio12 passed/0 ignored；MCP全特性89/1 ignored；正式消费者1；MCP严格lint通过；全workspace唯一H-306失败，AppCore严格lint既有10处阻断 | 待提交后另回填真实hash | 其他OS/真实插件/DeepSeek/UI未验，通知沿用忽略；HTTP session/响应上限/子孙进程不在范围；下一项H-02，总体200–400有效小时初估 |
 | [H-10：运行结束后预取压缩任务仍继续执行，结果及 usage 无处归集](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-11：以消息内容反查压缩边界，重复回答会让恢复重新带回已摘要的历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-12：Streamable HTTP 未保存初始化分配的 session header，有状态远程服务后续请求失败](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
