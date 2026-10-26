@@ -47,6 +47,8 @@ impl CronService {
             let chat = self_for_fire.chat.clone();
             let prompt = task.prompt.clone();
             let task_id = task.id.clone();
+            let pending = chat.pending_approvals();
+            let approval_task_id = task_id.clone();
             tokio::spawn(async move {
                 tracing::info!(task_id = %task_id, "firing scheduled task");
                 let result = chat
@@ -59,8 +61,21 @@ impl CronService {
                         None,
                         false,
                         None,
-                        |_event| {},    // fire-and-forget: no event collection
-                        |_approval| {}, // auto-deny (scheduled tasks don't prompt)
+                        |_event| {}, // fire-and-forget: no event collection
+                        move |approval| {
+                            // A scheduled run has no interactive owner.  The
+                            // ordinary channel gate registers before invoking
+                            // this callback, so resolving the request here
+                            // wakes the exact waiter instead of leaving an
+                            // unreachable approval pending forever.
+                            let resolved = pending.resolve_approved(&approval.call_id, false);
+                            tracing::info!(
+                                task_id = %approval_task_id,
+                                call_id = %approval.call_id,
+                                resolved,
+                                "denied approval for unattended scheduled run"
+                            );
+                        },
                     )
                     .await;
                 if let Err(e) = result {
@@ -138,7 +153,6 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit: unattended cron must not wait for an approval callback that discards requests"]
     async fn audit_unattended_cron_does_not_leave_an_unreachable_approval() {
         let root = tempfile::tempdir().unwrap();
         let db = Arc::new(Database::open_in_memory().unwrap());
@@ -186,49 +200,44 @@ mod audit_tests {
         let runner = cron.clone();
         let stop = shutdown.clone();
         let tick = tokio::spawn(async move { runner.run_tick_loop(stop).await });
-        let pending = chat.pending_approvals();
-        tokio::time::timeout(Duration::from_secs(5), async {
-            while pending.pending_count() == 0 {
+        let (run_id, finished, terminal_kind): (String, bool, Option<String>) =
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    let observed = db
+                        .with_conn(|conn| {
+                            conn.query_row(
+                                "SELECT id, finished_at IS NOT NULL, terminal_kind FROM runs ORDER BY created_at DESC LIMIT 1",
+                                [],
+                                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                            )
+                            .map_err(|error| {
+                                deepagent_core::error::CoreError::Persistence(error.to_string())
+                            })
+                        })
+                        .ok();
+                    if let Some((run_id, finished, terminal_kind)) = observed {
+                        if finished {
+                            break (run_id, finished, terminal_kind);
+                        }
+                    }
                 tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("scheduled run must reach the formal approval gate");
+                }
+            })
+            .await
+            .expect("scheduled run must reject unattended approval and reach a terminal state");
         shutdown.cancel();
         tick.await.unwrap().unwrap();
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        let (run_id, finished): (String, bool) = db
-            .with_conn(|conn| {
-                conn.query_row(
-                    "SELECT id, finished_at IS NOT NULL FROM runs ORDER BY created_at DESC LIMIT 1",
-                    [],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
-                )
-                .map_err(|error| deepagent_core::error::CoreError::Persistence(error.to_string()))
-            })
-            .unwrap();
-        let unreachable_pending = pending.pending_count();
+        let unreachable_pending = chat.pending_approvals().pending_count();
         let task_removed = cron.list().await.unwrap().is_empty();
-        assert!(chat.request_cancel(&run_id).unwrap().accepted);
-        tokio::time::timeout(Duration::from_secs(3), async {
-            while RunStore::new(&db)
-                .get(&run_id)
-                .unwrap()
-                .unwrap()
-                .finished_at
-                .is_none()
-            {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .expect("audit must clean up its scheduled run");
-        eprintln!("cron_task_removed={task_removed} scheduler_stopped=true pending={unreachable_pending} run_finished_before_cancel={finished} command_calls={}", commands.load(Ordering::SeqCst));
+        let persisted = RunStore::new(&db).get(&run_id).unwrap().unwrap();
+        eprintln!("cron_task_removed={task_removed} scheduler_stopped=true pending={unreachable_pending} run_finished_before_cancel={finished} terminal_kind={terminal_kind:?} command_calls={}", commands.load(Ordering::SeqCst));
         assert_eq!(commands.load(Ordering::SeqCst), 0);
         assert_eq!(
             unreachable_pending, 0,
-            "unattended work must reject or expose approval; an empty notifier cannot answer it"
+            "unattended work must reject approval through the live waiter"
         );
+        assert!(task_removed);
+        assert!(persisted.finished_at.is_some());
     }
 
     #[tokio::test]

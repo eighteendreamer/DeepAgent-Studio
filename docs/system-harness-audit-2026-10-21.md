@@ -1705,6 +1705,8 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 
 ### H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上
 
+**当前状态：修复中（2026-10-27）。**
+
 **级别：高（P1）；范围：Cron 触发的后台会话发生需要人工决策的工具调用。** 用户已有授权或自动策略允许的操作不一定触发；本项不是绕过审批执行命令，而是审批无人接收导致运行无法继续。与 H-15 的“终态后迟到授权”是不同生命周期阶段。
 
 #### 正式定时链路复现
@@ -1714,6 +1716,14 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 - 新增默认忽略探针 `cron_service::audit_tests::audit_unattended_cron_does_not_leave_an_unreachable_approval`：真实 CronService tick、正式磁盘 scheduled-tasks.json、ChatService、AlwaysAsk、模型脚本产生 bash 调用。命令执行器仅计数并拒绝执行，没有真实命令、网络或用户数据。
 - 创建已到期 one-shot，启动实际 tick loop；等待正式 pending 审批出现，再停止 scheduler 并观察 300ms。结果：`cron_task_removed=true scheduler_stopped=true pending=1 run_finished_before_cancel=false command_calls=0`。随后通过正式 request_cancel(run_id) 清理，并等待数据库终态后才断言，未遗留执行中的后台运行。
 - 执行 `cargo test -p deepagent-app-core --lib audit_unattended_cron_does_not_leave_an_unreachable_approval --offline -- --ignored --nocapture`：要求无人值守调用不能留下不可达审批的断言失败，测试约 0.55 秒。观察期不能证明数学意义无限等待，但正式代码中该等待只有回答、sender 关闭或运行取消的出口；本路径没有投递回答者。没有声称用户桌面已经发生同一 cron 故障。
+
+E-H37-20261027-01（本轮原始探针复核）：在生产代码未修改的 HEAD `fe55822b` 执行上述命令，退出1，0 passed/1 failed/0 ignored（测试体0.55秒）；真实输出为 `cron_task_removed=true scheduler_stopped=true pending=1 run_finished_before_cancel=false command_calls=0`，失败断言为 `unattended work must reject or expose approval; an empty notifier cannot answer it`。正式 CronService tick、磁盘计划文件、ChatService、AlwaysAsk、离线 MockTransport 与计数型命令执行器均参与；随后测试显式 request_cancel 并等待终态清理，无遗留后台任务，不访问真实供应商、网络、内网、凭据或用户文件。本轮只确认 H-37 当前仍失败，尚未修改生产实现，不合并 H-15/H-42/H-96/H-97。
+
+E-H37-20261027-02（根因修复）：`CronService::run_tick_loop()` 的 fire 闭包现在取得同一 `PendingApprovals` 注册表；无人值守 `run_in_session()` 的审批回调对已注册的 `ApprovalRequestDto.call_id` 调用 `resolve_approved(call_id, false)`，立即把 `ApprovalDecision::Deny` 送回原等待者并记录 task/call/resolved。没有把计划任务改成 `FullAccess`，没有绕过 `PolicyGate`、权限、ToolPipeline 或 RunStore；AlwaysAsk、AutoReview 需要人工的分支均通过同一 live waiter 拒绝，AutoReview 自动 Allow/Deny 分支仍由既有 PolicyGate 决定。仅修改现有 CronService 与该审计回归，不新增审批中心或第二套运行链。
+
+E-H37-20261027-03（修复后正式回归）：`cargo test -p deepagent-app-core --lib audit_unattended_cron_does_not_leave_an_unreachable_approval --offline -j 1 -- --nocapture --test-threads=1` 退出0，1 passed/0 failed/0 ignored；输出为 `cron_task_removed=true scheduler_stopped=true pending=0 run_finished_before_cancel=true terminal_kind=Some("failed") command_calls=0`。`cargo test -p deepagent-app-core --lib cron_service::audit_tests --offline -j 1 -- --nocapture --test-threads=1` 退出0，1 passed/0 failed/1 ignored（仅保留独立 H-97 scheduler shutdown 探针）；`cargo test -p deepagent-app-core --lib approval_bridge::tests --offline -j 1 -- --nocapture --test-threads=1` 为23 passed/0 failed；`cargo test -p deepagent-runtime --lib schedule:: --offline -j 1 -- --nocapture --test-threads=1` 为19 passed/0 failed；冻结修复代码后 `cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 为1159 passed/63 ignored/0 failed（测试体74.91秒）。`cargo fmt --all -- --check`、`git diff --check`退出0；严格 `cargo clippy -p deepagent-app-core --lib --offline -j 1 --no-deps -- -D warnings` 仍被未修改的 context_runtime.rs clone-on-copy、plugin_preparation.rs type-complexity、run_assembler.rs too-many-arguments 共10项既有告警阻断，未出现本项新增诊断。命令执行计数始终为0，pending审批为0，RunStore finished_at已写入；测试仅用临时计划、内存SQLite、离线MockTransport和拒绝型executor，不访问真实供应商、网络、内网、凭据或用户文件。
+
+E-H37-20261027-04（验收边界）：H-37在 Windows 本机 CronService→ChatService→ChannelApprovalGate→RunStore 及 AlwaysAsk 的正式定时链范围内已通过，待本项独立修复提交后关闭；拒绝发生在工具执行前，计划 one-shot 仍按现有 scheduler 记账移除，运行以 failed 终态结束而不留下 pending waiter。既有 approval_bridge 23项回归覆盖 AlwaysAsk 委托、AutoReview Allow/Ask/Deny 及 FullAccess 对照；本项不把 AutoReview 的既有分类规则改成自动放行，也不合并 H-15 终态后迟到回答、H-42 跨进程重复派发、H-96 记账失败重放或 H-97 scheduler 停止后的在途运行。其他 OS/UI/真实供应商、进程崩溃接管、周期任务规模和真实外部副作用未验；scheduler shutdown 不会因此自动取消已派生运行。
 
 
 
