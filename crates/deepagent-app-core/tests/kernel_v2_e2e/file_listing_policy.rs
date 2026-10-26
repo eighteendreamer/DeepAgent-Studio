@@ -1,6 +1,7 @@
 //! File discovery must not expose names hidden from direct reads.
 
 use super::*;
+use deepagent_app_core::SandboxMode;
 use deepagent_models::ModelRole;
 
 struct ListingModel {
@@ -9,14 +10,62 @@ struct ListingModel {
     observed: Mutex<Option<(bool, bool)>>,
 }
 
-fn paired_output(body: &serde_json::Value, call_id: &str) -> String {
-    body["input"]
+fn paired_output(body: &serde_json::Value, call_id: &str) -> serde_json::Value {
+    let output = &body["input"]
         .as_array()
         .unwrap()
         .iter()
         .find(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
-        .expect("the next request must carry the paired tool output")["output"]
-        .to_string()
+        .expect("the next request must carry the paired tool output")["output"];
+    serde_json::from_str(
+        output
+            .as_str()
+            .expect("tool output must be serialized JSON"),
+    )
+    .unwrap()
+}
+
+fn listing_names(envelope: &serde_json::Value, operation: &str) -> Vec<String> {
+    match operation {
+        "list_dir" => envelope["result"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|entry| entry["name"].as_str().unwrap().to_owned())
+            .collect(),
+        "glob" => envelope["result"]["matches"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|path| path.as_str().unwrap().to_owned())
+            .collect(),
+        _ => panic!("unknown listing operation"),
+    }
+}
+
+#[test]
+fn listing_observer_counts_only_result_names() {
+    for (operation, result) in [
+        ("list_dir", serde_json::json!({"entries":[]})),
+        ("glob", serde_json::json!({"matches":[]})),
+    ] {
+        let echo = serde_json::json!({"result":result,"path":".env","error":"visible.txt"});
+        assert!(listing_names(&echo, operation).is_empty());
+    }
+    assert_eq!(
+        listing_names(
+            &serde_json::json!({"result":{"entries":[{"name":".env"}]}}),
+            "list_dir"
+        ),
+        [".env"]
+    );
+    assert_eq!(
+        listing_names(
+            &serde_json::json!({"result":{"matches":["visible.txt"]}}),
+            "glob"
+        ),
+        ["visible.txt"]
+    );
 }
 
 #[async_trait]
@@ -31,7 +80,8 @@ impl HttpTransport for ListingModel {
             ),
             1 => {
                 let denied = paired_output(&body, "audit-listing-direct-read");
-                assert!(denied.contains("sensitive"));
+                assert_eq!(denied["status"], "error");
+                assert!(denied["error"].to_string().contains("sensitive"));
                 match self.operation {
                     "list_dir" => response_function_call(
                         "audit-listing-operation",
@@ -48,8 +98,16 @@ impl HttpTransport for ListingModel {
             }
             2 => {
                 let listing = paired_output(&body, "audit-listing-operation");
-                *self.observed.lock().unwrap() =
-                    Some((listing.contains(".env"), listing.contains("visible.txt")));
+                assert_eq!(listing["status"], "ok");
+                let names = listing_names(&listing, self.operation);
+                for denied in ["credentials", ".ENV.Local", "secret-store"] {
+                    assert!(!names.iter().any(|name| name == denied), "{listing}");
+                }
+                assert!(names.iter().any(|name| name == ".hidden"));
+                *self.observed.lock().unwrap() = Some((
+                    names.iter().any(|name| name == ".env"),
+                    names.iter().any(|name| name == "visible.txt"),
+                ));
                 response_text("Offline file-listing audit completed.")
             }
             _ => panic!("unexpected extra model request in file-listing audit"),
@@ -58,10 +116,19 @@ impl HttpTransport for ListingModel {
     }
 }
 
-async fn observe_listing(operation: &'static str) -> (bool, bool) {
+async fn observe_listing(operation: &'static str, mode: Option<SandboxMode>) -> (bool, bool) {
     let workspace = tempfile::tempdir().unwrap();
     std::fs::write(workspace.path().join(".env"), "AUDIT_LISTING_HIDDEN_3d8c\n").unwrap();
     std::fs::write(workspace.path().join("visible.txt"), "visible\n").unwrap();
+    std::fs::write(
+        workspace.path().join(".hidden"),
+        "ordinary hidden fixture\n",
+    )
+    .unwrap();
+    for name in ["credentials", ".ENV.Local"] {
+        std::fs::write(workspace.path().join(name), "synthetic policy fixture\n").unwrap();
+    }
+    std::fs::create_dir(workspace.path().join("secret-store")).unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
     let settings = Arc::new(SettingsService::new(
         db.clone(),
@@ -74,6 +141,9 @@ async fn observe_listing(operation: &'static str) -> (bool, bool) {
         .initialize("offline-audit-placeholder")
         .await
         .unwrap();
+    if let Some(mode) = mode {
+        settings.set_sandbox_mode(mode).unwrap();
+    }
     for role in [ModelRole::Chat, ModelRole::Reasoner] {
         settings.set_model(role, "deepseek-flash").unwrap();
     }
@@ -113,19 +183,24 @@ async fn observe_listing(operation: &'static str) -> (bool, bool) {
         .collect();
     assert_eq!(completed.len(), 1);
     assert_eq!(completed[0].data["ok"], true);
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "succeeded");
     let observed = model.observed.lock().unwrap().unwrap();
     eprintln!(
-        "file listing audit: operation={operation}, direct_read_denied=true, listing_ok=true, hidden_name_sent={}, visible_name_sent={}",
+        "file listing audit: operation={operation}, mode={mode:?}, direct_read_denied=true, listing_ok=true, hidden_name_sent={}, visible_name_sent={}",
         observed.0, observed.1
     );
     observed
 }
 
 #[tokio::test]
-#[ignore = "audit: glob and list_dir must hide names denied by direct read policy"]
 async fn audit_file_discovery_does_not_send_denied_file_names_to_model() {
-    let list_name = observe_listing("list_dir").await;
-    let glob_name = observe_listing("glob").await;
+    let list_name = observe_listing("list_dir", None).await;
+    let glob_name = observe_listing("glob", None).await;
     assert!(list_name.1 && glob_name.1, "ordinary file name disappeared");
     assert!(
         !list_name.0 && !glob_name.0,
@@ -138,9 +213,23 @@ async fn file_discovery_control_reports_visible_file() {
     // The control is the existing production test surface: discovery remains
     // usable for ordinary files; this fixture only ensures the probe is not
     // passing because all listing output was discarded.
-    let (_hidden, visible) = observe_listing("glob").await;
+    let (_hidden, visible) = observe_listing("glob", None).await;
     assert!(
         visible,
         "the audit fixture must observe a real listing result"
     );
+}
+
+#[tokio::test]
+async fn file_discovery_sensitive_policy_is_preserved_across_runtime_profiles() {
+    for mode in [
+        SandboxMode::ReadOnly,
+        SandboxMode::WorkspaceWrite,
+        SandboxMode::FullAccess,
+    ] {
+        for operation in ["list_dir", "glob"] {
+            let (hidden, visible) = observe_listing(operation, Some(mode)).await;
+            assert!(!hidden && visible, "{operation}/{mode:?}");
+        }
+    }
 }

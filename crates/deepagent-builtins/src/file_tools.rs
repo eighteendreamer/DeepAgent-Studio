@@ -770,6 +770,9 @@ impl Tool for ListDirTool {
             let mut entries: Vec<_> = snapshot
                 .entries
                 .into_iter()
+                // Discovery uses the same lexical/physical read authorization
+                // as recursive glob/grep, before exposing each candidate name.
+                .filter(|entry| root.read_identity(&resolved.join(&entry.name)).is_ok())
                 .map(|entry| {
                     serde_json::json!({
                         "name": entry.name.to_string_lossy(),
@@ -1573,6 +1576,126 @@ mod tests {
                 .unwrap();
             assert!(explicit.ok, "{access:?}: {explicit:?}");
             assert!(explicit.value["hits"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn list_dir_sensitive_policy_matches_direct_reads_in_every_access_mode() {
+        use crate::fs_guard::FsAccess;
+
+        let (_dir, root) = temp_root();
+        let protected = [
+            ".env",
+            "credentials",
+            ".ENV.Local",
+            "secret-store/data.txt",
+            "certs/server.key",
+        ];
+        for path in protected {
+            let path = root.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "synthetic policy fixture").unwrap();
+        }
+        for path in [".hidden", "visible.txt", "certs/public.txt"] {
+            std::fs::write(root.path().join(path), "ordinary fixture").unwrap();
+        }
+        std::fs::create_dir(root.path().join("empty")).unwrap();
+        for access in [
+            FsAccess::ReadOnly,
+            FsAccess::Workspace,
+            FsAccess::ReadAnywhere,
+            FsAccess::Full,
+        ] {
+            let root = root.clone().with_access(access);
+            let reader = ReadFileTool::new(root.clone());
+            for path in protected {
+                let read = reader
+                    .invoke(serde_json::json!({"path":path}))
+                    .await
+                    .unwrap();
+                assert!(!read.ok, "{access:?}/{path}: {read:?}");
+            }
+            let listing = ListDirTool::new(root);
+            let output = listing.invoke(serde_json::json!({})).await.unwrap();
+            assert!(output.ok, "{access:?}: {output:?}");
+            assert_eq!(
+                output.value["entries"],
+                serde_json::json!([
+                    {"name":".hidden", "dir":false},
+                    {"name":"certs", "dir":true},
+                    {"name":"empty", "dir":true},
+                    {"name":"visible.txt", "dir":false},
+                ]),
+                "{access:?}"
+            );
+            let nested = listing
+                .invoke(serde_json::json!({"path":"certs"}))
+                .await
+                .unwrap();
+            assert!(nested.ok, "{access:?}: {nested:?}");
+            assert_eq!(
+                nested.value["entries"],
+                serde_json::json!([{"name":"public.txt", "dir":false}])
+            );
+            let denied = listing
+                .invoke(serde_json::json!({"path":"secret-store"}))
+                .await
+                .unwrap();
+            assert!(!denied.ok, "{access:?}: {denied:?}");
+            let empty = listing
+                .invoke(serde_json::json!({"path":"empty"}))
+                .await
+                .unwrap();
+            assert!(empty.ok);
+            assert_eq!(empty.value["entries"], serde_json::json!([]));
+        }
+    }
+
+    #[cfg(any(windows, unix))]
+    #[tokio::test]
+    async fn list_dir_authorizes_link_targets_before_returning_names() {
+        use crate::fs_guard::FsAccess;
+
+        let (_dir, root) = temp_root();
+        let outside = tempfile::tempdir().unwrap();
+        for name in ["real", "secret-store"] {
+            std::fs::create_dir(root.path().join(name)).unwrap();
+        }
+        for (name, target) in [
+            ("inward", root.path().join("real")),
+            ("outward", outside.path().to_path_buf()),
+            ("alias", root.path().join("secret-store")),
+        ] {
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_dir(target, root.path().join(name)).unwrap();
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(target, root.path().join(name)).unwrap();
+        }
+        for access in [
+            FsAccess::ReadOnly,
+            FsAccess::Workspace,
+            FsAccess::ReadAnywhere,
+            FsAccess::Full,
+        ] {
+            let root = root.clone().with_access(access);
+            let external_allowed = matches!(access, FsAccess::ReadAnywhere | FsAccess::Full);
+            assert!(root.resolve_read("alias").is_err());
+            assert_eq!(root.resolve_read("outward").is_ok(), external_allowed);
+            let output = ListDirTool::new(root)
+                .invoke(serde_json::json!({}))
+                .await
+                .unwrap();
+            assert!(output.ok, "{access:?}: {output:?}");
+            let mut expected = vec![serde_json::json!({"name":"inward", "dir":false})];
+            if external_allowed {
+                expected.push(serde_json::json!({"name":"outward", "dir":false}));
+            }
+            expected.push(serde_json::json!({"name":"real", "dir":true}));
+            assert_eq!(
+                output.value["entries"],
+                serde_json::json!(expected),
+                "{access:?}"
+            );
         }
     }
 

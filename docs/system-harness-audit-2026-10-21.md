@@ -2364,6 +2364,10 @@ E-H78-20261026-73（独立提交与台账复核）：修复提交`c6947508`（�
 
 ### H-79：glob/list_dir 返回被直接读取策略拒绝的敏感文件名
 
+**2026-10-26修复状态：已修复并验收（所列Windows/Linux本机范围），修复提交待生成。** 以下原始审计失败保留，H-280仅归并证据；E-01～05为本轮即时记录，早期未完成不覆盖最终结论。
+
+E-H79-20261026-01（原探针先行复现）：HEAD=4cf519cc，工作树只有原有未跟踪项，尚未修改代码或测试。执行未改原探针`cargo test -p deepagent-app-core --test kernel_v2_e2e file_listing_policy --offline -j 1 -- --include-ignored --nocapture --test-threads=1`退出1，1 passed/1 failed/0 ignored（编译1m58s、测试0.99s）。list_dir为direct_read_denied=true、listing_ok=true、hidden_name_sent=true、visible_name_sent=true；glob为hidden_name_sent=false、visible_name_sent=true。因此只剩ListDirTool枚举后未逐候选授权；glob已由c6947508的walk_collect/read_identity共享边界消除，不重复改写。当前证据仅合成.env文件名进入离线下一wire，不是正文泄漏。修复将复用WorkspaceRoot::read_identity，不新增敏感名单/权限中心，保留普通隐藏文件和目录排序。H-280仅归并证据；未验收完成、无本轮修复提交。
+
 **级别：中（P2）；范围：工作区内存在被 `fs_guard` 禁止直接读取的 `.env`，模型调用 `glob("**")` 或 `list_dir`，并继续消费工具结果。** 本项限定为文件名/目录结构泄漏；敏感文件内容经搜索进入模型请求的独立证据见 H-77。
 
 - 根因与生产路径：`PathGuardHook` 只从工具参数中的 `path`、`file_path`、`filename` 读取候选路径；`glob` 使用 `pattern`，因此 hook 不会看到实际匹配文件。`ListDirTool::invoke()` 直接枚举目录 entry 名称，`GlobTool::invoke()` 通过 `walk_collect()` 枚举工作区；该遍历只跳过少量构建/点开头目录，不调用 `WorkspaceRoot::resolve_read()` 或 `is_sensitive_path()`。结果因此包含 `.env`，即使同一运行中 `read_file(".env")` 已被中央策略拒绝。
@@ -2372,6 +2376,14 @@ E-H78-20261026-73（独立提交与台账复核）：修复提交`c6947508`（�
 - 影响：模型可获知用户明确禁止读取的配置文件存在性和目录结构，进而推断环境、凭据或私有资源布局；文件名本身不等于内容泄漏，不能把本项与 H-77 合并。实际敏感内容仍需通过另一个工具路径进入请求才构成 H-77 的内容边界。本轮没有真实用户目录、真实密钥或公网传输。
 - 成熟实现对照：Claude Code 的 `GlobTool.ts`、`GrepTool.ts` 均调用 `checkReadPermissionForTool()`，并通过 `getFileReadIgnorePatterns()` 将 Read deny 规则转成搜索排除模式；`utils/glob.ts` 在枚举阶段应用这些排除项。该机制说明隐式发现必须复用读取策略，而不是只检查顶层 `pattern`/`path`。本轮未运行参考项目，不声称其默认敏感文件规则与本系统完全相同。
 - 修复方向（尚未实施，本地设计）：在现有 `WorkspaceRoot`/文件读取策略中提供候选路径可见性判断，让 `list_dir`、`glob`、`grep` 共用同一过滤边界；先确定“文件名可见”和“内容可读”是否同一策略，再按访问模式、显式授权和物理路径解析统一实现。过滤应发生在遍历结果生成前，不能先返回敏感名称再由 UI 删除；与 H-77、H-78 共用真实路径和重启/配置变更回归，不新增第二套搜索工具。
+
+E-H79-20261026-02（新增回归先红，生产代码未改）：新增公开Tool回归覆盖四FsAccess、敏感大小写/目录/嵌套key、普通.hidden/空目录/排序，并以真实Windows目录symlink验证内向/外向/敏感目标别名。`cargo test -p deepagent-builtins --lib list_dir_ --offline -j 1 -- --nocapture`退出1，1 passed/2 failed/0 ignored（编译17.34s、测试0.03s）：ReadOnly下敏感名.env/.ENV.Local/credentials/secret-store以及alias/outward仍出现在结果；inward和普通文件仍可见，链接dir=false语义保留。失败与E-01同一候选授权缺口一致，不新增编号。正式fixture随后转默认，增加结构化result.entries[].name/result.matches观察及三SandboxMode对照；尚未验收。
+
+E-H79-20261026-03（共享判定接入及两平台crate验收）：生产仅在ListDirTool生成JSON前逐entry调用既有WorkspaceRoot::read_identity；保留底层read_directory同句柄枚举原语，避免在原语层复制策略。与walk_collect共用敏感名、物理链及FsAccess授权，不新增API/依赖/配置或第二套规则。Windows `cargo test -p deepagent-builtins --offline -j 1 -- --quiet --test-threads=4`退出0，352 passed/4 ignored（编译27.36s、测试25.88s），doc-tests 0；Linux复用H-78固定1.96.0临时toolchain，显式CARGO_HOME/CARGO_TARGET_DIR/RUSTC/RUSTDOC，`cargo test -p deepagent-builtins --locked --offline -j 4 -- --quiet --test-threads=4`退出0，308 passed/0 ignored（编译18.31s、测试5.04s），doc-tests 0。两平台新增四FsAccess敏感名及真实symlink回归均通过，普通.hidden、空目录、嵌套public.txt、排序和链接dir=false保留；Windows四项ignored不计通过。正式下一wire及严格lint仍待，不据crate通过关闭整项。
+
+E-H79-20261026-04（正式链默认验收及严格lint通过）：`cargo test -p deepagent-app-core --test kernel_v2_e2e file_listing_policy --offline -j 1 -- --nocapture --test-threads=1`退出0，4 passed/0 failed/0 ignored（编译2m25s、测试3.52s）。原探针已转默认；9次正式run覆盖默认对照及ReadOnly/WorkspaceWrite/FullAccess各自list_dir、glob：真实配对输出status=ok，.env名称hidden_name_sent=false、visible_name_sent=true，credentials/.ENV.Local/secret-store不在结构化名称结果，普通.hidden仍可见；每run先有一次read_file硬拒绝，发现完成成功且只有一个succeeded终态。4项包括观察器反例，不冒称4个缺陷。`cargo clippy -p deepagent-builtins --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0（59.88s，含等待构建锁）；fmt --check与diff --check退出0。正在运行H-77/H-78正式消费者定向回归，尚不记结果。
+
+E-H79-20261026-05（消费者回归与本项验收结论）：`cargo test -p deepagent-app-core --test kernel_v2_e2e path_boundary --offline -j 1 -- --nocapture --test-threads=1`退出0，8 passed/0 ignored（9.34s），含真实junction正式读/目录/写删双向move、根替换、磁盘与下一wire对照；`cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -j 1 -- --nocapture --test-threads=1`退出0，4 passed/0 ignored（5.44s），H-77敏感正文及15组profile样本未回归。H-79在所列Windows/Linux本机范围验收完成，本轮生产修复新增1；H-280不另计。仅4文件：ListDir候选授权、默认正式fixture和两份文档；不改公共DTO/数据库/供应商参数/前端，名称结果过滤属于预期行为，不能获准或不能解析的候选不进入列表，正常.hidden/目录/链接语义有对照。仍不等于自定义Read deny、MCP/CodeGraph/自动上下文统一；Unix操作期抗rename、macOS、真实UI/DeepSeek未验。完整workspace与AppCore严格lint本轮未重复：保留既有H-306 prompts失败及AppCore既有lint阻断，不宣称全仓通过；无前端/Tauri改动故未跑pnpm build。306行台账按H编号核对：13已修复并验收、18历史跳过、7归并、2撤销、266待修、0修复中，266有效未关闭。剩余200–400有效小时仍为未校准初估，编译/环境等待另计；下一项H-74语义分支边界优先复核，尚未修改。修复提交待生成并另做真实hash回填，整体goal继续active。
 
 ### H-80：Responses repair 对外部混合工具类型缺少不变量校验（条件性）
 
@@ -8100,6 +8112,8 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 该次仅追加 H-78 的复测记录，未修改生产逻辑；完整 workspace、Desktop build、真实 DeepSeek、Linux/macOS 物理链接和 TOCTOU 压力验证未执行。显式探针保持 `#[ignore]`，默认绿色不代表该沙箱边界已修复。
 
 ### H-79 的 2026-10-25 复核归档（原 H-280，撤销独立计数）
+
+2026-10-26状态：已随唯一有效项H-79完成所列Windows/Linux本机验收，过程及残余限制见主条目E-H79-20261026-01～05；以下为历史证据，不另计修复。
 
 **编号校正（2026-10-25）：** `b8644d3c` 使用的 `file_listing_policy.rs`、`.env`/`visible.txt`、两类发现工具和下一 wire 观察，已完整登记于 H-79。以下只保留复测来源和输出；原 E-280/F-280/P-280 标签仅为追溯。本次去重未重跑探针，也未新增独立缺陷。
 
