@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计四十一项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计四十五项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 44 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 45 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有已进入修复但尚未验收的条目 |
-| 待修复 | 235 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 234 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **235（235待修复、0修复中）**；不提供完成率。四十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **234（234待修复、0修复中）**；不提供完成率。四十五项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -301,6 +301,22 @@ E-H41-20261027-03（正式回归）：显式隔离探针2 passed；三种 foreig
 E-H41-20261027-04（范围与提交前状态）：H-43 早到终态探针仍独立失败，未合并；未验真实 WebView、其他OS、进程重启、后台供应商作业。修复代码、回归测试与本轮文档将在同一独立提交创建，取得 hash 后只回填本台账与报告。
 
 E-H41-20261027-05（独立提交与范围）：生产修复、隔离回归测试及当时两份文档已在提交 `2964b38e6b0da39c268a5278df15d1ba44e9b730`（`【fix】修复H-41画布运行归属隔离`）中创建；本次仅回填真实 hash，不 amend、不推送、不创建 PR。关闭范围仍以 E-H41-20261027-04 为准，H-43/H-134及真实后台作业不因本项通过而关闭。
+
+## H-42 本轮即时记录（2026-10-27）
+
+**当前状态：已修复并验收（限 Windows 本机离线双进程计划文件与现有 CronService 调度范围）。** 本轮只处理同一 workspace 的跨进程 scheduler ownership，不合并 H-33 会话输入租约、H-96 派发后记账失败重放或 H-97 scheduler 停止后的在途运行；原始失败保留。
+
+E-H42-20261027-01（原始失败复核）：在生产代码未修改的 HEAD `5246c2a0` 执行 `cargo test -p deepagent-runtime --test schedule_audit --offline -- --ignored --nocapture`，退出 1；H-42 探针输出 `recurring=false fire_count=2`、`same_task_fired_in_two_processes=true` 以及 `recurring=true fire_count=2`、`same_task_fired_in_two_processes=true`，最终断言 `one occurrence was dispatched twice for recurring=[false, true]` 失败。单进程顺序重轮询仍为 `sequential_refires=0`；同命令中的独立 H-96 探针通过。父/子均进入正式 `CronScheduler::poll` 和实际 JSON 文件，只记录 task id，不启动模型、工具或网络；该失败证据不被修复后的通过覆盖。
+
+E-H42-20261027-02（根因修复）：在既有 `ScheduledTaskStore` 旁增加稳定的 `scheduled-tasks.json.lock` sidecar，使用 `fs2` OS 独占锁，非阻塞争用返回 standby；`CronScheduler::poll` 在计算 due 前取得锁，并保持至所有任务的读取、due/expiry 判断、fire callback 和 one-shot 删除/recurring 记账写回完成。争用进程只跳过本 tick，不等待父 fire callback，避免两个进程在同一 occurrence 上同时接纳。锁由 OS 文件句柄持有，正常退出、异常退出或被终止后由内核释放；没有新增 scheduler/store、审批、RunStore 或运行中心，也没有改写外部副作用的 exactly-once 语义。
+
+E-H42-20261027-03（正式双进程与生命周期回归）：移除 H-42 探针的 `ignore`，执行 `cargo test -p deepagent-runtime --test schedule_audit --offline -- --nocapture` 退出 0，H-42 双进程和新增生命周期探针共 `2 passed / 0 failed / 1 ignored`（唯一 ignored 为独立 H-96）。双进程 one-shot/recurring 均输出 `same_task_fired_in_two_processes=false`，顺序对照 `sequential_refires=0`；生命周期探针让独立子进程在 callback 持锁时验证 competing poll 无输出，再分别验证正常 owner 退出和被 `kill` 后主进程都能重新取得锁并完成一次 recurring occurrence。该探针仅使用临时 workspace、合成计划和 task-id 记录。
+
+E-H42-20261027-04（跨层回归与构建）：`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（302 passed / 11 ignored）；`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（1159 passed / 63 ignored），覆盖正式 `CronService` 消费者；`cargo check -p deepagent-runtime -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 均退出 0。未修改的 `crates/deepagent-runtime/src/model_agent.rs:282` `clone_on_copy` 使严格 `cargo clippy -p deepagent-runtime --all-targets --offline -j 1 --no-deps -- -D warnings` 仍退出 1；本轮未为 H-42 修理该基线告警。
+
+E-H42-20261027-05（验收边界）：锁覆盖“判断并派发到计划记账”的并发窗口，证明本机两个真实进程不会重复接纳同一持久 occurrence；不证明 callback 启动的模型/工具外部动作在进程于记账前崩溃时 exactly-once。落盘失败、fire 已接纳但 bookkeeping 未提交、运行在 scheduler shutdown 后的恢复仍分别属于 H-96/H-97 的独立生命周期问题；真实 DeepSeek/供应商、真实工具副作用、其他 OS、断电和完整 workspace 未执行，不把本项通过扩大为这些范围。
+
+E-H42-20261027-06（独立提交与 hash 回填）：生产锁、回归测试与本轮两份文档先在独立修复提交中创建；取得真实 hash 后只回填本台账与原审计报告，不 amend、不推送、不创建 PR。当前修复提交 hash 待回填，整体 goal 仍 active；下一项按风险和依赖继续复核 H-43。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -1150,7 +1166,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H39-20261027-01～04保留原始失败、根因、回归、范围与真实hash；不合并H-195/H-198 | WorkflowAgent维护节点终态，按已完成前驱激活普通边；if-else边必须匹配branch与source_handle，未选节点发布Skipped，共享后继按任一激活边进入 | E-H39-20261027-02～03：正式探针1 passed；Runtime workflow 67 passed；AppCore workflow_audit 9 passed/39 ignored；fmt/diff通过；严格clippy被既有告警阻断 | `f7bc2f436aa442dd1ed811c1f60c72fb0e9c7c6d` | 限本机离线 workflow graph→WorkflowAgent→AgentKernel→RunStore；未验多个end/join、OR求值、Tauri/其他OS/真实供应商/跨进程重开，余项见E-H39-04 |
 | [H-40：专业工作流配置在前端序列化被删除或被后端按另一套字段读取](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H40-20261027-01～05保留原始失败、根因、正式跨层回归、范围与提交回填；不合并H-39/H-162/H-198 | serializer 不再过滤 `inputVariables`/`conditions`；WorkflowAgent 规范读取桌面 start/end/condition/template 字段，并在同一边界兼容旧字段 | 正式跨层探针1 passed；Runtime workflow 67 passed；AppCore workflow_audit 9 passed/39 ignored；pnpm test:workflow 78 passed；fmt/diff通过；严格clippy被既有告警阻断 | `c133cb094616c2be6585c8010ef3af536ff909b1` | 限所列 Windows 本机离线桌面 TS→WorkflowAgent→RunStore；未验 Tauri/其他OS/真实供应商/全量专业节点/旧工程迁移/完整workspace，余项见E-H40-04 |
 | [H-41：其他会话完成会清掉当前画布运行监听和停止入口](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H41-20261027-01～05保留原始失败、根因、正式回归、边界与提交回填；不合并H-40/H-43/H-134 | 每次画布运行使用独立 owner；完成与节点事件按 owner/run_id 过滤；旧 owner 不能清理新 owner；取消只读取当前 owner | H-41隔离探针2 passed；pnpm test:workflow 78 passed；pnpm build通过；diff check通过 | `2964b38e6b0da39c268a5278df15d1ba44e9b730` | 限所列 Windows 本机离线 workflowExecutor/Tauri事件桥；H-43早到终态、真实WebView/其他OS/进程重启/后台供应商未验，余项见E-H41-04 |
-| [H-42：定时调度没有跨进程所有权，同一触发时段可重复派发一次性和循环任务](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-42：定时调度没有跨进程所有权，同一触发时段可重复派发一次性和循环任务](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H42-20261027-01～06保留原始双进程失败、锁临界区修复、正常退出/杀进程接管、正式回归与边界；不合并H-33/H-96/H-97 | 在现有ScheduledTaskStore旁增加稳定sidecar OS独占锁；CronScheduler::poll非阻塞取得后覆盖read→due→fire→bookkeeping，争用tick跳过，进程退出由OS释放；不新建scheduler/store/run中心 | H-42双进程探针2 passed；生命周期探针2 passed；Runtime lib302 passed/11 ignored；AppCore lib1159 passed/63 ignored；check、fmt、diff通过；严格Runtime clippy仅既有model_agent.rs clone_on_copy阻断 | 待首个修复提交后回填 | 限Windows本机离线双进程计划文件与现有CronService调度范围；计划锁不承诺外部副作用exactly-once，fire后记账失败/已接纳运行仍见H-96/H-97，真实供应商、其他OS、断电和完整workspace未验 |
 | [H-43：运行启动先于事件订阅就绪，提前终态丢失后前端持续等待](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 2026-10-26，原失败保留，E-H44-20261026-01～10 | 统一规范终态事务，run/task身份文件投影，既有ledger确认与重开幂等补偿；正常kernel/setup/workflow接回同一边界 | 原探针默认通过；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；workspace H-306/严格lint失败保留，见明细 | `3d247d1a` | 无schema迁移；外部last()消费者与Rust构造方需适配；跨平台/断电/真实UI未验，H-95不归并；总区间200–400有效小时初估 |
 | [H-45：父 Kernel 总时限直接丢弃执行 Future，前台子 Agent 没有取消和持久化收尾](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

@@ -9,9 +9,11 @@ use deepagent_runtime::schedule::{cron::local_to_epoch_ms, CronScheduler};
 
 const TEST: &str = "audit_two_scheduler_processes_cannot_fire_the_same_occurrence";
 const CHILD_ROOT: &str = "DEEPAGENT_AUDIT_CRON_CHILD_ROOT";
+const LOCK_TEST: &str = "audit_scheduler_lock_is_released_after_owner_exit_or_kill";
+const LOCK_CHILD_ROOT: &str = "DEEPAGENT_AUDIT_CRON_LOCK_CHILD_ROOT";
+const LOCK_CHILD_MODE: &str = "DEEPAGENT_AUDIT_CRON_LOCK_CHILD_MODE";
 
 #[test]
-#[ignore = "audit: independent scheduler processes must share ownership of each persisted occurrence"]
 fn audit_two_scheduler_processes_cannot_fire_the_same_occurrence() {
     let now = time::macros::datetime!(2026-10-21 12:00:00);
     if let Some(root) = std::env::var_os(CHILD_ROOT) {
@@ -95,6 +97,93 @@ fn audit_two_scheduler_processes_cannot_fire_the_same_occurrence() {
         duplicates.is_empty(),
         "one occurrence was dispatched twice for recurring={duplicates:?}"
     );
+}
+
+#[test]
+fn audit_scheduler_lock_is_released_after_owner_exit_or_kill() {
+    let now = time::macros::datetime!(2026-10-21 12:00:00);
+    if let Some(root) = std::env::var_os(LOCK_CHILD_ROOT) {
+        let root = PathBuf::from(root);
+        let scheduler = CronScheduler::for_workspace(&root);
+        let mode = std::env::var(LOCK_CHILD_MODE).unwrap_or_default();
+        let child_now = now;
+        scheduler
+            .poll(child_now, |_| {
+                std::fs::write(root.join("lock-ready"), "ready").unwrap();
+                if mode == "crash" {
+                    std::thread::sleep(Duration::from_secs(30));
+                } else {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            })
+            .unwrap();
+        return;
+    }
+
+    for mode in ["normal", "crash"] {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path();
+        let scheduler = CronScheduler::for_workspace(root);
+        let task = scheduler
+            .store()
+            .add(
+                "* * * * *".into(),
+                "audit scheduler lock lifecycle only".into(),
+                true,
+                local_to_epoch_ms(now) - 120_000,
+            )
+            .unwrap();
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", LOCK_TEST, "--test-threads=1"])
+            .env(LOCK_CHILD_ROOT, root)
+            .env(LOCK_CHILD_MODE, mode)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let ready_deadline = Instant::now() + Duration::from_secs(5);
+        while !root.join("lock-ready").exists() {
+            assert!(
+                Instant::now() < ready_deadline,
+                "{mode} lock owner did not acquire the scheduler lock"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let mut fired = 0;
+        let blocked = scheduler.poll(now, |_| fired += 1).unwrap();
+        assert!(
+            blocked.is_empty(),
+            "{mode} owner must block a competing poll"
+        );
+        assert_eq!(fired, 0);
+
+        if mode == "crash" {
+            child.kill().unwrap();
+        }
+        let status = child.wait().unwrap();
+        if mode == "normal" {
+            assert!(status.success(), "normal lock owner must exit cleanly");
+        } else {
+            assert!(
+                !status.success(),
+                "killed lock owner must not report success"
+            );
+        }
+
+        let after_now = if mode == "normal" {
+            now + time::Duration::minutes(1)
+        } else {
+            now
+        };
+        let after_release = scheduler.poll(after_now, |_| fired += 1).unwrap();
+        assert_eq!(fired, 1, "{mode} owner must not strand the occurrence");
+        assert_eq!(after_release.len(), 1);
+        assert!(matches!(
+            &after_release[0],
+            deepagent_runtime::schedule::FireOutcome::Fired { task_id } if task_id == &task.id
+        ));
+    }
 }
 
 #[cfg(windows)]

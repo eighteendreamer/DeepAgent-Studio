@@ -56,7 +56,9 @@ pub fn missed_tasks(tasks: &[ScheduledTask], now: PrimitiveDateTime) -> Vec<&Sch
 }
 
 /// File-backed scheduler. Each [`CronScheduler::poll`] is one read-modify-write
-/// over the store; fire side effects happen inside the caller's callback.
+/// over the store; fire side effects happen inside the caller's callback. A
+/// non-blocking workspace lock is held across the complete critical section so
+/// two processes cannot both accept the same persisted occurrence.
 #[derive(Debug, Clone)]
 pub struct CronScheduler {
     store: ScheduledTaskStore,
@@ -90,6 +92,13 @@ impl CronScheduler {
         now: PrimitiveDateTime,
         mut fire: impl FnMut(&ScheduledTask),
     ) -> Result<Vec<FireOutcome>> {
+        let Some(_lock) = self.store.try_lock()? else {
+            tracing::debug!(
+                path = %self.store.path().display(),
+                "another scheduler owns this poll; skipping this tick"
+            );
+            return Ok(Vec::new());
+        };
         let now_ms = super::cron::local_to_epoch_ms(now);
         let tasks = self.store.read()?;
         let mut outcomes = Vec::new();
@@ -284,6 +293,36 @@ mod tests {
         assert_eq!(fired, vec![task.id.clone()]);
         assert_eq!(outcomes, vec![FireOutcome::Fired { task_id: task.id }]);
         assert_eq!(sched.store().read().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_busy_scheduler_lease_skips_then_can_be_reacquired() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ScheduledTaskStore::new_at(dir.path().join("scheduled-tasks.json"));
+        let now = time::macros::datetime!(2026-09-15 09:00:00);
+        let task = store
+            .add(
+                "* * * * *".into(),
+                "lease contention".into(),
+                false,
+                crate::schedule::cron::local_to_epoch_ms(now) - 120_000,
+            )
+            .unwrap();
+        let scheduler = CronScheduler::new(store);
+        let held = scheduler.store().try_lock().unwrap().unwrap();
+        let mut fired = Vec::new();
+        assert!(scheduler
+            .poll(now, |fired_task| fired.push(fired_task.id.clone()))
+            .unwrap()
+            .is_empty());
+        assert!(fired.is_empty());
+        drop(held);
+
+        let outcomes = scheduler
+            .poll(now, |fired_task| fired.push(fired_task.id.clone()))
+            .unwrap();
+        assert_eq!(fired, vec![task.id]);
+        assert_eq!(outcomes.len(), 1);
     }
 
     #[test]

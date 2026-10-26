@@ -1649,6 +1649,7 @@ dependencies = [
  "deepagent-tools",
  "deepagent-tracing",
  "deepagent-verification",
+ "fs2",
  "futures",
  "reqwest",
  "serde",

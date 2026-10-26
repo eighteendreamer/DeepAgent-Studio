@@ -18,10 +18,11 @@
 //! `.deepagent/` if missing and always write `{ "tasks": [...] }` (an empty
 //! file, never a delete) so a file watcher sees the last-task-removed change.
 
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
 
 use deepagent_core::error::{CoreError, Result};
+use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -89,6 +90,25 @@ pub struct ScheduledTaskStore {
     path: PathBuf,
 }
 
+/// A non-blocking ownership lease for one scheduled-tasks file.
+///
+/// The lock lives beside the data file rather than on the data file itself:
+/// the latter may be replaced by a future atomic-write implementation and
+/// would therefore not provide stable ownership. The OS releases this lease
+/// when the process exits, including an abnormal exit.
+pub(crate) struct ScheduleFileLock {
+    file: File,
+    path: PathBuf,
+}
+
+impl Drop for ScheduleFileLock {
+    fn drop(&mut self) {
+        if let Err(error) = FileExt::unlock(&self.file) {
+            tracing::warn!(path = %self.path.display(), %error, "failed to release scheduler lock");
+        }
+    }
+}
+
 impl ScheduledTaskStore {
     /// Store rooted at `workspace/.deepagent/scheduled-tasks.json`.
     pub fn new(workspace: &Path) -> Self {
@@ -104,6 +124,56 @@ impl ScheduledTaskStore {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Try to become the owner of this schedule file without waiting.
+    ///
+    /// `None` means another process currently owns the scheduler turn and is
+    /// an ordinary standby result, not a persistence failure. The caller must
+    /// keep the returned guard alive across its complete read/evaluate/fire/
+    /// bookkeeping critical section.
+    pub(crate) fn try_lock(&self) -> Result<Option<ScheduleFileLock>> {
+        if let Some(parent) = self
+            .path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
+            fs::create_dir_all(parent).map_err(|error| {
+                CoreError::other(format!(
+                    "failed to create scheduler lock directory {}: {error}",
+                    parent.display()
+                ))
+            })?;
+        }
+        let lock_path = PathBuf::from(format!("{}.lock", self.path.display()));
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)
+            .map_err(|error| {
+                CoreError::other(format!(
+                    "failed to open scheduler lock {}: {error}",
+                    lock_path.display()
+                ))
+            })?;
+        match file.try_lock_exclusive() {
+            Ok(()) => Ok(Some(ScheduleFileLock {
+                file,
+                path: lock_path,
+            })),
+            Err(error)
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.raw_os_error() == fs2::lock_contended_error().raw_os_error() =>
+            {
+                Ok(None)
+            }
+            Err(error) => Err(CoreError::other(format!(
+                "failed to acquire scheduler lock {}: {error}",
+                lock_path.display()
+            ))),
+        }
     }
 
     /// Read and validate all tasks. Tolerant of missing/empty/malformed files;

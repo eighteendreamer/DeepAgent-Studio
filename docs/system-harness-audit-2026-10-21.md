@@ -1900,6 +1900,15 @@ E-H41-20261027-05（独立提交与范围）：生产修复、隔离回归测试
 - 修复应在现有调度服务上明确 workspace 所有权、主备接管及 occurrence 身份；复用现有 RunStore 做计划→运行的可审计关联，不另建运行中心。计划锁不能等同于每个外部动作 exactly-once；崩溃时应区分“未派发、已接纳、执行结果未知”，按业务幂等性恢复。单纯提前删除 one-shot 或增加进程内 Mutex 都不覆盖跨进程和崩溃窗口。
 - 验收覆盖两个 data root 打开同一项目、one-shot/recurring 并发触发、owner 正常退出及崩溃接管、落盘失败和已接纳运行的恢复；普通会话输入租约修复不能代替此项。本轮仅增加默认忽略审计测试和文档，未修改生产调度。
 
+#### 修复后即时 Evidence（2026-10-27）
+
+- **E-H42-20261027-01（原始失败保留）**：在未修改生产代码的 HEAD `5246c2a0` 执行 `cargo test -p deepagent-runtime --test schedule_audit --offline -- --ignored --nocapture`，退出 1。one-shot 与 recurring 均观察到父、子独立进程 `fire_count=2` 且 `same_task_fired_in_two_processes=true`；单进程顺序对照仍为 `sequential_refires=0`。该命令中的独立 H-96 探针通过；本条失败断言为 `one occurrence was dispatched twice for recurring=[false, true]`，没有真实模型、工具、网络或用户文件。
+- **E-H42-20261027-02（根因修复）**：在现有 `ScheduledTaskStore` 旁增加稳定的 `scheduled-tasks.json.lock` sidecar，使用 `fs2` OS 独占锁；`CronScheduler::poll` 非阻塞取得锁后，保持覆盖读取、due/expiry 判断、fire callback 和 one-shot/recurring 记账写回的整个临界区，争用进程只跳过本 tick。锁由 OS 文件句柄管理，正常退出或进程被终止后自动释放；未增加第二套 scheduler/store/RunStore，也没有宣称外部动作 exactly-once。
+- **E-H42-20261027-03（双进程回归）**：H-42 探针转为默认测试；`cargo test -p deepagent-runtime --test schedule_audit --offline -- --nocapture` 退出 0，H-42 双进程和生命周期探针共 `2 passed / 0 failed / 1 ignored`（唯一 ignored 为独立 H-96）。one-shot/recurring 双进程均为 `same_task_fired_in_two_processes=false`；生命周期探针在独立子进程持锁期间确认 competing poll 不派发，并在 owner 正常退出及被 `kill` 后确认主进程可重新取得锁并完成 occurrence。
+- **E-H42-20261027-04（跨层验证）**：`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 为 `302 passed / 11 ignored`；`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 为 `1159 passed / 63 ignored`；`cargo check -p deepagent-runtime -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 均通过。严格 Runtime clippy 仍被未修改的 `model_agent.rs:282 clone_on_copy` 阻断，不将基线失败写成通过。
+- **E-H42-20261027-05（边界）**：本修复只证明两个本机进程不会在“同一持久 occurrence 的判断→fire→记账”窗口内重复接纳；fire 后进程在记账前崩溃、落盘失败、已接纳运行的恢复和 scheduler 停止后的在途运行仍分别属于 H-96/H-97，不能由计划锁保证 exactly-once。真实 DeepSeek/供应商、工具副作用、其他 OS、断电和完整 workspace 未执行。
+- **E-H42-20261027-06（修复提交）**：生产锁、回归测试和本轮文档在独立修复提交中创建；hash 取得后只回填本条与进度台账，不 amend、不推送、不创建 PR。修复前的“本轮仅增加探针、未修改生产调度”历史记录保留不改写。
+
 ### H-43：运行启动先于事件订阅就绪，提前终态丢失后前端持续等待
 
 **级别：高（P1）；范围：桌面普通聊天和画布客户端的启动/订阅顺序。** 与 H-01 的 stdio 队列溢出和 H-41 的外部会话终态串话不同：本项只发送当前 run 的事件，且没有队列拥塞。
