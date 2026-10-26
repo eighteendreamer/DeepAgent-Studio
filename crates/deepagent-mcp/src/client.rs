@@ -4,6 +4,7 @@
 //! (discovery) → `tools/call` (invocation). The client assigns monotonic
 //! request ids and unwraps JSON-RPC errors into [`CoreError`].
 
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -14,6 +15,10 @@ use crate::protocol::{
     JsonRpcRequest, McpToolDef, ToolCallResult, ToolsListResult, MCP_PROTOCOL_VERSION,
 };
 use crate::transport::McpTransport;
+
+const MAX_TOOLS_LIST_PAGES: usize = 100;
+const MAX_TOOLS_LIST_ITEMS: usize = 2_048;
+const MAX_TOOLS_LIST_CURSOR_BYTES: usize = 64 * 1024;
 
 /// An MCP client bound to one server via a transport.
 pub struct McpClient {
@@ -76,9 +81,43 @@ impl McpClient {
 
     /// Discover the tools the server provides (`tools/list`).
     pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
-        let result = self.call("tools/list", None).await?;
-        let parsed: ToolsListResult = serde_json::from_value(result)?;
-        Ok(parsed.tools)
+        let mut tools = Vec::new();
+        let mut cursor = None;
+        let mut seen_cursors = HashSet::new();
+
+        for _ in 0..MAX_TOOLS_LIST_PAGES {
+            let params = cursor
+                .as_ref()
+                .map(|cursor| serde_json::json!({ "cursor": cursor }));
+            let result = self.call("tools/list", params).await?;
+            let parsed: ToolsListResult = serde_json::from_value(result)?;
+
+            if parsed.tools.len() > MAX_TOOLS_LIST_ITEMS.saturating_sub(tools.len()) {
+                return Err(CoreError::invalid(format!(
+                    "MCP tools/list exceeded the catalog limit of {MAX_TOOLS_LIST_ITEMS} tools"
+                )));
+            }
+            tools.extend(parsed.tools);
+
+            let Some(next_cursor) = parsed.next_cursor else {
+                return Ok(tools);
+            };
+            if next_cursor.len() > MAX_TOOLS_LIST_CURSOR_BYTES {
+                return Err(CoreError::invalid(format!(
+                    "MCP tools/list returned a cursor exceeding {MAX_TOOLS_LIST_CURSOR_BYTES} bytes"
+                )));
+            }
+            if !seen_cursors.insert(next_cursor.clone()) {
+                return Err(CoreError::invalid(
+                    "MCP tools/list returned a repeated pagination cursor",
+                ));
+            }
+            cursor = Some(next_cursor);
+        }
+
+        Err(CoreError::invalid(format!(
+            "MCP tools/list exceeded the pagination limit of {MAX_TOOLS_LIST_PAGES} pages"
+        )))
     }
 
     /// Invoke a tool by its server-local name (`tools/call`).
@@ -159,7 +198,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: tool discovery must follow the server's nextCursor"]
     async fn audit_tool_discovery_reads_all_pages() {
         use crate::protocol::JsonRpcResponse;
         use async_trait::async_trait;
@@ -202,6 +240,175 @@ mod tests {
             server.0.lock().unwrap()
         );
         assert_eq!(names, ["first", "second"], "later pages must not disappear");
+    }
+
+    #[tokio::test]
+    async fn list_tools_follows_empty_pages_and_preserves_opaque_cursor() {
+        use crate::protocol::JsonRpcResponse;
+        use async_trait::async_trait;
+        use std::sync::Mutex;
+
+        struct EmptyPageServer(Mutex<Vec<Option<String>>>);
+
+        #[async_trait]
+        impl McpTransport for EmptyPageServer {
+            async fn send(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+                let cursor = req
+                    .params
+                    .as_ref()
+                    .and_then(|params| params["cursor"].as_str())
+                    .map(str::to_string);
+                self.0.lock().unwrap().push(cursor.clone());
+                let result = match cursor.as_deref() {
+                    None => serde_json::json!({"tools":[],"nextCursor":"cursor/empty"}),
+                    Some("cursor/empty") => serde_json::json!({
+                        "tools":[{"name":"after-empty","inputSchema":{"type":"object"}}]
+                    }),
+                    _ => panic!("client changed the opaque cursor"),
+                };
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id,
+                    result: Some(result),
+                    error: None,
+                })
+            }
+        }
+
+        let server = Arc::new(EmptyPageServer(Mutex::new(Vec::new())));
+        let tools = McpClient::new(server.clone()).list_tools().await.unwrap();
+        assert_eq!(
+            tools
+                .iter()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>(),
+            ["after-empty"]
+        );
+        assert_eq!(
+            server.0.lock().unwrap().as_slice(),
+            &[None, Some("cursor/empty".into())]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_tools_rejects_repeated_cursor() {
+        use crate::protocol::JsonRpcResponse;
+        use async_trait::async_trait;
+
+        struct RepeatingServer;
+
+        #[async_trait]
+        impl McpTransport for RepeatingServer {
+            async fn send(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id,
+                    result: Some(serde_json::json!({
+                        "tools": [],
+                        "nextCursor": "same"
+                    })),
+                    error: None,
+                })
+            }
+        }
+
+        let error = McpClient::new(Arc::new(RepeatingServer))
+            .list_tools()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("repeated pagination cursor"));
+    }
+
+    #[tokio::test]
+    async fn list_tools_rejects_oversized_cursor() {
+        use crate::protocol::JsonRpcResponse;
+        use async_trait::async_trait;
+
+        struct OversizedCursorServer;
+
+        #[async_trait]
+        impl McpTransport for OversizedCursorServer {
+            async fn send(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id,
+                    result: Some(serde_json::json!({
+                        "tools": [],
+                        "nextCursor": "x".repeat(MAX_TOOLS_LIST_CURSOR_BYTES + 1)
+                    })),
+                    error: None,
+                })
+            }
+        }
+
+        let error = McpClient::new(Arc::new(OversizedCursorServer))
+            .list_tools()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("cursor exceeding"));
+    }
+
+    #[tokio::test]
+    async fn list_tools_rejects_unbounded_page_chain() {
+        use crate::protocol::JsonRpcResponse;
+        use async_trait::async_trait;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct EndlessServer(AtomicUsize);
+
+        #[async_trait]
+        impl McpTransport for EndlessServer {
+            async fn send(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+                let page = self.0.fetch_add(1, Ordering::Relaxed) + 1;
+                assert!(req.params.is_none() || req.params.as_ref().unwrap()["cursor"].is_string());
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id,
+                    result: Some(serde_json::json!({
+                        "tools": [],
+                        "nextCursor": format!("page-{page}")
+                    })),
+                    error: None,
+                })
+            }
+        }
+
+        let server = Arc::new(EndlessServer(AtomicUsize::new(0)));
+        let error = McpClient::new(server.clone())
+            .list_tools()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("pagination limit"));
+        assert_eq!(server.0.load(Ordering::Relaxed), MAX_TOOLS_LIST_PAGES);
+    }
+
+    #[tokio::test]
+    async fn list_tools_rejects_catalog_overflow_without_returning_partial_tools() {
+        use crate::protocol::JsonRpcResponse;
+        use async_trait::async_trait;
+
+        struct OverflowServer;
+
+        #[async_trait]
+        impl McpTransport for OverflowServer {
+            async fn send(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+                let tools = (0..=MAX_TOOLS_LIST_ITEMS)
+                    .map(|index| serde_json::json!({"name": format!("tool-{index}"), "inputSchema": {}}))
+                    .collect::<Vec<_>>();
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id,
+                    result: Some(serde_json::json!({"tools": tools})),
+                    error: None,
+                })
+            }
+        }
+
+        let error = McpClient::new(Arc::new(OverflowServer))
+            .list_tools()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("catalog limit"));
     }
 
     #[tokio::test]

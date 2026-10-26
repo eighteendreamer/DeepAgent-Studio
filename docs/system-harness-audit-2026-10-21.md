@@ -21,8 +21,9 @@
 | H-44 | 已修复并验收（2026-10-26，Windows本机所列范围） | 统一规范终态事务、run/task身份文件投影与幂等补偿；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；完整workspace H-306/严格lint失败与边界见原项；修复提交`3d247d1a` |
 | H-78 | 已修复并验收（2026-10-26，所列本机范围） | 共享物理路径授权与Windows操作边界；最终证据见本项E-H78-73及台账，原失败保留，修复提交`c6947508`；H-279不重复计数 |
 | H-79 | 已修复并验收（2026-10-26，所列本机范围） | 目录名称发现与读取授权统一；最终证据及限制见本项与台账，修复提交`79519de6` |
+| H-07 | 已修复并验收（2026-10-26，MCP/AppCore本机范围，提交hash待回填） | `ToolsListResult`保留不透明`nextCursor`，`McpClient::list_tools()`统一有界汇总分页；MCP全组77 passed/2 ignored，AppCore正式MCP筛选14 passed/13 ignored；E-H07-01～03 |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。本次按306行台账实核：本阶段累计修复 **15**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **264（264待修复）**；306是历史编号槽位。H-06限所列Windows/Linux本机范围验收：受影响crate、真实HTTP、正式AppCore和workspace相关消费者通过；完整workspace唯一失败仍是既有H-306，AppCore全仓严格lint仍受既有10项告警阻断，Linux真实stdio因无Node未执行，均不冒充全量通过。修复提交`5ba4ee83`已回填，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。本次按306行台账实核：本阶段累计修复 **16**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **263（263待修复、0修复中）**；306是历史编号槽位。H-07仅在MCP/AppCore所列本机范围验收，未把ignored测试或完整workspace当作全绿；提交hash待下一条文档回填记录写入，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -565,7 +566,16 @@ Codex `codex-mcp/src/rmcp_client.rs::list_tools_for_client_uncached()` 用 `pagi
 
 - 模型会误认为插件没有后续页的能力，任务无法完成或选择替代工具；设置界面还可能显示连接正常，增加定位难度。
 - 在现有 McpClient 统一实现有界分页，供 registry、状态查询和就绪快照共用；分页失败不能把半个工具集当作完整成功发布。
-- 补充无分页、多页、空页但有 cursor、重复 cursor、超限和取消测试。此探针默认忽略，生产发现逻辑尚未修复。
+ - 补充无分页、多页、空页但有 cursor、重复 cursor、超限和取消测试。分页中途失败继续沿现有错误链返回，不发布半套工具。
+
+#### H-07 即时复现记录（2026-10-26）
+
+E-H07-20261026-01：在未修改源码、未读取或暂存原有未跟踪项的前提下，执行
+`cargo test -p deepagent-mcp audit_tool_discovery_reads_all_pages --offline -- --ignored --nocapture`，退出 1（0 passed / 1 failed，测试体约 0.01s）。原始两页 mock 实际打印 `names=["first"], requests=[None]`，断言期望 `['first', 'second']`；请求记录只有首页且没有携带第二页不透明 cursor。该结果确认 H-07 仍可由当前生产 `McpClient::list_tools()` 触发，状态转为“修复中”；本条记录只证明故障仍存在，不把 ignored 探针或后续设计当作已修复。
+
+E-H07-20261026-02（根因修复与边界回归）：`ToolsListResult` 新增仅按 MCP wire 名称 `nextCursor` 映射的可选字段；`McpClient::list_tools()` 在同一入口循环请求后续页，原样回传 cursor，累计工具数并在成功终页后一次性返回。最大页数 100、工具总数 2048、cursor 64 KiB；重复 cursor、超长 cursor、无界页链和工具总数超限均返回结构化 `CoreError::Invalid`，空页带 cursor继续，transport/解析/取消错误不被吞掉。没有在 registry 或 AppCore 另造分页路径。
+
+E-H07-20261026-03（最终本机验收，提交hash待回填）：`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0，lib 77 passed/2 ignored，真实liveness2、HTTP未知结果1、reconnect initialize1、reconnect unknown2、stdio diagnostics1均通过，doc-tests0；其中原分页探针已转默认并通过。`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp --offline -j 1 -- --quiet --test-threads=1`退出0，14 passed/13 ignored，证明正式 AppCore MCP消费方使用同一分页结果。`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0；`cargo fmt --all -- --check`与`git diff --check`退出0。该验收未访问真实插件、真实凭据、真实供应商或外部服务；未据此宣称完整workspace、其他平台或真实分页服务全绿。
 
 ### H-08：MCP 初始化缺少 initialized 通知，严格服务端无法进入就绪状态
 

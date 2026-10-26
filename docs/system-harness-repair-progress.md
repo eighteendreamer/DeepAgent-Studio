@@ -8,15 +8,27 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 15 | H-06、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 16 | H-06、H-07、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有已进入实现但尚未完成验收的条目 |
-| 待修复 | 264 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 263 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **264（264待修复、0修复中）**；不提供完成率。十五项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **263（263待修复、0修复中）**；不提供完成率。十六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-07 本轮即时记录（2026-10-26）
+
+**当前状态：已修复并验收（限 MCP/AppCore 所列本机范围，提交 hash 待回填）。** 仅处理 MCP `tools/list` 分页发现，不改 H-06 的连接恢复/未知结果语义，不访问真实插件、真实凭据或外部服务。
+
+E-H07-20261026-01（原始探针复现）：在未修改源码、未读取或暂存原有未跟踪项的前提下，执行 `cargo test -p deepagent-mcp audit_tool_discovery_reads_all_pages --offline -- --ignored --nocapture`，退出 1（0 passed / 1 failed，测试体约 0.01s）。原始两页 mock 实际打印 `names=["first"], requests=[None]`，断言期望 `['first', 'second']`；请求记录只有首页，没有携带第二页不透明 cursor。该结果确认当前生产 `McpClient::list_tools()` 仍会发布不完整的工具集合，故本条进入“修复中”；本记录不把 ignored 探针或尚未实施的设计当作通过。
+
+当前根因边界已核对：`ToolsListResult` 未保存 `nextCursor`，`McpClient::list_tools()` 仅调用一次 `tools/list`，而 `McpRegistry::register_with_instructions()` 直接消费该结果。修复将收敛在 `McpClient`，并为分页页数、工具总数、cursor 长度、重复 cursor、空页带 cursor、取消和中途失败建立有界回归测试；分页中途失败不得把半套工具标记为完整成功。
+
+E-H07-20261026-02（根因修复与边界回归）：`ToolsListResult` 新增仅按 MCP wire 名称 `nextCursor` 映射的可选字段；`McpClient::list_tools()` 在同一入口循环请求后续页，原样回传 cursor，累计工具数并在成功终页后一次性返回。最大页数 100、工具总数 2048、cursor 64 KiB；重复 cursor、超长 cursor、无界页链和工具总数超限均返回结构化 `CoreError::Invalid`，空页带 cursor继续，transport/解析/取消错误不被吞掉。没有在 registry 或 AppCore 另造分页路径。
+
+E-H07-20261026-03（最终本机验收，提交 hash 待回填）：`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0，lib 77 passed/2 ignored，真实liveness2、HTTP未知结果1、reconnect initialize1、reconnect unknown2、stdio diagnostics1均通过，doc-tests0；其中原分页探针已转默认并通过。`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp --offline -j 1 -- --quiet --test-threads=1`退出0，14 passed/13 ignored，证明正式 AppCore MCP消费方使用同一分页结果。`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0；`cargo fmt --all -- --check`与`git diff --check`退出0。该验收未访问真实插件、真实凭据、真实供应商或外部服务；未据此宣称完整workspace、其他平台或真实分页服务全绿。
 
 ## H-06 本轮即时记录（2026-10-26）
 
@@ -616,7 +628,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 归并H-278只补强同项；限所列Windows/Linux本机范围 | 连接恢复与业务请求重试分离；tools/call单次派发并返回RemoteOutcomeUnknown，adapter/事件/持久化/wire保留unknown且retryable=false；ping/tools/list才可受限重试 | E-H06-01～06：原两探针各2次副作用失败；修复后MCP70/3 ignored、HTTP1、真实stdio2、AppCore2、相关workspace消费者通过；全workspace唯一既有H-306失败，Linux真实stdio因无Node未执行 | `5ba4ee83` | 未验证Linux真实stdio、真实供应商、多进程外部服务；不自动核实远端状态，调用方须先核实再重试；本项已完成所列本机边界验收，计数进入15项 |
-| [H-07：MCP 工具发现忽略分页，只发布首页工具且不报不完整](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-07：MCP 工具发现忽略分页，只发布首页工具且不报不完整](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始探针 E-H07-20261026-01 复现后，分页探针转默认通过 | `ToolsListResult.next_cursor`保留不透明 cursor；`McpClient::list_tools()`统一有界汇总，100页/2048工具/64KiB cursor，重复 cursor拒绝；registry/AppCore复用同一入口 | E-H07-01～03：原始0 passed/1 failed；修复后MCP lib77/2 ignored、AppCore MCP14/13 ignored、MCP no-deps严格lint及fmt/diff通过；未验完整workspace/其他平台/真实供应商 | 修复提交待生成，随后单独回填真实hash | 限所列MCP/AppCore本机范围；不把ignored、完整workspace或真实服务当作通过 |
 | [H-08：MCP 初始化缺少 initialized 通知，严格服务端无法进入就绪状态](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-09：stdio MCP 并发回包按读取者筛选，其他请求的响应会被永久丢弃](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-10：运行结束后预取压缩任务仍继续执行，结果及 usage 无处归集](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

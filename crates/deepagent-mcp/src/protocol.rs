@@ -84,6 +84,13 @@ pub struct ToolsListResult {
     /// Advertised tools.
     #[serde(default)]
     pub tools: Vec<McpToolDef>,
+    /// Opaque cursor for the next page, when the server has more tools.
+    #[serde(
+        rename = "nextCursor",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub next_cursor: Option<String>,
 }
 
 /// The result of `tools/call`.
@@ -230,6 +237,14 @@ mod tests {
         let res: ToolsListResult = serde_json::from_str(json).unwrap();
         assert_eq!(res.tools.len(), 1);
         assert_eq!(res.tools[0].name, "search");
+        assert_eq!(res.next_cursor, None);
+    }
+
+    #[test]
+    fn parses_tools_list_next_cursor_without_interpreting_it() {
+        let json = r#"{"tools":[],"nextCursor":"opaque/page?2"}"#;
+        let res: ToolsListResult = serde_json::from_str(json).unwrap();
+        assert_eq!(res.next_cursor.as_deref(), Some("opaque/page?2"));
     }
 
     #[test]
