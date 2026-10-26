@@ -1567,6 +1567,30 @@ impl ModelAgent {
         Ok(())
     }
 
+    /// Stop a run-owned prefire task at the terminal boundary and fold any
+    /// result that won the race with cancellation into side usage. A normal
+    /// terminal must not wait indefinitely for speculative work: the task is
+    /// explicitly aborted, then joined so Tokio cannot detach it. If the task
+    /// had already produced a note, its provider usage is still billable even
+    /// though pass-2 will never adopt it.
+    async fn finish_prefire_background(&mut self) {
+        if let Some(handle) = self.prefire_handle.take() {
+            handle.abort();
+            match handle.await {
+                Ok(Ok(Some(note))) => self.side_usage.record_call(&note.usage),
+                Ok(Ok(None)) => {}
+                Ok(Err(error)) => self.side_usage.record_call(&error.usage),
+                Err(join_error) if !join_error.is_cancelled() => {
+                    tracing::warn!(error = %join_error, "prefire task failed while finishing agent")
+                }
+                Err(_) => {}
+            }
+        }
+        if let Some(note) = self.prefire_cache.take() {
+            self.side_usage.record_call(&note.usage);
+        }
+    }
+
     /// Prefire scheduling (Grok `should_prefire_two_pass` + `spawn_local`): when
     /// the estimate sits in the lead band `[prefire_start, threshold)` and no
     /// note/handle exists yet, spawn a background pass-1 against a conversation
@@ -2098,6 +2122,10 @@ impl Agent for ModelAgent {
         self.think_inner(step, last, cancel, tools).await
     }
 
+    async fn finish_background_tasks(&mut self) {
+        self.finish_prefire_background().await;
+    }
+
     fn seed_surfaced_memories(&mut self, ids: &[String]) {
         // Session-wide de-dup: ids replayed from `MemoriesInjected` events
         // count as already surfaced, so a resumed run does not re-inject them
@@ -2135,6 +2163,19 @@ impl Agent for ModelAgent {
 
     fn take_pending_raw_usage(&mut self) -> Vec<serde_json::Value> {
         std::mem::take(&mut self.pending_raw_usage)
+    }
+}
+
+impl Drop for ModelAgent {
+    fn drop(&mut self) {
+        // The async Agent hook normally aborts and joins this task before
+        // finalization. Drop remains a last-resort ownership boundary for
+        // direct RuntimeAgent users and prevents Tokio from detaching a
+        // speculative provider call when an owner disappears unexpectedly.
+        if let Some(handle) = self.prefire_handle.take() {
+            handle.abort();
+            tracing::debug!("aborted run-owned prefire task during ModelAgent drop");
+        }
     }
 }
 
@@ -3944,7 +3985,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: run-owned prefire must not detach when its agent ends"]
     async fn audit_completed_agent_does_not_leave_prefire_running() {
         struct HeldPrefire {
             started: tokio::sync::Notify,
@@ -4022,6 +4062,73 @@ mod tests {
             !continued_after_owner_end,
             "dropping the completed agent must not detach its speculative model work"
         );
+    }
+
+    #[tokio::test]
+    async fn finishing_agent_accounts_prefire_usage_before_side_usage_is_read() {
+        struct ImmediatePrefire;
+
+        #[async_trait]
+        impl ReactiveContextCompactor for ImmediatePrefire {
+            async fn compact(
+                &self,
+                _messages: &[Message],
+                _trigger: CompactionTrigger,
+            ) -> Result<Option<ReactiveCompaction>> {
+                Ok(None)
+            }
+
+            async fn prefire_pass1_response_items(
+                &self,
+                _instructions: Option<&str>,
+                _items: &[ResponseInputItem],
+            ) -> Result<Option<PrefireNote>> {
+                Ok(Some(PrefireNote {
+                    note: "prefire note".into(),
+                    prefix_end: 1,
+                    fingerprint: 0,
+                    usage: deepagent_models::Usage {
+                        prompt_tokens: 900,
+                        completion_tokens: 60,
+                        total_tokens: 960,
+                        ..Default::default()
+                    },
+                }))
+            }
+        }
+
+        let mut agent = ModelAgent::new(
+            client(response_text_completed("done")),
+            "model",
+            "system",
+            "current task",
+            vec![],
+        )
+        .with_reactive_compactor(Arc::new(ImmediatePrefire))
+        .with_proactive_compaction(1_000_000)
+        .with_prefire(1);
+        let _ = complete_items(agent.think(0, &[]).await.unwrap());
+        assert!(agent.prefire_handle.is_some());
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !agent
+                .prefire_handle
+                .as_ref()
+                .is_some_and(|handle| handle.is_finished())
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("immediate prefire should finish before finalization");
+
+        agent.finish_background_tasks().await;
+
+        let side = agent
+            .side_usage()
+            .expect("completed prefire usage must reach the side ledger");
+        assert_eq!(side.billed_prompt_tokens, 900);
+        assert_eq!(side.completion_tokens, 60);
+        assert!(agent.prefire_handle.is_none());
     }
 
     #[tokio::test]

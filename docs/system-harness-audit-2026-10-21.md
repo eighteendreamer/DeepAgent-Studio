@@ -812,7 +812,14 @@ Grok 可以让部分预取跨 turn 保留，因为它的 handle/cache 属于 Ses
 - 主界面已经完成或停止后，推测摘要仍可能占用网络、模型配额和费用；本地账单无法归集晚到 usage。取消本地请求也不能保证供应商已产生的费用为零，修复不能作此承诺。
 - 运行反复进入提前区间后立即结束，会重复启动无消费者的摘要；本次未做真实供应商批量压力或费用测量。
 - 在既有取消树中给运行所属的摘要/预取派生子信号，终态收尾有界取消并回收；若要跨 turn 缓存，应由现有会话服务明确接管其身份、有效性和计费，不能丢弃 handle 后默许继续。
-- 已获得的 usage 必须在有主人的收尾路径归集；覆盖正常完成、用户取消、模型切换、摘要已完成但未收取、任务失败及会话重启。此缺陷探针默认忽略，生产行为尚未修改。
+- 已获得的 usage 必须在有主人的收尾路径归集；原始审计时此缺陷探针默认忽略，生产行为尚未修改。以下记录保留原始失败，并追加本轮修复后的验收范围。
+
+#### 修复与验收（2026-10-27）
+
+- 根因修复：`Agent` 新增默认的 `finish_background_tasks()` 收尾边界；`AgentKernel::start_prepared()` 在 `engine.run()` 返回后、checkpoint/finalizer 读取 side usage 前调用它。`ModelAgent` 在该边界取出并 `abort`/`await` prefire handle，将已经返回的 `PrefireNote` 或 `CompactionFailure` usage 记入 side ledger，并把尚未采用的 `prefire_cache` usage 一并归集。`Drop` 作为直接 Runtime 调用方的最后 ownership 边界，至少 abort 未收尾任务；没有把终态改写成失败，也没有新增 store、审批或取消机制。
+- 修复后原探针：`cargo test -p deepagent-runtime audit_completed_agent_does_not_leave_prefire_running --offline -- --nocapture` 退出 0，`1 passed / 0 failed / 301 filtered out`；输出 `main_done=true, continued_after_owner_end=false, side_usage_at_end=None`。同一测试已从 `#[ignore]` 转为默认回归。补充 `finishing_agent_accounts_prefire_usage_before_side_usage_is_read` 退出 0，断言 prefire 的 900 prompt / 60 completion tokens 在读取 side usage 前进入账本；新增 Kernel 回归 `kernel_finishes_agent_background_tasks_before_terminal_return` 也退出 0。
+- 交叉验证：`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（`289 passed / 0 failed / 13 ignored`）；`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（`1140 passed / 0 failed / 68 ignored`）；`cargo check -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。严格 runtime clippy 仍被既有 `model_agent.rs:225 clone_on_copy` 阻断，本轮未顺手修改该基线。
+- 残余限制：只验证本机离线 mock compactor、Runtime/AppCore 生产调用链；未执行真实 DeepSeek/供应商费用、桌面 UI、进程重启、跨平台或完整 workspace。`Drop` 的同步边界只能 abort，正式终态路径仍以异步 hook 的 abort+join 和 usage 归集为准；不承诺取消能抹掉供应商已产生的费用。
 
 ### H-11：以消息内容反查压缩边界，重复回答会让恢复重新带回已摘要的历史
 

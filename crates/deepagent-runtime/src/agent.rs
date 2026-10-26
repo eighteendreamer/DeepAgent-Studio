@@ -222,6 +222,12 @@ pub trait Agent: Send + Sync {
         self.think_cancelled(step, last, cancel).await
     }
 
+    /// Finish run-owned background work before the host reads terminal usage
+    /// or drops the agent. Implementations must make this bounded and must not
+    /// detach tasks whose results can consume provider quota or carry billing
+    /// usage. Non-model agents have no background work by default.
+    async fn finish_background_tasks(&mut self) {}
+
     /// Cumulative token usage observed so far this run. Defaults to none (for
     /// agents that don't track it); model-backed agents sum each call's usage.
     fn cumulative_usage(&self) -> Option<RunUsage> {

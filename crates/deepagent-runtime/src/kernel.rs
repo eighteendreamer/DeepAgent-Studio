@@ -564,6 +564,12 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         } else {
             engine.run(session, task, agent).await
         };
+        // Runtime-owned background work (for example ModelAgent prefire
+        // compaction) must be settled before finalization reads side usage and
+        // before the caller drops the agent. The Agent hook is deliberately
+        // separate from the run outcome: a terminal model result must not be
+        // rewritten merely because its speculative helper was cancelled.
+        agent.finish_background_tasks().await;
         if let Some(checkpoint) = self.config.checkpoint.as_ref() {
             if let Err(error) = checkpoint.commit() {
                 tracing::warn!(error = %error, "failed to persist run checkpoint");
@@ -703,6 +709,7 @@ mod tests {
     use crate::agent::{AgentDecision, Observation, RunUsage};
     use async_trait::async_trait;
     use deepagent_core::clock::FixedClock;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     struct HangingAgent;
 
@@ -1004,6 +1011,49 @@ mod tests {
             .as_str()
             .is_some_and(|hash| hash.starts_with("sha256:")));
         assert!(capability.data.get("tools").is_none());
+    }
+
+    struct FinishHookAgent {
+        finished: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl crate::agent::Agent for FinishHookAgent {
+        async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+            Ok(AgentDecision::Complete("done".into()))
+        }
+
+        async fn finish_background_tasks(&mut self) {
+            self.finished.store(true, Ordering::Release);
+        }
+    }
+
+    #[tokio::test]
+    async fn kernel_finishes_agent_background_tasks_before_terminal_return() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("finish-hook")).unwrap();
+        let task = session.create_task("finish").unwrap();
+        let registry = ToolRegistry::new();
+        let finished = Arc::new(AtomicBool::new(false));
+        let mut agent = FinishHookAgent {
+            finished: finished.clone(),
+        };
+        let kernel = AgentKernel::<FixedClock>::new(
+            db.clone(),
+            &registry,
+            Metrics::new(),
+            RuntimeConfig::default(),
+            "finish-hook-run",
+        );
+
+        let terminal = kernel
+            .start(RunRequest::new(&mut session, task, &mut agent))
+            .await
+            .unwrap();
+
+        assert_eq!(terminal.kind, TerminalKind::Succeeded);
+        assert!(finished.load(Ordering::Acquire));
     }
 
     #[test]
