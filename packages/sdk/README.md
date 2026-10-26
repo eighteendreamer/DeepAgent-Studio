@@ -33,3 +33,16 @@ server did not report configuration. Unknown persisted configuration versions
 are rejected, not silently treated as defaults. This additive file metadata
 does not require a SQLite migration; older binaries may ignore it, so do not
 use a downgrade to preserve a restricted session's execution contract.
+
+The stdio server has a bounded event queue. Overflow or output write/flush
+failure terminates the connection with an error instead of silently continuing
+after dropping notifications. It requests cancellation through the existing
+runtime for that connection's active/queued turns and waits up to 10 seconds;
+a cleanup timeout is an error, not proof that the turns reached a terminal.
+Never automatically resubmit a turn after a transport failure: its side effects
+may already have happened. Reconnect, then use `thread/read` to reconcile the
+durable run status and history (for example via `requestForTest`). Persist the
+returned session/run cursors, not the envelope's connection-local
+`eventSequence`. `event/ack` is only a monotonic, in-range connection receipt;
+it neither persists a cursor nor requests replay, and resets on reconnect.
+The SDK does not automatically reconcile interrupted streams or pending approvals.

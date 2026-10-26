@@ -6,6 +6,9 @@ mod admission_tests;
 #[path = "configuration_tests.rs"]
 mod configuration_tests;
 
+#[path = "backpressure_tests.rs"]
+mod backpressure_tests;
+
 use super::*;
 use deepagent_app_core::{ApprovalPolicy, MemorySecretStore, SettingsService};
 use deepagent_core::error::{CoreError, Result as CoreResult};
@@ -596,13 +599,17 @@ fn audit_stdio_slow_pipe_child_entrypoint() {
             turn_id: Some("critical-terminal".into()),
             message: "final terminal".into(),
         });
-        std::fs::write(marker, b"events queued").unwrap();
-        tokio::time::sleep(Duration::from_secs(1)).await;
+        let failure = tokio::time::timeout(Duration::from_secs(5), outbox.output.failed())
+            .await
+            .unwrap();
+        std::fs::write(marker, &failure).unwrap();
+        // Match the production main's transport-error exit; this also closes
+        // OS pipe handles even when Tokio stdout's blocking write is stalled.
+        std::process::exit(1);
     });
 }
 
 #[test]
-#[ignore = "audit H-01: a slow stdout consumer must not lose a turn terminal notification"]
 fn audit_stdio_slow_output_drops_terminal_on_real_pipe() {
     use std::io::Read;
     use std::process::{Command, Stdio};
@@ -632,7 +639,7 @@ fn audit_stdio_slow_output_drops_terminal_on_real_pipe() {
             "child did not queue its event burst"
         );
         assert!(
-            child.try_wait().unwrap().is_none(),
+            child.try_wait().unwrap().is_none() || marker.exists(),
             "child exited before queuing the event burst"
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -646,7 +653,15 @@ fn audit_stdio_slow_output_drops_terminal_on_real_pipe() {
         bytes
     });
     let status = child.wait().unwrap();
-    assert!(status.success(), "server child exited with {status}");
+    assert_eq!(
+        status.code(),
+        Some(1),
+        "slow connection must fail explicitly"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&marker).unwrap(),
+        "event outbox capacity exceeded"
+    );
     let bytes = reader.join().unwrap();
     let observed: Vec<Value> = String::from_utf8_lossy(&bytes)
         .lines()
@@ -668,7 +683,7 @@ fn audit_stdio_slow_output_drops_terminal_on_real_pipe() {
     );
     assert!(
         sequence_count < 1024 && !critical_terminal_seen,
-        "real stdout backpressure should drop the terminal notification after filling the outbox"
+        "faulted connection must stop; no false guarantee that its terminal was delivered"
     );
 }
 

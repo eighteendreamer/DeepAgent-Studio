@@ -185,6 +185,9 @@ pub struct ApprovalRespondRequest {
     pub scope: Option<String>,
 }
 
+/// Advisory receipt bounded by this connection's flushed notification high-water.
+/// Not a durable replay cursor; use ThreadReadRequest's session/run cursors after
+/// reconnecting. Sequence ordering under concurrent producers is separate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventAckRequest {
     #[serde(rename = "eventSequence")]

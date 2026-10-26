@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use deepagent_core::execution_config::SessionExecutionConfig;
@@ -22,8 +22,17 @@ use deepagent_persistence::run_control::RunControlStore;
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use deepagent_session::Session;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-use tokio::sync::mpsc;
+use futures::{stream::FuturesUnordered, StreamExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
+
+#[path = "app_server/event_outbox.rs"]
+mod event_outbox;
+use event_outbox::{EventOutbox, OutputState};
+#[path = "app_server/connection.rs"]
+mod connection;
+#[cfg(test)]
+use connection::complete_turn_dispatch;
+use connection::run_stdio_with_io;
 
 use crate::args::RunOptions;
 
@@ -37,70 +46,6 @@ const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INTERNAL: i32 = -32603;
 
 type EventEmitter = Arc<dyn Fn(HarnessEvent) + Send + Sync>;
-
-struct QueuedEvent {
-    sequence: u64,
-    event: HarnessEvent,
-}
-
-/// One bounded writer queue per stdio connection. Event sequence assignment
-/// occurs before enqueue; a full queue is an explicit backpressure/drop
-/// failure rather than spawning unordered writers for every event.
-struct EventOutbox {
-    tx: mpsc::Sender<QueuedEvent>,
-    next_sequence: AtomicU64,
-}
-
-impl EventOutbox {
-    fn new(stdout: Arc<tokio::sync::Mutex<tokio::io::Stdout>>) -> Arc<Self> {
-        let (tx, mut rx) = mpsc::channel::<QueuedEvent>(256);
-        tokio::spawn(async move {
-            while let Some(queued) = rx.recv().await {
-                let notification = RpcNotification {
-                    jsonrpc: "2.0".into(),
-                    method: NOTIFICATION_METHOD.into(),
-                    event_sequence: Some(queued.sequence),
-                    params: serde_json::to_value(queued.event).unwrap_or_else(|_| {
-                        serde_json::json!({
-                            "type": "error",
-                            "code": "serialize",
-                            "message": "failed to serialize harness event"
-                        })
-                    }),
-                };
-                let Ok(line) = serde_json::to_string(&notification) else {
-                    eprintln!("serialize app-server notification failed");
-                    continue;
-                };
-                let mut output = stdout.lock().await;
-                if let Err(error) = output.write_all(format!("{line}\n").as_bytes()).await {
-                    eprintln!("write app-server notification: {error}");
-                    continue;
-                }
-                let _ = output.flush().await;
-            }
-        });
-        Arc::new(Self {
-            tx,
-            next_sequence: AtomicU64::new(1),
-        })
-    }
-
-    fn emit(&self, event: HarnessEvent) {
-        let sequence = self.allocate_sequence();
-        self.enqueue(sequence, event);
-    }
-
-    fn allocate_sequence(&self) -> u64 {
-        self.next_sequence.fetch_add(1, Ordering::Relaxed)
-    }
-
-    fn enqueue(&self, sequence: u64, event: HarnessEvent) {
-        if let Err(error) = self.tx.try_send(QueuedEvent { sequence, event }) {
-            eprintln!("app-server event outbox full; dropped sequence {sequence}: {error}");
-        }
-    }
-}
 
 pub async fn run(transport: String) -> Result<(), String> {
     if transport != "stdio" {
@@ -166,6 +111,7 @@ pub struct ServerState {
     capabilities: SandboxCapabilities,
     initialized: bool,
     last_event_ack: u64,
+    output: Arc<OutputState>,
     threads: HashMap<String, ThreadState>,
     turns: HashMap<String, TurnState>,
 }
@@ -184,6 +130,7 @@ impl ServerState {
             capabilities,
             initialized: false,
             last_event_ack: 0,
+            output: Arc::new(OutputState::default()),
             threads: HashMap::new(),
             turns: HashMap::new(),
         }
@@ -371,6 +318,16 @@ impl ServerState {
         id: serde_json::Value,
         event_sequence: u64,
     ) -> (RpcResponse, Option<TurnLaunch>) {
+        if event_sequence > self.output.delivered_sequence.load(Ordering::Acquire) {
+            return (
+                RpcResponse::error(
+                    id,
+                    ERR_INVALID_PARAMS,
+                    "event acknowledgment exceeds this connection's flushed notifications",
+                ),
+                None,
+            );
+        }
         if event_sequence < self.last_event_ack {
             return (
                 RpcResponse::error(
@@ -1131,74 +1088,17 @@ pub async fn run_stdio(
     workspace: PathBuf,
     capabilities: SandboxCapabilities,
 ) -> Result<(), String> {
-    let state = Arc::new(Mutex::new(ServerState::new(chat, workspace, capabilities)));
-    let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
-    let outbox = EventOutbox::new(stdout.clone());
-    let emitter = {
-        let outbox = outbox.clone();
-        Arc::new(move |event: HarnessEvent| {
-            outbox.emit(event);
-        }) as EventEmitter
-    };
-
-    let stdin = tokio::io::stdin();
-    let mut lines = tokio::io::BufReader::new(stdin).lines();
-    while let Some(line) = lines
-        .next_line()
-        .await
-        .map_err(|error| format!("read app-server stdin: {error}"))?
-    {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let request = match serde_json::from_str::<RpcRequest>(&line) {
-            Ok(request) => request,
-            Err(error) => {
-                write_response(
-                    &stdout,
-                    &RpcResponse::error(serde_json::Value::Null, -32700, error.to_string()),
-                )
-                .await?;
-                continue;
-            }
-        };
-        let (response, launch) = {
-            let mut guard = state
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            guard.dispatch(request, Some(&emitter))
-        };
-        let written = write_response(&stdout, &response).await;
-        if let Some(launch) = launch {
-            complete_turn_dispatch(state.clone(), emitter.clone(), launch, written).await?;
-        } else {
-            written?;
-        }
-    }
-    Ok(())
+    run_stdio_with_io(
+        chat,
+        workspace,
+        capabilities,
+        tokio::io::stdin(),
+        tokio::io::stdout(),
+    )
+    .await
 }
 
-async fn complete_turn_dispatch(
-    state: Arc<Mutex<ServerState>>,
-    emitter: EventEmitter,
-    launch: TurnLaunch,
-    written: Result<(), String>,
-) -> Result<(), String> {
-    // Admission already committed. If its ACK cannot be written, cancel before
-    // preparation and let the same executor finalize it before returning the
-    // transport error to the host.
-    let cancellation = written
-        .is_err()
-        .then(|| launch.chat.request_cancel(&launch.turn_id));
-    let worker = spawn_turn(state, emitter, launch);
-    if let Some(cancellation) = cancellation {
-        worker
-            .await
-            .map_err(|error| format!("finalize undelivered turn ACK: {error}"))?;
-        cancellation.map_err(|error| error.to_string())?;
-    }
-    written
-}
+// One connection implementation for production stdio and controlled pipe tests.
 
 fn spawn_turn(
     state: Arc<Mutex<ServerState>>,
@@ -1283,8 +1183,8 @@ fn spawn_turn(
     })
 }
 
-async fn write_response(
-    stdout: &Arc<tokio::sync::Mutex<tokio::io::Stdout>>,
+async fn write_response<W: AsyncWrite + Unpin>(
+    stdout: &Arc<tokio::sync::Mutex<W>>,
     response: &RpcResponse,
 ) -> Result<(), String> {
     let line = serde_json::to_string(response)
@@ -1312,13 +1212,8 @@ mod tests {
     // until the corresponding production defect is fixed. See the 2026-10-21
     // system Harness audit for reproduction commands and evidence boundaries.
     #[test]
-    #[ignore = "audit reproducer: a stalled consumer must not lose terminal notification"]
     fn audit_stalled_outbox_preserves_terminal_notification() {
-        let (tx, mut rx) = mpsc::channel(256);
-        let outbox = EventOutbox {
-            tx,
-            next_sequence: AtomicU64::new(1),
-        };
+        let (outbox, mut rx) = EventOutbox::channel(256);
         for step in 0..256 {
             outbox.emit(HarnessEvent::TurnStarted {
                 thread_id: Some("audit-thread".into()),
@@ -1343,25 +1238,24 @@ mod tests {
             turn_id: "next-turn".into(),
             step: None,
         });
-        let next_sequence = rx.try_recv().unwrap().sequence;
+        // Explicit connection failure is the alternative to lossless delivery;
+        // the poisoned connection must not resume accepting new notifications.
+        assert!(rx.try_recv().is_err());
+        let failed = outbox.output.failure_reason();
         eprintln!(
-            "audit outbox: queued={}, terminal_received={terminal_received}, next_sequence={next_sequence}",
+            "audit outbox: queued={}, terminal_received={terminal_received}, connection_failure={failed:?}",
             received.len()
         );
         assert!(
-            terminal_received,
-            "a full connection queue silently lost the terminal event; next sequence is {next_sequence}"
+            terminal_received || failed.as_deref() == Some("event outbox capacity exceeded"),
+            "terminal must be delivered or the connection must fail explicitly"
         );
     }
 
     #[test]
     #[ignore = "audit H-91: event sequence must match concurrent enqueue order"]
     fn audit_concurrent_event_producers_keep_sequences_in_wire_order() {
-        let (tx, mut rx) = mpsc::channel(2);
-        let outbox = EventOutbox {
-            tx,
-            next_sequence: AtomicU64::new(1),
-        };
+        let (outbox, mut rx) = EventOutbox::channel(2);
 
         // Model a producer being descheduled after reserving its sequence but
         // before enqueueing; another producer can complete both steps first.
@@ -1639,6 +1533,7 @@ mod tests {
     fn event_ack_is_monotonic() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);
+        state.output.delivered_sequence.store(4, Ordering::Release);
         let first = state.handle_request_for_test(rpc_request(
             2,
             "event/ack",
@@ -1655,7 +1550,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-01 follow-up: event/ack must reject sequences that were never emitted and bind to a replay cursor"]
     fn audit_event_ack_rejects_unemitted_sequence() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);

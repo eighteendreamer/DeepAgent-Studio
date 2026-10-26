@@ -138,6 +138,13 @@ async fn introspection_methods_round_trip_without_a_model() {
     // Acknowledge the events observed so far; server tracks a monotonic cursor.
     let ack = client.event_ack(1).await.expect("event/ack");
     assert!(ack.is_success(), "event/ack succeeds");
+    assert!(
+        matches!(
+            client.event_ack(u64::MAX).await,
+            Err(SdkError::Rpc { code: -32602, .. })
+        ),
+        "unemitted connection sequence must be rejected through the real SDK"
+    );
 }
 
 #[tokio::test]
