@@ -52,13 +52,13 @@ E-H16-20261026-03（范围边界与未通过项目）：原有CLI ignored审批�
 
 ## H-17 本轮即时记录（2026-10-26）
 
-**当前状态：已修复并验收（前端源代码、受控事件和 TypeScript 构建范围）。** 原始真实桌面失败保留；修复提交 hash 待独立提交后回填。真实 WebView 故障注入因环境缺少隔离桌面变量未重跑，不扩张验收范围。
+**当前状态：已修复并验收（前端源代码、受控事件和 TypeScript 构建范围）。** 原始真实桌面失败保留；修复提交`5d13cb15eb616aef8275ab833d82a94f798d9579`。真实 WebView 故障注入因环境缺少隔离桌面变量未重跑，不扩张验收范围。
 
 E-H17-20261026-01（原始失败证据）：原报告记录的隔离Tauri WebView探针中，取消后收到`run_cancelled`及failed `session://completed`，DOM没有保存错误，数据库保持`state=finalizing, terminal_kind=NULL, finished_at=NULL`；这是修复前真实失败，不改写为当前结果。
 
 E-H17-20261026-02（生产链修复与回归）：`runChat()`新增`RunCompletionError`保留完成`status/run_id/error`；App在settled后只对“未收到`run_failed`且完成状态为failed”的错误追加一次“运行已停止，但结果未保存”诊断，保留取消工具卡和执行终态，正常cancelled不误报。`pnpm test:process-collapse`退出0（13 passed），新增用例抽取生产`App.tsx`真实终态路由并验证错误可映射为assistant block且重复只显示一次；`pnpm test:run-completion-error`退出0（2 passed），使用生产`api.ts::runChat`与受控Tauri transport验证failed/cancelled状态区分；`pnpm exec tsc --noEmit`退出0；完整`pnpm build`退出0（仅既有Vite大chunk/externalize warning）。
 
-E-H17-20261026-03（边界与未执行项目）：当前环境没有`AUDIT_DATA_ROOT`、`AUDIT_PLAYWRIGHT_MODULE`、`AUDIT_CDP_URL`，因此未启动真实桌面、真实测试模型或SQLite故障trigger，不引入真实凭据/付费请求。受控测试覆盖同一生产源码与事件/完成链，但未重新取得WebView截图，也未声称重启/跨会话全部时序通过。H-17仅在本记录范围验收，下一项按原报告优先级复核。
+E-H17-20261026-03（边界与未执行项目）：当前环境没有`AUDIT_DATA_ROOT`、`AUDIT_PLAYWRIGHT_MODULE`、`AUDIT_CDP_URL`，因此未启动真实桌面、真实测试模型或SQLite故障trigger，不引入真实凭据/付费请求。受控测试覆盖同一生产源码与事件/完成链，但未重新取得WebView截图，也未声称重启/跨会话全部时序通过。H-17仅在本记录范围验收，修复提交`5d13cb15eb616aef8275ab833d82a94f798d9579`，下一项按原报告优先级复核。
 
 ## H-01 本轮即时记录（2026-10-26）
 
@@ -813,7 +813,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-14：无效压缩保留原上下文时，已完成摘要请求的 usage 一同被丢弃](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-15：审批等待被取消后未清理，运行终态后仍接受迟到回答并授予跨调用权限](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H15-01～09保留原失败及逐次验证 | waiter所有权/回答互斥；原终态事务取消Pending审批，拒绝终态run/action与取消信号后授权 | AppCore专项25、正式取消/健康2、persistence75+9、CLI构建、隔离Rust SDK6、正式TS SDK1通过；全仓和严格AppCore lint保留既有基线失败，不阻断本项范围验收 | `76483eb5` | H-16身份冲突独立；DB重开非OS进程重启；真实供应商/真实命令未执行；总体200–400有效小时未校准初估 |
 | [H-16：审批直接以 provider call_id 为全库身份，不同运行之间产生幂等冲突](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H16-01～03保留原失败、生产修复、回归及边界；不与H-15合并 | 以长度分隔的`approval:v1:{run_id.len()}:{run_id}:{call_id.len()}:{call_id}`作为审批主身份，原provider call_id留在关联字段；兼容旧provider-id记录回答 | 原探针默认通过；runtime全组285/15 ignored、persistence76+9、AppCore approval2、CLI112/23 ignored、fmt/diff通过；严格clippy被既有model_agent clone_on_copy阻断；CLI重复事件ignored审计仍失败，归H-84边界 | `da73a472a843638d524067e93d6d59f145263114` | 限所列Windows本机、离线SQLite及协议消费者；未验真实供应商、OS重启、全workspace全绿；下一项按原报告优先级复核 |
-| [H-17：桌面收到取消后的保存失败，却因对话已 settled 而静默丢弃错误](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H17-01～03保留真实WebView原失败、生产链回归与环境边界 | `runChat`保留完成失败状态；App在settled后一次性追加保存诊断，不伪造durable终态，正常cancelled不误报 | `pnpm test:process-collapse`13 passed、`test:run-completion-error`2 passed、tsc及完整pnpm build通过；真实WebView/SQLite trigger未重跑，环境变量缺失 | 待独立提交后回填 | 验收限前端源代码、受控事件和构建；真实桌面故障注入、重启/跨会话时序仍待增强验收；下一项按原报告优先级复核 |
+| [H-17：桌面收到取消后的保存失败，却因对话已 settled 而静默丢弃错误](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H17-01～03保留真实WebView原失败、生产链回归与环境边界 | `runChat`保留完成失败状态；App在settled后一次性追加保存诊断，不伪造durable终态，正常cancelled不误报 | `pnpm test:process-collapse`13 passed、`test:run-completion-error`2 passed、tsc及完整pnpm build通过；真实WebView/SQLite trigger未重跑，环境变量缺失 | `5d13cb15eb616aef8275ab833d82a94f798d9579` | 验收限前端源代码、受控事件和构建；真实桌面故障注入、重启/跨会话时序仍待增强验收；下一项按原报告优先级复核 |
 | [H-18：输出上限重试后仍截断时，未完成工具调用被补参数并提交](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-19：子 Agent 的工具限制只过滤 schema，实际执行仍可调用被排除的工具](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-20：DAG 成功节点的工作树被强制删除，文件未交付给主目录或下游](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针在10229dd8复现；保留原始失败 | 保留节点树；独立index快照与依赖合并；既有子记录/事件定位、恢复/清理 | subagents 25 passed/0 ignored；AppCore lib1106 passed/80 ignored；kernel107 passed/90 ignored；fmt通过；workspace及AppCore严格lint既有阻断详见明细 | ae193ea8 | 仅本机行为；H-22独立；Git属性/ignored/submodule/磁盘保留边界见明细；剩余274项计入总区间 |
