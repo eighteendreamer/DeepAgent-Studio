@@ -1740,7 +1740,7 @@ E-H37-20261027-05（独立提交与真实 hash 回填）：本项生产修复、
 
 ### H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功
 
-**当前状态：修复中（2026-10-27）。**
+**当前状态：已修复并验收（2026-10-27，限本机离线工作流/Runtime/AppCore范围）。**
 
 **级别：高（P1）；范围：通过 ChatService / Tauri start_workflow 执行的 tool 节点。** 两个可独立核对的边界共同造成假成功：生产组装没有注册可调用工具；执行器报告失败后，WorkflowAgent 仍将其当作正常节点输出。不是模型自行决定忽略错误，也没有显式配置容错策略。
 
@@ -1757,6 +1757,8 @@ E-H38-20261027-01（本轮原始探针复核）：在生产代码未修改的 HE
 E-H38-20261027-02（根因修复与默认回归）：工作流装配改为复用 `RunEnvironment`、`base_registry_request` 与 `build_base_tool_registry`，因此工具使用与普通运行共享文件/命令/权限边界；`WorkflowToolExecutor` 保留底层 `ToolOutput.ok`，`WorkflowAgent` 对未知工具、缺少执行器、缺参及 `success=false` 统一返回节点错误，默认不继续下游。新增正常 `read_file`、工具输出失败和无执行器单测。执行 `cargo test -p deepagent-runtime --lib workflow:: --offline -j 1 -- --nocapture --test-threads=1`：67 passed/0 failed/245 filtered；执行 `cargo test -p deepagent-app-core --lib tool_runtime::session_search_tests --offline -j 1 -- --nocapture --test-threads=1`：2 passed/0 failed/1220 filtered。未启动真实模型、网络、媒体供应商或用户文件。
 
 E-H38-20261027-03（正式工作流回归）：执行 `cargo test -p deepagent-app-core --test workflow_audit --offline -j 1 -- --quiet --test-threads=1`：8 passed/0 failed/40 ignored；其中原 H-38 探针现为默认测试并确认 `tool_status=Failed`、`end_completed=false`、`run_terminal=failed`，正常 `read_file` 对照通过，缺失文件的 `ToolOutput` 失败不再继续到 `end`。`cargo fmt --all -- --check` 与 `git diff --check` 通过。严格 no-deps clippy 仍被既有 `Usage.clone()`、`plugin_preparation` 类型复杂度及原有 `base_registry_request` 参数数量告警阻断，未见本项新增告警；完整 workspace 尚未执行。
+
+E-H38-20261027-04（独立提交与范围）：代码、回归测试及当时两份文档已在提交 `85dadf3bc2bff6a778077bb422c2dd14e32ea0b8`（`【fix】修复H-38工作流工具失败传播`）中创建；随后仅回填本台账与本报告的真实 hash，不 amend、不推送、不创建 PR。H-38 关闭范围为 Windows 本机离线 workflow graph→WorkflowAgent→AgentKernel→RunStore 及共享基础工具注册；未验 Tauri UI、其他 OS、真实 DeepSeek/供应商、跨进程重开、完整 workspace，H-39 条件分支仍独立待处理。
 
 
 

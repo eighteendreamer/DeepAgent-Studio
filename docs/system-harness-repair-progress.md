@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计四十项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计四十一项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 40 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 41 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有已进入修复但尚未验收的条目 |
-| 待修复 | 239 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 238 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **239（239待修复、0修复中）**；不提供完成率。四十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **238（238待修复、0修复中）**；不提供完成率。四十一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -252,13 +252,15 @@ E-H37-20261027-05（独立提交与真实 hash 回填）：本项生产修复、
 
 ## H-38 本轮即时记录（2026-10-27）
 
-**当前状态：修复中。** 本轮先复核正式工作流工具注册为空与失败传播缺口；只处理工具节点结果/运行终态一致性，不合并 H-39 条件分支。
+**当前状态：已修复并验收（2026-10-27，限本机离线工作流/Runtime/AppCore范围）。** 本轮只处理工具节点结果/运行终态一致性，不合并 H-39 条件分支。
 
 E-H38-20261027-01（本轮原始探针复核）：在生产代码未修改的 HEAD `d5afb112` 执行 `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unknown_tool_propagates_node_and_run_failure --offline -j 1 -- --ignored --nocapture --test-threads=1`，退出1，0 passed/1 failed/0 ignored（测试体0.12秒，编译56.68秒）。真实输出为 `api_ok=true tool_status=Completed tool_outputs=Some(Object {error: "invalid input: unknown tool: read_file", output: Null, success: false}) node_error=None end_completed=true run_terminal=Some("succeeded")`；失败断言为执行错误不能成为 Completed 节点。正式 workflow graph、ChatService、WorkflowAgent、AgentKernel、事件泵和RunStore均参与；未启动模型、命令、网络、媒体供应商或真实用户文件。本轮只复核 H-38 原始失败，不合并 H-39。
 
 E-H38-20261027-02（根因修复与默认回归）：工作流装配改为复用 `RunEnvironment`、`base_registry_request` 与 `build_base_tool_registry`，工具使用与普通运行共享文件/命令/权限边界；`WorkflowToolExecutor` 保留底层 `ToolOutput.ok`，`WorkflowAgent` 对未知工具、缺少执行器、缺参及 `success=false` 统一返回节点错误，默认不继续下游。新增正常 `read_file`、工具输出失败和无执行器单测。`cargo test -p deepagent-runtime --lib workflow:: --offline -j 1 -- --nocapture --test-threads=1`：67 passed/0 failed/245 filtered；`cargo test -p deepagent-app-core --lib tool_runtime::session_search_tests --offline -j 1 -- --nocapture --test-threads=1`：2 passed/0 failed/1220 filtered。未启动真实模型、网络、媒体供应商或用户文件。
 
 E-H38-20261027-03（正式工作流回归）：`cargo test -p deepagent-app-core --test workflow_audit --offline -j 1 -- --quiet --test-threads=1`：8 passed/0 failed/40 ignored；原 H-38 探针现为默认测试并确认 `tool_status=Failed`、`end_completed=false`、`run_terminal=failed`，正常 `read_file` 对照通过，缺失文件的 `ToolOutput` 失败不再继续到 `end`。`cargo fmt --all -- --check` 与 `git diff --check` 通过。严格 no-deps clippy 仍被既有 `Usage.clone()`、`plugin_preparation` 类型复杂度及原有 `base_registry_request` 参数数量告警阻断，未见本项新增告警；完整 workspace 尚未执行。
+
+E-H38-20261027-04（独立提交与范围）：代码、回归测试及当时两份文档已在提交 `85dadf3bc2bff6a778077bb422c2dd14e32ea0b8`（`【fix】修复H-38工作流工具失败传播`）中创建；本次仅回填真实 hash，不 amend、不推送、不创建 PR。H-38 关闭范围为 Windows 本机离线 workflow graph→WorkflowAgent→AgentKernel→RunStore 及共享基础工具注册；未验 Tauri UI、其他 OS、真实 DeepSeek/供应商、跨进程重开、完整 workspace，H-39 条件分支仍独立待处理。
 
 ## H-15 本轮即时记录（2026-10-26）
 
