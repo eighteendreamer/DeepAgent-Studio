@@ -2957,42 +2957,33 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    #[ignore = "audit H-28: untrusted project config escalates the user's read-only permissions"]
-    async fn audit_untrusted_project_cannot_escalate_read_only_file_access() {
-        struct WriteOnceTransport {
-            arguments: String,
-            calls: std::sync::atomic::AtomicUsize,
-        }
+    struct PermissionWriteTransport {
+        arguments: String,
+        calls: std::sync::atomic::AtomicUsize,
+    }
 
-        #[async_trait::async_trait]
-        impl HttpTransport for WriteOnceTransport {
-            async fn stream(
-                &self,
-                _request: TransportRequest,
-                sink: &mut dyn EventSink,
-            ) -> Result<()> {
-                if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
-                    let item = serde_json::json!({
-                        "type": "function_call", "id": "audit-write-item",
-                        "call_id": "audit-write-call", "name": "write_file",
-                        "arguments": self.arguments
-                    });
-                    for event in ["response.output_item.added", "response.output_item.done"] {
-                        sink.on_event(
-                            &serde_json::json!({"type": event, "item": item}).to_string(),
-                        )?;
-                    }
-                } else {
-                    sink.on_event(r#"{"type":"response.output_text.delta","delta":"finished"}"#)?;
+    #[async_trait::async_trait]
+    impl HttpTransport for PermissionWriteTransport {
+        async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+                let item = serde_json::json!({
+                    "type": "function_call", "id": "audit-write-item",
+                    "call_id": "audit-write-call", "name": "write_file",
+                    "arguments": self.arguments
+                });
+                for event in ["response.output_item.added", "response.output_item.done"] {
+                    sink.on_event(&serde_json::json!({"type": event, "item": item}).to_string())?;
                 }
-                sink.on_event(
-                    r#"{"type":"response.completed","response":{"status":"completed"}}"#,
-                )?;
-                Ok(())
+            } else {
+                sink.on_event(r#"{"type":"response.output_text.delta","delta":"finished"}"#)?;
             }
+            sink.on_event(r#"{"type":"response.completed","response":{"status":"completed"}}"#)?;
+            Ok(())
         }
+    }
 
+    #[tokio::test]
+    async fn audit_untrusted_project_cannot_escalate_read_only_file_access() {
         let mut escalated = false;
         for project_override in [false, true] {
             let (db, settings, dir) = seeded().await;
@@ -3014,7 +3005,7 @@ mod tests {
                 .unwrap();
             }
             let target = root.join("audit-output.txt");
-            let transport = Arc::new(WriteOnceTransport {
+            let transport = Arc::new(PermissionWriteTransport {
                 arguments: serde_json::json!({"path": target, "content": "audit unapproved write"})
                     .to_string(),
                 calls: std::sync::atomic::AtomicUsize::new(0),
@@ -3066,6 +3057,204 @@ mod tests {
             !escalated,
             "untrusted project config granted an unapproved write despite user read-only settings"
         );
+    }
+
+    #[tokio::test]
+    async fn permission_project_sources_and_explicit_run_grants_gate_actual_writes() {
+        for source in [
+            ".deepagent/settings.json",
+            ".deepagent/settings.local.json",
+            ".claude/settings.json",
+            ".claude/settings.local.json",
+        ] {
+            let (db, settings, dir) = seeded().await;
+            settings.set_sandbox_mode(SandboxMode::ReadOnly).unwrap();
+            settings
+                .set_approval_policy(ApprovalPolicy::AlwaysAsk)
+                .unwrap();
+            let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
+            projects.add_project(dir.path().to_str().unwrap()).unwrap();
+            // Hook authorization alone is not a file-permission grant.
+            projects
+                .set_hooks_trusted(dir.path().to_str().unwrap(), true)
+                .unwrap();
+            let trust = crate::trust_service::TrustService::new(db.clone());
+            let config = dir.path().join(source);
+            std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+            std::fs::write(config, r#"{"permission_preset":"full_access"}"#).unwrap();
+            let target = dir.path().join("permission-matrix.txt");
+            let transport = Arc::new(PermissionWriteTransport {
+                arguments: serde_json::json!({"path":target,"content":"permission fixture"})
+                    .to_string(),
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            });
+            let chat = ChatService::new(db, settings.clone(), transport.clone(), dir.path())
+                .with_projects(projects);
+            for (stage, trusted, explicit, expected_write) in [
+                ("untrusted", false, false, false),
+                ("trusted-with-ceiling", true, false, false),
+                ("explicit-run-grant", true, true, true),
+                ("revoked", false, false, false),
+            ] {
+                trust.set_and_status(dir.path(), trusted).unwrap();
+                transport
+                    .calls
+                    .store(0, std::sync::atomic::Ordering::SeqCst);
+                if target.exists() {
+                    std::fs::remove_file(&target).unwrap();
+                }
+                let approvals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                let observed = approvals.clone();
+                let overrides = HarnessRunOverrides {
+                    permission_profile: explicit.then(|| "full_access".into()),
+                    ..Default::default()
+                };
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(8),
+                    chat.run_in_session_with_overrides(
+                        "permission fixture",
+                        None,
+                        None,
+                        None,
+                        vec![],
+                        None,
+                        false,
+                        None,
+                        overrides,
+                        |_| {},
+                        move |_| {
+                            observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        },
+                    ),
+                )
+                .await
+                .expect("permission fixture timed out")
+                .unwrap();
+                let prompts = approvals.load(std::sync::atomic::Ordering::SeqCst);
+                eprintln!(
+                    "source={source}, stage={stage}, wrote={}, approvals={prompts}",
+                    target.exists()
+                );
+                assert_eq!(target.exists(), expected_write);
+                assert_eq!(prompts, 0);
+                if expected_write {
+                    assert_eq!(
+                        std::fs::read_to_string(&target).unwrap(),
+                        "permission fixture"
+                    );
+                }
+                assert_eq!(settings.sandbox_mode().unwrap(), SandboxMode::ReadOnly);
+                assert_eq!(
+                    settings.approval_policy().unwrap(),
+                    ApprovalPolicy::AlwaysAsk
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn permission_project_trust_changes_preferences_and_preserves_actual_approval() {
+        let (db, settings, dir) = seeded().await;
+        settings
+            .set_sandbox_mode(SandboxMode::WorkspaceWrite)
+            .unwrap();
+        settings
+            .set_approval_policy(ApprovalPolicy::AlwaysAsk)
+            .unwrap();
+        // Workspace writes normally need no approval. Explicit user Ask is
+        // needed to exercise the policy gate without changing that contract.
+        settings
+            .set_permission_rules(deepagent_hooks::PermissionRules::new(
+                [],
+                ["Write".to_string()],
+                [],
+            ))
+            .unwrap();
+        let trust = crate::trust_service::TrustService::new(db.clone());
+        std::fs::create_dir_all(dir.path().join(".deepagent")).unwrap();
+        std::fs::write(
+            dir.path().join(".deepagent/settings.json"),
+            r#"{"permission_profile":"read_only"}"#,
+        )
+        .unwrap();
+        let target = dir.path().join("approval-fixture.txt");
+        let transport = Arc::new(PermissionWriteTransport {
+            arguments: serde_json::json!({"path":target,"content":"approved fixture"}).to_string(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let chat = Arc::new(ChatService::new(
+            db,
+            settings.clone(),
+            transport.clone(),
+            dir.path(),
+        ));
+        for (stage, trusted, approve, preference, expected_prompts, expected_write) in [
+            ("untrusted-deny", false, false, "read_only", 1, false),
+            ("trusted-restrict", true, true, "read_only", 0, false),
+            ("revoked-approve", false, true, "read_only", 1, true),
+            (
+                "untrusted-expand-deny",
+                false,
+                false,
+                "full_access",
+                1,
+                false,
+            ),
+            ("trusted-expand-deny", true, false, "full_access", 1, false),
+        ] {
+            std::fs::write(
+                dir.path().join(".deepagent/settings.json"),
+                serde_json::json!({"permission_profile":preference}).to_string(),
+            )
+            .unwrap();
+            if target.exists() {
+                std::fs::remove_file(&target).unwrap();
+            }
+            trust.set_and_status(dir.path(), trusted).unwrap();
+            transport
+                .calls
+                .store(0, std::sync::atomic::Ordering::SeqCst);
+            let approvals = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let observed = approvals.clone();
+            let responder = chat.clone();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(8),
+                chat.run(
+                    "approval fixture",
+                    |_| {},
+                    move |request| {
+                        observed.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        assert!(responder
+                            .resolve_approval(&request.call_id, approve, "permission_fixture")
+                            .unwrap());
+                    },
+                ),
+            )
+            .await
+            .expect("approval fixture timed out")
+            .unwrap();
+            let prompts = approvals.load(std::sync::atomic::Ordering::SeqCst);
+            eprintln!(
+                "stage={stage}, wrote={}, approvals={prompts}",
+                target.exists()
+            );
+            assert_eq!(prompts, expected_prompts);
+            assert_eq!(target.exists(), expected_write);
+            if expected_write {
+                assert_eq!(
+                    std::fs::read_to_string(&target).unwrap(),
+                    "approved fixture"
+                );
+            }
+            assert_eq!(
+                settings.sandbox_mode().unwrap(),
+                SandboxMode::WorkspaceWrite
+            );
+            assert_eq!(
+                settings.approval_policy().unwrap(),
+                ApprovalPolicy::AlwaysAsk
+            );
+        }
     }
 
     #[tokio::test]

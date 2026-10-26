@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::sync::Arc;
 
 use deepagent_core::error::Result;
@@ -9,7 +8,7 @@ use crate::runtime_event_log::append_runtime_log;
 use crate::sandbox_backend::SandboxBackendKind;
 use crate::sandboxie_service::SandboxieExecutor;
 use crate::settings::{
-    ApprovalPolicy, EffectivePermissionProfile, LocalExecutionMode, SandboxMode, SettingsService,
+    ApprovalPolicy, EffectivePermissionProfile, LocalExecutionMode, SandboxMode,
 };
 
 #[derive(Debug, Clone)]
@@ -25,15 +24,14 @@ pub(crate) struct RunEnvironment {
 
 impl RunEnvironment {
     pub(crate) fn resolve(
-        root: &Path,
-        settings: &SettingsService,
+        config: RunConfigOverlay,
+        base_profile: EffectivePermissionProfile,
+        project_trusted: bool,
         runtime_logs: &Option<Arc<RuntimeLogStore>>,
         sandboxie_executor: Option<&Arc<SandboxieExecutor>>,
         default_sandbox_backend: Option<SandboxBackendKind>,
         run_id: &str,
-        run_overrides: serde_json::Value,
     ) -> Result<Self> {
-        let config = RunConfigOverlay::load(root, run_overrides);
         // Surface the resolved managed-policy directory so a missing managed
         // layer is diagnosable at a glance (manual acceptance M-09: the
         // DEEPAGENT_MANAGED_SETTINGS_DIR env var did not propagate to the app
@@ -53,6 +51,7 @@ impl RunEnvironment {
                 .with_message("run configuration overlay loaded")
                 .with_data(serde_json::json!({
                     "sources": config.sources.clone(),
+                    "project_permissions_trusted": project_trusted,
                     "errors": config.errors.clone(),
                     "managed_dir": managed_dir
                         .as_ref()
@@ -70,7 +69,7 @@ impl RunEnvironment {
                 })),
         );
 
-        let profile = config.apply_permission_profile(settings.effective_permission_profile()?)?;
+        let profile = config.apply_permission_profile(base_profile, project_trusted)?;
         let policy = profile.approval_policy;
         let sandbox_mode = profile.sandbox_mode;
         let local_execution_mode = profile.local_execution_mode;
@@ -134,6 +133,8 @@ pub(crate) fn fs_access_for(mode: SandboxMode) -> deepagent_builtins::FsAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepagent_builtins::{WorkspaceRoot, WriteFileTool};
+    use deepagent_tools::Tool;
 
     #[test]
     fn fs_access_tracks_sandbox_mode() {
@@ -149,5 +150,79 @@ mod tests {
             fs_access_for(SandboxMode::FullAccess),
             deepagent_builtins::FsAccess::Full
         );
+    }
+
+    #[tokio::test]
+    async fn permission_managed_files_constrain_explicit_grants_at_actual_file_tool() {
+        let root = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let admin = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join(".deepagent")).unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::create_dir_all(admin.path().join("managed-settings.d")).unwrap();
+        let full = r#"{"permission_preset":"full_access","sandbox_mode":"full_access","approval_policy":"full_access"}"#;
+        std::fs::write(root.path().join(".deepagent/settings.json"), full).unwrap();
+        std::fs::write(home.path().join(".claude/settings.json"), full).unwrap();
+        std::fs::write(
+            admin.path().join("managed-settings.json"),
+            r#"{"sandboxMode":"read_only"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            admin.path().join("managed-settings.d/10-approval.json"),
+            r#"{"approvalPolicy":"always_ask"}"#,
+        )
+        .unwrap();
+        for managed in [false, true] {
+            let loaded = deepagent_context::DualConfigLoader::new(root.path())
+                .with_user_home(Some(home.path().to_owned()))
+                .with_managed_dir(managed.then(|| admin.path().to_owned()))
+                .with_run_overrides(serde_json::json!({"permission_profile":"full_access"}))
+                .load();
+            assert!(loaded.errors.is_empty());
+            assert_eq!(
+                loaded
+                    .layers
+                    .iter()
+                    .filter(|layer| layer.is_managed())
+                    .count(),
+                if managed { 3 } else { 1 }
+            ); // Includes the programmatic managed layer.
+            let config = RunConfigOverlay {
+                value: loaded.value,
+                sources: loaded.sources,
+                layers: loaded.layers,
+                errors: loaded.errors,
+            };
+            let environment = RunEnvironment::resolve(
+                config,
+                crate::settings::PermissionPreset::Default.to_effective_profile(),
+                false,
+                &None,
+                None,
+                None,
+                "permission-fixture",
+            )
+            .unwrap();
+            let target = root.path().join(format!("managed-{managed}.txt"));
+            let tool =
+                WriteFileTool::new(WorkspaceRoot::new(root.path()).with_access(environment.access));
+            let output = tool
+                .invoke(serde_json::json!({"path":target,"content":"managed fixture"}))
+                .await
+                .unwrap();
+            assert_eq!(output.ok, !managed);
+            assert_eq!(target.exists(), !managed);
+            if managed {
+                assert_eq!(environment.policy, ApprovalPolicy::AlwaysAsk);
+                assert_eq!(environment.sandbox_mode, SandboxMode::ReadOnly);
+                assert_eq!(
+                    environment.local_execution_mode,
+                    LocalExecutionMode::SandboxiePreferred
+                );
+            } else {
+                assert_eq!(std::fs::read_to_string(target).unwrap(), "managed fixture");
+            }
+        }
     }
 }

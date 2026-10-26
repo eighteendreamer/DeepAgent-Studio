@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十五项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十六项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 35 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 36 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前没有正在收敛的本轮独立项；下一项仍需按原报告逐项复核 |
-| 待修复 | 244 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 本轮H-28已完成所列范围验收；下一项仍需按原报告逐项复核 |
+| 待修复 | 243 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **244（244待修复）**；不提供完成率。三十五项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **243（243待修复）**；不提供完成率。三十六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -153,6 +153,28 @@ E-H27-20261027-06（全仓与 lint 实跑）：`cargo test --workspace --offline
 E-H27-20261027-07（最终范围与兼容性）：`cargo build -p deepagent-cli --offline -j 1` 退出 0；随后新建临时 DEEPAGENT_DATA_ROOT、移除进程继承的 DEEPAGENT_DB_PATH，执行 `cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 1 -- --nocapture --test-threads=1` 退出 0，6 passed/0 ignored，结束后恢复环境。此为当前正式 CLI 的隔离正向对照，不代表旧数据根失败已修复或原全仓全绿；未查看旧根。`cargo fmt --all -- --check`、`git diff --check` 退出 0。参考本地 Claude Code 的 shouldSkipHookDueToTrust 执行前门禁；本项目的来源分组及非交互也须显式项目 grant 属于本地设计，不照搬其 SDK 隐含信任。ConfigLayer 序列化字段、现有 register_into_with_host、协议/数据库 schema 均兼容；只新增同链路 wrapper 入口。无 registry 的 headless 项目 hook 现在拒绝，用户/管理员/已启用插件 hook 保留；等价 host 动作优先，不被 project 阴影。撤销只控制后续动作准入，不强杀已获准启动的动作，也不承诺 grant 检查与后续 syscall 原子回滚；初始未信任而未加载的 hook 在授权后下一 run 生效。子生命周期/迟到 registry 仅做克隆 registry 级测试，未执行完整子 Agent 模型运行、真实桌面 UI、其他 OS 或第三方 hook/供应商；无前端/Tauri 契约改动，未跑 pnpm build。本项10文件，不合并 H-28/H-237，不新增 store/审批中心。H-27 在此范围验收；累计35已验收、18历史跳过、7归并、2撤销、244待修、0修复中，整体 goal 仍 active，下一项准备复核 H-28。剩余200–400有效小时仍为未校准跨层初估，按剩余问题的复现/根因修复/验收规模估计，不机械扣减；编译、设备、依赖或环境等待另计。
 
 E-H27-20261027-08（独立提交与真实 hash 回填）：代码、测试和当时两份文档已在独立提交 `955ac0dad9c02b6962bb44e0d50c0f8f516db1e7`（`【fix】修复H-27项目hook来源信任边界`）中创建。台账已核对306行/306唯一编号/每行8列，除 H-27 外其余原状态行未改，两份 E-01～07 证据段落逐字一致。本次只回填真实 hash 并另做文档提交，不 amend、不推送、不创建 PR；原有未跟踪项未读取、修改或暂存。H-27 仅在上述范围验收，整体 goal 仍 active；下一项 H-28 尚未实施，剩余工时沿 E-07 的未校准区间，环境等待另计。
+
+## H-28 本轮即时记录（2026-10-27）
+
+**当前状态：已修复并验收（所列 Windows 本机、共享 RunAssembler/AppCore 与实际文件工具范围）。** 原始失败、专项与完整workspace结果、未验边界分别保留；独立提交hash待回填。
+
+E-H28-20261027-01（原始探针复核）：HEAD bee1fa7c、生产未改时执行 `cargo test -p deepagent-app-core --lib audit_untrusted_project_cannot_escalate_read_only_file_access --offline -j 1 -- --ignored --nocapture --test-threads=1`，退出 1，0 passed/1 failed，测试0.60秒。无项目覆盖为 wrote_file=false/approval_count=0；项目 permission_preset=full_access 后为 wrote_file=true/approval_count=0，固定内容核对成功，持久化用户设置仍为 ReadOnly/AlwaysAsk。仅临时项目、内存 SQLite、离线 transport 与正式 write_file，没有真实供应商、内网、凭据或用户文件。本轮只处理 H-28 的 profile 来源授权和权限上限，不修改 H-27 hook grant、permission rules、模型 provider 或 sandbox backend 独立条目；先前五类未跟踪项不读、不改、不暂存。
+
+E-H28-20261027-02（来源设计与首组验证）：profile 不再从无来源的 merged value 读取，而按现有 ConfigLayer 的 scope 顺序解析；未信任 project/project-local 与未知来源在解释 profile 前过滤。复用 TrustService 的项目授权（不依赖 opt-in bash gate、不借用 hooks_trusted），在每次 run 组装时固定同一 trust 快照；撤销在下次 run 生效，不承诺在途修改已组装 registry。受信任项目的偏好和插件默认受用户/host 权限上限约束，显式 user/run 与 managed 来源仍能设定权限；managed 按层最后解析，避免低层 preset 或另一字段别名在全局合并后反盖高层约束。审批与 sandbox 两个轴独立取更严格值，再重算 network/local execution 派生字段。本地权限上限设计比参考 Codex 的 disabled-layer 来源过滤更具体，不能声称照搬其全部语义。`cargo test -p deepagent-app-core --lib run_config::tests::permission_ --offline -j 1 -- --nocapture --test-threads=1` 退出 0，6 passed/0 ignored；含4种项目来源×8种字段×9个基础 profile×2种信任共576个断言组合、host/run/managed 正向、未知来源、无来源 merged value、local 优先级、无效值与原 permission-rule 对照。正式工具链新增回归仍待执行，不据此验收。
+
+E-H28-20261027-03（正式矩阵与夹具修正依据）：`cargo test -p deepagent-app-core --lib permission_project_ --offline -j 1 -- --nocapture --test-threads=1` 退出 1，3 passed/1 failed。四种项目文件的16个正式 ChatService 场景全部通过：未信任/受信任但用户只读/显式 run full_access/撤销，实际写入各为 false/false/true/false，审批均0，用户设置未变。失败来自新增审批夹具错误地假定 AlwaysAsk 会询问所有工作区写入；实测首组 wrote=true/approvals=0。已有 permission_default_prompts_for_computer_ops_and_outside_access 明确工作区普通写入可自动执行，AlwaysAsk 仅处理被门禁标记为 Ask 的调用，故此不是新的产品缺陷或 H-28 修复反证。后续夹具通过正式 SettingsService 设置用户 ask(Write) 规则，再验证真实拒绝/批准与项目 full_access 不能关掉审批；不修改该既有正常权限语义。
+
+E-H28-20261027-04（管理员消费方回归准备）：补充使用独立临时 user home、managed-settings.json 与 managed-settings.d drop-in 的 DualConfigLoader→RunEnvironment→真实 WriteFileTool 对照，不改进程全局环境或真实配置。首轮 `cargo test -p deepagent-app-core --lib permission_ --offline -j 1 -- --nocapture --test-threads=1` 编译退出 1（E0609），原因是新增测试误用 ToolOutput.is_error；查证该类型实际字段为 ok/value/truncated 后改为断言 ok，属于夹具编写错误，不计产品缺陷，也不计已通过。后续原探针默认执行、审批夹具与管理员实际写入对照待重新运行。
+
+E-H28-20261027-05（专项正式通过）：修正夹具后执行 `cargo test -p deepagent-app-core --lib permission_ --offline -j 1 -- --nocapture --test-threads=1` 退出 0，16 passed/0 ignored（含既有对照），测试4.14秒。四种文件16组实际写入矩阵仍全部为 false/false/true/false；用户 ask(Write) 下，未信任拒绝为 wrote=false/approvals=1，信任后项目只读为 false/0，撤销后用户批准为 true/1，未信任和受信任项目的 full_access 均仍 false/1。管理员真实临时文件经 DualConfigLoader→RunEnvironment→WriteFileTool：无管理员层显式 run grant 能写，managed base + drop-in 启用后返回失败且目标不存在；全程隔离 user home/managed dir，无进程全局环境修改。这项管理员回归是解析与实际文件工具消费，不冒称经过完整 ChatService 或真实桌面管理员部署。`cargo fmt --all -- --check` 退出0。原探针已移除 ignore，已启动顺序验证进程，依次执行默认单项、严格 lint、当前 CLI 构建和隔离数据根完整 workspace；各阶段结果待续读，不提前宣称通过。
+
+E-H28-20261027-06（默认原探针与 lint）：`cargo test -p deepagent-app-core --lib audit_untrusted_project_cannot_escalate_read_only_file_access --offline -j 1 -- --nocapture --test-threads=1` 退出0，1 passed/0 ignored，原无覆盖/有覆盖两组均 wrote_file=false/approval_count=0（0.43秒），不再依赖显式运行 ignored。`cargo clippy -p deepagent-app-core --all-targets --offline -j 1 --no-deps -- -D warnings` 退出101，仍被未改的 context_runtime 8处 clone_on_copy、plugin_preparation type_complexity 和 base_registry_request 既有 too_many_arguments 共10项阻断；没有屏蔽或顺手修基线，也未将未执行到的 test lint 称通过。专项之后仅加强管理员回归的低层 canonical full_access 与高层 camelCase read_only/always_ask 对照，并补 TrustService 语义注释；最终源码待完整 workspace 覆盖。最新 fmt check 与 diff check 均退出0。当前同一顺序进程继续构建正式 CLI，随后运行隔离数据根的 workspace；没有因观察等待重启验证。
+
+E-H28-20261027-07（完整 workspace 最终结果）：既有顺序进程54707最终退出101；`cargo test --workspace --offline -j 1 --no-fail-fast -- --quiet --test-threads=1` 已跑至全部后续 targets 和 doc-tests，而非遇首个失败即停。整个 workspace 使用新建临时 DEEPAGENT_DATA_ROOT，移除继承 DEEPAGENT_DB_PATH 并在 finally 恢复，未探查旧数据根。最新源码的 AppCore lib 为1158 passed/73 ignored、kernel_v2_e2e 为130 passed/84 ignored、CLI 为112 passed/23 ignored、builtins 为352 passed/4 ignored、Context55、Hooks65、Runtime290 passed/12 ignored、stabilization5、SDK真实stdio6及SDK doc-test1均通过。最终只有一个失败 target：deepagent-prompts lib 为27 passed/1 failed，既有 H-306 的 creative.video-edit.v1 defaultUserPrompt 为空；不修改此独立问题、不把 ignored 算通过、不宣称 workspace 全绿。E-06之后加强的管理员字段别名回归已被本次 AppCore 覆盖。原顺序进程的 CLI build 已退出0；正在另做最终专项、fmt、CLI 和 diff 复验，结果待续读。完整日志留在不提交的 target/h28-workspace-tests.log，严格 lint 仍为E-06所列10项既有阻断。
+
+E-H28-20261027-08（最终专项复验与包装进程说明）：最终源码再次执行 `cargo test -p deepagent-app-core --lib permission_ --offline -j 1 -- --nocapture --test-threads=1` 为16 passed/0 ignored，fmt、CLI build、diff check各子命令均明确打印退出0；但首次包装进程19187自身返回1，不能把该进程记作成功。随后仅调整临时环境清理的存在性判断和显式汇总退出状态，不改产品源码，以同一专项的 `--quiet --test-threads=1` 再验为16 passed/0 ignored（4.05秒），`cargo fmt --all -- --check`、`cargo build -p deepagent-cli --offline -j 1`（0.53秒）、`git diff --check`及整个包装进程均退出0。两次均使用独立临时数据根，未复用真实用户数据库；测试内容与E-07的最终源码一致，未以复验覆盖或删除首次包装退出1的事实。E-01～07两文逐字一致、306行/306唯一编号/每行8列已实际核对。
+
+E-H28-20261027-09（本项验收、兼容性与余项）：H-28在所列 Windows 本机、共享 RunAssembler/AppCore 与实际文件工具范围验收；原始失败保留，未信任项目不参与 profile 解析，受信任项目仅在用户/host 上限内表达偏好，显式 user/run 授权及 managed 最终约束有正向和拒绝对照。项目文件原先能授予 full_access 的行为被有意收紧；需要提高权限时必须来自已有显式 host/run 授权，不新增 store、执行链、公共DTO、协议、配置项或数据迁移。trust为组装快照，撤销影响下次run，不承诺中途撤换已组装工具；permission rules、sandbox backend与hook grant不在本项治理范围。未验其他OS、真实UI/OS沙箱、真实供应商、完整子Agent权限矩阵或所有宿主配置来源；无前端/Tauri契约变更，未运行pnpm build。完整workspace与严格lint仍分别有E-07/E-06所列失败，不宣称全仓通过。本轮新增验收1，台账应为36已验收/18历史跳过/7归并/2撤销/243待修/0修复中，即243有效未关闭；独立修复commit待生成后回填，不amend、不推送。下一项优先按原记录复核P1 H-36的完整工具结果持久化/同call_id隔离，本轮未复现或修改；不重做历史已修复H-29。全部剩余仍沿用未校准的200–400有效小时跨层初估，缺逐项工作量校准，不能机械按数量扣减或承诺完工；编译、设备和环境等待另计，整体goal保持active。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -988,7 +1010,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-25：丢弃供应商 Retry-After，在服务恢复前耗尽限流重试（已修复）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
 | [H-26：标准 PreToolUse 输出中的 deny/ask 被忽略，实际工具照常执行](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H26-20261027-01～05保留原始失败、根因修复、真实工具调度回归及边界；`42bd83b0`为独立修复提交 | ExternalCommand/HTTP hook 统一事件感知解析 `hookSpecificOutput`；校验 `hookEventName` 后将 PreToolUse deny/ask 送入既有 ToolExecutionPipeline，不改变顶层旧协议 | 原探针1 passed；hooks64、Runtime290/12 ignored、AppCore1142/66 ignored、check/fmt/diff通过；hooks clippy通过，Runtime/AppCore仅既有基线阻断 | `42bd83b0` | 限 Windows 本机与计数型安全工具；未验其他 OS、真实危险命令/供应商、H-27/H-28/H-103，剩余工时计入总区间 |
 | [H-27：项目 hooks 信任开关只覆盖独立文件，settings.json 内联 hook 仍执行宿主命令](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H27-20261027-01～08保留原始失败、候选反证及本机验收 | ConfigLayer 来源分组，ProjectHookTrust 执行前重读现有 grant；统一 settings loader，host 优先去重，五类动作均包裹准入 | 原探针1、专项7默认通过；workspace AppCore1149/74 ignored、Context55、Hooks65；CLI构建与隔离SDK6、fmt通过；全仓两失败target与lint基线保留 | `955ac0da` | 撤销不强杀在途动作，未信任时未加载hook须下次run；子生命周期仅registry级、非完整子Agent；H-28/H-237未改，剩余工时计入总区间 |
-| [H-28：未信任项目的权限配置覆盖用户只读设置，实际写文件没有请求审批](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-28：未信任项目的权限配置覆盖用户只读设置，实际写文件没有请求审批（已修复）](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H28-20261027-01～09保留原始失败、来源根因与正式副作用/审批对照 | 按ConfigLayer来源过滤未信任项目，可信项目/插件受host上限，显式user/run授权及managed最后约束，复用同一TrustService组装快照 | 默认原探针1、权限专项16通过且0 ignored；workspace AppCore1158/73 ignored、CLI112/23 ignored、SDK6通过；完整workspace仅既有H-306失败，严格lint既有10项，fmt/CLI构建/diff通过 | 独立修复提交待生成后回填 | 撤销下次run生效；未验其他OS/UI/真实供应商/完整子Agent矩阵；permission rules/backend/hook grant未改，剩余工时计入总区间 |
 | [H-29：HTTP 错误正文挂起时取消检查缺失，停止等待退化到正文完成或总超时（已修复）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
 | [H-30：SSE 实际按 data 行解析，合法多行事件失败，未闭合终态帧却被接受](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-31：同步原生压缩的摘要请求没有运行取消信号，停止必须等摘要返回（已修复）](system-harness-audit-2026-10-21.md) | P1 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |

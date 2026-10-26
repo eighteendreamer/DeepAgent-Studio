@@ -64,9 +64,47 @@ impl RunConfigOverlay {
     pub(crate) fn apply_permission_profile(
         &self,
         mut profile: EffectivePermissionProfile,
+        project_trusted: bool,
+    ) -> Result<EffectivePermissionProfile> {
+        // Merge precedence is not authority. Project preferences may narrow
+        // the user/host ceiling, but only explicit host/run/managed sources
+        // may grant more access. Never recover policy from the merged value:
+        // doing so loses both origin and cross-field/alias precedence.
+        let mut ceiling = profile;
+        for layer in &self.layers {
+            let scope = layer.scope();
+            if scope == ConfigScope::Unknown || (layer.is_project_scoped() && !project_trusted) {
+                tracing::info!(source = %layer.path, ?scope,
+                    "skipping permission profile from unauthorized config source");
+                continue;
+            }
+            let candidate = Self::apply_profile_value(&layer.value, profile).map_err(|error| {
+                CoreError::invalid(format!(
+                    "invalid permission config in {}: {error}",
+                    layer.path
+                ))
+            })?;
+            profile = match scope {
+                ConfigScope::Plugin | ConfigScope::Project | ConfigScope::ProjectLocal => {
+                    restrict_profile_to(candidate, ceiling)
+                }
+                ConfigScope::User => {
+                    ceiling = candidate;
+                    candidate
+                }
+                ConfigScope::Run | ConfigScope::Managed => candidate,
+                ConfigScope::Unknown => unreachable!("unknown origins are filtered above"),
+            };
+        }
+        Ok(normalize_profile(profile))
+    }
+
+    fn apply_profile_value(
+        value: &serde_json::Value,
+        mut profile: EffectivePermissionProfile,
     ) -> Result<EffectivePermissionProfile> {
         if let Some(permission_profile) =
-            string_field(&self.value, &["permission_profile", "permissionProfile"])
+            string_field(value, &["permission_profile", "permissionProfile"])
         {
             match permission_profile {
                 "read_only" => {
@@ -90,10 +128,9 @@ impl RunConfigOverlay {
                 }
             }
         }
-        if let Some(preset) = string_field(
-            &self.value,
-            &["permission_preset", "active_permission_preset"],
-        ) {
+        if let Some(preset) =
+            string_field(value, &["permission_preset", "active_permission_preset"])
+        {
             if let Some(parsed) = PermissionPreset::parse(preset) {
                 profile = parsed.to_effective_profile();
             } else {
@@ -102,26 +139,16 @@ impl RunConfigOverlay {
                 )));
             }
         }
-        if let Some(policy) = parse_overlay_enum::<ApprovalPolicy>(
-            &self.value,
-            &["approval_policy", "approvalPolicy"],
-        )? {
+        if let Some(policy) =
+            parse_overlay_enum::<ApprovalPolicy>(value, &["approval_policy", "approvalPolicy"])?
+        {
             profile.approval_policy = policy;
         }
         if let Some(sandbox) =
-            parse_overlay_enum::<SandboxMode>(&self.value, &["sandbox_mode", "sandboxMode"])?
+            parse_overlay_enum::<SandboxMode>(value, &["sandbox_mode", "sandboxMode"])?
         {
             profile.sandbox_mode = sandbox;
         }
-        profile.local_execution_mode = if matches!(
-            (profile.approval_policy, profile.sandbox_mode),
-            (ApprovalPolicy::FullAccess, SandboxMode::FullAccess)
-        ) {
-            LocalExecutionMode::Direct
-        } else {
-            LocalExecutionMode::SandboxiePreferred
-        };
-        profile.network_always_ask = matches!(profile.approval_policy, ApprovalPolicy::AlwaysAsk);
         Ok(profile)
     }
 
@@ -229,6 +256,36 @@ impl RunConfigOverlay {
     }
 }
 
+fn restrict_profile_to(
+    mut candidate: EffectivePermissionProfile,
+    ceiling: EffectivePermissionProfile,
+) -> EffectivePermissionProfile {
+    candidate.approval_policy = match (ceiling.approval_policy, candidate.approval_policy) {
+        (ApprovalPolicy::AlwaysAsk, _) => ApprovalPolicy::AlwaysAsk,
+        (ApprovalPolicy::AutoReview, ApprovalPolicy::FullAccess) => ApprovalPolicy::AutoReview,
+        (_, policy) => policy,
+    };
+    candidate.sandbox_mode = match (ceiling.sandbox_mode, candidate.sandbox_mode) {
+        (SandboxMode::ReadOnly, _) => SandboxMode::ReadOnly,
+        (SandboxMode::WorkspaceWrite, SandboxMode::FullAccess) => SandboxMode::WorkspaceWrite,
+        (_, mode) => mode,
+    };
+    candidate
+}
+
+fn normalize_profile(mut profile: EffectivePermissionProfile) -> EffectivePermissionProfile {
+    profile.local_execution_mode = if matches!(
+        (profile.approval_policy, profile.sandbox_mode),
+        (ApprovalPolicy::FullAccess, SandboxMode::FullAccess)
+    ) {
+        LocalExecutionMode::Direct
+    } else {
+        LocalExecutionMode::SandboxiePreferred
+    };
+    profile.network_always_ask = matches!(profile.approval_policy, ApprovalPolicy::AlwaysAsk);
+    profile
+}
+
 fn collect_hook_definitions(value: &serde_json::Value, merged: &mut HookDefinitions) -> Result<()> {
     if let Some(raw) = string_field(value, &["hooks_json", "hooksJson"]) {
         if !raw.trim().is_empty() {
@@ -333,7 +390,7 @@ mod tests {
             "approval_policy": "always_ask"
         }));
         let profile = overlay
-            .apply_permission_profile(PermissionPreset::Default.to_effective_profile())
+            .apply_permission_profile(PermissionPreset::Default.to_effective_profile(), false)
             .unwrap();
 
         assert_eq!(profile.approval_policy, ApprovalPolicy::AlwaysAsk);
@@ -343,6 +400,204 @@ mod tests {
             LocalExecutionMode::SandboxiePreferred
         );
         assert!(profile.network_always_ask);
+    }
+
+    #[test]
+    fn permission_project_sources_cannot_expand_host_ceiling() {
+        use deepagent_context::{
+            PROJECT_CLAUDE_PRECEDENCE, PROJECT_LOCAL_CLAUDE_PRECEDENCE,
+            PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
+        };
+        let payloads = [
+            serde_json::json!({"permission_profile":"full_access"}),
+            serde_json::json!({"permissionProfile":"full_access"}),
+            serde_json::json!({"permission_preset":"full_access"}),
+            serde_json::json!({"active_permission_preset":"full_access"}),
+            serde_json::json!({"approval_policy":"full_access"}),
+            serde_json::json!({"approvalPolicy":"full_access"}),
+            serde_json::json!({"sandbox_mode":"full_access"}),
+            serde_json::json!({"sandboxMode":"full_access"}),
+        ];
+        let bases = [
+            ApprovalPolicy::AlwaysAsk,
+            ApprovalPolicy::AutoReview,
+            ApprovalPolicy::FullAccess,
+        ]
+        .into_iter()
+        .flat_map(|policy| {
+            [
+                SandboxMode::ReadOnly,
+                SandboxMode::WorkspaceWrite,
+                SandboxMode::FullAccess,
+            ]
+            .into_iter()
+            .map(move |mode| {
+                normalize_profile(EffectivePermissionProfile {
+                    approval_policy: policy,
+                    sandbox_mode: mode,
+                    ..PermissionPreset::Default.to_effective_profile()
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+        for precedence in [
+            PROJECT_CLAUDE_PRECEDENCE,
+            PROJECT_DEEPAGENT_PRECEDENCE,
+            PROJECT_LOCAL_CLAUDE_PRECEDENCE,
+            PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
+        ] {
+            for payload in &payloads {
+                let config = RunConfigOverlay::from_layers(vec![layer(
+                    "project",
+                    precedence,
+                    payload.clone(),
+                )]);
+                for base in &bases {
+                    for trusted in [false, true] {
+                        assert_eq!(
+                            config.apply_permission_profile(*base, trusted).unwrap(),
+                            *base,
+                            "source={precedence}, payload={payload}, trusted={trusted}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn permission_project_preferences_need_trust_and_keep_local_precedence() {
+        use deepagent_context::PROJECT_LOCAL_DEEPAGENT_PRECEDENCE;
+        let config = RunConfigOverlay::from_layers(vec![
+            layer(
+                "project",
+                PROJECT_DEEPAGENT_PRECEDENCE,
+                serde_json::json!({"permission_profile":"read_only"}),
+            ),
+            layer(
+                "local",
+                PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
+                serde_json::json!({"permission_profile":"workspace_write"}),
+            ),
+        ]);
+        let full = PermissionPreset::FullAccess.to_effective_profile();
+        assert_eq!(config.apply_permission_profile(full, false).unwrap(), full);
+        assert_eq!(
+            config.apply_permission_profile(full, true).unwrap(),
+            PermissionPreset::Default.to_effective_profile()
+        );
+    }
+
+    #[test]
+    fn permission_host_run_and_managed_authority_is_source_scoped() {
+        use deepagent_context::{MANAGED_PRECEDENCE, PLUGIN_PRECEDENCE};
+        let readonly = normalize_profile(EffectivePermissionProfile {
+            sandbox_mode: SandboxMode::ReadOnly,
+            ..PermissionPreset::Default.to_effective_profile()
+        });
+        let full = serde_json::json!({"permission_preset":"full_access"});
+        for precedence in [
+            USER_DEEPAGENT_PRECEDENCE,
+            RUN_PRECEDENCE,
+            MANAGED_PRECEDENCE,
+        ] {
+            let config =
+                RunConfigOverlay::from_layers(vec![layer("host", precedence, full.clone())]);
+            assert_eq!(
+                config.apply_permission_profile(readonly, false).unwrap(),
+                PermissionPreset::FullAccess.to_effective_profile()
+            );
+        }
+        for precedence in [PLUGIN_PRECEDENCE, 0] {
+            let config =
+                RunConfigOverlay::from_layers(vec![layer("not a grant", precedence, full.clone())]);
+            assert_eq!(
+                config.apply_permission_profile(readonly, true).unwrap(),
+                readonly
+            );
+        }
+        // A legacy merged value without provenance is not an execution grant.
+        let mut unknown = RunConfigOverlay::from_layers(Vec::new());
+        unknown.value = full;
+        assert_eq!(
+            unknown.apply_permission_profile(readonly, true).unwrap(),
+            readonly
+        );
+    }
+
+    #[test]
+    fn permission_managed_fields_override_lower_presets_and_aliases() {
+        use deepagent_context::MANAGED_PRECEDENCE;
+        let config = RunConfigOverlay::from_layers(vec![
+            layer(
+                "user",
+                USER_DEEPAGENT_PRECEDENCE,
+                serde_json::json!({
+                    "permission_preset":"full_access",
+                    "sandbox_mode":"full_access",
+                    "approval_policy":"full_access"
+                }),
+            ),
+            layer(
+                "project",
+                PROJECT_DEEPAGENT_PRECEDENCE,
+                serde_json::json!({"permission_profile":"full_access"}),
+            ),
+            layer(
+                "run",
+                RUN_PRECEDENCE,
+                serde_json::json!({"permissionProfile":"full_access"}),
+            ),
+            layer(
+                "managed",
+                MANAGED_PRECEDENCE,
+                serde_json::json!({"sandboxMode":"read_only", "approvalPolicy":"always_ask"}),
+            ),
+        ]);
+        let resolved = config
+            .apply_permission_profile(PermissionPreset::Default.to_effective_profile(), true)
+            .unwrap();
+        assert_eq!(resolved.sandbox_mode, SandboxMode::ReadOnly);
+        assert_eq!(resolved.approval_policy, ApprovalPolicy::AlwaysAsk);
+        assert_eq!(
+            resolved.local_execution_mode,
+            LocalExecutionMode::SandboxiePreferred
+        );
+        assert!(resolved.network_always_ask);
+        let explicit = RunConfigOverlay::from_layers(vec![
+            layer(
+                "project",
+                PROJECT_DEEPAGENT_PRECEDENCE,
+                serde_json::json!({"permission_preset":"default"}),
+            ),
+            layer(
+                "run",
+                RUN_PRECEDENCE,
+                serde_json::json!({"permission_profile":"full_access"}),
+            ),
+        ]);
+        assert_eq!(
+            explicit
+                .apply_permission_profile(PermissionPreset::Default.to_effective_profile(), true)
+                .unwrap(),
+            PermissionPreset::FullAccess.to_effective_profile()
+        );
+    }
+
+    #[test]
+    fn permission_invalid_project_values_are_filtered_before_parsing() {
+        let config = RunConfigOverlay::from_layers(vec![layer(
+            "untrusted-project",
+            PROJECT_DEEPAGENT_PRECEDENCE,
+            serde_json::json!({"sandbox_mode":false}),
+        )]);
+        let base = PermissionPreset::Default.to_effective_profile();
+        assert_eq!(config.apply_permission_profile(base, false).unwrap(), base);
+        assert!(config
+            .apply_permission_profile(base, true)
+            .unwrap_err()
+            .to_string()
+            .contains("untrusted-project"));
     }
 
     #[test]

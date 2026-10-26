@@ -15,12 +15,16 @@
 //!   project, escalates `bash`/`shell` to approval (`Ask`) — so even
 //!   allow-listed commands that would otherwise auto-run wait for the user,
 //!   satisfying "未信任项目禁自动 bash".
+//! - Run profile resolution always uses the same trust store to authorize
+//!   project permission preferences, independently of the optional bash gate.
+//!   Trust permits preferences within the host ceiling, not an access grant;
+//!   executable project hooks retain their separate ProjectService grant.
 //!
 //! # Safety posture
 //!
 //! - **Ask, never Deny** — the gate raises to approval, never hard-blocks
 //!   (误杀更糟 baseline); once the user trusts the project it disappears.
-//! - **Enforcement is opt-in** via `DEEPAGENT_PROJECT_TRUST` (default off) so a
+//! - **Bash escalation is opt-in** via `DEEPAGENT_PROJECT_TRUST` (default off) so a
 //!   build without the trust-granting UI never strands the user in a
 //!   can't-run-anything state. The store + `set_trusted` API are always
 //!   available for the UI/command layer to build on.
@@ -70,8 +74,8 @@ pub struct ProjectTrustDto {
     pub project: String,
     /// Whether the project (or a trusted ancestor) is trusted.
     pub trusted: bool,
-    /// Whether trust enforcement is currently active (env-gated). When false,
-    /// the gate is not applied even for untrusted projects.
+    /// Whether the optional bash trust escalation is active (env-gated).
+    /// This does not disable the always-on project permission-source check.
     pub enforced: bool,
 }
 

@@ -54,6 +54,7 @@ use crate::model_runtime::select_run_model;
 use crate::office_service::OfficeService;
 use crate::project_map_service::ProjectMapService;
 use crate::prompt_gate::{finalize_blocked_user_prompt, submit_user_prompt};
+use crate::run_config::RunConfigOverlay;
 use crate::run_coordinator::RunCoordinator;
 use crate::run_environment::RunEnvironment;
 use crate::run_finalizer::{AppRunFinalizer, AppRunFinalizerRequest};
@@ -383,6 +384,9 @@ impl<'a> RunAssembler<'a> {
             .is_none()
             .then_some(self.sandboxie_executor.as_ref())
             .flatten();
+        let project_trusted =
+            crate::trust_service::TrustService::new(self.db.clone()).is_trusted(&root);
+        let run_config = RunConfigOverlay::load(&root, serde_json::to_value(&overrides)?);
         let RunEnvironment {
             config: run_config,
             profile: _profile,
@@ -392,15 +396,15 @@ impl<'a> RunAssembler<'a> {
             sandbox_backend,
             access,
         } = RunEnvironment::resolve(
-            &root,
-            self.settings,
+            run_config,
+            self.settings.effective_permission_profile()?,
+            project_trusted,
             self.runtime_logs,
             legacy_sandboxie_executor,
             self.sandbox_backend_registry
                 .as_ref()
                 .map(|registry| registry.default_kind()),
             &run_id,
-            serde_json::to_value(&overrides)?,
         )?;
 
         // Resolve the backend once for this run.  The returned executor is
@@ -730,7 +734,7 @@ impl<'a> RunAssembler<'a> {
             access,
             bash_allow: self.bash_allow.to_vec(),
             bash_full_access: matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
-            is_trusted: crate::trust_service::TrustService::new(self.db.clone()).is_trusted(&root),
+            is_trusted: project_trusted,
             project_hook_trust,
             runtime_environment: self
                 .runtime_broker
