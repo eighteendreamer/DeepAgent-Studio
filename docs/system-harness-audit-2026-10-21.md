@@ -6,7 +6,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-74 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 同一Projection帧提交源/派生项；分支和检查点共用有效末端；正式分支6、checkpoint1、stdio1定向通过，完整workspace唯一失败H-306，严格AppCore lint既有10项未绿；E-H74-01～15，提交待回填 |
+| H-74 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 同一Projection帧提交源/派生项；分支和检查点共用有效末端；正式分支6、checkpoint1、stdio1定向通过，完整workspace唯一失败H-306，严格AppCore lint既有10项未绿；E-H74-01～16，修复提交`1dbac424` |
 | H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交 `56b9e7b9` |
 | H-72 | 已修复并验收（2026-10-26，Windows 本机范围） | 全计划暂存/发布/历史提交及补偿；原探针默认通过，checkpoint 13 passed、AppCore audit 8 passed/2 ignored；workspace 被 H-306 阻断、严格 lint 有既有告警，详见原项及台账；修复提交 `d08c776c` |
 | H-73 | 已修复并验收（2026-10-26，Windows 本机范围） | 检查点绑定源 EventId 并按当前分支验证，旧格式未知归属保守拒绝；checkpoint_audit 17 passed/1 ignored，范围及失败见原项；修复提交 `d40eef9a` |
@@ -2074,7 +2074,7 @@ P-36-collision（callflow，关联 E-36-collision）：Responses function_call c
 
 ### H-74：分支边界截在源消息与原生镜像之间，保留的消息不进入下一请求
 
-2026-10-26当前状态：已修复并验收（所列Windows/Linux本机范围），以下原始审计证据及中间失败保留，修复提交待本轮独立提交后回填。
+2026-10-26当前状态：已修复并验收（所列Windows/Linux本机范围），修复提交`1dbac424`；以下原始审计证据及中间失败保留，不将当时未验状态改写为已完成。
 
 E-H74-20261026-01（原探针先行复现）：HEAD=3d058365，tracked工作树干净，原有未跟踪项不读改或暂存。执行未修改的`cargo test -p deepagent-app-core --test kernel_v2_e2e branch_boundary --offline -j 1 -- --include-ignored --nocapture --test-threads=1`退出1，1 passed/1 failed/0 ignored（测试1.20s）。正式AppService fork/rewind在源sequence=5保留MessageAppended后，下一Responses请求均retained_user_sent=false；保留镜像sequence=6的两入口对照均true，继续run均单succeeded终态。确认H-74仍存在，不是H-79回归或重复计数。已沿Session::append_with_response_projection→EventStore原始截断/分支→input_runtime::indexed_response_items核对：source与投影分开提交，分支能切开，恢复first_native后忽略source。正在确定统一逻辑边界和旧日志兼容，尚未修改生产代码或宣称验收。
 
@@ -2114,6 +2114,8 @@ E-H74-20261026-13（首轮no-fail-fast完整终态）：进程75226最终退出1
 E-H74-20261026-14（冻结源码最终验收）：最终源码在同一 `cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` 下完成编译并执行，退出101的唯一原因仍是既有H-306：`deepagent-prompts` 27 passed/1 failed（`creative.video-edit.v1` 的 `defaultUserPrompt` 为空）。H-74相关消费者在冻结源码上通过：AppCore 1132 passed/78 ignored，`checkpoint_audit` 19 passed/1 ignored，`kernel_v2_e2e` 125 passed/86 ignored（含坏旧尾0模型请求、source/mirror分支、重启/压缩/附件/重复输入），CLI 89 passed/27 ignored（含stdio source cursor），persistence 69、session_control 9、session 20，runtime 284/16 ignored，e2e_stabilization 5，harness protocol 12、SDK e2e_stdio 6；doc-tests除SDK 1个通过外均为0。最终 `cargo fmt --all -- --check`、`git diff --check`及persistence/session严格Clippy均退出0；AppCore严格Clippy仍被既有10项未改lint阻断。H-74原探针及扩展验收均不再复现，现标记已修复并验收；范围限本机后端/CLI与Linux持久化，未执行真实供应商、桌面点击、macOS和Linux AppCore/CLI验证；本轮无前端或Tauri契约改动，未跑pnpm build。旧二进制不能读取新增Projection记录，不能透明降级；无法明确归属的旧日志需保留raw诊断并回退至有效前缀，不自动猜测修复。
 
 E-H74-20261026-15（最终定向消费者复跑与交付范围）：冻结源码后的定向复跑全部退出0：`cargo test -p deepagent-app-core --test kernel_v2_e2e branch_boundary --offline -j 1 -- --nocapture --test-threads=1`为6 passed/0 ignored（6.84s）；`cargo test -p deepagent-app-core --test checkpoint_audit projection_source_boundary_uses_effective_sequence_for_checkpoint_restoration --offline -j 1 -- --nocapture`为1 passed/0 ignored（0.29s）；`cargo test -p deepagent-cli thread_fork_source_cursor_reports_the_complete_projection_boundary --offline -j 1 -- --nocapture`为1 passed/0 ignored（0.09s）。本项13文件包含同一存储/Session/AppCore边界、正式消费者回归与三份文档，不修改供应商参数、数据库schema或真实用户数据。本轮新增1，累计14已验收、18历史跳过、7归并、2撤销、265待修、0修复中；整体goal继续active。下一项准备复核P1 H-06的MCP未知结果重放与重复副作用，尚未实施。全部剩余仍为200–400有效小时的未校准初估，按265项的跨层复现/根因修复/验收需求估计，依赖归并和实际复现会改变范围；编译、设备和环境等待另计，不据本项完成机械扣减。
+
+E-H74-20261026-16（独立提交及真实hash回填）：修复提交`1dbac424`（【fix】统一H-74消息投影提交与分支完整边界）已创建，只含本项13个文件；代码、回归与当时三份文档一并提交。提交前fmt --check、diff --check、cached --check通过；306行/306唯一编号/无缺号/8列正确，两份H-74即时证据01～15逐字一致；累计14已验收、18历史跳过、7归并、2撤销、265待修。此步只回填真实修复hash并单独提交文档，不amend、不推送、不创建PR；原有五类未跟踪项未改动或暂存。H-74本轮新增1，整体goal继续active，下一项H-06；剩余200–400有效小时仍为未校准初估，编译和环境等待另计。
 
 ### H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史
 
