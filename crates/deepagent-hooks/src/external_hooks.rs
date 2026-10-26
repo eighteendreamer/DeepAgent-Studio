@@ -539,6 +539,20 @@ impl HookDefinitions {
         runner: Arc<dyn HookCommandRunner>,
         host: Arc<dyn HookActionExecutor>,
     ) -> usize {
+        self.register_into_with_host_wrapped(registry, runner, host, |hook| hook)
+    }
+
+    /// Register through the same construction path, letting a host apply a
+    /// source authorization wrapper to every action type before dispatch.
+    /// The wrapper encloses matcher/once behavior so a skipped untrusted hook
+    /// does not consume its one-shot state or launch an external action.
+    pub fn register_into_with_host_wrapped(
+        &self,
+        registry: &mut HookRegistry,
+        runner: Arc<dyn HookCommandRunner>,
+        host: Arc<dyn HookActionExecutor>,
+        wrap: impl Fn(Arc<dyn Hook>) -> Arc<dyn Hook>,
+    ) -> usize {
         let mut registered = 0;
         for (event_key, groups) in &self.hooks {
             let Some(event) = HookEvent::parse(event_key) else {
@@ -580,7 +594,7 @@ impl HookDefinitions {
                     } else {
                         hook
                     };
-                    registry.register(event.point(), hook);
+                    registry.register(event.point(), wrap(hook));
                     registered += 1;
                 }
             }
@@ -2357,6 +2371,61 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("prompt cannot be empty"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn registration_wrapper_encloses_all_action_types() {
+        struct SkipAction(Arc<dyn Hook>);
+        #[async_trait]
+        impl Hook for SkipAction {
+            fn name(&self) -> &str {
+                self.0.name()
+            }
+            fn dedup_key(&self) -> String {
+                self.0.dedup_key()
+            }
+            async fn run(&self, _: &HookContext) -> Result<HookOutcome> {
+                Ok(HookOutcome::Continue)
+            }
+        }
+        let defs = HookDefinitions::parse(
+            r#"{"hooks":{"SessionStart":[{"once":true,"hooks":[
+            {"type":"command","command":"must not run"},
+            {"type":"http","url":"http://127.0.0.1:1/not-contacted"},
+            {"type":"prompt","prompt":"must not query"},
+            {"type":"agent","prompt":"must not spawn"},
+            {"type":"mcp_tool","command":"must_not_call"}
+        ]}]}}"#,
+        )
+        .unwrap();
+        let runner = Arc::new(MockRunner::new(2, "", "not called"));
+        let host = Arc::new(MockHost {
+            outcome: HookOutcome::deny("not called"),
+            payload: Mutex::new(None),
+        });
+        let wrapped = std::sync::atomic::AtomicUsize::new(0);
+        let mut registry = HookRegistry::new();
+        let count = defs.register_into_with_host_wrapped(
+            &mut registry,
+            runner.clone(),
+            host.clone(),
+            |hook| {
+                wrapped.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Arc::new(SkipAction(hook))
+            },
+        );
+        assert_eq!(count, 5);
+        assert_eq!(wrapped.load(std::sync::atomic::Ordering::SeqCst), 5);
+        registry
+            .dispatch(&HookContext::new(
+                SessionId::nil(),
+                HookPoint::SessionStart,
+                HookData::None,
+            ))
+            .await
+            .unwrap();
+        assert!(runner.last_stdin.lock().unwrap().is_none());
+        assert!(host.payload.lock().unwrap().is_none());
     }
 
     #[test]

@@ -45,7 +45,9 @@ use crate::context_runtime::{
     RemoteContextFactory, RunContextRequest,
 };
 use crate::dto::{ApprovalRequestDto, PreflightToolCallDto};
-use crate::hook_assembly::{assemble_run_hooks, HookAssemblyRequest, OfficeSkillGuardHook};
+use crate::hook_assembly::{
+    assemble_run_hooks, HookAssemblyRequest, OfficeSkillGuardHook, ProjectHookTrust,
+};
 use crate::input_runtime::{accept_input_turn, collect_discovered_tools_from_events};
 use crate::kernel_runtime::{build_kernel_runtime_config, KernelRuntimeConfigRequest};
 use crate::model_runtime::select_run_model;
@@ -695,7 +697,9 @@ impl<'a> RunAssembler<'a> {
         );
         let _ = subagent_approvals.set(gate.clone());
 
-        let project_hooks = match self.project_hook_definitions(&root) {
+        let project_hook_trust =
+            Arc::new(ProjectHookTrust::new(self.projects.clone(), root.clone()));
+        let project_hooks = match self.project_hook_definitions(&root, &project_hook_trust) {
             Ok(defs) => defs,
             Err(e) => {
                 tracing::warn!(
@@ -727,6 +731,7 @@ impl<'a> RunAssembler<'a> {
             bash_allow: self.bash_allow.to_vec(),
             bash_full_access: matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
             is_trusted: crate::trust_service::TrustService::new(self.db.clone()).is_trusted(&root),
+            project_hook_trust,
             runtime_environment: self
                 .runtime_broker
                 .as_ref()
@@ -1605,8 +1610,13 @@ impl<'a> RunAssembler<'a> {
             .clone()
     }
 
-    /// Load project-scoped hook definitions from the workspace root.
-    fn project_hook_definitions(&self, root: &Path) -> Result<Option<HookDefinitions>> {
+    /// Load the standalone hooks file. Inline settings are loaded only once,
+    /// through RunConfigOverlay, preserving their configuration origin.
+    fn project_hook_definitions(
+        &self,
+        root: &Path,
+        trust: &ProjectHookTrust,
+    ) -> Result<Option<HookDefinitions>> {
         let paths = project_hook_paths(root)
             .into_iter()
             .filter(|path| path.exists())
@@ -1615,17 +1625,9 @@ impl<'a> RunAssembler<'a> {
             return Ok(None);
         }
 
-        let Some(projects) = self.projects else {
+        if !trust.is_trusted()? {
             tracing::info!(
-                paths = ?paths,
-                "skipping project hooks because no project registry is attached"
-            );
-            return Ok(None);
-        };
-        let project_path = root.to_string_lossy().into_owned();
-        if !projects.hooks_trusted(&project_path)? {
-            tracing::info!(
-                project = project_path.as_str(),
+                project = %root.display(),
                 paths = ?paths,
                 "skipping untrusted project hooks"
             );
@@ -1648,15 +1650,6 @@ impl<'a> RunAssembler<'a> {
         }
         if defs.is_empty() {
             return Ok(None);
-        }
-        for groups in defs.hooks.values_mut() {
-            for group in groups {
-                for action in &mut group.hooks {
-                    action
-                        .env
-                        .insert("DEEPAGENT_PROJECT_ROOT".to_string(), project_path.clone());
-                }
-            }
         }
         Ok(Some(defs))
     }
@@ -1818,15 +1811,9 @@ pub(crate) fn resolve_run_location(
     Ok((root.clone(), Some(root.to_string_lossy().into_owned())))
 }
 
-/// Conservative project-hook file search paths.
+/// Standalone hook file; settings hooks belong to the config overlay only.
 pub(crate) fn project_hook_paths(root: &Path) -> Vec<PathBuf> {
-    vec![
-        root.join(".claude").join("settings.json"),
-        root.join(".claude").join("settings.local.json"),
-        root.join(".deepagent").join("settings.json"),
-        root.join(".deepagent").join("settings.local.json"),
-        root.join(".deepagent").join("hooks.json"),
-    ]
+    vec![root.join(".deepagent").join("hooks.json")]
 }
 
 /// The transcript a compaction must summarize, bundled so choosing its source

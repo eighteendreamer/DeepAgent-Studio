@@ -33,8 +33,57 @@ impl ConfigLayer {
     pub fn is_managed(&self) -> bool {
         self.precedence >= MANAGED_PRECEDENCE
     }
+
+    /// Return the trust scope represented by this loader layer.
+    ///
+    /// Hook and execution policy consumers must use the source scope rather
+    /// than the merged value: a project-local layer is not equivalent to a
+    /// user or managed layer merely because it has higher precedence.
+    pub fn scope(&self) -> ConfigScope {
+        match self.precedence {
+            PLUGIN_PRECEDENCE => ConfigScope::Plugin,
+            USER_CLAUDE_PRECEDENCE | USER_DEEPAGENT_PRECEDENCE => ConfigScope::User,
+            PROJECT_CLAUDE_PRECEDENCE | PROJECT_DEEPAGENT_PRECEDENCE => ConfigScope::Project,
+            PROJECT_LOCAL_CLAUDE_PRECEDENCE | PROJECT_LOCAL_DEEPAGENT_PRECEDENCE => {
+                ConfigScope::ProjectLocal
+            }
+            RUN_PRECEDENCE => ConfigScope::Run,
+            precedence if precedence >= MANAGED_PRECEDENCE => ConfigScope::Managed,
+            _ => ConfigScope::Unknown,
+        }
+    }
+
+    /// Whether this layer is supplied by the opened project rather than by
+    /// the user, host, managed policy, or an explicit per-run override.
+    pub fn is_project_scoped(&self) -> bool {
+        matches!(
+            self.scope(),
+            ConfigScope::Project | ConfigScope::ProjectLocal
+        )
+    }
 }
 
+/// Origin of a merged configuration layer.  Keeping this on the layer lets
+/// execution consumers apply trust before interpreting commands/hooks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigScope {
+    Plugin,
+    User,
+    Project,
+    ProjectLocal,
+    Run,
+    Managed,
+    Unknown,
+}
+
+pub const PLUGIN_PRECEDENCE: u16 = 100;
+pub const USER_CLAUDE_PRECEDENCE: u16 = 200;
+pub const USER_DEEPAGENT_PRECEDENCE: u16 = 210;
+pub const PROJECT_CLAUDE_PRECEDENCE: u16 = 300;
+pub const PROJECT_DEEPAGENT_PRECEDENCE: u16 = 310;
+pub const PROJECT_LOCAL_CLAUDE_PRECEDENCE: u16 = 400;
+pub const PROJECT_LOCAL_DEEPAGENT_PRECEDENCE: u16 = 410;
+pub const RUN_PRECEDENCE: u16 = 500;
 /// Precedence at or above which a layer counts as managed policy.
 pub const MANAGED_PRECEDENCE: u16 = 600;
 
@@ -108,7 +157,7 @@ impl DualConfigLoader {
             &mut sources,
             &mut layers,
             "plugin_defaults",
-            100,
+            PLUGIN_PRECEDENCE,
             self.plugin_defaults,
         );
 
@@ -119,7 +168,7 @@ impl DualConfigLoader {
                 &mut layers,
                 &mut errors,
                 &home.join(".claude/settings.json"),
-                200,
+                USER_CLAUDE_PRECEDENCE,
             );
             load_path(
                 &mut value,
@@ -127,7 +176,7 @@ impl DualConfigLoader {
                 &mut layers,
                 &mut errors,
                 &home.join(".deepagent/settings.json"),
-                210,
+                USER_DEEPAGENT_PRECEDENCE,
             );
         }
         load_path(
@@ -136,7 +185,7 @@ impl DualConfigLoader {
             &mut layers,
             &mut errors,
             &self.workspace.join(".claude/settings.json"),
-            300,
+            PROJECT_CLAUDE_PRECEDENCE,
         );
         load_path(
             &mut value,
@@ -144,7 +193,7 @@ impl DualConfigLoader {
             &mut layers,
             &mut errors,
             &self.workspace.join(".deepagent/settings.json"),
-            310,
+            PROJECT_DEEPAGENT_PRECEDENCE,
         );
         load_path(
             &mut value,
@@ -152,7 +201,7 @@ impl DualConfigLoader {
             &mut layers,
             &mut errors,
             &self.workspace.join(".claude/settings.local.json"),
-            400,
+            PROJECT_LOCAL_CLAUDE_PRECEDENCE,
         );
         load_path(
             &mut value,
@@ -160,7 +209,7 @@ impl DualConfigLoader {
             &mut layers,
             &mut errors,
             &self.workspace.join(".deepagent/settings.local.json"),
-            410,
+            PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
         );
 
         push_layer(
@@ -168,7 +217,7 @@ impl DualConfigLoader {
             &mut sources,
             &mut layers,
             "run_overrides",
-            500,
+            RUN_PRECEDENCE,
             self.run_overrides,
         );
 
@@ -314,6 +363,31 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_layer_scope_preserves_trust_origin() {
+        let cases = [
+            (PLUGIN_PRECEDENCE, ConfigScope::Plugin, false),
+            (USER_DEEPAGENT_PRECEDENCE, ConfigScope::User, false),
+            (PROJECT_DEEPAGENT_PRECEDENCE, ConfigScope::Project, true),
+            (
+                PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
+                ConfigScope::ProjectLocal,
+                true,
+            ),
+            (RUN_PRECEDENCE, ConfigScope::Run, false),
+            (MANAGED_PRECEDENCE, ConfigScope::Managed, false),
+        ];
+        for (precedence, scope, project_scoped) in cases {
+            let layer = ConfigLayer {
+                path: "test".into(),
+                precedence,
+                value: serde_json::json!({}),
+            };
+            assert_eq!(layer.scope(), scope);
+            assert_eq!(layer.is_project_scoped(), project_scoped);
+        }
+    }
 
     #[test]
     fn native_file_wins_at_same_scope_and_managed_wins_last() {

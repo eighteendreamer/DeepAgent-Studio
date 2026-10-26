@@ -2365,52 +2365,162 @@ mod tests {
     }
 
     #[cfg(windows)]
+    fn project_hook_test_sources() -> [(&'static str, Option<&'static str>); 9] {
+        [
+            (".deepagent/hooks.json", None),
+            (".deepagent/settings.json", None),
+            (".deepagent/settings.local.json", None),
+            (".claude/settings.json", None),
+            (".claude/settings.local.json", None),
+            (".deepagent/settings.json", Some("hooks_json")),
+            (".deepagent/settings.local.json", Some("hooksJson")),
+            (".claude/settings.json", Some("hooks_json")),
+            (".claude/settings.local.json", Some("hooksJson")),
+        ]
+    }
+
+    #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit H-27: project settings hooks bypass the project hooks trust switch"]
     async fn audit_untrusted_project_settings_hooks_do_not_execute() {
-        let mut executed = Vec::new();
-        for file_name in ["hooks.json", "settings.json"] {
+        for (file_name, field) in project_hook_test_sources() {
             let (db, settings, dir) = seeded().await;
             let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
             let root = dir.path().to_str().unwrap();
             projects.add_project(root).unwrap();
-            projects.set_hooks_trusted(root, false).unwrap();
-            assert!(!projects.hooks_trusted(root).unwrap());
             assert!(!crate::trust_service::TrustService::new(db.clone()).is_trusted(dir.path()));
             let marker = dir.path().join("audit-hook-ran.txt");
             let quoted_marker = marker.to_string_lossy().replace('\'', "''");
             let definitions = serde_json::json!({ "hooks": { "SessionStart": [{
                 "hooks": [{
                     "type": "command", "shell": "powershell", "timeout": 5,
-                    "command": format!("Set-Content -LiteralPath '{quoted_marker}' -Value 'audit' -NoNewline")
+                    "command": format!("Add-Content -LiteralPath '{quoted_marker}' -Value 'audit' -NoNewline")
                 }]
             }]}});
+            let config = match field {
+                Some(field) => serde_json::json!({(field): definitions.to_string()}),
+                None => definitions,
+            };
+            let config_path = dir.path().join(file_name);
+            std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+            std::fs::write(&config_path, config.to_string()).unwrap();
+            let chat = ChatService::new(db.clone(), settings.clone(), chat_transport(), dir.path())
+                .with_projects(projects.clone());
+            // Exercise the full trust lifecycle for both supported project
+            // sources: untrusted is denied, an explicit grant runs the hook,
+            // and revoking that grant takes effect on the next run.
+            for (step, trusted, expected) in [
+                ("initial", false, false),
+                ("granted", true, true),
+                ("revoked", false, false),
+            ] {
+                projects.set_hooks_trusted(root, trusted).unwrap();
+                assert_eq!(projects.hooks_trusted(root).unwrap(), trusted);
+                if marker.exists() {
+                    std::fs::remove_file(&marker).unwrap();
+                }
+                chat.run("hello", |_| {}, |_| {}).await.unwrap();
+                let marker_present = marker.exists();
+                eprintln!(
+                    "source={file_name}, field={field:?}, step={step}, hooks_trusted={trusted}, marker_present={marker_present}"
+                );
+                assert_eq!(
+                    marker_present, expected,
+                    "project hook trust mismatch for {file_name} at {step}"
+                );
+                if expected {
+                    assert_eq!(std::fs::read_to_string(&marker).unwrap(), "audit");
+                }
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn project_hook_trust_revocation_gates_already_registered_session_end() {
+        struct RevokeDuringModel {
+            projects: Arc<crate::project_service::ProjectService>,
+            root: String,
+        }
+        #[async_trait::async_trait]
+        impl HttpTransport for RevokeDuringModel {
+            async fn stream(&self, _: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+                self.projects.set_hooks_trusted(&self.root, false)?;
+                sink.on_event(r#"{"type":"response.output_text.delta","delta":"done"}"#)?;
+                sink.on_event(
+                    r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                )?;
+                Ok(())
+            }
+        }
+        for file_name in ["hooks.json", "settings.json"] {
+            let (db, settings, dir) = seeded().await;
+            let projects = Arc::new(crate::project_service::ProjectService::new(db.clone()));
+            let root = dir.path().to_string_lossy().into_owned();
+            projects.add_project(&root).unwrap();
+            projects.set_hooks_trusted(&root, true).unwrap();
+            let marker = dir.path().join("audit-hook-events.txt");
+            let quoted_marker = marker.to_string_lossy().replace('\'', "''");
+            let action = |event: &str| {
+                serde_json::json!([{
+                    "hooks": [{
+                        "type":"command", "shell":"powershell", "timeout":5,
+                        "command":format!("Add-Content -LiteralPath '{quoted_marker}' -Value '{event}'")
+                    }]
+                }])
+            };
+            let defs = serde_json::json!({"hooks":{
+                "SessionStart": action("start"), "SessionEnd": action("end")
+            }});
             std::fs::create_dir_all(dir.path().join(".deepagent")).unwrap();
             std::fs::write(
                 dir.path().join(".deepagent").join(file_name),
-                definitions.to_string(),
+                defs.to_string(),
             )
             .unwrap();
-            let chat = ChatService::new(db, settings, chat_transport(), dir.path())
-                .with_projects(projects);
+            let transport = Arc::new(RevokeDuringModel {
+                projects: projects.clone(),
+                root,
+            });
+            let chat =
+                ChatService::new(db, settings, transport, dir.path()).with_projects(projects);
             chat.run("hello", |_| {}, |_| {}).await.unwrap();
-            let marker_present = marker.exists();
-            eprintln!("source={file_name}, hooks_trusted=false, marker_present={marker_present}");
-            if file_name == "hooks.json" {
-                assert!(
-                    !marker_present,
-                    "dedicated hooks file control must respect trust"
-                );
-            }
-            if marker_present {
-                assert_eq!(std::fs::read_to_string(&marker).unwrap(), "audit");
-                executed.push(file_name);
-            }
+            let contents = std::fs::read_to_string(&marker).unwrap();
+            let events = contents.lines().collect::<Vec<_>>();
+            eprintln!("source={file_name}, registered_then_revoked, events={events:?}");
+            assert_eq!(
+                events,
+                ["start"],
+                "revocation must prevent subsequent project hooks"
+            );
         }
-        assert!(
-            executed.is_empty(),
-            "untrusted project hooks executed from {executed:?}"
-        );
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn project_hooks_without_registry_are_skipped_but_user_hooks_run() {
+        let (db, settings, dir) = seeded().await;
+        // General workspace trust is not an implicit executable-hook grant.
+        crate::trust_service::TrustService::new(db.clone())
+            .set_trusted(dir.path())
+            .unwrap();
+        let marker = dir.path().join("user-hook.txt");
+        let quoted = marker.to_string_lossy().replace('\'', "''");
+        let user = serde_json::json!({"hooks":{"SessionStart":[{"hooks":[{
+            "type":"command", "shell":"powershell", "timeout":5,
+            "command":format!("Add-Content -LiteralPath '{quoted}' -Value 'user' -NoNewline")
+        }]}]}});
+        settings.set_hooks_json(&user.to_string()).unwrap();
+        // Invalid project hooks must be skipped before parsing, not disable
+        // the valid host/user hook or make headless chat fail to start.
+        std::fs::create_dir_all(dir.path().join(".deepagent")).unwrap();
+        std::fs::write(
+            dir.path().join(".deepagent/settings.json"),
+            r#"{"hooks_json":"invalid project hook JSON"}"#,
+        )
+        .unwrap();
+        let chat = ChatService::new(db, settings, chat_transport(), dir.path());
+        chat.run("hello", |_| {}, |_| {}).await.unwrap();
+        assert_eq!(std::fs::read_to_string(marker).unwrap(), "user");
     }
 
     #[cfg(windows)]

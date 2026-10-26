@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-use deepagent_context::{ConfigLayer, ConfigSource, DualConfigLoader};
+use deepagent_context::{ConfigLayer, ConfigScope, ConfigSource, DualConfigLoader};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_hooks::{HookDefinitions, PermissionRules};
 
@@ -19,6 +19,12 @@ pub(crate) struct RunConfigOverlay {
     pub(crate) errors: Vec<String>,
 }
 
+#[derive(Default)]
+pub(crate) struct RunHookDefinitions {
+    pub(crate) host: HookDefinitions,
+    pub(crate) project: HookDefinitions,
+}
+
 impl RunConfigOverlay {
     pub(crate) fn load(root: &Path, run_overrides: serde_json::Value) -> Self {
         let overlay = DualConfigLoader::new(root)
@@ -34,12 +40,11 @@ impl RunConfigOverlay {
 
     #[cfg(test)]
     fn from_value(value: serde_json::Value) -> Self {
-        Self {
+        Self::from_layers(vec![ConfigLayer {
+            path: "run_overrides".into(),
+            precedence: deepagent_context::RUN_PRECEDENCE,
             value,
-            sources: Vec::new(),
-            layers: Vec::new(),
-            errors: Vec::new(),
-        }
+        }])
     }
 
     #[cfg(test)]
@@ -187,21 +192,40 @@ impl RunConfigOverlay {
             .filter(|value| !value.trim().is_empty())
     }
 
-    /// Hooks aggregate across ALL config layers (plugin/user/project/local/
-    /// run/managed): every source's handler groups are appended, never
-    /// overwritten by a higher scope — hooks from an admin layer and a
-    /// project layer for the same event all run.
-    pub(crate) fn hook_definitions(&self) -> Result<Option<HookDefinitions>> {
-        let mut merged = HookDefinitions::default();
-        if self.layers.is_empty() {
-            // Overlays built from a single merged value (tests / legacy).
-            collect_hook_definitions(&self.value, &mut merged)?;
-        } else {
-            for layer in &self.layers {
-                collect_hook_definitions(&layer.value, &mut merged)?;
-            }
+    /// Hooks aggregate across the allowed config layers (plugin/user/project/
+    /// local/run/managed): every source's handler groups are appended, never
+    /// overwritten by a higher scope. Project and project-local layers are
+    /// included only after the caller has established project trust; this
+    /// keeps a merged scalar value from bypassing the source trust boundary.
+    pub(crate) fn hook_definitions(
+        &self,
+        project_hooks_trusted: bool,
+    ) -> Result<RunHookDefinitions> {
+        let mut definitions = RunHookDefinitions::default();
+        for layer in &self.layers {
+            let target = match layer.scope() {
+                ConfigScope::Project | ConfigScope::ProjectLocal => {
+                    if !project_hooks_trusted {
+                        tracing::info!(
+                            source = %layer.path,
+                            "skipping hooks from untrusted project config layer"
+                        );
+                        continue;
+                    }
+                    &mut definitions.project
+                }
+                ConfigScope::Unknown => {
+                    tracing::info!(
+                        source = %layer.path,
+                        "skipping hooks from config layer with unknown trust origin"
+                    );
+                    continue;
+                }
+                _ => &mut definitions.host,
+            };
+            collect_hook_definitions(&layer.value, target)?;
         }
-        Ok((!merged.is_empty()).then_some(merged))
+        Ok(definitions)
     }
 }
 
@@ -298,6 +322,9 @@ fn merge_json(target: &mut serde_json::Value, source: serde_json::Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use deepagent_context::{
+        PROJECT_DEEPAGENT_PRECEDENCE, RUN_PRECEDENCE, USER_DEEPAGENT_PRECEDENCE,
+    };
 
     #[test]
     fn overlay_profile_recomputes_execution_mode_after_overrides() {
@@ -356,10 +383,113 @@ mod tests {
             }
         }));
 
-        let defs = overlay.hook_definitions().unwrap().unwrap();
+        let defs = overlay.hook_definitions(true).unwrap().host;
 
         assert_eq!(defs.hooks.len(), 1);
         assert!(defs.hooks.contains_key("UserPromptSubmit"));
+    }
+
+    #[test]
+    fn project_hook_layers_are_filtered_until_trust_is_granted() {
+        let hook = |prompt: &str| {
+            serde_json::json!({
+                "hooks": {
+                    "SessionStart": [{
+                        "hooks": [{"type": "prompt", "prompt": prompt}]
+                    }]
+                }
+            })
+        };
+        let overlay = RunConfigOverlay::from_layers(vec![
+            layer(
+                "user/.deepagent/settings.json",
+                USER_DEEPAGENT_PRECEDENCE,
+                hook("user"),
+            ),
+            layer(
+                ".deepagent/settings.json",
+                PROJECT_DEEPAGENT_PRECEDENCE,
+                hook("project"),
+            ),
+            layer("run_overrides", RUN_PRECEDENCE, hook("run")),
+        ]);
+
+        let untrusted = overlay.hook_definitions(false).unwrap();
+        assert_eq!(
+            untrusted
+                .host
+                .hooks
+                .get("SessionStart")
+                .map(|groups| groups.len()),
+            Some(2),
+            "user and explicit run hooks remain, project hook is filtered"
+        );
+        assert!(untrusted.project.is_empty());
+
+        let trusted = overlay.hook_definitions(true).unwrap();
+        assert_eq!(
+            trusted
+                .project
+                .hooks
+                .get("SessionStart")
+                .map(|groups| groups.len()),
+            Some(1)
+        );
+        assert_eq!(trusted.host.action_count(), 2);
+    }
+
+    #[test]
+    fn project_hook_scope_matrix_keeps_host_sources_and_skips_unknown() {
+        use deepagent_context::{
+            MANAGED_PRECEDENCE, PLUGIN_PRECEDENCE, PROJECT_CLAUDE_PRECEDENCE,
+            PROJECT_LOCAL_CLAUDE_PRECEDENCE, PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
+            USER_CLAUDE_PRECEDENCE,
+        };
+        let hook = serde_json::json!({"hooks": {"SessionEnd": [{"hooks": [
+            {"type":"command", "command":"fixture"}
+        ]}]}});
+        let scopes = [
+            PLUGIN_PRECEDENCE,
+            USER_CLAUDE_PRECEDENCE,
+            USER_DEEPAGENT_PRECEDENCE,
+            PROJECT_CLAUDE_PRECEDENCE,
+            PROJECT_DEEPAGENT_PRECEDENCE,
+            PROJECT_LOCAL_CLAUDE_PRECEDENCE,
+            PROJECT_LOCAL_DEEPAGENT_PRECEDENCE,
+            RUN_PRECEDENCE,
+            MANAGED_PRECEDENCE,
+            MANAGED_PRECEDENCE + 1,
+            u16::MAX,
+            0, // Unknown origin must not be promoted to a trusted source.
+        ];
+        let overlay = RunConfigOverlay::from_layers(
+            scopes
+                .into_iter()
+                .map(|precedence| layer("source", precedence, hook.clone()))
+                .collect(),
+        );
+        for trusted in [false, true] {
+            let defs = overlay.hook_definitions(trusted).unwrap();
+            assert_eq!(defs.host.action_count(), 7);
+            assert_eq!(defs.project.action_count(), if trusted { 4 } else { 0 });
+        }
+        let untrusted_invalid = RunConfigOverlay::from_layers(vec![
+            layer("user", USER_DEEPAGENT_PRECEDENCE, hook),
+            layer(
+                "project",
+                PROJECT_DEEPAGENT_PRECEDENCE,
+                serde_json::json!({"hooks_json":"invalid JSON"}),
+            ),
+        ]);
+        assert_eq!(
+            untrusted_invalid
+                .hook_definitions(false)
+                .unwrap()
+                .host
+                .action_count(),
+            1
+        );
+        assert!(untrusted_invalid.hook_definitions(true).is_err());
     }
 
     fn layer(

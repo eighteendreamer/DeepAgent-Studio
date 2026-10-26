@@ -42,7 +42,7 @@ struct ProjectRegistry {
     /// User-facing project names keyed by project path.
     #[serde(default)]
     names: HashMap<String, String>,
-    /// Project paths whose local `.deepagent/hooks.json` may execute.
+    /// Project paths whose project/project-local hook definitions may execute.
     #[serde(default)]
     trusted_hook_projects: HashSet<String>,
 }
@@ -144,7 +144,8 @@ impl ProjectService {
         Ok(self.load()?.trusted_hook_projects.contains(path))
     }
 
-    /// Set whether project-local `.deepagent/hooks.json` is allowed to run.
+    /// Grant/revoke hooks from project settings and the standalone hooks file.
+    /// This is distinct from TrustService's opt-in shell approval escalation.
     pub fn set_hooks_trusted(&self, path: &str, trusted: bool) -> Result<()> {
         let mut reg = self.load()?;
         if !reg.paths.iter().any(|p| p == path) {
