@@ -3,6 +3,9 @@
 #[path = "admission_tests.rs"]
 mod admission_tests;
 
+#[path = "configuration_tests.rs"]
+mod configuration_tests;
+
 use super::*;
 use deepagent_app_core::{ApprovalPolicy, MemorySecretStore, SettingsService};
 use deepagent_core::error::{CoreError, Result as CoreResult};

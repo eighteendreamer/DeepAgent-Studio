@@ -253,6 +253,23 @@ impl<'db> EventStore<'db> {
         project: Option<&str>,
         now: Timestamp,
     ) -> Result<()> {
+        self.create_session_configured(id, title, mode, project, None, now)
+    }
+
+    /// Commit explicit execution configuration in the same authoritative file
+    /// header as session identity, before exposing the newly created session.
+    pub fn create_session_configured(
+        &self,
+        id: SessionId,
+        title: Option<&str>,
+        mode: SessionMode,
+        project: Option<&str>,
+        execution_config: Option<deepagent_core::execution_config::SessionExecutionConfig>,
+        now: Timestamp,
+    ) -> Result<()> {
+        if let Some(config) = &execution_config {
+            config.validate()?;
+        }
         let _io = self.db.lock_session_io()?;
         let _file_lock = session_files::lock_session(&self.db.session_files_root(), id)?;
         let created = session_files::create(
@@ -263,6 +280,7 @@ impl<'db> EventStore<'db> {
                 mode,
                 project: project.map(str::to_owned),
                 created_at: now,
+                execution_config,
             },
         )?;
         let result =
@@ -292,6 +310,22 @@ impl<'db> EventStore<'db> {
             tracing::error!(%id, %error, "session file committed but metadata insert failed; retaining source for startup repair");
         }
         result
+    }
+
+    /// Read pinned overrides from the existing session source, not SQLite or
+    /// a new settings store. Invalid/unsupported metadata is a hard error.
+    pub fn session_execution_config(
+        &self,
+        id: SessionId,
+    ) -> Result<Option<deepagent_core::execution_config::SessionExecutionConfig>> {
+        let loaded = self
+            .load_session_file(id)?
+            .ok_or_else(|| CoreError::not_found(format!("session {id}")))?;
+        let config = loaded.header.execution_config;
+        if let Some(config) = &config {
+            config.validate()?;
+        }
+        Ok(config)
     }
 
     /// Append `payload` to `session_id`'s stream, returning the full [`Event`]
@@ -1291,6 +1325,7 @@ impl<'db> EventStore<'db> {
                 mode: record.mode,
                 project: record.project.clone(),
                 created_at: now,
+                execution_config: loaded.header.execution_config,
             },
             events,
             projections,
@@ -2073,6 +2108,14 @@ mod tests {
                     mode: SessionMode::Normal,
                     project: Some("G:/workspace/orphan".into()),
                     created_at: Timestamp::from_millis(42),
+                    execution_config: Some(
+                        deepagent_core::execution_config::SessionExecutionConfig::new(
+                            deepagent_core::execution_config::ExecutionOverrides {
+                                permission_profile: Some("read_only".into()),
+                                ..Default::default()
+                            },
+                        ),
+                    ),
                 },
             )
             .unwrap();
@@ -2087,6 +2130,16 @@ mod tests {
         let reopened = Database::open(&db_path).unwrap();
         let store = EventStore::new(&reopened);
         let record = store.get_session(session_id).unwrap().unwrap();
+        assert_eq!(
+            store
+                .session_execution_config(session_id)
+                .unwrap()
+                .unwrap()
+                .overrides
+                .permission_profile
+                .as_deref(),
+            Some("read_only")
+        );
         assert_eq!(record.title.as_deref(), Some("orphaned creation"));
         assert_eq!(record.project.as_deref(), Some("G:/workspace/orphan"));
         assert_eq!(record.created_at, Timestamp::from_millis(42));
@@ -2832,5 +2885,91 @@ mod tests {
         let _ = clock;
         // store_with_session used create_session (no project) → None.
         assert!(store.get_session(sid).unwrap().unwrap().project.is_none());
+    }
+
+    #[test]
+    fn execution_config_survives_fork_rewind_project_move_and_reopen() {
+        use deepagent_core::execution_config::{ExecutionOverrides, SessionExecutionConfig};
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("config.sqlite");
+        let source = SessionId::new();
+        let child = SessionId::new();
+        let config = SessionExecutionConfig::new(ExecutionOverrides {
+            provider: Some("deepseek".into()),
+            model: Some("deepseek-flash".into()),
+            permission_profile: Some("read_only".into()),
+            sandbox_backend: Some("windows_sandbox".into()),
+            ..Default::default()
+        });
+        {
+            let db = Database::open(&path).unwrap();
+            let store = EventStore::new(&db);
+            store
+                .create_session_configured(
+                    source,
+                    None,
+                    SessionMode::Normal,
+                    Some("/old/project"),
+                    Some(config.clone()),
+                    Timestamp::from_millis(1),
+                )
+                .unwrap();
+            for text in ["first", "second"] {
+                store
+                    .append(
+                        source,
+                        EventPayload::Note { text: text.into() },
+                        Timestamp::from_millis(2),
+                    )
+                    .unwrap();
+            }
+            store
+                .fork_session(source, child, 0, Timestamp::from_millis(3))
+                .unwrap();
+            assert_eq!(
+                store.session_execution_config(child).unwrap(),
+                Some(config.clone())
+            );
+            assert_eq!(store.event_count(child).unwrap(), 1);
+            store.truncate_after(source, 0).unwrap();
+            assert_eq!(
+                store
+                    .move_project_sessions("/old/project", "/new/project")
+                    .unwrap(),
+                2
+            );
+        }
+        let db = Database::open(&path).unwrap();
+        let store = EventStore::new(&db);
+        for id in [source, child] {
+            assert_eq!(
+                store.session_execution_config(id).unwrap(),
+                Some(config.clone())
+            );
+            assert_eq!(
+                store.get_session(id).unwrap().unwrap().project.as_deref(),
+                Some("/new/project")
+            );
+            assert_eq!(store.event_count(id).unwrap(), 1);
+        }
+        let legacy = SessionId::new();
+        store
+            .create_session(legacy, None, Timestamp::from_millis(4))
+            .unwrap();
+        assert_eq!(store.session_execution_config(legacy).unwrap(), None);
+        let mut unsupported = config;
+        unsupported.version = 2;
+        let refused = SessionId::new();
+        assert!(store
+            .create_session_configured(
+                refused,
+                None,
+                SessionMode::Normal,
+                None,
+                Some(unsupported),
+                Timestamp::from_millis(5)
+            )
+            .is_err());
+        assert!(store.get_session(refused).unwrap().is_none());
     }
 }

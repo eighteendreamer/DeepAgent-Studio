@@ -219,19 +219,7 @@ pub(crate) type InvokedSkillMap =
 /// These values are merged through the existing run configuration overlay so
 /// the desktop path and headless paths still share one permission/model
 /// resolution implementation.
-#[derive(Debug, Clone, Default, serde::Serialize)]
-pub struct HarnessRunOverrides {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub sandbox_backend: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permission_profile: Option<String>,
-}
+pub use deepagent_core::execution_config::ExecutionOverrides as HarnessRunOverrides;
 
 impl ChatService {
     /// Build a chat service over the shared DB, settings, model transport, and

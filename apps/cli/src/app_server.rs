@@ -3,6 +3,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use deepagent_core::execution_config::SessionExecutionConfig;
+
 use deepagent_app_core::{
     AppService, ArchiveService, ChatService, HarnessRunOverrides, SandboxCapabilities,
 };
@@ -136,10 +138,7 @@ pub async fn run(transport: String) -> Result<(), String> {
 struct ThreadState {
     chat: ChatService,
     workspace: PathBuf,
-    provider: Option<String>,
-    model: Option<String>,
-    permission_profile: Option<String>,
-    sandbox_backend: Option<String>,
+    overrides: HarnessRunOverrides,
 }
 
 struct TurnLaunch {
@@ -155,6 +154,7 @@ struct TurnState {
     thread_id: String,
     chat: ChatService,
     active: bool,
+    overrides: HarnessRunOverrides,
 }
 
 /// In-process state for one app-server process. It owns no agent loop or
@@ -404,12 +404,20 @@ impl ServerState {
             Ok(path) => path,
             Err(error) => return (RpcResponse::error(id, ERR_INVALID_PARAMS, error), None),
         };
-        let session = match Session::create_in_project(
+        let configuration = SessionExecutionConfig::new(HarnessRunOverrides {
+            provider: params.provider,
+            model: params.model,
+            permission_profile: params.permission_profile,
+            sandbox_backend: params.sandbox_backend,
+            ..Default::default()
+        });
+        let session = match Session::create_configured(
             &self.database,
             &SystemClock,
             None,
             deepagent_core::SessionMode::Normal,
             Some(&workspace.to_string_lossy()),
+            Some(configuration.clone()),
         ) {
             Ok(session) => session,
             Err(error) => {
@@ -426,10 +434,7 @@ impl ServerState {
             ThreadState {
                 chat,
                 workspace: workspace.clone(),
-                provider: params.provider,
-                model: params.model,
-                permission_profile: params.permission_profile,
-                sandbox_backend: params.sandbox_backend,
+                overrides: configuration.overrides.clone(),
             },
         );
         if let Some(emitter) = emitter {
@@ -446,6 +451,7 @@ impl ServerState {
                     "threadId": thread_id,
                     "status": "ready",
                     "cwd": workspace,
+                    "configuration": configuration,
                 }),
             ),
             None,
@@ -505,15 +511,25 @@ impl ServerState {
             .project
             .map(PathBuf::from)
             .unwrap_or_else(|| self.workspace.clone());
+        let configuration = match store.session_execution_config(session_id) {
+            Ok(configuration) => configuration,
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                )
+            }
+        };
+        let overrides = configuration
+            .as_ref()
+            .map(|config| config.overrides.clone())
+            .unwrap_or_default();
         self.threads.insert(
             params.thread_id.clone(),
             ThreadState {
                 chat: self.base_chat.for_workspace(workspace.clone()),
                 workspace: workspace.clone(),
-                provider: None,
-                model: None,
-                permission_profile: None,
-                sandbox_backend: None,
+                overrides,
             },
         );
         (
@@ -523,6 +539,7 @@ impl ServerState {
                     "threadId": params.thread_id,
                     "status": "ready",
                     "cwd": workspace,
+                    "configuration": configuration,
                 }),
             ),
             None,
@@ -779,10 +796,7 @@ impl ServerState {
                 ThreadState {
                     chat: source.chat,
                     workspace: source.workspace,
-                    provider: source.provider,
-                    model: source.model,
-                    permission_profile: source.permission_profile,
-                    sandbox_backend: source.sandbox_backend,
+                    overrides: source.overrides,
                 },
             );
         }
@@ -833,11 +847,15 @@ impl ServerState {
         };
         let turn_id = format!("turn_{}", deepagent_core::id::EventId::new());
         let overrides = HarnessRunOverrides {
-            provider: params.provider.or(thread.provider),
-            model: params.model.or(thread.model),
-            reasoning_effort: params.reasoning_effort,
-            sandbox_backend: params.sandbox_backend.or(thread.sandbox_backend),
-            permission_profile: params.permission_profile.or(thread.permission_profile),
+            provider: params.provider.or(thread.overrides.provider),
+            model: params.model.or(thread.overrides.model),
+            reasoning_effort: params
+                .reasoning_effort
+                .or(thread.overrides.reasoning_effort),
+            sandbox_backend: params.sandbox_backend.or(thread.overrides.sandbox_backend),
+            permission_profile: params
+                .permission_profile
+                .or(thread.overrides.permission_profile),
         };
         if let Err(error) = thread.chat.admit_run(&turn_id, &params.thread_id) {
             return (
@@ -851,6 +869,7 @@ impl ServerState {
                 thread_id: params.thread_id.clone(),
                 chat: thread.chat.clone(),
                 active: true,
+                overrides: overrides.clone(),
             },
         );
         (
@@ -996,6 +1015,7 @@ impl ServerState {
                 thread_id: params.thread_id.clone(),
                 chat: current.chat.clone(),
                 active: true,
+                overrides: current.overrides.clone(),
             },
         );
         (
@@ -1013,7 +1033,7 @@ impl ServerState {
                 thread_id: params.thread_id,
                 turn_id: next_turn,
                 input: params.input,
-                overrides: HarnessRunOverrides::default(),
+                overrides: current.overrides,
             }),
         )
     }
@@ -1414,7 +1434,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: resuming a thread must preserve its explicit permission profile"]
     fn audit_resume_preserves_explicit_thread_overrides() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);
@@ -1446,10 +1465,10 @@ mod tests {
         );
         let actual = serde_json::to_value(launch.unwrap().overrides).unwrap();
         let expected = serde_json::json!({
-            "provider": original.provider,
-            "model": original.model,
-            "permission_profile": original.permission_profile,
-            "sandbox_backend": original.sandbox_backend
+            "provider": original.overrides.provider,
+            "model": original.overrides.model,
+            "permission_profile": original.overrides.permission_profile,
+            "sandbox_backend": original.overrides.sandbox_backend
         });
         eprintln!("audit resume: before={expected}, after={actual}");
         assert_eq!(
@@ -1459,7 +1478,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: steering must retain the effective model and permission configuration"]
     fn audit_steer_preserves_effective_turn_overrides() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);

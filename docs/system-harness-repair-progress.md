@@ -2,21 +2,53 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计十九项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计二十项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 19 | H-02、H-06、H-07、H-08、H-09、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 20 | H-04、H-02、H-06、H-07、H-08、H-09、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前没有已进入实现但尚未完成验收的条目 |
-| 待修复 | 260 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-04已完成所列Windows本机范围验收；下一项尚未实施 |
+| 待修复 | 259 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **260（260待修复、0修复中）**；不提供完成率。十九项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **259（259待修复、0修复中）**；不提供完成率。二十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-04 本轮即时记录（2026-10-26）
+
+**当前状态：已修复并验收（所列Windows本机范围）。** 原始及中间失败保留，最终范围见E-H04-13～14；修复提交待生成后另做真实hash回填。
+
+E-H04-20261026-01（原始复现）：生产代码未改时依次执行`cargo test -p deepagent-cli audit_resume_preserves --offline -- --ignored --nocapture`和`cargo test -p deepagent-cli audit_steer_preserves --offline -- --ignored --nocapture`，各0 passed/1 failed/0 ignored（测试各0.05s，cargo exit=101）。resume前provider/model/read_only/windows_sandbox齐全，后为{}；steer前另有reasoning_effort=high，替换后同为{}。当前H-02已接纳，无需探针手工admit；失败仍指向配置生命周期丢失。本轮只处理H-04：持久化显式线程配置、同进程/冷恢复/分叉继承与steer逐次覆盖传递；不合并H-03后端路由、H-49实际reasoning应用、H-130重复steer或H-222线程reasoning字段。原有未跟踪项不读取、修改或暂存。
+
+E-H04-20261026-02（统一元数据实现与首个复跑）：参考Codex的实际配置快照/恢复核对及steer_turn保留当前运行配置；本地设计将既有HarnessRunOverrides字段提升为core共享ExecutionOverrides并保持原AppCore公开别名，避免持久化与运行字段复制。新增版本化SessionExecutionConfig作为现有会话文件header可选字段，创建时同源写入、fork复制、重写保留，不新增SQLite表/迁移或配置store。start/resume返回显式configuration（旧会话无记录为null，不能声称恢复其历史丢失值），未知版本/不合法形状报错；未指定字段仍由原运行时解析最新设置。ThreadState持有同一结构，TurnState保留已合并逐次覆盖供steer继承。首个`cargo test -p deepagent-cli audit_resume_preserves --offline -j 1 -- --nocapture --test-threads=1`退出0，1 passed/0 ignored（编译1m45s、测试0.07s）。尚待冷恢复、fork/rewind、实际权限/模型wire、SDK及全仓验收，不能据此关闭。
+
+E-H04-20261026-03（SDK消费者与专项准备）：TypeScript SDK新增可选Thread.configuration投影，start/resume保留服务端返回值；旧server缺字段为undefined、旧会话无快照为null。实际在packages/sdk运行`pnpm test`退出0，tsc构建与6个Node测试全部通过，新增配置消费及旧响应正对照；这是mock-server合同验证，不冒充正式CLI/真实provider验收。另已加入共享元数据的fork/rewind/项目移动/重开用例，以及CLI冷附着、逐次覆盖隔离、真实AppCore模型wire与read_only工具负/显式full_access写入正对照；Rust专项仍在编译，尚无通过结论。未更改ThreadResumeRequest输入、PROTOCOL_VERSION或Tauri/UI。
+
+E-H04-20261026-04（Rust专项真实失败）：`cargo test -p deepagent-cli configuration_ --offline -j 1 -- --nocapture --test-threads=1`退出1，2 passed/1 failed/0 ignored（编译1m19s、测试0.62s）。冷恢复/fork与逐次覆盖隔离、旧会话null报告通过；实际权限对照在“item.completed/tool_result包含file writes are denied”的事件断言失败。此前该测试已确认durable succeeded且canary未创建，但不能据此推断具体拒绝来源或wire模型断言通过；正常写入对照尚未执行到。正在沿实际生产事件mapper与工具返回核对原因，不降低为只检查文件不存在。
+
+E-H04-20261026-05（定位专项断言与共享元数据通过）：保留E-04失败后，用同一测试二进制输出核对实际事件：read_only在既有修改hook阶段拒绝，事件为error/code=tool_blocked，message为write_file/modify is blocked by the current sandbox mode，而非进入文件工具后才产生ToolResult失败。原测试错误假设了拒绝层级；生产权限行为不需修改。新增断言改为核对该实际拒绝原因、canary未写入，并保留后续显式full_access真实工具成功正对照，不仅降低为文件不存在。带诊断的定向运行0 passed/1 failed（编译16.05s、测试0.38s），同二进制过滤输出再现同一结果；未把失败改写成通过。另`cargo test -p deepagent-core -p deepagent-persistence -p deepagent-session execution_config --offline -j 1 -- --nocapture --test-threads=1`退出0，core1+persistence2通过（测试0.17s），session/control被过滤为0，不能算其全组已验。
+
+E-H04-20261026-06（修正断言后的CLI全组）：`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0，102 passed/25 ignored（编译18.23s、测试6.80s）。含两个原探针取消ignore后默认通过、3个新configuration测试及原H-02回归；真实read_only hook拒绝已按实际tool_blocked核对，正常显式full_access经write_file创建临时canary成功，两组实际wire分别保持deepseek-flash与显式deepseek-pro，线程持久化仍为read_only。尚未把当前正式二进制构建/严格lint/workspace当作通过。随后补强同一真实链的steer替换执行与热fork检查，并在已有orphan文件恢复测试中加入配置断言；这些新增断言尚需重跑，生产源码不因此改动。
+
+E-H04-20261026-07（构建、共享lint与正式SDK跨进程通过）：`cargo build -p deepagent-cli --offline -j 1`退出0（1m41s）。`cargo clippy -p deepagent-core -p deepagent-persistence -p deepagent-session --all-targets --offline -j 1 --no-deps -- -D warnings`退出0（1m14s）；这不代表CLI/AppCore全lint通过。packages/sdk设置DEEPAGENT_TEST_BINARY为当前正式deepagent.exe后，`node --test tests/server-configuration.test.mjs`退出0，1 passed/0 skipped（0.41s）：真实SDK→stdio→正式CLI创建显式配置，重启server后对未附着源冷fork、显式resume child与source，version/四项覆盖完全保留。测试自行分配临时数据根、移除继承DB路径并在finally恢复环境/关闭进程，未访问旧根或真实凭据。最终workspace使用补强steer/热fork/orphan断言后的源码，现已启动，尚在编译；正式SDK此次验证的生产源码相同，后续仅补强测试。
+
+E-H04-20261026-08（最终契约审查补齐共享字段）：人工审查发现新共享SessionExecutionConfig允许保存reasoning_effort，但turn_start仍只读取本次请求值；虽然ThreadStartRequest当前尚无该字段（H-222仍未修），其他既有Session创建调用者使用新配置接口时也不应静默丢字段。将同一合并式补为turn显式值优先、否则已保存值，并在旧会话/已配置会话对照中检查共享创建接口的reasoning恢复；不新增ThreadStartRequest字段、不修改H-49的实际wire逻辑。完整workspace仍用已启动进程继续，不重启，其CLI编译快照可能早于此次单行改动，结束后必须补最终CLI全组与二进制/SDK复核，不能把旧快照当作新分支已验。
+
+E-H04-20261026-09（严格CLI lint真实失败与本轮修正）：CLI的`cargo clippy -p deepagent-cli --all-targets --offline -j 1 --no-deps -- -D warnings`退出非零，报告原有app_server.rs:627 unnecessary_map_or及新configuration_tests.rs显式drop(old)仍被诊断await_holding_lock。将测试改为词法作用域内构造cold ServerState，不屏蔽告警；原map_or不在本轮修改范围，保留基线。AppCore严格lint同一shell后续仍待build锁，不能提前宣称通过。完整workspace编译9m07s后已进入执行，AppCore1132 passed/78 ignored与checkpoint19 passed/1 ignored通过，后续尚无完整结论。
+
+E-H04-20261026-10（最终CLI回归与严格lint边界）：修正测试词法作用域及共享reasoning合并后的`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0，102 passed/25 ignored（构建汇总7m10s含锁等待，测试7.94s）。再次CLI严格lint退出101，仅余HEAD原有app_server.rs:627 unnecessary_map_or，新测试await_holding_lock已消失；`cargo clippy -p deepagent-app-core --lib --offline -j 1 --no-deps -- -D warnings`退出101，context_runtime.rs有8处clone_on_copy，plugin_preparation.rs有type_complexity，run_assembler.rs有too_many_arguments。已核对后三文件与HEAD无diff及原map_or原样存在，不顺手修或屏蔽，不宣称严格lint全绿。最终正式CLI构建另已退出0（1m49s），隔离Rust SDK仍在编译；完整workspace的kernel_v2_e2e为127 passed/86 ignored，后续仍待终态，不提前记为通过。
+
+E-H04-20261026-11（最终正式SDK复核清理失败）：最新正式CLI构建后重跑`node --test tests/server-configuration.test.mjs`退出1，0 passed/1 failed/0 skipped（0.41s），报EBUSY，无法unlink本次新建临时目录中的deepagent.db-wal。异常来自finally的rmSync；前序配置断言未报错，但不能据此把整项标通过。已读既有StdioTransport.close：child.kill后立即返回，没有等待close事件，故await agent.close不是文件句柄已释放的保证。本轮不顺手修改生产SDK生命周期，先核对Node清理API及测试收尾边界，保留此次真实失败；原E-07成功仅代表当时运行，不替代本次复核。
+
+E-H04-20261026-12（隔离Rust SDK对照及清理边界修正）：最终二进制的隔离`cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 1 -- --nocapture --test-threads=1`退出0，6 passed/0 ignored（编译36.82s、测试0.72s），临时DEEPAGENT_DATA_ROOT并移除继承DB路径；这仅是隔离环境对照，未证明旧根启动错误的具体根因。完整workspace当前e2e_stdio为2 passed/4 failed（initialize ResponseChannelClosed），prompts为27 passed/1 failed（既有H-306空defaultUserPrompt），后续尚待终态；共享core42、persistence71/control9已通过。依据[Node 22官方fsPromises.rm文档](https://nodejs.org/docs/latest-v22.x/api/fs.html#fspromisesrmpath-options)，测试清理由零重试rmSync改为await rm、maxRetries=3/retryDelay=100，仅对新建且已校验边界的临时根有界退避，异常仍传播；不修改生产close、不把清理成功冒充SDK进程生命周期已验，配置主断言不变。修正后正式TS SDK复跑待结果。
+
+E-H04-20261026-13（最终workspace终态与SDK复核）：沿原handle完成`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`，退出1，最终仅两个失败target：Rust SDK e2e_stdio（2 passed/4 failed，继承环境initialize ResponseChannelClosed）和deepagent-prompts lib（27 passed/1 failed，H-306）；其余默认target及doc-tests通过，ignored不算已验。包括AppCore1132/78 ignored、kernel127/86 ignored、CLI102/25 ignored、core42、persistence71/control9、session20、runtime284/16 ignored及stabilization5通过。最新reasoning合并/词法作用域的CLI102通过另见E-10，不用全仓较早快照替代。测试清理改用官方有界异步退避后，最新正式二进制的TS SDK`node --test tests/server-configuration.test.mjs`退出0，1 passed/0 skipped（0.49s），主配置断言未降低，生产SDK.close未修改；保留E-11清理失败。`cargo fmt --all -- --check`和`git diff --check`均退出0。全仓与严格lint未全绿，隔离SDK6通过不代表旧数据根初始化根因已修。
+
+E-H04-20261026-14（本项验收、兼容性与剩余范围）：已逐段审查本项生产diff与3个新增文件；原resume/steer探针取消ignore并默认通过，冷恢复/热冷fork/逐次隔离/steer五字段继承、真实AppCore模型wire及read_only拒写与显式full_access正常写入、存储rewind/项目移动/重开/orphan恢复均有实测。H-04在所列Windows本机范围标为已修复并验收，不把E-11失败、E-13全仓失败或E-10严格lint基线删去。本项16文件复用原Session/文件header/AppCore运行边界，未新增DB表、迁移、依赖、第二套store或配置解析器；旧创建API与HarnessRunOverrides公开别名保留，start/resume仅增加configuration返回。只固定显式覆盖，缺项仍走当前host/project设置；legacy null无法找回历史已丢内存值，旧binary可能忽略新header，降级不保证限制保留。配置读取复用全会话reader，大历史IO尚未压测。H-03实际backend路由、H-49 reasoning wire、H-130重复steer、H-222线程reasoning入口、H-216冷fork readiness独立未关闭；冷fork测试显式resume child，不冒充其已修。未验其他OS、真实DeepSeek、UI、全部feature组合，未改Tauri/前端故未跑desktop pnpm build。本轮新增1，累计20已验收、18历史跳过、7归并、2撤销、259待修、0修复中；整体goal继续active。下一项准备按风险复核H-01关键事件队列丢失，尚未开始。全部剩余200–400有效小时仍是跨层复现/修复/验收未校准粗估，锁等待、编译、设备/环境另计，不按本轮墙钟机械扣减。修复hash待独立提交后另行回填，不amend、不推送。
 
 ## H-02 本轮即时记录（2026-10-26）
 
@@ -694,7 +726,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-01：stdio 事件队列满时丢弃关键通知，连接仍表现正常](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H02-01原始失败保留，原探针转默认通过；限所列Windows本机范围 | ACK前复用admit_run/执行消费同一admission；interrupt核对终态及accepted；ACK失败同执行器收尾；补早期取消投影 | E-H02-01～15：CLI97 passed/27 ignored、真实stdio32轮、最终事件断言通过、build/fmt/diff通过；SDK隔离根6 passed；全workspace两失败target，严格CLI lint既有告警未绿 | `f777dc82` | H-01/H-04/H-92仍独立未修，其他OS/真实DeepSeek/UI未验；下一项H-04；总体200–400有效小时初估 |
 | [H-03：Harness 的逐次沙箱 backend 选择未进入实际执行路由](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H04-01保留原resume/steer失败，02～14记录实现/复核 | 共享ExecutionOverrides及现有会话header版本快照，resume/fork继承、steer保留逐次覆盖 | CLI102通过/25忽略；core42、persistence71/control9、session20；TS6及正式1、隔离Rust SDK6通过；全仓两失败target和严格lint基线见E-10～13 | 待生成独立修复提交并另回填 | 仅固定显式覆盖；旧会话无历史快照，降级不保证；H-03/H-49/H-130/H-222/H-216独立；总体200–400有效小时初估 |
 | [H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 归并H-278只补强同项；限所列Windows/Linux本机范围 | 连接恢复与业务请求重试分离；tools/call单次派发并返回RemoteOutcomeUnknown，adapter/事件/持久化/wire保留unknown且retryable=false；ping/tools/list才可受限重试 | E-H06-01～06：原两探针各2次副作用失败；修复后MCP70/3 ignored、HTTP1、真实stdio2、AppCore2、相关workspace消费者通过；全workspace唯一既有H-306失败，Linux真实stdio因无Node未执行 | `5ba4ee83` | 未验证Linux真实stdio、真实供应商、多进程外部服务；不自动核实远端状态，调用方须先核实再重试；本项已完成所列本机边界验收，计数进入15项 |
 | [H-07：MCP 工具发现忽略分页，只发布首页工具且不报不完整](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始探针 E-H07-20261026-01 复现后，分页探针转默认通过 | `ToolsListResult.next_cursor`保留不透明 cursor；`McpClient::list_tools()`统一有界汇总，100页/2048工具/64KiB cursor，重复 cursor拒绝；registry/AppCore复用同一入口 | E-H07-01～04：原始0 passed/1 failed；修复后MCP lib77/2 ignored、AppCore MCP14/13 ignored、MCP no-deps严格lint及fmt/diff通过；未验完整workspace/其他平台/真实供应商 | `e525b6de` | 限所列MCP/AppCore本机范围；不把ignored、完整workspace或真实服务当作通过 |

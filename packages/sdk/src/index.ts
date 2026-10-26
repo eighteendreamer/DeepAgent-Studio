@@ -181,6 +181,20 @@ export interface ThreadStartResult {
   threadId: string;
   status: string;
   cwd?: string | null;
+  /** null: legacy/non-harness session without a saved snapshot; undefined: older server. */
+  configuration?: SessionExecutionConfiguration | null;
+}
+
+/** Explicit overrides, not a snapshot of all resolved global/project settings. */
+export interface SessionExecutionConfiguration {
+  version: 1;
+  overrides: {
+    provider?: string;
+    model?: string;
+    reasoning_effort?: string;
+    permission_profile?: string;
+    sandbox_backend?: string;
+  };
 }
 
 export interface TurnStartResult {
@@ -607,7 +621,7 @@ export class DeepAgent {
       );
     }
     const result = (await this.request("thread/start", options)) as ThreadStartResult;
-    return new Thread(this, result.threadId);
+    return new Thread(this, result.threadId, result.configuration);
   }
 
   async resumeThread(threadId: string): Promise<Thread> {
@@ -616,8 +630,8 @@ export class DeepAgent {
         "resumeThread requires the stdio app-server transport"
       );
     }
-    await this.request("thread/resume", { threadId });
-    return new Thread(this, threadId);
+    const result = (await this.request("thread/resume", { threadId })) as ThreadStartResult;
+    return new Thread(this, threadId, result.configuration);
   }
 
   async listThreads(): Promise<ThreadInfo[]> {
@@ -703,7 +717,8 @@ export class DeepAgent {
 export class Thread {
   constructor(
     private readonly agent: DeepAgent,
-    public readonly id: string
+    public readonly id: string,
+    public readonly configuration?: SessionExecutionConfiguration | null
   ) {}
 
   async run(input: string, options: TurnStartOptions = {}): Promise<Turn> {

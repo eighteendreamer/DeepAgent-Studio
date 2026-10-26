@@ -74,6 +74,21 @@ test("reconnects the stdio process and resumes a thread", async () => {
   }
 });
 
+test("exposes saved configuration on start/resume and distinguishes legacy metadata", async () => {
+  const agent = createAgent();
+  try {
+    const older = await agent.startThread();
+    assert.equal(older.configuration, undefined);
+    assert.equal((await agent.resumeThread(older.id)).configuration, null);
+    const thread = await agent.startThread({ permissionProfile: "read_only" });
+    const expected = { version: 1, overrides: { permission_profile: "read_only" } };
+    assert.deepEqual(thread.configuration, expected);
+    assert.deepEqual((await agent.resumeThread(thread.id)).configuration, expected);
+  } finally {
+    await agent.close();
+  }
+});
+
 test("maps JSON-RPC errors to a stable SDK error", async () => {
   const agent = createAgent();
   try {

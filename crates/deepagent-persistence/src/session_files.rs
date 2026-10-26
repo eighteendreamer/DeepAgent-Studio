@@ -25,6 +25,9 @@ pub(crate) struct SessionFileHeader {
     pub(crate) mode: SessionMode,
     pub(crate) project: Option<String>,
     pub(crate) created_at: Timestamp,
+    /// Absent in older/non-harness sessions; never inferred from transcript text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) execution_config: Option<deepagent_core::execution_config::SessionExecutionConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1007,7 +1010,27 @@ mod tests {
             mode: SessionMode::Normal,
             project: None,
             created_at: Timestamp::from_millis(1),
+            execution_config: None,
         }
+    }
+
+    #[test]
+    fn execution_config_legacy_header_and_unknown_version_are_not_conflated() {
+        use deepagent_core::execution_config::{ExecutionOverrides, SessionExecutionConfig};
+        let legacy = serde_json::to_value(header(SessionId::new())).unwrap();
+        assert!(legacy.get("execution_config").is_none());
+        assert!(serde_json::from_value::<SessionFileHeader>(legacy.clone())
+            .unwrap()
+            .execution_config
+            .is_none());
+        let mut value = legacy;
+        let mut config = SessionExecutionConfig::new(ExecutionOverrides::default());
+        config.version = 2;
+        value["execution_config"] = serde_json::to_value(config).unwrap();
+        let parsed = serde_json::from_value::<SessionFileHeader>(value.clone()).unwrap();
+        assert!(parsed.execution_config.unwrap().validate().is_err());
+        value["execution_config"]["overrides"]["permission_profile"] = serde_json::json!(42);
+        assert!(serde_json::from_value::<SessionFileHeader>(value).is_err());
     }
 
     fn event(session_id: SessionId, text: &str) -> Event {

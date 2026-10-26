@@ -1,6 +1,7 @@
 import { createInterface } from "node:readline";
 
 const threads = new Set();
+const configurations = new Map();
 let turnNumber = 0;
 
 function send(message) {
@@ -41,7 +42,13 @@ input.on("line", (line) => {
     case "thread/start": {
       const threadId = "thread-mock";
       threads.add(threadId);
-      response(request.id, { threadId, status: "ready", cwd: request.params.cwd ?? null });
+      // Only emit the new field when testing a configured thread. Unconfigured
+      // responses remain the older-server compatibility control.
+      const configuration = request.params.permissionProfile ? {
+        version: 1, overrides: { permission_profile: request.params.permissionProfile }
+      } : undefined;
+      configurations.set(threadId, configuration);
+      response(request.id, { threadId, status: "ready", cwd: request.params.cwd ?? null, configuration });
       event({
         type: "thread.started",
         threadId,
@@ -57,7 +64,8 @@ input.on("line", (line) => {
       response(request.id, {
         threadId: request.params.threadId,
         status: "ready",
-        cwd: null
+        cwd: null,
+        configuration: configurations.get(request.params.threadId) ?? null
       });
       break;
     case "turn/start": {

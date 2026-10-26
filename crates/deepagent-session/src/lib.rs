@@ -57,10 +57,23 @@ impl<'db, C: Clock> Session<'db, C> {
         mode: deepagent_core::SessionMode,
         project: Option<&str>,
     ) -> Result<Self> {
+        Self::create_configured(db, clock, title, mode, project, None)
+    }
+
+    /// Create a session with versioned explicit execution overrides in the
+    /// same durable metadata boundary. Existing callers retain host defaults.
+    pub fn create_configured(
+        db: &'db Database,
+        clock: &'db C,
+        title: Option<&str>,
+        mode: deepagent_core::SessionMode,
+        project: Option<&str>,
+        execution_config: Option<deepagent_core::execution_config::SessionExecutionConfig>,
+    ) -> Result<Self> {
         let id = SessionId::new();
         let now = clock.now();
         let store = EventStore::new(db);
-        store.create_session_full(id, title, mode, project, now)?;
+        store.create_session_configured(id, title, mode, project, execution_config, now)?;
         let started = EventPayload::SessionStarted {
             title: title.map(|s| s.to_string()),
             mode,

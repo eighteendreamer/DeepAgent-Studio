@@ -20,6 +20,7 @@ pub mod clock;
 pub mod compaction_strategy;
 pub mod error;
 pub mod event;
+pub mod execution_config;
 pub mod id;
 pub mod message;
 pub mod redaction;
