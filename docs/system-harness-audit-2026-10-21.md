@@ -23,7 +23,7 @@
 | H-79 | 已修复并验收（2026-10-26，所列本机范围） | 目录名称发现与读取授权统一；最终证据及限制见本项与台账，修复提交`79519de6` |
 | H-07 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `ToolsListResult`保留不透明`nextCursor`，`McpClient::list_tools()`统一有界汇总分页；MCP全组77 passed/2 ignored，AppCore正式MCP筛选14 passed/13 ignored；E-H07-01～04，修复提交`e525b6de` |
 | H-08 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `McpTransport`统一支持无 ID notification，initialize 成功后发送 `notifications/initialized`；严格 stdio、HTTP fixture、MCP全组和AppCore MCP筛选通过；E-H08-01～04，修复提交`2dc9fdf6` |
-| H-09 | 已修复并验收（2026-10-26，Windows本机MCP/AppCore范围） | 单stdout reader、pending/oneshot与连接唯一wire ID；原探针转默认通过，stdio12/0 ignored、正式消费者1；全workspace唯一H-306失败及AppCore严格lint阻断见E-H09-01～07，修复hash待提交回填 |
+| H-09 | 已修复并验收（2026-10-26，Windows本机MCP/AppCore范围） | 单stdout reader、pending/oneshot与连接唯一wire ID；原探针转默认通过，stdio12/0 ignored、正式消费者1；全workspace唯一H-306失败及AppCore严格lint阻断见E-H09-01～09，修复提交`46ba0fd7` |
 
 逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。本次按306行台账实核：本阶段累计修复 **18**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **261（261待修复、0修复中）**；306是历史编号槽位。H-09已完成所列Windows本机MCP/AppCore范围验收；未把ignored、完整workspace或AppCore严格lint当作全绿，H-12 HTTP session管理仍独立待修，整体goal仍active。
 
@@ -618,7 +618,7 @@ E-H08-20261026-04（提交 hash 回填）：代码、回归测试与当时两份
 
 ### H-09：stdio MCP 并发回包按读取者筛选，其他请求的响应会被永久丢弃
 
-**2026-10-26状态：已修复并验收（所列Windows本机范围）。** 下文保留审计时失败、原探针与当时设计状态；后续E-H09-01～07记录修复和实际验收，提交hash待生成后另回填。
+**2026-10-26状态：已修复并验收（所列Windows本机范围）。** 下文保留审计时失败、原探针与当时设计状态；后续E-H09-01～09记录修复和实际验收，修复提交`46ba0fd7`，本次单独回填真实hash。
 
 **级别：高（P1）；范围：同一个 StdioTransport 上存在两个未完成请求且服务端乱序响应。** 单请求顺序测试无法发现此问题。
 
@@ -659,6 +659,8 @@ E-H09-20261026-06（workspace运行中出现既有H-306失败）：同一完整w
 E-H09-20261026-07（最终验收与范围）：`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`最终退出1，唯一失败target为`-p deepagent-prompts --lib`的既有H-306（27 passed/1 failed）；其余默认执行target与doc-tests通过。最新源码包含ID trace：AppCore lib1132 passed/78 ignored、kernel127/86 ignored、正式乱序消费者1/0 ignored、builtins352/4 ignored、CLI89/27 ignored、MCP默认lib82/1 ignored、runtime284/16 ignored、stabilization5、persistence69/control9、session20；不能把ignored或全workspace当作全绿。H-09在所列Windows本机Node/McpService范围验收完成，原失败及E-01～06保留；MCP全特性和严格lint结果见E-04，AppCore严格lint阻断见E-05。单reader不持有transport自身，无Arc自循环；waiter清理与连接终结同步，保留H-06不重发及逻辑ID错误上下文。公共trait/DTO/schema未改，stdio wire ID现在由连接分配，调用方返回ID保持原值；pending同时最多1024，超限显式失败；未知/迟到response丢弃，通知仍沿用原忽略行为。本项不解决响应字节上限、子孙进程生命周期或HTTP session管理；其他OS、真实插件/DeepSeek/UI未验，无前端/Tauri变更故未跑pnpm build。仅提交stdio实现、两份回归文件与两份文档共5文件。本轮新增1，累计18已验收、18历史跳过、7归并、2撤销、261待修、0修复中；整体goal继续active。下一项准备复核P1 H-02的接纳与立即中断窗口，尚未实施。全部剩余200–400有效小时仍为未校准初估，按261项跨层复现/根因修复/验收规模评估，依赖和归并会改变范围，编译（本次workspace8m00s）/锁/设备/环境等待另计，不据本项机械扣减。
 
 E-H09-20261026-08（提交前核对）：最终`cargo fmt --all -- --check`退出0，`git diff --check`退出0。306行台账为306唯一编号、无缺号、每行8列：18已修复并验收、18历史跳过、7归并、2撤销、261待修复；E-H09-01～07两份文档逐字一致。全workspace仅一条失败汇总及一个失败target，与E-06/07一致。AppCore lint阻断的三个生产文件及prompts目录与HEAD无diff。原有未跟踪项未读取、修改或暂存；本轮仅5文件准备独立提交，hash将在后续文档提交回填，不amend、不推送。
+
+E-H09-20261026-09（独立提交与真实hash回填）：修复提交`46ba0fd7`（【fix】修复H-09 stdio并发响应分派与取消清理）已创建，代码、回归和当时两份文档共5文件一并提交，提交前cached diff --check通过。本次只回填真实hash并单独提交两份文档，不amend、不推送、不创建PR。H-09保持所列Windows本机范围已验收，完整workspace仍有H-306失败、AppCore严格lint仍有既有10处阻断；总体18已验收、18历史跳过、7归并、2撤销、261待修，整体goal继续active，下一项H-02。剩余200–400有效小时仍为未校准初估，编译/设备/环境等待另计。
 
 ### H-10：运行结束后预取压缩任务仍继续执行，结果及 usage 无处归集
 
