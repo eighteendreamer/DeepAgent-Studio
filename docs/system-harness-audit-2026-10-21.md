@@ -1799,6 +1799,8 @@ E-H39-20261027-03（独立提交与范围）：生产修复、回归测试及当
 
 ### H-40：专业工作流配置在前端序列化被删除或被后端按另一套字段读取
 
+**当前状态：已修复并验收（2026-10-27，限 Windows 本机离线桌面 TypeScript→workflow graph→WorkflowAgent→RunStore 范围）。**
+
 **级别：高（P1）；范围：桌面专业工作流的输入声明、条件、输出映射和模板。** 图结构使用版本化 DTO，但节点 config 是开放 Map；前端配置 schema、发送过滤器和执行器没有同一份字段契约。H-39 证明的是有效后端条件也不控制派发；本项另行证明用户配置根本没有完整到达执行器，两者不能互相代替。
 
 #### 跨语言真实链路复现
@@ -1823,9 +1825,19 @@ E-H39-20261027-03（独立提交与范围）：生产修复、回归测试及当
 #### 成熟实现、影响与修复方向
 
 - DeepSeek Harness `workflow-ptc/src/meta.ts::validateMeta()` 对边界数据校验已知字段、类型和嵌套结构，错误逐项命名；同目录 runtime.ts 的 readAgentOptions() 拒绝不认识或暂不支持的选项，而非以空值假装接受。其接口是程序式工作流元数据及 agent 参数，并非本系统的画布节点；可借鉴的是在消费边界拒绝契约漂移，不能声称它实现了这里的专业节点 schema。
-- 本系统自己已经有统一的 values 解析、版本化 graph 和声明校验，修复应收敛到这几个既有边界：只过滤真正的 UI 属性；为每种可执行节点明确唯一的版本化 config/input/output 契约，前端编辑/序列化、后端验证/执行及字段迁移共用规则。无效或旧字段必须显式迁移或报错；不能只把三项从过滤器删掉，因为 end/template 的执行字段仍不一致，if-else 内层的桌面 `logic/items/variable/value` 与后端 `logicalOperator/conditions/left/right` 也仍需核对和统一。
+- 本系统自己已经有统一的 values 解析、版本化 graph 和声明校验，修复收敛在这些既有边界：序列化器只过滤真正的 UI 属性；专业配置的 `inputVariables`、`conditions`、`outputVariables`、`templateScript/templateInputVariables` 进入正式 graph；WorkflowAgent 以桌面 schema 的 `name`、`logic/items/variable/value` 和 `templateScript/templateInputVariables` 为规范输入，同时保留旧 `variable`、`logicalOperator/conditions`、`template/variables` 读取兼容，避免旧图在升级时静默丢失。旧字段兼容仅发生在同一执行器消费边界，不新增第二套运行链。
 - 已确认后果：合法输入引用被拒绝；条件值改变；配置的模板和输出映射静默失效，并且后三组仍报告运行成功。这会使用户难以区分“空结果是业务结果”与“配置根本没被执行”。没有把这些结果夸大为数据泄漏或真实付费损失。
-- 验收必须从生产前端 schema 合法配置生成请求，再经正式 Rust 执行对比具体输出；覆盖每种 enabled 专业节点、输入声明与引用、真实 false 条件、输出映射和旧工程迁移。分别测试 UI schema 和 Rust 图结构不能替代跨语言执行测试。本轮仅增加 fixture 桥、审计测试和文档，未修改生产配置过滤或执行器。
+- 验收必须从生产前端 schema 合法配置生成请求，再经正式 Rust 执行对比具体输出；覆盖每种 enabled 专业节点、输入声明与引用、真实 false 条件、输出映射和旧工程迁移。分别测试 UI schema 和 Rust 图结构不能替代跨语言执行测试。原始审计阶段只增加了 fixture 桥、审计测试和文档；本轮已修改生产配置过滤与 WorkflowAgent 消费边界，并以同一跨语言探针验收四类字段。
+
+#### H-40 本轮修复证据（2026-10-27）
+
+E-H40-20261027-01（原始失败复核）：在生产修复前的 HEAD `c48b4e81` 执行 `node apps/desktop/scripts/audit-workflow-contract.cjs --emit-fixtures` 与 `cargo test -p deepagent-app-core --test workflow_audit audit_desktop_workflow_config_survives_backend_execution --offline -j 1 -- --ignored --exact --nocapture --test-threads=1`，四组 fixture 的 `start.config`/条件分别为空或使用未被执行器读取的字段；正式测试退出1，0 passed/1 failed/0 ignored，实际为 input 编译失败、condition branch=false、output `{}`、template `output:""`。
+
+E-H40-20261027-02（根因修复）：`workflowExecutor.ts` 不再把专业节点的 `inputVariables`、`conditions` 当作 UI 元数据过滤；`WorkflowAgent` 的 start/end 声明优先读取 schema 的 `name`（兼容旧 `variable`），条件同时消费桌面 `logic/items/variable/value` 与旧字段，模板同时消费 `templateScript/templateInputVariables` 与旧字段。未新增 store、事件流或执行器，旧格式只在同一消费边界兼容。
+
+E-H40-20261027-03（正式跨层验收）：修复后 `node apps/desktop/scripts/audit-workflow-contract.cjs --emit-fixtures` 退出0并显示四组配置完整进入 `definition.nodes[*].config`；正式 Rust 探针退出0，1 passed/0 failed/0 ignored，四组均得到期望输出（`report=BLUE`、`branch=true`、`report=EXPECTED_REPORT`、`output=EXPECTED_TEMPLATE`），运行终态均 `succeeded`。`cargo test -p deepagent-runtime --lib workflow:: --offline -j 1 -- --quiet --test-threads=1` 为67 passed/0 failed；`cargo test -p deepagent-app-core --test workflow_audit --offline -j 1 -- --quiet --test-threads=1` 为9 passed/39 ignored；`cd apps/desktop && pnpm test:workflow` 为78 passed/0 failed；`cargo fmt --all -- --check`、`git diff --check` 通过。严格 clippy 仍被既有 `deepagent-models/src/client.rs:355` 与 `deepagent-runtime/src/model_agent.rs:282` 的 `clone_on_copy` 阻断，未修改或屏蔽。
+
+E-H40-20261027-04（范围与残余）：关闭范围为 Windows 本机离线的生产 TS 序列化→Rust graph/WorkflowAgent→Kernel/RunStore；未验 Tauri WebView、其他 OS、真实 DeepSeek/供应商、跨进程重开、全量 enabled 专业节点、旧工程迁移和完整 workspace。H-39 条件边激活、H-162 专业 AI 节点可达性及 H-198 OR 求值仍是独立条目。
 
 ### H-41：其他会话完成会清掉当前画布运行监听和停止入口
 

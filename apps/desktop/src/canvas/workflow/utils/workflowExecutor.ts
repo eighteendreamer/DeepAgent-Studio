@@ -30,9 +30,7 @@ const UI_META_KEYS = new Set([
   "executionTime",
   "audioReferenceName",
   "result",
-  "inputVariables",
   "outputMapping",
-  "conditions",
   // 界面意图字段：已折算成内核认的 size / referenceImages，不再重复跨界。
   "aspectRatio",
   "resolution",

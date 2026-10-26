@@ -78,6 +78,16 @@ async function emitFixtures() {
     finish({ payload: { run_id: "audit-serialized-workflow" } });
     await running;
     assert.ok(workflow);
+    const serializedNodes = workflow.definition.nodes;
+    if (name === "input") {
+      assert.equal(serializedNodes.find((node) => node.id === "start").config.inputVariables[0].name, "customer");
+    } else if (name === "condition") {
+      assert.equal(serializedNodes.find((node) => node.id === "inspect").config.conditions[0].items[0].value, "BLUE");
+    } else if (name === "output") {
+      assert.equal(serializedNodes.find((node) => node.id === "end").config.outputVariables[0].name, "report");
+    } else {
+      assert.equal(serializedNodes.find((node) => node.id === "inspect").config.templateScript, "EXPECTED_TEMPLATE");
+    }
     fixtures.push({ name, workflow });
   }
   process.stdout.write(JSON.stringify(fixtures));

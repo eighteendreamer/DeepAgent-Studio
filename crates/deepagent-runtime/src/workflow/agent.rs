@@ -392,8 +392,9 @@ impl WorkflowAgent {
         if let Some(variables) = config.get("inputVariables").and_then(Value::as_array) {
             for var in variables {
                 let name = var
-                    .get("variable")
+                    .get("name")
                     .and_then(Value::as_str)
+                    .or_else(|| var.get("variable").and_then(Value::as_str))
                     .unwrap_or_default();
                 if !name.is_empty() {
                     let value = self.inputs.get(name).cloned().unwrap_or(Value::Null);
@@ -412,8 +413,9 @@ impl WorkflowAgent {
         if let Some(variables) = config.get("outputVariables").and_then(Value::as_array) {
             for var in variables {
                 let name = var
-                    .get("variable")
+                    .get("name")
                     .and_then(Value::as_str)
+                    .or_else(|| var.get("variable").and_then(Value::as_str))
                     .unwrap_or_default();
                 let value = var.get("value").cloned().unwrap_or(Value::Null);
                 if !name.is_empty() {
@@ -498,18 +500,28 @@ impl WorkflowAgent {
             let items = group
                 .get("conditions")
                 .and_then(Value::as_array)
+                .or_else(|| group.get("items").and_then(Value::as_array))
                 .cloned()
                 .unwrap_or_default();
             let group_op = group
                 .get("logicalOperator")
                 .and_then(Value::as_str)
+                .or_else(|| group.get("logic").and_then(Value::as_str))
                 .unwrap_or("and");
 
             let mut group_result = true;
             for item in items {
-                let left = item.get("left").cloned().unwrap_or(Value::Null);
+                let left = item
+                    .get("left")
+                    .cloned()
+                    .or_else(|| item.get("variable").cloned())
+                    .unwrap_or(Value::Null);
                 let operator = item.get("operator").and_then(Value::as_str).unwrap_or("is");
-                let right = item.get("right").cloned().unwrap_or(Value::Null);
+                let right = item
+                    .get("right")
+                    .cloned()
+                    .or_else(|| item.get("value").cloned())
+                    .unwrap_or(Value::Null);
 
                 let left_resolved = values::resolve(&left, &self.outputs)?;
                 let right_resolved = values::resolve(&right, &self.outputs)?;
@@ -578,11 +590,30 @@ impl WorkflowAgent {
     }
 
     fn execute_template_transform(&self, config: &Map<String, Value>) -> Result<Value> {
-        let template = config.get("template").and_then(Value::as_str).unwrap_or("");
+        let template = config
+            .get("templateScript")
+            .or_else(|| config.get("template"))
+            .and_then(Value::as_str)
+            .unwrap_or("");
         let variables = config
             .get("variables")
             .and_then(Value::as_object)
             .cloned()
+            .or_else(|| {
+                config
+                    .get("templateInputVariables")
+                    .and_then(Value::as_array)
+                    .map(|bindings| {
+                        bindings.iter().fold(Map::new(), |mut variables, binding| {
+                            if let Some(name) = binding.get("name").and_then(Value::as_str) {
+                                if let Some(value) = binding.get("value") {
+                                    variables.insert(name.to_owned(), value.clone());
+                                }
+                            }
+                            variables
+                        })
+                    })
+            })
             .unwrap_or_default();
         let rendered = values::render_template(template, &variables, &self.outputs)?;
         Ok(serde_json::json!({ "output": rendered }))
