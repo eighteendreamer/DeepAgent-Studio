@@ -180,7 +180,7 @@ E-H28-20261027-10（独立提交与真实 hash 回填）：修复代码、正式
 
 ## H-36 本轮即时记录（2026-10-27）
 
-**当前状态：已修复并验收（所列Windows本机资产保留范围），独立提交hash待生成后回填。**
+**当前状态：已修复并验收（所列Windows本机资产保留范围），修复提交`2a18d9d8`。**
 
 E-H36-20261027-01（原始双探针复核）：HEAD 736418d6、生产代码未改时，在新建临时 DEEPAGENT_DATA_ROOT 下运行 `cargo test -p deepagent-runtime --lib tool_budget::tests::audit_same_call_id_from_two_runs_does_not_overwrite_saved_result --offline -j 1 -- --ignored --exact --nocapture --test-threads=1`，原生命令退出101、0 passed/1 failed（0.03秒）；不同session的相同provider_call_1返回同一文件路径，先写AUDIT_A后读到AUDIT_B。随后 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_saved_tool_result_survives_turn_and_database_reopen --offline -j 1 -- --ignored --nocapture --test-threads=1` 退出101、0 passed/1 failed（0.29秒），during_tool=true、after_turn=false、reopened_artifacts=1、replay_has_reference=true、reread_ok=false；包装进程99110最终退出1。探针仅真实临时SQLite/session文件、正式ChatService/内置read_file及离线transport，无真实供应商、凭据、内网或用户文件。本项已有生命周期删除和跨run覆盖两条子根因，同一H-36编号分别保留证据并统一收敛已发布结果资产契约，不合并其他H编号。当前仅阅读现有ToolResultBudgetConfig、ToolArtifactPersistence、ArtifactStore及session归档/保留清理调用链，尚未修改生产实现；不把单关cleanup当作完整修复。
 
@@ -205,6 +205,8 @@ E-H36-20261027-10（完整workspace终态与核心组最终复验）：进程702
 E-H36-20261027-11（最后正式资产组与构建结果）：顺序进程26538终态退出0；`cargo test -p deepagent-app-core --test kernel_v2_e2e tool_result_ --offline -j 1 -- --nocapture --test-threads=1` 最终5 passed/0 ignored（2.14秒），原生命周期再次为during_tool=true、after_turn=true、reopened_artifacts=1、replay_has_reference=true、reread_ok=true。新增外置结果目录对照复用Desktop的with_tool_results_dir配置方式：完整字节/索引在turn后保留，但受限workspace的read_file仍按既有hook拒绝越界读取，未偷偷授予read-anywhere；允许范围内实际续读由并行重开测试单独验证，不把二者混为所有沙箱下都可直接读任意artifact路径。`cargo fmt --all -- --check`、`cargo build -p deepagent-cli --offline -j 1`（1m12s）及`git diff --check`均退出0。没有前端/Tauri契约改动，未运行pnpm build或真实UI；跨OS/供应商/OS沙箱/UNC与断电验证仍未执行，不能扩写成本机测试之外的认证。
 
 E-H36-20261027-12（本项验收与交付范围）：H-36在所列Windows本机、离线正式Runtime/AppCore/SQLite/session/fork/保留回收范围验收，保留原始双失败和中间Windows路径/冗余借用回归，不合并或关闭其他H。统一预算→host资产证明→唯一不可覆盖发布→真实大小/digest索引→模型可见引用；完成/取消/agent错误不再删除结果，存储失败不虚报已保存且不改变工具本身副作用状态，正式保留入口保护active/trash/fork并在最后引用消失后回收。这里的不可变表示host不重复发布或覆盖同一身份，并非OS只读、外部改写防护或永久备份；E-07所列未索引旧文件/配额/大历史扫描/非协作外部目录竞争等边界保留。旧预算/Builder签名兼容，新ArtifactStore方法为增量接口，无schema/协议/事件/DTO字段迁移或第二套store；没有放宽工具权限。完整workspace和严格lint仍有E-08～10既有失败，不称全仓通过。仅本项13个文件进入独立修复提交，真实hash待生成后回填；不amend、不推送、不创建PR，原有五类未跟踪项不读取/修改/暂存。本轮新增验收1，累计37已验收/18历史跳过/7归并/2撤销/242待修/0修复中，即242有效未关闭；整体goal仍active。下一项准备按原报告复核P1 H-34并行工具期限与取消，不在本项顺手改调度或H-35屏障。剩余仍沿用未校准200–400有效小时跨层初估，尚缺逐项有效工时/依赖校准，不能机械扣减或承诺完工；本次编译6m53s/2m08s/1m12s及其他设备/环境等待另计。
+
+E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式回归与当时两份文档已进入独立提交 `2a18d9d8b291fee9595b8da5561ccae7065b608d`（`【fix】修复H-36工具结果资产保留与身份隔离`），仅13个相关文件；未推送、未创建PR。提交前实核306行/306唯一编号/每行8列、两文E-01～12逐字一致，除H-36外原台账行未改，状态实数37已验收/18历史跳过/7归并/2撤销/242待修/0修复中；fmt、diff check及persistence全target严格lint再验退出0（3.80秒）。原有五类未跟踪项仍仅显示在status，未读取/修改/暂存。本次仅回填真实hash并另建文档提交，不amend，不新增验收数；本项按E-07/11/12所列范围关闭，整体goal保持active，下一项H-34尚未复现或修改；剩余工时及等待口径沿E-12。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -1048,7 +1050,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-33：输入租约仅限 ChatService 内存，两宿主可同时推进同一会话](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-26，限所列Windows本机范围；H-32/H-44仍独立待修 | EventStore独占dispatch在admit前取得，outer registration持有；同coordinator队列共享；input lease登记即归outer，等待项drop清理 | 原探针0/1；最终workspace AppCore1131/78、host_session5/0、E2E107/90、persistence67/session_control9通过；runtime/session补跑通过。完整workspace因H-306失败，严格/all-target lint既有失败；命令与限制见本节和原项E-01～04 | `8ed5d82e` | 协作宿主须全部升级；无跨宿主取消转发、崩溃终态/外部副作用静止承诺，其他平台/UI/供应商未验；余量计入总工时区间 |
 | [H-34：并行工具绕过统一执行流水线，单工具超时保护在批量调用时失效](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列Windows本机资产保留范围；原始失败及E-01～12保留 | 唯一不覆盖发布与真实digest索引；统一输出处理；正式GC保护active/trash/fork，最后引用过期后回收 | 最终persistence84/control9、Runtime301/11 ignored、正式资产5/0 ignored、fmt/CLI通过；完整workspace仅H-306失败，严格lint既有阻断，详见E-08～11 | 独立修复提交待生成后回填 | 外置结果不隐式扩权；旧未索引资产/配额/外部目录竞争/其他平台与UI等限制见E-07/11/12；余量计入总工时区间 |
+| [H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列Windows本机资产保留范围；原始失败及E-01～13保留 | 唯一不覆盖发布与真实digest索引；统一输出处理；正式GC保护active/trash/fork，最后引用过期后回收 | 最终persistence84/control9、Runtime301/11 ignored、正式资产5/0 ignored、fmt/CLI通过；完整workspace仅H-306失败，严格lint既有阻断，详见E-08～11 | `2a18d9d8` | 外置结果不隐式扩权；旧未索引资产/配额/外部目录竞争/其他平台与UI等限制见E-07/11/12；余量计入总工时区间 |
 | [H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
