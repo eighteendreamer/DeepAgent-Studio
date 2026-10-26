@@ -476,9 +476,10 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
             "text response format is not supported by DeepSeek Chat Completions",
         ));
     }
+    let chat_input = request.chat_projection_items();
     let messages = crate::responses::messages_from_response_items(
         request.instructions.as_deref(),
-        &request.input,
+        &chat_input,
     );
     let mut chat = ChatCompletionRequest::new(request.model, messages).with_tools(request.tools);
     if let Some(value) = request.temperature {
@@ -1112,7 +1113,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: preserve every adjacent Responses reasoning item in Chat history"]
     fn audit_chat_projection_preserves_all_reasoning_items() {
         let request = ResponseRequest::from_response_items(
             "deepseek-flash",
@@ -1144,7 +1144,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: native-to-chat projection must preserve one assistant tool turn"]
     fn audit_chat_projection_preserves_tool_turn_narration_and_reasoning() {
         let mut accumulator = ChatCompletionAccumulator::new();
         for event in [
@@ -1195,6 +1194,80 @@ mod tests {
             "Need the file before answering."
         );
         assert_eq!(assistant[0]["tool_calls"][0]["id"], "audit-read");
+    }
+
+    #[test]
+    fn chat_projection_keeps_parallel_calls_and_all_reasoning_blocks_in_one_turn() {
+        let request = ResponseRequest::from_response_items(
+            "deepseek-flash",
+            None,
+            vec![
+                ResponseInputItem::Reasoning {
+                    id: Some("reasoning-1".into()),
+                    content: "inspect ".into(),
+                },
+                ResponseInputItem::Reasoning {
+                    id: Some("reasoning-2".into()),
+                    content: "both files".into(),
+                },
+                ResponseInputItem::FunctionCall {
+                    call_id: "call-a".into(),
+                    name: "read_file".into(),
+                    arguments: r#"{"path":"a.txt"}"#.into(),
+                },
+                ResponseInputItem::FunctionCall {
+                    call_id: "call-b".into(),
+                    name: "read_file".into(),
+                    arguments: r#"{"path":"b.txt"}"#.into(),
+                },
+                ResponseInputItem::Message {
+                    role: "assistant".into(),
+                    content: "I will inspect both files.".into(),
+                },
+                ResponseInputItem::FunctionCallOutput {
+                    call_id: "call-a".into(),
+                    output: "A".into(),
+                },
+                ResponseInputItem::FunctionCallOutput {
+                    call_id: "call-b".into(),
+                    output: "B".into(),
+                },
+            ],
+        );
+
+        let chat = response_to_chat_completion(request).unwrap();
+        assert_eq!(chat.messages.len(), 3);
+        assert_eq!(
+            chat.messages[0].role,
+            deepagent_core::message::Role::Assistant
+        );
+        assert_eq!(chat.messages[0].content, "I will inspect both files.");
+        assert_eq!(
+            chat.messages[0].reasoning_content.as_deref(),
+            Some("inspect both files")
+        );
+        assert_eq!(chat.messages[0].tool_calls.len(), 2);
+        assert_eq!(chat.messages[1].tool_call_id.as_deref(), Some("call-a"));
+        assert_eq!(chat.messages[2].tool_call_id.as_deref(), Some("call-b"));
+    }
+
+    #[test]
+    fn chat_projection_uses_repaired_history_for_dangling_calls() {
+        let request = ResponseRequest::from_response_items(
+            "deepseek-flash",
+            None,
+            vec![ResponseInputItem::FunctionCall {
+                call_id: "dangling".into(),
+                name: "read_file".into(),
+                arguments: "{}".into(),
+            }],
+        );
+
+        let chat = response_to_chat_completion(request).unwrap();
+        assert_eq!(chat.messages.len(), 2);
+        assert_eq!(chat.messages[0].tool_calls[0].id, "dangling");
+        assert_eq!(chat.messages[1].tool_call_id.as_deref(), Some("dangling"));
+        assert!(chat.messages[1].content.contains("tool result missing"));
     }
 
     #[test]

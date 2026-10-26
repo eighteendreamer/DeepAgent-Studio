@@ -146,6 +146,13 @@ pub struct ResponseRequest {
     /// attachment storage. Used to materialize `input_image` content parts;
     /// empty when the turn carries no image attachments.
     pub attachment_data_urls: std::collections::BTreeMap<String, String>,
+    /// Original item order used by the compatibility Chat projection.
+    ///
+    /// `input` is repaired at the Responses provider boundary so every tool
+    /// call has an adjacent output. That repair must not be used to rebuild a
+    /// legacy Chat assistant turn: native history may contain narration
+    /// between a call and its output while still belonging to one turn.
+    chat_projection_input: Vec<ResponseInputItem>,
 }
 
 impl Serialize for ResponseRequest {
@@ -366,6 +373,7 @@ impl ResponseRequest {
         instructions: Option<String>,
         input: Vec<ResponseInputItem>,
     ) -> Self {
+        let chat_projection_input = input.clone();
         Self {
             model: model.into(),
             instructions,
@@ -383,6 +391,7 @@ impl ResponseRequest {
             text: None,
             user: None,
             attachment_data_urls: std::collections::BTreeMap::new(),
+            chat_projection_input,
         }
     }
 
@@ -414,7 +423,33 @@ impl ResponseRequest {
     pub fn replace_messages(&mut self, messages: &[Message]) {
         let (instructions, input) = crate::responses::response_items_from_messages(messages);
         self.instructions = instructions;
-        self.input = input;
+        self.chat_projection_input = input.clone();
+        self.input = crate::responses::repair_tool_call_pairs(&input);
+    }
+
+    /// Replace the history fields from a freshly projected request.
+    ///
+    /// Retry and compaction paths must update both the repaired Responses
+    /// sequence and the original order retained for the Chat compatibility
+    /// route; assigning only `input` would leave a stale projection snapshot.
+    pub fn replace_history_from(&mut self, other: &Self) {
+        self.instructions = other.instructions.clone();
+        self.input = other.input.clone();
+        self.chat_projection_input = other.chat_projection_input.clone();
+        self.attachment_data_urls = other.attachment_data_urls.clone();
+    }
+
+    /// Return the original order when it has complete, ordered tool pairs;
+    /// otherwise fall back to the repaired sequence to avoid emitting a
+    /// dangling call on the Chat wire.
+    pub(crate) fn chat_projection_items(&self) -> Vec<ResponseInputItem> {
+        if crate::responses::chat_projection_history_is_safe(&self.chat_projection_input)
+            && crate::responses::repair_tool_call_pairs(&self.chat_projection_input) == self.input
+        {
+            self.chat_projection_input.clone()
+        } else {
+            self.input.clone()
+        }
     }
 
     /// Set temperature (builder style).

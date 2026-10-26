@@ -2209,9 +2209,7 @@ impl ModelAgent {
                 return Err(CoreError::other("request cancelled by user"));
             }
             let canonical = self.request_for_current_history();
-            request.instructions = canonical.instructions;
-            request.input = canonical.input;
-            request.attachment_data_urls = canonical.attachment_data_urls;
+            request.replace_history_from(&canonical);
             if attempt == 1 {
                 if let Some(sink) = &self.events {
                     sink.emit(RuntimeEvent::ModelRequestStarted {

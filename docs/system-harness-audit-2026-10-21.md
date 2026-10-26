@@ -31,8 +31,9 @@
 | H-08 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `McpTransport`统一支持无 ID notification，initialize 成功后发送 `notifications/initialized`；严格 stdio、HTTP fixture、MCP全组和AppCore MCP筛选通过；E-H08-01～04，修复提交`2dc9fdf6` |
 | H-09 | 已修复并验收（2026-10-26，Windows本机MCP/AppCore范围） | 单stdout reader、pending/oneshot与连接唯一wire ID；原探针转默认通过，stdio12/0 ignored、正式消费者1；全workspace唯一H-306失败及AppCore严格lint阻断见E-H09-01～09，修复提交`46ba0fd7` |
 | H-03 | 已修复并验收（2026-10-27，所列Windows本机/AppCore与CLI路由范围） | 原始Direct误路由失败保留；不可变backend registry按run解析，显式不可用拒绝，Direct兼容路径保留；AppCore路由1、registry8、CLI配置3及桌面Tauri cargo check通过，见E-H03-01～06；修复提交待回填 |
+| H-05 | 已修复并验收（2026-10-27，离线DeepSeek adapter、Chat wire投影与Runtime重组范围） | 原始assistant工具响应拆分失败保留；Chat使用原始item顺序合并同一assistant的reasoning/文本/单多工具调用，Responses仍使用repaired配对；projection4、models lib89、runtime model_agent62通过，见E-H05-01～04；修复提交待回填 |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **27**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **252（252待修复）**；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **28**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **251（251待修复）**；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -598,7 +599,7 @@ E-H04-20261026-15（独立提交与真实hash回填）：修复提交`9bc625f6`�
 
 ### H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应
 
-**级别：中（P2；启用严格 reasoning 校验的供应商可能升级为请求失败）；范围：`WireMode::ChatCompletions` 下经原生 ResponseItem 再发出的工具续轮。** 默认 Responses 路由的真实桌面测试不能证明本路径无误。
+**2026-10-27 已修复并验收（限离线 DeepSeek adapter、Chat wire 投影和 Runtime 重组范围）；原始失败证据保留。** 级别：中（P2；启用严格 reasoning 校验的供应商可能升级为请求失败）；范围：`WireMode::ChatCompletions` 下经原生 ResponseItem 再发出的工具续轮。默认 Responses 路由的真实桌面测试不能覆盖本路径。
 
 #### 触发与复现
 
@@ -614,8 +615,7 @@ assistant(content="I will read the file.", 无 reasoning)
 
 - 原本在执行前给出的说明变成执行后的独立 assistant 消息，且其 reasoning 不再跟随。工具 call_id 和 arguments 在本例仍完整，不能称它们也丢失。
 - 探针 `client::tests::audit_chat_projection_preserves_tool_turn_narration_and_reasoning` 使用生产流式 accumulator、生产 request 构造器、生产 Chat 投影和 serializer；输入为合成但合法的单个工具响应，不访问供应商。
-- 执行：`cargo test -p deepagent-models audit_chat_projection --offline -- --ignored --nocapture`。
-- 实际 wire 显示上述四条消息（含最初 user）；assistant 数量为 2，期望保持同一响应的断言失败。
+- E-H05-20261027-01（修复前原始失败）：在未改生产代码的快照执行 `cargo test -p deepagent-models audit_chat_projection_preserves_tool_turn_narration_and_reasoning --offline -- --ignored --nocapture`，退出 1，0 passed/1 failed；实际 wire 含 user、`assistant(reasoning + tool_calls, content="")`、tool、`assistant(content="I will read the file.")`，assistant 数量为 2。该失败证明保留，不用后续通过覆盖。
 
 #### 官方规则与成熟实现对照
 
@@ -626,8 +626,11 @@ DeepSeek Harness `packages/llm/llm-deepseek/src/serialize.ts::assistant()` 将�
 #### 后果和修复方向
 
 - 续轮上下文含额外、时间顺序错误的 assistant 发言，破坏模型对工具执行前后语义的理解；严格 reasoning 规则下存在请求被拒绝风险。
-- native Surface 与 Chat adapter 之间不能把有损 UI 投影当成协议回放。应由 provider seam 保留或恢复同一响应的块归属，在一次 serializer 内生成正确的 assistant 原子消息。
-- 补充含文本的单/多工具响应、reasoning 多块、重启回放、压缩边界和取消中断测试，并核对真实 wire；不能通过填造 reasoning 来满足校验。
+- native Surface 与 Chat adapter 之间不能把有损 UI 投影当成协议回放。修复在 provider seam 保留原始 Responses item 顺序，同时继续用另一份 repaired 序列服务 Responses wire；Chat 投影在一次 serializer 内把同一 assistant 的 reasoning、说明文本和单/多 tool call 合成一个原子 assistant message，不填造 reasoning，也不改变 Responses 配对规则。
+- `ResponseRequest` 现在同时维护原始 Chat 投影快照和已修复 Responses 输入；`replace_messages` 与 Runtime retry/compaction 统一更新两份快照。原始历史若缺少、重复、孤立或逆序 tool output，则安全回退到已修复序列，避免 Chat 续轮产生悬空调用。
+- E-H05-20261027-02（正式回归）：`cargo test -p deepagent-models audit_chat_projection --offline -- --nocapture` 退出 0，4 passed/0 failed/0 ignored，覆盖原单工具文本/ reasoning、相邻多 reasoning、并行多工具和 dangling-call repaired fallback；wire 断言为一个 assistant turn 后跟对应 tool results。
+- E-H05-20261027-03（相关消费者）：`cargo test -p deepagent-models --offline -j 1 -- --quiet --test-threads=1` 退出 0，lib 89 passed/21 ignored，集成 target 均无失败；`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0，286 passed/14 ignored（其中 model_agent 过滤组 62 passed/4 ignored），确认 Runtime 通过 `replace_history_from` 更新原始/修复双投影。
+- E-H05-20261027-04（构建与边界）：`cargo check -p deepagent-models -p deepagent-runtime --offline -j 1`、`cargo fmt --all -- --check` 和 `git diff --check` 退出 0。严格 clippy 分 crate 仍被未修改的 `deepagent-models/src/client.rs:355` 与 `deepagent-runtime/src/model_agent.rs:225` `clone_on_copy` 基线阻断；未执行真实 DeepSeek HTTP、真实工具副作用、桌面 UI、其他 OS 或完整 workspace，不把离线 fixture 通过扩大为供应商实测。
 
 ### H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用
 

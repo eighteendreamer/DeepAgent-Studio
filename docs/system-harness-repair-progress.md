@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计二十七项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计二十八项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 27 | H-01、H-02、H-03、H-04、H-06、H-07、H-08、H-09、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 28 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有正在收敛的本轮独立项；下一项仍需按原报告逐项复核 |
-| 待修复 | 252 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 251 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **252（252待修复）**；不提供完成率。二十七项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **251（251待修复）**；不提供完成率。二十八项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -35,6 +35,20 @@ E-H03-20261027-05（专项与兼容对照）：`cargo test -p deepagent-app-core
 E-H03-20261027-06（构建与未验）：`cargo check -p deepagent-app-core -p deepagent-cli --offline -j 1`、`cargo check --offline -j 1`（`apps/desktop/src-tauri`）及 `cargo fmt --all -- --check` 退出 0。AppCore 严格 clippy 仍被既有10项告警阻断（context_runtime 8、plugin_preparation 1、run_assembler 既有 too_many_arguments 1），本项未屏蔽。未执行真实 Windows Sandbox 启动、其他 OS、真实 DeepSeek/供应商、Tauri UI、完整 workspace；registry 只证明选择与不可用拒绝边界，不证明 OS 沙箱本体可用。
 
 E-H03-20261027-07（独立提交与 hash）：代码、回归测试及两份文档已在提交 `56e94701697cb9442745777147df4a6246860215`（`【fix】修复H-03逐次沙箱backend路由`）中创建；本次不 amend、不推送、不创建 PR。残余独立项包括 H-49、H-92、H-216 及真实 OS 沙箱能力验收；下一项按风险台账复核，剩余工时继续沿未校准跨层区间估算。
+
+## H-05 本轮即时记录（2026-10-27）
+
+**当前状态：已修复并验收（限离线 DeepSeek adapter、Chat wire 投影和 Runtime 重组范围）。** 本轮只处理 H-05 的同一 assistant 工具响应块归属，不合并 H-18 截断调用、H-30 SSE 分帧、H-49 reasoning wire 或 H-93 Chat 工具选择字段；原始失败保留。
+
+E-H05-20261027-01（修复前原始失败）：在未改生产代码的快照执行 `cargo test -p deepagent-models audit_chat_projection_preserves_tool_turn_narration_and_reasoning --offline -- --ignored --nocapture`，退出 1，0 passed/1 failed。实际 wire 为 user、空 content 的 assistant(reasoning + tool_calls)、tool、独立 assistant 文本；assistant 数量为 2。该失败证明 Chat 投影在 Responses 配对修复后拆散同一模型响应。
+
+E-H05-20261027-02（根因修复）：`ResponseRequest::from_response_items` 现在同时保留未修复的原始 item 顺序和 Responses 发送用的 repaired 顺序；Chat adapter 仅在原始调用/输出完整、有序且无重复/孤立 ID 时使用原始顺序，否则回退 repaired 序列，避免公开输入制造悬空调用。`messages_from_response_items` 合并连续 reasoning 块，并在同一原始 assistant turn 中把说明文本与单/多 tool call 组成一个 `Message`；`replace_messages` 与 Runtime 的 retry/compaction 改用 `replace_history_from` 同步两份快照。没有填造 reasoning，也没有改变 Responses wire 的相邻配对。
+
+E-H05-20261027-03（正式回归）：`cargo test -p deepagent-models audit_chat_projection --offline -- --nocapture` 退出 0，4 passed/0 failed/0 ignored；包含原单工具 narration/reasoning、相邻多 reasoning、并行多工具和 dangling-call fallback。`cargo test -p deepagent-models --offline -j 1 -- --quiet --test-threads=1` 退出 0（lib89 passed/21 ignored，集成 target 无失败）；`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（286 passed/14 ignored，其中 model_agent 过滤组62 passed/4 ignored），确认消费者更新双快照。
+
+E-H05-20261027-04（构建、格式与边界）：`cargo check -p deepagent-models -p deepagent-runtime --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。严格 clippy 分 crate 仍被未改的 `deepagent-models/src/client.rs:355` 与 `deepagent-runtime/src/model_agent.rs:225` `clone_on_copy` 基线阻断。未执行真实 DeepSeek HTTP、真实工具副作用、桌面 UI、其他 OS 或完整 workspace；这些不纳入本轮通过。
+
+代码、回归测试和两份文档待本轮独立修复提交创建后回填 hash；不 amend、不推送、不触碰既有未跟踪项。H-05 在上述本机范围验收，整体 goal 仍 active；下一项按风险/依赖继续核对，全部剩余有效修复工时仍为未校准跨层区间，编译/设备/环境等待另计。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -847,7 +861,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H02-01原始失败保留，原探针转默认通过；限所列Windows本机范围 | ACK前复用admit_run/执行消费同一admission；interrupt核对终态及accepted；ACK失败同执行器收尾；补早期取消投影 | E-H02-01～15：CLI97 passed/27 ignored、真实stdio32轮、最终事件断言通过、build/fmt/diff通过；SDK隔离根6 passed；全workspace两失败target，严格CLI lint既有告警未绿 | `f777dc82` | H-01/H-04后续已独立完成所列范围；H-92仍待修，其他OS/真实DeepSeek/UI未验；总体200–400有效小时初估 |
 | [H-03：Harness 的逐次沙箱 backend 选择未进入实际执行路由](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原始失败 E-H03-20261027-01 保留；限所列 Windows 本机/AppCore/CLI 路由范围 | 不可变 `SandboxBackendRegistry` 按 run 解析；主 run/子 Agent 共用一次解析结果；显式不可用拒绝；旧无 registry 仅保留 Direct 兼容 | E-H03-20261027-01～07：原探针默认1 passed；registry专项8 passed；CLI configuration3 passed；AppCore/CLI/桌面 cargo check、fmt通过；严格AppCore clippy既有10项未绿，真实OS Sandbox/UI/全workspace未验 | `56e94701697cb9442745777147df4a6246860215` | 不关闭真实OS Sandbox能力、H-49/H-92/H-216；不静默降级；总体剩余工时仍为未校准跨层区间 |
 | [H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H04-01保留原resume/steer失败，02～15记录实现/复核 | 共享ExecutionOverrides及现有会话header版本快照，resume/fork继承、steer保留逐次覆盖 | CLI102通过/25忽略；core42、persistence71/control9、session20；TS6及正式1、隔离Rust SDK6通过；全仓两失败target和严格lint基线见E-10～13 | `9bc625f6` | 仅固定显式覆盖；旧会话无历史快照，降级不保证；H-03/H-49/H-130/H-222/H-216独立；总体200–400有效小时初估 |
-| [H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始失败 E-H05-20261027-01 保留；限离线 DeepSeek adapter、Chat wire 投影与 Runtime 重组范围 | `ResponseRequest` 保留原始 item 顺序供 Chat 投影，Responses 继续使用修复后的配对序列；投影合并同一 assistant 的 reasoning/文本/单多工具调用，异常配对回退 repaired history；Runtime retry/compaction 用统一双快照替换 | E-H05-20261027-01～04：原探针0 passed/1 failed；修复后 Chat projection 4 passed；models lib89 passed/21 ignored，runtime model_agent62 passed/4 ignored；check/fmt/diff通过；严格clippy为既有client.rs:355 clone_on_copy，真实供应商/UI/其他OS/workspace未验 | 待本轮独立修复提交后回填 | 不宣称真实DeepSeek拒绝风险已在线触发；未覆盖真实HTTP/工具副作用；下一项按台账复核，整体剩余工时沿未校准跨层区间 |
 | [H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 归并H-278只补强同项；限所列Windows/Linux本机范围 | 连接恢复与业务请求重试分离；tools/call单次派发并返回RemoteOutcomeUnknown，adapter/事件/持久化/wire保留unknown且retryable=false；ping/tools/list才可受限重试 | E-H06-01～06：原两探针各2次副作用失败；修复后MCP70/3 ignored、HTTP1、真实stdio2、AppCore2、相关workspace消费者通过；全workspace唯一既有H-306失败，Linux真实stdio因无Node未执行 | `5ba4ee83` | 未验证Linux真实stdio、真实供应商、多进程外部服务；不自动核实远端状态，调用方须先核实再重试；本项已完成所列本机边界验收，计数进入15项 |
 | [H-07：MCP 工具发现忽略分页，只发布首页工具且不报不完整](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始探针 E-H07-20261026-01 复现后，分页探针转默认通过 | `ToolsListResult.next_cursor`保留不透明 cursor；`McpClient::list_tools()`统一有界汇总，100页/2048工具/64KiB cursor，重复 cursor拒绝；registry/AppCore复用同一入口 | E-H07-01～04：原始0 passed/1 failed；修复后MCP lib77/2 ignored、AppCore MCP14/13 ignored、MCP no-deps严格lint及fmt/diff通过；未验完整workspace/其他平台/真实供应商 | `e525b6de` | 限所列MCP/AppCore本机范围；不把ignored、完整workspace或真实服务当作通过 |
 | [H-08：MCP 初始化缺少 initialized 通知，严格服务端无法进入就绪状态](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始探针 E-H08-20261026-01 复现后转默认通过 | 新增 `JsonRpcNotification`/`McpTransport::notify()`；initialize 成功后统一发送无 ID通知；stdio、HTTP、ReconnectingTransport复用同一边界 | E-H08-01～04：原始0 passed/1 failed；修复后严格stdio1、MCP lib79/2 ignored、AppCore MCP14/13 ignored、HTTP notification与H-06 fixture通过；未验完整workspace/其他平台/H-12 session header | `2dc9fdf6` | 限所列本机协议范围；H-12 HTTP session管理仍独立待修，不把真实第三方服务当作通过 |

@@ -220,6 +220,56 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     repaired
 }
 
+/// Whether an un-repaired history can be projected to Chat Completions
+/// without losing the provider's tool-call invariant.
+///
+/// The Responses repair pass is allowed to move outputs next to calls.  The
+/// legacy Chat projection must instead see the original order so an assistant
+/// narration item can be folded into the same assistant message.  We only use
+/// that order when every call has exactly one later, matching-kind output and
+/// there are no orphan/duplicate ids; malformed histories fall back to the
+/// repaired sequence at the request boundary.
+pub(crate) fn chat_projection_history_is_safe(items: &[ResponseInputItem]) -> bool {
+    let mut calls = std::collections::HashMap::<&str, bool>::new();
+    let mut outputs = std::collections::HashSet::<&str>::new();
+
+    for item in items {
+        match item {
+            ResponseInputItem::FunctionCall { call_id, .. } => {
+                if calls.insert(call_id.as_str(), false).is_some() {
+                    return false;
+                }
+            }
+            ResponseInputItem::CustomToolCall { call_id, .. } => {
+                if calls.insert(call_id.as_str(), true).is_some() {
+                    return false;
+                }
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, .. } => {
+                let Some(kind) = calls.get_mut(call_id.as_str()) else {
+                    return false;
+                };
+                if *kind || !outputs.insert(call_id.as_str()) {
+                    return false;
+                }
+                *kind = false;
+            }
+            ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
+                let Some(kind) = calls.get_mut(call_id.as_str()) else {
+                    return false;
+                };
+                if !*kind || !outputs.insert(call_id.as_str()) {
+                    return false;
+                }
+                *kind = false;
+            }
+            _ => {}
+        }
+    }
+
+    calls.len() == outputs.len()
+}
+
 /// Project Responses items back to the legacy [`Message`] view used by UI DTOs
 /// and compatibility-only runtime paths.
 ///
@@ -252,16 +302,28 @@ pub fn messages_from_response_items(
     for item in items {
         match item {
             ResponseItem::Reasoning { content, .. } => {
-                pending_reasoning = (!content.is_empty()).then(|| content.clone());
+                if !content.is_empty() {
+                    match pending_reasoning.as_mut() {
+                        Some(reasoning) => reasoning.push_str(content),
+                        None => pending_reasoning = Some(content.clone()),
+                    }
+                }
             }
             ResponseItem::Message { role, content } => {
-                flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
                 let role = match role.as_str() {
                     "system" => Role::System,
                     "assistant" => Role::Assistant,
                     "tool" => Role::Tool,
                     _ => Role::User,
                 };
+                if role == Role::Assistant && !pending_tool_calls.is_empty() {
+                    let mut message = Message::assistant(content.clone())
+                        .with_tool_calls(std::mem::take(&mut pending_tool_calls));
+                    message.reasoning_content = pending_reasoning.take();
+                    out.push(message);
+                    continue;
+                }
+                flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
                 let mut message = Message::text(role, content.clone());
                 if role == Role::Assistant {
                     message.reasoning_content = pending_reasoning.take();
@@ -273,13 +335,21 @@ pub fn messages_from_response_items(
                 content,
                 attachments,
             } => {
-                flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
                 let role = match role.as_str() {
                     "system" => Role::System,
                     "assistant" => Role::Assistant,
                     "tool" => Role::Tool,
                     _ => Role::User,
                 };
+                if role == Role::Assistant && !pending_tool_calls.is_empty() {
+                    let mut message = Message::assistant(content.clone())
+                        .with_tool_calls(std::mem::take(&mut pending_tool_calls));
+                    message.reasoning_content = pending_reasoning.take();
+                    message.attachments = attachments.clone();
+                    out.push(message);
+                    continue;
+                }
+                flush_tool_calls(&mut pending_tool_calls, &mut out, &mut pending_reasoning);
                 let mut message = Message::text(role, content.clone());
                 if role == Role::Assistant {
                     message.reasoning_content = pending_reasoning.take();
