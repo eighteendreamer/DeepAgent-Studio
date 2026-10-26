@@ -1858,7 +1858,6 @@ async fn audit_workflow_multi_case_condition_keeps_else_handle() {
 }
 
 #[tokio::test]
-#[ignore = "audit: only the selected conditional edge may dispatch its exclusive descendants"]
 async fn audit_workflow_unselected_branch_is_not_dispatched() {
     let mut violations = Vec::new();
     for choose_true in [true, false] {
@@ -1917,6 +1916,9 @@ async fn audit_workflow_unselected_branch_is_not_dispatched() {
         assert!(events
             .iter()
             .any(|e| e.node_id == selected && e.status == NodeExecutionStatus::Completed));
+        assert!(events
+            .iter()
+            .any(|e| e.node_id == unselected && e.status == NodeExecutionStatus::Skipped));
         let unselected_started = events
             .iter()
             .any(|e| e.node_id == unselected && e.status == NodeExecutionStatus::Running);

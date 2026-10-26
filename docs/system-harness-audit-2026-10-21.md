@@ -1773,6 +1773,8 @@ E-H38-20261027-04（独立提交与范围）：代码、回归测试及当时两
 
 ### H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发
 
+**当前状态：修复中（2026-10-27）。**
+
 **级别：高（P1）；范围：正式工作流的 if-else 控制流。** 图编译校验了 source_handle 的有效性，但运行时没有根据已选分支筛选可执行边，拓扑可排序不等于路径可以执行。
 
 #### 生产链路与集成复现
@@ -1781,6 +1783,10 @@ E-H38-20261027-04（独立提交与范围）：代码、回归测试及当时两
 - `WorkflowAgent::execute_if_else()` 返回 `__branch`，`node_output_value_inline()` 将其投影成 branch。`think()` 逐项执行 compiled.order，只有 target_node_id 的局部过滤，没有按条件出口判断节点是否可达；即使已经输出 false，true 专属后继仍运行。
 - 新增默认忽略的 `workflow_audit.rs::audit_workflow_unselected_branch_is_not_dispatched`，使用正式 ChatService、图编译、Kernel、节点事件和 RunStore；图为 start→条件→互斥模板 A/B→共同 end。条件刻意使用后端实际读取的 `logicalOperator/conditions/left/right` 结构，先隔离桌面字段映射问题；不调用模型、命令、网络或媒体供应商。
 - 执行 `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unselected_branch_is_not_dispatched --offline -- --ignored --nocapture`：两组约 0.21 秒，true 时未选中的 FALSE_PATH 进入 Running 并产生 Completed 输出；false 时未选中的 TRUE_PATH 同样执行。两次持久化终态均为 succeeded；断言在收集完两组结果后明确失败。已确认条件本身在这两组后端结构中正确输出 true/false，排除了“仅条件比较算错”的解释。
+
+E-H39-20261027-01（当前代码原始探针复核）：在 H-38 已提交、H-39 尚未修改的 HEAD `ee739aca` 执行上述原生命令，退出1，0 passed/1 failed/0 ignored（测试体0.22秒）。真实输出为 `choose_true=true ... unselected_started=true ... terminal=Some("succeeded")` 与 `choose_true=false ... unselected_started=true ... terminal=Some("succeeded")`；断言失败。两组均使用正式 workflow graph、ChatService、WorkflowAgent、Kernel、事件泵和 RunStore，仅执行模板节点，无模型、命令、网络、媒体供应商或用户文件。本轮只复核 H-39，不合并 H-195/H-198。
+
+E-H39-20261027-02（修复后正式探针）：WorkflowAgent 新增节点终态表和激活前驱判断；普通边要求已完成前驱，`if-else` 边还必须匹配已完成条件节点输出的 `branch` 与 `source_handle`。未选路径发出带原因的 `Skipped`，公共后继只要有一条已激活边即可执行。执行 `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unselected_branch_is_not_dispatched --offline -j 1 -- --exact --nocapture --test-threads=1` 退出0，1 passed/0 failed/0 ignored（测试体0.25秒）；`choose_true=true/false` 两组均为 `unselected_started=false`、`unselected_output=None`、终态 `succeeded`，并断言未选节点有 `Skipped` 事件。未启动模型、命令、网络或媒体供应商。
 
 #### 参考机制、影响与修复方向
 

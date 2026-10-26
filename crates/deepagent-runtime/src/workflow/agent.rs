@@ -42,6 +42,10 @@ pub struct WorkflowAgent {
     target_node_id: Option<String>,
     publisher: NodeEventPublisher,
     outputs: BTreeMap<String, Value>,
+    /// Terminal status of every node that has been visited.  Branch edges are
+    /// activated from this state rather than from the static topological order
+    /// alone; a skipped predecessor must not make its exclusive successors run.
+    node_statuses: BTreeMap<String, NodeExecutionStatus>,
     step: usize,
     #[allow(dead_code)]
     started_at: Instant,
@@ -72,6 +76,7 @@ impl WorkflowAgent {
             target_node_id,
             publisher,
             outputs: BTreeMap::new(),
+            node_statuses: BTreeMap::new(),
             step: 0,
             started_at: Instant::now(),
             cancel: None,
@@ -153,6 +158,48 @@ impl WorkflowAgent {
             error,
             ..self.base_event(node_id)
         });
+    }
+
+    /// Whether at least one incoming edge has been activated by the results
+    /// already produced in this walk.  A node with no incoming edges retains
+    /// the historical root-node behavior; connected nodes require a completed
+    /// predecessor and, for an `if-else` predecessor, the matching source
+    /// handle.
+    fn has_active_predecessor(&self, node_id: &str) -> bool {
+        let incoming = self
+            .compiled
+            .definition
+            .edges
+            .iter()
+            .filter(|edge| edge.target == node_id)
+            .collect::<Vec<_>>();
+        if incoming.is_empty() {
+            return true;
+        }
+
+        incoming.into_iter().any(|edge| {
+            if self.node_statuses.get(&edge.source) != Some(&NodeExecutionStatus::Completed) {
+                return false;
+            }
+            let source_kind = self
+                .compiled
+                .definition
+                .nodes
+                .iter()
+                .find(|node| node.id == edge.source)
+                .map(|node| node.kind.as_str());
+            if source_kind != Some("if-else") {
+                return true;
+            }
+            let Some(handle) = edge.source_handle.as_deref() else {
+                return false;
+            };
+            self.outputs
+                .get(&edge.source)
+                .and_then(|output| output.get("branch"))
+                .and_then(Value::as_str)
+                == Some(handle)
+        })
     }
 
     /// Sink handed to a media job so the provider poll loop can report the
@@ -1368,6 +1415,21 @@ impl Agent for WorkflowAgent {
         let node_kind = node.kind.clone();
         let node_config = node.config.clone();
 
+        if !self.has_active_predecessor(&node_id) {
+            self.node_statuses
+                .insert(node_id.clone(), NodeExecutionStatus::Skipped);
+            self.emit_status(
+                &node_id,
+                NodeExecutionStatus::Skipped,
+                1,
+                0,
+                None,
+                Some("conditional branch not selected".to_string()),
+            );
+            self.step += 1;
+            return Ok(AgentDecision::Continue);
+        }
+
         if let Some(target) = &self.target_node_id {
             if &node_id != target && node_kind != "start" {
                 let ancestors = self
@@ -1377,6 +1439,8 @@ impl Agent for WorkflowAgent {
                     .cloned()
                     .unwrap_or_default();
                 if !ancestors.contains(target) {
+                    self.node_statuses
+                        .insert(node_id.clone(), NodeExecutionStatus::Skipped);
                     self.emit_status(&node_id, NodeExecutionStatus::Skipped, 1, 0, None, None);
                     self.step += 1;
                     return Ok(AgentDecision::Continue);
@@ -1385,6 +1449,8 @@ impl Agent for WorkflowAgent {
         }
 
         self.active_node_id = Some(node_id.clone());
+        self.node_statuses
+            .insert(node_id.clone(), NodeExecutionStatus::Running);
         self.emit_status(&node_id, NodeExecutionStatus::Running, 1, 0, None, None);
         let node_start = Instant::now();
 
@@ -1395,6 +1461,8 @@ impl Agent for WorkflowAgent {
             Ok(output) => {
                 let output_value = Self::node_output_value_inline(&node_kind, &output);
                 self.outputs.insert(node_id.clone(), output_value.clone());
+                self.node_statuses
+                    .insert(node_id.clone(), NodeExecutionStatus::Completed);
                 self.emit_status(
                     &node_id,
                     NodeExecutionStatus::Completed,
@@ -1424,6 +1492,7 @@ impl Agent for WorkflowAgent {
                 } else {
                     NodeExecutionStatus::Failed
                 };
+                self.node_statuses.insert(node_id.clone(), status);
                 self.emit_status(
                     &node_id,
                     status,
