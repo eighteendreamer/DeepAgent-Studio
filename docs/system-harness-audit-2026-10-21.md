@@ -1843,6 +1843,8 @@ E-H40-20261027-05（独立提交与范围）：生产修复、跨层审计回归
 
 ### H-41：其他会话完成会清掉当前画布运行监听和停止入口
 
+**当前状态：已修复并验收（2026-10-27，限 Windows 本机离线画布 TypeScript/Tauri 事件桥范围）。**
+
 **级别：高（P1）；范围：画布运行与普通会话等共享 Tauri 全局 session://completed 通知时的前端运行归属。** 这与 H-39/H-40 的后端图执行无关，不需要错误的节点配置即可触发。
 
 #### 生产链路与前端行为复现
@@ -1860,8 +1862,18 @@ E-H40-20261027-05（独立提交与范围）：生产修复、跨层审计回归
 
 - Codex `tui/src/app/app_server_event_targets.rs` 将 TurnCompleted 等通知映射到所属 thread_id，`app_server_events.rs` 按线程通道 enqueue，未知/无效归属被拒绝。它不是本系统 Tauri 的同名事件协议；参考的是完成事件同样必须具有明确 owner。
 - 本系统自己的 `api.ts` 普通聊天监听已经使用 `if (e.payload.run_id !== actualRunId) return`，并按 status 判断 resolve/reject；这证明可以复用现有事件契约，不需要额外全局完成中心。读取了 Codex 源码，未执行参考项目测试。
-- 修复应把所有画布事件和终态订阅绑定到既有 run_id / listener owner，并让旧运行的 finally 不能清除新运行的资源；完成失败/取消的投影也读取已有 status/error。这里最后两项是应覆盖的生命周期验收方向，未另行宣称动态确认全部旧运行竞态。
-- 验收：A 运行期间，B 完成/失败/取消均不能结束 A、移除 A 监听或阻断停止；只有 A 自己的终态结算；两个运行交错收尾、快速重跑及监听注册前完成也应测试。实际节点、会话终态和取消都走现有链路，不新增执行中心。本轮未修改生产订阅行为。
+- 修复收敛为每次画布运行一个 owner：owner 保存自己的 AbortController、run_id 和两条 unlisten；所有 chat/完成事件先校验 owner 与 run_id，旧运行的 finally 只能关闭自己的资源，异步 listener 注册在 owner 已失效时立即 unlisten。没有新增事件中心或执行链；完成状态仍由同一 run 的既有终态事件驱动。
+- 验收：A 运行期间，B 完成/失败/取消均不能结束 A、移除 A 监听或阻断停止；只有 A 自己的终态结算；两个运行交错收尾、快速重跑及监听注册前完成也应测试。实际节点、会话终态和取消都走现有链路，不新增执行中心。本轮已完成 owner/run_id 修复并通过前两类验收；监听注册前终态仍归 H-43 独立问题。
+
+#### H-41 本轮修复证据（2026-10-27）
+
+E-H41-20261027-01（原始失败复核）：在生产代码未修改的 HEAD `eb8de217` 执行 `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-workflow-isolation.test.cjs`，退出1，2 tests/0 passed/2 failed。真实输出为 foreign completion 后 `settledByForeignEvent=true`、`stoppedByForeignEvent=true`、`remainingListeners=0`、`ownTerminalDelivered=false`、`cancelRequests=0`；旧 A 事件还可令新 B 节点状态变为 completed。测试只替换本地 Tauri event/invoke bridge，不启动模型、媒体、命令或网络。
+
+E-H41-20261027-02（根因修复）：`workflowExecutor.ts` 用每次运行独立 owner 保存 AbortController、run_id 和两条 unlisten；`session://completed`、`chat://event` 严格匹配当前 owner 的 run_id；旧运行被替代或终态关闭后，异步 listener 注册会自卸载，旧 finally 不再清理新运行资源。`cancelWorkflow` 只读取当前 active owner 的 run_id。
+
+E-H41-20261027-03（正式回归）：同一显式命令退出0，2 passed/0 failed/0 skipped；三种 foreign completion status（completed/failed/cancelled）均不结束 A，A 自身完成仍交付节点事件，取消请求为 `canvas-run-A`；快速重跑旧 A 事件不能覆盖新 B。`cd apps/desktop && pnpm test:workflow` 为78 passed/0 failed；`cd apps/desktop && pnpm build` 退出0，TypeScript 检查和 Vite production build 通过，仅保留既有 browser externalization 与大 chunk 警告；`git diff --check` 通过。
+
+E-H41-20261027-04（边界）：H-43 的显式启动前订阅探针仍为2 failed（早到终态），本轮未把它并入 H-41；H-134 的控制器 owner、真实 WebView、其他 OS、进程重启和真实供应商/后台作业未验。关闭范围为 Windows 本机离线 workflowExecutor 与受控 Tauri 事件桥。
 
 ### H-42：定时调度没有跨进程所有权，同一触发时段可重复派发一次性和循环任务
 

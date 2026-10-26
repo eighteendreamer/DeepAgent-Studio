@@ -8,15 +8,15 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 43 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 44 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有已进入修复但尚未验收的条目 |
-| 待修复 | 236 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 235 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **236（236待修复、0修复中）**；不提供完成率。四十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **235（235待修复、0修复中）**；不提供完成率。四十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -287,6 +287,18 @@ E-H40-20261027-03（正式回归）：`node apps/desktop/scripts/audit-workflow-
 E-H40-20261027-04（范围与提交前状态）：未验 Tauri WebView、其他 OS、真实 DeepSeek/供应商、跨进程重开、全量 enabled 专业节点及旧工程迁移；H-39/H-162/H-198 仍独立。修复代码、跨层审计测试和本轮文档将在同一独立提交创建，取得 hash 后只回填本台账与报告，不 amend、不推送。
 
 E-H40-20261027-05（独立提交与范围）：生产修复、跨层审计回归、脚本断言及当时两份文档已在提交 `c133cb094616c2be6585c8010ef3af536ff909b1`（`【fix】修复H-40工作流配置契约`）中创建；本次仅回填真实 hash，不 amend、不推送、不创建 PR。关闭范围仍以 E-H40-20261027-04 为准，未把全量专业节点、其他平台或真实供应商验收冒称为已完成。
+
+## H-41 本轮即时记录（2026-10-27）
+
+**当前状态：已修复并验收（限 Windows 本机离线 workflowExecutor 与受控 Tauri 事件桥）。** 本轮只处理画布运行 owner、完成事件 run_id 过滤和停止入口，不合并 H-40、H-43 或 H-134。
+
+E-H41-20261027-01（原始失败复核）：HEAD `eb8de217` 执行显式 `audit-workflow-isolation.test.cjs`，退出1，2 failed；foreign completion 后 A 已结算、监听清零、取消请求为0，旧 A 事件还可覆盖新 B。
+
+E-H41-20261027-02（根因修复）：每次运行独立保存 AbortController/run_id/unlisten，事件严格校验 owner 与 run_id；旧 owner 的异步注册和 finally 只能清理自身，`cancelWorkflow` 只使用当前 active owner。
+
+E-H41-20261027-03（正式回归）：显式隔离探针2 passed；三种 foreign 状态均被忽略，A 自身终态和 cancel_run 正常；`pnpm test:workflow` 78 passed；`pnpm build` 退出0；diff check通过。
+
+E-H41-20261027-04（范围与提交前状态）：H-43 早到终态探针仍独立失败，未合并；未验真实 WebView、其他OS、进程重启、后台供应商作业。修复代码、回归测试与本轮文档将在同一独立提交创建，取得 hash 后只回填本台账与报告。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -1135,7 +1147,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H38-20261027-01～04保留原始失败、根因、回归、范围与真实hash；不合并H-39 | 工作流复用RunEnvironment、base_registry_request与build_base_tool_registry；WorkflowToolExecutor保留ToolOutput.ok，WorkflowAgent对工具错误返回节点失败并停止下游；无显式容错字段，默认失败传播 | E-H38-20261027-02～03：Runtime workflow 67 passed；tool_runtime 2 passed；workflow_audit 8 passed/40 ignored；fmt/diff通过；严格no-deps clippy被既有告警阻断，完整workspace未执行 | `85dadf3bc2bff6a778077bb422c2dd14e32ea0b8` | 限本机离线 workflow graph→WorkflowAgent→AgentKernel→RunStore 与共享基础工具注册；未验Tauri/其他OS/真实供应商/跨进程重开，余项见E-H38-04 |
 | [H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H39-20261027-01～04保留原始失败、根因、回归、范围与真实hash；不合并H-195/H-198 | WorkflowAgent维护节点终态，按已完成前驱激活普通边；if-else边必须匹配branch与source_handle，未选节点发布Skipped，共享后继按任一激活边进入 | E-H39-20261027-02～03：正式探针1 passed；Runtime workflow 67 passed；AppCore workflow_audit 9 passed/39 ignored；fmt/diff通过；严格clippy被既有告警阻断 | `f7bc2f436aa442dd1ed811c1f60c72fb0e9c7c6d` | 限本机离线 workflow graph→WorkflowAgent→AgentKernel→RunStore；未验多个end/join、OR求值、Tauri/其他OS/真实供应商/跨进程重开，余项见E-H39-04 |
 | [H-40：专业工作流配置在前端序列化被删除或被后端按另一套字段读取](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H40-20261027-01～05保留原始失败、根因、正式跨层回归、范围与提交回填；不合并H-39/H-162/H-198 | serializer 不再过滤 `inputVariables`/`conditions`；WorkflowAgent 规范读取桌面 start/end/condition/template 字段，并在同一边界兼容旧字段 | 正式跨层探针1 passed；Runtime workflow 67 passed；AppCore workflow_audit 9 passed/39 ignored；pnpm test:workflow 78 passed；fmt/diff通过；严格clippy被既有告警阻断 | `c133cb094616c2be6585c8010ef3af536ff909b1` | 限所列 Windows 本机离线桌面 TS→WorkflowAgent→RunStore；未验 Tauri/其他OS/真实供应商/全量专业节点/旧工程迁移/完整workspace，余项见E-H40-04 |
-| [H-41：其他会话完成会清掉当前画布运行监听和停止入口](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-41：其他会话完成会清掉当前画布运行监听和停止入口](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H41-20261027-01～04保留原始失败、根因、正式回归与边界，提交 hash待回填；不合并H-40/H-43/H-134 | 每次画布运行使用独立 owner；完成与节点事件按 owner/run_id 过滤；旧 owner 不能清理新 owner；取消只读取当前 owner | H-41隔离探针2 passed；pnpm test:workflow 78 passed；pnpm build通过；diff check通过 | 待本项独立提交后回填 | 限所列 Windows 本机离线 workflowExecutor/Tauri事件桥；H-43早到终态、真实WebView/其他OS/进程重启/后台供应商未验，余项见E-H41-04 |
 | [H-42：定时调度没有跨进程所有权，同一触发时段可重复派发一次性和循环任务](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-43：运行启动先于事件订阅就绪，提前终态丢失后前端持续等待](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 2026-10-26，原失败保留，E-H44-20261026-01～10 | 统一规范终态事务，run/task身份文件投影，既有ledger确认与重开幂等补偿；正常kernel/setup/workflow接回同一边界 | 原探针默认通过；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；workspace H-306/严格lint失败保留，见明细 | `3d247d1a` | 无schema迁移；外部last()消费者与Rust构造方需适配；跨平台/断电/真实UI未验，H-95不归并；总区间200–400有效小时初估 |

@@ -15,11 +15,39 @@ import type { CreativeNodeData, ProfessionalNodeData } from "../types";
  * second data-flow mechanism.
  */
 
-let _abortController: AbortController | null = null;
-let _eventUnlisten: (() => void) | null = null;
-let _completionUnlisten: (() => void) | null = null;
-/** 当前在跑的内核 run id；cancel_run 认的就是这个标识。 */
-let _currentRunId: string | null = null;
+type WorkflowRunOwner = {
+  controller: AbortController;
+  runId: string | null;
+  active: boolean;
+  closed: boolean;
+  eventUnlisten: (() => void) | null;
+  completionUnlisten: (() => void) | null;
+};
+
+/** 当前画布运行的 owner；每次监听和清理都必须落在同一个 owner 上。 */
+let _activeRun: WorkflowRunOwner | null = null;
+
+function detachRunOwner(owner: WorkflowRunOwner) {
+  owner.eventUnlisten?.();
+  owner.eventUnlisten = null;
+  owner.completionUnlisten?.();
+  owner.completionUnlisten = null;
+}
+
+function closeRunOwner(owner: WorkflowRunOwner) {
+  owner.active = false;
+  owner.closed = true;
+  detachRunOwner(owner);
+}
+
+function retireRunOwner(owner: WorkflowRunOwner) {
+  closeRunOwner(owner);
+  owner.controller.abort();
+}
+
+function abortError(): DOMException {
+  return new DOMException("Aborted", "AbortError");
+}
 
 const UI_META_KEYS = new Set([
   "label",
@@ -262,8 +290,9 @@ async function runBackendWorkflow(
   nodes: WorkflowNode[],
   edges: WorkflowEdge[],
   targetNodeId: string | undefined,
-  signal: AbortSignal,
+  owner: WorkflowRunOwner,
 ): Promise<void> {
+  const { signal } = owner.controller;
   const w = window as unknown as { __TAURI_INTERNALS__?: unknown };
   if (!w.__TAURI_INTERNALS__) {
     throw new Error("当前窗口不是 Tauri 运行时，无法调用内核执行链");
@@ -286,32 +315,31 @@ async function runBackendWorkflow(
     "start_workflow",
     { workflow, sessionId: null },
   );
-  _currentRunId = ack.run_id;
+  if (!owner.active || owner.closed || signal.aborted || _activeRun !== owner) {
+    throw abortError();
+  }
+  owner.runId = ack.run_id;
 
   return new Promise<void>((resolve, reject) => {
-    const cleanup = () => {
-      _eventUnlisten?.();
-      _eventUnlisten = null;
-      _completionUnlisten?.();
-      _completionUnlisten = null;
-    };
+    const cleanup = () => closeRunOwner(owner);
 
     const onAbort = () => {
       cleanup();
-      reject(new DOMException("Aborted", "AbortError"));
+      reject(abortError());
     };
     if (signal.aborted) {
       cleanup();
-      reject(new DOMException("Aborted", "AbortError"));
+      reject(abortError());
       return;
     }
     signal.addEventListener("abort", onAbort, { once: true });
 
     eventMod
       .listen<Record<string, unknown>>("chat://event", (e) => {
+        if (!owner.active || owner.closed || !owner.runId) return;
         const raw = e.payload;
         const envelope = raw as { run_id?: string; payload?: Record<string, unknown> };
-        if (envelope?.run_id && envelope.run_id !== ack.run_id) return;
+        if (envelope?.run_id !== owner.runId) return;
         const event =
           envelope?.run_id && envelope?.payload ? envelope.payload : raw;
         if (event?.type !== "workflow_node") return;
@@ -335,34 +363,46 @@ async function runBackendWorkflow(
         });
       })
       .then((unlisten) => {
-        _eventUnlisten = unlisten;
+        if (!owner.active || owner.closed || _activeRun !== owner) unlisten();
+        else owner.eventUnlisten = unlisten;
       });
 
     eventMod
-      .listen<Record<string, unknown>>("session://completed", () => {
+      .listen<Record<string, unknown>>("session://completed", (e) => {
+        if (!owner.active || owner.closed || !owner.runId) return;
+        if (e.payload?.run_id !== owner.runId) return;
         cleanup();
         signal.removeEventListener("abort", onAbort);
         resolve();
       })
       .then((unlisten) => {
-        _completionUnlisten = unlisten;
+        if (!owner.active || owner.closed || _activeRun !== owner) unlisten();
+        else owner.completionUnlisten = unlisten;
       });
   });
 }
 
 export async function runWorkflow(nodeId?: string) {
-  if (_abortController) {
-    _abortController.abort();
+  if (_activeRun) {
+    retireRunOwner(_activeRun);
+    _activeRun = null;
   }
-  _abortController = new AbortController();
-  const { signal } = _abortController;
+  const owner: WorkflowRunOwner = {
+    controller: new AbortController(),
+    runId: null,
+    active: true,
+    closed: false,
+    eventUnlisten: null,
+    completionUnlisten: null,
+  };
+  _activeRun = owner;
 
   const mode = useCanvasStore.getState().mode;
   const { nodes, edges } = getNodesAndEdges(mode);
 
   try {
     resetAllStatus();
-    await runBackendWorkflow(mode, nodes, edges, nodeId, signal);
+    await runBackendWorkflow(mode, nodes, edges, nodeId, owner);
   } catch (err) {
     if (err instanceof DOMException && err.name === "AbortError") {
       return;
@@ -386,21 +426,13 @@ export async function runWorkflow(nodeId?: string) {
       }
     }
   } finally {
-    _abortController = null;
-    _currentRunId = null;
+    if (_activeRun === owner) {
+      closeRunOwner(owner);
+      _activeRun = null;
+    } else {
+      closeRunOwner(owner);
+    }
   }
-}
-
-function stopWorkflow() {
-  if (_abortController) {
-    _abortController.abort();
-    _abortController = null;
-  }
-  _currentRunId = null;
-  _eventUnlisten?.();
-  _eventUnlisten = null;
-  _completionUnlisten?.();
-  _completionUnlisten = null;
 }
 
 /**
@@ -411,7 +443,8 @@ function stopWorkflow() {
  */
 export async function cancelWorkflow(nodeId?: string) {
   const mode = useCanvasStore.getState().mode;
-  const runId = _currentRunId;
+  const owner = _activeRun;
+  const runId = owner?.active ? owner.runId : null;
   if (runId) {
     try {
       const core = await import("@tauri-apps/api/core");
@@ -421,7 +454,10 @@ export async function cancelWorkflow(nodeId?: string) {
       console.error("[canvas] 取消运行失败:", error);
     }
   }
-  stopWorkflow();
+  if (owner) {
+    retireRunOwner(owner);
+    if (_activeRun === owner) _activeRun = null;
+  }
   if (nodeId) setNodeStatus(mode, nodeId, "idle");
 }
 
@@ -434,5 +470,5 @@ export function resetAllStatus() {
 }
 
 export function isWorkflowRunning(): boolean {
-  return _abortController != null;
+  return _activeRun?.active === true && !_activeRun.controller.signal.aborted;
 }

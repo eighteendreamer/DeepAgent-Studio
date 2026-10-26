@@ -52,7 +52,9 @@ test("foreign completion cannot finish or detach the active canvas run", {
     const beforeForeignNode = updates.length;
     emit("chat://event", nodeEvent("chat-run-B", "completed"));
     assert.equal(updates.length, beforeForeignNode, "foreign node events already have a working run filter");
-    emit("session://completed", { run_id: "chat-run-B", session_id: "chat-session-B", status: "completed", error: null });
+    for (const status of ["completed", "failed", "cancelled"]) {
+      emit("session://completed", { run_id: "chat-run-B", session_id: "chat-session-B", status, error: null });
+    }
     await new Promise(setImmediate);
     const stoppedByForeignEvent = !executor.isWorkflowRunning();
     const settledByForeignEvent = settled;
