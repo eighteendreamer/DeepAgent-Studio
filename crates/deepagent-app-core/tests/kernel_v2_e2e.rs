@@ -171,6 +171,9 @@ mod tool_schema_parameters;
 #[path = "kernel_v2_e2e/tool_call_identity.rs"]
 mod tool_call_identity;
 
+#[path = "kernel_v2_e2e/tool_result_assets.rs"]
+mod tool_result_assets;
+
 #[path = "kernel_v2_e2e/completion_net_effect.rs"]
 mod completion_net_effect;
 
@@ -864,7 +867,6 @@ async fn audit_unrelated_read_does_not_move_reads_before_write_barrier() {
 }
 
 #[tokio::test]
-#[ignore = "audit: model-visible saved tool results must survive turn completion and database reopen"]
 async fn audit_saved_tool_result_survives_turn_and_database_reopen() {
     use deepagent_core::event::EventPayload;
     use deepagent_persistence::{artifact_store::ArtifactStore, event_store::EventStore};
@@ -963,6 +965,14 @@ async fn audit_saved_tool_result_survives_turn_and_database_reopen() {
         "serial pipeline must index the full result"
     );
     assert_eq!(PathBuf::from(&artifacts[0].path), path);
+    let saved_bytes = std::fs::read(&path).unwrap();
+    assert!(String::from_utf8_lossy(&saved_bytes).contains("AUDIT_RESULT_TAIL"));
+    assert_eq!(artifacts[0].byte_size, saved_bytes.len() as i64);
+    use sha2::Digest;
+    assert_eq!(
+        artifacts[0].digest.as_deref(),
+        Some(format!("sha256:{:x}", sha2::Sha256::digest(&saved_bytes)).as_str())
+    );
     let events = EventStore::new(&reopened)
         .load_session(session_id.parse().unwrap())
         .unwrap();

@@ -26,11 +26,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::agent::{Agent, AgentDecision, Observation, ToolAttemptController};
 use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
-use crate::empty_stub::ensure_non_empty_output;
 use crate::events::{tool_ui_metadata, NullEventSink, RuntimeEvent, RuntimeEventSink};
-use crate::tool_budget::{
-    apply_tool_result_budget, cleanup_tool_result_paths, saved_path, ToolResultBudgetConfig,
-};
+use crate::tool_budget::ToolResultBudgetConfig;
+use crate::tool_pipeline::ToolResultPolicy;
 use crate::tool_result_decorator::ToolResultDecorator;
 
 /// An optional post-completion verification plan (开发计划.md Phase 7).
@@ -227,7 +225,6 @@ pub struct RuntimeEngine<'a, C: Clock> {
     approvals: std::sync::Arc<dyn ApprovalGate>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     cancel_token: Option<CancellationToken>,
-    created_tool_result_paths: std::sync::Arc<std::sync::Mutex<Vec<std::path::PathBuf>>>,
     edited_files: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>,
     >,
@@ -489,7 +486,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             approvals: std::sync::Arc::new(AutoDenyGate),
             cancel: None,
             cancel_token: None,
-            created_tool_result_paths: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             edited_files: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -1219,16 +1215,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             })?;
         }
 
-        if self.config.tool_result_budget.cleanup_on_run_end {
-            let paths = {
-                let mut guard = self
-                    .created_tool_result_paths
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                std::mem::take(&mut *guard)
-            };
-            cleanup_tool_result_paths(paths).await;
-        }
+        // Full outputs referenced by the event log are durable assets, not
+        // turn-local scratch files. Only owner/reference retention may reclaim them;
+        // completion, cancellation and error paths must not invalidate history.
         self.fire_hook(session_id, HookPoint::SessionEnd, HookData::None)
             .await?;
 
@@ -1259,13 +1248,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         Ok(())
     }
 
-    fn remember_tool_result_path(&self, output: &deepagent_tools::ToolOutput) {
-        if let Some(path) = saved_path(output) {
-            self.created_tool_result_paths
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .push(path);
-        }
+    fn tool_result_policy(&self, session_id: deepagent_core::id::SessionId) -> ToolResultPolicy {
+        ToolResultPolicy::new(
+            session_id,
+            self.config.tool_result_budget.clone(),
+            self.config.tool_result_decorator.clone(),
+            self.config.artifact_persistence.clone(),
+        )
     }
 
     /// Whether this run actually created or modified files. The build/type
@@ -1693,10 +1682,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             let execution_context = self
                 .execution_context()
                 .with_timeout(self.config.tool_timeout);
-            let budget = self.config.tool_result_budget.clone();
-            let session_id_str = session_id.to_string();
-            let created_paths = self.created_tool_result_paths.clone();
-            let decorator = self.config.tool_result_decorator.clone();
+            let result_policy = self.tool_result_policy(session_id);
             let early = speculative.remove(&call_id);
             futs.push(async move {
                 let invoke = || async {
@@ -1714,27 +1700,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     None => invoke().await,
                 };
                 let result = match raw_result {
-                    Ok(out) => {
-                        let mut out = apply_tool_result_budget(
-                            &budget,
-                            &session_id_str,
-                            &name,
-                            &call_id,
-                            out,
-                        )
-                        .await;
-                        ensure_non_empty_output(&mut out, &name);
-                        if let Some(decorator) = decorator.as_ref() {
-                            decorator.decorate(&name, &mut out).await;
-                        }
-                        if let Some(path) = saved_path(&out) {
-                            created_paths
-                                .lock()
-                                .unwrap_or_else(|p| p.into_inner())
-                                .push(path);
-                        }
-                        Ok(out)
-                    }
+                    Ok(out) => Ok(result_policy.apply(&name, &call_id, out).await),
                     Err(e) => Err(e),
                 };
                 (i, call_id, name, metadata_args, result, duration_ms)
@@ -2089,7 +2055,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         .with_result_policy(
             self.config.tool_result_budget.clone(),
             self.config.tool_result_decorator.clone(),
-            self.created_tool_result_paths.clone(),
+            Default::default(),
         )
         .with_checkpoint(self.config.checkpoint.clone());
         let pipeline = pipeline.with_artifact_persistence(self.config.artifact_persistence.clone());
@@ -2443,19 +2409,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
         let observation = match output {
             Ok(out) => {
-                let mut out = apply_tool_result_budget(
-                    &self.config.tool_result_budget,
-                    &session_id.to_string(),
-                    &tool_name,
-                    &call_id,
-                    out,
-                )
-                .await;
-                ensure_non_empty_output(&mut out, &tool_name);
-                if let Some(decorator) = self.config.tool_result_decorator.as_ref() {
-                    decorator.decorate(&tool_name, &mut out).await;
-                }
-                self.remember_tool_result_path(&out);
+                let out = self
+                    .tool_result_policy(session_id)
+                    .apply(&tool_name, &call_id, out)
+                    .await;
                 if !out.ok {
                     self.metrics.incr(names::TOOL_FAILURES, 1);
                 }
@@ -4041,7 +3998,7 @@ mod tests {
                 max_tokens: 10,
                 preview_tokens: 4,
                 output_dir: temp.path().to_path_buf(),
-                cleanup_on_run_end: false,
+                cleanup_on_run_end: true,
                 ..Default::default()
             },
             ..Default::default()
@@ -4073,6 +4030,82 @@ mod tests {
             })
             .expect("tool completion event");
         assert_eq!(completed["truncated"], true);
+    }
+
+    #[tokio::test]
+    async fn saved_tool_results_survive_cancellation_and_later_agent_error() {
+        struct StopAfterResult {
+            cancel: Arc<AtomicBool>,
+            should_cancel: bool,
+        }
+        #[async_trait]
+        impl Agent for StopAfterResult {
+            async fn think(&mut self, step: usize, last: &[Observation]) -> Result<AgentDecision> {
+                if step == 0 {
+                    return Ok(AgentDecision::CallTool(ToolInvocation::new(
+                        "big",
+                        serde_json::json!({}),
+                    )));
+                }
+                assert_eq!(last.len(), 1);
+                assert!(last[0].output["saved_path"].is_string());
+                if self.should_cancel {
+                    self.cancel.store(true, Ordering::Release);
+                    Ok(AgentDecision::Continue)
+                } else {
+                    Err(deepagent_core::error::CoreError::other(
+                        "fixture: agent failed after tool completion",
+                    ))
+                }
+            }
+        }
+        for should_cancel in [false, true] {
+            let db = Database::open_in_memory().unwrap();
+            let clock = FixedClock::new(1);
+            let mut session = Session::create(&db, &clock, None).unwrap();
+            let task = session.create_task("durable result").unwrap();
+            let dir = tempfile::tempdir().unwrap();
+            let cancel = Arc::new(AtomicBool::new(false));
+            let mut agent = StopAfterResult {
+                cancel: cancel.clone(),
+                should_cancel,
+            };
+            let registry = registry_with_big();
+            let engine = RuntimeEngine::new(
+                &registry,
+                Metrics::new(),
+                RuntimeConfig {
+                    tool_result_budget: ToolResultBudgetConfig {
+                        output_dir: dir.path().to_owned(),
+                        max_tokens: 1,
+                        preview_tokens: 1,
+                        cleanup_on_run_end: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .with_cancel(cancel);
+            let outcome = engine.run(&mut session, task, &mut agent).await;
+            if should_cancel {
+                assert_eq!(outcome.unwrap(), RunOutcome::Cancelled);
+            } else {
+                assert!(outcome
+                    .unwrap_err()
+                    .to_string()
+                    .contains("agent failed after tool completion"));
+            }
+            let events = EventStore::new(&db).load_session(session.id()).unwrap();
+            let output = events
+                .iter()
+                .find_map(|event| match &event.payload {
+                    EventPayload::ToolCallCompleted { output, .. } => Some(output),
+                    _ => None,
+                })
+                .unwrap();
+            let full = std::fs::read_to_string(output["saved_path"].as_str().unwrap()).unwrap();
+            assert!(full.contains(&"x".repeat(200)));
+        }
     }
 
     #[tokio::test]

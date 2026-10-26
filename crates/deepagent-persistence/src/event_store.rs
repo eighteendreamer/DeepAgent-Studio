@@ -882,6 +882,7 @@ impl<'db> EventStore<'db> {
 
     /// Permanently remove recycled session directories older than `cutoff`.
     pub fn purge_trashed_sessions_before(&self, cutoff: Timestamp) -> Result<u64> {
+        let _retention = self.db.lock_tool_result_retention()?;
         let _io = self.db.lock_session_io()?;
         session_files::purge_trash_before(&self.db.session_files_root(), cutoff.as_millis())
     }
@@ -889,8 +890,26 @@ impl<'db> EventStore<'db> {
     /// Remove the SQLite metadata and rebuildable projections for a session
     /// whose recycled source file has passed its retention window.
     pub fn purge_deleted_session_metadata(&self, session_id: SessionId) -> Result<bool> {
+        let _retention = self.db.lock_tool_result_retention()?;
+        let _io = self.db.lock_session_io()?;
+        let root = self.db.session_files_root();
+        let _file_lock = session_files::lock_session(&root, session_id)?;
+        if session_files::current_cursor(&root, session_id)?.is_some()
+            || session_files::latest_trash_timestamp(&root, session_id)?.is_some()
+        {
+            return Ok(false);
+        }
         self.db.with_conn(|c| {
             let tx = c.unchecked_transaction().map_err(map_sqlite)?;
+            // Forks may still carry these exact immutable result references.
+            // Keep the existing artifact index through the run FK cascade;
+            // reachability GC, not owner deletion, decides when bytes expire.
+            tx.execute(
+                "UPDATE artifacts SET run_id=NULL WHERE kind='tool_result' AND run_id IN
+                    (SELECT id FROM runs WHERE session_id=?1)",
+                params![session_id.to_string()],
+            )
+            .map_err(map_sqlite)?;
             tx.execute(
                 "DELETE FROM session_search_fts
                  WHERE CAST(doc_id AS INTEGER) IN
@@ -1274,6 +1293,7 @@ impl<'db> EventStore<'db> {
         until_seq: Sequence,
         now: Timestamp,
     ) -> Result<()> {
+        let _retention = self.db.lock_tool_result_retention()?;
         let record = self
             .get_session(source_id)?
             .ok_or_else(|| CoreError::not_found(format!("session {source_id} does not exist")))?;

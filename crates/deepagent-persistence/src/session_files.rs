@@ -792,7 +792,11 @@ fn write_generation(
 
 fn current_generation(root: &Path, session_id: SessionId) -> Result<Option<(u64, PathBuf)>> {
     let dir = session_dir(root, session_id);
-    let entries = match fs::read_dir(&dir) {
+    current_generation_in(&dir)
+}
+
+fn current_generation_in(dir: &Path) -> Result<Option<(u64, PathBuf)>> {
+    let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(io_error(error)),
@@ -817,6 +821,48 @@ fn current_generation(root: &Path, session_id: SessionId) -> Result<Option<(u64,
         }
     }
     Ok(selected)
+}
+
+/// Retention must include restorable recycle-area history, not just the active
+/// generation. Caller owns the per-session I/O lock; never repair logs in GC.
+pub(crate) fn load_retained_events(root: &Path, session_id: SessionId) -> Result<Vec<Event>> {
+    let mut directories = vec![session_dir(root, session_id)];
+    match fs::read_dir(trash_session_root(root, session_id)) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry.map_err(io_error)?;
+                if entry.file_type().map_err(io_error)?.is_dir()
+                    && entry.file_name().to_string_lossy().parse::<i64>().is_ok()
+                {
+                    directories.push(entry.path());
+                }
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(io_error(error)),
+    }
+    let mut events = Vec::new();
+    let mut found = false;
+    for directory in directories {
+        let Some((generation, path)) = current_generation_in(&directory)? else {
+            continue;
+        };
+        found = true;
+        let mut file = open_session_file(&path, false)?;
+        let loaded = read_locked_file(&mut file, generation, session_id, false)?;
+        if loaded.recovered_tail_bytes != 0 {
+            return Err(CoreError::EventLog(format!(
+                "incomplete retained history for {session_id}; tool result GC refused"
+            )));
+        }
+        events.extend(loaded.events);
+    }
+    if !found {
+        return Err(CoreError::EventLog(format!(
+            "retained session {session_id} has no readable source; tool result GC refused"
+        )));
+    }
+    Ok(events)
 }
 
 pub(crate) fn lock_session(root: &Path, session_id: SessionId) -> Result<SessionLock> {

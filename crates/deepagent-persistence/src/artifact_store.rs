@@ -54,7 +54,8 @@ impl ArtifactKind {
 pub struct ArtifactRecord {
     pub id: String,
     pub kind: ArtifactKind,
-    /// Owning run for tool output; `None` for canvas media.
+    /// Owning run for tool output while its source session is retained.
+    /// `None` for canvas media or detached results still referenced by forks.
     pub run_id: Option<String>,
     pub call_id: Option<String>,
     pub workspace_id: Option<String>,
@@ -95,9 +96,24 @@ impl<'db> ArtifactStore<'db> {
     }
 
     pub fn put(&self, record: &ArtifactRecord) -> Result<()> {
+        self.write(record, true)
+    }
+
+    /// Insert immutable metadata without silently replacing an older result
+    /// with the same identity. Existing mutable canvas callers retain `put`.
+    pub fn put_new(&self, record: &ArtifactRecord) -> Result<()> {
+        Self::validate_id(&record.id)?;
+        self.write(record, false)
+    }
+
+    fn write(&self, record: &ArtifactRecord, replace: bool) -> Result<()> {
+        let statement = format!(
+            "INSERT {} INTO artifacts ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            if replace { "OR REPLACE" } else { "" }
+        );
         self.db.with_conn(|conn| {
             conn.execute(
-                "INSERT OR REPLACE INTO artifacts (id, kind, run_id, call_id, workspace_id, path, media_type, byte_size, digest, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                &statement,
                 params![
                     record.id,
                     record.kind.as_str(),
@@ -179,6 +195,12 @@ impl<'db> ArtifactStore<'db> {
                 .map_err(map_sqlite)?;
             Ok(removed > 0)
         })
+    }
+
+    /// Reclaim expired, detached host results only after retained histories
+    /// (including forks and the recycle area) no longer reference them.
+    pub fn gc_tool_results_before(&self, cutoff: i64) -> Result<u64> {
+        crate::tool_result_retention::collect(self.db, cutoff)
     }
 
     /// Reject ids that would escape a managed root when joined to it.
@@ -296,6 +318,19 @@ mod tests {
             .unwrap();
         assert!(ArtifactStore::new(&db).delete("a1").unwrap());
         assert!(!ArtifactStore::new(&db).delete("a1").unwrap());
+    }
+
+    #[test]
+    fn immutable_insert_rejects_identity_reuse_without_replacing_original_metadata() {
+        let db = Database::open_in_memory().unwrap();
+        let store = ArtifactStore::new(&db);
+        let original = record("tool_result_identity", ArtifactKind::ToolResult);
+        store.put_new(&original).unwrap();
+        let mut replacement = original.clone();
+        replacement.path = "/different-result.json".into();
+        replacement.digest = Some("sha256:different".into());
+        assert!(store.put_new(&replacement).is_err());
+        assert_eq!(store.get(&original.id).unwrap(), Some(original));
     }
 
     #[test]

@@ -265,9 +265,18 @@ impl ArchiveService {
                 let session_id = item.session_id.parse().map_err(|error| {
                     CoreError::invalid(format!("bad archived session id: {error}"))
                 })?;
-                EventStore::new(&self.db).purge_deleted_session_metadata(session_id)?;
-                docs.delete(ARCHIVE_COLLECTION, &item.session_id)?;
+                let store = EventStore::new(&self.db);
+                if store.purge_deleted_session_metadata(session_id)?
+                    || store.get_session(session_id)?.is_none()
+                {
+                    docs.delete(ARCHIVE_COLLECTION, &item.session_id)?;
+                }
             }
+        }
+        let results = deepagent_persistence::artifact_store::ArtifactStore::new(&self.db)
+            .gc_tool_results_before(cutoff)?;
+        if results > 0 {
+            tracing::info!(results, "collected expired unreferenced tool results");
         }
         Ok(removed)
     }

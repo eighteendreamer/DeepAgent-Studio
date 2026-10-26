@@ -23,7 +23,9 @@ use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyG
 use crate::checkpoint::{CheckpointManager, MutationKind};
 use crate::empty_stub::ensure_non_empty_output;
 use crate::events::{tool_ui_metadata, NullEventSink, RuntimeEvent, RuntimeEventSink};
-use crate::tool_budget::{apply_tool_result_budget, saved_path, ToolResultBudgetConfig};
+use crate::tool_budget::{
+    budget_tool_result, cleanup_tool_result_paths, SavedToolResult, ToolResultBudgetConfig,
+};
 use crate::tool_result_decorator::ToolResultDecorator;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,27 +265,74 @@ impl ToolArtifactPersistence {
         }
     }
 
-    fn record(&self, call_id: &str, path: &std::path::Path) -> Result<()> {
+    fn record(&self, call_id: &str, saved: &SavedToolResult) -> Result<()> {
         // Legacy RuntimeEngine runs do not own a v2 `runs` row. Keep the
         // compatibility path functional without creating orphan metadata.
         if RunStore::new(&self.db).get(&self.run_id)?.is_none() {
             return Ok(());
         }
-        let byte_size = std::fs::metadata(path)
-            .map(|metadata| metadata.len() as i64)
-            .unwrap_or(0);
-        ArtifactStore::new(&self.db).put(&ArtifactRecord {
-            id: format!("artifact_{}", deepagent_core::id::EventId::new()),
+        ArtifactStore::new(&self.db).put_new(&ArtifactRecord {
+            id: saved.id.clone(),
             kind: ArtifactKind::ToolResult,
             run_id: Some(self.run_id.clone()),
             call_id: Some(call_id.to_string()),
             workspace_id: None,
-            path: path.to_string_lossy().to_string(),
+            path: saved.path.to_string_lossy().to_string(),
             media_type: Some("application/json".to_string()),
-            byte_size,
-            digest: None,
+            byte_size: saved.byte_size,
+            digest: Some(saved.digest.clone()),
             created_at: now_millis(),
         })
+    }
+}
+
+/// One post-execution contract for serial, speculative and parallel tools.
+/// Only the budget publisher can supply artifact provenance; decorations and
+/// tool-provided paths cannot register arbitrary files as host-owned results.
+#[derive(Clone)]
+pub(crate) struct ToolResultPolicy {
+    session_id: SessionId,
+    budget: ToolResultBudgetConfig,
+    decorator: Option<Arc<dyn ToolResultDecorator>>,
+    persistence: Option<ToolArtifactPersistence>,
+}
+
+impl ToolResultPolicy {
+    pub(crate) fn new(
+        session_id: SessionId,
+        budget: ToolResultBudgetConfig,
+        decorator: Option<Arc<dyn ToolResultDecorator>>,
+        persistence: Option<ToolArtifactPersistence>,
+    ) -> Self {
+        Self {
+            session_id,
+            budget,
+            decorator,
+            persistence,
+        }
+    }
+
+    pub(crate) async fn apply(&self, name: &str, call_id: &str, output: ToolOutput) -> ToolOutput {
+        let mut budgeted = budget_tool_result(
+            &self.budget,
+            &self.session_id.to_string(),
+            name,
+            call_id,
+            output,
+        )
+        .await;
+        if let (Some(saved), Some(persistence)) = (&budgeted.saved, &self.persistence) {
+            if let Err(error) = persistence.record(call_id, saved) {
+                tracing::warn!(call_id, %error, "full tool result indexing failed before publication");
+                cleanup_tool_result_paths(vec![saved.path.clone()]).await;
+                budgeted.persistence_failed(&error.to_string());
+            }
+        }
+        ensure_non_empty_output(&mut budgeted.output, name);
+        if let Some(decorator) = &self.decorator {
+            decorator.decorate(name, &mut budgeted.output).await;
+        }
+        budgeted.output
     }
 }
 
@@ -301,11 +350,8 @@ pub struct ToolExecutionPipeline<'a> {
     cancel: Arc<AtomicBool>,
     cancel_token: Option<CancellationToken>,
     timeout: Duration,
-    budget: ToolResultBudgetConfig,
-    decorator: Option<Arc<dyn ToolResultDecorator>>,
-    created_paths: Arc<Mutex<Vec<std::path::PathBuf>>>,
+    result_policy: ToolResultPolicy,
     checkpoint: Option<Arc<CheckpointManager>>,
-    artifact_persistence: Option<ToolArtifactPersistence>,
     action_persistence: Option<ToolActionPersistence>,
 }
 
@@ -326,11 +372,13 @@ impl<'a> ToolExecutionPipeline<'a> {
             cancel: Arc::new(AtomicBool::new(false)),
             cancel_token: None,
             timeout: ToolExecutionContext::DEFAULT_TIMEOUT,
-            budget: ToolResultBudgetConfig::default(),
-            decorator: None,
-            created_paths: Arc::new(Mutex::new(Vec::new())),
+            result_policy: ToolResultPolicy::new(
+                session_id,
+                ToolResultBudgetConfig::default(),
+                None,
+                None,
+            ),
             checkpoint: None,
-            artifact_persistence: None,
             action_persistence: None,
         }
     }
@@ -393,11 +441,12 @@ impl<'a> ToolExecutionPipeline<'a> {
         mut self,
         budget: ToolResultBudgetConfig,
         decorator: Option<Arc<dyn ToolResultDecorator>>,
-        created_paths: Arc<Mutex<Vec<std::path::PathBuf>>>,
+        _created_paths: Arc<Mutex<Vec<std::path::PathBuf>>>,
     ) -> Self {
-        self.budget = budget;
-        self.decorator = decorator;
-        self.created_paths = created_paths;
+        // Keep the old builder signature source-compatible, but never enqueue
+        // published history assets for unconditional end-of-turn deletion.
+        self.result_policy.budget = budget;
+        self.result_policy.decorator = decorator;
         self
     }
 
@@ -410,7 +459,7 @@ impl<'a> ToolExecutionPipeline<'a> {
         mut self,
         persistence: Option<ToolArtifactPersistence>,
     ) -> Self {
-        self.artifact_persistence = persistence;
+        self.result_policy.persistence = persistence;
         self
     }
 
@@ -840,29 +889,10 @@ impl<'a> ToolExecutionPipeline<'a> {
             Ok(output) => output,
             Err(error) => ToolOutput::failure(error.to_string()),
         };
-        output = apply_tool_result_budget(
-            &self.budget,
-            &self.session_id.to_string(),
-            &prepared.name,
-            &prepared.call_id,
-            output,
-        )
-        .await;
-        ensure_non_empty_output(&mut output, &prepared.name);
-        if let Some(decorator) = self.decorator.as_ref() {
-            decorator.decorate(&prepared.name, &mut output).await;
-        }
-        if let Some(path) = saved_path(&output) {
-            self.created_paths
-                .lock()
-                .unwrap_or_else(|poison| poison.into_inner())
-                .push(path);
-            if let Some(persistence) = self.artifact_persistence.as_ref() {
-                if let Some(path) = saved_path(&output) {
-                    persistence.record(&prepared.call_id, &path)?;
-                }
-            }
-        }
+        output = self
+            .result_policy
+            .apply(&prepared.name, &prepared.call_id, output)
+            .await;
 
         let metadata = tool_ui_metadata(&prepared.name, &prepared.arguments, Some(&output.value));
         self.events.emit(RuntimeEvent::ToolCompleted {
@@ -1254,6 +1284,126 @@ mod tests {
                 || registry.get("wait_for_cancellation").is_some()
         );
         (db, persistence)
+    }
+
+    fn result_policy_fixture(dir: &std::path::Path) -> (Arc<Database>, ToolResultPolicy) {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session_id = SessionId::new();
+        EventStore::new(&db)
+            .create_session(session_id, None, Timestamp::from_millis(1))
+            .unwrap();
+        RunStore::new(&db)
+            .create("result-run", &session_id.to_string(), None, 1)
+            .unwrap();
+        let policy = ToolResultPolicy::new(
+            session_id,
+            ToolResultBudgetConfig {
+                output_dir: dir.to_owned(),
+                max_tokens: 1,
+                preview_tokens: 1,
+                cleanup_on_run_end: true,
+                ..Default::default()
+            },
+            None,
+            Some(ToolArtifactPersistence::new(db.clone(), "result-run")),
+        );
+        (db, policy)
+    }
+
+    #[tokio::test]
+    async fn result_policy_indexes_immutable_bytes_and_preserves_repeated_call_id_outputs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, policy) = result_policy_fixture(dir.path());
+        let mut outputs = Vec::new();
+        for marker in ["FIRST_RESULT", "SECOND_RESULT"] {
+            outputs.push(
+                policy
+                    .apply(
+                        "test",
+                        "same-call",
+                        ToolOutput::success(serde_json::json!({"marker":marker})),
+                    )
+                    .await,
+            );
+        }
+        let records = ArtifactStore::new(&db).list_for_run("result-run").unwrap();
+        assert_eq!(records.len(), 2);
+        assert_ne!(records[0].path, records[1].path);
+        assert_ne!(records[0].id, records[1].id);
+        for (output, marker) in outputs.iter().zip(["FIRST_RESULT", "SECOND_RESULT"]) {
+            let path = output.value["saved_path"].as_str().unwrap();
+            let record = records.iter().find(|record| record.path == path).unwrap();
+            let bytes = std::fs::read(path).unwrap();
+            assert!(String::from_utf8_lossy(&bytes).contains(marker));
+            assert_eq!(record.byte_size, bytes.len() as i64);
+            assert_eq!(
+                record.digest.as_deref(),
+                Some(format!("sha256:{:x}", Sha256::digest(&bytes)).as_str())
+            );
+            assert_eq!(record.call_id.as_deref(), Some("same-call"));
+            assert_eq!(
+                record.id,
+                std::path::Path::new(path)
+                    .file_stem()
+                    .unwrap()
+                    .to_str()
+                    .unwrap()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn result_policy_index_failure_does_not_publish_a_stale_reference() {
+        let dir = tempfile::tempdir().unwrap();
+        let (db, policy) = result_policy_fixture(dir.path());
+        db.with_conn(|connection| {
+            connection
+                .execute_batch(
+                    "CREATE TRIGGER reject_result_index BEFORE INSERT ON artifacts
+                 BEGIN SELECT RAISE(ABORT, 'fixture: result index unavailable'); END;",
+                )
+                .map_err(|error| deepagent_core::error::CoreError::other(error.to_string()))?;
+            Ok(())
+        })
+        .unwrap();
+        let output = policy
+            .apply(
+                "test",
+                "call",
+                ToolOutput::success(serde_json::json!({"content":"full output"})),
+            )
+            .await;
+        assert!(output.ok);
+        assert!(output.truncated);
+        assert!(output.value["saved_path"].is_null());
+        assert!(output.value["persistence_error"]
+            .as_str()
+            .unwrap()
+            .contains("result index unavailable"));
+        assert!(!output.value.to_string().contains("full output saved"));
+        assert!(ArtifactStore::new(&db)
+            .list_for_run("result-run")
+            .unwrap()
+            .is_empty());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn result_policy_never_indexes_or_removes_tool_provided_saved_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let foreign = dir.path().join("foreign.txt");
+        std::fs::write(&foreign, "foreign bytes").unwrap();
+        let (db, policy) = result_policy_fixture(&dir.path().join("host-results"));
+        let mut output =
+            ToolOutput::success(serde_json::json!({"saved_path":foreign,"truncated":true}));
+        output.truncated = true;
+        policy.apply("test", "call", output).await;
+        assert_eq!(std::fs::read_to_string(foreign).unwrap(), "foreign bytes");
+        assert!(ArtifactStore::new(&db)
+            .list_for_run("result-run")
+            .unwrap()
+            .is_empty());
+        assert!(!dir.path().join("host-results").exists());
     }
 
     #[test]

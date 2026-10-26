@@ -30,6 +30,7 @@ pub mod subagent_store;
 
 mod event_projection;
 mod session_files;
+mod tool_result_retention;
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -128,6 +129,13 @@ impl Database {
     /// nothing else may rebuild it from the session-file root.
     pub fn session_transcript_dir(&self, session_id: SessionId) -> PathBuf {
         session_files::session_dir(&self.session_files_root(), session_id)
+    }
+
+    /// Coordinate fork publication with result reachability snapshots across
+    /// database handles/processes. This is not a new store or run owner.
+    pub(crate) fn lock_tool_result_retention(&self) -> Result<fs_commit::PathOperationGuard> {
+        fs_commit::lock_path_operation(&self.data_root.join("files").join("tool-result-retention"))
+            .map_err(|error| CoreError::Persistence(format!("tool result retention lock: {error}")))
     }
 
     pub(crate) fn lock_session_io(&self) -> Result<std::sync::MutexGuard<'_, ()>> {
