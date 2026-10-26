@@ -397,28 +397,30 @@ fn e2e_root(run_id: &str) -> PathBuf {
 
 /// Audit-only probe: records backend routing without running any host command.
 #[tokio::test]
-#[ignore = "audit reproducer: a per-turn sandbox override must not use the host default backend"]
 async fn audit_sandbox_override_does_not_route_to_default_direct_backend() {
     use deepagent_app_core::{
-        ApprovalPolicy, HarnessRunOverrides, SandboxBackend, SandboxBackendCommandExecutor,
-        SandboxBackendKind, SandboxCapabilities, SandboxExecutionRequest, SandboxExecutionResult,
-        SandboxMode,
+        ApprovalPolicy, HarnessRunOverrides, SandboxBackend, SandboxBackendKind,
+        SandboxBackendRegistry, SandboxCapabilities, SandboxExecutionRequest,
+        SandboxExecutionResult, SandboxMode,
     };
     use deepagent_builtins::bash_tool::CommandOutcome;
 
-    struct RecordingDirectBackend(Arc<AtomicUsize>);
+    struct RecordingBackend {
+        kind: SandboxBackendKind,
+        calls: Arc<AtomicUsize>,
+    }
 
     #[async_trait]
-    impl SandboxBackend for RecordingDirectBackend {
+    impl SandboxBackend for RecordingBackend {
         fn capabilities(&self) -> SandboxCapabilities {
             SandboxCapabilities {
-                kind: SandboxBackendKind::Direct,
+                kind: self.kind,
                 available: true,
                 supports_one_shot: true,
                 supports_interactive_pty: false,
                 supports_network_toggle: false,
                 supports_readonly_mapping: false,
-                message: "audit fake: never executes a process".into(),
+                message: format!("audit fake {:?}: never executes a process", self.kind),
             }
         }
 
@@ -426,14 +428,14 @@ async fn audit_sandbox_override_does_not_route_to_default_direct_backend() {
             &self,
             _request: SandboxExecutionRequest,
         ) -> Result<SandboxExecutionResult> {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            self.calls.fetch_add(1, Ordering::SeqCst);
             Ok(SandboxExecutionResult {
                 outcome: CommandOutcome {
                     exit_code: Some(0),
                     stdout: "audit fake output".into(),
                     stderr: String::new(),
                 },
-                backend: SandboxBackendKind::Direct,
+                backend: self.kind,
                 artifacts: Vec::new(),
             })
         }
@@ -456,12 +458,21 @@ async fn audit_sandbox_override_does_not_route_to_default_direct_backend() {
     settings
         .set_sandbox_mode(SandboxMode::WorkspaceWrite)
         .unwrap();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let executor = SandboxBackendCommandExecutor::new(
-        Arc::new(RecordingDirectBackend(calls.clone())),
-        root.path(),
-        SandboxMode::WorkspaceWrite,
-    );
+    let direct_calls = Arc::new(AtomicUsize::new(0));
+    let windows_calls = Arc::new(AtomicUsize::new(0));
+    let registry = Arc::new(SandboxBackendRegistry::new(
+        SandboxBackendKind::Direct,
+        vec![
+            Arc::new(RecordingBackend {
+                kind: SandboxBackendKind::Direct,
+                calls: direct_calls.clone(),
+            }) as Arc<dyn SandboxBackend>,
+            Arc::new(RecordingBackend {
+                kind: SandboxBackendKind::WindowsSandbox,
+                calls: windows_calls.clone(),
+            }) as Arc<dyn SandboxBackend>,
+        ],
+    ));
     let transport = Arc::new(ReplayTransport::new([
         response_function_call(
             "audit-command",
@@ -471,7 +482,7 @@ async fn audit_sandbox_override_does_not_route_to_default_direct_backend() {
         response_text("done"),
     ]));
     let chat = ChatService::new(db, settings, transport, root.path())
-        .with_local_command_executor(Arc::new(executor));
+        .with_sandbox_backend_registry(registry);
     let result = chat
         .run_in_session_with_overrides(
             "Run the audit command using the requested sandbox.",
@@ -491,15 +502,17 @@ async fn audit_sandbox_override_does_not_route_to_default_direct_backend() {
         )
         .await;
     eprintln!(
-        "audit sandbox: run_ok={}, direct_backend_calls={}",
+        "audit sandbox: run_ok={}, direct_backend_calls={}, windows_backend_calls={}",
         result.is_ok(),
-        calls.load(Ordering::SeqCst)
+        direct_calls.load(Ordering::SeqCst),
+        windows_calls.load(Ordering::SeqCst)
     );
     assert_eq!(
-        calls.load(Ordering::SeqCst),
+        direct_calls.load(Ordering::SeqCst),
         0,
         "a windows_sandbox override must select that backend or reject the run, never execute using direct"
     );
+    assert_eq!(windows_calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

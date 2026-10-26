@@ -181,8 +181,9 @@ pub use runtime_service::{
 };
 pub use sandbox_backend::{
     DirectSandboxBackend, SandboxBackend, SandboxBackendCommandExecutor, SandboxBackendKind,
-    SandboxCapabilities, SandboxExecutionRequest, SandboxExecutionResult, SandboxNetworkPolicy,
-    SandboxieBackend, WindowsSandboxBackend, WindowsSandboxTaskPlan, WindowsSandboxTaskPlanRequest,
+    SandboxBackendRegistry, SandboxCapabilities, SandboxExecutionRequest, SandboxExecutionResult,
+    SandboxNetworkPolicy, SandboxieBackend, WindowsSandboxBackend, WindowsSandboxTaskPlan,
+    WindowsSandboxTaskPlanRequest,
 };
 pub use sandboxie_service::{SandboxieExecutor, SandboxieService, SandboxieStatusDto};
 pub use secret_store::{EnvSecretStore, MemorySecretStore, SecretStore, SqliteSecretStore};

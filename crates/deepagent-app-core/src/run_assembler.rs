@@ -73,6 +73,10 @@ use crate::knowledge_service::KnowledgeService;
 use crate::mcp_service::McpService;
 use crate::plugin_service::PluginService;
 use crate::project_service::ProjectService;
+use crate::sandbox_backend::{
+    DirectSandboxBackend, SandboxBackendCommandExecutor, SandboxBackendKind,
+    SandboxBackendRegistry, SandboxNetworkPolicy,
+};
 use crate::sandboxie_service::SandboxieExecutor;
 use crate::skills_service::SkillsService;
 use crate::RuntimeBroker;
@@ -152,6 +156,7 @@ pub(crate) struct RunAssembler<'a> {
     /// from `ChatService` so two turns cannot fold the same window twice.
     pub(crate) session_memory_passes: &'a crate::session_memory::SessionMemoryPasses,
     pub(crate) sandboxie_executor: &'a Option<Arc<SandboxieExecutor>>,
+    pub(crate) sandbox_backend_registry: &'a Option<Arc<SandboxBackendRegistry>>,
     pub(crate) local_command_executor:
         &'a Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
     pub(crate) executor_factory: &'a Option<CommandExecutorFactory>,
@@ -345,21 +350,36 @@ impl<'a> RunAssembler<'a> {
         let plugin_projection = plugin_snapshot
             .as_ref()
             .map(|(projection, _)| projection.clone());
+        let legacy_sandboxie_executor = self
+            .sandbox_backend_registry
+            .is_none()
+            .then_some(self.sandboxie_executor.as_ref())
+            .flatten();
         let RunEnvironment {
             config: run_config,
             profile: _profile,
             policy,
             sandbox_mode,
             local_execution_mode,
+            sandbox_backend,
             access,
         } = RunEnvironment::resolve(
             &root,
             self.settings,
             self.runtime_logs,
-            self.sandboxie_executor,
+            legacy_sandboxie_executor,
+            self.sandbox_backend_registry
+                .as_ref()
+                .map(|registry| registry.default_kind()),
             &run_id,
             serde_json::to_value(&overrides)?,
         )?;
+
+        // Resolve the backend once for this run.  The returned executor is
+        // immutable and is shared by the parent and its sub-agent registries;
+        // another session cannot replace it by changing a process-wide slot.
+        let run_local_executor =
+            self.local_executor_for_run(&root, sandbox_mode, sandbox_backend)?;
 
         let mut model_prompt = self
             .dynamic_command_prompt(prompt)?
@@ -490,6 +510,8 @@ impl<'a> RunAssembler<'a> {
                 None,
                 None,
                 Some(local_execution_mode),
+                sandbox_backend.is_some(),
+                run_local_executor.clone(),
                 matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
                 &session_id_str,
             );
@@ -554,6 +576,8 @@ impl<'a> RunAssembler<'a> {
             effective_env_mode,
             connection_id,
             Some(local_execution_mode),
+            sandbox_backend.is_some(),
+            run_local_executor,
             true,
             &session_id_str,
         );
@@ -1653,10 +1677,12 @@ impl<'a> RunAssembler<'a> {
         env_mode: Option<&'a str>,
         connection_id: Option<&'a str>,
         local_exec_mode: Option<crate::settings::LocalExecutionMode>,
+        force_sandbox_backend: bool,
+        local_command_executor: Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>,
         bash_external_safety_gate: bool,
         session_id: &str,
     ) -> ToolRegistryBuildRequest<'a> {
-        let local_command_executor = match (self.runtime_broker, self.local_command_executor) {
+        let local_command_executor = match (self.runtime_broker, local_command_executor) {
             (Some(broker), Some(executor)) => Some(Arc::new(RuntimeCommandExecutor::new(
                 executor.clone(),
                 broker.clone(),
@@ -1679,6 +1705,7 @@ impl<'a> RunAssembler<'a> {
             env_mode,
             connection_id,
             local_exec_mode,
+            force_sandbox_backend,
             bash_external_safety_gate,
             bash_allow: self.bash_allow.to_vec(),
             settings: self.settings.clone(),
@@ -1691,6 +1718,42 @@ impl<'a> RunAssembler<'a> {
             remote_ops_factory: self.remote_ops_factory.clone(),
             question_responder: self.service.question_responder(session_id),
         }
+    }
+
+    fn local_executor_for_run(
+        &self,
+        root: &Path,
+        sandbox_mode: crate::settings::SandboxMode,
+        sandbox_backend: Option<SandboxBackendKind>,
+    ) -> Result<Option<Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>>> {
+        let Some(kind) = sandbox_backend else {
+            return Ok(self.local_command_executor.clone());
+        };
+        let Some(registry) = self.sandbox_backend_registry.as_ref() else {
+            // `ChatService::new` remains usable for embedders that do not opt
+            // into the backend registry.  Direct is the only unambiguous
+            // legacy choice; an isolated backend must be rejected instead of
+            // being silently replaced by the host executor.
+            if kind == SandboxBackendKind::Direct {
+                return Ok(Some(Arc::new(
+                    SandboxBackendCommandExecutor::new(
+                        Arc::new(DirectSandboxBackend::new()),
+                        root,
+                        sandbox_mode,
+                    )
+                    .with_network(SandboxNetworkPolicy::Disabled),
+                )));
+            }
+            return Err(CoreError::invalid(format!(
+                "sandbox backend '{}' requested but no backend registry is configured",
+                kind.label()
+            )));
+        };
+        let (_, backend) = registry.resolve(Some(kind))?;
+        Ok(Some(Arc::new(
+            SandboxBackendCommandExecutor::new(backend, root, sandbox_mode)
+                .with_network(SandboxNetworkPolicy::Disabled),
+        )))
     }
 }
 

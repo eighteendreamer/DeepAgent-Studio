@@ -1,6 +1,6 @@
 # DeepAgent Studio 全系统 Harness 审查
 
-## 修复阶段当前进度（2026-10-26）
+## 修复阶段当前进度（2026-10-27）
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
@@ -30,8 +30,9 @@
 | H-07 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `ToolsListResult`保留不透明`nextCursor`，`McpClient::list_tools()`统一有界汇总分页；MCP全组77 passed/2 ignored，AppCore正式MCP筛选14 passed/13 ignored；E-H07-01～04，修复提交`e525b6de` |
 | H-08 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `McpTransport`统一支持无 ID notification，initialize 成功后发送 `notifications/initialized`；严格 stdio、HTTP fixture、MCP全组和AppCore MCP筛选通过；E-H08-01～04，修复提交`2dc9fdf6` |
 | H-09 | 已修复并验收（2026-10-26，Windows本机MCP/AppCore范围） | 单stdout reader、pending/oneshot与连接唯一wire ID；原探针转默认通过，stdio12/0 ignored、正式消费者1；全workspace唯一H-306失败及AppCore严格lint阻断见E-H09-01～09，修复提交`46ba0fd7` |
+| H-03 | 已修复并验收（2026-10-27，所列Windows本机/AppCore与CLI路由范围） | 原始Direct误路由失败保留；不可变backend registry按run解析，显式不可用拒绝，Direct兼容路径保留；AppCore路由1、registry8、CLI配置3及桌面Tauri cargo check通过，见E-H03-01～06；修复提交待回填 |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **24**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **255（255待修复）**；306是历史编号槽位。H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **27**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **252（252待修复）**；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -512,6 +513,24 @@ Codex 的 `app-server/src/request_processors/thread_processor.rs` 将请求 sand
 - 必须在现有 `SandboxBackend` 边界解析并验证逐次选择；不可用时显式失败，不能静默降级。
 - 将生效 backend、工作目录、mode 和 network policy 形成逐次不可变执行上下文；保证工具注册和执行使用同一份结果。不要依赖修改全局共享 backend 来切换并发会话。
 - 补充不同会话并行、继续会话、显式 backend 不可用及实际返回配置一致性测试。此探针同样默认忽略，待修复后转常规回归。
+
+#### H-03 即时修复记录（2026-10-27）
+
+**当前状态：已修复并验收（所列 Windows 本机、AppCore 与 CLI 路由范围）。** 原始失败证据不删除；本项没有访问真实 Windows Sandbox、真实内网、真实凭据或外部服务。
+
+E-H03-20261027-01（原始失败复核）：沿原审计探针执行时，修复前证据仍为 `run_ok=true, direct_backend_calls=1`；该证据对应的生产原因是 `RunEnvironment` 只消费 permission/mode，`ChatService` 由宿主固定一个 `SandboxBackendCommandExecutor`，逐次 `sandbox_backend` 只进入 `HarnessRunOverrides` 而未进入 executor 选择。本轮没有把历史失败改写成通过。
+
+E-H03-20261027-02（根因修复）：在现有 `SandboxBackend` 边界新增不可变 `SandboxBackendRegistry`；`RunEnvironment` 解析并记录逐次 backend，`RunAssembler` 每个 run 解析一次 backend 并为主 run/子 Agent 共用该不可变 executor。显式 backend 不存在或不可用时结构化失败，不静默降级；无 registry 的旧嵌入调用仅保留 `direct` 兼容路径，隔离 backend 明确拒绝，避免误用宿主执行。CLI 构造 Direct、Sandboxie、Windows Sandbox 三个 backend 的统一 registry；桌面同样接入并在 Sandboxie 未安装时把显式默认选择投影为 Direct，显式请求 Sandboxie 仍拒绝。
+
+E-H03-20261027-03（共享模式竞态收敛）：`SandboxieBackend` 不再在共享 executor 上写入每次 run 的 mode；调用现有 Sandboxie service 的显式 mode 入口，避免并发会话通过全局 atomic 相互覆盖。legacy 无 registry 路径仍保留原 mode 更新，仅作为兼容边界。
+
+E-H03-20261027-04（回归验收）：`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_sandbox_override_does_not_route_to_default_direct_backend --offline -j 1 -- --nocapture --test-threads=1` 退出 0，1 passed/0 ignored；记录型 Windows backend 收到 1 次调用，Direct 收到 0 次，且没有启动系统进程。原 ignored 探针已转为默认测试。
+
+E-H03-20261027-05（backend 与消费者对照）：`cargo test -p deepagent-app-core --lib sandbox_backend --offline -j 1 -- --quiet --test-threads=1` 退出 0，8 passed/0 ignored，含不可用显式 backend 拒绝且默认 Direct 不回退误选；`cargo test -p deepagent-cli configuration --offline -j 1 -- --quiet --test-threads=1` 退出 0，3 passed/0 ignored，覆盖冷恢复配置及旧无 registry 的 Direct 兼容路径。首次改动后该 CLI 组曾 2 passed/1 failed（失败为旧测试未提供 registry 的 Direct 兼容），补上兼容边界后按本记录命令复跑通过；中间失败保留，不冒称首跑通过。
+
+E-H03-20261027-06（构建与限制）：`cargo check -p deepagent-app-core -p deepagent-cli --offline -j 1`、`cargo check --offline -j 1`（`apps/desktop/src-tauri`）及 `cargo fmt --all -- --check` 均退出 0。AppCore 严格 clippy 仍被既有 10 项告警阻断（context_runtime 8 个 `clone_on_copy`、plugin_preparation 1 个 `type_complexity`、run_assembler 既有 1 个 `too_many_arguments`），本项未屏蔽或顺手修复。未执行真实 Windows Sandbox 启动、其他 OS、真实 DeepSeek/供应商、Tauri UI 点击和完整 workspace；Windows Sandbox 的真实可用性仍由运行环境能力探测决定，registry 只保证选择不被静默替换。
+
+本项修复提交 hash 待代码/测试提交后回填；不 amend、不推送、不创建 PR。H-03 不关闭 H-49、H-92、H-216 等独立问题，也不把 backend 选择正确误报为所有权限、网络或沙箱能力均已验收。
 
 ### H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置
 

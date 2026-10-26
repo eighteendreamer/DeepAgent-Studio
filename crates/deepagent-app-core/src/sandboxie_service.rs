@@ -418,6 +418,15 @@ pub struct SandboxieExecutor {
     allow_direct_fallback: Arc<AtomicBool>,
 }
 
+pub(crate) struct SandboxieControlledRequest<'a> {
+    pub(crate) command: &'a str,
+    pub(crate) cwd: &'a str,
+    pub(crate) shell: CommandShell,
+    pub(crate) cancel: Arc<AtomicBool>,
+    pub(crate) timeout: std::time::Duration,
+    pub(crate) environment: &'a [(String, String)],
+}
+
 impl SandboxieExecutor {
     pub fn new(service: Arc<SandboxieService>) -> Self {
         Self {
@@ -530,6 +539,65 @@ impl CommandExecutor for SandboxieExecutor {
         shell: CommandShell,
         environment: &[(String, String)],
     ) -> Result<CommandOutcome> {
+        self.run_with_environment_at_mode(command, cwd, shell, environment, self.current_mode())
+            .await
+    }
+
+    /// Kernel-owned cancellation/deadline for sandboxed commands (M-06).
+    ///
+    /// The boxed process tree lives OUTSIDE our Job Object, so the
+    /// SystemExecutor kill path cannot reach it. Supervise the blocking
+    /// Start.exe run and, on cancel/timeout, ask SbieSvc to terminate every
+    /// process in the box (`Start.exe /box:<name> /terminate` — official
+    /// Sandboxie "Stop Programs" command line).
+    async fn run_controlled(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        timeout: std::time::Duration,
+    ) -> Result<CommandOutcome> {
+        self.run_controlled_with_environment(command, cwd, shell, cancel, timeout, &[])
+            .await
+    }
+
+    async fn run_controlled_with_environment(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        timeout: std::time::Duration,
+        environment: &[(String, String)],
+    ) -> Result<CommandOutcome> {
+        self.run_controlled_with_environment_at_mode(
+            SandboxieControlledRequest {
+                command,
+                cwd,
+                shell,
+                cancel,
+                timeout,
+                environment,
+            },
+            self.current_mode(),
+        )
+        .await
+    }
+}
+
+impl SandboxieExecutor {
+    /// Execute with an explicitly captured mode. Backend selection is
+    /// per-run, so the unified sandbox adapter must not race on the shared
+    /// compatibility atomic while another session is executing.
+    pub(crate) async fn run_with_environment_at_mode(
+        &self,
+        command: &str,
+        cwd: &str,
+        shell: CommandShell,
+        environment: &[(String, String)],
+        mode: SandboxMode,
+    ) -> Result<CommandOutcome> {
         let command = command.to_string();
         let cwd = cwd.to_string();
         let environment = environment.to_vec();
@@ -537,7 +605,6 @@ impl CommandExecutor for SandboxieExecutor {
         let sandbox_command = command.clone();
         let sandbox_cwd = cwd.clone();
         let sandbox_environment = environment.clone();
-        let mode = self.current_mode();
         match tokio::task::spawn_blocking(move || {
             service.run_command_in_box(
                 &sandbox_command,
@@ -576,36 +643,14 @@ impl CommandExecutor for SandboxieExecutor {
         }
     }
 
-    /// Kernel-owned cancellation/deadline for sandboxed commands (M-06).
-    ///
-    /// The boxed process tree lives OUTSIDE our Job Object, so the
-    /// SystemExecutor kill path cannot reach it. Supervise the blocking
-    /// Start.exe run and, on cancel/timeout, ask SbieSvc to terminate every
-    /// process in the box (`Start.exe /box:<name> /terminate` — official
-    /// Sandboxie "Stop Programs" command line).
-    async fn run_controlled(
+    /// Controlled variant with an immutable per-run sandbox mode.
+    pub(crate) async fn run_controlled_with_environment_at_mode(
         &self,
-        command: &str,
-        cwd: &str,
-        shell: CommandShell,
-        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        timeout: std::time::Duration,
-    ) -> Result<CommandOutcome> {
-        self.run_controlled_with_environment(command, cwd, shell, cancel, timeout, &[])
-            .await
-    }
-
-    async fn run_controlled_with_environment(
-        &self,
-        command: &str,
-        cwd: &str,
-        shell: CommandShell,
-        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        timeout: std::time::Duration,
-        environment: &[(String, String)],
+        request: SandboxieControlledRequest<'_>,
+        mode: SandboxMode,
     ) -> Result<CommandOutcome> {
         use std::sync::atomic::Ordering;
-        if cancel.load(Ordering::Acquire) {
+        if request.cancel.load(Ordering::Acquire) {
             return Err(CoreError::other("command cancelled before start"));
         }
         // When Sandboxie is not installed, do NOT silently run uncontained on
@@ -620,12 +665,12 @@ impl CommandExecutor for SandboxieExecutor {
                 return self
                     .fallback
                     .run_controlled_with_environment(
-                        command,
-                        cwd,
-                        shell,
-                        cancel,
-                        timeout,
-                        environment,
+                        request.command,
+                        request.cwd,
+                        request.shell,
+                        request.cancel,
+                        request.timeout,
+                        request.environment,
                     )
                     .await;
             }
@@ -634,21 +679,20 @@ impl CommandExecutor for SandboxieExecutor {
         }
 
         let service = self.service.clone();
-        let sandbox_command = command.to_string();
-        let sandbox_cwd = cwd.to_string();
-        let sandbox_environment = environment.to_vec();
-        let mode = self.current_mode();
+        let sandbox_command = request.command.to_string();
+        let sandbox_cwd = request.cwd.to_string();
+        let sandbox_environment = request.environment.to_vec();
         let mut boxed_run = tokio::task::spawn_blocking(move || {
             service.run_command_in_box(
                 &sandbox_command,
                 &sandbox_cwd,
                 mode,
-                shell,
+                request.shell,
                 &sandbox_environment,
             )
         });
 
-        let cancel_watch = cancel.clone();
+        let cancel_watch = request.cancel.clone();
         let outcome = tokio::select! {
             joined = &mut boxed_run => Some(joined),
             _ = async {
@@ -656,7 +700,7 @@ impl CommandExecutor for SandboxieExecutor {
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 }
             } => None,
-            _ = tokio::time::sleep(timeout) => None,
+            _ = tokio::time::sleep(request.timeout) => None,
         };
 
         match outcome {
@@ -675,12 +719,12 @@ impl CommandExecutor for SandboxieExecutor {
                     );
                     self.fallback
                         .run_controlled_with_environment(
-                            command,
-                            cwd,
-                            shell,
-                            cancel,
-                            timeout,
-                            environment,
+                            request.command,
+                            request.cwd,
+                            request.shell,
+                            request.cancel,
+                            request.timeout,
+                            request.environment,
                         )
                         .await
                 } else {
@@ -692,9 +736,7 @@ impl CommandExecutor for SandboxieExecutor {
                 }
             }
             None => {
-                // Cancelled or timed out: kill everything in the box, then
-                // let the (now unblocked) Start.exe wait finish in background.
-                let reason = if cancel.load(Ordering::Acquire) {
+                let reason = if request.cancel.load(Ordering::Acquire) {
                     "command cancelled"
                 } else {
                     "command timed out"

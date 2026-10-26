@@ -37,15 +37,16 @@ use deepagent_app_core::{
     ProjectMapNodeDto, ProjectMapOverviewDto, ProjectMapRefreshDto, ProjectMapService,
     ProjectMapStatusDto, ProjectService, ProjectTrustDto, PtyReadChunk, RecordingService,
     RecordingSessionDto, RewindResultDto, RuntimeBroker, RuntimeLogEntry, RuntimeLogStore,
-    RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, SandboxBackend,
-    SandboxBackendCommandExecutor, SandboxNetworkPolicy, SandboxieBackend, SandboxieExecutor,
-    SandboxieService, SandboxieStatusDto, SecretStore, SessionDetailDto, SessionSearchHitDto,
+    RuntimeProgressDto, RuntimeRootsDto, RuntimeService, RuntimeStatusDto, DirectSandboxBackend,
+    SandboxBackend, SandboxBackendRegistry,
+    SandboxieBackend, SandboxieExecutor, SandboxieService, SandboxieStatusDto, SecretStore,
+    SessionDetailDto, SessionSearchHitDto,
     SessionStateService, SessionSummaryDto, SessionUiPrefsDto, SettingsService, SettingsView,
     SkillActivationDto, SkillDto, SkillsMpClientHandle, SkillsRoots, SkillsService, SpeechService,
     SqliteSecretStore, StoredRunEvent, TerminalResultDto, TerminalService, TerminalShell,
     TranscriptDto, TranscriptSegmentDto, TrustService, VisionRecognizeRequestDto,
     VisionRecognizeResultDto, VisionService, VisionSettings, WebSearchSettings, WorkspaceInfoDto,
-    WorkspaceService,
+    WindowsSandboxBackend, WorkspaceService,
 };
 use deepagent_models::ReqwestTransport;
 use deepagent_ssh::SshService;
@@ -7101,15 +7102,25 @@ pub fn run() {
                     Arc::new(SandboxieExecutor::new(sandboxie.clone()).with_direct_fallback(true));
                 let sandbox_backend: Arc<dyn SandboxBackend> =
                     Arc::new(SandboxieBackend::new(sandboxie_executor.clone()));
-                let local_command_executor = Arc::new(
-                    SandboxBackendCommandExecutor::new(
-                        sandbox_backend,
-                        workspace_root.clone(),
-                        deepagent_app_core::SandboxMode::WorkspaceWrite,
-                    )
-                    .with_shared_mode(sandboxie_executor.sandbox_mode_handle())
-                    .with_network(SandboxNetworkPolicy::Disabled),
-                );
+                let default_backend = if sandboxie_executor.is_available() {
+                    deepagent_app_core::SandboxBackendKind::Sandboxie
+                } else {
+                    // The old desktop behavior explicitly fell back to host
+                    // execution when Sandboxie was not installed.  Make that
+                    // choice visible as the default, while an explicit
+                    // `sandboxie` request is still rejected by the registry.
+                    deepagent_app_core::SandboxBackendKind::Direct
+                };
+                let sandbox_backend_registry = Arc::new(SandboxBackendRegistry::new(
+                    default_backend,
+                    vec![
+                        Arc::new(DirectSandboxBackend::new()) as Arc<dyn SandboxBackend>,
+                        sandbox_backend.clone(),
+                        Arc::new(WindowsSandboxBackend::new(
+                            std::env::temp_dir().join("deepagent-windows-sandbox"),
+                        )) as Arc<dyn SandboxBackend>,
+                    ],
+                ));
                 Arc::new(
                     ChatService::new(
                         service.shared_database(),
@@ -7124,7 +7135,7 @@ pub fn run() {
                             connection_id,
                         })
                     })
-                    .with_local_command_executor(local_command_executor)
+                    .with_sandbox_backend_registry(sandbox_backend_registry)
                     .with_sandboxie_executor(sandboxie_executor)
                     .with_remote_context_factory(move |connection_id: String| {
                         build_remote_context(ssh_context.clone(), connection_id)

@@ -5,6 +5,7 @@
 //! adapts back to the existing command-executor contract instead of introducing
 //! another tool runtime.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Arc;
@@ -18,10 +19,12 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_tools::ToolExecutionContext;
 use serde::{Deserialize, Serialize};
 
-use crate::sandboxie_service::{sandbox_mode_code, sandbox_mode_from_code};
+use crate::sandboxie_service::{
+    sandbox_mode_code, sandbox_mode_from_code, SandboxieControlledRequest,
+};
 use crate::settings::SandboxMode;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SandboxBackendKind {
     Direct,
@@ -45,6 +48,69 @@ impl SandboxBackendKind {
             "windows_sandbox" | "windows-sandbox" | "wsb" => Some(Self::WindowsSandbox),
             _ => None,
         }
+    }
+}
+
+/// Immutable set of backends available to a host.
+///
+/// A `ChatService` may serve several sessions concurrently.  Keeping the
+/// selected backend in this registry, rather than mutating one process-wide
+/// executor for every turn, makes the backend choice part of the run's
+/// immutable execution context.
+#[derive(Clone)]
+pub struct SandboxBackendRegistry {
+    default_kind: SandboxBackendKind,
+    backends: Arc<HashMap<SandboxBackendKind, Arc<dyn SandboxBackend>>>,
+}
+
+impl SandboxBackendRegistry {
+    pub fn new(
+        default_kind: SandboxBackendKind,
+        backends: impl IntoIterator<Item = Arc<dyn SandboxBackend>>,
+    ) -> Self {
+        let mut indexed = HashMap::new();
+        for backend in backends {
+            indexed.insert(backend.capabilities().kind, backend);
+        }
+        Self {
+            default_kind,
+            backends: Arc::new(indexed),
+        }
+    }
+
+    pub fn default_kind(&self) -> SandboxBackendKind {
+        self.default_kind
+    }
+
+    pub fn capabilities(&self, kind: SandboxBackendKind) -> Option<SandboxCapabilities> {
+        self.backends
+            .get(&kind)
+            .map(|backend| backend.capabilities())
+    }
+
+    /// Resolve a requested backend and reject an unavailable explicit choice.
+    /// There is intentionally no fallback here: a caller that requests an
+    /// isolated backend must not silently execute through another backend.
+    pub fn resolve(
+        &self,
+        requested: Option<SandboxBackendKind>,
+    ) -> Result<(SandboxBackendKind, Arc<dyn SandboxBackend>)> {
+        let kind = requested.unwrap_or(self.default_kind);
+        let backend = self.backends.get(&kind).cloned().ok_or_else(|| {
+            CoreError::invalid(format!(
+                "sandbox backend is not configured: {}",
+                kind.label()
+            ))
+        })?;
+        let capabilities = backend.capabilities();
+        if !capabilities.available {
+            return Err(CoreError::other(format!(
+                "sandbox backend '{}' unavailable: {}",
+                kind.label(),
+                capabilities.message
+            )));
+        }
+        Ok((kind, backend))
     }
 }
 
@@ -180,17 +246,19 @@ impl SandboxBackend for SandboxieBackend {
     }
 
     async fn execute(&self, request: SandboxExecutionRequest) -> Result<SandboxExecutionResult> {
-        self.executor.set_sandbox_mode(request.sandbox_mode);
         let cwd = request.cwd.to_string_lossy().to_string();
         let outcome = self
             .executor
-            .run_controlled_with_environment(
-                &request.command,
-                &cwd,
-                request.shell,
-                request.cancel,
-                request.timeout,
-                &request.environment,
+            .run_controlled_with_environment_at_mode(
+                SandboxieControlledRequest {
+                    command: &request.command,
+                    cwd: &cwd,
+                    shell: request.shell,
+                    cancel: request.cancel,
+                    timeout: request.timeout,
+                    environment: &request.environment,
+                },
+                request.sandbox_mode,
             )
             .await?;
         Ok(SandboxExecutionResult {
@@ -940,6 +1008,23 @@ mod tests {
 
         let err = backend.execute(request).await.unwrap_err();
         assert!(err.to_string().contains("unavailable"));
+    }
+
+    #[test]
+    fn registry_rejects_unavailable_explicit_backend_without_fallback() {
+        let direct: Arc<dyn SandboxBackend> = Arc::new(DirectSandboxBackend::new());
+        let windows: Arc<dyn SandboxBackend> =
+            Arc::new(WindowsSandboxBackend::unavailable("test fixture disabled"));
+        let registry =
+            SandboxBackendRegistry::new(SandboxBackendKind::Direct, vec![direct, windows]);
+        let error = match registry.resolve(Some(SandboxBackendKind::WindowsSandbox)) {
+            Ok(_) => panic!("unavailable explicit backend unexpectedly resolved"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("windows_sandbox"));
+        assert!(error.to_string().contains("unavailable"));
+        let (_, selected) = registry.resolve(None).unwrap();
+        assert_eq!(selected.capabilities().kind, SandboxBackendKind::Direct);
     }
 
     fn minimal_windows_plan(

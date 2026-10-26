@@ -6,6 +6,7 @@ use deepagent_persistence::runtime_log_store::{NewRuntimeLogEntry, RuntimeLogSto
 
 use crate::run_config::RunConfigOverlay;
 use crate::runtime_event_log::append_runtime_log;
+use crate::sandbox_backend::SandboxBackendKind;
 use crate::sandboxie_service::SandboxieExecutor;
 use crate::settings::{
     ApprovalPolicy, EffectivePermissionProfile, LocalExecutionMode, SandboxMode, SettingsService,
@@ -18,6 +19,7 @@ pub(crate) struct RunEnvironment {
     pub(crate) policy: ApprovalPolicy,
     pub(crate) sandbox_mode: SandboxMode,
     pub(crate) local_execution_mode: LocalExecutionMode,
+    pub(crate) sandbox_backend: Option<SandboxBackendKind>,
     pub(crate) access: deepagent_builtins::FsAccess,
 }
 
@@ -26,7 +28,8 @@ impl RunEnvironment {
         root: &Path,
         settings: &SettingsService,
         runtime_logs: &Option<Arc<RuntimeLogStore>>,
-        sandboxie_executor: &Option<Arc<SandboxieExecutor>>,
+        sandboxie_executor: Option<&Arc<SandboxieExecutor>>,
+        default_sandbox_backend: Option<SandboxBackendKind>,
         run_id: &str,
         run_overrides: serde_json::Value,
     ) -> Result<Self> {
@@ -71,6 +74,21 @@ impl RunEnvironment {
         let policy = profile.approval_policy;
         let sandbox_mode = profile.sandbox_mode;
         let local_execution_mode = profile.local_execution_mode;
+        let sandbox_backend = match config.value.get("sandbox_backend") {
+            None => default_sandbox_backend,
+            Some(serde_json::Value::String(value)) => {
+                Some(SandboxBackendKind::parse(value).ok_or_else(|| {
+                    deepagent_core::error::CoreError::invalid(format!(
+                        "unsupported sandbox backend in run configuration: {value}"
+                    ))
+                })?)
+            }
+            Some(_) => {
+                return Err(deepagent_core::error::CoreError::invalid(
+                    "sandbox_backend in run configuration must be a string",
+                ));
+            }
+        };
         let access = fs_access_for(sandbox_mode);
         append_runtime_log(
             runtime_logs,
@@ -82,6 +100,7 @@ impl RunEnvironment {
                     "approval_policy": policy.label(),
                     "sandbox_mode": sandbox_mode.label(),
                     "local_execution_mode": format!("{local_execution_mode:?}"),
+                    "sandbox_backend": sandbox_backend.map(SandboxBackendKind::label),
                     "fs_access": format!("{access:?}"),
                 })),
         );
@@ -95,6 +114,7 @@ impl RunEnvironment {
             policy,
             sandbox_mode,
             local_execution_mode,
+            sandbox_backend,
             access,
         })
     }

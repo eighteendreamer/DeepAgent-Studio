@@ -187,6 +187,8 @@ pub struct ChatService {
     runtime_broker: Option<Arc<crate::RuntimeBroker>>,
     /// Typed reference to the sandboxie executor for per-run mode updates.
     sandboxie_executor: Option<Arc<crate::sandboxie_service::SandboxieExecutor>>,
+    /// Immutable backend set used to resolve one command executor per run.
+    sandbox_backend_registry: Option<Arc<crate::sandbox_backend::SandboxBackendRegistry>>,
     /// Optional remote-context factory for remote (SSH) sessions. When set,
     /// remote runs can inject a concise SSH snapshot so the model reasons from
     /// the remote host's actual state rather than the local workspace alone.
@@ -271,6 +273,7 @@ impl ChatService {
             local_command_executor: None,
             runtime_broker: None,
             sandboxie_executor: None,
+            sandbox_backend_registry: None,
             remote_context_factory: None,
             remote_ops_factory: None,
             question_notifier: None,
@@ -666,6 +669,17 @@ impl ChatService {
         self
     }
 
+    /// Bind the immutable set of local sandbox backends.  A selected backend
+    /// is resolved when a run is assembled, never by mutating a shared
+    /// executor used by another session.
+    pub fn with_sandbox_backend_registry(
+        mut self,
+        registry: Arc<crate::sandbox_backend::SandboxBackendRegistry>,
+    ) -> Self {
+        self.sandbox_backend_registry = Some(registry);
+        self
+    }
+
     /// Bind a factory that gathers a concise remote snapshot for a given SSH
     /// connection id. The result is injected as a system reminder during
     /// remote runs so the model can see the remote host and current directory.
@@ -945,6 +959,7 @@ impl ChatService {
             env_mode,
             connection_id,
             local_exec_mode,
+            force_sandbox_backend: false,
             bash_external_safety_gate,
             bash_allow: self.bash_allow.clone(),
             settings: self.settings.clone(),
@@ -1347,6 +1362,7 @@ impl ChatService {
             invoked_skills: &self.invoked_skills,
             session_memory_passes: &self.session_memory_passes,
             sandboxie_executor: &self.sandboxie_executor,
+            sandbox_backend_registry: &self.sandbox_backend_registry,
             local_command_executor: &self.local_command_executor,
             executor_factory: &self.executor_factory,
             runtime_broker: &self.runtime_broker,

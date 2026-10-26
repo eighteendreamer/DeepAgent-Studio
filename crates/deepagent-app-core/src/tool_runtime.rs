@@ -140,6 +140,11 @@ pub(crate) struct ToolRegistryBuildRequest<'a> {
     pub(crate) env_mode: Option<&'a str>,
     pub(crate) connection_id: Option<&'a str>,
     pub(crate) local_exec_mode: Option<LocalExecutionMode>,
+    /// A run-level backend was explicitly resolved.  This keeps a selected
+    /// sandbox backend in the command path even for a FullAccess profile,
+    /// where the legacy `local_exec_mode` would otherwise choose host direct
+    /// execution and discard the backend selection.
+    pub(crate) force_sandbox_backend: bool,
     pub(crate) bash_external_safety_gate: bool,
     pub(crate) bash_allow: Vec<String>,
     pub(crate) settings: Arc<SettingsService>,
@@ -178,7 +183,8 @@ pub(crate) fn build_base_tool_registry(
     ) {
         config = config.with_command_executor(factory(conn_id.to_string()));
     } else if request.env_mode != Some("remote") {
-        let use_sandbox = !matches!(request.local_exec_mode, Some(LocalExecutionMode::Direct));
+        let use_sandbox = request.force_sandbox_backend
+            || !matches!(request.local_exec_mode, Some(LocalExecutionMode::Direct));
         if use_sandbox {
             if let Some(executor) = request.local_command_executor {
                 config = config.with_command_executor(executor);

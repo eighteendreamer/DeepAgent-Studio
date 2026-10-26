@@ -11,9 +11,9 @@ use args::{CliCommand, RunOptions};
 use deepagent_app_core::{
     builtin_resources, data_root, AppService, ChatService, DirectSandboxBackend,
     HarnessRunOverrides, KeychainStore, McpService, PluginRoots, PluginService, SandboxBackend,
-    SandboxBackendCommandExecutor, SandboxBackendKind, SandboxCapabilities, SandboxMode,
-    SandboxNetworkPolicy, SandboxieBackend, SandboxieExecutor, SandboxieService, SkillsRoots,
-    SkillsService, SqliteSecretStore, WindowsSandboxBackend, KEYCHAIN_SERVICE,
+    SandboxBackendKind, SandboxBackendRegistry, SandboxCapabilities, SandboxieBackend,
+    SandboxieExecutor, SandboxieService, SkillsRoots, SkillsService, SqliteSecretStore,
+    WindowsSandboxBackend, KEYCHAIN_SERVICE,
 };
 use deepagent_harness_protocol::{EventContext, HarnessEvent, PROTOCOL_VERSION};
 use deepagent_models::{HttpTransport, ReqwestTransport, DEEPSEEK_OFFICIAL_PROVIDER};
@@ -274,9 +274,6 @@ pub(crate) fn build_chat_service(
         transport.clone(),
         secrets,
     ));
-    let sandbox_mode = sandbox_mode_for_profile(options.permission_profile.as_deref())
-        .or_else(|| settings.sandbox_mode().ok())
-        .unwrap_or(SandboxMode::WorkspaceWrite);
     let backend_kind = options
         .sandbox_backend
         .as_deref()
@@ -289,12 +286,10 @@ pub(crate) fn build_chat_service(
             )
         })?;
 
-    let (backend, capabilities, sandboxie) = build_backend(backend_kind);
-    let executor = SandboxBackendCommandExecutor::new(backend, workspace, sandbox_mode)
-        .with_network(SandboxNetworkPolicy::Disabled);
+    let (backend_registry, capabilities, sandboxie) = build_backend_registry(backend_kind);
     let (skills, plugins, mcp) = build_asset_services(workspace, &paths, Arc::clone(&db))?;
     let mut chat = ChatService::new(db, settings, transport, workspace)
-        .with_local_command_executor(Arc::new(executor))
+        .with_sandbox_backend_registry(backend_registry)
         // Long-term memory lives in the knowledge vault, so a headless run needs
         // the same store the desktop attaches; without this the memory tools would
         // silently vanish from the CLI tool set.
@@ -525,46 +520,35 @@ fn uninstall_assets(list: bool, purge: bool, assume_yes: bool) -> Result<(), Str
     Ok(())
 }
 
-fn build_backend(
+fn build_backend_registry(
     kind: SandboxBackendKind,
 ) -> (
-    Arc<dyn SandboxBackend>,
+    Arc<SandboxBackendRegistry>,
     SandboxCapabilities,
     Option<Arc<SandboxieExecutor>>,
 ) {
-    match kind {
-        SandboxBackendKind::Direct => {
-            let backend = Arc::new(DirectSandboxBackend::new());
-            (backend.clone(), backend.capabilities(), None)
-        }
-        SandboxBackendKind::Sandboxie => {
-            let service = Arc::new(SandboxieService::new(None));
-            let executor = Arc::new(SandboxieExecutor::new(service));
-            let backend = Arc::new(SandboxieBackend::new(executor.clone()));
-            (backend.clone(), backend.capabilities(), Some(executor))
-        }
-        SandboxBackendKind::WindowsSandbox => {
-            let backend = Arc::new(WindowsSandboxBackend::new(
-                std::env::temp_dir().join("deepagent-windows-sandbox"),
-            ));
-            (backend.clone(), backend.capabilities(), None)
-        }
-    }
+    let direct: Arc<dyn SandboxBackend> = Arc::new(DirectSandboxBackend::new());
+    let sandboxie_service = Arc::new(SandboxieService::new(None));
+    let sandboxie_executor = Arc::new(SandboxieExecutor::new(sandboxie_service));
+    let sandboxie: Arc<dyn SandboxBackend> =
+        Arc::new(SandboxieBackend::new(sandboxie_executor.clone()));
+    let windows: Arc<dyn SandboxBackend> = Arc::new(WindowsSandboxBackend::new(
+        std::env::temp_dir().join("deepagent-windows-sandbox"),
+    ));
+    let registry = Arc::new(SandboxBackendRegistry::new(
+        kind,
+        vec![direct, sandboxie, windows],
+    ));
+    let capabilities = registry
+        .capabilities(kind)
+        .expect("all built-in sandbox backends are registered");
+    (registry, capabilities, Some(sandboxie_executor))
 }
 
 fn database_path() -> Result<PathBuf, String> {
     // One shared rule with the desktop shell: DEEPAGENT_DB_PATH, then
     // DEEPAGENT_DATA_ROOT, then `~/.deepagent/deepagent.db`.
     deepagent_app_core::data_root::resolve_database_path().map_err(|error| error.to_string())
-}
-
-fn sandbox_mode_for_profile(profile: Option<&str>) -> Option<SandboxMode> {
-    match profile {
-        Some("read_only") => Some(SandboxMode::ReadOnly),
-        Some("workspace_write") => Some(SandboxMode::WorkspaceWrite),
-        Some("developer" | "full_access") => Some(SandboxMode::FullAccess),
-        _ => None,
-    }
 }
 
 fn emit_runtime_event(
