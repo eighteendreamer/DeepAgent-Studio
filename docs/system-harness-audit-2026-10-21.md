@@ -1509,6 +1509,9 @@ E-H28-20261027-10（独立提交与真实 hash 回填）：修复代码、正式
 - 执行 `cargo test -p deepagent-app-core --test host_lock audit_standby_open_preserves_live_actions_and_subagents --offline -- --ignored --nocapture`。对照成立：第二进程确为 standby、recovered:0、父 run 仍 running；但父进程读回 action=Failed、reason=process_restarted_while_running、child=cancelled。父进程随后调用正式成功落盘 API，动作得到 `IllegalTransition { from: "failed", to: "completed" }`，子运行得到 `NotFound("active subagent run not found: audit-live-child")`。保持现状的不变式断言明确失败。
 - 这是仍存活且持锁的 owner 的控制记录复现，没有真实启动工具/子 Agent 或调用供应商。已证明状态被误改及正常成功写入被拒绝；没有据此声称实际文件写入被中断、重复执行或全部父运行已失败。探针退出前释放锁，数据只位于自动清理的独立临时目录。
 
+
+
+
 #### 成熟实现、影响与修复方向
 
 - Claude Code `restored-src/src/utils/cronTasksLock.ts::tryAcquireSchedulerLock()` 对另一个存活 PID 返回 false，只有 stale owner 才恢复；释放也核对 sessionId。该代码是调度器锁，不是相同数据库结构，但可直接参考“先证明所有权或失活，再做恢复”的边界。
@@ -1586,6 +1589,9 @@ E-H34-20261027-04（验收边界）：已证单/双兼容工具的期限、取�
 - 执行 `cargo test -p deepagent-runtime --lib audit_parallel_tools_preserve_serial_deadline_and_cancellation --offline -- --ignored --nocapture`：单个 started=1、400ms 内完成、持久化一条 exceeded its 80 ms budget 失败结果；两个 started=2、400ms 后仍 pending，随后设置实际运行 cancel flag，再观察 200ms 仍 pending、timeout 结果为零。主动 release 后才退出，最后断言失败。全部 Future 在断言前回收，没有真实工具、模型网络或用户数据。第一次探针编译的借用错误已调整 fixture 取 session id 的时机，不列为产品缺陷。
 - 动态证据限于给定观察期和兼容工具，不声称运行了默认 120 秒或无限等待；生产并行分支缺少同等期限是代码证据。当前没有实际复现某个内置网络工具或后台进程泄漏，不能将其写成既成后果。
 
+
+
+
 #### 成熟实现、影响与修复方向
 
 - Codex `codex-rs/core/src/tools/parallel.rs::ToolCallRuntime::handle_tool_call_with_source()` 让串行/并行都经过统一 dispatch，使用 RwLock 控制 overlap；外层 select 等待 dispatch_handle 或 cancellation_token，取消时按 terminal_outcome_reached 判断是否等已完成结果，否则 abort 并 await 子任务、生成配对 aborted response。这里参考的是统一派发与有 owner 的取消收尾，不是宣称 Codex 给每种工具套同一个固定超时。
@@ -1599,9 +1605,13 @@ E-H34-20261027-05（独立提交与真实 hash 回填）：本项生产修复、
 
 ### H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义
 
+**当前状态：修复中（2026-10-27）。**
+
 **级别：高（P1）；范围：同一模型响应混合串行工具与至少两个通过检查的并行安全工具。** 与 H-34 的期限缺口不同，本项确认真实内置文件工具的执行顺序和下一请求结果不一致；不是仅凭事件显示次序推断。
 
 #### 根因与正式链路复现
+
+E-H35-20261027-01（当前代码原始探针复核）：在H-34已合并但H-35未修改的HEAD 85d23744下运行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_unrelated_read_does_not_move_reads_before_write_barrier --offline -j 1 -- --ignored --exact --nocapture --test-threads=1`，原生命令退出101，0 passed/1 failed/0 ignored（测试体0.57秒，编译/链接2分05秒）。正式 ChatService、离线 ReplayTransport、内存SQLite、临时工作区与内置 write_file/read_file 均参与；对照两调用 live_order=[audit-write,audit-read-source]、read_saw_new=true、read_failed=false；加入无关读后三调用 live_order=[audit-read-source,audit-read-other,audit-write]、read_saw_new=false、read_failed=true、disk_is_new=true，断言失败。所有调用均在断言前完成，无遗留Future；未访问真实DeepSeek、网络、内网、凭据或用户文件。H-34期限修复不包含写屏障，本项转修复中，不合并H-34/H-36。当前计数调整为38已验收/18历史跳过/7归并/2撤销/240待修/1修复中，即241有效未关闭；整体goal保持active。
 
 - `RuntimeEngine::execute_tools()` 先遍历整个 batch 收集 `parallel_idx`。只有零或一个并行候选时按模型顺序串行执行；至少两个时，先执行所有并行 I/O，再遍历原始 invocations，把已算出的结果放回原顺序，并执行剩余串行项。事件落盘顺序不能恢复已越过写操作的读取语义。
 - 新增默认忽略探针 `audit_unrelated_read_does_not_move_reads_before_write_barrier`，位于 `crates/deepagent-app-core/tests/kernel_v2_e2e.rs`。正式 ChatService、ModelAgent、工具注册和内置 write_file/read_file，在临时工作区运行；只有模型 transport 离线脚本化。捕获真实下一请求的序列化原生 `function_call_output`、实时 ToolStarted 和实际磁盘结果。
@@ -1610,12 +1620,21 @@ E-H34-20261027-05（独立提交与真实 hash 回填）：本项生产修复、
 - 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_unrelated_read_does_not_move_reads_before_write_barrier --offline -- --ignored --nocapture`：对照 `read_saw_new=true read_failed=false`，三调用 `read_saw_new=false read_failed=true`；“无关读取不改变写读屏障”断言失败，测试运行约 0.57 秒。
 - 初版 fixture 预先建立 source.txt，却没有先读再覆盖，触发了正式内置工具的 read-before-edit 保护；那次失败不是本缺陷证据。现使用新文件创建流程，符合 `WriteFileTool::invoke()` 对新文件无需先读的现有契约，两个 case 均确认实际写入成功。未关闭保护或放宽权限。
 
+
+
+
+
+E-H35-20261027-02（根因修复，尚未创建提交）：`RuntimeEngine::execute_tools()` 改为按模型原始调用序列扫描：连续 `is_parallel_safe` 调用组成一个并行组，组前的非并行安全调用作为独占屏障，先经既有 `execute_tool_with_before_and_speculative` 完成；屏障完成后才准备和派发下一组。每个并行组内仍复用H-34统一的 `ToolExecutionPipeline::prepare`、`execute_prepared`/`complete_prepared`、超时/取消、权限/审批、action state、结果预算、事件与hooks，结果按模型顺序写入Session；没有新增store、事件库、权限中心或工具名特判。仅修改 `crates/deepagent-runtime/src/loop_engine.rs`，保留H-34期限修复，不宣称工具声明错误或外部副作用可被调度器自动识别。
+
+E-H35-20261027-03（修复后正式回归）：冻结生产代码后，`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_unrelated_read_does_not_move_reads_before_write_barrier --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` 退出0，1 passed/0 failed/0 ignored（测试体0.57秒）；对照与加入无关读均输出 `live_order=[audit-write,audit-read-source,...]`，`read_saw_new=true`、`read_failed=false`、`disk_is_new=true`。H-34保护性探针再次运行退出0，1 passed/0 failed/0 ignored（0.47秒；单工具与双工具均按期限结束并各有budget error）。`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出0，301 passed/0 failed/11 ignored（13.00秒）；`cargo fmt --all -- --check`与`git diff --check`退出0。严格 `cargo clippy -p deepagent-runtime --lib --offline -j 1 --no-deps -- -D warnings` 仅被未修改的 `crates/deepagent-runtime/src/model_agent.rs:282` 既有 `Usage.clone()` clone-on-copy 阻断，未发现本项新增lint。测试仍仅使用本机临时工作区、内存SQLite、离线ReplayTransport和内置工具，不访问真实供应商、网络、内网、凭据或用户文件。
+
+E-H35-20261027-04（验收边界）：H-35在Windows本机RuntimeEngine/AppCore正式文件工具与所列写屏障探针范围内待独立提交后关闭。当前回归证明的是“非并行安全写入先完成，随后连续并行读取”的实际顺序与模型下一请求结果；尚未以本项新增探针覆盖多重写屏障、审批阻塞、取消竞态、所有工具的动态依赖图或其他OS/UI/真实供应商。调度器依赖工具的 `is_concurrency_safe` 声明，错误声明仍可能带来业务级竞态；本修复不提供任意外部进程/网络副作用的硬终止或原子回滚。H-34/H-36不合并。
 #### 成熟实现、影响与修复方向
 
 - DeepSeek Harness `packages/core/agent-loop/src/tool-calls.ts::executeToolCalls()` 明确将 exclusive 调用作为 barrier：首项为 exclusive 时仅运行该项；首项为 parallel 时进入 rolling pool，`runGroup::fillPool()` 遇到后续非 parallel 项停止补充派发，等待当前 inFlight 清空，再交还外层推进下一组。工具结果仍按模型顺序提交。参考源码已核对，未执行参考项目测试。
 - 已证实的后果：增加一个无关只读调用，会让原来成功的“创建后读取”向模型返回错误，尽管最终文件创建成功。对“编辑后验证”存在读到旧状态、模型误判失败并重复操作的风险，但这两种后果尚未在本探针复现，不写成已发生的事实。
 - 修复应与 H-34 一起收敛到既有统一 ToolPipeline：按原调用序列切分连续并行组及串行屏障，只有组内 I/O 重叠；前一组完全收尾后才能执行屏障，屏障结束后才能派发后一组。复用现有权限、hooks、deadline、取消和配对结果，不能通过对工具名增加临时特判或只重排日志修复。
-- 验收覆盖 write→read、read→write→read、多个串行屏障、审批阻塞及取消；加入或删除无关并行工具不能改变跨屏障的先后关系。本轮只增加审计测试和文档，未修改生产行为。
+- 原始审计阶段计划覆盖 write→read、read→write→read、多个串行屏障、审批阻塞及取消；本轮修复新增的实际验收与未验范围见E-H35-02～04。
 
 ### H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用
 
@@ -1629,6 +1648,9 @@ E-H34-20261027-05（独立提交与真实 hash 回填）：本项生产修复、
 - 在发送下一次模型请求时，从正式序列化 function_call_output 的 `status/result` 包装中取得 saved_path，确认文件此时存在且含 preview 外的尾标记。模型返回完成后，该路径已经不存在。释放服务和数据库再重新打开，artifact 索引仍有一条相同路径；原始 ToolCallCompleted 仍含 truncated=true 和 saved_path，但无尾标记，重新读完整结果得到 NotFound。
 - 执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_saved_tool_result_survives_turn_and_database_reopen --offline -- --ignored --nocapture`：`during_tool=true after_turn=false reopened_artifacts=1 replay_has_reference=true reread_ok=false`；要求跨 turn 可读的断言失败，测试约 0.28 秒。没有修改用户文件、调用真实模型或手工删除结果来制造失败。
 - 前三次 fixture 检查分别有尾标记重复进入 preview、误把异步桌面事件回调当作同步执行观测点、未解开 `status/result` 包装的问题，均不算生产故障证据。停止微调后核对正式 Session 与 ModelAgent 投影，改在 transport 请求边界检查真实路径；最终失败点才是产品文件生命周期断言。
+
+
+
 
 #### 成熟实现、影响与修复方向
 
@@ -1691,6 +1713,9 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 - 创建已到期 one-shot，启动实际 tick loop；等待正式 pending 审批出现，再停止 scheduler 并观察 300ms。结果：`cron_task_removed=true scheduler_stopped=true pending=1 run_finished_before_cancel=false command_calls=0`。随后通过正式 request_cancel(run_id) 清理，并等待数据库终态后才断言，未遗留执行中的后台运行。
 - 执行 `cargo test -p deepagent-app-core --lib audit_unattended_cron_does_not_leave_an_unreachable_approval --offline -- --ignored --nocapture`：要求无人值守调用不能留下不可达审批的断言失败，测试约 0.55 秒。观察期不能证明数学意义无限等待，但正式代码中该等待只有回答、sender 关闭或运行取消的出口；本路径没有投递回答者。没有声称用户桌面已经发生同一 cron 故障。
 
+
+
+
 #### 成熟实现、影响与修复方向
 
 - Claude Code `restored-src/src/hooks/useScheduledTasks.ts` 将定时提示放进现有 REPL 队列，并追加 scheduled fire 消息；有 agentId 的任务路由到存活 teammate，owner 不存在则删除孤儿任务。可借鉴的是复用真实可交互宿主与队列，而非对后台会话提供一个空 UI 回调。
@@ -1710,6 +1735,9 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 - 新增默认忽略集成探针 `tests/workflow_audit.rs::audit_workflow_unknown_tool_propagates_node_and_run_failure`。实际临时 input.txt 存在，正式 SettingsService、ChatService、输入接纳、图编译、WorkflowAgent、AgentKernel、事件泵和 RunStore；图为 start→read_file tool→end，不调用模型或自造节点完成事件。
 - 执行 `cargo test -p deepagent-app-core --test workflow_audit --offline -- --ignored --nocapture`：`api_ok=true tool_status=Completed tool_outputs={error:"invalid input: unknown tool: read_file",output:null,success:false} node_error=None end_completed=true run_terminal=Some("succeeded")`。要求工具节点失败的断言失败，约 0.11 秒。证明正式 AppCore 事件和持久化终态，未启动 Tauri 手动点击，不能将推断的 UI 表现写成实际截图证据。
 - 前端 `workflowExecutor.ts` 按事件 status 生成外层 `{success: mapped === "completed", outputs: ...}`，未从内层工具结果纠正状态；因此该投影的外层 success 会与内部 success=false 冲突。这里是消费方代码证据；不是声称生产环境已经执行了真实副作用工具。
+
+
+
 
 #### 成熟实现、影响与修复方向
 
@@ -1757,6 +1785,9 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 
 - 这是生产前端序列化与真实 Rust 后端之间的集成探针，不是 Tauri WebView 手动截图验收；供应商、网络和命令均未调用。本项没有遍历每一种专业节点，也没有将其他节点字段差异一概列为动态确认。
 
+
+
+
 #### 成熟实现、影响与修复方向
 
 - DeepSeek Harness `workflow-ptc/src/meta.ts::validateMeta()` 对边界数据校验已知字段、类型和嵌套结构，错误逐项命名；同目录 runtime.ts 的 readAgentOptions() 拒绝不认识或暂不支持的选项，而非以空值假装接受。其接口是程序式工作流元数据及 agent 参数，并非本系统的画布节点；可借鉴的是在消费边界拒绝契约漂移，不能声称它实现了这里的专业节点 schema。
@@ -1776,6 +1807,9 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 - 命令：PowerShell 先设 `$env:RUN_HARNESS_AUDIT='1'`，执行 `node --test apps/desktop/scripts/audit-workflow-isolation.test.cjs`，再删除该临时环境变量。显式探针约 106ms 失败：其他会话完成后，A 的 Promise 已结束，isWorkflowRunning=false、监听数=0、A 后续节点终态未交付，点击生产 cancelWorkflow 的 cancel_run 请求数=0。断言发生前已清理本地运行；该测试没有实际启动后台模型/媒体任务。
 - 复现边界：这里动态证明前端过早结算、丢弃后续事件并不发取消，不声称已经在真实桌面观察到了付费任务一直运行。后台是否仍在执行取决于 A 自身生命周期；B 的完成不会替 A 构成后端取消，潜在后果是 UI 已失去控制而实际作业还未结束。
 
+
+
+
 #### 成熟实现、影响与修复方向
 
 - Codex `tui/src/app/app_server_event_targets.rs` 将 TurnCompleted 等通知映射到所属 thread_id，`app_server_events.rs` 按线程通道 enqueue，未知/无效归属被拒绝。它不是本系统 Tauri 的同名事件协议；参考的是完成事件同样必须具有明确 owner。
@@ -1794,6 +1828,9 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 - 新增默认忽略集成探针 `crates/deepagent-runtime/tests/schedule_audit.rs::audit_two_scheduler_processes_cannot_fire_the_same_occurrence`。父进程真正进入生产 poll 的 fire callback 后，启动同一个测试二进制的独立子进程，共享同一实际 scheduled-tasks.json 和同一确定的 now；子进程也运行生产 poll。父回调的暂停固定一个合法交错，没有替换 read/write 或直接伪造重复回调。
 - 执行 `cargo test -p deepagent-runtime --test schedule_audit --offline -- --ignored --nocapture`，约 0.07 秒，one-shot 和 recurring 两组都观察到父、子进程 fire 相同 task id；one-shot 最后已删除，recurring 最后只剩一条且已更新，说明最终文件看起来正确不能反证重复派发。再以同一 now 单进程 poll，两组都不重触发，作为顺序账本有效的对照。收集两组并回收子进程后，唯一派发断言明确失败。
 - 这是两个真实调度进程和正式持久化的复现，没有同时开启两个桌面窗口，没有发模型/工具请求；只记录重复 fire，不把潜在的重复付费、文件写入或多次发送通知说成已发生。桌面装配允许多个调度实例的证据来自代码。
+
+
+
 
 #### 成熟实现、影响与修复方向
 
@@ -1893,6 +1930,9 @@ E-H36-20261027-13（独立提交与真实hash回填）：本项代码、正式�
 - 新增默认忽略测试 `subagent_runner::tests::audit_parent_deadline_finalizes_foreground_child`，复用既有审计 runner fixture、正式 TaskTool/ToolRegistry、父 AgentKernel 和子 ModelAgent；父决策仅为离线脚本，子 transport 在真正进入 ModelClient 后保持 pending 并支持取消。先跑“子模型已启动后主动 cancel”的对照，再跑相同子任务触发父总时限。总时限只在测试配置缩短为 1 秒；生产默认 30 分钟，不声称真实用户每秒触发。
 - 执行 `cargo test -p deepagent-app-core --lib audit_parent_deadline_finalizes_foreground_child --offline -- --ignored --nocapture`：首次约 1.31 秒，补充 cleanup 检查后再次执行约 1.25 秒，断言明确失败。主动取消组：parent=cancelled、root_cancelled=true、child=cancelled、finished_at 存在、transcript 存在、子终态事件=1、cleanup 成功；总时限组：parent=budget_exceeded、root_cancelled=false、child=running、finished_at 为空、transcript 不存在、子终态事件=0，正式 cleanup 入口因子记录仍 running 而拒绝。两组先等待 transport 的启动通知，排除只验证“尚未启动就取消”的假阳性。此处没有创建隔离工作树，cleanup 在检查是否有工作树之前就被运行状态拦截，不据此声称真实工作树删除失败。
 - 这是生产父子执行及真实临时子运行记录的证据，没有外网、真实子工具命令或隔离工作树；不据此声称 OS 子进程或付费网络任务一定在父终态后继续。动态证明的是执行 Future 已退出后，durable 子记录仍 running 且缺收尾；实际外部工作是否停取决于具体工具的 drop/cancel 行为。
+
+
+
 
 #### 成熟实现、影响与修复方向
 

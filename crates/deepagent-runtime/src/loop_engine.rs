@@ -1546,31 +1546,11 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             }
             return Ok(out);
         }
-        // Partition: read-only/concurrency-safe tools can have their I/O run in
-        // parallel; everything else runs sequentially for safety + ordering.
-        // Prepare each parallel candidate through the canonical pipeline before
-        // starting any I/O. The old branch only ran validation + BeforeToolUse
-        // and then called the registry directly, bypassing permission,
-        // deadline, cancellation and result finalization.
-        let mut prepared_parallel: std::collections::HashMap<
-            usize,
-            crate::tool_pipeline::ToolPreparation,
-        > = std::collections::HashMap::new();
-        let mut parallel_idx = Vec::new();
-        for (i, invocation) in invocations.iter_mut().enumerate() {
-            if !self.is_parallel_safe(&invocation.name, &invocation.arguments) {
-                continue;
-            }
-            let preparation = self
-                .tool_pipeline(session_id)
-                .prepare(invocation.clone(), None)
-                .await?;
-            if let crate::tool_pipeline::ToolPreparation::Ready(prepared) = &preparation {
-                invocation.arguments = prepared.arguments.clone();
-                parallel_idx.push(i);
-            }
-            prepared_parallel.insert(i, preparation);
-        }
+        // Partition by the original call sequence. A non-parallel-safe tool is
+        // an exclusive barrier: it must finish before a later parallel group
+        // can be prepared or dispatched. This prevents an unrelated read from
+        // overtaking a preceding write while retaining overlap inside each
+        // contiguous read-only group.
         let mut batch_inputs = invocations
             .iter()
             .map(|invocation| {
@@ -1581,152 +1561,138 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 )
             })
             .collect::<Vec<_>>();
+        let mut observations = Vec::with_capacity(invocations.len());
+        let mut next = 0usize;
+        while next < invocations.len() {
+            if self.is_cancelled() {
+                for invocation in invocations.drain(next..) {
+                    observations.push(
+                        self.record_cancelled_tool(
+                            session,
+                            invocation,
+                            provider_tool_calls_persisted,
+                        )
+                        .await?,
+                    );
+                }
+                break;
+            }
 
-        // Fast path: nothing parallelizable → just run them in order.
-        if parallel_idx.len() <= 1 {
-            let mut out = Vec::with_capacity(invocations.len());
-            for (index, inv) in invocations.into_iter().enumerate() {
-                let early = inv
+            if !self.is_parallel_safe(&invocations[next].name, &invocations[next].arguments) {
+                let invocation = invocations[next].clone();
+                let early = invocation
                     .id
                     .as_ref()
                     .and_then(|call_id| speculative.remove(call_id));
-                if let Some(preparation) = prepared_parallel.remove(&index) {
-                    out.push(
-                        self.execute_prepared_in_session(
+                observations.push(
+                    self.execute_tool_with_before_and_speculative(
+                        session,
+                        session_id,
+                        invocation,
+                        None,
+                        early,
+                        provider_tool_calls_persisted,
+                    )
+                    .await?,
+                );
+                next += 1;
+                continue;
+            }
+
+            let group_start = next;
+            while next < invocations.len()
+                && self.is_parallel_safe(&invocations[next].name, &invocations[next].arguments)
+            {
+                next += 1;
+            }
+
+            let mut prepared = Vec::with_capacity(next - group_start);
+            for (index, invocation) in invocations
+                .iter_mut()
+                .enumerate()
+                .skip(group_start)
+                .take(next - group_start)
+            {
+                let preparation = self
+                    .tool_pipeline(session_id)
+                    .prepare(invocation.clone(), None)
+                    .await?;
+                if let crate::tool_pipeline::ToolPreparation::Ready(ready) = &preparation {
+                    invocation.arguments = ready.arguments.clone();
+                    if let Some(input) = batch_inputs.get_mut(index) {
+                        input.2 = ready.arguments.clone();
+                    }
+                }
+                prepared.push((index, preparation));
+            }
+
+            use futures::stream::{FuturesUnordered, StreamExt};
+            let mut results: std::collections::HashMap<
+                usize,
+                Result<crate::tool_pipeline::ToolPipelineResult>,
+            > = std::collections::HashMap::new();
+            let mut blocked = std::collections::HashMap::new();
+            let mut futs = FuturesUnordered::new();
+            for (index, preparation) in prepared {
+                match preparation {
+                    crate::tool_pipeline::ToolPreparation::Ready(ready) => {
+                        let early = speculative.remove(&ready.call_id);
+                        let pipeline = self.tool_pipeline(session_id);
+                        futs.push(async move {
+                            let result = match early {
+                                Some(early) => match early.handle.await {
+                                    Ok((result, duration_ms)) => {
+                                        pipeline.complete_prepared(ready, result, duration_ms).await
+                                    }
+                                    Err(_) => pipeline.execute_prepared(ready).await,
+                                },
+                                None => pipeline.execute_prepared(ready).await,
+                            };
+                            (index, result)
+                        });
+                    }
+                    crate::tool_pipeline::ToolPreparation::Blocked(blocked_result) => {
+                        if let Some(early) = speculative.remove(&blocked_result.call_id) {
+                            early.handle.abort();
+                        }
+                        blocked.insert(index, blocked_result);
+                    }
+                }
+            }
+            while let Some((index, result)) = futs.next().await {
+                results.insert(index, result);
+            }
+
+            for (index, _) in invocations
+                .iter()
+                .enumerate()
+                .skip(group_start)
+                .take(next - group_start)
+            {
+                if let Some(result) = blocked.remove(&index) {
+                    observations.push(
+                        self.record_pipeline_result(
                             session,
                             session_id,
-                            preparation,
-                            early,
+                            result,
                             provider_tool_calls_persisted,
                         )
                         .await?,
                     );
                 } else {
-                    out.push(
-                        self.execute_tool_with_before_and_speculative(
+                    let result = results
+                        .remove(&index)
+                        .expect("parallel group result present")?;
+                    observations.push(
+                        self.record_pipeline_result(
                             session,
                             session_id,
-                            inv,
-                            None,
-                            early,
+                            result,
                             provider_tool_calls_persisted,
                         )
                         .await?,
                     );
                 }
-            }
-            for (index, observation) in out.iter().enumerate() {
-                if let Some(input) = batch_inputs.get_mut(index) {
-                    input.1 = observation.call_id.clone().or_else(|| input.1.clone());
-                }
-            }
-            if let Some(feedback) = self
-                .post_tool_batch_feedback(session_id, &batch_inputs, &out)
-                .await?
-            {
-                out.push(feedback);
-            }
-            return Ok(out);
-        }
-
-        if self.is_cancelled() {
-            let mut out = Vec::with_capacity(invocations.len());
-            for invocation in invocations {
-                out.push(
-                    self.record_cancelled_tool(session, invocation, provider_tool_calls_persisted)
-                        .await?,
-                );
-            }
-            return Ok(out);
-        }
-
-        use futures::stream::{FuturesUnordered, StreamExt};
-        let parallel_set: std::collections::HashSet<usize> = parallel_idx.iter().copied().collect();
-        // Concurrently execute the prepared calls through the canonical
-        // pipeline. It owns the timeout, cancellation, action state, result
-        // budget, events and hooks; this branch only controls overlap.
-        let mut futs = FuturesUnordered::new();
-        for &i in &parallel_idx {
-            let preparation = prepared_parallel
-                .remove(&i)
-                .expect("parallel preparation present");
-            let call_id = invocations[i]
-                .id
-                .clone()
-                .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
-            let early = speculative.remove(&call_id);
-            let pipeline = self.tool_pipeline(session_id);
-            futs.push(async move {
-                let result = match preparation {
-                    crate::tool_pipeline::ToolPreparation::Ready(prepared) => match early {
-                        Some(early) => match early.handle.await {
-                            Ok((result, duration_ms)) => {
-                                pipeline
-                                    .complete_prepared(prepared, result, duration_ms)
-                                    .await
-                            }
-                            Err(_) => pipeline.execute_prepared(prepared).await,
-                        },
-                        None => pipeline.execute_prepared(prepared).await,
-                    },
-                    crate::tool_pipeline::ToolPreparation::Blocked(blocked) => {
-                        if let Some(early) = early {
-                            early.handle.abort();
-                        }
-                        Ok(blocked)
-                    }
-                };
-                (i, result)
-            });
-        }
-        let mut results: std::collections::HashMap<
-            usize,
-            Result<crate::tool_pipeline::ToolPipelineResult>,
-        > = std::collections::HashMap::new();
-        while let Some((i, result)) = futs.next().await {
-            results.insert(i, result);
-        }
-
-        // Now stitch observations back together in the model's original order,
-        // appending events to the session log sequentially. Parallel-safe
-        // entries use their precomputed result (events already emitted live, so
-        // we skip re-emitting); the rest run through the normal sequential path.
-        let mut observations = Vec::with_capacity(invocations.len());
-        for (i, inv) in invocations.into_iter().enumerate() {
-            if parallel_set.contains(&i) {
-                let result = results.remove(&i).expect("parallel result present")?;
-                observations.push(
-                    self.record_pipeline_result(
-                        session,
-                        session_id,
-                        result,
-                        provider_tool_calls_persisted,
-                    )
-                    .await?,
-                );
-            } else if let Some(crate::tool_pipeline::ToolPreparation::Blocked(blocked)) =
-                prepared_parallel.remove(&i)
-            {
-                observations.push(
-                    self.record_pipeline_result(
-                        session,
-                        session_id,
-                        blocked,
-                        provider_tool_calls_persisted,
-                    )
-                    .await?,
-                );
-            } else {
-                observations.push(
-                    self.execute_tool_with_before(
-                        session,
-                        session_id,
-                        inv,
-                        None,
-                        provider_tool_calls_persisted,
-                    )
-                    .await?,
-                );
             }
         }
         for (index, observation) in observations.iter().enumerate() {
@@ -1902,47 +1868,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         })
     }
 
-    async fn execute_prepared_in_session(
-        &self,
-        session: &mut Session<'a, C>,
-        session_id: deepagent_core::id::SessionId,
-        preparation: crate::tool_pipeline::ToolPreparation,
-        speculative: Option<SpeculativeToolExecution>,
-        provider_tool_calls_persisted: bool,
-    ) -> Result<Observation> {
-        let result = match preparation {
-            crate::tool_pipeline::ToolPreparation::Ready(prepared) => {
-                let pipeline = self.tool_pipeline(session_id);
-                let result = match speculative {
-                    Some(speculative) => match speculative.handle.await {
-                        Ok((result, duration_ms)) => {
-                            pipeline
-                                .complete_prepared(prepared, result, duration_ms)
-                                .await?
-                        }
-                        Err(_) => pipeline.execute_prepared(prepared).await?,
-                    },
-                    None => pipeline.execute_prepared(prepared).await?,
-                };
-                result
-            }
-            crate::tool_pipeline::ToolPreparation::Blocked(blocked) => {
-                if let Some(speculative) = speculative {
-                    speculative
-                        .cancel
-                        .store(true, std::sync::atomic::Ordering::Release);
-                    if let Some(token) = speculative.token.as_ref() {
-                        token.cancel();
-                    }
-                    speculative.handle.abort();
-                }
-                blocked
-            }
-        };
-        self.record_pipeline_result(session, session_id, result, provider_tool_calls_persisted)
-            .await
-    }
-
     /// Execute one tool invocation, recording request + completion events and
     /// returning the [`Observation`] to feed back to the agent.
     async fn execute_tool(
@@ -1977,25 +1902,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             invocation,
             None,
             speculative,
-            provider_tool_calls_persisted,
-        )
-        .await
-    }
-
-    async fn execute_tool_with_before(
-        &self,
-        session: &mut Session<'a, C>,
-        session_id: deepagent_core::id::SessionId,
-        invocation: deepagent_tools::ToolInvocation,
-        before_override: Option<HookOutcome>,
-        provider_tool_calls_persisted: bool,
-    ) -> Result<Observation> {
-        self.execute_tool_with_before_and_speculative(
-            session,
-            session_id,
-            invocation,
-            before_override,
-            None,
             provider_tool_calls_persisted,
         )
         .await
