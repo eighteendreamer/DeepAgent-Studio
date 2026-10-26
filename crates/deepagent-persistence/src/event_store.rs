@@ -100,6 +100,16 @@ impl SessionControl<'_> {
     pub fn truncate_after(&self, keep_through: Sequence) -> Result<u64> {
         EventStore::new(self.db).truncate_after_in_control(self.session_id, keep_through)
     }
+
+    /// Keep the same exclusive scope across workspace restoration and fork.
+    pub fn fork_session(
+        &self,
+        new_id: SessionId,
+        until_seq: Sequence,
+        now: Timestamp,
+    ) -> Result<()> {
+        EventStore::new(self.db).fork_session_in_control(self.session_id, new_id, until_seq, now)
+    }
 }
 
 /// A summary row describing a persisted session.
@@ -298,6 +308,33 @@ impl<'db> EventStore<'db> {
         self.append_locked(session_id, payload, now)
     }
 
+    /// Commit the source plus its complete projection decision in one frame.
+    /// `project=false` records that provider-native items already own history.
+    pub fn append_with_response_projection(
+        &self,
+        session_id: SessionId,
+        payload: EventPayload,
+        project: bool,
+        now: Timestamp,
+    ) -> Result<Vec<Event>> {
+        let _activity = self.acquire_activity(session_id)?;
+        let _io = self.db.lock_session_io()?;
+        let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
+        let items = if project {
+            let history = if matches!(payload, EventPayload::ToolCallCompleted { .. }) {
+                session_files::load(&self.db.session_files_root(), session_id)?
+                    .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?
+                    .events
+            } else {
+                Vec::new()
+            };
+            crate::event_projection::response_items_for_payload(&history, &payload)?
+        } else {
+            Vec::new()
+        };
+        self.append_locked_projection(session_id, payload, Some(items), now)
+    }
+
     /// Project the committed run outcome, never a finalizer's competing proposal.
     /// File inspection, deduplication, append and ledger acknowledgement share
     /// the existing session lock. The file is authoritative even if SQLite's
@@ -364,6 +401,17 @@ impl<'db> EventStore<'db> {
         payload: EventPayload,
         now: Timestamp,
     ) -> Result<Event> {
+        self.append_locked_projection(session_id, payload, None, now)
+            .map(|mut events| events.remove(0))
+    }
+
+    fn append_locked_projection(
+        &self,
+        session_id: SessionId,
+        payload: EventPayload,
+        items: Option<Vec<deepagent_core::response_item::ResponseItem>>,
+        now: Timestamp,
+    ) -> Result<Vec<Event>> {
         if self
             .get_session(session_id)
             .map_err(|error| CoreError::Persistence(format!("read session metadata: {error}")))?
@@ -408,11 +456,17 @@ impl<'db> EventStore<'db> {
             timestamp: now,
             payload,
         };
-        let committed =
-            session_files::append(&self.db.session_files_root(), session_id, event, cursor)
-                .map_err(|error| CoreError::Persistence(format!("append session file: {error}")))?;
+        let committed = session_files::append_projection(
+            &self.db.session_files_root(),
+            session_id,
+            event,
+            items,
+            cursor,
+        )
+        .map_err(|error| CoreError::Persistence(format!("append session file: {error}")))?;
         let appended_rebuild_events = committed.rebuild_events;
         let event = committed.event;
+        let last_sequence = committed.items.last().unwrap_or(&event).sequence;
         if committed.recovered_tail_bytes > 0 {
             tracing::warn!(
                 %session_id,
@@ -462,7 +516,7 @@ impl<'db> EventStore<'db> {
                 params![
                     session_id.to_string(),
                     committed.generation as i64,
-                    event.sequence as i64,
+                    last_sequence as i64,
                     committed.byte_len as i64,
                     now.as_millis()
                 ],
@@ -472,6 +526,9 @@ impl<'db> EventStore<'db> {
                 replace_search_index(&tx, session_id, events)?;
             } else {
                 index_search_event(&tx, &event)?;
+                for item in &committed.items {
+                    index_search_event(&tx, item)?;
+                }
             }
             tx.execute(
                 "INSERT INTO session_search_cursors
@@ -485,7 +542,7 @@ impl<'db> EventStore<'db> {
                 params![
                     session_id.to_string(),
                     committed.generation as i64,
-                    event.sequence as i64,
+                    last_sequence as i64,
                     now.as_millis()
                 ],
             )
@@ -512,7 +569,7 @@ impl<'db> EventStore<'db> {
                 );
             }
         }
-        Ok(event)
+        Ok(std::iter::once(event).chain(committed.items).collect())
     }
 
     fn projected_cursor(&self, session_id: SessionId) -> Result<Option<SessionFileCursor>> {
@@ -542,15 +599,64 @@ impl<'db> EventStore<'db> {
         self.read_from(session_id, 0)
     }
 
+    /// A replay used for model continuation must not silently omit a torn
+    /// legacy source/native group. Raw read_from remains available for diagnosis.
+    pub fn load_session_for_model(&self, session_id: SessionId) -> Result<Vec<Event>> {
+        let Some(loaded) = self.load_session_file(session_id)? else {
+            return Ok(Vec::new());
+        };
+        crate::event_projection::projection_spans(&loaded.events, &loaded.projections, None)?;
+        Ok(loaded.events)
+    }
+
+    /// Map a raw cursor to the end of its complete source/native commit group.
+    /// Callers controlling workspace side effects hold SessionControl throughout.
+    pub fn resolve_branch_sequence(
+        &self,
+        session_id: SessionId,
+        sequence: Sequence,
+    ) -> Result<Sequence> {
+        let loaded = self
+            .load_session_file(session_id)?
+            .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
+        if self.get_session(session_id)?.is_none() || loaded.events.is_empty() {
+            return Err(CoreError::not_found(format!("session {session_id}")));
+        }
+        let spans = crate::event_projection::projection_spans(
+            &loaded.events,
+            &loaded.projections,
+            Some(sequence),
+        )?;
+        let resolved = crate::event_projection::complete_boundary(sequence, &spans);
+        if resolved != sequence {
+            tracing::info!(%session_id, requested_sequence = sequence, effective_sequence = resolved, "resolved complete response projection branch boundary");
+        }
+        Ok(resolved)
+    }
+
     /// Read events for a session starting at `from_sequence` (inclusive).
     /// Useful for incremental replay / tailing.
     pub fn read_from(&self, session_id: SessionId, from_sequence: Sequence) -> Result<Vec<Event>> {
+        let Some(loaded) = self.load_session_file(session_id)? else {
+            return Ok(Vec::new());
+        };
+        Ok(loaded
+            .events
+            .into_iter()
+            .filter(|event| event.sequence >= from_sequence)
+            .collect())
+    }
+
+    fn load_session_file(
+        &self,
+        session_id: SessionId,
+    ) -> Result<Option<session_files::LoadedSessionFile>> {
         let _io = self
             .db
             .lock_session_io_for(std::time::Duration::from_secs(5))?;
         let _file_lock = session_files::lock_session(&self.db.session_files_root(), session_id)?;
         let Some(loaded) = session_files::load(&self.db.session_files_root(), session_id)? else {
-            return Ok(Vec::new());
+            return Ok(None);
         };
         verify_contiguous(&loaded.events, session_id, 0)?;
         if loaded.recovered_tail_bytes > 0 {
@@ -560,11 +666,7 @@ impl<'db> EventStore<'db> {
                 "discarded an incomplete session-file tail after an interrupted write"
             );
         }
-        Ok(loaded
-            .events
-            .into_iter()
-            .filter(|event| event.sequence >= from_sequence)
-            .collect())
+        Ok(Some(loaded))
     }
 
     /// Fetch the session record.
@@ -1115,6 +1217,7 @@ impl<'db> EventStore<'db> {
     /// Copy events `0..=until_seq` of `source_id` into a freshly-created
     /// session `new_id`, preserving payloads, ordering, and original
     /// timestamps. The new session carries the source's title + run mode.
+    /// An anchor inside a source/projection group keeps that complete group.
     ///
     /// This is the **non-destructive** storage primitive behind session
     /// *fork* (branching) and *rewind-to-new-branch*: the source stream is
@@ -1126,10 +1229,34 @@ impl<'db> EventStore<'db> {
         until_seq: Sequence,
         now: Timestamp,
     ) -> Result<()> {
+        self.begin_control(source_id)?
+            .fork_session(new_id, until_seq, now)
+    }
+
+    fn fork_session_in_control(
+        &self,
+        source_id: SessionId,
+        new_id: SessionId,
+        until_seq: Sequence,
+        now: Timestamp,
+    ) -> Result<()> {
         let record = self
             .get_session(source_id)?
             .ok_or_else(|| CoreError::not_found(format!("session {source_id} does not exist")))?;
-        let events = self.load_session(source_id)?;
+        let loaded = self
+            .load_session_file(source_id)?
+            .ok_or_else(|| CoreError::not_found(format!("session {source_id}")))?;
+        let projections = crate::event_projection::projection_spans(
+            &loaded.events,
+            &loaded.projections,
+            Some(until_seq),
+        )?;
+        let until_seq = crate::event_projection::complete_boundary(until_seq, &projections);
+        let projections: Vec<_> = projections
+            .into_iter()
+            .filter(|span| span.end <= until_seq)
+            .collect();
+        let events = loaded.events;
         if events.is_empty() {
             return Err(CoreError::not_found(format!("session {source_id}")));
         }
@@ -1166,6 +1293,7 @@ impl<'db> EventStore<'db> {
                 created_at: now,
             },
             events,
+            projections,
         )?;
         let destination = session_files::session_dir(&root, new_id);
         self.db.with_conn(|connection| {
@@ -1196,7 +1324,8 @@ impl<'db> EventStore<'db> {
 
     /// Discard every event of `session_id` with sequence strictly greater than
     /// `keep_through`, returning the number of events removed. Sequences
-    /// `0..=keep_through` stay contiguous, so later appends continue gaplessly.
+    /// stay contiguous through the complete projection group containing the
+    /// requested anchor, so later appends continue gaplessly.
     ///
     /// This is the one deliberate exception to the append-only rule and is
     /// reachable only through an explicit, user-initiated **rewind**. The

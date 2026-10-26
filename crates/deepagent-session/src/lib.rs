@@ -30,123 +30,6 @@ pub struct Session<'db, C: Clock> {
     state: SessionState,
 }
 
-fn response_items_for_payload(
-    store: &EventStore<'_>,
-    session_id: SessionId,
-    payload: &EventPayload,
-) -> Result<Vec<ResponseItem>> {
-    let mut items = Vec::new();
-    match payload {
-        EventPayload::MessageAppended { message } => {
-            if let Some(reasoning) = message
-                .reasoning_content
-                .as_deref()
-                .filter(|text| !text.is_empty())
-            {
-                items.push(ResponseItem::Reasoning {
-                    id: None,
-                    content: reasoning.to_string(),
-                });
-            }
-            for call in &message.tool_calls {
-                if call.name == "apply_patch" {
-                    items.push(ResponseItem::CustomToolCall {
-                        call_id: call.id.clone(),
-                        name: call.name.clone(),
-                        input: call
-                            .arguments
-                            .get("patch")
-                            .and_then(serde_json::Value::as_str)
-                            .unwrap_or_default()
-                            .to_string(),
-                    });
-                } else {
-                    items.push(ResponseItem::FunctionCall {
-                        call_id: call.id.clone(),
-                        name: call.name.clone(),
-                        arguments: serde_json::to_string(&call.arguments)
-                            .unwrap_or_else(|_| "{}".to_string()),
-                    });
-                }
-            }
-            if !message.content.is_empty() || message.tool_calls.is_empty() {
-                items.push(ResponseItem::Message {
-                    role: message.role.as_str().to_string(),
-                    content: message.content.clone(),
-                });
-            }
-        }
-        EventPayload::ToolCallRequested { call } => {
-            if call.name == "apply_patch" {
-                items.push(ResponseItem::CustomToolCall {
-                    call_id: call.id.clone(),
-                    name: call.name.clone(),
-                    input: call
-                        .arguments
-                        .get("patch")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or_default()
-                        .to_string(),
-                });
-            } else {
-                items.push(ResponseItem::FunctionCall {
-                    call_id: call.id.clone(),
-                    name: call.name.clone(),
-                    arguments: serde_json::to_string(&call.arguments)
-                        .unwrap_or_else(|_| "{}".to_string()),
-                });
-            }
-        }
-        EventPayload::ToolCallCompleted {
-            call_id,
-            ok,
-            output,
-            ..
-        } => {
-            // Model-backed runs persist the provider-native call before the
-            // legacy ToolCallRequested projection. Resolve the call kind from
-            // whichever representation is newest so a completed custom call
-            // (apply_patch) receives CustomToolCallOutput rather than a
-            // mismatched FunctionCallOutput.
-            let custom = store
-                .load_session(session_id)?
-                .iter()
-                .rev()
-                .find_map(|event| match &event.payload {
-                    EventPayload::ToolCallRequested { call } if call.id == *call_id => {
-                        Some(call.name == "apply_patch")
-                    }
-                    EventPayload::ResponseItemAppended {
-                        item: ResponseItem::CustomToolCall { call_id: id, .. },
-                    } if id == call_id => Some(true),
-                    EventPayload::ResponseItemAppended {
-                        item: ResponseItem::FunctionCall { call_id: id, .. },
-                    } if id == call_id => Some(false),
-                    _ => None,
-                })
-                .unwrap_or(false);
-            let output = if *ok {
-                serde_json::json!({"status":"ok","result":output}).to_string()
-            } else {
-                serde_json::json!({"status":"error","error":output}).to_string()
-            };
-            if custom {
-                items.push(ResponseItem::CustomToolCallOutput {
-                    call_id: call_id.clone(),
-                    output,
-                });
-            } else {
-                items.push(ResponseItem::FunctionCallOutput {
-                    call_id: call_id.clone(),
-                    output,
-                });
-            }
-        }
-        _ => {}
-    }
-    Ok(items)
-}
-
 impl<'db, C: Clock> Session<'db, C> {
     /// Start a brand new session in [`SessionMode::Normal`].
     pub fn create(db: &'db Database, clock: &'db C, title: Option<&str>) -> Result<Self> {
@@ -205,7 +88,7 @@ impl<'db, C: Clock> Session<'db, C> {
         if store.get_session(id)?.is_none() {
             return Err(CoreError::not_found(format!("session {id}")));
         }
-        let events = store.load_session(id)?;
+        let events = store.load_session_for_model(id)?;
         if events.is_empty() {
             return Err(CoreError::not_found(format!("session {id}")));
         }
@@ -223,6 +106,7 @@ impl<'db, C: Clock> Session<'db, C> {
     /// stream is a copy of events `0..=at_seq` from `source_id`. The source is
     /// left untouched, so forking is fully non-destructive (it branches the
     /// timeline). Returns the new, recovered [`Session`].
+    /// A cursor within a source/native projection keeps the complete group.
     ///
     /// Forking lets the user explore an alternative continuation from any point
     /// in the timeline without losing the original transcript.
@@ -246,6 +130,7 @@ impl<'db, C: Clock> Session<'db, C> {
     /// **Rewind** this session in place to `to_seq`: discard every event after
     /// `to_seq` and reload the projection. This is destructive (the discarded
     /// tail is gone) and is only reachable through an explicit user action.
+    /// A cursor within a source/native projection keeps the complete group.
     ///
     /// After rewinding, the session is "reopened" (any prior end is cleared)
     /// and new events append gaplessly from the kept tail. Returns the number
@@ -315,22 +200,23 @@ impl<'db, C: Clock> Session<'db, C> {
     ) -> Result<Event> {
         let now = self.clock.now();
         let store = EventStore::new(self.db);
-        let response_items = if project_response_items {
-            response_items_for_payload(&store, self.id, &payload)?
+        let events = if matches!(
+            payload,
+            EventPayload::MessageAppended { .. }
+                | EventPayload::ToolCallRequested { .. }
+                | EventPayload::ToolCallCompleted { .. }
+        ) {
+            store.append_with_response_projection(self.id, payload, project_response_items, now)?
         } else {
-            Vec::new()
+            vec![store.append(self.id, payload, now)?]
         };
-        let event = store.append(self.id, payload, now)?;
-        self.state.apply(&event.payload);
-        for item in response_items {
-            let item_event = store.append(
-                self.id,
-                EventPayload::ResponseItemAppended { item },
-                self.clock.now(),
-            )?;
-            self.state.apply(&item_event.payload);
+        for event in &events {
+            self.state.apply(&event.payload);
         }
-        Ok(event)
+        Ok(events
+            .into_iter()
+            .next()
+            .expect("a committed group always has a source"))
     }
 
     /// Convenience: create a task and append the corresponding event.
@@ -384,6 +270,9 @@ impl<'db, C: Clock> Session<'db, C> {
         Ok(self.record()?.updated_at)
     }
 }
+
+#[cfg(test)]
+mod projection_boundary_tests;
 
 #[cfg(test)]
 mod tests {

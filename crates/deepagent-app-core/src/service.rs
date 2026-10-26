@@ -883,10 +883,12 @@ impl AppService {
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         // Fork also restores this workspace. Keep the same exclusive scope
         // across checkpoint publication and history commit as rewind.
-        let _control = EventStore::new(&self.db).begin_control(id)?;
+        let store = EventStore::new(&self.db);
+        let control = store.begin_control(id)?;
+        let at_seq = store.resolve_branch_sequence(id, at_seq)?;
         self.restore_checkpoints_after(session_id, at_seq, |restored_paths| {
             let new_id = SessionId::new();
-            EventStore::new(&self.db).fork_session(id, new_id, at_seq, SystemClock.now())?;
+            control.fork_session(new_id, at_seq, SystemClock.now())?;
             Ok(ForkResultDto {
                 new_session_id: new_id.to_string(),
                 source_session_id: session_id.to_string(),
@@ -904,10 +906,9 @@ impl AppService {
         let id = SessionId::from_str(session_id)
             .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
         let control = EventStore::new(&self.db).begin_control(id)?;
-        let clock = SystemClock;
-        // Validate recoverability before touching files. Avoid a fallible
-        // projection reload after the authoritative truncate has committed.
-        Session::recover(&self.db, &clock, id)?;
+        let to_seq = EventStore::new(&self.db).resolve_branch_sequence(id, to_seq)?;
+        // The resolver has validated the kept logical prefix before touching
+        // files. A malformed discarded tail must not block an earlier rewind.
         self.restore_checkpoints_after(session_id, to_seq, |restored_paths| {
             let removed = control.truncate_after(to_seq)?;
             Ok(RewindResultDto {

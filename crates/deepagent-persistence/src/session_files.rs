@@ -39,6 +39,19 @@ enum StoredRecord {
         schema: u32,
         event: Event,
     },
+    /// One source and its complete synthetic/native-only projection decision.
+    /// The whole record occupies one checksummed frame, never a partial group.
+    Projection {
+        schema: u32,
+        source: Event,
+        items: Vec<Event>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ProjectionSpan {
+    pub start: u64,
+    pub end: u64,
 }
 
 #[derive(Debug)]
@@ -46,6 +59,7 @@ pub(crate) struct LoadedSessionFile {
     pub(crate) generation: u64,
     pub(crate) header: SessionFileHeader,
     pub(crate) events: Vec<Event>,
+    pub(crate) projections: Vec<ProjectionSpan>,
     pub(crate) byte_len: u64,
     pub(crate) recovered_tail_bytes: u64,
 }
@@ -60,6 +74,7 @@ pub(crate) struct SessionFileCursor {
 #[derive(Debug)]
 pub(crate) struct AppendedSessionEvent {
     pub(crate) event: Event,
+    pub(crate) items: Vec<Event>,
     pub(crate) generation: u64,
     pub(crate) byte_len: u64,
     pub(crate) recovered_tail_bytes: u64,
@@ -88,11 +103,12 @@ pub(crate) fn create(root: &Path, header: SessionFileHeader) -> Result<LoadedSes
         )));
     }
 
-    let byte_len = write_generation(&path, generation, &header, &[])?;
+    let byte_len = write_generation(&path, generation, &header, &[], &[])?;
     Ok(LoadedSessionFile {
         generation,
         header,
         events: Vec::new(),
+        projections: Vec::new(),
         byte_len,
         recovered_tail_bytes: 0,
     })
@@ -119,6 +135,7 @@ pub(crate) fn prepare_fork(
     root: &Path,
     header: SessionFileHeader,
     events: Vec<Event>,
+    projections: Vec<ProjectionSpan>,
 ) -> Result<(tempfile::TempDir, LoadedSessionFile)> {
     let target = session_dir(root, header.id);
     let parent = target
@@ -135,6 +152,7 @@ pub(crate) fn prepare_fork(
         generation,
         &header,
         &events,
+        &projections,
     )?;
     Ok((
         staging,
@@ -142,6 +160,7 @@ pub(crate) fn prepare_fork(
             generation,
             header,
             events,
+            projections,
             byte_len,
             recovered_tail_bytes: 0,
         },
@@ -191,10 +210,21 @@ pub(crate) fn list_active_session_ids(root: &Path) -> Result<Vec<SessionId>> {
     Ok(ids)
 }
 
+#[cfg(test)]
 pub(crate) fn append(
     root: &Path,
     session_id: SessionId,
+    event: Event,
+    cursor: Option<SessionFileCursor>,
+) -> Result<AppendedSessionEvent> {
+    append_projection(root, session_id, event, None, cursor)
+}
+
+pub(crate) fn append_projection(
+    root: &Path,
+    session_id: SessionId,
     mut event: Event,
+    projected_items: Option<Vec<deepagent_core::response_item::ResponseItem>>,
     cursor: Option<SessionFileCursor>,
 ) -> Result<AppendedSessionEvent> {
     let (generation, path) = current_generation(root, session_id)?.ok_or_else(|| {
@@ -222,9 +252,32 @@ pub(crate) fn append(
         loaded.events.len() as u64
     };
 
-    let record = StoredRecord::Event {
-        schema: FORMAT_VERSION,
-        event: event.clone(),
+    let items: Vec<Event> = projected_items
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+        .map(|(index, item)| Event {
+            id: deepagent_core::id::EventId::new(),
+            session_id,
+            sequence: event.sequence + index as u64 + 1,
+            timestamp: event.timestamp,
+            payload: deepagent_core::event::EventPayload::ResponseItemAppended {
+                item: item.clone(),
+            },
+        })
+        .collect();
+    let record = if projected_items.is_some() {
+        StoredRecord::Projection {
+            schema: FORMAT_VERSION,
+            source: event.clone(),
+            items: items.clone(),
+        }
+    } else {
+        StoredRecord::Event {
+            schema: FORMAT_VERSION,
+            event: event.clone(),
+        }
     };
     let encoded = encode_records(std::slice::from_ref(&record))?;
     file.seek(SeekFrom::End(0))
@@ -246,6 +299,7 @@ pub(crate) fn append(
         .map_err(|error| CoreError::Persistence(format!("unlock session file: {error}")))?;
     Ok(AppendedSessionEvent {
         event,
+        items,
         generation,
         byte_len,
         recovered_tail_bytes,
@@ -261,6 +315,12 @@ pub(crate) fn rewrite_prefix(
     let current = load(root, session_id)?.ok_or_else(|| {
         CoreError::EventLog(format!("session {session_id} has no persisted event file"))
     })?;
+    let projections = crate::event_projection::projection_spans(
+        &current.events,
+        &current.projections,
+        Some(keep_through),
+    )?;
+    let keep_through = crate::event_projection::complete_boundary(keep_through, &projections);
     let kept: Vec<Event> = current
         .events
         .iter()
@@ -268,15 +328,20 @@ pub(crate) fn rewrite_prefix(
         .cloned()
         .collect();
     let removed = current.events.len().saturating_sub(kept.len()) as u64;
+    let projections: Vec<_> = projections
+        .into_iter()
+        .filter(|span| span.end <= keep_through)
+        .collect();
     let generation = current.generation + 1;
     let dir = session_dir(root, session_id);
     let path = generation_path(&dir, generation);
-    let byte_len = write_generation(&path, generation, &current.header, &kept)?;
+    let byte_len = write_generation(&path, generation, &current.header, &kept, &projections)?;
     Ok((
         LoadedSessionFile {
             generation,
             header: current.header,
             events: kept,
+            projections,
             byte_len,
             recovered_tail_bytes: 0,
         },
@@ -301,11 +366,18 @@ pub(crate) fn rewrite_header_project(
     let mut header = current.header.clone();
     header.project = Some(project.to_string());
     let path = generation_path(&session_dir(root, session_id), generation);
-    let byte_len = write_generation(&path, generation, &header, &current.events)?;
+    let byte_len = write_generation(
+        &path,
+        generation,
+        &header,
+        &current.events,
+        &current.projections,
+    )?;
     Ok(LoadedSessionFile {
         generation,
         header,
         events: current.events,
+        projections: current.projections,
         byte_len,
         recovered_tail_bytes: 0,
     })
@@ -509,25 +581,37 @@ fn parse_records(
     }
 
     let mut events = Vec::new();
+    let mut projections = Vec::new();
     for record in records {
-        match record {
-            StoredRecord::Event { schema, event } if schema == FORMAT_VERSION => {
-                if event.session_id != expected_session {
-                    return Err(CoreError::EventLog(format!(
-                        "event {} belongs to {} instead of {expected_session}",
-                        event.id, event.session_id
-                    )));
+        let group = match record {
+            StoredRecord::Event { schema, event } if schema == FORMAT_VERSION => vec![event],
+            StoredRecord::Projection {
+                schema,
+                source,
+                items,
+            } if schema == FORMAT_VERSION => {
+                if items.iter().any(|event| {
+                    !matches!(
+                        event.payload,
+                        deepagent_core::event::EventPayload::ResponseItemAppended { .. }
+                    )
+                }) {
+                    return Err(CoreError::EventLog(
+                        "projection contains a non-native item".into(),
+                    ));
                 }
-                let expected_sequence = events.len() as u64;
-                if event.sequence != expected_sequence {
-                    return Err(CoreError::EventLog(format!(
-                        "session {expected_session} has sequence {} at position {expected_sequence}",
-                        event.sequence
-                    )));
-                }
-                events.push(event);
+                projections.push(ProjectionSpan {
+                    start: source.sequence,
+                    end: source
+                        .sequence
+                        .checked_add(items.len() as u64)
+                        .ok_or_else(|| {
+                            CoreError::EventLog("projection sequence overflow".into())
+                        })?,
+                });
+                std::iter::once(source).chain(items).collect()
             }
-            StoredRecord::Event { schema, .. } => {
+            StoredRecord::Event { schema, .. } | StoredRecord::Projection { schema, .. } => {
                 return Err(CoreError::EventLog(format!(
                     "unsupported event schema {schema} in session {expected_session}"
                 )))
@@ -537,6 +621,22 @@ fn parse_records(
                     "duplicate header in session {expected_session}"
                 )))
             }
+        };
+        for event in group {
+            if event.session_id != expected_session {
+                return Err(CoreError::EventLog(format!(
+                    "event {} belongs to {} instead of {expected_session}",
+                    event.id, event.session_id
+                )));
+            }
+            let expected_sequence = events.len() as u64;
+            if event.sequence != expected_sequence {
+                return Err(CoreError::EventLog(format!(
+                    "session {expected_session} has sequence {} at position {expected_sequence}",
+                    event.sequence
+                )));
+            }
+            events.push(event);
         }
     }
 
@@ -544,6 +644,7 @@ fn parse_records(
         generation,
         header,
         events,
+        projections,
         byte_len,
         recovered_tail_bytes,
     })
@@ -554,6 +655,11 @@ fn decode_frames(bytes: &[u8]) -> Result<(Vec<StoredRecord>, usize, usize)> {
     let mut offset = 0usize;
     while offset < bytes.len() {
         let remaining = &bytes[offset..];
+        // A write can stop within the magic itself. Only its exact prefix is
+        // a recoverable short tail; arbitrary/corrupt bytes still fail below.
+        if remaining.len() < ZSTD_MAGIC.len() && ZSTD_MAGIC.starts_with(remaining) {
+            return Ok((records, offset, remaining.len()));
+        }
         let frame_size = match zstd::zstd_safe::find_frame_compressed_size(remaining) {
             Ok(size) => size,
             Err(code) if remaining.starts_with(&ZSTD_MAGIC) && is_truncated_frame(code) => {
@@ -610,6 +716,7 @@ fn write_generation(
     generation: u64,
     header: &SessionFileHeader,
     events: &[Event],
+    projections: &[ProjectionSpan],
 ) -> Result<u64> {
     let parent = path
         .parent()
@@ -630,14 +737,40 @@ fn write_generation(
         file.write_all(&encode_records(&[header_record])?)
             .map_err(io_error)?;
         if !events.is_empty() {
-            let records: Vec<StoredRecord> = events
-                .iter()
-                .cloned()
-                .map(|event| StoredRecord::Event {
+            let mut records = Vec::new();
+            let mut index = 0;
+            for span in projections {
+                if span.start < index as u64
+                    || span.end < span.start
+                    || span.end >= events.len() as u64
+                {
+                    return Err(CoreError::EventLog(
+                        "invalid projection span during generation rewrite".into(),
+                    ));
+                }
+                while index < span.start as usize {
+                    records.push(StoredRecord::Event {
+                        schema: FORMAT_VERSION,
+                        event: events[index].clone(),
+                    });
+                    index += 1;
+                }
+                records.push(StoredRecord::Projection {
                     schema: FORMAT_VERSION,
-                    event,
-                })
-                .collect();
+                    source: events[index].clone(),
+                    items: events[index + 1..=span.end as usize].to_vec(),
+                });
+                index = span.end as usize + 1;
+            }
+            records.extend(
+                events[index..]
+                    .iter()
+                    .cloned()
+                    .map(|event| StoredRecord::Event {
+                        schema: FORMAT_VERSION,
+                        event,
+                    }),
+            );
             file.write_all(&encode_records(&records)?)
                 .map_err(io_error)?;
         }
@@ -885,6 +1018,74 @@ mod tests {
             timestamp: Timestamp::from_millis(2),
             payload: EventPayload::Note { text: text.into() },
         }
+    }
+
+    #[test]
+    fn projection_frame_is_all_or_none_at_every_incomplete_frame_boundary() {
+        use deepagent_core::message::Message;
+        use deepagent_core::response_item::ResponseItem;
+
+        let temp = tempfile::tempdir().unwrap();
+        let id = SessionId::new();
+        create(temp.path(), header(id)).unwrap();
+        let (_, path) = current_generation(temp.path(), id).unwrap().unwrap();
+        let prefix = fs::read(&path).unwrap();
+        let mut source = event(id, "unused");
+        let mut message = Message::assistant("whole text");
+        message.reasoning_content = Some("whole reasoning".into());
+        source.payload = EventPayload::MessageAppended { message };
+        let items: Vec<_> = [
+            ResponseItem::Reasoning {
+                id: None,
+                content: "whole reasoning".into(),
+            },
+            ResponseItem::Message {
+                role: "assistant".into(),
+                content: "whole text".into(),
+            },
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| Event {
+            id: EventId::new(),
+            session_id: id,
+            sequence: index as u64 + 1,
+            timestamp: source.timestamp,
+            payload: EventPayload::ResponseItemAppended { item },
+        })
+        .collect();
+        let frame = encode_records(&[StoredRecord::Projection {
+            schema: FORMAT_VERSION,
+            source,
+            items,
+        }])
+        .unwrap();
+        for cut in 0..frame.len() {
+            let mut bytes = prefix.clone();
+            bytes.extend_from_slice(&frame[..cut]);
+            fs::write(&path, bytes).unwrap();
+            let recovered = load(temp.path(), id).unwrap().unwrap();
+            assert!(
+                recovered.events.is_empty(),
+                "partial source/items at frame cut {cut}"
+            );
+            assert!(recovered.projections.is_empty());
+            assert_eq!(fs::metadata(&path).unwrap().len(), prefix.len() as u64);
+        }
+        let mut bytes = prefix;
+        bytes.extend_from_slice(&frame);
+        fs::write(&path, &bytes).unwrap();
+        let complete = load(temp.path(), id).unwrap().unwrap();
+        assert_eq!(complete.events.len(), 3);
+        assert_eq!(complete.projections, [ProjectionSpan { start: 0, end: 2 }]);
+        let (rewritten, removed) = rewrite_prefix(temp.path(), id, 0).unwrap();
+        assert_eq!(removed, 0);
+        assert_eq!(rewritten.events, complete.events);
+        assert_eq!(rewritten.projections, complete.projections);
+        rewrite_header_project(temp.path(), id, "new-project").unwrap();
+        let again = load(temp.path(), id).unwrap().unwrap();
+        assert_eq!(again.projections, complete.projections);
+        assert_eq!(again.events, complete.events);
     }
 
     #[test]

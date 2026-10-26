@@ -28,6 +28,7 @@ pub mod run_store;
 pub mod runtime_log_store;
 pub mod subagent_store;
 
+mod event_projection;
 mod session_files;
 
 use std::path::{Path, PathBuf};

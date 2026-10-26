@@ -1606,6 +1606,47 @@ mod tests {
     }
 
     #[test]
+    fn thread_fork_source_cursor_reports_the_complete_projection_boundary() {
+        let mut state = ServerState::new_for_test();
+        initialize(&mut state);
+        let started = state.handle_request_for_test(rpc_request(
+            1,
+            "thread/start",
+            serde_json::json!({"cwd":state.workspace().to_string_lossy()}),
+        ));
+        let source = started.result()["threadId"].as_str().unwrap().to_owned();
+        let clock = SystemClock;
+        let anchor = Session::recover(&state.database, &clock, source.parse().unwrap())
+            .unwrap()
+            .append(deepagent_core::event::EventPayload::MessageAppended {
+                message: deepagent_core::message::Message::user("branch source wire fixture"),
+            })
+            .unwrap()
+            .sequence;
+        let forked = state.handle_request_for_test(rpc_request(
+            2,
+            "thread/fork",
+            serde_json::json!({"threadId":source,"atSequence":anchor}),
+        ));
+        assert!(forked.is_success(), "{forked:?}");
+        assert_eq!(forked.result()["forkedAt"], anchor + 1);
+        let child = forked.result()["threadId"].as_str().unwrap();
+        let events = EventStore::new(&state.database)
+            .load_session(child.parse().unwrap())
+            .unwrap();
+        assert_eq!(events.last().unwrap().sequence, anchor + 1);
+        let read = state.handle_request_for_test(rpc_request(
+            3,
+            "thread/read",
+            serde_json::json!({"threadId":child}),
+        ));
+        assert!(read.is_success());
+        assert!(read.result()["events"]
+            .to_string()
+            .contains("branch source wire fixture"));
+    }
+
+    #[test]
     fn thread_resume_and_read_reopen_the_same_file_backed_session() {
         let temporary = tempfile::tempdir().unwrap();
         let workspace = temporary.path().join("workspace");

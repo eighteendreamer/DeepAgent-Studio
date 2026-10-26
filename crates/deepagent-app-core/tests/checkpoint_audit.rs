@@ -717,6 +717,74 @@ impl BranchFixture {
 }
 
 #[test]
+fn projection_source_boundary_uses_effective_sequence_for_checkpoint_restoration() {
+    for operation in [Operation::Rewind, Operation::Fork] {
+        let fixture = BranchFixture::new();
+        let clock = FixedClock::new(1_000);
+        let mut session = Session::recover(&fixture.db, &clock, fixture.session_id).unwrap();
+        let source = session
+            .append(EventPayload::MessageAppended {
+                message: Message::user("kept source and projection"),
+            })
+            .unwrap()
+            .sequence;
+        let (_, checkpoint_sequence) = record_branch_edit(
+            &fixture.db,
+            fixture.session_id,
+            &fixture.target(),
+            fixture.storage.path(),
+            "kept-projection-edit",
+            "retained edit",
+        );
+        assert_eq!(checkpoint_sequence, source + 1);
+        session
+            .append(EventPayload::MessageAppended {
+                message: Message::assistant("discarded tail"),
+            })
+            .unwrap();
+        drop(session);
+        let app = AppService::from_shared(fixture.db.clone());
+        let (target, effective, restored) = match operation {
+            Operation::Fork => {
+                let result = app
+                    .fork_session(&fixture.session_id.to_string(), source)
+                    .unwrap();
+                (
+                    result.new_session_id,
+                    result.forked_at,
+                    result.restored_paths,
+                )
+            }
+            Operation::Rewind => {
+                let result = app
+                    .rewind_session(&fixture.session_id.to_string(), source)
+                    .unwrap();
+                (
+                    result.session_id,
+                    result.kept_through,
+                    result.restored_paths,
+                )
+            }
+        };
+        assert_eq!(effective, checkpoint_sequence);
+        assert!(
+            restored.is_empty(),
+            "a checkpoint in the kept group must not be restored"
+        );
+        assert_eq!(fixture.content(), "retained edit");
+        assert_eq!(
+            EventStore::new(&fixture.db)
+                .load_session(target.parse().unwrap())
+                .unwrap()
+                .last()
+                .unwrap()
+                .sequence,
+            effective
+        );
+    }
+}
+
+#[test]
 fn branch_rewind_keeps_surviving_prefix_across_reopen_and_reused_sequences() {
     let mut fixture = BranchFixture::new();
     let (prefix, _, prefix_tail) = fixture.edit("prefix", "prefix-content");

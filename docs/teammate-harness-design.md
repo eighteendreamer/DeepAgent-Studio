@@ -363,8 +363,9 @@ B6 两项目标（S3-1 迁移框架 / S3-2 session 级本地事件台账）经�
 四条链路各自闭环，全部本地存储、无云上报：
 
 1. **权威事件源**：`crates/deepagent-persistence/src/session_files.rs` —— 每 session 的 append-only
-   ZSTD 压缩 JSONL，分代管理。`FORMAT_VERSION=1`、`.v1.jsonl.zst`、`StoredRecord {Header|Event}`、
-   读锁 + 分代写入（:13-28、:531-577、:638-639）。
+   ZSTD 压缩 JSONL，分代管理。`FORMAT_VERSION=1`、`.v1.jsonl.zst`、`StoredRecord {Header|Event|Projection}`、
+   读锁 + 分代写入。H-74新增Projection记录把源事件及其派生项放进同一校验frame；原Event envelope不变，
+   分支锚点按完整组解析，仍由同一EventStore管理。新版本可读旧Header/Event记录；旧二进制不支持新增记录，不能直接降级读取新日志。
 2. **运行诊断台账**：`runtime_log_store`（SQLite append-only 诊断轨迹，run/session/category），
    由 app-core 运行链路生产消费。
 3. **会话统计投影**：`deepagent-observation`（`SessionStats::from_events` / `build_timeline` /
