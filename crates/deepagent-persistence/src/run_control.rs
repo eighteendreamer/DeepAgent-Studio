@@ -419,6 +419,8 @@ impl<'db> RunControlStore<'db> {
     pub fn request_approval(&self, approval: &NewRunApproval<'_>) -> Result<ControlMutation> {
         self.db.with_conn(|connection| {
             in_immediate_transaction(connection, || {
+                ensure_run_open(connection, approval.run_id)?;
+                ensure_action_open(connection, approval.run_id, approval.call_id)?;
                 let changed = connection
                     .execute(
                         "INSERT INTO run_approvals (approval_id,run_id,call_id,state,scope,risk,reason,policy_snapshot,expires_at,created_at,updated_at) VALUES (?1,?2,?3,'pending',?4,?5,?6,?7,?8,?9,?9) ON CONFLICT(approval_id) DO NOTHING",
@@ -512,6 +514,10 @@ impl<'db> RunControlStore<'db> {
                 } else {
                     ApprovalState::Denied
                 };
+                if current.state == ApprovalState::Pending {
+                    ensure_run_open(connection, &current.run_id)?;
+                    ensure_action_open(connection, &current.run_id, &current.call_id)?;
+                }
                 if current.state == ApprovalState::Pending
                     && current.expires_at.is_some_and(|expiry| expiry <= now)
                 {
@@ -1095,6 +1101,61 @@ fn lease_query<const N: usize>(
     .transpose()
 }
 
+fn ensure_run_open(connection: &Connection, run_id: &str) -> Result<()> {
+    let open: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM runs WHERE id=?1 AND finished_at IS NULL)",
+            [run_id],
+            |row| row.get(0),
+        )
+        .map_err(map_sqlite)?;
+    if !open {
+        return Err(CoreError::invalid(
+            "approval run is missing or already terminal",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_action_open(connection: &Connection, run_id: &str, call_id: &str) -> Result<()> {
+    let action = get_action_from(connection, run_id, call_id)?
+        .ok_or_else(|| CoreError::not_found("approval action"))?;
+    if action.state.is_terminal() {
+        return Err(CoreError::invalid("approval action is already terminal"));
+    }
+    Ok(())
+}
+
+/// Called inside the existing run-terminal transaction, before run_terminal.
+/// Only pending approvals of this run are invalidated; prior human decisions
+/// and other runs remain untouched. An audit failure rolls the whole turn back.
+pub(crate) fn cancel_pending_approvals(
+    connection: &Connection,
+    run_id: &str,
+    now: i64,
+) -> Result<()> {
+    let pending = collect_pairs(connection,
+        "SELECT approval_id,call_id FROM run_approvals WHERE run_id=?1 AND state='pending' ORDER BY approval_id", run_id)?;
+    for (approval_id, call_id) in pending {
+        connection.execute(
+            "UPDATE run_approvals SET state='cancelled',decided_at=?2,decided_by='run_terminal',updated_at=?2 WHERE approval_id=?1 AND state='pending'",
+            params![approval_id, now],
+        ).map_err(map_sqlite)?;
+        connection.execute(
+            "UPDATE run_actions SET state='cancelled',finished_at=?3,updated_at=?3 WHERE run_id=?1 AND call_id=?2 AND state='blocked'",
+            params![run_id, call_id, now],
+        ).map_err(map_sqlite)?;
+        append_control_event(
+            connection,
+            run_id,
+            now,
+            "approval.cancelled",
+            &serde_json::json!({"approvalId":approval_id,"callId":call_id,"reason":"run_terminal"}),
+        )?;
+    }
+    Ok(())
+}
+
 fn expire_approval(connection: &Connection, approval: &RunApprovalRecord, now: i64) -> Result<()> {
     connection
         .execute(
@@ -1314,6 +1375,382 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type, "run_accepted");
         assert_eq!(events[1].event_type, "action.received");
+    }
+
+    #[test]
+    fn approval_lifecycle_terminal_cancels_pending_atomically() {
+        let db = database_with_run();
+        let store = RunControlStore::new(&db);
+        store.create_action(&action("call-1", 0)).unwrap();
+        store
+            .transition_action("run-1", "call-1", RunActionState::Prepared, 3, None, None)
+            .unwrap();
+        store
+            .request_approval(&NewRunApproval {
+                approval_id: "approval-1",
+                run_id: "run-1",
+                call_id: "call-1",
+                scope: "single_call",
+                risk: "high",
+                reason: None,
+                policy_snapshot: None,
+                expires_at: None,
+                now: 4,
+            })
+            .unwrap();
+        let runs = RunStore::new(&db);
+        let before = runs.events_after("run-1", None).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TRIGGER h15_terminal_failure BEFORE INSERT ON run_events WHEN NEW.event_type='run_terminal' BEGIN SELECT RAISE(ABORT,'h15 terminal write fault'); END;").map_err(map_sqlite)
+        }).unwrap();
+        assert!(runs
+            .finish_with_event(
+                "run-1",
+                "cancelled",
+                None,
+                &serde_json::json!({"kind":"cancelled"}),
+                None,
+                5
+            )
+            .is_err());
+        assert!(runs.get("run-1").unwrap().unwrap().finished_at.is_none());
+        assert_eq!(
+            store.get_approval("approval-1").unwrap().unwrap().state,
+            ApprovalState::Pending
+        );
+        assert_eq!(
+            store.get_action("run-1", "call-1").unwrap().unwrap().state,
+            RunActionState::Blocked
+        );
+        assert_eq!(runs.events_after("run-1", None).unwrap(), before);
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER h15_terminal_failure")
+                .map_err(map_sqlite)
+        })
+        .unwrap();
+        assert!(runs
+            .finish_with_event(
+                "run-1",
+                "cancelled",
+                None,
+                &serde_json::json!({"kind":"cancelled"}),
+                None,
+                6
+            )
+            .unwrap());
+        assert_eq!(
+            store.get_approval("approval-1").unwrap().unwrap().state,
+            ApprovalState::Cancelled
+        );
+        assert_eq!(
+            store.get_action("run-1", "call-1").unwrap().unwrap().state,
+            RunActionState::Cancelled
+        );
+        let events = runs.events_after("run-1", None).unwrap();
+        assert_eq!(events[events.len() - 2].event_type, "approval.cancelled");
+        assert_eq!(events.last().unwrap().event_type, "run_terminal");
+        assert!(store
+            .respond_approval_scoped("approval-1", true, "late", Some("command_prefix"), 7)
+            .is_err());
+        assert_eq!(runs.events_after("run-1", None).unwrap(), events);
+    }
+
+    #[test]
+    fn approval_lifecycle_terminal_action_and_legacy_finished_run_reject_answers() {
+        let db = database_with_run();
+        let store = RunControlStore::new(&db);
+        store.create_action(&action("call-1", 0)).unwrap();
+        store
+            .transition_action("run-1", "call-1", RunActionState::Prepared, 3, None, None)
+            .unwrap();
+        let approval = NewRunApproval {
+            approval_id: "approval-1",
+            run_id: "run-1",
+            call_id: "call-1",
+            scope: "single_call",
+            risk: "high",
+            reason: None,
+            policy_snapshot: None,
+            expires_at: Some(10),
+            now: 4,
+        };
+        store.request_approval(&approval).unwrap();
+        store
+            .transition_action("run-1", "call-1", RunActionState::Cancelled, 5, None, None)
+            .unwrap();
+        let before = RunStore::new(&db).events_after("run-1", None).unwrap();
+        assert!(store
+            .respond_approval("approval-1", true, "late", 6)
+            .is_err());
+        assert!(store
+            .respond_approval("approval-1", true, "late", 11)
+            .is_err());
+        assert!(store.request_approval(&approval).is_err());
+        assert_eq!(
+            RunStore::new(&db).events_after("run-1", None).unwrap(),
+            before
+        );
+        // A pre-upgrade row can be terminal while an old approval is pending.
+        // Guard it even when its expiry has elapsed: do not append after finish.
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE runs SET finished_at=7,state='terminal' WHERE id='run-1'",
+                [],
+            )
+            .map(|_| ())
+            .map_err(map_sqlite)
+        })
+        .unwrap();
+        assert!(store
+            .respond_approval("approval-1", true, "late", 12)
+            .is_err());
+        assert_eq!(
+            RunStore::new(&db).events_after("run-1", None).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn approval_lifecycle_all_terminal_entries_preserve_other_runs_and_human_decisions() {
+        for entry in ["succeeded", "failed", "cancelled", "legacy", "recovered"] {
+            let db = database_with_run();
+            let runs = RunStore::new(&db);
+            runs.create("run-2", "session-1", None, 1).unwrap();
+            let store = RunControlStore::new(&db);
+            for (index, (run_id, call_id, approval_id)) in [
+                ("run-1", "waiting-1", "pending-1"),
+                ("run-1", "waiting-2", "pending-2"),
+                ("run-1", "allowed", "approved"),
+                ("run-1", "refused", "denied"),
+                ("run-2", "waiting-1", "other-run"),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                store
+                    .create_action(&NewRunAction {
+                        run_id,
+                        ..action(call_id, index as u64)
+                    })
+                    .unwrap();
+                store
+                    .transition_action(run_id, call_id, RunActionState::Prepared, 3, None, None)
+                    .unwrap();
+                store
+                    .request_approval(&NewRunApproval {
+                        approval_id,
+                        run_id,
+                        call_id,
+                        scope: "single_call",
+                        risk: "high",
+                        reason: None,
+                        policy_snapshot: None,
+                        expires_at: None,
+                        now: 4,
+                    })
+                    .unwrap();
+            }
+            store
+                .respond_approval("approved", true, "human", 5)
+                .unwrap();
+            store.respond_approval("denied", false, "human", 5).unwrap();
+            let other_events = runs.events_after("run-2", None).unwrap();
+            let before = runs.events_after("run-1", None).unwrap();
+            let finish = || match entry {
+                "legacy" => runs.finish("run-1", "cancelled", None, 6),
+                "recovered" => runs.finish_recovered(
+                    "run-1",
+                    "startup_recovery",
+                    &serde_json::json!({"fixture":true}),
+                    6,
+                ),
+                kind => runs.finish_with_event(
+                    "run-1",
+                    kind,
+                    None,
+                    &serde_json::json!({"kind":kind}),
+                    None,
+                    6,
+                ),
+            };
+            // Even the legacy entry must roll back its run update if approval
+            // invalidation cannot be audited; no partially finished state.
+            db.with_conn(|conn| {
+                conn.execute_batch("CREATE TRIGGER h15_cancel_failure BEFORE INSERT ON run_events WHEN NEW.event_type='approval.cancelled' BEGIN SELECT RAISE(ABORT,'h15 invalidation audit fault'); END;").map_err(map_sqlite)
+            }).unwrap();
+            assert!(finish().is_err(), "{entry}");
+            assert!(runs.get("run-1").unwrap().unwrap().finished_at.is_none());
+            assert_eq!(runs.events_after("run-1", None).unwrap(), before);
+            for approval_id in ["pending-1", "pending-2"] {
+                assert_eq!(
+                    store.get_approval(approval_id).unwrap().unwrap().state,
+                    ApprovalState::Pending
+                );
+            }
+            db.with_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER h15_cancel_failure")
+                    .map_err(map_sqlite)
+            })
+            .unwrap();
+            assert!(finish().unwrap(), "{entry}");
+            for (call_id, approval_id) in [("waiting-1", "pending-1"), ("waiting-2", "pending-2")] {
+                assert_eq!(
+                    store.get_approval(approval_id).unwrap().unwrap().state,
+                    ApprovalState::Cancelled
+                );
+                assert_eq!(
+                    store.get_action("run-1", call_id).unwrap().unwrap().state,
+                    RunActionState::Cancelled
+                );
+                assert!(store
+                    .respond_approval(approval_id, true, "late", 7)
+                    .is_err());
+            }
+            assert_eq!(
+                store.get_approval("approved").unwrap().unwrap().state,
+                ApprovalState::Approved
+            );
+            assert_eq!(
+                store.get_approval("denied").unwrap().unwrap().state,
+                ApprovalState::Denied
+            );
+            assert_eq!(
+                store.get_action("run-1", "allowed").unwrap().unwrap().state,
+                RunActionState::Queued
+            );
+            assert_eq!(
+                store.get_action("run-1", "refused").unwrap().unwrap().state,
+                RunActionState::Denied
+            );
+            let events = runs.events_after("run-1", None).unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.event_type == "approval.cancelled")
+                    .count(),
+                2
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.event_type == "run_terminal")
+                    .count(),
+                usize::from(entry != "legacy")
+            );
+            if entry != "legacy" {
+                assert_eq!(events.last().unwrap().event_type, "run_terminal");
+            }
+            assert!(!finish().unwrap(), "repeat {entry}");
+            assert_eq!(runs.events_after("run-1", None).unwrap(), events);
+            assert!(runs.get("run-2").unwrap().unwrap().finished_at.is_none());
+            assert_eq!(
+                store.get_approval("other-run").unwrap().unwrap().state,
+                ApprovalState::Pending
+            );
+            assert_eq!(
+                store
+                    .get_action("run-2", "waiting-1")
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                RunActionState::Blocked
+            );
+            assert_eq!(runs.events_after("run-2", None).unwrap(), other_events);
+            assert_eq!(
+                store
+                    .respond_approval("other-run", true, "human", 8)
+                    .unwrap(),
+                ControlMutation::Applied
+            );
+        }
+    }
+
+    #[test]
+    fn approval_lifecycle_answer_and_terminal_serialize_across_database_handles() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("approval-race.sqlite");
+        let db = Database::open(&path).unwrap();
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO sessions (id,created_at,updated_at) VALUES ('session-1',1,1)",
+                [],
+            )
+            .unwrap();
+            Ok(())
+        })
+        .unwrap();
+        for index in 0..16 {
+            let run_id = format!("r-{index}");
+            let approval_id = format!("a-{index}");
+            RunStore::new(&db)
+                .create(&run_id, "session-1", None, 1)
+                .unwrap();
+            let controls = RunControlStore::new(&db);
+            controls
+                .create_action(&NewRunAction {
+                    run_id: &run_id,
+                    ..action("call-1", 0)
+                })
+                .unwrap();
+            controls
+                .transition_action(&run_id, "call-1", RunActionState::Prepared, 3, None, None)
+                .unwrap();
+            controls
+                .request_approval(&NewRunApproval {
+                    approval_id: &approval_id,
+                    run_id: &run_id,
+                    call_id: "call-1",
+                    scope: "single_call",
+                    risk: "high",
+                    reason: None,
+                    policy_snapshot: None,
+                    expires_at: None,
+                    now: 4,
+                })
+                .unwrap();
+            let other = Database::open(&path).unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+            let answering = barrier.clone();
+            let answer_id = approval_id.clone();
+            let answer = std::thread::spawn(move || {
+                answering.wait();
+                RunControlStore::new(&other).respond_approval(&answer_id, true, "racing-answer", 5)
+            });
+            barrier.wait();
+            assert!(RunStore::new(&db)
+                .finish_with_event(
+                    &run_id,
+                    "cancelled",
+                    None,
+                    &serde_json::json!({"kind":"cancelled"}),
+                    None,
+                    6
+                )
+                .unwrap());
+            let answer_result = answer.join().unwrap();
+            let approval = controls.get_approval(&approval_id).unwrap().unwrap();
+            assert_ne!(approval.state, ApprovalState::Pending);
+            assert_eq!(
+                answer_result.is_ok(),
+                approval.state == ApprovalState::Approved
+            );
+            let events = RunStore::new(&db).events_after(&run_id, None).unwrap();
+            assert_eq!(events.last().unwrap().event_type, "run_terminal");
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.event_type == "run_terminal")
+                    .count(),
+                1
+            );
+            assert!(controls
+                .respond_approval(&approval_id, false, "late-conflicting-answer", 7)
+                .is_err());
+            assert_eq!(
+                RunStore::new(&db).events_after(&run_id, None).unwrap(),
+                events
+            );
+        }
     }
 
     #[test]

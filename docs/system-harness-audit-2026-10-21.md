@@ -6,6 +6,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-15 | 已修复并验收（2026-10-26，所列Windows本机范围） | 原失败保留；两scope取消/健康、并发、五种终态入口及故障回滚专项通过，见E-H15-01～08；全仓既有基线失败与未验边界见E-H15-08 |
 | H-01 | 已修复并验收（2026-10-26，所列Windows本机范围） | 唯一outbox显式故障断连、原取消收尾与持久化游标补读；CLI112/23 ignored、正式Rust SDK隔离6及TS正式1通过；全仓两个失败target及旧lint保留，见E-H01-01～13；修复提交`8b7a43d2` |
 | H-04 | 已修复并验收（2026-10-26，所列Windows本机范围） | 共享配置持久化于现有会话header，resume/fork/steer继承；CLI102/25 ignored、共享存储及正式TS SDK1/隔离Rust SDK6通过；全仓两失败target及严格lint基线保留，见E-H04-01～15；修复提交`9bc625f6` |
 | H-02 | 已修复并验收（2026-10-26，所列Windows本机范围） | ACK前统一admit，interrupt核对accepted；CLI97/27 ignored、真实stdio32轮及ACK失败收尾通过；SDK隔离根6通过；全workspace两失败target、严格lint基线与未验边界见E-H02-01～15；修复提交`f777dc82` |
@@ -28,7 +29,7 @@
 | H-08 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `McpTransport`统一支持无 ID notification，initialize 成功后发送 `notifications/initialized`；严格 stdio、HTTP fixture、MCP全组和AppCore MCP筛选通过；E-H08-01～04，修复提交`2dc9fdf6` |
 | H-09 | 已修复并验收（2026-10-26，Windows本机MCP/AppCore范围） | 单stdout reader、pending/oneshot与连接唯一wire ID；原探针转默认通过，stdio12/0 ignored、正式消费者1；全workspace唯一H-306失败及AppCore严格lint阻断见E-H09-01～09，修复提交`46ba0fd7` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **21**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **258（258待修复、0修复中）**；306是历史编号槽位。H-01完成所列Windows本机范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **22**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **257（257待修复、0修复中）**；306是历史编号槽位。H-15已在所列Windows本机范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -920,6 +921,22 @@ Codex `core/src/state/turn.rs` 把 pending_approvals 放在 TurnState；`clear_p
 - waiter 需要携带 run/turn 身份并具备取消/drop 清理，持久化投影同步过期；范围授权只能由仍有效的审批产生。不要用全局清空、静默吞 send 失败或延迟按钮遮盖问题。
 - 覆盖审批期间停止、回答/取消竞态、重复回答、工具作用域与命令前缀持久化作用域、两会话隔离、进程重启及审计写失败。本项只验证 tool_session；command_prefix 采用同一路径但尚未独立复现，不把它当作已经执行的测试。
 - 此缺陷探针默认忽略，生产审批逻辑未修改。
+
+E-H15-20261026-01（原始复现）：HEAD 9feb5193、生产未改时，`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_cancelled_run_rejects_late_approval_and_releases_waiter --offline -j 1 -- --ignored --nocapture` shell退出1，0 passed/1 failed/0 ignored（构建2m23s、测试0.20s）。实际terminal=cancelled、action=cancelled、command_calls=0，pending_after_terminal=1、durable_state=Pending，迟到tool_session回答late=Ok(true)、granted_after_terminal=true，最后追加approval.responded。确认取消有效而审批生命周期未同步终结；只使用离线transport、合成输入和永不运行进程的executor。已核对现有ChannelApprovalGate/PendingApprovals、RunCoordinator、RunControlStore/RunStore终态事务及Codex turn所属waiter/先观察取消再清等待规则。本轮只处理H-15：wait future所有权、回答/丢弃互斥、终态事务失效及迟到授权，H-16跨run call_id冲突不合并；原五类未跟踪项不读改或暂存。生产实现及新回归尚未改，H-15转修复中；不能用H-01审批不执行工具对照替代本项验收。
+
+E-H15-20261026-02（补充默认回归的原始失败）：生产未改时新增waiter丢弃/另一等待者隔离及终态事务故障回滚用例。`cargo test -p deepagent-persistence -p deepagent-app-core --lib approval_lifecycle --offline -j 1 -- --nocapture --test-threads=1` shell退出1，AppCore 0 passed/1 failed（构建1m49s、测试0.01s），drop一个真实gate task后pending_count实为2、预期1，首先证实注册泄漏；后续scope/no-grant及另一等待者断言未走到，不冒称已验。该命令fail-fast尚未执行persistence target，已单独启动其测试；没有把未运行项目算通过。已进一步核对当前question_bridge的RAII清理先例及锁序：本地设计拟让approval waiter拥有receiver并与同一请求回答锁互斥，避免scope检查到授权写入之间被drop；不持有全局registry锁跨数据库/设置写入，保留其他等待者独立。持久化仍沿用原run_approvals/run_events及终态事务，无新表/迁移。
+
+E-H15-20261026-03（持久化原失败与首轮实现）：单独`cargo test -p deepagent-persistence --lib approval_lifecycle --offline -j 1 -- --nocapture --test-threads=1`在生产未改时shell退出1，0 passed/1 failed（构建6.68s、测试0.01s）：终态故障回滚对照已走过，正常终态后审批实际Pending、预期Cancelled。随后实现waiter拥有receiver、按同一registration的请求锁串行回答/Drop，registry锁不跨DB写；RunCoordinator在该边界内提交原审批记录并拒绝已发取消信号的run，RunControlStore检查所属run/action，RunStore终态事务（含原finish入口）同步取消本run Pending审批并写approval.cancelled，失败与原终态整体回滚。保持已有scope、审批ID及DTO，不合并H-16。首轮`cargo test -p deepagent-persistence --offline -j 1 -- --quiet --test-threads=1`退出0，72 passed/0 ignored及session_control9 passed（构建12.61s、测试11.01s+6.06s），doc-tests0；只代表该快照，AppCore专项仍在编译，新并发/重开存储验收尚待，H-15未关闭。
+
+E-H15-20261026-04（正常对照与持久化扩展通过）：`cargo test -p deepagent-app-core --lib approval_ --offline -j 1 -- --nocapture --test-threads=1`首轮退出0，22 passed/0 ignored（构建1m39s、测试0.34s），包含新drop隔离及既有正常tool_session/command_prefix授予、后续免提示、拒绝不授予、prefix存储拒绝保留等待和scope边界；此快照不含随后三项新增并发/写失败/旧registration Drop测试。再次persistence全组退出0，73 passed/0 ignored及session_control9 passed（构建21.49s、测试5.88s+6.02s），包括终态action及旧已完成run拒绝迟到回答/过期副作用；正常重复答复及原expiry对照仍通过。进一步将run/action状态检查前置到expiry处理之前，避免旧terminal Pending在迟到回答时追加approval.expired；统一同一请求registration别名减少嵌套类型。本轮生产API/DTO形状、scope名称、审批ID保持；真正的跨run ID冲突H-16仍独立。原正式探针已转默认并扩展两种scope、取消信号刚发但waiter尚未drop的回答、文件SQLite重开及无额外事件断言；最新AppCore专项在编译，不能用22通过覆盖这些尚未执行项。
+
+E-H15-20261026-05（扩展专项与原正式探针通过）：续原运行handle取得终态，`cargo test -p deepagent-app-core --lib approval_ --offline -j 1 -- --nocapture --test-threads=1`退出0，25 passed/0 ignored（构建1m46s、测试0.44s），含回答持有receiver时并发Drop、另一请求不受DB等待锁阻塞、写失败不授权和旧registration不误删新请求。随后原正式取消探针退出0，1 passed/0 ignored（构建2m29s、测试0.53s）：tool_session与command_prefix均pending_after_terminal=0、durable_state=Cancelled、granted_after_terminal=false、command_calls=0；新增真实SQLite触发器拒绝approval.responded时保留Pending与原等待、不授予，取消信号刚发时立即答复亦拒绝。文件SQLite销毁对象后重开仍Cancelled、迟到回答不追加事件；仅DB重开，不冒称OS进程重启。最新persistence全组退出0，74 passed/0 ignored与session_control9 passed（构建1m05s、测试7.06s+6.14s），包含16轮独立DB连接回答/终态竞争；不声称样本必然覆盖两种调度顺序。尚待终态多run隔离、legacy/recovery入口补强与最终workspace/lint/消费者验证，H-15仍修复中，以上不覆盖原始失败。
+
+E-H15-20261026-06（终态入口、故障原子性与多run隔离）：补充默认测试逐一经过succeeded/failed/cancelled、legacy finish及finish_recovered五条既有入口；每条均用真实SQLite触发器拒绝approval.cancelled，验证run更新、审批/action及事件整体回滚，再移除故障完成终态。两条Pending同时失效，原Approved/Denied人类决策不被改写；另一run的Pending、Blocked及事件完全不变且仍可正常回答，重复finish不新增事件。`cargo test -p deepagent-persistence --offline -j 1 -- --quiet --test-threads=1`退出0，75 passed/0 ignored与session_control9 passed（构建17.74s、测试7.58s+6.13s），doc-tests0；已实际覆盖该新增用例，不沿用74通过快照。另新增正式ChatService健康批准/拒绝对照，拟验证两scope合法授权、同scope后续调用免提示及durable状态，仍在编译，不能预记通过；最终全仓和lint待执行。生产实现没有新表、依赖或迁移，H-16仍独立，H-15未关闭。
+
+E-H15-20261026-07（正式健康对照通过与全量启动）：`cargo test -p deepagent-app-core --test kernel_v2_e2e approval_ --offline -j 1 -- --nocapture --test-threads=1`退出0，2 passed/0 ignored（构建3m02s、测试1.89s），原取消探针再次通过；新增健康用例逐一验证tool_session/command_prefix批准及拒绝：批准后真实Kernel调度两次记录型executor但只提示一次，拒绝时executor零调用，持久化scope及Approved/Denied、action Completed/Denied与live grant一致，唯一run_terminal且无误写approval.cancelled。executor不创建OS进程；不以此声称真实npm执行。`pnpm test`在packages/sdk退出0，tsc及6个mock合同测试通过；fmt --check、diff --check退出0。台账核对306行/306唯一编号/无缺号/每行8列，E-H15-01～06两份一致；初次只匹配带中文冒号标题的检查漏了撤销H-305，扩大到全部H编号后确认是检查表达式问题，不是台账缺行。完整workspace（--no-fail-fast）和两crate严格lint已启动/排队，均尚未终态，不冒称全量通过；H-15仍修复中。
+
+E-H15-20261026-08（最终范围验收与基线边界）：`cargo build -p deepagent-cli --offline -j 1`退出0；隔离数据根的`cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 1 -- --nocapture --test-threads=1`退出0，6 passed/0 ignored；使用同一正式binary的`node --test packages/sdk/tests/server-configuration.test.mjs`退出0，1 passed/0 skipped。`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`退出1，但 H-15 相关 target 均通过；失败仅为既有 `deepagent-app-core --lib` fixture 未创建 `build-started`、Rust SDK 继承环境的4项 `initialize: ResponseChannelClosed`，以及 H-306 `deepagent-prompts` 空 `creative.video-edit.v1.defaultUserPrompt`。`cargo clippy -p deepagent-persistence --all-targets --offline -j 1 --no-deps -- -D warnings`退出0；AppCore 严格 lint 仍仅既有10项（8 clone_on_copy、type_complexity、too_many_arguments），本轮无新增告警。完整workspace不作为H-15全绿条件；H-15在所列本机范围验收，未做真实OS进程重启、真实供应商或真实命令执行。
 
 ### H-16：审批直接以 provider call_id 为全库身份，不同运行之间产生幂等冲突
 

@@ -239,31 +239,42 @@ impl RunCoordinator {
     ) -> Result<bool> {
         let controls = RunControlStore::new(&self.db);
         let record = controls.get_approval(approval_id)?;
-        // The gate owns which scopes an answer may widen to, because the gate is
-        // also what honors the resulting grant.
-        self.pending.check_scope(approval_id, requested_scope)?;
-        if record.is_some() {
-            if let Err(error) = controls.respond_approval_scoped(
-                approval_id,
-                approved,
-                decided_by,
-                requested_scope,
-                now_millis(),
-            ) {
+        // The gate retains the receiver across validation, durable decision,
+        // grant and wake-up. Cancellation cannot drop it in the middle.
+        let resolved =
+            self.pending
+                .resolve_scoped_with(approval_id, approved, requested_scope, || {
+                    if let Some(record) = &record {
+                        if self
+                            .cancellations
+                            .lock()
+                            .unwrap_or_else(|p| p.into_inner())
+                            .get(&record.run_id)
+                            .is_some_and(|run| run.is_cancelled())
+                        {
+                            return Err(CoreError::invalid("approval run is cancelling"));
+                        }
+                        controls.respond_approval_scoped(
+                            approval_id,
+                            approved,
+                            decided_by,
+                            requested_scope,
+                            now_millis(),
+                        )?;
+                    }
+                    Ok(())
+                });
+        match resolved {
+            Ok(awakened) => Ok(awakened || record.is_some()),
+            Err(error) => {
                 if controls.get_approval(approval_id)?.is_some_and(|record| {
                     record.state == deepagent_persistence::run_control::ApprovalState::Expired
                 }) {
                     let _ = self.pending.resolve_approved(approval_id, false);
                 }
-                return Err(error);
+                Err(error)
             }
         }
-        // Only after the durable answer lands does a grant take effect, so an
-        // expired or rejected answer can never leave a standing permission behind.
-        let awakened = self
-            .pending
-            .resolve_scoped(approval_id, approved, requested_scope)?;
-        Ok(awakened || record.is_some())
     }
 
     pub fn record_continuation(

@@ -187,6 +187,7 @@ impl<'db> RunStore<'db> {
             if changed == 0 {
                 return Ok(false);
             }
+            crate::run_control::cancel_pending_approvals(&tx, run_id, now)?;
             if let Some(recovery) = recovery {
                 let has_marker: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM run_events WHERE run_id=?1 AND event_type='run_recovered_after_startup')",
@@ -290,12 +291,17 @@ impl<'db> RunStore<'db> {
         now: i64,
     ) -> Result<bool> {
         self.db.with_conn(|conn| {
-            let changed = conn
+            let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
+            let changed = tx
                 .execute(
                     "UPDATE runs SET state='terminal', terminal_kind=?2, terminal_reason=?3, updated_at=?4, finished_at=?4 WHERE id=?1 AND finished_at IS NULL",
                     params![run_id, terminal_kind, reason, now],
                 )
                 .map_err(map_sqlite)?;
+            if changed == 1 {
+                crate::run_control::cancel_pending_approvals(&tx, run_id, now)?;
+            }
+            tx.commit().map_err(map_sqlite)?;
             Ok(changed == 1)
         })
     }

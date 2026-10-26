@@ -2,21 +2,41 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计二十一项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计二十二项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 21 | H-01、H-04、H-02、H-06、H-07、H-08、H-09、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 22 | H-01、H-04、H-02、H-06、H-07、H-08、H-09、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79、H-15，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-01已完成所列Windows本机连接故障、原取消路径及持久化游标补读验收 |
-| 待修复 | 258 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 无 |
+| 待修复 | 257 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **258（258待修复、0修复中）**；不提供完成率。二十一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **257（257待修复、0修复中）**；不提供完成率。二十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-15 本轮即时记录（2026-10-26）
+
+**当前状态：已修复并验收（所列 Windows 本机范围）。** 原始失败保留；最终范围见 E-H15-01～08，提交 hash 待独立提交后回填。
+
+E-H15-20261026-01（原始复现）：HEAD 9feb5193、生产未改时，`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_cancelled_run_rejects_late_approval_and_releases_waiter --offline -j 1 -- --ignored --nocapture` shell退出1，0 passed/1 failed/0 ignored（构建2m23s、测试0.20s）。实际terminal=cancelled、action=cancelled、command_calls=0，pending_after_terminal=1、durable_state=Pending，迟到tool_session回答late=Ok(true)、granted_after_terminal=true，最后追加approval.responded。确认取消有效而审批生命周期未同步终结；只使用离线transport、合成输入和永不运行进程的executor。已核对现有ChannelApprovalGate/PendingApprovals、RunCoordinator、RunControlStore/RunStore终态事务及Codex turn所属waiter/先观察取消再清等待规则。本轮只处理H-15：wait future所有权、回答/丢弃互斥、终态事务失效及迟到授权，H-16跨run call_id冲突不合并；原五类未跟踪项不读改或暂存。生产实现及新回归尚未改，H-15转修复中；不能用H-01审批不执行工具对照替代本项验收。
+
+E-H15-20261026-02（补充默认回归的原始失败）：生产未改时新增waiter丢弃/另一等待者隔离及终态事务故障回滚用例。`cargo test -p deepagent-persistence -p deepagent-app-core --lib approval_lifecycle --offline -j 1 -- --nocapture --test-threads=1` shell退出1，AppCore 0 passed/1 failed（构建1m49s、测试0.01s），drop一个真实gate task后pending_count实为2、预期1，首先证实注册泄漏；后续scope/no-grant及另一等待者断言未走到，不冒称已验。该命令fail-fast尚未执行persistence target，已单独启动其测试；没有把未运行项目算通过。已进一步核对当前question_bridge的RAII清理先例及锁序：本地设计拟让approval waiter拥有receiver并与同一请求回答锁互斥，避免scope检查到授权写入之间被drop；不持有全局registry锁跨数据库/设置写入，保留其他等待者独立。持久化仍沿用原run_approvals/run_events及终态事务，无新表/迁移。
+
+E-H15-20261026-03（持久化原失败与首轮实现）：单独`cargo test -p deepagent-persistence --lib approval_lifecycle --offline -j 1 -- --nocapture --test-threads=1`在生产未改时shell退出1，0 passed/1 failed（构建6.68s、测试0.01s）：终态故障回滚对照已走过，正常终态后审批实际Pending、预期Cancelled。随后实现waiter拥有receiver、按同一registration的请求锁串行回答/Drop，registry锁不跨DB写；RunCoordinator在该边界内提交原审批记录并拒绝已发取消信号的run，RunControlStore检查所属run/action，RunStore终态事务（含原finish入口）同步取消本run Pending审批并写approval.cancelled，失败与原终态整体回滚。保持已有scope、审批ID及DTO，不合并H-16。首轮`cargo test -p deepagent-persistence --offline -j 1 -- --quiet --test-threads=1`退出0，72 passed/0 ignored及session_control9 passed（构建12.61s、测试11.01s+6.06s），doc-tests0；只代表该快照，AppCore专项仍在编译，新并发/重开存储验收尚待，H-15未关闭。
+
+E-H15-20261026-04（正常对照与持久化扩展通过）：`cargo test -p deepagent-app-core --lib approval_ --offline -j 1 -- --nocapture --test-threads=1`首轮退出0，22 passed/0 ignored（构建1m39s、测试0.34s），包含新drop隔离及既有正常tool_session/command_prefix授予、后续免提示、拒绝不授予、prefix存储拒绝保留等待和scope边界；此快照不含随后三项新增并发/写失败/旧registration Drop测试。再次persistence全组退出0，73 passed/0 ignored及session_control9 passed（构建21.49s、测试5.88s+6.02s），包括终态action及旧已完成run拒绝迟到回答/过期副作用；正常重复答复及原expiry对照仍通过。进一步将run/action状态检查前置到expiry处理之前，避免旧terminal Pending在迟到回答时追加approval.expired；统一同一请求registration别名减少嵌套类型。本轮生产API/DTO形状、scope名称、审批ID保持；真正的跨run ID冲突H-16仍独立。原正式探针已转默认并扩展两种scope、取消信号刚发但waiter尚未drop的回答、文件SQLite重开及无额外事件断言；最新AppCore专项在编译，不能用22通过覆盖这些尚未执行项。
+
+E-H15-20261026-05（扩展专项与原正式探针通过）：续原运行handle取得终态，`cargo test -p deepagent-app-core --lib approval_ --offline -j 1 -- --nocapture --test-threads=1`退出0，25 passed/0 ignored（构建1m46s、测试0.44s），含回答持有receiver时并发Drop、另一请求不受DB等待锁阻塞、写失败不授权和旧registration不误删新请求。随后原正式取消探针退出0，1 passed/0 ignored（构建2m29s、测试0.53s）：tool_session与command_prefix均pending_after_terminal=0、durable_state=Cancelled、granted_after_terminal=false、command_calls=0；新增真实SQLite触发器拒绝approval.responded时保留Pending与原等待、不授予，取消信号刚发时立即答复亦拒绝。文件SQLite销毁对象后重开仍Cancelled、迟到回答不追加事件；仅DB重开，不冒称OS进程重启。最新persistence全组退出0，74 passed/0 ignored与session_control9 passed（构建1m05s、测试7.06s+6.14s），包含16轮独立DB连接回答/终态竞争；不声称样本必然覆盖两种调度顺序。尚待终态多run隔离、legacy/recovery入口补强与最终workspace/lint/消费者验证，H-15仍修复中，以上不覆盖原始失败。
+
+E-H15-20261026-06（终态入口、故障原子性与多run隔离）：补充默认测试逐一经过succeeded/failed/cancelled、legacy finish及finish_recovered五条既有入口；每条均用真实SQLite触发器拒绝approval.cancelled，验证run更新、审批/action及事件整体回滚，再移除故障完成终态。两条Pending同时失效，原Approved/Denied人类决策不被改写；另一run的Pending、Blocked及事件完全不变且仍可正常回答，重复finish不新增事件。`cargo test -p deepagent-persistence --offline -j 1 -- --quiet --test-threads=1`退出0，75 passed/0 ignored与session_control9 passed（构建17.74s、测试7.58s+6.13s），doc-tests0；已实际覆盖该新增用例，不沿用74通过快照。另新增正式ChatService健康批准/拒绝对照，拟验证两scope合法授权、同scope后续调用免提示及durable状态，仍在编译，不能预记通过；最终全仓和lint待执行。生产实现没有新表、依赖或迁移，H-16仍独立，H-15未关闭。
+
+E-H15-20261026-07（正式健康对照通过与全量启动）：`cargo test -p deepagent-app-core --test kernel_v2_e2e approval_ --offline -j 1 -- --nocapture --test-threads=1`退出0，2 passed/0 ignored（构建3m02s、测试1.89s），原取消探针再次通过；新增健康用例逐一验证tool_session/command_prefix批准及拒绝：批准后真实Kernel调度两次记录型executor但只提示一次，拒绝时executor零调用，持久化scope及Approved/Denied、action Completed/Denied与live grant一致，唯一run_terminal且无误写approval.cancelled。executor不创建OS进程；不以此声称真实npm执行。`pnpm test`在packages/sdk退出0，tsc及6个mock合同测试通过；fmt --check、diff --check退出0。台账核对306行/306唯一编号/无缺号/每行8列，E-H15-01～06两份一致；初次只匹配带中文冒号标题的检查漏了撤销H-305，扩大到全部H编号后确认是检查表达式问题，不是台账缺行。完整workspace（--no-fail-fast）和两crate严格lint已启动/排队，均尚未终态，不冒称全量通过；H-15仍修复中。
+
+E-H15-20261026-08（最终范围验收与基线边界）：`cargo build -p deepagent-cli --offline -j 1`退出0；隔离数据根的`cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 1 -- --nocapture --test-threads=1`退出0，6 passed/0 ignored；使用同一正式binary的`node --test packages/sdk/tests/server-configuration.test.mjs`退出0，1 passed/0 skipped。`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`退出1，但 H-15 相关 target 均通过；失败仅为既有 `deepagent-app-core --lib` fixture 未创建 `build-started`、Rust SDK 继承环境的4项 `initialize: ResponseChannelClosed`，以及 H-306 `deepagent-prompts` 空 `creative.video-edit.v1.defaultUserPrompt`。`cargo clippy -p deepagent-persistence --all-targets --offline -j 1 --no-deps -- -D warnings`退出0；AppCore 严格 lint 仍仅既有10项（8 clone_on_copy、type_complexity、too_many_arguments），本轮无新增告警。完整workspace不作为H-15全绿条件；H-15在所列本机范围验收，未做真实OS进程重启、真实供应商或真实命令执行。
 
 ## H-01 本轮即时记录（2026-10-26）
 
@@ -769,7 +789,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-12：Streamable HTTP 未保存初始化分配的 session header，有状态远程服务后续请求失败](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-13：AppCore 插件就绪快照与共享技能注册表不同步，新请求可继续声明已禁用技能](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-14：无效压缩保留原上下文时，已完成摘要请求的 usage 一同被丢弃](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-15：审批等待被取消后未清理，运行终态后仍接受迟到回答并授予跨调用权限](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-15：审批等待被取消后未清理，运行终态后仍接受迟到回答并授予跨调用权限](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H15-01～08保留原失败及逐次验证 | waiter所有权/回答互斥；原终态事务取消Pending审批，拒绝终态run/action与取消信号后授权 | AppCore专项25、正式取消/健康2、persistence75+9、CLI构建、隔离Rust SDK6、正式TS SDK1通过；全仓和严格AppCore lint保留既有基线失败，不阻断本项范围验收 | 待生成（随后单独回填） | H-16身份冲突独立；DB重开非OS进程重启；真实供应商/真实命令未执行；总体200–400有效小时未校准初估 |
 | [H-16：审批直接以 provider call_id 为全库身份，不同运行之间产生幂等冲突](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-17：桌面收到取消后的保存失败，却因对话已 settled 而静默丢弃错误](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-18：输出上限重试后仍截断时，未完成工具调用被补参数并提交](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

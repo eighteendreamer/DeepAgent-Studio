@@ -978,8 +978,159 @@ async fn audit_saved_tool_result_survives_turn_and_database_reopen() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: cancelled approval waiters must expire before late scoped answers"]
+async fn approval_lifecycle_healthy_answers_keep_durable_and_live_paths_aligned() {
+    use deepagent_app_core::ApprovalPolicy;
+    use deepagent_builtins::bash_tool::{CommandExecutor, CommandOutcome};
+    use deepagent_persistence::run_control::{ApprovalState, RunActionState, RunControlStore};
+
+    struct RecordsOnly(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl CommandExecutor for RecordsOnly {
+        async fn run(&self, _command: &str, _cwd: &str) -> Result<CommandOutcome> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(CommandOutcome {
+                exit_code: Some(0),
+                stdout: "offline fixture, no process launched".into(),
+                stderr: String::new(),
+            })
+        }
+    }
+
+    for scope in ["tool_session", "command_prefix"] {
+        for approved in [true, false] {
+            let root = tempfile::tempdir().unwrap();
+            let db = Arc::new(Database::open(root.path().join("healthy.sqlite")).unwrap());
+            let settings = Arc::new(SettingsService::new(
+                db.clone(),
+                Arc::new(MockTransport::with_get_json(
+                    r#"{"data":[{"id":"deepseek-v4-flash","object":"model","owned_by":"deepseek"}]}"#,
+                )),
+                Arc::new(MemorySecretStore::new()),
+            ));
+            settings.initialize("sk-audit-placeholder").await.unwrap();
+            settings
+                .set_approval_policy(ApprovalPolicy::AlwaysAsk)
+                .unwrap();
+            let call = |id, package| {
+                response_function_call(
+                    id,
+                    "bash",
+                    serde_json::json!({"command":format!("npm install {package}")}),
+                )
+            };
+            let mut turns = vec![call("healthy-approval", "offline-fixture-one")];
+            if approved {
+                turns.push(call("covered-approval", "offline-fixture-two"));
+            }
+            turns.push(response_text("Approval fixture finished."));
+            let executions = Arc::new(AtomicUsize::new(0));
+            let chat = Arc::new(
+                ChatService::new(
+                    db.clone(),
+                    settings.clone(),
+                    Arc::new(ReplayTransport::new(turns)),
+                    root.path(),
+                )
+                .with_local_command_executor(Arc::new(RecordsOnly(executions.clone()))),
+            );
+            let responder = chat.clone();
+            let prompts = Arc::new(AtomicUsize::new(0));
+            let notified = prompts.clone();
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                chat.run_in_session(
+                    "Exercise the offline approval fixture.",
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    false,
+                    Some("healthy-run"),
+                    |_| {},
+                    move |dto| {
+                        notified.fetch_add(1, Ordering::SeqCst);
+                        assert!(responder
+                            .resolve_approval_scoped(
+                                &dto.call_id,
+                                approved,
+                                Some(scope),
+                                "human-fixture"
+                            )
+                            .unwrap());
+                    },
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(prompts.load(Ordering::SeqCst), 1, "{scope}/{approved}");
+            assert_eq!(
+                executions.load(Ordering::SeqCst),
+                if approved { 2 } else { 0 }
+            );
+            assert_eq!(chat.pending_approvals().pending_count(), 0);
+            assert_eq!(
+                chat.pending_approvals().grants().list().len(),
+                usize::from(approved && scope == "tool_session")
+            );
+            assert_eq!(
+                settings.command_prefix_grants().unwrap().len(),
+                usize::from(approved && scope == "command_prefix")
+            );
+            let controls = RunControlStore::new(&db);
+            let record = controls.get_approval("healthy-approval").unwrap().unwrap();
+            assert_eq!(
+                record.state,
+                if approved {
+                    ApprovalState::Approved
+                } else {
+                    ApprovalState::Denied
+                }
+            );
+            assert_eq!(record.scope, scope);
+            assert_eq!(
+                controls
+                    .get_action("healthy-run", "healthy-approval")
+                    .unwrap()
+                    .unwrap()
+                    .state,
+                if approved {
+                    RunActionState::Completed
+                } else {
+                    RunActionState::Denied
+                }
+            );
+            let runs = deepagent_persistence::run_store::RunStore::new(&db);
+            let events = runs.events_after("healthy-run", None).unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.event_type == "run_terminal")
+                    .count(),
+                1
+            );
+            assert!(!events
+                .iter()
+                .any(|event| event.event_type == "approval.cancelled"));
+            assert!(runs
+                .get("healthy-run")
+                .unwrap()
+                .unwrap()
+                .finished_at
+                .is_some());
+        }
+    }
+}
+
+#[tokio::test]
 async fn audit_cancelled_run_rejects_late_approval_and_releases_waiter() {
+    cancelled_approval_scope("tool_session").await;
+    cancelled_approval_scope("command_prefix").await;
+}
+
+async fn cancelled_approval_scope(scope: &str) {
     use deepagent_app_core::ApprovalPolicy;
     use deepagent_builtins::bash_tool::{CommandExecutor, CommandOutcome};
     use deepagent_persistence::run_control::{ApprovalState, RunActionState, RunControlStore};
@@ -998,7 +1149,8 @@ async fn audit_cancelled_run_rejects_late_approval_and_releases_waiter() {
     }
 
     let root = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let database_path = root.path().join("h15.sqlite");
+    let db = Arc::new(Database::open(&database_path).unwrap());
     let settings = Arc::new(SettingsService::new(
         db.clone(),
         Arc::new(MockTransport::with_get_json(
@@ -1017,7 +1169,7 @@ async fn audit_cancelled_run_rejects_late_approval_and_releases_waiter() {
         serde_json::json!({"command":"npm install audit-fixture-no-execution"}),
     )]));
     let chat = Arc::new(
-        ChatService::new(db.clone(), settings, model, root.path())
+        ChatService::new(db.clone(), settings.clone(), model, root.path())
             .with_local_command_executor(Arc::new(NeverExecutes(command_calls.clone()))),
     );
     let pending = chat.pending_approvals();
@@ -1044,11 +1196,53 @@ async fn audit_cancelled_run_rejects_late_approval_and_releases_waiter() {
         .await
         .expect("tool must reach the real approval gate");
     assert_eq!(pending.pending_count(), 1);
+    db.with_conn(|conn| {
+        conn.execute_batch("CREATE TRIGGER h15_answer_fault BEFORE INSERT ON run_events WHEN NEW.event_type='approval.responded' BEGIN SELECT RAISE(ABORT,'h15 answer audit fault'); END;").unwrap();
+        Ok(())
+    }).unwrap();
+    assert!(chat
+        .resolve_approval_scoped(
+            "audit-waiting-approval",
+            true,
+            Some(scope),
+            "failed-audit-answer"
+        )
+        .is_err());
+    assert_eq!(pending.pending_count(), 1);
+    assert!(pending.grants().list().is_empty());
+    assert!(settings.command_prefix_grants().unwrap().is_empty());
+    assert_eq!(
+        RunControlStore::new(&db)
+            .get_approval("audit-waiting-approval")
+            .unwrap()
+            .unwrap()
+            .state,
+        ApprovalState::Pending
+    );
+    db.with_conn(|conn| {
+        conn.execute_batch("DROP TRIGGER h15_answer_fault").unwrap();
+        Ok(())
+    })
+    .unwrap();
     assert!(
         chat.request_cancel("audit-cancelled-approval")
             .unwrap()
             .accepted
     );
+    // No await after cancellation: answer before the waiting task can observe
+    // the signal and drop its gate future. It must not create a grant either.
+    let cancelling_answer = chat.resolve_approval_scoped(
+        "audit-waiting-approval",
+        true,
+        Some(scope),
+        "answer-after-cancel-signal",
+    );
+    assert!(
+        !matches!(cancelling_answer, Ok(true)),
+        "{cancelling_answer:?}"
+    );
+    assert!(pending.grants().list().is_empty());
+    assert!(settings.command_prefix_grants().unwrap().is_empty());
     tokio::time::timeout(Duration::from_secs(2), task)
         .await
         .expect("cancel must finish the run")
@@ -1076,7 +1270,7 @@ async fn audit_cancelled_run_rejects_late_approval_and_releases_waiter() {
     let late = chat.resolve_approval_scoped(
         &approvals[0].approval_id,
         true,
-        Some("tool_session"),
+        Some(scope),
         "audit-late-user",
     );
     let granted_after_terminal = !pending.grants().list().is_empty();
@@ -1088,14 +1282,55 @@ async fn audit_cancelled_run_rejects_late_approval_and_releases_waiter() {
         .event_type
         .clone();
     eprintln!(
-        "audit cancelled approval: terminal=cancelled, action=cancelled, command_calls=0, pending_after_terminal={pending_after_terminal}, durable_state={:?}, late={late:?}, granted_after_terminal={granted_after_terminal}, last_event={last_event}",
+        "audit cancelled approval: scope={scope}, terminal=cancelled, action=cancelled, command_calls=0, pending_after_terminal={pending_after_terminal}, durable_state={:?}, late={late:?}, granted_after_terminal={granted_after_terminal}, last_event={last_event}",
         approvals[0].state
     );
     assert!(
         pending_after_terminal == 0
-            && approvals[0].state != ApprovalState::Pending
+            && approvals[0].state == ApprovalState::Cancelled
+            && !matches!(late, Ok(true))
             && !granted_after_terminal,
         "cancelled runs must release/expire approvals and reject stale permission grants"
+    );
+    assert_eq!(
+        chat.run_events("audit-cancelled-approval", None)
+            .unwrap()
+            .len(),
+        events.len(),
+        "a stale answer must not append an event after the terminal boundary"
+    );
+    assert!(settings.command_prefix_grants().unwrap().is_empty());
+    // Drop the host objects and reopen the actual SQLite file: rejection must
+    // survive reconstruction, not just live in a process-local registry.
+    drop(controls);
+    drop(pending);
+    drop(chat);
+    drop(settings);
+    drop(db);
+    let reopened = Database::open(&database_path).unwrap();
+    let reopened_controls = RunControlStore::new(&reopened);
+    assert_eq!(
+        reopened_controls
+            .get_approval("audit-waiting-approval")
+            .unwrap()
+            .unwrap()
+            .state,
+        ApprovalState::Cancelled
+    );
+    assert!(reopened_controls
+        .respond_approval_scoped(
+            "audit-waiting-approval",
+            true,
+            "reopened-late-answer",
+            Some(scope),
+            i64::MAX
+        )
+        .is_err());
+    assert_eq!(
+        deepagent_persistence::run_store::RunStore::new(&reopened)
+            .events_after("audit-cancelled-approval", None)
+            .unwrap(),
+        events
     );
 }
 

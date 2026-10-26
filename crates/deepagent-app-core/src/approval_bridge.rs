@@ -281,7 +281,7 @@ fn prefix_of(tool: &str, arguments: &serde_json::Value) -> Result<String> {
 
 /// One request awaiting a human decision.
 struct Pending {
-    sender: oneshot::Sender<ApprovalDecision>,
+    sender: Option<oneshot::Sender<ApprovalDecision>>,
     tool: String,
     risk: String,
     /// Kept so a widening answer's grant is derived from what was actually asked,
@@ -289,12 +289,34 @@ struct Pending {
     arguments: serde_json::Value,
 }
 
+type PendingRegistration = Arc<Mutex<Pending>>;
+
 /// Shared registry of in-flight approval requests, keyed by `call_id`.
 #[derive(Clone, Default)]
 pub struct PendingApprovals {
-    inner: Arc<Mutex<HashMap<String, Pending>>>,
+    inner: Arc<Mutex<HashMap<String, PendingRegistration>>>,
     grants: SessionGrants,
     prefixes: PrefixGrants,
+}
+
+/// Own the receiver through Drop. A scoped answer and abandonment take the
+/// same per-request lock, so a grant cannot outlive an already-dropped waiter.
+/// The global registry lock is never held across durable/settings writes.
+struct PendingWaiter {
+    registry: PendingApprovals,
+    call_id: String,
+    registration: PendingRegistration,
+    receiver: oneshot::Receiver<ApprovalDecision>,
+}
+
+impl Drop for PendingWaiter {
+    fn drop(&mut self) {
+        let mut decision = self.registration.lock().expect("approval poisoned");
+        decision.sender.take();
+        self.registry.forget(&self.call_id, &self.registration);
+        // Receiver drops only after the lock above has synchronized with an
+        // answer in progress. Never synthesize a human Deny during cancellation.
+    }
 }
 
 impl PendingApprovals {
@@ -314,26 +336,42 @@ impl PendingApprovals {
     }
 
     /// Register a pending request, returning the receiver to await.
-    fn register(&self, request: &ApprovalRequest) -> oneshot::Receiver<ApprovalDecision> {
+    fn register(&self, request: &ApprovalRequest) -> PendingWaiter {
         let (tx, rx) = oneshot::channel();
-        self.inner.lock().expect("approvals poisoned").insert(
-            request.call_id.clone(),
-            Pending {
-                sender: tx,
-                tool: request.tool.clone(),
-                risk: request.risk.clone(),
-                arguments: request.arguments.clone(),
-            },
-        );
-        rx
+        let registration = Arc::new(Mutex::new(Pending {
+            sender: Some(tx),
+            tool: request.tool.clone(),
+            risk: request.risk.clone(),
+            arguments: request.arguments.clone(),
+        }));
+        self.inner
+            .lock()
+            .expect("approvals poisoned")
+            .insert(request.call_id.clone(), registration.clone());
+        PendingWaiter {
+            registry: self.clone(),
+            call_id: request.call_id.clone(),
+            registration,
+            receiver: rx,
+        }
     }
 
-    /// What this process is still waiting on for `call_id`.
-    fn live(&self, call_id: &str) -> Option<(String, serde_json::Value)> {
-        let inner = self.inner.lock().expect("approvals poisoned");
-        inner
+    fn registration(&self, call_id: &str) -> Option<PendingRegistration> {
+        self.inner
+            .lock()
+            .expect("approvals poisoned")
             .get(call_id)
-            .map(|pending| (pending.tool.clone(), pending.arguments.clone()))
+            .cloned()
+    }
+
+    fn forget(&self, call_id: &str, registration: &PendingRegistration) {
+        let mut inner = self.inner.lock().expect("approvals poisoned");
+        if inner
+            .get(call_id)
+            .is_some_and(|current| Arc::ptr_eq(current, registration))
+        {
+            inner.remove(call_id);
+        }
     }
 
     /// The scopes a request may widen to. A prefix scope is listed only while a
@@ -373,16 +411,16 @@ impl PendingApprovals {
     /// Resolve a pending request by `call_id` with a decision. Returns `true`
     /// if a matching pending request existed.
     pub fn resolve(&self, call_id: &str, decision: ApprovalDecision) -> bool {
-        let sender = self
-            .inner
-            .lock()
-            .expect("approvals poisoned")
-            .remove(call_id)
-            .map(|pending| pending.sender);
-        match sender {
-            Some(tx) => tx.send(decision).is_ok(),
-            None => false,
-        }
+        let Some(registration) = self.registration(call_id) else {
+            return false;
+        };
+        let mut pending = registration.lock().expect("approval poisoned");
+        let resolved = pending
+            .sender
+            .take()
+            .is_some_and(|tx| tx.send(decision).is_ok());
+        self.forget(call_id, &registration);
+        resolved
     }
 
     /// Resolve from a UI boolean (`true` = approved).
@@ -392,9 +430,22 @@ impl PendingApprovals {
 
     /// Interpret an answer's scope against the live request, without answering it.
     ///
-    /// The durable write happens before any grant is recorded, so the caller needs
-    /// to be able to ask "would this be accepted?" first.
+    /// This is a snapshot, not a reservation. Durable answer paths must use
+    /// `resolve_scoped_with` so validation and commit share waiter ownership.
     pub fn check_scope(&self, call_id: &str, scope: Option<&str>) -> Result<ApprovalScope> {
+        let registration = self.registration(call_id);
+        let pending = registration
+            .as_ref()
+            .map(|request| request.lock().expect("approval poisoned"));
+        self.scope_for(call_id, scope, pending.as_deref())
+    }
+
+    fn scope_for(
+        &self,
+        call_id: &str,
+        scope: Option<&str>,
+        pending: Option<&Pending>,
+    ) -> Result<ApprovalScope> {
         let scope = match scope {
             None | Some("") => ApprovalScope::SingleCall,
             Some(value) => ApprovalScope::parse(value)
@@ -403,13 +454,18 @@ impl PendingApprovals {
         if scope == ApprovalScope::SingleCall {
             return Ok(scope);
         }
-        match self.live(call_id) {
-            Some((tool, arguments)) if self.offered_for(&tool, &arguments).contains(&scope) => {
+        match pending.filter(|pending| pending.sender.as_ref().is_some_and(|tx| !tx.is_closed())) {
+            Some(pending)
+                if self
+                    .offered_for(&pending.tool, &pending.arguments)
+                    .contains(&scope) =>
+            {
                 Ok(scope)
             }
-            Some((tool, _)) => Err(CoreError::invalid(format!(
+            Some(pending) => Err(CoreError::invalid(format!(
                 "approval scope '{}' is not offered for tool {tool}",
-                scope.as_str()
+                scope.as_str(),
+                tool = pending.tool
             ))),
             None => Err(CoreError::invalid(format!(
                 "no live approval {call_id} to widen; grant scopes are only accepted \
@@ -426,35 +482,47 @@ impl PendingApprovals {
         approved: bool,
         scope: Option<&str>,
     ) -> Result<bool> {
-        let scope = self.check_scope(call_id, scope)?;
-        let pending = {
-            let mut inner = self.inner.lock().expect("approvals poisoned");
-            match inner.remove(call_id) {
-                Some(pending) => pending,
-                None => return Ok(false),
-            }
+        self.resolve_scoped_with(call_id, approved, scope, || Ok(()))
+    }
+
+    /// Scope validation, durable answer, grant and delivery share the waiter's
+    /// ownership boundary. A failed write leaves the same prompt answerable.
+    pub(crate) fn resolve_scoped_with(
+        &self,
+        call_id: &str,
+        approved: bool,
+        scope: Option<&str>,
+        commit: impl FnOnce() -> Result<()>,
+    ) -> Result<bool> {
+        let registration = self.registration(call_id);
+        let mut pending = registration
+            .as_ref()
+            .map(|request| request.lock().expect("approval poisoned"));
+        let scope = self.scope_for(call_id, scope, pending.as_deref())?;
+        commit()?;
+        let Some(pending) = pending.as_deref_mut() else {
+            return Ok(false);
         };
-        let (tool, risk) = (pending.tool.clone(), pending.risk.clone());
-        // A prefix grant is written before the run is woken, so the answer only
-        // becomes real once the rule exists. A store that refuses it (a fenced
-        // prefix, no store attached) puts the request back unanswered rather than
-        // letting the command run on a promise nothing keeps.
-        if approved && scope == ApprovalScope::CommandPrefix {
-            if let Err(error) = self.prefixes.grant_for(&tool, &pending.arguments) {
-                self.inner
-                    .lock()
-                    .expect("approvals poisoned")
-                    .insert(call_id.to_string(), pending);
-                return Err(error);
-            }
+        if !pending.sender.as_ref().is_some_and(|tx| !tx.is_closed()) {
+            return Ok(false);
         }
+        if approved && scope == ApprovalScope::CommandPrefix {
+            self.prefixes.grant_for(&pending.tool, &pending.arguments)?;
+        }
+        if approved && scope == ApprovalScope::ToolSession {
+            self.grants.grant(&pending.tool, &pending.risk);
+        }
+        // PendingWaiter cannot destroy its receiver while this lock is held.
         let resolved = pending
             .sender
+            .take()
+            .expect("live sender checked above")
             .send(ApprovalDecision::from_approved(approved))
             .is_ok();
-        if approved && scope == ApprovalScope::ToolSession {
-            self.grants.grant(&tool, &risk);
-        }
+        self.forget(
+            call_id,
+            registration.as_ref().expect("pending registration"),
+        );
         Ok(resolved)
     }
 
@@ -506,11 +574,13 @@ impl ApprovalGate for ChannelApprovalGate {
             );
             return ApprovalDecision::Allow;
         }
-        let rx = self.pending.register(&request);
+        let mut waiter = self.pending.register(&request);
         (self.notify)(self.pending.dto(&request));
         // Await the human decision. If the sender is dropped (UI closed), deny
         // for safety.
-        rx.await.unwrap_or(ApprovalDecision::Deny)
+        (&mut waiter.receiver)
+            .await
+            .unwrap_or(ApprovalDecision::Deny)
     }
 }
 
@@ -592,6 +662,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn approval_lifecycle_dropped_waiter_cannot_grant_and_keeps_other_waiter() {
+        for scope in ["tool_session", "command_prefix"] {
+            let pending = PendingApprovals::new();
+            let prefixes = Arc::new(MemoryPrefixes::default());
+            pending.prefixes().attach(prefixes.clone());
+            let gate = Arc::new(ChannelApprovalGate::new(pending.clone(), Arc::new(|_| {})));
+            let first_gate = gate.clone();
+            let first = tokio::spawn(async move { first_gate.request(req("cancelled")).await });
+            let second = tokio::spawn(async move { gate.request(req("other")).await });
+            wait_until_pending(&pending, 2).await;
+            first.abort();
+            assert!(first.await.unwrap_err().is_cancelled());
+            assert_eq!(
+                pending.pending_count(),
+                1,
+                "drop must remove only its waiter"
+            );
+            assert!(pending
+                .resolve_scoped("cancelled", true, Some(scope))
+                .is_err());
+            assert!(pending.grants().list().is_empty());
+            assert!(prefixes.granted.lock().unwrap().is_empty());
+            assert!(pending.resolve_approved("other", true));
+            assert_eq!(second.await.unwrap(), ApprovalDecision::Allow);
+            assert_eq!(pending.pending_count(), 0);
+        }
+    }
+
+    #[tokio::test]
     async fn channel_gate_resolves_via_ui() {
         let pending = PendingApprovals::new();
         let seen = Arc::new(Mutex::new(Vec::<ApprovalRequestDto>::new()));
@@ -615,6 +714,94 @@ mod tests {
         // The UI was notified with a unified DTO.
         assert_eq!(seen.lock().unwrap()[0].tool, "bash");
         assert!(seen.lock().unwrap()[0].arguments.contains("git push"));
+    }
+
+    #[test]
+    fn approval_lifecycle_answer_owns_receiver_without_blocking_other_requests() {
+        for scope in ["tool_session", "command_prefix"] {
+            let pending = PendingApprovals::new();
+            let prefixes = Arc::new(MemoryPrefixes::default());
+            pending.prefixes().attach(prefixes.clone());
+            let waiter = pending.register(&req("answer-wins"));
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let answering = pending.clone();
+            let answer = std::thread::spawn(move || {
+                answering.resolve_scoped_with("answer-wins", true, Some(scope), || {
+                    entered_tx.send(()).unwrap();
+                    release_rx
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap();
+                    Ok(())
+                })
+            });
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            let abandoning = std::thread::spawn(move || drop(waiter));
+            // An unrelated registration/answer must not take the first one's
+            // disk-write/abandonment lock. Use a bounded helper to avoid hangs.
+            let independent = pending.clone();
+            let (done_tx, done_rx) = std::sync::mpsc::channel();
+            let other = std::thread::spawn(move || {
+                let _other = independent.register(&req("other"));
+                done_tx
+                    .send(independent.resolve_approved("other", false))
+                    .unwrap();
+            });
+            let other_result = done_rx.recv_timeout(std::time::Duration::from_secs(2));
+            release_tx.send(()).unwrap();
+            assert!(
+                answer.join().unwrap().unwrap(),
+                "receiver must survive the committed answer"
+            );
+            abandoning.join().unwrap();
+            other.join().unwrap();
+            assert!(other_result.unwrap());
+            assert_eq!(pending.pending_count(), 0);
+            assert_eq!(
+                pending.grants().list().len(),
+                usize::from(scope == "tool_session")
+            );
+            assert_eq!(
+                prefixes.granted.lock().unwrap().len(),
+                usize::from(scope == "command_prefix")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn approval_lifecycle_failed_commit_does_not_answer_or_grant() {
+        let pending = PendingApprovals::new();
+        let gate = ChannelApprovalGate::new(pending.clone(), Arc::new(|_| {}));
+        let task = tokio::spawn(async move { gate.request(req("commit-failure")).await });
+        wait_until_pending(&pending, 1).await;
+        let result =
+            pending.resolve_scoped_with("commit-failure", true, Some("tool_session"), || {
+                Err(CoreError::other("fixture durable write failure"))
+            });
+        assert!(result.is_err());
+        assert_eq!(pending.pending_count(), 1);
+        assert!(pending.grants().list().is_empty());
+        assert!(!task.is_finished());
+        assert!(pending
+            .resolve_scoped("commit-failure", true, Some("tool_session"))
+            .unwrap());
+        assert_eq!(task.await.unwrap(), ApprovalDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn approval_lifecycle_old_drop_cannot_remove_new_registration() {
+        let pending = PendingApprovals::new();
+        let old = pending.register(&req("same-id"));
+        let mut current = pending.register(&req("same-id"));
+        drop(old);
+        assert_eq!(pending.pending_count(), 1);
+        assert!(pending.resolve_approved("same-id", true));
+        assert_eq!(
+            (&mut current.receiver).await.unwrap(),
+            ApprovalDecision::Allow
+        );
     }
 
     #[tokio::test]
