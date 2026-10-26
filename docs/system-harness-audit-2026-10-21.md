@@ -530,7 +530,7 @@ E-H03-20261027-05（backend 与消费者对照）：`cargo test -p deepagent-app
 
 E-H03-20261027-06（构建与限制）：`cargo check -p deepagent-app-core -p deepagent-cli --offline -j 1`、`cargo check --offline -j 1`（`apps/desktop/src-tauri`）及 `cargo fmt --all -- --check` 均退出 0。AppCore 严格 clippy 仍被既有 10 项告警阻断（context_runtime 8 个 `clone_on_copy`、plugin_preparation 1 个 `type_complexity`、run_assembler 既有 1 个 `too_many_arguments`），本项未屏蔽或顺手修复。未执行真实 Windows Sandbox 启动、其他 OS、真实 DeepSeek/供应商、Tauri UI 点击和完整 workspace；Windows Sandbox 的真实可用性仍由运行环境能力探测决定，registry 只保证选择不被静默替换。
 
-本项修复提交 hash 待代码/测试提交后回填；不 amend、不推送、不创建 PR。H-03 不关闭 H-49、H-92、H-216 等独立问题，也不把 backend 选择正确误报为所有权限、网络或沙箱能力均已验收。
+E-H03-20261027-07（独立提交与 hash）：代码、回归测试及两份文档已在提交 `56e94701697cb9442745777147df4a6246860215`（`【fix】修复H-03逐次沙箱backend路由`）中创建；本次不 amend、不推送、不创建 PR。H-03 不关闭 H-49、H-92、H-216 等独立问题，也不把 backend 选择正确误报为所有权限、网络或沙箱能力均已验收。
 
 ### H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置
 
