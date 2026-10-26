@@ -2,13 +2,13 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-78已完成所列Windows本机范围验收，累计十二项已验收，正准备独立提交。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改与测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；H-78已完成所列Windows本机范围验收，累计十二项已验收，H-78修复提交`c6947508`。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 12 | H-286、H-72、H-73、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78，均限所列本机验收；H-78待本次独立提交，其余hash见明细 |
+| 本阶段已修复并验收 | 12 | H-286、H-72、H-73、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78，均限所列本机验收；H-78修复提交`c6947508`，其余hash见明细 |
 | 历史已修复跳过 | 17 | 原报告有实现及修复后验收；本轮不重复修复/冒称重验 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
@@ -20,7 +20,7 @@
 
 ## H-78 本轮即时记录（2026-10-26）
 
-当前状态：已修复并验收（Windows本机范围），待独立提交及hash回填；最终验收矩阵和限制见E-72，以下保留即时过程记录。范围仅本仓库文件工具物理路径授权，合成临时文件/本机联接与离线transport；不访问真实用户文件、内网、凭据或供应商，不重做H-165及加密内容报错。复用既有WorkspaceRoot/PathGuard/文件工具边界，不新增工具注册/权限中心。
+当前状态：已修复并验收（Windows本机范围），修复提交`c6947508`；最终验收矩阵和限制见E-72，以下保留即时过程记录。范围仅本仓库文件工具物理路径授权，合成临时文件/本机联接与离线transport；不访问真实用户文件、内网、凭据或供应商，不重做H-165及加密内容报错。复用既有WorkspaceRoot/PathGuard/文件工具边界，不新增工具注册/权限中心。
 
 E-H78-20261026-01（source_type=command，content_hash/artifact_path=n/a）：HEAD `8d8260e0`执行`cargo test -p deepagent-app-core --test kernel_v2_e2e path_boundary --offline -j 1 -- --include-ignored --nocapture --test-threads=1`退出1，1 passed/1 failed/0 ignored（0.73s，编译1m02s）。直接外部路径WorkspaceWrite拒绝/FullAccess允许的对照通过；真实临时NTFS junction组仍为`content_returned=true, tool_completed_ok=Some(true), tool_blocked=false`。F-H78（P1，validated，confidence=high，evidence_ids=[E-H78-20261026-01]）：共享WorkspaceRoot/PathGuard仅词法授权，生产读路径把外部合成canary带入离线下一wire。P-H78（callflow）：正式ChatService/Kernel → path_guard → WorkspaceRoot词法通过 → 文件系统跟随junction → function_call_output/下一请求；未读取用户数据、凭据或调用真实供应商。H-279仅归并证据，不重复计数；本轮尚未改生产代码，需共用物理路径/实际I/O边界，覆盖读写与隐式遍历，保留Full/ReadAnywhere原语义，其他独立问题不顺手关闭。
 
@@ -178,6 +178,8 @@ E-H78-20261026-72（修复验收结论，2026-10-26）：H-78按原问题“Wind
 | 完整workspace | E-55真实执行后因既有H-306失败，后续未执行项不算通过；不能宣称全仓绿灯 |
 
 验收限制：本项不承诺Unix操作期抗rename，Unix仍保留字符串I/O；macOS环境、真实UI/供应商及断电未验证；本机UNC仅WSL provider，不保证所有远端文件系统语义。move多次rename不具备断电事务原子性，版本检查也不是对非协作写入者的文件系统CAS；H-287 DACL等独立问题仍保留。此次统一的是文件工具边界，没有将CheckpointManager等宿主自主I/O全部迁入WorkspaceRoot：静态核对capture_before仍先走词法confined并在工具执行前备份，未动态证明其物理授权，不能据此宣称全系统所有文件I/O已受同样保护；后续需单独复核，不新增未复现的缺陷编号。计时E-61仅当前Full/Workspace热读取抽样，非旧版本对比或性能承诺。以上限制保持明示，不改写原失败或关闭其他H编号。
+
+E-H78-20261026-73（独立提交与台账复核）：修复提交`c6947508`（【fix】修复H-78文件工具物理路径授权与Windows操作边界）已创建，18个文件，只包含本项生产代码、回归与两份当时记录；未推送/创建PR。提交前暂存diff --check退出0，原有未跟踪用户文件未读改或暂存。台账实际306行/306唯一编号/无缺号/8列正确；12已修复并验收、17历史跳过、7归并、2撤销、268待修，268有效未关闭；两份H-78证据各72条且E-17～72内容逐字一致（本条为第73条）。本次仅回填真实hash，不amend修复提交，不新增验收成果；整体goal保持active。下一项准备按原探针复核H-77，不预设仍失败或提前关闭。全部剩余200–400有效小时仍为未校准规划区间，环境等待另计。
 
 ## H-44 本轮即时记录与验收（2026-10-26）
 
@@ -601,7 +603,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原 HEAD 1a3c7192 为 1 passed/1 failed，原证据保留 | 复用会话锁：admission 至外层投影持共享 scope，rewind/fork 持独占 scope，忙时拒绝；桌面成功后才清屏 | active_rewind 默认 4 passed/0 ignored；四 crate 测试及 pnpm build 退出 0；workspace/严格 lint 既有失败及实际命令见 H-75 明细 | `8eea7bd5` | 限 Windows 后端及回调/构建；真实 UI/其他 OS 未验；H-33/H-23/跨 session 副作用未解决；下一项 H-76，总区间 200–400 有效工时 |
 | [H-76：文件写入只验证“曾经读过”，外部已保存的改动仍被旧内容成功覆盖](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原 HEAD 4c885044 复现失败，修复后原探针已转默认且通过，保留中间断言失败 | 观察真实字节与已交付窗口，三 mutation 统一提交、暂存后复核；稳定路径协作 gate，成功失效 | mutation 20 passed；正式 file_version 3 passed/0 ignored；workspace 内 builtins312、AppCore1104/正式链107、persistence67；runtime/session补跑通过；完整命令与既有失败见本节 | `b7cdfcc8` | Windows 本机范围；非协作 syscall 间隙、actor/compaction/路径/DACL及其他OS仍有限制；下一项 H-20，总区间200–400有效工时 |
 | [H-77：grep 未继承敏感文件读取拒绝，普通搜索可将被禁止的内容送入模型请求](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-78：Windows 工作区目录联接绕过词法路径限制，read_file 读取根目录外文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 保留全部阶段失败；H-279仅归并；Windows本机验收范围见E-72 | 共享逐跳授权/初始根身份/操作期pin；Windows读/枚举/mutation/delete/move共用边界，主registry有效FsAccess；复用H-76/H-286提交回滚 | Windows builtins349/4 ignored；正式path_boundary8（含mutation16组）/file_version3/move2通过；UNC/SUBST及跨卷显式通过；Linux305、persistence68+9通过；双crate严格lint通过；workspace H-306/AppCore既有lint失败，E-63～72 | 待本次独立提交后回填 | Unix字符串I/O竞态、macOS/断电/任意SMB未验；非全系统自主I/O统一；无协议迁移；本项Windows本机剩余0，环境另计 |
+| [H-78：Windows 工作区目录联接绕过词法路径限制，read_file 读取根目录外文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 保留全部阶段失败；H-279仅归并；Windows本机验收范围见E-72 | 共享逐跳授权/初始根身份/操作期pin；Windows读/枚举/mutation/delete/move共用边界，主registry有效FsAccess；复用H-76/H-286提交回滚 | Windows builtins349/4 ignored；正式path_boundary8（含mutation16组）/file_version3/move2通过；UNC/SUBST及跨卷显式通过；Linux305、persistence68+9通过；双crate严格lint通过；workspace H-306/AppCore既有lint失败，E-63～72 | `c6947508` | Unix字符串I/O竞态、macOS/断电/任意SMB未验；非全系统自主I/O统一；无协议迁移；本项Windows本机剩余0，环境另计 |
 | [H-79：glob/list_dir 返回被直接读取策略拒绝的敏感文件名](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-80：Responses repair 对外部混合工具类型缺少不变量校验（条件性）](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-81：Responses 完成文本 item 被错误补充全局 fallback（含空 assistant）](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
