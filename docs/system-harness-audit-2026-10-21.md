@@ -2364,7 +2364,7 @@ E-H78-20261026-73（独立提交与台账复核）：修复提交`c6947508`（�
 
 ### H-79：glob/list_dir 返回被直接读取策略拒绝的敏感文件名
 
-**2026-10-26修复状态：已修复并验收（所列Windows/Linux本机范围），修复提交待生成。** 以下原始审计失败保留，H-280仅归并证据；E-01～05为本轮即时记录，早期未完成不覆盖最终结论。
+**2026-10-26修复状态：已修复并验收（所列Windows/Linux本机范围），修复提交`79519de6`。** 以下原始审计失败保留，H-280仅归并证据；E-01～06为本轮即时记录，早期未完成不覆盖最终结论。
 
 E-H79-20261026-01（原探针先行复现）：HEAD=4cf519cc，工作树只有原有未跟踪项，尚未修改代码或测试。执行未改原探针`cargo test -p deepagent-app-core --test kernel_v2_e2e file_listing_policy --offline -j 1 -- --include-ignored --nocapture --test-threads=1`退出1，1 passed/1 failed/0 ignored（编译1m58s、测试0.99s）。list_dir为direct_read_denied=true、listing_ok=true、hidden_name_sent=true、visible_name_sent=true；glob为hidden_name_sent=false、visible_name_sent=true。因此只剩ListDirTool枚举后未逐候选授权；glob已由c6947508的walk_collect/read_identity共享边界消除，不重复改写。当前证据仅合成.env文件名进入离线下一wire，不是正文泄漏。修复将复用WorkspaceRoot::read_identity，不新增敏感名单/权限中心，保留普通隐藏文件和目录排序。H-280仅归并证据；未验收完成、无本轮修复提交。
 
@@ -2384,6 +2384,8 @@ E-H79-20261026-03（共享判定接入及两平台crate验收）：生产仅在L
 E-H79-20261026-04（正式链默认验收及严格lint通过）：`cargo test -p deepagent-app-core --test kernel_v2_e2e file_listing_policy --offline -j 1 -- --nocapture --test-threads=1`退出0，4 passed/0 failed/0 ignored（编译2m25s、测试3.52s）。原探针已转默认；9次正式run覆盖默认对照及ReadOnly/WorkspaceWrite/FullAccess各自list_dir、glob：真实配对输出status=ok，.env名称hidden_name_sent=false、visible_name_sent=true，credentials/.ENV.Local/secret-store不在结构化名称结果，普通.hidden仍可见；每run先有一次read_file硬拒绝，发现完成成功且只有一个succeeded终态。4项包括观察器反例，不冒称4个缺陷。`cargo clippy -p deepagent-builtins --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0（59.88s，含等待构建锁）；fmt --check与diff --check退出0。正在运行H-77/H-78正式消费者定向回归，尚不记结果。
 
 E-H79-20261026-05（消费者回归与本项验收结论）：`cargo test -p deepagent-app-core --test kernel_v2_e2e path_boundary --offline -j 1 -- --nocapture --test-threads=1`退出0，8 passed/0 ignored（9.34s），含真实junction正式读/目录/写删双向move、根替换、磁盘与下一wire对照；`cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -j 1 -- --nocapture --test-threads=1`退出0，4 passed/0 ignored（5.44s），H-77敏感正文及15组profile样本未回归。H-79在所列Windows/Linux本机范围验收完成，本轮生产修复新增1；H-280不另计。仅4文件：ListDir候选授权、默认正式fixture和两份文档；不改公共DTO/数据库/供应商参数/前端，名称结果过滤属于预期行为，不能获准或不能解析的候选不进入列表，正常.hidden/目录/链接语义有对照。仍不等于自定义Read deny、MCP/CodeGraph/自动上下文统一；Unix操作期抗rename、macOS、真实UI/DeepSeek未验。完整workspace与AppCore严格lint本轮未重复：保留既有H-306 prompts失败及AppCore既有lint阻断，不宣称全仓通过；无前端/Tauri改动故未跑pnpm build。306行台账按H编号核对：13已修复并验收、18历史跳过、7归并、2撤销、266待修、0修复中，266有效未关闭。剩余200–400有效小时仍为未校准初估，编译/环境等待另计；下一项H-74语义分支边界优先复核，尚未修改。修复提交待生成并另做真实hash回填，整体goal继续active。
+
+E-H79-20261026-06（独立提交及真实hash回填）：修复提交`79519de6`（【fix】统一H-79目录名称发现与读取授权）已创建，只含本项4文件；提交前fmt --check、diff --check、cached --check均通过，306行/306唯一编号/无缺号/8列正确，两份即时证据01～05逐字一致，计数13已验收、18跳过、7归并、2撤销、266待修。此步仅回填真实修复hash并单独提交文档，不amend/推送/创建PR；原有未跟踪项未读改或暂存。H-79本轮新增修复1，H-280不另计；H-74尚未修改，整体goal继续，残余范围与工时粗估按E-05保留。
 
 ### H-80：Responses repair 对外部混合工具类型缺少不变量校验（条件性）
 
