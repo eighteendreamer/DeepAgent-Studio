@@ -22,7 +22,7 @@
 | H-78 | 已修复并验收（2026-10-26，所列本机范围） | 共享物理路径授权与Windows操作边界；最终证据见本项E-H78-73及台账，原失败保留，修复提交`c6947508`；H-279不重复计数 |
 | H-79 | 已修复并验收（2026-10-26，所列本机范围） | 目录名称发现与读取授权统一；最终证据及限制见本项与台账，修复提交`79519de6` |
 | H-07 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `ToolsListResult`保留不透明`nextCursor`，`McpClient::list_tools()`统一有界汇总分页；MCP全组77 passed/2 ignored，AppCore正式MCP筛选14 passed/13 ignored；E-H07-01～04，修复提交`e525b6de` |
-| H-08 | 已修复并验收（2026-10-26，MCP/AppCore本机范围，提交hash待回填） | `McpTransport`统一支持无 ID notification，initialize 成功后发送 `notifications/initialized`；严格 stdio、HTTP fixture、MCP全组和AppCore MCP筛选通过；E-H08-01～03 |
+| H-08 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `McpTransport`统一支持无 ID notification，initialize 成功后发送 `notifications/initialized`；严格 stdio、HTTP fixture、MCP全组和AppCore MCP筛选通过；E-H08-01～04，修复提交`2dc9fdf6` |
 
 逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。本次按306行台账实核：本阶段累计修复 **17**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **262（262待修复、0修复中）**；306是历史编号槽位。H-07与H-08均仅在所列MCP/AppCore本机范围验收；未把ignored测试、完整workspace或H-12 HTTP session管理当作全绿，H-08提交hash待下一条文档回填记录写入，整体goal仍active。
 
@@ -612,6 +612,8 @@ E-H08-20261026-01：在未修改源码、未读取或暂存原有未跟踪项的
 E-H08-20261026-02（根因修复与协议边界）：新增 `JsonRpcNotification` DTO 和 `McpTransport::notify()` 统一接口；`McpClient::initialize()` 只有在 initialize response 成功后发送无 ID 的 `notifications/initialized`，通知失败会使握手失败。stdio 直接写入并 flush notification；HTTP POST notification 并接受成功状态（含 202）；ReconnectingTransport 转发到当前代，重连工厂使用同一握手。默认 trait 实现显式报不支持，避免自定义 transport 静默丢弃握手通知。同步更新 H-06 本机 HTTP fixture，使其按协议接收两代 `notifications/initialized`，未改变未知结果/副作用断言。
 
 E-H08-20261026-03（最终本机验收，提交 hash 待回填）：原严格探针转默认执行，`cargo test -p deepagent-mcp --test protocol_audit audit_strict_stdio_server_completes_initialization --offline -- --nocapture --test-threads=1`退出0，1 passed；HTTP notification fixture `http::tests::initialized_notification_is_posted_without_jsonrpc_id`通过。`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0，lib79 passed/2 ignored，protocol_audit 1 passed/1 ignored、HTTP未知结果1、重连握手1、stdio诊断1及其余默认测试通过，doc-tests0；`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp --offline -j 1 -- --quiet --test-threads=1`退出0，14 passed/13 ignored；`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0。`cargo fmt --all -- --check`及`git diff --check`通过。未验真实第三方/供应商、其他平台、完整workspace；HTTP 的 `Mcp-Session-Id` 持久化仍由独立 H-12 处理，本项不宣称已解决。
+
+E-H08-20261026-04（提交 hash 回填）：代码、回归测试与当时两份记录已在独立提交 `2dc9fdf6` 创建；本次只回填该真实 hash，不 amend、不推送、不触碰原有未跟踪项。H-08 状态保持“已修复并验收”，范围仍限 E-H08-01～03 所列本机验证。
 
 ### H-09：stdio MCP 并发回包按读取者筛选，其他请求的响应会被永久丢弃
 
