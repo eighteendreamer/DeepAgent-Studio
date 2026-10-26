@@ -69,14 +69,20 @@ impl McpClient {
     }
 
     /// Perform the `initialize` handshake, advertising our protocol version and
-    /// client info. Returns the server's `initialize` result.
+    /// client info. The required `notifications/initialized` notification is
+    /// sent only after a valid initialize result arrives. Returns the server's
+    /// `initialize` result.
     pub async fn initialize(&self, client_name: &str) -> Result<serde_json::Value> {
         let params = serde_json::json!({
             "protocolVersion": MCP_PROTOCOL_VERSION,
             "capabilities": { "tools": {} },
             "clientInfo": { "name": client_name, "version": env!("CARGO_PKG_VERSION") }
         });
-        self.call("initialize", Some(params)).await
+        let result = self.call("initialize", Some(params)).await?;
+        self.transport
+            .notify("notifications/initialized", None)
+            .await?;
+        Ok(result)
     }
 
     /// Discover the tools the server provides (`tools/list`).
@@ -173,13 +179,17 @@ mod tests {
 
     #[tokio::test]
     async fn initialize_handshake() {
-        let t = MockTransport::new().with_result(
+        let t = Arc::new(MockTransport::new().with_result(
             "initialize",
             serde_json::json!({"protocolVersion": MCP_PROTOCOL_VERSION}),
-        );
-        let client = client_with(t);
+        ));
+        let client = McpClient::new(t.clone());
         let res = client.initialize("deepagent").await.unwrap();
         assert_eq!(res["protocolVersion"], MCP_PROTOCOL_VERSION);
+        assert_eq!(
+            t.notifications(),
+            vec![("notifications/initialized".into(), None)]
+        );
     }
 
     #[tokio::test]

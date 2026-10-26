@@ -8,15 +8,24 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 16 | H-06、H-07、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 17 | H-06、H-07、H-08、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有已进入实现但尚未完成验收的条目 |
-| 待修复 | 263 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 262 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **263（263待修复、0修复中）**；不提供完成率。十六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **262（262待修复、0修复中）**；不提供完成率。十七项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-08 本轮即时记录（2026-10-26）
+
+**当前状态：已修复并验收（限 MCP/AppCore 所列本机范围，提交 hash 待回填）。** 仅处理 MCP 初始化成功后的 `notifications/initialized` 通知，不改 H-06 未知结果或 H-07 分页语义，不访问真实插件、真实凭据或外部服务。
+
+E-H08-20261026-01（原始探针复现）：在未修改源码、未读取或暂存原有未跟踪项的前提下，执行 `cargo test -p deepagent-mcp --test protocol_audit audit_strict_stdio_server_completes_initialization --offline -- --ignored --nocapture`，退出 1（0 passed / 1 failed，测试体约 0.07s）。本机 Node fixture 实际输出 `discovery=Err(Other("MCP error -32002 on tools/list: not initialized; received=initialize,tools/list"))`；服务端没有收到无 ID 的 `notifications/initialized`。当前 `McpClient::initialize()` 只调用带 request id 的 `initialize`，`McpTransport` 没有统一发送通知的能力，故 H-08 进入“修复中”。
+E-H08-20261026-02（根因修复与协议边界）：新增 `JsonRpcNotification` DTO 和 `McpTransport::notify()` 统一接口；`McpClient::initialize()` 只有在 initialize response 成功后发送无 ID 的 `notifications/initialized`，通知失败会使握手失败。stdio 直接写入并 flush notification；HTTP POST notification 并接受成功状态（含 202）；ReconnectingTransport 转发到当前代，重连工厂使用同一握手。默认 trait 实现显式报不支持，避免自定义 transport 静默丢弃握手通知。同步更新 H-06 本机 HTTP fixture，使其按协议接收两代 `notifications/initialized`，未改变未知结果/副作用断言。
+
+E-H08-20261026-03（最终本机验收，提交 hash 待回填）：原严格探针转默认执行，`cargo test -p deepagent-mcp --test protocol_audit audit_strict_stdio_server_completes_initialization --offline -- --nocapture --test-threads=1`退出0，1 passed；HTTP notification fixture `http::tests::initialized_notification_is_posted_without_jsonrpc_id`通过。`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --quiet --test-threads=1`退出0，lib79 passed/2 ignored，protocol_audit 1 passed/1 ignored、HTTP未知结果1、重连握手1、stdio诊断1及其余默认测试通过，doc-tests0；`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp --offline -j 1 -- --quiet --test-threads=1`退出0，14 passed/13 ignored；`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0。`cargo fmt --all -- --check`及`git diff --check`通过。未验真实第三方/供应商、其他平台、完整workspace；HTTP 的 `Mcp-Session-Id` 持久化仍由独立 H-12 处理，本项不宣称已解决。
 
 ## H-07 本轮即时记录（2026-10-26）
 
@@ -631,7 +640,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-06：MCP 断线恢复自动重发结果未知的工具调用，可能重复产生副作用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 归并H-278只补强同项；限所列Windows/Linux本机范围 | 连接恢复与业务请求重试分离；tools/call单次派发并返回RemoteOutcomeUnknown，adapter/事件/持久化/wire保留unknown且retryable=false；ping/tools/list才可受限重试 | E-H06-01～06：原两探针各2次副作用失败；修复后MCP70/3 ignored、HTTP1、真实stdio2、AppCore2、相关workspace消费者通过；全workspace唯一既有H-306失败，Linux真实stdio因无Node未执行 | `5ba4ee83` | 未验证Linux真实stdio、真实供应商、多进程外部服务；不自动核实远端状态，调用方须先核实再重试；本项已完成所列本机边界验收，计数进入15项 |
 | [H-07：MCP 工具发现忽略分页，只发布首页工具且不报不完整](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始探针 E-H07-20261026-01 复现后，分页探针转默认通过 | `ToolsListResult.next_cursor`保留不透明 cursor；`McpClient::list_tools()`统一有界汇总，100页/2048工具/64KiB cursor，重复 cursor拒绝；registry/AppCore复用同一入口 | E-H07-01～04：原始0 passed/1 failed；修复后MCP lib77/2 ignored、AppCore MCP14/13 ignored、MCP no-deps严格lint及fmt/diff通过；未验完整workspace/其他平台/真实供应商 | `e525b6de` | 限所列MCP/AppCore本机范围；不把ignored、完整workspace或真实服务当作通过 |
-| [H-08：MCP 初始化缺少 initialized 通知，严格服务端无法进入就绪状态](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-08：MCP 初始化缺少 initialized 通知，严格服务端无法进入就绪状态](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 原始探针 E-H08-20261026-01 复现后转默认通过 | 新增 `JsonRpcNotification`/`McpTransport::notify()`；initialize 成功后统一发送无 ID通知；stdio、HTTP、ReconnectingTransport复用同一边界 | E-H08-01～03：原始0 passed/1 failed；修复后严格stdio1、MCP lib79/2 ignored、AppCore MCP14/13 ignored、HTTP notification与H-06 fixture通过；未验完整workspace/其他平台/H-12 session header | 修复提交待生成，随后单独回填真实hash | 限所列本机协议范围；H-12 HTTP session管理仍独立待修，不把真实第三方服务当作通过 |
 | [H-09：stdio MCP 并发回包按读取者筛选，其他请求的响应会被永久丢弃](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-10：运行结束后预取压缩任务仍继续执行，结果及 usage 无处归集](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-11：以消息内容反查压缩边界，重复回答会让恢复重新带回已摘要的历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

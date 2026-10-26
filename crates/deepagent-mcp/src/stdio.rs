@@ -21,7 +21,7 @@ use deepagent_core::redaction::{is_secret_key, scrub_secret_literals};
 use deepagent_tools::ToolExecutionContext;
 
 use crate::config::McpServerConfig;
-use crate::protocol::{JsonRpcRequest, JsonRpcResponse};
+use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JsonRpcResponse};
 use crate::transport::{
     McpTransport, MCP_CANCELLED_BEFORE_DISPATCH, MCP_CANCELLED_UNKNOWN_OUTCOME,
 };
@@ -211,6 +211,27 @@ impl StdioTransport {
         Ok(())
     }
 
+    async fn write_notification(
+        &self,
+        method: &str,
+        params: Option<serde_json::Value>,
+    ) -> Result<()> {
+        let mut line = serde_json::to_string(&JsonRpcNotification::new(method, params))?;
+        line.push('\n');
+        let mut stdin = self.stdin.lock().await;
+        if let Err(error) = stdin.write_all(line.as_bytes()).await {
+            return Err(self
+                .disconnect_error(&format!("write MCP notification failed: {error}"))
+                .await);
+        }
+        if let Err(error) = stdin.flush().await {
+            return Err(self
+                .disconnect_error(&format!("flush MCP notification failed: {error}"))
+                .await);
+        }
+        Ok(())
+    }
+
     async fn read_response(&self, request_id: u64) -> Result<JsonRpcResponse> {
         let mut reader = self.stdout.lock().await;
         loop {
@@ -275,6 +296,10 @@ impl McpTransport for StdioTransport {
             }
             result = self.read_response(request_id) => result,
         }
+    }
+
+    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<()> {
+        self.write_notification(method, params).await
     }
 
     async fn close(&self) -> Result<()> {

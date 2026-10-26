@@ -38,6 +38,29 @@ impl JsonRpcRequest {
     }
 }
 
+/// A JSON-RPC notification (a message without an id or response).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JsonRpcNotification {
+    /// Always "2.0".
+    pub jsonrpc: String,
+    /// Notification method.
+    pub method: String,
+    /// Optional method parameters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
+impl JsonRpcNotification {
+    /// Build a notification.
+    pub fn new(method: impl Into<String>, params: Option<serde_json::Value>) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            method: method.into(),
+            params,
+        }
+    }
+}
+
 /// A JSON-RPC response.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JsonRpcResponse {
@@ -228,6 +251,16 @@ mod tests {
         let json = serde_json::to_value(&req).unwrap();
         assert_eq!(json["jsonrpc"], "2.0");
         assert_eq!(json["method"], "tools/list");
+        assert!(json.get("params").is_none());
+    }
+
+    #[test]
+    fn notification_serializes_without_id() {
+        let notification = JsonRpcNotification::new("notifications/initialized", None);
+        let json = serde_json::to_value(notification).unwrap();
+        assert_eq!(json["jsonrpc"], JSONRPC_VERSION);
+        assert_eq!(json["method"], "notifications/initialized");
+        assert!(json.get("id").is_none());
         assert!(json.get("params").is_none());
     }
 

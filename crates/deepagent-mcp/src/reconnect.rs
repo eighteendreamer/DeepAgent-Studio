@@ -265,6 +265,20 @@ impl McpTransport for ReconnectingTransport {
         self.send_request(request, context).await
     }
 
+    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<()> {
+        let current = self.ready_transport().await?;
+        let result = current.notify(method, params).await;
+        if let Err(error) = &result {
+            if is_transport_closed_error(error) {
+                let mut state = self.inner.lock().await;
+                if Arc::ptr_eq(&state.transport, &current) {
+                    state.disconnected = true;
+                }
+            }
+        }
+        result
+    }
+
     async fn close(&self) -> Result<()> {
         let transport = {
             let mut state = self.inner.lock().await;

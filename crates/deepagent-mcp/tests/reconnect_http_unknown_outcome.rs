@@ -22,7 +22,7 @@ async fn http_lost_reply_is_unknown_and_only_a_new_call_is_dispatched_after_reco
     let server = tokio::spawn(async move {
         let mut methods = Vec::new();
         let mut effects = Vec::new();
-        for _ in 0..4 {
+        for _ in 0..6 {
             let (mut stream, _) = listener.accept().await.unwrap();
             let request: Value = {
                 let mut reader = BufReader::new(&mut stream);
@@ -49,6 +49,15 @@ async fn http_lost_reply_is_unknown_and_only_a_new_call_is_dispatched_after_reco
             let result = match method.as_str() {
                 "initialize" => json!({"protocolVersion":"2024-11-05","capabilities":{"tools":{}},
                     "serverInfo":{"name":"h06-http","version":"1"}}),
+                "notifications/initialized" => {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .unwrap();
+                    continue;
+                }
                 "tools/call" => {
                     effects.push(
                         request["params"]["arguments"]["label"]
@@ -107,7 +116,14 @@ async fn http_lost_reply_is_unknown_and_only_a_new_call_is_dispatched_after_reco
     let (methods, effects) = result.expect("local HTTP regression deadline");
     assert_eq!(
         methods,
-        vec!["initialize", "tools/call", "initialize", "tools/call"]
+        vec![
+            "initialize",
+            "notifications/initialized",
+            "tools/call",
+            "initialize",
+            "notifications/initialized",
+            "tools/call"
+        ]
     );
     assert_eq!(effects, vec!["primary", "independent"]);
 }

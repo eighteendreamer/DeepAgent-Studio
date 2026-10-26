@@ -46,6 +46,14 @@ pub trait McpTransport: Send + Sync {
         }
     }
 
+    /// Send a JSON-RPC notification. Notifications have no id and must not
+    /// wait for a JSON-RPC response.
+    async fn notify(&self, _method: &str, _params: Option<serde_json::Value>) -> Result<()> {
+        Err(CoreError::other(
+            "MCP transport does not support notifications",
+        ))
+    }
+
     /// Close the transport / terminate the server process.
     async fn close(&self) -> Result<()> {
         Ok(())
@@ -63,6 +71,7 @@ pub struct MockTransport {
     /// When set, every send AFTER the first `n` returns a connection error —
     /// simulates a server that dies mid-run (fault-injection matrix).
     fail_after: Option<(usize, String)>,
+    notifications: Mutex<Vec<(String, Option<serde_json::Value>)>>,
 }
 
 impl MockTransport {
@@ -93,6 +102,11 @@ impl MockTransport {
             .map(|r| r.method.clone())
             .collect()
     }
+
+    /// Notifications sent so far, including their optional parameters.
+    pub fn notifications(&self) -> Vec<(String, Option<serde_json::Value>)> {
+        self.notifications.lock().expect("mock poisoned").clone()
+    }
 }
 
 #[async_trait]
@@ -121,6 +135,14 @@ impl McpTransport for MockTransport {
                 request.method
             ))),
         }
+    }
+
+    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<()> {
+        self.notifications
+            .lock()
+            .expect("mock poisoned")
+            .push((method.to_string(), params));
+        Ok(())
     }
 }
 

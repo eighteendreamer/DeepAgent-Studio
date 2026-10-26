@@ -109,7 +109,6 @@ async fn audit_http_initialization_retains_session_header() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: initialize must be followed by notifications/initialized"]
 async fn audit_strict_stdio_server_completes_initialization() {
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("strict-server.cjs");

@@ -22,7 +22,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_tools::ToolExecutionContext;
 
 use crate::config::McpServerConfig;
-use crate::protocol::{JsonRpcRequest, JSONRPC_VERSION};
+use crate::protocol::{JsonRpcNotification, JsonRpcRequest, JSONRPC_VERSION};
 use crate::protocol::{JsonRpcResponse, SseFrames};
 use crate::transport::{
     McpTransport, MCP_CANCELLED_BEFORE_DISPATCH, MCP_CANCELLED_UNKNOWN_OUTCOME,
@@ -134,6 +134,24 @@ impl McpTransport for HttpTransport {
             }
             result = self.send(request) => result,
         }
+    }
+
+    async fn notify(&self, method: &str, params: Option<serde_json::Value>) -> Result<()> {
+        let response = self
+            .post_json(&JsonRpcNotification::new(method, params))
+            .send()
+            .await
+            .map_err(|e| CoreError::other(format!("MCP HTTP notification failed: {e}")))?;
+        if !response.status().is_success() {
+            return Err(CoreError::other(format!(
+                "MCP server rejected notification with {}",
+                response.status()
+            )));
+        }
+        response.bytes().await.map_err(|e| {
+            CoreError::other(format!("reading MCP notification response failed: {e}"))
+        })?;
+        Ok(())
     }
 }
 
@@ -317,6 +335,37 @@ mod tests {
         assert_eq!(notification["params"]["requestId"], 41);
         assert!(notification.get("id").is_none());
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn initialized_notification_is_posted_without_jsonrpc_id() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/mcp", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let body = read_json_request(&mut stream).await;
+            stream
+                .write_all(
+                    b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await
+                .unwrap();
+            body
+        });
+
+        let transport = HttpTransport::with_url(url, Vec::new()).unwrap();
+        transport
+            .notify("notifications/initialized", None)
+            .await
+            .unwrap();
+        let body = tokio::time::timeout(Duration::from_secs(1), server)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(body["method"], "notifications/initialized");
+        assert_eq!(body["jsonrpc"], JSONRPC_VERSION);
+        assert!(body.get("id").is_none());
+        assert!(body.get("params").is_none());
     }
 
     #[test]
