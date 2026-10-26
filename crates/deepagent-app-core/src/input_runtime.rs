@@ -464,8 +464,50 @@ pub(crate) fn sequence_of_response_item(
     wanted: &ResponseInputItem,
 ) -> Option<deepagent_core::event::Sequence> {
     let indexed = indexed_response_items(events);
-    let user_tag = |item: &ResponseInputItem| -> Option<String> {
-        match item {
+    indexed
+        .iter()
+        .find_map(|(sequence, item)| response_items_match(item, wanted).then_some(*sequence))
+        .or_else(|| {
+            events.iter().find_map(|event| match &event.payload {
+                EventPayload::ResponseItemAppended { item } if item == wanted => {
+                    Some(event.sequence)
+                }
+                _ => None,
+            })
+        })
+}
+
+/// Resolve the event sequence for an entire compacted tail, not just its first
+/// item. A single item is not an identity: repeated assistant text can occur
+/// in old and current turns. Matching the contiguous tail makes the durable
+/// cut unambiguous while still accepting the existing user-tag and tool-call
+/// compatibility rules. If the same complete tail occurs more than once, fail
+/// closed rather than guessing a boundary that could replay old history.
+pub(crate) fn sequence_of_response_item_tail(
+    events: &[Event],
+    tail: &[ResponseInputItem],
+) -> Option<deepagent_core::event::Sequence> {
+    if tail.is_empty() {
+        return None;
+    }
+    let indexed = indexed_response_items(events);
+    let matches: Vec<_> = indexed
+        .windows(tail.len())
+        .filter(|window| {
+            window
+                .iter()
+                .map(|(_, item)| item)
+                .zip(tail)
+                .all(|(item, wanted)| response_items_match(item, wanted))
+        })
+        .map(|window| window[0].0)
+        .collect();
+    (matches.len() == 1).then(|| matches[0])
+}
+
+fn response_items_match(item: &ResponseInputItem, wanted: &ResponseInputItem) -> bool {
+    let user_tag = |candidate: &ResponseInputItem| -> Option<String> {
+        match candidate {
             ResponseInputItem::Message { role, content }
             | ResponseInputItem::InputMessage { role, content, .. }
                 if role == "user" =>
@@ -478,31 +520,18 @@ pub(crate) fn sequence_of_response_item(
             _ => None,
         }
     };
-    indexed
-        .iter()
-        .find_map(|(sequence, item)| {
-            let same = item == wanted
-                || match (item, wanted) {
-                    (
-                        ResponseInputItem::FunctionCallOutput { call_id: a, .. },
-                        ResponseInputItem::FunctionCallOutput { call_id: b, .. },
-                    )
-                    | (
-                        ResponseInputItem::CustomToolCallOutput { call_id: a, .. },
-                        ResponseInputItem::CustomToolCallOutput { call_id: b, .. },
-                    ) => a == b,
-                    _ => user_tag(wanted).is_some_and(|tag| user_tag(item).as_ref() == Some(&tag)),
-                };
-            same.then_some(*sequence)
-        })
-        .or_else(|| {
-            events.iter().find_map(|event| match &event.payload {
-                EventPayload::ResponseItemAppended { item } if item == wanted => {
-                    Some(event.sequence)
-                }
-                _ => None,
-            })
-        })
+    item == wanted
+        || match (item, wanted) {
+            (
+                ResponseInputItem::FunctionCallOutput { call_id: a, .. },
+                ResponseInputItem::FunctionCallOutput { call_id: b, .. },
+            )
+            | (
+                ResponseInputItem::CustomToolCallOutput { call_id: a, .. },
+                ResponseInputItem::CustomToolCallOutput { call_id: b, .. },
+            ) => a == b,
+            _ => user_tag(wanted).is_some_and(|tag| user_tag(item).as_ref() == Some(&tag)),
+        }
 }
 
 /// The event slice the model should see, plus the summary standing in for the

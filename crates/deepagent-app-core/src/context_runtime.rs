@@ -580,12 +580,9 @@ impl HookedReactiveContextCompactor {
     ) -> Result<()> {
         let events = deepagent_persistence::event_store::EventStore::new(&self.db)
             .load_session(self.session_id)?;
-        let cut = tail
-            .iter()
-            .find_map(|item| crate::input_runtime::sequence_of_response_item(&events, item))
-            .ok_or_else(|| {
-                CoreError::invalid("cannot resolve native compaction tail in durable session log")
-            })?;
+        let cut = crate::input_runtime::sequence_of_response_item_tail(&events, tail).ok_or_else(
+            || CoreError::invalid("cannot resolve native compaction tail in durable session log"),
+        )?;
         let clock = deepagent_core::clock::SystemClock;
         let mut session = deepagent_session::Session::recover(&self.db, &clock, self.session_id)?;
         session.append(EventPayload::ContextCompacted {
@@ -2783,7 +2780,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: repeated assistant text must not move a durable compaction cut backwards"]
     async fn audit_native_summary_replay_preserves_repeated_assistant_boundary() {
         use crate::session_memory::testing::{scripted_client, ScriptedTransport};
         let db = Arc::new(Database::open_in_memory().unwrap());

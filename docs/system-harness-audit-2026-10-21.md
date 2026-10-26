@@ -845,7 +845,14 @@ Codex `core/src/session/mod.rs::replace_compacted_history()` 先为缺失身份�
 - 跨运行或重启后，模型看到“摘要 + 被摘要的原文 + 近期尾部”，token 和费用增加，可能很快再次进入压缩或 overflow；摘要已更新的状态还可能与恢复的旧叙述冲突。这些是错误 Surface 的推论，本次没有测实际收费或真实模型误判。
 - 原生 Surface 应携带既有事件 sequence/稳定 item 身份或旁路 provenance，压缩尾部必须定位到确切事件；不能简单把 first match 改成 last match，因为尾部内部也可能重复。
 - 沿用现有 `ContextCompacted` / `run_events` 持久化边界，必要时兼容扩展实际 replacement/provenance，不能新建第二套上下文存储。来源不可验证时明确失败或采用可验证的保守边界，不写一个猜测的成功切点。
-- 补充相同 assistant 文本、相同 reasoning、连续多次压缩、snip/patch 后压缩及重启后的 live/replay/wire 等价测试。此探针默认忽略，生产边界尚未修复。
+- 补充相同 assistant 文本、相同 reasoning、连续多次压缩、snip/patch 后压缩及重启后的 live/replay/wire 等价测试。原始记录中此探针默认忽略，生产边界尚未修复；以下保留原失败并追加修复验收。
+
+#### 修复与验收（2026-10-27）
+
+- 根因修复：保留 `sequence_of_response_item()` 的兼容用途，但原生压缩落盘不再只拿 tail 的首个 item 做全日志首匹配；新增 `sequence_of_response_item_tail()`，先把 durable event 投影成带 sequence 的 item 序列，再要求整个压缩尾部作为连续窗口**唯一**匹配。重复的单个 assistant 文本因此不会把切点移到旧事件；若完整尾部仍有多个候选，则 fail closed，不猜测一个可能重放旧历史的边界。现有 user tag、工具 call_id 兼容匹配规则被抽成共享比较函数，没有新增上下文存储或改变 `ContextCompacted` wire。
+- 修复后原探针：`cargo test -p deepagent-app-core audit_native_summary_replay_preserves_repeated_assistant_boundary --offline -- --nocapture` 退出 0，`1 passed / 0 failed`；输出 `expected=50, saved=Some(50), original_items=54, live_items=6, replay_items=6`，并已移除 `#[ignore]` 转为默认回归。原始失败 `saved=Some(2), replay_items=54` 保留在本条触发与复现部分。
+- 交叉验证：`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（`1141 passed / 0 failed / 67 ignored`）；`cargo check -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。AppCore 严格 clippy 仍被未改的 10 个基线告警阻断（`context_runtime.rs` 8 个 `clone_on_copy`、`plugin_preparation.rs` 1 个 `type_complexity`、`run_assembler.rs` 1 个 `too_many_arguments`），本轮未顺手修复。
+- 残余限制：已验证本机内存 SQLite、生产 compactor、事件 replay 与默认/重复尾部对照；未执行真实 DeepSeek、真实大窗口费用、桌面重启、跨平台、完整 workspace 或所有 snip/patch/多次连续压缩组合。完整尾部多次重复时会保守拒绝记录边界，调用方仍需沿既有 compaction fallback 处理，不宣称任意历史形状均已通过。
 
 ### H-12：Streamable HTTP 未保存初始化分配的 session header，有状态远程服务后续请求失败
 
