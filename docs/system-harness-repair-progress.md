@@ -2,21 +2,53 @@
 
 ## 当前状态与计数口径（2026-10-26）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计十八项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计十九项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 18 | H-06、H-07、H-08、H-09、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 19 | H-02、H-06、H-07、H-08、H-09、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有已进入实现但尚未完成验收的条目 |
-| 待修复 | 261 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 260 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **261（261待修复、0修复中）**；不提供完成率。十八项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **260（260待修复、0修复中）**；不提供完成率。十九项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-02 本轮即时记录（2026-10-26）
+
+**当前状态：已修复并验收（所列Windows本机范围）。** 原失败和中间结果见E-01～13；修复提交待本轮独立提交后回填。
+
+E-H02-20261026-01（原始探针复现）：生产代码未改时执行`cargo test -p deepagent-cli audit_interrupt_after_start_ack_reaches_cancellation --offline -- --ignored --nocapture`，退出1，0 passed/1 failed/0 ignored（编译1m05s、测试0.20s）。实际`status="cancelling", active_registration=false, durable_runs=0`，ACK后的中断未送达任何执行侧注册。当前turn_start只插内存TurnState，run_stdio先写响应再spawn；turn_interrupt忽略request_cancel().accepted。状态转修复中，仅修H-02接纳/取消交付，复用ChatService::admit_run与RunCoordinator::take_admission，不修改H-04覆盖配置、H-01事件队列或另建取消链。原有未跟踪项不读取、不修改、不暂存。
+
+E-H02-20261026-02（根因实现与专项准备）：turn/start与turn/steer替换在返回started前调用现有ChatService::admit_run，执行端仍走run_in_session_with_overrides→RunCoordinator::take_admission，未建第二套registry。interrupt先检查已提交终态，再核对request_cancel().accepted，失去注册时不再虚假确认。run_stdio即使响应写失败也先移交已接纳launch，防止该错误分支遗留未执行admission；这不等于完成H-92宿主退出治理。准备前/排队取消由AppCore原边界写一次durable cancelled，Harness仅通过既有project_runtime_event补缺失的interrupted通知，并记录是否已收到kernel取消事件以避免重复。新增5个正式回归，使用真实InputLease队列日志屏障、模型调用计数、临时文件与重开读取，含正常后续输入；两处旧ignored steer探针移除现已多余的手工admit，保留其原独立断言与ignore。cargo fmt --all退出0，专项已启动，尚未取得通过结果。
+
+E-H02-20261026-03（五项正式专项通过）：`cargo test -p deepagent-cli admission_ --offline -j 1 -- --nocapture --test-threads=1`退出0，5 passed/0 ignored（编译28.75s、测试1.35s）。立即取消在执行前durable run已存在，两次interrupt均受理，模型请求0、canary未创建、唯一durable cancelled与live interrupted，重开read一致；后续正常输入真实调用模型2次并由write_file创建canary。真实队列以input_queued生产日志作为屏障，在前一个provider仍阻塞时取消排队项，取消项独立结束且未调用模型，释放前一个后下一输入可正常运行。另覆盖接纳失败无ACK/无TurnState/无durable run、完成后连接active视图落后仍拒绝中断、缺失注册拒绝中断、steer替换在执行前可取消。尚待原探针默认重跑、CLI全组/SDK stdio/严格lint及完整workspace验证。
+
+E-H02-20261026-04（原探针默认、CLI全组与真实管道）：`cargo test -p deepagent-cli --offline -j 1 -- --nocapture --test-threads=1`退出0，95 passed/26 ignored（4.64s），包含已取消ignore的原始H-02探针。随后新增独立真实子进程run_stdio父测试，使用临时SQLite、离线可取消transport、真实stdin/stdout管道连续32轮，每次在实际wire ACK立即检查durable run，再发interrupt并等待thread/read及live通知；最终按每个turn核对唯一run_terminal、唯一turn.interrupted，子进程有超时与kill/wait清理。`cargo test -p deepagent-cli admission_real_stdio --offline -j 1 -- --nocapture --test-threads=1`退出0，1 passed/0 ignored（编译17.79s、测试0.73s），实际32 ACK/32 interrupt/32唯一cancelled、model_requests=0。此样本说明本机该调度运行未启动模型；并不声称任意ACK后发送中断都早于模型启动，已开始的请求取消由队列/运行期对照覆盖。子进程entrypoint只作为ignored helper由父测试显式执行，不当作另一个默认成功场景计数。尚待最终CLI全组、SDK生产二进制与workspace，严格lint已启动。
+
+E-H02-20261026-05（严格lint首跑失败并修正本轮告警）：`cargo clippy -p deepagent-cli --all-targets --offline -j 1 --no-deps -- -D warnings`退出1：app_server.rs:610既有unnecessary_map_or，以及新增管道测试显式drop(send)触发drop_non_drop。已移除本轮多余closure drop，依Rust借用结束后直接关闭stdin，不屏蔽告警；既有map_or行未改，不顺手治理。此记录不把首次严格lint说成通过；后续需重跑确认仅剩基线。
+
+E-H02-20261026-06（最终边界审查与lint基线）：修正本轮drop_non_drop后，重跑同一CLI严格lint退出1，仅剩app_server.rs:610既有unnecessary_map_or；已对照HEAD确认该行相同，未屏蔽。审查时发现“写ACK失败后仅spawn”仍可能随宿主错误返回而被丢弃，故收敛为同一complete_turn_dispatch移交边界：失败时先请求取消，再await原执行器完成，最后保留原写错误返回。新增故障注入用例从该正式边界传入stdout broken pipe，断言返回前唯一cancelled、注册释放、模型0；尚待本次新增用例实际结果。正常EOF/运行时被销毁仍属独立H-92，不宣称解决。最终源码已fmt，CLI全组等待当前正式二进制构建锁；此时尚未更新已验收计数。
+
+E-H02-20261026-07（冻结源码后的CLI与二进制）：最终`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0，97 passed/27 ignored（编译31.92s、测试5.45s），包含原探针、6个接纳/取消确定性测试与真实32轮stdio父测试；ignored数量包含本轮子进程helper，helper由父测试实际执行。ACK失败注入验证返回前已完成唯一cancelled、取消注册释放、model请求0，并保留原broken-pipe错误。`cargo build -p deepagent-cli --offline -j 1`最后复核退出0（0.96s），确认SDK使用当前源码生成的正式二进制。最终严格CLI lint再次退出1，仅app_server.rs:610原有unnecessary_map_or（与HEAD相同行），本轮drop_non_drop已消失；不宣称严格lint全绿。SDK e2e_stdio与完整workspace已依次启动，后者正等待前者build锁，尚无最终结果。
+
+E-H02-20261026-08（SDK真实失败即时记录）：当前源码正式二进制构建通过后，`cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 1 -- --nocapture --test-threads=1`退出1，2 passed/4 failed/0 ignored（编译23.96s、测试1.00s）。四项都在initialize时报ResponseChannelClosed{id:1}：initialize_then_thread_start_streams_thread_started_event、interrupt_unknown_turn_surfaces_rpc_error、introspection_methods_round_trip_without_a_model、process_exits_when_stdin_closes；路径解析与初始化前请求拒绝通过。此时未进入turn/start，原因待查，不能称SDK消费链通过。完整workspace仍在运行/编译，保留同一进程继续观察，不因局部失败重启。
+
+E-H02-20261026-09（SDK隔离数据根对照通过）：检查SDK HarnessProcess::spawn确认其只设置cwd并继承环境，正式CLI启动会先按DEEPAGENT_DB_PATH/DEEPAGENT_DATA_ROOT选择数据并执行prepare；不把临时workspace误认为数据根隔离。保留E-08失败，未读取既有根内容、凭据或真实会话来定位具体文件。使用当前已编译的同一`target/debug/deps/e2e_stdio-fc54430c7f874953.exe --nocapture --test-threads=1`，仅在该shell进程中指定全新临时DEEPAGENT_DATA_ROOT并移除继承的DEEPAGENT_DB_PATH，退出0，6 passed/0 ignored（0.58s）。相同当前CLI二进制下隔离根消除了初始化断连，支持将E-08作为环境/数据选择相关阻断保留；尚未证明继承根中具体哪项导致退出，不伪称已修SDK或本轮完整workspace全绿。子进程32轮turn测试本身始终使用专门临时SQLite与离线transport，未依赖该启动路径。
+
+E-H02-20261026-10（测试契约人工审查）：审查发现立即取消测试的附加工具事件断言误用了不存在的tool.started；模型0请求与canary负/正对照仍是已执行有效证据，但该事件负断言本身不能证明工具未启动。按实际HarnessEvent::ItemStarted + ItemPayload::ToolCall（JSON item.started/item.kind=tool_call）修正，并补正常后续write_file事件正对照，避免再次出现永真负断言。只改测试，生产源码未变；完整workspace使用修正前编译快照，最终需在其结束后定向重跑此测试，不把正在运行的workspace当作新断言已执行。
+
+E-H02-20261026-11（workspace中两类失败即时记录）：完整workspace当前CLI97 passed/27 ignored、AppCore1132/78 ignored、kernel127/86 ignored、builtins352/4 ignored、persistence69/control9、runtime284/16 ignored均通过；但SDK e2e_stdio再次2 passed/4 failed，initialize同样ResponseChannelClosed（0.77s），以及既有H-306 prompts27 passed/1 failed（creative.video-edit.v1空defaultUserPrompt）。此轮不能沿用上一轮“唯一H-306失败”的结论。SDK隔离根对照6 passed见E-09，原继承环境失败原因尚未定位到具体文件。stabilization及后续仍在运行，最终退出码待取得。
+
+E-H02-20261026-12（最终断言复跑与workspace终态）：修正真实item.started/tool_call负断言并增加write_file正对照后，`cargo test -p deepagent-cli admission_immediate_interrupt --offline -j 1 -- --nocapture --test-threads=1`退出0，1 passed/0 ignored（编译19.22s、测试0.34s）。完整`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`同一进程已结束，退出1，明确两个失败target：`-p deepagent-harness-sdk --test e2e_stdio`（2 passed/4 failed，initialize断连）与`-p deepagent-prompts --lib`（27 passed/1 failed，既有H-306）；其余执行target与doc-tests通过，包括stabilization5 passed、session20 passed。workspace使用E-10修正前测试快照，不能称其执行了新事件断言；新断言由上述定向复跑证明。保留SDK隔离根6 passed对照及具体旧根退出原因未知的限制，不重启workspace或宣称全绿。
+
+E-H02-20261026-13（本机范围验收与限制）：最终新断言源码再次执行`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0，97 passed/27 ignored（构建检查0.55s、测试5.33s）；`cargo fmt --all -- --check`与`git diff --check`均退出0。原H-02探针已转默认，6个接纳/取消用例和真实stdio父测试均默认执行，子进程ignored helper由父测试显式运行。生产仅修改CLI app-server：started ACK前调用既有admit_run，原执行器消费同一admission；interrupt按已提交终态及accepted确认；ACK写失败等待同一执行器取消收尾；早期取消只投影原durable结果、不另写终态。本项在所列Windows本机离线/临时数据范围标为已修复并验收，原失败不删；完整workspace仍有E-12两类失败、严格CLI lint仍有E-07既有告警，不等于全仓通过。DTO/schema、AppCore生产代码、前端、模型参数、权限与沙箱配置均未改，无数据迁移。未执行其他OS、真实DeepSeek、真实UI或所有feature组合，无前端改动故未跑pnpm build。H-01通知满队列、H-04配置保留及H-92宿主退出仍独立未关闭，已开始的不可撤销工具副作用不因本项回滚。本轮新增1，累计19已验收、18历史跳过、7归并、2撤销、260待修、0修复中；整体goal继续active。下一项准备复核H-04，尚未实施。剩余200–400有效小时仍为未校准跨层复现/修复/验收粗估，编译、设备与环境等待另计，不据本项机械扣减。
+
+E-H02-20261026-14（提交前结构核对）：实际PowerShell校验两份文档，台账306行/306唯一编号、无缺号/重复、每行8列；状态为19已修复并验收、18历史跳过、7归并、2撤销、260待修复，合计306。E-H02-01～13两份文档逐字一致；最终fmt与diff检查退出0。已逐段阅读生产diff及新增admission_tests.rs，检查启动、队列、取消、重开与真实stdio断言；仅本项5文件准备暂存，不读取、修改或暂存原有未跟踪项。尚未生成修复hash，取得后另做文档回填提交，不amend、不推送、不创建PR。
 
 ## H-09 本轮即时记录（2026-10-26）
 
@@ -658,7 +690,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | H 编号、原标题与原报告链接 | 优先级 | 当前状态 | 归并目标 / 跳过依据 | 根因与修复摘要 | 测试命令、结果 / 未执行验收 | 修复 commit ID | 残余、下一步与剩余工时 |
 |---|---|---|---|---|---|---|---|
 | [H-01：stdio 事件队列满时丢弃关键通知，连接仍表现正常](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H02-01原始失败保留，原探针转默认通过；限所列Windows本机范围 | ACK前复用admit_run/执行消费同一admission；interrupt核对终态及accepted；ACK失败同执行器收尾；补早期取消投影 | E-H02-01～13：CLI97 passed/27 ignored、真实stdio32轮、最终事件断言通过、build/fmt/diff通过；SDK隔离根6 passed；全workspace两失败target，严格CLI lint既有告警未绿 | 待本轮独立提交后回填 | H-01/H-04/H-92仍独立未修，其他OS/真实DeepSeek/UI未验；下一项H-04；总体200–400有效小时初估 |
 | [H-03：Harness 的逐次沙箱 backend 选择未进入实际执行路由](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-05：Chat Completions 往返投影拆散同一次 assistant 工具响应](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

@@ -6,6 +6,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-02 | 已修复并验收（2026-10-26，所列Windows本机范围） | ACK前统一admit，interrupt核对accepted；CLI97/27 ignored、真实stdio32轮及ACK失败收尾通过；SDK隔离根6通过；全workspace两失败target、严格lint基线与未验边界见E-H02-01～13；提交待回填 |
 | H-06 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 连接恢复与业务请求重试分离；未知结果结构化保留并禁止自动重放；MCP、HTTP、AppCore正式链路通过；完整workspace仅既有H-306失败，Linux真实stdio因无Node未执行；E-H06-01～06，修复提交`5ba4ee83` |
 | H-74 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 同一Projection帧提交源/派生项；分支和检查点共用有效末端；正式分支6、checkpoint1、stdio1定向通过，完整workspace唯一失败H-306，严格AppCore lint既有10项未绿；E-H74-01～16，修复提交`1dbac424` |
 | H-286 | 已修复并验收（2026-10-26，Windows 本机范围） | 旧目标 staging/no-replace 发布/失败恢复；原正式探针已转默认并通过；builtins 292 passed/1 ignored，AppCore 正式工具链 102 passed/92 ignored。完整 workspace 和全依赖 lint 未全绿，限制见原项修复记录；修复提交 `56b9e7b9` |
@@ -25,7 +26,7 @@
 | H-08 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `McpTransport`统一支持无 ID notification，initialize 成功后发送 `notifications/initialized`；严格 stdio、HTTP fixture、MCP全组和AppCore MCP筛选通过；E-H08-01～04，修复提交`2dc9fdf6` |
 | H-09 | 已修复并验收（2026-10-26，Windows本机MCP/AppCore范围） | 单stdout reader、pending/oneshot与连接唯一wire ID；原探针转默认通过，stdio12/0 ignored、正式消费者1；全workspace唯一H-306失败及AppCore严格lint阻断见E-H09-01～09，修复提交`46ba0fd7` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。本次按306行台账实核：本阶段累计修复 **18**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **261（261待修复、0修复中）**；306是历史编号槽位。H-09已完成所列Windows本机MCP/AppCore范围验收；未把ignored、完整workspace或AppCore严格lint当作全绿，H-12 HTTP session管理仍独立待修，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **19**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **260（260待修复、0修复中）**；306是历史编号槽位。H-02完成所列Windows本机范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -388,6 +389,8 @@
 
 ### H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认
 
+**当前修复状态（2026-10-26）：已修复并验收（所列Windows本机范围）。** start/steer ACK前复用统一接纳，原执行器消费同一admission，中断按实际accepted确认；原始失败保留，最终证据与限制见E-H02-01～13，修复提交待回填。完整workspace和严格lint未全绿。
+
 **级别：高（P1）；范围：stdio `turn/start` / `turn/interrupt`；桌面 `start_chat_v2` 已采用更早的接纳，不能据此认定桌面同样失败。**
 
 #### 触发与复现
@@ -414,7 +417,37 @@ Codex `借鉴/codex/codex-rs/app-server/src/request_processors/turn_processor.rs
 - start 返回前完成统一接纳；执行端消费同一 admission；interrupt 必须依据 `accepted` 返回实际受理状态或保留可交付的取消意图，并覆盖立即取消、排队取消和完成竞争。
 - 测试需检验“取消后没有模型/工具启动”与唯一终态，不能只验证 JSON 字段。
 
-以上探针以默认 `#[ignore]` 保存，因为本轮仅审查，未修改生产行为；显式执行时预期为红色。修复对应业务问题时应改为默认运行的回归测试。
+审计当时以上探针以默认 `#[ignore]` 保存，显式执行为红色；本次修复已移除该ignore并默认通过，历史失败证据保留，见以下修复记录。
+
+#### H-02 即时修复记录（2026-10-26）
+
+E-H02-20261026-01（原始探针复现）：生产代码未改时执行`cargo test -p deepagent-cli audit_interrupt_after_start_ack_reaches_cancellation --offline -- --ignored --nocapture`，退出1，0 passed/1 failed/0 ignored（编译1m05s、测试0.20s）。实际`status="cancelling", active_registration=false, durable_runs=0`，ACK后的中断未送达任何执行侧注册。当前turn_start只插内存TurnState，run_stdio先写响应再spawn；turn_interrupt忽略request_cancel().accepted。状态转修复中，仅修H-02接纳/取消交付，复用ChatService::admit_run与RunCoordinator::take_admission，不修改H-04覆盖配置、H-01事件队列或另建取消链。原有未跟踪项不读取、不修改、不暂存。
+
+E-H02-20261026-02（根因实现与专项准备）：turn/start与turn/steer替换在返回started前调用现有ChatService::admit_run，执行端仍走run_in_session_with_overrides→RunCoordinator::take_admission，未建第二套registry。interrupt先检查已提交终态，再核对request_cancel().accepted，失去注册时不再虚假确认。run_stdio即使响应写失败也先移交已接纳launch，防止该错误分支遗留未执行admission；这不等于完成H-92宿主退出治理。准备前/排队取消由AppCore原边界写一次durable cancelled，Harness仅通过既有project_runtime_event补缺失的interrupted通知，并记录是否已收到kernel取消事件以避免重复。新增5个正式回归，使用真实InputLease队列日志屏障、模型调用计数、临时文件与重开读取，含正常后续输入；两处旧ignored steer探针移除现已多余的手工admit，保留其原独立断言与ignore。cargo fmt --all退出0，专项已启动，尚未取得通过结果。
+
+E-H02-20261026-03（五项正式专项通过）：`cargo test -p deepagent-cli admission_ --offline -j 1 -- --nocapture --test-threads=1`退出0，5 passed/0 ignored（编译28.75s、测试1.35s）。立即取消在执行前durable run已存在，两次interrupt均受理，模型请求0、canary未创建、唯一durable cancelled与live interrupted，重开read一致；后续正常输入真实调用模型2次并由write_file创建canary。真实队列以input_queued生产日志作为屏障，在前一个provider仍阻塞时取消排队项，取消项独立结束且未调用模型，释放前一个后下一输入可正常运行。另覆盖接纳失败无ACK/无TurnState/无durable run、完成后连接active视图落后仍拒绝中断、缺失注册拒绝中断、steer替换在执行前可取消。尚待原探针默认重跑、CLI全组/SDK stdio/严格lint及完整workspace验证。
+
+E-H02-20261026-04（原探针默认、CLI全组与真实管道）：`cargo test -p deepagent-cli --offline -j 1 -- --nocapture --test-threads=1`退出0，95 passed/26 ignored（4.64s），包含已取消ignore的原始H-02探针。随后新增独立真实子进程run_stdio父测试，使用临时SQLite、离线可取消transport、真实stdin/stdout管道连续32轮，每次在实际wire ACK立即检查durable run，再发interrupt并等待thread/read及live通知；最终按每个turn核对唯一run_terminal、唯一turn.interrupted，子进程有超时与kill/wait清理。`cargo test -p deepagent-cli admission_real_stdio --offline -j 1 -- --nocapture --test-threads=1`退出0，1 passed/0 ignored（编译17.79s、测试0.73s），实际32 ACK/32 interrupt/32唯一cancelled、model_requests=0。此样本说明本机该调度运行未启动模型；并不声称任意ACK后发送中断都早于模型启动，已开始的请求取消由队列/运行期对照覆盖。子进程entrypoint只作为ignored helper由父测试显式执行，不当作另一个默认成功场景计数。尚待最终CLI全组、SDK生产二进制与workspace，严格lint已启动。
+
+E-H02-20261026-05（严格lint首跑失败并修正本轮告警）：`cargo clippy -p deepagent-cli --all-targets --offline -j 1 --no-deps -- -D warnings`退出1：app_server.rs:610既有unnecessary_map_or，以及新增管道测试显式drop(send)触发drop_non_drop。已移除本轮多余closure drop，依Rust借用结束后直接关闭stdin，不屏蔽告警；既有map_or行未改，不顺手治理。此记录不把首次严格lint说成通过；后续需重跑确认仅剩基线。
+
+E-H02-20261026-06（最终边界审查与lint基线）：修正本轮drop_non_drop后，重跑同一CLI严格lint退出1，仅剩app_server.rs:610既有unnecessary_map_or；已对照HEAD确认该行相同，未屏蔽。审查时发现“写ACK失败后仅spawn”仍可能随宿主错误返回而被丢弃，故收敛为同一complete_turn_dispatch移交边界：失败时先请求取消，再await原执行器完成，最后保留原写错误返回。新增故障注入用例从该正式边界传入stdout broken pipe，断言返回前唯一cancelled、注册释放、模型0；尚待本次新增用例实际结果。正常EOF/运行时被销毁仍属独立H-92，不宣称解决。最终源码已fmt，CLI全组等待当前正式二进制构建锁；此时尚未更新已验收计数。
+
+E-H02-20261026-07（冻结源码后的CLI与二进制）：最终`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0，97 passed/27 ignored（编译31.92s、测试5.45s），包含原探针、6个接纳/取消确定性测试与真实32轮stdio父测试；ignored数量包含本轮子进程helper，helper由父测试实际执行。ACK失败注入验证返回前已完成唯一cancelled、取消注册释放、model请求0，并保留原broken-pipe错误。`cargo build -p deepagent-cli --offline -j 1`最后复核退出0（0.96s），确认SDK使用当前源码生成的正式二进制。最终严格CLI lint再次退出1，仅app_server.rs:610原有unnecessary_map_or（与HEAD相同行），本轮drop_non_drop已消失；不宣称严格lint全绿。SDK e2e_stdio与完整workspace已依次启动，后者正等待前者build锁，尚无最终结果。
+
+E-H02-20261026-08（SDK真实失败即时记录）：当前源码正式二进制构建通过后，`cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 1 -- --nocapture --test-threads=1`退出1，2 passed/4 failed/0 ignored（编译23.96s、测试1.00s）。四项都在initialize时报ResponseChannelClosed{id:1}：initialize_then_thread_start_streams_thread_started_event、interrupt_unknown_turn_surfaces_rpc_error、introspection_methods_round_trip_without_a_model、process_exits_when_stdin_closes；路径解析与初始化前请求拒绝通过。此时未进入turn/start，原因待查，不能称SDK消费链通过。完整workspace仍在运行/编译，保留同一进程继续观察，不因局部失败重启。
+
+E-H02-20261026-09（SDK隔离数据根对照通过）：检查SDK HarnessProcess::spawn确认其只设置cwd并继承环境，正式CLI启动会先按DEEPAGENT_DB_PATH/DEEPAGENT_DATA_ROOT选择数据并执行prepare；不把临时workspace误认为数据根隔离。保留E-08失败，未读取既有根内容、凭据或真实会话来定位具体文件。使用当前已编译的同一`target/debug/deps/e2e_stdio-fc54430c7f874953.exe --nocapture --test-threads=1`，仅在该shell进程中指定全新临时DEEPAGENT_DATA_ROOT并移除继承的DEEPAGENT_DB_PATH，退出0，6 passed/0 ignored（0.58s）。相同当前CLI二进制下隔离根消除了初始化断连，支持将E-08作为环境/数据选择相关阻断保留；尚未证明继承根中具体哪项导致退出，不伪称已修SDK或本轮完整workspace全绿。子进程32轮turn测试本身始终使用专门临时SQLite与离线transport，未依赖该启动路径。
+
+E-H02-20261026-10（测试契约人工审查）：审查发现立即取消测试的附加工具事件断言误用了不存在的tool.started；模型0请求与canary负/正对照仍是已执行有效证据，但该事件负断言本身不能证明工具未启动。按实际HarnessEvent::ItemStarted + ItemPayload::ToolCall（JSON item.started/item.kind=tool_call）修正，并补正常后续write_file事件正对照，避免再次出现永真负断言。只改测试，生产源码未变；完整workspace使用修正前编译快照，最终需在其结束后定向重跑此测试，不把正在运行的workspace当作新断言已执行。
+
+E-H02-20261026-11（workspace中两类失败即时记录）：完整workspace当前CLI97 passed/27 ignored、AppCore1132/78 ignored、kernel127/86 ignored、builtins352/4 ignored、persistence69/control9、runtime284/16 ignored均通过；但SDK e2e_stdio再次2 passed/4 failed，initialize同样ResponseChannelClosed（0.77s），以及既有H-306 prompts27 passed/1 failed（creative.video-edit.v1空defaultUserPrompt）。此轮不能沿用上一轮“唯一H-306失败”的结论。SDK隔离根对照6 passed见E-09，原继承环境失败原因尚未定位到具体文件。stabilization及后续仍在运行，最终退出码待取得。
+
+E-H02-20261026-12（最终断言复跑与workspace终态）：修正真实item.started/tool_call负断言并增加write_file正对照后，`cargo test -p deepagent-cli admission_immediate_interrupt --offline -j 1 -- --nocapture --test-threads=1`退出0，1 passed/0 ignored（编译19.22s、测试0.34s）。完整`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`同一进程已结束，退出1，明确两个失败target：`-p deepagent-harness-sdk --test e2e_stdio`（2 passed/4 failed，initialize断连）与`-p deepagent-prompts --lib`（27 passed/1 failed，既有H-306）；其余执行target与doc-tests通过，包括stabilization5 passed、session20 passed。workspace使用E-10修正前测试快照，不能称其执行了新事件断言；新断言由上述定向复跑证明。保留SDK隔离根6 passed对照及具体旧根退出原因未知的限制，不重启workspace或宣称全绿。
+
+E-H02-20261026-13（本机范围验收与限制）：最终新断言源码再次执行`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0，97 passed/27 ignored（构建检查0.55s、测试5.33s）；`cargo fmt --all -- --check`与`git diff --check`均退出0。原H-02探针已转默认，6个接纳/取消用例和真实stdio父测试均默认执行，子进程ignored helper由父测试显式运行。生产仅修改CLI app-server：started ACK前调用既有admit_run，原执行器消费同一admission；interrupt按已提交终态及accepted确认；ACK写失败等待同一执行器取消收尾；早期取消只投影原durable结果、不另写终态。本项在所列Windows本机离线/临时数据范围标为已修复并验收，原失败不删；完整workspace仍有E-12两类失败、严格CLI lint仍有E-07既有告警，不等于全仓通过。DTO/schema、AppCore生产代码、前端、模型参数、权限与沙箱配置均未改，无数据迁移。未执行其他OS、真实DeepSeek、真实UI或所有feature组合，无前端改动故未跑pnpm build。H-01通知满队列、H-04配置保留及H-92宿主退出仍独立未关闭，已开始的不可撤销工具副作用不因本项回滚。本轮新增1，累计19已验收、18历史跳过、7归并、2撤销、260待修、0修复中；整体goal继续active。下一项准备复核H-04，尚未实施。剩余200–400有效小时仍为未校准跨层复现/修复/验收粗估，编译、设备与环境等待另计，不据本项机械扣减。
+
+E-H02-20261026-14（提交前结构核对）：实际PowerShell校验两份文档，台账306行/306唯一编号、无缺号/重复、每行8列；状态为19已修复并验收、18历史跳过、7归并、2撤销、260待修复，合计306。E-H02-01～13两份文档逐字一致；最终fmt与diff检查退出0。已逐段阅读生产diff及新增admission_tests.rs，检查启动、队列、取消、重开与真实stdio断言；仅本项5文件准备暂存，不读取、修改或暂存原有未跟踪项。尚未生成修复hash，取得后另做文档回填提交，不amend、不推送、不创建PR。
 
 ### H-03：Harness 的逐次沙箱 backend 选择未进入实际执行路由
 

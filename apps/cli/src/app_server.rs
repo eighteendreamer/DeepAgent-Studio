@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use deepagent_app_core::{
@@ -839,6 +839,12 @@ impl ServerState {
             sandbox_backend: params.sandbox_backend.or(thread.sandbox_backend),
             permission_profile: params.permission_profile.or(thread.permission_profile),
         };
+        if let Err(error) = thread.chat.admit_run(&turn_id, &params.thread_id) {
+            return (
+                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                None,
+            );
+        }
         self.turns.insert(
             turn_id.clone(),
             TurnState {
@@ -889,15 +895,38 @@ impl ServerState {
                 None,
             );
         }
-        // The turn may have been acknowledged by the protocol before
-        // ChatService has installed its cancellation alias. The active turn
-        // registry is authoritative for the app-server ACK; the runtime
-        // cancellation call remains the single execution-side mechanism.
-        if let Err(error) = turn.chat.request_cancel(&params.turn_id) {
-            return (
-                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                None,
-            );
+        // A worker can commit its terminal before finish_turn updates this
+        // connection's view. Durable completion and the shared cancellation
+        // registry determine whether an interrupt can still be accepted.
+        match RunStore::new(&self.database).get(&params.turn_id) {
+            Ok(Some(run)) if run.finished_at.is_some() => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_TURN, "turn is already terminal"),
+                    None,
+                );
+            }
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                );
+            }
+            _ => {}
+        }
+        match turn.chat.request_cancel(&params.turn_id) {
+            Ok(request) if request.accepted => {}
+            Ok(_) => {
+                return (
+                    RpcResponse::error(id, ERR_INVALID_TURN, "turn is no longer cancellable"),
+                    None,
+                );
+            }
+            Err(error) => {
+                return (
+                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                    None,
+                );
+            }
         }
         (
             RpcResponse::success(
@@ -950,6 +979,12 @@ impl ServerState {
                 .chat
                 .record_continuation(&params.turn_id, &params.turn_id, &next_turn)
         {
+            return (
+                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
+                None,
+            );
+        }
+        if let Err(error) = current.chat.admit_run(&next_turn, &params.thread_id) {
             return (
                 RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
                 None,
@@ -1113,21 +1148,54 @@ pub async fn run_stdio(
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             guard.dispatch(request, Some(&emitter))
         };
-        write_response(&stdout, &response).await?;
+        let written = write_response(&stdout, &response).await;
         if let Some(launch) = launch {
-            spawn_turn(state.clone(), emitter.clone(), launch);
+            complete_turn_dispatch(state.clone(), emitter.clone(), launch, written).await?;
+        } else {
+            written?;
         }
     }
     Ok(())
 }
 
-fn spawn_turn(state: Arc<Mutex<ServerState>>, emitter: EventEmitter, launch: TurnLaunch) {
+async fn complete_turn_dispatch(
+    state: Arc<Mutex<ServerState>>,
+    emitter: EventEmitter,
+    launch: TurnLaunch,
+    written: Result<(), String>,
+) -> Result<(), String> {
+    // Admission already committed. If its ACK cannot be written, cancel before
+    // preparation and let the same executor finalize it before returning the
+    // transport error to the host.
+    let cancellation = written
+        .is_err()
+        .then(|| launch.chat.request_cancel(&launch.turn_id));
+    let worker = spawn_turn(state, emitter, launch);
+    if let Some(cancellation) = cancellation {
+        worker
+            .await
+            .map_err(|error| format!("finalize undelivered turn ACK: {error}"))?;
+        cancellation.map_err(|error| error.to_string())?;
+    }
+    written
+}
+
+fn spawn_turn(
+    state: Arc<Mutex<ServerState>>,
+    emitter: EventEmitter,
+    launch: TurnLaunch,
+) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let context =
             EventContext::new(Some(launch.thread_id.clone()), Some(launch.turn_id.clone()));
         let event_emitter = emitter.clone();
         let event_context = context.clone();
+        let interrupted = Arc::new(AtomicBool::new(false));
+        let event_interrupted = interrupted.clone();
         let on_event = move |event: deepagent_runtime::RuntimeEvent| {
+            if matches!(event, deepagent_runtime::RuntimeEvent::RunCancelled { .. }) {
+                event_interrupted.store(true, Ordering::Release);
+            }
             if let Some(projected) = project_runtime_event(&event, &event_context) {
                 event_emitter(projected);
             }
@@ -1160,6 +1228,27 @@ fn spawn_turn(state: Arc<Mutex<ServerState>>, emitter: EventEmitter, launch: Tur
                 on_approval,
             )
             .await;
+        // Cancellation before preparation or while queued never enters the
+        // kernel's event sink. Project its committed outcome through the same
+        // protocol mapper; do not write another terminal or duplicate a live one.
+        let result = result.and_then(|session| {
+            let db = launch.chat.database();
+            let run = RunStore::new(&db).get(&launch.turn_id)?;
+            if run.is_some_and(|run| {
+                run.terminal_kind.as_deref() == Some("cancelled")
+                    && !interrupted.load(Ordering::Acquire)
+            }) {
+                if let Some(event) = project_runtime_event(
+                    &deepagent_runtime::RuntimeEvent::RunCancelled {
+                        edited_files: Vec::new(),
+                    },
+                    &context,
+                ) {
+                    emitter(event);
+                }
+            }
+            Ok(session)
+        });
         if let Err(error) = result {
             emitter(HarnessEvent::TurnFailed {
                 thread_id: Some(launch.thread_id.clone()),
@@ -1171,7 +1260,7 @@ fn spawn_turn(state: Arc<Mutex<ServerState>>, emitter: EventEmitter, launch: Tur
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .finish_turn(&launch.turn_id);
-    });
+    })
 }
 
 async fn write_response(
@@ -1283,7 +1372,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: interrupt after turn ACK must reach cancellation registration"]
     fn audit_interrupt_after_start_ack_reaches_cancellation() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);
@@ -1321,6 +1409,8 @@ mod tests {
             active_registration,
             "interrupt acknowledged cancelling without an execution-side registration"
         );
+        assert_eq!(durable_runs.len(), 1);
+        assert_eq!(durable_runs[0].id, turn_id);
     }
 
     #[test]
@@ -1389,10 +1479,6 @@ mod tests {
             None,
         );
         let original = original.unwrap();
-        original
-            .chat
-            .admit_run(&original.turn_id, &thread_id)
-            .unwrap();
         let expected = serde_json::to_value(&original.overrides).unwrap();
         let (response, replacement) = state.dispatch(
             rpc_request(
@@ -1429,11 +1515,6 @@ mod tests {
             None,
         );
         let original = original.unwrap();
-        original
-            .chat
-            .admit_run(&original.turn_id, &thread_id)
-            .expect("admit the active turn before steering");
-
         let (first_response, first_replacement) = state.dispatch(
             rpc_request(
                 4,

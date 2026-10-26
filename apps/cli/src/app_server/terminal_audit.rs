@@ -1,5 +1,8 @@
 //! Exercise the real dispatcher/executor and durable read projection without network access.
 
+#[path = "admission_tests.rs"]
+mod admission_tests;
+
 use super::*;
 use deepagent_app_core::{ApprovalPolicy, MemorySecretStore, SettingsService};
 use deepagent_core::error::{CoreError, Result as CoreResult};
