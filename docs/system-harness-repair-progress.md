@@ -9,14 +9,28 @@
 | 状态 | 数量 | 含义 |
 |---|---|---|
 | 本阶段已修复并验收 | 12 | H-286、H-72、H-73、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78，均限所列本机验收；H-78修复提交`c6947508`，其余hash见明细 |
-| 历史已修复跳过 | 17 | 原报告有实现及修复后验收；本轮不重复修复/冒称重验 |
+| 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | H-78 Windows本机验收及跨卷/Unix兼容结果见E-63～72；Unix操作期竞态、macOS/断电等未验证范围仍明示保留 |
-| 待修复 | 268 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 267 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **268（268待修复）**；不提供完成率。十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。历史修复依原报告状态跳过，但不虚构其 commit ID：尚未逐项重新定位的历史 hash 明确留为“未重新定位”，保留原文验收来源。
+有效未关闭条目当前为 **267（267待修复）**；不提供完成率。十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-77 原探针复核（2026-10-26）
+
+当前状态：历史已修复跳过（前轮c6947508已消除，本轮生产代码不变），默认回归与跳过依据见E-01～05，独立测试/文档提交待回填。原审计失败保留；不归并H-78或关闭H-79。
+
+E-H77-20261026-01（原探针先行，尚未改生产）：HEAD=3e8ac506，工作树仅原有未跟踪用户项，未读改或暂存。读取原file_search_policy.rs与当前GrepTool/walk_collect/WorkspaceRoot，确认c6947508已将候选发现和实际正文读取接入read_identity/open_read，静态看同一敏感规则现已应用；不据此直接关闭H-77。已启动原命令`cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -j 1 -- --include-ignored --nocapture --test-threads=1`，保留ignored探针并显式执行，尚在编译。本轮只复核H-77敏感内容搜索，不关闭独立H-79名称可见性，也不新增重复生产链。重新核对Claude Code restored-src的GrepTool.ts:411～426及permissions/filesystem.ts:837：候选过滤消费统一Read deny模式；参考源码未执行，只作设计对照。
+
+E-H77-20261026-02（原复现已不成立，跳过重复生产修改）：E-01原命令真实退出0，2 passed/0 failed/0 ignored（编译2m35s、测试1.40s）。.env/credentials默认搜索均public_sent=true、protected_sent=false；certs/server.key显式**/*.key为public_sent=false、protected_sent=false；普通*.txt对照仍public_sent=true。每组真实read_file硬拒绝、grep完成ok、单succeeded终态，三个原受保护样本均未进入下一请求。原因对应c6947508内GrepTool::open_read与walk_collect::read_identity复用现有敏感路径策略；该生产修复先于本轮，不将其再记成一次新生产修复，也不为了凑数量重复改源代码。接下来只将原ignored转默认、补ReadOnly/Workspace/Full正式模式及嵌套敏感目录/大小写回归，并以结构化hits字段观察内容；验证后按“前轮已修复跳过重复生产修改”登记，保留原审计失败，不归并或提前关闭H-79。
+
+E-H77-20261026-03（默认正式回归通过，原探针已转默认）：只修改测试，取消原audit_grep探针的ignore，结构化解析下一wire配对输出并仅统计result.hits[].text，新增query/error回显反例，避免把输入或错误文字误判正文；原直接read拒绝与grep完成/单终态断言保留。补三个正式SandboxMode×五种敏感路径共15组，包含嵌套敏感目录和大小写名称。执行不带include-ignored的`cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -j 1 -- --nocapture --test-threads=1`退出0，4 passed/0 failed/0 ignored（编译1m39s、测试7.48s），15组均public_sent=true、protected_sent=false，原三个样本及普通*.txt对照也通过；4项含观察器测试，不冒称4个缺陷。另补现有builtins模块内四种FsAccess（含没有对应当前AppCore模式的ReadAnywhere）的公开Tool回归，仅新增cfg(test)，未改变生产代码；Linux定向执行尚在编译，不能记为通过。
+
+E-H77-20261026-04（四FsAccess跨平台定向通过）：新增测试grep_sensitive_policy_matches_direct_reads_in_every_access_mode在同一临时root中放入五种敏感路径及safe.txt，分别验证ReadOnly/Workspace/ReadAnywhere/Full：每个受保护直接读取失败，默认grep只返回safe.txt的真实正文，显式**/*.key成功但无hits。Windows `cargo test -p deepagent-builtins --lib grep_sensitive_policy --offline -j 1 -- --nocapture`退出0，1 passed/0 failed/0 ignored（编译21.61s、测试0.09s）。Linux沿H-78独立1.96.0环境，`cargo test -p deepagent-builtins --lib grep_sensitive_policy --locked --offline -j 4 -- --nocapture`退出0，1 passed/0 failed/0 ignored（编译17.40s、测试0.00s）。本轮只加cfg(test)与正式离线fixture，不改变生产行为；fmt --check、diff --check均退出0。当前all-targets/all-features严格builtins lint仍在运行，尚不记通过。未重新执行完整workspace/AppCore lint/真实UI/供应商/macOS，保留H-78中H-306及既有lint基线，不借旧通过宣称本轮全仓通过。
+
+E-H77-20261026-05（复核结论，跳过重复生产修复）：`cargo clippy -p deepagent-builtins --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0（17.13s）。H-77在本轮开始前已由c6947508的统一候选授权/正文打开消除，原探针显式运行通过、转默认后四项回归通过，补充Windows/Linux四FsAccess定向通过。因此本轮生产修复新增0，H-77登记为历史已修复跳过（明确是前轮共享边界已落地，不冒称原审计期间就已修复）；补交测试与当时两份文档的独立提交，hash随后回填，H-78实现不重复提交。限制：本项只验收fs_guard既有敏感路径规则的内容搜索，不等于任意自定义Read deny、自动上下文/CodeGraph/MCP均已统一；H-79敏感名称可见性仍独立待修。Unix操作期竞态、macOS、真实UI/供应商未验证。累计本阶段新增生产修复仍12项，跳过由17增至18（17审计历史+1前轮已修复），归并7、撤销2，待修267，整体goal仍active。下一项准备H-79原探针；剩余200–400有效小时仍未校准粗估，环境等待另计。
 
 ## H-78 本轮即时记录（2026-10-26）
 
@@ -269,7 +283,7 @@ workspace最终退出1：既有H-306（prompts27 passed/1 failed，`creative.vid
 
 暂估剩余 **200–400 小时有效修复、测试和文档交付时间**，是基于当前有效未关闭规模、跨层 owner/授权/持久化问题与多数单项需原输入回归的初始规划区间，不是将每项假定为相同难度。已交付项复杂度不同，且尚无独立计量的有效工时，不能据此虚构可靠吞吐或机械扣减工时；继续按实际样本与剩余根因分组滚动校准，不编造精确结束日期。不以对话跨度或编译等待伪造工时样本。
 
-设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。H-78 Windows本机验收已完成，真实跨卷与Linux共享解析兼容已执行，矩阵及未验证边界见E-72；workspace仍因既有H-306失败，不能写成全仓通过。当前8层路径公开read计时E-61仅本机小样本。H-78独立提交后，下一项准备复核H-77的原敏感文件搜索探针，先检查共享边界改动是否已使原复现不成立，不提前关闭或新增重复生产修复。H-32所有权与H-44终态投影分别验收、不归并。H-238/H-260/H-287等仍独立待修。
+设备、其他 OS/SDK、真实供应商或 UI 环境的等待时间 **尚无法量化，另计，不混入有效工时承诺**。不可取得的验收必须按具体问题报告阻塞或限制，不静默关闭。优先队列按原报告 A/B 组：文件损坏/授权一致性 → 未知结果副作用 → 接纳/审批/持久提交 → provider/计量/画布 → 历史/缓存/客户端。H-78 Windows本机验收已完成，真实跨卷与Linux共享解析兼容已执行，矩阵及未验证边界见E-72；workspace仍因既有H-306失败，不能写成全仓通过。当前8层路径公开read计时E-61仅本机小样本。H-77原探针已确认前轮共享边界修复生效，本轮只补默认回归并跳过重复生产修改；来源单列，不冒称审计期间已修复。H-77测试/文档独立提交后，下一项复核H-79名称可见性。H-32所有权与H-44终态投影分别验收、不归并。H-238/H-260/H-287等仍独立待修。
 
 ## H-286 本轮实施与验收明细
 
@@ -602,7 +616,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-74：分支边界截在源消息与原生镜像之间，保留的消息不进入下一请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-75：运行中回退没有取消或提交栅栏，已丢弃 turn 的回答仍写入新历史](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原 HEAD 1a3c7192 为 1 passed/1 failed，原证据保留 | 复用会话锁：admission 至外层投影持共享 scope，rewind/fork 持独占 scope，忙时拒绝；桌面成功后才清屏 | active_rewind 默认 4 passed/0 ignored；四 crate 测试及 pnpm build 退出 0；workspace/严格 lint 既有失败及实际命令见 H-75 明细 | `8eea7bd5` | 限 Windows 后端及回调/构建；真实 UI/其他 OS 未验；H-33/H-23/跨 session 副作用未解决；下一项 H-76，总区间 200–400 有效工时 |
 | [H-76：文件写入只验证“曾经读过”，外部已保存的改动仍被旧内容成功覆盖](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原 HEAD 4c885044 复现失败，修复后原探针已转默认且通过，保留中间断言失败 | 观察真实字节与已交付窗口，三 mutation 统一提交、暂存后复核；稳定路径协作 gate，成功失效 | mutation 20 passed；正式 file_version 3 passed/0 ignored；workspace 内 builtins312、AppCore1104/正式链107、persistence67；runtime/session补跑通过；完整命令与既有失败见本节 | `b7cdfcc8` | Windows 本机范围；非协作 syscall 间隙、actor/compaction/路径/DACL及其他OS仍有限制；下一项 H-20，总区间200–400有效工时 |
-| [H-77：grep 未继承敏感文件读取拒绝，普通搜索可将被禁止的内容送入模型请求](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-77：grep 未继承敏感文件读取拒绝，普通搜索可将被禁止的内容送入模型请求](system-harness-audit-2026-10-21.md) | P1 | 历史已修复跳过 | 原探针当前2 passed；实现已随前轮c6947508落地，不重复新生产修复、不归并H-78 | 统一walk_collect候选授权与grep正文open_read消费现有敏感策略；本轮只测试/文档 | 原探针转默认，正式4 passed含15组profile样本；四FsAccess公开工具Windows/Linux各1 passed；严格builtins全feature lint/fmt/diff通过，E-H77-01～05 | 生产`c6947508`；本轮测试文档提交待回填 | 仅fs_guard敏感内容策略；H-79/自定义规则及其他入口不随本项关闭；本轮新增生产修复0，下一项H-79 |
 | [H-78：Windows 工作区目录联接绕过词法路径限制，read_file 读取根目录外文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 保留全部阶段失败；H-279仅归并；Windows本机验收范围见E-72 | 共享逐跳授权/初始根身份/操作期pin；Windows读/枚举/mutation/delete/move共用边界，主registry有效FsAccess；复用H-76/H-286提交回滚 | Windows builtins349/4 ignored；正式path_boundary8（含mutation16组）/file_version3/move2通过；UNC/SUBST及跨卷显式通过；Linux305、persistence68+9通过；双crate严格lint通过；workspace H-306/AppCore既有lint失败，E-63～72 | `c6947508` | Unix字符串I/O竞态、macOS/断电/任意SMB未验；非全系统自主I/O统一；无协议迁移；本项Windows本机剩余0，环境另计 |
 | [H-79：glob/list_dir 返回被直接读取策略拒绝的敏感文件名](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-80：Responses repair 对外部混合工具类型缺少不变量校验（条件性）](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

@@ -1525,6 +1525,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn grep_sensitive_policy_matches_direct_reads_in_every_access_mode() {
+        use crate::fs_guard::FsAccess;
+
+        let (_dir, root) = temp_root();
+        let protected_paths = [
+            ".env",
+            "credentials",
+            "certs/server.key",
+            "nested/secret-store/data.txt",
+            "nested/.ENV.Local",
+        ];
+        for path in protected_paths {
+            let path = root.path().join(path);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "protected policy fixture").unwrap();
+        }
+        std::fs::write(root.path().join("safe.txt"), "public policy fixture").unwrap();
+        for access in [
+            FsAccess::ReadOnly,
+            FsAccess::Workspace,
+            FsAccess::ReadAnywhere,
+            FsAccess::Full,
+        ] {
+            let root = root.clone().with_access(access);
+            let reader = ReadFileTool::new(root.clone());
+            for path in protected_paths {
+                let read = reader
+                    .invoke(serde_json::json!({"path":path}))
+                    .await
+                    .unwrap();
+                assert!(!read.ok, "{access:?}/{path}: {read:?}");
+            }
+            let grep = GrepTool::new(root);
+            let output = grep
+                .invoke(serde_json::json!({"query":"policy fixture"}))
+                .await
+                .unwrap();
+            assert!(output.ok, "{access:?}: {output:?}");
+            let hits = output.value["hits"].as_array().unwrap();
+            assert_eq!(hits.len(), 1, "{access:?}: {output:?}");
+            assert_eq!(hits[0]["file"], "safe.txt");
+            assert_eq!(hits[0]["text"], "public policy fixture");
+            let explicit = grep
+                .invoke(serde_json::json!({"query":"policy fixture", "glob":"**/*.key"}))
+                .await
+                .unwrap();
+            assert!(explicit.ok, "{access:?}: {explicit:?}");
+            assert!(explicit.value["hits"].as_array().unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn list_dir_returns_entries() {
         let (_d, root) = temp_root();
         WriteFileTool::new(root.clone())

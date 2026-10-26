@@ -2162,6 +2162,20 @@ Workspace 实录：`cargo test --workspace --offline -j 1 -- --quiet` **退出 1
 
 ### H-77：grep 未继承敏感文件读取拒绝，普通搜索可将被禁止的内容送入模型请求
 
+#### 2026-10-26 原探针复核
+
+E-H77-20261026-01（原探针先行，尚未改生产）：HEAD=3e8ac506，工作树仅原有未跟踪用户项，未读改或暂存。读取原file_search_policy.rs与当前GrepTool/walk_collect/WorkspaceRoot，确认c6947508已将候选发现和实际正文读取接入read_identity/open_read，静态看同一敏感规则现已应用；不据此直接关闭H-77。已启动原命令`cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -j 1 -- --include-ignored --nocapture --test-threads=1`，保留ignored探针并显式执行，尚在编译。本轮只复核H-77敏感内容搜索，不关闭独立H-79名称可见性，也不新增重复生产链。重新核对Claude Code restored-src的GrepTool.ts:411～426及permissions/filesystem.ts:837：候选过滤消费统一Read deny模式；参考源码未执行，只作设计对照。
+
+E-H77-20261026-02（原复现已不成立，跳过重复生产修改）：E-01原命令真实退出0，2 passed/0 failed/0 ignored（编译2m35s、测试1.40s）。.env/credentials默认搜索均public_sent=true、protected_sent=false；certs/server.key显式**/*.key为public_sent=false、protected_sent=false；普通*.txt对照仍public_sent=true。每组真实read_file硬拒绝、grep完成ok、单succeeded终态，三个原受保护样本均未进入下一请求。原因对应c6947508内GrepTool::open_read与walk_collect::read_identity复用现有敏感路径策略；该生产修复先于本轮，不将其再记成一次新生产修复，也不为了凑数量重复改源代码。接下来只将原ignored转默认、补ReadOnly/Workspace/Full正式模式及嵌套敏感目录/大小写回归，并以结构化hits字段观察内容；验证后按“前轮已修复跳过重复生产修改”登记，保留原审计失败，不归并或提前关闭H-79。
+
+E-H77-20261026-03（默认正式回归通过，原探针已转默认）：只修改测试，取消原audit_grep探针的ignore，结构化解析下一wire配对输出并仅统计result.hits[].text，新增query/error回显反例，避免把输入或错误文字误判正文；原直接read拒绝与grep完成/单终态断言保留。补三个正式SandboxMode×五种敏感路径共15组，包含嵌套敏感目录和大小写名称。执行不带include-ignored的`cargo test -p deepagent-app-core --test kernel_v2_e2e file_search_policy --offline -j 1 -- --nocapture --test-threads=1`退出0，4 passed/0 failed/0 ignored（编译1m39s、测试7.48s），15组均public_sent=true、protected_sent=false，原三个样本及普通*.txt对照也通过；4项含观察器测试，不冒称4个缺陷。另补现有builtins模块内四种FsAccess（含没有对应当前AppCore模式的ReadAnywhere）的公开Tool回归，仅新增cfg(test)，未改变生产代码；Linux定向执行尚在编译，不能记为通过。
+
+E-H77-20261026-04（四FsAccess跨平台定向通过）：新增测试grep_sensitive_policy_matches_direct_reads_in_every_access_mode在同一临时root中放入五种敏感路径及safe.txt，分别验证ReadOnly/Workspace/ReadAnywhere/Full：每个受保护直接读取失败，默认grep只返回safe.txt的真实正文，显式**/*.key成功但无hits。Windows `cargo test -p deepagent-builtins --lib grep_sensitive_policy --offline -j 1 -- --nocapture`退出0，1 passed/0 failed/0 ignored（编译21.61s、测试0.09s）。Linux沿H-78独立1.96.0环境，`cargo test -p deepagent-builtins --lib grep_sensitive_policy --locked --offline -j 4 -- --nocapture`退出0，1 passed/0 failed/0 ignored（编译17.40s、测试0.00s）。本轮只加cfg(test)与正式离线fixture，不改变生产行为；fmt --check、diff --check均退出0。当前all-targets/all-features严格builtins lint仍在运行，尚不记通过。未重新执行完整workspace/AppCore lint/真实UI/供应商/macOS，保留H-78中H-306及既有lint基线，不借旧通过宣称本轮全仓通过。
+
+E-H77-20261026-05（复核结论，跳过重复生产修复）：`cargo clippy -p deepagent-builtins --all-targets --all-features --offline -j 1 --no-deps -- -D warnings`退出0（17.13s）。H-77在本轮开始前已由c6947508的统一候选授权/正文打开消除，原探针显式运行通过、转默认后四项回归通过，补充Windows/Linux四FsAccess定向通过。因此本轮生产修复新增0，H-77登记为历史已修复跳过（明确是前轮共享边界已落地，不冒称原审计期间就已修复）；补交测试与当时两份文档的独立提交，hash随后回填，H-78实现不重复提交。限制：本项只验收fs_guard既有敏感路径规则的内容搜索，不等于任意自定义Read deny、自动上下文/CodeGraph/MCP均已统一；H-79敏感名称可见性仍独立待修。Unix操作期竞态、macOS、真实UI/供应商未验证。累计本阶段新增生产修复仍12项，跳过由17增至18（17审计历史+1前轮已修复），归并7、撤销2，待修267，整体goal仍active。下一项准备H-79原探针；剩余200–400有效小时仍未校准粗估，环境等待另计。
+
+以下保留原审计失败记录；2026-10-26复核确认原问题已由前轮c6947508消除，本轮跳过重复生产修改，默认回归及残余限制见E-H77-05。
+
 **级别：高（P1）；范围：工作区内存在本系统 fs_guard 明确禁止读取的文件，且 grep 的 query 匹配其中某行、glob 覆盖该文件。** 已确认默认递归搜索的 .env/credentials，以及显式 **/*.key 搜索的 certs/server.key；不依赖 shell、MCP、额外授权、符号链接或跳出工作区。
 
 - 根因与生产路径：`PathGuardHook` 在正式 BeforeToolUse 阶段只检查 path/file_path/filename 三类参数；grep 接收的是 query/glob，glob 接收 pattern，因此中央 guard 不会解析它们实际遍历到的资源。`GrepTool::invoke()` 用 `walk_collect()` 从 WorkspaceRoot.path 取得候选文件，再直接 `tokio::fs::read_to_string(root.join(rel))`，没有逐候选调用 resolve_read 或 is_sensitive_path。walk_collect 只跳过部分目录和点开头的目录，不过滤敏感文件；所以根目录的 .env、非隐藏 credentials、key 文件都能进入内容扫描。工具只要求 ReadOnly 且风险 Safe，通用权限检查无法替代文件级拒绝。本系统对 Full/ReadAnywhere 模式也声明敏感文件始终禁止，不能用允许常规读取解释这个跨入口差异。

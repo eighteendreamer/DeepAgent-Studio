@@ -1,6 +1,7 @@
 //! Search must not disclose content that the same run cannot read directly.
 
 use super::*;
+use deepagent_app_core::SandboxMode;
 use deepagent_models::ModelRole;
 
 const PUBLIC: &str = "AUDIT_SEARCH_PUBLIC_493d";
@@ -30,7 +31,9 @@ impl HttpTransport for SearchPolicyModel {
                 .iter()
                 .find(|item| item["type"] == "function_call_output" && item["call_id"] == call_id)
                 .expect("the next request must contain the actual paired tool result")["output"]
-                .to_string()
+                .as_str()
+                .map(|text| serde_json::from_str::<serde_json::Value>(text).unwrap())
+                .unwrap()
         };
         let events = match self.calls.fetch_add(1, Ordering::SeqCst) {
             0 => response_function_call(
@@ -40,8 +43,9 @@ impl HttpTransport for SearchPolicyModel {
             ),
             1 => {
                 let denied = output("audit-protected-read");
-                assert!(denied.contains("sensitive"));
-                assert!(!denied.contains(PROTECTED));
+                assert_eq!(denied["status"], "error");
+                assert!(denied["error"].to_string().contains("sensitive"));
+                assert!(!denied.to_string().contains(PROTECTED));
                 let mut args = serde_json::json!({"query":"AUDIT_SEARCH"});
                 if let Some(pattern) = &self.pattern {
                     args["glob"] = pattern.clone().into();
@@ -50,10 +54,8 @@ impl HttpTransport for SearchPolicyModel {
             }
             2 => {
                 let searched = output("audit-protected-grep");
-                *self.observed.lock().unwrap() = Some(SearchObservation {
-                    public_sent: searched.contains(PUBLIC),
-                    protected_sent: searched.contains(PROTECTED),
-                });
+                assert_eq!(searched["status"], "ok");
+                *self.observed.lock().unwrap() = Some(observe_hits(&searched));
                 response_text("Offline search-policy audit completed.")
             }
             _ => panic!("unexpected extra model request in search-policy audit"),
@@ -62,7 +64,37 @@ impl HttpTransport for SearchPolicyModel {
     }
 }
 
-async fn observe_search(protected_path: &str, pattern: Option<&str>) -> SearchObservation {
+fn observe_hits(envelope: &serde_json::Value) -> SearchObservation {
+    let contains = |marker: &str| {
+        envelope["result"]["hits"].as_array().is_some_and(|hits| {
+            hits.iter().any(|hit| {
+                hit["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains(marker))
+            })
+        })
+    };
+    SearchObservation {
+        public_sent: contains(PUBLIC),
+        protected_sent: contains(PROTECTED),
+    }
+}
+
+#[test]
+fn search_observer_counts_only_hit_text() {
+    let echoed = serde_json::json!({"result":{"query":PROTECTED,"hits":[]},"error":PUBLIC});
+    let observed = observe_hits(&echoed);
+    assert!(!observed.public_sent && !observed.protected_sent);
+    let hit = serde_json::json!({"result":{"hits":[{"text":PUBLIC},{"text":PROTECTED}]}});
+    let observed = observe_hits(&hit);
+    assert!(observed.public_sent && observed.protected_sent);
+}
+
+async fn observe_search(
+    protected_path: &str,
+    pattern: Option<&str>,
+    sandbox_mode: Option<SandboxMode>,
+) -> SearchObservation {
     let workspace = tempfile::tempdir().unwrap();
     let target = workspace.path().join(protected_path);
     std::fs::create_dir_all(target.parent().unwrap()).unwrap();
@@ -80,6 +112,9 @@ async fn observe_search(protected_path: &str, pattern: Option<&str>) -> SearchOb
         .initialize("offline-audit-placeholder")
         .await
         .unwrap();
+    if let Some(mode) = sandbox_mode {
+        settings.set_sandbox_mode(mode).unwrap();
+    }
     for role in [ModelRole::Chat, ModelRole::Reasoner] {
         settings.set_model(role, "deepseek-flash").unwrap();
     }
@@ -132,7 +167,7 @@ async fn observe_search(protected_path: &str, pattern: Option<&str>) -> SearchOb
     assert_eq!(terminals[0].data["kind"], "succeeded");
     let observed = model.observed.lock().unwrap().unwrap();
     eprintln!(
-        "file search-policy audit: path={protected_path}, pattern={pattern:?}, read_denied=true, grep_ok=true, public_sent={}, protected_sent={}",
+        "file search-policy audit: mode={sandbox_mode:?}, path={protected_path}, pattern={pattern:?}, read_denied=true, grep_ok=true, public_sent={}, protected_sent={}",
         observed.public_sent,
         observed.protected_sent,
     );
@@ -141,13 +176,12 @@ async fn observe_search(protected_path: &str, pattern: Option<&str>) -> SearchOb
 
 #[tokio::test]
 async fn ordinary_search_with_restricted_glob_keeps_protected_fixture_out() {
-    let observed = observe_search(".env", Some("*.txt")).await;
+    let observed = observe_search(".env", Some("*.txt"), None).await;
     assert!(observed.public_sent);
     assert!(!observed.protected_sent);
 }
 
 #[tokio::test]
-#[ignore = "audit: grep must honor the same sensitive-file deny policy as read_file"]
 async fn audit_grep_does_not_send_denied_file_contents_to_model() {
     let mut observations = Vec::new();
     for (path, pattern) in [
@@ -155,11 +189,38 @@ async fn audit_grep_does_not_send_denied_file_contents_to_model() {
         ("credentials", None),
         ("certs/server.key", Some("**/*.key")),
     ] {
-        observations.push(observe_search(path, pattern).await);
+        observations.push(observe_search(path, pattern, None).await);
     }
     assert!(observations[0].public_sent && observations[1].public_sent);
     assert!(
         observations.iter().all(|observed| !observed.protected_sent),
         "grep sent content that read_file denied: {observations:?}"
     );
+}
+
+#[tokio::test]
+async fn sensitive_search_policy_is_preserved_across_runtime_profiles() {
+    for mode in [
+        SandboxMode::ReadOnly,
+        SandboxMode::WorkspaceWrite,
+        SandboxMode::FullAccess,
+    ] {
+        for path in [
+            ".env",
+            "credentials",
+            "certs/server.key",
+            "nested/secret-store/data.txt",
+            "nested/.ENV.Local",
+        ] {
+            let observed = observe_search(path, None, Some(mode)).await;
+            assert!(
+                observed.public_sent,
+                "normal file missing in {mode:?}/{path}"
+            );
+            assert!(
+                !observed.protected_sent,
+                "protected content in {mode:?}/{path}"
+            );
+        }
+    }
 }
