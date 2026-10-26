@@ -1077,7 +1077,7 @@ E-H19-03（回归与验收）：原探针已取消 `ignore` 并默认运行。�
 
 E-H19-04（lint 边界）：`cargo clippy -p deepagent-app-core --lib --offline -j 1 --no-deps -- -D warnings` 仍退出1，除本轮新增函数在修正 dead-code 后无新增诊断外，仅有未修改的 `context_runtime.rs` 既有 `clone_on_copy`、`plugin_preparation.rs` `type_complexity`、`run_assembler.rs` `too_many_arguments` 等基线；本轮不顺手改无关 lint。
 
-H-19 在上述 Windows 本机、临时目录、离线模型 transport 与 AppCore dispatch 范围内已修复并验收。修复提交 hash 在独立提交后回填；H-22 的工作区根绑定、H-26 hooks 决策和 H-84 审批事件重复仍独立。
+H-19 在上述 Windows 本机、临时目录、离线模型 transport 与 AppCore dispatch 范围内已修复并验收。修复提交为 `b9320670c6fe9a750f5347f2cd939b7a4a3680f0`；H-22 的工作区根绑定、H-26 hooks 决策和 H-84 审批事件重复仍独立。
 
 ### H-20：DAG 成功节点的工作树被强制删除，文件未交付给主目录或下游
 
