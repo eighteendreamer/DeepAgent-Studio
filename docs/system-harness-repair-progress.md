@@ -250,6 +250,16 @@ E-H37-20261027-04（验收边界）：H-37在 Windows 本机 CronService→ChatS
 
 E-H37-20261027-05（独立提交与真实 hash 回填）：本项生产修复、回归测试与当时两份文档已进入独立提交 `e930066df12949bb7cdb0229b1cd1e5ceaf136b7`（`【fix】修复H-37无人值守审批悬挂`），仅本项相关 CronService、审计回归和文档；未推送、未创建PR。提交前保留 E-H37-01 原始失败及 E-H37-02～04 的根因、回归和边界；此次只回填真实 hash、将 H-37 从待修复移入已修复并验收，不amend、不重复修复 H-15/H-42/H-96/H-97；原有五类未跟踪项未读取、修改或暂存。H-37仅在E-H37-04所列 Windows 本机范围关闭，整体goal保持active，下一项按原优先级复核 H-38。
 
+## H-38 本轮即时记录（2026-10-27）
+
+**当前状态：修复中。** 本轮先复核正式工作流工具注册为空与失败传播缺口；只处理工具节点结果/运行终态一致性，不合并 H-39 条件分支。
+
+E-H38-20261027-01（本轮原始探针复核）：在生产代码未修改的 HEAD `d5afb112` 执行 `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unknown_tool_propagates_node_and_run_failure --offline -j 1 -- --ignored --nocapture --test-threads=1`，退出1，0 passed/1 failed/0 ignored（测试体0.12秒，编译56.68秒）。真实输出为 `api_ok=true tool_status=Completed tool_outputs=Some(Object {error: "invalid input: unknown tool: read_file", output: Null, success: false}) node_error=None end_completed=true run_terminal=Some("succeeded")`；失败断言为执行错误不能成为 Completed 节点。正式 workflow graph、ChatService、WorkflowAgent、AgentKernel、事件泵和RunStore均参与；未启动模型、命令、网络、媒体供应商或真实用户文件。本轮只复核 H-38 原始失败，不合并 H-39。
+
+E-H38-20261027-02（根因修复与默认回归）：工作流装配改为复用 `RunEnvironment`、`base_registry_request` 与 `build_base_tool_registry`，工具使用与普通运行共享文件/命令/权限边界；`WorkflowToolExecutor` 保留底层 `ToolOutput.ok`，`WorkflowAgent` 对未知工具、缺少执行器、缺参及 `success=false` 统一返回节点错误，默认不继续下游。新增正常 `read_file`、工具输出失败和无执行器单测。`cargo test -p deepagent-runtime --lib workflow:: --offline -j 1 -- --nocapture --test-threads=1`：67 passed/0 failed/245 filtered；`cargo test -p deepagent-app-core --lib tool_runtime::session_search_tests --offline -j 1 -- --nocapture --test-threads=1`：2 passed/0 failed/1220 filtered。未启动真实模型、网络、媒体供应商或用户文件。
+
+E-H38-20261027-03（正式工作流回归）：`cargo test -p deepagent-app-core --test workflow_audit --offline -j 1 -- --quiet --test-threads=1`：8 passed/0 failed/40 ignored；原 H-38 探针现为默认测试并确认 `tool_status=Failed`、`end_completed=false`、`run_terminal=failed`，正常 `read_file` 对照通过，缺失文件的 `ToolOutput` 失败不再继续到 `end`。`cargo fmt --all -- --check` 与 `git diff --check` 通过。严格 no-deps clippy 仍被既有 `Usage.clone()`、`plugin_preparation` 类型复杂度及原有 `base_registry_request` 参数数量告警阻断，未见本项新增告警；完整 workspace 尚未执行。
+
 ## H-15 本轮即时记录（2026-10-26）
 
 **当前状态：已修复并验收（所列 Windows 本机范围）。** 原始失败保留；最终范围见 E-H15-01～08，提交 hash 待独立提交后回填。
@@ -1094,7 +1104,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H35-20261027-01～05保留原始失败、根因修复、正式回归、边界与提交回填；不合并H-34/H-36 | 按模型原始调用序列切分连续并行安全组与串行屏障；屏障先完成后才准备/派发下一组；组内复用ToolExecutionPipeline、期限、取消、权限、审批、结果与事件边界 | H-35探针1 passed；H-34保护探针1 passed；Runtime301 passed/11 ignored；fmt/diff通过；严格clippy仅被未修改的model_agent.rs:282既有告警阻断 | `870e2f58544ac8c0e63031cb8610dd8d81fcd627` | 限所列Windows本机RuntimeEngine/AppCore正式文件工具；不保证错误并行声明、其他OS/UI/真实供应商或外部副作用硬终止，残余见E-H35-04 |
 | [H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列Windows本机资产保留范围；原始失败及E-01～13保留 | 唯一不覆盖发布与真实digest索引；统一输出处理；正式GC保护active/trash/fork，最后引用过期后回收 | 最终persistence84/control9、Runtime301/11 ignored、正式资产5/0 ignored、fmt/CLI通过；完整workspace仅H-306失败，严格lint既有阻断，详见E-08～11 | `2a18d9d8` | 外置结果不隐式扩权；旧未索引资产/配额/外部目录竞争/其他平台与UI等限制见E-07/11/12；余量计入总工时区间 |
 | [H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H37-20261027-01～05保留原始失败、根因修复、正式回归、边界与提交回填；不合并H-15/H-42/H-96/H-97 | CronService 无交互审批回调直接通过同一 PendingApprovals waiter 送出 Deny；不改为 FullAccess，不绕过 PolicyGate、权限、ToolPipeline 或 RunStore | H-37探针1 passed；cron_service审计组1 passed/1 ignored；approval_bridge23 passed；Runtime schedule19 passed；AppCore lib1159 passed/63 ignored；fmt/diff通过；严格clippy仅既有10项阻断 | `e930066df12949bb7cdb0229b1cd1e5ceaf136b7` | 限所列Windows本机定时链与AlwaysAsk正式范围；其他OS/UI/真实供应商、崩溃接管、周期规模及H-97在途运行残余见E-H37-04 |
-| [H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功](system-harness-audit-2026-10-21.md) | P1 | 修复中 | 无跳过依据；E-H38-20261027-01保留原始失败；不合并H-39 | 工作流复用RunEnvironment、base_registry_request与build_base_tool_registry；WorkflowToolExecutor保留ToolOutput.ok，WorkflowAgent对工具错误返回节点失败并停止下游；无显式容错字段，默认失败传播 | E-H38-20261027-02～03：Runtime workflow 67 passed；tool_runtime 2 passed；workflow_audit 8 passed/40 ignored；fmt/diff通过；严格no-deps clippy被既有告警阻断，完整workspace未执行 | 待本项独立提交后回填 | 正式工具注册、未知工具、工具输出失败和无执行器已覆盖；权限拒绝单元已有对照；仍待提交、回填真实hash及更广跨入口/重开验收；预计剩余0.5～1.5小时（提交与复核），环境等待另计 |
 | [H-39：条件分支只生成标签，未选中的互斥路径仍被实际派发](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-40：专业工作流配置在前端序列化被删除或被后端按另一套字段读取](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-41：其他会话完成会清掉当前画布运行监听和停止入口](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

@@ -1740,6 +1740,8 @@ E-H37-20261027-05（独立提交与真实 hash 回填）：本项生产修复、
 
 ### H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功
 
+**当前状态：修复中（2026-10-27）。**
+
 **级别：高（P1）；范围：通过 ChatService / Tauri start_workflow 执行的 tool 节点。** 两个可独立核对的边界共同造成假成功：生产组装没有注册可调用工具；执行器报告失败后，WorkflowAgent 仍将其当作正常节点输出。不是模型自行决定忽略错误，也没有显式配置容错策略。
 
 #### 生产链路与集成复现
@@ -1749,6 +1751,12 @@ E-H37-20261027-05（独立提交与真实 hash 回填）：本项生产修复、
 - 新增默认忽略集成探针 `tests/workflow_audit.rs::audit_workflow_unknown_tool_propagates_node_and_run_failure`。实际临时 input.txt 存在，正式 SettingsService、ChatService、输入接纳、图编译、WorkflowAgent、AgentKernel、事件泵和 RunStore；图为 start→read_file tool→end，不调用模型或自造节点完成事件。
 - 执行 `cargo test -p deepagent-app-core --test workflow_audit --offline -- --ignored --nocapture`：`api_ok=true tool_status=Completed tool_outputs={error:"invalid input: unknown tool: read_file",output:null,success:false} node_error=None end_completed=true run_terminal=Some("succeeded")`。要求工具节点失败的断言失败，约 0.11 秒。证明正式 AppCore 事件和持久化终态，未启动 Tauri 手动点击，不能将推断的 UI 表现写成实际截图证据。
 - 前端 `workflowExecutor.ts` 按事件 status 生成外层 `{success: mapped === "completed", outputs: ...}`，未从内层工具结果纠正状态；因此该投影的外层 success 会与内部 success=false 冲突。这里是消费方代码证据；不是声称生产环境已经执行了真实副作用工具。
+
+E-H38-20261027-01（本轮原始探针复核）：在生产代码未修改的 HEAD `d5afb112` 执行 `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_unknown_tool_propagates_node_and_run_failure --offline -j 1 -- --ignored --nocapture --test-threads=1`，退出1，0 passed/1 failed/0 ignored（测试体0.12秒，编译56.68秒）。真实输出为 `api_ok=true tool_status=Completed tool_outputs=Some(Object {error: "invalid input: unknown tool: read_file", output: Null, success: false}) node_error=None end_completed=true run_terminal=Some("succeeded")`；失败断言为执行错误不能成为 Completed 节点。正式 workflow graph、ChatService、WorkflowAgent、AgentKernel、事件泵和RunStore均参与；未启动模型、命令、网络、媒体供应商或真实用户文件。本轮只复核 H-38 原始失败，不合并 H-39。
+
+E-H38-20261027-02（根因修复与默认回归）：工作流装配改为复用 `RunEnvironment`、`base_registry_request` 与 `build_base_tool_registry`，因此工具使用与普通运行共享文件/命令/权限边界；`WorkflowToolExecutor` 保留底层 `ToolOutput.ok`，`WorkflowAgent` 对未知工具、缺少执行器、缺参及 `success=false` 统一返回节点错误，默认不继续下游。新增正常 `read_file`、工具输出失败和无执行器单测。执行 `cargo test -p deepagent-runtime --lib workflow:: --offline -j 1 -- --nocapture --test-threads=1`：67 passed/0 failed/245 filtered；执行 `cargo test -p deepagent-app-core --lib tool_runtime::session_search_tests --offline -j 1 -- --nocapture --test-threads=1`：2 passed/0 failed/1220 filtered。未启动真实模型、网络、媒体供应商或用户文件。
+
+E-H38-20261027-03（正式工作流回归）：执行 `cargo test -p deepagent-app-core --test workflow_audit --offline -j 1 -- --quiet --test-threads=1`：8 passed/0 failed/40 ignored；其中原 H-38 探针现为默认测试并确认 `tool_status=Failed`、`end_completed=false`、`run_terminal=failed`，正常 `read_file` 对照通过，缺失文件的 `ToolOutput` 失败不再继续到 `end`。`cargo fmt --all -- --check` 与 `git diff --check` 通过。严格 no-deps clippy 仍被既有 `Usage.clone()`、`plugin_preparation` 类型复杂度及原有 `base_registry_request` 参数数量告警阻断，未见本项新增告警；完整 workspace 尚未执行。
 
 
 

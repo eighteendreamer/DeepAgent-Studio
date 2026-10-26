@@ -36,7 +36,7 @@ use deepagent_runtime::{
 };
 #[cfg(test)]
 use deepagent_session::Session;
-use deepagent_tools::{PermissionSet, ToolRegistry};
+use deepagent_tools::PermissionSet;
 
 use crate::approval_bridge::{ChannelApprovalGate, PolicyGate};
 use crate::chat_service::{ChatService, HarnessRunOverrides};
@@ -1339,6 +1339,39 @@ impl<'a> RunAssembler<'a> {
         }
         let (root, session_project) = self.run_location(Some(&session_id))?;
 
+        // Workflow tools must use the same run-scoped environment and base
+        // registry as a normal chat turn.  Constructing an empty registry here
+        // made every tool name look unknown and also skipped the configured
+        // filesystem/command boundaries.
+        let legacy_sandboxie_executor = self
+            .sandbox_backend_registry
+            .is_none()
+            .then_some(self.sandboxie_executor.as_ref())
+            .flatten();
+        let project_trusted =
+            crate::trust_service::TrustService::new(self.db.clone()).is_trusted(&root);
+        let run_config = RunConfigOverlay::load(&root, serde_json::json!({}));
+        let RunEnvironment {
+            policy,
+            sandbox_mode,
+            local_execution_mode,
+            sandbox_backend,
+            access,
+            ..
+        } = RunEnvironment::resolve(
+            run_config,
+            self.settings.effective_permission_profile()?,
+            project_trusted,
+            self.runtime_logs,
+            legacy_sandboxie_executor,
+            self.sandbox_backend_registry
+                .as_ref()
+                .map(|registry| registry.default_kind()),
+            &run_id,
+        )?;
+        let run_local_executor =
+            self.local_executor_for_run(&root, sandbox_mode, sandbox_backend)?;
+
         append_runtime_log(
             self.runtime_logs,
             NewRuntimeLogEntry::info("workflow", "workflow_run_requested")
@@ -1416,7 +1449,20 @@ impl<'a> RunAssembler<'a> {
         let wf_client = run_model.as_ref().map(|rm| rm.client.clone());
         let wf_model_name = run_model.as_ref().map(|rm| rm.model.clone());
 
-        let tool_registry = std::sync::Arc::new(ToolRegistry::new());
+        let mut tool_request = self.base_registry_request(
+            &root,
+            access,
+            None,
+            None,
+            Some(local_execution_mode),
+            sandbox_backend.is_some(),
+            run_local_executor,
+            matches!(policy, crate::settings::ApprovalPolicy::FullAccess),
+            &session_id,
+        );
+        tool_request.project = session_project.clone();
+        let (tool_registry, todo_store) = build_base_tool_registry(tool_request)?;
+        let tool_registry = std::sync::Arc::new(tool_registry);
 
         let mut agent = deepagent_runtime::workflow::WorkflowAgent::new(
             compiled,
@@ -1454,8 +1500,6 @@ impl<'a> RunAssembler<'a> {
             .unwrap_or(0);
 
         let plan = self.plan_mode_for_session(&session_id);
-        let todo_store = deepagent_builtins::TodoStore::new();
-
         let kernel_runtime = build_kernel_runtime_config(KernelRuntimeConfigRequest {
             db: self.db.clone(),
             run_id: &run_id,

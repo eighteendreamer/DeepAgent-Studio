@@ -1171,11 +1171,22 @@ impl deepagent_runtime::workflow::ToolExecutor for WorkflowToolExecutor {
             .invoke(tool_name, arguments, &self.granted, false)
             .await
         {
-            Ok(output) => Ok(deepagent_runtime::workflow::ToolExecutionResult {
-                success: true,
-                output: output.value,
-                error: None,
-            }),
+            Ok(output) => {
+                let error = (!output.ok)
+                    .then(|| {
+                        output
+                            .value
+                            .get("error")
+                            .and_then(serde_json::Value::as_str)
+                    })
+                    .flatten()
+                    .map(str::to_owned);
+                Ok(deepagent_runtime::workflow::ToolExecutionResult {
+                    success: output.ok,
+                    output: output.value,
+                    error,
+                })
+            }
             Err(e) => Ok(deepagent_runtime::workflow::ToolExecutionResult {
                 success: false,
                 output: serde_json::Value::Null,

@@ -76,7 +76,6 @@ async fn workflow_projects_one_identity_bound_session_terminal() {
 }
 
 #[tokio::test]
-#[ignore = "audit: a failed workflow tool node must not publish completed and a successful run"]
 async fn audit_workflow_unknown_tool_propagates_node_and_run_failure() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
@@ -84,7 +83,7 @@ async fn audit_workflow_unknown_tool_propagates_node_and_run_failure() {
             "version": 1,
             "nodes": [
                 {"id":"start","kind":"start"},
-                {"id":"inspect","kind":"tool","config":{"toolName":"read_file","toolArguments":{"path":"input.txt"}}},
+                {"id":"inspect","kind":"tool","config":{"toolName":"audit_unknown_tool","toolArguments":{}}},
                 {"id":"end","kind":"end"}
             ],
             "edges": [
@@ -126,6 +125,115 @@ async fn audit_workflow_unknown_tool_propagates_node_and_run_failure() {
         NodeExecutionStatus::Failed,
         "an execution error cannot be a completed node"
     );
+    assert_ne!(run.terminal_kind.as_deref(), Some("succeeded"));
+}
+
+#[tokio::test]
+async fn workflow_read_file_uses_shared_registry_and_completes() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"inspect","kind":"tool","config":{"toolName":"read_file","toolArguments":{"path":"input.txt"}}},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"inspect"},
+                {"id":"e2","source":"inspect","target":"end"}
+            ]
+        }
+    })).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    chat.run_workflow(
+        workflow,
+        "workflow-read-file-success".into(),
+        session,
+        move |event| {
+            if let RuntimeEvent::WorkflowNode { event } = event {
+                capture.lock().unwrap().push(event);
+            }
+        },
+        |_| {},
+    )
+    .await
+    .expect("registered read_file must execute");
+
+    let run = RunStore::new(&db)
+        .get("workflow-read-file-success")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let inspect = events
+        .iter()
+        .find(|event| event.node_id == "inspect" && event.status.is_terminal())
+        .expect("tool node terminal event");
+    assert_eq!(inspect.status, NodeExecutionStatus::Completed);
+    assert_eq!(
+        inspect
+            .outputs
+            .as_ref()
+            .and_then(|value| value.get("success")),
+        Some(&serde_json::Value::Bool(true))
+    );
+    assert!(events
+        .iter()
+        .any(|event| event.node_id == "end" && event.status == NodeExecutionStatus::Completed));
+    assert_eq!(run.terminal_kind.as_deref(), Some("succeeded"));
+}
+
+#[tokio::test]
+async fn workflow_tool_output_failure_propagates_without_downstream_completion() {
+    let (_root, db, chat, session) = workflow_fixture().await;
+    let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
+        "definition": {
+            "version": 1,
+            "nodes": [
+                {"id":"start","kind":"start"},
+                {"id":"inspect","kind":"tool","config":{"toolName":"read_file","toolArguments":{"path":"missing-input.txt"}}},
+                {"id":"end","kind":"end"}
+            ],
+            "edges": [
+                {"id":"e1","source":"start","target":"inspect"},
+                {"id":"e2","source":"inspect","target":"end"}
+            ]
+        }
+    })).unwrap();
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let capture = events.clone();
+    let result = chat
+        .run_workflow(
+            workflow,
+            "workflow-tool-output-failure".into(),
+            session,
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    capture.lock().unwrap().push(event);
+                }
+            },
+            |_| {},
+        )
+        .await;
+    assert!(
+        result.is_err(),
+        "a failed ToolOutput must fail the workflow"
+    );
+    let run = RunStore::new(&db)
+        .get("workflow-tool-output-failure")
+        .unwrap()
+        .unwrap();
+    let events = events.lock().unwrap();
+    let inspect = events
+        .iter()
+        .find(|event| event.node_id == "inspect" && event.status.is_terminal())
+        .expect("failed tool node terminal event");
+    assert_eq!(inspect.status, NodeExecutionStatus::Failed);
+    assert!(inspect.error.is_some());
+    assert!(!events
+        .iter()
+        .any(|event| event.node_id == "end" && event.status == NodeExecutionStatus::Completed));
     assert_ne!(run.terminal_kind.as_deref(), Some("succeeded"));
 }
 

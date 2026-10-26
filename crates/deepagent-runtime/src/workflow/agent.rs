@@ -1169,11 +1169,7 @@ impl WorkflowAgent {
         let executor = match &self.tool_executor {
             Some(e) => e,
             None => {
-                return Ok(serde_json::json!({
-                    "success": false,
-                    "output": null,
-                    "error": "no tool executor configured"
-                }));
+                return Err(CoreError::invalid("tool executor is not configured"));
             }
         };
 
@@ -1184,18 +1180,27 @@ impl WorkflowAgent {
             .unwrap_or(Value::Object(Map::new()));
 
         if tool_name.is_empty() {
-            return Ok(serde_json::json!({
-                "success": false,
-                "output": null,
-                "error": "toolName is required"
-            }));
+            return Err(CoreError::invalid("toolName is required"));
         }
 
         let result = executor.execute(tool_name, arguments).await?;
+        if !result.success {
+            let detail = result
+                .error
+                .or_else(|| {
+                    result
+                        .output
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .unwrap_or_else(|| format!("workflow tool `{tool_name}` failed"));
+            return Err(CoreError::other(detail));
+        }
         Ok(serde_json::json!({
-            "success": result.success,
+            "success": true,
             "output": result.output,
-            "error": result.error
+            "error": Value::Null
         }))
     }
 
@@ -2427,7 +2432,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn workflow_agent_handles_tool_node_without_executor() {
+    async fn workflow_agent_fails_tool_node_without_executor() {
         let mut tool_config = Map::new();
         tool_config.insert(
             "toolName".to_string(),
@@ -2458,19 +2463,11 @@ mod tests {
         // Execute start
         agent.think(0, &[]).await.unwrap();
 
-        // Execute tool (should handle missing executor gracefully)
-        let decision = agent.think(1, &[]).await.unwrap();
-        assert!(matches!(decision, AgentDecision::Continue));
-
-        // Verify tool output indicates no executor
-        let output = agent.outputs.get("tool-1").unwrap();
-        assert!(!output.get("success").unwrap().as_bool().unwrap());
-        assert!(output
-            .get("error")
-            .unwrap()
-            .as_str()
-            .unwrap()
-            .contains("no tool executor"));
+        // A missing executor is an execution failure, not a successful node
+        // carrying an error-shaped output.
+        let error = agent.think(1, &[]).await.unwrap_err();
+        assert!(error.to_string().contains("tool executor"));
+        assert!(!agent.outputs.contains_key("tool-1"));
     }
 
     #[tokio::test]
