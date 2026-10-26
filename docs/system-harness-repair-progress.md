@@ -8,15 +8,15 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 37 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-36、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 38 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-36、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 1 | H-34原探针真实失败，开始收敛统一执行流水线；H-36不重做 |
+| 修复中 | 0 | 本轮H-34已完成所列Windows本机范围验收；下一项动手前仍要逐项复核 |
 | 待修复 | 241 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **242（241待修复、1修复中）**；不提供完成率。三十七项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **241（241待修复）**；不提供完成率。三十八项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -188,6 +188,9 @@ E-H34-20261027-02（根因修复，尚未创建提交）：并行分支改为先
 E-H34-20261027-03（修复后正式回归）：生产代码冻结后再次运行 `cargo test -p deepagent-runtime --lib loop_engine::tests::audit_parallel_tools_preserve_serial_deadline_and_cancellation --offline -j 1 -- --ignored --exact --nocapture --test-threads=1`，退出0，1 passed/0 failed/0 ignored（0.45秒）；真实输出单工具 `started=1 finished_by_deadline=true stopped_after_cancel=true budget_errors=1`，双工具 `started=2 finished_by_deadline=true stopped_after_cancel=true budget_errors=2`。随后 `cargo test -p deepagent-runtime --lib loop_engine::tests --offline -j 1 -- --nocapture --test-threads=1` 退出0，37 passed/0 failed/3 ignored（6.93秒，另含本项及既有审计 ignored）；`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出0，301 passed/0 failed/11 ignored（13.32秒）。`cargo fmt --all -- --check` 与 `git diff --check` 退出0。H-34 探针只使用内存 SQLite、ScriptedAgent 和本地 GatedRead，不访问真实供应商、网络、内网、凭据或用户文件。
 
 E-H34-20261027-04（验收边界）：本项在 Windows 本机 RuntimeEngine/ToolPipeline 范围关闭前，仍须完成独立修复提交及 hash 回填。已证单/双兼容工具的期限、取消与成对失败结果；并行调度仍不等同于能硬杀不合作的外部进程/网络副作用，`bounded_by_run_timeout=false` 的子运行/人工等待仍按其自有契约等待；流式 speculative 的工具取消/期限另有既有边界。H-35 串行写屏障未合并，AppCore/真实桌面、其他 OS、真实供应商和外部资源清理未由本项宣称通过。严格 clippy 当前仍被未改 `deepagent-models/src/client.rs:355` 的 clone-on-copy 基线阻断。
+
+
+E-H34-20261027-05（独立提交与真实 hash 回填）：本项生产修复、正式回归与当时两份文档已进入独立提交 a3b636b2f59ca6756503daffb4bd77cf54964d85（【fix】修复H-34并行工具期限绕过），仅本项3个文件；未推送、未创建PR。提交前核对台账306行/306唯一编号/每行8列，原有五类未跟踪项未读取、修改或暂存。本次仅回填真实hash并另做文档提交，不amend；H-34仅在E-H34-04所列 Windows 本机RuntimeEngine/ToolPipeline范围关闭，不合并H-35、不重做H-36，整体goal保持active。
 
 ## H-36 本轮即时记录（2026-10-27）
 
@@ -1059,7 +1062,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-31：同步原生压缩的摘要请求没有运行取消信号，停止必须等摘要返回（已修复）](system-harness-audit-2026-10-21.md) | P1 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
 | [H-32：备用宿主打开数据库先执行无所有权恢复，误终结主宿主的工具动作和子 Agent](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-26，限所列Windows本机范围；E-H32-20261026-01～04 | 打开与恢复分离，既有activity/dispatch scope授权按会话恢复，锁内重读，含终态父run孤儿控制；租约仅到期撤销 | 原探针0/1；最终host_lock2/0、owned_recovery7/0、AppCore1131/78、persistence67/session_control9及runtime/session补跑通过；workspace H-306/严格lint既有失败保留，命令见明细 | `c015bc8f` | 旧无owner Rust API收窄；协作宿主须升级，忙session需后续再次恢复，非协作写者/外部副作用停止不保证；其他平台/UI未验，H-44不归并 |
 | [H-33：输入租约仅限 ChatService 内存，两宿主可同时推进同一会话](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-26，限所列Windows本机范围；H-32/H-44仍独立待修 | EventStore独占dispatch在admit前取得，outer registration持有；同coordinator队列共享；input lease登记即归outer，等待项drop清理 | 原探针0/1；最终workspace AppCore1131/78、host_session5/0、E2E107/90、persistence67/session_control9通过；runtime/session补跑通过。完整workspace因H-306失败，严格/all-target lint既有失败；命令与限制见本节和原项E-01～04 | `8ed5d82e` | 协作宿主须全部升级；无跨宿主取消转发、崩溃终态/外部副作用静止承诺，其他平台/UI/供应商未验；余量计入总工时区间 |
-| [H-34：并行工具绕过统一执行流水线，单工具超时保护在批量调用时失效](system-harness-audit-2026-10-21.md) | P1 | 修复中 | E-H34-20261027-01～04保留原始失败、统一pipeline修复与回归；独立提交hash待回填 | 并行先prepare，执行与收尾统一走ToolExecutionPipeline；调度器只管理并发和顺序 | H-34原探针修复后1 passed；loop_engine 37 passed/3 ignored，Runtime 301 passed/11 ignored，fmt/diff通过；严格clippy被models既有告警阻断 | 独立提交待生成 | 不合并H-35；仅Windows本机RuntimeEngine/内存工具范围，残余边界见E-H34-04 |
+| [H-34：并行工具绕过统一执行流水线，单工具超时保护在批量调用时失效](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H34-20261027-01～05保留原始失败、统一pipeline修复、回归、边界与提交回填 | 并行先prepare，执行与收尾统一走ToolExecutionPipeline；调度器只管理并发和顺序 | H-34探针1 passed；loop_engine 37 passed/3 ignored，Runtime 301 passed/11 ignored，fmt/diff通过；严格clippy被models既有告警阻断 | `a3b636b2f59ca6756503daffb4bd77cf54964d85` | 限所列Windows本机RuntimeEngine/ToolPipeline；不合并H-35，不重做H-36，残余边界见E-H34-04 |
 | [H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列Windows本机资产保留范围；原始失败及E-01～13保留 | 唯一不覆盖发布与真实digest索引；统一输出处理；正式GC保护active/trash/fork，最后引用过期后回收 | 最终persistence84/control9、Runtime301/11 ignored、正式资产5/0 ignored、fmt/CLI通过；完整workspace仅H-306失败，严格lint既有阻断，详见E-08～11 | `2a18d9d8` | 外置结果不隐式扩权；旧未索引资产/配额/外部目录竞争/其他平台与UI等限制见E-07/11/12；余量计入总工时区间 |
 | [H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
