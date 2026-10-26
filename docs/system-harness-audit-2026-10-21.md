@@ -1605,7 +1605,7 @@ E-H34-20261027-05（独立提交与真实 hash 回填）：本项生产修复、
 
 ### H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义
 
-**当前状态：修复中（2026-10-27）。**
+**当前状态：已修复并验收（2026-10-27，限所列 Windows 本机 RuntimeEngine/AppCore 正式文件工具范围；修复提交 `870e2f58544ac8c0e63031cb8610dd8d81fcd627`）。**
 
 **级别：高（P1）；范围：同一模型响应混合串行工具与至少两个通过检查的并行安全工具。** 与 H-34 的期限缺口不同，本项确认真实内置文件工具的执行顺序和下一请求结果不一致；不是仅凭事件显示次序推断。
 
@@ -1628,7 +1628,9 @@ E-H35-20261027-02（根因修复，尚未创建提交）：`RuntimeEngine::execu
 
 E-H35-20261027-03（修复后正式回归）：冻结生产代码后，`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_unrelated_read_does_not_move_reads_before_write_barrier --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` 退出0，1 passed/0 failed/0 ignored（测试体0.57秒）；对照与加入无关读均输出 `live_order=[audit-write,audit-read-source,...]`，`read_saw_new=true`、`read_failed=false`、`disk_is_new=true`。H-34保护性探针再次运行退出0，1 passed/0 failed/0 ignored（0.47秒；单工具与双工具均按期限结束并各有budget error）。`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出0，301 passed/0 failed/11 ignored（13.00秒）；`cargo fmt --all -- --check`与`git diff --check`退出0。严格 `cargo clippy -p deepagent-runtime --lib --offline -j 1 --no-deps -- -D warnings` 仅被未修改的 `crates/deepagent-runtime/src/model_agent.rs:282` 既有 `Usage.clone()` clone-on-copy 阻断，未发现本项新增lint。测试仍仅使用本机临时工作区、内存SQLite、离线ReplayTransport和内置工具，不访问真实供应商、网络、内网、凭据或用户文件。
 
-E-H35-20261027-04（验收边界）：H-35在Windows本机RuntimeEngine/AppCore正式文件工具与所列写屏障探针范围内待独立提交后关闭。当前回归证明的是“非并行安全写入先完成，随后连续并行读取”的实际顺序与模型下一请求结果；尚未以本项新增探针覆盖多重写屏障、审批阻塞、取消竞态、所有工具的动态依赖图或其他OS/UI/真实供应商。调度器依赖工具的 `is_concurrency_safe` 声明，错误声明仍可能带来业务级竞态；本修复不提供任意外部进程/网络副作用的硬终止或原子回滚。H-34/H-36不合并。
+E-H35-20261027-04（验收边界）：H-35在Windows本机RuntimeEngine/AppCore正式文件工具与所列写屏障探针范围内已验收关闭。当前回归证明的是“非并行安全写入先完成，随后连续并行读取”的实际顺序与模型下一请求结果；尚未以本项新增探针覆盖多重写屏障、审批阻塞、取消竞态、所有工具的动态依赖图或其他OS/UI/真实供应商。调度器依赖工具的 `is_concurrency_safe` 声明，错误声明仍可能带来业务级竞态；本修复不提供任意外部进程/网络副作用的硬终止或原子回滚。H-34/H-36不合并。
+
+E-H35-20261027-05（独立提交与真实 hash 回填）：本项生产修复、正式回归与当时两份文档已进入独立提交 `870e2f58544ac8c0e63031cb8610dd8d81fcd627`（`【fix】修复H-35并行写屏障越界`），仅本项相关代码、测试与文档；未推送、未创建PR。提交前已核对 H-35 原始失败、根因、回归与边界证据保留；`cargo fmt --all -- --check`、`git diff --check` 通过，Runtime 严格 clippy 仍仅被未修改的既有 `model_agent.rs:282` 阻断。此次只回填真实 hash 并把 H-35 计入已修复并验收，不amend、不重复修复H-34/H-36；原有五类未跟踪项未读取、修改或暂存。H-35仅在E-H35-20261027-04所列 Windows 本机范围关闭，其他平台、UI、真实供应商、动态依赖声明错误及外部副作用硬终止仍为残余限制；整体goal保持active，下一项准备按原优先级复核 H-37。
 #### 成熟实现、影响与修复方向
 
 - DeepSeek Harness `packages/core/agent-loop/src/tool-calls.ts::executeToolCalls()` 明确将 exclusive 调用作为 barrier：首项为 exclusive 时仅运行该项；首项为 parallel 时进入 rolling pool，`runGroup::fillPool()` 遇到后续非 parallel 项停止补充派发，等待当前 inFlight 清空，再交还外层推进下一组。工具结果仍按模型顺序提交。参考源码已核对，未执行参考项目测试。

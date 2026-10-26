@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十七项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十九项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 38 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-36、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 39 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 1 | H-35原始探针真实失败，开始收敛并行组与串行写屏障；H-34/H-36不重做 |
+| 修复中 | 0 | 当前没有已进入修复但尚未验收的条目 |
 | 待修复 | 240 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **241（240待修复、1修复中）**；不提供完成率。三十八项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **240（240待修复、0修复中）**；不提供完成率。三十九项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -194,14 +194,16 @@ E-H34-20261027-05（独立提交与真实 hash 回填）：本项生产修复、
 
 ## H-35 本轮即时记录（2026-10-27）
 
-**当前状态：修复中。**
+**当前状态：已修复并验收（所列 Windows 本机 RuntimeEngine/AppCore 正式文件工具范围；修复提交 `870e2f58544ac8c0e63031cb8610dd8d81fcd627`）。**
 
 E-H35-20261027-01（当前代码原始探针复核）：在H-34已合并但H-35未修改的HEAD 85d23744下运行 `cargo test -p deepagent-app-core --test kernel_v2_e2e audit_unrelated_read_does_not_move_reads_before_write_barrier --offline -j 1 -- --ignored --exact --nocapture --test-threads=1`，原生命令退出101，0 passed/1 failed/0 ignored（测试体0.57秒，编译/链接2分05秒）。正式 ChatService、离线 ReplayTransport、内存SQLite、临时工作区与内置 write_file/read_file 均参与；对照两调用 live_order=[audit-write,audit-read-source]、read_saw_new=true、read_failed=false；加入无关读后三调用 live_order=[audit-read-source,audit-read-other,audit-write]、read_saw_new=false、read_failed=true、disk_is_new=true，断言失败。所有调用均在断言前完成，无遗留Future；未访问真实DeepSeek、网络、内网、凭据或用户文件。H-34期限修复不包含写屏障，本项转修复中，不合并H-34/H-36。当前计数调整为38已验收/18历史跳过/7归并/2撤销/240待修/1修复中，即241有效未关闭；整体goal保持active。
 E-H35-20261027-02（根因修复，尚未创建提交）：`RuntimeEngine::execute_tools()` 改为按模型原始调用序列扫描：连续 `is_parallel_safe` 调用组成一个并行组，组前的非并行安全调用作为独占屏障，先经既有 `execute_tool_with_before_and_speculative` 完成；屏障完成后才准备和派发下一组。每个并行组内仍复用H-34统一的 `ToolExecutionPipeline::prepare`、`execute_prepared`/`complete_prepared`、超时/取消、权限/审批、action state、结果预算、事件与hooks，结果按模型顺序写入Session；没有新增store、事件库、权限中心或工具名特判。仅修改 `crates/deepagent-runtime/src/loop_engine.rs`，保留H-34期限修复，不宣称工具声明错误或外部副作用可被调度器自动识别。
 
 E-H35-20261027-03（修复后正式回归）：冻结生产代码后，`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_unrelated_read_does_not_move_reads_before_write_barrier --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` 退出0，1 passed/0 failed/0 ignored（测试体0.57秒）；对照与加入无关读均输出 `live_order=[audit-write,audit-read-source,...]`，`read_saw_new=true`、`read_failed=false`、`disk_is_new=true`。H-34保护性探针再次运行退出0，1 passed/0 failed/0 ignored（0.47秒；单工具与双工具均按期限结束并各有budget error）。`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出0，301 passed/0 failed/11 ignored（13.00秒）；`cargo fmt --all -- --check`与`git diff --check`退出0。严格 `cargo clippy -p deepagent-runtime --lib --offline -j 1 --no-deps -- -D warnings` 仅被未修改的 `crates/deepagent-runtime/src/model_agent.rs:282` 既有 `Usage.clone()` clone-on-copy 阻断，未发现本项新增lint。测试仍仅使用本机临时工作区、内存SQLite、离线ReplayTransport和内置工具，不访问真实供应商、网络、内网、凭据或用户文件。
 
-E-H35-20261027-04（验收边界）：H-35在Windows本机RuntimeEngine/AppCore正式文件工具与所列写屏障探针范围内待独立提交后关闭。当前回归证明的是“非并行安全写入先完成，随后连续并行读取”的实际顺序与模型下一请求结果；尚未以本项新增探针覆盖多重写屏障、审批阻塞、取消竞态、所有工具的动态依赖图或其他OS/UI/真实供应商。调度器依赖工具的 `is_concurrency_safe` 声明，错误声明仍可能带来业务级竞态；本修复不提供任意外部进程/网络副作用的硬终止或原子回滚。H-34/H-36不合并。
+E-H35-20261027-04（验收边界）：H-35在Windows本机RuntimeEngine/AppCore正式文件工具与所列写屏障探针范围内已验收关闭。当前回归证明的是“非并行安全写入先完成，随后连续并行读取”的实际顺序与模型下一请求结果；尚未以本项新增探针覆盖多重写屏障、审批阻塞、取消竞态、所有工具的动态依赖图或其他OS/UI/真实供应商。调度器依赖工具的 `is_concurrency_safe` 声明，错误声明仍可能带来业务级竞态；本修复不提供任意外部进程/网络副作用的硬终止或原子回滚。H-34/H-36不合并。
+
+E-H35-20261027-05（独立提交与真实 hash 回填）：本项生产修复、正式回归与当时两份文档已进入独立提交 `870e2f58544ac8c0e63031cb8610dd8d81fcd627`（`【fix】修复H-35并行写屏障越界`），仅本项相关代码、测试与文档；未推送、未创建PR。提交前已核对 H-35 原始失败、根因、回归与边界证据保留；`cargo fmt --all -- --check`、`git diff --check` 通过，Runtime 严格 clippy 仍仅被未修改的既有 `model_agent.rs:282` 阻断。此次只回填真实 hash 并把 H-35 计入已修复并验收，不amend、不重复修复H-34/H-36；原有五类未跟踪项未读取、修改或暂存。H-35仅在E-H35-20261027-04所列 Windows 本机范围关闭，其他平台、UI、真实供应商、动态依赖声明错误及外部副作用硬终止仍为残余限制；整体goal保持active，下一项准备按原优先级复核 H-37。
 
 
 ## H-36 本轮即时记录（2026-10-27）
@@ -1075,7 +1077,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-32：备用宿主打开数据库先执行无所有权恢复，误终结主宿主的工具动作和子 Agent](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-26，限所列Windows本机范围；E-H32-20261026-01～04 | 打开与恢复分离，既有activity/dispatch scope授权按会话恢复，锁内重读，含终态父run孤儿控制；租约仅到期撤销 | 原探针0/1；最终host_lock2/0、owned_recovery7/0、AppCore1131/78、persistence67/session_control9及runtime/session补跑通过；workspace H-306/严格lint既有失败保留，命令见明细 | `c015bc8f` | 旧无owner Rust API收窄；协作宿主须升级，忙session需后续再次恢复，非协作写者/外部副作用停止不保证；其他平台/UI未验，H-44不归并 |
 | [H-33：输入租约仅限 ChatService 内存，两宿主可同时推进同一会话](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-26，限所列Windows本机范围；H-32/H-44仍独立待修 | EventStore独占dispatch在admit前取得，outer registration持有；同coordinator队列共享；input lease登记即归outer，等待项drop清理 | 原探针0/1；最终workspace AppCore1131/78、host_session5/0、E2E107/90、persistence67/session_control9通过；runtime/session补跑通过。完整workspace因H-306失败，严格/all-target lint既有失败；命令与限制见本节和原项E-01～04 | `8ed5d82e` | 协作宿主须全部升级；无跨宿主取消转发、崩溃终态/外部副作用静止承诺，其他平台/UI/供应商未验；余量计入总工时区间 |
 | [H-34：并行工具绕过统一执行流水线，单工具超时保护在批量调用时失效](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H34-20261027-01～05保留原始失败、统一pipeline修复、回归、边界与提交回填 | 并行先prepare，执行与收尾统一走ToolExecutionPipeline；调度器只管理并发和顺序 | H-34探针1 passed；loop_engine 37 passed/3 ignored，Runtime 301 passed/11 ignored，fmt/diff通过；严格clippy被models既有告警阻断 | `a3b636b2f59ca6756503daffb4bd77cf54964d85` | 限所列Windows本机RuntimeEngine/ToolPipeline；不合并H-35，不重做H-36，残余边界见E-H34-04 |
-| [H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义](system-harness-audit-2026-10-21.md) | P1 | 修复中 | E-H35-20261027-01确认当前正式链路仍让无关读越过前置写入；未合并H-34/H-36 | 根因见原项；按调用序列切分连续并行组与串行屏障，尚未修改生产实现 | 原探针0 passed/1 failed/0 ignored，live_order与下一请求错误结果见E-H35-01；修复验收未执行 | 无本阶段修复提交 | 不合并H-34；仅本地离线，剩余工时计入总区间 |
+| [H-35：并行调度跨越串行写屏障，新增无关读操作会改变已有调用的执行语义](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H35-20261027-01～05保留原始失败、根因修复、正式回归、边界与提交回填；不合并H-34/H-36 | 按模型原始调用序列切分连续并行安全组与串行屏障；屏障先完成后才准备/派发下一组；组内复用ToolExecutionPipeline、期限、取消、权限、审批、结果与事件边界 | H-35探针1 passed；H-34保护探针1 passed；Runtime301 passed/11 ignored；fmt/diff通过；严格clippy仅被未修改的model_agent.rs:282既有告警阻断 | `870e2f58544ac8c0e63031cb8610dd8d81fcd627` | 限所列Windows本机RuntimeEngine/AppCore正式文件工具；不保证错误并行声明、其他OS/UI/真实供应商或外部副作用硬终止，残余见E-H35-04 |
 | [H-36：完整工具结果在 turn 结束时被删除，持久化历史与 artifact 索引留下失效引用](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列Windows本机资产保留范围；原始失败及E-01～13保留 | 唯一不覆盖发布与真实digest索引；统一输出处理；正式GC保护active/trash/fork，最后引用过期后回收 | 最终persistence84/control9、Runtime301/11 ignored、正式资产5/0 ignored、fmt/CLI通过；完整workspace仅H-306失败，严格lint既有阻断，详见E-08～11 | `2a18d9d8` | 外置结果不隐式扩权；旧未索引资产/配额/外部目录竞争/其他平台与UI等限制见E-07/11/12；余量计入总工时区间 |
 | [H-37：定时任务丢弃审批通知却仍等待人工回答，无人值守运行停在不可达审批上](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-38：正式工作流工具注册表为空，工具失败被包装成节点完成并令整次运行成功](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
