@@ -1849,7 +1849,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-26: standard hookSpecificOutput decisions silently become Continue"]
     async fn audit_standard_external_hook_decisions_gate_actual_tool_dispatch() {
         use deepagent_hooks::{HookDefinitions, SystemHookRunner};
 

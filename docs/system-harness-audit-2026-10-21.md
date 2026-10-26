@@ -32,8 +32,10 @@
 | H-09 | 已修复并验收（2026-10-26，Windows本机MCP/AppCore范围） | 单stdout reader、pending/oneshot与连接唯一wire ID；原探针转默认通过，stdio12/0 ignored、正式消费者1；全workspace唯一H-306失败及AppCore严格lint阻断见E-H09-01～09，修复提交`46ba0fd7` |
 | H-03 | 已修复并验收（2026-10-27，所列Windows本机/AppCore与CLI路由范围） | 原始Direct误路由失败保留；不可变backend registry按run解析，显式不可用拒绝，Direct兼容路径保留；AppCore路由1、registry8、CLI配置3及桌面Tauri cargo check通过，见E-H03-01～06；修复提交待回填 |
 | H-05 | 已修复并验收（2026-10-27，离线DeepSeek adapter、Chat wire投影与Runtime重组范围） | 原始assistant工具响应拆分失败保留；Chat使用原始item顺序合并同一assistant的reasoning/文本/单多工具调用，Responses仍使用repaired配对；projection4、models lib89、runtime lib286通过，见E-H05-01～04；修复提交`6bc2d66013c6116a8b2ea2c454fa29f3c854090d` |
+| H-14 | 已修复并验收（2026-10-27，离线 mock provider 与 Runtime/AppCore side ledger 范围） | 无效摘要仍保留原上下文但已归集 provider usage；AppCore 探针、Runtime 对照、全组及边界见本项修复记录；修复提交`74e6759c` |
+| H-26 | 已修复并验收（2026-10-27，Windows 本机外部 hook 进程与 ToolExecutionPipeline 范围） | 标准嵌套 PreToolUse deny/ask 已进入统一工具门禁；原始失败、真实调度回归及未验边界见本项修复记录；修复提交待回填 |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **28**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **251（251待修复）**；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **34**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **245（245待修复）**；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -1328,6 +1330,14 @@ AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reop
 - 迁入的兼容 hook 可以成功启动并输出合法 JSON，用户却失去它承诺的禁止/询问策略，且工具成功返回。适用插件/用户依赖该 hook 作为额外审批或策略门禁的情形；现有独立权限仍然有效。
 - 在既有统一外部 hook 输出解析器中建立按事件类型的契约，兼容已有顶层格式，明确未知/不匹配事件、无效 JSON 和退出码优先级。权限决策、输入修改和追加上下文应独立承载，避免用单一枚举互相覆盖；后两项本次仅做代码核查，未扩展为独立已复现问题。
 - 验收应包含真实进程和实际工具调度、顶层旧格式、标准嵌套 deny/ask/allow、不同事件及错误提示，不只测 JSON 能反序列化。未修改生产 hooks 行为。
+
+#### 修复与验收（2026-10-27）
+
+- 根因修复：外部 command/HTTP hook 的统一结果解析新增事件感知边界，识别 Claude 兼容的 `hookSpecificOutput`，校验 `hookEventName` 与当前注册事件一致后，再提取 `PreToolUse.permissionDecision` 和 `permissionDecisionReason`。旧顶层 `permissionDecision`、`decision`、`continue` 与退出码协议保持兼容；通用 parser 仍提供无事件上下文的兼容入口。未知或不匹配事件不会被当成当前工具的授权决定。
+- 原始失败已保留：未修复代码执行 `cargo test -p deepagent-runtime --lib audit_standard_external_hook_decisions_gate_actual_tool_dispatch --offline -- --ignored --nocapture` 时，顶层 deny 对照为 `tool_ok=false, tool_calls=0, approval_calls=0`，嵌套 deny 为 `tool_ok=true, tool_calls=1, approval_calls=0`，嵌套 ask 为 `tool_ok=true, tool_calls=1, approval_calls=0`；失败项为 `standard-deny`、`standard-ask`。
+- 修复后原探针：同一命令移除 `#[ignore]` 后执行退出 0，`1 passed / 0 failed`；实际为 `standard-deny tool_ok=false/tool_calls=0`、`standard-ask tool_ok=true/tool_calls=1/approval_calls=1`，证明决策进入真实 ToolExecutionPipeline，而非仅 parser 单测。
+- 兼容/边界回归：`cargo test -p deepagent-hooks --lib --offline -j 1 -- --quiet --test-threads=1` 为 `64 passed/0 failed`；新增事件匹配测试验证正确 `PreToolUse` 可 deny、错误 `PostToolUse` 不被误用。Runtime 全 lib 与 AppCore 全 lib、check、fmt/diff 结果记录在修复进度台账；hooks 严格 clippy 通过，Runtime/AppCore 严格 clippy 仍仅受既有基线告警阻断。
+- 残余限制：未在 Linux/macOS、真实第三方 hook 或真实危险命令上运行；本轮未扩展 `updatedInput`、`additionalContext` 等其他事件字段，也未改变 H-27 项目配置信任边界。未访问真实内网、凭据或用户文件。
 
 ### H-27：项目 hooks 信任开关只覆盖独立文件，settings.json 内联 hook 仍执行宿主命令
 

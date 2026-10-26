@@ -34,10 +34,10 @@ pub mod registry;
 pub use builtin::{ArgumentGuardHook, ToolAllowlistHook};
 pub use external_hooks::{
     evaluate_condition, interpolate_env_vars, is_private_ip, parse_structured_hook_output,
-    ExternalCommandHook, ExternalHostHook, ExternalHttpHook, HookAction, HookActionExecutor,
-    HookActionType, HookAsyncMode, HookCommandResult, HookCommandRunner, HookCommandShell,
-    HookDefinitions, HookEvent, HookMatcherGroup, OnceHook, SystemHookRunner,
-    DEFAULT_HOOK_TIMEOUT_SECS,
+    parse_structured_hook_output_for_event, ExternalCommandHook, ExternalHostHook,
+    ExternalHttpHook, HookAction, HookActionExecutor, HookActionType, HookAsyncMode,
+    HookCommandResult, HookCommandRunner, HookCommandShell, HookDefinitions, HookEvent,
+    HookMatcherGroup, OnceHook, SystemHookRunner, DEFAULT_HOOK_TIMEOUT_SECS,
 };
 pub use hook::{DecisionSource, Hook, HookOutcome};
 pub use lifecycle::{HookContext, HookData, HookPoint, ToolBatchItem};

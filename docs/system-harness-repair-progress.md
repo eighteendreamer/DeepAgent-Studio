@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十三项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计三十四项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 33 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 34 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-32、H-33、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有正在收敛的本轮独立项；下一项仍需按原报告逐项复核 |
-| 待修复 | 246 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 245 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **246（246待修复）**；不提供完成率。三十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **245（245待修复）**；不提供完成率。三十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -119,6 +119,20 @@ E-H14-20261027-03（专项回归）：修复后同一探针移除 `#[ignore]` �
 E-H14-20261027-04（全组与边界）：`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（289 passed/13 ignored）；`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（1142 passed/66 ignored，H-14 探针已转默认）；`cargo check -p deepagent-runtime -p deepagent-app-core --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check` 退出 0。严格 clippy 分 crate 仍被既有基线阻断：Runtime 为 `model_agent.rs:282 clone_on_copy`，AppCore 为 context_runtime 8、plugin_preparation 1、run_assembler 1，本轮未修改或屏蔽。未执行真实 DeepSeek/供应商收费、hook/持久化失败、取消、桌面/重启、其他 OS 或完整 workspace；这些不纳入本项通过。
 
 E-H14-20261027-05（独立提交与真实 hash 回填）：代码、回归测试和当时两份文档已在独立修复提交 `74e6759c`（`【fix】修复H-14无效压缩用量归集`）中创建；本次只回填真实 hash，不 amend、不推送、不触碰既有未跟踪项。H-14 本机范围已验收，整体 goal 仍 active；下一项仍按依赖复核 H-15。全部剩余有效修复工时沿未校准的 200–400 小时区间估算，编译/设备/环境等待另计。
+
+## H-26 本轮即时记录（2026-10-27）
+
+**当前状态：已修复并验收（限 Windows 本机真实外部 hook 进程、Runtime ToolExecutionPipeline 与 hooks crate 解析范围）。** 本轮只处理 Claude 兼容 `hookSpecificOutput` 的 `PreToolUse` deny/ask 未进入统一工具门禁，不合并 H-27 项目配置来源信任、H-28 权限 profile 覆盖或 H-103 hook 身份字段；原始失败保留。
+
+E-H26-20261027-01（原始复现）：生产未修复时执行 `cargo test -p deepagent-runtime --lib audit_standard_external_hook_decisions_gate_actual_tool_dispatch --offline -- --ignored --nocapture`，退出 1；flat deny 对照为 `tool_ok=false, tool_calls=0, approval_calls=0`，标准嵌套 deny 为 `tool_ok=true, tool_calls=1, approval_calls=0`，标准嵌套 ask 为 `tool_ok=true, tool_calls=1, approval_calls=0`。测试使用生产 `SystemHookRunner` 启动本机命令和计数型安全工具，不执行危险命令、不访问真实供应商或用户文件。
+
+E-H26-20261027-02（根因修复）：`deepagent-hooks::external_hooks` 新增带当前 `HookEvent` 的统一结果解析，识别 `hookSpecificOutput`，校验 `hookEventName` 后提取 `PreToolUse.permissionDecision`/reason；旧顶层结构和退出码兼容。ExternalCommandHook 与 ExternalHttpHook 都经过同一事件感知 parser，公开无事件 wrapper 保持既有 prompt/agent 调用兼容；未知/不匹配事件不套用当前授权。
+
+E-H26-20261027-03（正式回归）：原探针移除 `#[ignore]` 后退出 0，`1 passed / 0 failed`；标准 deny 为 `tool_ok=false, tool_calls=0`，标准 ask 为 `tool_ok=true, tool_calls=1, approval_calls=1`。新增 hooks parser 回归验证正确 PreToolUse deny 与错误 PostToolUse 不误用。
+
+E-H26-20261027-04（全组与边界）：`cargo test -p deepagent-hooks --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（64 passed/0 ignored）；`cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（290 passed/12 ignored）；`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出 0（1142 passed/66 ignored）；`cargo check -p deepagent-runtime -p deepagent-app-core --offline -j 1`、fmt、diff check通过。hooks严格 clippy通过；Runtime/AppCore严格 clippy仍被既有基线告警阻断（未新增）。未执行 Linux/macOS、真实第三方 hook/危险命令、真实供应商、桌面 UI 或完整 workspace。
+
+E-H26-20261027-05（独立提交与真实 hash 回填）：待代码、测试和两份文档完成独立提交后回填 commit ID；不 amend、不推送、不触碰既有未跟踪项。H-26 本机范围已验收，整体 goal 仍 active；下一项按优先级复核 H-27。全部剩余有效修复工时沿未校准的 200–400 小时区间估算，环境等待另计。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -952,7 +966,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-23：回退会话后旧笔记仍按复用序号宣称覆盖，压缩候选会替换新分支](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-26原失败保留，限Windows本机验收 | 来源尾EventId/session、显式快照与共用有效性、activity gate、私有working隔离旧后台写 | 模块41/原探针1/native-wire1通过；AppCore1128；完整workspace与lint既有阻断见明细 | b3614d8c | 外部save调用需传快照、旧笔记重提取、busy/导出/崩溃与I/O限制见明细；总体200–400有效小时初估 |
 | [H-24：较长的非 ASCII 供应商错误触发 panic，结构化错误处理被中断（已修复）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
 | [H-25：丢弃供应商 Retry-After，在服务恢复前耗尽限流重试（已修复）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
-| [H-26：标准 PreToolUse 输出中的 deny/ask 被忽略，实际工具照常执行](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-26：标准 PreToolUse 输出中的 deny/ask 被忽略，实际工具照常执行](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H26-20261027-01～05保留原始失败、根因修复、真实工具调度回归及边界；独立提交后回填 hash | ExternalCommand/HTTP hook 统一事件感知解析 `hookSpecificOutput`；校验 `hookEventName` 后将 PreToolUse deny/ask 送入既有 ToolExecutionPipeline，不改变顶层旧协议 | 原探针1 passed；hooks64、Runtime290/12 ignored、AppCore1142/66 ignored、check/fmt/diff通过；hooks clippy通过，Runtime/AppCore仅既有基线阻断 | 待独立提交后回填 | 限 Windows 本机与计数型安全工具；未验其他 OS、真实危险命令/供应商、H-27/H-28/H-103，剩余工时计入总区间 |
 | [H-27：项目 hooks 信任开关只覆盖独立文件，settings.json 内联 hook 仍执行宿主命令](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-28：未信任项目的权限配置覆盖用户只读设置，实际写文件没有请求审批](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-29：HTTP 错误正文挂起时取消检查缺失，停止等待退化到正文完成或总超时（已修复）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |

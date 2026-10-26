@@ -50,6 +50,9 @@
 //! A `0`-exit command may also emit structured JSON on stdout to ask/deny:
 //! `{ "decision": "block", "reason": "…" }` or
 //! `{ "permissionDecision": "allow|deny|ask", "permissionDecisionReason": "…" }`
+//! or the event-scoped Claude form
+//! `{ "hookSpecificOutput": { "hookEventName": "PreToolUse",
+//! "permissionDecision": "allow|deny|ask", "permissionDecisionReason": "…" } }`
 //! or `{ "continue": false, "stopReason": "…" }`.
 //!
 //! ## Matcher
@@ -1312,7 +1315,7 @@ impl Hook for ExternalCommandHook {
             )
             .await?;
 
-        Ok(interpret_result(&result))
+        Ok(interpret_result_for_event(&result, Some(self.event)))
     }
 }
 
@@ -1463,7 +1466,7 @@ impl Hook for ExternalHttpHook {
                 stderr: body,
             }
         };
-        Ok(interpret_result(&result))
+        Ok(interpret_result_for_event(&result, Some(self.event)))
     }
 }
 
@@ -1546,13 +1549,23 @@ fn build_http_payload(event: HookEvent, ctx: &HookContext) -> serde_json::Value 
 }
 
 /// Map a command result to a [`HookOutcome`] (exit code + structured stdout).
+#[cfg(test)]
 fn interpret_result(result: &HookCommandResult) -> HookOutcome {
+    interpret_result_for_event(result, None)
+}
+
+/// Map a command/HTTP result while retaining the configured lifecycle event.
+/// Event-scoped Claude hook output must not be applied to a different event.
+fn interpret_result_for_event(
+    result: &HookCommandResult,
+    expected_event: Option<HookEvent>,
+) -> HookOutcome {
     // Async response protocol takes highest precedence.
     if let Some(timeout) = parse_async_response_protocol(&result.stdout) {
         return HookOutcome::AsyncPending { timeout };
     }
     // A structured stdout decision takes precedence when present.
-    if let Some(outcome) = parse_structured_hook_output(&result.stdout) {
+    if let Some(outcome) = parse_structured_hook_output_for_event(&result.stdout, expected_event) {
         return outcome;
     }
     match result.exit_code {
@@ -1580,6 +1593,19 @@ fn interpret_result(result: &HookCommandResult) -> HookOutcome {
 /// Parse the common structured decision protocol used by command, MCP,
 /// prompt, and agent hooks.
 pub fn parse_structured_hook_output(stdout: &str) -> Option<HookOutcome> {
+    parse_structured_hook_output_for_event(stdout, None)
+}
+
+/// Parse a structured decision and, when supplied, require an event-scoped
+/// `hookSpecificOutput.hookEventName` to match the hook currently running.
+///
+/// The no-event public wrapper remains useful for generic prompt/agent hooks;
+/// command and HTTP hooks pass their configured event through
+/// [`interpret_result_for_event`].
+pub fn parse_structured_hook_output_for_event(
+    stdout: &str,
+    expected_event: Option<HookEvent>,
+) -> Option<HookOutcome> {
     let trimmed = stdout.trim();
     if !trimmed.starts_with('{') {
         return None;
@@ -1609,6 +1635,59 @@ pub fn parse_structured_hook_output(stdout: &str) -> Option<HookOutcome> {
                 .unwrap_or("blocked by external hook")
                 .to_string();
             return Some(HookOutcome::deny_from(reason, DecisionSource::Policy));
+        }
+    }
+
+    // Claude's event-scoped PreToolUse protocol.  Validate the event before
+    // consuming its permission decision so a response intended for another
+    // lifecycle point cannot silently gate this tool call.
+    if let Some(specific) = value
+        .get("hookSpecificOutput")
+        .and_then(|value| value.as_object())
+    {
+        let event_name = specific.get("hookEventName").and_then(|v| v.as_str())?;
+        let Some(event) = HookEvent::parse(event_name) else {
+            tracing::warn!(
+                event_name,
+                "external hook returned unknown hookSpecificOutput event"
+            );
+            return None;
+        };
+        if expected_event.is_some_and(|expected| expected != event) {
+            tracing::warn!(
+                expected = expected_event.map(|event| event.label()),
+                actual = event.label(),
+                "external hook returned a decision for a different lifecycle event"
+            );
+            return None;
+        }
+        if event == HookEvent::PreToolUse {
+            if let Some(pd) = specific.get("permissionDecision").and_then(|v| v.as_str()) {
+                let reason = specific
+                    .get("permissionDecisionReason")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                return match pd.to_ascii_lowercase().as_str() {
+                    "deny" => Some(HookOutcome::deny_from(
+                        if reason.is_empty() {
+                            "denied by external hook".into()
+                        } else {
+                            reason.to_string()
+                        },
+                        DecisionSource::Policy,
+                    )),
+                    "ask" => Some(HookOutcome::ask_from(
+                        if reason.is_empty() {
+                            "approval required by external hook".into()
+                        } else {
+                            reason.to_string()
+                        },
+                        DecisionSource::Policy,
+                    )),
+                    "allow" => Some(HookOutcome::Continue),
+                    _ => None,
+                };
+            }
         }
     }
 
@@ -2290,6 +2369,17 @@ mod tests {
             .expect("structured decision");
         assert_eq!(denied.deny_reason(), Some("unsafe"));
         assert_eq!(denied.source(), Some(DecisionSource::Coordinator));
+    }
+
+    #[test]
+    fn parses_event_scoped_pre_tool_decision_and_rejects_wrong_event() {
+        let stdout = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"blocked by policy"}}"#;
+        let denied = parse_structured_hook_output_for_event(stdout, Some(HookEvent::PreToolUse))
+            .expect("event-scoped decision");
+        assert_eq!(denied.deny_reason(), Some("blocked by policy"));
+        assert!(
+            parse_structured_hook_output_for_event(stdout, Some(HookEvent::PostToolUse)).is_none()
+        );
     }
 
     #[test]
