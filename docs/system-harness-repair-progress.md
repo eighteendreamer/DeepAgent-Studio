@@ -8,15 +8,15 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 22 | H-01、H-04、H-02、H-06、H-07、H-08、H-09、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79、H-15，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 23 | H-01、H-04、H-02、H-06、H-07、H-08、H-09、H-286、H-72、H-73、H-74、H-75、H-76、H-20、H-22、H-23、H-33、H-32、H-44、H-78、H-79、H-15、H-16，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 无 |
-| 待修复 | 257 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 当前没有正在收敛的本轮独立项；下一项仍需按原报告逐项复核 |
+| 待修复 | 256 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **257（257待修复、0修复中）**；不提供完成率。二十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **256（256待修复）**；不提供完成率。二十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-15 本轮即时记录（2026-10-26）
 
@@ -39,6 +39,16 @@ E-H15-20261026-07（正式健康对照通过与全量启动）：`cargo test -p 
 E-H15-20261026-08（最终范围验收与基线边界）：`cargo build -p deepagent-cli --offline -j 1`退出0；隔离数据根的`cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 1 -- --nocapture --test-threads=1`退出0，6 passed/0 ignored；使用同一正式binary的`node --test packages/sdk/tests/server-configuration.test.mjs`退出0，1 passed/0 skipped。`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`退出1，但 H-15 相关 target 均通过；失败仅为既有 `deepagent-app-core --lib` fixture 未创建 `build-started`、Rust SDK 继承环境的4项 `initialize: ResponseChannelClosed`，以及 H-306 `deepagent-prompts` 空 `creative.video-edit.v1.defaultUserPrompt`。`cargo clippy -p deepagent-persistence --all-targets --offline -j 1 --no-deps -- -D warnings`退出0；AppCore 严格 lint 仍仅既有10项（8 clone_on_copy、type_complexity、too_many_arguments），本轮无新增告警。完整workspace不作为H-15全绿条件；H-15在所列本机范围验收，未做真实OS进程重启、真实供应商或真实命令执行。
 
 E-H15-20261026-09（独立提交与真实hash回填）：代码、回归测试与当时两份文档已在独立提交`76483eb5d5f8dd260fc6ae0dcc6273b94a6ce430`创建；本次只回填该真实hash，不amend、不推送、不触碰原有未跟踪项。H-15台账及原报告顶部状态同步为已修复并验收，E-H15-01～08保留原始失败、过程证据、全仓基线和未验边界；E-H15-09不新增验收成果。
+
+## H-16 本轮即时记录（2026-10-26）
+
+**当前状态：已修复并验收（所列 Windows 本机范围）。** 原始失败保留；修复提交 hash 待独立提交后回填。
+
+E-H16-20261026-01（原始探针复现）：HEAD `96c323d8`、生产未改时执行`cargo test -p deepagent-runtime audit_distinct_runs_can_approve_the_same_provider_call_id_independently --offline -j 1 -- --ignored --nocapture`，shell退出1，0 passed/1 failed（编译约1m、测试0.03s）。实际输出`first_state=Denied, second_action=Received, second_approval=Err(Invalid("idempotency conflict for approval provider-call-reused")), first_approvals=1, second_approvals=0`；两个run的action已按(run_id,call_id)独立登记，但审批仍用裸provider call_id作为全库唯一键，第二run无法建立Pending审批。仅使用离线内存SQLite、合成重复ID和计数型工具，不执行系统命令、不访问真实供应商；H-15生命周期修复不作为本项依据。H-16转修复中，尚未修改生产代码。
+
+E-H16-20261026-02（生产修复与回归）：`ToolActionPersistence`现在以长度分隔的`approval:v1:{run_id.len()}:{run_id}:{call_id.len()}:{call_id}`作为全库审批身份；`run_actions`和审批行仍保存原始provider `call_id`，工具调用/结果关联不变。内存审批、持久化回答、AppCore DTO、CLI及app-server回答入口统一传递新approval ID；无action persistence的兼容路径继续使用原始call id。旧库中历史上以provider id为`approval_id`的记录仍可直接回答，未新增表或迁移。原探针转默认测试并通过：`cargo test -p deepagent-runtime audit_distinct_runs_can_approve_the_same_provider_call_id_independently --offline -j 1 -- --nocapture`退出0，1 passed，输出`first_state=Denied, second_action=Received, second_approval=Ok("approval:v1:17:run-action-second:20:provider-call-reused"), first_approvals=1, second_approvals=1`。`cargo test -p deepagent-runtime --offline -j 1 -- --quiet --test-threads=1`退出0（285 passed、15 ignored；e2e stabilization 5 passed）；`cargo test -p deepagent-persistence --offline -j 1 -- --quiet --test-threads=1`退出0（76+9 passed）；`cargo test -p deepagent-app-core --test kernel_v2_e2e approval_ --offline -j 1 -- --quiet --test-threads=1`退出0（2 passed）；`cargo test -p deepagent-cli --offline -j 1 -- --quiet --test-threads=1`退出0（112 passed、23 ignored）；`cargo fmt --all -- --check`及`git diff --check`退出0。新增持久化回归覆盖旧provider-id记录回答；正常批准/拒绝与H-15 scope/取消用例保持通过。
+
+E-H16-20261026-03（范围边界与未通过项目）：原有CLI ignored审批事件审计`cargo test -p deepagent-cli audit_tool_approval_emits_one_correlated_event --offline -j 1 -- --ignored --nocapture`退出1，观察到同一审批产生两条`approval.requested`，其中一条没有`approvalId`；这是重复审批事件边界（H-84相关），不属于H-16跨run身份修复，未顺手修改。`cargo clippy -p deepagent-runtime -p deepagent-persistence --all-targets --offline -j 1 --no-deps -- -D warnings`仍被既有`deepagent-runtime/src/model_agent.rs:225 clone_on_copy`阻断，未发现本轮新增告警。未执行真实供应商、真实命令、OS进程重启或全workspace全绿；旧记录兼容仅验证本机SQLite回答，不等于所有外部客户端缓存迁移。H-16在上述本机范围验收，修复提交 hash 待回填。
 
 ## H-01 本轮即时记录（2026-10-26）
 
@@ -792,7 +802,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-13：AppCore 插件就绪快照与共享技能注册表不同步，新请求可继续声明已禁用技能](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-14：无效压缩保留原上下文时，已完成摘要请求的 usage 一同被丢弃](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-15：审批等待被取消后未清理，运行终态后仍接受迟到回答并授予跨调用权限](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H15-01～09保留原失败及逐次验证 | waiter所有权/回答互斥；原终态事务取消Pending审批，拒绝终态run/action与取消信号后授权 | AppCore专项25、正式取消/健康2、persistence75+9、CLI构建、隔离Rust SDK6、正式TS SDK1通过；全仓和严格AppCore lint保留既有基线失败，不阻断本项范围验收 | `76483eb5` | H-16身份冲突独立；DB重开非OS进程重启；真实供应商/真实命令未执行；总体200–400有效小时未校准初估 |
-| [H-16：审批直接以 provider call_id 为全库身份，不同运行之间产生幂等冲突](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-16：审批直接以 provider call_id 为全库身份，不同运行之间产生幂等冲突](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H16-01～03保留原失败、生产修复、回归及边界；不与H-15合并 | 以长度分隔的`approval:v1:{run_id.len()}:{run_id}:{call_id.len()}:{call_id}`作为审批主身份，原provider call_id留在关联字段；兼容旧provider-id记录回答 | 原探针默认通过；runtime全组285/15 ignored、persistence76+9、AppCore approval2、CLI112/23 ignored、fmt/diff通过；严格clippy被既有model_agent clone_on_copy阻断；CLI重复事件ignored审计仍失败，归H-84边界 | 待独立提交后回填 | 限所列Windows本机、离线SQLite及协议消费者；未验真实供应商、OS重启、全workspace全绿；下一项按原报告优先级复核 |
 | [H-17：桌面收到取消后的保存失败，却因对话已 settled 而静默丢弃错误](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-18：输出上限重试后仍截断时，未完成工具调用被补参数并提交](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-19：子 Agent 的工具限制只过滤 schema，实际执行仍可调用被排除的工具](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

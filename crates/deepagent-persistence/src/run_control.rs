@@ -1754,6 +1754,53 @@ mod tests {
     }
 
     #[test]
+    fn approval_lifecycle_legacy_provider_id_remains_answerable() {
+        let db = database_with_run();
+        let store = RunControlStore::new(&db);
+        store
+            .create_action(&action("provider-call-reused", 0))
+            .unwrap();
+        store
+            .transition_action(
+                "run-1",
+                "provider-call-reused",
+                RunActionState::Prepared,
+                3,
+                None,
+                None,
+            )
+            .unwrap();
+        store
+            .request_approval(&NewRunApproval {
+                // Rows written before H-16 used the provider call id directly.
+                approval_id: "provider-call-reused",
+                run_id: "run-1",
+                call_id: "provider-call-reused",
+                scope: "single_call",
+                risk: "high",
+                reason: None,
+                policy_snapshot: None,
+                expires_at: None,
+                now: 4,
+            })
+            .unwrap();
+        assert_eq!(
+            store
+                .respond_approval("provider-call-reused", true, "legacy-client", 5)
+                .unwrap(),
+            ControlMutation::Applied
+        );
+        assert_eq!(
+            store
+                .get_approval("provider-call-reused")
+                .unwrap()
+                .unwrap()
+                .state,
+            ApprovalState::Approved
+        );
+    }
+
+    #[test]
     fn approval_response_is_idempotent_and_expiry_is_enforced() {
         let db = database_with_run();
         let store = RunControlStore::new(&db);

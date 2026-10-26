@@ -191,9 +191,28 @@ impl ToolActionPersistence {
         self.transition(call_id, RunActionState::Cancelled, Some(reason), None)
     }
 
-    pub(crate) fn request_approval(&self, call_id: &str, risk: &str, reason: &str) -> Result<()> {
+    /// Stable approval identity for this run/action pair. The provider call id
+    /// remains the action identity and is recorded in the approval row, but it
+    /// must not be used as the database-wide approval primary key.
+    fn approval_id(&self, call_id: &str) -> String {
+        format!(
+            "approval:v1:{}:{}:{}:{}",
+            self.run_id.len(),
+            self.run_id,
+            call_id.len(),
+            call_id
+        )
+    }
+
+    pub(crate) fn request_approval(
+        &self,
+        call_id: &str,
+        risk: &str,
+        reason: &str,
+    ) -> Result<String> {
+        let approval_id = self.approval_id(call_id);
         RunControlStore::new(&self.db).request_approval(&NewRunApproval {
-            approval_id: call_id,
+            approval_id: &approval_id,
             run_id: &self.run_id,
             call_id,
             scope: "single_call",
@@ -203,12 +222,12 @@ impl ToolActionPersistence {
             expires_at: None,
             now: now_millis(),
         })?;
-        Ok(())
+        Ok(approval_id)
     }
 
-    pub(crate) fn approve(&self, call_id: &str) -> Result<()> {
+    pub(crate) fn approve(&self, approval_id: &str) -> Result<()> {
         RunControlStore::new(&self.db).respond_approval(
-            call_id,
+            approval_id,
             true,
             "approval_gate",
             now_millis(),
@@ -216,9 +235,9 @@ impl ToolActionPersistence {
         Ok(())
     }
 
-    pub(crate) fn deny(&self, call_id: &str) -> Result<()> {
+    pub(crate) fn deny(&self, approval_id: &str) -> Result<()> {
         RunControlStore::new(&self.db).respond_approval(
-            call_id,
+            approval_id,
             false,
             "approval_gate",
             now_millis(),
@@ -628,13 +647,16 @@ impl<'a> ToolExecutionPipeline<'a> {
             reason: reason.clone(),
             needs_approval: true,
         });
-        if let Some(persistence) = self.action_persistence.as_ref() {
-            persistence.request_approval(call_id, risk, &reason)?;
-        }
+        let approval_id = self
+            .action_persistence
+            .as_ref()
+            .map(|persistence| persistence.request_approval(call_id, risk, &reason))
+            .transpose()?
+            .unwrap_or_else(|| call_id.to_string());
         let cancellation_wait = self.execution_context();
         let decision = tokio::select! {
             decision = self.approvals.request(ApprovalRequest {
-                call_id: call_id.to_string(),
+                call_id: approval_id.clone(),
                 tool: name.to_string(),
                 reason: reason.clone(),
                 risk: risk.to_string(),
@@ -655,13 +677,13 @@ impl<'a> ToolExecutionPipeline<'a> {
         Ok(match decision {
             ApprovalDecision::Allow => {
                 if let Some(persistence) = self.action_persistence.as_ref() {
-                    persistence.approve(call_id)?;
+                    persistence.approve(&approval_id)?;
                 }
                 None
             }
             ApprovalDecision::Deny => {
                 if let Some(persistence) = self.action_persistence.as_ref() {
-                    persistence.deny(call_id)?;
+                    persistence.deny(&approval_id)?;
                 }
                 Some(self.blocked(
                     call_id.to_string(),
@@ -1235,7 +1257,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: approval identity must include the owning run"]
     fn audit_distinct_runs_can_approve_the_same_provider_call_id_independently() {
         let registry = registry(RiskLevel::High, Arc::new(AtomicUsize::new(0)));
         let (db, first) = action_fixture(&registry);
@@ -1257,10 +1278,10 @@ mod tests {
         first
             .register_invocations(&mut [invocation.clone()], &registry)
             .unwrap();
-        first
+        let first_approval = first
             .request_approval("provider-call-reused", "high", "audit first")
             .unwrap();
-        first.deny("provider-call-reused").unwrap();
+        first.deny(&first_approval).unwrap();
         // Actions are correctly scoped by (run_id, call_id). The approval
         // layer must retain that identity instead of treating the provider id
         // as a database-wide idempotency key.
@@ -1278,10 +1299,10 @@ mod tests {
             store.get_action("run-action-second", "provider-call-reused").unwrap().unwrap().state,
             first_approvals.len(), second_approvals.len()
         );
-        assert!(
-            second_approval.is_ok(),
-            "a different run needs an independent approval: {second_approval:?}"
-        );
+        let second_approval = second_approval.unwrap_or_else(|error| {
+            panic!("a different run needs an independent approval: {error}")
+        });
+        assert_ne!(first_approval, second_approval);
         assert_eq!(first_approvals[0].state, ApprovalState::Denied);
         assert_eq!(second_approvals.len(), 1);
         assert_eq!(second_approvals[0].state, ApprovalState::Pending);
@@ -1407,9 +1428,10 @@ mod tests {
         let result = pipeline.execute(invocations.remove(0)).await.unwrap();
         assert!(result.output.ok);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let approval_id = "approval:v1:15:run-action-test:13:call-approved";
         assert_eq!(
             RunControlStore::new(&db)
-                .get_approval("call-approved")
+                .get_approval(approval_id)
                 .unwrap()
                 .unwrap()
                 .state,

@@ -1080,7 +1080,14 @@ async fn approval_lifecycle_healthy_answers_keep_durable_and_live_paths_aligned(
                 usize::from(approved && scope == "command_prefix")
             );
             let controls = RunControlStore::new(&db);
-            let record = controls.get_approval("healthy-approval").unwrap().unwrap();
+            let approval_id = format!(
+                "approval:v1:{}:{}:{}:{}",
+                "healthy-run".len(),
+                "healthy-run",
+                "healthy-approval".len(),
+                "healthy-approval"
+            );
+            let record = controls.get_approval(&approval_id).unwrap().unwrap();
             assert_eq!(
                 record.state,
                 if approved {
@@ -1174,8 +1181,10 @@ async fn cancelled_approval_scope(scope: &str) {
     );
     let pending = chat.pending_approvals();
     let notified = Arc::new(tokio::sync::Notify::new());
+    let approval_id = Arc::new(Mutex::new(None::<String>));
     let runner = chat.clone();
     let notify = notified.clone();
+    let observed_approval_id = approval_id.clone();
     let task = tokio::spawn(async move {
         runner
             .run_in_session(
@@ -1188,7 +1197,10 @@ async fn cancelled_approval_scope(scope: &str) {
                 false,
                 Some("audit-cancelled-approval"),
                 |_| {},
-                move |_| notify.notify_one(),
+                move |dto| {
+                    *observed_approval_id.lock().unwrap() = Some(dto.call_id);
+                    notify.notify_one();
+                },
             )
             .await
     });
@@ -1196,24 +1208,20 @@ async fn cancelled_approval_scope(scope: &str) {
         .await
         .expect("tool must reach the real approval gate");
     assert_eq!(pending.pending_count(), 1);
+    let approval_id = approval_id.lock().unwrap().clone().unwrap();
     db.with_conn(|conn| {
         conn.execute_batch("CREATE TRIGGER h15_answer_fault BEFORE INSERT ON run_events WHEN NEW.event_type='approval.responded' BEGIN SELECT RAISE(ABORT,'h15 answer audit fault'); END;").unwrap();
         Ok(())
     }).unwrap();
     assert!(chat
-        .resolve_approval_scoped(
-            "audit-waiting-approval",
-            true,
-            Some(scope),
-            "failed-audit-answer"
-        )
+        .resolve_approval_scoped(&approval_id, true, Some(scope), "failed-audit-answer")
         .is_err());
     assert_eq!(pending.pending_count(), 1);
     assert!(pending.grants().list().is_empty());
     assert!(settings.command_prefix_grants().unwrap().is_empty());
     assert_eq!(
         RunControlStore::new(&db)
-            .get_approval("audit-waiting-approval")
+            .get_approval(&approval_id)
             .unwrap()
             .unwrap()
             .state,
@@ -1232,7 +1240,7 @@ async fn cancelled_approval_scope(scope: &str) {
     // No await after cancellation: answer before the waiting task can observe
     // the signal and drop its gate future. It must not create a grant either.
     let cancelling_answer = chat.resolve_approval_scoped(
-        "audit-waiting-approval",
+        &approval_id,
         true,
         Some(scope),
         "answer-after-cancel-signal",
@@ -1311,7 +1319,7 @@ async fn cancelled_approval_scope(scope: &str) {
     let reopened_controls = RunControlStore::new(&reopened);
     assert_eq!(
         reopened_controls
-            .get_approval("audit-waiting-approval")
+            .get_approval(&approval_id)
             .unwrap()
             .unwrap()
             .state,
@@ -1319,7 +1327,7 @@ async fn cancelled_approval_scope(scope: &str) {
     );
     assert!(reopened_controls
         .respond_approval_scoped(
-            "audit-waiting-approval",
+            &approval_id,
             true,
             "reopened-late-answer",
             Some(scope),

@@ -938,7 +938,14 @@ async fn audit_tool_approval_emits_one_correlated_event() {
         1,
         "one approval generated multiple protocol events"
     );
-    assert_eq!(requests[0]["approvalId"], call_id);
+    let expected_approval_id = format!(
+        "approval:v1:{}:{}:{}:{}",
+        turn_id.len(),
+        turn_id,
+        call_id.len(),
+        call_id
+    );
+    assert_eq!(requests[0]["approvalId"], expected_approval_id);
 }
 
 #[tokio::test]
