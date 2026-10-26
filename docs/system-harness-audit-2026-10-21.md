@@ -31,7 +31,7 @@
 | H-08 | 已修复并验收（2026-10-26，MCP/AppCore本机范围） | `McpTransport`统一支持无 ID notification，initialize 成功后发送 `notifications/initialized`；严格 stdio、HTTP fixture、MCP全组和AppCore MCP筛选通过；E-H08-01～04，修复提交`2dc9fdf6` |
 | H-09 | 已修复并验收（2026-10-26，Windows本机MCP/AppCore范围） | 单stdout reader、pending/oneshot与连接唯一wire ID；原探针转默认通过，stdio12/0 ignored、正式消费者1；全workspace唯一H-306失败及AppCore严格lint阻断见E-H09-01～09，修复提交`46ba0fd7` |
 | H-03 | 已修复并验收（2026-10-27，所列Windows本机/AppCore与CLI路由范围） | 原始Direct误路由失败保留；不可变backend registry按run解析，显式不可用拒绝，Direct兼容路径保留；AppCore路由1、registry8、CLI配置3及桌面Tauri cargo check通过，见E-H03-01～06；修复提交待回填 |
-| H-05 | 已修复并验收（2026-10-27，离线DeepSeek adapter、Chat wire投影与Runtime重组范围） | 原始assistant工具响应拆分失败保留；Chat使用原始item顺序合并同一assistant的reasoning/文本/单多工具调用，Responses仍使用repaired配对；projection4、models lib89、runtime model_agent62通过，见E-H05-01～04；修复提交待回填 |
+| H-05 | 已修复并验收（2026-10-27，离线DeepSeek adapter、Chat wire投影与Runtime重组范围） | 原始assistant工具响应拆分失败保留；Chat使用原始item顺序合并同一assistant的reasoning/文本/单多工具调用，Responses仍使用repaired配对；projection4、models lib89、runtime lib286通过，见E-H05-01～04；修复提交`6bc2d66013c6116a8b2ea2c454fa29f3c854090d` |
 
 逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **28**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **251（251待修复）**；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
