@@ -20,7 +20,7 @@
 
 ## H-01 本轮即时记录（2026-10-26）
 
-**当前状态：已修复并验收（所列Windows本机范围）。** 原始及中间失败保留；最终范围见E-H01-11～12，修复提交待生成。
+**当前状态：已修复并验收（所列Windows本机范围）。** 原始及中间失败保留；最终范围见E-H01-11～12，修复提交`8b7a43d2`，本次另做真实hash回填。
 
 E-H01-20261026-01（原始确定性探针）：HEAD 4b28304b且生产未改时，`cargo test -p deepagent-cli audit_stalled_outbox_preserves_terminal_notification --offline -- --ignored --nocapture`退出1，0 passed/1 failed（测试0.01s、构建11.45s）。实际dropped sequence 257，queued=256、terminal_received=false、next_sequence=258，确认仍是try_send满队列后仅stderr记录且继续接受事件。已核对H-01原文与Codex transport的慢连接显式断开/不可断开writer异步背压分界；本轮仅处理连接传递失败与其ACK边界，H-91并发序号倒退、H-205 SDK丢envelope及H-92普通stdin EOF收尾不合并。原有五类未跟踪项不读取、修改或暂存。H-01转修复中；还未修改生产，后续真实管道与ACK探针结果待取。
 
@@ -45,6 +45,8 @@ E-H01-20261026-10（最终审查补强，不覆盖中间结果）：代码复核
 E-H01-20261026-11（最终测试终态与失败基线保留）：最后两项纯测试补强后的完整CLI再次退出0，112 passed/23 ignored（构建34.90s、测试24.00s），随后fmt --check及diff --check退出0；最终严格CLI clippy shell退出1，仅原有app_server.rs:584 unnecessary_map_or，未新增其他诊断，未修或屏蔽该旧行。`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`最终shell退出1，明确两个失败target：SDK e2e_stdio为2 passed/4 failed（均initialize ResponseChannelClosed），prompts lib为27 passed/1 failed（H-306空defaultUserPrompt）；其余target/doc-tests执行完毕，不能称完整workspace通过。该workspace快照早于最终纯测试断言与cfg(test) import补强，已由最新CLI全组/构建/lint补足本轮变化，不将旧快照冒充最终源码全仓重跑。实际AppCore1132 passed/78 ignored、kernel_v2_e2e127 passed/86 ignored、builtins352 passed/4 ignored、runtime284 passed/16 ignored、persistence71+9 passed、session20 passed；所有ignored均不计通过。
 
 E-H01-20261026-12（验收结论与范围）：H-01在所列Windows本机范围已修复并验收；采用容量256的唯一outbox显式故障断连，不保证所有积压通知送达、不重发或自动重跑，ACK仅约束已flush高水位范围且新连接重置，恢复必须使用既有session/run持久化游标。writer错误/容量故障唤醒连接，原取消路径收尾本连接turn，10s fault-drain超时明确报告未完成，绝不伪造终态；原ACK失败先取消再经原executor落盘的H-02语义保留。两run组合用例允许H-284现有入队自动中断行为，不能用它单独归因活跃run取消来源；单run真实OS管道、单run非协作取消及审批BrokenPipe用例另证故障取消。审批测试仅验证不执行工具及单一cancelled，不声明H-15待审批/迟到回答清理已修。未改变数据库/协议DTO形状/模型参数/前端，无迁移；新增拒绝超界ACK和输出失败退出1是有意的连接契约收紧。H-91/H-92/H-205/H-214/H-256/H-284保持独立未关闭，SDK不会自动补读且事件订阅EOF仍可能等待；真实DeepSeek/公网、Tauri/UI、Linux/macOS、全feature和MSRV未验，无相关前端改动未跑pnpm build。只含本项10文件，修复提交待生成并另做hash回填；306行台账已核对为21已验收、18历史跳过、7归并、2撤销、258待修、0修复中，258有效未关闭。下一项优先H-15取消后的旧审批与迟到授权边界，尚未复现或修改；全部剩余200–400有效小时仍是未校准初估，编译/依赖/设备等待另计，不承诺精确完成时间；整体goal继续active。
+
+E-H01-20261026-13（独立修复提交与真实hash回填）：已创建修复提交`8b7a43d2`（【fix】显式断开H-01故障连接并复用取消与持久化恢复），只含本项10文件；提交前fmt --check、diff --check及cached --check通过。306行/306唯一编号/无缺号/每行8列，两份E-H01-01～12逐字一致；21已验收、18历史跳过、7归并、2撤销、258待修。此步仅将真实hash回填两份文档并独立提交，不amend/推送/创建PR，原五类未跟踪项未读改或暂存。保留E-11完整workspace及严格lint失败、E-12平台和SDK恢复限制；H-15仍待本轮之后独立复核，整体goal继续active，工时仍为未校准200–400有效小时且环境等待另计。
 
 ## H-04 本轮即时记录（2026-10-26）
 
@@ -753,7 +755,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 <!-- repair-ledger:start -->
 | H 编号、原标题与原报告链接 | 优先级 | 当前状态 | 归并目标 / 跳过依据 | 根因与修复摘要 | 测试命令、结果 / 未执行验收 | 修复 commit ID | 残余、下一步与剩余工时 |
 |---|---|---|---|---|---|---|---|
-| [H-01：stdio 事件队列满时丢弃关键通知，连接仍表现正常](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原失败保留；E-H01-01～12，限所列Windows本机范围 | 唯一有界outbox显式故障断连；复用原取消/持久化收尾；ACK拒绝超出flush高水位 | 最新CLI112通过/23忽略；正式Rust SDK隔离6通过、TS正式1通过；真实OS管道/游标补读/审批/10s超时对照；workspace两个旧失败target，严格lint旧map_or未绿 | 待本轮独立修复提交后回填 | 不保证积压全部交付、不自动重跑/恢复；H-91/H-92/H-205/H-214/H-256/H-284独立；总体200–400有效小时未校准初估 |
+| [H-01：stdio 事件队列满时丢弃关键通知，连接仍表现正常](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原失败保留；E-H01-01～13，限所列Windows本机范围 | 唯一有界outbox显式故障断连；复用原取消/持久化收尾；ACK拒绝超出flush高水位 | 最新CLI112通过/23忽略；正式Rust SDK隔离6通过、TS正式1通过；真实OS管道/游标补读/审批/10s超时对照；workspace两个旧失败target，严格lint旧map_or未绿 | `8b7a43d2` | 不保证积压全部交付、不自动重跑/恢复；H-91/H-92/H-205/H-214/H-256/H-284独立；总体200–400有效小时未校准初估 |
 | [H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H02-01原始失败保留，原探针转默认通过；限所列Windows本机范围 | ACK前复用admit_run/执行消费同一admission；interrupt核对终态及accepted；ACK失败同执行器收尾；补早期取消投影 | E-H02-01～15：CLI97 passed/27 ignored、真实stdio32轮、最终事件断言通过、build/fmt/diff通过；SDK隔离根6 passed；全workspace两失败target，严格CLI lint既有告警未绿 | `f777dc82` | H-01/H-04后续已独立完成所列范围；H-92仍待修，其他OS/真实DeepSeek/UI未验；总体200–400有效小时初估 |
 | [H-03：Harness 的逐次沙箱 backend 选择未进入实际执行路由](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-04：Harness 恢复与 steer 替换运行会清空显式模型和权限配置](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H04-01保留原resume/steer失败，02～15记录实现/复核 | 共享ExecutionOverrides及现有会话header版本快照，resume/fork继承、steer保留逐次覆盖 | CLI102通过/25忽略；core42、persistence71/control9、session20；TS6及正式1、隔离Rust SDK6通过；全仓两失败target和严格lint基线见E-10～13 | `9bc625f6` | 仅固定显式覆盖；旧会话无历史快照，降级不保证；H-03/H-49/H-130/H-222/H-216独立；总体200–400有效小时初估 |

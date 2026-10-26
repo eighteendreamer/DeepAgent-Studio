@@ -6,7 +6,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-01 | 已修复并验收（2026-10-26，所列Windows本机范围） | 唯一outbox显式故障断连、原取消收尾与持久化游标补读；CLI112/23 ignored、正式Rust SDK隔离6及TS正式1通过；全仓两个失败target及旧lint保留，见E-H01-01～12；修复提交待生成 |
+| H-01 | 已修复并验收（2026-10-26，所列Windows本机范围） | 唯一outbox显式故障断连、原取消收尾与持久化游标补读；CLI112/23 ignored、正式Rust SDK隔离6及TS正式1通过；全仓两个失败target及旧lint保留，见E-H01-01～13；修复提交`8b7a43d2` |
 | H-04 | 已修复并验收（2026-10-26，所列Windows本机范围） | 共享配置持久化于现有会话header，resume/fork/steer继承；CLI102/25 ignored、共享存储及正式TS SDK1/隔离Rust SDK6通过；全仓两失败target及严格lint基线保留，见E-H04-01～15；修复提交`9bc625f6` |
 | H-02 | 已修复并验收（2026-10-26，所列Windows本机范围） | ACK前统一admit，interrupt核对accepted；CLI97/27 ignored、真实stdio32轮及ACK失败收尾通过；SDK隔离根6通过；全workspace两失败target、严格lint基线与未验边界见E-H02-01～15；修复提交`f777dc82` |
 | H-06 | 已修复并验收（2026-10-26，所列Windows/Linux本机范围） | 连接恢复与业务请求重试分离；未知结果结构化保留并禁止自动重放；MCP、HTTP、AppCore正式链路通过；完整workspace仅既有H-306失败，Linux真实stdio因无Node未执行；E-H06-01～06，修复提交`5ba4ee83` |
@@ -363,7 +363,7 @@
 
 原outbox和stdio入口分别收敛到唯一`event_outbox.rs`/`connection.rs`模块，容量仍256。满队列、writer关闭或输出序列化/write/flush错误均令连接明确故障，生产main返回错误并exit 1；只经现有取消别名和执行器收尾本连接turn，故障drain超10s报告未完成，不伪造终态或重跑。ACK拒绝超过成功flush高水位的值，仍为连接本地advisory receipt，不是durable cursor；恢复通过原thread/read的session/run游标，已实测取消终态补读及空续读。没有第二套存储、审批或取消机制。
 
-最终CLI112通过/23忽略、正式Rust SDK隔离6通过、TS正式配置1通过；完整workspace仍有SDK初始化与H-306两个失败target，严格lint仍有原map_or告警。H-91/H-92/H-205/H-214/H-256/H-284及H-15独立保留；不保证全部通知交付、SDK自动恢复或审批迟到回答清理。具体实测/限制见E-H01-01～12，修复提交待生成。以下触发、恢复链核对与修复方向保留为修复前历史，不代表当前仍原样失败。
+最终CLI112通过/23忽略、正式Rust SDK隔离6通过、TS正式配置1通过；完整workspace仍有SDK初始化与H-306两个失败target，严格lint仍有原map_or告警。H-91/H-92/H-205/H-214/H-256/H-284及H-15独立保留；不保证全部通知交付、SDK自动恢复或审批迟到回答清理。具体实测/限制见E-H01-01～13，修复提交`8b7a43d2`。以下触发、恢复链核对与修复方向保留为修复前历史，不代表当前仍原样失败。
 
 #### 触发与复现
 
@@ -418,6 +418,8 @@ E-H01-20261026-10（最终审查补强，不覆盖中间结果）：代码复核
 E-H01-20261026-11（最终测试终态与失败基线保留）：最后两项纯测试补强后的完整CLI再次退出0，112 passed/23 ignored（构建34.90s、测试24.00s），随后fmt --check及diff --check退出0；最终严格CLI clippy shell退出1，仅原有app_server.rs:584 unnecessary_map_or，未新增其他诊断，未修或屏蔽该旧行。`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`最终shell退出1，明确两个失败target：SDK e2e_stdio为2 passed/4 failed（均initialize ResponseChannelClosed），prompts lib为27 passed/1 failed（H-306空defaultUserPrompt）；其余target/doc-tests执行完毕，不能称完整workspace通过。该workspace快照早于最终纯测试断言与cfg(test) import补强，已由最新CLI全组/构建/lint补足本轮变化，不将旧快照冒充最终源码全仓重跑。实际AppCore1132 passed/78 ignored、kernel_v2_e2e127 passed/86 ignored、builtins352 passed/4 ignored、runtime284 passed/16 ignored、persistence71+9 passed、session20 passed；所有ignored均不计通过。
 
 E-H01-20261026-12（验收结论与范围）：H-01在所列Windows本机范围已修复并验收；采用容量256的唯一outbox显式故障断连，不保证所有积压通知送达、不重发或自动重跑，ACK仅约束已flush高水位范围且新连接重置，恢复必须使用既有session/run持久化游标。writer错误/容量故障唤醒连接，原取消路径收尾本连接turn，10s fault-drain超时明确报告未完成，绝不伪造终态；原ACK失败先取消再经原executor落盘的H-02语义保留。两run组合用例允许H-284现有入队自动中断行为，不能用它单独归因活跃run取消来源；单run真实OS管道、单run非协作取消及审批BrokenPipe用例另证故障取消。审批测试仅验证不执行工具及单一cancelled，不声明H-15待审批/迟到回答清理已修。未改变数据库/协议DTO形状/模型参数/前端，无迁移；新增拒绝超界ACK和输出失败退出1是有意的连接契约收紧。H-91/H-92/H-205/H-214/H-256/H-284保持独立未关闭，SDK不会自动补读且事件订阅EOF仍可能等待；真实DeepSeek/公网、Tauri/UI、Linux/macOS、全feature和MSRV未验，无相关前端改动未跑pnpm build。只含本项10文件，修复提交待生成并另做hash回填；306行台账已核对为21已验收、18历史跳过、7归并、2撤销、258待修、0修复中，258有效未关闭。下一项优先H-15取消后的旧审批与迟到授权边界，尚未复现或修改；全部剩余200–400有效小时仍是未校准初估，编译/依赖/设备等待另计，不承诺精确完成时间；整体goal继续active。
+
+E-H01-20261026-13（独立修复提交与真实hash回填）：已创建修复提交`8b7a43d2`（【fix】显式断开H-01故障连接并复用取消与持久化恢复），只含本项10文件；提交前fmt --check、diff --check及cached --check通过。306行/306唯一编号/无缺号/每行8列，两份E-H01-01～12逐字一致；21已验收、18历史跳过、7归并、2撤销、258待修。此步仅将真实hash回填两份文档并独立提交，不amend/推送/创建PR，原五类未跟踪项未读改或暂存。保留E-11完整workspace及严格lint失败、E-12平台和SDK恢复限制；H-15仍待本轮之后独立复核，整体goal继续active，工时仍为未校准200–400有效小时且环境等待另计。
 
 ### H-02：Harness ACK 与运行接纳分离，立即中断可能被虚假确认
 
