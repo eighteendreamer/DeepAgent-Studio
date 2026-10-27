@@ -14,7 +14,7 @@
 //!   the run actually created/modified files (fact-based gate). A pure
 //!   question in a cargo repo mutates nothing, so no build runs.
 //!
-//! Discovery stays conservative on cost: only fast, side-effect-free checks
+//! Discovery prefers inexpensive checks (which may still execute project code)
 //! (`cargo check`, `tsc --noEmit`, `python -m compileall`); full test suites
 //! stay opt-in.
 
@@ -22,7 +22,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use deepagent_runtime::VerificationPlan;
-use deepagent_verification::{Command, SystemCommandRunner, VerificationStep};
+use deepagent_verification::{Command, CommandRunner, VerificationStep};
 
 /// Discover a workspace-level acceptance plan for `root`.
 ///
@@ -30,12 +30,15 @@ use deepagent_verification::{Command, SystemCommandRunner, VerificationStep};
 /// `None` otherwise. Whether the plan actually runs is decided by the runtime
 /// loop based on real filesystem mutations — this function never inspects the
 /// prompt (that was the intent-guessing anti-pattern).
-pub(crate) fn discover_verification_plan(root: &Path) -> Option<VerificationPlan> {
+pub(crate) fn discover_verification_plan(
+    root: &Path,
+    runner: Arc<dyn CommandRunner>,
+) -> Option<VerificationPlan> {
     let steps = discover_steps(root);
     if steps.is_empty() {
         return None;
     }
-    Some(VerificationPlan::new(steps, Arc::new(SystemCommandRunner)))
+    Some(VerificationPlan::new(steps, runner))
 }
 
 /// Build-system detection, first match wins per ecosystem; all steps are
@@ -115,6 +118,10 @@ mod audit_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn discover_verification_plan(root: &Path) -> Option<VerificationPlan> {
+        super::discover_verification_plan(root, Arc::new(deepagent_verification::MockRunner::new()))
+    }
 
     #[test]
     fn build_system_yields_plan_regardless_of_prompt() {

@@ -75,7 +75,11 @@ fn main() {
 
     // Use the actual structural discovery and SystemCommandRunner. The only
     // command adjustment isolates Cargo's output/lock from this test binary.
-    let mut plan = discover_verification_plan(&root).unwrap();
+    // H-64 intentionally audits the standalone process runner's lifecycle.
+    // Production uses the run's registered bash pipeline instead (H-65).
+    let mut plan =
+        discover_verification_plan(&root, Arc::new(deepagent_verification::SystemCommandRunner))
+            .unwrap();
     assert_eq!(plan.steps.len(), 1);
     assert_eq!(plan.steps[0].command.program, "cargo");
     plan.steps[0].command.args.extend([

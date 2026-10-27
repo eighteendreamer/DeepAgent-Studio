@@ -353,6 +353,7 @@ pub struct ToolExecutionPipeline<'a> {
     result_policy: ToolResultPolicy,
     checkpoint: Option<Arc<CheckpointManager>>,
     action_persistence: Option<ToolActionPersistence>,
+    retain_raw_output: bool,
 }
 
 impl<'a> ToolExecutionPipeline<'a> {
@@ -380,6 +381,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             ),
             checkpoint: None,
             action_persistence: None,
+            retain_raw_output: false,
         }
     }
 
@@ -465,6 +467,13 @@ impl<'a> ToolExecutionPipeline<'a> {
 
     pub fn with_action_persistence(mut self, persistence: Option<ToolActionPersistence>) -> Self {
         self.action_persistence = persistence;
+        self
+    }
+
+    /// Preserve the original JSON for internal consumers that need exit status
+    /// and diagnostics. Events and durable results still use the budgeted value.
+    pub fn with_raw_output(mut self, retain: bool) -> Self {
+        self.retain_raw_output = retain;
         self
     }
 
@@ -889,6 +898,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             Ok(output) => output,
             Err(error) => ToolOutput::failure(error.to_string()),
         };
+        let raw_output = self.retain_raw_output.then(|| output.value.clone());
         output = self
             .result_policy
             .apply(&prepared.name, &prepared.call_id, output)
@@ -933,7 +943,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             name: prepared.name,
             arguments: prepared.arguments,
             output,
-            raw_output: None,
+            raw_output,
             duration_ms,
             stage: ToolPipelineStage::Execution,
         })
@@ -967,6 +977,20 @@ impl<'a> ToolExecutionPipeline<'a> {
             ToolPreparation::Ready(prepared) => self.execute_prepared(prepared).await,
             ToolPreparation::Blocked(result) => Ok(result),
         }
+    }
+
+    /// Execute a host-generated invocation through the same durable action
+    /// projection and policy pipeline as model-generated calls. Cloning the
+    /// run's persistence shares its sequence allocator; no second ledger is made.
+    pub async fn execute_registered(
+        &self,
+        mut invocation: ToolInvocation,
+    ) -> Result<ToolPipelineResult> {
+        if let Some(persistence) = &self.action_persistence {
+            persistence
+                .register_invocations(std::slice::from_mut(&mut invocation), self.registry)?;
+        }
+        self.execute(invocation).await
     }
 }
 

@@ -1135,6 +1135,13 @@ impl<'a> RunAssembler<'a> {
             verification_policy,
             fire_session_start: continue_session.is_none(),
             granted,
+            verification_context: crate::verification_commands::VerificationCommandContext {
+                registry: Arc::new(registry.clone()),
+                session_id: session.id(),
+                hooks: hooks.clone(),
+                approvals: gate.clone(),
+                cancellation: cancellation.cancellation(),
+            },
             nested_instructions: Some(Arc::new(
                 crate::nested_instructions::NestedInstructionsDecorator::new(
                     root.clone(),
@@ -1153,7 +1160,11 @@ impl<'a> RunAssembler<'a> {
             .unwrap_or_else(|p| p.into_inner())
             .clone();
 
-        let verification_plan = crate::completion_plan::discover_verification_plan(&root);
+        let verification_commands = kernel_runtime.verification_commands;
+        let verification_plan = crate::completion_plan::discover_verification_plan(
+            &root,
+            verification_commands.clone(),
+        );
         let (run_result, run_succeeded): (Result<()>, bool) = {
             let mut kernel = AgentKernel::<SystemClock>::new(
                 self.db.clone(),
@@ -1166,6 +1177,7 @@ impl<'a> RunAssembler<'a> {
             .with_approvals(gate)
             .with_hooks(&hooks)
             .with_cancellation(cancellation.cancellation());
+            verification_commands.bind_events(kernel.event_sink())?;
             if let Some(plan) = verification_plan.as_ref() {
                 kernel = kernel.with_verification(plan);
             }
@@ -1251,6 +1263,10 @@ impl<'a> RunAssembler<'a> {
         )?;
 
         drop(agent);
+        // The completion runner owns the run's hooks/event sender. Release it
+        // before draining the pump, just like the kernel/decorator above.
+        drop(verification_plan);
+        drop(verification_commands);
         drop(hooks);
         drop(sink);
         let _ = pump.await;
@@ -1499,6 +1515,10 @@ impl<'a> RunAssembler<'a> {
             .map(|event| event.sequence as i64)
             .unwrap_or(0);
 
+        let channel_gate =
+            ChannelApprovalGate::new(self.coordinator.pending(), Arc::new(on_approval));
+        let gate: Arc<dyn deepagent_runtime::ApprovalGate> = Arc::new(channel_gate);
+        let hooks = Arc::new(deepagent_hooks::HookRegistry::new());
         let plan = self.plan_mode_for_session(&session_id);
         let kernel_runtime = build_kernel_runtime_config(KernelRuntimeConfigRequest {
             db: self.db.clone(),
@@ -1511,9 +1531,18 @@ impl<'a> RunAssembler<'a> {
             verification_policy: crate::settings::VerificationPolicy::default(),
             fire_session_start: true,
             granted,
+            verification_context: crate::verification_commands::VerificationCommandContext {
+                registry: tool_registry.clone(),
+                session_id: session.id(),
+                hooks: hooks.clone(),
+                approvals: gate.clone(),
+                cancellation: cancellation.cancellation(),
+            },
             nested_instructions: None,
         })?;
         let config = kernel_runtime.config;
+
+        let verification_commands = kernel_runtime.verification_commands;
 
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled before workflow execution"));
@@ -1522,11 +1551,6 @@ impl<'a> RunAssembler<'a> {
         let empty_toolset: crate::tool_manifest::DiscoveredToolSet =
             Arc::new(std::sync::Mutex::new(std::collections::HashSet::new()));
         let registry = tool_registry;
-
-        let channel_gate =
-            ChannelApprovalGate::new(self.coordinator.pending(), Arc::new(on_approval));
-        let gate: Arc<dyn deepagent_runtime::ApprovalGate> = Arc::new(channel_gate);
-        let hooks = deepagent_hooks::HookRegistry::new();
 
         let (run_result, run_succeeded): (Result<()>, bool) = {
             let kernel = AgentKernel::<SystemClock>::new(
@@ -1540,6 +1564,7 @@ impl<'a> RunAssembler<'a> {
             .with_approvals(gate)
             .with_hooks(&hooks)
             .with_cancellation(cancellation.cancellation());
+            verification_commands.bind_events(kernel.event_sink())?;
 
             let task = session.create_task("[workflow run]")?;
             match kernel
@@ -1580,6 +1605,8 @@ impl<'a> RunAssembler<'a> {
         )?;
 
         drop(agent);
+        drop(verification_commands);
+        drop(hooks);
         drop(sink);
         let _ = pump.await;
 

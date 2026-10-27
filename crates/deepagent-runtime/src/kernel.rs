@@ -386,7 +386,7 @@ pub struct AgentKernel<'a, C: Clock> {
     verification: Option<&'a VerificationPlan>,
     adversarial_verifier: Option<Arc<dyn crate::adversarial::AdversarialVerifier>>,
     approvals: Arc<dyn ApprovalGate>,
-    events: Arc<dyn RuntimeEventSink>,
+    events: Arc<PersistentEventSink>,
     handle: RunHandle,
     /// Session-level accumulation of edited files across all turns in this run.
     edited_files: Arc<
@@ -405,6 +405,11 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
     ) -> Self {
         let run_id = run_id.into();
         Self {
+            events: Arc::new(PersistentEventSink::new(
+                db.clone(),
+                run_id.clone(),
+                Arc::new(NullEventSink),
+            )),
             db,
             registry,
             metrics,
@@ -413,7 +418,6 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             verification: None,
             adversarial_verifier: None,
             approvals: Arc::new(AutoDenyGate),
-            events: Arc::new(NullEventSink),
             handle: RunHandle {
                 run_id,
                 cancellation: CancellationTree::new(),
@@ -453,8 +457,19 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
     }
 
     pub fn with_events(mut self, events: Arc<dyn RuntimeEventSink>) -> Self {
-        self.events = events;
+        self.events = Arc::new(PersistentEventSink::new(
+            self.db.clone(),
+            self.handle.run_id.clone(),
+            events,
+        ));
         self
+    }
+
+    /// The same durable event entry point used by this kernel and its agent.
+    /// Bind host-owned runtime helpers after configuring `with_events` and
+    /// before `run`; never wrap this sink in a second persistence layer.
+    pub fn event_sink(&self) -> Arc<dyn RuntimeEventSink> {
+        self.events.clone()
     }
 
     pub fn with_cancellation_flag(mut self, flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
@@ -526,11 +541,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         )?;
         store.transition(&run_id, RunPhase::Preparing.label(), now_ms())?;
 
-        let persistent = Arc::new(PersistentEventSink::new(
-            self.db.clone(),
-            run_id.clone(),
-            self.events.clone(),
-        ));
+        let persistent = self.events.clone();
         // Provider streaming originates inside the Agent rather than the loop
         // engine. Inject the same canonical sink here so model deltas cannot
         // bypass run_events persistence while still reaching the live UI.

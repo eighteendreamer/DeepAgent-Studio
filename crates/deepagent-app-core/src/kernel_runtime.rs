@@ -7,6 +7,7 @@ use deepagent_persistence::Database;
 use deepagent_runtime::{CheckpointManager, RuntimeConfig, ToolResultBudgetConfig};
 
 use crate::settings::VerificationPolicy;
+use crate::verification_commands::{VerificationCommandContext, VerificationCommands};
 
 pub(crate) struct KernelRuntimeConfigRequest<'a> {
     pub(crate) db: Arc<Database>,
@@ -19,6 +20,7 @@ pub(crate) struct KernelRuntimeConfigRequest<'a> {
     pub(crate) verification_policy: VerificationPolicy,
     pub(crate) fire_session_start: bool,
     pub(crate) granted: deepagent_tools::PermissionSet,
+    pub(crate) verification_context: VerificationCommandContext,
     /// Nested-instruction discovery (kernel-refactor Phase C): injects
     /// not-yet-loaded `CLAUDE.md`/`AGENTS.md` when tools touch their
     /// directories. `None` for callers without a hook registry (tests).
@@ -29,6 +31,7 @@ pub(crate) struct KernelRuntimeConfigRequest<'a> {
 pub(crate) struct KernelRuntimeConfig {
     pub(crate) config: RuntimeConfig,
     pub(crate) checkpoint: Arc<CheckpointManager>,
+    pub(crate) verification_commands: Arc<VerificationCommands>,
 }
 
 pub(crate) fn build_kernel_runtime_config(
@@ -45,7 +48,7 @@ pub(crate) fn build_kernel_runtime_config(
     let mut per_tool_max_tokens = BTreeMap::new();
     per_tool_max_tokens.insert(deepagent_builtins::SKILL_TOOL_NAME.to_string(), 24_000);
 
-    let config = RuntimeConfig {
+    let mut config = RuntimeConfig {
         fire_session_start: request.fire_session_start,
         permissions: request.granted,
         // Completion is no longer gated on prompt-derived filesystem
@@ -72,32 +75,44 @@ pub(crate) fn build_kernel_runtime_config(
             per_tool_max_tokens,
             ..Default::default()
         },
-        tool_result_decorator: Some(Arc::new({
-            let mut chain = deepagent_runtime::ChainDecorator::new()
-                .push(Arc::new(
-                    crate::plan_mode_reminder::PlanModeReminderDecorator::new(request.plan),
-                ))
-                .push(Arc::new(
-                    crate::todo_snapshot_reminder::TodoSnapshotReminderDecorator::new(
-                        request.todo_store,
-                    ),
-                ))
-                .push(Arc::new(
-                    crate::verification_decorator::VerificationDecorator::with_policy(
-                        Arc::new(
-                            crate::verification_dispatcher::VerificationDispatcher::standard(),
-                        ),
-                        Some(request.root.to_path_buf()),
-                        request.verification_policy,
-                    ),
-                ));
-            if let Some(nested) = request.nested_instructions {
-                chain = chain.push(nested);
-            }
-            chain
-        })),
         ..Default::default()
     };
+    let verification_commands = Arc::new(VerificationCommands::new(
+        request.verification_context,
+        request.root,
+        &config,
+    ));
+    let verification = Arc::new(
+        crate::verification_decorator::VerificationDecorator::with_policy(
+            Arc::new(
+                crate::verification_dispatcher::VerificationDispatcher::standard_with_executor(
+                    verification_commands.clone(),
+                ),
+            ),
+            Some(request.root.to_path_buf()),
+            request.verification_policy,
+        ),
+    );
+    config.tool_result_decorator = Some(Arc::new({
+        let mut chain = deepagent_runtime::ChainDecorator::new()
+            .push(Arc::new(
+                crate::plan_mode_reminder::PlanModeReminderDecorator::new(request.plan),
+            ))
+            .push(Arc::new(
+                crate::todo_snapshot_reminder::TodoSnapshotReminderDecorator::new(
+                    request.todo_store,
+                ),
+            ))
+            .push(verification);
+        if let Some(nested) = request.nested_instructions {
+            chain = chain.push(nested);
+        }
+        chain
+    }));
 
-    Ok(KernelRuntimeConfig { config, checkpoint })
+    Ok(KernelRuntimeConfig {
+        config,
+        checkpoint,
+        verification_commands,
+    })
 }

@@ -45,6 +45,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
+use crate::verification_commands::quote_argument;
 use deepagent_builtins::{CommandExecutor, CommandOutcome, SystemExecutor};
 
 /// Default per-file verification budget. Verifiers that exceed this duration
@@ -120,7 +121,7 @@ impl VerificationDispatcher {
         Self::standard_with_executor(exec)
     }
 
-    /// Build the standard set with a custom executor (for tests).
+    /// Build the standard set with the caller's execution boundary.
     pub fn standard_with_executor(executor: Arc<dyn CommandExecutor>) -> Self {
         Self::new(vec![
             Arc::new(RustVerifier::new(executor.clone())),
@@ -286,7 +287,10 @@ impl Verifier for RustVerifier {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".into());
         // Quote the path so spaces / Unicode are preserved through the shell.
-        let cmd = format!("cargo check --offline --manifest-path \"{manifest_str}\"");
+        let cmd = format!(
+            "cargo check --offline --manifest-path {}",
+            quote_argument(&manifest_str)
+        );
         match self.executor.run(&cmd, &cwd).await {
             Ok(outcome) => command_outcome_to_verification(outcome),
             Err(e) => VerificationOutcome::Skipped {
@@ -345,7 +349,7 @@ impl Verifier for TypeScriptVerifier {
             .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".into());
-        let cmd = format!("tsc --noEmit -p \"{dir}\"");
+        let cmd = format!("tsc --noEmit -p {}", quote_argument(&dir));
         match self.executor.run(&cmd, &dir).await {
             Ok(outcome) => command_outcome_to_verification(outcome),
             Err(e) => VerificationOutcome::Skipped {
@@ -393,7 +397,7 @@ impl Verifier for PythonVerifier {
             .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|| ".".into());
-        let compile_cmd = format!("python -m py_compile \"{path_str}\"");
+        let compile_cmd = format!("python -m py_compile {}", quote_argument(&path_str));
         let compile = match self.executor.run(&compile_cmd, &cwd).await {
             Ok(o) => o,
             Err(e) => {
@@ -409,7 +413,7 @@ impl Verifier for PythonVerifier {
             };
         }
         // Optional ruff lint; missing ruff is fine, the py_compile check already passed.
-        let ruff_cmd = format!("ruff check \"{path_str}\"");
+        let ruff_cmd = format!("ruff check {}", quote_argument(&path_str));
         match self.executor.run(&ruff_cmd, &cwd).await {
             Ok(o) if o.exit_code == Some(0) => VerificationOutcome::Passed,
             Ok(o) => VerificationOutcome::Failed {

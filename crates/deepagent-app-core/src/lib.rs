@@ -103,6 +103,7 @@ pub mod tool_manifest;
 pub mod tool_runtime;
 pub mod trust_service;
 pub mod uninstall;
+mod verification_commands;
 pub mod verification_decorator;
 pub mod verification_dispatcher;
 pub mod verification_panel;

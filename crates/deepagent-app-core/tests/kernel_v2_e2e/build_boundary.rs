@@ -2,32 +2,74 @@
 
 use super::*;
 use deepagent_app_core::{
-    ApprovalPolicy, SandboxBackend, SandboxBackendCommandExecutor, SandboxBackendKind,
+    ApprovalPolicy, DirectSandboxBackend, HarnessRunOverrides, RuntimeBroker, RuntimeService,
+    SandboxBackend, SandboxBackendCommandExecutor, SandboxBackendKind, SandboxBackendRegistry,
     SandboxCapabilities, SandboxExecutionRequest, SandboxExecutionResult, SandboxMode,
+    SandboxNetworkPolicy,
 };
+use deepagent_persistence::run_control::RunControlStore;
 
 const REJECTED: &str = "AUDIT_CONFIGURED_BACKEND_REJECTED_BUILD";
 
-struct RejectingBackend(Arc<Mutex<Vec<String>>>);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BackendMode {
+    Reject,
+    Unavailable,
+    Allow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Route {
+    Local,
+    Broker,
+    Remote,
+    Override,
+}
+
+struct TestBackend {
+    calls: Arc<Mutex<Vec<String>>>,
+    mode: BackendMode,
+    kind: SandboxBackendKind,
+    expect_environment: bool,
+}
 
 #[async_trait]
-impl SandboxBackend for RejectingBackend {
+impl SandboxBackend for TestBackend {
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
-            kind: SandboxBackendKind::Direct,
-            available: true,
+            kind: self.kind,
+            available: self.mode != BackendMode::Unavailable,
             supports_one_shot: true,
             supports_interactive_pty: false,
             supports_network_toggle: false,
             supports_readonly_mapping: false,
-            message: "audit backend: records and refuses every command; spawns nothing".into(),
+            message: format!(
+                "fixture backend {:?}; only Allow executes finite local builds",
+                self.mode
+            ),
         }
     }
 
     async fn execute(&self, request: SandboxExecutionRequest) -> Result<SandboxExecutionResult> {
         assert_eq!(request.sandbox_mode, SandboxMode::WorkspaceWrite);
-        self.0.lock().unwrap().push(request.command);
-        Err(CoreError::other(REJECTED))
+        assert_eq!(request.network, SandboxNetworkPolicy::Disabled);
+        if self.expect_environment {
+            assert!(request
+                .environment
+                .iter()
+                .any(|(key, value)| key == "DEEPAGENT_PROJECT_ROOT"
+                    && value == &request.workspace_root.to_string_lossy()));
+            assert!(request
+                .environment
+                .iter()
+                .any(|(key, _)| key == "DEEPAGENT_RUNTIME_ROOT"));
+        }
+        self.calls.lock().unwrap().push(request.command.clone());
+        if self.mode == BackendMode::Allow {
+            DirectSandboxBackend::new().execute(request).await
+        } else {
+            Err(CoreError::other(REJECTED))
+        }
     }
 }
 
@@ -57,10 +99,14 @@ enum Mutation {
     Rust,
 }
 
-async fn run_with_rejecting_backend(mutation: Mutation) -> (bool, bool) {
+async fn run_with_backend(mutation: Mutation, mode: BackendMode) -> (bool, bool) {
+    run_with_route(mutation, mode, Route::Local).await
+}
+
+async fn run_with_route(mutation: Mutation, mode: BackendMode, route: Route) -> (bool, bool) {
     let mutate = !matches!(mutation, Mutation::None);
     let temp = tempfile::tempdir().unwrap();
-    let root = temp.path().join("workspace");
+    let root = temp.path().join("workspace 空格 $literal 'quote");
     std::fs::create_dir_all(root.join("src")).unwrap();
     std::fs::write(
         root.join("Cargo.toml"),
@@ -102,11 +148,21 @@ async fn run_with_rejecting_backend(mutation: Mutation) -> (bool, bool) {
         .unwrap();
 
     let backend_calls = Arc::new(Mutex::new(Vec::new()));
-    let executor = SandboxBackendCommandExecutor::new(
-        Arc::new(RejectingBackend(backend_calls.clone())),
+    let backend = Arc::new(TestBackend {
+        calls: backend_calls.clone(),
+        mode,
+        kind: if route == Route::Override {
+            SandboxBackendKind::WindowsSandbox
+        } else {
+            SandboxBackendKind::Direct
+        },
+        expect_environment: route == Route::Broker,
+    });
+    let executor = Arc::new(SandboxBackendCommandExecutor::new(
+        backend.clone(),
         &root,
         SandboxMode::WorkspaceWrite,
-    );
+    ));
     let mut turns = vec![response_function_call(
         "explicit-build",
         "bash",
@@ -127,7 +183,9 @@ async fn run_with_rejecting_backend(mutation: Mutation) -> (bool, bool) {
             serde_json::json!({"path":path,"content":content}),
         ));
     }
-    turns.push(response_text("Finished the requested turn."));
+    // Rejected completion checks use the existing reflection budget. Supply
+    // final answers for those retries; do not hide rejection by starving replay.
+    turns.extend((0..8).map(|_| response_text("Finished the requested turn.")));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let canary_at_request = Arc::new(Mutex::new(Vec::new()));
     let model = Arc::new(CaptureReplay {
@@ -136,20 +194,61 @@ async fn run_with_rejecting_backend(mutation: Mutation) -> (bool, bool) {
         canary: canary.clone(),
         canary_at_request: canary_at_request.clone(),
     });
-    let chat = ChatService::new(db.clone(), settings, model, &root)
-        .with_local_command_executor(Arc::new(executor));
+    let mut chat = ChatService::new(db.clone(), settings, model, &root)
+        .with_local_command_executor(executor.clone());
+    let unselected_calls = Arc::new(Mutex::new(Vec::new()));
+    if route == Route::Remote {
+        chat = chat
+            .with_local_command_executor(Arc::new(SandboxBackendCommandExecutor::new(
+                Arc::new(TestBackend {
+                    calls: unselected_calls.clone(),
+                    mode: BackendMode::Reject,
+                    kind: SandboxBackendKind::Direct,
+                    expect_environment: false,
+                }),
+                &root,
+                SandboxMode::WorkspaceWrite,
+            )))
+            .with_executor_factory(move |id| {
+                assert_eq!(id, "fixture-remote");
+                executor.clone()
+            });
+    } else if route == Route::Override {
+        chat = chat.with_sandbox_backend_registry(Arc::new(SandboxBackendRegistry::new(
+            SandboxBackendKind::Direct,
+            vec![
+                Arc::new(TestBackend {
+                    calls: unselected_calls.clone(),
+                    mode: BackendMode::Reject,
+                    kind: SandboxBackendKind::Direct,
+                    expect_environment: false,
+                }) as Arc<dyn SandboxBackend>,
+                backend,
+            ],
+        )));
+    } else if route == Route::Broker {
+        chat =
+            chat.with_runtime_broker(Arc::new(RuntimeBroker::new(Arc::new(RuntimeService::new(
+                &[temp.path().join("runtimes")],
+                Arc::new(deepagent_app_core::runtime_service::UnavailableDownloader),
+            )))));
+    }
     let run_id = "audit-auto-build-boundary";
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(15),
-        chat.run_in_session(
+        chat.run_in_session_with_overrides(
             "Try the build, then finish the turn.",
             None,
-            None,
-            None,
+            (route == Route::Remote).then_some("remote"),
+            (route == Route::Remote).then_some("fixture-remote"),
             Vec::new(),
             None,
             false,
             Some(run_id),
+            HarnessRunOverrides {
+                sandbox_backend: (route == Route::Override).then(|| "windows_sandbox".into()),
+                ..Default::default()
+            },
             |_| {},
             |_| {},
         ),
@@ -157,6 +256,10 @@ async fn run_with_rejecting_backend(mutation: Mutation) -> (bool, bool) {
     .await
     .expect("finite real build must finish");
     assert!(result.is_ok(), "{result:?}");
+    assert!(
+        unselected_calls.lock().unwrap().is_empty(),
+        "automatic checks must not replace the selected executor with the local/default backend"
+    );
     let events = chat.run_events(run_id, None).unwrap();
     assert_eq!(
         events
@@ -168,17 +271,65 @@ async fn run_with_rejecting_backend(mutation: Mutation) -> (bool, bool) {
     assert!(events
         .iter()
         .any(|e| e.event_type == "run_terminal" && e.data["kind"] == "succeeded"));
+    let calls = backend_calls.lock().unwrap().clone();
+    assert_eq!(calls[0], "cargo check --offline --quiet");
+    let post_edit = calls
+        .iter()
+        .filter(|c| c.contains("--manifest-path"))
+        .count();
+    assert_eq!(post_edit, usize::from(matches!(mutation, Mutation::Rust)));
+    if mutate {
+        assert!(
+            calls.len() >= 2 + post_edit,
+            "both automatic paths must reach the configured backend: {calls:?}"
+        );
+        assert!(events
+            .iter()
+            .any(|event| event.event_type == "verification"));
+    } else {
+        assert_eq!(
+            calls.len(),
+            1,
+            "without mutation no automatic build may run"
+        );
+    }
+    assert!(calls.iter().all(|c| c.starts_with("cargo check --offline")));
+    let actions = RunControlStore::new(&db).list_actions(run_id).unwrap();
     assert_eq!(
-        backend_calls.lock().unwrap().as_slice(),
-        ["cargo check --offline --quiet"],
-        "explicit bash must use the configured rejecting backend exactly once",
+        actions.iter().filter(|a| a.tool_name == "bash").count(),
+        calls.len()
+    );
+    assert_eq!(actions.len(), calls.len() + usize::from(mutate));
+    for pair in actions.windows(2) {
+        assert_eq!(pair[1].sequence, pair[0].sequence + 1);
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.event_type == "tool_completed" && e.data["name"] == "bash")
+            .count(),
+        calls.len()
     );
     let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), if mutate { 3 } else { 2 });
-    assert!(
-        requests[1].contains(REJECTED),
-        "the next actual wire request must carry the explicit command's rejection",
-    );
+    assert!(requests.len() >= if mutate { 3 } else { 2 });
+    if mode != BackendMode::Allow {
+        assert!(
+            requests[1].contains(REJECTED),
+            "explicit rejection must reach the actual next wire"
+        );
+        if matches!(mutation, Mutation::Rust) {
+            assert!(
+                requests[2].contains(REJECTED),
+                "post-edit rejection must reach the actual next wire"
+            );
+        }
+        if mutate {
+            assert!(
+                requests.last().unwrap().contains("verification_failed"),
+                "completion rejection must be fed back, not silently passed"
+            );
+        }
+    }
     assert_eq!(
         root.join("note.txt").exists(),
         matches!(mutation, Mutation::Text)
@@ -198,7 +349,7 @@ async fn run_with_rejecting_backend(mutation: Mutation) -> (bool, bool) {
         );
     }
     eprintln!(
-        "build-boundary mutation={mutation:?} backend_calls={} explicit_rejection_in_wire=true \
+        "build-boundary mutation={mutation:?} mode={mode:?} route={route:?} backend_calls={} post_edit_calls={post_edit} \
          workspace_edit={mutate} outside_workspace_canary={wrote_outside} \
          canary_before_final_request={visible_before_final} run_succeeded=true",
         backend_calls.lock().unwrap().len(),
@@ -209,24 +360,57 @@ async fn run_with_rejecting_backend(mutation: Mutation) -> (bool, bool) {
 #[tokio::test]
 async fn explicit_build_rejection_without_mutation_does_not_execute_host_build() {
     assert_eq!(
-        run_with_rejecting_backend(Mutation::None).await,
+        run_with_backend(Mutation::None, BackendMode::Reject).await,
         (false, false)
     );
 }
 
 #[tokio::test]
-#[ignore = "audit probe: automatic verification must use the configured command boundary"]
 async fn audit_auto_build_respects_configured_rejecting_backend() {
     assert_eq!(
-        run_with_rejecting_backend(Mutation::None).await,
+        run_with_backend(Mutation::None, BackendMode::Reject).await,
         (false, false)
     );
-    let text = run_with_rejecting_backend(Mutation::Text).await;
-    let rust = run_with_rejecting_backend(Mutation::Rust).await;
+    let text = run_with_backend(Mutation::Text, BackendMode::Reject).await;
+    let rust = run_with_backend(Mutation::Rust, BackendMode::Reject).await;
     assert_eq!(
         [text, rust],
         [(false, false), (false, false)],
         "automatic verification bypassed the rejecting backend and wrote outside the workspace; \
          a write before the final request identifies the post-edit decorator",
     );
+}
+
+#[tokio::test]
+async fn automatic_checks_do_not_fall_back_when_backend_is_unavailable() {
+    for mutation in [Mutation::Text, Mutation::Rust] {
+        assert_eq!(
+            run_with_backend(mutation, BackendMode::Unavailable).await,
+            (false, false)
+        );
+    }
+}
+
+#[tokio::test]
+async fn allowed_backend_still_executes_real_builds_and_post_edit_checks() {
+    // Explicit build is the positive control and writes the controlled canary.
+    // Counts/actions above independently require the post-edit and final checks.
+    for mutation in [Mutation::Text, Mutation::Rust] {
+        assert_eq!(
+            run_with_backend(mutation, BackendMode::Allow).await,
+            (true, true)
+        );
+    }
+}
+
+#[tokio::test]
+async fn automatic_checks_keep_runtime_environment_remote_route_and_run_override() {
+    for route in [Route::Broker, Route::Remote, Route::Override] {
+        for mutation in [Mutation::Text, Mutation::Rust] {
+            assert_eq!(
+                run_with_route(mutation, BackendMode::Reject, route).await,
+                (false, false)
+            );
+        }
+    }
 }
