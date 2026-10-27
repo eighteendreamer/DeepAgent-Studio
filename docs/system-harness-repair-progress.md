@@ -51,6 +51,8 @@ E-H52-06（2026-10-28最终验收与边界）：会话38389已原生终结。car
 
 E-H52-07（2026-10-28独立提交与回填）：代码、默认回归和当时两份文档已正常提交为 `bc046b903548d4f0b481e71988d2cbb99ac3dc52`（【fix】统一知识库跨宿主写入与版本冲突边界），仅本项8个文件；无amend、hook绕过、推送或PR。提交后tracked工作树干净，五类既有未跟踪用户项未读取/修改/暂存。本次取得hash后只回填两文档。文档检查曾因展示用无效通配符及过严全角冒号假设误拒历史追溯行，均为检查脚本错误，未改台账内容；改用既有通用H编号解析后，严格结构检查退出0：306行/306唯一编号/0坏列、两文档H-52状态一致。最终55验收/18历史跳过/7归并/2撤销/224待修/0修复中，224有效未关闭；下一项优先复核H-237，整体目标仍active。剩余工时及未验限制保持E-06，不把本项完成说成整体完成。
 
+E-H52-08（回填误改纠正）：复核267ba2d0的实际diff发现通用占位词替换还把既有H-15历史状态段误填成H-52的commit，台账编号/状态计数与H-15生产代码未变。本次按H-52代码提交中的原句精确恢复该段，不补写或改变H-15验收记录；只修正本轮文档回填错误，不amend既有提交。后续按章节/行边界回填，不再全文件替换公共占位词。两文档中的H-52提交指向和最终计数保持不变。
+
 ## H-51 本轮即时记录（2026-10-27）
 
 **当前状态：已修复并验收（E-H51-12所列Windows本机、离线模型与真实临时vault/SQLite范围）。** 本轮只处理项目身份漂移，不合并H-52跨宿主旧索引覆盖或H-176工作流过滤；54已验收/18历史跳过/7归并/2撤销/225待修/0修复中，225有效未关闭。以下记录按执行顺序保留，原失败和候选失败不改写；最终验收以E-H51-12为准，整体任务仍active。
@@ -638,7 +640,7 @@ E-H43-20261027-06（独立提交与 hash 回填）：代码、回归测试和原
 
 ## H-15 本轮即时记录（2026-10-26）
 
-**当前状态：已修复并验收（所列 Windows 本机范围）。** 原始失败保留；最终范围见 E-H15-01～08，提交 hash `bc046b903548d4f0b481e71988d2cbb99ac3dc52`。
+**当前状态：已修复并验收（所列 Windows 本机范围）。** 原始失败保留；最终范围见 E-H15-01～08，提交 hash 待独立提交后回填。
 
 E-H15-20261026-01（原始复现）：HEAD 9feb5193、生产未改时，`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_cancelled_run_rejects_late_approval_and_releases_waiter --offline -j 1 -- --ignored --nocapture` shell退出1，0 passed/1 failed/0 ignored（构建2m23s、测试0.20s）。实际terminal=cancelled、action=cancelled、command_calls=0，pending_after_terminal=1、durable_state=Pending，迟到tool_session回答late=Ok(true)、granted_after_terminal=true，最后追加approval.responded。确认取消有效而审批生命周期未同步终结；只使用离线transport、合成输入和永不运行进程的executor。已核对现有ChannelApprovalGate/PendingApprovals、RunCoordinator、RunControlStore/RunStore终态事务及Codex turn所属waiter/先观察取消再清等待规则。本轮只处理H-15：wait future所有权、回答/丢弃互斥、终态事务失效及迟到授权，H-16跨run call_id冲突不合并；原五类未跟踪项不读改或暂存。生产实现及新回归尚未改，H-15转修复中；不能用H-01审批不执行工具对照替代本项验收。
 
