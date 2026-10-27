@@ -173,6 +173,51 @@ pub(crate) struct RunAssembler<'a> {
     pub(crate) attachments: Vec<deepagent_runtime::InputAttachment>,
 }
 
+// Chat and workflow share this admission boundary. Cleanup cancellation is
+// not evidence of a cancelled outcome: the kernel may have committed Failed
+// (for example after a durability barrier rejected an event).
+fn finish_admitted_run(
+    db: &Database,
+    run_id: &str,
+    session_id: String,
+    cancellation: &deepagent_runtime::CancellationTree,
+    result: Result<String>,
+) -> Result<String> {
+    let terminal = deepagent_runtime::KernelTerminal {
+        kind: if matches!(&result, Err(CoreError::Persistence(_))) {
+            deepagent_runtime::TerminalKind::Failed
+        } else if cancellation.is_cancelled() {
+            deepagent_runtime::TerminalKind::Cancelled
+        } else if result.is_ok() {
+            deepagent_runtime::TerminalKind::Succeeded
+        } else {
+            deepagent_runtime::TerminalKind::Failed
+        },
+        message: None,
+        reason: result.as_ref().err().map(ToString::to_string),
+    };
+    let retain_error = |error: CoreError| match &result {
+        Err(original) => CoreError::Persistence(format!(
+            "{original}; outer run finalization also failed: {error}"
+        )),
+        Ok(_) => error,
+    };
+    deepagent_runtime::kernel::persist_terminal(db, run_id, &terminal, cancellation)
+        .map_err(retain_error)?;
+    let committed = deepagent_persistence::run_store::RunStore::new(db)
+        .get(run_id)
+        .map_err(retain_error)?;
+    if committed
+        .as_ref()
+        .and_then(|run| run.terminal_kind.as_deref())
+        == Some("cancelled")
+    {
+        Ok(session_id)
+    } else {
+        result
+    }
+}
+
 impl<'a> RunAssembler<'a> {
     /// Keep the shared skill registry on the same immutable plugin generation
     /// that this run captured for tools, hooks and prompt projection. A plugin
@@ -278,28 +323,13 @@ impl<'a> RunAssembler<'a> {
             .await;
         // The kernel may already have committed the terminal boundary. Setup
         // failures and cancellations use that same idempotent writer.
-        let terminal = deepagent_runtime::KernelTerminal {
-            kind: if cancellation.cancellation().is_cancelled() {
-                deepagent_runtime::TerminalKind::Cancelled
-            } else if result.is_ok() {
-                deepagent_runtime::TerminalKind::Succeeded
-            } else {
-                deepagent_runtime::TerminalKind::Failed
-            },
-            message: None,
-            reason: result.as_ref().err().map(ToString::to_string),
-        };
-        deepagent_runtime::kernel::persist_terminal(
+        finish_admitted_run(
             &db,
             &run_id,
-            &terminal,
+            session_id,
             &cancellation.cancellation(),
-        )?;
-        if cancellation.cancellation().is_cancelled() {
-            Ok(session_id)
-        } else {
-            result
-        }
+            result,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1317,28 +1347,13 @@ impl<'a> RunAssembler<'a> {
                 &cancellation,
             )
             .await;
-        let terminal = deepagent_runtime::KernelTerminal {
-            kind: if cancellation.cancellation().is_cancelled() {
-                deepagent_runtime::TerminalKind::Cancelled
-            } else if result.is_ok() {
-                deepagent_runtime::TerminalKind::Succeeded
-            } else {
-                deepagent_runtime::TerminalKind::Failed
-            },
-            message: None,
-            reason: result.as_ref().err().map(ToString::to_string),
-        };
-        deepagent_runtime::kernel::persist_terminal(
+        finish_admitted_run(
             &db,
             &run_id,
-            &terminal,
+            session_id,
             &cancellation.cancellation(),
-        )?;
-        if cancellation.cancellation().is_cancelled() {
-            Ok(session_id)
-        } else {
-            result
-        }
+            result,
+        )
     }
 
     async fn run_workflow_inner<F, A>(
@@ -2201,6 +2216,118 @@ mod run_location_tests {
             resolve_run_location(&db, Some(&projects), Path::new("/default"), None).unwrap(),
             (PathBuf::from("/default"), None)
         );
+    }
+}
+
+#[cfg(test)]
+mod admission_finalization_tests {
+    use super::*;
+    use deepagent_persistence::run_store::RunStore;
+    use deepagent_runtime::{CancellationTree, KernelTerminal, TerminalKind};
+
+    #[test]
+    fn cleanup_cancellation_does_not_replace_durable_failure_or_original_error() {
+        for committed in [None, Some("failed"), Some("cancelled")] {
+            let db = Database::open_in_memory().unwrap();
+            let session = Session::create(&db, &SystemClock, None).unwrap();
+            let session_id = session.id().to_string();
+            let cancellation = CancellationTree::new();
+            RunStore::new(&db)
+                .create("fault", &session_id, None, 1)
+                .unwrap();
+            if let Some(kind) = committed {
+                deepagent_runtime::kernel::persist_terminal(
+                    &db,
+                    "fault",
+                    &KernelTerminal {
+                        kind: if kind == "failed" {
+                            TerminalKind::Failed
+                        } else {
+                            TerminalKind::Cancelled
+                        },
+                        message: None,
+                        reason: Some("committed outcome".into()),
+                    },
+                    &cancellation,
+                )
+                .unwrap();
+            }
+            cancellation.cancel();
+            let result = finish_admitted_run(
+                &db,
+                "fault",
+                session_id.clone(),
+                &cancellation,
+                Err(CoreError::Persistence(
+                    "original event write rejected".into(),
+                )),
+            );
+            if committed == Some("cancelled") {
+                assert_eq!(result.unwrap(), session_id);
+            } else {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("original event write rejected"));
+                assert_eq!(
+                    RunStore::new(&db)
+                        .get("fault")
+                        .unwrap()
+                        .unwrap()
+                        .terminal_kind
+                        .as_deref(),
+                    Some("failed")
+                );
+            }
+            assert_eq!(
+                RunStore::new(&db)
+                    .events_after("fault", None)
+                    .unwrap()
+                    .iter()
+                    .filter(|event| event.event_type == "run_terminal")
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn outer_terminal_rejection_keeps_the_original_event_failure() {
+        let db = Database::open_in_memory().unwrap();
+        let session = Session::create(&db, &SystemClock, None).unwrap();
+        let session_id = session.id().to_string();
+        RunStore::new(&db)
+            .create("fault", &session_id, None, 1)
+            .unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TRIGGER reject_terminal BEFORE INSERT ON run_events
+                WHEN NEW.event_type='run_terminal' BEGIN SELECT RAISE(ABORT, 'outer terminal fault'); END;").unwrap();
+            Ok(())
+        }).unwrap();
+        let cancellation = CancellationTree::new();
+        cancellation.cancel();
+        let error = finish_admitted_run(
+            &db,
+            "fault",
+            session_id,
+            &cancellation,
+            Err(CoreError::Persistence(
+                "original event write rejected".into(),
+            )),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            error.contains("original event write rejected")
+                && error.contains("outer terminal fault"),
+            "{error}"
+        );
+        assert!(RunStore::new(&db)
+            .get("fault")
+            .unwrap()
+            .unwrap()
+            .finished_at
+            .is_none());
     }
 }
 

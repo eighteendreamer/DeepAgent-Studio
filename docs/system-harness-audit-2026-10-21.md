@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-142 | 已修复并验收（2026-10-28，仅所列Windows本机/离线/正式消费者范围） | 单sink首错锁存与checkpoint，保留真实工具结果并统一准入收尾；专项5/0/0、Runtime327/0/12、E2E156/0/78、准入2/0/0，fmt/Tauri Rust check通过；workspace3587/1既有H-306/313 ignored与lint旧阻断保留；H-143独立反证仍0/1；E-H142-06～07，修复提交待生成 |
 | H-135 | 已修复并验收（2026-10-28，仅所列Windows本机stdio与正式服务范围） | 唯一spawn清空继承环境、叠OS基础白名单与原显式env；默认环境5/0/1、全MCP126/0/6、正式服务1/0/1，MCP严格lint/fmt/桌面Rust通过；workspace3572/2/314及严格lint失败保留，见E-H135-01～06；修复提交`b51529f05bfdb669bac6dbaf7755594b6c4ff3b2` |
 | H-136 | 已修复并验收（2026-10-28，仅所列Windows本机发送边界） | 原背压随H-09已消除不重复计功；本轮修正锁排队取消误通知/误报未知，默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8，MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核保留，E-H136-02～07，修复提交`ab32b8db28f4546e4d95cd7da46eb92072145532` |
 | H-139 | 已修复并验收（2026-10-28，所列Windows本机/正式服务与runtime/离线范围） | 执行事实先提交，后置错误仍传播，同组结果全保留；原专项2/0/0、新runtime9/0/0默认通过，workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过；严格lint旧失败保留，E-H139-01～06，修复提交`93a412d049f7a41be129d528f9b043f9978e80c9` |
@@ -4013,13 +4014,17 @@ E-H136-07（独立提交回填）：生产、默认回归和当时两文档已�
 
 ### H-142：运行事件持久化失败被吞掉，实时事件与回放事件发生分叉
 
+**当前状态：已修复并验收（2026-10-28，仅本机所列范围；修复提交待生成，取得真实hash后正常回填）。** 统一原PersistentEventSink的append/delivery与首错锁存，通过checkpoint及原取消树停止后续模型/工具/hook；Kernel显式Failed并保留收尾错误，AppCore统一聊天/工作流准入收尾，保留已执行工具事实并结清未派发action。正式专项5/0/0、Runtime327/0/12、准入2/0/0、正式E2E156/0/78，fmt与独立Tauri Rust check通过；完整workspace3587/1既有H-306/313 ignored，严格lint未通过。最终证据及限制详见修复进度E-H142-06～07；H-143独立探针仍0/1，不归并、不关闭。以下原审计生产链、失败证据、候选进展和验证限制均按历史保留，不将当时的“生产代码未改/ignored/门禁未完成”误读为当前状态。
+
+**原候选进展（2026-10-28，历史记录，尚未验收阶段）：** 原始失败证据与下述审计结论保留；HEAD e64a7e40修前原探针再次0 passed/1 failed（target/h142-before-*）。候选在原PersistentEventSink收敛append/delivery，首错脱敏锁存并请求原取消树，新增默认no-op checkpoint以阻止后续模型/工具/hook越过失败；delta维持16KiB批量，实时delta为provisional，拒绝batch不自动重试。Kernel沿原终态事务返回Failed并合并后续存储失败，不新建执行/存储链。第二次Runtime tests check通过；Kernel专项19 passed/0 failed/1 ignored（独立H-143探针保留），含5项新增故障/正常对照、并发顺序和SQLite重开/cursor；原80%批量写入断言保留。正式ChatService真实write_file单/双工具与重开消费方回归仍在编译验证，完整workspace/严格lint/桌面Rust门禁尚未完成，不提前登记修复。过程与限制详见修复进度文档E-H142-01～03；H-143正常终态发布顺序不归并、不关闭。
+
 **级别：高（P1，事件回放不完整）；触发条件：`run_events` 的单条运行事件写入失败，而运行仍继续向实时 sink 分发事件。** 运行可能显示为成功，但重新连接、重启或 `thread/read` 只能看到持久化成功的前缀，无法重建实时 UI 曾经看到的完整工具生命周期。
 
-#### 生产链与动态证据
+#### 生产链与动态证据（原审计与修前历史）
 
 - `crates/deepagent-runtime/src/kernel.rs::PersistentEventSink::append()` 调用现有 `RunStore::append_event()`。写入失败时只 `tracing::warn!`，没有把失败返回给 `emit()`，也没有进入运行终态或重试状态。
 - `PersistentEventSink::emit()` 在 `append()` 返回后无条件调用 `self.delegate.emit(event)`。因此同一个 `RuntimeEvent` 的实时投影和 durable `run_events` 投影没有共同的提交边界。
-- 新增 ignored 探针 `kernel::tests::audit_event_persistence_failure_does_not_split_live_and_replay`：使用真实 `AgentKernel::start()`、`RunStore` 和 SQLite trigger，仅拒绝 `tool_completed` 插入；自定义 Agent 通过 Kernel 注入的规范 sink 发送 `ToolStarted`、`ToolCompleted` 后正常完成。实时标签包含 `tool_completed`，数据库事件为 `run_accepted、setup.started、capability.snapshot、setup.completed、run_started、session_registered、turn_started、tool_started、run_completed、run_terminal`，缺少 `tool_completed`。执行：`cargo test -p deepagent-runtime audit_event_persistence_failure_does_not_split_live_and_replay --offline -- --ignored --nocapture`，**0 passed / 1 failed（预期暴露缺陷）**。
+- 原审计新增的 ignored 探针（修前状态；本次已转为默认回归）`kernel::tests::audit_event_persistence_failure_does_not_split_live_and_replay`：使用真实 `AgentKernel::start()`、`RunStore` 和 SQLite trigger，仅拒绝 `tool_completed` 插入；自定义 Agent 通过 Kernel 注入的规范 sink 发送 `ToolStarted`、`ToolCompleted` 后正常完成。实时标签包含 `tool_completed`，数据库事件为 `run_accepted、setup.started、capability.snapshot、setup.completed、run_started、session_registered、turn_started、tool_started、run_completed、run_terminal`，缺少 `tool_completed`。执行：`cargo test -p deepagent-runtime audit_event_persistence_failure_does_not_split_live_and_replay --offline -- --ignored --nocapture`，**0 passed / 1 failed（预期暴露缺陷）**。
 
 #### 成熟实现对照
 
@@ -4032,7 +4037,15 @@ E-H136-07（独立提交回填）：生产、默认回归和当时两文档已�
 - 不能通过“继续发送实时事件”来掩盖 durable 写失败；否则工具调用可能在 UI 中显示已完成，重连后缺少结果，模型下一轮可能重复或误判该调用。当前探针只证明事件序列分叉，不证明一定发生重复外部副作用。
 - 应在现有 `PersistentEventSink` 边界收敛提交语义：普通事件写入失败时，实时 delegate 不得把该事件宣称为已提交；应保留失败诊断并让运行进入可观测的 persistence-error/终止或受控重试状态。对已经发出的实时事件，协议需要明确其为 provisional，不能让 `thread/read` 假设它已 durable。终态事件必须在所有必需前置事件可回放后再发布。
 - 修复必须复用现有 `RunStore/run_events`、终态和协议投影，不新增 live event store 或补写第二套日志。回归需覆盖普通事件、delta flush、终态写失败、断线重读以及单个事件失败后的 sequence 连续性。
-- 当前仅使用 SQLite trigger、内存数据库、离线 Agent 和真实 Kernel；未运行真实 Tauri、真实 provider、跨进程数据库锁争用或崩溃恢复。生产代码本轮未改，探针保持 ignored。
+- 原审计时仅使用 SQLite trigger、内存数据库、离线 Agent 和真实 Kernel；当时未运行真实 Tauri、真实 provider、跨进程数据库锁争用或崩溃恢复，生产代码未改、探针保持 ignored。这是修前历史限制，当前结果见下述最终验收。
+
+H-142候选的正式消费者补强（2026-10-28，历史记录，当时仍修复中）：首次正式ChatService回归1 passed/2 failed，确认Kernel已failed但AppCore把清理取消误归为成功；统一聊天/工作流准入收尾后，批次仍1/2，确认未派发的已注册action停留Received。现已沿原ToolActionPersistence结清未终结action，保留已完成写入及Session结果；AppCore以既有durable terminal判定取消而非仅看停止旗帜，原始错误与后续收尾失败合并保留。最新中间专项3/1，剩余为新测试未遵循ModelAgent既有status/result envelope的比较错误；已查生产映射和H-139正式测试后修正为完整既有envelope比较，工作流与准入对照一起重新验证中。所有中间失败日志target/h142-service-*保留，未降断言、未调超时、未增加ignore；全量门禁尚未完成，不能记验收。详见修复进度E-H142-04，H-143本身仍独立未修。
+
+H-142最终验收（2026-10-28，E-H142-06～07）：冻结的9份源码在最终门禁后及验收时SHA256均一致。正式`cargo test -p deepagent-app-core --test kernel_v2_e2e event_persistence:: --offline -j 1 -- --nocapture --test-threads=1`为5 passed/0 failed/0 ignored（3.18s），包含单/双真实write_file正常对照、模型请求/context_usage拒绝0 transport、ToolStarted拒绝无文件、ToolCompleted拒绝保留真实文件/Completed/Session完整结果且停止后续动作、未派发action终结、SQLite重开/cursor、恢复模型完整status/result envelope且不重复工具，以及正式工作流正常/失败传播。`cargo test -p deepagent-runtime --offline -j 1 -- --quiet --test-threads=1`为327/0/12（5 targets，lib319/0/10），包含原探针默认执行及6项新sink/Kernel测试；既有80%事件行/WAL削减断言不降。`cargo test -p deepagent-app-core --lib run_assembler::admission_finalization_tests:: --offline -j 1 -- --nocapture --test-threads=1`为2/0/0；正式Kernel E2E全组同参数为156/0/78。`cargo fmt --all -- --check`及追加复核、`git diff --check`通过，独立`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 1`通过。
+
+完整`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`原生101，130 targets共3587 passed/1 failed/313 ignored，1083.98s，编译7m39s且使用既有缓存；AppCore lib1210/0/65，唯一失败为未改H-306的creative.video-edit.v1空defaultUserPrompt。原生严格全仓lint仍101（models/client.rs:355 clone_on_copy）；Runtime全target/全feature/no-deps严格lint仍101（既有model_agent.rs:282）；AppCore全target/no-deps严格lint仍101（context_runtime 8处clone_on_copy、plugin_preparation复杂类型、base_registry_request参数数）。Runtime普通诊断为0但保留告警；AppCore普通诊断仍101，受未改mcp_discovery_restore.rs:433既有panicking_unwrap默认deny阻断。相关代码已对照HEAD，不宣称全仓或受阻后未到达的target已通过lint。完整日志、逐target汇总、原生结果及hash保留target/h142-final-*、h142-diagnostic-*、h142-frozen-sources.json，为ignored产物不提交。本次H-64冷ready未失败，不定位或关闭其历史间歇失败。
+
+验收仅限Windows本机、离线mock/合成凭据、Temp SQLite、真实工具及正式聊天/工作流边界。首错后fail-closed是有意兼容性变化；普通observer默认checkpoint成功保持源码兼容，live delta/逐token metadata仍为provisional，不是durable cursor或完成回执，SDK README已明确恢复核对原action/session结果且不自动重复工具，不承诺exactly-once。delegate不可重入同一sink。没有新增store、审批/取消链、协议字段、DTO/Tauri command、依赖/配置、数据库迁移或权限开口；真实供应商/用户数据/内网、其他OS、真实UI、断电强杀、跨进程锁争用及任意负载未验。无UI/TypeScript类型修改，未跑pnpm build/真实桌面，独立Rust check不替代它们。H-143终态探针按E-H142-06所列离线显式ignored/exact命令仍原生101、0/1/0，live先run_completed而终态事务被拒绝，见target/h142-independent-h143-*；保持其独立待修和原ignored，不把本项验收扩大到终态成功发布顺序。306唯一台账仅H-142更新，累计60验收/18历史跳过/7归并/2撤销/219待修/0修复中，219有效未关闭；修复代码/测试与当时两文档独立提交后正常回填真实hash，不amend、不推送、不PR。下一P1 H-143，剩余200–400有效小时仍为未逐项校准粗估，编译/设备/依赖/环境等待另计，整体目标未完成。
 
 ### H-143：终态持久化失败前已经发布实时完成事件
 

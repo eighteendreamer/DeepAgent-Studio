@@ -199,6 +199,17 @@ impl ToolActionPersistence {
         self.transition(call_id, RunActionState::Failed, Some(reason), None)
     }
 
+    /// The run has stopped at a rejected durability barrier. Preserve completed
+    /// effects, but settle calls registered for a batch that could not continue.
+    pub(crate) fn fail_unfinished(&self, reason: &str) -> Result<()> {
+        for action in RunControlStore::new(&self.db).list_actions(&self.run_id)? {
+            if !action.state.is_terminal() {
+                self.fail(&action.call_id, reason)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn cancel(&self, call_id: &str, reason: &str) -> Result<()> {
         let store = RunControlStore::new(&self.db);
         if store
@@ -495,6 +506,7 @@ impl<'a> ToolExecutionPipeline<'a> {
     }
 
     async fn fire(&self, point: HookPoint, data: HookData) -> Result<HookOutcome> {
+        self.events.checkpoint()?;
         match self.hooks {
             Some(hooks) => {
                 hooks
@@ -510,6 +522,32 @@ impl<'a> ToolExecutionPipeline<'a> {
         mut invocation: ToolInvocation,
         before_override: Option<HookOutcome>,
     ) -> Result<ToolPreparation> {
+        let call_id = invocation
+            .id
+            .clone()
+            .unwrap_or_else(|| format!("call_{}", deepagent_core::id::EventId::new()));
+        invocation.id = Some(call_id.clone());
+        let result = self.prepare_inner(invocation, before_override).await;
+        if let Err(error @ deepagent_core::error::CoreError::Persistence(_)) = &result {
+            if let Some(persistence) = &self.action_persistence {
+                if let Err(finalization) =
+                    persistence.fail(&call_id, "tool preparation persistence failed")
+                {
+                    return Err(deepagent_core::error::CoreError::Persistence(format!(
+                        "{error}; action finalization also failed: {finalization}"
+                    )));
+                }
+            }
+        }
+        result
+    }
+
+    async fn prepare_inner(
+        &self,
+        mut invocation: ToolInvocation,
+        before_override: Option<HookOutcome>,
+    ) -> Result<ToolPreparation> {
+        self.events.checkpoint()?;
         let call_id = invocation
             .id
             .clone()
@@ -822,6 +860,11 @@ impl<'a> ToolExecutionPipeline<'a> {
         &self,
         prepared: PreparedToolInvocation,
     ) -> Result<ToolPipelineCompletion> {
+        if let Err(error) = self.events.checkpoint() {
+            return self
+                .complete_prepared_inner(prepared, Err(error), 0, false, Vec::new())
+                .await;
+        }
         if let Some(persistence) = self.action_persistence.as_ref() {
             persistence.transition(&prepared.call_id, RunActionState::Running, None, None)?;
         }
@@ -842,6 +885,11 @@ impl<'a> ToolExecutionPipeline<'a> {
             summary: metadata.summary,
             meta: metadata.meta,
         });
+        if let Err(error) = self.events.checkpoint() {
+            return self
+                .complete_prepared_inner(prepared, Err(error), 0, false, mutation_targets)
+                .await;
+        }
         let started = Instant::now();
         // The budget reaches a tool as data, which means a tool is free to ignore
         // it; this is the only place that can actually enforce it. Without it one
@@ -984,6 +1032,7 @@ impl<'a> ToolExecutionPipeline<'a> {
     /// Hook failure stops further use, not an execution that already happened.
     /// Do not rewrite its action or replace its real result with a hook error.
     pub(crate) async fn post_execution(&self, completion: &ToolPipelineCompletion) -> Result<()> {
+        self.events.checkpoint()?;
         let result = &completion.result;
         if result.stage != ToolPipelineStage::Execution {
             return Ok(());

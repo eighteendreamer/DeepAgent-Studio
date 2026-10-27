@@ -2071,6 +2071,15 @@ impl DeltaObserver for SinkObserver<'_> {
                 arguments,
                 ..
             } => {
+                // Speculative read-only work must not cross an uncommitted
+                // token batch or an earlier structured-event failure.
+                if self
+                    .sink
+                    .as_ref()
+                    .is_some_and(|sink| sink.checkpoint().is_err())
+                {
+                    return;
+                }
                 if let Some(tools) = self.tools.as_deref_mut() {
                     tools.prepare(ToolInvocation::new(name, arguments).with_id(id));
                 }
@@ -2250,6 +2259,9 @@ impl ModelAgent {
         cancel: Option<Arc<AtomicBool>>,
         mut tools: Option<&mut dyn ToolAttemptController>,
     ) -> Result<AgentDecision> {
+        if let Some(sink) = &self.events {
+            sink.checkpoint()?;
+        }
         if cancel
             .as_ref()
             .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
@@ -2326,6 +2338,9 @@ impl ModelAgent {
                 }
             }
             self.publish_context_usage();
+            if let Some(sink) = &self.events {
+                sink.checkpoint()?;
+            }
             let (request_fingerprint, request_surface) = self.measure_request(&request);
             if let Some(tools) = tools.as_deref_mut() {
                 tools.begin(attempt);

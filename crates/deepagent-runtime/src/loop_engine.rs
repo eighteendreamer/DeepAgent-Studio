@@ -597,6 +597,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         point: HookPoint,
         data: HookData,
     ) -> Result<HookOutcome> {
+        self.events.checkpoint()?;
         match self.hooks {
             Some(reg) => {
                 let ctx = HookContext::new(session_id, point, data);
@@ -669,6 +670,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         agent: &mut dyn Agent,
     ) -> Result<RunOutcome> {
         let _session_activity = session.acquire_activity()?;
+        self.events.checkpoint()?;
         let session_id = session.id();
         let run_started_at = std::time::Instant::now();
 
@@ -712,6 +714,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
         let max_steps = self.config.max_steps.unwrap_or(usize::MAX);
         for step in 0..max_steps {
+            self.events.checkpoint()?;
             // Honor a manual stop requested from the UI: end cleanly at the
             // step boundary so the partial transcript is preserved.
             if self.is_cancelled() {
@@ -740,6 +743,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 finished = true;
                 break;
             }
+            self.events.checkpoint()?;
             let runtime_cancel = self
                 .cancel
                 .clone()
@@ -773,6 +777,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 }
                 Err(e) => return Err(e),
             };
+            self.events.checkpoint()?;
             if self.is_cancelled() {
                 self.record_cancelled_decision(session, decision, false)
                     .await?;

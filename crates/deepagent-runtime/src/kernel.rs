@@ -156,8 +156,14 @@ struct PersistentEventSink {
     db: Arc<Database>,
     run_id: String,
     delegate: Arc<dyn RuntimeEventSink>,
-    delta: Mutex<DeltaBuffer>,
-    phase: Mutex<RunPhase>,
+    state: Mutex<EventPersistenceState>,
+}
+
+struct EventPersistenceState {
+    delta: DeltaBuffer,
+    phase: RunPhase,
+    failure: Option<String>,
+    cancellation: Option<CancellationTree>,
 }
 
 impl PersistentEventSink {
@@ -166,158 +172,243 @@ impl PersistentEventSink {
             db,
             run_id,
             delegate,
-            delta: Mutex::new(DeltaBuffer::default()),
-            phase: Mutex::new(RunPhase::Preparing),
+            state: Mutex::new(EventPersistenceState {
+                delta: DeltaBuffer::default(),
+                phase: RunPhase::Preparing,
+                failure: None,
+                cancellation: None,
+            }),
         }
     }
 
-    fn append(&self, phase: RunPhase, status: &str, event_type: &str, data: serde_json::Value) {
-        self.transition_if_advanced(phase);
+    fn bind_cancellation(&self, cancellation: CancellationTree) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.failure.is_some() {
+            cancellation.cancel();
+        }
+        state.cancellation = Some(cancellation);
+    }
+
+    fn failure(&self) -> Option<String> {
+        self.state
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .failure
+            .clone()
+    }
+
+    fn finalization_error(&self, error: CoreError) -> CoreError {
+        match self.failure() {
+            Some(failure) => CoreError::Persistence(format!(
+                "{failure}; finalization also failed: {}",
+                crate::redaction::scrub_secret_literals(&error.to_string())
+            )),
+            None => error,
+        }
+    }
+
+    fn fail(
+        &self,
+        state: &mut EventPersistenceState,
+        event_type: &str,
+        error: CoreError,
+    ) -> CoreError {
+        let reason = state
+            .failure
+            .get_or_insert_with(|| {
+                let reason = format!(
+                    "run event {event_type} was not committed: {}",
+                    crate::redaction::scrub_secret_literals(&error.to_string())
+                );
+                tracing::error!(run_id = self.run_id, %reason, "kernel event persistence failed");
+                reason
+            })
+            .clone();
+        if let Some(cancellation) = &state.cancellation {
+            cancellation.cancel();
+        }
+        CoreError::Persistence(reason)
+    }
+
+    fn append(
+        &self,
+        state: &mut EventPersistenceState,
+        phase: RunPhase,
+        status: &str,
+        event_type: &str,
+        data: serde_json::Value,
+    ) -> Result<()> {
+        if let Some(failure) = &state.failure {
+            return Err(CoreError::Persistence(failure.clone()));
+        }
+        if !matches!(phase, RunPhase::Accepted | RunPhase::Terminal)
+            && phase_rank(phase) > phase_rank(state.phase)
+        {
+            RunStore::new(&self.db)
+                .transition(&self.run_id, phase.label(), now_ms())
+                .map_err(|error| self.fail(state, event_type, error))?;
+            state.phase = phase;
+        }
         // Product events are replayed by the UI, so bodies stay intact — but
         // secrets (bearer tokens, sk- keys, secret-named fields) must never
         // reach the database (Phase F unified redaction layer).
         let data = crate::redaction::scrub_secrets_value(data);
-        if let Err(error) = RunStore::new(&self.db).append_event(
+        RunStore::new(&self.db)
+            .append_event(
+                &self.run_id,
+                now_ms(),
+                phase.label(),
+                status,
+                event_type,
+                &data,
+            )
+            .map(|_| ())
+            .map_err(|error| self.fail(state, event_type, error))
+    }
+
+    fn flush_delta(&self, state: &mut EventPersistenceState) -> Result<()> {
+        if let Some(failure) = &state.failure {
+            return Err(CoreError::Persistence(failure.clone()));
+        }
+        if state.delta.text.is_empty() {
+            return Ok(());
+        }
+        let kind = state.delta.kind.unwrap_or("content_delta_batch");
+        let data = serde_json::json!({
+            "text": state.delta.text, "chunks": state.delta.chunks
+        });
+        self.append(state, RunPhase::RunningTurn, "progress", kind, data)?;
+        // Retain a rejected batch, but never automatically retry it or allow
+        // later actions past the latched failure.
+        state.delta = DeltaBuffer::default();
+        Ok(())
+    }
+
+    fn buffer_delta(
+        &self,
+        state: &mut EventPersistenceState,
+        kind: &'static str,
+        text: &str,
+    ) -> Result<()> {
+        if state.delta.kind.is_some_and(|current| current != kind)
+            || state.delta.text.len() >= PERSISTED_DELTA_BATCH_BYTES
+        {
+            self.flush_delta(state)?;
+        }
+        state.delta.kind = Some(kind);
+        state.delta.text.push_str(text);
+        state.delta.chunks += 1;
+        Ok(())
+    }
+
+    // The one permitted post-failure event is an explicit, durably appended
+    // failure diagnostic. It does not clear the latch or resume normal traffic.
+    fn report_failure(&self, reason: String) -> Result<()> {
+        let _state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        let event = RuntimeEvent::RunFailed { reason };
+        RunStore::new(&self.db).append_event(
             &self.run_id,
             now_ms(),
-            phase.label(),
-            status,
-            event_type,
-            &data,
-        ) {
-            tracing::warn!(%error, run_id = self.run_id, "failed to persist kernel event");
-        }
-    }
-
-    fn transition_if_advanced(&self, phase: RunPhase) {
-        if matches!(phase, RunPhase::Accepted | RunPhase::Terminal) {
-            return;
-        }
-        let should_transition = {
-            let mut current = self.phase.lock().unwrap_or_else(|p| p.into_inner());
-            if phase_rank(phase) <= phase_rank(*current) {
-                false
-            } else {
-                *current = phase;
-                true
-            }
-        };
-        if !should_transition {
-            return;
-        }
-        if let Err(error) =
-            RunStore::new(&self.db).transition(&self.run_id, phase.label(), now_ms())
-        {
-            tracing::warn!(
-                %error,
-                run_id = self.run_id,
-                phase = phase.label(),
-                "failed to transition kernel run phase"
-            );
-        }
-    }
-
-    fn flush_delta(&self) {
-        let buffered = {
-            let mut guard = self.delta.lock().unwrap_or_else(|p| p.into_inner());
-            if guard.text.is_empty() {
-                return;
-            }
-            std::mem::take(&mut *guard)
-        };
-        self.append(
-            RunPhase::RunningTurn,
-            "progress",
-            buffered.kind.unwrap_or("content_delta_batch"),
-            serde_json::json!({ "text": buffered.text, "chunks": buffered.chunks }),
-        );
-    }
-
-    fn buffer_delta(&self, kind: &'static str, text: &str) {
-        let should_flush = {
-            let guard = self.delta.lock().unwrap_or_else(|p| p.into_inner());
-            guard.kind.is_some_and(|current| current != kind)
-                || guard.text.len() >= PERSISTED_DELTA_BATCH_BYTES
-        };
-        if should_flush {
-            self.flush_delta();
-        }
-        let mut guard = self.delta.lock().unwrap_or_else(|p| p.into_inner());
-        guard.kind = Some(kind);
-        guard.text.push_str(text);
-        guard.chunks += 1;
+            RunPhase::Finalizing.label(),
+            "completed",
+            event.label(),
+            &crate::redaction::scrub_secrets_value(serde_json::to_value(&event)?),
+        )?;
+        self.delegate.emit(event);
+        Ok(())
     }
 }
 
 impl RuntimeEventSink for PersistentEventSink {
     fn emit(&self, event: RuntimeEvent) {
-        match &event {
-            RuntimeEvent::ContentDelta { text } => self.buffer_delta("content_delta_batch", text),
-            RuntimeEvent::ReasoningDelta { text } => {
-                self.buffer_delta("reasoning_delta_batch", text)
-            }
-            // ModelAgent emits one sanitized Responses metadata event directly
-            // before the matching ContentDelta/ReasoningDelta. Persisting that
-            // per-token metadata would both duplicate the stream signal and
-            // force-flush the 16 KiB text buffer on every token. It remains on
-            // the live delegate path below; only the durable duplicate is
-            // suppressed.
-            RuntimeEvent::ResponsesStreamEvent {
-                delta_chars: Some(_),
-                ..
-            } => {}
-            _ => {
-                self.flush_delta();
-                let (phase, status) = phase_for_event(&event);
-                if matches!(&event, RuntimeEvent::RunStarted { .. }) {
-                    // Record the kernel setup boundary separately from the
-                    // lifecycle event. This gives reconnecting clients a
-                    // durable marker for the point at which execution became
-                    // ready without introducing a second runtime pipeline.
-                    let snapshot = serde_json::json!({
-                        "os": std::env::consts::OS,
-                        "arch": std::env::consts::ARCH,
-                        "cwd": std::env::current_dir()
-                            .ok()
-                            .map(|path| path.to_string_lossy().into_owned()),
-                    });
-                    let snapshot_bytes =
-                        serde_json::to_vec(&snapshot).unwrap_or_else(|_| b"{}".to_vec());
-                    let snapshot_hash = format!(
-                        "sha256:{:x}",
-                        sha2::Sha256::digest(snapshot_bytes.as_slice())
-                    );
-                    self.append(
-                        RunPhase::Preparing,
-                        "completed",
-                        "setup.completed",
-                        serde_json::json!({
-                            "component": "agent_kernel",
-                            "environment": snapshot,
-                            "snapshotHash": snapshot_hash,
-                        }),
-                    );
-                }
-                if matches!(&event, RuntimeEvent::RunCancelled { .. }) {
-                    // Keep the operator intent and the runtime observation as
-                    // separate durable facts. The terminal event remains the
-                    // final lifecycle record for replay compatibility.
-                    self.append(
-                        RunPhase::Finalizing,
-                        "progress",
-                        "cancel.observed",
-                        serde_json::json!({ "run_id": self.run_id }),
-                    );
-                }
-                self.append(
-                    phase,
-                    status,
-                    event.label(),
-                    serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
-                );
-            }
+        // Serialize commit and delivery together, including helper events
+        // emitted concurrently with the model. Delegates must not re-enter.
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.failure.is_some() {
+            return;
         }
-        self.delegate.emit(event);
+        let result = (|| -> Result<()> {
+            match &event {
+                RuntimeEvent::ContentDelta { text } => {
+                    self.buffer_delta(&mut state, "content_delta_batch", text)?
+                }
+                RuntimeEvent::ReasoningDelta { text } => {
+                    self.buffer_delta(&mut state, "reasoning_delta_batch", text)?;
+                }
+                // ModelAgent emits one sanitized Responses metadata event directly
+                // before the matching ContentDelta/ReasoningDelta. Persisting that
+                // per-token metadata would both duplicate the stream signal and
+                // force-flush the 16 KiB text buffer on every token. It remains on
+                // the live delegate path below; only the durable duplicate is
+                // suppressed.
+                RuntimeEvent::ResponsesStreamEvent {
+                    delta_chars: Some(_),
+                    ..
+                } => {}
+                _ => {
+                    self.flush_delta(&mut state)?;
+                    let (phase, status) = phase_for_event(&event);
+                    if matches!(&event, RuntimeEvent::RunStarted { .. }) {
+                        // Record the kernel setup boundary separately from the
+                        // lifecycle event. This gives reconnecting clients a
+                        // durable marker for the point at which execution became
+                        // ready without introducing a second runtime pipeline.
+                        let snapshot = serde_json::json!({
+                            "os": std::env::consts::OS,
+                            "arch": std::env::consts::ARCH,
+                            "cwd": std::env::current_dir()
+                                .ok()
+                                .map(|path| path.to_string_lossy().into_owned()),
+                        });
+                        let snapshot_bytes =
+                            serde_json::to_vec(&snapshot).unwrap_or_else(|_| b"{}".to_vec());
+                        let snapshot_hash = format!(
+                            "sha256:{:x}",
+                            sha2::Sha256::digest(snapshot_bytes.as_slice())
+                        );
+                        self.append(
+                            &mut state,
+                            RunPhase::Preparing,
+                            "completed",
+                            "setup.completed",
+                            serde_json::json!({
+                                "component": "agent_kernel",
+                                "environment": snapshot,
+                                "snapshotHash": snapshot_hash,
+                            }),
+                        )?;
+                    }
+                    if matches!(&event, RuntimeEvent::RunCancelled { .. }) {
+                        // Keep the operator intent and the runtime observation as
+                        // separate durable facts. The terminal event remains the
+                        // final lifecycle record for replay compatibility.
+                        self.append(
+                            &mut state,
+                            RunPhase::Finalizing,
+                            "progress",
+                            "cancel.observed",
+                            serde_json::json!({ "run_id": self.run_id }),
+                        )?;
+                    }
+                    self.append(
+                        &mut state,
+                        phase,
+                        status,
+                        event.label(),
+                        serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
+                    )?;
+                }
+            }
+            Ok(())
+        })();
+        if result.is_ok() {
+            self.delegate.emit(event);
+        }
+    }
+
+    fn checkpoint(&self) -> Result<()> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        self.flush_delta(&mut state)
     }
 }
 
@@ -497,6 +588,8 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         agent: &mut dyn Agent,
     ) -> Result<KernelTerminal> {
         let _session_activity = session.acquire_activity()?;
+        self.events
+            .bind_cancellation(self.handle.cancellation.clone());
         let run_id = self.handle.run_id.clone();
         let session_id = session.id().to_string();
         let task_id = task.to_string();
@@ -619,7 +712,10 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                 tracing::warn!(error = %error, "failed to persist run checkpoint");
             }
         }
-        store.transition(&run_id, RunPhase::Finalizing.label(), now_ms())?;
+        let event_result = persistent.checkpoint();
+        store
+            .transition(&run_id, RunPhase::Finalizing.label(), now_ms())
+            .map_err(|error| persistent.finalization_error(error))?;
 
         let mut terminal = match result {
             Ok(RunOutcome::Completed(message)) => KernelTerminal {
@@ -692,8 +788,38 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             };
         }
 
-        persistent.flush_delta();
-        persist_terminal(&self.db, &run_id, &terminal, &self.handle.cancellation)?;
+        // Persistence stops are operational failures, not user cancellation
+        // or a successful model response. Keep the original cause even when
+        // cancellation was needed to unwind active work.
+        let mut finalization_errors = Vec::new();
+        if let Err(error) = event_result {
+            force_fail_active_task(session, task);
+            terminal = KernelTerminal {
+                kind: TerminalKind::Failed,
+                message: None,
+                reason: Some(error.to_string()),
+            };
+            if let Some(actions) = &self.config.action_persistence {
+                if let Err(error) = actions.fail_unfinished(&error.to_string()) {
+                    finalization_errors.push(error);
+                }
+            }
+            if let Err(error) = persistent.report_failure(error.to_string()) {
+                finalization_errors.push(error);
+            }
+        }
+        if let Err(error) =
+            persist_terminal(&self.db, &run_id, &terminal, &self.handle.cancellation)
+        {
+            finalization_errors.push(error);
+        }
+        let mut errors = finalization_errors.into_iter();
+        if let Some(first) = errors.next() {
+            let combined = errors.fold(first, |first, next| {
+                CoreError::Persistence(format!("{first}; additional finalization failure: {next}"))
+            });
+            return Err(persistent.finalization_error(combined));
+        }
         Ok(terminal)
     }
 }
@@ -754,6 +880,10 @@ fn now_ms() -> i64 {
         .as_millis()
         .min(i64::MAX as u128) as i64
 }
+
+#[cfg(test)]
+#[path = "kernel/event_persistence_tests.rs"]
+mod event_persistence_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1327,7 +1457,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit: a failed run_events append must not diverge from the live event stream"]
     async fn audit_event_persistence_failure_does_not_split_live_and_replay() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.with_conn(|conn| {
@@ -1363,7 +1492,12 @@ mod tests {
             .start(RunRequest::new(&mut session, task, &mut agent))
             .await
             .unwrap();
-        assert!(terminal.succeeded());
+        assert_eq!(terminal.kind, TerminalKind::Failed);
+        assert!(terminal
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("tool_completed"));
 
         let live_labels = live
             .labels
@@ -1378,11 +1512,33 @@ mod tests {
             .map(|event| event.event_type.as_str())
             .collect();
 
-        assert!(live_labels.contains(&"tool_completed"));
+        assert!(!live_labels.contains(&"tool_completed"));
+        assert!(!live_labels.contains(&"run_completed"));
         assert!(
-            durable_labels.contains(&"tool_completed"),
+            !durable_labels.contains(&"tool_completed"),
             "live event labels={live_labels:?}, durable event labels={durable_labels:?}"
         );
+        assert!(live_labels.contains(&"run_failed"));
+        assert!(durable_labels.contains(&"run_failed"));
+        assert_eq!(
+            durable_events
+                .iter()
+                .filter(|event| event.event_type == "run_terminal")
+                .count(),
+            1
+        );
+        assert_eq!(
+            RunStore::new(&db)
+                .get("run-event-persistence-audit")
+                .unwrap()
+                .unwrap()
+                .terminal_kind
+                .as_deref(),
+            Some("failed")
+        );
+        for (sequence, event) in durable_events.iter().enumerate() {
+            assert_eq!(event.sequence, sequence as u64);
+        }
     }
 
     #[tokio::test]

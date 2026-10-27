@@ -691,6 +691,14 @@ impl RuntimeEvent {
 pub trait RuntimeEventSink: Send + Sync {
     /// Handle one event. Must not block.
     fn emit(&self, event: RuntimeEvent);
+
+    /// Commit buffered progress before another model/tool/hook action and
+    /// observe any prior delivery failure. Live token deltas are provisional
+    /// until this barrier succeeds; they are never durable replay cursors.
+    /// Non-persistent observers keep the source-compatible no-op default.
+    fn checkpoint(&self) -> deepagent_core::error::Result<()> {
+        Ok(())
+    }
 }
 
 /// A sink that discards events (the default when no UI is attached).

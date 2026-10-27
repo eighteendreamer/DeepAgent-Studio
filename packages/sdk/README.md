@@ -46,3 +46,12 @@ returned session/run cursors, not the envelope's connection-local
 `eventSequence`. `event/ack` is only a monotonic, in-range connection receipt;
 it neither persists a cursor nor requests replay, and resets on reconnect.
 The SDK does not automatically reconcile interrupted streams or pending approvals.
+
+Live content/reasoning deltas and per-token stream metadata are provisional,
+not durable commit receipts. Text may be batched in the existing run ledger;
+replay is not a one-row-per-live-notification transcript. A rejected persistence
+barrier stops the run before later model/tool actions, but an earlier tool may
+already have executed. Reconcile its durable action state and session result
+with `thread/read` instead of automatically repeating the action. A live
+completion notification alone is not proof of a committed terminal: confirm
+the durable run terminal when reconciling a failed or interrupted stream.
