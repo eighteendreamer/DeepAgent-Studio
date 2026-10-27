@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-50 | 已修复并验收（2026-10-27，所列Windows本机离线派发与共享服务范围） | 唯一opaque身份、设备/后端代次、同设备操作锁与派发前失效；移动249/0/7真机ignored；workspace3504/1既有H-306失败/321 ignored、严格lint边界见E-H50-01～09；补强提交`f0ad9e5749e0d53cde9c6731c3993e0cdb847b84` |
 | H-65 | 已修复并验收（2026-10-27，所列Windows本机范围） | 两处共用正式工具执行边界，原失败保留；单元3/boundary5默认通过，最终workspace3471/1/324；独立取消/Job反例不擦除，见E-H65-01～16；修复提交`1f5fbb084e2babe908fd6481f1a05e1231a5f5d0` |
 | H-46 | 已修复并验收，恢复原验收（2026-10-27，Windows所列范围） | 资源收尾原始反例保留，同Job封闭准入与成员handle等待；MCP全特性115/0/8，workspace3479/1/324仅既有H-306失败；全仓lint失败见E-21，详见E-H46-15～23；补强提交`c7ee84ec2a9fa994a55cb5e458471259f030e1c5` |
 | H-58 | 已修复并验收（2026-10-27，所列Windows本机范围） | 身份与操作期目录边界共用；最终附件13/0、Builtins371/4、AppCore1173/60、Kernel135/83；完整workspace与lint基线失败保留，见E-H58-01～14；修复提交`fbb13a032b03f73d780ae4881e7d8b4464e0a6d8` |
@@ -2188,7 +2189,7 @@ E-H46-20261027-12（独立提交与真实hash回填）：代码、默认回归�
 
 原失败证据如下保留。最终原探针默认1 passed/0 ignored：登记/返回一致，current可执行，superseded/unknown为StaleUiNode，实际仅1条ADB input。新增Android11项覆盖并发/跨设备/失败/取消/clear/重连/稳定扫描/固定backend ID/替换/已知UI操作；AppCore新增2项验证schema→invoke→测试桥→正式AppMobileService与桌面summary/full及serde契约；iOS新增1项只验证FakeIosBackend/Remote元数据，首次fake硬编码设备身份导致的失败及修正保留。
 
-五移动crate共249 passed/7真机ignored，移动严格Clippy通过，builtins直接crate no-deps严格Clippy通过。完整workspace已实际跑完128个target：3504 passed/1既有H-306失败/321 ignored；AppCore lib1185/0/67、kernel_v2_e2e142/0/82、SDK stdio6通过，本项默认回归均通过。AppCore/builtins含依赖严格Clippy仍被未改models/client.rs:355阻断；fmt/diff通过，绝不声称全仓绿色。全部实际命令/失败/范围见进度台账E-H50-01～08。本轮代码、测试与文档补强提交待回填；初版不单独作为验收依据。
+五移动crate共249 passed/7真机ignored，移动严格Clippy通过，builtins直接crate no-deps严格Clippy通过。完整workspace已实际跑完128个target：3504 passed/1既有H-306失败/321 ignored；AppCore lib1185/0/67、kernel_v2_e2e142/0/82、SDK stdio6通过，本项默认回归均通过。AppCore/builtins含依赖严格Clippy仍被未改models/client.rs:355阻断；fmt/diff通过，绝不声称全仓绿色。全部实际命令/失败/范围见进度台账E-H50-01～08。本轮代码、测试与文档补强提交为 `f0ad9e5749e0d53cde9c6731c3993e0cdb847b84`；初版不单独作为验收依据。
 
 兼容及未验：snapshot_id按opaque传回，输入/已知UI变更后即使失败也需重捕获；None仍允许但会失效旧引用。未改Tauri/前端契约，未跑pnpm build或真实UI；没有连接真实手机/Mac/供应商或访问用户数据。外部自发UI变化、未被discovery观察的物理ABA、真实远程transport及其他OS不在本机证据内；设备锁记录按历史ID保留，锁等待预算不是新增的端到端deadline承诺。累计53验收/18历史跳过/7归并/2撤销/226有效未关闭，整体任务仍active；下一项准备H-51。总200–400有效小时规划粗估未逐项校准，环境等待另计。
 
