@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-142 | 已修复并验收（2026-10-28，仅所列Windows本机/离线/正式消费者范围） | 单sink首错锁存与checkpoint，保留真实工具结果并统一准入收尾；专项5/0/0、Runtime327/0/12、E2E156/0/78、准入2/0/0，fmt/Tauri Rust check通过；workspace3587/1既有H-306/313 ignored与lint旧阻断保留；H-143独立反证仍0/1；E-H142-06～07，修复提交待生成 |
+| H-142 | 已修复并验收（2026-10-28，仅所列Windows本机/离线/正式消费者范围） | 单sink首错锁存与checkpoint，保留真实工具结果并统一准入收尾；专项5/0/0、Runtime327/0/12、E2E156/0/78、准入2/0/0，fmt/Tauri Rust check通过；workspace3587/1既有H-306/313 ignored与lint旧阻断保留；H-143独立反证仍0/1；E-H142-06～08，修复提交`e1370f9db521556eb10c4719ffaa2b08dd1503ec` |
 | H-135 | 已修复并验收（2026-10-28，仅所列Windows本机stdio与正式服务范围） | 唯一spawn清空继承环境、叠OS基础白名单与原显式env；默认环境5/0/1、全MCP126/0/6、正式服务1/0/1，MCP严格lint/fmt/桌面Rust通过；workspace3572/2/314及严格lint失败保留，见E-H135-01～06；修复提交`b51529f05bfdb669bac6dbaf7755594b6c4ff3b2` |
 | H-136 | 已修复并验收（2026-10-28，仅所列Windows本机发送边界） | 原背压随H-09已消除不重复计功；本轮修正锁排队取消误通知/误报未知，默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8，MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核保留，E-H136-02～07，修复提交`ab32b8db28f4546e4d95cd7da46eb92072145532` |
 | H-139 | 已修复并验收（2026-10-28，所列Windows本机/正式服务与runtime/离线范围） | 执行事实先提交，后置错误仍传播，同组结果全保留；原专项2/0/0、新runtime9/0/0默认通过，workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过；严格lint旧失败保留，E-H139-01～06，修复提交`93a412d049f7a41be129d528f9b043f9978e80c9` |
@@ -4014,7 +4014,7 @@ E-H136-07（独立提交回填）：生产、默认回归和当时两文档已�
 
 ### H-142：运行事件持久化失败被吞掉，实时事件与回放事件发生分叉
 
-**当前状态：已修复并验收（2026-10-28，仅本机所列范围；修复提交待生成，取得真实hash后正常回填）。** 统一原PersistentEventSink的append/delivery与首错锁存，通过checkpoint及原取消树停止后续模型/工具/hook；Kernel显式Failed并保留收尾错误，AppCore统一聊天/工作流准入收尾，保留已执行工具事实并结清未派发action。正式专项5/0/0、Runtime327/0/12、准入2/0/0、正式E2E156/0/78，fmt与独立Tauri Rust check通过；完整workspace3587/1既有H-306/313 ignored，严格lint未通过。最终证据及限制详见修复进度E-H142-06～07；H-143独立探针仍0/1，不归并、不关闭。以下原审计生产链、失败证据、候选进展和验证限制均按历史保留，不将当时的“生产代码未改/ignored/门禁未完成”误读为当前状态。
+**当前状态：已修复并验收（2026-10-28，仅本机所列范围；修复提交`e1370f9db521556eb10c4719ffaa2b08dd1503ec`，见E-H142-08）。** 统一原PersistentEventSink的append/delivery与首错锁存，通过checkpoint及原取消树停止后续模型/工具/hook；Kernel显式Failed并保留收尾错误，AppCore统一聊天/工作流准入收尾，保留已执行工具事实并结清未派发action。正式专项5/0/0、Runtime327/0/12、准入2/0/0、正式E2E156/0/78，fmt与独立Tauri Rust check通过；完整workspace3587/1既有H-306/313 ignored，严格lint未通过。最终证据及限制详见修复进度E-H142-06～07；H-143独立探针仍0/1，不归并、不关闭。以下原审计生产链、失败证据、候选进展和验证限制均按历史保留，不将当时的“生产代码未改/ignored/门禁未完成”误读为当前状态。
 
 **原候选进展（2026-10-28，历史记录，尚未验收阶段）：** 原始失败证据与下述审计结论保留；HEAD e64a7e40修前原探针再次0 passed/1 failed（target/h142-before-*）。候选在原PersistentEventSink收敛append/delivery，首错脱敏锁存并请求原取消树，新增默认no-op checkpoint以阻止后续模型/工具/hook越过失败；delta维持16KiB批量，实时delta为provisional，拒绝batch不自动重试。Kernel沿原终态事务返回Failed并合并后续存储失败，不新建执行/存储链。第二次Runtime tests check通过；Kernel专项19 passed/0 failed/1 ignored（独立H-143探针保留），含5项新增故障/正常对照、并发顺序和SQLite重开/cursor；原80%批量写入断言保留。正式ChatService真实write_file单/双工具与重开消费方回归仍在编译验证，完整workspace/严格lint/桌面Rust门禁尚未完成，不提前登记修复。过程与限制详见修复进度文档E-H142-01～03；H-143正常终态发布顺序不归并、不关闭。
 
@@ -4046,6 +4046,8 @@ H-142最终验收（2026-10-28，E-H142-06～07）：冻结的9份源码在最�
 完整`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`原生101，130 targets共3587 passed/1 failed/313 ignored，1083.98s，编译7m39s且使用既有缓存；AppCore lib1210/0/65，唯一失败为未改H-306的creative.video-edit.v1空defaultUserPrompt。原生严格全仓lint仍101（models/client.rs:355 clone_on_copy）；Runtime全target/全feature/no-deps严格lint仍101（既有model_agent.rs:282）；AppCore全target/no-deps严格lint仍101（context_runtime 8处clone_on_copy、plugin_preparation复杂类型、base_registry_request参数数）。Runtime普通诊断为0但保留告警；AppCore普通诊断仍101，受未改mcp_discovery_restore.rs:433既有panicking_unwrap默认deny阻断。相关代码已对照HEAD，不宣称全仓或受阻后未到达的target已通过lint。完整日志、逐target汇总、原生结果及hash保留target/h142-final-*、h142-diagnostic-*、h142-frozen-sources.json，为ignored产物不提交。本次H-64冷ready未失败，不定位或关闭其历史间歇失败。
 
 验收仅限Windows本机、离线mock/合成凭据、Temp SQLite、真实工具及正式聊天/工作流边界。首错后fail-closed是有意兼容性变化；普通observer默认checkpoint成功保持源码兼容，live delta/逐token metadata仍为provisional，不是durable cursor或完成回执，SDK README已明确恢复核对原action/session结果且不自动重复工具，不承诺exactly-once。delegate不可重入同一sink。没有新增store、审批/取消链、协议字段、DTO/Tauri command、依赖/配置、数据库迁移或权限开口；真实供应商/用户数据/内网、其他OS、真实UI、断电强杀、跨进程锁争用及任意负载未验。无UI/TypeScript类型修改，未跑pnpm build/真实桌面，独立Rust check不替代它们。H-143终态探针按E-H142-06所列离线显式ignored/exact命令仍原生101、0/1/0，live先run_completed而终态事务被拒绝，见target/h142-independent-h143-*；保持其独立待修和原ignored，不把本项验收扩大到终态成功发布顺序。306唯一台账仅H-142更新，累计60验收/18历史跳过/7归并/2撤销/219待修/0修复中，219有效未关闭；修复代码/测试与当时两文档独立提交后正常回填真实hash，不amend、不推送、不PR。下一P1 H-143，剩余200–400有效小时仍为未逐项校准粗估，编译/设备/依赖/环境等待另计，整体目标未完成。
+
+H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK README及当时两文档已正常提交`e1370f9db521556eb10c4719ffaa2b08dd1503ec`（【fix】收敛运行事件持久化失败边界），仅本项12文件。提交后tracked干净，原五类用户未跟踪项未读取/修改/暂存，未amend、绕过hook、推送或创建PR。本次只以真实修复hash同步两文档和H-142唯一台账行，另作普通docs提交、不递归填写docs自身hash；原始失败、最终3587/1/313全仓结果、严格lint阻断、H-143独立反证及未验范围保留，累计60验收/18历史跳过/7归并/2撤销/219待修/0修复中，219有效未关闭。下一P1 H-143，原200–400有效小时未校准粗估及等待另计不变，整体目标继续。
 
 ### H-143：终态持久化失败前已经发布实时完成事件
 
