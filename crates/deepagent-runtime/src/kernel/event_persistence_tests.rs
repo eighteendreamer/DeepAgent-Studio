@@ -432,7 +432,17 @@ async fn kernel_fail_closed_covers_lifecycle_delta_and_double_storage_failure() 
                         .iter()
                         .filter(|event| event.event_type == "run_failed")
                         .count(),
-                    1
+                    usize::from(!terminal_failure),
+                    "a rejected terminal transaction must not leak its failure notification"
+                );
+                assert_eq!(
+                    live.0
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .filter(|event| event.label() == "run_failed")
+                        .count(),
+                    usize::from(!terminal_failure)
                 );
                 assert_eq!(session.state().task(task).unwrap().state, TaskState::Failed);
             } else {

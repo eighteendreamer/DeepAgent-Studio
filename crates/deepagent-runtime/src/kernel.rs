@@ -8,7 +8,7 @@ use deepagent_core::error::{CoreError, Result};
 use deepagent_core::id::TaskId;
 use deepagent_core::task::TaskState;
 use deepagent_hooks::HookRegistry;
-use deepagent_persistence::run_store::RunStore;
+use deepagent_persistence::run_store::{RunStore, RunTerminalUpdate};
 use deepagent_persistence::Database;
 use deepagent_session::Session;
 use deepagent_tools::ToolRegistry;
@@ -164,6 +164,8 @@ struct EventPersistenceState {
     phase: RunPhase,
     failure: Option<String>,
     cancellation: Option<CancellationTree>,
+    pending_terminal: Option<RuntimeEvent>,
+    closed: bool,
 }
 
 impl PersistentEventSink {
@@ -177,6 +179,8 @@ impl PersistentEventSink {
                 phase: RunPhase::Preparing,
                 failure: None,
                 cancellation: None,
+                pending_terminal: None,
+                closed: false,
             }),
         }
     }
@@ -301,21 +305,25 @@ impl PersistentEventSink {
         Ok(())
     }
 
-    // The one permitted post-failure event is an explicit, durably appended
-    // failure diagnostic. It does not clear the latch or resume normal traffic.
-    fn report_failure(&self, reason: String) -> Result<()> {
-        let _state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        let event = RuntimeEvent::RunFailed { reason };
-        RunStore::new(&self.db).append_event(
+    fn finish(&self, terminal: &KernelTerminal, cancellation: &CancellationTree) -> Result<bool> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.closed {
+            return Ok(false);
+        }
+        state.closed = true;
+        if state.failure.is_none() {
+            self.flush_delta(&mut state)?;
+        }
+        // A pending engine notification is only intent. Hooks, deadline
+        // cleanup and persistence may still change the canonical outcome.
+        persist_terminal_and_notify(
+            &self.db,
             &self.run_id,
-            now_ms(),
-            RunPhase::Finalizing.label(),
-            "completed",
-            event.label(),
-            &crate::redaction::scrub_secrets_value(serde_json::to_value(&event)?),
-        )?;
-        self.delegate.emit(event);
-        Ok(())
+            terminal,
+            cancellation,
+            state.pending_terminal.take(),
+            self.delegate.as_ref(),
+        )
     }
 }
 
@@ -324,9 +332,10 @@ impl RuntimeEventSink for PersistentEventSink {
         // Serialize commit and delivery together, including helper events
         // emitted concurrently with the model. Delegates must not re-enter.
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
-        if state.failure.is_some() {
+        if state.failure.is_some() || state.closed {
             return;
         }
+        let terminal_intent = event.is_terminal();
         let result = (|| -> Result<()> {
             match &event {
                 RuntimeEvent::ContentDelta { text } => {
@@ -390,24 +399,33 @@ impl RuntimeEventSink for PersistentEventSink {
                             serde_json::json!({ "run_id": self.run_id }),
                         )?;
                     }
-                    self.append(
-                        &mut state,
-                        phase,
-                        status,
-                        event.label(),
-                        serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
-                    )?;
+                    if !terminal_intent {
+                        self.append(
+                            &mut state,
+                            phase,
+                            status,
+                            event.label(),
+                            serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
+                        )?;
+                    }
                 }
             }
             Ok(())
         })();
         if result.is_ok() {
-            self.delegate.emit(event);
+            if terminal_intent {
+                state.pending_terminal = Some(event);
+            } else {
+                self.delegate.emit(event);
+            }
         }
     }
 
     fn checkpoint(&self) -> Result<()> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.closed && state.failure.is_none() {
+            return Err(CoreError::invalid("run event sink is finalized"));
+        }
         self.flush_delta(&mut state)
     }
 }
@@ -804,13 +822,8 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                     finalization_errors.push(error);
                 }
             }
-            if let Err(error) = persistent.report_failure(error.to_string()) {
-                finalization_errors.push(error);
-            }
         }
-        if let Err(error) =
-            persist_terminal(&self.db, &run_id, &terminal, &self.handle.cancellation)
-        {
+        if let Err(error) = persistent.finish(&terminal, &self.handle.cancellation) {
             finalization_errors.push(error);
         }
         let mut errors = finalization_errors.into_iter();
@@ -831,14 +844,82 @@ pub fn persist_terminal(
     terminal: &KernelTerminal,
     cancellation: &CancellationTree,
 ) -> Result<bool> {
-    let changed = RunStore::new(db).finish_with_event(
-        run_id,
-        terminal.kind.label(),
-        terminal.reason.as_deref(),
-        &crate::redaction::scrub_secrets_value(serde_json::to_value(terminal)?),
-        cancellation.requested_by().as_deref(),
-        now_ms(),
-    )?;
+    persist_terminal_record(db, run_id, terminal, cancellation, None)
+}
+
+/// Commit the lifecycle notification with the canonical terminal, then deliver
+/// it. Shared by Kernel execution and admission paths which finish without it.
+/// A repeated finalizer cannot deliver a second or conflicting notification.
+pub fn persist_terminal_and_notify(
+    db: &Database,
+    run_id: &str,
+    terminal: &KernelTerminal,
+    cancellation: &CancellationTree,
+    pending: Option<RuntimeEvent>,
+    delegate: &dyn RuntimeEventSink,
+) -> Result<bool> {
+    let edited_files = match pending {
+        Some(RuntimeEvent::RunCompleted { edited_files, .. })
+        | Some(RuntimeEvent::RunCancelled { edited_files }) => edited_files,
+        _ => Vec::new(),
+    };
+    let reason = || {
+        terminal
+            .reason
+            .clone()
+            .unwrap_or_else(|| terminal.kind.label().into())
+    };
+    let event = match terminal.kind {
+        TerminalKind::Succeeded => RuntimeEvent::RunCompleted {
+            message: terminal.message.clone().unwrap_or_default(),
+            edited_files,
+        },
+        TerminalKind::Cancelled => RuntimeEvent::RunCancelled { edited_files },
+        TerminalKind::Blocked => RuntimeEvent::RunAwaitingApproval { message: reason() },
+        _ => RuntimeEvent::RunFailed { reason: reason() },
+    };
+    let changed = persist_terminal_record(db, run_id, terminal, cancellation, Some(&event))?;
+    if changed {
+        delegate.emit(event);
+    }
+    Ok(changed)
+}
+
+fn persist_terminal_record(
+    db: &Database,
+    run_id: &str,
+    terminal: &KernelTerminal,
+    cancellation: &CancellationTree,
+    notification: Option<&RuntimeEvent>,
+) -> Result<bool> {
+    let data = crate::redaction::scrub_secrets_value(serde_json::to_value(terminal)?);
+    let alias = cancellation.requested_by();
+    let store = RunStore::new(db);
+    let changed = if let Some(event) = notification {
+        store.finish_with_notification(
+            run_id,
+            RunTerminalUpdate {
+                kind: terminal.kind.label(),
+                reason: terminal.reason.as_deref(),
+                data: &data,
+            },
+            (
+                event.label(),
+                &crate::redaction::scrub_secrets_value(serde_json::to_value(event)?),
+            ),
+            alias.as_deref(),
+            now_ms(),
+        )?
+    } else {
+        store.finish_with_event(
+            run_id,
+            terminal.kind.label(),
+            terminal.reason.as_deref(),
+            &data,
+            alias.as_deref(),
+            now_ms(),
+        )?
+    };
     deepagent_persistence::event_store::EventStore::new(db).project_run_terminal(
         run_id,
         deepagent_core::clock::Timestamp::from_millis(now_ms()),
@@ -884,6 +965,10 @@ fn now_ms() -> i64 {
 #[cfg(test)]
 #[path = "kernel/event_persistence_tests.rs"]
 mod event_persistence_tests;
+
+#[cfg(test)]
+#[path = "kernel/terminal_commit_tests.rs"]
+mod terminal_commit_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1542,7 +1627,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit: terminal persistence failure must not publish a live completion"]
     async fn audit_terminal_persistence_failure_does_not_claim_live_completion() {
         let db = Arc::new(Database::open_in_memory().unwrap());
         db.with_conn(|conn| {
@@ -1604,6 +1688,7 @@ mod tests {
             "live completion was published before durable terminal commit: {live_labels:?}"
         );
         assert!(!durable_labels.contains(&"run_terminal"));
+        assert!(!durable_labels.contains(&"run_completed"));
         assert!(
             record.finished_at.is_none(),
             "live labels={live_labels:?}, durable event labels={durable_labels:?}, record={record:?}"
@@ -1665,8 +1750,14 @@ mod tests {
         });
         assert_eq!(
             store.get("run-state").unwrap().unwrap().state,
-            RunPhase::Finalizing.label()
+            RunPhase::ExecutingTools.label(),
+            "completion intent is not a committed terminal"
         );
+        assert!(!store
+            .events_after("run-state", None)
+            .unwrap()
+            .iter()
+            .any(|event| event.event_type == "run_completed"));
     }
 
     #[tokio::test]

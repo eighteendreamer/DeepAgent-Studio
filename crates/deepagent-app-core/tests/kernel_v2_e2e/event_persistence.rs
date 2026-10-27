@@ -76,7 +76,7 @@ impl HttpTransport for WriteModel {
     }
 }
 
-async fn settings(db: Arc<Database>) -> Arc<SettingsService> {
+pub(super) async fn settings(db: Arc<Database>) -> Arc<SettingsService> {
     let settings = Arc::new(SettingsService::new(
         db,
         Arc::new(MockTransport::with_get_json(

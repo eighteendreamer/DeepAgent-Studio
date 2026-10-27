@@ -38,6 +38,14 @@ pub struct RunStore<'db> {
     db: &'db Database,
 }
 
+/// Borrowed input for the existing atomic terminal transaction. This is not a
+/// wire DTO: the runtime owns terminal semantics and notification projection.
+pub struct RunTerminalUpdate<'a> {
+    pub kind: &'a str,
+    pub reason: Option<&'a str>,
+    pub data: &'a serde_json::Value,
+}
+
 // The canonical terminal doubles as a durable projection intent. Confirmation
 // lives in the same ledger, never in a second store or a rebuildable file cursor.
 const PENDING_TERMINAL_PROJECTION: &str = "r.finished_at IS NOT NULL
@@ -137,11 +145,34 @@ impl<'db> RunStore<'db> {
     ) -> Result<bool> {
         self.commit_terminal(
             run_id,
-            terminal_kind,
-            reason,
+            RunTerminalUpdate {
+                kind: terminal_kind,
+                reason,
+                data: terminal,
+            },
+            cancel_alias,
+            None,
+            None,
+            now,
+        )
+    }
+
+    /// A lifecycle notification cannot be replayed without its canonical
+    /// outcome. Both rows and the run update commit, or all roll back.
+    pub fn finish_with_notification(
+        &self,
+        run_id: &str,
+        terminal: RunTerminalUpdate<'_>,
+        notification: (&str, &serde_json::Value),
+        cancel_alias: Option<&str>,
+        now: i64,
+    ) -> Result<bool> {
+        self.commit_terminal(
+            run_id,
             terminal,
             cancel_alias,
             None,
+            Some(notification),
             now,
         )
     }
@@ -158,31 +189,32 @@ impl<'db> RunStore<'db> {
         let terminal = serde_json::json!({"kind":"failed", "message":null, "reason":reason});
         self.commit_terminal(
             run_id,
-            "failed",
-            Some(reason),
-            &terminal,
+            RunTerminalUpdate {
+                kind: "failed",
+                reason: Some(reason),
+                data: &terminal,
+            },
             None,
             Some(recovery),
+            None,
             now,
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn commit_terminal(
         &self,
         run_id: &str,
-        terminal_kind: &str,
-        reason: Option<&str>,
-        terminal: &serde_json::Value,
+        terminal: RunTerminalUpdate<'_>,
         cancel_alias: Option<&str>,
         recovery: Option<&serde_json::Value>,
+        notification: Option<(&str, &serde_json::Value)>,
         now: i64,
     ) -> Result<bool> {
         self.db.with_conn(|conn| {
             let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
             let changed = tx.execute(
                 "UPDATE runs SET state='terminal', terminal_kind=?2, terminal_reason=?3, updated_at=?4, finished_at=?4 WHERE id=?1 AND finished_at IS NULL",
-                params![run_id, terminal_kind, reason, now],
+                params![run_id, terminal.kind, terminal.reason, now],
             ).map_err(map_sqlite)?;
             if changed == 0 {
                 return Ok(false);
@@ -202,7 +234,10 @@ impl<'db> RunStore<'db> {
                 events.push(("control", "cancel.requested", serde_json::json!({"alias": alias})));
                 events.push(("control", "cancel.propagated", serde_json::json!({"alias": alias, "target": "active_run"})));
             }
-            events.push(("terminal", "run_terminal", terminal.clone()));
+            if let Some((event_type, data)) = notification {
+                events.push(("finalizing", event_type, data.clone()));
+            }
+            events.push(("terminal", "run_terminal", terminal.data.clone()));
             for (phase, event_type, data) in events {
                 insert_run_event(&tx, run_id, now, phase, event_type, &data)?;
             }
@@ -473,6 +508,10 @@ impl<'db> RunStore<'db> {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "run_store/terminal_notification_tests.rs"]
+mod terminal_notification_tests;
 
 #[cfg(test)]
 mod tests {

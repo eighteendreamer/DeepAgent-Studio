@@ -49,9 +49,12 @@ The SDK does not automatically reconcile interrupted streams or pending approval
 
 Live content/reasoning deltas and per-token stream metadata are provisional,
 not durable commit receipts. Text may be batched in the existing run ledger;
-replay is not a one-row-per-live-notification transcript. A rejected persistence
-barrier stops the run before later model/tool actions, but an earlier tool may
-already have executed. Reconcile its durable action state and session result
-with `thread/read` instead of automatically repeating the action. A live
-completion notification alone is not proof of a committed terminal: confirm
-the durable run terminal when reconciling a failed or interrupted stream.
+replay is not a one-row-per-live-notification transcript. Canonical runtime
+completion notifications from the Kernel, admission, and workflow paths are
+delivered only after the durable terminal transaction commits. A provider
+`response.completed` item is only a model-response boundary, not proof that the
+run completed. A rejected persistence barrier stops the run before later
+model/tool actions, but an earlier tool may already have executed. Transport or
+admission errors are not durable receipts: after a disconnect, reconcile the
+durable run terminal, action state, and session result with `thread/read` instead
+of automatically repeating the action or treating a live completion as proof.

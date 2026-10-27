@@ -1112,7 +1112,12 @@ fn spawn_turn(
         let event_context = context.clone();
         let interrupted = Arc::new(AtomicBool::new(false));
         let event_interrupted = interrupted.clone();
+        let terminal_emitted = Arc::new(AtomicBool::new(false));
+        let event_terminal_emitted = terminal_emitted.clone();
         let on_event = move |event: deepagent_runtime::RuntimeEvent| {
+            if event.is_terminal() {
+                event_terminal_emitted.store(true, Ordering::Release);
+            }
             if matches!(event, deepagent_runtime::RuntimeEvent::RunCancelled { .. }) {
                 event_interrupted.store(true, Ordering::Release);
             }
@@ -1170,11 +1175,13 @@ fn spawn_turn(
             Ok(session)
         });
         if let Err(error) = result {
-            emitter(HarnessEvent::TurnFailed {
-                thread_id: Some(launch.thread_id.clone()),
-                turn_id: Some(launch.turn_id.clone()),
-                reason: error.to_string(),
-            });
+            if !terminal_emitted.load(Ordering::Acquire) {
+                emitter(HarnessEvent::TurnFailed {
+                    thread_id: Some(launch.thread_id.clone()),
+                    turn_id: Some(launch.turn_id.clone()),
+                    reason: error.to_string(),
+                });
+            }
         }
         state
             .lock()

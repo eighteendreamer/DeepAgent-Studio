@@ -77,6 +77,9 @@ mod post_tool_hook_commit;
 #[path = "kernel_v2_e2e/event_persistence.rs"]
 mod event_persistence;
 
+#[path = "kernel_v2_e2e/terminal_persistence.rs"]
+mod terminal_persistence;
+
 #[path = "kernel_v2_e2e/agent_hook_state.rs"]
 mod agent_hook_state;
 

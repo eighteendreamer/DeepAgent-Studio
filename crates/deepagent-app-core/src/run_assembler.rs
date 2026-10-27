@@ -978,14 +978,22 @@ impl<'a> RunAssembler<'a> {
                 message: Message::assistant(&abort_message),
             })?;
             session.transition_task(task, deepagent_core::task::TaskState::Completed)?;
-            sink.emit(RuntimeEvent::RunCompleted {
-                message: abort_message,
-                edited_files: vec![],
-            });
+            let result = deepagent_runtime::kernel::persist_terminal_and_notify(
+                self.db,
+                &run_id,
+                &deepagent_runtime::KernelTerminal {
+                    kind: deepagent_runtime::TerminalKind::Succeeded,
+                    message: Some(abort_message),
+                    reason: None,
+                },
+                &cancellation.cancellation(),
+                None,
+                sink.as_ref(),
+            );
             drop(hooks);
             drop(sink);
             let _ = pump.await;
-            return Ok(session_id);
+            return result.map(|_| session_id);
         }
 
         let run_context_request = RunContextRequest {
