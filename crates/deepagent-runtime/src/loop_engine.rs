@@ -969,7 +969,18 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             && adversarial_refutes < self.config.max_adversarial_retries
                         {
                             let changed = self.changed_file_paths();
-                            match verifier.verify(&content, &changed).await {
+                            let legacy_cancel = self.cancel.clone().unwrap_or_else(|| {
+                                std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+                            });
+                            let cancellation = self
+                                .cancel_token
+                                .as_ref()
+                                .map(CancellationToken::child_token)
+                                .unwrap_or_default();
+                            match verifier
+                                .verify_cancelled(&content, &changed, cancellation, legacy_cancel)
+                                .await
+                            {
                                 crate::adversarial::AdversarialVerdict::Accepted => {
                                     self.emit(RuntimeEvent::Verification {
                                         passed: true,
@@ -1006,6 +1017,15 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                                         }),
                                     )];
                                     continue;
+                                }
+                                crate::adversarial::AdversarialVerdict::Cancelled => {
+                                    session.transition_task(task, TaskState::Failed)?;
+                                    self.emit(RuntimeEvent::RunCancelled {
+                                        edited_files: self.collect_edited_files(),
+                                    });
+                                    outcome = RunOutcome::Cancelled;
+                                    finished = true;
+                                    break;
                                 }
                             }
                         }

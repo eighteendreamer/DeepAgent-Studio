@@ -149,9 +149,10 @@ fn main_agent() -> ModelAgent {
     )
 }
 
-/// Exercise the shipped model-backed completion checks through the kernel. Only the
-/// provider transport is offline; checkpoint evidence is a real temporary
-/// file mutation. Kept opt-in because these are unfixed audit assertions.
+/// Exercise the shipped model-backed completion checks through the kernel. Only
+/// the provider transport is offline; checkpoint evidence is a real temporary
+/// file mutation. The panel lifecycle cases are default regression coverage;
+/// only the provider itself remains offline and controlled.
 async fn audit_check_lifecycle(
     kind: CheckKind,
     cancel: bool,
@@ -356,14 +357,12 @@ async fn model_panel_completes_after_all_skeptics_reply() {
 }
 
 #[tokio::test]
-#[ignore = "audit probe: cancellation must interrupt the production verification panel"]
 async fn audit_cancel_during_model_panel_does_not_complete_successfully() {
     audit_check_lifecycle(CheckKind::Panel, false, false).await;
     audit_check_lifecycle(CheckKind::Panel, true, false).await;
 }
 
 #[tokio::test]
-#[ignore = "audit probe: task deadline must not detach production skeptic requests"]
 async fn audit_kernel_deadline_releases_model_panel_requests() {
     audit_check_lifecycle(CheckKind::Panel, false, true).await;
 }

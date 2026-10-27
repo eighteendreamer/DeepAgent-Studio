@@ -19,9 +19,11 @@
 //! synthetic refute (Grok bias-to-fail lives at the per-skeptic level), but the
 //! caller decides whether to nudge; it must not kill a correct run.
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use tokio_util::sync::CancellationToken;
 
 use deepagent_core::error::Result;
 
@@ -120,6 +122,8 @@ pub enum PanelOutcome {
         /// One-line-per-refuter gaps, for the feedback observation.
         gaps: Vec<String>,
     },
+    /// The owning run was cancelled while the panel was evaluating.
+    Cancelled,
 }
 
 impl PanelOutcome {
@@ -175,6 +179,29 @@ pub fn aggregate_verdicts(verdicts: &[SkepticVerdict]) -> PanelOutcome {
 pub trait SkepticSpawner: Send + Sync {
     /// Run skeptic `index` against `prompt`, returning its final message.
     async fn spawn(&self, index: u32, prompt: &str) -> Result<String>;
+
+    /// Run one skeptic under its run-owned cancellation token. External
+    /// implementations can override this to forward cancellation to their
+    /// provider; the default preserves the existing injection seam.
+    async fn spawn_cancelled(
+        &self,
+        index: u32,
+        prompt: &str,
+        cancellation: CancellationToken,
+    ) -> Result<String> {
+        if cancellation.is_cancelled() {
+            return Err(deepagent_core::error::CoreError::other(
+                "adversarial verification cancelled",
+            ));
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(deepagent_core::error::CoreError::other(
+                "adversarial verification cancelled",
+            )),
+            result = self.spawn(index, prompt) => result,
+        }
+    }
 }
 
 /// The adversarial system prompt handed to every skeptic. Method = Grok
@@ -203,13 +230,38 @@ pub async fn run_skeptic_panel(
     count: u32,
     prompt: &str,
 ) -> PanelOutcome {
+    run_skeptic_panel_cancelled(spawner, count, prompt, CancellationToken::new(), None).await
+}
+
+/// Run a panel under a run-owned cancellation token. Each skeptic receives a
+/// child token; cancellation aborts and joins every task before returning.
+/// This keeps model requests from outliving the run that created them.
+pub async fn run_skeptic_panel_cancelled(
+    spawner: Arc<dyn SkepticSpawner>,
+    count: u32,
+    prompt: &str,
+    cancellation: CancellationToken,
+    legacy_cancel: Option<Arc<AtomicBool>>,
+) -> PanelOutcome {
     let count = resolve_skeptic_count(Some(count));
-    let mut handles = Vec::with_capacity(count as usize);
+    if cancellation.is_cancelled()
+        || legacy_cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    {
+        cancellation.cancel();
+        return PanelOutcome::Cancelled;
+    }
+    let mut handles = tokio::task::JoinSet::new();
     for index in 0..count {
         let spawner = spawner.clone();
         let prompt = prompt.to_string();
-        handles.push(tokio::spawn(async move {
-            match spawner.spawn(index, &prompt).await {
+        let skeptic_cancel = cancellation.child_token();
+        handles.spawn(async move {
+            match spawner
+                .spawn_cancelled(index, &prompt, skeptic_cancel)
+                .await
+            {
                 Ok(text) => {
                     let verdict = parse_verdict(&text).unwrap_or(Verdict::Fail);
                     let reason = skeptic_reason(&text);
@@ -227,18 +279,56 @@ pub async fn run_skeptic_panel(
                     reason: format!("skeptic spawn failed: {error}"),
                 },
             }
-        }));
+        });
     }
     let mut verdicts = Vec::with_capacity(count as usize);
-    for handle in handles {
-        match handle.await {
-            Ok(verdict) => verdicts.push(verdict),
-            Err(join_error) => verdicts.push(SkepticVerdict {
-                index: verdicts.len() as u32,
-                verdict: Verdict::Fail,
-                reason: format!("skeptic task join failed: {join_error}"),
-            }),
+    let legacy_for_wait = legacy_cancel.clone();
+    let legacy_wait = async {
+        match legacy_for_wait {
+            Some(flag) => deepagent_runtime::cancellation::wait_for_legacy_flag(flag).await,
+            None => std::future::pending::<()>().await,
         }
+    };
+    tokio::pin!(legacy_wait);
+    while !handles.is_empty() {
+        if cancellation.is_cancelled() {
+            handles.abort_all();
+            while handles.join_next().await.is_some() {}
+            return PanelOutcome::Cancelled;
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                handles.abort_all();
+                while handles.join_next().await.is_some() {}
+                return PanelOutcome::Cancelled;
+            }
+            _ = &mut legacy_wait => {
+                cancellation.cancel();
+                handles.abort_all();
+                while handles.join_next().await.is_some() {}
+                return PanelOutcome::Cancelled;
+            }
+            joined = handles.join_next() => {
+                if let Some(result) = joined {
+                    match result {
+                        Ok(verdict) => verdicts.push(verdict),
+                        Err(join_error) => verdicts.push(SkepticVerdict {
+                            index: verdicts.len() as u32,
+                            verdict: Verdict::Fail,
+                            reason: format!("skeptic task join failed: {join_error}"),
+                        }),
+                    }
+                }
+            }
+        }
+    }
+    if cancellation.is_cancelled()
+        || legacy_cancel
+            .as_ref()
+            .is_some_and(|flag| flag.load(Ordering::Acquire))
+    {
+        return PanelOutcome::Cancelled;
     }
     verdicts.sort_by_key(|v| v.index);
     aggregate_verdicts(&verdicts)
@@ -299,6 +389,34 @@ impl SkepticSpawner for ModelSkepticSpawner {
         .with_max_output_tokens(1024);
         let response = self.client.stream_response(request).await?;
         Ok(response.output_text_projection())
+    }
+
+    async fn spawn_cancelled(
+        &self,
+        _index: u32,
+        prompt: &str,
+        cancellation: CancellationToken,
+    ) -> Result<String> {
+        let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
+            self.model.clone(),
+            &self.system_prompt,
+            prompt,
+        )
+        .with_temperature(0.2)
+        .with_max_output_tokens(1024);
+        let cancel = Arc::new(AtomicBool::new(false));
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                cancel.store(true, Ordering::Release);
+                Err(deepagent_core::error::CoreError::other(
+                    "adversarial verification cancelled",
+                ))
+            }
+            response = self.client.stream_response_cancelled(request, cancel.clone()) => {
+                Ok(response?.output_text_projection())
+            }
+        }
     }
 }
 
@@ -424,6 +542,43 @@ impl deepagent_runtime::AdversarialVerifier for ModelAdversarialVerifier {
                 tracing::warn!(refuted, total, "adversarial panel refuted the completion");
                 deepagent_runtime::AdversarialVerdict::Refuted { gaps }
             }
+            PanelOutcome::Cancelled => deepagent_runtime::AdversarialVerdict::Cancelled,
+        }
+    }
+
+    async fn verify_cancelled(
+        &self,
+        final_answer: &str,
+        changed_files: &[String],
+        cancellation: CancellationToken,
+        legacy_cancel: Arc<AtomicBool>,
+    ) -> deepagent_runtime::AdversarialVerdict {
+        if cancellation.is_cancelled() || legacy_cancel.load(Ordering::Acquire) {
+            return deepagent_runtime::AdversarialVerdict::Cancelled;
+        }
+        let prompt = self.build_prompt(final_answer, changed_files);
+        match run_skeptic_panel_cancelled(
+            self.spawner.clone(),
+            self.count,
+            &prompt,
+            cancellation,
+            Some(legacy_cancel),
+        )
+        .await
+        {
+            PanelOutcome::Passed { refuted, total } => {
+                tracing::info!(refuted, total, "adversarial panel accepted the completion");
+                deepagent_runtime::AdversarialVerdict::Accepted
+            }
+            PanelOutcome::Refuted {
+                refuted,
+                total,
+                gaps,
+            } => {
+                tracing::warn!(refuted, total, "adversarial panel refuted the completion");
+                deepagent_runtime::AdversarialVerdict::Refuted { gaps }
+            }
+            PanelOutcome::Cancelled => deepagent_runtime::AdversarialVerdict::Cancelled,
         }
     }
 }

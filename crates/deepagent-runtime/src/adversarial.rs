@@ -29,6 +29,9 @@
 //! - **Opt-in.** Wired only when explicitly enabled by the embedding layer.
 
 use async_trait::async_trait;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
+use tokio_util::sync::CancellationToken;
 
 /// The panel's advisory verdict on whether a completed run met its goal.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +44,10 @@ pub enum AdversarialVerdict {
         /// One line per refuting skeptic (already bounded/trimmed).
         gaps: Vec<String>,
     },
+    /// The owning run was cancelled while the panel was evaluating. This is
+    /// a control result, not a verifier failure: callers must not accept the
+    /// completion after this variant.
+    Cancelled,
 }
 
 /// Consulted once at completion (advisory). Implementations MUST fail open:
@@ -52,4 +59,29 @@ pub trait AdversarialVerifier: Send + Sync {
     /// mutation evidence) met its goal. The goal itself is captured by the
     /// implementation at construction, so the runtime need not thread it.
     async fn verify(&self, final_answer: &str, changed_files: &[String]) -> AdversarialVerdict;
+
+    /// Cancellation-aware verification entry point. Implementations that own
+    /// child work should override this method so they can cancel and join that
+    /// work instead of merely dropping the outer future. The default keeps
+    /// existing embedders source-compatible while still preventing a cancelled
+    /// run from being accepted after the verifier returns.
+    async fn verify_cancelled(
+        &self,
+        final_answer: &str,
+        changed_files: &[String],
+        cancellation: CancellationToken,
+        legacy_cancel: Arc<AtomicBool>,
+    ) -> AdversarialVerdict {
+        if cancellation.is_cancelled() || legacy_cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return AdversarialVerdict::Cancelled;
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => AdversarialVerdict::Cancelled,
+            _ = crate::cancellation::wait_for_legacy_flag(legacy_cancel) => {
+                AdversarialVerdict::Cancelled
+            }
+            verdict = self.verify(final_answer, changed_files) => verdict,
+        }
+    }
 }
