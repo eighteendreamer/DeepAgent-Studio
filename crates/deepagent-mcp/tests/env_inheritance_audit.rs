@@ -4,7 +4,9 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
-use deepagent_mcp::{connect_transport, McpClient, McpServerConfig};
+use deepagent_mcp::{
+    connect_transport, ConfigReconnectFactory, McpClient, McpServerConfig, ReconnectFactory,
+};
 use serde_json::{json, Value};
 
 const SECRET: &str = "DEEPAGENT_MCP_AUDIT_SECRET";
@@ -12,9 +14,14 @@ const LOWERCASE_TOKEN: &str = "deepagent_mcp_audit_token";
 const PLAIN: &str = "DEEPAGENT_MCP_AUDIT_PLAIN";
 const CHILD: &str = "DEEPAGENT_MCP_ENV_AUDIT_CHILD";
 const REPORT: &str = "DEEPAGENT_MCP_ENV_AUDIT_REPORT";
+const SERVER: &str = include_str!("fixtures/environment-server.cjs");
 
 async fn observe_isolated_environment() -> Value {
     let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let scratch = dir.path().join("scratch");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::create_dir_all(&scratch).unwrap();
     let report = dir.path().join("observations.json");
     let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
     command
@@ -34,11 +41,6 @@ async fn observe_isolated_environment() -> Value {
         "SystemDrive",
         "PATHEXT",
         "COMSPEC",
-        "TEMP",
-        "TMP",
-        "TMPDIR",
-        "HOME",
-        "USERPROFILE",
     ] {
         if let Some(value) = std::env::var_os(name) {
             command.env(name, value);
@@ -50,7 +52,20 @@ async fn observe_isolated_environment() -> Value {
         .env(REPORT, &report)
         .env(SECRET, format!("ambient-{nonce}"))
         .env(LOWERCASE_TOKEN, format!("lowercase-{nonce}"))
-        .env(PLAIN, "ambient-plain");
+        .env(PLAIN, "ambient-plain")
+        .env("MCP_CONTEXT_BLOB", format!("opaque-{nonce}"))
+        .env(
+            "HTTP_PROXY",
+            format!("http://user:synthetic-{nonce}@127.0.0.1:9"),
+        )
+        .env("SSL_CERT_FILE", format!("{nonce}-ca.pem"))
+        .env("NODE_OPTIONS", "--no-warnings")
+        .env("LANG", "C.UTF-8")
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .env("TEMP", &scratch)
+        .env("TMP", &scratch)
+        .env("TMPDIR", &scratch);
     #[cfg(windows)]
     command.creation_flags(0x08000000);
 
@@ -65,11 +80,12 @@ async fn observe_isolated_environment() -> Value {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: local MCP must not implicitly receive host credentials"]
 async fn audit_stdio_does_not_inherit_ambient_credentials() {
     let observed = observe_isolated_environment().await;
     eprintln!("audit MCP environment: {observed}");
-    assert_eq!(observed["ambient"]["plain_matches"], true);
+    // The new authorization boundary excludes ALL non-base ambient entries,
+    // not just names recognized by the diagnostics redactor.
+    assert_eq!(observed["ambient"]["plain_present"], false);
     assert_eq!(observed["explicit"]["explicit_secret_matches"], true);
     assert_eq!(observed["explicit"]["plain_matches"], true);
     assert_eq!(
@@ -77,15 +93,64 @@ async fn audit_stdio_does_not_inherit_ambient_credentials() {
         "an MCP with empty config.env received an undeclared host secret"
     );
     assert_eq!(observed["ambient"]["lowercase_token_present"], false);
+    for field in [
+        "opaque_present",
+        "proxy_present",
+        "ca_present",
+        "bootstrap_present",
+    ] {
+        assert_eq!(observed["ambient"][field], false, "{field}");
+    }
+    assert_eq!(observed["ambient"]["runtime_base_present"], true);
 }
 
 #[tokio::test]
-#[ignore = "audit control: explicitly configured MCP environment overrides must survive"]
 async fn audit_stdio_preserves_explicit_environment_overrides() {
     let observed = observe_isolated_environment().await;
     assert_eq!(observed["explicit"]["explicit_secret_matches"], true);
     assert_eq!(observed["explicit"]["ambient_secret_matches"], false);
     assert_eq!(observed["explicit"]["plain_matches"], true);
+}
+
+#[tokio::test]
+async fn declared_forwarding_keeps_runtime_proxy_ca_empty_and_unicode_values() {
+    let observed = observe_isolated_environment().await;
+    for field in [
+        "ambient_secret_matches",
+        "lowercase_token_matches",
+        "plain_matches",
+        "proxy_matches",
+        "ca_matches",
+        "runtime_base_present",
+        "locale_matches",
+        "empty_matches",
+        "unicode_matches",
+    ] {
+        assert_eq!(observed["forwarded"][field], true, "{field}");
+    }
+    assert_eq!(observed["forwarded"]["opaque_present"], false);
+    assert_eq!(observed["forwarded"]["bootstrap_present"], false);
+}
+
+#[tokio::test]
+async fn explicit_case_override_uses_platform_environment_name_semantics() {
+    let observed = observe_isolated_environment().await;
+    assert_eq!(observed["case_override"]["mixed_path_matches"], true);
+    assert_eq!(observed["case_override"]["runtime_base_present"], true);
+    assert_eq!(observed["case_override"]["lowercase_secret_matches"], true);
+    assert_eq!(
+        observed["case_override"]["explicit_secret_matches"],
+        cfg!(windows)
+    );
+    assert_eq!(observed["case_override"]["ambient_secret_matches"], false);
+}
+
+#[tokio::test]
+async fn real_config_reconnect_applies_the_same_environment_boundary() {
+    let observed = observe_isolated_environment().await;
+    for mode in ["ambient", "explicit"] {
+        assert_eq!(observed[format!("reconnected_{mode}")], observed[mode]);
+    }
 }
 
 #[tokio::test]
@@ -95,36 +160,10 @@ async fn audit_stdio_environment_fixture_child() {
     let report = std::env::var_os(REPORT).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let script = dir.path().join("environment-server.cjs");
-    std::fs::write(
-        &script,
-        r#"
-const [nonce, mode] = process.argv.slice(2);
-const has = name => Object.prototype.hasOwnProperty.call(process.env, name);
-require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
-  const request = JSON.parse(line);
-  if (!Object.prototype.hasOwnProperty.call(request, 'id')) return;
-  const result = request.method === 'initialize' ? {
-    protocolVersion: request.params.protocolVersion,
-    capabilities: { tools: {} },
-    serverInfo: { name: 'environment-audit', version: '1' },
-    audit: {
-      ambient_secret_present: has('DEEPAGENT_MCP_AUDIT_SECRET'),
-      ambient_secret_matches: process.env.DEEPAGENT_MCP_AUDIT_SECRET === `ambient-${nonce}`,
-      explicit_secret_matches: process.env.DEEPAGENT_MCP_AUDIT_SECRET === `explicit-${nonce}`,
-      lowercase_token_present: has('deepagent_mcp_audit_token'),
-      lowercase_token_matches: process.env.deepagent_mcp_audit_token === `lowercase-${nonce}`,
-      plain_matches: process.env.DEEPAGENT_MCP_AUDIT_PLAIN === `${mode}-plain`,
-    },
-  } : { tools: [] };
-  process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n');
-}).on('close', () => process.exit(0));
-setTimeout(() => process.exit(2), 15000).unref();
-"#,
-    )
-    .unwrap();
+    std::fs::write(&script, SERVER).unwrap();
     let mut observations = serde_json::Map::new();
-    for mode in ["ambient", "explicit"] {
-        let env = if mode == "explicit" {
+    for mode in ["ambient", "explicit", "forwarded", "case_override"] {
+        let mut env = if mode == "explicit" {
             BTreeMap::from([
                 (SECRET.to_owned(), format!("explicit-{nonce}")),
                 (PLAIN.to_owned(), "explicit-plain".to_owned()),
@@ -132,7 +171,31 @@ setTimeout(() => process.exit(2), 15000).unref();
         } else {
             BTreeMap::new()
         };
-        let config = McpServerConfig {
+        if mode == "forwarded" {
+            for name in [
+                SECRET,
+                LOWERCASE_TOKEN,
+                PLAIN,
+                "HTTP_PROXY",
+                "SSL_CERT_FILE",
+            ] {
+                env.insert(name.into(), format!("${{{name}}}"));
+            }
+            env.insert("MCP_EMPTY".into(), "".into());
+            env.insert("MCP_LABEL".into(), "本地 环境 🚀".into());
+        }
+        if mode == "case_override" {
+            env.insert(SECRET.to_ascii_lowercase(), format!("explicit-{nonce}"));
+            let separator = if cfg!(windows) { ';' } else { ':' };
+            env.insert(
+                "pAtH".into(),
+                format!(
+                    "{}{separator}{nonce}-explicit-path",
+                    std::env::var("PATH").unwrap()
+                ),
+            );
+        }
+        let mut config = McpServerConfig {
             transport: None,
             command: Some("node".to_owned()),
             args: vec![
@@ -145,6 +208,7 @@ setTimeout(() => process.exit(2), 15000).unref();
             url: None,
             headers: BTreeMap::new(),
         };
+        config.expand_with(&|name| std::env::var(name).ok());
         let client = McpClient::new(connect_transport(&config).unwrap());
         let initialized = tokio::time::timeout(
             Duration::from_secs(5),
@@ -157,9 +221,40 @@ setTimeout(() => process.exit(2), 15000).unref();
             .await
             .expect("local MCP tools/list must finish")
             .unwrap();
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            client.call_tool("env_probe", json!({})),
+        )
+        .await
+        .unwrap()
+        .unwrap();
         client.close().await.unwrap();
-        assert!(tools.is_empty());
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "env_probe");
+        assert!(!result.is_error);
+        assert_eq!(result.extra["structuredContent"], initialized["audit"]);
         observations.insert(mode.to_owned(), initialized["audit"].clone());
+        if matches!(mode, "ambient" | "explicit") {
+            let factory = ConfigReconnectFactory::new(config, "environment-audit");
+            let transport = tokio::time::timeout(Duration::from_secs(5), factory.reconnect())
+                .await
+                .unwrap()
+                .unwrap();
+            let recovered = McpClient::new(transport);
+            let result = tokio::time::timeout(
+                Duration::from_secs(5),
+                recovered.call_tool("env_probe", json!({})),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            recovered.close().await.unwrap();
+            assert!(!result.is_error);
+            observations.insert(
+                format!("reconnected_{mode}"),
+                result.extra["structuredContent"].clone(),
+            );
+        }
     }
     std::fs::write(report, serde_json::to_vec(&json!(observations)).unwrap()).unwrap();
 }

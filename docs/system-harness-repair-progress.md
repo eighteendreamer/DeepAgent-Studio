@@ -2,21 +2,37 @@
 
 ## 当前状态与计数口径（2026-10-28）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计五十八项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计五十九项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 58 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-136、H-139、H-237、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 59 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-237、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前无新的生产修复中条目；H-64已补诊断但首次冷ready失败未定位，不以复跑通过关闭；下一独立项复核H-135 |
-| 待修复 | 221 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-135按所列本机范围验收；H-64首次及本轮冷ready失败仍未定位 |
+| 待修复 | 220 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **221（221待修复、0修复中）**；不提供完成率。五十八项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **220（220待修复、0修复中）**；不提供完成率。五十九项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-135 本轮即时记录（2026-10-28）
+
+**当前状态：已修复并验收（2026-10-28，仅E-H135-05～06所列Windows本机范围）。** 本轮只处理stdio MCP默认环境授权，不修改HTTP/SSH、一般bash子进程、H-64就绪窗口或hook取消；以下候选及失败过程保留，修复提交待取得真实hash后回填。
+
+E-H135-01（原探针当前复现）：HEAD `a9034297`，tracked工作区初始干净，仅原有五类未跟踪用户项，未读取/修改/暂存。`cargo test -p deepagent-mcp --test env_inheritance_audit audit_stdio_does_not_inherit_ambient_credentials --offline -j 1 -- --ignored --exact --nocapture` 原生101，0 passed/1 failed/0 ignored，测试0.28s、整步7.30s；空env组ambient_secret_present/matches及lowercase_token_present/matches均true，普通变量及显式覆盖控制先通过。随后原显式覆盖探针同参数原生0，1/0/0，测试0.24s、整步0.64s。两命令与原失败日志保存在target/h135-before-*，不覆盖原审计记录。外层数据/home/USERPROFILE/HOME/managed隔离到新Temp、保留Cargo/Rustup并清除继承DB路径及供应商key；探针另用env_clear的独立宿主，只注入nonce派生合成值，Node仅返回布尔值，无真实凭据/内网/供应商测试。
+
+E-H135-02（根因与本地策略）：普通Command默认环境继承与config.env覆盖不是授权边界；日志is_secret_key只做脱敏，不应作为环境许可判断。已核对统一StdioTransport、connect_transport、ConfigReconnectFactory、McpService测试连接/准备/RuntimeBroker生产方，以及Codex的基础白名单与env_clear和DeepSeek Harness的敏感名scrub差异。本地选择更明确的基础白名单：只按固定名称读取OS启动、路径、profile、临时目录和locale变量；先env_clear、叠基础环境，再叠原config.env，直接复用标准Command的平台名称语义，Windows大小写覆盖由真实进程测试，不新增独立启动链。代理、CA、启动注入变量、凭据及其他自定义宿主变量默认均不传；通过既有config.env及${VAR}显式转发或覆盖，包含空字符串和Unicode。原普通变量隐式继承对照改为更强的非基础变量拒绝断言，显式普通变量/凭据覆盖正对照保留，不能把这项兼容性变化描述成完全无影响。RuntimeBroker追加的是既有受控运行时路径/facts而非整份宿主环境，仍作为现有显式配置层保留。日志只新增策略名与显式变量数量，原错误脱敏和生命周期owner不改。基础环境集合是基于参考实现与当前宿主的本地设计，不声称协议规定或OS沙箱。
+
+E-H135-03（候选专项实际终态）：会话7503及14200已原生终结。`cargo test -p deepagent-mcp --test env_inheritance_audit --offline -j 1 -- --nocapture --test-threads=1` 为5/0/1，测试3.42s；两原缺陷/正常对照已去ignore，新增显式转发/代理CA/空值Unicode、平台大小写及真实ConfigReconnectFactory重连，所有Node先完成initialize、tools/list和真实env_probe工具调用，初次与重连结果一致。共享Node夹具只返回存在性/匹配布尔值；默认未知普通名/opaque/凭据/代理CA/NODE_OPTIONS均不存在，基础环境正常；显式声明值可用。`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --test-threads=1` 共12 targets、126/0/6，76.83s；包含既有stderr脱敏、取消及真实重连回归。MCP全target/全feature严格Clippy为0，5.67s；fmt为0，3.34s。新增`cargo test -p deepagent-app-core --test mcp_environment --offline -j 1 -- --nocapture --test-threads=1` 为1/0/1，测试0.67s、整步57.28s：正式McpService测试连接与准备、registry/adapter真实工具调用的默认隔离和显式${VAR}传入均一致。两个ignored仅为由外层env_clear宿主显式启动的helper，不是未执行的缺陷探针。候选日志target/h135-candidate-*与h135-service-*保留。冻结源码后会话22792继续最终专项、完整workspace、严格lint与独立桌面Rust检查，尚未取得完整终态，不提前验收。
+
+E-H135-04（完整门禁中的冷就绪失败，非本项通过证据）：会话22792的workspace已真实执行到AppCore lib，1207 passed/1 failed/65 ignored，186.41s；H-64默认冷编译门禁再次失败。正常/Cancel先以1333/1184ms就绪并通过所列生命周期断言，Deadline组在4010ms仍无compiler-started、Cargo.lock、wrapper stage、build/worker marker或canary；失败快照保留executing_tools与running action，随后cleanup_cancel_accepted/cleanup_settled均true，同一Kernel future返回Cancelled、重开记录terminal/cancelled且actions全部终结。只能证明本次失败后的取消收尾成立，不能说原deadline就绪/编译可靠性通过、根因已定位或只是环境慢。该测试装配的是BashTool/SystemExecutor与正式验证管线，不经过本轮修改的StdioTransport；不修改其4s门禁、生产实现、断言或ignore，也不通过复跑覆盖首次日志。完整workspace仍在继续，最终统计、全仓lint和桌面检查终态另记；本项仍修复中，未增加验收数。
+
+E-H135-05（最终门禁实际终态）：会话22792已原生终结，源码在门禁期间未再修改；脚本外层退出0不代表各门禁全绿。`cargo test -p deepagent-mcp --test env_inheritance_audit --offline -j 1 -- --nocapture --test-threads=1` 原生0，5 passed/0 failed/1 helper ignored，测试3.59s、整步4.05s；`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --test-threads=1` 原生0，12 targets合计126/0/6，42.28s；`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -j 1 -- -D warnings` 原生0，0.73s；`cargo fmt --all -- --check` 原生0，3.72s。`cargo test -p deepagent-app-core --test mcp_environment --offline -j 1 -- --nocapture --test-threads=1` 原生0，1/0/1 helper ignored，测试0.65s、整步1.44s。`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` 原生101，130 targets合计3572 passed/2 failed/314 ignored，1110.75s，增量编译7m26s，不冒充无缓存构建；AppCore lib1207/1/65仅E-04冷就绪失败，正式Kernel E2E151/0/78、正式环境服务1/0/1、默认MCP lib99/0/2与环境5/0/1通过；另一失败仍为未修改H-306的creative.video-edit.v1空defaultUserPrompt。`cargo clippy --all-targets --all-features --offline -j 1 -- -D warnings` 原生101，13.61s，停于未修改models/client.rs:355 clone_on_copy，不能宣称全仓或AppCore新测试已通过严格lint。`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 1` 原生0，12.55s；共享Node夹具的`node --check crates/deepagent-mcp/tests/fixtures/environment-server.cjs`与git diff --check均0。所有原命令结果、完整日志及逐target统计保留在target/h135-final-*，不覆盖before/candidate/service原始证据。
+
+E-H135-06（验收范围、兼容性与剩余边界）：H-135在Windows本机、合成环境、真实stdio进程及ConfigReconnectFactory重连、正式McpService测试连接/准备和registry/adapter工具调用范围已修复并验收；原缺陷与正常覆盖对照均默认执行，两个helper虽标ignored但被外层隔离宿主显式执行，不作为未验缺陷跳过。固定基础白名单是本地策略；代理/CA、自定义宿主变量及启动注入变量不再自动继承，需要现有config.env显式配置或${VAR}转发，没有自动修改用户配置。只验证代理/CA值被明确传入，未验证真实代理联网或TLS信任；其他OS、真实供应商、完整插件到模型wire、真实UI、任意负载和强杀/断电未验。保留HOME/profile/PATH意味着同用户文件等其他凭据渠道未隔离，不能宣称OS沙箱或彻底消除凭据访问。stderr脱敏、生命周期owner、公共签名、协议、配置字段、依赖、数据库schema和迁移均未改变；无Tauri/TypeScript/UI修改，未跑pnpm build。E-04的冷就绪和H-306失败、严格lint阻断保留，不将其归因于环境或本项已解决。本轮新增范围验收1，累计59验收/18历史跳过/7归并/2撤销/220待修/0修复中，220有效未关闭；306历史槽位不变，仅H-135台账行改变。代码、测试和当时两文档将独立提交，取得真实hash后另作正常文档回填，不amend、不推送、不创建PR。下一独立候选P1 H-142，先核对原持久化失败探针和生产路径，不提前归并H-143。剩余200–400有效修复/验收小时仍为原未逐项校准粗估，按根因与跨层验收继续校准，编译/设备/依赖/环境等待另计，不机械扣减或承诺日期，整体goal保持active。
 
 ## H-64 冷编译就绪复核（2026-10-28）
 
@@ -1711,7 +1727,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-132：Chat Completions 的合法内容过滤终态被当作未知 provider 错误，usage 未进入运行账本](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-133：Responses `response.failed` 携带 usage 时未进入运行用量](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-134：被替代的画布 run 迟到节点事件可覆盖当前状态](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-135：stdio MCP 隐式继承宿主凭据，配置环境不是授权边界](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-135：stdio MCP 隐式继承宿主凭据，配置环境不是授权边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H135-01保留原失败/正常对照；非历史或归并项；限所列Windows本机范围 | 唯一spawn先env_clear、叠固定OS基础环境及原显式env；测试/准备/重连共用，代理CA/自定义变量须显式配置 | E-H135-01～06：默认环境5/0/1、全特性MCP126/0/6、正式服务1/0/1；MCP严格lint/fmt/桌面Rust通过；workspace3572/2/314与全仓lint旧失败保留 | 本轮代码与当时文档提交后回填 | 本机所列范围剩余0；非OS沙箱，真实代理TLS/其他OS/UI/供应商未验；H-64冷就绪仍未定位，下一P1 H-142；总工时原粗估未机械扣减 |
 | [H-136：stdio MCP 请求写入受背压阻塞时，停止信号无法结束发送等待](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原本地背压随H-09消除不重复计功；本轮新增锁排队反例修前0/1/0，见E-02～06 | 单一MessageWrite局部Queued/Writing/Flushed证据，未发出不通知/不报未知，写入中仍退役 | 默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8、MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核见E-05 | `ab32b8db28f4546e4d95cd7da46eb92072145532`；历史实现46ba0fd7 | 本机范围剩余0；远端停止best-effort/可能迟到字节，未验UI/供应商/其他OS；下一项先复核H-64就绪失败，总工时原粗估不机械扣减 |
 | [H-137：MCP 工具目录变更通知被丢弃，后续运行继续发布旧工具](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-138：MCP 结果整对象进入模型上下文，客户端元数据没有独立可见性边界](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

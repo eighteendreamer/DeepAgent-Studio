@@ -33,6 +33,58 @@ mod windows_job;
 const STDERR_LIMIT: usize = 8 * 1024;
 const MAX_PENDING_REQUESTS: usize = 1024;
 
+// Runtime base only, not a heuristic over secret-looking names. Other variables
+// (including proxy/CA configuration) require an explicit config.env entry.
+// Adapted to this host from Codex's local MCP base environment; this is not an
+// OS sandbox and does not restrict access to files belonging to the same user.
+#[cfg(windows)]
+const STDIO_BASE_ENV: &[&str] = &[
+    "PATH",
+    "PATHEXT",
+    "SHELL",
+    "COMSPEC",
+    "SYSTEMROOT",
+    "WINDIR",
+    "SYSTEMDRIVE",
+    "USERNAME",
+    "USERDOMAIN",
+    "USERPROFILE",
+    "HOMEDRIVE",
+    "HOMEPATH",
+    "PROGRAMFILES",
+    "PROGRAMFILES(X86)",
+    "PROGRAMW6432",
+    "PROGRAMDATA",
+    "LOCALAPPDATA",
+    "APPDATA",
+    "TEMP",
+    "TMP",
+    "TMPDIR",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TZ",
+];
+#[cfg(not(windows))]
+const STDIO_BASE_ENV: &[&str] = &[
+    "HOME",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "USER",
+    "__CF_USER_TEXT_ENCODING",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TERM",
+    "TMPDIR",
+    "TEMP",
+    "TMP",
+    "TZ",
+];
+
 type ResponseSender = oneshot::Sender<std::result::Result<JsonRpcResponse, String>>;
 
 #[derive(Default)]
@@ -209,11 +261,22 @@ impl StdioTransport {
 
         let mut cmd = tokio::process::Command::new(command);
         cmd.args(&config.args)
+            .env_clear()
+            .envs(
+                STDIO_BASE_ENV
+                    .iter()
+                    .filter_map(|name| std::env::var_os(name).map(|value| (*name, value))),
+            )
             .envs(&config.env)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        tracing::debug!(
+            policy = "runtime_base_and_config",
+            explicit_variables = config.env.len(),
+            "MCP stdio environment policy applied"
+        );
         if let Some(cwd) = &config.cwd {
             cmd.current_dir(cwd);
         }

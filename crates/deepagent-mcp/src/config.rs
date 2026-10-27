@@ -80,7 +80,9 @@ pub struct McpServerConfig {
     /// Process arguments (stdio).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub args: Vec<String>,
-    /// Environment variables for the process (stdio).
+    /// Explicit environment for stdio, overlaid on a small OS runtime base.
+    /// Other host variables are NOT inherited, including proxy/CA settings.
+    /// Use existing `${VAR}` expansion to deliberately forward a host value.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
     /// Working directory for the process (stdio).
