@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-135 | 已修复并验收（2026-10-28，仅所列Windows本机stdio与正式服务范围） | 唯一spawn清空继承环境、叠OS基础白名单与原显式env；默认环境5/0/1、全MCP126/0/6、正式服务1/0/1，MCP严格lint/fmt/桌面Rust通过；workspace3572/2/314及严格lint失败保留，见E-H135-01～06；修复提交待回填 |
+| H-135 | 已修复并验收（2026-10-28，仅所列Windows本机stdio与正式服务范围） | 唯一spawn清空继承环境、叠OS基础白名单与原显式env；默认环境5/0/1、全MCP126/0/6、正式服务1/0/1，MCP严格lint/fmt/桌面Rust通过；workspace3572/2/314及严格lint失败保留，见E-H135-01～06；修复提交`b51529f05bfdb669bac6dbaf7755594b6c4ff3b2` |
 | H-136 | 已修复并验收（2026-10-28，仅所列Windows本机发送边界） | 原背压随H-09已消除不重复计功；本轮修正锁排队取消误通知/误报未知，默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8，MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核保留，E-H136-02～07，修复提交`ab32b8db28f4546e4d95cd7da46eb92072145532` |
 | H-139 | 已修复并验收（2026-10-28，所列Windows本机/正式服务与runtime/离线范围） | 执行事实先提交，后置错误仍传播，同组结果全保留；原专项2/0/0、新runtime9/0/0默认通过，workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过；严格lint旧失败保留，E-H139-01～06，修复提交`93a412d049f7a41be129d528f9b043f9978e80c9` |
 | H-237 | 已修复并验收（2026-10-28，所列Windows本机/正式服务/离线模型范围） | 共享非递归安全策略与父能力位，Ask无交互拒绝；正式专项10/0/0、装配3/0/0，workspace3548/1既有H-306/317忽略；Tauri Rust check/fmt通过，严格lint基线失败保留；见E-H237-01～07，修复提交`9e3ee007735e82a6e44eba76175e2b87305702d0` |
@@ -3802,7 +3802,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-135：stdio MCP 隐式继承宿主凭据，配置环境不是授权边界
 
-**2026-10-28当前状态：已修复并验收，仅E-H135-05～06所列Windows本机范围；以下候选与历史失败不改写，修复提交待取得真实hash后回填。**
+**2026-10-28当前状态：已修复并验收，仅E-H135-05～06所列Windows本机范围；以下候选与历史失败不改写，修复提交`b51529f05bfdb669bac6dbaf7755594b6c4ff3b2`，见E-H135-07。**
 
 E-H135-01（原探针当前复现）：HEAD `a9034297`，tracked工作区初始干净，仅原有五类未跟踪用户项，未读取/修改/暂存。`cargo test -p deepagent-mcp --test env_inheritance_audit audit_stdio_does_not_inherit_ambient_credentials --offline -j 1 -- --ignored --exact --nocapture` 原生101，0 passed/1 failed/0 ignored，测试0.28s、整步7.30s；空env组ambient_secret_present/matches及lowercase_token_present/matches均true，普通变量及显式覆盖控制先通过。随后原显式覆盖探针同参数原生0，1/0/0，测试0.24s、整步0.64s。两命令与原失败日志保存在target/h135-before-*，不覆盖原审计记录。外层数据/home/USERPROFILE/HOME/managed隔离到新Temp、保留Cargo/Rustup并清除继承DB路径及供应商key；探针另用env_clear的独立宿主，只注入nonce派生合成值，Node仅返回布尔值，无真实凭据/内网/供应商测试。
 
@@ -3815,6 +3815,8 @@ E-H135-04（完整门禁中的冷就绪失败，非本项通过证据）：会�
 E-H135-05（最终门禁实际终态）：会话22792已原生终结，源码在门禁期间未再修改；脚本外层退出0不代表各门禁全绿。`cargo test -p deepagent-mcp --test env_inheritance_audit --offline -j 1 -- --nocapture --test-threads=1` 原生0，5 passed/0 failed/1 helper ignored，测试3.59s、整步4.05s；`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --test-threads=1` 原生0，12 targets合计126/0/6，42.28s；`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -j 1 -- -D warnings` 原生0，0.73s；`cargo fmt --all -- --check` 原生0，3.72s。`cargo test -p deepagent-app-core --test mcp_environment --offline -j 1 -- --nocapture --test-threads=1` 原生0，1/0/1 helper ignored，测试0.65s、整步1.44s。`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` 原生101，130 targets合计3572 passed/2 failed/314 ignored，1110.75s，增量编译7m26s，不冒充无缓存构建；AppCore lib1207/1/65仅E-04冷就绪失败，正式Kernel E2E151/0/78、正式环境服务1/0/1、默认MCP lib99/0/2与环境5/0/1通过；另一失败仍为未修改H-306的creative.video-edit.v1空defaultUserPrompt。`cargo clippy --all-targets --all-features --offline -j 1 -- -D warnings` 原生101，13.61s，停于未修改models/client.rs:355 clone_on_copy，不能宣称全仓或AppCore新测试已通过严格lint。`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 1` 原生0，12.55s；共享Node夹具的`node --check crates/deepagent-mcp/tests/fixtures/environment-server.cjs`与git diff --check均0。所有原命令结果、完整日志及逐target统计保留在target/h135-final-*，不覆盖before/candidate/service原始证据。
 
 E-H135-06（验收范围、兼容性与剩余边界）：H-135在Windows本机、合成环境、真实stdio进程及ConfigReconnectFactory重连、正式McpService测试连接/准备和registry/adapter工具调用范围已修复并验收；原缺陷与正常覆盖对照均默认执行，两个helper虽标ignored但被外层隔离宿主显式执行，不作为未验缺陷跳过。固定基础白名单是本地策略；代理/CA、自定义宿主变量及启动注入变量不再自动继承，需要现有config.env显式配置或${VAR}转发，没有自动修改用户配置。只验证代理/CA值被明确传入，未验证真实代理联网或TLS信任；其他OS、真实供应商、完整插件到模型wire、真实UI、任意负载和强杀/断电未验。保留HOME/profile/PATH意味着同用户文件等其他凭据渠道未隔离，不能宣称OS沙箱或彻底消除凭据访问。stderr脱敏、生命周期owner、公共签名、协议、配置字段、依赖、数据库schema和迁移均未改变；无Tauri/TypeScript/UI修改，未跑pnpm build。E-04的冷就绪和H-306失败、严格lint阻断保留，不将其归因于环境或本项已解决。本轮新增范围验收1，累计59验收/18历史跳过/7归并/2撤销/220待修/0修复中，220有效未关闭；306历史槽位不变，仅H-135台账行改变。代码、测试和当时两文档将独立提交，取得真实hash后另作正常文档回填，不amend、不推送、不创建PR。下一独立候选P1 H-142，先核对原持久化失败探针和生产路径，不提前归并H-143。剩余200–400有效修复/验收小时仍为原未逐项校准粗估，按根因与跨层验收继续校准，编译/设备/依赖/环境等待另计，不机械扣减或承诺日期，整体goal保持active。
+
+E-H135-07（独立提交与真实hash回填）：代码、默认回归、共享合成夹具及当时两文档已正常提交为`b51529f05bfdb669bac6dbaf7755594b6c4ff3b2`（【fix】收敛stdio MCP的默认环境继承边界），仅本项7文件，无依赖、公共签名、数据库迁移、amend、hook绕过、推送或PR。提交后tracked工作区干净，五类既有未跟踪用户项未读取/修改/暂存。本次只同步H-135当前状态、摘要与唯一台账行的真实修复hash，E-H135-01～06保留，冷就绪失败、H-306、严格lint阻断及未验范围不改写；306行/306唯一编号/8列，其他305行不变，累计59验收/18历史跳过/7归并/2撤销/220待修/0修复中，220有效未关闭。本次回填另作正常文档提交，不递归填写其自身hash；下一独立候选P1 H-142，原200–400有效小时未校准粗估及等待另计不变，整体goal继续active。
 
 以下路径、探针ignored状态及“本轮未修改”描述均为修复前审计历史；当前验收与未验边界以E-H135-05～06为准。
 
