@@ -2,21 +2,43 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计四十六项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计四十七项完成各自所列本机范围验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 46 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 47 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前没有已进入修复但尚未验收的条目 |
-| 待修复 | 233 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-45已完成所列本机范围验收；下一项执行前复核 |
+| 待修复 | 232 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **233（233待修复、0修复中）**；不提供完成率。四十六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **232（232待修复、0修复中）**；不提供完成率。四十七项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-45 本轮即时记录（2026-10-27）
+
+**当前状态：已修复并验收（所列Windows本机与父子运行生命周期范围，限制见E-10）。** E-H45-20261027-01：HEAD `b9084246` 原探针 `cargo test -p deepagent-app-core --lib audit_parent_deadline_finalizes_foreground_child --offline -- --ignored --nocapture` 退出1（0 passed/1 failed，测试1.30s）。主动取消组完整收尾；总时限组parent=budget_exceeded、root_cancelled=false、child=running、finished_at/transcript缺失、子终态0条，cleanup拒绝。仅本机临时fixture/离线transport。范围限定Kernel deadline和前台子运行owner；不另建store、取消树或执行通道，不合并H-61/H-64或独立后台任务。
+
+E-H45-20261027-02（首轮实现快照）：Kernel保留并继续poll原future，deadline先cancel现有树，再给1秒协作收尾，预算终态不被取消信号改写；Err路径仍归集usage并失败active task。子运行同步持久化收尾移至同一`TrackedSubagent` owner，正常结束和Drop复用，不新建store或后台清理链路。`cargo test -p deepagent-app-core --lib audit_parent_deadline_finalizes_foreground_child --offline -j 1 -- --nocapture` 退出0（1 passed，测试1.28s，编译1m47s）。父终态保持cancelled/budget_exceeded，两组子均cancelled、finished_at/transcript存在、一条子终态、cleanup成功。只代表该快照；新增扩展验收及整组检查未结束，尚未关闭。
+
+E-H45-20261027-03（扩展快照）：`cargo test -p deepagent-app-core --lib h45_ --offline -j 1 -- --nocapture --test-threads=1` 退出0（3 passed，测试13.73s，编译2m18s），覆盖协作/不协作工具、正式审批waiter、三个准备/停止hook挂起点和独立后台子任务。文件SQLite重开后仍一致，子终态唯一且先于父run_terminal，等待future释放、pending清零；background保持running直到自身被显式取消。真实Git清理与usage保护测试已补充但尚待运行，整组及workspace检查未结束，状态不变。
+
+E-H45-20261027-04（扩展整组与真实反证）：恢复会话83309取得终态：`cargo test -p deepagent-app-core --lib subagent_runner --offline -j 1 -- --nocapture --test-threads=1` 退出0，26 passed/4 ignored，测试31.12s；四个新增H-45默认测试及原探针均通过，包含真实临时Git工作树创建、forced drop后保留记录、现有cleanup移除目录与Git注册。随后 `cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出1，302 passed/1 failed/11 ignored，测试21.13s；`h45_deadline_cleanup_records_usage_once` 实际UsageRecorded=2、预期1。首轮实现把协作收尾的Ok结果改成Err，Runtime已写usage后Kernel错误分支再次写入；此为本轮实现反证，接下来保留原engine结果、单独记录deadline原因，不新增usage链路。尚未最终验收，H-45仍修复中。
+
+E-H45-20261027-05（usage反证修正与Runtime复核）：Kernel不再将协作收尾的Ok改成Err；保留engine原始结果走既有usage路径，deadline原因单独覆盖最终KernelTerminal，保留cleanup错误或grace超限诊断。`cargo test -p deepagent-runtime --lib h45_deadline_cleanup_records_usage_once --offline -j 1 -- --nocapture` 退出0（1 passed/0 ignored，测试0.12s、编译26.11s）；随后 `cargo test -p deepagent-runtime --lib --offline -j 1 -- --quiet --test-threads=1` 退出0（303 passed/11 ignored，测试14.66s）。这只验证所列协作收尾不重复归集及Runtime默认组，不声称所有晚期hook错误的usage语义已治理；AppCore全lib、workspace与lint仍待结果，H-45保持修复中。
+
+E-H45-20261027-06（AppCore全lib与检查）：`cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出0，1164 passed/62 ignored，测试92.87s（编译1m48s）。既有正常子运行、DAG工作树恢复/交付、父审批和权限过滤等默认对照一起通过；ignored并未作为验收成果。`cargo fmt --all -- --check` 与 `git diff --check` 退出0。当前实现无公共DTO/数据库schema/模型参数/前端契约变更；CLI新构建与隔离workspace检查已启动，尚未取回结果，严格lint待执行。状态仍为修复中，不以此局部通过代替最终验收。
+
+E-H45-20261027-07（严格lint真实失败）：`cargo clippy -p deepagent-runtime -p deepagent-app-core --all-targets --offline -j 1 --no-deps -- -D warnings` 退出101，阻于未修改的 `deepagent-runtime/src/model_agent.rs:282` 对Copy类型Usage调用clone（clone_on_copy）。此为实际本轮结果，不照抄旧结论、不记lint通过、不顺手改H-45范围外的压缩实现；接下来另跑保留全部warning的诊断，检查本项新增代码而不降低严格验收结论。CLI `cargo build -p deepagent-cli --offline -j 1` 已退出0（2m55s）；新临时DEEPAGENT_DATA_ROOT并移除继承DB override后，workspace已完成编译（16m18s），仍在执行，不能提前记整仓通过。
+
+E-H45-20261027-08（lint诊断与跨层执行快照）：不带-D warnings的 `cargo clippy -p deepagent-runtime -p deepagent-app-core --all-targets --offline -j 1 --no-deps` 也退出101：保留Runtime/AppCore既有clone_on_copy、type_complexity等warning，最终被未修改的 `tests/kernel_v2_e2e/mcp_discovery_restore.rs:433` 的panicking_unwrap默认deny阻断；没有禁用lint或改无关文件。HEAD源码核对model_agent.rs同一clone存在且相关文件diff为空，严格lint仍失败。隔离workspace已执行的AppCore默认lib为1164 passed/71 ignored、kernel_v2_e2e为135 passed/83 ignored、CLI为112 passed/23 ignored、真实SDK stdio为6 passed/0 ignored、Runtime为303 passed/11 ignored；prompts默认lib实际27 passed/1 failed，creative.video-edit.v1空defaultUserPrompt（既有H-306）。全命令尚在执行，其余结果待收集，未宣称完整workspace通过。
+
+E-H45-20261027-09（完整workspace终态）：同一隔离会话94130已结束，`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` 退出101；128个target汇总3441 passed/1 failed/327 ignored（含doc-tests，按完整日志汇总，不把ignored算通过）。唯一失败target为既有H-306的prompts lib；其他默认target及doc-tests均完成，其中stabilization 5 passed（70.33s）、新CLI的真实SDK stdio 6 passed。日志仅保留本机临时目录 `deepagent-h45-workspace-bc6975d73d874bd0b769c651839d71b2/validation.log`，不提交临时数据。CLI构建和workspace编译等待分别2m55s与16m18s，不算有效修复工时。严格lint和诊断的失败按E-07/E-08原样保留；未修改其来源文件，不能宣称全仓或严格lint全绿。
+
+E-H45-20261027-10（本项验收与边界）：H-45在所列Windows本机、正式TaskTool→ChatSubagentRunner→ModelAgent离线transport、文件SQLite重开及真实临时Git工作树范围验收。Kernel沿同一CancellationTree先cancel、保留同一future协作收尾、超出1秒grace再drop；统一TrackedSubagent owner复用transcript/store/子终态收尾，deadline仍为budget_exceeded，正常完成/主动取消/DAG恢复及独立后台对照通过；本轮发现的协作usage重复反证已修正并保留。1秒是本地策略，仅约束异步协作等待，不是同步I/O、操作系统或远端任务的硬停止承诺。Drop不运行async hook/自动删除工作树，已登记路径可由现有task.cleanup处理；真实Git创建命令中途被drop、磁盘/SQLite故障、进程崩溃、外部进程树/云工作停止、其他OS及真实供应商/UI未验，不合并H-61/H-64。无公共DTO、数据库schema、模型参数、前端/Tauri契约变化，未跑pnpm build；正常收尾持久化失败现返回错误而非仅告警后假成功，Drop失败仍记录error。完整workspace与严格lint保留E-07～09所列真实失败，不冒称全绿；最终fmt/diff检查通过。台账306行/306唯一H编号/无缺号/8列已核对，本轮新增验收1，累计47已验收/18历史跳过/7归并/2撤销/232待修/0修复中，232有效未关闭。独立修复commit待生成后另回填，不amend、不推送；下一项准备复核同属进程生命周期边界的H-46，不预设其仍失败。总体200–400有效小时仍为未逐项校准的跨层初估，依据剩余问题复现/根因修复/验收规模，编译、设备、依赖与环境等待另计，整体goal保持active。
 
 ## H-03 本轮即时记录（2026-10-27）
 
@@ -1185,7 +1207,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-42：定时调度没有跨进程所有权，同一触发时段可重复派发一次性和循环任务](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H42-20261027-01～06保留原始双进程失败、锁临界区修复、正常退出/杀进程接管、正式回归与边界；不合并H-33/H-96/H-97 | 在现有ScheduledTaskStore旁增加稳定sidecar OS独占锁；CronScheduler::poll非阻塞取得后覆盖read→due→fire→bookkeeping，争用tick跳过，进程退出由OS释放；不新建scheduler/store/run中心 | H-42双进程探针2 passed；生命周期探针2 passed；Runtime lib302 passed/11 ignored；AppCore lib1159 passed/63 ignored；check、fmt、diff通过；严格Runtime clippy仅既有model_agent.rs clone_on_copy阻断 | `75992c8bf12fb2a5c24acf3251ffa52627ffacb1` | 限Windows本机离线双进程计划文件与现有CronService调度范围；计划锁不承诺外部副作用exactly-once，fire后记账失败/已接纳运行仍见H-96/H-97，真实供应商、其他OS、断电和完整workspace未验 |
 | [H-43：运行启动先于事件订阅就绪，提前终态丢失后前端持续等待](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H43-20261027-01～06保留原始竞态失败、启动前就绪屏障、ACK前缓存、正式回归与边界；不合并H-01/H-205/H-214 | chat 与 canvas 均在启动命令前 await 事件/审批/终态监听；canvas ACK 前暂存并按 run_id 重放；复用现有 owner/取消/清理，不建第二事件中心 | H-43探针2 passed；pnpm test:workflow 78 passed；tsc通过；pnpm build通过；diff check通过；未验真实WebView/后端/重连/其他OS，见E-H43-05 | `3f9470e3b0592e0bc8f4feb60544219114dbb1` | 仅关闭本机离线包装器时序与画布投影；持久化补读、窗口断连、SDK队列和真实供应商仍属独立项；总区间按未校准跨层估算 |
 | [H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | 2026-10-26，原失败保留，E-H44-20261026-01～10 | 统一规范终态事务，run/task身份文件投影，既有ledger确认与重开幂等补偿；正常kernel/setup/workflow接回同一边界 | 原探针默认通过；recovery14/1、golden3/0、AppCore1132/78、core41、persistence67/control9、runtime284/16及session14通过；workspace H-306/严格lint失败保留，见明细 | `3d247d1a` | 无schema迁移；外部last()消费者与Rust构造方需适配；跨平台/断电/真实UI未验，H-95不归并；总区间200–400有效小时初估 |
-| [H-45：父 Kernel 总时限直接丢弃执行 Future，前台子 Agent 没有取消和持久化收尾](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-45：父 Kernel 总时限直接丢弃执行 Future，前台子 Agent 没有取消和持久化收尾](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H45-20261027-01～10保留原失败、usage反证及最终验收；不合并其他取消问题 | Kernel统一取消树+1秒协作grace；TrackedSubagent同步owner复用transcript/store/子终态；保留budget_exceeded和原usage路径 | 原探针默认通过；新增工具/审批/hook/后台/Git/usage回归通过；Runtime303、AppCore1164、CLI构建/SDK6通过；workspace3441/1 failed/327 ignored及lint失败见E-07～09 | 待独立提交后回填 | 限本机生命周期；Drop留工作树供cleanup、不保证外部工作硬停止；真实Git创建中途drop/故障/其他OS/UI未验；下一项H-46，总体200–400有效小时未校准初估 |
 | [H-46：Windows MCP transport 只终止直接进程，非 libuv 服务的普通后代仍继续运行](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-47：新增无关 MCP 配置会取消未变服务的初始化，并将宿主取消缓存为该服务失败](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-48：stdio MCP 探活耗尽后只停止探针，旧能力仍可发现，后续每次调用重新启动完整恢复预算](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

@@ -30,6 +30,10 @@ use crate::tool_manifest::{
     DiscoveredToolSet,
 };
 
+#[cfg(test)]
+#[path = "subagent_deadline_tests.rs"]
+mod deadline_tests;
+
 /// Runs a sub-agent for the `task` tool: a nested agent loop over a sub-registry
 /// (the built-ins minus `task`, so no recursion), on an ephemeral in-memory
 /// session, returning only the sub-agent's final message.
@@ -74,6 +78,138 @@ pub(crate) struct ChatSubagentRunner {
     /// same UI approval channel instead of auto-denying. Unset outside the
     /// desktop run path (tests / headless), where the engine default applies.
     pub(crate) parent_approvals: Arc<std::sync::OnceLock<Arc<dyn deepagent_runtime::ApprovalGate>>>,
+}
+
+/// One owner for the existing child transcript, durable record and terminal
+/// event. Normal completion and forced future destruction share this boundary;
+/// Drop does not spawn detached asynchronous cleanup or run arbitrary hooks.
+struct TrackedSubagent<'a> {
+    runner: &'a ChatSubagentRunner,
+    id: String,
+    request: deepagent_builtins::SubagentRequest,
+    created_at: i64,
+    persist: bool,
+    background: bool,
+    armed: bool,
+}
+
+impl TrackedSubagent<'_> {
+    fn finish(&mut self, state: &str, summary: &str) -> Result<()> {
+        self.armed = false;
+        let subagent_id = &self.id;
+        let request = &self.request;
+        let created_at = self.created_at;
+        let persist = self.persist;
+        let background = self.background;
+        let transcript_path = self
+            .runner
+            .transcript_root
+            .join(format!("{subagent_id}.json"));
+        let bounded_summary = subagent_summary(summary, 2_000);
+        let mut persistence_result = Ok(());
+        if persist {
+            // Optional versioned metadata in the existing transcript, not a
+            // second workspace store. It prevents resume-after-cleanup from
+            // silently running this DAG child in the parent workspace.
+            let workspace = if request.isolation == "shared" {
+                deepagent_persistence::subagent_store::SubagentRunStore::new(&self.runner.db)
+                    .get(subagent_id)?
+                    .and_then(|record| record.worktree_path)
+                    .map(|path| serde_json::json!({"version": 1, "kind": "dag", "path": path}))
+            } else {
+                None
+            };
+            let current_attempt = serde_json::json!({
+                "request": {
+                    "description": request.description,
+                    "prompt": request.prompt,
+                    "subagent_type": request.subagent_type,
+                    "allowed_tools": request.allowed_tools,
+                    "model": request.model,
+                    "effort": request.effort,
+                    "skills": request.skills,
+                    "isolation": request.isolation,
+                },
+                "state": state,
+                "summary": summary,
+                "started_at": created_at,
+                "finished_at": subagent_now_ms(),
+            });
+            let mut attempts = std::fs::read(&transcript_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|previous| previous.get("attempts").and_then(|v| v.as_array()).cloned())
+                .unwrap_or_default();
+            attempts.push(current_attempt.clone());
+            let transcript = serde_json::json!({
+                "subagent_id": subagent_id,
+                "parent_run_id": self.runner.parent_run_id,
+                "request": current_attempt["request"].clone(),
+                "workspace": workspace,
+                "state": state,
+                "summary": summary,
+                "created_at": created_at,
+                "finished_at": subagent_now_ms(),
+                "attempts": attempts,
+            });
+            let transcript_result =
+                std::fs::write(&transcript_path, serde_json::to_vec_pretty(&transcript)?).map_err(
+                    |error| {
+                        CoreError::Persistence(format!(
+                            "failed to write subagent transcript {}: {error}",
+                            transcript_path.display()
+                        ))
+                    },
+                );
+            // Still attempt the durable terminal even when the transcript
+            // filesystem is unavailable; return the failure instead of
+            // claiming that the whole lifecycle was persisted successfully.
+            let record_result =
+                deepagent_persistence::subagent_store::SubagentRunStore::new(&self.runner.db)
+                    .finish(
+                        subagent_id,
+                        state,
+                        Some(&bounded_summary),
+                        subagent_now_ms(),
+                    );
+            persistence_result = transcript_result.and(record_result);
+        }
+        let duration_ms = subagent_now_ms().saturating_sub(created_at) as u64;
+        if state == "cancelled" {
+            self.runner
+                .emit_subagent_event(RuntimeEvent::SubagentCancelled {
+                    id: subagent_id.clone(),
+                    parent_run_id: self.runner.parent_run_id.clone(),
+                    duration_ms,
+                    background,
+                });
+        } else {
+            self.runner
+                .emit_subagent_event(RuntimeEvent::SubagentCompleted {
+                    id: subagent_id.clone(),
+                    parent_run_id: self.runner.parent_run_id.clone(),
+                    state: state.to_string(),
+                    summary: bounded_summary.clone(),
+                    duration_ms,
+                    background,
+                });
+        }
+        persistence_result
+    }
+}
+
+impl Drop for TrackedSubagent<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            // A timed-out/hard-dropped future cannot await worktree removal.
+            // Keep its recorded path available to the existing task.cleanup
+            // entry point, and never leave the child falsely marked running.
+            if let Err(error) = self.finish("cancelled",
+                "sub-agent execution future dropped before cleanup completed; retained worktree may require task.cleanup; external work may still be stopping") {
+                tracing::error!(%error, subagent_id = self.id, "failed to persist dropped subagent lifecycle");
+            }
+        }
+    }
 }
 
 impl ChatSubagentRunner {
@@ -344,8 +480,15 @@ impl ChatSubagentRunner {
         persist: bool,
         background: bool,
     ) -> Result<deepagent_builtins::SubagentOutcome> {
-        let transcript_path = self.transcript_root.join(format!("{subagent_id}.json"));
-        let created_at = subagent_now_ms();
+        let mut lifecycle = TrackedSubagent {
+            runner: self,
+            id: subagent_id.clone(),
+            request: request.clone(),
+            created_at: subagent_now_ms(),
+            persist,
+            background,
+            armed: true,
+        };
         let _ = self
             .dispatch_child_hook(
                 HookPoint::SubagentStart,
@@ -434,86 +577,7 @@ impl ChatSubagentRunner {
                 },
             )
             .await;
-        if persist {
-            // Optional versioned metadata in the existing transcript, not a
-            // second workspace store. It prevents resume-after-cleanup from
-            // silently running this DAG child in the parent workspace.
-            let workspace = if request.isolation == "shared" {
-                deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db)
-                    .get(&subagent_id)?
-                    .and_then(|record| record.worktree_path)
-                    .map(|path| serde_json::json!({"version": 1, "kind": "dag", "path": path}))
-            } else {
-                None
-            };
-            let current_attempt = serde_json::json!({
-                "request": {
-                    "description": request.description,
-                    "prompt": request.prompt,
-                    "subagent_type": request.subagent_type,
-                    "allowed_tools": request.allowed_tools,
-                    "model": request.model,
-                    "effort": request.effort,
-                    "skills": request.skills,
-                    "isolation": request.isolation,
-                },
-                "state": state,
-                "summary": summary,
-                "started_at": created_at,
-                "finished_at": subagent_now_ms(),
-            });
-            let mut attempts = std::fs::read(&transcript_path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-                .and_then(|previous| previous.get("attempts").and_then(|v| v.as_array()).cloned())
-                .unwrap_or_default();
-            attempts.push(current_attempt.clone());
-            let transcript = serde_json::json!({
-                "subagent_id": subagent_id,
-                "parent_run_id": self.parent_run_id,
-                "request": current_attempt["request"].clone(),
-                "workspace": workspace,
-                "state": state,
-                "summary": summary,
-                "created_at": created_at,
-                "finished_at": subagent_now_ms(),
-                "attempts": attempts,
-            });
-            if let Err(error) = std::fs::write(
-                &transcript_path,
-                serde_json::to_vec_pretty(&transcript).unwrap_or_default(),
-            ) {
-                tracing::warn!(%error, path = %transcript_path.display(), "failed to write subagent transcript");
-            }
-            if let Err(error) =
-                deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db).finish(
-                    &subagent_id,
-                    state,
-                    Some(&bounded_summary),
-                    subagent_now_ms(),
-                )
-            {
-                tracing::warn!(%error, subagent_id, "failed to finalize subagent run record");
-            }
-        }
-        let duration_ms = subagent_now_ms().saturating_sub(created_at) as u64;
-        if cancelled {
-            self.emit_subagent_event(RuntimeEvent::SubagentCancelled {
-                id: subagent_id.clone(),
-                parent_run_id: self.parent_run_id.clone(),
-                duration_ms,
-                background,
-            });
-        } else {
-            self.emit_subagent_event(RuntimeEvent::SubagentCompleted {
-                id: subagent_id.clone(),
-                parent_run_id: self.parent_run_id.clone(),
-                state: state.to_string(),
-                summary: bounded_summary.clone(),
-                duration_ms,
-                background,
-            });
-        }
+        lifecycle.finish(state, &summary)?;
         if background {
             self.emit_subagent_event(RuntimeEvent::SubagentNotification {
                 id: subagent_id.clone(),
@@ -1663,7 +1727,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit: a parent kernel deadline must finalize its foreground child"]
     async fn audit_parent_deadline_finalizes_foreground_child() {
         let mut observations = Vec::new();
         for user_cancel in [true, false] {
@@ -1750,7 +1813,14 @@ mod tests {
         }
         eprintln!("{}", serde_json::to_string_pretty(&observations).unwrap());
         assert!(
-            observations.iter().all(|o| o["child_finished"] == true),
+            observations.iter().all(|o| {
+                o["root_cancelled"] == true
+                    && o["child_state"] == "cancelled"
+                    && o["child_finished"] == true
+                    && o["transcript_exists"] == true
+                    && o["child_terminal_events"] == 1
+                    && o["cleanup_error"].is_null()
+            }),
             "a terminal parent must not leave its dropped foreground child running"
         );
     }

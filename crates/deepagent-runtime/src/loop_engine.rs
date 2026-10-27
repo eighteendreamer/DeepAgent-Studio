@@ -133,8 +133,10 @@ pub struct RuntimeConfig {
     /// long-running work is the point of the loop, so a step counter must never
     /// be what ends it. A cap is for headless/SDK callers that ask for one.
     pub max_steps: Option<usize>,
-    /// Hard wall-clock deadline for the complete kernel run, including model,
-    /// hooks, approvals, tools and verification. `None` disables it.
+    /// Wall-clock execution budget for the kernel run, including model, hooks,
+    /// approvals, tools and verification. On expiry the kernel cancels the run
+    /// and allows a bounded cleanup grace before persisting budget_exceeded.
+    /// `None` disables it.
     pub task_timeout: Option<std::time::Duration>,
     /// Maximum cumulative provider-reported tokens for this run: every request's
     /// input plus every response's output, i.e. what the run was billed for.

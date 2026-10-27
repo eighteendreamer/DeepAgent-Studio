@@ -147,6 +147,11 @@ struct DeltaBuffer {
 
 const PERSISTED_DELTA_BATCH_BYTES: usize = 16 * 1024;
 
+// A task deadline is a budget boundary, not permission to detach the
+// execution future. Give cancellation-aware work a short, bounded window to
+// unwind child agents, tools and their durable finalizers.
+const DEADLINE_CLEANUP_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+
 struct PersistentEventSink {
     db: Arc<Database>,
     run_id: String,
@@ -547,22 +552,50 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
             engine = engine.with_adversarial_verifier(verifier);
         }
 
-        let result = if let Some(deadline) = self.config.task_timeout {
-            match tokio::time::timeout(deadline, engine.run(session, task, agent)).await {
-                Ok(result) => result,
-                Err(_) => {
+        let (result, deadline_reason) = if let Some(deadline) = self.config.task_timeout {
+            // Keep the execution future pinned and owned by this scope. A
+            // plain timeout(future) drops it on expiry, which skips
+            // run_tracked's transcript/store/event finalization for a
+            // foreground child.
+            let mut run = Box::pin(engine.run(session, task, agent));
+            tokio::select! {
+                result = &mut run => (result, None),
+                _ = tokio::time::sleep(deadline) => {
                     let reason = format!(
                         "run task budget exceeded its {}ms deadline",
                         deadline.as_millis()
                     );
+                    // Use the canonical cancellation tree so the engine and
+                    // any foreground child observe the same stop request.
+                    self.handle.cancellation.cancel();
                     persistent.emit(RuntimeEvent::RunFailed {
                         reason: reason.clone(),
                     });
-                    Err(CoreError::other(reason))
+                    match tokio::time::timeout(DEADLINE_CLEANUP_GRACE, &mut run).await {
+                        Ok(result) => {
+                            // The engine records usage before returning Ok,
+                            // including cooperative cancellation. Preserve
+                            // that result so the error fallback cannot bill
+                            // the same usage a second time.
+                            let reason = if let Err(error) = &result {
+                                tracing::warn!(%run_id, %error, "deadline cancellation cleanup returned an error");
+                                format!("{reason}; cancellation cleanup: {error}")
+                            } else {
+                                reason
+                            };
+                            (result, Some(reason))
+                        }
+                        Err(_) => {
+                            tracing::warn!(%run_id, "deadline cancellation cleanup grace exhausted");
+                            let reason = format!("{reason}; cancellation cleanup exceeded {}ms; external work may still be stopping",
+                                DEADLINE_CLEANUP_GRACE.as_millis());
+                            (Err(CoreError::other(reason.clone())), Some(reason))
+                        }
+                    }
                 }
             }
         } else {
-            engine.run(session, task, agent).await
+            (engine.run(session, task, agent).await, None)
         };
         // Runtime-owned background work (for example ModelAgent prefire
         // compaction) must be settled before finalization reads side usage and
@@ -577,7 +610,7 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
         }
         store.transition(&run_id, RunPhase::Finalizing.label(), now_ms())?;
 
-        let terminal = match result {
+        let mut terminal = match result {
             Ok(RunOutcome::Completed(message)) => KernelTerminal {
                 kind: TerminalKind::Succeeded,
                 message: Some(message),
@@ -638,6 +671,15 @@ impl<'a, C: Clock> AgentKernel<'a, C> {
                 }
             }
         };
+
+        if let Some(reason) = deadline_reason {
+            force_fail_active_task(session, task);
+            terminal = KernelTerminal {
+                kind: TerminalKind::BudgetExceeded,
+                message: None,
+                reason: Some(reason),
+            };
+        }
 
         persistent.flush_delta();
         persist_terminal(&self.db, &run_id, &terminal, &self.handle.cancellation)?;
@@ -1479,12 +1521,20 @@ mod tests {
             config,
             "run-deadline",
         );
-
+        let control = kernel.handle();
+        let started = std::time::Instant::now();
         let terminal = kernel
             .start(RunRequest::new(&mut session, task, &mut agent))
             .await
             .unwrap();
         assert_eq!(terminal.kind, TerminalKind::BudgetExceeded);
+        assert!(control.is_cancelled());
+        assert!(terminal
+            .reason
+            .as_deref()
+            .unwrap()
+            .contains("cleanup exceeded"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
         assert_eq!(session.state().task(task).unwrap().state, TaskState::Failed);
         let record = RunStore::new(&db).get("run-deadline").unwrap().unwrap();
         assert_eq!(record.terminal_kind.as_deref(), Some("budget_exceeded"));
@@ -1517,6 +1567,77 @@ mod tests {
         assert_eq!(terminal.kind, TerminalKind::BudgetExceeded);
         assert!(terminal.reason.unwrap().contains("run budget exceeded"));
         assert_eq!(session.state().task(task).unwrap().state, TaskState::Failed);
+    }
+
+    #[tokio::test]
+    async fn h45_deadline_cleanup_records_usage_once() {
+        struct UsageOnCancel;
+
+        #[async_trait]
+        impl Agent for UsageOnCancel {
+            async fn think(
+                &mut self,
+                _step: usize,
+                _last: &[Observation],
+            ) -> Result<AgentDecision> {
+                std::future::pending().await
+            }
+
+            async fn think_cancelled(
+                &mut self,
+                _step: usize,
+                _last: &[Observation],
+                cancel: Option<Arc<AtomicBool>>,
+            ) -> Result<AgentDecision> {
+                crate::cancellation::wait_for_legacy_flag(cancel.unwrap()).await;
+                Err(CoreError::other("H-45 usage fixture cancelled"))
+            }
+
+            fn cumulative_usage(&self) -> Option<RunUsage> {
+                Some(RunUsage {
+                    prompt_tokens: 10,
+                    completion_tokens: 5,
+                    total_tokens: 15,
+                    billed_prompt_tokens: 10,
+                    ..Default::default()
+                })
+            }
+        }
+
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let clock = FixedClock::new(1);
+        let mut session = Session::create(&db, &clock, Some("H-45 usage")).unwrap();
+        let task = session.create_task("cancel after usage").unwrap();
+        let registry = ToolRegistry::new();
+        let kernel = AgentKernel::new(
+            db.clone(),
+            &registry,
+            Default::default(),
+            RuntimeConfig {
+                task_timeout: Some(std::time::Duration::from_millis(25)),
+                ..Default::default()
+            },
+            "h45-usage",
+        );
+        let terminal = kernel
+            .start(RunRequest::new(&mut session, task, &mut UsageOnCancel))
+            .await
+            .unwrap();
+        assert_eq!(terminal.kind, TerminalKind::BudgetExceeded);
+        let events = deepagent_persistence::event_store::EventStore::new(&db)
+            .load_session(session.id())
+            .unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event.payload,
+                    deepagent_core::event::EventPayload::UsageRecorded { .. }
+                ))
+                .count(),
+            1,
+            "cooperative engine cleanup already recorded usage; the kernel must not duplicate it"
+        );
     }
 
     #[tokio::test]
