@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-136 | 已修复并验收（2026-10-28，仅所列Windows本机发送边界） | 原背压随H-09已消除不重复计功；本轮修正锁排队取消误通知/误报未知，默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8，MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核保留，E-H136-02～06，修复提交待回填 |
+| H-136 | 已修复并验收（2026-10-28，仅所列Windows本机发送边界） | 原背压随H-09已消除不重复计功；本轮修正锁排队取消误通知/误报未知，默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8，MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核保留，E-H136-02～07，修复提交`ab32b8db28f4546e4d95cd7da46eb92072145532` |
 | H-139 | 已修复并验收（2026-10-28，所列Windows本机/正式服务与runtime/离线范围） | 执行事实先提交，后置错误仍传播，同组结果全保留；原专项2/0/0、新runtime9/0/0默认通过，workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过；严格lint旧失败保留，E-H139-01～06，修复提交`93a412d049f7a41be129d528f9b043f9978e80c9` |
 | H-237 | 已修复并验收（2026-10-28，所列Windows本机/正式服务/离线模型范围） | 共享非递归安全策略与父能力位，Ask无交互拒绝；正式专项10/0/0、装配3/0/0，workspace3548/1既有H-306/317忽略；Tauri Rust check/fmt通过，严格lint基线失败保留；见E-H237-01～07，修复提交`9e3ee007735e82a6e44eba76175e2b87305702d0` |
 | H-52 | 已修复并验收（2026-10-28，所列Windows本机/vault/OS子进程范围） | 单一锁内读/身份/版本/写事务，草稿/提升/删除/合并共用；knowledge79/0/0、知识服务35/0/0，workspace3539/1既有H-306失败/319 ignored；桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H52-01～07，修复提交`bc046b903548d4f0b481e71988d2cbb99ac3dc52` |
@@ -3811,7 +3811,7 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 
 ### H-136：stdio MCP 请求写入受背压阻塞时，停止信号无法结束发送等待
 
-**当前状态：已修复并验收（2026-10-28，仅E-H136-05～06所列Windows本机范围）。** 以下原始失败/候选记录保留，最终以E-05～06为准；本轮修复提交待生成后回填。E-H136-02：当前HEAD `7fbfa93b`的原正式探针`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation --offline -j 1 -- --include-ignored --nocapture --test-threads=1`原生0、2 passed/0 failed/0 ignored（1.29s），512KiB背压停止已及时收尾，正常响应等待对照也通过；日志target/h136-before-probe.log。已核对H-09提交`46ba0fd75d9df4de3ba2ec4ccfb71924a5583915`：把整个write/response放入取消select并增加MessageWrite退役保护，已消除原“本地停止仍等待发送”根因，不重复记本轮修复。原夹具释放背压后很快close_all，after_release未见完整请求不能证明任何缓冲字节绝不迟到。
+**当前状态：已修复并验收（2026-10-28，仅E-H136-05～06所列Windows本机范围）。** 以下原始失败/候选记录保留，最终以E-05～06为准；本轮修复提交`ab32b8db28f4546e4d95cd7da46eb92072145532`，见E-H136-07。E-H136-02：当前HEAD `7fbfa93b`的原正式探针`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation --offline -j 1 -- --include-ignored --nocapture --test-threads=1`原生0、2 passed/0 failed/0 ignored（1.29s），512KiB背压停止已及时收尾，正常响应等待对照也通过；日志target/h136-before-probe.log。已核对H-09提交`46ba0fd75d9df4de3ba2ec4ccfb71924a5583915`：把整个write/response放入取消select并增加MessageWrite退役保护，已消除原“本地停止仍等待发送”根因，不重复记本轮修复。原夹具释放背压后很快close_all，after_release未见完整请求不能证明任何缓冲字节绝不迟到。
 
 本轮按原项要求补stdin锁排队边界：一个健康共享请求已在peer等待，另一请求只登记pending尚未取得stdin锁，取消分支却在释放锁后发送该未发出wire_id=4的通知并返回unknown，peer的下一ping显示held=1/held_wire_id=2/cancelled=4。新增`cancelling_queued_write_never_notifies_an_unissued_request_or_cancels_shared_waiter`修前0 passed/1 failed/0 ignored（0.13s，target/h136-queued-before.log），健康请求正常完成。此为同一发送owner的阶段判定残余，不把原通过探针宣称失败。测试在独立系统Temp的data/home/USERPROFILE/HOME/managed环境，去除继承DB路径与供应商key，无真实用户数据/供应商；tracked初始干净，五类用户未跟踪项未读写。
 
@@ -3828,6 +3828,8 @@ E-H136-05（最终门禁，非全仓全绿）：会话8276/20294/36946已全部�
 E-H136-06（限定验收与残余）：本项关闭仅覆盖所列Windows本机真实Node管道、正式服务/离线模型和临时SQLite。新生产根因修复是发送owner缺少阶段证据：Queued取消立即before dispatch且不通知未发出的ID、不影响健康共享等待；Writing取消/abort仍退役连接，使共享pending显式失败而不拼接半帧；Flushed保留原50ms有界通知。公开接口/wire/前端/权限/沙箱/依赖/配置/存储schema无变化，局部enum不是第二套持久状态中心；等锁取消的错误分类更精确，不增加自动重试。H-09消除的原本地背压问题不重复记生产成果。Windows“peer已读、宿主未poll完flush”仍会未知/退役、peer在释放后可完成，本轮新测试明确保留该事实；原E-H65-13临时诊断源码SHA256仍edca734ba7f079932904b46ed5a19ecb5af6b8c4469ea2a50ed529e12a6a463d，原1/1及必达通知断言不修改、不冒充通过。[取消规范](https://modelcontextprotocol.io/specification/2024-11-05/basic/utilities/cancellation)不保证对端停止，不能为必达而移除半帧保护。
 
 未验真实UI/供应商/其他OS/OS沙箱/任意负载/强杀或断电原子性，未跑pnpm build/独立TS SDK，因无相应签名或前端变更；workspace Rust SDK消费方已实际运行。原backpressure夹具release后马上close，不证明绝无迟到缓冲字节；外部副作用无撤回或exactly-once承诺。H-135/H-236保持独立，H-64首轮就绪失败列为下一轮优先复核，不自动抹去其已证明的取消进程归属验收。本轮新增1项限定验收，58验收/18历史跳过/7归并/2撤销/221待修/0修复中，221有效未关闭；306行/唯一编号，其他305条台账不改。本项本机范围剩余0；总200–400有效修复/验收小时仍为规模与跨层风险的原未逐项校准粗估，不机械扣减，构建/设备/依赖/环境等待另计，不承诺日期。代码、测试和当时两文档待独立提交后回填hash，不amend、不推送，整体goal继续active。以下历史证据保留。
+
+E-H136-07（独立提交回填）：生产、默认回归和当时两文档已正常提交`ab32b8db28f4546e4d95cd7da46eb92072145532`（【fix】收敛MCP发送阶段的取消边界），仅本项6文件。无amend、hook绕过、推送、PR或数据迁移，提交后tracked干净，五类用户既有未跟踪项未读写/暂存。本次仅回填H-136当前摘要、原项和唯一台账行，其他305条台账保持原文，另做文档提交。306行/306唯一编号/0坏列，58验收/18历史跳过/7归并/2撤销/221待修/0修复中，221有效未关闭；全量3564/2/315与严格lint失败、AppCore复跑和未定因就绪窗口均按E-05～06保留，不冒充全绿。下一项先复核H-64新失败，整体goal继续active，原200–400有效小时未校准粗估、设备/依赖/构建/环境等待另计。
 
 **级别：高（P1，停止延迟与取消后的迟到投递）；触发条件：本地 MCP 暂停或足够慢地读取 stdin，请求大小足以让管道写入持续等待，用户在此时停止。** 本探针以 512 KiB 虚构参数确定性制造背压，初轮 2 MiB 同样复现；不代表普通短参数都会触发。
 
