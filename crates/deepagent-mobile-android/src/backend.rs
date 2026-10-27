@@ -1073,7 +1073,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: mobile input must reject superseded and unknown snapshot references"]
     async fn audit_mobile_service_fences_input_to_the_returned_snapshot() {
         struct RecordingAdb {
             calls: std::sync::Mutex<Vec<Vec<String>>>,

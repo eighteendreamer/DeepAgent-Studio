@@ -143,11 +143,15 @@ impl MobileService {
         device_id: &str,
         ctx: &OperationContext,
     ) -> MobileResult<UiSnapshot> {
+        let _operation = self.inner.snapshot_store.acquire_device(device_id).await;
         let device = self.inner.registry.get(device_id).await?;
         let backend = self.backend_arc(device.platform).await?;
         let snapshot = backend.ui_snapshot(device_id, ctx).await?;
 
-        let _ = self.inner.snapshot_store.register(device_id).await;
+        self.inner
+            .snapshot_store
+            .register_id(device_id, &snapshot.snapshot_id)
+            .await;
 
         Ok(snapshot)
     }
@@ -187,7 +191,18 @@ impl MobileService {
         request: &InputRequest,
         ctx: &OperationContext,
     ) -> MobileResult<InputResult> {
+        let _operation = self
+            .inner
+            .snapshot_store
+            .acquire_device(&request.device_id)
+            .await;
         let device = self.inner.registry.get(&request.device_id).await?;
+        if let Some(snapshot_id) = request.snapshot_id.as_deref() {
+            self.inner
+                .snapshot_store
+                .validate(&request.device_id, snapshot_id, "input")
+                .await?;
+        }
         let backend = self.backend_arc(device.platform).await?;
         backend.input(request, ctx).await
     }
