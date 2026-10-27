@@ -385,7 +385,15 @@ impl KnowledgeService {
             .clone()
             .ok_or_else(|| CoreError::invalid("custom knowledge view has no roots"))?;
         Self::mutate_base(state, target, |base| {
-            *base = Self::build_base(&physical, &global, base.config().clone())?;
+            // Materializing a path changes its physical binding, not what this
+            // host has observed. An implicit reload here would authorize a stale
+            // same-title replacement of another host's first write (H-52).
+            let project = base.scope_snapshot(Scope::Project);
+            let global_snapshot = base.scope_snapshot(Scope::Global);
+            let mut rebound = Self::build_base(&physical, &global, base.config().clone())?;
+            rebound.apply_scope_snapshot(&project);
+            rebound.apply_scope_snapshot(&global_snapshot);
+            *base = rebound;
             Ok(())
         })?;
         let cached = state.bases.get_mut(&target).expect("project cache exists");
@@ -1258,7 +1266,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: independent vault views must not overwrite distinct titles on slug collision"]
     fn audit_independent_vault_writers_preserve_distinct_notes() {
         let mut outcomes = Vec::new();
         for refresh_second in [true, false] {

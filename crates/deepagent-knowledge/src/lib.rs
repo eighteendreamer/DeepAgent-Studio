@@ -35,6 +35,9 @@ pub mod entry;
 pub mod file_lock;
 pub mod vault;
 
+#[cfg(test)]
+mod mutation_tests;
+
 pub use base::{ConsolidationReport, KnowledgeBase, KnowledgeConfig, KnowledgeDraft, KnowledgeHit};
 pub use capture::{
     detect_recovery, detect_session_digest, is_session_substantive, is_worth_capturing,

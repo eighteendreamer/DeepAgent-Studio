@@ -6,7 +6,7 @@
 //! absolute paths) using the same lexical checks as the file-tool
 //! `WorkspaceRoot` guard.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
 
 use deepagent_core::error::{CoreError, Result};
@@ -18,6 +18,13 @@ use crate::file_lock;
 /// [`Vault::scan`] never folds them into the retrieval index and a human
 /// can move a file straight back to recover it.
 const SUPERSEDED_DIR: &str = ".superseded";
+
+/// Exact observed bytes, not timestamps or reserialized/rounded metadata.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct VaultSnapshot {
+    pub(crate) active: BTreeMap<String, String>,
+    pub(crate) drafts: BTreeMap<String, String>,
+}
 
 /// The OS-held exclusive lock over one vault directory.
 ///
@@ -31,23 +38,45 @@ pub struct VaultLock {
     /// while the transaction body runs.
     #[allow(dead_code)]
     guard: file_lock::FileLock,
+    root: PathBuf,
+    scope: Scope,
 }
 
 impl VaultLock {
     /// Overwrite one entry while holding the vault exclusively.
     pub fn write(&self, vault: &Vault, entry: &KnowledgeEntry) -> Result<PathBuf> {
+        self.check(vault)?;
         vault.write_inner(entry)
     }
 
     /// Remove one entry while holding the vault exclusively.
     pub fn delete(&self, vault: &Vault, id: &str) -> Result<bool> {
+        self.check(vault)?;
         vault.delete_inner(id)
     }
 
     /// Move one entry into the superseded archive while holding the vault
     /// exclusively.
     pub fn archive(&self, vault: &Vault, id: &str) -> Result<bool> {
+        self.check(vault)?;
         vault.archive_inner(id)
+    }
+
+    pub(crate) fn write_draft(&self, vault: &Vault, entry: &KnowledgeEntry) -> Result<PathBuf> {
+        self.check(vault)?;
+        vault.write_path(&vault.resolve_draft(&entry.id)?, entry)
+    }
+
+    pub(crate) fn delete_draft(&self, vault: &Vault, id: &str) -> Result<bool> {
+        self.check(vault)?;
+        Vault::delete_path(&vault.resolve_draft(id)?)
+    }
+
+    fn check(&self, vault: &Vault) -> Result<()> {
+        if self.root != vault.root || self.scope != vault.scope {
+            return Err(CoreError::invalid("vault lock belongs to another vault"));
+        }
+        Ok(())
     }
 }
 
@@ -82,39 +111,19 @@ impl Vault {
     /// Bad/unreadable files are skipped with a `tracing::warn` so a single bad
     /// file never blocks the whole load. Returns entries in id order.
     pub fn scan(&self) -> Result<Vec<KnowledgeEntry>> {
-        if !self.root.exists() {
-            return Ok(Vec::new());
-        }
-        let read_dir = std::fs::read_dir(&self.root)
-            .map_err(|e| CoreError::Persistence(format!("read knowledge vault: {e}")))?;
+        Ok(scan_files(&self.root, false)?
+            .into_iter()
+            .map(|(id, raw)| KnowledgeEntry::from_markdown(&id, self.scope, &raw))
+            .collect())
+    }
 
-        let mut entries = Vec::new();
-        for dirent in read_dir {
-            let dirent = match dirent {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::warn!("skipping unreadable vault entry: {e}");
-                    continue;
-                }
-            };
-            let path = dirent.path();
-            if !is_markdown(&path) {
-                continue;
-            }
-            let id = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(stem) if !stem.is_empty() => stem.to_string(),
-                _ => {
-                    tracing::warn!("skipping vault file with no usable name: {path:?}");
-                    continue;
-                }
-            };
-            match std::fs::read_to_string(&path) {
-                Ok(raw) => entries.push(KnowledgeEntry::from_markdown(&id, self.scope, &raw)),
-                Err(e) => tracing::warn!("skipping unreadable knowledge file {path:?}: {e}"),
-            }
-        }
-        entries.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(entries)
+    /// Caller holds the vault lock for read/decide/write. A writer must not
+    /// allocate from a tolerant scan that skipped an occupied/unreadable name.
+    pub(crate) fn snapshot(&self, strict: bool) -> Result<VaultSnapshot> {
+        Ok(VaultSnapshot {
+            active: scan_files(&self.root, strict)?,
+            drafts: scan_files(&self.drafts_dir(), strict)?,
+        })
     }
 
     /// Write (create or overwrite) the `.md` file for `entry`. The resolved
@@ -152,7 +161,17 @@ impl Vault {
         let name = source
             .file_name()
             .ok_or_else(|| CoreError::invalid("knowledge id has no file name"))?;
-        std::fs::rename(&source, dir.join(name))
+        let target = dir.join(name);
+        if target
+            .try_exists()
+            .map_err(|e| CoreError::Persistence(format!("inspect knowledge archive target: {e}")))?
+        {
+            return Err(CoreError::Persistence(format!(
+                "knowledge archive target already exists: {}",
+                target.display()
+            )));
+        }
+        std::fs::rename(&source, target)
             .map_err(|e| CoreError::Persistence(format!("archive knowledge file: {e}")))?;
         Ok(true)
     }
@@ -160,19 +179,23 @@ impl Vault {
     /// The write body, reachable only while a [`VaultLock`] is held.
     fn write_inner(&self, entry: &KnowledgeEntry) -> Result<PathBuf> {
         let path = self.resolve(&entry.id)?;
+        self.write_path(&path, entry)
+    }
+
+    fn write_path(&self, path: &Path, entry: &KnowledgeEntry) -> Result<PathBuf> {
         let markdown = entry.to_markdown();
-        std::fs::create_dir_all(&self.root)
+        std::fs::create_dir_all(path.parent().expect("vault file has a parent"))
             .map_err(|e| CoreError::Persistence(format!("create knowledge vault dir: {e}")))?;
-        let temp = staging_path(&path);
+        let temp = staging_path(path);
         std::fs::write(&temp, &markdown)
             .map_err(|e| CoreError::Persistence(format!("stage knowledge file: {e}")))?;
-        if let Err(error) = std::fs::rename(&temp, &path) {
+        if let Err(error) = std::fs::rename(&temp, path) {
             let _ = std::fs::remove_file(&temp);
             return Err(CoreError::Persistence(format!(
                 "commit knowledge file: {error}"
             )));
         }
-        let read_back = std::fs::read_to_string(&path)
+        let read_back = std::fs::read_to_string(path)
             .map_err(|e| CoreError::Persistence(format!("read back knowledge file: {e}")))?;
         if read_back != markdown {
             return Err(CoreError::Persistence(format!(
@@ -180,25 +203,30 @@ impl Vault {
                 path.display()
             )));
         }
-        if let Err(error) = make_private(&path) {
+        if let Err(error) = make_private(path) {
             tracing::debug!(
                 %error,
                 path = %path.display(),
                 "knowledge file left unrestricted: the platform refused to set owner-only bits"
             );
         }
-        Ok(path)
+        Ok(path.to_path_buf())
     }
 
     /// The delete body, reachable only while a [`VaultLock`] is held.
     fn delete_inner(&self, id: &str) -> Result<bool> {
         let path = self.resolve(id)?;
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| CoreError::Persistence(format!("delete knowledge file: {e}")))?;
-            Ok(true)
-        } else {
-            Ok(false)
+        Self::delete_path(&path)
+    }
+
+    fn delete_path(path: &Path) -> Result<bool> {
+        match std::fs::remove_file(path) {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(CoreError::Persistence(format!(
+                "delete knowledge file {}: {error}",
+                path.display()
+            ))),
         }
     }
 
@@ -212,7 +240,11 @@ impl Vault {
             file_lock::WAIT,
             "knowledge vault",
         )?;
-        Ok(VaultLock { guard })
+        Ok(VaultLock {
+            guard,
+            root: self.root.clone(),
+            scope: self.scope,
+        })
     }
 
     /// The drafts subdirectory (`<root>/.drafts`), physically isolated from
@@ -225,67 +257,27 @@ impl Vault {
     /// [`Vault::scan`]). Entries are returned with [`crate::entry::EntryStatus`]
     /// taken from their frontmatter.
     pub fn scan_drafts(&self) -> Result<Vec<KnowledgeEntry>> {
-        let dir = self.drafts_dir();
-        if !dir.exists() {
-            return Ok(Vec::new());
-        }
-        let read_dir = std::fs::read_dir(&dir)
-            .map_err(|e| CoreError::Persistence(format!("read knowledge drafts: {e}")))?;
-
-        let mut entries = Vec::new();
-        for dirent in read_dir {
-            let dirent = match dirent {
-                Ok(d) => d,
-                Err(e) => {
-                    tracing::warn!("skipping unreadable draft entry: {e}");
-                    continue;
-                }
-            };
-            let path = dirent.path();
-            if !is_markdown(&path) {
-                continue;
-            }
-            let id = match path.file_stem().and_then(|s| s.to_str()) {
-                Some(stem) if !stem.is_empty() => stem.to_string(),
-                _ => continue,
-            };
-            match std::fs::read_to_string(&path) {
-                Ok(raw) => entries.push(KnowledgeEntry::from_markdown(&id, self.scope, &raw)),
-                Err(e) => tracing::warn!("skipping unreadable draft file {path:?}: {e}"),
-            }
-        }
-        entries.sort_by(|a, b| a.id.cmp(&b.id));
-        Ok(entries)
+        Ok(scan_files(&self.drafts_dir(), false)?
+            .into_iter()
+            .map(|(id, raw)| KnowledgeEntry::from_markdown(&id, self.scope, &raw))
+            .collect())
     }
 
     /// Write a draft `.md` into the drafts subdirectory. Path confined to the
     /// drafts dir. Returns the file path written.
     pub fn write_draft(&self, entry: &KnowledgeEntry) -> Result<PathBuf> {
-        let path = self.resolve_draft(&entry.id)?;
-        let dir = self.drafts_dir();
-        std::fs::create_dir_all(&dir)
-            .map_err(|e| CoreError::Persistence(format!("create knowledge drafts dir: {e}")))?;
-        std::fs::write(&path, entry.to_markdown())
-            .map_err(|e| CoreError::Persistence(format!("write knowledge draft: {e}")))?;
-        Ok(path)
+        self.lock()?.write_draft(self, entry)
     }
 
     /// Delete a draft `.md` by id. Returns whether a file was removed.
     pub fn delete_draft(&self, id: &str) -> Result<bool> {
-        let path = self.resolve_draft(id)?;
-        if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| CoreError::Persistence(format!("delete knowledge draft: {e}")))?;
-            Ok(true)
-        } else {
-            Ok(false)
-        }
+        self.lock()?.delete_draft(self, id)
     }
 
     /// Resolve a draft id to its confined `<root>/.drafts/<id>.md` path.
     fn resolve_draft(&self, id: &str) -> Result<PathBuf> {
         self.validate_id(id)?;
-        let path = self.drafts_dir().join(format!("{id}.md"));
+        let path = resolve_markdown(&self.drafts_dir(), id)?;
         if !path.starts_with(self.drafts_dir()) {
             return Err(CoreError::invalid(format!(
                 "knowledge draft id escapes the vault: {id}"
@@ -298,13 +290,40 @@ impl Vault {
     /// id that would escape the vault root.
     fn resolve(&self, id: &str) -> Result<PathBuf> {
         self.validate_id(id)?;
-        let path = self.root.join(format!("{id}.md"));
+        let path = resolve_markdown(&self.root, id)?;
         if !path.starts_with(&self.root) {
             return Err(CoreError::invalid(format!(
                 "knowledge id escapes the vault: {id}"
             )));
         }
         Ok(path)
+    }
+
+    /// The current filesystem, not Rust string case-folding, decides whether
+    /// a name is occupied. External files can have noncanonical case.
+    pub(crate) fn allocate_id(
+        &self,
+        title: &str,
+        mut ids: BTreeSet<String>,
+        promoting: Option<&str>,
+    ) -> Result<String> {
+        loop {
+            let id = Self::unique_slug(title, &ids);
+            let exists = |path: &Path| {
+                path.try_exists().map_err(|e| {
+                    CoreError::Persistence(format!(
+                        "inspect knowledge identity {}: {e}",
+                        path.display()
+                    ))
+                })
+            };
+            let occupied = exists(&self.resolve(&id)?)?
+                || (Some(id.as_str()) != promoting && exists(&self.resolve_draft(&id)?)?);
+            if !occupied {
+                return Ok(id);
+            }
+            ids.insert(id);
+        }
     }
 
     /// Validate that an id is a flat, traversal-free slug (shared by active and
@@ -385,14 +404,109 @@ impl Vault {
     }
 }
 
-/// Whether a path is a `.md` file.
-fn is_markdown(path: &Path) -> bool {
-    path.is_file()
-        && path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("md"))
-            .unwrap_or(false)
+fn scan_files(dir: &Path, strict: bool) -> Result<BTreeMap<String, String>> {
+    let listing = match std::fs::read_dir(dir) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => {
+            return Err(CoreError::Persistence(format!(
+                "read knowledge directory {}: {error}",
+                dir.display()
+            )));
+        }
+    };
+    let mut files = BTreeMap::new();
+    for item in listing {
+        let read = || -> Result<Option<(String, String)>> {
+            let item =
+                item.map_err(|e| CoreError::Persistence(format!("read vault entry: {e}")))?;
+            let path = item.path();
+            if !path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+            {
+                return Ok(None);
+            }
+            if !item
+                .file_type()
+                .map_err(|e| {
+                    CoreError::Persistence(format!(
+                        "inspect knowledge file {}: {e}",
+                        path.display()
+                    ))
+                })?
+                .is_file()
+            {
+                if !strict {
+                    return Ok(None);
+                }
+                return Err(CoreError::Persistence(format!(
+                    "knowledge path is not a regular file: {}",
+                    path.display()
+                )));
+            }
+            let id = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .filter(|stem| !stem.is_empty())
+                .ok_or_else(|| {
+                    CoreError::invalid(format!("unusable knowledge name: {}", path.display()))
+                })?;
+            let raw = std::fs::read_to_string(&path).map_err(|e| {
+                CoreError::Persistence(format!("read knowledge file {}: {e}", path.display()))
+            })?;
+            Ok(Some((id.to_string(), raw)))
+        };
+        match read() {
+            Ok(Some((id, raw))) => {
+                if files.insert(id.clone(), raw).is_some() && strict {
+                    return Err(CoreError::Persistence(format!(
+                        "ambiguous knowledge identity {id} in {}; rename duplicate files before retrying", dir.display()
+                    )));
+                }
+            }
+            Ok(None) => {}
+            Err(error) if strict => return Err(error),
+            Err(error) => tracing::warn!(%error, "skipping unreadable knowledge entry"),
+        }
+    }
+    Ok(files)
+}
+
+/// Keep the actual extension of an existing externally managed Markdown file.
+/// New files still use `.md`. Duplicate stems are rejected by strict snapshots.
+fn resolve_markdown(dir: &Path, id: &str) -> Result<PathBuf> {
+    let canonical = dir.join(format!("{id}.md"));
+    if canonical
+        .try_exists()
+        .map_err(|e| CoreError::Persistence(format!("inspect knowledge path: {e}")))?
+    {
+        return Ok(canonical);
+    }
+    let listing = match std::fs::read_dir(dir) {
+        Ok(listing) => listing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(canonical),
+        Err(error) => {
+            return Err(CoreError::Persistence(format!(
+                "inspect knowledge directory: {error}"
+            )))
+        }
+    };
+    for item in listing {
+        let path = item
+            .map_err(|e| CoreError::Persistence(format!("inspect knowledge name: {e}")))?
+            .path();
+        if path.file_stem().and_then(|stem| stem.to_str()) == Some(id)
+            && path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+        {
+            return Ok(path);
+        }
+    }
+    Ok(canonical)
 }
 
 /// The staging file a write goes through before it is renamed into place. The
@@ -800,5 +914,29 @@ mod tests {
         assert_eq!(scanned[0].body, "merged body");
         // The lock lives under a dot-directory, so it never becomes an entry.
         assert_eq!(vault.scan().unwrap().len(), 1, "the lock is not an entry");
+    }
+
+    #[test]
+    fn draft_mutations_take_the_same_lock_and_guard_cannot_authorize_another_vault() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vault = Vault::new(tmp.path().join("one"), Scope::Project);
+        let other = Vault::new(tmp.path().join("two"), Scope::Project);
+        let draft = entry("draft", "Draft", "pending");
+        vault.write_draft(&draft).unwrap();
+        let held = vault.lock().unwrap();
+        assert!(vault
+            .write_draft(&draft)
+            .unwrap_err()
+            .to_string()
+            .contains("another writer"));
+        assert!(vault
+            .delete_draft(&draft.id)
+            .unwrap_err()
+            .to_string()
+            .contains("another writer"));
+        assert!(held.write(&other, &draft).is_err());
+        assert!(!other.root().exists());
+        drop(held);
+        assert!(vault.delete_draft(&draft.id).unwrap());
     }
 }

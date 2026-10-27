@@ -16,6 +16,53 @@ fn note(title: &str, body: &str, scope: &str) -> KnowledgeDraftDto {
 }
 
 #[test]
+fn independent_services_do_not_treat_project_materialization_as_consent_to_overwrite() {
+    for scope in ["project", "global"] {
+        for exists in [false, true] {
+            let tmp = tempfile::tempdir().unwrap();
+            let project = tmp.path().join("project");
+            let global = tmp.path().join("global");
+            if exists {
+                std::fs::create_dir_all(&project).unwrap();
+            }
+            let first = KnowledgeService::open(&project, &global).unwrap();
+            let second = KnowledgeService::open(&project, &global).unwrap();
+            let saved = first
+                .save(note("Same policy", "first author", scope))
+                .unwrap();
+            for _ in 0..2 {
+                assert!(
+                    second
+                        .save(note("Same policy", "unobserved replacement", scope))
+                        .is_err(),
+                    "scope={scope}, project_preexists={exists}: identity rebind is not a reload"
+                );
+            }
+            assert_eq!(
+                KnowledgeService::open(&project, &global)
+                    .unwrap()
+                    .get(&saved.id)
+                    .unwrap()
+                    .body,
+                "first author"
+            );
+            second.reload().unwrap();
+            second
+                .save(note("Same policy", "reviewed replacement", scope))
+                .unwrap();
+            assert_eq!(
+                KnowledgeService::open(&project, &global)
+                    .unwrap()
+                    .get(&saved.id)
+                    .unwrap()
+                    .body,
+                "reviewed replacement"
+            );
+        }
+    }
+}
+
+#[test]
 fn project_views_share_one_cache_across_aliases_and_directory_creation() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().join("project");

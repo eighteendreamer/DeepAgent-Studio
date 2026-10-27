@@ -16,7 +16,7 @@ use deepagent_memory::{
 };
 
 use crate::entry::{EntryKind, KnowledgeEntry, Scope};
-use crate::vault::Vault;
+use crate::vault::{Vault, VaultLock, VaultSnapshot};
 
 /// Tunables for passive injection and retrieval.
 #[derive(Debug, Clone)]
@@ -90,6 +90,82 @@ fn norm_title(title: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
         .to_lowercase()
+}
+
+fn conflict(scope: Scope, id: &str) -> CoreError {
+    tracing::warn!(
+        scope = scope.label(),
+        id,
+        "knowledge version conflict; reload required"
+    );
+    CoreError::Persistence(format!(
+        "knowledge version conflict for {}:{id}; reload before retrying",
+        scope.label()
+    ))
+}
+
+fn check_version(
+    scope: Scope,
+    id: &str,
+    expected: &BTreeMap<String, String>,
+    current: &BTreeMap<String, String>,
+) -> Result<()> {
+    if !expected.contains_key(id) || expected.get(id) != current.get(id) {
+        return Err(conflict(scope, id));
+    }
+    Ok(())
+}
+
+fn prepare_write(
+    vault: &Vault,
+    draft: KnowledgeDraft,
+    now_ms: i64,
+    expected: &VaultSnapshot,
+    current: &VaultSnapshot,
+    promoting: Option<&str>,
+) -> Result<KnowledgeEntry> {
+    let title = norm_title(&draft.title);
+    let find = |files: &BTreeMap<String, String>| {
+        files
+            .iter()
+            .map(|(id, raw)| KnowledgeEntry::from_markdown(id, draft.scope, raw))
+            .find(|entry| norm_title(&entry.title) == title)
+    };
+    let observed = find(&expected.active);
+    let (id, created_at) = if let Some(entry) = observed {
+        check_version(draft.scope, &entry.id, &expected.active, &current.active)?;
+        (entry.id, entry.created_at)
+    } else {
+        if let Some(entry) = find(&current.active) {
+            return Err(conflict(draft.scope, &entry.id));
+        }
+        let ids = current
+            .active
+            .keys()
+            .chain(
+                current
+                    .drafts
+                    .keys()
+                    .filter(|id| Some(id.as_str()) != promoting),
+            )
+            .cloned()
+            .collect();
+        (vault.allocate_id(&draft.title, ids, promoting)?, now_ms)
+    };
+    Ok(KnowledgeEntry {
+        id,
+        title: draft.title,
+        body: draft.body,
+        kind: draft.kind,
+        tags: draft.tags,
+        source_session: draft.source_session,
+        scope: draft.scope,
+        tier: draft.tier,
+        importance: draft.importance,
+        created_at,
+        updated_at: now_ms,
+        status: crate::entry::EntryStatus::Active,
+    })
 }
 
 /// Rough token estimate for budget control (chars/4, min 1).
@@ -228,6 +304,30 @@ pub struct KnowledgeScopeSnapshot {
     scope: Scope,
     entries: BTreeMap<String, KnowledgeEntry>,
     drafts: BTreeMap<String, KnowledgeEntry>,
+    files: VaultSnapshot,
+}
+
+impl KnowledgeScopeSnapshot {
+    fn from_files(scope: Scope, files: VaultSnapshot) -> Self {
+        let parse = |records: &BTreeMap<String, String>, draft: bool| {
+            records
+                .iter()
+                .map(|(id, raw)| {
+                    let mut entry = KnowledgeEntry::from_markdown(id, scope, raw);
+                    if draft {
+                        entry.status = crate::entry::EntryStatus::Draft;
+                    }
+                    (uid(scope, id), entry)
+                })
+                .collect()
+        };
+        Self {
+            scope,
+            entries: parse(&files.active, false),
+            drafts: parse(&files.drafts, true),
+            files,
+        }
+    }
 }
 
 /// The knowledge base: one or more vaults plus a derived retrieval index.
@@ -240,6 +340,8 @@ pub struct KnowledgeBase<E: Embedder + Clone> {
     /// uid (`scope:slug`) → pending draft. Kept entirely OUT of the retrieval
     /// index so drafts never leak into passive injection or search.
     drafts: BTreeMap<String, KnowledgeEntry>,
+    /// Read versions travel with the derived index, including same-host views.
+    files: BTreeMap<&'static str, VaultSnapshot>,
     retriever: Retriever<E>,
 }
 
@@ -254,6 +356,7 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
             embedder,
             entries: BTreeMap::new(),
             drafts: BTreeMap::new(),
+            files: BTreeMap::new(),
             retriever,
         }
     }
@@ -263,19 +366,27 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
     pub fn load_all(&mut self) -> Result<usize> {
         let mut entries = BTreeMap::new();
         let mut drafts = BTreeMap::new();
+        let mut files = BTreeMap::new();
         for vault in &self.vaults {
-            for entry in vault.scan()? {
-                entries.insert(uid(entry.scope, &entry.id), entry);
-            }
-            for mut draft in vault.scan_drafts()? {
-                // Force draft status regardless of frontmatter, since location
-                // (the `.drafts/` dir) is authoritative.
-                draft.status = crate::entry::EntryStatus::Draft;
-                drafts.insert(uid(draft.scope, &draft.id), draft);
-            }
+            // Do not materialize a missing project just to read it (H-51).
+            let _lock = if vault
+                .root()
+                .try_exists()
+                .map_err(|e| CoreError::Persistence(format!("inspect knowledge vault: {e}")))?
+            {
+                Some(vault.lock()?)
+            } else {
+                None
+            };
+            let snapshot =
+                KnowledgeScopeSnapshot::from_files(vault.scope(), vault.snapshot(false)?);
+            entries.extend(snapshot.entries);
+            drafts.extend(snapshot.drafts);
+            files.insert(vault.scope().label(), snapshot.files);
         }
         self.entries = entries;
         self.drafts = drafts;
+        self.files = files;
         self.rebuild_index();
         Ok(self.entries.len())
     }
@@ -296,6 +407,7 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
                 .filter(|(_, entry)| entry.scope == scope)
                 .map(|(id, entry)| (id.clone(), entry.clone()))
                 .collect(),
+            files: self.files.get(scope.label()).cloned().unwrap_or_default(),
         }
     }
 
@@ -312,9 +424,51 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         self.entries.extend(snapshot.entries.clone());
         self.drafts.retain(|_, entry| entry.scope != snapshot.scope);
         self.drafts.extend(snapshot.drafts.clone());
+        self.files
+            .insert(snapshot.scope.label(), snapshot.files.clone());
         if current.entries != snapshot.entries {
             self.rebuild_index();
         }
+    }
+
+    /// One synchronous read/decide/commit boundary for every knowledge mutation.
+    /// A conflict does not refresh the expected version: a blind retry must not
+    /// become permission to overwrite the competing author's new content.
+    fn mutate_scope<T>(
+        &mut self,
+        scope: Scope,
+        operation: impl FnOnce(&Vault, &VaultLock, &VaultSnapshot, &VaultSnapshot) -> Result<T>,
+    ) -> Result<T> {
+        let vault = self.vault_for(scope).cloned().ok_or_else(|| {
+            CoreError::invalid(format!("no vault configured for scope {}", scope.label()))
+        })?;
+        let lock = vault.lock()?;
+        let before = vault.snapshot(true)?;
+        let expected = self.files.get(scope.label()).cloned().unwrap_or_default();
+        let outcome = operation(&vault, &lock, &expected, &before);
+        match vault.snapshot(true) {
+            Ok(after) => {
+                if outcome.is_ok() || after != before {
+                    self.apply_scope_snapshot(&KnowledgeScopeSnapshot::from_files(scope, after));
+                }
+            }
+            Err(refresh) => {
+                // Never retain stale overwrite credentials after an uncertain
+                // commit. Reads are invalidated and an explicit reload is needed.
+                self.apply_scope_snapshot(&KnowledgeScopeSnapshot::from_files(
+                    scope,
+                    VaultSnapshot::default(),
+                ));
+                let cause = outcome
+                    .err()
+                    .map(|e| e.to_string())
+                    .unwrap_or_else(|| "mutation committed".into());
+                return Err(CoreError::Persistence(format!(
+                    "{cause}; knowledge cache refresh failed: {refresh}; reload required"
+                )));
+            }
+        }
+        outcome
     }
 
     /// Rebuild the retrieval index from the current entry set.
@@ -442,71 +596,11 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         if draft.title.trim().is_empty() {
             return Err(CoreError::invalid("knowledge entry title is empty"));
         }
-        let vault = self.vault_for(draft.scope).ok_or_else(|| {
-            CoreError::invalid(format!(
-                "no vault configured for scope {}",
-                draft.scope.label()
-            ))
-        })?;
-
-        // Dedup: an existing entry in the same scope with an equal normalized
-        // title is updated in place.
-        let target = norm_title(&draft.title);
-        let existing_id = self
-            .entries
-            .values()
-            .find(|e| e.scope == draft.scope && norm_title(&e.title) == target)
-            .map(|e| e.id.clone());
-
-        let entry = if let Some(id) = existing_id {
-            let created = self
-                .entries
-                .get(&uid(draft.scope, &id))
-                .map(|e| e.created_at)
-                .unwrap_or(now_ms);
-            KnowledgeEntry {
-                id,
-                title: draft.title,
-                kind: draft.kind,
-                tags: draft.tags,
-                created_at: created,
-                updated_at: now_ms,
-                source_session: draft.source_session,
-                scope: draft.scope,
-                status: crate::entry::EntryStatus::Active,
-                tier: draft.tier,
-                importance: draft.importance,
-                body: draft.body,
-            }
-        } else {
-            let existing_ids: BTreeSet<String> = self
-                .entries
-                .values()
-                .filter(|e| e.scope == draft.scope)
-                .map(|e| e.id.clone())
-                .collect();
-            let id = Vault::unique_slug(&draft.title, &existing_ids);
-            KnowledgeEntry {
-                id,
-                title: draft.title,
-                kind: draft.kind,
-                tags: draft.tags,
-                created_at: now_ms,
-                updated_at: now_ms,
-                source_session: draft.source_session,
-                scope: draft.scope,
-                status: crate::entry::EntryStatus::Active,
-                tier: draft.tier,
-                importance: draft.importance,
-                body: draft.body,
-            }
-        };
-
-        vault.write(&entry)?;
-        self.entries
-            .insert(uid(entry.scope, &entry.id), entry.clone());
-        self.rebuild_index();
-        Ok(entry)
+        self.mutate_scope(draft.scope, |vault, lock, expected, current| {
+            let entry = prepare_write(vault, draft, now_ms, expected, current, None)?;
+            lock.write(vault, &entry)?;
+            Ok(entry)
+        })
     }
 
     /// Fold duplicate long-term entries into one and archive the rest.
@@ -527,63 +621,45 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         now_ms: i64,
     ) -> Result<ConsolidationReport> {
         let mut report = ConsolidationReport::default();
-        let candidates: Vec<KnowledgeEntry> = self
-            .entries
-            .values()
-            .filter(|entry| match (&entry.source_session, exclude_session) {
-                (Some(source), Some(excluded)) => source != excluded,
-                _ => true,
-            })
-            .cloned()
-            .collect();
-
-        let mut groups: Vec<Vec<KnowledgeEntry>> = Vec::new();
-        for entry in candidates {
-            match groups
-                .iter_mut()
-                .find(|group| group.iter().any(|member| is_duplicate(member, &entry)))
-            {
-                Some(group) => group.push(entry),
-                None => groups.push(vec![entry]),
-            }
-        }
-
-        for group in groups.into_iter().filter(|group| group.len() > 1) {
-            let scope = group[0].scope;
-            let vault = self
-                .vault_for(scope)
-                .cloned()
-                .ok_or_else(|| CoreError::invalid("no vault for the consolidation scope"))?;
-            let survivor = pick_survivor(&group).clone();
-            let mut merged = merge_into(survivor.clone(), &group);
-            let rewritten = merged.body != survivor.body || merged.tags != survivor.tags;
-            if rewritten {
-                merged.updated_at = now_ms;
-            }
-
-            // One lock for the whole cluster: the rewrite and the archival moves
-            // must not interleave with another writer.
-            let lock = vault.lock()?;
-            if rewritten {
-                lock.write(&vault, &merged)?;
-                report.rewritten.push(uid(scope, &merged.id));
-            }
-            for member in &group {
-                if member.id == survivor.id {
-                    continue;
+        // Autonomous merges use the *current* contents, not cached candidates.
+        // Hold one scope lock from the scan through all rewrites and archives.
+        let scopes: Vec<_> = self.vaults.iter().map(Vault::scope).collect();
+        for scope in scopes {
+            self.mutate_scope(scope, |vault, lock, _, current| {
+                let candidates = current
+                    .active
+                    .iter()
+                    .map(|(id, raw)| KnowledgeEntry::from_markdown(id, scope, raw))
+                    .filter(|entry| match (&entry.source_session, exclude_session) {
+                        (Some(source), Some(excluded)) => source != excluded,
+                        _ => true,
+                    });
+                let mut groups: Vec<Vec<KnowledgeEntry>> = Vec::new();
+                for entry in candidates {
+                    match groups
+                        .iter_mut()
+                        .find(|group| group.iter().any(|member| is_duplicate(member, &entry)))
+                    {
+                        Some(group) => group.push(entry),
+                        None => groups.push(vec![entry]),
+                    }
                 }
-                let member_uid = uid(scope, &member.id);
-                if lock.archive(&vault, &member.id)? {
-                    report.superseded.push(member_uid.clone());
+                for group in groups.into_iter().filter(|group| group.len() > 1) {
+                    let survivor = pick_survivor(&group).clone();
+                    let mut merged = merge_into(survivor.clone(), &group);
+                    if merged != survivor {
+                        merged.updated_at = now_ms;
+                        lock.write(vault, &merged)?;
+                        report.rewritten.push(uid(scope, &merged.id));
+                    }
+                    for member in &group {
+                        if member.id != survivor.id && lock.archive(vault, &member.id)? {
+                            report.superseded.push(uid(scope, &member.id));
+                        }
+                    }
                 }
-                self.entries.remove(&member_uid);
-            }
-            drop(lock);
-            self.entries.insert(uid(scope, &merged.id), merged);
-        }
-
-        if !report.is_empty() {
-            self.rebuild_index();
+                Ok(())
+            })?;
         }
         Ok(report)
     }
@@ -603,12 +679,13 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         let Some(entry) = self.entries.get(uid_key).cloned() else {
             return Ok(false);
         };
-        if let Some(vault) = self.vault_for(entry.scope) {
-            vault.delete(&entry.id)?;
-        }
-        self.entries.remove(uid_key);
-        self.rebuild_index();
-        Ok(true)
+        self.mutate_scope(entry.scope, |vault, lock, expected, current| {
+            if !current.active.contains_key(&entry.id) {
+                return Ok(false);
+            }
+            check_version(entry.scope, &entry.id, &expected.active, &current.active)?;
+            lock.delete(vault, &entry.id)
+        })
     }
 
     /// Add a pending draft (from session auto-capture). Written to the vault's
@@ -617,45 +694,31 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         if draft.title.trim().is_empty() {
             return Err(CoreError::invalid("knowledge draft title is empty"));
         }
-        let vault = self.vault_for(draft.scope).ok_or_else(|| {
-            CoreError::invalid(format!(
-                "no vault configured for scope {}",
-                draft.scope.label()
-            ))
-        })?;
-        // Unique id across both active entries and existing drafts in scope.
-        let mut existing_ids: BTreeSet<String> = self
-            .entries
-            .values()
-            .filter(|e| e.scope == draft.scope)
-            .map(|e| e.id.clone())
-            .collect();
-        existing_ids.extend(
-            self.drafts
-                .values()
-                .filter(|e| e.scope == draft.scope)
-                .map(|e| e.id.clone()),
-        );
-        let id = Vault::unique_slug(&draft.title, &existing_ids);
-        let entry = KnowledgeEntry {
-            id,
-            title: draft.title,
-            kind: draft.kind,
-            tags: draft.tags,
-            created_at: now_ms,
-            updated_at: now_ms,
-            source_session: draft.source_session,
-            scope: draft.scope,
-            status: crate::entry::EntryStatus::Draft,
-            tier: draft.tier,
-            importance: draft.importance,
-            body: draft.body,
-        };
-        vault.write_draft(&entry)?;
-        self.drafts
-            .insert(uid(entry.scope, &entry.id), entry.clone());
-        // No index rebuild: drafts are never indexed.
-        Ok(entry)
+        self.mutate_scope(draft.scope, |vault, lock, _, current| {
+            let ids = current
+                .active
+                .keys()
+                .chain(current.drafts.keys())
+                .cloned()
+                .collect();
+            let id = vault.allocate_id(&draft.title, ids, None)?;
+            let entry = KnowledgeEntry {
+                id,
+                title: draft.title,
+                kind: draft.kind,
+                tags: draft.tags,
+                created_at: now_ms,
+                updated_at: now_ms,
+                source_session: draft.source_session,
+                scope: draft.scope,
+                status: crate::entry::EntryStatus::Draft,
+                tier: draft.tier,
+                importance: draft.importance,
+                body: draft.body,
+            };
+            lock.write_draft(vault, &entry)?;
+            Ok(entry)
+        })
     }
 
     /// All pending drafts, ordered by uid.
@@ -670,25 +733,31 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         let Some(draft) = self.drafts.get(uid_key).cloned() else {
             return Err(CoreError::not_found(format!("draft not found: {uid_key}")));
         };
-        // Remove the draft file first so the slug is free for the active write.
-        if let Some(vault) = self.vault_for(draft.scope) {
-            vault.delete_draft(&draft.id)?;
-        }
-        self.drafts.remove(uid_key);
-        // Promote via the normal write path (dedup + index update).
-        self.write(
-            KnowledgeDraft {
-                title: draft.title,
-                body: draft.body,
-                kind: draft.kind,
-                tags: draft.tags,
-                source_session: draft.source_session,
-                scope: draft.scope,
-                tier: draft.tier,
-                importance: draft.importance,
-            },
-            now_ms,
-        )
+        self.mutate_scope(draft.scope, |vault, lock, expected, current| {
+            check_version(draft.scope, &draft.id, &expected.drafts, &current.drafts)?;
+            let entry = prepare_write(
+                vault,
+                KnowledgeDraft {
+                    title: draft.title,
+                    body: draft.body,
+                    kind: draft.kind,
+                    tags: draft.tags,
+                    source_session: draft.source_session,
+                    scope: draft.scope,
+                    tier: draft.tier,
+                    importance: draft.importance,
+                },
+                now_ms,
+                expected,
+                current,
+                Some(&draft.id),
+            )?;
+            // Publish active first: a failed active write must not destroy the
+            // source draft. A later delete failure is reconciled by mutate_scope.
+            lock.write(vault, &entry)?;
+            lock.delete_draft(vault, &draft.id)?;
+            Ok(entry)
+        })
     }
 
     /// Discard a draft by composite uid: delete its file and drop it. Returns
@@ -697,11 +766,13 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         let Some(draft) = self.drafts.get(uid_key).cloned() else {
             return Ok(false);
         };
-        if let Some(vault) = self.vault_for(draft.scope) {
-            vault.delete_draft(&draft.id)?;
-        }
-        self.drafts.remove(uid_key);
-        Ok(true)
+        self.mutate_scope(draft.scope, |vault, lock, expected, current| {
+            if !current.drafts.contains_key(&draft.id) {
+                return Ok(false);
+            }
+            check_version(draft.scope, &draft.id, &expected.drafts, &current.drafts)?;
+            lock.delete_draft(vault, &draft.id)
+        })
     }
 
     /// Number of pending drafts.
