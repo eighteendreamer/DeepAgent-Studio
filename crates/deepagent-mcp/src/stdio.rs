@@ -472,10 +472,7 @@ impl McpTransport for StdioTransport {
         self.reader_task.abort();
         #[cfg(windows)]
         {
-            self.process_job
-                .terminate()
-                .map_err(|error| CoreError::other(format!("terminate owned MCP job: {error}")))?;
-            self.process_job.wait_empty().await.map_err(|error| {
+            self.process_job.shutdown().await.map_err(|error| {
                 CoreError::other(format!("wait for owned MCP job shutdown: {error}"))
             })?;
         }
