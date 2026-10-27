@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-52 | 已修复并验收（2026-10-28，所列Windows本机/vault/OS子进程范围） | 单一锁内读/身份/版本/写事务，草稿/提升/删除/合并共用；knowledge79/0/0、知识服务35/0/0，workspace3539/1既有H-306失败/319 ignored；桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H52-01～06，待独立提交回填 |
+| H-52 | 已修复并验收（2026-10-28，所列Windows本机/vault/OS子进程范围） | 单一锁内读/身份/版本/写事务，草稿/提升/删除/合并共用；knowledge79/0/0、知识服务35/0/0，workspace3539/1既有H-306失败/319 ignored；桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H52-01～07，修复提交`bc046b903548d4f0b481e71988d2cbb99ac3dc52` |
 | H-51 | 已修复并验收（2026-10-27，所列Windows本机/离线模型/vault范围） | 稳定内部ID绑定运行与pending物化，UI选择分离；知识33/0/1既有H-52 ignored，最终workspace3522/1既有H-306失败/320 ignored；独立桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H51-01～13，修复提交`a175a5fb96c4675d25a4bab6c23b7afc6ec12ccc` |
 | H-50 | 已修复并验收（2026-10-27，所列Windows本机离线派发与共享服务范围） | 唯一opaque身份、设备/后端代次、同设备操作锁与派发前失效；移动249/0/7真机ignored；workspace3504/1既有H-306失败/321 ignored、严格lint边界见E-H50-01～09；补强提交`f0ad9e5749e0d53cde9c6731c3993e0cdb847b84` |
 | H-65 | 已修复并验收（2026-10-27，所列Windows本机范围） | 两处共用正式工具执行边界，原失败保留；单元3/boundary5默认通过，最终workspace3471/1/324；独立取消/Job反例不擦除，见E-H65-01～16；修复提交`1f5fbb084e2babe908fd6481f1a05e1231a5f5d0` |
@@ -2261,7 +2261,7 @@ E-H51-11：稳定ID知识专项实跑33 passed/0 failed/1既有H-52 ignored，13
 
 ### H-52：知识库锁仅保护最终文件写入，独立宿主的旧索引可把不同笔记静默覆盖
 
-**2026-10-28状态：已修复并验收（所列Windows本机范围），待独立提交。** 进度文档E-H52-01～06保留原始失败、只读属性夹具错误和身份物化新反例。修复为本地设计，复用现有KnowledgeBase/Vault与OS锁：严格盘面读取→标题身份/实际文件名占用→精确原文版本核对→落盘→scope索引更新都在同一同步区段；陈旧同条目操作明确冲突、需要reload，不以同slug认定同笔记。草稿、提升、删除及consolidation共用边界，合并在锁内重新读取/分组，提升先保存active再删draft，部分提交后错误仍重扫并发布真实缓存；既有归档不覆盖。KnowledgeService物理重绑保留原读取快照，防止隐式reload授权未知同标题覆盖。不新增依赖、存储、DTO/协议或数据库迁移，不放宽权限。
+**2026-10-28状态：已修复并验收（所列Windows本机范围）。** 修复代码/测试/当时文档已正常提交为 `bc046b903548d4f0b481e71988d2cbb99ac3dc52`，本次取得hash后仅回填两文档，不amend、不推送、不创建PR；见E-H52-07。 进度文档E-H52-01～06保留原始失败、只读属性夹具错误和身份物化新反例。修复为本地设计，复用现有KnowledgeBase/Vault与OS锁：严格盘面读取→标题身份/实际文件名占用→精确原文版本核对→落盘→scope索引更新都在同一同步区段；陈旧同条目操作明确冲突、需要reload，不以同slug认定同笔记。草稿、提升、删除及consolidation共用边界，合并在锁内重新读取/分组，提升先保存active再删draft，部分提交后错误仍重扫并发布真实缓存；既有归档不覆盖。KnowledgeService物理重绑保留原读取快照，防止隐式reload授权未知同标题覆盖。不新增依赖、存储、DTO/协议或数据库迁移，不放宽权限。
 
 实际验收：原探针已去ignore默认通过，reload/不reload均两条、ID不同且A/B保留；knowledge79 passed/0 failed/0 ignored，正式服务知识组35/0/0。包含项目/global、中文/截断slug、同条目/外部精确内容变化与删除冲突、草稿身份/提升/失败重试、旧合并/部分archive失败和真实双进程。OS子进程运行正式KnowledgeBase；独立正式KnowledgeService覆盖缓存/目录物化，不冒称真实桌面或供应商。完整cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1为128 targets、3539 passed/1 failed/319 ignored，唯一既有H-306；独立Tauri Rust check、knowledge严格Clippy、fmt/diff通过。AppCore含依赖严格Clippy被既有models clone_on_copy阻断，no-deps严格10项既有错误，非严格诊断亦因既有测试panicking_unwrap失败；全部命令/日志及HEAD对照见E-H52-06，不宣称workspace/lint全绿。
 

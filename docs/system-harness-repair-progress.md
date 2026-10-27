@@ -49,6 +49,8 @@ E-H52-06（2026-10-28最终验收与边界）：会话38389已原生终结。car
 
 本项验收限Windows本机/临时真实文件与OS锁、正式服务和离线kernel消费者。没有前端类型/UI变更，未执行pnpm build、独立TS SDK、真实UI/真实供应商、其他OS、专门区分大小写目录、网络文件系统和大规模/断电压力；不能声称这些通过。外部不合作作者在检查与替换之间的写入不受vault锁保证，未承诺多文件/多scope断电全事务、外部编辑自动实时刷新、文件句柄级root隔离或DACL保留（H-287仍独立待修）。原500ms争锁上限保留；raw读取快照增加线性内存、扫描和派生索引成本，未做规模性能保证。当前本机范围剩余0，新增验收1项；下一项优先复核H-237 agent-hook权限继承，因其涉及已声明deny与真实子执行不一致，不机械按H-53编号推进。剩余224有效项的200–400有效修复/验收小时仍为原未逐项校准粗估，依据跨层与平台验收规模，没有逐项工时基线，不机械扣减；构建、设备/依赖/环境等待另计，不承诺精确日期。代码/默认回归/两文档待独立正常提交，不推送、不创建PR。
 
+E-H52-07（2026-10-28独立提交与回填）：代码、默认回归和当时两份文档已正常提交为 `bc046b903548d4f0b481e71988d2cbb99ac3dc52`（【fix】统一知识库跨宿主写入与版本冲突边界），仅本项8个文件；无amend、hook绕过、推送或PR。提交后tracked工作树干净，五类既有未跟踪用户项未读取/修改/暂存。本次取得hash后只回填两文档。文档检查曾因展示用无效通配符及过严全角冒号假设误拒历史追溯行，均为检查脚本错误，未改台账内容；改用既有通用H编号解析后，严格结构检查退出0：306行/306唯一编号/0坏列、两文档H-52状态一致。最终55验收/18历史跳过/7归并/2撤销/224待修/0修复中，224有效未关闭；下一项优先复核H-237，整体目标仍active。剩余工时及未验限制保持E-06，不把本项完成说成整体完成。
+
 ## H-51 本轮即时记录（2026-10-27）
 
 **当前状态：已修复并验收（E-H51-12所列Windows本机、离线模型与真实临时vault/SQLite范围）。** 本轮只处理项目身份漂移，不合并H-52跨宿主旧索引覆盖或H-176工作流过滤；54已验收/18历史跳过/7归并/2撤销/225待修/0修复中，225有效未关闭。以下记录按执行顺序保留，原失败和候选失败不改写；最终验收以E-H51-12为准，整体任务仍active。
@@ -636,7 +638,7 @@ E-H43-20261027-06（独立提交与 hash 回填）：代码、回归测试和原
 
 ## H-15 本轮即时记录（2026-10-26）
 
-**当前状态：已修复并验收（所列 Windows 本机范围）。** 原始失败保留；最终范围见 E-H15-01～08，提交 hash 待独立提交后回填。
+**当前状态：已修复并验收（所列 Windows 本机范围）。** 原始失败保留；最终范围见 E-H15-01～08，提交 hash `bc046b903548d4f0b481e71988d2cbb99ac3dc52`。
 
 E-H15-20261026-01（原始复现）：HEAD 9feb5193、生产未改时，`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_cancelled_run_rejects_late_approval_and_releases_waiter --offline -j 1 -- --ignored --nocapture` shell退出1，0 passed/1 failed/0 ignored（构建2m23s、测试0.20s）。实际terminal=cancelled、action=cancelled、command_calls=0，pending_after_terminal=1、durable_state=Pending，迟到tool_session回答late=Ok(true)、granted_after_terminal=true，最后追加approval.responded。确认取消有效而审批生命周期未同步终结；只使用离线transport、合成输入和永不运行进程的executor。已核对现有ChannelApprovalGate/PendingApprovals、RunCoordinator、RunControlStore/RunStore终态事务及Codex turn所属waiter/先观察取消再清等待规则。本轮只处理H-15：wait future所有权、回答/丢弃互斥、终态事务失效及迟到授权，H-16跨run call_id冲突不合并；原五类未跟踪项不读改或暂存。生产实现及新回归尚未改，H-15转修复中；不能用H-01审批不执行工具对照替代本项验收。
 
@@ -1492,7 +1494,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-49：备用模型切换只更新模型和预算，实际请求仍携带主模型的输出上限](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-50：移动输入未校验界面快照，已过期和未知引用仍下发设备命令](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原始失败、测试编译与fake身份反例保留；限E-H50-07～08所列Windows离线范围 | 现有SnapshotStore唯一service身份/设备锁，引用绑定观察到的设备连接与backend代次；已知UI操作下发前消费引用，schema显式声明optional snapshot_id | 原探针1；新增Android11/AppCore2/iOS1；五移动crate249 passed/7真机ignored；workspace3504 passed/1既有H-306失败/321 ignored；移动严格lint与builtins no-deps严格lint通过，AppCore/builtins含依赖严格lint受既有models阻断 | 初版`a08e0ead`；本轮补强`f0ad9e5749e0d53cde9c6731c3993e0cdb847b84` | None人工输入保留；opaque ID不可解析、输入后需重捕获；无DTO/数据迁移；真实设备/Mac/UI/其他OS未验，本机范围剩余0；下一项H-51，总200–400有效小时未校准、环境等待另计 |
 | [H-51：项目激活改写共享知识服务，既有运行的记忆读写会被重定向到另一个项目](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针与目录物化/junction/逻辑名称复用新失败均保留；限E-H51-12所列Windows本机范围，H-52/H-176不合并 | 单一知识服务的稳定内部ID绑定运行；pending按物理根收敛并固定vault路径；同宿主global派生索引同步；owned assembler/子代理/后台/收尾不跟随UI | 知识33/0/1既有H-52 ignored；最终workspace3522/1既有H-306失败/320 ignored，AppCore1201/0/66、kernel143/0/82、CLI/SDK默认组通过；桌面Rust check、knowledge严格lint、fmt/diff通过，AppCore严格及诊断lint有既有阻断 | `a175a5fb96c4675d25a4bab6c23b7afc6ec12ccc` | 默认global保留；固定视图不可activate，UI接口保留；无DTO/数据迁移；真实UI/供应商/其他OS未验、跨宿主H-52待修；缓存及发布成本见E-12，本机范围剩余0；下一项H-52，整体200–400有效小时未逐项校准、环境等待另计 |
-| [H-52：知识库锁仅保护最终文件写入，独立宿主的旧索引可把不同笔记静默覆盖](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H52-01原失败与E-04物化反例保留；限E-06所列Windows本机范围 | 唯一锁内读/身份/版本/写/缓存边界；精确原文冲突、物理重绑保留观察；草稿/提升/删除/合并共用 | knowledge79/0/0、知识服务35/0/0，原探针默认；最终workspace3539/1既有H-306失败/319 ignored；桌面Rust check、knowledge严格lint、fmt/diff通过，AppCore严格/诊断lint既有阻断 | 待独立提交后回填 | 无DTO/数据迁移；冲突需reload，归档不覆盖；非合作外部编辑/其他OS/UI/规模/断电/DACL未验，见E-06；本机范围剩余0，下一项H-237，总200–400有效小时未逐项校准、环境等待另计 |
+| [H-52：知识库锁仅保护最终文件写入，独立宿主的旧索引可把不同笔记静默覆盖](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H52-01原失败与E-04物化反例保留；限E-06所列Windows本机范围 | 唯一锁内读/身份/版本/写/缓存边界；精确原文冲突、物理重绑保留观察；草稿/提升/删除/合并共用 | knowledge79/0/0、知识服务35/0/0，原探针默认；最终workspace3539/1既有H-306失败/319 ignored；桌面Rust check、knowledge严格lint、fmt/diff通过，AppCore严格/诊断lint既有阻断 | `bc046b903548d4f0b481e71988d2cbb99ac3dc52` | 无DTO/数据迁移；冲突需reload，归档不覆盖；非合作外部编辑/其他OS/UI/规模/断电/DACL未验，见E-06；本机范围剩余0，下一项H-237，总200–400有效小时未逐项校准、环境等待另计 |
 | [H-53：原生压缩移除相关记忆后，后台检索去重与预算仍保留旧记录](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-54：有效模型参数被桌面深度覆盖，显式思考强度与输出上限没有进入真实请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-55：简单思考模式直接携带 Responses 的 none 进入 Chat 适配器，本地校验拒绝整个运行](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
