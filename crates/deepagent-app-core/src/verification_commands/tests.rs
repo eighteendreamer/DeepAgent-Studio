@@ -44,7 +44,7 @@ impl CommandExecutor for RecordingExecutor {
     }
 }
 
-fn fixture(
+pub(super) fn fixture(
     root: &Path,
     executor: Arc<dyn CommandExecutor>,
     outcome: HookOutcome,

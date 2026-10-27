@@ -131,3 +131,7 @@ wasm = ["deepagent-tools/wasm"]
 [dev-dependencies]
 tokio = { workspace = true }
 wat = "1"
+
+[target.'cfg(windows)'.dev-dependencies]
+# Observe real fixture process exits using the same locked bindings as MCP/builtins.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Threading"] }

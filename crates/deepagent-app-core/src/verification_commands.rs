@@ -191,3 +191,6 @@ impl CommandRunner for VerificationCommands {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, windows))]
+mod lifecycle_tests;

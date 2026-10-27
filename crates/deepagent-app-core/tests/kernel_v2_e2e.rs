@@ -15,6 +15,10 @@ use deepagent_subagents::WorktreeProvider;
 #[path = "kernel_v2_e2e/build_boundary.rs"]
 mod build_boundary;
 
+#[cfg(windows)]
+#[path = "kernel_v2_e2e/verification_lifecycle.rs"]
+mod verification_lifecycle;
+
 #[path = "kernel_v2_e2e/image_preparation.rs"]
 mod image_preparation;
 
