@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-65 | 已修复并验收（2026-10-27，所列Windows本机范围） | 两处共用正式工具执行边界，原失败保留；单元3/boundary5默认通过，最终workspace3471/1/324；独立取消/Job反例不擦除，见E-H65-01～15；修复提交待回填 |
+| H-65 | 已修复并验收（2026-10-27，所列Windows本机范围） | 两处共用正式工具执行边界，原失败保留；单元3/boundary5默认通过，最终workspace3471/1/324；独立取消/Job反例不擦除，见E-H65-01～16；修复提交`1f5fbb084e2babe908fd6481f1a05e1231a5f5d0` |
 | H-46 | 待修复，原验收因新反例重新打开（2026-10-27） | H-65全仓门禁出现public close返回成功而后代handle未signaled；后续重跑通过不擦除反例，见E-H46-13 |
 | H-58 | 已修复并验收（2026-10-27，所列Windows本机范围） | 身份与操作期目录边界共用；最终附件13/0、Builtins371/4、AppCore1173/60、Kernel135/83；完整workspace与lint基线失败保留，见E-H58-01～14；修复提交`fbb13a032b03f73d780ae4881e7d8b4464e0a6d8` |
 | H-15 | 已修复并验收（2026-10-26，所列Windows本机范围） | 原失败保留；两scope取消/健康、并发、五种终态入口及故障回滚专项通过，见E-H15-01～09；全仓既有基线失败与未验边界见E-H15-08 |
@@ -2534,6 +2534,8 @@ E-H65-20261027-13（MCP取消时序的确定性隔离反证，不修独立问题
 E-H65-20261027-14（移除诊断后的最终完整workspace门禁）：临时MCP调度探针已移出当前源码、原mcp_hook_cancellation fixture已逐字还原；未改任何生产取消实现或放宽测试。执行 `cargo test --workspace --offline --no-fail-fast -j 1` 原生退出101，总耗时740.78s（编译8m51s），128个target汇总3471 passed/1 failed/324 ignored；本项verification_commands三项和build_boundary五项全部默认实际执行通过，AppCore lib1176 passed/0 failed/69 ignored、kernel139/0/82、Runtime lib303/0/11、MCP86/0/2、Rust SDK真实stdio6/0/0。唯一失败仍为H-306：creative.video-edit.v1的defaultUserPrompt为空（prompts27/1/0），没有改其源码。普通MCP取消和Job public close此次均通过，不覆盖或删除E-10/11的真实反例：H-46仍待修复，H-136保留E-13的当前/HEAD确定性发送窗口补充及产品契约待核验。不能取得旧失败当次trace，未宣称其被本轮修好；H-65两处命令路由本身的后端拒绝/正常执行、action sequence与durable事件验收独立成立。严格lint沿用本轮E-10/11实际执行的既有失败及诊断，不称全仓全绿、不屏蔽lint。最终 `cargo fmt --all -- --check` 退出0（3.83s）、git diff --check退出0；命令/原生退出码/耗时见E-01同根final-results.json，128个target明细见final-target-counts.json，完整日志final-workspace.log。所有本轮命令均已终结，无待续读会话。
 
 E-H65-20261027-15（本项验收、兼容性与残余范围）：H-65在所列Windows本机范围已修复并验收。完成计划与post-edit decorator只持有同一VerificationCommands适配器，命令走当前已注册bash和原ToolExecutionPipeline；不另建executor/fallback、store、审批或取消中心，保留选定backend、broker环境、remote factory与per-run override。Kernel提供唯一canonical durable事件入口，宿主生成调用复用同一action allocator与顺序；内部保留原始exit/诊断，事件/UI/制品仍走预算发布及既有持久化scrub，不扩大成全部输出已脱敏的承诺。缺权限、hook Deny及Ask审批拒绝不进入executor，配置backend拒绝无宿主fallback；批准正向、大结果退出状态、预取消/timeout控制传递、越界cwd及中文/空格/$/单引号路径argv通过；正式None/Text/Rust拒绝canary均不出现，Direct允许真实构建正常写入测试canary。Unavailable只验证注入executor的拒绝，remote/WindowsSandbox为记录替身，不冒充真实SSH/OS沙箱；未逐一运行npm/Go/Java/.NET等所有发现命令，未验Linux/macOS、真实供应商/桌面UI/用户数据。自动检查现在明确受原hook/权限/审批约束，可能拒绝或要求审批，并新增可回放bash action/events；公共DTO、Tauri/前端签名、数据库schema与模型参数不变，无迁移、新依赖或第二套运行链。现有验证反射预算结束后run仍可能succeeded，不代表被拒绝的构建成功；独立手动/verify入口、Windows既有shell输出编码、H-64真实构建取消/进程归属、H-46及H-136不由本项关闭。没有前端/UI契约变更，未跑pnpm build；所有真实失败与未验范围保留，不以局部绿测替代E-14完整门禁。两份文档与306行/306唯一编号/8列已于提交前核对；本轮新增验收1，累计49已验收/18历史跳过/7归并/2撤销/230待修/0修复中，230有效未关闭。独立修复commit待生成后另回填，不amend、不推送；下一项优先复核H-46 public close新反例，再复核H-64新生产路径。总体200–400有效小时仍为跨层复现/根因修复/验收规模的未逐项校准初估，不能按本项机械扣减或承诺完工；本轮所列编译/测试等待另计，整体goal保持active。
+
+E-H65-20261027-16（独立提交与真实hash回填）：生产修复、默认回归及当时两份文档已独立提交 `1f5fbb084e2babe908fd6481f1a05e1231a5f5d0`（【fix】统一H-65自动验证的命令执行边界），仅本项13个文件。提交后tracked工作区为空，只剩原有五类未跟踪项；未读取、修改或暂存它们，没有推送、PR、数据库迁移或真实用户数据操作。本次只回填实际修复hash并同步两份文档，另做文档提交，不amend、不增加修复计数。306行/306唯一编号/8列复核口径不变：49已验收/18历史跳过/7归并/2撤销/230待修/0修复中，230有效未关闭；H-46保持重开，H-136发送窗口与H-64新生产生命周期仍待核验，最终workspace及严格lint限制沿E-10～15保留。下一项优先复核H-46，不在本项顺手改其实现；200–400有效小时未校准初估与编译/设备/环境等待另计的口径不变，整体goal保持active。
 
 以下保留修复前原始审计记录；其中旧 `--ignored` 命令和当时计数为历史证据，当前回归已转默认并在E-14实际执行。
 
