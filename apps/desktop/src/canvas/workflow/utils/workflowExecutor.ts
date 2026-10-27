@@ -311,6 +311,93 @@ async function runBackendWorkflow(
     target_node_id: targetNodeId ?? null,
   };
 
+  type BufferedEvent = {
+    channel: "workflow" | "completion";
+    payload: Record<string, unknown>;
+  };
+  const buffered: BufferedEvent[] = [];
+  let resolveCompletion!: () => void;
+  let rejectCompletion!: (reason: unknown) => void;
+  const completion = new Promise<void>((resolve, reject) => {
+    resolveCompletion = resolve;
+    rejectCompletion = reject;
+  });
+
+  const cleanup = () => {
+    closeRunOwner(owner);
+    signal.removeEventListener("abort", onAbort);
+  };
+  const onAbort = () => {
+    cleanup();
+    rejectCompletion(abortError());
+  };
+  if (signal.aborted) {
+    cleanup();
+    throw abortError();
+  }
+  signal.addEventListener("abort", onAbort, { once: true });
+
+  const handleWorkflowPayload = (raw: Record<string, unknown>) => {
+    if (!owner.active || owner.closed) return;
+    const envelope = raw as { run_id?: string; payload?: Record<string, unknown> };
+    if (!owner.runId) {
+      buffered.push({ channel: "workflow", payload: raw });
+      return;
+    }
+    if (envelope?.run_id !== owner.runId) return;
+    const event = envelope?.payload ?? raw;
+    if (event?.type !== "workflow_node") return;
+    const inner = (event as { event?: Record<string, unknown> }).event ?? event;
+    const nodeId = inner.node_id as string | undefined;
+    const backendStatus = inner.status as string | undefined;
+    if (!nodeId || !backendStatus) return;
+
+    const mapped = mapBackendStatus(backendStatus);
+    setNodeStatus(mode, nodeId, mapped, {
+      executionTime:
+        typeof inner.elapsed_ms === "number" ? inner.elapsed_ms : undefined,
+      errorMessage:
+        typeof inner.error === "string" ? inner.error : undefined,
+      result:
+        inner.outputs !== undefined && inner.outputs !== null
+          ? { success: mapped === "completed", outputs: inner.outputs }
+          : undefined,
+      ...applyNodeEventIdentity(mode, nodeId, inner),
+      ...applyNodeOutputs(mode, inner.outputs),
+    });
+  };
+
+  const handleCompletionPayload = (payload: Record<string, unknown>) => {
+    if (!owner.active || owner.closed) return;
+    if (!owner.runId) {
+      buffered.push({ channel: "completion", payload });
+      return;
+    }
+    if (payload.run_id !== owner.runId) return;
+    cleanup();
+    resolveCompletion();
+  };
+
+  const eventUnlisten = await eventMod.listen<Record<string, unknown>>(
+    "chat://event",
+    (e) => handleWorkflowPayload(e.payload),
+  );
+  if (!owner.active || owner.closed || signal.aborted || _activeRun !== owner) {
+    eventUnlisten();
+    throw abortError();
+  }
+  owner.eventUnlisten = eventUnlisten;
+
+  const completionUnlisten = await eventMod.listen<Record<string, unknown>>(
+    "session://completed",
+    (e) => handleCompletionPayload(e.payload),
+  );
+  if (!owner.active || owner.closed || signal.aborted || _activeRun !== owner) {
+    completionUnlisten();
+    throw abortError();
+  }
+  owner.completionUnlisten = completionUnlisten;
+
   const ack = await core.invoke<{ run_id: string; session_id: string | null }>(
     "start_workflow",
     { workflow, sessionId: null },
@@ -319,67 +406,13 @@ async function runBackendWorkflow(
     throw abortError();
   }
   owner.runId = ack.run_id;
+  for (const event of buffered.splice(0)) {
+    if (!owner.active || owner.closed) break;
+    if (event.channel === "workflow") handleWorkflowPayload(event.payload);
+    else handleCompletionPayload(event.payload);
+  }
 
-  return new Promise<void>((resolve, reject) => {
-    const cleanup = () => closeRunOwner(owner);
-
-    const onAbort = () => {
-      cleanup();
-      reject(abortError());
-    };
-    if (signal.aborted) {
-      cleanup();
-      reject(abortError());
-      return;
-    }
-    signal.addEventListener("abort", onAbort, { once: true });
-
-    eventMod
-      .listen<Record<string, unknown>>("chat://event", (e) => {
-        if (!owner.active || owner.closed || !owner.runId) return;
-        const raw = e.payload;
-        const envelope = raw as { run_id?: string; payload?: Record<string, unknown> };
-        if (envelope?.run_id !== owner.runId) return;
-        const event =
-          envelope?.run_id && envelope?.payload ? envelope.payload : raw;
-        if (event?.type !== "workflow_node") return;
-        const inner = (event as { event?: Record<string, unknown> }).event ?? event;
-        const nodeId = inner.node_id as string | undefined;
-        const backendStatus = inner.status as string | undefined;
-        if (!nodeId || !backendStatus) return;
-
-        const mapped = mapBackendStatus(backendStatus);
-        setNodeStatus(mode, nodeId, mapped, {
-          executionTime:
-            typeof inner.elapsed_ms === "number" ? inner.elapsed_ms : undefined,
-          errorMessage:
-            typeof inner.error === "string" ? inner.error : undefined,
-          result:
-            inner.outputs !== undefined && inner.outputs !== null
-              ? { success: mapped === "completed", outputs: inner.outputs }
-              : undefined,
-          ...applyNodeEventIdentity(mode, nodeId, inner),
-          ...applyNodeOutputs(mode, inner.outputs),
-        });
-      })
-      .then((unlisten) => {
-        if (!owner.active || owner.closed || _activeRun !== owner) unlisten();
-        else owner.eventUnlisten = unlisten;
-      });
-
-    eventMod
-      .listen<Record<string, unknown>>("session://completed", (e) => {
-        if (!owner.active || owner.closed || !owner.runId) return;
-        if (e.payload?.run_id !== owner.runId) return;
-        cleanup();
-        signal.removeEventListener("abort", onAbort);
-        resolve();
-      })
-      .then((unlisten) => {
-        if (!owner.active || owner.closed || _activeRun !== owner) unlisten();
-        else owner.completionUnlisten = unlisten;
-      });
-  });
+  await completion;
 }
 
 export async function runWorkflow(nodeId?: string) {

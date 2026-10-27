@@ -1429,17 +1429,9 @@ export async function runChat(
       cancelAfterAdmission();
     };
     abortSignal?.addEventListener("abort", onAbort, { once: true });
-    const unlistenEvent = await mod.listen<RunEventEnvelope<RuntimeEvent> | RuntimeEvent>("chat://event", (e) => {
-      const payload = unwrapRunPayload(e.payload, actualRunId);
-      if (payload) onEvent(payload);
-    });
-    const unlistenApproval = await mod.listen<RunEventEnvelope<ApprovalRequest> | ApprovalRequest>(
-      "chat://approval",
-      (e) => {
-        const payload = unwrapRunPayload(e.payload, actualRunId);
-        if (payload) onApproval?.({ ...payload, run_id: actualRunId });
-      }
-    );
+    let unlistenEvent: (() => void) | null = null;
+    let unlistenApproval: (() => void) | null = null;
+    let unlistenCompletion: (() => void) | null = null;
     // Old-chain retirement (kernel refactor Phase F): the long-held
     // `run_chat` IPC is gone. This wrapper keeps the legacy promise shape —
     // resolve with the session id on completion — by starting a v2 run and
@@ -1450,26 +1442,44 @@ export async function runChat(
       status: string;
       error?: string | null;
     };
-    const completedCleanup: { fn: (() => void) | null } = { fn: null };
+    let completionTimer: ReturnType<typeof setTimeout> | null = null;
+    let completionSettled = false;
+    let resolveCompletion!: (sessionId: string) => void;
+    let rejectCompletion!: (reason: unknown) => void;
+    const completion = new Promise<string>((resolve, reject) => {
+      resolveCompletion = resolve;
+      rejectCompletion = reject;
+    });
     try {
-      const completion = new Promise<string>((resolve, reject) => {
-        mod
-          .listen<CompletedPayload>("session://completed", (e) => {
-            if (e.payload.run_id !== actualRunId) return;
-            // Delay resolve to give trailing events (like run_cancelled with edited_files)
-            // time to arrive before the finally block tears down the event listeners.
-            setTimeout(() => {
-              if (e.payload.status === "completed" && e.payload.session_id) {
-                resolve(e.payload.session_id);
-              } else {
-                reject(new RunCompletionError(e.payload));
-              }
-            }, 100);
-          })
-          .then((unlisten) => {
-            completedCleanup.fn = unlisten;
-          })
-          .catch(reject);
+      // All listeners must be registered before start_chat_v2. Tauri's listen
+      // call is asynchronous; merely starting it before invoke does not create
+      // a readiness barrier, so await each registration explicitly.
+      unlistenEvent = await mod.listen<RunEventEnvelope<RuntimeEvent> | RuntimeEvent>(
+        "chat://event",
+        (e) => {
+          const payload = unwrapRunPayload(e.payload, actualRunId);
+          if (payload) onEvent(payload);
+        },
+      );
+      unlistenApproval = await mod.listen<RunEventEnvelope<ApprovalRequest> | ApprovalRequest>(
+        "chat://approval",
+        (e) => {
+          const payload = unwrapRunPayload(e.payload, actualRunId);
+          if (payload) onApproval?.({ ...payload, run_id: actualRunId });
+        },
+      );
+      unlistenCompletion = await mod.listen<CompletedPayload>("session://completed", (e) => {
+        if (e.payload.run_id !== actualRunId || completionSettled) return;
+        // Delay resolve to give trailing events (like run_cancelled with edited_files)
+        // time to arrive before the finally block tears down the event listeners.
+        completionTimer = setTimeout(() => {
+          completionSettled = true;
+          if (e.payload.status === "completed" && e.payload.session_id) {
+            resolveCompletion(e.payload.session_id);
+          } else {
+            rejectCompletion(new RunCompletionError(e.payload));
+          }
+        }, 100);
       });
       const ack = await invoke<StartChatV2Ack>("start_chat_v2", {
         prompt,
@@ -1490,9 +1500,10 @@ export async function runChat(
       return nextSessionId;
     } finally {
       abortSignal?.removeEventListener("abort", onAbort);
-      unlistenEvent();
-      unlistenApproval();
-      completedCleanup.fn?.();
+      if (completionTimer !== null) clearTimeout(completionTimer);
+      unlistenEvent?.();
+      unlistenApproval?.();
+      unlistenCompletion?.();
     }
   }
   return mockChatStream(prompt, onEvent);

@@ -1930,6 +1930,17 @@ E-H41-20261027-05（独立提交与范围）：生产修复、隔离回归测试
 - 潜在后果：后端已结束，调用方仍等待；画布节点可能缺少结果、UI 保持运行态或阻塞下一操作。普通聊天的其他状态处理是否会部分纠正 UI，要另外实测，不把包装器 Promise 悬挂直接等同所有界面都完全冻结。由于后端实际已经终态，不能把这项笼统描述成后台工作无法停止。
 - 验收包括注册延迟、ACK 前完成、快速校验失败、当前 run 失败/取消、订阅失败、窗口重连及持久化补读；必须保证无丢终态且监听可释放。此阶段只增加默认跳过的故障探针和文档，没有修改生产订阅或另建事件中心。
 
+#### H-43 修复后证据（2026-10-27）
+
+**当前状态：已修复并验收（限 Windows 本机离线前端包装器、受控 Tauri IPC 桥和画布事件投影）。** 上述首次失败保留，不改写为成功；本节只记录根因修复和新的回归证据。
+
+- **E-H43-20261027-01（根因修复）：** `runChat()` 以前只启动 `session://completed` 的异步 `listen`，没有等待注册完成就调用 `start_chat_v2`；`runBackendWorkflow()` 则在 `start_workflow` ACK 后才注册两条监听。两条路径现在都在启动命令前依次 `await` 完成事件、运行事件和审批监听注册。画布路径在 ACK 前暂存带 `run_id` 的节点/终态 envelope，收到 ACK 后按返回的 run id 重放并过滤；旧 owner、取消和注册失败仍沿同一 owner 清理，不增加事件中心或第二套持久化。
+- **E-H43-20261027-02（原探针正式回归）：** `$env:RUN_HARNESS_AUDIT='1'; node --test apps/desktop/scripts/audit-start-subscription.test.cjs` 退出 0，`2 passed / 0 failed`。chat 和 canvas 均输出 `startedBeforeSubscriptionReady=false`、`earlyTerminalDelivered=true`、`pendingAfterReadiness=false`；canvas 另为 `nodeCompleted=true`，两者 `listenersAfterControl=0`。夹具仍只替换本地 Tauri listen/invoke，不启动真实后端、模型、工具、网络或用户文件。
+- **E-H43-20261027-03（生产前端回归）：** `cd apps/desktop && pnpm test:workflow` 退出 0（78 passed）；`cd apps/desktop && pnpm exec tsc --noEmit` 退出 0。既有 `check-run-completion-error` 也在完整桌面构建链中通过，确认失败/取消终态仍保留原状态错误。
+- **E-H43-20261027-04（桌面构建）：** `cd apps/desktop && pnpm build` 退出 0，包含插件预打包、全部桌面脚本回归、TypeScript 检查和 Vite production build；仅保留既有 Node 内置模块 externalization 与大 chunk 警告。`git diff --check` 退出 0。
+- **E-H43-20261027-05（范围与残余限制）：** 证明的是“启动命令不会早于监听就绪，ACK 前到达的同 run 事件不会丢失”这一包装器契约；未执行真实 Tauri WebView、真实后端/DeepSeek、跨窗口重连、进程重启、其他 OS 或后台供应商作业。持久化补读、窗口断连和 SDK 事件队列仍由 H-01/H-205/H-214 等独立条目负责，不因本项关闭。
+- **修复提交：** 代码、回归探针和本节记录在本轮独立修复提交中创建；提交 hash 在 `docs/system-harness-repair-progress.md` 取得后回填，避免改写首次失败证据。
+
 ### H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态
 
 #### 2026-10-26 修复过程与验收（H-44，Windows本机范围）

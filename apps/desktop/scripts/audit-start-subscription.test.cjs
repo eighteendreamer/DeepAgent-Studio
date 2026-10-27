@@ -48,7 +48,7 @@ function transport(runId, sessionId, startCommand) {
 }
 
 for (const kind of ["chat", "canvas"]) {
-  test(`${kind} completes when the backend terminal precedes subscription readiness`, {
+  test(`${kind} waits for subscription readiness before starting the run`, {
     skip: process.env.RUN_HARNESS_AUDIT !== "1",
     timeout: 5000,
   }, async () => {
@@ -91,6 +91,8 @@ for (const kind of ["chat", "canvas"]) {
         earlyTerminalDelivered: bus.observations.earlyTerminalDelivered,
         pendingAfterReadiness, ...(kind === "canvas" ? { nodeCompleted } : {}),
         listenersAfterControl: bus.handlers.size }));
+      assert.equal(startedBeforeSubscriptionReady, false, "the backend must not start before listeners are ready");
+      assert.equal(bus.observations.earlyTerminalDelivered, true, "the terminal must be observed by the ready listener");
       assert.equal(pendingAfterReadiness, false, "an already completed run must not remain pending after subscription is ready");
       if (kind === "canvas") assert.equal(nodeCompleted, true);
     } finally {
