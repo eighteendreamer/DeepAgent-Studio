@@ -1939,7 +1939,7 @@ E-H41-20261027-05（独立提交与范围）：生产修复、隔离回归测试
 - **E-H43-20261027-03（生产前端回归）：** `cd apps/desktop && pnpm test:workflow` 退出 0（78 passed）；`cd apps/desktop && pnpm exec tsc --noEmit` 退出 0。既有 `check-run-completion-error` 也在完整桌面构建链中通过，确认失败/取消终态仍保留原状态错误。
 - **E-H43-20261027-04（桌面构建）：** `cd apps/desktop && pnpm build` 退出 0，包含插件预打包、全部桌面脚本回归、TypeScript 检查和 Vite production build；仅保留既有 Node 内置模块 externalization 与大 chunk 警告。`git diff --check` 退出 0。
 - **E-H43-20261027-05（范围与残余限制）：** 证明的是“启动命令不会早于监听就绪，ACK 前到达的同 run 事件不会丢失”这一包装器契约；未执行真实 Tauri WebView、真实后端/DeepSeek、跨窗口重连、进程重启、其他 OS 或后台供应商作业。持久化补读、窗口断连和 SDK 事件队列仍由 H-01/H-205/H-214 等独立条目负责，不因本项关闭。
-- **修复提交：** 代码、回归探针和本节记录在本轮独立修复提交中创建；提交 hash 在 `docs/system-harness-repair-progress.md` 取得后回填，避免改写首次失败证据。
+- **修复提交：** 代码、回归探针和本节记录已在独立修复提交 `3f9470e3b0592e0bc8f4feb60544219114db5c4b`（`【fix】修复H-43启动订阅竞态`）中创建；后续仅在进度台账回填该 hash，不改写首次失败证据。
 
 ### H-44：启动恢复绕过统一终态边界，运行表已失败但会话重放仍没有终态
 
