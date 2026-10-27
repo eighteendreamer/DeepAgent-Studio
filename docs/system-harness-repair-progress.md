@@ -2,21 +2,54 @@
 
 ## 当前状态与计数口径（2026-10-27）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计五十二项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计五十三项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 52 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 53 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前没有仍在本阶段核验中的条目 |
-| 待修复 | 227 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 226 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **227（227待修复、0修复中）**；不提供完成率。五十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **226（226待修复、0修复中）**；不提供完成率。五十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-50 本轮即时记录（2026-10-27）
+
+**当前状态：已修复并验收（所列Windows本机离线Android派发、共享服务与工具契约范围）。** 初版提交不单独作为结案依据；最终边界与全仓反证见E-H50-07～08。53已验收/18历史跳过/7归并/2撤销/226待修/0修复中，226有效未关闭。
+
+E-H50-01（原始反例与在途实现）：修改前显式原探针记录为0 passed/1 failed，tracked_matches_returned=false、latest_validates=false，三组均accepted，实际3条ADB输入；保留原文首次失败。初版提交a08e0ead修正登记/返回与校验，但复查发现backend重复ID、连接ABA和检查/派发并发边界不足，不能仅凭该提交结案。当前未提交重构由service发布唯一opaque ID，单一device snapshot记录及锁覆盖捕获/输入/失效，Registry提供观察到的连接代次；不新增执行链/DTO/生产依赖。
+
+E-H50-02（续接实跑）：当前代码运行 cargo test -p deepagent-mobile-android --lib audit_mobile_service_fences_input_to_the_returned_snapshot --offline -j 1 -- --nocapture --test-threads=1，退出0，1 passed/0 failed/0 ignored；tracked_matches_returned=true、latest_validates=true，只有current accepted，superseded/unknown均StaleUiNode，实际1条ADB输入。只证明这一原始离线探针；最新并发/失败/工具边界和完整workspace尚待，不引用旧重构前全组结果冒充新验收。未访问真实手机、内网、凭据或既有用户数据根。
+
+
+E-H50-03（新增边界及失败记录）：Android正式service/AdbBackend新增10项回归实跑退出0、10 passed；覆盖单次消费/None/派发后错误、remove与Offline重连、捕获阻止旧输入且其他设备推进、输入持锁/等待取消与timeout、在途重连拒绝发布、失败/取消捕获、clear顺序、稳定扫描/Busy租约和route改变、install/launch/terminate失效、固定backend ID。AppCore工具契约测试初次编译退出1，误用ToolOutput.is_error/content及把AppCore ArtifactRefDto作为builtins DTO转换；按现有ok/value字段和底层ArtifactRef边界修正，未当作生产缺陷。修正后 cargo test -p deepagent-app-core --lib mobile_service:: --offline -j 1 -- --nocapture --test-threads=1 退出0，10 passed/0 failed/1真机ignored，其中新增2项：ToolRegistry schema→invoke→测试桥→AppMobileService→MobileService，最新/已消费/未知/非法类型/省略引用；桌面summary/full返回身份和serde输入。该桥仅测试使用，没有虚构生产模型工具注册链。
+
+E-H50-04（iOS反证与最终生产边界）：第一次五移动crate全组在iOS新增测试失败，FakeIosBackend.ui_snapshot硬编码device_id=fake，正式service正确拒绝另设备快照；保留失败，不改service校验，修正已有fake按请求返回device_id并给原fake测试加断言。补FakeIosBackend与Remote元数据的service一致性，不冒充真实Mac transport或iOS设备验收。复核发现backend重新注册和stop_emulator同样能改变引用来源/界面，现将backend registration UUID并入同一snapshot provenance，捕获结束复核，stop命令按既有Android discovery身份持同一锁且下发前失效；追加替换/在途替换与stop对照，未新增运行链/公共DTO/依赖。最新五crate测试退出0：Android75、core5、iOS20、protocol82、runtime67，真机7 ignored；所有doc-tests0。此前版本移动严格lint曾通过，但最新版本严格lint尚在会话31156等待现有构建锁，不能沿用旧结果。
+
+E-H50-05（完整门禁在途）：新建系统Temp下专用DEEPAGENT_DATA_ROOT并仅在该shell去除DEEPAGENT_DB_PATH，未读取既有数据根；cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1 在会话1339执行，日志target/h50-workspace-tests.log，尚未取得终态。AppCore和builtins严格Clippy/fmt/diff在会话17138执行（尚未取得终态）；严格lint基线失败不预判本次结果。台账保持修复中，不计新增关闭。单设备锁只序列化本service的操作，不能冻结设备外部UI变化或未被discovery观察的物理断连；等待上限沿用OperationContext.deadline，只是锁等待预算，不声称端到端deadline新保证；设备锁记录按见过的ID保留，不改变数据/协议schema。
+
+E-H50-06（严格门禁与编号核对）：最新五移动crate的 cargo clippy -p deepagent-mobile-core -p deepagent-mobile-protocol -p deepagent-mobile-runtime -p deepagent-mobile-android -p deepagent-mobile-ios --all-targets --all-features --offline -j 1 -- -D warnings 原生退出0（含等待已有workspace构建锁，8m08s）。AppCore及builtins分别执行同样all-targets/all-features严格Clippy，均退出101，实际停在未改models/client.rs:355 clone_on_copy；git show HEAD同一行存在，不改无关models，也不把严格lint写成通过。fmt/diff当时退出0。台账程序核对为306行/306唯一编号：52验收、18历史跳过、7归并、2撤销、226待修、1修复中。协议只补doc comment说明service opaque身份、已知UI变更/输入消费及None，不变序列化字段；没有修改Tauri command、前端类型或UI组件，因此未运行pnpm build/真实UI；协议doc comment追加后的测试/格式另复验。完整workspace仍在会话1339执行，不重启。
+
+E-H50-07（最终完整门禁）：会话1339已原生退出101；完整workspace --no-fail-fast实际执行128个target（含doc-tests），汇总3504 passed/1 failed/321 ignored。唯一失败为既有H-306：prompts canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，creative.video-edit.v1空defaultUserPrompt；不把全仓写成通过。AppCore lib1185/0/67、kernel_v2_e2e142/0/82、builtins357/0/4、Runtime303/0/11、SDK真实stdio6/0/0及五移动crate全部默认组通过；本项新增测试没有ignored。日志保留target/h50-workspace-tests.log，不提交。复验原探针仍1 passed/0 ignored且仅1条ADB input，fmt/diff退出0。
+
+| 实际命令（均本机离线） | 结果 |
+|---|---|
+| cargo test -p deepagent-mobile-core -p deepagent-mobile-protocol -p deepagent-mobile-runtime -p deepagent-mobile-android -p deepagent-mobile-ios --offline -j 1 -- --quiet --test-threads=1 | 退出0：Android75/core5/iOS20/protocol82/runtime67，合计249 passed；7真机ignored |
+| cargo test -p deepagent-mobile-android --lib audit_mobile_service_fences_input_to_the_returned_snapshot --offline -j 1 -- --nocapture --test-threads=1 | 最终退出0：1 passed，0 ignored；current可执行、superseded/unknown为StaleUiNode，1条input |
+| cargo test -p deepagent-app-core --lib mobile_service:: --offline -j 1 -- --nocapture --test-threads=1 | 退出0：10 passed/1真机ignored；最终实现另由完整workspace覆盖 |
+| cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1 | 退出101：3504 passed/1既有H-306失败/321 ignored，128个target；专用新临时数据根 |
+| cargo clippy -p deepagent-mobile-core -p deepagent-mobile-protocol -p deepagent-mobile-runtime -p deepagent-mobile-android -p deepagent-mobile-ios --all-targets --all-features --offline -j 1 -- -D warnings | 退出0 |
+| cargo clippy -p deepagent-app-core --all-targets --all-features --offline -j 1 -- -D warnings；同参数 -p deepagent-builtins | 各退出101：均停既有models/client.rs:355 clone_on_copy；保留严格失败 |
+| cargo clippy -p deepagent-builtins --all-targets --all-features --offline -j 1 --no-deps -- -D warnings | 退出0；仅直接crate检查，不替代上行含依赖严格失败 |
+| cargo test -p deepagent-mobile-protocol --offline -j 1 -- --quiet --test-threads=1 | doc comment同步后退出0，82 passed |
+| cargo fmt --all -- --check；git diff --check | 最终均退出0 |
+
+E-H50-08（根因、兼容性和验收边界）：此为原审计已说明的本地移动设计，版本栅栏原则参考Codex run_with_snapshot而非复制手机实现。只保留现有MobileService/SnapshotStore/DeviceRegistry：service发布同一opaque ID并返回，单设备锁覆盖捕获/显式验证/派发/主动失效，不同设备独立；连接与backend代次禁止旧引用跨重连/重新注册，捕获结束复核来源。已知install/launch/terminate/stop_emulator和input在派发前失效，失败或取消不复活旧引用；锁等待使用现有ctx取消/预算。optional snapshot_id已在MobileInputTool descriptor公开，并由正式ToolRegistry、工具invoke和AppMobileService的测试桥验证传递，未新增生产工具注册或声称完整模型链验收。iOS仅现有FakeIosBackend，Remote仅连接元数据，不是远程Mac transport实测；真实手机、真实ADB、真实Mac、其他OS、真实UI/供应商均未执行（授权及当前环境范围）。未更改Tauri命令、前端类型/组件或wire字段，未跑pnpm build；无新依赖、数据库迁移或权限放宽。兼容行为：ID必须按opaque处理，输入及其他已知UI变更后需重捕获，即便backend报错；None人工坐标输入仍可用但同样撤销旧快照。外部自发UI改变、discovery未观察的物理ABA不保证可检测；已接纳的旧backend调用可完成，但旧引用不能进入新backend。锁条目按历史device ID保留，非全局存储/取消重构。本项在上述范围验收；整体任务仍active，下一项准备H-51跨项目记忆读写重定向，不在本轮修改。剩余200–400有效修复/验收小时仍为原规模/跨层风险的未逐项校准规划区间，缺少逐项有效工时计量，不机械扣减；编译门禁、设备/依赖/环境等待另计，不承诺完工日期。
 
 ## H-61 本轮即时记录（2026-10-27）
 
@@ -1392,7 +1425,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-47：新增无关 MCP 配置会取消未变服务的初始化，并将宿主取消缓存为该服务失败](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-48：stdio MCP 探活耗尽后只停止探针，旧能力仍可发现，后续每次调用重新启动完整恢复预算](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-49：备用模型切换只更新模型和预算，实际请求仍携带主模型的输出上限](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-50：移动输入未校验界面快照，已过期和未知引用仍下发设备命令](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-50：移动输入未校验界面快照，已过期和未知引用仍下发设备命令](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原始失败、测试编译与fake身份反例保留；限E-H50-07～08所列Windows离线范围 | 现有SnapshotStore唯一service身份/设备锁，引用绑定观察到的设备连接与backend代次；已知UI操作下发前消费引用，schema显式声明optional snapshot_id | 原探针1；新增Android11/AppCore2/iOS1；五移动crate249 passed/7真机ignored；workspace3504 passed/1既有H-306失败/321 ignored；移动严格lint与builtins no-deps严格lint通过，AppCore/builtins含依赖严格lint受既有models阻断 | 初版`a08e0ead`；本轮补强提交待回填 | None人工输入保留；opaque ID不可解析、输入后需重捕获；无DTO/数据迁移；真实设备/Mac/UI/其他OS未验，本机范围剩余0；下一项H-51，总200–400有效小时未校准、环境等待另计 |
 | [H-51：项目激活改写共享知识服务，既有运行的记忆读写会被重定向到另一个项目](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-52：知识库锁仅保护最终文件写入，独立宿主的旧索引可把不同笔记静默覆盖](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-53：原生压缩移除相关记忆后，后台检索去重与预算仍保留旧记录](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

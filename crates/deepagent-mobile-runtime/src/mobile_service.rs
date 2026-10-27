@@ -16,7 +16,7 @@ use crate::backend::MobileBackend;
 use crate::device_registry::DeviceRegistry;
 use crate::operation::OperationContext;
 use crate::remote_mac_manager::RemoteMacManager;
-use crate::snapshot_store::SnapshotStore;
+use crate::snapshot_store::{SnapshotConnection, SnapshotStore};
 use crate::RegisterArtifactRequest;
 
 /// High-level facade that ties together all mobile subsystems.
@@ -37,7 +37,12 @@ struct ServiceInner {
     artifact_store: ArtifactStore,
     snapshot_store: SnapshotStore,
     remote_manager: RwLock<Option<RemoteMacManager>>,
-    backends: RwLock<HashMap<MobilePlatform, Arc<dyn MobileBackend>>>,
+    backends: RwLock<HashMap<MobilePlatform, BackendRegistration>>,
+}
+
+struct BackendRegistration {
+    backend: Arc<dyn MobileBackend>,
+    generation: uuid::Uuid,
 }
 
 impl MobileService {
@@ -69,7 +74,13 @@ impl MobileService {
         platform: MobilePlatform,
         backend: Arc<dyn MobileBackend>,
     ) {
-        self.inner.backends.write().await.insert(platform, backend);
+        self.inner.backends.write().await.insert(
+            platform,
+            BackendRegistration {
+                backend,
+                generation: uuid::Uuid::new_v4(),
+            },
+        );
     }
 
     /// Get a shared reference to the backend for a given platform.
@@ -77,12 +88,21 @@ impl MobileService {
         &self,
         platform: MobilePlatform,
     ) -> MobileResult<Arc<dyn MobileBackend>> {
+        self.backend_registration(platform)
+            .await
+            .map(|(backend, _)| backend)
+    }
+
+    async fn backend_registration(
+        &self,
+        platform: MobilePlatform,
+    ) -> MobileResult<(Arc<dyn MobileBackend>, uuid::Uuid)> {
         self.inner
             .backends
             .read()
             .await
             .get(&platform)
-            .cloned()
+            .map(|entry| (entry.backend.clone(), entry.generation))
             .ok_or_else(|| MobileError::BackendUnavailable {
                 reason: format!("{:?} backend not registered", platform),
             })
@@ -92,8 +112,8 @@ impl MobileService {
     pub async fn probe_all(&self) -> Vec<BackendStatus> {
         let backends = self.inner.backends.read().await;
         let mut results = Vec::new();
-        for backend in backends.values() {
-            match backend.probe().await {
+        for entry in backends.values() {
+            match entry.backend.probe().await {
                 Ok(status) => results.push(status),
                 Err(e) => {
                     tracing::warn!(error = %e, "backend probe failed");
@@ -143,15 +163,28 @@ impl MobileService {
         device_id: &str,
         ctx: &OperationContext,
     ) -> MobileResult<UiSnapshot> {
-        let _operation = self.inner.snapshot_store.acquire_device(device_id).await;
-        let device = self.inner.registry.get(device_id).await?;
-        let backend = self.backend_arc(device.platform).await?;
-        let snapshot = backend.ui_snapshot(device_id, ctx).await?;
-
-        self.inner
-            .snapshot_store
-            .register_id(device_id, &snapshot.snapshot_id)
-            .await;
+        let mut snapshot_state = self.ui_operation(device_id, ctx).await?;
+        let (device, connection) = self.inner.registry.ui_connection(device_id).await?;
+        let (backend, backend_generation) = self.backend_registration(device.platform).await?;
+        snapshot_state.invalidate();
+        let mut snapshot = backend.ui_snapshot(device_id, ctx).await?;
+        if snapshot.device_id != device_id {
+            return Err(MobileError::Internal(
+                "backend returned a snapshot for another device".into(),
+            ));
+        }
+        let (_, current_connection) = self.inner.registry.ui_connection(device_id).await?;
+        let (_, current_backend) = self.backend_registration(device.platform).await?;
+        if current_connection != connection || current_backend != backend_generation {
+            return Err(MobileError::StaleUiNode {
+                snapshot_id: snapshot.snapshot_id,
+                node_id: snapshot.root_node_id,
+            });
+        }
+        snapshot.snapshot_id = snapshot_state.publish(Some(SnapshotConnection {
+            device: connection,
+            backend: backend_generation,
+        }));
 
         Ok(snapshot)
     }
@@ -162,8 +195,10 @@ impl MobileService {
         request: &InstallRequest,
         ctx: &OperationContext,
     ) -> MobileResult<()> {
+        let mut snapshot_state = self.ui_operation(&request.device_id, ctx).await?;
         let device = self.inner.registry.get(&request.device_id).await?;
         let backend = self.backend_arc(device.platform).await?;
+        snapshot_state.invalidate();
         backend.install(request, ctx).await
     }
 
@@ -173,15 +208,19 @@ impl MobileService {
         request: &LaunchRequest,
         ctx: &OperationContext,
     ) -> MobileResult<()> {
+        let mut snapshot_state = self.ui_operation(&request.device_id, ctx).await?;
         let device = self.inner.registry.get(&request.device_id).await?;
         let backend = self.backend_arc(device.platform).await?;
+        snapshot_state.invalidate();
         backend.launch(request, ctx).await
     }
 
     /// Terminate a running application.
     pub async fn terminate(&self, target: &AppTarget, ctx: &OperationContext) -> MobileResult<()> {
+        let mut snapshot_state = self.ui_operation(&target.device_id, ctx).await?;
         let device = self.inner.registry.get(&target.device_id).await?;
         let backend = self.backend_arc(device.platform).await?;
+        snapshot_state.invalidate();
         backend.terminate(target, ctx).await
     }
 
@@ -191,20 +230,47 @@ impl MobileService {
         request: &InputRequest,
         ctx: &OperationContext,
     ) -> MobileResult<InputResult> {
-        let _operation = self
+        let mut snapshot_state = self.ui_operation(&request.device_id, ctx).await?;
+        let (device, connection) = self
             .inner
-            .snapshot_store
-            .acquire_device(&request.device_id)
-            .await;
-        let device = self.inner.registry.get(&request.device_id).await?;
+            .registry
+            .ui_connection(&request.device_id)
+            .await?;
+        let (backend, backend_generation) = self.backend_registration(device.platform).await?;
         if let Some(snapshot_id) = request.snapshot_id.as_deref() {
-            self.inner
-                .snapshot_store
-                .validate(&request.device_id, snapshot_id, "input")
-                .await?;
+            snapshot_state.validate(
+                snapshot_id,
+                "input",
+                Some(SnapshotConnection {
+                    device: connection,
+                    backend: backend_generation,
+                }),
+            )?;
         }
-        let backend = self.backend_arc(device.platform).await?;
+        // Even a failed or cancelled backend call may already have changed the
+        // device. Revoke before dispatch, not only after a successful reply.
+        snapshot_state.invalidate();
         backend.input(request, ctx).await
+    }
+
+    async fn ui_operation(
+        &self,
+        device_id: &str,
+        ctx: &OperationContext,
+    ) -> MobileResult<tokio::sync::OwnedMutexGuard<crate::snapshot_store::DeviceSnapshot>> {
+        let cancellation = ctx.cancellation_token();
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => Err(MobileError::Cancelled {
+                operation_id: ctx.operation_id.clone(),
+            }),
+            result = tokio::time::timeout(ctx.deadline, self.inner.snapshot_store.acquire_device(device_id)) => {
+                result.map_err(|_| MobileError::Timeout {
+                    operation_id: ctx.operation_id.clone(),
+                    elapsed_ms: ctx.deadline.as_millis().min(u64::MAX as u128) as u64,
+                })
+            }
+        }
     }
 
     /// Read device logs.
@@ -244,9 +310,14 @@ impl MobileService {
         request: &StopEmulatorRequest,
         ctx: &OperationContext,
     ) -> MobileResult<()> {
+        // ADB discovery uses this same Android device identity. Revoke before
+        // sending stop, rather than waiting for a later discovery poll.
+        let device_id = format!("android-{}", request.serial);
+        let mut snapshot_state = self.ui_operation(&device_id, ctx).await?;
         let backend = self
             .backend_arc(deepagent_mobile_core::MobilePlatform::Android)
             .await?;
+        snapshot_state.invalidate();
         backend.stop_emulator(request, ctx).await
     }
 

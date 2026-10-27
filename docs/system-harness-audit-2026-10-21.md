@@ -43,7 +43,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **52**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **227（227待修复、0修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **53**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **226（226待修复、0修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -2181,6 +2181,16 @@ E-H46-20261027-12（独立提交与真实hash回填）：代码、默认回归�
 ### H-50：移动输入未校验界面快照，已过期和未知引用仍下发设备命令
 
 **级别：高（P1）；范围：移动设备 MobileService → Android 输入。** 动态证据为正式服务和后端配合离线 ADB runner；没有向真实手机发送输入，也未证明 iOS 后端具备相同行为。
+
+#### 修复状态（2026-10-27，已修复并验收，限所列Windows本机离线范围）
+
+初版a08e0ead后继续根因补强：现有SnapshotStore只持一份service发布的opaque身份，按设备锁序列化捕获/显式校验/输入/清除，引用绑定观察到的设备连接及backend注册代次；捕获完成复核来源，已知UI变更及输入在下发前消费引用，失败/取消不复活旧引用。install/launch/terminate/stop_emulator共用这一失效边界；None人工输入保留。MobileInputTool schema补optional snapshot_id并说明重捕获，不新增第二运行链/注册表/权限旁路、wire字段或生产依赖。
+
+原失败证据如下保留。最终原探针默认1 passed/0 ignored：登记/返回一致，current可执行，superseded/unknown为StaleUiNode，实际仅1条ADB input。新增Android11项覆盖并发/跨设备/失败/取消/clear/重连/稳定扫描/固定backend ID/替换/已知UI操作；AppCore新增2项验证schema→invoke→测试桥→正式AppMobileService与桌面summary/full及serde契约；iOS新增1项只验证FakeIosBackend/Remote元数据，首次fake硬编码设备身份导致的失败及修正保留。
+
+五移动crate共249 passed/7真机ignored，移动严格Clippy通过，builtins直接crate no-deps严格Clippy通过。完整workspace已实际跑完128个target：3504 passed/1既有H-306失败/321 ignored；AppCore lib1185/0/67、kernel_v2_e2e142/0/82、SDK stdio6通过，本项默认回归均通过。AppCore/builtins含依赖严格Clippy仍被未改models/client.rs:355阻断；fmt/diff通过，绝不声称全仓绿色。全部实际命令/失败/范围见进度台账E-H50-01～08。本轮代码、测试与文档补强提交待回填；初版不单独作为验收依据。
+
+兼容及未验：snapshot_id按opaque传回，输入/已知UI变更后即使失败也需重捕获；None仍允许但会失效旧引用。未改Tauri/前端契约，未跑pnpm build或真实UI；没有连接真实手机/Mac/供应商或访问用户数据。外部自发UI变化、未被discovery观察的物理ABA、真实远程transport及其他OS不在本机证据内；设备锁记录按历史ID保留，锁等待预算不是新增的端到端deadline承诺。累计53验收/18历史跳过/7归并/2撤销/226有效未关闭，整体任务仍active；下一项准备H-51。总200–400有效小时规划粗估未逐项校准，环境等待另计。
 
 #### 触发、生产路径与复现
 

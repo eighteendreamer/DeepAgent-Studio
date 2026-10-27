@@ -582,7 +582,7 @@ impl Tool for MobileInputTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
             name: MOBILE_INPUT_TOOL_NAME.into(),
-            description: "Perform an input action (tap, swipe, text) on a mobile device. Requires device_id and action. Medium risk.".into(),
+            description: "Perform an input action (tap, swipe, text) on a mobile device. Pass snapshot_id from mobile_ui_snapshot when acting on that snapshot; capture again after input. Omit only for uncorrelated manual input. Medium risk.".into(),
             parameters: serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -594,6 +594,10 @@ impl Tool for MobileInputTool {
                         "type": "string",
                         "enum": ["tap", "swipe", "text", "key"],
                         "description": "The input action type"
+                    },
+                    "snapshot_id": {
+                        "type": "string",
+                        "description": "The latest UI snapshot ID for this device. Stale or unknown references are rejected before input dispatch."
                     },
                     "x": { "type": "integer" },
                     "y": { "type": "integer" },

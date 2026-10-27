@@ -2,9 +2,12 @@ use serde::{Deserialize, Serialize};
 
 /// A snapshot of the device UI hierarchy at a point in time.
 ///
-/// `snapshot_id` is valid only until the next snapshot. All input operations
-/// must carry the `snapshot_id` they were issued against; stale references
-/// produce `StaleUiNode` errors.
+/// The service publishes an opaque `snapshot_id` for the observed device and
+/// backend connection. A later capture, UI-mutating operation, explicit clear
+/// or connection replacement revokes it. Snapshot-based input must carry that
+/// identity; stale references produce `StaleUiNode` before input is dispatched.
+/// Capture again after input, including a failed or cancelled dispatch. Manual
+/// input may omit the reference (see `InputRequest`); it still revokes snapshots.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UiSnapshot {
     pub snapshot_id: String,

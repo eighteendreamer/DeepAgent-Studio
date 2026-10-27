@@ -23,3 +23,6 @@ pub use emulator_parser::{extract_emulator_port, parse_avdmanager_list, parse_li
 pub use emulator_runner::{EmulatorCommandRunner, FakeEmulatorRunner, SystemEmulatorRunner};
 pub use fake::FakeAndroidBackend;
 pub use tool_resolver::ToolResolver;
+
+#[cfg(test)]
+mod snapshot_fence_tests;

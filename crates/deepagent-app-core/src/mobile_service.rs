@@ -384,6 +384,10 @@ impl Default for AppMobileService {
 }
 
 #[cfg(test)]
+#[path = "mobile_snapshot_tests.rs"]
+mod snapshot_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use deepagent_mobile_core::{MobileError, MobilePlatform};

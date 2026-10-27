@@ -16,6 +16,8 @@ pub struct DeviceRegistry {
 
 struct RegistryInner {
     devices: HashMap<String, MobileDevice>,
+    /// Identity of the current observed connection, not the reusable device ID.
+    connections: HashMap<String, uuid::Uuid>,
     event_tx: tokio::sync::mpsc::UnboundedSender<MobileEvent>,
 }
 
@@ -24,6 +26,7 @@ impl DeviceRegistry {
         Self {
             inner: Arc::new(Mutex::new(RegistryInner {
                 devices: HashMap::new(),
+                connections: HashMap::new(),
                 event_tx,
             })),
         }
@@ -34,6 +37,20 @@ impl DeviceRegistry {
     pub async fn upsert(&self, device: MobileDevice) {
         let mut inner = self.inner.lock().await;
         let existing = inner.devices.get(&device.id).cloned();
+
+        // A disappearance/reappearance or a non-operational state revokes all
+        // UI references from the previous connection, including same-ID ABA.
+        let same_connection = existing.as_ref().is_some_and(|old| {
+            matches!(old.state, DeviceState::Ready | DeviceState::Busy)
+                && matches!(device.state, DeviceState::Ready | DeviceState::Busy)
+                && old.platform == device.platform
+                && old.connection == device.connection
+        });
+        if !same_connection {
+            inner
+                .connections
+                .insert(device.id.clone(), uuid::Uuid::new_v4());
+        }
 
         match existing {
             None => {
@@ -67,6 +84,7 @@ impl DeviceRegistry {
     pub async fn remove(&self, device_id: &str, reason: &str) {
         let mut inner = self.inner.lock().await;
         if inner.devices.remove(device_id).is_some() {
+            inner.connections.remove(device_id);
             tracing::info!(device_id = %device_id, reason = %reason, "device disconnected");
             let _ = inner.event_tx.send(MobileEvent::DeviceDisconnected {
                 device_id: device_id.to_string(),
@@ -91,6 +109,30 @@ impl DeviceRegistry {
             .ok_or_else(|| MobileError::DeviceNotFound {
                 device_id: device_id.to_string(),
             })
+    }
+
+    /// Capture routing and connection identity atomically for a UI operation.
+    pub(crate) async fn ui_connection(
+        &self,
+        device_id: &str,
+    ) -> MobileResult<(MobileDevice, uuid::Uuid)> {
+        let inner = self.inner.lock().await;
+        let device = inner
+            .devices
+            .get(device_id)
+            .ok_or_else(|| MobileError::DeviceNotFound {
+                device_id: device_id.to_string(),
+            })?;
+        if !matches!(device.state, DeviceState::Ready | DeviceState::Busy) {
+            return Err(MobileError::DeviceNotReady {
+                device_id: device_id.to_string(),
+                state: device.state,
+            });
+        }
+        let connection = inner.connections.get(device_id).ok_or_else(|| {
+            MobileError::Internal(format!("missing connection identity for {device_id}"))
+        })?;
+        Ok((device.clone(), *connection))
     }
 
     /// Transition a device to `Busy` if it is currently `Ready`. Returns an

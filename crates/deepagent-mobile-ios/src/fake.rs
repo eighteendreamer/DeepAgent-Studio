@@ -136,12 +136,12 @@ impl MobileBackend for FakeIosBackend {
 
     async fn ui_snapshot(
         &self,
-        _device_id: &str,
+        device_id: &str,
         _ctx: &OperationContext,
     ) -> MobileResult<UiSnapshot> {
         Ok(UiSnapshot {
             snapshot_id: "fake-ios-snap".into(),
-            device_id: "fake".into(),
+            device_id: device_id.into(),
             root_node_id: "root".into(),
             nodes: vec![UiNode {
                 node_id: "root".into(),
@@ -259,6 +259,7 @@ mod tests {
         let backend = FakeIosBackend::new();
         let ctx = test_ctx();
         let snap = backend.ui_snapshot("any-device", &ctx).await.unwrap();
+        assert_eq!(snap.device_id, "any-device");
         assert_eq!(snap.nodes[0].source, UiNodeSource::IosXctest);
         assert_eq!(snap.root_node_id, "root");
     }
@@ -287,5 +288,55 @@ mod tests {
         assert_eq!(phys.kind, DeviceKind::Physical);
         assert_eq!(phys.connection, DeviceConnection::Usb);
         assert!(phys.id.starts_with("ios-usb-"));
+    }
+
+    /// H-50 shared service fencing also applies to the currently fake-only iOS
+    /// backend. This exercises remote metadata, not a real remote Mac transport.
+    #[tokio::test]
+    async fn service_snapshot_fence_is_platform_and_connection_independent() {
+        use deepagent_mobile_runtime::{
+            ArtifactStore, DeviceRegistry, MobileService, SnapshotStore,
+        };
+        let backend = Arc::new(FakeIosBackend::new());
+        let mut device = FakeIosBackend::fake_simulator("H50", DeviceState::Ready);
+        device.connection = DeviceConnection::Remote {
+            host_id: "offline-mac-a".into(),
+        };
+        let id = device.id.clone();
+        let (tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let registry = DeviceRegistry::new(tx);
+        registry.upsert(device.clone()).await;
+        let service = MobileService::new(registry, ArtifactStore::new(), SnapshotStore::new());
+        service.register_backend(MobilePlatform::Ios, backend).await;
+        let old = service.ui_snapshot(&id, &test_ctx()).await.unwrap();
+        let fresh = service.ui_snapshot(&id, &test_ctx()).await.unwrap();
+        assert_ne!(old.snapshot_id, fresh.snapshot_id);
+        let request = |snapshot_id: String| InputRequest {
+            device_id: id.clone(),
+            snapshot_id: Some(snapshot_id),
+            action: InputAction::Tap { x: 1, y: 1 },
+        };
+        assert!(matches!(
+            service.input(&request(old.snapshot_id), &test_ctx()).await,
+            Err(MobileError::StaleUiNode { .. })
+        ));
+        assert!(
+            service
+                .input(&request(fresh.snapshot_id), &test_ctx())
+                .await
+                .unwrap()
+                .accepted
+        );
+        let before_move = service.ui_snapshot(&id, &test_ctx()).await.unwrap();
+        device.connection = DeviceConnection::Remote {
+            host_id: "offline-mac-b".into(),
+        };
+        service.registry().upsert(device).await;
+        assert!(matches!(
+            service
+                .input(&request(before_move.snapshot_id), &test_ctx())
+                .await,
+            Err(MobileError::StaleUiNode { .. })
+        ));
     }
 }

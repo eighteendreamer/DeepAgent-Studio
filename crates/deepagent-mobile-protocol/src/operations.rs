@@ -88,6 +88,9 @@ pub enum InputAction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputRequest {
     pub device_id: String,
+    /// Latest service-issued UI reference. `None` means uncorrelated manual
+    /// input, not a bypass for a supplied stale reference. Dispatch consumes
+    /// the reference; capture again before the next snapshot-based input.
     pub snapshot_id: Option<String>,
     pub action: InputAction,
 }
