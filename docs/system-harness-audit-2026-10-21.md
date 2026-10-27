@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-51 | 已修复并验收（2026-10-27，所列Windows本机/离线模型/vault范围） | 稳定内部ID绑定运行与pending物化，UI选择分离；知识33/0/1既有H-52 ignored，最终workspace3522/1既有H-306失败/320 ignored；独立桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H51-01～12，待独立提交 |
+| H-51 | 已修复并验收（2026-10-27，所列Windows本机/离线模型/vault范围） | 稳定内部ID绑定运行与pending物化，UI选择分离；知识33/0/1既有H-52 ignored，最终workspace3522/1既有H-306失败/320 ignored；独立桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H51-01～13，修复提交`a175a5fb96c4675d25a4bab6c23b7afc6ec12ccc` |
 | H-50 | 已修复并验收（2026-10-27，所列Windows本机离线派发与共享服务范围） | 唯一opaque身份、设备/后端代次、同设备操作锁与派发前失效；移动249/0/7真机ignored；workspace3504/1既有H-306失败/321 ignored、严格lint边界见E-H50-01～09；补强提交`f0ad9e5749e0d53cde9c6731c3993e0cdb847b84` |
 | H-65 | 已修复并验收（2026-10-27，所列Windows本机范围） | 两处共用正式工具执行边界，原失败保留；单元3/boundary5默认通过，最终workspace3471/1/324；独立取消/Job反例不擦除，见E-H65-01～16；修复提交`1f5fbb084e2babe908fd6481f1a05e1231a5f5d0` |
 | H-46 | 已修复并验收，恢复原验收（2026-10-27，Windows所列范围） | 资源收尾原始反例保留，同Job封闭准入与成员handle等待；MCP全特性115/0/8，workspace3479/1/324仅既有H-306失败；全仓lint失败见E-21，详见E-H46-15～23；补强提交`c7ee84ec2a9fa994a55cb5e458471259f030e1c5` |
@@ -2219,7 +2219,7 @@ E-H46-20261027-12（独立提交与真实hash回填）：代码、默认回归�
 
 最终依据进度台账E-H51-12验收：在同一知识服务内以稳定内部缓存ID绑定运行，UI激活只切自己的视图；未创建根物化后按真实物理路径合并、vault固定采用观察到的物理路径，不以路径名称充当句柄身份。global仍共享并在同一mutex内发布所有派生索引。普通run/workflow、工具、被动附件、后台检索、子代理及收尾共用绑定，不增加存储或协议。
 
-最终完整workspace命令退出101，128个target共3522 passed/1既有H-306失败/320 ignored，AppCore lib1201/0/66、kernel_v2_e2e143/0/82、knowledge64/0/0、CLI112/0/23、Rust SDK真实stdio6/0/0通过；知识专项33/0/1仅保留独立H-52 ignored。本项原探针与全部新回归默认执行，目录创建前别名、双向首写、并发slug冲突、实际写后错误、pending junction改指向及旧逻辑名复用均通过。独立Tauri Rust check、knowledge直接严格Clippy、fmt/diff为0；AppCore严格及诊断lint有已核对的既有阻断，详见E-H51-12，不称全仓绿色。真实UI/供应商/其他OS及Windows专门配置的区分大小写目录未验，未改wire/前端且未运行pnpm/单独TS SDK；无依赖或数据库迁移，固定视图拒绝activate、UI管理句柄接口保留。跨宿主事务H-52与工作流筛选H-176仍独立未关闭；缓存按宿主生命周期保留，global发布成本随缓存与笔记增长，不保证外部替换物理根的句柄级隔离。代码/测试/当时文档待独立提交；整体任务仍active。
+最终完整workspace命令退出101，128个target共3522 passed/1既有H-306失败/320 ignored，AppCore lib1201/0/66、kernel_v2_e2e143/0/82、knowledge64/0/0、CLI112/0/23、Rust SDK真实stdio6/0/0通过；知识专项33/0/1仅保留独立H-52 ignored。本项原探针与全部新回归默认执行，目录创建前别名、双向首写、并发slug冲突、实际写后错误、pending junction改指向及旧逻辑名复用均通过。独立Tauri Rust check、knowledge直接严格Clippy、fmt/diff为0；AppCore严格及诊断lint有已核对的既有阻断，详见E-H51-12，不称全仓绿色。真实UI/供应商/其他OS及Windows专门配置的区分大小写目录未验，未改wire/前端且未运行pnpm/单独TS SDK；无依赖或数据库迁移，固定视图拒绝activate、UI管理句柄接口保留。跨宿主事务H-52与工作流筛选H-176仍独立未关闭；缓存按宿主生命周期保留，global发布成本随缓存与笔记增长，不保证外部替换物理根的句柄级隔离。代码/测试/当时文档已独立提交为 `a175a5fb96c4675d25a4bab6c23b7afc6ec12ccc`，仅本项12个文件，未推送/创建PR；取得hash后仅回填两份文档，不amend。整体任务仍active。
 
 以下为按时间保留的原始失败与候选验证记录，不将其中“待验/修复中”误作最终状态。
 
