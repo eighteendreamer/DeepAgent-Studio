@@ -4051,7 +4051,7 @@ H-142提交回填（2026-10-28，E-H142-08）：代码、默认测试、SDK READ
 
 ### H-143：终态持久化失败前已经发布实时完成事件
 
-**修复进展（2026-10-28）：已修复并验收（仅E-H143-03～05所列Windows本机/离线范围；修复提交待真实hash回填）。** HEAD 769e41b4的原精确ignored探针是修前真实反证：原生101，0 passed/1 failed/0 ignored（测试0.10s、整步1.09s），live先run_completed而run_terminal事务被拒绝，见target/h143-before-probe-*及修复进度E-H143-01。修复复用原终态事务，将规范生命周期通知与runs/run_terminal原子提交，成功后才delivery，并让正常Kernel、预检短路、正式聊天/工作流及CLI共用同一边界；不另建存储或协议。实现、正式消费者、真实OS子进程重开、门禁和限制见修复进度E-H143-03～05；以下原始审计与失败证据保留。
+**修复进展（2026-10-28）：已修复并验收（仅E-H143-03～05所列Windows本机/离线范围；修复提交`7bf6bae11a97296953f1f61f092949cba2a8800d`，见E-H143-06）。** HEAD 769e41b4的原精确ignored探针是修前真实反证：原生101，0 passed/1 failed/0 ignored（测试0.10s、整步1.09s），live先run_completed而run_terminal事务被拒绝，见target/h143-before-probe-*及修复进度E-H143-01。修复复用原终态事务，将规范生命周期通知与runs/run_terminal原子提交，成功后才delivery，并让正常Kernel、预检短路、正式聊天/工作流及CLI共用同一边界；不另建存储或协议。实现、正式消费者、真实OS子进程重开、门禁和限制见修复进度E-H143-03～05；以下原始审计与失败证据保留。
 
 **级别：高（P1，完成状态与 durable run 状态矛盾）；触发条件：`run_terminal` 的原子终态写入失败。** 用户界面可能先收到 `run_completed`，但数据库中的 `runs.finished_at` 仍为空，重连后该运行不会被视为已完成。
 

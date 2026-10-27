@@ -20,7 +20,7 @@
 
 ## H-143 本轮即时记录（2026-10-28）
 
-**当前状态：已修复并验收（2026-10-28，仅E-H143-03～05所列Windows本机/离线范围；修复提交待真实hash回填）。** 只处理生命周期完成投影先于规范终态事务发布的提交边界，包含同根因的正常Kernel、预检短路完成及正式聊天/工作流消费者；不借此修复H-306、既有lint或其他编号。
+**当前状态：已修复并验收（2026-10-28，仅E-H143-03～05所列Windows本机/离线范围；修复提交`7bf6bae11a97296953f1f61f092949cba2a8800d`，见E-H143-06）。** 只处理生命周期完成投影先于规范终态事务发布的提交边界，包含同根因的正常Kernel、预检短路完成及正式聊天/工作流消费者；不借此修复H-306、既有lint或其他编号。
 
 E-H143-01（修前真实复现与范围）：HEAD 769e41b4，tracked初始干净，仅原五类用户未跟踪项，未读取/修改/暂存。复用既有隔离runner，数据/home/USERPROFILE/HOME/managed置于新Temp，保留Cargo/Rustup，清供应商key与DB路径。原命令`cargo test -p deepagent-runtime --lib kernel::tests::audit_terminal_persistence_failure_does_not_claim_live_completion --offline -j 1 -- --ignored --exact --nocapture`原生101，0 passed/1 failed/0 ignored，测试0.10s、整步1.09s；真实AgentKernel+SQLite trigger拒绝run_terminal，live仍为run_started/session_registered/turn_started/run_completed，原断言失败，证据target/h143-before-probe.log、h143-before-probe-result.json保留。无真实用户数据、供应商或内网操作。
 
@@ -31,6 +31,8 @@ E-H143-03（实现与正式消费者验收）：复用RunStore既有终态事务
 E-H143-04（实际门禁与重开）：默认H-143探针已由修前ignored失败改为默认执行并通过。持久化专项6/0/0、Runtime Kernel专项26/0/0，Runtime全crate lib325/0/9 ignored、e2e5/0/0、schedule2/0/1、tokenizer1/0/1；AppCore终态专项4/0/1 helper ignored、准入2/0/0，恢复审计14/0/1，CLI终态审计23/0/12，CLI全crate112/0/23；`cargo fmt --all -- --check`及独立Tauri Rust check通过。正式消费者覆盖SQLite重开、cursor、真实OS子进程重开与启动恢复；拒绝`run_completed`或`run_terminal`时，live和replay均不泄漏成功完成，恢复只产生规范失败终态且不重复执行。
 
 E-H143-05（范围、限制与台账）：验收仅限Windows本机、离线mock/合成凭据、Temp SQLite、真实文件工具、真实OS子进程及正式ChatService/工作流/CLI回调边界；未验证真实供应商、真实用户数据/内网、其他OS、真实UI、断电/强杀、跨进程锁争用、压力负载及exactly-once。完整workspace原生101，失败仍为既有H-64冷编译就绪与H-306空`defaultUserPrompt`；严格Clippy仍受既有Runtime/AppCore/CLI问题阻断；未改前端，未跑pnpm build。计数更新为61已验收、18历史跳过、7归并、2撤销、218待修、0修复中、218有效未关闭；下一独立候选为H-144。
+
+E-H143-06（独立提交与真实hash回填）：实现、测试、SDK语义说明及两份审计文档已正常提交为`7bf6bae11a97296953f1f61f092949cba2a8800d`（【fix】收敛终态持久化与完成通知边界），仅本项13个相关文件；未新增依赖/配置/迁移，未amend、绕过hook、推送或创建PR。提交后仅保留原五类未跟踪用户项，未读取、修改或暂存；本次回填另作普通docs提交，不递归填写docs自身hash。
 
 ## H-142 本轮即时记录（2026-10-28）
 
@@ -1799,7 +1801,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-140：输入 hook 成功输出的上下文被丢弃，主模型只收到原始输入](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-141：周期 todo reminder 在独立用户回合之间被重置，长期会话永不触发](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-142：运行事件持久化失败被吞掉，实时事件与回放事件发生分叉](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H142-01保留原探针0/1/0；非跳过/归并项；限E-H142-06～07所列Windows本机范围，H-143独立未修 | 单sink首错锁存/checkpoint与原取消树收敛；保留已执行工具事实、结清未派发action，统一聊天/工作流准入收尾 | 正式专项5/0/0、Runtime327/0/12、准入2/0/0、E2E156/0/78；fmt/Tauri Rust check通过；workspace3587/1既有H-306/313 ignored及lint既有阻断保留 | `e1370f9db521556eb10c4719ffaa2b08dd1503ec` | 本机所列范围剩余0；provisional delta非完成回执，不承诺exactly-once；其他OS/UI/供应商/断电强杀/跨进程锁未验；下一P1 H-143；总200–400有效小时未校准粗估及等待另计不变 |
-| [H-143：终态持久化失败前已经发布实时完成事件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H143-01原探针0/1/0为修前证据；E-H143-03～05为本轮正式验收，非跳过/归并项 | 规范终态与生命周期通知共用原事务，提交后才delivery；Kernel、预检短路、ChatService/工作流及CLI共用 | 持久化/Kernel/AppCore/恢复/CLI专项通过；真实OS子进程重开与cursor通过；workspace/lint基线阻断见E-H143-05 | 修复提交待真实hash回填 | 仅Windows本机/离线mock与正式消费者范围；其他OS、供应商、UI、断电强杀、锁争用、压力和exactly-once未验；总200–400有效小时未校准粗估及等待另计 |
+| [H-143：终态持久化失败前已经发布实时完成事件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H143-01原探针0/1/0为修前证据；E-H143-03～05为本轮正式验收，非跳过/归并项 | 规范终态与生命周期通知共用原事务，提交后才delivery；Kernel、预检短路、ChatService/工作流及CLI共用 | 持久化/Kernel/AppCore/恢复/CLI专项通过；真实OS子进程重开与cursor通过；workspace/lint基线阻断见E-H143-05 | `7bf6bae11a97296953f1f61f092949cba2a8800d` | 仅Windows本机/离线mock与正式消费者范围；其他OS、供应商、UI、断电强杀、锁争用、压力和exactly-once未验；总200–400有效小时未校准粗估及等待另计 |
 | [H-144：DeepSeek Chat 合法终态 `aborted` / `insufficient_system_resource` 被当作未知错误](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-145：Thinking 模式下不支持的 Chat `tool_choice` 组合未在请求前拒绝](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-146：DeepSeek Chat 用户隔离字段被序列化为 Responses 的 `user`](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
