@@ -28,7 +28,8 @@ use crate::transport::{
 };
 
 #[cfg(windows)]
-const CREATE_NO_WINDOW: u32 = 0x08000000;
+#[path = "stdio_windows_job.rs"]
+mod windows_job;
 const STDERR_LIMIT: usize = 8 * 1024;
 const MAX_PENDING_REQUESTS: usize = 1024;
 
@@ -179,6 +180,8 @@ async fn dispatch_responses(stdout: ChildStdout, dispatcher: Arc<ResponseDispatc
 /// A stdio transport backed by a spawned child process.
 pub struct StdioTransport {
     child: Mutex<Child>,
+    #[cfg(windows)]
+    process_job: windows_job::ProcessJob,
     stdin: Mutex<ChildStdin>,
     dispatcher: Arc<ResponseDispatcher>,
     reader_task: tokio::task::JoinHandle<()>,
@@ -207,10 +210,12 @@ impl StdioTransport {
             cmd.current_dir(cwd);
         }
         #[cfg(windows)]
-        {
-            cmd.creation_flags(CREATE_NO_WINDOW);
-        }
-
+        let (mut child, process_job) = windows_job::ProcessJob::spawn(&mut cmd).map_err(|e| {
+            CoreError::other(format!(
+                "failed to spawn contained MCP server '{command}': {e}"
+            ))
+        })?;
+        #[cfg(not(windows))]
         let mut child = cmd.spawn().map_err(|e| {
             CoreError::other(format!("failed to spawn MCP server '{command}': {e}"))
         })?;
@@ -257,6 +262,8 @@ impl StdioTransport {
         let reader_task = tokio::spawn(dispatch_responses(stdout, dispatcher.clone()));
         Ok(Self {
             child: Mutex::new(child),
+            #[cfg(windows)]
+            process_job,
             stdin: Mutex::new(stdin),
             dispatcher,
             reader_task,
@@ -430,6 +437,10 @@ impl Drop for StdioTransport {
             .finish("MCP transport closed the connection");
         self.reader_task.abort();
         self.stderr_task.get_mut().abort();
+        #[cfg(windows)]
+        if let Err(error) = self.process_job.terminate() {
+            tracing::error!(%error, "failed to terminate owned MCP job on drop");
+        }
         // Dropping the last client during cancellation or config replacement
         // must not orphan its child process.
         let _ = self.child.get_mut().start_kill();
@@ -459,6 +470,15 @@ impl McpTransport for StdioTransport {
         self.dispatcher
             .finish("MCP transport closed the connection");
         self.reader_task.abort();
+        #[cfg(windows)]
+        {
+            self.process_job
+                .terminate()
+                .map_err(|error| CoreError::other(format!("terminate owned MCP job: {error}")))?;
+            self.process_job.wait_empty().await.map_err(|error| {
+                CoreError::other(format!("wait for owned MCP job shutdown: {error}"))
+            })?;
+        }
         let mut child = self.child.lock().await;
         let _ = child.start_kill();
         child
