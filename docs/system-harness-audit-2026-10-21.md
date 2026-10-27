@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-237 | 已修复并验收（2026-10-28，所列Windows本机/正式服务/离线模型范围） | 共享非递归安全策略与父能力位，Ask无交互拒绝；正式专项10/0/0、装配3/0/0，workspace3548/1既有H-306/317忽略；Tauri Rust check/fmt通过，严格lint基线失败保留；见E-H237-01～06，独立提交后回填hash |
+| H-237 | 已修复并验收（2026-10-28，所列Windows本机/正式服务/离线模型范围） | 共享非递归安全策略与父能力位，Ask无交互拒绝；正式专项10/0/0、装配3/0/0，workspace3548/1既有H-306/317忽略；Tauri Rust check/fmt通过，严格lint基线失败保留；见E-H237-01～07，修复提交`9e3ee007735e82a6e44eba76175e2b87305702d0` |
 | H-52 | 已修复并验收（2026-10-28，所列Windows本机/vault/OS子进程范围） | 单一锁内读/身份/版本/写事务，草稿/提升/删除/合并共用；knowledge79/0/0、知识服务35/0/0，workspace3539/1既有H-306失败/319 ignored；桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H52-01～07，修复提交`bc046b903548d4f0b481e71988d2cbb99ac3dc52` |
 | H-51 | 已修复并验收（2026-10-27，所列Windows本机/离线模型/vault范围） | 稳定内部ID绑定运行与pending物化，UI选择分离；知识33/0/1既有H-52 ignored，最终workspace3522/1既有H-306失败/320 ignored；独立桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H51-01～13，修复提交`a175a5fb96c4675d25a4bab6c23b7afc6ec12ccc` |
 | H-50 | 已修复并验收（2026-10-27，所列Windows本机离线派发与共享服务范围） | 唯一opaque身份、设备/后端代次、同设备操作锁与派发前失效；移动249/0/7真机ignored；workspace3504/1既有H-306失败/321 ignored、严格lint边界见E-H50-01～09；补强提交`f0ad9e5749e0d53cde9c6731c3993e0cdb847b84` |
@@ -7417,6 +7417,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - E-H237-06（最终）：31536与66176均已终结。正式专项10/0/0（5.29s），最终装配补强3/0/0（1.04s）含父session记账一次断言，两原探针默认执行。完整 `cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` 原生101：128 targets、3548 passed/1 failed/317 ignored，唯一仍为未改H-306空creative.video-edit.v1 defaultUserPrompt；AppCore lib1206/0/65、kernel_v2_e2e149/0/80及正式Rust SDK stdio6/0/0通过。fmt与独立Tauri Rust check通过；严格AppCore含依赖lint被旧models/client.rs:355阻断、no-deps严格仍有10项旧告警；非严格all-targets诊断仍因旧mcp_discovery_restore.rs:433 panicking_unwrap失败，非严格lib仅10旧告警退出0。命令全表及日志见[进度台账E-H237-06](system-harness-repair-progress.md)，不称全仓绿色。
 - 实现：HookAssembly一次组装Plan/PermissionRules/Path/Bash及可选安全门禁，主/子共享Arc hook对象；父再注册session技能记账及扩展lifecycle回调，子不递归。HookRuntime继承父能力位，沿用实际Safe registry与统一pipeline，Ask继续由现有AutoDenyGate拒绝，父FullAccess不替子授权。正式wire/真实临时文件证明拒绝前无正文进入子模型；来源优先级、另一Safe工具、强制隐藏写及Full-access源工具/空能力位对照通过。基础策略先于扩展注册，但dispatcher仍并发执行，多个deny的诊断原因可能更早呈现基础策略；不声称deny可阻止扩展被调度。没有新增依赖/存储/协议/command/迁移。
 - 限制：仅Windows本机与离线模型；未跑pnpm build/独立TS SDK/真实UI和供应商/其他OS或OS沙箱，无前端协议变更。不是所有Safe/MCP工具与来源/事件组合的完整动态证明；规则仍为run-scoped快照。H-234状态、H-235成本、H-236取消、H-238读取凭据继续独立，不把Safe分类等于绝对只读，也不声称OS沙箱逃逸修复。新增验收1项，当前56验收/18历史跳过/7归并/2撤销/223待修/0修复中、223有效未关闭；下项优先复核P1 H-139副作用后的结果提交。200–400有效小时仍为原未逐项校准粗估，等待设备/依赖/构建/环境另计。修复提交在独立正常提交后回填本节，不推送或建PR；历史失败不改写。
+- E-H237-07：代码、默认回归与当时两文档已独立正常提交为 `9e3ee007735e82a6e44eba76175e2b87305702d0`（【fix】统一agent-hook的权限继承边界），仅本项8个文件。diff/台账结构检查0，306行/306唯一编号/0坏列，56验收/223有效未关闭；提交后tracked干净，五类用户未跟踪项不动。此次仅回填H-237明确章节/行，不amend、不推送、不建PR。下项H-139及工时/边界保持E-06，整体目标仍active。
 
 #### 首次即时 Evidence（2026-10-24）
 
