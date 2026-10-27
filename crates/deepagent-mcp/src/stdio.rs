@@ -139,16 +139,24 @@ impl Drop for PendingRequest<'_> {
     }
 }
 
+/// Invocation-local evidence for cancellation, not a peer execution guarantee.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MessageWriteState {
+    Queued,
+    Writing,
+    Flushed,
+}
+
 /// A partially written JSON line cannot be resumed by another request. Retire
 /// this connection if a write future is dropped before write+flush completes.
 struct MessageWrite<'a> {
     dispatcher: &'a ResponseDispatcher,
-    complete: bool,
+    state: &'a mut MessageWriteState,
 }
 
 impl Drop for MessageWrite<'_> {
     fn drop(&mut self) {
-        if !self.complete {
+        if *self.state == MessageWriteState::Writing {
             self.dispatcher
                 .finish("MCP connection lost during message write");
         }
@@ -342,14 +350,19 @@ impl StdioTransport {
         }
     }
 
-    async fn write_message<T: serde::Serialize + Sync>(&self, message: &T) -> Result<()> {
+    async fn write_message<T: serde::Serialize + Sync>(
+        &self,
+        message: &T,
+        state: &mut MessageWriteState,
+    ) -> Result<()> {
         let mut line = serde_json::to_string(message)?;
         line.push('\n');
         let mut stdin = self.stdin.lock().await;
         self.dispatcher.check_open()?;
-        let mut write = MessageWrite {
+        *state = MessageWriteState::Writing;
+        let write = MessageWrite {
             dispatcher: &self.dispatcher,
-            complete: false,
+            state,
         };
         if let Err(error) = stdin.write_all(line.as_bytes()).await {
             self.dispatcher
@@ -365,7 +378,7 @@ impl StdioTransport {
                 .disconnect_error(&format!("flush to MCP server failed: {error}"))
                 .await);
         }
-        write.complete = true;
+        *write.state = MessageWriteState::Flushed;
         Ok(())
     }
 
@@ -374,8 +387,11 @@ impl StdioTransport {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<()> {
-        self.write_message(&JsonRpcNotification::new(method, params))
-            .await
+        self.write_message(
+            &JsonRpcNotification::new(method, params),
+            &mut MessageWriteState::Queued,
+        )
+        .await
     }
 
     async fn send_request(
@@ -406,8 +422,9 @@ impl StdioTransport {
             Err(CoreError::Other(reason)) => return Err(self.disconnect_error(&reason).await),
             Err(error) => return Err(error),
         };
+        let mut write_state = MessageWriteState::Queued;
         let dispatch = async {
-            self.write_message(&wire_request).await?;
+            self.write_message(&wire_request, &mut write_state).await?;
             match receiver.await {
                 Ok(Ok(mut response)) => {
                     response.id = request.id;
@@ -423,7 +440,17 @@ impl StdioTransport {
             biased;
             _ = context.cancelled() => {
                 drop(pending);
-                self.notify_cancelled_bounded(wire_id).await;
+                // A waiter cancelled before acquiring stdin has never issued
+                // its request. Do not send an invalid cancellation for that id
+                // or misreport its outcome as unknown. An incomplete write has
+                // already retired the stream via MessageWrite::drop; only a
+                // fully flushed frame can safely be followed by a notification.
+                if write_state == MessageWriteState::Queued {
+                    return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
+                }
+                if write_state == MessageWriteState::Flushed {
+                    self.notify_cancelled_bounded(wire_id).await;
+                }
                 Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME))
             }
             result = dispatch => result,

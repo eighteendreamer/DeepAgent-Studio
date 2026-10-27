@@ -2,21 +2,63 @@
 
 ## 当前状态与计数口径（2026-10-28）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计五十七项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计五十八项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 57 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-139、H-237、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 58 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-136、H-139、H-237、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前无；下一项准备复核H-136发送背压与取消窗口（P1） |
-| 待修复 | 222 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 当前无；下一项先复核H-64冷编译就绪门禁本轮新失败，不直接把复跑通过当作根因已明 |
+| 待修复 | 221 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **222（222待修复、0修复中）**；不提供完成率。五十七项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **221（221待修复、0修复中）**；不提供完成率。五十八项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-136 本轮即时记录（2026-10-28）
+
+**当前状态：已修复并验收（2026-10-28，仅E-H136-05～06所列Windows本机发送边界范围）。** 以下保留原始失败与候选过程，以最终验收和限制为准；本轮修复提交待生成后回填。原“发送背压使本地停止等待不结束”已由H-09提交`46ba0fd75d9df4de3ba2ec4ccfb71924a5583915`把整个write/response纳入取消select并增加MessageWrite退役保护而消除，不重复记作本轮生产修复。本轮在原项明确要求的stdin锁排队边界确认仍有缺口，只处理同一发送owner的阶段判定，不修改H-135环境继承或H-236 hook上下文。
+
+E-H136-02（原探针和当前反例）：HEAD `7fbfa93b`，初始tracked工作区干净，五类既有未跟踪用户项未读取/修改/暂存。所有测试使用全新系统Temp的data/home/USERPROFILE/HOME/managed根，保留Cargo/Rustup目录并清除继承DB路径和供应商key。`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation --offline -j 1 -- --include-ignored --nocapture --test-threads=1`原生0，2 passed/0 failed/0 ignored，测试1.29s；日志target/h136-before-probe.log。512KiB首块65536字节后暂停，accepted=true、250ms后run已结束，终态cancelled、模型1次；正常响应等待收到取消。释放后立即close的原夹具不能证明所有缓冲字节都不迟到，保留该限制。
+
+新增真实StdioTransport测试先保留一个健康共享请求，独占stdin锁，再单次poll另一请求使其登记后等锁；触发取消、单次poll进入取消分支后释放锁，peer的下一ping作解析屏障。`cargo test -p deepagent-mcp --lib cancelling_queued_write --offline -j 1 -- --nocapture --test-threads=1`原生101，0 passed/1 failed/0 ignored，0.13s，target/h136-queued-before.log：peer held=1，但cancelled=4而健康held_wire_id=2，未发送的wire_id=4被通知取消，返回remote outcome unknown而非before dispatch。健康请求仍可正常完成；失败不来自取消其他请求。此为当前独立发送阶段残余，不把原背压通过改写成失败。
+
+E-H136-03（依据与候选）：已读当前transport/client/reconnect/adapter/registry及消费者、H-09 Git diff与锁定Tokio1.52.3 Windows ChildStdio/Blocking源码。按[MCP 2024-11-05取消规范](https://modelcontextprotocol.io/specification/2024-11-05/basic/utilities/cancellation)，通知只能引用此前已发出的在途请求；取消是可选且对端可能忽略。按[stdio换行帧规范](https://modelcontextprotocol.io/specification/2024-11-05/basic/transports)，半帧后不能继续追加通知冒充合法消息。沿既有MessageWrite引入局部Queued/Writing/Flushed状态：等锁取消返回before dispatch且不通知；写入中仍保守退役、未知结果；flush完成才尝试原有50ms通知。此为本地状态表示，不另建执行链/存储/取消树；未降低退役保护，也不保证撤回已交给OS/blocking线程的字节。E-H65-13及原临时诊断的1通过/1失败原始断言和源码保持不变，不能把要求必达通知的断言当成协议已有保证。候选及新增补强尚待完整验证，本项未增加验收数或提交。
+
+E-H136-04（补强与夹具纠正）：新增默认覆盖预取消/重复取消、锁排队不影响健康共享请求、真实部分写入取消使同连接等待者显式失败、Windows未poll完flush的保守退役与flush完成的匹配通知/复用。另以正式ConfigReconnectFactory与ReconnectingTransport验证部分写入取消后，仅新控制请求恢复连接，后续独立调用产生一次副作用，旧请求不重放。原AppCore背压探针去ignore且保留全部原断言，改真实临时SQLite并补重复停止、唯一tool_completed/run_terminal和重开逐事件sequence/type/data一致性。
+
+首次补强default dispatch为13 passed/1 failed，失败在共享等待者错误类型；诊断复跑又在取消前pending_count=0处失败（target/h136-candidate-dispatch.log、h136-boundary-first.log保留）。根因是新增Node夹具pause stdin后仅有unref超时器，peer会自行退出，不是生产取消失败；独立Node对照实测unref组126ms退出0/beforeExit，保留引用组198ms在150ms超时退出2。只把新增paused夹具的15s兜底改为有引用计时器，未改生产或降低断言，随后同专项1 passed/0 failed/0 ignored，0.74s（h136-boundary-partial.log）。候选fmt曾因诊断assert未格式化退出1，已运行cargo fmt --all。最终冻结源码会话8276在完整Temp配置/数据隔离下进行正式默认探针、14项dispatch、全MCP、workspace、严格lint和独立桌面Rust门禁；尚未取得完整终态，不提前验收。
+
+E-H136-05（最终门禁与全量失败复核）：会话8276、20294、36946均已原生终结，无待续读验证。源码在最终门禁期间未再修改；每轮数据/配置发现均隔离至独立Temp，不使用真实供应商或用户数据。
+
+| 实际命令 | 原生结果 |
+|---|---|
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_cancellation --offline -j 1 -- --nocapture --test-threads=1` | 0，2 passed/0 failed/0 ignored，1.43s；原背压探针默认执行，两个场景重复停止后单一结果/终态，SQLite重开事件一致 |
+| `cargo test -p deepagent-mcp --lib stdio::dispatch_tests --offline -j 1 -- --nocapture --test-threads=1` | 0，14/0/0，3.00s；其中5项为本轮新增 |
+| `cargo test -p deepagent-mcp --all-features --offline -j 1 -- --test-threads=1` | 0，12 targets共121/0/8；新真实stdio取消/重连回归1/0/0，0.89s；其他ignored仍保留 |
+| `cargo clippy -p deepagent-mcp --all-targets --all-features --offline -j 1 -- -D warnings` | 0，2.79s，包含新回归 |
+| `cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` | 101，129 targets共3564 passed/2 failed/315 ignored，1000.87s，其中编译6m48s；两失败及复核见下文，不冒充全绿 |
+| `cargo clippy --all-targets --all-features --offline -j 1 -- -D warnings` | 101，未改models/client.rs:355 Option<ReasoningEffort> clone_on_copy，HEAD原文已核对 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 1` | 0，独立桌面Rust消费方，29.60s |
+| `cargo fmt --all -- --check`、`git diff --check` | 均0，最终源码及文档一致性另核对 |
+
+workspace相关消费方：Kernel E2E151/0/78、MCP默认lib99/0/2、新真实取消重连1/0/0、Runtime312/0/11、Rust SDK lib5/0/12通过。完整日志target/h136-final-*，逐target汇总h136-final-targets.json，命令/退出码/耗时h136-final-results.json，不提交日志。
+
+全量两失败：既有H-306空creative.video-edit.v1 defaultUserPrompt；另有未改动的`verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline`在compiler-started就绪4s窗口失败，elapsed_ms=4003、cargo_lock=false、无build/worker/canary标记。后者不能未经证据称为旧稳定基线或随机偶发。已读该条目/共享BuildFixture，调用路径为本地BashTool/SystemExecutor/Kernel，不装配MCP，相关源码/夹具无本轮diff；本轮未改超时、断言或H-64生产。用**全量生成的同一个**`target/debug/deps/deepagent_app_core-d48a3542e6edc36d.exe`、新隔离根执行：
+
+- `verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline --exact --nocapture --test-threads=1`：0，1/0/0，14.11s；None/Cancel/Deadline三组ready为1780/1232/1341ms，原进程退出/终态/副作用断言通过。
+- 同二进制 `--quiet --test-threads=1` 完整AppCore lib：0，1206/0/65，163.88s；不替换或重写首次workspace的1205/1/65。
+
+复核日志h136-readiness.log、h136-appcore.log及对应result.json。未取得首次失败的启动调用栈/根因，复跑成功不证明全部负载下冷编译就绪可靠；下一项先复核H-64该边界，不在H-136顺手修测试或重开已证明的取消进程归属行为。
+
+E-H136-06（本项验收、兼容性与残余）：H-136仅在所列Windows本机正式服务/真实Node管道/临时文件SQLite范围关闭。本轮新增生产修复仅为发送owner缺少阶段证据：等锁取消立即返回before dispatch且无错误通知，健康共享请求仍等待并正常完成；Writing取消/abort保留连接退役，使同连接其他pending显式失败而不拼接半帧；Flushed保留原50ms有界通知。Windows peer已读但flush未poll的组明确验证结果未知、退役且peer释放后仍能完成；不是远端停止保证。旧临时诊断源码SHA256仍为edca734ba7f079932904b46ed5a19ecb5af6b8c4469ea2a50ed529e12a6a463d，原1通过/1失败及断言未编辑，未把新契约测试冒充旧必达通知断言通过。H-09已消除原本地背压根因，不重复计生产成果。
+
+公开Tool/MCP接口、wire、Tauri/前端类型、权限、沙箱、配置、依赖及存储schema均无变化，无迁移或第二套状态中心；MessageWriteState仅一次写入的局部生命周期。唯一错误分类变化是已知尚未发送的等锁取消不再被包装为远端结果未知；不新增自动重试/重放。没有证明回滚外部副作用、强杀/断电原子性、其他OS/任意系统负载/真实MCP/供应商/UI/OS沙箱矩阵；未跑pnpm build/独立TS SDK，因无相关签名或前端变更，现有workspace Rust SDK消费方已执行。原释放背压后立即close的夹具不能用于宣称绝无迟到字节。E-H65-13窗口保留为best-effort限制，不移除半帧保护换取通知；H-135/H-236保持独立。
+
+本轮新增验收1，累计58验收/18历史跳过/7归并/2撤销/221待修/0修复中，221有效未关闭；306行/306唯一编号，其他305条台账保持原文。本项所列本机范围剩余0。下一项先复核H-64本轮冷编译就绪失败，再按风险/依赖处理H-135等P1问题。全部剩余200–400有效修复/验收小时仍是按审计规模与跨层风险的原未逐项校准粗估，不机械扣减、不承诺日期；本轮编译及后续设备/依赖/环境等待另计。代码/默认回归/当时两文档将独立提交，取得hash后另回填，不amend、不推送、不创建PR，整体goal保持active。
 
 ## H-139 本轮即时记录（2026-10-28）
 
@@ -1652,7 +1694,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-133：Responses `response.failed` 携带 usage 时未进入运行用量](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-134：被替代的画布 run 迟到节点事件可覆盖当前状态](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-135：stdio MCP 隐式继承宿主凭据，配置环境不是授权边界](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-136：stdio MCP 请求写入受背压阻塞时，停止信号无法结束发送等待](system-harness-audit-2026-10-21.md) | P1 | 待修复 | E-H136-01补充发送/flush窗口；原背压需重验，不直接套旧结论 | H-65调查证实当前/隔离HEAD相同窗口会退役连接并丢失peer取消；尚未修生产 | 临时真实transport控制调度两边均1/1，正常flush组通过；原背压探针未重跑 | 无本阶段修复提交 | 不计新增编号；随发送/连接owner边界复核；逐项工时待评估，计入总区间 |
+| [H-136：stdio MCP 请求写入受背压阻塞时，停止信号无法结束发送等待](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原本地背压随H-09消除不重复计功；本轮新增锁排队反例修前0/1/0，见E-02～06 | 单一MessageWrite局部Queued/Writing/Flushed证据，未发出不通知/不报未知，写入中仍退役 | 默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8、MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核见E-05 | 本轮修复提交待回填；历史实现46ba0fd7 | 本机范围剩余0；远端停止best-effort/可能迟到字节，未验UI/供应商/其他OS；下一项先复核H-64就绪失败，总工时原粗估不机械扣减 |
 | [H-137：MCP 工具目录变更通知被丢弃，后续运行继续发布旧工具](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-138：MCP 结果整对象进入模型上下文，客户端元数据没有独立可见性边界](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-139：后置 hook 报错跳过已执行工具的结果提交，重开后成功写入变成结果缺失](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-28，E-H139-01～06所列Windows本机范围；原失败保留 | 统一完成边界先收尾action/Session，同组结果全提交后才运行可失败post-hook，原错误仍传播 | 原专项2/0/0、新runtime9/0/0默认通过；workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过，严格lint旧阻断保留 | `93a412d049f7a41be129d528f9b043f9978e80c9` | 所列范围剩余0；未验UI/供应商/其他OS/DB故障与强杀窗口，不宣称exactly-once；总工时粗估不机械扣减 |

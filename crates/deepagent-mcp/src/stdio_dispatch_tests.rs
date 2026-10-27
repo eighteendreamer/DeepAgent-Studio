@@ -368,3 +368,292 @@ async fn aborting_blocked_write_retires_connection_instead_of_appending_a_new_js
     assert!(send(&transport, 2, "ping").await.is_err());
     transport.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn cancelling_queued_write_never_notifies_an_unissued_request_or_cancels_shared_waiter() {
+    let (_dir, transport) = spawn_server(HOLD_SERVER);
+    let healthy = tokio::spawn({
+        let transport = transport.clone();
+        async move { send(&transport, 1, "hold").await }
+    });
+    tokio::time::timeout(DEADLINE, async {
+        while send(&transport, 2, "ping").await.unwrap().result.unwrap()["held"] != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let stdin = transport.stdin.lock().await;
+    let context = ToolExecutionContext::default();
+    let cancel = context.cancellation_token();
+    let request = JsonRpcRequest::new(3, "hold", None);
+    let mut queued = transport.send_with_context(&request, context);
+    std::future::poll_fn(|cx| {
+        assert!(queued.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert_eq!(pending_count(&transport), 2);
+    cancel.cancel();
+    // Drive cancellation while the writer is still locked, then release it.
+    // This also exposes an invalid cancellation notification if the cancelled
+    // caller queues one for a request which has never acquired stdin.
+    let early_result = std::future::poll_fn(|cx| {
+        std::task::Poll::Ready(match queued.as_mut().poll(cx) {
+            std::task::Poll::Ready(result) => Some(result),
+            std::task::Poll::Pending => None,
+        })
+    })
+    .await;
+    let completed_while_locked = early_result.is_some();
+    drop(stdin);
+    let error = match early_result {
+        Some(result) => result,
+        None => tokio::time::timeout(DEADLINE, queued).await.unwrap(),
+    }
+    .unwrap_err();
+    let pending_after_cancel = pending_count(&transport);
+    let barrier = send(&transport, 4, "ping").await.unwrap().result.unwrap();
+    let healthy_still_waiting = !healthy.is_finished();
+    transport.notify("release", None).await.unwrap();
+    let healthy_result = healthy.await.unwrap().unwrap();
+    transport.close().await.unwrap();
+
+    eprintln!("queued cancellation: error={error}, pending={pending_after_cancel}, peer={barrier}");
+    assert_eq!(error.to_string(), MCP_CANCELLED_BEFORE_DISPATCH);
+    assert!(
+        completed_while_locked,
+        "cancellation must not wait for the stdin owner"
+    );
+    assert!(
+        barrier["cancelled"].is_null(),
+        "unsent request must not have a cancellation notification"
+    );
+    assert_eq!(
+        barrier["held"], 1,
+        "cancelled queued request must never reach the peer"
+    );
+    assert_eq!(pending_after_cancel, 1);
+    assert!(healthy_still_waiting);
+    assert_eq!(healthy_result.id, 1);
+    assert_eq!(healthy_result.result.unwrap()["late"], true);
+}
+
+#[tokio::test]
+async fn precancelled_request_has_no_wire_effect_and_keeps_connection_usable() {
+    let (_dir, transport) = spawn_server(HOLD_SERVER);
+    let context = ToolExecutionContext::default();
+    context.cancellation_token().cancel();
+    context.cancellation_token().cancel();
+    let error = transport
+        .send_with_context(&JsonRpcRequest::new(1, "hold", None), context)
+        .await
+        .unwrap_err();
+    assert_eq!(error.to_string(), MCP_CANCELLED_BEFORE_DISPATCH);
+    assert_eq!(pending_count(&transport), 0);
+    let barrier = send(&transport, 1, "ping").await.unwrap();
+    transport.close().await.unwrap();
+    assert_eq!(barrier.id, 1);
+    let peer = barrier.result.unwrap();
+    assert_eq!(peer["held"], 0);
+    assert!(peer["cancelled"].is_null());
+    assert_eq!(
+        peer["wire_id"], 1,
+        "precancellation must not even allocate a wire id"
+    );
+}
+
+#[tokio::test]
+async fn token_cancellation_during_partial_write_retires_stream_and_wakes_shared_waiters() {
+    let (dir, transport) = spawn_server(
+        r#"
+const fs = require('node:fs');
+const path = require('node:path');
+let buffer = '', held = 0;
+process.stdin.on('data', chunk => {
+  buffer += chunk.toString('utf8');
+  if (buffer.length > 1024) {
+    process.stdin.pause();
+    fs.writeFileSync(path.join(__dirname, 'partial-write'), String(buffer.length));
+    return;
+  }
+  let end;
+  while ((end = buffer.indexOf('\n')) >= 0) {
+    const req = JSON.parse(buffer.slice(0, end));
+    buffer = buffer.slice(end + 1);
+    if (req.method === 'hold') held++;
+    else process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:req.id,result:{held}})+'\n');
+  }
+});
+// Pausing stdin removes its active read handle; retain a bounded peer lifetime.
+setTimeout(() => process.exit(2), 15000);
+"#,
+    );
+    let healthy = tokio::spawn({
+        let transport = transport.clone();
+        async move { send(&transport, 1, "hold").await }
+    });
+    tokio::time::timeout(DEADLINE, async {
+        while send(&transport, 2, "ping").await.unwrap().result.unwrap()["held"] != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+
+    let context = ToolExecutionContext::default();
+    let cancel = context.cancellation_token();
+    let writing = tokio::spawn({
+        let transport = transport.clone();
+        async move {
+            transport
+                .send_with_context(
+                    &JsonRpcRequest::new(
+                        3,
+                        "large",
+                        Some(serde_json::json!({"payload":"x".repeat(8 * 1024 * 1024)})),
+                    ),
+                    context,
+                )
+                .await
+        }
+    });
+    let marker = dir.path().join("partial-write");
+    wait_for_marker(&marker).await;
+    let read_bytes: usize = std::fs::read_to_string(marker).unwrap().parse().unwrap();
+    assert!(read_bytes > 0 && read_bytes < 8 * 1024 * 1024);
+    let queued_request = JsonRpcRequest::new(4, "ping", None);
+    let mut queued = transport.send(&queued_request);
+    std::future::poll_fn(|cx| {
+        assert!(queued.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    assert_eq!(pending_count(&transport), 3);
+    cancel.cancel();
+    cancel.cancel();
+    let error = tokio::time::timeout(DEADLINE, writing)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap_err();
+    let queued_error = tokio::time::timeout(DEADLINE, queued)
+        .await
+        .unwrap()
+        .unwrap_err();
+    let healthy_error = healthy.await.unwrap().unwrap_err();
+    let extra_write = transport.notify("release", None).await;
+    transport.close().await.unwrap();
+
+    eprintln!("partial write: cancelled={error}, queued={queued_error}, healthy={healthy_error}, notification={extra_write:?}");
+    assert_eq!(error.to_string(), MCP_CANCELLED_UNKNOWN_OUTCOME);
+    for error in [queued_error, healthy_error, extra_write.unwrap_err()] {
+        assert!(
+            error.to_string().contains("during message write"),
+            "{error}"
+        );
+    }
+    assert_eq!(pending_count(&transport), 0);
+    assert!(transport.dispatcher.check_open().is_err());
+}
+
+#[cfg(windows)]
+const FLUSH_SERVER: &str = r#"
+const fs = require('node:fs');
+const path = require('node:path');
+const mark = (name, id) => fs.writeFileSync(path.join(__dirname, name), String(id));
+let pending, timer;
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+  const req = JSON.parse(line);
+  if (req.method === 'hold') {
+    pending = req;
+    mark('started', req.id);
+    timer = setInterval(() => {
+      if (!fs.existsSync(path.join(__dirname, 'release'))) return;
+      clearInterval(timer);
+      mark('responded', req.id);
+      process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:req.id,result:{late:true}})+'\n');
+    }, 5);
+  } else if (req.method === 'notifications/cancelled' && pending.id === req.params.requestId) {
+    clearInterval(timer);
+    mark('cancelled', req.params.requestId);
+  }
+});
+setTimeout(() => process.exit(2), 15000).unref();
+"#;
+
+#[cfg(windows)]
+#[tokio::test]
+async fn unpolled_windows_flush_keeps_unknown_outcome_and_retires_instead_of_appending() {
+    assert_windows_flush_boundary(true).await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn completed_windows_flush_allows_correlated_cancellation_and_reuse() {
+    assert_windows_flush_boundary(false).await;
+}
+
+#[cfg(windows)]
+async fn assert_windows_flush_boundary(defer_flush_poll: bool) {
+    let (dir, transport) = spawn_server(FLUSH_SERVER);
+    let context = ToolExecutionContext::default();
+    let cancel = context.cancellation_token();
+    let request = JsonRpcRequest::new(1, "hold", None);
+    let mut call = transport.send_with_context(&request, context);
+    std::future::poll_fn(|cx| {
+        assert!(call.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    })
+    .await;
+    wait_for_marker(&dir.path().join("started")).await;
+    if !defer_flush_poll {
+        // The fence must acquire the same writer, so the caller has observed
+        // write+flush completion, not merely the peer's receipt of the bytes.
+        tokio::select! {
+            result = &mut call => panic!("held request completed early: {result:?}"),
+            fence = transport.notify("fence", None) => fence.unwrap(),
+        }
+    }
+    cancel.cancel();
+    let error = tokio::time::timeout(DEADLINE, call)
+        .await
+        .unwrap()
+        .unwrap_err();
+    let probe = transport.notify("probe", None).await;
+    let notified = tokio::time::timeout(
+        Duration::from_millis(250),
+        wait_for_marker(&dir.path().join("cancelled")),
+    )
+    .await
+    .is_ok();
+    std::fs::write(dir.path().join("release"), "release").unwrap();
+    if !notified {
+        wait_for_marker(&dir.path().join("responded")).await;
+    }
+    transport.close().await.unwrap();
+
+    eprintln!("flush boundary: defer={defer_flush_poll}, notified={notified}, probe={probe:?}");
+    assert_eq!(error.to_string(), MCP_CANCELLED_UNKNOWN_OUTCOME);
+    assert_eq!(pending_count(&transport), 0);
+    if defer_flush_poll {
+        assert!(!notified);
+        assert!(probe
+            .unwrap_err()
+            .to_string()
+            .contains("during message write"));
+        assert!(
+            dir.path().join("responded").exists(),
+            "unknown outcome does not imply remote work stopped"
+        );
+    } else {
+        assert!(notified);
+        assert!(probe.is_ok());
+        assert!(!dir.path().join("responded").exists());
+        assert_eq!(
+            std::fs::read(dir.path().join("started")).unwrap(),
+            std::fs::read(dir.path().join("cancelled")).unwrap()
+        );
+    }
+}

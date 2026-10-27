@@ -39,7 +39,6 @@ async fn stopping_run_interrupts_inflight_stdio_mcp_call() {
 }
 
 #[tokio::test]
-#[ignore = "audit: cancellation must interrupt an MCP request blocked writing to stdin"]
 async fn audit_stopping_run_interrupts_backpressured_stdio_write() {
     exercise_stdio_cancellation(512 * 1024).await;
 }
@@ -127,7 +126,8 @@ setTimeout(() => process.exit(2), 15000).unref();
     )
     .unwrap();
 
-    let db = Arc::new(Database::open_in_memory().unwrap());
+    let db_path = root.path().join("state.sqlite");
+    let db = Arc::new(Database::open(&db_path).unwrap());
     let settings = Arc::new(SettingsService::new(
         db.clone(),
         Arc::new(MockTransport::with_get_json(
@@ -215,6 +215,8 @@ setTimeout(() => process.exit(2), 15000).unref();
     };
 
     let cancellation = chat.request_cancel(&session_id).unwrap();
+    // Repeated stop requests must not create a second result or terminal.
+    chat.request_cancel(&session_id).unwrap();
     tokio::time::sleep(Duration::from_millis(250)).await;
     let run_still_waiting = !run.is_finished();
     let cancellation_notification_received = cancelled.exists();
@@ -272,6 +274,21 @@ setTimeout(() => process.exit(2), 15000).unref();
     );
     assert_eq!(terminal.terminal_kind.as_deref(), Some("cancelled"));
     assert_eq!(model.calls.load(Ordering::Acquire), 1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "tool_completed"
+                && event.data["call_id"] == "audit-cancel-mcp-call")
+            .count(),
+        1
+    );
     assert!(
         events.iter().any(|event| {
             let error = event.data["output"]["error"].as_str().unwrap_or_default();
@@ -282,4 +299,23 @@ setTimeout(() => process.exit(2), 15000).unref();
         }),
         "the interrupted MCP tool call must have a paired failure result"
     );
+    let reopened = Database::open(&db_path).unwrap();
+    let store = deepagent_persistence::run_store::RunStore::new(&reopened);
+    assert_eq!(
+        store
+            .get("audit-cancel-inflight-mcp")
+            .unwrap()
+            .unwrap()
+            .terminal_kind,
+        terminal.terminal_kind
+    );
+    let replay = store
+        .events_after("audit-cancel-inflight-mcp", None)
+        .unwrap();
+    assert_eq!(replay.len(), events.len());
+    for (saved, original) in replay.iter().zip(&events) {
+        assert_eq!(saved.sequence, original.sequence);
+        assert_eq!(saved.event_type, original.event_type);
+        assert_eq!(saved.data, original.data);
+    }
 }
