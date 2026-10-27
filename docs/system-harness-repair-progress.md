@@ -12,11 +12,25 @@
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前无；下一项先复核H-64冷编译就绪门禁本轮新失败，不直接把复跑通过当作根因已明 |
+| 修复中 | 0 | 当前无新的生产修复中条目；H-64已补诊断但首次冷ready失败未定位，不以复跑通过关闭；下一独立项复核H-135 |
 | 待修复 | 221 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
 有效未关闭条目当前为 **221（221待修复、0修复中）**；不提供完成率。五十八项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-64 冷编译就绪复核（2026-10-28）
+
+**状态：原所列生产取消/进程归属验收范围不变；H-136 全量中新出现的冷编译就绪失败仍未定位，不增加修复或验收数。** 本轮只处理该失败的证据与测试收尾缺口，不把一次诊断补强登记成第二次 H-64 生产修复，也不提高原 4 秒就绪门禁、5 秒 deadline/post-edit 时限或删除冷模式。
+
+E-H64-20261028-01（现状、假设与范围）：HEAD `724b51e3`，tracked 工作区初始干净，五类既有未跟踪用户项未读取/修改/暂存。已重新读取原 H-64/H-65、共享 BuildFixture、VerificationCommands、SystemExecutor、Kernel 与正式 ChatService 消费方。H-136 首次全量的 elapsed_ms=4003、Cargo.lock/target/build/worker 均缺失只证明未见编译入口标记；原测试在 observer 内直接 unwrap，丢失了当时 Kernel/result/action 和编译器 query 阶段的区分，不能据此断言 Cargo 没有启动、生产取消失效或仅为环境慢。原同二进制两次复核通过也不能追溯首次根因。当前无证据支持修改生产实现。
+
+E-H64-20261028-02（测试诊断与收尾补强）：只改原两处测试文件。临时 native rustc-wrapper 为每个自身 PID 写入 query/build-script 的 entered/forwarding/completed 阶段与耗时，不记录命令参数、供应商内容或宿主路径；原 4 秒失败快照同时保留该阶段。Kernel observer 遇 ready 错误先保存原错误、运行记录、action 与事件类型，再请求同一取消树、最多等待原 2 秒停止窗口，放行夹具并 join 同一个运行 future；重开原临时 SQLite 后把真实 Kernel result/terminal/action 状态附入错误，最终仍由正式测试 unwrap 失败，绝不把清理成功变成 ready 通过。新增两个默认对照：已完成真实 rustc --version query 但未到编译 gate 仍必须失败且保留 query 阶段；坏临时 Cargo.toml 在 wrapper 前失败时仍返回 ready 错误且运行与 action 收尾可核对。两者是本地测试设计，不冒充原首次失败原因；保留全部正常/取消/deadline/drop/timeout、原生句柄退出、唯一终态与无迟到副作用断言。首次 fmt check 仅新代码排版失败，已按现有 rustfmt 格式化。
+
+E-H64-20261028-03（专项实际终态，完整门禁进行中）：隔离数据/home/USERPROFILE/HOME/managed 至全新系统 Temp，保留 Cargo/Rustup 工具链目录并清除继承 DB 路径及供应商 key，无真实用户数据/外部供应商。会话7353已原生退出0：`cargo test --workspace --lib verification_commands:: --offline --no-fail-fast -j 1 -- --nocapture --test-threads=1` 共10 passed/0 failed/0 ignored，测试80.46s、整步193.29s（编译1m51s）；新增两对照默认执行，原冷 Kernel 正常/取消/deadline ready=1236/1358/1500ms，未复现首次冷门禁失败。`cargo test --workspace --test kernel_v2_e2e verification_lifecycle:: --offline -j 1 -- --nocapture --test-threads=1` 共3/0/0，测试24.74s、整步97.64s；共享 fixture 的正式 ChatService 完成/post-edit/父先退出对照均保留并通过。`cargo fmt --all -- --check` 退出0，3.13s。日志与逐命令结果在 target/h64-readiness-20261028-targeted-*；不覆盖 H-136 或 H-64 原日志。冻结测试源码后会话57493继续完整 workspace 与严格 Clippy；尚未取得终态，不能提前记全仓通过或根因已修复。
+
+E-H64-20261028-04（完整门禁终态、结论与限制）：会话57493已原生终结，无运行中的验证。`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` 原生101，129 targets合计3567 passed/1 failed/315 ignored，600.19s（本轮增量编译0.85s，不冒充全仓无缓存构建）；AppCore lib1208/0/65、正式Kernel E2E151/0/78、CLI112/0/23、MCP默认lib99/0/2、Runtime312/0/11通过。唯一失败仍为未修改H-306的creative.video-edit.v1空defaultUserPrompt。本次完整门禁未复现H-136原冷ready失败，不能倒推其首次根因已明或承诺任意负载下就绪可靠。`cargo clippy --all-targets --all-features --offline -j 1 -- -D warnings` 原生101，3.03s，仍停于未修改models/client.rs:355 clone_on_copy，不能宣称新测试或全仓已通过严格lint；最终`cargo fmt --all -- --check`原生0，3.08s，git diff --check为0。完整日志/命令结果与统计为target/h64-readiness-20261028-final-*，原始失败日志不覆盖、不改断言。
+
+本轮交付仅为H-64测试异常路径的证据与同future收尾补强，两项确定性对照不冒充历史失败复现或新生产修复；新增诊断会写临时阶段文件，可能影响时序，不作为性能改善或历史负载重放证明。未改生产Rust实现、公共接口、协议、权限、沙箱、配置、依赖或数据库schema，无迁移；无Tauri/TypeScript/UI变更，未运行桌面独立Rust/前端构建、真实UI/供应商/其他OS/任意负载或强杀断电验收。保留原H-64所列取消/进程归属范围验收与新ready未定位限制，不能把H-64全部宿主冷启动视为完成。下一独立根因准备复核P1 H-135（stdio MCP隐式环境继承）；H-64原冷门禁及本轮诊断仍保留在默认完整门禁，不归并、不静默删除。新增验收0，累计58验收/18历史跳过/7归并/2撤销/221待修/0修复中，221有效未关闭。剩余200–400有效修复/验收小时仍为原未逐项校准粗估，依复现、跨层修复与验收规模估计，命令壁钟/设备/依赖/环境等待另计，不机械扣减或承诺日期。测试及当时两文档独立提交，取得真实hash后另回填；不amend、不推送、不创建PR，整体goal保持active。
 
 ## H-136 本轮即时记录（2026-10-28）
 
@@ -1624,7 +1638,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-61：对抗复核脱离主运行取消，取消后仍可落成功终态，总时限也不清理复核请求](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列 Windows 本机、正式 Kernel/ModelAgent 与受控离线 transport；不合并 H-62/H-63 | 取消感知 verifier + 运行子 token；面板 JoinSet 统一 abort/join，每个 skeptic 使用子 token；ModelSkepticSpawner 使用取消感知模型流，取消结果在完成提交前落唯一取消终态 | E-H61-20261027-01～03：原取消/截止失败保留；默认 AppCore audit 4/0/2、Runtime lib 303/0/11；正常 PASS、主动取消、task deadline 均通过，真实供应商/UI/其他 OS/完整 workspace 与严格 lint 未验 | `e925c7e0`（生产修复） | 受控离线 transport 和所列 Windows 范围；H-62/H-63仍待修复；本项后续按优先级准备 H-62，预计 4–8 有效小时，环境等待另计 |
 | [H-62：停滞分类等待没有运行取消，停止要等分类结束，但最终取消映射正确](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-63：对抗复核和停滞分类丢弃已返回的 usage，现有会话成本账本漏记附属请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-64：自动完成验证没有运行取消与进程归属，总时限终态后真实 build.rs 仍能写文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | H-65已将生产自动验证接回统一bash/ToolExecutionPipeline；本轮仅补独立生命周期与冷编译阶段证据，不把旧SystemCommandRunner失败伪装成当前生产失败 | E-H64-20261027-01～20：旧runner 0/2/0原始失败保留；正式ChatService 142/0/82；adapter/Kernel冷与正常生命周期8/0/0，真实取消/deadline/drop/timeout均在放行前回收后代、单终态且无迟到canary；E-19冷ChatServiceready窗口反证保留 | 严格/诊断clippy及完整workspace仍有既有H-306和lint失败；未验所有宿主冷编译阶段、其他OS、真实供应商/桌面；生产实现为H-65 commit | `1f5fbb084e2babe908fd6481f1a05e1231a5f5d0`（生产实现）；本轮独立验收提交 `f78a32ea` | 所列Windows本机自动验证路径已关闭；独立手工SystemCommandRunner仍不属于当前自动装配，其他平台与冷启动全部阶段另计；总200–400有效小时未校准、等待另计 |
+| [H-64：自动完成验证没有运行取消与进程归属，总时限终态后真实 build.rs 仍能写文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | H-65已将生产自动验证接回统一bash/ToolExecutionPipeline；本轮仅补独立生命周期与冷编译阶段证据，不把旧SystemCommandRunner失败伪装成当前生产失败 | E-H64-20261027-01～20：旧runner 0/2/0原始失败保留；正式ChatService 142/0/82；adapter/Kernel冷与正常生命周期8/0/0，真实取消/deadline/drop/timeout均在放行前回收后代、单终态且无迟到canary；E-19冷ChatServiceready窗口反证保留；2026-10-28仅补冷ready错误的阶段证据与同future收尾，不计新生产修复 | 严格/诊断clippy及完整workspace仍有既有H-306和lint失败；未验所有宿主冷编译阶段、其他OS、真实供应商/桌面；生产实现为H-65 commit；E-H64-20261028-01～04：默认专项10/0/0、正式Chat3/0/0，workspace3567/1/315（唯一H-306），严格lint旧失败；H-136首次冷ready失败未定位 | `1f5fbb084e2babe908fd6481f1a05e1231a5f5d0`（生产实现）；本轮独立验收提交 `f78a32ea` | 所列Windows本机自动验证路径已关闭；独立手工SystemCommandRunner仍不属于当前自动装配，其他平台与冷启动全部阶段另计；总200–400有效小时未校准、等待另计；新冷ready失败保留为未定位限制，本轮复跑通过不关闭该限制；下一独立项H-135 |
 | [H-65：两处自动验证绕过已配置命令后端，显式构建被拒绝后仍可在宿主执行项目脚本并写出工作区](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，Windows所列本机范围；不合并H-64/H-03 | 两处共用已注册bash/ToolExecutionPipeline与Kernel canonical事件入口、同一action allocator | E-01～15保留失败；单元3/boundary5默认通过；最终workspace3471/1/324，独立取消窗口与H-46重开保留 | `1f5fbb084e2babe908fd6481f1a05e1231a5f5d0` | 真实OS沙箱/SSH、其他OS、H-64未验；H-46按E-22恢复验收，H-136待复核；229有效未关闭，总体200–400有效小时未校准，等待另计 |
 | [H-66：Flash 开启 DeepSeek 原生搜索后，本地搜索函数被替换为该模型会忽略的原生工具](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-67：当前轮图片未进入实时模型 Surface，原生镜像也丢附件，已有会话的图片在下一轮仍不出现](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

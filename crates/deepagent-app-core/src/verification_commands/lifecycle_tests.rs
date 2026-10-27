@@ -29,10 +29,16 @@ enum Stop {
 }
 
 async fn observe(stop: Stop, parent_exits: bool) {
-    observe_fixture(BuildFixture::new().await, stop, parent_exits).await;
+    observe_fixture(BuildFixture::new().await, stop, parent_exits)
+        .await
+        .unwrap();
 }
 
-async fn observe_fixture(fixture: BuildFixture, stop: Stop, parent_exits: bool) {
+async fn observe_fixture(
+    fixture: BuildFixture,
+    stop: Stop,
+    parent_exits: bool,
+) -> Result<(), String> {
     let db_path = fixture.root.join("run.sqlite");
     let db = Arc::new(Database::open(&db_path).unwrap());
     let clock = FixedClock::new(1);
@@ -125,10 +131,39 @@ async fn observe_fixture(fixture: BuildFixture, stop: Stop, parent_exits: bool) 
             .start(RunRequest::new(&mut session, task, &mut agent))
             .await;
         exited.store(true, Ordering::Release);
-        result.unwrap()
+        result
     };
     let observe = async {
-        let processes = fixture.try_started().await.unwrap();
+        let processes = match fixture.try_started().await {
+            Ok(processes) => processes,
+            Err(error) => {
+                // Preserve the failing observation, then settle the SAME run.
+                // Panicking here used to drop join! before its result/actions
+                // could distinguish command failure from compiler readiness.
+                let before = RunStore::new(&db).get(run_id).unwrap();
+                let actions = RunControlStore::new(&db).list_actions(run_id).unwrap();
+                let event_types: Vec<_> = RunStore::new(&db)
+                    .events_after(run_id, None)
+                    .unwrap()
+                    .into_iter()
+                    .map(|event| event.event_type)
+                    .collect();
+                let accepted = kernel.handle().cancel();
+                let settled = tokio::time::timeout(Duration::from_secs(2), async {
+                    while !exited.load(Ordering::Acquire) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                })
+                .await
+                .is_ok();
+                fixture.release();
+                return Err(format!(
+                    "{error}; stop={stop:?} parent_exits={parent_exits} before={before:?} \
+                     actions={actions:?} event_types={event_types:?} \
+                     cleanup_cancel_accepted={accepted} cleanup_settled={settled}"
+                ));
+            }
+        };
         if parent_exits {
             fixture.return_parent(&processes).await;
         }
@@ -164,14 +199,29 @@ async fn observe_fixture(fixture: BuildFixture, stop: Stop, parent_exits: bool) 
             .terminal_kind;
         fixture.release();
         processes.settle().await;
-        (stopped, native_exited, before)
+        Ok((stopped, native_exited, before))
     };
-    let (terminal, (stopped, native_exited, before)) =
-        tokio::time::timeout(Duration::from_secs(12), async {
-            tokio::join!(run, observe)
-        })
-        .await
-        .expect("finite kernel and real processes must settle");
+    let (terminal, observed) = tokio::time::timeout(Duration::from_secs(12), async {
+        tokio::join!(run, observe)
+    })
+    .await
+    .expect("finite kernel and real processes must settle");
+    let (stopped, native_exited, before) = match observed {
+        Ok(observed) => observed,
+        Err(error) => {
+            let reopened = Database::open(&db_path).unwrap();
+            let record = RunStore::new(&reopened).get(run_id).unwrap();
+            let actions = RunControlStore::new(&reopened)
+                .list_actions(run_id)
+                .unwrap();
+            let actions_terminal = actions.iter().all(|action| action.state.is_terminal());
+            return Err(format!(
+                "{error}; settled_run_result={terminal:?} settled_record={record:?} \
+                 settled_actions_terminal={actions_terminal}"
+            ));
+        }
+    };
+    let terminal = terminal.unwrap();
     let expected = match stop {
         Stop::None => TerminalKind::Succeeded,
         Stop::Cancel => TerminalKind::Cancelled,
@@ -226,6 +276,7 @@ async fn observe_fixture(fixture: BuildFixture, stop: Stop, parent_exits: bool) 
         assert_eq!(before.as_deref(), Some(expected_label));
         assert!(!fixture.wrote(), "descendant side effect survived terminal");
     }
+    Ok(())
 }
 
 #[tokio::test]
@@ -245,8 +296,55 @@ async fn production_build_parent_exit_with_inherited_pipes_still_owns_worker() {
 #[tokio::test]
 async fn production_cold_compiler_gate_normal_cancel_and_deadline() {
     for stop in [Stop::None, Stop::Cancel, Stop::Deadline] {
-        observe_fixture(BuildFixture::cold().await, stop, false).await;
+        observe_fixture(BuildFixture::cold().await, stop, false)
+            .await
+            .unwrap();
     }
+}
+
+#[tokio::test]
+async fn readiness_failure_retains_kernel_result_and_settles_actions() {
+    let fixture = BuildFixture::cold().await;
+    // A deterministic failure BEFORE rustc-wrapper dispatch; unlike the
+    // historical timeout, this injected cause is known and must stay an error.
+    std::fs::write(fixture.root.join("Cargo.toml"), "not a valid manifest\n").unwrap();
+    let error = observe_fixture(fixture, Stop::None, false)
+        .await
+        .expect_err("a build that never reaches the gate must not pass readiness");
+    assert!(
+        error.contains("real build must reach compiler-started"),
+        "{error}"
+    );
+    assert!(error.contains("compiler_stages=[]"), "{error}");
+    assert!(error.contains("tool_completed"), "{error}");
+    assert!(error.contains("cleanup_settled=true"), "{error}");
+    assert!(error.contains("settled_run_result=Ok("), "{error}");
+    assert!(error.contains("settled_actions_terminal=true"), "{error}");
+}
+
+#[tokio::test]
+async fn cold_query_progress_remains_visible_when_compiler_gate_is_not_reached() {
+    let fixture = BuildFixture::cold().await;
+    let wrapper = fixture.root.parent().unwrap().join("compiler-wrapper.exe");
+    let command = format!(
+        "& {} rustc --version",
+        quote_argument(wrapper.to_str().unwrap())
+    );
+    let output = SystemExecutor
+        .run(&command, fixture.root.to_str().unwrap())
+        .await
+        .unwrap();
+    assert_eq!(output.exit_code, Some(0), "{output:?}");
+    assert!(!fixture.root.join("target").exists());
+    assert!(!fixture.root.join("compiler-started").exists());
+    let error = match fixture.try_started().await {
+        Ok(_) => panic!("a version query must not reach the build-script gate"),
+        Err(error) => error,
+    };
+    assert!(error.contains("real build must reach compiler-started"));
+    assert!(error.contains("query completed exit=Some(0)"), "{error}");
+    assert!(error.contains("cargo_lock=false"), "{error}");
+    assert!(!fixture.wrote());
 }
 
 #[tokio::test]

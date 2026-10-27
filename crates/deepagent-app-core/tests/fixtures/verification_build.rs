@@ -53,13 +53,21 @@ fn main() {
     // The same source can be compiled as Cargo's native rustc-wrapper. Forward
     // query invocations immediately; gate only the real build-script compile.
     if args.first().is_some_and(|arg| arg != "--fixture-worker") {
-        if args.windows(2).any(|pair| pair[0] == "--crate-name" && pair[1] == "build_script_build") {
+        let began = Instant::now();
+        let stage = format!("compiler-wrapper-{}.stage", std::process::id());
+        let compiling = args.windows(2).any(|pair| pair[0] == "--crate-name" && pair[1] == "build_script_build");
+        let kind = if compiling { "build-script" } else { "query" };
+        // Fixture-only progress, without command arguments or host paths.
+        fs::write(&stage, format!("{kind} entered")).unwrap();
+        if compiling {
             fs::write("compiler-started", std::process::id().to_string()).unwrap();
             let status = Command::new(std::env::current_exe().unwrap())
                 .arg("--compiler-worker").status().unwrap();
             assert!(status.success());
         }
+        fs::write(&stage, format!("{kind} forwarding elapsed_ms={}", began.elapsed().as_millis())).unwrap();
         let status = Command::new(&args[0]).args(&args[1..]).status().unwrap();
+        fs::write(&stage, format!("{kind} completed exit={:?} elapsed_ms={}", status.code(), began.elapsed().as_millis())).unwrap();
         std::process::exit(status.code().unwrap_or(1));
     }
     if std::env::args().nth(1).as_deref() == Some("--fixture-worker") {
@@ -269,8 +277,30 @@ fn main() {
             Err(error) => files.push(format!("read target/debug/build: {error}")),
         }
         files.sort();
+        let mut compiler_stages = Vec::new();
+        match std::fs::read_dir(&self.root) {
+            Ok(entries) => {
+                for entry in entries {
+                    match entry {
+                        Ok(entry) => {
+                            let name = entry.file_name();
+                            let name = name.to_string_lossy();
+                            if name.starts_with("compiler-wrapper-") && name.ends_with(".stage") {
+                                compiler_stages.push(format!(
+                                    "{name}: {:?}",
+                                    std::fs::read_to_string(entry.path())
+                                ));
+                            }
+                        }
+                        Err(error) => compiler_stages.push(format!("read stage entry: {error}")),
+                    }
+                }
+            }
+            Err(error) => compiler_stages.push(format!("read stage directory: {error}")),
+        }
+        compiler_stages.sort();
         format!(
-            "cargo_lock={} target_files={files:?} build_marker={} worker_marker={} canary={}",
+            "cargo_lock={} target_files={files:?} compiler_stages={compiler_stages:?} build_marker={} worker_marker={} canary={}",
             self.root.join("Cargo.lock").is_file(),
             self.root.join("build-started").is_file(),
             self.root.join("worker-started").is_file(),
