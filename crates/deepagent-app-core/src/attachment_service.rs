@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use base64::Engine as _;
+use deepagent_builtins::fs_guard::{validate_storage_name, OwnedDirectory, OwnedDirectoryRoot};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::MessageAttachment;
 use deepagent_runtime::AttachmentDataResolver;
@@ -21,6 +22,7 @@ const PENDING_SESSION: &str = "pending";
 #[derive(Debug, Clone)]
 pub struct AttachmentService {
     root: PathBuf,
+    storage: OwnedDirectoryRoot,
     preview: FilePreviewService,
 }
 
@@ -34,36 +36,32 @@ struct AttachmentExtraction {
 impl AttachmentService {
     pub fn new(root: PathBuf) -> Self {
         Self {
+            storage: OwnedDirectoryRoot::new(root.clone()),
             root,
             preview: FilePreviewService::new(),
         }
     }
 
     pub fn ingest(&self, input: AttachmentIngestDto) -> Result<AttachmentDto> {
-        let id = input
-            .id
-            .as_deref()
-            .map(sanitize_segment)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(new_attachment_id);
-        let session_bucket = input
-            .session_id
-            .as_deref()
-            .map(sanitize_segment)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| PENDING_SESSION.to_string());
-        let storage_dir = self.root.join(session_bucket).join(&id);
-        fs::create_dir_all(&storage_dir)
+        let id = input.id.clone().unwrap_or_else(new_attachment_id);
+        let relative = attachment_path(input.session_id.as_deref(), &id)?;
+        let directory = self
+            .storage
+            .directory(&relative, true)
             .map_err(|e| CoreError::Other(format!("create attachment dir: {e}")))?;
+        // Preserve existing DTO path spelling; only operation-time I/O uses
+        // the pinned physical directory (including Windows verbatim paths).
+        let storage_dir = self.root.join(relative);
 
         let name = clean_file_name(&input.name);
-        let original_path = self.persist_original(&storage_dir, &name, &input)?;
+        let original_path = self.persist_original(&directory, &name, &input)?;
         let original_path_string = original_path
             .as_ref()
-            .map(|path| path.to_string_lossy().into_owned());
-        let (size_bytes, sha256) = if let Some(path) = original_path.as_ref() {
-            let bytes =
-                fs::read(path).map_err(|e| CoreError::Other(format!("read attachment: {e}")))?;
+            .map(|_| storage_dir.join(&name).to_string_lossy().into_owned());
+        let (size_bytes, sha256) = if original_path.is_some() {
+            let bytes = directory
+                .read_file(&name)
+                .map_err(|e| CoreError::Other(format!("read attachment: {e}")))?;
             (bytes.len() as u64, Some(hex_sha256(&bytes)))
         } else {
             (
@@ -84,7 +82,8 @@ impl AttachmentService {
         };
 
         if let Some(text) = extraction.extracted_text.as_ref() {
-            fs::write(storage_dir.join("extracted.txt"), text)
+            directory
+                .write_file("extracted.txt", text.as_bytes())
                 .map_err(|e| CoreError::Other(format!("write extracted text: {e}")))?;
         }
 
@@ -104,50 +103,43 @@ impl AttachmentService {
             status: extraction.status,
             message: extraction.message,
         };
-        self.write_metadata(&storage_dir, &dto)?;
+        self.write_metadata(&directory, &dto)?;
         Ok(dto)
     }
 
     pub fn remove(&self, session_id: Option<&str>, id: &str) -> Result<bool> {
-        let session_bucket = session_id
-            .map(sanitize_segment)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| PENDING_SESSION.to_string());
-        let id = sanitize_segment(id);
-        let path = self.root.join(session_bucket).join(id);
-        if !path.exists() {
-            return Ok(false);
-        }
-        fs::remove_dir_all(&path)
-            .map_err(|e| CoreError::Other(format!("remove attachment: {e}")))?;
-        Ok(true)
+        let relative = attachment_path(session_id, id)?;
+        self.storage
+            .remove_tree(&relative)
+            .map_err(|e| CoreError::Other(format!("remove attachment: {e}")))
     }
 
     fn persist_original(
         &self,
-        storage_dir: &Path,
+        directory: &OwnedDirectory,
         name: &str,
         input: &AttachmentIngestDto,
     ) -> Result<Option<PathBuf>> {
         if let Some(text) = input.text.as_ref() {
-            let path = storage_dir.join(name);
-            fs::write(&path, text)
+            let path = directory
+                .write_file(name, text.as_bytes())
                 .map_err(|e| CoreError::Other(format!("write text attachment: {e}")))?;
             return Ok(Some(path));
         }
 
         if let Some(data_url) = input.data_url.as_ref() {
             let bytes = decode_data_url(data_url)?;
-            let path = storage_dir.join(name);
-            fs::write(&path, bytes)
+            let path = directory
+                .write_file(name, &bytes)
                 .map_err(|e| CoreError::Other(format!("write attachment data: {e}")))?;
             return Ok(Some(path));
         }
 
         if let Some(source) = input.local_path.as_ref() {
-            let source_path = Path::new(source);
-            let path = storage_dir.join(name);
-            fs::copy(source_path, &path)
+            let bytes = fs::read(source)
+                .map_err(|e| CoreError::Other(format!("read attachment source '{source}': {e}")))?;
+            let path = directory
+                .write_file(name, &bytes)
                 .map_err(|e| CoreError::Other(format!("copy attachment '{source}': {e}")))?;
             return Ok(Some(path));
         }
@@ -207,13 +199,33 @@ impl AttachmentService {
         })
     }
 
-    fn write_metadata(&self, storage_dir: &Path, dto: &AttachmentDto) -> Result<()> {
+    fn write_metadata(&self, directory: &OwnedDirectory, dto: &AttachmentDto) -> Result<()> {
         let json = serde_json::to_string_pretty(dto)
             .map_err(|e| CoreError::Other(format!("serialize attachment metadata: {e}")))?;
-        fs::write(storage_dir.join("metadata.json"), json)
+        directory
+            .write_file("metadata.json", json.as_bytes())
             .map_err(|e| CoreError::Other(format!("write attachment metadata: {e}")))?;
         Ok(())
     }
+}
+
+/// Attachment identities are not filenames to be sanitized: substitution would
+/// merge distinct owners. Missing session alone means the pending bucket.
+fn attachment_path(session_id: Option<&str>, id: &str) -> Result<PathBuf> {
+    let bucket = session_id.unwrap_or(PENDING_SESSION);
+    for (field, value) in [("session_id", bucket), ("id", id)] {
+        validate_storage_name(value)
+            .map_err(|e| CoreError::invalid(format!("attachment {field}: {e}")))?;
+        if !value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        {
+            return Err(CoreError::invalid(format!(
+                "attachment {field} must be a single ASCII identity"
+            )));
+        }
+    }
+    Ok(Path::new(bucket).join(id))
 }
 
 fn sheets_to_text(sheets: &[crate::dto::SheetPreviewDto]) -> String {
@@ -359,6 +371,10 @@ impl AttachmentDataResolver for FileAttachmentResolver {
     }
 }
 
+#[cfg(test)]
+#[path = "attachment_storage_tests.rs"]
+mod storage_tests;
+
 fn sniff_image_mime(path: &str) -> Option<String> {
     let ext = std::path::Path::new(path)
         .extension()?
@@ -458,7 +474,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: attachment cleanup must reject directory components and empty ids"]
     fn audit_attachment_removal_stays_inside_one_attachment() {
         let mut safe = Vec::new();
         for (label, bucket, id) in [
@@ -496,6 +511,10 @@ mod tests {
                 assert!(result.unwrap());
                 assert!(!first_present && second_present && unrelated_present);
             } else {
+                assert!(
+                    result.is_err(),
+                    "invalid identity must be diagnosed, not treated as missing"
+                );
                 safe.push(first_present && second_present && unrelated_present);
             }
         }
@@ -503,7 +522,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: attachment import must reject identities outside one attachment directory"]
     fn audit_attachment_import_stays_inside_one_attachment() {
         let mut safe = Vec::new();
         for (label, bucket, id) in [

@@ -20,6 +20,9 @@ mod root;
 mod write;
 pub(crate) use write::{StagedWrite, WriteTarget};
 
+mod owned;
+pub use owned::{validate_storage_name, OwnedDirectory, OwnedDirectoryRoot};
+
 /// How broadly file tools may reach outside the workspace root. Drives the
 /// approval-policy → filesystem mapping:
 /// - [`FsAccess::Workspace`] (默认权限): reads and writes confined to the root.

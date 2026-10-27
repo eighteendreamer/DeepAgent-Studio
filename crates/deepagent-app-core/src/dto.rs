@@ -787,8 +787,11 @@ pub struct PreviewResultDto {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AttachmentIngestDto {
     /// Optional frontend-generated id. A backend id is generated when omitted.
+    /// Supplied identities must be nonempty ordinary ASCII storage components;
+    /// they are validated, never rewritten into another attachment identity.
     pub id: Option<String>,
     /// Optional session id. Missing values are stored under the pending bucket.
+    /// Supplied values follow the same identity rules as `id` (empty is invalid).
     pub session_id: Option<String>,
     /// "text" | "image" | "file".
     pub kind: String,

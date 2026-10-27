@@ -4,8 +4,11 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
+下表为历轮交付摘要选摘，不是完整台账；单项最新状态、真实提交和全部编号见原项修复记录及进度台账。
+
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-58 | 已修复并验收（2026-10-27，所列Windows本机范围） | 身份与操作期目录边界共用；最终附件13/0、Builtins371/4、AppCore1173/60、Kernel135/83；完整workspace与lint基线失败保留，见E-H58-01～14；修复提交待回填 |
 | H-15 | 已修复并验收（2026-10-26，所列Windows本机范围） | 原失败保留；两scope取消/健康、并发、五种终态入口及故障回滚专项通过，见E-H15-01～09；全仓既有基线失败与未验边界见E-H15-08 |
 | H-16 | 已修复并验收（2026-10-26，所列Windows本机范围） | 原重复provider call_id失败已消除；两run各有独立审批，旧provider-id记录仍可回答；见E-H16-01～03，修复提交`da73a472a843638d524067e93d6d59f145263114` |
 | H-17 | 已修复并验收（2026-10-26，所列前端/受控事件范围） | settled后仍显示一次保存失败诊断，正常取消不误报；受控事件、API状态和桌面构建通过，原真实WebView故障注入未重跑，见E-H17-01～03，修复提交`5d13cb15eb616aef8275ab833d82a94f798d9579` |
@@ -38,7 +41,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **37**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **242（242待修复）**；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前本阶段累计修复 **49**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **230（230待修复、0修复中）**；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -2342,6 +2345,36 @@ E-H46-20261027-12（独立提交与真实hash回填）：代码、默认回归�
 - 应将技能目录一并纳入 H-57 的内容保留修复：当前 Surface 的目录正文与已展示身份必须一致，失败接纳、压缩/snip、目录更新及重启都需有明确规则。仅在 UI 安装/重载时 reset 或延长发送间隔，不能修复普通第二轮丢目录；本轮仍只添加测试和文档。
 
 ### H-58：附件清理把字符替换当作身份验证，空 ID/点目录可删除整桶，父目录 session 可删除附件 root 外数据
+
+**修复状态（2026-10-27）：已修复并验收（所列Windows本机范围，限制与未绿门禁见E-H58-20261027-10～14）。**
+
+E-H58-20261027-01（原探针真实复核）：HEAD `1889a6a7`、生产代码未改，续读会话66308取得 `cargo test -p deepagent-app-core --lib audit_attachment_ --offline -j 1 -- --ignored --nocapture --test-threads=1` 执行器退出1（未单独捕获原生Cargo退出码），0 passed/2 failed/0 ignored（编译10.93s、测试0.09s）。删除正常对照只删first；空id和点id均删first/second整桶；父目录session删掉附件root外、同一TempDir内unrelated。导入正常对照成功；点id、父目录id、父目录bucket均accepted=true/overwritten=true/metadata=true，最后一组outside_root=true。探针先canonicalize确认所有目标在各自临时fixture内且不等于fixture根，只操作测试canary；未访问真实附件、用户数据库、凭据、供应商或内网。H-58转修复中；删除与导入同源于sanitize_segment把字符替换当身份验证，必须一起修，不重复处理归并H-262。尚未修改生产实现或取得验收。台账48已验收/18历史跳过/7归并/2撤销/230待修/1修复中，231有效未关闭；整体goal保持active。
+
+E-H58-20261027-02（首轮根因修复与原探针回归）：ingest/remove共用attachment_path，显式id/session不再清洗或为空时回退，缺省None仍生成id/使用pending；合法ASCII、内部点号和原DTO路径拼写保留。新增薄OwnedDirectoryRoot/OwnedDirectory宿主存储入口，直接复用已有RootAnchor、Windows WriteDirectory、WriteTarget/Stage和native read，不套用模型工具的敏感文件名策略，不新增附件store或权限链路；拒绝root下链接/重解析别名，原件、extracted和metadata均新文件暂存后发布，避免原地截断硬链接外侧inode。`cargo test -p deepagent-app-core --lib attachment_service --offline -j 1 -- --nocapture --test-threads=1` 会话91056退出0，6 passed/0 ignored（编译2m44s、测试0.11s）；两项原探针已转默认，非法删除均Err且所有canary保留，非法导入均拒绝且无覆盖/metadata，正常对照成立。该次编译先有4项新增公共API缺文档warning，现已补注释；后续新增扩展/竞态测试尚未取得结果，不把本次6项通过当最终验收。Windows沿用已有句柄操作时边界；其他平台仍是原有portable预检，不宣称同等原子no-follow能力。
+
+E-H58-20261027-03（扩展测试真实反证）：会话5804的同一attachment_service命令执行器退出1（未单独捕获原生Cargo退出码），11 passed/1 failed/0 ignored（编译3m10s、测试0.37s）。新增非法身份/清洗碰撞、pending/生成id/重开删除、中文root与DTO路径、local_path导入、原件/extracted/metadata三种硬链接和root/初始ancestor替换均通过；链接组在fixture创建阶段失败：mklink报告 `Invalid switch - "first"`，尚未调用该case的生产ingest。原因是测试把含内嵌正斜杠的Windows PathBuf交给cmd内置mklink，被解析为开关；接下来仅规范fixture命令参数为反斜杠，不修改生产边界、不跳过链接测试，也不把该组记为通过。builtins操作期三项测试仍在既有会话84633编译，未重启。
+
+E-H58-20261027-04（Windows操作期真实故障注入）：会话84633退出0，`cargo test -p deepagent-builtins --lib fs_guard::owned --offline -j 1 -- --nocapture --test-threads=1` 3 passed/0 ignored（编译2m40s、测试0.07s）。在实际write预检后才创建外侧canary的硬链接，正式暂存发布仍只替换附件目录项、外侧内容不变；持有正式directory guard时root/bucket/空attachment三层rename均返回sharing violation，释放后正常rename成功；在remove预检后将原目标挪到parked并换成指向fixture外侧目录的junction，生产remove返回Ok(true)、仅unlink替换后的junction，outside及parked的canary均保留。该实验只操作同一TempDir内测试对象，不是对抗所有NTFS重解析修改的证明。随后补了两个portable宿主边界测试及跨session精确删除/普通文件拒绝对照，待最终整组运行；静态链接组的mklink参数已修正，尚未计为通过。
+
+E-H58-20261027-05（最终附件组与共享文件边界整组）：隔离驱动会话84071中，`cargo fmt --all -- --check`退出0；最终 `cargo test -p deepagent-app-core --lib attachment_service --offline -j 1 -- --nocapture --test-threads=1` 13 passed/0 ignored，退出0（编译2m52s、测试0.61s），E-03的五类静态链接/junction场景现均实际执行并通过，跨session同id删除、普通文件拒绝、缺失root幂等和原两探针亦通过；未使用ignore或跳过fixture。`cargo test -p deepagent-builtins --all-features --offline -j 1 -- --quiet --test-threads=1`退出0，371 passed/4 ignored（编译33.49s、测试90.91s），包含新增portable两项、Windows三项及已有文件工具/H-78正反对照；ignored不计为通过。完整AppCore lib、kernel消费者、CLI、workspace及严格lint仍在同一顺序驱动中，尚未验收关闭。身份拒绝规则与宿主薄入口为本地设计，依据已有文件边界复用；Windows名称约束参照[Microsoft命名规则](https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file)，目录共享与rename约束参照[CreateFileW](https://learn.microsoft.com/en-us/windows/win32/api/fileapi/nf-fileapi-createfilew)，递归清理沿已有Rust实现并参照[remove_dir_all](https://doc.rust-lang.org/std/fs/fn.remove_dir_all.html)，不把文档承诺替代本机探针。
+
+E-H58-20261027-06（AppCore默认全lib通过）：隔离驱动中 `cargo test -p deepagent-app-core --lib --offline -j 1 -- --quiet --test-threads=1` 退出0，1173 passed/60 ignored，测试105.66s（本步编译0.69s）。包含正式附件组、其他AppCore默认服务/状态与存储对照；两项H-58原探针不再ignored，其他ignored不计为通过。kernel_v2_e2e、CLI、完整workspace和all-feature严格lint仍待同一会话84071终态，不以本步通过替代验收。
+
+E-H58-20261027-07（正式Kernel消费方整组）：隔离驱动中 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline -j 1 -- --quiet --test-threads=1` 退出0，135 passed/83 ignored（编译2m45s、测试138.50s）。正常附件导入/历史与分支消费方随默认组执行，ignored审计探针不计通过，未以本轮身份修复关闭其他图片/历史问题。CLI正重新构建以供随后workspace内实际SDK stdio使用；完整workspace和all-feature严格lint仍待。
+
+E-H58-20261027-08（正式CLI重建与全仓验证启动）：`cargo build -p deepagent-cli --offline -j 1`退出0，编译1m34s，当前target/debug/deepagent.exe已重新生成。随后同一会话84071在新临时DEEPAGENT_DATA_ROOT且移除继承DEEPAGENT_DB_PATH的环境执行 `cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`，仍在编译/运行，不能据此计为通过。各步日志与退出码持续写入 `C:/Users/32734/AppData/Local/Temp/deepagent-h58-validation-07beecc7c76b492abcc4fb5c3a020763/validation.log` 和同目录results.json，仅本机保留、不提交测试数据；完整workspace后还将顺序执行受影响两crate的all-target/all-feature严格clippy。
+
+E-H58-20261027-09（证据口径校正）：复查原工具回执，66308及5804显示的是PowerShell执行器exit_code=1，没有另行输出原生Cargo退出码；已将E-01/E-03中沿用惯例写成的101改为“执行器退出1（未单独捕获原生Cargo退出码）”。两次失败的0/2、11/1测试数、canary结果、编译/运行时长和原输出均不变。顺序验证驱动84071则每步实际采集$LASTEXITCODE写入results.json，后续记录按该实测原生值；不把Cargo通常的退出码当成本次观测值。workspace仍在同一进程运行，未重启。
+
+E-H58-20261027-10（完整workspace与严格lint真实终态）：会话84071已终结，完整workspace命令原生退出101（编译8m00s、整步1016.97s）；按该步日志逐个汇总128个target为3464 passed/1 failed/325 ignored（含doc-tests）。唯一失败是未修改deepagent-prompts的 `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`：creative.video-edit.v1的defaultUserPrompt为空，即已有H-306；相关目录无diff。AppCore在workspace feature union下1173 passed/69 ignored，kernel135/83、Builtins357/4，当前CLI的实际SDK stdio6/0通过。随后 `cargo clippy -p deepagent-builtins -p deepagent-app-core --all-targets --all-features --offline -j 1 -- -D warnings` 原生退出101（91.38s），阻于未修改models/src/client.rs:355对Option<ReasoningEffort>调用clone；git blame定位35ed2938e，相关文件diff为空，旧E-H05也记录同一基线。不能把此严格lint或完整workspace记为通过；不修改H-306/Models，不屏蔽lint。接下来另做选定crate的no-deps严格检查及保留warning的诊断，明确区分原门禁失败与本项代码诊断，不重启已终结驱动。
+
+E-H58-20261027-11（共享边界严格lint与跨平台静态复核）：`cargo clippy -p deepagent-builtins --all-targets --all-features --offline -j 1 --no-deps -- -D warnings` 原生退出0，33.14s；这是所选Builtins代码及测试的严格检查，不替代E-10包含依赖的失败门禁。AppCore同等严格检查仍在会话54318进行。静态复核同时发现新增链接fixture末尾cleanup需要区分Unix符号链接与Windows junction：已仅在测试中分别使用remove_file/remove_dir，依据仓库现有Unix链接测试与平台语义；未修改生产实现，Windows路径分支不变。Linux/macOS运行未执行，不能把这次静态修正写成跨平台通过；最终会再跑Windows附件13项与格式检查。
+
+E-H58-20261027-12（AppCore严格lint与保留warning诊断）：会话54318已结束。`cargo clippy -p deepagent-app-core --all-targets --all-features --offline -j 1 --no-deps -- -D warnings` 原生退出101，现有lib十项错误分别为context_runtime.rs:382/404/471/491/520/532/542/551的clone_on_copy、plugin_preparation.rs:14的type_complexity、run_assembler.rs:1740的too_many_arguments。去掉-D warnings而不禁用任何lint的同一命令仍原生退出101：十项保留warning，最后由既有tests/kernel_v2_e2e/mcp_discovery_restore.rs:433的panicking_unwrap默认deny阻断，另有现有测试warning。上述文件diff均为空；诊断没有指向本项attachment_service/attachment_storage_tests/owned.rs，但不据此假称整个AppCore严格lint通过。最终fmt与diff check退出0。Unix fixture cleanup修正后的Windows附件组已在会话76531重新编译运行，结果待收集；未降低、屏蔽或修复无关门禁。
+
+E-H58-20261027-13（最终源码附件回归）：会话76531已退出0且显式采集FINAL_ATTACHMENT_NATIVE_EXIT=0；`cargo test -p deepagent-app-core --lib attachment_service --offline -j 1 -- --nocapture --test-threads=1` 在隔离final-host数据根下再次13 passed/0 ignored（编译2m21s、测试0.52s）。这是Unix测试cleanup分支静态修正后的最终源码Windows执行；原两失败探针及所有新增附件对照仍通过。最终生产实现与E-10完整workspace执行时相同；仅测试的非Windows cleanup分支有后续修正，不借此宣称Linux/macOS已执行。所有本项测试/验证会话现已终结，不再poll已完成句柄。
+
+E-H58-20261027-14（本项验收、兼容性与残余边界）：H-58在所列Windows本机、正式AttachmentService及已有Kernel/CLI/SDK消费路径范围已修复并验收。单一有效身份解析先于任何创建/写入/删除，精确选择root/bucket/id；常见静态junction/链接拒绝，原件/extracted/metadata复用新文件暂存发布，root/ancestor身份替换拒绝，正常pending、生成id、合法内部点号、文件名清洗、文本/data URL/local导入、跨session精确删除、缺失幂等和服务重开对照通过。显式Some(空字符串)、非法/被替换字符身份、Windows设备名/尾点等存储别名现在明确报错，不再回退或折叠；缺省None行为、合法身份、DTO字段与逻辑路径拼写、Tauri/前端调用签名不变，无数据库迁移、新依赖、第二套附件store或工具/权限执行链。旧异常数据不自动搬迁/删除，合法host root更换须重建service；暂存是单文件发布，不是整份附件多文件事务或同id并发隔离，未改变毫秒id生成策略。Unix/macOS未执行，portable父路径检查不提供Windows同等操作期原子no-follow；未覆盖任意外部写入者/所有重解析类型、掉电/磁盘故障，未治理独立的附件任意path读取、内容完整性和授权问题。无前端契约/UI修改，未跑pnpm build、真实UI/供应商/用户数据。完整workspace与严格AppCore/依赖lint仍保留E-10～12的既有失败，不能宣称全仓全绿；Builtins所选crate严格lint、最终fmt/diff和本项实际回归通过。两份即时证据逐字一致，306行/306唯一编号/8列已核对；本轮新增验收1，累计49已验收/18历史跳过/7归并/2撤销/230待修/0修复中，230有效未关闭，不计重复H-262。独立修复commit待生成后另回填，不amend、不推送。原报告首页旧摘要计数滞后也同步为当前台账，不改写历史失败；下一项按执行一致性优先复核P1 H-65两处自动验证绕过已配置命令后端，本轮不预设原探针仍成立、不合并H-64取消归属。剩余200–400有效小时仍是基于剩余跨层复现/根因修复/验收规模的未校准初估，缺逐项有效工时与依赖校准，不能按数量机械扣减或承诺完工；本轮所列编译/测试等待另计，整体goal保持active。
 
 **级别：高（P1，数据完整性）；触发条件：调用附件删除接口时提供异常 id 或 session_id。** 正常 Composer 使用随机 ID，不会自行生成本探针的异常值；本轮未证明普通点击会触发，也未证明远程网页能调用桌面 IPC，不能表述为已发现公网攻击入口。
 
