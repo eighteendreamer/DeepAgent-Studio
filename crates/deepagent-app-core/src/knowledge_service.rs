@@ -8,6 +8,7 @@
 //! It loads two vaults — project-local and user-global — into one index, and
 //! exposes serializable DTOs the desktop app consumes.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -164,15 +165,62 @@ fn parse_scope(s: Option<&str>) -> Scope {
     }
 }
 
-/// UI- and runtime-facing knowledge base service.
+/// UI selection and stable runtime views of the same vault-backed service.
+///
+/// Local design: one service mutex owns every cached project index. Bound handles
+/// never consult the mutable UI selection. Mutations publish the shared global
+/// scope to the other derived indexes before releasing that lock, including
+/// partial changes when a vault operation returns an error. No model await is
+/// performed while holding it; independent hosts remain a separate boundary.
 pub struct KnowledgeService {
-    inner: Mutex<KnowledgeState>,
-    global_root: PathBuf,
+    inner: Arc<Mutex<KnowledgeState>>,
+    project: Option<u64>,
 }
 
 struct KnowledgeState {
-    project_root: PathBuf,
+    active: u64,
+    bases: BTreeMap<u64, ProjectKnowledge>,
+    // IDs, unlike path names, cannot be reused by a different physical root.
+    // Merged pending handles point directly to a surviving cache, never chains.
+    aliases: BTreeMap<u64, u64>,
+    next_project: u64,
+    // Custom from_base wiring is already fixed and has no retargetable roots.
+    global_root: Option<PathBuf>,
+}
+
+struct ProjectKnowledge {
+    root: PathBuf,
+    materialized: bool,
     base: KnowledgeBase<HashingEmbedder>,
+}
+
+fn knowledge_root(path: &Path) -> Result<(PathBuf, bool)> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| CoreError::Persistence(format!("resolve knowledge root: {error}")))?
+            .join(path)
+    };
+    let resolved = deepagent_persistence::fs_commit::canonicalize_with_missing_suffix(&absolute)
+        .map_err(|error| CoreError::Persistence(format!("resolve knowledge root: {error}")))?;
+    // Windows may report a suffix below a regular file as NotFound. The shared
+    // path helper resolves identity, not the directory contract of a vault.
+    for (depth, ancestor) in resolved.ancestors().enumerate() {
+        match std::fs::metadata(ancestor) {
+            Ok(metadata) if metadata.is_dir() => return Ok((resolved, depth == 0)),
+            Ok(_) => return Err(CoreError::invalid("knowledge root must be a directory")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(CoreError::Persistence(format!(
+                    "inspect knowledge root: {error}"
+                )))
+            }
+        }
+    }
+    Err(CoreError::invalid(
+        "knowledge root has no existing directory ancestor",
+    ))
 }
 
 impl KnowledgeService {
@@ -181,13 +229,25 @@ impl KnowledgeService {
     /// The project vault lives at `<project_root>/.deepagent/knowledge/`; the
     /// global vault at `<global_root>/knowledge/`. Neither needs to exist yet.
     pub fn open(project_root: &Path, global_root: &Path) -> Result<Self> {
-        let base = Self::build_base(project_root, global_root, KnowledgeConfig::default())?;
+        let (project_root, materialized) = knowledge_root(project_root)?;
+        let (global_root, _) = knowledge_root(global_root)?;
+        let base = Self::build_base(&project_root, &global_root, KnowledgeConfig::default())?;
         Ok(Self {
-            inner: Mutex::new(KnowledgeState {
-                project_root: project_root.to_path_buf(),
-                base,
-            }),
-            global_root: global_root.to_path_buf(),
+            inner: Arc::new(Mutex::new(KnowledgeState {
+                active: 0,
+                bases: BTreeMap::from([(
+                    0,
+                    ProjectKnowledge {
+                        root: project_root,
+                        materialized,
+                        base,
+                    },
+                )]),
+                aliases: BTreeMap::new(),
+                next_project: 1,
+                global_root: Some(global_root),
+            })),
+            project: None,
         })
     }
 
@@ -210,70 +270,284 @@ impl KnowledgeService {
     /// Build over an already-constructed base (for tests / custom wiring).
     pub fn from_base(base: KnowledgeBase<HashingEmbedder>) -> Self {
         Self {
-            inner: Mutex::new(KnowledgeState {
-                project_root: PathBuf::new(),
-                base,
-            }),
-            global_root: PathBuf::new(),
+            inner: Arc::new(Mutex::new(KnowledgeState {
+                active: 0,
+                bases: BTreeMap::from([(
+                    0,
+                    ProjectKnowledge {
+                        root: PathBuf::new(),
+                        materialized: true,
+                        base,
+                    },
+                )]),
+                aliases: BTreeMap::new(),
+                next_project: 1,
+                global_root: None,
+            })),
+            project: Some(0),
         }
     }
 
-    /// Switch the project-local vault to `project_root`, preserving the global
-    /// vault and runtime toggles. This keeps project-scoped knowledge aligned
-    /// with the active project folder instead of the app launch directory.
+    /// Select the UI's project without retargeting any existing runtime handle.
+    /// Bound views cannot change selection. Closing a sidebar project does not
+    /// invalidate a live run's cache or turn its writes into another project.
     pub fn activate_project(&self, project_root: &Path) -> Result<()> {
-        let mut state = self.lock();
-        if state.project_root == project_root {
-            return Ok(());
+        if self.project.is_some() {
+            return Err(CoreError::invalid(
+                "a bound knowledge view cannot activate a project",
+            ));
         }
-        let config = state.base.config().clone();
-        let base = Self::build_base(project_root, &self.global_root, config)?;
-        *state = KnowledgeState {
-            project_root: project_root.to_path_buf(),
-            base,
-        };
+        let (project, materialized) = knowledge_root(project_root)?;
+        let mut state = self.lock();
+        let (project, created) = Self::ensure_project(&mut state, &project, materialized)?;
+        if state.active != project && !created {
+            // Preserve the UI's existing rescan-on-switch behavior, but update
+            // the shared view rather than replacing any run's project identity.
+            Self::mutate_project(&mut state, project, KnowledgeBase::load_all)?;
+        }
+        state.active = Self::project_key(&state, project);
         Ok(())
+    }
+
+    /// Bind an explicit run project, independently of the sidebar selection.
+    /// A custom `from_base` service is already bound by its caller and is reused
+    /// without guessing vault paths. Opening a new view can fail; reads never
+    /// hide reload errors or silently fall back to the currently active project.
+    pub fn for_project(&self, project_root: &Path) -> Result<Arc<Self>> {
+        let mut state = self.lock();
+        let project = if state.global_root.is_none() {
+            state.active
+        } else {
+            let (project, materialized) = knowledge_root(project_root)?;
+            Self::ensure_project(&mut state, &project, materialized)?.0
+        };
+        Ok(Arc::new(Self {
+            inner: self.inner.clone(),
+            project: Some(project),
+        }))
+    }
+
+    /// Capture the current view without filesystem I/O. Runtime adapters use
+    /// this at construction, not on every later call or after a model await.
+    pub fn bind_current(&self) -> Arc<Self> {
+        let state = self.lock();
+        Arc::new(Self {
+            inner: self.inner.clone(),
+            project: Some(Self::project_key(
+                &state,
+                self.project.unwrap_or(state.active),
+            )),
+        })
+    }
+
+    fn project_key(state: &KnowledgeState, project: u64) -> u64 {
+        state.aliases.get(&project).copied().unwrap_or(project)
+    }
+
+    /// Resolve only an as-yet-missing operation root and its physical peers.
+    /// Filesystem identity (not case-folding) decides which caches can merge.
+    /// Rebuild the vault at its physical path as well as redirecting old keys:
+    /// retaining a logical symlink in the vault would still retarget late I/O.
+    /// Unrelated invalid pending roots cannot block a healthy project's work.
+    fn reconcile_project(state: &mut KnowledgeState, project: u64) -> Result<u64> {
+        let project = Self::project_key(state, project);
+        let cached = &state.bases[&project];
+        if cached.materialized {
+            return Ok(project);
+        }
+        let (physical, materialized) = knowledge_root(&cached.root)?;
+        if !materialized {
+            return Ok(project);
+        }
+        let mut peers = Vec::new();
+        for (&id, pending) in state
+            .bases
+            .iter()
+            .filter(|(_, cached)| !cached.materialized)
+        {
+            match knowledge_root(&pending.root) {
+                Ok((path, true)) if path == physical => peers.push(id),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    project = %pending.root.display(), %error,
+                    "cannot resolve unrelated pending knowledge project"
+                ),
+            }
+        }
+        let target = state
+            .bases
+            .iter()
+            .find(|(_, cached)| cached.materialized && cached.root == physical)
+            .map(|(&id, _)| id)
+            .unwrap_or(project);
+        let global = state
+            .global_root
+            .clone()
+            .ok_or_else(|| CoreError::invalid("custom knowledge view has no roots"))?;
+        Self::mutate_base(state, target, |base| {
+            *base = Self::build_base(&physical, &global, base.config().clone())?;
+            Ok(())
+        })?;
+        let cached = state.bases.get_mut(&target).expect("project cache exists");
+        cached.root = physical;
+        cached.materialized = true;
+        for alias in state.aliases.values_mut() {
+            if peers.contains(alias) {
+                *alias = target;
+            }
+        }
+        if peers.contains(&state.active) {
+            state.active = target;
+        }
+        for peer in peers {
+            if peer != target {
+                state.bases.remove(&peer);
+                state.aliases.insert(peer, target);
+            }
+        }
+        Ok(target)
+    }
+
+    fn ensure_project(
+        state: &mut KnowledgeState,
+        project: &Path,
+        materialized: bool,
+    ) -> Result<(u64, bool)> {
+        // Only pending roots resolving to the requested physical project take
+        // part. Other unreadable projects must not poison a healthy binding.
+        let pending: Vec<u64> = state.bases.iter()
+            .filter(|(_, cached)| !cached.materialized)
+            .filter(|(_, cached)| matches!(knowledge_root(&cached.root), Ok((path, true)) if path == project))
+            .map(|(&id, _)| id)
+            .collect();
+        for id in pending {
+            Self::reconcile_project(state, id)?;
+        }
+        if let Some((&id, _)) = state
+            .bases
+            .iter()
+            .find(|(_, cached)| cached.root == project)
+        {
+            return Ok((id, false));
+        }
+        let current = &state.bases[&state.active].base;
+        let base = Self::build_base(
+            project,
+            state
+                .global_root
+                .as_deref()
+                .ok_or_else(|| CoreError::invalid("custom knowledge view has no roots"))?,
+            current.config().clone(),
+        )?;
+        let id = state.next_project;
+        state.next_project = id
+            .checked_add(1)
+            .ok_or_else(|| CoreError::other("knowledge project identity exhausted"))?;
+        // Markdown remains the truth. A successful disk scan publishes its
+        // global projection to every already-open view under the same lock.
+        let global = base.scope_snapshot(Scope::Global);
+        for cached in state.bases.values_mut() {
+            cached.base.apply_scope_snapshot(&global);
+        }
+        state.bases.insert(
+            id,
+            ProjectKnowledge {
+                root: project.to_path_buf(),
+                materialized,
+                base,
+            },
+        );
+        Ok((id, true))
+    }
+
+    fn read<T>(&self, read: impl FnOnce(&KnowledgeBase<HashingEmbedder>) -> T) -> T {
+        let state = self.lock();
+        let project = Self::project_key(&state, self.project.unwrap_or(state.active));
+        read(&state.bases[&project].base)
+    }
+
+    fn mutate<T>(
+        &self,
+        mutate: impl FnOnce(&mut KnowledgeBase<HashingEmbedder>) -> Result<T>,
+    ) -> Result<T> {
+        let mut state = self.lock();
+        let project = self.project.unwrap_or(state.active);
+        Self::mutate_project(&mut state, project, mutate)
+    }
+
+    fn mutate_project<T>(
+        state: &mut KnowledgeState,
+        project: u64,
+        mutate: impl FnOnce(&mut KnowledgeBase<HashingEmbedder>) -> Result<T>,
+    ) -> Result<T> {
+        let project = Self::reconcile_project(state, project)?;
+        let result = Self::mutate_base(state, project, mutate);
+        match (result, Self::reconcile_project(state, project)) {
+            (result, Ok(_)) => result,
+            (Ok(_), Err(error)) => Err(error),
+            (Err(operation), Err(identity)) => Err(CoreError::other(format!(
+                "{operation}; refresh knowledge project identity: {identity}"
+            ))),
+        }
+    }
+
+    /// The sole cached-base mutation/publication boundary. Identity merging
+    /// uses the same boundary for its disk reload, without recursing into it.
+    fn mutate_base<T>(
+        state: &mut KnowledgeState,
+        project: u64,
+        mutate: impl FnOnce(&mut KnowledgeBase<HashingEmbedder>) -> Result<T>,
+    ) -> Result<T> {
+        let base = state
+            .bases
+            .get_mut(&project)
+            .map(|cached| &mut cached.base)
+            .expect("bound knowledge view exists");
+        let before = base.scope_snapshot(Scope::Global);
+        let result = mutate(base);
+        let after = base.scope_snapshot(Scope::Global);
+        if before != after {
+            for (key, cached) in &mut state.bases {
+                if *key != project {
+                    cached.base.apply_scope_snapshot(&after);
+                }
+            }
+        }
+        result
     }
 
     /// Re-scan all vaults from disk and rebuild the index. Returns entry count.
     pub fn reload(&self) -> Result<usize> {
-        let mut base = self.lock();
-        base.base.load_all()
+        self.mutate(KnowledgeBase::load_all)
     }
 
     /// List all entries as DTOs.
     pub fn list(&self) -> Vec<KnowledgeDto> {
-        let base = self.lock();
-        base.base
-            .list()
-            .iter()
-            .map(KnowledgeDto::from_entry)
-            .collect()
+        self.read(|base| base.list().iter().map(KnowledgeDto::from_entry).collect())
     }
 
     /// Get one entry by composite id (`scope:slug`).
     pub fn get(&self, id: &str) -> Option<KnowledgeDto> {
-        let base = self.lock();
-        base.base.get(id).map(KnowledgeDto::from_entry)
+        self.read(|base| base.get(id).map(KnowledgeDto::from_entry))
     }
 
     /// Search the knowledge base, returning hit DTOs (best first).
     pub fn search(&self, query: &str, kind: Option<&str>, limit: usize) -> Vec<KnowledgeHitDto> {
         let kind = kind.filter(|s| !s.trim().is_empty()).map(EntryKind::parse);
-        let base = self.lock();
-        base.base
-            .search(query, kind, limit)
-            .into_iter()
-            .map(|hit| KnowledgeHitDto {
-                id: format!("{}:{}", hit.entry.scope.label(), hit.entry.id),
-                title: hit.entry.title,
-                kind: hit.entry.kind.label().to_string(),
-                scope: hit.entry.scope.label().to_string(),
-                score: hit.score,
-                excerpt: hit.excerpt,
-                updated_at: hit.entry.updated_at,
-            })
-            .collect()
+        self.read(|base| {
+            base.search(query, kind, limit)
+                .into_iter()
+                .map(|hit| KnowledgeHitDto {
+                    id: format!("{}:{}", hit.entry.scope.label(), hit.entry.id),
+                    title: hit.entry.title,
+                    kind: hit.entry.kind.label().to_string(),
+                    scope: hit.entry.scope.label().to_string(),
+                    score: hit.score,
+                    excerpt: hit.excerpt,
+                    updated_at: hit.entry.updated_at,
+                })
+                .collect()
+        })
     }
 
     /// Create or update an entry from a draft. Returns the persisted entry.
@@ -296,21 +570,19 @@ impl KnowledgeService {
             tier: draft.tier,
             importance: draft.importance,
         };
-        let mut base = self.lock();
-        let entry = base.base.write(kdraft, now_ms)?;
+        let entry = self.mutate(|base| base.write(kdraft, now_ms))?;
         Ok(KnowledgeDto::from_entry(&entry))
     }
 
     /// Delete an entry by composite id. Returns whether it existed.
     pub fn delete(&self, id: &str) -> Result<bool> {
-        let mut base = self.lock();
-        base.base.delete(id)
+        self.mutate(|base| base.delete(id))
     }
 
     /// How many entries both vaults hold, which is what the consolidation gate
     /// measures before spending a scan.
     pub fn entry_count(&self) -> usize {
-        self.lock().base.len()
+        self.read(KnowledgeBase::len)
     }
 
     /// Fold duplicate entries across both vaults and archive the losers.
@@ -323,71 +595,66 @@ impl KnowledgeService {
         exclude_session: Option<&str>,
         now_millis: i64,
     ) -> Result<deepagent_knowledge::ConsolidationReport> {
-        let mut state = self.lock();
-        state.base.consolidate(exclude_session, now_millis)
+        self.mutate(|base| base.consolidate(exclude_session, now_millis))
     }
 
     /// The passive-injection block for `query` (empty when nothing qualifies or
     /// passive injection is disabled).
     pub fn passive_block(&self, query: &str) -> String {
-        let base = self.lock();
-        base.base.passive_block(query)
+        self.read(|base| base.passive_block(query))
     }
 
     /// Toggle passive injection.
     pub fn set_passive_enabled(&self, on: bool) {
-        let mut base = self.lock();
-        base.base.set_passive_enabled(on);
+        for cached in self.lock().bases.values_mut() {
+            cached.base.set_passive_enabled(on);
+        }
     }
 
     /// Whether passive injection is currently enabled.
     pub fn passive_enabled(&self) -> bool {
-        let base = self.lock();
-        base.base.config().passive_enabled
+        self.read(|base| base.config().passive_enabled)
     }
 
     /// Toggle session auto-capture (recovery → active knowledge).
     pub fn set_auto_capture(&self, on: bool) {
-        let mut base = self.lock();
-        base.base.set_auto_capture_enabled(on);
+        for cached in self.lock().bases.values_mut() {
+            cached.base.set_auto_capture_enabled(on);
+        }
     }
 
     /// Whether session auto-capture is currently enabled.
     pub fn auto_capture_enabled(&self) -> bool {
-        let base = self.lock();
-        base.base.config().auto_capture_enabled
+        self.read(|base| base.config().auto_capture_enabled)
     }
 
     /// List pending drafts as DTOs.
     pub fn list_drafts(&self) -> Vec<KnowledgeDto> {
-        let base = self.lock();
-        base.base
-            .list_drafts()
-            .iter()
-            .map(KnowledgeDto::from_entry)
-            .collect()
+        self.read(|base| {
+            base.list_drafts()
+                .iter()
+                .map(KnowledgeDto::from_entry)
+                .collect()
+        })
     }
 
     /// Accept a draft by composite id: promote it to an active entry.
     pub fn accept_draft(&self, id: &str) -> Result<KnowledgeDto> {
         let now_ms = SystemClock.now().as_millis();
-        let mut base = self.lock();
-        let entry = base.base.accept_draft(id, now_ms)?;
+        let entry = self.mutate(|base| base.accept_draft(id, now_ms))?;
         Ok(KnowledgeDto::from_entry(&entry))
     }
 
     /// Discard a draft by composite id.
     pub fn discard_draft(&self, id: &str) -> Result<bool> {
-        let mut base = self.lock();
-        base.base.discard_draft(id)
+        self.mutate(|base| base.discard_draft(id))
     }
 
     /// Add a pending draft directly. Returns the draft.
     #[cfg(test)]
     fn add_draft(&self, draft: KnowledgeDraft) -> Result<KnowledgeDto> {
         let now_ms = SystemClock.now().as_millis();
-        let mut base = self.lock();
-        let entry = base.base.add_draft(draft, now_ms)?;
+        let entry = self.mutate(|base| base.add_draft(draft, now_ms))?;
         Ok(KnowledgeDto::from_entry(&entry))
     }
 
@@ -415,8 +682,10 @@ impl KnowledgeService {
         events: &[Event],
         session_id: &str,
     ) -> Option<KnowledgeDto> {
-        // Cheap, lock-free gate first.
-        if !self.auto_capture_enabled() {
+        let bound = self.bind_current();
+        let service = bound.as_ref();
+        // Cheap gate before any model call; the lock is released immediately.
+        if !service.auto_capture_enabled() {
             return None;
         }
 
@@ -427,7 +696,7 @@ impl KnowledgeService {
             let draft = summarize_recovery(&client, &model, &signal, session_id)
                 .await
                 .unwrap_or_else(|| fallback_recovery_draft(&signal, session_id));
-            return self.persist_capture(draft);
+            return service.persist_capture(draft);
         }
 
         // Path 2: generic session digest. Local substantiveness gate filters
@@ -439,15 +708,14 @@ impl KnowledgeService {
             return None;
         }
         let draft = summarize_session_digest(&client, &model, &digest, session_id).await?;
-        self.persist_capture(draft)
+        service.persist_capture(draft)
     }
 
     /// Persist an auto-capture draft into the vault. Returns the persisted
     /// entry DTO, or `None` (with a warning log) on a write error.
     fn persist_capture(&self, draft: KnowledgeDraft) -> Option<KnowledgeDto> {
         let now_ms = SystemClock.now().as_millis();
-        let mut base = self.lock();
-        match base.base.write(draft, now_ms) {
+        match self.mutate(|base| base.write(draft, now_ms)) {
             Ok(entry) => Some(KnowledgeDto::from_entry(&entry)),
             Err(e) => {
                 tracing::warn!(error = %e, "failed to persist auto-capture knowledge");
@@ -465,7 +733,7 @@ impl KnowledgeService {
 
 impl std::fmt::Debug for KnowledgeService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let n = self.inner.lock().map(|s| s.base.len()).unwrap_or(0);
+        let n = self.read(KnowledgeBase::len);
         f.debug_struct("KnowledgeService")
             .field("entries", &n)
             .finish()
@@ -691,7 +959,9 @@ pub struct KnowledgeServiceBackend {
 impl KnowledgeServiceBackend {
     /// Wrap a shared knowledge service.
     pub fn new(service: std::sync::Arc<KnowledgeService>) -> Self {
-        Self { service }
+        Self {
+            service: service.bind_current(),
+        }
     }
 }
 
@@ -743,7 +1013,9 @@ pub struct WorkflowKnowledgeRetriever {
 impl WorkflowKnowledgeRetriever {
     /// Wrap a shared knowledge service.
     pub fn new(service: std::sync::Arc<KnowledgeService>) -> Self {
-        Self { service }
+        Self {
+            service: service.bind_current(),
+        }
     }
 }
 
@@ -813,7 +1085,9 @@ pub struct KnowledgeMemoryProvider {
 impl KnowledgeMemoryProvider {
     /// Wrap a shared knowledge service.
     pub fn new(service: std::sync::Arc<KnowledgeService>) -> Self {
-        Self { service }
+        Self {
+            service: service.bind_current(),
+        }
     }
 }
 
@@ -858,6 +1132,10 @@ impl deepagent_runtime::RelevantMemoryProvider for KnowledgeMemoryProvider {
         Ok(out)
     }
 }
+
+#[cfg(test)]
+#[path = "knowledge_project_tests.rs"]
+mod project_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1056,7 +1334,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: active project changes must not retarget existing run memory handles"]
     async fn audit_existing_memory_handles_keep_their_project_after_activation() {
         use deepagent_builtins::{MemoryRecallTool, MemoryWriteTool};
         use deepagent_runtime::RelevantMemoryProvider;
@@ -1227,6 +1504,57 @@ mod tests {
             transport,
             ModelConfig::deepseek("sk-test"),
         ))
+    }
+
+    #[tokio::test]
+    async fn capture_wait_does_not_lock_selection_and_publishes_to_existing_global_views() {
+        use deepagent_models::transport::{EventSink, HttpTransport, TransportRequest};
+        #[derive(Default)]
+        struct DelayedCapture {
+            entered: tokio::sync::Notify,
+            release: tokio::sync::Notify,
+        }
+        #[async_trait::async_trait]
+        impl HttpTransport for DelayedCapture {
+            async fn stream(&self, _: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+                self.entered.notify_one();
+                self.release.notified().await;
+                sink.on_event(&serde_json::json!({"type":"response.output_text.delta", "delta":
+                    r#"{"worth_saving":true,"title":"Late shared capture","body":"late deployment evidence"}"#}).to_string())?;
+                sink.on_event(
+                    r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+                )?;
+                Ok(())
+            }
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = Arc::new(service(tmp.path()));
+        let alpha = svc.bind_current();
+        let model = Arc::new(DelayedCapture::default());
+        let client = Arc::new(ModelClient::new(
+            model.clone(),
+            ModelConfig::deepseek("offline-fixture-placeholder"),
+        ));
+        let pending = svc.clone();
+        let capture = tokio::spawn(async move {
+            pending
+                .capture_from_session(client, "deepseek-v4-flash".into(), &recovery_events(), "s")
+                .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), model.entered.notified())
+            .await
+            .unwrap();
+        svc.activate_project(&tmp.path().join("beta")).unwrap();
+        let beta = svc.bind_current();
+        model.release.notify_one();
+        let entry = tokio::time::timeout(std::time::Duration::from_secs(5), capture)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(entry.scope, "global");
+        assert_eq!(alpha.get(&entry.id), Some(entry.clone()));
+        assert_eq!(beta.get(&entry.id), Some(entry));
     }
 
     #[tokio::test]

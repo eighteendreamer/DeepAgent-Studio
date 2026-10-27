@@ -95,7 +95,9 @@ pub struct MemoryService {
 impl MemoryService {
     /// Build over the shared knowledge service (one store, one retrieval track).
     pub fn new(knowledge: Arc<KnowledgeService>) -> Self {
-        Self { knowledge }
+        Self {
+            knowledge: knowledge.bind_current(),
+        }
     }
 }
 

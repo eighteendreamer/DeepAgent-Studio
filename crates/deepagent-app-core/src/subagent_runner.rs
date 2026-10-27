@@ -635,8 +635,13 @@ impl ChatSubagentRunner {
                 // The parent registry captured the session's project when the
                 // run started. Rebinding filesystem tools to an isolated root
                 // must not change session_search to the currently active UI
-                // project (which may have changed meanwhile).
-                if spec.tool.descriptor().name == "session_search" {
+                // project (which may have changed meanwhile). The child also
+                // keeps the parent's project knowledge, not a fresh worktree
+                // vault or the UI's current selection.
+                if matches!(
+                    spec.tool.descriptor().name.as_str(),
+                    "session_search" | "knowledge_search"
+                ) {
                     continue;
                 }
                 sub_registry.replace(spec.tool.clone());

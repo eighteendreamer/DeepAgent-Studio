@@ -904,7 +904,7 @@ impl ChatService {
             connection_id,
             local_exec_mode,
             bash_external_safety_gate,
-        );
+        )?;
         if let Some(projects) = &self.projects {
             request.project = projects.active()?.filter(|path| !path.trim().is_empty());
         }
@@ -944,7 +944,7 @@ impl ChatService {
         connection_id: Option<&'a str>,
         local_exec_mode: Option<crate::settings::LocalExecutionMode>,
         bash_external_safety_gate: bool,
-    ) -> ToolRegistryBuildRequest<'a> {
+    ) -> Result<ToolRegistryBuildRequest<'a>> {
         let local_command_executor = match (&self.runtime_broker, &self.local_command_executor) {
             (Some(broker), Some(executor)) => Some(Arc::new(RuntimeCommandExecutor::new(
                 executor.clone(),
@@ -960,7 +960,7 @@ impl ChatService {
                 as Arc<dyn deepagent_builtins::bash_tool::CommandExecutor>),
             (None, executor) => executor.clone(),
         };
-        ToolRegistryBuildRequest {
+        Ok(ToolRegistryBuildRequest {
             db: self.db.clone(),
             root,
             project: Some(root.to_string_lossy().into_owned()),
@@ -974,13 +974,17 @@ impl ChatService {
             settings: self.settings.clone(),
             executor_factory: self.executor_factory.clone(),
             local_command_executor,
-            knowledge: self.knowledge.clone(),
+            knowledge: self
+                .knowledge
+                .as_ref()
+                .map(|knowledge| knowledge.for_project(root))
+                .transpose()?,
             cron: self.cron.clone(),
             project_map: self.project_map.clone(),
             office: self.office.clone(),
             remote_ops_factory: self.remote_ops_factory.clone(),
             question_responder: self.question_responder(""),
-        }
+        })
     }
 
     /// Wire the `skill` built-in into a registry. No-op when no
@@ -1357,7 +1361,7 @@ impl ChatService {
             tool_results_dir: &self.tool_results_dir,
             runtime_logs: &self.runtime_logs,
             cost: &self.cost,
-            knowledge: &self.knowledge,
+            knowledge: self.knowledge.clone(),
             cron: &self.cron,
             canvas_model: &self.canvas_model,
             skills: &self.skills,

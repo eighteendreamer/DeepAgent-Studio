@@ -142,7 +142,9 @@ pub(crate) struct RunAssembler<'a> {
     pub(crate) tool_results_dir: &'a Path,
     pub(crate) runtime_logs: &'a Option<Arc<RuntimeLogStore>>,
     pub(crate) cost: &'a Option<Arc<CostService>>,
-    pub(crate) knowledge: &'a Option<Arc<KnowledgeService>>,
+    /// Owned by this single-use assembler, then bound once to its run project.
+    /// The host's UI-facing service is never retargeted by run preparation.
+    pub(crate) knowledge: Option<Arc<KnowledgeService>>,
     pub(crate) cron: &'a Option<Arc<crate::CronService>>,
     pub(crate) canvas_model: &'a Option<Arc<crate::canvas_model_gateway::CanvasModelGateway>>,
     pub(crate) skills: &'a Option<Arc<std::sync::Mutex<SkillsService>>>,
@@ -302,7 +304,7 @@ impl<'a> RunAssembler<'a> {
 
     #[allow(clippy::too_many_arguments)]
     async fn run_inner<F, A>(
-        self,
+        mut self,
         prompt: &str,
         continue_session: Option<&str>,
         env_mode: Option<&str>,
@@ -325,6 +327,11 @@ impl<'a> RunAssembler<'a> {
             return Err(CoreError::other("cancelled before preparation"));
         }
         let (root, session_project) = self.run_location(continue_session)?;
+        self.knowledge = self
+            .knowledge
+            .as_ref()
+            .map(|knowledge| knowledge.for_project(&root))
+            .transpose()?;
         let normalized_input = deepagent_runtime::InputIngress::normalize(
             continue_session.map(ToOwned::to_owned),
             root.clone(),
@@ -420,10 +427,6 @@ impl<'a> RunAssembler<'a> {
 
         if let Some(cost) = self.cost {
             cost.check_budget()?;
-        }
-
-        if let Some(knowledge) = self.knowledge {
-            knowledge.activate_project(&root)?;
         }
 
         let clock = SystemClock;
@@ -1092,7 +1095,7 @@ impl<'a> RunAssembler<'a> {
             .with_attachment_resolver(Arc::new(crate::attachment_service::FileAttachmentResolver))
             .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);
 
-        if let Some(knowledge) = self.knowledge {
+        if let Some(knowledge) = &self.knowledge {
             agent = agent.with_relevant_memory_provider(Arc::new(
                 crate::knowledge_service::KnowledgeMemoryProvider::new(knowledge.clone()),
             ));
@@ -1338,7 +1341,7 @@ impl<'a> RunAssembler<'a> {
     }
 
     async fn run_workflow_inner<F, A>(
-        self,
+        mut self,
         workflow_request: deepagent_runtime::workflow::WorkflowRequest,
         run_id: String,
         session_id: String,
@@ -1354,6 +1357,11 @@ impl<'a> RunAssembler<'a> {
             return Err(CoreError::other("cancelled before workflow preparation"));
         }
         let (root, session_project) = self.run_location(Some(&session_id))?;
+        self.knowledge = self
+            .knowledge
+            .as_ref()
+            .map(|knowledge| knowledge.for_project(&root))
+            .transpose()?;
 
         // Workflow tools must use the same run-scoped environment and base
         // registry as a normal chat turn.  Constructing an empty registry here
@@ -1628,7 +1636,7 @@ impl<'a> RunAssembler<'a> {
 
     /// Build a [`crate::slash_runtime::SlashRuntime`] from this assembler's
     /// borrowed fields.
-    fn slash_runtime(&self) -> crate::slash_runtime::SlashRuntime<'a> {
+    fn slash_runtime(&self) -> crate::slash_runtime::SlashRuntime<'_> {
         crate::slash_runtime::SlashRuntime {
             db: self.db,
             settings: self.settings,

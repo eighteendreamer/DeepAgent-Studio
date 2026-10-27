@@ -218,6 +218,18 @@ fn merge_into(mut survivor: KnowledgeEntry, group: &[KnowledgeEntry]) -> Knowled
 
 type Retriever<E> = ContextualRetriever<E, HeadingContextualizer, ScoreReranker>;
 
+/// In-memory projection of one vault scope, including pending drafts.
+///
+/// This is derived index data, not another store. A host with several project
+/// views of the same global vault can publish a mutation without rescanning
+/// disk or copying entries from another project's private scope.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnowledgeScopeSnapshot {
+    scope: Scope,
+    entries: BTreeMap<String, KnowledgeEntry>,
+    drafts: BTreeMap<String, KnowledgeEntry>,
+}
+
 /// The knowledge base: one or more vaults plus a derived retrieval index.
 pub struct KnowledgeBase<E: Embedder + Clone> {
     vaults: Vec<Vault>,
@@ -266,6 +278,43 @@ impl<E: Embedder + Clone> KnowledgeBase<E> {
         self.drafts = drafts;
         self.rebuild_index();
         Ok(self.entries.len())
+    }
+
+    /// Copy the derived entries and drafts belonging to exactly one scope.
+    pub fn scope_snapshot(&self, scope: Scope) -> KnowledgeScopeSnapshot {
+        KnowledgeScopeSnapshot {
+            scope,
+            entries: self
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.scope == scope)
+                .map(|(id, entry)| (id.clone(), entry.clone()))
+                .collect(),
+            drafts: self
+                .drafts
+                .iter()
+                .filter(|(_, entry)| entry.scope == scope)
+                .map(|(id, entry)| (id.clone(), entry.clone()))
+                .collect(),
+        }
+    }
+
+    /// Synchronize a view of the **same vault** from its host-owned projection.
+    /// Other scopes, vault paths and configuration are unchanged; no disk I/O
+    /// occurs. Callers must serialize mutations of the shared vault itself.
+    pub fn apply_scope_snapshot(&mut self, snapshot: &KnowledgeScopeSnapshot) {
+        let current = self.scope_snapshot(snapshot.scope);
+        if current == *snapshot {
+            return;
+        }
+        self.entries
+            .retain(|_, entry| entry.scope != snapshot.scope);
+        self.entries.extend(snapshot.entries.clone());
+        self.drafts.retain(|_, entry| entry.scope != snapshot.scope);
+        self.drafts.extend(snapshot.drafts.clone());
+        if current.entries != snapshot.entries {
+            self.rebuild_index();
+        }
     }
 
     /// Rebuild the retrieval index from the current entry set.
@@ -726,6 +775,68 @@ mod tests {
             tier: None,
             importance: None,
         }
+    }
+
+    #[test]
+    fn scope_projection_replaces_only_shared_index_and_never_writes_target_vault() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut source = base(&tmp.path().join("source"));
+        let mut target = base(&tmp.path().join("target"));
+        let private = target
+            .write(
+                draft(
+                    "Private",
+                    "private evidence",
+                    EntryKind::Note,
+                    Scope::Project,
+                ),
+                1,
+            )
+            .unwrap();
+        let shared = source
+            .write(
+                draft("Shared", "shared evidence", EntryKind::Note, Scope::Global),
+                1,
+            )
+            .unwrap();
+        let pending = source
+            .add_draft(
+                draft(
+                    "Pending",
+                    "pending evidence",
+                    EntryKind::Memory,
+                    Scope::Global,
+                ),
+                2,
+            )
+            .unwrap();
+        target.apply_scope_snapshot(&source.scope_snapshot(Scope::Global));
+        assert_eq!(
+            target.get(&uid(Scope::Project, &private.id)),
+            Some(&private)
+        );
+        assert_eq!(target.get(&uid(Scope::Global, &shared.id)), Some(&shared));
+        assert_eq!(target.list_drafts(), vec![pending]);
+        assert_eq!(
+            target
+                .search("shared evidence", Some(EntryKind::Note), 10)
+                .len(),
+            2
+        );
+        assert!(target
+            .search("pending", Some(EntryKind::Memory), 10)
+            .is_empty());
+        assert!(
+            !tmp.path().join("target/glob").exists(),
+            "a projection is not a second persisted store"
+        );
+        source.delete(&uid(Scope::Global, &shared.id)).unwrap();
+        target.apply_scope_snapshot(&source.scope_snapshot(Scope::Global));
+        assert!(target.get(&uid(Scope::Global, &shared.id)).is_none());
+        assert_eq!(
+            target.get(&uid(Scope::Project, &private.id)),
+            Some(&private)
+        );
     }
 
     #[test]

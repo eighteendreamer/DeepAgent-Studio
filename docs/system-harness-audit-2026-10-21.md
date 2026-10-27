@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-51 | 已修复并验收（2026-10-27，所列Windows本机/离线模型/vault范围） | 稳定内部ID绑定运行与pending物化，UI选择分离；知识33/0/1既有H-52 ignored，最终workspace3522/1既有H-306失败/320 ignored；独立桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H51-01～12，待独立提交 |
 | H-50 | 已修复并验收（2026-10-27，所列Windows本机离线派发与共享服务范围） | 唯一opaque身份、设备/后端代次、同设备操作锁与派发前失效；移动249/0/7真机ignored；workspace3504/1既有H-306失败/321 ignored、严格lint边界见E-H50-01～09；补强提交`f0ad9e5749e0d53cde9c6731c3993e0cdb847b84` |
 | H-65 | 已修复并验收（2026-10-27，所列Windows本机范围） | 两处共用正式工具执行边界，原失败保留；单元3/boundary5默认通过，最终workspace3471/1/324；独立取消/Job反例不擦除，见E-H65-01～16；修复提交`1f5fbb084e2babe908fd6481f1a05e1231a5f5d0` |
 | H-46 | 已修复并验收，恢复原验收（2026-10-27，Windows所列范围） | 资源收尾原始反例保留，同Job封闭准入与成员handle等待；MCP全特性115/0/8，workspace3479/1/324仅既有H-306失败；全仓lint失败见E-21，详见E-H46-15～23；补强提交`c7ee84ec2a9fa994a55cb5e458471259f030e1c5` |
@@ -44,7 +45,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **53**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **226（226待修复、0修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **53**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **226（225待修复、1修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -2213,6 +2214,28 @@ E-H46-20261027-12（独立提交与真实hash回填）：代码、默认回归�
 ### H-51：项目激活改写共享知识服务，既有运行的记忆读写会被重定向到另一个项目
 
 **级别：高（P1）；范围：项目级 memory_write / memory_recall 与相关知识后台检索。** 用户明确选择 global 的跨项目共享属于预期；本项只针对 project 作用域和本应绑定原运行的检索。
+
+#### 修复状态（2026-10-27，已修复并验收：所列Windows本机范围）
+
+最终依据进度台账E-H51-12验收：在同一知识服务内以稳定内部缓存ID绑定运行，UI激活只切自己的视图；未创建根物化后按真实物理路径合并、vault固定采用观察到的物理路径，不以路径名称充当句柄身份。global仍共享并在同一mutex内发布所有派生索引。普通run/workflow、工具、被动附件、后台检索、子代理及收尾共用绑定，不增加存储或协议。
+
+最终完整workspace命令退出101，128个target共3522 passed/1既有H-306失败/320 ignored，AppCore lib1201/0/66、kernel_v2_e2e143/0/82、knowledge64/0/0、CLI112/0/23、Rust SDK真实stdio6/0/0通过；知识专项33/0/1仅保留独立H-52 ignored。本项原探针与全部新回归默认执行，目录创建前别名、双向首写、并发slug冲突、实际写后错误、pending junction改指向及旧逻辑名复用均通过。独立Tauri Rust check、knowledge直接严格Clippy、fmt/diff为0；AppCore严格及诊断lint有已核对的既有阻断，详见E-H51-12，不称全仓绿色。真实UI/供应商/其他OS及Windows专门配置的区分大小写目录未验，未改wire/前端且未运行pnpm/单独TS SDK；无依赖或数据库迁移，固定视图拒绝activate、UI管理句柄接口保留。跨宿主事务H-52与工作流筛选H-176仍独立未关闭；缓存按宿主生命周期保留，global发布成本随缓存与笔记增长，不保证外部替换物理根的句柄级隔离。代码/测试/当时文档待独立提交；整体任务仍active。
+
+以下为按时间保留的原始失败与候选验证记录，不将其中“待验/修复中”误作最终状态。
+
+原探针在HEAD 54922cf1未改生产时重新实跑退出1，0 passed/1 failed；切B后原工具/provider改读B且project写实际落B，不切组正常。保留以下首次失败；当前设计与实际记录见进度台账E-H51-01～02，不提前关闭，不合并H-52/H-176。
+
+本轮再次复现与候选实现见台账E-H51-03～04；候选版本原H-51探针已转默认且通过，但新增边界、正式双会话及最终门禁仍待，不以局部结果结案。
+
+新增目录根反例及fixture表面断言错误保留在E-H51-05；修正后知识28/0/1既有H-52 ignored、收尾1/0、正式双会话含shared/worktree两组1/0通过，详见E-H51-06。完整workspace、严格lint和独立桌面Rust检查未取得终态，当前仍为修复中。
+
+后续E-H51-07已取得owned assembler版本门禁终态：128个target合计3517 passed/1既有H-306失败/320 ignored，AppCore lib1196/0/66、正式kernel_v2_e2e143/0/82；独立桌面Rust check、fmt/diff均0。严格lint含依赖停在既有models clone_on_copy，no-deps亦有10项既有阻断，不能称全绿。该门禁不覆盖随后新增的反例，不据此结案。
+
+E-H51-08新增真实行为反证：两个句柄在项目目录尚未创建时，以Windows大小写别名绑定同一未来目录，首句柄save实际落盘后，第二句柄get返回None。原先别名断言只在首写之后执行，未覆盖该交错。补充后的默认测试以cargo test --workspace project_views_share_one_cache_across_aliases_and_directory_creation --offline --no-fail-fast -j 1 -- --nocapture --test-threads=1实跑退出101，0 passed/1 failed/0 ignored；此前内部key反例亦失败。根因是不存在后缀保留拼写、提前分出两个项目缓存，创建后旧句柄未收敛；两次日志和原始失败均保留，不ignore、不降低断言，不把该候选实现缺口归为独立宿主H-52。下一步重审未创建根到物理目录的稳定身份及双向首写，不能简单全路径转小写混淆区分大小写的目录。当前H-51仍修复中、未提交；未访问真实用户数据、凭据或网络，真实UI/供应商/其他OS未验。
+
+E-H51-09～10继续以实际磁盘反证重审候选设计：第一次物化候选知识30/0/1既有H-52 ignored，但临时pending路径成为junction并重指向beta后，旧句柄晚写未落原alpha，专项0/1/0；固定实际vault物理路径后知识32/0/1通过，但旧逻辑名称复用为新真实目录时，显式新绑定仍继承alpha旧缓存，扩展专项再次0/1/0。原始失败均保留。停止路径别名特判，改为单一KnowledgeState内部稳定缓存ID，规范化根只负责定位，物化后旧ID直接指向同一真实根的唯一缓存，实际vault采用观察到的物理路径；新物理目录即使复用旧逻辑名也可独立绑定。稳定ID候选尚待专项/完整门禁，当前仍修复中，不合并H-52/H-176，不声称具备外部替换物理目录的句柄级隔离。
+
+E-H51-11：稳定ID知识专项实跑33 passed/0 failed/1既有H-52 ignored，13个项目视图边界及原正式工具/provider探针默认通过，包含上述所有反例。旧候选完整门禁会话20178已终结，3521 passed/2 failed/320 ignored，失败为本轮逻辑名复用与既有H-306，保留而不冒充全绿；其后桌面Rust check、knowledge直接严格lint及fmt/diff为0，AppCore严格lint仍有已列既有阻断。现已重新执行稳定ID完整门禁（会话28894），未取得最终终态，不以专项成功提前验收或提交。
 
 #### 触发、生产路径与复现
 

@@ -123,7 +123,7 @@ impl AppRunFinalizer {
         Self {
             db,
             cost,
-            knowledge,
+            knowledge: knowledge.map(|knowledge| knowledge.bind_current()),
             cancellations,
             session_memory,
             consolidation_gate: crate::memory_consolidation::ConsolidationGate::default(),
@@ -443,6 +443,57 @@ mod tests {
     use deepagent_runtime::{CancellationTree, NullEventSink};
     use std::collections::HashMap;
     use std::sync::Mutex;
+
+    #[test]
+    fn finalizer_consolidates_its_bound_project_after_ui_activation_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let alpha = tmp.path().join("alpha");
+        let beta = tmp.path().join("beta");
+        let global = tmp.path().join("global");
+        let knowledge = Arc::new(KnowledgeService::open(&alpha, &global).unwrap());
+        let seed = |title: &str| -> crate::KnowledgeDraftDto {
+            serde_json::from_value(serde_json::json!({"title":title,
+                "body":"project deployment evidence repeated verbatim in two notes",
+                "scope":"project", "kind":"memory"}))
+            .unwrap()
+        };
+        for title in ["Alpha one", "Alpha two"] {
+            knowledge.save(seed(title)).unwrap();
+        }
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let finalizer = AppRunFinalizer::new(
+            db.clone(),
+            None,
+            Some(knowledge.clone()),
+            Arc::new(Mutex::new(HashMap::new())),
+            SessionMemoryPasses::default(),
+        )
+        .with_consolidation_gate(crate::memory_consolidation::ConsolidationGate {
+            min_entries: 2,
+            min_interval: std::time::Duration::ZERO,
+            min_runs_between: 1,
+        });
+        knowledge.activate_project(&beta).unwrap();
+        for title in ["Beta one", "Beta two"] {
+            knowledge.save(seed(title)).unwrap();
+        }
+        let mut session = Session::create(&db, &SystemClock, Some("late finalize")).unwrap();
+        let id = session.id().to_string();
+        finalizer.consolidate_memories(&mut session, &id).unwrap();
+        assert_eq!(
+            KnowledgeService::open(&alpha, &global)
+                .unwrap()
+                .entry_count(),
+            1
+        );
+        assert_eq!(
+            KnowledgeService::open(&beta, &global)
+                .unwrap()
+                .entry_count(),
+            2
+        );
+        assert_eq!(knowledge.entry_count(), 2);
+    }
 
     #[test]
     fn clear_run_cancellation_removes_session_and_run_aliases() {
