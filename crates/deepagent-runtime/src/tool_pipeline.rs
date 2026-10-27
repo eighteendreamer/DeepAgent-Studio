@@ -56,6 +56,23 @@ pub struct ToolPipelineResult {
     pub stage: ToolPipelineStage,
 }
 
+/// Execution facts awaiting observational hooks. The loop commits the result
+/// to its Session before consuming this boundary; standalone callers already
+/// have the normal runtime event and action projections.
+pub(crate) struct ToolPipelineCompletion {
+    pub result: ToolPipelineResult,
+    mutation_targets: Vec<std::path::PathBuf>,
+}
+
+impl ToolPipelineCompletion {
+    pub(crate) fn blocked(result: ToolPipelineResult) -> Self {
+        Self {
+            result,
+            mutation_targets: Vec::new(),
+        }
+    }
+}
+
 pub enum ToolPreparation {
     Ready(PreparedToolInvocation),
     Blocked(ToolPipelineResult),
@@ -794,6 +811,17 @@ impl<'a> ToolExecutionPipeline<'a> {
         &self,
         prepared: PreparedToolInvocation,
     ) -> Result<ToolPipelineResult> {
+        let completion = self.execute_prepared_deferred(prepared).await?;
+        self.post_execution(&completion).await?;
+        Ok(completion.result)
+    }
+
+    /// Execute and finalize the action without entering fallible post hooks.
+    /// Session owners must record `result` before calling `post_execution`.
+    pub(crate) async fn execute_prepared_deferred(
+        &self,
+        prepared: PreparedToolInvocation,
+    ) -> Result<ToolPipelineCompletion> {
         if let Some(persistence) = self.action_persistence.as_ref() {
             persistence.transition(&prepared.call_id, RunActionState::Running, None, None)?;
         }
@@ -857,6 +885,19 @@ impl<'a> ToolExecutionPipeline<'a> {
         result: Result<ToolOutput>,
         duration_ms: u64,
     ) -> Result<ToolPipelineResult> {
+        let completion = self
+            .complete_prepared_deferred(prepared, result, duration_ms)
+            .await?;
+        self.post_execution(&completion).await?;
+        Ok(completion.result)
+    }
+
+    pub(crate) async fn complete_prepared_deferred(
+        &self,
+        prepared: PreparedToolInvocation,
+        result: Result<ToolOutput>,
+        duration_ms: u64,
+    ) -> Result<ToolPipelineCompletion> {
         let speculative_safe = self.registry.get(&prepared.name).is_some_and(|spec| {
             spec.descriptor.risk == deepagent_tools::permission::RiskLevel::Safe
                 && spec.tool.is_concurrency_safe(&prepared.arguments)
@@ -878,7 +919,7 @@ impl<'a> ToolExecutionPipeline<'a> {
         duration_ms: u64,
         emit_started: bool,
         mutation_targets: Vec<std::path::PathBuf>,
-    ) -> Result<ToolPipelineResult> {
+    ) -> Result<ToolPipelineCompletion> {
         if emit_started {
             if let Some(persistence) = self.action_persistence.as_ref() {
                 persistence.transition(&prepared.call_id, RunActionState::Running, None, None)?;
@@ -916,18 +957,6 @@ impl<'a> ToolExecutionPipeline<'a> {
             summary: metadata.summary,
             meta: metadata.meta,
         });
-        self.fire(
-            if output.ok {
-                HookPoint::AfterToolUse
-            } else {
-                HookPoint::PostToolUseFailure
-            },
-            HookData::after_tool(prepared.name.clone(), prepared.arguments.clone(), output.ok),
-        )
-        .await?;
-        if output.ok {
-            self.fire_file_changed_hooks(&mutation_targets).await?;
-        }
         if let Some(persistence) = self.action_persistence.as_ref() {
             if output.ok {
                 persistence.transition(&prepared.call_id, RunActionState::Completed, None, None)?;
@@ -938,15 +967,45 @@ impl<'a> ToolExecutionPipeline<'a> {
             }
         }
 
-        Ok(ToolPipelineResult {
-            call_id: prepared.call_id,
-            name: prepared.name,
-            arguments: prepared.arguments,
-            output,
-            raw_output,
-            duration_ms,
-            stage: ToolPipelineStage::Execution,
+        Ok(ToolPipelineCompletion {
+            result: ToolPipelineResult {
+                call_id: prepared.call_id,
+                name: prepared.name,
+                arguments: prepared.arguments,
+                output,
+                raw_output,
+                duration_ms,
+                stage: ToolPipelineStage::Execution,
+            },
+            mutation_targets,
         })
+    }
+
+    /// Hook failure stops further use, not an execution that already happened.
+    /// Do not rewrite its action or replace its real result with a hook error.
+    pub(crate) async fn post_execution(&self, completion: &ToolPipelineCompletion) -> Result<()> {
+        let result = &completion.result;
+        if result.stage != ToolPipelineStage::Execution {
+            return Ok(());
+        }
+        self.fire(
+            if result.output.ok {
+                HookPoint::AfterToolUse
+            } else {
+                HookPoint::PostToolUseFailure
+            },
+            HookData::after_tool(
+                result.name.clone(),
+                result.arguments.clone(),
+                result.output.ok,
+            ),
+        )
+        .await?;
+        if result.output.ok {
+            self.fire_file_changed_hooks(&completion.mutation_targets)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn fire_file_changed_hooks(&self, mutation_targets: &[std::path::PathBuf]) -> Result<()> {

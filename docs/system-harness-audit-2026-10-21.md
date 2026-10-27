@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-139 | 已修复并验收（2026-10-28，所列Windows本机/正式服务与runtime/离线范围） | 执行事实先提交，后置错误仍传播，同组结果全保留；原专项2/0/0、新runtime9/0/0默认通过，workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过；严格lint旧失败保留，E-H139-01～05，修复提交待取得hash后回填 |
 | H-237 | 已修复并验收（2026-10-28，所列Windows本机/正式服务/离线模型范围） | 共享非递归安全策略与父能力位，Ask无交互拒绝；正式专项10/0/0、装配3/0/0，workspace3548/1既有H-306/317忽略；Tauri Rust check/fmt通过，严格lint基线失败保留；见E-H237-01～07，修复提交`9e3ee007735e82a6e44eba76175e2b87305702d0` |
 | H-52 | 已修复并验收（2026-10-28，所列Windows本机/vault/OS子进程范围） | 单一锁内读/身份/版本/写事务，草稿/提升/删除/合并共用；knowledge79/0/0、知识服务35/0/0，workspace3539/1既有H-306失败/319 ignored；桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H52-01～07，修复提交`bc046b903548d4f0b481e71988d2cbb99ac3dc52` |
 | H-51 | 已修复并验收（2026-10-27，所列Windows本机/离线模型/vault范围） | 稳定内部ID绑定运行与pending物化，UI选择分离；知识33/0/1既有H-52 ignored，最终workspace3522/1既有H-306失败/320 ignored；独立桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H51-01～13，修复提交`a175a5fb96c4675d25a4bab6c23b7afc6ec12ccc` |
@@ -47,7 +48,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **56**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **223（223待修复、0修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **57**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **222（222待修复、0修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -3881,6 +3882,14 @@ E-H136-20261027-01（H-65门禁调查的既有发送窗口补充，非修复）�
 
 ### H-139：后置 hook 报错跳过已执行工具的结果提交，重开后成功写入变成结果缺失
 
+**修复状态（2026-10-28）：已修复并验收，限下述Windows本机范围。** 修复前当前原探针复测仍1 passed/1 failed；错误组Running/无Session结果/重开误判，保留target/h139-before.log。最终统一ToolExecutionPipeline把已执行结果事件和action收尾，与可失败后置扩展分开；RuntimeEngine串行及speculative先落Session结果，并行组先按模型顺序落全部已执行结果，再运行原PostToolUse/PostToolUseFailure/FileChanged，错误保留原类型/原因并停止后续使用，不改写工具执行事实、不重执行。组内PermissionDenied扩展同样在结果提交后运行。公开pipeline便捷接口和ToolPipelineResult保持原形，新增完成值仅crate内、短生命周期；host-generated沿原event/action，不伪造模型Session调用，无新存储/依赖/协议/配置/权限或迁移。这是参考职责分离后的本地组合设计，不套用MCP结果改写契约。
+
+最终 `cargo test -p deepagent-app-core --test kernel_v2_e2e post_tool_hook_commit --offline -j 1 -- --nocapture --test-threads=1` 原生0、2 passed/0 failed/0 ignored；缺陷探针已去ignore，并在正式HookStarted时检查结果已提交。错误组run唯一failed且主模型1次请求，重开后action仍Completed，同call_id唯一function_call_output为实际成功结果，未变为缺失结果；正常组唯一succeeded、主模型2次。`cargo test -p deepagent-runtime --lib post_tool_commit_tests --offline -j 1 -- --nocapture --test-threads=1` 原生0、9/0/0：失败工具、真实并行、StreamingToolAttempt推测单/并行、FileChanged、后置取消/挂起future丢弃、host-generated及正常并行对照。barrier证明并行重叠，工具次数排除重执行，hook内读正式EventStore/RunControlStore验证同组结果先提交，文件SQLite重开验证action不误判。挂起future丢弃不冒充真实强杀，host-generated无模型Session结果是预期边界。两次新增夹具编译失败及修正保留，未降断言。
+
+最终完整 `cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` 原生101，128 targets合计3558 passed/1 failed/316 ignored，唯一失败仍未改H-306空creative.video-edit.v1 defaultUserPrompt；AppCore1206/0/65、Kernel E2E150/0/79、Runtime312/0/11、CLI112/0/23及真实Rust SDK stdio6/0/0通过。独立Tauri Rust check、fmt/diff通过；严格workspace Clippy停于旧models/client.rs:355，runtime no-deps严格停于旧model_agent.rs:282，AppCore no-deps严格仍旧10项。额外非严格诊断runtime all-targets退出0但保留lib/schedule旧告警，Kernel E2E诊断仍因旧mcp_discovery_restore.rs:433 panicking_unwrap退出101；两新增/改动回归文件无新诊断，不能宣称严格lint绿色。命令、日志与HEAD对照见进度文档E-H139-01～05；会话35632/37512均结束，无待续读进程，日志target/h139-*不提交。修复提交待取得hash后回填。
+
+兼容性和残余：并行I/O仍重叠，post-hook改为组结果全提交后按模型顺序执行，观察时机/延迟可能变化；明确Deny/Ask仍沿既有观察点策略，未新增结果改写语义。未跑pnpm build/独立TS SDK/真实UI/真实供应商、其他OS、真实远程MCP/HTTP hook、OS沙箱或压力矩阵：本轮无前端/wire改动，验收限本机离线。FileChanged/失败/取消/host-generated主要由runtime直接Hook覆盖，不外推成所有正式模型hook/外部组合均验收。未注入DB写故障或实际强杀；工具执行、预算处理、action、Session仍非单一事务，不证明任意崩溃窗口原子性或外部副作用exactly-once。H-83/H-103/H-236独立未修。本轮新增验收1，57验收/18历史跳过/7归并/2撤销/222待修/0修复中；下一项准备H-136原发送背压与取消探针，不在本轮修改。原200–400有效修复/验收小时仍未逐项校准，构建及设备/依赖/环境等待另计，不机械扣减或承诺日期。以下审计原始证据保留。
+
 **级别：高（P1，条件性的副作用与历史不一致）；触发条件：串行工具已经实际执行成功，随后配置的 PostToolUse hook 返回执行错误。** 本次用正式 prompt hook 返回无效决策 JSON 触发；不将普通 command hook 的非零退出、所有 hook 或默认无 hook 对话视为已覆盖。
 
 #### 生产链与动态复现
@@ -3901,7 +3910,7 @@ E-H136-20261027-01（H-65门禁调查的既有发送窗口补充，非修复）�
 - 已证明：实际磁盘变更和成功 run event 仍存在，但模型历史失去真实工具结果，重开后又被标为进程重启失败。模型可能把已完成的修改、命令或外部操作当作未完成并选择重试；**本探针没有执行第二次写入或真实外部副作用**，不能把这种风险写成已发生的重复操作。它也不等于原始结果在所有持久化源中彻底丢失，成功 ToolCompleted 仍保存在 run_events。
 - 应在既有 ToolPipeline / action / Session 边界明确“实际执行完成”“hook 反馈或拒绝后续使用”“模型可见结果”的分别收尾契约：已有执行事实及真实结果先获得可回放记录，再运行可失败的后置扩展；若 hook 要阻断继续，仍以同 call_id 返回可解释的配对反馈，并保留实际副作用与原结果。明确观察 hook 错误的继续/停止策略属于本地设计，不能靠吞掉所有 hook 错误、删除原调用、制造未知工具或重执行来修复，也不能另建结果存储。
 - 与 H-83 区分：H-83 是最终完成 hook 报错导致同一 turn 的实时终态冲突；本项两组均唯一终态，缺陷是**工具已执行到 session/action 提交之间**的边界。与 H-103 的 hook 输入字段缺失也不同；即使补齐输入字段，后置执行错误仍须正确收尾。
-- 当前只动态覆盖 Windows、单个串行 write_file、PostToolUse prompt 的有效/无效 JSON、文件数据库重开、正式恢复与离线 provider wire；未覆盖并行组、PostToolUseFailure、FileChanged、取消、HTTP/MCP hook、DB 写入故障、真实 Tauri、macOS/Linux 或真实 DeepSeek。生产代码未改，缺陷探针保持 ignored，默认测试通过不表示该缺口已修复。
+- 原审计当时只动态覆盖 Windows、单个串行 write_file、PostToolUse prompt 的有效/无效 JSON、文件数据库重开、正式恢复与离线 provider wire；未覆盖并行组、PostToolUseFailure、FileChanged、取消、HTTP/MCP hook、DB 写入故障、真实 Tauri、macOS/Linux 或真实 DeepSeek。当时生产代码未改、缺陷探针保持 ignored，默认测试通过不表示该缺口已修复；本轮新增验收范围以上方修复记录为准。
 
 ### H-140：输入 hook 成功输出的上下文被丢弃，主模型只收到原始输入
 

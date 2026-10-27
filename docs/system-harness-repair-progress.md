@@ -2,21 +2,54 @@
 
 ## 当前状态与计数口径（2026-10-28）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计五十六项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计五十七项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 56 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-237、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 57 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-139、H-237、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前无；下一项优先复核H-139后置hook错误后的工具结果提交（P1） |
-| 待修复 | 223 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 当前无；下一项准备复核H-136发送背压与取消窗口（P1） |
+| 待修复 | 222 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **223（223待修复、0修复中）**；不提供完成率。五十六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **222（222待修复、0修复中）**；不提供完成率。五十七项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-139 本轮即时记录（2026-10-28）
+
+**当前状态：已修复并验收（2026-10-28，E-H139-04～05所列Windows本机、正式服务/真实临时文件与SQLite/离线模型及runtime范围）。** 本轮只处理已执行工具在后置hook执行错误后的提交边界，不合并H-83终态、H-103输入字段或H-236取消传播。以下原始失败及候选状态保留，最终以E-04～05为准；修复提交待取得hash后限定回填。
+
+E-H139-01（原探针复核）：HEAD `28349927`，tracked工作树干净，五类既有未跟踪用户项未读取/修改/暂存。在独立系统Temp的数据、home、USERPROFILE/HOME、managed目录下，保留工具链目录并去除继承DB路径/供应商key，执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e post_tool_hook_commit --offline -j 1 -- --include-ignored --nocapture --test-threads=1`，原生101，1 passed/1 failed/0 ignored，编译2m14s、测试1.00s；target/h139-before.log保留。错误组磁盘写入成功且run_events存在成功ToolCompleted，但session结果0/action Running；重开后Failed/process_restarted_while_running，下一wire为缺失结果。正常组全部配对且Completed，未重执行写入。
+
+E-H139-02（根因与候选）：已读当前pipeline/串行、并行、speculative和host-generated调用方，以及Claude普通工具先addToolResult后post-hook、Codex执行事实与结果控制分离源码。沿既有pipeline引入仅crate内的完成边界：统一提交预算后真实结果事件和action，Session调用方先落全部已执行结果再调用原post-hook；后置执行错误仍停止并原样传播，不吞掉、不改写工具成功/失败、不重执行。并行组的完整结果按模型顺序先提交，后置hook改为该顺序运行；公开pipeline便捷方法仍调用同一实现，host-generated只沿既有event/action、不伪造模型会话调用。此为本地组合设计，无新存储/协议/依赖/权限或沙箱放宽。初版原专项2 passed/0 failed/0 ignored（target/h139-candidate.log），尚早于新增补强；不当最终验收。
+
+E-H139-03（新增夹具与待验）：原缺陷探针已去ignore并新增HookStarted时正式持久化断言、错误继续传播和主请求次数断言。新runtime夹具覆盖失败工具、真实并行、speculative单/并行、FileChanged、后置取消、挂起hook未来被丢弃、host-generated和正常并行对照；最初两次编译分别因夹具误用with_cancellation及释放hooks早于借用的Session而失败，已按现有with_cancel接口和生命周期修正，保留target/h139-runtime.log、h139-runtime-retry.log，不改生产语义或降低断言。会话52276最终原生0，9 passed/0 failed/0 ignored，target/h139-runtime-final.log。最终门禁会话35632在独立Temp配置/数据根执行更新后的原专项、新runtime专项、完整workspace、严格lint、独立Tauri Rust消费方和fmt/diff，尚待终态。台账仍56验收/18历史跳过/7归并/2撤销/222待修/1修复中，共223有效未关闭；原200–400有效修复/验收小时粗估未逐项校准，构建与设备/依赖/环境等待另计。
+
+E-H139-04（最终门禁）：会话35632、37512均已原生终结，没有待续读验证进程。最新原专项默认执行2 passed/0 failed/0 ignored，0.86s；错误组在HookStarted之前已有真实Session结果和Completed action，hook解析错误仍令run唯一failed，主模型仅1次请求；重开后同call_id唯一输出仍为真实成功结果，未变成进程重启失败。正常组唯一succeeded且主模型2次请求。新runtime默认9 passed/0 failed/0 ignored，0.90s；真实临时文件和文件SQLite，barrier证明并行组实际重叠，真实StreamingToolAttempt提供推测执行，次数断言排除重复执行。hook内部读取正式EventStore/RunControlStore核对同组所有结果在扩展开始前提交，重开后action保持原真实成功/失败。挂起future丢弃只验证该阶段已提交，不冒充真实进程强杀验收；host-generated不属于模型工具历史，只验证原action投影和真实文件。两次新增夹具编译失败保留，未ignore/放宽断言。
+
+| 实际命令（隔离的Windows本机离线环境） | 原生结果 |
+|---|---|
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e post_tool_hook_commit --offline -j 1 -- --nocapture --test-threads=1` | 0，2/0/0；原缺陷探针现为默认测试 |
+| `cargo test -p deepagent-runtime --lib post_tool_commit_tests --offline -j 1 -- --nocapture --test-threads=1` | 0，9/0/0 |
+| `cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` | 101，128 targets，3558 passed/1 failed/316 ignored；唯一失败仍H-306空creative.video-edit.v1 defaultUserPrompt |
+| `cargo clippy --all-targets --all-features --offline -j 1 -- -D warnings` | 101，既有models/client.rs:355 clone_on_copy；已核对HEAD |
+| `cargo clippy -p deepagent-runtime --all-targets --all-features --offline -j 1 --no-deps -- -D warnings` | 101，既有model_agent.rs:282 Usage clone_on_copy；已核对HEAD |
+| `cargo clippy -p deepagent-app-core --all-targets --all-features --offline -j 1 --no-deps -- -D warnings` | 101，既有context_runtime八处clone_on_copy、plugin_preparation type_complexity、run_assembler十参数，共10项 |
+| `cargo clippy -p deepagent-runtime --all-targets --all-features --offline -j 1 --no-deps` | 诊断命令退出0，仍有上述lib旧告警及schedule_audit.rs:228 set_readonly(false)旧告警；不等于严格lint通过，新文件无诊断 |
+| `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --all-features --offline -j 1 --no-deps` | 诊断命令退出101，既有mcp_discovery_restore.rs:433 panicking_unwrap及旧告警；新原探针文件无诊断，不冒充全绿 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 1` | 0，独立桌面Rust消费方，32.08s |
+| `cargo fmt --all -- --check`、`git diff --check` | 均0；另做逐编号与Markdown一致性复核 |
+
+workspace中的AppCore lib1206/0/65、kernel_v2_e2e150/0/79、Runtime312/0/11、Builtins357/0/4、CLI112/0/23、Rust SDK lib5/0/12与真实stdio6/0/0均通过；全部门禁日志target/h139-final-*，额外诊断target/h139-runtime-diagnostic.log、h139-kernel-diagnostic.log，不提交。严格失败不以诊断命令代替，不修改无关基线。
+
+E-H139-05（根因收敛、兼容性与残余）：只修改现有runtime ToolExecutionPipeline与RuntimeEngine及其回归；ToolPipelineCompletion是crate内短生命周期完成值，不是新DTO、ledger或执行链。完成与后置扩展仍只有一个可信实现，公开execute_prepared/complete_prepared/execute_registered便捷接口和ToolPipelineResult保持原形；真实工具输出按原预算/decorator处理并保留，action先以执行结果收尾，Session调用方先落结果，再运行PostToolUse/PostToolUseFailure/FileChanged。并行组已执行的所有可用结果按模型顺序提交后才传播执行错误或调用扩展；拒绝结果的PermissionDenied回调同样移到组提交之后。后置错误保留原类型/原因并停止后续使用，不返回伪成功、不将hook错误伪装成工具执行失败、不重执行。原无调用的legacy函数未扩改。
+
+兼容性影响：并行I/O保持重叠，post-hook从组内并发完成时机改为全组结果提交后按模型顺序执行；可能改变hook观察时机及延迟。观察点显式Deny/Ask仍沿现有registry策略处理，不新增MCP结果改写/审批语义。没有新增依赖、存储、wire字段、Tauri command、前端类型、配置、权限放宽或数据迁移。未执行pnpm build、独立TS SDK、真实UI/供应商、其他OS、真实远程MCP/HTTP hook、OS沙箱或压力矩阵：没有前端/协议变更，且当前验收限本机离线。FileChanged/失败/取消/host-generated由runtime真实文件与直接Hook回归覆盖，不冒充各类正式模型hook和外部服务组合全部动态验收。没有注入DB/文件系统提交故障，也没有证明执行至预算处理/action/Session独立提交之间的真实强杀窗口原子性；不宣称任意崩溃或外部副作用exactly-once。H-83/H-103/H-236保持独立未修。
+
+本项所列范围剩余0，本轮新增验收1；306行/306唯一编号，57验收/18历史跳过/7归并/2撤销/222待修/0修复中，222有效未关闭。下一项准备H-136：发送背压与取消窗口影响在途MCP操作及收尾，需先重跑原探针并核对已有补充证据，不提前修改。全部剩余200–400有效修复/验收小时仍是按报告规模及跨层风险的原未逐项校准粗估，没有有效工时吞吐基线，不机械扣减；构建、设备、依赖及环境等待另计，不承诺日期。代码、测试和当时两文档待独立提交，取得hash后回填，不推送、不创建PR。
 
 ## H-237 本轮即时记录（2026-10-28）
 
@@ -1620,7 +1653,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-136：stdio MCP 请求写入受背压阻塞时，停止信号无法结束发送等待](system-harness-audit-2026-10-21.md) | P1 | 待修复 | E-H136-01补充发送/flush窗口；原背压需重验，不直接套旧结论 | H-65调查证实当前/隔离HEAD相同窗口会退役连接并丢失peer取消；尚未修生产 | 临时真实transport控制调度两边均1/1，正常flush组通过；原背压探针未重跑 | 无本阶段修复提交 | 不计新增编号；随发送/连接owner边界复核；逐项工时待评估，计入总区间 |
 | [H-137：MCP 工具目录变更通知被丢弃，后续运行继续发布旧工具](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-138：MCP 结果整对象进入模型上下文，客户端元数据没有独立可见性边界](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-139：后置 hook 报错跳过已执行工具的结果提交，重开后成功写入变成结果缺失](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-139：后置 hook 报错跳过已执行工具的结果提交，重开后成功写入变成结果缺失](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-28，E-H139-01～05所列Windows本机范围；原失败保留 | 统一完成边界先收尾action/Session，同组结果全提交后才运行可失败post-hook，原错误仍传播 | 原专项2/0/0、新runtime9/0/0默认通过；workspace3558/1既有H-306/316 ignored，Tauri Rust check/fmt通过，严格lint旧阻断保留 | 修复提交待取得hash后回填 | 所列范围剩余0；未验UI/供应商/其他OS/DB故障与强杀窗口，不宣称exactly-once；总工时粗估不机械扣减 |
 | [H-140：输入 hook 成功输出的上下文被丢弃，主模型只收到原始输入](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-141：周期 todo reminder 在独立用户回合之间被重置，长期会话永不触发](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-142：运行事件持久化失败被吞掉，实时事件与回放事件发生分叉](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

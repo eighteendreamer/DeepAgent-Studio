@@ -106,6 +106,7 @@ async fn observe(malformed: bool) -> Observation {
         let chat = ChatService::new(db.clone(), settings, model.clone(), &workspace);
         let live_events = Arc::new(Mutex::new(Vec::new()));
         let captured = live_events.clone();
+        let hook_db = db.clone();
         let result = tokio::time::timeout(
             Duration::from_secs(8),
             chat.run_in_session(
@@ -117,15 +118,39 @@ async fn observe(malformed: bool) -> Observation {
                 None,
                 false,
                 Some(RUN_ID),
-                move |event| captured.lock().unwrap().push(event),
+                move |event| {
+                    if matches!(&event, RuntimeEvent::HookStarted { event, .. } if event == "PostToolUse") {
+                        let run = RunStore::new(&hook_db).get(RUN_ID).unwrap().unwrap();
+                        let history = EventStore::new(&hook_db)
+                            .load_session(SessionId::from_str(&run.session_id).unwrap())
+                            .unwrap();
+                        assert_eq!(history.iter().filter(|event| matches!(
+                            &event.payload, EventPayload::ToolCallCompleted { call_id, .. }
+                                if call_id == CALL_ID
+                        )).count(), 1, "the result must be durable before entering the hook");
+                        assert_eq!(RunControlStore::new(&hook_db).list_actions(RUN_ID).unwrap()[0].state,
+                            RunActionState::Completed);
+                    }
+                    captured.lock().unwrap().push(event);
+                },
                 |_| {},
             ),
         )
         .await
         .expect("the write and configured prompt hook must finish");
-        if !malformed {
+        if malformed {
+            assert!(result
+                .as_ref()
+                .unwrap_err()
+                .to_string()
+                .contains("model-backed hook must return JSON"));
+        } else {
             result.as_ref().unwrap();
         }
+        assert_eq!(
+            model.main_requests.lock().unwrap().len(),
+            if malformed { 1 } else { 2 }
+        );
         assert_eq!(model.hook_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             std::fs::read_to_string(workspace.join("side-effect.txt")).unwrap(),
@@ -257,7 +282,11 @@ async fn valid_post_tool_hook_preserves_executed_write_across_restart() {
 }
 
 #[tokio::test]
-#[ignore = "audit: a malformed post-tool decision must not erase an executed write's durable result"]
 async fn audit_post_tool_hook_error_preserves_executed_write_across_restart() {
-    assert_execution_was_committed(observe(true).await);
+    let observed = observe(true).await;
+    assert_eq!(
+        observed.terminal, "failed",
+        "hook errors must not be swallowed"
+    );
+    assert_execution_was_committed(observed);
 }

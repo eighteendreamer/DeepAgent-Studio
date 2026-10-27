@@ -1651,7 +1651,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             use futures::stream::{FuturesUnordered, StreamExt};
             let mut results: std::collections::HashMap<
                 usize,
-                Result<crate::tool_pipeline::ToolPipelineResult>,
+                Result<crate::tool_pipeline::ToolPipelineCompletion>,
             > = std::collections::HashMap::new();
             let mut blocked = std::collections::HashMap::new();
             let mut futs = FuturesUnordered::new();
@@ -1664,11 +1664,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                             let result = match early {
                                 Some(early) => match early.handle.await {
                                     Ok((result, duration_ms)) => {
-                                        pipeline.complete_prepared(ready, result, duration_ms).await
+                                        pipeline
+                                            .complete_prepared_deferred(ready, result, duration_ms)
+                                            .await
                                     }
-                                    Err(_) => pipeline.execute_prepared(ready).await,
+                                    Err(_) => pipeline.execute_prepared_deferred(ready).await,
                                 },
-                                None => pipeline.execute_prepared(ready).await,
+                                None => pipeline.execute_prepared_deferred(ready).await,
                             };
                             (index, result)
                         });
@@ -1685,36 +1687,46 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 results.insert(index, result);
             }
 
+            let mut completions = Vec::with_capacity(next - group_start);
+            let mut execution_error = None;
             for (index, _) in invocations
                 .iter()
                 .enumerate()
                 .skip(group_start)
                 .take(next - group_start)
             {
-                if let Some(result) = blocked.remove(&index) {
-                    observations.push(
-                        self.record_pipeline_result(
-                            session,
-                            session_id,
-                            result,
-                            provider_tool_calls_persisted,
-                        )
-                        .await?,
-                    );
+                let completion = if let Some(result) = blocked.remove(&index) {
+                    crate::tool_pipeline::ToolPipelineCompletion::blocked(result)
                 } else {
-                    let result = results
+                    match results
                         .remove(&index)
-                        .expect("parallel group result present")?;
-                    observations.push(
-                        self.record_pipeline_result(
-                            session,
-                            session_id,
-                            result,
-                            provider_tool_calls_persisted,
-                        )
-                        .await?,
-                    );
-                }
+                        .expect("parallel group result present")
+                    {
+                        Ok(completion) => completion,
+                        Err(error) => {
+                            execution_error.get_or_insert(error);
+                            continue;
+                        }
+                    }
+                };
+                observations.push(self.record_pipeline_result(
+                    session,
+                    &completion.result,
+                    provider_tool_calls_persisted,
+                )?);
+                completions.push(completion);
+            }
+            // Every member has already executed. Commit all available facts in
+            // model order before propagating any error or invoking extensions.
+            if let Some(error) = execution_error {
+                return Err(error);
+            }
+            for completion in &completions {
+                self.finish_pipeline_result(session_id, &completion.result)
+                    .await?;
+                self.tool_pipeline(session_id)
+                    .post_execution(completion)
+                    .await?;
             }
         }
         for (index, observation) in observations.iter().enumerate() {
@@ -1822,14 +1834,12 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
 
     /// Record the durable session projection for a result already finalized by
     /// the canonical [`ToolExecutionPipeline`]. Runtime events, result policy,
-    /// action state and post-execution hooks are owned by that pipeline; this
-    /// method only performs the model-order append and common observation
-    /// projection.
-    async fn record_pipeline_result(
+    /// action state are owned by that pipeline. All results in an executed
+    /// parallel group must be recorded before any fallible post hook runs.
+    fn record_pipeline_result(
         &self,
         session: &mut Session<'a, C>,
-        session_id: deepagent_core::id::SessionId,
-        result: crate::tool_pipeline::ToolPipelineResult,
+        result: &crate::tool_pipeline::ToolPipelineResult,
         provider_tool_calls_persisted: bool,
     ) -> Result<Observation> {
         let crate::tool_pipeline::ToolPipelineResult {
@@ -1838,7 +1848,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             arguments,
             output,
             duration_ms,
-            stage,
             ..
         } = result;
         self.metrics.incr(names::TOOL_CALLS, 1);
@@ -1856,7 +1865,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         }
 
         let ok = output.ok;
-        let value = output.value;
+        let value = &output.value;
         if !ok {
             self.metrics.incr(names::TOOL_FAILURES, 1);
         }
@@ -1864,16 +1873,30 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             call_id: call_id.clone(),
             ok,
             output: value.clone(),
-            duration_ms,
+            duration_ms: *duration_ms,
         })?;
-        if !ok && stage != crate::tool_pipeline::ToolPipelineStage::Execution {
+        Ok(Observation {
+            tool: tool_name.clone(),
+            ok,
+            raw_output: None,
+            output: value.clone(),
+            call_id: Some(call_id.clone()),
+        })
+    }
+
+    async fn finish_pipeline_result(
+        &self,
+        session_id: deepagent_core::id::SessionId,
+        result: &crate::tool_pipeline::ToolPipelineResult,
+    ) -> Result<()> {
+        if !result.output.ok && result.stage != crate::tool_pipeline::ToolPipelineStage::Execution {
             self.fire_hook(
                 session_id,
                 HookPoint::PermissionDenied,
                 HookData::Permission {
-                    tool: tool_name.clone(),
-                    arguments: arguments.clone(),
-                    reason: value["error"]
+                    tool: result.name.clone(),
+                    arguments: result.arguments.clone(),
+                    reason: result.output.value["error"]
                         .as_str()
                         .unwrap_or("tool blocked")
                         .to_string(),
@@ -1881,13 +1904,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             )
             .await?;
         }
-        Ok(Observation {
-            tool: tool_name,
-            ok,
-            raw_output: None,
-            output: value,
-            call_id: Some(call_id),
-        })
+        Ok(())
     }
 
     /// Execute one tool invocation, recording request + completion events and
@@ -1956,7 +1973,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         }
 
         let prepared = pipeline.prepare(invocation, before_override).await?;
-        let result = match prepared {
+        let completion = match prepared {
             crate::tool_pipeline::ToolPreparation::Ready(prepared) => {
                 let requested = EventPayload::ToolCallRequested {
                     call: ToolCall {
@@ -1975,7 +1992,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                     Some(speculative) => match speculative.handle.await {
                         Ok((result, duration_ms)) => {
                             pipeline
-                                .complete_prepared(prepared, result, duration_ms)
+                                .complete_prepared_deferred(prepared, result, duration_ms)
                                 .await?
                         }
                         Err(error) => {
@@ -1984,10 +2001,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                                 error = %error,
                                 "speculative read was unavailable; executing after commit"
                             );
-                            pipeline.execute_prepared(prepared).await?
+                            pipeline.execute_prepared_deferred(prepared).await?
                         }
                     },
-                    None => pipeline.execute_prepared(prepared).await?,
+                    None => pipeline.execute_prepared_deferred(prepared).await?,
                 }
             }
             crate::tool_pipeline::ToolPreparation::Blocked(blocked) => {
@@ -2012,10 +2029,11 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 } else {
                     session.append(requested)?;
                 }
-                blocked
+                crate::tool_pipeline::ToolPipelineCompletion::blocked(blocked)
             }
         };
 
+        let result = &completion.result;
         if !result.output.ok {
             self.metrics.incr(names::TOOL_FAILURES, 1);
         }
@@ -2025,21 +2043,9 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             output: result.output.value.clone(),
             duration_ms: result.duration_ms,
         })?;
-        if !result.output.ok && result.stage != crate::tool_pipeline::ToolPipelineStage::Execution {
-            self.fire_hook(
-                session_id,
-                HookPoint::PermissionDenied,
-                HookData::Permission {
-                    tool: result.name.clone(),
-                    arguments: result.arguments.clone(),
-                    reason: result.output.value["error"]
-                        .as_str()
-                        .unwrap_or("tool blocked")
-                        .to_string(),
-                },
-            )
-            .await?;
-        }
+        self.finish_pipeline_result(session_id, result).await?;
+        pipeline.post_execution(&completion).await?;
+        let result = completion.result;
         Ok(Observation {
             tool: result.name,
             ok: result.output.ok,
@@ -2687,6 +2693,10 @@ enum VerifyStep {
     /// Verification failed and reflection said to stop retrying.
     GaveUp,
 }
+
+#[cfg(test)]
+#[path = "post_tool_commit_tests.rs"]
+mod post_tool_commit_tests;
 
 #[cfg(test)]
 mod tests {
