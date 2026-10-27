@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-237 | 已修复并验收（2026-10-28，所列Windows本机/正式服务/离线模型范围） | 共享非递归安全策略与父能力位，Ask无交互拒绝；正式专项10/0/0、装配3/0/0，workspace3548/1既有H-306/317忽略；Tauri Rust check/fmt通过，严格lint基线失败保留；见E-H237-01～06，独立提交后回填hash |
 | H-52 | 已修复并验收（2026-10-28，所列Windows本机/vault/OS子进程范围） | 单一锁内读/身份/版本/写事务，草稿/提升/删除/合并共用；knowledge79/0/0、知识服务35/0/0，workspace3539/1既有H-306失败/319 ignored；桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H52-01～07，修复提交`bc046b903548d4f0b481e71988d2cbb99ac3dc52` |
 | H-51 | 已修复并验收（2026-10-27，所列Windows本机/离线模型/vault范围） | 稳定内部ID绑定运行与pending物化，UI选择分离；知识33/0/1既有H-52 ignored，最终workspace3522/1既有H-306失败/320 ignored；独立桌面Rust check/knowledge严格lint/fmt通过，AppCore lint既有阻断；见E-H51-01～13，修复提交`a175a5fb96c4675d25a4bab6c23b7afc6ec12ccc` |
 | H-50 | 已修复并验收（2026-10-27，所列Windows本机离线派发与共享服务范围） | 唯一opaque身份、设备/后端代次、同设备操作锁与派发前失效；移动249/0/7真机ignored；workspace3504/1既有H-306失败/321 ignored、严格lint边界见E-H50-01～09；补强提交`f0ad9e5749e0d53cde9c6731c3993e0cdb847b84` |
@@ -46,7 +47,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **53**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **226（225待修复、1修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **56**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **223（223待修复、0修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -7404,7 +7405,18 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 ### H-237：agent-hook 未继承主运行有效权限，被规则或工作区边界拒绝的读取仍将正文交给 hook 模型
 
-**级别：高（P1，条件性用户权限边界失效）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 与真实文件工具已复现，未修复。必须已启用并命中 agent-hook；不是任意聊天都会触发，也不是整个文件沙箱失效。**
+**级别：高（P1，条件性用户权限边界失效）；状态：已修复并验收（2026-10-28，Windows本机正式服务/真实临时文件/离线模型范围，见E-H237-06）。原显式Read deny失败保留，原工作区外读取的既有工具层修复不重复计功。必须已启用并命中 agent-hook；不是任意聊天都会触发，也不是整个文件沙箱失效。**
+
+#### 2026-10-28 修复与验收（原始步骤按时间保留）
+
+- E-H237-01：cf4f356c 上以独立 Temp 数据/home 根复核原命令并增加 `-j 1 --test-threads=1`，会话97858已终结，101；5 passed/1 failed/0 ignored。失败仍是显式 Read deny 后，父拒绝而 hook 读取真实虚构正文成功；工作区外对照现因文件工具自身有效 access 通过。日志 target/h237-before.log，不提交、不涉及真实用户数据或模型。
+- E-H237-02：沿用现有 HookRegistry/PermissionRules/PathGuard 与 AutoDenyGate，装配基础安全策略共享快照（Arc hook 对象）后再注册主运行扩展 lifecycle hooks；hook 继承父能力位且保持实际 Safe registry 筛选。Ask 无交互拒绝，不递归调用用户/项目/插件回调。实现/新增回归/多来源及完整门禁尚待，进度详见修复台账同名记录；不合并H-234～236或H-238。
+- E-H237-03：候选专项会话35637已终结，10 passed/0 failed/0 ignored，6.73s；含两原探针默认启用、Ask与FullAccess父对照、项目deny/UI allow、Pre/Post事件、另一Safe工具及强制隐藏写调用，真实文件未变且父唯一成功终态。敏感文件对照去掉显式Read deny以独立检验PathGuard，保留原失败证据。新能力位/managed来源/Full-access源工具与不递归测试会话87357在途，完整门禁未运行，不宣称最终验收。
+- E-H237-04：87357已终结，新增组0/3失败，原因是夹具未初始化SettingsService，尚未进入派发；保留target/h237-policy.log，补离线初始化后重验。ConfigOverlay实际按Windows USERPROFILE发现用户配置，DEEPAGENT_HOME不覆盖此路径；后续同时隔离USERPROFILE/HOME/managed目录，不把先前两变量隔离说成完整配置隔离。未修改生产加载器或断言，尚未验收。
+- E-H237-05：完整配置隔离后的补强90950为3 passed/0 failed/0 ignored，1.14s；覆盖实际能力位、Full-access源工具的PathGuard、user/managed优先级、通配扩展不递归。最终会话31536已得fmt与正式专项10/0/0，完整workspace/lint/Tauri仍在途。父session的OfficeSkillGuard技能记账不进入安全投影，避免错误共享上下文凭据；新一次记账断言待最终确认。状态仍修复中，不计新增验收。
+- E-H237-06（最终）：31536与66176均已终结。正式专项10/0/0（5.29s），最终装配补强3/0/0（1.04s）含父session记账一次断言，两原探针默认执行。完整 `cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` 原生101：128 targets、3548 passed/1 failed/317 ignored，唯一仍为未改H-306空creative.video-edit.v1 defaultUserPrompt；AppCore lib1206/0/65、kernel_v2_e2e149/0/80及正式Rust SDK stdio6/0/0通过。fmt与独立Tauri Rust check通过；严格AppCore含依赖lint被旧models/client.rs:355阻断、no-deps严格仍有10项旧告警；非严格all-targets诊断仍因旧mcp_discovery_restore.rs:433 panicking_unwrap失败，非严格lib仅10旧告警退出0。命令全表及日志见[进度台账E-H237-06](system-harness-repair-progress.md)，不称全仓绿色。
+- 实现：HookAssembly一次组装Plan/PermissionRules/Path/Bash及可选安全门禁，主/子共享Arc hook对象；父再注册session技能记账及扩展lifecycle回调，子不递归。HookRuntime继承父能力位，沿用实际Safe registry与统一pipeline，Ask继续由现有AutoDenyGate拒绝，父FullAccess不替子授权。正式wire/真实临时文件证明拒绝前无正文进入子模型；来源优先级、另一Safe工具、强制隐藏写及Full-access源工具/空能力位对照通过。基础策略先于扩展注册，但dispatcher仍并发执行，多个deny的诊断原因可能更早呈现基础策略；不声称deny可阻止扩展被调度。没有新增依赖/存储/协议/command/迁移。
+- 限制：仅Windows本机与离线模型；未跑pnpm build/独立TS SDK/真实UI和供应商/其他OS或OS沙箱，无前端协议变更。不是所有Safe/MCP工具与来源/事件组合的完整动态证明；规则仍为run-scoped快照。H-234状态、H-235成本、H-236取消、H-238读取凭据继续独立，不把Safe分类等于绝对只读，也不声称OS沙箱逃逸修复。新增验收1项，当前56验收/18历史跳过/7归并/2撤销/223待修/0修复中、223有效未关闭；下项优先复核P1 H-139副作用后的结果提交。200–400有效小时仍为原未逐项校准粗估，等待设备/依赖/构建/环境另计。修复提交在独立正常提交后回填本节，不推送或建PR；历史失败不改写。
 
 #### 首次即时 Evidence（2026-10-24）
 

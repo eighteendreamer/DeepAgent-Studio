@@ -1724,6 +1724,8 @@ mod tests {
             reasoning_effort: ReasoningEffort::None,
             mcp,
             agent_registry: Arc::new(ToolRegistry::new()),
+            agent_policy: Arc::new(deepagent_hooks::HookRegistry::new()),
+            agent_permissions: PermissionSet::empty(),
             events: Arc::downgrade(&sink),
         }
     }

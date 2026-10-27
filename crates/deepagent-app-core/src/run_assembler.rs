@@ -732,6 +732,7 @@ impl<'a> RunAssembler<'a> {
             reasoning_effort,
             mcp: hook_mcp_registry,
             registry: &registry,
+            permissions: granted.clone(),
             plan: plan.clone(),
             office_skill_guard,
             access,

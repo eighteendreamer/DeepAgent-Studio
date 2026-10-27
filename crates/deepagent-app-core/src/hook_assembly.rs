@@ -8,11 +8,11 @@ use deepagent_builtins::WorkspaceRoot;
 use deepagent_core::error::Result;
 use deepagent_hooks::{
     DecisionSource, Hook, HookActionExecutor, HookCommandRunner, HookContext, HookData,
-    HookDefinitions, HookOutcome, HookPoint, HookRegistry, PermissionRulesHook,
+    HookDefinitions, HookOutcome, HookPoint, HookRegistry, PermissionRules, PermissionRulesHook,
 };
 use deepagent_models::{ModelClient, ReasoningEffort};
 use deepagent_runtime::RuntimeEventSink;
-use deepagent_tools::ToolRegistry;
+use deepagent_tools::{PermissionSet, ToolRegistry};
 
 use crate::chat_service::InvokedSkillMap;
 use crate::hook_runtime::{build_hook_agent_registry, AppHookActionExecutor, ObservableHookRunner};
@@ -33,6 +33,7 @@ pub(crate) struct HookAssemblyRequest<'a> {
     pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) mcp: Option<Arc<deepagent_mcp::McpRegistry>>,
     pub(crate) registry: &'a ToolRegistry,
+    pub(crate) permissions: PermissionSet,
     pub(crate) plan: deepagent_builtins::PlanMode,
     pub(crate) office_skill_guard: Option<Arc<dyn Hook>>,
     pub(crate) access: deepagent_builtins::FsAccess,
@@ -111,31 +112,27 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
     let ui_rules = request.settings.permission_rules().unwrap_or_default();
     let rules = request.run_config.merged_permission_rules(ui_rules)?;
 
-    let mut hooks = HookRegistry::new();
+    // One policy assembly, shared hook objects. Capture it BEFORE adding any
+    // lifecycle extensions: installing those in an agent-hook would recurse.
+    let policy_hooks = Arc::new(assemble_run_policy_hooks(&request, rules));
+    let mut hooks = policy_hooks.as_ref().clone();
     let hook_action_executor: Arc<dyn HookActionExecutor> = Arc::new(AppHookActionExecutor {
         client: request.client.clone(),
         model: request.model.clone(),
         reasoning_effort: request.reasoning_effort,
         mcp: request.mcp,
         agent_registry: Arc::new(build_hook_agent_registry(request.registry)?),
+        agent_policy: policy_hooks,
+        agent_permissions: request.permissions,
         events: Arc::downgrade(&request.sink),
     });
 
-    hooks.register(
-        HookPoint::BeforeToolUse,
-        Arc::new(deepagent_builtins::PlanModeHook::new(request.plan)),
-    );
+    // Skill-use bookkeeping belongs to the parent session, not its isolated
+    // hook conversation. It is not an authorization policy to clone.
     if let Some(office_skill_guard) = request.office_skill_guard {
         hooks.register(HookPoint::BeforeToolUse, office_skill_guard.clone());
         hooks.register(HookPoint::AfterToolUse, office_skill_guard);
     }
-    if !rules.is_empty() {
-        hooks.register(
-            HookPoint::BeforeToolUse,
-            Arc::new(PermissionRulesHook::new(rules)),
-        );
-    }
-
     register_user_hooks(
         &mut hooks,
         request.settings,
@@ -186,10 +183,33 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         &request.runtime_environment,
     );
 
+    Ok(HookAssemblyResult {
+        hooks: Arc::new(hooks),
+    })
+}
+
+/// The run's policy-only projection. Both runtimes execute these same guards;
+/// only the parent adds extension callbacks. No policy is reconstructed from
+/// hook tool schemas or from a second read of settings inside the child.
+fn assemble_run_policy_hooks(
+    request: &HookAssemblyRequest<'_>,
+    rules: PermissionRules,
+) -> HookRegistry {
+    let mut hooks = HookRegistry::new();
+    hooks.register(
+        HookPoint::BeforeToolUse,
+        Arc::new(deepagent_builtins::PlanModeHook::new(request.plan.clone())),
+    );
+    if !rules.is_empty() {
+        hooks.register(
+            HookPoint::BeforeToolUse,
+            Arc::new(PermissionRulesHook::new(rules)),
+        );
+    }
     deepagent_builtins::register_guard_hooks_with_bash_full_access(
         &mut hooks,
         WorkspaceRoot::new(request.root.to_path_buf()).with_access(request.access),
-        request.bash_allow,
+        request.bash_allow.clone(),
         request.bash_full_access,
     );
 
@@ -236,9 +256,7 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         );
     }
 
-    Ok(HookAssemblyResult {
-        hooks: Arc::new(hooks),
-    })
+    hooks
 }
 
 fn register_user_hooks(
@@ -478,6 +496,10 @@ fn office_skill_for_path(path: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+#[path = "hook_policy_tests.rs"]
+mod policy_tests;
 
 #[cfg(test)]
 mod project_hook_tests {

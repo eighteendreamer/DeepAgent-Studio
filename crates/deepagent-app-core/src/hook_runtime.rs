@@ -69,6 +69,8 @@ pub async fn test_hook_action(
             reasoning_effort,
             mcp,
             agent_registry: Arc::new(ToolRegistry::new()),
+            agent_policy: Arc::new(HookRegistry::new()),
+            agent_permissions: PermissionSet::empty(),
             events: Arc::downgrade(&sink),
         }),
         None => Arc::new(UnavailableHookHost),
@@ -228,6 +230,9 @@ pub(crate) struct AppHookActionExecutor {
     pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) mcp: Option<Arc<deepagent_mcp::McpRegistry>>,
     pub(crate) agent_registry: Arc<ToolRegistry>,
+    /// Effective parent policy without user/plugin lifecycle callbacks.
+    pub(crate) agent_policy: Arc<HookRegistry>,
+    pub(crate) agent_permissions: PermissionSet,
     pub(crate) events: std::sync::Weak<dyn RuntimeEventSink>,
 }
 
@@ -314,7 +319,7 @@ impl AppHookActionExecutor {
             "{}\nYou are the isolated '{profile}' hook agent. Use only the supplied read-only tools. Never modify files, run commands, or create another agent.",
             model_hook_system_prompt(true)
         );
-        let permissions = PermissionSet::developer();
+        let permissions = self.agent_permissions.clone();
         let tools = self
             .agent_registry
             .visible_to(&permissions)
@@ -346,7 +351,11 @@ impl AppHookActionExecutor {
             ..RuntimeConfig::default()
         };
         let engine: RuntimeEngine<'_, SystemClock> =
-            RuntimeEngine::new(&self.agent_registry, Default::default(), config);
+            RuntimeEngine::new(&self.agent_registry, Default::default(), config)
+                .with_hooks(&self.agent_policy);
+        // Agent-hooks have no interactive approver. Keep RuntimeEngine's
+        // AutoDenyGate: an inherited Ask must never become implicit consent,
+        // even when the parent's approval reviewer is FullAccess.
         match engine.run(&mut session, task, &mut agent).await? {
             deepagent_runtime::RunOutcome::Completed(output) => parse_model_hook_decision(&output),
             deepagent_runtime::RunOutcome::Cancelled => {
