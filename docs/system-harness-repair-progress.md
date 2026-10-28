@@ -20,7 +20,7 @@
 
 ## H-287 本轮即时记录（2026-10-28）
 
-**当前状态：已修复并验收（2026-10-28，本机 Windows/离线合成 fixture/临时 SQLite 与正式生产消费者范围）。** 范围为已有目标DACL、写前staging和现有检查点恢复；不治理owner/SACL或扩展为所有平台元数据。
+**当前状态：已修复并验收（2026-10-28，本机 Windows/离线合成 fixture/临时 SQLite 与正式生产消费者范围）；修复提交`f2efc1b5`。** 范围为已有目标DACL、写前staging和现有检查点恢复；不治理owner/SACL或扩展为所有平台元数据。
 
 E-H287-01（本轮原探针复核，2026-10-28）：HEAD `3d8d0a68`、tracked起始干净。隔离临时data/home/profile/managed、清除继承数据库路径及供应商key，只操作tempfile合成文件；`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e file_metadata:: --offline -j 2 -- --include-ignored --nocapture --test-threads=1`原生101、26.26秒，**1 passed / 1 failed / 0 ignored**（`target/h287-before-20261028*`）。三个正式内容工具均完成，protected true→false、规则1→16、policy_equal=false、重开恢复policy_equal=false；只读/默认继承对照正常。只输出布尔与规则数，不输出SID/SDDL，不读取或修改原五类用户未跟踪项。
 
@@ -65,6 +65,8 @@ E-H287-14（最终门禁、验收与兼容性边界）：在E-13固定的最新1
 最终runtime自身no-deps严格Clippy原生101、10.30秒，仅未修改`model_agent.rs:282`既有clone_on_copy；新增恢复测试lint已消除（`target/h287-runtime-strict-lint-final-20261028*`）。persistence/builtins严格lint与Tauri lib check的生产源码未变，E-10/E-12通过结果仍适用；全workspace严格lint依旧有E-11所列models/client.rs既有阻断，未屏蔽任何lint。格式/diff检查通过，最新10份SHA256仍与E-13快照一致。原protected正式探针已移除ignore；正常继承/只读、三工具Allow/Deny、首次创建、正文前空staging、策略变化拒绝、旧/坏元数据拒绝、目录根发布及历史失败DACL补偿都有真实回归，不只依赖编译或零测试绿色。
 
 据上述原反例、完整相关组及正式生产消费者证据，H-287在Windows本机/离线合成fixture/临时SQLite范围内已修复并验收，新增验收1，累计68验收/18历史跳过/7归并/2撤销/211有效待修，0修复中。保留旧Windows存在项检查点缺DACL元数据时明确拒绝恢复的兼容变化，无SQL迁移；不承诺owner/SACL、其他OS、真实数据、跨卷/断电、非协作外部writer排他或全部ACL组合。未改前端/DTO，未执行pnpm build/完整桌面窗口或截图，不把Tauri check当UI验收。修复代码/测试与两文档仅本项内容一并独立提交，取得ID后另做文档回填，不amend、不推送；下一项拟优先复核H-288的计划模式恢复与写入限制。总剩余200–400有效小时仍是未经逐项校准的历史风险粗估，编译/依赖/设备等待另计，不能机械扣减或承诺日期。
+
+E-H287-15（独立提交与收尾回执）：修复、默认回归测试及当时两份文档已一并提交为`f2efc1b5659589aeff06ea357babf8eb8d933a7b`（`【fix】保留文件替换与恢复的Windows DACL`），仅12个本项相关文件。提交前10份源码/测试/manifest的SHA256与E-13最新门禁版本一致，index逐文件与工作树内容一致；14项证据在两文档逐项相同，306行编号唯一且其他305行与前一HEAD逐字相同。本次仅回填已存在的真实修复hash及此收尾记录，另做文档提交，不amend或扩大E-14验收范围。target中的失败/候选/最终证据、原五类用户未跟踪项和真实用户数据均未纳入提交；未推送、建PR或执行生产数据迁移。累计68本机范围验收/18历史跳过/7归并/2撤销/211有效待修，整体目标仍active，下一独立项拟复核H-288的计划模式恢复和写入限制；200–400有效小时仍是未逐项校准粗估，等待另计。
 
 ## H-163 本轮即时记录（2026-10-28）
 
@@ -2178,7 +2180,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-284：同一 Harness thread 的第二个 `turn/start` 被确认成独立 started，实际输入租约随后取消第一个运行](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H284-01原失败、03～05候选/身份失败及07中断证据保留；非重复/归并，限06～08本机范围 | 原临界区、准入前按SessionId等价身份拒绝忙态start为-32005；沿原worker生命周期，无第二队列/store；显式steer不变 | 默认原探针+7回归通过；CLI120/0/22、协议12/0/0、SDK lib5/0/12+OS6/0/0+doc1/0/0、TS7/0/0及fmt/build通过；完整workspace3608/1既有H-306/312 ignored，严格lint旧基线阻断见E-H284-08 | `844c7ea723d352bd04bb3b9e681232c648ab6f5e` | 仅同一ServerState；非跨进程排他或跨终态幂等；其他OS/UI/供应商/强杀/压力未验；H-130/H-92独立；下一P1 H-175；200–400有效小时历史未校准粗估，等待另计 |
 | [H-285：Harness 接受不存在的分叉锚点，超出有符号范围后恢复旧文件却复制完整成功历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-286：`move_path` 覆盖目标前先递归删除，移到源的祖先目录时失败却删除源和无关文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原正式探针修复前 1 passed / 1 failed；修复后默认 2 passed | 原生 no-replace 发布；旧目标 staging/失败恢复；失败恢复保留 recovery_path | 详见本文件 H-286 命令表：builtins 292 passed/1 ignored，AppCore 正式链 102 passed/92 ignored；全量/lint 限制保留 | `56b9e7b9` | Windows 本机范围验收；其他 OS、真实跨卷/断电/UI 未验，不等于全局通过；本项本地剩余工时 0，环境验收另计 |
-| [H-287：Windows 内容原子替换丢失目标文件 DACL，成功编辑及检查点恢复均未保留原访问控制策略](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H287-01～14保留原失败及候选反例；仅Windows本机临时数据范围 | 共享版本化DACL快照；写前保护；现有检查点树复制/根发布/继承核验与失败补偿，不另造恢复中心 | 最终默认Kernel161/0/78、checkpoint19/0/1；builtins362/0/4、persistence92/0/0、runtime332/0/9；checkpoint显式20/0/0；persistence/builtins严格lint、Tauri check通过；全仓3680/1/308仅既有H-306失败，严格lint既有clone阻断，见E-14 | 已验收，修复ID待提交后回填 | 旧Windows检查点缺DACL元数据明确拒绝存在项恢复；无SQL迁移，owner/SACL/其他OS/断电未验；211有效待修，总200–400未校准有效小时，等待另计 |
+| [H-287：Windows 内容原子替换丢失目标文件 DACL，成功编辑及检查点恢复均未保留原访问控制策略](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H287-01～15保留原失败及候选反例；仅Windows本机临时数据范围 | 共享版本化DACL快照；写前保护；现有检查点树复制/根发布/继承核验与失败补偿，不另造恢复中心 | 最终默认Kernel161/0/78、checkpoint19/0/1；builtins362/0/4、persistence92/0/0、runtime332/0/9；checkpoint显式20/0/0；persistence/builtins严格lint、Tauri check通过；全仓3680/1/308仅既有H-306失败，严格lint既有clone阻断，见E-14 | `f2efc1b5659589aeff06ea357babf8eb8d933a7b` | 旧Windows检查点缺DACL元数据明确拒绝存在项恢复；无SQL迁移，owner/SACL/其他OS/断电未验；211有效待修，总200–400未校准有效小时，等待另计 |
 | [H-288：计划模式只存在服务内存，恢复同一会话后静默失去写入限制](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-289：CodeGraph 定义文件变更后不会重新连接未修改 caller 的调用边](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-290：画布供应商保存先提交配置、后写密钥，密钥持久化失败后发布新配置与旧凭据的混合身份](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
