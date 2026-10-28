@@ -147,6 +147,7 @@ pub(crate) struct RunAssembler<'a> {
     pub(crate) knowledge: Option<Arc<KnowledgeService>>,
     pub(crate) cron: &'a Option<Arc<crate::CronService>>,
     pub(crate) canvas_model: &'a Option<Arc<crate::canvas_model_gateway::CanvasModelGateway>>,
+    pub(crate) workflow_http: &'a Arc<dyn deepagent_builtins::http_request::HttpRequestClient>,
     pub(crate) skills: &'a Option<Arc<std::sync::Mutex<SkillsService>>>,
     pub(crate) mcp: &'a Option<Arc<McpService>>,
     pub(crate) plugins: &'a Option<Arc<PluginService>>,
@@ -1400,6 +1401,7 @@ impl<'a> RunAssembler<'a> {
             crate::trust_service::TrustService::new(self.db.clone()).is_trusted(&root);
         let run_config = RunConfigOverlay::load(&root, serde_json::json!({}));
         let RunEnvironment {
+            config: workflow_config,
             policy,
             sandbox_mode,
             local_execution_mode,
@@ -1509,7 +1511,31 @@ impl<'a> RunAssembler<'a> {
             &session_id,
         );
         tool_request.project = session_project.clone();
-        let (tool_registry, todo_store) = build_base_tool_registry(tool_request)?;
+        let (mut tool_registry, todo_store) = build_base_tool_registry(tool_request)?;
+        // A host broker is not an escape hatch from OS isolation, including the
+        // legacy executor path that predates the backend registry. Use the
+        // resolved execution mode, not an independent permission-preset mapping.
+        let http_enabled = match sandbox_backend {
+            Some(SandboxBackendKind::Direct) => true,
+            Some(_) => false,
+            None => {
+                legacy_sandboxie_executor.is_none()
+                    || matches!(
+                        local_execution_mode,
+                        crate::settings::LocalExecutionMode::Direct
+                    )
+            }
+        };
+        tool_registry.register(Arc::new(
+            deepagent_builtins::http_request::HttpRequestTool::new(
+                self.workflow_http.clone(),
+                http_enabled,
+            ),
+        ))?;
+        append_runtime_log(self.runtime_logs, NewRuntimeLogEntry::info("network", "workflow_http_broker_bound")
+            .with_run_id(&run_id)
+            .with_source("deepagent-app-core::run_assembler")
+            .with_data(serde_json::json!({"enabled":http_enabled,"sandbox_backend":sandbox_backend.map(|backend| backend.label()),"legacy_sandboxie":legacy_sandboxie_executor.is_some(),"local_execution_mode":format!("{local_execution_mode:?}"),"policy":"public_pinned_same_origin"})));
         let tool_registry = std::sync::Arc::new(tool_registry);
 
         let mut agent = deepagent_runtime::workflow::WorkflowAgent::new(
@@ -1549,9 +1575,22 @@ impl<'a> RunAssembler<'a> {
 
         let channel_gate =
             ChannelApprovalGate::new(self.coordinator.pending(), Arc::new(on_approval));
-        let gate: Arc<dyn deepagent_runtime::ApprovalGate> = Arc::new(channel_gate);
-        let hooks = Arc::new(deepagent_hooks::HookRegistry::new());
+        let gate: Arc<dyn deepagent_runtime::ApprovalGate> =
+            Arc::new(PolicyGate::new(policy, Arc::new(channel_gate)));
+        let mut hooks = deepagent_hooks::HookRegistry::new();
         let plan = self.plan_mode_for_session(&session_id);
+        hooks.register(
+            deepagent_hooks::HookPoint::BeforeToolUse,
+            Arc::new(deepagent_builtins::PlanModeHook::new(plan.clone())),
+        );
+        // Use the existing source merge and rule evaluator. A workflow URL is
+        // input, not a grant that may bypass user/project/managed deny rules.
+        let rules = workflow_config.merged_permission_rules(self.settings.permission_rules()?)?;
+        hooks.register(
+            deepagent_hooks::HookPoint::BeforeToolUse,
+            Arc::new(deepagent_hooks::PermissionRulesHook::new(rules)),
+        );
+        let hooks = Arc::new(hooks);
         let kernel_runtime = build_kernel_runtime_config(KernelRuntimeConfigRequest {
             db: self.db.clone(),
             run_id: &run_id,
@@ -1572,7 +1611,10 @@ impl<'a> RunAssembler<'a> {
             },
             nested_instructions: None,
         })?;
-        let config = kernel_runtime.config;
+        let mut config = kernel_runtime.config;
+        // Nodes need the original bounded HTTP value, not the model preview or
+        // injected reminders. Persistence/events retain the normal result policy.
+        config.retain_raw_tool_output = true;
 
         let verification_commands = kernel_runtime.verification_commands;
 

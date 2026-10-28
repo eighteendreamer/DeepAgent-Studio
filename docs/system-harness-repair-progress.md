@@ -2,21 +2,65 @@
 
 ## 当前状态与计数口径（2026-10-28）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十二项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十三项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 62 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-237、H-284、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 63 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-175、H-237、H-284、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 无 |
-| 待修复 | 217 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 无；H-175已按下列范围验收 |
+| 待修复 | 216 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **217（217待修复、0修复中）**；不提供完成率。六十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **216（216待修复、0修复中）**；不提供完成率。六十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-175 本轮即时记录（2026-10-28）
+
+**当前状态：已修复并验收（2026-10-28，仅E-H175-09所列Windows本机、离线模型/注入broker/临时TCP与SQLite及前端受控消费方范围；修复提交待创建后回填）。** 只处理工作流定义直接驱动的 HTTP 节点；不合并或关闭 H-165 provider artifact 下载、H-249 音频输入、H-164 Canvas 取消等独立问题。E-H175-01～08保留各阶段原始失败和未验收状态，最终以E-H175-09为准。
+
+E-H175-01（原探针真实复现）：HEAD `e9e6e445`，tracked 初始干净，原五类用户未跟踪项未读取/修改/暂存。隔离 Temp data/home/profile/managed，清除继承的数据库路径和供应商 key，仅连接临时 loopback fixture。`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_http_node_does_not_bypass_network_approval --offline -j 1 -- --ignored --exact --nocapture` 原生 101，0 passed/1 failed/0 ignored，整步 96.60s；实际 requests=1、approvals=0、run_terminal=succeeded。原 handle 28760 已收取并确认结束，证据 `target/h175-before-probe.log`、`target/h175-before-probe-result.json` 保留。当前 registry 已因其他修复接入基础工具，不能沿用原审计“空 registry”描述；HTTP 仍在 WorkflowAgent 内裸请求，绕过已装配的 Kernel 工具管线。原探针的无条件 accept 等待需改为有界收尾，不能因修复后零请求挂住。
+
+E-H175-02（候选边界与首次失败，未验收）：HTTP 节点改为正式 `AgentDecision::CallTool`，typed `http_request` 注册到既有 ToolRegistry；使用 Network capability、高风险审批、有效规则与计划模式 hook、运行取消和原 action/run_events 持久化。节点不再持有 reqwest；共享 raw-output opt-in 同步串行/并行 observation，节点获取有界原始 JSON，模型预览/持久化仍用既有预算与脱敏。公网 broker 为本地设计，参考本地 deepseek-harness web-fetch-http、锁定 reqwest 0.12.28 源码和 IANA special registries；全 DNS 校验/逐跳 pin、禁代理及隐式重试、只同源 GET/HEAD redirect、请求/响应预算与总 deadline、未知结果不重放。隔离 backend 未提供 broker 时拒绝 host fallback。DNS64 前缀与 embedded IPv4 依据 [RFC 7050](https://www.rfc-editor.org/rfc/rfc7050.html) 和 [RFC 6052](https://www.rfc-editor.org/rfc/rfc6052.html)；这是受控宿主策略，不声称 OS 网络隔离或任意网络拓扑保护。未新增依赖、配置或数据库迁移。
+
+早期 `cargo check -p deepagent-app-core --tests --offline -j 1` 原生0、85.26s，仅原有 BuildFixture::cold warning；首批 broker 专项8/0/0、179.11s。handle80322现已收取：`cargo test -p deepagent-app-core --test workflow_audit http --offline -j 1 -- --nocapture --test-threads=1` 原生101、236.24s、2/2/0，审批断言误写事件名和串行 observation 漏接 raw_output 分别导致失败。已按真实 `approval.requested` 契约和单一 pipeline 修正；同命令 candidate2 原生0、114.36s、4/0/0，原探针默认执行，私网零请求/零审批且节点和run失败。失败日志 `target/h175-candidate-workflow-http*` 与修正后 `candidate2-workflow-http*` 均保留，不改写首次结果。
+
+E-H175-03（正式 Canvas 消费方补齐，未验收）：全局核对当前 CLI/Rust SDK/TS SDK/Harness 协议没有 workflow start API；实际入口为 Tauri `start_workflow`。其已发送 `chat://approval`，但 Canvas executor 原来未订阅，普通聊天的 run 过滤也不能代收，故仅后端审批通过不足以验收。沿原 WorkflowRunOwner 添加 ACK 前监听/缓冲、run_id 隔离、同 owner 清理；Canvas store 只作 UI 投影，复用既有 ApprovalDialog、resolveApproval 与 shadcn Dialog/Button，不建第二审批中心。重复点击只发一次；迟到点击/响应/事件不能影响替换后的 owner；false/异常保持可见诊断，取消仍走原 cancel_run，不扩大 H-164。审批监听未完成时立即观察 completion rejection，避免清理期间的未处理拒绝；不是新取消链。
+
+`node --test scripts/check-workflow.test.cjs`（apps/desktop）原生0、82 passed/0 failed/0 skipped，新增4组受控真实 executor/store 回归，含 ACK 前审批、外run、去重/队列、拒绝、重试、提交中禁重、完成/取消/替换和迟到 listener。`pnpm build` 原生0、134.57s，包含上述默认测试、现有前端回归、tsc 和 Vite；保留既有体积/浏览器 externalization 警告，日志 `target/h175-canvas-build-candidate*`。UI视觉仍在隔离浏览器夹具核验，不冒充真实Tauri/供应商验收。
+
+E-H175-04（新增正式边界回归及夹具纠正，完整门禁中）：broker专项扩大至11项，`cargo test -p deepagent-app-core http_runtime::tests:: --lib --offline -j 1 -- --nocapture --test-threads=1` 原生0、146.01s、11/0/0，新增六种DNS64前缀私网/公网对照、真实部分响应读取取消/deadline和正式ChatService审批→实际临时TCP→文件SQLite重开/recovery/cursor/action/approval不重放。合成公网DNS在测试编译专有字段映射到loopback，生产无该字段，未访问公网或真实内网。
+
+新workflow补强首次 candidate3 原生101、33.53s、5/3/0：两项通过另一 SettingsService 实例写DB却使用原实例cache，未真正变更运行profile；一项错误假定取消后迟答返回false，真实统一控制层返回 cancelled→approved 的 IllegalTransition。只修夹具，使用同一配置实例并断言非法迁移、审批记录不变与零请求；未改控制层契约、降低权限断言或增加特判。candidate4同正式命令原生0、35.79s、8/0/0，覆盖FullAccess正常、deny优先于FullAccess/allow/ask、审批等待取消、隔离backend无broker拒绝、显式Authorization真实传递且durable事件仍脱敏；原探针零请求采用有界drain收尾，保留正常失败证据。日志 `target/h175-candidate3-workflow-http*` 与 `candidate4-workflow-http*` 均保留。
+
+当前已冻结本项代码SHA-256，handle43830运行最终相关全组、workspace、严格lint、独立Tauri Rust与fmt，逐命令结果保留 `target/h175-final-*`，未取得全部终态前不验收/提交。累计仍62验收/18历史跳过/7归并/2撤销/216待修/1修复中，217有效未关闭；原200–400有效工作小时为未逐项校准历史粗估，编译、设备、依赖和环境等待另计，不机械扣减或承诺日期。
+
+E-H175-05（视觉核验与UI最终版本，Rust完整门禁仍执行中）：隔离浏览器夹具只渲染实际 WorkflowApprovalDialog/ApprovalDialog、Canvas store 和主题，不启动真实Tauri/宿主服务、不访问用户配置/数据或供应商；不把静态投影当作真实HTTP审批交互。夹具首次JSX未转译、随后启动cwd使Tailwind未生效，只修夹具并保留早期白屏截图；没有把这些错误当成产品验证通过。正确加载后发现标题/描述横向挤压，按既有GlobalModalHeader结构分组；同时核对GlobalModal会先完成关闭动画，单靠受控open无法防止Escape/遮罩隐藏审批，因此shadcn DialogContent仅转发现有closeOnBackdrop/closeOnEscape参数（默认不变），本审批明确关闭两条隐式dismiss路径，保留显式“取消工作流”走原内核。
+
+当前实际浏览器核验：审批工具/风险/URL/method/body可见，提交中批准/拒绝均disabled且状态文字可见；错误态显示红色可重试诊断，Escape及遮罩点击后审批仍可见。最终截图 `target/h175-approval-pending-final.png`、`target/h175-approval-error-final.png`；临时标签页和本轮preview进程已清理。此后 `pnpm build` 原生0、167.85s，全部默认前端回归（workflow82/0/0）、tsc/Vite通过，日志 `target/h175-canvas-build-final*`；TS SDK `pnpm --dir packages/sdk test`原生0、7/0/0（含tsc），只作既有协议消费方回归，不伪造workflow SDK API。
+
+最终Rust runner启动时UI尚在视觉核验，之后只变更新WorkflowApprovalDialog布局/隐式关闭控制及shadcn透传；未改冻结Rust代码。不能用首份全文件快照给后续UI背书，收尾必须核对Rust哈希零差异、新增shadcn文件及UI独立最终快照 `target/h175-final-ui-source-hashes.json`；现UI7文件复核零差异。Rust正式broker11/0/0、workflowHTTP8/0/0、builtinsHTTP2/0/0、runtime全组333/0/11（lib325/0/9，保留既有ignored）、workflow全组17/0/38已原生结束，完整workspace/严格lint/Tauri仍待真实终态，handle43830保持续读，不因观察超时重启。本项仍修复中，未新增验收或commit，62验收和217有效未关闭不变。
+
+E-H175-06（前轮门禁真实终态，未验收）：原handle43830已结束，未因观察超时重启。逐命令原生结果：broker11/0/0、workflowHTTP8/0/0、builtinsHTTP2/0/0、runtime333/0/11、workflow全组17/0/38；`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`原生101、1295.64s，130 targets合计3629 passed/1 failed/311 ignored，唯一失败仍为H-306的`canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`。独立Tauri Rust check原生0、53.44s，fmt原生0、3.93s。严格workspace lint原生101，停在未改models/client.rs:355的clone_on_copy；三crate targets lint原生101，停在未改runtime/model_agent.rs:282的clone_on_copy。之后原handle68298也已收取终态：builtins严格lint原生0、30.21s；AppCore严格lint原生101、45.55s，8处context_runtime.rs的Usage clone_on_copy及plugin_preparation.rs的type_complexity、run_assembler.rs既有base_registry_request参数数目。已对照HEAD原实现，不在H-175顺手治理这些基线阻断，也不称全仓lint通过。证据`target/h175-final-*`保留。
+
+前轮runner末尾以源码快照差异拒绝了全文件冻结结论：13个Rust/manifest/lock文件零变化，仅视觉核验期间的新WorkflowApprovalDialog变动；shadcn透传又晚于初始快照。最终UI7文件独立快照复核零差异，且已另跑最终pnpm build；不能用初始全文件快照给最终UI背书。下述legacy补强修改了Rust源码，以上Rust结果只作补强前证据，不能替代新版本相关与完整门禁。
+
+E-H175-07（legacy隔离残余实测与同根因补强中，未验收）：源码复核发现无backend registry时，`with_sandboxie_executor`配合legacy命令executor仍沿已解析的SandboxiePreferred选隔离，但候选HTTP只检查可空backend枚举，将None直接当成允许host broker。新增正式ChatService反例，仅构造SandboxieService/Executor且不探测安装、不初始化或启动OS进程，注入离线RecordingHttp并批准审批。`cargo test -p deepagent-app-core --test workflow_audit http::workflow_http_legacy_sandboxie_without_a_broker_never_falls_back_to_host --offline -j 1 -- --exact --nocapture --test-threads=1`原生101、67.83s、0/1/0，实际requests=1、run_terminal=succeeded，证据`target/h175-legacy-before*`保留。现沿同一RunEnvironment已解析backend/local_execution_mode绑定HTTP能力：显式Direct可用、显式隔离拒绝、legacy Sandboxie非Direct拒绝；不新增第二套profile映射。新增显式Direct和FullAccess-unused-legacy正常对照，候选专项仍须真实终态，之后重新冻结并运行完整门禁；不关闭其他H编号、累计计数不变。
+
+E-H175-08（补强专项通过，新版本完整门禁中）：legacy修正后的第一轮正式HTTP10/0/0、原生0、108.67s（`target/h175-legacy-candidate*`），反例现requests=0、run失败；显式Direct和FullAccess正常对照均一次派发。另补可用registry三backend对照（仅Direct允许，FullAccess不能放宽显式隔离）及generic-tool别名不能绕过high-risk门禁，两者均不启动OS命令。首次新夹具编译原生101、3.88s，原因是泛型IntoIterator不自动将Arc<FixtureBackend>提升为Arc<dyn SandboxBackend>；对照真实registry签名显式转为trait object，只改夹具，不修改契约或降低断言。修正后正式HTTP12/0/0、原生0、37.85s，证据`target/h175-boundary-candidate*`、`boundary-candidate2*`均保留。
+
+此后冻结20个本项源码/manifest/lock文件，`target/h175-verified-check.ps1`沿原隔离runner逐命令执行专项、runtime/workflow全组、完整workspace、严格lint、额外普通workflow lint诊断与独立Tauri Rust check，原handle13192持续收取，不因观察超时重启。普通lint仅为定位新增诊断，不替代严格lint门禁。UI7文件与最终build前快照再次核对零差异；不重跑供应商/真实Tauri或其他OS，也不把隔离browser视觉夹具当作这些验收。本项仍未验收，62验收/217有效未关闭不变。
+
+E-H175-09（补强后冻结版本最终门禁、范围验收与限制）：原handle13192已真实结束，20个源码/manifest/lock的前后SHA-256及收尾重算均零差异，UI7文件也与最终build前独立快照一致。`cargo test -p deepagent-app-core http_runtime::tests:: --lib --offline -j 1 -- --nocapture --test-threads=1`原生0、141.04s、11/0/0；`cargo test -p deepagent-app-core --test workflow_audit http --offline -j 1 -- --nocapture --test-threads=1`原生0、3.31s、12/0/0，含原探针和legacy真实反例的默认回归；`cargo test -p deepagent-builtins http_request::tests:: --lib --offline -j 1 -- --nocapture --test-threads=1`原生0、0.74s、2/0/0；runtime全组原生0、95.56s、333/0/11；workflow_audit全组原生0、4.78s、21/0/38。没有将本项探针留为ignored，38项其他独立审计探针保持原状，不冒称已通过。
+
+`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1`原生101、1436.36s，130 targets合计3633 passed/1 failed/311 ignored；唯一失败仍是H-306空`creative.video-edit.v1.defaultUserPrompt`，Kernel E2E160/0/79、AppCore lib1221/0/65、runtime lib325/0/9、workflow21/0/38。完整workspace不记通过。`cargo fmt --all -- --check`原生0、4.42s；独立Tauri `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 1`原生0、14.88s；builtins all-targets/all-features/no-deps严格clippy原生0、14.65s。workspace严格clippy原生101、15.17s，仍为models/client.rs:355的既有clone_on_copy；三crate与AppCore单独严格lint分别原生101、32.16s/26.92s，均在AppCore既有8处Usage clone、plugin_preparation类型复杂度及原base_registry_request参数数目处停止。前轮runtime旧阻断仍保留，不宣称本次独立严格runtime已绿。额外`cargo clippy -p deepagent-app-core --test workflow_audit --no-deps --offline -j 1`原生0、40.77s，仅10处既有lib warning和3处既有workflow/media测试warning；已git show HEAD逐一核对，未屏蔽告警或顺手修改，不以此替代严格lint。
+
+正式生产/消费方范围：HTTP节点通过单一Kernel工具管线继承Network capability、高风险审批、有效deny/ask规则、计划模式、取消及durable action/run_events；公网broker的地址/DNS64/redirect pin与预算、deadline、不重放由临时TCP及正式ChatService→文件SQLite重开回归验证。三backend/legacy与Direct对照不启动OS进程；泛型tool别名保留既有high-risk拒绝语义。Canvas复用现有Tauri审批事件、owner和resolveApproval，前端82/0/0及最终pnpm build原生0（167.85s），实际组件的隔离浏览器视觉截图与TS SDK7/0/0证据沿用最终源码哈希；没有workflow SDK API，SDK测试只算既有协议回归。真实Tauri端到端、供应商、真实Sandboxie/Windows Sandbox设备与其他OS未执行；不能由合成视觉/注入能力推断这些范围通过。
+
+兼容性与安全：不改Tauri/机器协议DTO、session/run schema或模型供应商，不增依赖、配置项或数据库迁移；新增可信宿主HTTP client seam，不允许workflow JSON配置broker。保留body/status/headers输出，但私网/特殊目标、跨源redirect、隔离backend无broker（含legacy）和超预算请求现在明确失败，未知结果不自动重放，这是有意收紧而非兼容放行；公网策略为本地设计，不声称OS网络隔离或任意网络拓扑保护。原五类用户未跟踪项未读取/修改/暂存。所有原生结果及前后快照在`target/h175-verified-*`，全量聚合在`target/h175-verified-targets.json`；原失败不覆盖。本项新增验收1项，累计63验收/18历史跳过/7归并/2撤销/216待修/0修复中，216有效未关闭。下一项准备H-165供应商artifact第二跳授权，不在本项合并；剩余200–400有效工作小时仍为未逐项校准历史粗估，设备/依赖/环境等待另计。
 
 ## H-284 本轮即时记录（2026-10-28）
 
@@ -1857,7 +1901,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-172：Responses 数值参数只在设置层校验，公开 ModelClient 仍发送越界值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-173：Responses 工具输出图片无法保留，公共消息边界静默降为纯文本](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-174：公开 `replace_messages` 绕过 Responses 工具调用配对修复](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-175：工作流 `http-request` 节点绕过统一网络权限与审批边界](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-175：工作流 `http-request` 节点绕过统一网络权限与审批边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H175-01～09原始/候选/legacy失败保留，仅所列Windows本机与受控消费方范围；非归并项 | typed HTTP进入原Kernel权限/规则/审批/取消/action；受控公网broker；backend与legacy fail-closed；Canvas复用原审批通道 | HTTP12/0/0、broker11/0/0、builtins2/0/0、runtime333/0/11、workflow21/0/38；前端82/0/0及build、Tauri/fmt/builtins严格lint通过；workspace3633/1既有H-306/311 ignored，严格lint旧阻断详E09 | 验收后待创建修复提交并回填 | H-165/H-249/H-164独立；真实Tauri/供应商/OS设备及其他平台未验；216有效未关闭；200–400有效小时历史未校准粗估，等待另计 |
 | [H-176：工作流 `knowledgeBaseId` 是死字段，知识检索节点无条件混合 project/global vault](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-177：未知 `target_node_id` 被当作空工作流成功，重跑/恢复目标没有 admission 校验](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-178：专业画布 `code` 节点标记为 enabled，但脚本从未执行且错误被伪造成成功](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

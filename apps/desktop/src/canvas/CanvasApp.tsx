@@ -20,6 +20,7 @@ import { BottomBar as WorkflowBottomBar } from "./workflow/components/BottomBar"
 import { MiniMap } from "./workflow/components/MiniMap";
 import { NodePicker } from "./workflow/components/NodePicker";
 import { CanvasSettingsDialog } from "./workflow/components/CanvasSettingsDialog";
+import { WorkflowApprovalDialog } from "./workflow/components/WorkflowApprovalDialog";
 import {
   SelectionFrameNode,
   SELECTION_NODE_ID,
@@ -902,6 +903,7 @@ function WorkflowCanvasInner() {
       <MiniMap containerWidth={containerSize.width} containerHeight={containerSize.height} />
       <NodePicker />
       <CanvasSettingsDialog />
+      <WorkflowApprovalDialog />
       {cropTarget && (
         <CropOverlay
           key={cropTarget.nodeId}

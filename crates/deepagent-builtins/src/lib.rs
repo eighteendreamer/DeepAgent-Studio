@@ -56,6 +56,7 @@ pub mod fs_guard;
 pub mod git_tools;
 pub mod glob_match;
 pub mod guard_hooks;
+pub mod http_request;
 pub mod knowledge_tools;
 pub mod memory_tools;
 #[allow(missing_docs)]

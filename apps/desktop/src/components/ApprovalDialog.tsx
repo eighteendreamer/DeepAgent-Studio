@@ -8,6 +8,7 @@ interface Props {
   request: ApprovalRequest | null;
   /** How many approvals are queued in total (including the current one). */
   queueCount?: number;
+  disabled?: boolean;
   /** `scope` widens the answer; omit it to approve this call only. */
   onApprove: (req: ApprovalRequest, scope?: string) => void;
   onReject: (req: ApprovalRequest) => void;
@@ -71,7 +72,7 @@ function approvalContent(argumentsText: string): string[] {
  * a fullscreen modal. It shows the tool, risk, reason, and a human-readable
  * summary of the requested action without exposing raw JSON.
  */
-export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }: Props) {
+export function ApprovalDialog({ request, queueCount = 0, disabled = false, onApprove, onReject }: Props) {
   const { t } = useTranslation();
   const remaining = Math.max(0, queueCount - 1);
   const content = request ? approvalContent(request.arguments) : [];
@@ -120,6 +121,7 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
 
           <div className="px-4 py-2.5 border-t border-border-theme flex justify-end gap-2 bg-[#FbFcFd]">
             <TintButton
+              disabled={disabled}
               variant="default"
               className="px-3.5 py-1.5 rounded-full text-[13px]"
               onClick={() => onReject(request)}
@@ -129,6 +131,7 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
             {/* Drawn from what the backend gate actually honors. */}
             {request.scopes?.includes("command_prefix") && request.command_prefix && (
               <TintButton
+                disabled={disabled}
                 variant="default"
                 className="px-3.5 py-1.5 rounded-full text-[13px]"
                 onClick={() => onApprove(request, "command_prefix")}
@@ -138,6 +141,7 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
             )}
             {request.scopes?.includes("tool_session") && (
               <TintButton
+                disabled={disabled}
                 variant="default"
                 className="px-3.5 py-1.5 rounded-full text-[13px]"
                 onClick={() => onApprove(request, "tool_session")}
@@ -146,6 +150,7 @@ export function ApprovalDialog({ request, queueCount = 0, onApprove, onReject }:
               </TintButton>
             )}
             <TintButton
+              disabled={disabled}
               variant="primary"
               className="px-3.5 py-1.5 rounded-full text-[13px] shadow-sm"
               onClick={() => onApprove(request)}

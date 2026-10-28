@@ -1304,6 +1304,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         .with_checkpoint(self.config.checkpoint.clone())
         .with_artifact_persistence(self.config.artifact_persistence.clone())
         .with_action_persistence(self.config.action_persistence.clone())
+        .with_raw_output(self.config.retain_raw_tool_output)
     }
 
     /// Whether this run actually created or modified files. The build/type
@@ -1883,7 +1884,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         Ok(Observation {
             tool: tool_name.clone(),
             ok,
-            raw_output: None,
+            raw_output: result.raw_output.clone(),
             output: value.clone(),
             call_id: Some(call_id.clone()),
         })
@@ -2054,7 +2055,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         Ok(Observation {
             tool: result.name,
             ok: result.output.ok,
-            raw_output: None,
+            raw_output: result.raw_output,
             output: result.output.value,
             call_id: Some(result.call_id),
         })

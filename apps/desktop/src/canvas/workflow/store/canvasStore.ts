@@ -1,6 +1,15 @@
 import { create } from "zustand";
 import type { CanvasMode, NodePickerPosition } from "../types";
 import type { Viewport } from "@xyflow/react";
+import type { ApprovalRequest } from "../../../types";
+
+/** 仅投影当前运行的审批 UI；权威审批仍由内核持有。 */
+export interface WorkflowApprovalView {
+  runId: string;
+  requests: ApprovalRequest[];
+  submitting: boolean;
+  error: string | null;
+}
 
 interface CropTarget {
   nodeId: string;
@@ -34,6 +43,8 @@ export interface PickerWiring {
 }
 
 interface CanvasState {
+  workflowApproval: WorkflowApprovalView | null;
+  setWorkflowApproval: (view: WorkflowApprovalView | null) => void;
   mode: CanvasMode;
   setMode: (mode: CanvasMode) => void;
 
@@ -73,6 +84,8 @@ interface CanvasState {
 }
 
 export const useCanvasStore = create<CanvasState>((set) => ({
+  workflowApproval: null,
+  setWorkflowApproval: (workflowApproval) => set({ workflowApproval }),
   mode: "creative",
   setMode: (mode) => set({ mode }),
 

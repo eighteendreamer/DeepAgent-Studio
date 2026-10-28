@@ -347,6 +347,176 @@ function loadWorkflowExecutor(calls, updates) {
   });
 }
 
+function deferredWorkflowValue() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
+async function untilWorkflow(predicate) {
+  const deadline = Date.now() + 2000;
+  while (!predicate()) {
+    assert.ok(Date.now() < deadline, "workflow fixture did not reach its barrier");
+    await new Promise(setImmediate);
+  }
+}
+
+function approvalWorkflowFixture({ beforeAck, approvalListenGate, answer } = {}) {
+  const previousWindow = globalThis.window;
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  const { useCanvasStore: canvas } = loadTypeScript("../src/canvas/workflow/store/canvasStore.ts", {
+    zustand: { create: createLocalStore },
+  });
+  canvas.getState().setMode("professional");
+  const handlers = new Map();
+  const registrations = [];
+  const calls = [];
+  const answers = [];
+  let nextRun = 0;
+  const state = { nodes: [{ id: "http", data: { kind: "http-request", status: "idle" } }], edges: [],
+    updateNodeData: (id, patch) => Object.assign(state.nodes.find((node) => node.id === id).data, patch) };
+  const emit = (name, payload) => handlers.get(name)?.({ payload });
+  const executor = loadTypeScript("../src/canvas/workflow/utils/workflowExecutor.ts", {
+    "../store/canvasStore": { useCanvasStore: canvas },
+    "../store/professionalStore": { useProfessionalStore: { getState: () => state } },
+    "../store/creativeStore": { useCreativeStore: { getState: () => ({ nodes: [], edges: [] }) } },
+    "../../../api": { resolveApproval: async (...args) => {
+      answers.push(args);
+      return answer ? answer(...args) : true;
+    } },
+    "@tauri-apps/api/core": { invoke: async (command, args) => {
+      calls.push({ command, args });
+      if (command !== "start_workflow") return { accepted: true };
+      const runId = `approval-run-${++nextRun}`;
+      assert.ok(handlers.has("chat://approval"), "approval subscription must precede start");
+      await beforeAck?.(emit, runId);
+      return { run_id: runId, session_id: null };
+    } },
+    "@tauri-apps/api/event": { listen: async (name, callback) => {
+      const registration = { name, callback, active: true };
+      registrations.push(registration);
+      handlers.set(name, callback);
+      if (name === "chat://approval" && approvalListenGate) await approvalListenGate.promise;
+      return () => {
+        registration.active = false;
+        if (handlers.get(name) === callback) handlers.delete(name);
+      };
+    } },
+  });
+  const runs = [];
+  return { canvas, handlers, registrations, calls, answers, emit, executor,
+    start: () => { const run = executor.runWorkflow(); runs.push(run); return run; },
+    async close() {
+      await executor.cancelWorkflow();
+      approvalListenGate?.resolve();
+      await Promise.all(runs);
+      assert.ok(registrations.every((registration) => !registration.active));
+      assert.equal(canvas.getState().workflowApproval, null);
+      if (previousWindow === undefined) delete globalThis.window;
+      else globalThis.window = previousWindow;
+    },
+  };
+}
+
+function workflowApproval(runId, callId = "http-call") {
+  return { run_id: runId, payload: { call_id: callId, tool: "http_request", risk: "high",
+    arguments: '{"url":"https://synthetic.invalid/"}', reason: "network", scopes: ["once"] } };
+}
+
+test("canvas buffers approval before ACK, isolates foreign runs and answers each request once", async () => {
+  const response = deferredWorkflowValue();
+  const fixture = approvalWorkflowFixture({ answer: () => response.promise, beforeAck: (emit, runId) => {
+    emit("chat://approval", workflowApproval("foreign-run", "foreign"));
+    emit("chat://approval", workflowApproval(runId));
+    emit("chat://approval", workflowApproval(runId));
+  } });
+  try {
+    const running = fixture.start();
+    await untilWorkflow(() => fixture.canvas.getState().workflowApproval);
+    const view = fixture.canvas.getState().workflowApproval;
+    assert.equal(view.requests.length, 1);
+    const request = view.requests[0];
+    assert.equal(request.run_id, "approval-run-1");
+    const responding = fixture.executor.respondWorkflowApproval(request, true);
+    await untilWorkflow(() => fixture.answers.length === 1);
+    assert.equal(await fixture.executor.respondWorkflowApproval(request, true), false);
+    fixture.emit("chat://approval", workflowApproval("approval-run-1", "second"));
+    response.resolve(true);
+    assert.equal(await responding, true);
+    assert.deepEqual(fixture.answers, [["http-call", true, undefined]]);
+    assert.equal(fixture.canvas.getState().workflowApproval.requests[0].call_id, "second");
+    const second = fixture.canvas.getState().workflowApproval.requests[0];
+    assert.equal(await fixture.executor.respondWorkflowApproval(second, false), true);
+    assert.deepEqual(fixture.answers[1], ["second", false, undefined]);
+    assert.equal(fixture.canvas.getState().workflowApproval, null);
+    fixture.emit("session://completed", { run_id: "approval-run-1" });
+    await running;
+    assert.equal(fixture.handlers.size, 0);
+  } finally { await fixture.close(); }
+});
+
+test("failed or expired approval remains visible and can be retried without pretending success", async () => {
+  let attempt = 0;
+  const fixture = approvalWorkflowFixture({ answer: () => {
+    attempt += 1;
+    if (attempt === 1) throw new Error("synthetic transport failure");
+    return attempt > 2;
+  } });
+  try {
+    fixture.start();
+    await untilWorkflow(() => fixture.calls.some((call) => call.command === "start_workflow"));
+    await new Promise(setImmediate);
+    fixture.emit("chat://approval", workflowApproval("approval-run-1"));
+    const request = fixture.canvas.getState().workflowApproval.requests[0];
+    assert.equal(await fixture.executor.respondWorkflowApproval(request, false), false);
+    assert.match(fixture.canvas.getState().workflowApproval.error, /synthetic transport failure/);
+    assert.equal(await fixture.executor.respondWorkflowApproval(request, false), false);
+    assert.match(fixture.canvas.getState().workflowApproval.error, /未受理/);
+    assert.equal(await fixture.executor.respondWorkflowApproval(request, false), true);
+    assert.equal(fixture.canvas.getState().workflowApproval, null);
+  } finally { await fixture.close(); }
+});
+
+test("cancel or replacement clears approval and stale callbacks, clicks and responses cannot touch the new owner", async () => {
+  const response = deferredWorkflowValue();
+  const fixture = approvalWorkflowFixture({ answer: () => response.promise });
+  try {
+    fixture.start();
+    await untilWorkflow(() => fixture.calls.length === 1);
+    await new Promise(setImmediate);
+    fixture.emit("chat://approval", workflowApproval("approval-run-1"));
+    const request = fixture.canvas.getState().workflowApproval.requests[0];
+    const responding = fixture.executor.respondWorkflowApproval(request, true);
+    await untilWorkflow(() => fixture.answers.length === 1);
+    const oldCallback = fixture.handlers.get("chat://approval");
+    fixture.start();
+    await untilWorkflow(() => fixture.calls.filter((call) => call.command === "start_workflow").length === 2);
+    await new Promise(setImmediate);
+    fixture.emit("chat://approval", workflowApproval("approval-run-2", "new-call"));
+    oldCallback({ payload: workflowApproval("approval-run-1", "late") });
+    response.resolve(true);
+    await responding;
+    assert.equal(await fixture.executor.respondWorkflowApproval(request, true), false);
+    assert.equal(fixture.answers.length, 1);
+    assert.deepEqual(fixture.canvas.getState().workflowApproval.requests.map((pending) => pending.call_id), ["new-call"]);
+    await fixture.executor.cancelWorkflow();
+    assert.equal(fixture.canvas.getState().workflowApproval, null);
+    assert.equal(fixture.handlers.size, 0);
+  } finally { await fixture.close(); }
+});
+
+test("cancel during approval listener registration retires the late listener and never starts", async () => {
+  const gate = deferredWorkflowValue();
+  const fixture = approvalWorkflowFixture({ approvalListenGate: gate });
+  try {
+    fixture.start();
+    await untilWorkflow(() => fixture.handlers.has("chat://approval"));
+    await fixture.executor.cancelWorkflow();
+    gate.resolve();
+  } finally { await fixture.close(); }
+  assert.equal(fixture.calls.length, 0);
+});
+
 test("cancelling a node run asks the kernel to cancel the same run id it returned", async () => {
   const previousWindow = globalThis.window;
   globalThis.window = { __TAURI_INTERNALS__: {} };

@@ -111,6 +111,8 @@ pub struct ChatService {
     /// Canvas provider gateway. When set, canvas workflow nodes call the
     /// model the user configured in canvas settings instead of the chat model.
     canvas_model: Option<Arc<crate::canvas_model_gateway::CanvasModelGateway>>,
+    /// Trusted host network broker; never configurable by workflow JSON.
+    workflow_http: Arc<dyn deepagent_builtins::http_request::HttpRequestClient>,
     /// Optional project-map reader. When set, read-only `code_map_*` tools are
     /// registered for the active project so the model can locate code before
     /// broad file reads.
@@ -256,6 +258,7 @@ impl ChatService {
             knowledge: None,
             cron: None,
             canvas_model: None,
+            workflow_http: Arc::new(crate::http_runtime::PublicHttpClient::default()),
             project_map: None,
             office: None,
             cost: None,
@@ -278,6 +281,17 @@ impl ChatService {
             remote_ops_factory: None,
             question_notifier: None,
         }
+    }
+
+    /// Replace the workflow HTTP broker for a trusted embedding host. The host
+    /// must enforce the HttpRequestClient contract; tool capability, approvals
+    /// and sandbox admission remain owned by this service and the Kernel.
+    pub fn with_workflow_http_client(
+        mut self,
+        client: Arc<dyn deepagent_builtins::http_request::HttpRequestClient>,
+    ) -> Self {
+        self.workflow_http = client;
+        self
     }
 
     /// Return the shared database used by sessions, runs, settings, and
@@ -1364,6 +1378,7 @@ impl ChatService {
             knowledge: self.knowledge.clone(),
             cron: &self.cron,
             canvas_model: &self.canvas_model,
+            workflow_http: &self.workflow_http,
             skills: &self.skills,
             mcp: &self.mcp,
             plugins: &self.plugins,

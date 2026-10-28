@@ -51,7 +51,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **59**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **220（220待修复、0修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **63**、历史已修复跳过 **18**、归并 **7**、撤销 **2**、有效未关闭 **216（216待修复、0修复中）**；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -4788,6 +4788,14 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 - 本轮只新增审计测试和文档，未修改生产修复；默认桌面 `ResponseHistory::request()` 的正常路径仍由 `from_response_items()` 负责 repair，触发面限定为公开 mutator/未来 Harness 或 SDK 复用。
 
 ### H-175：工作流 `http-request` 节点绕过统一网络权限与审批边界
+
+**修复状态（2026-10-28）：已修复并验收，仅E-H175-09所列Windows本机与受控生产/消费方范围，修复提交待创建后回填。** E-H175-01保留修前事实：在 HEAD `e9e6e445` 的隔离本机 fixture 重跑原探针，原生101、0 passed/1 failed/0 ignored；requests=1、approvals=0、run_terminal=succeeded，证据`target/h175-before-probe*`保留。当时已装配基础registry/gate，HTTP裸请求仍绕过Kernel工具执行管线；原审计“空registry”是更早历史，不当作当前事实。E-H175-02～08保留中间未验收状态与失败，最终结论以下述E09及进度台账为准。不合并或关闭H-165/H-249/H-164。
+
+E-H175-02～04候选更新（仍未验收）：HTTP已候选工具化并进入原Kernel Network权限/高风险审批/有效规则/取消及action持久化；受控公网broker逐跳DNS校验/pin、响应预算、deadline与不重放，隔离backend无broker拒绝host fallback。Canvas沿原owner补齐ACK前审批监听、run过滤、既有审批UI和resolveApproval；CLI/SDK当前没有workflow启动API，未伪造其工作流验收。首次候选2/2/0的事件名/串行raw_output错误和补强5/3/0的配置cache/迟答返回契约夹具错误均保留，修正后正式HTTP8/0/0、broker11/0/0、前端82/0/0及pnpm build原生0。冻结代码后的完整门禁handle43830尚未终结，不计验收或提交；范围、真实命令及残余见进度记录。E-H175-05补充真实浏览器的提交中/错误态、Escape/遮罩不丢审批截图，及UI最终pnpm build原生0；Rust门禁期间UI单独修正并重验，不以初始全文件快照冒充最终UI冻结。原下文为审计时历史实现/失败事实，不改写成当前候选仍为裸HTTP。
+
+E-H175-06～08续接（仍修复中）：原43830及68298均已收取终态；前轮workspace3629/1/311（仅H-306失败）、Tauri Rust/fmt通过，严格workspace/runtime/AppCore lint基线阻断保留。runner因视觉核验期间UI差异拒绝了全文件冻结结论，Rust零变化及UI独立最终快照分别核对，不能混用。随后正式legacy Sandboxie反例原生101、0/1/0，实际host broker requests=1且run成功；现按既有RunEnvironment的backend/local_execution_mode补强同一HTTP绑定根因，新增Direct正常对照。补强后正式HTTP12/0/0，含可用registry隔离和generic-tool别名对照；新夹具一次trait-object编译失败也保留。旧Rust门禁仅为补强前证据，20个源码文件已重新冻结，handle13192执行完整门禁，未取得真实终态前不验收。完整命令、原始失败和限制见进度E-H175-06～08。
+
+E-H175-09（冻结版本最终验收）：HTTP节点改走原Kernel工具管线，Network capability/高风险审批/有效规则/计划模式/取消与durable action不再旁路；公网broker全DNS校验、逐跳pin、同源GET/HEAD redirect、预算/deadline和未知结果不重放；显式隔离及legacy Sandboxie无broker拒绝host fallback，显式Direct/FullAccess正常对照通过。Canvas按原owner/审批事件/resolveApproval回答，不建立第二审批中心。新冻结20文件前后哈希零差异，正式broker11/0/0、HTTP12/0/0、builtins2/0/0、runtime333/0/11、workflow全组21/0/38；完整workspace原生101、3633/1/311（仅既有H-306），Tauri Rust/fmt/builtins严格lint原生0，workspace及AppCore严格lint旧阻断未掩盖。前端82/0/0、最终pnpm build和SDK7/0/0依最终未变源码证据有效；真实Tauri端到端/供应商/沙箱设备及其他OS未执行。没有新增协议DTO、依赖、配置或数据库迁移；私网、跨源redirect、隔离无broker和超预算现在明确失败，为有意安全收紧。完整命令、耗时、失败、普通lint诊断与兼容性限制见进度E-H175-09；累计63验收、216有效未关闭，不声称全系统完成或全仓全绿。下文保留原审计触发描述和失败证据。
 
 **级别：高（P1，工作流网络能力越权）；触发条件：能够提交专业工作流定义的调用者放入 `http-request` 节点，并将 `httpUrl` 指向宿主可达的 loopback、私网或其他未授权网络目标。** 本项与 H-165 的供应商图片 URL 第二跳不同：H-165 是 provider 成功响应驱动的 artifact 下载，本项是工作流定义本身直接触发裸 HTTP 请求；两条链路都必须独立收敛到统一网络策略。
 

@@ -12,6 +12,8 @@ use deepagent_runtime::RuntimeEvent;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+#[path = "workflow_audit/http.rs"]
+mod http;
 #[path = "workflow_audit/media.rs"]
 mod media;
 
@@ -238,7 +240,6 @@ async fn workflow_tool_output_failure_propagates_without_downstream_completion()
 }
 
 #[tokio::test]
-#[ignore = "audit: workflow http-request must use the shared network permission and approval boundary"]
 async fn audit_workflow_http_node_does_not_bypass_network_approval() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -275,6 +276,8 @@ async fn audit_workflow_http_node_does_not_bypass_network_approval() {
     .unwrap();
     let approvals = Arc::new(AtomicUsize::new(0));
     let approval_count = approvals.clone();
+    let nodes = Arc::new(Mutex::new(Vec::new()));
+    let captured_nodes = nodes.clone();
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
@@ -282,7 +285,11 @@ async fn audit_workflow_http_node_does_not_bypass_network_approval() {
             workflow,
             "audit-workflow-http-network-boundary".into(),
             session,
-            |_| {},
+            move |event| {
+                if let RuntimeEvent::WorkflowNode { event } = event {
+                    captured_nodes.lock().unwrap().push(event);
+                }
+            },
             move |_| {
                 approval_count.fetch_add(1, Ordering::SeqCst);
             },
@@ -294,7 +301,16 @@ async fn audit_workflow_http_node_does_not_bypass_network_approval() {
         .get("audit-workflow-http-network-boundary")
         .unwrap()
         .unwrap();
-    let _ = server.await;
+    // A correct denial never connects. The original unbounded accept waiter
+    // would hang precisely when the regression was fixed.
+    let mut server = server;
+    if tokio::time::timeout(Duration::from_millis(100), &mut server)
+        .await
+        .is_err()
+    {
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
 
     eprintln!(
         "api_ok={} error={:?} requests={} approvals={} run_terminal={:?}",
@@ -309,10 +325,21 @@ async fn audit_workflow_http_node_does_not_bypass_network_approval() {
         0,
         "workflow HTTP must not reach a private/loopback destination without network policy"
     );
-    assert!(
-        approvals.load(Ordering::SeqCst) > 0,
-        "a network-capable workflow node must route through the approval boundary"
+    assert_eq!(
+        approvals.load(Ordering::SeqCst),
+        0,
+        "a hard destination denial is not overridable by approval"
     );
+    assert!(result.is_err());
+    assert_ne!(run.terminal_kind.as_deref(), Some("succeeded"));
+    let nodes = nodes.lock().unwrap();
+    assert!(nodes
+        .iter()
+        .any(|node| node.node_id == "request" && node.status == NodeExecutionStatus::Failed));
+    assert!(!nodes
+        .iter()
+        .any(|node| matches!(node.node_id.as_str(), "request" | "end")
+            && node.status == NodeExecutionStatus::Completed));
 }
 
 #[tokio::test]

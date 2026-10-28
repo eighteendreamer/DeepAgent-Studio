@@ -3,6 +3,7 @@ import { useCreativeStore } from "../store/creativeStore";
 import { useProfessionalStore } from "../store/professionalStore";
 import { useCanvasStore } from "../store/canvasStore";
 import type { CreativeNodeData, ProfessionalNodeData } from "../types";
+import type { ApprovalRequest } from "../../../types";
 
 /**
  * Workflow execution for both canvas modes.
@@ -22,6 +23,7 @@ type WorkflowRunOwner = {
   closed: boolean;
   eventUnlisten: (() => void) | null;
   completionUnlisten: (() => void) | null;
+  approvalUnlisten: (() => void) | null;
 };
 
 /** 当前画布运行的 owner；每次监听和清理都必须落在同一个 owner 上。 */
@@ -32,6 +34,10 @@ function detachRunOwner(owner: WorkflowRunOwner) {
   owner.eventUnlisten = null;
   owner.completionUnlisten?.();
   owner.completionUnlisten = null;
+  owner.approvalUnlisten?.();
+  owner.approvalUnlisten = null;
+  const canvas = useCanvasStore.getState();
+  if (canvas.workflowApproval?.runId === owner.runId) canvas.setWorkflowApproval(null);
 }
 
 function closeRunOwner(owner: WorkflowRunOwner) {
@@ -312,7 +318,7 @@ async function runBackendWorkflow(
   };
 
   type BufferedEvent = {
-    channel: "workflow" | "completion";
+    channel: "workflow" | "completion" | "approval";
     payload: Record<string, unknown>;
   };
   const buffered: BufferedEvent[] = [];
@@ -322,6 +328,9 @@ async function runBackendWorkflow(
     resolveCompletion = resolve;
     rejectCompletion = reject;
   });
+  // Cancellation can arrive while listener registration/start ACK is pending.
+  // Observe immediately; awaiting below still receives the original rejection.
+  void completion.catch(() => {});
 
   const cleanup = () => {
     closeRunOwner(owner);
@@ -378,6 +387,27 @@ async function runBackendWorkflow(
     resolveCompletion();
   };
 
+  const handleApprovalPayload = (raw: Record<string, unknown>) => {
+    if (!owner.active || owner.closed || _activeRun !== owner) return;
+    if (!owner.runId) {
+      buffered.push({ channel: "approval", payload: raw });
+      return;
+    }
+    if (raw.run_id !== owner.runId) return;
+    const request = raw.payload as ApprovalRequest | undefined;
+    if (!request || typeof request.call_id !== "string" || !request.call_id) return;
+    const canvas = useCanvasStore.getState();
+    const view = canvas.workflowApproval;
+    const requests = view?.runId === owner.runId ? view.requests : [];
+    if (requests.some((pending) => pending.call_id === request.call_id)) return;
+    canvas.setWorkflowApproval({
+      runId: owner.runId,
+      requests: [...requests, { ...request, run_id: owner.runId }],
+      submitting: view?.submitting ?? false,
+      error: view?.error ?? null,
+    });
+  };
+
   const eventUnlisten = await eventMod.listen<Record<string, unknown>>(
     "chat://event",
     (e) => handleWorkflowPayload(e.payload),
@@ -398,6 +428,16 @@ async function runBackendWorkflow(
   }
   owner.completionUnlisten = completionUnlisten;
 
+  const approvalUnlisten = await eventMod.listen<Record<string, unknown>>(
+    "chat://approval",
+    (e) => handleApprovalPayload(e.payload),
+  );
+  if (!owner.active || owner.closed || signal.aborted || _activeRun !== owner) {
+    approvalUnlisten();
+    throw abortError();
+  }
+  owner.approvalUnlisten = approvalUnlisten;
+
   const ack = await core.invoke<{ run_id: string; session_id: string | null }>(
     "start_workflow",
     { workflow, sessionId: null },
@@ -409,7 +449,8 @@ async function runBackendWorkflow(
   for (const event of buffered.splice(0)) {
     if (!owner.active || owner.closed) break;
     if (event.channel === "workflow") handleWorkflowPayload(event.payload);
-    else handleCompletionPayload(event.payload);
+    else if (event.channel === "completion") handleCompletionPayload(event.payload);
+    else handleApprovalPayload(event.payload);
   }
 
   await completion;
@@ -427,6 +468,7 @@ export async function runWorkflow(nodeId?: string) {
     closed: false,
     eventUnlisten: null,
     completionUnlisten: null,
+    approvalUnlisten: null,
   };
   _activeRun = owner;
 
@@ -466,6 +508,41 @@ export async function runWorkflow(nodeId?: string) {
       closeRunOwner(owner);
     }
   }
+}
+
+/** 回答当前 owner 的当前审批；迟到点击/响应不能影响下一次运行。 */
+export async function respondWorkflowApproval(
+  request: ApprovalRequest,
+  approved: boolean,
+  scope?: string,
+): Promise<boolean> {
+  const owner = _activeRun;
+  const view = useCanvasStore.getState().workflowApproval;
+  if (!owner?.active || owner.closed || !owner.runId || !view ||
+      view.runId !== owner.runId || request.run_id !== owner.runId ||
+      view.requests[0] !== request || view.submitting) return false;
+  useCanvasStore.getState().setWorkflowApproval({ ...view, submitting: true, error: null });
+  let accepted = false;
+  let error: string | null = null;
+  try {
+    const api = await import("../../../api");
+    // Dynamic import may yield while the run is cancelled or replaced.
+    if (_activeRun !== owner || !owner.active || owner.closed) return false;
+    accepted = await api.resolveApproval(request.call_id, approved, scope);
+    if (!accepted) error = "审批已失效，内核未受理。请核对运行状态或取消工作流。";
+  } catch (cause) {
+    error = `审批回答失败：${cause instanceof Error ? cause.message : String(cause)}`;
+  }
+  if (_activeRun === owner && owner.active && !owner.closed) {
+    const current = useCanvasStore.getState().workflowApproval;
+    if (current?.runId === owner.runId && current.requests[0] === request) {
+      const requests = accepted ? current.requests.slice(1) : current.requests;
+      useCanvasStore.getState().setWorkflowApproval(
+        requests.length ? { ...current, requests, submitting: false, error } : null,
+      );
+    }
+  }
+  return accepted;
 }
 
 /**

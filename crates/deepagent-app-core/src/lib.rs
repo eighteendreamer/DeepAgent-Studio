@@ -40,6 +40,7 @@ pub mod git_service;
 pub mod hook_assembly;
 pub mod hook_runtime;
 pub mod host_lock;
+mod http_runtime;
 pub mod input_runtime;
 pub mod install_ledger;
 pub mod kernel_runtime;

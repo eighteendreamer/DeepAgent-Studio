@@ -94,10 +94,13 @@ interface DialogContentProps extends React.HTMLAttributes<HTMLDivElement> {
   zIndexClass?: string;
   /** Optional overlay styling for focused viewers such as image preview. */
   backdropClassName?: string;
+  /** Forward existing modal dismissal controls for decisions that must be answered explicitly. */
+  closeOnBackdrop?: boolean;
+  closeOnEscape?: boolean;
 }
 
 const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
-  ({ className, children, zIndexClass, backdropClassName, ...props }, ref) => {
+  ({ className, children, zIndexClass, backdropClassName, closeOnBackdrop, closeOnEscape, ...props }, ref) => {
     const { open, setOpen, origin } = useDialogContext();
 
     return (
@@ -107,6 +110,8 @@ const DialogContent = React.forwardRef<HTMLDivElement, DialogContentProps>(
         onClose={() => setOpen(false)}
         zIndexClass={zIndexClass}
         backdropClassName={backdropClassName}
+        closeOnBackdrop={closeOnBackdrop}
+        closeOnEscape={closeOnEscape}
         panelClassName={className}
         panelProps={{ role: "dialog", "aria-modal": true, ...props }}
         panelRef={ref}

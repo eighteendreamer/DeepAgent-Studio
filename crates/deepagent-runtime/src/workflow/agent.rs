@@ -30,6 +30,12 @@ use super::values;
 use crate::agent::{Agent, AgentDecision, Observation, RunUsage};
 use deepagent_core::error::{CoreError, Result};
 
+struct PendingHttpNode {
+    node_id: String,
+    call_id: String,
+    started: Instant,
+}
+
 /// Executes a compiled workflow graph as an [`Agent`].
 ///
 /// The agent walks nodes in topological order. Each `think()` call executes one
@@ -53,6 +59,7 @@ pub struct WorkflowAgent {
     /// Node `think` is executing right now. A media job reports progress from
     /// inside the provider poll loop, which cannot see the graph walk.
     active_node_id: Option<String>,
+    pending_http: Option<PendingHttpNode>,
     model: Option<Arc<ModelClient>>,
     model_name: Option<String>,
     knowledge_retriever: Option<Arc<dyn KnowledgeRetriever>>,
@@ -81,6 +88,7 @@ impl WorkflowAgent {
             started_at: Instant::now(),
             cancel: None,
             active_node_id: None,
+            pending_http: None,
             model: None,
             model_name: None,
             knowledge_retriever: None,
@@ -254,7 +262,6 @@ impl WorkflowAgent {
             "video-stitch" | "image-compare" => Err(deepagent_core::error::CoreError::invalid(
                 format!("UnsupportedOperation: canvas node `{kind}` has no executor yet"),
             )),
-            "http-request" => self.execute_http_request(&resolved_config).await,
             "tool" => self.execute_tool(&resolved_config).await,
             "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
             "iteration" | "loop" => self.execute_iteration(&resolved_config).await,
@@ -1144,105 +1151,23 @@ impl WorkflowAgent {
         }))
     }
 
-    async fn execute_http_request(&self, config: &Map<String, Value>) -> Result<Value> {
-        let method = config
-            .get("httpMethod")
-            .and_then(Value::as_str)
-            .unwrap_or("GET");
-        let url = config.get("httpUrl").and_then(Value::as_str).unwrap_or("");
-        let body = config.get("httpBody").and_then(Value::as_str).unwrap_or("");
-        let timeout_secs = config
-            .get("httpTimeout")
-            .and_then(Value::as_u64)
-            .unwrap_or(30);
-        let retry_count = config
-            .get("httpRetryCount")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
-
-        let headers: Vec<(String, String)> = config
-            .get("httpHeaders")
-            .and_then(Value::as_object)
-            .map(|m| {
-                m.iter()
-                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        if url.is_empty() {
-            return Err(CoreError::invalid("http-request: url is required"));
+    fn http_tool_arguments(&self, config: &Map<String, Value>) -> Result<Value> {
+        let mut arguments = Map::new();
+        for (field, name, default) in [
+            ("httpUrl", "url", Value::Null),
+            ("httpMethod", "method", Value::String("GET".into())),
+            ("httpBody", "body", Value::String(String::new())),
+            ("httpHeaders", "headers", serde_json::json!({})),
+            ("httpTimeout", "timeout_secs", Value::from(30)),
+            ("httpRetryCount", "retry_count", Value::from(0)),
+        ] {
+            arguments.insert(
+                name.into(),
+                values::resolve(config.get(field).unwrap_or(&default), &self.outputs)?,
+            );
         }
-
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(timeout_secs))
-            .build()
-            .map_err(|e| CoreError::other(format!("http-request: client build failed: {e}")))?;
-
-        let req_method = match method {
-            "POST" => reqwest::Method::POST,
-            "PUT" => reqwest::Method::PUT,
-            "DELETE" => reqwest::Method::DELETE,
-            "PATCH" => reqwest::Method::PATCH,
-            _ => reqwest::Method::GET,
-        };
-
-        let mut last_error = String::new();
-        let attempts = retry_count + 1;
-
-        for attempt in 0..attempts {
-            let mut req = client.request(req_method.clone(), url);
-            for (k, v) in &headers {
-                req = req.header(k.as_str(), v.as_str());
-            }
-            if !body.is_empty()
-                && matches!(
-                    req_method,
-                    reqwest::Method::POST | reqwest::Method::PUT | reqwest::Method::PATCH
-                )
-            {
-                req = req.body(body.to_string());
-            }
-
-            match req.send().await {
-                Ok(resp) => {
-                    let status = resp.status().as_u16();
-                    let resp_headers: serde_json::Map<String, Value> = resp
-                        .headers()
-                        .iter()
-                        .map(|(k, v)| {
-                            (
-                                k.as_str().to_string(),
-                                Value::String(v.to_str().unwrap_or("").to_string()),
-                            )
-                        })
-                        .collect();
-                    let resp_body = resp.text().await.unwrap_or_default();
-
-                    let body_json: Value =
-                        serde_json::from_str(&resp_body).unwrap_or(Value::String(resp_body));
-
-                    return Ok(serde_json::json!({
-                        "body": body_json,
-                        "status_code": status,
-                        "headers": resp_headers,
-                    }));
-                }
-                Err(e) => {
-                    last_error = e.to_string();
-                    if attempt < attempts - 1 {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                    }
-                }
-            }
-        }
-
-        Err(CoreError::other(format!(
-            "http-request: failed after {} attempts: {}",
-            attempts, last_error
-        )))
+        Ok(Value::Object(arguments))
     }
-
     async fn execute_tool(&self, config: &Map<String, Value>) -> Result<Value> {
         let executor = match &self.tool_executor {
             Some(e) => e,
@@ -1406,6 +1331,62 @@ impl WorkflowAgent {
         }))
     }
 
+    fn finish_node(
+        &mut self,
+        node_id: String,
+        node_kind: String,
+        result: Result<Value>,
+        elapsed_ms: u64,
+    ) -> Result<AgentDecision> {
+        match result {
+            Ok(output) => {
+                let output_value = Self::node_output_value_inline(&node_kind, &output);
+                self.outputs.insert(node_id.clone(), output_value.clone());
+                self.node_statuses
+                    .insert(node_id.clone(), NodeExecutionStatus::Completed);
+                self.emit_status(
+                    &node_id,
+                    NodeExecutionStatus::Completed,
+                    1,
+                    elapsed_ms,
+                    Some(output_value),
+                    None,
+                );
+                self.step += 1;
+
+                if node_kind == "end" {
+                    let summary = output
+                        .get("output")
+                        .or_else(|| output.as_object().and_then(|m| m.values().next()))
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "workflow completed".to_string());
+                    return Ok(AgentDecision::Complete(summary));
+                }
+
+                Ok(AgentDecision::Continue)
+            }
+            Err(error) => {
+                // 用户取消不是失败：视频这类长作业在轮询中途被打断时走到这里，
+                // 终态必须区分开，否则一次停止会被记成一次执行失败。
+                let status = if self.is_cancelled() {
+                    NodeExecutionStatus::Cancelled
+                } else {
+                    NodeExecutionStatus::Failed
+                };
+                self.node_statuses.insert(node_id.clone(), status);
+                self.emit_status(
+                    &node_id,
+                    status,
+                    1,
+                    elapsed_ms,
+                    None,
+                    Some(error.to_string()),
+                );
+                Err(error)
+            }
+        }
+    }
+
     fn node_output_value_inline(kind: &str, result: &Value) -> Value {
         match kind {
             "if-else" => {
@@ -1426,7 +1407,33 @@ impl Agent for WorkflowAgent {
         self.publisher.set_sink(events);
     }
 
-    async fn think(&mut self, _step: usize, _last: &[Observation]) -> Result<AgentDecision> {
+    async fn think(&mut self, _step: usize, last: &[Observation]) -> Result<AgentDecision> {
+        if let Some(pending) = self.pending_http.take() {
+            let result = last
+                .iter()
+                .find(|observation| observation.call_id.as_deref() == Some(&pending.call_id))
+                .ok_or_else(|| CoreError::other("http-request: missing correlated tool result"))
+                .and_then(|observation| {
+                    if !observation.ok {
+                        Err(CoreError::other(format!(
+                            "http-request: {}",
+                            observation.output
+                        )))
+                    } else {
+                        Ok(observation
+                            .raw_output
+                            .as_ref()
+                            .unwrap_or(&observation.output)
+                            .clone())
+                    }
+                });
+            return self.finish_node(
+                pending.node_id,
+                "http-request".into(),
+                result,
+                pending.started.elapsed().as_millis() as u64,
+            );
+        }
         if self.is_cancelled() {
             return Err(CoreError::other("workflow cancelled"));
         }
@@ -1485,55 +1492,35 @@ impl Agent for WorkflowAgent {
         self.emit_status(&node_id, NodeExecutionStatus::Running, 1, 0, None, None);
         let node_start = Instant::now();
 
+        if node_kind == "http-request" {
+            let arguments = match self.http_tool_arguments(&node_config) {
+                Ok(arguments) => arguments,
+                Err(error) => return self.finish_node(node_id, node_kind, Err(error), 0),
+            };
+            let call_id = format!("workflow_http_{}", deepagent_core::id::EventId::new());
+            self.pending_http = Some(PendingHttpNode {
+                node_id,
+                call_id: call_id.clone(),
+                started: node_start,
+            });
+            return Ok(AgentDecision::CallTool(
+                deepagent_tools::ToolInvocation::new("http_request", arguments).with_id(call_id),
+            ));
+        }
+
         let result = self.execute_node_inline(&node_kind, &node_config).await;
         let elapsed_ms = node_start.elapsed().as_millis() as u64;
 
-        match result {
-            Ok(output) => {
-                let output_value = Self::node_output_value_inline(&node_kind, &output);
-                self.outputs.insert(node_id.clone(), output_value.clone());
-                self.node_statuses
-                    .insert(node_id.clone(), NodeExecutionStatus::Completed);
-                self.emit_status(
-                    &node_id,
-                    NodeExecutionStatus::Completed,
-                    1,
-                    elapsed_ms,
-                    Some(output_value),
-                    None,
-                );
-                self.step += 1;
+        self.finish_node(node_id, node_kind, result, elapsed_ms)
+    }
 
-                if node_kind == "end" {
-                    let summary = output
-                        .get("output")
-                        .or_else(|| output.as_object().and_then(|m| m.values().next()))
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "workflow completed".to_string());
-                    return Ok(AgentDecision::Complete(summary));
-                }
-
-                Ok(AgentDecision::Continue)
-            }
-            Err(error) => {
-                // 用户取消不是失败：视频这类长作业在轮询中途被打断时走到这里，
-                // 终态必须区分开，否则一次停止会被记成一次执行失败。
-                let status = if self.is_cancelled() {
-                    NodeExecutionStatus::Cancelled
-                } else {
-                    NodeExecutionStatus::Failed
-                };
-                self.node_statuses.insert(node_id.clone(), status);
-                self.emit_status(
-                    &node_id,
-                    status,
-                    1,
-                    elapsed_ms,
-                    None,
-                    Some(error.to_string()),
-                );
-                Err(error)
-            }
+    async fn finish_background_tasks(&mut self) {
+        // The Kernel can stop before the next think (cancellation, persistence
+        // error or deadline). Close the pending node without inventing success.
+        if let Some(pending) = self.pending_http.take() {
+            let _ = self.finish_node(pending.node_id, "http-request".into(),
+                Err(CoreError::other("http-request: run stopped before node result delivery; reconcile the durable action before retrying")),
+                pending.started.elapsed().as_millis() as u64);
         }
     }
 
