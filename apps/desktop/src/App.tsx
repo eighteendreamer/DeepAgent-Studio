@@ -557,7 +557,7 @@ export function App() {
   // scrolling and navigation stay responsive while this is true.
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
   const [stoppingRunIds, setStoppingRunIds] = useState<Set<string>>(() => new Set());
-  const [planMode, setPlanMode] = useState(false);
+  const [planMode, setPlanMode] = useState<boolean | null>(false);
   // The session id of the in-flight run, set as soon as the backend announces
   // it (session_registered) — used for the manual stop button and to navigate
   // into the still-running session.
@@ -670,9 +670,14 @@ export function App() {
         }
       })
       .catch(() => { if (!cancelled) setDetail(null); });
+    setPlanMode(null);
     getPlanMode(activeId)
       .then((next) => { if (!cancelled) setPlanMode(next); })
-      .catch(() => { if (!cancelled) setPlanMode(false); });
+      .catch((error) => {
+        if (cancelled) return;
+        setPlanMode(null);
+        message.error(`计划模式状态读取失败，请明确选择 /plan 或 /execute：${String(error)}`);
+      });
     return () => { cancelled = true; };
   }, [activeId]);
 
@@ -2187,8 +2192,14 @@ export function App() {
           refreshSessions();
           if (newSessionId) {
             getPlanMode(newSessionId)
-              .then(setPlanMode)
-              .catch(() => {});
+              .then((next) => {
+                if (activeIdRef.current === newSessionId) setPlanMode(next);
+              })
+              .catch((error) => {
+                if (activeIdRef.current !== newSessionId) return;
+                setPlanMode(null);
+                message.error(`计划模式状态读取失败，请明确选择 /plan 或 /execute：${String(error)}`);
+              });
           }
           if (newSessionId && newSessionId !== activeIdRef.current) {
             setActiveId(newSessionId);

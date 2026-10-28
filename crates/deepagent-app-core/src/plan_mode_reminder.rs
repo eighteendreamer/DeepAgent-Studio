@@ -18,7 +18,8 @@
 //!
 //! - Plan-mode flag is `active` at the moment the tool result is being
 //!   decorated: yes.
-//! - Plan-mode flag is `inactive`: no — zero overhead beyond an atomic load.
+//! - Plan-mode state is `inactive`: no. Durable sessions read the event source.
+//! - Recovery fails: report an explicit diagnostic, never an implicit exit.
 //!
 //! The reminder is the same regardless of which tool was called; the model
 //! only needs to know "you're in plan mode" once per result, not "you just
@@ -47,9 +48,7 @@ pub struct PlanModeReminderDecorator {
 }
 
 impl PlanModeReminderDecorator {
-    /// Build over a session's shared plan-mode flag. The decorator clones the
-    /// flag (cheap — `PlanMode` is `Arc<AtomicBool>` under the hood) so it
-    /// continues to observe live toggles as the session runs.
+    /// Build over the same state source as the hard execution gate.
     pub fn new(plan: PlanMode) -> Self {
         Self { plan }
     }
@@ -63,10 +62,16 @@ impl PlanModeReminderDecorator {
 #[async_trait]
 impl ToolResultDecorator for PlanModeReminderDecorator {
     async fn decorate(&self, _tool_name: &str, output: &mut ToolOutput) {
-        if !self.plan.is_active() {
-            return;
+        match self.plan.is_active() {
+            Ok(false) => return,
+            Ok(true) => append_to_tool_result(&mut output.value, &wrap(PLAN_MODE_REMINDER_BODY)),
+            Err(error) => {
+                tracing::warn!(%error, "plan mode reminder could not read durable state");
+                append_to_tool_result(&mut output.value, &wrap(
+                    "Plan mode status is unavailable. Further tool admission must recover the durable state; do not assume plan mode was exited. Explicitly select /plan or /execute for an unknown legacy session."
+                ));
+            }
         }
-        append_to_tool_result(&mut output.value, &wrap(PLAN_MODE_REMINDER_BODY));
     }
 }
 
@@ -87,7 +92,7 @@ mod tests {
     async fn no_reminder_when_plan_mode_inactive() {
         let plan = PlanMode::new();
         // Default state is inactive.
-        assert!(!plan.is_active());
+        assert!(!plan.is_active().unwrap());
         let dec = PlanModeReminderDecorator::new(plan);
         let mut out = ok_with(json!({"path": "src/main.rs", "content": "..."}));
         dec.decorate("read_file", &mut out).await;
@@ -99,7 +104,7 @@ mod tests {
     #[tokio::test]
     async fn reminder_appended_when_plan_mode_active() {
         let plan = PlanMode::new();
-        plan.set(true);
+        plan.set(true).unwrap();
         let dec = PlanModeReminderDecorator::new(plan);
         let mut out = ok_with(json!({"matches": ["src/main.rs"]}));
         dec.decorate("glob", &mut out).await;
@@ -113,9 +118,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn unavailable_state_is_diagnosed_not_presented_as_an_exit() {
+        let db = Arc::new(deepagent_persistence::Database::open_in_memory().unwrap());
+        let plan =
+            PlanMode::for_session(db, &deepagent_core::id::SessionId::new().to_string()).unwrap();
+        let dec = PlanModeReminderDecorator::new(plan);
+        let mut out = ok_with(json!({"synthetic_result":true}));
+        dec.decorate("read_file", &mut out).await;
+        assert!(out.ok);
+        assert_eq!(out.value["synthetic_result"], true);
+        assert!(out.value["_system_reminder"]
+            .as_str()
+            .unwrap()
+            .contains("status is unavailable"));
+    }
+
+    #[tokio::test]
     async fn reminder_lists_disabled_tools_so_model_does_not_retry_them() {
         let plan = PlanMode::new();
-        plan.set(true);
+        plan.set(true).unwrap();
         let dec = PlanModeReminderDecorator::new(plan);
         let mut out = ok_with(json!({}));
         dec.decorate("read_file", &mut out).await;
@@ -128,7 +149,7 @@ mod tests {
     #[tokio::test]
     async fn reminder_does_not_change_ok_status() {
         let plan = PlanMode::new();
-        plan.set(true);
+        plan.set(true).unwrap();
         let dec = PlanModeReminderDecorator::new(plan);
         let mut out = ok_with(json!({"x": 1}));
         dec.decorate("any", &mut out).await;
@@ -154,7 +175,7 @@ mod tests {
         dec.decorate("read_file", &mut off).await;
         assert!(off.value.get("_system_reminder").is_none());
 
-        plan.set(true);
+        plan.set(true).unwrap();
         let mut on = ok_with(json!({}));
         dec.decorate("read_file", &mut on).await;
         assert!(on.value["_system_reminder"]
@@ -162,7 +183,7 @@ mod tests {
             .unwrap()
             .contains("Plan mode is active"));
 
-        plan.set(false);
+        plan.set(false).unwrap();
         let mut off_again = ok_with(json!({}));
         dec.decorate("read_file", &mut off_again).await;
         assert!(off_again.value.get("_system_reminder").is_none());

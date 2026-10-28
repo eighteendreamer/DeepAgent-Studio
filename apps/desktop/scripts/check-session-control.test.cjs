@@ -93,3 +93,66 @@ test("a missing session does not call the backend or mutate the screen", async (
   assert.equal(f.state.messages, f.original);
   assert.equal(f.liveTranscripts.current.get("source"), f.original);
 });
+
+// Execute the production session-activation effect, including its cleanup.
+function planModeEffect(getPlanMode) {
+  const file = path.resolve(__dirname, "../src/App.tsx");
+  const ast = ts.createSourceFile(file, fs.readFileSync(file, "utf8"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  let expression;
+  function visit(node) {
+    if (ts.isCallExpression(node) && node.expression.getText(ast) === "useEffect"
+      && node.arguments[0]?.getText(ast).includes("getPlanMode(activeId)")) {
+      assert.equal(expression, undefined, "one authoritative activation effect");
+      expression = node.arguments[0].getText(ast);
+    }
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.ok(expression);
+  const state = { mode: true, errors: [] };
+  const bindings = {
+    activeId: "synthetic-session", activeIdRef: { current: null },
+    getSessionDetail: async () => ({ context_usage: null }), getPlanMode,
+    setDetail: () => {}, setContextUsageByKey: () => {},
+    setPlanMode: (value) => { state.mode = value; },
+    message: { error: (error) => state.errors.push(error) },
+  };
+  const compiled = ts.transpileModule(`module.exports = (${expression});`, {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+  }).outputText;
+  const module = { exports: {} };
+  new Function("module", ...Object.keys(bindings), compiled)(module, ...Object.values(bindings));
+  return { state, cleanup: module.exports() };
+}
+
+test("plan state is unknown while loading and a failed read never means normal mode", async () => {
+  let reject;
+  const f = planModeEffect(() => new Promise((_, fail) => { reject = fail; }));
+  assert.equal(f.state.mode, null);
+  reject(new Error("synthetic recovery failure"));
+  await new Promise(setImmediate);
+  assert.equal(f.state.mode, null);
+  assert.equal(f.state.errors.length, 1);
+  assert.match(f.state.errors[0], /\/plan.*\/execute/);
+  assert.match(f.state.errors[0], /synthetic recovery failure/);
+});
+
+for (const active of [true, false]) {
+  test(`plan state applies the authoritative ${active} value`, async () => {
+    const f = planModeEffect(async () => active);
+    await new Promise(setImmediate);
+    assert.equal(f.state.mode, active);
+    assert.deepEqual(f.state.errors, []);
+  });
+}
+
+test("a stale plan-state rejection cannot change another session or publish its error", async () => {
+  let reject;
+  const f = planModeEffect(() => new Promise((_, fail) => { reject = fail; }));
+  f.cleanup();
+  f.state.mode = false;
+  reject(new Error("previous session"));
+  await new Promise(setImmediate);
+  assert.equal(f.state.mode, false);
+  assert.deepEqual(f.state.errors, []);
+});

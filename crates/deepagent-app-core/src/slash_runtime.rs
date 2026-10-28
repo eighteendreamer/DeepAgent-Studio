@@ -4,7 +4,7 @@
 //! dispatch slash commands. The chat service constructs a [`SlashRuntime`] from
 //! its fields and delegates; the Tauri layer's public API is unchanged.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Mutex};
@@ -51,7 +51,6 @@ pub struct SlashRuntime<'a> {
     pub projects: Option<&'a ProjectService>,
     pub skills: Option<&'a Mutex<SkillsService>>,
     pub tool_results_dir: &'a Path,
-    pub plan_modes: &'a Mutex<HashMap<String, deepagent_builtins::PlanMode>>,
     pub plugins: Option<&'a PluginService>,
 }
 
@@ -77,20 +76,19 @@ impl<'a> SlashRuntime<'a> {
         }
     }
 
-    fn is_plan_mode(&self, session_id: &str) -> bool {
-        let map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
-        map.get(session_id)
-            .map(deepagent_builtins::PlanMode::is_active)
-            .unwrap_or(false)
+    fn is_plan_mode(&self, session_id: &str) -> Result<bool> {
+        Ok(deepagent_persistence::event_store::EventStore::new(self.db)
+            .session_plan_mode(session_id.parse()?)?
+            .active)
     }
 
-    fn set_plan_mode(&self, session_id: &str, active: bool) -> bool {
-        let plan = {
-            let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
-            map.entry(session_id.to_string()).or_default().clone()
-        };
-        plan.set(active);
-        plan.is_active()
+    fn set_plan_mode(&self, session_id: &str, active: bool) -> Result<()> {
+        deepagent_persistence::event_store::EventStore::new(self.db).set_session_plan_mode(
+            session_id.parse()?,
+            active,
+            SystemClock.now(),
+        )?;
+        Ok(())
     }
 
     /// Dispatch a parsed slash-command result against the live session.
@@ -104,11 +102,11 @@ impl<'a> SlashRuntime<'a> {
     ) -> Result<String> {
         let message = match result.action {
             SlashAction::EnterPlanMode => {
-                self.set_plan_mode(session_id, true);
+                self.set_plan_mode(session_id, true)?;
                 result.message
             }
             SlashAction::ExitPlanMode => {
-                self.set_plan_mode(session_id, false);
+                self.set_plan_mode(session_id, false)?;
                 result.message
             }
             SlashAction::Compact => {
@@ -205,7 +203,7 @@ impl<'a> SlashRuntime<'a> {
             }
             SlashAction::Status => {
                 let root = self.effective_root();
-                let plan = if self.is_plan_mode(session_id) {
+                let plan = if self.is_plan_mode(session_id)? {
                     "开启"
                 } else {
                     "关闭"

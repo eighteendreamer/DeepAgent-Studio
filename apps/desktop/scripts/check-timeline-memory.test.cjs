@@ -169,6 +169,7 @@ test("no durable event disappears from the transcript without a decision", () =>
   assert.ok(variants.length >= 17, `parsed only ${variants.length} EventPayload variants`);
 
   const deliberatelyInvisible = {
+    PlanModeChanged: "collaboration state is read by get_plan_mode; command/tool messages already explain selections, not an extra conversation turn",
     SessionStarted: "session metadata; the transcript opens with the first message",
     SessionEnded: "lifecycle marker for the session list, not a row",
     TaskCreated: "task bookkeeping; the plan panel renders it",

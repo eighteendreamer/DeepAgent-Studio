@@ -28,6 +28,10 @@ pub(crate) struct SessionFileHeader {
     /// Absent in older/non-harness sessions; never inferred from transcript text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) execution_config: Option<deepagent_core::execution_config::SessionExecutionConfig>,
+    /// Only new sessions have a known initial inactive plan mode. Legacy
+    /// headers remain unknown until an explicit PlanModeChanged selection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) plan_mode_version: Option<u32>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1057,6 +1061,7 @@ mod tests {
             project: None,
             created_at: Timestamp::from_millis(1),
             execution_config: None,
+            plan_mode_version: None,
         }
     }
 

@@ -28,6 +28,9 @@ use sha2::{Digest, Sha256};
 use crate::session_files::{self, SessionFileCursor, SessionFileHeader};
 use crate::{map_sqlite, Database};
 
+mod plan_mode;
+pub use plan_mode::SessionPlanMode;
+
 /// Existing repository facade over session metadata and file-backed events.
 pub struct EventStore<'db> {
     db: &'db Database,
@@ -281,6 +284,7 @@ impl<'db> EventStore<'db> {
                 project: project.map(str::to_owned),
                 created_at: now,
                 execution_config,
+                plan_mode_version: Some(plan_mode::VERSION),
             },
         )?;
         let result =
@@ -1346,6 +1350,7 @@ impl<'db> EventStore<'db> {
                 project: record.project.clone(),
                 created_at: now,
                 execution_config: loaded.header.execution_config,
+                plan_mode_version: loaded.header.plan_mode_version,
             },
             events,
             projections,
@@ -2125,6 +2130,7 @@ mod tests {
                 SessionFileHeader {
                     id: session_id,
                     title: Some("orphaned creation".into()),
+                    plan_mode_version: Some(plan_mode::VERSION),
                     mode: SessionMode::Normal,
                     project: Some("G:/workspace/orphan".into()),
                     created_at: Timestamp::from_millis(42),

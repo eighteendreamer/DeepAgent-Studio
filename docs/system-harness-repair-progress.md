@@ -1,22 +1,50 @@
 # Harness 问题修复进度
 
-## 当前状态与计数口径（2026-10-28）
+## 当前状态与计数口径（2026-10-29）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十八项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十九项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 68 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-284、H-286、H-287、H-300，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 69 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-284、H-286、H-287、H-288、H-300，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前没有正在修改但尚未完成验收的条目 |
-| 待修复 | 211 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-288已按E-H288-09所列本机范围验收 |
+| 待修复 | 210 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **211（全部待修复）**；不提供完成率。六十八项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **210（210待修复、0修复中）**；不提供完成率。六十九项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-288 本轮即时记录（2026-10-29）
+
+**当前状态：已修复并验收（2026-10-29，仅E-H288-09所列Windows本机、离线与受控组件范围）；修复提交待独立提交后回填。** E-H288-01～08保留修前、候选失败及门禁终态，阶段性“修复中/待执行”不代表最终状态。
+
+E-H288-01（本轮修前复核与范围，2026-10-28）：tracked起始干净，HEAD为09eb357b；已有隔离原探针真实终态为原生101、221.30秒，1 passed / 1 failed / 0 ignored（target/h288-before-20261028*），不是本轮重跑。两入口热续聊拒写，关闭旧服务及SQLite后重开均mode=false/ok=true/written=true；本轮仅治理该同根因恢复状态，不合并其他H项。候选复用原会话源的版本化PlanModeChanged与新会话header来源标记；旧无状态会话明确要求选择，所有生产入口和工具门禁读取同一持久化投影。此为参考DeepSeek Harness最后值投影后适配本系统硬门禁的本地设计，不另建store/审批/取消。尚未验收、未提交；fork/rewind/compaction、所有入口、失败、并发、权限组合及相关构建均待实跑，不宣称通过。
+
+E-H288-02（候选边界与编译，2026-10-29）：在原EventStore下增加唯一plan_mode投影，版本1选择事件由原append提交；新会话header标记已知默认false，legacy无来源不默认退出，fork复制header、rewind保留原header与有效事件前缀。生产PlanMode绑定原Database/session，每次准入重读权威源而非缓存，setter/slash/工具/initial/workflow/hook/reminder共用；读/写失败传播，提醒器因原void接口显式诊断而不伪造退出。第一候选check（persistence/builtins/AppCore --tests）原生0、70.57秒；首组builtins 4/0/0、persistence模式6/0/0，原生0、54.45秒（target/h288-first-compile-20261029*、h288-state-unit-20261029*）。这些不是完整验收，不能覆盖随后新增回归。
+
+E-H288-03（正式原链与扩展反例，2026-10-29）：原plan_lifecycle::带include-ignored候选原生0、232.52秒，2 passed/0 failed/0 ignored（target/h288-formal-candidate-20261029*）；setter及/plan在SQLite/服务真正重开后均cold_mode=true、工具error、目标不存在。随后原探针取消ignore，新增初始模式、模型enter/exit与独立read_only组合；两次默认扩展组均4 passed/1 failed/0 ignored，分别154.12/179.92秒（target/h288-expanded-formal-{default,policy}-20261029*）。唯一失败是新增read_only夹具先后误期待permission字样及FsGuard执行期错误；真实拒绝更早来自现有FsGuardHook，输出hook_denied和modify is blocked by the current sandbox mode，目标始终未创建、exit模式已持久化。已核对guard_hooks.rs与原hook权限测试，改为断言该精确结构化拒绝，不放松为任意error；该最后断言仍待复验，未修改生产权限/沙箱逻辑，不抹去两次失败。
+
+E-H288-04（模式专项与兼容性，2026-10-29）：persistence/builtins/AppCore --lib plan_mode原生0、121.37秒，各6 passed/0 failed/0 ignored（target/h288-expanded-state-unit-20261029*）。覆盖显式切换失败不确认退出、未知源门禁失败、提醒诊断、新默认/legacy未知显式选择、未来版本/损坏字段拒绝、关闭重开/双handle、fork/rewind/compaction及历史控制拒绝。其后新增四handle并发16次提交的无gap/最后值回归，尚待实跑。没有SQL migration或新依赖；Rust PlanMode及ChatService读写API变为Result，已同步仓内调用方；Tauri wire仍为boolean成功值与原错误通道。旧无状态会话需显式/plan或/execute；未知版本不允许以setter覆盖，不保证降级/混用旧二进制契约。每工具全量源读取的长会话成本、其他OS/真实进程重启/强杀/跨宿主压力未验；并发选择在下一工具准入生效，不撤销已通过门禁的工具，不另造取消机制。
+
+E-H288-05（前端真实回归与合成UI，2026-10-29）：生产会话激活effect的8项测试通过，读失败保留unknown并显式通知，清理后的迟到错误不覆盖另一会话；组件通过现有shadcn Item显示unknown，不显示为已退出。首轮pnpm build原生1、31.83秒，新增PlanModeChanged缺少聊天投影决策而被原门禁发现；按既有规则登记为明确不可见的协作状态（get_plan_mode显示，命令/工具消息说明），不新增虚假聊天turn。随后完整pnpm build原生0、147.98秒（target/h288-ui-build{,-projection}-20261029*），包含8项新增/原会话控制测试、TS类型及Vite构建。用仅localhost的临时合成入口加载真实Composer，实际切换unknown/active/normal三态并核对AX与截图（target/h288-ui-{unknown,active,normal}-20261029.png）；无宿主/真实会话/模型/凭据，未点击发送。临时server已停止、入口移至target/h288-ui-harness-20261029，不纳入提交；此不是完整Tauri重启验收。
+
+E-H288-06（严格lint真实范围，2026-10-29）：core/persistence/builtins --all-targets --all-features --no-deps严格Clippy原生0、18.32秒（target/h288-source-strict-lint-20261029*），仅该快照，尚未覆盖之后的并发单测。AppCore同参数原生101、53.50秒（target/h288-appcore-strict-lint-20261029*），11项：context_runtime八处clone_on_copy、plugin_preparation type_complexity、base_registry_request既有too_many_arguments、http_runtime.rs:332既有needless_return（all-features才启用）；HEAD核对后相关前三文件无diff，不顺手修或屏蔽。根workspace fmt通过；独立Tauri fmt check仍含原imports与set_reasoning_effort格式差异，本项get/set桥接已按formatter输出调整，不把外层PowerShell exit0当该子命令通过。完整workspace、Tauri lib检查、默认正式精确断言与新增并发回归仍待终态；H-288修复中、无commit，新增验收0，68本阶段验收/18历史跳过/7归并/2撤销/210待修+1修复中=211有效未关闭。总体200–400有效小时仍为历史未逐项校准粗估，环境等待另计。
+
+E-H288-07（最新默认门禁与待续收取，2026-10-29）：E-06后只修正read_only夹具的精确期望、新增四handle并发测试，并按独立formatter格式化两处桥接；源码/前端脚本SHA256固定于target/h288-review-source-20261029.json且复核未变。默认正式plan_lifecycle::（不带include-ignored）原生0、110.64秒，5 passed/0 failed/0 ignored（target/h288-formal-reviewed-20261029*），包括原冷恢复、合法退出/其他会话、初始模式重开、模型enter→拒写→exit→正常写及独立read_only沙箱Hook精确拒绝。persistence模式组原生0、10.57秒，7/0/0（target/h288-concurrency-reviewed-20261029*），四独立连接同时提交16次、事件连续且最终状态等于最后commit；不是跨进程或跨主机压力验收。最终root fmt check原生0；独立Tauri fmt check原生1，仅剩HEAD已有imports及set_reasoning_effort差异，本项桥接不再出现在差异内（target/h288-{final-format,tauri-format}-20261029*）。两文档E-01～06逐项一致，台账306行/306唯一编号/其他305行与HEAD逐字一致，计数68/18/7/2/210待修/1修复中。当前同一顺序执行会话90955已实际进入隔离完整workspace test --offline --no-fail-fast -j 2 -- --quiet --test-threads=1（顶层target-dir为target/h300-after-h163-build），证据target/h288-reviewed-workspace-20261029*；其后排队Tauri lib check、core/persistence/builtins最新严格lint（h288-reviewed-tauri、h288-reviewed-lint），尚未执行到不能称通过。需继续收取同一会话，不因观察超时重启；尚未全项验收、无commit、不推送，整体任务保持active。
+
+E-H288-08（完整门禁终态与基线核对，2026-10-29）：E-07排队的命令均已终结，16份源码/前端测试的SHA256与target/h288-review-source-20261029.json全部一致，没有用旧版本结果替代当前候选。`cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1`原生101、1137.47秒，130个标准结果合计 **3694 passed / 1 failed / 307 ignored**（target/h288-reviewed-workspace-20261029*）；唯一失败仍为H-306的canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，creative.video-edit.v1空defaultUserPrompt，相关校验和资源未被本项修改。AppCore lib **1231/0/62 ignored**、正式Kernel **165/0/77 ignored**、builtins **364/0/4 ignored**、persistence **99/0/0**、runtime **332/0/9 ignored**、core **43/0/0**、session **20/0/0**、CLI **120/0/22 ignored**、Rust SDK真实stdio **6/0/0**均通过，不把ignored计为通过或宣称全仓全绿。
+
+`cargo check --target-dir target/h300-after-h163-build --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 2`原生0、55.74秒；`cargo clippy --target-dir target/h300-after-h163-build -p deepagent-core -p deepagent-persistence -p deepagent-builtins --all-targets --all-features --no-deps --offline -j 2 -- -D warnings`原生0、11.38秒，覆盖最终并发测试（target/h288-reviewed-{tauri,lint}-20261029*）。随后全workspace严格Clippy原生101、31.99秒，仅到未修改models/client.rs:355的clone_on_copy即停止（target/h288-workspace-strict-lint-20261029*），不等于列尽全部lint；AppCore自身11项既有基线及独立Tauri fmt限制继续按E-06～07保留，未新增抑制、未顺手修复。E-07的“workspace执行中/Tauri及最终局部lint排队”据此收束；E-05完整pnpm build及合成真实Composer三态UI仍适用于未变源码。
+
+E-H288-09（本项验收与交付边界，2026-10-29）：人工复核所有生产PlanMode来源、slash/initial/workflow/工具与Tauri消费方，已无独立plan_modes缓存；模式取自原EventStore的版本化选择事件和新会话来源标记，原工具门禁每次重读，读取失败不变成false，切换成功只在原append成功后确认。原故障探针已取消ignore，并以默认正式5/0/0、持久化7/0/0、相关完整组和前端失败/迟到隔离回归覆盖同会话关闭重开、显式退出、另一会话、模型工具切换、独立read_only拒绝、fork/rewind/compaction、legacy未知与未来版本、四连接16次无gap提交。保留修前失败与两次夹具期望错误；“失败切换不确认退出”的专项只证明提交前历史控制拒绝，未新增source已提交而SQL投影失败的专项，不把任何错误返回泛化为无副作用保证。
+
+据此H-288在Windows本机、离线MockTransport、临时SQLite/合成文件及受控真实Composer范围内已修复并验收。旧无状态会话需明确/plan或/execute；Rust PlanMode/ChatService公开读写API改为Result，仓内调用方已同步，Tauri成功wire仍boolean。无新依赖、SQL迁移、第二运行/store/审批/取消链或权限放宽；不保证降级/混用旧二进制契约。模式选择在下一工具准入生效，不撤销已准入工具；长会话全量源读取性能、真实进程重启/强杀、完整Tauri窗口、其他OS和跨宿主压力未验，不用服务/DB重建或窄视口合成截图冒充。新增验收1，累计 **69验收/18历史跳过/7归并/2撤销/210待修复/0修复中，210有效未关闭**；整体目标未完成。代码/测试和两文档仅本项内容独立提交，取得hash后另做文档回填，不amend、不推送。下一项拟按文件完整性风险优先复核H-260（压缩后陈旧读取资格），先验证原探针，不预认仍成立；总剩余200–400有效小时仍为未经逐项校准的历史粗估，依据跨层授权、执行、持久化与客户端风险规模，编译/设备/依赖等待另计，不机械扣减或承诺完工日期。
+
+E-H288-10（提交前复核，2026-10-29）：本轮重新执行`cargo fmt --all -- --check`与`git diff --check`均原生0；在apps/desktop执行`node --test scripts/check-session-control.test.cjs scripts/check-timeline-memory.test.cjs`原生0，**18 passed / 0 failed / 0 skipped**。16份源码SHA256仍与E-07最终门禁快照全部一致；306行台账、306唯一编号，除H-288外其余305行与HEAD逐字一致，状态69/18/7/2/210待修/0修复中与两份概要相符，E-01～09逐项文本一致。复看现存三态截图确认unknown警告、active徽标与normal状态区分；合成入口为窄视口且存在横向裁切，不作为完整工作台视觉验收。仅拟暂存16份本项源码/测试及两份台账，保留target中的修前/候选/最终证据和用户五类未跟踪项；本记录不扩大E-09验收范围。
 
 ## H-287 本轮即时记录（2026-10-28）
 
@@ -2181,7 +2209,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-285：Harness 接受不存在的分叉锚点，超出有符号范围后恢复旧文件却复制完整成功历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-286：`move_path` 覆盖目标前先递归删除，移到源的祖先目录时失败却删除源和无关文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原正式探针修复前 1 passed / 1 failed；修复后默认 2 passed | 原生 no-replace 发布；旧目标 staging/失败恢复；失败恢复保留 recovery_path | 详见本文件 H-286 命令表：builtins 292 passed/1 ignored，AppCore 正式链 102 passed/92 ignored；全量/lint 限制保留 | `56b9e7b9` | Windows 本机范围验收；其他 OS、真实跨卷/断电/UI 未验，不等于全局通过；本项本地剩余工时 0，环境验收另计 |
 | [H-287：Windows 内容原子替换丢失目标文件 DACL，成功编辑及检查点恢复均未保留原访问控制策略](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H287-01～15保留原失败及候选反例；仅Windows本机临时数据范围 | 共享版本化DACL快照；写前保护；现有检查点树复制/根发布/继承核验与失败补偿，不另造恢复中心 | 最终默认Kernel161/0/78、checkpoint19/0/1；builtins362/0/4、persistence92/0/0、runtime332/0/9；checkpoint显式20/0/0；persistence/builtins严格lint、Tauri check通过；全仓3680/1/308仅既有H-306失败，严格lint既有clone阻断，见E-14 | `f2efc1b5659589aeff06ea357babf8eb8d933a7b` | 旧Windows检查点缺DACL元数据明确拒绝存在项恢复；无SQL迁移，owner/SACL/其他OS/断电未验；211有效待修，总200–400未校准有效小时，等待另计 |
-| [H-288：计划模式只存在服务内存，恢复同一会话后静默失去写入限制](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-288：计划模式只存在服务内存，恢复同一会话后静默失去写入限制](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H288-01～09保留原失败与候选反例；仅Windows本机离线/受控组件范围 | 原会话源版本化模式投影，统一生产读写与每次工具准入，unknown/失败不默认退出；无第二运行或store | 默认正式5/0/0、持久化7/0/0、前端完整build/合成三态UI、Tauri check及core/persistence/builtins严格lint通过；最终全仓3694/1/307仅既有H-306失败；AppCore/全局lint和独立Tauri fmt既有基线见E-06～09 | 独立提交后回填 | 旧会话未知需显式选择，Rust API改Result而成功wire不变；无SQL迁移；长会话性能/真实进程重启/完整窗口/其他OS未验；210有效未关闭，总200–400未校准有效小时，等待另计 |
 | [H-289：CodeGraph 定义文件变更后不会重新连接未修改 caller 的调用边](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-290：画布供应商保存先提交配置、后写密钥，密钥持久化失败后发布新配置与旧凭据的混合身份](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-291：重复编号撤销，归并 H-126（2026-10-25 更正）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-126 | 只关联原证据，不新增修复任务 | 验收由 H-126 统一记录 | 无独立修复提交 | 不独立计数或估时 |

@@ -131,13 +131,6 @@ pub struct ChatService {
     runtime_logs: Option<Arc<RuntimeLogStore>>,
     /// Base directory for persisted large tool results.
     tool_results_dir: PathBuf,
-    /// Per-session Plan-mode flags. Plan mode is a read-only planning state:
-    /// while active, the BeforeToolUse plan-mode hook denies write tools. The
-    /// flag is shared (cheap `Arc<AtomicBool>`) so the enter/exit tools, the
-    /// hook, and the UI toggle all view the same state. Sessions with no entry
-    /// are in normal mode.
-    plan_modes:
-        Arc<std::sync::Mutex<std::collections::HashMap<String, deepagent_builtins::PlanMode>>>,
     /// Per-session cancellation trees for in-flight runs. The UI sets one via
     /// [`ChatService::cancel_session`] to stop the model stream, tools, and
     /// agent loop through one propagated signal.
@@ -264,7 +257,6 @@ impl ChatService {
             cost: None,
             runtime_logs: None,
             tool_results_dir,
-            plan_modes: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             input_leases: Arc::new(InputLeaseRegistry::default()),
             subagent_controls: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
             discovered_tools: Arc::new(std::sync::Mutex::new(std::collections::HashMap::new())),
@@ -838,26 +830,15 @@ impl ChatService {
             .resolve_approval_scoped(approval_id, approved, scope, decided_by)
     }
 
-    /// Return the shared plan-mode flag for a session, creating an inactive
-    /// flag the first time this process sees the session.
-    fn plan_mode_for_session(&self, session_id: &str) -> deepagent_builtins::PlanMode {
-        let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
-        map.entry(session_id.to_string()).or_default().clone()
-    }
-
-    /// Whether the session is currently in read-only Plan mode.
-    pub fn is_plan_mode(&self, session_id: &str) -> bool {
-        let map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
-        map.get(session_id)
-            .map(deepagent_builtins::PlanMode::is_active)
-            .unwrap_or(false)
+    /// Read the same durable state used by slash commands and tool admission.
+    pub fn is_plan_mode(&self, session_id: &str) -> Result<bool> {
+        deepagent_builtins::PlanMode::for_session(self.db.clone(), session_id)?.is_active()
     }
 
     /// Set the session's read-only Plan mode flag and return the new state.
-    pub fn set_plan_mode(&self, session_id: &str, active: bool) -> bool {
-        let plan = self.plan_mode_for_session(session_id);
-        plan.set(active);
-        plan.is_active()
+    pub fn set_plan_mode(&self, session_id: &str, active: bool) -> Result<bool> {
+        deepagent_builtins::PlanMode::for_session(self.db.clone(), session_id)?.set(active)?;
+        Ok(active)
     }
 
     /// Return the shared discovered-tools set for a session, creating an
@@ -1370,7 +1351,6 @@ impl ChatService {
             coordinator: &self.coordinator,
             bash_allow: &self.bash_allow,
             input_leases: &self.input_leases,
-            plan_modes: &self.plan_modes,
             subagent_controls: &self.subagent_controls,
             tool_results_dir: &self.tool_results_dir,
             runtime_logs: &self.runtime_logs,
@@ -2222,7 +2202,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(chat.is_plan_mode(&sid));
+        assert!(chat.is_plan_mode(&sid).unwrap());
         assert!(collected.lock().unwrap().iter().any(|ev| {
             matches!(ev, RuntimeEvent::RunCompleted { message, .. } if message.contains("Entered Plan mode"))
         }));
@@ -2241,7 +2221,7 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!chat.is_plan_mode(&sid));
+        assert!(!chat.is_plan_mode(&sid).unwrap());
 
         let id = deepagent_core::id::SessionId::from_str(&sid).unwrap();
         let store = deepagent_persistence::event_store::EventStore::new(&db);

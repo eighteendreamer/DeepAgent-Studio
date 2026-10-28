@@ -8,7 +8,12 @@ use std::path::Path;
 const WRITTEN: &str = "synthetic-plan-lifecycle-write\n";
 
 #[derive(Default)]
-struct PlanModel(Mutex<Vec<Value>>);
+struct PlanModel(Mutex<Vec<Value>>, Vec<PlanOperation>);
+
+enum PlanOperation {
+    Select(bool),
+    Write(&'static str),
+}
 
 #[async_trait]
 impl HttpTransport for PlanModel {
@@ -20,7 +25,24 @@ impl HttpTransport for PlanModel {
             requests.len() - 1
         };
         let action = step / 2;
-        let item = if step % 2 == 0 {
+        let item = if let Some(operation) = self.1.get(step) {
+            match operation {
+                PlanOperation::Select(active) => super::responses_fixture::call(
+                    &format!("audit-mode-{step}"),
+                    if *active {
+                        "enter_plan_mode"
+                    } else {
+                        "exit_plan_mode"
+                    },
+                    json!({}),
+                ),
+                PlanOperation::Write(path) => super::responses_fixture::call(
+                    &format!("audit-mode-{step}"),
+                    "write_file",
+                    json!({"path":path,"content":WRITTEN}),
+                ),
+            }
+        } else if self.1.is_empty() && step % 2 == 0 {
             super::responses_fixture::call(
                 &format!("audit-plan-write-{action}"),
                 "write_file",
@@ -86,7 +108,7 @@ async fn attempt(
     let action = start / 2;
     let path = workspace.join(format!("generated-{action}.txt"));
     assert!(!path.exists());
-    let mode = chat.is_plan_mode(session);
+    let mode = chat.is_plan_mode(session).unwrap();
     let actual_session = chat
         .run_in_session(
             "Continue the supplied controlled local audit and report the tool result.",
@@ -170,7 +192,7 @@ async fn observe_reopen(slash: bool, reapply: bool) -> WriteObservation {
             chat.run("/plan", |_| {}, |_| {}).await.unwrap()
         } else {
             let session = chat.create_session(None).unwrap();
-            assert!(chat.set_plan_mode(&session, true));
+            assert!(chat.set_plan_mode(&session, true).unwrap());
             session
         };
         assert_eq!(model.0.lock().unwrap().len(), 0);
@@ -197,9 +219,9 @@ async fn observe_reopen(slash: bool, reapply: bool) -> WriteObservation {
     let config = settings(db.clone(), secrets);
     assert_eq!(config.view().unwrap().unwrap().chat_model, "deepseek-flash");
     let chat = ChatService::new(db, config, model.clone(), &workspace);
-    let cold_mode_before_reapply = chat.is_plan_mode(&session);
+    let cold_mode_before_reapply = chat.is_plan_mode(&session).unwrap();
     if reapply {
-        assert!(chat.set_plan_mode(&session, true));
+        assert!(chat.set_plan_mode(&session, true).unwrap());
     }
     let cold = attempt(&chat, &model, &workspace, &session, "audit-plan-cold").await;
     assert_eq!(cold.prior_plan_in_wire, slash);
@@ -247,7 +269,7 @@ async fn plan_lifecycle_explicit_reapply_and_exit_controls() {
     .await;
     assert!(!exited.mode && exited.ok && exited.written);
     let unrelated = chat.create_session(None).unwrap();
-    assert!(chat.set_plan_mode(&session, true));
+    assert!(chat.set_plan_mode(&session, true).unwrap());
     let normal = attempt(
         &chat,
         &model,
@@ -260,7 +282,6 @@ async fn plan_lifecycle_explicit_reapply_and_exit_controls() {
 }
 
 #[tokio::test]
-#[ignore = "audit: session plan restrictions must survive closing and reopening their host"]
 async fn audit_plan_mode_survives_database_and_service_reopen() {
     let mut observations = Vec::new();
     for slash in [true, false] {
@@ -270,4 +291,199 @@ async fn audit_plan_mode_survives_database_and_service_reopen() {
         observations.iter().all(|v| v.mode && !v.ok && !v.written),
         "recovering the same session silently removed its plan restriction"
     );
+}
+
+#[tokio::test]
+async fn plan_lifecycle_exit_does_not_grant_read_only_write_permissions() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(temp.path().join("state.sqlite")).unwrap());
+    let config = settings(db.clone(), Arc::new(MemorySecretStore::new()));
+    config
+        .initialize("offline-audit-placeholder")
+        .await
+        .unwrap();
+    let model = Arc::new(PlanModel(
+        Mutex::new(Vec::new()),
+        vec![
+            PlanOperation::Select(false),
+            PlanOperation::Write("must-stay-absent.txt"),
+        ],
+    ));
+    let chat = ChatService::new(db, config, model.clone(), temp.path());
+    let id = chat.create_session(None).unwrap();
+    assert!(chat.set_plan_mode(&id, true).unwrap());
+    chat.run_in_session_with_overrides(
+        "Execute the supplied synthetic permission control.",
+        Some(&id),
+        None,
+        None,
+        Vec::new(),
+        None,
+        false,
+        None,
+        deepagent_app_core::HarnessRunOverrides {
+            permission_profile: Some("read_only".into()),
+            ..Default::default()
+        },
+        |_| {},
+        |_| panic!("read_only denial must not be an approval grant"),
+    )
+    .await
+    .unwrap();
+    assert!(!chat.is_plan_mode(&id).unwrap());
+    assert!(!temp.path().join("must-stay-absent.txt").exists());
+    let requests = model.0.lock().unwrap();
+    assert_eq!(requests.len(), 3);
+    let outputs: Vec<_> = requests[2]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "function_call_output" && item["call_id"] == "audit-mode-1")
+        .collect();
+    assert_eq!(outputs.len(), 1);
+    let result: Value = serde_json::from_str(outputs[0]["output"].as_str().unwrap()).unwrap();
+    assert_eq!(result["status"], "error");
+    assert_eq!(result["error"]["error_type"], "hook_denied");
+    assert_eq!(
+        result["error"]["error"],
+        "blocked by hook: modify is blocked by the current sandbox mode: 'must-stay-absent.txt'"
+    );
+}
+
+#[tokio::test]
+async fn plan_lifecycle_model_tools_commit_before_the_next_write_gate() {
+    let temp = tempfile::tempdir().unwrap();
+    let db = Arc::new(Database::open(temp.path().join("state.sqlite")).unwrap());
+    let config = settings(db.clone(), Arc::new(MemorySecretStore::new()));
+    config
+        .initialize("offline-audit-placeholder")
+        .await
+        .unwrap();
+    let model = Arc::new(PlanModel(
+        Mutex::new(Vec::new()),
+        vec![
+            PlanOperation::Select(true),
+            PlanOperation::Write("while-active.txt"),
+            PlanOperation::Select(false),
+            PlanOperation::Write("after-exit.txt"),
+        ],
+    ));
+    let chat = ChatService::new(db.clone(), config, model.clone(), temp.path());
+    let id = chat
+        .run(
+            "Execute the supplied synthetic sequence and report tool results.",
+            |_| {},
+            |_| {},
+        )
+        .await
+        .unwrap();
+    assert!(!chat.is_plan_mode(&id).unwrap());
+    assert!(!temp.path().join("while-active.txt").exists());
+    assert_eq!(
+        std::fs::read_to_string(temp.path().join("after-exit.txt")).unwrap(),
+        WRITTEN
+    );
+    let requests = model.0.lock().unwrap();
+    assert_eq!(requests.len(), 5);
+    for (index, ok) in [true, false, true, true].into_iter().enumerate() {
+        let call = format!("audit-mode-{index}");
+        let outputs: Vec<_> = requests[index + 1]["input"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["type"] == "function_call_output" && item["call_id"] == call)
+            .collect();
+        assert_eq!(outputs.len(), 1);
+        let output: Value = serde_json::from_str(outputs[0]["output"].as_str().unwrap()).unwrap();
+        assert_eq!(output["status"] == "ok", ok);
+    }
+    let changes: Vec<_> = deepagent_persistence::event_store::EventStore::new(&db)
+        .load_session(id.parse().unwrap())
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            deepagent_core::event::EventPayload::PlanModeChanged { version: 1, active } => {
+                Some(active)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(changes, [true, false]);
+}
+
+#[tokio::test]
+async fn plan_lifecycle_initial_flag_is_durable_and_missing_state_fails_before_model_io() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("state.sqlite");
+    let model = Arc::new(PlanModel::default());
+    let secrets = Arc::new(MemorySecretStore::new());
+    let id = {
+        let db = Arc::new(Database::open(&path).unwrap());
+        let config = settings(db.clone(), secrets.clone());
+        config
+            .initialize("offline-audit-placeholder")
+            .await
+            .unwrap();
+        let chat = ChatService::new(db.clone(), config.clone(), model.clone(), temp.path());
+        let id = chat
+            .run_in_session(
+                "Try the supplied synthetic write and report the result.",
+                None,
+                None,
+                None,
+                Vec::new(),
+                None,
+                true,
+                None,
+                |_| {},
+                |_| {},
+            )
+            .await
+            .unwrap();
+        assert!(chat.is_plan_mode(&id).unwrap());
+        assert!(!temp.path().join("generated-0.txt").exists());
+        assert!(
+            chat.wait_for_session_memory_passes(std::time::Duration::from_secs(1))
+                .await
+        );
+        drop(chat);
+        drop(config);
+        assert_eq!(Arc::strong_count(&db), 1);
+        id
+    };
+    let db = Arc::new(Database::open(&path).unwrap());
+    let config = settings(db.clone(), secrets);
+    let chat = ChatService::new(db.clone(), config, model.clone(), temp.path());
+    let cold = attempt(&chat, &model, temp.path(), &id, "initial-flag-cold").await;
+    assert!(cold.mode && !cold.written && !cold.ok);
+    let count = model.0.lock().unwrap().len();
+    deepagent_persistence::event_store::EventStore::new(&db)
+        .append(
+            id.parse().unwrap(),
+            deepagent_core::event::EventPayload::PlanModeChanged {
+                version: 2,
+                active: false,
+            },
+            deepagent_core::clock::Timestamp::from_millis(999),
+        )
+        .unwrap();
+    assert!(chat.is_plan_mode(&id).is_err());
+    assert!(chat.set_plan_mode(&id, false).is_err());
+    assert!(chat
+        .run_in_session(
+            "Do not issue a model request on invalid state.",
+            Some(&id),
+            None,
+            None,
+            Vec::new(),
+            None,
+            false,
+            None,
+            |_| {},
+            |_| {}
+        )
+        .await
+        .is_err());
+    assert_eq!(model.0.lock().unwrap().len(), count);
+    assert!(!temp.path().join("generated-2.txt").exists());
 }

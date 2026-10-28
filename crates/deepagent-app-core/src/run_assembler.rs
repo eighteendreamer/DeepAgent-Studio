@@ -137,7 +137,6 @@ pub(crate) struct RunAssembler<'a> {
     pub(crate) coordinator: &'a Arc<RunCoordinator>,
     pub(crate) bash_allow: &'a [String],
     pub(crate) input_leases: &'a Arc<InputLeaseRegistry>,
-    pub(crate) plan_modes: &'a Arc<std::sync::Mutex<HashMap<String, deepagent_builtins::PlanMode>>>,
     pub(crate) subagent_controls: &'a Arc<std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub(crate) tool_results_dir: &'a Path,
     pub(crate) runtime_logs: &'a Option<Arc<RuntimeLogStore>>,
@@ -528,10 +527,12 @@ impl<'a> RunAssembler<'a> {
         let reasoning_effort = run_model.reasoning_effort;
         let fallback_model = run_model.fallback_model;
 
-        let plan = self.plan_mode_for_session(&session_id_str);
+        let plan = self.plan_mode_for_session(&session_id_str)?;
         if continue_session.is_none() && initial_plan_mode {
-            plan.set(true);
+            plan.set(true)?;
         }
+        // Reject unknown/corrupt recovery before issuing a model request.
+        plan.is_active()?;
 
         let restored_discovered = collect_discovered_tools_from_events(&prior_events);
         if !restored_discovered.is_empty() {
@@ -902,11 +903,6 @@ impl<'a> RunAssembler<'a> {
         let session_id = session.id().to_string();
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled before persisting user input"));
-        }
-        {
-            let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
-            map.entry(session_id.clone())
-                .or_insert_with(|| plan.clone());
         }
         session.append(EventPayload::MessageAppended {
             message: Message::user(&prompt_to_record)
@@ -1589,7 +1585,8 @@ impl<'a> RunAssembler<'a> {
         let gate: Arc<dyn deepagent_runtime::ApprovalGate> =
             Arc::new(PolicyGate::new(policy, Arc::new(channel_gate)));
         let mut hooks = deepagent_hooks::HookRegistry::new();
-        let plan = self.plan_mode_for_session(&session_id);
+        let plan = self.plan_mode_for_session(&session_id)?;
+        plan.is_active()?;
         hooks.register(
             deepagent_hooks::HookPoint::BeforeToolUse,
             Arc::new(deepagent_builtins::PlanModeHook::new(plan.clone())),
@@ -1726,7 +1723,6 @@ impl<'a> RunAssembler<'a> {
             projects: self.projects.as_deref(),
             skills: self.skills.as_deref(),
             tool_results_dir: self.tool_results_dir,
-            plan_modes: self.plan_modes,
             plugins: self.plugins.as_deref(),
         }
     }
@@ -1755,10 +1751,9 @@ impl<'a> RunAssembler<'a> {
         crate::slash_runtime::dynamic_command_prompt(&self.slash_runtime(), prompt)
     }
 
-    /// Return the shared plan-mode flag for a session.
-    fn plan_mode_for_session(&self, session_id: &str) -> deepagent_builtins::PlanMode {
-        let mut map = self.plan_modes.lock().unwrap_or_else(|p| p.into_inner());
-        map.entry(session_id.to_string()).or_default().clone()
+    /// Bind all consumers to the original session event source, never a cache.
+    fn plan_mode_for_session(&self, session_id: &str) -> Result<deepagent_builtins::PlanMode> {
+        deepagent_builtins::PlanMode::for_session(self.db.clone(), session_id)
     }
 
     /// Return the shared discovered-tools set for a session.

@@ -61,6 +61,8 @@ impl Event {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum EventPayload {
+    /// A committed collaboration-mode selection, independent of tool permissions.
+    PlanModeChanged { version: u32, active: bool },
     /// A new session was created.
     SessionStarted {
         /// Optional human-friendly title.
@@ -299,6 +301,7 @@ impl EventPayload {
     /// they are used for DB indexing and analytics.
     pub fn kind(&self) -> &'static str {
         match self {
+            EventPayload::PlanModeChanged { .. } => "plan_mode_changed",
             EventPayload::SessionStarted { .. } => "session_started",
             EventPayload::SessionEnded { .. } => "session_ended",
             EventPayload::TaskCreated { .. } => "task_created",

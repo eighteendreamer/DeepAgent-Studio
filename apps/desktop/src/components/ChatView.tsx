@@ -108,7 +108,7 @@ interface Props {
   /** Cancellation was accepted and the backend is draining the run. */
   stopping?: boolean;
   /** Current session is in read-only Plan mode. */
-  planMode?: boolean;
+  planMode?: boolean | null;
   /** Explicitly selected project path. Empty means the chat is not project-bound. */
   activeProjectPath?: string | null;
   /** Authoritative current chat repository path, supplied independently of global selection. */

@@ -2944,7 +2944,10 @@ fn cancel_subagent(
 
 #[tauri::command]
 fn get_plan_mode(state: State<'_, AppState>, session_id: String) -> Result<bool, String> {
-    Ok(state.chat.is_plan_mode(&session_id))
+    state
+        .chat
+        .is_plan_mode(&session_id)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -2953,7 +2956,10 @@ fn set_plan_mode(
     session_id: String,
     active: bool,
 ) -> Result<bool, String> {
-    Ok(state.chat.set_plan_mode(&session_id, active))
+    state
+        .chat
+        .set_plan_mode(&session_id, active)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
