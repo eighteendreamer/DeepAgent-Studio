@@ -9,6 +9,7 @@ use deepagent_app_core::{
     AppService, ArchiveService, ChatService, HarnessRunOverrides, SandboxCapabilities,
 };
 use deepagent_core::clock::SystemClock;
+use deepagent_core::id::SessionId;
 use deepagent_harness_protocol::{
     project_runtime_event, EventContext, HarnessEvent, HarnessRequest, InitializeRequest,
     RpcNotification, RpcRequest, RpcResponse, ThreadArchiveRequest, ThreadForkRequest,
@@ -41,6 +42,7 @@ const ERR_NOT_INITIALIZED: i32 = -32001;
 const ERR_ALREADY_INITIALIZED: i32 = -32002;
 const ERR_INVALID_THREAD: i32 = -32003;
 const ERR_INVALID_TURN: i32 = -32004;
+const ERR_THREAD_BUSY: i32 = -32005;
 const ERR_INVALID_PARAMS: i32 = -32602;
 const ERR_METHOD_NOT_FOUND: i32 = -32601;
 const ERR_INTERNAL: i32 = -32603;
@@ -802,6 +804,28 @@ impl ServerState {
                 None,
             );
         };
+        // dispatch holds the connection's ServerState mutex through admission
+        // and installation. ACKed, queued steering and cancelling workers all
+        // remain active until finish_turn, after AppCore releases their leases.
+        // Ordinary start must never trigger accept_input_turn's replace policy.
+        // Resume accepts equivalent SessionId spellings; those still share the
+        // same durable session and must not bypass its busy reservation.
+        let session_id = params.thread_id.parse::<SessionId>().ok();
+        if self.turns.values().any(|turn| {
+            turn.active
+                && (turn.thread_id == params.thread_id
+                    || session_id
+                        .is_some_and(|id| turn.thread_id.parse::<SessionId>().ok() == Some(id)))
+        }) {
+            return (
+                RpcResponse::error(
+                    id,
+                    ERR_THREAD_BUSY,
+                    "thread is busy; wait for the active turn to finish or use turn/steer explicitly",
+                ),
+                None,
+            );
+        }
         let turn_id = format!("turn_{}", deepagent_core::id::EventId::new());
         let overrides = HarnessRunOverrides {
             provider: params.provider.or(thread.overrides.provider),

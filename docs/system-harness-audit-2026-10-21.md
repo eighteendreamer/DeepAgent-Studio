@@ -9156,6 +9156,8 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 ### H-284：同一 Harness thread 的第二个 `turn/start` 被确认成独立 started，实际输入租约随后取消第一个运行
 
+**修复与验收（2026-10-28，仅所列Windows本机/离线范围；修复提交待生成并回填）。** 在原ServerState临界区、durable admission之前，以既有SessionId类型识别同一会话的等价ID；任一原worker仍active（含ACK待执行、显式steer排队、取消收尾与终态通知后清理）时，普通turn/start明确返回JSON-RPC -32005，不创建run/launch、排队或取消原任务。沿原TurnState/finish_turn边界，不新建owner、队列、store或配置，不改变显式steer及AppCore跨宿主lease策略。原探针现默认通过：仅1次模型请求、原任务completed且durable单一succeeded，无cancel.requested；另7项回归覆盖16并发重试、等价ID、不同thread真实模型并行、文件工具、审批、排队取消及重开恢复，真实OS stdio 32轮对照通过。最终CLI120/0/22、协议/Rust SDK/TS SDK与fmt/build通过；完整workspace3608/1/312仅既有H-306失败，严格Clippy仍受HEAD已有models clone_on_copy及CLI unnecessary_map_or阻断。源码冻结哈希零差异，原始失败、身份诊断、中断及全部原生结果保留，详见修复进度E-H284-01～08。此保证仅同一ServerState，不是跨进程排他、跨终态幂等或exactly-once；响应丢失先thread/read核对，终态通知不是worker就绪回执。H-130/H-92独立；其他OS、真实供应商/UI、断电强杀与压力未验，未改前端故未跑桌面pnpm build。以下原始触发、失败、治理方向与验证收尾均保留为修前历史，不代表当前仍按旧路径运行。
+
 **级别：中高（P1，Harness 控制面与运行身份语义）；触发条件：同一 thread 的第一个 turn 已进入模型请求但尚未终态，客户端再次发送 `turn/start`。** 本项不是“两个模型同时持有同一 session 租约”：AppCore 会把第二个输入排队并请求取消前一个；缺口在于 Harness 在排队/替代关系尚未确定时，已经向客户端确认了两个独立的 `started` turn。
 
 #### 即时 Evidence（2026-10-25，复现后立即登记）
@@ -9186,14 +9188,14 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - 若第一个 turn 在取消前已经执行了工具、写文件或审批等待，第二个请求的“普通 start”会改变前一个运行的生命周期，而不是单纯排队。工具副作用、迟到事件和审批结果的具体后果已有其他条目覆盖，本项不重复宣称它们在本次 fixture 中发生。
 - 该问题不会绕过现有 `InputLeaseRegistry`、PermissionRules 或 Sandbox backend；它是控制面 ACK、运行 owner 和自动取消策略不一致，属于可靠性/可审计性问题，不是本机测试本身的攻击行为。
 
-#### 治理方向（本地设计，未实施）
+#### 修前治理方向（历史本地设计）
 
 - 在现有 `ServerState`/AppCore admission 边界只保留一个可信的 thread 活动 owner。第二个 `turn/start` 必须在同一临界区得到明确结果：忙态拒绝、显式 queued（返回 position/owner）或显式替代（返回 `replacesTurnId`）；不能先返回独立 `started`，再由下层隐式取消。
 - 不新增第二套队列或运行存储：复用现有 `RunCoordinator`、`InputLeaseRegistry`、RunStore/run_events 和 `turn/read`。若产品选择自动替代，应先记录 continuation/owner 关系，再向客户端返回可回放的 replacement 身份；若选择排队，客户端应能知道排队请求何时被提升或取消。
 - 将 `TurnState.active: bool` 收敛为至少 active/queued/cancelling/replaced/terminal 的受控状态，所有 `turn/start`、`turn/interrupt`、`turn/steer` 和 EOF 收尾共用一次性 claim；请求重试不得再创建第二个 launch。
 - 回归必须覆盖：同 thread 第二次 start、响应丢失后的重试、第一轮模型/工具/审批/排队各阶段的第二次 start、不同 thread 并行、取消与终态竞争、重启后 stale turn，以及事件和 durable run 的唯一终态。必须同时断言 ACK 语义、模型请求次数、InputLease 变化和 `thread/read` 回放，不能只检查 JSON 状态字符串。
 
-#### 验证收尾与限制
+#### 修前验证收尾与限制
 
 - 测试夹具编译修正后，正式命令实际完成并得到上述 **0 passed / 1 failed（预期）**；未把这个故障探针纳入默认绿色测试，也未修改生产逻辑。
 - 验证收尾：`cargo fmt --all -- --check` 通过，`git diff --check` 通过；默认 `cargo test -p deepagent-cli app_server:: --offline` 为 **11 passed / 0 failed / 24 ignored**。`cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings` 未通过，阻断仍来自未修改的 `crates/deepagent-models/src/client.rs:355 clone_on_copy` 与 `crates/deepagent-persistence/src/run_store.rs:127 explicit_counter_loop`。

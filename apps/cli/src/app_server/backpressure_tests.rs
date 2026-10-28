@@ -238,8 +238,8 @@ async fn backpressure_fault_while_stdin_open_cancels_active_and_queued_then_reco
     let queued = client
         .call(
             4,
-            "turn/start",
-            json!({"threadId":fixture.thread_id,"input":"queued"}),
+            "turn/steer",
+            json!({"threadId":fixture.thread_id,"turnId":active,"input":"queued"}),
         )
         .await["turnId"]
         .as_str()

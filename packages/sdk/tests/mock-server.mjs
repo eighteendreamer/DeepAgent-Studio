@@ -69,6 +69,10 @@ input.on("line", (line) => {
       });
       break;
     case "turn/start": {
+      if (request.params.input === "fixture:busy") {
+        error(request.id, -32005, "thread is busy; use turn/steer explicitly");
+        break;
+      }
       const turnId = `turn-mock-${++turnNumber}`;
       response(request.id, {
         threadId: request.params.threadId,

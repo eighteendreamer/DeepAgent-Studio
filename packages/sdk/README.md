@@ -19,6 +19,18 @@ await agent.close();
 `cli-jsonl` is available for one-shot automation through `runJsonl(prompt)`.
 Thread lifecycle and turn control require the stdio app-server transport.
 
+Within one app-server, `turn/start` starts only an idle thread. An admitted,
+running, queued replacement or cancelling turn keeps the thread busy until its
+worker finishes cleanup. A second ordinary start fails with JSON-RPC `-32005`
+(TypeScript `HarnessRpcError.code`, Rust `SdkError::Rpc.code`): it does not create
+a run, enqueue input, or cancel the existing turn. A terminal notification can
+precede worker cleanup, so it is not by itself a new-start readiness receipt. Use
+`turn/steer` only when you explicitly intend replacement. Different threads may
+run concurrently. A lost response is not permission to resubmit: reconcile with
+`thread/read` first. This busy check is process-local, not an idempotency key or
+a cross-host exclusion guarantee; AppCore retains its existing lease/dispatch
+protection across hosts.
+
 New threads persist their explicit provider/model/permission/backend overrides
 in the existing session file. Resume and fork retain these values; per-turn
 overrides do not change thread defaults, but steer replacements retain that

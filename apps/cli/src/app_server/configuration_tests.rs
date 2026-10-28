@@ -24,6 +24,23 @@ fn start(state: &mut ServerState, thread_id: &str, extra: Value) -> TurnLaunch {
     launch.unwrap()
 }
 
+async fn finish_cancelled_metadata_launch(state: &Arc<Mutex<ServerState>>, launch: TurnLaunch) {
+    // Metadata tests do not use a provider. Settle each admitted fixture through
+    // the real executor before checking defaults on the next ordinary start.
+    assert!(
+        launch
+            .chat
+            .request_cancel(&launch.turn_id)
+            .unwrap()
+            .accepted
+    );
+    let worker = spawn_turn(state.clone(), Arc::new(|_| {}), launch);
+    tokio::time::timeout(Duration::from_secs(10), worker)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 #[tokio::test]
 async fn configuration_cold_resume_fork_and_turn_defaults_are_independent() {
     let fixture = Fixture::new(completed_text("unused")).await;
@@ -62,13 +79,14 @@ async fn configuration_cold_resume_fork_and_turn_defaults_are_independent() {
         json!({"threadId":source,"atSequence":0}),
     );
     let hot_child = hot_fork["threadId"].as_str().unwrap();
+    let hot_launch = start(&mut cold, hot_child, json!({}));
     assert_eq!(
-        serde_json::to_value(start(&mut cold, hot_child, json!({})).overrides).unwrap(),
+        serde_json::to_value(&hot_launch.overrides).unwrap(),
         expected["overrides"]
     );
     let child_launch = start(&mut cold, child, json!({}));
     assert_eq!(
-        serde_json::to_value(child_launch.overrides).unwrap(),
+        serde_json::to_value(&child_launch.overrides).unwrap(),
         expected["overrides"]
     );
     let original = start(
@@ -89,14 +107,21 @@ async fn configuration_cold_resume_fork_and_turn_defaults_are_independent() {
         None,
     );
     assert!(response.is_success());
-    assert_eq!(replacement.unwrap().overrides, original.overrides);
+    let replacement = replacement.unwrap();
+    assert_eq!(replacement.overrides, original.overrides);
+    let state = Arc::new(Mutex::new(cold));
+    for launch in [hot_launch, child_launch, original, replacement] {
+        finish_cancelled_metadata_launch(&state, launch).await;
+    }
+    let next = start(&mut state.lock().unwrap(), source, json!({}));
     assert_eq!(
-        serde_json::to_value(start(&mut cold, source, json!({})).overrides).unwrap(),
+        serde_json::to_value(&next.overrides).unwrap(),
         expected["overrides"]
     );
+    finish_cancelled_metadata_launch(&state, next).await;
     // Individual turn overrides are not promoted into the persistent thread contract.
     assert_eq!(
-        EventStore::new(&cold.database)
+        EventStore::new(&state.lock().unwrap().database)
             .session_execution_config(source.parse().unwrap())
             .unwrap()
             .unwrap()
@@ -142,20 +167,17 @@ async fn configuration_legacy_resume_explicitly_reports_missing_snapshot() {
     .to_string();
     let mut cold = fixture.reopened_state();
     dispatch(&mut cold, "thread/resume", json!({"threadId":configured}));
-    assert_eq!(
-        start(&mut cold, &configured, json!({}))
-            .overrides
-            .reasoning_effort
-            .as_deref(),
-        Some("low")
+    let first = start(&mut cold, &configured, json!({}));
+    assert_eq!(first.overrides.reasoning_effort.as_deref(), Some("low"));
+    let state = Arc::new(Mutex::new(cold));
+    finish_cancelled_metadata_launch(&state, first).await;
+    let second = start(
+        &mut state.lock().unwrap(),
+        &configured,
+        json!({"reasoningEffort":"high"}),
     );
-    assert_eq!(
-        start(&mut cold, &configured, json!({"reasoningEffort":"high"}))
-            .overrides
-            .reasoning_effort
-            .as_deref(),
-        Some("high")
-    );
+    assert_eq!(second.overrides.reasoning_effort.as_deref(), Some("high"));
+    finish_cancelled_metadata_launch(&state, second).await;
 }
 
 struct WireTransport {

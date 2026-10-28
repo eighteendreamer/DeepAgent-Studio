@@ -107,6 +107,26 @@ test("maps JSON-RPC errors to a stable SDK error", async () => {
   }
 });
 
+test("busy start rejects without a phantom turn or automatic retry", async () => {
+  const agent = createAgent();
+  try {
+    const thread = await agent.startThread();
+    await assert.rejects(() => thread.run("fixture:busy"), (error) => {
+      assert.ok(error instanceof HarnessRpcError);
+      assert.equal(error.code, -32005);
+      return true;
+    });
+    const events = [];
+    for await (const event of thread.runStreamed("normal after rejection")) {
+      events.push(event);
+    }
+    assert.equal(events.at(-1).type, "turn.completed");
+    assert.equal(events.at(-1).turnId, "turn-mock-1");
+  } finally {
+    await agent.close();
+  }
+});
+
 test("streams one-shot CLI JSONL events without a server session", async () => {
   const agent = new DeepAgent({
     transport: "cli-jsonl",

@@ -6,6 +6,9 @@ mod admission_tests;
 #[path = "configuration_tests.rs"]
 mod configuration_tests;
 
+#[path = "start_exclusivity_tests.rs"]
+mod start_exclusivity_tests;
+
 #[path = "backpressure_tests.rs"]
 mod backpressure_tests;
 
@@ -238,11 +241,15 @@ impl Fixture {
     }
 
     fn terminals(&self, turn_id: &str) -> Vec<String> {
+        self.terminals_for(&self.thread_id, turn_id)
+    }
+
+    fn terminals_for(&self, thread_id: &str, turn_id: &str) -> Vec<String> {
         self.events
             .lock()
             .unwrap()
             .iter()
-            .filter(|event| event["turnId"] == turn_id && event["threadId"] == self.thread_id)
+            .filter(|event| event["turnId"] == turn_id && event["threadId"] == thread_id)
             .filter_map(|event| match event["type"].as_str() {
                 Some(kind @ ("turn.completed" | "turn.failed" | "turn.interrupted")) => {
                     Some(kind.to_owned())
@@ -738,7 +745,6 @@ async fn provider_error_has_one_matching_live_and_durable_terminal() {
 }
 
 #[tokio::test]
-#[ignore = "audit H-284: concurrent turn/start must expose busy or queued semantics"]
 async fn audit_concurrent_turn_start_does_not_ack_two_independent_started_turns() {
     let transport = Arc::new(ConcurrentTurnTransport::new());
     let fixture = Fixture::with_transport(transport.clone()).await;
@@ -789,37 +795,14 @@ async fn audit_concurrent_turn_start_does_not_ack_two_independent_started_turns(
         ),
         None,
     );
-    assert!(second_response.is_success());
-    assert_eq!(second_response.result()["status"], "started");
-    let second_id = second_response.result()["turnId"]
-        .as_str()
-        .expect("second turn id")
-        .to_owned();
-    assert_ne!(first_id, second_id);
-    spawn_turn(
-        fixture.state.clone(),
-        emitter,
-        second_launch.expect("second turn launch"),
-    );
-
-    tokio::time::timeout(Duration::from_secs(10), async {
-        loop {
-            if transport.requests.load(Ordering::SeqCst) >= 2 {
-                break;
-            }
-            transport.entered.notified().await;
-        }
-    })
-    .await
-    .expect("queued second turn must eventually reach the model transport");
-
-    transport.release.notify_waiters();
+    // Release and settle the real worker before asserting; a failed assertion
+    // must not leave the fixture model future or session lease running.
+    transport.release.notify_one();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let done = {
                 let state = fixture.state.lock().unwrap();
                 state.turns.get(&first_id).is_some_and(|turn| !turn.active)
-                    && state.turns.get(&second_id).is_some_and(|turn| !turn.active)
             };
             if done {
                 break;
@@ -828,22 +811,26 @@ async fn audit_concurrent_turn_start_does_not_ack_two_independent_started_turns(
         }
     })
     .await
-    .expect("both turn tasks must reach a terminal state");
+    .expect("first turn task must reach a terminal state");
 
     let first_terminals = fixture.terminals(&first_id);
-    let second_terminals = fixture.terminals(&second_id);
     eprintln!(
-        "concurrent turn/start audit: first_ack=started second_ack=started first_id={first_id} second_id={second_id} model_requests={} first_terminals={first_terminals:?} second_terminals={second_terminals:?}",
+        "concurrent turn/start audit: first_ack=started second_error={:?} model_requests={} first_terminals={first_terminals:?}",
+        second_response.error_code(),
         transport.requests.load(Ordering::SeqCst)
     );
-
-    assert!(
-        second_response.error_code().is_some()
-            || second_response.result()["status"] != "started"
-            || second_response.result().get("queued").is_some()
-            || second_response.result().get("replacesTurnId").is_some(),
-        "same-thread turn/start returned two independent started ACKs; the second run is only cancelled/queued later by InputLeaseRegistry"
-    );
+    assert_eq!(second_response.error_code(), Some(ERR_THREAD_BUSY));
+    assert!(second_launch.is_none());
+    assert_eq!(transport.requests.load(Ordering::SeqCst), 1);
+    assert_eq!(first_terminals, ["turn.completed"]);
+    let read = fixture.read();
+    assert_eq!(read["runEvents"].as_array().unwrap().len(), 1);
+    assert_durable_terminal(&read, &first_id, "succeeded");
+    assert!(!read["runEvents"][0]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["event_type"] == "cancel.requested"));
 }
 
 #[tokio::test]

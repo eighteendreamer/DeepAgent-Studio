@@ -2,7 +2,7 @@
 use super::*;
 use deepagent_persistence::runtime_log_store::RuntimeLogStore;
 
-fn launch(fixture: &Fixture, input: &str) -> TurnLaunch {
+pub(super) fn launch(fixture: &Fixture, input: &str) -> TurnLaunch {
     let (response, launch) = fixture.state.lock().unwrap().dispatch(
         rpc(
             "turn/start",
@@ -19,7 +19,7 @@ fn launch(fixture: &Fixture, input: &str) -> TurnLaunch {
     launch
 }
 
-fn interrupt(fixture: &Fixture, turn_id: &str) -> RpcResponse {
+pub(super) fn interrupt(fixture: &Fixture, turn_id: &str) -> RpcResponse {
     fixture
         .state
         .lock()
@@ -34,7 +34,7 @@ fn interrupt(fixture: &Fixture, turn_id: &str) -> RpcResponse {
         .0
 }
 
-fn execute(fixture: &Fixture, launch: TurnLaunch) {
+pub(super) fn execute(fixture: &Fixture, launch: TurnLaunch) {
     let events = fixture.events.clone();
     spawn_turn(
         fixture.state.clone(),
@@ -48,7 +48,7 @@ fn execute(fixture: &Fixture, launch: TurnLaunch) {
     );
 }
 
-async fn finished(fixture: &Fixture, id: &str) {
+pub(super) async fn finished(fixture: &Fixture, id: &str) {
     tokio::time::timeout(Duration::from_secs(10), async {
         while fixture.state.lock().unwrap().turns[id].active {
             tokio::time::sleep(Duration::from_millis(5)).await;
@@ -246,9 +246,9 @@ async fn admission_steering_replacement_is_cancellable_before_execution() {
     assert_eq!(transport.next_response.load(Ordering::SeqCst), 0);
 }
 
-struct HeldFirstTransport {
-    requests: AtomicUsize,
-    released: tokio::sync::Notify,
+pub(super) struct HeldFirstTransport {
+    pub(super) requests: AtomicUsize,
+    pub(super) released: tokio::sync::Notify,
 }
 
 #[async_trait::async_trait]
@@ -305,7 +305,17 @@ async fn admission_queued_interrupt_removes_only_its_waiter_without_a_model_requ
     })
     .await
     .unwrap();
-    let queued = launch(&fixture, "queued");
+    // Ordinary start now rejects a busy thread (H-284). Explicit steering is
+    // still the supported producer of queued replacement input for H-02.
+    let (response, queued) = fixture.state.lock().unwrap().dispatch(
+        rpc(
+            "turn/steer",
+            json!({"threadId":fixture.thread_id,"turnId":first_id,"input":"queued"}),
+        ),
+        None,
+    );
+    assert!(response.is_success(), "{response:?}");
+    let queued = queued.unwrap();
     let queued_id = queued.turn_id.clone();
     execute(&fixture, queued);
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -459,6 +469,22 @@ fn admission_real_stdio_immediate_interrupt_reaches_one_terminal_for_every_ack()
         assert_eq!(response["result"]["status"], "started");
         // Check the durable identity at the actual wire ACK, before sending interrupt.
         assert!(RunStore::new(&db).get(&id).unwrap().is_some());
+        request_id += 1;
+        // Repeat the input after its wire ACK (including the pre-execution
+        // window). The error must not create another durable admission.
+        send(
+            request_id,
+            "turn/start",
+            json!({"threadId":thread,"input":"Wait until cancelled."}),
+        );
+        assert_eq!(
+            receive(request_id, &mut notifications)["error"]["code"],
+            ERR_THREAD_BUSY
+        );
+        assert_eq!(
+            RunStore::new(&db).list_for_session(&thread).unwrap().len(),
+            turn_ids.len() + 1
+        );
         request_id += 1;
         send(
             request_id,
