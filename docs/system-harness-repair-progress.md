@@ -2,21 +2,33 @@
 
 ## 当前状态与计数口径（2026-10-28）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十四项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十五项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 64 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-165、H-175、H-237、H-284、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 65 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-164、H-165、H-175、H-237、H-284、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 无；H-165已按下列本机范围验收 |
-| 待修复 | 215 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 无；H-164与H-165均已按下列本机范围验收 |
+| 待修复 | 214 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **215（215待修复、0修复中）**；不提供完成率。六十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **214（214待修复、0修复中）**；不提供完成率。六十五项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-164 本轮即时记录（2026-10-28）
+
+**当前状态：已修复并验收（2026-10-28，仅下列Windows本机、离线模型/临时loopback provider、文件SQLite与正式工作流消费方范围；修复提交`63cfffa4`）。** 本轮只收敛 Canvas 同步 text/image/audio provider 等待的运行取消边界，不合并 H-119 视频取消、H-165 图片URL第二跳、H-167媒体字节预算或 H-300 embedding 节点注册。
+
+E-H164-01（修前事实）：原正式 text 探针在取消被接受后 300ms 内不退出；释放 provider 响应后 text 节点先 `Completed`，run 才落 `cancelled`。原始失败命令、输出和限制保留在审计报告 H-164 章节，不改写为本轮新证据。
+
+E-H164-02（根因修复）：`WorkflowAgent::think_cancelled()` 通过既有 `await_cancelled()` 包裹整个 Canvas `think()` future，取消时丢弃正在等待的 provider future；活动节点通过单一 `cancel_active_node()` 发布一次 `Cancelled` 并清理 owner。`finish_node()` 在 provider 晚到成功时再次检查取消标志，拒绝发布 `Completed`，将节点结果转换为取消错误并交给既有 RuntimeEngine 终态收尾。
+
+E-H164-03（本机验收）：text 原始取消探针 `cargo test -p deepagent-app-core --test workflow_audit media::audit_text_cancel_does_not_wait_for_provider_response --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` 为 **1 passed / 0 failed**（`stopped_within_300ms=true`、`unfinished_before_response=false`、`cancel_to_exit_ms=63`、`text_completed=false`、`text_cancelled=true`、`requests=1`）。image 与 audio 动态取消探针分别 **1/0/0**，均在响应释放前退出、无 `Completed`、节点 `Cancelled`、run terminal 为 `cancelled`；正常 text 对照 **1/0/0**，provider 响应释放后节点 `Completed` 且 run `succeeded`。`media::` 默认组 **5/0/14 ignored**；Runtime workflow 全组 **67/0/0**；两 crate `cargo check --tests`、`cargo fmt --all -- --check` 和 `git diff --check` 通过。
+
+E-H164-04（未覆盖与阻断）：embedding 正式工作流在 graph compile 阶段仍因 H-300 的 `unknown workflow node kind (neither professional nor creative)` 被拒绝，provider 请求数为零；因此本轮不把 embedding provider 取消写成动态已验证，也不顺手修 H-300。严格 clippy 两个目标均被未改动的 `crates/deepagent-models/src/client.rs:355` `clone_on_copy` 基线阻断；未运行完整 workspace、Desktop build/真实Tauri、真实供应商或其他OS。取消只保证本地 future、节点事件和 run 终态一致，不声称远端 provider 已撤销。
 
 ## H-165 本轮即时记录（2026-10-28）
 
@@ -1904,8 +1916,8 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-161：画布 LLM 节点的温度和输出上限在 provider adapter 前被丢弃](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-162：前端标为可用的四类专业 AI 节点没有可达的正式模型执行链](system-harness-audit-2026-10-21.md) | P0 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-163：工作流模型调用丢失 DeepSeek usage，成本账本、缓存观测和 token budget 与实际请求分裂](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-164：画布文本请求不在运行取消树内，节点完成态可与运行取消终态分裂](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-165：图片供应商可令宿主下载任意私网 URL，并把响应作为成功 artifact 保存](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H165-01原探针已复现；E-H165-03完成本机范围验收；不归并其他下载/预算问题 | E-H165-02的run-scoped opaque handle、统一PublicHttpClient与Kernel高风险工具管线已落地 | 原生专项与相关回归均通过；完整workspace未执行，严格clippy在既有models/client.rs:355基线处阻断，Desktop/真实供应商未执行，限制见E-H165-03/04 | `88274ae8` | H-167/H-249/H-303/H-164独立；215有效未关闭；总体200–400有效小时历史粗估，等待另计 |
+| [H-164：画布文本请求不在运行取消树内，节点完成态可与运行取消终态分裂](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H164-01保留原 text 失败证据；E-H164-03完成 text/image/audio 本机动态验收；embedding 正式链被独立 H-300 图注册缺陷阻断 | 复用既有 `think_cancelled`/`await_cancelled` 取消边界，活动节点只发布一次 `Cancelled`，晚到 provider 输出不得发布 `Completed` | text/image/audio 取消、正常 text 对照、media 默认组、Runtime workflow 组、两 crate check/fmt/diff check通过；严格clippy被未改动models/client.rs:355基线阻断，限制见E-H164-04 | `63cfffa4` | 仅所列Windows本机/离线/loopback范围；embedding未动态验证，远端provider撤销、workspace、Desktop/真实Tauri、真实供应商及其他OS未验；H-119/H-165/H-167/H-300独立；214有效未关闭 |
+| [H-165：图片供应商可令宿主下载任意私网 URL，并把响应作为成功 artifact 保存](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H165-01原探针已复现；E-H165-03完成本机范围验收；不归并其他下载/预算问题 | E-H165-02的run-scoped opaque handle、统一PublicHttpClient与Kernel高风险工具管线已落地 | 原生专项与相关回归均通过；完整workspace未执行，严格clippy在既有models/client.rs:355基线处阻断，Desktop/真实供应商未执行，限制见E-H165-03/04 | `88274ae8` | H-167/H-249/H-303/H-164独立；214有效未关闭；总体200–400有效小时历史粗估，等待另计 |
 | [H-166：DeepSeek Responses 思考模式下 top_p 会被忽略或规范化，设置值不等于有效采样值](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-167：画布图片下载无响应字节上限，超预算数据被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-168：易变 instructions 位于历史之前，动态变化截断多轮 KV cache 前缀](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
@@ -1915,7 +1927,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-172：Responses 数值参数只在设置层校验，公开 ModelClient 仍发送越界值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-173：Responses 工具输出图片无法保留，公共消息边界静默降为纯文本](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-174：公开 `replace_messages` 绕过 Responses 工具调用配对修复](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-175：工作流 `http-request` 节点绕过统一网络权限与审批边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H175-01～10原始/候选/legacy失败保留，仅所列Windows本机与受控消费方范围；非归并项 | typed HTTP进入原Kernel权限/规则/审批/取消/action；受控公网broker；backend与legacy fail-closed；Canvas复用原审批通道 | HTTP12/0/0、broker11/0/0、builtins2/0/0、runtime333/0/11、workflow21/0/38；前端82/0/0及build、Tauri/fmt/builtins严格lint通过；workspace3633/1既有H-306/311 ignored，严格lint旧阻断详E09 | `2c7871df87afbc16df9fb443f1761a3a56ea90bf` | H-165/H-249/H-164独立；真实Tauri/供应商/OS设备及其他平台未验；216有效未关闭；200–400有效小时历史未校准粗估，等待另计 |
+| [H-175：工作流 `http-request` 节点绕过统一网络权限与审批边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H175-01～10原始/候选/legacy失败保留，仅所列Windows本机与受控消费方范围；非归并项 | typed HTTP进入原Kernel权限/规则/审批/取消/action；受控公网broker；backend与legacy fail-closed；Canvas复用原审批通道 | HTTP12/0/0、broker11/0/0、builtins2/0/0、runtime333/0/11、workflow21/0/38；前端82/0/0及build、Tauri/fmt/builtins严格lint通过；workspace3633/1既有H-306/311 ignored，严格lint旧阻断详E09 | `2c7871df87afbc16df9fb443f1761a3a56ea90bf` | H-165/H-249/H-164独立；真实Tauri/供应商/OS设备及其他平台未验；214有效未关闭；200–400有效小时历史未校准粗估，等待另计 |
 | [H-176：工作流 `knowledgeBaseId` 是死字段，知识检索节点无条件混合 project/global vault](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-177：未知 `target_node_id` 被当作空工作流成功，重跑/恢复目标没有 admission 校验](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-178：专业画布 `code` 节点标记为 enabled，但脚本从未执行且错误被伪造成成功](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
