@@ -333,6 +333,7 @@ fn output_contract(kind: &str) -> Result<(&'static [&'static str], Option<&'stat
         | "variable-assigner" => (&["output"], None),
         "llm" | "agent" => (&["text", "usage"], None),
         "question-classifier" => (&["class_name", "class_label", "usage"], None),
+        "embeddings" => (&["count", "dimensions", "providerId", "modelId"], None),
         "knowledge-retrieval" => (&["documents", "content"], None),
         "http-request" => (&["body", "status_code", "headers"], None),
         "tool" => (&["text", "json"], None),
@@ -983,7 +984,7 @@ mod tests {
 
     #[test]
     fn recognizes_exactly_the_professional_registry_output_contracts() {
-        let cases: [(&str, &[&str]); 29] = [
+        let cases: [(&str, &[&str]); 30] = [
             ("start", &[]),
             ("end", &[]),
             ("code", &[]),
@@ -1005,6 +1006,10 @@ mod tests {
             (
                 "question-classifier",
                 &["class_name", "class_label", "usage"],
+            ),
+            (
+                "embeddings",
+                &["count", "dimensions", "providerId", "modelId"],
             ),
             ("knowledge-retrieval", &["documents", "content"]),
             ("http-request", &["body", "status_code", "headers"]),

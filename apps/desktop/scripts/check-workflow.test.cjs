@@ -8,7 +8,7 @@ const ts = require("typescript");
 function loadTypeScript(relativePath, imports = {}) {
   const filename = path.resolve(__dirname, relativePath);
   const compiled = ts.transpileModule(readFileSync(filename, "utf8"), {
-    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
     fileName: filename,
   });
   const loaded = new Module(filename, module);
@@ -148,6 +148,58 @@ test("dynamic outputs follow edited declarations and do not leak empty fields", 
   assert.equal(registry.getNodeOutputs("variable-aggregator", { aggregatorOutputType: "array" })[0].type, "array");
 });
 
+test("embedding schema reaches the real model editor with embedding-only options; legacy text schemas stay text", () => {
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const definition = registry.getNodeDefinition("embeddings");
+  assert.equal(definition.configSchema.properties.embeddingModel["x-widget"], "model");
+  assert.equal(definition.configSchema.properties.embeddingModel["x-model-scenario"], "embedding");
+  assert.deepEqual(registry.createDefaultNodeData("embeddings").texts, [""]);
+  const providers = [{ id: "synthetic", name: "Synthetic", enabled: true, models: [
+    { id: "text", name: "Text", enabled: true, scenarios: ["text"] },
+    { id: "embedding", name: "Embedding", enabled: true, scenarios: ["embedding"] },
+    { id: "disabled", name: "Disabled", enabled: false, scenarios: ["embedding"] },
+  ] }];
+  const { scenarioModelOptions } = loadSettingsModule([]);
+  const selections = [];
+  const noop = () => null;
+  const { SchemaObjectEditor } = loadTypeScript("../src/canvas/workflow/components/SchemaConfigForm.tsx", {
+    "../utils/nodeRegistry": registry,
+    "../utils/configSchema": configSchema,
+    "../store/canvasSettingsStore": { scenarioModelOptions, useCanvasSettingsStore: (select) => select({ providers }) },
+    "../../../components/shadcn/button": { Button: noop },
+    "./CanvasFields": {
+      CanvasField: ({ children }) => children, CanvasInput: noop, CanvasTextarea: noop,
+      CanvasSelect: (props) => { selections.push(props); return null; },
+    },
+    "./VariablePicker": { VariablePicker: noop },
+    "./NodeOutputPanel": { NodeOutputPanel: noop },
+  });
+  for (const kind of ["embeddings", "llm"]) {
+    renderToStaticMarkup(React.createElement(SchemaObjectEditor, {
+      nodeId: kind, path: kind, schema: registry.getNodeDefinition(kind).configSchema,
+      value: createDefaultNodeData(kind), onChange: noop,
+    }));
+  }
+  assert.deepEqual(selections.find((select) => select.id === "embeddings.embeddingModel").options, [
+    { value: "", label: "使用默认嵌入模型" }, { value: "synthetic::embedding", label: "Synthetic / Embedding" },
+  ]);
+  assert.deepEqual(selections.find((select) => select.id === "llm.llmModel").options.map((option) => option.value), ["", "deepseek-chat", "synthetic::text"]);
+});
+
+test("real desktop embedding defaults serialize through start_workflow without losing provider or texts", () => {
+  const { execFileSync } = require("node:child_process");
+  const fixtures = JSON.parse(execFileSync(process.execPath, [
+    path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-embedding-fixture", "synthetic-provider",
+  ], { encoding: "utf8" }));
+  assert.equal(fixtures.length, 1);
+  const embedding = fixtures[0].workflow.definition.nodes.find((node) => node.id === "embedding");
+  assert.equal(embedding.kind, "embeddings");
+  assert.equal(embedding.config.embeddingModel, "synthetic-provider::audit-embedding-model");
+  assert.deepEqual(embedding.config.texts, ["audit embedding"]);
+  assert.equal(embedding.config.status, undefined);
+});
+
 test("schema validation reports nested required, duplicate-name, type and range failures", () => {
   const schema = { type: "object", required: ["name"], properties: {
     name: { type: "string", minLength: 1 }, count: { type: "integer", minimum: 1, maximum: 4 },
@@ -216,7 +268,7 @@ function createLocalStore(init) {
   return api;
 }
 
-function loadSettingsStore(calls) {
+function loadSettingsModule(calls) {
   const exports = loadTypeScript("../src/canvas/workflow/store/canvasSettingsStore.ts", {
     react: { useMemo: () => undefined },
     zustand: { create: createLocalStore },
@@ -241,7 +293,11 @@ function loadSettingsStore(calls) {
       writeCanvasPreference: () => {},
     },
   });
-  return exports.useCanvasSettingsStore;
+  return exports;
+}
+
+function loadSettingsStore(calls) {
+  return loadSettingsModule(calls).useCanvasSettingsStore;
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));

@@ -175,6 +175,26 @@ register({
 });
 
 register({
+  kind: "embeddings",
+  label: "文本嵌入",
+  category: "AI",
+  icon: "layer-group",
+  availability: "enabled",
+  executor: "embedding",
+  outputs: [
+    { name: "count", type: "number", description: "输入文本数量" },
+    { name: "dimensions", type: "number", description: "向量维度" },
+    { name: "providerId", type: "string", description: "实际供应商标识" },
+    { name: "modelId", type: "string", description: "实际模型标识" },
+  ],
+  defaultData: () => ({
+    label: "文本嵌入",
+    embeddingModel: "",
+    texts: [""],
+  }),
+});
+
+register({
   kind: "knowledge-retrieval",
   label: "知识检索",
   category: "知识",

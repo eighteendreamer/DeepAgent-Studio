@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-28）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十六项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十七项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 66 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-284、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 67 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-284、H-286、H-300，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 无；H-163 按 E-H163-12 所列本机范围验收，H-300 保持独立排队 |
-| 待修复 | 213 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 无；H-300按E-H300-12所列本机范围验收，下一项仍待执行前复核 |
+| 待修复 | 212 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **213（213待修复、0修复中）**；不提供完成率。六十六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **212（212待修复、0修复中）**；不提供完成率。六十七项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
 
 ## H-163 本轮即时记录（2026-10-28）
 
@@ -56,6 +56,55 @@ E-H163-12（最终证据、验收边界与独立提交，2026-10-28）：主树�
 
 据原验收矩阵，bridge/run-level、单/多模型、fallback、输出失败、预算、截断/取消、无或部分 usage/缺价、DeepSeek cache/reasoning、Anthropic/Gemini 显式映射、持久化/重开/fork/旧行对照、正式 UI DTO 及真实组件受控显示均已有所列证据，故只关闭该本机范围 H-163。完整 HTTP/SSE 已报告用量只进入原 `RunUsage::record_call()`；RunCostRecorded 是既有账本行的版本化关联投影。兼容性：无 SQL migration/新依赖/新运行链/权限或沙箱放行；新版本可读旧日志，旧二进制不能读新事件；新增 optional bridge 字段与 `HistoricalCost.id` 的仓外 Rust 构造方需适配。未验真实供应商账单、完整 Tauri 窗口、其他 OS、Anthropic cache-write 分档价格、费用写入与事件追加失败/断电/跨边界事务幂等或外部副作用 exactly-once，不作这些保证；H-299、H-300 及附属调用继续独立。修复提交：`de93c589`（不 amend）。计数为 66 验收、18 历史跳过、7 归并、2 撤销、213 有效未关闭；总体剩余仍采用历史未逐项校准 **200–400 有效小时**，编译、依赖、设备与环境等待另计。下一项回到 H-300 完整 UI、embedding 挂起取消与最终门禁，不因成本探针通过而关闭该项；整体 goal 保持 active。
 
+## H-300 本轮即时记录（2026-10-28）
+
+**当前状态：已修复并验收（2026-10-28，仅 E-H300-12 所列 Windows 本机/离线/正式消费者与受控真实组件范围）；本项新增验收数为1；修复提交待回填。** 原始失败与候选判断按 E-H300-01～11 的发生顺序保留；其中成本仍失败、取消/UI未验和门禁待收取均为历史阶段状态，最新结论以 E-H300-12 为准。H-163/H-164 保持独立且不重复计数。
+
+E-H300-01（修前证据）：保留原报告 H-300 的 `unknown workflow node kind (neither professional nor creative)`、`provider_called=false` 与原始失败命令，不用本轮成功覆盖。原可达性探针现已取消 `#[ignore]`，修后执行时不再传 `--ignored`，避免零测试假通过。
+
+E-H300-02（当前实现边界）：复用既有版本 1 `WorkflowDefinition`、graph compile、`WorkflowAgent::execute_embedding`、`CanvasModelGateway::embed` 和 `run_events`。前端把 `embeddings` 注册为专业节点及 `embedding` executor，schema 声明 `embeddingModel` 与 `texts`，picker 与 category 同步；graph 声明 `count/dimensions/providerId/modelId` 输出。通用 `ModelEditor` 按 schema 的 `x-model-scenario` 调用既有 `scenarioModelOptions`，默认仍为 text；场景类型复用既有 `ModelScenario`。当前 `canvas_node_contracts`/`CREATIVE_NODE_KINDS` 仅负责创作节点，不把本专业节点塞入第二份创作提示词/路由，也未声称所有 capability 已收敛为单份注册表。无新运行链、依赖、数据库迁移、权限或沙箱放行。
+
+E-H300-03（已取得的成功证据）：`cargo test -p deepagent-runtime --lib workflow:: --offline -- --test-threads=1` **67 passed / 0 failed**；`cargo check -p deepagent-app-core --tests --offline` 通过，保留既有 `BuildFixture::cold` dead_code warning。`node --test scripts/check-workflow.test.cjs`（apps/desktop）**86 passed / 0 failed**：实际 `SchemaObjectEditor`/`ModelEditor` 组件与真实筛选函数（仅控件、store 数据和 IPC 被替换）验证 embedding 候选排除 text/禁用模型，旧 text 场景仍保留历史裸模型；实际 `workflowExecutor`/registry/schema 序列化不会丢模型引用和文本。首次组件断言漏算既有 `deepseek-chat` 保留项而失败，只改断言，未改生产兼容规则。
+
+真实 TS→Rust seam 命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_desktop_embedding_dto_reaches_registered_provider --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` **1 passed / 0 failed**（证据 `target/h300-desktop-dto-candidate3*`）。此探针使用生产 TS registry/schema/serializer 发给 `start_workflow` 的 DTO，再反序列化为真实 Rust `WorkflowRequest`，经 ChatService/Kernel/WorkflowAgent/真实 HTTP gateway 到临时 loopback `/v1/embeddings`，得到 Completed/dimensions=3；Node 依赖探针保持 opt-in，不把默认 ignored 当验收。前两次候选分别暴露测试持有已 drop provider 的编译错误，以及夹具错误地要求单文本 wire 必为数组；依据生产 `embedding_input()` 的 scalar/list 语义修夹具后才形成有效成功证据。历史候选日志保留。
+
+E-H300-04（修复候选前未通过的必要验收，保留原失败）：
+
+- `cargo test -p deepagent-app-core --test workflow_audit media::audit_embedding_batch_output_matches_provider_vectors --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` **0 passed / 1 failed**（`target/h300-batch-acceptance*`）：真实 HTTP input 为 `["first","second"]`，合成 provider 返回 2 个 3 维向量，节点仍 Completed/run succeeded，但输出 `count=1`。静态根因是 gateway 的 `parse_output` 只取 `data.first()`，`embed()` 再硬编码 `count: 1`；不能用单文本成功替代批量契约验收，也不能收窄表单为单文本掩盖反例。
+- `cargo test -p deepagent-app-core --test workflow_audit media::audit_embedding_provider_usage_reaches_existing_cost_ledger --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` **0 passed / 1 failed**（有效证据 `target/h300-cost-acceptance-candidate2*`）：完整 ChatService 工作流挂接同一数据库的真实 CostService；合成 provider 返回 `usage.prompt_tokens=11/total_tokens=11`，请求正常成功且 provider 只收到一次请求，但会话账本 `input_tokens=0`。并非真实费用推算，也没有提供真实供应商凭据。embedding response/output 没有 usage，需与独立 H-163 的 canonical 计量边界联验；本轮未混入另一根因的生产修复。
+
+E-H300-05（实际门禁与版本边界）：批量根因修复后的 `cargo test -p deepagent-app-core --lib canvas_model_gateway::tests:: --offline -j 1 -- --test-threads=1` **44 passed / 0 failed / 8 ignored**；`cargo test -p deepagent-app-core --test workflow_audit --offline -j 1 -- --test-threads=1` **27 passed / 0 failed / 40 ignored**；真实桌面 embedding DTO opt-in 原命令再跑 **1 passed / 0 failed**；`cargo check -p deepagent-app-core --tests --offline -j 1`、`cargo fmt --all -- --check`、`git diff --check`通过。证据 `target/h300-batch-final-{gateway-all,workflow-all,desktop-dto,check}*`。
+
+`pnpm build`（apps/desktop）原生 0，包含全部默认前端回归、tsc 与 Vite，场景类型复用后的复跑同样原生 0（`target/h300-build-type-reuse.log`）；只保留既有 browser externalization/大 chunk 警告。严格 `cargo clippy -p deepagent-runtime -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 1 -- -D warnings` 原生 101，未改动 `runtime/model_agent.rs:282` clone_on_copy 阻断；最终单 AppCore lib 的严格 clippy 原生 101，11 项来自未改动 context_runtime、http_runtime、plugin_preparation、run_assembler，不顺手修改。没有将 lint 写为通过。
+
+`cargo test --workspace --offline --no-fail-fast -j 1 -- --quiet --test-threads=1` 原生 101、1518.17 秒，唯一失败 target 为既有 `deepagent-prompts --lib`（H-306），完整日志 `target/h300-workspace*`。该次启动于批量 parser 修改前，不作为最终批量代码全仓验收；批量修改后执行的是上列相关全组与 tests check。此前默认 workflow 的 25/0/38 与中间 25/0/41 是各阶段证据，不覆盖成本实际失败，也不能替代最终 27/0/40 的范围。未宣称完整 workspace 全绿。
+
+E-H300-06（UI 观察与限制）：通过 `target/h300-ui-preview.mjs` 的临时本机浏览器夹具渲染真实 SchemaConfigForm、CanvasSelect、NodeOutputPanel 和样式，providers 完全合成，不读取真实配置或执行模型。已观察嵌入字段、四个输出变量，以及下拉只含“使用默认嵌入模型”和启用的合成嵌入模型；随后浏览器绑定失效，恢复绑定仍失败，未取得完整截图、文本对照交互或输入保存验收。观察记录 `target/h300-ui-observation.json`。这不是完整 UI 或真实 Tauri 验收；其他 OS、真实供应商、embedding 挂起取消仍未验证，不外推远端 provider 撤销。
+
+E-H300-07（下一步/工时/提交）：批量输入输出已推进至 E-H300-08；下一步是依赖 H-163 的 canonical 计量边界及模型归属联验，不在本项另造第二套账本或只填一个无模型来源的 token 数。H-163 保持独立编号和提交，完成后回跑成本探针，再补完整 UI/embedding 挂起取消与最终全仓门禁，更新两份文档。H-300 当前无修复 commit（尚未通过完整验收，不按已完成任务提交）；不推送、不建 PR。共享计量依赖需在 H-163 复现/设计后重估，不给精确结束承诺；全体剩余仍为 214 有效未关闭，沿用总体 200–400 有效小时的未校准规划区间（按剩余跨层/持久化/授权风险规模而非同难度乘法），编译等待、设备与其他环境等待另计。
+
+E-H300-08（同一节点输入/输出契约的批量补强）：依据项目既有 `CanvasEmbeddingRequest.texts`/`CanvasEmbeddingResponse.vectors` 与 [OpenAI Embeddings 官方响应契约](https://developers.openai.com/api/reference/resources/embeddings/methods/create) 的批量 data/index/embedding，gateway 解析全部向量，按 index 恢复输入顺序；无 index 的既有兼容样本保留响应顺序。混用/重复/越界 index、空向量、非数值/超出 f32 有限域元素、维度不一致均明确失败；bridge 对照实际发送的非空文本数量，少返回不得假成功。`CanvasModelOutput::Embedding` 新增完整 `vectors` 并保留原 `vector` 首向量字段供现有单向量调用方使用；仓内消费方已搜索、tests check 通过，节点 DTO 的四个输出不变、不持久化向量正文。该 Rust enum 新增字段对仓外穷尽解构的调用方需同步，不是数据库迁移或网络协议变更。
+
+原 batch 探针去掉 `#[ignore]`，provider=2/node count=2；增加少返回一项的真实工作流失败/唯一失败终态对照。两项 parser 测试含乱序和原单向量正常场景、八组异常 payload，**2 passed / 0 failed**；embedding 默认组 **5 passed / 0 failed / 2 ignored**（Node seam/成本联验，前者已单独执行通过）。当前源码再次运行成本探针仍为 **0 passed / 1 failed**、provider prompt=11/ledger input=0（`target/h300-batch-final-cost-acceptance*`），因此继续“修复中”，不把默认跳过当关闭依据。受控浏览器 helper 已核对专属进程命令行后停止，无后台监控。
+
+E-H300-09（H-163 提交后的实际联验，2026-10-28）：H-163 修复提交为 `de93c589`，引用补齐文档提交为 `f41825f8`。首次未指定专属 target 的四组命令都因旧依赖 API 编译失败、没有进入测试（`target/h163-h300-after-h163-{cost,batch,incomplete,dto}*`），不计通过。使用全新 `CARGO_TARGET_DIR=target/h300-after-h163-build` 后，原成本探针、批量输出、批量缺项失败对照和真实桌面 DTO 四组分别 **1 passed / 0 failed**，日志 `target/h163-h300-after-h163-clean-{cost,batch,incomplete,dto}*`；provider prompt=11/ledger input=11、provider vectors=2/node count=2。成本探针现已移除默认 ignore，防止依赖已修复后继续依赖 opt-in 隐藏回归；Node seam 仍须显式执行，不能把其默认 ignored 当通过。历史 E-04/08 的成本失败属于修前版本，不代表当前仍失败。
+
+E-H300-10（已可达 embedding 的真实挂起取消与重开）：既有 LocalEmbeddingProvider 增加可选响应闸门，复用原 fixture、ChatService、Kernel 和 `WorkflowAgent::think_cancelled/await_cancelled`，没有改生产取消路径或新增取消机制。`cargo test -p deepagent-app-core --test workflow_audit media::embedding_pending_response_cancellation_uses_shared_terminal_boundary --offline -j 2 -- --exact --nocapture --test-threads=1` **1 passed / 0 failed**（`target/h163-h300-pending-cancel-20261028*`）：确认正式 HTTP 请求已到达后接受取消，300ms 观察窗内结束，本次取消至退出实测102ms（不是性能保证）。断言节点恰一次 Cancelled、无 Completed/输出，provider 放行迟到响应后 live/durable 均不追加；SQLite 重开后顺序和唯一 Cancelled 终态保留；账本无费用行且版本化费用回执为未知、不是测量零价。正常成功与批量失败对照继续保留。只证明本地 future 中断，不宣称远端供应商撤销。
+
+E-H300-11（受控真实组件交互与构建）：在完全合成 localhost fixture 中，实际操作 SchemaConfigForm、CanvasSelect、NodeOutputPanel、professionalStore、exportWorkflow/parseWorkflowImport。嵌入下拉只含默认与启用的嵌入模型，不含 text/disabled；文本对照保留默认、legacy deepseek-chat 与启用文本模型，不含 embedding。选定两侧模型、编辑并新增第二条文本，经过正式 JSON 导出/导入和 store 恢复，模型身份和两条文本均保留，四个输出变量可见。截图 `target/h300-ui-{embedding-options,text-options,saved,outputs}-20261028.png`，AX记录 `target/h300-ui-saved-20261028.ax.txt`，观察 `target/h300-ui-final-observation-20261028.json`。首次导航超时后绑定同一 tab 成功；构建预捆绑资源触发 Vite reload 导致首轮编辑丢失，依据服务日志确认后重做并取得有效恢复截图，不冒充产品持久化失败。已关闭临时 tab，核对进程命令行后停止专属 helper，无后台监控。此处不是完整 Tauri 窗口或生产数据库保存验收；正式桌面 DTO→Rust→provider 和 SQLite run_events 重开由独立动态探针验证。`pnpm build` 原生0、198.10秒（全部默认前端回归/tsc/Vite；`target/h300-final-frontend-20261028*`），独立 Tauri `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 2` 原生0、85.79秒（`target/h163-h300-final-tauri-20261028*`），fmt/diff check通过。保留既有 browser externalization/大 chunk 警告。最终 workspace、相关全组、Node seam 与严格 lint 尚在执行，未验收或提交，不增加完成数。
+
+E-H300-12（最终门禁、完整闭环与限定验收，2026-10-28）：当前最终源码已执行 `cargo test -p deepagent-app-core --test workflow_audit --offline -j 2 -- --test-threads=1` **41 passed / 0 failed / 39 ignored**，其中本项正常、原可达性、重开、批量、批量缺项、已报告成本与挂起取消全部默认执行；`cargo test -p deepagent-app-core --lib canvas_model_gateway::tests:: --offline -j 2 -- --test-threads=1` **47/0/5 ignored**；`cargo test -p deepagent-runtime --lib workflow:: --offline -j 2 -- --test-threads=1` **68/0/0**。Node 真实桌面 DTO seam 与原 text 取消对照均用 `--ignored --exact --nocapture` 显式各 **1/0/0**，未把默认 ignored 当通过。证据 `target/h300-final-{workflow,gateway,runtime-workflow,desktop-dto,text-cancel-control}-20261028*`。UI 交互、文本兼容、两项配置恢复、四输出、正式 provider wire、计量与 SQLite 重开、取消终态分别由 E-09～11 及这些相关组闭环，不只依据编译或 fake bridge 单测。
+
+最终主树 `cargo test --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1` 原生 **101**、1734.77秒，130个 result sections 合计 **3659 passed / 7 failed / 309 ignored**（`target/h163-h300-final-workspace-20261028*`）。失败为 H-306 目录断言、五项未修改的 verification_commands lifecycle 夹具及 allowed_backend 构建对照；后六项分别在4秒就绪、120秒准备或15秒整轮观察窗失败，日志保留。源码查证 SystemExecutor 继承宿主环境，而本轮命令通过 `CARGO_TARGET_DIR` 选缓存，该变量也会重定向临时项目内的子 Cargo；同 target 上的其他门禁也曾并行竞争。改用已核实的顶层 `--target-dir target/h300-after-h163-build` 并移除继承 target 变量后，六项各 exact **1/0/0**（`target/h300-baseline-*-20261028*`）；没有改产品、夹具、4秒门槛或断言。
+
+为避免用默认 feature 的窄复跑冒充全仓 feature 组合，对上次 workspace 日志中**同一已编译测试 binary**再顺序运行完整两组，保存 binary SHA256：AppCore **1230/0/62 ignored**、原生0；kernel_v2_e2e **159/1/79 ignored**、原生101（`target/h300-same-binary-{deepagent_app_core,kernel_v2_e2e}-20261028*`）。前述六项构建夹具在同一binary完整组中均通过，但Kernel另出现 `mcp_hook_cancellation::ordinary_mcp_tool_notifies_the_same_peer_on_cancellation` 失败：本地cancelled且唯一终态已提交，peer未收到通知，放行后仍完成。不能把这次完整组写成全绿，也不能仅凭窄复跑证明所有失败已定位。
+
+对新出现的MCP对照失败，只作有界调查，不修改生产/测试/超时或降低断言：当前同一workspace binary执行 `mcp_hook_cancellation:: --test-threads=1 --nocapture` 为 **2/0/1 ignored**；未含H-300的独立HEAD快照执行 `cargo test --manifest-path target/h163-receipt-standalone/Cargo.toml --target-dir target/h163-receipt-standalone-build -p deepagent-app-core --test kernel_v2_e2e mcp_hook_cancellation:: --offline -j 2 -- --nocapture --test-threads=1` 同为 **2/0/1 ignored**（`target/h300-mcp-control-{candidate,head-baseline}-20261028*`）。快照633个Rust/manifest/lock文件已逐一对照当前HEAD Git blob，零差异；此基线使用默认feature，不能充当workspace feature组合的完整组通过。MCP取消控制路径与本项零diff；原审计E-H65-10～13及E-H136-20261027-01在H-300前已保留同类取消通知失败与独立StdioTransport调度反证。以上支持将其保留为独立全局残余，而非在本项顺手修复；**没有取得本次失败当时的调用栈，不将复跑通过冒称本次根因已定位或问题已消除**。H-236 hook上下文缺口仍为独立待修，普通工具对照不等于hook取消已修复。六项构建失败的对照支持环境/调度干扰，但未独立量化target变量与并发负载各自贡献，旧H-64所有冷就绪历史失败也仍未全部定位。原全仓7失败和后续MCP整组失败均保留，H-306仍未修。
+
+AppCore/runtime 严格 `cargo clippy -p <crate> --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` 分别原生101：AppCore既有 context_runtime/http_runtime/plugin_preparation/run_assembler 11项，runtime既有 model_agent.rs:282 clone_on_copy；失败文件与HEAD无差异，没有抑制后称通过（`target/h300-final-{appcore-clippy,runtime-clippy}-20261028*`）。E-11前端build/Tauri check与最终fmt/diff check通过，保留既有警告。9个源码/测试文件 SHA256 与已测版本一致，清单 `target/h300-final-source-manifest-20261028.json`。
+
+验收结论仅限 **Windows 本机、离线合成 provider、正式 DTO/Kernel/账本/run_events 与受控真实组件范围**：H-300 原能力不可达及其必须共同满足的批量输入/输出契约已修复，新增验收1；不把 H-163/H-164 的共享能力再计新修复。沿用原专业节点契约与 graph seam，没有另造创作提示词链、capability registry、运行器或账本；不是全局 capability 注册表重构。无SQL迁移、新依赖、外部服务接入或权限/沙箱放行；`CanvasModelOutput::Embedding` 新增完整 `vectors` 并保留 legacy `vector`，仓外 Rust 穷尽构造/解构需适配，版本1工作流与节点四字段输出不变。未验完整Tauri窗口、生产数据库保存、真实供应商/账单/远端撤销、其他OS、超大规模/断电/多宿主压力，不作这些保证。H-299、H-301～304、H-306各自独立；受控UI不是全产品UI验收。修复提交待本次独立提交后回填，不amend、不推送、不建PR。全部剩余 **212**；下一项拟按文件数据/权限风险复核 H-287，不在本项混入修复。历史总体工时仍为未逐项校准的 **200–400有效小时**，依据剩余跨层授权/执行/持久化/客户端风险规模，缺少可靠吞吐计量不能机械扣减；编译、依赖、设备及环境等待另计。整体目标仍active。
+
 ## H-164 本轮即时记录（2026-10-28）
 
 **当前状态：已修复并验收（2026-10-28，仅下列Windows本机、离线模型/临时loopback provider、文件SQLite与正式工作流消费方范围；修复提交`63cfffa4`）。** 本轮只收敛 Canvas 同步 text/image/audio provider 等待的运行取消边界，不合并 H-119 视频取消、H-165 图片URL第二跳、H-167媒体字节预算或 H-300 embedding 节点注册。
@@ -67,6 +116,8 @@ E-H164-02（根因修复）：`WorkflowAgent::think_cancelled()` 通过既有 `a
 E-H164-03（本机验收）：text 原始取消探针 `cargo test -p deepagent-app-core --test workflow_audit media::audit_text_cancel_does_not_wait_for_provider_response --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` 为 **1 passed / 0 failed**（`stopped_within_300ms=true`、`unfinished_before_response=false`、`cancel_to_exit_ms=63`、`text_completed=false`、`text_cancelled=true`、`requests=1`）。image 与 audio 动态取消探针分别 **1/0/0**，均在响应释放前退出、无 `Completed`、节点 `Cancelled`、run terminal 为 `cancelled`；正常 text 对照 **1/0/0**，provider 响应释放后节点 `Completed` 且 run `succeeded`。`media::` 默认组 **5/0/14 ignored**；Runtime workflow 全组 **67/0/0**；两 crate `cargo check --tests`、`cargo fmt --all -- --check` 和 `git diff --check` 通过。
 
 E-H164-04（未覆盖与阻断）：embedding 正式工作流在 graph compile 阶段仍因 H-300 的 `unknown workflow node kind (neither professional nor creative)` 被拒绝，provider 请求数为零；因此本轮不把 embedding provider 取消写成动态已验证，也不顺手修 H-300。严格 clippy 两个目标均被未改动的 `crates/deepagent-models/src/client.rs:355` `clone_on_copy` 基线阻断；未运行完整 workspace、Desktop build/真实Tauri、真实供应商或其他OS。取消只保证本地 future、节点事件和 run 终态一致，不声称远端 provider 已撤销。
+
+E-H164-05（H-300 后续资料，2026-10-28）：E-H164-04 的 graph 阻断是修复 H-300 前的历史事实；当前工作树已可达 embedding provider，但 H-300 批量输出与成本验收仍失败，且尚未单独执行 embedding 挂起取消。H-164 原验收范围仍限 text/image/audio，不把入口修通写成新增取消验收。（历史阶段记录；H-300后续E-10～12已取得embedding取消动态证据，不扩大本项原text/image/audio验收范围，也不重复计数。）
 
 ## H-165 本轮即时记录（2026-10-28）
 
@@ -2090,7 +2141,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-297：默认字符密度计数低估官方离线文本，冷计量可漏过既定压缩压力阈值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-298：Harness 超出存储表示域的读取游标回绕，错误重放全部旧 run events](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-299：桌面端工具循环的实时用量与会话重载显示不一致](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-300：Embedding 工作流执行器存在，但画布契约/图注册表没有注册 embedding 节点](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-300：Embedding 工作流执行器存在，但画布契约/图注册表没有注册 embedding 节点](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H300-01～12保留原graph/批量/成本失败；仅所列Windows本机范围，H-163/H-164不重复计数 | 复用专业registry/schema、graph、executor/gateway、取消树、canonical计量与run_events；批量全解析/次序/数量校验 | workflow41/0/39、gateway47/0/5、runtime68/0；真实桌面DTO1/0、text取消1/0；UI真实交互恢复/前端build/Tauri/fmt通过；workspace3659/7/309与严格lint失败保留，同binary整组AppCore1230/0/62、Kernel159/1/79（MCP通知）；当前及HEAD快照MCP对照各2/0/1不抹去整组失败；见E-12 | 待本次独立提交后回填 | 无SQL迁移/新依赖；Rust enum新增vectors仓外穷尽调用方需适配，原vector与节点DTO保留；完整Tauri/真实供应商/其他OS/断电未验；剩余212，下一H-287，总200–400未校准有效小时，等待另计 |
 | [H-301：Audio 合成取消没有打断共享 Canvas HTTP 响应](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-302：画布视频下载没有类型级字节上限](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-303：画布视频 provider URL 第二跳绕过网络审批](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

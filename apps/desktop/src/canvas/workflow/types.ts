@@ -1,4 +1,5 @@
 import type { Node, Edge } from "@xyflow/react";
+import type { ModelScenario } from "./store/canvasSettingsStore";
 
 export type CanvasMode = "creative" | "professional";
 export type NodeStatus = "idle" | "running" | "completed" | "error";
@@ -43,6 +44,7 @@ export type ProfessionalNodeKind =
   | "agent-v2"
   | "question-classifier"
   | "parameter-extractor"
+  | "embeddings"
   | "knowledge-retrieval"
   | "knowledge-index"
   | "document-extractor"
@@ -67,7 +69,7 @@ export interface NodeOutput {
   description?: string;
 }
 
-export type ExecutorKind = "passthrough" | "model" | "code" | "http" | "retrieval" | "control-flow" | "transform" | "human";
+export type ExecutorKind = "passthrough" | "model" | "embedding" | "code" | "http" | "retrieval" | "control-flow" | "transform" | "human";
 
 export interface NodeConfigSchema {
   type?: "string" | "number" | "integer" | "boolean" | "object" | "array";
@@ -86,6 +88,8 @@ export interface NodeConfigSchema {
   format?: string;
   additionalProperties?: boolean | NodeConfigSchema;
   "x-widget"?: "textarea" | "code" | "variable" | "model" | "tool" | "json" | "password";
+  /** Model capability used by the model picker (defaults to text for legacy schemas). */
+  "x-model-scenario"?: ModelScenario;
   "x-enum-labels"?: string[];
   "x-variable-types"?: string[];
   "x-visible-when"?: { field: string; value: unknown };
@@ -204,6 +208,9 @@ export interface ProfessionalNodeData {
   llmSystemPrompt?: string;
   llmTemperature?: number;
   llmMaxTokens?: number;
+  embeddingModel?: string;
+  texts?: string[];
+  text?: string;
   agentTools?: string[];
   agentStrategy?: "function-call" | "react";
   codeLanguage?: "javascript" | "python";
@@ -465,6 +472,7 @@ export const PROFESSIONAL_NODE_PICKER_TABS: ProfessionalNodePickerTab[] = [
           { kind: "answer", label: "输出", icon: "message-square" },
           { kind: "question-classifier", label: "问题分类器", icon: "tags" },
           { kind: "parameter-extractor", label: "参数提取器", icon: "table-columns" },
+          { kind: "embeddings", label: "文本嵌入", icon: "layer-group" },
         ],
       },
       {
@@ -537,6 +545,7 @@ export const PROFESSIONAL_NODE_CATEGORIES: ProfessionalNodeCategory[] = [
       { kind: "agent-v2", label: "Agent V2", icon: "bot" },
       { kind: "question-classifier", label: "问题分类", icon: "tags" },
       { kind: "parameter-extractor", label: "参数提取", icon: "table-columns" },
+      { kind: "embeddings", label: "文本嵌入", icon: "layer-group" },
     ],
   },
   {

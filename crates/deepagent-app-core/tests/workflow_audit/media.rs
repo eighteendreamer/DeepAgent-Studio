@@ -7,9 +7,13 @@ use deepagent_app_core::canvas_model_gateway::CanvasModelGateway;
 use deepagent_app_core::canvas_provider_service::{
     CanvasModelConfig, CanvasProviderInput, CanvasProviderService, CanvasScenario,
 };
+use deepagent_app_core::cost_service::CostService;
 use deepagent_app_core::{ChatService, MemorySecretStore, SettingsService};
+use deepagent_core::event::EventPayload;
 use deepagent_models::transport::MockTransport;
-use deepagent_persistence::{run_store::RunStore, Database};
+use deepagent_persistence::{
+    cost_store::CostStore, event_store::EventStore, run_store::RunStore, Database,
+};
 use deepagent_runtime::workflow::{NodeExecutionEvent, NodeExecutionStatus, WorkflowRequest};
 use deepagent_runtime::RuntimeEvent;
 use serde_json::{json, Value};
@@ -583,27 +587,59 @@ impl Drop for LocalPendingAudioProvider {
     }
 }
 
-/// An embeddings provider that accepts the request but withholds the JSON
-/// response. Embeddings have no artifact download, so this isolates the
-/// shared provider HTTP cancellation boundary itself.
-struct LocalPendingEmbeddingProvider {
+/// Synthetic OpenAI-compatible embeddings endpoint. Only loopback is used;
+/// the real gateway still constructs and parses the HTTP request/response.
+struct LocalEmbeddingProvider {
     base_url: String,
     request_received: Arc<Notify>,
+    release_response: Option<Arc<Notify>>,
+    requests: Arc<Mutex<Vec<Value>>>,
     server: JoinHandle<()>,
 }
 
-impl LocalPendingEmbeddingProvider {
+impl LocalEmbeddingProvider {
     async fn start() -> Self {
+        Self::start_with_response_count(None).await
+    }
+
+    async fn start_with_response_count(response_count: Option<usize>) -> Self {
+        Self::start_with_options(response_count, false).await
+    }
+
+    async fn start_pending() -> Self {
+        Self::start_with_options(None, true).await
+    }
+
+    async fn start_with_options(response_count: Option<usize>, pending: bool) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let request_received = Arc::new(Notify::new());
         let arrived = request_received.clone();
+        let release_response = pending.then(|| Arc::new(Notify::new()));
+        let release = release_response.clone();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let (line, _) = read_request(&mut socket).await;
+            let (line, body) = read_request(&mut socket).await;
             assert!(line.starts_with("POST /v1/embeddings "));
+            // Production embedding_input() sends a scalar for one text and
+            // an array for a batch. Do not invent an array-only wire contract.
+            let count = match &body["input"] {
+                Value::String(_) => 1,
+                Value::Array(texts) => texts.len(),
+                _ => panic!("text embedding input"),
+            };
+            captured.lock().unwrap().push(body);
             arrived.notify_one();
-            let payload = json!({"data":[{"embedding":[0.1, 0.2, 0.3]}]}).to_string();
+            if let Some(release) = release {
+                release.notified().await;
+            }
+            let data: Vec<Value> = (0..response_count.unwrap_or(count))
+                .map(|index| json!({"index": index, "embedding": [0.1, 0.2, 0.3]}))
+                .collect();
+            let payload = json!({"data": data, "usage": {"prompt_tokens": 11, "total_tokens": 11}})
+                .to_string();
             let header = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                 payload.len()
@@ -615,12 +651,27 @@ impl LocalPendingEmbeddingProvider {
         Self {
             base_url: format!("http://{address}/v1"),
             request_received,
+            release_response,
+            requests,
             server,
         }
     }
+
+    async fn wait_for_request(&self) {
+        tokio::time::timeout(Duration::from_secs(5), self.request_received.notified())
+            .await
+            .expect("the real embedding gateway must receive the request before cancellation");
+    }
+
+    async fn close(&mut self) {
+        if let Some(release) = &self.release_response {
+            release.notify_one();
+        }
+        (&mut self.server).await.unwrap();
+    }
 }
 
-impl Drop for LocalPendingEmbeddingProvider {
+impl Drop for LocalEmbeddingProvider {
     fn drop(&mut self) {
         self.server.abort();
     }
@@ -856,7 +907,7 @@ impl MediaFixture {
         .await
     }
 
-    async fn new_embedding(provider: &LocalPendingEmbeddingProvider) -> Self {
+    async fn new_embedding(provider: &LocalEmbeddingProvider) -> Self {
         Self::with_provider(
             &provider.base_url,
             "Audit local embedding",
@@ -1404,9 +1455,274 @@ async fn real_image_workflow_stores_one_successful_artifact() {
 }
 
 #[tokio::test]
-#[ignore = "audit: an enabled embedding workflow must reach its registered provider"]
+async fn real_embedding_workflow_reaches_provider_and_completes() {
+    let provider = LocalEmbeddingProvider::start().await;
+    let fixture = MediaFixture::new_embedding(&provider).await;
+    let run_id = "audit-embedding-normal-control";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    let provider_called = tokio::time::timeout(
+        Duration::from_millis(50),
+        provider.request_received.notified(),
+    )
+    .await
+    .is_ok();
+    result.unwrap();
+
+    let embedding = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|event| {
+            event.node_id == "embedding" && event.status == NodeExecutionStatus::Completed
+        })
+        .cloned()
+        .expect("normal embedding control must complete");
+    assert!(provider_called);
+    assert_eq!(
+        provider.requests.lock().unwrap().as_slice(),
+        &[json!({"model": "audit-embedding-model", "input": "audit embedding"})]
+    );
+    drop(provider);
+    let outputs = embedding
+        .outputs
+        .expect("embedding output must be published");
+    assert_eq!(outputs["dimensions"], 3);
+    assert_eq!(outputs["count"], 1);
+    assert_eq!(
+        outputs.as_object().unwrap().len(),
+        4,
+        "vector payloads must stay out of node events"
+    );
+    assert!(embedding
+        .provider_id
+        .as_deref()
+        .is_some_and(|provider_id| !provider_id.is_empty()));
+    assert_eq!(embedding.model_id.as_deref(), Some("audit-embedding-model"));
+    assert_eq!(outputs["modelId"], "audit-embedding-model");
+    assert_eq!(
+        outputs["providerId"],
+        embedding.provider_id.as_deref().unwrap()
+    );
+
+    let terminals = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "succeeded");
+}
+
+#[tokio::test]
+async fn embedding_pending_response_cancellation_uses_shared_terminal_boundary() {
+    let mut provider = LocalEmbeddingProvider::start_pending().await;
+    let mut fixture = MediaFixture::new_embedding(&provider).await;
+    let cost = Arc::new(CostService::new(fixture.db.clone()));
+    fixture.chat = fixture.chat.clone().with_cost(cost.clone());
+    let run_id = "audit-embedding-pending-cancellation";
+    let mut run = fixture.spawn(run_id);
+    provider.wait_for_request().await;
+    let started = Instant::now();
+    let accepted = fixture.chat.request_cancel(run_id).unwrap().accepted;
+    let stopped = tokio::time::timeout(Duration::from_millis(300), &mut run).await;
+    let stopped_before_response = stopped.is_ok();
+    let live_before_response = fixture.live.lock().unwrap().clone();
+    let durable_before_response = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    // Always release and join the synthetic server, even on a regression. A
+    // late response is not permission to publish a completed node or usage.
+    provider.close().await;
+    let result = match stopped {
+        Ok(joined) => joined.unwrap(),
+        Err(_) => finish_run(&mut run).await,
+    };
+    let cancel_to_exit_ms = started.elapsed().as_millis();
+    result.unwrap();
+    eprintln!(
+        "embedding cancellation: accepted={accepted}, stopped_within_300ms={stopped_before_response}, cancel_to_exit_ms={cancel_to_exit_ms}"
+    );
+    assert!(accepted);
+    assert!(
+        stopped_before_response,
+        "cancellation must not await provider response"
+    );
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        fixture.live.lock().unwrap().as_slice(),
+        live_before_response
+    );
+    assert_eq!(
+        RunStore::new(&fixture.db)
+            .events_after(run_id, None)
+            .unwrap()
+            .len(),
+        durable_before_response.len(),
+        "late provider data must not append new events after the durable terminal"
+    );
+    let node_terminals: Vec<_> = live_before_response
+        .iter()
+        .filter(|event| event.node_id == "embedding" && event.status.is_terminal())
+        .collect();
+    assert_eq!(node_terminals.len(), 1);
+    assert_eq!(node_terminals[0].status, NodeExecutionStatus::Cancelled);
+    assert!(node_terminals[0].outputs.is_none());
+    assert!(CostStore::new(&fixture.db)
+        .session_costs_detailed(&fixture.session)
+        .unwrap()
+        .is_empty());
+    let session_id = fixture.session.clone();
+    let MediaFixture {
+        _root: root,
+        db,
+        chat,
+        artifacts,
+        providers,
+        ..
+    } = fixture;
+    drop(cost);
+    drop(chat);
+    drop(artifacts);
+    drop(providers);
+    drop(db);
+    let reopened = Database::open(root.path().join("media.db")).unwrap();
+    let stored = RunStore::new(&reopened).events_after(run_id, None).unwrap();
+    assert!(stored
+        .windows(2)
+        .all(|pair| pair[0].sequence < pair[1].sequence));
+    let terminals: Vec<_> = stored
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "cancelled");
+    let replayed: Vec<NodeExecutionEvent> = stored
+        .iter()
+        .filter(|event| event.event_type == "workflow_node")
+        .map(|event| serde_json::from_value(event.data["event"].clone()).unwrap())
+        .filter(|event: &NodeExecutionEvent| {
+            event.node_id == "embedding" && event.status.is_terminal()
+        })
+        .collect();
+    assert_eq!(replayed.len(), 1);
+    assert_eq!(replayed[0].status, NodeExecutionStatus::Cancelled);
+    let history = EventStore::new(&reopened)
+        .load_session(session_id.parse().unwrap())
+        .unwrap();
+    let receipts: Vec<_> = history
+        .iter()
+        .filter_map(|event| match &event.payload {
+            EventPayload::RunCostRecorded {
+                run_id: id,
+                ledger_ids,
+                cost_yuan,
+                ..
+            } if id == run_id => Some((ledger_ids, cost_yuan)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(receipts.len(), 1);
+    assert!(receipts[0].0.is_empty());
+    assert!(
+        receipts[0].1.is_none(),
+        "unreported usage cannot become a measured zero cost"
+    );
+}
+
+#[tokio::test]
+async fn audit_embedding_node_events_survive_database_reopen() {
+    let provider = LocalEmbeddingProvider::start().await;
+    let fixture = MediaFixture::new_embedding(&provider).await;
+    let run_id = "audit-embedding-node-replay";
+    let mut run = fixture.spawn(run_id);
+    let result = finish_run(&mut run).await;
+    drop(provider);
+    result.unwrap();
+
+    let live = fixture.live.lock().unwrap().clone();
+    let embedding = live
+        .iter()
+        .find(|event| {
+            event.node_id == "embedding" && event.status == NodeExecutionStatus::Completed
+        })
+        .expect("embedding completion must be emitted");
+    let expected_provider = embedding
+        .provider_id
+        .as_deref()
+        .expect("embedding completion must include provider provenance")
+        .to_owned();
+    assert_eq!(embedding.model_id.as_deref(), Some("audit-embedding-model"));
+
+    let MediaFixture {
+        _root: root,
+        db,
+        chat,
+        artifacts,
+        providers,
+        ..
+    } = fixture;
+    drop(chat);
+    drop(artifacts);
+    drop(providers);
+    drop(db);
+
+    let reopened = Arc::new(Database::open(root.path().join("media.db")).unwrap());
+    let stored = RunStore::new(&reopened).events_after(run_id, None).unwrap();
+    assert!(stored
+        .windows(2)
+        .all(|events| events[0].sequence < events[1].sequence));
+    let cursor = stored.first().expect("durable run events").sequence;
+    let resumed = RunStore::new(&reopened)
+        .events_after(run_id, Some(cursor))
+        .unwrap();
+    assert_eq!(resumed.len(), stored.len() - 1);
+    assert!(resumed.iter().all(|event| event.sequence > cursor));
+    let replayed: Vec<NodeExecutionEvent> = stored
+        .iter()
+        .filter(|event| event.event_type == "workflow_node")
+        .map(|event| serde_json::from_value(event.data["event"].clone()).unwrap())
+        .collect();
+    let replayed_embedding = replayed
+        .iter()
+        .find(|event| {
+            event.node_id == "embedding" && event.status == NodeExecutionStatus::Completed
+        })
+        .expect("embedding completion must survive database reopen");
+    assert_eq!(
+        replayed_embedding.model_id.as_deref(),
+        Some("audit-embedding-model")
+    );
+    assert_eq!(
+        replayed_embedding.provider_id.as_deref(),
+        Some(expected_provider.as_str())
+    );
+    assert_eq!(
+        replayed_embedding.outputs.as_ref().unwrap()["dimensions"],
+        3
+    );
+    assert_eq!(
+        stored
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .count(),
+        1
+    );
+    assert_eq!(
+        stored
+            .iter()
+            .find(|event| event.event_type == "run_terminal")
+            .unwrap()
+            .data["kind"],
+        "succeeded"
+    );
+}
+
+#[tokio::test]
 async fn audit_embedding_workflow_reaches_registered_provider() {
-    let provider = LocalPendingEmbeddingProvider::start().await;
+    let provider = LocalEmbeddingProvider::start().await;
     let fixture = MediaFixture::new_embedding(&provider).await;
     let run_id = "audit-embedding-provider-reachability";
     let mut run = fixture.spawn(run_id);
@@ -1429,6 +1745,117 @@ async fn audit_embedding_workflow_reaches_registered_provider() {
         provider_called,
         "the configured embedding provider must receive a request"
     );
+}
+
+#[tokio::test]
+#[ignore = "audit: requires local Node and desktop dependencies; actual embedding TS/Rust seam"]
+async fn audit_desktop_embedding_dto_reaches_registered_provider() {
+    let provider = LocalEmbeddingProvider::start().await;
+    let mut fixture = MediaFixture::new_embedding(&provider).await;
+    let model_ref = fixture.workflow.definition.nodes[1].config["embeddingModel"]
+        .as_str()
+        .unwrap();
+    let provider_id = model_ref.split_once("::").unwrap().0;
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../apps/desktop/scripts/audit-workflow-contract.cjs");
+    let output = std::process::Command::new("node")
+        .arg(script)
+        .args(["--emit-embedding-fixture", provider_id])
+        .output()
+        .expect("local Node is required for this opt-in audit");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let fixtures: Vec<Value> = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(fixtures.len(), 1);
+    fixture.workflow = serde_json::from_value(fixtures[0]["workflow"].clone()).unwrap();
+    let mut run = fixture.spawn("audit-desktop-embedding-dto");
+    finish_run(&mut run).await.unwrap();
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    assert!(fixture.live.lock().unwrap().iter().any(|event| {
+        event.node_id == "embedding"
+            && event.status == NodeExecutionStatus::Completed
+            && event.outputs.as_ref().unwrap()["dimensions"] == 3
+    }));
+}
+
+#[tokio::test]
+async fn audit_embedding_provider_usage_reaches_existing_cost_ledger() {
+    let provider = LocalEmbeddingProvider::start().await;
+    let mut fixture = MediaFixture::new_embedding(&provider).await;
+    let cost = Arc::new(CostService::new(fixture.db.clone()));
+    fixture.chat = fixture.chat.clone().with_cost(cost.clone());
+    let mut run = fixture.spawn("audit-embedding-cost-acceptance");
+    finish_run(&mut run).await.unwrap();
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    let summary = cost.summary(&fixture.session).unwrap();
+    eprintln!(
+        "embedding provider usage: prompt_tokens=11; ledger input_tokens={}",
+        summary.input_tokens
+    );
+    assert_eq!(
+        summary.input_tokens, 11,
+        "provider-reported usage must not disappear after a successful embedding"
+    );
+}
+
+#[tokio::test]
+async fn audit_embedding_batch_output_matches_provider_vectors() {
+    let provider = LocalEmbeddingProvider::start().await;
+    let mut fixture = MediaFixture::new_embedding(&provider).await;
+    fixture.workflow.definition.nodes[1]
+        .config
+        .insert("texts".into(), json!(["first", "second"]));
+    let mut run = fixture.spawn("audit-embedding-batch-acceptance");
+    finish_run(&mut run).await.unwrap();
+    assert_eq!(
+        provider.requests.lock().unwrap()[0]["input"],
+        json!(["first", "second"])
+    );
+    let events = fixture.live.lock().unwrap();
+    let completed = events
+        .iter()
+        .find(|event| {
+            event.node_id == "embedding" && event.status == NodeExecutionStatus::Completed
+        })
+        .unwrap();
+    let outputs = completed.outputs.as_ref().unwrap();
+    eprintln!("embedding batch: provider_vectors=2; node_outputs={outputs}");
+    assert_eq!(
+        outputs["count"], 2,
+        "the registered output contract must not silently discard batch results"
+    );
+}
+
+#[tokio::test]
+async fn embedding_incomplete_provider_batch_fails_without_a_completed_node() {
+    let provider = LocalEmbeddingProvider::start_with_response_count(Some(1)).await;
+    let mut fixture = MediaFixture::new_embedding(&provider).await;
+    fixture.workflow.definition.nodes[1]
+        .config
+        .insert("texts".into(), json!(["first", "second"]));
+    let run_id = "audit-embedding-incomplete-batch";
+    let mut run = fixture.spawn(run_id);
+    assert!(finish_run(&mut run).await.is_err());
+    assert_eq!(provider.requests.lock().unwrap().len(), 1);
+    let events = fixture.live.lock().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event.node_id == "embedding" && event.status == NodeExecutionStatus::Failed));
+    assert!(!events.iter().any(
+        |event| event.node_id == "embedding" && event.status == NodeExecutionStatus::Completed
+    ));
+    let stored = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminal: Vec<_> = stored
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].data["kind"], "failed");
 }
 
 #[tokio::test]

@@ -605,7 +605,10 @@ pub enum CanvasModelOutput {
         model_id: String,
     },
     Embedding {
+        /// First vector retained for existing single-vector gateway callers.
         vector: Vec<f32>,
+        /// Full batch, in input order. Workflow events expose only its count.
+        vectors: Vec<Vec<f32>>,
         dimensions: usize,
         provider_id: String,
         model_id: String,
@@ -2052,6 +2055,63 @@ fn hmac_sha256_finish(
     outer.finalize().into()
 }
 
+/// Parse all returned vectors rather than silently keeping the first input.
+/// OpenAI-compatible endpoints may return indexed items out of order. Legacy
+/// compatible endpoints without any index retain their response order.
+fn parse_embedding_vectors(value: &Value) -> CanvasResult<Vec<Vec<f32>>> {
+    let invalid = |reason: &str| {
+        CanvasError::new(
+            CanvasErrorCode::ProviderFailure,
+            format!("invalid embedding response: {reason}"),
+        )
+    };
+    let items = value
+        .get("data")
+        .and_then(Value::as_array)
+        .filter(|items| !items.is_empty())
+        .ok_or_else(|| invalid("no vectors"))?;
+    let indexed = items.iter().any(|item| item.get("index").is_some());
+    let mut vectors = vec![None; items.len()];
+    let mut dimensions = None;
+    for (position, item) in items.iter().enumerate() {
+        let index = if indexed {
+            item.get("index")
+                .and_then(Value::as_u64)
+                .and_then(|index| usize::try_from(index).ok())
+                .filter(|&index| index < items.len())
+                .ok_or_else(|| invalid("missing or out-of-range index"))?
+        } else {
+            position
+        };
+        let values = item
+            .get("embedding")
+            .and_then(Value::as_array)
+            .filter(|values| !values.is_empty())
+            .ok_or_else(|| invalid("empty or non-array vector"))?;
+        if dimensions.is_some_and(|dimensions| dimensions != values.len()) {
+            return Err(invalid("inconsistent vector dimensions"));
+        }
+        dimensions = Some(values.len());
+        let vector = values
+            .iter()
+            .map(|value| {
+                value
+                    .as_f64()
+                    .map(|number| number as f32)
+                    .filter(|number| number.is_finite())
+                    .ok_or_else(|| invalid("non-numeric or non-finite vector element"))
+            })
+            .collect::<CanvasResult<Vec<_>>>()?;
+        if vectors[index].replace(vector).is_some() {
+            return Err(invalid("duplicate vector index"));
+        }
+    }
+    vectors
+        .into_iter()
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| invalid("incomplete vector batch"))
+}
+
 async fn parse_output(
     candidate: &ResolvedCanvasModel,
     kind: CanvasRequestKind,
@@ -2078,28 +2138,12 @@ async fn parse_output(
             })
         }
         CanvasRequestKind::Embeddings => {
-            let vector = value
-                .get("data")
-                .and_then(Value::as_array)
-                .and_then(|items| items.first())
-                .and_then(|item| item.get("embedding"))
-                .and_then(Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(|v| v.as_f64().map(|f| f as f32))
-                        .collect::<Vec<f32>>()
-                })
-                .filter(|v| !v.is_empty())
-                .ok_or_else(|| {
-                    CanvasError::new(
-                        CanvasErrorCode::ProviderFailure,
-                        "embedding response contained no vector".to_string(),
-                    )
-                })?;
+            let vectors = parse_embedding_vectors(value)?;
+            let vector = vectors[0].clone();
             let dimensions = vector.len();
             Ok(CanvasModelOutput::Embedding {
                 vector,
+                vectors,
                 dimensions,
                 provider_id,
                 model_id,
@@ -3186,21 +3230,34 @@ impl CanvasModelGateway {
         };
         match output {
             CanvasModelOutput::Embedding {
-                vector,
+                vectors,
                 dimensions,
                 provider_id,
                 model_id,
                 usage,
                 raw_usage,
-            } => Ok(CanvasEmbeddingResponse {
-                dimensions,
-                count: 1,
-                provider_id,
-                model_id,
-                vectors: vec![vector],
-                usage,
-                raw_usage,
-            }),
+                ..
+            } => {
+                let expected_count = request
+                    .texts
+                    .iter()
+                    .filter(|text| !text.trim().is_empty())
+                    .count();
+                if vectors.len() != expected_count {
+                    return Err(deepagent_core::error::CoreError::other(
+                        "embedding provider returned a vector count different from the text input count",
+                    ));
+                }
+                Ok(CanvasEmbeddingResponse {
+                    dimensions,
+                    count: vectors.len(),
+                    provider_id,
+                    model_id,
+                    vectors,
+                    usage,
+                    raw_usage,
+                })
+            }
             other => Err(deepagent_core::error::CoreError::other(format!(
                 "embedding node received a non-vector model output: {other:?}"
             ))),
@@ -3254,6 +3311,40 @@ mod tests {
     use deepagent_runtime::workflow::CanvasJobProgressSink;
     use std::sync::Arc;
 
+    #[test]
+    fn embedding_batch_keeps_all_vectors_in_input_order_and_legacy_scalar() {
+        assert_eq!(
+            parse_embedding_vectors(&json!({"data": [
+                {"index": 1, "embedding": [3.0, 4.0]},
+                {"index": 0, "embedding": [1.0, 2.0]},
+            ]}))
+            .unwrap(),
+            vec![vec![1.0, 2.0], vec![3.0, 4.0]]
+        );
+        assert_eq!(
+            parse_embedding_vectors(&json!({"data": [
+                {"embedding": [0.5, -0.25, 1.0]},
+            ]}))
+            .unwrap(),
+            vec![vec![0.5, -0.25, 1.0]]
+        );
+    }
+
+    #[test]
+    fn embedding_batch_rejects_invalid_items_without_silent_truncation() {
+        for data in [
+            json!([]),
+            json!([{"embedding": []}]),
+            json!([{"embedding": [1.0, "invalid"]}]),
+            json!([{"embedding": [1e100]}]),
+            json!([{"embedding": [1.0]}, {"embedding": [1.0, 2.0]}]),
+            json!([{"index": 0, "embedding": [1.0]}, {"index": 0, "embedding": [2.0]}]),
+            json!([{"index": 2, "embedding": [1.0]}]),
+            json!([{"index": 0, "embedding": [1.0]}, {"embedding": [2.0]}]),
+        ] {
+            assert!(parse_embedding_vectors(&json!({"data": data})).is_err());
+        }
+    }
     fn facts(
         node_kind: &str,
         allowed: &[CanvasOperation],

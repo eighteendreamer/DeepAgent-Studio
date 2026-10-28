@@ -41,8 +41,10 @@ function JsonEditor({ value, onChange, schema, path }: EditorProps) {
 function ModelEditor({ schema, value, onChange, path }: EditorProps) {
   const providers = useCanvasSettingsStore((state) => state.providers);
   const current = String(value ?? "");
-  const options = scenarioModelOptions(providers, "text", current || undefined);
-  return <CanvasSelect id={path} label={schema.title} value={current} onChange={onChange} options={[{ value: "", label: "使用默认文本模型" }, ...options]} />;
+  const scenario = schema["x-model-scenario"] ?? "text";
+  const options = scenarioModelOptions(providers, scenario, current || undefined);
+  const defaultLabel = scenario === "embedding" ? "使用默认嵌入模型" : "使用默认文本模型";
+  return <CanvasSelect id={path} label={schema.title} value={current} onChange={onChange} options={[{ value: "", label: defaultLabel }, ...options]} />;
 }
 
 function ArrayEditor(props: EditorProps) {

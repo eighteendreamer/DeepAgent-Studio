@@ -269,6 +269,10 @@ export const NODE_CONFIG_SCHEMAS: Record<ProfessionalNodeKind, NodeConfigSchema>
     extractorInstruction: { ...text("提取指令"), "x-widget": "textarea" },
     reasoningMode: { type: "boolean", title: "推理模式", default: false },
   }),
+  embeddings: nodeSchema("文本嵌入", {
+    embeddingModel: { ...MODEL, title: "嵌入模型", "x-model-scenario": "embedding" },
+    texts: list("文本列表", text("文本"), [""]),
+  }, "将文本转换为向量表示，结果仅暴露数量、维度和模型身份，不持久化向量正文。"),
   "knowledge-retrieval": nodeSchema("知识检索", {
     knowledgeBaseId: text("知识库标识"),
     knowledgeTopK: { type: "integer", title: "召回数量", default: 3, minimum: 1, maximum: 20 },

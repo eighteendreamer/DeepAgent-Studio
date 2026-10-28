@@ -22,18 +22,26 @@ function loadTypeScript(relativePath, imports = {}) {
   return loaded.exports;
 }
 
-async function emitFixtures() {
+async function emitFixtures(names = ["input", "condition", "output", "template"], providerId) {
   const schemas = loadTypeScript("../src/canvas/workflow/utils/nodeSchemas.ts");
   const configSchema = loadTypeScript("../src/canvas/workflow/utils/configSchema.ts");
   const registry = loadTypeScript("../src/canvas/workflow/utils/nodeRegistry.ts", {
     "./nodeSchemas": schemas, "./configSchema": configSchema,
   });
   const fixtures = [];
-  for (const name of ["input", "condition", "output", "template"]) {
+  for (const name of names) {
     const node = (id, kind, patch = {}) => ({ id, type: `professional-${kind}`, position: { x: 0, y: 0 }, data: { ...registry.createDefaultNodeData(kind), ...patch } });
     let nodes = [node("start", "start"), node("end", "end")];
     let edges = [{ id: "e1", source: "start", target: "end" }];
-    if (name === "input") {
+    if (name === "embedding") {
+      nodes.splice(1, 0, node("embedding", "embeddings", {
+        embeddingModel: `${providerId}::audit-embedding-model`, texts: ["audit embedding"],
+      }));
+      edges = [
+        { id: "e1", source: "start", target: "embedding" },
+        { id: "e2", source: "embedding", target: "end" },
+      ];
+    } else if (name === "input") {
       nodes[0].data.inputVariables = [{ name: "customer", type: "string", default: "BLUE" }];
       nodes[1].data.outputVariables = [{ name: "report", type: "string", value: "{{#start.customer#}}" }];
     } else if (name === "output") {
@@ -79,7 +87,11 @@ async function emitFixtures() {
     await running;
     assert.ok(workflow);
     const serializedNodes = workflow.definition.nodes;
-    if (name === "input") {
+    if (name === "embedding") {
+      const config = serializedNodes.find((node) => node.id === "embedding").config;
+      assert.equal(config.embeddingModel, `${providerId}::audit-embedding-model`);
+      assert.deepEqual(config.texts, ["audit embedding"]);
+    } else if (name === "input") {
       assert.equal(serializedNodes.find((node) => node.id === "start").config.inputVariables[0].name, "customer");
     } else if (name === "condition") {
       assert.equal(serializedNodes.find((node) => node.id === "inspect").config.conditions[0].items[0].value, "BLUE");
@@ -95,8 +107,11 @@ async function emitFixtures() {
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] !== "--emit-fixtures") {
-    throw new Error("opt-in audit only: pass --emit-fixtures or run the ignored Rust workflow contract probe");
+  if (process.argv[2] === "--emit-embedding-fixture" && process.argv[3]) {
+    emitFixtures(["embedding"], process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-fixtures") {
+    emitFixtures().catch((error) => { console.error(error); process.exitCode = 1; });
+  } else {
+    throw new Error("opt-in audit only: pass --emit-fixtures or --emit-embedding-fixture <provider-id>");
   }
-  emitFixtures().catch((error) => { console.error(error); process.exitCode = 1; });
 }
