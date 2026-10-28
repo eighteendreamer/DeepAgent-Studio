@@ -684,6 +684,13 @@ pub enum ModelStreamEvent {
 /// Mode reasoning, and tool-call starts — already decoded from each chunk. The
 /// default no-op impl lets callers ignore deltas (the non-streaming path).
 pub trait DeltaObserver: Send {
+    /// A provider usage snapshot arrived. The default preserves the existing
+    /// semantic event; observers needing failure/cancellation accounting may
+    /// retain the numeric report before stream assembly can fail.
+    fn on_usage(&mut self, usage: Usage, _raw: &serde_json::Value) {
+        self.on_event(ModelStreamEvent::Usage { usage });
+    }
+
     /// Unified event entry point. Existing observers overriding the legacy
     /// callbacks continue to work through this default dispatcher.
     fn on_event(&mut self, event: ModelStreamEvent) {

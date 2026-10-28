@@ -329,6 +329,7 @@ fn finalize_usage(
     .finalize_after_kernel(
         session,
         AppRunFinalizerRequest {
+            model_usage: None,
             session_id: &session_id,
             run_id,
             discovered_before_run: &HashSet::new(),

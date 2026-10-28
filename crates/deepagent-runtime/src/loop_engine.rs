@@ -704,7 +704,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         let mut finished = false;
         let mut completion_failures = 0usize;
         let mut adversarial_refutes = 0usize;
-        let mut raw_responses_usage: Vec<serde_json::Value> = Vec::new();
         let mut tool_effects: Vec<crate::completion::ToolEffectRecord> = Vec::new();
 
         // Verification state persists across attempts (tracks loop detection).
@@ -811,7 +810,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             }
             tracing::debug!(step, ?decision, "agent decision");
             let pending_response_items = agent.take_pending_response_items();
-            raw_responses_usage.extend(agent.take_pending_raw_usage());
             let (decision, response_items) = match decision {
                 AgentDecision::CompleteItems { message, items } => {
                     // CompleteItems is the final turn's authoritative output. ModelAgent
@@ -1205,6 +1203,10 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         // Persist the run's cumulative token usage + wall-clock duration so the
         // UI can show per-turn metrics when the session is reopened later.
         if let Some(u) = agent.cumulative_usage() {
+            // Drain only at the persistence boundary. Budget/cancellation can
+            // stop before decision dispatch, and an error must leave every
+            // earlier call available to the kernel's error finalizer.
+            let raw_responses_usage = agent.take_pending_raw_usage();
             let duration_ms = run_started_at.elapsed().as_millis() as u64;
             session.append(EventPayload::UsageRecorded {
                 prompt_tokens: u.prompt_tokens,

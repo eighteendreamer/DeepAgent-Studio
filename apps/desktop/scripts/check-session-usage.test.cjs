@@ -205,3 +205,94 @@ test("the block breakdown truncates nothing and names its own gap", () => {
   assert.match(indicator, /其他\/未归类/, "context the rows do not name gets a row");
   assert.match(indicator, /上下文组成（估算）/, "the rows are an estimate, and must say so");
 });
+
+// H-163 crosses the existing UI contract; exercise its real mapper, event
+// handlers and footer, rather than a second implementation of those rules.
+function productionUsageNodes() {
+  const ts = require("typescript");
+  const ast = ts.createSourceFile("App.tsx", read("App.tsx"), ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const found = {};
+  function visit(node) {
+    if (ts.isFunctionDeclaration(node) && node.name?.text === "mapConversationToChatMessages") found.mapper = node;
+    if (ts.isVariableDeclaration(node) && node.name.getText(ast) === "addUsage") found.live = node;
+    if (ts.isCaseClause(node) && node.expression.getText(ast) === '"cost_recorded"') found.cost = node;
+    ts.forEachChild(node, visit);
+  }
+  visit(ast);
+  assert.deepEqual(Object.keys(found).sort(), ["cost", "live", "mapper"]);
+  const compile = (code) => ts.transpileModule(code, {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return { ts, ast, found, compile };
+}
+
+function loadUsageComponent(relative, imports = {}) {
+  const ts = require("typescript");
+  const Module = require("node:module");
+  const filename = path.join(sourceRoot, relative);
+  const loaded = new Module(filename, module);
+  loaded.filename = filename;
+  loaded.paths = Module._nodeModulePaths(path.dirname(filename));
+  const original = loaded.require.bind(loaded);
+  loaded.require = (name) => Object.hasOwn(imports, name) ? imports[name] : original(name);
+  loaded._compile(ts.transpileModule(read(relative), {
+    fileName: filename,
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText, filename);
+  return loaded.exports;
+}
+
+test("workflow persisted usage reaches the production mapper and rendered footer", () => {
+  const { ast, found, compile } = productionUsageNodes();
+  const mapper = new Function(`${compile(found.mapper.getText(ast))}; return mapConversationToChatMessages;`)();
+  // Same canonical shape as the real two-provider workflow integration test:
+  // gauges describe the last request; output/reasoning are run accumulators.
+  // H-299 owns the live/reload semantic difference and is deliberately unchanged.
+  const [message] = mapper([{
+    id: "workflow", role: "assistant", content: "answer", parts: [],
+    usage: { prompt_tokens: 50, completion_tokens: 30, reasoning_tokens: 17,
+      total_tokens: 60, prompt_cache_hit_tokens: 20, prompt_cache_miss_tokens: 30,
+      duration_ms: 12, cost_yuan: 0.000310 },
+  }]);
+  assert.deepEqual(message.usage, {
+    promptTokens: 50, completionTokens: 30, reasoningTokens: 17, totalTokens: 60,
+    cacheHitTokens: 20, cacheMissTokens: 30, costYuan: 0.000310,
+  });
+  assert.equal(message.runMs, 12);
+  const React = require("react");
+  const { renderToStaticMarkup } = require("react-dom/server");
+  const format = loadUsageComponent("components/chat-timeline/format.ts");
+  const { TurnFooter } = loadUsageComponent("components/chat-timeline/TurnFooter.tsx", {
+    "../ui/HoverInfo": { HoverInfo: ({ children }) => children },
+    "./EditedFilesList": { EditedFilesList: () => null },
+    "./format": format,
+  });
+  const render = (usage) => renderToStaticMarkup(React.createElement(TurnFooter, {
+    usage, totalMs: message.runMs, answer: message.content,
+  })).replace(/<[^>]*>/g, "");
+  const text = render(message.usage);
+  for (const label of ["60 tokens", "输入 50", "输出 30", "缓存命中 20", "缓存未命中 30", "￥0.000310"]) {
+    assert.ok(text.includes(label), `rendered workflow metric missing: ${label}`);
+  }
+  assert.ok(render({ ...message.usage, costYuan: undefined }).includes("￥--"), "unknown pricing must not display a measured zero");
+});
+
+test("one aggregate workflow cost receipt preserves the production per-request usage projection", () => {
+  const { ts, ast, found, compile } = productionUsageNodes();
+  let messages = [{ role: "assistant", content: "answer" }];
+  const updateTranscript = (update) => { messages = update(messages); };
+  const addUsage = new Function("updateTranscript", `${compile(`const ${found.live.getText(ast)};`)}; return addUsage;`)(updateTranscript);
+  addUsage({ prompt: 100, completion: 20, reasoning: 12, cacheHit: 80, cacheMiss: 20 });
+  addUsage({ prompt: 50, completion: 10, reasoning: 5, cacheHit: 0, cacheMiss: 50 });
+  const before = { ...messages[0].usage };
+  assert.equal(before.promptTokens, 50);
+  assert.equal(before.totalTokens, 60);
+  // Execute the actual cost case without its switch-only break statement.
+  const block = found.cost.statements[0];
+  assert.ok(ts.isBlock(block));
+  const body = block.statements.filter((node) => !ts.isBreakStatement(node)).map((node) => node.getText(ast)).join("\n");
+  new Function("updateTranscript", "event", compile(body))(updateTranscript, {
+    type: "cost_recorded", model: "workflow", origin: "run", cost_yuan: 0.000310,
+  });
+  assert.deepEqual(messages[0].usage, { ...before, costYuan: 0.000310 });
+});

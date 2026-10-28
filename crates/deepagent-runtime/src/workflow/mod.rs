@@ -4,6 +4,7 @@ mod graph;
 pub mod knowledge;
 mod node_events;
 pub mod tools;
+mod usage;
 pub mod values;
 
 pub use agent::WorkflowAgent;
@@ -21,3 +22,4 @@ pub use graph::{
 pub use knowledge::{KnowledgeDocument, KnowledgeRetriever};
 pub use node_events::{NodeEventPublisher, NodeExecutionEvent, NodeExecutionStatus};
 pub use tools::{ToolExecutionResult, ToolExecutor};
+pub use usage::WorkflowModelUsage;

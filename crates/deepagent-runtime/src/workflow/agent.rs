@@ -26,6 +26,7 @@ use super::graph::CompiledWorkflow;
 use super::knowledge::KnowledgeRetriever;
 use super::node_events::{NodeEventPublisher, NodeExecutionEvent, NodeExecutionStatus};
 use super::tools::ToolExecutor;
+use super::usage::{WorkflowUsage, WorkflowUsageObserver};
 use super::values;
 use crate::agent::{Agent, AgentDecision, Observation, RunUsage};
 use deepagent_core::error::{CoreError, Result};
@@ -73,7 +74,7 @@ pub struct WorkflowAgent {
     tool_executor: Option<Arc<dyn ToolExecutor>>,
     canvas_bridge: Option<Arc<dyn CanvasModelBridge>>,
     artifact_validator: Option<Arc<dyn CanvasArtifactValidator>>,
-    usage: RunUsage,
+    usage: Arc<WorkflowUsage>,
 }
 
 impl WorkflowAgent {
@@ -88,6 +89,7 @@ impl WorkflowAgent {
             compiled,
             inputs,
             target_node_id,
+            usage: Arc::new(WorkflowUsage::new(publisher.clone())),
             publisher,
             outputs: BTreeMap::new(),
             node_statuses: BTreeMap::new(),
@@ -103,7 +105,6 @@ impl WorkflowAgent {
             tool_executor: None,
             canvas_bridge: None,
             artifact_validator: None,
-            usage: RunUsage::default(),
         }
     }
 
@@ -118,6 +119,11 @@ impl WorkflowAgent {
         self.model = Some(client);
         self.model_name = Some(model_name);
         self
+    }
+
+    /// Measured calls grouped by actual route, for the existing cost finalizer.
+    pub fn model_usage(&self) -> Vec<super::WorkflowModelUsage> {
+        self.usage.models()
     }
 
     /// Attach a knowledge retriever so knowledge-retrieval nodes can search.
@@ -707,37 +713,42 @@ impl WorkflowAgent {
         if let Some(bridge) = self.canvas_bridge.clone() {
             if !model_ref.is_empty() || self.model.is_none() {
                 let response = bridge
-                    .complete(CanvasCompletionRequest {
-                        model_ref: model_ref.clone(),
-                        node_kind: kind.to_string(),
-                        skill_ids: config
-                            .get("skillIds")
-                            .or_else(|| config.get("skill_ids"))
-                            .and_then(Value::as_array)
-                            .map(|items| {
-                                items
-                                    .iter()
-                                    .filter_map(|item| item.as_str().map(str::to_string))
-                                    .collect()
-                            })
-                            .unwrap_or_default(),
-                        system_prompt: (!system_prompt.is_empty()).then(|| system_prompt.clone()),
-                        prompt: composed_prompt.clone(),
-                        temperature: config
-                            .get("llmTemperature")
-                            .or_else(|| config.get("temperature"))
-                            .and_then(Value::as_f64)
-                            .map(|value| value as f32),
-                        max_tokens: config
-                            .get("llmMaxTokens")
-                            .or_else(|| config.get("maxTokens"))
-                            .and_then(Value::as_u64)
-                            .map(|value| value as u32),
-                        images: Vec::new(),
-                    })
+                    .complete_with_usage(
+                        CanvasCompletionRequest {
+                            model_ref: model_ref.clone(),
+                            node_kind: kind.to_string(),
+                            skill_ids: config
+                                .get("skillIds")
+                                .or_else(|| config.get("skill_ids"))
+                                .and_then(Value::as_array)
+                                .map(|items| {
+                                    items
+                                        .iter()
+                                        .filter_map(|item| item.as_str().map(str::to_string))
+                                        .collect()
+                                })
+                                .unwrap_or_default(),
+                            system_prompt: (!system_prompt.is_empty())
+                                .then(|| system_prompt.clone()),
+                            prompt: composed_prompt.clone(),
+                            temperature: config
+                                .get("llmTemperature")
+                                .or_else(|| config.get("temperature"))
+                                .and_then(Value::as_f64)
+                                .map(|value| value as f32),
+                            max_tokens: config
+                                .get("llmMaxTokens")
+                                .or_else(|| config.get("maxTokens"))
+                                .and_then(Value::as_u64)
+                                .map(|value| value as u32),
+                            images: Vec::new(),
+                        },
+                        self.usage.clone(),
+                    )
                     .await?;
                 let mut outcome = serde_json::json!({
                     "text": response.text,
+                    "usage": response.usage,
                     "providerId": response.provider_id,
                     "modelId": response.model_id,
                     "model": if model_ref.is_empty() { response.model_id.clone() } else { model_ref },
@@ -754,12 +765,15 @@ impl WorkflowAgent {
             None => {
                 return Ok(serde_json::json!({
                     "text": format!("[{}] no model client configured for workflow run", kind),
-                    "usage": { "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 }
+                    "usage": null
                 }));
             }
         };
 
-        let model_name = self.model_name.as_deref().unwrap_or("deepseek-chat");
+        let model_name = self
+            .model_name
+            .clone()
+            .unwrap_or_else(|| "deepseek-chat".into());
 
         let temperature = config
             .get("llmTemperature")
@@ -777,7 +791,7 @@ impl WorkflowAgent {
         }
         messages.push(Message::user(user_prompt));
 
-        let mut request = ChatCompletionRequest::new(model_name, messages);
+        let mut request = ChatCompletionRequest::new(&model_name, messages);
         if let Some(t) = temperature {
             request.temperature = Some(t);
         }
@@ -785,34 +799,17 @@ impl WorkflowAgent {
             request.max_tokens = Some(m);
         }
 
-        let response = client.stream_chat_completion(request).await?;
+        let mut observer = WorkflowUsageObserver::new(self.usage.clone(), model_name);
+        let response = client
+            .stream_chat_completion_observed(request, &mut observer)
+            .await;
+        drop(observer);
+        let response = response?;
         let text = response.output_text_projection();
-
-        let usage_json = response
-            .usage
-            .as_ref()
-            .map(|u| {
-                serde_json::json!({
-                    "prompt_tokens": u.prompt_tokens,
-                    "completion_tokens": u.completion_tokens,
-                    "total_tokens": u.total_tokens,
-                })
-            })
-            .unwrap_or_else(|| {
-                serde_json::json!({ "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0 })
-            });
-
-        if let Some(u) = &response.usage {
-            // Canvas workflow nodes: use last-wins replacement for prompt_tokens
-            // (same fix as model_agent.rs) to prevent context-size inflation.
-            self.usage.prompt_tokens = u.prompt_tokens;
-            self.usage.completion_tokens += u.completion_tokens;
-            self.usage.total_tokens = u.total_tokens;
-        }
 
         Ok(serde_json::json!({
             "text": text,
-            "usage": usage_json
+            "usage": response.usage
         }))
     }
 
@@ -1192,16 +1189,19 @@ impl WorkflowAgent {
             })
             .unwrap_or_default();
         let response = bridge
-            .embed(CanvasEmbeddingRequest {
-                model_ref: config
-                    .get("embeddingModel")
-                    .or_else(|| config.get("model"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string(),
-                texts,
-            })
+            .embed_with_usage(
+                CanvasEmbeddingRequest {
+                    model_ref: config
+                        .get("embeddingModel")
+                        .or_else(|| config.get("model"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string(),
+                    texts,
+                },
+                self.usage.clone(),
+            )
             .await?;
         Ok(serde_json::json!({
             "count": response.count,
@@ -1696,7 +1696,11 @@ impl Agent for WorkflowAgent {
     }
 
     fn cumulative_usage(&self) -> Option<RunUsage> {
-        Some(self.usage)
+        Some(self.usage.total())
+    }
+
+    fn take_pending_raw_usage(&mut self) -> Vec<Value> {
+        self.usage.take_raw()
     }
 }
 
@@ -1770,6 +1774,8 @@ mod tests {
                 reasoning: Some("thinking about the tagline".to_string()),
                 provider_id: "cvp-1".to_string(),
                 model_id: "gpt-5.6-sol".to_string(),
+                usage: None,
+                raw_usage: None,
             })
         }
 
@@ -1933,6 +1939,8 @@ mod tests {
                 provider_id: "cvp-2".to_string(),
                 model_id: "Qwen/Qwen3-VL-Embedding-8B".to_string(),
                 vectors: Vec::new(),
+                usage: None,
+                raw_usage: None,
             })
         }
     }

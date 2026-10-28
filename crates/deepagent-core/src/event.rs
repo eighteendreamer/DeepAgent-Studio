@@ -216,6 +216,18 @@ pub enum EventPayload {
         raw_responses_usage: Option<serde_json::Value>,
     },
 
+    /// A run's cost receipt over existing ledger rows, not a second ledger.
+    /// Task identity survives fork/replay; row ownership prevents a multi-model
+    /// row from being mistaken for the next run's entire cost.
+    RunCostRecorded {
+        version: u32,
+        run_id: String,
+        task_id: Option<TaskId>,
+        ledger_session_id: String,
+        ledger_ids: Vec<i64>,
+        cost_yuan: Option<f64>,
+    },
+
     /// One or more deferred tools were discovered via the `tool_search`
     /// built-in (tool-search spec, Phase 3C). Persisted append-only so a
     /// session that's resumed can rebuild its active tool set without the
@@ -301,6 +313,7 @@ impl EventPayload {
             EventPayload::RunTerminal { .. } => "run_terminal",
             EventPayload::Note { .. } => "note",
             EventPayload::UsageRecorded { .. } => "usage_recorded",
+            EventPayload::RunCostRecorded { .. } => "run_cost_recorded",
             EventPayload::ToolsDiscovered { .. } => "tools_discovered",
             EventPayload::McpInstructionsDelta { .. } => "mcp_instructions_delta",
             EventPayload::MemoriesInjected { .. } => "memories_injected",
@@ -313,6 +326,25 @@ impl EventPayload {
 mod tests {
     use super::*;
     use crate::message::Message;
+
+    #[test]
+    fn versioned_run_cost_receipt_roundtrips_unknown_without_a_measured_zero() {
+        let receipt = EventPayload::RunCostRecorded {
+            version: 1,
+            run_id: "synthetic-run".into(),
+            task_id: Some(TaskId::new()),
+            ledger_session_id: "synthetic-session".into(),
+            ledger_ids: vec![11, 12],
+            cost_yuan: None,
+        };
+        assert_eq!(receipt.kind(), "run_cost_recorded");
+        let json = serde_json::to_value(&receipt).unwrap();
+        assert!(json["cost_yuan"].is_null());
+        assert_eq!(
+            serde_json::from_value::<EventPayload>(json).unwrap(),
+            receipt
+        );
+    }
 
     #[test]
     fn terminal_identity_is_optional_for_legacy_json_and_roundtrips() {

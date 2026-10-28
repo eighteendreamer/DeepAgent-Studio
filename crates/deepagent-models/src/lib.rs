@@ -33,6 +33,7 @@ pub mod responses;
 pub mod sse;
 pub mod stream;
 pub mod transport;
+pub mod usage;
 
 #[cfg(feature = "http")]
 pub mod reqwest_transport;

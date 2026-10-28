@@ -193,6 +193,10 @@ impl CostService {
     /// RMB cost when pricing is available, or None when pricing is unavailable.
     /// Token usage is always saved; cost unavailability is marked explicitly.
     pub fn record(&self, request: CostRecordRequest) -> Result<Option<f64>> {
+        self.record_with_id(request).map(|(_, cost)| cost)
+    }
+
+    pub(crate) fn record_with_id(&self, request: CostRecordRequest) -> Result<(i64, Option<f64>)> {
         let pricing_result = self.pricing_for_model(&request.model);
         let effective_cache_miss = if request.cache_miss_tokens > 0 {
             request.cache_miss_tokens
@@ -229,7 +233,7 @@ impl CostService {
             }
         };
 
-        CostStore::new(&self.db).insert(&CostEntry {
+        let id = CostStore::new(&self.db).insert_with_id(&CostEntry {
             session_id: &request.session_id,
             timestamp: now,
             model: &request.model,
@@ -244,7 +248,7 @@ impl CostService {
             output_price: snapshot.map(|s| s.2),
             pricing_source: Some("https://api-docs.deepseek.com/zh-cn/quick_start/pricing"),
         })?;
-        Ok(cost_yuan)
+        Ok((id, cost_yuan))
     }
 
     /// Get a cost summary for a session + today + month + total.

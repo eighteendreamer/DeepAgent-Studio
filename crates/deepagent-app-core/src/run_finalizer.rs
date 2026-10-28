@@ -41,6 +41,9 @@ pub(crate) struct AppRunFinalizerRequest<'a> {
     pub(crate) discovered_before_run: &'a HashSet<String>,
     pub(crate) discovered_tools: &'a DiscoveredToolSet,
     pub(crate) usage: Option<RunUsage>,
+    /// Workflow calls can select different routes per node. These are
+    /// projections of the same canonical usage, not additional spend.
+    pub(crate) model_usage: Option<&'a [deepagent_runtime::workflow::WorkflowModelUsage]>,
     /// Tokens of model calls the run loop did not make itself (compaction
     /// summaries). Booked as its own ledger row, never folded into `usage`, so
     /// the per-turn token display keeps describing only the sampling loop.
@@ -88,28 +91,34 @@ pub(crate) fn record_usage_cost(
     origin: CostOrigin,
     sink: &dyn RuntimeEventSink,
 ) {
-    match cost.record(cost_request_for(session_id, model_name, &usage)) {
-        Ok(Some(cny)) => {
-            tracing::info!(cost_yuan = cny, "recorded run cost");
-            sink.emit(RuntimeEvent::CostRecorded {
-                model: model_name.to_string(),
-                cost_yuan: Some(cny),
-                origin,
-            });
-        }
-        Ok(None) => {
-            tracing::warn!(
-                model = model_name,
-                "token usage saved but cost unavailable (no pricing for model)"
-            );
-            sink.emit(RuntimeEvent::CostRecorded {
-                model: model_name.to_string(),
-                cost_yuan: None,
-                origin,
-            });
-        }
+    match write_usage_cost(cost, session_id, model_name, &usage) {
+        Ok((_, cost_yuan)) => sink.emit(RuntimeEvent::CostRecorded {
+            model: model_name.to_string(),
+            cost_yuan,
+            origin,
+        }),
         Err(error) => tracing::warn!(error = %error, "failed to record run cost"),
     }
+}
+
+/// The single cost-write boundary, shared by aggregate workflow receipts and
+/// the existing single-model/side-call notification wrapper above.
+fn write_usage_cost(
+    cost: &CostService,
+    session_id: &str,
+    model_name: &str,
+    usage: &RunUsage,
+) -> Result<(i64, Option<f64>)> {
+    let result = cost.record_with_id(cost_request_for(session_id, model_name, usage))?;
+    if let Some(cny) = result.1 {
+        tracing::info!(model = model_name, cost_yuan = cny, "recorded run cost");
+    } else {
+        tracing::warn!(
+            model = model_name,
+            "token usage saved but cost unavailable (no pricing for model)"
+        );
+    }
+    Ok(result)
 }
 
 impl AppRunFinalizer {
@@ -152,12 +161,22 @@ impl AppRunFinalizer {
         let context_tokens = request
             .usage
             .map_or(0u64, |usage| usage.total_tokens as u64);
-        self.record_run_cost(
-            request.session_id,
-            request.model_name,
-            request.usage,
-            request.sink,
-        );
+        if let Some(models) = request.model_usage {
+            self.record_workflow_cost(
+                session,
+                request.run_id,
+                request.session_id,
+                models,
+                request.sink,
+            )?;
+        } else {
+            self.record_run_cost(
+                request.session_id,
+                request.model_name,
+                request.usage,
+                request.sink,
+            );
+        }
         if let (Some(cost), Some(side)) = (&self.cost, request.side_usage) {
             // Compaction spend is booked as its own row, never folded into the
             // turn's usage (that would move the numbers the panel shows).
@@ -259,6 +278,72 @@ impl AppRunFinalizer {
             return;
         }
         record_usage_cost(cost, session_id, model_name, u, CostOrigin::Run, sink);
+    }
+
+    fn record_workflow_cost<C: Clock>(
+        &self,
+        session: &mut Session<'_, C>,
+        run_id: &str,
+        session_id: &str,
+        models: &[deepagent_runtime::workflow::WorkflowModelUsage],
+        sink: &dyn RuntimeEventSink,
+    ) -> Result<()> {
+        let mut total = models
+            .iter()
+            .all(|model| model.usage_complete)
+            .then_some(0.0);
+        let mut ledger_ids = Vec::new();
+        if let Some(cost) = &self.cost {
+            for measured in models {
+                if measured.usage.billed_prompt_tokens == 0 && measured.usage.completion_tokens == 0
+                {
+                    continue;
+                }
+                match write_usage_cost(cost, session_id, &measured.model_id, &measured.usage) {
+                    Ok((id, value)) => {
+                        ledger_ids.push(id);
+                        total = total.zip(value).map(|(sum, cost)| sum + cost);
+                    }
+                    Err(error) => {
+                        total = None;
+                        tracing::warn!(model = %measured.model_id, error = %error, "failed to record workflow cost");
+                    }
+                }
+            }
+        } else {
+            total = None;
+        }
+        if ledger_ids.is_empty() {
+            total = None;
+        }
+        let task_id = deepagent_persistence::run_store::RunStore::new(&self.db)
+            .get(run_id)?
+            .and_then(|run| run.task_id)
+            .map(|id| id.parse::<deepagent_core::id::TaskId>())
+            .transpose()?;
+        let booked = !ledger_ids.is_empty();
+        session.append(EventPayload::RunCostRecorded {
+            version: 1,
+            run_id: run_id.into(),
+            task_id,
+            ledger_session_id: session_id.into(),
+            ledger_ids,
+            cost_yuan: total,
+        })?;
+        if booked {
+            // Existing UI replaces the turn's cost and settles its live token
+            // overlay on this event. Notify once, only AFTER all model rows.
+            sink.emit(RuntimeEvent::CostRecorded {
+                model: if models.len() == 1 {
+                    models[0].model_id.clone()
+                } else {
+                    "workflow".into()
+                },
+                cost_yuan: total,
+                origin: CostOrigin::Run,
+            });
+        }
+        Ok(())
     }
 
     fn clear_run_cancellation(&self, session_id: &str, run_id: &str) {
@@ -541,6 +626,7 @@ mod tests {
             .finalize_after_kernel(
                 &mut session,
                 AppRunFinalizerRequest {
+                    model_usage: None,
                     session_id: &session_id,
                     run_id: "run_test",
                     discovered_before_run: &before,
@@ -652,6 +738,7 @@ mod tests {
             .finalize_after_kernel(
                 &mut session,
                 AppRunFinalizerRequest {
+                    model_usage: None,
                     session_id: &session_id,
                     run_id: "run_consolidate",
                     discovered_before_run: &before,
@@ -754,6 +841,7 @@ mod tests {
             .finalize_after_kernel(
                 &mut session,
                 AppRunFinalizerRequest {
+                    model_usage: None,
                     session_id: &session_id,
                     run_id: "run_rows",
                     discovered_before_run: &before,

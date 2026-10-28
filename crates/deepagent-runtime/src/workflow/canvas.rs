@@ -49,6 +49,12 @@ pub struct CanvasCompletionResponse {
     pub reasoning: Option<String>,
     pub provider_id: String,
     pub model_id: String,
+    /// None means unreported, not a measured zero-token call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<deepagent_models::Usage>,
+    /// Numeric-only provider counters, before canonical normalization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_usage: Option<serde_json::Value>,
 }
 
 /// An image generation or edit request for one canvas node.
@@ -250,6 +256,26 @@ pub struct CanvasEmbeddingResponse {
     pub provider_id: String,
     pub model_id: String,
     pub vectors: Vec<Vec<f32>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<deepagent_models::Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raw_usage: Option<serde_json::Value>,
+}
+
+/// One physical provider request's usage receipt. Report it before validating
+/// the output so a charged response is not erased by a later node failure.
+#[derive(Debug, Clone)]
+pub struct CanvasUsageReport {
+    /// Absent for a compatibility client that exposes no provider identity.
+    pub provider_id: Option<String>,
+    pub model_id: String,
+    pub usage: Option<deepagent_models::Usage>,
+    pub raw_usage: Option<serde_json::Value>,
+}
+
+/// Run-owned observer, not a store or a second accounting implementation.
+pub trait CanvasUsageSink: Send + Sync {
+    fn record(&self, report: CanvasUsageReport);
 }
 
 /// What the kernel knows about one node when it must decide an operation.
@@ -283,6 +309,23 @@ pub trait CanvasModelBridge: Send + Sync {
     /// Text / vision completion.
     async fn complete(&self, request: CanvasCompletionRequest) -> Result<CanvasCompletionResponse>;
 
+    /// Compatibility bridges report their successful response once. Gateways
+    /// override this to include attempts whose output later fails validation.
+    async fn complete_with_usage(
+        &self,
+        request: CanvasCompletionRequest,
+        usage: Arc<dyn CanvasUsageSink>,
+    ) -> Result<CanvasCompletionResponse> {
+        let response = self.complete(request).await?;
+        usage.record(CanvasUsageReport {
+            provider_id: Some(response.provider_id.clone()),
+            model_id: response.model_id.clone(),
+            usage: response.usage,
+            raw_usage: response.raw_usage.clone(),
+        });
+        Ok(response)
+    }
+
     /// Image generation or editing, decided by whether references are present.
     async fn generate_image(&self, request: CanvasImageRequest) -> Result<CanvasImageResponse>;
 
@@ -303,6 +346,21 @@ pub trait CanvasModelBridge: Send + Sync {
 
     /// Text embeddings.
     async fn embed(&self, request: CanvasEmbeddingRequest) -> Result<CanvasEmbeddingResponse>;
+
+    async fn embed_with_usage(
+        &self,
+        request: CanvasEmbeddingRequest,
+        usage: Arc<dyn CanvasUsageSink>,
+    ) -> Result<CanvasEmbeddingResponse> {
+        let response = self.embed(request).await?;
+        usage.record(CanvasUsageReport {
+            provider_id: Some(response.provider_id.clone()),
+            model_id: response.model_id.clone(),
+            usage: response.usage,
+            raw_usage: response.raw_usage.clone(),
+        });
+        Ok(response)
+    }
 
     /// Decide the concrete operation for a node from its contract and the
     /// resolved input facts. Ambiguity is an error, never a silent default.
@@ -328,6 +386,22 @@ mod tests {
     use super::*;
     use std::sync::Mutex;
 
+    #[test]
+    fn old_bridge_responses_keep_unreported_usage_unknown() {
+        let text: CanvasCompletionResponse = serde_json::from_value(serde_json::json!({
+            "text": "old", "providerId": "p", "modelId": "m"
+        }))
+        .unwrap();
+        assert!(text.usage.is_none() && text.raw_usage.is_none());
+        let embedding: CanvasEmbeddingResponse = serde_json::from_value(serde_json::json!({
+            "dimensions": 2, "count": 1, "providerId": "p", "modelId": "m", "vectors": [[1.0, 2.0]]
+        }))
+        .unwrap();
+        assert!(embedding.usage.is_none() && embedding.raw_usage.is_none());
+        let projected = serde_json::to_value(text).unwrap();
+        assert!(projected.get("usage").is_none() && projected.get("rawUsage").is_none());
+    }
+
     struct FakeBridge {
         calls: Mutex<Vec<String>>,
     }
@@ -345,6 +419,8 @@ mod tests {
                 reasoning: None,
                 provider_id: "p".to_string(),
                 model_id: "m".to_string(),
+                usage: None,
+                raw_usage: None,
             })
         }
 
@@ -425,6 +501,8 @@ mod tests {
                 provider_id: "p".to_string(),
                 model_id: "m".to_string(),
                 vectors: request.texts.iter().map(|_| vec![0.5, 0.25]).collect(),
+                usage: None,
+                raw_usage: None,
             })
         }
     }

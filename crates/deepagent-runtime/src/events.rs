@@ -409,7 +409,8 @@ pub enum RuntimeEvent {
     /// already delivered through [`RuntimeEvent::Usage`]. `cost_yuan` is `None`
     /// when no official pricing exists for the model (usage is still recorded).
     CostRecorded {
-        /// Model id the cost was billed against.
+        /// Model id the cost was billed against; `workflow` for an aggregate
+        /// multi-model run receipt. Ledger rows retain the exact model ids.
         model: String,
         /// Backend-computed RMB cost, or `None` when pricing is unavailable.
         #[serde(default)]

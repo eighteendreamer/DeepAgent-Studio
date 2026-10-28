@@ -472,16 +472,48 @@ impl AppService {
         if events.is_empty() {
             return Err(CoreError::not_found(format!("session {session_id}")));
         }
-        let mut recorded_costs = CostStore::new(&self.db)
-            .session_costs_detailed(session_id)?
-            .into_iter();
-
         let mut messages: Vec<ConversationMessageDto> = Vec::new();
         let run_ids: std::collections::HashMap<_, _> = RunStore::new(&self.db)
             .list_for_session(session_id)?
             .into_iter()
             .filter_map(|run| run.task_id.map(|task| (task, run.id)))
             .collect();
+        let mut owned_cost_ids = std::collections::HashSet::new();
+        let mut run_costs = std::collections::HashMap::new();
+        for event in events {
+            if let EventPayload::RunCostRecorded {
+                version,
+                run_id,
+                task_id,
+                ledger_session_id,
+                ledger_ids,
+                cost_yuan,
+            } = &event.payload
+            {
+                if ledger_session_id == session_id {
+                    owned_cost_ids.extend(ledger_ids.iter().copied());
+                }
+                if let Some(task_id) = task_id {
+                    let identity_matches = run_ids
+                        .get(&task_id.to_string())
+                        .map_or(true, |expected| expected == run_id);
+                    let cost = if *version == 1 && identity_matches {
+                        *cost_yuan
+                    } else {
+                        tracing::warn!(%run_id, %task_id, version, "unsupported or conflicting run cost receipt");
+                        None
+                    };
+                    run_costs.insert(*task_id, cost);
+                }
+            }
+        }
+        // Old logs retain their positional fallback. Explicitly owned rows must
+        // never shift that cursor, including after a multi-model workflow.
+        let mut recorded_costs = CostStore::new(&self.db)
+            .session_costs_detailed(session_id)?
+            .into_iter()
+            .filter(|cost| !owned_cost_ids.contains(&cost.id));
+        let mut current_task = None;
         let mut turns: Vec<(usize, ConversationTurnDto)> = Vec::new();
         // Index of tool parts by call_id within the current assistant turn, so a
         // completion updates the request card in place.
@@ -594,6 +626,7 @@ impl AppService {
                     _ => {}
                 },
                 EventPayload::TaskCreated { task_id, .. } => {
+                    current_task = Some(*task_id);
                     if let Some((_, turn)) = turns.last_mut() {
                         turn.id = run_ids
                             .get(&task_id.to_string())
@@ -768,7 +801,9 @@ impl AppService {
                         prompt_cache_miss_tokens: *prompt_cache_miss_tokens,
                         duration_ms: *duration_ms,
                         raw_responses_usage: raw_responses_usage.clone(),
-                        cost_yuan: recorded_costs.next().and_then(|c| c.cost_yuan),
+                        cost_yuan: current_task
+                            .and_then(|task| run_costs.get(&task).copied())
+                            .unwrap_or_else(|| recorded_costs.next().and_then(|c| c.cost_yuan)),
                     });
                 }
                 // A durable compaction boundary is part of what the user reads

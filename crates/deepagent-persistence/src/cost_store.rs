@@ -45,6 +45,8 @@ pub struct CostEntry<'a> {
 /// A historical cost record retrieved from the database.
 #[derive(Debug, Clone, PartialEq)]
 pub struct HistoricalCost {
+    /// Stable identity in the existing ledger.
+    pub id: i64,
     /// Computed cost in CNY / RMB. None when pricing unavailable.
     pub cost_yuan: Option<f64>,
     /// Pricing snapshot: input cache-hit price per million tokens (RMB).
@@ -70,6 +72,11 @@ impl<'db> CostStore<'db> {
 
     /// Insert one cost record.
     pub fn insert(&self, entry: &CostEntry<'_>) -> Result<()> {
+        self.insert_with_id(entry).map(|_| ())
+    }
+
+    /// Same insert boundary, returning the identity for a run receipt.
+    pub fn insert_with_id(&self, entry: &CostEntry<'_>) -> Result<i64> {
         self.db.with_conn(|c| {
             c.execute(
                 "INSERT INTO costs (session_id, timestamp, model, input_tokens, output_tokens, \
@@ -93,7 +100,7 @@ impl<'db> CostStore<'db> {
                 ],
             )
             .map_err(map_sqlite)?;
-            Ok(())
+            Ok(c.last_insert_rowid())
         })
     }
 
@@ -132,13 +139,14 @@ impl<'db> CostStore<'db> {
             let mut stmt = c
                 .prepare(
                     "SELECT cost_yuan, input_cache_hit_price, input_cache_miss_price, \
-                     output_price, pricing_source \
+                     output_price, pricing_source, id \
                      FROM costs WHERE session_id = ?1 ORDER BY id ASC",
                 )
                 .map_err(map_sqlite)?;
             let rows = stmt
                 .query_map(params![session_id], |row| {
                     Ok(HistoricalCost {
+                        id: row.get(5)?,
                         cost_yuan: row.get(0)?,
                         input_cache_hit_price: row.get(1)?,
                         input_cache_miss_price: row.get(2)?,

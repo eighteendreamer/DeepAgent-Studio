@@ -399,7 +399,7 @@ impl ChatCompletionAccumulator {
             let parsed = parse_chat_usage(usage);
             self.usage = Some(parsed);
             self.raw_usage = Some(usage.clone());
-            observer.on_event(ModelStreamEvent::Usage { usage: parsed });
+            observer.on_usage(parsed, usage);
         }
 
         if let Some(choices) = value.get("choices").and_then(serde_json::Value::as_array) {
@@ -578,7 +578,9 @@ fn map_finish_reason(reason: &str) -> Result<FinishReason> {
     }
 }
 
-fn parse_chat_usage(value: &serde_json::Value) -> Usage {
+/// Parse Chat Completions usage, including DeepSeek cache and reasoning buckets.
+/// Responses API usage uses a different wire shape and must not call this parser.
+pub fn parse_chat_usage(value: &serde_json::Value) -> Usage {
     let prompt_tokens = value
         .get("prompt_tokens")
         .and_then(serde_json::Value::as_u64)

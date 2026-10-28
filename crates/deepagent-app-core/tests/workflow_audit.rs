@@ -16,6 +16,8 @@ use tokio::net::TcpListener;
 mod http;
 #[path = "workflow_audit/media.rs"]
 mod media;
+#[path = "workflow_audit/usage.rs"]
+mod usage;
 
 async fn workflow_fixture() -> (tempfile::TempDir, Arc<Database>, ChatService, String) {
     let root = tempfile::tempdir().unwrap();

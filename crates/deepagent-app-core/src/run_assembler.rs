@@ -1298,6 +1298,7 @@ impl<'a> RunAssembler<'a> {
                 usage: agent.cumulative_usage(),
                 side_usage: agent.side_usage(),
                 model_name: &model_name_for_cost,
+                model_usage: None,
                 sink: sink.as_ref(),
                 run_succeeded,
                 capture_client: Some(capture_client),
@@ -1664,6 +1665,7 @@ impl<'a> RunAssembler<'a> {
         };
 
         let finalizer_model_name = wf_model_name.clone();
+        let model_usage = agent.model_usage();
         AppRunFinalizer::new(
             self.db.clone(),
             self.cost.clone(),
@@ -1681,6 +1683,7 @@ impl<'a> RunAssembler<'a> {
                 usage: agent.cumulative_usage(),
                 side_usage: agent.side_usage(),
                 model_name: finalizer_model_name.as_deref().unwrap_or("workflow"),
+                model_usage: Some(&model_usage),
                 sink: sink.as_ref(),
                 run_succeeded,
                 capture_client: run_model.as_ref().map(|rm| rm.client.clone()),

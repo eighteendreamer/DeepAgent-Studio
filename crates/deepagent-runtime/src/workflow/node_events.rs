@@ -177,12 +177,18 @@ impl NodeEventPublisher {
             .collect();
         event.error = event.error.map(|error| scrub_secret_literals(&error));
         annotate_provenance(&mut event);
+        self.emit_runtime(RuntimeEvent::WorkflowNode { event });
+    }
+
+    /// Share the run's current sink with workflow usage; clones follow the
+    /// kernel's persistence wrapper just like node progress callbacks do.
+    pub(super) fn emit_runtime(&self, event: RuntimeEvent) {
         let sink = self
             .sink
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
-        sink.emit(RuntimeEvent::WorkflowNode { event });
+        sink.emit(event);
     }
 
     /// Report where a long media job stands. This stays a `Running` event: the

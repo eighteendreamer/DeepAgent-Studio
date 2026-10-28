@@ -24,7 +24,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
+use crate::canvas_provider_usage::parse_usage;
 use deepagent_core::error::Result as CoreResult;
+use deepagent_runtime::workflow::canvas::{CanvasUsageReport, CanvasUsageSink};
 use deepagent_runtime::workflow::{
     CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest, CanvasCompletionResponse,
     CanvasEmbeddingRequest, CanvasEmbeddingResponse, CanvasImagePreparation, CanvasImageRequest,
@@ -586,6 +588,8 @@ pub enum CanvasModelOutput {
         reasoning: Option<String>,
         provider_id: String,
         model_id: String,
+        usage: Option<deepagent_models::Usage>,
+        raw_usage: Option<Value>,
     },
     Image {
         mime: String,
@@ -605,6 +609,8 @@ pub enum CanvasModelOutput {
         dimensions: usize,
         provider_id: String,
         model_id: String,
+        usage: Option<deepagent_models::Usage>,
+        raw_usage: Option<Value>,
     },
     Audio {
         mime: String,
@@ -1033,6 +1039,17 @@ impl CanvasModelGateway {
         model_id: &str,
         request: &CanvasModelRequest,
     ) -> CanvasResult<CanvasModelOutput> {
+        self.execute_on_observed(provider_id, model_id, request, None)
+            .await
+    }
+
+    async fn execute_on_observed(
+        &self,
+        provider_id: &str,
+        model_id: &str,
+        request: &CanvasModelRequest,
+        usage: Option<Arc<dyn CanvasUsageSink>>,
+    ) -> CanvasResult<CanvasModelOutput> {
         let resolved = self
             .providers
             .resolve_model(provider_id, model_id)
@@ -1040,7 +1057,7 @@ impl CanvasModelGateway {
         // An explicit model is not swapped out, so exceeding its declared limit
         // is the user's error to see rather than a silent reroute.
         reference_limit_error(&resolved.model, request.images.len())?;
-        self.call(&resolved, request).await
+        self.call(&resolved, request, usage.as_deref()).await
     }
 
     /// Run a request using the scenario candidate list, falling through only on
@@ -1049,6 +1066,15 @@ impl CanvasModelGateway {
         &self,
         request: &CanvasModelRequest,
         workspace_id: Option<&str>,
+    ) -> CanvasResult<CanvasModelOutput> {
+        self.execute_observed(request, workspace_id, None).await
+    }
+
+    async fn execute_observed(
+        &self,
+        request: &CanvasModelRequest,
+        workspace_id: Option<&str>,
+        usage: Option<Arc<dyn CanvasUsageSink>>,
     ) -> CanvasResult<CanvasModelOutput> {
         let scenario = request.operation.scenario().ok_or_else(|| {
             CanvasError::new(
@@ -1090,7 +1116,7 @@ impl CanvasModelGateway {
         };
         let mut last_error = None;
         for candidate in candidates {
-            match self.call(&candidate, request).await {
+            match self.call(&candidate, request, usage.as_deref()).await {
                 Ok(output) => return Ok(output),
                 Err(error) if error.is_transient() => {
                     tracing::warn!(
@@ -1116,6 +1142,7 @@ impl CanvasModelGateway {
         &self,
         candidate: &ResolvedCanvasModel,
         request: &CanvasModelRequest,
+        usage_sink: Option<&dyn CanvasUsageSink>,
     ) -> CanvasResult<CanvasModelOutput> {
         let api_key = provider_api_key(candidate)?;
         let kind = request_kind(request.operation)?;
@@ -1176,6 +1203,26 @@ impl CanvasModelGateway {
             )
         })?;
         let raw = String::from_utf8_lossy(&bytes).to_string();
+        let value = serde_json::from_slice::<Value>(&bytes);
+        if matches!(
+            kind,
+            CanvasRequestKind::Chat | CanvasRequestKind::Embeddings
+        ) {
+            if let Some(sink) = usage_sink {
+                let (usage, raw_usage) = value
+                    .as_ref()
+                    .map(|value| parse_usage(candidate.provider.protocol, kind, value))
+                    .unwrap_or((None, None));
+                // Every physical response settles once, including a failed
+                // candidate or a body whose output parser will reject it.
+                sink.record(CanvasUsageReport {
+                    provider_id: Some(candidate.provider.id.clone()),
+                    model_id: candidate.model.id.clone(),
+                    usage,
+                    raw_usage,
+                });
+            }
+        }
         if !status.is_success() {
             return Err(classify_status(status.as_u16(), &raw));
         }
@@ -1195,7 +1242,7 @@ impl CanvasModelGateway {
                 model_id: candidate.model.id.clone(),
             });
         }
-        let value: Value = serde_json::from_str(&raw).map_err(|e| {
+        let value: Value = value.map_err(|e| {
             CanvasError::new(
                 CanvasErrorCode::ProviderFailure,
                 format!(
@@ -1472,7 +1519,7 @@ impl CanvasModelGateway {
             size: None,
             timeout_ms: 30_000,
         };
-        let result = self.call(&resolved, &request).await;
+        let result = self.call(&resolved, &request, None).await;
         let latency_ms = started.elapsed().as_millis() as u64;
         match result {
             Ok(_) => CanvasConnectionTestResult {
@@ -2012,6 +2059,7 @@ async fn parse_output(
 ) -> CanvasResult<CanvasModelOutput> {
     let provider_id = candidate.provider.id.clone();
     let model_id = candidate.model.id.clone();
+    let (usage, raw_usage) = parse_usage(candidate.provider.protocol, kind, value);
     match kind {
         CanvasRequestKind::Chat => {
             let text = extract_text(candidate.provider.protocol, value).ok_or_else(|| {
@@ -2025,6 +2073,8 @@ async fn parse_output(
                 reasoning: extract_reasoning(candidate.provider.protocol, value),
                 provider_id,
                 model_id,
+                usage,
+                raw_usage,
             })
         }
         CanvasRequestKind::Embeddings => {
@@ -2053,6 +2103,8 @@ async fn parse_output(
                 dimensions,
                 provider_id,
                 model_id,
+                usage,
+                raw_usage,
             })
         }
         CanvasRequestKind::ImageGenerate | CanvasRequestKind::ImageEdit => {
@@ -2141,6 +2193,8 @@ async fn parse_output(
                 reasoning: None,
                 provider_id,
                 model_id,
+                usage: None,
+                raw_usage: None,
             })
         }
         // 合成响应是二进制，call 在 JSON 解析前就返回了；走到这里说明接线错了。
@@ -2596,11 +2650,11 @@ fn to_core_error(error: CanvasError) -> deepagent_core::error::CoreError {
     deepagent_core::error::CoreError::other(error.to_string())
 }
 
-#[async_trait]
-impl CanvasModelBridge for CanvasModelGateway {
-    async fn complete(
+impl CanvasModelGateway {
+    async fn complete_observed(
         &self,
         request: CanvasCompletionRequest,
+        usage_sink: Option<Arc<dyn CanvasUsageSink>>,
     ) -> CoreResult<CanvasCompletionResponse> {
         let system_prompt = assemble_system_prompt(
             &request.node_kind,
@@ -2619,11 +2673,11 @@ impl CanvasModelBridge for CanvasModelGateway {
         };
         validate_request(&model_request).map_err(to_core_error)?;
         let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
-            self.execute_on(provider_id, model_id, &model_request)
+            self.execute_on_observed(provider_id, model_id, &model_request, usage_sink)
                 .await
                 .map_err(to_core_error)?
         } else {
-            self.execute(&model_request, None)
+            self.execute_observed(&model_request, None, usage_sink)
                 .await
                 .map_err(to_core_error)?
         };
@@ -2633,16 +2687,38 @@ impl CanvasModelBridge for CanvasModelGateway {
                 reasoning,
                 provider_id,
                 model_id,
+                usage,
+                raw_usage,
             } => Ok(CanvasCompletionResponse {
                 text,
                 reasoning,
                 provider_id,
                 model_id,
+                usage,
+                raw_usage,
             }),
             other => Err(deepagent_core::error::CoreError::other(format!(
                 "text node received a non-text model output: {other:?}"
             ))),
         }
+    }
+}
+
+#[async_trait]
+impl CanvasModelBridge for CanvasModelGateway {
+    async fn complete(
+        &self,
+        request: CanvasCompletionRequest,
+    ) -> CoreResult<CanvasCompletionResponse> {
+        self.complete_observed(request, None).await
+    }
+
+    async fn complete_with_usage(
+        &self,
+        request: CanvasCompletionRequest,
+        usage: Arc<dyn CanvasUsageSink>,
+    ) -> CoreResult<CanvasCompletionResponse> {
+        self.complete_observed(request, Some(usage)).await
     }
 
     async fn prepare_image(
@@ -3071,6 +3147,24 @@ impl CanvasModelBridge for CanvasModelGateway {
     }
 
     async fn embed(&self, request: CanvasEmbeddingRequest) -> CoreResult<CanvasEmbeddingResponse> {
+        self.embed_observed(request, None).await
+    }
+
+    async fn embed_with_usage(
+        &self,
+        request: CanvasEmbeddingRequest,
+        usage: Arc<dyn CanvasUsageSink>,
+    ) -> CoreResult<CanvasEmbeddingResponse> {
+        self.embed_observed(request, Some(usage)).await
+    }
+}
+
+impl CanvasModelGateway {
+    async fn embed_observed(
+        &self,
+        request: CanvasEmbeddingRequest,
+        usage_sink: Option<Arc<dyn CanvasUsageSink>>,
+    ) -> CoreResult<CanvasEmbeddingResponse> {
         let model_request = CanvasModelRequest {
             audio: Default::default(),
             operation: CanvasOperation::Embedding,
@@ -3082,11 +3176,11 @@ impl CanvasModelBridge for CanvasModelGateway {
             timeout_ms: 120_000,
         };
         let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
-            self.execute_on(provider_id, model_id, &model_request)
+            self.execute_on_observed(provider_id, model_id, &model_request, usage_sink)
                 .await
                 .map_err(to_core_error)?
         } else {
-            self.execute(&model_request, None)
+            self.execute_observed(&model_request, None, usage_sink)
                 .await
                 .map_err(to_core_error)?
         };
@@ -3096,12 +3190,16 @@ impl CanvasModelBridge for CanvasModelGateway {
                 dimensions,
                 provider_id,
                 model_id,
+                usage,
+                raw_usage,
             } => Ok(CanvasEmbeddingResponse {
                 dimensions,
                 count: 1,
                 provider_id,
                 model_id,
                 vectors: vec![vector],
+                usage,
+                raw_usage,
             }),
             other => Err(deepagent_core::error::CoreError::other(format!(
                 "embedding node received a non-vector model output: {other:?}"
@@ -4174,7 +4272,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: canvas completions must preserve provider usage and DeepSeek cache details"]
     fn audit_canvas_completion_preserves_provider_usage_and_cache_details() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let provider_payload = deepseek_usage_completion_payload();
@@ -4232,7 +4329,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: canvas provider usage must reach WorkflowAgent and the existing cost ledger"]
     async fn audit_canvas_provider_usage_reaches_workflow_run_accounting() {
         use std::collections::{HashMap, HashSet};
         use std::sync::Mutex;
@@ -4268,6 +4364,7 @@ mod tests {
             AgentDecision::Continue
         ));
         let run_usage = agent.cumulative_usage();
+        let model_usage = agent.model_usage();
 
         let db = Arc::new(Database::open_in_memory().expect("ledger database"));
         let cost = Arc::new(crate::cost_service::CostService::new(db.clone()));
@@ -4286,6 +4383,7 @@ mod tests {
         .finalize_after_kernel(
             &mut session,
             AppRunFinalizerRequest {
+                model_usage: Some(&model_usage),
                 session_id: &session_id,
                 run_id: "run_canvas_usage_audit",
                 discovered_before_run: &before,
@@ -4322,7 +4420,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: the run-level workflow model path must use canonical RunUsage accounting"]
     async fn audit_run_level_workflow_model_preserves_deepseek_usage_buckets() {
         use deepagent_models::{MockTransport, ModelClient, ModelConfig};
         use deepagent_runtime::agent::{Agent, AgentDecision};
