@@ -20,7 +20,7 @@
 
 ## H-165 本轮即时记录（2026-10-28）
 
-**当前状态：已修复并验收（2026-10-28，仅下列Windows本机、离线模型/注入broker/临时TCP与SQLite范围；修复提交hash待本轮代码提交后回填）。** 只处理供应商图片输出URL的第二跳授权，不归并H-167字节预算、H-249音频输入、H-303视频输出URL或H-164 provider等待取消；H-119/H-122历史修复按原依据跳过生产重写，保留视频回归。
+**当前状态：已修复并验收（2026-10-28，仅下列Windows本机、离线模型/注入broker/临时TCP与SQLite范围；修复提交`88274ae8`）。** 只处理供应商图片输出URL的第二跳授权，不归并H-167字节预算、H-249音频输入、H-303视频输出URL或H-164 provider等待取消；H-119/H-122历史修复按原依据跳过生产重写，保留视频回归。
 
 E-H165-01（原探针真实复现）：HEAD `0220b6af`，tracked干净，原五类用户未跟踪项未读取/修改/暂存。隔离Temp data/home/profile/managed，清除继承数据库路径与供应商key，仅访问两台临时loopback fixture。`cargo test -p deepagent-app-core --test workflow_audit media::audit_provider_image_url_cannot_fetch_loopback_resource --offline -j 1 -- --ignored --exact --nocapture --test-threads=1`原生101、4.09s、0/1/0；provider_requests=1、private_requests包含一次GET /host-private.png、approvals=0、run_terminal=succeeded、artifact_bytes=36且canary_stored=true。原生结果及日志`target/h165-before-probe*`保留，不覆盖失败。
 
@@ -1905,7 +1905,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-162：前端标为可用的四类专业 AI 节点没有可达的正式模型执行链](system-harness-audit-2026-10-21.md) | P0 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-163：工作流模型调用丢失 DeepSeek usage，成本账本、缓存观测和 token budget 与实际请求分裂](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-164：画布文本请求不在运行取消树内，节点完成态可与运行取消终态分裂](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-165：图片供应商可令宿主下载任意私网 URL，并把响应作为成功 artifact 保存](system-harness-audit-2026-10-21.md) | P1 | 修复中 | E-H165-01原探针已复现；不归并其他下载/预算问题 | E02拟复用公网传输与原Kernel工具管线，尚未验收 | 原生101、0/1/0，私网GET一次、canary保存且run成功；正常/最终门禁未执行 | 无本阶段修复提交 | H-167/H-249/H-303/H-164独立；216有效未关闭；总体200–400有效小时历史粗估，等待另计 |
+| [H-165：图片供应商可令宿主下载任意私网 URL，并把响应作为成功 artifact 保存](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H165-01原探针已复现；E-H165-03完成本机范围验收；不归并其他下载/预算问题 | E-H165-02的run-scoped opaque handle、统一PublicHttpClient与Kernel高风险工具管线已落地 | 原生专项与相关回归均通过；完整workspace/严格clippy/Desktop/真实供应商未执行，限制见E-H165-03/04 | `88274ae8` | H-167/H-249/H-303/H-164独立；216有效未关闭；总体200–400有效小时历史粗估，等待另计 |
 | [H-166：DeepSeek Responses 思考模式下 top_p 会被忽略或规范化，设置值不等于有效采样值](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-167：画布图片下载无响应字节上限，超预算数据被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-168：易变 instructions 位于历史之前，动态变化截断多轮 KV cache 前缀](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
