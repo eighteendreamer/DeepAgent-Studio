@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-163 | 已修复并验收（2026-10-28，仅所列Windows本机/离线/正式生产消费者范围） | canonical 用量、实际模型归属、未知完整性与版本化成本回执；usage12/0/0、原探针3/0、UI15/0/0，主树 workspace3663/1/310（唯一既有H-306）、Tauri check通过；E-H163-01～12，修复提交`de93c589` |
 | H-142 | 已修复并验收（2026-10-28，仅所列Windows本机/离线/正式消费者范围） | 单sink首错锁存与checkpoint，保留真实工具结果并统一准入收尾；专项5/0/0、Runtime327/0/12、E2E156/0/78、准入2/0/0，fmt/Tauri Rust check通过；workspace3587/1既有H-306/313 ignored与lint旧阻断保留；H-143独立反证仍0/1；E-H142-06～08，修复提交`e1370f9db521556eb10c4719ffaa2b08dd1503ec` |
 | H-135 | 已修复并验收（2026-10-28，仅所列Windows本机stdio与正式服务范围） | 唯一spawn清空继承环境、叠OS基础白名单与原显式env；默认环境5/0/1、全MCP126/0/6、正式服务1/0/1，MCP严格lint/fmt/桌面Rust通过；workspace3572/2/314及严格lint失败保留，见E-H135-01～06；修复提交`b51529f05bfdb669bac6dbaf7755594b6c4ff3b2` |
 | H-136 | 已修复并验收（2026-10-28，仅所列Windows本机发送边界） | 原背压随H-09已消除不重复计功；本轮修正锁排队取消误通知/误报未知，默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8，MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核保留，E-H136-02～07，修复提交`ab32b8db28f4546e4d95cd7da46eb92072145532` |
@@ -4537,7 +4538,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 
 #### H-163 修复候选与验收续记（2026-10-28）
 
-**状态：已修复并验收（2026-10-28，仅限 E-H163-12 所列 Windows 本机/离线/正式生产消费者范围；提交待本次独立提交后回填）。** 原三探针在当前基线分别 exact 复现失败，日志 `target/h163-before-exact-{bridge,ledger,direct}*` 保留；现在已取消它们的默认 ignore。实现复用现有 Chat parser、`RunUsage::record_call()`、Kernel/UsageRecorded/run_events、Finalizer/CostService，不建立另一套计量或账本。Canvas bridge 保留 optional canonical usage 和数字白名单 raw，provider adapter 显式映射 Chat/Anthropic/Gemini/Embedding；在输出校验前记录一次已报告用量，run-level observer 对重复 SSE snapshot 只取最后一次并在截断/取消时结算；raw 延迟至原持久化边界 drain。路由/usageReported 版本化元数据是本地诊断设计；缺失 bucket 的既有数值投影不当作供应商测量零值。
+**状态：已修复并验收（2026-10-28，仅限 E-H163-12 所列 Windows 本机/离线/正式生产消费者范围；修复提交`de93c589`）。** 原三探针在当前基线分别 exact 复现失败，日志 `target/h163-before-exact-{bridge,ledger,direct}*` 保留；现在已取消它们的默认 ignore。实现复用现有 Chat parser、`RunUsage::record_call()`、Kernel/UsageRecorded/run_events、Finalizer/CostService，不建立另一套计量或账本。Canvas bridge 保留 optional canonical usage 和数字白名单 raw，provider adapter 显式映射 Chat/Anthropic/Gemini/Embedding；在输出校验前记录一次已报告用量，run-level observer 对重复 SSE snapshot 只取最后一次并在截断/取消时结算；raw 延迟至原持久化边界 drain。路由/usageReported 版本化元数据是本地诊断设计；缺失 bucket 的既有数值投影不当作供应商测量零值。
 
 费用按实际模型 exact pricing key 写原账本；所有模型行完成后只发一条整轮费用回执，任一缺价则整体未知。最终汇总改动后 usage 专项 **9 passed / 0 failed**；追加缺价对照后整个 workflow_audit 为 **37 passed / 0 failed / 40 ignored**，本项十项默认测试覆盖多模型/多 attempt、失败/fallback、预算、截断/取消、未知、SQLite 重开/游标/单终态及正式 UI DTO。H-300 原成本 opt-in 探针显式执行 **1 passed / 0 failed**、input=11，不据此关闭该项。生产 App mapper/addUsage/cost handler 与真实 TurnFooter SSR 消费方回归 **15 passed / 0 failed**；H-299 显示语义仍独立。
 
