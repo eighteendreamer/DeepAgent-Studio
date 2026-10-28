@@ -153,6 +153,25 @@ impl WorkflowAgent {
             .unwrap_or(false)
     }
 
+    fn cancel_active_node(&mut self) {
+        let Some(node_id) = self.active_node_id.take() else {
+            return;
+        };
+        if self.node_statuses.get(&node_id) != Some(&NodeExecutionStatus::Running) {
+            return;
+        }
+        self.node_statuses
+            .insert(node_id.clone(), NodeExecutionStatus::Cancelled);
+        self.emit_status(
+            &node_id,
+            NodeExecutionStatus::Cancelled,
+            1,
+            0,
+            None,
+            Some("workflow cancelled while the node was in flight".to_string()),
+        );
+    }
+
     fn base_event(&self, node_id: &str) -> NodeExecutionEvent {
         NodeExecutionEvent::new(self.compiled.revision.clone(), node_id.to_string())
     }
@@ -1381,6 +1400,21 @@ impl WorkflowAgent {
     ) -> Result<AgentDecision> {
         match result {
             Ok(output) => {
+                if self.is_cancelled() {
+                    let error = CoreError::other("workflow cancelled before node completion");
+                    self.node_statuses
+                        .insert(node_id.clone(), NodeExecutionStatus::Cancelled);
+                    self.emit_status(
+                        &node_id,
+                        NodeExecutionStatus::Cancelled,
+                        1,
+                        elapsed_ms,
+                        None,
+                        Some(error.to_string()),
+                    );
+                    self.active_node_id = None;
+                    return Err(error);
+                }
                 let output_value = Self::node_output_value_inline(&node_kind, &output);
                 self.outputs.insert(node_id.clone(), output_value.clone());
                 self.node_statuses
@@ -1393,6 +1427,7 @@ impl WorkflowAgent {
                     Some(output_value),
                     None,
                 );
+                self.active_node_id = None;
                 self.step += 1;
 
                 if node_kind == "end" {
@@ -1423,6 +1458,7 @@ impl WorkflowAgent {
                     None,
                     Some(error.to_string()),
                 );
+                self.active_node_id = None;
                 Err(error)
             }
         }
@@ -1446,6 +1482,23 @@ impl WorkflowAgent {
 impl Agent for WorkflowAgent {
     fn set_event_sink(&mut self, events: Arc<dyn crate::events::RuntimeEventSink>) {
         self.publisher.set_sink(events);
+    }
+
+    async fn think_cancelled(
+        &mut self,
+        step: usize,
+        last: &[Observation],
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Result<AgentDecision> {
+        let Some(cancel) = cancel else {
+            return self.think(step, last).await;
+        };
+        let result =
+            crate::cancellation::await_cancelled(self.think(step, last), Some(cancel)).await;
+        if result.is_err() && self.is_cancelled() {
+            self.cancel_active_node();
+        }
+        result
     }
 
     async fn think(&mut self, _step: usize, last: &[Observation]) -> Result<AgentDecision> {

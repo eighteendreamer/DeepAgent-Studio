@@ -1230,6 +1230,34 @@ async fn audit_video_cancel_does_not_wait_for_provider_status_response() {
 }
 
 #[tokio::test]
+async fn real_text_workflow_completes_after_provider_response() {
+    let mut provider = LocalTextProvider::start().await;
+    let fixture = MediaFixture::new_text(&provider).await;
+    let run_id = "audit-text-normal-control";
+    let mut run = fixture.spawn(run_id);
+    provider.wait_for_request().await;
+    provider.release_response.notify_one();
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+    result.unwrap();
+
+    let events = fixture.live.lock().unwrap();
+    assert!(events.iter().any(|event| {
+        event.node_id == "text"
+            && event.status == NodeExecutionStatus::Completed
+            && event.outputs.is_some()
+    }));
+    let terminals = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect::<Vec<_>>();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "succeeded");
+}
+
+#[tokio::test]
 #[ignore = "audit: an accepted workflow cancellation must interrupt a pending Canvas text response"]
 async fn audit_text_cancel_does_not_wait_for_provider_response() {
     let mut provider = LocalTextProvider::start().await;
