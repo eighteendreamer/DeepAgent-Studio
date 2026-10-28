@@ -7,6 +7,8 @@
 use std::io;
 use std::path::Path;
 
+pub mod access;
+
 /// Stable advisory ownership for one path, independent of the inode replaced
 /// by an atomic write. Lock files must not be unlinked while owners are live.
 #[must_use]

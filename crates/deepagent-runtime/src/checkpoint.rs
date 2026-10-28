@@ -11,6 +11,7 @@ use deepagent_persistence::checkpoint_store::{
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 
+mod access;
 mod restore;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +20,8 @@ struct CheckpointEntry {
     existed: bool,
     was_dir: bool,
     backup: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    windows_dacl: Option<access::AccessTree>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -123,20 +126,16 @@ impl CheckpointManager {
 
         let existed = path.exists();
         let was_dir = path.is_dir();
-        let backup = if existed {
+        let (backup, windows_dacl) = if existed {
             let index = self.entries.lock().unwrap_or_else(|p| p.into_inner()).len();
             let destination = self.storage_dir.join("files").join(index.to_string());
-            if was_dir {
-                copy_directory(&path, &destination)?;
-            } else {
-                if let Some(parent) = destination.parent() {
-                    std::fs::create_dir_all(parent).map_err(fs_error)?;
-                }
-                std::fs::copy(&path, &destination).map_err(fs_error)?;
-            }
-            Some(destination.to_string_lossy().to_string())
+            let windows_dacl = backup_entry(&path, &destination)?;
+            (
+                Some(destination.to_string_lossy().to_string()),
+                windows_dacl,
+            )
         } else {
-            None
+            (None, None)
         };
         self.entries
             .lock()
@@ -146,6 +145,7 @@ impl CheckpointManager {
                 existed,
                 was_dir,
                 backup,
+                windows_dacl,
             });
         // Crash consistency: persist the manifest incrementally after every
         // new capture instead of only at run end. If the process dies
@@ -308,6 +308,23 @@ fn normalize_path(path: &Path) -> PathBuf {
     normalized
 }
 
+fn backup_entry(source: &Path, destination: &Path) -> Result<Option<access::AccessTree>> {
+    #[cfg(windows)]
+    {
+        access::capture_copy(source, destination).map(Some)
+    }
+    #[cfg(not(windows))]
+    {
+        if source.is_dir() {
+            copy_directory(source, destination)?;
+        } else {
+            std::fs::copy(source, destination).map_err(fs_error)?;
+        }
+        Ok(None)
+    }
+}
+
+#[cfg(not(windows))]
 fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
     std::fs::create_dir_all(destination).map_err(fs_error)?;
     for entry in std::fs::read_dir(source).map_err(fs_error)? {

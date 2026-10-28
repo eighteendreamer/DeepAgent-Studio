@@ -76,6 +76,95 @@ fn no_staging(root: &Path) {
         .starts_with(".deepagent-write-")));
 }
 
+#[cfg(windows)]
+mod access_policy {
+    use super::*;
+    use deepagent_persistence::fs_commit::access::WindowsDacl;
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::{READ_CONTROL, WRITE_DAC};
+
+    fn policy(sddl: &str) -> WindowsDacl {
+        serde_json::from_value(json!({"version":1,"protected":true,"sddl":sddl})).unwrap()
+    }
+
+    fn set(path: &Path, policy: &WindowsDacl) {
+        let file = std::fs::OpenOptions::new()
+            .access_mode(READ_CONTROL | WRITE_DAC)
+            .open(path)
+            .unwrap();
+        policy.apply(&file, false).unwrap();
+    }
+
+    fn capture(path: &Path) -> WindowsDacl {
+        WindowsDacl::capture(&std::fs::File::open(path).unwrap()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn all_content_tools_preserve_explicit_allow_deny_and_inherited_policies() {
+        for explicit in [false, true] {
+            for tool in 0..3 {
+                let files = Files::new(INITIAL);
+                if explicit {
+                    set(&files.path(), &policy("D:P(D;;0x20;;;WD)(A;;FA;;;WD)"));
+                }
+                let before = capture(&files.path());
+                files.read().await;
+                assert!(
+                    files.change(tool, INITIAL).await.ok,
+                    "tool={tool}, explicit={explicit}"
+                );
+                assert!(capture(&files.path()) == before, "tool changed DACL");
+                assert_eq!(files.disk(), INITIAL.replace("value=old", "value=new"));
+                no_staging(files.root.path());
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn first_creation_keeps_default_parent_inheritance() {
+        let files = Files::new(INITIAL);
+        let expected = capture(&files.path());
+        let result = WriteFileTool::with_cache(files.root.clone(), files.cache.clone())
+            .invoke(json!({"path":"created.txt","content":"synthetic first write"}))
+            .await
+            .unwrap();
+        assert!(result.ok, "{result:?}");
+        assert!(capture(&files.root.path().join("created.txt")) == expected);
+        no_staging(files.root.path());
+    }
+
+    #[test]
+    fn empty_stage_is_protected_and_policy_change_rejects_publication() {
+        use std::io::Write;
+        let files = Files::new(INITIAL);
+        let before = policy("D:P(D;;0x20;;;WD)(A;;FA;;;WD)");
+        set(&files.path(), &before);
+        let before = capture(&files.path());
+        let target = files.root.write_target(&files.path(), false).unwrap();
+        let mut stage = target.stage().unwrap();
+        assert_eq!(stage.file_mut().metadata().unwrap().len(), 0);
+        assert!(
+            WindowsDacl::capture(stage.file_mut()).unwrap() == before,
+            "unprotected empty staging entry"
+        );
+        stage
+            .file_mut()
+            .write_all(b"must not be published")
+            .unwrap();
+        let changed = policy("D:P(A;;FA;;;WD)");
+        set(&files.path(), &changed);
+        let changed = capture(&files.path());
+        let error = stage.publish(&target, true).unwrap_err();
+        assert!(error.to_string().contains("FILE_ACCESS_POLICY_CHANGED"));
+        assert_eq!(files.disk(), INITIAL);
+        assert!(
+            capture(&files.path()) == changed,
+            "failed write reverted external DACL change"
+        );
+        no_staging(files.root.path());
+    }
+}
+
 #[tokio::test]
 async fn every_mutation_preserves_external_edits_until_fresh_read() {
     for tool in 0..3 {

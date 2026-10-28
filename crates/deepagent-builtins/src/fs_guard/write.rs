@@ -93,7 +93,9 @@ impl WriteTarget {
     pub(crate) fn stage(&self) -> io::Result<StagedWrite> {
         let parent = self.path.parent().expect("validated parent");
         #[cfg(windows)]
-        let inner = self.parent.stage(parent)?;
+        let inner = self
+            .parent
+            .stage(parent, self.path.file_name().expect("validated file name"))?;
         #[cfg(not(windows))]
         let inner = tempfile::Builder::new()
             .prefix(".deepagent-write-")

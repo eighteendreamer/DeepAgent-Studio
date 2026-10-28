@@ -100,7 +100,7 @@ impl HttpTransport for MetadataModel {
                 assert_eq!(outputs.len(), 1);
                 let result: Value =
                     serde_json::from_str(outputs[0]["output"].as_str().unwrap()).unwrap();
-                assert_eq!(result["status"], "ok");
+                assert_eq!(result["status"], "ok", "tool error: {}", result["error"]);
                 super::responses_fixture::text("audit-metadata-answer", "Metadata audit finished.")
             }
             _ => panic!("unexpected extra metadata audit request"),
@@ -225,14 +225,20 @@ async fn observe(tool: &'static str, protect: bool) -> Observation {
 #[tokio::test]
 async fn file_metadata_read_and_inherited_write_controls() {
     let read = observe("read_file", true).await;
-    assert_eq!(read.before, read.after);
-    assert_eq!(read.before, read.restored);
+    assert!(read.before == read.after, "read-only control changed DACL");
+    assert!(
+        read.before == read.restored,
+        "read-only restore changed DACL"
+    );
     let write = observe("write_file", false).await;
-    assert_eq!(write.before, write.after);
+    assert!(write.before == write.after, "inherited write changed DACL");
+    assert!(
+        write.before == write.restored,
+        "inherited restore changed DACL"
+    );
 }
 
 #[tokio::test]
-#[ignore = "audit: content-only replacement must preserve the existing file DACL"]
 async fn audit_file_content_tools_preserve_protected_dacl() {
     let mut observations = Vec::new();
     for tool in ["write_file", "edit_file", "multi_edit"] {
@@ -244,5 +250,11 @@ async fn audit_file_content_tools_preserve_protected_dacl() {
             .iter()
             .all(|(_, value)| value.before == value.after),
         "content-only edits replaced the original access-control policy"
+    );
+    assert!(
+        observations
+            .iter()
+            .all(|(_, value)| value.before == value.restored),
+        "checkpoint restore did not recover the original access-control policy"
     );
 }

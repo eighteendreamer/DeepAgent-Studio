@@ -20,6 +20,8 @@ struct RestoreEntry {
     target: PathBuf,
     reported: PathBuf,
     backup: Option<PathBuf>,
+    #[cfg(windows)]
+    access: Option<super::access::AccessTree>,
 }
 
 struct StagedRoot {
@@ -27,6 +29,8 @@ struct StagedRoot {
     area: PathBuf,
     previous_moved: bool,
     published: bool,
+    #[cfg(windows)]
+    access: Vec<super::access::AccessLease>,
 }
 
 #[derive(Default)]
@@ -105,9 +109,11 @@ impl RestoreTransaction {
                 area: area.clone(),
                 previous_moved: false,
                 published: false,
+                #[cfg(windows)]
+                access: Vec::new(),
             });
         }
-        for stage in &transaction.stages {
+        for stage in &mut transaction.stages {
             // Every minimal root is itself restored by at least one entry.
             // Its last complete snapshot supersedes all earlier descendants;
             // only later descendant operations can affect its final contents.
@@ -128,11 +134,26 @@ impl RestoreTransaction {
                 } else {
                     stage.area.join("desired").join(suffix)
                 };
-                remove_staged(&desired)?;
+                #[cfg(windows)]
+                stage
+                    .access
+                    .retain(|lease| !lease.staged.starts_with(&desired));
+                remove_staged(&desired).map_err(|error| {
+                    CoreError::other(format!(
+                        "checkpoint superseded staging cleanup failed: {error}"
+                    ))
+                })?;
                 if let Some(backup) = &entry.backup {
                     if let Some(parent) = desired.parent() {
                         fs::create_dir_all(parent).map_err(fs_error)?;
                     }
+                    #[cfg(windows)]
+                    stage.access.extend(super::access::prepare_copy(
+                        backup,
+                        &desired,
+                        entry.access.as_ref().expect("validated Windows DACL tree"),
+                    )?);
+                    #[cfg(not(windows))]
                     copy_entry(backup, &desired)?;
                 }
             }
@@ -143,14 +164,41 @@ impl RestoreTransaction {
     fn publish(&mut self) -> Result<()> {
         for stage in &mut self.stages {
             create_parents(&stage.target, &mut self.created_parents)?;
+            #[cfg(windows)]
+            super::access::prepare_publication(&mut stage.access, &stage.area.join("desired"))?;
             if exists(&stage.target)? {
-                rename_no_replace(&stage.target, &stage.area.join("previous")).map_err(fs_error)?;
+                rename_no_replace(&stage.target, &stage.area.join("previous")).map_err(
+                    |error| {
+                        CoreError::other(format!(
+                            "checkpoint retaining previous root failed: {error}"
+                        ))
+                    },
+                )?;
                 stage.previous_moved = true;
             }
             let desired = stage.area.join("desired");
             if exists(&desired)? {
-                rename_no_replace(&desired, &stage.target).map_err(fs_error)?;
+                rename_no_replace(&desired, &stage.target).map_err(|error| {
+                    CoreError::other(format!(
+                        "checkpoint publishing desired root failed: {error}"
+                    ))
+                })?;
                 stage.published = true;
+                #[cfg(windows)]
+                {
+                    for lease in &stage.access {
+                        let relative = lease
+                            .staged
+                            .strip_prefix(&desired)
+                            .expect("owned staged entry");
+                        let published = if relative.as_os_str().is_empty() {
+                            stage.target.clone()
+                        } else {
+                            stage.target.join(relative)
+                        };
+                        lease.publish_policy(&published)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -254,10 +302,29 @@ fn parse_entries(records: &[CheckpointRecord]) -> Result<Vec<RestoreEntry>> {
                 }
                 None
             };
+            if let Some(source) = &backup {
+                #[cfg(windows)]
+                {
+                    let tree = entry.windows_dacl.as_ref().ok_or_else(|| CoreError::invalid("legacy checkpoint lacks Windows DACL metadata; exact access-policy restoration is unavailable"))?;
+                    super::access::validate_backup(source, tree)?;
+                }
+                #[cfg(not(windows))]
+                if entry.windows_dacl.is_some() {
+                    return Err(CoreError::invalid(
+                        "Windows checkpoint DACL metadata cannot be restored on this platform",
+                    ));
+                }
+            } else if entry.windows_dacl.is_some() {
+                return Err(CoreError::invalid(
+                    "absent checkpoint entry unexpectedly has DACL metadata",
+                ));
+            }
             entries.push(RestoreEntry {
                 target,
                 reported: lexical_target,
                 backup,
+                #[cfg(windows)]
+                access: entry.windows_dacl.clone(),
             });
         }
     }
@@ -303,6 +370,7 @@ fn resolve_target(path: &Path) -> Result<PathBuf> {
     }
 }
 
+#[cfg(not(windows))]
 fn copy_entry(source: &Path, destination: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(source).map_err(fs_error)?;
     if metadata.file_type().is_symlink() {
@@ -396,18 +464,19 @@ mod tests {
                     let path = self.path(name);
                     let existed = exists(&path).unwrap();
                     let was_dir = path.is_dir();
-                    let backup = if existed {
+                    let (backup, windows_dacl) = if existed {
                         let backup = storage_dir.join(index.to_string());
-                        copy_entry(&path, &backup).unwrap();
-                        Some(backup.to_string_lossy().to_string())
+                        let access = super::super::backup_entry(&path, &backup).unwrap();
+                        (Some(backup.to_string_lossy().to_string()), access)
                     } else {
-                        None
+                        (None, None)
                     };
                     CheckpointEntry {
                         path: path.to_string_lossy().to_string(),
                         existed,
                         was_dir,
                         backup,
+                        windows_dacl,
                     }
                 })
                 .collect();
@@ -460,6 +529,156 @@ mod tests {
         assert_eq!(
             fs::read_to_string(fixture.path("second")).unwrap(),
             "second-current"
+        );
+        fixture.assert_no_stages();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn missing_or_corrupt_dacl_metadata_rejects_restore_before_publication() {
+        for invalid in [
+            "legacy",
+            "tree-version",
+            "policy-version",
+            "invalid-sddl",
+            "traversal",
+            "omitted",
+        ] {
+            let fixture = Fixture::new();
+            fs::write(fixture.path("file"), "before").unwrap();
+            let mut record = fixture.snapshot(&["file"]);
+            let mut manifest: serde_json::Value = serde_json::from_str(&record.manifest).unwrap();
+            let entry = &mut manifest["entries"][0];
+            match invalid {
+                "legacy" => {
+                    entry.as_object_mut().unwrap().remove("windows_dacl");
+                }
+                "tree-version" => entry["windows_dacl"]["version"] = 2.into(),
+                "policy-version" => {
+                    entry["windows_dacl"]["entries"][0]["policy"]["version"] = 2.into()
+                }
+                "invalid-sddl" => {
+                    entry["windows_dacl"]["entries"][0]["policy"]["sddl"] = "D:\0bad".into()
+                }
+                "traversal" => {
+                    entry["windows_dacl"]["entries"][0]["relative"] = "../outside".into()
+                }
+                "omitted" => entry["windows_dacl"]["entries"] = serde_json::json!([]),
+                _ => unreachable!(),
+            }
+            record.manifest = manifest.to_string();
+            fs::write(fixture.path("file"), "current").unwrap();
+            assert!(
+                RestoreTransaction::run(&[record], |_| -> Result<()> {
+                    panic!("invalid access metadata must not reach history commit")
+                })
+                .is_err(),
+                "{invalid}"
+            );
+            assert_eq!(fs::read_to_string(fixture.path("file")).unwrap(), "current");
+            fixture.assert_no_stages();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn changed_final_parent_policy_compensates_content_and_dacl() {
+        use deepagent_persistence::fs_commit::access::{
+            create_snapshot_target, open_snapshot_source, WindowsDacl,
+        };
+        let fixture = Fixture::new();
+        let parent = create_snapshot_target(&fixture.path("tree"), true).unwrap();
+        let target = fixture.path("tree/file");
+        fs::write(&target, "before").unwrap();
+        let original = WindowsDacl::capture(&open_snapshot_source(&target).unwrap()).unwrap();
+        let record = fixture.snapshot(&["tree/file"]);
+        let changed: WindowsDacl = serde_json::from_value(
+            serde_json::json!({"version":1,"protected":true,"sddl":"D:P(A;OICI;FA;;;WD)"}),
+        )
+        .unwrap();
+        changed.apply(&parent, false).unwrap();
+        fs::write(&target, "current").unwrap();
+        let before_restore = WindowsDacl::capture(&open_snapshot_source(&target).unwrap()).unwrap();
+        assert!(
+            original != before_restore,
+            "fixture must change inherited policy"
+        );
+        let error = RestoreTransaction::run(&[record], |_| -> Result<()> {
+            panic!("mismatched final DACL must not reach history commit")
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("DACL differs after publication"));
+        assert_eq!(fs::read_to_string(&target).unwrap(), "current");
+        assert!(
+            WindowsDacl::capture(&open_snapshot_source(&target).unwrap()).unwrap()
+                == before_restore,
+            "compensation changed original DACL"
+        );
+        fixture.assert_no_stages();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn directory_restore_and_history_compensation_preserve_every_original_policy() {
+        use deepagent_persistence::fs_commit::access::{
+            create_snapshot_target, open_policy_source, WindowsDacl,
+        };
+        let fixture = Fixture::new();
+        let tree = fixture.path("tree");
+        let parent = create_snapshot_target(&tree, true).unwrap();
+        let restricted: WindowsDacl = serde_json::from_value(serde_json::json!({"version":1,"protected":true,"sddl":"D:P(D;OICI;0x20;;;WD)(A;OICI;FA;;;WD)"})).unwrap();
+        restricted.apply(&parent, false).unwrap();
+        fs::create_dir(tree.join("nested")).unwrap();
+        fs::write(tree.join("nested/file"), "before").unwrap();
+        let paths = [tree.clone(), tree.join("nested"), tree.join("nested/file")];
+        let capture = || {
+            paths
+                .iter()
+                .map(|path| WindowsDacl::capture(&open_policy_source(path).unwrap()).unwrap())
+                .collect::<Vec<_>>()
+        };
+        let original = capture();
+        let record = fixture.snapshot(&["tree"]);
+        let changed: WindowsDacl = serde_json::from_value(
+            serde_json::json!({"version":1,"protected":true,"sddl":"D:P(A;OICI;FA;;;WD)"}),
+        )
+        .unwrap();
+        changed.apply(&parent, false).unwrap();
+        fs::write(tree.join("nested/file"), "current").unwrap();
+        let current = capture();
+        assert!(
+            current != original,
+            "fixture must change protected and inherited policies"
+        );
+        let result = RestoreTransaction::run(std::slice::from_ref(&record), |_| -> Result<()> {
+            assert_eq!(
+                fs::read_to_string(tree.join("nested/file")).unwrap(),
+                "before"
+            );
+            assert!(
+                capture() == original,
+                "restore changed original tree policy"
+            );
+            Err(CoreError::Persistence("injected history failure".into()))
+        });
+        assert!(result.is_err());
+        assert_eq!(
+            fs::read_to_string(tree.join("nested/file")).unwrap(),
+            "current"
+        );
+        assert!(
+            capture() == current,
+            "compensation changed current tree policy"
+        );
+        RestoreTransaction::run(&[record], |_| Ok(())).unwrap();
+        assert_eq!(
+            fs::read_to_string(tree.join("nested/file")).unwrap(),
+            "before"
+        );
+        assert!(
+            capture() == original,
+            "successful restore changed original tree policy"
         );
         fixture.assert_no_stages();
     }

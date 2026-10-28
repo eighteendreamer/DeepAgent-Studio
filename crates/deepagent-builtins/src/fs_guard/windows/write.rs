@@ -1,6 +1,7 @@
 //! Stable parent and fresh-file publication for the existing mutation boundary.
 
 use super::*;
+use deepagent_persistence::fs_commit::access::WindowsDacl;
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::os::windows::fs::MetadataExt;
@@ -10,7 +11,7 @@ use windows_sys::Wdk::Storage::FileSystem::{
 };
 use windows_sys::Win32::Storage::FileSystem::{
     FileDispositionInfo, SetFileInformationByHandle, DELETE, FILE_DISPOSITION_INFO,
-    FILE_GENERIC_WRITE,
+    FILE_GENERIC_WRITE, READ_CONTROL, WRITE_DAC,
 };
 
 pub(in crate::fs_guard) struct WriteDirectory {
@@ -168,12 +169,32 @@ impl WriteDirectory {
         Ok(is_directory)
     }
 
-    pub(in crate::fs_guard) fn stage(&self, display_parent: &Path) -> io::Result<Stage> {
+    fn access_policy(&self, name: &OsStr) -> io::Result<Option<WindowsDacl>> {
+        match open_name(
+            self.handle(),
+            &mut relative_name(name)?,
+            READ_CONTROL,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT,
+        ) {
+            Ok(file) => WindowsDacl::capture(&file).map(Some),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(in crate::fs_guard) fn stage(
+        &self,
+        display_parent: &Path,
+        name: &OsStr,
+    ) -> io::Result<Stage> {
+        let policy = self.access_policy(name)?;
         Ok(tempfile::Builder::new()
             .prefix(".deepagent-write-")
             .disable_cleanup(true)
             .make_in(display_parent, |generated| {
-                Ok(Stage {
+                let stage = Stage {
                     file: open_name(
                         self.handle(),
                         &mut relative_name(
@@ -181,13 +202,18 @@ impl WriteDirectory {
                                 .file_name()
                                 .ok_or_else(|| invalid("missing staging name"))?,
                         )?,
-                        FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE,
+                        FILE_GENERIC_READ | FILE_GENERIC_WRITE | DELETE | WRITE_DAC,
                         FILE_SHARE_READ,
                         FILE_CREATE,
                         FILE_NON_DIRECTORY_FILE,
                     )?,
                     published: false,
-                })
+                    policy: policy.clone(),
+                };
+                if let Some(policy) = &stage.policy {
+                    policy.apply(&stage.file, true)?;
+                }
+                Ok(stage)
             })?
             .into_parts()
             .0)
@@ -197,6 +223,7 @@ impl WriteDirectory {
 pub(in crate::fs_guard) struct Stage {
     pub(in crate::fs_guard) file: File,
     published: bool,
+    policy: Option<WindowsDacl>,
 }
 
 impl Stage {
@@ -206,6 +233,17 @@ impl Stage {
         name: &OsStr,
         replace: bool,
     ) -> io::Result<()> {
+        if parent.access_policy(name)? != self.policy {
+            return Err(io::Error::other("FILE_ACCESS_POLICY_CHANGED: target policy changed during staging; no content was published"));
+        }
+        if let Some(policy) = &self.policy {
+            policy.apply(&self.file, false)?;
+            if WindowsDacl::capture(&self.file)? != *policy {
+                return Err(io::Error::other(
+                    "file access policy could not be preserved before publication",
+                ));
+            }
+        }
         let name = relative_name(name)?;
         let size = size_of::<FILE_RENAME_INFORMATION>() + size_of_val(name.as_slice());
         let mut buffer = vec![0usize; size.div_ceil(size_of::<usize>())];
