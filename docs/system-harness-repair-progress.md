@@ -58,7 +58,7 @@ E-H163-12（最终证据、验收边界与独立提交，2026-10-28）：主树�
 
 ## H-300 本轮即时记录（2026-10-28）
 
-**当前状态：已修复并验收（2026-10-28，仅 E-H300-12 所列 Windows 本机/离线/正式消费者与受控真实组件范围）；本项新增验收数为1；修复提交待回填。** 原始失败与候选判断按 E-H300-01～11 的发生顺序保留；其中成本仍失败、取消/UI未验和门禁待收取均为历史阶段状态，最新结论以 E-H300-12 为准。H-163/H-164 保持独立且不重复计数。
+**当前状态：已修复并验收（2026-10-28，仅 E-H300-12 所列 Windows 本机/离线/正式消费者与受控真实组件范围）；本项新增验收数为1；修复提交`39c61767`。** 原始失败与候选判断按 E-H300-01～11 的发生顺序保留；其中成本仍失败、取消/UI未验和门禁待收取均为历史阶段状态，最新结论以 E-H300-12 为准。H-163/H-164 保持独立且不重复计数。
 
 E-H300-01（修前证据）：保留原报告 H-300 的 `unknown workflow node kind (neither professional nor creative)`、`provider_called=false` 与原始失败命令，不用本轮成功覆盖。原可达性探针现已取消 `#[ignore]`，修后执行时不再传 `--ignored`，避免零测试假通过。
 
@@ -103,7 +103,9 @@ E-H300-12（最终门禁、完整闭环与限定验收，2026-10-28）：当前�
 
 AppCore/runtime 严格 `cargo clippy -p <crate> --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` 分别原生101：AppCore既有 context_runtime/http_runtime/plugin_preparation/run_assembler 11项，runtime既有 model_agent.rs:282 clone_on_copy；失败文件与HEAD无差异，没有抑制后称通过（`target/h300-final-{appcore-clippy,runtime-clippy}-20261028*`）。E-11前端build/Tauri check与最终fmt/diff check通过，保留既有警告。9个源码/测试文件 SHA256 与已测版本一致，清单 `target/h300-final-source-manifest-20261028.json`。
 
-验收结论仅限 **Windows 本机、离线合成 provider、正式 DTO/Kernel/账本/run_events 与受控真实组件范围**：H-300 原能力不可达及其必须共同满足的批量输入/输出契约已修复，新增验收1；不把 H-163/H-164 的共享能力再计新修复。沿用原专业节点契约与 graph seam，没有另造创作提示词链、capability registry、运行器或账本；不是全局 capability 注册表重构。无SQL迁移、新依赖、外部服务接入或权限/沙箱放行；`CanvasModelOutput::Embedding` 新增完整 `vectors` 并保留 legacy `vector`，仓外 Rust 穷尽构造/解构需适配，版本1工作流与节点四字段输出不变。未验完整Tauri窗口、生产数据库保存、真实供应商/账单/远端撤销、其他OS、超大规模/断电/多宿主压力，不作这些保证。H-299、H-301～304、H-306各自独立；受控UI不是全产品UI验收。修复提交待本次独立提交后回填，不amend、不推送、不建PR。全部剩余 **212**；下一项拟按文件数据/权限风险复核 H-287，不在本项混入修复。历史总体工时仍为未逐项校准的 **200–400有效小时**，依据剩余跨层授权/执行/持久化/客户端风险规模，缺少可靠吞吐计量不能机械扣减；编译、依赖、设备及环境等待另计。整体目标仍active。
+验收结论仅限 **Windows 本机、离线合成 provider、正式 DTO/Kernel/账本/run_events 与受控真实组件范围**：H-300 原能力不可达及其必须共同满足的批量输入/输出契约已修复，新增验收1；不把 H-163/H-164 的共享能力再计新修复。沿用原专业节点契约与 graph seam，没有另造创作提示词链、capability registry、运行器或账本；不是全局 capability 注册表重构。无SQL迁移、新依赖、外部服务接入或权限/沙箱放行；`CanvasModelOutput::Embedding` 新增完整 `vectors` 并保留 legacy `vector`，仓外 Rust 穷尽构造/解构需适配，版本1工作流与节点四字段输出不变。未验完整Tauri窗口、生产数据库保存、真实供应商/账单/远端撤销、其他OS、超大规模/断电/多宿主压力，不作这些保证。H-299、H-301～304、H-306各自独立；受控UI不是全产品UI验收。修复提交`39c61767`，不amend、不推送、不建PR。全部剩余 **212**；下一项拟按文件数据/权限风险复核 H-287，不在本项混入修复。历史总体工时仍为未逐项校准的 **200–400有效小时**，依据剩余跨层授权/执行/持久化/客户端风险规模，缺少可靠吞吐计量不能机械扣减；编译、依赖、设备及环境等待另计。整体目标仍active。
+
+E-H300-13（独立提交与收尾复核）：修复、回归测试及当时两份文档已一并提交为`39c61767f7f844254c367d3bec78697ff7089c61`（`【fix】接通嵌入工作流完整执行契约`），仅11个本项相关文件。提交前9个源码/测试SHA256与最终门禁版本一致，306行台账编号唯一，其他305条状态行与前一HEAD逐字相同；收尾再次执行`node --test scripts/check-workflow.test.cjs`为**86 passed / 0 failed / 0 skipped**（`target/h300-handoff-node-20261028.log`），fmt及diff check通过。未将target证据、原五类用户未跟踪项或用户数据加入提交，未推送/建PR/amend。此次只回填真实修复hash和该收尾记录，不扩大E-12的本机验收范围，也不抹去workspace/Kernel MCP/lint失败。累计67验收、18历史跳过、7归并、2撤销、212有效未关闭；下一项H-287仍待原探针复核，整体目标active。
 
 ## H-164 本轮即时记录（2026-10-28）
 
@@ -2141,7 +2143,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-297：默认字符密度计数低估官方离线文本，冷计量可漏过既定压缩压力阈值](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-298：Harness 超出存储表示域的读取游标回绕，错误重放全部旧 run events](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-299：桌面端工具循环的实时用量与会话重载显示不一致](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-300：Embedding 工作流执行器存在，但画布契约/图注册表没有注册 embedding 节点](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H300-01～12保留原graph/批量/成本失败；仅所列Windows本机范围，H-163/H-164不重复计数 | 复用专业registry/schema、graph、executor/gateway、取消树、canonical计量与run_events；批量全解析/次序/数量校验 | workflow41/0/39、gateway47/0/5、runtime68/0；真实桌面DTO1/0、text取消1/0；UI真实交互恢复/前端build/Tauri/fmt通过；workspace3659/7/309与严格lint失败保留，同binary整组AppCore1230/0/62、Kernel159/1/79（MCP通知）；当前及HEAD快照MCP对照各2/0/1不抹去整组失败；见E-12 | 待本次独立提交后回填 | 无SQL迁移/新依赖；Rust enum新增vectors仓外穷尽调用方需适配，原vector与节点DTO保留；完整Tauri/真实供应商/其他OS/断电未验；剩余212，下一H-287，总200–400未校准有效小时，等待另计 |
+| [H-300：Embedding 工作流执行器存在，但画布契约/图注册表没有注册 embedding 节点](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H300-01～12保留原graph/批量/成本失败；仅所列Windows本机范围，H-163/H-164不重复计数 | 复用专业registry/schema、graph、executor/gateway、取消树、canonical计量与run_events；批量全解析/次序/数量校验 | workflow41/0/39、gateway47/0/5、runtime68/0；真实桌面DTO1/0、text取消1/0；UI真实交互恢复/前端build/Tauri/fmt通过；workspace3659/7/309与严格lint失败保留，同binary整组AppCore1230/0/62、Kernel159/1/79（MCP通知）；当前及HEAD快照MCP对照各2/0/1不抹去整组失败；见E-12 | `39c61767` | 无SQL迁移/新依赖；Rust enum新增vectors仓外穷尽调用方需适配，原vector与节点DTO保留；完整Tauri/真实供应商/其他OS/断电未验；剩余212，下一H-287，总200–400未校准有效小时，等待另计 |
 | [H-301：Audio 合成取消没有打断共享 Canvas HTTP 响应](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-302：画布视频下载没有类型级字节上限](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-303：画布视频 provider URL 第二跳绕过网络审批](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
