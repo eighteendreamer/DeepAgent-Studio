@@ -16,8 +16,8 @@ use deepagent_models::chat_completions::ChatCompletionRequest;
 
 use super::canvas::{
     CanvasArtifactValidator, CanvasAudioRequest, CanvasCompletionRequest, CanvasEmbeddingRequest,
-    CanvasImageRequest, CanvasJobProgressSink, CanvasModelBridge, CanvasRouteRequest,
-    CanvasVideoRequest,
+    CanvasImagePreparation, CanvasImageRequest, CanvasImageResponse, CanvasJobProgressSink,
+    CanvasModelBridge, CanvasRouteRequest, CanvasVideoRequest,
 };
 use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
@@ -31,6 +31,12 @@ use crate::agent::{Agent, AgentDecision, Observation, RunUsage};
 use deepagent_core::error::{CoreError, Result};
 
 struct PendingHttpNode {
+    node_id: String,
+    call_id: String,
+    started: Instant,
+}
+
+struct PendingImageNode {
     node_id: String,
     call_id: String,
     started: Instant,
@@ -60,6 +66,7 @@ pub struct WorkflowAgent {
     /// inside the provider poll loop, which cannot see the graph walk.
     active_node_id: Option<String>,
     pending_http: Option<PendingHttpNode>,
+    pending_image: Option<PendingImageNode>,
     model: Option<Arc<ModelClient>>,
     model_name: Option<String>,
     knowledge_retriever: Option<Arc<dyn KnowledgeRetriever>>,
@@ -89,6 +96,7 @@ impl WorkflowAgent {
             cancel: None,
             active_node_id: None,
             pending_http: None,
+            pending_image: None,
             model: None,
             model_name: None,
             knowledge_retriever: None,
@@ -789,14 +797,14 @@ impl WorkflowAgent {
         }))
     }
 
-    /// Execute a canvas image node. Whether the call generates a new image or
-    /// edits a reference image is decided by the resolved inputs, exactly like
-    /// the deterministic router prescribes.
-    async fn execute_image_gen(
+    /// Build the typed request for a canvas image node. Whether the call
+    /// generates a new image or edits a reference image is decided by the
+    /// resolved inputs, exactly like the deterministic router prescribes.
+    fn image_request(
         &self,
         node_kind: &str,
         config: &Map<String, Value>,
-    ) -> Result<Value> {
+    ) -> Result<CanvasImageRequest> {
         let bridge = self.canvas_bridge.clone().ok_or_else(|| {
             deepagent_core::error::CoreError::other(
                 "image nodes need the canvas model bridge; configure the canvas providers first",
@@ -852,25 +860,27 @@ impl WorkflowAgent {
             input_kinds,
             has_prompt: true,
         })?;
-        let response = bridge
-            .generate_image(CanvasImageRequest {
-                model_ref: config
-                    .get("imageModel")
-                    .or_else(|| config.get("model"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .trim()
-                    .to_string(),
-                prompt,
-                reference_images,
-                size: config
-                    .get("size")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-                operation: routed.operation.clone(),
-            })
-            .await?;
-        Ok(serde_json::json!({
+        let _ = bridge;
+        Ok(CanvasImageRequest {
+            model_ref: config
+                .get("imageModel")
+                .or_else(|| config.get("model"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string(),
+            prompt,
+            reference_images,
+            size: config
+                .get("size")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            operation: routed.operation.clone(),
+        })
+    }
+
+    fn image_response_value(response: CanvasImageResponse) -> Value {
+        serde_json::json!({
             // The node keeps its existing `imageUrl` field, but the value is an
             // `artifact://` reference: no base64 enters events or the graph.
             "imageUrl": response.artifact_uri,
@@ -878,7 +888,38 @@ impl WorkflowAgent {
             "operation": response.operation,
             "providerId": response.provider_id,
             "modelId": response.model_id,
-        }))
+        })
+    }
+
+    async fn execute_image_gen(
+        &self,
+        node_kind: &str,
+        config: &Map<String, Value>,
+    ) -> Result<Value> {
+        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
+            deepagent_core::error::CoreError::other(
+                "image nodes need the canvas model bridge; configure the canvas providers first",
+            )
+        })?;
+        let response = bridge
+            .generate_image(self.image_request(node_kind, config)?)
+            .await?;
+        Ok(Self::image_response_value(response))
+    }
+
+    async fn prepare_image_gen(
+        &self,
+        node_kind: &str,
+        config: &Map<String, Value>,
+    ) -> Result<CanvasImagePreparation> {
+        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
+            deepagent_core::error::CoreError::other(
+                "image nodes need the canvas model bridge; configure the canvas providers first",
+            )
+        })?;
+        bridge
+            .prepare_image(self.image_request(node_kind, config)?)
+            .await
     }
 
     /// Video node: one asynchronous provider job, resumable by task id.
@@ -1408,6 +1449,38 @@ impl Agent for WorkflowAgent {
     }
 
     async fn think(&mut self, _step: usize, last: &[Observation]) -> Result<AgentDecision> {
+        if let Some(pending) = self.pending_image.take() {
+            let result = last
+                .iter()
+                .find(|observation| observation.call_id.as_deref() == Some(&pending.call_id))
+                .ok_or_else(|| {
+                    CoreError::other("canvas_image_fetch: missing correlated tool result")
+                })
+                .and_then(|observation| {
+                    if !observation.ok {
+                        return Err(CoreError::other(format!(
+                            "canvas_image_fetch: {}",
+                            observation.output
+                        )));
+                    }
+                    let output = observation
+                        .raw_output
+                        .as_ref()
+                        .unwrap_or(&observation.output);
+                    serde_json::from_value::<CanvasImageResponse>(output.clone()).map_err(|error| {
+                        CoreError::other(format!(
+                            "canvas_image_fetch returned an invalid image response: {error}"
+                        ))
+                    })
+                })
+                .map(Self::image_response_value);
+            return self.finish_node(
+                pending.node_id,
+                "image-gen".into(),
+                result,
+                pending.started.elapsed().as_millis() as u64,
+            );
+        }
         if let Some(pending) = self.pending_http.take() {
             let result = last
                 .iter()
@@ -1508,6 +1581,41 @@ impl Agent for WorkflowAgent {
             ));
         }
 
+        if matches!(node_kind.as_str(), "image-gen" | "image-edit") {
+            let preparation = self.prepare_image_gen(&node_kind, &node_config).await;
+            match preparation {
+                Ok(CanvasImagePreparation::Ready(response)) => {
+                    return self.finish_node(
+                        node_id,
+                        node_kind,
+                        Ok(Self::image_response_value(response)),
+                        node_start.elapsed().as_millis() as u64,
+                    );
+                }
+                Ok(CanvasImagePreparation::Deferred { request_id, origin }) => {
+                    let call_id = format!("workflow_image_{}", deepagent_core::id::EventId::new());
+                    self.pending_image = Some(PendingImageNode {
+                        node_id,
+                        call_id: call_id.clone(),
+                        started: node_start,
+                    });
+                    return Ok(AgentDecision::CallTool(
+                        deepagent_tools::ToolInvocation::new(
+                            "canvas_image_fetch",
+                            serde_json::json!({
+                                "request_id": request_id,
+                                "origin": origin,
+                            }),
+                        )
+                        .with_id(call_id),
+                    ));
+                }
+                Err(error) => {
+                    return self.finish_node(node_id, node_kind, Err(error), 0);
+                }
+            }
+        }
+
         let result = self.execute_node_inline(&node_kind, &node_config).await;
         let elapsed_ms = node_start.elapsed().as_millis() as u64;
 
@@ -1521,6 +1629,16 @@ impl Agent for WorkflowAgent {
             let _ = self.finish_node(pending.node_id, "http-request".into(),
                 Err(CoreError::other("http-request: run stopped before node result delivery; reconcile the durable action before retrying")),
                 pending.started.elapsed().as_millis() as u64);
+        }
+        if let Some(pending) = self.pending_image.take() {
+            let _ = self.finish_node(
+                pending.node_id,
+                "image-gen".into(),
+                Err(CoreError::other(
+                    "canvas_image_fetch: run stopped before node result delivery; reconcile the durable action before retrying",
+                )),
+                pending.started.elapsed().as_millis() as u64,
+            );
         }
     }
 

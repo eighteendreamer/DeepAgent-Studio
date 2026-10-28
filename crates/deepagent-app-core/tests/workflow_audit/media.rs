@@ -402,6 +402,8 @@ impl LocalImageProvider {
     }
 
     async fn close(&mut self) {
+        self.provider_server.abort();
+        self.private_server.abort();
         let provider_result = (&mut self.provider_server).await;
         let private_result = (&mut self.private_server).await;
         assert!(provider_result.is_ok() || provider_result.unwrap_err().is_cancelled());
@@ -984,12 +986,21 @@ impl MediaFixture {
     }
 
     fn spawn(&self, run_id: &str) -> JoinHandle<deepagent_core::error::Result<String>> {
+        self.spawn_with_approval(run_id, true)
+    }
+
+    fn spawn_with_approval(
+        &self,
+        run_id: &str,
+        approve: bool,
+    ) -> JoinHandle<deepagent_core::error::Result<String>> {
         let chat = self.chat.clone();
         let workflow = self.workflow.clone();
         let session = self.session.clone();
         let run_id = run_id.to_string();
         let live = self.live.clone();
         let approvals = self.approvals.clone();
+        let approval_chat = chat.clone();
         tokio::spawn(async move {
             chat.run_workflow(
                 workflow,
@@ -1000,8 +1011,10 @@ impl MediaFixture {
                         live.lock().unwrap().push(event);
                     }
                 },
-                move |_| {
+                move |approval| {
                     approvals.fetch_add(1, Ordering::SeqCst);
+                    let _ =
+                        approval_chat.resolve_approval(&approval.call_id, approve, "media-fixture");
                 },
             )
             .await
@@ -1320,8 +1333,8 @@ async fn audit_canvas_provider_error_body_is_bounded() {
 
 #[tokio::test]
 async fn real_image_workflow_stores_one_successful_artifact() {
-    let mut provider = LocalImageProvider::start().await;
-    let fixture = MediaFixture::new_image(&provider).await;
+    let mut provider = LocalInlineImageProvider::start(PRIVATE_IMAGE_BYTES.to_vec()).await;
+    let fixture = MediaFixture::new_inline_image(&provider).await;
     let run_id = "audit-image-normal-control";
     let mut run = fixture.spawn(run_id);
     let result = finish_run(&mut run).await;
@@ -1536,7 +1549,6 @@ async fn audit_provider_image_url_cannot_fetch_loopback_resource() {
     let mut run = fixture.spawn(run_id);
     let result = finish_run(&mut run).await;
     provider.close().await;
-    result.unwrap();
 
     let events = RunStore::new(&fixture.db)
         .events_after(run_id, None)
@@ -1548,26 +1560,19 @@ async fn audit_provider_image_url_cannot_fetch_loopback_resource() {
     let live = fixture.live.lock().unwrap();
     let image = live
         .iter()
-        .find(|event| event.node_id == "image" && event.status == NodeExecutionStatus::Completed)
-        .expect("the production image node must complete before checking its artifact");
-    let artifact_uri = image
-        .artifacts
-        .first()
-        .expect("the image node must publish its stored artifact");
-    let stored = fixture
-        .artifacts
-        .read_bytes(artifact_uri.trim_start_matches("artifact://"))
-        .unwrap()
-        .unwrap();
+        .rev()
+        .find(|event| event.node_id == "image" && event.status.is_terminal())
+        .expect("the production image node must emit a terminal failure");
     let provider_requests = provider.provider_requests.lock().unwrap();
     let private_requests = provider.private_requests.lock().unwrap();
     let approvals = fixture.approvals.load(Ordering::SeqCst);
     eprintln!(
-        "provider image URL: provider_requests={}, private_requests={private_requests:?}, approvals={approvals}, terminal={}, artifact_bytes={}, canary_stored={}",
+        "provider image URL: provider_requests={}, private_requests={private_requests:?}, approvals={approvals}, terminal={}, image_status={:?}, artifacts={:?}, result_ok={}",
         provider_requests.len(),
         terminals[0].data["kind"],
-        stored.len(),
-        stored == PRIVATE_IMAGE_BYTES
+        image.status,
+        image.artifacts,
+        result.is_ok()
     );
 
     assert_eq!(provider_requests.len(), 1);
@@ -1575,12 +1580,57 @@ async fn audit_provider_image_url_cannot_fetch_loopback_resource() {
         .0
         .starts_with("POST /v1/images/generations "));
     assert_eq!(terminals.len(), 1);
-    assert_eq!(terminals[0].data["kind"], "succeeded");
-    assert_eq!(approvals, 0);
+    assert_eq!(approvals, 1);
+    assert_ne!(terminals[0].data["kind"], "succeeded");
+    assert!(!result.is_ok());
+    assert_ne!(image.status, NodeExecutionStatus::Completed);
+    assert!(image.artifacts.is_empty());
     assert!(
-        private_requests.is_empty() && stored != PRIVATE_IMAGE_BYTES,
-        "an untrusted provider response must not make the host fetch and persist a loopback resource"
+        private_requests.is_empty(),
+        "an untrusted provider response must not make the host fetch a loopback resource"
     );
+}
+
+#[tokio::test]
+#[ignore = "audit: denying provider image URL access must not fetch or persist an artifact"]
+async fn audit_denied_provider_image_url_is_not_fetched_or_persisted() {
+    let mut provider = LocalImageProvider::start().await;
+    let fixture = MediaFixture::new_image(&provider).await;
+    let run_id = "audit-image-provider-url-denied";
+    let mut run = fixture.spawn_with_approval(run_id, false);
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    let image = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event.node_id == "image" && event.status.is_terminal())
+        .cloned()
+        .expect("image node must emit a terminal result");
+    let provider_requests = provider.provider_requests.lock().unwrap();
+    let private_requests = provider.private_requests.lock().unwrap();
+
+    assert_eq!(provider_requests.len(), 1);
+    assert!(provider_requests[0]
+        .0
+        .starts_with("POST /v1/images/generations "));
+    assert_eq!(fixture.approvals.load(Ordering::SeqCst), 1);
+    assert_eq!(terminals.len(), 1);
+    assert_ne!(terminals[0].data["kind"], "succeeded");
+    assert!(result.is_err());
+    assert_eq!(image.status, NodeExecutionStatus::Failed);
+    assert!(image.artifacts.is_empty());
+    assert!(private_requests.is_empty());
 }
 
 #[tokio::test]

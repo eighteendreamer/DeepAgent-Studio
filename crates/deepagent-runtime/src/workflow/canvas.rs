@@ -69,7 +69,7 @@ pub struct CanvasImageRequest {
 /// Image result. `artifact_uri` is the only form a canvas node may persist:
 /// the bytes stay in the artifact store, so no base64 reaches the graph, the
 /// node events or the session history.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CanvasImageResponse {
     pub artifact_uri: String,
@@ -78,6 +78,23 @@ pub struct CanvasImageResponse {
     pub model_id: String,
     /// `generate` or `edit`, decided by the router and reported back for events.
     pub operation: String,
+}
+
+/// Result of preparing an image node for execution.
+///
+/// Inline provider payloads are ready immediately.  A provider-hosted asset is
+/// deliberately deferred so the app layer can turn the second hop into a
+/// normal kernel tool call (and therefore apply the run's network capability,
+/// approval, cancellation and durable action rules).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CanvasImagePreparation {
+    Ready(CanvasImageResponse),
+    Deferred {
+        /// Opaque, one-shot handle retained by the app-owned gateway.
+        request_id: String,
+        /// Redacted origin shown in approval/audit UI; never a signed URL.
+        origin: String,
+    },
 }
 
 /// A speech request for one canvas audio node.
@@ -268,6 +285,15 @@ pub trait CanvasModelBridge: Send + Sync {
 
     /// Image generation or editing, decided by whether references are present.
     async fn generate_image(&self, request: CanvasImageRequest) -> Result<CanvasImageResponse>;
+
+    /// Prepare an image node.  Existing bridges keep their old synchronous
+    /// behavior through this default; the app gateway overrides it when a
+    /// provider returns a remote asset URL.
+    async fn prepare_image(&self, request: CanvasImageRequest) -> Result<CanvasImagePreparation> {
+        self.generate_image(request)
+            .await
+            .map(CanvasImagePreparation::Ready)
+    }
 
     /// Text-to-speech or speech-to-text for the audio node.
     async fn run_audio(&self, request: CanvasAudioRequest) -> Result<CanvasAudioResponse>;

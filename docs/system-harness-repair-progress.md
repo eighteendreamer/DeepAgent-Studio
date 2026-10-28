@@ -2,21 +2,33 @@
 
 ## 当前状态与计数口径（2026-10-28）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十三项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十四项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 63 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-175、H-237、H-284、H-286，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 64 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-165、H-175、H-237、H-284、H-286，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 无；H-175已按下列范围验收 |
+| 修复中 | 0 | 无；H-165已按下列本机范围验收 |
 | 待修复 | 216 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **216（216待修复、0修复中）**；不提供完成率。六十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **216（216待修复、0修复中）**；不提供完成率。六十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-165 本轮即时记录（2026-10-28）
+
+**当前状态：已修复并验收（2026-10-28，仅下列Windows本机、离线模型/注入broker/临时TCP与SQLite范围；修复提交hash待本轮代码提交后回填）。** 只处理供应商图片输出URL的第二跳授权，不归并H-167字节预算、H-249音频输入、H-303视频输出URL或H-164 provider等待取消；H-119/H-122历史修复按原依据跳过生产重写，保留视频回归。
+
+E-H165-01（原探针真实复现）：HEAD `0220b6af`，tracked干净，原五类用户未跟踪项未读取/修改/暂存。隔离Temp data/home/profile/managed，清除继承数据库路径与供应商key，仅访问两台临时loopback fixture。`cargo test -p deepagent-app-core --test workflow_audit media::audit_provider_image_url_cannot_fetch_loopback_resource --offline -j 1 -- --ignored --exact --nocapture --test-threads=1`原生101、4.09s、0/1/0；provider_requests=1、private_requests包含一次GET /host-private.png、approvals=0、run_terminal=succeeded、artifact_bytes=36且canary_stored=true。原生结果及日志`target/h165-before-probe*`保留，不覆盖失败。
+
+E-H165-02（根因修复）：`CanvasModelOutput::ImageUrl`只保留在run-scoped `CanvasModelGateway`内存；工作流图片节点发出正式`canvas_image_fetch`高风险工具调用，signed URL不进入tool arguments、普通事件或持久化参数。工具复用H-175 `PublicHttpClient`的全DNS地址校验、逐跳pin、禁代理、同源redirect、取消/超时和未知结果不重放；响应使用`CanvasArtifactStream` staging，失败/取消不发布artifact。旧`generate_image()`兼容入口遇到provider URL明确拒绝并清理句柄，不能绕过Kernel工具管线。新增一次性handle的origin绑定和run隔离；不改H-167字节预算、H-249音频输入、H-303视频输出URL或H-164取消。
+
+E-H165-03（本机验收）：原反例重跑 `cargo test -p deepagent-app-core --test workflow_audit media::audit_provider_image_url_cannot_fetch_loopback_resource --offline -j 1 -- --ignored --exact --nocapture --test-threads=1` 原生0、1 passed/0 failed；provider_requests=1、private_requests=[]、approvals=1、image_status=failed、run_terminal=failed、artifacts=[]。审批拒绝回归 `... media::audit_denied_provider_image_url_is_not_fetched_or_persisted ...` 原生0、1/0/0，确认拒绝后无第二跳/制品。正常inline对照 `... media::real_image_workflow_stores_one_successful_artifact ...` 原生0、1/0/0，36字节artifact、run succeeded。一次性handle/origin单测原生0、1/0/0；统一HTTP broker `cargo test -p deepagent-app-core http_runtime::tests:: --lib --offline -j 1 -- --nocapture --test-threads=1` 原生0、11/0/0；workflow_audit media组原生0、4/0/14 ignored。`cargo check -p deepagent-app-core --tests --offline -j 1`与`git diff --check`通过。未执行完整workspace、严格workspace clippy、Desktop build/真实Tauri、真实供应商/公网或其他OS；现有H-306及既有lint基线阻断不归因本项。原始失败证据`target/h165-before-probe*`保留。
+
+E-H165-04（残余限制）：本项只证明受控loopback拒绝、审批/取消管线边界、inline成功及broker单测；没有把公网可达性、DNS拓扑、OS网络隔离或所有媒体下载外推为已验证。H-167输出字节预算、H-164 provider等待取消、H-249音频远程输入、H-303视频URL仍保持独立待处理。
 
 ## H-175 本轮即时记录（2026-10-28）
 
@@ -1893,7 +1905,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-162：前端标为可用的四类专业 AI 节点没有可达的正式模型执行链](system-harness-audit-2026-10-21.md) | P0 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-163：工作流模型调用丢失 DeepSeek usage，成本账本、缓存观测和 token budget 与实际请求分裂](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-164：画布文本请求不在运行取消树内，节点完成态可与运行取消终态分裂](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-165：图片供应商可令宿主下载任意私网 URL，并把响应作为成功 artifact 保存](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-165：图片供应商可令宿主下载任意私网 URL，并把响应作为成功 artifact 保存](system-harness-audit-2026-10-21.md) | P1 | 修复中 | E-H165-01原探针已复现；不归并其他下载/预算问题 | E02拟复用公网传输与原Kernel工具管线，尚未验收 | 原生101、0/1/0，私网GET一次、canary保存且run成功；正常/最终门禁未执行 | 无本阶段修复提交 | H-167/H-249/H-303/H-164独立；216有效未关闭；总体200–400有效小时历史粗估，等待另计 |
 | [H-166：DeepSeek Responses 思考模式下 top_p 会被忽略或规范化，设置值不等于有效采样值](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-167：画布图片下载无响应字节上限，超预算数据被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-168：易变 instructions 位于历史之前，动态变化截断多轮 KV cache 前缀](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

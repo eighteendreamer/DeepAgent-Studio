@@ -4558,6 +4558,8 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 
 ### H-165：图片供应商可令宿主下载任意私网 URL，并把响应作为成功 artifact 保存
 
+**修复状态（2026-10-28）：已修复并验收，仅限修复进度台账 E-H165-02～04 所列 Windows 本机与受控 fixture 范围；代码提交 hash 以修复提交回填。** 供应商 URL 不再由宿主直接裸 GET：工作流先创建 run-scoped 一次性 opaque handle，再经既有 Kernel 的 `canvas_image_fetch` 高风险工具调用，复用统一 `PublicHttpClient` 的地址/DNS/redirect/取消策略；审批拒绝、loopback/private 目标或失败不会产生第二跳请求、成功节点终态或 artifact。签名 URL 只留在运行内存，旧非工作流兼容入口遇到 URL 明确失败。H-167 字节预算、H-164 取消、H-249 音频输入和 H-303 视频 URL 仍独立，不能由本项状态外推。
+
 **级别：高（P1，条件性 SSRF / 宿主网络边界缺失）；触发条件：已配置的 image-gen 供应商或兼容网关在成功响应中返回指向 loopback、私网、链路本地或云元数据地址的 `data[0].url`。** 本项审计测试本身是正常且安全的本机故障注入：只绑定两台 `127.0.0.1` 临时服务和虚构 canary，不访问公网、真实内网、云元数据或用户服务。
 
 #### 生产路径与完整工作流复现

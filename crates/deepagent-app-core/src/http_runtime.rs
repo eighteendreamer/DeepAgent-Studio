@@ -219,7 +219,10 @@ impl PublicHttpClient {
         Ok(addresses)
     }
 
-    async fn execute(&self, request: &HttpRequest) -> Result<Value> {
+    /// Open one response after applying the broker's complete destination,
+    /// redirect and retry policy.  Callers own body consumption so media can
+    /// stream into artifact staging without creating a second network policy.
+    pub(crate) async fn open_response(&self, request: &HttpRequest) -> Result<reqwest::Response> {
         let mut url = parse_url(&request.url)?;
         let headers = request_headers(request)?;
         let method = reqwest::Method::from_bytes(request.method.as_bytes())
@@ -248,7 +251,7 @@ impl PublicHttpClient {
                 .body(request.body.clone())
                 .send()
                 .await;
-            let mut response = match response {
+            let response = match response {
                 Ok(response) => response,
                 Err(error) if error.is_connect() && retries < request.retry_count => {
                     // No application request has been dispatched. Never retry
@@ -284,45 +287,49 @@ impl PublicHttpClient {
                 redirects += 1;
                 continue;
             }
-            if response
-                .content_length()
-                .is_some_and(|size| size > MAX_RESPONSE_BYTES as u64)
-            {
+            return Ok(response);
+        }
+    }
+
+    async fn execute(&self, request: &HttpRequest) -> Result<Value> {
+        let response = self.open_response(request).await?;
+        if response
+            .content_length()
+            .is_some_and(|size| size > MAX_RESPONSE_BYTES as u64)
+        {
+            return Err(CoreError::invalid(
+                "HttpResponseTooLarge: declared body exceeds limit",
+            ));
+        }
+        let status = response.status().as_u16();
+        let headers: serde_json::Map<String, Value> = response
+            .headers()
+            .iter()
+            .map(|(key, value)| {
+                (
+                    key.to_string(),
+                    Value::String(value.to_str().unwrap_or("").to_string()),
+                )
+            })
+            .collect();
+        let mut response = response;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            CoreError::other(format!(
+                "HttpOutcomeUnknown: body read failed: {}; request was not replayed",
+                error.without_url()
+            ))
+        })? {
+            if chunk.len() > MAX_RESPONSE_BYTES.saturating_sub(bytes.len()) {
                 return Err(CoreError::invalid(
-                    "HttpResponseTooLarge: declared body exceeds limit",
+                    "HttpResponseTooLarge: streamed body exceeds limit",
                 ));
             }
-            let status = response.status().as_u16();
-            let headers: serde_json::Map<String, Value> = response
-                .headers()
-                .iter()
-                .map(|(key, value)| {
-                    (
-                        key.to_string(),
-                        Value::String(value.to_str().unwrap_or("").to_string()),
-                    )
-                })
-                .collect();
-            let mut bytes = Vec::new();
-            while let Some(chunk) = response.chunk().await.map_err(|error| {
-                CoreError::other(format!(
-                    "HttpOutcomeUnknown: body read failed: {}; request was not replayed",
-                    error.without_url()
-                ))
-            })? {
-                if chunk.len() > MAX_RESPONSE_BYTES.saturating_sub(bytes.len()) {
-                    return Err(CoreError::invalid(
-                        "HttpResponseTooLarge: streamed body exceeds limit",
-                    ));
-                }
-                bytes.extend_from_slice(&chunk);
-            }
-            let text = String::from_utf8_lossy(&bytes).into_owned();
-            let body = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
-            return Ok(
-                serde_json::json!({"body": body, "status_code": status, "headers": headers}),
-            );
+            bytes.extend_from_slice(&chunk);
         }
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        let body = serde_json::from_str::<Value>(&text).unwrap_or(Value::String(text));
+        return Ok(serde_json::json!({"body": body, "status_code": status, "headers": headers}));
     }
 }
 

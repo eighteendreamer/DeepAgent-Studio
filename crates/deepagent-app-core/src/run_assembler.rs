@@ -1532,6 +1532,16 @@ impl<'a> RunAssembler<'a> {
                 http_enabled,
             ),
         ))?;
+        let canvas_run_gateway = self
+            .canvas_model
+            .as_ref()
+            .map(crate::canvas_model_gateway::CanvasModelGateway::scoped_for_run);
+        if let Some(gateway) = canvas_run_gateway.as_ref() {
+            // Provider-controlled image URLs are deferred by the gateway and
+            // consumed only through the canonical kernel tool pipeline.  The
+            // signed URL never enters the invocation arguments or events.
+            tool_registry.register(Arc::new(gateway.image_fetch_tool()))?;
+        }
         append_runtime_log(self.runtime_logs, NewRuntimeLogEntry::info("network", "workflow_http_broker_bound")
             .with_run_id(&run_id)
             .with_source("deepagent-app-core::run_assembler")
@@ -1550,7 +1560,7 @@ impl<'a> RunAssembler<'a> {
             agent = agent.with_model(client, model_name);
         }
 
-        if let Some(gateway) = self.canvas_model.clone() {
+        if let Some(gateway) = canvas_run_gateway {
             agent = agent
                 .with_canvas_bridge(gateway.clone())
                 .with_artifact_validator(gateway);

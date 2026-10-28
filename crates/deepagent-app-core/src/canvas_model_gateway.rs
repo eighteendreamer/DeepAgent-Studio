@@ -12,10 +12,10 @@
 //!    `generateContent`. Third-party wire shapes stop here; nothing above this
 //!    module sees a provider payload, and nothing below it sees a node name.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -27,15 +27,20 @@ use sha2::{Digest, Sha256};
 use deepagent_core::error::Result as CoreResult;
 use deepagent_runtime::workflow::{
     CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest, CanvasCompletionResponse,
-    CanvasEmbeddingRequest, CanvasEmbeddingResponse, CanvasImageRequest, CanvasImageResponse,
-    CanvasJobPhase, CanvasJobProgress, CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest,
-    CanvasVideoRequest, CanvasVideoResponse,
+    CanvasEmbeddingRequest, CanvasEmbeddingResponse, CanvasImagePreparation, CanvasImageRequest,
+    CanvasImageResponse, CanvasJobPhase, CanvasJobProgress, CanvasModelBridge, CanvasRouteOutcome,
+    CanvasRouteRequest, CanvasVideoRequest, CanvasVideoResponse,
 };
 
 use crate::canvas_node_contract::canvas_node_contract;
 use crate::canvas_provider_service::{
     endpoint_url, CanvasModelConfig, CanvasProtocol, CanvasProviderService, CanvasRequestKind,
     CanvasScenario, ResolvedCanvasModel, ANTHROPIC_VERSION,
+};
+use crate::http_runtime::PublicHttpClient;
+use deepagent_builtins::http_request::{HttpRequest, HttpRequestClient};
+use deepagent_tools::{
+    Permission, PermissionSet, RiskLevel, Tool, ToolDescriptor, ToolExecutionContext, ToolOutput,
 };
 
 /// Stable error codes surfaced to the UI, CLI and events.
@@ -588,6 +593,13 @@ pub enum CanvasModelOutput {
         provider_id: String,
         model_id: String,
     },
+    /// Provider returned a temporary URL.  The URL is kept inside the
+    /// run-scoped gateway until the kernel-approved fetch tool consumes it.
+    ImageUrl {
+        url: String,
+        provider_id: String,
+        model_id: String,
+    },
     Embedding {
         vector: Vec<f32>,
         dimensions: usize,
@@ -641,6 +653,99 @@ pub struct CanvasModelGateway {
     /// Where generated media is stored. Without it, image calls have nowhere to
     /// put their bytes, so they fail instead of emitting inline base64.
     artifacts: Option<std::sync::Arc<crate::canvas_artifact_service::CanvasArtifactService>>,
+    pending_images: Arc<Mutex<HashMap<String, PendingImageArtifact>>>,
+    public_http: Arc<PublicHttpClient>,
+}
+
+#[derive(Debug, Clone)]
+struct PendingImageArtifact {
+    url: String,
+    origin: String,
+    provider_id: String,
+    model_id: String,
+    operation: String,
+}
+
+/// Kernel tool for the provider-controlled image second hop.  Its arguments
+/// contain only a one-shot handle and a redacted origin; the signed URL stays
+/// inside [`CanvasModelGateway`].
+pub struct CanvasImageFetchTool {
+    gateway: Arc<CanvasModelGateway>,
+}
+
+const CANVAS_IMAGE_FETCH_TOOL: &str = "canvas_image_fetch";
+
+#[async_trait]
+impl Tool for CanvasImageFetchTool {
+    fn descriptor(&self) -> ToolDescriptor {
+        ToolDescriptor {
+            name: CANVAS_IMAGE_FETCH_TOOL.to_string(),
+            description:
+                "Fetch one provider image artifact through the approved public network broker."
+                    .to_string(),
+            parameters: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "request_id": {"type": "string", "minLength": 1, "maxLength": 256},
+                    "origin": {"type": "string", "minLength": 1, "maxLength": 512}
+                },
+                "required": ["request_id", "origin"]
+            }),
+            risk: RiskLevel::High,
+            required_permissions: PermissionSet::from_iter_perms([Permission::Network]),
+        }
+    }
+
+    fn validate_input(&self, arguments: Value) -> CoreResult<Value> {
+        let request_id = arguments
+            .get("request_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                deepagent_core::error::CoreError::invalid("image fetch request_id is required")
+            })?;
+        let origin = arguments
+            .get("origin")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                deepagent_core::error::CoreError::invalid("image fetch origin is required")
+            })?;
+        if self.gateway.pending_image_origin(request_id).as_deref() != Some(origin) {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "image fetch handle is unknown or origin does not match",
+            ));
+        }
+        Ok(json!({"request_id": request_id, "origin": origin}))
+    }
+
+    async fn invoke(&self, arguments: Value) -> CoreResult<ToolOutput> {
+        self.invoke_with_context(arguments, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn invoke_with_context(
+        &self,
+        arguments: Value,
+        context: ToolExecutionContext,
+    ) -> CoreResult<ToolOutput> {
+        let request_id = arguments
+            .get("request_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                deepagent_core::error::CoreError::invalid("image fetch request_id is required")
+            })?;
+        let origin = arguments
+            .get("origin")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                deepagent_core::error::CoreError::invalid("image fetch origin is required")
+            })?;
+        let response = self
+            .gateway
+            .fetch_image_handle(request_id, origin, context)
+            .await?;
+        Ok(ToolOutput::success(serde_json::to_value(response)?))
+    }
 }
 
 impl CanvasModelGateway {
@@ -653,7 +758,22 @@ impl CanvasModelGateway {
             providers,
             http,
             artifacts: None,
+            pending_images: Arc::new(Mutex::new(HashMap::new())),
+            public_http: Arc::new(PublicHttpClient::default()),
         }
+    }
+
+    /// Create a gateway whose deferred image URLs live only for one workflow
+    /// run. The provider, artifact and HTTP policy remain the same trusted
+    /// services; only one-shot request state is isolated.
+    pub(crate) fn scoped_for_run(self: &Arc<Self>) -> Arc<Self> {
+        Arc::new(Self {
+            providers: self.providers.clone(),
+            http: self.http.clone(),
+            artifacts: self.artifacts.clone(),
+            pending_images: Arc::new(Mutex::new(HashMap::new())),
+            public_http: self.public_http.clone(),
+        })
     }
 
     #[must_use]
@@ -663,6 +783,138 @@ impl CanvasModelGateway {
     ) -> Self {
         self.artifacts = Some(artifacts);
         self
+    }
+
+    fn stage_image_url(
+        &self,
+        url: String,
+        provider_id: String,
+        model_id: String,
+        operation: String,
+    ) -> CoreResult<CanvasImagePreparation> {
+        let parsed = reqwest::Url::parse(&url).map_err(|error| {
+            deepagent_core::error::CoreError::invalid(format!(
+                "provider image URL is invalid: {error}"
+            ))
+        })?;
+        let origin = parsed.origin().ascii_serialization();
+        let request_id = format!("canvas_image_{}", deepagent_core::id::EventId::new());
+        self.pending_images
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .insert(
+                request_id.clone(),
+                PendingImageArtifact {
+                    url,
+                    origin: origin.clone(),
+                    provider_id,
+                    model_id,
+                    operation,
+                },
+            );
+        Ok(CanvasImagePreparation::Deferred { request_id, origin })
+    }
+
+    fn pending_image_origin(&self, request_id: &str) -> Option<String> {
+        self.pending_images
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(request_id)
+            .map(|pending| pending.origin.clone())
+    }
+
+    async fn fetch_image_handle(
+        &self,
+        request_id: &str,
+        origin: &str,
+        context: ToolExecutionContext,
+    ) -> CoreResult<CanvasImageResponse> {
+        let pending = {
+            let mut pending_images = self
+                .pending_images
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let pending = pending_images.get(request_id).ok_or_else(|| {
+                deepagent_core::error::CoreError::invalid(
+                    "image fetch handle is unknown or already consumed",
+                )
+            })?;
+            if pending.origin != origin {
+                return Err(deepagent_core::error::CoreError::invalid(
+                    "image fetch origin does not match its one-shot handle",
+                ));
+            }
+            pending_images.remove(request_id).ok_or_else(|| {
+                deepagent_core::error::CoreError::invalid(
+                    "image fetch handle is unknown or already consumed",
+                )
+            })?
+        };
+        let request = HttpRequest {
+            url: pending.url.clone(),
+            method: "GET".to_string(),
+            body: String::new(),
+            headers: Default::default(),
+            timeout_secs: 120,
+            retry_count: 0,
+        };
+        self.public_http
+            .validate(&request)
+            .map_err(|error| deepagent_core::error::CoreError::other(error.to_string()))?;
+        let response = tokio::select! {
+            biased;
+            _ = context.cancelled() => {
+                return Err(deepagent_core::error::CoreError::other("image artifact fetch cancelled; no automatic replay"));
+            }
+            result = tokio::time::timeout(context.timeout(), self.public_http.open_response(&request)) => {
+                result.map_err(|_| deepagent_core::error::CoreError::other("image artifact fetch deadline exceeded; outcome may be unknown"))??
+            }
+        };
+        if !response.status().is_success() {
+            return Err(deepagent_core::error::CoreError::other(format!(
+                "image artifact fetch failed with HTTP {}",
+                response.status()
+            )));
+        }
+        let artifacts = self.artifact_store("store a generated image")?;
+        let mut stream = artifacts.begin_stream(
+            deepagent_persistence::artifact_store::ArtifactKind::Image,
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok()),
+            None,
+            None,
+        )?;
+        let mut response = response;
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                _ = context.cancelled() => {
+                    return Err(deepagent_core::error::CoreError::other("image artifact fetch cancelled; staged artifact was discarded"));
+                }
+                result = response.chunk() => result.map_err(|error| deepagent_core::error::CoreError::other(format!("read image artifact: {error}")))?,
+            };
+            let Some(chunk) = chunk else { break };
+            stream.write_chunk(&chunk)?;
+        }
+        let stored = stream.finish()?;
+        Ok(CanvasImageResponse {
+            artifact_uri: stored.uri,
+            mime: stored
+                .media_type
+                .unwrap_or_else(|| mime_from_url(&pending.url)),
+            provider_id: pending.provider_id,
+            model_id: pending.model_id,
+            operation: pending.operation,
+        })
+    }
+
+    /// Register the run-scoped image fetcher in the canonical tool registry.
+    pub fn image_fetch_tool(self: &Arc<Self>) -> CanvasImageFetchTool {
+        CanvasImageFetchTool {
+            gateway: self.clone(),
+        }
     }
 
     fn artifact_store(
@@ -1863,10 +2115,8 @@ async fn parse_output(
                         "image response contained neither b64_json nor url".to_string(),
                     )
                 })?;
-            let bytes = fetch_binary(url, None).await?;
-            Ok(CanvasModelOutput::Image {
-                mime: sniff_image_mime(&bytes).unwrap_or_else(|| mime_from_url(url)),
-                bytes,
+            Ok(CanvasModelOutput::ImageUrl {
+                url: url.to_string(),
                 provider_id,
                 model_id,
             })
@@ -2395,7 +2645,10 @@ impl CanvasModelBridge for CanvasModelGateway {
         }
     }
 
-    async fn generate_image(&self, request: CanvasImageRequest) -> CoreResult<CanvasImageResponse> {
+    async fn prepare_image(
+        &self,
+        request: CanvasImageRequest,
+    ) -> CoreResult<CanvasImagePreparation> {
         let has_reference = !request.reference_images.is_empty();
         let operation = match request.operation.trim() {
             "image_generate" => CanvasOperation::ImageGenerate,
@@ -2448,7 +2701,7 @@ impl CanvasModelBridge for CanvasModelGateway {
                         &bytes,
                         None,
                     )?;
-                Ok(CanvasImageResponse {
+                Ok(CanvasImagePreparation::Ready(CanvasImageResponse {
                     artifact_uri: stored.uri,
                     mime,
                     provider_id,
@@ -2458,11 +2711,40 @@ impl CanvasModelBridge for CanvasModelGateway {
                     } else {
                         "generate".to_string()
                     },
-                })
+                }))
             }
+            CanvasModelOutput::ImageUrl {
+                url,
+                provider_id,
+                model_id,
+            } => self.stage_image_url(
+                url,
+                provider_id,
+                model_id,
+                if operation == CanvasOperation::ImageEdit {
+                    "edit".to_string()
+                } else {
+                    "generate".to_string()
+                },
+            ),
             other => Err(deepagent_core::error::CoreError::other(format!(
                 "image node received a non-image model output: {other:?}"
             ))),
+        }
+    }
+
+    async fn generate_image(&self, request: CanvasImageRequest) -> CoreResult<CanvasImageResponse> {
+        match CanvasModelBridge::prepare_image(self, request).await? {
+            CanvasImagePreparation::Ready(response) => Ok(response),
+            CanvasImagePreparation::Deferred { request_id, origin } => {
+                self.pending_images
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .remove(&request_id);
+                Err(deepagent_core::error::CoreError::invalid(format!(
+                    "provider image URL at {origin} requires the approved workflow tool pipeline"
+                )))
+            }
         }
     }
 
@@ -3002,6 +3284,54 @@ mod tests {
             video_resume_fingerprint(&fingerprint, "job-1"),
             video_resume_fingerprint(&fingerprint, "job-2"),
             "task ids must be part of the persisted resume binding"
+        );
+    }
+
+    #[tokio::test]
+    async fn provider_image_handle_is_origin_bound_and_one_shot() {
+        let db = Arc::new(Database::open_in_memory().expect("db"));
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::secret_store::MemorySecretStore::default()),
+        ));
+        let gateway = CanvasModelGateway::new(providers);
+        let preparation = gateway
+            .stage_image_url(
+                "http://127.0.0.1:9/private.png".to_string(),
+                "provider".to_string(),
+                "image-model".to_string(),
+                "generate".to_string(),
+            )
+            .expect("defer image URL");
+        let CanvasImagePreparation::Deferred { request_id, origin } = preparation else {
+            panic!("provider URL must be deferred");
+        };
+
+        let wrong = gateway
+            .fetch_image_handle(
+                &request_id,
+                "http://other.example",
+                ToolExecutionContext::default(),
+            )
+            .await;
+        assert!(wrong.is_err());
+        assert_eq!(
+            gateway.pending_image_origin(&request_id).as_deref(),
+            Some(origin.as_str())
+        );
+
+        let first = gateway
+            .fetch_image_handle(&request_id, &origin, ToolExecutionContext::default())
+            .await;
+        assert!(first.is_err(), "loopback must be rejected by the broker");
+        assert!(gateway.pending_image_origin(&request_id).is_none());
+
+        let second = gateway
+            .fetch_image_handle(&request_id, &origin, ToolExecutionContext::default())
+            .await;
+        assert!(
+            second.is_err(),
+            "a provider image handle must not be replayable"
         );
     }
 
