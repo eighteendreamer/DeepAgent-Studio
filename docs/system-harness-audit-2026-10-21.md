@@ -4789,7 +4789,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 
 ### H-175：工作流 `http-request` 节点绕过统一网络权限与审批边界
 
-**修复状态（2026-10-28）：已修复并验收，仅E-H175-09所列Windows本机与受控生产/消费方范围，修复提交待创建后回填。** E-H175-01保留修前事实：在 HEAD `e9e6e445` 的隔离本机 fixture 重跑原探针，原生101、0 passed/1 failed/0 ignored；requests=1、approvals=0、run_terminal=succeeded，证据`target/h175-before-probe*`保留。当时已装配基础registry/gate，HTTP裸请求仍绕过Kernel工具执行管线；原审计“空registry”是更早历史，不当作当前事实。E-H175-02～08保留中间未验收状态与失败，最终结论以下述E09及进度台账为准。不合并或关闭H-165/H-249/H-164。
+**修复状态（2026-10-28）：已修复并验收，仅E-H175-09所列Windows本机与受控生产/消费方范围，修复提交`2c7871df87afbc16df9fb443f1761a3a56ea90bf`（进度E-H175-10）。** E-H175-01保留修前事实：在 HEAD `e9e6e445` 的隔离本机 fixture 重跑原探针，原生101、0 passed/1 failed/0 ignored；requests=1、approvals=0、run_terminal=succeeded，证据`target/h175-before-probe*`保留。当时已装配基础registry/gate，HTTP裸请求仍绕过Kernel工具执行管线；原审计“空registry”是更早历史，不当作当前事实。E-H175-02～08保留中间未验收状态与失败，最终结论以下述E09及进度台账为准。不合并或关闭H-165/H-249/H-164。
 
 E-H175-02～04候选更新（仍未验收）：HTTP已候选工具化并进入原Kernel Network权限/高风险审批/有效规则/取消及action持久化；受控公网broker逐跳DNS校验/pin、响应预算、deadline与不重放，隔离backend无broker拒绝host fallback。Canvas沿原owner补齐ACK前审批监听、run过滤、既有审批UI和resolveApproval；CLI/SDK当前没有workflow启动API，未伪造其工作流验收。首次候选2/2/0的事件名/串行raw_output错误和补强5/3/0的配置cache/迟答返回契约夹具错误均保留，修正后正式HTTP8/0/0、broker11/0/0、前端82/0/0及pnpm build原生0。冻结代码后的完整门禁handle43830尚未终结，不计验收或提交；范围、真实命令及残余见进度记录。E-H175-05补充真实浏览器的提交中/错误态、Escape/遮罩不丢审批截图，及UI最终pnpm build原生0；Rust门禁期间UI单独修正并重验，不以初始全文件快照冒充最终UI冻结。原下文为审计时历史实现/失败事实，不改写成当前候选仍为裸HTTP。
 
