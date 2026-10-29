@@ -1388,7 +1388,6 @@ async fn audit_denied_provider_video_url_is_not_fetched_or_persisted() {
 }
 
 #[tokio::test]
-#[ignore = "audit: provider video downloads must enforce a bounded artifact size"]
 async fn audit_provider_video_download_rejects_oversized_artifact() {
     let configured_limit = 32 * 1024 * 1024;
     let response_bytes = configured_limit + 1;
@@ -1407,14 +1406,14 @@ async fn audit_provider_video_download_rejects_oversized_artifact() {
     provider.release_poll.notify_one();
     let result = finish_run(&mut run).await;
     provider.close().await;
-    let image = fixture
+    let video = fixture
         .live
         .lock()
         .unwrap()
         .iter()
         .find(|event| event.node_id == "video" && event.status == NodeExecutionStatus::Completed)
         .cloned();
-    let artifact_bytes = image
+    let artifact_bytes = video
         .as_ref()
         .and_then(|event| event.artifacts.first())
         .and_then(|uri| {
@@ -1438,6 +1437,68 @@ async fn audit_provider_video_download_rejects_oversized_artifact() {
     assert!(
         result.is_err() && artifact_bytes.is_none() && terminal.as_deref() != Some("succeeded"),
         "provider video downloads must be rejected before artifact persistence"
+    );
+    assert!(result
+        .unwrap_err()
+        .to_string()
+        .contains("VideoArtifactTooLarge"));
+    assert_eq!(terminal.as_deref(), Some("failed"));
+    assert_eq!(fixture.approvals.load(Ordering::SeqCst), 1);
+    let live = fixture.live.lock().unwrap().clone();
+    assert_eq!(
+        live.iter()
+            .filter(|event| event.node_id == "video" && event.status == NodeExecutionStatus::Failed)
+            .count(),
+        1
+    );
+    assert!(live
+        .iter()
+        .filter(|event| event.node_id == "video")
+        .all(|event| event.status != NodeExecutionStatus::Completed
+            && event.outputs.is_none()
+            && event.artifacts.is_empty()));
+    assert!(fixture.artifacts.list(None, None).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(fixture._root.path().join("artifacts"))
+            .unwrap()
+            .count(),
+        0
+    );
+    let MediaFixture {
+        _root: root,
+        db,
+        chat,
+        artifacts,
+        providers,
+        ..
+    } = fixture;
+    drop(chat);
+    drop(artifacts);
+    drop(providers);
+    drop(db);
+    let db = Arc::new(Database::open(root.path().join("media.db")).unwrap());
+    let durable = RunStore::new(&db).events_after(run_id, None).unwrap();
+    assert!(durable
+        .windows(2)
+        .all(|pair| pair[0].sequence < pair[1].sequence));
+    let replay: Vec<NodeExecutionEvent> = durable
+        .iter()
+        .filter(|event| event.event_type == "workflow_node")
+        .map(|event| serde_json::from_value(event.data["event"].clone()).unwrap())
+        .collect();
+    assert_eq!(replay, live);
+    let terminals: Vec<_> = durable
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "failed");
+    assert!(
+        CanvasArtifactService::new(root.path().join("artifacts"), db)
+            .unwrap()
+            .list(None, None)
+            .unwrap()
+            .is_empty()
     );
 }
 

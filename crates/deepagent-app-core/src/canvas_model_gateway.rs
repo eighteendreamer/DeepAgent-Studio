@@ -46,6 +46,9 @@ use deepagent_tools::{
     Permission, PermissionSet, RiskLevel, Tool, ToolDescriptor, ToolExecutionContext, ToolOutput,
 };
 
+mod video_download_limit;
+use video_download_limit::VideoDownloadLimit;
+
 /// Stable error codes surfaced to the UI, CLI and events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CanvasErrorCode {
@@ -669,6 +672,7 @@ pub struct CanvasModelGateway {
     workspace_id: Option<String>,
     pending_artifacts: Arc<Mutex<HashMap<String, PendingArtifact>>>,
     public_http: Arc<PublicHttpClient>,
+    video_download_limit: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -734,6 +738,9 @@ const CANVAS_AUDIO_FETCH_TOOL: &str = "canvas_audio_fetch";
 const CANVAS_VIDEO_FETCH_TOOL: &str = "canvas_video_fetch";
 /// Local policy for newly supported remote audio inputs, not a provider limit.
 const MAX_REMOTE_AUDIO_BYTES: usize = 32 * 1024 * 1024;
+/// Local default for a provider-generated video, independent of user imports
+/// and provider capabilities. Trusted Rust hosts can configure a different limit.
+pub const DEFAULT_VIDEO_DOWNLOAD_LIMIT: u64 = 32 * 1024 * 1024;
 /// Error bodies are diagnostic input, not model output. Keep their memory and
 /// provider-send budget independent from successful media payload limits.
 const MAX_PROVIDER_ERROR_BODY_BYTES: usize = 64 * 1024;
@@ -844,6 +851,7 @@ impl CanvasModelGateway {
             workspace_id: None,
             pending_artifacts: Arc::new(Mutex::new(HashMap::new())),
             public_http: Arc::new(PublicHttpClient::default()),
+            video_download_limit: DEFAULT_VIDEO_DOWNLOAD_LIMIT,
         }
     }
 
@@ -861,6 +869,7 @@ impl CanvasModelGateway {
             workspace_id: crate::canvas_scope::normalize_workspace_id(workspace_id)?,
             pending_artifacts: Arc::new(Mutex::new(HashMap::new())),
             public_http: self.public_http.clone(),
+            video_download_limit: self.video_download_limit,
         }))
     }
 
@@ -871,6 +880,19 @@ impl CanvasModelGateway {
     ) -> Self {
         self.artifacts = Some(artifacts);
         self
+    }
+
+    /// Set the byte ceiling for provider video downloads before sharing this
+    /// gateway. Each run inherits the immutable policy; local video imports are
+    /// unaffected. Zero/unindexable limits are rejected rather than unlimited.
+    pub fn with_video_download_limit(mut self, max_bytes: u64) -> CoreResult<Self> {
+        if max_bytes == 0 || max_bytes > i64::MAX as u64 {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "video download limit must be positive and fit the artifact index",
+            ));
+        }
+        self.video_download_limit = max_bytes;
+        Ok(self)
     }
 
     /// Test-only route substitution for a synthetic public hostname. The
@@ -1016,6 +1038,11 @@ impl CanvasModelGateway {
             )));
         }
         let kind = pending.output.kind();
+        let mut video_limit = (kind == ArtifactFetchKind::Video)
+            .then(|| VideoDownloadLimit::new(self.video_download_limit));
+        if let Some(limit) = &video_limit {
+            limit.check_declared(response.content_length())?;
+        }
         let audio = kind == ArtifactFetchKind::AudioInput;
         if audio
             && response
@@ -1082,6 +1109,9 @@ impl CanvasModelGateway {
         while let Some(chunk) = response.chunk().await.map_err(|error| {
             CoreError::other(format!("read media artifact: {}", error.without_url()))
         })? {
+            if let Some(limit) = &mut video_limit {
+                limit.accept(chunk.len())?;
+            }
             if audio && chunk.len() > MAX_REMOTE_AUDIO_BYTES - size {
                 return Err(CoreError::invalid(
                     "remote audio exceeds the 32 MiB download budget",
@@ -1815,6 +1845,10 @@ mod audio_input_tests;
 #[cfg(test)]
 #[path = "canvas_model_gateway/error_body_tests.rs"]
 mod error_body_tests;
+
+#[cfg(test)]
+#[path = "canvas_model_gateway/video_download_tests.rs"]
+mod video_download_tests;
 
 // Media workflows retain the real AppCore/Kernel/provider consumers while
 // sharing the cfg(test)-only public DNS/local transport seam with the broker.
@@ -2640,6 +2674,7 @@ async fn fetch_video_artifact(
     cancel: Option<&Arc<AtomicBool>>,
     task_id: &str,
     workspace_id: Option<&str>,
+    max_bytes: u64,
 ) -> CanvasResult<crate::canvas_artifact_service::CanvasArtifactDto> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -2672,6 +2707,12 @@ async fn fetch_video_artifact(
             "video artifact download failed",
         ));
     }
+    let mut limit = VideoDownloadLimit::new(max_bytes);
+    limit
+        .check_declared(response.content_length())
+        .map_err(|error| {
+            CanvasError::new(CanvasErrorCode::ResponseBodyTooLarge, error.to_string())
+        })?;
     let media_type = response
         .headers()
         .get(reqwest::header::CONTENT_TYPE)
@@ -2708,6 +2749,9 @@ async fn fetch_video_artifact(
         let Some(chunk) = chunk else {
             break;
         };
+        limit.accept(chunk.len()).map_err(|error| {
+            CanvasError::new(CanvasErrorCode::ResponseBodyTooLarge, error.to_string())
+        })?;
         stream.write_chunk(&chunk).map_err(|error| {
             CanvasError::new(
                 CanvasErrorCode::ProviderFailure,
@@ -3444,6 +3488,7 @@ impl CanvasModelBridge for CanvasModelGateway {
             request.cancel.as_ref(),
             &plan.task_id,
             self.workspace_id.as_deref(),
+            self.video_download_limit,
         )
         .await
         .map_err(to_core_error)?;
@@ -6137,6 +6182,7 @@ mod tests {
                 None,
                 "large-job",
                 None,
+                total_bytes as u64,
             ))
             .expect("download large video");
         server.join().expect("server thread");
@@ -6198,6 +6244,7 @@ mod tests {
                 Some(&task_cancel),
                 "cancel-download",
                 None,
+                DEFAULT_VIDEO_DOWNLOAD_LIMIT,
             )
             .await
         });

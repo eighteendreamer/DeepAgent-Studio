@@ -65,7 +65,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **82**、历史已修复跳过 **21**、归并 **7**、撤销 **2**、有效未关闭 **194（194待修复、0修复中）**；H-304已按E-H304-05～06限定验收，校正此总览此前遗漏的累计数；H-301已按E-H301-01～06核对为本轮前随H-164修复，新增生产修复0；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **83**、历史已修复跳过 **21**、归并 **7**、撤销 **2**、有效未关闭 **193（193待修复、0修复中）**；H-302已按E-H302-03～05限定验收，新增验收1，193有效未关闭；H-304已按E-H304-05～06限定验收，校正此总览此前遗漏的累计数；H-301已按E-H301-01～06核对为本轮前随H-164修复，新增生产修复0；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -10725,7 +10725,15 @@ E-H300-13（独立提交与收尾复核）：修复、回归测试及当时两�
 
 ### H-302：画布视频下载没有类型级字节上限
 
-**级别：中高（P1/P2，资源边界）；状态：正式工作流路径已复现，未修复。** 触发条件是视频 provider 的状态结果返回可下载 URL，且该 URL 响应体超过宿主应接受的单个视频 artifact 预算。该项与 H-167/H-248 的 image/audio 输出边界同类，但本轮独立覆盖 video submit→status→download 链路，不把其他模态证据外推。
+**级别：中高（P1/P2，资源边界）；状态：已修复并验收（2026-10-30，仅修复台账 E-H302-03～05 所列 Windows 本机、合成媒体/HTTP 和临时 SQLite 范围）；代码、测试和当时双台账待独立提交。** 触发条件是视频 provider 的状态结果返回可下载 URL，且该 URL 响应体超过宿主应接受的单个视频 artifact 预算。该项与 H-167/H-248 的 image/audio 输出边界同类，但本轮独立覆盖 video submit→status→download 链路，不把其他模态证据外推。以下保留原始失败；完整 workspace/严格 lint 未全绿，未扩大验收边界。
+
+#### 修复与限定验收（2026-10-30）
+
+- 本轮修前原探针原生 101、0/1/0，32 MiB+1 制品和 succeeded 反例保留于 h302-original-20261030。候选在正式 one-shot broker 与兼容视频下载入口共用 VideoDownloadLimit，默认 32 MiB 为独立本地策略，不是供应商能力声明；Rust builder 显式配置并由 run scope 固定继承。声明长度和实际 chunk 共同检查，第一个超限 chunk 在 staging 写入前拒绝，复用原取消、deadline、清理、发布与审批边界。
+- 扩充专项 8/0/0，含声明/chunked/无长度、恰好上限、公共 builder 实际允许 32 MiB+1、取消/deadline、两入口截断及计数溢出；原正式探针已默认 1/0/0，验证 artifact_bytes=None、唯一 failed、video 无 Completed/输出、统一审批以及 SQLite 重开 replay/sequence。通用本地 64 MiB+1 视频导入和兼容显式大视频对照仍通过。不新增桌面设置项、SQL 迁移、依赖或 image/audio 预算。
+- Canvas183/0/16、AppCore1332/0/56、workflow30/0/25、重开6/0/0、Runtime339/0/9、Tauri check、前端272项及 pnpm build、根 fmt 已实际通过。严格 AppCore 11 项及 models client 的旧 lint、Kernel fixture 默认 deny、独立 Tauri 格式失败保留，相关文件未改；没有抑制或顺手修复。
+- 4 份源码/测试已冻结；本轮完整 workspace 原生 101、892.51 秒（增量编译 3m40s），130 targets 合计 3822 passed/1 failed/293 ignored。唯一失败为未改的 H-306（creative.video-edit.v1 空 defaultUserPrompt）；真实 SDK stdio 6/0/0，默认 CLI 使用本轮构建且结束后确认无活跃进程并恢复原 SHA-256。原始日志/result/逐 target 统计及完整命令见修复台账 E-H302-03～04，不把外层 driver 的退出 0 当 Cargo 通过。
+- 限定验收与兼容性见 E-H302-05：新增 Rust 常量/宿主 builder，默认 provider 视频超过 32 MiB 失败，可在共享前显式配置，不新增桌面限额设置、wire DTO、依赖或 SQL 迁移，不限制本地导入，不改变 image/audio 或沙箱/权限。该规则不是总磁盘/并发配额或远端任务/计费撤销；未验真实供应商/凭据/内网/用户数据、其他 OS、真实 GUI/WebView/FFmpeg、压缩媒体、并发/OOM/磁盘耗尽、强杀/断电或 OS 进程崩溃恢复。原正式探针默认通过与完整相关门禁已收取后才计新增验收 1；下面原始审计正文保持不变。
 
 #### 即时 Evidence（2026-10-25）
 
