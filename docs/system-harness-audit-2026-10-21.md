@@ -10725,7 +10725,7 @@ E-H300-13（独立提交与收尾复核）：修复、回归测试及当时两�
 
 ### H-302：画布视频下载没有类型级字节上限
 
-**级别：中高（P1/P2，资源边界）；状态：已修复并验收（2026-10-30，仅修复台账 E-H302-03～05 所列 Windows 本机、合成媒体/HTTP 和临时 SQLite 范围）；代码、测试和当时双台账待独立提交。** 触发条件是视频 provider 的状态结果返回可下载 URL，且该 URL 响应体超过宿主应接受的单个视频 artifact 预算。该项与 H-167/H-248 的 image/audio 输出边界同类，但本轮独立覆盖 video submit→status→download 链路，不把其他模态证据外推。以下保留原始失败；完整 workspace/严格 lint 未全绿，未扩大验收边界。
+**级别：中高（P1/P2，资源边界）；状态：已修复并验收（2026-10-30，仅修复台账 E-H302-03～05 所列 Windows 本机、合成媒体/HTTP 和临时 SQLite 范围）；修复提交 `ac9e5610a9790bbdfe552012ec2fa22e9a236106`。** 触发条件是视频 provider 的状态结果返回可下载 URL，且该 URL 响应体超过宿主应接受的单个视频 artifact 预算。该项与 H-167/H-248 的 image/audio 输出边界同类，但本轮独立覆盖 video submit→status→download 链路，不把其他模态证据外推。以下保留原始失败；完整 workspace/严格 lint 未全绿，未扩大验收边界。
 
 #### 修复与限定验收（2026-10-30）
 
@@ -10734,6 +10734,8 @@ E-H300-13（独立提交与收尾复核）：修复、回归测试及当时两�
 - Canvas183/0/16、AppCore1332/0/56、workflow30/0/25、重开6/0/0、Runtime339/0/9、Tauri check、前端272项及 pnpm build、根 fmt 已实际通过。严格 AppCore 11 项及 models client 的旧 lint、Kernel fixture 默认 deny、独立 Tauri 格式失败保留，相关文件未改；没有抑制或顺手修复。
 - 4 份源码/测试已冻结；本轮完整 workspace 原生 101、892.51 秒（增量编译 3m40s），130 targets 合计 3822 passed/1 failed/293 ignored。唯一失败为未改的 H-306（creative.video-edit.v1 空 defaultUserPrompt）；真实 SDK stdio 6/0/0，默认 CLI 使用本轮构建且结束后确认无活跃进程并恢复原 SHA-256。原始日志/result/逐 target 统计及完整命令见修复台账 E-H302-03～04，不把外层 driver 的退出 0 当 Cargo 通过。
 - 限定验收与兼容性见 E-H302-05：新增 Rust 常量/宿主 builder，默认 provider 视频超过 32 MiB 失败，可在共享前显式配置，不新增桌面限额设置、wire DTO、依赖或 SQL 迁移，不限制本地导入，不改变 image/audio 或沙箱/权限。该规则不是总磁盘/并发配额或远端任务/计费撤销；未验真实供应商/凭据/内网/用户数据、其他 OS、真实 GUI/WebView/FFmpeg、压缩媒体、并发/OOM/磁盘耗尽、强杀/断电或 OS 进程崩溃恢复。原正式探针默认通过与完整相关门禁已收取后才计新增验收 1；下面原始审计正文保持不变。
+
+交付核对：本项 6 文件已独立提交 `ac9e5610a9790bbdfe552012ec2fa22e9a236106`（【fix】限制画布供应商视频下载字节上限）；306 个唯一编号/8 列、仅 H-302 主行变化、其余 305 行和原失败正文保留，4 份受测源码冻结一致，SDK 原 binary 已恢复。当前另做文档 hash 回填，不 amend、不推送、不建 PR；不扩大上述验收范围。
 
 #### 即时 Evidence（2026-10-25）
 
