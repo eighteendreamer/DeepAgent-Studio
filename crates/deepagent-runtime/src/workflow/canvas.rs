@@ -251,6 +251,10 @@ pub struct CanvasVideoResponse {
     pub resume_fingerprint: String,
 }
 
+/// A completed video response or a provider URL awaiting the approved fetch
+/// tool. The default bridge remains synchronous for compatibility.
+pub type CanvasVideoPreparation = CanvasArtifactPreparation<CanvasVideoResponse>;
+
 /// An embedding request for one canvas node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -362,6 +366,14 @@ pub trait CanvasModelBridge: Send + Sync {
 
     /// Submit or resume an asynchronous video job and wait for its artifact.
     async fn generate_video(&self, request: CanvasVideoRequest) -> Result<CanvasVideoResponse>;
+
+    /// Prepare a video job without implicitly fetching a provider-controlled
+    /// URL. Gateways with a network broker may defer that second hop.
+    async fn prepare_video(&self, request: CanvasVideoRequest) -> Result<CanvasVideoPreparation> {
+        self.generate_video(request)
+            .await
+            .map(CanvasVideoPreparation::Ready)
+    }
 
     /// Text embeddings.
     async fn embed(&self, request: CanvasEmbeddingRequest) -> Result<CanvasEmbeddingResponse>;

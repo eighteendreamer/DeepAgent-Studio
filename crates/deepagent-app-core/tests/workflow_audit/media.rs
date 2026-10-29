@@ -1,14 +1,15 @@
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use deepagent_app_core::canvas_artifact_service::CanvasArtifactService;
-use deepagent_app_core::canvas_model_gateway::CanvasModelGateway;
-use deepagent_app_core::canvas_provider_service::{
+use crate::canvas_artifact_service::CanvasArtifactService;
+use crate::canvas_model_gateway::CanvasModelGateway;
+use crate::canvas_provider_service::{
     CanvasModelConfig, CanvasProviderInput, CanvasProviderService, CanvasScenario,
 };
-use deepagent_app_core::cost_service::CostService;
-use deepagent_app_core::{ChatService, MemorySecretStore, SettingsService};
+use crate::cost_service::CostService;
+use crate::{ChatService, MemorySecretStore, SettingsService};
 use deepagent_core::event::EventPayload;
 use deepagent_models::transport::MockTransport;
 use deepagent_persistence::{
@@ -42,6 +43,7 @@ struct LocalVideoProvider {
 /// fetch can be observed independently from submit/status traffic.
 struct LocalVideoUrlProvider {
     base_url: String,
+    provider_requests: Arc<Mutex<Vec<String>>>,
     private_requests: Arc<Mutex<Vec<String>>>,
     provider_server: JoinHandle<()>,
     private_server: JoinHandle<()>,
@@ -68,11 +70,14 @@ impl LocalVideoUrlProvider {
         let provider_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let provider_address = provider_listener.local_addr().unwrap();
         let download_url = format!("http://{private_address}/host-private.mp4");
+        let provider_requests = Arc::new(Mutex::new(Vec::new()));
+        let provider_captured = provider_requests.clone();
         let provider_server = tokio::spawn(async move {
             let mut submitted = false;
             loop {
                 let (mut socket, _) = provider_listener.accept().await.unwrap();
                 let (line, _) = read_request(&mut socket).await;
+                provider_captured.lock().unwrap().push(line.clone());
                 let payload = if line.starts_with("POST /v1/video/submit ") {
                     submitted = true;
                     json!({"requestId":"audit-video-url"}).to_string()
@@ -97,6 +102,7 @@ impl LocalVideoUrlProvider {
         });
         Self {
             base_url: format!("http://{provider_address}/v1"),
+            provider_requests,
             private_requests,
             provider_server,
             private_server,
@@ -157,30 +163,29 @@ impl LocalVideoProvider {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let (line, body) = read_request(&mut socket).await;
                 captured.lock().unwrap().push((line.clone(), body));
-                let (media_type, payload) =
-                    if line.starts_with("POST /v1/video/submit ") {
-                        let sequence = submitted.fetch_add(1, Ordering::SeqCst) + 1;
-                        let task_id = if sequence == 1 {
-                            task_id_prefix.clone()
-                        } else {
-                            format!("{task_id_prefix}-{sequence}")
-                        };
-                        (
-                            "application/json",
-                            json!({"requestId": task_id}).to_string().into_bytes(),
-                        )
-                    } else if line.starts_with("POST /v1/video/status ") {
-                        arrived.notify_one();
-                        release.notified().await;
-                        ("application/json", json!({
+                let (media_type, payload) = if line.starts_with("POST /v1/video/submit ") {
+                    let sequence = submitted.fetch_add(1, Ordering::SeqCst) + 1;
+                    let task_id = if sequence == 1 {
+                        task_id_prefix.clone()
+                    } else {
+                        format!("{task_id_prefix}-{sequence}")
+                    };
+                    (
+                        "application/json",
+                        json!({"requestId": task_id}).to_string().into_bytes(),
+                    )
+                } else if line.starts_with("POST /v1/video/status ") {
+                    arrived.notify_one();
+                    release.notified().await;
+                    ("application/json", json!({
                         "status": status,
                         "reason": "audit provider finished",
-                        "results": {"videos": [{"url": format!("http://{address}/clip.mp4")}]}
+                        "results": {"videos": [{"url": format!("http://public.fixture.invalid:{}/clip.mp4", address.port())}]}
                     }).to_string().into_bytes())
-                    } else {
-                        assert_eq!(line, "GET /clip.mp4 HTTP/1.1");
-                        ("video/mp4", video_bytes.clone())
-                    };
+                } else {
+                    assert_eq!(line, "GET /clip.mp4 HTTP/1.1");
+                    ("video/mp4", video_bytes.clone())
+                };
                 let header = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: {media_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     payload.len()
@@ -1134,8 +1139,15 @@ impl MediaFixture {
         let artifacts = Arc::new(
             CanvasArtifactService::new(root.path().join("artifacts"), db.clone()).unwrap(),
         );
-        let gateway =
-            Arc::new(CanvasModelGateway::new(providers.clone()).with_artifacts(artifacts.clone()));
+        let mut gateway =
+            CanvasModelGateway::new(providers.clone()).with_artifacts(artifacts.clone());
+        if let Some(port) = reqwest::Url::parse(base_url)
+            .ok()
+            .and_then(|url| url.port())
+        {
+            gateway = gateway.with_public_fixture_route(SocketAddr::from(([127, 0, 0, 1], port)));
+        }
+        let gateway = Arc::new(gateway);
         let chat = ChatService::new(
             db.clone(),
             settings,
@@ -1258,40 +1270,88 @@ async fn audit_provider_video_url_cannot_fetch_loopback_resource() {
     let mut run = fixture.spawn(run_id);
     let result = finish_run(&mut run).await;
     provider.close().await;
-    result.unwrap();
 
     let events = RunStore::new(&fixture.db)
         .events_after(run_id, None)
         .unwrap();
-    let terminal = events
+    let terminals: Vec<_> = events
         .iter()
-        .find(|event| event.event_type == "run_terminal")
-        .and_then(|event| event.data["kind"].as_str())
-        .unwrap_or("missing");
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
     let video = fixture
         .live
         .lock()
         .unwrap()
         .iter()
-        .find(|event| event.node_id == "video" && event.status == NodeExecutionStatus::Completed)
+        .rev()
+        .find(|event| event.node_id == "video" && event.status.is_terminal())
         .cloned()
-        .expect("video node must complete before checking second-hop evidence");
-    let stored = fixture
-        .artifacts
-        .read_bytes(video.artifacts[0].trim_start_matches("artifact://"), None)
-        .unwrap()
-        .unwrap();
+        .expect("video node must emit a terminal failure");
+    let provider_requests = provider.provider_requests.lock().unwrap();
     let private_requests = provider.private_requests.lock().unwrap().clone();
     eprintln!(
-        "provider video URL: private_requests={private_requests:?}, approvals={}, terminal={terminal}, artifact_bytes={}, canary_stored={}",
+        "provider video URL: provider_requests={}, private_requests={private_requests:?}, approvals={}, terminal={:?}, video_status={:?}, artifacts={:?}, result_ok={}",
+        provider_requests.len(),
         fixture.approvals.load(Ordering::SeqCst),
-        stored.len(),
-        stored == VIDEO_BYTES
+        terminals.first().map(|event| &event.data["kind"]),
+        video.status,
+        video.artifacts,
+        result.is_ok()
     );
+    assert_eq!(provider_requests.len(), 2);
+    assert!(provider_requests[0].starts_with("POST /v1/video/submit "));
+    assert!(provider_requests[1].starts_with("POST /v1/video/status "));
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(fixture.approvals.load(Ordering::SeqCst), 1);
+    assert_eq!(terminals[0].data["kind"], "failed");
+    assert!(result.is_err());
+    assert_eq!(video.status, NodeExecutionStatus::Failed);
+    assert!(video.artifacts.is_empty());
+    assert!(fixture.artifacts.list(None, None).unwrap().is_empty());
     assert!(
-        private_requests.is_empty() && stored != VIDEO_BYTES,
+        private_requests.is_empty(),
         "provider-controlled video URL must not fetch a host-private destination"
     );
+}
+
+#[tokio::test]
+#[ignore = "audit: denying provider video URL access must not fetch or persist an artifact"]
+async fn audit_denied_provider_video_url_is_not_fetched_or_persisted() {
+    let mut provider = LocalVideoUrlProvider::start().await;
+    let fixture = MediaFixture::new_video_url(&provider).await;
+    let run_id = "audit-video-provider-url-denied";
+    let mut run = fixture.spawn_with_approval(run_id, false);
+    let result = finish_run(&mut run).await;
+    provider.close().await;
+
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    let video = fixture
+        .live
+        .lock()
+        .unwrap()
+        .iter()
+        .rev()
+        .find(|event| event.node_id == "video" && event.status.is_terminal())
+        .cloned()
+        .expect("video node must emit a terminal result");
+    let provider_requests = provider.provider_requests.lock().unwrap();
+    let private_requests = provider.private_requests.lock().unwrap();
+
+    assert_eq!(provider_requests.len(), 2);
+    assert_eq!(fixture.approvals.load(Ordering::SeqCst), 1);
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "failed");
+    assert!(result.is_err());
+    assert_eq!(video.status, NodeExecutionStatus::Failed);
+    assert!(video.artifacts.is_empty());
+    assert!(fixture.artifacts.list(None, None).unwrap().is_empty());
+    assert!(private_requests.is_empty());
 }
 
 #[tokio::test]
@@ -1992,10 +2052,8 @@ async fn h252_same_workspace_images_reach_provider_and_keep_output_ownership() {
 
 #[tokio::test]
 async fn h253_chunked_uploads_reject_foreign_workflows_and_allow_the_owner() {
-    use deepagent_app_core::canvas_artifact_uploads::{
-        ArtifactUploadAction, CanvasArtifactUploads,
-    };
-    use deepagent_app_core::canvas_workflow_store::CanvasWorkflowStore;
+    use crate::canvas_artifact_uploads::{ArtifactUploadAction, CanvasArtifactUploads};
+    use crate::canvas_workflow_store::CanvasWorkflowStore;
     for owner in [None, Some("ws-a"), Some("ws-b")] {
         let mut provider = LocalInlineImageProvider::start(PRIVATE_IMAGE_BYTES.to_vec()).await;
         let mut fixture = MediaFixture::new_inline_image(&provider).await;

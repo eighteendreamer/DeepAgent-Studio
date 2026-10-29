@@ -32,7 +32,7 @@ use deepagent_runtime::workflow::{
     CanvasCompletionRequest, CanvasCompletionResponse, CanvasEmbeddingRequest,
     CanvasEmbeddingResponse, CanvasImagePreparation, CanvasImageRequest, CanvasImageResponse,
     CanvasJobPhase, CanvasJobProgress, CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest,
-    CanvasVideoRequest, CanvasVideoResponse,
+    CanvasVideoPreparation, CanvasVideoRequest, CanvasVideoResponse,
 };
 
 use crate::canvas_node_contract::canvas_node_contract;
@@ -670,6 +670,13 @@ pub struct CanvasModelGateway {
 }
 
 #[derive(Debug, Clone)]
+struct VideoDownloadPlan {
+    url: String,
+    provider_id: String,
+    model_id: String,
+    task_id: String,
+    resume_fingerprint: String,
+}
 struct PendingArtifact {
     url: String,
     origin: String,
@@ -684,12 +691,19 @@ enum PendingArtifactOutput {
         operation: String,
     },
     AudioInput,
+    Video {
+        provider_id: String,
+        model_id: String,
+        task_id: String,
+        resume_fingerprint: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ArtifactFetchKind {
     Image,
     AudioInput,
+    Video,
 }
 
 impl PendingArtifactOutput {
@@ -697,13 +711,13 @@ impl PendingArtifactOutput {
         match self {
             Self::Image { .. } => ArtifactFetchKind::Image,
             Self::AudioInput => ArtifactFetchKind::AudioInput,
+            Self::Video { .. } => ArtifactFetchKind::Video,
         }
     }
 }
 
-/// Kernel tool for the provider-controlled image second hop.  Its arguments
-/// contain only a one-shot handle and a redacted origin; the signed URL stays
-/// inside [`CanvasModelGateway`].
+/// Kernel tool for provider-controlled media second hops. Its arguments contain
+/// only a one-shot handle and a redacted origin; the URL stays in the gateway.
 pub struct CanvasArtifactFetchTool {
     gateway: Arc<CanvasModelGateway>,
     kind: ArtifactFetchKind,
@@ -715,6 +729,7 @@ pub type CanvasImageFetchTool = CanvasArtifactFetchTool;
 
 const CANVAS_IMAGE_FETCH_TOOL: &str = "canvas_image_fetch";
 const CANVAS_AUDIO_FETCH_TOOL: &str = "canvas_audio_fetch";
+const CANVAS_VIDEO_FETCH_TOOL: &str = "canvas_video_fetch";
 /// Local policy for newly supported remote audio inputs, not a provider limit.
 const MAX_REMOTE_AUDIO_BYTES: usize = 32 * 1024 * 1024;
 
@@ -758,6 +773,7 @@ impl Tool for CanvasArtifactFetchTool {
             name: match self.kind {
                 ArtifactFetchKind::Image => CANVAS_IMAGE_FETCH_TOOL,
                 ArtifactFetchKind::AudioInput => CANVAS_AUDIO_FETCH_TOOL,
+                ArtifactFetchKind::Video => CANVAS_VIDEO_FETCH_TOOL,
             }
             .to_string(),
             description: match self.kind {
@@ -766,6 +782,9 @@ impl Tool for CanvasArtifactFetchTool {
                 }
                 ArtifactFetchKind::AudioInput => {
                     "Fetch one remote audio input through the approved public network broker."
+                }
+                ArtifactFetchKind::Video => {
+                    "Fetch one provider video artifact through the approved public network broker."
                 }
             }
             .to_string(),
@@ -849,6 +868,14 @@ impl CanvasModelGateway {
         self
     }
 
+    /// Test-only route substitution for a synthetic public hostname. The
+    /// production gateway always uses the system resolver and transport.
+    #[cfg(test)]
+    pub(crate) fn with_public_fixture_route(mut self, address: std::net::SocketAddr) -> Self {
+        self.public_http = Arc::new(crate::http_runtime::public_fixture_client(address));
+        self
+    }
+
     fn stage_image_url(
         &self,
         url: String,
@@ -879,6 +906,7 @@ impl CanvasModelGateway {
         let prefix = match output.kind() {
             ArtifactFetchKind::Image => "canvas_image",
             ArtifactFetchKind::AudioInput => "canvas_audio",
+            ArtifactFetchKind::Video => "canvas_video",
         };
         let request_id = format!("{prefix}_{}", deepagent_core::id::EventId::new());
         self.pending_artifacts
@@ -982,7 +1010,8 @@ impl CanvasModelGateway {
                 response.status()
             )));
         }
-        let audio = pending.output.kind() == ArtifactFetchKind::AudioInput;
+        let kind = pending.output.kind();
+        let audio = kind == ArtifactFetchKind::AudioInput;
         if audio
             && response
                 .content_length()
@@ -1015,6 +1044,14 @@ impl CanvasModelGateway {
             sniff_audio_mime(&prefix).ok_or_else(|| {
                 CoreError::invalid("remote audio has no supported audio container signature")
             })?
+        } else if kind == ArtifactFetchKind::Video {
+            response
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
+                .filter(|value| value.starts_with("video/"))
+                .unwrap_or_else(|| mime_from_url(&pending.url))
         } else {
             response
                 .headers()
@@ -1026,10 +1063,10 @@ impl CanvasModelGateway {
         let mut stream = self
             .artifact_store("store a downloaded media artifact")?
             .begin_stream(
-                if audio {
-                    ArtifactKind::Audio
-                } else {
-                    ArtifactKind::Image
+                match kind {
+                    ArtifactFetchKind::AudioInput => ArtifactKind::Audio,
+                    ArtifactFetchKind::Image => ArtifactKind::Image,
+                    ArtifactFetchKind::Video => ArtifactKind::Video,
                 },
                 Some(&mime),
                 None,
@@ -1070,6 +1107,19 @@ impl CanvasModelGateway {
                 artifact_uri: stored.uri,
                 mime,
             })?,
+            PendingArtifactOutput::Video {
+                provider_id,
+                model_id,
+                task_id,
+                resume_fingerprint,
+            } => serde_json::to_value(CanvasVideoResponse {
+                artifact_uri: stored.uri,
+                mime,
+                provider_id,
+                model_id,
+                task_id,
+                resume_fingerprint,
+            })?,
         })
     }
 
@@ -1087,6 +1137,16 @@ impl CanvasModelGateway {
         CanvasArtifactFetchTool {
             gateway: self.clone(),
             kind: ArtifactFetchKind::AudioInput,
+            enabled,
+        }
+    }
+
+    /// Video provider assets use the same resolved backend capability and
+    /// public-network approval boundary as image and audio artifacts.
+    pub fn video_fetch_tool(self: &Arc<Self>, enabled: bool) -> CanvasArtifactFetchTool {
+        CanvasArtifactFetchTool {
+            gateway: self.clone(),
+            kind: ArtifactFetchKind::Video,
             enabled,
         }
     }
@@ -1728,6 +1788,12 @@ impl CanvasModelGateway {
 #[cfg(test)]
 #[path = "canvas_model_gateway/audio_input_tests.rs"]
 mod audio_input_tests;
+
+// Media workflows retain the real AppCore/Kernel/provider consumers while
+// sharing the cfg(test)-only public DNS/local transport seam with the broker.
+#[cfg(test)]
+#[path = "../tests/workflow_audit/media.rs"]
+mod workflow_media_audit;
 
 /// Map an operation onto the endpoint family it must use. Generation and edit
 /// never share an endpoint.
@@ -2897,6 +2963,161 @@ impl CanvasModelGateway {
             ))),
         }
     }
+    async fn run_video_job(&self, request: CanvasVideoRequest) -> CoreResult<VideoDownloadPlan> {
+        use std::time::Instant;
+
+        if request.prompt.trim().is_empty() && request.image_url.is_none() {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "MissingReferenceInput: video node needs a prompt or a first frame",
+            ));
+        }
+        let candidate = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref)
+        {
+            self.providers.resolve_model(provider_id, model_id)?
+        } else {
+            self.providers
+                .candidates_for_scenario(CanvasScenario::VideoGeneration, None)?
+                .into_iter()
+                .next()
+                .ok_or_else(|| {
+                    deepagent_core::error::CoreError::invalid(
+                        "NoCandidateModel: no enabled model serves video generation",
+                    )
+                })?
+        };
+        let images = match request
+            .image_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            Some(reference) => self.resolve_image_inputs(&[reference.to_string()])?,
+            None => Vec::new(),
+        };
+        let input_fingerprint = video_input_fingerprint(&candidate, &request, images.first());
+        let model_request = CanvasModelRequest {
+            operation: CanvasOperation::VideoGenerate,
+            prompt: request.prompt.clone(),
+            system_prompt: None,
+            images,
+            texts: Vec::new(),
+            size: request.size.clone(),
+            audio: CanvasAudioInput::default(),
+            timeout_ms: 120_000,
+        };
+        // Provider task ids are scoped to the account that created them. Resume
+        // only when the saved fingerprint still matches the effective inputs
+        // and current provider credentials/configuration.
+        let saved_task_id = request
+            .resume_task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let resumable_task_id = saved_task_id.filter(|task_id| {
+            let current = video_resume_fingerprint(&input_fingerprint, task_id);
+            request.resume_fingerprint.as_deref() == Some(current.as_str())
+        });
+        if saved_task_id.is_some() && resumable_task_id.is_none() {
+            tracing::info!(
+                provider_id = %candidate.provider.id,
+                model_id = %candidate.model.id,
+                has_saved_fingerprint = request.resume_fingerprint.is_some(),
+                "saved video task does not match current inputs/provider; submitting a new task"
+            );
+        }
+        let task_id = match resumable_task_id {
+            Some(existing) => existing.trim().to_string(),
+            None => self
+                .submit_media_job(&candidate, &model_request, request.cancel.as_ref())
+                .await
+                .map_err(to_core_error)?,
+        };
+        let resume_fingerprint = video_resume_fingerprint(&input_fingerprint, &task_id);
+        if let Some(sink) = request.on_progress.as_ref() {
+            // Publish identity before the first potentially long status wait.
+            sink.emit(CanvasJobProgress {
+                job_id: task_id.clone(),
+                phase: CanvasJobPhase::Queued,
+                resume_fingerprint: resume_fingerprint.clone(),
+            });
+        }
+        let timeout_ms = request.timeout_ms.max(1_000);
+        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+        let mut round = 0u32;
+        let mut reported: Option<CanvasJobPhase> = Some(CanvasJobPhase::Queued);
+        let job = loop {
+            if request
+                .cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::SeqCst))
+            {
+                return Err(deepagent_core::error::CoreError::other(format!(
+                    "Cancelled: video job `{task_id}` interrupted; rerun the node with the same task id to keep polling"
+                )));
+            }
+            let job = self
+                .poll_media_job(&candidate, &task_id, 60_000, request.cancel.as_ref())
+                .await
+                .map_err(to_core_error)?;
+            if matches!(
+                job.status,
+                CanvasJobStatus::Succeeded | CanvasJobStatus::Failed
+            ) {
+                break job;
+            }
+            let phase = if job.status == CanvasJobStatus::Queued {
+                CanvasJobPhase::Queued
+            } else {
+                CanvasJobPhase::Running
+            };
+            if reported != Some(phase) {
+                if let Some(sink) = request.on_progress.as_ref() {
+                    sink.emit(CanvasJobProgress {
+                        job_id: task_id.clone(),
+                        phase,
+                        resume_fingerprint: resume_fingerprint.clone(),
+                    });
+                }
+                reported = Some(phase);
+            }
+            if Instant::now() >= deadline {
+                return Err(deepagent_core::error::CoreError::other(format!(
+                    "TransientFailure: video job `{task_id}` did not finish within {timeout_ms} ms"
+                )));
+            }
+            await_video_operation(
+                async {
+                    tokio::time::sleep(poll_delay(round)).await;
+                    Ok(())
+                },
+                request.cancel.as_ref(),
+                &format!(
+                    "Cancelled: video job `{task_id}` polling wait interrupted; rerun with the same task id to keep polling"
+                ),
+            )
+            .await
+            .map_err(to_core_error)?;
+            round += 1;
+        };
+        if job.status == CanvasJobStatus::Failed {
+            return Err(deepagent_core::error::CoreError::other(format!(
+                "ProviderFailure: video job `{task_id}` failed: {}",
+                job.reason
+                    .unwrap_or_else(|| "no reason reported".to_string())
+            )));
+        }
+        let url = job.video_url.ok_or_else(|| {
+            deepagent_core::error::CoreError::other(format!(
+                "ProviderFailure: video job `{task_id}` succeeded without a video url"
+            ))
+        })?;
+        Ok(VideoDownloadPlan {
+            url,
+            provider_id: candidate.provider.id.clone(),
+            model_id: candidate.model.id.clone(),
+            task_id,
+            resume_fingerprint,
+        })
+    }
 }
 
 #[async_trait]
@@ -3117,159 +3338,13 @@ impl CanvasModelBridge for CanvasModelGateway {
     }
 
     async fn generate_video(&self, request: CanvasVideoRequest) -> CoreResult<CanvasVideoResponse> {
-        use std::time::Instant;
-
-        if request.prompt.trim().is_empty() && request.image_url.is_none() {
-            return Err(deepagent_core::error::CoreError::invalid(
-                "MissingReferenceInput: video node needs a prompt or a first frame",
-            ));
-        }
-        let candidate = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref)
-        {
-            self.providers.resolve_model(provider_id, model_id)?
-        } else {
-            self.providers
-                .candidates_for_scenario(CanvasScenario::VideoGeneration, None)?
-                .into_iter()
-                .next()
-                .ok_or_else(|| {
-                    deepagent_core::error::CoreError::invalid(
-                        "NoCandidateModel: no enabled model serves video generation",
-                    )
-                })?
-        };
-        let images = match request
-            .image_url
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            Some(reference) => self.resolve_image_inputs(&[reference.to_string()])?,
-            None => Vec::new(),
-        };
-        let input_fingerprint = video_input_fingerprint(&candidate, &request, images.first());
-        let model_request = CanvasModelRequest {
-            operation: CanvasOperation::VideoGenerate,
-            prompt: request.prompt.clone(),
-            system_prompt: None,
-            images,
-            texts: Vec::new(),
-            size: request.size.clone(),
-            audio: CanvasAudioInput::default(),
-            timeout_ms: 120_000,
-        };
-        // Provider task ids are scoped to the account that created them. Resume
-        // only when the saved fingerprint still matches the effective inputs
-        // and current provider credentials/configuration.
-        let saved_task_id = request
-            .resume_task_id
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty());
-        let resumable_task_id = saved_task_id.filter(|task_id| {
-            let current = video_resume_fingerprint(&input_fingerprint, task_id);
-            request.resume_fingerprint.as_deref() == Some(current.as_str())
-        });
-        if saved_task_id.is_some() && resumable_task_id.is_none() {
-            tracing::info!(
-                provider_id = %candidate.provider.id,
-                model_id = %candidate.model.id,
-                has_saved_fingerprint = request.resume_fingerprint.is_some(),
-                "saved video task does not match current inputs/provider; submitting a new task"
-            );
-        }
-        let task_id = match resumable_task_id {
-            Some(existing) => existing.trim().to_string(),
-            None => self
-                .submit_media_job(&candidate, &model_request, request.cancel.as_ref())
-                .await
-                .map_err(to_core_error)?,
-        };
-        let resume_fingerprint = video_resume_fingerprint(&input_fingerprint, &task_id);
-        if let Some(sink) = request.on_progress.as_ref() {
-            // Publish identity before the first potentially long status wait.
-            sink.emit(CanvasJobProgress {
-                job_id: task_id.clone(),
-                phase: CanvasJobPhase::Queued,
-                resume_fingerprint: resume_fingerprint.clone(),
-            });
-        }
-        let timeout_ms = request.timeout_ms.max(1_000);
-        let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-        let mut round = 0u32;
-        let mut reported: Option<CanvasJobPhase> = Some(CanvasJobPhase::Queued);
-        let job = loop {
-            if request
-                .cancel
-                .as_ref()
-                .is_some_and(|flag| flag.load(Ordering::SeqCst))
-            {
-                return Err(deepagent_core::error::CoreError::other(format!(
-                    "Cancelled: video job `{task_id}` interrupted; rerun the node with the same task id to keep polling"
-                )));
-            }
-            let job = self
-                .poll_media_job(&candidate, &task_id, 60_000, request.cancel.as_ref())
-                .await
-                .map_err(to_core_error)?;
-            if matches!(
-                job.status,
-                CanvasJobStatus::Succeeded | CanvasJobStatus::Failed
-            ) {
-                break job;
-            }
-            let phase = if job.status == CanvasJobStatus::Queued {
-                CanvasJobPhase::Queued
-            } else {
-                CanvasJobPhase::Running
-            };
-            if reported != Some(phase) {
-                if let Some(sink) = request.on_progress.as_ref() {
-                    sink.emit(CanvasJobProgress {
-                        job_id: task_id.clone(),
-                        phase,
-                        resume_fingerprint: resume_fingerprint.clone(),
-                    });
-                }
-                reported = Some(phase);
-            }
-            if Instant::now() >= deadline {
-                return Err(deepagent_core::error::CoreError::other(format!(
-                    "TransientFailure: video job `{task_id}` did not finish within {timeout_ms} ms"
-                )));
-            }
-            await_video_operation(
-                async {
-                    tokio::time::sleep(poll_delay(round)).await;
-                    Ok(())
-                },
-                request.cancel.as_ref(),
-                &format!(
-                    "Cancelled: video job `{task_id}` polling wait interrupted; rerun with the same task id to keep polling"
-                ),
-            )
-            .await
-            .map_err(to_core_error)?;
-            round += 1;
-        };
-        if job.status == CanvasJobStatus::Failed {
-            return Err(deepagent_core::error::CoreError::other(format!(
-                "ProviderFailure: video job `{task_id}` failed: {}",
-                job.reason
-                    .unwrap_or_else(|| "no reason reported".to_string())
-            )));
-        }
-        let url = job.video_url.ok_or_else(|| {
-            deepagent_core::error::CoreError::other(format!(
-                "ProviderFailure: video job `{task_id}` succeeded without a video url"
-            ))
-        })?;
-        // 供应商链接通常一小时过期，必须当场下载入库，节点只留 artifact 引用。
+        let plan = self.run_video_job(request.clone()).await?;
         let artifacts = self.artifact_store("store a generated video")?;
         let stored = fetch_video_artifact(
-            &url,
+            &plan.url,
             artifacts,
             request.cancel.as_ref(),
-            &task_id,
+            &plan.task_id,
             self.workspace_id.as_deref(),
         )
         .await
@@ -3277,17 +3352,33 @@ impl CanvasModelBridge for CanvasModelGateway {
         let mime = stored
             .media_type
             .clone()
-            .unwrap_or_else(|| mime_from_url(&url));
+            .unwrap_or_else(|| mime_from_url(&plan.url));
         Ok(CanvasVideoResponse {
             artifact_uri: stored.uri,
             mime,
-            provider_id: candidate.provider.id.clone(),
-            model_id: candidate.model.id.clone(),
-            task_id,
-            resume_fingerprint,
+            provider_id: plan.provider_id,
+            model_id: plan.model_id,
+            task_id: plan.task_id,
+            resume_fingerprint: plan.resume_fingerprint,
         })
     }
 
+    async fn prepare_video(
+        &self,
+        request: CanvasVideoRequest,
+    ) -> CoreResult<CanvasVideoPreparation> {
+        let plan = self.run_video_job(request).await?;
+        let (request_id, origin) = self.stage_artifact_url(
+            plan.url,
+            PendingArtifactOutput::Video {
+                provider_id: plan.provider_id,
+                model_id: plan.model_id,
+                task_id: plan.task_id,
+                resume_fingerprint: plan.resume_fingerprint,
+            },
+        )?;
+        Ok(CanvasVideoPreparation::Deferred { request_id, origin })
+    }
     fn inspect_input_kinds(&self, references: &[String]) -> CoreResult<Vec<String>> {
         references
             .iter()
@@ -3561,6 +3652,125 @@ mod tests {
         assert!(artifacts.record(id, Some("ws-b")).unwrap().is_none());
         assert!(owner
             .fetch_image_handle(&request_id, &origin, ToolExecutionContext::default())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn h303_deferred_video_fetch_preserves_scope_kind_and_one_shot() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let mut buffer = [0; 1024];
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            assert!(String::from_utf8_lossy(&request).starts_with("GET /video.mp4 "));
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\nContent-Length: 5\r\nConnection: close\r\n\r\nvideo",
+                )
+                .await
+                .unwrap();
+        });
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let artifacts = Arc::new(
+            crate::canvas_artifact_service::CanvasArtifactService::new(root.path(), db.clone())
+                .unwrap(),
+        );
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::MemorySecretStore::new()),
+        ));
+        let mut base = CanvasModelGateway::new(providers).with_artifacts(artifacts.clone());
+        base.public_http = Arc::new(crate::http_runtime::public_fixture_client(address));
+        let base = Arc::new(base);
+        let owner = base.scoped_for_run(Some("ws-a")).unwrap();
+        let foreign = base.scoped_for_run(Some("ws-b")).unwrap();
+        let (request_id, origin) = owner
+            .stage_artifact_url(
+                format!("http://public.fixture.invalid:{}/video.mp4", address.port()),
+                PendingArtifactOutput::Video {
+                    provider_id: "synthetic-provider".into(),
+                    model_id: "synthetic-video".into(),
+                    task_id: "synthetic-task".into(),
+                    resume_fingerprint: "synthetic-fingerprint".into(),
+                },
+            )
+            .unwrap();
+
+        let no_broker = owner
+            .video_fetch_tool(false)
+            .invoke(json!({"request_id": request_id.clone(), "origin": origin.clone()}))
+            .await;
+        assert!(no_broker
+            .expect_err("isolated backends must not fall back to the host")
+            .to_string()
+            .contains("NetworkDenied"));
+        assert!(foreign
+            .fetch_artifact_handle(
+                &request_id,
+                &origin,
+                ArtifactFetchKind::Video,
+                ToolExecutionContext::default(),
+            )
+            .await
+            .is_err());
+        assert!(owner
+            .fetch_artifact_handle(
+                &request_id,
+                &origin,
+                ArtifactFetchKind::Image,
+                ToolExecutionContext::default(),
+            )
+            .await
+            .is_err());
+        assert!(owner
+            .pending_artifact_origin(&request_id, ArtifactFetchKind::Video)
+            .is_some());
+
+        let fetched = tokio::time::timeout(
+            Duration::from_secs(5),
+            owner.fetch_artifact_handle(
+                &request_id,
+                &origin,
+                ArtifactFetchKind::Video,
+                ToolExecutionContext::default(),
+            ),
+        )
+        .await;
+        if !matches!(&fetched, Ok(Ok(_))) {
+            server.abort();
+        }
+        let output: CanvasVideoResponse =
+            serde_json::from_value(fetched.unwrap().unwrap()).unwrap();
+        server.await.unwrap();
+        let id = output.artifact_uri.trim_start_matches("artifact://");
+        let record = artifacts.record(id, Some("ws-a")).unwrap().unwrap();
+        assert_eq!(
+            record.kind,
+            deepagent_persistence::artifact_store::ArtifactKind::Video
+        );
+        assert_eq!(
+            artifacts.read_bytes(id, Some("ws-a")).unwrap().unwrap(),
+            b"video"
+        );
+        assert!(artifacts.record(id, None).unwrap().is_none());
+        assert!(artifacts.record(id, Some("ws-b")).unwrap().is_none());
+        assert!(owner
+            .fetch_artifact_handle(
+                &request_id,
+                &origin,
+                ArtifactFetchKind::Video,
+                ToolExecutionContext::default(),
+            )
             .await
             .is_err());
     }

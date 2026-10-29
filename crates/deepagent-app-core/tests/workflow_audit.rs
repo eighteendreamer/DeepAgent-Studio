@@ -14,8 +14,6 @@ use tokio::net::TcpListener;
 
 #[path = "workflow_audit/http.rs"]
 mod http;
-#[path = "workflow_audit/media.rs"]
-mod media;
 #[path = "workflow_audit/usage.rs"]
 mod usage;
 

@@ -1544,6 +1544,7 @@ impl<'a> RunAssembler<'a> {
             // signed URL never enters the invocation arguments or events.
             tool_registry.register(Arc::new(gateway.image_fetch_tool()))?;
             tool_registry.register(Arc::new(gateway.audio_fetch_tool(http_enabled)))?;
+            tool_registry.register(Arc::new(gateway.video_fetch_tool(http_enabled)))?;
         }
         append_runtime_log(self.runtime_logs, NewRuntimeLogEntry::info("network", "workflow_http_broker_bound")
             .with_run_id(&run_id)

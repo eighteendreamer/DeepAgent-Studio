@@ -14,7 +14,7 @@ pub use canvas::{
     CanvasCompletionResponse, CanvasEmbeddingRequest, CanvasEmbeddingResponse,
     CanvasImagePreparation, CanvasImageRequest, CanvasImageResponse, CanvasJobPhase,
     CanvasJobProgress, CanvasJobProgressSink, CanvasModelBridge, CanvasRouteOutcome,
-    CanvasRouteRequest, CanvasVideoRequest, CanvasVideoResponse,
+    CanvasRouteRequest, CanvasVideoPreparation, CanvasVideoRequest, CanvasVideoResponse,
 };
 pub use graph::{
     compile, CompiledWorkflow, WorkflowDefinition, WorkflowEdgeSpec, WorkflowNodeSpec,

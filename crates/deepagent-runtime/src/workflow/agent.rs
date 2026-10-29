@@ -18,7 +18,7 @@ use super::canvas::{
     CanvasArtifactResponse, CanvasArtifactValidator, CanvasAudioInputPreparation,
     CanvasAudioRequest, CanvasCompletionRequest, CanvasEmbeddingRequest, CanvasImagePreparation,
     CanvasImageRequest, CanvasImageResponse, CanvasJobProgressSink, CanvasModelBridge,
-    CanvasRouteRequest, CanvasVideoRequest,
+    CanvasRouteRequest, CanvasVideoPreparation, CanvasVideoRequest, CanvasVideoResponse,
 };
 use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
@@ -49,6 +49,7 @@ struct PendingMediaNode {
 enum PendingMediaOutput {
     Image,
     AudioInput(Map<String, Value>),
+    Video,
 }
 
 impl PendingMediaOutput {
@@ -56,6 +57,7 @@ impl PendingMediaOutput {
         match self {
             Self::Image => "canvas_image_fetch",
             Self::AudioInput(_) => "canvas_audio_fetch",
+            Self::Video => "canvas_video_fetch",
         }
     }
 }
@@ -959,8 +961,10 @@ impl WorkflowAgent {
             .await
     }
 
-    /// Video node: one asynchronous provider job, resumable by task id.
-    async fn execute_video(&self, config: &Map<String, Value>) -> Result<Value> {
+    fn build_video_request(
+        &self,
+        config: &Map<String, Value>,
+    ) -> Result<(CanvasVideoRequest, String)> {
         let bridge = self.canvas_bridge.clone().ok_or_else(|| {
             deepagent_core::error::CoreError::other(
                 "video nodes need the canvas model bridge; configure the canvas providers first",
@@ -1024,8 +1028,8 @@ impl WorkflowAgent {
                 routed.operation
             )));
         }
-        let response = bridge
-            .generate_video(CanvasVideoRequest {
+        Ok((
+            CanvasVideoRequest {
                 model_ref: config
                     .get("videoModel")
                     .or_else(|| config.get("model"))
@@ -1040,7 +1044,6 @@ impl WorkflowAgent {
                     .and_then(Value::as_str)
                     .map(str::to_string)
                     .filter(|value| !value.trim().is_empty()),
-                // 上次中断留下的任务 id：继续轮询，不再提交一次生成。
                 resume_task_id: config
                     .get("videoTaskId")
                     .and_then(Value::as_str)
@@ -1054,19 +1057,43 @@ impl WorkflowAgent {
                 timeout_ms: 600_000,
                 cancel: self.cancel.clone(),
                 on_progress: self.progress_sink(),
-            })
-            .await?;
+            },
+            routed.operation,
+        ))
+    }
+
+    /// Video node: one asynchronous provider job, resumable by task id.
+    async fn execute_video(&self, config: &Map<String, Value>) -> Result<Value> {
+        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
+            CoreError::other(
+                "video nodes need the canvas model bridge; configure the canvas providers first",
+            )
+        })?;
+        let (request, operation) = self.build_video_request(config)?;
+        let response = bridge.generate_video(request).await?;
         Ok(serde_json::json!({
             "videoUrl": response.artifact_uri,
             "videoTaskId": response.task_id,
             "videoTaskFingerprint": response.resume_fingerprint,
             "mime": response.mime,
-            "operation": routed.operation,
+            "operation": operation,
             "providerId": response.provider_id,
             "modelId": response.model_id,
         }))
     }
 
+    async fn prepare_video_gen(
+        &self,
+        config: &Map<String, Value>,
+    ) -> Result<CanvasVideoPreparation> {
+        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
+            CoreError::other(
+                "video nodes need the canvas model bridge; configure the canvas providers first",
+            )
+        })?;
+        let (request, _operation) = self.build_video_request(config)?;
+        bridge.prepare_video(request).await
+    }
     fn audio_reference(config: &Map<String, Value>) -> Result<Option<String>> {
         // 节点自选的文件与上游连线送入的都是同一路音频；契约要求恰好一路。
         let edge_audios: Vec<String> = config
@@ -1569,6 +1596,25 @@ impl Agent for WorkflowAgent {
                     }
                     .await
                 }
+                PendingMediaOutput::Video => output.and_then(|value| {
+                    serde_json::from_value::<CanvasVideoResponse>(value)
+                        .map(|response| {
+                            serde_json::json!({
+                                "videoUrl": response.artifact_uri,
+                                "videoTaskId": response.task_id,
+                                "videoTaskFingerprint": response.resume_fingerprint,
+                                "mime": response.mime,
+                                "operation": "video_generate",
+                                "providerId": response.provider_id,
+                                "modelId": response.model_id,
+                            })
+                        })
+                        .map_err(|error| {
+                            CoreError::other(format!(
+                                "{tool} returned an invalid video response: {error}"
+                            ))
+                        })
+                }),
             };
             return self.finish_node(
                 pending.node_id,
@@ -1731,6 +1777,50 @@ impl Agent for WorkflowAgent {
                 result,
                 node_start.elapsed().as_millis() as u64,
             );
+        }
+
+        if node_kind == "video-gen" {
+            match self.prepare_video_gen(&node_config).await {
+                Ok(CanvasVideoPreparation::Ready(response)) => {
+                    return self.finish_node(
+                        node_id,
+                        node_kind,
+                        Ok(serde_json::json!({
+                            "videoUrl": response.artifact_uri,
+                            "videoTaskId": response.task_id,
+                            "videoTaskFingerprint": response.resume_fingerprint,
+                            "mime": response.mime,
+                            "operation": "video_generate",
+                            "providerId": response.provider_id,
+                            "modelId": response.model_id,
+                        })),
+                        node_start.elapsed().as_millis() as u64,
+                    );
+                }
+                Ok(CanvasVideoPreparation::Deferred { request_id, origin }) => {
+                    let call_id = format!("workflow_video_{}", deepagent_core::id::EventId::new());
+                    self.pending_media = Some(PendingMediaNode {
+                        node_id,
+                        node_kind,
+                        output: PendingMediaOutput::Video,
+                        call_id: call_id.clone(),
+                        started: node_start,
+                    });
+                    return Ok(AgentDecision::CallTool(
+                        deepagent_tools::ToolInvocation::new(
+                            "canvas_video_fetch",
+                            serde_json::json!({
+                                "request_id": request_id,
+                                "origin": origin,
+                            }),
+                        )
+                        .with_id(call_id),
+                    ));
+                }
+                Err(error) => {
+                    return self.finish_node(node_id, node_kind, Err(error), 0);
+                }
+            }
         }
 
         if matches!(node_kind.as_str(), "image-gen" | "image-edit") {
