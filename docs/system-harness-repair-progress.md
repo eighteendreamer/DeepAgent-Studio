@@ -20,7 +20,7 @@
 
 ## H-251 本轮即时记录（2026-10-29）
 
-**当前状态：已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围）；修复提交待本次独立提交后回填。** 原始失败证据保留；本轮仅处理命名工作流的workspace边界，H-252制品访问、H-244 live快照及H-255命名空间不合并计数。
+**当前状态：已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围）；修复提交`d26e2266a19edfc78c07b39936b29fc6b33f1796`。** 原始失败证据保留；本轮仅处理命名工作流的workspace边界，H-252制品访问、H-244 live快照及H-255命名空间不合并计数。
 
 E-H251-01（本轮原复现，source_type=command/file）：起始HEAD `ad35aeb823b640db8fbf4c3f1dbb574d64b12e9c`，tracked干净，原五类用户未跟踪项仅列名、不读取。核对store、Tauri四命令、前端冲突副本、原探针及数据库重开测试。执行`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_workflow_store::tests::audit_named_workflows_require_workspace_scope --offline -j 2 -- --ignored --exact --nocapture`，原生101、0 passed/1 failed/0 ignored，list_exposes_b/load_exposes_b/deleted_other_workspace均true，A仍存在（target/h251-original-20261029.log/-result.json）。确认当前仍是独立缺陷，不是历史修复或H-255的保留ID碰撞。
 
@@ -55,6 +55,10 @@ E-H251-07（限定验收与兼容边界，2026-10-29）：原命名工作流在�
 本项是受信本地调用方的namespace边界，不是身份认证；拥有任意IPC/直接数据库访问能力者仍可自报别的workspace。后端过滤发生在服务投影前，DocumentStore仍扫描原collection，没有SQL级逐租户物理隔离。服务端CAS保护归属检查到提交的竞争，不等同于命名工作流的客户端revision租约，不宣称解决同scope串行陈旧图覆盖。桌面仍是固定默认画布，未新增多项目窗口身份注册、导入导出/运行入口或真实项目切换UI。H-252 artifact引用授权、跨用户身份体系、旧数据人工修复、强杀/断电与旧新binary并写、其他OS、原生Tauri/WebView、真实provider/tool调用均未在本轮验收；无真实用户数据、凭据或外部服务操作。
 
 本项新增修复验收1，306唯一编号台账核对后累计75已修复并验收、20历史已修复跳过、7归并、2撤销、202待修复、0修复中，即202有效未关闭。仅本项8文件独立提交，取得真实hash后另作docs回填，不amend、不推送；整体目标仍active。下一项拟独立复核H-252制品跨workspace访问边界，先读取原探针和当前消费者，尚未开始实现。全部剩余200–400有效小时仍是未逐项校准的历史粗估，依据未关闭跨层权限/持久化及验收风险，不按关闭1项机械扣减；构建、设备、依赖和环境等待另计，不承诺完工日期。
+
+E-H251-08（独立提交回填，2026-10-29）：修复、回归与当时两份台账已独立提交为`d26e2266a19edfc78c07b39936b29fc6b33f1796`（【fix】隔离命名工作流作用域并保留删除记录），仅本项8文件。提交前h251-precommit.cjs工作树及--staged两轮校验通过：6份受测源码SHA256未变、暂存区与工作树内容一致、306个唯一编号无缺号/8列完整、其余305行未改、两文档即时记录逐字相同，原审计全文除本项新增记录与首页汇总外原样保留；详h251-precommit-{worktree,staged}-20261029-result.json。再次根fmt --check退出0（h251-final-format-20261029.log）。提交后tracked干净，五类用户未跟踪项只列名，未读取、修改、暂存或删除；target证据不入提交。
+
+本次只回填真实hash与本段证据，另作docs提交，不amend、不推送、不新增修复数量或扩大E-07验收。累计75验收/20历史跳过/7归并/2撤销/202待修复、0修复中；完整workspace的H-306、严格lint及桌面独立格式基线仍保留。整体目标active，下一项H-252尚未启动；剩余200–400有效小时仍为未逐项校准粗估，环境/构建等待另计。
 
 ## H-246 本轮独立复核（2026-10-29）
 
@@ -2426,7 +2430,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-248：画布语音合成响应无字节上限，超预算音频被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-249：画布语音转写的远程音频输入绕过统一网络权限与审批](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-250：画布 artifact 读取不校验持久化摘要，旧 URI 会静默投影替换后的字节](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-251：命名画布工作流保存了 workspace_id，但库查询、读取和删除没有 workspace 访问边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 独立scope缺陷，原失败保留；E-H251-01～07限定本机范围 | 统一scope CRUD/归属CAS；原地tombstone保留owner/graph；Tauri及冲突副本同scope | store20、重开3、前端263/build/UI、Tauri check通过；workspace3736/1/300仅H-306；严格lint/桌面fmt既有阻断已对照 | 独立提交后回填 | 受信namespace非认证；无SQL迁移；tombstone占存储、旧新binary并写未验；H-252不含，202有效未关闭，剩余工时未校准 |
+| [H-251：命名画布工作流保存了 workspace_id，但库查询、读取和删除没有 workspace 访问边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 独立scope缺陷，原失败保留；E-H251-01～08限定本机范围 | 统一scope CRUD/归属CAS；原地tombstone保留owner/graph；Tauri及冲突副本同scope | store20、重开3、前端263/build/UI、Tauri check通过；workspace3736/1/300仅H-306；严格lint/桌面fmt既有阻断已对照 | `d26e2266a19edfc78c07b39936b29fc6b33f1796` | 受信namespace非认证；无SQL迁移；tombstone占存储、旧新binary并写未验；H-252不含，202有效未关闭，剩余工时未校准 |
 | [H-252：Canvas artifact 的读取、provider 投影、显示和删除按全局 ID 操作，绕过 workspace 隔离](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-253：分块 canvas artifact 上传丢失 workspace 所有权，发布出无主媒体](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-254：artifact 删除先删文件后删索引，数据库失败会留下永久 dangling URI](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

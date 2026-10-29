@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-251 | 已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围） | 显式scope CRUD、归属CAS及保留graph/owner的tombstone；store20、重开3、前端263/build/UI、Tauri check通过；全仓3736/1/300仅H-306，严格lint/桌面格式旧阻断已对照；E-H251-01～07，独立提交后回填 |
+| H-251 | 已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围） | 显式scope CRUD、归属CAS及保留graph/owner的tombstone；store20、重开3、前端263/build/UI、Tauri check通过；全仓3736/1/300仅H-306，严格lint/桌面格式旧阻断已对照；E-H251-01～08，`d26e2266a19edfc78c07b39936b29fc6b33f1796` |
 | H-238 | 历史已修复跳过（2026-10-29，仅所列Windows本机范围） | 本轮前随H-260的0ba0f611共享边界消除；3个原探针转默认，Hook9/0/0、Kernel169/0/74，相关库通过、严格lint既有11项阻断；E-H238-01～04，测试/文档`94fd117d1fde0781c759cee2a52e555944b5f027`，不重复计生产修复 |
 | H-260 | 已修复并验收（2026-10-29，仅E-H260-08所列Windows本机范围） | 共享字节与上下文观察代次分离；正式压缩/恢复38/0/7、Hook默认6/0/3及显式9/0/0；全仓3714/1/306仅既有H-306，Tauri/局部严格lint通过，旧全局lint阻断保留；E-H260-01～09，修复提交`0ba0f611a4496e4385cb0d2d113397c1f15d54a4` |
 | H-287 | 已修复并验收（2026-10-28，仅所列Windows本机范围） | 共享DACL快照、正文前staging保护及原检查点树发布/核验/补偿；默认Kernel161/0/78、checkpoint19/0/1，显式checkpoint20/0/0，Tauri通过；全仓3680/1/308仅既有H-306，严格lint既有阻断保留；E-H287-01～15，修复提交`f2efc1b5` |
@@ -8243,7 +8243,7 @@ E-H244-08（独立提交回填，2026-10-29）：修复代码、默认回归及�
 
 ### H-251：命名画布工作流保存了 workspace_id，但库查询、读取和删除没有 workspace 访问边界
 
-**当前状态：已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围）；修复提交待本次独立提交后回填。** 原始失败证据保留；本轮仅处理命名工作流的workspace边界，H-252制品访问、H-244 live快照及H-255命名空间不合并计数。
+**当前状态：已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围）；修复提交`d26e2266a19edfc78c07b39936b29fc6b33f1796`。** 原始失败证据保留；本轮仅处理命名工作流的workspace边界，H-252制品访问、H-244 live快照及H-255命名空间不合并计数。
 
 E-H251-01（本轮原复现，source_type=command/file）：起始HEAD `ad35aeb823b640db8fbf4c3f1dbb574d64b12e9c`，tracked干净，原五类用户未跟踪项仅列名、不读取。核对store、Tauri四命令、前端冲突副本、原探针及数据库重开测试。执行`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_workflow_store::tests::audit_named_workflows_require_workspace_scope --offline -j 2 -- --ignored --exact --nocapture`，原生101、0 passed/1 failed/0 ignored，list_exposes_b/load_exposes_b/deleted_other_workspace均true，A仍存在（target/h251-original-20261029.log/-result.json）。确认当前仍是独立缺陷，不是历史修复或H-255的保留ID碰撞。
 
@@ -8278,6 +8278,10 @@ E-H251-07（限定验收与兼容边界，2026-10-29）：原命名工作流在�
 本项是受信本地调用方的namespace边界，不是身份认证；拥有任意IPC/直接数据库访问能力者仍可自报别的workspace。后端过滤发生在服务投影前，DocumentStore仍扫描原collection，没有SQL级逐租户物理隔离。服务端CAS保护归属检查到提交的竞争，不等同于命名工作流的客户端revision租约，不宣称解决同scope串行陈旧图覆盖。桌面仍是固定默认画布，未新增多项目窗口身份注册、导入导出/运行入口或真实项目切换UI。H-252 artifact引用授权、跨用户身份体系、旧数据人工修复、强杀/断电与旧新binary并写、其他OS、原生Tauri/WebView、真实provider/tool调用均未在本轮验收；无真实用户数据、凭据或外部服务操作。
 
 本项新增修复验收1，306唯一编号台账核对后累计75已修复并验收、20历史已修复跳过、7归并、2撤销、202待修复、0修复中，即202有效未关闭。仅本项8文件独立提交，取得真实hash后另作docs回填，不amend、不推送；整体目标仍active。下一项拟独立复核H-252制品跨workspace访问边界，先读取原探针和当前消费者，尚未开始实现。全部剩余200–400有效小时仍是未逐项校准的历史粗估，依据未关闭跨层权限/持久化及验收风险，不按关闭1项机械扣减；构建、设备、依赖和环境等待另计，不承诺完工日期。
+
+E-H251-08（独立提交回填，2026-10-29）：修复、回归与当时两份台账已独立提交为`d26e2266a19edfc78c07b39936b29fc6b33f1796`（【fix】隔离命名工作流作用域并保留删除记录），仅本项8文件。提交前h251-precommit.cjs工作树及--staged两轮校验通过：6份受测源码SHA256未变、暂存区与工作树内容一致、306个唯一编号无缺号/8列完整、其余305行未改、两文档即时记录逐字相同，原审计全文除本项新增记录与首页汇总外原样保留；详h251-precommit-{worktree,staged}-20261029-result.json。再次根fmt --check退出0（h251-final-format-20261029.log）。提交后tracked干净，五类用户未跟踪项只列名，未读取、修改、暂存或删除；target证据不入提交。
+
+本次只回填真实hash与本段证据，另作docs提交，不amend、不推送、不新增修复数量或扩大E-07验收。累计75验收/20历史跳过/7归并/2撤销/202待修复、0修复中；完整workspace的H-306、严格lint及桌面独立格式基线仍保留。整体目标active，下一项H-252尚未启动；剩余200–400有效小时仍为未逐项校准粗估，环境/构建等待另计。
 
 **级别：高（P1，跨项目工作流泄露与破坏）；触发条件：** 同一宿主数据库中存在多个 workspace/project，命名工作流由 `canvas_workflow_save` 写入不同 `workspace_id`，随后任一窗口、插件或调用方使用公开的 `canvas_workflow_list`、`canvas_workflow_load(id)` 或 `canvas_workflow_delete(id)`。保存接口接受 workspace 身份，但后续三个库操作没有接收调用者 workspace，也没有在 SQL/文档层比较 `CanvasWorkflowDoc.workspace_id`。本项不重复 H-244：H-244 是同一 live canvas 的陈旧快照覆盖；H-251 是不同 workspace 的可见性与删除隔离。
 
