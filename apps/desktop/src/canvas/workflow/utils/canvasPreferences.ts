@@ -10,9 +10,9 @@ import { importCanvasMedia } from "./canvasMedia";
  * memory after one hydration pass, which keeps the existing synchronous call
  * sites synchronous; writes are merged and flushed to the backend.
  *
- * Legacy `localStorage` payloads are read once, upgraded (inline base64 images
- * become artifacts) and then deleted, so the same canvas data never has two
- * homes.
+ * Legacy `localStorage` payloads are upgraded (inline base64 images become
+ * artifacts) and removed only after this window's database write succeeds.
+ * Ambiguous leftovers are retained, not treated as a second writable store.
  */
 
 export type CanvasPreferenceKey =
@@ -43,6 +43,9 @@ const dirty = new Set<CanvasPreferenceKey>();
 const timers = new Map<CanvasPreferenceKey, ReturnType<typeof setTimeout>>();
 const revisions = new Map<CanvasPreferenceKey, number>();
 const flushes = new Map<CanvasPreferenceKey, Promise<void>>();
+// Prepared migration values are not readable/editable cache entries. Retain
+// them on write failure so retrying the same source does not re-import media.
+const migrations = new Map<CanvasPreferenceKey, { raw: string; value: unknown }>();
 const persistenceWaiters = new Map<CanvasPreferenceKey, Array<{
   resolve: () => void;
   reject: (error: Error) => void;
@@ -54,23 +57,34 @@ function isTauriRuntime(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
-function readLegacy(key: CanvasPreferenceKey): unknown {
+function readLegacy(key: CanvasPreferenceKey): { raw: string; value: unknown } | null {
+  const legacyKey = LEGACY_STORAGE_KEYS[key];
+  if (!legacyKey) return null;
+  let raw: string | null;
   try {
-    const legacyKey = LEGACY_STORAGE_KEYS[key];
-    if (!legacyKey) return null;
-    const raw = localStorage.getItem(legacyKey);
-    return raw ? JSON.parse(raw) : null;
+    raw = localStorage.getItem(legacyKey);
   } catch {
-    return null;
+    throw new Error(`无法读取旧画布偏好 ${key}，源数据未修改`);
+  }
+  if (raw === null) return null;
+  try {
+    return { raw, value: JSON.parse(raw) };
+  } catch {
+    // JSON.parse messages can contain fragments of user data; do not log them.
+    throw new Error(`旧画布偏好 ${key} JSON 无效，源数据已保留`);
   }
 }
 
-function forgetLegacy(key: CanvasPreferenceKey) {
+function forgetLegacy(key: CanvasPreferenceKey, raw: string) {
   try {
     const legacyKey = LEGACY_STORAGE_KEYS[key];
-    if (legacyKey) localStorage.removeItem(legacyKey);
+    if (!legacyKey) return;
+    if (localStorage.getItem(legacyKey) === raw) localStorage.removeItem(legacyKey);
+    else console.warn(`[canvas] 旧偏好 ${key} 已变化，保留源数据`);
   } catch {
-    // 存储不可用不影响：数据库已经是唯一读取来源
+    // The database commit is acknowledged; a cleanup failure must not make
+    // the next startup overwrite it by migrating again.
+    console.warn(`[canvas] 旧偏好 ${key} 清理失败；数据库已保存，保留源数据`);
   }
 }
 
@@ -102,22 +116,33 @@ async function upgradeLibraryImages(value: unknown): Promise<unknown> {
 async function hydrateKey(key: CanvasPreferenceKey): Promise<void> {
   const stored = await invoke<unknown | null>("canvas_preference_read", { key });
   if (stored !== null && stored !== undefined) {
+    migrations.delete(key);
     cache.set(key, stored);
-    forgetLegacy(key);
+    // Without a receipt tying legacy bytes to this document, do not erase a
+    // possibly different source left by an older window or an unknown commit.
     publish(key);
     return;
   }
   const legacy = readLegacy(key);
-  forgetLegacy(key);
   if (legacy === null) {
+    migrations.delete(key);
     // 明确记录"库里确实还没有"，否则调用方无法区分空数据和未载入。
     cache.set(key, null);
     publish(key);
     return;
   }
-  const value = key === "creative-library" ? await upgradeLibraryImages(legacy) : legacy;
-  await invoke("canvas_preference_write", { key, value });
-  cache.set(key, value);
+  let migration = migrations.get(key);
+  if (!migration || migration.raw !== legacy.raw) {
+    const value = key === "creative-library"
+      ? await upgradeLibraryImages(legacy.value)
+      : legacy.value;
+    migration = { raw: legacy.raw, value };
+    migrations.set(key, migration);
+  }
+  await invoke("canvas_preference_write", { key, value: migration.value });
+  forgetLegacy(key, migration.raw);
+  migrations.delete(key);
+  cache.set(key, migration.value);
   publish(key);
 }
 

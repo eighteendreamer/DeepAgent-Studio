@@ -56,7 +56,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **70**、历史已修复跳过 **19**、归并 **7**、撤销 **2**、有效未关闭 **208（207待修复、1修复中）**；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **74**、历史已修复跳过 **19**、归并 **7**、撤销 **2**、有效未关闭 **204（204待修复、0修复中）**；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -7940,6 +7940,34 @@ E-H238-04（独立提交回填，2026-10-29）：本轮测试与当时两份文�
 - 本轮没有重新执行 H-165/H-167，也没有处理用户排除的 `encrypted-content` 报错；H-248 只记录语音合成响应预算缺口。
 
 ### H-247：画布 legacy 偏好迁移在后端写入失败时先删源数据，导致不可重试丢失
+
+**当前状态：已修复并验收（2026-10-29，仅E-H247-05所列本机范围）；独立修复提交待执行。** 原2026-10-25失败记录原文保留。
+
+E-H247-01（原探针与源数据复核，source_type=command/file）：起始HEAD a9c642005013c6126ca7f4677763670ed51ed6b6，tracked干净，原五类未跟踪项只列名、不读取。原RUN_HARNESS_AUDIT=1探针0/1（target/h247-original-20261029*），先收到H-245新增的hydration rejection，未到原源保留断言。仅把await适配成assert.rejects，保留原源保留断言，生产代码未改时再执行仍0/1，实际legacyAfter=null/cacheLoaded=false（h247-before-source-20261029*）。确认是独立迁移丢失，不是因早抛错误误判或历史修复。
+
+F-H247-current / P-H247-current：源删除早于目标写入回执；JSON解析失败又被当作无源而清理。后端已有文档时的无条件forgetLegacy也不能证明这份legacy已被该文档接管。参照同仓workflowPersistence已有先写后清理的生命周期，并读取真实CanvasArtifactService：artifact import使用新ID而非内容去重，不能凭SHA字段宣称幂等。
+
+E-H247-02（候选，本地设计）：偏好模块保留raw/value源快照，写入确认成功后才按raw一致性清理；坏JSON/源不可读失败可重试、不授权空值写入，parse异常不输出用户内容。准备结果留在模块内有界migration map，普通读写cache只能在确认后建立，同一raw写失败后重试复用图片转换结果；raw改变时废弃旧候选。已有backend文档时保留归属不明的legacy，不重放迁移；cleanup失败保留源并记录不含内容的诊断。复用H-245恢复/关闭门禁，无新backend API、SQL迁移、marker或第二持久库。
+
+原探针转默认并加入test:canvas-ipc，首轮专项14/0/0（h247-unit-first-20261029.log），覆盖失败→同实例重试、等待回执顺序、多key、损坏/不可读源、合法null/false/0/空串、清理失败、写回执丢失、重新加载模块、源更新与图片部分导入/偏好写失败重试。图片导入失败的条目仍按原行为保留内联字节，不丢条目。模块内候选不提供跨进程精确一次artifact导入；导入成功但偏好尚未提交时强制退出可能留下未引用artifact。双窗口legacy读/删不是跨进程原子CAS；残留源保留，不自动合并或猜测归属。完整构建、真实浏览器localStorage及生产UI生命周期仍待执行，不能据14项局部通过提前关闭。
+
+E-H247-03（相关门禁与构建，2026-10-29，source_type=command）：在仓库根执行`node --test apps/desktop/scripts/audit-canvas-preference-legacy-migration-loss.test.cjs apps/desktop/scripts/audit-canvas-preference-read-failure.test.cjs apps/desktop/scripts/check-canvas-persistence.test.cjs apps/desktop/scripts/check-video-edit-persistence.test.cjs apps/desktop/scripts/check-workflow.test.cjs`，原生0、131 passed/0 failed/0 skipped（target/h247-front-regression-20261029.log）。14项H-247默认回归及H-245七项、图保存21项、视频项目3项、workflow86项通过；没有把模块重新加载称作OS进程终止测试。
+
+apps/desktop的`pnpm build`原生0、129.82秒，默认前端测试共256 passed/0 failed/0 skipped（含canvas-ipc54项），tsc --noEmit、Vite和许可证门禁通过（h247-desktop-build-20261029.log/-result.json，h247-build-test-summary-20261029.json）；既有externalization/大chunk警告未抹去。`cargo fmt --all -- --check`原生0（h247-format-20261029.log）；git diff --check原生0。3份代码/测试/配置SHA256见h247-reviewed-source-20261029.json，构建后未修改受测源码。
+
+E-H247-04（真实localStorage、生产UI与renderer重开，2026-10-29，source_type=command/image）：`node target/h247-ui-browser.cjs`原生0（h247-ui-browser-20261029.log/-result.json）。本轮完成的Vite dist原样加载，使用真实CanvasApp/设置页/偏好模块及浏览器localStorage；两个全新Chromium context只种入合成legacy目录，所有非本机HTTP请求拦截，Tauri IPC/后端为合成状态，browser/context/server均在finally关闭。
+
+提交前失败场景：首次write失败时源字符串原样且editor未挂载，正常关闭被保存门禁拒绝；主动关闭page并新建page后仍见原source，再次失败不清源；切换write成功并实际点击“重新加载”、展开工具栏、进入设置/工作区，两目录显示legacy-images/legacy-videos，backend值一致且source已清理。共3次attempt只有1次commit；后续再次新建page不再迁移。提交后丢回执场景：首次write已更新合成backend但返回错误，source仍在；关闭page/新建page后从backend恢复正确目录，只有1次attempt/commit，source作为归属不明备份保留；再重开不重复写。两场景pageErrors、unexpected IPC、外部请求均为空，console仅预期的注入错误/关闭拒绝。已逐张查看h247-ui-{before,after}-{failed,recovered}-20261029.png，错误/重试按钮可见，恢复后目录显示完整无截断。本项没有操作真实用户profile、实际文件目录或供应商。
+
+E-H247-05（限定验收、兼容与未覆盖范围，2026-10-29）：原H-247的“backend写失败却先删除唯一legacy源”在Windows本机、合成IPC、真实生产前端/localStorage范围内已修复并验收。失败源可重试、可在renderer重开后恢复；成功才清理本次raw源；坏JSON不再被当作空值，解析日志不回显内容；不同源/归属不明源/清理失败保留而不是猜测删除。图片部分导入失败仍保留原条目内联字节，同一窗口中相同raw的偏好写失败重试不重复导入准备过的图片，成功后重开从backend读取。
+
+无新增依赖、command、wire DTO、SQL migration、权限/沙箱变化，生产修改只在canvasPreferences.ts；图存储和H-245门禁未另造实现。兼容变化：损坏/不可读legacy在backend为空时现在显式阻止ready，修复源后可重试；backend已存在时不再自动清除无法确认归属的legacy副本。保留源不是第二可写偏好库；当前值仍只来自backend，未自动合并旧源、未修复本轮前已丢失的数据。
+
+未实施durable迁移marker、跨进程精确一次artifact导入或双窗口原子迁移；原CanvasArtifactService每次import生成新ID，同窗口候选缓存不能阻止“artifact已提交、偏好尚未提交”期间强制杀进程后再导入形成重复/未引用artifact。原图片导入失败的inline fallback保持不变，不宣称全部图片均已制品化。localStorage的raw比较/删除不是跨renderer原子CAS，未验证旧新应用同时写源。未执行OS进程强杀/断电、原生Tauri/WebView、真实SQLite锁/只读故障、真实用户数据或其他OS。Rust/Tauri及协议均未改，本轮未重复跑Rust workspace/Tauri check/严格Clippy；最近H-255记录的3728/1/301（唯一H-306）和既有Clippy阻断仍存在，未称全仓全绿。
+
+本项新增验收1；306行核对后累计74已修复并验收、19历史已修复跳过、7归并、2撤销、204待修复、0修复中，204有效未关闭，整体目标保持active。仅本项5文件独立提交，取得真实hash后另做docs回填、不amend、不推送。下一项拟独立复核H-246，确认H-245共享未读门禁是否已消除原竞态，先查原探针前置条件，不重复计生产修复。全部剩余200–400有效小时仍是基于未关闭跨层问题和验收风险的历史粗估、尚未逐项校准；不按关闭1项机械扣减，设备/依赖/构建等待另计，不承诺日期。
+
+提交前续接复核（2026-10-29）：再次读取当前生产实现、14项默认回归、真实浏览器验收脚本及结果，并核对3份受测代码/测试/配置SHA256未变。重新执行E-H247-03的五文件相关回归，131 passed/0 failed/0 skipped（target/h247-handoff-regression-20261029.log），根cargo fmt --all -- --check原生0（h247-handoff-format-20261029.log）；此前完整build/UI证据复用，不冒称重新运行。审计首页旧汇总70/208同步为逐项台账74/204，这是补齐历轮汇总滞后，不是本轮新增4项修复；其他305行及全部原始失败证据保持不变。
 
 **级别：高（P1，迁移数据完整性）；触发条件：旧版 `localStorage` 中存在尚未迁移的画布偏好，新的 `canvas_preference_read` 返回空，随后 `canvas_preference_write` 失败。状态：正式 `canvasPreferences.ts` 生产迁移链已复现，未修复。** 本项不是 H-245 的读取失败回退，也不是 H-246 的 hydration/编辑竞态；它发生在 legacy 到数据库的单次迁移中。
 
