@@ -552,35 +552,60 @@ struct LocalPendingAudioProvider {
     base_url: String,
     request_received: Arc<Notify>,
     release_response: Arc<Notify>,
+    disconnected: Arc<Notify>,
     server: JoinHandle<()>,
 }
 
 impl LocalPendingAudioProvider {
     async fn start() -> Self {
+        Self::start_with_prefix(None).await
+    }
+
+    /// None stalls before headers; Some(status) sends a header and a partial
+    /// body first. Both release paths return only the same synthetic audio.
+    async fn start_with_prefix(status: Option<u16>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let request_received = Arc::new(Notify::new());
         let release_response = Arc::new(Notify::new());
         let arrived = request_received.clone();
         let release = release_response.clone();
+        let disconnected = Arc::new(Notify::new());
+        let closed = disconnected.clone();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let (line, _) = read_request(&mut socket).await;
             assert!(line.starts_with("POST /v1/audio/speech "));
-            arrived.notify_one();
-            release.notified().await;
+            let prefix = status.map(|_| AUDIO_BYTES.len() / 2).unwrap_or(0);
             let header = format!(
-                "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                "HTTP/1.1 {} Synthetic\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                status.unwrap_or(200),
                 AUDIO_BYTES.len()
             );
-            if socket.write_all(header.as_bytes()).await.is_ok() {
-                let _ = socket.write_all(AUDIO_BYTES).await;
+            if status.is_some() {
+                socket.write_all(header.as_bytes()).await.unwrap();
+                socket.write_all(&AUDIO_BYTES[..prefix]).await.unwrap();
             }
+            arrived.notify_one();
+            let mut buffer = [0; 1];
+            tokio::select! {
+                _ = release.notified() => {}
+                read = socket.read(&mut buffer) => {
+                    assert!(matches!(read, Ok(0) | Err(_)), "unexpected extra request bytes");
+                    closed.notify_one();
+                    return;
+                }
+            }
+            if status.is_none() && socket.write_all(header.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = socket.write_all(&AUDIO_BYTES[prefix..]).await;
         });
         Self {
             base_url: format!("http://{address}/v1"),
             request_received,
             release_response,
+            disconnected,
             server,
         }
     }
@@ -2686,13 +2711,34 @@ async fn embedding_incomplete_provider_batch_fails_without_a_completed_node() {
 }
 
 #[tokio::test]
-#[ignore = "audit: an accepted workflow cancellation must interrupt a pending Canvas audio response"]
 async fn audit_audio_cancel_does_not_wait_for_provider_response() {
-    let provider = LocalPendingAudioProvider::start().await;
-    let fixture = MediaFixture::new_audio(&provider).await;
+    assert_h301_audio_cancellation(None).await;
+}
+
+#[tokio::test]
+async fn h301_partial_success_and_error_audio_bodies_cancel_without_output_and_replay_once() {
+    for status in [200, 503] {
+        assert_h301_audio_cancellation(Some(status)).await;
+    }
+}
+
+async fn assert_h301_audio_cancellation(status: Option<u16>) {
+    let mut provider = LocalPendingAudioProvider::start_with_prefix(status).await;
+    let mut fixture = MediaFixture::new_audio(&provider).await;
+    let scope = status.map(|_| "h301-workspace");
+    fixture.workflow.workspace_id = scope.map(str::to_string);
     let run_id = "audit-audio-cancel-pending-response";
     let mut run = fixture.spawn(run_id);
     provider.wait_for_request().await;
+    if status.is_some() {
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    assert!(RunStore::new(&fixture.db)
+        .get(run_id)
+        .unwrap()
+        .unwrap()
+        .finished_at
+        .is_none());
     let started = Instant::now();
     let accepted = fixture.chat.request_cancel(run_id).unwrap().accepted;
     let stopped = tokio::time::timeout(Duration::from_millis(300), &mut run).await;
@@ -2703,13 +2749,20 @@ async fn audit_audio_cancel_does_not_wait_for_provider_response() {
         .unwrap()
         .finished_at
         .is_none();
-    provider.release_response.notify_one();
     let result = match stopped {
         Ok(joined) => joined.unwrap(),
-        Err(_) => finish_run(&mut run).await,
+        Err(_) => {
+            provider.release_response.notify_one();
+            finish_run(&mut run).await
+        }
     };
     let cancel_to_exit_ms = started.elapsed().as_millis();
-    let mut provider = provider;
+    if stopped_before_response {
+        tokio::time::timeout(Duration::from_secs(2), provider.disconnected.notified())
+            .await
+            .expect("cancel must close HTTP before releasing the provider");
+    }
+    let before_release = fixture.live.lock().unwrap().clone();
     provider.close().await;
     let events = fixture.live.lock().unwrap().clone();
     let audio_completed = events
@@ -2731,13 +2784,130 @@ async fn audit_audio_cancel_does_not_wait_for_provider_response() {
     );
     assert!(accepted);
     assert!(
+        result.is_ok(),
+        "the established cancelled-run result remains successful control flow"
+    );
+    assert!(
         stopped_before_response,
         "accepted cancellation must stop a pending audio provider response"
     );
     assert!(!audio_completed);
     assert!(audio_cancelled);
+    assert_eq!(
+        events
+            .iter()
+            .filter(
+                |event| event.node_id == "audio" && event.status == NodeExecutionStatus::Cancelled
+            )
+            .count(),
+        1
+    );
+    assert!(!events
+        .iter()
+        .any(|event| event.node_id == "end" && event.status == NodeExecutionStatus::Completed));
+    assert!(events
+        .iter()
+        .filter(|event| event.node_id == "audio")
+        .all(|event| event.outputs.is_none() && event.artifacts.is_empty()));
+    assert_eq!(
+        events, before_release,
+        "late provider release cannot publish output"
+    );
+    assert!(fixture.artifacts.list(scope, None).unwrap().is_empty());
+    assert_eq!(
+        std::fs::read_dir(fixture._root.path().join("artifacts"))
+            .unwrap()
+            .count(),
+        0
+    );
     assert_eq!(terminals.len(), 1);
     assert_eq!(terminals[0].data["kind"], "cancelled");
+
+    let MediaFixture {
+        _root: root,
+        db,
+        chat,
+        artifacts,
+        providers,
+        ..
+    } = fixture;
+    drop(chat);
+    drop(artifacts);
+    drop(providers);
+    drop(db);
+    let reopened = Arc::new(Database::open(root.path().join("media.db")).unwrap());
+    let durable = RunStore::new(&reopened).events_after(run_id, None).unwrap();
+    assert!(durable
+        .windows(2)
+        .all(|pair| pair[0].sequence < pair[1].sequence));
+    let replay: Vec<NodeExecutionEvent> = durable
+        .iter()
+        .filter(|event| event.event_type == "workflow_node")
+        .map(|event| serde_json::from_value(event.data["event"].clone()).unwrap())
+        .collect();
+    assert_eq!(replay, events);
+    let terminals: Vec<_> = durable
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "cancelled");
+    assert!(
+        CanvasArtifactService::new(root.path().join("artifacts"), reopened)
+            .unwrap()
+            .list(scope, None)
+            .unwrap()
+            .is_empty()
+    );
+    eprintln!("h301 durable audio cancellation: response_status={status:?}, socket_closed_before_release=true, replay_matches=true, artifacts=0");
+}
+
+#[tokio::test]
+async fn h301_audio_success_preserves_bytes_scope_and_single_terminal() {
+    for status in [None, Some(200)] {
+        let mut provider = LocalPendingAudioProvider::start_with_prefix(status).await;
+        let mut fixture = MediaFixture::new_audio(&provider).await;
+        fixture.workflow.workspace_id = Some("h301-workspace".into());
+        let run_id = "h301-normal-audio";
+        let mut run = fixture.spawn(run_id);
+        provider.wait_for_request().await;
+        assert!(
+            !run.is_finished(),
+            "partial response must not become an early success"
+        );
+        provider.release_response.notify_one();
+        finish_run(&mut run).await.unwrap();
+        provider.close().await;
+        let live = fixture.live.lock().unwrap();
+        let completed: Vec<_> = live
+            .iter()
+            .filter(|event| {
+                event.node_id == "audio" && event.status == NodeExecutionStatus::Completed
+            })
+            .collect();
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].artifacts.len(), 1);
+        assert_eq!(completed[0].operation.as_deref(), Some("speech_synthesize"));
+        let id = completed[0].artifacts[0].trim_start_matches("artifact://");
+        assert_eq!(
+            fixture
+                .artifacts
+                .read_bytes(id, Some("h301-workspace"))
+                .unwrap()
+                .unwrap(),
+            AUDIO_BYTES
+        );
+        assert!(fixture.artifacts.read_bytes(id, None).unwrap().is_none());
+        let durable = RunStore::new(&fixture.db)
+            .events_after(run_id, None)
+            .unwrap();
+        let terminals: Vec<_> = durable
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].data["kind"], "succeeded");
+    }
 }
 
 #[tokio::test]

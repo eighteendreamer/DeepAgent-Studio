@@ -64,7 +64,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **81**、历史已修复跳过 **20**、归并 **7**、撤销 **2**、有效未关闭 **196（196待修复、0修复中）**；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **82**、历史已修复跳过 **21**、归并 **7**、撤销 **2**、有效未关闭 **194（194待修复、0修复中）**；H-304已按E-H304-05～06限定验收，校正此总览此前遗漏的累计数；H-301已按E-H301-01～06核对为本轮前随H-164修复，新增生产修复0；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -10693,6 +10693,14 @@ AppCore/runtime 严格 `cargo clippy -p <crate> --all-targets --all-features --n
 E-H300-13（独立提交与收尾复核）：修复、回归测试及当时两份文档已一并提交为`39c61767f7f844254c367d3bec78697ff7089c61`（`【fix】接通嵌入工作流完整执行契约`），仅11个本项相关文件。提交前9个源码/测试SHA256与最终门禁版本一致，306行台账编号唯一，其他305条状态行与前一HEAD逐字相同；收尾再次执行`node --test scripts/check-workflow.test.cjs`为**86 passed / 0 failed / 0 skipped**（`target/h300-handoff-node-20261028.log`），fmt及diff check通过。未将target证据、原五类用户未跟踪项或用户数据加入提交，未推送/建PR/amend。此次只回填真实修复hash和该收尾记录，不扩大E-12的本机验收范围，也不抹去workspace/Kernel MCP/lint失败。累计67验收、18历史跳过、7归并、2撤销、212有效未关闭；下一项H-287仍待原探针复核，整体目标active。
 
 ### H-301：Audio 合成取消没有打断共享 Canvas HTTP 响应
+
+**当前状态：历史已修复跳过（2026-10-30，仅下列 Windows 本机合成 provider/临时 SQLite 范围）；生产修复归 H-164 的 `63cfffa4959640e4cb1395c94d614c8c4ec5197c`，本轮新增生产修复数 0。** 修前复核原正式探针已 1 passed/0 failed，accepted=true、cancel_to_exit_ms=64、audio_completed=false、audio_cancelled=true、唯一 terminal=cancelled。Git 祖先与 blame 以及 E-H164-03 的历史音频验收证明，整个 `WorkflowAgent::think` future 已被共享取消护栏包住，取消丢弃 provider 等待并统一发布节点 Cancelled，`finish_node` 拒绝取消后的 Completed；本项不再修改生产逻辑，不归因于 H-300/H-304，不重复计功。
+
+本轮将原探针转默认，并补 200/503 已发送半正文的取消、无响应头/200 正常释放对照：验证受理前 run 未结束、取消后 300ms 内退出、释放前连接关闭、无 Completed/输出/制品、单次 Cancelled/唯一取消终态，以及关库重开后的顺序与 live/replay 一致。正常对照保留合成音频原字节、workspace 归属和唯一成功终态。实际命令公共参数为 `--target-dir target/h300-after-h163-build --offline -j 2`；最终媒体默认组 **25 passed/0 failed/13 ignored**，AppCore lib **1323/0/57**，workflow integration **30/0/25**，制品重开 **6/0/0**，Runtime lib **339/0/9**，根 fmt/diff check 通过。完整命令、原生退出与耗时见进度台账 E-H301-01～06 及 `target/h301-*-20261030` 证据；本轮测试/文档提交取得 hash 后另行回填。
+
+严格 Clippy 仍有未修改的 AppCore 11 项错误；全 test 非严格 lint 也被未改 Kernel fixture 的 `mcp_discovery_restore.rs:433 panicking_unwrap` 默认 deny 阻断，原失败保留，不把窄诊断成功或 ignored 当作全部通过。只改测试与两份文档，无 API/wire/依赖/权限/沙箱/生产数据库迁移。本轮未重跑 workspace、CLI/SDK、Tauri/pnpm/GUI、真实供应商或其他 OS；上轮 H-304 全仓结果不是本轮结果。300ms 是本机用例断言，连接关闭另有 2 秒等待；同进程关库重开、已断连 fixture 的释放不等于 OS 崩溃、真实完成竞态、远端撤销或计费验收。H-302 等独立问题仍待修，整体目标 active。
+
+以下为 2026-10-25 的原始审计正文，保留首次失败及当时的未修状态，不代表当前仍复现。
 
 **级别：高（P1，运行控制与状态一致性）；状态：正式工作流路径已复现，未修复。** 触发条件是用户在 `audio` 节点的语音合成请求已经发出、供应商迟迟不返回时点击停止/发送取消。这个问题与 H-165 的 URL 第二跳不同：本轮没有下载供应商返回的 URL，也没有访问内网或公网，只验证 provider 响应读取是否受取消控制。
 
