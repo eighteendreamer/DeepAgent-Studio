@@ -8,15 +8,29 @@
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 80 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-284、H-286、H-287、H-288、H-300，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 81 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-284、H-286、H-287、H-288、H-300、H-303，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 20 | 17项原审计历史修复，另H-77/H-238/H-246分别随H-78/H-260/H-245共享边界消除；H-246原探针前置条件已变，历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-249已完成E-H249-06所列本机范围验收；下一项尚未实施 |
-| 待修复 | 197 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 当前没有已登记的修复中条目；下一项 H-304 尚未实施 |
+| 待修复 | 196 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **197（197待修复、0修复中）**；不提供完成率。八十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4及真实复核单独列明，合计20项历史跳过。
+有效未关闭条目当前为 **196（196待修复、0修复中）**；不提供完成率。八十一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4及真实复核单独列明，合计20项历史跳过。
+
+## H-303 本轮即时记录（2026-10-29）
+
+**当前状态：已修复并验收（仅所列 Windows 本机、合成媒体、临时 SQLite 与 loopback fixture 范围）。** 修复提交为 `c68c41cea7225c79e48d44939d35ff4aa1fee023`（`【fix】修复画布视频下载网络审批绕过`）。H-249 已交付不重复；五类用户未跟踪项仍只经 `git status` 列名，未读取、修改或暂存。
+
+E-H303-01（修前复现）：隔离临时 data/home/profile/managed 并清除继承 key、DB/target 覆盖后，原正式 workflow 探针原生 101、0 passed/1 failed/0 ignored；第二台 loopback 收到 `GET /host-private.mp4`，`approvals=0`、终态 `succeeded`、23 字节 canary 实际进入 artifact。原始日志/result 为 `target/h303-original-20261029.log` / `target/h303-original-20261029-result.json`，反例保留。
+
+E-H303-02（正常闭环）：正式 `video-gen` 先运行 provider submit/status/resume/progress，成功 URL 进入 run-scoped one-shot handle，经 `canvas_video_fetch`、原 `http_enabled`、统一 Network/High 风险审批和 `PublicHttpClient` 保存为同 workspace `Video` artifact；正常专项 1 passed/0 failed，只有一个成功终态。
+
+E-H303-03（拒绝矩阵）：loopback/private URL ignored 探针 1 passed，`private_requests=[]`、`approvals=1`、终态 `failed`、video `Failed`、`artifacts=[]`；审批拒绝探针 1 passed，未发生私网 GET 或持久化。H303 handle 单测 1 passed，覆盖 scope、Video kind、one-shot 和无 broker 回退拒绝。四份结果分别见 `target/h303-video-success-final-20261029-*`、`target/h303-private-url-final-20261029-*`、`target/h303-denied-url-final-20261029-*`、`target/h303-video-handle-2-20261029-*`。
+
+E-H303-04（相关门禁）：Runtime workflow 69 passed；AppCore workflow 30 passed/25 ignored；Canvas 161 passed/19 ignored；run assembler 7 passed；HTTP broker 11 passed；AppCore lib 1310 passed/59 ignored；Tauri Rust check、`apps/desktop` `pnpm build`、根 fmt 和 `git diff --check` 均原生 0。严格 Clippy 仍被未修改的 `deepagent-models/src/client.rs:355` `clone_on_copy` 基线错误阻断。
+
+E-H303-05（完整 workspace 限制）：按要求启动 `cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1`，运行至既有 Rust SDK `e2e_stdio` 时长时间无子进程输出，人工中止，未取得终态；不把它记为通过或 H-303 失败，也不覆盖既有 H-306/SDK 基线。未访问真实 provider、凭据、公网/内网或用户数据；H-302 视频字节预算、H-301 取消和兼容入口 `generate_video()` 仍独立待处理。无新依赖、SQL 迁移或权限放宽，整体目标继续 active，下一项 H-304。
 
 ## H-249 本轮即时记录（2026-10-29）
 
@@ -2740,7 +2754,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-300：Embedding 工作流执行器存在，但画布契约/图注册表没有注册 embedding 节点](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H300-01～12保留原graph/批量/成本失败；仅所列Windows本机范围，H-163/H-164不重复计数 | 复用专业registry/schema、graph、executor/gateway、取消树、canonical计量与run_events；批量全解析/次序/数量校验 | workflow41/0/39、gateway47/0/5、runtime68/0；真实桌面DTO1/0、text取消1/0；UI真实交互恢复/前端build/Tauri/fmt通过；workspace3659/7/309与严格lint失败保留，同binary整组AppCore1230/0/62、Kernel159/1/79（MCP通知）；当前及HEAD快照MCP对照各2/0/1不抹去整组失败；见E-12 | `39c61767` | 无SQL迁移/新依赖；Rust enum新增vectors仓外穷尽调用方需适配，原vector与节点DTO保留；完整Tauri/真实供应商/其他OS/断电未验；剩余212，下一H-287，总200–400未校准有效小时，等待另计 |
 | [H-301：Audio 合成取消没有打断共享 Canvas HTTP 响应](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-302：画布视频下载没有类型级字节上限](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-303：画布视频 provider URL 第二跳绕过网络审批](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-303：画布视频 provider URL 第二跳绕过网络审批](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H303-01保留修前真实GET/存储反例；E-H303-02～05覆盖正常 Video artifact、loopback/审批拒绝、handle 边界与相关门禁 | 正式 video-gen 通过 prepare seam + `canvas_video_fetch`，复用 run-scoped one-shot、PublicHttpClient、原 `http_enabled`、统一审批/取消/deadline/owner；不新增运行链 | 正常1/0/0、拒绝1/0/0、handle1/0/0；相关 Runtime/AppCore/Tauri/前端与 fmt/diff 通过；完整 workspace 在既有 SDK e2e 无终态中止，严格 Clippy 基线失败保留 | `c68c41cea7225c79e48d44939d35ff4aa1fee023` | 仅所列 Windows 本机合成媒体范围；H-302/H-301/兼容入口独立，下一项 H-304，196有效未关闭 |
 | [H-304：Canvas provider 非 2xx 错误正文在分类前无界缓冲](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-305 撤销：SDK Drop 行为符合已有文档，原探针不能证明独立缺陷](system-harness-audit-2026-10-21.md) | — | 撤销 | f37da4fe 撤销误报；Drop 契约及探针隔离/清理不足 | 不作为有效缺陷或修复成果 | 不重复运行已撤销探针 | 撤销证据：f37da4fe | 不独立计数或估时；编号不复用 |
 | [H-306：本地视频编辑的空默认提示词使公开画布提示词目录整体不可读](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

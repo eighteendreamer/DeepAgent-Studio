@@ -18,6 +18,7 @@
 | H-260 | 已修复并验收（2026-10-29，仅E-H260-08所列Windows本机范围） | 共享字节与上下文观察代次分离；正式压缩/恢复38/0/7、Hook默认6/0/3及显式9/0/0；全仓3714/1/306仅既有H-306，Tauri/局部严格lint通过，旧全局lint阻断保留；E-H260-01～09，修复提交`0ba0f611a4496e4385cb0d2d113397c1f15d54a4` |
 | H-287 | 已修复并验收（2026-10-28，仅所列Windows本机范围） | 共享DACL快照、正文前staging保护及原检查点树发布/核验/补偿；默认Kernel161/0/78、checkpoint19/0/1，显式checkpoint20/0/0，Tauri通过；全仓3680/1/308仅既有H-306，严格lint既有阻断保留；E-H287-01～15，修复提交`f2efc1b5` |
 | H-300 | 已修复并验收（2026-10-28，仅所列Windows本机范围） | 专业节点注册/场景筛选与批量完整契约；workflow41/0/39、gateway47/0/5、runtime68/0，真实DTO/取消/重开/UI恢复及前端/Tauri通过；workspace3659/7/309与严格lint失败保留；同binary完整组AppCore1230/0/62、Kernel159/1/79（MCP通知），受控窄复跑不抹去原失败；E-H300-01～12，修复提交`39c61767` |
+| H-303 | 已修复并验收（2026-10-29，仅所列Windows本机合成媒体、临时SQLite与loopback fixture范围） | 视频 provider URL 第二跳改走 run-scoped one-shot handle、统一 PublicHttpClient/Network 审批与 Video artifact；正常、私网拒绝、审批拒绝和 handle 作用域回归通过；完整 workspace 未取得终态，既有 H-306/SDK e2e 与严格 Clippy 基线保留；E-H303-01～05，修复提交`c68c41cea7225c79e48d44939d35ff4aa1fee023` |
 | H-163 | 已修复并验收（2026-10-28，仅所列Windows本机/离线/正式生产消费者范围） | canonical 用量、实际模型归属、未知完整性与版本化成本回执；usage12/0/0、原探针3/0、UI15/0/0，主树 workspace3663/1/310（唯一既有H-306）、Tauri check通过；E-H163-01～12，修复提交`de93c589` |
 | H-142 | 已修复并验收（2026-10-28，仅所列Windows本机/离线/正式消费者范围） | 单sink首错锁存与checkpoint，保留真实工具结果并统一准入收尾；专项5/0/0、Runtime327/0/12、E2E156/0/78、准入2/0/0，fmt/Tauri Rust check通过；workspace3587/1既有H-306/313 ignored与lint旧阻断保留；H-143独立反证仍0/1；E-H142-06～08，修复提交`e1370f9db521556eb10c4719ffaa2b08dd1503ec` |
 | H-135 | 已修复并验收（2026-10-28，仅所列Windows本机stdio与正式服务范围） | 唯一spawn清空继承环境、叠OS基础白名单与原显式env；默认环境5/0/1、全MCP126/0/6、正式服务1/0/1，MCP严格lint/fmt/桌面Rust通过；workspace3572/2/314及严格lint失败保留，见E-H135-01～06；修复提交`b51529f05bfdb669bac6dbaf7755594b6c4ff3b2` |
@@ -62,7 +63,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **79**、历史已修复跳过 **20**、归并 **7**、撤销 **2**、有效未关闭 **198（198待修复、0修复中）**；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **81**、历史已修复跳过 **20**、归并 **7**、撤销 **2**、有效未关闭 **196（196待修复、0修复中）**；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -10736,26 +10737,25 @@ E-H300-13（独立提交与收尾复核）：修复、回归测试及当时两�
 
 ### H-303：画布视频 provider URL 第二跳绕过网络审批
 
-**级别：高（P1，条件性网络边界）；状态：正式 video 工作流路径已复现，未修复。** 触发条件是已配置的 video provider 在 `video/status` 成功结果中返回一个宿主可访问的下载 URL。当前宿主随后直接下载该 URL；本轮用第二台 loopback 服务模拟 host-private 资源，只在本机验证是否发生第二跳，不访问真实内网、云元数据或公网。
+**级别：高（P1，条件性网络边界）；状态：已修复并验收（2026-10-29，仅所列 Windows 本机、合成媒体、临时 SQLite 与 loopback fixture 范围）。** video provider 在 `video/status` 返回的 URL 现在不会由宿主直接 GET；正式 `video-gen` workflow 先完成 submit/status/resume/progress，再把 URL 放入 run-scoped opaque one-shot handle，经统一网络 broker、Network/High 风险审批和 `PublicHttpClient` 下载为同 workspace `Video` artifact，随后才回执给节点。
 
-#### 即时 Evidence（2026-10-25）
+#### 修前证据（E-H303-01）
 
-- 新增并执行 `crates/deepagent-app-core/tests/workflow_audit/media.rs::audit_provider_video_url_cannot_fetch_loopback_resource`。夹具使用正式 `ChatService`、`WorkflowAgent`、视频 submit/status、`fetch_video_artifact`、ArtifactService、RunStore 和文件 SQLite；一台 loopback 服务冒充 provider，另一台 loopback 服务只返回合成 MP4 canary。
-- 命令：`cargo test -p deepagent-app-core --test workflow_audit media::audit_provider_video_url_cannot_fetch_loopback_resource --offline -- --ignored --nocapture --exact`。按安全边界预期失败，实际输出：`private_requests=["GET /host-private.mp4 HTTP/1.1"], approvals=0, terminal=succeeded, artifact_bytes=23, canary_stored=true`。
-- 这证明正式 video provider URL 被直接二跳 GET，响应被写入 artifact，运行仍 succeeded；没有审批事件。测试没有使用真实供应商凭据、用户文件或外部网络，且只在确认第二跳后登记本项。
-- 生产链核对：`generate_video()` 取成功 job 的 `video_url` 后调用 `fetch_video_artifact()`；该函数新建 reqwest client 并 `client.get(url)`，只处理 HTTP 状态、MIME 和流式 artifact 写入，没有调用统一 network permission/approval seam，也没有校验 loopback/private/redirect 目标。H-165 的 image URL 问题不覆盖这个独立 video downloader 路径；H-249 是 audio transcription 的远程输入，触发点不同。
+隔离临时 data/home/profile/managed、清除继承 key 与 DB/target 覆盖后执行原正式 workflow 探针：`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test workflow_audit media::audit_provider_video_url_cannot_fetch_loopback_resource --offline -j 2 -- --ignored --nocapture --exact`。原生 101、4.25 秒、0 passed/1 failed/0 ignored；第二台 loopback fixture 收到 `GET /host-private.mp4`，`approvals=0`、唯一终态 `succeeded`、`artifact_bytes=23`、`canary_stored=true`。原始日志/result 保留在 `target/h303-original-20261029.log` 与 `target/h303-original-20261029-result.json`，不覆盖修前反例。
 
-#### 成熟 Agent 对照、影响与治理方向
+#### 修复与验收证据（E-H303-02～05）
 
-- **Codex** 的命令、文件和网络能力从 permission profile、approval reviewer 与 sandbox/host seam 进入执行；provider 返回的任意 URL 不应凭字符串类型自动获得新的网络能力。其 app-server 传输层也把请求生命周期和身份绑定，不能把一个外部结果当作新的可信权限。
-- **DeepSeek Harness** 的工具/host adapter 将外部资源解析留在宿主能力边界，并在 provider/adapter 侧区分可信配置与模型产生的值；可迁移原则是“模型/provider 输出是数据，不是授权”。本轮未运行参考工程的 video adapter，不把静态源码写成动态保证。
-- **DeepSeek 官方 Responses/Tool Calls/KV Cache** 文档不规定本地 URL 下载、SSRF 防护或审批；官方只规定模型返回调用/结果后由宿主执行。因此 reasoning、strict、缓存前缀都不能修复本地 video URL 的权限缺口。
-- 影响是 P1：若供应商、兼容网关或被污染的响应让 URL 指向 loopback、私网、重定向链或本机控制面，宿主可在无用户批准下读取并持久化响应，随后把内容暴露给工作流下游、artifact 查看器或下一次模型输入。当前证据只证明本机 canary 被读取和存储，不证明真实数据已泄露或已访问云元数据。
-- 根治方向是让所有 provider-controlled URL 统一进入既有网络策略：解析并固定重定向前后的目标，拒绝 loopback、link-local、私网、Unix/特殊 scheme 和未获批准的 host；每个二跳带上 operation、provider、run、风险类别和审批上下文；下载流同时复用 H-302 的字节预算与 H-301/H-164 的取消 token。image、video、audio 的下载/输入不能各自新建裸 reqwest client。
+- `CanvasModelBridge::prepare_video` 与 `PendingArtifactOutput::Video` 为 additive seam；workflow `video-gen` 通过 `canvas_video_fetch` 工具续接，工具绑定装配器原有 `http_enabled`，不新增下载、审批、事件或持久化链。URL、query、provider key 不进入工具参数、审批正文或 action；下载复用既有取消、deadline、owner、one-shot 和 artifact ownership。
+- 正常闭环：`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_model_gateway::workflow_media_audit::real_video_workflow_stores_the_download_and_one_success_terminal --offline -j 2 -- --nocapture --exact --test-threads=1`，1 passed/0 failed/1368 filtered；合成视频保存为 `Video` artifact，只有一个成功终态。
+- 私网/loopback 拒绝：同一专项的 ignored 探针原生 0，1 passed/0 failed/1368 filtered；provider 控制面请求 2 次，`private_requests=[]`、`approvals=1`、终态 `failed`、video `Failed`、`artifacts=[]`。审批拒绝探针同样 1 passed，未发生私网 GET 或持久化。
+- handle 边界：`canvas_model_gateway::tests::h303_deferred_video_fetch_preserves_scope_kind_and_one_shot` 原生 0，1 passed；覆盖 run scope、Video kind、one-shot 消费和无 broker 回退拒绝。四项原生结果分别保留在 `target/h303-video-success-final-20261029-*`、`target/h303-private-url-final-20261029-*`、`target/h303-denied-url-final-20261029-*`、`target/h303-video-handle-2-20261029-*`。
+- 受影响回归：Runtime workflow 69 passed；AppCore workflow 30 passed/25 ignored；Canvas 161 passed/19 ignored；run assembler 7 passed；HTTP broker 11 passed；AppCore lib 1310 passed/59 ignored；Tauri Rust check 与 `apps/desktop` `pnpm build` 均原生 0。`cargo fmt --all -- --check`、`git diff --check` 均原生 0。
 
-#### 本轮边界
+#### 门禁结果与剩余边界
 
-- 本项只新增 ignored 双 loopback 复现与文档，没有修改生产网络或权限逻辑；没有访问真实内网、元数据服务、公网或用户数据，也没有重复 image 的 H-165 canary。验收仍需正常 video 下载对照、拒绝 loopback、拒绝 redirect-to-private、审批允许的显式例外和取消/超限组合。
+严格 `cargo clippy --target-dir target/h300-after-h163-build -p deepagent-runtime -p deepagent-app-core --tests --offline -j 2 -- -D warnings` 被未修改的 `crates/deepagent-models/src/client.rs:355` `clone_on_copy` 基线错误阻断；未顺手修改或屏蔽。完整 workspace 命令按项目要求启动，但运行至既有 Rust SDK `e2e_stdio` 时长时间无子进程输出且无活动子进程，人工中止，未取得终态；此前 AppCore lib、kernel_v2_e2e、workflow 等已执行组未见 H-303 失败，不能把这次中止写成 workspace 通过，也不以它覆盖既有 H-306/SDK 环境基线。
+
+本项没有真实 provider、真实凭据、公网/内网、真实用户文件或跨平台 UI 验证；H-302 视频字节预算、H-301 取消响应及直接兼容入口 `generate_video()` 的其他历史边界仍独立保留。本修复无新依赖、SQL 迁移或权限放宽；未改变隔离 backend 无 broker 的拒绝。修复代码与回归已提交为 `c68c41cea7225c79e48d44939d35ff4aa1fee023`（`【fix】修复画布视频下载网络审批绕过`），下一项为 H-304，整体目标仍 active。
 
 ### H-304：Canvas provider 非 2xx 错误正文在分类前无界缓冲
 
