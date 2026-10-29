@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-304 | 已修复并验收（2026-10-30，仅 E-H304-05～06 所列 Windows 本机范围） | 共用 64 KiB 非 2xx reader；最终专项 7/0/0、正式媒体 workflow 22/0/14、Tauri/fmt 通过；全仓 3810/1/295 仅既有 H-306，严格 Clippy 旧失败保留；E-H304-01～06，独立提交后回填 hash |
+| H-304 | 已修复并验收（2026-10-30，仅 E-H304-05～06 所列 Windows 本机范围） | 共用 64 KiB 非 2xx reader；最终专项 7/0/0、正式媒体 workflow 22/0/14、Tauri/fmt 通过；全仓 3810/1/295 仅既有 H-306，严格 Clippy 旧失败保留；E-H304-01～07，`d752c8094950c0524c1f9947736aa6a9b6d52d01` |
 | H-249 | 已修复并验收（2026-10-29，仅E-H249-06所列Windows本机范围） | 共用run-scoped制品工具/公网broker，统一Network审批后转Audio artifact再执行原provider；专项13、Canvas140/0/4、重开6/workflow50、前端272/build及Tauri通过；全仓3799/1/295仅既有H-306，旧严格lint/桌面格式失败保留；E-H249-01～07，`6198d4cd6d76791657b4fe220f92937534c453d4` |
 | H-253 | 已修复并验收（2026-10-29，仅E-H253-06所列Windows本机范围） | 上传绑定workspace/host caller，Canvas127/0/5、重开6、workflow49/0/39、前端272/build及Tauri通过；全仓3785/1/296仅H-306，旧严格lint/桌面格式失败保留；E-H253-01～07，`f525187adf300a649cb47e8ef388601463db26be` |
 | H-250 | 已修复并验收（2026-10-29，仅E-H250-06所列Windows本机范围） | 原gate内单次SHA-256/长度验证、只返回受验bytes；Canvas120/0/6、重开5、workflow48/0/39、前端269/build及Tauri通过；全仓3776/1/297仅H-306，旧lint/桌面格式失败保留；E-H250-01～07，`6bb48869346d0103b7e2d12d31fe32473dc5681b` |
@@ -10760,7 +10760,7 @@ E-H300-13（独立提交与收尾复核）：修复、回归测试及当时两�
 
 ### H-304：Canvas provider 非 2xx 错误正文在分类前无界缓冲
 
-**修复验收（2026-10-30）：已修复并验收，仅限所列 Windows 本机合成媒体、临时 SQLite 和 loopback fixture 范围；独立提交后回填 hash。** `call`、视频 submit/status 的 `post_json`、模型目录共用非 2xx reader，分类/JSON 解析前先检查声明长度并累计实际 chunk；超过 64 KiB 本地诊断限额立即丢弃响应，返回非 transient 的 `ResponseBodyTooLarge`，保留 HTTP 状态并省略正文。小错误保留原 400 字符 Unicode 安全摘要和 401/403/429/5xx 分类；失败 Chat/Embedding 响应仍单次结算物理 usage，未读/畸形保持 unknown。视频错误正文继续走原取消/timeout，不新增运行、审批或存储链。
+**修复验收（2026-10-30）：已修复并验收，仅限所列 Windows 本机合成媒体、临时 SQLite 和 loopback fixture 范围；修复提交 `d752c8094950c0524c1f9947736aa6a9b6d52d01`。** `call`、视频 submit/status 的 `post_json`、模型目录共用非 2xx reader，分类/JSON 解析前先检查声明长度并累计实际 chunk；超过 64 KiB 本地诊断限额立即丢弃响应，返回非 transient 的 `ResponseBodyTooLarge`，保留 HTTP 状态并省略正文。小错误保留原 400 字符 Unicode 安全摘要和 401/403/429/5xx 分类；失败 Chat/Embedding 响应仍单次结算物理 usage，未读/畸形保持 unknown。视频错误正文继续走原取消/timeout，不新增运行、审批或存储链。
 
 修前证据 `target/h304-original-20261029.log` / `-result.json` 原生 101，保留 `sent_bytes=33554433` 原始反例。最终 7 项真实 gateway 边界回归通过，包含声明与 chunked 超限、恰好限额、小错误/Unicode、各入口与正常控制面对照、usage/截断传输、候选切换和视频半正文取消/timeout。正式媒体模块 22 passed/0 failed/14 ignored，本项文本原探针转默认且音频新增回归默认通过：文本实际 `response_bytes=33554433`、`sent_bytes=65536`、`error_message_bytes=95`、`terminal=failed`；两者均单次 failed 终态，无 Completed 节点或输出 artifact。未借默认忽略跳过本项探针。
 

@@ -20,7 +20,7 @@
 
 ## H-304 本轮即时记录（2026-10-30）
 
-**当前状态：已修复并验收（2026-10-30，仅 E-H304-05～06 所列 Windows 本机、合成媒体、临时 SQLite 和 loopback 范围）；独立提交 hash 待提交后回填。** 基线 HEAD 为 `0794f0e09bb22559bffc19067c2bdd61f7cf14d0`。仅处理 Canvas provider 非 2xx 错误正文在分类前无界缓冲；覆盖共享 `call`、视频 submit/status 的 `post_json` 和模型目录入口，不冒领 H-301 取消或 H-302 成功媒体字节预算。五类用户未跟踪项只经 `git status` 列名，不读取、修改、暂存或删除。以下 E-01～04 保留过程证据，当时的待验状态不替代 E-05～06 的最终结果。
+**当前状态：已修复并验收（2026-10-30，仅 E-H304-05～06 所列 Windows 本机、合成媒体、临时 SQLite 和 loopback 范围）；修复提交 `d752c8094950c0524c1f9947736aa6a9b6d52d01`。** 基线 HEAD 为 `0794f0e09bb22559bffc19067c2bdd61f7cf14d0`。仅处理 Canvas provider 非 2xx 错误正文在分类前无界缓冲；覆盖共享 `call`、视频 submit/status 的 `post_json` 和模型目录入口，不冒领 H-301 取消或 H-302 成功媒体字节预算。五类用户未跟踪项只经 `git status` 列名，不读取、修改、暂存或删除。以下 E-01～04 保留过程证据，当时的待验状态不替代 E-05～06 的最终结果。
 
 E-H304-01（续接原始复现）：原正式探针现位于 lib 的 `canvas_model_gateway::workflow_media_audit::audit_canvas_provider_error_body_is_bounded`。修前命令原生 101、0 passed/1 failed，`response_bytes=33554433`、`sent_bytes=33554433`、`error_message_bytes=446`、`terminal=failed`；证据 `target/h304-original-20261029.log` / `target/h304-original-20261029-result.json` 保留不覆盖。
 
@@ -53,6 +53,8 @@ E-H304-06（限定验收与兼容边界）：共享 reader 在分类/JSON 解析
 公共 Rust `CanvasErrorCode` 增加 `ResponseBodyTooLarge`，仓外穷尽匹配调用方需适配；仓内全局检索没有其他枚举消费方，Tauri Rust 消费者实际编译通过。没有新 command/DTO、前端类型/事件 payload、依赖、配置、审批放宽或生产数据库迁移。新错误读取诊断移除 reqwest URL，不声明旧日志和供应商正文已全面脱敏。未执行 pnpm build/原生 GUI（未改前端/桥接 wire）、真实 provider、其他 OS、设备或并发资源压力验收；不能把本机门禁推广为全平台或全仓严格通过。
 
 本轮新增 1 项限定验收：82 验收、20 历史跳过、7 归并、2 撤销、195 待修、0 修复中。306 主行唯一且仅 H-304 行相对 HEAD 改变。下一候选准备复核 H-301 Audio 合成取消，先核对原探针与现有外层护栏；未实施，不把 H-304 的视频错误取消对照冒领为它的修复。全部剩余修复与验收暂沿用历史 200–400 有效小时粗估，尚未对 195 项逐项校准，不按提交数扣减；设备/依赖/构建与环境等待另计，没有可靠等待时长，不承诺完工日。整个目标继续 active。
+
+E-H304-07（独立提交回填，source_type=command/file）：三份源码/测试与当时两份文档共 5 文件已独立提交 `d752c8094950c0524c1f9947736aa6a9b6d52d01`（`【fix】限制画布供应商错误响应正文的读取边界`）。提交前 staged scope、diff check、306 个唯一编号/8 列、状态计数与三份冻结 SHA-256 均核对通过；原 H-304 审计正文逐字保留，其他 305 条台账主行不变。提交后仅五类原用户未跟踪项，未读取、修改、暂存或删除；未推送、建 PR、amend、改 Git 配置或操作真实数据。本次仅另行回填真实修复 hash，不递归填写文档提交自身 hash，不扩大限定验收范围。
 
 ## H-303 本轮即时记录（2026-10-29）
 
@@ -2791,7 +2793,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-301：Audio 合成取消没有打断共享 Canvas HTTP 响应](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-302：画布视频下载没有类型级字节上限](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-303：画布视频 provider URL 第二跳绕过网络审批](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H303-01保留修前真实GET/存储反例；E-H303-02～05覆盖正常 Video artifact、loopback/审批拒绝、handle 边界与相关门禁 | 正式 video-gen 通过 prepare seam + `canvas_video_fetch`，复用 run-scoped one-shot、PublicHttpClient、原 `http_enabled`、统一审批/取消/deadline/owner；不新增运行链 | 正常1/0/0、拒绝1/0/0、handle1/0/0；相关 Runtime/AppCore/Tauri/前端与 fmt/diff 通过；完整 workspace 在既有 SDK e2e 无终态中止，严格 Clippy 基线失败保留 | `c68c41cea7225c79e48d44939d35ff4aa1fee023` | 仅所列 Windows 本机合成媒体范围；H-302/H-301/兼容入口独立，下一项 H-304，196有效未关闭 |
-| [H-304：Canvas provider 非 2xx 错误正文在分类前无界缓冲](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H304-01 保留原正式 workflow 失败；仅 E-05～06 所列 Windows 本机范围，不归并其他媒体问题 | 共用非 2xx reader，64 KiB 本地限额、声明/实际 chunk 双检查及原取消/单次 usage 边界 | 最终专项 7/0/0、正式媒体 22/0/14、Tauri/fmt 通过；全仓 3810/1/295 仅既有 H-306，严格 lint 旧失败保留；E-H304-05 | 独立提交后回填 | Rust error enum 新 variant；成功媒体预算/H-301/H-302 独立；195 有效未关闭，下一候选 H-301；总 200–400 未校准有效小时，等待另计 |
+| [H-304：Canvas provider 非 2xx 错误正文在分类前无界缓冲](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H304-01 保留原正式 workflow 失败；仅 E-05～06 所列 Windows 本机范围，不归并其他媒体问题 | 共用非 2xx reader，64 KiB 本地限额、声明/实际 chunk 双检查及原取消/单次 usage 边界 | 最终专项 7/0/0、正式媒体 22/0/14、Tauri/fmt 通过；全仓 3810/1/295 仅既有 H-306，严格 lint 旧失败保留；E-H304-05 | `d752c8094950c0524c1f9947736aa6a9b6d52d01` | Rust error enum 新 variant；成功媒体预算/H-301/H-302 独立；195 有效未关闭，下一候选 H-301；总 200–400 未校准有效小时，等待另计 |
 | [H-305 撤销：SDK Drop 行为符合已有文档，原探针不能证明独立缺陷](system-harness-audit-2026-10-21.md) | — | 撤销 | f37da4fe 撤销误报；Drop 契约及探针隔离/清理不足 | 不作为有效缺陷或修复成果 | 不重复运行已撤销探针 | 撤销证据：f37da4fe | 不独立计数或估时；编号不复用 |
 | [H-306：本地视频编辑的空默认提示词使公开画布提示词目录整体不可读](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 <!-- repair-ledger:end -->
