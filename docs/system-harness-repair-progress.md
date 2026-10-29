@@ -20,7 +20,7 @@
 
 ## H-249 本轮即时记录（2026-10-29）
 
-**当前状态：已修复并验收（2026-10-29，仅E-H249-06所列Windows本机范围），待独立提交后回填hash。** 基线HEAD为`c597b354fd076bb5382e68bce74e5917c999cbd4`。H-253已交付不重复；五类用户未跟踪项仍只经git status列名，不读取、修改、暂存或删除。
+**当前状态：已修复并验收（2026-10-29，仅E-H249-06所列Windows本机范围），修复提交`6198d4cd6d76791657b4fe220f92937534c453d4`。** 基线HEAD为`c597b354fd076bb5382e68bce74e5917c999cbd4`。H-253已交付不重复；五类用户未跟踪项仍只经git status列名，不读取、修改、暂存或删除。
 
 E-H249-01（原始复现，source_type=command）：隔离临时data/home/profile/managed，清除继承key和DB/target覆盖，执行`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_model_gateway::tests::audit_speech_transcription_remote_reference_bypasses_network_policy --offline -j 2 -- --ignored --exact --nocapture`，原生101、9.45秒、0 passed/1 failed/0 ignored；真实输出private_gets=1、text=Some("transcribed")。日志及结果保留于target/h249-original-20261029.log/-result.json。只证明正式gateway直接调用，不扩大为已验证UI/完整workflow旁路。
 
@@ -65,6 +65,8 @@ E-H249-06（完整门禁终态与限定验收，source_type=command/file）：�
 兼容与边界：公共Rust bridge只增加有默认实现的prepare_audio_input，旧image枚举variant import、工具名/schema/响应保留；未准备的run_audio远程引用改为明确NetworkDenied，不再隐式GET。新远程音频32 MiB是本地下载预算；本地artifact/data及图片的其他预算不在本项。成功下载的输入是正常持久化artifact，provider失败不自动删除，也不承诺provider exactly-once。新tool args/approval/action不含源query或provider key，不冒称原用户图/inputs/start输出全面脱敏。无新依赖、SQL迁移或第二套执行/事件/审批链。
 
 本项由修复中转验收，仅H-249主行更新：80验收、20历史跳过、7归并、2撤销、197待修、0修复中，197有效未关闭。下一项准备H-303视频provider URL第二跳网络审批，仍须先复核原探针、当前实现及H-164/H-249共享边界，不预记修复。全部剩余修复与验收暂沿用历史200–400有效小时粗估，依据仍为既有风险/依赖分组而非197项逐项重新估算，不按提交数机械扣减；跨层契约、持久化故障注入、平台与硬件验证会改变区间。设备/依赖/构建/环境等待另计且尚无可靠时长，不能据此承诺完工日。整个目标继续active。
+
+E-H249-07（独立提交回填，source_type=command/file）：9份源码/测试及当时两份文档共11文件已独立提交`6198d4cd6d76791657b4fe220f92937534c453d4`（【fix】统一远程音频输入的网络审批与制品边界）。提交前306主行唯一且仅H-249改变，80/20/7/2/197状态计数与汇总一致；9份SHA-256冻结核对及staged diff check通过。提交后仅五类原用户未跟踪项，未暂存、读取、修改或删除；未推送/建PR/迁移数据，也未amend或绕过hook。本次仅另行回填真实修复hash与提交记录，不递归填写文档提交自身hash，不把限定验收改写为全仓/全平台通过。
 
 ## H-253 本轮即时记录（2026-10-29）
 
@@ -2684,7 +2686,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-246：画布偏好 hydration 完成后会覆盖读取期间的用户编辑](system-harness-audit-2026-10-21.md) | P1 | 历史已修复跳过 | 本轮前随H-245共享门禁消除；原探针早期接纳前置断言已变，历史对照见E-H246-01～05 | 未读拒绝且UI等待，已读key不被重试覆盖；本轮仅默认回归，无新生产修复 | 当前及H-245模块6/0/0，修前原探针0/1原payload失败；相关137/0/0、build262/0/0、真实CanvasApp延迟读/连续编辑/关闭/重开及3截图通过 | 生产来源`8c8e1af4ec0a419255687eefd2e5895703f99d40`；本轮测试/文档`ac4e34453366be7e956bdc9b76cad04c9ef06ce1` | 仅E-04本机范围；无新增兼容变更；原生WebView/SQLite/强杀/多OS未验、无跨窗口CAS；203有效未关闭，200–400有效小时历史未校准粗估 |
 | [H-247：画布 legacy 偏好迁移在后端写入失败时先删源数据，导致不可重试丢失](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原源丢失断言本轮复现，非历史修复 | 原始源保留到提交确认，按raw清理；坏JSON不当空；复用同窗口准备结果，见E-H247-01～06 | 默认14/0/0、相关131/0/0；build256/0/0+tsc/Vite；真实localStorage及CanvasApp双故障重开/4截图；fmt/diff通过；未原生WebView或Rust全仓重跑 | `a1a7f86068821c894b462cb1fca7e598df0e56b3` | 仅所列范围；无协议/SQL迁移变更；无跨进程artifact精确一次/原子legacy迁移，残留源保留；本项0，总200–400有效小时未校准粗估 |
 | [H-248：画布语音合成响应无字节上限，超预算音频被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-249：画布语音转写的远程音频输入绕过统一网络权限与审批](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H249-01～06；原gateway失败保留，旧workflow Unknown提前拒绝的范围纠正保留 | 共用run-scoped one-shot制品工具/PublicHttpClient，经统一Network审批后按真实Audio artifact执行原provider | 专项lib12/workflow1、Canvas140/0/4、重开6/workflow50、前端272/build及Tauri通过；workspace3799/1/295仅既有H-306，旧严格lint/桌面格式失败保留 | 待独立fix提交后回填 | 仅E-06 Windows本机范围；直接远程run_audio改拒绝、新远程音频32MiB本地预算；无依赖/SQL迁移，非provider exactly-once；197有效未关闭，历史200–400有效小时未校准，等待另计 |
+| [H-249：画布语音转写的远程音频输入绕过统一网络权限与审批](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H249-01～07；原gateway失败保留，旧workflow Unknown提前拒绝的范围纠正保留 | 共用run-scoped one-shot制品工具/PublicHttpClient，经统一Network审批后按真实Audio artifact执行原provider | 专项lib12/workflow1、Canvas140/0/4、重开6/workflow50、前端272/build及Tauri通过；workspace3799/1/295仅既有H-306，旧严格lint/桌面格式失败保留 | `6198d4cd6d76791657b4fe220f92937534c453d4`；本次另做文档回填 | 仅E-06 Windows本机范围；直接远程run_audio改拒绝、新远程音频32MiB本地预算；无依赖/SQL迁移，非provider exactly-once；197有效未关闭，历史200–400有效小时未校准，等待另计 |
 | [H-250：画布 artifact 读取不校验持久化摘要，旧 URI 会静默投影替换后的字节](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H250-01～07保留原失败与后续红测，仅所列Windows本机范围 | 原物化gate内单次流式SHA-256/长度验证；只返回受验bytes，路径查询不缓冲媒体；原索引保留 | Canvas120/0/6、重开5/0/0、workflow48/0/39，原探针默认通过；前端269/build及Tauri通过；workspace3776/1/297仅既有H-306，旧严格lint/桌面格式阻断保留 | `6bb48869346d0103b7e2d12d31fe32473dc5681b` | 无SQL迁移/IPC变更；旧缺失/非法摘要拒绝物化；非永久路径lease/抢占取消，其他OS/原生UI/供应商未验；H-253独立，199有效未关闭，总200–400有效小时未校准 |
 | [H-251：命名画布工作流保存了 workspace_id，但库查询、读取和删除没有 workspace 访问边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 独立scope缺陷，原失败保留；E-H251-01～08限定本机范围 | 统一scope CRUD/归属CAS；原地tombstone保留owner/graph；Tauri及冲突副本同scope | store20、重开3、前端263/build/UI、Tauri check通过；workspace3736/1/300仅H-306；严格lint/桌面fmt既有阻断已对照 | `d26e2266a19edfc78c07b39936b29fc6b33f1796` | 受信namespace非认证；无SQL迁移；tombstone占存储、旧新binary并写未验；H-252不含，202有效未关闭，剩余工时未校准 |
 | [H-252：Canvas artifact 的读取、provider 投影、显示和删除按全局 ID 操作，绕过 workspace 隔离](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H252-01～11，原失败保留，限Windows本机范围 | 唯一owner校验、run固定scope、同域输出及前端分域缓存 | scope7、canvas109/0/8、runtime69、重开4、前端269/build/UI、Tauri/示例check通过；全仓3747/1/299仅H-306；新增lint已清、旧11项保留 | `7bc7d9bf76b521d2286525584ac90ba31f7692a2` | namespace非认证，无迁移；H-250/253/254独立；下一项H-254，201有效未关闭 |
