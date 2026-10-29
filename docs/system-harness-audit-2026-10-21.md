@@ -1,6 +1,6 @@
 # DeepAgent Studio 全系统 Harness 审查
 
-## 修复阶段当前进度（2026-10-29）
+## 修复阶段当前进度（2026-10-30）
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-304 | 已修复并验收（2026-10-30，仅 E-H304-05～06 所列 Windows 本机范围） | 共用 64 KiB 非 2xx reader；最终专项 7/0/0、正式媒体 workflow 22/0/14、Tauri/fmt 通过；全仓 3810/1/295 仅既有 H-306，严格 Clippy 旧失败保留；E-H304-01～06，独立提交后回填 hash |
 | H-249 | 已修复并验收（2026-10-29，仅E-H249-06所列Windows本机范围） | 共用run-scoped制品工具/公网broker，统一Network审批后转Audio artifact再执行原provider；专项13、Canvas140/0/4、重开6/workflow50、前端272/build及Tauri通过；全仓3799/1/295仅既有H-306，旧严格lint/桌面格式失败保留；E-H249-01～07，`6198d4cd6d76791657b4fe220f92937534c453d4` |
 | H-253 | 已修复并验收（2026-10-29，仅E-H253-06所列Windows本机范围） | 上传绑定workspace/host caller，Canvas127/0/5、重开6、workflow49/0/39、前端272/build及Tauri通过；全仓3785/1/296仅H-306，旧严格lint/桌面格式失败保留；E-H253-01～07，`f525187adf300a649cb47e8ef388601463db26be` |
 | H-250 | 已修复并验收（2026-10-29，仅E-H250-06所列Windows本机范围） | 原gate内单次SHA-256/长度验证、只返回受验bytes；Canvas120/0/6、重开5、workflow48/0/39、前端269/build及Tauri通过；全仓3776/1/297仅H-306，旧lint/桌面格式失败保留；E-H250-01～07，`6bb48869346d0103b7e2d12d31fe32473dc5681b` |
@@ -10758,6 +10759,14 @@ E-H300-13（独立提交与收尾复核）：修复、回归测试及当时两�
 本项没有真实 provider、真实凭据、公网/内网、真实用户文件或跨平台 UI 验证；H-302 视频字节预算、H-301 取消响应及直接兼容入口 `generate_video()` 的其他历史边界仍独立保留。本修复无新依赖、SQL 迁移或权限放宽；未改变隔离 backend 无 broker 的拒绝。修复代码与回归已提交为 `c68c41cea7225c79e48d44939d35ff4aa1fee023`（`【fix】修复画布视频下载网络审批绕过`），下一项为 H-304，整体目标仍 active。
 
 ### H-304：Canvas provider 非 2xx 错误正文在分类前无界缓冲
+
+**修复验收（2026-10-30）：已修复并验收，仅限所列 Windows 本机合成媒体、临时 SQLite 和 loopback fixture 范围；独立提交后回填 hash。** `call`、视频 submit/status 的 `post_json`、模型目录共用非 2xx reader，分类/JSON 解析前先检查声明长度并累计实际 chunk；超过 64 KiB 本地诊断限额立即丢弃响应，返回非 transient 的 `ResponseBodyTooLarge`，保留 HTTP 状态并省略正文。小错误保留原 400 字符 Unicode 安全摘要和 401/403/429/5xx 分类；失败 Chat/Embedding 响应仍单次结算物理 usage，未读/畸形保持 unknown。视频错误正文继续走原取消/timeout，不新增运行、审批或存储链。
+
+修前证据 `target/h304-original-20261029.log` / `-result.json` 原生 101，保留 `sent_bytes=33554433` 原始反例。最终 7 项真实 gateway 边界回归通过，包含声明与 chunked 超限、恰好限额、小错误/Unicode、各入口与正常控制面对照、usage/截断传输、候选切换和视频半正文取消/timeout。正式媒体模块 22 passed/0 failed/14 ignored，本项文本原探针转默认且音频新增回归默认通过：文本实际 `response_bytes=33554433`、`sent_bytes=65536`、`error_message_bytes=95`、`terminal=failed`；两者均单次 failed 终态，无 Completed 节点或输出 artifact。未借默认忽略跳过本项探针。
+
+完整 workspace 原生 101、872.90 秒，130 targets 汇总 3810 passed/1 failed/295 ignored，唯一失败是未改 H-306；AppCore lib 1320/0/67、workflow 30/0/25、重开 6/0/0、Runtime lib 339/0/9、CLI 120/0/22、SDK 实际 stdio 6/0/0。Tauri Rust check、根 fmt/diff 通过。AppCore 严格 lint 仍为 11 项既有错误，workspace 严格 lint 被未改 models/client.rs:355 阻断；保留失败，不把非严格诊断 0 代替严格通过。三份源码在全部门禁后匹配冻结 SHA-256。SDK 硬编码测试位置本次使用已验证相同 SHA-256 的当前 CLI，原构建产物已恢复；不据此臆断上轮挂起根因。
+
+兼容与限制：公共 Rust error enum 新增 variant，仓外穷尽匹配需适配；没有新依赖、配置、command/DTO、前端 wire 或生产数据迁移。64 KiB 限制应用累计保留的诊断正文，不保证网络内部缓冲或 provider 已发送量精确受此限制。成功 JSON/音频/视频正文预算、H-301/H-302 等独立缺陷未冒领；真实 provider、原生 GUI、其他 OS、设备和并发资源压力未验，未执行无本项 wire 变更的前端 build。完整命令、证据与剩余工时见进度台账 E-H304-01～06。下文为原始审计证据，保留不删除。
 
 **级别：中高（P1/P2，条件性资源边界）；状态：正式 text 工作流路径已复现，未修复。** 触发条件是 Canvas provider 对一次模型请求返回非 2xx，并把超出宿主错误诊断预算的正文持续发送。该项与 H-302 的成功视频 artifact 流不同：这里响应会进入失败分类路径；也与 H-303 的 provider URL 第二跳不同：本轮只有一次 provider POST，没有后续 URL 下载或内网访问。
 

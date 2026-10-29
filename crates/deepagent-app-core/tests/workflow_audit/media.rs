@@ -248,6 +248,10 @@ struct LocalErrorTextProvider {
 
 impl LocalErrorTextProvider {
     async fn start(response_bytes: usize) -> Self {
+        Self::start_at(response_bytes, "/v1/chat/completions").await
+    }
+
+    async fn start_at(response_bytes: usize, path: &'static str) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let sent_bytes = Arc::new(AtomicUsize::new(0));
@@ -255,7 +259,7 @@ impl LocalErrorTextProvider {
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             let (line, _) = read_request(&mut socket).await;
-            assert!(line.starts_with("POST /v1/chat/completions "));
+            assert!(line.starts_with(&format!("POST {path} ")));
             let body = vec![b'E'; response_bytes];
             let header = format!(
                 "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -1066,8 +1070,12 @@ impl MediaFixture {
     }
 
     async fn new_audio(provider: &LocalPendingAudioProvider) -> Self {
+        Self::new_audio_at(&provider.base_url).await
+    }
+
+    async fn new_audio_at(base_url: &str) -> Self {
         Self::with_provider(
-            &provider.base_url,
+            base_url,
             "Audit local audio",
             "audit-audio-model",
             vec![CanvasScenario::TextToSpeech],
@@ -1554,7 +1562,6 @@ async fn audit_text_cancel_does_not_wait_for_provider_response() {
 }
 
 #[tokio::test]
-#[ignore = "audit: Canvas provider error responses must be bounded before classification"]
 async fn audit_canvas_provider_error_body_is_bounded() {
     let response_bytes = 32 * 1024 * 1024 + 1;
     let mut provider = LocalErrorTextProvider::start(response_bytes).await;
@@ -1584,13 +1591,61 @@ async fn audit_canvas_provider_error_body_is_bounded() {
         result.is_ok()
     );
     assert!(
-        result.is_err() && terminal != "succeeded" && text_error.is_some(),
+        result.is_err() && terminal == "failed" && text_error.is_some(),
         "provider error must fail the node and run"
     );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .count(),
+        1
+    );
+    let error = text_error.unwrap();
+    assert!(error.contains("ResponseBodyTooLarge") && error.contains("HTTP 500"));
+    assert!(error_len < 200);
+    assert!(!live
+        .iter()
+        .any(|event| event.node_id == "text" && event.status == NodeExecutionStatus::Completed));
+    assert!(live.iter().all(|event| event.artifacts.is_empty()));
+    assert!(fixture.artifacts.list(None, None).unwrap().is_empty());
     assert!(
         sent_bytes < response_bytes,
         "the gateway must stop an oversized error response before the provider sends the complete body"
     );
+}
+
+#[tokio::test]
+async fn h304_audio_error_body_never_becomes_a_successful_artifact() {
+    let response_bytes = 32 * 1024 * 1024 + 1;
+    let mut provider = LocalErrorTextProvider::start_at(response_bytes, "/v1/audio/speech").await;
+    let fixture = MediaFixture::new_audio_at(&provider.base_url).await;
+    let run_id = "h304-error-audio";
+    let result = finish_run(&mut fixture.spawn(run_id)).await;
+    provider.close().await;
+    assert!(result.is_err());
+    assert!(provider.sent_bytes.load(Ordering::SeqCst) < response_bytes);
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "failed");
+    let live = fixture.live.lock().unwrap();
+    assert!(live.iter().any(|event| event.node_id == "audio"
+        && event.status == NodeExecutionStatus::Failed
+        && event
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("ResponseBodyTooLarge"))));
+    assert!(!live
+        .iter()
+        .any(|event| event.node_id == "audio" && event.status == NodeExecutionStatus::Completed));
+    assert!(live.iter().all(|event| event.artifacts.is_empty()));
+    assert!(fixture.artifacts.list(None, None).unwrap().is_empty());
 }
 
 #[tokio::test]

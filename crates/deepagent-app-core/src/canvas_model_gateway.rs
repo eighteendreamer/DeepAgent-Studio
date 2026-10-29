@@ -61,6 +61,7 @@ pub enum CanvasErrorCode {
     InvalidInput,
     TransientFailure,
     ProviderFailure,
+    ResponseBodyTooLarge,
 }
 
 impl CanvasErrorCode {
@@ -78,6 +79,7 @@ impl CanvasErrorCode {
             Self::InvalidInput => "InvalidInput",
             Self::TransientFailure => "TransientFailure",
             Self::ProviderFailure => "ProviderFailure",
+            Self::ResponseBodyTooLarge => "ResponseBodyTooLarge",
         }
     }
 
@@ -732,6 +734,9 @@ const CANVAS_AUDIO_FETCH_TOOL: &str = "canvas_audio_fetch";
 const CANVAS_VIDEO_FETCH_TOOL: &str = "canvas_video_fetch";
 /// Local policy for newly supported remote audio inputs, not a provider limit.
 const MAX_REMOTE_AUDIO_BYTES: usize = 32 * 1024 * 1024;
+/// Error bodies are diagnostic input, not model output. Keep their memory and
+/// provider-send budget independent from successful media payload limits.
+const MAX_PROVIDER_ERROR_BODY_BYTES: usize = 64 * 1024;
 
 impl CanvasArtifactFetchTool {
     fn parse(&self, arguments: &Value) -> CoreResult<(String, String)> {
@@ -1433,6 +1438,27 @@ impl CanvasModelGateway {
             )
         })?;
         let status = resp.status();
+        if !status.is_success() {
+            let body = read_bounded_provider_body(
+                resp,
+                MAX_PROVIDER_ERROR_BODY_BYTES,
+                VideoCancellation {
+                    flag: None,
+                    message: "provider error response read interrupted",
+                },
+                "provider error response",
+            )
+            .await;
+            let value = body
+                .as_ref()
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok());
+            record_response_usage(candidate, kind, value.as_ref(), usage_sink);
+            return Err(classify_status(
+                status.as_u16(),
+                &String::from_utf8_lossy(&body?),
+            ));
+        }
         // 语音合成回二进制，其余回 JSON，所以先按字节取再分流。
         let bytes = resp.bytes().await.map_err(|e| {
             CanvasError::new(
@@ -1443,30 +1469,8 @@ impl CanvasModelGateway {
                 ),
             )
         })?;
-        let raw = String::from_utf8_lossy(&bytes).to_string();
         let value = serde_json::from_slice::<Value>(&bytes);
-        if matches!(
-            kind,
-            CanvasRequestKind::Chat | CanvasRequestKind::Embeddings
-        ) {
-            if let Some(sink) = usage_sink {
-                let (usage, raw_usage) = value
-                    .as_ref()
-                    .map(|value| parse_usage(candidate.provider.protocol, kind, value))
-                    .unwrap_or((None, None));
-                // Every physical response settles once, including a failed
-                // candidate or a body whose output parser will reject it.
-                sink.record(CanvasUsageReport {
-                    provider_id: Some(candidate.provider.id.clone()),
-                    model_id: candidate.model.id.clone(),
-                    usage,
-                    raw_usage,
-                });
-            }
-        }
-        if !status.is_success() {
-            return Err(classify_status(status.as_u16(), &raw));
-        }
+        record_response_usage(candidate, kind, value.as_ref().ok(), usage_sink);
         if kind == CanvasRequestKind::SpeechSynthesize {
             if bytes.is_empty() {
                 return Err(CanvasError::new(
@@ -1534,6 +1538,17 @@ impl CanvasModelGateway {
         )
         .await?;
         let status = resp.status();
+        if !status.is_success() {
+            let raw = read_bounded_provider_body(
+                resp,
+                MAX_PROVIDER_ERROR_BODY_BYTES,
+                cancellation,
+                "provider error response",
+            )
+            .await?;
+            let raw = String::from_utf8_lossy(&raw);
+            return Err(classify_status(status.as_u16(), &raw));
+        }
         let raw = await_video_operation(
             async {
                 resp.text().await.map_err(|e| {
@@ -1547,9 +1562,6 @@ impl CanvasModelGateway {
             cancellation.message,
         )
         .await?;
-        if !status.is_success() {
-            return Err(classify_status(status.as_u16(), &raw));
-        }
         let value: Value = serde_json::from_str(&raw).map_err(|e| {
             CanvasError::new(
                 CanvasErrorCode::ProviderFailure,
@@ -1695,15 +1707,26 @@ impl CanvasModelGateway {
             )
         })?;
         let status = resp.status();
+        if !status.is_success() {
+            let raw = read_bounded_provider_body(
+                resp,
+                MAX_PROVIDER_ERROR_BODY_BYTES,
+                VideoCancellation {
+                    flag: None,
+                    message: "model catalog error response read interrupted",
+                },
+                "model catalog error response",
+            )
+            .await?;
+            let raw = String::from_utf8_lossy(&raw);
+            return Err(classify_status(status.as_u16(), &raw));
+        }
         let raw = resp.text().await.map_err(|e| {
             CanvasError::new(
                 CanvasErrorCode::TransientFailure,
                 format!("reading model catalog: {e}"),
             )
         })?;
-        if !status.is_success() {
-            return Err(classify_status(status.as_u16(), &raw));
-        }
         let value: Value = serde_json::from_str(&raw).map_err(|e| {
             CanvasError::new(
                 CanvasErrorCode::ProviderFailure,
@@ -1788,6 +1811,10 @@ impl CanvasModelGateway {
 #[cfg(test)]
 #[path = "canvas_model_gateway/audio_input_tests.rs"]
 mod audio_input_tests;
+
+#[cfg(test)]
+#[path = "canvas_model_gateway/error_body_tests.rs"]
+mod error_body_tests;
 
 // Media workflows retain the real AppCore/Kernel/provider consumers while
 // sharing the cfg(test)-only public DNS/local transport seam with the broker.
@@ -1889,6 +1916,33 @@ fn classify_status(status: u16, raw: &str) -> CanvasError {
         _ => CanvasErrorCode::ProviderFailure,
     };
     CanvasError::new(code, message)
+}
+
+/// Preserve one accounting observation per physical response, even if its body
+/// was malformed or deliberately not consumed. Missing usage stays unknown.
+fn record_response_usage(
+    candidate: &ResolvedCanvasModel,
+    kind: CanvasRequestKind,
+    value: Option<&Value>,
+    sink: Option<&dyn CanvasUsageSink>,
+) {
+    if !matches!(
+        kind,
+        CanvasRequestKind::Chat | CanvasRequestKind::Embeddings
+    ) {
+        return;
+    }
+    if let Some(sink) = sink {
+        let (usage, raw_usage) = value
+            .map(|value| parse_usage(candidate.provider.protocol, kind, value))
+            .unwrap_or((None, None));
+        sink.record(CanvasUsageReport {
+            provider_id: Some(candidate.provider.id.clone()),
+            model_id: candidate.model.id.clone(),
+            usage,
+            raw_usage,
+        });
+    }
 }
 
 /// The api key of a resolved candidate, or the stable error saying it is gone.
@@ -2534,6 +2588,50 @@ where
         }
         result = future => result,
     }
+}
+
+/// Read a provider response with a hard byte budget before turning it into an
+/// error string or JSON value. The `Content-Length` check is only a fast path;
+/// chunked responses are counted and dropped at the first over-budget chunk.
+async fn read_bounded_provider_body(
+    mut response: reqwest::Response,
+    limit: usize,
+    cancellation: VideoCancellation<'_>,
+    label: &'static str,
+) -> CanvasResult<Vec<u8>> {
+    await_video_operation(
+        async {
+            let status = response.status().as_u16();
+            let too_large = || {
+                CanvasError::new(
+                    CanvasErrorCode::ResponseBodyTooLarge,
+                    format!("HTTP {status}: {label} exceeds {limit} byte limit (body omitted)"),
+                )
+            };
+            if response
+                .content_length()
+                .is_some_and(|length| length > limit as u64)
+            {
+                return Err(too_large());
+            }
+            let mut body = Vec::with_capacity(limit);
+            while let Some(chunk) = response.chunk().await.map_err(|error| {
+                CanvasError::new(
+                    CanvasErrorCode::TransientFailure,
+                    format!("reading HTTP {status} {label}: {}", error.without_url()),
+                )
+            })? {
+                if chunk.len() > limit.saturating_sub(body.len()) {
+                    return Err(too_large());
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(body)
+        },
+        cancellation.flag,
+        cancellation.message,
+    )
+    .await
 }
 
 async fn fetch_video_artifact(
@@ -4632,6 +4730,91 @@ mod tests {
         assert!(!classify_status(400, "bad args").is_transient());
     }
 
+    #[tokio::test]
+    async fn provider_error_body_budget_handles_chunked_and_small_responses() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        async fn serve(response: &'static [u8], chunked: bool) -> reqwest::Response {
+            let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let address = listener.local_addr().expect("address");
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.expect("accept");
+                let mut request = Vec::new();
+                let mut buffer = [0u8; 512];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let count = socket.read(&mut buffer).await.expect("request");
+                    assert_ne!(count, 0, "request ended before headers");
+                    request.extend_from_slice(&buffer[..count]);
+                }
+                if chunked {
+                    socket
+                        .write_all(
+                            b"HTTP/1.1 500 Internal Server Error\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                        )
+                        .await
+                        .expect("headers");
+                    for chunk in response.chunks(3) {
+                        socket
+                            .write_all(format!("{:x}\r\n", chunk.len()).as_bytes())
+                            .await
+                            .expect("chunk header");
+                        socket.write_all(chunk).await.expect("chunk");
+                        socket.write_all(b"\r\n").await.expect("chunk end");
+                    }
+                    socket.write_all(b"0\r\n\r\n").await.expect("trailers");
+                } else {
+                    socket
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 500 Internal Server Error\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                response.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await
+                        .expect("headers");
+                    socket.write_all(response).await.expect("body");
+                }
+            });
+            let response = reqwest::Client::new()
+                .get(format!("http://{address}/error"))
+                .send()
+                .await
+                .expect("response");
+            server.await.expect("server task");
+            response
+        }
+
+        let small = serve(b"bad args", false).await;
+        let body = read_bounded_provider_body(
+            small,
+            MAX_PROVIDER_ERROR_BODY_BYTES,
+            VideoCancellation {
+                flag: None,
+                message: "cancelled",
+            },
+            "provider error response",
+        )
+        .await
+        .expect("small error body");
+        assert_eq!(body, b"bad args");
+
+        let chunked = serve(b"abcdef", true).await;
+        let error = read_bounded_provider_body(
+            chunked,
+            5,
+            VideoCancellation {
+                flag: None,
+                message: "cancelled",
+            },
+            "provider error response",
+        )
+        .await
+        .expect_err("chunked body must stop at the first over-budget chunk");
+        assert_eq!(error.code, CanvasErrorCode::ResponseBodyTooLarge);
+    }
+
     #[test]
     fn embedded_provider_error_on_200_is_reported() {
         let value = json!({ "error": { "message": "content policy" } });
@@ -6076,7 +6259,7 @@ mod tests {
             .count()
     }
 
-    fn deepseek_usage_completion_payload() -> Value {
+    pub(super) fn deepseek_usage_completion_payload() -> Value {
         json!({
             "choices": [{
                 "message": {
@@ -6146,7 +6329,10 @@ mod tests {
         (format!("http://127.0.0.1:{port}/v1"), captured)
     }
 
-    fn local_text_gateway(base_url: String, model_id: &str) -> (CanvasModelGateway, String) {
+    pub(super) fn local_text_gateway(
+        base_url: String,
+        model_id: &str,
+    ) -> (CanvasModelGateway, String) {
         let db = Arc::new(Database::open_in_memory().expect("db"));
         let providers = Arc::new(CanvasProviderService::new(
             db,

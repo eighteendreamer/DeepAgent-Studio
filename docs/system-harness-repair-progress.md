@@ -1,22 +1,58 @@
 # Harness 问题修复进度
 
-## 当前状态与计数口径（2026-10-29）
+## 当前状态与计数口径（2026-10-30）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计八十项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计八十二项均限各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 81 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-284、H-286、H-287、H-288、H-300、H-303，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 82 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-284、H-286、H-287、H-288、H-300、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 20 | 17项原审计历史修复，另H-77/H-238/H-246分别随H-78/H-260/H-245共享边界消除；H-246原探针前置条件已变，历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 当前没有已登记的修复中条目；下一项 H-304 尚未实施 |
-| 待修复 | 196 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-304 已完成所列范围验收；下一候选 H-301 尚未实施 |
+| 待修复 | 195 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **196（196待修复、0修复中）**；不提供完成率。八十一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4及真实复核单独列明，合计20项历史跳过。
+有效未关闭条目当前为 **195（195待修复、0修复中）**；不提供完成率。八十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4及真实复核单独列明，合计20项历史跳过。
+
+## H-304 本轮即时记录（2026-10-30）
+
+**当前状态：已修复并验收（2026-10-30，仅 E-H304-05～06 所列 Windows 本机、合成媒体、临时 SQLite 和 loopback 范围）；独立提交 hash 待提交后回填。** 基线 HEAD 为 `0794f0e09bb22559bffc19067c2bdd61f7cf14d0`。仅处理 Canvas provider 非 2xx 错误正文在分类前无界缓冲；覆盖共享 `call`、视频 submit/status 的 `post_json` 和模型目录入口，不冒领 H-301 取消或 H-302 成功媒体字节预算。五类用户未跟踪项只经 `git status` 列名，不读取、修改、暂存或删除。以下 E-01～04 保留过程证据，当时的待验状态不替代 E-05～06 的最终结果。
+
+E-H304-01（续接原始复现）：原正式探针现位于 lib 的 `canvas_model_gateway::workflow_media_audit::audit_canvas_provider_error_body_is_bounded`。修前命令原生 101、0 passed/1 failed，`response_bytes=33554433`、`sent_bytes=33554433`、`error_message_bytes=446`、`terminal=failed`；证据 `target/h304-original-20261029.log` / `target/h304-original-20261029-result.json` 保留不覆盖。
+
+P-H304-current（本地设计）：参照当前 HTTP runtime 的声明长度快拒绝与 chunk 累计、models transport 的 64 KiB 错误正文边界，在 Canvas HTTP adapter 共用有界 reader；超限中止读取并返回非 transient 的 `ResponseBodyTooLarge`，HTTP 状态保留、正文不进入诊断。小错误沿原分类；Chat/Embedding 每个物理响应仍结算一次 usage，未读/畸形保持 unknown。复用已有视频取消机制，不新增公共取消参数、依赖、配置、SQL 或第二运行链。上一候选探针曾通过但终态误入 `budget_exceeded`；最新诊断已避开该字符串分类，必须重新实测，不能沿用旧绿。当前补充真实边界/各入口/usage/取消及超时回归，随后复跑相关消费者与完整门禁。
+
+E-H304-02（当前候选首轮专项，source_type=command/file）：隔离 data/home/profile/managed 及 APPDATA/LOCALAPPDATA/XDG 配置，保留离线 Cargo/Rustup 位置、清除继承 key 和 DB/target 覆盖。`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_model_gateway::error_body_tests:: --offline -j 2 -- --nocapture --test-threads=1` 原生 0、79.83 秒，6 passed/0 failed/0 ignored（h304-boundary-matrix-first-20261030）。涵盖小 400/401/403/429/503 与 400 Unicode 字符摘要、恰好 64 KiB/chunked 实际超限、七类实际入口声明超限零正文读取、Chat/Embedding 小错误 usage 与畸形/超限/截断 unknown 单次结算、超限不 fallback 而小 429/503 可 fallback、视频 submit/status 半正文取消/超时及 socket 关闭。随后补充控制面正常/小错误对照；新增对照尚待完整门禁执行，不沿用首轮结果。
+
+E-H304-03（正式 Kernel 媒体消费者，source_type=command）：同一隔离 runner 执行上述 Cargo 参数，将过滤器替换为 `canvas_model_gateway::workflow_media_audit::`，原生 0、7.87 秒，22 passed/0 failed/14 ignored（h304-formal-probes-20261030）。本项文本原探针已转默认，`response_bytes=33554433`、`sent_bytes=65536`、`error_message_bytes=95`、`terminal=failed`；新增音频非 2xx 回归也默认通过。两者均验证单次 failed 终态、无节点 Completed、无输出 artifact；组内原文本/图片/视频/embedding 正常对照通过。14 个其他独立审计探针保持忽略，不把它们记为本项验收。
+
+E-H304-04（冻结与完整门禁准备，source_type=command/file）：三份生产/测试源码 SHA-256 记录于 `target/h304-frozen-sources-20261030.json`，根 fmt 与 diff check 均为 0。当前 CLI 以指定 target-dir 离线构建原生 0、76.97 秒（h304-current-cli-build-20261030）。SDK e2e 硬编码根 `target/debug/deepagent.exe`，故先备份旧构建产物，再以本次 CLI 覆盖该测试位置并验证 SHA-256 相同；证据 h304-sdk-cli-hashes-20261030.json，不修改 SDK 源码或降低测试门禁。完整 workspace 已用隔离 runner 启动，原生终态未取得前不预记通过；后续消费者/lint/Tauri 和源码冻结复核仍待执行。
+
+E-H304-05（最终冻结源码门禁，source_type=command/file）：Cargo 均显式使用 `--target-dir target/h300-after-h163-build --offline -j 2`；每条命令的 `-result.json` 记录原生退出码，外层 PowerShell 状态不能替代。不是干净重建。三份源码在全部门禁后 SHA-256 仍与冻结清单一致（h304-post-gate-source-check-20261030.json）。
+
+| 实际命令/范围（省略上述公共 Cargo 参数） | 原生结果及证据 |
+|---|---|
+| cargo test -p deepagent-app-core --lib canvas_model_gateway::error_body_tests:: -- --nocapture --test-threads=1 | 0，86.29 秒；最终 7 passed/0 failed/0 ignored；新增 submit/status/catalog 正常和小错误对照实际通过，h304-boundary-matrix-final-20261030 |
+| cargo test -p deepagent-app-core --lib canvas_model_gateway::workflow_media_audit:: -- --nocapture --test-threads=1 | 0，7.87 秒；22/0/14；本项两探针默认执行，原正常媒体对照保留，h304-formal-probes-20261030 |
+| cargo test --workspace --no-fail-fast -- --quiet --test-threads=1 | 101，872.90 秒；130 targets 共 3810 passed/1 failed/295 ignored；唯一失败仍是未改 prompts 的 H-306（creative.video-edit.v1 空 defaultUserPrompt），h304-workspace-final-20261030 及 -summary.json；不记全仓通过 |
+| workspace 内实际消费者 | AppCore lib 1320/0/67、workflow 30/0/25、artifact 重开 6/0/0、Kernel e2e 169/0/74；Runtime lib 339/0/9 与 stabilization 5/0/0；CLI 120/0/22、SDK 真实 stdio e2e 6/0/0；均是上述原全仓运行的真实 target 结果，不是过滤为 0 |
+| cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --tests | 0，19.75 秒，h304-tauri-final-check-20261030 |
+| cargo clippy -p deepagent-app-core --lib --no-deps -- -D warnings | 101，18.99 秒；既有 context_runtime 8 项 clone_on_copy、http_runtime needless_return、plugin_preparation type_complexity、run_assembler too_many_arguments 共 11 项；h304-appcore-strict-clippy-20261030 |
+| cargo clippy --all-targets --all-features -- -D warnings | 101，3.37 秒；未改 models/client.rs:355 clone_on_copy，h304-workspace-strict-clippy-20261030；未抑制、未顺手修复 |
+| cargo clippy -p deepagent-app-core --lib --test workflow_audit --test canvas_persistence_restart --no-deps | 0，26.05 秒，仅既有 warning；这是非严格诊断，不替代严格通过，h304-selected-lint-diagnostic-20261030 |
+| 根 cargo fmt --all -- --check；git diff --check；冻结源码与 CLI 构建产物恢复 | 0/0，三份源码匹配；SDK 默认测试位置已恢复备份且无该路径存活进程，h304-final-integrity-20261030.json |
+
+严格 lint 基线核对：上述四份 AppCore 报错源文件以及 models/client.rs、prompts 文件相对当前 HEAD 均未修改。与 h249-appcore-clippy 比较时，原始结果保留了 run_assembler 历史行号 1855→1856 和 lib-test 摘要差异；按错误内容/源文件归一后 11 项完全一致（h304-clippy-baseline-comparison / h304-clippy-semantic-baseline-comparison-20261030.json），不伪称逐字相同。当前 CLI 下 SDK e2e 实测通过，但没有旧 binary 因果对照，不把上轮无终态的根因臆断为旧 binary。
+
+E-H304-06（限定验收与兼容边界）：共享 reader 在分类/JSON 解析前对声明与实际 chunk 双重检查，保留的错误正文字节最多 64 KiB，超限丢弃 Response，错误保留 HTTP 状态并省略正文；这不是 TCP/TLS 缓冲或供应商已发送字节精确不超过 64 KiB 的承诺。小错误仍使用原 400 Unicode 字符摘要与 401/403/429/5xx 分类。Chat/Embedding 的失败响应仍结算一次物理 usage，未知不伪造零；视频半正文取消/timeout 沿原取消桥收束。文本和音频正式消费者均失败、只落一个 failed 终态、不发布成功节点/输出 artifact。成功 JSON/音频/视频的大小限额不在本项；H-301、H-302 及其他独立审计条目保持待修。
+
+公共 Rust `CanvasErrorCode` 增加 `ResponseBodyTooLarge`，仓外穷尽匹配调用方需适配；仓内全局检索没有其他枚举消费方，Tauri Rust 消费者实际编译通过。没有新 command/DTO、前端类型/事件 payload、依赖、配置、审批放宽或生产数据库迁移。新错误读取诊断移除 reqwest URL，不声明旧日志和供应商正文已全面脱敏。未执行 pnpm build/原生 GUI（未改前端/桥接 wire）、真实 provider、其他 OS、设备或并发资源压力验收；不能把本机门禁推广为全平台或全仓严格通过。
+
+本轮新增 1 项限定验收：82 验收、20 历史跳过、7 归并、2 撤销、195 待修、0 修复中。306 主行唯一且仅 H-304 行相对 HEAD 改变。下一候选准备复核 H-301 Audio 合成取消，先核对原探针与现有外层护栏；未实施，不把 H-304 的视频错误取消对照冒领为它的修复。全部剩余修复与验收暂沿用历史 200–400 有效小时粗估，尚未对 195 项逐项校准，不按提交数扣减；设备/依赖/构建与环境等待另计，没有可靠等待时长，不承诺完工日。整个目标继续 active。
 
 ## H-303 本轮即时记录（2026-10-29）
 
@@ -2755,7 +2791,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-301：Audio 合成取消没有打断共享 Canvas HTTP 响应](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-302：画布视频下载没有类型级字节上限](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-303：画布视频 provider URL 第二跳绕过网络审批](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H303-01保留修前真实GET/存储反例；E-H303-02～05覆盖正常 Video artifact、loopback/审批拒绝、handle 边界与相关门禁 | 正式 video-gen 通过 prepare seam + `canvas_video_fetch`，复用 run-scoped one-shot、PublicHttpClient、原 `http_enabled`、统一审批/取消/deadline/owner；不新增运行链 | 正常1/0/0、拒绝1/0/0、handle1/0/0；相关 Runtime/AppCore/Tauri/前端与 fmt/diff 通过；完整 workspace 在既有 SDK e2e 无终态中止，严格 Clippy 基线失败保留 | `c68c41cea7225c79e48d44939d35ff4aa1fee023` | 仅所列 Windows 本机合成媒体范围；H-302/H-301/兼容入口独立，下一项 H-304，196有效未关闭 |
-| [H-304：Canvas provider 非 2xx 错误正文在分类前无界缓冲](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-304：Canvas provider 非 2xx 错误正文在分类前无界缓冲](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H304-01 保留原正式 workflow 失败；仅 E-05～06 所列 Windows 本机范围，不归并其他媒体问题 | 共用非 2xx reader，64 KiB 本地限额、声明/实际 chunk 双检查及原取消/单次 usage 边界 | 最终专项 7/0/0、正式媒体 22/0/14、Tauri/fmt 通过；全仓 3810/1/295 仅既有 H-306，严格 lint 旧失败保留；E-H304-05 | 独立提交后回填 | Rust error enum 新 variant；成功媒体预算/H-301/H-302 独立；195 有效未关闭，下一候选 H-301；总 200–400 未校准有效小时，等待另计 |
 | [H-305 撤销：SDK Drop 行为符合已有文档，原探针不能证明独立缺陷](system-harness-audit-2026-10-21.md) | — | 撤销 | f37da4fe 撤销误报；Drop 契约及探针隔离/清理不足 | 不作为有效缺陷或修复成果 | 不重复运行已撤销探针 | 撤销证据：f37da4fe | 不独立计数或估时；编号不复用 |
 | [H-306：本地视频编辑的空默认提示词使公开画布提示词目录整体不可读](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 <!-- repair-ledger:end -->
