@@ -38,6 +38,15 @@ pub enum CoreError {
     #[error("persistence error: {0}")]
     Persistence(String),
 
+    /// Deletion was durably accepted, but physical cleanup or its receipt is
+    /// still pending. The artifact must not be materialized or republished.
+    #[error("artifact_pending_delete: {artifact_id}: {source}")]
+    ArtifactPendingDelete {
+        artifact_id: String,
+        #[source]
+        source: Box<CoreError>,
+    },
+
     /// The event log is corrupt or inconsistent (e.g. sequence gap).
     #[error("event log corruption: {0}")]
     EventLog(String),

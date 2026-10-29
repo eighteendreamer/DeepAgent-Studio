@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::{map_sqlite, Database};
 
+mod deletion;
+pub(crate) use deletion::deletion_metadata_is_valid;
+pub use deletion::{verify_file_for_deletion, ArtifactState};
+
 /// What an artifact is. Persisted as its lowercase label.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,7 +116,11 @@ impl<'db> ArtifactStore<'db> {
             if replace { "OR REPLACE" } else { "" }
         );
         self.db.with_conn(|conn| {
-            conn.execute(
+            let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
+            // An outstanding deletion owns both its ID and its published path.
+            // Check and insert in one SQLite transaction, including `put`.
+            deletion::check_publication(&tx, record)?;
+            tx.execute(
                 &statement,
                 params![
                     record.id,
@@ -128,7 +136,7 @@ impl<'db> ArtifactStore<'db> {
                 ],
             )
             .map_err(map_sqlite)?;
-            Ok(())
+            tx.commit().map_err(map_sqlite)
         })
     }
 
@@ -205,6 +213,8 @@ impl<'db> ArtifactStore<'db> {
         })
     }
 
+    /// Index-only removal. Published bytes must use `delete_file` with the
+    /// owner's policy; this operation never cancels a pending deletion intent.
     pub fn delete(&self, id: &str) -> Result<bool> {
         self.db.with_conn(|conn| {
             let removed = conn

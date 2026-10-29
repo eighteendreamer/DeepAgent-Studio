@@ -1557,6 +1557,82 @@ async fn h252_cross_workspace_images_fail_before_provider_and_persist_one_termin
 }
 
 #[tokio::test]
+async fn h254_pending_artifact_fails_before_provider_and_replays_one_failed_terminal() {
+    use deepagent_core::error::CoreError;
+    use deepagent_persistence::artifact_store::ArtifactKind;
+    for owner in [None, Some("ws-a"), Some("ws-b")] {
+        let mut provider = LocalImageProvider::start().await;
+        let mut fixture = MediaFixture::new_image(&provider).await;
+        fixture.workflow.workspace_id = owner.map(str::to_string);
+        let artifact = fixture
+            .artifacts
+            .import_bytes(
+                ArtifactKind::Image,
+                Some("image/png"),
+                PRIVATE_IMAGE_BYTES,
+                owner,
+            )
+            .unwrap();
+        fixture
+            .db
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TRIGGER h254_receipt BEFORE DELETE ON documents
+                WHEN OLD.collection='artifact_deletions_v1'
+                BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END;",
+                )
+                .map_err(|error| CoreError::other(error.to_string()))
+            })
+            .unwrap();
+        assert!(matches!(
+            fixture.artifacts.delete(&artifact.id, owner).unwrap_err(),
+            CoreError::ArtifactPendingDelete { .. }
+        ));
+        let config = &mut fixture.workflow.definition.nodes[1].config;
+        config.insert("referenceImages".into(), json!([artifact.uri]));
+        config.insert("operation".into(), json!("image_edit"));
+        let run_id = "h254-pending-reference";
+        let mut run = fixture.spawn(run_id);
+        let result = finish_run(&mut run).await;
+        provider.close().await;
+        assert!(result.is_err());
+        assert!(provider.provider_requests.lock().unwrap().is_empty());
+        assert!(provider.private_requests.lock().unwrap().is_empty());
+        let events = RunStore::new(&fixture.db)
+            .events_after(run_id, None)
+            .unwrap();
+        let terminals: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].data["kind"], "failed");
+        assert!(events
+            .iter()
+            .any(|event| event.data.to_string().contains("artifact_pending_delete")));
+        assert!(!fixture
+            .live
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| event.node_id == "end" && event.status == NodeExecutionStatus::Completed));
+        fixture
+            .db
+            .with_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER h254_receipt;")
+                    .map_err(|error| CoreError::other(error.to_string()))
+            })
+            .unwrap();
+        assert!(fixture.artifacts.delete(&artifact.id, owner).unwrap());
+        assert!(fixture
+            .artifacts
+            .record(&artifact.id, owner)
+            .unwrap()
+            .is_none());
+    }
+}
+
+#[tokio::test]
 async fn h252_same_workspace_images_reach_provider_and_keep_output_ownership() {
     use deepagent_persistence::artifact_store::ArtifactKind;
     for caller in [None, Some(" ws-a "), Some("ws-b")] {

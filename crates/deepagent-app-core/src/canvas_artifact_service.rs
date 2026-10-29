@@ -19,7 +19,10 @@ use crate::canvas_scope::normalize_workspace_id;
 use base64::Engine;
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
-use deepagent_persistence::artifact_store::{ArtifactKind, ArtifactRecord, ArtifactStore};
+use deepagent_persistence::artifact_store::{
+    verify_file_for_deletion, ArtifactKind, ArtifactRecord, ArtifactStore,
+};
+use deepagent_persistence::fs_commit;
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -170,10 +173,18 @@ pub struct CanvasArtifactService {
 
 impl CanvasArtifactService {
     pub fn new(root: impl AsRef<Path>, db: Arc<Database>) -> Result<Self> {
-        let root = root.as_ref().to_path_buf();
+        let root = if root.as_ref().is_absolute() {
+            root.as_ref().to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|error| CoreError::other(format!("resolve artifact root: {error}")))?
+                .join(root)
+        };
         std::fs::create_dir_all(&root)
             .map_err(|error| CoreError::Other(format!("create artifact root {root:?}: {error}")))?;
-        Ok(Self { root, db })
+        let service = Self { root, db };
+        service.recover_deletions()?;
+        Ok(service)
     }
 
     /// Import bytes, a `data:` URL or a local file as an artifact.
@@ -339,9 +350,11 @@ impl CanvasArtifactService {
     pub fn record(&self, id: &str, workspace_id: Option<&str>) -> Result<Option<ArtifactRecord>> {
         ArtifactStore::validate_id(id)?;
         let workspace = normalize_workspace_id(workspace_id)?;
-        let record = ArtifactStore::new(&self.db).get(id)?;
-        match record {
-            Some(record) if Self::in_workspace(&record, &workspace)? => Ok(Some(record)),
+        let state = ArtifactStore::new(&self.db).state(id)?;
+        match state {
+            Some(state) if Self::in_workspace(state.record(), &workspace)? => {
+                state.require_active().map(Some)
+            }
             _ => Ok(None),
         }
     }
@@ -353,14 +366,43 @@ impl CanvasArtifactService {
             && normalize_workspace_id(record.workspace_id.as_deref())? == *workspace)
     }
 
-    fn require_record(&self, id: &str, workspace_id: Option<&str>) -> Result<ArtifactRecord> {
-        self.record(id, workspace_id)?.ok_or_else(|| {
-            tracing::warn!(
-                artifact_id = id,
-                "canvas artifact unavailable in requested workspace"
-            );
-            CoreError::invalid("unknown artifact in requested workspace")
-        })
+    /// Keep materialization inside the same path gate used by deletion, then
+    /// re-read ownership/state. A returned path is only valid at query time;
+    /// it is not a lease over a later webview/native-tool open.
+    fn with_record<T>(
+        &self,
+        id: &str,
+        workspace_id: Option<&str>,
+        use_record: impl FnOnce(&ArtifactRecord) -> Result<T>,
+    ) -> Result<Option<T>> {
+        let Some(expected) = self.record(id, workspace_id)? else {
+            return Ok(None);
+        };
+        let _operation = fs_commit::lock_path_operation(Path::new(&expected.path))
+            .map_err(|error| CoreError::other(format!("lock artifact {id}: {error}")))?;
+        let Some(record) = self.record(id, workspace_id)? else {
+            return Ok(None);
+        };
+        if record != expected {
+            return Err(CoreError::other("artifact changed during materialization"));
+        }
+        use_record(&record).map(Some)
+    }
+
+    fn with_required_record<T>(
+        &self,
+        id: &str,
+        workspace_id: Option<&str>,
+        use_record: impl FnOnce(&ArtifactRecord) -> Result<T>,
+    ) -> Result<T> {
+        self.with_record(id, workspace_id, use_record)?
+            .ok_or_else(|| {
+                tracing::warn!(
+                    artifact_id = id,
+                    "canvas artifact unavailable in requested workspace"
+                );
+                CoreError::invalid("unknown artifact in requested workspace")
+            })
     }
 
     /// Validate a persisted reference as a readable video artifact.
@@ -376,29 +418,28 @@ impl CanvasArtifactService {
     pub fn video_file_path(&self, reference: &str, workspace_id: Option<&str>) -> Result<PathBuf> {
         let id = artifact_id_from_uri(reference.trim())
             .ok_or_else(|| CoreError::invalid("expected an artifact:// video reference"))?;
-        let record = self.require_record(id, workspace_id)?;
-        if record.kind != ArtifactKind::Video {
-            return Err(CoreError::invalid(format!(
-                "artifact `{id}` is {}, expected video",
-                record.kind.as_str()
-            )));
-        }
-        let path = PathBuf::from(&record.path);
-        File::open(&path).map_err(|error| {
-            CoreError::invalid(format!("video artifact `{id}` is unreadable: {error}"))
-        })?;
-        Ok(path)
+        self.with_required_record(id, workspace_id, |record| {
+            if record.kind != ArtifactKind::Video {
+                return Err(CoreError::invalid(format!(
+                    "artifact `{id}` is {}, expected video",
+                    record.kind.as_str()
+                )));
+            }
+            let path = PathBuf::from(&record.path);
+            File::open(&path).map_err(|error| {
+                CoreError::invalid(format!("video artifact `{id}` is unreadable: {error}"))
+            })?;
+            Ok(path)
+        })
     }
 
     /// Bytes behind an artifact, for sending to a provider.
     pub fn read_bytes(&self, id: &str, workspace_id: Option<&str>) -> Result<Option<Vec<u8>>> {
-        let Some(record) = self.record(id, workspace_id)? else {
-            return Ok(None);
-        };
-        let bytes = std::fs::read(&record.path).map_err(|error| {
-            CoreError::Other(format!("read artifact {id} from {}: {error}", record.path))
-        })?;
-        Ok(Some(bytes))
+        self.with_record(id, workspace_id, |record| {
+            std::fs::read(&record.path).map_err(|error| {
+                CoreError::Other(format!("read artifact {id} from {}: {error}", record.path))
+            })
+        })
     }
 
     /// Resolve any node-stored reference into something a provider accepts:
@@ -414,18 +455,18 @@ impl CanvasArtifactService {
             return Ok(Some(reference.to_string()));
         }
         match artifact_id_from_uri(reference) {
-            Some(id) => {
-                let record = self.require_record(id, workspace_id)?;
+            Some(id) => self.with_required_record(id, workspace_id, |record| {
                 let bytes = std::fs::read(&record.path)
                     .map_err(|error| CoreError::Other(format!("read artifact {id}: {error}")))?;
                 let mime = record
                     .media_type
-                    .unwrap_or_else(|| "application/octet-stream".into());
+                    .as_deref()
+                    .unwrap_or("application/octet-stream");
                 Ok(Some(format!(
                     "data:{mime};base64,{}",
                     base64::engine::general_purpose::STANDARD.encode(&bytes)
                 )))
-            }
+            }),
             None => Ok(None),
         }
     }
@@ -442,8 +483,9 @@ impl CanvasArtifactService {
         let Some(id) = artifact_id_from_uri(reference.trim()) else {
             return Ok(None);
         };
-        let record = self.require_record(id, workspace_id)?;
-        Ok(Some(CanvasArtifactDto::from_record(&record)))
+        self.with_required_record(id, workspace_id, |record| {
+            Ok(Some(CanvasArtifactDto::from_record(record)))
+        })
     }
 
     /// Indexed artifacts for one workspace, newest first.
@@ -462,24 +504,68 @@ impl CanvasArtifactService {
         Ok(records)
     }
 
-    /// Drop the index row and the bytes together.
+    /// Commit a deletion intent before removing bytes. A committed but
+    /// unfinished operation is reported as `ArtifactPendingDelete` and can be
+    /// retried by the same namespace or recovered when this service reopens.
     pub fn delete(&self, id: &str, workspace_id: Option<&str>) -> Result<bool> {
-        let removed = self.record(id, workspace_id)?.is_some_and(|record| {
-            if let Err(error) = std::fs::remove_file(&record.path) {
-                if error.kind() != std::io::ErrorKind::NotFound {
-                    tracing::warn!(
-                        artifact_id = id,
-                        error = %error,
-                        "artifact bytes could not be removed"
-                    );
-                }
-            }
-            true
-        });
-        if !removed {
+        ArtifactStore::validate_id(id)?;
+        let workspace = normalize_workspace_id(workspace_id)?;
+        let store = ArtifactStore::new(&self.db);
+        let Some(state) = store.state(id)? else {
+            return Ok(false);
+        };
+        if !Self::in_workspace(state.record(), &workspace)? {
             return Ok(false);
         }
-        ArtifactStore::new(&self.db).delete(id)
+        store.delete_file(state.record(), |record| self.verify_deletion(record))
+    }
+
+    fn owns_deletion_path(&self, record: &ArtifactRecord) -> Result<bool> {
+        let path = Path::new(&record.path);
+        let Some(parent) = path.parent() else {
+            return Ok(false);
+        };
+        if !path.is_absolute() {
+            return Ok(false);
+        }
+        let parent = fs_commit::canonicalize_with_missing_suffix(parent)
+            .map_err(|error| CoreError::other(format!("resolve artifact parent: {error}")))?;
+        let root = std::fs::canonicalize(&self.root)
+            .map_err(|error| CoreError::other(format!("resolve artifact root: {error}")))?;
+        Ok(parent == root)
+    }
+
+    fn verify_deletion(&self, record: &ArtifactRecord) -> Result<bool> {
+        if !self.owns_deletion_path(record)? || !verify_file_for_deletion(record)? {
+            return Err(CoreError::invalid(
+                "artifact deletion refused unverified managed file",
+            ));
+        }
+        Ok(true)
+    }
+
+    fn recover_deletions(&self) -> Result<()> {
+        let store = ArtifactStore::new(&self.db);
+        for record in store.pending_deletions()? {
+            if record.kind == ArtifactKind::ToolResult
+                || record.run_id.is_some()
+                || record.call_id.is_some()
+            {
+                continue;
+            }
+            // Multiple media roots may share the database. Recovery only owns
+            // this service's configured root, never the persisted path alone.
+            let recovery = (|| {
+                if !self.owns_deletion_path(&record)? {
+                    return Ok(false);
+                }
+                store.delete_file(&record, |record| self.verify_deletion(record))
+            })();
+            if let Err(error) = recovery {
+                tracing::warn!(artifact_id=%record.id, %error, "canvas artifact deletion remains pending after recovery");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -527,7 +613,8 @@ impl CanvasArtifactStream {
             self.id,
             extension_for(media_type.as_deref(), self.file_name.as_deref(), self.kind)
         ));
-        staging.publish(&path)?;
+        let _operation = fs_commit::lock_path_operation(&path)
+            .map_err(|error| CoreError::other(format!("lock artifact publication: {error}")))?;
 
         let record = ArtifactRecord {
             id: self.id,
@@ -541,8 +628,21 @@ impl CanvasArtifactStream {
             media_type,
             created_at: SystemClock.now().as_millis(),
         };
-        if let Err(error) = ArtifactStore::new(&self.db).put_new(&record) {
-            let _ = std::fs::remove_file(&path);
+        let store = ArtifactStore::new(&self.db);
+        if let Some(state) = store.state(&record.id)? {
+            state.require_active()?;
+            return Err(CoreError::invalid("artifact identity is already published"));
+        }
+        // Check the reserved identity before touching its final path, including
+        // the crash window after an earlier unlink but before its receipt.
+        staging.publish(&path)?;
+        if let Err(error) = store.put_new(&record) {
+            // These bytes have never been indexed; they are not a published
+            // artifact retirement. The path gate and no-clobber move ensure
+            // this rollback cannot remove an older pending publication.
+            if let Err(cleanup) = std::fs::remove_file(&path) {
+                tracing::warn!(artifact_id=%record.id, %cleanup, "unindexed artifact cleanup failed");
+            }
             return Err(error);
         }
         tracing::debug!(
@@ -626,7 +726,7 @@ impl ArtifactStaging {
     }
 
     fn publish(&mut self, final_path: &Path) -> Result<()> {
-        std::fs::rename(&self.path, final_path).map_err(|error| {
+        fs_commit::rename_no_replace(&self.path, final_path).map_err(|error| {
             CoreError::Other(format!(
                 "publish artifact {}: {error}",
                 final_path.display()
@@ -1032,7 +1132,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-254: artifact delete must preserve index and bytes when index deletion fails"]
     fn audit_artifact_delete_is_atomic_across_file_and_index() {
         let root = TempRoot::new("delete-atomicity");
         let db = Arc::new(Database::open_in_memory().expect("database"));
@@ -1109,6 +1208,269 @@ mod tests {
             .expect_err("dangling reference must not render blank")
             .to_string()
             .contains("unknown artifact in requested workspace"));
+    }
+
+    #[test]
+    fn h254_index_failure_preserves_all_materializations_and_allows_retry() {
+        let (root, service) = service("delete-materializations");
+        let video = service
+            .import_bytes(
+                ArtifactKind::Video,
+                Some("video/mp4"),
+                b"video",
+                Some("ws-a"),
+            )
+            .unwrap();
+        service.db.with_conn(|conn| {
+            conn.execute_batch("CREATE TRIGGER h254_reject_delete BEFORE DELETE ON artifacts BEGIN SELECT RAISE(ABORT, 'synthetic delete failure'); END;")
+                .map_err(|error| CoreError::other(error.to_string()))?;
+            Ok(())
+        }).unwrap();
+        assert!(service.delete(&video.id, Some("ws-a")).is_err());
+        assert_eq!(
+            service
+                .read_bytes(&video.id, Some("ws-a"))
+                .unwrap()
+                .unwrap(),
+            b"video"
+        );
+        assert!(service
+            .resolve_for_provider(&video.uri, Some("ws-a"))
+            .unwrap()
+            .is_some());
+        assert!(service
+            .display_target(&video.uri, Some("ws-a"))
+            .unwrap()
+            .is_some());
+        assert!(service
+            .video_file_path(&video.uri, Some("ws-a"))
+            .unwrap()
+            .is_file());
+        assert!(!service.delete(&video.id, Some("ws-b")).unwrap());
+        service
+            .db
+            .with_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER h254_reject_delete;")
+                    .map_err(|error| CoreError::other(error.to_string()))?;
+                Ok(())
+            })
+            .unwrap();
+        assert!(service.delete(&video.id, Some("ws-a")).unwrap());
+        assert!(!service.delete(&video.id, Some("ws-a")).unwrap());
+        assert!(service.record(&video.id, Some("ws-a")).unwrap().is_none());
+        assert!(!Path::new(&video.path).exists());
+        drop(root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn h254_file_delete_failure_is_pending_scoped_and_recoverable_on_reopen() {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_SHARE_READ: u32 = 0x0000_0001;
+        let root = tempfile::tempdir().unwrap();
+        let database = root.path().join("state.db");
+        let media_root = root.path().join("artifacts");
+        let db = Arc::new(Database::open(&database).unwrap());
+        let service = CanvasArtifactService::new(&media_root, db.clone()).unwrap();
+        let video = service
+            .import_bytes(
+                ArtifactKind::Video,
+                Some("video/mp4"),
+                b"locked video",
+                Some("ws-a"),
+            )
+            .unwrap();
+        // Permit ordinary reads, but deny deletion while this real OS handle is live.
+        let held = OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&video.path)
+            .unwrap();
+        let error = service
+            .delete(&video.id, Some("ws-a"))
+            .expect_err("file deletion failure must not be reported as success");
+        assert!(error.to_string().contains("artifact_pending_delete"));
+        assert_eq!(std::fs::read(&video.path).unwrap(), b"locked video");
+        assert!(service.list(Some("ws-a"), None).unwrap().is_empty());
+        for caller in [None, Some("ws-b")] {
+            assert!(!service.delete(&video.id, caller).unwrap());
+            assert!(service.record(&video.id, caller).unwrap().is_none());
+            for error in [
+                service
+                    .resolve_for_provider(&video.uri, caller)
+                    .unwrap_err(),
+                service.display_target(&video.uri, caller).unwrap_err(),
+                service.video_file_path(&video.uri, caller).unwrap_err(),
+            ] {
+                assert!(error
+                    .to_string()
+                    .contains("unknown artifact in requested workspace"));
+                assert!(!error.to_string().contains("artifact_pending_delete"));
+            }
+        }
+        for result in [
+            service.read_bytes(&video.id, Some("ws-a")).map(|_| ()),
+            service
+                .resolve_for_provider(&video.uri, Some("ws-a"))
+                .map(|_| ()),
+            service.display_target(&video.uri, Some("ws-a")).map(|_| ()),
+            service
+                .video_file_path(&video.uri, Some("ws-a"))
+                .map(|_| ()),
+        ] {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("artifact_pending_delete"));
+        }
+        drop(service);
+        drop(db);
+        drop(held);
+        let unrelated = CanvasArtifactService::new(
+            root.path().join("other-media"),
+            Arc::new(Database::open(&database).unwrap()),
+        )
+        .unwrap();
+        assert!(
+            Path::new(&video.path).exists(),
+            "another service root cannot recover this deletion"
+        );
+        drop(unrelated);
+        let reopened =
+            CanvasArtifactService::new(&media_root, Arc::new(Database::open(&database).unwrap()))
+                .unwrap();
+        assert!(reopened.record(&video.id, Some("ws-a")).unwrap().is_none());
+        assert!(
+            !Path::new(&video.path).exists(),
+            "opening the service must finish its committed deletion intent"
+        );
+        assert!(!reopened.delete(&video.id, Some("ws-a")).unwrap());
+    }
+
+    #[test]
+    fn h254_cleanup_refuses_an_external_path_even_with_matching_identity_and_digest() {
+        let (root, service) = service("delete-external-path");
+        let video = service
+            .import_bytes(
+                ArtifactKind::Video,
+                Some("video/mp4"),
+                b"synthetic video",
+                None,
+            )
+            .unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_path = outside
+            .path()
+            .join(Path::new(&video.path).file_name().unwrap());
+        std::fs::rename(&video.path, &outside_path).unwrap();
+        let mut record = service.record(&video.id, None).unwrap().unwrap();
+        record.path = outside_path.to_string_lossy().into_owned();
+        ArtifactStore::new(&service.db).put(&record).unwrap();
+        assert!(service.delete(&video.id, None).is_err());
+        assert_eq!(std::fs::read(&outside_path).unwrap(), b"synthetic video");
+        assert_eq!(service.record(&video.id, None).unwrap(), Some(record));
+        assert!(ArtifactStore::new(&service.db)
+            .pending_deletions()
+            .unwrap()
+            .is_empty());
+        drop(root);
+    }
+
+    #[test]
+    fn h254_materialization_and_delete_share_the_operation_gate() {
+        let (_root, service) = service("read-delete-gate");
+        let video = service
+            .import_bytes(
+                ArtifactKind::Video,
+                Some("video/mp4"),
+                b"synthetic video",
+                None,
+            )
+            .unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (deleted_tx, deleted_rx) = std::sync::mpsc::channel();
+        std::thread::scope(|threads| {
+            let service = &service;
+            let id = &video.id;
+            let reader = threads.spawn(move || {
+                service
+                    .with_record(id, None, |record| {
+                        entered_tx.send(()).unwrap();
+                        release_rx
+                            .recv_timeout(std::time::Duration::from_secs(3))
+                            .unwrap();
+                        std::fs::read(&record.path)
+                            .map_err(|error| CoreError::other(error.to_string()))
+                    })
+                    .unwrap()
+            });
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap();
+            let deletion =
+                threads.spawn(move || deleted_tx.send(service.delete(id, None)).unwrap());
+            assert!(matches!(
+                deleted_rx.recv_timeout(std::time::Duration::from_millis(100)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ));
+            release_tx.send(()).unwrap();
+            assert_eq!(reader.join().unwrap().unwrap(), b"synthetic video");
+            assert!(deleted_rx
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .unwrap()
+                .unwrap());
+            deletion.join().unwrap();
+        });
+        assert!(service.read_bytes(&video.id, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn h254_stream_publication_never_overwrites_an_existing_or_pending_identity() {
+        let (_root, service) = service("pending-publication");
+        let video = service
+            .import_bytes(
+                ArtifactKind::Video,
+                Some("video/mp4"),
+                b"original video",
+                None,
+            )
+            .unwrap();
+        for pending in [false, true] {
+            if pending {
+                service
+                    .db
+                    .with_conn(|conn| {
+                        conn.execute_batch(
+                            "CREATE TRIGGER h254_receipt BEFORE DELETE ON documents
+                        WHEN OLD.collection='artifact_deletions_v1'
+                        BEGIN SELECT RAISE(ABORT,'synthetic receipt failure'); END;",
+                        )
+                        .map_err(|error| CoreError::other(error.to_string()))
+                    })
+                    .unwrap();
+                assert!(service.delete(&video.id, None).is_err());
+            }
+            let mut stream = service
+                .begin_stream(ArtifactKind::Video, Some("video/mp4"), None, None)
+                .unwrap();
+            stream.id = video.id.clone();
+            stream.write_chunk(b"replacement video").unwrap();
+            assert!(stream.finish().is_err());
+            if pending {
+                assert!(!Path::new(&video.path).exists());
+                assert!(service
+                    .record(&video.id, None)
+                    .unwrap_err()
+                    .to_string()
+                    .contains("artifact_pending_delete"));
+            } else {
+                assert_eq!(
+                    service.read_bytes(&video.id, None).unwrap().unwrap(),
+                    b"original video"
+                );
+            }
+        }
     }
 
     #[test]

@@ -3,19 +3,22 @@
 //! until the last retained transcript (active or recycled) releases them.
 
 use std::collections::HashSet;
-use std::io::{self, Read};
 use std::path::Path;
 
-use deepagent_core::error::{CoreError, Result};
+use deepagent_core::error::Result;
 use deepagent_core::id::SessionId;
+#[cfg(test)]
 use sha2::{Digest, Sha256};
 
-use crate::artifact_store::{ArtifactRecord, ArtifactStore};
+use crate::artifact_store::{
+    deletion_metadata_is_valid, verify_file_for_deletion, ArtifactKind, ArtifactRecord,
+    ArtifactStore,
+};
 use crate::{map_sqlite, session_files, Database};
 
 pub(crate) fn collect(db: &Database, cutoff: i64) -> Result<u64> {
     let _retention = db.lock_tool_result_retention()?;
-    let ids = db.with_conn(|conn| {
+    let mut ids = db.with_conn(|conn| {
         let mut statement = conn
             .prepare(
                 "SELECT a.id FROM artifacts a WHERE a.kind='tool_result' AND a.run_id IS NULL
@@ -30,21 +33,37 @@ pub(crate) fn collect(db: &Database, cutoff: i64) -> Result<u64> {
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(map_sqlite)
     })?;
+    let store = ArtifactStore::new(db);
+    // Previously committed retirements may be the only remaining records.
+    // Retry them under the same retention gate, including after database reopen.
+    ids.extend(
+        store
+            .pending_deletions()?
+            .into_iter()
+            .filter(|record| record.kind == ArtifactKind::ToolResult && record.run_id.is_none())
+            .map(|record| record.id),
+    );
+    ids.sort();
+    ids.dedup();
     if ids.is_empty() {
         return Ok(0);
     }
     let referenced = retained_ids(db)?;
-    let store = ArtifactStore::new(db);
     let mut removed = 0;
     for id in ids {
         if referenced.contains(&id) || !is_published_identity(&id) {
             continue;
         }
-        let Some(record) = store.get(&id)? else {
+        let Some(state) = store.state(&id)? else {
             continue;
         };
-        if remove_verified(&record)? {
-            store.delete(&id)?;
+        if !valid_tool_result_metadata(state.record()) {
+            tracing::warn!(artifact_id=%id, "tool result GC retained invalid publication metadata");
+            continue;
+        }
+        // The coordinator rechecks this exact metadata under the path gate;
+        // only the file digest/link verification needs to perform I/O there.
+        if store.delete_file(state.record(), verify_file_for_deletion)? {
             removed += 1;
         }
     }
@@ -98,81 +117,12 @@ fn is_published_identity(id: &str) -> bool {
         })
 }
 
-fn remove_verified(record: &ArtifactRecord) -> Result<bool> {
-    let path = Path::new(&record.path);
-    if !path.is_absolute()
-        || path.file_stem().and_then(|s| s.to_str()) != Some(&record.id)
-        || path.extension().and_then(|s| s.to_str()) != Some("json")
-        || record.digest.is_none()
-        || record.byte_size < 0
-    {
-        tracing::warn!(id=%record.id, "tool result GC retained invalid publication metadata");
-        return Ok(false);
-    }
-    let _operation = crate::fs_commit::lock_path_operation(path).map_err(persistence_error)?;
-    // Refuse observed link replacements; this preflight is not a native
-    // handle-relative deletion boundary against arbitrary external writers.
-    // A digest mismatch is diagnostic and retained for investigation.
-    for ancestor in path.ancestors() {
-        match std::fs::symlink_metadata(ancestor) {
-            Ok(metadata) if is_link(&metadata) => {
-                tracing::warn!(id=%record.id, "tool result GC refused a replaced link");
-                return Ok(false);
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == io::ErrorKind::NotFound && ancestor == path => {}
-            Err(error) => return Err(persistence_error(error)),
-        }
-    }
-    let mut file = match std::fs::File::open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(true),
-        Err(error) => return Err(persistence_error(error)),
-    };
-    let mut digest = Sha256::new();
-    let mut bytes = 0u64;
-    let mut buffer = [0u8; 8192];
-    loop {
-        let len = file.read(&mut buffer).map_err(persistence_error)?;
-        if len == 0 {
-            break;
-        }
-        digest.update(&buffer[..len]);
-        bytes = bytes.saturating_add(len as u64);
-        if bytes > record.byte_size as u64 {
-            tracing::warn!(id=%record.id, "tool result GC retained an enlarged file");
-            return Ok(false);
-        }
-    }
-    if bytes != record.byte_size as u64
-        || record.digest.as_deref() != Some(format!("sha256:{:x}", digest.finalize()).as_str())
-    {
-        tracing::warn!(id=%record.id, "tool result GC retained changed bytes");
-        return Ok(false);
-    }
-    drop(file);
-    std::fs::remove_file(path).map_err(persistence_error)?;
-    Ok(true)
+fn valid_tool_result_metadata(record: &ArtifactRecord) -> bool {
+    record.kind == ArtifactKind::ToolResult
+        && record.run_id.is_none()
+        && Path::new(&record.path).extension().and_then(|s| s.to_str()) == Some("json")
+        && deletion_metadata_is_valid(record)
 }
-
-fn is_link(metadata: &std::fs::Metadata) -> bool {
-    #[cfg(windows)]
-    {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes()
-            & windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT
-            != 0
-    }
-    #[cfg(not(windows))]
-    {
-        metadata.file_type().is_symlink()
-    }
-}
-
-fn persistence_error(error: io::Error) -> CoreError {
-    CoreError::Persistence(format!("tool result retention: {error}"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -206,6 +156,74 @@ mod tests {
         };
         ArtifactStore::new(db).put_new(&record).unwrap();
         record
+    }
+
+    #[test]
+    fn h254_gc_index_failure_preserves_published_bytes() {
+        let db = Database::open_in_memory().unwrap();
+        let artifact = result(&db, 1);
+        let original = std::fs::read(&artifact.path).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "CREATE TRIGGER h254_block_gc_delete BEFORE DELETE ON artifacts
+                 BEGIN SELECT RAISE(ABORT, 'synthetic GC index failure'); END;",
+            )
+            .map_err(map_sqlite)?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(collect(&db, 100).is_err());
+        assert!(ArtifactStore::new(&db).get(&artifact.id).unwrap().is_some());
+        assert_eq!(std::fs::read(&artifact.path).unwrap(), original);
+    }
+
+    #[test]
+    fn h254_gc_retains_invalid_metadata_without_blocking_valid_candidates() {
+        let db = Database::open_in_memory().unwrap();
+        let mut invalid = result(&db, 1);
+        let original_path = invalid.path.clone();
+        invalid.path = "relative.json".into();
+        ArtifactStore::new(&db).put(&invalid).unwrap();
+        let valid = result(&db, 2);
+        assert_eq!(collect(&db, 100).unwrap(), 1);
+        assert!(ArtifactStore::new(&db).get(&invalid.id).unwrap().is_some());
+        assert!(Path::new(&original_path).is_file());
+        assert!(ArtifactStore::new(&db).get(&valid.id).unwrap().is_none());
+        assert!(!Path::new(&valid.path).exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn h254_gc_retries_committed_cleanup_after_database_reopen() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ;
+
+        let root = tempfile::tempdir().unwrap();
+        let db_path = root.path().join("gc.db");
+        let db = Database::open(&db_path).unwrap();
+        let artifact = result(&db, 1);
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(FILE_SHARE_READ)
+            .open(&artifact.path)
+            .unwrap();
+        let error = collect(&db, 100).unwrap_err();
+        assert!(matches!(
+            error,
+            deepagent_core::error::CoreError::ArtifactPendingDelete { .. }
+        ));
+        assert!(ArtifactStore::new(&db).get(&artifact.id).unwrap().is_none());
+        assert!(Path::new(&artifact.path).exists());
+        drop(db);
+        drop(held);
+        let reopened = Database::open(&db_path).unwrap();
+        assert_eq!(collect(&reopened, 100).unwrap(), 1);
+        assert_eq!(collect(&reopened, 100).unwrap(), 0);
+        assert!(!Path::new(&artifact.path).exists());
+        assert!(ArtifactStore::new(&reopened)
+            .pending_deletions()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
