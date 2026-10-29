@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-30）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计八十三项均限各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计八十四项均限各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 83 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 84 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-160、H-163、H-164、H-165、H-175、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 本轮 H-302 已按所列本机范围验收，未将旧门禁失败写为通过 |
-| 待修复 | 193 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 本轮 H-160 已按所列本机范围验收，未将旧门禁失败写为通过 |
+| 待修复 | 192 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **193（193待修复、0修复中）**；不提供完成率。八十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **192（192待修复、0修复中）**；不提供完成率。八十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
 
 ## H-302 视频下载上限（2026-10-30，已修复并验收）
 
@@ -60,11 +60,29 @@ E-H302-05（限定验收、兼容性与残余）：H-302 在所列 Windows 本�
 
 兼容性：新增 additive Rust 常量/宿主 builder，默认 provider 视频超过 32 MiB 现在失败；可信 Rust 宿主可在共享前显式配置正数且不超过 i64::MAX 的上限，run scope 固定继承。无桌面设置项、wire DTO/command、依赖或 SQL 迁移；不把它写成已接入桌面可配置开关。通用本地导入、image/audio 输出限额和权限/沙箱策略不变。该策略不是总磁盘/并发配额、供应商能力声明或远端任务/计费取消；无自动重放。未验真实供应商/凭据/内网/用户数据、其他 OS、真实 GUI/WebView/FFmpeg、压缩媒体、并发压力、OOM/磁盘耗尽、强杀/断电及跨进程恢复；SQLite 重开不等于 OS 崩溃恢复。严格 lint 和独立 Tauri 格式旧失败已实际执行并保留。
 
-累计 **83 验收、21 历史跳过、7 归并、2 撤销、193 待修复、0 修复中**，193 有效未关闭，306 历史槽位不变。下一独立候选 **H-160（非法显式模型引用静默转自动路由）**，基于剩余 P1 的供应商选择/成本边界风险优先复核当前实现和原探针；本轮未实施，不先挑易通过的 H-306。总剩余仍沿用 **200–400 有效修复与验收小时**的历史未逐项校准粗估；193 项跨入口、权限、运行、协议与持久化缺乏逐项耗时，不能按提交数或本轮命令墙钟时间扣减。设备、依赖、构建与环境等待另计，无可靠总等待量或精确完工日期；整体 goal 保持 active。
+本段为 H-302 交付时的历史快照：当时为 **83 验收、21 历史跳过、7 归并、2 撤销、193 待修复、0 修复中**，下一候选为 H-160。H-160 随后已按本文下一节完成；当前计数以文首 **84 验收、192 待修复**为准。总剩余仍沿用 **200–400 有效修复与验收小时**的历史未逐项校准粗估；设备、依赖、构建与环境等待另计，无可靠总等待量或精确完工日期；整体 goal 保持 active。
 
 E-H302-06（独立提交与完整性）：本项代码、默认回归与当时双台账共 6 文件已正常提交 `ac9e5610a9790bbdfe552012ec2fa22e9a236106`（【fix】限制画布供应商视频下载字节上限）。提交前台账验证器实际核对 306 个唯一编号/8 列、仅 H-302 主行改变、其余 305 行与原 H-302 审计失败正文保留、4 份源码 SHA-256 与受测冻结一致、完整 workspace 逐 target 结果、11 条严格错误消息及 SDK binary 原 hash 恢复，全部通过（h302-delivery-before-stage/staged-20261030.json）。最终 git diff --check 原生 0（h302-final-diff-20261030-result.json），staged diff --check 亦通过；提交后 tracked 工作区干净，仅保留原五类用户未跟踪项，target 证据未提交。
 
-本次只回填真实修复 hash 和交付记录，另做正常 docs 提交，不递归回填 docs 自身 hash，不 amend、不绕过 hook、不改 Git 配置、不推送或建 PR。前述完整 workspace 原生 101/H-306、严格及全 test lint、独立 Tauri 格式失败和未验条件全部保留；不把本项限定验收当系统完成。下一候选 H-160 尚未实施；193 有效未关闭，总 200–400 有效小时仍未逐项校准，构建/设备/依赖与环境等待另计，整体 goal 继续 active。
+本次只回填真实修复 hash 和交付记录，另做正常 docs 提交，不递归回填 docs 自身 hash，不 amend、不绕过 hook、不改 Git 配置、不推送或建 PR。前述完整 workspace 原生 101/H-306、严格及全 test lint、独立 Tauri 格式失败和未验条件全部保留；不把 H-302 限定验收当系统完成。H-160 已在下一节独立提交并验收，当前 192 有效未关闭；总 200–400 有效小时仍未逐项校准，构建/设备/依赖与环境等待另计，整体 goal 继续 active。
+
+## H-160 非法显式模型引用静默转自动路由（2026-10-30，已修复并验收）
+
+**当前状态：已修复并验收（仅 E-H160-03～05 所列 Windows 本机、loopback、临时 SQLite 与前端构建范围）；代码提交 `5e5044a6c63a4f7164a5d352a51e164d7aef6175`。** 本项只处理 Canvas 模型身份解析和空值自动路由边界，不合并 H-161 生成参数、H-162 专业节点 executor、H-163 usage 或其他 provider 下载问题。五类原用户未跟踪项仍只经 `git status` 列名，不读取、修改、暂存或删除。
+
+E-H160-01（原始复现，source_type=command）：在隔离 data/home/profile/managed、清除继承凭据和 DB/target 覆盖的环境执行原 ignored 探针。原生 **101、0 passed / 1 failed / 0 ignored**，`model_ref=deepseek-chat` 被 `decode_model_ref` 解释为 `None`，正式 Canvas bridge 选择候选 `other-text-model`，wire 请求成功且 provenance 的 `model_id` 为该候选；证据保留于 `target/h160-original-full-20261030.log` / `-result.json`，不改写为通过。
+
+P-H160-current（本地设计）：空字符串/空白是唯一自动路由；非空值必须是恰好一个非空 `providerId::modelId`。新增单一内部 parser 供 text/image/video/audio/embedding bridge 入口复用，显式值先严格解码，再由既有 provider snapshot 精确解析；非法形状在 transport 前返回 `InvalidModelReference`，未知 provider/model 保留既有 resolve 错误。`decode_model_ref()` 仅保留兼容的合法 pair 观察语义，不能再作为执行分支。WorkflowAgent 挂载 Canvas bridge 时始终使用 bridge，空值也走场景候选，不回退通用 client；前端新节点默认、schema 默认改为空，历史裸值/目录外引用显示为无效而非合法候选。
+
+E-H160-02（实现与回归，source_type=file/command）：原 H-160 Rust 探针移除 `ignore` 并补 parser 边界单测；`canvas_model_gateway::tests::` **54 passed / 0 failed / 3 ignored**。非法 `deepseek-chat`、空段、多个 `::` 均为 `Err(InvalidModelReference)` 且 wire/provider transport 调用数为 0；空模型的 transient candidate fallback **1 passed / 0 failed**（`target/h160-targeted-green2-20261030.log`、`target/h160-fallback-green2-20261030.log`）。前端 `node --test apps/desktop/scripts/audit-workflow-model-identity.test.cjs apps/desktop/scripts/check-workflow.test.cjs` **88 passed / 0 failed**，覆盖四类默认空值、历史裸引用、未知引用和多分隔符拒绝。
+
+E-H160-03（源码冻结与相关门禁，source_type=command/file）：8 份源码/测试在最终门禁前冻结 SHA-256，清单为 `target/h160-frozen-sources-20261030.json`。固定使用 `--target-dir target/h300-after-h163-build --offline -j 2`；最终 workflow/restart 分别 **30/0/25、6/0/0**（`h160-workflow-integrations-final-20261030`），Runtime **339/0/9**（`h160-runtime-final-20261030`），Tauri `cargo check` **0**（`h160-tauri-check-final-20261030`），根 `cargo fmt --all -- --check` **0**（`h160-format-final-20261030`），前端审计 **88/0/0**（`h160-frontend-audit-final-20261030`），`apps/desktop` `pnpm build` **0**（`h160-desktop-build-20261030`）。
+
+E-H160-04（全量/严格门禁限制，source_type=command/file）：AppCore 最终 lib **1333 passed / 1 failed / 55 ignored**；唯一失败为 `verification_commands::lifecycle_tests::production_cold_compiler_gate_normal_cancel_and_deadline`，因冷编译器门禁找不到 `target/debug/build` 等既有目标文件，证据 `h160-appcore-lib-final-20261030.log`，不属于 H-160 断言。严格 `cargo clippy -p deepagent-app-core -p deepagent-runtime --all-targets --all-features ... -- -D warnings` 首先被未改 `deepagent-models/src/client.rs:355` 的 `clone_on_copy` 阻断；临时允许该 lint 后又报告既有 `http_runtime.rs:332`、`plugin_preparation.rs:14`、`run_assembler.rs:1856` 和测试 fixture 诊断，未为本项压制或顺手修改。独立 Tauri `cargo fmt -- --check` 的旧格式差异同样保留；全 workspace 本轮未重跑。
+
+E-H160-05（限定验收、兼容性与残余）：H-160 新增修复 **1**，历史跳过/归并/撤销 **0**。只有空引用自动路由；任何非空裸值或畸形值都在 provider transport 前失败，合法引用仍保持精确 provider/model 身份；空值 fallback、正式 WorkflowAgent bridge、前端选择器显示、Tauri check 与桌面 build 均通过。未新增 SQL/依赖/command/DTO 或第二套 provider/运行链；未知历史裸值不会自动迁移，用户需重新选择合法 `providerId::modelId`。未验真实供应商、凭据、内网、用户数据、真实 Tauri WebView、其他 OS、跨进程崩溃恢复和版本化图迁移；完整 workspace 不因本轮相关门禁通过而宣称全绿。
+
+累计 **84 验收、21 历史跳过、7 归并、2 撤销、192 待修复、0 修复中**，192 有效未关闭，306 历史槽位不变。下一候选需重新从剩余条目按风险与依赖复核；总剩余仍沿用 **200–400 有效修复与验收小时**的历史未逐项校准粗估，设备、依赖、构建与环境等待另计，整体 goal 继续 active。
 
 ## H-301 历史消除复核（2026-10-30）
 
@@ -2728,7 +2746,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-157：模型目录丢弃 model-level reasoning effort，Responses 请求不校验所选模型支持档位](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-158：Responses named `tool_choice` 接受官方不支持的 `custom` / `web_search` 类型并进入 wire](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-159：MCP 非法 `inputSchema` 在注册与发布阶段未校验，作为 function `parameters` 进入每次模型请求](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-160：Canvas gateway 把非法显式模型引用解释为自动路由，修通专业节点后可静默改用另一供应商](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-160：Canvas gateway 把非法显式模型引用解释为自动路由，修通专业节点后可静默改用另一供应商](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H160-01保留修前真实误路由；E-H160-02～05覆盖严格 parser、空值 fallback、正式 bridge、前端历史引用和相关门禁；限所列 Windows 本机、loopback、临时 SQLite 与桌面构建范围 | 只有空值自动路由；非空值严格为唯一 `providerId::modelId`，text/image/video/audio/embedding 共用 parser；Canvas bridge 不回退通用 client；四类节点默认与选择器无效提示同步 | Canvas gateway54/0/3、workflow30/0/25、重开6/0/0、Runtime339/0/9、前端88/0/0，Tauri check/build/root fmt通过；AppCore全量1333/1/55为既有冷编译器门禁环境失败，严格Clippy及独立Tauri fmt旧阻断保留；详见E-H160-03～05 | `5e5044a6c63a4f7164a5d352a51e164d7aef6175` | 未新增SQL/依赖/command/DTO；历史裸引用不自动迁移，用户需重选合法模型；真实供应商、Tauri WebView、其他OS、完整workspace、崩溃恢复和版本化图迁移未验；192有效未关闭，总200–400有效小时仍未逐项校准 |
 | [H-161：画布 LLM 节点的温度和输出上限在 provider adapter 前被丢弃](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-162：前端标为可用的四类专业 AI 节点没有可达的正式模型执行链](system-harness-audit-2026-10-21.md) | P0 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-163：工作流模型调用丢失 DeepSeek usage，成本账本、缓存观测和 token budget 与实际请求分裂](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H163-01～12保留原三失败及后续两反例，仅所列Windows本机范围 | 复用canonical累计与实际模型归集，数字raw脱敏、完整性未知及版本化账本回执修正重开/fork与旧行游标 | usage12/0/0、原探针默认3通过、UI15/0/0；主树workflow39/0/40、相关库/桌面build/Tauri通过；独立workflow34/0/39；workspace3663/1既有H-306/310、冷ready首次失败及lint旧阻断保留，详E-11～12 | `de93c589` | 无SQL迁移；旧二进制不读新事件，仓外Rust构造方需适配；真实供应商/完整Tauri/其他OS/断电与账本事务幂等未验；H-299/H-300独立，剩余213，总200–400有效小时历史粗估 |
