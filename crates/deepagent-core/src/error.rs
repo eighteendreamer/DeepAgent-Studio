@@ -47,6 +47,17 @@ pub enum CoreError {
         source: Box<CoreError>,
     },
 
+    /// The published content identity could not be verified. Retain the index
+    /// and expected digest for diagnosis instead of silently using new bytes.
+    #[error(
+        "artifact_integrity_mismatch: {artifact_id}: expected_digest={expected_digest:?}; {reason}"
+    )]
+    ArtifactIntegrityMismatch {
+        artifact_id: String,
+        expected_digest: Option<String>,
+        reason: String,
+    },
+
     /// The event log is corrupt or inconsistent (e.g. sequence gap).
     #[error("event log corruption: {0}")]
     EventLog(String),

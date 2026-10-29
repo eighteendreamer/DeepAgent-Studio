@@ -176,6 +176,68 @@ fn h252_artifact_namespaces_survive_reopen_and_concurrent_foreign_deletes() {
 }
 
 #[test]
+fn h250_reopened_media_preserves_expected_digest_and_rejects_changed_content() {
+    use deepagent_core::error::CoreError;
+    let root = TempRoot::new("h250_integrity");
+    let items = {
+        let service = CanvasArtifactService::new(
+            root.files_dir(),
+            Arc::new(Database::open(root.db_path()).unwrap()),
+        )
+        .unwrap();
+        [
+            ArtifactKind::Image,
+            ArtifactKind::Audio,
+            ArtifactKind::Video,
+        ]
+        .map(|kind| {
+            service
+                .import_bytes(kind, None, b"original media", Some("ws-a"))
+                .unwrap()
+        })
+    };
+    std::fs::write(&items[0].path, b"changed media!").unwrap();
+    std::fs::remove_file(&items[1].path).unwrap();
+    let reopened = CanvasArtifactService::new(
+        root.files_dir(),
+        Arc::new(Database::open(root.db_path()).unwrap()),
+    )
+    .unwrap();
+    for item in &items[..2] {
+        let record = reopened.record(&item.id, Some("ws-a")).unwrap().unwrap();
+        match reopened.read_bytes(&item.id, Some("ws-a")).unwrap_err() {
+            CoreError::ArtifactIntegrityMismatch {
+                artifact_id,
+                expected_digest,
+                ..
+            } => {
+                assert_eq!(artifact_id, item.id);
+                assert_eq!(expected_digest, record.digest);
+            }
+            other => panic!("unexpected integrity result: {other}"),
+        }
+        assert!(reopened
+            .read_bytes(&item.id, Some("ws-b"))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            reopened.record(&item.id, Some("ws-a")).unwrap(),
+            Some(record)
+        );
+    }
+    assert_eq!(
+        reopened
+            .read_bytes(&items[2].id, Some("ws-a"))
+            .unwrap()
+            .unwrap(),
+        b"original media"
+    );
+    reopened
+        .video_file_path(&items[2].uri, Some("ws-a"))
+        .unwrap();
+}
+
+#[test]
 fn named_workflow_operations_preserve_live_slots_across_independent_handles_and_reopen() {
     let root = TempRoot::new("workflow_namespace");
     let snapshots = {

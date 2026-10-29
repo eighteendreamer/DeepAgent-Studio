@@ -27,6 +27,10 @@ use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+mod integrity;
+#[cfg(test)]
+mod integrity_tests;
+
 /// URI scheme stored on canvas nodes instead of the bytes themselves.
 pub const ARTIFACT_URI_PREFIX: &str = "artifact://";
 
@@ -426,20 +430,14 @@ impl CanvasArtifactService {
                 )));
             }
             let path = PathBuf::from(&record.path);
-            File::open(&path).map_err(|error| {
-                CoreError::invalid(format!("video artifact `{id}` is unreadable: {error}"))
-            })?;
+            integrity::verify_file(record, None)?;
             Ok(path)
         })
     }
 
     /// Bytes behind an artifact, for sending to a provider.
     pub fn read_bytes(&self, id: &str, workspace_id: Option<&str>) -> Result<Option<Vec<u8>>> {
-        self.with_record(id, workspace_id, |record| {
-            std::fs::read(&record.path).map_err(|error| {
-                CoreError::Other(format!("read artifact {id} from {}: {error}", record.path))
-            })
-        })
+        self.with_record(id, workspace_id, integrity::read_bytes)
     }
 
     /// Resolve any node-stored reference into something a provider accepts:
@@ -456,8 +454,7 @@ impl CanvasArtifactService {
         }
         match artifact_id_from_uri(reference) {
             Some(id) => self.with_required_record(id, workspace_id, |record| {
-                let bytes = std::fs::read(&record.path)
-                    .map_err(|error| CoreError::Other(format!("read artifact {id}: {error}")))?;
+                let bytes = integrity::read_bytes(record)?;
                 let mime = record
                     .media_type
                     .as_deref()
@@ -484,6 +481,7 @@ impl CanvasArtifactService {
             return Ok(None);
         };
         self.with_required_record(id, workspace_id, |record| {
+            integrity::verify_file(record, None)?;
             Ok(Some(CanvasArtifactDto::from_record(record)))
         })
     }
@@ -914,7 +912,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-250: canvas artifact reads must verify the stored digest before provider projection"]
     fn audit_replaced_canvas_artifact_is_rejected_before_provider_projection() {
         let (_root, service) = service("digest-integrity");
         let imported = service
@@ -934,26 +931,35 @@ mod tests {
         let replacement = b"\x89PNG\r\n\x1a\naudit-replacement";
         std::fs::write(&imported.path, replacement).expect("replace managed artifact bytes");
 
-        let projected = service
+        let record = service
+            .record(&imported.id, Some("audit-workspace"))
+            .unwrap()
+            .unwrap();
+        let error = service
             .resolve_for_provider(&imported.uri, Some("audit-workspace"))
-            .expect("digest mismatch should be a structured artifact error");
-        let projected = projected.expect("artifact reference should resolve");
-        let (_, projected_payload) = projected
-            .split_once(',')
-            .expect("provider projection must be a data URL");
-        let projected_bytes = STANDARD
-            .decode(projected_payload)
-            .expect("decode projected data");
+            .expect_err("changed bytes must not be projected under the old URI");
         eprintln!(
-            "canvas artifact digest audit: original_bytes={}, replacement_bytes={}, projected_bytes={}, stored_digest={:?}",
+            "canvas artifact digest audit: original_bytes={}, replacement_bytes={}, error={error}, stored_digest={:?}",
             original.len(),
             replacement.len(),
-            projected_bytes.len(),
-            service.record(&imported.id, Some("audit-workspace")).expect("record").and_then(|record| record.digest),
+            record.digest,
         );
-        assert_ne!(
-            projected_bytes, replacement,
-            "a replaced canvas artifact must not be projected to the provider under the old URI"
+        match error {
+            CoreError::ArtifactIntegrityMismatch {
+                artifact_id,
+                expected_digest,
+                ..
+            } => {
+                assert_eq!(artifact_id, imported.id);
+                assert_eq!(expected_digest, record.digest);
+            }
+            other => panic!("expected structured integrity failure: {other}"),
+        }
+        assert_eq!(
+            service
+                .record(&imported.id, Some("audit-workspace"))
+                .unwrap(),
+            Some(record)
         );
     }
 

@@ -1633,6 +1633,177 @@ async fn h254_pending_artifact_fails_before_provider_and_replays_one_failed_term
 }
 
 #[tokio::test]
+async fn h250_corrupt_media_fails_before_transport_and_replays_expected_identity() {
+    use deepagent_persistence::artifact_store::ArtifactKind;
+    for owner in [None, Some("ws-a"), Some("ws-b")] {
+        for kind in [
+            ArtifactKind::Image,
+            ArtifactKind::Audio,
+            ArtifactKind::Video,
+        ] {
+            let mut provider = LocalImageProvider::start().await;
+            let scenario = match kind {
+                ArtifactKind::Image => CanvasScenario::ImageGeneration,
+                ArtifactKind::Audio => CanvasScenario::SpeechToText,
+                ArtifactKind::Video => CanvasScenario::VideoGeneration,
+                _ => unreachable!(),
+            };
+            let mut fixture = MediaFixture::with_provider(
+                &provider.base_url,
+                "Synthetic H250 media",
+                "audit-media-model",
+                vec![scenario],
+                |provider_id| {
+                    serde_json::from_value(json!({
+                        "definition": {
+                            "version": 1,
+                            "nodes": [
+                                {"id":"start","kind":"start"},
+                                {"id":"media","kind": match kind {
+                                    ArtifactKind::Image => "image-gen",
+                                    ArtifactKind::Audio => "audio",
+                                    ArtifactKind::Video => "video-edit",
+                                    _ => unreachable!(),
+                                }, "config": {
+                                    "prompt":"synthetic integrity check",
+                                    "imageModel":format!("{provider_id}::audit-media-model"),
+                                    "audioModel":format!("{provider_id}::audit-media-model")
+                                }},
+                                {"id":"end","kind":"end"}
+                            ],
+                            "edges": [
+                                {"id":"e1","source":"start","target":"media"},
+                                {"id":"e2","source":"media","target":"end"}
+                            ]
+                        }
+                    }))
+                    .unwrap()
+                },
+            )
+            .await;
+            fixture.workflow.workspace_id = owner.map(str::to_string);
+            let artifact = fixture
+                .artifacts
+                .import_bytes(kind, None, PRIVATE_IMAGE_BYTES, owner)
+                .unwrap();
+            let record = fixture
+                .artifacts
+                .record(&artifact.id, owner)
+                .unwrap()
+                .unwrap();
+            std::fs::write(&artifact.path, vec![b'x'; PRIVATE_IMAGE_BYTES.len()]).unwrap();
+            let config = &mut fixture.workflow.definition.nodes[1].config;
+            match kind {
+                ArtifactKind::Image => {
+                    config.insert("operation".into(), json!("image_edit"));
+                    config.insert("referenceImages".into(), json!([artifact.uri]));
+                }
+                ArtifactKind::Audio => {
+                    config.insert("operation".into(), json!("speech_transcribe"));
+                    config.insert("audioReference".into(), json!(artifact.uri));
+                }
+                ArtifactKind::Video => {
+                    config.extend(
+                        json!({
+                            "videoEditStatus":"exported",
+                            "videoEditInputRefs":[artifact.uri],
+                            "videoEditOutputRef":artifact.uri,
+                            "videoEditTrimStart":0.0,
+                            "videoEditTrimEnd":1.0,
+                            "videoEditInputFingerprint":format!("{}:0.000:1.000", artifact.uri),
+                        })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    );
+                }
+                _ => unreachable!(),
+            }
+            let run_id = "h250-corrupt-media";
+            let mut run = fixture.spawn(run_id);
+            let result = finish_run(&mut run).await;
+            provider.close().await;
+            assert!(result.is_err(), "kind={kind:?} scope={owner:?}");
+            assert!(provider.provider_requests.lock().unwrap().is_empty());
+            assert!(provider.private_requests.lock().unwrap().is_empty());
+            let events = RunStore::new(&fixture.db)
+                .events_after(run_id, None)
+                .unwrap();
+            let terminals: Vec<_> = events
+                .iter()
+                .filter(|event| event.event_type == "run_terminal")
+                .collect();
+            assert_eq!(terminals.len(), 1);
+            assert_eq!(terminals[0].data["kind"], "failed");
+            let replay = serde_json::to_string(&events).unwrap();
+            assert!(
+                replay.contains("artifact_integrity_mismatch"),
+                "kind={kind:?}: {replay}"
+            );
+            assert!(replay.contains(&artifact.id));
+            assert!(replay.contains(record.digest.as_deref().unwrap()));
+            assert!(!fixture
+                .live
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| ["media", "end"].contains(&event.node_id.as_str())
+                    && event.status == NodeExecutionStatus::Completed));
+            assert_eq!(
+                fixture.artifacts.record(&artifact.id, owner).unwrap(),
+                Some(record)
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn h250_cancel_during_materialization_gate_has_one_terminal_and_no_transport() {
+    use deepagent_persistence::artifact_store::ArtifactKind;
+    let mut provider = LocalImageProvider::start().await;
+    let mut fixture = MediaFixture::new_image(&provider).await;
+    let artifact = fixture
+        .artifacts
+        .import_bytes(ArtifactKind::Image, None, PRIVATE_IMAGE_BYTES, None)
+        .unwrap();
+    std::fs::write(&artifact.path, b"changed").unwrap();
+    let config = &mut fixture.workflow.definition.nodes[1].config;
+    config.insert("operation".into(), json!("image_edit"));
+    config.insert("referenceImages".into(), json!([artifact.uri]));
+    let operation =
+        deepagent_persistence::fs_commit::lock_path_operation(std::path::Path::new(&artifact.path))
+            .unwrap();
+    let run_id = "h250-cancel-materialization";
+    let mut run = fixture.spawn(run_id);
+    let mut accepted = false;
+    for _ in 0..100 {
+        if RunStore::new(&fixture.db).get(run_id).unwrap().is_some() {
+            accepted = fixture.chat.request_cancel(run_id).unwrap().accepted;
+            if accepted {
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // This checks cancellation once cooperative I/O is released, not native
+    // interruption of a synchronous filesystem lock or a stalled disk read.
+    drop(operation);
+    let _ = finish_run(&mut run).await;
+    provider.close().await;
+    assert!(accepted);
+    assert!(provider.provider_requests.lock().unwrap().is_empty());
+    let events = RunStore::new(&fixture.db)
+        .events_after(run_id, None)
+        .unwrap();
+    let terminals: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "cancelled");
+}
+
+#[tokio::test]
 async fn h252_same_workspace_images_reach_provider_and_keep_output_ownership() {
     use deepagent_persistence::artifact_store::ArtifactKind;
     for caller in [None, Some(" ws-a "), Some("ws-b")] {
