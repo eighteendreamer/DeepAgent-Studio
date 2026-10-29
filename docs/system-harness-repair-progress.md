@@ -9,14 +9,32 @@
 | 状态 | 数量 | 含义 |
 |---|---|---|
 | 本阶段已修复并验收 | 70 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-260、H-284、H-286、H-287、H-288、H-300，均限所列本机验收；hash见各项明细 |
-| 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
+| 历史已修复跳过 | 19 | 17项原审计历史修复，另H-77/H-238分别随H-78/H-260共享边界消除，原探针复核通过并转默认；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | H-260已按E-H260-08完成限定范围验收 |
-| 待修复 | 209 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 208 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **209（209待修复、0修复中）**；不提供完成率。七十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **208（208待修复、0修复中）**；不提供完成率。七十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611及真实复核单独列明，合计19项历史跳过。
+
+## H-238 原探针复核（2026-10-29）
+
+**当前状态：历史已修复跳过（2026-10-29复核，仅E-H238-01～03所列Windows本机范围）；生产实现已随H-260提交`0ba0f611a4496e4385cb0d2d113397c1f15d54a4`交付。** 本轮只将三个原探针转默认并补强断言，未修改生产实现。原2026-10-24的5 passed/3 failed及真实空桩、盲写证据保留；阶段性“待终态/暂不关闭”不代表最终状态，不重复计新增生产修复。
+
+E-H238-01（原探针复核与根因定位，2026-10-29，source_type=command/file）：起始HEAD为6036f1f5，tracked干净，五类用户未跟踪项保持不动。独立临时data/home/profile/managed、清除供应商key和数据库路径继承，执行`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e hook_file_cache:: --offline -j 2 -- --include-ignored --quiet --test-threads=1`，原生0、5.49秒，9 passed/0 failed/0 ignored（target/h238-reconfirmed-20261029*）。这是未改测试时的本轮实测，另有续接前h238-before-20261029同组9/0/0，不以它冒充本轮执行。
+
+F-H238-current / P-H238-current：`build_hook_agent_registry`仍共享工具Arc，但`execute_agent`创建独立Session/ModelAgent/RuntimeEngine，`RuntimeEngine::run`每次绑定独立`ToolObservationScope`，`FileStateCache`按上下文观察身份选择last_read/窗口，`file_mutation::apply`通过同一身份取证明。因此共享字节cache_hit=true不再等于另一个模型已见正文；该生产边界已由`0ba0f611a4496e4385cb0d2d113397c1f15d54a4`实现。三个原反例当前均不成立，不重复改生产代码。只将三个原ignored探针转默认，补强结构化content、非stub、保留cache_hit及明确read-before-edit拒绝断言；六个正常对照、唯一wire配对、真实磁盘和唯一持久终态断言保持。首个fmt检查指出新增断言需换行，已按格式修正；默认组及相关门禁待终态，不提前验收。
+
+E-H238-02（默认回归与完整Kernel消费者，2026-10-29，source_type=command）：仅测试文件改变，三个原探针均已取消ignore，默认命令`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e hook_file_cache:: --offline -j 2 -- --quiet --test-threads=1`原生0、78.44秒，9 passed/0 failed/0 ignored（target/h238-default-20261029*）。双向首次读的结构化结果均有正文、不是stub且cache_hit=true；Hook先读不能授权父盲写，磁盘保留且返回must call read_file。原六个正常对照与正式持久终态断言均通过。随后完整`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e --offline -j 2 -- --quiet --test-threads=1`原生0、193.30秒，169 passed/0 failed/74 ignored（target/h238-kernel-20261029*）；74项是本轮未执行的其他测试，不能计为通过。编译仍提示原verification_build.rs:24的BuildFixture::cold dead_code，未抑制或修改。修正排版后根fmt与git diff --check均实测0；共享库与严格lint仍待收取终态，暂不关闭。
+
+E-H238-03（共享边界门禁与限定范围结论，2026-10-29，source_type=command）：`cargo test --target-dir target/h300-after-h163-build -p deepagent-tools -p deepagent-builtins -p deepagent-runtime --lib --offline -j 2 -- --quiet --test-threads=1`原生0、154.91秒，builtins369/0/4、runtime338/0/9、tools26/0/0（依次为passed/failed/ignored；target/h238-shared-libs-20261029*）。包含三类mutation观察代次失效、父/Hook独立窗口与legacy隔离、晚到旧read、并发/复用engine及串行/并行/speculative/legacy派发回归；不把低层测试冒充多个真实Hook的完整组合测试。
+
+严格命令`cargo clippy --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e --no-deps --offline -j 2 -- -D warnings`原生101、31.39秒，在AppCore lib的11项既有诊断处停止，未到测试target严格lint验收；8处context_runtime的Usage.clone_on_copy、http_runtime:332 needless_return、plugin_preparation:14 type_complexity、run_assembler:1849 too_many_arguments，文件/行与h260-scoped-reviewed-appcore-lint完全一致（target/h238-kernel-clippy-20261029*）。不增加allow、不顺手修无关lint，也不宣称全绿。
+
+结论：H-238按“历史已修复跳过”关闭原已复现范围，生产修复为本轮前的`0ba0f611a4496e4385cb0d2d113397c1f15d54a4`，不是本轮新增生产修复；本轮只交付默认强回归与两份文档。累计70已修复并验收、19历史跳过（17项原历史修复及H-77/H-238两项共享边界复核）、7归并、2撤销、208待修复、0修复中，共306个唯一编号；208有效未关闭。H-238不是归并删除，仍保留独立原证据和默认测试。
+
+范围/兼容：无生产源码、API、依赖、配置、SQL迁移、权限或沙箱变化；限定Windows本机、受控离线模型、真实ChatService/Kernel/file_tools与文件SQLite。未重新运行完整workspace、Tauri/pnpm/UI或真实供应商/其他OS：本轮仅测试与文档变更；H-260历史workspace3714/1/306（唯一H-306失败）不冒充本轮结果。多Hook完整组合、工具结果提交失败的完整交付证明、完整fork观察投影及真实模型质量/缓存收益仍未独立验收，不能由这9项宣称全部覆盖；本轮只确认原三个反例和既有共享边界回归。下一项准备H-244：陈旧画布快照静默覆盖较新编辑，按数据完整性风险优先，尚未修改。剩余200–400有效小时仍是未经逐项校准的历史粗估，不按本次关闭1项机械扣减，设备、依赖和构建等待另计；整体目标未完成。本轮测试/文档提交将在取得真实hash后另行回填。
 
 ## H-260 本轮即时记录（2026-10-29）
 
@@ -2207,7 +2225,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-235：模型型生命周期 hook 的成功 usage 未交回会话账本，漏计费用后下一轮预算仍放行](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-236：hook 缺少父运行取消上下文，工具流水线仍等待，MCP 对端未获取消](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-237：agent-hook 未继承主运行有效权限，被规则或工作区边界拒绝的读取仍将正文交给 hook 模型](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针5/1失败保留；工作区外原有工具层修复不重复计功 | 一次装配基础安全策略并共享对象；继承父能力位，Ask无交互拒绝，排除递归扩展与父session记账 | E-H237-01～07；正式专项10/0/0、装配补强3/0/0、workspace3548/1既有H-306/317忽略；Tauri check/fmt通过，严格lint既有阻断 | `9e3ee007735e82a6e44eba76175e2b87305702d0` | Windows本机所列范围验收；UI/供应商/其他OS/全部工具矩阵未验，H-234～236/238仍独立；本项本机剩余0，总200–400有效小时未逐项校准 |
-| [H-238：agent-hook 与主模型共享“已读”状态，首次读取变空桩且写前凭证串用](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-238：agent-hook 与主模型共享“已读”状态，首次读取变空桩且写前凭证串用](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 本轮前已随H-260共享边界消除，含原3反例的9项显式复核通过，不重复计生产修复 | 每运行观察代次隔离读取窗口/stub/写前资格；本轮仅将3原探针转默认并补强结构化正文与拒绝断言 | E-H238-01～03；Hook默认9/0/0、完整Kernel169/0/74，builtins369/0/4、runtime338/0/9、tools26/0/0；严格lint既有11项阻断，非全仓重验 | 生产`0ba0f611a4496e4385cb0d2d113397c1f15d54a4`；本轮测试/文档提交另行回填 | 限Windows本机离线所列消费者；UI/供应商/其他OS/全部多Hook及提交故障组合未验；原范围剩余0，下一H-244；总200–400有效小时历史未校准粗估，等待另计 |
 | [H-239：hook 去重忽略条件与模型，不适用的声明可吞掉实际校验器](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-240：一次性 hook 被不匹配的工具提前消耗，首次实际写入没有经过校验](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-241：普通 task 的取消操作遗漏会话归属校验，另一会话可停止不属于自己的后台子 Agent](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

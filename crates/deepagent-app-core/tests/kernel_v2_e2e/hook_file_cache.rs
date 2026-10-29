@@ -147,6 +147,15 @@ fn output(request: &Value, id: &str) -> Value {
     output["result"].clone()
 }
 
+fn assert_cached_body(result: &Value) {
+    assert_eq!(
+        result["cache_hit"], true,
+        "reuse bytes, not another context's proof"
+    );
+    assert_ne!(result["unchanged_stub"], true);
+    assert!(result["content"].as_str().unwrap().contains(CANARY));
+}
+
 async fn configured(db: Arc<Database>, enable_hook: bool) -> Arc<SettingsService> {
     let settings = Arc::new(SettingsService::new(
         db,
@@ -345,7 +354,6 @@ async fn context_reset_in_readonly_hook_does_not_revoke_parent_read_authority() 
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: a parent's read is not proof an isolated hook has the file body"]
 async fn hook_file_cache_parent_read_does_not_suppress_hook_body() {
     let observed = observe(Order::ParentThenHook, false).await;
     assert!(observed.parent_body_seen);
@@ -353,10 +361,11 @@ async fn hook_file_cache_parent_read_does_not_suppress_hook_body() {
         observed.hook_body_seen,
         "first hook read must deliver content to its own history"
     );
+    assert_cached_body(observed.hook_read.as_ref().unwrap());
+    assert!(!observed.replacement_written);
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: a hook's read is not proof the parent has the file body"]
 async fn hook_file_cache_hook_read_does_not_suppress_parent_body() {
     let observed = observe(Order::HookThenParent, false).await;
     assert!(observed.hook_body_seen);
@@ -364,6 +373,8 @@ async fn hook_file_cache_hook_read_does_not_suppress_parent_body() {
         observed.parent_body_seen,
         "first parent read must deliver content to its own history"
     );
+    assert_cached_body(observed.parent_second.as_ref().unwrap());
+    assert!(!observed.replacement_written);
 }
 
 #[tokio::test]
@@ -385,7 +396,6 @@ async fn hook_file_cache_own_read_allows_existing_file_write() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: hook read must not grant read-before-edit proof to an unseen parent"]
 async fn hook_file_cache_hook_read_does_not_authorize_unseen_parent_write() {
     let observed = observe(Order::HookThenWrite, false).await;
     assert!(observed.hook_body_seen && !observed.parent_body_seen);
@@ -393,5 +403,7 @@ async fn hook_file_cache_hook_read_does_not_authorize_unseen_parent_write() {
         !observed.replacement_written,
         "parent must not overwrite an existing file it has never seen"
     );
-    assert_eq!(observed.parent_write.unwrap()["status"], "error");
+    let output = observed.parent_write.unwrap();
+    assert_eq!(output["status"], "error");
+    assert!(output.to_string().contains("must call read_file"));
 }
