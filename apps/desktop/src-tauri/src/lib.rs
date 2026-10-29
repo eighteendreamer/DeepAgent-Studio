@@ -2278,7 +2278,7 @@ fn canvas_workflow_state_read(
     state: State<'_, AppState>,
     mode: String,
     workspace_id: Option<String>,
-) -> Result<Option<serde_json::Value>, String> {
+) -> Result<deepagent_app_core::canvas_workflow_store::CanvasWorkflowState, String> {
     state
         .canvas_workflows
         .read_current(&mode, workspace_id.as_deref())
@@ -2292,11 +2292,19 @@ fn canvas_workflow_state_write(
     mode: String,
     workspace_id: Option<String>,
     graph: serde_json::Value,
-) -> Result<deepagent_app_core::canvas_workflow_store::CanvasWorkflowMeta, String> {
+    expected_revision: Option<String>,
+) -> Result<
+    deepagent_app_core::canvas_workflow_store::CanvasWorkflowWriteReceipt,
+    deepagent_app_core::canvas_workflow_store::CanvasWorkflowWriteError,
+> {
     state
         .canvas_workflows
-        .write_current(&mode, workspace_id.as_deref(), &graph)
-        .map_err(|e| e.to_string())
+        .write_current(
+            &mode,
+            workspace_id.as_deref(),
+            &graph,
+            expected_revision.as_deref(),
+        )
 }
 
 /// List saved workflows (newest first, live slots excluded).

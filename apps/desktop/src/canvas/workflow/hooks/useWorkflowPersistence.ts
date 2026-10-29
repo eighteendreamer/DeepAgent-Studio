@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
-import { flushWorkflowPersistence, whenWorkflowPersistenceReady } from "../utils/workflowPersistence";
+import {
+  flushWorkflowPersistence, whenWorkflowPersistenceReady, workflowPersistenceProblems,
+  subscribeWorkflowPersistence, preserveAndReloadWorkflow, retryWorkflowPersistence,
+} from "../utils/workflowPersistence";
 import { flushCanvasPreferences } from "../utils/canvasPreferences";
 import { message } from "../../../components/message";
 
@@ -8,6 +11,14 @@ export function useWorkflowPersistence() {
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const [problems, setProblems] = useState(workflowPersistenceProblems);
+
+  useEffect(() => {
+    const update = () => setProblems(workflowPersistenceProblems());
+    const stop = subscribeWorkflowPersistence(update);
+    update();
+    return stop;
+  }, []);
 
   useEffect(() => {
     let disposed = false;
@@ -44,7 +55,7 @@ export function useWorkflowPersistence() {
         } catch (cause) {
           allowClose = false;
           console.error("[canvas] 关闭前保存失败:", cause);
-          message.error("画布保存失败，请重试关闭窗口");
+          message.error("画布尚未保存，窗口已保留；请先处理保存错误或版本冲突");
         } finally {
           closing = false;
         }
@@ -60,5 +71,8 @@ export function useWorkflowPersistence() {
     };
   }, []);
 
-  return { ready, error, retry: () => setAttempt((value) => value + 1) };
+  return {
+    ready, error, retry: () => setAttempt((value) => value + 1), problems,
+    preserveAndReload: preserveAndReloadWorkflow, retrySave: retryWorkflowPersistence,
+  };
 }

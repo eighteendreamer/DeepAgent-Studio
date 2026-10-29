@@ -45,7 +45,10 @@ function graph(mode, label = "saved") {
   };
 }
 
+const backends = new WeakMap();
 function fixture(database = {}, override = async () => {}) {
+  if (!backends.has(database)) backends.set(database, { revisions: new Map(Object.keys(database).map((mode) => [mode, `initial-${mode}`])), sequence: 0, backups: [] });
+  const backend = backends.get(database);
   const legacy = new Map();
   global.window = { __TAURI_INTERNALS__: {} };
   global.localStorage = { getItem: (key) => legacy.get(key) ?? null, removeItem: (key) => legacy.delete(key) };
@@ -54,9 +57,25 @@ function fixture(database = {}, override = async () => {}) {
   const calls = [];
   const invoke = async (command, args) => {
     calls.push({ command, ...structuredClone(args) });
-    await override(command, args);
-    if (command === "canvas_workflow_state_read") return structuredClone(database[args.mode] ?? null);
-    if (command === "canvas_workflow_state_write") { database[args.mode] = structuredClone(args.graph); return {}; }
+    const overrideResult = await override(command, args);
+    if (overrideResult !== undefined) return overrideResult;
+    if (command === "canvas_workflow_state_read") return { schemaVersion: 1, graph: structuredClone(database[args.mode] ?? null), revision: backend.revisions.get(args.mode) ?? null };
+    if (command === "canvas_workflow_state_write") {
+      const current = backend.revisions.get(args.mode) ?? null;
+      if (args.expectedRevision !== current) throw { schemaVersion: 1, code: "revision_conflict", currentRevision: current, message: "stale" };
+      const revision = `revision-${++backend.sequence}`;
+      database[args.mode] = structuredClone(args.graph);
+      backend.revisions.set(args.mode, revision);
+      return { schemaVersion: 1, revision, updatedAt: backend.sequence };
+    }
+    if (command === "canvas_workflow_save") {
+      backend.backups.push(structuredClone(args.graph));
+      return { id: `backup-${backend.backups.length}` };
+    }
+    if (command === "canvas_workflow_load") {
+      const graph = backend.backups[Number(args.id.replace("backup-", "")) - 1];
+      return graph ? { graph: structuredClone(graph) } : null;
+    }
     throw new Error(command);
   };
   const persistence = load(`${base}utils/workflowPersistence.ts`, {
@@ -64,7 +83,7 @@ function fixture(database = {}, override = async () => {}) {
     "../store/creativeStore": { useCreativeStore: creative },
     "../store/professionalStore": { useProfessionalStore: professional },
   });
-  return { ...persistence, creative, professional, legacy, calls, database };
+  return { ...persistence, creative, professional, legacy, calls, database, backups: backend.backups };
 }
 const writes = (f) => f.calls.filter((call) => call.command === "canvas_workflow_state_write");
 
@@ -188,6 +207,169 @@ test("malformed database records cannot silently become empty editable graphs", 
   await f.flushWorkflowPersistence();
   assert.equal(writes(f).length, 0);
   assert.deepEqual(f.database.creative, { broken: true });
+});
+
+for (const mode of ["creative", "professional"]) {
+  test(`${mode}: stale window preserves local edits, blocks retries and saves a copy before reload`, async () => {
+    const database = { [mode]: graph(mode) };
+    const first = fixture(database), second = fixture(database);
+    await Promise.all([first.whenWorkflowPersistenceReady(), second.whenWorkflowPersistenceReady()]);
+    first[mode].getState().updateNodeData(`${mode}-1`, { label: "winner" });
+    await first.flushWorkflowPersistence();
+    second[mode].getState().updateNodeData(`${mode}-1`, { label: "local" });
+    let notifications = 0;
+    const stop = second.subscribeWorkflowPersistence(() => notifications++);
+    await assert.rejects(second.flushWorkflowPersistence(), /其他窗口/);
+    assert.equal(database[mode].nodes[0].data.label, "winner");
+    assert.equal(second[mode].getState().nodes[0].data.label, "local");
+    assert.equal(second.workflowPersistenceProblems()[0].conflict, true);
+    assert.ok(notifications > 0);
+    const attempted = writes(second).length;
+    second[mode].getState().updateNodeData(`${mode}-1`, { label: "local-latest" });
+    await sleep(600);
+    await assert.rejects(second.retryWorkflowPersistence(mode), /其他窗口/);
+    assert.equal(writes(second).length, attempted, "a conflict must never be retried with the remote token");
+    await second.preserveAndReloadWorkflow(mode);
+    assert.equal(second.backups.length, 1);
+    assert.equal(second.backups[0].nodes[0].data.label, "local-latest");
+    assert.equal(second[mode].getState().nodes[0].data.label, "winner");
+    assert.deepEqual(second.workflowPersistenceProblems(), []);
+    second[mode].getState().updateNodeData(`${mode}-1`, { label: "after-reload" });
+    await second.flushWorkflowPersistence();
+    assert.equal(database[mode].nodes[0].data.label, "after-reload");
+    stop();
+  });
+}
+
+test("two windows that read absence cannot both create the live slot", async () => {
+  const database = {};
+  const first = fixture(database), second = fixture(database);
+  await Promise.all([first.whenWorkflowPersistenceReady(), second.whenWorkflowPersistenceReady()]);
+  first.creative.setState(graph("creative", "first"));
+  second.creative.setState(graph("creative", "second"));
+  await first.flushWorkflowPersistence();
+  await assert.rejects(second.flushWorkflowPersistence(), /其他窗口/);
+  assert.equal(database.creative.nodes[0].data.label, "first");
+  assert.equal(second.creative.getState().nodes[0].data.label, "second");
+});
+
+test("failed backup or reload retains local state; reload retry reuses its completed backup", async () => {
+  let fail = "";
+  const database = { creative: graph("creative") };
+  const first = fixture(database), second = fixture(database, async (command) => {
+    if ((fail === "backup" && command === "canvas_workflow_save") || (fail === "read" && command.endsWith("_read"))) throw new Error(`failed ${fail}`);
+  });
+  await Promise.all([first.whenWorkflowPersistenceReady(), second.whenWorkflowPersistenceReady()]);
+  first.creative.getState().updateNodeData("creative-1", { label: "winner" });
+  await first.flushWorkflowPersistence();
+  second.creative.getState().updateNodeData("creative-1", { label: "local" });
+  await assert.rejects(second.flushWorkflowPersistence());
+  fail = "backup";
+  await assert.rejects(second.preserveAndReloadWorkflow("creative"), /failed backup/);
+  assert.equal(second.backups.length, 0);
+  fail = "read";
+  await assert.rejects(second.preserveAndReloadWorkflow("creative"), /failed read/);
+  assert.equal(second.backups.length, 1);
+  assert.equal(second.creative.getState().nodes[0].data.label, "local");
+  assert.equal(database.creative.nodes[0].data.label, "winner");
+  fail = "";
+  await second.preserveAndReloadWorkflow("creative");
+  assert.equal(second.backups.length, 1, "do not create a second copy when only the read failed");
+  assert.equal(second.creative.getState().nodes[0].data.label, "winner");
+});
+
+test("edits during conflict recovery are not discarded by a late reload", async () => {
+  let pause = false;
+  const barrier = deferred();
+  const database = { creative: graph("creative") };
+  const first = fixture(database), second = fixture(database, async (command) => {
+    if (pause && command.endsWith("_read")) await barrier.promise;
+  });
+  await Promise.all([first.whenWorkflowPersistenceReady(), second.whenWorkflowPersistenceReady()]);
+  first.creative.getState().updateNodeData("creative-1", { label: "winner" });
+  await first.flushWorkflowPersistence();
+  second.creative.getState().updateNodeData("creative-1", { label: "local" });
+  await assert.rejects(second.flushWorkflowPersistence());
+  pause = true;
+  const recovery = second.preserveAndReloadWorkflow("creative");
+  await tick();
+  assert.equal(second.workflowPersistenceProblems()[0].recovering, true);
+  second.creative.getState().updateNodeData("creative-1", { label: "new-local" });
+  barrier.resolve();
+  await assert.rejects(recovery, /仍在变化/);
+  assert.equal(second.creative.getState().nodes[0].data.label, "new-local");
+  assert.equal(second.backups[0].nodes[0].data.label, "local");
+  await second.preserveAndReloadWorkflow("creative");
+  assert.equal(second.backups[1].nodes[0].data.label, "new-local");
+  assert.equal(second.creative.getState().nodes[0].data.label, "winner");
+});
+
+test("recovery verifies that an earlier backup still exists before discarding local state", async () => {
+  let failRead = false;
+  const database = { creative: graph("creative") };
+  const first = fixture(database), second = fixture(database, async (command) => {
+    if (failRead && command.endsWith("_read")) throw new Error("read failed");
+  });
+  await Promise.all([first.whenWorkflowPersistenceReady(), second.whenWorkflowPersistenceReady()]);
+  first.creative.getState().updateNodeData("creative-1", { label: "winner" });
+  await first.flushWorkflowPersistence();
+  second.creative.getState().updateNodeData("creative-1", { label: "local" });
+  await assert.rejects(second.flushWorkflowPersistence());
+  failRead = true;
+  await assert.rejects(second.preserveAndReloadWorkflow("creative"));
+  second.backups[0] = null;
+  failRead = false;
+  await second.preserveAndReloadWorkflow("creative");
+  assert.equal(second.backups[1].nodes[0].data.label, "local");
+  assert.equal(second.creative.getState().nodes[0].data.label, "winner");
+});
+
+test("unknown protocol fails closed; a lost write response never authorizes a blind retry", async () => {
+  const incompatible = fixture({}, async (command) => command.endsWith("_read") ? graph("creative") : undefined);
+  await assert.rejects(incompatible.whenWorkflowPersistenceReady(), /协议版本/);
+  await incompatible.flushWorkflowPersistence();
+  assert.equal(writes(incompatible).length, 0);
+  let loseResponse = true;
+  const database = {};
+  const first = fixture(database, async (command, args) => {
+    if (loseResponse && command.endsWith("_write")) {
+      database[args.mode] = structuredClone(args.graph);
+      backends.get(database).revisions.set(args.mode, "committed-but-response-lost");
+      throw new Error("response lost");
+    }
+  });
+  await first.whenWorkflowPersistenceReady();
+  first.creative.setState(graph("creative", "local"));
+  await assert.rejects(first.flushWorkflowPersistence(), /response lost/);
+  const second = fixture(database);
+  await second.whenWorkflowPersistenceReady();
+  second.creative.getState().updateNodeData("creative-1", { label: "newer" });
+  await second.flushWorkflowPersistence();
+  loseResponse = false;
+  await assert.rejects(first.flushWorkflowPersistence(), /其他窗口/);
+  assert.equal(database.creative.nodes[0].data.label, "newer");
+  assert.equal(first.creative.getState().nodes[0].data.label, "local");
+});
+
+test("undo after a lost write response cannot make flush silently forget the unknown commit", async () => {
+  let loseResponse = true;
+  const original = graph("creative", "original");
+  const database = { creative: structuredClone(original) };
+  const f = fixture(database, async (command, args) => {
+    if (loseResponse && command.endsWith("_write")) {
+      database[args.mode] = structuredClone(args.graph);
+      backends.get(database).revisions.set(args.mode, "unknown-commit");
+      throw new Error("response lost");
+    }
+  });
+  await f.whenWorkflowPersistenceReady();
+  f.creative.getState().updateNodeData("creative-1", { label: "committed" });
+  await assert.rejects(f.flushWorkflowPersistence());
+  f.creative.setState(original);
+  loseResponse = false;
+  await assert.rejects(f.flushWorkflowPersistence(), /其他窗口/);
+  assert.equal(f.creative.getState().nodes[0].data.label, "original");
+  assert.equal(database.creative.nodes[0].data.label, "committed");
 });
 
 test("closing waits for both graph and preferences, and save failure keeps the window open", async () => {

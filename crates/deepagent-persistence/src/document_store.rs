@@ -67,6 +67,28 @@ impl<'db> DocumentStore<'db> {
         })
     }
 
+    /// Create a document only if the namespaced key is still absent. Unlike
+    /// `put`, a concurrent creator is never overwritten.
+    pub fn insert_if_absent(
+        &self,
+        collection: &str,
+        id: &str,
+        body: &str,
+        now: Timestamp,
+    ) -> Result<bool> {
+        self.db.with_conn(|c| {
+            let changed = c
+                .execute(
+                    "INSERT INTO documents (id, collection, body, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)
+                 ON CONFLICT(collection, id) DO NOTHING",
+                    params![id, collection, body, now.as_millis()],
+                )
+                .map_err(map_sqlite)?;
+            Ok(changed == 1)
+        })
+    }
+
     /// Replace a document body only when it still matches the body that was
     /// read. This keeps small, automatic document migrations from overwriting
     /// a concurrent update made by another host process.
@@ -258,6 +280,55 @@ mod tests {
         assert_eq!(store.count("c1").unwrap(), 1);
         assert_eq!(store.count("c2").unwrap(), 1);
         assert!(store.get("c1", "x").unwrap().is_some());
+    }
+
+    #[test]
+    fn conditional_creation_and_replacement_arbitrate_independent_connections() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("documents.sqlite");
+        let first = Database::open(&path).unwrap();
+        let second = Database::open(&path).unwrap();
+        let gate = std::sync::Barrier::new(2);
+        let created = std::thread::scope(|scope| {
+            let one = scope.spawn(|| {
+                gate.wait();
+                DocumentStore::new(&first)
+                    .insert_if_absent("c", "id", "first", at(1))
+                    .unwrap()
+            });
+            let two = scope.spawn(|| {
+                gate.wait();
+                DocumentStore::new(&second)
+                    .insert_if_absent("c", "id", "second", at(1))
+                    .unwrap()
+            });
+            [one.join().unwrap(), two.join().unwrap()]
+        });
+        assert_eq!(created.iter().filter(|&&success| success).count(), 1);
+        let original = DocumentStore::new(&first).get("c", "id").unwrap().unwrap();
+        let replace = |db: &Database, body: &str| {
+            gate.wait();
+            DocumentStore::new(db)
+                .replace_body_if_unchanged("c", "id", &original.body, body, at(2))
+                .unwrap()
+        };
+        let changed = std::thread::scope(|scope| {
+            let one = scope.spawn(|| replace(&first, "new-first"));
+            let two = scope.spawn(|| replace(&second, "new-second"));
+            [one.join().unwrap(), two.join().unwrap()]
+        });
+        assert_eq!(changed.iter().filter(|&&success| success).count(), 1);
+        assert!(DocumentStore::new(&first)
+            .insert_if_absent("other", "id", "isolated", at(3))
+            .unwrap());
+        assert_eq!(
+            DocumentStore::new(&first)
+                .get("c", "id")
+                .unwrap()
+                .unwrap()
+                .created_at,
+            at(1)
+        );
     }
 
     #[test]

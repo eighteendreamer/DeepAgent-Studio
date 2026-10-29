@@ -81,13 +81,18 @@ test("canvas viewport survives workflow graph save and reload", {
     const creative = graphStore();
     const professional = graphStore();
     const documents = new Map();
+    const revisions = new Map();
+    let sequence = 0;
     const writeLog = [];
     const invoke = async (command, args) => {
-      if (command === "canvas_workflow_state_read") return documents.get(args.mode) ?? null;
+      if (command === "canvas_workflow_state_read") return { schemaVersion: 1, graph: documents.get(args.mode) ?? null, revision: revisions.get(args.mode) ?? null };
       if (command === "canvas_workflow_state_write") {
+        assert.equal(args.expectedRevision, revisions.get(args.mode) ?? null);
         documents.set(args.mode, args.graph);
+        const revision = `revision-${++sequence}`;
+        revisions.set(args.mode, revision);
         writeLog.push({ ...args, graph: structuredClone(args.graph) });
-        return {};
+        return { schemaVersion: 1, revision };
       }
       throw new Error(`unexpected Tauri command: ${command}`);
     };

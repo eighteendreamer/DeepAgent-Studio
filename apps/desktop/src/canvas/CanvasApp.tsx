@@ -38,6 +38,7 @@ import { CreativeLibraryPanel } from "./workflow/components/CreativeLibraryPanel
 import { WorkflowNodeShell } from "./workflow/components/WorkflowNodeShell";
 import { WorkflowEdge } from "./workflow/components/WorkflowEdge";
 import { useWorkflowPersistence } from "./workflow/hooks/useWorkflowPersistence";
+import { WorkflowPersistenceNotice } from "./workflow/components/WorkflowPersistenceNotice";
 import { CREATIVE_NODE_KINDS, PROFESSIONAL_NODE_CATEGORIES, type WorkflowNode } from "./workflow/types";
 import { isTauri } from "../api";
 import { Button } from "../components/shadcn/button";
@@ -966,9 +967,10 @@ function WorkflowCanvasInner() {
 }
 
 export function CanvasApp() {
-  const { ready, error, retry } = useWorkflowPersistence();
+  const { ready, error, retry, problems, preserveAndReload, retrySave } = useWorkflowPersistence();
   return (
-    <div className="h-screen w-full overflow-hidden text-text-base">
+    <div className="relative h-screen w-full overflow-hidden text-text-base">
+      <WorkflowPersistenceNotice problems={problems} preserveAndReload={preserveAndReload} retrySave={retrySave} />
       {!ready ? (
         <div className="flex h-full flex-col items-center justify-center gap-3 bg-[#0a0a0a] text-sm text-white/60" role={error ? "alert" : "status"}>
           <span>{error ? "画布恢复失败，请重试" : "正在恢复画布…"}</span>

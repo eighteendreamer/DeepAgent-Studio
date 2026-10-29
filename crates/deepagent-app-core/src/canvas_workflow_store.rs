@@ -13,6 +13,7 @@ use deepagent_persistence::document_store::DocumentStore;
 use deepagent_persistence::Database;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 /// Document collection for canvas workflow graphs.
 pub const CANVAS_WORKFLOW_COLLECTION: &str = "canvas_workflows";
@@ -37,6 +38,62 @@ pub struct CanvasWorkflowDoc {
     /// True for the live canvas slot rather than a saved workflow.
     #[serde(default)]
     pub current: bool,
+    /// Fresh write identity prevents ABA even for equal graphs/timestamps.
+    /// Old documents remain readable without rewriting them on read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+}
+
+/// Versioned live-slot read contract. Absence is an explicit create-only lease,
+/// never permission to overwrite a document that appeared after this read.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasWorkflowState {
+    pub schema_version: u8,
+    pub revision: Option<String>,
+    pub graph: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasWorkflowWriteReceipt {
+    pub schema_version: u8,
+    pub revision: String,
+    pub updated_at: i64,
+}
+
+/// The IPC preserves conflict identity; callers must not parse display text or
+/// adopt current_revision as permission to retry their stale graph.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasWorkflowWriteError {
+    pub schema_version: u8,
+    pub code: &'static str,
+    pub message: String,
+    pub current_revision: Option<String>,
+}
+
+impl std::fmt::Display for CanvasWorkflowWriteError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CanvasWorkflowWriteError {}
+
+impl From<CoreError> for CanvasWorkflowWriteError {
+    fn from(error: CoreError) -> Self {
+        Self {
+            schema_version: 1,
+            code: "write_failed",
+            message: error.to_string(),
+            current_revision: None,
+        }
+    }
+}
+
+fn revision(body: &str) -> String {
+    format!("{:x}", Sha256::digest(body.as_bytes()))
 }
 
 /// Library listing entry (graph excluded to keep the payload small).
@@ -121,9 +178,16 @@ impl CanvasWorkflowStore {
         mode: &str,
         workspace_id: Option<&str>,
         graph: &Value,
-    ) -> Result<CanvasWorkflowMeta> {
+        expected_revision: Option<&str>,
+    ) -> Result<CanvasWorkflowWriteReceipt, CanvasWorkflowWriteError> {
         check_graph_size(graph)?;
         let id = current_workflow_id(mode, workspace_id)?;
+        let store = DocumentStore::new(&self.db);
+        let previous = store.get(CANVAS_WORKFLOW_COLLECTION, &id)?;
+        let current_revision = previous.as_ref().map(|doc| revision(&doc.body));
+        if current_revision.as_deref() != expected_revision {
+            return Err(Self::conflict(&id, current_revision));
+        }
         let meta = CanvasWorkflowMeta {
             id: id.clone(),
             name: format!("current-{mode}"),
@@ -138,17 +202,60 @@ impl CanvasWorkflowStore {
             graph: graph.clone(),
             updated_at: meta.updated_at,
             current: true,
+            revision: Some(uuid::Uuid::new_v4().to_string()),
         };
-        self.put(&document)?;
-        Ok(meta)
+        let body = serde_json::to_string(&document).map_err(CoreError::from)?;
+        let now = SystemClock.now();
+        let changed = match previous {
+            Some(previous) => store.replace_body_if_unchanged(
+                CANVAS_WORKFLOW_COLLECTION,
+                &id,
+                &previous.body,
+                &body,
+                now,
+            )?,
+            None => store.insert_if_absent(CANVAS_WORKFLOW_COLLECTION, &id, &body, now)?,
+        };
+        if !changed {
+            let current = store.get(CANVAS_WORKFLOW_COLLECTION, &id)?;
+            return Err(Self::conflict(&id, current.map(|doc| revision(&doc.body))));
+        }
+        tracing::debug!(document_id = %id, "canvas snapshot committed with revision check");
+        Ok(CanvasWorkflowWriteReceipt {
+            schema_version: 1,
+            revision: revision(&body),
+            updated_at: meta.updated_at,
+        })
+    }
+
+    fn conflict(id: &str, current_revision: Option<String>) -> CanvasWorkflowWriteError {
+        tracing::warn!(document_id = id, "stale canvas snapshot rejected");
+        CanvasWorkflowWriteError {
+            schema_version: 1,
+            code: "revision_conflict",
+            message:
+                "Canvas changed in another window; preserve local edits and reload before saving"
+                    .into(),
+            current_revision,
+        }
     }
 
     /// Read the live canvas graph, if any.
-    pub fn read_current(&self, mode: &str, workspace_id: Option<&str>) -> Result<Option<Value>> {
+    pub fn read_current(
+        &self,
+        mode: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<CanvasWorkflowState> {
         let id = current_workflow_id(mode, workspace_id)?;
         let doc = DocumentStore::new(&self.db).get(CANVAS_WORKFLOW_COLLECTION, &id)?;
-        let Some(doc) = doc else { return Ok(None) };
-        Ok(Some(decode(&doc)?.graph))
+        Ok(CanvasWorkflowState {
+            schema_version: 1,
+            revision: doc.as_ref().map(|doc| revision(&doc.body)),
+            graph: doc
+                .as_ref()
+                .map(|doc| decode(doc).map(|doc| doc.graph))
+                .transpose()?,
+        })
     }
 
     /// Save or overwrite a named workflow in the library.
@@ -187,6 +294,7 @@ impl CanvasWorkflowStore {
             graph: graph.clone(),
             updated_at: meta.updated_at,
             current: false,
+            revision: None,
         })?;
         Ok(meta)
     }
@@ -248,34 +356,49 @@ mod tests {
         assert!(store
             .read_current("creative", None)
             .expect("read")
+            .graph
             .is_none());
-        store
+        let saved = store
             .write_current(
                 "creative",
                 None,
                 &json!({ "nodes": [{ "id": "a" }], "edges": [] }),
+                None,
             )
             .expect("write creative");
         store
-            .write_current("professional", None, &json!({ "nodes": [], "edges": [] }))
+            .write_current(
+                "professional",
+                None,
+                &json!({ "nodes": [], "edges": [] }),
+                None,
+            )
             .expect("write professional");
         let creative = store
             .read_current("creative", None)
             .expect("read")
+            .graph
             .expect("present");
         assert_eq!(creative["nodes"].as_array().expect("nodes").len(), 1);
         assert!(store
             .read_current("creative", Some("other-workspace"))
             .expect("read other")
+            .graph
             .is_none());
 
         store
-            .write_current("creative", None, &json!({ "nodes": [], "edges": [] }))
+            .write_current(
+                "creative",
+                None,
+                &json!({ "nodes": [], "edges": [] }),
+                Some(&saved.revision),
+            )
             .expect("overwrite");
         assert_eq!(
             store
                 .read_current("creative", None)
                 .expect("read")
+                .graph
                 .expect("present")["nodes"]
                 .as_array()
                 .expect("nodes")
@@ -331,7 +454,7 @@ mod tests {
     fn library_list_excludes_live_canvas_slots() {
         let store = store();
         store
-            .write_current("creative", None, &json!({ "nodes": [] }))
+            .write_current("creative", None, &json!({ "nodes": [] }), None)
             .expect("current");
         assert!(store.list_workflows().expect("list").is_empty());
     }
@@ -397,6 +520,7 @@ mod tests {
                 "creative",
                 Some("workspace-a"),
                 &json!({"nodes":[{"id":"live-only"}]}),
+                None,
             )
             .expect("write live canvas");
 
@@ -410,13 +534,15 @@ mod tests {
         let live_after_overwrite = store
             .read_current("creative", Some("workspace-a"))
             .expect("read live canvas")
+            .graph
             .map(|graph| graph["nodes"].clone());
         let delete_result = store
             .delete_workflow(&current_id)
             .expect("delete collision id");
         let live_after_delete = store
             .read_current("creative", Some("workspace-a"))
-            .expect("read live canvas after delete");
+            .expect("read live canvas after delete")
+            .graph;
         eprintln!(
             "canvas workflow id collision audit: overwrite_ok={}, live_after_overwrite={:?}, delete_ok={}, live_after_delete_present={}",
             overwrite.is_ok(),
@@ -442,7 +568,7 @@ mod tests {
         assert!(mode_error.to_string().contains("sideways"));
         let oversized = json!({ "blob": "x".repeat(MAX_GRAPH_BYTES + 10) });
         let error = store
-            .write_current("creative", None, &oversized)
+            .write_current("creative", None, &oversized, None)
             .expect_err("oversized graph");
         assert!(error.to_string().contains("limit"));
         assert!(store
@@ -457,7 +583,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit: a stale canvas window must not overwrite a newer graph snapshot"]
     fn audit_current_canvas_rejects_stale_window_snapshot() {
         let root = tempfile::tempdir().expect("temp root");
         let db_path = root.path().join("canvas.sqlite");
@@ -466,28 +591,34 @@ mod tests {
         let first = CanvasWorkflowStore::new(first_db);
         let second = CanvasWorkflowStore::new(second_db);
 
-        first
-            .write_current("creative", None, &json!({"nodes":[{"id":"base"}]}))
+        let seed = first
+            .write_current("creative", None, &json!({"nodes":[{"id":"base"}]}), None)
             .expect("seed");
         let stale_snapshot = second
             .read_current("creative", None)
-            .expect("read stale snapshot")
-            .expect("snapshot exists");
+            .expect("read stale snapshot");
 
         first
             .write_current(
                 "creative",
                 None,
                 &json!({"nodes":[{"id":"base"},{"id":"first"}]}),
+                Some(&seed.revision),
             )
             .expect("newer write");
 
-        let mut stale_update = stale_snapshot;
+        let mut stale_update = stale_snapshot.graph.expect("snapshot exists");
         stale_update["nodes"] = json!([{"id":"base"},{"id":"second"}]);
-        let stale_result = second.write_current("creative", None, &stale_update);
+        let stale_result = second.write_current(
+            "creative",
+            None,
+            &stale_update,
+            stale_snapshot.revision.as_deref(),
+        );
         let final_graph = second
             .read_current("creative", None)
             .expect("read final graph")
+            .graph
             .expect("final graph exists");
         eprintln!(
             "stale_accepted={} final_nodes={:?}",
@@ -498,5 +629,177 @@ mod tests {
             stale_result.is_err(),
             "a stale canvas snapshot was accepted and overwrote a newer window update"
         );
+        assert_eq!(stale_result.unwrap_err().code, "revision_conflict");
+        assert_eq!(final_graph["nodes"], json!([{"id":"base"},{"id":"first"}]));
+    }
+
+    #[test]
+    fn absent_read_is_create_only_and_equal_graph_writes_get_new_revisions() {
+        let store = store();
+        let absent = store.read_current("creative", None).unwrap();
+        assert_eq!(
+            serde_json::to_value(&absent).unwrap(),
+            json!({"schemaVersion":1,"revision":null,"graph":null})
+        );
+        let graph = json!({"nodes":[{"id":"a"}]});
+        let first = store.write_current("creative", None, &graph, None).unwrap();
+        let conflict = store
+            .write_current("creative", None, &json!({"nodes":[]}), None)
+            .unwrap_err();
+        assert_eq!(conflict.code, "revision_conflict");
+        let wire = serde_json::to_value(&conflict).unwrap();
+        assert_eq!(wire["schemaVersion"], 1);
+        assert_eq!(wire["currentRevision"], first.revision);
+        assert!(
+            wire.get("graph").is_none(),
+            "conflict must not echo graph content"
+        );
+        let second = store
+            .write_current("creative", None, &graph, Some(&first.revision))
+            .unwrap();
+        assert_ne!(first.revision, second.revision);
+        assert!(store
+            .write_current("creative", None, &graph, Some(&first.revision))
+            .is_err());
+        assert_eq!(
+            store.read_current("creative", None).unwrap().graph,
+            Some(graph)
+        );
+    }
+
+    #[test]
+    fn legacy_documents_get_stable_read_tokens_without_mutation_and_upgrade_on_write() {
+        let store = store();
+        let id = current_workflow_id("creative", None).unwrap();
+        let legacy = json!({"id":id,"name":"old","mode":"creative","graph":{"nodes":[{"id":"legacy"}]},"updatedAt":1,"current":true}).to_string();
+        let documents = DocumentStore::new(&store.db);
+        documents
+            .put(
+                CANVAS_WORKFLOW_COLLECTION,
+                &id,
+                &legacy,
+                None,
+                SystemClock.now(),
+            )
+            .unwrap();
+        let first = store.read_current("creative", None).unwrap();
+        assert_eq!(first, store.read_current("creative", None).unwrap());
+        assert_eq!(
+            documents
+                .get(CANVAS_WORKFLOW_COLLECTION, &id)
+                .unwrap()
+                .unwrap()
+                .body,
+            legacy
+        );
+        assert!(store
+            .write_current("creative", None, &json!({}), None)
+            .is_err());
+        let saved = store
+            .write_current(
+                "creative",
+                None,
+                first.graph.as_ref().unwrap(),
+                first.revision.as_deref(),
+            )
+            .unwrap();
+        assert_ne!(first.revision.as_ref(), Some(&saved.revision));
+        assert!(store
+            .load_workflow(&id)
+            .unwrap()
+            .unwrap()
+            .revision
+            .is_some());
+    }
+
+    #[test]
+    fn concurrent_windows_have_one_winner_and_reopen_preserves_its_revision() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("canvas.sqlite");
+        let seed = {
+            let store = CanvasWorkflowStore::new(Arc::new(Database::open(&path).unwrap()));
+            store
+                .write_current("creative", Some("ws"), &json!({"nodes":[]}), None)
+                .unwrap()
+        };
+        let first = CanvasWorkflowStore::new(Arc::new(Database::open(&path).unwrap()));
+        let second = CanvasWorkflowStore::new(Arc::new(Database::open(&path).unwrap()));
+        let gate = std::sync::Barrier::new(2);
+        let write = |store: &CanvasWorkflowStore, id| {
+            gate.wait();
+            store.write_current(
+                "creative",
+                Some("ws"),
+                &json!({"nodes":[{"id":id}]}),
+                Some(&seed.revision),
+            )
+        };
+        let results = std::thread::scope(|scope| {
+            let one = scope.spawn(|| write(&first, "a"));
+            let two = scope.spawn(|| write(&second, "b"));
+            [one.join().unwrap(), two.join().unwrap()]
+        });
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let winner = results
+            .iter()
+            .find_map(|result| result.as_ref().ok())
+            .unwrap();
+        let graph = first.read_current("creative", Some("ws")).unwrap().graph;
+        drop(first);
+        drop(second);
+        let reopened = CanvasWorkflowStore::new(Arc::new(Database::open(&path).unwrap()));
+        let state = reopened.read_current("creative", Some("ws")).unwrap();
+        assert_eq!(state.revision.as_ref(), Some(&winner.revision));
+        assert_eq!(state.graph, graph);
+        assert!(reopened
+            .write_current("creative", Some("ws"), &json!({}), Some(&seed.revision))
+            .is_err());
+        for (mode, workspace) in [("professional", Some("ws")), ("creative", Some("other"))] {
+            assert!(reopened
+                .write_current(mode, workspace, &json!({}), None)
+                .is_ok());
+        }
+    }
+
+    #[test]
+    fn failed_database_update_retains_graph_and_revision_for_retry() {
+        let store = store();
+        let initial = json!({"nodes":[{"id":"kept"}]});
+        let saved = store
+            .write_current("creative", None, &initial, None)
+            .unwrap();
+        store.db.with_conn(|connection| {
+            connection.execute_batch("CREATE TRIGGER reject_canvas BEFORE UPDATE ON documents BEGIN SELECT RAISE(ABORT, 'synthetic disk failure'); END;")
+                .map_err(|error| CoreError::Persistence(error.to_string()))
+        }).unwrap();
+        let error = store
+            .write_current(
+                "creative",
+                None,
+                &json!({"nodes":[]}),
+                Some(&saved.revision),
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "write_failed");
+        assert!(error.message.contains("synthetic disk failure"));
+        let unchanged = store.read_current("creative", None).unwrap();
+        assert_eq!(unchanged.revision, Some(saved.revision.clone()));
+        assert_eq!(unchanged.graph, Some(initial));
+        store
+            .db
+            .with_conn(|connection| {
+                connection
+                    .execute_batch("DROP TRIGGER reject_canvas")
+                    .map_err(|error| CoreError::Persistence(error.to_string()))
+            })
+            .unwrap();
+        assert!(store
+            .write_current(
+                "creative",
+                None,
+                &json!({"nodes":[]}),
+                Some(&saved.revision)
+            )
+            .is_ok());
     }
 }

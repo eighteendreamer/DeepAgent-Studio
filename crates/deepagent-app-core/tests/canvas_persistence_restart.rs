@@ -136,7 +136,7 @@ fn every_canvas_document_survives_a_reopen_of_the_same_database() {
 
         let workflows = CanvasWorkflowStore::new(db.clone());
         workflows
-            .write_current("creative", None, &graph())
+            .write_current("creative", None, &graph(), None)
             .expect("write current");
         workflows
             .save_workflow(Some("wf-demo"), "演示工作流", "creative", None, &graph())
@@ -181,6 +181,7 @@ fn every_canvas_document_survives_a_reopen_of_the_same_database() {
     let restored = workflows
         .read_current("creative", None)
         .expect("read current")
+        .graph
         .expect("current graph restored");
     assert_eq!(restored, graph());
     assert_eq!(
