@@ -1710,6 +1710,7 @@ export interface SshConnection {
   username: string;
   auth_type: SshAuthType;
   key_path?: string;
+  known_hosts_path?: string;
   status: SshStatus;
   last_error?: string;
   latency_ms?: number;

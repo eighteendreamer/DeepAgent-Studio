@@ -22,6 +22,10 @@ pub struct SshConnectionConfig {
     pub username: String,
     pub auth_type: SshAuthType,
     pub key_path: Option<String>,
+    /// Explicit verified OpenSSH known_hosts source. Legacy None resolves to app data,
+    /// never the process user's default SSH directory.
+    #[serde(default)]
+    pub known_hosts_path: Option<String>,
     #[serde(default)]
     pub password: Option<String>,
     #[serde(default)]
@@ -57,6 +61,8 @@ pub struct SshConnectionDto {
     pub username: String,
     pub auth_type: SshAuthType,
     pub key_path: Option<String>,
+    #[serde(default)]
+    pub known_hosts_path: Option<String>,
     pub status: SshStatus,
     pub last_error: Option<String>,
     pub latency_ms: Option<u64>,
@@ -70,6 +76,8 @@ pub struct CreateSshConnectionRequest {
     pub username: String,
     pub auth_type: SshAuthType,
     pub key_path: Option<String>,
+    #[serde(default)]
+    pub known_hosts_path: Option<String>,
     pub password: Option<String>,
 }
 
@@ -82,6 +90,9 @@ pub struct UpdateSshConnectionRequest {
     pub username: String,
     pub auth_type: SshAuthType,
     pub key_path: Option<String>,
+    /// None preserves the existing source; Some("") resets to the app default.
+    #[serde(default)]
+    pub known_hosts_path: Option<String>,
     pub password: Option<String>,
 }
 
@@ -101,6 +112,7 @@ impl SshConnectionConfig {
             username: username.into(),
             auth_type,
             key_path: None,
+            known_hosts_path: None,
             password: None,
             extra_options: HashMap::new(),
             control_path: None,

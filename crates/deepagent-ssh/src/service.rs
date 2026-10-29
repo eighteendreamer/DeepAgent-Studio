@@ -3,6 +3,7 @@ use super::config::{
     UpdateSshConnectionRequest,
 };
 use super::error::{SshError, SshResult};
+use super::host_trust::HostTrust;
 use super::remote::{
     RemoteBundleManifest, RemoteBundleRequest, RemoteBundleResult, RemoteInstallRequest,
     RemoteInstallResult, RemoteManifestEntry, RemoteProbeResult, RemotePushFileRequest,
@@ -73,6 +74,8 @@ impl SshConfigStore for JsonFileSshConfigStore {
 }
 
 pub struct SshServiceImpl {
+    // Config identity changes cannot race publication of a verified connection.
+    lifecycle: RwLock<()>,
     configs: RwLock<HashMap<String, SshConnectionConfig>>,
     sessions: RwLock<HashMap<String, Arc<SshSession>>>,
     config_store: Arc<dyn SshConfigStore>,
@@ -91,6 +94,7 @@ impl SshServiceImpl {
 
     pub fn with_config_store(app_data: PathBuf, config_store: Arc<dyn SshConfigStore>) -> Self {
         Self {
+            lifecycle: RwLock::new(()),
             configs: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
             config_store,
@@ -100,14 +104,20 @@ impl SshServiceImpl {
     }
 
     pub async fn load(&self) -> SshResult<()> {
+        let _lifecycle = self.lifecycle.write().await;
         let configs = self
             .config_store
             .load()
             .await?
             .into_iter()
-            .map(|config| (config.id.clone(), config))
-            .collect();
+            .map(|mut config| {
+                config.known_hosts_path =
+                    Some(self.resolve_known_hosts(config.known_hosts_path.as_deref())?);
+                Ok((config.id.clone(), config))
+            })
+            .collect::<SshResult<HashMap<_, _>>>()?;
         *self.configs.write().await = configs;
+        self.loaded.store(true, Ordering::Relaxed);
         Ok(())
     }
 
@@ -156,6 +166,7 @@ impl SshServiceImpl {
                 username: cfg.username.clone(),
                 auth_type: cfg.auth_type,
                 key_path: cfg.key_path.clone(),
+                known_hosts_path: cfg.known_hosts_path.clone(),
                 status,
                 last_error,
                 latency_ms,
@@ -177,6 +188,8 @@ impl SshServiceImpl {
             request.username,
             request.auth_type,
         );
+        config.known_hosts_path =
+            Some(self.resolve_known_hosts(request.known_hosts_path.as_deref())?);
         validate_config(
             &config,
             request.key_path.as_deref(),
@@ -205,6 +218,7 @@ impl SshServiceImpl {
         request: UpdateSshConnectionRequest,
     ) -> SshResult<SshConnectionDto> {
         self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.write().await;
         let mut configs = self.configs.write().await;
         let cfg = configs
             .get_mut(&request.id)
@@ -217,6 +231,14 @@ impl SshServiceImpl {
             username: request.username,
             auth_type: request.auth_type,
             key_path: request.key_path.clone(),
+            known_hosts_path: Some(
+                self.resolve_known_hosts(
+                    request
+                        .known_hosts_path
+                        .as_deref()
+                        .or(cfg.known_hosts_path.as_deref()),
+                )?,
+            ),
             password: request.password,
             extra_options: cfg.extra_options.clone(),
             control_path: None,
@@ -244,6 +266,7 @@ impl SshServiceImpl {
 
     pub async fn remove_connection(&self, id: &str) -> SshResult<()> {
         self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.write().await;
         let _ = self.disconnect(id).await;
         let mut configs = self.configs.write().await;
         configs.remove(id);
@@ -254,23 +277,22 @@ impl SshServiceImpl {
 
     pub async fn connect(&self, id: &str) -> SshResult<SshServiceHandle> {
         self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.read().await;
         let cfg = self.config_for(id).await?;
-        let session = self.session_for(cfg.clone()).await;
-        if let Some(client) = session.client().await {
-            if !client.is_closed() {
-                session.set_status(SshStatus::Connected, None).await;
-                session.touch_keepalive();
-                let _ = self
-                    .update_cached_status(id, SshStatus::Connected, None, cfg.cached_latency_ms)
-                    .await;
-                return Ok(SshServiceHandle::new(id, id, 80, 24));
-            }
+        if let Some((session, _client)) = self.reusable_client(&cfg).await? {
+            session.set_status(SshStatus::Connected, None).await;
+            session.touch_keepalive();
+            let _ = self
+                .update_cached_status(id, SshStatus::Connected, None, cfg.cached_latency_ms)
+                .await;
+            return Ok(SshServiceHandle::new(id, id, 80, 24));
         }
 
+        let session = self.session_for(cfg.clone()).await;
         session.set_status(SshStatus::Connecting, None).await;
         let started = std::time::Instant::now();
-        let client = match timeout(Duration::from_secs(20), connect_client(&cfg)).await {
-            Ok(Ok(client)) => client,
+        let (client, trust) = match timeout(Duration::from_secs(20), connect_client(&cfg)).await {
+            Ok(Ok(verified)) => verified,
             Ok(Err(err)) => {
                 let msg = err.to_string();
                 session
@@ -302,6 +324,7 @@ impl SshServiceImpl {
                 return Err(err);
             }
         };
+        *session.host_trust.write().await = Some(trust);
         session.set_client(Some(client)).await;
         session.set_status(SshStatus::Connected, None).await;
         session.touch_keepalive();
@@ -651,16 +674,18 @@ impl SshServiceImpl {
 
     pub async fn test_connection(&self, config: &SshConnectionConfig) -> SshResult<SshTestResult> {
         self.ensure_loaded().await;
-        let cfg = {
+        let _lifecycle = self.lifecycle.read().await;
+        let mut cfg = {
             let configs = self.configs.read().await;
             configs
                 .get(&config.id)
                 .cloned()
                 .unwrap_or_else(|| config.clone())
         };
+        cfg.known_hosts_path = Some(self.resolve_known_hosts(cfg.known_hosts_path.as_deref())?);
         let start = std::time::Instant::now();
         let result = match timeout(Duration::from_secs(20), async {
-            let client = connect_client(&cfg).await?;
+            let (client, _) = connect_client(&cfg).await?;
             let output = client.execute("echo ok").await.map_err(map_ssh_error)?;
             let _ = client.disconnect().await;
             Ok::<_, SshError>(output)
@@ -706,6 +731,7 @@ impl SshServiceImpl {
 
     pub async fn refresh_due_statuses(&self) -> SshResult<usize> {
         self.ensure_loaded().await;
+        let _lifecycle = self.lifecycle.read().await;
         let configs = {
             let guard = self.configs.read().await;
             guard.values().cloned().collect::<Vec<_>>()
@@ -1103,6 +1129,78 @@ impl SshServiceImpl {
             .ok_or_else(|| SshError::NotFound(id.to_string()))
     }
 
+    fn resolve_known_hosts(&self, requested: Option<&str>) -> SshResult<String> {
+        let path = match requested.filter(|value| !value.trim().is_empty()) {
+            Some(path) => PathBuf::from(path),
+            None => {
+                let root = if self.data_root.is_absolute() {
+                    self.data_root.clone()
+                } else {
+                    std::env::current_dir()?.join(&self.data_root)
+                };
+                root.join("known_hosts")
+            }
+        };
+        if !path.is_absolute() {
+            return Err(SshError::InvalidConfig(
+                "known_hosts path must be absolute (no ~ expansion)".into(),
+            ));
+        }
+        path.into_os_string()
+            .into_string()
+            .map_err(|_| SshError::InvalidConfig("known_hosts path must be valid Unicode".into()))
+    }
+
+    async fn reusable_client(
+        &self,
+        cfg: &SshConnectionConfig,
+    ) -> SshResult<Option<(Arc<SshSession>, Client)>> {
+        let session = self.sessions.read().await.get(&cfg.id).cloned();
+        let Some(session) = session else {
+            return Ok(None);
+        };
+        let Some(client) = session.client().await else {
+            return Ok(None);
+        };
+        if client.is_closed() {
+            self.disconnect(&cfg.id).await?;
+            return Ok(None);
+        }
+        let original = session.config();
+        if original.host != cfg.host
+            || original.port != cfg.port
+            || original.username != cfg.username
+            || original.auth_type != cfg.auth_type
+            || original.key_path != cfg.key_path
+            || original.password != cfg.password
+        {
+            self.disconnect(&cfg.id).await?;
+            return Ok(None);
+        }
+        match HostTrust::load(cfg).await {
+            Ok(trust) if session.host_trust.read().await.as_ref() == Some(&trust) => {
+                Ok(Some((session, client)))
+            }
+            result => {
+                // A changed or revoked source must never inherit the previously authenticated client.
+                self.disconnect(&cfg.id).await?;
+                tracing::debug!(target: "deepagent_ssh", connection_id = cfg.id,
+                    "SSH trust source changed; discarded live connection");
+                if let Err(error) = result {
+                    self.update_cached_status(
+                        &cfg.id,
+                        SshStatus::Error,
+                        Some(error.to_string()),
+                        None,
+                    )
+                    .await?;
+                    return Err(error);
+                }
+                Ok(None)
+            }
+        }
+    }
+
     async fn session_for(&self, cfg: SshConnectionConfig) -> Arc<SshSession> {
         let mut sessions = self.sessions.write().await;
         sessions
@@ -1155,78 +1253,65 @@ impl SshServiceImpl {
     }
 
     async fn refresh_connection_status(&self, cfg: &SshConnectionConfig) -> SshResult<()> {
-        let session = {
-            let sessions = self.sessions.read().await;
-            sessions.get(&cfg.id).cloned()
-        };
-        if let Some(session) = session {
-            if let Some(client) = session.client().await {
-                if client.is_closed() {
-                    session.set_client(None).await;
-                    session.set_status(SshStatus::Disconnected, None).await;
-                    self.sessions.write().await.remove(&cfg.id);
-                } else {
-                    let started = std::time::Instant::now();
-                    let outcome = timeout(
-                        Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS),
-                        execute_health_check(&client),
+        if let Some((session, client)) = self.reusable_client(cfg).await? {
+            let started = std::time::Instant::now();
+            let outcome = timeout(
+                Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS),
+                execute_health_check(&client),
+            )
+            .await;
+            return match outcome {
+                Ok(Ok(())) => {
+                    session.set_status(SshStatus::Connected, None).await;
+                    session.touch_keepalive();
+                    self.update_cached_status(
+                        &cfg.id,
+                        SshStatus::Connected,
+                        None,
+                        Some(started.elapsed().as_millis() as u64),
                     )
-                    .await;
-                    return match outcome {
-                        Ok(Ok(())) => {
-                            session.set_status(SshStatus::Connected, None).await;
-                            session.touch_keepalive();
-                            self.update_cached_status(
-                                &cfg.id,
-                                SshStatus::Connected,
-                                None,
-                                Some(started.elapsed().as_millis() as u64),
-                            )
-                            .await
-                        }
-                        Ok(Err(err)) => {
-                            let msg = err.to_string();
-                            let _ = client.disconnect().await;
-                            session.replace_pty(None).await;
-                            session.set_client(None).await;
-                            session
-                                .set_status(SshStatus::Error, Some(msg.clone()))
-                                .await;
-                            self.sessions.write().await.remove(&cfg.id);
-                            self.update_cached_status(
-                                &cfg.id,
-                                SshStatus::Error,
-                                Some(msg),
-                                Some(started.elapsed().as_millis() as u64),
-                            )
-                            .await
-                        }
-                        Err(_) => {
-                            let err =
-                                SshError::Timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS));
-                            let _ = client.disconnect().await;
-                            session.replace_pty(None).await;
-                            session.set_client(None).await;
-                            session
-                                .set_status(SshStatus::Error, Some(err.to_string()))
-                                .await;
-                            self.sessions.write().await.remove(&cfg.id);
-                            self.update_cached_status(
-                                &cfg.id,
-                                SshStatus::Error,
-                                Some(err.to_string()),
-                                Some(started.elapsed().as_millis() as u64),
-                            )
-                            .await
-                        }
-                    };
+                    .await
                 }
-            }
+                Ok(Err(err)) => {
+                    let msg = err.to_string();
+                    let _ = client.disconnect().await;
+                    session.replace_pty(None).await;
+                    session.set_client(None).await;
+                    session
+                        .set_status(SshStatus::Error, Some(msg.clone()))
+                        .await;
+                    self.sessions.write().await.remove(&cfg.id);
+                    self.update_cached_status(
+                        &cfg.id,
+                        SshStatus::Error,
+                        Some(msg),
+                        Some(started.elapsed().as_millis() as u64),
+                    )
+                    .await
+                }
+                Err(_) => {
+                    let err = SshError::Timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS));
+                    let _ = client.disconnect().await;
+                    session.replace_pty(None).await;
+                    session.set_client(None).await;
+                    session
+                        .set_status(SshStatus::Error, Some(err.to_string()))
+                        .await;
+                    self.sessions.write().await.remove(&cfg.id);
+                    self.update_cached_status(
+                        &cfg.id,
+                        SshStatus::Error,
+                        Some(err.to_string()),
+                        Some(started.elapsed().as_millis() as u64),
+                    )
+                    .await
+                }
+            };
         }
 
         let started = std::time::Instant::now();
         let outcome = timeout(Duration::from_secs(STATUS_REFRESH_TIMEOUT_SECS), async {
-            let client = connect_client(cfg).await?;
+            let (client, _) = connect_client(cfg).await?;
             execute_health_check(&client).await?;
             let _ = client.disconnect().await;
             Ok::<(), SshError>(())
@@ -1347,17 +1432,35 @@ async fn execute_health_check(client: &Client) -> SshResult<()> {
     Ok(())
 }
 
-async fn connect_client(config: &SshConnectionConfig) -> SshResult<Client> {
+async fn connect_client(config: &SshConnectionConfig) -> SshResult<(Client, HostTrust)> {
     validate_config(
         config,
         config.key_path.as_deref(),
         config.password.as_deref(),
     )?;
+    let trust = HostTrust::load(config).await?;
     let auth = auth_method(config)?;
     let addr = (config.host.as_str(), config.port);
-    Client::connect(addr, &config.username, auth, ServerCheckMethod::NoCheck)
-        .await
-        .map_err(map_ssh_error)
+    let client = Client::connect(
+        addr,
+        &config.username,
+        auth,
+        ServerCheckMethod::KnownHostsFile(trust.path.clone()),
+    )
+    .await
+    .map_err(|error| HostTrust::map_connect_error(config, error))?;
+    match HostTrust::load(config).await {
+        Ok(current) if current == trust => Ok((client, trust)),
+        result => {
+            let _ = client.disconnect().await;
+            Err(result.err().unwrap_or_else(|| {
+                HostTrust::error(
+                    config,
+                    "trust source changed during handshake; retry after verification",
+                )
+            }))
+        }
+    }
 }
 
 fn auth_method(config: &SshConnectionConfig) -> SshResult<AuthMethod> {
@@ -1435,13 +1538,14 @@ fn dto_from_config(
         username: cfg.username.clone(),
         auth_type: cfg.auth_type,
         key_path: cfg.key_path.clone(),
+        known_hosts_path: cfg.known_hosts_path.clone(),
         status,
         last_error,
         latency_ms,
     }
 }
 
-fn map_ssh_error(err: async_ssh2_tokio::Error) -> SshError {
+pub(super) fn map_ssh_error(err: async_ssh2_tokio::Error) -> SshError {
     match err {
         async_ssh2_tokio::Error::PasswordWrong
         | async_ssh2_tokio::Error::KeyAuthFailed

@@ -3726,6 +3726,7 @@ export interface SshConnection {
   username: string;
   auth_type: "agent" | "key_file" | "password";
   key_path?: string;
+  known_hosts_path?: string;
   status: "disconnected" | "connecting" | "connected" | "error";
   last_error?: string;
   latency_ms?: number;
@@ -3899,6 +3900,7 @@ export async function sshCreateConnection(
   authType: "agent" | "key_file" | "password",
   keyPath?: string,
   password?: string,
+  knownHostsPath?: string,
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -3910,8 +3912,9 @@ export async function sshCreateConnection(
       authType,
       keyPath,
       password,
+      knownHostsPath,
     });
-  return { id: "mock", name, host, port, username, auth_type: authType, status: "disconnected" };
+  return { id: "mock", name, host, port, username, auth_type: authType, known_hosts_path: knownHostsPath, status: "disconnected" };
 }
 
 export async function sshUpdateConnection(
@@ -3923,6 +3926,7 @@ export async function sshUpdateConnection(
   authType: "agent" | "key_file" | "password",
   keyPath?: string,
   password?: string,
+  knownHostsPath?: string,
 ): Promise<SshConnection> {
   const invoke = getInvoke();
   if (invoke)
@@ -3935,8 +3939,9 @@ export async function sshUpdateConnection(
       authType,
       keyPath,
       password,
+      knownHostsPath,
     });
-  return { id, name, host, port, username, auth_type: authType, status: "disconnected" };
+  return { id, name, host, port, username, auth_type: authType, known_hosts_path: knownHostsPath, status: "disconnected" };
 }
 
 export async function sshRemoveConnection(id: string): Promise<void> {

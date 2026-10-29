@@ -6,6 +6,13 @@ pub type SshResult<T> = Result<T, SshError>;
 
 #[derive(Debug, Error)]
 pub enum SshError {
+    #[error("ssh host key verification failed for [{host}]:{port}: {reason}; known_hosts={known_hosts_path}. Verify the host fingerprint with a trusted administrator before adding or replacing its public key; never accept a changed key blindly.")]
+    HostKeyVerification {
+        host: String,
+        port: u16,
+        known_hosts_path: String,
+        reason: String,
+    },
     #[error("connection not found: {0}")]
     NotFound(String),
     #[error("connection already exists with id {0}")]

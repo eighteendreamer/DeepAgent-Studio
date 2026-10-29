@@ -2,7 +2,8 @@
 //!
 //! 需要一台允许密码登录的 SSH 服务器。通过环境变量提供：
 //! `DEEPAGENT_SSH_TEST_HOST`、`DEEPAGENT_SSH_TEST_PORT`（默认 22）、
-//! `DEEPAGENT_SSH_TEST_USERNAME`（默认 root）、`DEEPAGENT_SSH_TEST_PASSWORD`。
+//! `DEEPAGENT_SSH_TEST_USERNAME`（默认 root）、`DEEPAGENT_SSH_TEST_PASSWORD`，
+//! 以及预先核验过的 `DEEPAGENT_SSH_TEST_KNOWN_HOSTS` 绝对路径。
 //! 运行：`cargo test -p deepagent-ssh --test pty_shell -- --ignored --nocapture`。
 
 use std::time::{Duration, Instant};
@@ -41,6 +42,10 @@ async fn pty_shell_streams_prompt_and_echoes_input() {
             username: username.clone(),
             auth_type: SshAuthType::Password,
             key_path: None,
+            known_hosts_path: Some(
+                std::env::var("DEEPAGENT_SSH_TEST_KNOWN_HOSTS")
+                    .expect("provide an independently verified known_hosts absolute path"),
+            ),
             password: Some(password),
         })
         .await

@@ -1,3 +1,4 @@
+import { SshHostTrustField } from "./SshHostTrustField";
 import { HoverInfo } from "../ui/HoverInfo";
 import {
   ArrowLeft,
@@ -66,6 +67,7 @@ interface ConnectionForm {
   username: string;
   authType: AuthType;
   keyPath: string;
+  knownHostsPath: string;
   password: string;
 }
 
@@ -76,6 +78,7 @@ const emptyForm: ConnectionForm = {
   username: "",
   authType: "password",
   keyPath: "",
+  knownHostsPath: "",
   password: "",
 };
 
@@ -520,6 +523,7 @@ export function RemoteSidebar({
           authType,
           keyPath,
           password,
+          form.knownHostsPath,
         );
       } else {
         const created = await sshCreateConnection(
@@ -530,6 +534,7 @@ export function RemoteSidebar({
           authType,
           keyPath,
           password,
+          form.knownHostsPath,
         );
         void handleSelect(created);
       }
@@ -558,6 +563,7 @@ export function RemoteSidebar({
       username: conn.username,
       authType: conn.key_path ? "file" : "password",
       keyPath: conn.key_path || "",
+      knownHostsPath: conn.known_hosts_path || "",
       password: "",
     });
     setEditingConn(conn);
@@ -1159,6 +1165,11 @@ export function RemoteSidebar({
                         </div>
                       </div>
 
+                      <SshHostTrustField
+                        id="remote-known-hosts"
+                        value={form.knownHostsPath}
+                        onChange={(knownHostsPath) => setForm({ ...form, knownHostsPath })}
+                      />
                       <section className="space-y-2.5 border-t border-border-theme pt-3">
                         <div className="flex items-center gap-4 text-[12px]">
                           <label className="flex items-center gap-1.5">

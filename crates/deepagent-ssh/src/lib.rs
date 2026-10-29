@@ -39,6 +39,7 @@ pub use session::{
 
 mod config;
 mod error;
+mod host_trust;
 mod remote;
 mod service;
 mod session;
@@ -436,6 +437,7 @@ impl SshService {
             username: dto.username.clone(),
             auth_type: dto.auth_type,
             key_path: dto.key_path.clone(),
+            known_hosts_path: dto.known_hosts_path.clone(),
             password: None,
             extra_options: HashMap::new(),
             control_path: None,
@@ -526,6 +528,7 @@ mod tests {
                 username: "tester".into(),
                 auth_type: SshAuthType::Agent,
                 key_path: None,
+                known_hosts_path: None,
                 password: None,
             })
             .await

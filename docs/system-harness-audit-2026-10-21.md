@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-125 | 已修复并验收（2026-10-30，仅 E-H125-05～06 所列 Windows 本机范围） | strict known_hosts 贯通握手/复用/配置与两处表单；SSH14/0/1、前端279、Tauri存储1/check与受控UI通过；全仓3861/1/288唯一既有H-306，旧严格lint/fmt失败保留；修复提交待回填 |
 | H-159 | 已修复并验收（2026-10-30，仅 E-H159-04～05 所列 Windows 本机范围） | 唯一 schema compiler 覆盖注册/替换/最终 provider，MCP 逐能力隔离；专项、真实刷新/deferred、WASM、Tauri check 通过；全仓3849/1/289唯一既有H-306，旧严格lint/fmt阻断保留；E-H159-01～05，修复提交 `36b8b74e358092c10872cefb64250c4845eb8cf6` |
 | H-301 | 历史已修复跳过（2026-10-30，仅 E-H301-03～05 所列 Windows 本机范围） | 生产实现归 H-164 的 63cfffa4，本轮新增生产修复 0；默认媒体25/0/13、AppCore1323/0/57、workflow30/0/25、重开6、Runtime339/0/9，fmt通过，lint旧失败保留；E-H301-01～07，测试/文档 `8a7df621bf9be1144be514231d46968ba560a17e` |
 | H-160 | 已修复并验收（2026-10-30，仅 E-H160-03～05 所列 Windows 本机、loopback、临时 SQLite 与前端构建范围） | 非空模型引用严格要求唯一 `providerId::modelId`，只有空值自动路由；Canvas bridge、WorkflowAgent、四类专业节点默认与前端历史值提示同步；Canvas gateway 54/0/3、workflow30/0/25、重开6/0/0、Runtime339/0/9、前端88/0/0、Tauri check/桌面 build/根 fmt通过；AppCore 全量 lib 1333/1/55 为既有冷编译器门禁环境失败，严格 Clippy/独立 Tauri fmt 旧阻断保留；E-H160-01～05，代码提交 `5e5044a6c63a4f7164a5d352a51e164d7aef6175` |
@@ -68,7 +69,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **85**、历史已修复跳过 **21**、归并 **7**、撤销 **2**、有效未关闭 **191（191待修复、0修复中）**；H-160、H-161按各自 E-H160/E-H161 限定验收，新增验收2，191有效未关闭；H-302已按E-H302-03～05限定验收；H-304已按E-H304-05～06限定验收，校正此总览此前遗漏的累计数；H-301已按E-H301-01～06核对为本轮前随H-164修复，新增生产修复0；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与ToolExecutionPipeline范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **88**、历史已修复跳过 **21**、归并 **7**、撤销 **2**、有效未关闭 **188（188待修复、0修复中）**；H-125按E-H125-05～06限定验收，本轮新增1；H-159按E-H159-04～05已验收，H-162既有验收的漏计已校正而非新增；H-160、H-161按各自E-H160/E-H161历史限定验收，当轮新增2；H-302已按E-H302-03～05限定验收；H-304已按E-H304-05～06限定验收，校正此总览此前遗漏的累计数；H-301已按E-H301-01～06核对为本轮前随H-164修复，新增生产修复0；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与ToolExecutionPipeline范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -3717,6 +3718,44 @@ DeepSeek 官方 [Create Response](https://api-docs.deepseek.com/api/create-respo
 - 成熟实现对照：DeepSeek Harness `packages/ssh/ssh/src/index.ts` 启动本地 OpenSSH 时明确传 `StrictHostKeyChecking=yes`，其 SSH README 要求连接前配置 known-host 项，启动测试检查实际参数；Claude Code `restored-src/src/utils/plugins/marketplaceManager.ts` 对 Git SSH/submodule 使用同一 strict 选项，并针对未知/变更主机密钥给出失败诊断。Codex 本次核查到的 `windows-sandbox-rs/src/ssh_config_dependencies.rs` 是将 OpenSSH 的 known-host/config 文件纳入沙箱依赖追踪；没有据此推断 Codex 独立实现了通用 SSH 主机密钥校验。
 - 影响与触发边界：攻击者需要能中间人拦截/重定向 SSH 网络，或连接配置中的主机地址错误地指向攻击者；单纯持有正常 SSH 账户并不能令可信网络下的真实服务器密钥替换。触发后，使用密码认证时客户端可能把口令交给伪装服务器；使用密钥文件时不表示私钥会被发送，但客户端会把该连接视作目标并可能向错误对端发送命令、路径和文件内容，接收伪造输出，破坏远程操作的机密性与完整性。此次只使用本机随机服务器和测试凭据，没有访问公网、用户服务器或真实凭据，也没有证明现实网络中已有攻击发生。
 - 收敛方向（尚未实施，本地设计）：在 SSH 连接配置中持久化可审计的 host key 信任来源，首次连接通过用户核验 fingerprint 后写入现有配置存储，后续按 host+port 校验并在密钥变化时失败关闭；至少复用现有库的 known_hosts 支持，并明确其路径、hashed-host/非默认端口兼容和 Windows 路径行为。禁止在未知密钥时静默自动接受。信任配置要贯穿 `connect`、test、status refresh、重连以及更新后的连接身份；UI 显示首次核验和 key changed 的可操作错误。回归覆盖 unknown / matching / changed key、非默认端口、IPv6、连接复用、密码与 key-file auth、临时 known_hosts、重启恢复以及服务端密钥轮换；只有失败关闭和兼容路径均验证后才算修复。
+
+#### H-125 SSH 主机身份验证（2026-10-30，已修复并验收）
+
+**当前状态：已修复并验收（仅 E-H125-05～06 所列 Windows 本机、loopback、临时 SQLite 与受控组件范围）；修复提交待本次独立提交后回填。** E-H125-01～04 是各阶段原始记录，其中“候选/待终态/修复中”保留为历史快照，不替代以下最终结论。
+
+当前只处理 H-125，基线 HEAD 05d5d91d；不连接真实主机、不读取用户 SSH 凭据，五类原用户未跟踪项仅经 git status 列名。不得把下面的候选和局部结果当作验收。
+
+E-H125-01（原复现）：既有原探针使用 loopback 随机端口、随机 host/decoy keys 与临时测试密码。实际 cargo test --target-dir target/h300-after-h163-build -p deepagent-ssh --test host_key_audit --offline -j 2 -- --ignored --nocapture --test-threads=1 原生101、66.6655624秒、0 passed/1 failed；production_connect_accepts_untrusted_key=true、known_hosts_rejects_mismatched_key=true。原始失败保留在 target/h125-original-20261030.log/-result.json，本轮已读取确认，不冒称本次重新运行。
+
+E-H125-02（TDD与候选）：新增正式服务 loopback 回归 h125_rejects_unknown_before_auth，修改生产前真实运行同一公共Cargo参数的 --test host_key_trust h125_rejects_unknown_before_auth -- --exact --nocapture --test-threads=1，原生101、4.10秒、0/1，失败为 unknown key must be rejected（target/h125-tdd-unknown-red-20261030*）。候选复用 async-ssh2-tokio KnownHostsFile 和 russh known-host parser，明确应用专用默认路径，新增持久化 known_hosts_path 并同步现有DTO/Tauri/两处表单；省略更新保留旧来源，显式空值重置应用默认。先由用户通过可信渠道核验管理员指纹/公钥并配置文件，不自动TOFU、不探测后自动录入、不调用系统默认路径。未知/变更/不可读拒绝；有效连接复用也校验信任源变更，配置更新失效旧连接。该信任来源/复用代次为本地设计，借鉴 deepseek-harness 的 StrictHostKeyChecking=yes 边界，不能把安装、UI或编译当作验收。正常、轮换、key-file、hashed-host、IPv6、重启及生产消费方门禁仍待验证。
+
+E-H125-03（候选实现与当前门禁，尚未验收）：正式 connect/test/status handshake 已复用 strict KnownHostsFile，新增 known_hosts_path 贯穿旧配置默认、注入存储、DTO、Tauri create/update/status/list、API mock 和两处表单。省略 update 字段保留来源、显式空串重置应用专用绝对路径；未知/变更错误保留路径和管理员指纹核验指引，不自动录入公钥。现有 session 记录无Debug的信任源摘要，源变更/撤销先断开，正常源保留复用；配置更新与握手发布由服务现有边界内的读写生命周期门禁协调。依赖不支持的 @revoked/@cert-authority 一律拒绝，不伪称完整 OpenSSH 语法兼容。
+
+专项实际结果：SSH 全组原生0、18.14秒，lib3/0/0、原探针默认1/0/0、loopback正式服务10/0/0、真实服务器PTY保留1 ignored（target/h125-final-ssh-regressions-20261030*）；包含密码/key-file前拒绝、IPv6、未知/匹配/变更、撤销/轮换、重启、test/status、旧配置与更新省略/清空以及in-flight握手更新。hashed-host/非22端口规则由同一正式HostTrust reader单测验证，不冒称该单测有网络握手。首次扩展组8/1是Windows测试路径分隔符文本断言不当，改为Path比较后通过；原失败保留。首次编译失败是已查源码函数位于known_hosts子模块而非顶层重导出，已修正模块路径；没有猜测替换依赖版本。
+
+严格SSH Clippy最终原生0、3.03秒（target/h125-ssh-strict-clippy-final-20261030*）；首次新增测试 err().expect() lint失败已改expect_err，不放宽lint。前端真实生产callback/API/共享字段5/0/0，pnpm build原生0、124.29秒，合计279 passed/0 failed/0 skipped、tsc/Vite/许可证通过，保留既有大chunk等警告（target/h125-frontend-regressions-20261030*、h125-desktop-build-20261030*）。受控Vite页面挂载真实设置和RemoteSidebar，分别打开新增表单、编辑信任路径并取得1280x720截图，AX标签/核验警告/host+port说明可见；无Tauri、真实SSH或用户数据，细节target/h125-controlled-ui-20261030.json，不能当完整桌面验收。
+
+Tauri check --lib --tests最终原生0、17.81秒（target/h125-tauri-check-final-20261030*）；首次暴露status手工DTO投影漏字段，改复用已有From投影后通过，不留第二投影。根fmt原生1、4.95秒只报告未改agent.rs:1043；独立Tauri fmt原生1、0.35秒报告既有imports/canvas write/set_reasoning_effort差异，保留未顺手修改。21份源码/配置/测试最终冻结见target/h125-frozen-sources-final-20261030.json；此前非final冻结保留。Tauri正式SqliteSshConfigStore临时加密存储重开/前端投影测试、全仓门禁尚待真实终态，不把检查通过当验收。本项无修复commit，仍87验收、21历史跳过、7归并、2撤销、188待修+1修复中；整体goal保持active。
+
+E-H125-04（冻结后补充门禁，尚未验收）：Tauri正式加密存储测试 cargo test --target-dir target/h300-after-h163-build --manifest-path apps/desktop/src-tauri/Cargo.toml --lib ssh_trust_tests:: --offline -j 2 -- --nocapture --test-threads=1 原生0、361.23秒、1/0/0（target/h125-tauri-store-test-20261030*）；仅临时SQLite及MemorySecretStore wrapping key，真实SqliteSshConfigStore保存/关闭/重开恢复信任路径，前端投影不含password，未访问OS钥匙串。修改文件独立rustfmt check原生0、0.15秒。全仓严格Clippy原生101、147.15秒（含等待同一构建目录锁），仍停在未改models/client.rs:355 clone_on_copy；当前CLI build原生0、1.45秒。证据分别h125-selected-format、h125-workspace-strict-clippy、h125-current-cli-build-20261030*。首次台账校验脚本因Node默认stdout缓冲不足退出，调高只读读取缓冲后实际校验通过：21份最终源码SHA256一致，306唯一H编号且均8列，仅H125主行改变，原H125失败段逐字保留（target/h125-interim-review-20261030.json），不是产品测试失败。
+
+完整workspace由唯一顺序driver执行，已用本轮CLI替换SDK硬编码默认路径并核SHA256；正常结束后finally必须恢复并核对原binary。当前已进入真实AppCore测试，未取得终态，不重启同一任务、不计验收。target/h125-workspace-driver-20261030.ps1与h125-final-gates-driver-20261030.ps1记录队列。当前总数仍87验收/188待修+1修复中=189有效未关闭，等待不等于阻塞或通过，整体goal active。
+
+E-H125-05（完整 workspace 真实终态，source_type=command/file）：唯一顺序任务已结束，未因观察超时重启。实际命令 cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1，原生 **101、706.39 秒**，132 targets 合计 **3861 passed / 1 failed / 288 ignored**（target/h125-workspace-20261030.log/-result.json、h125-workspace-summary-20261030.json）。AppCore lib 1341/0/62、Kernel E2E 171/0/73、Runtime lib 342/0/9；SSH lib 3/0/0、原探针默认 1/0/0、正式 loopback 10/0/0、真实 PTY 1 ignored。全仓 feature 合并与单 crate 的 ignored 数量可能不同，ignored 不计通过。
+
+唯一失败仍为既有 H-306：canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，creative.video-edit.v1 的 defaultUserPrompt 为空，canvas_prompt.rs:310:35；诊断正文与 H-159 完整日志一致。该 prompts 文件、严格 lint 的 models/client.rs 和根 fmt 的 runtime/workflow/agent.rs 相对本项基线 05d5d91d 均零 diff，没有顺手修改或放宽门禁。独立 Tauri 格式旧差异同样保留，不能把外层 driver 退出码或相关测试成功当全仓全绿。前端 build 日志重新汇总确为 279 tests / 279 passed / 0 failed / 0 skipped，不把构建日志各组重复计数为新增修复数。
+
+SDK 默认 CLI 在子进程结束后已由 finally 恢复，重新读取实际 binary 的 SHA-256 精确匹配原 E75E9B802E93E9AA93342F558DED74E243C4D14769387187500920DF9D52B5B0，活跃默认 CLI 数量为0（target/h125-sdk-cli-restored-20261030.json）。不是以旧 CLI 冒充本轮协议消费方。21 份源码/配置/测试与最终冻结 SHA-256 一致；提交前还须核对306唯一编号/8列、仅H-125主行改变、原始失败正文保留及双文档正文一致，证据使用 target/h125-delivery-*-20261030.json。
+
+E-H125-06（限定验收、兼容性与残余）：H-125 在上述范围修复并验收，本轮新增修复 **1**、历史跳过/归并/撤销 **0**。原缺陷和新增 TDD 失败都保留，原探针转为默认回归；未知/不匹配主机在密码与 key-file 身份发送前拒绝，匹配、非默认端口、IPv6、重启、显式轮换、健康检查和连接复用对照通过。connect/test/status 的新握手共用唯一 KnownHostsFile 边界，复用连接重新核对同一信任源，配置写锁等待在途握手后失效旧会话；没有第二套 SSH 执行、权限、审批或持久化链。
+
+信任必须由用户先通过可信管理员独立核验指纹和公钥，再手工预置 known_hosts；不自动 TOFU、不从未验证连接抓取后录入、不读取用户默认 SSH 目录。旧存储缺字段解析到应用专用 &lt;app_data&gt;/deepagent-ssh/known_hosts，源缺失/不可读则失败关闭，不恢复 NoCheck；只接受绝对 Unicode 路径，不展开~。更新省略字段保留旧来源，显式空串重置应用默认。依赖不实现 marker 语义，因此专用文件含 @revoked/@cert-authority 时整体拒绝；不声称完整 OpenSSH 语法、证书或通配规则兼容。hashed/plain/multi-host/端口规则是正式 reader 单测证据，不冒称 hashed-host 网络握手。
+
+Rust 公共配置/request/DTO 增加字段及 SshError 增加 variant，属于 Rust 源码兼容变化；前端字段和 Tauri 参数可省略，旧 JSON 仍可读取但未知主机不再连接成功。两处现有表单共用 shadcn 字段与可操作核验指引；Tauri 正式加密存储关闭重开和前端不泄露 password 的测试通过。没有新第三方依赖、SQL迁移、系统默认信任目录导入、自动公钥写入或权限/沙箱放宽。真实服务器 PTY 仍 ignored，明确要求测试 known_hosts，不为验收连接真实主机。
+
+未验真实 SSH 服务器/凭据/内网/用户数据、OS钥匙串、完整 native Tauri WebView、其他OS、长期并发压力、强杀/断电/跨进程恢复及信任文件跨进程恶意替换；摘要前后比较不是跨进程文件锁。受控 UI 只挂载真实设置/远程组件并检查两张截图，不等于 GUI 到真实 SSH 验收。存储既有错误传播和其他 SSH 并发/权限问题未扩修。完整 workspace、严格 lint 和独立 Tauri/根格式门禁并非全绿，失败与未验边界明确保留。
+
+累计 **88 验收、21 历史跳过、7 归并、2 撤销、188 待修复、0 修复中**，188 有效未关闭，306历史槽位不变。下一项准备复核 **H-134 被替代画布 run 的迟到事件覆盖当前状态**，先核对原生产探针与当前 owner 边界，不因候选容易通过就跳过高风险项。总剩余仍沿用 **200–400 有效修复与验收小时**的历史未逐项校准粗估，依据剩余跨层根因、持久化/权限/取消和消费方验证范围；构建、设备、依赖及环境等待另计，缺少可靠总等待量，不编造精确完工日期，整体 goal 保持 active。
 
 ### H-126：MCP stdio 与 HTTP transport 在完整读取/解析前没有响应字节上限
 

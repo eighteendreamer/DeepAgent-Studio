@@ -110,6 +110,7 @@ pub struct PtyState {
 }
 
 pub struct SshSession {
+    pub(crate) host_trust: RwLock<Option<super::host_trust::HostTrust>>,
     config: SshConnectionConfig,
     client: RwLock<Option<Client>>,
     pty: RwLock<Option<PtyState>>,
@@ -122,6 +123,7 @@ pub struct SshSession {
 impl SshSession {
     pub fn new(config: SshConnectionConfig) -> Arc<Self> {
         Arc::new(Self {
+            host_trust: RwLock::new(None),
             config,
             client: RwLock::new(None),
             pty: RwLock::new(None),

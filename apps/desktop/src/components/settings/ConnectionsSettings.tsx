@@ -1,3 +1,4 @@
+import { SshHostTrustField } from "../remote/SshHostTrustField";
 import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -23,6 +24,7 @@ interface FormData {
   username: string;
   authType: AuthType;
   keyPath: string;
+  knownHostsPath: string;
   password: string;
 }
 
@@ -33,6 +35,7 @@ const emptyForm: FormData = {
   username: "",
   authType: "password",
   keyPath: "",
+  knownHostsPath: "",
   password: "",
 };
 
@@ -46,6 +49,9 @@ export function normalizeSshError(
   if (!raw) return t("settings.connections.errors.generic");
 
   const lower = raw.toLowerCase();
+  if (lower.includes("ssh host key verification failed")) {
+    return `${t("settings.connections.hostKeyError")} ${raw}`;
+  }
   if (
     lower.includes("os error 10061") ||
     lower.includes("connection refused") ||
@@ -122,6 +128,7 @@ export function ConnectionsSettings() {
       username: conn.username,
       authType: conn.key_path ? "file" : "password",
       keyPath: conn.key_path || "",
+      knownHostsPath: conn.known_hosts_path || "",
       password: "",
     });
     setIsModalOpen(true);
@@ -153,6 +160,7 @@ export function ConnectionsSettings() {
         authType,
         keyPath,
         password,
+        form.knownHostsPath,
       );
     } else {
       await sshCreateConnection(
@@ -163,6 +171,7 @@ export function ConnectionsSettings() {
         authType,
         keyPath,
         password,
+        form.knownHostsPath,
       );
     }
 
@@ -448,6 +457,11 @@ export function ConnectionsSettings() {
               }}
             >
               <div className="space-y-3 px-5 py-4">
+                <SshHostTrustField
+                  id="settings-known-hosts"
+                  value={form.knownHostsPath}
+                  onChange={(knownHostsPath) => setForm({ ...form, knownHostsPath })}
+                />
                 <section className="space-y-2.5">
                   <div>
                     <label className="mb-1.5 block text-[11px] font-medium text-text-base">

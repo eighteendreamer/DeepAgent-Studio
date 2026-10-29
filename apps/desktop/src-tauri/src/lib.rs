@@ -68,6 +68,9 @@ use deepagent_app_core::KEYCHAIN_SERVICE;
 const KEYCHAIN_SKILLSMP_KEY_NAME: &str = "skillsmp_api_key";
 const SSH_CONFIG_SECRET_NAME: &str = "ssh_connection_configs";
 
+#[cfg(test)]
+mod ssh_trust_tests;
+
 /// Encrypted SQLite persistence adapter for SSH connection metadata and
 /// credentials. The legacy JSON file is imported once, then removed only
 /// after the encrypted write succeeds.
@@ -5167,6 +5170,7 @@ struct SshConnectionFrontendDto {
     pub username: String,
     pub auth_type: &'static str,
     pub key_path: Option<String>,
+    pub known_hosts_path: Option<String>,
     pub status: &'static str,
     pub last_error: Option<String>,
     pub latency_ms: Option<u64>,
@@ -5182,6 +5186,7 @@ impl From<DtoSshConnectionDto> for SshConnectionFrontendDto {
             username: dto.username,
             auth_type: to_dto_auth_type(dto.auth_type),
             key_path: dto.key_path,
+            known_hosts_path: dto.known_hosts_path,
             status: to_dto_status(dto.status),
             last_error: dto.last_error,
             latency_ms: dto.latency_ms,
@@ -5228,6 +5233,7 @@ async fn ssh_create_connection(
     auth_type: String,
     key_path: Option<String>,
     password: Option<String>,
+    known_hosts_path: Option<String>,
 ) -> Result<SshConnectionFrontendDto, String> {
     let ssh = state.ssh.clone();
     let auth = match auth_type.as_str() {
@@ -5244,6 +5250,7 @@ async fn ssh_create_connection(
         auth_type: auth,
         key_path,
         password,
+        known_hosts_path,
     })
     .await
     .map(Into::into)
@@ -5262,6 +5269,7 @@ async fn ssh_update_connection(
     auth_type: String,
     key_path: Option<String>,
     password: Option<String>,
+    known_hosts_path: Option<String>,
 ) -> Result<SshConnectionFrontendDto, String> {
     let ssh = state.ssh.clone();
     let auth = match auth_type.as_str() {
@@ -5279,6 +5287,7 @@ async fn ssh_update_connection(
         auth_type: auth,
         key_path,
         password,
+        known_hosts_path,
     })
     .await
     .map(Into::into)
@@ -5318,18 +5327,11 @@ async fn ssh_status(
         .into_iter()
         .find(|c| c.id == id)
         .ok_or_else(|| format!("SSH connection not found: {id}"))?;
-    Ok(SshConnectionFrontendDto {
-        id: cfg.id,
-        name: cfg.name,
-        host: cfg.host,
-        port: cfg.port,
-        username: cfg.username,
-        auth_type: to_dto_auth_type(cfg.auth_type),
-        key_path: cfg.key_path,
-        status: to_dto_status(snap.status),
-        last_error: snap.last_error,
-        latency_ms: snap.latency_ms,
-    })
+    let mut frontend = SshConnectionFrontendDto::from(cfg);
+    frontend.status = to_dto_status(snap.status);
+    frontend.last_error = snap.last_error;
+    frontend.latency_ms = snap.latency_ms;
+    Ok(frontend)
 }
 
 #[tauri::command]
