@@ -8017,6 +8017,32 @@ E-H238-04（独立提交回填，2026-10-29）：本轮测试与当时两份文�
 
 ### H-245：画布偏好读取失败后仍完成 hydration，后续 workspace 设置写回会覆盖未读字段
 
+**当前状态：已修复并验收（2026-10-29，仅E-H245-06所列本机范围）；独立修复提交待执行。** 原2026-10-25失败记录原文保留，以下为本轮证据。
+
+E-H245-01（原探针复核，source_type=command/file）：起始HEAD为10c64c543967ed2cc4d1363e30768a7ab83a50a3，tracked干净；五类用户未跟踪项只查看status列名。执行原 `RUN_HARNESS_AUDIT=1 node --test apps/desktop/scripts/audit-canvas-preference-read-failure.test.cjs`，原生1、0 passed/1 failed/0 skipped（target/h245-reconfirmed-20261029.log及-result.json）；读失败后hydrationResolved=true，实际writePayload/persistedAfter为imageDir=new-images、videoDir空值。不是历史已修复，不以既有摘要代替本轮复核。
+
+F-H245-current / P-H245-current：同一窗口的未读fallback被当成可替换文档；cache缺项与成功读取空值虽可区分，写入口却不检查资格，hydration吞错，settings先更新本地、画布挂载只等待图。根因修复复用现有cache.has作为成功加载基线、现有偏好队列与画布恢复门禁，不新建store/command/DTO。
+
+E-H245-02（候选范围，本地设计）：所有Tauri偏好写入口在key未成功读取时拒绝且不污染cache/dirty；Promise写入接口以rejection报告错误。hydration汇总带key的原因向调用方失败、失败后可重试，已成功加载key不重读，以免覆盖其本地编辑；模块预加载单独记录异常。useWorkflowPersistence同时等待图与偏好，复用CanvasApp已有错误/重新加载界面；settings写入被接纳后才更新本地，失败写入既有lastError。关闭flush等待当前载入，未读key仍在时拒绝，不隐式重试或提交fallback。
+
+本项解决原单窗口读故障链，不把跨窗口偏好陈旧全量写问题混入：后端整文档API未改，不增加CAS/字段patch，不宣称数据库级保护。H-246早期写入将受同一资格门禁影响，需另复核；H-247先删legacy源再写仍独立未修，不能用提前抛出hydration错误假称其数据恢复。正在补默认原探针、正常空值/重试/多key/异步写/关闭和UI验收；尚未执行候选门禁。
+
+E-H245-03（默认回归与构建，2026-10-29，source_type=command）：原H-245脚本已取消skip并加入既有test:canvas-ipc。首次默认专项6/0/0（target/h245-unit-first-20261029.log）；补齐生产hook关闭/重试测试后，执行 `node --test scripts/audit-canvas-preference-read-failure.test.cjs scripts/check-canvas-persistence.test.cjs scripts/check-video-edit-persistence.test.cjs scripts/check-workflow.test.cjs`，原生0、117 passed/0 failed/0 skipped（h245-front-regression-20261029.log）。覆盖原公开settings mutator拒绝未读写、重试成功后实际payload保留old-videos、全部四key同步/异步写拒绝、未读cache不被污染、共享在途加载、flush等待、已加载dirty key不被重读、反复失败可再试、健康空文档创建、browser只读预览以及生产hook失败/重试/关闭门禁。既有图保存21项、视频项目3项、workflow86项同步通过；hook单元采用受控React调度，不冒充实际UI。
+
+随后apps/desktop `pnpm build` 原生0、177.01秒，20组默认前端测试共242 passed/0 failed/0 skipped，含canvas-ipc40项；tsc --noEmit、Vite及许可证门禁通过（h245-desktop-build-20261029.log、-result.json）。既有browser externalization与大chunk警告保留。根 `cargo fmt --all -- --check` 原生0（h245-format-20261029.log），git diff --check原生0。6份代码/测试/配置SHA256见h245-reviewed-source-20261029.json，构建后未再修改。
+
+E-H245-04（实际生产UI与关闭交互，2026-10-29，source_type=command/image）：Playwright加载本轮未改写的Vite dist及真实CanvasApp/设置页/偏好模块/hook，在全新Chromium context与本机HTTP中运行，仅Tauri IPC返回合成数据，拦截外部请求、finally关闭browser/server。前两次fixture在等待设置按钮时超时退出1（h245-ui-browser-{first,second}-20261029.log及对应failure.json）；初猜重试竞态不成立，诊断DOM/screenshot（h245-ui-diagnostic-20261029*）证实editor已经挂载，真正原因是默认折叠的CanvasToolbarDock使设置按钮不可见。按生产组件行为先hover工具栏，仅修fixture、未改生产代码；测试同时显式等待失败重试的loading→alert状态。
+
+最终 `node target/h245-ui-browser.cjs` 原生0（h245-ui-browser-final-20261029.log及h245-ui-browser-20261029-result.json）：读故障时editor未挂载、无偏好写入；关闭事件被阻止，失败重试仍不开放编辑；读恢复后实际点击重新加载/工具栏/设置/工作区，显示old-images和old-videos；实际点击图片目录浏览（受控dialog返回new-images）并发送关闭事件后，唯一write为imageDir=new-images、videoDir=old-videos，成功关闭调用只发生一次。pageErrors与unexpected IPC为空；console仅预期的注入读错误/关闭拒绝，非静默吞错。已逐张查看h245-ui-{read-failed,recovered,saved}-final-20261029.png：恢复提示/按钮可见，设置两目录可读，无截断；截图中的关闭拒绝toast来自前一步失败操作，保存完成由实际IPC断言验收，不以toast消失代替。此为完整生产前端浏览器交互，不是真实Tauri/WebView或SQLite故障测试。
+
+E-H245-05（相邻条目边界，2026-10-29，source_type=command/file）：未改H-246/H-247原探针，显式RUN_HARNESS_AUDIT=1运行两者原生1、0/2/0（h245-adjacent-original-20261029*）。H-246现在在早期编辑已接纳的前置断言失败（空值不等于new-images），因为未读写被显式拒绝；不能将其描述为仍在原末尾数据丢失断言失败，也不能未经独立复核直接关闭。H-247原probe先收到hydration rejection；为观察真实源数据，target/h245-observe-legacy.cjs只在内存加载原脚本时捕获该异常，保持原源保留断言，原生1、0/1/0，legacyAfter=null、cacheLoaded=false（h245-legacy-source-observation-20261029.log）。先删legacy源的独立缺陷仍真实存在，未被异常提前返回掩盖。原两测试文件与两项台账均未变。
+
+E-H245-06（限定验收与剩余范围，2026-10-29）：H-245在Windows本机、合成IPC和真实生产前端范围内已修复并验收；单窗口读取失败不再授权fallback全量写入，用户必须成功重新加载后再编辑，正常空文档仍可创建。cache.has是成功读取资格，不是后端revision；现有revisions仍只是本地写代次，不宣称CAS。无新增依赖、DTO、command、存储、SQL迁移、权限/沙箱变更；未成功加载时同步写现在抛错，Promise写入口reject，settings通过既有lastError处理，全部生产调用方已核对。现有错误/重试UI被复用，无新增业务组件。
+
+Rust/Tauri生产方和IPC字段未改，本轮不重复运行workspace Rust测试、Tauri编译及严格Clippy；这不是它们已全绿，最近H-255记录仍为3728/1/301（H-306唯一失败）及既有Clippy阻断。未执行原生WebView/真实数据库读故障、多窗口偏好竞争、真实用户数据/凭据/供应商、强制杀进程/断电或其他OS。偏好后端仍是整文档替换，不防止另一个窗口在已读后修改同文档；H-247迁移源丢失和H-246独立复核不在本项验收结论内。
+
+本项新增验收1；306行唯一编号复核后累计73已修复并验收、19历史已修复跳过、7归并、2撤销、205待修复、0修复中，有效未关闭205，整体目标未完成。仅本项8文件独立提交，真实hash取得后另做docs回填，不amend、不推送。下一项优先H-247迁移源丢失（原始用户数据完整性），H-246随后独立复核共享门禁影响。全部剩余200–400有效小时仍是未逐项校准的历史粗估，依据剩余跨层问题与验收范围，不按关闭1项机械扣减；构建、依赖及设备等待另计，不承诺完工日期。
+
 **级别：高（P1，偏好数据完整性）；触发条件：画布偏好文档读取暂时失败，前端继续初始化并随后修改同一文档中的一个字段。状态：正式 `canvasPreferences.ts`、`canvasSettingsStore.ts` 生产模块链路已复现，未修复。** 本项与 H-244 的图快照并发覆盖不同：这里没有第二个写窗口，单窗口在一次读取失败后也会用回退状态覆盖后端文档。
 
 #### 首次即时 Evidence（2026-10-25）

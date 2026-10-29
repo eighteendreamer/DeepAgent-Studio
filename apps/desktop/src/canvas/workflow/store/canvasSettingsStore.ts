@@ -655,8 +655,12 @@ export const useCanvasSettingsStore = create<WorkflowSettingsState>((set, get) =
 
     setWorkspaceDir: (kind, dir) => {
       const workspace = { ...get().workspace, [kind]: dir };
-      set({ workspace });
-      saveWorkspace(workspace);
+      try {
+        saveWorkspace(workspace);
+        set({ workspace, lastError: null });
+      } catch (error) {
+        reportFailure("保存输出目录", error);
+      }
     },
   };
 });

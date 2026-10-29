@@ -4,7 +4,7 @@ import {
   flushWorkflowPersistence, whenWorkflowPersistenceReady, workflowPersistenceProblems,
   subscribeWorkflowPersistence, preserveAndReloadWorkflow, retryWorkflowPersistence,
 } from "../utils/workflowPersistence";
-import { flushCanvasPreferences } from "../utils/canvasPreferences";
+import { flushCanvasPreferences, whenCanvasPreferencesReady } from "../utils/canvasPreferences";
 import { message } from "../../../components/message";
 
 export function useWorkflowPersistence() {
@@ -23,7 +23,7 @@ export function useWorkflowPersistence() {
   useEffect(() => {
     let disposed = false;
     setError(null);
-    void whenWorkflowPersistenceReady().then(() => {
+    void Promise.all([whenWorkflowPersistenceReady(), whenCanvasPreferencesReady()]).then(() => {
       if (!disposed) setReady(true);
     }).catch((cause) => {
       console.error("[canvas] 恢复画布失败:", cause);

@@ -388,7 +388,10 @@ test("closing waits for both graph and preferences, and save failure keeps the w
       close: async () => { closed++; },
     }) },
     "../utils/workflowPersistence": f,
-    "../utils/canvasPreferences": { flushCanvasPreferences: () => barrier.promise },
+    "../utils/canvasPreferences": {
+      whenCanvasPreferencesReady: async () => {},
+      flushCanvasPreferences: () => barrier.promise,
+    },
     "../../../components/message": { message: { error: (text) => messages.push(text) } },
   });
   hook.useWorkflowPersistence();

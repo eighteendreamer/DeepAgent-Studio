@@ -151,8 +151,11 @@ function publish(key: CanvasPreferenceKey) {
   });
 }
 
-/** 覆盖一个偏好文档：先更新缓存，再合并写库。 */
+/** 只有成功读取（含明确空值）的文档才能被替换，fallback 不是写入基线。 */
 export function writeCanvasPreference(key: CanvasPreferenceKey, value: unknown): void {
+  if (isTauriRuntime() && !cache.has(key)) {
+    throw new Error(`画布偏好 ${key} 尚未成功读取，请重新加载`);
+  }
   cache.set(key, value);
   revisions.set(key, (revisions.get(key) ?? 0) + 1);
   publish(key);
@@ -160,7 +163,7 @@ export function writeCanvasPreference(key: CanvasPreferenceKey, value: unknown):
 }
 
 /** Write through the shared debounce and resolve only when the latest value is durable. */
-export function writeCanvasPreferenceAndWait(
+export async function writeCanvasPreferenceAndWait(
   key: CanvasPreferenceKey,
   value: unknown,
 ): Promise<void> {
@@ -214,7 +217,7 @@ async function flushKey(key: CanvasPreferenceKey): Promise<void> {
   return pending;
 }
 
-/** 载入全部偏好文档（含旧 localStorage 迁移）；重复调用共享同一次结果。 */
+/** 共享正在执行的载入；失败可重试，但不能重读已载入文档并覆盖本地编辑。 */
 export function whenCanvasPreferencesReady(): Promise<void> {
   if (hydration) return hydration;
   hydration = (async () => {
@@ -222,19 +225,29 @@ export function whenCanvasPreferencesReady(): Promise<void> {
       CANVAS_PREFERENCE_KEYS.forEach((key) => cache.delete(key));
       return;
     }
+    const failures: string[] = [];
     for (const key of CANVAS_PREFERENCE_KEYS) {
+      if (cache.has(key)) continue;
       try {
         await hydrateKey(key);
       } catch (error) {
-        console.error(`[canvas] 读取偏好 ${key} 失败:`, error);
+        failures.push(`${key}: ${String(error)}`);
       }
     }
-  })();
+    if (failures.length) throw new Error(`读取画布偏好失败：${failures.join("；")}`);
+  })().catch((error) => {
+    hydration = null;
+    throw error;
+  });
   return hydration;
 }
 
 /** 退出前把未落库的编辑刷回内核。 */
 export async function flushCanvasPreferences(): Promise<void> {
+  await hydration;
+  if (isTauriRuntime() && CANVAS_PREFERENCE_KEYS.some((key) => !cache.has(key))) {
+    throw new Error("画布偏好尚未成功读取，请重新加载后保存");
+  }
   for (const key of [...dirty]) {
     const pending = timers.get(key);
     if (pending) {
@@ -247,6 +260,8 @@ export async function flushCanvasPreferences(): Promise<void> {
 }
 
 // 画布窗口一挂载就把偏好拉进内存，调用方仍按同步方式读取。
-void whenCanvasPreferencesReady();
+void whenCanvasPreferencesReady().catch((error) => {
+  console.error("[canvas] 初始化偏好失败:", error);
+});
 
 // 关闭前由 useWorkflowPersistence 统一等待偏好与节点图，避免两个监听器分别重发关闭。
