@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-252 | 已修复并验收（2026-10-29，仅E-H252-10所列Windows本机范围） | 显式owner校验、run固定scope及前端缓存隔离；scope7、canvas109、runtime69、重开4、前端269/build/UI、Tauri/示例check通过；全仓3747/1/299仅H-306，旧lint阻断保留；E-H252-01～10，修复提交待回填 |
+| H-252 | 已修复并验收（2026-10-29，仅E-H252-10所列Windows本机范围） | 显式owner校验、run固定scope及前端缓存隔离；scope7、canvas109、runtime69、重开4、前端269/build/UI、Tauri/示例check通过；全仓3747/1/299仅H-306，旧lint阻断保留；E-H252-01～11，`7bc7d9bf76b521d2286525584ac90ba31f7692a2` |
 | H-251 | 已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围） | 显式scope CRUD、归属CAS及保留graph/owner的tombstone；store20、重开3、前端263/build/UI、Tauri check通过；全仓3736/1/300仅H-306，严格lint/桌面格式旧阻断已对照；E-H251-01～08，`d26e2266a19edfc78c07b39936b29fc6b33f1796` |
 | H-238 | 历史已修复跳过（2026-10-29，仅所列Windows本机范围） | 本轮前随H-260的0ba0f611共享边界消除；3个原探针转默认，Hook9/0/0、Kernel169/0/74，相关库通过、严格lint既有11项阻断；E-H238-01～04，测试/文档`94fd117d1fde0781c759cee2a52e555944b5f027`，不重复计生产修复 |
 | H-260 | 已修复并验收（2026-10-29，仅E-H260-08所列Windows本机范围） | 共享字节与上下文观察代次分离；正式压缩/恢复38/0/7、Hook默认6/0/3及显式9/0/0；全仓3714/1/306仅既有H-306，Tauri/局部严格lint通过，旧全局lint阻断保留；E-H260-01～09，修复提交`0ba0f611a4496e4385cb0d2d113397c1f15d54a4` |
@@ -8321,7 +8321,7 @@ E-H251-08（独立提交回填，2026-10-29）：修复、回归与当时两份�
 
 ## H-252 本轮即时记录（2026-10-29）
 
-**当前状态：已修复并验收（2026-10-29，仅E-H252-10所列Windows本机范围），修复提交待回填。** 本项只处理Canvas artifact的workspace访问与运行归属，H-250摘要完整性、H-253分块上传归属、H-254删除事务独立保留。
+**当前状态：已修复并验收（2026-10-29，仅E-H252-10所列Windows本机范围），修复提交`7bc7d9bf76b521d2286525584ac90ba31f7692a2`。** 本项只处理Canvas artifact的workspace访问与运行归属，H-250摘要完整性、H-253分块上传归属、H-254删除事务独立保留。
 
 E-H252-01（原始失败，source_type=command）：基线HEAD为5c88aef8f8b8bb2efbb614bcef989cfe9901c191。执行cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_artifact_service::tests::audit_canvas_artifact_operations_require_workspace_scope --offline -j 2 -- --ignored --exact --nocapture，原生101、0 passed/1 failed/0 ignored，4.89秒；read/provider/display/delete跨域均成功（target/h252-original-20261029.log及-result.json）。原证据保留，未以旧验收代替本项验证。
 
@@ -8369,13 +8369,15 @@ E-H252-10（本机限定验收与兼容性，2026-10-29）：原服务按全局I
 
 兼容变化：Rust物化/删除等方法增加显式scope，WorkflowRequest新增可选snake_case workspace_id，Tauri URL/data URL/video trim增加可选workspaceId，仓内调用方已同步；缺省/null仅属旧默认namespace，不是全域权限，显式合法ID会trim、空/非法ID拒绝，非法持久owner不自动猜测/修复。新前端与新后端需配套，旧deny_unknown_fields消费者不保证接受新增字段。新发布使用put_new，不能覆盖已有owner；普通Canvas入口排除ToolResult及宿主run/call结果，原始ArtifactStore仍是受信内部接口。当前桌面仍为默认画布并显式传null，不从session.project文件系统路径推断身份；本项不是认证系统，不能防御任意IPC/数据库访问。
 
-未验真实供应商、真实用户数据、原生Tauri/WebView/FFmpeg交互、完整多项目UI、其他OS、跨宿主压力或exactly-once；不把受控浏览器或编译检查当成上述验收。H-250摘要完整性、H-253分块上传owner、H-254文件/索引删除事务仍各有独立失败证据，均不关闭/归并；原审计收敛方向中提到的删除事务不在本项冒领。下一独立候选为H-254，优先防止数据库失败时丢失媒体；本轮尚未实施该项。当前H-252已验收，等待仅本项独立提交及真实hash回填，不推送、不建PR、不amend；整个修复目标继续active。
+未验真实供应商、真实用户数据、原生Tauri/WebView/FFmpeg交互、完整多项目UI、其他OS、跨宿主压力或exactly-once；不把受控浏览器或编译检查当成上述验收。H-250摘要完整性、H-253分块上传owner、H-254文件/索引删除事务仍各有独立失败证据，均不关闭/归并；原审计收敛方向中提到的删除事务不在本项冒领。下一独立候选为H-254，优先防止数据库失败时丢失媒体；本轮尚未实施该项。E-H252-10记录时已验收、待本项独立提交及真实hash回填；实际提交见E-H252-11。不推送、不建PR、不amend，整个修复目标继续active。
 
-计数核对：306唯一编号，76验收、20历史跳过、7归并、2撤销、201待修复、0修复中，201有效未关闭。本轮新增验收1项；本项提交待回填，整体目标active。剩余200–400有效修复/验收小时仍为未逐项校准的历史粗估，按剩余跨层、权限与持久化边界风险估计，不按本轮完成数机械扣减或承诺日期；设备、依赖、构建及环境等待另计，等待总量暂无可靠估计。
+E-H252-11（独立提交与真实hash回填，2026-10-29）：修复、回归测试和当时两份台账已正常提交为`7bc7d9bf76b521d2286525584ac90ba31f7692a2`（【fix】隔离画布制品访问并绑定运行归属），仅本项25个文件。提交前后23个源码/测试/manifest的SHA256一致，306行编号唯一，其他305条台账行相对本项基线不变。提交后只保留原五类用户未跟踪项；未读取、修改或暂存它们，未提交target证据、真实数据或凭据，未推送/建PR/amend或绕过hook。本次仅回填真实修复hash与本条交付记录，另作普通docs提交，不递归回填docs自身hash；不扩大E-H252-10验收范围，不抹去全仓H-306、严格lint或独立Tauri格式的既有失败。累计76验收、20历史跳过、7归并、2撤销、201有效未关闭，下一项H-254尚未实施，整个目标继续active。
+
+计数核对：306唯一编号，76验收、20历史跳过、7归并、2撤销、201待修复、0修复中，201有效未关闭。本轮新增验收1项；修复提交`7bc7d9bf76b521d2286525584ac90ba31f7692a2`，整体目标active。剩余200–400有效修复/验收小时仍为未逐项校准的历史粗估，按剩余跨层、权限与持久化边界风险估计，不按本轮完成数机械扣减或承诺日期；设备、依赖、构建及环境等待另计，等待总量暂无可靠估计。
 
 ### H-252：Canvas artifact 的读取、provider 投影、显示和删除按全局 ID 操作，绕过 workspace 隔离
 
-**修复状态（2026-10-29）：已修复并验收，仅限E-H252-10所列Windows本机范围；修复提交待回填。** 上方E-H252-01～10为本轮实现与验收记录；以下保留原始审计失败及当时建议，不将H-250/253/254一并关闭。
+**修复状态（2026-10-29）：已修复并验收，仅限E-H252-10所列Windows本机范围；修复提交`7bc7d9bf76b521d2286525584ac90ba31f7692a2`。** 上方E-H252-01～11为本轮实现与验收记录；以下保留原始审计失败及当时建议，不将H-250/253/254一并关闭。
 
 **级别：高（P1，跨项目媒体泄露与破坏）；触发条件：** 同一数据库和 managed artifact root 中存在多个 workspace 的 canvas artifact，调用方拿到另一个 workspace 的 `artifact://id`（例如来自 H-251 的跨 workspace workflow graph、旧事件或共享插件），随后进入 `read_bytes`、`resolve_for_provider`、`display_target` 或 `delete`。这些方法只接收全局 artifact ID/URI，不接收 caller workspace，也没有比较 `ArtifactRecord.workspace_id`。本项不重复 H-250：H-250 是同一 artifact 文件被替换后缺少 digest 校验；H-252 是 artifact 记录本身没有访问 scope。
 
