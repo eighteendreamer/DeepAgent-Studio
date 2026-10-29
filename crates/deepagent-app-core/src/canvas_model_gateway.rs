@@ -556,6 +556,14 @@ pub struct CanvasModelRequest {
     pub operation: CanvasOperation,
     pub prompt: String,
     pub system_prompt: Option<String>,
+    /// Sampling control supplied by the canvas node. `None` means the
+    /// provider/model default; an explicit value must be preserved or rejected
+    /// by the protocol adapter, never silently dropped.
+    pub temperature: Option<f32>,
+    /// Maximum generated tokens supplied by the canvas node. `None` means the
+    /// adapter's existing default policy; an explicit value is forwarded to
+    /// the provider-specific field.
+    pub max_tokens: Option<u32>,
     pub images: Vec<CanvasImageInput>,
     pub texts: Vec<String>,
     pub size: Option<String>,
@@ -569,6 +577,8 @@ impl CanvasModelRequest {
             operation: CanvasOperation::TextGenerate,
             prompt: prompt.into(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: Vec::new(),
             texts: Vec::new(),
             size: None,
@@ -1808,6 +1818,8 @@ impl CanvasModelGateway {
             },
             prompt: "ping".to_string(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: Vec::new(),
             texts: vec!["ping".to_string()],
             size: None,
@@ -2099,6 +2111,7 @@ fn build_request_body(
     model_id: &str,
     request: &CanvasModelRequest,
 ) -> CanvasResult<Value> {
+    validate_generation_options(protocol, kind, request)?;
     Ok(match (protocol, kind) {
         (CanvasProtocol::OpenAi, CanvasRequestKind::Chat) => {
             let mut messages = Vec::new();
@@ -2113,7 +2126,14 @@ fn build_request_body(
                 "role": "user",
                 "content": openai_user_content(request),
             }));
-            json!({ "model": model_id, "messages": messages, "stream": false })
+            let mut body = json!({ "model": model_id, "messages": messages, "stream": false });
+            if let Some(temperature) = request.temperature {
+                body["temperature"] = json!(temperature);
+            }
+            if let Some(max_tokens) = request.max_tokens {
+                body["max_tokens"] = json!(max_tokens);
+            }
+            body
         }
         (CanvasProtocol::OpenAi, CanvasRequestKind::Embeddings) => json!({
             "model": model_id,
@@ -2153,6 +2173,12 @@ fn build_request_body(
                 "max_tokens": 4096,
                 "messages": [{ "role": "user", "content": anthropic_user_content(request) }],
             });
+            if let Some(max_tokens) = request.max_tokens {
+                body["max_tokens"] = json!(max_tokens);
+            }
+            if let Some(temperature) = request.temperature {
+                body["temperature"] = json!(temperature);
+            }
             if let Some(system) = request
                 .system_prompt
                 .as_ref()
@@ -2170,6 +2196,16 @@ fn build_request_body(
                     "parts": gemini_parts(request),
                 }],
             });
+            let mut generation_config = serde_json::Map::new();
+            if let Some(temperature) = request.temperature {
+                generation_config.insert("temperature".to_string(), json!(temperature));
+            }
+            if let Some(max_tokens) = request.max_tokens {
+                generation_config.insert("maxOutputTokens".to_string(), json!(max_tokens));
+            }
+            if !generation_config.is_empty() {
+                body["generationConfig"] = Value::Object(generation_config);
+            }
             if let Some(system) = request
                 .system_prompt
                 .as_ref()
@@ -2235,6 +2271,49 @@ fn build_request_body(
             ));
         }
     })
+}
+
+/// Validate the shared generation controls before any provider transport. The
+/// numeric bounds are the common canvas contract; provider-specific serializers
+/// retain the distinction between omitted and explicit values and map the
+/// fields to their native names.
+fn validate_generation_options(
+    protocol: CanvasProtocol,
+    kind: CanvasRequestKind,
+    request: &CanvasModelRequest,
+) -> CanvasResult<()> {
+    if let Some(temperature) = request.temperature {
+        if !temperature.is_finite() || !(0.0..=2.0).contains(&temperature) {
+            return Err(CanvasError::invalid(format!(
+                "InvalidGenerationOptions: temperature must be finite and between 0 and 2, got {temperature}"
+            )));
+        }
+    }
+    if let Some(max_tokens) = request.max_tokens {
+        if max_tokens == 0 || max_tokens > 393_216 {
+            return Err(CanvasError::invalid(format!(
+                "InvalidGenerationOptions: max_tokens must be between 1 and 393216, got {max_tokens}"
+            )));
+        }
+    }
+    if (request.temperature.is_some() || request.max_tokens.is_some())
+        && !matches!(
+            (protocol, kind),
+            (CanvasProtocol::OpenAi, CanvasRequestKind::Chat)
+                | (CanvasProtocol::Anthropic, CanvasRequestKind::Chat)
+                | (CanvasProtocol::Gemini, CanvasRequestKind::Chat)
+                | (CanvasProtocol::Gemini, CanvasRequestKind::ImageGenerate)
+        )
+    {
+        return Err(CanvasError::new(
+            CanvasErrorCode::UnsupportedCapability,
+            format!(
+                "provider protocol `{}` does not support generation controls for `{kind:?}`",
+                protocol.as_str()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 const MAX_ANTHROPIC_IMAGES: usize = 20;
@@ -3120,6 +3199,8 @@ impl CanvasModelGateway {
             operation: CanvasOperation::TextGenerate,
             prompt: request.prompt.clone(),
             system_prompt,
+            temperature: request.temperature,
+            max_tokens: request.max_tokens,
             images: self.resolve_image_inputs(&request.images)?,
             texts: Vec::new(),
             size: None,
@@ -3191,6 +3272,8 @@ impl CanvasModelGateway {
             operation: CanvasOperation::VideoGenerate,
             prompt: request.prompt.clone(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images,
             texts: Vec::new(),
             size: request.size.clone(),
@@ -3356,6 +3439,8 @@ impl CanvasModelBridge for CanvasModelGateway {
             operation,
             prompt: request.prompt.clone(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: self.resolve_image_inputs(&request.reference_images)?,
             texts: Vec::new(),
             size: request.size.clone(),
@@ -3460,6 +3545,8 @@ impl CanvasModelBridge for CanvasModelGateway {
             operation,
             prompt: request.text.clone(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: Vec::new(),
             texts: Vec::new(),
             size: None,
@@ -3674,6 +3761,8 @@ impl CanvasModelGateway {
             operation: CanvasOperation::Embedding,
             prompt: request.texts.first().cloned().unwrap_or_default(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: Vec::new(),
             texts: request.texts.clone(),
             size: None,
@@ -4446,6 +4535,8 @@ mod tests {
             operation: CanvasOperation::Embedding,
             prompt: "hello".to_string(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: Vec::new(),
             texts: vec!["hello".to_string(), "world".to_string()],
             size: None,
@@ -4463,12 +4554,120 @@ mod tests {
     }
 
     #[test]
+    fn generation_controls_map_to_each_chat_protocol_and_omitted_values_stay_omitted() {
+        let mut request = CanvasModelRequest::text("hello");
+        let openai_default = build_request_body(
+            CanvasProtocol::OpenAi,
+            CanvasRequestKind::Chat,
+            "deepseek-chat",
+            &request,
+        )
+        .expect("openai default body");
+        assert!(openai_default.get("temperature").is_none());
+        assert!(openai_default.get("max_tokens").is_none());
+
+        request.temperature = Some(0.2);
+        request.max_tokens = Some(17);
+        let openai = build_request_body(
+            CanvasProtocol::OpenAi,
+            CanvasRequestKind::Chat,
+            "deepseek-chat",
+            &request,
+        )
+        .expect("openai body");
+        assert!((openai["temperature"].as_f64().expect("temperature") - 0.2).abs() < 1e-6);
+        assert_eq!(openai["max_tokens"], json!(17));
+
+        let anthropic = build_request_body(
+            CanvasProtocol::Anthropic,
+            CanvasRequestKind::Chat,
+            "claude-sonnet",
+            &request,
+        )
+        .expect("anthropic body");
+        assert!((anthropic["temperature"].as_f64().expect("temperature") - 0.2).abs() < 1e-6);
+        assert_eq!(anthropic["max_tokens"], json!(17));
+
+        let gemini = build_request_body(
+            CanvasProtocol::Gemini,
+            CanvasRequestKind::Chat,
+            "gemini-2.5-flash",
+            &request,
+        )
+        .expect("gemini body");
+        assert!(
+            (gemini["generationConfig"]["temperature"]
+                .as_f64()
+                .expect("temperature")
+                - 0.2)
+                .abs()
+                < 1e-6
+        );
+        assert_eq!(gemini["generationConfig"]["maxOutputTokens"], json!(17));
+
+        let anthropic_default = build_request_body(
+            CanvasProtocol::Anthropic,
+            CanvasRequestKind::Chat,
+            "claude-sonnet",
+            &CanvasModelRequest::text("hello"),
+        )
+        .expect("anthropic default body");
+        assert_eq!(anthropic_default["max_tokens"], json!(4096));
+        assert!(anthropic_default.get("temperature").is_none());
+    }
+
+    #[test]
+    fn unsupported_generation_controls_fail_before_they_can_be_dropped() {
+        let mut request = CanvasModelRequest::text("hello");
+        request.temperature = Some(0.2);
+        let error = build_request_body(
+            CanvasProtocol::OpenAi,
+            CanvasRequestKind::Embeddings,
+            "text-embedding",
+            &request,
+        )
+        .expect_err("embedding adapters must not silently drop temperature");
+        assert_eq!(error.code, CanvasErrorCode::UnsupportedCapability);
+    }
+
+    #[test]
+    fn invalid_generation_controls_are_rejected_before_serialization() {
+        for temperature in [-0.1, 2.1, f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let mut request = CanvasModelRequest::text("hello");
+            request.temperature = Some(temperature);
+            let error = build_request_body(
+                CanvasProtocol::OpenAi,
+                CanvasRequestKind::Chat,
+                "deepseek-chat",
+                &request,
+            )
+            .expect_err("invalid temperature");
+            assert_eq!(error.code, CanvasErrorCode::InvalidInput);
+        }
+
+        for max_tokens in [0, 393_217] {
+            let mut request = CanvasModelRequest::text("hello");
+            request.max_tokens = Some(max_tokens);
+            let error = build_request_body(
+                CanvasProtocol::OpenAi,
+                CanvasRequestKind::Chat,
+                "deepseek-chat",
+                &request,
+            )
+            .expect_err("invalid max_tokens");
+            assert_eq!(error.code, CanvasErrorCode::InvalidInput);
+        }
+    }
+
+    #[test]
     fn image_edit_body_requires_reference_images() {
         let request = CanvasModelRequest {
             audio: Default::default(),
             operation: CanvasOperation::ImageEdit,
             prompt: "change the sky".to_string(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: vec![CanvasImageInput {
                 data_url: "data:image/png;base64,AAAA".to_string(),
             }],
@@ -4801,6 +5000,8 @@ mod tests {
             operation: CanvasOperation::ImageEdit,
             prompt: "把两张图合成".to_string(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: vec![
                 CanvasImageInput {
                     data_url: "artifact://a".to_string(),
@@ -4931,6 +5132,8 @@ mod tests {
             operation: CanvasOperation::ImageGenerate,
             prompt: "a cube".to_string(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: vec![CanvasImageInput {
                 data_url: "data:image/png;base64,BB".to_string(),
             }],
@@ -5068,7 +5271,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: canvas node generation controls must reach the provider request"]
     fn audit_canvas_completion_honors_node_temperature_and_output_limit() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let (base_url, captured_body) = spawn_single_chat_responder("configured");
@@ -5097,15 +5299,44 @@ mod tests {
             response.model_id
         );
 
-        assert_eq!(
-            body.get("temperature").and_then(Value::as_f64),
-            Some(0.2),
-            "the configured node temperature must reach the provider"
+        let temperature = body
+            .get("temperature")
+            .and_then(Value::as_f64)
+            .expect("temperature");
+        assert!(
+            (temperature - 0.2).abs() < 1e-6,
+            "the configured node temperature must reach the provider: {temperature}"
         );
         assert_eq!(
             body.get("max_tokens").and_then(Value::as_u64),
             Some(17),
             "the configured node output limit must reach the provider"
+        );
+    }
+
+    #[test]
+    fn invalid_canvas_generation_controls_never_reach_provider_transport() {
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let (base_url, captured_body) = spawn_single_chat_responder("must not be sent");
+        let (gateway, provider_id) = local_text_gateway(base_url, "deepseek-flash");
+
+        let result = rt.block_on(gateway.complete(CanvasCompletionRequest {
+            model_ref: format!("{provider_id}::deepseek-flash"),
+            node_kind: String::new(),
+            prompt_policy: CanvasPromptPolicy::Professional,
+            skill_ids: Vec::new(),
+            system_prompt: None,
+            prompt: "invalid controls".to_string(),
+            temperature: Some(f32::NAN),
+            max_tokens: Some(17),
+            images: Vec::new(),
+        }));
+
+        assert!(result.is_err(), "invalid controls must fail closed");
+        assert_eq!(
+            captured_body.lock().expect("lock").as_ref(),
+            None,
+            "validation must happen before provider transport"
         );
     }
 
@@ -5551,6 +5782,8 @@ mod tests {
             operation: CanvasOperation::Embedding,
             prompt: "ping".to_string(),
             system_prompt: None,
+            temperature: None,
+            max_tokens: None,
             images: Vec::new(),
             texts: vec!["ping".to_string()],
             size: None,
