@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-134 | 已修复并验收（2026-10-30，仅E-H134-05～06所列本机范围） | 原owner统一替换取消与迟到ACK/错误收尾，默认17条；桌面296/build、订阅2、正式Rust消费者与Tauri通过；workspace3861/1/288仅既有H306，旧lint/fmt失败保留；独立fix提交后回填 |
 | H-125 | 已修复并验收（2026-10-30，仅 E-H125-05～06 所列 Windows 本机范围） | strict known_hosts 贯通握手/复用/配置与两处表单；SSH14/0/1、前端279、Tauri存储1/check与受控UI通过；全仓3861/1/288唯一既有H-306，旧严格lint/fmt失败保留；修复提交 40d810eb630c5d7e22fc47a22d0a40ce4a6c28e1 |
 | H-159 | 已修复并验收（2026-10-30，仅 E-H159-04～05 所列 Windows 本机范围） | 唯一 schema compiler 覆盖注册/替换/最终 provider，MCP 逐能力隔离；专项、真实刷新/deferred、WASM、Tauri check 通过；全仓3849/1/289唯一既有H-306，旧严格lint/fmt阻断保留；E-H159-01～05，修复提交 `36b8b74e358092c10872cefb64250c4845eb8cf6` |
 | H-301 | 历史已修复跳过（2026-10-30，仅 E-H301-03～05 所列 Windows 本机范围） | 生产实现归 H-164 的 63cfffa4，本轮新增生产修复 0；默认媒体25/0/13、AppCore1323/0/57、workflow30/0/25、重开6、Runtime339/0/9，fmt通过，lint旧失败保留；E-H301-01～07，测试/文档 `8a7df621bf9be1144be514231d46968ba560a17e` |
@@ -69,7 +70,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **88**、历史已修复跳过 **21**、归并 **7**、撤销 **2**、有效未关闭 **188（188待修复、0修复中）**；H-125按E-H125-05～06限定验收，本轮新增1；H-159按E-H159-04～05已验收，H-162既有验收的漏计已校正而非新增；H-160、H-161按各自E-H160/E-H161历史限定验收，当轮新增2；H-302已按E-H302-03～05限定验收；H-304已按E-H304-05～06限定验收，校正此总览此前遗漏的累计数；H-301已按E-H301-01～06核对为本轮前随H-164修复，新增生产修复0；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与ToolExecutionPipeline范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **89**、历史已修复跳过 **21**、归并 **7**、撤销 **2**、有效未关闭 **187（187待修复、0修复中）**；H-134按E-H134-05～06限定验收，本轮新增1；H-125按E-H125-05～06限定验收，当轮新增1；H-159按E-H159-04～05已验收，H-162既有验收的漏计已校正而非新增；H-160、H-161按各自E-H160/E-H161历史限定验收，当轮新增2；H-302已按E-H302-03～05限定验收；H-304已按E-H304-05～06限定验收，校正此总览此前遗漏的累计数；H-301已按E-H301-01～06核对为本轮前随H-164修复，新增生产修复0；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与ToolExecutionPipeline范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -3860,6 +3861,36 @@ E-H125-07（独立提交与完整性）：本项实现、默认回归与当时�
 - 成熟实现对照：Codex `app-server-protocol/src/protocol/v2/item.rs` 的 `ItemStartedNotification` / `ItemCompletedNotification` 同时带 `thread_id`、`turn_id` 和 item；`turn.rs` 的开始/完成通知也带 `thread_id` 与 turn。可借鉴在 item 与 turn 两级按 owner identity 归属事件。ArtCraft `frontend/libs/tauri-events/src/lib/events/functional/VideoGenerationCompleteEvent.ts` 将异步 `listen()` Promise 保存在 hook 所有者内，并在组件提前卸载后解除迟到注册的监听；这是 listener 生命周期模式，不负责同一组件内的新旧任务仲裁。
 - 已直接证明：新 run 的节点状态从 Running 被旧 run 的 Completed 改写；重跑路径没有调用 `cancel_run`。`applyNodeOutputs()` 和 `applyNodeEventIdentity()` 也在同一个未按当前 owner 隔离的回调内更新结果及媒体身份字段，但本探针没有单独断言这些字段被旧输出覆盖；没有运行后端任务，不能断言供应商仍在后台生成或产生重复费用。
 - 修复方向：将 controller、run_id、完成状态和两条 unlisten Promise 收进每次运行自己的 owner 对象；开始替代 run 前以旧 run_id 取消旧内核运行；每次异步注册完成时若 owner 已失效就立即 unlisten；节点和完成回调必须同时匹配当前 owner 与事件 run_id，清理只允许释放本 owner 的资源。该边界与 H-41 的外部完成串话、H-43 的订阅就绪竞态独立。本轮只增审计探针和文档，没有改生产行为。
+
+#### H-134 画布owner替换（2026-10-30，已修复并验收）
+
+**当前状态：已修复并验收（仅 E-H134-05～06 所列 Windows 本机、临时数据库、loopback provider 与受控浏览器范围）；实现提交待独立 fix 后回填。** E-H134-01～04 与 P-H134-current 保留为当时快照，其中“候选/待终态/修复中”不替代本节最终结论。
+
+本项基线 bc7eea43，只处理画布 owner 的替换、迟到 ACK/错误与取消收尾；不重做 H-41/H-43，不改变内核取消协议。五类原用户未跟踪项仅经 git status 列名。
+
+E-H134-01（原探针现状）：原显式命令在隔离 home/data/managed、清除继承凭据的环境执行，原生1、5.26秒、0 passed/0 failed/1 cancelled；原因是旧夹具等待两条并行迟到注册，而 H-43 已改为启动前逐条等待三条监听。Promise pending 导致 cancelledByParent，不当作产品红测，证据 target/h134-original-20261030.log/-result.json。H-41 的2964b38e已提供 owner/迟到监听隔离，H-43的3f9470e3已提供启动前就绪屏障，但 runWorkflow 替换仍仅本地 abort，迟到ACK还在记录run_id前被丢弃。
+
+E-H134-02（真实TDD）：只修改正式生产TS加载夹具后，生产代码相对基线零diff时执行 node --test scripts/audit-workflow-isolation.test.cjs，原生1、2.83秒、8 passed/6 failed/0 cancelled/0 skipped。已有隔离对照 staleAttemptOverwroteCurrent=false，但 cancelRequestsOnSupersede=0；新增已接纳替换、迟到ACK、快速替换屏障、ACK前停止、旧启动失败覆盖新状态和取消传输失败均暴露剩余缺口，不把历史已消除分支重复计为新增修复。证据h134-owner-tdd-red-20261030*。
+
+P-H134-current（候选，本地设计）：复用已有每次运行owner，owner内只保存前驱取消屏障与单次取消Promise；替换先使旧owner失效，已知run_id通过既有cancel_run一次取消，再允许下一次启动；尚未返回ACK则保留取消意图，ACK先绑定原owner后由其finally取消。节点/终态/错误/停止收尾均按当前owner归属；保留一个已关闭最新owner（无监听）防止迟到清理在新运行结束后误改结果，不增加第二套运行/事件/取消中心。取消ACK不是后端终态或供应商计费停止证明；传输失败记录上下文并阻止该次替换自动启动，不自动重试取消。
+
+E-H134-03（候选验证中）：首轮14项正式TS回归14/0/0/0；扩展正常完成与完成后迟到停止对照，pnpm test:workflow为104 passed/0 failed/0 cancelled/0 skipped。当前仅3份源码/配置/测试冻结，target/h134-frozen-sources-20261030.json；最终冻结后的桌面构建、受控UI、正式Rust消费者与相关检查尚待真实终态，不计验收、尚无提交。累计仍88验收、21历史跳过、7归并、2撤销、187待修+1修复中=188有效未关闭；整体goal active。
+
+E-H134-04（最终源码与补充门禁，尚待完整workspace）：增加取消返回not_found的正常对照后，共17条owner回归进入默认test:workflow；最终pnpm build原生0、102.47秒，独立汇总296 passed/0 failed/0 cancelled/0 skipped，其中workflow105/0，tsc/Vite/许可证通过，既有大chunk警告保留。3份最终源码/配置/测试冻结见target/h134-frozen-sources-final-20261030.json，早期冻结保留；冻结后不再修改生产行为。显式RUN_HARNESS_AUDIT=1的node --test scripts/audit-start-subscription.test.cjs原生0、1.02秒、chat/canvas共2/0/0/0，早期终态被接收、无订阅前启动、无残留监听。Tauri check --lib --tests原生0、17.83秒；正式Rust消费者先前实际终态为workflow_audit30/0/25 ignored、canvas_persistence_restart6/0/0、workflow_media_audit26/0/12 ignored，公共Cargo参数均为--target-dir target/h300-after-h163-build --offline -j 2，未把ignored计入通过。
+
+受控IAB页面挂载真实workflowExecutor、真实Zustand store和Tauri JS包，只替换IPC：首轮延迟ACK→替换→投递旧回执→旧节点/终态回调→新运行完成，观察仅cancel_run controlled-run-1一次；旧回调后仍running/新运行输出，新运行完成后completed/新运行完成输出且监听0，没有cancel_run controlled-run-2。两张1280x720截图及AX记录见target/h134-controlled-ui-20261030.json与h134-controlled-ui-stale/complete-20261030.png。该页面不挂完整App、不接真实后端/供应商；UI后仅修正取消注释并增加not_found测试，无运行行为变更。自启Vite session7129已终态1，确认对应1436端口Vite进程0；不把Ctrl-C退出1当构建失败或仍存活。
+
+根fmt原生1、5.83秒仍仅报未改runtime/workflow/agent.rs:1043；独立Tauri fmt原生1、4.29秒保留既有imports/canvas write/set_reasoning_effort及依赖crate格式差异；全仓严格Clippy原生101、7.39秒仍停于未改models/client.rs:355 clone_on_copy。没有顺手修基线或放宽lint。当前CLI build原生0、1.20秒；唯一顺序driver23273已启动完整workspace，临时使用本轮CLI供SDK消费，finally必须恢复原默认binary并核SHA256，尚未取得全仓真实终态、不计验收。证据h134-desktop-build-final、start-subscription、tauri-check-final、root-format、tauri-format、workspace-strict-clippy、current-cli-build-20261030*；本项仍修复中、尚无commit。
+
+E-H134-05（完整 workspace 与提交前证据）：唯一顺序driver已终态，实际 cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1 原生 **101、667.62秒**；132 targets合计 **3861 passed / 1 failed / 288 ignored**，AppCore lib1341/0/62、Kernel E2E171/0/73、Runtime lib342/0/9。唯一失败仍为H-306 canvas_prompt::tests::every_node_kind_owns_exactly_one_profile：creative.video-edit.v1空defaultUserPrompt，canvas_prompt.rs:310:35。该prompts文件、严格lint的models/client.rs、根格式的runtime/workflow/agent.rs及Tauri lib.rs相对bc7eea43均零diff；未顺手修复或放宽门禁，不能把driver外层退出0、局部通过或ignored当全仓全绿。原始命令/日志见target/h134-workspace-20261030.log/-result.json，最终132项汇总见h134-workspace-summary-final-20261030.json。首次派生汇总因PowerShell大小写不敏感把running测试数误作target标签，计数未变；改为大小写敏感后另存final，保留原元数据，不当产品失败。
+
+SDK消费方临时使用本轮CLI后已由finally恢复原默认binary；重新读取SHA-256精确等于E75E9B802E93E9AA93342F558DED74E243C4D14769387187500920DF9D52B5B0，活跃默认CLI为0，见target/h134-sdk-cli-restored-20261030.json。最终源码3份SHA-256再次匹配受测冻结；双文档H134正文、306唯一编号/8列、仅H134主行改变、原H134首次失败正文保留与顶部清单一致性由target/h134-verify-delivery-20261030.cjs校验，实际interim已通过，提交前/暂存/提交后还须分别取得真实结果。没有用H125旧全仓结果冒充本轮；最终桌面构建296/0、workflow105/0、订阅2/0、Rust工作流30/0/25与重开6/0/0、媒体26/0/12及Tauri check均见E-H134-04，所有ignored继续明确保留。
+
+E-H134-06（限定验收、兼容性与残余）：H-134在上述范围修复并验收，本轮新增修复 **1**，历史跳过/归并/撤销新增 **0**；H-41的监听owner隔离与H-43的启动订阅屏障是历史已修复基础，不重复计功。新增根因修复只在原workflowExecutor的owner边界内：已知run_id的替换经既有cancel_run发一次请求，快速替换继承同一前驱屏障；迟到ACK先绑定原owner，再取消该已失效owner；旧节点、完成、审批、启动错误和停止响应不能改新owner。正常完成不取消，保留一个已关闭最新owner身份但不保留监听，正常/not_found/传输失败对照和每监听恰好清理一次均有默认回归。没有新command、DTO、运行/事件/审批/取消中心、第三方依赖、SQL迁移或权限/沙箱放宽；导出函数签名和Tauri参数不变。
+
+取消屏障只等待取消请求结果，**不是内核终态、真实供应商停止或不再计费的证明**；not_found仅告警，不伪装成持久终态。启动ACK未知时新run可以先启动，旧ACK回来后才可定位并取消旧run；ACK永久丢失/悬挂时不能保证该UI定位后端run，不能声称消除所有后台重叠或外部重复副作用。取消传输失败保留错误并阻止该次替换自动启动，不自动重试取消；后续用户显式新启动不是跨进程排他或幂等保障。未验完整native Tauri WebView/真实GUI到后端链、真实供应商/凭据/内网/用户数据、其他OS、断电强杀、跨窗口/跨进程生命周期、长期压力与永久未返回ACK。受控页面与正式Rust服务测试是分别验证相关边界，不冒充一条完整后端E2E；真实资源按本任务隔离要求未访问，不能以编译或截图替代它们。
+
+累计 **89验收、21历史跳过、7归并、2撤销、187待修复、0修复中**，187有效未关闭，306历史槽位不变；本项独立fix提交及hash回填待本轮交付。下一项准备复核 **H-224 日/月费用时间桶错误导致超额后继续请求模型**：已有正式预算接纳探针和CostService单一边界，风险是费用上限漏拦；先核对原探针与当前日历条件，不扩大到独立的H-225/H-226。总剩余继续沿用历史 **200–400有效修复与验收小时**的未逐项校准粗估，依据剩余跨层根因、权限/持久化/取消和生产消费方验收范围；没有独立工时计量，不能用本轮编译等待机械扣减。设备、依赖、构建和环境等待另计，缺少可靠总等待量，不承诺精确完工日期；整体goal继续active。
 
 ### H-135：stdio MCP 隐式继承宿主凭据，配置环境不是授权边界
 

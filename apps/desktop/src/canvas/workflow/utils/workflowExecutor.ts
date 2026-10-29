@@ -24,9 +24,11 @@ type WorkflowRunOwner = {
   eventUnlisten: (() => void) | null;
   completionUnlisten: (() => void) | null;
   approvalUnlisten: (() => void) | null;
+  startBarrier: Promise<void>;
+  cancellation: Promise<void> | null;
 };
 
-/** 当前画布运行的 owner；每次监听和清理都必须落在同一个 owner 上。 */
+/** 最新画布 owner（含已结束者）；保留身份以拒绝迟到清理，不保留监听。 */
 let _activeRun: WorkflowRunOwner | null = null;
 
 function detachRunOwner(owner: WorkflowRunOwner) {
@@ -46,9 +48,26 @@ function closeRunOwner(owner: WorkflowRunOwner) {
   detachRunOwner(owner);
 }
 
-function retireRunOwner(owner: WorkflowRunOwner) {
+function cancelRunOwner(owner: WorkflowRunOwner): Promise<void> {
+  if (!owner.runId) return Promise.resolve();
+  if (!owner.cancellation) {
+    const runId = owner.runId;
+    owner.cancellation = (async () => {
+      const core = await import("@tauri-apps/api/core");
+      const ack = await core.invoke<{ accepted: boolean }>("cancel_run", { runId });
+      if (!ack.accepted) console.warn("[canvas] 内核未受理取消:", runId);
+    })();
+  }
+  return owner.cancellation;
+}
+
+function retireRunOwner(owner: WorkflowRunOwner): Promise<void> {
+  if (owner.closed && !owner.controller.signal.aborted) return Promise.resolve();
   closeRunOwner(owner);
   owner.controller.abort();
+  // Carry the predecessor barrier through owners replaced before they start.
+  // A late start ACK is cancelled in that owner's own finalizer instead.
+  return owner.startBarrier.then(() => cancelRunOwner(owner));
 }
 
 function abortError(): DOMException {
@@ -347,7 +366,7 @@ async function runBackendWorkflow(
   signal.addEventListener("abort", onAbort, { once: true });
 
   const handleWorkflowPayload = (raw: Record<string, unknown>) => {
-    if (!owner.active || owner.closed) return;
+    if (!owner.active || owner.closed || _activeRun !== owner) return;
     const envelope = raw as { run_id?: string; payload?: Record<string, unknown> };
     if (!owner.runId) {
       buffered.push({ channel: "workflow", payload: raw });
@@ -377,7 +396,7 @@ async function runBackendWorkflow(
   };
 
   const handleCompletionPayload = (payload: Record<string, unknown>) => {
-    if (!owner.active || owner.closed) return;
+    if (!owner.active || owner.closed || _activeRun !== owner) return;
     if (!owner.runId) {
       buffered.push({ channel: "completion", payload });
       return;
@@ -442,10 +461,12 @@ async function runBackendWorkflow(
     "start_workflow",
     { workflow: { ...workflow, workspace_id: null }, sessionId: null },
   );
+  // Admission identity belongs to this attempt even when it was retired while
+  // invoke was pending. Its finalizer must still notify the existing kernel.
+  owner.runId = ack.run_id;
   if (!owner.active || owner.closed || signal.aborted || _activeRun !== owner) {
     throw abortError();
   }
-  owner.runId = ack.run_id;
   for (const event of buffered.splice(0)) {
     if (!owner.active || owner.closed) break;
     if (event.channel === "workflow") handleWorkflowPayload(event.payload);
@@ -457,10 +478,7 @@ async function runBackendWorkflow(
 }
 
 export async function runWorkflow(nodeId?: string) {
-  if (_activeRun) {
-    retireRunOwner(_activeRun);
-    _activeRun = null;
-  }
+  const startBarrier = _activeRun ? retireRunOwner(_activeRun) : Promise.resolve();
   const owner: WorkflowRunOwner = {
     controller: new AbortController(),
     runId: null,
@@ -469,6 +487,8 @@ export async function runWorkflow(nodeId?: string) {
     eventUnlisten: null,
     completionUnlisten: null,
     approvalUnlisten: null,
+    startBarrier,
+    cancellation: null,
   };
   _activeRun = owner;
 
@@ -476,13 +496,17 @@ export async function runWorkflow(nodeId?: string) {
   const { nodes, edges } = getNodesAndEdges(mode);
 
   try {
+    await owner.startBarrier;
+    if (_activeRun !== owner || owner.controller.signal.aborted) throw abortError();
     resetAllStatus();
     await runBackendWorkflow(mode, nodes, edges, nodeId, owner);
   } catch (err) {
+    if (_activeRun !== owner || owner.controller.signal.aborted) return;
     if (err instanceof DOMException && err.name === "AbortError") {
       return;
     }
     const msg = err instanceof Error ? err.message : String(err);
+    console.error("[canvas] 工作流运行失败:", msg);
     const affected = nodeId ? [nodeId] : nodes.map((node) => node.id);
     for (const id of affected) {
       const current =
@@ -501,11 +525,13 @@ export async function runWorkflow(nodeId?: string) {
       }
     }
   } finally {
-    if (_activeRun === owner) {
-      closeRunOwner(owner);
-      _activeRun = null;
-    } else {
-      closeRunOwner(owner);
+    closeRunOwner(owner);
+    if (owner.controller.signal.aborted) {
+      try {
+        await cancelRunOwner(owner);
+      } catch (error) {
+        console.error("[canvas] 取消运行失败:", error);
+      }
     }
   }
 }
@@ -548,25 +574,20 @@ export async function respondWorkflowApproval(
 /**
  * 取消这次画布运行。
  *
- * 画布一次只有一个在跑的 run，所以节点上的取消就是取消整次运行；先通知内核
- * 停止，再收掉本地监听并复位节点，避免节点永远停在“运行中”。
+ * 节点上的取消针对整次画布运行；先失效本地 owner，再经统一取消函数通知内核。
+ * 启动 ACK 尚未返回时，由原 owner 在收到 run_id 后补发取消；取消受理不等于终态。
  */
 export async function cancelWorkflow(nodeId?: string) {
   const mode = useCanvasStore.getState().mode;
   const owner = _activeRun;
-  const runId = owner?.active ? owner.runId : null;
-  if (runId) {
+  if (owner) {
     try {
-      const core = await import("@tauri-apps/api/core");
-      const ack = await core.invoke<{ accepted: boolean }>("cancel_run", { runId });
-      if (!ack.accepted) console.warn("[canvas] 内核未受理取消:", runId);
+      await retireRunOwner(owner);
     } catch (error) {
       console.error("[canvas] 取消运行失败:", error);
     }
-  }
-  if (owner) {
-    retireRunOwner(owner);
-    if (_activeRun === owner) _activeRun = null;
+    // A stop response may arrive after another run claimed the same node.
+    if (_activeRun !== owner) return;
   }
   if (nodeId) setNodeStatus(mode, nodeId, "idle");
 }
