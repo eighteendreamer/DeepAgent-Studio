@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-159 | 已修复并验收（2026-10-30，仅 E-H159-04～05 所列 Windows 本机范围） | 唯一 schema compiler 覆盖注册/替换/最终 provider，MCP 逐能力隔离；专项、真实刷新/deferred、WASM、Tauri check 通过；全仓3849/1/289唯一既有H-306，旧严格lint/fmt阻断保留；E-H159-01～05，修复提交待本次独立提交后回填 |
+| H-159 | 已修复并验收（2026-10-30，仅 E-H159-04～05 所列 Windows 本机范围） | 唯一 schema compiler 覆盖注册/替换/最终 provider，MCP 逐能力隔离；专项、真实刷新/deferred、WASM、Tauri check 通过；全仓3849/1/289唯一既有H-306，旧严格lint/fmt阻断保留；E-H159-01～05，修复提交 `36b8b74e358092c10872cefb64250c4845eb8cf6` |
 | H-301 | 历史已修复跳过（2026-10-30，仅 E-H301-03～05 所列 Windows 本机范围） | 生产实现归 H-164 的 63cfffa4，本轮新增生产修复 0；默认媒体25/0/13、AppCore1323/0/57、workflow30/0/25、重开6、Runtime339/0/9，fmt通过，lint旧失败保留；E-H301-01～07，测试/文档 `8a7df621bf9be1144be514231d46968ba560a17e` |
 | H-160 | 已修复并验收（2026-10-30，仅 E-H160-03～05 所列 Windows 本机、loopback、临时 SQLite 与前端构建范围） | 非空模型引用严格要求唯一 `providerId::modelId`，只有空值自动路由；Canvas bridge、WorkflowAgent、四类专业节点默认与前端历史值提示同步；Canvas gateway 54/0/3、workflow30/0/25、重开6/0/0、Runtime339/0/9、前端88/0/0、Tauri check/桌面 build/根 fmt通过；AppCore 全量 lib 1333/1/55 为既有冷编译器门禁环境失败，严格 Clippy/独立 Tauri fmt 旧阻断保留；E-H160-01～05，代码提交 `5e5044a6c63a4f7164a5d352a51e164d7aef6175` |
 | H-161 | 已修复并验收（2026-10-30，仅 E-H161-02～05 所列 Windows 本机、loopback provider、临时 SQLite、离线依赖和桌面构建范围） | `CanvasModelRequest` 保留生成控制；OpenAI/Anthropic/Gemini adapter 显式映射并验证，非支持 operation 拒绝；原探针1/0/0、Canvas gateway60/0/1、Runtime342/0/9、Tauri check、workflow88/0/0、桌面 build通过；根 fmt 既有 `agent.rs:1043` 阻断、严格 Clippy/完整 workspace/真实供应商未验；E-H161-01～05，代码提交 `47082abd04590ba42c9eb46e2ede952d1d0f21b7`，测试兼容提交 `99fe59ee5f4ad0c2dcf0d381aaebb81afee9de86` |
@@ -4477,7 +4477,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 
 #### H-159 修复记录（2026-10-30）
 
-**当前状态：已修复并验收（仅 E-H159-04～05 所列 Windows 本机、mock/Node stdio 与离线构建范围）；修复提交待本次独立提交后回填。** 本轮仅处理 H-159 的参数 schema 发布边界，不合并 H-275 的 MCP hook 参数实例校验等独立问题。基线 HEAD `6cc671c20754755944ebe79e9ffc526577c4a1b7`；原五类用户未跟踪项只列名、不读取或修改。E-01～03 为当时复现与候选记录，其中待验表述不替代下面真实终态。
+**当前状态：已修复并验收（仅 E-H159-04～05 所列 Windows 本机、mock/Node stdio 与离线构建范围）；修复提交 `36b8b74e358092c10872cefb64250c4845eb8cf6`。** 本轮仅处理 H-159 的参数 schema 发布边界，不合并 H-275 的 MCP hook 参数实例校验等独立问题。基线 HEAD `6cc671c20754755944ebe79e9ffc526577c4a1b7`；原五类用户未跟踪项只列名、不读取或修改。E-01～03 为当时复现与候选记录，其中待验表述不替代下面真实终态。
 
 - **E-H159-01（原探针重新复现）：** `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e tool_schema_parameters::invalid_mcp_tool_schemas_are_rejected_before_provider_transport --offline -j 2 -- --ignored --exact --nocapture --test-threads=1` 原生 101、1.20 秒、**0 passed / 1 failed / 0 ignored**。缺失、字符串、数组 schema 均为注册成功且 transport=1；日志 `target/h159-original-20261030.log` 与 `-result.json` 保留，不改写为通过。本探针只用内存 MCP/model transport，无真实网络、凭据或用户数据操作。
 - **P-H159-current（本地设计，候选）：** 复用 `deepagent-tools` 现有 jsonschema 0.18 编译器，统一对象根检查；ToolRegistry register/replace 在可见前验证，内部替换消费方使用可返回错误的 additive try_replace。MCP 必需字段不再 default 为 null，分页边界逐项隔离缺失 schema、原始条目仍计入目录上限；McpRegistry 隔离非对象和不可编译工具，正常兄弟工具继续可用。模型层依赖同一工具校验函数，Chat/Responses 的最终 request.validate 统一防守，不新增第二套编译器或 provider/审批/运行链。WASM 发现沿原 best-effort 语义隔离非法描述。此为本项目所需边界设计，不将参考实现的 schema 子集等同于 DeepSeek 普通模式。
@@ -4487,6 +4487,7 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 
 - **E-H159-04（完整 workspace 终态）：** 上述唯一任务原生 101、948.96 秒，131 targets 合计 **3849 passed / 1 failed / 289 ignored**；AppCore lib1341/0/62、Kernel171/0/73、workflow30/0/25、SQLite重开6/0/0、Runtime342/0/9、Models106/0/23、MCP103/0/2、Tools30/0/0、本项provider integration2/0/0、真实SDK stdio6/0/0。唯一失败为既有 H-306 的空 `creative.video-edit.v1` defaultUserPrompt，与 H-302 历史失败正文一致，相关 prompts 源码相对基线未变；全仓并非全绿。默认 SDK CLI 已确认子进程结束并恢复原 SHA-256。证据 `target/h159-workspace-20261030.log` / `-result.json`、`h159-workspace-summary-final-20261030.json` 和 `h159-sdk-cli-restored-20261030.json`；首次汇总器 target 标签大小写问题已另写 final 汇总纠正，不改变原日志或测试总计。
 - **E-H159-05（限定验收与兼容性）：** 唯一 compiler 覆盖 ToolRegistry register/replace/invocation 与 Chat/Responses 最终验证，内部替换消费方使用 additive try_replace；旧 replace 签名不变、非法替换保留旧有效工具。MCP 缺失字段不再静默 null，逐能力隔离不放宽目录预算，全坏目录可保持 server connected 而发布 0 工具；真实配置刷新及正式 deferred search 不再发布坏能力，健康普通请求成功。WASM 沿既有 best-effort 发现隔离；合法复杂 schema 不改写，custom/web_search 不校验 wire 不发送的 function parameters。无新第三方依赖、配置项、SQL 迁移、UI/wire DTO 或权限/审批/沙箱变更，根 lock 仅新增 models→tools 内部依赖。未验真实供应商 schema 子集/错误码、其他 OS、GUI/WebView、长期并发刷新与编译性能；本轮未跑 pnpm build（无前端/桥接契约变更，Tauri Rust 消费方已检查）。H-275 独立待修，严格 lint 与 fmt 旧失败保留。台账同步为87验收/189待修，其中 H-162 是基线漏计补正，不是本轮新增；本轮新增修复仅1，整体任务未完成。
+- **E-H159-06（独立提交）：** 实现、默认回归与当时双文档共17文件已正常提交 `36b8b74e358092c10872cefb64250c4845eb8cf6`；受测源码冻结、原失败正文、306唯一主行/8列、仅H-159主行改变、87项汇总逐项匹配及SDK原binary hash恢复均在提交前和staged阶段复核通过，见 `target/h159-delivery-before-stage-20261030.json` / `h159-delivery-staged-20261030.json`。fix提交后tracked工作区干净，本次只回填hash和交付记录另做docs提交，不amend、不推送/建PR，原五类用户项与全部失败/未验限制保留。
 
 ### H-160：Canvas gateway 把非法显式模型引用解释为自动路由，修通专业节点后可静默改用另一供应商
 
