@@ -61,6 +61,7 @@ pub struct CanvasArtifactImport {
 pub struct CanvasArtifactDto {
     pub id: String,
     pub uri: String,
+    pub workspace_id: Option<String>,
     pub kind: String,
     pub media_type: Option<String>,
     pub byte_size: i64,
@@ -74,6 +75,7 @@ impl CanvasArtifactDto {
         Self {
             id: record.id.clone(),
             uri: artifact_uri(&record.id),
+            workspace_id: record.workspace_id.clone(),
             kind: record.kind.as_str().to_string(),
             media_type: record.media_type.clone(),
             byte_size: record.byte_size,

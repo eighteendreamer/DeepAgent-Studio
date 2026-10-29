@@ -1876,6 +1876,140 @@ async fn h252_same_workspace_images_reach_provider_and_keep_output_ownership() {
 }
 
 #[tokio::test]
+async fn h253_chunked_uploads_reject_foreign_workflows_and_allow_the_owner() {
+    use deepagent_app_core::canvas_artifact_uploads::{
+        ArtifactUploadAction, CanvasArtifactUploads,
+    };
+    use deepagent_app_core::canvas_workflow_store::CanvasWorkflowStore;
+    for owner in [None, Some("ws-a"), Some("ws-b")] {
+        let mut provider = LocalInlineImageProvider::start(PRIVATE_IMAGE_BYTES.to_vec()).await;
+        let mut fixture = MediaFixture::new_inline_image(&provider).await;
+        let uploads = CanvasArtifactUploads::new(fixture.artifacts.clone());
+        let id = uploads
+            .apply(
+                ArtifactUploadAction::Begin {
+                    kind: "image".into(),
+                    mime: "image/png".into(),
+                    name: "synthetic.png".into(),
+                    size: PRIVATE_IMAGE_BYTES.len() as u64,
+                },
+                owner,
+                "studio-canvas",
+            )
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        uploads
+            .apply(
+                ArtifactUploadAction::Write {
+                    id: id.clone(),
+                    offset: 0,
+                    bytes: PRIVATE_IMAGE_BYTES.to_vec(),
+                },
+                owner,
+                "studio-canvas",
+            )
+            .unwrap();
+        let dto = uploads
+            .apply(ArtifactUploadAction::Finish { id }, owner, "studio-canvas")
+            .unwrap();
+        let reference = dto["uri"].as_str().unwrap();
+        fixture.workflow.definition.nodes[1]
+            .config
+            .insert("referenceImages".into(), json!([reference]));
+        fixture.workflow.definition.nodes[1]
+            .config
+            .insert("operation".into(), json!("image_edit"));
+        let workflows = CanvasWorkflowStore::new(fixture.db.clone());
+        let saved = workflows
+            .save_workflow(
+                None,
+                "Synthetic upload graph",
+                "creative",
+                owner,
+                &serde_json::to_value(&fixture.workflow.definition).unwrap(),
+            )
+            .unwrap();
+        fixture.workflow.definition = serde_json::from_value(
+            workflows
+                .load_workflow(&saved.id, owner)
+                .unwrap()
+                .unwrap()
+                .graph,
+        )
+        .unwrap();
+        for (index, caller) in [None, Some("ws-a"), Some("ws-b")].into_iter().enumerate() {
+            if caller == owner {
+                continue;
+            }
+            assert!(workflows
+                .load_workflow(&saved.id, caller)
+                .unwrap()
+                .is_none());
+            fixture.workflow.workspace_id = caller.map(str::to_string);
+            let run_id = format!("h253-foreign-{index}");
+            let mut run = fixture.spawn(&run_id);
+            assert!(finish_run(&mut run).await.is_err());
+            assert!(provider.requests.lock().unwrap().is_empty());
+            let events = RunStore::new(&fixture.db)
+                .events_after(&run_id, None)
+                .unwrap();
+            let terminals: Vec<_> = events
+                .iter()
+                .filter(|event| event.event_type == "run_terminal")
+                .collect();
+            assert_eq!(terminals.len(), 1);
+            assert_eq!(terminals[0].data["kind"], "failed");
+            assert!(!fixture
+                .live
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| ["image", "end"].contains(&event.node_id.as_str())
+                    && event.status == NodeExecutionStatus::Completed));
+        }
+        fixture.workflow.workspace_id = owner.map(str::to_string);
+        let mut run = fixture.spawn("h253-owner");
+        let result = finish_run(&mut run).await;
+        if result.is_err() {
+            provider.server.abort();
+        }
+        provider.close().await;
+        result.unwrap();
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        use base64::Engine as _;
+        assert_eq!(
+            requests[0].1["image"][0],
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(PRIVATE_IMAGE_BYTES)
+            )
+        );
+        assert_eq!(
+            fixture
+                .artifacts
+                .record(dto["id"].as_str().unwrap(), owner)
+                .unwrap()
+                .unwrap()
+                .workspace_id
+                .as_deref(),
+            owner
+        );
+        assert_eq!(fixture.artifacts.list(owner, None).unwrap().len(), 2);
+        let terminals: Vec<_> = RunStore::new(&fixture.db)
+            .events_after("h253-owner", None)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminals.len(), 1);
+        assert_eq!(terminals[0].data["kind"], "succeeded");
+    }
+}
+
+#[tokio::test]
 async fn real_image_workflow_stores_one_successful_artifact() {
     let mut provider = LocalInlineImageProvider::start(PRIVATE_IMAGE_BYTES.to_vec()).await;
     let fixture = MediaFixture::new_inline_image(&provider).await;

@@ -83,6 +83,17 @@ function canvasCommandsUsedByUi() {
 
 const registered = registeredCommands();
 
+test("chunked upload binds the explicit namespace and host-provided window identity", () => {
+  const source = readFileSync(TAURI_LIB, "utf8");
+  const start = source.indexOf("async fn canvas_artifact_upload(");
+  const command = source.slice(start, source.indexOf("\n#[tauri::command]", start));
+  assert.ok(start >= 0);
+  assert.match(command, /workspace_id: Option<String>/);
+  assert.match(command, /window: tauri::WebviewWindow/);
+  assert.match(command, /window\.label\(\)/);
+  assert.match(command, /\.apply\(action, workspace_id\.as_deref\(\), &caller_id\)/);
+});
+
 test("every command the canvas invokes is registered with tauri", () => {
   const missing = [...canvasCommandsUsedByUi()]
     .filter((name) => !registered.has(name))

@@ -58,6 +58,10 @@ pub enum CoreError {
         reason: String,
     },
 
+    /// Missing, expired and foreign uploads are deliberately indistinguishable.
+    #[error("artifact_scope_denied: upload {upload_id} is unavailable in requested context")]
+    ArtifactUploadUnavailable { upload_id: String },
+
     /// The event log is corrupt or inconsistent (e.g. sequence gap).
     #[error("event log corruption: {0}")]
     EventLog(String),

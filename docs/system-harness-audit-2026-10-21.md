@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-253 | 已修复并验收（2026-10-29，仅E-H253-06所列Windows本机范围） | 上传绑定workspace/host caller，Canvas127/0/5、重开6、workflow49/0/39、前端272/build及Tauri通过；全仓3785/1/296仅H-306，旧严格lint/桌面格式失败保留；E-H253-01～06，待独立提交 |
 | H-250 | 已修复并验收（2026-10-29，仅E-H250-06所列Windows本机范围） | 原gate内单次SHA-256/长度验证、只返回受验bytes；Canvas120/0/6、重开5、workflow48/0/39、前端269/build及Tauri通过；全仓3776/1/297仅H-306，旧lint/桌面格式失败保留；E-H250-01～07，`6bb48869346d0103b7e2d12d31fe32473dc5681b` |
 | H-254 | 已修复并验收（2026-10-29，仅E-H254-09所列Windows本机范围） | 共享删除意图/FULL事务、pending和恢复，GC保留政策不变；persistence123、Canvas115、重开4、workflow1、前端269/build、Tauri通过；全仓3768/1/298仅H-306，旧lint/桌面格式失败保留；E-H254-01～10，`64636fcd9ad544460d6c81855f1a899e4d2daf8d` |
 | H-252 | 已修复并验收（2026-10-29，仅E-H252-10所列Windows本机范围） | 显式owner校验、run固定scope及前端缓存隔离；scope7、canvas109、runtime69、重开4、前端269/build/UI、Tauri/示例check通过；全仓3747/1/299仅H-306，旧lint阻断保留；E-H252-01～11，`7bc7d9bf76b521d2286525584ac90ba31f7692a2` |
@@ -60,7 +61,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **78**、历史已修复跳过 **20**、归并 **7**、撤销 **2**、有效未关闭 **199（199待修复、0修复中）**；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **79**、历史已修复跳过 **20**、归并 **7**、撤销 **2**、有效未关闭 **198（198待修复、0修复中）**；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与 ToolExecutionPipeline 范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -8466,6 +8467,57 @@ E-H252-11（独立提交与真实hash回填，2026-10-29）：修复、回归测
 - 未运行 workspace 全量、Desktop build/UI、真实多窗口、插件/CLI 调用方、远程 daemon、真实 DeepSeek 请求或参考工程测试；没有删除用户文件、访问公网/内网或重现用户排除的 `encrypted-content` 报错。H-250、H-251 及此前 H-245～H-249 不重复计数。
 
 ### H-253：分块 canvas artifact 上传丢失 workspace 所有权，发布出无主媒体
+
+#### 本轮修复即时记录（2026-10-29）
+
+**当前状态：已修复并验收（2026-10-29，仅E-H253-06所列Windows本机范围），待本项独立提交。** 基线HEAD为`2b8a974ff7f36d6014522e8a98e0f1a679903d2f`；H-250已交付不重复。原五类未跟踪用户项只经git status列名，不读取、修改、暂存或删除。
+
+E-H253-01（本轮原始复现，source_type=command）：在隔离临时data/home/profile/managed、清除继承key及DB/target覆盖的环境执行`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_artifact_uploads::tests::audit_chunked_upload_preserves_workspace_ownership --offline -j 2 -- --ignored --exact --nocapture`，原生101、11.34秒、0 passed/1 failed/0 ignored，输出dto_workspace_id=Null、record_workspace_id=None、byte_size=4（target/h253-original-20261029.log/-result.json）。原失败保留。该旧探针没有提供caller workspace，不能把它当成当前A/B越权证据：H-252之后None是隔离的默认namespace，不是所有workspace的通配。
+
+F-H253-current / P-H253-current（本地设计，尚未验收）：Begin/BeginStreaming固定向原CanvasArtifactStream传None，内存upload表没有workspace/caller owner，后续Write/Finish/Abort只凭裸ID可操作。现有studio-canvas仍使用显式默认namespace；没有可信的per-window活动项目注册表，不能临时读取全局active project猜归属。本项沿H-252既有normalize_workspace_id，在每次apply接收显式workspace上下文，begin固定stream owner，后续动作在同一mutex内统一验证scope和host caller；Tauri复用既有WebviewWindow注入取得label，TS上传工具在begin前冻结scope并贯穿write/finish/abort。受信本地namespace不是用户认证；不增加第二套store/运行链，不自动迁移或给历史默认记录猜owner。
+
+E-H253-02（前端协议红测，source_type=command）：先仅增加真实TS函数加载测试及Tauri桥接门禁，执行`node --test --test-name-pattern 'recorded uploads|upload failure|chunked upload binds' scripts/check-video-edit-persistence.test.cjs scripts/check-canvas-ipc.test.cjs`，原生1、3项失败/0通过/0跳过（target/h253-frontend-red-20261029.log/-result.json）。上传函数所有动作缺少workspaceId，失败abort也丢scope；桥接没有workspace/window上下文。未用静态字符串检查代替TS实际调用测试。
+
+本轮范围：分块上传与一次性导入的归属一致性，default/A/B与不同窗口对在途动作的隔离，失败/超时/重复ID/正常drop及DB关闭重开，正式workflow消费方；DTO仅增加可观察的workspaceId。H-251/H-252/H-250只做回归，不另计数；未完成上传保持现有内存/RAII语义，不虚构崩溃后续传能力。需收取相关/完整workspace、严格lint、前端构建和Tauri门禁后才能验收。当前78验收、20历史跳过、7归并、2撤销、198待修与1修复中，199有效未关闭；200–400有效小时仍为未逐项校准历史粗估，设备/依赖/构建/环境等待另计，整体目标active。
+
+E-H253-03（候选实现与真实消费者专项，source_type=command/file）：复用原CanvasArtifactUploads mutex/map与CanvasArtifactStream，在begin时固定规范化workspace及host caller；Write/Finish/Abort在任何尺寸校验、TTL刷新、remove或finish之前统一核对二者。外域、未知、过期均返回CoreError::ArtifactUploadUnavailable（显示artifact_scope_denied、仅含caller提供的upload ID），不泄露owner，也不删除/刷新别人的在途上传。TTL仍是在后续apply时回收，不新增后台定时器；重启不恢复内存在途ID。窗口身份由Tauri注入的WebviewWindow.label取得，namespace仍是受信本地上下文，不是用户认证或窗口代次令牌。
+
+DTO新增可观察workspaceId；Tauri command新增可选顶层workspaceId参数；TS uploadRecordedVideo新增可选scope并在begin前冻结，所有write/finish/abort使用同一值。省略scope仍用null；当前没有该导出函数的正式UI调用方，不把它写成已验收的录制导出UI。没有增加全局活动项目推断或自动把历史默认记录归入命名项目。Rust apply签名要求workspace/caller，原审计探针相应改为显式audit-workspace并断言DB/DTO精确一致，已取消ignore；原无上下文失败证据保留。公共Rust DTO新增字段；CoreError原枚举已是non_exhaustive，本项只新增变体。没有依赖、SQL迁移、第二套上传持久化或其他入口改造。
+
+`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_artifact_uploads:: --offline -j 2 -- --nocapture --test-threads=1`原生0、140.60秒，11 passed/0 failed/0 ignored，原探针默认通过（h253-uploads-green-first-20261029）。覆盖default/A/B × 已知长度image/audio/video与未知长度audio/video，一次性导入对照、规范化、list/read/provider/display/delete隔离、跨scope/不同caller的恶意Write/Finish/Abort及TTL不变、并发正常分块、重复finish/abort、无效context、过期/不完整/过大chunk/drop清理，以及真实SQLite INSERT trigger失败后字节与索引均无发布残留。
+
+`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib --test workflow_audit --test canvas_persistence_restart h253 --offline -j 2 -- --nocapture --test-threads=1`原生0、78.23秒，lib6/0/0、真实DB关闭重开1/0/0、正式workflow1/0/0（h253-consumers-first-20261029）。重开后default/A/B发布归属、digest与bytes保留，未完成upload ID不可复活，正常drop无part残留。正式上传→命名图保存/读取→Kernel/gateway链路中，三owner的6组外域图访问拒绝、外域run各唯一failed且provider请求0、无Completed；3组同域请求实际发送原图片并成功生成同域制品。未把库级apply等同于真实原生窗口IPC测试，也不宣称强杀后part清理或跨进程续传。
+
+实际TS/IPC相关测试`node --test scripts/check-video-edit-persistence.test.cjs scripts/check-canvas-ipc.test.cjs scripts/check-canvas-media-scope.test.cjs`原生0、15 passed/0 failed/0 skipped（h253-frontend-green-first-20261029）；涵盖多chunk顺序及default/A/B顶层scope、write/finish异常后同域abort、原错误保留。11份本项源码/测试已在相关门禁前冻结SHA-256（target/h253-reviewed-sources-before-gates-20261029.json）。当前完整前端构建、Canvas/workflow/重开全组、严格lint/Tauri和后续workspace仍待终态，仍修复中、不加验收数。
+
+E-H253-04（相关门禁终态与基线复核，source_type=command/file）：以下沿用隔离临时data/home/profile/managed与既有target目录，不是干净构建。原生结果JSON及日志均已收取；顺序runner外层退出0不代替每条命令结果。
+
+| 实际命令 | 原生命令结果与证据 |
+|---|---|
+| `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_ --offline -j 2 -- --nocapture --test-threads=1` | 0，8.91秒；127 passed/0 failed/5 ignored，原H-253探针默认执行通过；h253-canvas-regressions-20261029.log/-result.json |
+| `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test workflow_audit --test canvas_persistence_restart --offline -j 2 -- --nocapture --test-threads=1` | 0，16.70秒；重开6/0/0、完整正式workflow49/0/39；h253-workflow-restart-20261029.log/-result.json |
+| `cargo clippy --target-dir target/h300-after-h163-build -p deepagent-core -p deepagent-persistence --all-targets --no-deps --offline -j 2 -- -D warnings` | 0，6.21秒；h253-core-persistence-clippy-20261029.log/-result.json |
+| `cargo clippy --target-dir target/h300-after-h163-build -p deepagent-core -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` | 101，53.60秒；仍旧11项，24条诊断标题/位置与H-250最终日志区分大小写逐条相同，无新增诊断；h253-appcore-clippy-20261029.log/-result.json |
+| `cargo clippy --target-dir target/h300-after-h163-build --all-targets --all-features --offline -j 2 -- -D warnings` | 101，9.10秒；仍models/client.rs:355的旧clone_on_copy；h253-workspace-clippy-20261029.log/-result.json |
+| `cargo check --target-dir target/h300-after-h163-build --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --tests --offline -j 2` | 0，51.43秒；h253-tauri-20261029.log/-result.json |
+| apps/desktop：`pnpm build` | 0，144.70秒；272 passed/0 failed/0 skipped，tsc/Vite/插件许可证通过，既有externalization/大chunk警告保留；h253-desktop-build-20261029.log/-result.json |
+| `cargo fmt --all -- --check`；`cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check`；`git diff --check` | 依次0/1/0；独立Tauri fmt与H-250仅归一化Diff标题行号后相同，本项上传块无新格式诊断；h253-format-20261029-result.json、h253-format-reviewed-20261029.json |
+
+11份源码/测试已复核与冻结SHA-256全部一致。唯一既有全仓任务session 73868仍在实际执行，h253-workspace-20261029.log尚无原生终态；不重启、不预填通过数，当前仍修复中、未提交、未验收。uploadRecordedVideo全局调用搜索仅有导出与两处测试；当前VideoEditForm走原生canvas_video_trim，不宣称本项已通过真实录制导出UI或原生窗口生命周期验收。新增正式workflow回归是三owner的图片路径（6外域拒绝、3同域成功），其他媒体由上传矩阵与既有workflow组覆盖，不把它扩大为新增九组正式多媒体请求。入口沿用统一过期清理；对仍活跃目标流的外域动作不刷新TTL、不消费或删除它。
+
+E-H253-05（完整workspace终态与冻结源码复核，source_type=command/file）：既有session 73868已原生终结，没有因观察等待重启。实际执行`cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1`，原生101、1303.31秒，其中增量编译7m16s；130 targets合计3785 passed/1 failed/296 ignored（target/h253-workspace-20261029.log/-result.json/-summary.json）。AppCore lib1276/0/54、Kernel E2E169/0/74、Runtime lib339/0/9、重开6/0/0、正式workflow49/0/39。统计以区分大小写的Running/Doc-tests定位target，未把小写running当作新target；ignored不计验收。
+
+唯一失败为deepagent-prompts的canvas_prompt::tests::every_node_kind_owns_exactly_one_profile：creative.video-edit.v1存在空defaultUserPrompt。panic位置及错误正文与H-250日志相同（只忽略进程PID），prompts源码相对基线无改动；不把新失败笼统归为旧基线，也不把workspace原生101写成通过。11份源码/测试与门禁前冻结SHA-256全部一致（target/h253-source-after-workspace-20261029.json）。最终根`cargo fmt --all -- --check`与`git diff --check`均0，合计9.98秒（h253-final-format-20261029-result.json）；E-04独立Tauri格式退出1、严格AppCore/workspace lint退出101仍保留。
+
+补充诊断命令`cargo clippy --target-dir target/h300-after-h163-build -p deepagent-app-core --test workflow_audit --test canvas_persistence_restart --no-deps --offline -j 2`原生0、85.78秒（h253-consumer-clippy-diagnostic-20261029.log/-result.json）。该命令未加-D warnings，不代替严格lint。输出11项lib旧告警和7项workflow旧代码告警；逐一核对位置不在本项新增测试内，media.rs的2639对应基线2505（本项插入134行），其余告警文件未改；重开测试未输出告警。没有为通过门禁压制或顺手修复旧告警。
+
+E-H253-06（限定验收、兼容性与残余）：H-253已在上述Windows本机、合成媒体、临时SQLite、实际TS函数调用与本机HTTP provider fixture、正式Kernel/gateway消费者范围修复并验收；代码及当时双台账待本项独立提交。保留原始0/1/0及前端0/3/0红测，原探针已改为显式workspace并转默认，不借ignored跳过。单一既有上传map/stream绑定规范化workspace与host caller，Write/Finish/Abort共同检查活跃目标流归属，发布的DB owner与DTO一致；不新建store、运行链、审批中心或后台清理器。
+
+兼容性：Rust apply签名新增必填workspace/caller，仓库消费方已同步，仓外Rust调用方需更新；JSON DTO增加workspaceId，Tauri顶层workspaceId可省略，TS新增可选参数默认null。未知、过期或外域的Abort现在与Write/Finish返回同一opaque unavailable错误，不再把未知Abort当成功；TS失败清理仍保留原始错误。无依赖、SQL迁移或历史owner自动回填；None仍为默认namespace，不是通配，旧默认记录不会被猜归属或向命名域开放。
+
+窗口label是host提供的本地caller标识，不是用户认证或窗口实例代次令牌；未验窗口销毁/同label重用、真实原生WebView IPC、真实录制导出UI/FFmpeg、真实供应商、真实用户数据、其他OS、强杀/断电及跨进程压力。TTL仅在下一次apply时清理；正常drop清理part已验，不承诺强杀残留回收、重启续传或exactly-once。这些限制不写为已验收能力。
+
+本轮仅新增限定验收1项，累计79验收、20历史跳过、7归并、2撤销、198待修复、0修复中，198有效未关闭；306历史槽位不变，相对2b8a974f仅H-253主行变化，其他305行保持原样。下一独立优先候选H-249（远程音频输入的网络权限/审批），须先复核当前共享网络边界和原探针，本项未实施它，不为容易通过优先修H-306。剩余200–400有效修复与验收小时仍为历史未逐项校准粗估，按跨入口、权限、运行及持久化根因继续校准，不能按提交数机械扣减；设备/依赖/构建及环境等待另计，无可靠总量或精确日期承诺。整体修复目标继续active，不宣称系统完成。
 
 **级别：中高（P1，媒体生命周期与项目隔离）；触发条件：** 前端/桌面使用 `canvas_artifact_upload` 的 `Begin` 或 `BeginStreaming` 分块上传路径，而不是一次性 `canvas_artifact_import`。`ArtifactUploadAction` 没有 workspace 字段，`CanvasArtifactUploads::apply` 创建 `CanvasArtifactStream` 时固定传 `workspace_id=None`；完成后 artifact 记录和 DTO 都没有 owner。该问题不同于 H-252：H-252 是已有 workspace owner 的读/写操作不检查 scope；H-253 是上传创建阶段直接丢掉 owner。
 

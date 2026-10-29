@@ -2378,14 +2378,19 @@ fn canvas_artifact_import(
 
 #[tauri::command]
 async fn canvas_artifact_upload(
+    window: tauri::WebviewWindow,
     state: State<'_, Arc<deepagent_app_core::canvas_artifact_uploads::CanvasArtifactUploads>>,
     action: deepagent_app_core::canvas_artifact_uploads::ArtifactUploadAction,
+    workspace_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let uploads = state.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || uploads.apply(action))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(|e| e.to_string())
+    let caller_id = window.label().to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        uploads.apply(action, workspace_id.as_deref(), &caller_id)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())
 }
 
 /// Resolve a node-stored media reference for display. Returns `None` for

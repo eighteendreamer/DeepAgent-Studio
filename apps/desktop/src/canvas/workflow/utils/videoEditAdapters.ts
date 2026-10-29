@@ -49,8 +49,12 @@ export async function uploadRecordedVideo(
   chunks: AsyncIterable<Blob>,
   mime: string,
   name: string,
+  workspaceId: string | null = null,
 ): Promise<string> {
+  // Freeze once; changing a UI selection cannot reassign an in-flight stream.
+  const scope = workspaceId?.trim() ?? null;
   const id = await invoke<string>("canvas_artifact_upload", {
+    workspaceId: scope,
     action: { action: "begin_streaming", kind: "video", mime, name },
   });
   let offset = 0;
@@ -61,6 +65,7 @@ export async function uploadRecordedVideo(
           await blob.slice(cursor, Math.min(cursor + UPLOAD_CHUNK_BYTES, blob.size)).arrayBuffer(),
         );
         await invoke("canvas_artifact_upload", {
+          workspaceId: scope,
           action: { action: "write", id, offset, bytes: Array.from(chunk) },
         });
         offset += chunk.length;
@@ -68,11 +73,12 @@ export async function uploadRecordedVideo(
     }
     if (offset === 0) throw new Error("编码结果为空");
     const artifact = await invoke<CanvasArtifactDto>("canvas_artifact_upload", {
+      workspaceId: scope,
       action: { action: "finish", id },
     });
     return artifact.uri;
   } catch (error) {
-    await invoke("canvas_artifact_upload", { action: { action: "abort", id } }).catch(
+    await invoke("canvas_artifact_upload", { workspaceId: scope, action: { action: "abort", id } }).catch(
       () => undefined,
     );
     throw error;

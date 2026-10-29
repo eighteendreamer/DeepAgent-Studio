@@ -238,6 +238,134 @@ fn h250_reopened_media_preserves_expected_digest_and_rejects_changed_content() {
 }
 
 #[test]
+fn h253_uploaded_ownership_survives_close_reopen_without_reviving_upload_ids() {
+    use deepagent_app_core::canvas_artifact_uploads::{
+        ArtifactUploadAction, CanvasArtifactUploads,
+    };
+    use deepagent_core::error::CoreError;
+    let root = TempRoot::new("h253_upload_owner");
+    let (items, unfinished_id) = {
+        let artifacts = Arc::new(
+            CanvasArtifactService::new(
+                root.files_dir(),
+                Arc::new(Database::open(root.db_path()).unwrap()),
+            )
+            .unwrap(),
+        );
+        let uploads = CanvasArtifactUploads::new(artifacts.clone());
+        let mut items = Vec::new();
+        for owner in [None, Some("ws-a"), Some("ws-b")] {
+            let action = serde_json::from_value(json!({"action":"begin", "kind":"video", "mime":"video/mp4", "name":"synthetic.mp4", "size":3})).unwrap();
+            let id = uploads
+                .apply(action, owner, "studio-canvas")
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string();
+            uploads
+                .apply(
+                    ArtifactUploadAction::Write {
+                        id: id.clone(),
+                        offset: 0,
+                        bytes: vec![1, 2, 3],
+                    },
+                    owner,
+                    "studio-canvas",
+                )
+                .unwrap();
+            let dto = uploads
+                .apply(ArtifactUploadAction::Finish { id }, owner, "studio-canvas")
+                .unwrap();
+            items.push((owner, dto));
+        }
+        let id = uploads
+            .apply(
+                ArtifactUploadAction::BeginStreaming {
+                    kind: "audio".into(),
+                    mime: "audio/wav".into(),
+                    name: "unfinished.wav".into(),
+                },
+                Some("ws-a"),
+                "studio-canvas",
+            )
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_string();
+        uploads
+            .apply(
+                ArtifactUploadAction::Write {
+                    id: id.clone(),
+                    offset: 0,
+                    bytes: vec![9],
+                },
+                Some("ws-a"),
+                "studio-canvas",
+            )
+            .unwrap();
+        (items, id)
+    }; // Close uploads, artifact service and every SQLite handle before reopening.
+    assert!(!std::fs::read_dir(root.files_dir())
+        .unwrap()
+        .any(|entry| entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".part")));
+    let artifacts = Arc::new(
+        CanvasArtifactService::new(
+            root.files_dir(),
+            Arc::new(Database::open(root.db_path()).unwrap()),
+        )
+        .unwrap(),
+    );
+    let uploads = CanvasArtifactUploads::new(artifacts.clone());
+    for (owner, dto) in items {
+        let id = dto["id"].as_str().unwrap();
+        assert_eq!(dto["workspaceId"], json!(owner));
+        assert_eq!(
+            artifacts
+                .record(id, owner)
+                .unwrap()
+                .unwrap()
+                .workspace_id
+                .as_deref(),
+            owner
+        );
+        assert_eq!(
+            artifacts.read_bytes(id, owner).unwrap().unwrap(),
+            vec![1, 2, 3]
+        );
+        artifacts
+            .video_file_path(dto["uri"].as_str().unwrap(), owner)
+            .unwrap();
+        assert_eq!(artifacts.list(owner, None).unwrap().len(), 1);
+        for foreign in [None, Some("ws-a"), Some("ws-b")] {
+            if foreign == owner {
+                continue;
+            }
+            assert!(artifacts.record(id, foreign).unwrap().is_none());
+            assert!(artifacts
+                .display_target(dto["uri"].as_str().unwrap(), foreign)
+                .is_err());
+            assert!(!artifacts.delete(id, foreign).unwrap());
+        }
+    }
+    for owner in [None, Some("ws-a"), Some("ws-b")] {
+        assert!(matches!(
+            uploads.apply(
+                ArtifactUploadAction::Finish {
+                    id: unfinished_id.clone()
+                },
+                owner,
+                "studio-canvas"
+            ),
+            Err(CoreError::ArtifactUploadUnavailable { .. })
+        ));
+    }
+}
+
+#[test]
 fn named_workflow_operations_preserve_live_slots_across_independent_handles_and_reopen() {
     let root = TempRoot::new("workflow_namespace");
     let snapshots = {

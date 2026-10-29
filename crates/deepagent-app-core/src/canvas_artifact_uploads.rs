@@ -1,6 +1,7 @@
 //! Bounded IPC uploads into the existing artifact service. Unfinished streams
 //! are RAII-cleaned on abort, idle expiration, and orderly host shutdown.
 use crate::canvas_artifact_service::{CanvasArtifactService, CanvasArtifactStream};
+use crate::canvas_scope::normalize_workspace_id;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_persistence::artifact_store::ArtifactKind;
 use serde::Deserialize;
@@ -42,6 +43,8 @@ pub enum ArtifactUploadAction {
 }
 struct Upload {
     stream: CanvasArtifactStream,
+    workspace_id: Option<String>,
+    caller_id: String,
     expected: Option<u64>,
     written: u64,
     touched: Instant,
@@ -57,12 +60,41 @@ impl CanvasArtifactUploads {
             uploads: Mutex::new(HashMap::new()),
         }
     }
-    pub fn apply(&self, action: ArtifactUploadAction) -> Result<Value> {
+    /// The host supplies caller identity; workspace is an explicit namespace,
+    /// never a lookup of mutable active-project state. None is the default only.
+    pub fn apply(
+        &self,
+        action: ArtifactUploadAction,
+        workspace_id: Option<&str>,
+        caller_id: &str,
+    ) -> Result<Value> {
+        let workspace_id = normalize_workspace_id(workspace_id)?;
+        if caller_id.is_empty() {
+            return Err(CoreError::invalid("upload caller identity is required"));
+        }
         let mut uploads = self
             .uploads
             .lock()
             .map_err(|_| CoreError::invalid("artifact upload lock poisoned"))?;
         uploads.retain(|_, upload| upload.touched.elapsed() < IDLE_TIMEOUT);
+        // Check before every mutation, including malformed chunks and abort.
+        // A foreign request must neither consume the stream nor refresh its TTL.
+        if let Some(id) = match &action {
+            ArtifactUploadAction::Write { id, .. }
+            | ArtifactUploadAction::Finish { id }
+            | ArtifactUploadAction::Abort { id } => Some(id),
+            _ => None,
+        } {
+            if !uploads.get(id).is_some_and(|upload| {
+                upload.workspace_id == workspace_id && upload.caller_id == caller_id
+            }) {
+                tracing::warn!(
+                    upload_id = id,
+                    "canvas upload unavailable in requested context"
+                );
+                return Err(upload_unavailable(id));
+            }
+        }
         match action {
             ArtifactUploadAction::Begin {
                 kind,
@@ -84,14 +116,19 @@ impl CanvasArtifactUploads {
                 if name.len() > 255 || mime.len() > 128 {
                     return Err(CoreError::invalid("upload metadata too long"));
                 }
-                let stream = self
-                    .artifacts
-                    .begin_stream(kind, Some(&mime), Some(&name), None)?;
+                let stream = self.artifacts.begin_stream(
+                    kind,
+                    Some(&mime),
+                    Some(&name),
+                    workspace_id.as_deref(),
+                )?;
                 let id = format!("upload_{}", deepagent_core::id::EventId::new());
                 uploads.insert(
                     id.clone(),
                     Upload {
                         stream,
+                        workspace_id,
+                        caller_id: caller_id.to_string(),
                         expected: Some(size),
                         written: 0,
                         touched: Instant::now(),
@@ -111,14 +148,19 @@ impl CanvasArtifactUploads {
                 if name.len() > 255 || mime.len() > 128 {
                     return Err(CoreError::invalid("upload metadata too long"));
                 }
-                let stream = self
-                    .artifacts
-                    .begin_stream(kind, Some(&mime), Some(&name), None)?;
+                let stream = self.artifacts.begin_stream(
+                    kind,
+                    Some(&mime),
+                    Some(&name),
+                    workspace_id.as_deref(),
+                )?;
                 let id = format!("upload_{}", deepagent_core::id::EventId::new());
                 uploads.insert(
                     id.clone(),
                     Upload {
                         stream,
+                        workspace_id,
+                        caller_id: caller_id.to_string(),
                         expected: None,
                         written: 0,
                         touched: Instant::now(),
@@ -129,7 +171,7 @@ impl CanvasArtifactUploads {
             ArtifactUploadAction::Write { id, offset, bytes } => {
                 let upload = uploads
                     .get_mut(&id)
-                    .ok_or_else(|| CoreError::invalid("upload missing or expired"))?;
+                    .ok_or_else(|| upload_unavailable(&id))?;
                 if bytes.is_empty()
                     || bytes.len() > MAX_CHUNK
                     || offset != upload.written
@@ -150,9 +192,7 @@ impl CanvasArtifactUploads {
                 Ok(json!(upload.written))
             }
             ArtifactUploadAction::Finish { id } => {
-                let upload = uploads
-                    .remove(&id)
-                    .ok_or_else(|| CoreError::invalid("upload missing or expired"))?;
+                let upload = uploads.remove(&id).ok_or_else(|| upload_unavailable(&id))?;
                 if upload
                     .expected
                     .is_some_and(|expected| expected != upload.written)
@@ -171,6 +211,15 @@ impl CanvasArtifactUploads {
         }
     }
 }
+
+fn upload_unavailable(id: &str) -> CoreError {
+    CoreError::ArtifactUploadUnavailable {
+        upload_id: id.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests;
 
 #[cfg(test)]
 mod tests {
@@ -191,32 +240,44 @@ mod tests {
     fn upload_is_published_only_after_all_ordered_chunks_arrive() {
         let (_dir, uploads) = uploads();
         let id = uploads
-            .apply(ArtifactUploadAction::Begin {
-                kind: "video".into(),
-                mime: "video/mp4".into(),
-                name: "test.mp4".into(),
-                size: 5,
-            })
+            .apply(
+                ArtifactUploadAction::Begin {
+                    kind: "video".into(),
+                    mime: "video/mp4".into(),
+                    name: "test.mp4".into(),
+                    size: 5,
+                },
+                None,
+                "test-window",
+            )
             .expect("begin")
             .as_str()
             .expect("id")
             .to_string();
         uploads
-            .apply(ArtifactUploadAction::Write {
-                id: id.clone(),
-                offset: 0,
-                bytes: vec![1, 2],
-            })
+            .apply(
+                ArtifactUploadAction::Write {
+                    id: id.clone(),
+                    offset: 0,
+                    bytes: vec![1, 2],
+                },
+                None,
+                "test-window",
+            )
             .expect("first chunk");
         uploads
-            .apply(ArtifactUploadAction::Write {
-                id: id.clone(),
-                offset: 2,
-                bytes: vec![3, 4, 5],
-            })
+            .apply(
+                ArtifactUploadAction::Write {
+                    id: id.clone(),
+                    offset: 2,
+                    bytes: vec![3, 4, 5],
+                },
+                None,
+                "test-window",
+            )
             .expect("second chunk");
         let result = uploads
-            .apply(ArtifactUploadAction::Finish { id })
+            .apply(ArtifactUploadAction::Finish { id }, None, "test-window")
             .expect("finish");
         assert_eq!(result["byteSize"], 5);
         assert!(result["uri"]
@@ -229,30 +290,42 @@ mod tests {
     fn invalid_offset_discards_staging_and_oversized_upload_is_rejected() {
         let (dir, uploads) = uploads();
         assert!(uploads
-            .apply(ArtifactUploadAction::Begin {
-                kind: "video".into(),
-                mime: "video/mp4".into(),
-                name: "huge.mp4".into(),
-                size: MAX_UPLOAD_BYTES + 1,
-            })
+            .apply(
+                ArtifactUploadAction::Begin {
+                    kind: "video".into(),
+                    mime: "video/mp4".into(),
+                    name: "huge.mp4".into(),
+                    size: MAX_UPLOAD_BYTES + 1,
+                },
+                None,
+                "test-window"
+            )
             .is_err());
         let id = uploads
-            .apply(ArtifactUploadAction::Begin {
-                kind: "video".into(),
-                mime: "video/mp4".into(),
-                name: "test.mp4".into(),
-                size: 3,
-            })
+            .apply(
+                ArtifactUploadAction::Begin {
+                    kind: "video".into(),
+                    mime: "video/mp4".into(),
+                    name: "test.mp4".into(),
+                    size: 3,
+                },
+                None,
+                "test-window",
+            )
             .expect("begin")
             .as_str()
             .expect("id")
             .to_string();
         assert!(uploads
-            .apply(ArtifactUploadAction::Write {
-                id,
-                offset: 1,
-                bytes: vec![1],
-            })
+            .apply(
+                ArtifactUploadAction::Write {
+                    id,
+                    offset: 1,
+                    bytes: vec![1],
+                },
+                None,
+                "test-window"
+            )
             .is_err());
         assert_eq!(
             std::fs::read_dir(dir.path()).expect("list files").count(),
@@ -264,31 +337,43 @@ mod tests {
     fn streaming_upload_accepts_unknown_length_and_enforces_chunk_order() {
         let (_dir, uploads) = uploads();
         let id = uploads
-            .apply(ArtifactUploadAction::BeginStreaming {
-                kind: "video".into(),
-                mime: "video/webm;codecs=vp9".into(),
-                name: "trimmed.webm".into(),
-            })
+            .apply(
+                ArtifactUploadAction::BeginStreaming {
+                    kind: "video".into(),
+                    mime: "video/webm;codecs=vp9".into(),
+                    name: "trimmed.webm".into(),
+                },
+                None,
+                "test-window",
+            )
             .expect("begin streaming")
             .as_str()
             .expect("id")
             .to_string();
         uploads
-            .apply(ArtifactUploadAction::Write {
-                id: id.clone(),
-                offset: 0,
-                bytes: vec![1, 2],
-            })
+            .apply(
+                ArtifactUploadAction::Write {
+                    id: id.clone(),
+                    offset: 0,
+                    bytes: vec![1, 2],
+                },
+                None,
+                "test-window",
+            )
             .expect("first chunk");
         uploads
-            .apply(ArtifactUploadAction::Write {
-                id: id.clone(),
-                offset: 2,
-                bytes: vec![3],
-            })
+            .apply(
+                ArtifactUploadAction::Write {
+                    id: id.clone(),
+                    offset: 2,
+                    bytes: vec![3],
+                },
+                None,
+                "test-window",
+            )
             .expect("second chunk");
         let result = uploads
-            .apply(ArtifactUploadAction::Finish { id })
+            .apply(ArtifactUploadAction::Finish { id }, None, "test-window")
             .expect("finish");
         assert_eq!(result["byteSize"], 3);
         assert_eq!(result["mediaType"], "video/webm;codecs=vp9");
@@ -298,16 +383,22 @@ mod tests {
     fn empty_streaming_upload_is_not_published() {
         let (dir, uploads) = uploads();
         let id = uploads
-            .apply(ArtifactUploadAction::BeginStreaming {
-                kind: "video".into(),
-                mime: "video/webm".into(),
-                name: "empty.webm".into(),
-            })
+            .apply(
+                ArtifactUploadAction::BeginStreaming {
+                    kind: "video".into(),
+                    mime: "video/webm".into(),
+                    name: "empty.webm".into(),
+                },
+                None,
+                "test-window",
+            )
             .expect("begin streaming")
             .as_str()
             .expect("id")
             .to_string();
-        assert!(uploads.apply(ArtifactUploadAction::Finish { id }).is_err());
+        assert!(uploads
+            .apply(ArtifactUploadAction::Finish { id }, None, "test-window")
+            .is_err());
         assert_eq!(
             std::fs::read_dir(dir.path()).expect("list files").count(),
             0
@@ -315,7 +406,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-253: chunked canvas uploads must persist the caller workspace"]
     fn audit_chunked_upload_preserves_workspace_ownership() {
         let dir = tempfile::tempdir().expect("temp dir");
         let db = Arc::new(Database::open_in_memory().expect("database"));
@@ -323,29 +413,41 @@ mod tests {
             Arc::new(CanvasArtifactService::new(dir.path(), db).expect("artifact service"));
         let uploads = CanvasArtifactUploads::new(service.clone());
         let id = uploads
-            .apply(ArtifactUploadAction::Begin {
-                kind: "video".into(),
-                mime: "video/mp4".into(),
-                name: "workspace-owned.mp4".into(),
-                size: 4,
-            })
+            .apply(
+                ArtifactUploadAction::Begin {
+                    kind: "video".into(),
+                    mime: "video/mp4".into(),
+                    name: "workspace-owned.mp4".into(),
+                    size: 4,
+                },
+                Some("audit-workspace"),
+                "test-window",
+            )
             .expect("begin")
             .as_str()
             .expect("upload id")
             .to_string();
         uploads
-            .apply(ArtifactUploadAction::Write {
-                id: id.clone(),
-                offset: 0,
-                bytes: vec![1, 2, 3, 4],
-            })
+            .apply(
+                ArtifactUploadAction::Write {
+                    id: id.clone(),
+                    offset: 0,
+                    bytes: vec![1, 2, 3, 4],
+                },
+                Some("audit-workspace"),
+                "test-window",
+            )
             .expect("write");
         let dto = uploads
-            .apply(ArtifactUploadAction::Finish { id })
+            .apply(
+                ArtifactUploadAction::Finish { id },
+                Some("audit-workspace"),
+                "test-window",
+            )
             .expect("finish");
         let artifact_id = dto["id"].as_str().expect("artifact id");
         let record = service
-            .record(artifact_id, None)
+            .record(artifact_id, Some("audit-workspace"))
             .expect("record")
             .expect("published record");
         eprintln!(
@@ -354,9 +456,7 @@ mod tests {
             record.workspace_id,
             record.byte_size,
         );
-        assert!(
-            record.workspace_id.is_some(),
-            "a chunked canvas upload must retain the caller workspace instead of publishing an unowned artifact"
-        );
+        assert_eq!(record.workspace_id.as_deref(), Some("audit-workspace"));
+        assert_eq!(dto["workspaceId"], "audit-workspace");
     }
 }

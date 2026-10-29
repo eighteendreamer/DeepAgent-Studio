@@ -17,6 +17,7 @@ export type CanvasMediaKind = "image" | "video" | "audio" | "document";
 interface CanvasArtifactDto {
   id: string;
   uri: string;
+  workspaceId?: string | null;
   kind: string;
   mediaType?: string | null;
   byteSize: number;
