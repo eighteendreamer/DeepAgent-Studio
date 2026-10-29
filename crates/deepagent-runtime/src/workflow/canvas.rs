@@ -17,6 +17,24 @@ use serde::{Deserialize, Serialize};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
+/// Selects how the app layer resolves a text node's prompt.
+///
+/// Creative nodes use the versioned backend prompt catalog. Professional nodes
+/// own their system prompt in the workflow config and must not be looked up in
+/// that creative catalog by accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CanvasPromptPolicy {
+    CreativeProfile,
+    Professional,
+}
+
+impl Default for CanvasPromptPolicy {
+    fn default() -> Self {
+        Self::CreativeProfile
+    }
+}
+
 /// A text (or vision) completion request for one canvas node.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,6 +45,10 @@ pub struct CanvasCompletionRequest {
     /// profile. Empty for professional nodes that carry their own system prompt.
     #[serde(default)]
     pub node_kind: String,
+    /// Explicitly selects the prompt registry boundary. This prevents a
+    /// professional node from being treated as a creative profile lookup.
+    #[serde(default)]
+    pub prompt_policy: CanvasPromptPolicy,
     /// Skills requested for this node; validated against the node contract.
     #[serde(default)]
     pub skill_ids: Vec<String>,

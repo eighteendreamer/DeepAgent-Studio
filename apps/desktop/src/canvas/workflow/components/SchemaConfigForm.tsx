@@ -164,7 +164,11 @@ export function SchemaConfigForm({ nodeId, data, onUpdate }: { nodeId: string; d
   const definition = getNodeDefinition(data.kind);
   const issues = getNodeConfigIssues(data.kind, data);
   return <div className="nodrag nopan nowheel max-h-[65vh] overflow-y-auto pr-1" onPointerDown={(event) => event.stopPropagation()} onDoubleClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}>
-    {definition.availability === "reserved" && <p className="mb-3 text-[11px] text-amber-200/80">该节点的外部连接尚未启用，配置不会自动启动服务。</p>}
+    {definition.availability === "reserved" && <p className="mb-3 text-[11px] text-amber-200/80">
+      {data.kind === "agent-v2"
+        ? "Agent V2 当前仅保留配置形状，工具循环、审批、取消、记忆和结构化输出执行链尚未启用。"
+        : "该节点的外部连接尚未启用，配置不会自动启动服务。"}
+    </p>}
     <SchemaObjectEditor nodeId={nodeId} path={nodeId} schema={definition.configSchema} value={data} onChange={(next) => onUpdate(Object.fromEntries(Object.entries(next as Record<string, unknown>).filter(([key, value]) => !Object.is(value, data[key]))))} />
     {!!issues.length && <div role="status" className="mt-3 text-[11px] text-amber-200/80">{issues.map((issue) => <p key={`${issue.path}:${issue.message}`}>{issue.path}：{issue.message}</p>)}</div>}
     <NodeOutputPanel nodeId={nodeId} data={data} />

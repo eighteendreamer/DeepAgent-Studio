@@ -31,8 +31,8 @@ use deepagent_runtime::workflow::{
     CanvasArtifactResponse, CanvasAudioInputPreparation, CanvasAudioRequest, CanvasAudioResponse,
     CanvasCompletionRequest, CanvasCompletionResponse, CanvasEmbeddingRequest,
     CanvasEmbeddingResponse, CanvasImagePreparation, CanvasImageRequest, CanvasImageResponse,
-    CanvasJobPhase, CanvasJobProgress, CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest,
-    CanvasVideoPreparation, CanvasVideoRequest, CanvasVideoResponse,
+    CanvasJobPhase, CanvasJobProgress, CanvasModelBridge, CanvasPromptPolicy, CanvasRouteOutcome,
+    CanvasRouteRequest, CanvasVideoPreparation, CanvasVideoRequest, CanvasVideoResponse,
 };
 
 use crate::canvas_node_contract::canvas_node_contract;
@@ -3031,10 +3031,34 @@ pub fn assemble_system_prompt(
     node_system_prompt: Option<&str>,
     skill_ids: &[String],
 ) -> CoreResult<Option<String>> {
-    if node_kind.trim().is_empty() {
+    let policy = if node_kind.trim().is_empty() {
+        CanvasPromptPolicy::Professional
+    } else {
+        CanvasPromptPolicy::CreativeProfile
+    };
+    assemble_system_prompt_with_policy(node_kind, policy, node_system_prompt, skill_ids)
+}
+
+fn assemble_system_prompt_with_policy(
+    node_kind: &str,
+    policy: CanvasPromptPolicy,
+    node_system_prompt: Option<&str>,
+    skill_ids: &[String],
+) -> CoreResult<Option<String>> {
+    if matches!(policy, CanvasPromptPolicy::Professional) {
+        if !skill_ids.is_empty() {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "UnsupportedOperation: professional model nodes cannot attach creative skills",
+            ));
+        }
         return Ok(node_system_prompt
             .map(str::to_string)
             .filter(|value| !value.trim().is_empty()));
+    }
+    if node_kind.trim().is_empty() {
+        return Err(deepagent_core::error::CoreError::invalid(
+            "InvalidConfiguration: creative model nodes require a node kind",
+        ));
     }
     let contract = canvas_node_contract(node_kind)?;
     let profile = deepagent_prompts::canvas_prompt::creative_profile(node_kind)?;
@@ -3075,8 +3099,19 @@ impl CanvasModelGateway {
         request: CanvasCompletionRequest,
         usage_sink: Option<Arc<dyn CanvasUsageSink>>,
     ) -> CoreResult<CanvasCompletionResponse> {
-        let system_prompt = assemble_system_prompt(
+        // Keep the pre-policy wire compatibility: an omitted policy plus an
+        // empty node kind is the legacy professional request shape. New
+        // professional nodes set the policy explicitly in the runtime seam.
+        let prompt_policy = if request.node_kind.trim().is_empty()
+            && matches!(request.prompt_policy, CanvasPromptPolicy::CreativeProfile)
+        {
+            CanvasPromptPolicy::Professional
+        } else {
+            request.prompt_policy
+        };
+        let system_prompt = assemble_system_prompt_with_policy(
             &request.node_kind,
+            prompt_policy,
             request.system_prompt.as_deref(),
             &request.skill_ids,
         )?;
@@ -5004,6 +5039,7 @@ mod tests {
         let result = rt.block_on(gateway.complete(CanvasCompletionRequest {
             model_ref: "deepseek-chat".to_string(),
             node_kind: String::new(),
+            prompt_policy: CanvasPromptPolicy::Professional,
             skill_ids: Vec::new(),
             system_prompt: None,
             prompt: "audit".to_string(),
@@ -5042,6 +5078,7 @@ mod tests {
             .block_on(gateway.complete(CanvasCompletionRequest {
                 model_ref: format!("{provider_id}::deepseek-flash"),
                 node_kind: String::new(),
+                prompt_policy: CanvasPromptPolicy::Professional,
                 skill_ids: Vec::new(),
                 system_prompt: None,
                 prompt: "audit controls".to_string(),
@@ -5073,8 +5110,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: every enabled professional AI node must have a working backend path"]
-    async fn audit_enabled_professional_ai_nodes_reach_the_canvas_provider() {
+    async fn audit_professional_ai_nodes_reach_provider_or_fail_closed() {
         use deepagent_runtime::agent::{Agent, AgentDecision};
 
         let cases = [
@@ -5084,6 +5120,8 @@ mod tests {
                     ("llmModel", Value::String("MODEL_REF".to_string())),
                     ("llmPrompt", Value::String("classify this".to_string())),
                 ],
+                "answer",
+                true,
             ),
             (
                 "agent-v2",
@@ -5091,6 +5129,8 @@ mod tests {
                     ("agentV2Model", Value::String("MODEL_REF".to_string())),
                     ("agentV2Task", Value::String("complete this".to_string())),
                 ],
+                "answer",
+                false,
             ),
             (
                 "question-classifier",
@@ -5105,6 +5145,8 @@ mod tests {
                         json!([{ "name": "one", "description": "first" }]),
                     ),
                 ],
+                "1",
+                true,
             ),
             (
                 "parameter-extractor",
@@ -5116,11 +5158,13 @@ mod tests {
                         json!([{ "name": "name", "type": "string", "required": true }]),
                     ),
                 ],
+                r#"{"name":"Eighteen"}"#,
+                true,
             ),
         ];
         let mut outcomes = Vec::new();
-        for (kind, entries) in cases {
-            let (base_url, captured_body) = spawn_single_chat_responder("answer");
+        for (kind, entries, response_text, enabled) in cases {
+            let (base_url, captured_body) = spawn_single_chat_responder(response_text);
             let (gateway, provider_id) = local_text_gateway(base_url, "deepseek-flash");
             let model_ref = format!("{provider_id}::deepseek-flash");
             let mut config = serde_json::Map::new();
@@ -5141,16 +5185,31 @@ mod tests {
             ));
             let result = agent.think(1, &[]).await;
             let provider_called = captured_body.lock().expect("lock").is_some();
-            outcomes.push((kind, result.map(|_| ()), provider_called));
+            outcomes.push((kind, result.map(|_| ()), provider_called, enabled));
         }
         eprintln!("professional AI node audit: {outcomes:?}");
 
-        for (kind, result, provider_called) in outcomes {
-            assert!(result.is_ok(), "enabled node {kind} failed: {result:?}");
-            assert!(
-                provider_called,
-                "enabled node {kind} completed without calling its configured provider"
-            );
+        for (kind, result, provider_called, enabled) in outcomes {
+            if enabled {
+                assert!(result.is_ok(), "enabled node {kind} failed: {result:?}");
+                assert!(
+                    provider_called,
+                    "enabled node {kind} completed without calling its configured provider"
+                );
+            } else {
+                assert!(result.is_err(), "reserved node {kind} must fail closed");
+                assert!(
+                    !provider_called,
+                    "reserved node {kind} reached its provider"
+                );
+                assert!(
+                    result
+                        .expect_err("reserved node should return an error")
+                        .to_string()
+                        .contains("reserved"),
+                    "reserved node {kind} should explain its capability state"
+                );
+            }
         }
     }
 
@@ -5165,6 +5224,7 @@ mod tests {
             .block_on(gateway.complete(CanvasCompletionRequest {
                 model_ref: format!("{provider_id}::deepseek-flash"),
                 node_kind: String::new(),
+                prompt_policy: CanvasPromptPolicy::Professional,
                 skill_ids: Vec::new(),
                 system_prompt: None,
                 prompt: "audit usage".to_string(),

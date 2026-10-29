@@ -387,7 +387,10 @@ register({
   label: "Agent V2",
   category: "AI",
   icon: "bot",
-  availability: "enabled",
+  // The runtime currently has only the Canvas one-shot completion seam. Keep
+  // this node visible for existing graphs, but do not advertise the promised
+  // tool/approval/cancellation/memory/structured-output Agent V2 semantics.
+  availability: "reserved",
   executor: "model",
   outputs: [
     { name: "text", type: "string", description: "Agent 输出文本" },

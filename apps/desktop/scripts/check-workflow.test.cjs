@@ -148,6 +148,12 @@ test("dynamic outputs follow edited declarations and do not leak empty fields", 
   assert.equal(registry.getNodeOutputs("variable-aggregator", { aggregatorOutputType: "array" })[0].type, "array");
 });
 
+test("Agent V2 stays visible for existing graphs but is explicitly reserved", () => {
+  const definition = registry.getNodeDefinition("agent-v2");
+  assert.equal(definition.availability, "reserved");
+  assert.equal(definition.executor, "model");
+});
+
 test("embedding schema reaches the real model editor with embedding-only options; legacy text schemas stay text", () => {
   const React = require("react");
   const { renderToStaticMarkup } = require("react-dom/server");

@@ -13,8 +13,9 @@ pub use canvas::{
     CanvasAudioInputPreparation, CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest,
     CanvasCompletionResponse, CanvasEmbeddingRequest, CanvasEmbeddingResponse,
     CanvasImagePreparation, CanvasImageRequest, CanvasImageResponse, CanvasJobPhase,
-    CanvasJobProgress, CanvasJobProgressSink, CanvasModelBridge, CanvasRouteOutcome,
-    CanvasRouteRequest, CanvasVideoPreparation, CanvasVideoRequest, CanvasVideoResponse,
+    CanvasJobProgress, CanvasJobProgressSink, CanvasModelBridge, CanvasPromptPolicy,
+    CanvasRouteOutcome, CanvasRouteRequest, CanvasVideoPreparation, CanvasVideoRequest,
+    CanvasVideoResponse,
 };
 pub use graph::{
     compile, CompiledWorkflow, WorkflowDefinition, WorkflowEdgeSpec, WorkflowNodeSpec,
