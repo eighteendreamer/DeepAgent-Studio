@@ -28,10 +28,11 @@ use crate::canvas_provider_usage::parse_usage;
 use deepagent_core::error::Result as CoreResult;
 use deepagent_runtime::workflow::canvas::{CanvasUsageReport, CanvasUsageSink};
 use deepagent_runtime::workflow::{
-    CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest, CanvasCompletionResponse,
-    CanvasEmbeddingRequest, CanvasEmbeddingResponse, CanvasImagePreparation, CanvasImageRequest,
-    CanvasImageResponse, CanvasJobPhase, CanvasJobProgress, CanvasModelBridge, CanvasRouteOutcome,
-    CanvasRouteRequest, CanvasVideoRequest, CanvasVideoResponse,
+    CanvasArtifactResponse, CanvasAudioInputPreparation, CanvasAudioRequest, CanvasAudioResponse,
+    CanvasCompletionRequest, CanvasCompletionResponse, CanvasEmbeddingRequest,
+    CanvasEmbeddingResponse, CanvasImagePreparation, CanvasImageRequest, CanvasImageResponse,
+    CanvasJobPhase, CanvasJobProgress, CanvasModelBridge, CanvasRouteOutcome, CanvasRouteRequest,
+    CanvasVideoRequest, CanvasVideoResponse,
 };
 
 use crate::canvas_node_contract::canvas_node_contract;
@@ -664,36 +665,110 @@ pub struct CanvasModelGateway {
     artifacts: Option<std::sync::Arc<crate::canvas_artifact_service::CanvasArtifactService>>,
     /// Immutable namespace captured at workflow admission, never active-project state.
     workspace_id: Option<String>,
-    pending_images: Arc<Mutex<HashMap<String, PendingImageArtifact>>>,
+    pending_artifacts: Arc<Mutex<HashMap<String, PendingArtifact>>>,
     public_http: Arc<PublicHttpClient>,
 }
 
 #[derive(Debug, Clone)]
-struct PendingImageArtifact {
+struct PendingArtifact {
     url: String,
     origin: String,
-    provider_id: String,
-    model_id: String,
-    operation: String,
+    output: PendingArtifactOutput,
+}
+
+#[derive(Debug, Clone)]
+enum PendingArtifactOutput {
+    Image {
+        provider_id: String,
+        model_id: String,
+        operation: String,
+    },
+    AudioInput,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ArtifactFetchKind {
+    Image,
+    AudioInput,
+}
+
+impl PendingArtifactOutput {
+    fn kind(&self) -> ArtifactFetchKind {
+        match self {
+            Self::Image { .. } => ArtifactFetchKind::Image,
+            Self::AudioInput => ArtifactFetchKind::AudioInput,
+        }
+    }
 }
 
 /// Kernel tool for the provider-controlled image second hop.  Its arguments
 /// contain only a one-shot handle and a redacted origin; the signed URL stays
 /// inside [`CanvasModelGateway`].
-pub struct CanvasImageFetchTool {
+pub struct CanvasArtifactFetchTool {
     gateway: Arc<CanvasModelGateway>,
+    kind: ArtifactFetchKind,
+    enabled: bool,
 }
 
+/// Compatibility name for the existing provider-image fetch tool.
+pub type CanvasImageFetchTool = CanvasArtifactFetchTool;
+
 const CANVAS_IMAGE_FETCH_TOOL: &str = "canvas_image_fetch";
+const CANVAS_AUDIO_FETCH_TOOL: &str = "canvas_audio_fetch";
+/// Local policy for newly supported remote audio inputs, not a provider limit.
+const MAX_REMOTE_AUDIO_BYTES: usize = 32 * 1024 * 1024;
+
+impl CanvasArtifactFetchTool {
+    fn parse(&self, arguments: &Value) -> CoreResult<(String, String)> {
+        if !self.enabled {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "NetworkDenied: selected sandbox has no HTTP broker; host fallback is forbidden",
+            ));
+        }
+        let request_id = arguments
+            .get("request_id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                deepagent_core::error::CoreError::invalid("artifact fetch request_id is required")
+            })?;
+        let origin = arguments
+            .get("origin")
+            .and_then(Value::as_str)
+            .ok_or_else(|| {
+                deepagent_core::error::CoreError::invalid("artifact fetch origin is required")
+            })?;
+        if self
+            .gateway
+            .pending_artifact_origin(request_id, self.kind)
+            .as_deref()
+            != Some(origin)
+        {
+            return Err(deepagent_core::error::CoreError::invalid(
+                "artifact fetch handle is unknown or origin does not match",
+            ));
+        }
+        Ok((request_id.to_string(), origin.to_string()))
+    }
+}
 
 #[async_trait]
-impl Tool for CanvasImageFetchTool {
+impl Tool for CanvasArtifactFetchTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor {
-            name: CANVAS_IMAGE_FETCH_TOOL.to_string(),
-            description:
-                "Fetch one provider image artifact through the approved public network broker."
-                    .to_string(),
+            name: match self.kind {
+                ArtifactFetchKind::Image => CANVAS_IMAGE_FETCH_TOOL,
+                ArtifactFetchKind::AudioInput => CANVAS_AUDIO_FETCH_TOOL,
+            }
+            .to_string(),
+            description: match self.kind {
+                ArtifactFetchKind::Image => {
+                    "Fetch one provider image artifact through the approved public network broker."
+                }
+                ArtifactFetchKind::AudioInput => {
+                    "Fetch one remote audio input through the approved public network broker."
+                }
+            }
+            .to_string(),
             parameters: json!({
                 "type": "object",
                 "additionalProperties": false,
@@ -709,23 +784,7 @@ impl Tool for CanvasImageFetchTool {
     }
 
     fn validate_input(&self, arguments: Value) -> CoreResult<Value> {
-        let request_id = arguments
-            .get("request_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                deepagent_core::error::CoreError::invalid("image fetch request_id is required")
-            })?;
-        let origin = arguments
-            .get("origin")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                deepagent_core::error::CoreError::invalid("image fetch origin is required")
-            })?;
-        if self.gateway.pending_image_origin(request_id).as_deref() != Some(origin) {
-            return Err(deepagent_core::error::CoreError::invalid(
-                "image fetch handle is unknown or origin does not match",
-            ));
-        }
+        let (request_id, origin) = self.parse(&arguments)?;
         Ok(json!({"request_id": request_id, "origin": origin}))
     }
 
@@ -739,23 +798,12 @@ impl Tool for CanvasImageFetchTool {
         arguments: Value,
         context: ToolExecutionContext,
     ) -> CoreResult<ToolOutput> {
-        let request_id = arguments
-            .get("request_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                deepagent_core::error::CoreError::invalid("image fetch request_id is required")
-            })?;
-        let origin = arguments
-            .get("origin")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                deepagent_core::error::CoreError::invalid("image fetch origin is required")
-            })?;
+        let (request_id, origin) = self.parse(&arguments)?;
         let response = self
             .gateway
-            .fetch_image_handle(request_id, origin, context)
+            .fetch_artifact_handle(&request_id, &origin, self.kind, context)
             .await?;
-        Ok(ToolOutput::success(serde_json::to_value(response)?))
+        Ok(ToolOutput::success(response))
     }
 }
 
@@ -770,7 +818,7 @@ impl CanvasModelGateway {
             http,
             artifacts: None,
             workspace_id: None,
-            pending_images: Arc::new(Mutex::new(HashMap::new())),
+            pending_artifacts: Arc::new(Mutex::new(HashMap::new())),
             public_http: Arc::new(PublicHttpClient::default()),
         }
     }
@@ -787,7 +835,7 @@ impl CanvasModelGateway {
             http: self.http.clone(),
             artifacts: self.artifacts.clone(),
             workspace_id: crate::canvas_scope::normalize_workspace_id(workspace_id)?,
-            pending_images: Arc::new(Mutex::new(HashMap::new())),
+            pending_artifacts: Arc::new(Mutex::new(HashMap::new())),
             public_http: self.public_http.clone(),
         }))
     }
@@ -808,64 +856,114 @@ impl CanvasModelGateway {
         model_id: String,
         operation: String,
     ) -> CoreResult<CanvasImagePreparation> {
+        let (request_id, origin) = self.stage_artifact_url(
+            url,
+            PendingArtifactOutput::Image {
+                provider_id,
+                model_id,
+                operation,
+            },
+        )?;
+        Ok(CanvasImagePreparation::Deferred { request_id, origin })
+    }
+
+    fn stage_artifact_url(
+        &self,
+        url: String,
+        output: PendingArtifactOutput,
+    ) -> CoreResult<(String, String)> {
         let parsed = reqwest::Url::parse(&url).map_err(|error| {
-            deepagent_core::error::CoreError::invalid(format!(
-                "provider image URL is invalid: {error}"
-            ))
+            deepagent_core::error::CoreError::invalid(format!("artifact URL is invalid: {error}"))
         })?;
         let origin = parsed.origin().ascii_serialization();
-        let request_id = format!("canvas_image_{}", deepagent_core::id::EventId::new());
-        self.pending_images
+        let prefix = match output.kind() {
+            ArtifactFetchKind::Image => "canvas_image",
+            ArtifactFetchKind::AudioInput => "canvas_audio",
+        };
+        let request_id = format!("{prefix}_{}", deepagent_core::id::EventId::new());
+        self.pending_artifacts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .insert(
                 request_id.clone(),
-                PendingImageArtifact {
+                PendingArtifact {
                     url,
                     origin: origin.clone(),
-                    provider_id,
-                    model_id,
-                    operation,
+                    output,
                 },
             );
-        Ok(CanvasImagePreparation::Deferred { request_id, origin })
+        Ok((request_id, origin))
     }
 
-    fn pending_image_origin(&self, request_id: &str) -> Option<String> {
-        self.pending_images
+    fn pending_artifact_origin(&self, request_id: &str, kind: ArtifactFetchKind) -> Option<String> {
+        self.pending_artifacts
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(request_id)
+            .filter(|pending| pending.output.kind() == kind)
             .map(|pending| pending.origin.clone())
     }
 
+    #[cfg(test)]
+    fn pending_image_origin(&self, request_id: &str) -> Option<String> {
+        self.pending_artifact_origin(request_id, ArtifactFetchKind::Image)
+    }
+
+    #[cfg(test)]
     async fn fetch_image_handle(
         &self,
         request_id: &str,
         origin: &str,
         context: ToolExecutionContext,
     ) -> CoreResult<CanvasImageResponse> {
+        Ok(serde_json::from_value(
+            self.fetch_artifact_handle(request_id, origin, ArtifactFetchKind::Image, context)
+                .await?,
+        )?)
+    }
+
+    async fn fetch_artifact_handle(
+        &self,
+        request_id: &str,
+        origin: &str,
+        kind: ArtifactFetchKind,
+        context: ToolExecutionContext,
+    ) -> CoreResult<Value> {
         let pending = {
-            let mut pending_images = self
-                .pending_images
+            let mut handles = self
+                .pending_artifacts
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let pending = pending_images.get(request_id).ok_or_else(|| {
+            let pending = handles.get(request_id).ok_or_else(|| {
                 deepagent_core::error::CoreError::invalid(
-                    "image fetch handle is unknown or already consumed",
+                    "artifact fetch handle is unknown or already consumed",
                 )
             })?;
-            if pending.origin != origin {
+            if pending.origin != origin || pending.output.kind() != kind {
                 return Err(deepagent_core::error::CoreError::invalid(
-                    "image fetch origin does not match its one-shot handle",
+                    "artifact fetch origin or kind does not match its one-shot handle",
                 ));
             }
-            pending_images.remove(request_id).ok_or_else(|| {
+            handles.remove(request_id).ok_or_else(|| {
                 deepagent_core::error::CoreError::invalid(
-                    "image fetch handle is unknown or already consumed",
+                    "artifact fetch handle is unknown or already consumed",
                 )
             })?
         };
+        // One deadline covers DNS, every redirect, headers and the entire body.
+        // A consumed handle is never restored, even when the wire outcome is unknown.
+        tokio::select! {
+            biased;
+            _ = context.cancelled() => Err(deepagent_core::error::CoreError::other("media artifact fetch cancelled; staged artifact discarded; no automatic replay")),
+            result = tokio::time::timeout(context.timeout(), self.download_artifact(pending)) => {
+                result.map_err(|_| deepagent_core::error::CoreError::other("media artifact fetch deadline exceeded; outcome may be unknown; no automatic replay"))?
+            }
+        }
+    }
+
+    async fn download_artifact(&self, pending: PendingArtifact) -> CoreResult<Value> {
+        use deepagent_core::error::CoreError;
+        use deepagent_persistence::artifact_store::ArtifactKind;
         let request = HttpRequest {
             url: pending.url.clone(),
             method: "GET".to_string(),
@@ -876,60 +974,120 @@ impl CanvasModelGateway {
         };
         self.public_http
             .validate(&request)
-            .map_err(|error| deepagent_core::error::CoreError::other(error.to_string()))?;
-        let response = tokio::select! {
-            biased;
-            _ = context.cancelled() => {
-                return Err(deepagent_core::error::CoreError::other("image artifact fetch cancelled; no automatic replay"));
-            }
-            result = tokio::time::timeout(context.timeout(), self.public_http.open_response(&request)) => {
-                result.map_err(|_| deepagent_core::error::CoreError::other("image artifact fetch deadline exceeded; outcome may be unknown"))??
-            }
-        };
+            .map_err(|error| CoreError::other(error.to_string()))?;
+        let mut response = self.public_http.open_response(&request).await?;
         if !response.status().is_success() {
-            return Err(deepagent_core::error::CoreError::other(format!(
-                "image artifact fetch failed with HTTP {}",
+            return Err(CoreError::other(format!(
+                "media artifact fetch failed with HTTP {}",
                 response.status()
             )));
         }
-        let artifacts = self.artifact_store("store a generated image")?;
-        let mut stream = artifacts.begin_stream(
-            deepagent_persistence::artifact_store::ArtifactKind::Image,
+        let audio = pending.output.kind() == ArtifactFetchKind::AudioInput;
+        if audio
+            && response
+                .content_length()
+                .is_some_and(|size| size > MAX_REMOTE_AUDIO_BYTES as u64)
+        {
+            return Err(CoreError::invalid(
+                "remote audio exceeds the 32 MiB download budget",
+            ));
+        }
+        let mut prefix = Vec::new();
+        // Resolve remote audio from actual bytes, not a filename or untrusted
+        // Content-Type. At most the first transport chunks are buffered.
+        if audio {
+            while prefix.len() < 12 {
+                let Some(chunk) = response.chunk().await.map_err(|error| {
+                    CoreError::other(format!("read media artifact: {}", error.without_url()))
+                })?
+                else {
+                    break;
+                };
+                if chunk.len() > MAX_REMOTE_AUDIO_BYTES - prefix.len() {
+                    return Err(CoreError::invalid(
+                        "remote audio exceeds the 32 MiB download budget",
+                    ));
+                }
+                prefix.extend_from_slice(&chunk);
+            }
+        }
+        let mime = if audio {
+            sniff_audio_mime(&prefix).ok_or_else(|| {
+                CoreError::invalid("remote audio has no supported audio container signature")
+            })?
+        } else {
             response
                 .headers()
                 .get(reqwest::header::CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok()),
-            None,
-            self.workspace_id.as_deref(),
-        )?;
-        let mut response = response;
-        loop {
-            let chunk = tokio::select! {
-                biased;
-                _ = context.cancelled() => {
-                    return Err(deepagent_core::error::CoreError::other("image artifact fetch cancelled; staged artifact was discarded"));
-                }
-                result = response.chunk() => result.map_err(|error| deepagent_core::error::CoreError::other(format!("read image artifact: {error}")))?,
-            };
-            let Some(chunk) = chunk else { break };
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_string)
+                .unwrap_or_else(|| mime_from_url(&pending.url))
+        };
+        let mut stream = self
+            .artifact_store("store a downloaded media artifact")?
+            .begin_stream(
+                if audio {
+                    ArtifactKind::Audio
+                } else {
+                    ArtifactKind::Image
+                },
+                Some(&mime),
+                None,
+                self.workspace_id.as_deref(),
+            )?;
+        stream.write_chunk(&prefix)?;
+        let mut size = prefix.len();
+        while let Some(chunk) = response.chunk().await.map_err(|error| {
+            CoreError::other(format!("read media artifact: {}", error.without_url()))
+        })? {
+            if audio && chunk.len() > MAX_REMOTE_AUDIO_BYTES - size {
+                return Err(CoreError::invalid(
+                    "remote audio exceeds the 32 MiB download budget",
+                ));
+            }
+            if audio {
+                size += chunk.len();
+            }
             stream.write_chunk(&chunk)?;
         }
+        // Let the enclosing cancellation/deadline guard observe readiness before publication.
+        tokio::task::yield_now().await;
         let stored = stream.finish()?;
-        Ok(CanvasImageResponse {
-            artifact_uri: stored.uri,
-            mime: stored
-                .media_type
-                .unwrap_or_else(|| mime_from_url(&pending.url)),
-            provider_id: pending.provider_id,
-            model_id: pending.model_id,
-            operation: pending.operation,
+        let mime = stored.media_type.unwrap_or(mime);
+        Ok(match pending.output {
+            PendingArtifactOutput::Image {
+                provider_id,
+                model_id,
+                operation,
+            } => serde_json::to_value(CanvasImageResponse {
+                artifact_uri: stored.uri,
+                mime,
+                provider_id,
+                model_id,
+                operation,
+            })?,
+            PendingArtifactOutput::AudioInput => serde_json::to_value(CanvasArtifactResponse {
+                artifact_uri: stored.uri,
+                mime,
+            })?,
         })
     }
 
-    /// Register the run-scoped image fetcher in the canonical tool registry.
+    /// Preserve the existing image tool's name, schema and response contract.
     pub fn image_fetch_tool(self: &Arc<Self>) -> CanvasImageFetchTool {
-        CanvasImageFetchTool {
+        CanvasArtifactFetchTool {
             gateway: self.clone(),
+            kind: ArtifactFetchKind::Image,
+            enabled: true,
+        }
+    }
+
+    /// Bind the same resolved backend capability as the existing typed HTTP tool.
+    pub fn audio_fetch_tool(self: &Arc<Self>, enabled: bool) -> CanvasArtifactFetchTool {
+        CanvasArtifactFetchTool {
+            gateway: self.clone(),
+            kind: ArtifactFetchKind::AudioInput,
+            enabled,
         }
     }
 
@@ -948,8 +1106,8 @@ impl CanvasModelGateway {
     /// Bytes, container type and upload filename behind `audio.reference`.
     ///
     /// `artifact://` reads the managed blob, `data:` decodes inline bytes and
-    /// `http(s)` downloads it, so an audio node works with every reference
-    /// shape an existing graph may already carry.
+    /// Remote references must first become artifacts through the approved tool
+    /// pipeline. Provider selection must never create an implicit host GET.
     async fn audio_input(
         &self,
         request: &CanvasModelRequest,
@@ -1006,10 +1164,9 @@ impl CanvasModelGateway {
                 let mime = head.strip_prefix("data:").unwrap_or(head).to_string();
                 (bytes, mime)
             } else {
-                (
-                    fetch_binary(&reference, None).await?,
-                    mime_from_url(&reference),
-                )
+                return Err(CanvasError::invalid(
+                "NetworkDenied: remote audio requires the approved workflow artifact tool pipeline",
+            ));
             };
         if bytes.is_empty() {
             return Err(CanvasError::new(
@@ -1567,6 +1724,10 @@ impl CanvasModelGateway {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "canvas_model_gateway/audio_input_tests.rs"]
+mod audio_input_tests;
 
 /// Map an operation onto the endpoint family it must use. Generation and edit
 /// never share an endpoint.
@@ -2277,40 +2438,6 @@ async fn parse_output(
     }
 }
 
-/// Download a provider-hosted artifact (image responses frequently return a
-/// temporary URL instead of inline bytes).
-async fn fetch_binary(url: &str, api_key: Option<&str>) -> CanvasResult<Vec<u8>> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(120))
-        .build()
-        .map_err(|e| {
-            CanvasError::new(
-                CanvasErrorCode::TransientFailure,
-                format!("create download client: {e}"),
-            )
-        })?;
-    let mut req = client.get(url);
-    if let Some(key) = api_key {
-        req = req.header("Authorization", format!("Bearer {key}"));
-    }
-    let resp = req.send().await.map_err(|e| {
-        CanvasError::new(
-            CanvasErrorCode::TransientFailure,
-            format!("download provider artifact: {e}"),
-        )
-    })?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(classify_status(status.as_u16(), "artifact download failed"));
-    }
-    resp.bytes().await.map(|b| b.to_vec()).map_err(|e| {
-        CanvasError::new(
-            CanvasErrorCode::TransientFailure,
-            format!("read provider artifact bytes: {e}"),
-        )
-    })
-}
-
 /// Await one video transport step while honoring the run's existing legacy
 /// cancellation bridge. Dropping the request/body future closes the local HTTP
 /// wait; it does not claim that a provider-side job or side effect was undone.
@@ -2881,7 +3008,7 @@ impl CanvasModelBridge for CanvasModelGateway {
         match CanvasModelBridge::prepare_image(self, request).await? {
             CanvasImagePreparation::Ready(response) => Ok(response),
             CanvasImagePreparation::Deferred { request_id, origin } => {
-                self.pending_images
+                self.pending_artifacts
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner())
                     .remove(&request_id);
@@ -2890,6 +3017,18 @@ impl CanvasModelBridge for CanvasModelGateway {
                 )))
             }
         }
+    }
+
+    fn prepare_audio_input(&self, reference: &str) -> CoreResult<CanvasAudioInputPreparation> {
+        let reference = reference.trim();
+        if crate::canvas_artifact_service::artifact_id_from_uri(reference).is_some()
+            || reference.starts_with("data:")
+        {
+            return Ok(CanvasAudioInputPreparation::Ready(reference.to_string()));
+        }
+        let (request_id, origin) =
+            self.stage_artifact_url(reference.to_string(), PendingArtifactOutput::AudioInput)?;
+        Ok(CanvasAudioInputPreparation::Deferred { request_id, origin })
     }
 
     async fn run_audio(&self, request: CanvasAudioRequest) -> CoreResult<CanvasAudioResponse> {
@@ -5356,91 +5495,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&artifact_root);
     }
 
-    #[test]
-    #[ignore = "audit reproducer: remote audio references must use the network policy"]
-    fn audit_speech_transcription_remote_reference_bypasses_network_policy() {
-        use std::io::{Read, Write};
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let port = listener.local_addr().expect("addr").port();
-        let get_requests = Arc::new(AtomicUsize::new(0));
-        let seen = get_requests.clone();
-        std::thread::spawn(move || {
-            for stream in listener.incoming().take(2) {
-                let Ok(mut stream) = stream else { continue };
-                let mut request = [0u8; 4096];
-                let size = stream.read(&mut request).unwrap_or(0);
-                let request_line = String::from_utf8_lossy(&request[..size]);
-                if request_line.starts_with("GET /private.wav") {
-                    seen.fetch_add(1, Ordering::SeqCst);
-                    let body = b"ID3\x03\x00PRIVATE_AUDIO_CANARY";
-                    let head = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    let _ = stream.write_all(head.as_bytes());
-                    let _ = stream.write_all(body);
-                } else {
-                    let body = br#"{"text":"transcribed"}"#;
-                    let head = format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                        body.len()
-                    );
-                    let _ = stream.write_all(head.as_bytes());
-                    let _ = stream.write_all(body);
-                }
-                let _ = stream.flush();
-            }
-        });
-
-        let db = Arc::new(Database::open_in_memory().expect("db"));
-        let providers = Arc::new(CanvasProviderService::new(
-            db,
-            Arc::new(crate::secret_store::MemorySecretStore::default()),
-        ));
-        let created = providers
-            .save_provider(CanvasProviderInput {
-                name: "Local".to_string(),
-                protocol: "openai".to_string(),
-                base_url: format!("http://127.0.0.1:{port}/v1"),
-                enabled: true,
-                models: vec![CanvasModelConfig {
-                    id: "local-transcribe".to_string(),
-                    name: "local-transcribe".to_string(),
-                    description: String::new(),
-                    enabled: true,
-                    scenarios: vec![CanvasScenario::SpeechToText],
-                    priority: 0,
-                    max_reference_images: None,
-                }],
-                api_key: Some("sk-local".to_string()),
-                ..Default::default()
-            })
-            .expect("provider");
-        let gateway = CanvasModelGateway::new(providers);
-        let remote = format!("http://127.0.0.1:{port}/private.wav");
-        let output = rt
-            .block_on(gateway.run_audio(CanvasAudioRequest {
-                model_ref: format!("{}::local-transcribe", created.id),
-                operation: "speech_transcribe".to_string(),
-                text: String::new(),
-                audio_reference: Some(remote),
-                voice: None,
-                format: None,
-                timeout_ms: 5_000,
-            }))
-            .expect("current implementation accepts the remote audio reference");
-        eprintln!(
-            "speech remote reference audit: private_gets={}, text={:?}",
-            get_requests.load(Ordering::SeqCst),
-            output.text
-        );
-        assert_eq!(
-            get_requests.load(Ordering::SeqCst),
-            0,
-            "a remote audio reference must be rejected or pass the network approval boundary"
-        );
+    #[tokio::test]
+    async fn audit_speech_transcription_remote_reference_bypasses_network_policy() {
+        super::audio_input_tests::assert_unprepared_reference_denied().await;
     }
 
     /// 视频作业整链走线：提交拿 requestId、轮询到 Succeed、把一小时内失效的

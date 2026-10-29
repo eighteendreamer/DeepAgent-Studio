@@ -15,9 +15,10 @@ use deepagent_core::message::Message;
 use deepagent_models::chat_completions::ChatCompletionRequest;
 
 use super::canvas::{
-    CanvasArtifactValidator, CanvasAudioRequest, CanvasCompletionRequest, CanvasEmbeddingRequest,
-    CanvasImagePreparation, CanvasImageRequest, CanvasImageResponse, CanvasJobProgressSink,
-    CanvasModelBridge, CanvasRouteRequest, CanvasVideoRequest,
+    CanvasArtifactResponse, CanvasArtifactValidator, CanvasAudioInputPreparation,
+    CanvasAudioRequest, CanvasCompletionRequest, CanvasEmbeddingRequest, CanvasImagePreparation,
+    CanvasImageRequest, CanvasImageResponse, CanvasJobProgressSink, CanvasModelBridge,
+    CanvasRouteRequest, CanvasVideoRequest,
 };
 use deepagent_models::client::ModelClient;
 use serde_json::{Map, Value};
@@ -37,10 +38,26 @@ struct PendingHttpNode {
     started: Instant,
 }
 
-struct PendingImageNode {
+struct PendingMediaNode {
     node_id: String,
+    node_kind: String,
     call_id: String,
     started: Instant,
+    output: PendingMediaOutput,
+}
+
+enum PendingMediaOutput {
+    Image,
+    AudioInput(Map<String, Value>),
+}
+
+impl PendingMediaOutput {
+    fn tool_name(&self) -> &'static str {
+        match self {
+            Self::Image => "canvas_image_fetch",
+            Self::AudioInput(_) => "canvas_audio_fetch",
+        }
+    }
 }
 
 /// Executes a compiled workflow graph as an [`Agent`].
@@ -67,7 +84,7 @@ pub struct WorkflowAgent {
     /// inside the provider poll loop, which cannot see the graph walk.
     active_node_id: Option<String>,
     pending_http: Option<PendingHttpNode>,
-    pending_image: Option<PendingImageNode>,
+    pending_media: Option<PendingMediaNode>,
     model: Option<Arc<ModelClient>>,
     model_name: Option<String>,
     knowledge_retriever: Option<Arc<dyn KnowledgeRetriever>>,
@@ -98,7 +115,7 @@ impl WorkflowAgent {
             cancel: None,
             active_node_id: None,
             pending_http: None,
-            pending_image: None,
+            pending_media: None,
             model: None,
             model_name: None,
             knowledge_retriever: None,
@@ -260,15 +277,19 @@ impl WorkflowAgent {
         }))
     }
 
+    fn resolve_config(&self, config: &Map<String, Value>) -> Result<Map<String, Value>> {
+        config
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), values::resolve(value, &self.outputs)?)))
+            .collect()
+    }
+
     async fn execute_node_inline(
         &mut self,
         kind: &str,
         config: &Map<String, Value>,
     ) -> Result<Value> {
-        let mut resolved_config = Map::new();
-        for (key, value) in config {
-            resolved_config.insert(key.clone(), values::resolve(value, &self.outputs)?);
-        }
+        let resolved_config = self.resolve_config(config)?;
 
         match kind {
             "start" => self.execute_start(&resolved_config),
@@ -1046,24 +1067,7 @@ impl WorkflowAgent {
         }))
     }
 
-    /// Audio node: either direction of speech, never guessed by the node.
-    ///
-    /// The contract requires an explicit operation, so the only fact this
-    /// executor adds to the route is what the referenced value really is.
-    async fn execute_audio(&self, config: &Map<String, Value>) -> Result<Value> {
-        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
-            deepagent_core::error::CoreError::other(
-                "audio nodes need the canvas model bridge; configure the canvas providers first",
-            )
-        })?;
-        let text = Self::compose_prompt(
-            config,
-            config
-                .get("prompt")
-                .or_else(|| config.get("text"))
-                .and_then(Value::as_str)
-                .unwrap_or(""),
-        );
+    fn audio_reference(config: &Map<String, Value>) -> Result<Option<String>> {
         // 节点自选的文件与上游连线送入的都是同一路音频；契约要求恰好一路。
         let edge_audios: Vec<String> = config
             .get("audioInputs")
@@ -1087,15 +1091,34 @@ impl WorkflowAgent {
             .into_iter()
             .chain(edge_audios)
             .collect::<Vec<_>>();
-        let audio_reference = match references.len() {
-            0 => None,
-            1 => Some(references.remove(0)),
-            count => {
-                return Err(deepagent_core::error::CoreError::invalid(format!(
+        match references.len() {
+            0 => Ok(None),
+            1 => Ok(Some(references.remove(0))),
+            count => Err(deepagent_core::error::CoreError::invalid(format!(
                 "OperationInputConflict: `audio` node takes exactly one audio input, got {count}"
-            )))
-            }
-        };
+            ))),
+        }
+    }
+
+    /// Audio node: either direction of speech, never guessed by the node.
+    ///
+    /// The contract requires an explicit operation, so the only fact this
+    /// executor adds to the route is what the referenced value really is.
+    async fn execute_audio(&self, config: &Map<String, Value>) -> Result<Value> {
+        let bridge = self.canvas_bridge.clone().ok_or_else(|| {
+            deepagent_core::error::CoreError::other(
+                "audio nodes need the canvas model bridge; configure the canvas providers first",
+            )
+        })?;
+        let text = Self::compose_prompt(
+            config,
+            config
+                .get("prompt")
+                .or_else(|| config.get("text"))
+                .and_then(Value::as_str)
+                .unwrap_or(""),
+        );
+        let audio_reference = Self::audio_reference(config)?;
         let mut input_kinds = Vec::new();
         if !text.trim().is_empty() {
             input_kinds.push("Text".to_string());
@@ -1464,6 +1487,21 @@ impl WorkflowAgent {
         }
     }
 
+    fn correlated_tool_output(last: &[Observation], call_id: &str, tool: &str) -> Result<Value> {
+        let observation = last
+            .iter()
+            .find(|observation| observation.call_id.as_deref() == Some(call_id))
+            .ok_or_else(|| CoreError::other(format!("{tool}: missing correlated tool result")))?;
+        if !observation.ok {
+            return Err(CoreError::other(format!("{tool}: {}", observation.output)));
+        }
+        Ok(observation
+            .raw_output
+            .as_ref()
+            .unwrap_or(&observation.output)
+            .clone())
+    }
+
     fn node_output_value_inline(kind: &str, result: &Value) -> Value {
         match kind {
             "if-else" => {
@@ -1502,34 +1540,39 @@ impl Agent for WorkflowAgent {
     }
 
     async fn think(&mut self, _step: usize, last: &[Observation]) -> Result<AgentDecision> {
-        if let Some(pending) = self.pending_image.take() {
-            let result = last
-                .iter()
-                .find(|observation| observation.call_id.as_deref() == Some(&pending.call_id))
-                .ok_or_else(|| {
-                    CoreError::other("canvas_image_fetch: missing correlated tool result")
-                })
-                .and_then(|observation| {
-                    if !observation.ok {
-                        return Err(CoreError::other(format!(
-                            "canvas_image_fetch: {}",
-                            observation.output
-                        )));
+        if let Some(pending) = self.pending_media.take() {
+            let tool = pending.output.tool_name();
+            let output = Self::correlated_tool_output(last, &pending.call_id, tool);
+            let result = match pending.output {
+                PendingMediaOutput::Image => output.and_then(|value| {
+                    serde_json::from_value::<CanvasImageResponse>(value)
+                        .map(Self::image_response_value)
+                        .map_err(|error| {
+                            CoreError::other(format!(
+                                "{tool} returned an invalid image response: {error}"
+                            ))
+                        })
+                }),
+                PendingMediaOutput::AudioInput(mut config) => {
+                    async {
+                        let receipt: CanvasArtifactResponse = serde_json::from_value(output?)
+                            .map_err(|error| {
+                                CoreError::other(format!(
+                                    "{tool} returned an invalid artifact response: {error}"
+                                ))
+                            })?;
+                        if self.is_cancelled() {
+                            return Err(CoreError::other("workflow cancelled"));
+                        }
+                        config.insert("audioReference".into(), Value::String(receipt.artifact_uri));
+                        self.execute_audio(&config).await
                     }
-                    let output = observation
-                        .raw_output
-                        .as_ref()
-                        .unwrap_or(&observation.output);
-                    serde_json::from_value::<CanvasImageResponse>(output.clone()).map_err(|error| {
-                        CoreError::other(format!(
-                            "canvas_image_fetch returned an invalid image response: {error}"
-                        ))
-                    })
-                })
-                .map(Self::image_response_value);
+                    .await
+                }
+            };
             return self.finish_node(
                 pending.node_id,
-                "image-gen".into(),
+                pending.node_kind,
                 result,
                 pending.started.elapsed().as_millis() as u64,
             );
@@ -1634,6 +1677,62 @@ impl Agent for WorkflowAgent {
             ));
         }
 
+        if node_kind == "audio" {
+            let preparation = (|| -> Result<_> {
+                let config = self.resolve_config(&node_config)?;
+                let reference = Self::audio_reference(&config)?;
+                let preparation = reference
+                    .map(|reference| {
+                        self.canvas_bridge
+                            .as_ref()
+                            .ok_or_else(|| {
+                                CoreError::other("audio nodes need the canvas model bridge")
+                            })?
+                            .prepare_audio_input(&reference)
+                    })
+                    .transpose()?;
+                Ok((config, preparation))
+            })();
+            let (mut config, preparation) = match preparation {
+                Ok(prepared) => prepared,
+                Err(error) => return self.finish_node(node_id, node_kind, Err(error), 0),
+            };
+            match preparation {
+                Some(CanvasAudioInputPreparation::Deferred { request_id, origin }) => {
+                    // The signed source reference remains solely in the gateway.
+                    config.remove("audioReference");
+                    config.remove("audioInputs");
+                    let call_id = format!("workflow_audio_{}", deepagent_core::id::EventId::new());
+                    self.pending_media = Some(PendingMediaNode {
+                        node_id,
+                        node_kind,
+                        call_id: call_id.clone(),
+                        started: node_start,
+                        output: PendingMediaOutput::AudioInput(config),
+                    });
+                    return Ok(AgentDecision::CallTool(
+                        deepagent_tools::ToolInvocation::new(
+                            "canvas_audio_fetch",
+                            serde_json::json!({"request_id":request_id,"origin":origin}),
+                        )
+                        .with_id(call_id),
+                    ));
+                }
+                Some(CanvasAudioInputPreparation::Ready(reference)) => {
+                    config.remove("audioInputs");
+                    config.insert("audioReference".into(), Value::String(reference));
+                }
+                None => {}
+            }
+            let result = self.execute_audio(&config).await;
+            return self.finish_node(
+                node_id,
+                node_kind,
+                result,
+                node_start.elapsed().as_millis() as u64,
+            );
+        }
+
         if matches!(node_kind.as_str(), "image-gen" | "image-edit") {
             let preparation = self.prepare_image_gen(&node_kind, &node_config).await;
             match preparation {
@@ -1647,8 +1746,10 @@ impl Agent for WorkflowAgent {
                 }
                 Ok(CanvasImagePreparation::Deferred { request_id, origin }) => {
                     let call_id = format!("workflow_image_{}", deepagent_core::id::EventId::new());
-                    self.pending_image = Some(PendingImageNode {
+                    self.pending_media = Some(PendingMediaNode {
                         node_id,
+                        node_kind,
+                        output: PendingMediaOutput::Image,
                         call_id: call_id.clone(),
                         started: node_start,
                     });
@@ -1683,13 +1784,14 @@ impl Agent for WorkflowAgent {
                 Err(CoreError::other("http-request: run stopped before node result delivery; reconcile the durable action before retrying")),
                 pending.started.elapsed().as_millis() as u64);
         }
-        if let Some(pending) = self.pending_image.take() {
+        if let Some(pending) = self.pending_media.take() {
+            let tool = pending.output.tool_name();
             let _ = self.finish_node(
                 pending.node_id,
-                "image-gen".into(),
-                Err(CoreError::other(
-                    "canvas_image_fetch: run stopped before node result delivery; reconcile the durable action before retrying",
-                )),
+                pending.node_kind,
+                Err(CoreError::other(format!(
+                    "{tool}: run stopped before node result delivery; reconcile the durable action before retrying",
+                ))),
                 pending.started.elapsed().as_millis() as u64,
             );
         }

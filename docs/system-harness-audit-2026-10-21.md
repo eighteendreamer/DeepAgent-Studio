@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-249 | 已修复并验收（2026-10-29，仅E-H249-06所列Windows本机范围） | 共用run-scoped制品工具/公网broker，统一Network审批后转Audio artifact再执行原provider；专项13、Canvas140/0/4、重开6/workflow50、前端272/build及Tauri通过；全仓3799/1/295仅既有H-306，旧严格lint/桌面格式失败保留；E-H249-01～06，待独立提交后回填hash |
 | H-253 | 已修复并验收（2026-10-29，仅E-H253-06所列Windows本机范围） | 上传绑定workspace/host caller，Canvas127/0/5、重开6、workflow49/0/39、前端272/build及Tauri通过；全仓3785/1/296仅H-306，旧严格lint/桌面格式失败保留；E-H253-01～07，`f525187adf300a649cb47e8ef388601463db26be` |
 | H-250 | 已修复并验收（2026-10-29，仅E-H250-06所列Windows本机范围） | 原gate内单次SHA-256/长度验证、只返回受验bytes；Canvas120/0/6、重开5、workflow48/0/39、前端269/build及Tauri通过；全仓3776/1/297仅H-306，旧lint/桌面格式失败保留；E-H250-01～07，`6bb48869346d0103b7e2d12d31fe32473dc5681b` |
 | H-254 | 已修复并验收（2026-10-29，仅E-H254-09所列Windows本机范围） | 共享删除意图/FULL事务、pending和恢复，GC保留政策不变；persistence123、Canvas115、重开4、workflow1、前端269/build、Tauri通过；全仓3768/1/298仅H-306，旧lint/桌面格式失败保留；E-H254-01～10，`64636fcd9ad544460d6c81855f1a899e4d2daf8d` |
@@ -7871,7 +7872,15 @@ E-H238-04（独立提交回填，2026-10-29）：本轮测试与当时两份文�
 
 ### H-249：画布语音转写的远程音频输入绕过统一网络权限与审批
 
-**级别：高（P1，条件性 SSRF / 工作流网络边界缺失）；触发条件：能够提交或恢复 `speech_transcribe` 节点的调用者把 `audio_reference` 设为宿主可达的 `http(s)` URL。状态：正式 `CanvasModelGateway::run_audio` 与本机 provider/input loopback 已复现，未修复。** 本项与 H-165 的供应商返回资产不同：这里不需要恶意 provider，工作流输入本身即可驱动宿主 GET。
+**级别：高（P1，条件性 SSRF / 网络边界缺失）；原触发条件：直接调用gateway并提供宿主可达的远程audio_reference。状态：已修复并验收（2026-10-29，仅E-H249-06所列Windows本机范围），待独立提交后回填hash。** 原gateway真实GET证据保留；修前正式workflow旧路径会因音频Unknown提前拒绝，原先对完整workflow触发条件的推论已由本轮诊断纠正，不能混同为已复现UI旁路。
+
+#### 2026-10-29 修复与验收（E-H249-01～06）
+
+- 根因修复：移除audio_input唯一裸fetch_binary；未准备的远程run_audio明确NetworkDenied。远程音频在run-scoped gateway保存opaque one-shot handle，复用H-165制品工具和H-175 PublicHttpClient；新canvas_audio_fetch沿原ToolRegistry/Network权限/High风险审批、action、取消与整体deadline执行。下载按实际字节签名建立同workspace Audio artifact，再走原音频operation路由与provider，不靠URL后缀猜音频，也不在下载工具内调用转写。音频工具绑定RunAssembler既有http_enabled，隔离backend无HTTP broker不得回落宿主。
+- 原失败与范围纠正：E-01原gateway探针0/1/0，private_gets=1；E-02正式workflow原分类Unknown提前拒绝，0 GET/0审批，不能当成有效网络旁路红测。原直接gateway探针已转默认并通过。E-04专项lib12/0/0与正式workflow1/0/0，覆盖真实GET→multipart POST→同域artifact、审批/action/唯一终态及SQLite关闭重开不重放、artifact/data正常与外域拒绝、权限/backend矩阵、私网/IPv6/凭据URL、混合DNS及redirect、整体取消/deadline/32MiB预算、失败无发布和跨kind/域/run并发one-shot。具体命令及前期失败均保留于进度文档E-01～05，不用后续通过擦除失败。
+- 相关门禁：Runtime lib339/0/9及e2e5/0/0，broker11/0/0，Canvas140/0/4，重开6/0/0、workflow50/0/39；Tauri lib/tests check、前端272/0/0及tsc/Vite/许可证通过。完整workspace命令为`cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1`，原生101、1102.95秒，130个Running/Doc-tests target合计3799/1/295；唯一失败为未改prompts的既有H-306（creative.video-edit.v1空defaultUserPrompt）。根fmt及diff check通过；严格Runtime/AppCore/all-features lint与独立Tauri格式既有失败保留，非严格诊断通过不替代严格门禁。
+- 兼容与残余：旧图片工具名/schema/响应及枚举variant import保留，bridge新增默认方法；直接远程run_audio改拒绝，新远程音频32MiB为本地下载预算，不是供应商限额；本地artifact/data和其他媒体预算不冒领。成功下载的输入artifact正常保留，provider失败不自动回滚，非provider exactly-once。新tool args/approval/action不含源query/key，但原有用户图/inputs/start输出不在全面脱敏承诺内。无新依赖、SQL迁移或第二套执行/审批/持久化链；未验真实WebView、真实供应商、其他OS、断电/跨进程压力。
+- 本项限定验收不等于整仓全绿或整个目标完成；当前80验收、20历史跳过、7归并、2撤销、197待修、0修复中，197有效未关闭。下一候选H-303尚未实施；剩余200–400有效小时仅历史风险分组粗估，未逐项校准，设备/依赖/构建/环境等待另计。修复提交待取得真实hash后另做文档回填，不amend。
 
 #### 首次即时 Evidence（2026-10-25）
 
@@ -7906,6 +7915,16 @@ E-H238-04（独立提交回填，2026-10-29）：本轮测试与当时两份文�
 - 已执行正式 ignored gateway 探针，结果 **0 passed / 1 failed（缺陷预期）**；失败来自 `private_gets=1`，不是本机 fixture 未启动。新增的只有 test-only ignored 测试与本报告，没有修改生产网络逻辑。
 - 已核对 `CanvasAudioInput`、`audio_input`、`fetch_binary` 和 `run_audio`；未运行真实工作流 UI、真实私网/metadata、公网 provider、DNS rebinding、redirect、审批 UI 或跨平台网络栈。
 - 本轮没有重新执行 H-165/H-175，也没有处理用户排除的 `encrypted-content` 报错；H-249 与图片输出、工作流 HTTP 节点保持独立编号。
+
+#### 修复阶段历史过程（2026-10-29，最终状态见上方及E-H249-06）
+
+E-H249-01原探针在隔离环境再次真实复现private_gets=1、转写成功，原生101、0/1/0，证据target/h249-original-20261029.log/-result.json。新增正式workflow测试两次均在网络前退出：诊断明确为音频引用Unknown，requests=0、approvals=0（h249-workflow-red-20261029、h249-workflow-diagnostic-20261029，原生101、0/1/0）。修前URL分类器不识别远程音频；因此原触发条件对完整workflow的推论过宽，应限定为已验证gateway直接调用，不能把夹具断言失败写成正式workflow旁路。
+
+E-H249-02方案形成时拟沿H-165统一延迟工具与H-175公网broker，在审批后下载为同域artifact并以真实kind路由，再调用provider；裸gateway远程调用拒绝。音频继承装配器http_enabled，32 MiB仅为本地新增远程下载预算设计，不是已有配置。该阶段生产实现、正反对照、全套门禁与提交尚未完成，整体未关闭为198；原始失败保留，不扩大其他项的验收范围。
+
+随后候选复用统一延迟制品工具、公网broker和原http_enabled；远程输入不再经裸fetch_binary，实际下载后才凭字节签名形成同域Audio artifact并走原provider。E-H249-03/04记录前期夹具/编译失败和纠正依据，最终专项原生0、lib12/0/0与正式workflow1/0/0（h249-media-final-candidate-20261029，265.66秒），包含本机真实GET/POST、审批/隔离/预算/取消、one-shot及SQLite重开对照。9份源码冻结时完整门禁仍待终态，没有提前提交或增加验收计数。新增tool/action脱敏不等于原有workflow输入持久化全面脱敏；无私网放行开关、SQL迁移或新增依赖。原生GUI、真实供应商、其他OS及断电未验。
+
+E-H249-05阶段收取相关门禁：Canvas140/0/4（原探针默认通过，图片one-shot回归保留）、broker11/0/0、Runtime lib339/0/9及e2e5、正式workflow50/0/39、重开6/0/0，前端272/build和Tauri lib/tests check通过。core/persistence严格clippy通过；AppCore旧11项、Runtime未改model_agent.rs:282、workspace未改models/client.rs:355严格lint仍失败；额外all-targets诊断也在未改mcp_discovery_restore.rs:433既有panicking_unwrap默认deny处失败，相关消费者诊断0不等于严格通过。根fmt/diff通过，独立Tauri fmt输出与H-253逐字一致仍失败。冻结9份源码一致；该记录写入时完整workspace session 86349仍运行，未预填终态、未提交、未验收；后续最终结果见E-H249-06。未运行真实供应商、原生WebView或其他OS；不把构建替代这些验收。
 
 ### H-248：画布语音合成响应无字节上限，超预算音频被完整缓冲并持久化
 

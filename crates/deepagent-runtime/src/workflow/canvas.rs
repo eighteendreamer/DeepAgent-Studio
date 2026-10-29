@@ -86,21 +86,34 @@ pub struct CanvasImageResponse {
     pub operation: String,
 }
 
-/// Result of preparing an image node for execution.
+/// Result of preparing a media artifact for execution.
 ///
 /// Inline provider payloads are ready immediately.  A provider-hosted asset is
 /// deliberately deferred so the app layer can turn the second hop into a
 /// normal kernel tool call (and therefore apply the run's network capability,
 /// approval, cancellation and durable action rules).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CanvasImagePreparation {
-    Ready(CanvasImageResponse),
+pub enum CanvasArtifactPreparation<T = CanvasImageResponse> {
+    Ready(T),
     Deferred {
         /// Opaque, one-shot handle retained by the app-owned gateway.
         request_id: String,
         /// Redacted origin shown in approval/audit UI; never a signed URL.
         origin: String,
     },
+}
+
+// Re-export the enum (not a type alias) to preserve existing variant imports.
+pub use CanvasArtifactPreparation as CanvasImagePreparation;
+/// A local reference, or a remote input awaiting the canonical fetch tool.
+pub type CanvasAudioInputPreparation = CanvasArtifactPreparation<String>;
+
+/// Download receipt only; provider execution remains a separate workflow step.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasArtifactResponse {
+    pub artifact_uri: String,
+    pub mime: String,
 }
 
 /// A speech request for one canvas audio node.
@@ -340,6 +353,12 @@ pub trait CanvasModelBridge: Send + Sync {
 
     /// Text-to-speech or speech-to-text for the audio node.
     async fn run_audio(&self, request: CanvasAudioRequest) -> Result<CanvasAudioResponse>;
+
+    /// Prepare a reference without guessing its remote media type or making a
+    /// network request. Gateways defer remote inputs to the run's tool pipeline.
+    fn prepare_audio_input(&self, reference: &str) -> Result<CanvasAudioInputPreparation> {
+        Ok(CanvasAudioInputPreparation::Ready(reference.to_string()))
+    }
 
     /// Submit or resume an asynchronous video job and wait for its artifact.
     async fn generate_video(&self, request: CanvasVideoRequest) -> Result<CanvasVideoResponse>;

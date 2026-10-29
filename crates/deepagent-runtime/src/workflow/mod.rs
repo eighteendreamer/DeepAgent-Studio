@@ -9,7 +9,8 @@ pub mod values;
 
 pub use agent::WorkflowAgent;
 pub use canvas::{
-    CanvasArtifactValidator, CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest,
+    CanvasArtifactPreparation, CanvasArtifactResponse, CanvasArtifactValidator,
+    CanvasAudioInputPreparation, CanvasAudioRequest, CanvasAudioResponse, CanvasCompletionRequest,
     CanvasCompletionResponse, CanvasEmbeddingRequest, CanvasEmbeddingResponse,
     CanvasImagePreparation, CanvasImageRequest, CanvasImageResponse, CanvasJobPhase,
     CanvasJobProgress, CanvasJobProgressSink, CanvasModelBridge, CanvasRouteOutcome,

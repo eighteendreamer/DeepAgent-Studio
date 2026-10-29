@@ -712,11 +712,126 @@ async fn read_request(socket: &mut TcpStream) -> (String, Value) {
                 header.lines().next().unwrap().to_string(),
                 if body.is_empty() {
                     Value::Null
+                } else if header
+                    .to_ascii_lowercase()
+                    .contains("content-type: multipart/form-data;")
+                {
+                    Value::String(String::from_utf8_lossy(body).into_owned())
                 } else {
                     serde_json::from_slice(body).unwrap()
                 },
             );
         }
+    }
+}
+
+/// One local endpoint for the untrusted source and the configured transcription
+/// provider. A zero-request result is observable without blocking accept/join.
+struct LocalTranscriptionProvider {
+    base_url: String,
+    audio_url: String,
+    requests: Arc<Mutex<Vec<(String, Value)>>>,
+    server: JoinHandle<()>,
+}
+
+impl LocalTranscriptionProvider {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let (line, body) = read_request(&mut socket).await;
+                let (mime, reply): (&str, &[u8]) = if line.starts_with("GET /remote.mp3 ") {
+                    ("audio/mpeg", AUDIO_BYTES)
+                } else {
+                    assert!(line.starts_with("POST /v1/audio/transcriptions "));
+                    ("application/json", br#"{"text":"synthetic transcription"}"#)
+                };
+                captured.lock().unwrap().push((line, body));
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    reply.len()
+                );
+                if socket.write_all(header.as_bytes()).await.is_ok() {
+                    let _ = socket.write_all(reply).await;
+                }
+            }
+        });
+        Self {
+            base_url: format!("http://{address}/v1"),
+            audio_url: format!("http://{address}/remote.mp3"),
+            requests,
+            server,
+        }
+    }
+}
+
+impl Drop for LocalTranscriptionProvider {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+#[tokio::test]
+async fn h249_remote_audio_cannot_bypass_approval_or_the_public_network_broker() {
+    for approve in [false, true] {
+        let provider = LocalTranscriptionProvider::start().await;
+        let fixture = MediaFixture::with_provider(
+            &provider.base_url,
+            "Synthetic transcription",
+            "synthetic-transcribe",
+            vec![CanvasScenario::SpeechToText],
+            |provider_id| {
+                serde_json::from_value(json!({
+                    "definition":{"version":1,"nodes":[
+                        {"id":"start","kind":"start"},
+                        {"id":"audio","kind":"audio","config":{
+                            "operation":"speech_transcribe",
+                            "audioReference":provider.audio_url,
+                            "audioModel":format!("{provider_id}::synthetic-transcribe")
+                        }},
+                        {"id":"end","kind":"end"}
+                    ],"edges":[{"id":"a","source":"start","target":"audio"},
+                        {"id":"b","source":"audio","target":"end"}]}
+                }))
+                .unwrap()
+            },
+        )
+        .await;
+        let mut run = fixture.spawn_with_approval("h249-private-input", approve);
+        let result = finish_run(&mut run).await;
+        let requests = provider.requests.lock().unwrap();
+        eprintln!(
+            "h249 private audio: approve={approve}, requests={}, approvals={}, result={result:?}",
+            requests.len(),
+            fixture.approvals.load(Ordering::SeqCst)
+        );
+        assert!(
+            requests.is_empty(),
+            "neither denied nor approved private input may cause a GET or provider POST"
+        );
+        assert!(result.is_err());
+        assert_eq!(fixture.approvals.load(Ordering::SeqCst), 1);
+        let events = RunStore::new(&fixture.db)
+            .events_after("h249-private-input", None)
+            .unwrap();
+        let terminals: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminals.len(), 1);
+        assert_ne!(terminals[0].data["kind"], "succeeded");
+        assert!(fixture.artifacts.list(None, None).unwrap().is_empty());
+        assert!(!fixture
+            .live
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|event| ["audio", "end"].contains(&event.node_id.as_str())
+                && event.status == NodeExecutionStatus::Completed));
     }
 }
 

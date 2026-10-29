@@ -48,9 +48,16 @@ fn request(url: String) -> HttpRequest {
 /// Share the existing public-policy/local-transport seam with media tests.
 /// DNS and transport are synthetic; production builds contain neither override.
 pub(crate) fn public_fixture_client(address: SocketAddr) -> PublicHttpClient {
+    public_fixture_client_with_answers(address, &[&["8.8.8.8"]])
+}
+
+pub(crate) fn public_fixture_client_with_answers(
+    address: SocketAddr,
+    answers: &[&[&str]],
+) -> PublicHttpClient {
     assert!(address.ip().is_loopback());
     PublicHttpClient {
-        resolver: resolver(&[&["8.8.8.8"]]),
+        resolver: resolver(answers),
         fixture_route: Some(address),
     }
 }
