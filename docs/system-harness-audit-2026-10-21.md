@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-250 | 已修复并验收（2026-10-29，仅E-H250-06所列Windows本机范围） | 原gate内单次SHA-256/长度验证、只返回受验bytes；Canvas120/0/6、重开5、workflow48/0/39、前端269/build及Tauri通过；全仓3776/1/297仅H-306，旧lint/桌面格式失败保留；E-H250-01～06，修复提交待回填 |
+| H-250 | 已修复并验收（2026-10-29，仅E-H250-06所列Windows本机范围） | 原gate内单次SHA-256/长度验证、只返回受验bytes；Canvas120/0/6、重开5、workflow48/0/39、前端269/build及Tauri通过；全仓3776/1/297仅H-306，旧lint/桌面格式失败保留；E-H250-01～07，`6bb48869346d0103b7e2d12d31fe32473dc5681b` |
 | H-254 | 已修复并验收（2026-10-29，仅E-H254-09所列Windows本机范围） | 共享删除意图/FULL事务、pending和恢复，GC保留政策不变；persistence123、Canvas115、重开4、workflow1、前端269/build、Tauri通过；全仓3768/1/298仅H-306，旧lint/桌面格式失败保留；E-H254-01～10，`64636fcd9ad544460d6c81855f1a899e4d2daf8d` |
 | H-252 | 已修复并验收（2026-10-29，仅E-H252-10所列Windows本机范围） | 显式owner校验、run固定scope及前端缓存隔离；scope7、canvas109、runtime69、重开4、前端269/build/UI、Tauri/示例check通过；全仓3747/1/299仅H-306，旧lint阻断保留；E-H252-01～11，`7bc7d9bf76b521d2286525584ac90ba31f7692a2` |
 | H-251 | 已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围） | 显式scope CRUD、归属CAS及保留graph/owner的tombstone；store20、重开3、前端263/build/UI、Tauri check通过；全仓3736/1/300仅H-306，严格lint/桌面格式旧阻断已对照；E-H251-01～08，`d26e2266a19edfc78c07b39936b29fc6b33f1796` |
@@ -8210,7 +8210,7 @@ E-H244-08（独立提交回填，2026-10-29）：修复代码、默认回归及�
 
 #### 本轮修复即时记录（2026-10-29）
 
-**当前状态：已修复并验收（2026-10-29，仅E-H250-06所列Windows本机范围）；修复提交待正常提交后回填。** 基线HEAD为`00279836622422a764fe5710e711c2023d386053`；H-254已提交验收不重复。原五类用户未跟踪项只经git status列名，不读取、修改、暂存或删除；E-H250-01～04保留为当时记录。
+**当前状态：已修复并验收（2026-10-29，仅E-H250-06所列Windows本机范围）；修复提交`6bb48869346d0103b7e2d12d31fe32473dc5681b`。** 基线HEAD为`00279836622422a764fe5710e711c2023d386053`；H-254已提交验收不重复。原五类用户未跟踪项只经git status列名，不读取、修改、暂存或删除；E-H250-01～04保留为当时记录。
 
 E-H250-01（原始复现，source_type=command）：复用已核对的隔离runner模式，使用独立临时data/home/profile/managed、清除继承供应商key及DB/target覆盖，执行 `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_artifact_service::tests::audit_replaced_canvas_artifact_is_rejected_before_provider_projection --offline -j 2 -- --ignored --exact --nocapture`，原生101、121.01秒、0 passed/1 failed/0 ignored（target/h250-original-20261029.log/-result.json）。生产输出original_bytes=7、replacement_bytes=25、projected_bytes=25，持久digest仍是原值；原失败保留，未访问真实用户数据或外部供应商。
 
@@ -8254,6 +8254,8 @@ E-H250-06（限定验收、兼容性与残余）：H-250仅在上述Windows本�
 返回路径只在查询时验证，不是后续WebView/FFmpeg open的永久lease；gate持有时取消只验证释放后唯一cancelled及零provider请求，不宣称同步文件锁/磁盘I/O可抢占。未验真实供应商/用户数据、其他OS、真实断电/强杀、原生Tauri/WebView/FFmpeg、任意外部写者后续open强隔离或压力容量；没有相关环境/授权数据，未降低为已验。H-253上传owner与其他相邻编号独立保留。
 
 提交前git diff --check退出0；台账已核对306行、306唯一编号、8列，相对基线00279836仅H-250主行改变，其他305行不动。本轮仅新增限定范围验收1项，累计78验收、20历史跳过、7归并、2撤销、199待修复、0修复中，199有效未关闭，306历史槽位不变。下一独立优先候选P1 H-253：需先核对分块上传的workspace归属、调用方与原探针，不预填修复。剩余200–400有效修复/验收小时继续作为未逐项校准的历史粗估，按剩余跨入口、权限、运行及持久化根因校准，不能按本轮机械扣减；设备/依赖/构建与环境等待另计、无可靠总量，整体目标active，不宣称系统已完成。
+
+E-H250-07（独立提交与真实hash回填）：修复代码、默认回归与当时双台账已正常提交为`6bb48869346d0103b7e2d12d31fe32473dc5681b`（【fix】校验画布制品物化时的内容身份），仅本项8文件，无依赖、SQL迁移、IPC/前端签名变更、amend、hook绕过、推送或PR；commit后tracked工作区干净，原五类未跟踪用户项未读取/修改/暂存。本次仅回填双台账当前状态、摘要与唯一H-250行的真实修复hash，另作正常docs提交，不递归填写docs自身hash；E-01～06、完整workspace/H-306失败、旧严格lint与独立Tauri格式失败及未验范围全部保留。回填复核306行/306唯一编号/8列，相对00279836仍只改变H-250主行，其他305行不动；78验收、20历史跳过、7归并、2撤销与199有效待修不变。下一独立候选H-253与200–400有效小时历史未校准粗估、环境等待另计及整体目标active均不变。
 
 **级别：高（P1，画布媒体内容完整性与模型输入身份）；触发条件：** 一个已写入画布图或节点事件的 `artifact://<id>` 所指向文件，在后续模型请求前被宿主、同步程序、备份恢复或同机其他进程替换，而 SQLite 中的 artifact 记录仍保留原 `digest`。本项是 CanvasArtifactService 的读取/恢复边界，不重复 H-70：H-70 针对 Chat 历史附件的 `AttachmentService` 引用；本项针对画布 artifact index、`CanvasArtifactService::resolve_for_provider` 和画布 provider 输入。
 
