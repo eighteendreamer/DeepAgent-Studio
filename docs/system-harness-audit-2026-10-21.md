@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-301 | 历史已修复跳过（2026-10-30，仅 E-H301-03～05 所列 Windows 本机范围） | 生产实现归 H-164 的 63cfffa4，本轮新增生产修复 0；默认媒体25/0/13、AppCore1323/0/57、workflow30/0/25、重开6、Runtime339/0/9，fmt通过，lint旧失败保留；E-H301-01～07，测试/文档 `8a7df621bf9be1144be514231d46968ba560a17e` |
 | H-304 | 已修复并验收（2026-10-30，仅 E-H304-05～06 所列 Windows 本机范围） | 共用 64 KiB 非 2xx reader；最终专项 7/0/0、正式媒体 workflow 22/0/14、Tauri/fmt 通过；全仓 3810/1/295 仅既有 H-306，严格 Clippy 旧失败保留；E-H304-01～07，`d752c8094950c0524c1f9947736aa6a9b6d52d01` |
 | H-249 | 已修复并验收（2026-10-29，仅E-H249-06所列Windows本机范围） | 共用run-scoped制品工具/公网broker，统一Network审批后转Audio artifact再执行原provider；专项13、Canvas140/0/4、重开6/workflow50、前端272/build及Tauri通过；全仓3799/1/295仅既有H-306，旧严格lint/桌面格式失败保留；E-H249-01～07，`6198d4cd6d76791657b4fe220f92937534c453d4` |
 | H-253 | 已修复并验收（2026-10-29，仅E-H253-06所列Windows本机范围） | 上传绑定workspace/host caller，Canvas127/0/5、重开6、workflow49/0/39、前端272/build及Tauri通过；全仓3785/1/296仅H-306，旧严格lint/桌面格式失败保留；E-H253-01～07，`f525187adf300a649cb47e8ef388601463db26be` |
@@ -10696,7 +10697,7 @@ E-H300-13（独立提交与收尾复核）：修复、回归测试及当时两�
 
 **当前状态：历史已修复跳过（2026-10-30，仅下列 Windows 本机合成 provider/临时 SQLite 范围）；生产修复归 H-164 的 `63cfffa4959640e4cb1395c94d614c8c4ec5197c`，本轮新增生产修复数 0。** 修前复核原正式探针已 1 passed/0 failed，accepted=true、cancel_to_exit_ms=64、audio_completed=false、audio_cancelled=true、唯一 terminal=cancelled。Git 祖先与 blame 以及 E-H164-03 的历史音频验收证明，整个 `WorkflowAgent::think` future 已被共享取消护栏包住，取消丢弃 provider 等待并统一发布节点 Cancelled，`finish_node` 拒绝取消后的 Completed；本项不再修改生产逻辑，不归因于 H-300/H-304，不重复计功。
 
-本轮将原探针转默认，并补 200/503 已发送半正文的取消、无响应头/200 正常释放对照：验证受理前 run 未结束、取消后 300ms 内退出、释放前连接关闭、无 Completed/输出/制品、单次 Cancelled/唯一取消终态，以及关库重开后的顺序与 live/replay 一致。正常对照保留合成音频原字节、workspace 归属和唯一成功终态。实际命令公共参数为 `--target-dir target/h300-after-h163-build --offline -j 2`；最终媒体默认组 **25 passed/0 failed/13 ignored**，AppCore lib **1323/0/57**，workflow integration **30/0/25**，制品重开 **6/0/0**，Runtime lib **339/0/9**，根 fmt/diff check 通过。完整命令、原生退出与耗时见进度台账 E-H301-01～06 及 `target/h301-*-20261030` 证据；本轮测试/文档提交取得 hash 后另行回填。
+本轮将原探针转默认，并补 200/503 已发送半正文的取消、无响应头/200 正常释放对照：验证受理前 run 未结束、取消后 300ms 内退出、释放前连接关闭、无 Completed/输出/制品、单次 Cancelled/唯一取消终态，以及关库重开后的顺序与 live/replay 一致。正常对照保留合成音频原字节、workspace 归属和唯一成功终态。实际命令公共参数为 `--target-dir target/h300-after-h163-build --offline -j 2`；最终媒体默认组 **25 passed/0 failed/13 ignored**，AppCore lib **1323/0/57**，workflow integration **30/0/25**，制品重开 **6/0/0**，Runtime lib **339/0/9**，根 fmt/diff check 通过。完整命令、原生退出与耗时见进度台账 E-H301-01～07 及 `target/h301-*-20261030` 证据；本轮测试/文档已独立提交 `8a7df621bf9be1144be514231d46968ba560a17e`，本次仅另做文档回填。
 
 严格 Clippy 仍有未修改的 AppCore 11 项错误；全 test 非严格 lint 也被未改 Kernel fixture 的 `mcp_discovery_restore.rs:433 panicking_unwrap` 默认 deny 阻断，原失败保留，不把窄诊断成功或 ignored 当作全部通过。只改测试与两份文档，无 API/wire/依赖/权限/沙箱/生产数据库迁移。本轮未重跑 workspace、CLI/SDK、Tauri/pnpm/GUI、真实供应商或其他 OS；上轮 H-304 全仓结果不是本轮结果。300ms 是本机用例断言，连接关闭另有 2 秒等待；同进程关库重开、已断连 fixture 的释放不等于 OS 崩溃、真实完成竞态、远端撤销或计费验收。H-302 等独立问题仍待修，整体目标 active。
 
