@@ -186,6 +186,11 @@ pub trait Agent: Send + Sync {
     /// keep the default no-op implementation.
     fn set_event_sink(&mut self, _events: Arc<dyn crate::events::RuntimeEventSink>) {}
 
+    /// The engine binds this model's observation scope, including nested runs.
+    /// Model agents call this handler only when a replacement is adopted, not
+    /// when compaction merely starts or its persistence fails.
+    fn set_tool_context_reset(&mut self, _reset: deepagent_tools::ToolContextReset) {}
+
     /// Produce the next decision. `step` is the 0-based iteration index;
     /// `last` carries the observations from the previous step (empty on the
     /// first step; more than one when the previous step ran tools in parallel).

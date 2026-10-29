@@ -54,7 +54,7 @@ pub(crate) async fn apply(
         let observed = cache
             .lock()
             .unwrap_or_else(|p| p.into_inner())
-            .observed(&path);
+            .observed(&path, context.observation());
         let target = match root.write_target(
             &path,
             matches!(mutation, Mutation::Write(_)) && observed.is_none(),
@@ -91,6 +91,10 @@ pub(crate) async fn apply(
                 if context.is_cancelled() {
                     Err(io::Error::other(
                         "FILE_OPERATION_CANCELLED: no content was written",
+                    ))
+                } else if !context.observation_is_current() {
+                    Err(io::Error::other(
+                        "FILE_CONTEXT_REPLACED: read_file in the current model context before editing. No content was written",
                     ))
                 } else {
                     Ok(())

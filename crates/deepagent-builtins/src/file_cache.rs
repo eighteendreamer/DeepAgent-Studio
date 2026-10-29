@@ -1,4 +1,4 @@
-//! Per-run file state cache for built-in file tools.
+//! Shared byte snapshots with model-context-local read evidence.
 //!
 //! Beyond plain content caching this cache also records the **most recent
 //! `read_file` call's `(offset, limit)`** for each path. Two helpers built on
@@ -20,6 +20,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
+use deepagent_tools::ToolObservation;
+
 /// A cached text file snapshot.
 #[derive(Debug, Clone)]
 pub struct CachedFile {
@@ -36,10 +38,54 @@ struct CacheEntry {
     file: CachedFile,
     modified: Option<SystemTime>,
     len: u64,
-    /// `(offset, limit)` of the most recent read_file invocation that matched
-    /// this entry. `None` until the first call to [`FileStateCache::record_read`].
+    reads: Vec<ReadObservation>,
+}
+
+#[derive(Debug, Clone)]
+struct ReadObservation {
+    /// None is the legacy direct Tool API, never a wildcard for scoped runs.
+    context: Option<ToolObservation>,
     last_read: Option<(Option<usize>, Option<usize>)>,
     observed: Vec<Range<usize>>,
+}
+
+impl ReadObservation {
+    fn matches(&self, context: Option<&ToolObservation>) -> bool {
+        match (&self.context, context) {
+            (Some(own), Some(context)) => own.same_context(context),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+impl CacheEntry {
+    fn read(&self, context: Option<&ToolObservation>) -> Option<&ReadObservation> {
+        self.reads.iter().find(|read| read.matches(context))
+    }
+
+    fn read_mut(&mut self, context: Option<&ToolObservation>) -> Option<&mut ReadObservation> {
+        // Reclaim expired generations lazily without clearing reusable bytes
+        // or any live sibling's windows. Late old invocations cannot reinsert.
+        self.reads.retain(|read| {
+            read.context
+                .as_ref()
+                .map_or(true, ToolObservation::is_current)
+        });
+        if context.is_some_and(|context| !context.is_current()) {
+            return None;
+        }
+        let index = self.reads.iter().position(|read| read.matches(context));
+        let index = index.unwrap_or_else(|| {
+            self.reads.push(ReadObservation {
+                context: context.cloned(),
+                last_read: None,
+                observed: Vec::new(),
+            });
+            self.reads.len() - 1
+        });
+        self.reads.get_mut(index)
+    }
 }
 
 pub(crate) type SharedFileStateCache = Arc<Mutex<FileStateCache>>;
@@ -58,7 +104,8 @@ impl ObservedFile {
     }
 }
 
-/// Per-run cache keyed by resolved file path.
+/// Byte cache keyed by resolved file path, with separate read evidence for each
+/// model context. Direct unscoped callers retain their legacy cache-local view.
 ///
 /// The cache stores full UTF-8 content and delivered ranges. Metadata freshness
 /// is only an optimization hint for external callers; production read/mutate
@@ -105,8 +152,7 @@ impl FileStateCache {
                 file: file.clone(),
                 modified: metadata.modified().ok(),
                 len: metadata.len(),
-                last_read: None,
-                observed: Vec::new(),
+                reads: Vec::new(),
             },
         );
         file
@@ -117,20 +163,26 @@ impl FileStateCache {
         self.entries.remove(path);
     }
 
-    /// Whether a successful read, rather than just a cache load, was recorded.
+    /// Whether a legacy unscoped read, rather than just a cache load, was recorded.
     /// This is not a version check and must not alone authorize a mutation.
     pub fn has_been_read(&self, path: &Path) -> bool {
         self.entries
             .get(path)
-            .is_some_and(|entry| entry.last_read.is_some())
+            .and_then(|entry| entry.read(None))
+            .is_some_and(|read| read.last_read.is_some())
     }
 
-    pub(crate) fn observed(&self, path: &Path) -> Option<ObservedFile> {
+    pub(crate) fn observed(
+        &self,
+        path: &Path,
+        context: Option<&ToolObservation>,
+    ) -> Option<ObservedFile> {
         let entry = self.entries.get(path)?;
-        entry.last_read?;
+        let read = entry.read(context)?;
+        read.last_read?;
         Some(ObservedFile {
             content: entry.file.content.clone(),
-            ranges: entry.observed.clone(),
+            ranges: read.observed.clone(),
         })
     }
 
@@ -141,7 +193,13 @@ impl FileStateCache {
 
     /// Record only the actual window delivered by the tool, including its raw
     /// line terminators. Repeated windows accumulate only for identical bytes.
-    pub(crate) fn record_window(&mut self, path: &Path, start_line: usize, lines: usize) {
+    pub(crate) fn record_window(
+        &mut self,
+        path: &Path,
+        context: Option<&ToolObservation>,
+        start_line: usize,
+        lines: usize,
+    ) {
         let Some(entry) = self.entries.get_mut(path) else {
             return;
         };
@@ -158,10 +216,13 @@ impl FileStateCache {
         if lines == 0 && !entry.file.content.is_empty() {
             return;
         }
-        entry.observed.push(start..end);
-        entry.observed.sort_by_key(|range| range.start);
+        let Some(read) = entry.read_mut(context) else {
+            return;
+        };
+        read.observed.push(start..end);
+        read.observed.sort_by_key(|range| range.start);
         let mut merged: Vec<Range<usize>> = Vec::new();
-        for range in entry.observed.drain(..) {
+        for range in read.observed.drain(..) {
             if let Some(previous) = merged
                 .last_mut()
                 .filter(|previous| previous.end >= range.start)
@@ -171,14 +232,28 @@ impl FileStateCache {
                 merged.push(range);
             }
         }
-        entry.observed = merged;
+        read.observed = merged;
     }
 
     /// Record `(offset, limit)` as the most recent successful `read_file`
-    /// invocation for `path`. No-op when `path` is not cached.
+    /// unscoped invocation for `path`. No-op when `path` is not cached.
     pub fn record_read(&mut self, path: &Path, offset: Option<usize>, limit: Option<usize>) {
-        if let Some(entry) = self.entries.get_mut(path) {
-            entry.last_read = Some((offset, limit));
+        self.record_read_in_context(path, None, offset, limit);
+    }
+
+    pub(crate) fn record_read_in_context(
+        &mut self,
+        path: &Path,
+        context: Option<&ToolObservation>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) {
+        if let Some(read) = self
+            .entries
+            .get_mut(path)
+            .and_then(|entry| entry.read_mut(context))
+        {
+            read.last_read = Some((offset, limit));
         }
     }
 
@@ -191,9 +266,20 @@ impl FileStateCache {
         offset: Option<usize>,
         limit: Option<usize>,
     ) -> bool {
+        self.last_read_matches_in_context(path, None, offset, limit)
+    }
+
+    pub(crate) fn last_read_matches_in_context(
+        &self,
+        path: &Path,
+        context: Option<&ToolObservation>,
+        offset: Option<usize>,
+        limit: Option<usize>,
+    ) -> bool {
         self.entries
             .get(path)
-            .and_then(|e| e.last_read)
+            .and_then(|entry| entry.read(context))
+            .and_then(|read| read.last_read)
             .is_some_and(|prev| prev == (offset, limit))
     }
 }
@@ -287,5 +373,33 @@ mod tests {
         cache.record_read(&path, Some(1), None);
         assert!(!cache.has_been_read(&path));
         assert!(!cache.last_read_matches(&path, Some(1), None));
+    }
+
+    #[test]
+    fn expired_generations_are_reclaimed_without_revoking_live_sibling_windows() {
+        let dir = tempdir().unwrap();
+        let (path, meta) = write_and_meta(dir.path(), "a.txt", "hello\n");
+        let mut cache = FileStateCache::new();
+        cache.store(path.clone(), "hello\n".into(), &meta);
+        let parent = deepagent_tools::ToolObservationScope::default();
+        let parent_token = parent.capture();
+        cache.record_read_in_context(&path, Some(&parent_token), None, None);
+        cache.record_window(&path, Some(&parent_token), 1, 1);
+        let sibling = deepagent_tools::ToolObservationScope::default();
+        for _ in 0..64 {
+            let old = sibling.capture();
+            cache.record_read_in_context(&path, Some(&old), None, None);
+            sibling.reset();
+            // A late invocation cannot restore an expired record.
+            cache.record_read_in_context(&path, Some(&old), None, None);
+            cache.record_window(&path, Some(&old), 1, 1);
+            assert!(cache.observed(&path, Some(&old)).is_none());
+            assert_eq!(cache.entries[&path].reads.len(), 1);
+            assert!(cache
+                .observed(&path, Some(&parent_token))
+                .unwrap()
+                .covers(&(0..6)));
+            assert!(cache.matching_content(&path, "hello\n").is_some());
+        }
     }
 }

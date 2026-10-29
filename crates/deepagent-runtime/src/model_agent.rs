@@ -572,6 +572,7 @@ pub struct ModelAgent {
     /// numbers and re-emits it, so the occupancy surface has one source.
     context_snapshot: Option<deepagent_context::ContextUsageSnapshot>,
     surface_persistence: Option<Arc<dyn ContextSurfacePersistence>>,
+    tool_context_reset: Option<deepagent_tools::ToolContextReset>,
     /// Provider-native Responses output items from the latest completed model
     /// turn, drained by the runtime loop into the append-only session log.
     pending_response_items: Vec<ResponseOutputItem>,
@@ -702,6 +703,7 @@ impl ModelAgent {
             usage: crate::agent::RunUsage::default(),
             context_snapshot: None,
             surface_persistence: None,
+            tool_context_reset: None,
             pending_response_items: Vec::new(),
             pending_raw_usage: Vec::new(),
             reasoning_effort: ReasoningEffort::default(),
@@ -822,7 +824,18 @@ impl ModelAgent {
         self.sync_message_projection();
     }
 
+    fn reset_tool_context(&self, strategy: &str) {
+        if let Some(reset) = &self.tool_context_reset {
+            reset();
+            tracing::debug!(
+                strategy,
+                "revoked tool observations for replaced model context"
+            );
+        }
+    }
+
     fn adopt_compacted_history(&mut self, compacted: &ReactiveCompaction) {
+        self.reset_tool_context("compaction");
         // Every adoption path (proactive threshold, prefire pass-2, reactive
         // overflow recovery) funnels here, so this is the one place the
         // summarizing call's spend can be recorded without missing a route.
@@ -885,6 +898,9 @@ impl ModelAgent {
             .collect();
         if let Some(persistence) = &self.surface_persistence {
             persistence.replace_tool_results(strategy, &replacements)?;
+        }
+        if !replacements.is_empty() {
+            self.reset_tool_context(strategy);
         }
         for item in self.response_history.items.iter_mut().take(protected_start) {
             match item {
@@ -1155,6 +1171,7 @@ impl ModelAgent {
     /// the agent appends the live turn's messages on top as usual.
     pub fn with_history(mut self, history: Vec<Message>) -> Self {
         if !history.is_empty() {
+            self.reset_tool_context("history_replacement");
             // messages == [system, goal]; reinsert as [system, history.., goal].
             let goal = self.messages.pop().expect("seeded with system + goal");
             self.messages.extend(history);
@@ -1176,6 +1193,7 @@ impl ModelAgent {
         if history.is_empty() {
             return self;
         }
+        self.reset_tool_context("history_replacement");
         let instructions = self.response_history.instructions.clone();
         let live_goal = self.response_history.items.last().filter(|item| matches!(item,
             ResponseInputItem::Message { role, .. } | ResponseInputItem::InputMessage { role, .. } if role == "user")).cloned();
@@ -1988,6 +2006,7 @@ impl ModelAgent {
                 .extend(plan.applied_tags.iter().cloned());
         }
         self.snipped_tags.extend(plan.applied_tags.iter().cloned());
+        self.reset_tool_context("history_snip");
         let items = std::mem::take(&mut self.response_history.items);
         self.response_history.replace_items(plan.apply(items));
         self.sync_message_projection();
@@ -2167,6 +2186,10 @@ async fn stream_model_attempt<'a>(
 
 #[async_trait]
 impl Agent for ModelAgent {
+    fn set_tool_context_reset(&mut self, reset: deepagent_tools::ToolContextReset) {
+        self.tool_context_reset = Some(reset);
+    }
+
     fn set_event_sink(&mut self, events: Arc<dyn RuntimeEventSink>) {
         self.events = Some(events);
     }
@@ -2843,6 +2866,10 @@ fn retry_delay_with_provider(
         capped - jitter_range + jitter,
     ))
 }
+
+#[cfg(test)]
+#[path = "model_context_authority_tests.rs"]
+mod context_authority_tests;
 
 #[cfg(test)]
 mod tests {

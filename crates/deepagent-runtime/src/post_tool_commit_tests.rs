@@ -281,6 +281,7 @@ async fn exercise(case: Case) {
             PermissionSet::developer(),
             Arc::new(AtomicBool::new(false)),
             None,
+            engine.observations.clone(),
             std::time::Duration::from_secs(3),
             true,
         );

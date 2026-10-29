@@ -16,7 +16,9 @@ use deepagent_persistence::run_control::{
 use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use deepagent_tools::permission::PermissionSet;
-use deepagent_tools::{ToolExecutionContext, ToolInvocation, ToolOutput, ToolRegistry};
+use deepagent_tools::{
+    ToolExecutionContext, ToolInvocation, ToolObservationScope, ToolOutput, ToolRegistry,
+};
 use sha2::{Digest, Sha256};
 
 use crate::approval::{ApprovalDecision, ApprovalGate, ApprovalRequest, AutoDenyGate};
@@ -377,6 +379,7 @@ pub struct ToolExecutionPipeline<'a> {
     events: Arc<dyn RuntimeEventSink>,
     cancel: Arc<AtomicBool>,
     cancel_token: Option<CancellationToken>,
+    observations: ToolObservationScope,
     timeout: Duration,
     result_policy: ToolResultPolicy,
     checkpoint: Option<Arc<CheckpointManager>>,
@@ -400,6 +403,7 @@ impl<'a> ToolExecutionPipeline<'a> {
             events: Arc::new(NullEventSink),
             cancel: Arc::new(AtomicBool::new(false)),
             cancel_token: None,
+            observations: ToolObservationScope::default(),
             timeout: ToolExecutionContext::DEFAULT_TIMEOUT,
             result_policy: ToolResultPolicy::new(
                 session_id,
@@ -444,6 +448,13 @@ impl<'a> ToolExecutionPipeline<'a> {
         self
     }
 
+    /// Share the owning model context across every pipeline built for a run.
+    /// Standalone pipelines otherwise start with independent read evidence.
+    pub fn with_observation_scope(mut self, observations: ToolObservationScope) -> Self {
+        self.observations = observations;
+        self
+    }
+
     fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
             || self
@@ -460,11 +471,12 @@ impl<'a> ToolExecutionPipeline<'a> {
             .cancel_token
             .as_ref()
             .map(CancellationToken::child_token);
-        if let Some(token) = token {
+        let context = if let Some(token) = token {
             ToolExecutionContext::from_token_and_flag(token, self.cancel.clone())
         } else {
             ToolExecutionContext::new(self.cancel.clone())
-        }
+        };
+        context.with_observation(self.observations.capture())
     }
 
     pub fn with_result_policy(

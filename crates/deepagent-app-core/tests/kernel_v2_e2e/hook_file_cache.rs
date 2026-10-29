@@ -27,6 +27,7 @@ enum Order {
     HookThenWrite,
     NoHookThenWrite,
     ParentReadThenWrite,
+    ParentReadThenHookThenWrite,
 }
 
 struct CacheModel {
@@ -41,9 +42,13 @@ impl CacheModel {
         let read = |id| call(id, "read_file", json!({"path":"fixture.txt"}));
         let list = |id| call(id, "task_list", json!({}));
         match (self.order, index) {
-            (Order::ParentThenHook | Order::ParentRepeat | Order::ParentReadThenWrite, 0) => {
-                read(FIRST)
-            }
+            (
+                Order::ParentThenHook
+                | Order::ParentRepeat
+                | Order::ParentReadThenWrite
+                | Order::ParentReadThenHookThenWrite,
+                0,
+            ) => read(FIRST),
             (
                 Order::HookThenParent
                 | Order::HookOnly
@@ -51,7 +56,7 @@ impl CacheModel {
                 | Order::NoHookThenWrite,
                 0,
             ) => list(FIRST),
-            (Order::ParentThenHook, 1) => list(SECOND),
+            (Order::ParentThenHook | Order::ParentReadThenHookThenWrite, 1) => list(SECOND),
             (Order::HookThenParent | Order::ParentRepeat, 1) => read(SECOND),
             (Order::HookThenWrite | Order::NoHookThenWrite | Order::ParentReadThenWrite, 1) => {
                 call(
@@ -60,7 +65,12 @@ impl CacheModel {
                     json!({"path":"fixture.txt","content":REPLACEMENT}),
                 )
             }
-            (Order::HookOnly, 1) | (_, 2) => {
+            (Order::ParentReadThenHookThenWrite, 2) => call(
+                "cache-parent-write",
+                "write_file",
+                json!({"path":"fixture.txt","content":REPLACEMENT}),
+            ),
+            (Order::HookOnly, 1) | (_, 2) | (Order::ParentReadThenHookThenWrite, 3) => {
                 text("cache-parent-final", "Offline read audit complete.")
             }
             _ => panic!("unexpected parent request {index}"),
@@ -86,11 +96,15 @@ impl HttpTransport for CacheModel {
         let item = if hook {
             match index {
                 0 => {
-                    let mut arguments = json!({"path":"fixture.txt"});
-                    if self.explicit_hook_offset {
-                        arguments["offset"] = json!(1);
+                    if self.order == Order::ParentReadThenHookThenWrite {
+                        call(HOOK_READ, "task_list", json!({}))
+                    } else {
+                        let mut arguments = json!({"path":"fixture.txt"});
+                        if self.explicit_hook_offset {
+                            arguments["offset"] = json!(1);
+                        }
+                        call(HOOK_READ, "read_file", arguments)
                     }
-                    call(HOOK_READ, "read_file", arguments)
                 }
                 1 => text("cache-hook-decision", r#"{"ok":true}"#),
                 _ => panic!("unexpected hook request {index}"),
@@ -240,7 +254,14 @@ fn summarize(order: Order, model: &CacheModel, events: &[RuntimeEvent], disk: &s
         order,
         Order::ParentRepeat | Order::NoHookThenWrite | Order::ParentReadThenWrite
     );
-    assert_eq!(parent.len(), if order == Order::HookOnly { 2 } else { 3 });
+    assert_eq!(
+        parent.len(),
+        match order {
+            Order::HookOnly => 2,
+            Order::ParentReadThenHookThenWrite => 4,
+            _ => 3,
+        }
+    );
     assert_eq!(hooks.len(), if hooked { 2 } else { 0 });
     assert!(!parent[0].to_string().contains(CANARY));
     if hooked {
@@ -251,17 +272,30 @@ fn summarize(order: Order, model: &CacheModel, events: &[RuntimeEvent], disk: &s
     )).count(), usize::from(hooked));
     let parent_first = matches!(
         order,
-        Order::ParentThenHook | Order::ParentRepeat | Order::ParentReadThenWrite
+        Order::ParentThenHook
+            | Order::ParentRepeat
+            | Order::ParentReadThenWrite
+            | Order::ParentReadThenHookThenWrite
     )
     .then(|| output(&parent[1], FIRST));
     let parent_second = matches!(order, Order::HookThenParent | Order::ParentRepeat)
         .then(|| output(&parent[2], SECOND));
-    let hook_read = hooked.then(|| output(&hooks[1], HOOK_READ));
+    let hook_read = (hooked && order != Order::ParentReadThenHookThenWrite)
+        .then(|| output(&hooks[1], HOOK_READ));
     let parent_write = matches!(
         order,
-        Order::HookThenWrite | Order::NoHookThenWrite | Order::ParentReadThenWrite
+        Order::HookThenWrite
+            | Order::NoHookThenWrite
+            | Order::ParentReadThenWrite
+            | Order::ParentReadThenHookThenWrite
     )
-    .then(|| wire_output(&parent[2], SECOND));
+    .then(|| {
+        if order == Order::ParentReadThenHookThenWrite {
+            wire_output(&parent[3], "cache-parent-write")
+        } else {
+            wire_output(&parent[2], SECOND)
+        }
+    });
     Observation {
         parent_body_seen: parent.iter().any(|body| body.to_string().contains(CANARY)),
         hook_body_seen: hooks.iter().any(|body| body.to_string().contains(CANARY)),
@@ -296,6 +330,18 @@ async fn hook_file_cache_different_range_receives_body() {
     let observed = observe(Order::ParentThenHook, true).await;
     assert!(observed.parent_body_seen && observed.hook_body_seen);
     assert_eq!(observed.hook_read.unwrap()["cache_hit"], true);
+}
+
+#[tokio::test]
+async fn context_reset_in_readonly_hook_does_not_revoke_parent_read_authority() {
+    let observed = observe(Order::ParentReadThenHookThenWrite, false).await;
+    assert!(observed.parent_body_seen);
+    assert!(!observed.hook_body_seen, "hook only called task_list");
+    assert!(
+        observed.replacement_written,
+        "an unrelated nested context must not revoke the parent's observed file"
+    );
+    assert_eq!(observed.parent_write.unwrap()["status"], "ok");
 }
 
 #[tokio::test]

@@ -20,6 +20,7 @@
 //! so a sandboxed executor can wrap any tool transparently, and [`sandbox`]
 //! holds the policy/ABI while [`wasm`](crate::wasm) holds the engine backend.
 
+mod observation;
 pub mod permission;
 pub mod registry;
 pub mod sandbox;
@@ -37,6 +38,7 @@ use tokio_util::sync::CancellationToken;
 
 use deepagent_core::error::Result;
 
+pub use observation::{ToolObservation, ToolObservationScope};
 pub use permission::{Permission, PermissionSet, RiskLevel};
 pub use registry::{ToolRegistry, ToolSpec, ValidatedInvocation};
 pub use sandbox::{Capabilities, Sandbox, SandboxPolicy, SandboxStats};
@@ -132,6 +134,7 @@ pub struct ToolExecutionContext {
     cancel: Arc<AtomicBool>,
     token: CancellationToken,
     timeout: Duration,
+    observation: Option<ToolObservation>,
 }
 
 impl Default for ToolExecutionContext {
@@ -140,6 +143,7 @@ impl Default for ToolExecutionContext {
             cancel: Arc::new(AtomicBool::new(false)),
             token: CancellationToken::new(),
             timeout: Self::DEFAULT_TIMEOUT,
+            observation: None,
         }
     }
 }
@@ -189,12 +193,31 @@ impl ToolExecutionContext {
             cancel: Arc::new(AtomicBool::new(false)),
             token: self.token.child_token(),
             timeout: self.timeout,
+            observation: self.observation.clone(),
         }
     }
 
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
         self
+    }
+
+    /// Runtime and pipeline owners attach their captured model generation.
+    /// The legacy direct Tool API leaves this unset: its shared file cache is
+    /// its observation boundary, and can never inherit a scoped runtime read.
+    pub fn with_observation(mut self, observation: ToolObservation) -> Self {
+        self.observation = Some(observation);
+        self
+    }
+
+    pub fn observation(&self) -> Option<&ToolObservation> {
+        self.observation.as_ref()
+    }
+
+    pub fn observation_is_current(&self) -> bool {
+        self.observation
+            .as_ref()
+            .map_or(true, ToolObservation::is_current)
     }
 
     pub fn cancel_flag(&self) -> Arc<AtomicBool> {
@@ -229,6 +252,10 @@ async fn wait_for_legacy_cancel(cancel: Arc<AtomicBool>) {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// Revokes tool-local facts derived from a model's previous context. This is
+/// not a permission grant, cancellation signal, or a second tool dispatcher.
+pub type ToolContextReset = Arc<dyn Fn() + Send + Sync>;
 
 /// The trait every tool implements.
 #[async_trait]

@@ -1,7 +1,7 @@
 use super::*;
 use crate::file_cache::FileStateCache;
 use crate::file_tools::{EditFileTool, MultiEditTool, ReadFileTool, WriteFileTool};
-use deepagent_tools::Tool;
+use deepagent_tools::{Tool, ToolObservationScope};
 use serde_json::json;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -47,25 +47,52 @@ impl Files {
     }
 
     async fn change(&self, tool: usize, owner: &str) -> ToolOutput {
+        self.change_in(tool, owner, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn change_in(
+        &self,
+        tool: usize,
+        owner: &str,
+        context: ToolExecutionContext,
+    ) -> ToolOutput {
         match tool {
             0 => WriteFileTool::with_cache(self.root.clone(), self.cache.clone())
-                .invoke(
+                .invoke_with_context(
                     json!({"path":"shared.txt", "content":owner.replace("value=old", "value=new")}),
+                    context,
                 )
                 .await
                 .unwrap(),
             1 => EditFileTool::with_cache(self.root.clone(), self.cache.clone())
-                .invoke(json!({"path":"shared.txt", "old":"value=old", "new":"value=new"}))
+                .invoke_with_context(
+                    json!({"path":"shared.txt", "old":"value=old", "new":"value=new"}),
+                    context,
+                )
                 .await
                 .unwrap(),
             _ => MultiEditTool::with_cache(self.root.clone(), self.cache.clone())
-                .invoke(
+                .invoke_with_context(
                     json!({"path":"shared.txt", "edits":[{"old":"value=old", "new":"value=new"}]}),
+                    context,
                 )
                 .await
                 .unwrap(),
         }
     }
+}
+
+fn scoped(scope: &ToolObservationScope) -> ToolExecutionContext {
+    ToolExecutionContext::default().with_observation(scope.capture())
+}
+
+async fn read_in(files: &Files, scope: &ToolObservationScope) -> ToolOutput {
+    files
+        .reader()
+        .invoke_with_context(json!({"path":"shared.txt"}), scoped(scope))
+        .await
+        .unwrap()
 }
 
 fn no_staging(root: &Path) {
@@ -74,6 +101,122 @@ fn no_staging(root: &Path) {
         .file_name()
         .to_string_lossy()
         .starts_with(".deepagent-write-")));
+}
+
+#[tokio::test]
+async fn context_reset_revokes_all_mutations_and_forces_a_real_reread() {
+    for tool in 0..3 {
+        let files = Files::new(INITIAL);
+        let other = Files::new(INITIAL);
+        let scope = ToolObservationScope::default();
+        assert!(read_in(&files, &scope).await.ok);
+        other.read().await;
+        let stub = read_in(&files, &scope).await;
+        assert!(stub.value.to_string().contains("FILE_UNCHANGED_STUB"));
+        let old_invocation = scoped(&scope);
+        scope.reset();
+        assert!(!files.change_in(tool, INITIAL, old_invocation).await.ok);
+        let rejected = files.change_in(tool, INITIAL, scoped(&scope)).await;
+        assert!(
+            !rejected.ok,
+            "mutation {tool} kept discarded read authority"
+        );
+        assert_eq!(files.disk(), INITIAL);
+        no_staging(files.root.path());
+        // Another actor/cache is unaffected; reset is not a global permission flag.
+        assert!(other.change(tool, INITIAL).await.ok);
+        let reread = read_in(&files, &scope).await;
+        assert!(reread.ok);
+        assert_eq!(reread.value["cache_hit"], true);
+        assert!(reread.value.to_string().contains("owner=initial"));
+        assert!(!reread.value.to_string().contains("FILE_UNCHANGED_STUB"));
+        assert!(files.change_in(tool, INITIAL, scoped(&scope)).await.ok);
+        assert!(files.disk().contains("value=new"));
+    }
+}
+
+#[tokio::test]
+async fn resetting_a_shared_cache_sibling_preserves_parent_authority() {
+    for tool in 0..3 {
+        let files = Files::new(INITIAL);
+        let parent = ToolObservationScope::default();
+        let hook = ToolObservationScope::default();
+        assert!(read_in(&files, &parent).await.ok);
+        let nested = read_in(&files, &hook).await;
+        assert_eq!(nested.value["cache_hit"], true);
+        assert!(nested.value["content"]
+            .as_str()
+            .unwrap()
+            .contains("owner=initial"));
+        hook.reset();
+        assert!(!files.change_in(tool, INITIAL, scoped(&hook)).await.ok);
+        assert_eq!(read_in(&files, &parent).await.value["unchanged_stub"], true);
+        assert!(files.change_in(tool, INITIAL, scoped(&parent)).await.ok);
+        assert!(files.disk().contains("value=new"));
+    }
+}
+
+#[tokio::test]
+async fn shared_bytes_do_not_share_windows_or_legacy_authority() {
+    let files = Files::new(INITIAL);
+    let parent = ToolObservationScope::default();
+    let hook = ToolObservationScope::default();
+    let read = files.reader();
+    let first = read
+        .invoke_with_context(json!({"path":"shared.txt","limit":1}), scoped(&parent))
+        .await
+        .unwrap();
+    let second = read
+        .invoke_with_context(json!({"path":"shared.txt","offset":2}), scoped(&hook))
+        .await
+        .unwrap();
+    assert!(first.ok && second.ok);
+    assert_eq!(second.value["cache_hit"], true);
+    assert!(!files.change_in(0, INITIAL, scoped(&parent)).await.ok);
+    assert!(!files.change_in(0, INITIAL, scoped(&hook)).await.ok);
+    assert!(!files.change_in(1, INITIAL, scoped(&parent)).await.ok);
+    assert!(
+        !files.change(1, INITIAL).await.ok,
+        "unscoped cannot inherit scoped reads"
+    );
+    files.read().await;
+    let fresh = ToolObservationScope::default();
+    assert!(
+        !files.change_in(1, INITIAL, scoped(&fresh)).await.ok,
+        "scoped cannot inherit legacy reads"
+    );
+    assert!(files.change_in(1, INITIAL, scoped(&hook)).await.ok);
+    assert!(files.disk().contains("value=new"));
+}
+
+#[tokio::test]
+async fn late_old_read_cannot_authorize_the_replacement_context() {
+    let files = Files::new(INITIAL);
+    let scope = ToolObservationScope::default();
+    let old_context = scoped(&scope);
+    let gate = lock_path_operation(&files.path()).unwrap();
+    let reader = files.reader();
+    let (started, waiting) = tokio::sync::oneshot::channel();
+    let pending = tokio::spawn(async move {
+        started.send(()).unwrap();
+        reader
+            .invoke_with_context(json!({"path":"shared.txt"}), old_context)
+            .await
+            .unwrap()
+    });
+    waiting.await.unwrap();
+    scope.reset();
+    drop(gate);
+    assert!(pending.await.unwrap().ok);
+    assert!(!files.change_in(0, INITIAL, scoped(&scope)).await.ok);
+    assert_eq!(files.disk(), INITIAL);
+    let reread = read_in(&files, &scope).await;
+    assert_eq!(reread.value["cache_hit"], true);
+    assert!(reread.value["content"]
+        .as_str()
+        .unwrap()
+        .contains("owner=initial"));
+    assert!(files.change_in(0, INITIAL, scoped(&scope)).await.ok);
 }
 
 #[cfg(windows)]

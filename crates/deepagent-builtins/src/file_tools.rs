@@ -231,7 +231,7 @@ impl Tool for ReadFileTool {
             };
             let (content, returned_lines, next_offset, truncated, message) =
                 read_window(&cached.content, cached.line_count, offset, limit);
-            let unchanged = cache_hit && cache.last_read_matches(&resolved, offset, limit);
+            let unchanged = cache_hit && cache.last_read_matches_in_context(&resolved, context.observation(), offset, limit);
             if unchanged {
                 return ToolOutput::success(serde_json::json!({
                 "path": root.relativize(&resolved),
@@ -248,8 +248,8 @@ impl Tool for ReadFileTool {
                 "message": "file unchanged since last read with same offset/limit; content omitted to save tokens",
                 }));
             }
-            cache.record_read(&resolved, offset, limit);
-            cache.record_window(&resolved, offset.unwrap_or(1), returned_lines);
+            cache.record_read_in_context(&resolved, context.observation(), offset, limit);
+            cache.record_window(&resolved, context.observation(), offset.unwrap_or(1), returned_lines);
             ToolOutput::success(serde_json::json!({
             "path": root.relativize(&resolved),
             "content": content,

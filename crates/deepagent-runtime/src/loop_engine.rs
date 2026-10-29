@@ -18,7 +18,7 @@ use deepagent_core::task::TaskState;
 use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry, ToolBatchItem};
 use deepagent_session::Session;
 use deepagent_tools::permission::PermissionSet;
-use deepagent_tools::{ToolExecutionContext, ToolRegistry};
+use deepagent_tools::{ToolExecutionContext, ToolObservationScope, ToolRegistry};
 use deepagent_tracing::metrics::{names, Metrics};
 use deepagent_verification::reflection::NextAction;
 use deepagent_verification::{CommandRunner, ReflectionEngine, VerificationStep, Verifier};
@@ -217,6 +217,7 @@ pub struct RuntimeEngine<'a, C: Clock> {
     approvals: std::sync::Arc<dyn ApprovalGate>,
     cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     cancel_token: Option<CancellationToken>,
+    observations: ToolObservationScope,
     edited_files: std::sync::Arc<
         std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, crate::events::EditedFile>>,
     >,
@@ -232,6 +233,7 @@ struct StreamingToolAttempt<'a> {
     permissions: PermissionSet,
     runtime_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     runtime_token: Option<CancellationToken>,
+    observations: ToolObservationScope,
     timeout: std::time::Duration,
     speculation_enabled: bool,
     active_attempt: Option<usize>,
@@ -256,6 +258,7 @@ impl<'a> StreamingToolAttempt<'a> {
         permissions: PermissionSet,
         runtime_cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         runtime_token: Option<CancellationToken>,
+        observations: ToolObservationScope,
         timeout: std::time::Duration,
         speculation_enabled: bool,
     ) -> Self {
@@ -264,6 +267,7 @@ impl<'a> StreamingToolAttempt<'a> {
             permissions,
             runtime_cancel,
             runtime_token,
+            observations,
             timeout,
             speculation_enabled,
             active_attempt: None,
@@ -404,6 +408,7 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
                     .map(CancellationToken::child_token);
                 let task_token = execution_token.clone();
                 let timeout = self.timeout;
+                let observation = self.observations.capture();
                 let handle =
                     tokio::spawn(async move {
                         let started = std::time::Instant::now();
@@ -426,6 +431,7 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
                                     )
                                 },
                             )
+                            .with_observation(observation)
                             .with_timeout(timeout),
                         )
                         .await;
@@ -478,6 +484,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             approvals: std::sync::Arc::new(AutoDenyGate),
             cancel: None,
             cancel_token: None,
+            observations: ToolObservationScope::default(),
             edited_files: std::sync::Arc::new(std::sync::Mutex::new(
                 std::collections::HashMap::new(),
             )),
@@ -520,10 +527,12 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
             .cancel_token
             .as_ref()
             .map(CancellationToken::child_token);
-        child_token.map_or_else(
-            || ToolExecutionContext::new(legacy.clone()),
-            |token| ToolExecutionContext::from_token_and_flag(token, legacy.clone()),
-        )
+        child_token
+            .map_or_else(
+                || ToolExecutionContext::new(legacy.clone()),
+                |token| ToolExecutionContext::from_token_and_flag(token, legacy.clone()),
+            )
+            .with_observation(self.observations.capture())
     }
 
     /// Attach a live event sink (builder style). Events are pushed as the run
@@ -669,8 +678,37 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         task: TaskId,
         agent: &mut dyn Agent,
     ) -> Result<RunOutcome> {
+        // Run-local binding, not mutable engine-global state: reusing one
+        // engine (even concurrently) must neither inherit nor revoke another
+        // model's observations. All original stores/gates/sinks remain shared.
+        let run = Self {
+            registry: self.registry,
+            metrics: self.metrics.clone(),
+            config: self.config.clone(),
+            hooks: self.hooks,
+            verification: self.verification,
+            adversarial_verifier: self.adversarial_verifier.clone(),
+            events: self.events.clone(),
+            approvals: self.approvals.clone(),
+            cancel: self.cancel.clone(),
+            cancel_token: self.cancel_token.clone(),
+            observations: ToolObservationScope::default(),
+            edited_files: self.edited_files.clone(),
+            _clock: std::marker::PhantomData,
+        };
+        run.run_in_context(session, task, agent).await
+    }
+
+    async fn run_in_context(
+        &self,
+        session: &mut Session<'a, C>,
+        task: TaskId,
+        agent: &mut dyn Agent,
+    ) -> Result<RunOutcome> {
         let _session_activity = session.acquire_activity()?;
         self.events.checkpoint()?;
+        let observations = self.observations.clone();
+        agent.set_tool_context_reset(std::sync::Arc::new(move || observations.reset()));
         let session_id = session.id();
         let run_started_at = std::time::Instant::now();
 
@@ -752,6 +790,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 self.config.permissions.clone(),
                 runtime_cancel,
                 self.cancel_token.clone(),
+                self.observations.clone(),
                 self.config.tool_timeout,
                 self.hooks.is_none(),
             );
@@ -1298,6 +1337,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         .with_auto_approve(self.config.auto_approve)
         .with_execution_controls(cancel, self.config.tool_timeout)
         .with_execution_token(self.cancel_token.clone())
+        .with_observation_scope(self.observations.clone())
         .with_result_policy(
             self.config.tool_result_budget.clone(),
             self.config.tool_result_decorator.clone(),
@@ -2707,6 +2747,10 @@ enum VerifyStep {
 mod post_tool_commit_tests;
 
 #[cfg(test)]
+#[path = "tool_observation_tests.rs"]
+mod tool_observation_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::testing::ScriptedAgent;
@@ -3566,6 +3610,7 @@ mod tests {
             PermissionSet::read_only(),
             Arc::new(AtomicBool::new(false)),
             None,
+            ToolObservationScope::default(),
             std::time::Duration::from_secs(60),
             true,
         );

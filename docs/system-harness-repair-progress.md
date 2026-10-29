@@ -2,21 +2,65 @@
 
 ## 当前状态与计数口径（2026-10-29）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计六十九项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计七十项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 69 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-284、H-286、H-287、H-288、H-300，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 70 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-260、H-284、H-286、H-287、H-288、H-300，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 18 | 17项原审计历史修复，另H-77在本轮前已随H-78共享边界消除，原探针复核通过；两种来源明确区分，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-288已按E-H288-09所列本机范围验收 |
-| 待修复 | 210 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-260已按E-H260-08完成限定范围验收 |
+| 待修复 | 209 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **210（210待修复、0修复中）**；不提供完成率。六十九项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+有效未关闭条目当前为 **209（209待修复、0修复中）**；不提供完成率。七十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。18项审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；H-77是另一本轮前已修复来源，生产实现c6947508及本轮真实复核单独列明。
+
+## H-260 本轮即时记录（2026-10-29）
+
+**当前状态：已修复并验收（2026-10-29，仅E-H260-08所列Windows本机、离线与正式消费者范围）；修复hash待独立提交后回填。** E-H260-01～08保留原失败、候选回归、重构与最终门禁；阶段性“修复中/执行中”不代表最终状态。
+
+E-H260-01（修前复核与根因边界，2026-10-29）：HEAD为4d4a059f，tracked起始干净；独立临时data/home/profile/managed、清除供应商key及数据库路径继承，执行`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib context_runtime::tests::audit_compaction_clears_model_output_but_not_file_edit_cache --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，原生101、114.75秒，0 passed/1 failed/0 ignored（target/h260-before-20261029*）。模型结果已清，未重新读取的覆盖仍成功、磁盘为after；保留原始失败。核对发现该native micro helper当前标有cfg(test)、只有测试调用，不能沿用原报告“该helper本身是生产入口”的表述；真正生产清理位于ModelAgent::prune_stale_tool_results，完整压缩/prefire采纳和snip也会撤回上下文，必须验证这些真实入口。
+
+本轮仅修复H-260，不合并H-76的外部字节冲突或其他H项。参考Claude compact.ts的readFileState.clear；本地设计为Tool/ToolRegistry提供同步撤回上下文派生状态的生命周期回调，RuntimeEngine绑定其实际工具实例，ModelAgent仅在成功采纳完整压缩、工具结果清理、snip或历史替换时调用，读取工具清除原共享FileStateCache的快照、窗口与unchanged stub资格。新运行先清旧资格，生产恢复仍使用原注册/会话链，不另造store、权限或取消。压缩无结果、失败或Surface持久化拒绝应保留原资格；显式重新读取必须返回正文并恢复三类mutation准入。该设计尚待正式生产链和回归验证，不能把手动clear或旧helper单测通过当验收；H-260保持修复中、无commit，69验收/18历史跳过/7归并/2撤销/209待修+1修复中=210有效未关闭。
+
+E-H260-02（候选首轮、夹具根因与正式默认回归，2026-10-29）：保留h260-first-context-20261029的原生101、120.78秒、32 passed/3 failed/7 ignored；三项新回归均因scripted model has no remaining turn失败。沿生产CompletionGate核对，夹具有真实文件写入却未配置CheckpointManager，完成证据为空而触发后续模型轮次；补齐原检查点，不改生产门禁、不增加脚本回合掩盖失败。失败对照的末次edit/multi_edit改为针对首次成功写入后的new→final，仍强断言真实磁盘。随后h260-second-context-20261029原生0、113.22秒、36 passed/0 failed/7 ignored，原探针已改为真实RuntimeEngine自动绑定→ModelAgent原生采纳→正式三类文件工具且取消ignore；legacy采纳、None及Err保留旧Surface/读取资格均走真实engine，重新读取必须有正文而非unchanged stub。其余7个ignored属于其他审计，不计通过；此组仅使用受控compactor，不能代替生产HookedReactiveContextCompactor组合、持久化、恢复或完整验收。现补4项runtime生命周期回归及真实生产prune/SQLite关闭重开/复用registry续聊组合，验证尚在执行（h260-lifecycle、h260-production-context、h260-file-mutations）；保持修复中，无commit，计数不变。
+
+E-H260-03（真实生产采纳、恢复与专项门禁，2026-10-29）：h260-lifecycle-20261029原生0、33.43秒、4/0/0，覆盖native/legacy完整采纳、proactive/reactive/prefire共用采纳边界、显式历史替换、idle清理、原生/自定义tool output、无替换、prune与snip持久化拒绝及重复snip不撤回。保留h260-production-context-20261029的101、113.30秒、36/1/7：固定120输入token的脚本usage掩盖历史增长，未发生压缩而首写成功；修正夹具按增长报告合成usage后h260-production-meter-20261029为101、113.18秒、37/1/7，真实prune/冷恢复已通过，唯一新full夹具仍未达到KEEP_WINDOW的至少5个正文块/约1万token、4万token封顶规则。重新审视正文与tool dump的边界，增加真实assistant正文并让full夹具在满足保留条件后触发，未降低生产阈值或改变保留策略；另有一次fmt在新夹具多余括号处原生1，解析修正后复验。
+
+h260-production-retention-20261029原生0、109.83秒，context_runtime默认组38 passed/0 failed/7 ignored。新增组合以真实RuntimeEngine→ModelAgent→HookedReactiveContextCompactor/SessionSurfaceStore→正式file_tools验证三种mutation：生产prune已持久化替换原读取结果；受控prune持久化拒绝时，生产完整summary随后成功写入ContextCompacted并采纳、没有伪造prune patch。两路径均拒绝无reread写入，重新读取为正文而非stub，再写成功。真正关闭SQLite后重开、保留原registry暖cache；分别走recover/write、Session::fork/edit、Session::rewind/multi_edit并重建原会话模型Surface，新engine无重新读取仍拒写、reread后成功。保留原始read事件而replay不复活已撤回内容；分支测试为Session历史控制与RuntimeEngine组合，不冒充完整Tauri文件检查点恢复或真实跨进程AppCore启动。
+
+h260-file-mutations-reviewed-20261029原生0、29.31秒、24/0/0，包含本项清缓存/独立cache、外部版本、已交付窗口、DACL、取消、发布失败以及真实双宿主进程冲突；预期catch_unwind夹具打印panic但测试真实通过。h260-runtime-tools-reviewed-20261029原生0、102.83秒，runtime lib336/0/9、stabilization5/0/0、tools24/0/0，doc tests两组0/0/0；审批与权限拒绝仍通过，没有扩大权限。11份最终源码SHA256固定于target/h260-reviewed-source-20261029.json；root fmt与git diff --check均原生0（h260-reviewed-{format,diff}-20261029*）。当前隔离完整workspace测试及后续Tauri lib check、局部/全局严格lint已在同一顺序会话11037启动，尚无完整终态；此时不能验收、不能提交，69/18/7/2/209待修+1修复中=210有效未关闭。无新依赖、SQL迁移、wire/前端变更；Tool和Agent为带默认实现的新增生命周期接口，新运行与成功上下文替换会保守清空本批文件资格，必须实际reread，不重建任何store/审批/取消。剩余200–400有效小时仍是未经逐项校准的历史粗估，设备、依赖及构建等待另计。
+
+E-H260-04（完整门禁揭示候选回归，不验收，2026-10-29）：顺序会话11037已真实终结，不再live。完整命令cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1原生101、1006.05秒，130份结果合计3704 passed/2 failed/306 ignored（h260-reviewed-workspace-20261029*）。AppCore lib1237/0/61、builtins365/0/4、runtime336/0/9、persistence99/0/0、session20/0/0；正式Kernel164/1/77。两失败分别是既有H-306空defaultUserPrompt与本轮新增回归hook_file_cache::hook_file_cache_different_range_receives_body；后者不是环境失败或既有基线，不得跳过或改断言。精确观察是parent与hook均收到正文，但hook的cache_hit由预期true变false；尚不能由此声称父写入失败。
+
+Tauri lib check原生0、17.07秒；tools/builtins全部targets/features/no-deps严格Clippy原生0、23.30秒。runtime严格Clippy原生101、9.06秒，既有model_agent.rs:282 Usage clone_on_copy；AppCore原生101、29.64秒，8处既有context_runtime Usage clone、http_runtime.rs:332 needless_return、plugin_preparation type_complexity、run_assembler既有too_many_arguments共11项；workspace严格Clippy原生101、4.13秒，停于未修改models/client.rs:355 clone_on_copy。对应h260-reviewed-{tauri,tools-lint,runtime-lint,appcore-lint,workspace-lint}-20261029*。11份受测源码与reviewed-source快照一致，未抑制lint或顺手修其他H。无前端/wire修改，不运行pnpm build或冒充UI验收。
+
+根因复审：build_hook_agent_registry直接register(spec.tool.clone())，父与隔离Hook虽有不同registry仍复用同一Arc<Tool>/FileStateCache。候选把运行上下文重置等同清空整个共享字节缓存；仅靠原registry回调不能表达读取证据的上下文所有者。必须区分可复用的字节快照与每个模型上下文实际收到的窗口/stub资格，不能改cache_hit预期、全局保留资格或加嵌套特判。已读取ToolExecutionContext的取消/期限字段、ToolPipeline::execution_context及RuntimeEngine的直接invoke路径，下一步需在统一执行上下文内设计观察身份/代次，并让read/mutation与采纳回调共用；这是待实现设计，不宣称已完成。为区分缓存命中变化与真正父资格损失，现补正式ChatService控制：parent真实read→只调用task_list的隔离Hook→parent write；不改现有控制断言，新测试h260-parent-authority-counterexample-20261029正在执行，待原生终态。H-260继续修复中、无提交、不进入其他H；69验收/18历史跳过/7归并/2撤销/209待修+1修复中=210有效未关闭，剩余200–400有效小时仍为未经逐项校准的历史粗估，构建与环境等待另计。
+
+E-H260-05（新增真实父资格反例，2026-10-29）：h260-parent-authority-counterexample-20261029已终结，原生101、120.57秒，测试本体0.61秒、0 passed/1 failed/0 ignored。执行cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e hook_file_cache::context_reset_in_readonly_hook_does_not_revoke_parent_read_authority --offline -j 2 -- --exact --nocapture --test-threads=1。父模型确实收到CANARY正文，隔离Hook只执行task_list、没有读取该文件；Hook结束后父write_file却被must call read_file拒绝，磁盘未变。此为本轮全cache重置候选导致的真实正常场景回归，不是原H-260修前行为、Hook字节cache_hit差异或已验收结果。保留默认强断言，不ignore、不改期望、不靠Hook补读恢复父资格；未修改原different-range控制。
+
+据此否决把所有模型上下文映射到同一可清空cache资格的方案；下一步仍是H-260：沿原ToolExecutionContext传递上下文观察身份/代次，让共享字节快照与各模型已交付窗口/stub资格分离，成功采纳只失效自身资格、新运行不继承他者资格，必须同时核对ToolPipeline与RuntimeEngine直接invoke路径。该方案目前仅为有反例依据的本地设计，尚未实现或验证；不能用当前专项绿色关闭H-260，也不把相邻Hook审计项另计成果。当前所有已启动命令均已收取终态，无live构建/测试需续等。11份此前门禁源码未变，仅另增正式Kernel反例；当前最终fmt/diff与台账核对另存h260-current-checkpoint-20261029*，不把旧完整门禁称为覆盖新增反例后的源码。保持修复中、无commit、无新增验收，69/18/7/2/209待修+1修复中=210有效未关闭。未触碰用户排除文件、真实凭据、用户数据或外部服务；不推送、不创建PR，整体目标继续active。
+
+E-H260-06（按上下文观察代次重构与首轮实测，2026-10-29）：已移除候选的Tool::reset_model_context、registry-wide回调和FileStateCache全清；ModelAgent成功采纳边界保留，但回调只轮换当前运行的ToolObservationScope。基于原ToolExecutionContext的本地设计：scope独占当前Arc代次，调用与缓存只留Weak身份；失效或销毁后旧调用不能为新代次记录窗口。FileStateCache共享字节，按观察身份分离last_read、窗口与stub；read、write/edit/multi_edit、串行/并行pipeline、speculative和legacy直接invoke统一传递该身份。RuntimeEngine每次run绑定独立执行视图，共享原store/gate/sink，即使复用同一engine并发运行也不共用资格。child保留观察身份，但仍使用原子取消链；未添加依赖、SQL迁移、wire/UI或新权限系统。直接Tool API未显式提供身份时保持原cache-local语义，不能继承scoped运行的证明，反向也不能；它不代表独立模型共享权限。
+
+隔离命令cargo test --target-dir target/h300-after-h163-build -p deepagent-tools -p deepagent-builtins --lib --offline -j 2 -- --quiet --test-threads=1原生0、115.91秒：builtins368/0/4、tools26/0/0（h260-scoped-first-units-20261029*）；含三类mutation重读门禁、共享cache的父/Hook独立窗口、legacy隔离、晚到旧read、原外部版本/跨进程/DACL/取消对照。首轮runtime编译原生101、10.80秒，发现post_tool_commit_tests旧StreamingToolAttempt构造调用漏传scope；同步该真实调用方后同参数-p deepagent-runtime --lib原生0、43.17秒，338/0/9（h260-scoped-runtime{,-complete}-20261029*）。新增真实并发共用engine、同session复用、串行/并行、speculative与legacy直接路径的观察身份回归通过。
+
+正式默认Hook组cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e hook_file_cache:: --offline -j 2 -- --nocapture --test-threads=1原生0、144.19秒，6/0/3（h260-scoped-hook-default-20261029*）：原different-range仍断言cache_hit=true；父真实read→仅task_list的隔离Hook→父write现在成功且磁盘改变。未修改这些断言，不用Hook补读。3个ignored属独立H-238，未计通过或另计验收。生产context_runtime专项仍在顺序会话17540执行；尚未重跑新实现的完整workspace、Tauri和严格lint，旧全量结果不能替代。H-260保持修复中、未提交、无新增验收；69/18/7/2/209待修+1修复中=210有效未关闭。剩余200–400有效小时仍是未经逐项校准的历史粗估，编译与环境等待另计。
+
+E-H260-07（生产路径复验与完整门禁启动，2026-10-29）：新实现的context_runtime默认组已收取终态，命令cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib context_runtime:: --offline -j 2 -- --quiet --test-threads=1原生0、121.19秒、38/0/7（h260-scoped-production-context-20261029*）。真实生产prune、完整summary采纳、持久化拒绝对照、SQLite关闭重开与保留registry的recover/fork/rewind均重新通过；这些不是完整Tauri重启或真实供应商验收。顺序会话17540已终结。首轮新实现tools/builtins全部targets/features/no-deps严格Clippy原生0、11.88秒；runtime同参数原生101、12.33秒，唯一诊断仍是HEAD已存在的model_agent.rs:282 Usage.clone_on_copy，已核对HEAD原行，未屏蔽或顺手修改（h260-scoped-{tools,runtime}-lint-20261029*）。
+
+随后补强旧代次mutation自身拒绝与64次代次轮换回收过期窗口的回归，尚待最终全量验证；先前builtins/lint结果不冒充覆盖该补强。当前16份源码SHA256固定于target/h260-scoped-reviewed-source-20261029.json，根cargo fmt --all -- --check和git diff --check实际0。完整cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1已在会话57975启动（h260-scoped-reviewed-workspace-20261029*），本记录时尚无终态，之后还需新源码的Tauri与严格门禁。H-260仍修复中、无commit，69验收/18历史跳过/7归并/2撤销/209待修+1修复中=210有效未关闭；不把H-238关联不变量另计成果，不进入其他H；历史200–400有效小时未校准，等待另计。
+
+E-H260-08（最终门禁与限定范围验收，2026-10-29）：完整新源码workspace命令cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1已真实终结，原生101、1118.69秒；130份结果合计3714 passed/1 failed/306 ignored（h260-scoped-reviewed-workspace-20261029*）。AppCore lib1237/0/61、正式Kernel166/0/77、builtins369/0/4、runtime338/0/9、tools26/0/0、persistence99/0/0、session20/0/0、stabilization5/0/0。唯一失败为既有H-306：canvas_prompt::tests::every_node_kind_owns_exactly_one_profile拒绝creative.video-edit.v1的空defaultUserPrompt；未改该文件或断言，不称全workspace全绿。本项先前父资格与cache_hit回归均消除，未以过滤/ignore规避。
+
+最终Tauri cargo check --target-dir target/h300-after-h163-build --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 2原生0、47.64秒；tools/builtins全部targets/features/no-deps严格Clippy原生0、10.78秒。AppCore同参数严格Clippy原生101、47.60秒，11项诊断的文件/行与旧候选门禁一致；workspace全部targets/features严格Clippy原生101、5.86秒，仍停于未修改models/client.rs:355 clone_on_copy；runtime既有model_agent.rs:282诊断见E-H260-07。原失败保留，不增加allow、不顺手修无关问题（h260-scoped-reviewed-{tauri,tools-lint,appcore-lint,workspace-lint}-20261029*）。最后显式执行cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e hook_file_cache:: --offline -j 2 -- --include-ignored --quiet --test-threads=1，原生0、136.02秒，9/0/0（h260-scoped-adjacent-hook-invariants-20261029*）；仅作共享边界的相邻回归证据，不修改H-238状态、ignore属性或计数。
+
+验收结论：H-260已修复并验收，限Windows本机、离线受控模型、正式RuntimeEngine/ModelAgent/file_tools/ChatService与上述持久化消费者。成功采纳上下文替换只失效本上下文证明；失败/无替换不失效；三类mutation均要求本代次实际读取，重新读取交付正文；共享父/Hook、并发与复用engine、旧代次晚到结果不互相授权或撤销，字节缓存和原H-76版本/窗口/DACL门禁保持。16份受测源码与reviewed-source快照一致。保留修前E-H260-01和被否定候选E-H260-04～05；本项新增验收1，累计70验收/18历史跳过/7归并/2撤销/209待修+0修复中=209有效未关闭。代码/测试/此时文档将在独立fix提交后回填真实hash，不提前编造。
+
+兼容性与边界：无新依赖、SQL迁移、Tauri command/wire/UI变更，不另建store/审批/取消；Agent为默认实现的附加绑定接口，Tool公共方法不变。观察代次不持久化，恢复/新run保守要求重新读取，即使历史仍保留正文；直接Tool API无显式身份仍以原cache为上下文，不能取得scoped证明，独立模型调用方应显式携带scope。未运行pnpm/UI（无前端改动）、真实DeepSeek/凭据、跨进程AppCore重启/强杀、其他OS或真实OS沙箱；不承诺处理工具结果提交失败等H-238扩展边界或非协作外部writer的最终syscall间隙。下一项准备复核H-238是否已随共享边界消除及其剩余验收，不重复计功；整体目标未完成。全部剩余200–400有效小时仍为未逐项校准的历史粗估，编译、设备和依赖等待另计。
 
 ## H-288 本轮即时记录（2026-10-29）
 
@@ -2183,7 +2227,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-257：SSE 把确定非法的 UTF-8 当成未收齐字符，后续字节持续滞留且错误被误报为缺少终态](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-258：CLI TUI 忽略模型 attempt 回滚，重试成功后仍把废弃答案和推理拼入最终显示](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-259：流式预处理缓存覆盖最终工具参数，实际写入与原生调用历史及续轮上下文发生错配](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-260：上下文压缩清掉模型可见文件结果后，旧 FileStateCache 仍授权覆盖已有文件](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-260：上下文压缩清掉模型可见文件结果后，旧 FileStateCache 仍授权覆盖已有文件](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H260-01～08；原失败与全清候选回归保留；限所列Windows本机范围 | ToolExecutionContext观察代次分离共享字节与上下文读取资格，成功采纳只撤销自身；所有派发路径共用 | 生产压缩/恢复38/0/7、Hook默认6/0/3及显式9/0/0；全仓3714/1/306仅既有H-306；Tauri、tools/builtins严格lint及fmt通过，旧全局lint失败保留 | 待本轮fix提交后回填 | 无新依赖/迁移/wire变更；未验真实供应商/其他OS/UI/跨进程AppCore；下一项H-238先复核共享影响，不重复计功；209有效未关闭，历史200–400有效小时未校准，等待另计 |
 | [H-261：Responses 历史中乱序工具结果被 repair 静默替换为合成失败](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-262：附件身份路径边界（H-58 的重复登记）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-58 | 只关联原证据，不新增修复任务 | 验收由 H-58 统一记录 | 无独立修复提交 | 不独立计数或估时 |
 | [H-263：实时持久化分叉重复登记（已撤销）](system-harness-audit-2026-10-21.md) | — | 撤销 | 原报告 H-265 明确撤销；Git b1912f53 为撤回提交 | 不作为有效缺陷或修复成果 | 不重复运行已撤销探针 | 撤销证据：b1912f53 | 不独立计数或估时；编号不复用 |

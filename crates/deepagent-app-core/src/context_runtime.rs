@@ -2033,6 +2033,10 @@ or updated resources.\n\n<invoked-skills>\n",
 mod summary_audit;
 
 #[cfg(test)]
+#[path = "context_file_authority_tests.rs"]
+mod file_authority_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use deepagent_context::TokenCounter;
@@ -2145,66 +2149,13 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit: context compaction must not leave stale file-edit authorization"]
     async fn audit_compaction_clears_model_output_but_not_file_edit_cache() {
-        use deepagent_builtins::{file_tools, WorkspaceRoot};
-
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("existing.txt");
-        tokio::fs::write(&path, "before ".repeat(200))
-            .await
-            .unwrap();
-        let tools = file_tools(WorkspaceRoot::new(dir.path()));
-        let read = tools
-            .iter()
-            .find(|tool| tool.descriptor().name == "read_file")
-            .unwrap();
-        let write = tools
-            .iter()
-            .find(|tool| tool.descriptor().name == "write_file")
-            .unwrap();
-
-        let read_output = read
-            .invoke(serde_json::json!({ "path": "existing.txt" }))
-            .await
-            .unwrap();
-        assert!(read_output.ok);
-
-        let items = vec![
-            ResponseInputItem::FunctionCall {
-                call_id: "audit-compaction-read".into(),
-                name: "read_file".into(),
-                arguments: r#"{"path":"existing.txt"}"#.into(),
-            },
-            ResponseInputItem::FunctionCallOutput {
-                call_id: "audit-compaction-read".into(),
-                output: read_output.value.to_string(),
-            },
-        ];
-        let (compacted, cleared) = micro_compact_response_item_outputs(&items, 2).unwrap();
-        assert_eq!(cleared, 1);
-        assert!(matches!(
-            &compacted[1],
-            ResponseInputItem::FunctionCallOutput { output, .. }
-                if output.contains("cleared by micro-compact")
-        ));
-
-        // The model-visible read body is now gone, but the shared file cache
-        // still considers the path read. An overwrite succeeds without a new
-        // read, demonstrating the boundary mismatch.
-        let write_output = write
-            .invoke(serde_json::json!({ "path": "existing.txt", "content": "after" }))
-            .await
-            .unwrap();
-        eprintln!(
-            "compaction_file_cache: model_output_cleared=true write_without_reread={} disk={}",
-            write_output.ok,
-            tokio::fs::read_to_string(&path).await.unwrap()
-        );
-        assert!(
-            !write_output.ok,
-            "compaction must revoke stale read-before-edit authorization"
-        );
+        // The historical micro helper is test-only. Exercise actual native
+        // adoption, automatic engine binding and all three production tools.
+        super::file_authority_tests::assert_dropped_read_authority(
+            super::file_authority_tests::Replacement::Native,
+        )
+        .await;
     }
 
     #[cfg(windows)]
