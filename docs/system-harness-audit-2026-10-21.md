@@ -8,7 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
-| H-254 | 已修复并验收（2026-10-29，仅E-H254-09所列Windows本机范围） | 共享删除意图/FULL事务、pending和恢复，GC保留政策不变；persistence123、Canvas115、重开4、workflow1、前端269/build、Tauri通过；全仓3768/1/298仅H-306，旧lint/桌面格式失败保留；E-H254-01～09，待独立提交及hash回填 |
+| H-254 | 已修复并验收（2026-10-29，仅E-H254-09所列Windows本机范围） | 共享删除意图/FULL事务、pending和恢复，GC保留政策不变；persistence123、Canvas115、重开4、workflow1、前端269/build、Tauri通过；全仓3768/1/298仅H-306，旧lint/桌面格式失败保留；E-H254-01～10，`64636fcd9ad544460d6c81855f1a899e4d2daf8d` |
 | H-252 | 已修复并验收（2026-10-29，仅E-H252-10所列Windows本机范围） | 显式owner校验、run固定scope及前端缓存隔离；scope7、canvas109、runtime69、重开4、前端269/build/UI、Tauri/示例check通过；全仓3747/1/299仅H-306，旧lint阻断保留；E-H252-01～11，`7bc7d9bf76b521d2286525584ac90ba31f7692a2` |
 | H-251 | 已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围） | 显式scope CRUD、归属CAS及保留graph/owner的tombstone；store20、重开3、前端263/build/UI、Tauri check通过；全仓3736/1/300仅H-306，严格lint/桌面格式旧阻断已对照；E-H251-01～08，`d26e2266a19edfc78c07b39936b29fc6b33f1796` |
 | H-238 | 历史已修复跳过（2026-10-29，仅所列Windows本机范围） | 本轮前随H-260的0ba0f611共享边界消除；3个原探针转默认，Hook9/0/0、Kernel169/0/74，相关库通过、严格lint既有11项阻断；E-H238-01～04，测试/文档`94fd117d1fde0781c759cee2a52e555944b5f027`，不重复计生产修复 |
@@ -8456,7 +8456,7 @@ E-H252-11（独立提交与真实hash回填，2026-10-29）：修复、回归测
 
 #### 本轮修复即时记录（2026-10-29）
 
-**当前状态：已修复并验收（2026-10-29，仅E-H254-09所列Windows本机范围），待独立提交及hash回填。** 基线`c85df5d2bed292f3e7587c609bca362c8240126d`；既有用户未跟踪项仅列名，未读取或改动；E-01～07保留为当时记录。E-H254-01：隔离临时data/home/profile/managed、清除继承key/DB路径，以`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_artifact_service::tests::audit_artifact_delete_is_atomic_across_file_and_index --offline -j 2 -- --ignored --exact --nocapture`复现，原生101、0/1/0、2.00秒，`delete_error=true, file_exists=false, row_exists=true`（target/h254-original-20261029.log/-result.json）。
+**当前状态：已修复并验收（2026-10-29，仅E-H254-09所列Windows本机范围），修复提交`64636fcd9ad544460d6c81855f1a899e4d2daf8d`。** 基线`c85df5d2bed292f3e7587c609bca362c8240126d`；既有用户未跟踪项仅列名，未读取或改动；E-01～07保留为当时记录。E-H254-01：隔离临时data/home/profile/managed、清除继承key/DB路径，以`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_artifact_service::tests::audit_artifact_delete_is_atomic_across_file_and_index --offline -j 2 -- --ignored --exact --nocapture`复现，原生101、0/1/0、2.00秒，`delete_error=true, file_exists=false, row_exists=true`（target/h254-original-20261029.log/-result.json）。
 
 E-H254-02：新增正式Canvas物化/跨域/重试回归与Windows真实拒删handle回归，专项原生101、0/2/0、142.38秒；新增正式工具结果GC索引失败回归原生101、0/1/0、13.15秒（h254-materialization-red-20261029、h254-gc-red-20261029各log/-result.json）。GC与Canvas同为先删文件再删索引，失败后均保留row但丢失bytes，因此本项共用一个生命周期修复，不改变H-36可达性与retention政策，不重复计数。现有未提交源码仅新增测试，生产尚未实现。
 
@@ -8497,6 +8497,8 @@ E-H254-09（限定验收、兼容性与剩余工作，2026-10-29）：**H-254已
 新增Rust CoreError::ArtifactPendingDelete变体（下游穷尽match需适配），现有IPC仍投影字符串，未新增command/DTO或改变前端类型；同域pending由原普通结果改为显式错误。删除意图提交持有原connection mutex临时提升FULL、保留更强策略并恢复原值，不改数据库默认配置。此为本地可恢复协议，不是原子跨文件系统/SQLite事务或exactly-once承诺；返回路径不是永久lease，advisory锁不防御任意外部写者，不保证混用旧binary或直接改SQLite。未做真实断电/硬件磁盘故障、其他OS、真实供应商、原生Tauri/WebView/FFmpeg或全部多项目UI验收；本项无UI改动，不以build代替手动UI验收。
 
 相邻H-250摘要读取完整性与H-253分块上传owner的显式原探针仍各0/1/0，独立保留，不关闭或归并。本轮新增验收1，累计 **77验收、20历史跳过、7归并、2撤销、200待修复、0修复中，200有效未关闭**；其他305条主台账状态不变。下一独立候选H-250，先完整交付本项后再动手。剩余 **200–400有效小时**仍为未逐项校准的历史规划粗估，不能按提交数机械扣减；构建/设备/依赖及外部验收等待另计，不承诺精确日期，整个修复目标继续active。
+
+E-H254-10（独立提交与真实hash回填，2026-10-29）：修复、回归测试和当时两份台账已正常提交为`64636fcd9ad544460d6c81855f1a899e4d2daf8d`（【fix】为制品删除建立可恢复持久化事务），仅本项9个文件。受测7份源码SHA256提交前后全部一致；306条编号唯一，仅H-254主行相对基线改变，其余305条保持原样，当前77验收、20历史跳过、7归并、2撤销、200有效未关闭。代码提交后仅保留原五类用户未跟踪项；没有读取、修改或暂存它们，也未纳入target证据、真实数据或凭据。本次只回填真实修复hash并追加交付记录，另作普通docs提交，不递归回填docs自身hash；未推送、建PR、amend、绕过hook或修改Git配置。E-09的待提交描述保留为代码提交前时点，不扩大其限定验收范围；全仓H-306、旧严格lint和独立Tauri格式失败、H-250/H-253独立失败及其他未验条件均保留。下一独立候选H-250尚未实施，整个修复目标继续active。
 
 **原始问题级别：中高（P1，持久化一致性与回放可靠性）；触发条件：** 一个已发布 artifact 的文件删除成功，但 `ArtifactStore::delete` 因数据库锁、约束/trigger、磁盘故障恢复或连接异常失败。原`CanvasArtifactService::delete`先执行`std::fs::remove_file(record.path)`，再删除SQLite行；当时没有事务、删除意图/tombstone或失败后的文件恢复。该项不重复H-250（读取摘要完整性）、H-252（workspace scope）或H-253（上传owner丢失）。
 
