@@ -9,14 +9,34 @@
 | 状态 | 数量 | 含义 |
 |---|---|---|
 | 本阶段已修复并验收 | 74 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-244、H-245、H-247、H-255、H-260、H-284、H-286、H-287、H-288、H-300，均限所列本机验收；hash见各项明细 |
-| 历史已修复跳过 | 19 | 17项原审计历史修复，另H-77/H-238分别随H-78/H-260共享边界消除，原探针复核通过并转默认；两种来源明确区分，不重复记新生产修复 |
+| 历史已修复跳过 | 20 | 17项原审计历史修复，另H-77/H-238/H-246分别随H-78/H-260/H-245共享边界消除；H-246原探针前置条件已变，历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-247已按E-H247-05完成限定范围验收 |
-| 待修复 | 204 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-246已按E-H246-04完成限定范围历史修复复核 |
+| 待修复 | 203 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **204（204待修复、0修复中）**；不提供完成率。七十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611及真实复核单独列明，合计19项历史跳过。
+有效未关闭条目当前为 **203（203待修复、0修复中）**；不提供完成率。七十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4及真实复核单独列明，合计20项历史跳过。
+
+## H-246 本轮独立复核（2026-10-29）
+
+**当前状态：历史已修复跳过（2026-10-29，仅E-H246-04所列Windows本机范围）；生产修复来源为H-245的`8c8e1af4ec0a419255687eefd2e5895703f99d40`，本轮测试/文档独立提交待执行。** 原2026-10-25成功读取覆盖编辑的失败证据保留，不把本轮前置断言失败混同为原数据丢失。
+
+E-H246-01（原探针复核，source_type=command/file）：起始HEAD `9eab1d03a3289b70c6f91f0e1f246abe0507cdf5`，tracked干净，原五类用户未跟踪项只列名、不读取。读取原审计、偏好模块、settings store、CanvasApp、加载/关闭hook及H-245提交，执行`RUN_HARNESS_AUDIT=1 node --test apps/desktop/scripts/audit-canvas-preference-edit-during-hydration.test.cjs`，原生1、0 passed/1 failed/0 skipped（target/h246-original-20261029.log/-result.json）。当前在原74行“editBeforeRead.imageDir应为new-images”前置断言失败，实际空串，lastError为尚未成功读取；尚未到原最终payload断言。不能据0/1宣称旧数据丢失仍存在，也不能据此直接关闭。
+
+F-H246-current / P-H246-current：H-245的writeCanvasPreference在cache未成功载入时拒绝写入；setWorkspaceDir先调用保存资格检查，成功才更新workspace，拒绝时不显示为已接纳。CanvasApp的既有ready门禁同时等待图与偏好，首次读期间不会挂载设置入口。成功载入的key可接受正常编辑；后续其他key完成/重试跳过已载入key，不重放旧workspace快照。因此原“未读时已接纳编辑”的可达前提已由共享边界消除，本轮不另加dirty补丁、revision协议或第二条保存链。
+
+E-H246-02（历史因果对照与默认回归，source_type=command）：未checkout或改写生产文件，通过target/h246-historical-preload.cjs在隔离Node进程中仅载入git show得到的canvasPreferences.ts和canvasSettingsStore.ts历史源码。H-245之前`10c64c543967ed2cc4d1363e30768a7ab83a50a3`配原探针仍0/1，实际早期new-images已接纳，最终payload恢复old-images/old-videos（h246-before-h245-original-20261029.log）；H-245提交中的两模块配本轮6项回归则6/0/0（h246-after-h245-regression-20261029.log；h246-historical-recheck-20261029-result.json）。这是模块级受控因果对照，不是整个历史checkout构建或历史原生UI验证。
+
+原探针转默认并加入test:canvas-ipc，不再依赖RUN_HARNESS_AUDIT。当前`node --test apps/desktop/scripts/audit-canvas-preference-edit-during-hydration.test.cjs`为6/0/0（h246-default-first-20261029.log）。延迟成功读先断言显式拒绝/无cache资格/无publish/无写，随后同一公开store接受读取后的编辑并保留原videoDir；还覆盖连续两字段编辑、后续key仍pending时已加载workspace的编辑、失败后的延迟重试、其他key失败后重试不重读dirty workspace、legacy写回执前拒绝编辑与成功后正常编辑。逐项核对store/cache、公开变更通知、实际写payload和合成backend结果，关闭flush等待读取而不写fallback；未修改生产TypeScript/Rust实现。
+
+E-H246-03（相关门禁与完整前端，2026-10-29，source_type=command）：`node --test apps/desktop/scripts/audit-canvas-preference-edit-during-hydration.test.cjs apps/desktop/scripts/audit-canvas-preference-legacy-migration-loss.test.cjs apps/desktop/scripts/audit-canvas-preference-read-failure.test.cjs apps/desktop/scripts/check-canvas-persistence.test.cjs apps/desktop/scripts/check-video-edit-persistence.test.cjs apps/desktop/scripts/check-workflow.test.cjs`原生0，137 passed/0 failed/0 skipped（target/h246-front-regression-20261029.log）。apps/desktop执行`pnpm build`原生0、135.05秒，全部默认测试262/0/0（canvas-ipc60项），tsc --noEmit、Vite与许可证门禁通过（h246-desktop-build-20261029.log/-result.json、h246-build-test-summary-20261029.json），保留既有externalization/大chunk警告。`node --check apps/desktop/scripts/audit-canvas-preference-edit-during-hydration.test.cjs`、根`cargo fmt --all -- --check`和`git diff --check`通过；当前package未定义独立前端lint脚本，不虚构lint通过。受测文件SHA256见h246-reviewed-source-20261029.json。
+
+E-H246-04（生产UI复核、跳过依据与范围，2026-10-29，source_type=command/image）：`node target/h246-ui-browser.cjs`原生0（h246-ui-browser-20261029.log/-result.json），加载本轮原样Vite dist，真实CanvasApp/设置页/store/hook，两个全新Chromium context，Tauri IPC与backend使用合成数据，只允许本机HTTP，未操作真实文件/凭据/供应商。延迟workspace成功读期间只显示恢复中，无编辑器/工具栏/浏览按钮、零写；释放读取后显示原目录，实际连续选择两次图片目录及一次视频目录，关闭门禁完成保存，最终latest-images/latest-videos；重建page后目录保持且无额外写。独立pending-close场景中关闭处理等待读取，未提前关闭或写fallback；读取完成后关闭一次，原值不变、零写。两场景pageErrors/consoleErrors/意外IPC/外部请求均为空，browser/context/server均在finally关闭。已查看pending/ready/reopened三张截图，等待状态与目录展示正常；renderer重开不等于OS强杀。
+
+本项按“本轮前已随共享边界修复”登记为历史已修复跳过，不记新增生产修复、不与H-245重复计功。本轮只改默认回归、package测试入口和两文档共4文件，无新依赖、command、DTO、SQL迁移、权限/沙箱或生产行为变化。既有未读编辑拒绝语义不提供早期输入自动排队/合并；正常UI等待加载后可编辑，本轮验证已接纳编辑不会因其他key结束/重试丢失。未实现跨窗口偏好CAS、版本化后端合并或恢复过去丢失的数据；H-247的跨进程迁移限制不在本项内扩展保证。
+
+未执行原生Tauri/WebView、真实SQLite慢读/故障、OS进程强杀/断电、多OS或真实用户数据。生产实现与桥接未改，本轮未重跑Rust workspace、Tauri check及严格Clippy；最近H-255全仓3728/1/301（唯一既有H-306）及Clippy旧阻断仍保留，不能称全仓全绿。306行核对后为74已修复验收、20历史已修复跳过、7归并、2撤销、203待修复、0修复中；本轮新增生产修复0、历史跳过1，203有效未关闭，整体目标保持active。下一项拟H-251，优先复核命名工作流跨workspace可见性和删除隔离。全部剩余200–400有效小时仍为未逐项校准的历史粗估，依据跨层权限/持久化问题与验收风险；设备、依赖、构建和环境等待另计，不机械扣减或承诺日期。
 
 ## H-247 本轮即时记录（2026-10-29）
 
@@ -2361,7 +2381,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-243：原生 compaction 移除 memory 摘录后，memory 去重状态未释放，后续检索无法重新注入](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-244：CanvasWorkflowStore 接受陈旧完整图快照，两个窗口的后写会静默丢失先写编辑](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针真实双连接丢节点，已转默认并断言较新图保留；非跳过/归并 | 原DocumentStore原子创建/CAS，版本化读写与冲突保留副本后重载 | E-H244-01～07；store9/0/2、persistence100/0/0+9/0/0、前端21/0/0、最终build/Tauri/fmt/截图通过；workspace3723/1/302唯一H-306，严格lint旧阻断 | `7c00bb177e73cd430b0ca3642ef347f9844adf4b`；本次另做文档回填 | 仅E-07本机范围；H-251/H-255/H-202及真实Tauri/跨进程压力未验；207有效未关闭，总200–400有效小时未校准粗估，等待另计 |
 | [H-245：画布偏好读取失败后仍完成 hydration，后续 workspace 设置写回会覆盖未读字段](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原探针本轮复现，非历史修复 | 未读fallback不再授权整文档替换；统一加载资格/重试/画布及关闭门禁，见E-H245-01～06 | 相关117/0/0；pnpm build全部242/0/0+tsc/Vite；真实CanvasApp浏览器IPC交互及3截图；fmt/diff通过；未原生WebView或Rust全仓重跑 | `8c8e1af4ec0a419255687eefd2e5895703f99d40` | 仅所列单窗口前端范围；无协议/迁移变更；跨窗口偏好CAS未实现，H-246/H-247独立；本项0，整体粗估200–400有效小时 |
-| [H-246：画布偏好 hydration 完成后会覆盖读取期间的用户编辑](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-246：画布偏好 hydration 完成后会覆盖读取期间的用户编辑](system-harness-audit-2026-10-21.md) | P1 | 历史已修复跳过 | 本轮前随H-245共享门禁消除；原探针早期接纳前置断言已变，历史对照见E-H246-01～04 | 未读拒绝且UI等待，已读key不被重试覆盖；本轮仅默认回归，无新生产修复 | 当前及H-245模块6/0/0，修前原探针0/1原payload失败；相关137/0/0、build262/0/0、真实CanvasApp延迟读/连续编辑/关闭/重开及3截图通过 | 生产来源`8c8e1af4ec0a419255687eefd2e5895703f99d40`；本轮测试/文档提交待执行 | 仅E-04本机范围；无新增兼容变更；原生WebView/SQLite/强杀/多OS未验、无跨窗口CAS；203有效未关闭，200–400有效小时历史未校准粗估 |
 | [H-247：画布 legacy 偏好迁移在后端写入失败时先删源数据，导致不可重试丢失](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原源丢失断言本轮复现，非历史修复 | 原始源保留到提交确认，按raw清理；坏JSON不当空；复用同窗口准备结果，见E-H247-01～06 | 默认14/0/0、相关131/0/0；build256/0/0+tsc/Vite；真实localStorage及CanvasApp双故障重开/4截图；fmt/diff通过；未原生WebView或Rust全仓重跑 | `a1a7f86068821c894b462cb1fca7e598df0e56b3` | 仅所列范围；无协议/SQL迁移变更；无跨进程artifact精确一次/原子legacy迁移，残留源保留；本项0，总200–400有效小时未校准粗估 |
 | [H-248：画布语音合成响应无字节上限，超预算音频被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-249：画布语音转写的远程音频输入绕过统一网络权限与审批](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
