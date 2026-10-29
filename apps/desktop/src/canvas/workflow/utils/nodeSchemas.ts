@@ -100,7 +100,7 @@ const VARIABLE_BINDING: NodeConfigSchema = {
 
 const MODEL: NodeConfigSchema = { ...text("模型"), "x-widget": "model" };
 
-const CHAT_MODEL: NodeConfigSchema = { ...MODEL, default: "deepseek-chat" };
+const CHAT_MODEL: NodeConfigSchema = { ...MODEL, default: "" };
 
 const TOOL: NodeConfigSchema = { ...text("工具"), "x-widget": "tool" };
 

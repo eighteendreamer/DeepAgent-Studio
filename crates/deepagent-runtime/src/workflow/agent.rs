@@ -734,53 +734,54 @@ impl WorkflowAgent {
         let composed_prompt = Self::compose_prompt(config, &user_prompt);
 
         if let Some(bridge) = self.canvas_bridge.clone() {
-            if !model_ref.is_empty() || self.model.is_none() {
-                let response = bridge
-                    .complete_with_usage(
-                        CanvasCompletionRequest {
-                            model_ref: model_ref.clone(),
-                            node_kind: kind.to_string(),
-                            skill_ids: config
-                                .get("skillIds")
-                                .or_else(|| config.get("skill_ids"))
-                                .and_then(Value::as_array)
-                                .map(|items| {
-                                    items
-                                        .iter()
-                                        .filter_map(|item| item.as_str().map(str::to_string))
-                                        .collect()
-                                })
-                                .unwrap_or_default(),
-                            system_prompt: (!system_prompt.is_empty())
-                                .then(|| system_prompt.clone()),
-                            prompt: composed_prompt.clone(),
-                            temperature: config
-                                .get("llmTemperature")
-                                .or_else(|| config.get("temperature"))
-                                .and_then(Value::as_f64)
-                                .map(|value| value as f32),
-                            max_tokens: config
-                                .get("llmMaxTokens")
-                                .or_else(|| config.get("maxTokens"))
-                                .and_then(Value::as_u64)
-                                .map(|value| value as u32),
-                            images: Vec::new(),
-                        },
-                        self.usage.clone(),
-                    )
-                    .await?;
-                let mut outcome = serde_json::json!({
-                    "text": response.text,
-                    "usage": response.usage,
-                    "providerId": response.provider_id,
-                    "modelId": response.model_id,
-                    "model": if model_ref.is_empty() { response.model_id.clone() } else { model_ref },
-                });
-                if let Some(reasoning) = response.reasoning {
-                    outcome["reasoning"] = serde_json::Value::String(reasoning);
-                }
-                return Ok(outcome);
+            // The canvas bridge owns both explicit providerId::modelId routes
+            // and the empty automatic route. Do not fall back to the generic
+            // client merely because the model reference is empty: that would
+            // make a new canvas node silently leave its configured scenario.
+            let response = bridge
+                .complete_with_usage(
+                    CanvasCompletionRequest {
+                        model_ref: model_ref.clone(),
+                        node_kind: kind.to_string(),
+                        skill_ids: config
+                            .get("skillIds")
+                            .or_else(|| config.get("skill_ids"))
+                            .and_then(Value::as_array)
+                            .map(|items| {
+                                items
+                                    .iter()
+                                    .filter_map(|item| item.as_str().map(str::to_string))
+                                    .collect()
+                            })
+                            .unwrap_or_default(),
+                        system_prompt: (!system_prompt.is_empty()).then(|| system_prompt.clone()),
+                        prompt: composed_prompt.clone(),
+                        temperature: config
+                            .get("llmTemperature")
+                            .or_else(|| config.get("temperature"))
+                            .and_then(Value::as_f64)
+                            .map(|value| value as f32),
+                        max_tokens: config
+                            .get("llmMaxTokens")
+                            .or_else(|| config.get("maxTokens"))
+                            .and_then(Value::as_u64)
+                            .map(|value| value as u32),
+                        images: Vec::new(),
+                    },
+                    self.usage.clone(),
+                )
+                .await?;
+            let mut outcome = serde_json::json!({
+                "text": response.text,
+                "usage": response.usage,
+                "providerId": response.provider_id,
+                "modelId": response.model_id,
+                "model": if model_ref.is_empty() { response.model_id.clone() } else { model_ref },
+            });
+            if let Some(reasoning) = response.reasoning {
+                outcome["reasoning"] = serde_json::Value::String(reasoning);
             }
+            return Ok(outcome);
         }
 
         let client = match &self.model {

@@ -594,7 +594,9 @@ async fn transient_candidate_fallback_accounts_each_reported_attempt_once() {
     f.register(&a, "openai", "audit-a", 10);
     f.register(&b, "openai", "audit-b", 0);
     let (ok, _) = f
-        .run("usage-fallback", workflow(&["scenario-default"]))
+        // Empty is the only canvas value that means automatic scenario routing;
+        // a non-empty bare model name must never silently fall through.
+        .run("usage-fallback", workflow(&[""]))
         .await;
     assert!(ok);
     assert_eq!(a.calls.lock().unwrap().len(), 1);

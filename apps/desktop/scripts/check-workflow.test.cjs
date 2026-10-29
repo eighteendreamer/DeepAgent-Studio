@@ -184,7 +184,23 @@ test("embedding schema reaches the real model editor with embedding-only options
   assert.deepEqual(selections.find((select) => select.id === "embeddings.embeddingModel").options, [
     { value: "", label: "使用默认嵌入模型" }, { value: "synthetic::embedding", label: "Synthetic / Embedding" },
   ]);
-  assert.deepEqual(selections.find((select) => select.id === "llm.llmModel").options.map((option) => option.value), ["", "deepseek-chat", "synthetic::text"]);
+  assert.deepEqual(selections.find((select) => select.id === "llm.llmModel").options.map((option) => option.value), ["", "synthetic::text"]);
+});
+
+test("legacy model references are visible as invalid instead of automatic candidates", () => {
+  const { decodeModelRef, scenarioModelOptions } = loadSettingsModule([]);
+  assert.equal(decodeModelRef("deepseek-chat"), null);
+  assert.equal(decodeModelRef("provider::model::fallback"), null);
+  assert.deepEqual(scenarioModelOptions([
+    { id: "synthetic", name: "Synthetic", enabled: true, models: [{ id: "text", name: "Text", enabled: true, scenarios: ["text"] }] },
+  ], "text", "deepseek-chat")[0], {
+    value: "deepseek-chat",
+    label: "无效模型引用（需 providerId::modelId）：deepseek-chat",
+  });
+  assert.deepEqual(scenarioModelOptions([], "text", "provider::missing")[0], {
+    value: "provider::missing",
+    label: "无效模型引用：provider::missing",
+  });
 });
 
 test("real desktop embedding defaults serialize through start_workflow without losing provider or texts", () => {

@@ -61,7 +61,7 @@ export function LLMContent({ data }: Props) {
     <div className="flex flex-col gap-1">
       <div className="flex items-center gap-1.5">
         <span className="rounded px-1 py-0.5 text-[9px] font-medium" style={{ background: "rgba(139,92,246,0.2)", color: "rgba(139,92,246,0.9)" }}>
-          {data.llmModel ?? "deepseek-chat"}
+          {data.llmModel || "自动选择模型"}
         </span>
         {data.llmTemperature != null && (
           <span className="text-[9px]" style={{ color: "rgba(248,248,248,0.35)" }}>

@@ -2990,19 +2990,35 @@ fn content_to_text(value: &Value) -> Option<String> {
 /// The separator the canvas UI uses to address one model of one provider.
 pub const MODEL_REF_SEPARATOR: &str = "::";
 
-/// Split a `providerId::modelId` reference. A bare legacy name (no separator)
-/// yields `None`, which means "route by scenario candidates".
+/// Split a `providerId::modelId` reference for compatibility callers.
+///
+/// This lossy helper is retained for callers that only need to inspect a
+/// valid pair. Gateway execution must use [`parse_model_ref`] instead, since a
+/// non-empty malformed reference is not equivalent to automatic routing.
 pub fn decode_model_ref(model_ref: &str) -> Option<(&str, &str)> {
-    let index = model_ref.find(MODEL_REF_SEPARATOR)?;
-    if index == 0 {
-        return None;
+    parse_model_ref(model_ref).ok().flatten()
+}
+
+/// Parse the canvas model route without conflating automatic routing and an
+/// invalid explicit identity. Empty input is the only automatic route; every
+/// non-empty value must contain exactly one non-empty `providerId::modelId`
+/// pair. Provider/model existence is checked later against the same provider
+/// snapshot by `execute_on`.
+fn parse_model_ref(model_ref: &str) -> CoreResult<Option<(&str, &str)>> {
+    let trimmed = model_ref.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
     }
-    let provider_id = model_ref[..index].trim();
-    let model_id = model_ref[index + MODEL_REF_SEPARATOR.len()..].trim();
-    if provider_id.is_empty() || model_id.is_empty() {
-        return None;
+    let mut parts = trimmed.split(MODEL_REF_SEPARATOR);
+    let provider_id = parts.next().unwrap_or_default().trim();
+    let model_id = parts.next().unwrap_or_default().trim();
+    let valid = !provider_id.is_empty() && !model_id.is_empty() && parts.next().is_none();
+    if !valid {
+        return Err(deepagent_core::error::CoreError::invalid(format!(
+            "InvalidModelReference: non-empty canvas model reference `{trimmed}` must use providerId::modelId"
+        )));
     }
-    Some((provider_id, model_id))
+    Ok(Some((provider_id, model_id)))
 }
 
 /// Assemble the system prompt for a canvas node call.
@@ -3075,14 +3091,15 @@ impl CanvasModelGateway {
             timeout_ms: 120_000,
         };
         validate_request(&model_request).map_err(to_core_error)?;
-        let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
-            self.execute_on_observed(provider_id, model_id, &model_request, usage_sink)
+        let output = match parse_model_ref(&request.model_ref)? {
+            Some((provider_id, model_id)) => self
+                .execute_on_observed(provider_id, model_id, &model_request, usage_sink)
                 .await
-                .map_err(to_core_error)?
-        } else {
-            self.execute_observed(&model_request, self.workspace_id.as_deref(), usage_sink)
+                .map_err(to_core_error)?,
+            None => self
+                .execute_observed(&model_request, self.workspace_id.as_deref(), usage_sink)
                 .await
-                .map_err(to_core_error)?
+                .map_err(to_core_error)?,
         };
         match output {
             CanvasModelOutput::Text {
@@ -3113,11 +3130,10 @@ impl CanvasModelGateway {
                 "MissingReferenceInput: video node needs a prompt or a first frame",
             ));
         }
-        let candidate = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref)
-        {
-            self.providers.resolve_model(provider_id, model_id)?
-        } else {
-            self.providers
+        let candidate = match parse_model_ref(&request.model_ref)? {
+            Some((provider_id, model_id)) => self.providers.resolve_model(provider_id, model_id)?,
+            None => self
+                .providers
                 .candidates_for_scenario(CanvasScenario::VideoGeneration, None)?
                 .into_iter()
                 .next()
@@ -3125,7 +3141,7 @@ impl CanvasModelGateway {
                     deepagent_core::error::CoreError::invalid(
                         "NoCandidateModel: no enabled model serves video generation",
                     )
-                })?
+                })?,
         };
         let images = match request
             .image_url
@@ -3311,14 +3327,15 @@ impl CanvasModelBridge for CanvasModelGateway {
             timeout_ms: 300_000,
         };
         validate_request(&model_request).map_err(to_core_error)?;
-        let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
-            self.execute_on(provider_id, model_id, &model_request)
+        let output = match parse_model_ref(&request.model_ref)? {
+            Some((provider_id, model_id)) => self
+                .execute_on(provider_id, model_id, &model_request)
                 .await
-                .map_err(to_core_error)?
-        } else {
-            self.execute(&model_request, self.workspace_id.as_deref())
+                .map_err(to_core_error)?,
+            None => self
+                .execute(&model_request, self.workspace_id.as_deref())
                 .await
-                .map_err(to_core_error)?
+                .map_err(to_core_error)?,
         };
         match output {
             CanvasModelOutput::Image {
@@ -3423,14 +3440,15 @@ impl CanvasModelBridge for CanvasModelGateway {
             },
         };
         validate_request(&model_request).map_err(to_core_error)?;
-        let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
-            self.execute_on(provider_id, model_id, &model_request)
+        let output = match parse_model_ref(&request.model_ref)? {
+            Some((provider_id, model_id)) => self
+                .execute_on(provider_id, model_id, &model_request)
                 .await
-                .map_err(to_core_error)?
-        } else {
-            self.execute(&model_request, self.workspace_id.as_deref())
+                .map_err(to_core_error)?,
+            None => self
+                .execute(&model_request, self.workspace_id.as_deref())
                 .await
-                .map_err(to_core_error)?
+                .map_err(to_core_error)?,
         };
         match (operation, output) {
             (
@@ -3626,14 +3644,15 @@ impl CanvasModelGateway {
             size: None,
             timeout_ms: 120_000,
         };
-        let output = if let Some((provider_id, model_id)) = decode_model_ref(&request.model_ref) {
-            self.execute_on_observed(provider_id, model_id, &model_request, usage_sink)
+        let output = match parse_model_ref(&request.model_ref)? {
+            Some((provider_id, model_id)) => self
+                .execute_on_observed(provider_id, model_id, &model_request, usage_sink)
                 .await
-                .map_err(to_core_error)?
-        } else {
-            self.execute_observed(&model_request, self.workspace_id.as_deref(), usage_sink)
+                .map_err(to_core_error)?,
+            None => self
+                .execute_observed(&model_request, self.workspace_id.as_deref(), usage_sink)
                 .await
-                .map_err(to_core_error)?
+                .map_err(to_core_error)?,
         };
         match output {
             CanvasModelOutput::Embedding {
@@ -4954,7 +4973,29 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: a non-empty invalid model reference must not become automatic routing"]
+    fn model_ref_parser_only_allows_empty_auto_route_or_one_explicit_pair() {
+        assert!(parse_model_ref("").unwrap().is_none());
+        assert!(parse_model_ref("  \t").unwrap().is_none());
+        assert_eq!(
+            parse_model_ref(" provider-1 :: model-1 ")
+                .expect("valid explicit identity")
+                .unwrap(),
+            ("provider-1", "model-1")
+        );
+        for invalid in [
+            "deepseek-chat",
+            "provider-1::",
+            "::model-1",
+            "provider-1::::model-1",
+            "provider-1::model-1::fallback",
+        ] {
+            let error = parse_model_ref(invalid).expect_err("invalid identity must not auto-route");
+            assert!(error.to_string().contains("InvalidModelReference"));
+        }
+        assert_eq!(decode_model_ref("deepseek-chat"), None);
+    }
+
+    #[test]
     fn audit_invalid_explicit_model_ref_is_rejected_before_provider_transport() {
         let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
         let (base_url, captured_body) = spawn_single_chat_responder("routed");

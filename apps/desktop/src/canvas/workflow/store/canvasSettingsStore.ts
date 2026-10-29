@@ -143,18 +143,19 @@ export function encodeModelRef(providerId: string, modelId: string): string {
 }
 
 export function decodeModelRef(ref: string): { providerId: string; modelId: string } | null {
-  const index = ref.indexOf(MODEL_REF_SEPARATOR);
-  if (index <= 0) return null;
-  const providerId = ref.slice(0, index);
-  const modelId = ref.slice(index + MODEL_REF_SEPARATOR.length);
-  return modelId ? { providerId, modelId } : null;
+  const trimmed = ref.trim();
+  const parts = trimmed.split(MODEL_REF_SEPARATOR);
+  if (parts.length !== 2) return null;
+  const providerId = parts[0].trim();
+  const modelId = parts[1].trim();
+  return providerId && modelId ? { providerId, modelId } : null;
 }
 
 /**
  * 某个场景下可选择模型的列表（供应商名 / 模型名）。
  *
- * `current` 用于把历史遗留的裸模型名（如 `deepseek-chat`）保留成可见选项，
- * 避免切换数据源后节点上已存的值凭空消失。
+ * `current` 用于把历史上已保存但当前目录中不存在的引用保留为“无效”选项，
+ * 让用户看见待迁移状态，而不是把裸模型名伪装成可选的合法模型。
  */
 export function scenarioModelOptions(
   providers: ModelProvider[],
@@ -171,8 +172,12 @@ export function scenarioModelOptions(
           label: `${provider.name} / ${model.name || model.id}`,
         })),
     );
-  if (current && !options.some((option) => option.value === current)) {
-    options.unshift({ value: current, label: current });
+  const trimmedCurrent = current?.trim() ?? "";
+  if (trimmedCurrent && !options.some((option) => option.value === trimmedCurrent)) {
+    const label = decodeModelRef(trimmedCurrent)
+      ? `无效模型引用：${trimmedCurrent}`
+      : `无效模型引用（需 providerId::modelId）：${trimmedCurrent}`;
+    options.unshift({ value: trimmedCurrent, label });
   }
   return options;
 }
