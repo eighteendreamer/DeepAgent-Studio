@@ -18,6 +18,9 @@ use sha2::{Digest, Sha256};
 /// Document collection for canvas workflow graphs.
 pub const CANVAS_WORKFLOW_COLLECTION: &str = "canvas_workflows";
 
+/// Live slots and named workflows share a collection, but never an ID namespace.
+const CURRENT_WORKFLOW_PREFIX: &str = "current:";
+
 /// Largest accepted graph, in bytes of serialized JSON.
 const MAX_GRAPH_BYTES: usize = 16 * 1024 * 1024;
 
@@ -114,7 +117,7 @@ pub fn current_workflow_id(mode: &str, workspace_id: Option<&str>) -> Result<Str
         _ => "_default".to_string(),
     };
     validate_token(&workspace, "workspace id")?;
-    Ok(format!("current:{mode}:{workspace}"))
+    Ok(format!("{CURRENT_WORKFLOW_PREFIX}{mode}:{workspace}"))
 }
 
 fn normalize_mode(mode: &str) -> Result<String> {
@@ -139,6 +142,18 @@ fn validate_token(value: &str, location: &str) -> Result<()> {
         return Err(CoreError::invalid(format!(
             "{location} must be 1..=120 ASCII letters, digits, underscore, hyphen or colon"
         )));
+    }
+    Ok(())
+}
+
+/// The persistent key, not the mutable `current` flag, owns the live namespace.
+/// Keep legacy named IDs (including colons) valid outside that namespace.
+fn validate_named_workflow_id(id: &str) -> Result<()> {
+    validate_token(id, "workflow id")?;
+    if id.starts_with(CURRENT_WORKFLOW_PREFIX) {
+        return Err(CoreError::invalid(
+            "reserved_workflow_id: current canvas IDs are not named workflow IDs",
+        ));
     }
     Ok(())
 }
@@ -275,7 +290,7 @@ impl CanvasWorkflowStore {
         }
         let id = match id.map(str::trim) {
             Some(existing) if !existing.is_empty() => {
-                validate_token(existing, "workflow id")?;
+                validate_named_workflow_id(existing)?;
                 existing.to_string()
             }
             _ => format!("wf-{}", uuid::Uuid::new_v4()),
@@ -304,8 +319,13 @@ impl CanvasWorkflowStore {
         let mut items: Vec<CanvasWorkflowMeta> = DocumentStore::new(&self.db)
             .list(CANVAS_WORKFLOW_COLLECTION)?
             .iter()
+            // Old collisions can have current=false. Check the actual key
+            // before decoding; a payload ID cannot turn a live row into a name.
+            .filter(|doc| validate_named_workflow_id(&doc.id).is_ok())
             .filter_map(|doc| decode(doc).ok())
-            .filter(|document| !document.current)
+            .filter(|document| {
+                !document.current && validate_named_workflow_id(&document.id).is_ok()
+            })
             .map(|document| CanvasWorkflowMeta {
                 id: document.id,
                 name: document.name,
@@ -318,14 +338,14 @@ impl CanvasWorkflowStore {
     }
 
     pub fn load_workflow(&self, id: &str) -> Result<Option<CanvasWorkflowDoc>> {
-        validate_token(id, "workflow id")?;
+        validate_named_workflow_id(id)?;
         let doc = DocumentStore::new(&self.db).get(CANVAS_WORKFLOW_COLLECTION, id)?;
         let Some(doc) = doc else { return Ok(None) };
         Ok(Some(decode(&doc)?))
     }
 
     pub fn delete_workflow(&self, id: &str) -> Result<bool> {
-        validate_token(id, "workflow id")?;
+        validate_named_workflow_id(id)?;
         DocumentStore::new(&self.db).delete(CANVAS_WORKFLOW_COLLECTION, id)
     }
 
@@ -511,7 +531,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-255: named workflow ids must not collide with reserved current canvas slots"]
     fn audit_named_workflow_cannot_overwrite_or_delete_current_slot() {
         let store = store();
         let current_id = current_workflow_id("creative", Some("workspace-a")).expect("current id");
@@ -523,6 +542,7 @@ mod tests {
                 None,
             )
             .expect("write live canvas");
+        let before = store.read_current("creative", Some("workspace-a")).unwrap();
 
         let overwrite = store.save_workflow(
             Some(&current_id),
@@ -536,15 +556,13 @@ mod tests {
             .expect("read live canvas")
             .graph
             .map(|graph| graph["nodes"].clone());
-        let delete_result = store
-            .delete_workflow(&current_id)
-            .expect("delete collision id");
+        let delete_result = store.delete_workflow(&current_id);
         let live_after_delete = store
             .read_current("creative", Some("workspace-a"))
             .expect("read live canvas after delete")
             .graph;
         eprintln!(
-            "canvas workflow id collision audit: overwrite_ok={}, live_after_overwrite={:?}, delete_ok={}, live_after_delete_present={}",
+            "canvas workflow id collision audit: overwrite_ok={}, live_after_overwrite={:?}, delete_ok={:?}, live_after_delete_present={}",
             overwrite.is_ok(),
             live_after_overwrite,
             delete_result,
@@ -553,10 +571,136 @@ mod tests {
         assert!(
             overwrite.is_err()
                 && live_after_overwrite == Some(json!([{"id":"live-only"}]))
-                && !delete_result
+                && delete_result.is_err()
                 && live_after_delete.is_some(),
             "named workflow APIs must reject reserved current canvas ids"
         );
+        for error in [
+            overwrite.unwrap_err(),
+            delete_result.unwrap_err(),
+            store.load_workflow(&current_id).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("reserved_workflow_id"));
+        }
+        assert_eq!(
+            store.read_current("creative", Some("workspace-a")).unwrap(),
+            before,
+            "failed named operations must retain both graph and revision"
+        );
+        let document = DocumentStore::new(&store.db)
+            .get(CANVAS_WORKFLOW_COLLECTION, &current_id)
+            .unwrap()
+            .unwrap();
+        assert!(decode(&document).unwrap().current);
+        assert!(store.list_workflows().unwrap().is_empty());
+    }
+
+    #[test]
+    fn named_apis_cannot_preoccupy_any_live_namespace_key() {
+        let store = store();
+        let mut ids = vec![
+            "current:".to_string(),
+            "current:future:anything".to_string(),
+        ];
+        for mode in CANVAS_MODES {
+            for workspace in [None, Some("ws-a"), Some("nested:ws-b")] {
+                ids.push(current_workflow_id(mode, workspace).unwrap());
+            }
+        }
+        for id in ids {
+            for supplied in [id.clone(), format!("  {id}  ")] {
+                let error = store
+                    .save_workflow(Some(&supplied), "rejected", "creative", None, &json!({}))
+                    .unwrap_err();
+                assert!(error.to_string().contains("reserved_workflow_id"));
+            }
+            assert!(store.load_workflow(&id).is_err());
+            assert!(store.delete_workflow(&id).is_err());
+            assert!(DocumentStore::new(&store.db)
+                .get(CANVAS_WORKFLOW_COLLECTION, &id)
+                .unwrap()
+                .is_none());
+        }
+        assert!(store.list_workflows().unwrap().is_empty());
+        // Rejected preoccupation must not prevent a legitimate create-only write.
+        for mode in CANVAS_MODES {
+            store
+                .write_current(mode, None, &json!({"nodes":[]}), None)
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn named_ids_keep_legacy_spelling_and_normal_lifecycle() {
+        let store = store();
+        for id in [
+            "wf-demo",
+            "legacy:import-1",
+            "current-copy",
+            "CURRENT:creative:_default",
+        ] {
+            let saved = store
+                .save_workflow(Some(id), "first", "creative", None, &json!({"nodes":[]}))
+                .unwrap();
+            assert_eq!(saved.id, id);
+            store
+                .save_workflow(Some(id), "updated", "creative", None, &json!({"nodes":[1]}))
+                .unwrap();
+            let loaded = store.load_workflow(id).unwrap().unwrap();
+            assert_eq!(loaded.graph, json!({"nodes":[1]}));
+            assert_eq!(loaded.name, "updated");
+            assert!(!loaded.current);
+            assert!(store
+                .list_workflows()
+                .unwrap()
+                .iter()
+                .any(|entry| entry.id == id));
+            assert!(store.delete_workflow(id).unwrap());
+            assert!(!store.delete_workflow(id).unwrap());
+            assert!(store.load_workflow(id).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn historical_collisions_are_not_library_entries_or_silently_rewritten() {
+        let store = store();
+        let documents = DocumentStore::new(&store.db);
+        for (mode, payload_id) in [
+            ("creative", "current:creative:_default"),
+            ("professional", "wf-alias"),
+        ] {
+            let id = current_workflow_id(mode, None).unwrap();
+            // Previous named overwrite changed current to false. Even a legacy
+            // payload whose ID disagrees with its key must not expose the slot.
+            let body = json!({"id":payload_id,"name":"old collision","mode":mode,
+                "graph":{"nodes":[{"id":"retained"}]},"updatedAt":1,"current":false})
+            .to_string();
+            documents
+                .put(
+                    CANVAS_WORKFLOW_COLLECTION,
+                    &id,
+                    &body,
+                    None,
+                    SystemClock.now(),
+                )
+                .unwrap();
+            let before = store.read_current(mode, None).unwrap();
+            assert!(store.list_workflows().unwrap().is_empty());
+            assert!(store.load_workflow(&id).is_err());
+            assert!(store.delete_workflow(&id).is_err());
+            assert!(store
+                .save_workflow(Some(&id), "rejected", mode, None, &json!({}))
+                .is_err());
+            assert_eq!(
+                documents
+                    .get(CANVAS_WORKFLOW_COLLECTION, &id)
+                    .unwrap()
+                    .unwrap()
+                    .body,
+                body
+            );
+            assert_eq!(store.read_current(mode, None).unwrap(), before);
+        }
     }
 
     #[test]
@@ -704,12 +848,11 @@ mod tests {
             )
             .unwrap();
         assert_ne!(first.revision.as_ref(), Some(&saved.revision));
-        assert!(store
-            .load_workflow(&id)
+        let written = documents
+            .get(CANVAS_WORKFLOW_COLLECTION, &id)
             .unwrap()
-            .unwrap()
-            .revision
-            .is_some());
+            .unwrap();
+        assert!(decode(&written).unwrap().revision.is_some());
     }
 
     #[test]

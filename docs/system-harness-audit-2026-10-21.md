@@ -8312,6 +8312,36 @@ E-H244-08（独立提交回填，2026-10-29）：修复代码、默认回归及�
 
 ### H-255：命名工作流 ID 可占用 `current:<mode>:<workspace>`，覆盖或删除 live canvas slot
 
+**当前状态：已修复并验收（2026-10-29，仅E-H255-06所列本机范围）；修复commit待取得真实hash后回填。** 本轮只处理H-255，新增验收1；E-H255-01～05保留原失败及阶段验证，“待终态/修复中”不是最终状态。
+
+E-H255-01（原探针复现，source_type=command/file）：起始HEAD为cc9ff516，tracked干净，五类用户未跟踪项只查看status列名、不读取或修改。复核原审计、当前CanvasWorkflowStore/DocumentStore、Tauri命名CRUD、前端恢复副本调用方、manifest/CI和既有重开测试。使用独立临时data/home/profile/managed并清除供应商key/数据库路径继承的h255 runner，执行 `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_workflow_store::tests::audit_named_workflow_cannot_overwrite_or_delete_current_slot --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，原生101、7.59秒，0 passed/1 failed/0 ignored（target/h255-before-20261029*）。overwrite_ok=true、live_after_overwrite为named-overwrite、delete_ok=true、live_after_delete_present=false；H-244版本检查不阻止命名API直接put/delete同一key。原失败证据保留，非历史跳过或归并。
+
+E-H255-02（根因及候选范围，source_type=file）：本地设计复用原CanvasWorkflowStore的唯一ID生成/校验边界和DocumentStore；当前仓库CanvasPreferencesStore也在服务边界集中校验可用key。参考DeepSeek Harness Session/Job身份边界只作设计核对，未运行参考工程，不宣称其同构canvas实现。live和named共用collection本身不是问题，问题是命名入口只做通用字符校验而接受保留键；可变current布尔值无法保护历史覆盖后current=false的记录。
+
+候选集中定义current:保留前缀，live ID生成复用同一常量；命名save/load/delete统一校验并在存储操作之前拒绝保留ID。list先校验实际存储key，再按payload ID/current过滤，旧碰撞记录不再作为命名条目暴露、也不被自动改写。合法旧ID（含非保留冒号、大小写及current-copy）保持原生命周期；不收紧成只准wf-UUID。沿用CoreError::Invalid及Tauri字符串错误契约，原因带reserved_workflow_id，不新增DTO或把它称为结构化IPC code。旧保留ID调用改为明确错误；旧碰撞内容保持在原slot可经live read读取，但无法自动还原此前已覆盖的原图。不执行真实数据扫描/SQL迁移/自动改名，不合并H-251权限或H-202 viewport。
+
+原H-255探针已转默认并补强图/revision/current标记/list不变断言；新增空slot预占用、双模式/多workspace、重复请求、合法旧ID、历史碰撞数据保留测试，以及真实双文件SQLite连接全部关闭后重开、生成副本CRUD与H-244新旧token对照。H-244旧测试用load_workflow检查live文档的测试内调用改为直接检查原DocumentStore持久文档，保留原revision断言；生产live读写及CAS逻辑未改。首次fmt check只报告新增测试排版（h255-first-format-20261029.log，exit1），执行cargo fmt后只影响本项两份Rust文件。专项/完整门禁待实际结果，不凭候选关闭。当前71验收/19历史跳过/7归并/2撤销/206待修+1修复中=207有效未关闭；总200–400有效小时仍为未逐项校准历史粗估，设备/依赖/构建等待另计，整体目标active。
+
+E-H255-03（默认专项与真实重开，2026-10-29，source_type=command）：`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_workflow_store:: --offline -j 2 -- --nocapture --test-threads=1` 原生0、114.15秒，**13 passed/0 failed/1 ignored**（h255-store-20261029*）。原H-255探针默认通过：overwrite_ok=false、delete为reserved_workflow_id错误、live_after_delete_present=true，graph/revision/current标记保留且list无live条目；H-244陈旧写默认回归仍为stale_accepted=false、base/first保留。唯一ignored为H-251，不计通过。空slot/重复请求/双模式/含冒号workspace/旧named ID及current=false历史碰撞保留对照全部执行。
+
+`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test canvas_persistence_restart --offline -j 2 -- --nocapture --test-threads=1` 原生0、61.37秒，**2/0/0**（h255-restart-20261029*）。新增测试通过两个独立文件SQLite连接，对两模式×三个workspace共6个live slot重复named save/load/delete拒绝、正常生成副本；全部连接关闭后重开，图与token原样、named load/delete不碰live，并验证新token写入后旧token拒绝。原画布数据重开对照也通过；测试没有运行真实Tauri或第三方请求。
+
+apps/desktop的`pnpm test:canvas-ipc`原生0、**33/0/0**（h255-canvas-ipc-20261029*），包含真实前端保存队列/副本恢复21项与命令注册静态门禁；受控IPC不冒充原生后端联测。根fmt/diff check均0，最终两份Rust源码SHA256见h255-reviewed-source-20261029.json；此前fmt排版失败保留。当前完整workspace（会话54295）、pnpm build（94083）及Tauri check仍待终态，未验收或提交；71/19/7/2/206待修+1修复中=207有效未关闭。
+
+E-H255-04（桌面门禁与严格lint，2026-10-29，source_type=command）：`pnpm build`原生0、157.05秒（h255-desktop-build-20261029*），全部默认前端回归、tsc、Vite通过；既有browser externalization与大chunk警告保留。本轮未修改UI/TypeScript或Tauri命令签名，不重复宣称H-244历史截图为本轮视觉验收。独立Tauri `cargo check --target-dir target/h300-after-h163-build --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 2`原生0、234.31秒，包含等待共享target构建锁（h255-tauri-20261029*）。
+
+`cargo clippy --target-dir target/h300-after-h163-build -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 -- -D warnings`原生101、125.47秒（含等锁，h255-appcore-clippy-20261029*），仍为context_runtime八处clone_on_copy、http_runtime:332 needless_return、plugin_preparation:14 type_complexity、run_assembler:1849 too_many_arguments共11项，与h244-appcore-clippy的文件/行/类型一致；lib与lib test各报告同组错误，不重复算22项。workspace all-targets/all-features严格命令（同target-dir、--offline -j 2）原生101、4.42秒（h255-workspace-clippy-20261029*），止于models/client.rs:355既有clone_on_copy。相关源码无diff，不加allow、不顺手修旧诊断、不称严格全绿。当前只剩原完整workspace会话54295仍在执行，其他本项工具会话已收取终态；保持修复中、未提交。
+
+E-H255-05（完整workspace终态，2026-10-29，source_type=command）：原会话54295已真实收取终态，未因等待重启。隔离命令 `cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1` 原生101、1057.26秒，130组test/doc-test合计 **3728 passed/1 failed/301 ignored**（h255-workspace-20261029*、h255-workspace-summary-20261029.json）。唯一失败为prompts::canvas_prompt::tests::every_node_kind_owns_exactly_one_profile的creative.video-edit.v1空默认提示词，和H-244同一既有H-306；对应源码未改，未抹去失败或把ignored计通过。AppCore lib **1246/0/59**、正式canvas_persistence_restart **2/0/0**、Kernel **169/0/74**、builtins **369/0/4**、runtime **338/0/9**。H-255原探针和新增测试默认执行，H-244回归保持通过；H-251原ignored仍独立。两份受测Rust源码自h255-reviewed-source快照之后未变；本轮所有命令会话已结束，未留测试等待冒充验收。
+
+E-H255-06（限定验收、兼容与未覆盖范围，2026-10-29）：依据原公开API真实覆盖/删除反例、默认专项、真实双SQLite连接及重开、完整workspace生产消费者和桌面构建，H-255在**Windows本机、临时SQLite、正式CanvasWorkflowStore API**范围内已修复并验收。命名CRUD统一拒绝current:保留命名空间，不再依赖可变current标记或前端过滤；list按实际key隔离旧碰撞记录。原live读写/CAS、合法旧named ID、自动生成冲突副本和普通列表/更新/删除均保留。没有新增store、DTO、command、依赖、SQL迁移或权限/沙箱变更。
+
+兼容变化是曾接受的current:命名save/load/delete现在返回原CoreError/Tauri字符串错误（原因reserved_workflow_id），不是新增结构化wire code；使用这类ID的外部调用方需改用live API或生成新的named ID。旧碰撞记录不再显示为named条目，但字节原样保留、live read仍可读；本项不会自动恢复早已被覆盖/删除的图，也不自动分配新ID或迁移真实数据。H-251跨workspace权限、H-202 viewport及其他偏好问题未关闭。未执行真实Tauri UI/插件导入操作、旧新二进制并行、恶意直写SQLite、跨进程压力、断电、真实用户数据或其他OS；本轮无UI代码改动，不用受控IPC或Tauri check冒充原生窗口验收。混用旧二进制仍可绕过新服务的校验，不承诺数据库级隔离策略。
+
+本项新增验收1，306行核对后累计 **72已修复并验收、19历史已修复跳过、7归并、2撤销、206待修复、0修复中**，剩余有效未关闭206。仅两份Rust源码/测试和两份文档共4文件独立提交，取得真实hash后另做文档回填，不amend、不推送。下一项拟优先复核P1 H-245：偏好读取失败后仍hydration完成并覆盖未读字段，继续按数据完整性优先，而非挑选容易项。全部剩余200–400有效小时仍为依据历史队列和跨层验收风险的未逐项校准粗估，不机械扣减、不承诺日期；构建、依赖、设备等待另计，整体目标保持active。
+
+以下保留2026-10-25原始审计证据，历史“未实施”不代表上述当前进度。
+
 **级别：高（P1，画布数据破坏与恢复边界）；触发条件：** 调用 `save_workflow(Some(id), ...)` 或 `delete_workflow(id)` 时，`id` 取 live canvas 的保留格式 `current:<mode>:<workspace>`。`validate_token` 为了允许 workspace/current key 中的冒号而接受该字符串；命名工作流 API 没有拒绝 `current:` 前缀，也没有把 live 与 named collection 使用不同的 key 类型/表。该问题不重复 H-244：H-244 是两个窗口的陈旧完整快照覆盖；H-255 在单线程、无并发下即可用命名 API 破坏 live slot。
 
 #### 首次即时 Evidence（2026-10-25）

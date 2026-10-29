@@ -12,7 +12,7 @@ use deepagent_app_core::canvas_provider_service::{
     CanvasModelConfig, CanvasProviderInput, CanvasProviderService, CanvasScenario,
     CanvasScenarioBinding,
 };
-use deepagent_app_core::canvas_workflow_store::CanvasWorkflowStore;
+use deepagent_app_core::canvas_workflow_store::{current_workflow_id, CanvasWorkflowStore};
 use deepagent_app_core::secret_store::{MemorySecretStore, SqliteSecretStore};
 use deepagent_persistence::artifact_store::ArtifactKind;
 use deepagent_persistence::Database;
@@ -91,6 +91,77 @@ fn png_data_url() -> String {
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode([0x89u8, b'P', b'N', b'G', 1, 2, 3])
     )
+}
+
+#[test]
+fn named_workflow_operations_preserve_live_slots_across_independent_handles_and_reopen() {
+    let root = TempRoot::new("workflow_namespace");
+    let snapshots = {
+        let first = CanvasWorkflowStore::new(Arc::new(Database::open(root.db_path()).unwrap()));
+        let second = CanvasWorkflowStore::new(Arc::new(Database::open(root.db_path()).unwrap()));
+        let mut snapshots = Vec::new();
+        for mode in ["creative", "professional"] {
+            for workspace in [None, Some("ws-a"), Some("ws-b")] {
+                let id = current_workflow_id(mode, workspace).unwrap();
+                let live = json!({"nodes":[{"id":"live","data":{"owner":id}}],"edges":[]});
+                first.write_current(mode, workspace, &live, None).unwrap();
+                let before = first.read_current(mode, workspace).unwrap();
+                // Repeat import/update/delete attempts through public production
+                // methods, without mutating the database behind the service.
+                for _ in 0..2 {
+                    let error = second
+                        .save_workflow(
+                            Some(&id),
+                            "collision",
+                            mode,
+                            workspace,
+                            &json!({"nodes":[]}),
+                        )
+                        .unwrap_err();
+                    assert!(error.to_string().contains("reserved_workflow_id"));
+                    assert!(second.load_workflow(&id).is_err());
+                    assert!(second.delete_workflow(&id).is_err());
+                }
+                assert_eq!(second.read_current(mode, workspace).unwrap(), before);
+                // The H-244 conflict-copy path must still save/load a fresh name.
+                let copy = second
+                    .save_workflow(None, "preserved copy", mode, workspace, &live)
+                    .unwrap();
+                assert!(copy.id.starts_with("wf-"));
+                assert_eq!(second.load_workflow(&copy.id).unwrap().unwrap().graph, live);
+                snapshots.push((mode, workspace, before, copy.id));
+            }
+        }
+        assert_eq!(first.list_workflows().unwrap().len(), snapshots.len());
+        snapshots
+    };
+    // Both original database connections have been closed, not merely reused.
+    let reopened = CanvasWorkflowStore::new(Arc::new(Database::open(root.db_path()).unwrap()));
+    for (mode, workspace, expected, named_id) in snapshots {
+        assert_eq!(reopened.read_current(mode, workspace).unwrap(), expected);
+        assert_eq!(
+            reopened.load_workflow(&named_id).unwrap().unwrap().graph,
+            expected.graph.clone().unwrap()
+        );
+        assert!(reopened.delete_workflow(&named_id).unwrap());
+        assert_eq!(reopened.read_current(mode, workspace).unwrap(), expected);
+        let updated = json!({"nodes":[{"id":"newer"}],"edges":[]});
+        reopened
+            .write_current(mode, workspace, &updated, expected.revision.as_deref())
+            .unwrap();
+        let stale = reopened.write_current(
+            mode,
+            workspace,
+            &json!({"nodes":[]}),
+            expected.revision.as_deref(),
+        );
+        assert_eq!(stale.unwrap_err().code, "revision_conflict");
+        assert_eq!(
+            reopened.read_current(mode, workspace).unwrap().graph,
+            Some(updated)
+        );
+    }
+    assert!(reopened.list_workflows().unwrap().is_empty());
 }
 
 #[test]
