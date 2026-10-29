@@ -239,7 +239,9 @@ export function preserveAndReloadWorkflow(mode: CanvasMode): Promise<void> {
     await writing?.catch(() => undefined);
     const local = JSON.stringify(graphOf(mode));
     if (slot.backedUp?.graph === local) {
-      const kept = await invoke<{ graph?: unknown } | null>("canvas_workflow_load", { id: slot.backedUp.id });
+      const kept = await invoke<{ graph?: unknown } | null>("canvas_workflow_load", {
+        id: slot.backedUp.id, workspaceId: null,
+      });
       if (!kept || JSON.stringify(kept.graph) !== local) slot.backedUp = undefined;
     }
     if (slot.backedUp?.graph !== local) {

@@ -98,3 +98,14 @@ test("the plan's required canvas command surface stays registered", () => {
   const missing = REQUIRED_COMMANDS.filter((name) => !registered.has(name));
   assert.deepEqual(missing, [], `§15 commands gone: ${missing.join(", ")}`);
 });
+
+test("named workflow commands forward workspace identity to the shared store", () => {
+  const source = readFileSync(TAURI_LIB, "utf8");
+  for (const action of ["list", "load", "save", "delete"]) {
+    const start = source.indexOf(`fn canvas_workflow_${action}(`);
+    assert.ok(start >= 0);
+    const command = source.slice(start, source.indexOf("\n#[tauri::command]", start));
+    assert.match(command, /workspace_id: Option<String>/, `${action} must accept scope`);
+    assert.match(command, new RegExp(`\\.${action}_workflow${action === "list" ? "s" : ""}\\([\\s\\S]*?workspace_id\\.as_deref\\(\\)`), `${action} must forward scope without reading mutable active-project state`);
+  }
+});

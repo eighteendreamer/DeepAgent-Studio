@@ -2,21 +2,59 @@
 
 ## 当前状态与计数口径（2026-10-29）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计七十四项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计七十五项维持各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 74 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-244、H-245、H-247、H-255、H-260、H-284、H-286、H-287、H-288、H-300，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 75 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-135、H-136、H-139、H-142、H-143、H-163、H-164、H-165、H-175、H-237、H-244、H-245、H-247、H-251、H-255、H-260、H-284、H-286、H-287、H-288、H-300，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 20 | 17项原审计历史修复，另H-77/H-238/H-246分别随H-78/H-260/H-245共享边界消除；H-246原探针前置条件已变，历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-246已按E-H246-04完成限定范围历史修复复核 |
-| 待修复 | 203 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | 无 |
+| 待修复 | 202 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **203（203待修复、0修复中）**；不提供完成率。七十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4及真实复核单独列明，合计20项历史跳过。
+有效未关闭条目当前为 **202（202待修复、0修复中）**；不提供完成率。七十五项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4及真实复核单独列明，合计20项历史跳过。
+
+## H-251 本轮即时记录（2026-10-29）
+
+**当前状态：已修复并验收（2026-10-29，仅E-H251-07所列Windows本机范围）；修复提交待本次独立提交后回填。** 原始失败证据保留；本轮仅处理命名工作流的workspace边界，H-252制品访问、H-244 live快照及H-255命名空间不合并计数。
+
+E-H251-01（本轮原复现，source_type=command/file）：起始HEAD `ad35aeb823b640db8fbf4c3f1dbb574d64b12e9c`，tracked干净，原五类用户未跟踪项仅列名、不读取。核对store、Tauri四命令、前端冲突副本、原探针及数据库重开测试。执行`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_workflow_store::tests::audit_named_workflows_require_workspace_scope --offline -j 2 -- --ignored --exact --nocapture`，原生101、0 passed/1 failed/0 ignored，list_exposes_b/load_exposes_b/deleted_other_workspace均true，A仍存在（target/h251-original-20261029.log/-result.json）。确认当前仍是独立缺陷，不是历史修复或H-255的保留ID碰撞。
+
+F-H251-current / P-H251-current：命名库CRUD缺少caller workspace条件，save显式ID也可改写另一owner；先读归属再无条件put/delete仍有检查与写入竞态。当前桌面只有固定studio-canvas默认作用域窗口，前端live和backup save均传null，backup load原来不传scope；不存在可直接复用的per-window项目身份注册表。本项建立受信本地调用方的显式namespace边界，不把可由调用方提供的workspace参数宣称为用户认证或防御已获任意IPC权限的恶意renderer。
+
+E-H251-02（候选实现，本地设计，待完整验证）：原CanvasWorkflowStore的list/load/delete显式接收workspace；None只匹配旧缺失scope的默认命名空间，显式空/非法身份拒绝，合法身份trim规范化。列表投影前与单条读取统一检查持久owner、实际key/文档ID、current标记和删除状态；正常跨scope与未知ID分别同为None/false。保存保留显式ID创建兼容，但已存在ID不能跨owner覆盖或重新占用已删除ID；复用原DocumentStore insert_if_absent/replace_body_if_unchanged封住并发创建、归属检查与落库窗口，无新store或SQL迁移。
+
+删除以同一文档的条件替换写入storage-only deletedAt和新revision，保留原owner/graph及删除时间作为可恢复记录，不再物理清除；公开DTO保持原形，旧文档可读但不在读取时改写。未增加恢复/清理UI，删除记录继续占用存储，旧版本会忽略新marker，不能据此承诺旧新binary并写安全。Tauri三命令同步scope参数，既有save入口不变；backup load显式传与save一致的null。没有新增多项目画布或信任身份系统，跨scope artifact URI的授权仍属于独立H-252。
+
+E-H251-03（初步验证，尚非验收）：原探针转默认并加跨A/B/default CRUD、覆盖、旧缺失scope、规范化/非法scope、删除记录留存及失败原文保留、真实双SQLite句柄并发创建等回归；原H-244/H-255与重开测试按scope契约适配。首轮Rust测试因新并发测试闭包生命周期E0373编译失败（h251-store-first-20261029.log），已把共享闭包移到thread::scope外，生产实现未因该编译错误修改，修后测试待终态。前端`node --test apps/desktop/scripts/check-canvas-ipc.test.cjs apps/desktop/scripts/check-canvas-persistence.test.cjs`原生0、24/0/0（h251-front-first-20261029.log），只证明静态IPC转发与受控生产前端恢复链，不能替代Rust/真实桥接验收。
+
+保持修复中，完整workspace、Tauri check、严格lint、构建及相称UI/跨连接验收尚待执行或收取终态；不提前关闭或提交。当前74已修复验收、20历史跳过、7归并、2撤销、202待修复、1修复中，203有效未关闭。全部剩余200–400有效小时仍是未逐项校准的历史粗估，基于跨层权限/持久化及验收风险；设备、依赖、构建与环境等待另计，不承诺完成日期。
+
+E-H251-04（续接终态及补强回归，2026-10-29，source_type=command）：已收取原session 96465与3114终态，没有重启同一命令。第二轮store专项原生0、19 passed/0 failed/0 ignored（target/h251-store-second-20261029.log）；apps/desktop的`pnpm build`原生0、129.08秒，20组默认测试合计263 passed/0 failed/0 skipped，tsc --noEmit、Vite与许可证门禁通过（h251-desktop-build-20261029.log/-result.json、h251-build-test-summary-20261029.json）。既有externalization/大chunk警告保留。
+
+续接只补测试，生产代码未变：新增12轮真实双SQLite连接的同owner save/delete竞争，检查成功写回执对应图仍保留在active文档或tombstone中；新增A/B/default三类删除记录在完全关闭旧连接、数据库重开后仍保留owner/graph/marker，所有scope均不能重新占用ID。执行`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib --test canvas_persistence_restart canvas_ --offline -j 2 -- --nocapture --test-threads=1`原生0，lib104 passed/0 failed/9 ignored（含store20项），integration1 passed/0 failed/0 ignored、2 filtered out，158.47秒（h251-final-store-and-restart-20261029*）。明确canvas_过滤未执行两个named重开用例，随后无过滤执行`cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test canvas_persistence_restart --offline -j 2 -- --nocapture --test-threads=1`原生0、3/0/0、1.98秒（h251-restart-20261029*）。使用独立临时data/home/profile/managed，清除继承provider key和DB路径，不读取原用户数据。根fmt --check与diff --check原生0；6份受测源码SHA256见h251-reviewed-source-20261029.json。
+
+E-H251-05（实际React消费者与重试，2026-10-29，source_type=command/image）：`node target/h251-ui-browser.cjs`原生0（h251-ui-browser-20261029.log/-result.json）。从本轮源码编译真实WorkflowPersistenceNotice、持久化队列与Zustand，双page共用合成IPC；不是完整CanvasApp或原生Tauri，也不是SQLite UI联测。A保存后B产生冲突；实际点击保留副本，副本保存成功但注入latest read失败，B图仍保留。再次点击时真实canvas_workflow_load显式携带与save一致的workspaceId:null，确认旧副本后恢复A最新图；合计1次save、1次load，无重复副本，刷新renderer仍为A图，合成B-workspace记录未变。pageErrors、unexpected IPC、外部请求均为空，console仅预期409/503及恢复失败诊断。已逐张查看retry/recovered截图，恢复提示和按钮可见、重试后显示最新图；未修改生产UI。全新Chromium context，非本机请求拦截，finally关闭context/browser/server，不访问真实用户profile或供应商。
+
+此时完整workspace已启动，Tauri与严格lint尚待执行；以上局部/浏览器结果不足以提前宣布完整验收。
+
+E-H251-06（完整门禁与真实失败基线，2026-10-29，source_type=command）：`cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1`已收取原进程终态，Cargo原生101、1178.09秒，130个target/doc-test汇总3736 passed/1 failed/300 ignored；唯一失败为既有H-306：deepagent-prompts的every_node_kind_owns_exactly_one_profile报告creative.video-edit.v1空defaultUserPrompt。AppCore1253 passed/0 failed/58 ignored，重开3/0/0；未把ignored计通过（h251-workspace-20261029.log/-result.json、h251-workspace-summary-20261029.json）。本轮没有重启全仓任务或顺手修改H-306。
+
+`cargo check --target-dir target/h300-after-h163-build --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --offline -j 2`原生0、50.65秒（h251-tauri-20261029*），覆盖真实Tauri command宏展开与AppCore调用契约；不是原生WebView交互测试。`cargo clippy --target-dir target/h300-after-h163-build -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings`原生101、49.71秒，仍为context_runtime八项clone_on_copy、http_runtime needless_return、plugin_preparation type_complexity、run_assembler too_many_arguments共11项；与H-255日志诊断逐条相同。`cargo clippy --target-dir target/h300-after-h163-build --all-targets --all-features --offline -j 2 -- -D warnings`原生101、17.11秒，仍在models/client.rs:355的clone_on_copy阻断。两日志与result均保留，相关诊断源文件与HEAD完全一致，未屏蔽warning，不能称全量lint通过。
+
+根`cargo fmt --all -- --check`和git diff --check原生0；额外`cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check`退出1，发现lib.rs四处历史格式差异。提取HEAD同文件到target后以相同rustfmt配置check也退出1，去掉路径/行偏移后的四段格式diff逐字相同，未涉及本轮scope命令改动（h251-tauri-format-20261029.log、h251-tauri-head-format-20261029.log、h251-lint-format-baseline-20261029-result.json）；未为过门禁格式化无关旧代码。6份受测源码哈希复核未变。首次台账校验脚本因要求编号后必须接冒号，漏计以空格标记撤销的H-305，得到305行并在写入前失败；已改按编号识别，核实306个唯一编号且无缺号，不将撤销行丢弃或增加有效任务。
+
+E-H251-07（限定验收与兼容边界，2026-10-29）：原命名工作流在未比较workspace时全局list/load/delete及指定ID跨owner覆盖的问题，在Windows本机、正式CanvasWorkflowStore/真实SQLite、Tauri编译接线及真实React消费者/合成IPC范围内已修复并验收。原0/1失败证据保留，原H-251探针已纳入默认回归；A/B/default对照、正常同scope更新、未知/跨scope读删一致返回None/false、删除失败原文不变、双连接竞争和数据库重开均有实际通过证据。无新增store、依赖、command或SQL migration，未修改工具执行、模型供应商或沙箱。
+
+兼容变化：Rust三个方法新增显式scope参数，仓内调用方已同步；Tauri三命令新增可选workspaceId，遗漏/null仅限旧默认namespace、不再全局读取。显式ID仍可新建，但跨owner/已删除ID不能覆盖或再占用；合法owner trim规范化，空/非法scope拒绝。旧缺失/null owner仍属默认；旧损坏、ID不一致或非法owner记录会显式失败，不自动改写/猜测归属，当前全collection列表也会被此类异常记录阻断。删除改为保留graph/owner/deletedAt的原地tombstone，无恢复或清理UI，仍占存储；旧binary不识别marker，不能与新版并写。
+
+本项是受信本地调用方的namespace边界，不是身份认证；拥有任意IPC/直接数据库访问能力者仍可自报别的workspace。后端过滤发生在服务投影前，DocumentStore仍扫描原collection，没有SQL级逐租户物理隔离。服务端CAS保护归属检查到提交的竞争，不等同于命名工作流的客户端revision租约，不宣称解决同scope串行陈旧图覆盖。桌面仍是固定默认画布，未新增多项目窗口身份注册、导入导出/运行入口或真实项目切换UI。H-252 artifact引用授权、跨用户身份体系、旧数据人工修复、强杀/断电与旧新binary并写、其他OS、原生Tauri/WebView、真实provider/tool调用均未在本轮验收；无真实用户数据、凭据或外部服务操作。
+
+本项新增修复验收1，306唯一编号台账核对后累计75已修复并验收、20历史已修复跳过、7归并、2撤销、202待修复、0修复中，即202有效未关闭。仅本项8文件独立提交，取得真实hash后另作docs回填，不amend、不推送；整体目标仍active。下一项拟独立复核H-252制品跨workspace访问边界，先读取原探针和当前消费者，尚未开始实现。全部剩余200–400有效小时仍是未逐项校准的历史粗估，依据未关闭跨层权限/持久化及验收风险，不按关闭1项机械扣减；构建、设备、依赖和环境等待另计，不承诺完工日期。
 
 ## H-246 本轮独立复核（2026-10-29）
 
@@ -2388,7 +2426,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-248：画布语音合成响应无字节上限，超预算音频被完整缓冲并持久化](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-249：画布语音转写的远程音频输入绕过统一网络权限与审批](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-250：画布 artifact 读取不校验持久化摘要，旧 URI 会静默投影替换后的字节](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-251：命名画布工作流保存了 workspace_id，但库查询、读取和删除没有 workspace 访问边界](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-251：命名画布工作流保存了 workspace_id，但库查询、读取和删除没有 workspace 访问边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 独立scope缺陷，原失败保留；E-H251-01～07限定本机范围 | 统一scope CRUD/归属CAS；原地tombstone保留owner/graph；Tauri及冲突副本同scope | store20、重开3、前端263/build/UI、Tauri check通过；workspace3736/1/300仅H-306；严格lint/桌面fmt既有阻断已对照 | 独立提交后回填 | 受信namespace非认证；无SQL迁移；tombstone占存储、旧新binary并写未验；H-252不含，202有效未关闭，剩余工时未校准 |
 | [H-252：Canvas artifact 的读取、provider 投影、显示和删除按全局 ID 操作，绕过 workspace 隔离](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-253：分块 canvas artifact 上传丢失 workspace 所有权，发布出无主媒体](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-254：artifact 删除先删文件后删索引，数据库失败会留下永久 dangling URI](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

@@ -2311,10 +2311,11 @@ fn canvas_workflow_state_write(
 #[tauri::command]
 fn canvas_workflow_list(
     state: State<'_, AppState>,
+    workspace_id: Option<String>,
 ) -> Result<Vec<deepagent_app_core::canvas_workflow_store::CanvasWorkflowMeta>, String> {
     state
         .canvas_workflows
-        .list_workflows()
+        .list_workflows(workspace_id.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -2340,19 +2341,24 @@ fn canvas_workflow_save(
 fn canvas_workflow_load(
     state: State<'_, AppState>,
     id: String,
+    workspace_id: Option<String>,
 ) -> Result<Option<deepagent_app_core::canvas_workflow_store::CanvasWorkflowDoc>, String> {
     state
         .canvas_workflows
-        .load_workflow(&id)
+        .load_workflow(&id, workspace_id.as_deref())
         .map_err(|e| e.to_string())
 }
 
 /// Remove one saved workflow.
 #[tauri::command]
-fn canvas_workflow_delete(state: State<'_, AppState>, id: String) -> Result<bool, String> {
+fn canvas_workflow_delete(
+    state: State<'_, AppState>,
+    id: String,
+    workspace_id: Option<String>,
+) -> Result<bool, String> {
     state
         .canvas_workflows
-        .delete_workflow(&id)
+        .delete_workflow(&id, workspace_id.as_deref())
         .map_err(|e| e.to_string())
 }
 

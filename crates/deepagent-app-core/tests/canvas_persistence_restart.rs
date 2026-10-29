@@ -119,8 +119,8 @@ fn named_workflow_operations_preserve_live_slots_across_independent_handles_and_
                         )
                         .unwrap_err();
                     assert!(error.to_string().contains("reserved_workflow_id"));
-                    assert!(second.load_workflow(&id).is_err());
-                    assert!(second.delete_workflow(&id).is_err());
+                    assert!(second.load_workflow(&id, None).is_err());
+                    assert!(second.delete_workflow(&id, None).is_err());
                 }
                 assert_eq!(second.read_current(mode, workspace).unwrap(), before);
                 // The H-244 conflict-copy path must still save/load a fresh name.
@@ -128,11 +128,20 @@ fn named_workflow_operations_preserve_live_slots_across_independent_handles_and_
                     .save_workflow(None, "preserved copy", mode, workspace, &live)
                     .unwrap();
                 assert!(copy.id.starts_with("wf-"));
-                assert_eq!(second.load_workflow(&copy.id).unwrap().unwrap().graph, live);
+                assert_eq!(
+                    second
+                        .load_workflow(&copy.id, workspace)
+                        .unwrap()
+                        .unwrap()
+                        .graph,
+                    live
+                );
                 snapshots.push((mode, workspace, before, copy.id));
             }
         }
-        assert_eq!(first.list_workflows().unwrap().len(), snapshots.len());
+        for workspace in [None, Some("ws-a"), Some("ws-b")] {
+            assert_eq!(first.list_workflows(workspace).unwrap().len(), 2);
+        }
         snapshots
     };
     // Both original database connections have been closed, not merely reused.
@@ -140,10 +149,24 @@ fn named_workflow_operations_preserve_live_slots_across_independent_handles_and_
     for (mode, workspace, expected, named_id) in snapshots {
         assert_eq!(reopened.read_current(mode, workspace).unwrap(), expected);
         assert_eq!(
-            reopened.load_workflow(&named_id).unwrap().unwrap().graph,
+            reopened
+                .load_workflow(&named_id, workspace)
+                .unwrap()
+                .unwrap()
+                .graph,
             expected.graph.clone().unwrap()
         );
-        assert!(reopened.delete_workflow(&named_id).unwrap());
+        for other in [None, Some("ws-a"), Some("ws-b")]
+            .into_iter()
+            .filter(|other| *other != workspace)
+        {
+            assert!(reopened.load_workflow(&named_id, other).unwrap().is_none());
+            assert!(!reopened.delete_workflow(&named_id, other).unwrap());
+            assert!(reopened
+                .save_workflow(Some(&named_id), "cross-scope", mode, other, &json!({}))
+                .is_err());
+        }
+        assert!(reopened.delete_workflow(&named_id, workspace).unwrap());
         assert_eq!(reopened.read_current(mode, workspace).unwrap(), expected);
         let updated = json!({"nodes":[{"id":"newer"}],"edges":[]});
         reopened
@@ -161,7 +184,57 @@ fn named_workflow_operations_preserve_live_slots_across_independent_handles_and_
             Some(updated)
         );
     }
-    assert!(reopened.list_workflows().unwrap().is_empty());
+    for workspace in [None, Some("ws-a"), Some("ws-b")] {
+        assert!(reopened.list_workflows(workspace).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn named_workflow_deletions_keep_their_owner_and_graph_after_database_reopen() {
+    use deepagent_app_core::canvas_workflow_store::CANVAS_WORKFLOW_COLLECTION;
+    use deepagent_persistence::document_store::DocumentStore;
+
+    let root = TempRoot::new("named_tombstones");
+    let records = {
+        let db = Arc::new(Database::open(root.db_path()).unwrap());
+        let workflows = CanvasWorkflowStore::new(db.clone());
+        [None, Some("ws-a"), Some("ws-b")].map(|scope| {
+            let graph = json!({"owner":scope,"nodes":[{"id":"retained"}]});
+            let item = workflows
+                .save_workflow(None, "retained", "creative", scope, &graph)
+                .unwrap();
+            assert!(workflows.delete_workflow(&item.id, scope).unwrap());
+            let raw = DocumentStore::new(&db)
+                .get(CANVAS_WORKFLOW_COLLECTION, &item.id)
+                .unwrap()
+                .unwrap();
+            (item.id, scope, graph, raw)
+        })
+    };
+    let db = Arc::new(Database::open(root.db_path()).unwrap());
+    let workflows = CanvasWorkflowStore::new(db.clone());
+    for (id, owner, graph, retained) in records {
+        for scope in [None, Some("ws-a"), Some("ws-b")] {
+            assert!(workflows.load_workflow(&id, scope).unwrap().is_none());
+            assert!(workflows.list_workflows(scope).unwrap().is_empty());
+            assert!(!workflows.delete_workflow(&id, scope).unwrap());
+            assert!(workflows
+                .save_workflow(Some(&id), "reclaim", "creative", scope, &json!({}))
+                .is_err());
+        }
+        let raw = DocumentStore::new(&db)
+            .get(CANVAS_WORKFLOW_COLLECTION, &id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            raw, retained,
+            "rejected operations cannot mutate tombstones"
+        );
+        let body: Value = serde_json::from_str(&raw.body).unwrap();
+        assert_eq!(body["workspaceId"], json!(owner));
+        assert_eq!(body["graph"], graph);
+        assert!(body["deletedAt"].is_i64());
+    }
 }
 
 #[test]
@@ -260,7 +333,7 @@ fn every_canvas_document_survives_a_reopen_of_the_same_database() {
         json!("creative.image-gen.v1")
     );
     let named = workflows
-        .load_workflow("wf-demo")
+        .load_workflow("wf-demo", None)
         .expect("load named")
         .expect("named workflow restored");
     assert_eq!(named.name, "演示工作流");

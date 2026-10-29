@@ -69,10 +69,12 @@ function fixture(database = {}, override = async () => {}) {
       return { schemaVersion: 1, revision, updatedAt: backend.sequence };
     }
     if (command === "canvas_workflow_save") {
+      assert.equal(args.workspaceId, null, "conflict copies belong to the same explicit default scope as the live canvas");
       backend.backups.push(structuredClone(args.graph));
       return { id: `backup-${backend.backups.length}` };
     }
     if (command === "canvas_workflow_load") {
+      assert.equal(args.workspaceId, null, "backup verification must carry the same scope as its save");
       const graph = backend.backups[Number(args.id.replace("backup-", "")) - 1];
       return graph ? { graph: structuredClone(graph) } : null;
     }

@@ -173,6 +173,57 @@ fn decode(doc: &deepagent_persistence::document_store::Document) -> Result<Canva
         .map_err(|error| CoreError::invalid(format!("decode canvas workflow: {error}")))
 }
 
+/// Named workflows stay in the original document collection. A deletion is a
+/// conditional replacement with a retained graph, not an unauditable hard delete.
+/// Keep the storage-only marker out of the public, live workflow DTO.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredNamedWorkflow {
+    #[serde(flatten)]
+    document: CanvasWorkflowDoc,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    deleted_at: Option<i64>,
+}
+
+/// None is the legacy/default namespace, never a wildcard. Explicit invalid
+/// identities must not silently fall back to that namespace.
+fn named_workspace(workspace_id: Option<&str>) -> Result<Option<String>> {
+    workspace_id
+        .map(|value| {
+            let value = value.trim();
+            validate_token(value, "workspace id")?;
+            Ok(value.to_string())
+        })
+        .transpose()
+}
+
+fn scoped_named_workflow(
+    doc: &deepagent_persistence::document_store::Document,
+    workspace: &Option<String>,
+) -> Result<Option<StoredNamedWorkflow>> {
+    let stored: StoredNamedWorkflow = serde_json::from_str(&doc.body)
+        // Do not surface serde's invalid-value excerpt: it can contain graph data.
+        .map_err(|_| CoreError::invalid("invalid stored named workflow document"))?;
+    if stored.document.id != doc.id {
+        return Err(CoreError::invalid(
+            "named workflow document identity mismatch",
+        ));
+    }
+    let owner = named_workspace(stored.document.workspace_id.as_deref())?;
+    Ok(
+        (stored.deleted_at.is_none() && !stored.document.current && owner == *workspace)
+            .then_some(stored),
+    )
+}
+
+fn named_workflow_unavailable(id: &str) -> CoreError {
+    tracing::warn!(
+        document_id = id,
+        "named workflow mutation rejected: unavailable or changed"
+    );
+    CoreError::invalid("workflow_unavailable: named workflow is unavailable or changed")
+}
+
 /// Persistence service for canvas graphs.
 pub struct CanvasWorkflowStore {
     db: Arc<Database>,
@@ -284,6 +335,7 @@ impl CanvasWorkflowStore {
     ) -> Result<CanvasWorkflowMeta> {
         check_graph_size(graph)?;
         let mode = normalize_mode(mode)?;
+        let workspace = named_workspace(workspace_id)?;
         let name = name.trim();
         if name.is_empty() {
             return Err(CoreError::invalid("canvas workflow name is required"));
@@ -301,63 +353,112 @@ impl CanvasWorkflowStore {
             mode,
             updated_at: self.now(),
         };
-        self.put(&CanvasWorkflowDoc {
-            id,
-            name: meta.name.clone(),
-            mode: meta.mode.clone(),
-            workspace_id: workspace_id.map(str::to_string),
-            graph: graph.clone(),
-            updated_at: meta.updated_at,
-            current: false,
-            revision: None,
+        let store = DocumentStore::new(&self.db);
+        let previous = store.get(CANVAS_WORKFLOW_COLLECTION, &id)?;
+        if let Some(previous) = &previous {
+            if scoped_named_workflow(previous, &workspace)?.is_none() {
+                return Err(named_workflow_unavailable(&id));
+            }
+        }
+        let body = serde_json::to_string(&StoredNamedWorkflow {
+            document: CanvasWorkflowDoc {
+                id: id.clone(),
+                name: meta.name.clone(),
+                mode: meta.mode.clone(),
+                workspace_id: workspace,
+                graph: graph.clone(),
+                updated_at: meta.updated_at,
+                current: false,
+                revision: Some(uuid::Uuid::new_v4().to_string()),
+            },
+            deleted_at: None,
         })?;
+        let now = SystemClock.now();
+        let changed = match previous {
+            Some(previous) => store.replace_body_if_unchanged(
+                CANVAS_WORKFLOW_COLLECTION,
+                &id,
+                &previous.body,
+                &body,
+                now,
+            )?,
+            None => store.insert_if_absent(CANVAS_WORKFLOW_COLLECTION, &id, &body, now)?,
+        };
+        if !changed {
+            return Err(named_workflow_unavailable(&id));
+        }
+        tracing::debug!(document_id = %id, "named workflow committed in requested workspace");
         Ok(meta)
     }
 
-    /// Library entries, newest first, excluding the live canvas slots.
-    pub fn list_workflows(&self) -> Result<Vec<CanvasWorkflowMeta>> {
-        let mut items: Vec<CanvasWorkflowMeta> = DocumentStore::new(&self.db)
-            .list(CANVAS_WORKFLOW_COLLECTION)?
-            .iter()
-            // Old collisions can have current=false. Check the actual key
-            // before decoding; a payload ID cannot turn a live row into a name.
-            .filter(|doc| validate_named_workflow_id(&doc.id).is_ok())
-            .filter_map(|doc| decode(doc).ok())
-            .filter(|document| {
-                !document.current && validate_named_workflow_id(&document.id).is_ok()
-            })
-            .map(|document| CanvasWorkflowMeta {
-                id: document.id,
-                name: document.name,
-                mode: document.mode,
-                updated_at: document.updated_at,
-            })
-            .collect();
+    /// Entries in exactly one workspace, newest first. No global-list fallback.
+    pub fn list_workflows(&self, workspace_id: Option<&str>) -> Result<Vec<CanvasWorkflowMeta>> {
+        let workspace = named_workspace(workspace_id)?;
+        let mut items = Vec::new();
+        for doc in DocumentStore::new(&self.db).list(CANVAS_WORKFLOW_COLLECTION)? {
+            // The actual key owns the live namespace, including old collisions.
+            if validate_named_workflow_id(&doc.id).is_err() {
+                continue;
+            }
+            if let Some(stored) = scoped_named_workflow(&doc, &workspace)? {
+                let document = stored.document;
+                items.push(CanvasWorkflowMeta {
+                    id: document.id,
+                    name: document.name,
+                    mode: document.mode,
+                    updated_at: document.updated_at,
+                });
+            }
+        }
         items.sort_by_key(|item| std::cmp::Reverse(item.updated_at));
         Ok(items)
     }
 
-    pub fn load_workflow(&self, id: &str) -> Result<Option<CanvasWorkflowDoc>> {
+    pub fn load_workflow(
+        &self,
+        id: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<Option<CanvasWorkflowDoc>> {
         validate_named_workflow_id(id)?;
+        let workspace = named_workspace(workspace_id)?;
         let doc = DocumentStore::new(&self.db).get(CANVAS_WORKFLOW_COLLECTION, id)?;
         let Some(doc) = doc else { return Ok(None) };
-        Ok(Some(decode(&doc)?))
+        Ok(scoped_named_workflow(&doc, &workspace)?.map(|stored| stored.document))
     }
 
-    pub fn delete_workflow(&self, id: &str) -> Result<bool> {
+    /// Retain a tombstone and the graph atomically, bound to the checked owner.
+    /// Absent, deleted, and different-workspace IDs all return false.
+    pub fn delete_workflow(&self, id: &str, workspace_id: Option<&str>) -> Result<bool> {
         validate_named_workflow_id(id)?;
-        DocumentStore::new(&self.db).delete(CANVAS_WORKFLOW_COLLECTION, id)
-    }
-
-    fn put(&self, document: &CanvasWorkflowDoc) -> Result<()> {
-        let body = serde_json::to_string(document)?;
-        DocumentStore::new(&self.db).put(
+        let workspace = named_workspace(workspace_id)?;
+        let store = DocumentStore::new(&self.db);
+        let Some(previous) = store.get(CANVAS_WORKFLOW_COLLECTION, id)? else {
+            return Ok(false);
+        };
+        let Some(mut stored) = scoped_named_workflow(&previous, &workspace)? else {
+            tracing::debug!(
+                document_id = id,
+                "named workflow delete: unavailable in requested workspace"
+            );
+            return Ok(false);
+        };
+        stored.deleted_at = Some(self.now());
+        stored.document.revision = Some(uuid::Uuid::new_v4().to_string());
+        let body = serde_json::to_string(&stored)?;
+        if !store.replace_body_if_unchanged(
             CANVAS_WORKFLOW_COLLECTION,
-            &document.id,
+            id,
+            &previous.body,
             &body,
-            None,
             SystemClock.now(),
-        )
+        )? {
+            return Err(named_workflow_unavailable(id));
+        }
+        tracing::info!(
+            document_id = id,
+            "named workflow deleted with retained graph and owner"
+        );
+        Ok(true)
     }
 }
 
@@ -440,12 +541,12 @@ mod tests {
             )
             .expect("save");
         assert!(saved.id.starts_with("wf-"));
-        let listed = store.list_workflows().expect("list");
+        let listed = store.list_workflows(None).expect("list");
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "海报流水线");
 
         let loaded = store
-            .load_workflow(&saved.id)
+            .load_workflow(&saved.id, None)
             .expect("load")
             .expect("present");
         assert_eq!(loaded.mode, "creative");
@@ -460,14 +561,16 @@ mod tests {
                 &json!({ "nodes": [] }),
             )
             .expect("update");
-        assert_eq!(store.list_workflows().expect("list").len(), 1);
+        assert_eq!(store.list_workflows(None).expect("list").len(), 1);
         assert_eq!(
-            store.list_workflows().expect("list")[0].name,
+            store.list_workflows(None).expect("list")[0].name,
             "改名后的流水线"
         );
-        assert!(store.delete_workflow(&saved.id).expect("delete"));
-        assert!(!store.delete_workflow(&saved.id).expect("second delete"));
-        assert!(store.list_workflows().expect("list").is_empty());
+        assert!(store.delete_workflow(&saved.id, None).expect("delete"));
+        assert!(!store
+            .delete_workflow(&saved.id, None)
+            .expect("second delete"));
+        assert!(store.list_workflows(None).expect("list").is_empty());
     }
 
     #[test]
@@ -476,11 +579,10 @@ mod tests {
         store
             .write_current("creative", None, &json!({ "nodes": [] }), None)
             .expect("current");
-        assert!(store.list_workflows().expect("list").is_empty());
+        assert!(store.list_workflows(None).expect("list").is_empty());
     }
 
     #[test]
-    #[ignore = "audit H-251: named canvas workflows must enforce workspace scope on list/load/delete"]
     fn audit_named_workflows_require_workspace_scope() {
         let store = store();
         let workspace_a = store
@@ -502,32 +604,384 @@ mod tests {
             )
             .expect("save workspace B");
 
-        let listed = store.list_workflows().expect("list workflows");
+        let before_b = store
+            .load_workflow(&workspace_b.id, Some("workspace-b"))
+            .unwrap()
+            .unwrap();
+        let listed = store
+            .list_workflows(Some("workspace-a"))
+            .expect("list workflows");
         let loaded_b = store
-            .load_workflow(&workspace_b.id)
-            .expect("load workspace B")
-            .expect("workspace B exists");
+            .load_workflow(&workspace_b.id, Some("workspace-a"))
+            .expect("load workspace B from A");
         let deleted_b = store
-            .delete_workflow(&workspace_b.id)
-            .expect("delete workspace B");
+            .delete_workflow(&workspace_b.id, Some("workspace-a"))
+            .expect("delete workspace B from A");
+        let overwrite_b = store.save_workflow(
+            Some(&workspace_b.id),
+            "attempted overwrite",
+            "creative",
+            Some("workspace-a"),
+            &json!({"nodes":[{"id":"must-not-reach-b"}]}),
+        );
         let list_exposes_b = listed.iter().any(|item| item.id == workspace_b.id);
-        let load_exposes_b = loaded_b.workspace_id.as_deref() == Some("workspace-b");
+        let load_exposes_b = loaded_b.is_some();
         eprintln!(
             "canvas workflow scope audit: listed_ids={:?}, list_exposes_b={}, loaded_workspace={:?}, load_exposes_b={}, deleted_other_workspace={}, retained_a_id={}",
             listed.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(),
             list_exposes_b,
-            loaded_b.workspace_id,
+            loaded_b.as_ref().and_then(|doc| doc.workspace_id.as_deref()),
             load_exposes_b,
             deleted_b,
             store
-                .load_workflow(&workspace_a.id)
+                .load_workflow(&workspace_a.id, Some("workspace-a"))
                 .expect("load workspace A")
                 .is_some(),
         );
         assert!(
-            !list_exposes_b && !load_exposes_b && !deleted_b,
+            !list_exposes_b && !load_exposes_b && !deleted_b && overwrite_b.is_err(),
             "workspace-scoped canvas APIs exposed or deleted another workspace's workflow"
         );
+        assert_eq!(
+            store
+                .load_workflow(&workspace_b.id, Some("workspace-b"))
+                .unwrap(),
+            Some(before_b)
+        );
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, workspace_a.id);
+    }
+
+    #[test]
+    fn named_workflows_isolate_default_and_explicit_workspaces_for_all_operations() {
+        let store = store();
+        let scopes = [None, Some("workspace-a"), Some("workspace-b")];
+        let saved: Vec<_> = scopes
+            .iter()
+            .map(|scope| {
+                store
+                    .save_workflow(None, "scoped", "creative", *scope, &json!({"owner":scope}))
+                    .unwrap()
+            })
+            .collect();
+        for (caller, scope) in scopes.iter().enumerate() {
+            assert_eq!(
+                store.list_workflows(*scope).unwrap(),
+                vec![saved[caller].clone()]
+            );
+            for (owner, item) in saved.iter().enumerate() {
+                if caller == owner {
+                    assert!(store.load_workflow(&item.id, *scope).unwrap().is_some());
+                    continue;
+                }
+                assert_eq!(store.load_workflow(&item.id, *scope).unwrap(), None);
+                assert!(!store.delete_workflow(&item.id, *scope).unwrap());
+                let error = store
+                    .save_workflow(Some(&item.id), "forbidden", "creative", *scope, &json!({}))
+                    .unwrap_err();
+                assert!(error.to_string().contains("workflow_unavailable"));
+                assert_eq!(
+                    store
+                        .load_workflow(&item.id, scopes[owner])
+                        .unwrap()
+                        .unwrap()
+                        .graph,
+                    json!({"owner":scopes[owner]})
+                );
+            }
+            assert!(store.load_workflow("wf-unknown", *scope).unwrap().is_none());
+            assert!(!store.delete_workflow("wf-unknown", *scope).unwrap());
+        }
+        for (scope, item) in scopes.iter().zip(saved) {
+            store
+                .save_workflow(
+                    Some(&item.id),
+                    "normal update",
+                    "professional",
+                    *scope,
+                    &json!({"updated":true}),
+                )
+                .unwrap();
+            assert_eq!(
+                store
+                    .load_workflow(&item.id, *scope)
+                    .unwrap()
+                    .unwrap()
+                    .graph,
+                json!({"updated":true})
+            );
+            assert!(store.delete_workflow(&item.id, *scope).unwrap());
+            assert!(store.list_workflows(*scope).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn named_delete_retains_graph_owner_and_receipt_without_reassigning_the_id() {
+        let store = store();
+        let schema = store.db.schema_version().unwrap();
+        let graph = json!({"nodes":[{"id":"recoverable"}]});
+        let saved = store
+            .save_workflow(None, "kept", "creative", Some("ws-a"), &graph)
+            .unwrap();
+        let documents = DocumentStore::new(&store.db);
+        let before = documents
+            .get(CANVAS_WORKFLOW_COLLECTION, &saved.id)
+            .unwrap()
+            .unwrap();
+        assert!(store.delete_workflow(&saved.id, Some("ws-a")).unwrap());
+        let after = documents
+            .get(CANVAS_WORKFLOW_COLLECTION, &saved.id)
+            .unwrap()
+            .unwrap();
+        let tombstone: StoredNamedWorkflow = serde_json::from_str(&after.body).unwrap();
+        assert!(tombstone.deleted_at.is_some());
+        assert_eq!(tombstone.document.graph, graph);
+        assert_eq!(tombstone.document.workspace_id.as_deref(), Some("ws-a"));
+        assert_ne!(
+            tombstone.document.revision,
+            decode(&before).unwrap().revision
+        );
+        for scope in [None, Some("ws-a"), Some("ws-b")] {
+            assert!(store.load_workflow(&saved.id, scope).unwrap().is_none());
+            assert!(!store.delete_workflow(&saved.id, scope).unwrap());
+            assert!(store
+                .save_workflow(Some(&saved.id), "reclaim", "creative", scope, &json!({}))
+                .is_err());
+            assert!(store.list_workflows(scope).unwrap().is_empty());
+        }
+        assert_eq!(
+            documents
+                .get(CANVAS_WORKFLOW_COLLECTION, &saved.id)
+                .unwrap()
+                .unwrap()
+                .body,
+            after.body
+        );
+        assert_eq!(store.db.schema_version().unwrap(), schema);
+    }
+
+    #[test]
+    fn legacy_missing_workspace_is_default_only_and_normalized_owners_keep_their_scope() {
+        let store = store();
+        let documents = DocumentStore::new(&store.db);
+        for (id, workspace) in [("wf-legacy", None), ("wf-spaced", Some(" ws-a "))] {
+            let mut body = json!({"id":id,"name":"legacy","mode":"creative","graph":{"nodes":[]},"updatedAt":1});
+            if let Some(workspace) = workspace {
+                body["workspaceId"] = json!(workspace);
+            }
+            documents
+                .put(
+                    CANVAS_WORKFLOW_COLLECTION,
+                    id,
+                    &body.to_string(),
+                    None,
+                    SystemClock.now(),
+                )
+                .unwrap();
+        }
+        assert_eq!(store.list_workflows(None).unwrap()[0].id, "wf-legacy");
+        assert_eq!(
+            store.list_workflows(Some("ws-a")).unwrap()[0].id,
+            "wf-spaced"
+        );
+        assert!(store
+            .load_workflow("wf-legacy", Some("ws-a"))
+            .unwrap()
+            .is_none());
+        assert!(store.load_workflow("wf-spaced", None).unwrap().is_none());
+        let before = documents
+            .get(CANVAS_WORKFLOW_COLLECTION, "wf-spaced")
+            .unwrap()
+            .unwrap();
+        assert!(store
+            .load_workflow("wf-spaced", Some(" ws-a "))
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            documents
+                .get(CANVAS_WORKFLOW_COLLECTION, "wf-spaced")
+                .unwrap()
+                .unwrap()
+                .body,
+            before.body,
+            "reads must not silently migrate old rows"
+        );
+        store
+            .save_workflow(
+                Some("wf-spaced"),
+                "updated",
+                "creative",
+                Some(" ws-a "),
+                &json!({}),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .load_workflow("wf-spaced", Some("ws-a"))
+                .unwrap()
+                .unwrap()
+                .workspace_id
+                .as_deref(),
+            Some("ws-a")
+        );
+        for invalid in ["", "  ", "bad/path", "工作区"] {
+            assert!(store.list_workflows(Some(invalid)).is_err());
+            assert!(store.load_workflow("wf-legacy", Some(invalid)).is_err());
+            assert!(store.delete_workflow("wf-legacy", Some(invalid)).is_err());
+            assert!(store
+                .save_workflow(None, "invalid", "creative", Some(invalid), &json!({}))
+                .is_err());
+        }
+        assert!(store.load_workflow("wf-legacy", None).unwrap().is_some());
+    }
+
+    #[test]
+    fn failed_tombstone_commit_preserves_the_complete_original_document() {
+        let store = store();
+        let saved = store
+            .save_workflow(
+                None,
+                "kept",
+                "creative",
+                Some("ws-a"),
+                &json!({"nodes":[1]}),
+            )
+            .unwrap();
+        let documents = DocumentStore::new(&store.db);
+        let before = documents
+            .get(CANVAS_WORKFLOW_COLLECTION, &saved.id)
+            .unwrap()
+            .unwrap();
+        store.db.with_conn(|conn| {
+            conn.execute_batch("CREATE TRIGGER reject_workflow_delete BEFORE UPDATE ON documents WHEN NEW.collection = 'canvas_workflows' BEGIN SELECT RAISE(ABORT, 'synthetic failed commit'); END;").unwrap();
+            Ok(())
+        }).unwrap();
+        assert!(store.delete_workflow(&saved.id, Some("ws-a")).is_err());
+        assert_eq!(
+            documents
+                .get(CANVAS_WORKFLOW_COLLECTION, &saved.id)
+                .unwrap()
+                .unwrap(),
+            before
+        );
+        assert!(store
+            .load_workflow(&saved.id, Some("ws-a"))
+            .unwrap()
+            .is_some());
+        assert_eq!(store.list_workflows(Some("ws-a")).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn concurrent_named_creators_cannot_take_over_each_others_workspace() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("named-scopes.sqlite");
+        let first = CanvasWorkflowStore::new(Arc::new(Database::open(&path).unwrap()));
+        let second = CanvasWorkflowStore::new(Arc::new(Database::open(&path).unwrap()));
+        for attempt in 0..12 {
+            let id = format!("wf-race-{attempt}");
+            let barrier = std::sync::Barrier::new(2);
+            let create = |store: &CanvasWorkflowStore, owner| {
+                barrier.wait();
+                store.save_workflow(
+                    Some(&id),
+                    "racing",
+                    "creative",
+                    Some(owner),
+                    &json!({"owner":owner}),
+                )
+            };
+            let (a, b) = std::thread::scope(|threads| {
+                let a = threads.spawn(|| create(&first, "ws-a"));
+                let b = threads.spawn(|| create(&second, "ws-b"));
+                (a.join().unwrap(), b.join().unwrap())
+            });
+            assert_ne!(
+                a.is_ok(),
+                b.is_ok(),
+                "exactly one namespace owns a concurrently created id"
+            );
+            let (owner, other) = if a.is_ok() {
+                ("ws-a", "ws-b")
+            } else {
+                ("ws-b", "ws-a")
+            };
+            assert_eq!(
+                first
+                    .load_workflow(&id, Some(owner))
+                    .unwrap()
+                    .unwrap()
+                    .graph,
+                json!({"owner":owner})
+            );
+            assert!(!second.delete_workflow(&id, Some(other)).unwrap());
+            assert!(first.delete_workflow(&id, Some(owner)).unwrap());
+            assert!(second
+                .save_workflow(
+                    Some(&id),
+                    "reuse after delete",
+                    "creative",
+                    Some(other),
+                    &json!({})
+                )
+                .is_err());
+        }
+    }
+
+    #[test]
+    fn concurrent_named_save_and_delete_preserve_the_acknowledged_graph_and_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("named-mutations.sqlite");
+        let db = Arc::new(Database::open(&path).unwrap());
+        let first = CanvasWorkflowStore::new(db.clone());
+        let second = CanvasWorkflowStore::new(Arc::new(Database::open(&path).unwrap()));
+        for attempt in 0..12 {
+            let saved = first
+                .save_workflow(None, "before", "creative", Some("ws-a"), &json!({"v":0}))
+                .unwrap();
+            let barrier = std::sync::Barrier::new(2);
+            let graph = json!({"v":attempt + 1});
+            let (update, deletion) = std::thread::scope(|threads| {
+                let update = threads.spawn(|| {
+                    barrier.wait();
+                    first.save_workflow(Some(&saved.id), "after", "creative", Some("ws-a"), &graph)
+                });
+                let deletion = threads.spawn(|| {
+                    barrier.wait();
+                    second.delete_workflow(&saved.id, Some("ws-a"))
+                });
+                (update.join().unwrap(), deletion.join().unwrap())
+            });
+            assert!(update.is_ok() || matches!(deletion, Ok(true)));
+            let raw = DocumentStore::new(&db)
+                .get(CANVAS_WORKFLOW_COLLECTION, &saved.id)
+                .unwrap()
+                .unwrap();
+            let stored: StoredNamedWorkflow = serde_json::from_str(&raw.body).unwrap();
+            assert_eq!(stored.document.workspace_id.as_deref(), Some("ws-a"));
+            assert_eq!(stored.deleted_at.is_some(), matches!(deletion, Ok(true)));
+            assert_eq!(
+                stored.document.graph,
+                if update.is_ok() {
+                    graph
+                } else {
+                    json!({"v":0})
+                }
+            );
+            assert!(second
+                .load_workflow(&saved.id, Some("ws-b"))
+                .unwrap()
+                .is_none());
+            assert!(!second.delete_workflow(&saved.id, Some("ws-b")).unwrap());
+            assert!(second
+                .save_workflow(
+                    Some(&saved.id),
+                    "takeover",
+                    "creative",
+                    Some("ws-b"),
+                    &json!({})
+                )
+                .is_err());
+        }
     }
 
     #[test]
@@ -556,7 +1010,7 @@ mod tests {
             .expect("read live canvas")
             .graph
             .map(|graph| graph["nodes"].clone());
-        let delete_result = store.delete_workflow(&current_id);
+        let delete_result = store.delete_workflow(&current_id, None);
         let live_after_delete = store
             .read_current("creative", Some("workspace-a"))
             .expect("read live canvas after delete")
@@ -578,7 +1032,7 @@ mod tests {
         for error in [
             overwrite.unwrap_err(),
             delete_result.unwrap_err(),
-            store.load_workflow(&current_id).unwrap_err(),
+            store.load_workflow(&current_id, None).unwrap_err(),
         ] {
             assert!(error.to_string().contains("reserved_workflow_id"));
         }
@@ -592,7 +1046,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(decode(&document).unwrap().current);
-        assert!(store.list_workflows().unwrap().is_empty());
+        assert!(store.list_workflows(None).unwrap().is_empty());
     }
 
     #[test]
@@ -614,14 +1068,14 @@ mod tests {
                     .unwrap_err();
                 assert!(error.to_string().contains("reserved_workflow_id"));
             }
-            assert!(store.load_workflow(&id).is_err());
-            assert!(store.delete_workflow(&id).is_err());
+            assert!(store.load_workflow(&id, None).is_err());
+            assert!(store.delete_workflow(&id, None).is_err());
             assert!(DocumentStore::new(&store.db)
                 .get(CANVAS_WORKFLOW_COLLECTION, &id)
                 .unwrap()
                 .is_none());
         }
-        assert!(store.list_workflows().unwrap().is_empty());
+        assert!(store.list_workflows(None).unwrap().is_empty());
         // Rejected preoccupation must not prevent a legitimate create-only write.
         for mode in CANVAS_MODES {
             store
@@ -646,18 +1100,18 @@ mod tests {
             store
                 .save_workflow(Some(id), "updated", "creative", None, &json!({"nodes":[1]}))
                 .unwrap();
-            let loaded = store.load_workflow(id).unwrap().unwrap();
+            let loaded = store.load_workflow(id, None).unwrap().unwrap();
             assert_eq!(loaded.graph, json!({"nodes":[1]}));
             assert_eq!(loaded.name, "updated");
             assert!(!loaded.current);
             assert!(store
-                .list_workflows()
+                .list_workflows(None)
                 .unwrap()
                 .iter()
                 .any(|entry| entry.id == id));
-            assert!(store.delete_workflow(id).unwrap());
-            assert!(!store.delete_workflow(id).unwrap());
-            assert!(store.load_workflow(id).unwrap().is_none());
+            assert!(store.delete_workflow(id, None).unwrap());
+            assert!(!store.delete_workflow(id, None).unwrap());
+            assert!(store.load_workflow(id, None).unwrap().is_none());
         }
     }
 
@@ -685,9 +1139,9 @@ mod tests {
                 )
                 .unwrap();
             let before = store.read_current(mode, None).unwrap();
-            assert!(store.list_workflows().unwrap().is_empty());
-            assert!(store.load_workflow(&id).is_err());
-            assert!(store.delete_workflow(&id).is_err());
+            assert!(store.list_workflows(None).unwrap().is_empty());
+            assert!(store.load_workflow(&id, None).is_err());
+            assert!(store.delete_workflow(&id, None).is_err());
             assert!(store
                 .save_workflow(Some(&id), "rejected", mode, None, &json!({}))
                 .is_err());
