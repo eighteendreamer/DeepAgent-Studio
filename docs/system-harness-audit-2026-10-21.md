@@ -4539,6 +4539,17 @@ P-158-linkage（callflow，关联 E-158-linkage/E-158-chat）：普通字段或 
 - 根因修复应先统一“节点声明、配置 schema、可执行 capability、prompt policy、输出 contract”这一份版本化事实：前端 enabled 只能来自后端可执行能力快照，或在实现前明确标为 unsupported；专业一次性 LLM 可复用 Canvas text bridge，但应显式传 `Professional` prompt policy，而不是用空字符串暗号。分类/提取需要在同一 bridge 上组装明确 prompt、校验结构化结果并映射既有 output contract。Agent V2 若承诺工具与记忆，应复用 ModelAgent/ToolPipeline/审批/取消链；若当前仅一轮 completion，就不应冒充 Agent V2。修复必须同时处理 H-160 的模型身份、H-161 的生成参数和后续 usage 归集，避免“修通即暴露”级联缺陷。
 - 验收应从生产 `createDefaultNodeData()` 和 schema 生成四类配置，经 `runWorkflow`/Tauri DTO、图编译、Kernel、真实 bridge 到受控 provider，逐项断言：provider 调用次数、精确模型、prompt/参数、结构化输出、节点事件、终态、usage；Agent V2 另需工具调用、审批、取消和记忆边界。无 executor 的节点必须在添加到画布前可见地禁用，而不是运行时才报错。
 
+#### H-162 修复终态（2026-10-30）
+
+**状态：已修复并验收（仅限 Windows 本机、离线依赖、loopback provider 与桌面静态检查范围）；代码提交 `6bf802ce`。** 本轮没有访问真实 DeepSeek、凭据、内网或用户数据；Agent V2 未被伪装成一次性 completion，而是按能力边界明确标记 reserved 并 fail-closed。
+
+- Runtime 新增显式 `CanvasPromptPolicy::{CreativeProfile,Professional}`。LLM、Agent（旧节点）、问题分类和参数提取走 Professional policy，不再把专业 kind 送入创作 prompt profile；创作节点继续使用版本化 creative profile。专业请求的空模型引用仍由 H-160 的唯一 Canvas parser 自动路由，非空值保持严格 `providerId::modelId`。
+- `question-classifier` 已接入正式 dispatcher：构造编号分类 prompt，经 Canvas text provider 完成，严格解析 1-based 类别编号并输出 `class_name`、`class_label`、`usage`、`providerId`、`modelId` 与 `__branch`。`parameter-extractor` 同样走正式 bridge，要求 JSON object，按声明校验必填字段、重复/未知参数名与 string/number/boolean/object/array/file 类型并输出动态字段及 `__is_success`、`__reason`、`__usage`。
+- 分类器分支激活已接入统一图执行器：`__branch=class-N` 只激活对应 `source_handle=class-N`，未选边发布 Skipped，不新增第二套调度或事件中心。
+- Agent V2 的前端定义改为 `availability: "reserved"`，配置面板明确说明工具循环、审批、取消、记忆和结构化输出执行链尚未启用；Runtime 在 provider 前返回 `UnsupportedOperation`，不会产生模型调用。这样既保留已有图的配置形状，也不把一次性 completion 冒充完整 Agent V2。待后续复用 `ModelAgent`/`ToolPipeline`/统一审批、取消和记忆边界后再重新启用。
+- 回归与门禁：Runtime 全量 **342 passed / 9 ignored**；Runtime 专业 agent 专项 **31 passed / 0 failed**；AppCore gateway 专项 **55 passed / 2 ignored**；正式专业节点链探针 `audit_professional_ai_nodes_reach_provider_or_fail_closed` **1 passed**，LLM/分类/提取各 provider 调用一次，Agent V2 明确报 reserved 且 transport=0；Runtime/AppCore `cargo check`、Tauri `cargo check`、根 `cargo fmt --all -- --check` 与 `git diff --check` 通过；`apps/desktop` `pnpm test:workflow` **88 passed**，`pnpm build` **0**（仅既有 Vite 大 chunk warning）。
+- 本轮未执行完整 workspace 测试、严格 all-target/all-feature Clippy、真实 Tauri WebView 手动操作、其他 OS、真实供应商、Agent V2 工具/审批/取消/记忆的完整闭环；这些不被本项绿色探针替代。H-161 生成参数、H-163 usage 归集、H-164 取消树和其他媒体/权限项仍按各自条目独立验收。
+
 ### H-163：工作流模型调用丢失 DeepSeek usage，成本账本、缓存观测和 token budget 与实际请求分裂
 
 **级别：高（P1，计量/预算/成本事实错误）；范围：能够到达 Canvas text provider 的创作节点，以及未走 Canvas bridge 的 run-level WorkflowAgent 兼容分支。** H-63 是对抗复核与停滞分类两条附属调用丢账，本项是工作流自身的主要节点调用；H-162 当前阻断四类专业 AI 节点，但 `text-gen` 等创作节点已经可触发本项，且修通专业节点后会立即继承同一缺口。
