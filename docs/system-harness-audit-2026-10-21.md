@@ -8312,7 +8312,7 @@ E-H244-08（独立提交回填，2026-10-29）：修复代码、默认回归及�
 
 ### H-255：命名工作流 ID 可占用 `current:<mode>:<workspace>`，覆盖或删除 live canvas slot
 
-**当前状态：已修复并验收（2026-10-29，仅E-H255-06所列本机范围）；修复commit待取得真实hash后回填。** 本轮只处理H-255，新增验收1；E-H255-01～05保留原失败及阶段验证，“待终态/修复中”不是最终状态。
+**当前状态：已修复并验收（2026-10-29，仅E-H255-06所列本机范围）；修复提交`7d9fbe43e336fae539f195a0c653ae8f09ce7c47`。** 本轮只处理H-255，新增验收1；E-H255-01～05保留原失败及阶段验证，“待终态/修复中”不是最终状态。
 
 E-H255-01（原探针复现，source_type=command/file）：起始HEAD为cc9ff516，tracked干净，五类用户未跟踪项只查看status列名、不读取或修改。复核原审计、当前CanvasWorkflowStore/DocumentStore、Tauri命名CRUD、前端恢复副本调用方、manifest/CI和既有重开测试。使用独立临时data/home/profile/managed并清除供应商key/数据库路径继承的h255 runner，执行 `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --lib canvas_workflow_store::tests::audit_named_workflow_cannot_overwrite_or_delete_current_slot --offline -j 2 -- --ignored --exact --nocapture --test-threads=1`，原生101、7.59秒，0 passed/1 failed/0 ignored（target/h255-before-20261029*）。overwrite_ok=true、live_after_overwrite为named-overwrite、delete_ok=true、live_after_delete_present=false；H-244版本检查不阻止命名API直接put/delete同一key。原失败证据保留，非历史跳过或归并。
 
@@ -8339,6 +8339,8 @@ E-H255-06（限定验收、兼容与未覆盖范围，2026-10-29）：依据原�
 兼容变化是曾接受的current:命名save/load/delete现在返回原CoreError/Tauri字符串错误（原因reserved_workflow_id），不是新增结构化wire code；使用这类ID的外部调用方需改用live API或生成新的named ID。旧碰撞记录不再显示为named条目，但字节原样保留、live read仍可读；本项不会自动恢复早已被覆盖/删除的图，也不自动分配新ID或迁移真实数据。H-251跨workspace权限、H-202 viewport及其他偏好问题未关闭。未执行真实Tauri UI/插件导入操作、旧新二进制并行、恶意直写SQLite、跨进程压力、断电、真实用户数据或其他OS；本轮无UI代码改动，不用受控IPC或Tauri check冒充原生窗口验收。混用旧二进制仍可绕过新服务的校验，不承诺数据库级隔离策略。
 
 本项新增验收1，306行核对后累计 **72已修复并验收、19历史已修复跳过、7归并、2撤销、206待修复、0修复中**，剩余有效未关闭206。仅两份Rust源码/测试和两份文档共4文件独立提交，取得真实hash后另做文档回填，不amend、不推送。下一项拟优先复核P1 H-245：偏好读取失败后仍hydration完成并覆盖未读字段，继续按数据完整性优先，而非挑选容易项。全部剩余200–400有效小时仍为依据历史队列和跨层验收风险的未逐项校准粗估，不机械扣减、不承诺日期；构建、依赖、设备等待另计，整体目标保持active。
+
+E-H255-07（独立提交回填，2026-10-29）：修复代码、默认回归和当时两份文档已一并提交为`7d9fbe43e336fae539f195a0c653ae8f09ce7c47`（【fix】隔离命名工作流与当前画布键空间），仅本项4文件。提交前根fmt/diff均实测0，2份受测源码SHA256与reviewed快照一致，index与工作树一致；306个唯一编号、其他305行与起始HEAD逐字一致、双文档证据相同及2026-10-25原H-255审计全文保留均已检查（h255-precommit-review-20261029-result.json）。提交后tracked干净，原五类用户未跟踪项未读取/修改/暂存，target证据未提交。本次只回填真实hash和收尾记录，另做docs提交，不amend、不推送、不创建PR，不扩大E-06验收范围或将旧测试写为新执行。累计72验收/19历史跳过/7归并/2撤销/206待修、0修复中；整体目标active，下一项拟复核H-245，200–400有效小时仍为未逐项校准粗估，等待另计。
 
 以下保留2026-10-25原始审计证据，历史“未实施”不代表上述当前进度。
 
