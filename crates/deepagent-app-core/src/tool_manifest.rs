@@ -110,9 +110,9 @@ pub(crate) fn register_tool_search_into(
     let names: Vec<String> = deferred.iter().map(|s| s.name.clone()).collect();
     // Child registries inherit the parent's tool objects. Rebind the reserved
     // discovery channel to this run's own set instead of retaining its parent.
-    registry.replace(Arc::new(deepagent_builtins::ToolSearchTool::new(
+    registry.try_replace(Arc::new(deepagent_builtins::ToolSearchTool::new(
         deferred, discovered,
-    )));
+    )))?;
     Ok(names)
 }
 

@@ -82,14 +82,17 @@ pub(crate) fn register_wasm_tools(registry: &mut ToolRegistry, root: &Path) -> R
         };
         let (description, parameters) =
             load_spec(&dir.join(format!("{name}.json"))).unwrap_or_else(|| default_spec(name));
-        registry.register(Arc::new(SandboxedTool::new(
+        if let Err(error) = registry.register(Arc::new(SandboxedTool::new(
             name.to_string(),
             description,
             parameters,
             module,
             sandbox.clone(),
             SandboxPolicy::default(),
-        )))?;
+        ))) {
+            tracing::warn!(tool = name, %error, "skipping invalid WASM tool descriptor");
+            continue;
+        }
         count += 1;
     }
     if count > 0 {
@@ -189,6 +192,25 @@ mod tests {
         assert!(registry
             .check("echo", &PermissionSet::read_only(), false)
             .is_err());
+    }
+
+    #[test]
+    fn invalid_wasm_schema_does_not_block_healthy_tools() {
+        let dir = tempfile::tempdir().unwrap();
+        let tools_dir = dir.path().join(WASM_TOOLS_SUBDIR);
+        std::fs::create_dir_all(&tools_dir).unwrap();
+        for name in ["bad", "healthy"] {
+            std::fs::write(tools_dir.join(format!("{name}.wasm")), b"unused fixture").unwrap();
+        }
+        std::fs::write(
+            tools_dir.join("bad.json"),
+            r#"{"parameters":"invalid schema"}"#,
+        )
+        .unwrap();
+        let mut registry = ToolRegistry::new();
+        assert_eq!(register_wasm_tools(&mut registry, dir.path()).unwrap(), 1);
+        assert!(registry.get("bad").is_none());
+        assert!(registry.get("healthy").is_some());
     }
 
     #[test]

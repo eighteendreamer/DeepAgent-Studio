@@ -40,7 +40,7 @@ use deepagent_core::error::Result;
 
 pub use observation::{ToolObservation, ToolObservationScope};
 pub use permission::{Permission, PermissionSet, RiskLevel};
-pub use registry::{ToolRegistry, ToolSpec, ValidatedInvocation};
+pub use registry::{validate_tool_schema, ToolRegistry, ToolSpec, ValidatedInvocation};
 pub use sandbox::{Capabilities, Sandbox, SandboxPolicy, SandboxStats};
 pub use sandboxed_tool::SandboxedTool;
 

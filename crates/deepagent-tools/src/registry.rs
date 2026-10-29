@@ -18,6 +18,40 @@ use deepagent_core::error::{CoreError, Result};
 use crate::permission::PermissionSet;
 use crate::{Tool, ToolDescriptor, ToolExecutionContext, ToolOutput};
 
+/// Compile and validate a tool's model-facing parameter schema.
+///
+/// Provider function parameters are required to be a JSON Schema object.  A
+/// JSON Schema can technically use a scalar/boolean root, but those shapes are
+/// not valid for the function-tool wire contract used by this project.  Keep
+/// the object-root check and compiler invocation in one place so registration,
+/// invocation and provider-boundary validation cannot drift apart.
+pub fn validate_tool_schema(name: &str, parameters: &serde_json::Value) -> Result<()> {
+    compile_tool_schema(name, parameters).map(|_| ())
+}
+
+fn compile_tool_schema(
+    name: &str,
+    parameters: &serde_json::Value,
+) -> Result<jsonschema::JSONSchema> {
+    if !parameters.is_object() {
+        return Err(CoreError::invalid(format!(
+            "invalid schema for tool '{name}': root must be a JSON object"
+        )));
+    }
+
+    jsonschema::JSONSchema::compile(parameters).map_err(|error| {
+        // ValidationError's Display includes the rejected schema value. Keep
+        // diagnostic locations/rules, not remote descriptions/defaults/secrets.
+        let location = deepagent_core::redaction::scrub_secret_literals(
+            &error.instance_path.to_string(),
+        );
+        let rule = deepagent_core::redaction::scrub_secret_literals(&error.schema_path.to_string());
+        CoreError::invalid(format!(
+            "invalid schema for tool '{name}': JSON Schema compilation failed at '{location}' (schema rule '{rule}')"
+        ))
+    })
+}
+
 /// A registered tool plus its cached descriptor.
 #[derive(Clone)]
 pub struct ToolSpec {
@@ -72,7 +106,8 @@ impl ToolRegistry {
         Self::default()
     }
 
-    /// Register a tool. Returns an error if the name is already taken.
+    /// Register a tool. Returns an error if the name is already taken or the
+    /// model-facing parameter schema is invalid.
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
         let descriptor = tool.descriptor();
         let name = descriptor.name.clone();
@@ -81,6 +116,7 @@ impl ToolRegistry {
                 "tool '{name}' is already registered"
             )));
         }
+        validate_tool_schema(&name, &descriptor.parameters)?;
         self.tools.insert(name, ToolSpec { tool, descriptor });
         Ok(())
     }
@@ -88,10 +124,23 @@ impl ToolRegistry {
     /// Replace an existing implementation by descriptor name, or insert it.
     /// Used when a child run rebinds workspace-aware built-ins to an isolated
     /// worktree while retaining root-independent MCP/plugin tools.
+    ///
+    /// Invalid descriptors are rejected without replacing the previous entry.
+    /// Call [`Self::try_replace`] when the caller needs the error returned.
     pub fn replace(&mut self, tool: Arc<dyn Tool>) {
+        if let Err(error) = self.try_replace(tool) {
+            tracing::warn!(error = %error, "rejecting invalid tool replacement");
+        }
+    }
+
+    /// Fallible variant of [`Self::replace`] for callers that must surface a
+    /// schema failure instead of logging and continuing.
+    pub fn try_replace(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
         let descriptor = tool.descriptor();
-        self.tools
-            .insert(descriptor.name.clone(), ToolSpec { tool, descriptor });
+        let name = descriptor.name.clone();
+        validate_tool_schema(&name, &descriptor.parameters)?;
+        self.tools.insert(name, ToolSpec { tool, descriptor });
+        Ok(())
     }
 
     /// Number of registered tools.
@@ -161,8 +210,7 @@ impl ToolRegistry {
             .tools
             .get(name)
             .ok_or_else(|| CoreError::invalid(format!("unknown tool: {name}")))?;
-        let compiled = jsonschema::JSONSchema::compile(&spec.descriptor.parameters)
-            .map_err(|e| CoreError::invalid(format!("invalid schema for tool '{name}': {e}")))?;
+        let compiled = compile_tool_schema(name, &spec.descriptor.parameters)?;
         if let Err(errors) = compiled.validate(&arguments) {
             let detail = errors
                 .take(8)
@@ -250,6 +298,28 @@ mod tests {
         }
     }
 
+    struct DescriptorTool {
+        name: String,
+        parameters: serde_json::Value,
+    }
+
+    #[async_trait]
+    impl Tool for DescriptorTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor {
+                name: self.name.clone(),
+                description: "descriptor fixture".into(),
+                parameters: self.parameters.clone(),
+                risk: RiskLevel::Safe,
+                required_permissions: PermissionSet::empty(),
+            }
+        }
+
+        async fn invoke(&self, arguments: serde_json::Value) -> Result<ToolOutput> {
+            Ok(ToolOutput::success(arguments))
+        }
+    }
+
     fn registry_with(risk: RiskLevel, perms: PermissionSet) -> ToolRegistry {
         let mut r = ToolRegistry::new();
         r.register(Arc::new(EchoTool { risk, perms })).unwrap();
@@ -312,6 +382,120 @@ mod tests {
             perms: PermissionSet::empty(),
         }));
         assert!(err.is_err());
+    }
+
+    #[test]
+    fn registration_rejects_invalid_parameter_schema_roots_and_compilation() {
+        let invalid = [
+            serde_json::Value::Null,
+            serde_json::json!("not-a-schema"),
+            serde_json::json!([]),
+            serde_json::json!(true),
+            serde_json::json!(false),
+            serde_json::json!({"type": "not-a-json-schema-type"}),
+        ];
+
+        for (index, parameters) in invalid.into_iter().enumerate() {
+            let mut registry = ToolRegistry::new();
+            let error = registry
+                .register(Arc::new(DescriptorTool {
+                    name: format!("invalid_{index}"),
+                    parameters,
+                }))
+                .expect_err("invalid schema must be rejected before publication");
+            assert!(error.to_string().contains("invalid schema"));
+            assert!(registry.is_empty());
+        }
+    }
+
+    #[test]
+    fn registration_accepts_complex_object_schema() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "minLength": 1},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20}
+            },
+            "required": ["query"],
+            "additionalProperties": false
+        });
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(DescriptorTool {
+                name: "complex".into(),
+                parameters: schema,
+            }))
+            .unwrap();
+        assert!(registry.get("complex").is_some());
+        assert!(registry
+            .validate_invocation("complex", serde_json::json!({"query":"ok"}))
+            .is_ok());
+        assert!(registry
+            .validate_invocation("complex", serde_json::json!({"query":3}))
+            .is_err());
+    }
+
+    #[test]
+    fn schema_compiler_error_omits_rejected_schema_values() {
+        let error = validate_tool_schema(
+            "bad",
+            &serde_json::json!({
+                "type":"secret-schema-fixture-value", "description":"private-description-fixture"
+            }),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("JSON Schema compilation failed"));
+        assert!(!error.contains("secret-schema-fixture-value"));
+        assert!(!error.contains("private-description-fixture"));
+    }
+
+    #[test]
+    fn invalid_replacement_keeps_previous_valid_tool() {
+        let mut registry = ToolRegistry::new();
+        registry
+            .register(Arc::new(DescriptorTool {
+                name: "rebind".into(),
+                parameters: serde_json::json!({"type": "object"}),
+            }))
+            .unwrap();
+
+        let error = registry
+            .try_replace(Arc::new(DescriptorTool {
+                name: "rebind".into(),
+                parameters: serde_json::Value::Null,
+            }))
+            .expect_err("invalid replacement must fail closed");
+        assert!(error.to_string().contains("invalid schema"));
+        assert_eq!(
+            registry.get("rebind").unwrap().descriptor.parameters,
+            serde_json::json!({"type": "object"})
+        );
+
+        registry.replace(Arc::new(DescriptorTool {
+            name: "rebind".into(),
+            parameters: serde_json::Value::Null,
+        }));
+        assert_eq!(
+            registry.get("rebind").unwrap().descriptor.parameters,
+            serde_json::json!({"type": "object"})
+        );
+        registry.replace(Arc::new(DescriptorTool {
+            name: "new_invalid".into(),
+            parameters: serde_json::json!([]),
+        }));
+        assert!(registry.get("new_invalid").is_none());
+        let replacement = serde_json::json!({"type":"object", "required":["new"]});
+        registry
+            .try_replace(Arc::new(DescriptorTool {
+                name: "rebind".into(),
+                parameters: replacement.clone(),
+            }))
+            .unwrap();
+        assert_eq!(
+            registry.get("rebind").unwrap().descriptor.parameters,
+            replacement
+        );
     }
 
     #[test]

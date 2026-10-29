@@ -97,7 +97,7 @@ pub struct McpToolDef {
     #[serde(default)]
     pub description: String,
     /// JSON Schema for arguments.
-    #[serde(rename = "inputSchema", default)]
+    #[serde(rename = "inputSchema")]
     pub input_schema: serde_json::Value,
 }
 
@@ -271,6 +271,13 @@ mod tests {
         assert_eq!(res.tools.len(), 1);
         assert_eq!(res.tools[0].name, "search");
         assert_eq!(res.next_cursor, None);
+    }
+
+    #[test]
+    fn tool_definition_requires_input_schema_field() {
+        assert!(
+            serde_json::from_value::<McpToolDef>(serde_json::json!({"name":"missing"})).is_err()
+        );
     }
 
     #[test]

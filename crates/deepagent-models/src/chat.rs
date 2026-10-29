@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::Message;
 use deepagent_core::response_item::{ResponseInputItem, ResponseOutputItem};
+use deepagent_tools::validate_tool_schema;
 
 /// Validate DeepSeek Responses' optional end-user identifier.
 ///
@@ -99,6 +100,19 @@ impl ToolSchema {
             },
         }
     }
+}
+
+/// Validate every function tool that will be projected to a provider wire.
+///
+/// The registry normally validates descriptors before they become visible,
+/// but requests can also be assembled directly by SDK and integration callers.
+/// Keeping this final guard on the provider-neutral request type prevents an
+/// invalid schema from reaching either Responses or Chat serialization.
+pub(crate) fn validate_function_tool_schemas(tools: &[ToolSchema]) -> Result<()> {
+    for tool in tools.iter().filter(|tool| tool.kind == "function") {
+        validate_tool_schema(&tool.function.name, &tool.function.parameters)?;
+    }
+    Ok(())
 }
 
 /// A function definition advertised to the model.
@@ -497,6 +511,7 @@ impl ResponseRequest {
         if let Some(user) = &self.user {
             validate_responses_user_identifier(user)?;
         }
+        validate_function_tool_schemas(&self.tools)?;
         Ok(())
     }
 }
@@ -819,6 +834,35 @@ mod tests {
         assert!(json.get("max_output_tokens").is_none());
         assert!((json["temperature"].as_f64().unwrap() - 0.2).abs() < 1e-6);
         assert_eq!(json["tools"][0]["name"], "reverse");
+    }
+
+    #[test]
+    fn responses_request_validation_rejects_invalid_function_schema() {
+        for parameters in [
+            serde_json::Value::Null,
+            serde_json::json!("not-a-schema"),
+            serde_json::json!([]),
+            serde_json::json!({"type": "not-a-json-schema-type"}),
+        ] {
+            let request = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
+                .with_tools(vec![ToolSchema::function("invalid", "invalid", parameters)]);
+            assert!(request.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn responses_request_validation_accepts_complex_function_schema() {
+        let request = ResponseRequest::new("deepseek-v4-flash", vec![Message::user("hi")])
+            .with_tools(vec![ToolSchema::function(
+                "search",
+                "search docs",
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]
+                }),
+            )]);
+        assert!(request.validate().is_ok());
     }
 
     #[test]

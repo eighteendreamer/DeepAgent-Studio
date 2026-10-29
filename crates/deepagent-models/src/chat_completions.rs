@@ -12,7 +12,10 @@ use deepagent_core::response_item::ResponseOutputItem;
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 
-use crate::chat::{FinishReason, ReasoningEffort, Response, ThinkingToggle, ToolSchema, Usage};
+use crate::chat::{
+    validate_function_tool_schemas, FinishReason, ReasoningEffort, Response, ThinkingToggle,
+    ToolSchema, Usage,
+};
 use crate::stream::{DeltaObserver, ModelStreamEvent};
 
 /// A DeepSeek Chat Completions request.
@@ -196,6 +199,7 @@ impl ChatCompletionRequest {
                 "DeepSeek Chat Completions supports function tools only",
             ));
         }
+        validate_function_tool_schemas(&self.tools)?;
         Ok(())
     }
 }
@@ -655,6 +659,17 @@ mod tests {
         let request = ChatCompletionRequest::new("deepseek-flash", vec![Message::user("plain")]);
         let json = serde_json::to_value(&request).unwrap();
         assert_eq!(json["messages"][0]["content"], "plain");
+    }
+
+    #[test]
+    fn chat_request_validation_rejects_invalid_function_schema_before_wire() {
+        let request = ChatCompletionRequest::new("deepseek-flash", vec![Message::user("hi")])
+            .with_tools(vec![ToolSchema::function(
+                "invalid",
+                "invalid",
+                serde_json::Value::Null,
+            )]);
+        assert!(request.validate().is_err());
     }
     use crate::stream::{DeltaObserver, ModelStreamEvent};
     use crate::{FinishReason, ToolSchema, Usage};

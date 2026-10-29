@@ -609,6 +609,117 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn h159_host_refresh_and_deferred_search_exclude_invalid_schemas() {
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("schema-server.cjs");
+        std::fs::write(&script, r#"
+const invalid = process.argv[2] === 'invalid';
+require('node:readline').createInterface({input:process.stdin}).on('line', line => {
+  const msg = JSON.parse(line);
+  if (!('id' in msg)) return;
+  const reply = result => process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:msg.id,result})+'\n');
+  if (msg.method === 'initialize') reply({protocolVersion:msg.params.protocolVersion,
+    capabilities:{tools:{}},serverInfo:{name:'schema-fixture',version:'1'}});
+  else if (msg.method === 'tools/list') reply({tools:[
+    {name:'healthy',inputSchema:{type:'object'}},
+    {name:'changing',inputSchema:invalid ? 'invalid schema' : {type:'object'}},
+    ...(invalid ? [{name:'missing'},{name:'array',inputSchema:[]},
+      {name:'uncompilable',inputSchema:{type:'invalid-type'}}] : [])
+  ]});
+  else reply({content:[{type:'text',text:'ok'}]});
+});
+"#).unwrap();
+        let service = Arc::new(McpService::new(Arc::new(
+            Database::open_in_memory().unwrap(),
+        )));
+        let config = |mode: &str| McpServerConfig {
+            transport: None,
+            command: Some("node".into()),
+            args: vec![script.to_string_lossy().into_owned(), mode.into()],
+            env: BTreeMap::new(),
+            cwd: None,
+            url: None,
+            headers: BTreeMap::new(),
+        };
+        service
+            .upsert(McpServerDto::from_config("schema", &config("valid"), true))
+            .unwrap();
+        service.start_preparation();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while service.ready_registry().all_tools().len() != 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("first host snapshot must publish valid tools");
+        let original = service.ready_registry();
+
+        service
+            .upsert(McpServerDto::from_config(
+                "schema",
+                &config("invalid"),
+                true,
+            ))
+            .unwrap();
+        service.start_preparation();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while service.ready_registry().all_tools().len() != 1 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("refreshed host snapshot must exclude only invalid capabilities");
+        let refreshed = service.ready_registry();
+        assert_eq!(refreshed.all_tools()[0].local_name, "healthy");
+        assert_eq!(
+            original.all_tools().len(),
+            2,
+            "in-flight snapshots stay immutable"
+        );
+
+        let mut registry = deepagent_tools::ToolRegistry::new();
+        crate::mcp_runtime::attach_mcp_tools(&mut registry, Some(&service), None, None)
+            .await
+            .unwrap();
+        let discovered: crate::tool_manifest::DiscoveredToolSet = Arc::default();
+        let manifest = crate::tool_manifest::prepare_tool_manifest(
+            &mut registry,
+            deepagent_builtins::ToolSearchMode::Enabled,
+            discovered.clone(),
+            0,
+        )
+        .unwrap();
+        assert_eq!(manifest.deferred_tool_names, ["mcp__schema__healthy"]);
+        assert_eq!(manifest.tools.len(), 1);
+        assert_eq!(manifest.tools[0].function.name, "tool_search");
+        let search = registry
+            .invoke(
+                "tool_search",
+                serde_json::json!({"query":"select:mcp__schema__healthy,mcp__schema__changing"}),
+                &deepagent_tools::PermissionSet::developer(),
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(search.ok);
+        let tools = crate::tool_manifest::build_visible_tool_schemas(
+            &registry,
+            &deepagent_tools::PermissionSet::developer(),
+            deepagent_builtins::ToolSearchMode::Enabled,
+            &discovered,
+        );
+        assert_eq!(tools.len(), 2);
+        assert!(tools
+            .iter()
+            .any(|tool| tool.function.name == "mcp__schema__healthy"));
+        assert!(!tools
+            .iter()
+            .any(|tool| tool.function.name == "mcp__schema__changing"));
+        original.close_all().await.unwrap();
+        refreshed.close_all().await.unwrap();
+    }
+
+    #[tokio::test]
     #[ignore = "audit: unrelated config changes must preserve valid pending MCP startup"]
     async fn audit_unrelated_config_change_preserves_pending_startup() {
         let mut observations = Vec::new();

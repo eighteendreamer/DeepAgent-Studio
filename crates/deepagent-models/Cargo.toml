@@ -16,6 +16,7 @@ http = ["dep:reqwest", "dep:time"]
 
 [dependencies]
 deepagent-core.workspace = true
+deepagent-tools.workspace = true
 async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true

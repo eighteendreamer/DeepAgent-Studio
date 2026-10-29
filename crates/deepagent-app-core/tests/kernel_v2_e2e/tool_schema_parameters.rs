@@ -22,7 +22,6 @@ impl HttpTransport for CountingModelTransport {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: reject invalid MCP inputSchema before model transport"]
 async fn invalid_mcp_tool_schemas_are_rejected_before_provider_transport() {
     let cases = [
         serde_json::json!({"name":"missing_schema"}),
@@ -40,6 +39,12 @@ async fn invalid_mcp_tool_schemas_are_rejected_before_provider_transport() {
             .register(&format!("schema_audit_{index}"), client)
             .await;
         let mcp_registered = mcp_result.is_ok();
+        assert_eq!(
+            mcp_result.unwrap(),
+            0,
+            "no invalid definition is a capability"
+        );
+        assert!(mcp_registry.all_tools().is_empty());
 
         let model_transport = Arc::new(CountingModelTransport::default());
         let mut tool_registry = ToolRegistry::new();
@@ -88,7 +93,7 @@ async fn invalid_mcp_tool_schemas_are_rejected_before_provider_transport() {
             "MCP schema audit: mcp_registered={mcp_registered} tool_registered={tool_registered} parameters={parameters:?} transport_calls={}",
             requests.len()
         );
-        if mcp_registered || tool_registered || !requests.is_empty() {
+        if !mcp_registered || tool_registered || !requests.is_empty() {
             violations.push((index, parameters, requests.len()));
         }
     }
@@ -97,4 +102,52 @@ async fn invalid_mcp_tool_schemas_are_rejected_before_provider_transport() {
         violations.is_empty(),
         "invalid MCP schemas reached the model provider boundary: {violations:?}"
     );
+}
+
+#[tokio::test]
+async fn invalid_mcp_schema_does_not_block_normal_request_with_healthy_tool() {
+    let transport = McpMockTransport::new().with_result("tools/list", serde_json::json!({
+        "tools":[
+            {"name":"invalid","inputSchema":{"required":"not-an-array"}},
+            {"name":"missing"},
+            {"name":"healthy","inputSchema":{"type":"object","properties":{"q":{"type":"string"}}}}
+        ]
+    }));
+    let mut mcp = McpRegistry::new();
+    assert_eq!(
+        mcp.register("mixed", Arc::new(McpClient::new(Arc::new(transport))))
+            .await
+            .unwrap(),
+        1
+    );
+    let mut registry = ToolRegistry::new();
+    for adapter in adapters_for(Arc::new(mcp)) {
+        registry.register(adapter).unwrap();
+    }
+    let tools = registry
+        .visible_to(&PermissionSet::developer())
+        .into_iter()
+        .map(|tool| ToolSchema::function(tool.name, tool.description, tool.parameters))
+        .collect();
+    let transport = Arc::new(CountingModelTransport::default());
+    let client = ModelClient::new(
+        transport.clone(),
+        ModelConfig::deepseek("audit-placeholder"),
+    );
+    client
+        .stream_response(
+            ResponseRequest::new(
+                "deepseek-flash",
+                vec![deepagent_core::message::Message::user(
+                    "normal text request",
+                )],
+            )
+            .with_tools(tools),
+        )
+        .await
+        .unwrap();
+    let requests = transport.requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(requests[0]["tools"][0]["name"], "mcp__mixed__healthy");
 }

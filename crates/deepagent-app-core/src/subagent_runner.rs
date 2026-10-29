@@ -644,7 +644,7 @@ impl ChatSubagentRunner {
                 ) {
                     continue;
                 }
-                sub_registry.replace(spec.tool.clone());
+                sub_registry.try_replace(spec.tool.clone())?;
             }
         }
         // The tool list is an execution capability boundary, not merely a

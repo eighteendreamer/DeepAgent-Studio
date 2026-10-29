@@ -11,14 +11,23 @@ use std::sync::Arc;
 use deepagent_core::error::{CoreError, Result};
 use deepagent_tools::ToolExecutionContext;
 
-use crate::protocol::{
-    JsonRpcRequest, McpToolDef, ToolCallResult, ToolsListResult, MCP_PROTOCOL_VERSION,
-};
+use crate::protocol::{JsonRpcRequest, McpToolDef, ToolCallResult, MCP_PROTOCOL_VERSION};
 use crate::transport::McpTransport;
 
 const MAX_TOOLS_LIST_PAGES: usize = 100;
 const MAX_TOOLS_LIST_ITEMS: usize = 2_048;
 const MAX_TOOLS_LIST_CURSOR_BYTES: usize = 64 * 1024;
+
+/// Decode the page envelope before individual definitions so a missing required
+/// inputSchema can be isolated without dropping valid sibling tools. Count raw
+/// entries before filtering to preserve the catalog limit across pages.
+#[derive(serde::Deserialize)]
+struct ToolsListPage {
+    #[serde(default)]
+    tools: Vec<serde_json::Value>,
+    #[serde(rename = "nextCursor", default)]
+    next_cursor: Option<String>,
+}
 
 /// An MCP client bound to one server via a transport.
 pub struct McpClient {
@@ -90,20 +99,31 @@ impl McpClient {
         let mut tools = Vec::new();
         let mut cursor = None;
         let mut seen_cursors = HashSet::new();
+        let mut item_count = 0;
 
         for _ in 0..MAX_TOOLS_LIST_PAGES {
             let params = cursor
                 .as_ref()
                 .map(|cursor| serde_json::json!({ "cursor": cursor }));
             let result = self.call("tools/list", params).await?;
-            let parsed: ToolsListResult = serde_json::from_value(result)?;
+            let parsed: ToolsListPage = serde_json::from_value(result)?;
 
-            if parsed.tools.len() > MAX_TOOLS_LIST_ITEMS.saturating_sub(tools.len()) {
+            if parsed.tools.len() > MAX_TOOLS_LIST_ITEMS.saturating_sub(item_count) {
                 return Err(CoreError::invalid(format!(
                     "MCP tools/list exceeded the catalog limit of {MAX_TOOLS_LIST_ITEMS} tools"
                 )));
             }
-            tools.extend(parsed.tools);
+            item_count += parsed.tools.len();
+            for definition in parsed.tools {
+                if definition.is_object() && definition.get("inputSchema").is_none() {
+                    tracing::warn!(
+                        tool = definition.get("name").and_then(|name| name.as_str()),
+                        "ignoring MCP tool: required inputSchema is missing"
+                    );
+                    continue;
+                }
+                tools.push(serde_json::from_value(definition)?);
+            }
 
             let Some(next_cursor) = parsed.next_cursor else {
                 return Ok(tools);
@@ -205,6 +225,23 @@ mod tests {
         let tools = client.list_tools().await.unwrap();
         assert_eq!(tools.len(), 2);
         assert_eq!(tools[0].name, "search");
+    }
+
+    #[tokio::test]
+    async fn missing_schema_entries_still_count_toward_catalog_limit() {
+        let definitions = (0..=MAX_TOOLS_LIST_ITEMS)
+            .map(|index| serde_json::json!({"name":format!("missing-{index}")}))
+            .collect::<Vec<_>>();
+        let client = client_with(
+            MockTransport::new()
+                .with_result("tools/list", serde_json::json!({"tools":definitions})),
+        );
+        assert!(client
+            .list_tools()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("catalog limit"));
     }
 
     #[tokio::test]

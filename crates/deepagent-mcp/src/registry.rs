@@ -8,9 +8,10 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tracing::Instrument;
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_tools::ToolExecutionContext;
+use deepagent_tools::{validate_tool_schema, ToolExecutionContext};
 
 use crate::client::McpClient;
 use crate::liveness::{LivenessConfig, LivenessProbe};
@@ -88,15 +89,30 @@ impl McpRegistry {
                 "MCP server '{server_name}' is already registered"
             )));
         }
-        let defs = client.list_tools().await?;
+        let defs = client
+            .list_tools()
+            .instrument(tracing::info_span!("mcp_tools_list", server = server_name))
+            .await?;
         let tools: Vec<RemoteTool> = defs
             .into_iter()
-            .map(|d: McpToolDef| RemoteTool {
-                namespaced_name: namespaced_name(server_name, &d.name),
-                server: server_name.to_string(),
-                local_name: d.name,
-                description: d.description,
-                input_schema: d.input_schema,
+            .filter_map(|d: McpToolDef| {
+                let namespaced = namespaced_name(server_name, &d.name);
+                if let Err(error) = validate_tool_schema(&namespaced, &d.input_schema) {
+                    tracing::warn!(
+                        server = server_name,
+                        tool = d.name.as_str(),
+                        error = %error,
+                        "ignoring MCP tool with invalid input schema"
+                    );
+                    return None;
+                }
+                Some(RemoteTool {
+                    namespaced_name: namespaced,
+                    server: server_name.to_string(),
+                    local_name: d.name,
+                    description: d.description,
+                    input_schema: d.input_schema,
+                })
             })
             .collect();
         let count = tools.len();
@@ -436,6 +452,66 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         assert!(tools
             .iter()
             .any(|t| t.namespaced_name == "mcp__asana__create_task"));
+    }
+
+    #[tokio::test]
+    async fn invalid_tool_schema_isolated_while_valid_tools_register() {
+        let transport = MockTransport::new().with_result(
+            "tools/list",
+            serde_json::json!({
+                "tools": [
+                    {"name":"broken", "inputSchema":"not-a-schema"},
+                    {
+                        "name":"search",
+                        "description":"search docs",
+                        "inputSchema": {
+                            "type":"object",
+                            "properties":{"query":{"type":"string"}},
+                            "required":["query"]
+                        }
+                    }
+                ]
+            }),
+        );
+        let mut registry = McpRegistry::new();
+        let count = registry
+            .register("schema-audit", client(transport))
+            .await
+            .unwrap();
+
+        assert_eq!(count, 1);
+        assert!(registry.find_tool("mcp__schema-audit__broken").is_none());
+        assert!(registry.find_tool("mcp__schema-audit__search").is_some());
+    }
+
+    #[tokio::test]
+    async fn server_with_only_invalid_tool_schemas_publishes_no_tools() {
+        let transport = MockTransport::new().with_result(
+            "tools/list",
+            serde_json::json!({
+                "tools": [
+                    {"name":"missing_schema"},
+                    {"name":"array_schema", "inputSchema":[]}
+                ]
+            }),
+        );
+        let mut registry = McpRegistry::new();
+        let count = registry
+            .register_with_instructions(
+                "schema-audit",
+                client(transport),
+                Some("still connected".into()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(count, 0);
+        assert_eq!(registry.server_count(), 1);
+        assert!(registry.all_tools().is_empty());
+        assert_eq!(
+            registry.server_instructions(),
+            vec![("schema-audit".into(), "still connected".into())]
+        );
     }
 
     #[tokio::test]
