@@ -39,25 +39,28 @@ const displaySrcs = new Map<string, string>();
 const inFlight = new Map<string, Promise<string>>();
 
 /** Reference → an address an `<img>` can load. Non-artifacts pass through. */
-export function resolveCanvasMediaSrc(reference: string): Promise<string> {
+export function resolveCanvasMediaSrc(reference: string, workspaceId: string | null = null): Promise<string> {
   const trimmed = reference.trim();
   if (!isArtifactReference(trimmed)) return Promise.resolve(trimmed);
-  const cached = displaySrcs.get(trimmed);
+  const scope = workspaceId?.trim() ?? null;
+  const key = JSON.stringify([scope, trimmed]);
+  const cached = displaySrcs.get(key);
   if (cached) return Promise.resolve(cached);
-  const pending = inFlight.get(trimmed);
+  const pending = inFlight.get(key);
   if (pending) return pending;
 
   const task = (async () => {
     const dto = await invoke<CanvasArtifactDto | null>("canvas_artifact_url", {
       reference: trimmed,
+      workspaceId: scope,
     });
-    if (!dto) return trimmed;
+    if (!dto) throw new Error("artifact 制品在当前工作区不可用");
     const { convertFileSrc } = await import("@tauri-apps/api/core");
     const src = convertFileSrc(dto.path);
-    displaySrcs.set(trimmed, src);
+    displaySrcs.set(key, src);
     return src;
-  })().finally(() => inFlight.delete(trimmed));
-  inFlight.set(trimmed, task);
+  })().finally(() => inFlight.delete(key));
+  inFlight.set(key, task);
   return task;
 }
 
@@ -113,42 +116,47 @@ export async function importCanvasMediaFile(
  * A one-off `data:` URL for the crop / annotation overlays, which need pixels.
  * Never store the result on a node.
  */
-export async function loadCanvasMediaPixels(reference: string): Promise<string> {
+export async function loadCanvasMediaPixels(reference: string, workspaceId: string | null = null): Promise<string> {
   const resolved = await invoke<string | null>("canvas_artifact_data_url", {
     reference: reference.trim(),
+    workspaceId: workspaceId?.trim() ?? null,
   });
+  if (!resolved && isArtifactReference(reference)) throw new Error("artifact 制品在当前工作区不可用");
   // 旧图里的 asset:/http:/data: 引用后端不接管，原样交给浏览器解码，行为与迁移前一致。
   return resolved ?? reference;
 }
 
 /** Component hook: keep node data as the reference, render the resolved src. */
-export function useCanvasMediaSrc(reference?: string): string | undefined {
-  const [src, setSrc] = useState<string | undefined>(() =>
-    reference && !isArtifactReference(reference) ? reference : undefined,
-  );
+export function useCanvasMediaSrc(reference?: string, workspaceId: string | null = null): string | undefined {
+  const key = JSON.stringify([workspaceId?.trim() ?? null, reference?.trim()]);
+  const [resolved, setResolved] = useState<{ key: string; src?: string } | null>(null);
 
   useEffect(() => {
     if (!reference) {
-      setSrc(undefined);
+      setResolved(null);
       return;
     }
     if (!isArtifactReference(reference)) {
-      setSrc(reference);
+      setResolved(null);
       return;
     }
     let active = true;
-    void resolveCanvasMediaSrc(reference)
+    void resolveCanvasMediaSrc(reference, workspaceId)
       .then((value) => {
-        if (active) setSrc(value);
+        if (active) setResolved({ key, src: value });
       })
       .catch((error: unknown) => {
         console.error("[canvas] 解析媒体引用失败:", error);
-        if (active) setSrc(undefined);
+        if (active) setResolved({ key });
       });
     return () => {
       active = false;
     };
-  }, [reference]);
+  }, [reference, workspaceId, key]);
 
-  return src;
+  // Effects run after render: never show the prior namespace's resolved path
+  // even for one frame while a scope/reference change is waiting to load.
+  if (!reference) return undefined;
+  if (!isArtifactReference(reference)) return reference;
+  return resolved?.key === key ? resolved.src : undefined;
 }

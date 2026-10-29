@@ -345,7 +345,7 @@ mod tests {
             .expect("finish");
         let artifact_id = dto["id"].as_str().expect("artifact id");
         let record = service
-            .record(artifact_id)
+            .record(artifact_id, None)
             .expect("record")
             .expect("published record");
         eprintln!(

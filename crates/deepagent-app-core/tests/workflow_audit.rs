@@ -42,6 +42,31 @@ async fn workflow_fixture() -> (tempfile::TempDir, Arc<Database>, ChatService, S
 }
 
 #[tokio::test]
+async fn h252_invalid_workspace_is_rejected_even_without_a_canvas_gateway() {
+    for (index, scope) in ["", " ", "bad/path"].iter().enumerate() {
+        let (_root, db, chat, session) = workflow_fixture().await;
+        let workflow = serde_json::from_value(serde_json::json!({
+            "workspace_id": scope,
+            "definition": {"version":1, "nodes":[{"id":"end","kind":"end"}],"edges":[]}
+        }))
+        .unwrap();
+        let run_id = format!("h252-invalid-scope-{index}");
+        let result = chat
+            .run_workflow(workflow, run_id.clone(), session, |_| {}, |_| {})
+            .await;
+        assert!(result.unwrap_err().to_string().contains("workspace id"));
+        let terminal: Vec<_> = RunStore::new(&db)
+            .events_after(&run_id, None)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].data["kind"], "failed");
+    }
+}
+
+#[tokio::test]
 async fn workflow_projects_one_identity_bound_session_terminal() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({

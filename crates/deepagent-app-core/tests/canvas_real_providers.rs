@@ -456,7 +456,8 @@ async fn creative_text_then_image_graph_runs_on_real_providers() {
                     .to_string_lossy()
                     .split('.')
                     .next()
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                None
             )
             .expect("record")
             .is_some(),
@@ -559,7 +560,7 @@ async fn video_job_submits_polls_and_downloads() {
     );
     let id = answer.artifact_uri.trim_start_matches("artifact://");
     let bytes = artifacts
-        .read_bytes(id)
+        .read_bytes(id, None)
         .expect("read")
         .expect("the expiring provider url must have been downloaded");
     assert!(

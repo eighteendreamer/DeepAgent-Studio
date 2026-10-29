@@ -94,6 +94,88 @@ fn png_data_url() -> String {
 }
 
 #[test]
+fn h252_artifact_namespaces_survive_reopen_and_concurrent_foreign_deletes() {
+    let root = TempRoot::new("artifact_namespaces");
+    let scopes = [None, Some("ws-a"), Some("ws-b")];
+    let items = {
+        let service = CanvasArtifactService::new(
+            root.files_dir(),
+            Arc::new(Database::open(root.db_path()).unwrap()),
+        )
+        .unwrap();
+        scopes.map(|scope| {
+            service
+                .import_bytes(
+                    ArtifactKind::Video,
+                    Some("video/mp4"),
+                    b"synthetic scoped video",
+                    scope,
+                )
+                .unwrap()
+        })
+    };
+    // Every worker opens a separate SQLite connection after the writer closes.
+    let barrier = std::sync::Barrier::new(scopes.len());
+    std::thread::scope(|threads| {
+        let mut workers = Vec::new();
+        for (index, caller) in scopes.iter().copied().enumerate() {
+            let root = &root;
+            let items = &items;
+            let barrier = &barrier;
+            workers.push(threads.spawn(move || {
+                let service = CanvasArtifactService::new(
+                    root.files_dir(),
+                    Arc::new(Database::open(root.db_path()).unwrap()),
+                )
+                .unwrap();
+                barrier.wait();
+                for _ in 0..12 {
+                    assert_eq!(service.list(caller, None).unwrap().len(), 1);
+                    for (owner, item) in items.iter().enumerate() {
+                        if owner == index {
+                            assert_eq!(
+                                service.read_bytes(&item.id, caller).unwrap().unwrap(),
+                                b"synthetic scoped video"
+                            );
+                            service.video_file_path(&item.uri, caller).unwrap();
+                        } else {
+                            assert!(service.record(&item.id, caller).unwrap().is_none());
+                            assert!(service.resolve_for_provider(&item.uri, caller).is_err());
+                            assert!(!service.delete(&item.id, caller).unwrap());
+                        }
+                    }
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+    });
+    let reopened = CanvasArtifactService::new(
+        root.files_dir(),
+        Arc::new(Database::open(root.db_path()).unwrap()),
+    )
+    .unwrap();
+    for (owner, item) in scopes.into_iter().zip(items) {
+        assert_eq!(
+            reopened
+                .record(&item.id, owner)
+                .unwrap()
+                .unwrap()
+                .workspace_id
+                .as_deref(),
+            owner
+        );
+        assert_eq!(
+            reopened.read_bytes(&item.id, owner).unwrap().unwrap(),
+            b"synthetic scoped video"
+        );
+        assert!(reopened.delete(&item.id, owner).unwrap());
+        assert!(reopened.record(&item.id, owner).unwrap().is_none());
+    }
+}
+
+#[test]
 fn named_workflow_operations_preserve_live_slots_across_independent_handles_and_reopen() {
     let root = TempRoot::new("workflow_namespace");
     let snapshots = {
@@ -308,7 +390,7 @@ fn every_canvas_document_survives_a_reopen_of_the_same_database() {
             .expect("write preferences");
 
         let bytes = artifacts
-            .read_bytes(imported.id.as_str())
+            .read_bytes(imported.id.as_str(), Some("ws-1"))
             .expect("read bytes")
             .expect("bytes present");
         (imported.uri, bytes)
@@ -368,14 +450,17 @@ fn every_canvas_document_survives_a_reopen_of_the_same_database() {
         .strip_prefix("artifact://")
         .expect("artifact uri");
     let record = artifacts
-        .record(id)
+        .record(id, Some("ws-1"))
         .expect("record")
         .expect("index row restored");
     assert_eq!(record.kind, ArtifactKind::Image);
     assert_eq!(record.media_type.as_deref(), Some("image/png"));
     assert_eq!(record.byte_size as usize, artifact_bytes.len());
     assert_eq!(
-        artifacts.read_bytes(id).expect("read").expect("bytes"),
+        artifacts
+            .read_bytes(id, Some("ws-1"))
+            .expect("read")
+            .expect("bytes"),
         artifact_bytes
     );
     assert!(std::fs::metadata(&record.path)
@@ -383,7 +468,7 @@ fn every_canvas_document_survives_a_reopen_of_the_same_database() {
         .is_file());
     assert_eq!(
         artifacts
-            .list("ws-1", Some(ArtifactKind::Image))
+            .list(Some("ws-1"), Some(ArtifactKind::Image))
             .expect("list")
             .len(),
         1

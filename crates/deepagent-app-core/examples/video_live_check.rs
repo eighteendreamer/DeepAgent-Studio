@@ -132,7 +132,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(output) => {
             println!(
                 "generated={}",
-                artifacts.video_file_path(&output.artifact_uri)?.display()
+                artifacts
+                    .video_file_path(&output.artifact_uri, None)?
+                    .display()
             );
             Ok(())
         }

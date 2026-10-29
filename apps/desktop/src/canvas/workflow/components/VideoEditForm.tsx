@@ -175,6 +175,7 @@ export function VideoEditForm({ data, onUpdate }: {
         }
       });
       const artifact = await invoke<{ uri: string }>("canvas_video_trim", {
+        workspaceId: null,
         operationId,
         reference: data.videoEditInputRefs[0],
         startSeconds: trimStart,

@@ -159,7 +159,24 @@ impl<'db> ArtifactStore<'db> {
         })
     }
 
-    /// Workspace artifacts, newest first, optionally narrowed to one kind.
+    /// All indexed artifacts, newest first, optionally narrowed to one kind.
+    /// The application service can apply a legacy-aware namespace policy before
+    /// exposing metadata. This is a host-internal scan, not a global UI query.
+    pub fn list(&self, kind: Option<ArtifactKind>) -> Result<Vec<ArtifactRecord>> {
+        let statement = format!(
+            "SELECT {COLUMNS} FROM artifacts WHERE (?1 IS NULL OR kind=?1) ORDER BY created_at DESC, id DESC"
+        );
+        self.db.with_conn(|conn| {
+            let mut statement = conn.prepare(&statement).map_err(map_sqlite)?;
+            let rows = statement
+                .query_map([kind.map(ArtifactKind::as_str)], row_to_record)
+                .map_err(map_sqlite)?;
+            rows.collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(map_sqlite)
+        })
+    }
+
+    /// Workspace artifacts with exact stored ownership, newest first.
     pub fn list_for_workspace(
         &self,
         workspace_id: &str,

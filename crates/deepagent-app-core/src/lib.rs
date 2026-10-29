@@ -23,6 +23,7 @@ pub mod canvas_node_contract;
 pub mod canvas_preferences;
 pub mod canvas_provider_service;
 mod canvas_provider_usage;
+mod canvas_scope;
 pub mod canvas_workflow_store;
 pub mod chat_service;
 pub mod command_guard_llm;

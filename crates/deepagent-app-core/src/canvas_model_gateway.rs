@@ -662,6 +662,8 @@ pub struct CanvasModelGateway {
     /// Where generated media is stored. Without it, image calls have nowhere to
     /// put their bytes, so they fail instead of emitting inline base64.
     artifacts: Option<std::sync::Arc<crate::canvas_artifact_service::CanvasArtifactService>>,
+    /// Immutable namespace captured at workflow admission, never active-project state.
+    workspace_id: Option<String>,
     pending_images: Arc<Mutex<HashMap<String, PendingImageArtifact>>>,
     public_http: Arc<PublicHttpClient>,
 }
@@ -767,6 +769,7 @@ impl CanvasModelGateway {
             providers,
             http,
             artifacts: None,
+            workspace_id: None,
             pending_images: Arc::new(Mutex::new(HashMap::new())),
             public_http: Arc::new(PublicHttpClient::default()),
         }
@@ -775,14 +778,18 @@ impl CanvasModelGateway {
     /// Create a gateway whose deferred image URLs live only for one workflow
     /// run. The provider, artifact and HTTP policy remain the same trusted
     /// services; only one-shot request state is isolated.
-    pub(crate) fn scoped_for_run(self: &Arc<Self>) -> Arc<Self> {
-        Arc::new(Self {
+    pub(crate) fn scoped_for_run(
+        self: &Arc<Self>,
+        workspace_id: Option<&str>,
+    ) -> CoreResult<Arc<Self>> {
+        Ok(Arc::new(Self {
             providers: self.providers.clone(),
             http: self.http.clone(),
             artifacts: self.artifacts.clone(),
+            workspace_id: crate::canvas_scope::normalize_workspace_id(workspace_id)?,
             pending_images: Arc::new(Mutex::new(HashMap::new())),
             public_http: self.public_http.clone(),
-        })
+        }))
     }
 
     #[must_use]
@@ -893,7 +900,7 @@ impl CanvasModelGateway {
                 .get(reqwest::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok()),
             None,
-            None,
+            self.workspace_id.as_deref(),
         )?;
         let mut response = response;
         loop {
@@ -946,6 +953,7 @@ impl CanvasModelGateway {
     async fn audio_input(
         &self,
         request: &CanvasModelRequest,
+        workspace_id: Option<&str>,
     ) -> CanvasResult<(Vec<u8>, String, String)> {
         let reference = request
             .audio
@@ -966,7 +974,7 @@ impl CanvasModelGateway {
                     .artifact_store("read an audio input")
                     .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?;
                 let record = store
-                    .record(id)
+                    .record(id, workspace_id)
                     .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?
                     .ok_or_else(|| {
                         CanvasError::new(
@@ -975,7 +983,7 @@ impl CanvasModelGateway {
                         )
                     })?;
                 let bytes = store
-                    .read_bytes(id)
+                    .read_bytes(id, workspace_id)
                     .map_err(|e| CanvasError::new(CanvasErrorCode::InvalidInput, e.to_string()))?
                     .ok_or_else(|| {
                         CanvasError::new(
@@ -1022,7 +1030,7 @@ impl CanvasModelGateway {
             .map(|url| {
                 let resolved = self
                     .artifact_store("send a reference image")?
-                    .resolve_for_provider(url)?
+                    .resolve_for_provider(url, self.workspace_id.as_deref())?
                     .ok_or_else(|| {
                         deepagent_core::error::CoreError::invalid(format!(
                             "UnsupportedOperation: image reference `{url}` is not an artifact, data URL or http URL"
@@ -1060,7 +1068,13 @@ impl CanvasModelGateway {
         // An explicit model is not swapped out, so exceeding its declared limit
         // is the user's error to see rather than a silent reroute.
         reference_limit_error(&resolved.model, request.images.len())?;
-        self.call(&resolved, request, usage.as_deref()).await
+        self.call(
+            &resolved,
+            request,
+            usage.as_deref(),
+            self.workspace_id.as_deref(),
+        )
+        .await
     }
 
     /// Run a request using the scenario candidate list, falling through only on
@@ -1079,6 +1093,9 @@ impl CanvasModelGateway {
         workspace_id: Option<&str>,
         usage: Option<Arc<dyn CanvasUsageSink>>,
     ) -> CanvasResult<CanvasModelOutput> {
+        let workspace_id = crate::canvas_scope::normalize_workspace_id(workspace_id)
+            .map_err(|error| CanvasError::new(CanvasErrorCode::InvalidInput, error.to_string()))?;
+        let workspace_id = workspace_id.as_deref();
         let scenario = request.operation.scenario().ok_or_else(|| {
             CanvasError::new(
                 CanvasErrorCode::UnsupportedOperation,
@@ -1119,7 +1136,10 @@ impl CanvasModelGateway {
         };
         let mut last_error = None;
         for candidate in candidates {
-            match self.call(&candidate, request, usage.as_deref()).await {
+            match self
+                .call(&candidate, request, usage.as_deref(), workspace_id)
+                .await
+            {
                 Ok(output) => return Ok(output),
                 Err(error) if error.is_transient() => {
                     tracing::warn!(
@@ -1146,6 +1166,7 @@ impl CanvasModelGateway {
         candidate: &ResolvedCanvasModel,
         request: &CanvasModelRequest,
         usage_sink: Option<&dyn CanvasUsageSink>,
+        workspace_id: Option<&str>,
     ) -> CanvasResult<CanvasModelOutput> {
         let api_key = provider_api_key(candidate)?;
         let kind = request_kind(request.operation)?;
@@ -1159,7 +1180,7 @@ impl CanvasModelGateway {
 
         let (content_type, body) = match kind {
             CanvasRequestKind::SpeechTranscribe => {
-                let (bytes, mime, filename) = self.audio_input(request).await?;
+                let (bytes, mime, filename) = self.audio_input(request, workspace_id).await?;
                 (
                     format!("multipart/form-data; boundary={AUDIO_FORM_BOUNDARY}"),
                     transcription_form(&candidate.model.id, &bytes, &filename, &mime)?,
@@ -1522,7 +1543,9 @@ impl CanvasModelGateway {
             size: None,
             timeout_ms: 30_000,
         };
-        let result = self.call(&resolved, &request, None).await;
+        let result = self
+            .call(&resolved, &request, None, self.workspace_id.as_deref())
+            .await;
         let latency_ms = started.elapsed().as_millis() as u64;
         match result {
             Ok(_) => CanvasConnectionTestResult {
@@ -2325,6 +2348,7 @@ async fn fetch_video_artifact(
     artifacts: &crate::canvas_artifact_service::CanvasArtifactService,
     cancel: Option<&Arc<AtomicBool>>,
     task_id: &str,
+    workspace_id: Option<&str>,
 ) -> CanvasResult<crate::canvas_artifact_service::CanvasArtifactDto> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(120))
@@ -2372,7 +2396,7 @@ async fn fetch_video_artifact(
             deepagent_persistence::artifact_store::ArtifactKind::Video,
             media_type.as_deref(),
             None,
-            None,
+            workspace_id,
         )
         .map_err(|error| CanvasError::new(CanvasErrorCode::ProviderFailure, error.to_string()))?;
     let mut response = response;
@@ -2721,7 +2745,7 @@ impl CanvasModelGateway {
                 .await
                 .map_err(to_core_error)?
         } else {
-            self.execute_observed(&model_request, None, usage_sink)
+            self.execute_observed(&model_request, self.workspace_id.as_deref(), usage_sink)
                 .await
                 .map_err(to_core_error)?
         };
@@ -2802,7 +2826,7 @@ impl CanvasModelBridge for CanvasModelGateway {
                 .await
                 .map_err(to_core_error)?
         } else {
-            self.execute(&model_request, None)
+            self.execute(&model_request, self.workspace_id.as_deref())
                 .await
                 .map_err(to_core_error)?
         };
@@ -2819,7 +2843,7 @@ impl CanvasModelBridge for CanvasModelGateway {
                         deepagent_persistence::artifact_store::ArtifactKind::Image,
                         Some(&mime),
                         &bytes,
-                        None,
+                        self.workspace_id.as_deref(),
                     )?;
                 Ok(CanvasImagePreparation::Ready(CanvasImageResponse {
                     artifact_uri: stored.uri,
@@ -2902,7 +2926,7 @@ impl CanvasModelBridge for CanvasModelGateway {
                 .await
                 .map_err(to_core_error)?
         } else {
-            self.execute(&model_request, None)
+            self.execute(&model_request, self.workspace_id.as_deref())
                 .await
                 .map_err(to_core_error)?
         };
@@ -2922,7 +2946,7 @@ impl CanvasModelBridge for CanvasModelGateway {
                         deepagent_persistence::artifact_store::ArtifactKind::Audio,
                         Some(&mime),
                         &bytes,
-                        None,
+                        self.workspace_id.as_deref(),
                     )?;
                 Ok(CanvasAudioResponse {
                     operation: "speech_synthesize".to_string(),
@@ -3102,9 +3126,15 @@ impl CanvasModelBridge for CanvasModelGateway {
         })?;
         // 供应商链接通常一小时过期，必须当场下载入库，节点只留 artifact 引用。
         let artifacts = self.artifact_store("store a generated video")?;
-        let stored = fetch_video_artifact(&url, artifacts, request.cancel.as_ref(), &task_id)
-            .await
-            .map_err(to_core_error)?;
+        let stored = fetch_video_artifact(
+            &url,
+            artifacts,
+            request.cancel.as_ref(),
+            &task_id,
+            self.workspace_id.as_deref(),
+        )
+        .await
+        .map_err(to_core_error)?;
         let mime = stored
             .media_type
             .clone()
@@ -3127,14 +3157,18 @@ impl CanvasModelBridge for CanvasModelGateway {
                 if let Some(id) = crate::canvas_artifact_service::artifact_id_from_uri(trimmed) {
                     let kind = self
                         .artifact_store("inspect an input reference")?
-                        .record(id)?
+                        .record(id, self.workspace_id.as_deref())?
                         .map(|record| match record.kind {
                             deepagent_persistence::artifact_store::ArtifactKind::Image => "Image",
                             deepagent_persistence::artifact_store::ArtifactKind::Video => "Video",
                             deepagent_persistence::artifact_store::ArtifactKind::Audio => "Audio",
                             _ => "Document",
                         })
-                        .unwrap_or("Unknown");
+                        .ok_or_else(|| {
+                            deepagent_core::error::CoreError::invalid(
+                                "artifact is unavailable in requested workspace",
+                            )
+                        })?;
                     return Ok(kind.to_string());
                 }
                 Ok(classify_media_reference(trimmed)
@@ -3224,7 +3258,7 @@ impl CanvasModelGateway {
                 .await
                 .map_err(to_core_error)?
         } else {
-            self.execute_observed(&model_request, None, usage_sink)
+            self.execute_observed(&model_request, self.workspace_id.as_deref(), usage_sink)
                 .await
                 .map_err(to_core_error)?
         };
@@ -3268,7 +3302,7 @@ impl CanvasModelGateway {
 impl deepagent_runtime::workflow::CanvasArtifactValidator for CanvasModelGateway {
     fn validate_video_artifact(&self, reference: &str) -> CoreResult<()> {
         self.artifact_store("validate a video-edit artifact")?
-            .validate_video_reference(reference)
+            .validate_video_reference(reference, self.workspace_id.as_deref())
     }
 }
 
@@ -3308,8 +3342,148 @@ mod tests {
         CanvasModelConfig, CanvasProviderInput, CanvasProviderService, CanvasScenarioBinding,
     };
     use deepagent_persistence::Database;
-    use deepagent_runtime::workflow::CanvasJobProgressSink;
+    use deepagent_runtime::workflow::{CanvasArtifactValidator, CanvasJobProgressSink};
     use std::sync::Arc;
+
+    #[tokio::test]
+    async fn h252_deferred_image_fetch_preserves_scope_and_isolates_one_shot_handles() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            while !request.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+                let mut buffer = [0; 1024];
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0);
+                request.extend_from_slice(&buffer[..count]);
+            }
+            assert!(String::from_utf8_lossy(&request).starts_with("GET /image.png "));
+            socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 5\r\nConnection: close\r\n\r\nimage").await.unwrap();
+        });
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let artifacts = Arc::new(
+            crate::canvas_artifact_service::CanvasArtifactService::new(root.path(), db.clone())
+                .unwrap(),
+        );
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::MemorySecretStore::new()),
+        ));
+        let mut base = CanvasModelGateway::new(providers).with_artifacts(artifacts.clone());
+        base.public_http = Arc::new(crate::http_runtime::public_fixture_client(address));
+        let base = Arc::new(base);
+        let owner = base.scoped_for_run(Some("ws-a")).unwrap();
+        let foreign = base.scoped_for_run(Some("ws-b")).unwrap();
+        let CanvasImagePreparation::Deferred { request_id, origin } = owner
+            .stage_image_url(
+                format!("http://public.fixture.invalid:{}/image.png", address.port()),
+                "synthetic-provider".into(),
+                "synthetic-image".into(),
+                "generate".into(),
+            )
+            .unwrap()
+        else {
+            panic!("expected deferred image");
+        };
+        assert!(foreign
+            .fetch_image_handle(&request_id, &origin, ToolExecutionContext::default())
+            .await
+            .is_err());
+        assert!(owner.pending_image_origin(&request_id).is_some());
+        let fetched = tokio::time::timeout(
+            Duration::from_secs(5),
+            owner.fetch_image_handle(&request_id, &origin, ToolExecutionContext::default()),
+        )
+        .await;
+        if !matches!(&fetched, Ok(Ok(_))) {
+            server.abort();
+        }
+        let joined = server.await;
+        let output = fetched.unwrap().unwrap();
+        joined.unwrap();
+        let id = output.artifact_uri.trim_start_matches("artifact://");
+        assert_eq!(
+            artifacts
+                .record(id, Some("ws-a"))
+                .unwrap()
+                .unwrap()
+                .workspace_id
+                .as_deref(),
+            Some("ws-a")
+        );
+        assert_eq!(
+            artifacts.read_bytes(id, Some("ws-a")).unwrap().unwrap(),
+            b"image"
+        );
+        assert!(artifacts.record(id, None).unwrap().is_none());
+        assert!(artifacts.record(id, Some("ws-b")).unwrap().is_none());
+        assert!(owner
+            .fetch_image_handle(&request_id, &origin, ToolExecutionContext::default())
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn h252_run_scoped_gateways_isolate_all_artifact_input_paths() {
+        use crate::canvas_artifact_service::CanvasArtifactService;
+        use deepagent_persistence::artifact_store::ArtifactKind;
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let artifacts = Arc::new(CanvasArtifactService::new(root.path(), db.clone()).unwrap());
+        let providers = Arc::new(CanvasProviderService::new(
+            db,
+            Arc::new(crate::MemorySecretStore::new()),
+        ));
+        let base = Arc::new(CanvasModelGateway::new(providers).with_artifacts(artifacts.clone()));
+        for owner in [None, Some("ws-a"), Some("ws-b")] {
+            let image = artifacts
+                .import_bytes(ArtifactKind::Image, Some("image/png"), b"image", owner)
+                .unwrap();
+            let audio = artifacts
+                .import_bytes(ArtifactKind::Audio, Some("audio/mpeg"), b"ID3audio", owner)
+                .unwrap();
+            let video = artifacts
+                .import_bytes(ArtifactKind::Video, Some("video/mp4"), b"video", owner)
+                .unwrap();
+            for caller in [None, Some("ws-a"), Some("ws-b")] {
+                let gateway = base.scoped_for_run(caller).unwrap();
+                let own = caller == owner;
+                for item in [&image, &audio, &video] {
+                    assert_eq!(
+                        gateway
+                            .inspect_input_kinds(std::slice::from_ref(&item.uri))
+                            .is_ok(),
+                        own
+                    );
+                }
+                assert_eq!(
+                    gateway
+                        .resolve_image_inputs(std::slice::from_ref(&image.uri))
+                        .is_ok(),
+                    own
+                );
+                assert_eq!(gateway.validate_video_artifact(&video.uri).is_ok(), own);
+                let mut request =
+                    CanvasModelRequest::text("").with_operation(CanvasOperation::SpeechTranscribe);
+                request.audio.reference = Some(audio.uri.clone());
+                let result = gateway
+                    .audio_input(&request, gateway.workspace_id.as_deref())
+                    .await;
+                assert_eq!(result.is_ok(), own);
+                if own {
+                    assert_eq!(result.unwrap().0, b"ID3audio");
+                }
+            }
+        }
+        assert_eq!(
+            base.workspace_id, None,
+            "creating scoped runs cannot mutate their shared parent"
+        );
+        assert!(base.scoped_for_run(Some("bad/path")).is_err());
+    }
 
     #[test]
     fn embedding_batch_keeps_all_vectors_in_input_order_and_legacy_scalar() {
@@ -4742,14 +4916,14 @@ mod tests {
             .to_string();
         assert_eq!(
             artifacts
-                .read_bytes(&artifact_id)
+                .read_bytes(&artifact_id, None)
                 .expect("read")
                 .expect("stored")
                 .as_slice(),
             &[0x89, b'P', b'N', b'G', 0, 1]
         );
         let reused = artifacts
-            .resolve_for_provider(&image.artifact_uri)
+            .resolve_for_provider(&image.artifact_uri, None)
             .expect("resolve")
             .expect("provider-ready reference");
         assert!(
@@ -5033,14 +5207,17 @@ mod tests {
         assert!(uri.starts_with("artifact://"), "synthesize gave {uri}");
         assert!(spoken.text.is_none());
         let id = uri.trim_start_matches("artifact://");
-        let record = artifacts.record(id).expect("record").expect("row");
+        let record = artifacts.record(id, None).expect("record").expect("row");
         assert_eq!(
             record.kind,
             deepagent_persistence::artifact_store::ArtifactKind::Audio
         );
         assert_eq!(record.media_type.as_deref(), Some("audio/mpeg"));
         assert_eq!(
-            artifacts.read_bytes(id).expect("read").expect("bytes"),
+            artifacts
+                .read_bytes(id, None)
+                .expect("read")
+                .expect("bytes"),
             voice_bytes
         );
 
@@ -5163,7 +5340,10 @@ mod tests {
             .expect("current implementation accepts the oversized response");
         let uri = spoken.audio_url.expect("artifact reference");
         let id = uri.trim_start_matches("artifact://");
-        let artifact = artifacts.read_bytes(id).expect("read").expect("bytes");
+        let artifact = artifacts
+            .read_bytes(id, None)
+            .expect("read")
+            .expect("bytes");
         eprintln!(
             "speech output audit: configured_input_limit={configured_input_limit}, response_bytes={}, artifact_bytes={}",
             audio.len(),
@@ -5395,14 +5575,17 @@ mod tests {
             done.artifact_uri
         );
         let id = done.artifact_uri.trim_start_matches("artifact://");
-        let record = artifacts.record(id).expect("record").expect("row");
+        let record = artifacts.record(id, None).expect("record").expect("row");
         assert_eq!(
             record.kind,
             deepagent_persistence::artifact_store::ArtifactKind::Video
         );
         assert_eq!(record.media_type.as_deref(), Some("video/mp4"));
         assert_eq!(
-            artifacts.read_bytes(id).expect("read").expect("bytes"),
+            artifacts
+                .read_bytes(id, None)
+                .expect("read")
+                .expect("bytes"),
             mp4,
             "the expiring provider url must be downloaded into the store"
         );
@@ -5503,12 +5686,16 @@ mod tests {
                 &artifacts,
                 None,
                 "large-job",
+                None,
             ))
             .expect("download large video");
         server.join().expect("server thread");
         assert_eq!(stored.byte_size, total_bytes as i64);
         assert_eq!(stored.media_type.as_deref(), Some("video/mp4"));
-        let record = artifacts.record(&stored.id).expect("record").expect("row");
+        let record = artifacts
+            .record(&stored.id, None)
+            .expect("record")
+            .expect("row");
         assert_eq!(record.byte_size, total_bytes as i64);
         let _ = std::fs::remove_dir_all(root);
     }
@@ -5560,6 +5747,7 @@ mod tests {
                 task_artifacts.as_ref(),
                 Some(&task_cancel),
                 "cancel-download",
+                None,
             )
             .await
         });

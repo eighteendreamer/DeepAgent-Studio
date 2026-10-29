@@ -49,6 +49,10 @@ pub struct WorkflowEdgeSpec {
 #[serde(deny_unknown_fields)]
 pub struct WorkflowRequest {
     pub definition: WorkflowDefinition,
+    /// Explicit canvas namespace, independent of a session's filesystem project.
+    /// Absence means the legacy/default namespace, not every workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
     #[serde(default)]
     pub inputs: Map<String, Value>,
     #[serde(default)]
@@ -1069,6 +1073,37 @@ mod tests {
             vec![edge("e", "root", "dependent")],
         );
         assert_eq!(compile(definition).unwrap().order, vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn h252_workspace_scope_is_optional_snake_case_and_round_trips() {
+        let legacy = serde_json::json!({"definition": valid_graph()});
+        let request: WorkflowRequest = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(request.workspace_id, None);
+        assert!(serde_json::to_value(&request)
+            .unwrap()
+            .get("workspace_id")
+            .is_none());
+        let mut explicit = legacy.clone();
+        explicit["workspace_id"] = serde_json::json!("ws-a");
+        let request: WorkflowRequest = serde_json::from_value(explicit).unwrap();
+        assert_eq!(request.workspace_id.as_deref(), Some("ws-a"));
+        assert_eq!(
+            serde_json::from_value::<WorkflowRequest>(serde_json::to_value(&request).unwrap())
+                .unwrap(),
+            request
+        );
+        let mut null = legacy.clone();
+        null["workspace_id"] = Value::Null;
+        assert_eq!(
+            serde_json::from_value::<WorkflowRequest>(null)
+                .unwrap()
+                .workspace_id,
+            None
+        );
+        let mut wrong_case = legacy;
+        wrong_case["workspaceId"] = serde_json::json!("ws-a");
+        assert!(serde_json::from_value::<WorkflowRequest>(wrong_case).is_err());
     }
 
     #[test]

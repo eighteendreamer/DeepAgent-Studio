@@ -426,6 +426,7 @@ impl Drop for LocalImageProvider {
 /// This covers the alternate parse_output branch without a second-hop server.
 struct LocalInlineImageProvider {
     base_url: String,
+    requests: Arc<Mutex<Vec<(String, Value)>>>,
     server: JoinHandle<()>,
 }
 
@@ -433,10 +434,16 @@ impl LocalInlineImageProvider {
     async fn start(image_bytes: Vec<u8>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
-            let (line, _) = read_request(&mut socket).await;
-            assert!(line.starts_with("POST /v1/images/generations "));
+            let (line, body) = read_request(&mut socket).await;
+            assert!(
+                line.starts_with("POST /v1/images/generations ")
+                    || line.starts_with("POST /v1/images/edits ")
+            );
+            captured.lock().unwrap().push((line, body));
             use base64::Engine as _;
             let encoded = base64::engine::general_purpose::STANDARD.encode(image_bytes);
             let payload = json!({"data":[{"b64_json":encoded}]}).to_string();
@@ -450,6 +457,7 @@ impl LocalInlineImageProvider {
         });
         Self {
             base_url: format!("http://{address}/v1"),
+            requests,
             server,
         }
     }
@@ -1107,7 +1115,7 @@ async fn real_video_workflow_stores_the_download_and_one_success_terminal() {
     assert_eq!(
         fixture
             .artifacts
-            .read_bytes(uri.trim_start_matches("artifact://"))
+            .read_bytes(uri.trim_start_matches("artifact://"), None)
             .unwrap()
             .unwrap(),
         VIDEO_BYTES
@@ -1155,7 +1163,7 @@ async fn audit_provider_video_url_cannot_fetch_loopback_resource() {
         .expect("video node must complete before checking second-hop evidence");
     let stored = fixture
         .artifacts
-        .read_bytes(video.artifacts[0].trim_start_matches("artifact://"))
+        .read_bytes(video.artifacts[0].trim_start_matches("artifact://"), None)
         .unwrap()
         .unwrap();
     let private_requests = provider.private_requests.lock().unwrap().clone();
@@ -1204,7 +1212,7 @@ async fn audit_provider_video_download_rejects_oversized_artifact() {
         .and_then(|uri| {
             fixture
                 .artifacts
-                .read_bytes(uri.trim_start_matches("artifact://"))
+                .read_bytes(uri.trim_start_matches("artifact://"), None)
                 .ok()
         })
         .flatten()
@@ -1411,6 +1419,216 @@ async fn audit_canvas_provider_error_body_is_bounded() {
 }
 
 #[tokio::test]
+async fn h252_generated_audio_video_keep_scope_and_private_image_download_stays_denied() {
+    fn assert_output(fixture: &MediaFixture, run_id: &str, node: &str, bytes: &[u8]) {
+        let live = fixture.live.lock().unwrap();
+        let event = live
+            .iter()
+            .find(|event| event.node_id == node && event.status == NodeExecutionStatus::Completed)
+            .unwrap();
+        let id = event.artifacts[0].trim_start_matches("artifact://");
+        let record = fixture.artifacts.record(id, Some("ws-a")).unwrap().unwrap();
+        assert_eq!(record.workspace_id.as_deref(), Some("ws-a"));
+        assert_eq!(
+            fixture
+                .artifacts
+                .read_bytes(id, Some("ws-a"))
+                .unwrap()
+                .unwrap(),
+            bytes
+        );
+        for foreign in [None, Some("ws-b")] {
+            assert!(fixture.artifacts.read_bytes(id, foreign).unwrap().is_none());
+            assert!(!fixture.artifacts.delete(id, foreign).unwrap());
+        }
+        let terminal: Vec<_> = RunStore::new(&fixture.db)
+            .events_after(run_id, None)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].data["kind"], "succeeded");
+    }
+    let mut video = LocalVideoProvider::start("Succeed").await;
+    let mut fixture = MediaFixture::new(&video).await;
+    fixture.workflow.workspace_id = Some("ws-a".into());
+    let mut run = fixture.spawn("h252-scoped-video");
+    video.wait_for_poll().await;
+    video.release_poll.notify_one();
+    let result = finish_run(&mut run).await;
+    video.close().await;
+    result.unwrap();
+    assert_output(&fixture, "h252-scoped-video", "video", VIDEO_BYTES);
+
+    let mut audio = LocalPendingAudioProvider::start().await;
+    let mut fixture = MediaFixture::new_audio(&audio).await;
+    fixture.workflow.workspace_id = Some("ws-a".into());
+    let mut run = fixture.spawn("h252-scoped-audio");
+    audio.wait_for_request().await;
+    audio.release_response.notify_one();
+    let result = finish_run(&mut run).await;
+    audio.close().await;
+    result.unwrap();
+    assert_output(&fixture, "h252-scoped-audio", "audio", AUDIO_BYTES);
+
+    let mut image = LocalImageProvider::start().await;
+    let mut fixture = MediaFixture::new_image(&image).await;
+    fixture.workflow.workspace_id = Some("ws-a".into());
+    let mut run = fixture.spawn("h252-scoped-deferred-image");
+    let result = finish_run(&mut run).await;
+    image.close().await;
+    assert!(result.unwrap_err().to_string().contains("NetworkDenied"));
+    assert_eq!(image.provider_requests.lock().unwrap().len(), 1);
+    assert!(image.private_requests.lock().unwrap().is_empty());
+    for scope in [None, Some("ws-a"), Some("ws-b")] {
+        assert!(fixture.artifacts.list(scope, None).unwrap().is_empty());
+    }
+    let terminals: Vec<_> = RunStore::new(&fixture.db)
+        .events_after("h252-scoped-deferred-image", None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "run_terminal")
+        .collect();
+    assert_eq!(terminals.len(), 1);
+    assert_eq!(terminals[0].data["kind"], "failed");
+}
+
+#[tokio::test]
+async fn h252_cross_workspace_images_fail_before_provider_and_persist_one_terminal() {
+    use deepagent_persistence::artifact_store::ArtifactKind;
+    for caller in [None, Some("ws-a"), Some("ws-b")] {
+        for owner in [None, Some("ws-a"), Some("ws-b")] {
+            if caller == owner {
+                continue;
+            }
+            let mut provider = LocalImageProvider::start().await;
+            let mut fixture = MediaFixture::new_image(&provider).await;
+            fixture.workflow.workspace_id = caller.map(str::to_string);
+            let foreign = fixture
+                .artifacts
+                .import_bytes(
+                    ArtifactKind::Image,
+                    Some("image/png"),
+                    PRIVATE_IMAGE_BYTES,
+                    owner,
+                )
+                .unwrap();
+            let config = &mut fixture.workflow.definition.nodes[1].config;
+            config.insert("referenceImages".into(), json!([foreign.uri]));
+            config.insert("operation".into(), json!("image_edit"));
+            let run_id = "h252-cross-scope-image";
+            let mut run = fixture.spawn(run_id);
+            let result = finish_run(&mut run).await;
+            provider.close().await;
+            assert!(result.is_err(), "caller {caller:?}, owner {owner:?}");
+            assert!(provider.provider_requests.lock().unwrap().is_empty());
+            assert!(provider.private_requests.lock().unwrap().is_empty());
+            let events = RunStore::new(&fixture.db)
+                .events_after(run_id, None)
+                .unwrap();
+            let terminal: Vec<_> = events
+                .iter()
+                .filter(|event| event.event_type == "run_terminal")
+                .collect();
+            assert_eq!(terminal.len(), 1);
+            assert_eq!(terminal[0].data["kind"], "failed");
+            assert!(events
+                .iter()
+                .any(|event| event.data.to_string().contains("requested workspace")));
+            let live = fixture.live.lock().unwrap();
+            assert!(live.iter().any(
+                |event| event.node_id == "image" && event.status == NodeExecutionStatus::Failed
+            ));
+            assert!(!live
+                .iter()
+                .any(|event| event.node_id == "end"
+                    && event.status == NodeExecutionStatus::Completed));
+            assert_eq!(
+                fixture
+                    .artifacts
+                    .read_bytes(&foreign.id, owner)
+                    .unwrap()
+                    .unwrap(),
+                PRIVATE_IMAGE_BYTES
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn h252_same_workspace_images_reach_provider_and_keep_output_ownership() {
+    use deepagent_persistence::artifact_store::ArtifactKind;
+    for caller in [None, Some(" ws-a "), Some("ws-b")] {
+        let owner = caller.map(str::trim);
+        let mut provider = LocalInlineImageProvider::start(PRIVATE_IMAGE_BYTES.to_vec()).await;
+        let mut fixture = MediaFixture::new_inline_image(&provider).await;
+        fixture.workflow.workspace_id = caller.map(str::to_string);
+        let input = fixture
+            .artifacts
+            .import_bytes(
+                ArtifactKind::Image,
+                Some("image/png"),
+                PRIVATE_IMAGE_BYTES,
+                owner,
+            )
+            .unwrap();
+        fixture.workflow.definition.nodes[1]
+            .config
+            .insert("referenceImages".into(), json!([input.uri]));
+        fixture.workflow.definition.nodes[1]
+            .config
+            .insert("operation".into(), json!("image_edit"));
+        let run_id = "h252-same-scope-image";
+        let mut run = fixture.spawn(run_id);
+        let result = finish_run(&mut run).await;
+        if result.is_err() {
+            provider.server.abort();
+        }
+        provider.close().await;
+        result.unwrap();
+        let requests = provider.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert!(requests[0].0.starts_with("POST /v1/images/edits "));
+        use base64::Engine as _;
+        assert_eq!(
+            requests[0].1["image"][0],
+            format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(PRIVATE_IMAGE_BYTES)
+            )
+        );
+        let live = fixture.live.lock().unwrap();
+        let output = live
+            .iter()
+            .find(|event| {
+                event.node_id == "image" && event.status == NodeExecutionStatus::Completed
+            })
+            .unwrap();
+        let id = output.artifacts[0].trim_start_matches("artifact://");
+        let record = fixture.artifacts.record(id, owner).unwrap().unwrap();
+        assert_eq!(record.workspace_id.as_deref(), owner);
+        assert_eq!(
+            fixture.artifacts.read_bytes(id, owner).unwrap().unwrap(),
+            PRIVATE_IMAGE_BYTES
+        );
+        for other in [None, Some("ws-a"), Some("ws-b")] {
+            if other != owner {
+                assert!(fixture.artifacts.read_bytes(id, other).unwrap().is_none());
+            }
+        }
+        let terminal: Vec<_> = RunStore::new(&fixture.db)
+            .events_after(run_id, None)
+            .unwrap()
+            .into_iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].data["kind"], "succeeded");
+    }
+}
+
+#[tokio::test]
 async fn real_image_workflow_stores_one_successful_artifact() {
     let mut provider = LocalInlineImageProvider::start(PRIVATE_IMAGE_BYTES.to_vec()).await;
     let fixture = MediaFixture::new_inline_image(&provider).await;
@@ -1435,7 +1653,7 @@ async fn real_image_workflow_stores_one_successful_artifact() {
     assert_eq!(
         fixture
             .artifacts
-            .read_bytes(uri.trim_start_matches("artifact://"))
+            .read_bytes(uri.trim_start_matches("artifact://"), None)
             .unwrap()
             .unwrap(),
         PRIVATE_IMAGE_BYTES
@@ -2120,7 +2338,7 @@ async fn audit_provider_image_download_rejects_oversized_artifact() {
         .expect("the image node must publish its stored artifact");
     let stored = fixture
         .artifacts
-        .read_bytes(artifact_uri.trim_start_matches("artifact://"))
+        .read_bytes(artifact_uri.trim_start_matches("artifact://"), None)
         .unwrap()
         .unwrap();
     let private_requests = provider.private_requests.lock().unwrap();
@@ -2175,7 +2393,7 @@ async fn audit_provider_inline_image_rejects_oversized_artifact() {
         .and_then(|uri| {
             fixture
                 .artifacts
-                .read_bytes(uri.trim_start_matches("artifact://"))
+                .read_bytes(uri.trim_start_matches("artifact://"), None)
                 .ok()
         })
         .flatten()
@@ -2252,7 +2470,7 @@ async fn audit_video_node_events_survive_database_reopen() {
     let artifacts = CanvasArtifactService::new(root.path().join("artifacts"), reopened).unwrap();
     assert_eq!(
         artifacts
-            .read_bytes(uri.trim_start_matches("artifact://"))
+            .read_bytes(uri.trim_start_matches("artifact://"), None)
             .unwrap()
             .unwrap(),
         VIDEO_BYTES,

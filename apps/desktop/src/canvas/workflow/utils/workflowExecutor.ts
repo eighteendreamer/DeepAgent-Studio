@@ -440,7 +440,7 @@ async function runBackendWorkflow(
 
   const ack = await core.invoke<{ run_id: string; session_id: string | null }>(
     "start_workflow",
-    { workflow, sessionId: null },
+    { workflow: { ...workflow, workspace_id: null }, sessionId: null },
   );
   if (!owner.active || owner.closed || signal.aborted || _activeRun !== owner) {
     throw abortError();

@@ -109,3 +109,20 @@ test("named workflow commands forward workspace identity to the shared store", (
     assert.match(command, new RegExp(`\\.${action}_workflow${action === "list" ? "s" : ""}\\([\\s\\S]*?workspace_id\\.as_deref\\(\\)`), `${action} must forward scope without reading mutable active-project state`);
   }
 });
+
+test("artifact materialization and video trim forward the caller namespace", () => {
+  const source = readFileSync(TAURI_LIB, "utf8");
+  for (const [name, calls] of [
+    ["canvas_artifact_url", ["display_target"]],
+    ["canvas_artifact_data_url", ["resolve_for_provider"]],
+    ["canvas_video_trim", ["video_file_path", "record", "import_video_file"]],
+  ]) {
+    const start = source.indexOf(`fn ${name}(`);
+    assert.ok(start >= 0);
+    const command = source.slice(start, source.indexOf("\n#[tauri::command]", start));
+    assert.match(command, /workspace_id: Option<String>/, `${name} must accept scope`);
+    for (const call of calls) {
+      assert.match(command, new RegExp(`\\.${call}\\([\\s\\S]*?workspace_id\\.as_deref\\(\\)`), `${name}/${call} must preserve scope`);
+    }
+  }
+});

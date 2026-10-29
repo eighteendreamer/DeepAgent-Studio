@@ -357,3 +357,6 @@ impl HttpRequestClient for PublicHttpClient {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+pub(crate) use tests::public_fixture_client;

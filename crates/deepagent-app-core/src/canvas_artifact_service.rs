@@ -15,6 +15,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::canvas_scope::normalize_workspace_id;
 use base64::Engine;
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
@@ -277,6 +278,10 @@ impl CanvasArtifactService {
         file_name: Option<&str>,
         workspace_id: Option<&str>,
     ) -> Result<CanvasArtifactStream> {
+        let workspace_id = normalize_workspace_id(workspace_id)?;
+        if kind == ArtifactKind::ToolResult {
+            return Err(CoreError::invalid("tool results are not canvas media"));
+        }
         let id = format!("art_{}", deepagent_core::id::EventId::new());
         ArtifactStore::validate_id(&id)?;
         let staging_path = self.root.join(format!(".{id}.part"));
@@ -287,7 +292,7 @@ impl CanvasArtifactService {
             kind,
             media_type: media_type.map(str::to_string),
             file_name: file_name.map(str::to_string),
-            workspace_id: workspace_id.map(str::to_string),
+            workspace_id,
             staging: Some(ArtifactStaging::create(staging_path)?),
         })
     }
@@ -319,34 +324,59 @@ impl CanvasArtifactService {
         media_type: &str,
         file_name: &str,
         path: impl AsRef<Path>,
+        workspace_id: Option<&str>,
     ) -> Result<CanvasArtifactDto> {
         self.import_file(
             ArtifactKind::Video,
             Some(media_type),
             Some(file_name),
             path,
-            None,
+            workspace_id,
         )
     }
 
     /// Index row for an artifact id.
-    pub fn record(&self, id: &str) -> Result<Option<ArtifactRecord>> {
+    pub fn record(&self, id: &str, workspace_id: Option<&str>) -> Result<Option<ArtifactRecord>> {
         ArtifactStore::validate_id(id)?;
-        ArtifactStore::new(&self.db).get(id)
+        let workspace = normalize_workspace_id(workspace_id)?;
+        let record = ArtifactStore::new(&self.db).get(id)?;
+        match record {
+            Some(record) if Self::in_workspace(&record, &workspace)? => Ok(Some(record)),
+            _ => Ok(None),
+        }
+    }
+
+    fn in_workspace(record: &ArtifactRecord, workspace: &Option<String>) -> Result<bool> {
+        Ok(record.kind != ArtifactKind::ToolResult
+            && record.run_id.is_none()
+            && record.call_id.is_none()
+            && normalize_workspace_id(record.workspace_id.as_deref())? == *workspace)
+    }
+
+    fn require_record(&self, id: &str, workspace_id: Option<&str>) -> Result<ArtifactRecord> {
+        self.record(id, workspace_id)?.ok_or_else(|| {
+            tracing::warn!(
+                artifact_id = id,
+                "canvas artifact unavailable in requested workspace"
+            );
+            CoreError::invalid("unknown artifact in requested workspace")
+        })
     }
 
     /// Validate a persisted reference as a readable video artifact.
-    pub fn validate_video_reference(&self, reference: &str) -> Result<()> {
-        self.video_file_path(reference).map(|_| ())
+    pub fn validate_video_reference(
+        &self,
+        reference: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<()> {
+        self.video_file_path(reference, workspace_id).map(|_| ())
     }
 
     /// Resolve a validated video artifact to its managed file for native media tools.
-    pub fn video_file_path(&self, reference: &str) -> Result<PathBuf> {
+    pub fn video_file_path(&self, reference: &str, workspace_id: Option<&str>) -> Result<PathBuf> {
         let id = artifact_id_from_uri(reference.trim())
             .ok_or_else(|| CoreError::invalid("expected an artifact:// video reference"))?;
-        let record = self
-            .record(id)?
-            .ok_or_else(|| CoreError::invalid(format!("unknown video artifact `{id}`")))?;
+        let record = self.require_record(id, workspace_id)?;
         if record.kind != ArtifactKind::Video {
             return Err(CoreError::invalid(format!(
                 "artifact `{id}` is {}, expected video",
@@ -361,8 +391,8 @@ impl CanvasArtifactService {
     }
 
     /// Bytes behind an artifact, for sending to a provider.
-    pub fn read_bytes(&self, id: &str) -> Result<Option<Vec<u8>>> {
-        let Some(record) = self.record(id)? else {
+    pub fn read_bytes(&self, id: &str, workspace_id: Option<&str>) -> Result<Option<Vec<u8>>> {
+        let Some(record) = self.record(id, workspace_id)? else {
             return Ok(None);
         };
         let bytes = std::fs::read(&record.path).map_err(|error| {
@@ -373,17 +403,21 @@ impl CanvasArtifactService {
 
     /// Resolve any node-stored reference into something a provider accepts:
     /// `data:` / `http(s)` pass through, `artifact://id` becomes a data URL.
-    pub fn resolve_for_provider(&self, reference: &str) -> Result<Option<String>> {
+    pub fn resolve_for_provider(
+        &self,
+        reference: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<Option<String>> {
+        normalize_workspace_id(workspace_id)?;
         let reference = reference.trim();
         if is_remote_or_inline_reference(reference) {
             return Ok(Some(reference.to_string()));
         }
         match artifact_id_from_uri(reference) {
             Some(id) => {
-                let record = self
-                    .record(id)?
-                    .ok_or_else(|| CoreError::invalid(format!("unknown artifact `{id}`")))?;
-                let bytes = self.read_bytes(id)?.unwrap_or_default();
+                let record = self.require_record(id, workspace_id)?;
+                let bytes = std::fs::read(&record.path)
+                    .map_err(|error| CoreError::Other(format!("read artifact {id}: {error}")))?;
                 let mime = record
                     .media_type
                     .unwrap_or_else(|| "application/octet-stream".into());
@@ -399,30 +433,38 @@ impl CanvasArtifactService {
     /// Resolve a node-stored reference for display. Artifact URIs come back with
     /// the managed path the webview can load; any other scheme returns `None`,
     /// meaning the caller keeps using the value it already has.
-    pub fn display_target(&self, reference: &str) -> Result<Option<CanvasArtifactDto>> {
+    pub fn display_target(
+        &self,
+        reference: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<Option<CanvasArtifactDto>> {
+        normalize_workspace_id(workspace_id)?;
         let Some(id) = artifact_id_from_uri(reference.trim()) else {
             return Ok(None);
         };
-        let record = self.record(id)?.ok_or_else(|| {
-            CoreError::invalid(format!(
-                "artifact `{id}` is referenced by the canvas but missing from the store"
-            ))
-        })?;
+        let record = self.require_record(id, workspace_id)?;
         Ok(Some(CanvasArtifactDto::from_record(&record)))
     }
 
     /// Indexed artifacts for one workspace, newest first.
     pub fn list(
         &self,
-        workspace_id: &str,
+        workspace_id: Option<&str>,
         kind: Option<ArtifactKind>,
     ) -> Result<Vec<ArtifactRecord>> {
-        ArtifactStore::new(&self.db).list_for_workspace(workspace_id, kind)
+        let workspace = normalize_workspace_id(workspace_id)?;
+        let mut records = Vec::new();
+        for record in ArtifactStore::new(&self.db).list(kind)? {
+            if Self::in_workspace(&record, &workspace)? {
+                records.push(record);
+            }
+        }
+        Ok(records)
     }
 
     /// Drop the index row and the bytes together.
-    pub fn delete(&self, id: &str) -> Result<bool> {
-        let removed = self.record(id)?.is_some_and(|record| {
+    pub fn delete(&self, id: &str, workspace_id: Option<&str>) -> Result<bool> {
+        let removed = self.record(id, workspace_id)?.is_some_and(|record| {
             if let Err(error) = std::fs::remove_file(&record.path) {
                 if error.kind() != std::io::ErrorKind::NotFound {
                     tracing::warn!(
@@ -499,7 +541,7 @@ impl CanvasArtifactStream {
             media_type,
             created_at: SystemClock.now().as_millis(),
         };
-        if let Err(error) = ArtifactStore::new(&self.db).put(&record) {
+        if let Err(error) = ArtifactStore::new(&self.db).put_new(&record) {
             let _ = std::fs::remove_file(&path);
             return Err(error);
         }
@@ -717,7 +759,7 @@ mod tests {
         );
         assert_eq!(
             service
-                .list("ws-1", Some(ArtifactKind::Image))
+                .list(Some("ws-1"), Some(ArtifactKind::Image))
                 .expect("list")
                 .len(),
             1
@@ -739,13 +781,13 @@ mod tests {
             })
             .expect("import");
         let resolved = service
-            .resolve_for_provider(&imported.uri)
+            .resolve_for_provider(&imported.uri, None)
             .expect("resolve")
             .expect("present");
         assert!(resolved.starts_with("data:image/png;base64,"));
         assert_eq!(
             service
-                .read_bytes(&imported.id)
+                .read_bytes(&imported.id, None)
                 .expect("read")
                 .expect("bytes")
                 .len(),
@@ -755,17 +797,17 @@ mod tests {
         // before artifacts existed still execute.
         assert_eq!(
             service
-                .resolve_for_provider("https://cdn/x.png")
+                .resolve_for_provider("https://cdn/x.png", None)
                 .expect("remote")
                 .as_deref(),
             Some("https://cdn/x.png")
         );
         assert!(service
-            .resolve_for_provider("asset://localhost/x")
+            .resolve_for_provider("asset://localhost/x", None)
             .unwrap()
             .is_none());
         assert!(service
-            .resolve_for_provider("artifact://art_missing")
+            .resolve_for_provider("artifact://art_missing", None)
             .expect_err("unknown id")
             .to_string()
             .contains("unknown artifact"));
@@ -786,14 +828,14 @@ mod tests {
             })
             .expect("import artifact");
         let original = service
-            .read_bytes(&imported.id)
+            .read_bytes(&imported.id, Some("audit-workspace"))
             .expect("read original")
             .expect("original bytes");
         let replacement = b"\x89PNG\r\n\x1a\naudit-replacement";
         std::fs::write(&imported.path, replacement).expect("replace managed artifact bytes");
 
         let projected = service
-            .resolve_for_provider(&imported.uri)
+            .resolve_for_provider(&imported.uri, Some("audit-workspace"))
             .expect("digest mismatch should be a structured artifact error");
         let projected = projected.expect("artifact reference should resolve");
         let (_, projected_payload) = projected
@@ -807,7 +849,7 @@ mod tests {
             original.len(),
             replacement.len(),
             projected_bytes.len(),
-            service.record(&imported.id).expect("record").and_then(|record| record.digest),
+            service.record(&imported.id, Some("audit-workspace")).expect("record").and_then(|record| record.digest),
         );
         assert_ne!(
             projected_bytes, replacement,
@@ -816,69 +858,177 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit H-252: canvas artifact reads and deletes must enforce workspace scope"]
     fn audit_canvas_artifact_operations_require_workspace_scope() {
         let (_root, service) = service("workspace-scope");
-        let workspace_a = service
-            .import(&CanvasArtifactImport {
-                kind: "image".to_string(),
-                data_url: Some(format!(
-                    "data:image/png;base64,{}",
-                    STANDARD.encode(b"workspace-a-image")
-                )),
-                local_path: None,
-                file_name: None,
-                media_type: None,
-                workspace_id: Some("workspace-a".into()),
-            })
-            .expect("import workspace A artifact");
-        let workspace_b = service
-            .import(&CanvasArtifactImport {
-                kind: "image".to_string(),
-                data_url: Some(format!(
-                    "data:image/png;base64,{}",
-                    STANDARD.encode(b"workspace-b-image")
-                )),
-                local_path: None,
-                file_name: None,
-                media_type: None,
-                workspace_id: Some("workspace-b".into()),
-            })
-            .expect("import workspace B artifact");
+        let a = service
+            .import_bytes(
+                ArtifactKind::Image,
+                Some("image/png"),
+                b"workspace-a-image",
+                Some("workspace-a"),
+            )
+            .unwrap();
+        let b = service
+            .import_bytes(
+                ArtifactKind::Image,
+                Some("image/png"),
+                b"workspace-b-image",
+                Some("workspace-b"),
+            )
+            .unwrap();
+        let caller = Some("workspace-a");
+        let read_exposes_b = service.read_bytes(&b.id, caller).unwrap().is_some();
+        let provider_exposes_b = service.resolve_for_provider(&b.uri, caller).is_ok();
+        let display_exposes_b = service.display_target(&b.uri, caller).is_ok();
+        let deleted_b = service.delete(&b.id, caller).unwrap();
+        eprintln!("canvas artifact scope audit: read_exposes_b={read_exposes_b}, provider_exposes_b={provider_exposes_b}, display_exposes_b={display_exposes_b}, deleted_other_workspace={deleted_b}");
+        assert!(!read_exposes_b && !provider_exposes_b && !display_exposes_b && !deleted_b);
+        assert_eq!(
+            service
+                .read_bytes(&b.id, Some("workspace-b"))
+                .unwrap()
+                .unwrap(),
+            b"workspace-b-image"
+        );
+        assert!(service.record(&a.id, caller).unwrap().is_some());
+    }
 
-        let b_bytes = service
-            .read_bytes(&workspace_b.id)
-            .expect("read workspace B artifact")
-            .expect("workspace B bytes");
-        let b_provider = service
-            .resolve_for_provider(&workspace_b.uri)
-            .expect("resolve workspace B artifact")
-            .expect("provider projection");
-        let b_display = service
-            .display_target(&workspace_b.uri)
-            .expect("display workspace B artifact")
-            .expect("display target");
-        let deleted_b = service
-            .delete(&workspace_b.id)
-            .expect("delete workspace B artifact");
-        let read_exposes_b = b_bytes == b"workspace-b-image";
-        let provider_exposes_b = !b_provider.is_empty();
-        let display_exposes_b = !b_display.id.is_empty();
-        eprintln!(
-            "canvas artifact scope audit: read_exposes_b={}, provider_exposes_b={}, display_exposes_b={}, read_bytes={}, provider_data_url={}, display_path={}, deleted_other_workspace={}, retained_a={}",
-            read_exposes_b,
-            provider_exposes_b,
-            display_exposes_b,
-            String::from_utf8_lossy(&b_bytes),
-            b_provider.starts_with("data:image/png;base64,"),
-            b_display.path,
-            deleted_b,
-            service.record(&workspace_a.id).expect("record A").is_some(),
+    #[test]
+    fn artifacts_require_exact_namespace_for_all_materialization_and_deletion() {
+        let (_root, service) = service("scope-matrix");
+        let scopes = [None, Some("ws-a"), Some("ws-b")];
+        let items: Vec<_> = scopes
+            .iter()
+            .map(|scope| {
+                service
+                    .import_bytes(
+                        ArtifactKind::Video,
+                        Some("video/mp4"),
+                        b"synthetic video",
+                        *scope,
+                    )
+                    .unwrap()
+            })
+            .collect();
+        for (caller, scope) in scopes.iter().enumerate() {
+            assert_eq!(
+                service
+                    .list(*scope, None)
+                    .unwrap()
+                    .iter()
+                    .map(|r| r.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec![items[caller].id.as_str()]
+            );
+            for (owner, item) in items.iter().enumerate() {
+                if caller == owner {
+                    assert_eq!(
+                        service.read_bytes(&item.id, *scope).unwrap().unwrap(),
+                        b"synthetic video"
+                    );
+                    assert!(service
+                        .resolve_for_provider(&item.uri, *scope)
+                        .unwrap()
+                        .unwrap()
+                        .starts_with("data:video/mp4;base64,"));
+                    assert_eq!(
+                        service
+                            .display_target(&item.uri, *scope)
+                            .unwrap()
+                            .unwrap()
+                            .id,
+                        item.id
+                    );
+                    service.validate_video_reference(&item.uri, *scope).unwrap();
+                } else {
+                    assert!(service.record(&item.id, *scope).unwrap().is_none());
+                    assert!(service.read_bytes(&item.id, *scope).unwrap().is_none());
+                    for (actual, missing) in [
+                        (
+                            service.resolve_for_provider(&item.uri, *scope).unwrap_err(),
+                            service
+                                .resolve_for_provider("artifact://art_missing", *scope)
+                                .unwrap_err(),
+                        ),
+                        (
+                            service.display_target(&item.uri, *scope).unwrap_err(),
+                            service
+                                .display_target("artifact://art_missing", *scope)
+                                .unwrap_err(),
+                        ),
+                        (
+                            service.video_file_path(&item.uri, *scope).unwrap_err(),
+                            service
+                                .video_file_path("artifact://art_missing", *scope)
+                                .unwrap_err(),
+                        ),
+                    ] {
+                        assert_eq!(actual.to_string(), missing.to_string());
+                    }
+                    assert!(!service.delete(&item.id, *scope).unwrap());
+                    assert_eq!(std::fs::read(&item.path).unwrap(), b"synthetic video");
+                }
+            }
+        }
+        for (scope, item) in scopes.iter().zip(items) {
+            assert!(service.delete(&item.id, *scope).unwrap());
+            assert!(!service.delete(&item.id, *scope).unwrap());
+            assert!(service.record(&item.id, *scope).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn legacy_default_and_normalized_owners_do_not_expose_host_tool_results() {
+        let (_root, service) = service("scope-legacy");
+        let default = service
+            .import_bytes(ArtifactKind::Image, Some("image/png"), b"default", None)
+            .unwrap();
+        let scoped = service
+            .import_bytes(
+                ArtifactKind::Image,
+                Some("image/png"),
+                b"scoped",
+                Some(" ws-a "),
+            )
+            .unwrap();
+        let mut legacy = ArtifactStore::new(&service.db)
+            .get(&scoped.id)
+            .unwrap()
+            .unwrap();
+        legacy.workspace_id = Some(" ws-a ".into());
+        ArtifactStore::new(&service.db).put(&legacy).unwrap();
+        assert_eq!(service.list(Some("ws-a"), None).unwrap()[0].id, scoped.id);
+        assert!(service
+            .record(&scoped.id, Some(" ws-a "))
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            ArtifactStore::new(&service.db)
+                .get(&scoped.id)
+                .unwrap()
+                .unwrap(),
+            legacy
         );
-        assert!(
-            !read_exposes_b && !provider_exposes_b && !display_exposes_b && !deleted_b,
-            "workspace-scoped artifact APIs exposed or deleted another workspace's artifact"
-        );
+        let mut host_result = legacy.clone();
+        host_result.id = "host_result".into();
+        host_result.workspace_id = None;
+        host_result.kind = ArtifactKind::ToolResult;
+        ArtifactStore::new(&service.db).put(&host_result).unwrap();
+        assert!(service.record(&host_result.id, None).unwrap().is_none());
+        assert!(!service.delete(&host_result.id, None).unwrap());
+        assert_eq!(service.list(None, None).unwrap()[0].id, default.id);
+        assert_eq!(service.list(None, None).unwrap().len(), 1);
+        for invalid in ["", " ", "bad/path", "工作区"] {
+            assert!(service.record(&default.id, Some(invalid)).is_err());
+            assert!(service.list(Some(invalid), None).is_err());
+            assert!(service.delete(&default.id, Some(invalid)).is_err());
+            assert!(service
+                .import_bytes(ArtifactKind::Image, None, b"invalid", Some(invalid))
+                .is_err());
+        }
+        assert!(service
+            .import_bytes(ArtifactKind::ToolResult, None, b"host-only", None)
+            .is_err());
     }
 
     #[test]
@@ -908,10 +1058,10 @@ mod tests {
         })
         .expect("install delete failure trigger");
 
-        let delete_result = service.delete(&imported.id);
+        let delete_result = service.delete(&imported.id, Some("delete-workspace"));
         let file_exists = Path::new(&imported.path).exists();
         let row_exists = service
-            .record(&imported.id)
+            .record(&imported.id, Some("delete-workspace"))
             .expect("read failed-delete record")
             .is_some();
         eprintln!(
@@ -940,25 +1090,25 @@ mod tests {
             })
             .expect("import");
         let target = service
-            .display_target(&imported.uri)
+            .display_target(&imported.uri, None)
             .expect("resolve")
             .expect("artifact target");
         assert_eq!(target.id, imported.id);
         assert!(Path::new(&target.path).exists());
         assert!(service
-            .display_target("https://cdn.example.com/x.png")
+            .display_target("https://cdn.example.com/x.png", None)
             .expect("remote")
             .is_none());
         assert!(service
-            .display_target("asset://localhost/C:/Users/x.png")
+            .display_target("asset://localhost/C:/Users/x.png", None)
             .expect("asset")
             .is_none());
-        service.delete(&imported.id).expect("delete");
+        service.delete(&imported.id, None).expect("delete");
         assert!(service
-            .display_target(&imported.uri)
+            .display_target(&imported.uri, None)
             .expect_err("dangling reference must not render blank")
             .to_string()
-            .contains("missing from the store"));
+            .contains("unknown artifact in requested workspace"));
     }
 
     #[test]
@@ -985,7 +1135,7 @@ mod tests {
         std::fs::remove_file(&source).expect("remove source");
         assert_eq!(
             service
-                .read_bytes(&imported.id)
+                .read_bytes(&imported.id, None)
                 .expect("read")
                 .expect("bytes")
                 .len(),
@@ -1026,7 +1176,7 @@ mod tests {
         assert_eq!(imported.byte_size, 17);
         assert_eq!(
             service
-                .read_bytes(&imported.id)
+                .read_bytes(&imported.id, None)
                 .expect("read artifact")
                 .expect("stored bytes"),
             b"\x00\x00\x00\x14ftypmp42media"
@@ -1050,10 +1200,13 @@ mod tests {
                 workspace_id: None,
             })
             .expect("import json");
-        assert!(service.delete(&imported.id).expect("delete"));
+        assert!(service.delete(&imported.id, None).expect("delete"));
         assert!(!Path::new(&imported.path).exists());
-        assert!(service.record(&imported.id).expect("record").is_none());
-        assert!(!service.delete(&imported.id).expect("second delete"));
+        assert!(service
+            .record(&imported.id, None)
+            .expect("record")
+            .is_none());
+        assert!(!service.delete(&imported.id, None).expect("second delete"));
     }
 
     #[test]
@@ -1144,26 +1297,26 @@ mod tests {
             .import_bytes(ArtifactKind::Video, Some("video/webm"), b"video", None)
             .expect("store video");
         service
-            .validate_video_reference(&video.uri)
+            .validate_video_reference(&video.uri, None)
             .expect("stored video passes");
 
         let image = service
             .import_bytes(ArtifactKind::Image, Some("image/png"), b"image", None)
             .expect("store image");
         assert!(service
-            .validate_video_reference(&image.uri)
+            .validate_video_reference(&image.uri, None)
             .expect_err("image must not pass as video")
             .to_string()
             .contains("expected video"));
         assert!(service
-            .validate_video_reference("artifact://missing")
+            .validate_video_reference("artifact://missing", None)
             .expect_err("missing artifact must fail")
             .to_string()
-            .contains("unknown video artifact"));
+            .contains("unknown artifact in requested workspace"));
 
         std::fs::remove_file(&video.path).expect("remove video bytes");
         assert!(service
-            .validate_video_reference(&video.uri)
+            .validate_video_reference(&video.uri, None)
             .expect_err("missing bytes must fail")
             .to_string()
             .contains("unreadable"));

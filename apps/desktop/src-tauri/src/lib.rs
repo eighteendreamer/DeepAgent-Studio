@@ -2394,10 +2394,11 @@ async fn canvas_artifact_upload(
 fn canvas_artifact_url(
     state: State<'_, AppState>,
     reference: String,
+    workspace_id: Option<String>,
 ) -> Result<Option<deepagent_app_core::canvas_artifact_service::CanvasArtifactDto>, String> {
     state
         .canvas_artifacts
-        .display_target(&reference)
+        .display_target(&reference, workspace_id.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -2409,6 +2410,7 @@ async fn canvas_video_trim(
     state: State<'_, AppState>,
     operation_id: String,
     reference: String,
+    workspace_id: Option<String>,
     start_seconds: f64,
     end_seconds: f64,
 ) -> Result<deepagent_app_core::canvas_artifact_service::CanvasArtifactDto, String> {
@@ -2425,11 +2427,14 @@ async fn canvas_video_trim(
     }
     let input = state
         .canvas_artifacts
-        .video_file_path(&reference)
+        .video_file_path(&reference, workspace_id.as_deref())
         .map_err(|error| error.to_string())?;
     let record = state
         .canvas_artifacts
-        .record(reference.trim().trim_start_matches("artifact://"))
+        .record(
+            reference.trim().trim_start_matches("artifact://"),
+            workspace_id.as_deref(),
+        )
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "视频素材不存在".to_string())?;
     let (extension, mime) = video_trim_output_format(&input, record.media_type.as_deref())?;
@@ -2569,7 +2574,12 @@ async fn canvas_video_trim(
             return Err("已取消视频导出".to_string());
         }
         let artifact = artifacts
-            .import_video_file(mime, &format!("video-trim.{extension}"), &output_path)
+            .import_video_file(
+                mime,
+                &format!("video-trim.{extension}"),
+                &output_path,
+                workspace_id.as_deref(),
+            )
             .map_err(|error| format!("保存裁剪视频失败：{error}"))?;
         let _ = app.emit(
             "canvas-video-trim-progress",
@@ -2733,10 +2743,11 @@ fn video_trim_output_format(
 fn canvas_artifact_data_url(
     state: State<'_, AppState>,
     reference: String,
+    workspace_id: Option<String>,
 ) -> Result<Option<String>, String> {
     state
         .canvas_artifacts
-        .resolve_for_provider(&reference)
+        .resolve_for_provider(&reference, workspace_id.as_deref())
         .map_err(|e| e.to_string())
 }
 
@@ -7718,9 +7729,9 @@ mod tests {
         let db = service.shared_database();
         let artifacts = CanvasArtifactService::new(staging.path().join("artifacts"), db).unwrap();
         let imported = artifacts
-            .import_video_file("video/mp4", "source.mp4", &source)
+            .import_video_file("video/mp4", "source.mp4", &source, None)
             .unwrap();
-        let input = artifacts.video_file_path(&imported.uri).unwrap();
+        let input = artifacts.video_file_path(&imported.uri, None).unwrap();
         let output = staging.path().join("trim.mp4");
         let make_command = |output: &Path, realtime: bool| {
             let mut command = std::process::Command::new(&ffmpeg);
@@ -7790,10 +7801,13 @@ mod tests {
             std::fs::metadata(&output).unwrap().len()
         );
         let exported = artifacts
-            .import_video_file("video/mp4", "trim.mp4", &output)
+            .import_video_file("video/mp4", "trim.mp4", &output, None)
             .unwrap();
         assert_ne!(imported.uri, exported.uri);
-        assert!(artifacts.video_file_path(&exported.uri).unwrap().is_file());
+        assert!(artifacts
+            .video_file_path(&exported.uri, None)
+            .unwrap()
+            .is_file());
         let decoded = std::process::Command::new(&ffmpeg)
             .args(["-v", "error", "-nostdin", "-i"])
             .arg(&output)

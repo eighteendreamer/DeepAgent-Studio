@@ -1378,6 +1378,10 @@ impl<'a> RunAssembler<'a> {
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled before workflow preparation"));
         }
+        // Validate the caller namespace even for local-only graphs without a
+        // model gateway. A missing gateway must never turn invalid scope into default.
+        let workspace_id =
+            crate::canvas_scope::normalize_workspace_id(workflow_request.workspace_id.as_deref())?;
         let (root, session_project) = self.run_location(Some(&session_id))?;
         self.knowledge = self
             .knowledge
@@ -1532,7 +1536,8 @@ impl<'a> RunAssembler<'a> {
         let canvas_run_gateway = self
             .canvas_model
             .as_ref()
-            .map(crate::canvas_model_gateway::CanvasModelGateway::scoped_for_run);
+            .map(|gateway| gateway.scoped_for_run(workspace_id.as_deref()))
+            .transpose()?;
         if let Some(gateway) = canvas_run_gateway.as_ref() {
             // Provider-controlled image URLs are deferred by the gateway and
             // consumed only through the canonical kernel tool pipeline.  The

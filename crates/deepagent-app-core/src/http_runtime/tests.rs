@@ -45,6 +45,16 @@ fn request(url: String) -> HttpRequest {
     serde_json::from_value(serde_json::json!({"url":url})).unwrap()
 }
 
+/// Share the existing public-policy/local-transport seam with media tests.
+/// DNS and transport are synthetic; production builds contain neither override.
+pub(crate) fn public_fixture_client(address: SocketAddr) -> PublicHttpClient {
+    assert!(address.ip().is_loopback());
+    PublicHttpClient {
+        resolver: resolver(&[&["8.8.8.8"]]),
+        fixture_route: Some(address),
+    }
+}
+
 struct Fixture {
     address: SocketAddr,
     requests: Arc<Mutex<Vec<Vec<u8>>>>,
