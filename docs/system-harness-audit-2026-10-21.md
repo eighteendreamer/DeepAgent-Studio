@@ -1239,7 +1239,16 @@ AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reop
 - Claude Code `tools/AgentTool/resumeAgent.ts` 并行读取 getAgentTranscript 与 readAgentMetadata，恢复消息/replacement 状态、角色和工作目录后重新运行；`sessionStorage.ts::AgentMetadata` 特别说明缺角色元数据会使 fork 恢复静默退化。Codex `core/src/agent/control/resume.rs` 恢复后返回实际 ThreadConfigSnapshot。可借鉴的是恢复有效状态并验证其完整性，不是照搬它们的字段或存储。
 - 本系统应在现有子运行 request/transcript 边界统一序列化与恢复契约，避免 writer/reader 手工字段清单不同步；兼容旧数据，对字段缺失给出明确默认或恢复诊断，不凭空猜出旧 schema。
 - 覆盖首次运行→继续、再次继续、跨父 turn、宿主重启、旧 transcript、工具限制和模型配置；完整历史与压缩 replacement 如需恢复，应复用现有事件及 Surface 能力，不能另造子 Agent 运行内核。
-- 本轮仅增加测试与报告，并把测试 runner fixture 提取复用；未修生产保存或恢复行为。
+- 审计原始阶段仅增加测试与报告，并把测试 runner fixture 提取复用；当时未修生产保存或恢复行为。以下 2026-10-31 记录为后续独立修复，不覆盖这份原始失败证据。
+
+#### 2026-10-31 修复与验收（H-21）
+
+- 根因已修复：子运行 transcript writer 不再手工列出部分 request 字段，而是通过 `SubagentRequest` 的统一 serde 契约完整序列化；resume reader 使用同一类型反序列化。`fork` 在恢复时仍明确重置为 `false`，旧 transcript 缺失的新增可选字段按兼容默认处理，缺少必要的 request/prompt 仍返回持久化错误。没有新增子运行 store、事件链或数据库迁移。
+- 原始命令在生产代码未改时已复现：`cargo test -p deepagent-app-core --lib subagent_runner::tests::audit_child_resume_preserves_schema_phase_and_label --offline -j 1 -- --ignored --nocapture --test-threads=1`，**0 passed / 1 failed / 0 ignored**；输出为 `restored_phase=None, restored_label=None, restored_schema=None`，三项恢复 wire 指令均为 false。
+- 修复后同一测试转为默认回归，实际 **1 passed / 0 failed / 0 ignored**；扩展为首次运行→继续→再次继续，`resume_count=2`，两次恢复的 phase、label、schema 均在真实离线模型 wire 中保留。新增旧 transcript 兼容回归也通过，验证缺失 `fork/phase/label/schema` 时仍能恢复既有字段并使用 shared 默认。
+- 相关回归：`cargo test -p deepagent-app-core --lib subagent_runner::tests:: --offline -j 1 -- --nocapture --test-threads=1` 为 **15 passed / 0 failed / 3 ignored**；`cargo test -p deepagent-builtins --offline -j 1 -- --quiet --test-threads=1` 为 **369 passed / 0 failed / 4 ignored**；`cargo test -p deepagent-persistence subagent_store --offline -j 1 -- --quiet --test-threads=1` 为 **3 passed / 0 failed**；`cargo check -p deepagent-builtins -p deepagent-app-core --offline -j 1` 退出 0。
+- 格式与边界：两份修改 Rust 文件独立 rustfmt 检查及 `git diff --check` 通过。根 `cargo fmt --all -- --check` 仍只被未修改的 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；`cargo clippy -p deepagent-app-core --lib --offline -j 1 -- -D warnings` 仍只在未修改的 `crates/deepagent-models/src/client.rs:355` 的既有 `clone_on_copy` 阻断。未运行真实供应商、宿主强杀/重启、其他 OS、完整 workspace 或真实 UI；这些不作为本项通过依据。
+- H-21 现按上述 Windows 本机、临时 transcript/SQLite、离线模型 transport 范围标记为已修复并验收；H-20、H-22 的 DAG 产物/工作区边界及完整历史恢复仍是独立问题，不因本项关闭。
 
 ### H-22：DAG 子运行只改变声明的工作目录，文件工具仍绑定父工作区
 

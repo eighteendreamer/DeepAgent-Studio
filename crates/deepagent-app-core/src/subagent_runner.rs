@@ -119,17 +119,12 @@ impl TrackedSubagent<'_> {
             } else {
                 None
             };
+            // Serialize the complete request type once at the persistence
+            // boundary. Keeping the writer on the same serde contract as the
+            // reader prevents newly added request fields from silently being
+            // dropped from resumable child runs.
             let current_attempt = serde_json::json!({
-                "request": {
-                    "description": request.description,
-                    "prompt": request.prompt,
-                    "subagent_type": request.subagent_type,
-                    "allowed_tools": request.allowed_tools,
-                    "model": request.model,
-                    "effort": request.effort,
-                    "skills": request.skills,
-                    "isolation": request.isolation,
-                },
+                "request": serde_json::to_value(request)?,
                 "state": state,
                 "summary": summary,
                 "started_at": created_at,
@@ -911,68 +906,27 @@ impl ChatSubagentRunner {
             .get("request")
             .and_then(serde_json::Value::as_object)
             .ok_or_else(|| CoreError::Persistence("sub-agent transcript has no request".into()))?;
-        let saved_prompt = saved
-            .get("prompt")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or_default();
         let previous_summary = record.summary.as_deref().unwrap_or_default();
-        let read_array = |key: &str| {
-            saved
-                .get(key)
-                .and_then(serde_json::Value::as_array)
-                .map(|values| {
-                    values
-                        .iter()
-                        .filter_map(serde_json::Value::as_str)
-                        .map(ToOwned::to_owned)
-                        .collect()
-                })
-                .unwrap_or_default()
-        };
-        Ok(deepagent_builtins::SubagentRequest {
-            description: saved
-                .get("description")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("Resume sub-agent")
-                .to_string(),
-            prompt: format!(
-                "Resume the prior delegated task using the preserved result below.\n\nOriginal task:\n{saved_prompt}\n\nPrevious result:\n{previous_summary}\n\nContinuation request:\n{continuation}"
-            ),
-            subagent_type: saved
-                .get("subagent_type")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned)
-                .or_else(|| {
-                    (record.agent_type != "general").then(|| record.agent_type.clone())
-                }),
-            allowed_tools: read_array("allowed_tools"),
-            model: saved
-                .get("model")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned),
-            effort: saved
-                .get("effort")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned),
-            skills: read_array("skills"),
-            isolation: saved
-                .get("isolation")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("shared")
-                .to_string(),
-            // A resumed child continues its own line; it is not a fresh fork.
-            fork: false,
-            // Frontmatter fields preserved from original request
-            phase: saved
-                .get("phase")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned),
-            label: saved
-                .get("label")
-                .and_then(serde_json::Value::as_str)
-                .map(ToOwned::to_owned),
-            schema: saved.get("schema").cloned(),
-        })
+        let mut request: deepagent_builtins::SubagentRequest =
+            serde_json::from_value(serde_json::Value::Object(saved.clone())).map_err(|error| {
+                CoreError::Persistence(format!("invalid sub-agent request: {error}"))
+            })?;
+        let saved_prompt = request.prompt.clone();
+        if request.description.trim().is_empty() {
+            request.description = "Resume sub-agent".to_string();
+        }
+        if request.isolation.trim().is_empty() {
+            request.isolation = "shared".to_string();
+        }
+        request.prompt = format!(
+            "Resume the prior delegated task using the preserved result below.\n\nOriginal task:\n{saved_prompt}\n\nPrevious result:\n{previous_summary}\n\nContinuation request:\n{continuation}"
+        );
+        request.subagent_type = request
+            .subagent_type
+            .or_else(|| (record.agent_type != "general").then(|| record.agent_type.clone()));
+        // A resumed child continues its own line; it is not a fresh fork.
+        request.fork = false;
+        Ok(request)
     }
 
     fn ensure_resume_lineage(
@@ -2106,7 +2060,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: child resume must preserve its original output contract"]
     async fn audit_child_resume_preserves_schema_phase_and_label() {
         use deepagent_builtins::SubagentRunner;
         use deepagent_persistence::subagent_store::SubagentRunStore;
@@ -2148,13 +2101,25 @@ mod tests {
             )
             .await
             .unwrap();
+        let after_first = store.get(&record.id).unwrap().unwrap();
+        assert_eq!(after_first.state, "succeeded");
+        assert_eq!(after_first.resume_count, 1);
+        runner
+            .resume(
+                &record.id,
+                "Continue again with the same contract",
+                Default::default(),
+            )
+            .await
+            .unwrap();
         let after = store.get(&record.id).unwrap().unwrap();
         assert_eq!(after.state, "succeeded");
-        assert_eq!(after.resume_count, 1);
+        assert_eq!(after.resume_count, 2);
         let requests = transport.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
+        assert_eq!(requests.len(), 3);
         let initial = requests[0]["instructions"].as_str().unwrap();
         let resumed = requests[1]["instructions"].as_str().unwrap();
+        let resumed_again = requests[2]["instructions"].as_str().unwrap();
         assert!(
             initial.contains("audit-contract-phase")
                 && initial.contains("audit-contract-label")
@@ -2170,6 +2135,66 @@ mod tests {
             (original.phase, original.label, original.schema),
             "resume lost the original child contract after durable tracking"
         );
+        assert!(
+            resumed_again.contains("audit-contract-phase")
+                && resumed_again.contains("audit-contract-label")
+                && resumed_again.contains("audit_resume_value"),
+            "second resume lost the original child contract"
+        );
+    }
+
+    #[test]
+    fn resume_request_accepts_legacy_transcript_without_new_fields() {
+        use deepagent_persistence::subagent_store::SubagentRunRecord;
+
+        let dir = tempfile::tempdir().unwrap();
+        let runner = audit_child_runner(dir.path(), Arc::new(AuditResumeTransport::default()));
+        let transcript_path = dir.path().join("legacy-child.json");
+        std::fs::write(
+            &transcript_path,
+            serde_json::to_vec(&serde_json::json!({
+                "request": {
+                    "description": "legacy child",
+                    "prompt": "keep the original task",
+                    "subagent_type": "explore",
+                    "allowed_tools": ["Read"],
+                    "model": "deepseek-audit",
+                    "effort": "high",
+                    "skills": ["review"],
+                    "isolation": "shared"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let record = SubagentRunRecord {
+            id: "legacy-child".into(),
+            parent_run_id: runner.parent_run_id.clone(),
+            origin_parent_run_id: runner.parent_run_id.clone(),
+            state: "succeeded".into(),
+            agent_type: "explore".into(),
+            transcript_path: Some(transcript_path.to_string_lossy().into_owned()),
+            worktree_path: None,
+            summary: Some("legacy result".into()),
+            created_at: 1,
+            updated_at: 2,
+            finished_at: Some(2),
+            resume_count: 0,
+        };
+
+        let restored = runner.resume_request(&record, "continue safely").unwrap();
+        assert_eq!(restored.description, "legacy child");
+        assert!(restored.prompt.contains("keep the original task"));
+        assert_eq!(restored.subagent_type.as_deref(), Some("explore"));
+        assert_eq!(restored.allowed_tools, ["Read"]);
+        assert_eq!(restored.model.as_deref(), Some("deepseek-audit"));
+        assert_eq!(restored.effort.as_deref(), Some("high"));
+        assert_eq!(restored.skills, ["review"]);
+        assert_eq!(restored.isolation, "shared");
+        assert!(!restored.fork);
+        assert_eq!(restored.phase, None);
+        assert_eq!(restored.label, None);
+        assert_eq!(restored.schema, None);
     }
 
     #[tokio::test]
