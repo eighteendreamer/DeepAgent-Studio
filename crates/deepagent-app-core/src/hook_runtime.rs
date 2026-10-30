@@ -284,12 +284,17 @@ impl AppHookActionExecutor {
         let result = registry
             .invoke_with_context(action.command.trim(), arguments, execution)
             .await?;
-        let output = bounded_hook_text(&result.text(), 8_192);
+        // Keep the complete MCP response for control-protocol parsing. The
+        // bounded form is a presentation preview only; feeding it back into
+        // the parser can turn a valid denial into malformed JSON and silently
+        // allow the protected operation.
+        let output = result.text();
         if result.is_error {
-            return Err(CoreError::other(if output.is_empty() {
+            let preview = bounded_hook_text(&output, 8_192);
+            return Err(CoreError::other(if preview.is_empty() {
                 "MCP hook tool returned an error".to_string()
             } else {
-                format!("MCP hook tool returned an error: {output}")
+                format!("MCP hook tool returned an error: {preview}")
             }));
         }
         Ok(parse_structured_hook_output(&output).unwrap_or(HookOutcome::Continue))
