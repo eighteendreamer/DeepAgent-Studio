@@ -112,7 +112,8 @@ async fn observe(monthly: bool, limit: f64, prebook: bool) -> Observation {
     cost.set_budget(BudgetConfig {
         daily_limit: (!monthly).then_some(limit),
         monthly_limit: monthly.then_some(limit),
-    });
+    })
+    .unwrap();
     let usage_events = Arc::new(AtomicUsize::new(0));
     let model = Arc::new(BudgetLoopModel {
         cost: cost.clone(),

@@ -11,6 +11,7 @@ use std::sync::{Arc, RwLock};
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_persistence::cost_store::{CostEntry, CostStore};
+use deepagent_persistence::document_store::DocumentStore;
 use deepagent_persistence::Database;
 use jiff::{tz::TimeZone, Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
@@ -103,6 +104,79 @@ pub struct BudgetConfig {
     pub monthly_limit: Option<f64>,
 }
 
+// Local policy for this cost ledger, not a provider-account spending limit.
+// Reuse the settings document store; never maintain a second in-memory owner.
+const BUDGET_COLLECTION: &str = "settings";
+const BUDGET_ID: &str = "cost-budget";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BudgetPolicy {
+    version: u32,
+    currency: String,
+    period: String,
+    timezone: String,
+    scope: String,
+    // Missing is corruption; only explicit null means unlimited. Public DTO
+    // defaults remain compatible, but must not weaken a stored policy.
+    #[serde(deserialize_with = "required_budget_limit")]
+    daily_limit: Option<f64>,
+    #[serde(deserialize_with = "required_budget_limit")]
+    monthly_limit: Option<f64>,
+}
+
+fn required_budget_limit<'de, D>(deserializer: D) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<f64>::deserialize(deserializer)
+}
+
+impl BudgetPolicy {
+    fn new(budget: BudgetConfig) -> Self {
+        Self {
+            version: 1,
+            currency: "CNY".into(),
+            period: "calendar-day/month".into(),
+            timezone: "host-local".into(),
+            scope: "cost-ledger".into(),
+            daily_limit: budget.daily_limit,
+            monthly_limit: budget.monthly_limit,
+        }
+    }
+
+    fn into_budget(self) -> Result<BudgetConfig> {
+        if self.version != 1
+            || self.currency != "CNY"
+            || self.period != "calendar-day/month"
+            || self.timezone != "host-local"
+            || self.scope != "cost-ledger"
+        {
+            return Err(CoreError::invalid("unsupported budget policy metadata"));
+        }
+        let budget = BudgetConfig {
+            daily_limit: self.daily_limit,
+            monthly_limit: self.monthly_limit,
+        };
+        validate_budget(&budget)?;
+        Ok(budget)
+    }
+}
+
+fn validate_budget(budget: &BudgetConfig) -> Result<()> {
+    for (name, limit) in [
+        ("daily", budget.daily_limit),
+        ("monthly", budget.monthly_limit),
+    ] {
+        if limit.is_some_and(|value| !value.is_finite() || value < 0.0) {
+            return Err(CoreError::invalid(format!(
+                "budget policy {name} limit must be finite and non-negative"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// A single persisted cost record.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CostRecord {
@@ -158,7 +232,6 @@ pub struct CostSummary {
 pub struct CostService {
     db: Arc<Database>,
     pricing: RwLock<PricingSource>,
-    budget: RwLock<BudgetConfig>,
 }
 
 enum PricingSource {
@@ -173,7 +246,6 @@ impl CostService {
         Self {
             db,
             pricing: RwLock::new(PricingSource::Explicit(HashMap::new())),
-            budget: RwLock::new(BudgetConfig::default()),
         }
     }
 
@@ -184,7 +256,6 @@ impl CostService {
         Self {
             db,
             pricing: RwLock::new(PricingSource::Settings(settings)),
-            budget: RwLock::new(BudgetConfig::default()),
         }
     }
 
@@ -194,18 +265,41 @@ impl CostService {
         *self.pricing.write().unwrap_or_else(|p| p.into_inner()) = PricingSource::Explicit(pricing);
     }
 
-    /// Set the budget config. Uses interior mutability so the service can be
-    /// shared as an `Arc` (the Tauri `set_budget` command calls this).
-    pub fn set_budget(&self, budget: BudgetConfig) {
-        *self.budget.write().unwrap_or_else(|p| p.into_inner()) = budget;
+    /// Atomically replace the ledger's durable policy. Success means committed;
+    /// concurrent replacements use last-committed-write wins, not a field merge.
+    /// Explicit `None` clears a limit; zero blocks new runs immediately.
+    pub fn set_budget(&self, budget: BudgetConfig) -> Result<()> {
+        validate_budget(&budget)?;
+        let body = serde_json::to_string(&BudgetPolicy::new(budget))
+            .map_err(|error| CoreError::Serialization(format!("budget policy encode: {error}")))?;
+        DocumentStore::new(&self.db)
+            .put(BUDGET_COLLECTION, BUDGET_ID, &body, None, SystemClock.now())
+            .map_err(|error| CoreError::Persistence(format!("budget policy write: {error}")))?;
+        tracing::info!(scope = "cost-ledger", "budget policy committed");
+        Ok(())
     }
 
-    /// A clone of the current budget config.
-    pub fn budget(&self) -> BudgetConfig {
-        self.budget
-            .read()
-            .unwrap_or_else(|p| p.into_inner())
-            .clone()
+    /// Read the shared policy on every operation, including across independent
+    /// connections/processes. Only an absent document means never configured;
+    /// unreadable, corrupt or unsupported policies must not become unlimited.
+    pub fn budget(&self) -> Result<BudgetConfig> {
+        let Some(document) = DocumentStore::new(&self.db)
+            .get(BUDGET_COLLECTION, BUDGET_ID)
+            .map_err(|error| CoreError::Persistence(format!("budget policy read: {error}")))?
+        else {
+            return Ok(BudgetConfig::default());
+        };
+        let policy: BudgetPolicy = serde_json::from_str(&document.body).map_err(|error| {
+            // Parser messages can echo arbitrary stored strings. Preserve the
+            // failure category/location without logging the policy body.
+            CoreError::Serialization(format!(
+                "budget policy decode: {:?} at line {}, column {}",
+                error.classify(),
+                error.line(),
+                error.column()
+            ))
+        })?;
+        policy.into_budget()
     }
 
     /// Record a cost entry for a completed model call. Returns the calculated
@@ -273,6 +367,10 @@ impl CostService {
 
     /// Get a cost summary for a session + today + month + total.
     pub fn summary(&self, session_id: &str) -> Result<CostSummary> {
+        self.summary_with_budget(session_id, self.budget()?)
+    }
+
+    fn summary_with_budget(&self, session_id: &str, budget: BudgetConfig) -> Result<CostSummary> {
         // Capture one instant and one full set of host-local zone rules. A
         // current fixed UTC offset is not necessarily the offset at month start.
         let now = Timestamp::from_millisecond(SystemClock.now().as_millis())
@@ -280,10 +378,15 @@ impl CostService {
         let zone = TimeZone::try_system().map_err(|error| {
             CoreError::invalid(format!("cost calendar system timezone: {error}"))
         })?;
-        self.summary_at(session_id, &now.to_zoned(zone))
+        self.summary_at(session_id, &now.to_zoned(zone), budget)
     }
 
-    fn summary_at(&self, session_id: &str, now: &Zoned) -> Result<CostSummary> {
+    fn summary_at(
+        &self,
+        session_id: &str,
+        now: &Zoned,
+        budget: BudgetConfig,
+    ) -> Result<CostSummary> {
         // Date::to_zoned uses compatible disambiguation: first occurrence in
         // a fold, shifted forward across a midnight gap. No 24h/30d buckets.
         let start = |date: jiff::civil::Date| {
@@ -307,7 +410,7 @@ impl CostService {
             month_cost,
             total_cost,
             currency: "CNY".to_string(),
-            budget: self.budget(),
+            budget,
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
             cache_hit_tokens: usage.cache_hit_tokens,
@@ -341,12 +444,12 @@ impl CostService {
     /// Check whether the budget allows a new run. Returns `Ok(())` if within
     /// budget, or an error describing which limit was hit.
     pub fn check_budget(&self) -> Result<()> {
-        let budget = self.budget();
+        let budget = self.budget()?;
         if budget.daily_limit.is_none() && budget.monthly_limit.is_none() {
             return Ok(());
         }
-        let summary = self.summary("")?;
-        if let Some(daily) = budget.daily_limit {
+        let summary = self.summary_with_budget("", budget)?;
+        if let Some(daily) = summary.budget.daily_limit {
             if summary.today_cost >= daily {
                 return Err(CoreError::invalid(format!(
                     "daily budget exhausted (￥{:.2} / ￥{:.2})",
@@ -354,7 +457,7 @@ impl CostService {
                 )));
             }
         }
-        if let Some(monthly) = budget.monthly_limit {
+        if let Some(monthly) = summary.budget.monthly_limit {
             if summary.month_cost >= monthly {
                 return Err(CoreError::invalid(format!(
                     "monthly budget exhausted (￥{:.2} / ￥{:.2})",
@@ -368,11 +471,13 @@ impl CostService {
 
 impl std::fmt::Debug for CostService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CostService")
-            .field("budget", &self.budget())
-            .finish()
+        // Formatting must not perform database IO or reveal stored policy.
+        f.debug_struct("CostService").finish_non_exhaustive()
     }
 }
+
+#[cfg(test)]
+mod budget_tests;
 
 #[cfg(test)]
 mod tests {
@@ -433,7 +538,9 @@ mod tests {
                 })
                 .unwrap();
         }
-        let summary = svc.summary_at("ses_1", &local).unwrap();
+        let summary = svc
+            .summary_at("ses_1", &local, svc.budget().unwrap())
+            .unwrap();
         assert_eq!(summary.session_cost, 62.0, "{now}");
         assert_eq!(summary.total_cost, 62.0, "{now}");
         assert_eq!(
@@ -655,7 +762,8 @@ mod tests {
         svc.set_budget(BudgetConfig {
             daily_limit: Some(0.001),
             monthly_limit: None,
-        });
+        })
+        .unwrap();
         svc.record(CostRecordRequest {
             session_id: "ses_1".to_string(),
             model: "deepseek-v4-flash".to_string(),

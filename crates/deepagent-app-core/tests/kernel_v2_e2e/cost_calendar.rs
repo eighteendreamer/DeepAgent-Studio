@@ -49,7 +49,7 @@ async fn observe_budget(budget: BudgetConfig, rows: &[(i64, f64)]) -> BudgetObse
         .await
         .unwrap();
     let cost = Arc::new(CostService::new(db.clone()));
-    cost.set_budget(budget);
+    cost.set_budget(budget).unwrap();
     let model = Arc::new(BudgetModel::default());
     let chat =
         ChatService::new(db.clone(), settings, model.clone(), root.path()).with_cost(cost.clone());

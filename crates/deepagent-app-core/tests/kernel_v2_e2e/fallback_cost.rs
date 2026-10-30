@@ -105,7 +105,8 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
     cost.set_budget(BudgetConfig {
         daily_limit: Some(LIMIT),
         monthly_limit: None,
-    });
+    })
+    .unwrap();
     let model = Arc::new(RouteModel {
         overload_at: switch.then_some(usize::from(tool_first)),
         tool_first,

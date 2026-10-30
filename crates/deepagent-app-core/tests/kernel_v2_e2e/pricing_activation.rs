@@ -175,7 +175,8 @@ async fn observe_activation(activation: Activation) -> PricingObservation {
     cost.set_budget(BudgetConfig {
         daily_limit: Some(0.0005),
         monthly_limit: None,
-    });
+    })
+    .unwrap();
     let model = Arc::new(PricedUsageModel::default());
     let chat =
         ChatService::new(db.clone(), settings, model.clone(), root.path()).with_cost(cost.clone());

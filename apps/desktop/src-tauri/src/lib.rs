@@ -1875,10 +1875,13 @@ fn set_budget(
     daily_limit: Option<f64>,
     monthly_limit: Option<f64>,
 ) -> Result<CostSummary, String> {
-    state.cost.set_budget(BudgetConfig {
-        daily_limit,
-        monthly_limit,
-    });
+    state
+        .cost
+        .set_budget(BudgetConfig {
+            daily_limit,
+            monthly_limit,
+        })
+        .map_err(|e| e.to_string())?;
     state.cost.summary("").map_err(|e| e.to_string())
 }
 

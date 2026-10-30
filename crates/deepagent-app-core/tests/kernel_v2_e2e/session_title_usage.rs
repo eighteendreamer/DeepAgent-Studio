@@ -125,7 +125,8 @@ async fn assert_exhausted_budget_blocks_ordinary_run(
     cost.set_budget(BudgetConfig {
         daily_limit: Some(0.0005),
         monthly_limit: None,
-    });
+    })
+    .unwrap();
     assert!(cost
         .check_budget()
         .unwrap_err()

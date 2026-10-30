@@ -266,7 +266,8 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
     cost.set_budget(BudgetConfig {
         daily_limit: Some(limit),
         monthly_limit: None,
-    });
+    })
+    .unwrap();
     let model = Arc::new(UsageModel {
         kind,
         parent: Mutex::new(Vec::new()),

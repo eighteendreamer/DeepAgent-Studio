@@ -1201,7 +1201,9 @@ export async function getCostSummary(sessionId?: string): Promise<CostSummary> {
   return EMPTY_COST_SUMMARY;
 }
 
-/** Set the daily/monthly budget (RMB/CNY); returns the refreshed summary. */
+/** Persist the ledger's daily/monthly budget (CNY); null explicitly clears a limit.
+ * Desktop failures reject the Promise, including policy persistence/recovery errors.
+ */
 export async function setBudget(
   dailyLimit: number | null,
   monthlyLimit: number | null,
