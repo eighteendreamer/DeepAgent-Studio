@@ -106,7 +106,7 @@ if (mode === 'worker') {
     if (request.method === 'initialize' && process.env.H46_HANG_INITIALIZE === '1') return;
     if (request.method === 'tools/call' && request.params.name === 'stall') return;
     let result = { server_pid: process.pid };
-    if (request.method === 'initialize') result = { protocolVersion: '2025-06-18',
+    if (request.method === 'initialize') result = { protocolVersion: '2024-11-05',
       capabilities: { tools: {} }, serverInfo: { name: 'ownership-fixture', version: '1' } };
     if (request.method === 'tools/list') result = { tools: ['echo', 'stall'].map(name =>
       ({ name, description: name, inputSchema: { type: 'object' } })) };
@@ -142,7 +142,7 @@ while ($null -ne ($line = [Console]::ReadLine())) {
   if ($request.method -eq 'tools/call' -and $request.params.name -eq 'stall') { continue }
   $result = @{ server_pid = $PID }
   if ($request.method -eq 'initialize') {
-    $result = @{ protocolVersion = '2025-06-18'; capabilities = @{ tools = @{} };
+    $result = @{ protocolVersion = '2024-11-05'; capabilities = @{ tools = @{} };
       serverInfo = @{ name = 'ownership-fixture'; version = '1' } }
   }
   if ($request.method -eq 'tools/list') {

@@ -29,6 +29,50 @@ struct ToolsListPage {
     next_cursor: Option<String>,
 }
 
+/// The required business result for the MCP initialize handshake.
+///
+/// Keep this DTO private to the handshake seam: callers still receive the raw
+/// result for optional fields such as `instructions`, while readiness is gated
+/// by one strongly typed validation path.
+#[derive(Debug, serde::Deserialize)]
+struct InitializeResult {
+    #[serde(rename = "protocolVersion")]
+    protocol_version: String,
+    capabilities: serde_json::Map<String, serde_json::Value>,
+    #[serde(rename = "serverInfo")]
+    server_info: InitializeServerInfo,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct InitializeServerInfo {
+    name: String,
+    version: String,
+}
+
+fn validate_initialize_result(result: &serde_json::Value) -> Result<()> {
+    let InitializeResult {
+        protocol_version,
+        capabilities,
+        server_info: InitializeServerInfo { name, version },
+    } = serde_json::from_value(result.clone()).map_err(|error| {
+        CoreError::invalid(format!(
+            "MCP initialize result has an invalid shape: {error}"
+        ))
+    })?;
+
+    if protocol_version != MCP_PROTOCOL_VERSION {
+        return Err(CoreError::invalid(format!(
+            "MCP initialize protocol version mismatch: expected {MCP_PROTOCOL_VERSION}, got {protocol_version}"
+        )));
+    }
+
+    // The field types above are the protocol gate. Consume all required
+    // values so future DTO changes cannot accidentally leave a required field
+    // unchecked.
+    let _ = (capabilities, name, version);
+    Ok(())
+}
+
 /// An MCP client bound to one server via a transport.
 pub struct McpClient {
     transport: Arc<dyn McpTransport>,
@@ -87,10 +131,31 @@ impl McpClient {
             "capabilities": { "tools": {} },
             "clientInfo": { "name": client_name, "version": env!("CARGO_PKG_VERSION") }
         });
-        let result = self.call("initialize", Some(params)).await?;
-        self.transport
+        let result = match self.call("initialize", Some(params)).await {
+            Ok(result) => result,
+            Err(error) => {
+                if let Err(close_error) = self.transport.close().await {
+                    tracing::warn!(error = %close_error, "failed to close MCP transport after initialize error");
+                }
+                return Err(error);
+            }
+        };
+        if let Err(error) = validate_initialize_result(&result) {
+            if let Err(close_error) = self.transport.close().await {
+                tracing::warn!(error = %close_error, "failed to close MCP transport after invalid initialize result");
+            }
+            return Err(error);
+        }
+        if let Err(error) = self
+            .transport
             .notify("notifications/initialized", None)
-            .await?;
+            .await
+        {
+            if let Err(close_error) = self.transport.close().await {
+                tracing::warn!(error = %close_error, "failed to close MCP transport after initialized notification error");
+            }
+            return Err(error);
+        }
         Ok(result)
     }
 
@@ -201,7 +266,11 @@ mod tests {
     async fn initialize_handshake() {
         let t = Arc::new(MockTransport::new().with_result(
             "initialize",
-            serde_json::json!({"protocolVersion": MCP_PROTOCOL_VERSION}),
+            serde_json::json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "mock-server", "version": "1"}
+            }),
         ));
         let client = McpClient::new(t.clone());
         let res = client.initialize("deepagent").await.unwrap();
@@ -210,6 +279,34 @@ mod tests {
             t.notifications(),
             vec![("notifications/initialized".into(), None)]
         );
+    }
+
+    #[tokio::test]
+    async fn initialize_rejects_invalid_result_before_initialized_notification() {
+        let invalid_results = [
+            serde_json::json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": [],
+                "serverInfo": {"name": "mock-server", "version": "1"}
+            }),
+            serde_json::json!({
+                "protocolVersion": MCP_PROTOCOL_VERSION,
+                "capabilities": {},
+                "serverInfo": {"name": 42, "version": "1"}
+            }),
+            serde_json::json!({
+                "protocolVersion": "2099-01-01",
+                "capabilities": {},
+                "serverInfo": {"name": "mock-server", "version": "1"}
+            }),
+        ];
+
+        for result in invalid_results {
+            let transport = Arc::new(MockTransport::new().with_result("initialize", result));
+            let client = McpClient::new(transport.clone());
+            assert!(client.initialize("deepagent").await.is_err());
+            assert!(transport.notifications().is_empty());
+        }
     }
 
     #[tokio::test]
