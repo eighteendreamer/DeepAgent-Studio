@@ -7627,7 +7627,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 ### H-235：模型型生命周期 hook 的成功 usage 未交回会话账本，漏计费用后下一轮预算仍放行
 
-**修复状态（2026-10-30）：已修复并验收，仅限E-H235-06～09所列Windows本机范围；独立修复提交待回填。以下原始失败和过程记录按历史保留，不代表当前仍复现；不隐去全仓H-306、既有lint/格式及未验范围。**
+**修复状态（2026-10-30）：已修复并验收，仅限E-H235-06～09所列Windows本机范围；独立修复提交`e0c057f1857694a3c1f2e20c61b368a5242515e7`。以下原始失败和过程记录按历史保留，不代表当前仍复现；不隐去全仓H-306、既有lint/格式及未验范围。**
 
 E-H235-01（原探针复核与范围，2026-10-30）：基线 `01ba2909` tracked干净，五类原用户未跟踪项仅列名、不读改/暂存/删除。原生 `cargo test -p deepagent-app-core --test kernel_v2_e2e hook_usage:: --offline -j 2 -- --include-ignored --nocapture` 已终态exit101、303.53秒含冷构建，3 passed/4 failed/0 ignored；不重复运行原探针。prompt允许/拒绝各完成3次、agent允许/拒绝各完成4次完整usage响应，主账本仍仅两次费用0.001232元，应分别0.001848/0.002464元，预算0.00154元下下一轮仍实际dispatch一次；无hook、matcher未中和主费用已越限三对照正常。证据 `target/h235-original-probe-20261030.log`及同名-result.json保留。H-235标记修复中，未验收、无修复commit；只修模型hook附属请求归属与入账，不混修H-234父状态、H-236取消或H-272运行中预算。已有CallUsageObserver/CallUsageSink、CostService、RunStore为复用边界，需覆盖主kernel前UserPromptSubmit早拒绝、错误/取消、重试/混合模型、回放归属及持久化失败，不能只在正常finalizer加无身份累计器。
 
@@ -7646,6 +7646,8 @@ E-H235-07（lint与格式的真实范围）：workspace严格`cargo clippy --all
 E-H235-08（验证后原生清理）：按用户要求，先核对绝对allowlist、dev子树及祖先无reparse/junction、无cargo/rustc/rustdoc/link或目标可执行进程，并保留dry-run；仅对根target和target/h235-tauri-build执行`cargo clean --profile dev --offline --target-dir <绝对路径>`。原生均0，分别移除11363文件/18.9GiB与7997文件/2.4GiB，两个debug目录均确认不存在；G盘可用由170224967680增至191943028736字节（约158.53→178.76GiB，容量口径不与Cargo逻辑体积混加）。2222份根target证据文件与24份受测源码哈希均保持一致，target根及日志/证据、用户五类未跟踪项保留。证据h235-final-clean-{plan,protected,result}-20261030.json、两份clean日志与脚本；没有删除整个根target，也不以清理当作测试通过。
 
 E-H235-09（本项验收与限制）：原允许/拒绝反例、主kernel前早拒绝和正常对照、错误/取消/timeout/drop、物理重试/实际模型报价、并发、缺价/无usage、原子失败/幂等及真实SQLite关闭后重开均有上述实际证据，H-235在Windows本机/隔离HOME与APPDATA/临时SQLite及workspace/MemorySecretStore/离线模型transport范围内验收。复用同一CallUsageObserver、CostService、costs/run_events和父run/session归属，不共享私有agent上下文，也不在finalizer重复计费；缺报价为None，不造零费用。Rust新增观察/归属接口为附加能力，已有cost_recorded及SideCall wire复用，无新依赖、SQL迁移、Tauri command或权限/沙箱放宽；内部回执版本1，旧turn费用仍正常回放。前端仅已手动执行真实App.tsx事件处理器并检查状态，不是完整GUI/WebView或截图验收；未验真实供应商账单、其他OS、断电/进程强杀、全DB不可写、跨宿主压力或旧程序降级，不承诺自动reconcile。H-234、H-272、H-306等仍独立，尤其不宣称运行内预算硬停或未知报价预算策略已实现。本项新增验收1，累计95验收/21历史跳过/7归并/2撤销/181待修复/0修复中，181有效未关闭；只提交本项24源码/测试与两份当时文档，真实fix hash取得后另做docs回填，不amend、不推送、不建PR。下一项拟先复核H-272原探针和当前消费边界，本轮未执行或修改该项。全部剩余200–400有效修复与验收小时仍为历史未逐项校准粗估，依据其余跨层权限/执行/持久化/客户端工作，构建、依赖、设备及环境等待另计，不机械扣减或承诺日期；整体goal继续active。
+
+E-H235-10（独立提交与真实hash回填，2026-10-30）：代码、默认回归及当时两份文档已提交为`e0c057f1857694a3c1f2e20c61b368a5242515e7`（【fix】统一模型生命周期钩子的费用归属与原子入账），精确26个相关文件，父提交01ba2909；提交前index与受测工作树逐文件一致、24份源码SHA256与最终门禁快照一致，306唯一主行中其他305行不变。此次仅回填已存在的真实修复hash与收尾记录，另做docs提交，不amend、不推送、不建PR，不重复执行或扩张E-H235-09的验收。源码、用户原五类未跟踪项与target证据不纳入本次文档提交；两个Rust debug目录仍已清理。E-H235-01～10在两份文档逐项相同，累计95本机范围验收/21历史跳过/7归并/2撤销/181有效待修、0修复中；下一项拟复核H-272，整体目标继续active。全部剩余200–400有效小时仍为历史未逐项校准粗估，构建/设备/依赖和环境等待另计。
 
 **级别：中（P2，需启用 prompt/agent hook 的用量完整性与预算接纳缺陷）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 与 CostService 已复现，未修复。供应商响应全部 completed 且完整携带 usage，没有真实收费请求。**
 
