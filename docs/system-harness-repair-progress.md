@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-31）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零一项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零二项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 101 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 102 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前无进行中的独立项 |
-| 待修复 | 175 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 174 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **175（175待修复、0修复中）**；不提供完成率。一百零一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **174（174待修复、0修复中）**；不提供完成率。一百零二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
 
 ## H-275 MCP hook 参数 schema 执行边界（2026-10-31，已修复并验收）
 
@@ -45,6 +45,24 @@ E-H276-04（消费方与构建门禁）：AppCore lib **1376 passed / 0 failed /
 E-H276-05（范围与限制）：仅覆盖 Windows 本机、离线主模型、临时 SQLite、真实 Node v22.22.1 stdio MCP 与临时目标文件；未验真实外部 MCP/HTTP、其他 OS、完整 workspace、Desktop/Tauri/UI、真实供应商、长时并发、多 content、Ask/Modify 或真实用户数据/副作用。没有执行 `cargo clean`，未删除用户文件或既有证据。
 
 E-H276-06（范围与提交）：代码与默认回归已提交于 `25e83ffa`（`【fix】分离MCP hook控制解析与展示截断`）；本台账在 fix commit 后另做正常 docs 回填，不推送、不创建 PR。本项剩余0，下一项 H-277。
+
+## H-277 MCP initialize 结果未校验（2026-10-31，已修复并验收）
+
+E-H277-01（首次连接修前复现）：移除首次连接探针的 `ignore` 后，`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_initialize_contract --offline -- --include-ignored --nocapture --test-threads=1` 为 **2 passed / 1 failed / 0 ignored**（缺陷预期）；空对象、缺 `protocolVersion`、缺 `capabilities`、缺 `serverInfo`、数字版本和不支持版本均被接受，连接进入 `connected`、发现并执行工具。原始日志保留在 `target/h277-original-probe-20261031.log`。
+
+E-H277-02（重连修前复现）：移除重连探针的 `ignore` 后，`cargo test -p deepagent-mcp --test reconnect_initialize_contract --offline -- --nocapture --test-threads=1` 为 **1 passed / 1 failed / 0 ignored**（缺陷预期）；`ConfigReconnectFactory::reconnect` 对同六类非法 initialize result 均返回 ready transport。原始日志保留在 `target/h277-reconnect-original-probe-20261031.log`。
+
+E-H277-03（根因与实现）：`McpClient::initialize` 原先只检查 JSON-RPC `result` 存在。本轮在同一 handshake seam 增加私有强类型 DTO，要求 `protocolVersion` 精确为当前支持的 `2024-11-05`、`capabilities` 为对象、`serverInfo.name/version` 为字符串；schema 或版本失败时关闭当前 transport 并返回带字段/expected/actual 的协议错误，只有校验成功才发送 `notifications/initialized`。首次连接和 `ConfigReconnectFactory` 重连均复用该入口；保留原始 `Value` 返回以兼容 `instructions` 等可选字段，无新依赖、协议字段、store、迁移或第二套版本判断。
+
+E-H277-04（首次连接正式回归）：`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_initialize_contract --offline -j 1 -- --nocapture --test-threads=1` 为 **3 passed / 0 failed / 250 filtered**；六类非法结果的设置页 probe 与宿主均为 `failed`，`ready_servers=0`，`tools/list=0`、`tools/call=0`，没有向模型广告工具；合法握手仍为 `connected`，发现/调用各1次，显式 JSON-RPC error 对照仍失败闭环。
+
+E-H277-05（重连正式回归）：`cargo test -p deepagent-mcp --test reconnect_initialize_contract --offline -j 1 -- --nocapture --test-threads=1` 为 **2 passed / 0 failed / 0 ignored**；合法重连接受，六类非法结果全部拒绝，证明重连不会绕过首次连接门槛。
+
+E-H277-06（MCP 消费方回归）：`cargo test -p deepagent-mcp --all-features --offline -j 1 -- --test-threads=1` 为 **111 passed / 0 failed / 2 ignored**，覆盖默认与 HTTP transport、真实 Node stdio、生命周期、环境继承及重连；新增直接单测 `cargo test -p deepagent-mcp --lib initialize_ --offline -j 1 -- --test-threads=1` 为 **2 passed / 0 failed / 105 filtered**，明确错误形状/版本不发送 initialized。
+
+E-H277-07（AppCore、构建与 lint）：`cargo test -p deepagent-app-core --lib --offline -j 1 -- --test-threads=1` 为 **1376 passed / 0 failed / 51 ignored**；`cargo check -p deepagent-app-core --offline -j 1` 退出0；`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -- -D warnings` 退出0；改动文件定向 rustfmt 与 `git diff --check` 退出0。
+
+E-H277-08（范围、门禁限制与提交）：完整 `kernel_v2_e2e` 为 **197 passed / 4 failed / 52 ignored**；H-277 三项均通过，4个失败为未修改的 fallback_cost/hook_usage 日预算共享测试，不归因本项。根 `cargo fmt --all -- --check` 仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；AppCore 严格 Clippy 仍被未修改 `crates/deepagent-models/src/client.rs:355` 的 `clone_on_copy` 阻断。范围限 Windows 本机、离线模型、临时 SQLite、真实 Node stdio/HTTP fixture；未验真实外部 MCP/供应商、副作用、其他 OS、完整 workspace、Desktop/Tauri/UI 或真实用户数据。代码与测试已提交于 `f4d80dd9`（`【fix】校验MCP初始化握手结果`），未推送、未创建 PR；没有执行 `cargo clean`，未删除 `target`、用户文件或既有证据。本项剩余0，下一项按风险顺序准备复核 H-282。
 
 ## H-21 子 Agent 恢复输出契约（2026-10-31，已修复并验收）
 
@@ -3207,7 +3225,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-274：Responses token 计数超过宿主 u32 宽度后静默截断，账本可被压成零](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H274-02～07；原始超宽截断证据 E-H274-width 保留；H-273 的字段关系检查独立不合并 | Responses adapter 对五类 provider usage 计数使用 checked `u64 -> u32` 转换，超界/非法整数在 Usage 发布前拒绝，沿现有失败终态；不改变内部 Usage 宽度、不在 CostService 修正 | Models lib 99/0/21；H-274 正式 1/0/0；usage_contract 5/0/0；相关 check 通过；根 fmt/clippy 受未改基线阻断 | `99dc83c0`（`【fix】拒绝Responses超宽用量计数`） | 限 Windows 本机、离线 Responses fixture、临时 SQLite/合成报价；未验真实供应商/账单、其他 OS、强杀/断电、并发压力及其他 usage 关系；本项剩余0，当前177有效待修，总200–400有效小时仍为历史未校准粗估，等待另计 |
 | [H-275：MCP hook 直接调用绕过 discovered inputSchema，非法参数仍发送到工具](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H275-01～06；保留修前 `continued/1` 原始失败证据；无归并 | 在既有 `deepagent-tools` schema compiler 上提取共享参数校验，`McpRegistry::invoke*` 在查到绑定的 `RemoteTool.input_schema` 后、`McpClient::call_tool*` 前校验最终参数；覆盖 hook 注入 `hook_input`，不改权限/审批/取消 | 原始探针修前 2/1，修后默认 H-275 3/0；MCP lib 104/0/2、Tools lib 30/0/0；相关 check/定向 rustfmt/git diff --check 见 E-H275-05～06 | `f9666b5f`（`【fix】统一MCP工具参数schema校验边界`） | 限 Windows 本机、内存 recording MCP 与离线测试；未验真实外部 MCP/供应商、其他 OS、HTTP/stdio 副作用及长时并发；本项剩余0，总176有效待修，200–400有效小时仍为历史未逐项校准粗估，等待另计 |
 | [H-276：MCP hook 在解析前截断完整拒绝 JSON，超过展示上限后静默放行真实写入](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H276-01～06；保留修前 `continued/写入` 原始失败证据；无归并 | `AppHookActionExecutor::execute_mcp` 对完整 MCP 文本解析控制协议，展示上限只作用于错误详情预览；不再让截断破坏 JSON 后 `unwrap_or(Continue)` 放行 | 修前 2/1，修后正式 3/0；AppCore lib 1376/0/51、Hooks lib 67/0/0、AppCore check 通过；根 fmt/严格 Clippy 的既有基线失败见 E-H276-04 | `25e83ffa`（`【fix】分离MCP hook控制解析与展示截断`） | 限 Windows 本机、离线模型、真实 Node stdio 与临时文件；未验真实外部 MCP/HTTP、其他 OS、完整 workspace、Desktop/Tauri/UI、长时并发及真实副作用；本项剩余0，总175有效待修，200–400有效小时仍为历史未逐项校准粗估，等待另计 |
-| [H-277：MCP initialize 结果未校验，缺失必填字段或协商不支持版本仍发布 Ready 并执行工具](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-277：MCP initialize 结果未校验，缺失必填字段或协商不支持版本仍发布 Ready 并执行工具](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H277-01～08；保留修前首次连接与重连失败证据；无归并 | `McpClient::initialize` 通过私有强类型 DTO 统一校验 `protocolVersion == 2024-11-05`、`capabilities` 对象和 `serverInfo.name/version` 字符串；校验失败关闭 transport、禁止 `initialized` 与工具发现，重连复用同一入口 | 首次连接正式 3/0/0（六类非法结果均 failed、tools/list/call=0）；重连 2/0/0；MCP all-features 111/0/2；AppCore lib 1376/0/51；AppCore check 与 MCP 严格 Clippy 通过；根 fmt、AppCore 严格 Clippy及完整kernel E2E的既有/无关失败见 E-H277-08 | `f4d80dd9`（`【fix】校验MCP初始化握手结果`） | 限 Windows 本机、离线模型、临时 SQLite、真实 Node stdio/HTTP fixture；未验真实外部 MCP/供应商、副作用、其他 OS、Desktop/Tauri/UI、完整 workspace；本项剩余0，当前174有效待修，总200–400有效小时仍为历史未校准粗估，等待另计 |
 | [H-278：MCP 未知结果重放的真实进程补强（归 H-06）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-06 | 只关联原证据，不新增修复任务 | 验收由 H-06 统一记录 | 无独立修复提交 | 不独立计数或估时 |
 | [H-279：junction 物理路径边界重复登记（归 H-78）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-78 | 只关联原证据，不新增修复任务 | 验收由 H-78 统一记录 | 无独立修复提交 | 不独立计数或估时 |
 | [H-280：敏感路径发现重复登记（归 H-79）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-79 | 只关联原证据，不新增修复任务 | 验收由 H-79 统一记录 | 无独立修复提交 | 不独立计数或估时 |

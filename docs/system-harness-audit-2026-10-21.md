@@ -9769,6 +9769,17 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - `node crates/deepagent-app-core/tests/kernel_v2_e2e/mcp_initialize_contract_reference.mjs`：**8 个参考 SDK 样本全部符合预期**；合法握手连接并发送 initialized，其余七类拒绝且不发送 initialized。`cargo fmt --all -- --check`、`git diff --check`通过；只读进程检查在测试收尾后为 `active_initialize_contract_mcp_fixture_processes=0`（本轮脚本未留子进程）。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`仍被未修改的 `models/src/client.rs:355` clone_on_copy 与 `persistence/src/run_store.rs:127` explicit_counter_loop阻断；本轮未修改这些文件，不把 lint 阻断归入H-277，也不声称 clippy 全绿。未运行完整 workspace、Desktop build/UI、真实 DeepSeek 计费/缓存、外部 MCP 或真实副作用；本轮未处理用户排除的 encrypted-content 问题，全系统审计仍未结束。
 
+#### H-277 修复与正式验收（2026-10-31）
+
+- **E-H277-01/E-H277-02（修前证据保留）：** 首次连接探针移除 `ignore` 后为 **2 passed / 1 failed / 0 ignored**，重连探针为 **1 passed / 1 failed / 0 ignored**；六类非法 initialize result 均曾进入 Ready 或返回 ready transport。原始日志保留在 `target/h277-original-probe-20261031.log` 与 `target/h277-reconnect-original-probe-20261031.log`，不以修后结果覆盖。
+- **E-H277-03（根因修复）：** `McpClient::initialize` 新增私有强类型握手 DTO，统一要求 `protocolVersion == 2024-11-05`、`capabilities` 为对象、`serverInfo.name/version` 为字符串。schema/版本错误会关闭当前 transport 并返回包含错误形状或 expected/actual 的 `CoreError::Invalid`；仅校验成功后发送 `notifications/initialized`。`ConfigReconnectFactory` 仍通过同一 `McpClient::initialize`，没有在重连或 AppCore 另加判断；原始 `Value` 返回和可选 `instructions` 消费保持兼容。
+- **E-H277-04（首次连接正式回归）：** `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_initialize_contract --offline -j 1 -- --nocapture --test-threads=1` 为 **3 passed / 0 failed / 250 filtered**。六类非法结果的设置页 probe 与宿主均为 `failed`、`ready_servers=0`、`tools/list=0`、`tools/call=0`；合法握手仍 connected 并完成一次发现/调用，显式 JSON-RPC error 对照仍失败闭环。
+- **E-H277-05（重连正式回归）：** `cargo test -p deepagent-mcp --test reconnect_initialize_contract --offline -j 1 -- --nocapture --test-threads=1` 为 **2 passed / 0 failed / 0 ignored**；合法重连接受，六类非法结果全部拒绝。
+- **E-H277-06（MCP 与直接控制边界）：** `cargo test -p deepagent-mcp --all-features --offline -j 1 -- --test-threads=1` 为 **111 passed / 0 failed / 2 ignored**；新增 initialize 单元回归为 **2 passed / 0 failed / 105 filtered**，非法形状/版本均未发送 initialized。`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -- -D warnings` 退出0。
+- **E-H277-07（AppCore 消费方）：** `cargo test -p deepagent-app-core --lib --offline -j 1 -- --test-threads=1` 为 **1376 passed / 0 failed / 51 ignored**；`cargo check -p deepagent-app-core --offline -j 1` 退出0；改动文件 rustfmt 与 `git diff --check` 退出0。
+- **E-H277-08（完整门禁与限制）：** 完整 `kernel_v2_e2e` 为 **197 passed / 4 failed / 52 ignored**；H-277 三项通过，4个失败为未修改的 fallback_cost/hook_usage 日预算共享测试，未归因本项。根 `cargo fmt --all -- --check` 仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；AppCore 严格 Clippy 仍被未修改 `crates/deepagent-models/src/client.rs:355` 的 `clone_on_copy` 阻断。未运行完整 workspace、Desktop/Tauri/UI、真实外部 MCP/供应商或真实副作用；没有执行 `cargo clean`，未删除 `target`、用户文件或既有证据。
+- **E-H277-09（交付）：** 代码与测试提交为 `f4d80dd9`（`【fix】校验MCP初始化握手结果`），未推送、未创建 PR。本项在 Windows 本机、离线模型、临时 SQLite、真实 Node stdio/HTTP fixture 范围内修复并验收；其他平台、真实外部服务与生产副作用仍属未验证边界，全系统审计继续进行。
+
 ### H-06 的真实进程补强归档（原 H-278，撤销独立计数）
 
 **2026-10-25 编号更正：** 下述真实 stdio 证据与 H-06 的 mock 证据覆盖同一个 `ReconnectingTransport::send` 根因、同一“已生效但响应丢失”的故障窗口及同一重复副作用后果。真实进程补强有价值，但不是第二个问题；唯一保留项为 H-06，沿用其 P1 定级。以下原始 E/F/P 标签和当轮执行记录保留供追溯，不代表独立缺陷或本轮重新执行。生产逻辑未修复。
