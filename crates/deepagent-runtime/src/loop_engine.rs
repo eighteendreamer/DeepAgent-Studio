@@ -610,18 +610,13 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         match self.hooks {
             Some(reg) => {
                 let ctx = HookContext::new(session_id, point, data);
-                if let Some(cancel) = self.cancel.clone() {
-                    tokio::select! {
-                        result = reg.dispatch(&ctx) => result,
-                        _ = wait_for_runtime_cancel(cancel, self.cancel_token.clone()) => Err(
-                            deepagent_core::error::CoreError::other(
-                                format!("hook '{}' cancelled by user", point.label())
-                            )
-                        ),
-                    }
+                let cancel = self.cancel.clone().unwrap_or_default();
+                let execution = if let Some(token) = &self.cancel_token {
+                    ToolExecutionContext::from_token_and_flag(token.child_token(), cancel)
                 } else {
-                    reg.dispatch(&ctx).await
-                }
+                    ToolExecutionContext::new(cancel)
+                };
+                reg.dispatch_with_context(&ctx, execution).await
             }
             None => Ok(HookOutcome::Continue),
         }
@@ -2626,26 +2621,6 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
         )
         .await?;
         Ok(())
-    }
-}
-
-async fn wait_for_runtime_cancel(
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    token: Option<CancellationToken>,
-) {
-    if let Some(token) = token {
-        tokio::select! {
-            _ = token.cancelled() => {},
-            _ = wait_for_runtime_cancel_flag(cancel) => {},
-        }
-    } else {
-        wait_for_runtime_cancel_flag(cancel).await;
-    }
-}
-
-async fn wait_for_runtime_cancel_flag(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
-    while !cancel.load(std::sync::atomic::Ordering::Acquire) {
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 }
 

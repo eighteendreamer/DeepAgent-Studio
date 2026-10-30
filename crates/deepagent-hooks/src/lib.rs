@@ -25,6 +25,7 @@
 //! cannot halt anything and is downgraded to a warning.
 
 pub mod builtin;
+mod execution;
 pub mod external_hooks;
 pub mod hook;
 pub mod lifecycle;

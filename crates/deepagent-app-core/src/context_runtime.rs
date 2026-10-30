@@ -238,9 +238,14 @@ impl HookedReactiveContextCompactor {
         cancel: Option<Arc<AtomicBool>>,
         usage: deepagent_models::Usage,
     ) -> std::result::Result<HookOutcome, CompactionFailure> {
-        deepagent_runtime::cancellation::await_cancelled(self.hooks.dispatch(&context), cancel)
-            .await
-            .map_err(|error| CompactionFailure::new(error, usage))
+        let result = if let Some(cancel) = cancel {
+            self.hooks
+                .dispatch_with_context(&context, deepagent_tools::ToolExecutionContext::new(cancel))
+                .await
+        } else {
+            self.hooks.dispatch(&context).await
+        };
+        result.map_err(|error| CompactionFailure::new(error, usage))
     }
 
     async fn summarize_response_item_zone_cancelled(

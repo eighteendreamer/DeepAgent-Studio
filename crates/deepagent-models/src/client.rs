@@ -206,8 +206,8 @@ impl ModelClient {
 
     /// Like [`ModelClient::stream_response_observed`], but aborts promptly when
     /// `cancel` is set. The real reqwest transport uses this to stop an
-    /// in-flight SSE body read; mock/default transports still preserve the old
-    /// behavior unless they opt in.
+    /// in-flight SSE body read; the default transport method also stops waiting
+    /// on cancellation by dropping the local stream future.
     pub async fn stream_response_observed_cancelled(
         &self,
         mut request: ResponseRequest,

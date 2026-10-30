@@ -7611,7 +7611,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 ### H-236：hook 缺少父运行取消上下文，工具流水线仍等待，MCP 对端未获取消
 
-**级别：中（P2，可选模型/MCP hook 的取消生命周期缺口）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite 已复现，后续补充真实 stdio MCP 对端证据，未修复。不是所有 hooks 均不响应取消，也没有复现取消后主运行误记成功。**
+**级别：中（P2，可选模型/MCP hook 的取消生命周期缺口）；当前状态：已修复并验收（2026-10-30，仅E-H236-06～08所列Windows本机范围；修复提交待正常提交后回填）。以下原始失败、设置错误及增量证据按历史保留，不代表当前仍复现；完整workspace、旧lint/fmt及远端限制均不隐去。不是所有hooks均不响应取消，也没有复现取消后主运行误记成功。**
 
 #### 首次即时 Evidence（2026-10-24）
 
@@ -7696,6 +7696,49 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 - `cargo fmt --all -- --check`、`git diff --check` 通过；Git 提示 Windows 工作副本行尾转换，不是内容检查失败。`cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` 未通过，被未修改的 `models/src/client.rs:355` 的 clone_on_copy 与 `persistence/src/run_store.rs:127` 的 explicit_counter_loop 阻断，不声称 lint 全绿。
 - 测试收尾后只读进程检查为 `active_hook_mcp_fixture_processes=0`；每组均释放 gate、等待 run、关闭所属测试 registry，没有遗留本轮 Node 故障服务。参考 DeepSeek Harness 的 signal 单测结果见上节；未运行完整 workspace、Desktop 构建或 UI 手测。
 - 尚未覆盖本轮MCP hook自身超时、HTTP传输、并行多hook、server拒绝取消/部分完成、共享server并发、重启恢复、真实Tauri或真实DeepSeek计费；新的正常/故障样本不替代这些待测边界。仍只变更测试、模块入口与审计文档，没有生产修复、权限/公共协议变更，也未处理用户排除的encrypted-content问题。
+
+#### 当前修复状态（2026-10-30，已修复并验收）
+
+当前仅处理 H-236，基线 HEAD ed2b9c03；不提前归并普通 MCP 工具的稀发取消反例，不重开 H-128/H-136，也不扩修 H-237。五类原用户未跟踪项仅经 git status 列名，不读取或改动。以下原生命令均由 target/h236-run-isolated-20261030.ps1 隔离 home/data/profile/APPDATA 并清除继承凭据执行；无真实供应商、真实内网或用户数据库。
+
+E-H236-01：原探针 `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e hook_cancellation --offline -j 2 -- --include-ignored --nocapture --test-threads=1` 已取得真实终态，原生101、92.81秒，**4 passed / 3 failed / 0 ignored**。失败为前/后置模型 Hook 与 MCP Hook 取消传播；正常允许、输入/启动模型取消及普通 MCP 工具取消对照通过。上轮完整 workspace 的普通 MCP 反例仍保留，不能以本次对照转绿抹去。证据 target/h236-original-hooks-20261030.log/-result.json。
+
+E-H236-02：修改生产前补两条默认回归，分别在真实并行工具结果已提交、真实文件写入及 FileChanged Hook 已进入后取消，要求有界结束并在数据库重开后保留 completed action/真实字节。`cargo test --target-dir target/h300-after-h163-build -p deepagent-runtime --lib h236_pending_ --offline -j 2 -- --nocapture --test-threads=1` 实际原生101、31.94秒，**0 passed / 2 failed / 0 ignored**，均因取消后仍等待挂起 Hook，2秒测试观察窗到期；并非产品 SLA。证据 target/h236-post-commit-red-20261030.log/-result.json。
+
+P-H236-current（已实施，本地设计）：沿既有 ToolExecutionContext 贯通统一 HookRegistry、HookActionExecutor、命令/HTTP/MCP/模型 Hook、agent 私有 Runtime 与工具 pipeline；run-owned registry 让旧 dispatch 调用同样继承父取消。每个 hook 使用独立 child，用户取消或动作期限先通知资源 owner，再给最多1秒本地清理预算；复用既有 MCP 按 requestId 的取消通知，不关闭共享服务。prompt 使用取消感知模型入口，agent 私有 Runtime 继承父取消，保留原 H-237 权限与 AutoDenyGate；前置取消不执行父工具，后置沿 H-139 先提交事实再停止附属决策。保留旧 trait 方法的默认兼容入口，无第二套取消/事件/存储链路。实现及最终验收见 E-H236-06～08；修复提交在正常独立提交后回填，不把本节本机验收外推为全系统完成。
+
+E-H236-03（候选门禁，不代表验收）：冻结20份源码/配置/测试后，Hooks/Models/Runtime lib分别67/0/0、94/0/21、344/0/9（通过/失败/忽略），新增Hook资源owner默认回归5/0/0；Hooks严格Clippy、Tauri --lib --tests检查及CLI构建原生0。全仓严格Clippy原生101，仍停于models/client.rs:355既有clone_on_copy；本轮该文件仅其他位置注释改变，诊断行未改。根fmt与Tauri fmt均原生1，保留原有格式差异。逐项命令、退出码和耗时见target/h236-final-{related-libs,owner-tests,hooks-clippy,workspace-clippy,root-format,tauri-format,tauri-check}-20261030-result.json及h236-current-cli-build-20261030-result.json；不以局部门禁替代完整验收。
+
+E-H236-04（完整workspace未完成）：第一次全仓test原生101、239.44秒，在owned_recovery/mcp_environment链接阶段报LNK1140，同时G盘仅余约132MiB，未进入测试；不能当作测试通过或H-236行为失败。定向清旧缓存后第二次实际编译完成，AppCore lib取得1345 passed/0 failed/62 ignored（248.21秒），但用户随后要求删除Rust编译产物，本轮据此停止所属cargo/测试进程；整体原生-1、433.56秒，kernel_v2_e2e未取得正常终态，不把其异常退出记作产品回归。两次driver均finally恢复原默认CLI并核SHA-256。证据h236-workspace-20261030*、h236-workspace-space-retry-20261030*、h236-validation-stopped-for-cleanup-20261030.json及两份sdk-cli-restored记录。原普通MCP稀发反例和H-306基线均未被本次未完成验证覆盖或抹去。
+
+E-H236-05（用户要求的构建清理，非修复验收）：确认所属构建/测试进程退出、默认CLI已恢复后，使用cargo clean --offline清理根target的dev profile、target/h300-after-h163-build、apps/desktop/src-tauri/target及target/h163-receipt-isolated；四项原生0，Cargo分别报告60.0/87.7/16.1/18.4GiB。G盘实际可用空间从5464649728增至191973572608字节；1942份根目录验收/对照资料与20份冻结源码哈希均保持一致，CLI对照备份和原始失败证据保留。记录target/h236-full-build-clean-plan-20261030.json、h236-clean-protected-evidence-20261030.json、h236-full-build-clean-result-20261030.json及h236-full-clean-h163-isolated-result-20261030.json。以上为当时清理快照，源码未因清理修改；随后为继续本项验收重新构建，结果见E-H236-06～07，不能把旧build记录当作现存产物。清理使用profile/明确target范围，保留证据根目录，不是把整个target连同日志删除。
+
+E-H236-06（最终默认回归与生产消费方）：清理后冻结21份源码/配置/测试（target/h236-frozen-sources-after-clean-20261030.json），本轮交付前逐一重读SHA-256均一致。公共Cargo参数为 `--target-dir target/h300-after-h163-build --offline -j 2`，以下结果均为真实原生0：
+
+| 实际命令（附公共参数） | 通过/失败/忽略 | 证据与耗时 |
+|---|---|---|
+| `cargo test -p deepagent-hooks -p deepagent-models -p deepagent-runtime --lib -- --nocapture --test-threads=1` | 67/0/0、94/0/21、344/0/9 | h236-related-libs-post-clean-20261030，83.23秒 |
+| `cargo test -p deepagent-hooks --tests -- --nocapture --test-threads=1` | lib 67/0/0，integration 5/0/0 | h236-hooks-integration-final-20261030，24.41秒 |
+| `cargo test -p deepagent-app-core --lib cancellation_tests::h236_ -- --nocapture --test-threads=1` | 3/0/0 | h236-appcore-private-cancel-20261030，3.00秒 |
+| `cargo test -p deepagent-runtime --lib h236_ -- --nocapture --test-threads=1` | 2/0/0 | h236-runtime-postcommit-green-20261030，2.82秒 |
+| `cargo test -p deepagent-app-core --test kernel_v2_e2e hook_cancellation -- --include-ignored --nocapture --test-threads=1` | 9/0/0 | h236-kernel-hooks-green-20261030，126.90秒 |
+| `cargo test -p deepagent-app-core --lib -- --quiet --test-threads=1` | 1348/0/53 | h236-appcore-lib-full-20261030，220.07秒 |
+
+上述证据均为target根下同名.log/-result.json，不将ignored计为通过。三条原缺陷探针已转默认，Kernel组实际覆盖四个位置×prompt/agent正常及取消、工具调用前取消、部分决策流取消（含不取消对照），四个MCP位置取消和正常释放，以及同服务普通工具取消。MCP新增同一peer并发请求对照：hook用户取消/自身期限仅通知匹配requestId，不取消兄弟请求、不close_all共享服务，兄弟正常释放成功；父read action保持Completed、唯一cancelled/failed终态。私有agent补解析完成但未派发、子工具已进入等待、正常工具→决策三组，取消无后续模型请求。Runtime两条红→绿证明真实并行结果/文件字节已提交后遇挂起hook取消，关库重开仍保留completed事实。Hooks五条验证绑定旧dispatch、并行Once包装清理（100ms协作清理，不压缩成探针窗口）、期限不取消父/兄弟、已取消不启动、真实命令无迟到写入、loopback HTTP半正文等待退出。HTTP只证明宿主退出，不声称撤回服务端效果。
+
+独立Tauri在 `apps/desktop/src-tauri` 实际运行 `cargo check --target-dir ../../target/h300-after-h163-build --manifest-path Cargo.toml --lib --tests --locked --offline -j 2`，原生0、295.79秒；该相对target实际位于apps/target，非根target。CLI另运行 `cargo build -p deepagent-cli --offline -j 2`，默认target构建原生0、263.19秒。SDK随后 `cargo test --target-dir target/h300-after-h163-build -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 -- --nocapture --test-threads=1` 为6/0/0、13.86秒。命令证据h236-tauri-check、current-cli-build-final、sdk-e2e-final-20261030；仅正式Rust消费方验收，无TS/wire/UI形状修改。
+
+E-H236-07（完整workspace与门禁限制）：冻结后完整 `cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1` 原生101、1287.98秒；逐段日志133个结果合计 **3881 passed / 6 failed / 283 ignored**，AppCore lib1348/0/62、Kernel179/0/68、Runtime344/0/9。失败为SDK的5项（清理后其硬编码根target/debug/deepagent.exe不存在）及既有H-306的creative.video-edit.v1空defaultUserPrompt。随后按测试自身先决条件重建默认CLI并复验SDK6/0/0，未改SDK实现/断言；这不是重新跑过完整workspace，不能把总结果改写为全绿。H-306源码与本轮零diff；普通MCP对照本次完整组通过不抹去此前稀发反例，也不宣称本项修复transport发送窗口。证据h236-workspace-final-20261030.log/-result.json及逐target-summary；未进入/被中止的早期全仓结果仍保留于E-H236-04。
+
+根 `cargo fmt --all -- --check` 原生1、4.31秒，仍仅未改runtime/workflow/agent.rs:1043；本轮19份Rust文件单独 `rustfmt --check --edition 2021 --config skip_children=true <files>` 原生0。相关4 crate `cargo clippy --target-dir target/h300-after-h163-build -p deepagent-hooks -p deepagent-models -p deepagent-runtime -p deepagent-app-core --all-targets --offline -j 2 -- -D warnings` 原生101、29.50秒，仍停于models/client.rs:355既有clone_on_copy，本轮只改该文件另一位置的注释。此前全workspace严格Clippy亦同处阻断，Hooks单crate严格lint实际通过；不抑制诊断、不顺手修旧问题。Tauri旧fmt差异保留。最终diff/台账/受测源码完整性在提交前检查，不以局部绿替代全仓门禁。
+
+E-H236-08（限定验收与剩余）：本项父执行上下文缺口已修复并在上述Windows本机、临时SQLite、合成模型、真实临时工具/命令、loopback HTTP及stdio peer范围验收。清理预算是本地有界收尾策略，不是产品SLA、远端rollback或计费停止承诺；不合作的自定义Hook到期被drop，远端副作用保留未知。没有测试真实凭据/供应商/内网/用户数据、其他OS、任意共享server负载、远端拒绝取消/不可逆动作、硬杀断电及OS沙箱；未运行pnpm build、独立TS SDK和GUI，因无前端/桥接形状变更。原有权限、AutoDenyGate、主工具事实提交与唯一终态边界复用，无SQL迁移/新外部依赖/第二取消中心。新增hooks→既有tools内部依赖及trait默认兼容方法，不改供应商参数或机器协议；自定义资源owner若只实现旧方法，仍需自行实现协作清理，不能据默认drop保证外部资源终结。
+
+本轮新增根因修复1项，历史跳过/归并/撤销新增0；累计91验收、21历史跳过、7归并、2撤销、185待修复、0修复中，185有效未关闭，306槽位不变。下一项按费用准入与持久化风险复核H-225/H-226，先查原探针与当前实现，不预先合并。总剩余 **200–400有效修复与验收小时** 仍为尚未逐项校准的历史粗估（依据剩余跨层权限、持久化、取消与生产消费方范围），无可靠独立工时计量，不机械扣减构建耗时；设备/依赖/编译与环境等待另计，不作精确日期承诺。代码、测试与当时双文档独立正常提交后另做hash回填，不amend、不推送、不建PR，整体目标继续active。
+
+E-H236-09（交付前复核与清理）：同一受测源码在隔离配置环境再次默认执行 `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e hook_cancellation --offline -j 2 -- --nocapture --test-threads=1`，原生0、18.59秒、9 passed/0 failed/0 ignored（h236-delivery-kernel-20261030）；19份Rust修改文件独立rustfmt原生0。交付检查确认306行/306唯一编号/8列、其余305主行逐字未改、顶部91项与主行相同、双文档最终正文一致、原始审计证据保留及21份受测源码SHA-256一致。辅助检查首次遇Node读取大文档默认缓冲上限、随后发现H-305撤销标题使用空格而非冒号；分别修正辅助读取容量和已存在标题解析，未改生产/测试/台账内容或放宽验收，最终检查通过（h236-delivery-before-clean-20261030.json）。
+
+确认本轮构建进程、真实hook-mcp夹具和各产物目录内运行程序均0后，先按已解析的绝对路径、非junction边界预览，再执行 `cargo clean --profile dev --target-dir <checked-target> --locked --offline`。三处target分别为根target、根target/h300-after-h163-build、apps/target/h300-after-h163-build；Cargo各原生0并报告删除3.0/17.7/2.5GiB，三处debug实际均不存在。G盘可用从168333000704增至191966666752字节；1992份根目录证据及21份源码哈希均未改变。记录h236-delivery-clean-plan/protected-evidence/clean-result-20261030.json和三份clean日志；仅删重新生成的编译产物，保留历史对照binary、日志和原用户未跟踪项。此后未重新编译，下一项必须按需重建；不将清理后的旧binary路径当作现存文件或将清理算作问题修复数。
 
 ### H-237：agent-hook 未继承主运行有效权限，被规则或工作区边界拒绝的读取仍将正文交给 hook 模型
 

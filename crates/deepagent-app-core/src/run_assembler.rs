@@ -779,6 +779,14 @@ impl<'a> RunAssembler<'a> {
                 .unwrap_or_default(),
         })?
         .hooks;
+        // The registry is run-owned, including nested instruction, compaction,
+        // and child-lifecycle dispatchers which use the legacy dispatch entry.
+        let hooks = Arc::new(hooks.as_ref().clone().with_execution_context(
+            deepagent_tools::ToolExecutionContext::from_token_and_flag(
+                cancellation.cancellation().token(),
+                cancellation.flag(),
+            ),
+        ));
         let _ = subagent_hooks.set(hooks.clone());
         append_runtime_log(
             self.runtime_logs,
@@ -799,20 +807,16 @@ impl<'a> RunAssembler<'a> {
                 })),
         );
 
-        let prompt_decision = {
-            let cancel = cancellation.cancellation();
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Err(CoreError::other("cancelled before user prompt hooks")),
-                result = submit_user_prompt(
-                    &registry,
-                    &hooks,
-                    session.id(),
-                    model_prompt.clone(),
-                    cancellation.flag(),
-                ) => result?,
-            }
-        };
+        // The Hook owner must observe cancellation and finish its bounded
+        // resource cleanup; dropping it here would lose MCP notifications.
+        let prompt_decision = submit_user_prompt(
+            &registry,
+            &hooks,
+            session.id(),
+            model_prompt.clone(),
+            cancellation.flag(),
+        )
+        .await?;
         match prompt_decision {
             PromptDecision::Accept(effective_prompt) => {
                 append_runtime_log(
@@ -1037,13 +1041,17 @@ impl<'a> RunAssembler<'a> {
                         .collect(),
                 },
             );
-            let dispatch = hooks.dispatch(&context);
-            tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Err(CoreError::other("cancelled before model request")),
-                result = dispatch => if let Err(error) = result {
-                    tracing::warn!(error = %error, "InstructionsLoaded hook failed");
-                },
+            if let Err(error) = hooks
+                .dispatch_with_context(
+                    &context,
+                    deepagent_tools::ToolExecutionContext::from_token_and_flag(
+                        cancel.token(),
+                        cancellation.flag(),
+                    ),
+                )
+                .await
+            {
+                tracing::warn!(error = %error, "InstructionsLoaded hook failed");
             }
         }
         if cancellation.cancellation().is_cancelled() {

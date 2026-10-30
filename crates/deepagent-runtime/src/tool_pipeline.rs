@@ -522,7 +522,10 @@ impl<'a> ToolExecutionPipeline<'a> {
         match self.hooks {
             Some(hooks) => {
                 hooks
-                    .dispatch(&HookContext::new(self.session_id, point, data))
+                    .dispatch_with_context(
+                        &HookContext::new(self.session_id, point, data),
+                        self.execution_context(),
+                    )
                     .await
             }
             None => Ok(HookOutcome::Continue),

@@ -41,10 +41,17 @@ impl Drop for Waiting<'_> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GatePoint {
+    BeforeDecision,
+    BeforeToolCall,
+    StreamingDecision,
+}
+
 struct GatedModel {
     site: Site,
     agent: bool,
-    gate_before_tool: bool,
+    gate: GatePoint,
     entered: Notify,
     release: Notify,
     waiting: AtomicUsize,
@@ -63,6 +70,7 @@ impl HttpTransport for GatedModel {
             "cancel-response-{}",
             self.parent.load(Ordering::Acquire) + self.hooks.lock().unwrap().len()
         );
+        let mut gated = false;
         let item = if hook {
             let index = {
                 let mut hooks = self.hooks.lock().unwrap();
@@ -70,13 +78,7 @@ impl HttpTransport for GatedModel {
                 hooks.len() - 1
             };
             assert!(index <= usize::from(self.agent));
-            if index == usize::from(self.agent && !self.gate_before_tool) {
-                self.waiting.fetch_add(1, Ordering::AcqRel);
-                let _waiting = Waiting(&self.waiting);
-                self.entered.notify_one();
-                self.release.notified().await;
-                self.answered.fetch_add(1, Ordering::AcqRel);
-            }
+            gated = index == usize::from(self.agent && self.gate != GatePoint::BeforeToolCall);
             if self.agent && index == 0 {
                 call("hook-cancel-list", "task_list", json!({}))
             } else {
@@ -97,15 +99,46 @@ impl HttpTransport for GatedModel {
                 )
             }
         };
-        emit_responses_events(
-            sink,
-            &completed(
-                &response_id,
-                MODEL,
-                item,
-                json!({"input_tokens":12,"output_tokens":6,"total_tokens":18}),
-            ),
-        )
+        let mut events = completed(
+            &response_id,
+            MODEL,
+            item,
+            json!({"input_tokens":12,"output_tokens":6,"total_tokens":18}),
+        );
+        let split = if gated && self.gate == GatePoint::StreamingDecision {
+            let partial = [
+                json!({"type":"response.content_part.added","item_id":"hook-cancel-decision",
+                    "output_index":0,"content_index":0,
+                    "part":{"type":"output_text","text":"","annotations":[]}}),
+                json!({"type":"response.output_text.delta","item_id":"hook-cancel-decision",
+                    "output_index":0,"content_index":0,"delta":"{\"ok\":"}),
+                json!({"type":"response.output_text.delta","item_id":"hook-cancel-decision",
+                    "output_index":0,"content_index":0,"delta":"true}"}),
+                json!({"type":"response.output_text.done","item_id":"hook-cancel-decision",
+                    "output_index":0,"content_index":0,"text":"{\"ok\":true}"}),
+                json!({"type":"response.content_part.done","item_id":"hook-cancel-decision",
+                    "output_index":0,"content_index":0,
+                    "part":{"type":"output_text","text":"{\"ok\":true}","annotations":[]}}),
+            ];
+            events.splice(2..2, partial.into_iter().map(|event| event.to_string()));
+            for (sequence, event) in events.iter_mut().enumerate() {
+                let mut value: Value = serde_json::from_str(event)?;
+                value["sequence_number"] = sequence.into();
+                *event = value.to_string();
+            }
+            emit_responses_events(sink, &events[..4])?;
+            4 // The actual parser has received a partial decision, but no terminal.
+        } else {
+            0
+        };
+        if gated {
+            self.waiting.fetch_add(1, Ordering::AcqRel);
+            let _waiting = Waiting(&self.waiting);
+            self.entered.notify_one();
+            self.release.notified().await;
+            self.answered.fetch_add(1, Ordering::AcqRel);
+        }
+        emit_responses_events(sink, &events[split..])
     }
 }
 
@@ -211,6 +244,20 @@ async fn observe_wait(
     cancel: bool,
     gate_before_tool: bool,
 ) -> Observation {
+    observe_gate(
+        site,
+        agent,
+        cancel,
+        if gate_before_tool {
+            GatePoint::BeforeToolCall
+        } else {
+            GatePoint::BeforeDecision
+        },
+    )
+    .await
+}
+
+async fn observe_gate(site: Site, agent: bool, cancel: bool, gate: GatePoint) -> Observation {
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("fixture.txt"), "AUDIT_CANCEL_FILE").unwrap();
     let db = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
@@ -218,7 +265,7 @@ async fn observe_wait(
     let model = Arc::new(GatedModel {
         site,
         agent,
-        gate_before_tool,
+        gate,
         entered: Notify::new(),
         release: Notify::new(),
         waiting: AtomicUsize::new(0),
@@ -249,7 +296,7 @@ async fn observe_wait(
     tokio::time::timeout(Duration::from_secs(4), model.entered.notified())
         .await
         .expect("the configured hook must really enter its model wait");
-    if !gate_before_tool {
+    if gate != GatePoint::BeforeToolCall {
         verify_agent_tool(&model, false);
     }
     assert_eq!(model.waiting.load(Ordering::Acquire), 1);
@@ -286,7 +333,7 @@ async fn observe_wait(
         "formal cancellation/success must settle: {result:?}"
     );
     assert_eq!(model.waiting.load(Ordering::Acquire), 0);
-    verify_agent_tool(&model, gate_before_tool && cancel);
+    verify_agent_tool(&model, gate == GatePoint::BeforeToolCall && cancel);
     let terminal = RunStore::new(&db).get(RUN).unwrap().unwrap();
     assert_eq!(
         terminal.terminal_kind.as_deref(),
@@ -312,7 +359,7 @@ async fn observe_wait(
             ..Observation::default()
         },
     );
-    eprintln!("hook cancellation: site={site:?}, agent={agent}, cancel={cancel}, gate_before_tool={gate_before_tool}, {observation:?}");
+    eprintln!("hook cancellation: site={site:?}, agent={agent}, cancel={cancel}, gate={gate:?}, {observation:?}");
     assert_eq!(observation.hook_starts, 1);
     observation
 }
@@ -379,13 +426,35 @@ async fn assert_tool_hook_cancellation(site: Site) {
 }
 
 #[tokio::test]
-#[ignore = "audit: sequential pre-tool hooks must stop their model wait on run cancellation"]
 async fn audit_pre_tool_model_hooks_observe_run_cancellation() {
     assert_tool_hook_cancellation(Site::Before).await;
 }
 
 #[tokio::test]
-#[ignore = "audit: sequential post-tool hooks must stop their model wait on run cancellation"]
 async fn audit_post_tool_model_hooks_observe_run_cancellation() {
     assert_tool_hook_cancellation(Site::After).await;
+}
+
+#[tokio::test]
+async fn h236_streaming_hook_decisions_cancel_without_consuming_the_terminal() {
+    for site in [Site::Before, Site::After] {
+        for agent in [false, true] {
+            for cancel in [false, true] {
+                let observed =
+                    observe_gate(site, agent, cancel, GatePoint::StreamingDecision).await;
+                assert_eq!(observed.answered, usize::from(!cancel));
+                assert_eq!(observed.parent_requests, if cancel { 1 } else { 2 });
+                let tools = usize::from(!cancel || site == Site::After);
+                assert_eq!(observed.parent_tool_completions, tools);
+                if cancel {
+                    assert!(observed.stopped_before_release);
+                    assert_eq!(observed.waiting_before_release, 0);
+                    assert_eq!(
+                        observed.hook_requests,
+                        observed.hook_requests_before_release
+                    );
+                }
+            }
+        }
+    }
 }

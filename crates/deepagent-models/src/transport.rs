@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_tools::ToolExecutionContext;
 
 /// An outbound Responses request at the transport level (already serialized).
 #[derive(Debug, Clone)]
@@ -32,20 +33,24 @@ pub trait HttpTransport: Send + Sync {
     /// Perform the request and drive `sink` with each SSE payload string.
     async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()>;
 
-    /// Cancel-aware streaming variant. The default preserves compatibility for
-    /// test transports and embedders; real transports should override this so a
-    /// UI stop can abort an in-flight network read instead of waiting for the
-    /// provider stream to finish naturally.
+    /// Cancel-aware streaming variant. Dropping the in-flight stream future is
+    /// the common local boundary; transports may override it to also interrupt
+    /// their socket read. This keeps test transports and embedders cooperative
+    /// without requiring a second cancellation API.
     async fn stream_cancelled(
         &self,
         request: TransportRequest,
         sink: &mut dyn EventSink,
         cancel: Arc<AtomicBool>,
     ) -> Result<()> {
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Acquire) {
             return Err(CoreError::other("request cancelled"));
         }
-        self.stream(request, sink).await
+        let execution = ToolExecutionContext::new(cancel);
+        tokio::select! {
+            result = self.stream(request, sink) => result,
+            _ = execution.cancelled() => Err(CoreError::other("request cancelled")),
+        }
     }
 
     /// Perform an authenticated `GET` and return the raw JSON body. Used for
@@ -132,18 +137,6 @@ impl HttpTransport for MockTransport {
         Ok(())
     }
 
-    async fn stream_cancelled(
-        &self,
-        request: TransportRequest,
-        sink: &mut dyn EventSink,
-        cancel: Arc<AtomicBool>,
-    ) -> Result<()> {
-        if cancel.load(Ordering::Relaxed) {
-            return Err(CoreError::other("request cancelled"));
-        }
-        self.stream(request, sink).await
-    }
-
     async fn get_json(&self, _url: &str, _api_key: &str) -> Result<String> {
         self.get_response.clone().ok_or_else(|| {
             deepagent_core::error::CoreError::other("mock transport has no canned GET response")
@@ -154,6 +147,7 @@ impl HttpTransport for MockTransport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use async_trait::async_trait;
 
     #[tokio::test]
     async fn mock_transport_replays_events() {
@@ -177,5 +171,59 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(seen, vec!["a", "b", terminal.as_str()]);
+    }
+
+    struct NonCooperativeTransport {
+        entered: tokio::sync::Notify,
+        dropped: Arc<AtomicBool>,
+    }
+
+    struct StreamGuard(Arc<AtomicBool>);
+
+    impl Drop for StreamGuard {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    #[async_trait]
+    impl HttpTransport for NonCooperativeTransport {
+        async fn stream(
+            &self,
+            _request: TransportRequest,
+            _sink: &mut dyn EventSink,
+        ) -> Result<()> {
+            let _guard = StreamGuard(self.dropped.clone());
+            self.entered.notify_one();
+            std::future::pending::<()>().await;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn default_cancel_aware_transport_drops_a_pending_stream() {
+        let transport = NonCooperativeTransport {
+            entered: tokio::sync::Notify::new(),
+            dropped: Arc::new(AtomicBool::new(false)),
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let request = TransportRequest {
+            url: "offline://test".into(),
+            api_key: String::new(),
+            body: "{}".into(),
+        };
+        let mut sink = |_data: &str| Ok(false);
+        let stream = transport.stream_cancelled(request, &mut sink, cancel.clone());
+        let stop = async {
+            transport.entered.notified().await;
+            cancel.store(true, Ordering::Release);
+        };
+        let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(stream, stop)
+        })
+        .await
+        .expect("cancel-aware stream must settle");
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
+        assert!(transport.dropped.load(Ordering::Acquire));
     }
 }

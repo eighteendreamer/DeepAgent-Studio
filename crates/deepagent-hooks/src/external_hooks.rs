@@ -74,6 +74,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use deepagent_core::error::{CoreError, Result};
+use deepagent_tools::ToolExecutionContext;
 
 use crate::hook::{DecisionSource, Hook, HookOutcome};
 use crate::lifecycle::{HookContext, HookData, HookPoint};
@@ -714,6 +715,23 @@ pub trait HookCommandRunner: Send + Sync {
         env: &BTreeMap<String, String>,
         timeout: Duration,
     ) -> Result<HookCommandResult>;
+
+    /// Process-backed runners retain their existing drop/tree-kill owner.
+    async fn run_with_context(
+        &self,
+        command: &str,
+        stdin_json: &str,
+        shell: HookCommandShell,
+        env: &BTreeMap<String, String>,
+        timeout: Duration,
+        execution: ToolExecutionContext,
+    ) -> Result<HookCommandResult> {
+        tokio::select! {
+            biased;
+            _ = execution.cancelled() => Err(CoreError::other("command hook cancelled by user")),
+            result = self.run(command, stdin_json, shell, env, timeout) => result,
+        }
+    }
 }
 
 /// Executes host-owned hook action types without coupling this crate to a
@@ -722,6 +740,15 @@ pub trait HookCommandRunner: Send + Sync {
 pub trait HookActionExecutor: Send + Sync {
     async fn execute(&self, action: &HookAction, payload: serde_json::Value)
         -> Result<HookOutcome>;
+
+    async fn execute_with_context(
+        &self,
+        action: &HookAction,
+        payload: serde_json::Value,
+        _execution: ToolExecutionContext,
+    ) -> Result<HookOutcome> {
+        self.execute(action, payload).await
+    }
 }
 
 /// Real OS process runner (spawns via the platform shell, pipes JSON to stdin).
@@ -1176,10 +1203,19 @@ impl Hook for OnceHook {
     }
 
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        self.run_with_context(ctx, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn run_with_context(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookOutcome> {
         if self.fired.swap(true, std::sync::atomic::Ordering::SeqCst) {
             return Ok(HookOutcome::Continue);
         }
-        self.inner.run(ctx).await
+        self.inner.run_with_context(ctx, execution).await
     }
 }
 
@@ -1312,6 +1348,15 @@ impl Hook for ExternalCommandHook {
     }
 
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        self.run_with_context(ctx, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn run_with_context(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookOutcome> {
         if !self.applies(ctx) {
             return Ok(HookOutcome::Continue);
         }
@@ -1320,12 +1365,13 @@ impl Hook for ExternalCommandHook {
         let stdin_json = serde_json::to_string(&payload)?;
         let result = self
             .runner
-            .run(
+            .run_with_context(
                 &self.action.command,
                 &stdin_json,
                 self.action.shell,
                 &self.action.env,
                 self.action.timeout_duration(),
+                execution,
             )
             .await?;
 
@@ -1366,6 +1412,15 @@ impl Hook for ExternalHostHook {
     }
 
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        self.run_with_context(ctx, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn run_with_context(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookOutcome> {
         if let Some(condition) = &self.if_condition {
             if !evaluate_condition(condition, ctx) {
                 return Ok(HookOutcome::Continue);
@@ -1378,19 +1433,20 @@ impl Hook for ExternalHostHook {
                 }
             }
         }
-        tokio::time::timeout(
-            self.action.timeout_duration(),
-            self.host
-                .execute(&self.action, build_http_payload(self.event, ctx)),
+        let child = execution
+            .child()
+            .with_timeout(self.action.timeout_duration());
+        crate::execution::run_controlled(
+            &execution,
+            &child,
+            Some(self.action.timeout_duration()),
+            self.host.execute_with_context(
+                &self.action,
+                build_http_payload(self.event, ctx),
+                child.clone(),
+            ),
         )
         .await
-        .map_err(|_| {
-            CoreError::other(format!(
-                "{} hook timed out after {}s",
-                self.name(),
-                self.action.timeout_duration().as_secs()
-            ))
-        })?
     }
 }
 
@@ -1416,6 +1472,20 @@ impl Hook for ExternalHttpHook {
             self.matcher.as_deref().unwrap_or("*"),
             self.action.url.trim()
         )
+    }
+
+    async fn run_with_context(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookOutcome> {
+        // Dropping reqwest's in-flight request/body stops the local HTTP wait;
+        // this does not promise rollback of a remote side effect.
+        tokio::select! {
+            biased;
+            _ = execution.cancelled() => Err(CoreError::other("HTTP hook cancelled by user")),
+            result = self.run(ctx) => result,
+        }
     }
 
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {

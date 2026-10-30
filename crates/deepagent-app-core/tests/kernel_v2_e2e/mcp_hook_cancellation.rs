@@ -23,8 +23,7 @@ const EVENTS: [&str; 4] = [
 const SERVER: &str = r#"
 const fs = require('node:fs');
 const readline = require('node:readline');
-let pending;
-let timer;
+const pending = new Map();
 function reply(id, result) {
   process.stdout.write(JSON.stringify({jsonrpc:'2.0', id, result}) + '\n');
 }
@@ -43,20 +42,22 @@ readline.createInterface({input:process.stdin}).on('line', line => {
     inputSchema:{type:'object'}
   }]});
   else if (req.method === 'tools/call') {
-    pending = req;
-    mark(process.env.AUDIT_STARTED, req);
-    timer = setInterval(() => {
-      if (!fs.existsSync(process.env.AUDIT_RELEASE)) return;
+    const slot = req.params.arguments.slot || '';
+    mark(process.env.AUDIT_STARTED + slot, req);
+    const timer = setInterval(() => {
+      if (!fs.existsSync(process.env.AUDIT_RELEASE + slot)) return;
       clearInterval(timer);
-      mark(process.env.AUDIT_RESPONDED, {requestId:req.id});
+      mark(process.env.AUDIT_RESPONDED + slot, {requestId:req.id});
       reply(req.id, {content:[{type:'text',text:'{"ok":true}'}],isError:false});
-      pending = undefined;
+      pending.delete(req.id);
     }, 5);
+    pending.set(req.id, {timer, slot});
   } else if (req.method === 'notifications/cancelled') {
-    if (pending && req.params.requestId === pending.id) {
-      clearInterval(timer);
-      pending = undefined;
-      mark(process.env.AUDIT_CANCELLED, req);
+    const active = pending.get(req.params.requestId);
+    if (active) {
+      clearInterval(active.timer);
+      pending.delete(req.params.requestId);
+      mark(process.env.AUDIT_CANCELLED + active.slot, req);
     }
   } else if (req.id !== undefined) reply(req.id, {});
 });
@@ -134,6 +135,10 @@ struct Fixture {
 }
 
 async fn fixture(event: &'static str) -> Fixture {
+    fixture_with_timeout(event, 5).await
+}
+
+async fn fixture_with_timeout(event: &'static str, timeout: u64) -> Fixture {
     // This marker selects a normal model-issued tool call, not a hook event.
     let ordinary_mcp = event == "ordinary-tool-control";
     let root = tempfile::tempdir().unwrap();
@@ -167,7 +172,7 @@ async fn fixture(event: &'static str) -> Fixture {
             .set_hooks_json(
                 &json!({"hooks":{event:[{
                     "matcher":"*", "hooks":[{"type":"mcp_tool",
-                        "command":"mcp__hook_cancel_audit__review", "timeout":5}]
+                        "command":"mcp__hook_cancel_audit__review", "timeout":timeout}]
                 }]}})
                 .to_string(),
             )
@@ -389,7 +394,6 @@ async fn released_mcp_hooks_finish_at_all_four_boundaries() {
 }
 
 #[tokio::test]
-#[ignore = "audit H-236: every MCP hook must receive parent cancellation, including peer notification"]
 async fn audit_mcp_hooks_propagate_cancellation_to_the_stdio_peer() {
     let mut observations = Vec::new();
     for event in EVENTS {
@@ -408,4 +412,116 @@ async fn audit_mcp_hooks_propagate_cancellation_to_the_stdio_peer() {
             && !o.server_completed_after_release),
         "MCP hook stop must end the local wait and notify the cooperative peer: {observations:?}"
     );
+}
+
+#[tokio::test]
+async fn h236_hook_cancel_and_deadline_preserve_a_shared_peer_request() {
+    use deepagent_tools::ToolExecutionContext;
+    for deadline in [false, true] {
+        let Fixture {
+            root,
+            db,
+            ready,
+            chat,
+            ..
+        } = fixture_with_timeout("PostToolUse", if deadline { 1 } else { 5 }).await;
+        let run_chat = chat.clone();
+        let mut run = tokio::spawn(async move {
+            run_chat
+                .run_in_session(
+                    "Read fixture.txt.",
+                    None,
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    false,
+                    Some(RUN),
+                    |_| {},
+                    |_| {},
+                )
+                .await
+        });
+        let peer = ready.clone();
+        let mut sibling = None;
+        let observation = tokio::time::timeout(Duration::from_secs(6), async {
+            wait_for_file(&root.path().join("started.json")).await?;
+            sibling = Some(tokio::spawn(async move {
+                peer.invoke_with_context(
+                    "mcp__hook_cancel_audit__review",
+                    json!({"slot":"sibling"}),
+                    ToolExecutionContext::default(),
+                )
+                .await
+            }));
+            wait_for_file(&root.path().join("started.jsonsibling")).await?;
+            if !deadline {
+                assert!(chat.request_cancel(RUN).unwrap().accepted);
+            }
+            let run_result = (&mut run).await.unwrap();
+            wait_for_file(&root.path().join("cancelled.json")).await?;
+            Ok::<_, tokio::time::error::Elapsed>(run_result)
+        })
+        .await;
+        // Release/close all owned fixtures before any target assertion, even
+        // when a regression leaves either foreground request waiting.
+        std::fs::write(root.path().join("release"), "release").unwrap();
+        std::fs::write(root.path().join("releasesibling"), "release").unwrap();
+        let sibling_result = if let Some(mut sibling) = sibling {
+            let result = tokio::time::timeout(Duration::from_secs(3), &mut sibling).await;
+            if result.is_err() {
+                sibling.abort();
+                let _ = sibling.await;
+            }
+            Some(result)
+        } else {
+            None
+        };
+        if !matches!(&observation, Ok(Ok(_))) {
+            let _ = chat.request_cancel(RUN);
+            run.abort();
+            let _ = run.await;
+        }
+        ready.close_all().await.unwrap();
+        let run_result = observation.unwrap().unwrap();
+        if !deadline {
+            assert!(run_result.is_ok());
+        }
+        let request: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.path().join("started.json")).unwrap(),
+        )
+        .unwrap();
+        let notification: Value = serde_json::from_str(
+            &std::fs::read_to_string(root.path().join("cancelled.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(request["id"], notification["params"]["requestId"]);
+        assert!(!root.path().join("responded.json").exists());
+        assert!(!root.path().join("cancelled.jsonsibling").exists());
+        assert!(!sibling_result.unwrap().unwrap().unwrap().unwrap().is_error);
+        let terminal = RunStore::new(&db).get(RUN).unwrap().unwrap();
+        assert_eq!(
+            terminal.terminal_kind.as_deref(),
+            Some(if deadline { "failed" } else { "cancelled" })
+        );
+        let events = chat.run_events(RUN, None).unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|e| e.event_type == "run_terminal")
+                .count(),
+            1
+        );
+        // The parent read completed before the post-tool hook timed out/stopped.
+        let action = deepagent_persistence::run_control::RunControlStore::new(&db)
+            .list_actions(RUN)
+            .unwrap()
+            .into_iter()
+            .find(|action| action.call_id == "mcp-hook-parent-read")
+            .unwrap();
+        assert_eq!(
+            action.state,
+            deepagent_persistence::run_control::RunActionState::Completed
+        );
+    }
 }

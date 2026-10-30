@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use deepagent_core::error::Result;
+use deepagent_tools::ToolExecutionContext;
 
 use crate::lifecycle::HookContext;
 
@@ -182,6 +183,16 @@ pub trait Hook: Send + Sync {
 
     /// Run the hook for the given context.
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome>;
+
+    /// Run-scoped controls for resource-owning hooks. Legacy hooks keep their
+    /// implementation; the registry still bounds their cancellation cleanup.
+    async fn run_with_context(
+        &self,
+        ctx: &HookContext,
+        _execution: ToolExecutionContext,
+    ) -> Result<HookOutcome> {
+        self.run(ctx).await
+    }
 }
 
 #[cfg(test)]

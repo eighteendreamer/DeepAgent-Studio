@@ -159,6 +159,7 @@ struct Case {
     file_changed: bool,
     cancel_in_hook: bool,
     drop_in_hook: bool,
+    cancel_pending_hook: bool,
     host_generated: bool,
     valid_hook: bool,
 }
@@ -217,7 +218,7 @@ async fn exercise(case: Case) {
             .collect(),
         host_generated: case.host_generated,
         calls: hook_calls.clone(),
-        effect: if case.drop_in_hook {
+        effect: if case.drop_in_hook || case.cancel_pending_hook {
             HookEffect::Pending(entered.clone())
         } else if case.cancel_in_hook {
             HookEffect::Cancel(cancel.clone())
@@ -275,7 +276,7 @@ async fn exercise(case: Case) {
         let engine: RuntimeEngine<'_, FixedClock> =
             RuntimeEngine::new(&registry, Metrics::default(), config)
                 .with_hooks(&hooks)
-                .with_cancel(cancel);
+                .with_cancel(cancel.clone());
         let mut attempt = StreamingToolAttempt::new(
             &registry,
             PermissionSet::developer(),
@@ -304,7 +305,18 @@ async fn exercise(case: Case) {
         {
             let execution =
                 engine.execute_tools(&mut session, session_id, invocations, speculative, false);
-            if case.drop_in_hook {
+            if case.cancel_pending_hook {
+                tokio::pin!(execution);
+                tokio::select! {
+                    result = &mut execution => panic!("hook must still be pending: {result:?}"),
+                    _ = entered.notified() => {}
+                }
+                cancel.store(true, Ordering::Release);
+                let result = tokio::time::timeout(std::time::Duration::from_secs(2), execution)
+                    .await
+                    .expect("parent cancellation must stop a pending post-tool hook");
+                assert!(result.unwrap_err().to_string().contains("cancelled"));
+            } else if case.drop_in_hook {
                 tokio::select! {
                     result = execution => panic!("hook must still be pending: {result:?}"),
                     _ = entered.notified() => {}
@@ -421,6 +433,24 @@ async fn cancellation_in_post_hook_cannot_cancel_completed_action() {
 async fn dropped_post_hook_future_cannot_erase_execution() {
     exercise(Case {
         drop_in_hook: true,
+        ..Case::default()
+    })
+    .await;
+}
+#[tokio::test]
+async fn h236_pending_post_hook_cancellation_preserves_parallel_execution_after_reopen() {
+    exercise(Case {
+        parallel: true,
+        cancel_pending_hook: true,
+        ..Case::default()
+    })
+    .await;
+}
+#[tokio::test]
+async fn h236_pending_file_change_hook_cancellation_preserves_written_bytes_after_reopen() {
+    exercise(Case {
+        file_changed: true,
+        cancel_pending_hook: true,
         ..Case::default()
     })
     .await;

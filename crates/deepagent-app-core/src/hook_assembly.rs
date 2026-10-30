@@ -12,7 +12,7 @@ use deepagent_hooks::{
 };
 use deepagent_models::{ModelClient, ReasoningEffort};
 use deepagent_runtime::RuntimeEventSink;
-use deepagent_tools::{PermissionSet, ToolRegistry};
+use deepagent_tools::{PermissionSet, ToolExecutionContext, ToolRegistry};
 
 use crate::chat_service::InvokedSkillMap;
 use crate::hook_runtime::{build_hook_agent_registry, AppHookActionExecutor, ObservableHookRunner};
@@ -94,12 +94,21 @@ impl Hook for TrustedProjectHook {
     }
 
     async fn run(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        self.run_with_context(ctx, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn run_with_context(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookOutcome> {
         if !self.trust.is_trusted()? {
             tracing::info!(project = %self.trust.root.display(), point = ctx.point.label(),
                 "skipping project hook without current trust grant");
             return Ok(HookOutcome::Continue);
         }
-        self.inner.run(ctx).await
+        self.inner.run_with_context(ctx, execution).await
     }
 }
 

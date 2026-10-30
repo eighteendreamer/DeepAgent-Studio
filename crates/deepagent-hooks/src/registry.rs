@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use deepagent_core::error::Result;
+use deepagent_tools::ToolExecutionContext;
 
 use crate::hook::{Hook, HookOutcome};
 use crate::lifecycle::{HookContext, HookPoint};
@@ -27,12 +28,20 @@ use crate::lifecycle::{HookContext, HookPoint};
 #[derive(Default, Clone)]
 pub struct HookRegistry {
     hooks: BTreeMap<HookPoint, Vec<Arc<dyn Hook>>>,
+    execution: ToolExecutionContext,
 }
 
 impl HookRegistry {
     /// New empty registry.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Bind the existing registry to one owning run. Legacy lifecycle callers
+    /// inherit this scope; invocation owners can pass a more specific child.
+    pub fn with_execution_context(mut self, execution: ToolExecutionContext) -> Self {
+        self.execution = execution;
+        self
     }
 
     /// Register `hook` to fire at `point`. The same hook instance can be
@@ -63,6 +72,18 @@ impl HookRegistry {
     /// At non-vetoable points every non-`Continue` outcome is downgraded to a
     /// warning and `Continue` is returned.
     pub async fn dispatch(&self, ctx: &HookContext) -> Result<HookOutcome> {
+        self.dispatch_with_context(ctx, self.execution.clone())
+            .await
+    }
+
+    /// Dispatch using the owning run's existing cancellation controls. Each
+    /// deduplicated hook gets an isolated child and finishes cleanup before the
+    /// same precedence/reduction path below returns.
+    pub async fn dispatch_with_context(
+        &self,
+        ctx: &HookContext,
+        execution: ToolExecutionContext,
+    ) -> Result<HookOutcome> {
         let Some(registered) = self.hooks.get(&ctx.point) else {
             return Ok(HookOutcome::Continue);
         };
@@ -72,7 +93,17 @@ impl HookRegistry {
             .iter()
             .filter(|hook| seen.insert(hook.dedup_key()))
             .collect::<Vec<_>>();
-        let results = futures::future::join_all(hooks.iter().map(|hook| hook.run(ctx))).await;
+        let results = futures::future::join_all(hooks.iter().map(|hook| async {
+            let child = execution.child();
+            crate::execution::run_controlled(
+                &execution,
+                &child,
+                None,
+                hook.run_with_context(ctx, child.clone()),
+            )
+            .await
+        }))
+        .await;
 
         let vetoable = ctx.point.is_vetoable();
         // Accumulator: the highest-precedence non-terminal outcome so far.

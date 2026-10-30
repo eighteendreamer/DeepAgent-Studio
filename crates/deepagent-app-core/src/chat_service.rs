@@ -1758,7 +1758,11 @@ mod tests {
             ..HookAction::default()
         };
         let outcome = executor
-            .execute_mcp(&action, serde_json::json!({"hook_event_name":"PreToolUse"}))
+            .execute_mcp(
+                &action,
+                serde_json::json!({"hook_event_name":"PreToolUse"}),
+                deepagent_tools::ToolExecutionContext::default(),
+            )
             .await
             .unwrap();
         assert_eq!(outcome.deny_reason(), Some("MCP policy denied"));
@@ -1918,6 +1922,7 @@ mod tests {
             .execute_agent(
                 &action,
                 serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"shell"}),
+                deepagent_tools::ToolExecutionContext::default(),
             )
             .await
             .unwrap();

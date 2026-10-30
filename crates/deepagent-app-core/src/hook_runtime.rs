@@ -16,9 +16,13 @@ use deepagent_models::{ModelClient, ReasoningEffort, ResponseRequest, ToolSchema
 use deepagent_persistence::Database;
 use deepagent_runtime::{ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent, RuntimeEventSink};
 use deepagent_session::Session;
-use deepagent_tools::{PermissionSet, RiskLevel, ToolRegistry};
+use deepagent_tools::{PermissionSet, RiskLevel, ToolExecutionContext, ToolRegistry};
 
 static HOOK_EVENT_SEQ: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(test)]
+#[path = "hook_cancellation_tests.rs"]
+mod cancellation_tests;
 
 /// Result of a settings-page hook test run (any of the 5 action types).
 #[derive(Debug, Clone)]
@@ -241,11 +245,12 @@ impl AppHookActionExecutor {
         &self,
         action: &HookAction,
         payload: serde_json::Value,
+        execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
         match action.action_type {
-            HookActionType::McpTool => self.execute_mcp(action, payload).await,
-            HookActionType::Prompt => self.execute_prompt(action, payload).await,
-            HookActionType::Agent => self.execute_agent(action, payload).await,
+            HookActionType::McpTool => self.execute_mcp(action, payload, execution).await,
+            HookActionType::Prompt => self.execute_prompt(action, payload, execution).await,
+            HookActionType::Agent => self.execute_agent(action, payload, execution).await,
             HookActionType::Command | HookActionType::Http => Err(CoreError::invalid(
                 "command/http hooks cannot be executed by the host action executor",
             )),
@@ -256,6 +261,7 @@ impl AppHookActionExecutor {
         &self,
         action: &HookAction,
         payload: serde_json::Value,
+        execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
         let registry = self.mcp.as_ref().ok_or_else(|| {
             CoreError::other("MCP hook requested but no MCP registry is connected")
@@ -267,7 +273,9 @@ impl AppHookActionExecutor {
         } else {
             payload
         };
-        let result = registry.invoke(action.command.trim(), arguments).await?;
+        let result = registry
+            .invoke_with_context(action.command.trim(), arguments, execution)
+            .await?;
         let output = bounded_hook_text(&result.text(), 8_192);
         if result.is_error {
             return Err(CoreError::other(if output.is_empty() {
@@ -283,6 +291,7 @@ impl AppHookActionExecutor {
         &self,
         action: &HookAction,
         payload: serde_json::Value,
+        execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
         let prompt = render_model_hook_prompt(action, &payload)?;
         let model = action
@@ -299,7 +308,14 @@ impl AppHookActionExecutor {
         .with_temperature(0.0)
         .with_max_output_tokens(512)
         .with_reasoning_effort(ReasoningEffort::None);
-        let response = self.client.stream_response(request).await?;
+        let response = self
+            .client
+            .stream_response_cancelled(request, execution.cancel_flag());
+        let response = tokio::select! {
+            biased;
+            _ = execution.cancelled() => return Err(CoreError::other("prompt hook was cancelled")),
+            response = response => response?,
+        };
         parse_model_hook_decision(&response.output_text_projection())
     }
 
@@ -307,6 +323,7 @@ impl AppHookActionExecutor {
         &self,
         action: &HookAction,
         payload: serde_json::Value,
+        execution: ToolExecutionContext,
     ) -> Result<HookOutcome> {
         let prompt = render_model_hook_prompt(action, &payload)?;
         let model = action
@@ -352,7 +369,9 @@ impl AppHookActionExecutor {
         };
         let engine: RuntimeEngine<'_, SystemClock> =
             RuntimeEngine::new(&self.agent_registry, Default::default(), config)
-                .with_hooks(&self.agent_policy);
+                .with_hooks(&self.agent_policy)
+                .with_cancel(execution.cancel_flag())
+                .with_cancellation_token(execution.cancellation_token());
         // Agent-hooks have no interactive approver. Keep RuntimeEngine's
         // AutoDenyGate: an inherited Ask must never become implicit consent,
         // even when the parent's approval reviewer is FullAccess.
@@ -389,6 +408,16 @@ impl HookActionExecutor for AppHookActionExecutor {
         action: &HookAction,
         payload: serde_json::Value,
     ) -> Result<HookOutcome> {
+        self.execute_with_context(action, payload, ToolExecutionContext::default())
+            .await
+    }
+
+    async fn execute_with_context(
+        &self,
+        action: &HookAction,
+        payload: serde_json::Value,
+        execution: ToolExecutionContext,
+    ) -> Result<HookOutcome> {
         let id = format!("hook-{}", HOOK_EVENT_SEQ.fetch_add(1, Ordering::Relaxed));
         let event = payload
             .get("hook_event_name")
@@ -405,7 +434,7 @@ impl HookActionExecutor for AppHookActionExecutor {
             });
         }
         let started = Instant::now();
-        let result = self.execute_inner(action, payload).await;
+        let result = self.execute_inner(action, payload, execution).await;
         if let Some(events) = self.events.upgrade() {
             let (exit_code, stderr, outcome) = match &result {
                 Ok(
@@ -540,6 +569,26 @@ impl HookCommandRunner for ObservableHookRunner {
         env: &BTreeMap<String, String>,
         timeout: Duration,
     ) -> Result<HookCommandResult> {
+        self.run_with_context(
+            command,
+            stdin_json,
+            shell,
+            env,
+            timeout,
+            ToolExecutionContext::default(),
+        )
+        .await
+    }
+
+    async fn run_with_context(
+        &self,
+        command: &str,
+        stdin_json: &str,
+        shell: HookCommandShell,
+        env: &BTreeMap<String, String>,
+        timeout: Duration,
+        execution: ToolExecutionContext,
+    ) -> Result<HookCommandResult> {
         let id = format!("hook-{}", HOOK_EVENT_SEQ.fetch_add(1, Ordering::Relaxed));
         let event = hook_event_name(stdin_json);
         if let Some(events) = self.events.upgrade() {
@@ -553,14 +602,21 @@ impl HookCommandRunner for ObservableHookRunner {
         let started = Instant::now();
         let mut effective_env = self.runtime_environment.clone();
         effective_env.extend(env.clone());
-        let result = if let Some(cwd) = &self.cwd {
-            self.inner
-                .run_in_dir(command, stdin_json, shell, &effective_env, timeout, cwd)
-                .await
-        } else {
-            self.inner
-                .run(command, stdin_json, shell, &effective_env, timeout)
-                .await
+        let process = async {
+            if let Some(cwd) = &self.cwd {
+                self.inner
+                    .run_in_dir(command, stdin_json, shell, &effective_env, timeout, cwd)
+                    .await
+            } else {
+                self.inner
+                    .run(command, stdin_json, shell, &effective_env, timeout)
+                    .await
+            }
+        };
+        let result = tokio::select! {
+            biased;
+            _ = execution.cancelled() => Err(CoreError::other("command hook cancelled by user")),
+            result = process => result,
         };
         let duration_ms = started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
         if let Ok(result) = &result {
