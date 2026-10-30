@@ -169,6 +169,19 @@ impl McpRegistry {
                 return Err(CoreError::invalid(format!("duplicate MCP server: {name}")));
             }
         }
+        let mut tool_names = self
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.namespaced_name)
+            .collect::<std::collections::BTreeSet<_>>();
+        for tool in other.all_tools() {
+            if !tool_names.insert(tool.namespaced_name.clone()) {
+                return Err(CoreError::invalid(format!(
+                    "MCP tool '{}' is already registered",
+                    tool.namespaced_name
+                )));
+            }
+        }
         self.servers.extend(other.servers.clone());
         Ok(())
     }
@@ -291,6 +304,20 @@ mod tests {
                 serde_json::json!({"tools":[
                     {"name":"search","description":"search docs","inputSchema":{"type":"object"}},
                     {"name":"create_task","description":"create a task","inputSchema":{"type":"object"}}
+                ]}),
+            )
+            .with_result(
+                "tools/call",
+                serde_json::json!({"content":[{"type":"text","text":"ok"}],"isError":false}),
+            )
+    }
+
+    fn single_tool_transport(name: &str) -> MockTransport {
+        MockTransport::new()
+            .with_result(
+                "tools/list",
+                serde_json::json!({"tools":[
+                    {"name":name,"description":"collision fixture","inputSchema":{"type":"object"}}
                 ]}),
             )
             .with_result(
@@ -438,6 +465,25 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         assert_eq!(n, "mcp__asana__create_task");
         assert_eq!(split_namespaced(&n), Some(("asana", "create_task")));
         assert_eq!(split_namespaced("read_file"), None);
+    }
+
+    #[tokio::test]
+    async fn extend_ready_rejects_colliding_namespaced_tools_transactionally() {
+        let mut first = McpRegistry::new();
+        first
+            .register("a", client(single_tool_transport("b__echo")))
+            .await
+            .unwrap();
+        let mut second = McpRegistry::new();
+        second
+            .register("a__b", client(single_tool_transport("echo")))
+            .await
+            .unwrap();
+
+        let error = first.extend_ready(&second).unwrap_err().to_string();
+        assert!(error.contains("mcp__a__b__echo"), "{error}");
+        assert_eq!(first.server_names(), vec!["a"]);
+        assert_eq!(first.all_tools().len(), 1);
     }
 
     #[tokio::test]

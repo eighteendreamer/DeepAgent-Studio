@@ -329,6 +329,23 @@ impl McpService {
         result
     }
 
+    async fn cache_preparation_failure(&self, name: &str, fingerprint: String, error: String) {
+        let slot = self
+            .preparation
+            .slots
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .entry(name.to_owned())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(None)))
+            .clone();
+        let mut slot = slot.lock().await;
+        *slot = Some(CachedRegistry {
+            fingerprint,
+            registry: Arc::new(McpRegistry::new()),
+            failures: vec![(name.to_owned(), error)],
+        });
+    }
+
     async fn ensure_builtin_payload(
         &self,
         cancel: &deepagent_runtime::CancellationTree,
@@ -566,8 +583,14 @@ impl McpService {
                 }
                 match result {
                     Ok((name, fingerprint, registry)) => {
+                        if ready.server_names().iter().any(|server| server == &name) {
+                            continue;
+                        }
                         if let Err(error) = ready.extend_ready(&registry) {
-                            tracing::error!(%error, "MCP snapshot conflict");
+                            tracing::error!(server = name.as_str(), %error, "MCP snapshot conflict; excluding server from ready capabilities");
+                            service
+                                .cache_preparation_failure(&name, fingerprint, error.to_string())
+                                .await;
                             continue;
                         }
                         service

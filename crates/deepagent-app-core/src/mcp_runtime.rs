@@ -52,7 +52,9 @@ pub(crate) async fn attach_mcp_tools(
         let mut plugins = (*plugins).clone();
         let user_names = ready.server_names();
         plugins.retain_servers(|name| !user_names.iter().any(|user| user == name));
-        ready.extend_ready(&plugins)?;
+        if let Err(error) = ready.extend_ready(&plugins) {
+            tracing::warn!(%error, "MCP plugin snapshot conflict; excluding plugin capabilities from this run");
+        }
     }
     let mcp_registry = Arc::new(ready);
     for adapter in deepagent_mcp::adapters_for(mcp_registry.clone()) {
