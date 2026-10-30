@@ -2587,7 +2587,9 @@ E-H63-09（2026-10-31，本机范围修复与验收）：本轮仅处理H-63三�
 
 实际门禁：`cargo fmt --all -- --check`通过；owner边界30 passed/0 failed；verification panel 5/0/1历史ignored；标题9/0；正式装配2/0；AppCore `kernel_v2_e2e` 216/0/55；Runtime lib 351/0/9；Persistence lib 120/0；Tauri Rust 8/0/1；Persistence strict clippy通过；`cargo build -p deepagent-cli --offline`退出0；`pnpm --dir apps/desktop build`退出0（含TypeScript/Vite及既有前端脚本）；15份冻结源码SHA全匹配。原始完整workspace退出101，失败为既有H-64 cold compiler gate、H-306空`creative.video-edit.v1`提示，以及首次SDK E2E未先构建CLI导致的缺少`target/debug/deepagent.exe`；未改无关代码，先后执行隔离数据根并构建CLI后的同一SDK E2E为6 passed/0 failed。AppCore全lib单独为1388/1/52，唯一失败仍H-64 `post_edit_default_timeout_stops_real_descendant`；AppCore/Runtime clippy仍被未修改的`deepagent-models/src/client.rs:355 clone_on_copy`阻断。上述失败不属于H-63断言，原始失败日志和完整workspace结果保留，未以局部绿测冒充全仓通过。
 
-本项按Windows本机、临时SQLite/workspace、MemorySecretStore和离线合成transport验收；未访问真实凭据、真实供应商、内网或用户数据，未执行数据库迁移、推送、PR或修改用户未跟踪文件。残余限制为真实供应商账期、其他OS、断电/强杀、并发压力、桌面真实WebView故障注入及未知价格预算策略未验；下一项按优先级复核H-21，预计4–8有效小时，构建/设备/依赖等待另计。代码与本段文档将在独立fix提交后回填真实commit ID。
+本项按Windows本机、临时SQLite/workspace、MemorySecretStore和离线合成transport验收；未访问真实凭据、真实供应商、内网或用户数据，未执行数据库迁移、推送、PR或修改用户未跟踪文件。残余限制为真实供应商账期、其他OS、断电/强杀、并发压力、桌面真实WebView故障注入及未知价格预算策略未验；下一项按优先级复核H-21，预计4–8有效小时，构建/设备/依赖等待另计。
+
+E-H63-10（2026-10-31，独立提交与hash回填）：H-63代码、回归测试及当时两份同步文档已独立提交为`6ad458cd53aaf78b7d3203cd818953c193a3a61e`（【fix】收敛附属模型调用的费用归属与生命周期），精确17个相关文件；未纳入target证据或用户未跟踪项，无amend、推送、PR、数据库迁移或真实数据操作。本段回填真实fix hash，文档自身另做docs提交，不递归填写自身hash；原始失败、完整workspace失败分类、15份冻结源码SHA和所有验证日志均保留。
 
 **级别：中（P2）；范围：开启上述可选复核/分类，附属模型请求成功并返回 usage。** 默认关闭开关不能代替开启后的成本正确性；不把这两条链路外推为所有后台模型请求都漏计。
 
