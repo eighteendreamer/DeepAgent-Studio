@@ -2405,7 +2405,14 @@ E-H51-11：稳定ID知识专项实跑33 passed/0 failed/1既有H-52 ignored，13
 
 - 两组均在断言前调用正式 close_all 关闭本测试连接，测试共约 0.46 秒。没有调用公网、实际工具或真实供应商，也没有验收 Tauri 错误展示。直接后果是这个就绪集合被每轮复用时，普通对话持续在组装阶段失败，破坏“插件失败不阻塞主体运行”的边界。当前 ToolRegistry 拒绝重名，故本轮没有复现错误工具执行或静默跨 server 路由，不能声称发生了这些后果。
 - Codex `借鉴/codex/codex-rs/codex-mcp/src/tools.rs::normalize_tools_for_model_with_prefix` 保留 raw server/tool identity，统一生成模型可见名，并由 unique_callable_parts 对最终全名集合检查唯一性、必要时加稳定身份 hash；不是只对 server key 去重。`connection_manager_tests.rs` 有 namespace/tool 清洗冲突的独立测试。本轮只核对源码，没有执行 Codex 测试，也不将其 128 字节上限当成 DeepSeek 的协议限制。
-- 修复应在既有就绪快照发布边界统一名称分配与反向路由，确保模型 schema、ToolRegistry、审批/权限来源和 MCP 原始调用身份一致；冲突能力必须在发布前消歧或隔离并报管理状态，不能到普通聊天组装时才使整轮失败。名称规则变化还需兼容已有历史工具调用与权限匹配。应补跨用户/插件快照、不同发布顺序、刷新/恢复以及同名配置替换测试；不通过吞掉 ToolRegistry 错误、选择第一个或禁止所有双下划线临时掩盖。本轮只新增测试和报告，没有修改生产工具命名或快照发布。
+- 修复应在既有就绪快照发布边界统一名称分配与反向路由，确保模型 schema、ToolRegistry、审批/权限来源和 MCP 原始调用身份一致；冲突能力必须在发布前消歧或隔离并报管理状态，不能到普通聊天组装时才使整轮失败。名称规则变化还需兼容已有历史工具调用与权限匹配。应补跨用户/插件快照、不同发布顺序、刷新/恢复以及同名配置替换测试；不通过吞掉 ToolRegistry 错误、选择第一个或禁止所有双下划线临时掩盖。原始审计阶段只新增测试和报告，没有修改生产工具命名或快照发布；修复结果见下述验收记录。
+
+**修复与验收（2026-10-31，仅所列 Windows 本机/离线范围；修复提交 `a200747a`）。** `McpRegistry::extend_ready` 现在在合并前同时校验 server key 和最终 `namespaced_name` 集合，冲突时事务性返回错误、不修改已有 ready registry。`McpService::start_preparation` 在发布快照时隔离冲突 server，并把该 server 缓存为 `failed` 状态；plugin overlay 冲突只隔离插件能力，不让普通聊天组装失败。既有工具名、原始 server/tool 路由和权限边界不变，没有新增 registry、store、协议字段、迁移或依赖。
+
+- **E-H56-01（修前原始证据）**：保留 `target/h56-original-probe-20261031.log`。正式 Node stdio 双 server 探针的非冲突对照完成且模型请求 1 次；`a` + `a__b` 的最终名冲突时两 server 仍 Ready，普通聊天在 ToolRegistry 注册阶段报 `mcp__a__b__echo` already registered，模型请求 0 次，测试按预期失败。
+- **E-H56-02（根因与回归）**：新增 `extend_ready` 的事务性同名工具单测；正式探针移除 `ignore` 后，`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_ready_mcp_name_collision_does_not_block_chat --offline -j 1 -- --nocapture --test-threads=1` 为 **1 passed / 0 failed / 252 filtered**。非冲突对照为 2 Ready/2 tools/1 request；冲突组只发布 1 个 server/1 个 tool，另一 server 状态为 `failed`，普通聊天仍完成且模型请求 1 次。最终输出保留 `target/h56-final-probe-20261031.log`。
+- **E-H56-03（共享回归与构建）**：`cargo test -p deepagent-mcp --lib --offline -j 1 -- --quiet --test-threads=1` 为 **106 passed / 0 failed / 2 ignored**；`cargo test -p deepagent-app-core --lib mcp_ --offline -j 1 -- --quiet --test-threads=1` 为 **60 passed / 0 failed / 2 ignored**；`cargo check -p deepagent-app-core -p deepagent-mcp --offline -j 1` 退出 0；MCP 严格 Clippy 退出 0；`git diff --check` 退出 0。根 `cargo fmt --all -- --check` 仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；AppCore 严格 Clippy 仍被未修改 `context_runtime.rs`、`http_runtime.rs`、`plugin_preparation.rs`、`run_assembler.rs` 的既有 11 项诊断阻断，未压制或顺手修复。
+- **E-H56-04（范围与限制）**：验证限 Windows 本机、临时 SQLite/工作区、真实 Node stdio fixture 与离线模型 transport；未验真实外部 MCP/HTTP、真实供应商、Desktop/Tauri/UI、其他 OS、跨进程并发、断电/重启或所有配置发布顺序。当前策略保留先到达的非冲突 server，冲突 server 进入管理状态 `failed`；不声称完成自动消歧或历史工具名迁移。
 
 ### H-57：MCP 说明与技能目录仅按已发送身份去重，正文未进入可回放模型历史，后续无状态请求丢失内容
 

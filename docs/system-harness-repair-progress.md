@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-31）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零五项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零六项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 105 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 106 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前无进行中的独立项 |
-| 待修复 | 171 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 170 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **171（171待修复、0修复中）**；不提供完成率。一百零五项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **170（170待修复、0修复中）**；不提供完成率。一百零六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
 
 ## H-275 MCP hook 参数 schema 执行边界（2026-10-31，已修复并验收）
 
@@ -63,6 +63,18 @@ E-H277-06（MCP 消费方回归）：`cargo test -p deepagent-mcp --all-features
 E-H277-07（AppCore、构建与 lint）：`cargo test -p deepagent-app-core --lib --offline -j 1 -- --test-threads=1` 为 **1376 passed / 0 failed / 51 ignored**；`cargo check -p deepagent-app-core --offline -j 1` 退出0；`cargo clippy -p deepagent-mcp --all-targets --all-features --offline -- -D warnings` 退出0；改动文件定向 rustfmt 与 `git diff --check` 退出0。
 
 E-H277-08（范围、门禁限制与提交）：完整 `kernel_v2_e2e` 为 **197 passed / 4 failed / 52 ignored**；H-277 三项均通过，4个失败为未修改的 fallback_cost/hook_usage 日预算共享测试，不归因本项。根 `cargo fmt --all -- --check` 仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；AppCore 严格 Clippy 仍被未修改 `crates/deepagent-models/src/client.rs:355` 的 `clone_on_copy` 阻断。范围限 Windows 本机、离线模型、临时 SQLite、真实 Node stdio/HTTP fixture；未验真实外部 MCP/供应商、副作用、其他 OS、完整 workspace、Desktop/Tauri/UI 或真实用户数据。代码与测试已提交于 `f4d80dd9`（`【fix】校验MCP初始化握手结果`），未推送、未创建 PR；没有执行 `cargo clean`，未删除 `target`、用户文件或既有证据。本项剩余0，下一项按风险顺序准备复核 H-282。
+
+## H-56 MCP 快照合并后的工具名称唯一性（2026-10-31，已修复并验收）
+
+原报告：[H-56：宿主就绪快照合并未检查工具重名，已连接 MCP 可让普通聊天在请求前整体失败](system-harness-audit-2026-10-21.md)。**优先级：P1。** 本轮只处理独立的 MCP ready 快照最终工具名冲突，不合并 H-57 说明/技能正文丢失或其他 MCP 生命周期问题。
+
+- **E-H56-01（修前原始探针）**：保留于 `target/h56-original-probe-20261031.log`。正式 Node stdio 双 server 对照中，`a` + `b` 正常完成、模型请求1次；`a` + `a__b` 生成两个 `mcp__a__b__echo`，两 server 均 Ready，普通聊天在 ToolRegistry 注册阶段失败，模型请求0次。故障探针按预期失败，不把原始失败当验收。
+- **E-H56-02（根因与实现）**：`McpRegistry::extend_ready` 合并前计算已有与待合并 registry 的最终 `namespaced_name` 集合，发现重复即返回错误且不修改 receiver；server key 重复仍沿原边界拒绝。`McpService::start_preparation` 遇冲突时不发布该 server，将其空 registry 与失败原因缓存为 `failed`，已发布的非冲突 server 保持可用；plugin overlay 冲突仅隔离插件能力并记录 warning。没有新增 registry/store、协议字段、迁移、权限旁路或改写既有工具名/原始路由。
+- **E-H56-03（正式验收）**：移除探针 `ignore` 后，`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_ready_mcp_name_collision_does_not_block_chat --offline -j 1 -- --nocapture --test-threads=1` 为 **1 passed / 0 failed / 252 filtered**；非冲突对照为2 Ready/2 tools/1 request，冲突组为1 Ready/1 tool/1 request，冲突 server 状态为`failed`，普通聊天完成。最终日志为 `target/h56-final-probe-20261031.log`。
+- **E-H56-04（共享回归与构建）**：`cargo test -p deepagent-mcp --lib --offline -j 1 -- --quiet --test-threads=1` 为 **106 passed / 0 failed / 2 ignored**；`cargo test -p deepagent-app-core --lib mcp_ --offline -j 1 -- --quiet --test-threads=1` 为 **60 passed / 0 failed / 2 ignored**；`cargo check -p deepagent-app-core -p deepagent-mcp --offline -j 1` 退出0；MCP严格 Clippy退出0；`git diff --check`退出0。根 `cargo fmt --all -- --check` 仍被未修改的 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；AppCore严格 Clippy仍为未修改基线的11项诊断（context_runtime/http_runtime/plugin_preparation/run_assembler），未压制或顺手修复。
+- **E-H56-05（范围、提交与状态）**：仅覆盖 Windows 本机、临时 SQLite/工作区、真实 Node stdio fixture 与离线模型 transport；未验真实外部 MCP/HTTP、供应商、Desktop/Tauri/UI、其他 OS、跨进程并发、断电/重启、所有发布顺序或历史工具名迁移。代码、回归测试和默认化探针已提交为 `a200747a`（`【fix】隔离MCP快照工具名称冲突`），未推送、未创建 PR；没有执行 `cargo clean`，未删除 `target`、日志、证据或用户文件。本项剩余 **0**，下一项按风险/依赖顺序准备复核 H-57。
+
+本轮新增修复 **1**；累计 **106 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、170 有效待修复、0 修复中**。全部剩余工作仍按历史粗估 **200–400 有效修复与验收小时**，有效工作时间与构建、设备、依赖及环境等待分开计算，不承诺精确完工日期；整体 goal 继续 active。
 
 ## H-282 Git 状态整体 trim 与模型上下文事实投影（2026-10-31，已修复并验收）
 
@@ -3043,7 +3055,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-53：原生压缩移除相关记忆后，后台检索去重与预算仍保留旧记录](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-54：有效模型参数被桌面深度覆盖，显式思考强度与输出上限没有进入真实请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-55：简单思考模式直接携带 Responses 的 none 进入 Chat 适配器，本地校验拒绝整个运行](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-56：宿主就绪快照合并未检查工具重名，已连接 MCP 可让普通聊天在请求前整体失败](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-56：宿主就绪快照合并未检查工具重名，已连接 MCP 可让普通聊天在请求前整体失败](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H56-01～05；保留修前 `target/h56-original-probe-20261031.log` 与最终默认探针；不合并 H-57 | `extend_ready` 在快照发布前校验最终 namespaced tool 集合并事务性拒绝冲突；AppCore 隔离冲突 server 并缓存 failed，plugin overlay 冲突不阻塞普通聊天 | 正式探针1/0/252 filtered；MCP lib106/0/2 ignored；AppCore mcp_60/0/2 ignored；check、MCP严格Clippy、diff通过；根fmt/AppCore严格Clippy受既有基线阻断，见E-H56-03 | `a200747a`（`【fix】隔离MCP快照工具名称冲突`） | 限 Windows 本机临时 SQLite/Node stdio/离线模型；未验真实外部MCP/HTTP、供应商、Desktop/Tauri、其他OS、跨进程/重启与自动消歧；本项剩余0，下一项H-57；200–400有效小时为历史粗估，等待另计 |
 | [H-57：MCP 说明与技能目录仅按已发送身份去重，正文未进入可回放模型历史，后续无状态请求丢失内容](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-58：附件清理把字符替换当作身份验证，空 ID/点目录可删除整桶，父目录 session 可删除附件 root 外数据](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列Windows本机范围；H-262不重复计数 | 统一身份校验＋共享root/目录句柄/暂存发布，ingest/remove共用边界 | E-H58-20261027-01～14：最终附件13/0 ignored、Builtins371/4、AppCore1173/60、kernel135/83；workspace3464/1/325与严格lint既有失败保留 | `fbb13a032b03f73d780ae4881e7d8b4464e0a6d8` | Unix/其他OS未验且无同等原子no-follow承诺；多文件事务等限制见E-14；下一项H-65，总体200–400有效小时未校准 |
 | [H-59：WASM 调用完成后遗留的 watchdog 中断共享引擎上的后续调用](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
