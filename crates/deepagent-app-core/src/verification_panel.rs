@@ -354,6 +354,7 @@ pub struct ModelSkepticSpawner {
     client: Arc<deepagent_models::ModelClient>,
     model: String,
     system_prompt: String,
+    call_usage: Option<crate::call_usage::RunCallUsageOwner>,
 }
 
 impl ModelSkepticSpawner {
@@ -364,6 +365,7 @@ impl ModelSkepticSpawner {
             client,
             model: model.into(),
             system_prompt: SKEPTIC_SYSTEM_PROMPT.to_string(),
+            call_usage: None,
         }
     }
 
@@ -375,11 +377,24 @@ impl ModelSkepticSpawner {
         self.system_prompt = prompt.into();
         self
     }
-}
 
-#[async_trait]
-impl SkepticSpawner for ModelSkepticSpawner {
-    async fn spawn(&self, _index: u32, prompt: &str) -> Result<String> {
+    pub(crate) fn with_call_usage(mut self, owner: crate::call_usage::RunCallUsageOwner) -> Self {
+        self.call_usage = Some(owner);
+        self
+    }
+    async fn execute(
+        &self,
+        prompt: &str,
+        cancellation: Option<CancellationToken>,
+    ) -> Result<String> {
+        if cancellation
+            .as_ref()
+            .is_some_and(CancellationToken::is_cancelled)
+        {
+            return Err(deepagent_core::error::CoreError::other(
+                "adversarial verification cancelled",
+            ));
+        }
         let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
             self.model.clone(),
             &self.system_prompt,
@@ -387,8 +402,46 @@ impl SkepticSpawner for ModelSkepticSpawner {
         )
         .with_temperature(0.2)
         .with_max_output_tokens(1024);
-        let response = self.client.stream_response(request).await?;
+        let mut call = match crate::call_usage::SideModelCall::start(
+            self.call_usage.as_ref(),
+            "adversarial_verification",
+            &self.model,
+        ) {
+            Ok(call) => call,
+            Err(error) => {
+                // No judge was dispatched. This is an environmental limitation,
+                // not a model refutation that should cause another paid turn.
+                // Use the panel's existing synthetic PARTIAL semantics; the
+                // durable rejected lifecycle remains the source of truth.
+                tracing::warn!(%error, "advisory skeptic unavailable before dispatch");
+                return Ok(format!(
+                    "Verification not dispatched: {error}\nVERDICT: PARTIAL"
+                ));
+            }
+        };
+        let response = if let Some(cancellation) = cancellation {
+            let cancel = Arc::new(AtomicBool::new(false));
+            tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => {
+                    cancel.store(true, Ordering::Release);
+                    call.finish("cancelled")?;
+                    return Err(deepagent_core::error::CoreError::other("adversarial verification cancelled"));
+                }
+                response = call.stream_response(&self.client, request, Some(cancel.clone())) => response,
+            }
+        } else {
+            call.stream_response(&self.client, request, None).await
+        }?;
+        call.finish("completed")?;
         Ok(response.output_text_projection())
+    }
+}
+
+#[async_trait]
+impl SkepticSpawner for ModelSkepticSpawner {
+    async fn spawn(&self, _index: u32, prompt: &str) -> Result<String> {
+        self.execute(prompt, None).await
     }
 
     async fn spawn_cancelled(
@@ -397,26 +450,7 @@ impl SkepticSpawner for ModelSkepticSpawner {
         prompt: &str,
         cancellation: CancellationToken,
     ) -> Result<String> {
-        let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
-            self.model.clone(),
-            &self.system_prompt,
-            prompt,
-        )
-        .with_temperature(0.2)
-        .with_max_output_tokens(1024);
-        let cancel = Arc::new(AtomicBool::new(false));
-        tokio::select! {
-            biased;
-            _ = cancellation.cancelled() => {
-                cancel.store(true, Ordering::Release);
-                Err(deepagent_core::error::CoreError::other(
-                    "adversarial verification cancelled",
-                ))
-            }
-            response = self.client.stream_response_cancelled(request, cancel.clone()) => {
-                Ok(response?.output_text_projection())
-            }
-        }
+        self.execute(prompt, Some(cancellation)).await
     }
 }
 

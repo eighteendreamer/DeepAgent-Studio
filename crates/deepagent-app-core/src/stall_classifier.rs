@@ -47,6 +47,7 @@ pub fn stall_detector_enabled() -> bool {
 pub struct ModelStallClassifier {
     client: Arc<ModelClient>,
     model: String,
+    call_usage: Option<crate::call_usage::RunCallUsageOwner>,
 }
 
 impl ModelStallClassifier {
@@ -55,7 +56,13 @@ impl ModelStallClassifier {
         Self {
             client,
             model: model.into(),
+            call_usage: None,
         }
+    }
+
+    pub(crate) fn with_call_usage(mut self, owner: crate::call_usage::RunCallUsageOwner) -> Self {
+        self.call_usage = Some(owner);
+        self
     }
 }
 
@@ -69,9 +76,20 @@ impl StallClassifier for ModelStallClassifier {
         )
         .with_temperature(0.0)
         .with_max_output_tokens(300);
+        let mut call = match crate::call_usage::SideModelCall::start(
+            self.call_usage.as_ref(),
+            "stall_classification",
+            &self.model,
+        ) {
+            Ok(call) => call,
+            Err(error) => {
+                tracing::warn!(%error, "stall classifier admission failed; failing open");
+                return None;
+            }
+        };
         let response = match tokio::time::timeout(
             CLASSIFY_TIMEOUT,
-            self.client.stream_response(request),
+            call.stream_response(&self.client, request, None),
         )
         .await
         {
@@ -81,10 +99,17 @@ impl StallClassifier for ModelStallClassifier {
                 return None;
             }
             Err(_) => {
+                if let Err(error) = call.finish("timed_out") {
+                    tracing::error!(%error, "timed-out classifier accounting failed");
+                }
                 tracing::warn!("stall classifier timed out; failing open");
                 return None;
             }
         };
+        if let Err(error) = call.finish("completed") {
+            tracing::error!(%error, "stall classifier accounting failed; failing open");
+            return None;
+        }
         let output_text = response.output_text_projection();
         match parse_stall_verdict(&output_text) {
             Ok(verdict) => Some(verdict),

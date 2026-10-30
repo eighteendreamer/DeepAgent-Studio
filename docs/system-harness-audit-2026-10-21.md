@@ -2565,7 +2565,7 @@ E-H61-20261027-03（默认回归验收）：`cargo test -p deepagent-app-core --
 
 ### H-63：对抗复核和停滞分类丢弃已返回的 usage，现有会话成本账本漏记附属请求
 
-**2026-10-30状态：阻塞待处理（上游H-133依赖）；候选封存保留，尚未验收。**
+**2026-10-31状态：已修复并验收（限本机所列范围）；H-133已验收，H-63三个附属入口已接入共享用量/预算owner。**
 
 E-H63-01（2026-10-30，原探针与范围核对）：基线4dc2aacb404cc7887ddd28f432b700cccd95ab3b，tracked初始干净，原五类用户未跟踪项仅列名不读取/修改/暂存/删除。续接原cell272/session10131取得同一驱动的两个原生终态，没有重启活进程：隔离HOME/APPDATA、MemorySecretStore与离线transport下，`cargo test -p deepagent-app-core --lib audit_completion_check_usage_reaches_cost_ledger --offline -j 2 -- --include-ignored --nocapture --test-threads=1`退出101，0 passed/1 failed/0 ignored，352.46秒（测试0.46秒），两组账本均11/3，应为314/24和112/10；`cargo test -p deepagent-app-core --test kernel_v2_e2e session_title_usage --offline -j 2 -- --include-ignored --nocapture --test-threads=1`退出101，1 passed/1 failed/0 ignored，114.75秒（测试0.88秒），正常与耗尽预算均2请求/1行/1000输入100输出，标题用量2000/7未入账。空历史0请求和已有用户标题控制通过。原日志、receipt及5文件源码SHA冻结清单target/h063-original-*-20261030保留，动手前5份哈希一致。旧标题fixture对耗尽预算也中途强制标题存在，与最终期望不派发矛盾；后续需明确修正该fixture契约，而不是接受越限请求。
 
@@ -2580,6 +2580,14 @@ E-H63-05（冻结候选终态、独立依赖与未关闭结论）：15份冻结R
 E-H63-06（依赖核对与续接边界）：对照原报告确认这不是H-273/H-274，也不是“后台记忆”；H-133的正式标题是“Responses response.failed携带usage时未进入运行用量”，本轮E-H63-02的误称已纠正。独立原探针`cargo test -p deepagent-models --lib audit_failed_responses_terminal_emits_included_usage --offline -j 2 -- --include-ignored --nocapture --test-threads=1`真实退出101、35.64秒，0 passed/1 failed/0 ignored：error仍正确返回，但observer未收到9 input/2 output/4 cache/1 reasoning，日志与receipt为target/h063-dependency-h133-original-20261030。models/runtime生产源码相对基线零diff，未在本轮混修或归并H-133；H-63候选和新增默认失败回归完整保留、未暂存/提交。先按独立闭环修复H-133这个已证实的上游依赖，再回来冻结并完整验收H-63，不能以H-63正常路径成功宣称全部完成。完整workspace、严格lint、独立Tauri/前端构建及最终清理尚未执行，原因是当前候选仍有真实依赖失败而非门禁被忽略；相关构建产物暂留供后续验证，不整删根target。未访问真实凭据/内网/外部模型/用户数据，未迁移DB、推送、建PR或修改原五类用户未跟踪项；15源码和两份同步台账待后续独立修复验收后按问题边界提交。计数不增加：96验收/21历史跳过/7归并/2撤销/179待修/1修复中，180有效未关闭；整体goal继续active，不把可自行修复的项目依赖设为全目标阻塞。剩余200–400有效工作小时仍为历史未逐项校准粗估，构建/设备/依赖等待另计，不作精确日期承诺。
 
 E-H63-07（独立修复前的安全封存）：为避免将未验收H-63源码混入H-133独立提交，15份候选源码逐份对照冻结SHA及target/h063-before-h133-20261030备份；12份tracked源码保存sources-only.patch并通过git apply --check --reverse后仅反向应用这些本轮改动，3份本轮新源码在逐字节备份哈希一致后只删除各文件本身，无递归删除。反向后git apply --check可重新应用，Rust内容diff为0；未处理用户五类未跟踪项、源码仓库之外的文件或任何构建目录。封存结果target/h133-h063-parking-result-20261030.json和原候选/红测证据全部保留，后续恢复须核对新HEAD与补丁边界。仅本阶段进度证据先做docs提交，不是H-63修复提交，不增加验收数；H-63暂列阻塞待处理（独立上游H-133待修），96验收/21历史跳过/7归并/2撤销/179待修/0修复中/1阻塞待处理，180有效未关闭，整体goal active。
+
+E-H63-08（2026-10-30，H-133修复后的候选恢复）：H-133已由`29e807ad1bc45b21809410e6f838b6270dce2d3b`修复并验收，按前置依赖恢复H-63封存候选；先执行`git apply --check`并应用`target/h063-before-h133-20261030/sources-only.patch`，从`new/`恢复3个新增测试文件。原15份H-63冻结源码中14份按内容恢复；`kernel_v2_e2e.rs`额外保留H-133提交新增的`failed_response_usage`模块注册，避免回退已验收测试，因此与旧冻结SHA仅此独立增量不同。当前候选源码状态保存为`target/h063-candidate4-tested-sources-20261030.json`，未触碰用户五类未跟踪项、H-133生产逻辑或证据目录。H-63转为修复中，尚未重新验收或提交；本轮只运行H-63 owner/附属模型调用/标题/正式装配边界，不混修H-62、H-273/H-274。
+
+E-H63-09（2026-10-31，本机范围修复与验收）：本轮仅处理H-63三个已证实的附属模型消费入口：对抗复核、停滞分类和正式桌面会话标题；不修改H-62停滞取消根因、H-133 parser、H-272主运行预算或并发预留策略。根因修复复用同一`RunCallUsageOwner`/`CallUsageObserver`/`CostService`/`run_events`边界，新增`SideModelCall`生命周期guard：派发前共享预算与账本健康检查，真实usage独立于回答是否采用入账，failed response、取消、timeout、future drop和重复终帧不丢量、不重复结算；副作用只追加版本化`model_side_call_started/finished`，不创建第二个run终态。标题入口改为显式父run，桌面传入精确`run_id`，session-only兼容在多run或无run时拒绝猜测latest；标题空结果、手动取代、失败重试、缺价、账本写失败与SQLite重开均保留可审计回执。
+
+实际门禁：`cargo fmt --all -- --check`通过；owner边界30 passed/0 failed；verification panel 5/0/1历史ignored；标题9/0；正式装配2/0；AppCore `kernel_v2_e2e` 216/0/55；Runtime lib 351/0/9；Persistence lib 120/0；Tauri Rust 8/0/1；Persistence strict clippy通过；`cargo build -p deepagent-cli --offline`退出0；`pnpm --dir apps/desktop build`退出0（含TypeScript/Vite及既有前端脚本）；15份冻结源码SHA全匹配。原始完整workspace退出101，失败为既有H-64 cold compiler gate、H-306空`creative.video-edit.v1`提示，以及首次SDK E2E未先构建CLI导致的缺少`target/debug/deepagent.exe`；未改无关代码，先后执行隔离数据根并构建CLI后的同一SDK E2E为6 passed/0 failed。AppCore全lib单独为1388/1/52，唯一失败仍H-64 `post_edit_default_timeout_stops_real_descendant`；AppCore/Runtime clippy仍被未修改的`deepagent-models/src/client.rs:355 clone_on_copy`阻断。上述失败不属于H-63断言，原始失败日志和完整workspace结果保留，未以局部绿测冒充全仓通过。
+
+本项按Windows本机、临时SQLite/workspace、MemorySecretStore和离线合成transport验收；未访问真实凭据、真实供应商、内网或用户数据，未执行数据库迁移、推送、PR或修改用户未跟踪文件。残余限制为真实供应商账期、其他OS、断电/强杀、并发压力、桌面真实WebView故障注入及未知价格预算策略未验；下一项按优先级复核H-21，预计4–8有效小时，构建/设备/依赖等待另计。代码与本段文档将在独立fix提交后回填真实commit ID。
 
 **级别：中（P2）；范围：开启上述可选复核/分类，附属模型请求成功并返回 usage。** 默认关闭开关不能代替开启后的成本正确性；不把这两条链路外推为所有后台模型请求都漏计。
 

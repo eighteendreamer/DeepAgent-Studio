@@ -11,6 +11,9 @@ mod hook_boundaries;
 #[path = "call_budget_tests.rs"]
 mod budget_boundaries;
 
+#[path = "side_call_usage_tests.rs"]
+mod side_calls;
+
 #[derive(Default)]
 struct Events(Mutex<Vec<RuntimeEvent>>);
 impl RuntimeEventSink for Events {

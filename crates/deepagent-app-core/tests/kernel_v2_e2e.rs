@@ -59,6 +59,9 @@ mod mcp_image_output;
 #[path = "kernel_v2_e2e/session_title_usage.rs"]
 mod session_title_usage;
 
+#[path = "kernel_v2_e2e/completion_check_usage.rs"]
+mod completion_check_usage;
+
 #[path = "kernel_v2_e2e/mcp_cancellation.rs"]
 mod mcp_cancellation;
 

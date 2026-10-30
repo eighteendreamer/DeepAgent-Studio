@@ -1172,7 +1172,8 @@ impl<'a> RunAssembler<'a> {
 
         if execution_features.stall_detector || crate::stall_classifier::stall_detector_enabled() {
             agent = agent.with_stall_classifier(Arc::new(
-                crate::stall_classifier::ModelStallClassifier::new(stall_client, stall_model),
+                crate::stall_classifier::ModelStallClassifier::new(stall_client, stall_model)
+                    .with_call_usage(call_owner.clone()),
             ));
         }
 
@@ -1244,6 +1245,7 @@ impl<'a> RunAssembler<'a> {
             if let Some((av_client, av_model, av_goal)) = adversarial_bits {
                 let spawner = Arc::new(
                     crate::verification_panel::ModelSkepticSpawner::new(av_client, av_model)
+                        .with_call_usage(call_owner.clone())
                         .with_system_prompt(
                             crate::verification_panel::GOAL_COVERAGE_SKEPTIC_PROMPT,
                         ),

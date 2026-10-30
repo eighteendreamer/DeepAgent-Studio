@@ -193,12 +193,25 @@ async fn audit_check_lifecycle(
     };
     let mut kernel =
         AgentKernel::<FixedClock>::new(db.clone(), &registry, Metrics::new(), config, run_id);
-    let mut agent = main_agent();
+    // Match production assembly: auxiliary consumers share the parent owner,
+    // and the finalizer projects the already-booked main receipts.
+    let sink: Arc<dyn deepagent_runtime::RuntimeEventSink> =
+        Arc::new(deepagent_runtime::NullEventSink);
+    let owner = crate::call_usage::RunCallUsageOwner {
+        db: db.clone(),
+        cost: Some(Arc::new(crate::cost_service::CostService::new(db.clone()))),
+        session_id: session.id().to_string(),
+        run_id: run_id.into(),
+        events: Arc::downgrade(&sink),
+    };
+    let main_usage = owner.main_loop();
+    let mut agent = main_agent().with_call_usage_sink(main_usage.clone());
     match kind {
         CheckKind::Panel => {
             kernel = kernel.with_adversarial_verifier(Arc::new(ModelAdversarialVerifier::new(
                 Arc::new(
                     ModelSkepticSpawner::new(check_client, "deepseek-flash")
+                        .with_call_usage(owner.clone())
                         .with_system_prompt(GOAL_COVERAGE_SKEPTIC_PROMPT),
                 ),
                 "create answer.txt",
@@ -207,7 +220,8 @@ async fn audit_check_lifecycle(
         }
         CheckKind::Stall => {
             agent = agent.with_stall_classifier(Arc::new(
-                crate::stall_classifier::ModelStallClassifier::new(check_client, "deepseek-flash"),
+                crate::stall_classifier::ModelStallClassifier::new(check_client, "deepseek-flash")
+                    .with_call_usage(owner.clone()),
             ));
         }
     }
@@ -301,7 +315,14 @@ async fn audit_check_lifecycle(
         assert_eq!(record.terminal_kind.as_deref(), Some("succeeded"));
     }
 
-    finalize_usage(&db, &mut session, run_id, &agent, terminal.succeeded())
+    finalize_usage(
+        &db,
+        &mut session,
+        run_id,
+        &agent,
+        main_usage.as_ref(),
+        terminal.succeeded(),
+    )
 }
 
 fn finalize_usage(
@@ -309,6 +330,7 @@ fn finalize_usage(
     session: &mut Session<'_, FixedClock>,
     run_id: &str,
     agent: &ModelAgent,
+    main_usage: &crate::call_usage::OwnedCallUsage,
     succeeded: bool,
 ) -> crate::cost_service::CostSummary {
     use crate::run_finalizer::{AppRunFinalizer, AppRunFinalizerRequest};
@@ -319,6 +341,7 @@ fn finalize_usage(
     let session_id = session.id().to_string();
     let usage = agent.cumulative_usage();
     let side = agent.side_usage();
+    let model_usage = agent.model_usage();
     AppRunFinalizer::new(
         db.clone(),
         Some(cost.clone()),
@@ -329,8 +352,8 @@ fn finalize_usage(
     .finalize_after_kernel(
         session,
         AppRunFinalizerRequest {
-            model_usage: None,
-            booked_calls: None,
+            model_usage: Some(&model_usage),
+            booked_calls: Some(main_usage),
             multi_model_label: "multi-model",
             session_id: &session_id,
             run_id,
@@ -383,7 +406,6 @@ async fn audit_cancel_during_stall_classifier_exits_before_reply() {
 }
 
 #[tokio::test]
-#[ignore = "audit probe: auxiliary model calls must retain provider usage in the existing ledger"]
 async fn audit_completion_check_usage_reaches_cost_ledger() {
     let panel = audit_check_lifecycle(CheckKind::Panel, false, false).await;
     let stall = audit_check_lifecycle(CheckKind::Stall, false, false).await;

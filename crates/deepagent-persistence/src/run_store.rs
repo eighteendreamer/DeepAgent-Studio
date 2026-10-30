@@ -22,7 +22,8 @@ pub struct RunRecord {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// Ordered ledger record. `run_terminal` is the unique committed outcome,
 /// not necessarily the final record: a versioned `session_terminal_projected`
-/// acknowledgement may follow it. Replay consumers must keep that record and
+/// acknowledgement, model usage receipts and auxiliary lifecycles may follow
+/// it. Replay consumers must keep those records and
 /// use `event_type`, not the last array entry, to identify the outcome.
 pub struct StoredRunEvent {
     pub run_id: String,

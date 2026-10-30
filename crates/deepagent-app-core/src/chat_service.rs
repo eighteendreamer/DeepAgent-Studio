@@ -1157,12 +1157,34 @@ impl ChatService {
     /// untitled. Intended for post-run refinement: if the user renames the
     /// session before generation finishes, the second title check prevents the
     /// auto title from overwriting the explicit one.
+    /// Legacy session-only calls require a unique parent run; callers that know
+    /// the causal run should use `maybe_generate_session_title_for_run`.
     pub async fn maybe_generate_session_title(&self, session_id: &str) -> Result<Option<String>> {
         crate::session_title::generate_session_title(
             &self.db,
             &self.settings,
             self.transport.clone(),
             session_id,
+            None,
+            self.cost.clone(),
+        )
+        .await
+    }
+
+    /// Post-run refinement with explicit accounting provenance. Auxiliary
+    /// lifecycle/usage is appended to this run without changing its terminal.
+    pub async fn maybe_generate_session_title_for_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<Option<String>> {
+        crate::session_title::generate_session_title(
+            &self.db,
+            &self.settings,
+            self.transport.clone(),
+            session_id,
+            Some(run_id),
+            self.cost.clone(),
         )
         .await
     }

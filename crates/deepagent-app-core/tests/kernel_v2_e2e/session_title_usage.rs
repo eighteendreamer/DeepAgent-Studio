@@ -8,8 +8,26 @@ use serde_json::{json, Value};
 
 const TITLE: &str = "离线标题计量验收";
 
+#[path = "session_title_usage/lifecycle.rs"]
+mod lifecycle;
+
+#[derive(Clone, Default)]
+enum TitleBehavior {
+    #[default]
+    Normal,
+    Empty,
+    FailedMeasured,
+    FailedTerminal,
+    WaitMeasured,
+    Rename(Arc<Database>, SessionId),
+}
+
 #[derive(Default)]
-struct TitleModel(Mutex<Vec<Value>>);
+struct TitleModel {
+    requests: Mutex<Vec<Value>>,
+    behavior: Mutex<TitleBehavior>,
+    observed: tokio::sync::Notify,
+}
 
 #[async_trait]
 impl HttpTransport for TitleModel {
@@ -18,12 +36,24 @@ impl HttpTransport for TitleModel {
         let is_title = body["instructions"]
             .as_str()
             .is_some_and(|text| text.contains("You generate concise conversation titles"));
-        self.0.lock().unwrap().push(body.clone());
+        self.requests.lock().unwrap().push(body.clone());
+        let behavior = self.behavior.lock().unwrap().clone();
+        if is_title && matches!(behavior, TitleBehavior::FailedTerminal) {
+            sink.on_event(&json!({"type":"response.failed","response":{"status":"failed",
+                "error":{"code":"offline_title_failed","message":"controlled title provider failure"},
+                "usage":{"input_tokens":2000,"output_tokens":7,"total_tokens":2007,
+                    "input_tokens_details":{"cached_tokens":1500}}}}).to_string())?;
+            return Ok(());
+        }
         let (text, usage) = if is_title {
             assert_eq!(body["max_output_tokens"], 48);
             assert_eq!(body["reasoning"]["effort"], "none");
             (
-                TITLE,
+                if matches!(behavior, TitleBehavior::Empty) {
+                    ""
+                } else {
+                    TITLE
+                },
                 json!({"input_tokens":2000,"output_tokens":7,"total_tokens":2007,
                     "input_tokens_details":{"cached_tokens":1500}}),
             )
@@ -34,19 +64,37 @@ impl HttpTransport for TitleModel {
                     "input_tokens_details":{"cached_tokens":800}}),
             )
         };
-        emit_responses_events(
-            sink,
-            &super::responses_fixture::completed(
-                if is_title {
-                    "audit-title"
-                } else {
-                    "audit-main"
-                },
-                body["model"].as_str().unwrap(),
-                super::responses_fixture::text("audit-text", text),
-                usage,
-            ),
-        )
+        let frames = super::responses_fixture::completed(
+            if is_title {
+                "audit-title"
+            } else {
+                "audit-main"
+            },
+            body["model"].as_str().unwrap(),
+            super::responses_fixture::text("audit-text", text),
+            usage,
+        );
+        emit_responses_events(sink, &frames)?;
+        if is_title {
+            // Repeated final snapshots must still book one physical attempt.
+            sink.on_event(frames.last().unwrap())?;
+            self.observed.notify_one();
+            match behavior {
+                TitleBehavior::FailedMeasured => {
+                    return Err(CoreError::other("controlled title provider failure"))
+                }
+                TitleBehavior::WaitMeasured => return std::future::pending().await,
+                TitleBehavior::Rename(db, id) => {
+                    EventStore::new(&db).rename_session(
+                        id,
+                        Some("用户在生成期间命名"),
+                        Timestamp::from_millis(2),
+                    )?;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 }
 
@@ -159,7 +207,7 @@ async fn observe(case: Case) -> Observation {
         )
         .await
         .unwrap();
-        assert_eq!(transport.0.lock().unwrap().len(), 1);
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
         assert!(EventStore::new(&db)
             .get_session(id)
             .unwrap()
@@ -185,12 +233,26 @@ async fn observe(case: Case) -> Observation {
     }
     if matches!(case, Case::ExhaustedBudget) {
         assert_exhausted_budget_blocks_ordinary_run(&chat, &cost, &session).await;
-        assert_eq!(transport.0.lock().unwrap().len(), 1);
+        assert_eq!(transport.requests.lock().unwrap().len(), 1);
     }
-    let generated = chat.maybe_generate_session_title(&session).await.unwrap();
+    let result = if matches!(case, Case::Empty) {
+        chat.maybe_generate_session_title(&session).await
+    } else {
+        chat.maybe_generate_session_title_for_run(&session, "audit-title-main")
+            .await
+    };
+    let generated = if matches!(case, Case::ExhaustedBudget) {
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("daily budget exhausted"));
+        None
+    } else {
+        result.unwrap()
+    };
     let title = EventStore::new(&db).get_session(id).unwrap().unwrap().title;
     match case {
-        Case::Empty => assert!(title.is_none()),
+        Case::Empty | Case::ExhaustedBudget => assert!(title.is_none()),
         Case::Named => assert_eq!(title.as_deref(), Some("用户标题")),
         _ => assert_eq!(title.as_deref(), Some(TITLE)),
     }
@@ -206,7 +268,7 @@ async fn observe(case: Case) -> Observation {
     assert_eq!(store.session_total(&session).unwrap(), live.session_cost);
     let observed = Observation {
         case,
-        calls: transport.0.lock().unwrap().len(),
+        calls: transport.requests.lock().unwrap().len(),
         rows: store.session_costs_detailed(&session).unwrap().len(),
         input: usage.input_tokens,
         output: usage.output_tokens,
@@ -230,7 +292,6 @@ async fn empty_history_and_user_named_sessions_do_not_dispatch_title_requests() 
 }
 
 #[tokio::test]
-#[ignore = "audit H-63 extension: successful post-run title usage lacks the shared cost owner"]
 async fn audit_title_requests_obey_budget_and_book_returned_usage() {
     let ordinary = observe(Case::Untitled).await;
     let exhausted = observe(Case::ExhaustedBudget).await;

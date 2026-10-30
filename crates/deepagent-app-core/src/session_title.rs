@@ -1,8 +1,7 @@
 //! Session title generation from conversation history.
 //!
-//! Extracted from `chat_service` so the title-generation concern lives in its
-//! own module. The public entry point mirrors the old `ChatService` method so
-//! callers do not change.
+//! Post-run titles retain an explicit parent and settle through the same
+//! physical-call budget/accounting boundary as other run-owned consumers.
 
 use std::str::FromStr;
 use std::sync::Arc;
@@ -14,8 +13,11 @@ use deepagent_core::message::Role;
 use deepagent_models::transport::HttpTransport;
 use deepagent_models::{ModelClient, ModelConfig, ModelRole, ReasoningEffort};
 use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 
+use crate::call_usage::{RunCallUsageOwner, SideModelCall};
+use crate::cost_service::CostService;
 use crate::input_runtime::full_history_from_events;
 use crate::settings::{SettingsService, WebSearchProvider};
 
@@ -33,10 +35,12 @@ const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
 /// session before generation finishes, the second title check prevents the
 /// auto title from overwriting the explicit one.
 pub async fn generate_session_title(
-    db: &Database,
+    db: &Arc<Database>,
     settings_svc: &SettingsService,
     transport: Arc<dyn HttpTransport>,
     session_id: &str,
+    parent_run_id: Option<&str>,
+    cost: Option<Arc<CostService>>,
 ) -> Result<Option<String>> {
     let id = SessionId::from_str(session_id)
         .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
@@ -83,6 +87,43 @@ pub async fn generate_session_title(
         return Ok(None);
     }
 
+    // The desktop knows the exact completed run. The legacy session-only seam
+    // may infer a parent only when it is unique, never by guessing latest amid
+    // concurrent/multiple runs. Imported history without provenance stays local.
+    let runs = RunStore::new(db);
+    let parent = match parent_run_id {
+        Some(run_id) => runs
+            .get(run_id)?
+            .ok_or_else(|| CoreError::not_found("session title parent run"))?,
+        None => {
+            let candidates = runs.list_for_session(session_id)?;
+            match candidates.as_slice() {
+                [] => return Ok(None),
+                [parent] => parent.clone(),
+                _ => {
+                    return Err(CoreError::invalid(
+                        "session title requires an explicit parent run",
+                    ))
+                }
+            }
+        }
+    };
+    if parent.session_id != session_id {
+        return Err(CoreError::invalid("session title parent session mismatch"));
+    }
+    if parent.terminal_kind.as_deref() != Some("succeeded") || parent.finished_at.is_none() {
+        return Ok(None);
+    }
+    let events: Arc<dyn deepagent_runtime::RuntimeEventSink> =
+        Arc::new(deepagent_runtime::NullEventSink);
+    let owner = RunCallUsageOwner {
+        db: db.clone(),
+        cost,
+        session_id: session_id.into(),
+        run_id: parent.id,
+        events: Arc::downgrade(&events),
+    };
+
     let settings = settings_svc
         .load()?
         .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
@@ -109,7 +150,7 @@ pub async fn generate_session_title(
     let client = Arc::new(ModelClient::new(transport, config));
 
     let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
-        model,
+        model.clone(),
         SESSION_TITLE_SYSTEM_PROMPT,
         format!(
             "Create a short conversation title from this transcript:\n\n{}",
@@ -119,26 +160,33 @@ pub async fn generate_session_title(
     .streaming()
     .with_max_output_tokens(48)
     .with_reasoning_effort(ReasoningEffort::None);
-    let response = client.stream_response(request).await?;
-    let Some(title) = normalize_generated_session_title(&response.output_text_projection()) else {
-        return Ok(None);
-    };
-
-    let current = store.get_session(id)?;
-    if current
-        .as_ref()
-        .and_then(|session| session.title.as_deref())
-        .map(|title| !title.trim().is_empty())
-        .unwrap_or(false)
-    {
-        return Ok(None);
-    }
-
-    let clock = SystemClock;
-    if !store.rename_session(id, Some(&title), clock.now())? {
-        return Err(CoreError::not_found(format!("session {session_id}")));
-    }
-    Ok(Some(title))
+    let mut call = SideModelCall::start(Some(&owner), "session_title", &model)?;
+    let response = call.stream_response(&client, request, None).await?;
+    let accepted: Result<_> = (|| {
+        let Some(title) = normalize_generated_session_title(&response.output_text_projection())
+        else {
+            return Ok((None, "empty"));
+        };
+        let current = store.get_session(id)?;
+        if current
+            .as_ref()
+            .and_then(|session| session.title.as_deref())
+            .is_some_and(|title| !title.trim().is_empty())
+        {
+            return Ok((None, "superseded"));
+        }
+        if !store.rename_session(id, Some(&title), SystemClock.now())? {
+            return Err(CoreError::not_found(format!("session {session_id}")));
+        }
+        Ok((Some(title), "applied"))
+    })();
+    call.finish(
+        accepted
+            .as_ref()
+            .map(|(_, outcome)| *outcome)
+            .unwrap_or("failed"),
+    )?;
+    accepted.map(|(title, _)| title)
 }
 
 fn normalize_generated_session_title(raw: &str) -> Option<String> {
