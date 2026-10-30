@@ -393,7 +393,7 @@ async fn observe_tool_loop_usage(with_details: bool) {
             .session_costs_detailed(&session)
             .unwrap()
             .len(),
-        1
+        2
     );
     drop(chat);
     drop(cost);
@@ -409,7 +409,7 @@ async fn observe_tool_loop_usage(with_details: bool) {
     assert_tool_loop_session_usage(&reopened, &session, &samples, with_details);
     let cold_cost = CostService::new(Arc::new(reopened));
     assert_eq!(cold_cost.summary(&session).unwrap(), summary);
-    eprintln!("main tool-loop usage: details={with_details}, requests=2, live_usage=2, durable_usage=2, raw_samples=2, ledger_rows=1, billed_input=400, output=50, cost={expected_cost}, file_reopen=equal");
+    eprintln!("main tool-loop usage: details={with_details}, requests=2, live_usage=2, durable_usage=2, raw_samples=2, ledger_rows=2, billed_input=400, output=50, cost={expected_cost}, file_reopen=equal");
 }
 
 #[tokio::test]

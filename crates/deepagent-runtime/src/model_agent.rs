@@ -2052,6 +2052,18 @@ struct MainUsageSink {
 }
 
 impl CallUsageSink for MainUsageSink {
+    fn before_call(&self) -> Result<()> {
+        self.external
+            .as_ref()
+            .map_or(Ok(()), |sink| sink.before_call())
+    }
+
+    fn checkpoint(&self) -> Result<()> {
+        self.external
+            .as_ref()
+            .map_or(Ok(()), |sink| sink.checkpoint())
+    }
+
     fn record(&self, report: CallUsageReport) {
         self.usage.record(&report);
         if let Some(sink) = &self.external {
@@ -2199,9 +2211,12 @@ async fn stream_model_attempt<'a>(
     bool,
     Option<&'a mut dyn ToolAttemptController>,
 ) {
+    if let Err(error) = usage_sink.before_call() {
+        return (Err(error), false, tools);
+    }
     let sink = usage_sink.events.clone();
     let mut observer = SinkObserver {
-        usage: CallUsageObserver::new(usage_sink, request.model.clone(), false),
+        usage: CallUsageObserver::new(usage_sink.clone(), request.model.clone(), false),
         sink,
         tools,
         step,
@@ -2225,6 +2240,11 @@ async fn stream_model_attempt<'a>(
     }
     let stream_activity_seen = observer.stream_activity_seen;
     let tools = observer.tools.take();
+    drop(observer);
+    let result = match usage_sink.checkpoint() {
+        Ok(()) => result,
+        Err(error) => Err(error),
+    };
     (result, stream_activity_seen, tools)
 }
 

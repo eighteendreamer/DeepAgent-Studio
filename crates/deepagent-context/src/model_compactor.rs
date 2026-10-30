@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use deepagent_core::error::CoreError;
+use deepagent_models::usage::{CallUsageObserver, CallUsageSink};
 use deepagent_models::{
     classify_model_error, ModelClient, ModelFailureKind, ResponseRequest, Usage,
 };
@@ -31,6 +32,7 @@ pub struct ModelCompactor {
     temperature: f32,
     /// Cap on the summary's output tokens.
     max_tokens: u32,
+    call_usage_sink: Option<Arc<dyn CallUsageSink>>,
 }
 
 /// The compaction system prompt: instructs the model to emit ONLY JSON.
@@ -70,6 +72,7 @@ impl ModelCompactor {
             model: model.into(),
             temperature: 0.2,
             max_tokens: 1024,
+            call_usage_sink: None,
         }
     }
 
@@ -82,6 +85,13 @@ impl ModelCompactor {
     /// Override the max output tokens (builder style).
     pub fn with_max_output_tokens(mut self, n: u32) -> Self {
         self.max_tokens = n;
+        self
+    }
+
+    /// Use the owning run's admission/accounting boundary for every physical
+    /// summary attempt, regardless of adoption, parsing or heuristic fallback.
+    pub fn with_call_usage_sink(mut self, sink: Arc<dyn CallUsageSink>) -> Self {
+        self.call_usage_sink = Some(sink);
         self
     }
 
@@ -193,15 +203,55 @@ impl ModelCompactor {
             .with_temperature(self.temperature)
             .with_max_output_tokens(self.max_tokens);
 
-            let response = match cancel.clone() {
-                Some(flag) => self.client.stream_response_cancelled(request, flag).await,
-                None => self.client.stream_response(request).await,
+            if let Some(sink) = &self.call_usage_sink {
+                sink.before_call().map_err(|error| ModelCompactionError {
+                    error,
+                    usage: spent,
+                })?;
+            }
+            let mut accounting = self
+                .call_usage_sink
+                .as_ref()
+                .map(|sink| CallUsageObserver::new(sink.clone(), self.model.clone(), false));
+            let mut noop = deepagent_models::stream::NoopObserver;
+            let observer: &mut dyn deepagent_models::DeltaObserver = match accounting.as_mut() {
+                Some(observer) => observer,
+                None => &mut noop,
             };
+            let response = match cancel.clone() {
+                Some(flag) => {
+                    self.client
+                        .stream_response_observed_cancelled(request, observer, flag)
+                        .await
+                }
+                None => {
+                    self.client
+                        .stream_response_observed(request, observer)
+                        .await
+                }
+            };
+            if let (Some(observer), Ok(response)) = (&mut accounting, &response) {
+                observer.completed(response.usage, response.raw_usage.as_ref());
+            }
+            // A measured failed/cancelled attempt is real spend too. Keep the
+            // existing side-usage projection consistent with the durable row,
+            // including when a later retry is refused by the budget gate.
+            let measured = accounting
+                .as_ref()
+                .and_then(CallUsageObserver::measured_usage)
+                .or_else(|| response.as_ref().ok().and_then(|response| response.usage));
+            if let Some(usage) = measured {
+                fold_usage(&mut spent, usage);
+            }
+            drop(accounting);
+            if let Some(sink) = &self.call_usage_sink {
+                sink.checkpoint().map_err(|error| ModelCompactionError {
+                    error,
+                    usage: spent,
+                })?;
+            }
             match response {
                 Ok(response) => {
-                    if let Some(usage) = response.usage {
-                        fold_usage(&mut spent, usage);
-                    }
                     if cancel
                         .as_ref()
                         .is_some_and(|flag| flag.load(Ordering::Acquire))

@@ -330,6 +330,7 @@ fn finalize_usage(
         session,
         AppRunFinalizerRequest {
             model_usage: None,
+            booked_calls: None,
             multi_model_label: "multi-model",
             session_id: &session_id,
             run_id,

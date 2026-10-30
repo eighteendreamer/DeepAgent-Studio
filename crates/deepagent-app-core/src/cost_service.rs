@@ -466,12 +466,21 @@ impl CostService {
         )))
     }
 
-    /// Check whether the budget allows a new run. Returns `Ok(())` if within
-    /// budget, or an error describing which limit was hit.
+    /// Check admission against measured, committed ledger spend. This same
+    /// policy is used before each owned physical request, not only new runs.
     pub fn check_budget(&self) -> Result<()> {
+        self.check_budget_accounting(true)
+    }
+
+    pub(crate) fn check_budget_accounting(&self, accounting_complete: bool) -> Result<()> {
         let budget = self.budget()?;
         if budget.daily_limit.is_none() && budget.monthly_limit.is_none() {
             return Ok(());
+        }
+        if !accounting_complete {
+            return Err(CoreError::invalid(
+                "budget cannot be verified: prior model call usage or price is unavailable",
+            ));
         }
         let summary = self.summary_with_budget("", budget)?;
         if let Some(daily) = summary.budget.daily_limit {

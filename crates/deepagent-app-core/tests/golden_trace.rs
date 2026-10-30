@@ -277,6 +277,7 @@ async fn golden_trace_simple_answer_matches_fixture() {
         "running_turn:model_first_token",
         "running_turn:model_output",
         "running_turn:responses_stream_event",
+        "running_turn:model_call_usage",
         "running_turn:model_request_completed",
         "running_turn:context_usage",
         "verifying:completion_evidence",

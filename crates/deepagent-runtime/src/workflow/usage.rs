@@ -1,5 +1,7 @@
 //! Workflow projections of the existing canonical call accounting rule.
 
+use std::sync::{Arc, Mutex};
+
 use serde_json::{json, Value};
 
 use super::canvas::{CanvasUsageReport, CanvasUsageSink};
@@ -14,6 +16,7 @@ pub use crate::usage::ModelUsage as WorkflowModelUsage;
 pub(super) struct WorkflowUsage {
     usage: RunUsageTracker,
     publisher: NodeEventPublisher,
+    external: Mutex<Option<Arc<dyn CanvasUsageSink>>>,
 }
 
 impl WorkflowUsage {
@@ -21,7 +24,19 @@ impl WorkflowUsage {
         Self {
             usage: RunUsageTracker::default(),
             publisher,
+            external: Mutex::new(None),
         }
+    }
+
+    pub(super) fn bind_sink(&self, sink: Arc<dyn CanvasUsageSink>) {
+        *self.external.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);
+    }
+
+    fn external(&self) -> Option<Arc<dyn CanvasUsageSink>> {
+        self.external
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
     }
 
     pub(super) fn total(&self) -> RunUsage {
@@ -38,6 +53,14 @@ impl WorkflowUsage {
 }
 
 impl CanvasUsageSink for WorkflowUsage {
+    fn before_call(&self) -> deepagent_core::error::Result<()> {
+        self.external().map_or(Ok(()), |sink| sink.before_call())
+    }
+
+    fn checkpoint(&self) -> deepagent_core::error::Result<()> {
+        self.external().map_or(Ok(()), |sink| sink.checkpoint())
+    }
+
     fn record(&self, mut report: CanvasUsageReport) {
         let mut raw = report
             .raw_usage
@@ -52,6 +75,9 @@ impl CanvasUsageSink for WorkflowUsage {
         });
         report.raw_usage = Some(raw.clone());
         self.usage.record(&report);
+        if let Some(sink) = self.external() {
+            sink.record(report.clone());
+        }
         if let Some(usage) = report.usage {
             self.publisher.emit_runtime(RuntimeEvent::Usage {
                 prompt_tokens: usage.prompt_tokens,

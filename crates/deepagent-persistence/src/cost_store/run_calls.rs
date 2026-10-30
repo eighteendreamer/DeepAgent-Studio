@@ -30,18 +30,18 @@ pub struct RecordedCallCost {
     pub inserted: bool,
 }
 
-#[derive(Serialize, Deserialize)]
-struct Receipt {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunCallReceipt {
     version: u32,
-    session_id: String,
-    call_id: String,
-    report: Value,
-    ledger_id: Option<i64>,
-    cost_yuan: Option<f64>,
+    pub session_id: String,
+    pub call_id: String,
+    pub report: Value,
+    pub ledger_id: Option<i64>,
+    pub cost_yuan: Option<f64>,
 }
 
-fn decode(body: &str) -> Result<Receipt> {
-    let receipt: Receipt = serde_json::from_str(body)
+fn decode(body: &str) -> Result<RunCallReceipt> {
+    let receipt: RunCallReceipt = serde_json::from_str(body)
         .map_err(|_| CoreError::Persistence("invalid model call usage receipt".into()))?;
     if receipt.version != 1 {
         return Err(CoreError::Persistence(
@@ -52,6 +52,41 @@ fn decode(body: &str) -> Result<Receipt> {
 }
 
 impl CostStore<'_> {
+    /// Read the existing durable accounting receipts, including incomplete or
+    /// failed bookings. A missing/wrong parent cannot authorize a paid call.
+    pub fn run_call_receipts(&self, session_id: &str, run_id: &str) -> Result<Vec<RunCallReceipt>> {
+        self.db.with_conn(|conn| {
+            let owner: Option<String> = conn
+                .query_row("SELECT session_id FROM runs WHERE id=?1", [run_id], |row| {
+                    row.get(0)
+                })
+                .optional()
+                .map_err(map_sqlite)?;
+            if owner.as_deref() != Some(session_id) {
+                return Err(CoreError::invalid("model call parent run/session mismatch"));
+            }
+            let mut statement = conn
+                .prepare(
+                    "SELECT data FROM run_events WHERE run_id=?1
+                     AND event_type IN (?2, 'model_call_usage_failed') ORDER BY sequence",
+                )
+                .map_err(map_sqlite)?;
+            let rows = statement
+                .query_map(params![run_id, EVENT_TYPE], |row| row.get::<_, String>(0))
+                .map_err(map_sqlite)?;
+            rows.map(|row| {
+                let receipt = decode(&row.map_err(map_sqlite)?)?;
+                if receipt.session_id != session_id {
+                    return Err(CoreError::Persistence(
+                        "model call receipt session mismatch".into(),
+                    ));
+                }
+                Ok(receipt)
+            })
+            .collect()
+        })
+    }
+
     /// Atomically book an answered/measured request and its parent ownership.
     /// A repeated identical identity is a no-op (including after reopen);
     /// conflicting attribution is an error. None means unreported usage or
@@ -120,8 +155,9 @@ impl CostStore<'_> {
         })
     }
 
-    /// Exclude explicitly owned side-call rows from legacy positional turn
-    /// replay. They are session spend, not the main context/turn cost gauge.
+    /// Exclude explicitly owned physical-call rows from legacy positional turn
+    /// replay. Modern turn receipts reference their identities explicitly;
+    /// side calls are session spend, not the main context/turn cost gauge.
     pub fn run_call_ledger_ids(&self, session_id: &str) -> Result<HashSet<i64>> {
         self.db.with_conn(|conn| {
             let mut stmt = conn

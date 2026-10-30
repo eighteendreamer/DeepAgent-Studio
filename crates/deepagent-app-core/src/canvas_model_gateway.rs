@@ -1468,6 +1468,11 @@ impl CanvasModelGateway {
             .timeout(timeout)
             .header(reqwest::header::CONTENT_TYPE, content_type);
         req = apply_auth_headers(req, candidate.provider.protocol, &api_key);
+        if let Some(sink) = usage_sink {
+            sink.before_call().map_err(|error| {
+                CanvasError::new(CanvasErrorCode::InvalidInput, error.to_string())
+            })?;
+        }
         let resp = req.body(body).send().await.map_err(|e| {
             CanvasError::new(
                 CanvasErrorCode::TransientFailure,
@@ -1493,7 +1498,7 @@ impl CanvasModelGateway {
                 .as_ref()
                 .ok()
                 .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok());
-            record_response_usage(candidate, kind, value.as_ref(), usage_sink);
+            record_response_usage(candidate, kind, value.as_ref(), usage_sink)?;
             return Err(classify_status(
                 status.as_u16(),
                 &String::from_utf8_lossy(&body?),
@@ -1510,7 +1515,7 @@ impl CanvasModelGateway {
             )
         })?;
         let value = serde_json::from_slice::<Value>(&bytes);
-        record_response_usage(candidate, kind, value.as_ref().ok(), usage_sink);
+        record_response_usage(candidate, kind, value.as_ref().ok(), usage_sink)?;
         if kind == CanvasRequestKind::SpeechSynthesize {
             if bytes.is_empty() {
                 return Err(CanvasError::new(
@@ -1971,12 +1976,12 @@ fn record_response_usage(
     kind: CanvasRequestKind,
     value: Option<&Value>,
     sink: Option<&dyn CanvasUsageSink>,
-) {
+) -> CanvasResult<()> {
     if !matches!(
         kind,
         CanvasRequestKind::Chat | CanvasRequestKind::Embeddings
     ) {
-        return;
+        return Ok(());
     }
     if let Some(sink) = sink {
         let (usage, raw_usage) = value
@@ -1988,7 +1993,10 @@ fn record_response_usage(
             usage,
             raw_usage,
         });
+        sink.checkpoint()
+            .map_err(|error| CanvasError::new(CanvasErrorCode::InvalidInput, error.to_string()))?;
     }
+    Ok(())
 }
 
 /// The api key of a resolved candidate, or the stable error saying it is gone.
@@ -5558,6 +5566,7 @@ mod tests {
             &mut session,
             AppRunFinalizerRequest {
                 model_usage: Some(&model_usage),
+                booked_calls: None,
                 multi_model_label: "workflow",
                 session_id: &session_id,
                 run_id: "run_canvas_usage_audit",

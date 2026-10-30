@@ -228,6 +228,41 @@ async fn actual_agent_retry_and_prompt_override_price_each_physical_route_once()
 }
 
 #[tokio::test]
+async fn measured_agent_failure_reaches_the_budget_before_any_retry() {
+    let (owner, _events) = setup();
+    let cost = owner.cost.as_ref().unwrap();
+    cost.set_pricing(std::collections::HashMap::from([(
+        "flash".into(),
+        crate::cost_service::ModelPricing {
+            input_cache_hit_per_million: 1.0,
+            input_cache_miss_per_million: 1.0,
+            output_per_million: 1.0,
+        },
+    )]));
+    cost.set_budget(crate::cost_service::BudgetConfig {
+        daily_limit: Some(0.001),
+        monthly_limit: None,
+    })
+    .unwrap();
+    let (agent, requests) = executor(owner.clone(), Answer::RetryMeasured);
+    let error = agent
+        .execute(&action(HookActionType::Agent), json!({}))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("daily budget exhausted"));
+    assert_eq!(requests.calls.load(Ordering::Acquire), 1);
+    let summary = cost.summary(&owner.session_id).unwrap();
+    assert_eq!(summary.input_tokens, 1000);
+    assert!((summary.session_cost - 0.0011).abs() < 1e-12);
+    assert!(owner
+        .main_loop()
+        .before_call()
+        .unwrap_err()
+        .to_string()
+        .contains("daily budget exhausted"));
+}
+
+#[tokio::test]
 async fn cancellation_after_usage_is_accounted_for_prompt_and_private_agent() {
     for kind in [HookActionType::Prompt, HookActionType::Agent] {
         let (owner, _events) = setup();

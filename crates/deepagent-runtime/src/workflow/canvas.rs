@@ -346,6 +346,7 @@ pub trait CanvasModelBridge: Send + Sync {
         request: CanvasCompletionRequest,
         usage: Arc<dyn CanvasUsageSink>,
     ) -> Result<CanvasCompletionResponse> {
+        usage.before_call()?;
         let response = self.complete(request).await?;
         usage.record(CanvasUsageReport {
             provider_id: Some(response.provider_id.clone()),
@@ -353,6 +354,7 @@ pub trait CanvasModelBridge: Send + Sync {
             usage: response.usage,
             raw_usage: response.raw_usage.clone(),
         });
+        usage.checkpoint()?;
         Ok(response)
     }
 
@@ -396,6 +398,7 @@ pub trait CanvasModelBridge: Send + Sync {
         request: CanvasEmbeddingRequest,
         usage: Arc<dyn CanvasUsageSink>,
     ) -> Result<CanvasEmbeddingResponse> {
+        usage.before_call()?;
         let response = self.embed(request).await?;
         usage.record(CanvasUsageReport {
             provider_id: Some(response.provider_id.clone()),
@@ -403,6 +406,7 @@ pub trait CanvasModelBridge: Send + Sync {
             usage: response.usage,
             raw_usage: response.raw_usage.clone(),
         });
+        usage.checkpoint()?;
         Ok(response)
     }
 

@@ -8,6 +8,9 @@ use serde_json::json;
 #[path = "hook_usage_boundary_tests.rs"]
 mod hook_boundaries;
 
+#[path = "call_budget_tests.rs"]
+mod budget_boundaries;
+
 #[derive(Default)]
 struct Events(Mutex<Vec<RuntimeEvent>>);
 impl RuntimeEventSink for Events {

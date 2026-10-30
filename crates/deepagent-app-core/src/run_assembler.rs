@@ -553,6 +553,14 @@ impl<'a> RunAssembler<'a> {
 
         let (sink, rx) = ChannelSink::new();
         let sink: Arc<dyn RuntimeEventSink> = Arc::new(sink);
+        let call_owner = crate::call_usage::RunCallUsageOwner {
+            db: self.db.clone(),
+            cost: self.cost.clone(),
+            session_id: session_id_str.clone(),
+            run_id: run_id.clone(),
+            events: Arc::downgrade(&sink),
+        };
+        let main_usage = call_owner.main_loop();
         let subagent_hooks: Arc<std::sync::OnceLock<Arc<HookRegistry>>> =
             Arc::new(std::sync::OnceLock::new());
         let subagent_parent_checkpoint: Arc<
@@ -611,6 +619,7 @@ impl<'a> RunAssembler<'a> {
                 parent_run_id: run_id.clone(),
                 transcript_root: self.tool_results_dir.join("subagents"),
                 client: client.clone(),
+                usage_owner: Some(call_owner.clone()),
                 model: model.clone(),
                 reasoning_effort: subagent_reasoning_effort,
                 registry: sub_registry,
@@ -759,13 +768,7 @@ impl<'a> RunAssembler<'a> {
             plugin_projection: plugin_projection.as_ref(),
             root: &root,
             sink: sink.clone(),
-            usage_owner: Some(crate::call_usage::RunCallUsageOwner {
-                db: self.db.clone(),
-                cost: self.cost.clone(),
-                session_id: session_id_str.clone(),
-                run_id: run_id.clone(),
-                events: Arc::downgrade(&sink),
-            }),
+            usage_owner: Some(call_owner.clone()),
             client: client.clone(),
             model: model.clone(),
             reasoning_effort,
@@ -1072,14 +1075,16 @@ impl<'a> RunAssembler<'a> {
 
         let capture_client = client.clone();
         let capture_model = model.clone();
-        let reactive_compactor: Arc<dyn ReactiveContextCompactor> =
-            Arc::new(HookedReactiveContextCompactor::new(
+        let reactive_compactor: Arc<dyn ReactiveContextCompactor> = Arc::new(
+            HookedReactiveContextCompactor::new(
                 client.clone(),
                 model.clone(),
                 hooks.clone(),
                 session.id(),
                 self.db.clone(),
-            ));
+            )
+            .with_call_usage_sink(call_owner.invocation(run_id.clone(), "compaction")),
+        );
         let model_name_for_cost = model.clone();
 
         let autocompact_reserve = self.settings.autocompact_reserve_tokens();
@@ -1119,6 +1124,7 @@ impl<'a> RunAssembler<'a> {
             || crate::verification_panel::adversarial_verify_enabled())
         .then(|| (client.clone(), model.clone(), prompt_for_model.to_string()));
         let mut agent = ModelAgent::new(client, model, system_prompt, final_user_prompt, tools)
+            .with_call_usage_sink(main_usage.clone())
             .with_tool_schema_source(crate::tool_manifest::live_tool_schema_source(
                 registry.clone(),
                 granted.clone(),
@@ -1311,6 +1317,7 @@ impl<'a> RunAssembler<'a> {
                 side_usage: agent.side_usage(),
                 model_name: &model_name_for_cost,
                 model_usage: Some(&model_usage),
+                booked_calls: Some(main_usage.as_ref()),
                 multi_model_label: "multi-model",
                 sink: sink.as_ref(),
                 run_succeeded,
@@ -1502,6 +1509,14 @@ impl<'a> RunAssembler<'a> {
         );
 
         let compiled = deepagent_runtime::workflow::compile(workflow_request.definition)?;
+        let call_owner = crate::call_usage::RunCallUsageOwner {
+            db: self.db.clone(),
+            cost: self.cost.clone(),
+            session_id: session_id.clone(),
+            run_id: run_id.clone(),
+            events: Arc::downgrade(&sink),
+        };
+        let main_usage = call_owner.main_loop();
         let publisher = deepagent_runtime::workflow::NodeEventPublisher::new(sink.clone());
 
         let run_model = select_run_model(
@@ -1575,7 +1590,8 @@ impl<'a> RunAssembler<'a> {
             workflow_request.target_node_id,
             publisher,
         )
-        .with_cancel(cancellation.flag());
+        .with_cancel(cancellation.flag())
+        .with_call_usage_sink(main_usage.clone());
 
         if let (Some(client), Some(model_name)) = (wf_client, wf_model_name.clone()) {
             agent = agent.with_model(client, model_name);
@@ -1705,6 +1721,7 @@ impl<'a> RunAssembler<'a> {
                 side_usage: agent.side_usage(),
                 model_name: finalizer_model_name.as_deref().unwrap_or("workflow"),
                 model_usage: Some(&model_usage),
+                booked_calls: Some(main_usage.as_ref()),
                 multi_model_label: "workflow",
                 sink: sink.as_ref(),
                 run_succeeded,

@@ -2,8 +2,12 @@
 //! and workflow. These are usage receipts, not another cost ledger.
 
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+#[cfg(test)]
+use std::sync::Arc;
+use std::sync::Mutex;
 
+pub use deepagent_models::usage::{CallUsageObserver, CallUsageReport, CallUsageSink};
+#[cfg(test)]
 use deepagent_models::{DeltaObserver, Usage};
 use serde_json::Value;
 
@@ -17,19 +21,6 @@ pub struct ModelUsage {
     pub model_id: String,
     pub usage: RunUsage,
     pub usage_complete: bool,
-}
-
-/// Receipt for one physical provider request, before output validation.
-#[derive(Debug, Clone)]
-pub struct CallUsageReport {
-    pub provider_id: Option<String>,
-    pub model_id: String,
-    pub usage: Option<Usage>,
-    pub raw_usage: Option<Value>,
-}
-
-pub trait CallUsageSink: Send + Sync {
-    fn record(&self, report: CallUsageReport);
 }
 
 #[derive(Default)]
@@ -97,67 +88,6 @@ impl RunUsageTracker {
                 .unwrap_or_else(|p| p.into_inner())
                 .pending_raw,
         )
-    }
-}
-
-/// Retain the latest SSE usage snapshot, then settle exactly once, including
-/// when a provider error or cancellation drops the waiting future. The request
-/// route is captured before dispatch, never read from a later fallback model.
-pub struct CallUsageObserver {
-    sink: Arc<dyn CallUsageSink>,
-    model_id: String,
-    usage: Option<Usage>,
-    raw: Option<Value>,
-    record_unreported: bool,
-}
-
-impl CallUsageObserver {
-    pub fn new(sink: Arc<dyn CallUsageSink>, model_id: String, record_unreported: bool) -> Self {
-        Self {
-            sink,
-            model_id,
-            usage: None,
-            raw: None,
-            record_unreported,
-        }
-    }
-
-    pub fn completed(&mut self, usage: Option<Usage>, raw: Option<&Value>) {
-        self.record_unreported = true;
-        if usage.is_some() {
-            self.usage = usage;
-        }
-        if let Some(raw) = raw {
-            self.raw = Some(raw.clone());
-        }
-    }
-}
-
-impl DeltaObserver for CallUsageObserver {
-    fn on_usage(&mut self, usage: Usage, raw: &Value) {
-        self.usage = Some(usage);
-        self.raw = Some(raw.clone());
-    }
-
-    fn on_event(&mut self, event: deepagent_models::ModelStreamEvent) {
-        if let deepagent_models::ModelStreamEvent::Usage { usage } = event {
-            self.usage = Some(usage);
-        }
-    }
-}
-
-impl Drop for CallUsageObserver {
-    fn drop(&mut self) {
-        // No fabricated charge or unknown-cost row for an unmeasured failed
-        // request. A successful unmeasured response is explicitly incomplete.
-        if self.usage.is_some() || self.record_unreported {
-            self.sink.record(CallUsageReport {
-                provider_id: None,
-                model_id: self.model_id.clone(),
-                usage: self.usage,
-                raw_usage: self.raw.take(),
-            });
-        }
     }
 }
 

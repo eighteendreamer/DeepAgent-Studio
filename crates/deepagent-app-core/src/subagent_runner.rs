@@ -43,6 +43,7 @@ pub(crate) struct ChatSubagentRunner {
     pub(crate) parent_run_id: String,
     pub(crate) transcript_root: PathBuf,
     pub(crate) client: Arc<ModelClient>,
+    pub(crate) usage_owner: Option<crate::call_usage::RunCallUsageOwner>,
     pub(crate) model: String,
     pub(crate) reasoning_effort: ReasoningEffort,
     pub(crate) registry: Arc<ToolRegistry>,
@@ -740,14 +741,20 @@ impl ChatSubagentRunner {
             &self.client.capability(&sub_model),
             sub_reasoning_effort,
         );
+        let mut reactive_compactor = crate::context_runtime::HookedReactiveContextCompactor::new(
+            self.client.clone(),
+            sub_model.clone(),
+            Arc::new(deepagent_hooks::HookRegistry::new()),
+            session.id(),
+            db.clone(),
+        );
+        if let Some(owner) = &self.usage_owner {
+            reactive_compactor = reactive_compactor.with_call_usage_sink(
+                owner.invocation(session.id().to_string(), "subagent_compaction"),
+            );
+        }
         let reactive_compactor: Arc<dyn deepagent_runtime::ReactiveContextCompactor> =
-            Arc::new(crate::context_runtime::HookedReactiveContextCompactor::new(
-                self.client.clone(),
-                sub_model.clone(),
-                Arc::new(deepagent_hooks::HookRegistry::new()),
-                session.id(),
-                db.clone(),
-            ));
+            Arc::new(reactive_compactor);
         let mut agent = ModelAgent::new(
             self.client.clone(),
             sub_model,
@@ -765,6 +772,10 @@ impl ChatSubagentRunner {
         .with_reactive_compactor(reactive_compactor)
         .with_proactive_compaction(context_policy.autocompact_threshold_tokens(None, None) as u64)
         .with_context_policy(context_policy, None, None);
+        if let Some(owner) = &self.usage_owner {
+            agent =
+                agent.with_call_usage_sink(owner.invocation(session.id().to_string(), "subagent"));
+        }
         let checkpoint = Arc::new(deepagent_runtime::CheckpointManager::new(
             self.db.clone(),
             self.parent_run_id.clone(),
@@ -1420,6 +1431,7 @@ mod tests {
         ChatSubagentRunner {
             db: db.clone(),
             parent_run_id: "audit-parent".into(),
+            usage_owner: None,
             transcript_root: root.join("transcripts"),
             client: Arc::new(ModelClient::new(
                 transport.clone(),

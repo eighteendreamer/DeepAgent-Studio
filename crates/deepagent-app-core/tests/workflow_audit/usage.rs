@@ -26,6 +26,9 @@ use tokio::net::TcpListener;
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
+#[path = "budget.rs"]
+mod measured_budget;
+
 struct Provider {
     base: String,
     calls: Arc<Mutex<Vec<Value>>>,

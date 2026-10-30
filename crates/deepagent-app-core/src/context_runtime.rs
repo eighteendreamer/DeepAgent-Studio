@@ -102,6 +102,7 @@ pub(crate) struct HookedReactiveContextCompactor {
     /// to be written here, at the moment it is produced.
     db: Arc<Database>,
     breaker: Mutex<CompactionBreaker>,
+    call_usage_sink: Option<Arc<dyn deepagent_models::usage::CallUsageSink>>,
 }
 
 /// Unified debounce + circuit breaker across the run's reactive compactions
@@ -161,6 +162,24 @@ impl HookedReactiveContextCompactor {
             session_id,
             db,
             breaker: Mutex::new(CompactionBreaker::default()),
+            call_usage_sink: None,
+        }
+    }
+
+    pub(crate) fn with_call_usage_sink(
+        mut self,
+        sink: Arc<dyn deepagent_models::usage::CallUsageSink>,
+    ) -> Self {
+        self.call_usage_sink = Some(sink);
+        self
+    }
+
+    fn model_compactor(&self) -> deepagent_context::ModelCompactor {
+        let compactor =
+            deepagent_context::ModelCompactor::new(self.client.clone(), self.model.clone());
+        match &self.call_usage_sink {
+            Some(sink) => compactor.with_call_usage_sink(sink.clone()),
+            None => compactor,
         }
     }
 
@@ -206,10 +225,10 @@ impl HookedReactiveContextCompactor {
             .map(render_response_item_for_compaction)
             .collect::<Vec<_>>();
         let goal = latest_user_content_from_response_items(zone).unwrap_or_default();
-        let (summary, usage) =
-            deepagent_context::ModelCompactor::new(self.client.clone(), self.model.clone())
-                .summarize_accounted(&goal, &deepagent_context::TaskSummary::default(), &rendered)
-                .await;
+        let (summary, usage) = self
+            .model_compactor()
+            .summarize_accounted(&goal, &deepagent_context::TaskSummary::default(), &rendered)
+            .await;
         let mut summary_block = summary.to_context_block();
         // Post-compaction re-injection (Phase E): modified files, failed checks
         // and invoked skills from the compacted zone survive the summary so the
@@ -277,16 +296,16 @@ impl HookedReactiveContextCompactor {
             .map(render_response_item_for_compaction)
             .collect::<Vec<_>>();
         let goal = latest_user_content_from_response_items(zone).unwrap_or_default();
-        let (summary, usage) =
-            deepagent_context::ModelCompactor::new(self.client.clone(), self.model.clone())
-                .summarize_accounted_cancelled(
-                    &goal,
-                    &deepagent_context::TaskSummary::default(),
-                    &rendered,
-                    cancel.clone(),
-                )
-                .await
-                .map_err(|failure| CompactionFailure::new(failure.error, failure.usage))?;
+        let (summary, usage) = self
+            .model_compactor()
+            .summarize_accounted_cancelled(
+                &goal,
+                &deepagent_context::TaskSummary::default(),
+                &rendered,
+                cancel.clone(),
+            )
+            .await
+            .map_err(|failure| CompactionFailure::new(failure.error, failure.usage))?;
         if cancel
             .as_ref()
             .is_some_and(|flag| flag.load(Ordering::Acquire))

@@ -146,6 +146,12 @@ impl WorkflowAgent {
         self.usage.models()
     }
 
+    /// Bind physical calls to the host's existing admission and cost owner.
+    pub fn with_call_usage_sink(self, sink: Arc<dyn crate::usage::CallUsageSink>) -> Self {
+        self.usage.bind_sink(sink);
+        self
+    }
+
     /// Attach a knowledge retriever so knowledge-retrieval nodes can search.
     pub fn with_knowledge_retriever(mut self, retriever: Arc<dyn KnowledgeRetriever>) -> Self {
         self.knowledge_retriever = Some(retriever);
@@ -1043,9 +1049,11 @@ impl WorkflowAgent {
                 .unwrap_or_default(),
             "parameter-extractor",
         )?;
-        if let Some(unknown) = parsed.keys().find(|name| !params.iter().any(|parameter| {
-            parameter.get("name").and_then(Value::as_str) == Some(name.as_str())
-        })) {
+        if let Some(unknown) = parsed.keys().find(|name| {
+            !params.iter().any(|parameter| {
+                parameter.get("name").and_then(Value::as_str) == Some(name.as_str())
+            })
+        }) {
             return Err(CoreError::invalid(format!(
                 "InvalidModelOutput: parameter-extractor returned undeclared field `{unknown}`"
             )));
@@ -1209,11 +1217,13 @@ impl WorkflowAgent {
             request.max_tokens = Some(m);
         }
 
+        crate::usage::CallUsageSink::before_call(self.usage.as_ref())?;
         let mut observer = WorkflowUsageObserver::new(self.usage.clone(), model_name, true);
         let response = client
             .stream_chat_completion_observed(request, &mut observer)
             .await;
         drop(observer);
+        crate::usage::CallUsageSink::checkpoint(self.usage.as_ref())?;
         let response = response?;
         let text = response.output_text_projection();
 

@@ -1,4 +1,4 @@
-//! Run-owned accounting for auxiliary model calls. Reuses the runtime's
+//! Run-owned accounting for physical model calls. Reuses the models'
 //! physical-request observer, the host's pricing and the existing run ledger.
 //! Results/decisions are deliberately not a prerequisite for booking usage.
 
@@ -33,10 +33,24 @@ impl RunCallUsageOwner {
         invocation_id: String,
         purpose: &'static str,
     ) -> Arc<OwnedCallUsage> {
+        self.owned_invocation(invocation_id, purpose, CostOrigin::SideCall)
+    }
+
+    pub(crate) fn main_loop(&self) -> Arc<OwnedCallUsage> {
+        self.owned_invocation(self.run_id.clone(), "main_loop", CostOrigin::Run)
+    }
+
+    fn owned_invocation(
+        &self,
+        invocation_id: String,
+        purpose: &'static str,
+        origin: CostOrigin,
+    ) -> Arc<OwnedCallUsage> {
         Arc::new(OwnedCallUsage {
             owner: self.clone(),
             invocation_id,
             purpose,
+            origin,
             error: Mutex::new(None),
         })
     }
@@ -46,10 +60,21 @@ pub(crate) struct OwnedCallUsage {
     owner: RunCallUsageOwner,
     invocation_id: String,
     purpose: &'static str,
+    origin: CostOrigin,
     error: Mutex<Option<String>>,
 }
 
 impl OwnedCallUsage {
+    pub(crate) fn main_receipts(
+        &self,
+    ) -> Result<Vec<deepagent_persistence::cost_store::RunCallReceipt>> {
+        Ok(CostStore::new(&self.owner.db)
+            .run_call_receipts(&self.owner.session_id, &self.owner.run_id)?
+            .into_iter()
+            .filter(|receipt| receipt.report["origin"] == "run")
+            .collect())
+    }
+
     pub(crate) fn checkpoint(&self) -> Result<()> {
         match self
             .error
@@ -66,6 +91,24 @@ impl OwnedCallUsage {
 }
 
 impl CallUsageSink for OwnedCallUsage {
+    fn checkpoint(&self) -> Result<()> {
+        OwnedCallUsage::checkpoint(self)
+    }
+
+    fn before_call(&self) -> Result<()> {
+        self.checkpoint()?;
+        let Some(cost) = &self.owner.cost else {
+            return Ok(());
+        };
+        let receipts = CostStore::new(&self.owner.db)
+            .run_call_receipts(&self.owner.session_id, &self.owner.run_id)?;
+        let accounting_complete = !receipts.iter().any(|receipt| {
+            receipt.report["ledger_available"] == true
+                && (receipt.ledger_id.is_none() || receipt.cost_yuan.is_none())
+        });
+        cost.check_budget_accounting(accounting_complete)
+    }
+
     fn record(&self, report: CallUsageReport) {
         // Stable receipt identity for this physical attempt; never use the
         // provider response id (which may be absent or repeated on retries).
@@ -73,6 +116,7 @@ impl CallUsageSink for OwnedCallUsage {
         let data = serde_json::json!({
             "version":1,
             "purpose":self.purpose,
+            "origin":self.origin,
             "invocation_id":self.invocation_id,
             "provider_id":report.provider_id,
             "model_id":report.model_id,
@@ -103,7 +147,12 @@ impl CallUsageSink for OwnedCallUsage {
         };
         match result {
             Ok(recorded) => {
-                if recorded.inserted && recorded.ledger_id.is_some() {
+                // The main turn keeps its existing one final aggregate notice.
+                // Its rows are already durable; finalization must not book again.
+                if self.origin == CostOrigin::SideCall
+                    && recorded.inserted
+                    && recorded.ledger_id.is_some()
+                {
                     if let Some(events) = self.owner.events.upgrade() {
                         events.emit(RuntimeEvent::CostRecorded {
                             model: report.model_id,
@@ -117,7 +166,7 @@ impl CallUsageSink for OwnedCallUsage {
                 // No successful CostRecorded, zero charge or silent fallback.
                 // Retain an explicit failed receipt when the run ledger is
                 // still writable (e.g. a cost insert alone was rejected).
-                tracing::error!(run_id = %self.owner.run_id, %call_id, %error, "auxiliary model usage could not be booked");
+                tracing::error!(run_id = %self.owner.run_id, %call_id, %error, "model call usage could not be booked");
                 *self.error.lock().unwrap_or_else(|p| p.into_inner()) = Some(error.to_string());
                 let store = RunStore::new(&self.owner.db);
                 let failed_receipt = store.get(&self.owner.run_id).and_then(|run| {

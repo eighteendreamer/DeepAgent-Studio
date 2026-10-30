@@ -101,6 +101,10 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
     let prices = settings.load().unwrap().unwrap().pricing_catalog.models;
     assert_eq!(prices[FLASH].calculate(1000, 100, 800, 200), 0.000616);
     assert_eq!(prices[PRO].calculate(1000, 100, 800, 200), 0.002370);
+    // H-272 stops before another paid attempt if the first tool-bearing
+    // response already reached the shared budget. Keep that route contrast,
+    // rather than making the fixture unlimited to preserve an old success.
+    let stopped = tool_first && prices[primary].calculate(1000, 100, 800, 200) >= LIMIT;
     let cost = Arc::new(CostService::from_settings(db.clone(), settings.clone()));
     cost.set_budget(BudgetConfig {
         daily_limit: Some(LIMIT),
@@ -145,19 +149,30 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
             )
             .await;
         if turn == 1 {
-            result.unwrap();
+            if stopped {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("daily budget exhausted"));
+            } else {
+                result.unwrap();
+            }
             let first_models = model.requests.lock().unwrap().clone();
             let mut expected_models = vec![primary.to_string()];
-            if tool_first {
+            if tool_first && !stopped {
                 expected_models.push(primary.to_string());
             }
-            if switch {
+            if switch && !stopped {
                 expected_models.push(fallback.to_string());
             }
             assert_eq!(first_models, expected_models);
-            let answered = if switch { fallback } else { primary };
+            let answered = if switch && !stopped {
+                fallback
+            } else {
+                primary
+            };
             let expected_cost = prices[answered].calculate(1000, 100, 800, 200)
-                + if tool_first {
+                + if tool_first && !stopped {
                     prices[primary].calculate(1000, 100, 800, 200)
                 } else {
                     0.0
@@ -175,7 +190,7 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
                 })
                 .unwrap();
             let summary = cost.summary(&session).unwrap();
-            let calls = 1 + u64::from(tool_first);
+            let calls = 1 + u64::from(tool_first && !stopped);
             assert_eq!(summary.input_tokens, 1000 * calls);
             assert_eq!(summary.output_tokens, 100 * calls);
             assert_eq!(summary.cache_hit_tokens, 800 * calls);
@@ -234,7 +249,14 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
                 .filter(|event| event.event_type == "run_terminal")
                 .collect();
             assert_eq!(terminals.len(), 1);
-            assert_eq!(terminals[0].data["kind"], "succeeded");
+            assert_eq!(
+                terminals[0].data["kind"],
+                if turn == 1 && stopped {
+                    "budget_exceeded"
+                } else {
+                    "succeeded"
+                }
+            );
         }
     }
     let (first_models, ledger_models, rows, summary, cost_events, expected_cost) = first.unwrap();
@@ -320,16 +342,19 @@ fn assert_route_cost(observed: &RouteObservation) {
         );
         assert_eq!(observed.rows.len(), 1);
     } else {
-        let mut answered = vec![
+        let answered = vec![
             observed.first_models[0].clone(),
             observed.first_models.last().unwrap().clone(),
         ];
-        answered.sort();
-        answered.dedup();
         assert_eq!(observed.ledger_models, answered);
         assert_eq!(
+            observed.rows.len(),
+            2,
+            "one durable row per answered physical request"
+        );
+        assert_eq!(
             observed.cost_events[0].0,
-            if answered.len() == 1 {
+            if answered[0] == answered[1] {
                 &answered[0]
             } else {
                 "multi-model"

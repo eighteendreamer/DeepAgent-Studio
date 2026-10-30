@@ -39,6 +39,14 @@ impl HookKind {
     fn denies(self) -> bool {
         matches!(self, Self::PromptDeny | Self::AgentDeny)
     }
+
+    fn expected_calls(self) -> usize {
+        match self {
+            Self::Prompt | Self::PromptDeny => 1,
+            Self::Agent | Self::AgentDeny => 2,
+            _ => 0,
+        }
+    }
 }
 
 struct UsageModel {
@@ -163,18 +171,20 @@ fn tool_output(request: &Value, call_id: &str) -> Value {
     serde_json::from_str(outputs[0]["output"].as_str().unwrap()).unwrap()
 }
 
-fn verify_first_run(chat: &ChatService, model: &UsageModel, events: &[RuntimeEvent]) -> usize {
+fn verify_first_run(
+    chat: &ChatService,
+    model: &UsageModel,
+    events: &[RuntimeEvent],
+    stopped: bool,
+    durable_result: (bool, Value),
+) -> usize {
     let kind = model.kind;
     let hook_calls = model.hooks.lock().unwrap().len();
+    assert_eq!(hook_calls, kind.expected_calls());
     assert_eq!(
-        hook_calls,
-        match kind {
-            HookKind::Prompt | HookKind::PromptDeny => 1,
-            HookKind::Agent | HookKind::AgentDeny => 2,
-            _ => 0,
-        }
+        model.parent.lock().unwrap().len(),
+        if stopped { 1 } else { 2 }
     );
-    assert_eq!(model.parent.lock().unwrap().len(), 2);
     if matches!(kind, HookKind::Agent | HookKind::AgentDeny) {
         let hooks = model.hooks.lock().unwrap();
         assert_eq!(tool_output(&hooks[1], "hook-usage-list")["status"], "ok");
@@ -185,15 +195,25 @@ fn verify_first_run(chat: &ChatService, model: &UsageModel, events: &[RuntimeEve
         .filter(|event| event.event_type == "run_terminal")
         .collect();
     assert_eq!(terminals.len(), 1);
-    assert_eq!(terminals[0].data["kind"], "succeeded");
-    let parent_result = {
-        let requests = model.parent.lock().unwrap();
-        tool_output(&requests[1], "parent-usage-read")
-    };
     assert_eq!(
-        parent_result["status"],
-        if kind.denies() { "error" } else { "ok" }
+        terminals[0].data["kind"],
+        if stopped {
+            "budget_exceeded"
+        } else {
+            "succeeded"
+        }
     );
+    if !stopped {
+        let requests = model.parent.lock().unwrap();
+        assert_eq!(
+            tool_output(&requests[1], "parent-usage-read")["status"],
+            if kind.denies() { "error" } else { "ok" }
+        );
+    }
+    // Even if no second paid request is admitted, the local tool/denial result
+    // must already be durable, not dropped with the stopped model continuation.
+    assert_eq!(durable_result.0, !kind.denies());
+    let parent_result = durable_result.1;
     if kind.denies() {
         assert!(parent_result
             .to_string()
@@ -279,11 +299,14 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
         ChatService::new(db.clone(), settings, model.clone(), &workspace).with_cost(cost.clone());
     let events = Arc::new(Mutex::new(Vec::new()));
     let captured = events.clone();
-    let session = tokio::time::timeout(
+    let session = chat.create_session(None).unwrap();
+    let stopped = (1 + kind.expected_calls()) as f64 >= budget_calls;
+    let parent_calls = if stopped { 1 } else { 2 };
+    let result = tokio::time::timeout(
         Duration::from_secs(8),
         chat.run_in_session(
             "Read fixture.txt and reply briefly.",
-            None,
+            Some(&session),
             None,
             None,
             Vec::new(),
@@ -295,11 +318,34 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
         ),
     )
     .await
-    .expect("formal hook workflow must finish")
-    .unwrap();
+    .expect("formal hook workflow must finish");
+    if stopped {
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("daily budget exhausted"));
+    } else {
+        result.unwrap();
+    }
+    let durable_results: Vec<_> = EventStore::new(&db)
+        .load_session(session.parse().unwrap())
+        .unwrap()
+        .into_iter()
+        .filter_map(|event| match event.payload {
+            EventPayload::ToolCallCompleted {
+                call_id,
+                ok,
+                output,
+                ..
+            } if call_id == "parent-usage-read" => Some((ok, output)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(durable_results.len(), 1);
     let (hook_calls, event_cost, live_input) = {
         let events = events.lock().unwrap();
-        let hook_calls = verify_first_run(&chat, &model, &events);
+        let hook_calls =
+            verify_first_run(&chat, &model, &events, stopped, durable_results[0].clone());
         let (event_cost, live_input) = live_totals(&events);
         (hook_calls, event_cost, live_input)
     };
@@ -310,14 +356,21 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
         .into_iter()
         .filter(|event| event.event_type == "model_call_usage")
         .collect();
-    assert_eq!(receipts.len(), hook_calls);
+    assert_eq!(receipts.len(), parent_calls + hook_calls);
+    assert_eq!(
+        receipts
+            .iter()
+            .filter(|receipt| receipt.data["report"]["origin"] == "side_call")
+            .count(),
+        hook_calls
+    );
     assert_eq!(
         receipts
             .iter()
             .map(|event| event.data["call_id"].as_str().unwrap())
             .collect::<std::collections::HashSet<_>>()
             .len(),
-        hook_calls
+        parent_calls + hook_calls
     );
     for receipt in &receipts {
         assert_eq!(receipt.data["session_id"], session);
@@ -337,7 +390,7 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
         .iter()
         .map(|row| row.cost_yuan.expect("active pricing in historical ledger"))
         .sum();
-    let answered = 2 + hook_calls;
+    let answered = parent_calls + hook_calls;
     let followup = tokio::time::timeout(
         Duration::from_secs(8),
         chat.run_in_session(
@@ -367,7 +420,7 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
         expected_cost: unit_cost * answered as f64,
         limit,
         followup_error: followup.err().map(|error| error.to_string()),
-        followup_dispatches: model.parent.lock().unwrap().len() - 2,
+        followup_dispatches: model.parent.lock().unwrap().len() - parent_calls,
     };
     eprintln!("hook usage audit: kind={kind:?}, observed={observed:?}");
     observed
@@ -400,7 +453,11 @@ fn assert_all_answered_usage(observed: Observation) {
             observed.durable_input,
             observed.raw_calls
         ),
-        (2000, 1000, 2)
+        (
+            ((observed.answered - observed.hook_calls) * 1000) as u64,
+            1000,
+            observed.answered - observed.hook_calls
+        )
     );
     assert!(observed.hook_calls <= observed.answered);
 }
@@ -438,4 +495,16 @@ async fn audit_prompt_hook_denial_still_accounts_usage() {
 #[tokio::test]
 async fn audit_agent_hook_denial_still_accounts_usage() {
     assert_all_answered_usage(observe(HookKind::AgentDeny, 2.5).await);
+}
+
+#[tokio::test]
+async fn sufficient_budget_keeps_the_complete_two_step_agent_hook_and_parent_answer() {
+    for kind in [HookKind::Agent, HookKind::AgentDeny] {
+        assert_all_answered_usage(observe(kind, 3.5).await);
+    }
+}
+
+#[tokio::test]
+async fn measured_prompt_hook_spend_stops_the_next_parent_request() {
+    assert_all_answered_usage(observe(HookKind::Prompt, 1.5).await);
 }

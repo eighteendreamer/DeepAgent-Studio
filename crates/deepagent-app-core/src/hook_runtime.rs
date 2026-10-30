@@ -317,11 +317,9 @@ impl AppHookActionExecutor {
         .with_temperature(0.0)
         .with_max_output_tokens(512)
         .with_reasoning_effort(ReasoningEffort::None);
-        let mut observer = CallUsageObserver::new(
-            usage.unwrap_or_else(|| Arc::new(NoopEventSink)),
-            model.into(),
-            false,
-        );
+        let usage = usage.unwrap_or_else(|| Arc::new(NoopEventSink));
+        usage.before_call()?;
+        let mut observer = CallUsageObserver::new(usage.clone(), model.into(), false);
         let response = {
             let response = self.client.stream_response_observed_cancelled(
                 request,
@@ -339,6 +337,7 @@ impl AppHookActionExecutor {
         }
         // Settle before parsing JSON, including errors and cancellation.
         drop(observer);
+        usage.checkpoint()?;
         let response = response?;
         parse_model_hook_decision(&response.output_text_projection())
     }

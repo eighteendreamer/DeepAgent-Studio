@@ -44,6 +44,9 @@ pub(crate) struct AppRunFinalizerRequest<'a> {
     /// Main-loop and workflow calls can select different routes. These are
     /// projections of the same canonical usage, not additional spend.
     pub(crate) model_usage: Option<&'a [deepagent_runtime::usage::ModelUsage]>,
+    /// Production request-owned calls are already in the one durable ledger.
+    /// Finalization projects their identities; it must not charge them twice.
+    pub(crate) booked_calls: Option<&'a crate::call_usage::OwnedCallUsage>,
     pub(crate) multi_model_label: &'a str,
     /// Tokens of model calls the run loop did not make itself (compaction
     /// summaries). Booked as its own ledger row, never folded into `usage`, so
@@ -170,10 +173,10 @@ impl AppRunFinalizer {
             self.record_model_cost(
                 session,
                 request.run_id,
-                request.session_id,
                 models,
                 request.multi_model_label,
                 request.sink,
+                request.booked_calls,
             )?;
         } else {
             self.record_run_cost(
@@ -183,7 +186,9 @@ impl AppRunFinalizer {
                 request.sink,
             );
         }
-        if let (Some(cost), Some(side)) = (&self.cost, request.side_usage) {
+        if let (None, Some(cost), Some(side)) =
+            (request.booked_calls, &self.cost, request.side_usage)
+        {
             // Compaction spend is booked as its own row, never folded into the
             // turn's usage (that would move the numbers the panel shows).
             record_usage_cost(
@@ -290,23 +295,32 @@ impl AppRunFinalizer {
         &self,
         session: &mut Session<'_, C>,
         run_id: &str,
-        session_id: &str,
         models: &[deepagent_runtime::usage::ModelUsage],
         multi_model_label: &str,
         sink: &dyn RuntimeEventSink,
+        booked_calls: Option<&crate::call_usage::OwnedCallUsage>,
     ) -> Result<()> {
+        let session_id = session.id().to_string();
         let mut total = models
             .iter()
             .all(|model| model.usage_complete)
             .then_some(0.0);
         let mut ledger_ids = Vec::new();
-        if let Some(cost) = &self.cost {
+        if let Some(booked) = booked_calls {
+            booked.checkpoint()?;
+            for receipt in booked.main_receipts()? {
+                if let Some(id) = receipt.ledger_id {
+                    ledger_ids.push(id);
+                }
+                total = total.zip(receipt.cost_yuan).map(|(sum, value)| sum + value);
+            }
+        } else if let Some(cost) = &self.cost {
             for measured in models {
                 if measured.usage.billed_prompt_tokens == 0 && measured.usage.completion_tokens == 0
                 {
                     continue;
                 }
-                match write_usage_cost(cost, session_id, &measured.model_id, &measured.usage) {
+                match write_usage_cost(cost, &session_id, &measured.model_id, &measured.usage) {
                     Ok((id, value)) => {
                         ledger_ids.push(id);
                         total = total.zip(value).map(|(sum, cost)| sum + cost);
@@ -333,7 +347,7 @@ impl AppRunFinalizer {
             version: 1,
             run_id: run_id.into(),
             task_id,
-            ledger_session_id: session_id.into(),
+            ledger_session_id: session_id,
             ledger_ids,
             cost_yuan: total,
         })?;
@@ -634,6 +648,7 @@ mod tests {
                 &mut session,
                 AppRunFinalizerRequest {
                     model_usage: None,
+                    booked_calls: None,
                     multi_model_label: "multi-model",
                     session_id: &session_id,
                     run_id: "run_test",
@@ -747,6 +762,7 @@ mod tests {
                 &mut session,
                 AppRunFinalizerRequest {
                     model_usage: None,
+                    booked_calls: None,
                     multi_model_label: "multi-model",
                     session_id: &session_id,
                     run_id: "run_consolidate",
@@ -851,6 +867,7 @@ mod tests {
                 &mut session,
                 AppRunFinalizerRequest {
                     model_usage: None,
+                    booked_calls: None,
                     multi_model_label: "multi-model",
                     session_id: &session_id,
                     run_id: "run_rows",
@@ -955,6 +972,7 @@ mod tests {
                         discovered_tools: &empty,
                         usage: Some(run_of(&[provider_call(1000, 100, 800, 200); 2])),
                         model_usage: Some(&models),
+                        booked_calls: None,
                         multi_model_label: "multi-model",
                         side_usage: Some(RunUsage::from(provider_call(900, 60, 700, 200))),
                         model_name: "primary",
