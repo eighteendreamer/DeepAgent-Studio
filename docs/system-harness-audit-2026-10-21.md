@@ -9997,11 +9997,11 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - **E-H282-04（共享 parser 单元）**：`cargo test -p deepagent-workspace --offline -- --test-threads=1` 为 **13 passed / 0 failed**，覆盖未暂存/删除/未跟踪/重命名、空格和非 ASCII 路径及空状态；`cargo clippy -p deepagent-workspace --all-targets --offline -- -D warnings` 退出 0。
 - **E-H282-05（AppCore 消费方）**：`cargo test -p deepagent-app-core --lib --offline -j 1 -- --test-threads=1` 为 **1376 passed / 0 failed / 51 ignored**；`cargo check -p deepagent-workspace -p deepagent-app-core --offline -j 1` 退出 0；修改文件定向 rustfmt `--check` 与 `git diff --check` 退出 0。`cargo clippy -p deepagent-app-core --lib --offline -j 1 -- -D warnings` 仍被未修改的 `crates/deepagent-models/src/client.rs:355` `clone_on_copy` 阻断；根 `cargo fmt --all -- --check` 仍被未修改的 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断，均无本项文件诊断。
 - **E-H282-06（范围与限制）**：验收限 Windows 本机、真实 Git 临时仓库、临时 SQLite、离线模型 transport 和内存 run_events；未验真实 DeepSeek 决策、用户仓库/用户文件、其他 OS、跨进程/磁盘重开、Desktop/Tauri/CLI/SDK 全入口、超大仓库及所有 Git 编码异常。未改变权限、审批、取消或 Git 写操作。
-- **E-H282-07（提交与状态）**：代码、共享 parser、AppCore 回归和默认探针已独立提交 `c2ed35c4`（`【fix】统一Git状态解析并保留未暂存路径`），未推送、未创建 PR；对应进度台账已回填为“已修复并验收”，本项剩余 0。当前总计 **103 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、173 有效未关闭（173 待修复、0 修复中）**，不提供完成率。
+- **E-H282-07（提交与状态）**：代码、共享 parser、AppCore 回归和默认探针已独立提交 `c2ed35c4`（`【fix】统一Git状态解析并保留未暂存路径`），未推送、未创建 PR；对应进度台账已回填为“已修复并验收”，本项剩余 0。H-282 完成时的历史快照为 **103 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、173 有效未关闭（173 待修复、0 修复中）**；H-283 的最新总数见其最终 Evidence，不提供完成率。
 
 ### H-283：Read deny 只拦工具，自动工作区上下文仍在首次请求发送 README 与清单摘要
 
-**级别：中（P2，条件性的数据可见性/权限表达设计缺口）；状态：正式链路已复现，未修复。** 必须区分契约：当前 `PermissionRules` 明确按工具调用匹配，`Read` deny 在本次测试中正常拦截了 `read_file`，没有规则引擎失效或审批被绕过的证据。本项确认的是：工具级拒绝不是模型数据可见性边界，宿主自动预读不接收同一有效读取策略；不能把现有工具禁令误当作全局文件保密承诺。
+**级别：中（P2，条件性的数据可见性/权限表达设计缺口）；状态：2026-10-31 已修复并验收（限 E-H283-01～08）。** 必须区分契约：当前 `PermissionRules` 明确按工具调用匹配，`Read` deny 在修复前探针中正常拦截了 `read_file`，没有规则引擎失效或审批被绕过的证据。本项确认的是：工具级拒绝不能自动成为模型数据可见性边界；本轮已让自动工作区预读消费同一份有效读取策略。
 
 #### 即时 Evidence（2026-10-25，承接已完成执行，未为登记重新运行探针）
 
@@ -10036,17 +10036,27 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - **DeepSeek Harness（静态参考，未运行）：** 已查到其 Workspace Controller、Workspace Files、Session/Attachment/Scope 分离的 owner seam；本轮没有发现可直接证明其自动 README 预读与 Read deny 绑定的同构测试。因此本项的治理不能伪装成“DeepSeek 官方已经替宿主做了权限过滤”。
 - **DeepSeek 官方边界：** Responses API 是无状态的，`instructions` 作为第一条 system 消息，宿主需把要给模型的上下文放进请求；Tool Calls 指南明确函数由用户/宿主提供并执行，模型本身不执行具体函数。官方 API、reasoning、strict schema 与 KV cache 都不会替本地 scanner 判断某个文件内容是否可见。[Responses API 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/)、[Tool Calls 指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)
 - **后果：** 如果被拒绝的 README/manifest 含内部路径、部署信息、密钥提示或用户不希望交给模型的业务摘要，后续 `read_file` deny 只能阻止再次读取，不能撤回第一次请求已发送的内容；若使用真实 provider，这会扩大模型输入面和审计范围。此次只用合成 canary 与离线 transport，没有证明真实秘密被发送。
-- **治理方向（本地设计，未实施）：** 在现有 workspace scanner 与 context runtime 之间引入 run-scoped、可审计的 `ResourceVisibilityPolicy`/读取授权快照；README、manifest 摘要、tree/name discovery 和直接 `read_file` 在生成模型可见 block 前统一判定。若产品确实希望“结构感知”默认开启，应明确定义允许来源（例如仅公开 manifest 字段、脱敏 README）并在 wire/日志中标注来源与过滤结果；若 `Read` deny 只承诺工具级拒绝，应在设置和协议文档中明确，不把它呈现成全局保密开关。策略变化要绑定 context version，后续请求、重放和审批使用同一快照；不能在 prompt 中写“不要看”代替宿主过滤。
+- **修复前治理方向（本地设计，已由本轮最小方案落实权限快照边界）：** 在现有 workspace scanner 与 context runtime 之间引入 run-scoped、可审计的 `ResourceVisibilityPolicy`/读取授权快照；README、manifest 摘要、tree/name discovery 和直接 `read_file` 在生成模型可见 block 前统一判定。若产品确实希望“结构感知”默认开启，应明确定义允许来源（例如仅公开 manifest 字段、脱敏 README）并在 wire/日志中标注来源与过滤结果；若 `Read` deny 只承诺工具级拒绝，应在设置和协议文档中明确，不把它呈现成全局保密开关。策略变化要绑定 context version，后续请求、重放和审批使用同一快照；不能在 prompt 中写“不要看”代替宿主过滤。当前实际实现复用 `PermissionRules` 快照，先覆盖 `Read/read_file` 的 deny/ask；完整按路径/内容分类策略仍未实现。
 - **验收方向：** 增加 README/manifest、普通文件、敏感后缀与隐藏目录、文件名/内容两层可见性，默认/显式 deny、allow、ask、sandbox profile，CLI/SDK/Desktop 三入口和恢复/重放矩阵；断言被拒内容既不在首次 `instructions`，也不在后续 history、工具结果、日志摘要或错误信息中。保留本轮控制：允许读取仍能到达真实工具结果，普通文件自动上下文仍不无故泄露，工具 deny 仍产生 `tool_blocked`。
 
 #### 验证进度（持续追加）
 
-- 已确认上述六个场景和一次命令结果；没有为增加发现数量重复运行 ignored 故障探针。
-- `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**92 passed / 0 failed / 87 ignored**，179 tests，测试体 18.73 秒。H-283 的普通/允许控制在默认套件通过；H-283 故障探针仍显式 ignore，默认绿色不代表自动上下文已受权限过滤。
+- 修复前已确认上述六个场景和一次命令结果；原始失败正文保留在 `target/h283-original-probe-20261031.log`，不以修后结果覆盖。
+- 修复前 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` 为 **92 passed / 0 failed / 87 ignored**；当时 H-283 故障探针显式 ignore，默认绿色不代表自动上下文受权限过滤。
 - `cargo test -p deepagent-workspace --offline`：**11 passed / 0 failed**，doc-tests **0 passed / 0 failed**。这覆盖 scanner/snapshot 既有控制，但没有修生产权限边界。
-- `cargo fmt --all -- --check`：通过；`git diff --check`：通过（工作树已有换行风格提示，不是内容错误）。
-- `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`：失败于未修改的既有告警 `deepagent-models/src/client.rs:355 clone_on_copy` 与 `deepagent-persistence/src/run_store.rs:127 explicit_counter_loop`；没有为本轮审计修改无关生产代码。
+- 修复后正式探针 `cargo test -p deepagent-app-core --test kernel_v2_e2e workspace_context_policy:: --offline -- --nocapture --test-threads=1` 为 **2 passed / 0 failed / 251 filtered**；README/manifest 在 `Read` deny 下不再进入首次或后续 `instructions`，普通文件/允许读取控制保持通过。最终正文保留于 `target/h283-final-probe-20261031.log`。
+- 修复后 `cargo test -p deepagent-app-core --lib --offline -j 1 -- --test-threads=1` 为 **1377 passed / 0 failed / 51 ignored**；权限判断单测 `system_context::tests::workspace_scan_treats_read_ask_and_deny_as_not_visible` 为 **1 passed / 0 failed**；`cargo check -p deepagent-app-core --offline -j 1` 退出 0；`git diff --check` 退出 0。
+- `cargo fmt --all -- --check` 仍被未修改的 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；严格 `cargo clippy -p deepagent-app-core --lib --offline -j 1 -- -D warnings` 仍被未修改基线阻断（首个为 `crates/deepagent-models/src/client.rs:355`，另有 runtime/AppCore 既有 lint）；放宽这些已知基线后本轮相关 crate Clippy 退出 0。没有为本轮修改无关生产代码。
 - 仍未执行完整 workspace、独立 Desktop/CLI/SDK 流程、前端构建、参考工程测试、跨平台、真实 DeepSeek 决策/费用或磁盘重开；没有兼容性、配置、数据迁移、权限或沙箱行为变更。未处理用户排除的 encrypted-content 问题。
+
+#### 修复实现与最终 Evidence（2026-10-31）
+
+- **根因修复**：`RunAssembler` 在解析 `RunEnvironment` 后只计算一次 `RunConfigOverlay::merged_permission_rules(settings.permission_rules())`，将同一有效 `PermissionRules` 快照同时传给 hook 装配和 `context_runtime`；hook 不再自行重新读取设置，避免权限快照分叉。
+- **上下文边界**：`build_system_manifest_with_permissions` 在调用 `WorkspaceScanner` 前以 `read_file` 评估有效规则；`Deny` 或 `Ask` 均跳过 README/manifest/tree 自动 enrichment，无规则或明确 `Allow` 保留原有结构感知。工具层 `PermissionRulesHook` 与模型可见上下文因此共享同一 deny/ask/allow 优先级。
+- **回归范围**：保留原始 `Read deny` 工具阻断、普通文件不预载和允许读取可返回正文三个控制；H-283 正式探针已移除 `ignore`，故障场景默认纳入回归。
+- **提交与状态**：代码、测试和探针默认化已提交 `0ab74ee5`（`【fix】统一自动工作区上下文读取权限`），未推送、未创建 PR；没有执行 `cargo clean`，未删除 `target`、日志、用户文件或既有证据。
+- **限制与残余风险**：仅覆盖 Windows 本机、临时 SQLite/文件、离线模型 transport；未验真实 DeepSeek、用户仓库/凭据、CLI/SDK/Desktop/前端、其他 OS、磁盘重开、全量 workspace、隐藏/敏感后缀及并发配置变更。当前修复是 run-scoped 工具级 `Read` 可见性投影，不宣称已建立按路径/内容分类的全局资源策略；后续若扩展 scanner 来源仍需复用同一策略。
+- **当前台账口径**：本项剩余 0；累计 **104 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、172 有效未关闭（172 待修复、0 修复中）**，不提供完成率。下一项按依赖顺序准备复核 H-285；剩余工时仍为 **200–400 有效修复与验收小时**的历史未逐项校准粗估，有效工作时间与构建/设备/依赖等待分开计算。
 
 ### H-284：同一 Harness thread 的第二个 `turn/start` 被确认成独立 started，实际输入租约随后取消第一个运行
 

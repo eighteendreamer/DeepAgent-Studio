@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-31）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零三项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零四项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 103 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 104 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前无进行中的独立项 |
-| 待修复 | 173 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 172 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **173（173待修复、0修复中）**；不提供完成率。一百零三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **172（172待修复、0修复中）**；不提供完成率。一百零四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
 
 ## H-275 MCP hook 参数 schema 执行边界（2026-10-31，已修复并验收）
 
@@ -77,7 +77,20 @@ E-H277-08（范围、门禁限制与提交）：完整 `kernel_v2_e2e` 为 **197
 - **E-H282-07（范围与限制）**：验证限 Windows 本机、真实 Git 临时仓库、临时 SQLite、离线模型 transport 和内存 run_events；未验真实 DeepSeek 决策、用户仓库/用户文件、其他 OS、跨进程/磁盘重开、Desktop/Tauri/CLI/SDK 全入口、超大仓库及所有 Git 编码异常。命令失败在 `detect_git_context` 返回不可用而非伪装 clean；本项未改变权限、审批、取消或 Git 写操作。
 - **E-H282-08（提交）**：代码、共享 parser、AppCore 回归和探针默认化已提交于 `c2ed35c4`（`【fix】统一Git状态解析并保留未暂存路径`），未推送、未创建 PR；本台账与原审计报告随后另做正常文档提交，不 amend。
 
-本项剩余 **0**；当前为 **103 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、173 有效待修复、0 修复中**。下一项按影响/依赖顺序准备复核 H-283；剩余工时仍为 **200–400 有效修复与验收小时**的历史未逐项校准粗估，有效工作时间与构建/设备/依赖等待分开计算，不提供精确完工承诺。
+本项剩余 **0**；当前为 **103 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、173 有效待修复、0 修复中**（该行是 H-282 完成时的历史快照，最新总数见文首及 H-283）。下一项按影响/依赖顺序准备复核 H-285；剩余工时仍为 **200–400 有效修复与验收小时**的历史未逐项校准粗估，有效工作时间与构建/设备/依赖等待分开计算，不提供精确完工承诺。
+
+## H-283 Read deny 与自动工作区上下文权限（2026-10-31，已修复并验收）
+
+原报告：[H-283：Read deny 只拦工具，自动工作区上下文仍在首次请求发送 README 与清单摘要](system-harness-audit-2026-10-21.md)。本轮只处理首次模型请求前 `WorkspaceScanner` 的读取授权投影，不合并 H-237 agent-hook 私有运行权限继承、H-79 文件发现或 H-77 grep 候选。
+
+- **E-H283-01（修前原始探针）**：保留于 `target/h283-original-probe-20261031.log`。执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e workspace_context_policy:: --offline -- --include-ignored --nocapture --test-threads=1`，结果 **1 passed / 1 failed / 0 ignored**（缺陷预期）；README/`package.json` canary 已进入首次与后续 `instructions`，工具层 `read_file` 被 `Read` deny 阻断且工具结果无 canary。
+- **E-H283-02（根因）**：`system_context::build_system_manifest` 原本无条件调用 `WorkspaceScanner::scan`，而 `PermissionRulesHook` 只在 `BeforeToolUse` 处理工具调用；因此工具 deny 发生前，scanner 已把 README/manifest 摘要放入模型 system context。
+- **E-H283-03（实现）**：`RunAssembler` 在 `RunEnvironment` 解析后只计算一次 `RunConfigOverlay::merged_permission_rules(settings.permission_rules())`，将同一 `PermissionRules` 快照传给 `HookAssemblyRequest` 和 `RunContextRequest`。新增权限感知的 manifest 入口：对 `read_file` 的有效结果为 `Deny` 或 `Ask` 时跳过 workspace enrichment；无规则或明确 `Allow` 保持原行为。未新增权限中心、store、协议字段、迁移或依赖。
+- **E-H283-04（正式跨层回归）**：移除 H-283 探针 `ignore` 后，`cargo test -p deepagent-app-core --test kernel_v2_e2e workspace_context_policy:: --offline -- --nocapture --test-threads=1` 为 **2 passed / 0 failed / 251 filtered**；README/manifest deny 场景首次和后续 instructions 均无 canary，`tool_blocked=1`、成功读取/审批为0；普通文件与允许读取控制保持通过。最终正文保留于 `target/h283-final-probe-20261031.log`。
+- **E-H283-05（策略单测与消费方）**：`cargo test -p deepagent-app-core --lib system_context::tests::workspace_scan_treats_read_ask_and_deny_as_not_visible --offline -- --nocapture` 为 **1 passed / 0 failed**，覆盖 Read deny、read_file ask、Read allow 与无规则；`cargo test -p deepagent-app-core --lib --offline -j 1 -- --test-threads=1` 为 **1377 passed / 0 failed / 51 ignored**。
+- **E-H283-06（构建与 lint）**：`cargo check -p deepagent-app-core --offline -j 1` 退出0；`git diff --check` 退出0。根 `cargo fmt --all -- --check` 仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；严格 AppCore Clippy 仍被未修改基线阻断（首个为 `crates/deepagent-models/src/client.rs:355`，另有 runtime/AppCore 既有 lint），放宽这些既有 lint 后本轮相关 crate Clippy 退出0。
+- **E-H283-07（范围与限制）**：限 Windows 本机、临时 SQLite/合成文件与离线模型 transport；未验真实 DeepSeek、用户仓库/凭据、CLI/SDK/Desktop/前端、其他 OS、磁盘重开、全量 workspace、隐藏/敏感后缀与并发配置变更。该修复是 run-scoped `Read` 可见性投影，不宣称完成按路径/内容分类的全局资源策略。
+- **E-H283-08（提交与状态）**：代码、回归测试和探针默认化已提交 `0ab74ee5`（`【fix】统一自动工作区上下文读取权限`），未推送、未创建 PR；没有执行 `cargo clean`，未删除 `target`、日志、用户文件或既有证据。本项剩余 **0**；最新累计 **104 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、172 有效待修复、0 修复中**。下一项准备复核 H-285；剩余工时仍为 **200–400 有效修复与验收小时**历史未逐项校准粗估，有效工作与构建/设备/依赖等待分开计算。
 
 ## H-21 子 Agent 恢复输出契约（2026-10-31，已修复并验收）
 
@@ -3246,7 +3259,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-280：敏感路径发现重复登记（归 H-79）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-79 | 只关联原证据，不新增修复任务 | 验收由 H-79 统一记录 | 无独立修复提交 | 不独立计数或估时 |
 | [H-281：中间 system serializer 补强（归 H-168）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-168 | 只关联原证据，不新增修复任务 | 验收由 H-168 统一记录 | 无独立修复提交 | 不独立计数或估时 |
 | [H-282：Git 状态整体 trim 破坏首条未暂存路径，正式模型上下文可把脏工作区报告为 clean](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H282-01～08；保留修前 `1/1` 原始失败证据；不与H-283合并 | `deepagent-workspace` 保留 porcelain NUL 记录并提供共享纯解析器；AppCore GitService 与模型 GitContext 共用结构化状态，脏标志不依赖展示路径截断 | workspace 13/0/0；正式 git_context 2/0/251 filtered；AppCore lib 1376/0/51；workspace/AppCore check、workspace clippy、定向 rustfmt/diff-check 通过 | `c2ed35c4`（`【fix】统一Git状态解析并保留未暂存路径`） | 限Windows本机临时Git/SQLite/离线模型；未验真实供应商、用户仓库、其他OS、完整CLI/SDK/Desktop入口、磁盘重开及所有Git编码/规模异常；本项剩余0 |
-| [H-283：Read deny 只拦工具，自动工作区上下文仍在首次请求发送 README 与清单摘要](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-283：Read deny 只拦工具，自动工作区上下文仍在首次请求发送 README 与清单摘要](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H283-01～08；保留修前 `1/1` 原始失败证据；不与H-237/H-79/H-77合并 | `RunAssembler` 一次解析有效 `PermissionRules`，hook 与 `context_runtime` 共用快照；`WorkspaceScanner` 在 `Read/read_file` 为 deny/ask 时不运行，allow/无规则保持原结构感知 | H-283 正式探针 2/0/251 filtered；AppCore lib 1377/0/51；权限单测1/0；AppCore check通过；严格fmt/Clippy受未修改基线限制，见本项明细 | `0ab74ee5`（`【fix】统一自动工作区上下文读取权限`） | 限Windows本机临时SQLite/文件/离线模型；未验真实供应商、CLI/SDK/Desktop/其他OS、磁盘重开、全量workspace及路径分类策略；本项剩余0，下一H-285 |
 | [H-284：同一 Harness thread 的第二个 `turn/start` 被确认成独立 started，实际输入租约随后取消第一个运行](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H284-01原失败、03～05候选/身份失败及07中断证据保留；非重复/归并，限06～08本机范围 | 原临界区、准入前按SessionId等价身份拒绝忙态start为-32005；沿原worker生命周期，无第二队列/store；显式steer不变 | 默认原探针+7回归通过；CLI120/0/22、协议12/0/0、SDK lib5/0/12+OS6/0/0+doc1/0/0、TS7/0/0及fmt/build通过；完整workspace3608/1既有H-306/312 ignored，严格lint旧基线阻断见E-H284-08 | `844c7ea723d352bd04bb3b9e681232c648ab6f5e` | 仅同一ServerState；非跨进程排他或跨终态幂等；其他OS/UI/供应商/强杀/压力未验；H-130/H-92独立；下一P1 H-175；200–400有效小时历史未校准粗估，等待另计 |
 | [H-285：Harness 接受不存在的分叉锚点，超出有符号范围后恢复旧文件却复制完整成功历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-286：`move_path` 覆盖目标前先递归删除，移到源的祖先目录时失败却删除源和无关文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原正式探针修复前 1 passed / 1 failed；修复后默认 2 passed | 原生 no-replace 发布；旧目标 staging/失败恢复；失败恢复保留 recovery_path | 详见本文件 H-286 命令表：builtins 292 passed/1 ignored，AppCore 正式链 102 passed/92 ignored；全量/lint 限制保留 | `56b9e7b9` | Windows 本机范围验收；其他 OS、真实跨卷/断电/UI 未验，不等于全局通过；本项本地剩余工时 0，环境验收另计 |
