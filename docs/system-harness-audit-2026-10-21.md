@@ -9575,7 +9575,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - E-H273-04（正式链路回归）：原 H-273 ignored 探针转为默认测试；`cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract::audit_inconsistent_cached_usage_is_rejected_before_cost_accounting --offline -j 2 -- --nocapture --exact` 为 **1 passed / 0 failed**。观察到 `result_error=invalid input`、`usage_events=0`、唯一账本行数 `0`、成本回调为空、summary 成本为 `0`，未进入 succeeded 计费。
 - E-H273-05（正常与持久化对照）：`cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract:: --offline -j 2 -- --nocapture --test-threads=1` 为 **4 passed / 0 failed / 1 ignored**；H-274 探针继续 ignored，正常 zero/partial cache、工具循环、多响应、文件 SQLite 重开均通过。`cargo test -p deepagent-models --lib --offline -j 2` 为 **97 passed / 0 failed / 21 ignored**；`cargo check -p deepagent-models -p deepagent-runtime -p deepagent-app-core --offline -j 2` 退出 0。
 - E-H273-06（门禁与限制）：改动文件定向 `rustfmt --edition 2021 --config skip_children=true --check`、`git diff --check` 通过。根 `cargo fmt --all -- --check` 仍被未修改的 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；严格 `cargo clippy -p deepagent-models -p deepagent-runtime -p deepagent-app-core --all-targets --offline -j 2 -- -D warnings` 仍被未修改的 `crates/deepagent-models/src/client.rs:355` `clone_on_copy` 阻断，本轮没有新增 lint 诊断。显式包含 H-274 ignored 探针的 usage_contract 结果为 **4 passed / 1 failed（H-274 预期失败）**，不把独立问题误记为 H-273 回归失败。未验证真实供应商、真实扣费、其他 OS、并发/断电、H-274 宽度与其他 usage 关系不变量。
-- E-H273-07（提交）：代码、回归测试和本项验收文档先独立提交；取得 commit ID 后在本节与进度台账回填，不 amend、不推送、不创建 PR。
+- E-H273-07（独立提交与 hash 回填）：代码、回归测试和本项验收文档已先独立提交为 `7ab31dd7`（`【fix】拒绝Responses矛盾缓存用量`）；随后仅回填本节与进度台账，不 amend、不推送、不创建 PR。原始失败证据、H-274 独立探针和未修改的全局门禁基线均保留。
 
 #### 根因、影响与数据流
 
