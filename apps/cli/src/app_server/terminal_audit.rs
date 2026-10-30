@@ -1270,6 +1270,7 @@ struct ForkBoundaryObservation {
     requested: Option<u64>,
     tail: u64,
     success: bool,
+    error_code: Option<i32>,
     restored_paths: usize,
     content: String,
     source_history_unchanged: bool,
@@ -1349,6 +1350,7 @@ async fn observe_fork_boundary(boundary: ForkBoundary) -> ForkBoundaryObservatio
         requested,
         tail,
         success: response.is_success(),
+        error_code: response.error_code(),
         restored_paths: response
             .result
             .as_ref()
@@ -1389,7 +1391,6 @@ async fn fork_existing_boundaries_keep_history_and_file_horizon_aligned() {
 }
 
 #[tokio::test]
-#[ignore = "audit H-285: reject nonexistent fork boundaries before restoring workspace files"]
 async fn audit_fork_nonexistent_sequence_does_not_restore_completed_writes() {
     let mut observations = Vec::new();
     for boundary in [
@@ -1407,6 +1408,7 @@ async fn audit_fork_nonexistent_sequence_does_not_restore_completed_writes() {
     for observed in observations {
         assert!(
             !observed.success
+                && observed.error_code == Some(ERR_INVALID_PARAMS)
                 && observed.sessions_added == 0
                 && observed.restored_paths == 0
                 && observed.content == "after-fork-audit"

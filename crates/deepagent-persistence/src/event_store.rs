@@ -660,16 +660,7 @@ impl<'db> EventStore<'db> {
         if self.get_session(session_id)?.is_none() || loaded.events.is_empty() {
             return Err(CoreError::not_found(format!("session {session_id}")));
         }
-        let spans = crate::event_projection::projection_spans(
-            &loaded.events,
-            &loaded.projections,
-            Some(sequence),
-        )?;
-        let resolved = crate::event_projection::complete_boundary(sequence, &spans);
-        if resolved != sequence {
-            tracing::info!(%session_id, requested_sequence = sequence, effective_sequence = resolved, "resolved complete response projection branch boundary");
-        }
-        Ok(resolved)
+        resolve_branch_sequence_from_loaded(session_id, &loaded, sequence)
     }
 
     /// Read events for a session starting at `from_sequence` (inclusive).
@@ -1304,6 +1295,7 @@ impl<'db> EventStore<'db> {
         let loaded = self
             .load_session_file(source_id)?
             .ok_or_else(|| CoreError::not_found(format!("session {source_id}")))?;
+        let until_seq = resolve_branch_sequence_from_loaded(source_id, &loaded, until_seq)?;
         let projections = crate::event_projection::projection_spans(
             &loaded.events,
             &loaded.projections,
@@ -1407,6 +1399,9 @@ impl<'db> EventStore<'db> {
                 "session {session_id} does not exist"
             )));
         }
+        let loaded = session_files::load(&self.db.session_files_root(), session_id)?
+            .ok_or_else(|| CoreError::not_found(format!("session {session_id}")))?;
+        let keep_through = resolve_branch_sequence_from_loaded(session_id, &loaded, keep_through)?;
         let (rewritten, removed) =
             session_files::rewrite_prefix(&self.db.session_files_root(), session_id, keep_through)?;
         let tail_ts = rewritten
@@ -1867,6 +1862,34 @@ fn find_terminal_projection(
         )));
     }
     Ok(keyed.or(legacy))
+}
+
+/// Resolve a user-supplied branch cursor only after binding it to an actual
+/// persisted event. A cursor beyond the tail must not be treated as an
+/// implicit full-history fork or passed to a checkpoint query.
+fn resolve_branch_sequence_from_loaded(
+    session_id: SessionId,
+    loaded: &session_files::LoadedSessionFile,
+    sequence: Sequence,
+) -> Result<Sequence> {
+    if loaded.events.is_empty() {
+        return Err(CoreError::not_found(format!("session {session_id}")));
+    }
+    if !loaded.events.iter().any(|event| event.sequence == sequence) {
+        return Err(CoreError::invalid(format!(
+            "branch sequence {sequence} does not exist in session {session_id}"
+        )));
+    }
+    let spans = crate::event_projection::projection_spans(
+        &loaded.events,
+        &loaded.projections,
+        Some(sequence),
+    )?;
+    let resolved = crate::event_projection::complete_boundary(sequence, &spans);
+    if resolved != sequence {
+        tracing::info!(%session_id, requested_sequence = sequence, effective_sequence = resolved, "resolved complete response projection branch boundary");
+    }
+    Ok(resolved)
 }
 
 /// Defensive check for gaps/corruption in an authoritative file prefix.
@@ -2789,6 +2812,32 @@ mod tests {
             )
             .unwrap();
         assert_eq!(next.sequence, 3);
+    }
+
+    #[test]
+    fn branch_operations_reject_nonexistent_sequences_before_mutation() {
+        let (db, sid, clock) = store_with_session();
+        let store = EventStore::new(&db);
+        for text in ["first", "second", "third"] {
+            store
+                .append(sid, EventPayload::Note { text: text.into() }, clock.now())
+                .unwrap();
+        }
+        let before = store.load_session(sid).unwrap();
+        let tail = before.last().unwrap().sequence;
+
+        for sequence in [tail + 1, i64::MAX as u64 + 1, u64::MAX] {
+            assert!(store.resolve_branch_sequence(sid, sequence).is_err());
+            let child = SessionId::new();
+            assert!(store
+                .fork_session(sid, child, sequence, clock.now())
+                .is_err());
+            assert!(store.get_session(child).unwrap().is_none());
+            assert_eq!(store.load_session(sid).unwrap(), before);
+
+            assert!(store.truncate_after(sid, sequence).is_err());
+            assert_eq!(store.load_session(sid).unwrap(), before);
+        }
     }
 
     #[test]

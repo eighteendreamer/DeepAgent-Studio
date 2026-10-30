@@ -9,6 +9,7 @@ use deepagent_app_core::{
     AppService, ArchiveService, ChatService, HarnessRunOverrides, SandboxCapabilities,
 };
 use deepagent_core::clock::SystemClock;
+use deepagent_core::error::CoreError;
 use deepagent_core::id::SessionId;
 use deepagent_harness_protocol::{
     project_runtime_event, EventContext, HarnessEvent, HarnessRequest, InitializeRequest,
@@ -742,10 +743,12 @@ impl ServerState {
         {
             Ok(result) => result,
             Err(error) => {
-                return (
-                    RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                    None,
-                )
+                let code = match &error {
+                    CoreError::Invalid(_) => ERR_INVALID_PARAMS,
+                    CoreError::NotFound(_) => ERR_INVALID_THREAD,
+                    _ => ERR_INTERNAL,
+                };
+                return (RpcResponse::error(id, code, error.to_string()), None);
             }
         };
         let source = self.threads.get(&params.thread_id).cloned();

@@ -10110,6 +10110,14 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 **级别：中（P2，条件性数据一致性缺陷）；触发条件：** 客户端显式传入不存在的 `thread/fork.atSequence`；当值超过 `i64::MAX` 且源会话有文件检查点时，可发生不符合请求位置的文件恢复。默认不传锚点及指定真实尾序号的本轮对照均正常，不把异常整数输入推断为默认流程必现。
 
+#### 修复与验收（2026-10-31，已修复并验收）
+
+- **实现**：在共享 `EventStore` 分支边界解析处先要求显式序号真实存在于源事件文件，再解析完整 source/native projection 组；`fork` 与 `rewind` 的持久化入口复用同一校验，因此不存在的 tail+1、`i64::MAX+1` 和 `u64::MAX` 会在文件恢复、子会话创建或历史改写前失败。`AppService::restore_checkpoints_after` 将 `u64` 转 SQLite `i64` 改为 checked conversion；Harness 将该输入错误映射为 JSON-RPC `-32602`。未新增存储/恢复链、协议字段、数据库迁移或权限旁路。
+- **修复前复核**：`cargo test -p deepagent-cli --offline audit_fork_nonexistent_sequence_does_not_restore_completed_writes -- --ignored --nocapture --test-threads=1` 为 **0 passed / 1 failed（预期暴露缺陷）**；三种边界均返回成功，后两种恢复 `before-fork-audit`。完整输出保留于 `target/h285-original-probe-20261031.log`。
+- **正式验收**：正常边界 `cargo test -p deepagent-cli app_server::terminal_audit::fork_existing_boundaries_keep_history_and_file_horizon_aligned --offline -j 1 -- --exact --nocapture --test-threads=1` 为 **1 passed / 0 failed**；故障探针已移除 `ignore`，同名命令为 **1 passed / 0 failed**，tail+1、`i64.MAX+1`、`u64.MAX` 均 `-32602`、`restored_paths=0`、磁盘保持 `after-fork-audit`、无新会话、源历史不变。最终输出分别保留于 `target/h285-control-final-20261031.log` 与 `target/h285-final-probe-20261031.log`。
+- **共享边界回归**：`deepagent-persistence` EventStore 相关 **27 passed / 0 failed**（含三类非法序号无副作用）；`deepagent-session` projection boundary **6 passed / 0 failed**；AppCore `service::tests::` **438 passed / 0 failed / 10 ignored**，包含 checked conversion、fork/rewind 正常场景。
+- **构建与限制**：`cargo check -p deepagent-persistence -p deepagent-app-core -p deepagent-cli --offline -j 1` 通过；修改文件独立 rustfmt 与 `git diff --check` 通过。根 `cargo fmt --all -- --check` 仍被未修改的 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；严格 Clippy 仍被基线的 `deepagent-models/src/client.rs:355` 及既有 AppCore/runtime lint 阻断，不将其归因于本项。验收限 Windows 本机、临时 SQLite/文件和离线 transport；未验真实供应商、Desktop/Tauri、其他 OS、断电/重开及跨进程并发。H-72/H-73/H-74/H-75 等独立边界不因本项关闭。
+
 #### 即时 Evidence（2026-10-25，首次复现后立即登记）
 
 - Scope：自有仓库、临时 workspace/文件 SQLite、正式 `ServerState::dispatch` → `spawn_turn` → `ChatService`/Kernel → `read_file`/`write_file` → 自动检查点，随后正式 `thread/fork`。模型仅使用离线 ScriptedTransport，返回读取、写入、完成三个响应；只使用合成正文，没有网络、真实用户文件、凭据或手工拼造检查点。
@@ -10140,7 +10148,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - **Codex（本地静态源码，未运行）：** `core/src/thread_manager.rs::fork_history_from_snapshot()` 使用 `ForkSnapshot` 和有效历史截断边界，而不是把同一未校验 u64 分别转换后用于 SQL 文件恢复与事件复制。未找到与本项目 `sequence as i64` + workspace checkpoint 恢复完全同构的路径，不声称已运行 Codex 验证相同输入，也不把它列为同输入的动态反例。
 - **DeepSeek 官方边界：** [Responses API 参数](https://api-docs.deepseek.com/zh-cn/api/create-response/) 和 [Responses 指南](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) 定义模型请求与历史回传，不定义本地分叉/文件恢复；[Tool Calls](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/) 中工具由宿主执行。[KV cache](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/) 不会校验本地检查点位置。本问题属于宿主历史/磁盘边界，不归咎于 DeepSeek 推理或缓存。
 
-#### 影响与治理方向（未实施）
+#### 原影响与治理方向（修复前）
 
 - 已证明的后果是：一次返回成功的 fork 能撤销此前正常完成的临时文件写入，同时保留含该写入的完整会话事实。后续模型或用户若依赖会话历史判断磁盘状态，会面对互相矛盾的证据；本轮未运行 child 后续模型决策，不能声称已导致二次盲写。
 - 触发需要显式异常整数，合法默认流程未复现，因此不标 P1，不描述为默认必然数据丢失。大量检查点、目录恢复、多宿主和真实外部编辑的具体后果未实测；已观察文件回退足以证明不能将未校验锚点交给有副作用恢复。
@@ -10154,6 +10162,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - 收尾 `cargo fmt --all -- --check` 与 `git diff --check` 均通过；diff 只涉及上述测试文件及本文档。Git 的 LF/CRLF 提示不是内容校验失败，用户已有未跟踪文件保持不动。
 - `cargo clippy -p deepagent-cli --all-targets --offline -- -D warnings`：未通过，阻断于未修改的 `crates/deepagent-models/src/client.rs:355 clone_on_copy` 与 `crates/deepagent-persistence/src/run_store.rs:127 explicit_counter_loop`。不把既有告警误写为本轮修复，也没有调整无关生产代码。
 - 未执行完整 workspace、Desktop/SDK 动态流程、真实 DeepSeek、参考工程测试、重开及跨平台验证；无生产契约、权限、配置或数据迁移改动。本轮 skill 要求的人工可达性和误报核对已落实到正式工具与磁盘观察，不以模式搜索代替复现。
+- 2026-10-31 收尾：以上原治理方向已按共享 EventStore/AppService 边界实施并通过本节“修复与验收”所列回归；原始失败证据保留，本项剩余 **0**。修复代码与测试提交、台账计数及 commit hash 见修复进度文档对应 H-285 条目。
 
 #### 同轮排除项：`thread/start.cwd` 不单独登记漏洞
 

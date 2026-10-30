@@ -961,8 +961,13 @@ impl AppService {
         sequence: u64,
         finalize: impl FnOnce(Vec<String>) -> Result<T>,
     ) -> Result<T> {
+        let sequence_i64 = i64::try_from(sequence).map_err(|_| {
+            CoreError::invalid(format!(
+                "checkpoint sequence {sequence} exceeds the SQLite signed range"
+            ))
+        })?;
         let checkpoints = CheckpointStore::new(&self.db)
-            .list_for_session_after_sequence(session_id, sequence as i64)?;
+            .list_for_session_after_sequence(session_id, sequence_i64)?;
         let ids = checkpoints
             .into_iter()
             .map(|checkpoint| checkpoint.id)
@@ -1370,6 +1375,18 @@ mod tests {
         );
         service.rewind_session(&id.to_string(), 0).unwrap();
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "before");
+    }
+
+    #[test]
+    fn restore_checkpoint_sequence_rejects_values_outside_sqlite_range() {
+        let db = std::sync::Arc::new(Database::open_in_memory().unwrap());
+        let service = AppService::from_shared(db);
+        let result = service.restore_checkpoints_after("missing", u64::MAX, |_| Ok(()));
+        assert!(matches!(
+            result,
+            Err(CoreError::Invalid(message))
+                if message.contains("exceeds the SQLite signed range")
+        ));
     }
 
     fn seeded_service() -> (AppService, String) {
