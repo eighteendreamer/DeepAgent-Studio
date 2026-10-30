@@ -15,6 +15,8 @@ use deepagent_persistence::Database;
 use jiff::{tz::TimeZone, Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
 
+use crate::settings::SettingsService;
+
 /// Pricing for one model, in RMB per million tokens.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelPricing {
@@ -155,25 +157,41 @@ pub struct CostSummary {
 /// Cost tracking service.
 pub struct CostService {
     db: Arc<Database>,
-    pricing: RwLock<HashMap<String, ModelPricing>>,
+    pricing: RwLock<PricingSource>,
     budget: RwLock<BudgetConfig>,
 }
 
+enum PricingSource {
+    Explicit(HashMap<String, ModelPricing>),
+    Settings(Arc<SettingsService>),
+}
+
 impl CostService {
-    /// Build with the shared database and no initial pricing. Callers must
-    /// load pricing from settings via `set_pricing()` before recording costs.
+    /// Build a standalone ledger with no initial pricing. Use `set_pricing`
+    /// for an explicit catalog, or `from_settings` for a settings-owned host.
     pub fn new(db: Arc<Database>) -> Self {
         Self {
             db,
-            pricing: RwLock::new(HashMap::new()),
+            pricing: RwLock::new(PricingSource::Explicit(HashMap::new())),
             budget: RwLock::new(BudgetConfig::default()),
         }
     }
 
-    /// Replace the in-memory pricing catalog with the official catalog from
-    /// settings. Call this after settings initialization or pricing refresh.
+    /// Bind to the host's settings owner instead of copying its pricing.
+    /// Successful initialization/refresh is immediately visible to billing;
+    /// no background notification or ordering-sensitive `set_pricing` is needed.
+    pub fn from_settings(db: Arc<Database>, settings: Arc<SettingsService>) -> Self {
+        Self {
+            db,
+            pricing: RwLock::new(PricingSource::Settings(settings)),
+            budget: RwLock::new(BudgetConfig::default()),
+        }
+    }
+
+    /// Select an explicit catalog (also opts out of a settings binding).
+    /// Settings-owned production hosts should not call this method.
     pub fn set_pricing(&self, pricing: HashMap<String, ModelPricing>) {
-        *self.pricing.write().unwrap_or_else(|p| p.into_inner()) = pricing;
+        *self.pricing.write().unwrap_or_else(|p| p.into_inner()) = PricingSource::Explicit(pricing);
     }
 
     /// Set the budget config. Uses interior mutability so the service can be
@@ -225,9 +243,10 @@ impl CostService {
                     )),
                 )
             }
-            Err(_) => {
+            Err(error) => {
                 tracing::warn!(
                     model = %request.model,
+                    %error,
                     "no pricing available; saving token usage without cost"
                 );
                 (None, None)
@@ -297,11 +316,17 @@ impl CostService {
     }
 
     fn pricing_for_model(&self, model: &str) -> Result<ModelPricing> {
-        let pricing = self.pricing.read().unwrap_or_else(|p| p.into_inner());
+        let source = self.pricing.read().unwrap_or_else(|p| p.into_inner());
+        let pricing = match &*source {
+            PricingSource::Explicit(pricing) => pricing.get(model).cloned(),
+            PricingSource::Settings(settings) => settings
+                .load()?
+                .and_then(|settings| settings.pricing_catalog.models.get(model).cloned()),
+        };
 
         // Exact match first (e.g. "deepseek-flash", "deepseek-v4-pro")
-        if let Some(p) = pricing.get(model) {
-            return Ok(p.clone());
+        if let Some(pricing) = pricing {
+            return Ok(pricing);
         }
 
         // No fuzzy fallback: if the exact model isn't in the official catalog,

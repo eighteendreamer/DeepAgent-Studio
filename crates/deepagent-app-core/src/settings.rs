@@ -1537,12 +1537,9 @@ impl SettingsService {
                 .map(|s| s.language.clone())
                 .unwrap_or_default(),
         };
-        self.save(&settings)?;
-
-        // Refresh official pricing in parallel (non-blocking; failure only warns).
-        if let Err(e) = self.refresh_pricing_inner(&mut settings).await {
-            tracing::warn!(error = %e, "pricing refresh failed during initialize");
-        }
+        // The built-in pricing snapshot is local, not a parallel HTTP request.
+        // Commit models and pricing together before reporting activation success.
+        self.refresh_pricing_inner(&mut settings).await?;
 
         self.view_with_key(Some(api_key), &settings)
     }
@@ -1646,13 +1643,14 @@ impl SettingsService {
 
     /// Load the public settings (catalog) from the database.
     pub fn load(&self) -> Result<Option<AppSettings>> {
-        if let Some(cached) = self
+        // Keep DB reads/writes and cache publication in one owner order. A
+        // delayed initial load must not replace a later committed snapshot.
+        let mut cache = self
             .settings_cache
             .lock()
-            .map_err(|_| CoreError::other("settings cache lock poisoned"))?
-            .clone()
-        {
-            return Ok(cached);
+            .map_err(|_| CoreError::other("settings cache lock poisoned"))?;
+        if let Some(cached) = &*cache {
+            return Ok(cached.clone());
         }
 
         let store = DocumentStore::new(&self.db);
@@ -1688,10 +1686,7 @@ impl SettingsService {
             }
             break Some(serde_json::from_value::<AppSettings>(stored)?);
         };
-        *self
-            .settings_cache
-            .lock()
-            .map_err(|_| CoreError::other("settings cache lock poisoned"))? = Some(loaded.clone());
+        *cache = Some(loaded.clone());
         Ok(loaded)
     }
 
@@ -2412,6 +2407,10 @@ impl SettingsService {
     }
 
     fn save(&self, settings: &AppSettings) -> Result<()> {
+        let mut cache = self
+            .settings_cache
+            .lock()
+            .map_err(|_| CoreError::other("settings cache lock poisoned"))?;
         let store = DocumentStore::new(&self.db);
         let body = serde_json::to_string(settings)?;
         store.put(
@@ -2421,11 +2420,7 @@ impl SettingsService {
             None,
             Timestamp::from_millis(settings.discovered_at),
         )?;
-        *self
-            .settings_cache
-            .lock()
-            .map_err(|_| CoreError::other("settings cache lock poisoned"))? =
-            Some(Some(settings.clone()));
+        *cache = Some(Some(settings.clone()));
         Ok(())
     }
 }
@@ -2520,6 +2515,209 @@ mod tests {
         let secrets = Arc::new(MemorySecretStore::new());
         let svc = SettingsService::new(db, transport_with_models(), secrets.clone());
         (svc, secrets)
+    }
+
+    #[tokio::test]
+    async fn pricing_activation_initialization_commits_models_and_prices_together() {
+        let (settings, _) = service();
+        settings
+            .db
+            .with_conn(|connection| {
+                connection
+                    .execute_batch(
+                        "CREATE TRIGGER reject_initial_pricing BEFORE INSERT ON documents
+                 WHEN NEW.collection = 'settings' AND NEW.id = 'app'
+                 BEGIN SELECT RAISE(ABORT, 'synthetic initial save failure'); END;",
+                    )
+                    .map_err(|error| CoreError::Persistence(error.to_string()))
+            })
+            .unwrap();
+        assert!(settings
+            .initialize("synthetic-pricing-test")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("synthetic initial save failure"));
+        assert!(settings.load().unwrap().is_none());
+        settings
+            .db
+            .with_conn(|connection| {
+                connection
+                    .execute_batch(
+                        "DROP TRIGGER reject_initial_pricing;
+                 CREATE TRIGGER reject_second_pricing_write BEFORE UPDATE ON documents
+                 WHEN NEW.collection = 'settings' AND NEW.id = 'app'
+                 BEGIN SELECT RAISE(ABORT, 'models/prices must be one commit'); END;",
+                    )
+                    .map_err(|error| CoreError::Persistence(error.to_string()))
+            })
+            .unwrap();
+        let view = settings.initialize("synthetic-pricing-test").await.unwrap();
+        let persisted: AppSettings = serde_json::from_str(
+            &DocumentStore::new(&settings.db)
+                .get(SETTINGS_COLLECTION, SETTINGS_ID)
+                .unwrap()
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        assert!(!persisted.pricing_catalog.models.is_empty());
+        assert_eq!(view.pricing_catalog, persisted.pricing_catalog);
+        assert_eq!(
+            settings.load().unwrap().unwrap().pricing_catalog,
+            persisted.pricing_catalog
+        );
+    }
+
+    #[tokio::test]
+    async fn pricing_activation_save_publishes_only_committed_catalog() {
+        use crate::cost_service::{CostRecordRequest, CostService};
+
+        let (settings, _) = service();
+        let settings = Arc::new(settings);
+        settings.initialize("synthetic-pricing-test").await.unwrap();
+        settings
+            .db
+            .with_conn(|connection| {
+                connection
+                    .execute_batch(
+                        "INSERT INTO sessions (id, title, mode, created_at, updated_at)
+                 VALUES ('pricing', 'fixture', 'normal', 0, 0);
+                 CREATE TRIGGER reject_pricing_update BEFORE UPDATE ON documents
+                 WHEN NEW.collection = 'settings' AND NEW.id = 'app'
+                 BEGIN SELECT RAISE(ABORT, 'synthetic settings write failure'); END;",
+                    )
+                    .map_err(|error| CoreError::Persistence(error.to_string()))
+            })
+            .unwrap();
+        let cost = CostService::from_settings(settings.db.clone(), settings.clone());
+        let committed = settings.load().unwrap().unwrap();
+        let mut changed = committed.clone();
+        let price = changed
+            .pricing_catalog
+            .models
+            .get_mut("deepseek-flash")
+            .unwrap();
+        price.output_per_million = 100.0;
+        assert!(settings
+            .save(&changed)
+            .unwrap_err()
+            .to_string()
+            .contains("synthetic settings write failure"));
+        assert_eq!(
+            settings.load().unwrap().unwrap().pricing_catalog,
+            committed.pricing_catalog
+        );
+        let request = || CostRecordRequest {
+            session_id: "pricing".into(),
+            model: "deepseek-flash".into(),
+            input_tokens: 1000,
+            output_tokens: 100,
+            cache_hit_tokens: 800,
+            cache_miss_tokens: 200,
+            total_tokens: 1100,
+        };
+        assert_eq!(cost.record(request()).unwrap(), Some(0.000616));
+        settings
+            .db
+            .with_conn(|connection| {
+                connection
+                    .execute_batch("DROP TRIGGER reject_pricing_update")
+                    .map_err(|error| CoreError::Persistence(error.to_string()))
+            })
+            .unwrap();
+        settings.save(&changed).unwrap();
+        assert_eq!(cost.record(request()).unwrap(), Some(0.010216));
+        let rows = deepagent_persistence::cost_store::CostStore::new(&settings.db)
+            .session_costs_detailed("pricing")
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        // A later activation never reprices an already committed cost row.
+        assert_eq!(rows[0].output_price, Some(4.0));
+        assert_eq!(rows[1].output_price, Some(100.0));
+    }
+
+    #[tokio::test]
+    async fn pricing_activation_serializes_database_and_snapshot_publication() {
+        let (settings, _) = service();
+        settings.initialize("synthetic-pricing-test").await.unwrap();
+        let settings = Arc::new(settings);
+        // Force both cold load and save to wait at the real DB boundary. They
+        // must already own the cache guard, preventing out-of-order publication.
+        for loading in [true, false] {
+            if loading {
+                *settings.settings_cache.lock().unwrap() = None;
+            }
+            let current = serde_json::from_str::<AppSettings>(
+                &DocumentStore::new(&settings.db)
+                    .get(SETTINGS_COLLECTION, SETTINGS_ID)
+                    .unwrap()
+                    .unwrap()
+                    .body,
+            )
+            .unwrap();
+            settings
+                .db
+                .with_conn(|_| {
+                    let owner = settings.clone();
+                    let worker = std::thread::spawn(move || {
+                        if loading {
+                            owner.load().map(|_| ())
+                        } else {
+                            owner.save(&current)
+                        }
+                    });
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    while settings.settings_cache.try_lock().is_ok() {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "DB operation did not acquire snapshot publication guard"
+                        );
+                        std::thread::yield_now();
+                    }
+                    // Return the worker; joining while holding the DB would deadlock.
+                    Ok(worker)
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+                .unwrap();
+        }
+        let start = Arc::new(std::sync::Barrier::new(9));
+        let workers: Vec<_> = (1..=8)
+            .map(|version| {
+                let owner = settings.clone();
+                let start = start.clone();
+                std::thread::spawn(move || {
+                    let mut snapshot = owner.load().unwrap().unwrap();
+                    snapshot.pricing_catalog.fetched_at = version;
+                    snapshot
+                        .pricing_catalog
+                        .models
+                        .get_mut("deepseek-flash")
+                        .unwrap()
+                        .output_per_million = version as f64;
+                    start.wait();
+                    owner.save(&snapshot).unwrap();
+                })
+            })
+            .collect();
+        start.wait();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+        let persisted: AppSettings = serde_json::from_str(
+            &DocumentStore::new(&settings.db)
+                .get(SETTINGS_COLLECTION, SETTINGS_ID)
+                .unwrap()
+                .unwrap()
+                .body,
+        )
+        .unwrap();
+        assert_eq!(
+            settings.load().unwrap().unwrap().pricing_catalog,
+            persisted.pricing_catalog
+        );
     }
 
     #[tokio::test]

@@ -12,6 +12,29 @@ enum Activation {
     ConfiguredStartup,
     FirstLogin,
     RefreshAfterLogin,
+    StartupRefreshAfterLogin,
+    FailedLoginRetry,
+    LoginAgain,
+    LegacyEmptyStartup,
+}
+
+const DISCOVERY: &str =
+    r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#;
+
+struct DiscoveryTransport(AtomicBool);
+
+#[async_trait]
+impl HttpTransport for DiscoveryTransport {
+    async fn stream(&self, _: TransportRequest, _: &mut dyn EventSink) -> Result<()> {
+        Err(CoreError::other("discovery fixture cannot stream"))
+    }
+
+    async fn get_json(&self, _: &str, _: &str) -> Result<String> {
+        if self.0.swap(false, Ordering::SeqCst) {
+            return Err(CoreError::other("synthetic discovery failure"));
+        }
+        Ok(DISCOVERY.to_string())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -62,36 +85,68 @@ struct PricingObservation {
 
 async fn observe_activation(activation: Activation) -> PricingObservation {
     let root = tempfile::tempdir().unwrap();
-    let db = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
-    let settings = Arc::new(SettingsService::new(
-        db.clone(),
-        Arc::new(MockTransport::with_get_json(
-            r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"}]}"#,
-        )),
-        Arc::new(MemorySecretStore::new()),
-    ));
-    if matches!(activation, Activation::ConfiguredStartup) {
-        settings
-            .initialize("offline-audit-placeholder")
-            .await
-            .unwrap();
+    let path = root.path().join("state.sqlite");
+    let secrets = Arc::new(MemorySecretStore::new());
+    // Real close/reopen, not a copied in-memory catalog pretending to be startup.
+    if matches!(
+        activation,
+        Activation::ConfiguredStartup | Activation::LegacyEmptyStartup
+    ) {
+        let db = Arc::new(Database::open(&path).unwrap());
+        let seed = SettingsService::new(
+            db.clone(),
+            Arc::new(MockTransport::with_get_json(DISCOVERY)),
+            secrets.clone(),
+        );
+        seed.initialize("offline-audit-placeholder").await.unwrap();
+        if matches!(activation, Activation::LegacyEmptyStartup) {
+            let mut legacy = serde_json::to_value(seed.load().unwrap().unwrap()).unwrap();
+            legacy.as_object_mut().unwrap().remove("pricing_catalog");
+            deepagent_persistence::document_store::DocumentStore::new(&db)
+                .put(
+                    "settings",
+                    "app",
+                    &legacy.to_string(),
+                    None,
+                    deepagent_core::clock::Timestamp::from_millis(1),
+                )
+                .unwrap();
+        }
     }
+    let db = Arc::new(Database::open(&path).unwrap());
+    let discovery = Arc::new(DiscoveryTransport(AtomicBool::new(false)));
+    let settings = Arc::new(SettingsService::new(db.clone(), discovery.clone(), secrets));
 
-    // Mirror desktop startup: load existing pricing, then attempt its one-shot refresh.
-    let cost = Arc::new(CostService::new(db.clone()));
-    if let Some(view) = settings.view().unwrap() {
-        cost.set_pricing(view.pricing_catalog.models);
-    }
-    match settings.refresh_pricing().await {
-        Ok(catalog) => cost.set_pricing(catalog.models),
-        Err(error) => {
-            assert!(!matches!(activation, Activation::ConfiguredStartup));
+    // The production binding is shared by desktop startup and this regression.
+    // Never manually deliver a catalog to CostService in this fixture.
+    let cost = Arc::new(CostService::from_settings(db.clone(), settings.clone()));
+    if !matches!(
+        activation,
+        Activation::StartupRefreshAfterLogin | Activation::ConfiguredStartup
+    ) {
+        if let Err(error) = settings.refresh_pricing().await {
+            assert!(!matches!(
+                activation,
+                Activation::ConfiguredStartup | Activation::LegacyEmptyStartup
+            ));
             assert!(error.to_string().contains("settings not initialized"));
         }
     }
 
-    // Mirror initialize_project: settings activate successfully, but cost is not notified.
-    if !matches!(activation, Activation::ConfiguredStartup) {
+    if matches!(activation, Activation::FailedLoginRetry) {
+        discovery.0.store(true, Ordering::SeqCst);
+        assert!(settings
+            .initialize("offline-audit-placeholder")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("synthetic discovery failure"));
+        assert!(settings.load().unwrap().is_none());
+    }
+    if !matches!(
+        activation,
+        Activation::ConfiguredStartup | Activation::LegacyEmptyStartup
+    ) {
         settings
             .initialize("offline-audit-placeholder")
             .await
@@ -101,9 +156,21 @@ async fn observe_activation(activation: Activation) -> PricingObservation {
     assert_eq!(persisted.catalog.chat_model, MODEL);
     let price = persisted.pricing_catalog.models.get(MODEL).unwrap();
     assert!((price.calculate(1000, 100, 800, 200) - EXPECTED_IDLE_COST).abs() < 1e-12);
+    if matches!(
+        activation,
+        Activation::RefreshAfterLogin | Activation::StartupRefreshAfterLogin
+    ) {
+        settings.refresh_pricing().await.unwrap();
+    }
     if matches!(activation, Activation::RefreshAfterLogin) {
-        // Positive control: the existing explicit-refresh bridge delivers the catalog.
-        cost.set_pricing(settings.refresh_pricing().await.unwrap().models);
+        settings.refresh_models().await.unwrap();
+    }
+    if matches!(activation, Activation::LoginAgain) {
+        settings.clear_key().unwrap();
+        settings
+            .initialize("offline-relogin-placeholder")
+            .await
+            .unwrap();
     }
     cost.set_budget(BudgetConfig {
         daily_limit: Some(0.0005),
@@ -175,6 +242,14 @@ async fn observe_activation(activation: Activation) -> PricingObservation {
     assert_eq!(observed.first_summary.cache_hit_tokens, 800);
     assert_eq!(observed.first_summary.cache_miss_tokens, 200);
     assert_eq!(observed.first_rows.len(), 1);
+    let row = &observed.first_rows[0];
+    assert_eq!(row.input_cache_hit_price, Some(0.02));
+    assert_eq!(row.input_cache_miss_price, Some(1.0));
+    assert_eq!(row.output_price, Some(4.0));
+    assert_eq!(
+        row.pricing_source.as_deref(),
+        Some("https://api-docs.deepseek.com/zh-cn/quick_start/pricing")
+    );
     assert!(observed.wire_models.iter().all(|model| model == MODEL));
     eprintln!("pricing activation audit: activation={activation:?} observed={observed:?}");
     observed
@@ -202,7 +277,18 @@ async fn configured_startup_and_explicit_pricing_refresh_book_usage_and_enforce_
 }
 
 #[tokio::test]
-#[ignore = "audit H-225: first login persists pricing without activating the existing CostService"]
 async fn audit_first_login_activates_pricing_before_the_first_model_call() {
     assert_priced_and_next_run_blocked(&observe_activation(Activation::FirstLogin).await);
+}
+
+#[tokio::test]
+async fn pricing_activation_handles_late_refresh_failure_retry_relogin_and_legacy_startup() {
+    for activation in [
+        Activation::StartupRefreshAfterLogin,
+        Activation::FailedLoginRetry,
+        Activation::LoginAgain,
+        Activation::LegacyEmptyStartup,
+    ] {
+        assert_priced_and_next_run_blocked(&observe_activation(activation).await);
+    }
 }

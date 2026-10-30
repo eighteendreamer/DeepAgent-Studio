@@ -7140,6 +7140,33 @@ E-H224-06（独立提交与最终完整性）：代码、默认回归、依赖�
 
 本轮验证：`cargo fmt --all -- --check`、`git diff --check` 通过（首次格式检查提示新探针两处布局，格式化后复检通过）；H-225 显式探针为上述 **1 passed / 1 failed**。正常对照单独执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e pricing_activation::configured_startup_and_explicit_pricing_refresh_book_usage_and_enforce_budget --offline -- --exact`：**1 passed**；`cargo test -p deepagent-app-core --lib --offline`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**37 passed / 40 ignored**。默认忽略的缺陷未被常规绿色结果关闭。未执行全 workspace、Clippy、桌面 build/真实 UI、真实供应商用量与扣费验收；本轮没有生产行为/前端契约变更，不据此宣称已修复或全系统通过。
 
+#### 当前修复状态（2026-10-30，已修复并验收）
+
+当前仅处理 H-225，基线 HEAD 8fd3ecfd17d9ae5c2f7d663290f117ebfdc54fd3。H-236已独立交付；本轮不合并H-226、不扩修H-87/H-88，不访问真实供应商、凭据、内网或用户数据库。五类原用户未跟踪项仅经git status列名，未读改/暂存/删除。
+
+**当前状态：已修复并验收（2026-10-30，仅E-H225-03～05所列Windows本机、隔离SQLite/合成凭据、离线模型与生产桌面编译/前端构建范围）；修复提交待独立提交后回填。** E-H225-01～02为历史阶段快照，不能替代最终门禁与限制。
+
+E-H225-01（原探针，修复前）：使用 target/h225-run-isolated-20261030.ps1 隔离home/data/profile/APPDATA并清除继承凭据，执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e pricing_activation:: --offline -- --include-ignored --nocapture`；原生101、114.18秒（包含冷构建），1 passed / 1 failed / 0 ignored。首次登录费用行NULL、summary为0、两次Flash wire成功，usage/cache完整；已配置启动与显式同步对照计0.000616元并拒绝第二轮。证据 target/h225-original-probe-20261030.log/-result.json；原失败正文不删除，本次尚未验收。
+
+P-H225（本地设计，已实施；以下保留方案及阶段证据）：CostService绑定现有SettingsService，按同一已提交快照精确查价，不维护需要通知的第二报价副本；桌面移除启动/手工刷新各自的set_pricing桥接。SettingsService对DB读写及缓存发布使用同一owner锁，阻止迟到load/save反向覆盖已提交快照；保留显式注入报价的独立ledger兼容入口。回归覆盖首登前后启动刷新、真实close/reopen、旧空报价、发现失败重试、重登/刷新、保存失败与并发发布，以及wire/usage/事件/历史价格/下一轮预算一致。只处理已知报价激活；不补算旧NULL账单、不修改未知模型预算策略、不改供应商价格、endpoint契约或schema。
+
+E-H225-02（实现与专项阶段证据）：生产CostService新增SettingsService绑定，桌面所有set_pricing桥接已移除；initialize改为模型/报价一次持久化，失败不返回激活成功。SettingsService的load/save持有同一缓存锁跨越DB操作及快照发布，不解决跨host缓存和凭据迟到刷新（H-87/H-88）。`cargo test -p deepagent-app-core --lib settings::tests::pricing_activation_ --offline -- --nocapture`原生0、3 passed / 0 failed / 0 ignored，覆盖初始提交失败重试及只写一次、后续保存失败保留旧价/重试生效/历史价格不变、冷load与save的持锁顺序和8线程最终缓存=DB。最终冻结源码的 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` 原生0，181 passed / 0 failed / 67 ignored，H-225的3条均默认执行、含7种激活场景，无手工set_pricing。证据h225-pricing-owner、h225-kernel-e2e-20261030.log/-result.json和h225-tested-sources-20261030.json（4份源码）；其余门禁仍在执行，尚未验收。
+
+阶段失败不删除：首次扩展close/reopen夹具未保留MemorySecretStore占位key，h225-pricing-regression-20261030为1通过/2失败（API key not set）；仅修正测试夹具共用合成secret store后专项3通过，真实SQLite仍完整close/reopen，不用再次initialize伪装启动。AppCore首次全量lib为1350通过/1失败/53忽略，失败completion_plan::audit_tests::discovered_real_build_completes_after_release未在4秒内出现build-started标记；尚未判定原因，后续对照/复跑不得覆盖原失败。根fmt旧agent.rs:1043、独立Tauri旧格式差异如实保留；本轮修改3份AppCore Rust文件的rustfmt --check和git diff --check通过。
+E-H225-03（最终门禁与环境恢复）：首次 `cargo test --workspace --offline --no-fail-fast` 在编译阶段出现LLVM/内存分配失败及LNK1102，未产生测试结果；降为 `-j 2 -- --test-threads=2` 后LNK1285明确报告checkpoint_audit的PDB损坏，同样不能算全仓测试。两次均等待真实进程终态，随后原生 `cargo clean -p deepagent-app-core --profile dev --target-dir G:\Code_Warehouse\DeepAgent-Studio\target --offline` 清理该包编译产物（7.6GiB、exit0），2034份顶层证据和4份源码哈希不变，损坏PDB已不存在。保留h225-workspace、h225-workspace-bounded及h225-appcore-clean-result-20261030记录，不修改生产代码掩盖环境失败。
+
+恢复后执行 `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2`，原生101、711.32秒，133个结果块合计 **3891 passed / 1 failed / 282 ignored**；唯一失败canvas_prompt::tests::every_node_kind_owns_exactly_one_profile为既有H-306（prompts源码未改）。其中AppCore lib **1351/0/62**、kernel_v2_e2e **181/0/67**；H-225三项owner单测和三项E2E均默认执行，原首登探针不再ignored。先前build-started超时的原测试本次完整运行通过，未定位首轮环境敏感性的独立根因，不宣称已修复它。证据h225-workspace-recovered-20261030.log/-result.json、h225-evidence-summary-20261030.json；完整workspace不是全绿。
+
+E-H225-04（消费方、格式与lint）：`cargo build -p deepagent-cli --offline` exit0；`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir target/h225-tauri-build --offline` exit0；`cd apps/desktop && pnpm build` exit0，21批共296前端测试通过、TS与Vite通过，保留大chunk和browser externalization等构建告警。根 `cargo fmt --all -- --check` 仍因未改runtime/workflow/agent.rs:1043失败；独立Tauri fmt因原import布局/画布write_current/set_reasoning_effort格式失败。三个修改的AppCore Rust文件rustfmt --edition 2021 --check通过；Tauri改动片段不在其格式诊断中，未为本项格式化无关代码。`cargo clippy --all-targets --all-features --offline -- -D warnings` 被未改models/client.rs:355 clone_on_copy阻断；额外 `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` 仍报未改context_runtime、http_runtime、plugin_preparation、run_assembler及既有测试fixture诊断，无本轮修改文件诊断；不压制lint、不宣称严格检查全绿。证据h225-cli-build/tauri-check/desktop-build/format/tauri-format/clippy/appcore-clippy-20261030及h225-baseline-gate-check-20261030.json。
+
+E-H225-05（验收范围与兼容性）：已证实首登早/晚启动刷新、已配置真实DB重开且不再刷新、旧缺price字段的配置刷新升级、发现失败重试、退出后重登、手工模型/报价刷新均使用同一SettingsService已提交价格，七场景的canonical Flash首轮usage1000/100/hit800/miss200、费用行/summary/CostRecorded均0.000616元、历史价格snapshot正确、第二轮daily预算拒绝且仅一次wire；这是仓库既有闲时快照及合成usage，不是真实扣款或当前官网价格验证。单测证明DB保存失败不发布新价，重试后生效且不重算旧行，初始化模型与价格仅一次提交，冷load/save和8线程最终发布与DB一致（按提交顺序，不承诺较晚发起的请求必胜）。保留CostService::new/set_pricing显式ledger兼容入口，只把桌面生产装配改为from_settings；DTO/事件名/权限/沙箱/供应商参数/DB schema未改。设置保存失败现在明确返回错误，不再返回部分激活成功。
+
+不覆盖真实供应商价格/用量/账单、其他OS、WebView向导点击与时序压力、endpoint切换（当前初始化为固定DeepSeek discovery）、跨host缓存一致性H-87、凭据迟到刷新与SecretStore/DB跨存储原子性H-88、备用模型分段归价H-226、运行中硬预算、未知模型/无价NULL费用的准入策略及未挂载CostService的其他入口。旧NULL历史费用不补算，不拿当前价静默改账。本项UI与桥接形状未改，前端构建/Tauri编译不能冒充真实UI或跨平台验收。
+
+E-H225-06（用户要求的编译清理）：验证与进程全部终态后，对根target和target/h225-tauri-build分别使用 `cargo clean --profile dev --offline --target-dir <明确目录>`，只移除两处debug profile，exit均0，Cargo报告17.1/2.4GiB；实际G盘可用由172163457024增至191960236032字节（约18.44GiB）。2048份顶层日志/探针/脚本证据和4份冻结源码哈希均保持一致，未删除整个target；原其他四处debug仍不存在。证据h225-final-clean-plan/protected/result-20261030.json及原生clean日志，清理后不再重建Rust产物。
+
+本轮新增根因修复1项、历史跳过/归并/撤销新增0；累计 **92验收、21历史跳过、7归并、2撤销、184待修复、0修复中**，184有效未关闭，306唯一槽位/8列与其余305条主行不变。下一项准备复核H-226备用模型分段归价，先查原探针与现有计账消费方，不预先合并。本项所列本机验收剩余0；其余限制按独立条目/后续验收处理。总剩余 **200–400有效修复与验收小时** 仍为未逐项校准的历史粗估，依据剩余跨层权限、执行、持久化与消费方范围，没有可靠独立工时计量，不按编译等待机械扣减；设备、依赖、构建和环境等待另计，无精确完工日期承诺。整体goal active。代码、测试与当时双文档正常独立提交，取得hash后另做文档回填，不amend、不推送、不建PR。
+
 ### H-226：备用模型切换后仍按初始模型结算，完整 usage 被错误归价且下一轮预算误放行或误拒绝
 
 **级别：中高（P1/P2 之间，费用账本与本地预算完整性）；触发条件：** 普通聊天已挂载且正确激活 CostService，Chat 与 Reasoner 角色不同，运行内触发既有过载 fallback，并由不同价格的备用模型成功返回 usage。不是所有运行都错价，也不将离线过载夹具说成当前 DeepSeek 服务必然发送的错误格式。

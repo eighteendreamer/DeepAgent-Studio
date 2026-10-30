@@ -2,23 +2,50 @@
 
 ## 当前状态与计数口径（2026-10-30）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计九十一项均限各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计九十二项均限各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 91 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 92 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 无 |
-| 待修复 | 185 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 184 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **185（185待修复、0修复中）**；不提供完成率。九十一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **184（184待修复、0修复中）**；不提供完成率。九十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
 
 上一轮 H-159 的计数纠正记录（历史快照）：当轮新增修复只有 H-159 一项。该轮基线 HEAD `6cc671c2` 的 306 主行实际已有 86 项验收、190 项待修，文首 85 项列表漏列 H-162；本轮按已存在的 `6bf802ce` 实现、`56dfe8b9` 验收记录及 `b7c7d505` 范围说明补正计数，不把 H-162 当作新增修复。下文各历史即时记录中的数量和“当前”均为当时快照；最新总数以本节及完整主行台账为准。
+
+## H-225 首次登录报价激活（2026-10-30，已修复并验收）
+
+当前仅处理 H-225，基线 HEAD 8fd3ecfd17d9ae5c2f7d663290f117ebfdc54fd3。H-236已独立交付；本轮不合并H-226、不扩修H-87/H-88，不访问真实供应商、凭据、内网或用户数据库。五类原用户未跟踪项仅经git status列名，未读改/暂存/删除。
+
+**当前状态：已修复并验收（2026-10-30，仅E-H225-03～05所列Windows本机、隔离SQLite/合成凭据、离线模型与生产桌面编译/前端构建范围）；修复提交待独立提交后回填。** E-H225-01～02为历史阶段快照，不能替代最终门禁与限制。
+
+E-H225-01（原探针，修复前）：使用 target/h225-run-isolated-20261030.ps1 隔离home/data/profile/APPDATA并清除继承凭据，执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e pricing_activation:: --offline -- --include-ignored --nocapture`；原生101、114.18秒（包含冷构建），1 passed / 1 failed / 0 ignored。首次登录费用行NULL、summary为0、两次Flash wire成功，usage/cache完整；已配置启动与显式同步对照计0.000616元并拒绝第二轮。证据 target/h225-original-probe-20261030.log/-result.json；原失败正文不删除，本次尚未验收。
+
+P-H225（本地设计，已实施；以下保留方案及阶段证据）：CostService绑定现有SettingsService，按同一已提交快照精确查价，不维护需要通知的第二报价副本；桌面移除启动/手工刷新各自的set_pricing桥接。SettingsService对DB读写及缓存发布使用同一owner锁，阻止迟到load/save反向覆盖已提交快照；保留显式注入报价的独立ledger兼容入口。回归覆盖首登前后启动刷新、真实close/reopen、旧空报价、发现失败重试、重登/刷新、保存失败与并发发布，以及wire/usage/事件/历史价格/下一轮预算一致。只处理已知报价激活；不补算旧NULL账单、不修改未知模型预算策略、不改供应商价格、endpoint契约或schema。
+
+E-H225-02（实现与专项阶段证据）：生产CostService新增SettingsService绑定，桌面所有set_pricing桥接已移除；initialize改为模型/报价一次持久化，失败不返回激活成功。SettingsService的load/save持有同一缓存锁跨越DB操作及快照发布，不解决跨host缓存和凭据迟到刷新（H-87/H-88）。`cargo test -p deepagent-app-core --lib settings::tests::pricing_activation_ --offline -- --nocapture`原生0、3 passed / 0 failed / 0 ignored，覆盖初始提交失败重试及只写一次、后续保存失败保留旧价/重试生效/历史价格不变、冷load与save的持锁顺序和8线程最终缓存=DB。最终冻结源码的 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline` 原生0，181 passed / 0 failed / 67 ignored，H-225的3条均默认执行、含7种激活场景，无手工set_pricing。证据h225-pricing-owner、h225-kernel-e2e-20261030.log/-result.json和h225-tested-sources-20261030.json（4份源码）；其余门禁仍在执行，尚未验收。
+
+阶段失败不删除：首次扩展close/reopen夹具未保留MemorySecretStore占位key，h225-pricing-regression-20261030为1通过/2失败（API key not set）；仅修正测试夹具共用合成secret store后专项3通过，真实SQLite仍完整close/reopen，不用再次initialize伪装启动。AppCore首次全量lib为1350通过/1失败/53忽略，失败completion_plan::audit_tests::discovered_real_build_completes_after_release未在4秒内出现build-started标记；尚未判定原因，后续对照/复跑不得覆盖原失败。根fmt旧agent.rs:1043、独立Tauri旧格式差异如实保留；本轮修改3份AppCore Rust文件的rustfmt --check和git diff --check通过。
+E-H225-03（最终门禁与环境恢复）：首次 `cargo test --workspace --offline --no-fail-fast` 在编译阶段出现LLVM/内存分配失败及LNK1102，未产生测试结果；降为 `-j 2 -- --test-threads=2` 后LNK1285明确报告checkpoint_audit的PDB损坏，同样不能算全仓测试。两次均等待真实进程终态，随后原生 `cargo clean -p deepagent-app-core --profile dev --target-dir G:\Code_Warehouse\DeepAgent-Studio\target --offline` 清理该包编译产物（7.6GiB、exit0），2034份顶层证据和4份源码哈希不变，损坏PDB已不存在。保留h225-workspace、h225-workspace-bounded及h225-appcore-clean-result-20261030记录，不修改生产代码掩盖环境失败。
+
+恢复后执行 `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2`，原生101、711.32秒，133个结果块合计 **3891 passed / 1 failed / 282 ignored**；唯一失败canvas_prompt::tests::every_node_kind_owns_exactly_one_profile为既有H-306（prompts源码未改）。其中AppCore lib **1351/0/62**、kernel_v2_e2e **181/0/67**；H-225三项owner单测和三项E2E均默认执行，原首登探针不再ignored。先前build-started超时的原测试本次完整运行通过，未定位首轮环境敏感性的独立根因，不宣称已修复它。证据h225-workspace-recovered-20261030.log/-result.json、h225-evidence-summary-20261030.json；完整workspace不是全绿。
+
+E-H225-04（消费方、格式与lint）：`cargo build -p deepagent-cli --offline` exit0；`cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --target-dir target/h225-tauri-build --offline` exit0；`cd apps/desktop && pnpm build` exit0，21批共296前端测试通过、TS与Vite通过，保留大chunk和browser externalization等构建告警。根 `cargo fmt --all -- --check` 仍因未改runtime/workflow/agent.rs:1043失败；独立Tauri fmt因原import布局/画布write_current/set_reasoning_effort格式失败。三个修改的AppCore Rust文件rustfmt --edition 2021 --check通过；Tauri改动片段不在其格式诊断中，未为本项格式化无关代码。`cargo clippy --all-targets --all-features --offline -- -D warnings` 被未改models/client.rs:355 clone_on_copy阻断；额外 `cargo clippy -p deepagent-app-core --all-targets --no-deps --offline -j 2 -- -D warnings` 仍报未改context_runtime、http_runtime、plugin_preparation、run_assembler及既有测试fixture诊断，无本轮修改文件诊断；不压制lint、不宣称严格检查全绿。证据h225-cli-build/tauri-check/desktop-build/format/tauri-format/clippy/appcore-clippy-20261030及h225-baseline-gate-check-20261030.json。
+
+E-H225-05（验收范围与兼容性）：已证实首登早/晚启动刷新、已配置真实DB重开且不再刷新、旧缺price字段的配置刷新升级、发现失败重试、退出后重登、手工模型/报价刷新均使用同一SettingsService已提交价格，七场景的canonical Flash首轮usage1000/100/hit800/miss200、费用行/summary/CostRecorded均0.000616元、历史价格snapshot正确、第二轮daily预算拒绝且仅一次wire；这是仓库既有闲时快照及合成usage，不是真实扣款或当前官网价格验证。单测证明DB保存失败不发布新价，重试后生效且不重算旧行，初始化模型与价格仅一次提交，冷load/save和8线程最终发布与DB一致（按提交顺序，不承诺较晚发起的请求必胜）。保留CostService::new/set_pricing显式ledger兼容入口，只把桌面生产装配改为from_settings；DTO/事件名/权限/沙箱/供应商参数/DB schema未改。设置保存失败现在明确返回错误，不再返回部分激活成功。
+
+不覆盖真实供应商价格/用量/账单、其他OS、WebView向导点击与时序压力、endpoint切换（当前初始化为固定DeepSeek discovery）、跨host缓存一致性H-87、凭据迟到刷新与SecretStore/DB跨存储原子性H-88、备用模型分段归价H-226、运行中硬预算、未知模型/无价NULL费用的准入策略及未挂载CostService的其他入口。旧NULL历史费用不补算，不拿当前价静默改账。本项UI与桥接形状未改，前端构建/Tauri编译不能冒充真实UI或跨平台验收。
+
+E-H225-06（用户要求的编译清理）：验证与进程全部终态后，对根target和target/h225-tauri-build分别使用 `cargo clean --profile dev --offline --target-dir <明确目录>`，只移除两处debug profile，exit均0，Cargo报告17.1/2.4GiB；实际G盘可用由172163457024增至191960236032字节（约18.44GiB）。2048份顶层日志/探针/脚本证据和4份冻结源码哈希均保持一致，未删除整个target；原其他四处debug仍不存在。证据h225-final-clean-plan/protected/result-20261030.json及原生clean日志，清理后不再重建Rust产物。
+
+本轮新增根因修复1项、历史跳过/归并/撤销新增0；累计 **92验收、21历史跳过、7归并、2撤销、184待修复、0修复中**，184有效未关闭，306唯一槽位/8列与其余305条主行不变。下一项准备复核H-226备用模型分段归价，先查原探针与现有计账消费方，不预先合并。本项所列本机验收剩余0；其余限制按独立条目/后续验收处理。总剩余 **200–400有效修复与验收小时** 仍为未逐项校准的历史粗估，依据剩余跨层权限、执行、持久化与消费方范围，没有可靠独立工时计量，不按编译等待机械扣减；设备、依赖、构建和环境等待另计，无精确完工日期承诺。整体goal active。代码、测试与当时双文档正常独立提交，取得hash后另做文档回填，不amend、不推送、不建PR。
 
 ## H-236 Hook 父运行取消传播（2026-10-30，已修复并验收）
 
@@ -3022,7 +3049,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-222：`thread/start` 的 `reasoningEffort` 被静默丢弃，后续 turn 回退到默认思考配置](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-223：刷新相同模型目录会覆盖仍有效的用户选型，下一次 Responses 请求静默换模型](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-224：日/月费用使用错误时间桶，真实预算接纳漏计本期历史费用后继续请求模型](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 仅E-H224-04～05所列Windows本机范围；原失败正文保留 | 既有CostService按完整本地时区求自然日/月初，异常拒绝有限预算；无新成本库/DTO/SQL迁移 | 原探针1/2→3/0；冻结费用10/0（25样本）、默认准入及UTC4/0、Tauri locked检查通过；workspace3867/2/286，MCP窄复核1/0不抹原失败；旧lint/fmt和锁漂移保留，E-H224-01～05 | 92944c47e5e4a634edd209c4246c9006b1731704 | 不保证未知价格/并发/运行中硬停/其他OS或真实供应商；下一H-236，186有效未关闭；200–400有效小时仍为历史粗估，设备/依赖/构建等待另计 |
-| [H-225：首次登录只持久化报价，未激活既有 CostService，正常模型有用量却无费用且预算继续放行](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-225：首次登录只持久化报价，未激活既有 CostService，正常模型有用量却无费用且预算继续放行](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H225-01原探针复现；E-H225-03～05本机限定验收 | SettingsService单一价格源、模型报价一次提交及DB/缓存同序发布；桌面移除手工同步 | owner3/0/0、E2E181/0/67、全仓3891/1/282仅H306；CLI/Tauri/前端296通过；旧fmt/lint失败，见E-H225 | 待独立fix提交后回填 | 本项所列验收剩余0；真实UI/供应商/跨host与未知费用等限制见E-H225-05，H-226独立排队 |
 | [H-226：备用模型切换后仍按初始模型结算，完整 usage 被错误归价且下一轮预算误放行或误拒绝](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-227：日/月限额仅驻留内存，宿主服务重建后历史费用保留但预算静默变为无限](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-228：会话搜索在可见性过滤前截断候选，隐藏记录可挤掉全部有效历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
