@@ -7611,7 +7611,7 @@ cargo test -p deepagent-app-core --test kernel_v2_e2e verification_toolchain::au
 
 ### H-236：hook 缺少父运行取消上下文，工具流水线仍等待，MCP 对端未获取消
 
-**级别：中（P2，可选模型/MCP hook 的取消生命周期缺口）；当前状态：已修复并验收（2026-10-30，仅E-H236-06～08所列Windows本机范围；修复提交待正常提交后回填）。以下原始失败、设置错误及增量证据按历史保留，不代表当前仍复现；完整workspace、旧lint/fmt及远端限制均不隐去。不是所有hooks均不响应取消，也没有复现取消后主运行误记成功。**
+**级别：中（P2，可选模型/MCP hook 的取消生命周期缺口）；当前状态：已修复并验收（2026-10-30，仅E-H236-06～08所列Windows本机范围；修复提交a0cc7c6adbed0aed57ace39f4199afa8e914124f）。以下原始失败、设置错误及增量证据按历史保留，不代表当前仍复现；完整workspace、旧lint/fmt及远端限制均不隐去。不是所有hooks均不响应取消，也没有复现取消后主运行误记成功。**
 
 #### 首次即时 Evidence（2026-10-24）
 
@@ -7705,7 +7705,7 @@ E-H236-01：原探针 `cargo test --target-dir target/h300-after-h163-build -p d
 
 E-H236-02：修改生产前补两条默认回归，分别在真实并行工具结果已提交、真实文件写入及 FileChanged Hook 已进入后取消，要求有界结束并在数据库重开后保留 completed action/真实字节。`cargo test --target-dir target/h300-after-h163-build -p deepagent-runtime --lib h236_pending_ --offline -j 2 -- --nocapture --test-threads=1` 实际原生101、31.94秒，**0 passed / 2 failed / 0 ignored**，均因取消后仍等待挂起 Hook，2秒测试观察窗到期；并非产品 SLA。证据 target/h236-post-commit-red-20261030.log/-result.json。
 
-P-H236-current（已实施，本地设计）：沿既有 ToolExecutionContext 贯通统一 HookRegistry、HookActionExecutor、命令/HTTP/MCP/模型 Hook、agent 私有 Runtime 与工具 pipeline；run-owned registry 让旧 dispatch 调用同样继承父取消。每个 hook 使用独立 child，用户取消或动作期限先通知资源 owner，再给最多1秒本地清理预算；复用既有 MCP 按 requestId 的取消通知，不关闭共享服务。prompt 使用取消感知模型入口，agent 私有 Runtime 继承父取消，保留原 H-237 权限与 AutoDenyGate；前置取消不执行父工具，后置沿 H-139 先提交事实再停止附属决策。保留旧 trait 方法的默认兼容入口，无第二套取消/事件/存储链路。实现及最终验收见 E-H236-06～08；修复提交在正常独立提交后回填，不把本节本机验收外推为全系统完成。
+P-H236-current（已实施，本地设计）：沿既有 ToolExecutionContext 贯通统一 HookRegistry、HookActionExecutor、命令/HTTP/MCP/模型 Hook、agent 私有 Runtime 与工具 pipeline；run-owned registry 让旧 dispatch 调用同样继承父取消。每个 hook 使用独立 child，用户取消或动作期限先通知资源 owner，再给最多1秒本地清理预算；复用既有 MCP 按 requestId 的取消通知，不关闭共享服务。prompt 使用取消感知模型入口，agent 私有 Runtime 继承父取消，保留原 H-237 权限与 AutoDenyGate；前置取消不执行父工具，后置沿 H-139 先提交事实再停止附属决策。保留旧 trait 方法的默认兼容入口，无第二套取消/事件/存储链路。实现及最终验收见 E-H236-06～08；修复提交a0cc7c6adbed0aed57ace39f4199afa8e914124f；不把本节本机验收外推为全系统完成。
 
 E-H236-03（候选门禁，不代表验收）：冻结20份源码/配置/测试后，Hooks/Models/Runtime lib分别67/0/0、94/0/21、344/0/9（通过/失败/忽略），新增Hook资源owner默认回归5/0/0；Hooks严格Clippy、Tauri --lib --tests检查及CLI构建原生0。全仓严格Clippy原生101，仍停于models/client.rs:355既有clone_on_copy；本轮该文件仅其他位置注释改变，诊断行未改。根fmt与Tauri fmt均原生1，保留原有格式差异。逐项命令、退出码和耗时见target/h236-final-{related-libs,owner-tests,hooks-clippy,workspace-clippy,root-format,tauri-format,tauri-check}-20261030-result.json及h236-current-cli-build-20261030-result.json；不以局部门禁替代完整验收。
 
@@ -7739,6 +7739,8 @@ E-H236-08（限定验收与剩余）：本项父执行上下文缺口已修复�
 E-H236-09（交付前复核与清理）：同一受测源码在隔离配置环境再次默认执行 `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e hook_cancellation --offline -j 2 -- --nocapture --test-threads=1`，原生0、18.59秒、9 passed/0 failed/0 ignored（h236-delivery-kernel-20261030）；19份Rust修改文件独立rustfmt原生0。交付检查确认306行/306唯一编号/8列、其余305主行逐字未改、顶部91项与主行相同、双文档最终正文一致、原始审计证据保留及21份受测源码SHA-256一致。辅助检查首次遇Node读取大文档默认缓冲上限、随后发现H-305撤销标题使用空格而非冒号；分别修正辅助读取容量和已存在标题解析，未改生产/测试/台账内容或放宽验收，最终检查通过（h236-delivery-before-clean-20261030.json）。
 
 确认本轮构建进程、真实hook-mcp夹具和各产物目录内运行程序均0后，先按已解析的绝对路径、非junction边界预览，再执行 `cargo clean --profile dev --target-dir <checked-target> --locked --offline`。三处target分别为根target、根target/h300-after-h163-build、apps/target/h300-after-h163-build；Cargo各原生0并报告删除3.0/17.7/2.5GiB，三处debug实际均不存在。G盘可用从168333000704增至191966666752字节；1992份根目录证据及21份源码哈希均未改变。记录h236-delivery-clean-plan/protected-evidence/clean-result-20261030.json和三份clean日志；仅删重新生成的编译产物，保留历史对照binary、日志和原用户未跟踪项。此后未重新编译，下一项必须按需重建；不将清理后的旧binary路径当作现存文件或将清理算作问题修复数。
+
+E-H236-10（独立提交与hash回填）：代码、默认回归、内部依赖及当时双文档共23文件已正常提交 `a0cc7c6adbed0aed57ace39f4199afa8e914124f`（【fix】贯通Hook父运行取消上下文）。提交前、暂存后及fix提交后检查均确认21份受测源码哈希、306唯一台账/8列、顶部计数、其余305行、双文档共享正文及原始失败证据不变，diff --check通过；证据h236-delivery-before-stage/staged/after-code-commit-20261030.json。fix提交后tracked工作区干净，仅原五类用户未跟踪项列名，未读改/暂存/删除。此次只回填真实修复hash和交付记录，另做双文档提交，不amend、不递归回填docs自身hash、不推送、不建PR。清理后未重新生成编译产物；本机限定验收、workspace/旧lint/fmt限制与185有效未关闭保持E-H236-07～09，下一复核H-225/H-226及总工时粗估不变，整体目标active。
 
 ### H-237：agent-hook 未继承主运行有效权限，被规则或工作区边界拒绝的读取仍将正文交给 hook 模型
 
