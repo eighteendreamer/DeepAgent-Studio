@@ -15,6 +15,9 @@ use deepagent_subagents::WorktreeProvider;
 #[path = "kernel_v2_e2e/build_boundary.rs"]
 mod build_boundary;
 
+#[path = "kernel_v2_e2e/failed_response_usage.rs"]
+mod failed_response_usage;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/verification_lifecycle.rs"]
 mod verification_lifecycle;

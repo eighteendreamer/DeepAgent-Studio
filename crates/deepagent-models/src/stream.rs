@@ -167,31 +167,14 @@ impl ResponseAccumulator {
                     self.emit_tool_completed(index, observer);
                 }
             }
-            "response.completed" => {
-                self.terminal = Some(FinishReason::Stop);
-                self.saw_terminal = true;
-                if let Some(usage) =
-                    parse_response_usage(value.get("response").and_then(|v| v.get("usage")))
-                {
-                    self.raw_usage = value.get("response").and_then(|v| v.get("usage")).cloned();
-                    self.usage = Some(usage);
-                    observer.on_event(ModelStreamEvent::Usage { usage });
-                }
-                observer.on_event(ModelStreamEvent::Finished {
-                    reason: self.terminal,
+            "response.completed" | "response.incomplete" => {
+                self.terminal = Some(if kind == "response.completed" {
+                    FinishReason::Stop
+                } else {
+                    FinishReason::Length
                 });
-                return Ok(true);
-            }
-            "response.incomplete" => {
-                self.terminal = Some(FinishReason::Length);
                 self.saw_terminal = true;
-                if let Some(usage) =
-                    parse_response_usage(value.get("response").and_then(|v| v.get("usage")))
-                {
-                    self.raw_usage = value.get("response").and_then(|v| v.get("usage")).cloned();
-                    self.usage = Some(usage);
-                    observer.on_event(ModelStreamEvent::Usage { usage });
-                }
+                self.observe_terminal_usage(value.get("response"), observer);
                 observer.on_event(ModelStreamEvent::Finished {
                     reason: self.terminal,
                 });
@@ -199,6 +182,7 @@ impl ResponseAccumulator {
             }
             "response.failed" => {
                 self.saw_terminal = true;
+                self.observe_terminal_usage(value.get("response"), observer);
                 let error = value
                     .get("response")
                     .and_then(|response| response.get("error"));
@@ -214,6 +198,27 @@ impl ResponseAccumulator {
             _ => {}
         }
         Ok(false)
+    }
+
+    fn observe_terminal_usage(
+        &mut self,
+        response: Option<&serde_json::Value>,
+        observer: &mut dyn DeltaObserver,
+    ) {
+        // A failed response may still report paid work. Deliver its snapshot
+        // before returning the provider error, through the same accounting
+        // callback as successful terminals. Missing/null is not measured zero.
+        let Some(raw) = response
+            .and_then(|value| value.get("usage"))
+            .filter(|v| !v.is_null())
+        else {
+            return;
+        };
+        if let Some(usage) = parse_response_usage(Some(raw)) {
+            self.raw_usage = Some(raw.clone());
+            self.usage = Some(usage);
+            observer.on_usage(usage, &crate::usage::sanitized_provider_usage(raw));
+        }
     }
 
     fn add_item(&mut self, item: &serde_json::Value, observer: &mut dyn DeltaObserver) {
@@ -1263,6 +1268,122 @@ mod tests {
                 .and_then(serde_json::Value::as_u64),
             Some(4)
         );
+    }
+
+    #[derive(Default)]
+    struct TerminalUsageRecorder {
+        events: Vec<ModelStreamEvent>,
+        snapshots: Vec<(Usage, serde_json::Value)>,
+    }
+
+    impl DeltaObserver for TerminalUsageRecorder {
+        fn on_usage(&mut self, usage: Usage, raw: &serde_json::Value) {
+            self.snapshots.push((usage, raw.clone()));
+            self.on_event(ModelStreamEvent::Usage { usage });
+        }
+
+        fn on_event(&mut self, event: ModelStreamEvent) {
+            self.events.push(event);
+        }
+    }
+
+    #[test]
+    fn responses_terminal_usage_preserves_numeric_snapshot_before_result() {
+        use serde_json::json;
+        for kind in [
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        ] {
+            let raw = json!({"input_tokens":9,"output_tokens":2,"total_tokens":11,
+                "input_tokens_details":{"cached_tokens":4,"text":"provider-text-canary"},
+                "output_tokens_details":{"reasoning_tokens":1},
+                "unknown":"provider-text-canary"});
+            let mut acc = ResponseAccumulator::new();
+            let mut observer = TerminalUsageRecorder::default();
+            let result = acc.push_sse_data_observed(
+                &json!({"type":kind,"response":{"usage":raw,
+                    "error":{"code":"audit_failed","message":"controlled failure"}}})
+                .to_string(),
+                &mut observer,
+            );
+            assert_eq!(observer.snapshots.len(), 1, "{kind}");
+            let (usage, raw_observed) = &observer.snapshots[0];
+            assert_eq!(
+                *usage,
+                Usage {
+                    prompt_tokens: 9,
+                    completion_tokens: 2,
+                    total_tokens: 11,
+                    prompt_cache_hit_tokens: 4,
+                    prompt_cache_miss_tokens: 5,
+                    reasoning_tokens: 1
+                }
+            );
+            assert_eq!(*raw_observed, crate::usage::sanitized_provider_usage(&raw));
+            assert!(!raw_observed.to_string().contains("provider-text-canary"));
+            assert_eq!(
+                observer
+                    .events
+                    .iter()
+                    .filter(|event| matches!(event, ModelStreamEvent::Usage { .. }))
+                    .count(),
+                1
+            );
+            if kind == "response.failed" {
+                assert!(matches!(result, Err(CoreError::Provider { code, .. })
+                    if code.as_deref() == Some("audit_failed")));
+                assert!(!observer
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, ModelStreamEvent::Finished { .. })));
+            } else {
+                assert!(result.unwrap());
+                let response = acc.finish().unwrap();
+                assert_eq!(response.usage, Some(*usage));
+                assert_eq!(response.raw_usage, Some(raw));
+                assert!(matches!(
+                    observer.events.last(),
+                    Some(ModelStreamEvent::Finished { .. })
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn responses_terminal_missing_or_null_usage_is_not_a_measured_zero() {
+        use serde_json::{json, Value};
+        for kind in [
+            "response.completed",
+            "response.incomplete",
+            "response.failed",
+        ] {
+            for present in [false, true] {
+                let mut response = json!({"error":{"code":"audit_failed"}});
+                if present {
+                    response["usage"] = Value::Null;
+                }
+                let mut acc = ResponseAccumulator::new();
+                let mut observer = TerminalUsageRecorder::default();
+                let result = acc.push_sse_data_observed(
+                    &json!({"type":kind,"response":response}).to_string(),
+                    &mut observer,
+                );
+                assert!(observer.snapshots.is_empty(), "{kind}, null={present}");
+                assert!(!observer
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, ModelStreamEvent::Usage { .. })));
+                if kind == "response.failed" {
+                    assert!(result.is_err());
+                } else {
+                    assert!(result.unwrap());
+                    let response = acc.finish().unwrap();
+                    assert!(response.usage.is_none());
+                    assert!(response.raw_usage.is_none());
+                }
+            }
+        }
     }
 
     #[test]

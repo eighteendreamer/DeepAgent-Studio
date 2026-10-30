@@ -2,25 +2,37 @@
 
 ## 当前状态与计数口径（2026-10-30）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计九十六项均限各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计九十七项均限各自所列本机范围验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 96 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 97 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-63候选封存，准备独立修复H-133上游依赖 |
-| 待修复 | 179 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-63候选已封存，等待其独立修复恢复 |
+| 待修复 | 178 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 1 | H-63候选等待独立上游H-133；并非整个goal被阻塞 |
 
-有效未关闭条目当前为 **180（179待修复、1阻塞待处理）**；不提供完成率。九十六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **179（178待修复、1阻塞待处理）**；不提供完成率。九十六项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
 
 上一轮 H-159 的计数纠正记录（历史快照）：当轮新增修复只有 H-159 一项。该轮基线 HEAD `6cc671c2` 的 306 主行实际已有 86 项验收、190 项待修，文首 85 项列表漏列 H-162；本轮按已存在的 `6bf802ce` 实现、`56dfe8b9` 验收记录及 `b7c7d505` 范围说明补正计数，不把 H-162 当作新增修复。下文各历史即时记录中的数量和“当前”均为当时快照；最新总数以本节及完整主行台账为准。
 
+## H-133 失败终帧用量保留（2026-10-30，已修复并验收）
+
+E-H133-01（2026-10-30，独立依赖与原失败复核）：基线8bada7d9a4dcbf340cb17c88027a01d44c430d19，tracked干净，仅原五类用户未跟踪项，保持只列名不读取/修改/暂存/删除；H-63候选继续封存在target/h063-before-h133-20261030，不恢复或混入本项。已核对原探针target/h063-dependency-h133-original-20261030.log及-result.json：正式ModelClient+离线Responses transport原生101、35.6369858秒，0 passed/1 failed/0 ignored，provider error保留但9 input/2 output/4 cache/1 reasoning未通知observer；当前models/runtime源码与该次失败基线一致，不重复空跑红测。本轮只修H-133的failed终帧可选usage保留；H-272后的canonical observer已能在错误返回/drop时结算，先补默认模型/运行时/正式ChatService与文件SQLite消费回归，再在Responses parser的统一终帧边界修复。missing/null不编造用量，错误分类和唯一失败终态不变，raw诊断复用已有numeric sanitizer；不混修H-63、H-273/H-274、provider参数或账本设计。H-133修复中，尚未验收或创建修复提交；96验收/21历史跳过/7归并/2撤销/178待修/1修复中/1阻塞（H-63），180有效未关闭，整体goal active。剩余200–400有效工作小时仍为历史未逐项校准粗估，构建/设备/依赖等待另计，不作精确日期承诺。
+
+E-H133-02（新增默认TDD与唯一根因修复）：生产源码尚未改动时，新增模型层3项默认回归真实0 passed/3 failed/0 ignored（原生101、6.61秒），运行时2项真实0/2/0（101、60.92秒），正式ChatService+文件SQLite组真实1/2/0（101、157.83秒）；failed+usage漏量、fallback漏首候选，以及null usage被成功终帧当零实测均由反例确认。原成功带完整usage与failed缺失/null对照成立。首轮模型夹具因测试未限定CoreError路径编译失败（3.27秒），保留原输出并修正测试路径，不算产品红测。日志/receipt为target/h133-models-tdd-red/red2、h133-runtime-tdd-red、h133-chat-tdd-red-20261030。随后仅在ResponseAccumulator生产边界合并completed/incomplete的重复处理，并共享observe_terminal_usage；failed在返回原provider error前调用同一on_usage，numeric sanitizer保留原计数字段presence、拒绝字符串/未知诊断，默认observer仍收到唯一Usage，失败不发成功Finished；optional null与missing均不编造收费。已有canonical observer/runtime/AppCore入账链无需生产修改，H-273/H-274数值完整性规则原样保留。上述只是候选修复，完整门禁尚待执行，H-133仍修复中。
+
+E-H133-03（冻结候选定向门禁终态）：5份Rust源码/测试冻结于target/h133-candidate1-tested-sources-20261030.json，顺序driver退出0且结束时SHA全部匹配。root fmt原生0、5.48秒；Models全lib默认98 passed/0 failed/20历史ignored（0、6.82秒），原H-133已取消ignore且默认通过；新增Runtime两项2/0/0（0、31.28秒），验证唯一failed实测、raw numeric/presence、无usage不伪造、fallback前后逐模型归属109 input/12 output；正式ChatService+文件SQLite三项3/0/0（0、148.22秒），failed保留原error/唯一failed终态，9 input/2 output/4 hit/5 miss/1 reasoning仅入账一行、合成0.00544元，预算耗尽后下一run不dispatch，success/missing/null正常对照成立，run/session事件、receipt、费用及CostSummary全部关库重开一致。终帧usage先于唯一终态，顺序稳定，不改run_events协议或持久化schema。日志/receipt为target/h133-candidate1-{fmt,models,runtime,chat}-20261030；已验证306编号唯一/8列、仅H-133主行改变、E-H133正文双文档一致，H-63 sources-only.patch当前仍能git apply --check。完整workspace、严格lint与HTTP/CLI构建尚未执行，当前仍修复中，不把定向全绿等同完整验收。
+
+E-H133-04（定向验收与全局门禁边界，2026-10-30）：H-133相关门禁均真实执行并通过：root `cargo fmt --all -- --check`原生0、5.48秒（候选driver；最终fmt复核0、6.69秒）；`cargo test -p deepagent-models --lib --offline -j 2 -- --nocapture --test-threads=1` 98 passed/0 failed/20历史ignored，6.82秒；Runtime新增2/0/0，31.28秒；正式AppCore/ChatService+文件SQLite新增3/0/0，148.22秒；`cargo test -p deepagent-models --features http --offline -j 2 -- --quiet --test-threads=1`原生0、35.05秒；HTTP build原生0、1.00秒；CLI build原生0、170.08秒。全workspace按要求执行`cargo test --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1`，原生101、1634.63秒，133 targets合计3965 passed/1 failed/270 ignored；唯一失败仍是基线H-306 `deepagent-prompts` 的 `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`（27/1/0），与本项改动无关。严格clippy三次均止于未改的基线 `crates/deepagent-models/src/client.rs:355` `clone_on_copy`（all 101/110.76秒，models-http 101/21.67秒，runtime 101/18.05秒）；未顺手修改或放宽基线。受测源码SHA仍匹配冻结清单，H-63封存补丁仍可`git apply --check`。因此H-133在其影响范围内已修复并验收，不把全仓既有H-306/clippy阻断冒充本项失败；未执行Tauri/前端构建，因为本项没有桥接或UI改动。
+
 ## H-63 附属模型消费归属（2026-10-30，依赖待处理，候选未验收）
+
+
 
 E-H63-01（2026-10-30，原探针与范围核对）：基线4dc2aacb404cc7887ddd28f432b700cccd95ab3b，tracked初始干净，原五类用户未跟踪项仅列名不读取/修改/暂存/删除。续接原cell272/session10131取得同一驱动的两个原生终态，没有重启活进程：隔离HOME/APPDATA、MemorySecretStore与离线transport下，`cargo test -p deepagent-app-core --lib audit_completion_check_usage_reaches_cost_ledger --offline -j 2 -- --include-ignored --nocapture --test-threads=1`退出101，0 passed/1 failed/0 ignored，352.46秒（测试0.46秒），两组账本均11/3，应为314/24和112/10；`cargo test -p deepagent-app-core --test kernel_v2_e2e session_title_usage --offline -j 2 -- --include-ignored --nocapture --test-threads=1`退出101，1 passed/1 failed/0 ignored，114.75秒（测试0.88秒），正常与耗尽预算均2请求/1行/1000输入100输出，标题用量2000/7未入账。空历史0请求和已有用户标题控制通过。原日志、receipt及5文件源码SHA冻结清单target/h063-original-*-20261030保留，动手前5份哈希一致。旧标题fixture对耗尽预算也中途强制标题存在，与最终期望不派发矛盾；后续需明确修正该fixture契约，而不是接受越限请求。
 
@@ -3071,7 +3083,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-130：Harness `turn/steer` 可从同一个已替代 turn 重复派生多个运行](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-131：固定总时限会截断仍在持续输出的 provider stream](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-132：Chat Completions 的合法内容过滤终态被当作未知 provider 错误，usage 未进入运行账本](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-133：Responses `response.failed` 携带 usage 时未进入运行用量](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-133：Responses `response.failed` 携带 usage 时未进入运行用量](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | 2026-10-30；不归并H-63，H-63只依赖本项 | failed在返回原provider error前复用统一终帧usage回调；缺失/null不计零 | E-H133-01～04：模型98/0/20 ignored、Runtime2/0/0、AppCore3/0/0；HTTP/CLI/fmt通过；全workspace既有H-306失败、clippy既有clone_on_copy，均不属于本项 | 修复提交待回填 | 仅限离线Mock Responses、Runtime/AppCore文件SQLite与当前Windows；未改Tauri/UI、未测真实provider/凭据；下一项恢复H-63 |
 | [H-134：被替代的画布 run 迟到节点事件可覆盖当前状态](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H134-01～06保留原失配夹具与真实TDD8/6；H41/H43历史边界不重复计功，仅所列本机范围 | 原owner单次取消/前驱屏障、迟到ACK绑定及旧错误/停止收尾隔离；保留一个无监听closed owner身份 | 默认owner17/0、workflow105/0、桌面296/build、订阅2/0、Rust30/重开6/媒体26与Tauri通过；workspace3861/1/288唯一既有H306，旧lint/fmt失败保留 | 9c0b11f751f817cb034ce45b27cf756b5722d8d7 | 取消ACK不等终态；未知ACK仍可短暂重叠，不保证真实供应商停止；native/其他OS/断电/跨窗口未验；187有效未关闭，下一H224；历史200–400有效小时未校准、等待另计 |
 | [H-135：stdio MCP 隐式继承宿主凭据，配置环境不是授权边界](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H135-01保留原失败/正常对照；非历史或归并项；限所列Windows本机范围 | 唯一spawn先env_clear、叠固定OS基础环境及原显式env；测试/准备/重连共用，代理CA/自定义变量须显式配置 | E-H135-01～06：默认环境5/0/1、全特性MCP126/0/6、正式服务1/0/1；MCP严格lint/fmt/桌面Rust通过；workspace3572/2/314与全仓lint旧失败保留 | `b51529f05bfdb669bac6dbaf7755594b6c4ff3b2` | 本机所列范围剩余0；非OS沙箱，真实代理TLS/其他OS/UI/供应商未验；H-64冷就绪仍未定位，下一P1 H-142；总工时原粗估未机械扣减 |
 | [H-136：stdio MCP 请求写入受背压阻塞时，停止信号无法结束发送等待](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原本地背压随H-09消除不重复计功；本轮新增锁排队反例修前0/1/0，见E-02～06 | 单一MessageWrite局部Queued/Writing/Flushed证据，未发出不通知/不报未知，写入中仍退役 | 默认原专项2/0/0、dispatch14/0/0、全MCP121/0/8、MCP严格lint/fmt/Tauri check通过；workspace3564/2/315及冷门禁复核见E-05 | `ab32b8db28f4546e4d95cd7da46eb92072145532`；历史实现46ba0fd7 | 本机范围剩余0；远端停止best-effort/可能迟到字节，未验UI/供应商/其他OS；下一项先复核H-64就绪失败，总工时原粗估不机械扣减 |

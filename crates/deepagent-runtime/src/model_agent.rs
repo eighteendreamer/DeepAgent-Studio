@@ -3918,6 +3918,98 @@ mod tests {
         assert_eq!(transport.requests.lock().unwrap().len(), 2);
     }
 
+    fn failed_response_with_usage(usage: Option<serde_json::Value>, code: &str) -> String {
+        let mut response = serde_json::json!({"status":"failed",
+            "error":{"code":code,"message":"controlled failure"}});
+        if let Some(usage) = usage {
+            response["usage"] = usage;
+        }
+        serde_json::json!({"type":"response.failed","response":response}).to_string()
+    }
+
+    #[tokio::test]
+    async fn failed_responses_usage_reaches_runtime_without_changing_failure() {
+        let raw = serde_json::json!({"input_tokens":9,"output_tokens":2,"total_tokens":11,
+            "input_tokens_details":{"cached_tokens":4},
+            "output_tokens_details":{"reasoning_tokens":1},"unknown":"provider-text-canary"});
+        for sample in [Some(raw.clone()), None, Some(serde_json::Value::Null)] {
+            let measured = sample.as_ref().is_some_and(|value| !value.is_null());
+            let (sink, mut rx) = crate::events::ChannelSink::new();
+            let mut agent = ModelAgent::new(
+                client(vec![failed_response_with_usage(sample, "audit_failed")]),
+                "primary",
+                "sys",
+                "prompt",
+                vec![],
+            )
+            .with_events(Arc::new(sink))
+            .with_max_model_attempts(1);
+            let error = agent.think(0, &[]).await.unwrap_err();
+            assert!(matches!(error, CoreError::Provider { code, .. }
+                if code.as_deref() == Some("audit_failed")));
+            let routes = agent.model_usage();
+            assert_eq!(routes.len(), usize::from(measured));
+            let raw_usage = agent.take_pending_raw_usage();
+            assert_eq!(raw_usage.len(), usize::from(measured));
+            let events: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok())
+                .filter(|event| matches!(event, RuntimeEvent::Usage { .. }))
+                .collect();
+            assert_eq!(events.len(), usize::from(measured));
+            if measured {
+                assert_eq!(routes[0].model_id, "primary");
+                assert!(routes[0].usage_complete);
+                let total = agent.cumulative_usage().unwrap();
+                assert_eq!(total, routes[0].usage);
+                assert_eq!(total.billed_prompt_tokens, 9);
+                assert_eq!(total.completion_tokens, 2);
+                assert_eq!(total.reasoning_tokens, 1);
+                assert_eq!(total.prompt_cache_hit_tokens, 4);
+                assert_eq!(
+                    raw_usage[0],
+                    deepagent_models::usage::sanitized_provider_usage(&raw)
+                );
+                assert!(matches!(&events[0], RuntimeEvent::Usage {
+                    prompt_tokens:9, completion_tokens:2, reasoning_tokens:1,
+                    prompt_cache_hit_tokens:4, raw_responses_usage:Some(value), ..
+                } if value == &raw_usage[0]));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_responses_usage_stays_on_its_attempt_when_falling_back() {
+        let raw = serde_json::json!({"input_tokens":9,"output_tokens":2,"total_tokens":11,
+            "input_tokens_details":{"cached_tokens":4},
+            "output_tokens_details":{"reasoning_tokens":1}});
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                vec![failed_response_with_usage(Some(raw), "overloaded_error")],
+                response_text_completed_with_usage("done", 100, 10, 80),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let mut agent = ModelAgent::new(client, "primary", "sys", "prompt", vec![])
+            .with_fallback_model(Some("fallback".into()));
+        agent.think(0, &[]).await.unwrap();
+        let routes = agent.model_usage();
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].model_id, "fallback");
+        assert_eq!(routes[0].usage.billed_prompt_tokens, 100);
+        assert_eq!(routes[1].model_id, "primary");
+        assert_eq!(routes[1].usage.billed_prompt_tokens, 9);
+        assert_eq!(agent.cumulative_usage().unwrap().billed_prompt_tokens, 109);
+        assert_eq!(agent.cumulative_usage().unwrap().completion_tokens, 12);
+        assert_eq!(agent.take_pending_raw_usage().len(), 2);
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0]["model"], "primary");
+        assert_eq!(requests[1]["model"], "fallback");
+    }
+
     struct UsageThenWait {
         ready: Arc<tokio::sync::Notify>,
     }

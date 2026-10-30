@@ -3862,6 +3862,22 @@ E-H125-07（独立提交与完整性）：本项实现、默认回归与当时�
 
 ### H-133：Responses `response.failed` 携带 usage 时未进入运行用量
 
+**当前状态：已修复并验收（2026-10-30，仅E-H133-04所列本机离线范围）；修复提交待回填。**
+
+
+
+**历史快照：当时处于修复中；下文保留原审计失败证据。**
+
+E-H133-01（2026-10-30，独立依赖与原失败复核）：基线8bada7d9a4dcbf340cb17c88027a01d44c430d19，tracked干净，仅原五类用户未跟踪项，保持只列名不读取/修改/暂存/删除；H-63候选继续封存在target/h063-before-h133-20261030，不恢复或混入本项。已核对原探针target/h063-dependency-h133-original-20261030.log及-result.json：正式ModelClient+离线Responses transport原生101、35.6369858秒，0 passed/1 failed/0 ignored，provider error保留但9 input/2 output/4 cache/1 reasoning未通知observer；当前models/runtime源码与该次失败基线一致，不重复空跑红测。本轮只修H-133的failed终帧可选usage保留；H-272后的canonical observer已能在错误返回/drop时结算，先补默认模型/运行时/正式ChatService与文件SQLite消费回归，再在Responses parser的统一终帧边界修复。missing/null不编造用量，错误分类和唯一失败终态不变，raw诊断复用已有numeric sanitizer；不混修H-63、H-273/H-274、provider参数或账本设计。H-133修复中，尚未验收或创建修复提交；96验收/21历史跳过/7归并/2撤销/178待修/1修复中/1阻塞（H-63），180有效未关闭，整体goal active。剩余200–400有效工作小时仍为历史未逐项校准粗估，构建/设备/依赖等待另计，不作精确日期承诺。
+
+E-H133-02（新增默认TDD与唯一根因修复）：生产源码尚未改动时，新增模型层3项默认回归真实0 passed/3 failed/0 ignored（原生101、6.61秒），运行时2项真实0/2/0（101、60.92秒），正式ChatService+文件SQLite组真实1/2/0（101、157.83秒）；failed+usage漏量、fallback漏首候选，以及null usage被成功终帧当零实测均由反例确认。原成功带完整usage与failed缺失/null对照成立。首轮模型夹具因测试未限定CoreError路径编译失败（3.27秒），保留原输出并修正测试路径，不算产品红测。日志/receipt为target/h133-models-tdd-red/red2、h133-runtime-tdd-red、h133-chat-tdd-red-20261030。随后仅在ResponseAccumulator生产边界合并completed/incomplete的重复处理，并共享observe_terminal_usage；failed在返回原provider error前调用同一on_usage，numeric sanitizer保留原计数字段presence、拒绝字符串/未知诊断，默认observer仍收到唯一Usage，失败不发成功Finished；optional null与missing均不编造收费。已有canonical observer/runtime/AppCore入账链无需生产修改，H-273/H-274数值完整性规则原样保留。上述只是候选修复，完整门禁尚待执行，H-133仍修复中。
+
+E-H133-03（冻结候选定向门禁终态）：5份Rust源码/测试冻结于target/h133-candidate1-tested-sources-20261030.json，顺序driver退出0且结束时SHA全部匹配。root fmt原生0、5.48秒；Models全lib默认98 passed/0 failed/20历史ignored（0、6.82秒），原H-133已取消ignore且默认通过；新增Runtime两项2/0/0（0、31.28秒），验证唯一failed实测、raw numeric/presence、无usage不伪造、fallback前后逐模型归属109 input/12 output；正式ChatService+文件SQLite三项3/0/0（0、148.22秒），failed保留原error/唯一failed终态，9 input/2 output/4 hit/5 miss/1 reasoning仅入账一行、合成0.00544元，预算耗尽后下一run不dispatch，success/missing/null正常对照成立，run/session事件、receipt、费用及CostSummary全部关库重开一致。终帧usage先于唯一终态，顺序稳定，不改run_events协议或持久化schema。日志/receipt为target/h133-candidate1-{fmt,models,runtime,chat}-20261030；已验证306编号唯一/8列、仅H-133主行改变、E-H133正文双文档一致，H-63 sources-only.patch当前仍能git apply --check。完整workspace、严格lint与HTTP/CLI构建尚未执行，当前仍修复中，不把定向全绿等同完整验收。
+
+E-H133-04（定向验收与全局门禁边界，2026-10-30）：H-133相关门禁均真实执行并通过：root `cargo fmt --all -- --check`原生0、5.48秒（候选driver；最终fmt复核0、6.69秒）；`cargo test -p deepagent-models --lib --offline -j 2 -- --nocapture --test-threads=1` 98 passed/0 failed/20历史ignored，6.82秒；Runtime新增2/0/0，31.28秒；正式AppCore/ChatService+文件SQLite新增3/0/0，148.22秒；`cargo test -p deepagent-models --features http --offline -j 2 -- --quiet --test-threads=1`原生0、35.05秒；HTTP build原生0、1.00秒；CLI build原生0、170.08秒。全workspace按要求执行`cargo test --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1`，原生101、1634.63秒，133 targets合计3965 passed/1 failed/270 ignored；唯一失败仍是基线H-306 `deepagent-prompts` 的 `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`（27/1/0），与本项改动无关。严格clippy三次均止于未改的基线 `crates/deepagent-models/src/client.rs:355` `clone_on_copy`（all 101/110.76秒，models-http 101/21.67秒，runtime 101/18.05秒）；未顺手修改或放宽基线。受测源码SHA仍匹配冻结清单，H-63封存补丁仍可`git apply --check`。因此H-133在其影响范围内已修复并验收，不把全仓既有H-306/clippy阻断冒充本项失败；未执行Tauri/前端构建，因为本项没有桥接或UI改动。
+
+
+
 **级别：低（P3，条件性）；触发条件：Responses provider 以 `response.failed` 结束，但完整 response 同时包含非空 usage。** 默认桌面运行使用 Responses 路由；该项不改变失败终态，只影响 provider 已返回用量的保留。
 
 - 官方契约：DeepSeek [Responses API](https://api-docs.deepseek.com/api/create-response/) 将 `response.failed` 定义为携带完整 response 和 error details 的终态；同一 Response schema 定义 `usage` 及 input/output/cache/reasoning 统计。该契约允许失败终态携带 usage；本轮没有真实供应商失败样本证明每类失败都会返回非空用量。

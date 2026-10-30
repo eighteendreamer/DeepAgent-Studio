@@ -1686,7 +1686,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: keep provider usage from a failed Responses terminal"]
     async fn audit_failed_responses_terminal_emits_included_usage() {
         #[derive(Default)]
         struct UsageRecorder(Vec<crate::stream::ModelStreamEvent>);
@@ -1710,8 +1709,23 @@ mod tests {
             .await;
 
         assert!(
-            result.is_err(),
-            "failed terminal should remain a provider error"
+            matches!(result, Err(deepagent_core::error::CoreError::Provider { code, message, .. })
+            if code.as_deref() == Some("audit_failed") && message == "controlled failure")
+        );
+        assert_eq!(
+            observer
+                .0
+                .iter()
+                .filter(|event| matches!(event, crate::stream::ModelStreamEvent::Usage { .. }))
+                .count(),
+            1
+        );
+        assert!(
+            !observer
+                .0
+                .iter()
+                .any(|event| matches!(event, crate::stream::ModelStreamEvent::Finished { .. })),
+            "a failed terminal must not publish a successful finish"
         );
         assert!(observer.0.iter().any(|event| matches!(
             event,
