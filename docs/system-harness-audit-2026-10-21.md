@@ -9505,7 +9505,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 ### H-272：日/月限额只有 run 准入保护，已取得越限用量后正常工具循环仍继续请求模型
 
-**级别：中（P2，条件性费用控制能力缺口）；状态：正式 ChatService 工具循环、已激活报价、文件 SQLite 与后续准入已验证，未修复。** 这是运行内停发能力缺失，不是 DeepSeek 协议错误，也不把当前仅承诺“new run”检查的 check_budget 函数本身说成实现错误。若把 BudgetConfig 的 maximum daily/monthly spend 当作本期消费保护，现有实现不足；若产品明确只提供新 run 准入限制，则必须显式呈现这个边界，不能当作全程硬上限。
+**级别：中（P2，条件性费用控制能力缺口）；状态：已修复并验收，仅限 E-H272-04～08 所列 Windows 本机 ChatService/ModelAgent 范围。** 这是运行内停发能力缺失，不是 DeepSeek 协议错误，也不把修复前仅承诺“new run”检查的 `check_budget` 函数本身说成实现错误。若把 BudgetConfig 的 maximum daily/monthly spend 当作本期消费保护，修复前实现不足；当前已在主模型付费请求边界补充运行内检查，但仍不宣称所有 workflow、并发预留或真实供应商账单均已覆盖。
 
 #### 首次即时记录与探针修正（2026-10-25）
 
@@ -9541,12 +9541,20 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - 以上是参考源码调用链核查，**未运行完整 Claude Code**，不声称其任何并发、工具副作用或预取路径都能零超支。它是 USD/session预算，非本系统CNY/日月账户预算；可借鉴运行内反馈与显式终止原因，不能直接复制其全局状态，也不将它包装成同构SQLite/并发预留方案。本轮没有发现并验证 Codex 与本系统完全同构的人民币日/月gate，不编造 Codex 已有此实现。
 - **DeepSeek官方**：[Responses参数](https://api-docs.deepseek.com/zh-cn/api/create-response/)明确usage是该响应的输入、输出、缓存命中与总token统计；[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)由宿主执行工具再继续请求。官方协议不会替宿主完成本地日/月预算控制。这里供应商usage已足以在首响应后按当前报价估算消费，问题是Harness没有把运行内计量反馈到下一次dispatch；不是要求DeepSeek额外返回本地budget字段，也不是缓存协议不兼容。文档于2026-10-25联网复核，探针金额是人为合成报价×合成用量，不是当日官方报价或实际扣款。
 
-#### 治理方向（本地设计，未实施）
+#### 治理方向（本地设计与实现）
 
 - 在既有唯一 CostService/Provider seam 与 RuntimeEngine 之间定义运行中计量和dispatch前检查契约，保留日/月/账户作用域；每次已取得的usage形成可幂等识别的计量，不只等run最终账本。运行内检查必须读取已结算加在途已测消费；仅在每轮再次调用当前 check_budget 仍会看到旧账本，不能解决根因。
 - 若选择逐请求入账，finalizer需按已结算身份归并，不能再对相同billed totals重复扣算；若选择保留finalizer汇总，需由同一owner维护活动消费并定义原子结算/释放。不能在UI收到Usage后另写第二套预算中心，也不能在Desktop、CLI、SDK各补一段。报价缺失、换模型、附属调用、取消与重试应有明确状态和记账归属；不把本轮未测的并发预留一起宣称已解决。
 - 达限后停止**新的付费请求**，沿既有RunPhase/TerminalKind产生单一可审计原因，保留已取得工具输出、usage与可恢复会话；不将预算停发伪装为正常回答或吞错误。是否立即阻止已授权本地工具、副作用如何处理需要明确产品契约；本轮只用了只读task_list，没有据此验证写操作/审批。
 - 回归应覆盖首响应越限/恰好等限、零cache/部分cache、首调用超额后不发下一请求、每步不同模型报价、usage缺失、失败/取消/重试、hook/compaction/子Agent、并发run、周期切换、重启/崩溃及正确的唯一结算。若只保留admission语义，UI/协议文档需明确“限制新run，不会中止在途run”；不能把改文案称为已实现硬限额。
+
+#### 修复与正式验收（2026-10-31）
+
+- E-H272-04（修复前原探针保留）：在未改生产代码的基线执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e inflight_budget:: --offline -j 2 -- --include-ignored --nocapture --test-threads=1`，正式低限额日/月样本均实际 dispatch 2 次；高限额和预先入账对照通过，结果为 2 passed / 2 failed。原始失败正文仍按原条目保留，未把异步 UI Usage 回调计数误当 Runtime usage 顺序。
+- E-H272-05（根因修复）：在 `deepagent-runtime::usage` 增加 `ModelRequestGate` seam；`ModelAgent` 在每次付费请求前、同一 turn 的重试/长度续写/备用模型 attempt 前调用它。AppCore 的 `CostService` 实现该 gate，将既有持久日/月账本与当前 run 已完整测量的各模型 `RunUsage` 按现有定价合并计算，仅用于准入判断，不写第二账本；最终 `AppRunFinalizer` 仍是唯一成本落账边界。无 SQL migration、第二 store、UI/权限/沙箱放宽。
+- E-H272-06（正式回归）：同一命令重新执行，**4 passed / 0 failed / 0 ignored**。日/月 0.5 元样本在首个响应 usage（合成每次 1 元）后返回 `budget_exceeded`，dispatch=1、usage event=1、唯一成本行=1 元，未发送工具结果后的第二个模型请求；3 元日/月对照各 dispatch 2 次并正常 succeeded。后续独立 follow-up 均在准入前拒绝且 dispatch=0。
+- E-H272-07（相关验证）：`cargo test -p deepagent-runtime --offline -j 2` 为 **349 passed / 0 failed / 9 ignored**；`cargo test -p deepagent-app-core --lib cost_service:: --offline -j 2` 为 **17 passed / 0 failed**；`cargo check -p deepagent-runtime -p deepagent-app-core --offline -j 2` 退出 0。新增 CostService 单测验证“最终结算前，已测运行用量也会触发日限额”。
+- E-H272-08（格式、lint 与边界）：本轮改动文件使用 `rustfmt --edition 2021 --config skip_children=true --check` 及 `git diff --check`；根 `cargo fmt --all -- --check` 仍被未改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断。`cargo clippy -p deepagent-runtime --all-targets --offline -j 2 -- -D warnings` 先被未改 `crates/deepagent-models/src/client.rs:355` 的 `clone_on_copy` 阻断；补跑 `--no-deps` 还报告未改 `crates/deepagent-runtime/src/model_agent.rs:286` 的 `clone_on_copy` 与 `workflow/canvas.rs:32` 的 `derivable_impls`，本轮 gate 代码无新增诊断。验收限 Windows 本机、临时 SQLite、离线 Responses transport、已激活合成报价和 ChatService/ModelAgent 主循环；未验 workflow canvas 模型入口、并发预算预留、强杀/断电、其他 OS、真实供应商或真实扣费。修复 commit 在取得后回填，当前文档提交不 amend。
 
 ### H-273：Responses cached_tokens 超过 input_tokens 仍被接受并按低价记账
 

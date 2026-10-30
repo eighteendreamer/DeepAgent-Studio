@@ -31,7 +31,8 @@ use crate::stall_detector::{
     StallClassifier, StallDecision, MAX_STALL_NUDGES_PER_RUN,
 };
 use crate::usage::{
-    CallUsageObserver, CallUsageReport, CallUsageSink, ModelUsage, RunUsageTracker,
+    CallUsageObserver, CallUsageReport, CallUsageSink, ModelRequestGate, ModelUsage,
+    RunUsageTracker,
 };
 
 #[derive(Debug, Clone)]
@@ -573,6 +574,8 @@ pub struct ModelAgent {
     /// Optional host accounting owner. Forward each physical attempt without
     /// sharing this agent's private context gauge or replay history.
     call_usage_sink: Option<Arc<dyn CallUsageSink>>,
+    /// Host-owned budget policy checked before every paid model attempt.
+    model_request_gate: Option<Arc<dyn ModelRequestGate>>,
     /// The run's context occupancy snapshot, as assembled before the first
     /// request. Each answered request updates it from the provider's own
     /// numbers and re-emits it, so the occupancy surface has one source.
@@ -707,6 +710,7 @@ impl ModelAgent {
             events: None,
             usage: Arc::new(RunUsageTracker::default()),
             call_usage_sink: None,
+            model_request_gate: None,
             context_snapshot: None,
             surface_persistence: None,
             tool_context_reset: None,
@@ -1032,6 +1036,13 @@ impl ModelAgent {
         self
     }
 
+    /// Attach the host's existing budget policy. The gate is consulted before
+    /// each provider attempt, including retries after a measured response.
+    pub fn with_model_request_gate(mut self, gate: Arc<dyn ModelRequestGate>) -> Self {
+        self.model_request_gate = Some(gate);
+        self
+    }
+
     pub fn with_fallback_model(mut self, model: Option<String>) -> Self {
         self.fallback_model = model
             .map(|model| model.trim().to_string())
@@ -1230,6 +1241,13 @@ impl ModelAgent {
     /// Side calls retain their separately configured model and ledger origin.
     pub fn model_usage(&self) -> Vec<ModelUsage> {
         self.usage.models()
+    }
+
+    fn check_model_request_gate(&self) -> Result<()> {
+        if let Some(gate) = &self.model_request_gate {
+            gate.check(&self.model_usage())?;
+        }
+        Ok(())
     }
 
     /// Record a tool observation as a `tool` role message correlated to its
@@ -2343,6 +2361,9 @@ impl ModelAgent {
         for obs in last {
             self.record_observation(obs);
         }
+        // Account for usage already received by this run before scheduling any
+        // paid side work (prefire/compaction) or the next main request.
+        self.check_model_request_gate()?;
         if let Some(source) = &self.tool_schema_source {
             self.tools = source();
         }
@@ -2383,6 +2404,13 @@ impl ModelAgent {
             }
             attempt += 1;
             self.request_max_output_override = request.max_output_tokens;
+            // A successful response can be followed by a retry/continuation
+            // inside this same think call. Re-check before every subsequent
+            // provider attempt so measured usage cannot be bypassed by retry
+            // or fallback control flow.
+            if attempt > 1 {
+                self.check_model_request_gate()?;
+            }
             // Run pressure management against the final Surface and this
             // attempt's output ceiling, including nudges and retry changes.
             self.maybe_proactive_compact(step, cancel.clone()).await?;

@@ -469,28 +469,73 @@ impl CostService {
     /// Check whether the budget allows a new run. Returns `Ok(())` if within
     /// budget, or an error describing which limit was hit.
     pub fn check_budget(&self) -> Result<()> {
+        self.check_budget_with_usage(&[])
+    }
+
+    /// Check whether another paid request may be dispatched while a run is in
+    /// progress. The durable ledger does not contain the current run until its
+    /// finalizer executes, so add the already measured, priced route usage to
+    /// the persisted day/month totals for this decision only. No cost row is
+    /// written here; finalization remains the single ledger write boundary.
+    pub fn check_budget_with_usage(
+        &self,
+        usage: &[deepagent_runtime::usage::ModelUsage],
+    ) -> Result<()> {
         let budget = self.budget()?;
         if budget.daily_limit.is_none() && budget.monthly_limit.is_none() {
             return Ok(());
         }
         let summary = self.summary_with_budget("", budget)?;
+        let measured_cost = usage.iter().try_fold(0.0, |total, route| {
+            if !route.usage_complete {
+                return Ok(total);
+            }
+            let pricing = match self.pricing_for_model(&route.model_id) {
+                Ok(pricing) => pricing,
+                // A missing catalog entry is already represented as an
+                // unknown-cost receipt by the finalizer. Do not fabricate a
+                // price solely for the in-flight gate; other pricing/storage
+                // failures still propagate.
+                Err(CoreError::Invalid(message))
+                    if message.starts_with("no official pricing for model '") =>
+                {
+                    return Ok(total);
+                }
+                Err(error) => return Err(error),
+            };
+            let cost = pricing.calculate(
+                route.usage.billed_prompt_tokens,
+                route.usage.completion_tokens,
+                route.usage.billed_cache_hit_tokens,
+                route.usage.billed_cache_miss_tokens,
+            );
+            Ok(total + cost)
+        })?;
+        let today_cost = summary.today_cost + measured_cost;
+        let month_cost = summary.month_cost + measured_cost;
         if let Some(daily) = summary.budget.daily_limit {
-            if summary.today_cost >= daily {
+            if today_cost >= daily {
                 return Err(CoreError::invalid(format!(
                     "daily budget exhausted (￥{:.2} / ￥{:.2})",
-                    summary.today_cost, daily
+                    today_cost, daily
                 )));
             }
         }
         if let Some(monthly) = summary.budget.monthly_limit {
-            if summary.month_cost >= monthly {
+            if month_cost >= monthly {
                 return Err(CoreError::invalid(format!(
                     "monthly budget exhausted (￥{:.2} / ￥{:.2})",
-                    summary.month_cost, monthly
+                    month_cost, monthly
                 )));
             }
         }
         Ok(())
+    }
+}
+
+impl deepagent_runtime::usage::ModelRequestGate for CostService {
+    fn check(&self, usage: &[deepagent_runtime::usage::ModelUsage]) -> Result<()> {
+        self.check_budget_with_usage(usage)
     }
 }
 

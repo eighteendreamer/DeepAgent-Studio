@@ -313,3 +313,42 @@ fn independent_connections_commit_whole_policies_without_stale_caches() {
     let peer = CostService::new(Arc::new(Database::open(&path).unwrap()));
     assert_eq!(peer.budget().unwrap(), final_policy);
 }
+
+#[test]
+fn measured_run_usage_counts_against_budget_before_finalization() {
+    let service = CostService::new(Arc::new(Database::open_in_memory().unwrap()));
+    service.set_pricing(HashMap::from([(
+        "model".to_string(),
+        ModelPricing {
+            input_cache_hit_per_million: 0.0,
+            input_cache_miss_per_million: 1000.0,
+            output_per_million: 0.0,
+        },
+    )]));
+    service
+        .set_budget(BudgetConfig {
+            daily_limit: Some(0.5),
+            monthly_limit: None,
+        })
+        .unwrap();
+    let usage = deepagent_runtime::usage::ModelUsage {
+        provider_id: None,
+        model_id: "model".into(),
+        usage: deepagent_runtime::agent::RunUsage {
+            billed_prompt_tokens: 1_000,
+            billed_cache_miss_tokens: 1_000,
+            completion_tokens: 10,
+            ..Default::default()
+        },
+        usage_complete: true,
+    };
+
+    // The run has not been finalized yet, so the durable-only check remains
+    // below the limit; the in-flight check must include the measured call.
+    assert!(service.check_budget().is_ok());
+    let error = service
+        .check_budget_with_usage(&[usage])
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("daily budget exhausted"), "{error}");
+}

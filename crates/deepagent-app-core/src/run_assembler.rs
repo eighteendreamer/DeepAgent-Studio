@@ -1146,6 +1146,10 @@ impl<'a> RunAssembler<'a> {
             .with_attachment_resolver(Arc::new(crate::attachment_service::FileAttachmentResolver))
             .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);
 
+        if let Some(cost) = self.cost {
+            agent = agent.with_model_request_gate(cost.clone());
+        }
+
         if let Some(knowledge) = &self.knowledge {
             agent = agent.with_relevant_memory_provider(Arc::new(
                 crate::knowledge_service::KnowledgeMemoryProvider::new(knowledge.clone()),

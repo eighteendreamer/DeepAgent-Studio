@@ -85,3 +85,4 @@ pub use tool_pipeline::{
     ToolPipelineResult, ToolPipelineStage, ToolPreparation,
 };
 pub use tool_result_decorator::{ChainDecorator, ToolResultDecorator};
+pub use usage::ModelRequestGate;

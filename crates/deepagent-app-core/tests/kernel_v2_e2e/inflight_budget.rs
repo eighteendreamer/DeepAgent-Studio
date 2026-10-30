@@ -275,32 +275,37 @@ async fn already_booked_spend_blocks_dispatch_for_both_periods() {
 async fn assert_no_dispatch_after_measured_limit(monthly: bool) {
     let observed = observe(monthly, 0.5, false).await;
     // Complete all evidence and cleanup before the intended failing invariant.
-    assert_successful_two_calls(&observed);
+    let category = if monthly {
+        "monthly budget"
+    } else {
+        "daily budget"
+    };
+    assert!(observed.first_error.as_deref().unwrap().contains(category));
     assert!(observed
         .followup_error
         .as_deref()
         .unwrap()
-        .contains(if monthly {
-            "monthly budget exhausted"
-        } else {
-            "daily budget exhausted"
-        }));
+        .contains(category));
     assert_eq!(observed.followup_dispatches, 0);
-    assert_eq!(
-        observed.dispatches.len(),
-        1,
-        "first response already measured CNY 1 >= limit 0.5; do not dispatch another paid call"
-    );
+    assert_eq!(observed.dispatches.len(), 1);
+    assert_eq!(observed.usage_events, 1);
+    assert_eq!(observed.dispatches[0].ledger_cost, 0.0);
+    assert!(observed.dispatches[0].budget_allowed);
+    assert!(!observed.dispatches[0].tool_output_paired);
+    assert_eq!(observed.summary.session_cost, 1.0);
+    assert_eq!(observed.summary.input_tokens, 1000);
+    assert_eq!(observed.summary.output_tokens, 10);
+    assert_eq!(observed.ledger_rows, 1);
+    assert_eq!(observed.cost_events, [Some(1.0)]);
+    assert_eq!(observed.terminals, ["budget_exceeded"]);
 }
 
 #[tokio::test]
-#[ignore = "audit H-272: daily budget is not rechecked after measured in-run model usage"]
 async fn audit_daily_budget_stops_after_measured_usage_reaches_limit() {
     assert_no_dispatch_after_measured_limit(false).await;
 }
 
 #[tokio::test]
-#[ignore = "audit H-272: monthly budget is not rechecked after measured in-run model usage"]
 async fn audit_monthly_budget_stops_after_measured_usage_reaches_limit() {
     assert_no_dispatch_after_measured_limit(true).await;
 }

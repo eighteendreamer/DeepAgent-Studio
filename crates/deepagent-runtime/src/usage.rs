@@ -8,6 +8,7 @@ use deepagent_models::{DeltaObserver, Usage};
 use serde_json::Value;
 
 use crate::agent::RunUsage;
+use deepagent_core::error::Result;
 
 /// Attribution for the existing finalizer. The exact model id is the pricing
 /// key; an unavailable provider identity must not be invented.
@@ -17,6 +18,16 @@ pub struct ModelUsage {
     pub model_id: String,
     pub usage: RunUsage,
     pub usage_complete: bool,
+}
+
+/// Gate consulted immediately before a paid model request is dispatched.
+///
+/// The runtime owns the measured per-route usage; the application layer owns
+/// pricing and budget policy. Keeping this seam here lets the running loop
+/// re-check the existing policy without creating a second ledger or coupling
+/// the runtime crate to a particular billing implementation.
+pub trait ModelRequestGate: Send + Sync {
+    fn check(&self, usage: &[ModelUsage]) -> Result<()>;
 }
 
 /// Receipt for one physical provider request, before output validation.
