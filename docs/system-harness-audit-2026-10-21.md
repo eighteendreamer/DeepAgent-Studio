@@ -1249,6 +1249,7 @@ AppCore 中间版本：完整限定名 `subagent_runner::tests::dag_outputs_reop
 - 相关回归：`cargo test -p deepagent-app-core --lib subagent_runner::tests:: --offline -j 1 -- --nocapture --test-threads=1` 为 **15 passed / 0 failed / 3 ignored**；`cargo test -p deepagent-builtins --offline -j 1 -- --quiet --test-threads=1` 为 **369 passed / 0 failed / 4 ignored**；`cargo test -p deepagent-persistence subagent_store --offline -j 1 -- --quiet --test-threads=1` 为 **3 passed / 0 failed**；`cargo check -p deepagent-builtins -p deepagent-app-core --offline -j 1` 退出 0。
 - 格式与边界：两份修改 Rust 文件独立 rustfmt 检查及 `git diff --check` 通过。根 `cargo fmt --all -- --check` 仍只被未修改的 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；`cargo clippy -p deepagent-app-core --lib --offline -j 1 -- -D warnings` 仍只在未修改的 `crates/deepagent-models/src/client.rs:355` 的既有 `clone_on_copy` 阻断。未运行真实供应商、宿主强杀/重启、其他 OS、完整 workspace 或真实 UI；这些不作为本项通过依据。
 - H-21 现按上述 Windows 本机、临时 transcript/SQLite、离线模型 transport 范围标记为已修复并验收；H-20、H-22 的 DAG 产物/工作区边界及完整历史恢复仍是独立问题，不因本项关闭。
+- 代码、回归测试及本项两份文档已先提交为 `549b914a040f4a8d758aa7fe5b76cc79a2286b78`（`【fix】修复H-21子Agent恢复输出契约`）；本条真实 hash 回填另作文档提交，不 amend、不推送、不创建 PR。
 
 ### H-22：DAG 子运行只改变声明的工作目录，文件工具仍绑定父工作区
 
