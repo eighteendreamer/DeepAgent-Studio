@@ -72,7 +72,7 @@
 | H-28 | 已修复并验收（2026-10-27，Windows 本机共享 AppCore 与实际文件工具范围） | 来源分层与用户/host权限上限；默认原探针1、专项16通过，完整workspace仅既有H-306失败、严格lint既有10项；E-H28-01～10及未验边界见原项，修复提交`052afd40` |
 | H-36 | 已修复并验收（2026-10-27，Windows本机结果资产保留范围） | 唯一发布/真实digest索引/owner与fork引用保留GC；正式资产5、persistence84/control9、Runtime301/11 ignored及CLI通过；全仓/lint基线与限制见E-H36-01～13，修复提交`2a18d9d8` |
 
-逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **89**、历史已修复跳过 **21**、归并 **7**、撤销 **2**、有效未关闭 **187（187待修复、0修复中）**；H-134按E-H134-05～06限定验收，本轮新增1；H-125按E-H125-05～06限定验收，当轮新增1；H-159按E-H159-04～05已验收，H-162既有验收的漏计已校正而非新增；H-160、H-161按各自E-H160/E-H161历史限定验收，当轮新增2；H-302已按E-H302-03～05限定验收；H-304已按E-H304-05～06限定验收，校正此总览此前遗漏的累计数；H-301已按E-H301-01～06核对为本轮前随H-164修复，新增生产修复0；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与ToolExecutionPipeline范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
+逐编号状态、优先级、跳过/归并依据、验收、提交和剩余工时统一维护在 [修复进度台账](system-harness-repair-progress.md)。当前维持本机范围验收 **103**、历史已修复跳过 **21**、归并 **7**、撤销 **2**、有效未关闭 **173（173待修复、0修复中）**；H-134按E-H134-05～06限定验收，本轮新增1；H-125按E-H125-05～06限定验收，当轮新增1；H-159按E-H159-04～05已验收，H-162既有验收的漏计已校正而非新增；H-160、H-161按各自E-H160/E-H161历史限定验收，当轮新增2；H-302已按E-H302-03～05限定验收；H-304已按E-H304-05～06限定验收，校正此总览此前遗漏的累计数；H-301已按E-H301-01～06核对为本轮前随H-164修复，新增生产修复0；H-238已按E-H238-01～03复核为本轮前随H-260修复，不重复计功；H-46的新反例已完成根因补强并恢复验收，H-61、H-64、H-65按各自所列范围关闭；H-282按E-H282-01～08修复并验收；306是历史编号槽位。H-163按E-H163-12所列Windows本机/离线/正式生产消费者范围验收；H-164按E-H164-03所列Windows本机 text/image/audio 取消范围验收；其embedding图注册阻断是H-300修前证据；H-300按E-H300-12所列正式调用/批量/计量/取消/重开与受控UI范围验收，不重复计入H-164；H-175按E-H175-09所列Windows本机与受控消费方范围验收，原始/候选/legacy失败和完整workspace/lint旧阻断保留；H-135按所列Windows本机默认环境与显式转发范围验收；H-64冷就绪失败仍未定位；H-139按所列正式服务与runtime提交边界验收；H-03按所列Windows本机/AppCore与CLI路由范围验收；H-05按所列离线DeepSeek adapter、Chat wire投影与Runtime重组范围验收；H-14按离线 mock provider 与 side ledger 范围验收；H-26按Windows本机外部 hook 与ToolExecutionPipeline范围验收；H-27按Windows本机项目 hook 来源与执行准入范围验收；H-28按Windows本机共享AppCore与实际文件工具范围验收；H-36按所列Windows本机结果资产保留范围验收；H-15、H-16按所列Windows本机范围验收，H-17按所列前端/受控事件范围验收；H-288按E-H288-09所列持久化模式、默认门禁及受控组件范围验收，旧会话未知需显式选择；未把ignored、完整workspace或严格lint当作全绿，整体goal仍active。
 
 初始工时估算仍为 **200–400 小时有效修复与验收时间**，属于基于报告规模与跨层风险的规划范围，不是实测完工承诺；已交付项缺少独立有效工时计量，不能用对话/编译时间伪造吞吐或机械扣减。按剩余根因分组继续校准。不同平台、真实供应商及 UI 验收所需环境时间另计，最大 H 编号不作为剩余项数。
 
@@ -135,7 +135,7 @@
 | Windows 内容编辑的文件访问控制元数据 | 原正式 write_file/edit_file/multi_edit 成功写正文却丢失受保护DACL，重开恢复正文不恢复策略；2026-10-28原输入三工具写后及重开恢复策略均相等，正常对照与写前空staging保护通过 | H-287已修复并完成Windows本机验收，原失败证据保留，E-H287-01～14；仅合成临时文件，非其他账户/真实数据泄漏或跨平台承诺，旧无DACL元数据检查点的存在项恢复明确拒绝 |
 | 原生文件移动的失败提交边界 | 审计时正式 move_path 覆盖移动到自身父目录会删除源和 sibling；2026-10-26 原输入现直接拒绝且两文件保留，平级替换和检查点重开对照通过 | H-286 已修复并完成 Windows 本机验收；不是所有平台/断电事务保证，全量验证限制见该项修复记录；原失败证据保留 |
 | Harness 分叉锚点资格与检查点数值边界 | 正式模型工具循环实际读取/写入临时文件并完成；不存在的 tail+1 仍成功复制全部历史；`i64::MAX+1`/`u64::MAX` 额外把文件恢复到旧内容，而 child 仍保留完整成功写入历史 | 新增 H-285（P2，显式非法序号条件）；默认/真实 tail/起点三项对照通过；正式 dispatcher/AppCore/Kernel/CheckpointManager、文件 SQLite、离线模型，无用户文件或公网 |
-| Git 事实在 UI 与模型上下文的投影 | 临时真实 Git 仓库的修改/删除被模型上下文误报 clean，长路径首字节丢失；同一 GitService 正确列出路径，三类正常控制通过 | 新增 H-282（P3）；正式 ChatService/Kernel/ModelClient 请求及内存 run_events，无模型真实决策、用户文件覆盖或磁盘重开验证 |
+| Git 事实在 UI 与模型上下文的投影 | 原修复前真实 Git 仓库的修改/删除被模型上下文误报 clean，长路径首字节丢失；修复后共享 NUL porcelain parser，正式 wire 三类故障与三类正常控制均一致 | H-282（P3）已修复并验收；正式 ChatService/Kernel/ModelClient 请求及内存 run_events，范围与残余限制见 H-282 修复记录 |
 | MCP 初始化结果与 Ready 发布门槛 | 六类不完整/错误版本的initialize成功结果经真实stdio，设置页probe与宿主均connected；工具进入正式Responses schema并实际调用，结果进入下一wire | 新增 H-277（P2，条件性协议兼容/诊断缺口）；完整握手和显式JSON-RPC错误两类对照通过；不重复H-07/H-08，不推断线上服务必定返回异常握手 |
 | MCP hook 决策正文与展示截断 | 修前真实 stdio 服务的8193/10000字符及8193字符中文拒绝因展示截断而 continued 并写入；修后完整拒绝均 blocked、文件未写入，短/精确边界与长允许对照保持正常 | H-276（P2）已修复并验收；正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 MCP 与文件工具；离线模型，不外推默认无 hook 聊天 |
 | MCP hook 的发现 schema 与执行契约 | 同一严格工具的缺必填、非法枚举、多余字段，正常 ToolRegistry 路径均在 transport 前拒绝；正式设置页 hook 测试入口经配置解析、注册、PreToolUse 派发后却逐项 continued、各发送1次 tools/call | 新增 H-275（P3）；合法静态参数与既有拒绝决策对照通过；内存 transport，不外推真实 server 副作用或全部模型 MCP 调用 |
@@ -9936,7 +9936,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 ### H-282：Git 状态整体 trim 破坏首条未暂存路径，正式模型上下文可把脏工作区报告为 clean
 
-**级别：低（P3，模型上下文事实准确性）；状态：三个故障场景已通过正式请求复现，未修复。** 本项是 Git 事实投影，不是 H-168 的动态前缀缓存问题，也不涉及工作区越界或已发生的文件覆盖。登记前已检索报告中的 `GitContext`、`git_context`、`porcelain` 及脏/干净状态相关记录，未发现同一解析根因的既有条目。
+**级别：低（P3，模型上下文事实准确性）；状态：2026-10-31 已修复并验收（限 E-H282-01～08）。** 本项是 Git 事实投影，不是 H-168 的动态前缀缓存问题，也不涉及工作区越界或已发生的文件覆盖。登记前已检索报告中的 `GitContext`、`git_context`、`porcelain` 及脏/干净状态相关记录，未发现同一解析根因的既有条目；修复后不与 H-283 自动上下文权限问题合并。
 
 #### 首次即时 Evidence（2026-10-25，复现后先登记）
 
@@ -9984,10 +9984,20 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 - 环境：Windows，`git version 2.54.0.windows.1`；真实本机 Git 与离线 Responses transport。探针首次有效执行为上述 **1 passed / 1 failed（预期）**，随后没有为增加发现数量重跑故障矩阵。
 - `cargo test -p deepagent-workspace --offline`：**11 passed / 0 failed**，doc-tests 为 0；已有测试只有干净仓库和新增未跟踪文件，未覆盖本轮首条未暂存状态。
-- 格式化后 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**91 passed / 0 failed / 86 ignored**，测试体 14.32 秒。新正常控制在默认套件通过；H-282 探针继续显式 ignore，默认绿色不代表缺陷已修复。
+- 修复前格式化后 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**91 passed / 0 failed / 86 ignored**，测试体 14.32 秒。新正常控制在默认套件通过；当时 H-282 探针显式 ignore，默认绿色不代表缺陷已修复；修后正式结果见下方 E-H282-03。
 - 首次 `cargo fmt --all -- --check` 只报告新增测试排版；运行 `cargo fmt --all` 后再次检查通过。`git diff --check` 通过，仅有既有换行策略的 LF/CRLF 提示。
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings` **失败**：未修改的 `deepagent-models/src/client.rs:355` 命中 `clone_on_copy`，未修改的 `deepagent-persistence/src/run_store.rs:127` 命中 `explicit_counter_loop`。没有为让本轮 lint 通过而修改无关生产逻辑，也不能声称已完成整个 target 的 lint 验收。
 - 本轮仅增加 `kernel_v2_e2e/git_context.rs`、注册该测试模块并追加本报告。未运行全 workspace、独立 Desktop/CLI/SDK 流程、前端构建、参考工程、跨平台、真实 DeepSeek 决策/费用或磁盘重开；没有兼容性、配置、数据迁移、权限或沙箱行为变更。
+
+#### H-282 修复与验收证据（2026-10-31）
+
+- **E-H282-01（修前证据保留）**：原始失败日志保留于 `target/h282-original-probe-20261031.log`；上述 `1 passed / 1 failed / 0 ignored` 结果未被修后运行覆盖。
+- **E-H282-02（根因修复）**：提交 `c2ed35c4` 在 `deepagent-workspace` 增加保留原始 stdout/NUL 记录边界的 Git helper 与 `parse_git_status_porcelain_z` 结构化解析；`detect_git_context` 使用 `status --porcelain=v1 -z --untracked-files=all`，在展示截断前独立确定 dirty。AppCore `GitService::parse_status_z` 复用该 parser，消除 UI 与模型上下文的第二套状态解析；branch/log 单值输出仍按各自契约 trim。命令失败返回 `None`/不可用，不静默变成 clean。
+- **E-H282-03（正式跨层回归）**：移除 H-282 探针 `ignore` 后执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e git_context:: --offline -- --nocapture --test-threads=1`，结果 **2 passed / 0 failed / 251 filtered**；`Unstaged/a`、`Deleted/a`、`Unstaged/src/main.rs` 均在真实 GitService、ChatService、Kernel 与 ModelClient wire 中保留完整路径并报告 `uncommitted changes present`，干净/未跟踪/已暂存控制保持通过。最终日志保留于 `target/h282-final-probe-20261031.log`。
+- **E-H282-04（共享 parser 单元）**：`cargo test -p deepagent-workspace --offline -- --test-threads=1` 为 **13 passed / 0 failed**，覆盖未暂存/删除/未跟踪/重命名、空格和非 ASCII 路径及空状态；`cargo clippy -p deepagent-workspace --all-targets --offline -- -D warnings` 退出 0。
+- **E-H282-05（AppCore 消费方）**：`cargo test -p deepagent-app-core --lib --offline -j 1 -- --test-threads=1` 为 **1376 passed / 0 failed / 51 ignored**；`cargo check -p deepagent-workspace -p deepagent-app-core --offline -j 1` 退出 0；修改文件定向 rustfmt `--check` 与 `git diff --check` 退出 0。
+- **E-H282-06（范围与限制）**：验收限 Windows 本机、真实 Git 临时仓库、临时 SQLite、离线模型 transport 和内存 run_events；未验真实 DeepSeek 决策、用户仓库/用户文件、其他 OS、跨进程/磁盘重开、Desktop/Tauri/CLI/SDK 全入口、超大仓库及所有 Git 编码异常。未改变权限、审批、取消或 Git 写操作。
+- **E-H282-07（提交与状态）**：代码、共享 parser、AppCore 回归和默认探针已独立提交 `c2ed35c4`（`【fix】统一Git状态解析并保留未暂存路径`），未推送、未创建 PR；对应进度台账已回填为“已修复并验收”，本项剩余 0。当前总计 **103 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、173 有效未关闭（173 待修复、0 修复中）**，不提供完成率。
 
 ### H-283：Read deny 只拦工具，自动工作区上下文仍在首次请求发送 README 与清单摘要
 
