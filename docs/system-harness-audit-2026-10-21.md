@@ -8,6 +8,7 @@
 
 | 问题 | 当前修复状态 | 本轮证据 / 提交 |
 |---|---|---|
+| H-224 | 已修复并验收（2026-10-30，仅本项所列本机范围） | 自然日/月与时区异常边界；验收细节与残余见E-H224记录 |
 | H-134 | 已修复并验收（2026-10-30，仅E-H134-05～06所列本机范围） | 原owner统一替换取消与迟到ACK/错误收尾，默认17条；桌面296/build、订阅2、正式Rust消费者与Tauri通过；workspace3861/1/288仅既有H306，旧lint/fmt失败保留；fix 9c0b11f751f817cb034ce45b27cf756b5722d8d7 |
 | H-125 | 已修复并验收（2026-10-30，仅 E-H125-05～06 所列 Windows 本机范围） | strict known_hosts 贯通握手/复用/配置与两处表单；SSH14/0/1、前端279、Tauri存储1/check与受控UI通过；全仓3861/1/288唯一既有H-306，旧严格lint/fmt失败保留；修复提交 40d810eb630c5d7e22fc47a22d0a40ce4a6c28e1 |
 | H-159 | 已修复并验收（2026-10-30，仅 E-H159-04～05 所列 Windows 本机范围） | 唯一 schema compiler 覆盖注册/替换/最终 provider，MCP 逐能力隔离；专项、真实刷新/deferred、WASM、Tauri check 通过；全仓3849/1/289唯一既有H-306，旧严格lint/fmt阻断保留；E-H159-01～05，修复提交 `36b8b74e358092c10872cefb64250c4845eb8cf6` |
@@ -7064,6 +7065,34 @@ Hooks 的连续输入契约缺口（H-102 至 H-115）也指向同一工程边�
 本轮仅增加审计探针和证据文档，尚未修复生产预算行为；不涉及协议、权限、沙箱或数据迁移。
 
 本轮验证：`cargo fmt --all -- --check`、`git diff --check` 通过（首次格式检查提示新增探针布局，格式化后重跑通过）；H-224 显式探针为上述 **1 passed / 2 failed**。`cargo test -p deepagent-app-core --lib cost_service::tests:: --offline`：**6 passed**；`cargo test -p deepagent-persistence cost_store::tests:: --offline`：**4 passed**；`cargo test -p deepagent-app-core --lib --offline`：**1091 passed / 50 ignored**；`cargo test -p deepagent-app-core --test kernel_v2_e2e --offline`：**36 passed / 39 ignored**。默认忽略的已知缺陷不因常规测试为绿而关闭。未跑全 workspace、Clippy、桌面 build/真实 UI、公网模型或真实扣费验收；本轮没有生产行为/跨层契约改动，不据此宣称全系统已通过。
+
+#### H-224 自然日历费用边界（2026-10-30，已修复并验收）
+
+**当前状态：已修复并验收（仅E-H224-04～05所列Windows本机、临时SQLite、离线transport和固定时区样本范围）；修复提交待本次正常提交产生，hash另做docs回填。** E-H224-01～03保留为阶段快照，不替代本节最终结论。基线2dc1c071，本轮只处理H-224，不扩修H-225/H-226，五类原用户未跟踪项仅经git status列名。
+
+E-H224-01（本轮原探针）：生产修改前在隔离home/data/profile/APPDATA、清继承凭据的环境执行 `cargo test --target-dir target/h300-after-h163-build -p deepagent-app-core --test kernel_v2_e2e cost_calendar:: --offline -j 2 -- --include-ignored --nocapture --test-threads=1`，原生101、10.80秒、1 passed/2 failed/0 ignored。2026-10-30 08:29 +08两组都把本期合成13元计为1元，5元预算仍放行，各1次模型调用、唯一succeeded；当前账单正常拦截对照通过。占位凭据、临时SQLite与MockTransport，不是实际报价或扣款。原始证据target/h224-original-20261030.log/-result.json，不覆盖原审计2026-10-24失败正文。
+
+P-H224-current（候选，本地设计）：现有CostService在同一instant和完整host-local时区规则上求自然日/月初，summary与check_budget继续共用原聚合/准入边界。采用Jiff0.2.38的civil日期与compatible午夜消歧，fold选较早、gap向后；不以当前固定offset倒推边界。try_system失败保留上下文并让有限预算拒绝，不静默回退UTC；无限预算保留原早返回。Jiff缓存版本的源码/API、MIT OR Unlicense与MSRV1.70已核对；新增依赖是为避免手写DST解析，原报告中time固定offset建议不能证明完整本地时区正确性。无新公开配置、DTO、成本库或SQL迁移。
+
+E-H224-02（候选首轮）：同一原始命令和未修改探针实际原生0、92.78秒（含新依赖编译）、3 passed/0 failed/0 ignored；日/月本期13元正确计入，模型调用0、唯一failed。证据target/h224-original-green-20261030.log/-result.json。随后补25个固定instant/明确UTC边界样本，以及默认真实接纳/无效TZ隔离子进程回归；当前仍待新增回归、完整workspace、Tauri消费方、格式与lint的真实终态，不把原探针局部转绿当验收。
+
+E-H224-03（新增回归与门禁中间态）：费用服务10/0/0（4条新测试含25个明确UTC边界样本），真实准入4/0/0，含子进程无效TZ下日/月有限预算均在dispatch前失败且唯一failed、无限预算仍成功1次。首轮发现新夹具terminals字段不再被外部读取，已移除该冗余返回字段；此前日志保留，其余cold夹具warning属既有。最终4份源码/配置/锁文件冻结见target/h224-frozen-sources-final-20261030.json；修改文件rustfmt --check原生0，根fmt原生1仍仅未改agent.rs:1043、Tauri fmt原生1保留旧差异，全仓严格Clippy原生101仍停于未改models/client.rs:355 clone_on_copy，未放宽门禁。当前CLI build原生0、96.76秒；Tauri check --lib --tests原生0、66.58秒。冻结后的完整workspace由受控SDK binary备份/替换/finally恢复driver执行，尚待真实终态，不计验收。
+
+依赖解析备注：根Cargo.lock仅新增Jiff相关9个包、无既有包版本升级；部分是可选依赖的lock记录而非实际启用编译。独立Tauri Cargo.lock按现有.gitignore管理、未跟踪，首次离线解析另重解17个旁系锁定版本。单包精确回退遇wasm相互精确约束；隔离manifest整体约束遇rust-argon2、旧libredox缓存缺失，连续三次失败后停止该回退路线，未联网或修改生产manifest，也不强制提交被忽略锁文件。原始失败与初次解析副本保留在target/h224-tauri-lock-*；本次生成环境的依赖漂移未恢复，不当作跨平台或旧锁重现验证通过，后续以实际--locked结果记录本机固定解析检查。
+
+E-H224-04（冻结后最终门禁）：完整 `cargo test --target-dir target/h300-after-h163-build --workspace --offline --no-fail-fast -j 2 -- --quiet --test-threads=1` 实际原生101、1076.46秒；132 targets合计 **3867 passed / 2 failed / 286 ignored**，AppCore lib1345/0/62、Kernel E2E173/1/71、Runtime lib342/0/9。两个失败分别为既有H-306的creative.video-edit.v1空defaultUserPrompt，以及未修改的mcp_hook_cancellation::ordinary_mcp_tool_notifies_the_same_peer_on_cancellation：本地已cancelled，但cancellation_received=false、释放后对端仍完成，mcp_hook_cancellation.rs:368。后者没有挂载CostService；夹具、MCP实现与本轮基线零diff，不把此观察归功于H-224修复或直接断言其根因。正式日志target/h224-workspace-20261030.log/-result.json与132项-summary-final保留全部失败。SDK默认CLI已由finally恢复，重新读取SHA-256等于E75E9B802E93E9AA93342F558DED74E243C4D14769387187500920DF9D52B5B0；外层driver退出0不是workspace通过。
+
+同一冻结workspace二进制的费用服务专项 **10/0/0**（0.53秒），含25个固定UTC起点oracle：UTC/正负/45分钟offset、本地午夜前后、epoch前、28/29/30/31天、闰日/跨年、23/25小时日、月初与当前offset不同、Lord Howe半小时DST、午夜gap/fold与Apia跳日；每例验证起点本身包含、前1ms排除，session/total/usage/currency兼容。原两条审计探针重构为日期/时区不依赖的边界合同并转默认：正式账本期外12元+期初1元允许，期初4元+当前1元在5元阈值拒绝，模型派发0、唯一failed；当前12元对照仍拒绝。宿主默认完整组已执行这些测试；另仅在受控子进程环境设置TZ=UTC运行同一frozen kernel binary，**4/0/0**（1.93秒），不再依赖旧取模边界必须不同的precondition。无效TZ用独立fresh子进程验证，未更改主机时区、父进程TZ或系统时钟。原先忽略的两条已进入默认回归，不以跳过探针当修复。
+
+Tauri固定本次解析的 `cargo check --target-dir target/h300-after-h163-build --manifest-path apps/desktop/src-tauri/Cargo.toml --lib --tests --locked --offline -j 2` 原生0、9.73秒。费用DTO/command/TS形状未改，现有get_cost_summary/set_budget消费同一服务，正式ChatService→RunAssembler在请求前拒绝有实际回归；没有额外新增入口。全仓严格Clippy仍原生101停于models/client.rs:355；再运行AppCore --all-targets --no-deps严格检查原生101、72.44秒，lib11项、lib test13项既有错误，5份诊断源码相对基线均零diff，target/h224-clippy-baseline-verification-20261030.json可核。未放宽lint或顺手修复；修改文件格式检查通过，根/Tauri格式旧失败继续保留。
+
+完整组额外MCP失败在隔离home/data环境、同一冻结kernel binary、同一--exact命令只复核一次，实际1/0/0、1.06秒，此次cancellation_received=true、对端未完成。窄复跑转绿只说明该次观察，不抹去完整组反例，不宣称MCP问题已修复或全仓全绿。下一项优先复核H-236及此普通工具对照的取消通知边界，不在H-224中搭补丁或更改其台账行。独立Tauri被忽略锁文件的17个旁系版本漂移未恢复，三次离线回退失败已停止；--locked仅证明本次本机固定解析可检查，不是旧锁或跨平台重现成功，该锁文件和恢复辅助manifest均不提交。根受版本控制锁文件9个相关新增、既有版本无改动已逐包核验。
+
+E-H224-05（限定验收、兼容与剩余）：本轮新增根因修复1项，历史跳过/归并/撤销新增0。唯一生产周期解析保留在CostService：一个clock instant、完整本地zone规则，月初按本地civil月份而非30天桶；summary与已有有限预算准入共享原CostStore聚合。午夜歧义明确使用compatible，fold取较早、gap向后消歧；时区获取失败带cost calendar上下文拒绝有限预算，不能静默退回UTC算出伪低费用，无预算仍保留原早返回。Jiff默认尊重进程TZ/系统规则，系统zone缓存更新不是即时承诺。私有summary_at仅提供确定性验证seam，没有公共clock/timezone配置、DTO/command、第二成本库、SQL迁移、价格改动或权限/沙箱放宽。Jiff及实际相关tz依赖的MSRV1.70/许可已核对，不把它等同整仓Rust1.80已验收。
+
+验收限上述本机与固定样本，不覆盖全部历史时区变动、其他OS/native WebView、真实供应商账期/价格/扣款、跨进程并发预算保留、运行中硬停、未知NULL费用/初次价格激活、其他未挂载CostService入口或未来时间账单纠偏；H-225/H-226等独立问题仍保留。本轮未改UI、TS类型或Tauri桥接形状，因此未运行pnpm build/GUI点击；Tauri编译与正式服务E2E不能冒充完整UI、真实供应商或跨平台验证。没有读取真实凭据、内网或用户数据库。取消MCP反例、严格lint/fmt旧失败与生成锁漂移均如实保留，不以本项限定验收宣布系统完成。
+
+累计 **90验收、21历史跳过、7归并、2撤销、186待修复、0修复中**，186有效未关闭，306历史槽位不变。下一复核H-236（取消对端通知/副作用优先；不预断言与普通工具反例同根因）；H-225/H-226仍排队。总剩余沿用历史 **200–400有效修复与验收小时**、尚未逐项校准的粗估，依据剩余跨层根因与权限/持久化/取消及生产消费方验收范围；无独立工时计量，不用本轮构建耗时机械扣减。设备、依赖、构建和环境等待另计，不承诺精确日期；整体goal active。代码、测试与当时双文档正常独立提交，取得hash后另做docs回填，不amend、不推送、不建PR。
 
 ### H-225：首次登录只持久化报价，未激活既有 CostService，正常模型有用量却无费用且预算继续放行
 

@@ -12,6 +12,7 @@ use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_persistence::cost_store::{CostEntry, CostStore};
 use deepagent_persistence::Database;
+use jiff::{tz::TimeZone, Timestamp, Zoned};
 use serde::{Deserialize, Serialize};
 
 /// Pricing for one model, in RMB per million tokens.
@@ -253,11 +254,26 @@ impl CostService {
 
     /// Get a cost summary for a session + today + month + total.
     pub fn summary(&self, session_id: &str) -> Result<CostSummary> {
-        let now = SystemClock.now().as_millis();
-        // Approximate day/month boundaries in ms.
-        let day_ms = 86_400_000i64;
-        let today_start = now - (now % day_ms);
-        let month_start = now - (now % (day_ms * 30));
+        // Capture one instant and one full set of host-local zone rules. A
+        // current fixed UTC offset is not necessarily the offset at month start.
+        let now = Timestamp::from_millisecond(SystemClock.now().as_millis())
+            .map_err(|error| CoreError::invalid(format!("cost calendar timestamp: {error}")))?;
+        let zone = TimeZone::try_system().map_err(|error| {
+            CoreError::invalid(format!("cost calendar system timezone: {error}"))
+        })?;
+        self.summary_at(session_id, &now.to_zoned(zone))
+    }
+
+    fn summary_at(&self, session_id: &str, now: &Zoned) -> Result<CostSummary> {
+        // Date::to_zoned uses compatible disambiguation: first occurrence in
+        // a fold, shifted forward across a midnight gap. No 24h/30d buckets.
+        let start = |date: jiff::civil::Date| {
+            date.to_zoned(now.time_zone().clone())
+                .map(|start| start.timestamp().as_millisecond())
+                .map_err(|error| CoreError::invalid(format!("cost calendar period start: {error}")))
+        };
+        let today_start = start(now.date())?;
+        let month_start = start(now.date().first_of_month())?;
 
         let store = CostStore::new(&self.db);
         let session_cost = store.session_total(session_id)?;
@@ -356,6 +372,218 @@ mod tests {
         })
         .unwrap();
         CostService::new(db)
+    }
+
+    fn assert_calendar_cost(now: &str, day_start: &str, month_start: &str) {
+        let svc = service();
+        let local: Zoned = now.parse().unwrap();
+        // Explicit UTC expectations are independent of the period calculation.
+        let day: Timestamp = day_start.parse().unwrap();
+        let month: Timestamp = month_start.parse().unwrap();
+        let day = day.as_millisecond();
+        let month = month.as_millisecond();
+        assert!(month <= day && day <= local.timestamp().as_millisecond());
+        for (timestamp, amount) in [
+            (month - 1, 32.0),
+            (month, 2.0),
+            (day - 1, 4.0),
+            (day, 8.0),
+            (local.timestamp().as_millisecond(), 16.0),
+        ] {
+            CostStore::new(&svc.db)
+                .insert(&CostEntry {
+                    session_id: "ses_1",
+                    timestamp,
+                    model: "calendar-fixture",
+                    input_tokens: 1,
+                    output_tokens: 0,
+                    cache_hit_tokens: 0,
+                    cache_miss_tokens: 1,
+                    total_tokens: 1,
+                    cost_yuan: Some(amount),
+                    input_cache_hit_price: None,
+                    input_cache_miss_price: None,
+                    output_price: None,
+                    pricing_source: Some("synthetic-calendar-boundary"),
+                })
+                .unwrap();
+        }
+        let summary = svc.summary_at("ses_1", &local).unwrap();
+        assert_eq!(summary.session_cost, 62.0, "{now}");
+        assert_eq!(summary.total_cost, 62.0, "{now}");
+        assert_eq!(
+            summary.today_cost,
+            if day == month { 26.0 } else { 24.0 },
+            "{now}"
+        );
+        assert_eq!(
+            summary.month_cost,
+            if day == month { 26.0 } else { 30.0 },
+            "{now}"
+        );
+        assert_eq!(summary.currency, "CNY");
+        assert_eq!(summary.budget, BudgetConfig::default());
+        assert_eq!(summary.input_tokens, 5);
+        assert_eq!(summary.cache_miss_tokens, 5);
+        assert_eq!(summary.output_tokens, 0);
+        assert_eq!(summary.cache_hit_tokens, 0);
+    }
+
+    #[test]
+    fn calendar_cost_uses_local_dates_and_offsets() {
+        for (now, day, month) in [
+            (
+                "2026-10-30T12:00:00Z[UTC]",
+                "2026-10-30T00:00:00Z",
+                "2026-10-01T00:00:00Z",
+            ),
+            (
+                "2026-10-30T00:00:00+08:00[Asia/Shanghai]",
+                "2026-10-29T16:00:00Z",
+                "2026-09-30T16:00:00Z",
+            ),
+            (
+                "2026-10-29T23:59:59.999+08:00[Asia/Shanghai]",
+                "2026-10-28T16:00:00Z",
+                "2026-09-30T16:00:00Z",
+            ),
+            (
+                "2026-10-29T23:59:59.999-07:00[-07:00]",
+                "2026-10-29T07:00:00Z",
+                "2026-10-01T07:00:00Z",
+            ),
+            (
+                "2026-10-30T12:00:00+05:45[Asia/Kathmandu]",
+                "2026-10-29T18:15:00Z",
+                "2026-09-30T18:15:00Z",
+            ),
+            (
+                "2026-10-30T12:00:00-09:30[-09:30]",
+                "2026-10-30T09:30:00Z",
+                "2026-10-01T09:30:00Z",
+            ),
+            (
+                "1970-01-01T00:00:00Z[UTC]",
+                "1970-01-01T00:00:00Z",
+                "1970-01-01T00:00:00Z",
+            ),
+            (
+                "1969-12-31T23:59:59Z[UTC]",
+                "1969-12-31T00:00:00Z",
+                "1969-12-01T00:00:00Z",
+            ),
+        ] {
+            assert_calendar_cost(now, day, month);
+        }
+    }
+
+    #[test]
+    fn calendar_cost_handles_month_lengths_leap_days_and_year_rollover() {
+        for (now, day, month) in [
+            (
+                "2023-02-28T12:00:00Z[UTC]",
+                "2023-02-28T00:00:00Z",
+                "2023-02-01T00:00:00Z",
+            ),
+            (
+                "2024-02-29T12:00:00Z[UTC]",
+                "2024-02-29T00:00:00Z",
+                "2024-02-01T00:00:00Z",
+            ),
+            (
+                "2024-03-01T00:00:00Z[UTC]",
+                "2024-03-01T00:00:00Z",
+                "2024-03-01T00:00:00Z",
+            ),
+            (
+                "2026-04-30T23:59:59.999Z[UTC]",
+                "2026-04-30T00:00:00Z",
+                "2026-04-01T00:00:00Z",
+            ),
+            (
+                "2026-05-31T12:00:00Z[UTC]",
+                "2026-05-31T00:00:00Z",
+                "2026-05-01T00:00:00Z",
+            ),
+            (
+                "2026-12-31T23:59:59.999Z[UTC]",
+                "2026-12-31T00:00:00Z",
+                "2026-12-01T00:00:00Z",
+            ),
+            (
+                "2027-01-01T00:00:00Z[UTC]",
+                "2027-01-01T00:00:00Z",
+                "2027-01-01T00:00:00Z",
+            ),
+        ] {
+            assert_calendar_cost(now, day, month);
+        }
+    }
+
+    #[test]
+    fn calendar_cost_uses_boundary_offsets_across_dst() {
+        for (now, day, month) in [
+            (
+                "2024-03-10T12:00:00-04:00[America/New_York]",
+                "2024-03-10T05:00:00Z",
+                "2024-03-01T05:00:00Z",
+            ),
+            (
+                "2024-11-03T12:00:00-05:00[America/New_York]",
+                "2024-11-03T04:00:00Z",
+                "2024-11-01T04:00:00Z",
+            ),
+            (
+                "2024-03-15T12:00:00-04:00[America/New_York]",
+                "2024-03-15T04:00:00Z",
+                "2024-03-01T05:00:00Z",
+            ),
+            (
+                "2024-11-15T12:00:00-05:00[America/New_York]",
+                "2024-11-15T05:00:00Z",
+                "2024-11-01T04:00:00Z",
+            ),
+            (
+                "2024-10-06T12:00:00+11:00[Australia/Lord_Howe]",
+                "2024-10-05T13:30:00Z",
+                "2024-09-30T13:30:00Z",
+            ),
+            (
+                "2024-04-07T12:00:00+10:30[Australia/Lord_Howe]",
+                "2024-04-06T13:00:00Z",
+                "2024-03-31T13:00:00Z",
+            ),
+        ] {
+            assert_calendar_cost(now, day, month);
+        }
+    }
+
+    #[test]
+    fn calendar_cost_disambiguates_midnight_gaps_folds_and_skipped_dates() {
+        for (now, day, month) in [
+            (
+                "2015-10-18T12:00:00-02:00[America/Sao_Paulo]",
+                "2015-10-18T03:00:00Z",
+                "2015-10-01T03:00:00Z",
+            ),
+            (
+                "2024-11-03T00:30:00-05:00[America/Havana]",
+                "2024-11-03T04:00:00Z",
+                "2024-11-01T04:00:00Z",
+            ),
+            (
+                "2024-11-03T00:30:00-04:00[America/Havana]",
+                "2024-11-03T04:00:00Z",
+                "2024-11-01T04:00:00Z",
+            ),
+            (
+                "2011-12-31T12:00:00+14:00[Pacific/Apia]",
+                "2011-12-30T10:00:00Z",
+                "2011-12-01T10:00:00Z",
+            ),
+        ] {
+            assert_calendar_cost(now, day, month);
+        }
     }
 
     #[test]

@@ -82,6 +82,8 @@ hound = { workspace = true, optional = true }
 # Current date/OS for the dynamic system-prompt environment block (so the model
 # never searches a stale year). Already in the workspace lock; offline-safe.
 time = { version = "0.3", default-features = false, features = ["std", "local-offset"] }
+# Calendar-aware host-local budget periods, including midnight gaps/folds.
+jiff = "0.2.38"
 keyring = { version = "3", optional = true }
 portable-pty = "0.8"
 
@@ -131,6 +133,8 @@ wasm = ["deepagent-tools/wasm"]
 [dev-dependencies]
 tokio = { workspace = true }
 wat = "1"
+# Deterministic named-zone tests must not depend on host zoneinfo installation.
+jiff = { version = "0.2.38", features = ["tzdb-bundle-always"] }
 
 [target.'cfg(windows)'.dev-dependencies]
 # Observe real fixture process exits using the same locked bindings as MCP/builtins.
