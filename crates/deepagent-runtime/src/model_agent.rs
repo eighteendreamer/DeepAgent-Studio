@@ -30,6 +30,9 @@ use crate::stall_detector::{
     build_stall_nudge, evaluate_stall, render_stall_transcript_from_response_items,
     StallClassifier, StallDecision, MAX_STALL_NUDGES_PER_RUN,
 };
+use crate::usage::{
+    CallUsageObserver, CallUsageReport, CallUsageSink, ModelUsage, RunUsageTracker,
+};
 
 #[derive(Debug, Clone)]
 pub struct ReactiveCompaction {
@@ -566,7 +569,7 @@ pub struct ModelAgent {
     /// as [`RuntimeEvent`]s for streaming to a UI.
     events: Option<Arc<dyn RuntimeEventSink>>,
     /// Cumulative token usage summed across every model call this run.
-    usage: crate::agent::RunUsage,
+    usage: Arc<RunUsageTracker>,
     /// The run's context occupancy snapshot, as assembled before the first
     /// request. Each answered request updates it from the provider's own
     /// numbers and re-emits it, so the occupancy surface has one source.
@@ -576,7 +579,6 @@ pub struct ModelAgent {
     /// Provider-native Responses output items from the latest completed model
     /// turn, drained by the runtime loop into the append-only session log.
     pending_response_items: Vec<ResponseOutputItem>,
-    pending_raw_usage: Vec<serde_json::Value>,
     /// DeepSeek Responses reasoning effort applied to every request.
     reasoning_effort: ReasoningEffort,
     /// Provider attempts per turn for transient/empty-stream failures.
@@ -700,12 +702,11 @@ impl ModelAgent {
             tool_schema_source: None,
             pending_tool_call_id: None,
             events: None,
-            usage: crate::agent::RunUsage::default(),
+            usage: Arc::new(RunUsageTracker::default()),
             context_snapshot: None,
             surface_persistence: None,
             tool_context_reset: None,
             pending_response_items: Vec::new(),
-            pending_raw_usage: Vec::new(),
             reasoning_effort: ReasoningEffort::default(),
             max_model_attempts: 3,
             fallback_model: None,
@@ -1213,6 +1214,12 @@ impl ModelAgent {
         &self.messages
     }
 
+    /// Per-request route attribution of the same cumulative main-loop usage.
+    /// Side calls retain their separately configured model and ledger origin.
+    pub fn model_usage(&self) -> Vec<ModelUsage> {
+        self.usage.models()
+    }
+
     /// Record a tool observation as a `tool` role message correlated to its
     /// originating tool-call id.
     ///
@@ -1387,7 +1394,6 @@ impl ModelAgent {
         surface: deepagent_context::SurfaceTokenBreakdown,
     ) {
         if let Some(usage) = response.usage {
-            self.usage.record_call(&usage);
             self.context_meter
                 .anchor(fingerprint, surface.total(), usage.prompt_tokens as usize);
             self.snip_tokens_freed_unreflected = 0;
@@ -1398,22 +1404,7 @@ impl ModelAgent {
                     usage.prompt_cache_miss_tokens,
                 );
             }
-            if let Some(sink) = &self.events {
-                sink.emit(RuntimeEvent::Usage {
-                    prompt_tokens: usage.prompt_tokens,
-                    completion_tokens: usage.completion_tokens,
-                    reasoning_tokens: usage.reasoning_tokens,
-                    total_tokens: usage.total_tokens,
-                    prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
-                    prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
-                    cost_yuan: None,
-                    raw_responses_usage: response.raw_usage.clone(),
-                });
-            }
             self.publish_context_usage();
-        }
-        if let Some(raw) = response.raw_usage.clone() {
-            self.pending_raw_usage.push(raw);
         }
     }
 
@@ -2042,6 +2033,29 @@ fn doom_loop_signature(invocations: &[ToolInvocation]) -> String {
     parts.join("|")
 }
 
+struct MainUsageSink {
+    usage: Arc<RunUsageTracker>,
+    events: Option<Arc<dyn RuntimeEventSink>>,
+}
+
+impl CallUsageSink for MainUsageSink {
+    fn record(&self, report: CallUsageReport) {
+        self.usage.record(&report);
+        if let (Some(usage), Some(sink)) = (report.usage, &self.events) {
+            sink.emit(RuntimeEvent::Usage {
+                prompt_tokens: usage.prompt_tokens,
+                completion_tokens: usage.completion_tokens,
+                reasoning_tokens: usage.reasoning_tokens,
+                total_tokens: usage.total_tokens,
+                prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
+                prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens,
+                cost_yuan: None,
+                raw_responses_usage: report.raw_usage,
+            });
+        }
+    }
+}
+
 /// Forwards model streaming deltas to a [`RuntimeEventSink`] as
 /// [`RuntimeEvent`]s, so a UI sees tokens/reasoning live.
 struct SinkObserver<'a> {
@@ -2051,9 +2065,14 @@ struct SinkObserver<'a> {
     request_started_at: std::time::Instant,
     first_token_seen: bool,
     stream_activity_seen: bool,
+    usage: CallUsageObserver,
 }
 
 impl DeltaObserver for SinkObserver<'_> {
+    fn on_usage(&mut self, usage: deepagent_models::Usage, raw: &serde_json::Value) {
+        self.usage.on_usage(usage, raw);
+    }
+
     fn on_event(&mut self, event: ModelStreamEvent) {
         self.stream_activity_seen = true;
         match event {
@@ -2123,9 +2142,11 @@ impl DeltaObserver for SinkObserver<'_> {
                     });
                 }
             }
+            ModelStreamEvent::Usage { usage } => {
+                self.usage.on_event(ModelStreamEvent::Usage { usage });
+            }
             ModelStreamEvent::ToolCallStarted { .. }
             | ModelStreamEvent::ToolArgumentsDelta { .. }
-            | ModelStreamEvent::Usage { .. }
             | ModelStreamEvent::Finished { .. } => {}
         }
     }
@@ -2152,7 +2173,7 @@ impl SinkObserver<'_> {
 async fn stream_model_attempt<'a>(
     client: &ModelClient,
     request: ResponseRequest,
-    sink: Option<Arc<dyn RuntimeEventSink>>,
+    usage_sink: Arc<MainUsageSink>,
     step: usize,
     started_at: std::time::Instant,
     cancel: Option<Arc<AtomicBool>>,
@@ -2162,7 +2183,9 @@ async fn stream_model_attempt<'a>(
     bool,
     Option<&'a mut dyn ToolAttemptController>,
 ) {
+    let sink = usage_sink.events.clone();
     let mut observer = SinkObserver {
+        usage: CallUsageObserver::new(usage_sink, request.model.clone(), false),
         sink,
         tools,
         step,
@@ -2179,6 +2202,11 @@ async fn stream_model_attempt<'a>(
             .stream_response_observed(request, &mut observer)
             .await
     };
+    if let Ok(response) = &result {
+        observer
+            .usage
+            .completed(response.usage, response.raw_usage.as_ref());
+    }
     let stream_activity_seen = observer.stream_activity_seen;
     let tools = observer.tools.take();
     (result, stream_activity_seen, tools)
@@ -2245,10 +2273,11 @@ impl Agent for ModelAgent {
     fn cumulative_usage(&self) -> Option<crate::agent::RunUsage> {
         // None when nothing was reported (all zero), so callers can skip the
         // persisted usage event for providers that don't return usage.
-        if self.usage == crate::agent::RunUsage::default() {
+        let usage = self.usage.total();
+        if usage == crate::agent::RunUsage::default() {
             None
         } else {
-            Some(self.usage)
+            Some(usage)
         }
     }
 
@@ -2257,7 +2286,7 @@ impl Agent for ModelAgent {
     }
 
     fn take_pending_raw_usage(&mut self) -> Vec<serde_json::Value> {
-        std::mem::take(&mut self.pending_raw_usage)
+        self.usage.take_raw()
     }
 }
 
@@ -2373,7 +2402,10 @@ impl ModelAgent {
             let (result, stream_activity_seen, returned_tools) = stream_model_attempt(
                 &self.client,
                 request.clone(),
-                self.events.clone(),
+                Arc::new(MainUsageSink {
+                    usage: self.usage.clone(),
+                    events: self.events.clone(),
+                }),
                 step,
                 attempt_started_at,
                 cancel.clone(),
@@ -3794,6 +3826,138 @@ mod tests {
         assert_eq!(usage.billed_cache_hit_tokens, 3_000);
         assert_eq!(usage.prompt_cache_hit_tokens, 1_200);
         assert_eq!(usage.completion_tokens, 90);
+        let routes = agent.model_usage();
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].model_id, "model");
+        assert_eq!(routes[0].usage, usage);
+        assert!(routes[0].usage_complete);
+    }
+
+    fn chat_usage_chunk(input: u32, output: u32) -> String {
+        serde_json::json!({
+            "choices": [],
+            "usage": {"prompt_tokens":input,"completion_tokens":output,
+                "total_tokens":input+output,"prompt_cache_hit_tokens":input/2,
+                "prompt_cache_miss_tokens":input-input/2}
+        })
+        .to_string()
+    }
+
+    #[tokio::test]
+    async fn route_usage_keeps_latest_failed_chat_attempt_before_fallback() {
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                vec![
+                    chat_usage_chunk(100, 10),
+                    chat_usage_chunk(1000, 100),
+                    "__ERROR_OVERLOADED__".into(),
+                ],
+                vec![
+                    serde_json::json!({"choices":[{"index":0,"delta":{"content":"done"},
+                    "finish_reason":"stop"}]})
+                    .to_string(),
+                    chat_usage_chunk(2000, 200),
+                    "[DONE]".into(),
+                ],
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek_chat("test"),
+        ));
+        let mut agent = ModelAgent::new(client, "primary", "sys", "prompt", vec![])
+            .with_fallback_model(Some("fallback".into()));
+        agent.think(0, &[]).await.unwrap();
+        let routes = agent.model_usage();
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].model_id, "fallback");
+        assert_eq!(routes[0].usage.billed_prompt_tokens, 2000);
+        assert_eq!(routes[1].model_id, "primary");
+        assert_eq!(routes[1].usage.billed_prompt_tokens, 1000);
+        assert_eq!(agent.cumulative_usage().unwrap().billed_prompt_tokens, 3000);
+        assert_eq!(agent.cumulative_usage().unwrap().completion_tokens, 300);
+        assert_eq!(agent.take_pending_raw_usage().len(), 2);
+        assert_eq!(transport.requests.lock().unwrap().len(), 2);
+    }
+
+    struct UsageThenWait {
+        ready: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait]
+    impl HttpTransport for UsageThenWait {
+        async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            sink.on_event(&chat_usage_chunk(1000, 100))?;
+            self.ready.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test]
+    async fn route_usage_survives_cancelled_and_dropped_think_futures() {
+        for drop_future in [false, true] {
+            let ready = Arc::new(tokio::sync::Notify::new());
+            let client = Arc::new(ModelClient::new(
+                Arc::new(UsageThenWait {
+                    ready: ready.clone(),
+                }),
+                ModelConfig::deepseek_chat("test"),
+            ));
+            let mut agent = ModelAgent::new(client, "primary", "sys", "prompt", vec![]);
+            let cancel = Arc::new(AtomicBool::new(false));
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                let mut future = Box::pin(agent.think_cancelled(0, &[], Some(cancel.clone())));
+                tokio::select! {
+                    _ = ready.notified() => {},
+                    result = &mut future => panic!("stream ended before cancellation: {result:?}"),
+                }
+                if !drop_future {
+                    cancel.store(true, std::sync::atomic::Ordering::Release);
+                    assert!(future.await.is_err());
+                }
+                // Otherwise drop the future exactly as the kernel's select does.
+            })
+            .await
+            .unwrap();
+            let routes = agent.model_usage();
+            assert_eq!(routes.len(), 1);
+            assert_eq!(routes[0].model_id, "primary");
+            assert_eq!(routes[0].usage.billed_prompt_tokens, 1000);
+            assert_eq!(routes[0].usage.completion_tokens, 100);
+            assert!(routes[0].usage_complete);
+            assert_eq!(agent.cumulative_usage().unwrap(), routes[0].usage);
+            assert_eq!(agent.take_pending_raw_usage().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn route_usage_preserves_paid_truncation_before_fallback() {
+        let mut truncated = response_text_completed_with_usage("partial", 1000, 20, 800);
+        let terminal = truncated.last_mut().unwrap();
+        *terminal = terminal.replace("response.completed", "response.incomplete");
+        let transport = Arc::new(AttemptTransport {
+            attempts: Mutex::new(VecDeque::from([
+                truncated,
+                vec!["__ERROR_OVERLOADED__".into()],
+                response_text_completed_with_usage("done", 2000, 40, 1600),
+            ])),
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = Arc::new(ModelClient::new(
+            transport.clone(),
+            ModelConfig::deepseek("test"),
+        ));
+        let mut agent = ModelAgent::new(client, "primary", "sys", "prompt", vec![])
+            .with_fallback_model(Some("fallback".into()));
+        agent.think(0, &[]).await.unwrap();
+        let routes = agent.model_usage();
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].model_id, "fallback");
+        assert_eq!(routes[0].usage.billed_prompt_tokens, 2000);
+        assert_eq!(routes[1].usage.billed_prompt_tokens, 1000);
+        assert_eq!(agent.cumulative_usage().unwrap().completion_tokens, 60);
+        assert_eq!(transport.requests.lock().unwrap().len(), 3);
     }
 
     /// A snapshot whose assembly estimate is `estimated` inside `window`.

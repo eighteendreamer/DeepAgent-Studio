@@ -38,6 +38,7 @@ pub mod stall_detector;
 pub mod tool_budget;
 pub mod tool_pipeline;
 pub mod tool_result_decorator;
+pub mod usage;
 pub mod workflow;
 
 pub use adversarial::{AdversarialVerdict, AdversarialVerifier};

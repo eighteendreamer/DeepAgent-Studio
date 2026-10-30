@@ -1209,7 +1209,7 @@ impl WorkflowAgent {
             request.max_tokens = Some(m);
         }
 
-        let mut observer = WorkflowUsageObserver::new(self.usage.clone(), model_name);
+        let mut observer = WorkflowUsageObserver::new(self.usage.clone(), model_name, true);
         let response = client
             .stream_chat_completion_observed(request, &mut observer)
             .await;

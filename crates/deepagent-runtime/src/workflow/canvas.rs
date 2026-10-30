@@ -303,19 +303,10 @@ pub struct CanvasEmbeddingResponse {
 
 /// One physical provider request's usage receipt. Report it before validating
 /// the output so a charged response is not erased by a later node failure.
-#[derive(Debug, Clone)]
-pub struct CanvasUsageReport {
-    /// Absent for a compatibility client that exposes no provider identity.
-    pub provider_id: Option<String>,
-    pub model_id: String,
-    pub usage: Option<deepagent_models::Usage>,
-    pub raw_usage: Option<serde_json::Value>,
-}
+pub use crate::usage::CallUsageReport as CanvasUsageReport;
 
 /// Run-owned observer, not a store or a second accounting implementation.
-pub trait CanvasUsageSink: Send + Sync {
-    fn record(&self, report: CanvasUsageReport);
-}
+pub use crate::usage::CallUsageSink as CanvasUsageSink;
 
 /// What the kernel knows about one node when it must decide an operation.
 ///

@@ -2,8 +2,10 @@
 
 use super::*;
 use deepagent_app_core::{BudgetConfig, CostSummary};
+use deepagent_core::event::EventPayload;
 use deepagent_models::ModelRole;
 use deepagent_persistence::cost_store::{CostStore, HistoricalCost};
+use deepagent_persistence::event_store::EventStore;
 
 const FLASH: &str = "deepseek-flash";
 const PRO: &str = "deepseek-v4-pro";
@@ -82,12 +84,13 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("fixture.txt"), "AUDIT_LOCAL_COST_FIXTURE").unwrap();
     let db = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
+    let secrets = Arc::new(MemorySecretStore::new());
     let settings = Arc::new(SettingsService::new(
         db.clone(),
         Arc::new(MockTransport::with_get_json(
             r#"{"data":[{"id":"deepseek-flash","object":"model","owned_by":"deepseek"},{"id":"deepseek-v4-pro","object":"model","owned_by":"deepseek"}]}"#,
         )),
-        Arc::new(MemorySecretStore::new()),
+        secrets.clone(),
     ));
     settings
         .initialize("offline-audit-placeholder")
@@ -98,8 +101,7 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
     let prices = settings.load().unwrap().unwrap().pricing_catalog.models;
     assert_eq!(prices[FLASH].calculate(1000, 100, 800, 200), 0.000616);
     assert_eq!(prices[PRO].calculate(1000, 100, 800, 200), 0.002370);
-    let cost = Arc::new(CostService::new(db.clone()));
-    cost.set_pricing(prices.clone()); // Deliberately avoid the separate H-225 activation gap.
+    let cost = Arc::new(CostService::from_settings(db.clone(), settings.clone()));
     cost.set_budget(BudgetConfig {
         daily_limit: Some(LIMIT),
         monthly_limit: None,
@@ -180,6 +182,29 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
             let rows = CostStore::new(&db)
                 .session_costs_detailed(&session)
                 .unwrap();
+            let receipts: Vec<_> = EventStore::new(&db)
+                .load_session(session.parse().unwrap())
+                .unwrap()
+                .into_iter()
+                .filter_map(|event| match event.payload {
+                    EventPayload::RunCostRecorded {
+                        run_id,
+                        ledger_ids,
+                        cost_yuan,
+                        ..
+                    } => Some((run_id, ledger_ids, cost_yuan)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].0, run_id);
+            assert_eq!(
+                receipts[0].1,
+                rows.iter().map(|row| row.id).collect::<Vec<_>>()
+            );
+            assert!(receipts[0]
+                .2
+                .is_some_and(|cost| (cost - expected_cost).abs() < 1e-12));
             first = Some((
                 first_models,
                 ledger_models,
@@ -213,6 +238,43 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
     }
     let (first_models, ledger_models, rows, summary, cost_events, expected_cost) = first.unwrap();
     let second_dispatches = model.requests.lock().unwrap().len() - first_models.len();
+    let app = deepagent_app_core::AppService::from_shared(db.clone());
+    let before_reopen = app.session_conversation(&session).unwrap();
+    let turn_costs: Vec<_> = before_reopen
+        .iter()
+        .filter_map(|message| message.usage.as_ref())
+        .map(|usage| usage.cost_yuan)
+        .collect();
+    assert_eq!(turn_costs.len(), 1 + usize::from(second_error.is_none()));
+    assert!(turn_costs[0].is_some_and(|cost| (cost - expected_cost).abs() < 1e-12));
+    if second_error.is_none() {
+        assert!(turn_costs[1]
+            .is_some_and(
+                |cost| (cost - prices[primary].calculate(1000, 100, 800, 200)).abs() < 1e-12
+            ));
+    }
+    let persisted_total = cost.summary(&session).unwrap().session_cost;
+    drop(chat);
+    drop(app);
+    drop(cost);
+    drop(db);
+    let reopened = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
+    let settings = Arc::new(SettingsService::new(
+        reopened.clone(),
+        Arc::new(MockTransport::new(vec![])),
+        secrets,
+    ));
+    let cost = Arc::new(CostService::from_settings(
+        reopened.clone(),
+        settings.clone(),
+    ));
+    let app = deepagent_app_core::AppService::from_shared(reopened.clone());
+    let _chat = ChatService::new(reopened, settings, model, root.path()).with_cost(cost.clone());
+    assert_eq!(app.session_conversation(&session).unwrap(), before_reopen);
+    assert_eq!(
+        cost.summary(&session).unwrap().session_cost,
+        persisted_total
+    );
     let observed = RouteObservation {
         first_models,
         ledger_models,
@@ -228,6 +290,7 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
 }
 
 fn assert_route_cost(observed: &RouteObservation) {
+    assert_eq!(observed.cost_events.len(), 1, "one whole-run UI cost event");
     let ledger_total: Option<f64> = observed.rows.iter().map(|row| row.cost_yuan).sum();
     let event_total: Option<f64> = observed.cost_events.iter().map(|(_, cost)| *cost).sum();
     let cost_matches = (observed.summary.session_cost - observed.expected_cost).abs() < 1e-12
@@ -255,6 +318,22 @@ fn assert_route_cost(observed: &RouteObservation) {
             &[(answered.clone(), Some(observed.expected_cost))]
         );
         assert_eq!(observed.rows.len(), 1);
+    } else {
+        let mut answered = vec![
+            observed.first_models[0].clone(),
+            observed.first_models.last().unwrap().clone(),
+        ];
+        answered.sort();
+        answered.dedup();
+        assert_eq!(observed.ledger_models, answered);
+        assert_eq!(
+            observed.cost_events[0].0,
+            if answered.len() == 1 {
+                &answered[0]
+            } else {
+                "multi-model"
+            }
+        );
     }
 }
 
@@ -268,19 +347,17 @@ async fn unchanged_models_book_single_and_multiple_answered_calls_correctly() {
 }
 
 #[tokio::test]
-#[ignore = "audit H-226: fallback Pro usage is booked at the initial Flash price"]
 async fn audit_fallback_to_pro_books_pro_cost_and_blocks_the_next_run() {
     assert_route_cost(&observe_route(FLASH, true, false).await);
 }
 
 #[tokio::test]
-#[ignore = "audit H-226: fallback Flash usage is booked at the initial Pro price"]
 async fn audit_fallback_to_flash_books_flash_cost_and_allows_the_next_run() {
     assert_route_cost(&observe_route(PRO, true, false).await);
 }
 
 #[tokio::test]
-#[ignore = "audit H-226: mixed model usage cannot be priced under one initial model"]
 async fn audit_mixed_model_run_preserves_each_answered_calls_cost_route() {
     assert_route_cost(&observe_route(FLASH, true, true).await);
+    assert_route_cost(&observe_route(PRO, true, true).await);
 }

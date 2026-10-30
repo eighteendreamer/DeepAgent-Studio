@@ -5558,6 +5558,7 @@ mod tests {
             &mut session,
             AppRunFinalizerRequest {
                 model_usage: Some(&model_usage),
+                multi_model_label: "workflow",
                 session_id: &session_id,
                 run_id: "run_canvas_usage_audit",
                 discovered_before_run: &before,

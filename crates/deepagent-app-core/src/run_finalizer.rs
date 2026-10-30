@@ -41,9 +41,10 @@ pub(crate) struct AppRunFinalizerRequest<'a> {
     pub(crate) discovered_before_run: &'a HashSet<String>,
     pub(crate) discovered_tools: &'a DiscoveredToolSet,
     pub(crate) usage: Option<RunUsage>,
-    /// Workflow calls can select different routes per node. These are
+    /// Main-loop and workflow calls can select different routes. These are
     /// projections of the same canonical usage, not additional spend.
-    pub(crate) model_usage: Option<&'a [deepagent_runtime::workflow::WorkflowModelUsage]>,
+    pub(crate) model_usage: Option<&'a [deepagent_runtime::usage::ModelUsage]>,
+    pub(crate) multi_model_label: &'a str,
     /// Tokens of model calls the run loop did not make itself (compaction
     /// summaries). Booked as its own ledger row, never folded into `usage`, so
     /// the per-turn token display keeps describing only the sampling loop.
@@ -162,11 +163,12 @@ impl AppRunFinalizer {
             .usage
             .map_or(0u64, |usage| usage.total_tokens as u64);
         if let Some(models) = request.model_usage {
-            self.record_workflow_cost(
+            self.record_model_cost(
                 session,
                 request.run_id,
                 request.session_id,
                 models,
+                request.multi_model_label,
                 request.sink,
             )?;
         } else {
@@ -280,12 +282,13 @@ impl AppRunFinalizer {
         record_usage_cost(cost, session_id, model_name, u, CostOrigin::Run, sink);
     }
 
-    fn record_workflow_cost<C: Clock>(
+    fn record_model_cost<C: Clock>(
         &self,
         session: &mut Session<'_, C>,
         run_id: &str,
         session_id: &str,
-        models: &[deepagent_runtime::workflow::WorkflowModelUsage],
+        models: &[deepagent_runtime::usage::ModelUsage],
+        multi_model_label: &str,
         sink: &dyn RuntimeEventSink,
     ) -> Result<()> {
         let mut total = models
@@ -306,7 +309,7 @@ impl AppRunFinalizer {
                     }
                     Err(error) => {
                         total = None;
-                        tracing::warn!(model = %measured.model_id, error = %error, "failed to record workflow cost");
+                        tracing::warn!(model = %measured.model_id, error = %error, "failed to record model cost");
                     }
                 }
             }
@@ -337,7 +340,7 @@ impl AppRunFinalizer {
                 model: if models.len() == 1 {
                     models[0].model_id.clone()
                 } else {
-                    "workflow".into()
+                    multi_model_label.into()
                 },
                 cost_yuan: total,
                 origin: CostOrigin::Run,
@@ -627,6 +630,7 @@ mod tests {
                 &mut session,
                 AppRunFinalizerRequest {
                     model_usage: None,
+                    multi_model_label: "multi-model",
                     session_id: &session_id,
                     run_id: "run_test",
                     discovered_before_run: &before,
@@ -739,6 +743,7 @@ mod tests {
                 &mut session,
                 AppRunFinalizerRequest {
                     model_usage: None,
+                    multi_model_label: "multi-model",
                     session_id: &session_id,
                     run_id: "run_consolidate",
                     discovered_before_run: &before,
@@ -842,6 +847,7 @@ mod tests {
                 &mut session,
                 AppRunFinalizerRequest {
                     model_usage: None,
+                    multi_model_label: "multi-model",
                     session_id: &session_id,
                     run_id: "run_rows",
                     discovered_before_run: &before,
@@ -882,6 +888,129 @@ mod tests {
             vec![CostOrigin::Run, CostOrigin::SideCall],
             "the run's own row must be told apart from the compaction row"
         );
+    }
+
+    #[test]
+    fn route_cost_preserves_side_model_and_unknown_aggregate() {
+        use crate::cost_service::ModelPricing;
+        use deepagent_persistence::cost_store::CostStore;
+        use deepagent_persistence::event_store::EventStore;
+        use deepagent_runtime::usage::ModelUsage;
+
+        for (missing_price, missing_usage) in [(false, false), (true, false), (false, true)] {
+            let db = Arc::new(Database::open_in_memory().unwrap());
+            let cost = Arc::new(CostService::new(db.clone()));
+            let mut pricing = HashMap::from([(
+                "primary".into(),
+                ModelPricing {
+                    input_cache_hit_per_million: 1.0,
+                    input_cache_miss_per_million: 1.0,
+                    output_per_million: 1.0,
+                },
+            )]);
+            if !missing_price {
+                pricing.insert(
+                    "fallback".into(),
+                    ModelPricing {
+                        input_cache_hit_per_million: 10.0,
+                        input_cache_miss_per_million: 10.0,
+                        output_per_million: 10.0,
+                    },
+                );
+            }
+            cost.set_pricing(pricing);
+            let mut session = Session::create(&db, &SystemClock, Some("routes and side")).unwrap();
+            let session_id = session.id().to_string();
+            let usage = RunUsage::from(provider_call(1000, 100, 800, 200));
+            let models: Vec<_> = ["primary", "fallback"]
+                .into_iter()
+                .map(|model| ModelUsage {
+                    provider_id: None,
+                    model_id: model.into(),
+                    usage,
+                    usage_complete: model != "fallback" || !missing_usage,
+                })
+                .collect();
+            let finalizer = AppRunFinalizer::new(
+                db.clone(),
+                Some(cost),
+                None,
+                Arc::new(Mutex::new(HashMap::new())),
+                SessionMemoryPasses::default(),
+            );
+            let empty = Arc::new(Mutex::new(HashSet::new()));
+            let before = HashSet::new();
+            let (sink, mut events) = deepagent_runtime::ChannelSink::new();
+            finalizer
+                .finalize_after_kernel(
+                    &mut session,
+                    AppRunFinalizerRequest {
+                        session_id: &session_id,
+                        run_id: "route-side-test",
+                        discovered_before_run: &before,
+                        discovered_tools: &empty,
+                        usage: Some(run_of(&[provider_call(1000, 100, 800, 200); 2])),
+                        model_usage: Some(&models),
+                        multi_model_label: "multi-model",
+                        side_usage: Some(RunUsage::from(provider_call(900, 60, 700, 200))),
+                        model_name: "primary",
+                        sink: &sink,
+                        run_succeeded: false,
+                        capture_client: None,
+                        capture_model: None,
+                    },
+                )
+                .unwrap();
+            let rows = CostStore::new(&db)
+                .session_costs_detailed(&session_id)
+                .unwrap();
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[0].cost_yuan, Some(0.0011));
+            assert_eq!(rows[1].cost_yuan, (!missing_price).then_some(0.011));
+            assert_eq!(
+                rows[2].cost_yuan,
+                Some(0.00096),
+                "side call retains primary pricing"
+            );
+            let costs: Vec<_> = std::iter::from_fn(|| events.try_recv().ok())
+                .filter_map(|event| match event {
+                    RuntimeEvent::CostRecorded {
+                        model,
+                        cost_yuan,
+                        origin,
+                    } => Some((model, cost_yuan, origin)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(costs.len(), 2);
+            assert_eq!(costs[0].0, "multi-model");
+            assert_eq!(costs[0].2, CostOrigin::Run);
+            let expected = (!(missing_price || missing_usage)).then_some(0.0121);
+            match (costs[0].1, expected) {
+                (Some(actual), Some(expected)) => assert!((actual - expected).abs() < 1e-12),
+                (actual, expected) => assert_eq!(actual, expected),
+            }
+            assert_eq!(
+                costs[1],
+                ("primary".into(), Some(0.00096), CostOrigin::SideCall)
+            );
+            let receipts: Vec<_> = EventStore::new(&db)
+                .load_session(session.id())
+                .unwrap()
+                .into_iter()
+                .filter_map(|event| match event.payload {
+                    EventPayload::RunCostRecorded {
+                        ledger_ids,
+                        cost_yuan,
+                        ..
+                    } => Some((ledger_ids, cost_yuan)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(receipts.len(), 1);
+            assert_eq!(receipts[0].0, vec![rows[0].id, rows[1].id]);
+            assert_eq!(receipts[0].1, costs[0].1);
+        }
     }
 
     #[tokio::test]

@@ -7217,6 +7217,26 @@ E-H225-07（独立提交与回填）：代码、默认回归与当时双文档�
 
 实际尝试 `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`，**未通过**：已有 `deepagent-models/src/client.rs:355` 的 `clone_on_copy` 和 `deepagent-persistence/src/run_store.rs:127` 的 `explicit_counter_loop` 被 deny warnings 拦截，本轮未修改这些生产文件，也未压制告警；不能声称新增测试已通过完整 Clippy。未执行全 workspace 测试、全 features Clippy、桌面 build/真实 UI、公网故障与真实扣费验收；这里只交付有证据的新增审计项，不宣称全系统通过。
 
+#### 2026-10-30 修复续接（已修复并验收，限下列本机范围）
+
+E-H226-01（先复现）：基线 `35bae5178316f0af7f9f67cb3eef4b364adeeb92`，tracked干净，仅保留原用户五类未跟踪项（只列名，未读改/暂存/删除）。实际原探针 `cargo test -p deepagent-app-core --test kernel_v2_e2e fallback_cost:: --offline -j 2 -- --include-ignored --nocapture` exit101，310.07秒含冷构建，1通过/3失败/0忽略；四组正常对照通过，双向fallback及混合模型三组错误归价、下一轮错误接纳再次复现。原始失败正文保留，证据 `target/h226-original-probe-20261030.log` 与同名 `-result.json`。离线overload仍只代表既有classifier支持的受控分类，不声称真实供应商普通503一定可达。
+
+E-H226-02（根因与本地设计）：主聊天原先只有累计RunUsage，finalizer再用初始模型绑定整笔费用，丢失实际请求模型。将既有workflow/usage的route投影与attempt observer提升为共享 `runtime/src/usage.rs`，主聊天和workflow复用同一 `RunUsageTracker` 与 `RunUsage::record_call`；不建第二费用账本。每次物理request在dispatch前捕获model，最后一份usage快照结算一次，失败/取消/drop后已报告usage不漏不重；没有usage的失败不虚构消费，成功无usage保留不完整标记。无provider身份时保留None，不拼造pricing key。保留RunUsage的Copy、最新gauge与累计billed语义，主聊天raw provider usage原样，不添加模型元数据。设计依据为当前workflow owner/finalizer、claudecode的resolvedModel计价、deepseek-harness的attempt归集；仅参考，不执行参考服务。
+
+E-H226-03（统一落账与兼容）：主聊天与workflow共用现有CostService/costs/write_usage_cost及v1 RunCostRecorded，每个实际模型落一行，整轮费用仅通知一次，防止UI最后一行覆盖整轮；多模型聊天label为multi-model，工作流仍为workflow。压缩side call保持其实际固定初始模型与SideCall来源，不改成最终fallback。原WorkflowModelUsage、CanvasUsageReport/CanvasUsageSink保持兼容re-export；协议、Tauri/TS事件形状、权限、沙箱和数据库schema不变。同步两处原finalizer测试装配的group label，其余业务不改。通过既有receipt关联ledger_ids，重开后多行不漂移到下一turn。旧错误历史账单不重算、不执行真实数据迁移。
+
+E-H226-04（默认回归）：原三组ignored探针已转默认，正常四组对照、单次双向切换和混合双向共8种场景；使用生产from_settings，不手工同步报价。4项fallback测试全过，核对真实wire、三桶usage、各模型价格snapshot、唯一终态、下一轮零dispatch/放行、一次费用事件、receipt及SQLite真实close/reopen后的会话费用与summary。新增3项runtime检查覆盖失败Chat attempt最后快照后fallback、取消及drop、已付费截断后fallback；共享observer 2项检查重复快照/raw/无usage标记；finalizer 1项覆盖有价/无价/不完整三组与独立side模型。连同12项原workflow usage和3项usage_contract，25项关键检查均在最终全仓默认执行通过，不以忽略原探针代替验收。定向记录 `h226-route-fix-replay`（4/0/0，102.02秒含构建）、`h226-runtime-route-tests`（3/0/0，51.10秒含构建）及最终workspace日志保留。
+
+E-H226-05（真实门禁与失败记录）：首次全仓编译356.70秒发现两处测试装配漏group label，修正后重跑，未将编译失败算测试通过。之后完整全仓770.09秒为3895通过/6失败/279忽略：其中SDK的5项因冷清理后缺少正常CLI可执行文件失败，源码明确要求先cargo build；另1项为既有H-306。补齐 `cargo build -p deepagent-cli --offline -j 2`（exit0，117.71秒）后，最终实际再次执行 `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=2`，exit101，433.93秒，133个结果块，**3900通过/1失败/279忽略**；SDK前置条件失败已消除，唯一失败仍是H-306 `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`（creative.video-edit.v1空defaultUserPrompt）。AppCore lib1352/0/62、kernel E2E184/0/64、runtime lib349/0/9；不宣称全仓全绿。证据 `h226-workspace`、`h226-workspace-final`、`h226-workspace-cli-ready` 全部保留，最终机器核对为 `target/h226-evidence-summary-20261030.json`。
+
+E-H226-06（格式、lint与跨层）：10份可独立格式检查的改动源码rustfmt --check通过，git diff --check通过；根 `cargo fmt --all -- --check` 仍仅被workflow/agent.rs:1043的未改格式段阻断（本文件本轮只改observer构造），独立Tauri fmt仍被原lib.rs两处import、write_current和set_reasoning_effort格式阻断。实际全workspace/all-targets/all-features严格Clippy仍被models/client.rs:355 clone_on_copy阻断；runtime/AppCore owners --no-deps严格Clippy仍被runtime/model_agent.rs:285 clone_on_copy、workflow/canvas.rs:32 derivable_impls阻断；AppCore单独--no-deps/all-targets严格检查仍有原context_runtime/http_runtime/plugin_preparation/run_assembler及测试fixture/media诊断，未压制或顺手修复，所报旧代码段经baseline/diff核对未改。新usage/route/finalizer修改行未见诊断，不把门禁失败说成通过。独立 `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target\h226-tauri-build` exit0，304.13秒；`apps/desktop`执行 `pnpm build` exit0，143.46秒，21批296前端测试及TS/Vite通过。未做GUI、其他OS、真实供应商/公网故障/扣费验收。
+
+E-H226-07（用户要求的编译清理）：所有验证进程终态后，先dry-run并核对绝对路径、reparse/junction及运行进程，再原生 `cargo clean --profile dev --offline --target-dir <明确目录>`。根target/debug删除10986文件（Cargo报告19.7GiB），target/h226-tauri-build/debug删除7997文件（2.4GiB），均exit0且目录消失。G盘可用由169443811328增至191954481152字节，实际释放约20.96GiB，剩约178.77GiB；2100份顶层日志/探针/脚本和11份受测源码哈希不变。不删除整个target、不清Cargo下载缓存、不动用户文件。证据 `target/h226-final-clean-plan/protected/result-20261030.json` 及原生日志，清理后不再重建Rust产物。
+
+本轮新增根因修复1项；历史跳过/归并/撤销新增0。累计 **93验收、21历史跳过、7归并、2撤销、183待修复、0修复中**，183有效未关闭，306唯一主行/8列，其他305主行不变。本项仅按上述范围验收：不修H-49请求容量、H-63尚未由parser暴露的失败Responses usage/其他漏装配入口、H-87/H-88、H-227预算配置生命周期或无价预算策略，不补算旧账单。下一项准备复核H-227，先执行其原探针并核对现有配置/持久化边界，避免重复实现。总剩余 **200–400有效修复与验收小时** 仍为未逐项校准的历史粗估，依据剩余跨层权限、执行、持久化与消费方范围；无可靠独立工时计量，不按构建等待机械扣减。设备、依赖、构建和环境等待另计，不作精确日期承诺。整体goal active，不能宣布全部完成。
+
+代码、测试与当时双文档待正常独立fix提交；取得真实hash后另做docs回填，不amend、不推送、不建PR。本地隔离home/data/profile/APPDATA、MemorySecretStore及离线transport；仅原workflow回归启用测试自建loopback服务，不访问真实内网/凭据或用户数据库。
+
 ### H-227：日/月限额仅驻留内存，宿主服务重建后历史费用保留但预算静默变为无限
 
 **级别：条件性中（P2，周期预算配置生命周期缺口）；触发条件：** 调用公开 `CostService::set_budget` 或桌面 `set_budget` command 配置过非空日/月限额，随后重建该成本服务，且宿主/外部调用方没有自行重放配置。现有文档/类型把它描述为日/月预算，却没有明确标注“仅本进程有效”；也没有找到当前前端组件使用 `setBudget`，因此不声称已有预算设置按钮、真实 UI 操作丢失或所有用户都受影响。此为本系统架构能力缺口，不是 DeepSeek 协议违约。
