@@ -596,40 +596,64 @@ fn parse_response_usage(value: Option<&serde_json::Value>) -> Result<Option<Usag
     let Some(value) = value else {
         return Ok(None);
     };
-    let prompt_tokens_raw = value
-        .get("input_tokens")
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
-    let prompt_cache_hit_tokens_raw = value
-        .get("input_tokens_details")
-        .and_then(|v| v.get("cached_tokens"))
-        .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0);
+    let prompt_tokens_raw = response_usage_count(value.get("input_tokens"), "input_tokens")?;
+    let prompt_cache_hit_tokens_raw = response_usage_count(
+        value
+            .get("input_tokens_details")
+            .and_then(|v| v.get("cached_tokens")),
+        "input_tokens_details.cached_tokens",
+    )?;
     if prompt_cache_hit_tokens_raw > prompt_tokens_raw {
         return Err(CoreError::invalid(format!(
             "Responses usage invariant violated: input_tokens_details.cached_tokens ({prompt_cache_hit_tokens_raw}) exceeds input_tokens ({prompt_tokens_raw})"
         )));
     }
-    let prompt_tokens = prompt_tokens_raw as u32;
-    let prompt_cache_hit_tokens = prompt_cache_hit_tokens_raw as u32;
+    let prompt_tokens = checked_response_usage_count(prompt_tokens_raw, "input_tokens")?;
+    let prompt_cache_hit_tokens = checked_response_usage_count(
+        prompt_cache_hit_tokens_raw,
+        "input_tokens_details.cached_tokens",
+    )?;
     Ok(Some(Usage {
         prompt_tokens,
-        completion_tokens: value
-            .get("output_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32,
-        reasoning_tokens: value
-            .get("output_tokens_details")
-            .and_then(|v| v.get("reasoning_tokens"))
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32,
-        total_tokens: value
-            .get("total_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0) as u32,
+        completion_tokens: checked_response_usage_count(
+            response_usage_count(value.get("output_tokens"), "output_tokens")?,
+            "output_tokens",
+        )?,
+        reasoning_tokens: checked_response_usage_count(
+            response_usage_count(
+                value
+                    .get("output_tokens_details")
+                    .and_then(|v| v.get("reasoning_tokens")),
+                "output_tokens_details.reasoning_tokens",
+            )?,
+            "output_tokens_details.reasoning_tokens",
+        )?,
+        total_tokens: checked_response_usage_count(
+            response_usage_count(value.get("total_tokens"), "total_tokens")?,
+            "total_tokens",
+        )?,
         prompt_cache_hit_tokens,
         prompt_cache_miss_tokens: prompt_tokens.saturating_sub(prompt_cache_hit_tokens),
     }))
+}
+
+fn response_usage_count(value: Option<&serde_json::Value>, field: &str) -> Result<u64> {
+    let Some(value) = value else {
+        return Ok(0);
+    };
+    value.as_u64().ok_or_else(|| {
+        CoreError::invalid(format!(
+            "Responses usage field `{field}` must be a non-negative integer"
+        ))
+    })
+}
+
+fn checked_response_usage_count(value: u64, field: &str) -> Result<u32> {
+    u32::try_from(value).map_err(|_| {
+        CoreError::invalid(format!(
+            "Responses usage field `{field}` exceeds host u32 range: {value}"
+        ))
+    })
 }
 
 /// Provider-neutral semantic model stream used by Agent Kernel v2.
@@ -1342,6 +1366,64 @@ mod tests {
             )
             .unwrap_err();
         assert!(error.to_string().contains("cached_tokens"));
+    }
+
+    #[test]
+    fn responses_usage_rejects_counts_wider_than_host_type() {
+        let oversized = u64::from(u32::MAX) + 1;
+        for (field, usage) in [
+            (
+                "input_tokens",
+                serde_json::json!({"input_tokens": oversized}),
+            ),
+            (
+                "output_tokens",
+                serde_json::json!({"output_tokens": oversized}),
+            ),
+            (
+                "output_tokens_details.reasoning_tokens",
+                serde_json::json!({
+                    "output_tokens_details": {"reasoning_tokens": oversized}
+                }),
+            ),
+            (
+                "total_tokens",
+                serde_json::json!({"total_tokens": oversized}),
+            ),
+            (
+                "input_tokens_details.cached_tokens",
+                serde_json::json!({
+                    "input_tokens": u32::MAX,
+                    "input_tokens_details": {"cached_tokens": oversized}
+                }),
+            ),
+        ] {
+            let error = parse_response_usage(Some(&usage)).unwrap_err();
+            assert!(
+                error.to_string().contains(field),
+                "error for {field} did not identify the field: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn responses_usage_accepts_u32_maximum_counts() {
+        let maximum = u64::from(u32::MAX);
+        let usage = parse_response_usage(Some(&serde_json::json!({
+            "input_tokens": maximum,
+            "input_tokens_details": {"cached_tokens": maximum},
+            "output_tokens": maximum,
+            "output_tokens_details": {"reasoning_tokens": maximum},
+            "total_tokens": maximum,
+        })))
+        .unwrap()
+        .unwrap();
+        assert_eq!(usage.prompt_tokens, u32::MAX);
+        assert_eq!(usage.prompt_cache_hit_tokens, u32::MAX);
+        assert_eq!(usage.prompt_cache_miss_tokens, 0);
+        assert_eq!(usage.completion_tokens, u32::MAX);
+        assert_eq!(usage.reasoning_tokens, u32::MAX);
+        assert_eq!(usage.total_tokens, u32::MAX);
     }
 
     #[test]

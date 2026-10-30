@@ -9599,18 +9599,27 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 ### H-274：Responses token 计数超过宿主 u32 宽度后静默截断，账本可被压成零
 
-**级别：中（P2，条件性 provider usage 完整性、费用与预算保护缺口）；状态：正式 ChatService/ModelClient/CostService/SQLite 链路已复现，未修复。** 触发条件是 provider、兼容网关或中间层返回超过 `u32::MAX` 的 JSON 整数；这不是声称 DeepSeek 正常请求会产生四十亿级 token，而是宿主在面对不可信/错误 usage 时没有 fail closed。
+**级别：中（P2，条件性 provider usage 完整性、费用与预算保护缺口）；状态：已修复并验收（2026-10-31，仅限所列 Windows 本机、离线 Responses fixture、临时 SQLite 和合成报价范围）。** 触发条件是 provider、兼容网关或中间层返回超过 `u32::MAX` 的 JSON 整数；这不是声称 DeepSeek 正常请求会产生四十亿级 token，而是宿主在面对不可信/错误 usage 时必须 fail closed。
 
 #### 即时 Evidence（2026-10-25）
 
-- 在 `crates/deepagent-app-core/tests/kernel_v2_e2e/usage_contract.rs` 新增 ignored 探针 `audit_oversized_usage_counts_are_rejected_before_cost_accounting`。装配与 H-273 相同的正式 SettingsService、ChatService、ModelClient、Responses SSE accumulator、Runtime usage/finalizer、文件 SQLite CostStore；唯一替身是离线 `HttpTransport`，报价仍为测试专用值。
-- 故障响应保持其他字段一致，只把 `input_tokens` 设为 `4_294_967_296`、`output_tokens=1`、`total_tokens=4_294_967_297`、`cached_tokens=0`。执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract::audit_oversized_usage_counts_are_rejected_before_cost_accounting --offline -- --include-ignored --nocapture --exact`，结果 **0 passed / 1 failed（预期），33.16s**。
-- 真实观察：`result_error=None`、`calls=1`、`summary.input_tokens=0`、`summary.output_tokens=1`、`ledger_rows=1`、`usage_events=1`、`costs=[￥0.0]`，运行正常完成。失败点是“超出宿主 `u32` 的 provider usage 应在费用归集前拒绝”。没有重试、fallback、工具、真实密钥、真实供应商或公网。
-- H-273 的正常 cached usage 对照仍通过；本项独立于 `cached_tokens > input_tokens`，即使缓存命中为零也能触发。探针只修改测试与本报告，未修改生产逻辑。
+- 修复前在 `crates/deepagent-app-core/tests/kernel_v2_e2e/usage_contract.rs` 新增 ignored 探针 `audit_oversized_usage_counts_are_rejected_before_cost_accounting`。装配与 H-273 相同的正式 SettingsService、ChatService、ModelClient、Responses SSE accumulator、Runtime usage/finalizer、文件 SQLite CostStore；唯一替身是离线 `HttpTransport`，报价仍为测试专用值。
+- 修复前故障响应保持其他字段一致，只把 `input_tokens` 设为 `4_294_967_296`、`output_tokens=1`、`total_tokens=4_294_967_297`、`cached_tokens=0`。执行原始命令，结果 **0 passed / 1 failed（预期），33.16s**。
+- 修复前真实观察：`result_error=None`、`calls=1`、`summary.input_tokens=0`、`summary.output_tokens=1`、`ledger_rows=1`、`usage_events=1`、`costs=[￥0.0]`，运行正常完成。失败点是“超出宿主 `u32` 的 provider usage 应在费用归集前拒绝”。没有重试、fallback、工具、真实密钥、真实供应商或公网。
+- H-273 的正常 cached usage 对照仍通过；本项独立于 `cached_tokens > input_tokens`，即使缓存命中为零也能触发。上述为修复前失败证据，原始正文保留。
+
+#### 修复与正式验收（2026-10-31）
+
+- E-H274-02（根因修复）：Responses adapter 的单一 usage 解析边界新增 checked `u64 -> u32` 转换，覆盖 `input_tokens`、`cached_tokens`、`output_tokens`、`reasoning_tokens` 和 `total_tokens`；缺失字段继续兼容为零，超出宿主范围或非非负整数返回带字段路径的 `invalid input`，不投递 `ModelStreamEvent::Usage`。没有把 `Usage` 改成更宽类型，也没有在 CostService 层截断/修正；H-273 的缓存关系检查保持独立。
+- E-H274-03（provider 单元回归）：`cargo test -p deepagent-models --lib --offline -j 2` 为 **99 passed / 0 failed / 21 ignored**；新增每个 usage 计数字段的超界拒绝和 `u32::MAX` 恰好边界对照，stream 相关 26 项全通过。
+- E-H274-04（正式链路回归）：原 H-274 ignored 探针转为默认测试；`cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract::audit_oversized_usage_counts_are_rejected_before_cost_accounting --offline -j 2 -- --nocapture --exact` 为 **1 passed / 0 failed**。观察到 `result_error=invalid input`、`usage_events=0`、账本 0 行、成本回调为空、summary 成本为 `0`，未进入 succeeded 计费。
+- E-H274-05（相关正常路径与构建）：`cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract:: --offline -j 2 -- --nocapture --test-threads=1` 为 **5 passed / 0 failed / 0 ignored**；覆盖 H-273、H-274、zero/partial cache、工具循环、多响应和 SQLite 重开。`cargo check -p deepagent-models -p deepagent-runtime -p deepagent-app-core --offline -j 2` 退出 0。
+- E-H274-06（门禁与限制）：改动文件 `rustfmt --edition 2021 --config skip_children=true --check`、`git diff --check` 通过。根 `cargo fmt --all -- --check` 仍被未修改的 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；严格 `cargo clippy -p deepagent-models -p deepagent-runtime -p deepagent-app-core --all-targets --offline -j 2 -- -D warnings` 仍被未修改的 `crates/deepagent-models/src/client.rs:355` `clone_on_copy` 阻断，本轮没有新增 lint 诊断。未验证真实供应商/账单、其他 OS、强杀/断电、并发压力或 H-273 之外的 usage 关系不变量。
+- E-H274-07（提交）：代码、回归测试和本项验收文档先独立提交；取得 commit ID 后在本节与进度台账回填，不 amend、不推送、不创建 PR。
 
 #### 根因、影响与数据流
 
-- F-274（category=provider-boundary，status=validated，confidence=high；evidence_ids=[E-274-width]）：`crates/deepagent-models/src/stream.rs::parse_response_usage` 对 `input_tokens`、`output_tokens`、`reasoning_tokens`、`total_tokens` 先 `as_u64()`，随后直接 `as u32`。Rust 的窄化转换丢弃高位；解析器再把值封装成普通 `Usage`，没有检查原始整数是否可由宿主类型表示。
+- F-274（category=provider-boundary，status=validated，confidence=high；evidence_ids=[E-274-width]，修复前）：`crates/deepagent-models/src/stream.rs::parse_response_usage` 对 `input_tokens`、`output_tokens`、`reasoning_tokens`、`total_tokens` 先 `as_u64()`，随后直接 `as u32`。Rust 的窄化转换丢弃高位；解析器再把值封装成普通 `Usage`，没有检查原始整数是否可由宿主类型表示。当前已在同一 adapter 边界使用 checked conversion；H-274 的宽度缺陷不再进入 `Usage`/CostService。
 - P-274：Responses `usage` → 无界 `u64` → `as u32` 截断 → `ModelAgent::record_provider_response_usage` → `RunUsage`/CostService/SQLite。样本中四十亿输入 token 变成 0，miss 也变成 0，运行被标记为成功且账本可写入零成本；若日/月预算依赖该账本，后续请求会使用错误的可用额度。这里不声称真实 DeepSeek 账户会按宿主的零值扣费，只确认本地费用与预算观测被污染。
 - 影响限定为畸形、代理错误或恶意中间层 usage；正常上下文窗口远低于 `u32::MAX` 时不触发。后果可包括费用少记、缓存/上下文指标失真、预算保护失效和审计数据不可解释；本轮没有真实扣款或账户余额损失证据。
 - 与 H-273 区分：H-273 是合法宽度内的字段关系矛盾（cached 大于 input）；H-274 是单个字段超出宿主表示范围后被截断。两者都应在同一 provider adapter 边界拒绝，但不能用 clamp 或 CostService 二次修正替代解析边界。
@@ -9621,7 +9630,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - **Codex**：`借鉴/codex/codex-rs/codex-api/src/sse/responses.rs::ResponseCompletedUsage` 以 `i64` 保留 Responses 字段，再映射到 typed `TokenUsage`，没有在反序列化点把任意 JSON 整数静默压成 `u32`。本轮没有把 Codex 的类型保留误写成完整不变量校验；可迁移原则是“先保留/校验原始宽度，再进入内部账本”。
 - **DeepSeek 官方**：[Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)将 `input_tokens`、`output_tokens`、`total_tokens`声明为必需整数，并说明 `total_tokens`是输入加输出；`cached_tokens`与 `reasoning_tokens`是细分整数。文档定义了字段语义，没有授权宿主把超出内部表示范围的整数截断后继续记账。KV Cache 文档也只把命中作为输入缓存观测维度，不替宿主完成本地数值校验。
 
-#### 治理方向（本地设计，未实施）
+#### 治理方向（修复前本地设计；未覆盖的边界仍适用）
 
 - 在现有 Responses provider adapter 单一入口使用 checked conversion：拒绝负数、非整数、超过 `u32::MAX` 或字段路径缺失造成的不可解释缺省；将原始 usage 作为脱敏诊断上下文保留，但 invalid usage 不得投递到 `RunUsage`、CostService 或预算快照。
 - 解析成功后再做 H-273 的关系检查：`cached_tokens <= input_tokens`、`total_tokens >= input_tokens + output_tokens`，并检查 reasoning 不超过 output；所有拒绝沿现有失败/终态路径只落一个可审计结果。
