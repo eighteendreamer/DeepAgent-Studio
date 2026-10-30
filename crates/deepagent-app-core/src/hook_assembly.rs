@@ -28,6 +28,7 @@ pub(crate) struct HookAssemblyRequest<'a> {
     pub(crate) plugin_projection: Option<&'a PluginRuntimeProjection>,
     pub(crate) root: &'a Path,
     pub(crate) sink: Arc<dyn RuntimeEventSink>,
+    pub(crate) usage_owner: Option<crate::call_usage::RunCallUsageOwner>,
     pub(crate) client: Arc<ModelClient>,
     pub(crate) model: String,
     pub(crate) reasoning_effort: ReasoningEffort,
@@ -134,6 +135,7 @@ pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<Hoo
         agent_policy: policy_hooks,
         agent_permissions: request.permissions,
         events: Arc::downgrade(&request.sink),
+        usage_owner: request.usage_owner,
     });
 
     // Skill-use bookkeeping belongs to the parent session, not its isolated

@@ -8,8 +8,7 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use tokio::sync::Notify;
 
-#[path = "../tests/kernel_v2_e2e/responses_fixture.rs"]
-mod responses_fixture;
+use crate::responses_fixture;
 
 struct DropFlag(Arc<AtomicBool>);
 
@@ -136,6 +135,7 @@ async fn exercise(point: StopPoint) {
         agent_policy: Arc::new(HookRegistry::new()),
         agent_permissions: PermissionSet::empty(),
         events: Arc::downgrade(&sink),
+        usage_owner: None,
     });
     let definitions = HookDefinitions::parse(
         r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"agent","prompt":"Review","timeout":5}]}]}}"#,

@@ -478,7 +478,7 @@ impl AppService {
             .into_iter()
             .filter_map(|run| run.task_id.map(|task| (task, run.id)))
             .collect();
-        let mut owned_cost_ids = std::collections::HashSet::new();
+        let mut owned_cost_ids = CostStore::new(&self.db).run_call_ledger_ids(session_id)?;
         let mut run_costs = std::collections::HashMap::new();
         for event in events {
             if let EventPayload::RunCostRecorded {

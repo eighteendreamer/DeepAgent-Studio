@@ -759,6 +759,13 @@ impl<'a> RunAssembler<'a> {
             plugin_projection: plugin_projection.as_ref(),
             root: &root,
             sink: sink.clone(),
+            usage_owner: Some(crate::call_usage::RunCallUsageOwner {
+                db: self.db.clone(),
+                cost: self.cost.clone(),
+                session_id: session_id_str.clone(),
+                run_id: run_id.clone(),
+                events: Arc::downgrade(&sink),
+            }),
             client: client.clone(),
             model: model.clone(),
             reasoning_effort,

@@ -1722,6 +1722,7 @@ mod tests {
             agent_policy: Arc::new(deepagent_hooks::HookRegistry::new()),
             agent_permissions: PermissionSet::empty(),
             events: Arc::downgrade(&sink),
+            usage_owner: None,
         }
     }
 
@@ -1923,6 +1924,7 @@ mod tests {
                 &action,
                 serde_json::json!({"hook_event_name":"PreToolUse","tool_name":"shell"}),
                 deepagent_tools::ToolExecutionContext::default(),
+                None,
             )
             .await
             .unwrap();

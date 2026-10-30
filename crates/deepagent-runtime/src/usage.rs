@@ -103,7 +103,7 @@ impl RunUsageTracker {
 /// Retain the latest SSE usage snapshot, then settle exactly once, including
 /// when a provider error or cancellation drops the waiting future. The request
 /// route is captured before dispatch, never read from a later fallback model.
-pub(crate) struct CallUsageObserver {
+pub struct CallUsageObserver {
     sink: Arc<dyn CallUsageSink>,
     model_id: String,
     usage: Option<Usage>,
@@ -112,11 +112,7 @@ pub(crate) struct CallUsageObserver {
 }
 
 impl CallUsageObserver {
-    pub(crate) fn new(
-        sink: Arc<dyn CallUsageSink>,
-        model_id: String,
-        record_unreported: bool,
-    ) -> Self {
+    pub fn new(sink: Arc<dyn CallUsageSink>, model_id: String, record_unreported: bool) -> Self {
         Self {
             sink,
             model_id,
@@ -126,7 +122,7 @@ impl CallUsageObserver {
         }
     }
 
-    pub(crate) fn completed(&mut self, usage: Option<Usage>, raw: Option<&Value>) {
+    pub fn completed(&mut self, usage: Option<Usage>, raw: Option<&Value>) {
         self.record_unreported = true;
         if usage.is_some() {
             self.usage = usage;

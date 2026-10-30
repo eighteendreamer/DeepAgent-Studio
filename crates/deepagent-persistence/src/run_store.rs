@@ -54,7 +54,7 @@ const PENDING_TERMINAL_PROJECTION: &str = "r.finished_at IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM run_events e WHERE e.run_id=r.id
                     AND e.event_type='session_terminal_projected')";
 
-fn insert_run_event(
+pub(crate) fn insert_run_event(
     conn: &rusqlite::Connection,
     run_id: &str,
     now: i64,

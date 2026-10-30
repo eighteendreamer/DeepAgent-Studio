@@ -310,6 +310,32 @@ impl CostService {
     }
 
     pub(crate) fn record_with_id(&self, request: CostRecordRequest) -> Result<(i64, Option<f64>)> {
+        self.with_priced_entry(&request, |entry| {
+            let id = CostStore::new(&self.db).insert_with_id(entry)?;
+            Ok((id, entry.cost_yuan))
+        })
+    }
+
+    pub(crate) fn record_run_call(
+        &self,
+        call: &deepagent_persistence::cost_store::RunCallUsage<'_>,
+        request: Option<CostRecordRequest>,
+    ) -> Result<deepagent_persistence::cost_store::RecordedCallCost> {
+        let store = CostStore::new(&self.db);
+        match request {
+            Some(request) => {
+                self.with_priced_entry(&request, |entry| store.record_run_call(call, Some(entry)))
+            }
+            None => store.record_run_call(call, None),
+        }
+    }
+
+    /// One pricing/cache normalization boundary for aggregate and owned calls.
+    fn with_priced_entry<T>(
+        &self,
+        request: &CostRecordRequest,
+        write: impl FnOnce(&CostEntry<'_>) -> Result<T>,
+    ) -> Result<T> {
         let pricing_result = self.pricing_for_model(&request.model);
         let effective_cache_miss = if request.cache_miss_tokens > 0 {
             request.cache_miss_tokens
@@ -347,7 +373,7 @@ impl CostService {
             }
         };
 
-        let id = CostStore::new(&self.db).insert_with_id(&CostEntry {
+        write(&CostEntry {
             session_id: &request.session_id,
             timestamp: now,
             model: &request.model,
@@ -361,8 +387,7 @@ impl CostService {
             input_cache_miss_price: snapshot.map(|s| s.1),
             output_price: snapshot.map(|s| s.2),
             pricing_source: Some("https://api-docs.deepseek.com/zh-cn/quick_start/pricing"),
-        })?;
-        Ok((id, cost_yuan))
+        })
     }
 
     /// Get a cost summary for a session + today + month + total.

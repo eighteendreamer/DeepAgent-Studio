@@ -570,6 +570,9 @@ pub struct ModelAgent {
     events: Option<Arc<dyn RuntimeEventSink>>,
     /// Cumulative token usage summed across every model call this run.
     usage: Arc<RunUsageTracker>,
+    /// Optional host accounting owner. Forward each physical attempt without
+    /// sharing this agent's private context gauge or replay history.
+    call_usage_sink: Option<Arc<dyn CallUsageSink>>,
     /// The run's context occupancy snapshot, as assembled before the first
     /// request. Each answered request updates it from the provider's own
     /// numbers and re-emits it, so the occupancy surface has one source.
@@ -703,6 +706,7 @@ impl ModelAgent {
             pending_tool_call_id: None,
             events: None,
             usage: Arc::new(RunUsageTracker::default()),
+            call_usage_sink: None,
             context_snapshot: None,
             surface_persistence: None,
             tool_context_reset: None,
@@ -1017,6 +1021,14 @@ impl ModelAgent {
 
     pub fn with_max_model_attempts(mut self, attempts: usize) -> Self {
         self.max_model_attempts = attempts.max(1);
+        self
+    }
+
+    /// Observe the same per-attempt receipt used by this agent's accounting,
+    /// including measured failures/cancellation and retries. Do not also book
+    /// these receipts from an aggregate finalizer.
+    pub fn with_call_usage_sink(mut self, sink: Arc<dyn CallUsageSink>) -> Self {
+        self.call_usage_sink = Some(sink);
         self
     }
 
@@ -2036,11 +2048,15 @@ fn doom_loop_signature(invocations: &[ToolInvocation]) -> String {
 struct MainUsageSink {
     usage: Arc<RunUsageTracker>,
     events: Option<Arc<dyn RuntimeEventSink>>,
+    external: Option<Arc<dyn CallUsageSink>>,
 }
 
 impl CallUsageSink for MainUsageSink {
     fn record(&self, report: CallUsageReport) {
         self.usage.record(&report);
+        if let Some(sink) = &self.external {
+            sink.record(report.clone());
+        }
         if let (Some(usage), Some(sink)) = (report.usage, &self.events) {
             sink.emit(RuntimeEvent::Usage {
                 prompt_tokens: usage.prompt_tokens,
@@ -2405,6 +2421,7 @@ impl ModelAgent {
                 Arc::new(MainUsageSink {
                     usage: self.usage.clone(),
                     events: self.events.clone(),
+                    external: self.call_usage_sink.clone(),
                 }),
                 step,
                 attempt_started_at,

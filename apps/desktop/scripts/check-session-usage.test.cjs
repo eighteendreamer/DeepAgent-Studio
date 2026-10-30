@@ -5,6 +5,23 @@ const test = require("node:test");
 
 const sourceRoot = path.resolve(__dirname, "../src");
 
+test("auxiliary call cost refreshes session totals without replacing main-turn cost", () => {
+  const source = read("App.tsx");
+  const body = source.slice(source.indexOf('case "cost_recorded":'), source.indexOf('case "run_completed":', source.indexOf('case "cost_recorded":')));
+  const dispatch = new Function("event", "updateTranscript", `switch (event.type) { ${body} }`);
+  const original = [{ role: "assistant", usage: { prompt: 1000, costYuan: 0.2 } }];
+  let updates = 0;
+  let state = original;
+  const update = (fn) => { updates++; state = fn(state); };
+  dispatch({ type: "cost_recorded", origin: "side_call", cost_yuan: 0.1 }, update);
+  assert.equal(updates, 0);
+  assert.equal(state, original);
+  for (const origin of ["run", undefined]) {
+    dispatch({ type: "cost_recorded", origin, cost_yuan: 0.3 }, update);
+    assert.deepEqual(state[0].usage, { prompt: 1000, costYuan: 0.3 });
+  }
+});
+
 function read(relative) {
   return fs.readFileSync(path.join(sourceRoot, relative), "utf8");
 }

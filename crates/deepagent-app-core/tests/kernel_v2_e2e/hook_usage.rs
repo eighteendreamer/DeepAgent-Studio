@@ -18,6 +18,9 @@ const MODEL: &str = "deepseek-flash";
 const MARKER: &str = "AUDIT_MODEL_HOOK_USAGE";
 const RUN: &str = "audit-hook-usage-first";
 
+#[path = "hook_usage/early_gate.rs"]
+mod early_gate;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum HookKind {
     None,
@@ -261,8 +264,7 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
     let unit_cost = pricing[MODEL].calculate(1000, 100, 800, 200);
     assert!(unit_cost > 0.0);
     let limit = unit_cost * budget_calls;
-    let cost = Arc::new(CostService::new(db.clone()));
-    cost.set_pricing(pricing); // Exclude the already documented H-225 activation defect.
+    let cost = Arc::new(CostService::from_settings(db.clone(), settings.clone()));
     cost.set_budget(BudgetConfig {
         daily_limit: Some(limit),
         monthly_limit: None,
@@ -302,6 +304,31 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
         (hook_calls, event_cost, live_input)
     };
     let (durable_input, raw_calls) = durable_totals(&db, &session);
+    let receipts: Vec<_> = chat
+        .run_events(RUN, None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == "model_call_usage")
+        .collect();
+    assert_eq!(receipts.len(), hook_calls);
+    assert_eq!(
+        receipts
+            .iter()
+            .map(|event| event.data["call_id"].as_str().unwrap())
+            .collect::<std::collections::HashSet<_>>()
+            .len(),
+        hook_calls
+    );
+    for receipt in &receipts {
+        assert_eq!(receipt.data["session_id"], session);
+        assert_eq!(receipt.data["report"]["model_id"], MODEL);
+        assert!(receipt.data["report"]["provider_id"].is_null());
+        assert_eq!(receipt.data["report"]["usage"]["prompt_tokens"], 1000);
+        assert_eq!(
+            receipt.data["report"]["raw_usage"]["input_tokens_details"]["cached_tokens"],
+            800
+        );
+    }
     let summary = cost.summary(&session).unwrap();
     let rows = CostStore::new(&db)
         .session_costs_detailed(&session)
@@ -367,7 +394,14 @@ fn assert_all_answered_usage(observed: Observation) {
     );
     // Capture observability separately; a correct side-call design need not fold
     // child usage into the parent's context-size gauge or main-only raw history.
-    assert!(observed.live_input > 0 && observed.durable_input > 0 && observed.raw_calls > 0);
+    assert_eq!(
+        (
+            observed.live_input,
+            observed.durable_input,
+            observed.raw_calls
+        ),
+        (2000, 1000, 2)
+    );
     assert!(observed.hook_calls <= observed.answered);
 }
 
@@ -387,25 +421,21 @@ async fn counted_main_usage_blocks_the_next_admission() {
 }
 
 #[tokio::test]
-#[ignore = "audit: prompt hook usage must reach the existing ledger and budget admission"]
 async fn audit_prompt_hook_usage_reaches_ledger_and_budget() {
     assert_all_answered_usage(observe(HookKind::Prompt, 2.5).await);
 }
 
 #[tokio::test]
-#[ignore = "audit: agent hook calls must reach the existing ledger and budget admission"]
 async fn audit_agent_hook_usage_reaches_ledger_and_budget() {
     assert_all_answered_usage(observe(HookKind::Agent, 2.5).await);
 }
 
 #[tokio::test]
-#[ignore = "audit: a denied parent tool must not erase prompt-hook spend"]
 async fn audit_prompt_hook_denial_still_accounts_usage() {
     assert_all_answered_usage(observe(HookKind::PromptDeny, 2.5).await);
 }
 
 #[tokio::test]
-#[ignore = "audit: a denied parent tool must not erase agent-hook spend"]
 async fn audit_agent_hook_denial_still_accounts_usage() {
     assert_all_answered_usage(observe(HookKind::AgentDeny, 2.5).await);
 }

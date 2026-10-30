@@ -11,8 +11,7 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-#[path = "../tests/kernel_v2_e2e/responses_fixture.rs"]
-mod responses_fixture;
+use crate::responses_fixture;
 
 const CANARY: &str = "SYNTHETIC_HOOK_POLICY_BODY";
 
@@ -116,6 +115,7 @@ async fn assembled_read(
         plugin_projection: None,
         root: &root,
         sink,
+        usage_owner: None,
         client: Arc::new(ModelClient::new(
             transport.clone(),
             ModelConfig::deepseek("offline"),

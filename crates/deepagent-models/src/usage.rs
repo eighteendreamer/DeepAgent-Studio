@@ -28,6 +28,8 @@ pub fn sanitized_provider_usage(value: &Value) -> Value {
     for (key, counters) in [
         ("prompt_tokens_details", &["cached_tokens"][..]),
         ("completion_tokens_details", &["reasoning_tokens"][..]),
+        ("input_tokens_details", &["cached_tokens"][..]),
+        ("output_tokens_details", &["reasoning_tokens"][..]),
         (
             "cache_creation",
             &["ephemeral_5m_input_tokens", "ephemeral_1h_input_tokens"][..],
@@ -75,6 +77,21 @@ mod tests {
                 "unknown": {"tokens": 123}
             })),
             json!({"prompt_tokens": 0, "completion_tokens": null, "prompt_tokens_details": {"cached_tokens": 0}})
+        );
+    }
+
+    #[test]
+    fn responses_nested_cache_and_reasoning_counters_remain_numeric_only() {
+        assert_eq!(
+            sanitized_provider_usage(&json!({
+                "input_tokens":1000,"output_tokens":100,
+                "input_tokens_details":{"cached_tokens":800,"prompt":"secret-canary"},
+                "output_tokens_details":{"reasoning_tokens":20,"text":"secret-canary"},
+                "key":"secret-canary",
+            })),
+            json!({"input_tokens":1000,"output_tokens":100,
+            "input_tokens_details":{"cached_tokens":800},
+            "output_tokens_details":{"reasoning_tokens":20}})
         );
     }
 }

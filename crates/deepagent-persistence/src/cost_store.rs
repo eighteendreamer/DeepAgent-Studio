@@ -11,6 +11,9 @@ use rusqlite::params;
 
 use crate::{map_sqlite, Database};
 
+mod run_calls;
+pub use run_calls::{RecordedCallCost, RunCallUsage};
+
 /// A single cost ledger row to insert.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CostEntry<'a> {
@@ -77,31 +80,7 @@ impl<'db> CostStore<'db> {
 
     /// Same insert boundary, returning the identity for a run receipt.
     pub fn insert_with_id(&self, entry: &CostEntry<'_>) -> Result<i64> {
-        self.db.with_conn(|c| {
-            c.execute(
-                "INSERT INTO costs (session_id, timestamp, model, input_tokens, output_tokens, \
-                 cache_hit_tokens, cache_miss_tokens, total_tokens, cost_yuan, \
-                 input_cache_hit_price, input_cache_miss_price, output_price, pricing_source) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-                params![
-                    entry.session_id,
-                    entry.timestamp,
-                    entry.model,
-                    entry.input_tokens,
-                    entry.output_tokens,
-                    entry.cache_hit_tokens,
-                    entry.cache_miss_tokens,
-                    entry.total_tokens,
-                    entry.cost_yuan,
-                    entry.input_cache_hit_price,
-                    entry.input_cache_miss_price,
-                    entry.output_price,
-                    entry.pricing_source,
-                ],
-            )
-            .map_err(map_sqlite)?;
-            Ok(c.last_insert_rowid())
-        })
+        self.db.with_conn(|c| insert_entry(c, entry))
     }
 
     /// Sum of `cost_yuan` for a single session.
@@ -223,6 +202,33 @@ pub struct SessionUsageTotals {
     pub cache_hit_tokens: u64,
     /// Sum of `cache_miss_tokens` across the session.
     pub cache_miss_tokens: u64,
+}
+
+// One ledger insert for both aggregate callers and transaction-owned requests.
+fn insert_entry(c: &rusqlite::Connection, entry: &CostEntry<'_>) -> Result<i64> {
+    c.execute(
+        "INSERT INTO costs (session_id, timestamp, model, input_tokens, output_tokens, \
+         cache_hit_tokens, cache_miss_tokens, total_tokens, cost_yuan, \
+         input_cache_hit_price, input_cache_miss_price, output_price, pricing_source) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+        params![
+            entry.session_id,
+            entry.timestamp,
+            entry.model,
+            entry.input_tokens,
+            entry.output_tokens,
+            entry.cache_hit_tokens,
+            entry.cache_miss_tokens,
+            entry.total_tokens,
+            entry.cost_yuan,
+            entry.input_cache_hit_price,
+            entry.input_cache_miss_price,
+            entry.output_price,
+            entry.pricing_source,
+        ],
+    )
+    .map_err(map_sqlite)?;
+    Ok(c.last_insert_rowid())
 }
 
 #[cfg(test)]

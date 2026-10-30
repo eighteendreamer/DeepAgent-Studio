@@ -62,7 +62,11 @@ pub(crate) struct AppRunFinalizerRequest<'a> {
 /// pass), so "what did this cost the session" cannot be answered two ways.
 /// It reads the billed totals: a pass that answered six requests is billed for
 /// six, not for the last request's context size.
-fn cost_request_for(session_id: &str, model_name: &str, usage: &RunUsage) -> CostRecordRequest {
+pub(crate) fn cost_request_for(
+    session_id: &str,
+    model_name: &str,
+    usage: &RunUsage,
+) -> CostRecordRequest {
     CostRecordRequest {
         session_id: session_id.to_string(),
         model: model_name.to_string(),

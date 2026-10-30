@@ -14,6 +14,7 @@ use deepagent_hooks::{
 };
 use deepagent_models::{ModelClient, ReasoningEffort, ResponseRequest, ToolSchema};
 use deepagent_persistence::Database;
+use deepagent_runtime::usage::{CallUsageObserver, CallUsageSink};
 use deepagent_runtime::{ModelAgent, RuntimeConfig, RuntimeEngine, RuntimeEvent, RuntimeEventSink};
 use deepagent_session::Session;
 use deepagent_tools::{PermissionSet, RiskLevel, ToolExecutionContext, ToolRegistry};
@@ -76,6 +77,7 @@ pub async fn test_hook_action(
             agent_policy: Arc::new(HookRegistry::new()),
             agent_permissions: PermissionSet::empty(),
             events: Arc::downgrade(&sink),
+            usage_owner: None, // Settings-page synthetic test has no parent run.
         }),
         None => Arc::new(UnavailableHookHost),
     };
@@ -221,6 +223,10 @@ impl RuntimeEventSink for NoopEventSink {
     fn emit(&self, _event: RuntimeEvent) {}
 }
 
+impl CallUsageSink for NoopEventSink {
+    fn record(&self, _report: deepagent_runtime::usage::CallUsageReport) {}
+}
+
 pub(crate) struct ObservableHookRunner {
     inner: SystemHookRunner,
     events: std::sync::Weak<dyn RuntimeEventSink>,
@@ -238,6 +244,7 @@ pub(crate) struct AppHookActionExecutor {
     pub(crate) agent_policy: Arc<HookRegistry>,
     pub(crate) agent_permissions: PermissionSet,
     pub(crate) events: std::sync::Weak<dyn RuntimeEventSink>,
+    pub(crate) usage_owner: Option<crate::call_usage::RunCallUsageOwner>,
 }
 
 impl AppHookActionExecutor {
@@ -246,11 +253,12 @@ impl AppHookActionExecutor {
         action: &HookAction,
         payload: serde_json::Value,
         execution: ToolExecutionContext,
+        usage: Option<Arc<dyn CallUsageSink>>,
     ) -> Result<HookOutcome> {
         match action.action_type {
             HookActionType::McpTool => self.execute_mcp(action, payload, execution).await,
-            HookActionType::Prompt => self.execute_prompt(action, payload, execution).await,
-            HookActionType::Agent => self.execute_agent(action, payload, execution).await,
+            HookActionType::Prompt => self.execute_prompt(action, payload, execution, usage).await,
+            HookActionType::Agent => self.execute_agent(action, payload, execution, usage).await,
             HookActionType::Command | HookActionType::Http => Err(CoreError::invalid(
                 "command/http hooks cannot be executed by the host action executor",
             )),
@@ -292,6 +300,7 @@ impl AppHookActionExecutor {
         action: &HookAction,
         payload: serde_json::Value,
         execution: ToolExecutionContext,
+        usage: Option<Arc<dyn CallUsageSink>>,
     ) -> Result<HookOutcome> {
         let prompt = render_model_hook_prompt(action, &payload)?;
         let model = action
@@ -308,14 +317,29 @@ impl AppHookActionExecutor {
         .with_temperature(0.0)
         .with_max_output_tokens(512)
         .with_reasoning_effort(ReasoningEffort::None);
-        let response = self
-            .client
-            .stream_response_cancelled(request, execution.cancel_flag());
-        let response = tokio::select! {
-            biased;
-            _ = execution.cancelled() => return Err(CoreError::other("prompt hook was cancelled")),
-            response = response => response?,
+        let mut observer = CallUsageObserver::new(
+            usage.unwrap_or_else(|| Arc::new(NoopEventSink)),
+            model.into(),
+            false,
+        );
+        let response = {
+            let response = self.client.stream_response_observed_cancelled(
+                request,
+                &mut observer,
+                execution.cancel_flag(),
+            );
+            tokio::select! {
+                biased;
+                _ = execution.cancelled() => Err(CoreError::other("prompt hook was cancelled")),
+                response = response => response,
+            }
         };
+        if let Ok(response) = &response {
+            observer.completed(response.usage, response.raw_usage.as_ref());
+        }
+        // Settle before parsing JSON, including errors and cancellation.
+        drop(observer);
+        let response = response?;
         parse_model_hook_decision(&response.output_text_projection())
     }
 
@@ -324,13 +348,15 @@ impl AppHookActionExecutor {
         action: &HookAction,
         payload: serde_json::Value,
         execution: ToolExecutionContext,
+        usage: Option<Arc<dyn CallUsageSink>>,
     ) -> Result<HookOutcome> {
         let prompt = render_model_hook_prompt(action, &payload)?;
         let model = action
             .model
-            .clone()
-            .filter(|model| !model.trim().is_empty())
-            .unwrap_or_else(|| self.model.clone());
+            .as_deref()
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+            .unwrap_or(&self.model);
         let profile = action.agent.as_deref().unwrap_or("general");
         let system = format!(
             "{}\nYou are the isolated '{profile}' hook agent. Use only the supplied read-only tools. Never modify files, run commands, or create another agent.",
@@ -355,6 +381,9 @@ impl AppHookActionExecutor {
         let mut agent = ModelAgent::new(self.client.clone(), model, system, prompt, tools)
             .with_reasoning_effort(self.reasoning_effort)
             .with_max_model_attempts(2);
+        if let Some(usage) = usage {
+            agent = agent.with_call_usage_sink(usage);
+        }
         let config = RuntimeConfig {
             max_steps: Some(6),
             task_timeout: Some(action.timeout_duration()),
@@ -434,7 +463,29 @@ impl HookActionExecutor for AppHookActionExecutor {
             });
         }
         let started = Instant::now();
-        let result = self.execute_inner(action, payload, execution).await;
+        let usage = match action.action_type {
+            HookActionType::Prompt => self
+                .usage_owner
+                .as_ref()
+                .map(|owner| owner.invocation(id.clone(), "hook_prompt")),
+            HookActionType::Agent => self
+                .usage_owner
+                .as_ref()
+                .map(|owner| owner.invocation(id.clone(), "hook_agent")),
+            _ => None,
+        };
+        let result = self
+            .execute_inner(
+                action,
+                payload,
+                execution,
+                usage.clone().map(|sink| sink as Arc<dyn CallUsageSink>),
+            )
+            .await;
+        let result = match usage.as_ref().map(|usage| usage.checkpoint()).transpose() {
+            Err(error) => Err(error),
+            Ok(_) => result,
+        };
         if let Some(events) = self.events.upgrade() {
             let (exit_code, stderr, outcome) = match &result {
                 Ok(

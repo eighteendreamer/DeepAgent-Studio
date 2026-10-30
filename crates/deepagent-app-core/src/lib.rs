@@ -16,6 +16,7 @@ pub mod archive_service;
 pub(crate) mod atomic_file;
 pub mod attachment_service;
 pub mod builtin_resources;
+mod call_usage;
 pub mod canvas_artifact_service;
 pub mod canvas_artifact_uploads;
 pub mod canvas_model_gateway;
@@ -72,6 +73,9 @@ pub mod project_service;
 pub mod prompt_gate;
 pub mod question_bridge;
 pub mod recording_service;
+#[cfg(test)]
+#[path = "../tests/kernel_v2_e2e/responses_fixture.rs"]
+mod responses_fixture;
 pub mod run_assembler;
 pub mod run_config;
 pub mod run_coordinator;
