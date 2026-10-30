@@ -9638,7 +9638,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 ### H-275：MCP hook 直接调用绕过 discovered inputSchema，非法参数仍发送到工具
 
-**级别：低至中（P3，条件性 hook 参数契约缺口）；状态：正式 AppHookActionExecutor/McpRegistry/McpClient 链路已复现，未修复。** 仅 MCP transport 为内存 recording fixture，不连接外部服务；不表示正常模型 MCP 工具链也缺少校验。
+**级别：低至中（P3，条件性 hook 参数契约缺口）；状态：已修复并验收（2026-10-31，仅限所列 Windows 本机、离线测试与内存 recording MCP 范围）。** 修前正式 AppHookActionExecutor/McpRegistry/McpClient 链路的失败证据保留；真实外部 MCP、供应商和其他平台不在本项范围内。
 
 #### 即时 Evidence（2026-10-25，复现后先登记）
 
@@ -9670,17 +9670,26 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - **Codex**：`借鉴/codex/codex-rs/core/src/tools/handlers/mcp.rs::handle_call`通向 `core/src/mcp_tool_call.rs::handle_mcp_tool_call`，后者先解析 arguments JSON，再进入已准备的 MCP 调用；本轮没有在该调用点证明对 discovered input_schema 的通用完整校验，也没有找到与本系统 mcp_tool 生命周期 action 完全同构的测试。因此不声称“Codex已解决本项”，不把 JSON 语法解析当 schema 约束校验。
 - **DeepSeek官方**：2026-10-25联网复核[工具调用指南](https://api-docs.deepseek.com/zh-cn/guides/tool_calls/)：模型本身不执行函数，strict是模型生成 Function 调用的格式约束；[Responses参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)以 JSON Schema 描述 function parameters。这里的参数由宿主生命周期和配置生成，根本不经过模型 strict 生成；提高 thinking、开启 strict 或调整缓存不能修复该执行路径差异。本轮不把当前工具指南未逐字出现的“调用前必须验证所有参数”当成直接引文；统一校验建议依据本系统已有主工具契约与参考 defineTool 的设计，而非虚构官方 MCP hook 规范。
 
-#### 治理方向（本地设计，未实施）
+#### 治理方向（修复前本地设计）
 
 - 让已发现工具的 schema 校验成为复用的执行边界能力，覆盖主模型、hook 与公开 McpRegistry 调用；可在既有 deepagent-tools 提取共享 validator，由 MCP 执行边界复用，保留错误字段路径与结构化上下文。不要在 UI、CLI、SDK 或 hook 内各写一次 validator，也不要新增第二套 registry/审批中心；需要明确哪些 API 允许接收已验证调用，避免双重编译和不同规则漂移。
 - 校验最终合并对象，包括宿主注入的 hook_input；schema与工具目录绑定，同一代工具名/归属/schema/调用一起使用。若上游 schema 不支持或本身非法，应显式报不支持/拒绝，不能只校验能理解的部分后宣称全部通过，也不能默默删除 hook_input、多余字段或猜测默认 decision。
 - 错误沿既有 HookStarted/HookCompleted 与 HookRegistry 错误路径传播，不把非法输入改写成 `{ok:true}`。本项不扩展或替代权限判断、审批与取消；这些保持独立且统一。回归补缺必填/枚举/类型/未知字段、合法 raw/static、hook_input冲突、未知或断线工具、目录刷新、server严格/宽松两类、真实stdio/HTTP、取消与主run终态；本轮未声称覆盖这些未测组合。
 
+#### 修复与正式验收（2026-10-31）
+
+- **E-H275-01（修前证据保留）：** 原始命令 `cargo test -p deepagent-app-core --lib mcp_hook --offline -- --include-ignored --nocapture --test-threads=1` 为 **2 passed / 1 failed / 0 ignored**；三类非法最终参数均为 `continued`、各发送 1 次 `tools/call`。原始正文保留于 `target/h275-original-probe-20261031.log`，未用修复后的绿色结果覆盖。
+- **E-H275-02（根因修复）：** 在既有 `deepagent-tools` 的 JSON Schema 编译器旁提取公开 `validate_tool_arguments`，`ToolRegistry::validate_invocation` 与 MCP 执行边界共用同一校验和错误格式。`McpRegistry::invoke`、`invoke_with_context` 在按 namespaced name 找到绑定的 `RemoteTool.input_schema` 后、调用 `McpClient::call_tool*` 前校验最终参数，因此宿主注入的 `hook_input` 也受校验；不新增 registry、审批、权限、协议字段或依赖。
+- **E-H275-03（正式 hook 回归）：** 原探针转为默认测试，`cargo test -p deepagent-app-core --lib mcp_hook --offline -- --nocapture --test-threads=1` 为 **3 passed / 0 failed / 0 ignored**；缺必填、非法枚举、多余字段均为 `error`、远端调用为 0；合法 `decision=allow` 仍为 `continued` 且调用 1 次，既有 MCP 拒绝决策对照保持通过。最终正文保留于 `target/h275-final-probe-20261031.log`。
+- **E-H275-04（共享边界回归）：** `cargo test -p deepagent-mcp --lib --offline -- --test-threads=1` 为 **104 passed / 0 failed / 2 ignored**，新增无上下文与带 `ToolExecutionContext` 两个 `McpRegistry::invoke*` 入口的非法参数零 wire 对照，并验证合法参数仍可发出；`cargo test -p deepagent-tools --lib --offline -- --test-threads=1` 为 **30 passed / 0 failed / 0 ignored**。
+- **E-H275-05（消费方与门禁）：** `cargo test -p deepagent-app-core --lib --offline -j 2 -- --test-threads=1` 为 **1376 passed / 0 failed / 51 ignored**（203.21 秒）；`cargo check -p deepagent-tools -p deepagent-mcp -p deepagent-app-core --offline -j 2` 退出 0；Tools/MCP 严格 `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` 退出 0。改动文件定向 rustfmt 与 `git diff --check` 退出 0。
+- **E-H275-06（未通过的全局基线与限制）：** 根 `cargo fmt --all -- --check` 仍只被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；AppCore 严格 Clippy 仍为既有未修改 `context_runtime.rs`、`http_runtime.rs`、`plugin_preparation.rs`、`run_assembler.rs` 及测试文件诊断，本轮无新增 H-275 诊断。未执行完整 workspace、Desktop/Tauri、真实外部 MCP/stdio/HTTP、真实供应商、其他 OS、长时并发或真实副作用验收。
+
 #### 验证与边界
 
-- 当前新增内容仅 test-only fixture、合法对照、ignored缺陷探针与本文；没有生产行为、公共协议、依赖、UI、权限或沙箱变更。采用代码审计 skill 的数据流人工核查与可达性验证要求，未运行 Semgrep/CodeQL 全仓扫描；不拿搜索命中当复现。
-- 交付前最终重跑 `cargo test -p deepagent-app-core --lib mcp_hook --offline -- --nocapture --test-threads=1`为 **2 passed / 1 ignored**；`cargo test -p deepagent-tools --lib --offline`为 **24 passed**（含 schema 校验、权限与审批正常测试）。`cargo fmt --all -- --check`与`git diff --check`均通过；Git仅提示现有Windows行尾转换，不是格式错误。最终入口的显式故障命令结果为上文 **2 passed / 1 failed（缺陷预期）**，绝不将其计作修复通过。
-- 未运行完整workspace测试、全特性clippy、Desktop build/UI、真实DeepSeek、真实外部MCP或任何真实副作用。没有测试供应商费用、缓存命中、线上发生率；全系统目标仍未完成。本轮未处理用户排除的 encrypted-content 问题。
+- 本轮新增了共享生产校验边界、registry 回归和默认 H-275 探针；没有改公共 wire 字段、依赖、UI、权限或沙箱策略。原始失败证据和修复后结果分别保留在 `target/h275-original-probe-20261031.log` 与 `target/h275-final-probe-20261031.log`。采用代码审计 skill 的数据流人工核查与可达性验证要求，未运行 Semgrep/CodeQL 全仓扫描。
+- 最终 `cargo test -p deepagent-app-core --lib mcp_hook --offline -- --nocapture --test-threads=1` 为 **3 passed / 0 ignored**；`cargo test -p deepagent-mcp --lib --offline -- --test-threads=1` 为 **104 passed / 2 ignored**；`cargo test -p deepagent-tools --lib --offline -- --test-threads=1` 为 **30 passed**；AppCore 默认 lib 为 **1376 passed / 51 ignored**。改动文件定向 rustfmt 与 `git diff --check` 通过，相关 `cargo check` 通过，Tools/MCP 严格 Clippy 通过；全局格式和 AppCore 严格 Clippy 的既有基线失败见 E-H275-06。
+- 未运行完整 workspace、Desktop build/UI、真实 DeepSeek、真实外部 MCP 或真实副作用；没有测试供应商费用、缓存命中、线上发生率、其他 OS 或长时并发。全系统目标仍未完成，本轮未处理用户排除的 encrypted-content 问题。
 
 ### H-276：MCP hook 在解析前截断完整拒绝 JSON，超过展示上限后静默放行真实写入
 

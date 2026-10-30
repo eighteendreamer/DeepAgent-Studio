@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tracing::Instrument;
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_tools::{validate_tool_schema, ToolExecutionContext};
+use deepagent_tools::{validate_tool_arguments, validate_tool_schema, ToolExecutionContext};
 
 use crate::client::McpClient;
 use crate::liveness::{LivenessConfig, LivenessProbe};
@@ -229,6 +229,7 @@ impl McpRegistry {
         let tool = self
             .find_tool(namespaced)
             .ok_or_else(|| CoreError::not_found(format!("MCP tool '{namespaced}'")))?;
+        validate_tool_arguments(namespaced, &tool.input_schema, &arguments)?;
         let connected = self
             .servers
             .get(&tool.server)
@@ -254,6 +255,7 @@ impl McpRegistry {
         let tool = self
             .find_tool(namespaced)
             .ok_or_else(|| CoreError::not_found(format!("MCP tool '{namespaced}'")))?;
+        validate_tool_arguments(namespaced, &tool.input_schema, &arguments)?;
         let connected = self
             .servers
             .get(&tool.server)
@@ -294,6 +296,35 @@ mod tests {
             .with_result(
                 "tools/call",
                 serde_json::json!({"content":[{"type":"text","text":"ok"}],"isError":false}),
+            )
+    }
+
+    fn strict_tools_transport() -> MockTransport {
+        MockTransport::new()
+            .with_result(
+                "tools/list",
+                serde_json::json!({
+                    "tools": [{
+                        "name": "check",
+                        "description": "check policy",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "decision": {"type": "string", "enum": ["allow", "deny"]},
+                                "hook_input": {"type": "object"}
+                            },
+                            "required": ["decision"],
+                            "additionalProperties": false
+                        }
+                    }]
+                }),
+            )
+            .with_result(
+                "tools/call",
+                serde_json::json!({
+                    "content": [{"type": "text", "text": "ok"}],
+                    "isError": false
+                }),
             )
     }
 
@@ -525,6 +556,46 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             .await
             .unwrap();
         assert_eq!(res.text(), "ok");
+    }
+
+    #[tokio::test]
+    async fn invocation_validates_discovered_arguments_before_wire() {
+        let transport = Arc::new(strict_tools_transport());
+        let mut reg = McpRegistry::new();
+        reg.register("policy", Arc::new(McpClient::new(transport.clone())))
+            .await
+            .unwrap();
+
+        let error = reg
+            .invoke(
+                "mcp__policy__check",
+                serde_json::json!({"decision": "unknown"}),
+            )
+            .await
+            .expect_err("invalid arguments must be rejected before tools/call");
+        assert!(error.to_string().contains("input validation failed"));
+        assert_eq!(transport.sent_methods(), vec!["tools/list"]);
+
+        let error = reg
+            .invoke_with_context(
+                "mcp__policy__check",
+                serde_json::json!({"decision": "allow", "extra": true}),
+                ToolExecutionContext::default(),
+            )
+            .await
+            .expect_err("context-aware invocation must share the schema gate");
+        assert!(error.to_string().contains("input validation failed"));
+        assert_eq!(transport.sent_methods(), vec!["tools/list"]);
+
+        let result = reg
+            .invoke(
+                "mcp__policy__check",
+                serde_json::json!({"decision": "allow"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.text(), "ok");
+        assert_eq!(transport.sent_methods(), vec!["tools/list", "tools/call"]);
     }
 
     #[tokio::test]

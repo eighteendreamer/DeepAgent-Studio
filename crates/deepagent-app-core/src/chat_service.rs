@@ -1845,7 +1845,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-275: MCP hook invocation must honor discovered inputSchema"]
     async fn audit_mcp_hook_bypasses_discovered_input_schema() {
         let payload = mcp_schema_audit_payload();
         let cases = [

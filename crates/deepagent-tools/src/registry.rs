@@ -29,6 +29,37 @@ pub fn validate_tool_schema(name: &str, parameters: &serde_json::Value) -> Resul
     compile_tool_schema(name, parameters).map(|_| ())
 }
 
+/// Validate one invocation against a model-facing JSON Schema.
+///
+/// This is kept beside [`validate_tool_schema`] so every execution boundary
+/// uses the same compiler and error contract, including registries that do
+/// not own a [`Tool`] implementation (for example the MCP registry).
+pub fn validate_tool_arguments(
+    name: &str,
+    parameters: &serde_json::Value,
+    arguments: &serde_json::Value,
+) -> Result<()> {
+    let compiled = compile_tool_schema(name, parameters)?;
+    if let Err(errors) = compiled.validate(arguments) {
+        let detail = errors
+            .take(8)
+            .map(|error| {
+                let path = error.instance_path.to_string();
+                if path.is_empty() {
+                    error.to_string()
+                } else {
+                    format!("{path}: {error}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(CoreError::invalid(format!(
+            "tool '{name}' input validation failed: {detail}"
+        )));
+    }
+    Ok(())
+}
+
 fn compile_tool_schema(
     name: &str,
     parameters: &serde_json::Value,
@@ -210,24 +241,7 @@ impl ToolRegistry {
             .tools
             .get(name)
             .ok_or_else(|| CoreError::invalid(format!("unknown tool: {name}")))?;
-        let compiled = compile_tool_schema(name, &spec.descriptor.parameters)?;
-        if let Err(errors) = compiled.validate(&arguments) {
-            let detail = errors
-                .take(8)
-                .map(|error| {
-                    let path = error.instance_path.to_string();
-                    if path.is_empty() {
-                        error.to_string()
-                    } else {
-                        format!("{path}: {error}")
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(CoreError::invalid(format!(
-                "tool '{name}' input validation failed: {detail}"
-            )));
-        }
+        validate_tool_arguments(name, &spec.descriptor.parameters, &arguments)?;
         let arguments = spec.tool.validate_input(arguments)?;
         Ok(ValidatedInvocation {
             name: name.to_string(),
