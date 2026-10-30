@@ -9559,18 +9559,27 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 ### H-273：Responses cached_tokens 超过 input_tokens 仍被接受并按低价记账
 
-**级别：低至中（P2/P3，条件性供应商 usage 完整性与费用观测缺口）；状态：正式 ChatService/ModelClient/CostService/SQLite 链路已复现，未修复。** 触发条件是 provider 返回结构上可解析、但内部不一致的 usage：`input_tokens=3`、`input_tokens_details.cached_tokens=8`、`total_tokens=3`。这不是正常 DeepSeek usage 的发生率或真实扣费证明；它是 provider adapter 必须守住的边界，防止错误数据被当成可信账单。
+**级别：低至中（P2/P3，条件性供应商 usage 完整性与费用观测缺口）；状态：已修复并验收（2026-10-31，仅限所列 Windows 本机、离线 Responses fixture、临时 SQLite 和合成报价范围）。** 触发条件是 provider 返回结构上可解析、但内部不一致的 usage：`input_tokens=3`、`input_tokens_details.cached_tokens=8`、`total_tokens=3`。这不是正常 DeepSeek usage 的发生率或真实扣费证明；它是 provider adapter 必须守住的边界，防止错误数据被当成可信账单。
 
 #### 即时 Evidence（2026-10-25）
 
 - 新增 test-only `crates/deepagent-app-core/tests/kernel_v2_e2e/usage_contract.rs`，装配正式 SettingsService、ChatService、ModelClient、Responses SSE accumulator、Runtime usage/finalizer、文件 SQLite CostStore；只有 HTTP transport 是离线 fixture。合成报价为 cache hit ￥100/百万、miss ￥1000/百万、output ￥0，不是官方报价。
 - 一致对照使用 `input=3, cached=2, output=0, total=3`：正式 run 唯一 succeeded，1 次 provider request，Usage 事件 1 次，账本 `input=3/hit=2/miss=1/session_cost=￥0.0012`，CostRecorded 同额；该对照通过。
 - 故障样本只把 cached 改为 8，其他响应身份、文本、完成终态和 wire 序列不变。执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract:: --offline -- --include-ignored --nocapture --test-threads=1`，**1 passed / 1 failed（预期），0.45s**。实际观察：`result_error=None`、`calls=1`、唯一正常完成、`input=3/hit=8/miss=0`、单条成本行 `￥0.0008`、Usage 事件 1 次；失败点是“应在费用归集前拒绝”。没有重试、fallback、工具、真实密钥、真实供应商或公网。
-- 首次加入父测试模块后运行 `cargo fmt --all -- --check` 通过；探针只修改测试和本审计文档，不改变生产逻辑。
+- 修复前首次加入父测试模块后运行 `cargo fmt --all -- --check` 通过；当时探针只修改测试和本审计文档，不改变生产逻辑。
+
+#### 修复与正式验收（2026-10-31）
+
+- E-H273-02（根因修复）：Responses adapter 的 `parse_response_usage` 现在返回 `Result<Option<Usage>>`；在把 provider usage 投递给 `ModelStreamEvent::Usage` 前，按原始 `u64` 值拒绝 `input_tokens_details.cached_tokens > input_tokens`，错误沿现有 `ModelClient`/ChatService 失败路径传播。没有在 CostService 层 clamp 或猜测修正，也没有新增账本、协议或迁移；H-274 的宽度校验仍独立保留。
+- E-H273-03（provider 单元回归）：`cargo test -p deepagent-models --lib stream::tests:: --offline -j 2 -- --nocapture` 为 **24 passed / 0 failed**；覆盖零命中、部分命中、全命中、缺省 cache、completed 与 incomplete 的畸形 usage 拒绝。
+- E-H273-04（正式链路回归）：原 H-273 ignored 探针转为默认测试；`cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract::audit_inconsistent_cached_usage_is_rejected_before_cost_accounting --offline -j 2 -- --nocapture --exact` 为 **1 passed / 0 failed**。观察到 `result_error=invalid input`、`usage_events=0`、唯一账本行数 `0`、成本回调为空、summary 成本为 `0`，未进入 succeeded 计费。
+- E-H273-05（正常与持久化对照）：`cargo test -p deepagent-app-core --test kernel_v2_e2e usage_contract:: --offline -j 2 -- --nocapture --test-threads=1` 为 **4 passed / 0 failed / 1 ignored**；H-274 探针继续 ignored，正常 zero/partial cache、工具循环、多响应、文件 SQLite 重开均通过。`cargo test -p deepagent-models --lib --offline -j 2` 为 **97 passed / 0 failed / 21 ignored**；`cargo check -p deepagent-models -p deepagent-runtime -p deepagent-app-core --offline -j 2` 退出 0。
+- E-H273-06（门禁与限制）：改动文件定向 `rustfmt --edition 2021 --config skip_children=true --check`、`git diff --check` 通过。根 `cargo fmt --all -- --check` 仍被未修改的 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；严格 `cargo clippy -p deepagent-models -p deepagent-runtime -p deepagent-app-core --all-targets --offline -j 2 -- -D warnings` 仍被未修改的 `crates/deepagent-models/src/client.rs:355` `clone_on_copy` 阻断，本轮没有新增 lint 诊断。显式包含 H-274 ignored 探针的 usage_contract 结果为 **4 passed / 1 failed（H-274 预期失败）**，不把独立问题误记为 H-273 回归失败。未验证真实供应商、真实扣费、其他 OS、并发/断电、H-274 宽度与其他 usage 关系不变量。
+- E-H273-07（提交）：代码、回归测试和本项验收文档先独立提交；取得 commit ID 后在本节与进度台账回填，不 amend、不推送、不创建 PR。
 
 #### 根因、影响与数据流
 
-- F-273（category=provider-boundary，status=validated，confidence=high；evidence_ids=[E-273-usage]）：`crates/deepagent-models/src/stream.rs::parse_response_usage` 将 `input_tokens` 与 `cached_tokens` 各自 `as_u64() as u32`，只用 `saturating_sub` 计算 miss；没有检查 `cached_tokens <= input_tokens`、`total_tokens >= input+output` 或字段是否在可表示范围内。于是内部矛盾被压成一个普通 `Usage`，`ModelAgent::record_provider_response_usage` 立即发布，`RunUsage`/finalizer/CostService 将 hit=8 当成真实计费维度。
+- F-273（category=provider-boundary，status=validated，confidence=high；evidence_ids=[E-273-usage]，修复前）：`crates/deepagent-models/src/stream.rs::parse_response_usage` 将 `input_tokens` 与 `cached_tokens` 各自 `as_u64() as u32`，只用 `saturating_sub` 计算 miss；没有检查 `cached_tokens <= input_tokens`、`total_tokens >= input+output` 或字段是否在可表示范围内。于是内部矛盾被压成一个普通 `Usage`，`ModelAgent::record_provider_response_usage` 立即发布，`RunUsage`/finalizer/CostService 将 hit=8 当成真实计费维度。当前已在同一 adapter 边界补上 `cached_tokens <= input_tokens` 拒绝；其余关系与宽度校验仍由 H-274/后续条目独立负责。
 - P-273：DeepSeek Responses 完成事件 → parser 接受矛盾 usage → Runtime 正常 completed → CostService 使用 hit 单价而不是 miss 单价 → 账本少记费用，并把错误 cache 命中率提供给 UI/预算/审计。样本中合成应至少按 3 个输入 token 的边界计量，实际按 8 个 cache-hit token 计价；这里不声称某个“正确金额”一定是 0.0012，因为供应商若报告矛盾数据，宿主应优先标记 invalid/unknown，而不是自行猜测修正。
 - 这不是 H-133 的 failed 终态 usage 丢失：本项是 completed 成功响应的 usage 被错误接受；也不是 H-163/H-235 的 usage 没有跨工作流或 hook 归集：本项 usage 已完整进入唯一账本，只是输入不变量未校验。H-272 的运行内预算 gate 也不需要触发，本轮没有设置预算；两者可叠加但根因不同。
 - 影响限定为 provider/代理/中间层返回畸形 usage 的情况。后果包括低估成本、错误显示缓存效果、在预算保护中留下错误基线；本轮没有真实扣款或账户余额损失证据。若故障响应被重复重放，错误账本还会继续污染日/月汇总；没有据此声称所有 DeepSeek 请求都会发生。
@@ -9582,7 +9591,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - **DeepSeek 官方**：[Responses 参数文档](https://api-docs.deepseek.com/zh-cn/api/create-response/)规定 usage 的 `input_tokens`、`input_tokens_details.cached_tokens`、`output_tokens`、`total_tokens`分别表示本次输入、缓存命中细分、输出和总量；[KV Cache 指南](https://api-docs.deepseek.com/zh-cn/guides/kv_cache/)把缓存命中作为输入缓存观察维度。文档没有授权宿主把 `cached_tokens > input_tokens` 当成合法计量，也没有替宿主做本地账本校验。
 - **Codex** 对照仅作为类型/保真边界：`codex-api/src/sse/responses.rs` 将 Responses usage 解析为 typed `TokenUsage`，保留 input/cached/output/reasoning/total 字段；本轮没有找到它在该位置校验 DeepSeek 同名不变量，也不把 Codex 包装成已经解决本项的直接证据。
 
-#### 治理方向（本地设计，未实施）
+#### 治理方向（修复前本地设计；未覆盖的边界仍适用）
 
 - 在现有 provider adapter 的单一 usage 解析边界加入 checked 解析：拒绝负数、非整数、超出宿主表示范围、`cached_tokens > input_tokens`、`total_tokens < input_tokens + output_tokens`；必要时保留 raw usage 供诊断，但不能把 invalid 数值投递给 `RunUsage`/CostService。错误应保留 provider event、字段路径和脱敏摘要，并沿现有失败/终态路径只落一个结果。
 - 不要在 CostService 中再次“猜测修正”已经污染的 Usage；否则会产生第二套 provider 语义。若兼容未来供应商新增字段，应在 provider adapter 显式版本化映射，保留合法缺省与 unknown 状态，不能把缺字段自动补零后继续声称可计费。

@@ -170,10 +170,9 @@ impl ResponseAccumulator {
             "response.completed" => {
                 self.terminal = Some(FinishReason::Stop);
                 self.saw_terminal = true;
-                if let Some(usage) =
-                    parse_response_usage(value.get("response").and_then(|v| v.get("usage")))
-                {
-                    self.raw_usage = value.get("response").and_then(|v| v.get("usage")).cloned();
+                let raw_usage = value.get("response").and_then(|v| v.get("usage"));
+                if let Some(usage) = parse_response_usage(raw_usage)? {
+                    self.raw_usage = raw_usage.cloned();
                     self.usage = Some(usage);
                     observer.on_event(ModelStreamEvent::Usage { usage });
                 }
@@ -185,10 +184,9 @@ impl ResponseAccumulator {
             "response.incomplete" => {
                 self.terminal = Some(FinishReason::Length);
                 self.saw_terminal = true;
-                if let Some(usage) =
-                    parse_response_usage(value.get("response").and_then(|v| v.get("usage")))
-                {
-                    self.raw_usage = value.get("response").and_then(|v| v.get("usage")).cloned();
+                let raw_usage = value.get("response").and_then(|v| v.get("usage"));
+                if let Some(usage) = parse_response_usage(raw_usage)? {
+                    self.raw_usage = raw_usage.cloned();
                     self.usage = Some(usage);
                     observer.on_event(ModelStreamEvent::Usage { usage });
                 }
@@ -594,18 +592,27 @@ fn reasoning_text_from_item(item: &serde_json::Value) -> Option<String> {
     }
 }
 
-fn parse_response_usage(value: Option<&serde_json::Value>) -> Option<Usage> {
-    let value = value?;
-    let prompt_tokens = value
+fn parse_response_usage(value: Option<&serde_json::Value>) -> Result<Option<Usage>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let prompt_tokens_raw = value
         .get("input_tokens")
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as u32;
-    let prompt_cache_hit_tokens = value
+        .unwrap_or(0);
+    let prompt_cache_hit_tokens_raw = value
         .get("input_tokens_details")
         .and_then(|v| v.get("cached_tokens"))
         .and_then(serde_json::Value::as_u64)
-        .unwrap_or(0) as u32;
-    Some(Usage {
+        .unwrap_or(0);
+    if prompt_cache_hit_tokens_raw > prompt_tokens_raw {
+        return Err(CoreError::invalid(format!(
+            "Responses usage invariant violated: input_tokens_details.cached_tokens ({prompt_cache_hit_tokens_raw}) exceeds input_tokens ({prompt_tokens_raw})"
+        )));
+    }
+    let prompt_tokens = prompt_tokens_raw as u32;
+    let prompt_cache_hit_tokens = prompt_cache_hit_tokens_raw as u32;
+    Ok(Some(Usage {
         prompt_tokens,
         completion_tokens: value
             .get("output_tokens")
@@ -622,7 +629,7 @@ fn parse_response_usage(value: Option<&serde_json::Value>) -> Option<Usage> {
             .unwrap_or(0) as u32,
         prompt_cache_hit_tokens,
         prompt_cache_miss_tokens: prompt_tokens.saturating_sub(prompt_cache_hit_tokens),
-    })
+    }))
 }
 
 /// Provider-neutral semantic model stream used by Agent Kernel v2.
@@ -1297,6 +1304,7 @@ mod tests {
             "output_tokens": 5,
             "total_tokens": 42
         })))
+        .unwrap()
         .unwrap();
         assert_eq!(usage.prompt_tokens, 37);
         assert_eq!(usage.prompt_cache_hit_tokens, 0);
@@ -1306,8 +1314,34 @@ mod tests {
             "input_tokens": 3,
             "input_tokens_details": {"cached_tokens": 8}
         })))
-        .unwrap();
-        assert_eq!(inconsistent.prompt_cache_miss_tokens, 0);
+        .unwrap_err();
+        assert!(inconsistent.to_string().contains("cached_tokens"));
+    }
+
+    #[test]
+    fn responses_usage_accepts_zero_partial_and_full_cache() {
+        for (cached, expected_miss) in [(0, 3), (2, 1), (3, 0)] {
+            let usage = parse_response_usage(Some(&serde_json::json!({
+                "input_tokens": 3,
+                "input_tokens_details": {"cached_tokens": cached},
+            })))
+            .unwrap()
+            .unwrap();
+            assert_eq!(usage.prompt_cache_hit_tokens, cached);
+            assert_eq!(usage.prompt_cache_miss_tokens, expected_miss);
+        }
+    }
+
+    #[test]
+    fn responses_incomplete_rejects_inconsistent_cached_usage() {
+        let mut accumulator = ResponseAccumulator::new();
+        let error = accumulator
+            .push_sse_data_observed(
+                r#"{"type":"response.incomplete","response":{"usage":{"input_tokens":3,"input_tokens_details":{"cached_tokens":4}}}}"#,
+                &mut NoopObserver,
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("cached_tokens"));
     }
 
     #[test]

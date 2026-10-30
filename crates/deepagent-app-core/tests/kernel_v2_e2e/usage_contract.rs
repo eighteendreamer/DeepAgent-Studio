@@ -423,7 +423,6 @@ async fn main_tool_loop_defaults_absent_usage_details_without_losing_raw_samples
 }
 
 #[tokio::test]
-#[ignore = "audit H-273: cached_tokens greater than input_tokens must not be accepted as billable usage"]
 async fn audit_inconsistent_cached_usage_is_rejected_before_cost_accounting() {
     let observed = observe(json!({
         "input_tokens": 3,
@@ -439,7 +438,9 @@ async fn audit_inconsistent_cached_usage_is_rejected_before_cost_accounting() {
     );
     assert_eq!(observed.calls, 1);
     assert_eq!(observed.ledger_rows, 0);
+    assert_eq!(observed.usage_events, 0);
     assert!(observed.costs.is_empty());
+    assert_eq!(observed.summary.session_cost, 0.0);
 }
 
 #[tokio::test]
