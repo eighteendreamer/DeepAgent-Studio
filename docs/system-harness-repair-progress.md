@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-31）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零四项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零五项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 104 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 105 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前无进行中的独立项 |
-| 待修复 | 172 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 171 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **172（172待修复、0修复中）**；不提供完成率。一百零四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **171（171待修复、0修复中）**；不提供完成率。一百零五项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
 
 ## H-275 MCP hook 参数 schema 执行边界（2026-10-31，已修复并验收）
 
@@ -90,7 +90,18 @@ E-H277-08（范围、门禁限制与提交）：完整 `kernel_v2_e2e` 为 **197
 - **E-H283-05（策略单测与消费方）**：`cargo test -p deepagent-app-core --lib system_context::tests::workspace_scan_treats_read_ask_and_deny_as_not_visible --offline -- --nocapture` 为 **1 passed / 0 failed**，覆盖 Read deny、read_file ask、Read allow 与无规则；`cargo test -p deepagent-app-core --lib --offline -j 1 -- --test-threads=1` 为 **1377 passed / 0 failed / 51 ignored**。
 - **E-H283-06（构建与 lint）**：`cargo check -p deepagent-app-core --offline -j 1` 退出0；`git diff --check` 退出0。根 `cargo fmt --all -- --check` 仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；严格 AppCore Clippy 仍被未修改基线阻断（首个为 `crates/deepagent-models/src/client.rs:355`，另有 runtime/AppCore 既有 lint），放宽这些既有 lint 后本轮相关 crate Clippy 退出0。
 - **E-H283-07（范围与限制）**：限 Windows 本机、临时 SQLite/合成文件与离线模型 transport；未验真实 DeepSeek、用户仓库/凭据、CLI/SDK/Desktop/前端、其他 OS、磁盘重开、全量 workspace、隐藏/敏感后缀与并发配置变更。该修复是 run-scoped `Read` 可见性投影，不宣称完成按路径/内容分类的全局资源策略。
-- **E-H283-08（提交与状态）**：代码、回归测试和探针默认化已提交 `0ab74ee5`（`【fix】统一自动工作区上下文读取权限`），未推送、未创建 PR；没有执行 `cargo clean`，未删除 `target`、日志、用户文件或既有证据。本项剩余 **0**；最新累计 **104 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、172 有效待修复、0 修复中**。下一项准备复核 H-285；剩余工时仍为 **200–400 有效修复与验收小时**历史未逐项校准粗估，有效工作与构建/设备/依赖等待分开计算。
+- **E-H283-08（提交与状态）**：代码、回归测试和探针默认化已提交 `0ab74ee5`（`【fix】统一自动工作区上下文读取权限`），未推送、未创建 PR；没有执行 `cargo clean`，未删除 `target`、日志、用户文件或既有证据。本项剩余 **0**；本项完成时累计 **104 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、172 有效待修复、0 修复中**。下一项准备复核 H-285；剩余工时仍为 **200–400 有效修复与验收小时**历史未逐项校准粗估，有效工作与构建/设备/依赖等待分开计算。
+
+## H-285 Harness 分叉锚点存在性与 SQLite 表示边界（2026-10-31，已修复并验收）
+
+原报告：[H-285：Harness 接受不存在的分叉锚点，超出有符号范围后恢复旧文件却复制完整成功历史](system-harness-audit-2026-10-21.md)。本轮只处理显式 `thread/fork.atSequence` 的真实事件绑定、`u64 → i64` 表示边界和恢复前置顺序；不合并 H-72/H-73/H-74/H-75 的检查点补偿、旧分支身份、投影组或并发栅栏问题。
+
+- **E-H285-01（修前原始探针）**：依据原审计探针执行 `cargo test -p deepagent-cli --offline audit_fork_nonexistent_sequence_does_not_restore_completed_writes -- --ignored --nocapture --test-threads=1`，结果 **0 passed / 1 failed**（预期暴露缺陷）；tail+1、`i64::MAX+1`、`u64::MAX` 均错误成功，后两种恢复旧文件。原始输出保留于 `target/h285-original-probe-20261031.log`。
+- **E-H285-02（根因与实现）**：`EventStore::resolve_branch_sequence` 及 storage fork/rewind 入口现在先校验序号真实存在，再复用 projection boundary；`AppService::restore_checkpoints_after` 使用 `i64::try_from` 后才查询检查点；Harness 将 `CoreError::Invalid` 映射为 `ERR_INVALID_PARAMS (-32602)`。非法位置在恢复文件、创建 child、复制/改写历史前失败，无新增存储链、协议字段、迁移或权限旁路。
+- **E-H285-03（正式探针与正常对照）**：故障探针移除 `ignore` 后 **1 passed / 0 failed**；三种非法边界均 `-32602`、`restored_paths=0`、磁盘仍为 `after-fork-audit`、源历史不变且无新会话。正常 Latest/Tail/Start 对照 **1 passed / 0 failed**，真实尾序号和投影组仍能正确分叉。日志分别为 `target/h285-final-probe-20261031.log` 与 `target/h285-control-final-20261031.log`。
+- **E-H285-04（共享回归）**：`cargo test -p deepagent-persistence --lib event_store::tests:: --offline -j 1 -- --test-threads=1` 为 **27 passed / 0 failed**；`cargo test -p deepagent-session --lib projection_boundary_tests --offline -j 1 -- --test-threads=1` 为 **6 passed / 0 failed**；AppCore `service::tests::` 为 **438 passed / 0 failed / 10 ignored**；CLI `app_server::` 默认消费方为 **46 passed / 0 failed / 20 ignored**（含 H-285 默认探针）。
+- **E-H285-05（构建与限制）**：`cargo check -p deepagent-persistence -p deepagent-app-core -p deepagent-cli --offline -j 1` 退出 0；修改文件 rustfmt 与 `git diff --check` 退出 0。根 `cargo fmt --all -- --check` 仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；严格 Clippy 仍被未修改 models/client.rs:355 及既有 AppCore/runtime lint 阻断。验收限 Windows 本机、临时 SQLite/文件和离线 transport；未验真实 DeepSeek、Desktop/Tauri、其他 OS、断电/重开及跨进程并发，H-72/H-73/H-74/H-75 仍独立。
+- **E-H285-06（状态与提交）**：本项代码、回归测试及原审计条目更新提交为 `a57b1307`（`【fix】校验Harness分叉锚点边界`），未推送、未创建 PR；本项剩余 **0**。本轮新增修复 **1**，历史已修复跳过 **21**，归并 **7**，撤销 **2**，有效待修复 **171**；总剩余工时仍沿全局历史粗估 **200–400 有效修复与验收小时**，有效工作与构建/设备/依赖等待分开计算，不提供精确完工承诺。
 
 ## H-21 子 Agent 恢复输出契约（2026-10-31，已修复并验收）
 
@@ -3261,7 +3272,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-282：Git 状态整体 trim 破坏首条未暂存路径，正式模型上下文可把脏工作区报告为 clean](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H282-01～08；保留修前 `1/1` 原始失败证据；不与H-283合并 | `deepagent-workspace` 保留 porcelain NUL 记录并提供共享纯解析器；AppCore GitService 与模型 GitContext 共用结构化状态，脏标志不依赖展示路径截断 | workspace 13/0/0；正式 git_context 2/0/251 filtered；AppCore lib 1376/0/51；workspace/AppCore check、workspace clippy、定向 rustfmt/diff-check 通过 | `c2ed35c4`（`【fix】统一Git状态解析并保留未暂存路径`） | 限Windows本机临时Git/SQLite/离线模型；未验真实供应商、用户仓库、其他OS、完整CLI/SDK/Desktop入口、磁盘重开及所有Git编码/规模异常；本项剩余0 |
 | [H-283：Read deny 只拦工具，自动工作区上下文仍在首次请求发送 README 与清单摘要](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H283-01～08；保留修前 `1/1` 原始失败证据；不与H-237/H-79/H-77合并 | `RunAssembler` 一次解析有效 `PermissionRules`，hook 与 `context_runtime` 共用快照；`WorkspaceScanner` 在 `Read/read_file` 为 deny/ask 时不运行，allow/无规则保持原结构感知 | H-283 正式探针 2/0/251 filtered；AppCore lib 1377/0/51；权限单测1/0；AppCore check通过；严格fmt/Clippy受未修改基线限制，见本项明细 | `0ab74ee5`（`【fix】统一自动工作区上下文读取权限`） | 限Windows本机临时SQLite/文件/离线模型；未验真实供应商、CLI/SDK/Desktop/其他OS、磁盘重开、全量workspace及路径分类策略；本项剩余0，下一H-285 |
 | [H-284：同一 Harness thread 的第二个 `turn/start` 被确认成独立 started，实际输入租约随后取消第一个运行](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H284-01原失败、03～05候选/身份失败及07中断证据保留；非重复/归并，限06～08本机范围 | 原临界区、准入前按SessionId等价身份拒绝忙态start为-32005；沿原worker生命周期，无第二队列/store；显式steer不变 | 默认原探针+7回归通过；CLI120/0/22、协议12/0/0、SDK lib5/0/12+OS6/0/0+doc1/0/0、TS7/0/0及fmt/build通过；完整workspace3608/1既有H-306/312 ignored，严格lint旧基线阻断见E-H284-08 | `844c7ea723d352bd04bb3b9e681232c648ab6f5e` | 仅同一ServerState；非跨进程排他或跨终态幂等；其他OS/UI/供应商/强杀/压力未验；H-130/H-92独立；下一P1 H-175；200–400有效小时历史未校准粗估，等待另计 |
-| [H-285：Harness 接受不存在的分叉锚点，超出有符号范围后恢复旧文件却复制完整成功历史](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-285：Harness 接受不存在的分叉锚点，超出有符号范围后恢复旧文件却复制完整成功历史](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H285-01～06；保留修前失败与最终默认探针；不与H-72/H-73/H-74/H-75合并 | EventStore 统一校验真实事件锚点，fork/rewind 复用边界；AppService 对检查点 SQL 游标使用 checked `u64→i64`；Harness 无副作用前返回 `-32602` | persistence27/0、session projection6/0、AppCore service438/0/10 ignored、CLI app_server46/0/20 ignored；相关 check通过；根fmt/严格Clippy受既有基线阻断，详见本节与原报告 | `a57b1307`（`【fix】校验Harness分叉锚点边界`） | Windows 本机临时SQLite/文件/离线transport；未验真实供应商、Desktop/其他OS、断电重开/跨进程；本项剩余0，H-72/H-73/H-74/H-75仍独立 |
 | [H-286：`move_path` 覆盖目标前先递归删除，移到源的祖先目录时失败却删除源和无关文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 原正式探针修复前 1 passed / 1 failed；修复后默认 2 passed | 原生 no-replace 发布；旧目标 staging/失败恢复；失败恢复保留 recovery_path | 详见本文件 H-286 命令表：builtins 292 passed/1 ignored，AppCore 正式链 102 passed/92 ignored；全量/lint 限制保留 | `56b9e7b9` | Windows 本机范围验收；其他 OS、真实跨卷/断电/UI 未验，不等于全局通过；本项本地剩余工时 0，环境验收另计 |
 | [H-287：Windows 内容原子替换丢失目标文件 DACL，成功编辑及检查点恢复均未保留原访问控制策略](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H287-01～15保留原失败及候选反例；仅Windows本机临时数据范围 | 共享版本化DACL快照；写前保护；现有检查点树复制/根发布/继承核验与失败补偿，不另造恢复中心 | 最终默认Kernel161/0/78、checkpoint19/0/1；builtins362/0/4、persistence92/0/0、runtime332/0/9；checkpoint显式20/0/0；persistence/builtins严格lint、Tauri check通过；全仓3680/1/308仅既有H-306失败，严格lint既有clone阻断，见E-14 | `f2efc1b5659589aeff06ea357babf8eb8d933a7b` | 旧Windows检查点缺DACL元数据明确拒绝存在项恢复；无SQL迁移，owner/SACL/其他OS/断电未验；211有效待修，总200–400未校准有效小时，等待另计 |
 | [H-288：计划模式只存在服务内存，恢复同一会话后静默失去写入限制](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H288-01～11保留原失败与候选反例；仅Windows本机离线/受控组件范围 | 原会话源版本化模式投影，统一生产读写与每次工具准入，unknown/失败不默认退出；无第二运行或store | 默认正式5/0/0、持久化7/0/0、前端完整build/合成三态UI、Tauri check及core/persistence/builtins严格lint通过；最终全仓3694/1/307仅既有H-306失败；AppCore/全局lint和独立Tauri fmt既有基线见E-06～09 | `02224769d4327bb9585545ed47e555bab83a35c8` | 旧会话未知需显式选择，Rust API改Result而成功wire不变；无SQL迁移；长会话性能/真实进程重启/完整窗口/其他OS未验；210有效未关闭，总200–400未校准有效小时，等待另计 |
