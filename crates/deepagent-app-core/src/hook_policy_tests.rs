@@ -111,6 +111,9 @@ async fn assembled_read(
     let assembled = assemble_run_hooks(HookAssemblyRequest {
         settings: &settings,
         run_config: &overlay,
+        permission_rules: overlay
+            .merged_permission_rules(settings.permission_rules().unwrap())
+            .unwrap(),
         project_hooks: None,
         plugin_projection: None,
         root: &root,

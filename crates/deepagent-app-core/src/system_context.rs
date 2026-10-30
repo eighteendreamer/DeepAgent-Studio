@@ -5,6 +5,7 @@ use deepagent_context::{
     HeuristicTokenizer, TokenCounter,
 };
 use deepagent_core::message::Message;
+use deepagent_hooks::{PermissionRules, RuleDecision};
 use deepagent_models::ToolSchema;
 
 use crate::settings::SandboxMode;
@@ -21,6 +22,7 @@ pub const SYSTEM_PROMPT_DYNAMIC_BOUNDARY: &str =
 /// The single assembly entry for the system prompt; the named block parameters
 /// make the cacheable/dynamic split explicit rather than hiding it behind a
 /// struct the callers would have to re-derive.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_system_manifest(
     root: &Path,
@@ -32,6 +34,37 @@ pub(crate) fn build_system_manifest(
     skill_catalog_blocks: Vec<String>,
     prompt_budget: usize,
     user_language: Option<&str>,
+) -> ContextManifest {
+    build_system_manifest_with_permissions(
+        root,
+        sandbox_mode,
+        output_style_block,
+        plugin_output_style_block,
+        tool_catalog_block,
+        mcp_instructions_block,
+        skill_catalog_blocks,
+        prompt_budget,
+        user_language,
+        None,
+    )
+}
+
+/// Build the system manifest while applying the run's effective file-read
+/// policy to automatic workspace enrichment. Tool-level permission hooks run
+/// later, but a scanner must not read a file into model-visible context when
+/// the same effective policy denies or asks for `Read`/`read_file`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_system_manifest_with_permissions(
+    root: &Path,
+    sandbox_mode: SandboxMode,
+    output_style_block: Option<String>,
+    plugin_output_style_block: Option<String>,
+    tool_catalog_block: Option<String>,
+    mcp_instructions_block: Option<String>,
+    skill_catalog_blocks: Vec<String>,
+    prompt_budget: usize,
+    user_language: Option<&str>,
+    permission_rules: Option<&PermissionRules>,
 ) -> ContextManifest {
     let today = current_date_string();
     let os = std::env::consts::OS;
@@ -102,17 +135,19 @@ pub(crate) fn build_system_manifest(
     // `target`/`node_modules`/dot-dirs and is bounded (depth 4 / 200 entries),
     // so it stays cheap even in large repos. Scan failures are non-fatal
     // (skip the block) — it is context enrichment, never required.
-    if let Ok(snapshot) = deepagent_workspace::WorkspaceScanner::default().scan(root) {
-        let block = snapshot.to_context_block();
-        if !block.trim().is_empty() {
-            assembler = assembler.push(
-                ContextSourceKind::RuntimeEnvironment,
-                "deepagent.workspace_structure",
-                880,
-                false,
-                false,
-                block,
-            );
+    if workspace_scan_allowed(permission_rules) {
+        if let Ok(snapshot) = deepagent_workspace::WorkspaceScanner::default().scan(root) {
+            let block = snapshot.to_context_block();
+            if !block.trim().is_empty() {
+                assembler = assembler.push(
+                    ContextSourceKind::RuntimeEnvironment,
+                    "deepagent.workspace_structure",
+                    880,
+                    false,
+                    false,
+                    block,
+                );
+            }
         }
     }
 
@@ -173,6 +208,14 @@ pub(crate) fn build_system_manifest(
     }
 
     assembler.assemble(&HeuristicTokenizer::new(), prompt_budget)
+}
+
+fn workspace_scan_allowed(permission_rules: Option<&PermissionRules>) -> bool {
+    !matches!(
+        permission_rules
+            .and_then(|rules| { rules.evaluate("read_file", &serde_json::Value::Null) }),
+        Some(RuleDecision::Deny | RuleDecision::Ask)
+    )
 }
 
 pub(crate) fn build_context_pack_snapshot(
@@ -683,5 +726,17 @@ mod tests {
             .iter()
             .any(|e| e.source == ContextSourceKind::SkillCatalog));
         assert!(manifest.dropped_origins.is_empty());
+    }
+
+    #[test]
+    fn workspace_scan_treats_read_ask_and_deny_as_not_visible() {
+        let denied = PermissionRules::new([], [], ["Read".to_string()]);
+        let asked = PermissionRules::new([], ["read_file".to_string()], []);
+        let allowed = PermissionRules::new(["Read".to_string()], [], []);
+
+        assert!(!workspace_scan_allowed(Some(&denied)));
+        assert!(!workspace_scan_allowed(Some(&asked)));
+        assert!(workspace_scan_allowed(Some(&allowed)));
+        assert!(workspace_scan_allowed(None));
     }
 }

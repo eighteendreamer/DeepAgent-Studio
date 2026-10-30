@@ -12,7 +12,9 @@ use deepagent_core::event::{Event, EventPayload};
 use deepagent_core::id::SessionId;
 use deepagent_core::message::Message;
 use deepagent_core::response_item::ResponseInputItem;
-use deepagent_hooks::{HookContext, HookData, HookOutcome, HookPoint, HookRegistry};
+use deepagent_hooks::{
+    HookContext, HookData, HookOutcome, HookPoint, HookRegistry, PermissionRules,
+};
 use deepagent_models::{ModelClient, ToolSchema};
 use deepagent_persistence::Database;
 use deepagent_runtime::{
@@ -25,7 +27,7 @@ use crate::plugin_runtime::{PluginOutputStyleEntry, PluginRuntimeProjection};
 use crate::settings::{SandboxMode, SettingsService};
 use crate::skill_catalog_reminder::SkillCatalogSendState;
 use crate::skills_service::SkillsService;
-use crate::system_context::{build_context_pack_snapshot, build_system_manifest};
+use crate::system_context::{build_context_pack_snapshot, build_system_manifest_with_permissions};
 use crate::tool_manifest::{deferred_tools_announcement, ToolManifest};
 
 pub(crate) type RemoteContextFuture = Pin<Box<dyn Future<Output = Result<Option<String>>> + Send>>;
@@ -1400,6 +1402,7 @@ fn compaction_reinjection_block_from_items(compacted_zone: &[ResponseInputItem])
 pub(crate) struct RunContextRequest<'a> {
     pub(crate) root: &'a Path,
     pub(crate) sandbox_mode: SandboxMode,
+    pub(crate) permission_rules: &'a PermissionRules,
     pub(crate) plugin_projection: Option<&'a PluginRuntimeProjection>,
     /// Aggregated MCP server instructions, surfaced as `McpCatalog` context.
     /// This is the full-block fallback: when per-session delta mode is disabled
@@ -1468,7 +1471,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         }
     });
 
-    let system_manifest = build_system_manifest(
+    let system_manifest = build_system_manifest_with_permissions(
         request.root,
         request.sandbox_mode,
         output_style_block,
@@ -1478,6 +1481,7 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
         skill_catalog_blocks,
         request.context_policy.prompt_budget,
         user_language.as_deref(),
+        Some(request.permission_rules),
     );
     let system_prompt = system_manifest.render();
 

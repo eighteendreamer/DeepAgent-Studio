@@ -443,6 +443,10 @@ impl<'a> RunAssembler<'a> {
                 .map(|registry| registry.default_kind()),
             &run_id,
         )?;
+        // Resolve the same effective permission snapshot used by the tool
+        // hooks before any automatic workspace context is assembled.
+        let effective_permission_rules =
+            run_config.merged_permission_rules(self.settings.permission_rules()?)?;
 
         // Resolve the backend once for this run.  The returned executor is
         // immutable and is shared by the parent and its sub-agent registries;
@@ -755,6 +759,7 @@ impl<'a> RunAssembler<'a> {
         let hooks = assemble_run_hooks(HookAssemblyRequest {
             settings: self.settings,
             run_config: &run_config,
+            permission_rules: effective_permission_rules.clone(),
             project_hooks,
             plugin_projection: plugin_projection.as_ref(),
             root: &root,
@@ -1007,6 +1012,7 @@ impl<'a> RunAssembler<'a> {
         let run_context_request = RunContextRequest {
             root: &root,
             sandbox_mode,
+            permission_rules: &effective_permission_rules,
             plugin_projection: plugin_projection.as_ref(),
             mcp_instructions_block: mcp_instructions_block.as_deref(),
             mcp_instructions_entries: Some(&mcp_instructions_entries),

@@ -24,6 +24,7 @@ use crate::settings::SettingsService;
 pub(crate) struct HookAssemblyRequest<'a> {
     pub(crate) settings: &'a SettingsService,
     pub(crate) run_config: &'a RunConfigOverlay,
+    pub(crate) permission_rules: PermissionRules,
     pub(crate) project_hooks: Option<HookDefinitions>,
     pub(crate) plugin_projection: Option<&'a PluginRuntimeProjection>,
     pub(crate) root: &'a Path,
@@ -114,13 +115,10 @@ impl Hook for TrustedProjectHook {
 }
 
 pub(crate) fn assemble_run_hooks(request: HookAssemblyRequest<'_>) -> Result<HookAssemblyResult> {
-    // Multi-source permission rules: UI settings participate as a user-scope
-    // source; every config layer (plugin/user/project/local/run/managed) is
-    // set-unioned with deny > ask > allow enforced across the union, and
-    // managed layers are supreme (deny/ask from below cannot veto a managed
-    // allow, and nothing below can drop a managed deny/ask).
-    let ui_rules = request.settings.permission_rules().unwrap_or_default();
-    let rules = request.run_config.merged_permission_rules(ui_rules)?;
+    // The effective rules are resolved once by the run assembler and shared
+    // with automatic context construction, so hooks and model-visible
+    // enrichment cannot observe different permission snapshots.
+    let rules = request.permission_rules.clone();
 
     // One policy assembly, shared hook objects. Capture it BEFORE adding any
     // lifecycle extensions: installing those in an agent-hook would recurse.

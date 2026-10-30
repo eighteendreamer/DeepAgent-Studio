@@ -217,9 +217,6 @@ async fn workspace_context_policy_allowed_and_nonpreloaded_controls() {
 }
 
 #[tokio::test]
-// Desired resource-visibility invariant for H-283, not an assertion that the
-// current tool-only PermissionRules contract promises global file secrecy.
-#[ignore = "audit: Read-denied file content must not be disclosed by automatic workspace enrichment"]
 async fn audit_automatic_workspace_context_respects_effective_read_denial() {
     let mut leaked = Vec::new();
     for case in [FileCase::Readme, FileCase::Package] {
