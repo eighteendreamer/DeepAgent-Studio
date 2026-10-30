@@ -137,7 +137,7 @@
 | Harness 分叉锚点资格与检查点数值边界 | 正式模型工具循环实际读取/写入临时文件并完成；不存在的 tail+1 仍成功复制全部历史；`i64::MAX+1`/`u64::MAX` 额外把文件恢复到旧内容，而 child 仍保留完整成功写入历史 | 新增 H-285（P2，显式非法序号条件）；默认/真实 tail/起点三项对照通过；正式 dispatcher/AppCore/Kernel/CheckpointManager、文件 SQLite、离线模型，无用户文件或公网 |
 | Git 事实在 UI 与模型上下文的投影 | 临时真实 Git 仓库的修改/删除被模型上下文误报 clean，长路径首字节丢失；同一 GitService 正确列出路径，三类正常控制通过 | 新增 H-282（P3）；正式 ChatService/Kernel/ModelClient 请求及内存 run_events，无模型真实决策、用户文件覆盖或磁盘重开验证 |
 | MCP 初始化结果与 Ready 发布门槛 | 六类不完整/错误版本的initialize成功结果经真实stdio，设置页probe与宿主均connected；工具进入正式Responses schema并实际调用，结果进入下一wire | 新增 H-277（P2，条件性协议兼容/诊断缺口）；完整握手和显式JSON-RPC错误两类对照通过；不重复H-07/H-08，不推断线上服务必定返回异常握手 |
-| MCP hook 决策正文与展示截断 | 真实 stdio 服务返回完整合法拒绝 JSON，100/8192 字符阻止写入；8193/10000 字符及8193字符中文拒绝均变 continued，临时文件实际写入，下一模型 wire 为成功工具结果 | 新增 H-276（P2，条件性策略失效）；正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 MCP 与文件工具；离线模型，不外推默认无 hook 聊天 |
+| MCP hook 决策正文与展示截断 | 修前真实 stdio 服务的8193/10000字符及8193字符中文拒绝因展示截断而 continued 并写入；修后完整拒绝均 blocked、文件未写入，短/精确边界与长允许对照保持正常 | H-276（P2）已修复并验收；正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 MCP 与文件工具；离线模型，不外推默认无 hook 聊天 |
 | MCP hook 的发现 schema 与执行契约 | 同一严格工具的缺必填、非法枚举、多余字段，正常 ToolRegistry 路径均在 transport 前拒绝；正式设置页 hook 测试入口经配置解析、注册、PreToolUse 派发后却逐项 continued、各发送1次 tools/call | 新增 H-275（P3）；合法静态参数与既有拒绝决策对照通过；内存 transport，不外推真实 server 副作用或全部模型 MCP 调用 |
 | 定时调度的日历可满足性与故障隔离 | 正常 cron_create 接受 2 月/4 月 31 日，正式 Runtime tick 与实际时钟 AppCore tick 均 panic；文件不变，重建 scheduler 仍 panic，删除坏计划后健康任务可派发 | 新增 H-271（P2）；正常月末、闰日对照通过；未运行完整桌面或 release 构建 |
 | 摘要正文与草稿控制标记的边界 | 两正文经 JSON 解码完全等价，字面 analysis 标签组丢失片段、Unicode 转义组保留；下一 wire 和文件重开结果一致 | 新增 H-269（P3）；另有其他标签和真正前置草稿对照，不外推所有摘要或所有私有草稿处理 |
@@ -9693,7 +9693,7 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 
 ### H-276：MCP hook 在解析前截断完整拒绝 JSON，超过展示上限后静默放行真实写入
 
-**级别：中（P2，已启用 MCP 校验 hook 的条件性策略失效）；状态：正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 Node stdio 服务与 write_file 已复现，未修复。不是所有 hook 或默认聊天均放行，也不是文件权限/沙箱全面失效。**
+**级别：中（P2，已启用 MCP 校验 hook 的条件性策略失效）；状态：已修复并验收（2026-10-31，仅限所列 Windows 本机、离线模型与真实 Node stdio/临时文件范围）。** 修前正式 SettingsService/ChatService/Kernel、文件 SQLite、真实 Node stdio 服务与 write_file 的失败证据保留；不是所有 hook 或默认聊天均放行，也不是文件权限/沙箱全面失效。
 
 #### 首次即时 Evidence（2026-10-25）
 
@@ -9724,7 +9724,16 @@ E-H260-09（独立提交回填，2026-10-29）：修复提交`0ba0f611a4496e4385
 - `cargo clippy -p deepagent-app-core --test kernel_v2_e2e --offline -- -D warnings`未通过：未修改的`models/src/client.rs:355` clone_on_copy及`persistence/src/run_store.rs:127` explicit_counter_loop阻断；相应文件diff为空，不把它们作为本轮新缺陷或宣称lint通过。随后补充恰好8192字符中文的正常拒绝对照，以区分字符上限与字节上限，最终结果继续追加。
 - 增补中文边界后，同一显式故障命令最终 **2 passed / 1 failed（缺陷预期），2.92s**。恰好8192字符中文、24528 UTF-8字节正常blocked且未写文件；8193字符中文、24531字节仍continued并写入。三个长拒绝故障样本观察一致，正常样本共五组，确认是8192字符截断而非8192字节传输限制。Node实际版本v22.22.1。
 - 最终文件版本重跑 `cargo test -p deepagent-app-core --test kernel_v2_e2e --offline --quiet`：**88 passed / 84 ignored，10.09s**；`cargo fmt --all -- --check`和`git diff --check`通过（仅Git的Windows行尾提示）。只读进程核查 `active_decision_size_mcp_fixture_processes=0`，测试服务已关闭；所有故障断言均在资源收尾后执行，没有遗留服务继续操作。
-- 本轮仅新增测试模块、模块入口和本报告；未改生产逻辑、公共协议、模型参数、权限或沙箱配置，不需要数据迁移。按code-audit技能核查完整输入→解析→控制决定→真实文件与下一wire的可达性，没有运行Semgrep/CodeQL全仓扫描或以搜索结果代替复现。未运行完整workspace、Desktop build/UI、参考工程完整测试、真实DeepSeek计费/缓存或外部MCP服务；未覆盖HTTP、多content、ask及多个并发hook，未处理用户排除的encrypted-content问题。全系统审计仍未结束。
+- 初轮登记阶段仅新增测试模块、模块入口和本报告，未改生产逻辑；以下修复阶段新增的生产改动仅限 MCP hook 控制解析边界。按code-audit技能核查完整输入→解析→控制决定→真实文件与下一wire的可达性，没有运行Semgrep/CodeQL全仓扫描或以搜索结果代替复现。未运行完整workspace、Desktop build/UI、参考工程完整测试、真实DeepSeek计费/缓存或外部MCP服务；未覆盖HTTP、多content、ask及多个并发hook，未处理用户排除的encrypted-content问题。全系统审计仍未结束。
+
+#### 修复与正式验收（2026-10-31）
+
+- **E-H276-01（修前证据保留）：** 将原故障探针从 `ignore` 移除后，`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_hook_decision_size --offline -- --nocapture --test-threads=1` 为 **2 passed / 1 failed / 0 ignored**；8193/10000字符 ASCII 与8193字符中文的完整合法 `ok=false` 均为 `continued`、目标文件实际写入。原始正文保留于 `target/h276-original-probe-20261031.log`。
+- **E-H276-02（根因修复）：** `AppHookActionExecutor::execute_mcp` 现在保留 `ToolCallResult::text()` 的完整字符串供 `parse_structured_hook_output` 解析；`bounded_hook_text(..., 8192)` 只用于 `is_error` 的错误详情预览，不再把展示截断结果作为控制协议输入。没有新增协议字段、依赖、权限/审批/取消链、SQL迁移或第二套解析器。
+- **E-H276-03（正式回归）：** 同一命令修后为 **3 passed / 0 failed / 0 ignored**；8193/10000字符 ASCII 与8193字符中文拒绝均为 `blocked`、文件未创建、工具结果为 `hook_denied`；100/8192字符拒绝与100/8193字符允许对照保持原有 `blocked`/`continued` 语义。最终正文保留于 `target/h276-final-probe-20261031.log`。
+- **E-H276-04（消费方与门禁）：** `cargo test -p deepagent-app-core --lib --offline -j 2 -- --test-threads=1` 为 **1376 passed / 0 failed / 51 ignored**；`cargo test -p deepagent-hooks --lib --offline -- --test-threads=1` 为 **67 passed / 0 failed / 0 ignored**；`cargo check -p deepagent-app-core --offline -j 2` 退出0。改动文件 `rustfmt --edition 2021 --check` 与 `git diff --check` 退出0。根 `cargo fmt --all -- --check` 仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；定向 AppCore 严格 Clippy 仍先被未修改 `crates/deepagent-models/src/client.rs:355` 的 `clone_on_copy` 阻断，无本轮文件诊断。
+- **E-H276-05（范围与限制）：** 验收限 Windows 本机、离线主模型、临时 SQLite、真实 Node v22.22.1 stdio MCP 与临时目标文件；未验真实外部 MCP/HTTP、其他 OS、完整 workspace、Desktop/Tauri/UI、真实供应商、长时并发、多 content、Ask/Modify 或真实用户数据/副作用。没有执行 `cargo clean`，未删除用户文件或既有证据。
+- **E-H276-06（独立提交）：** 代码与默认回归已提交为 `25e83ffa`（`【fix】分离MCP hook控制解析与展示截断`），未推送、未创建 PR；本报告与修复进度台账在取得 fix hash 后另做正常 docs 回填，不 amend。
 
 ### H-277：MCP initialize 结果未校验，缺失必填字段或协商不支持版本仍发布 Ready 并执行工具
 

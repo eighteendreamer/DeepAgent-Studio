@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-31）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零一项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 100 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 101 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-58、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-284、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前无进行中的独立项 |
-| 待修复 | 176 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 175 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **176（176待修复、0修复中）**；不提供完成率。一百项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **175（175待修复、0修复中）**；不提供完成率。一百零一项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
 
 ## H-275 MCP hook 参数 schema 执行边界（2026-10-31，已修复并验收）
 
@@ -31,6 +31,20 @@ E-H275-04（共享入口回归）：`cargo test -p deepagent-mcp --lib --offline
 E-H275-05（AppCore 与构建门禁）：`cargo test -p deepagent-app-core --lib --offline -j 2 -- --test-threads=1` 为 **1376 passed / 0 failed / 51 ignored**；`cargo check -p deepagent-tools -p deepagent-mcp -p deepagent-app-core --offline -j 2` 退出 0；Tools/MCP 严格 Clippy 退出 0；改动文件定向 rustfmt 与 `git diff --check` 退出 0。根格式和 AppCore 严格 Clippy 的既有未修改基线失败另见审计 E-H275-06。
 
 E-H275-06（范围与提交）：仅覆盖 Windows 本机、离线测试和内存 recording MCP；未验真实外部 MCP/stdio/HTTP、供应商、其他 OS、长时并发或真实副作用。代码与测试已提交于 `f9666b5f`（`【fix】统一MCP工具参数schema校验边界`）；本台账在 fix commit 后另做正常 docs 回填，不推送、不创建 PR。
+
+## H-276 MCP hook 决策正文与展示截断（2026-10-31，已修复并验收）
+
+E-H276-01（修前原始探针）：移除故障探针 `ignore` 后，`cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_hook_decision_size --offline -- --nocapture --test-threads=1` 为 **2 passed / 1 failed / 0 ignored**；8193/10000 字符 ASCII 与8193字符中文的完整合法拒绝均为 `continued`、目标文件实际写入。原始正文保留在 `target/h276-original-probe-20261031.log`。
+
+E-H276-02（根因与实现）：`AppHookActionExecutor::execute_mcp` 原本先把完整 MCP 文本截成8192字符，再解析截断值；本轮改为保留 `ToolCallResult::text()` 完整字符串供 `parse_structured_hook_output` 解析，`bounded_hook_text(..., 8192)` 仅用于 `is_error` 错误详情预览。没有新增解析器、协议字段、依赖、权限/审批/取消链或 SQL 迁移。
+
+E-H276-03（正式 hook 回归）：同一命令修后为 **3 passed / 0 failed / 0 ignored**；8193/10000 字符 ASCII 与8193字符中文拒绝均为 `blocked`、文件未创建、工具结果为 `hook_denied`；100/8192字符拒绝与100/8193字符允许对照保持正常 `blocked`/`continued`。最终正文保留在 `target/h276-final-probe-20261031.log`。
+
+E-H276-04（消费方与构建门禁）：AppCore lib **1376 passed / 0 failed / 51 ignored**；Hooks lib **67 passed / 0 failed / 0 ignored**；`cargo check -p deepagent-app-core --offline -j 2` 退出0；改动文件定向 rustfmt 与 `git diff --check` 退出0。根格式仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；定向 AppCore 严格 Clippy 仍被未修改 `crates/deepagent-models/src/client.rs:355` 的 `clone_on_copy` 阻断，无本轮文件诊断。
+
+E-H276-05（范围与限制）：仅覆盖 Windows 本机、离线主模型、临时 SQLite、真实 Node v22.22.1 stdio MCP 与临时目标文件；未验真实外部 MCP/HTTP、其他 OS、完整 workspace、Desktop/Tauri/UI、真实供应商、长时并发、多 content、Ask/Modify 或真实用户数据/副作用。没有执行 `cargo clean`，未删除用户文件或既有证据。
+
+E-H276-06（范围与提交）：代码与默认回归已提交于 `25e83ffa`（`【fix】分离MCP hook控制解析与展示截断`）；本台账在 fix commit 后另做正常 docs 回填，不推送、不创建 PR。本项剩余0，下一项 H-277。
 
 ## H-21 子 Agent 恢复输出契约（2026-10-31，已修复并验收）
 
@@ -3192,7 +3206,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-273：Responses cached_tokens 超过 input_tokens 仍被接受并按低价记账](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H273-02～07；原失败证据 E-H273-usage 保留；H-274 独立不合并 | Responses adapter 在 Usage 进入 Runtime/CostService 前按原始值拒绝 `cached_tokens > input_tokens`，沿现有错误终态，不在账本层 clamp 或猜测；无迁移/新账本/协议变化 | Models stream 24/0/0、Models lib 97/0/21、H-273 正式 1/0/0、usage_contract 默认 4/0/1、相关 check 通过；根 fmt/clippy 被未改基线阻断，H-274 显式 ignored 仍预期失败 | `7ab31dd7`（`【fix】拒绝Responses矛盾缓存用量`） | 限 Windows 本机、离线 Responses fixture、临时 SQLite/合成报价；未验真实供应商/账单、其他 OS、H-274 宽度及其他 usage 关系；本项剩余0，当前177有效待修，总200–400有效小时仍为历史未校准粗估，等待另计 |
 | [H-274：Responses token 计数超过宿主 u32 宽度后静默截断，账本可被压成零](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H274-02～07；原始超宽截断证据 E-H274-width 保留；H-273 的字段关系检查独立不合并 | Responses adapter 对五类 provider usage 计数使用 checked `u64 -> u32` 转换，超界/非法整数在 Usage 发布前拒绝，沿现有失败终态；不改变内部 Usage 宽度、不在 CostService 修正 | Models lib 99/0/21；H-274 正式 1/0/0；usage_contract 5/0/0；相关 check 通过；根 fmt/clippy 受未改基线阻断 | `99dc83c0`（`【fix】拒绝Responses超宽用量计数`） | 限 Windows 本机、离线 Responses fixture、临时 SQLite/合成报价；未验真实供应商/账单、其他 OS、强杀/断电、并发压力及其他 usage 关系；本项剩余0，当前177有效待修，总200–400有效小时仍为历史未校准粗估，等待另计 |
 | [H-275：MCP hook 直接调用绕过 discovered inputSchema，非法参数仍发送到工具](system-harness-audit-2026-10-21.md) | P3 | 已修复并验收 | E-H275-01～06；保留修前 `continued/1` 原始失败证据；无归并 | 在既有 `deepagent-tools` schema compiler 上提取共享参数校验，`McpRegistry::invoke*` 在查到绑定的 `RemoteTool.input_schema` 后、`McpClient::call_tool*` 前校验最终参数；覆盖 hook 注入 `hook_input`，不改权限/审批/取消 | 原始探针修前 2/1，修后默认 H-275 3/0；MCP lib 104/0/2、Tools lib 30/0/0；相关 check/定向 rustfmt/git diff --check 见 E-H275-05～06 | `f9666b5f`（`【fix】统一MCP工具参数schema校验边界`） | 限 Windows 本机、内存 recording MCP 与离线测试；未验真实外部 MCP/供应商、其他 OS、HTTP/stdio 副作用及长时并发；本项剩余0，总176有效待修，200–400有效小时仍为历史未逐项校准粗估，等待另计 |
-| [H-276：MCP hook 在解析前截断完整拒绝 JSON，超过展示上限后静默放行真实写入](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-276：MCP hook 在解析前截断完整拒绝 JSON，超过展示上限后静默放行真实写入](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H276-01～06；保留修前 `continued/写入` 原始失败证据；无归并 | `AppHookActionExecutor::execute_mcp` 对完整 MCP 文本解析控制协议，展示上限只作用于错误详情预览；不再让截断破坏 JSON 后 `unwrap_or(Continue)` 放行 | 修前 2/1，修后正式 3/0；AppCore lib 1376/0/51、Hooks lib 67/0/0、AppCore check 通过；根 fmt/严格 Clippy 的既有基线失败见 E-H276-04 | `25e83ffa`（`【fix】分离MCP hook控制解析与展示截断`） | 限 Windows 本机、离线模型、真实 Node stdio 与临时文件；未验真实外部 MCP/HTTP、其他 OS、完整 workspace、Desktop/Tauri/UI、长时并发及真实副作用；本项剩余0，总175有效待修，200–400有效小时仍为历史未逐项校准粗估，等待另计 |
 | [H-277：MCP initialize 结果未校验，缺失必填字段或协商不支持版本仍发布 Ready 并执行工具](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-278：MCP 未知结果重放的真实进程补强（归 H-06）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-06 | 只关联原证据，不新增修复任务 | 验收由 H-06 统一记录 | 无独立修复提交 | 不独立计数或估时 |
 | [H-279：junction 物理路径边界重复登记（归 H-78）](system-harness-audit-2026-10-21.md) | — | 归并 | 唯一有效项 H-78 | 只关联原证据，不新增修复任务 | 验收由 H-78 统一记录 | 无独立修复提交 | 不独立计数或估时 |
