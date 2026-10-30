@@ -1976,35 +1976,24 @@ fn parse_status_z(
     output: &str,
     stats: &HashMap<String, Option<(u32, u32)>>,
 ) -> Vec<GitChangedFileDto> {
-    let mut files = Vec::new();
-    let mut entries = output.split('\0').filter(|s| !s.is_empty()).peekable();
-    while let Some(entry) = entries.next() {
-        if entry.len() < 4 {
-            continue;
-        }
-        let xy = &entry[..2];
-        let path = entry[3..].to_string();
-        let mut old_path = None;
-        if xy.contains('R') || xy.contains('C') {
-            if let Some(next) = entries.peek().copied() {
-                old_path = Some(next.to_string());
-                entries.next();
+    deepagent_workspace::parse_git_status_porcelain_z(output)
+        .entries
+        .into_iter()
+        .map(|entry| {
+            let counts = stats.get(&entry.path).copied().flatten();
+            let (additions, deletions) = counts.unwrap_or((0, 0));
+            let line_stats_available = counts.is_some();
+            GitChangedFileDto {
+                path: entry.path,
+                old_path: entry.old_path,
+                status: entry.status.clone(),
+                category: status_category(&entry.status).to_string(),
+                additions,
+                deletions,
+                line_stats_available,
             }
-        }
-        let counts = stats.get(&path).copied().flatten();
-        let (additions, deletions) = counts.unwrap_or((0, 0));
-        let line_stats_available = counts.is_some();
-        files.push(GitChangedFileDto {
-            path,
-            old_path,
-            status: xy.to_string(),
-            category: status_category(xy).to_string(),
-            additions,
-            deletions,
-            line_stats_available,
-        });
-    }
-    files
+        })
+        .collect()
 }
 
 fn status_category(xy: &str) -> &'static str {

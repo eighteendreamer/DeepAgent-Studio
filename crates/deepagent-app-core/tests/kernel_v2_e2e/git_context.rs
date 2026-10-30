@@ -201,7 +201,6 @@ async fn git_context_clean_untracked_and_staged_controls_match_wire() {
 }
 
 #[tokio::test]
-#[ignore = "audit: trimming porcelain output must not corrupt the first unstaged path or mark it clean"]
 async fn audit_unstaged_git_context_preserves_dirty_state_and_paths_on_wire() {
     let mut mismatches = Vec::new();
     for (change, relative) in [
