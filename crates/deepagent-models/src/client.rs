@@ -466,6 +466,7 @@ fn log_response_input_pairs(request: &ResponseRequest) {
 }
 
 fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletionRequest> {
+    crate::responses::validate_tool_call_ids(&request.input)?;
     if request.top_logprobs.is_some() {
         return Err(deepagent_core::error::CoreError::invalid(
             "top_logprobs is not supported by DeepSeek Chat Completions",
@@ -501,6 +502,10 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
     chat.attachment_data_urls = request.attachment_data_urls;
     Ok(chat)
 }
+
+#[cfg(test)]
+#[path = "client_input_identity_tests.rs"]
+mod input_identity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -835,7 +840,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: Responses call ids must be non-empty before transport"]
     async fn audit_responses_call_ids_are_validated_before_transport() {
         struct CountingTransport {
             calls: Arc<AtomicUsize>,

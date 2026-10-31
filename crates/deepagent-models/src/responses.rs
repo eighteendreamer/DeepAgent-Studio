@@ -9,6 +9,33 @@ use deepagent_core::message::{Message, Role};
 pub use deepagent_core::response_item::{ResponseInputItem, ResponseItem, ResponseOutputItem};
 use std::collections::HashSet;
 
+/// Check the repaired/native history at dispatch, including public input edits.
+/// A blank id cannot safely associate an already-executed call with its output;
+/// never repair it by inventing an identity or disclosing history in the error.
+pub(crate) fn validate_tool_call_ids(
+    items: &[ResponseInputItem],
+) -> deepagent_core::error::Result<()> {
+    for (index, item) in items.iter().enumerate() {
+        let (call_id, kind) = match item {
+            ResponseInputItem::FunctionCall { call_id, .. } => (call_id, "function_call"),
+            ResponseInputItem::FunctionCallOutput { call_id, .. } => {
+                (call_id, "function_call_output")
+            }
+            ResponseInputItem::CustomToolCall { call_id, .. } => (call_id, "custom_tool_call"),
+            ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
+                (call_id, "custom_tool_call_output")
+            }
+            _ => continue,
+        };
+        if call_id.trim().is_empty() {
+            return Err(deepagent_core::error::CoreError::invalid(format!(
+                "Responses input item {index} ({kind}) requires a non-empty call_id"
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Convert the context projection into ordered Responses input items.
 pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Vec<ResponseItem>) {
     let mut instructions = Vec::new();

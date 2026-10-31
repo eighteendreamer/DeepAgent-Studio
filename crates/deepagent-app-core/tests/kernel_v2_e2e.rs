@@ -119,6 +119,9 @@ mod subagent_resume_context;
 #[path = "kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
 
+#[path = "kernel_v2_e2e/input_call_identity.rs"]
+mod input_call_identity;
+
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/prompt_hook_context.rs"]
 mod prompt_hook_context;

@@ -512,6 +512,7 @@ impl ResponseRequest {
             validate_responses_user_identifier(user)?;
         }
         validate_function_tool_schemas(&self.tools)?;
+        crate::responses::validate_tool_call_ids(&self.input)?;
         Ok(())
     }
 }
