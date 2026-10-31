@@ -218,6 +218,16 @@ async fn fixture_with_timeout(event: &'static str, timeout: u64) -> Fixture {
 }
 
 async fn observe(event: &'static str, cancel: bool) -> Observation {
+    observe_with_deferred_poll(event, cancel, false).await
+}
+
+async fn observe_with_deferred_poll(
+    event: &'static str,
+    cancel: bool,
+    defer_hook_poll: bool,
+) -> Observation {
+    use std::future::Future;
+
     let Fixture {
         root,
         db,
@@ -231,9 +241,13 @@ async fn observe(event: &'static str, cancel: bool) -> Observation {
     let responded = root.path().join("responded.json");
     let events = Arc::new(Mutex::new(Vec::new()));
     let captured = events.clone();
+    let hook_started = Arc::new(AtomicBool::new(false));
+    let started_hook = hook_started.clone();
+    let resume_poll = Arc::new(tokio::sync::Notify::new());
+    let resumed = resume_poll.clone();
     let run_chat = chat.clone();
     let mut run = tokio::spawn(async move {
-        run_chat
+        let mut operation = Box::pin(run_chat
             .run_in_session(
                 "Read fixture.txt and reply briefly.",
                 None,
@@ -243,10 +257,33 @@ async fn observe(event: &'static str, cancel: bool) -> Observation {
                 None,
                 false,
                 Some(RUN),
-                move |event| captured.lock().unwrap().push(event),
+                move |runtime_event| {
+                    if matches!(&runtime_event, RuntimeEvent::HookStarted { event: name, .. } if name == event) {
+                        started_hook.store(true, Ordering::Release);
+                    }
+                    captured.lock().unwrap().push(runtime_event);
+                },
                 |_| {},
-            )
-            .await
+            ));
+        if defer_hook_poll {
+            // Park the owning future after its first hook poll, but let the
+            // actual peer consume the frame. Cancellation then wins before
+            // the Windows pipe's flush completion is polled by the owner.
+            loop {
+                let completed =
+                    std::future::poll_fn(|cx| std::task::Poll::Ready(operation.as_mut().poll(cx)))
+                        .await;
+                if let std::task::Poll::Ready(result) = completed {
+                    return result;
+                }
+                if hook_started.load(Ordering::Acquire) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+            resumed.notified().await;
+        }
+        operation.await
     });
     if wait_for_file(&started).await.is_err() {
         let _ = chat.request_cancel(RUN);
@@ -269,10 +306,12 @@ async fn observe(event: &'static str, cancel: bool) -> Observation {
         .is_none());
     let stop_result = if cancel {
         assert!(chat.request_cancel(RUN).unwrap().accepted);
+        resume_poll.notify_one();
         tokio::time::timeout(Duration::from_millis(250), &mut run)
             .await
             .ok()
     } else {
+        resume_poll.notify_one();
         None
     };
     let stopped_before_release = stop_result.is_some();
@@ -395,9 +434,24 @@ async fn released_mcp_hooks_finish_at_all_four_boundaries() {
 
 #[tokio::test]
 async fn audit_mcp_hooks_propagate_cancellation_to_the_stdio_peer() {
+    assert_hook_cancellation(false).await;
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn h236_mcp_hook_cancel_after_peer_receipt_before_owner_repoll() {
+    assert_hook_cancellation(true).await;
+    // A parked owner without cancellation must still finish normally.
+    let normal = observe_with_deferred_poll("UserPromptSubmit", false, true).await;
+    assert!(!normal.cancellation_received);
+    assert!(normal.server_completed_after_release);
+    assert_eq!(normal.parent_requests, 1);
+}
+
+async fn assert_hook_cancellation(defer_hook_poll: bool) {
     let mut observations = Vec::new();
     for event in EVENTS {
-        let observed = observe(event, true).await;
+        let observed = observe_with_deferred_poll(event, true, defer_hook_poll).await;
         let tool_site = matches!(event, "PreToolUse" | "PostToolUse");
         assert_eq!(observed.parent_requests, usize::from(tool_site));
         let read_count = usize::from(event == "PostToolUse");

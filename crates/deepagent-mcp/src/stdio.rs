@@ -32,6 +32,7 @@ use crate::transport::{
 mod windows_job;
 const STDERR_LIMIT: usize = 8 * 1024;
 const MAX_PENDING_REQUESTS: usize = 1024;
+const CANCELLATION_CLEANUP_TIMEOUT: Duration = Duration::from_millis(50);
 
 // Runtime base only, not a heuristic over secret-looking names. Other variables
 // (including proxy/CA configuration) require an explicit config.env entry.
@@ -191,24 +192,16 @@ impl Drop for PendingRequest<'_> {
     }
 }
 
-/// Invocation-local evidence for cancellation, not a peer execution guarantee.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum MessageWriteState {
-    Queued,
-    Writing,
-    Flushed,
-}
-
 /// A partially written JSON line cannot be resumed by another request. Retire
 /// this connection if a write future is dropped before write+flush completes.
 struct MessageWrite<'a> {
     dispatcher: &'a ResponseDispatcher,
-    state: &'a mut MessageWriteState,
+    flushed: bool,
 }
 
 impl Drop for MessageWrite<'_> {
     fn drop(&mut self) {
-        if *self.state == MessageWriteState::Writing {
+        if !self.flushed {
             self.dispatcher
                 .finish("MCP connection lost during message write");
         }
@@ -345,7 +338,23 @@ impl StdioTransport {
         })
     }
 
-    async fn disconnect_error(&self, reason: &str) -> CoreError {
+    async fn disconnect_error(
+        &self,
+        reason: &str,
+        context: Option<&ToolExecutionContext>,
+    ) -> CoreError {
+        let diagnostic = self.collect_disconnect_error(reason);
+        match context {
+            Some(context) => tokio::select! {
+                biased;
+                _ = context.cancelled() => CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME),
+                error = diagnostic => error,
+            },
+            None => diagnostic.await,
+        }
+    }
+
+    async fn collect_disconnect_error(&self, reason: &str) -> CoreError {
         let mut child = self.child.lock().await;
         let status = match child.try_wait() {
             Ok(Some(status)) => Some(status),
@@ -398,9 +407,9 @@ impl StdioTransport {
         .await
     }
 
-    async fn notify_cancelled_bounded(&self, request_id: u64) {
-        match tokio::time::timeout(
-            Duration::from_millis(50),
+    async fn notify_cancelled_bounded(&self, request_id: u64, deadline: tokio::time::Instant) {
+        match tokio::time::timeout_at(
+            deadline,
             self.send_cancelled_notification(request_id, "user requested cancellation"),
         )
         .await
@@ -413,36 +422,79 @@ impl StdioTransport {
         }
     }
 
+    /// Return a cleanup deadline only when cancellation interrupted the flush.
+    /// The same budget must then cover both completing this frame and notifying
+    /// its peer. Never finish an incomplete write_all after cancellation.
     async fn write_message<T: serde::Serialize + Sync>(
         &self,
         message: &T,
-        state: &mut MessageWriteState,
-    ) -> Result<()> {
+        context: Option<&ToolExecutionContext>,
+    ) -> Result<Option<tokio::time::Instant>> {
         let mut line = serde_json::to_string(message)?;
         line.push('\n');
-        let mut stdin = self.stdin.lock().await;
-        self.dispatcher.check_open()?;
-        *state = MessageWriteState::Writing;
-        let write = MessageWrite {
-            dispatcher: &self.dispatcher,
-            state,
+        let cancelled = async {
+            match context {
+                Some(context) => context.cancelled().await,
+                None => std::future::pending::<()>().await,
+            }
         };
-        if let Err(error) = stdin.write_all(line.as_bytes()).await {
+        tokio::pin!(cancelled);
+        let mut stdin = tokio::select! {
+            biased;
+            _ = &mut cancelled => return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH)),
+            stdin = self.stdin.lock() => stdin,
+        };
+        self.dispatcher.check_open()?;
+        if context.is_some_and(ToolExecutionContext::is_cancelled) {
+            return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
+        }
+        let mut write = MessageWrite {
+            dispatcher: &self.dispatcher,
+            flushed: false,
+        };
+        let result = tokio::select! {
+            biased;
+            _ = &mut cancelled => return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME)),
+            result = stdin.write_all(line.as_bytes()) => result,
+        };
+        if let Err(error) = result {
             self.dispatcher
                 .finish("write to MCP server failed; connection lost");
             return Err(self
-                .disconnect_error(&format!("write to MCP server failed: {error}"))
+                .disconnect_error(&format!("write to MCP server failed: {error}"), context)
                 .await);
         }
-        if let Err(error) = stdin.flush().await {
+        let (result, deadline) = {
+            let flush = stdin.flush();
+            tokio::pin!(flush);
+            tokio::select! {
+                biased;
+                _ = &mut cancelled => {
+                    // Windows pipes may have delivered the full frame while
+                    // their blocking flush completion still needs polling.
+                    // Retain this exact future instead of retiring it merely
+                    // because cancellation won the outer select.
+                    let deadline = tokio::time::Instant::now() + CANCELLATION_CLEANUP_TIMEOUT;
+                    match tokio::time::timeout_at(deadline, &mut flush).await {
+                        Ok(result) => (result, Some(deadline)),
+                        Err(_) => {
+                            tracing::debug!("MCP cancellation cleanup timed out during message flush");
+                            return Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME));
+                        }
+                    }
+                }
+                result = &mut flush => (result, None),
+            }
+        };
+        if let Err(error) = result {
             self.dispatcher
                 .finish("flush to MCP server failed; connection lost");
             return Err(self
-                .disconnect_error(&format!("flush to MCP server failed: {error}"))
+                .disconnect_error(&format!("flush to MCP server failed: {error}"), context)
                 .await);
         }
-        *write.state = MessageWriteState::Flushed;
-        Ok(())
+        write.flushed = true;
+        Ok(deadline)
     }
 
     async fn write_notification(
@@ -450,11 +502,9 @@ impl StdioTransport {
         method: &str,
         params: Option<serde_json::Value>,
     ) -> Result<()> {
-        self.write_message(
-            &JsonRpcNotification::new(method, params),
-            &mut MessageWriteState::Queued,
-        )
-        .await
+        self.write_message(&JsonRpcNotification::new(method, params), None)
+            .await
+            .map(|_| ())
     }
 
     async fn send_request(
@@ -482,42 +532,36 @@ impl StdioTransport {
         let (sender, receiver) = oneshot::channel();
         let pending = match self.dispatcher.register(wire_id, sender) {
             Ok(pending) => pending,
-            Err(CoreError::Other(reason)) => return Err(self.disconnect_error(&reason).await),
+            Err(CoreError::Other(reason)) => {
+                return Err(self.disconnect_error(&reason, None).await)
+            }
             Err(error) => return Err(error),
         };
-        let mut write_state = MessageWriteState::Queued;
-        let dispatch = async {
-            self.write_message(&wire_request, &mut write_state).await?;
-            match receiver.await {
-                Ok(Ok(mut response)) => {
-                    response.id = request.id;
-                    Ok(response)
-                }
-                Ok(Err(reason)) => Err(self.disconnect_error(&reason).await),
-                Err(_) => Err(CoreError::other(
-                    "MCP response dispatcher closed the connection",
-                )),
-            }
+        let cleanup_deadline = self.write_message(&wire_request, Some(&context)).await?;
+        let deadline = match cleanup_deadline {
+            Some(deadline) => deadline,
+            None => tokio::select! {
+                biased;
+                _ = context.cancelled() => tokio::time::Instant::now() + CANCELLATION_CLEANUP_TIMEOUT,
+                response = receiver => {
+                    return match response {
+                        Ok(Ok(mut response)) => {
+                            response.id = request.id;
+                            Ok(response)
+                        }
+                        Ok(Err(reason)) => Err(self.disconnect_error(&reason, Some(&context)).await),
+                        Err(_) => Err(CoreError::other(
+                            "MCP response dispatcher closed the connection",
+                        )),
+                    };
+                },
+            },
         };
-        tokio::select! {
-            biased;
-            _ = context.cancelled() => {
-                drop(pending);
-                // A waiter cancelled before acquiring stdin has never issued
-                // its request. Do not send an invalid cancellation for that id
-                // or misreport its outcome as unknown. An incomplete write has
-                // already retired the stream via MessageWrite::drop; only a
-                // fully flushed frame can safely be followed by a notification.
-                if write_state == MessageWriteState::Queued {
-                    return Err(CoreError::other(MCP_CANCELLED_BEFORE_DISPATCH));
-                }
-                if write_state == MessageWriteState::Flushed {
-                    self.notify_cancelled_bounded(wire_id).await;
-                }
-                Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME))
-            }
-            result = dispatch => result,
-        }
+        drop(pending);
+        // Only a fully flushed frame reaches this boundary. A queued request
+        // was never issued; a partial/stalled/aborted frame retires the stream.
+        self.notify_cancelled_bounded(wire_id, deadline).await;
+        Err(CoreError::other(MCP_CANCELLED_UNKNOWN_OUTCOME))
     }
 }
 
