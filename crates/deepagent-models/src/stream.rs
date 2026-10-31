@@ -85,9 +85,10 @@ impl ResponseAccumulator {
                     .get("delta")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("");
-                let builder = self.tool_calls.iter_mut().find(|b| {
-                    b.item_id.as_deref() == Some(item_id) || b.id.as_deref() == Some(item_id)
-                });
+                let builder = self
+                    .tool_calls
+                    .iter_mut()
+                    .find(|b| b.item_id.as_deref() == Some(item_id) || b.id == item_id);
                 if let Some(builder) = builder {
                     if builder.completed_arguments.is_some() {
                         return Err(tool_identity_conflict(
@@ -136,14 +137,14 @@ impl ResponseAccumulator {
             }
             "response.output_item.done" => {
                 if let Some(item) = value.get("item") {
-                    self.complete_item(
+                    let call_index = self.complete_item(
                         item,
                         value
                             .get("output_index")
                             .and_then(serde_json::Value::as_u64),
                         observer,
                     )?;
-                    self.record_output_item(item);
+                    self.record_output_item(item, call_index);
                 }
             }
             "response.function_call_arguments.done" | "response.custom_tool_call_input.done" => {
@@ -152,9 +153,11 @@ impl ResponseAccumulator {
                     .or_else(|| value.get("call_id"))
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("");
-                if let Some(builder) = self.tool_calls.iter_mut().find(|b| {
-                    b.item_id.as_deref() == Some(item_id) || b.id.as_deref() == Some(item_id)
-                }) {
+                if let Some(builder) = self
+                    .tool_calls
+                    .iter_mut()
+                    .find(|b| b.item_id.as_deref() == Some(item_id) || b.id == item_id)
+                {
                     if builder.custom != (kind == "response.custom_tool_call_input.done") {
                         return Err(tool_identity_conflict(builder.index, "call kind"));
                     }
@@ -239,16 +242,23 @@ impl ResponseAccumulator {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
         let item_id = item.get("id").and_then(serde_json::Value::as_str);
-        let call_id = item
-            .get("call_id")
-            .and_then(serde_json::Value::as_str)
-            .or(item_id);
+        // Output item ids locate stream fragments; only the explicit call_id
+        // pairs an executable tool call with its output. Never synthesize one.
+        let identity = if matches!(kind, "function_call" | "custom_tool_call") {
+            Some((
+                tool_identity_field(item, "call_id")?,
+                tool_identity_field(item, "name")?,
+            ))
+        } else {
+            None
+        };
+        let call_id = identity.map(|(id, _)| id);
         let matches: Vec<_> = self
             .tool_calls
             .iter()
             .filter(|builder| {
                 item_id.is_some_and(|id| builder.item_id.as_deref() == Some(id))
-                    || call_id.is_some_and(|id| builder.id.as_deref() == Some(id))
+                    || call_id.is_some_and(|id| builder.id == id)
                     || output_index.is_some_and(|index| builder.output_index == Some(index))
             })
             .map(|builder| builder.index)
@@ -258,9 +268,9 @@ impl ResponseAccumulator {
             if matches.len() != 1
                 || builder.custom != (kind == "custom_tool_call")
                 || !matches!(kind, "function_call" | "custom_tool_call")
-                || builder.id.as_deref() != call_id
+                || Some(builder.id.as_str()) != call_id
                 || builder.item_id.as_deref() != item_id
-                || builder.name.as_deref() != item.get("name").and_then(serde_json::Value::as_str)
+                || Some(builder.name.as_str()) != identity.map(|(_, name)| name)
                 || (builder.output_index.is_some()
                     && output_index.is_some()
                     && builder.output_index != output_index)
@@ -288,34 +298,22 @@ impl ResponseAccumulator {
             }
             return Ok(None);
         }
-        if kind != "function_call" && kind != "custom_tool_call" {
+        let Some((id, name)) = identity else {
             return Ok(None);
-        }
+        };
         let index = self.tool_calls.len();
         let item_id = item
             .get("id")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string);
-        let id = item
-            .get("call_id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-            .or_else(|| {
-                item.get("id")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_string)
-            });
-        let name = item
-            .get("name")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("tool")
-            .to_string();
+        let id = id.to_string();
+        let name = name.to_string();
         self.tool_calls.push(ToolCallBuilder {
             index,
             output_index,
             item_id,
             id: id.clone(),
-            name: Some(name.clone()),
+            name: name.clone(),
             arguments: item
                 .get("arguments")
                 .or_else(|| item.get("input"))
@@ -326,7 +324,11 @@ impl ResponseAccumulator {
             completed_arguments: None,
             completed_emitted: false,
         });
-        observer.on_event(ModelStreamEvent::ToolCallStarted { index, id, name });
+        observer.on_event(ModelStreamEvent::ToolCallStarted {
+            index,
+            id: Some(id),
+            name,
+        });
         Ok(Some(index))
     }
 
@@ -373,7 +375,7 @@ impl ResponseAccumulator {
                     continue;
                 }
                 self.complete_item(item, Some(output_index as u64), observer)?;
-                self.record_output_item(item);
+                self.record_output_item(item, Some(index));
             }
         }
         if let Some(builder) = self.tool_calls.iter().find(|builder| {
@@ -393,9 +395,7 @@ impl ResponseAccumulator {
         if builder.completed_emitted {
             return;
         }
-        let Some(name) = builder.name.clone() else {
-            return;
-        };
+        let name = builder.name.clone();
         let args = if builder.custom {
             builder.arguments.as_str()
         } else if builder.arguments.trim().is_empty() {
@@ -408,10 +408,7 @@ impl ResponseAccumulator {
         } else {
             serde_json::from_str(args).unwrap_or_else(|e| serde_json::json!({"__invalid_tool_arguments__":true,"raw":args,"parse_error":e.to_string()}))
         };
-        let id = builder
-            .id
-            .clone()
-            .unwrap_or_else(|| format!("call_stream_{}", index));
+        let id = builder.id.clone();
         builder.completed_emitted = true;
         observer.on_event(ModelStreamEvent::ToolCallCompleted {
             index,
@@ -421,7 +418,7 @@ impl ResponseAccumulator {
         });
     }
 
-    fn record_output_item(&mut self, item: &serde_json::Value) {
+    fn record_output_item(&mut self, item: &serde_json::Value, call_index: Option<usize>) {
         let Some(kind) = item.get("type").and_then(serde_json::Value::as_str) else {
             return;
         };
@@ -443,42 +440,9 @@ impl ResponseAccumulator {
                     .map(str::to_string),
                 content: reasoning_text_from_item(item).unwrap_or_default(),
             }),
-            "function_call" => Some(ResponseOutputItem::FunctionCall {
-                call_id: item
-                    .get("call_id")
-                    .or_else(|| item.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                name: item
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("tool")
-                    .to_string(),
-                arguments: item
-                    .get("arguments")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            }),
-            "custom_tool_call" => Some(ResponseOutputItem::CustomToolCall {
-                call_id: item
-                    .get("call_id")
-                    .or_else(|| item.get("id"))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-                name: item
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("apply_patch")
-                    .to_string(),
-                input: item
-                    .get("input")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or_default()
-                    .to_string(),
-            }),
+            "function_call" | "custom_tool_call" => {
+                call_index.map(|index| self.tool_calls[index].output_item())
+            }
             "web_search_call" => Some(ResponseOutputItem::WebSearchCall {
                 id: item
                     .get("id")
@@ -532,29 +496,7 @@ impl ResponseAccumulator {
             if self.terminal == Some(FinishReason::Length) && !builder.completed_emitted {
                 continue;
             }
-            let id = builder
-                .id
-                .unwrap_or_else(|| format!("call_stream_{}", builder.index));
-            let args = if builder.custom {
-                builder.arguments.as_str()
-            } else if builder.arguments.trim().is_empty() {
-                "{}"
-            } else {
-                builder.arguments.trim()
-            };
-            if builder.custom {
-                fallback_items.push(ResponseOutputItem::CustomToolCall {
-                    call_id: id,
-                    name: builder.name.unwrap_or_else(|| "apply_patch".into()),
-                    input: args.to_string(),
-                });
-            } else {
-                fallback_items.push(ResponseOutputItem::FunctionCall {
-                    call_id: id,
-                    name: builder.name.unwrap_or_else(|| "tool".into()),
-                    arguments: args.to_string(),
-                });
-            }
+            fallback_items.push(builder.output_item());
         }
         if !self.content.is_empty() || fallback_items.is_empty() {
             fallback_items.push(ResponseOutputItem::Message {
@@ -873,13 +815,13 @@ pub trait DeltaObserver: Send {
 pub struct NoopObserver;
 impl DeltaObserver for NoopObserver {}
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ToolCallBuilder {
     index: usize,
     output_index: Option<u64>,
     item_id: Option<String>,
-    id: Option<String>,
-    name: Option<String>,
+    id: String,
+    name: String,
     arguments: String,
     custom: bool,
     completed_arguments: Option<String>,
@@ -887,6 +829,26 @@ struct ToolCallBuilder {
 }
 
 impl ToolCallBuilder {
+    fn output_item(&self) -> ResponseOutputItem {
+        if self.custom {
+            ResponseOutputItem::CustomToolCall {
+                call_id: self.id.clone(),
+                name: self.name.clone(),
+                input: self.arguments.clone(),
+            }
+        } else {
+            ResponseOutputItem::FunctionCall {
+                call_id: self.id.clone(),
+                name: self.name.clone(),
+                arguments: if self.arguments.trim().is_empty() {
+                    "{}".into()
+                } else {
+                    self.arguments.trim().to_string()
+                },
+            }
+        }
+    }
+
     fn complete_arguments(&mut self, arguments: &str) -> Result<()> {
         if let Some(previous) = &self.completed_arguments {
             let equivalent = if self.custom {
@@ -913,6 +875,19 @@ impl ToolCallBuilder {
         self.arguments = arguments.to_string();
         Ok(())
     }
+}
+
+fn tool_identity_field<'a>(item: &'a serde_json::Value, field: &str) -> Result<&'a str> {
+    item.get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            CoreError::provider(
+                None,
+                Some("malformed_tool_call".into()),
+                format!("Responses tool call requires a non-empty string {field}"),
+            )
+        })
 }
 
 fn tool_identity_conflict(index: usize, field: &str) -> CoreError {

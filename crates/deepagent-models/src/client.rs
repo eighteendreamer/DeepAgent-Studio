@@ -1045,7 +1045,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: malformed Responses function calls must not be accepted"]
     async fn audit_responses_reject_malformed_function_call_output() {
         let client = client_with(vec![
             r#"{"type":"response.output_item.done","item":{"type":"function_call","arguments":"{}"}}"#

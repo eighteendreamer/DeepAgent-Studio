@@ -24,6 +24,154 @@ fn item() -> Value {
         "name":"write_file", "arguments":r#"{"path":"a.txt","content":"PRIVATE_CONTENT"}"#})
 }
 
+fn assert_malformed_identity(events: Vec<Value>) {
+    let mut acc = ResponseAccumulator::new();
+    let mut rec = Recorded::default();
+    let error = events
+        .iter()
+        .try_for_each(|event| push(&mut acc, &mut rec, event).map(|_| ()))
+        .expect_err("a malformed provider identity must not become an executable call");
+    assert!(
+        matches!(&error, CoreError::Provider { code: Some(code), .. }
+        if code == "malformed_tool_call"),
+        "{error:?}"
+    );
+    assert!(!error.to_string().contains("PRIVATE_CONTENT"));
+    assert!(!crate::classify_model_error(&error).retryable());
+    assert_eq!(rec.completed(), 0);
+}
+
+#[test]
+fn h151_required_identity_is_shared_by_added_done_and_terminal_items() {
+    for custom in [false, true] {
+        for field in ["call_id", "name"] {
+            for value in [
+                None,
+                Some(Value::Null),
+                Some(json!("")),
+                Some(json!(" \t\n")),
+                Some(json!(123)),
+                Some(json!(false)),
+            ] {
+                for item_id in [false, true] {
+                    let mut malformed = item();
+                    if custom {
+                        malformed["type"] = json!("custom_tool_call");
+                        malformed["name"] = json!("apply_patch");
+                        malformed["input"] = json!("PRIVATE_CONTENT");
+                    }
+                    if !item_id {
+                        malformed.as_object_mut().unwrap().remove("id");
+                    }
+                    if let Some(value) = value.clone() {
+                        malformed[field] = value;
+                    } else {
+                        malformed.as_object_mut().unwrap().remove(field);
+                    }
+                    for event in [
+                        json!({"type":"response.output_item.added","item":malformed}),
+                        done(&malformed, 0),
+                        terminal(vec![malformed.clone()]),
+                    ] {
+                        assert_malformed_identity(vec![event]);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn h151_malformed_final_identity_prevents_publication_of_valid_sibling_calls() {
+    let valid = item();
+    for field in ["call_id", "name"] {
+        let mut malformed = valid.clone();
+        malformed.as_object_mut().unwrap().remove(field);
+        assert_malformed_identity(vec![added(&valid, 0), done(&malformed, 0)]);
+        malformed["id"] = json!("another-item");
+        assert_malformed_identity(vec![
+            done(&valid, 0),
+            terminal(vec![valid.clone(), malformed]),
+        ]);
+    }
+}
+
+#[test]
+fn h151_valid_calls_need_no_item_id_and_repeated_done_publishes_once() {
+    for custom in [false, true] {
+        for arguments in ["", "{}", "  {}  "] {
+            let mut valid = item();
+            valid.as_object_mut().unwrap().remove("id");
+            valid["arguments"] = json!(arguments);
+            if custom {
+                valid["type"] = json!("custom_tool_call");
+                valid["name"] = json!("apply_patch");
+                valid["input"] = json!(arguments);
+            }
+            let mut start = valid.clone();
+            start[if custom { "input" } else { "arguments" }] = json!("");
+            for events in [
+                vec![terminal(vec![valid.clone()])],
+                vec![
+                    done(&valid, 0),
+                    done(&valid, 0),
+                    terminal(vec![valid.clone()]),
+                ],
+                vec![
+                    json!({"type":"response.output_item.added","item":start}),
+                    json!({"type":if custom {"response.custom_tool_call_input.delta"}
+                        else {"response.function_call_arguments.delta"},
+                        "call_id":"call-a","delta":arguments}),
+                    json!({"type":if custom {"response.custom_tool_call_input.done"}
+                        else {"response.function_call_arguments.done"},
+                        "call_id":"call-a",(if custom {"input"} else {"arguments"}):arguments}),
+                    done(&valid, 0),
+                    terminal(vec![valid.clone()]),
+                ],
+            ] {
+                let mut acc = ResponseAccumulator::new();
+                let mut rec = Recorded::default();
+                for event in events {
+                    push(&mut acc, &mut rec, &event).unwrap();
+                }
+                assert_eq!(rec.completed(), 1);
+                let response = acc.finish().unwrap();
+                let calls = response.tool_invocations_from_items();
+                assert_eq!(calls.len(), 1, "no raw/fallback duplicate identity");
+                assert_eq!(calls[0].0, "call-a");
+                if custom {
+                    assert_eq!(calls[0].2["patch"], arguments);
+                } else {
+                    assert_eq!(calls[0].2, json!({}));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn h151_partial_length_and_provider_failure_do_not_synthesize_calls() {
+    for terminal in [
+        json!({"type":"response.incomplete","response":{"status":"incomplete"}}),
+        json!({"type":"response.failed","response":{"error":{"code":"fixture_failure"}}}),
+    ] {
+        let mut acc = ResponseAccumulator::new();
+        let mut rec = Recorded::default();
+        push(&mut acc, &mut rec, &added(&item(), 0)).unwrap();
+        let result = push(&mut acc, &mut rec, &terminal);
+        assert_eq!(rec.completed(), 0);
+        if result.is_ok() {
+            assert!(acc
+                .finish()
+                .unwrap()
+                .tool_invocations_from_items()
+                .is_empty());
+        } else {
+            assert!(matches!(result, Err(CoreError::Provider { .. })));
+        }
+    }
+}
+
 fn added(item: &Value, index: usize) -> Value {
     let mut item = item.clone();
     item["arguments"] = json!("");

@@ -14,12 +14,20 @@ const RUN: &str = "audit-identity-run";
 struct IdentityModel {
     early: String,
     final_args: String,
+    malformed_call: Option<serde_json::Value>,
     workspace: PathBuf,
     requests: Mutex<Vec<serde_json::Value>>,
 }
 
 impl IdentityModel {
     fn call_events(&self) -> Vec<String> {
+        if let Some(item) = &self.malformed_call {
+            return vec![
+                serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+                serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+                    .to_string(),
+            ];
+        }
         let item = serde_json::json!({
             "type":"function_call", "id":"audit-identity-item", "call_id":CALL,
             "name":"write_file", "arguments":self.final_args, "status":"completed"
@@ -82,7 +90,12 @@ struct Observation {
     early_exists: bool,
 }
 
-async fn observe(early: String, final_args: String, reject: bool) -> Option<Observation> {
+async fn observe(
+    early: String,
+    final_args: String,
+    reject: Option<&str>,
+    malformed_call: Option<serde_json::Value>,
+) -> Option<Observation> {
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -104,6 +117,7 @@ async fn observe(early: String, final_args: String, reject: bool) -> Option<Obse
     let model = Arc::new(IdentityModel {
         early,
         final_args: final_args.clone(),
+        malformed_call,
         workspace: workspace.clone(),
         requests: Mutex::new(Vec::new()),
     });
@@ -131,11 +145,12 @@ async fn observe(early: String, final_args: String, reject: bool) -> Option<Obse
         .filter(|e| e.event_type == "run_terminal")
         .collect();
     assert_eq!(terminals.len(), 1);
-    if reject {
+    if let Some(code) = reject {
         let error = result.expect_err("conflicting complete calls must fail before execution");
-        assert!(error.to_string().contains("tool_call_identity_conflict"));
+        assert!(error.to_string().contains(code), "{error}");
         assert!(!error.to_string().contains("EARLY"));
         assert!(!error.to_string().contains("FINAL"));
+        assert!(!error.to_string().contains("PRIVATE_CONTENT"));
         assert_eq!(terminals[0].data["kind"], "failed");
         assert!(!events
             .iter()
@@ -161,6 +176,9 @@ async fn observe(early: String, final_args: String, reject: bool) -> Option<Obse
             &event.payload,
             EventPayload::ResponseItemAppended {
                 item: ResponseItem::FunctionCall { .. }
+                    | ResponseItem::FunctionCallOutput { .. }
+                    | ResponseItem::CustomToolCall { .. }
+                    | ResponseItem::CustomToolCallOutput { .. }
             } | EventPayload::ToolCallRequested { .. }
                 | EventPayload::ToolCallCompleted { .. }
         )));
@@ -171,6 +189,25 @@ async fn observe(early: String, final_args: String, reject: bool) -> Option<Obse
         );
         eprintln!(
             "identity rejection: no files/actions/calls/results, one failed terminal, one request"
+        );
+        drop(chat);
+        drop(db);
+        let reopened = Database::open(temporary.path().join("state.sqlite")).unwrap();
+        assert_eq!(
+            EventStore::new(&reopened)
+                .load_session(run.session_id.parse().unwrap())
+                .unwrap(),
+            history,
+            "reopening must not introduce a malformed call into native history"
+        );
+        assert_eq!(
+            deepagent_persistence::run_store::RunStore::new(&reopened)
+                .get(RUN)
+                .unwrap()
+                .unwrap()
+                .terminal_kind
+                .as_deref(),
+            Some("failed")
         );
         return None;
     }
@@ -278,7 +315,7 @@ fn final_arguments() -> String {
 #[tokio::test]
 async fn matching_tool_completions_keep_execution_and_history_consistent() {
     let final_args = final_arguments();
-    let observed = observe(final_args.clone(), final_args, false)
+    let observed = observe(final_args.clone(), final_args, None, None)
         .await
         .unwrap();
     assert_eq!(observed.executed, observed.final_args);
@@ -290,7 +327,8 @@ async fn equivalent_json_tool_completions_keep_execution_and_history_consistent(
     let observed = observe(
         "{ \"path\" : \"final.txt\", \"content\" : \"FINAL\" }".into(),
         final_arguments(),
-        false,
+        None,
+        None,
     )
     .await
     .unwrap();
@@ -303,8 +341,42 @@ async fn audit_conflicting_tool_completions_never_commit_a_different_call() {
     assert!(observe(
         serde_json::json!({"path":"early.txt","content":"EARLY"}).to_string(),
         final_arguments(),
-        true,
+        Some("tool_call_identity_conflict"),
+        None,
     )
     .await
     .is_none());
+}
+
+#[tokio::test]
+async fn h151_malformed_provider_identity_never_executes_or_enters_native_history() {
+    for custom in [false, true] {
+        for field in ["call_id", "name"] {
+            for replacement in [
+                None,
+                Some(serde_json::json!(" \t")),
+                Some(serde_json::json!(0)),
+            ] {
+                let mut item = serde_json::json!({
+                    "type":if custom {"custom_tool_call"} else {"function_call"},
+                    "id":"audit-malformed-item", "call_id":CALL,
+                    "name":if custom {"apply_patch"} else {"write_file"},
+                    "arguments":final_arguments(), "input":"PRIVATE_CONTENT"
+                });
+                if let Some(value) = replacement {
+                    item[field] = value;
+                } else {
+                    item.as_object_mut().unwrap().remove(field);
+                }
+                assert!(observe(
+                    final_arguments(),
+                    final_arguments(),
+                    Some("malformed_tool_call"),
+                    Some(item)
+                )
+                .await
+                .is_none());
+            }
+        }
+    }
 }

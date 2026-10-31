@@ -2,21 +2,37 @@
 
 ## 当前状态与计数口径（2026-10-31）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百一十三项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百一十四项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 113 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 114 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 22 | 17项原审计历史修复，另H-77/H-83/H-238/H-246/H-301分别随H-78/H-143/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-83已按E-H83-01～04完成既有修复复核；原始失败、单点反事实和全局格式/严格lint失败均保留 |
-| 待修复 | 162 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-151已完成所列本机验收；下一项尚未开始 |
+| 待修复 | 161 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **162（162待修复、0修复中）**；不提供完成率。一百一十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。
+有效未关闭条目当前为 **161（161待修复、0修复中）**；不提供完成率。一百一十四项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。
+
+## H-151 provider工具身份边界（2026-10-31，已修复并验收）
+
+**当前状态：已修复并验收，仅限下述本机离线范围；不宣称全仓全绿或整个任务完成。**
+
+- **E-H151-01（修前原探针与TDD，2026-10-31）**：基线HEAD `01df330a`，tracked干净；原 `cargo test -p deepagent-models audit_responses_reject_malformed_function_call_output --offline -j 2 -- --ignored --nocapture --test-threads=1` 原生101、124.15秒、0 passed/1 failed/0 ignored，正式ModelClient返回Ok(Response)，同一缺失身份item成为空call_id/tool和call_stream_0/tool两项。只改测试后，新增 `cargo test -p deepagent-models --lib h151_ --offline -j 2 -- --nocapture --test-threads=1` 原生101、14.91秒、1/3/0；正式 `cargo test -p deepagent-app-core --test kernel_v2_e2e h151_ --offline -j 2 -- --nocapture --test-threads=1` 原生101、447.54秒、0/1/0，旧实现返回成功session ID，拒绝断言失败。此Kernel红测没有打印证明实际写文件，不把它称作已证明副作用。原始h151-{original,identity-red,kernel-red}-20261031.log及result.json均保留；原客户端探针转为默认测试，未以ignore绕过验收。以下Cargo验证均由隔离runner向外层追加本工作区绝对--target-dir，清除继承凭据并隔离HOME/USERPROFILE/APPDATA，fixture使用占位key/MemorySecretStore和临时SQLite，不访问真实provider/凭据/内网或用户数据。
+
+- **E-H151-02（根因、实现与既有参数契约，2026-10-31）**：原ResponseAccumulator的add_item/record_output_item/finish分别用item id、空字符串或call_stream_N替代call_id，用tool/apply_patch替代缺失name；H-259只能发现身份前后冲突，不能保证初始身份存在。本轮唯一生产改动在既有stream.rs：function/custom item入口共用显式非空白字符串call_id/name校验，内部builder身份改为必填String，done与最终投影共用builder.output_item，不再制造默认身份或二次独立解析。错误为不含输入内容且不可重试的malformed_tool_call；保留H-259终帧前不发布可执行完成、等价重复done幂等与H-18合法身份下的length未完成剔除。合法无item id仍可按call_id关联增量，function空参数沿既有执行语义规范为{}，custom input原样保留。原报告建议统一拒绝malformed参数；核对既有invalid_tool_json_degrades_to_rejectable_sentinel及ToolPipeline::prepare的显式sentinel检查后，本项保留非法JSON在统一工具验证门、schema/hook/权限/执行前产生配对失败的已测试策略，不改为整轮parser失败，也不宣称完成全量provider schema或请求侧H-147/148/149校验。来源以当前代码/调用方/测试为主，参考deepseek-harness的translate.ts:57空身份拒绝（仅阅读未执行），2026-10-31再次核对[DeepSeek Responses官方文档](https://api-docs.deepseek.com/api/create-response/)的item id、call_id关联、名称与JSON参数语义。无第二运行链、新依赖、公共DTO、协议字段或SQL迁移。
+
+- **E-H151-03（冻结源码专项与正式执行验收，2026-10-31）**：四份Rust实现/测试SHA256冻结并归档，所有最终门禁前后逐份一致。`cargo test -p deepagent-models --all-targets --all-features --offline -j 2 -- --nocapture --test-threads=1` exit0、24.04秒，11结果块合计130 passed/0 failed/39 ignored（lib126/0/22），原客户端探针和四项H-151回归均默认通过，覆盖added/done/terminal、function/custom、缺失/null/空/空白/非字符串身份、有无item id、兄弟call、重复done、合法无参、call_id增量、length/provider failure。`cargo test -p deepagent-app-core --test kernel_v2_e2e tool_call_identity --offline -j 2 -- --nocapture --test-threads=1` exit0、245.27秒、4/0/0，含12组畸形function/custom身份：目标文件不存在，无action/审批/native call/result，仅一failed终态及一次模型请求，错误不带合成敏感内容，独立SQLite重开后历史和failed状态一致；三个H-259真实写入、等价JSON和冲突对照仍通过。`cargo test -p deepagent-runtime --all-targets --all-features --offline -j 2 -- --test-threads=2` exit0、159.24秒，4结果块合计360/0/11。日志、原生exit与统计保留在h151-{models-final,kernel-final,runtime-final}-20261031*，不把这些重复执行结果与全仓合计相加。
+
+- **E-H151-04（完整全仓与SDK前置条件，2026-10-31）**：首次 `cargo test --workspace --offline -j 2 -- --test-threads=2` exit101、1372.13秒，在SDK e2e的1/5/0处停止：三项明确断言普通target/debug/deepagent.exe未构建，两项直接spawn报NotFound；不是五项都已通过exists断言。核对SDK cli_binary/spawn_server/HarnessProcess::spawn、CLI的[[bin]]及CI先build后test流程，并实际确认该exe不存在。按测试注明前置条件补 `cargo build -p deepagent-cli --offline -j 2` exit0、135.90秒，再 `cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 -- --nocapture --test-threads=2` exit0、14.92秒、6/0/0，未修改SDK代码。随后 `cargo test --workspace --no-fail-fast --offline -j 2 -- --test-threads=2` 完整终态exit101、683.53秒，133结果块合计4021 passed/1 failed/250 ignored；AppCore lib1387/0/58、Kernel224/0/44、CLI122/0/20、SDK e2e6/0/0。唯一失败为未修改prompts的canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，creative.video-edit.v1的defaultUserPrompt为空，与待修H-306一致；该crate与01df330a无diff，不在本项修复或降低断言，也不称全仓全绿。初次失败及补齐前置后的完整日志、133目标统计与11项门禁终态均保留在h151-{workspace-final,cli-build-final,sdk-final,workspace-complete,acceptance-result}-20261031*；此前未运行到prompts不能当作H-306曾通过。
+
+- **E-H151-05（格式、严格lint与未验范围，2026-10-31）**：`cargo fmt -p deepagent-models -- --check` exit0；对修改的Kernel fixture执行 `rustfmt --edition 2021 --check --config skip_children=true crates/deepagent-app-core/tests/kernel_v2_e2e/tool_call_identity.rs` exit0；`git diff --check` exit0。根 `cargo fmt --all -- --check` exit1，仅未修改的crates/deepagent-runtime/src/workflow/agent.rs:1043差异。`cargo clippy -p deepagent-models --all-targets --all-features --offline -j 2 --no-deps -- -D warnings` 及全仓all-targets/all-features严格Clippy均exit101，首个阻断为client.rs:355既有clone_on_copy，与H-259已留日志相同；本轮该client文件仅移除原探针ignore，未新增allow或顺手修lint，不能称严格lint通过或所有后续lint已检查。未运行Desktop/Tauri/UI、其他OS、真实供应商、真实网络/凭据、长时并发、外层取消/强杀/断电验收；公开command/DTO未变，未以单测替代这些验收。格式及lint原生日志保留，完整pnpm/Tauri构建未由本项声称通过。
+
+- **E-H151-06（验收结论、兼容性与下一步，2026-10-31）**：依据原反例、先红后绿、正式Kernel无副作用/持久化重开、合法写入对照及完整生产消费方测试，H-151按E-01～05所列Windows本机离线范围已修复并验收，新增1项；严格拒绝缺失/空白/非字符串provider身份是预期行为变化，正常显式身份、公开事件/DTO及合法无参调用保持兼容。非法JSON仍由统一工具验证门配对拒绝，不扩大为完整输出schema已修复；H-148请求侧空call_id、H-152未知输出类型及H-306保持独立。累计114已验收/22历史跳过/7归并/2撤销/161待修/0修复中，306唯一编号、其余305台账主行不变；无完成率，整个目标继续active。仅本项四份Rust文件与当时双文档独立提交，实际hash随后回填；不amend、不推送、不创建PR。下一项准备复核H-148请求侧空call_id，尚未实施。本项所列验收剩余0，全部剩余200–400有效修复与验收小时仍是历史未逐项校准粗估，依据剩余执行/权限/事件/持久化及跨宿主范围；编译、设备、依赖和环境等待另计，不承诺精确日期。验证结束后的编译产物清理待提交后执行，不把准备好的脚本称为已清理。
 
 ## H-83 既有终态边界复核（2026-10-31）
 
@@ -3286,7 +3302,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-148：Responses 工具调用的空 `call_id` 未在请求边界拒绝](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-149：Responses 重复 `call_id` 被静默去重并跨过 provider boundary](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-150：Responses `input` 与 `instructions` 同时为空仍发送请求](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-151：Responses malformed function call 被填充默认身份并继续提交](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-151：Responses malformed function call 被填充默认身份并继续提交](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-31原探针/adapter/正式Kernel先红后绿，非历史跳过 | SSE入口必填显式非空身份，builder单一投影，禁止默认ID/name | E-H151-01～06：models130/0/39、Kernel4/0/0、runtime360/0/11；全仓4021/1/250仅H-306；格式/lint基线另列 | 待本项独立提交后回填真实hash | 仅所列Windows本机离线范围，正常身份/DTO兼容；无完整provider schema、GUI/供应商/跨OS验收；本项0，总200–400有效小时未校准粗估 |
 | [H-152：官方 `tool_search_call` 在 Responses adapter 中被静默丢弃](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-153：Responses 规范思考档位贯通缺陷（规范值链路已修复；别名见 H-155）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原项规范值链已有修复/验收；别名缺口仍属 H-155 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
 | [H-154：Responses `user` 只检查非空，非法标识符进入真实 provider 请求（已修复）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
