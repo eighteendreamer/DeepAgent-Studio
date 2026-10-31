@@ -11,11 +11,14 @@ use deepagent_core::response_item::ResponseOutputItem;
 
 use crate::chat::{FinishReason, Response, Usage};
 
+#[path = "stream_text.rs"]
+mod text;
+
 /// Responses API semantic SSE accumulator. DeepSeek sends an event object in
 /// each `data:` payload; the event's `type` selects the semantic delta.
 #[derive(Debug, Default)]
 pub struct ResponseAccumulator {
-    content: String,
+    text_items: text::TextItems,
     reasoning: String,
     tool_calls: Vec<ToolCallBuilder>,
     output_items: Vec<ResponseOutputItem>,
@@ -61,7 +64,8 @@ impl ResponseAccumulator {
         match kind {
             "response.output_text.delta" => {
                 if let Some(text) = value.get("delta").and_then(serde_json::Value::as_str) {
-                    self.content.push_str(text);
+                    self.text_items
+                        .delta(&value, text, &mut self.output_items)?;
                     observer.on_event(ModelStreamEvent::ContentDelta {
                         text: text.to_string(),
                     });
@@ -137,14 +141,11 @@ impl ResponseAccumulator {
             }
             "response.output_item.done" => {
                 if let Some(item) = value.get("item") {
-                    let call_index = self.complete_item(
-                        item,
-                        value
-                            .get("output_index")
-                            .and_then(serde_json::Value::as_u64),
-                        observer,
-                    )?;
-                    self.record_output_item(item, call_index);
+                    let output_index = value
+                        .get("output_index")
+                        .and_then(serde_json::Value::as_u64);
+                    let call_index = self.complete_item(item, output_index, observer)?;
+                    self.record_output_item(item, call_index, output_index)?;
                 }
             }
             "response.function_call_arguments.done" | "response.custom_tool_call_input.done" => {
@@ -299,6 +300,10 @@ impl ResponseAccumulator {
             return Ok(None);
         }
         let Some((id, name)) = identity else {
+            if kind == "message" {
+                self.text_items
+                    .start(item, output_index, &mut self.output_items)?;
+            }
             return Ok(None);
         };
         let index = self.tool_calls.len();
@@ -375,7 +380,9 @@ impl ResponseAccumulator {
                     continue;
                 }
                 self.complete_item(item, Some(output_index as u64), observer)?;
-                self.record_output_item(item, Some(index));
+                self.record_output_item(item, Some(index), Some(output_index as u64))?;
+            } else if item.get("type").and_then(serde_json::Value::as_str) == Some("message") {
+                self.record_output_item(item, None, Some(output_index as u64))?;
             }
         }
         if let Some(builder) = self.tool_calls.iter().find(|builder| {
@@ -418,21 +425,21 @@ impl ResponseAccumulator {
         });
     }
 
-    fn record_output_item(&mut self, item: &serde_json::Value, call_index: Option<usize>) {
+    fn record_output_item(
+        &mut self,
+        item: &serde_json::Value,
+        call_index: Option<usize>,
+        output_index: Option<u64>,
+    ) -> Result<()> {
         let Some(kind) = item.get("type").and_then(serde_json::Value::as_str) else {
-            return;
+            return Ok(());
         };
+        if kind == "message" {
+            return self
+                .text_items
+                .complete(item, output_index, &mut self.output_items);
+        }
         let parsed = match kind {
-            "message" => {
-                let role = item
-                    .get("role")
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("assistant")
-                    .to_string();
-                let content =
-                    output_text_from_message_item(item).unwrap_or_else(|| self.content.clone());
-                Some(ResponseOutputItem::Message { role, content })
-            }
             "reasoning" => Some(ResponseOutputItem::Reasoning {
                 id: item
                     .get("id")
@@ -470,11 +477,12 @@ impl ResponseAccumulator {
                     _ => false,
                 }) {
                     *existing = parsed;
-                    return;
+                    return Ok(());
                 }
             }
             self.output_items.push(parsed);
         }
+        Ok(())
     }
 
     pub fn finish(mut self) -> Result<Response> {
@@ -498,13 +506,7 @@ impl ResponseAccumulator {
             }
             fallback_items.push(builder.output_item());
         }
-        if !self.content.is_empty() || fallback_items.is_empty() {
-            fallback_items.push(ResponseOutputItem::Message {
-                role: "assistant".into(),
-                content: self.content.clone(),
-            });
-        }
-        let mut output_items = self.output_items;
+        let (mut output_items, text_fallback_start) = self.text_items.finish(self.output_items);
         if !self.reasoning.is_empty() {
             if let Some(ResponseOutputItem::Reasoning { content, .. }) = output_items
                 .iter_mut()
@@ -514,13 +516,17 @@ impl ResponseAccumulator {
                     *content = self.reasoning.clone();
                 }
             } else {
-                fallback_items.insert(
-                    0,
-                    ResponseOutputItem::Reasoning {
-                        id: None,
-                        content: self.reasoning.clone(),
-                    },
-                );
+                let reasoning = ResponseOutputItem::Reasoning {
+                    id: None,
+                    content: self.reasoning.clone(),
+                };
+                // Legacy reasoning deltas still precede their text fallback.
+                // Completed native items keep their existing relative order.
+                if let Some(index) = text_fallback_start {
+                    output_items.insert(index, reasoning);
+                } else {
+                    fallback_items.insert(0, reasoning);
+                }
             }
         }
         for item in fallback_items {
@@ -542,17 +548,9 @@ fn response_item_already_present(
     candidate: &ResponseOutputItem,
 ) -> bool {
     match candidate {
-        ResponseOutputItem::Message { role, content } => items.iter().any(|item| {
-            matches!(
-                item,
-                ResponseOutputItem::Message {
-                    role: existing_role,
-                    content: existing_content,
-                } if existing_role == role && existing_content == content
-            )
-        }),
-        // Input-only variant; never produced as a model output.
-        ResponseOutputItem::InputMessage { .. } => false,
+        // Messages are reconciled by provider identity, never text equality.
+        // InputMessage is input-only and is never produced as a model output.
+        ResponseOutputItem::Message { .. } | ResponseOutputItem::InputMessage { .. } => false,
         ResponseOutputItem::Reasoning { id, content } => items.iter().any(|item| {
             matches!(
                 item,
