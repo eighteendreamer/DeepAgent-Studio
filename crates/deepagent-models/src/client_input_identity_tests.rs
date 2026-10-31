@@ -529,7 +529,7 @@ fn h80_unique_mixed_output_kinds_are_repaired_losslessly_and_idempotently() {
     }
 }
 
-fn h80_request(history: Vec<ResponseInputItem>, refresh: usize) -> ResponseRequest {
+fn request_from_history(history: Vec<ResponseInputItem>, refresh: usize) -> ResponseRequest {
     match refresh {
         0 => ResponseRequest::from_response_items("deepseek-flash", None, history),
         1 => {
@@ -569,10 +569,10 @@ async fn h80_constructor_and_history_refresh_send_corrected_pairs_on_both_wires(
                             transport.clone(),
                             ModelConfig::deepseek("offline-placeholder").with_wire_mode(mode),
                         );
-                        send(&client, h80_request(valid, refresh), cancel_aware)
+                        send(&client, request_from_history(valid, refresh), cancel_aware)
                             .await
                             .unwrap();
-                        send(&client, h80_request(mixed, refresh), cancel_aware)
+                        send(&client, request_from_history(mixed, refresh), cancel_aware)
                             .await
                             .unwrap();
                         let bodies = transport.0.lock().unwrap();
@@ -654,6 +654,221 @@ fn h80_mixed_kind_repair_never_hides_blank_or_duplicate_identities() {
             request
                 .validate()
                 .expect_err("kind repair must not choose an ambiguous call"),
+        );
+    }
+}
+
+fn h261_histories(
+    first_custom: bool,
+    second_custom: bool,
+    layout: usize,
+) -> (Vec<ResponseInputItem>, Vec<ResponseInputItem>) {
+    let first = items("h261-first", first_custom, 0);
+    let second = items("h261-second", second_custom, 0);
+    let (a, mut ao, b, mut bo) = (
+        first[1].clone(),
+        first[2].clone(),
+        second[1].clone(),
+        second[2].clone(),
+    );
+    for (item, payload) in [
+        (&mut ao, "PRIVATE_FIRST_RESULT\r\n\0中文\t{ raw: not JSON }"),
+        (&mut bo, "PRIVATE_SECOND_RESULT"),
+    ] {
+        match item {
+            ResponseInputItem::FunctionCallOutput { output, .. }
+            | ResponseInputItem::CustomToolCallOutput { output, .. } => *output = payload.into(),
+            _ => unreachable!(),
+        }
+    }
+    let narration = ResponseInputItem::Message {
+        role: "assistant".into(),
+        content: "Tool narration.".into(),
+    };
+    let (unordered, ordered) = match layout {
+        0 => (
+            vec![ao.clone(), bo.clone(), a.clone(), b.clone()],
+            vec![a, b, ao, bo],
+        ),
+        1 => (
+            vec![ao.clone(), a.clone(), bo.clone(), b.clone()],
+            vec![a, ao, b, bo],
+        ),
+        2 => (
+            vec![bo.clone(), a.clone(), b.clone(), ao.clone()],
+            vec![a, b, ao, bo],
+        ),
+        3 => (
+            vec![
+                ao.clone(),
+                a.clone(),
+                narration.clone(),
+                bo.clone(),
+                b.clone(),
+            ],
+            vec![a, ao, narration, b, bo],
+        ),
+        _ => unreachable!(),
+    };
+    let prefix = vec![
+        first[0].clone(),
+        ResponseInputItem::Reasoning {
+            id: Some("h261-reasoning".into()),
+            content: "Reasoning.".into(),
+        },
+        ResponseInputItem::WebSearchCall {
+            id: "h261-search".into(),
+            status: "completed".into(),
+            action: None,
+        },
+    ];
+    (
+        [prefix.clone(), unordered].concat(),
+        [prefix, ordered].concat(),
+    )
+}
+
+#[test]
+fn h261_early_outputs_are_preserved_losslessly_with_stable_call_groups() {
+    for first_custom in [false, true] {
+        for second_custom in [false, true] {
+            for layout in 0..4 {
+                let (unordered, expected) = h261_histories(first_custom, second_custom, layout);
+                let original = unordered.clone();
+                let repaired = crate::responses::repair_tool_call_pairs(&unordered);
+                assert_eq!(repaired, expected);
+                assert_eq!(
+                    crate::responses::repair_tool_call_pairs(&repaired),
+                    repaired
+                );
+                assert_eq!(unordered, original);
+                let request =
+                    ResponseRequest::from_response_items("deepseek-flash", None, unordered);
+                request.validate().unwrap();
+                assert_eq!(request.input, expected);
+                // Provider reasoning uses content parts, unlike the durable
+                // ResponseItem's internal plain-string representation.
+                let mut expected_wire = json!(expected);
+                expected_wire[1]["content"] = json!([{
+                    "type": "reasoning_text", "text": "Reasoning."
+                }]);
+                assert_eq!(
+                    serde_json::to_value(request).unwrap()["input"],
+                    expected_wire
+                );
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn h261_early_results_reach_both_wires_through_shared_history_refresh() {
+    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+        for cancel_aware in [false, true] {
+            for first_custom in [false, true] {
+                for second_custom in [false, true] {
+                    for layout in 0..4 {
+                        for refresh in 0..4 {
+                            let (unordered, ordered) =
+                                h261_histories(first_custom, second_custom, layout);
+                            let transport = Arc::new(RecordingTransport::default());
+                            let client = ModelClient::new(
+                                transport.clone(),
+                                ModelConfig::deepseek("offline-placeholder").with_wire_mode(mode),
+                            );
+                            send(
+                                &client,
+                                request_from_history(ordered, refresh),
+                                cancel_aware,
+                            )
+                            .await
+                            .unwrap();
+                            send(
+                                &client,
+                                request_from_history(unordered, refresh),
+                                cancel_aware,
+                            )
+                            .await
+                            .unwrap();
+                            let bodies = transport.0.lock().unwrap();
+                            assert_eq!(bodies.len(), 2);
+                            assert_eq!(
+                                bodies[1], bodies[0],
+                                "late call must consume its real result"
+                            );
+                            let body = bodies[1].to_string();
+                            assert!(
+                                body.contains("PRIVATE_FIRST_RESULT")
+                                    && body.contains("PRIVATE_SECOND_RESULT")
+                            );
+                            assert!(!body.contains("tool result missing"));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn h261_late_calls_cannot_hide_blank_or_ambiguous_execution_identities() {
+    for id in ["", " \t", "PRIVATE_DUPLICATE_ID"] {
+        let (mut unordered, _) = h261_histories(false, true, 0);
+        for item in &mut unordered {
+            match item {
+                ResponseInputItem::FunctionCall { call_id, .. }
+                | ResponseInputItem::CustomToolCall { call_id, .. }
+                | ResponseInputItem::FunctionCallOutput { call_id, .. }
+                | ResponseInputItem::CustomToolCallOutput { call_id, .. } => *call_id = id.into(),
+                _ => {}
+            }
+        }
+        assert_eq!(
+            crate::responses::repair_tool_call_pairs(&unordered),
+            unordered
+        );
+        let request =
+            ResponseRequest::from_response_items("deepseek-flash", None, unordered.clone());
+        assert_eq!(request.input, unordered);
+        assert_invalid(
+            request
+                .validate()
+                .expect_err("a late call is not permission to choose an identity"),
+        );
+    }
+}
+
+#[test]
+fn h261_real_empty_results_and_truly_missing_pairs_keep_existing_recovery_policy() {
+    for custom in [false, true] {
+        for payload in ["", "tool result missing", "{\"status\":\"error\"}"] {
+            let mut pair = items("h261-result-control", custom, 0);
+            match &mut pair[2] {
+                ResponseInputItem::FunctionCallOutput { output, .. }
+                | ResponseInputItem::CustomToolCallOutput { output, .. } => {
+                    *output = payload.into()
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(crate::responses::repair_tool_call_pairs(&pair), pair);
+        }
+        let missing = crate::responses::repair_tool_call_pairs(&items("h261-missing", custom, 1));
+        let output = match &missing[2] {
+            ResponseInputItem::FunctionCallOutput { output, .. }
+            | ResponseInputItem::CustomToolCallOutput { output, .. } => output,
+            _ => unreachable!(),
+        };
+        assert!(output.contains("tool result missing"));
+        let orphan = items("h261-orphan", custom, 2);
+        let repaired = crate::responses::repair_tool_call_pairs(&orphan);
+        assert_eq!(repaired.len(), 3);
+        assert_eq!(repaired[2], orphan[1]);
+        assert!(
+            matches!(&repaired[1],
+                ResponseInputItem::FunctionCall { name, .. } if !custom && name == "unknown_tool"
+            ) || matches!(&repaired[1],
+                ResponseInputItem::CustomToolCall { name, .. } if custom && name == "apply_patch"
+            )
         );
     }
 }

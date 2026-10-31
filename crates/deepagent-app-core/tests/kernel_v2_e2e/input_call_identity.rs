@@ -304,3 +304,54 @@ async fn h80_reopened_mixed_kind_history_repairs_only_wire_without_execution_or_
         }
     }
 }
+
+#[tokio::test]
+async fn h261_reopened_early_outputs_keep_real_results_without_reexecution_or_rewriting() {
+    for first_custom in [false, true] {
+        for second_custom in [false, true] {
+            for parallel in [false, true] {
+                let mut first = history_pair("h261-first", first_custom);
+                let mut second = history_pair("h261-second", second_custom);
+                for (pair, payload) in [
+                    (&mut first, "PRIVATE_FIRST_RESULT"),
+                    (&mut second, "PRIVATE_SECOND_RESULT"),
+                ] {
+                    match &mut pair[1] {
+                        ResponseItem::FunctionCallOutput { output, .. }
+                        | ResponseItem::CustomToolCallOutput { output, .. } => {
+                            *output = payload.into()
+                        }
+                        _ => unreachable!(),
+                    }
+                }
+                let (unordered, expected) = if parallel {
+                    (
+                        vec![
+                            first[1].clone(),
+                            second[1].clone(),
+                            first[0].clone(),
+                            second[0].clone(),
+                        ],
+                        vec![
+                            first[0].clone(),
+                            second[0].clone(),
+                            first[1].clone(),
+                            second[1].clone(),
+                        ],
+                    )
+                } else {
+                    (
+                        vec![
+                            first[1].clone(),
+                            first[0].clone(),
+                            second[1].clone(),
+                            second[0].clone(),
+                        ],
+                        [first, second].concat(),
+                    )
+                };
+                observe_projected(unordered, false, expected).await;
+            }
+        }
+    }
+}

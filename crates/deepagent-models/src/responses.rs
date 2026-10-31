@@ -217,9 +217,9 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     let mut outputs = std::collections::HashMap::<String, ResponseInputItem>::new();
     let mut orphan_outputs = Vec::new();
 
-    // Validated identities are unique on each side. Indexing first lets
-    // reconstruction put outputs immediately after their contiguous provider
-    // call group, without splitting parallel calls.
+    // Classify against the whole history, not just calls seen so far. A real
+    // output can precede its call after import/replay and is not an orphan.
+    // Identity validation above makes each association unambiguous.
     for item in items {
         match item {
             ResponseInputItem::FunctionCall { call_id, .. } => {
@@ -229,6 +229,13 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
                 call_ids.insert(call_id.clone());
                 custom_call_ids.insert(call_id.clone());
             }
+            _ => {}
+        }
+    }
+    // Reconstruction below retains each contiguous provider call group and
+    // emits its real results after the group, regardless of input result order.
+    for item in items {
+        match item {
             ResponseInputItem::FunctionCallOutput { call_id, .. }
             | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
                 if call_ids.contains(call_id) {
