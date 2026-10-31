@@ -11,6 +11,13 @@ const FLASH: &str = "deepseek-flash";
 const PRO: &str = "deepseek-v4-pro";
 const LIMIT: f64 = 0.002;
 
+#[derive(Clone, Copy, Debug)]
+enum RouteBudget {
+    CompleteRoute,
+    OriginalLimit,
+    ExactFirstCall,
+}
+
 #[derive(Debug)]
 struct RouteModel {
     overload_at: Option<usize>,
@@ -75,11 +82,17 @@ struct RouteObservation {
     summary: CostSummary,
     cost_events: Vec<(String, Option<f64>)>,
     expected_cost: f64,
+    limit: f64,
     second_error: Option<String>,
     second_dispatches: usize,
 }
 
-async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteObservation {
+async fn observe_route(
+    primary: &str,
+    switch: bool,
+    tool_first: bool,
+    budget: RouteBudget,
+) -> RouteObservation {
     let fallback = if primary == FLASH { PRO } else { FLASH };
     let root = tempfile::tempdir().unwrap();
     std::fs::write(root.path().join("fixture.txt"), "AUDIT_LOCAL_COST_FIXTURE").unwrap();
@@ -101,9 +114,21 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
     let prices = settings.load().unwrap().unwrap().pricing_catalog.models;
     assert_eq!(prices[FLASH].calculate(1000, 100, 800, 200), 0.000616);
     assert_eq!(prices[PRO].calculate(1000, 100, 800, 200), 0.002370);
+    let first_call_cost = prices[primary].calculate(1000, 100, 800, 200);
+    let stop_after_first = !matches!(budget, RouteBudget::CompleteRoute);
+    let limit = match budget {
+        // Route accounting needs enough budget to dispatch the continuation.
+        // Keep the original low limit in separate explicit stop scenarios.
+        RouteBudget::CompleteRoute => LIMIT + if tool_first { first_call_cost } else { 0.0 },
+        RouteBudget::OriginalLimit => LIMIT,
+        RouteBudget::ExactFirstCall => first_call_cost,
+    };
+    if stop_after_first {
+        assert!(tool_first && first_call_cost >= limit);
+    }
     let cost = Arc::new(CostService::from_settings(db.clone(), settings.clone()));
     cost.set_budget(BudgetConfig {
-        daily_limit: Some(LIMIT),
+        daily_limit: Some(limit),
         monthly_limit: None,
     })
     .unwrap();
@@ -145,19 +170,30 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
             )
             .await;
         if turn == 1 {
-            result.unwrap();
+            if stop_after_first {
+                assert!(result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("daily budget exhausted"));
+            } else {
+                result.unwrap();
+            }
             let first_models = model.requests.lock().unwrap().clone();
             let mut expected_models = vec![primary.to_string()];
-            if tool_first {
+            if tool_first && !stop_after_first {
                 expected_models.push(primary.to_string());
             }
-            if switch {
+            if switch && !stop_after_first {
                 expected_models.push(fallback.to_string());
             }
             assert_eq!(first_models, expected_models);
-            let answered = if switch { fallback } else { primary };
+            let answered = if switch && !stop_after_first {
+                fallback
+            } else {
+                primary
+            };
             let expected_cost = prices[answered].calculate(1000, 100, 800, 200)
-                + if tool_first {
+                + if tool_first && !stop_after_first {
                     prices[primary].calculate(1000, 100, 800, 200)
                 } else {
                     0.0
@@ -175,7 +211,7 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
                 })
                 .unwrap();
             let summary = cost.summary(&session).unwrap();
-            let calls = 1 + u64::from(tool_first);
+            let calls = 1 + u64::from(tool_first && !stop_after_first);
             assert_eq!(summary.input_tokens, 1000 * calls);
             assert_eq!(summary.output_tokens, 100 * calls);
             assert_eq!(summary.cache_hit_tokens, 800 * calls);
@@ -234,7 +270,14 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
                 .filter(|event| event.event_type == "run_terminal")
                 .collect();
             assert_eq!(terminals.len(), 1);
-            assert_eq!(terminals[0].data["kind"], "succeeded");
+            assert_eq!(
+                terminals[0].data["kind"],
+                if turn == 1 && stop_after_first {
+                    "budget_exceeded"
+                } else {
+                    "succeeded"
+                }
+            );
         }
     }
     let (first_models, ledger_models, rows, summary, cost_events, expected_cost) = first.unwrap();
@@ -283,6 +326,7 @@ async fn observe_route(primary: &str, switch: bool, tool_first: bool) -> RouteOb
         summary,
         cost_events,
         expected_cost,
+        limit,
         second_error,
         second_dispatches,
     };
@@ -303,7 +347,7 @@ fn assert_route_cost(observed: &RouteObservation) {
         .is_some_and(|error| error.contains("daily budget exhausted"));
     assert!(
         cost_matches
-            && blocked == (observed.expected_cost >= LIMIT)
+            && blocked == (observed.expected_cost >= observed.limit)
             && observed.second_dispatches == usize::from(!blocked),
         "answered model route must own cost and next admission: {observed:?}"
     );
@@ -342,23 +386,43 @@ fn assert_route_cost(observed: &RouteObservation) {
 async fn unchanged_models_book_single_and_multiple_answered_calls_correctly() {
     for primary in [FLASH, PRO] {
         for tool_first in [false, true] {
-            assert_route_cost(&observe_route(primary, false, tool_first).await);
+            assert_route_cost(
+                &observe_route(primary, false, tool_first, RouteBudget::CompleteRoute).await,
+            );
         }
     }
 }
 
 #[tokio::test]
 async fn audit_fallback_to_pro_books_pro_cost_and_blocks_the_next_run() {
-    assert_route_cost(&observe_route(FLASH, true, false).await);
+    assert_route_cost(&observe_route(FLASH, true, false, RouteBudget::CompleteRoute).await);
 }
 
 #[tokio::test]
 async fn audit_fallback_to_flash_books_flash_cost_and_allows_the_next_run() {
-    assert_route_cost(&observe_route(PRO, true, false).await);
+    assert_route_cost(&observe_route(PRO, true, false, RouteBudget::CompleteRoute).await);
 }
 
 #[tokio::test]
 async fn audit_mixed_model_run_preserves_each_answered_calls_cost_route() {
-    assert_route_cost(&observe_route(FLASH, true, true).await);
-    assert_route_cost(&observe_route(PRO, true, true).await);
+    assert_route_cost(&observe_route(FLASH, true, true, RouteBudget::CompleteRoute).await);
+    assert_route_cost(&observe_route(PRO, true, true, RouteBudget::CompleteRoute).await);
+}
+
+#[tokio::test]
+async fn original_low_budget_stops_before_another_primary_or_fallback_attempt() {
+    for switch in [false, true] {
+        assert_route_cost(&observe_route(PRO, switch, true, RouteBudget::OriginalLimit).await);
+    }
+}
+
+#[tokio::test]
+async fn exact_first_call_budget_stops_before_another_primary_or_fallback_attempt() {
+    for primary in [FLASH, PRO] {
+        for switch in [false, true] {
+            assert_route_cost(
+                &observe_route(primary, switch, true, RouteBudget::ExactFirstCall).await,
+            );
+        }
+    }
 }
