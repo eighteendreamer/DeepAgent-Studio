@@ -236,9 +236,9 @@ async fn execute_with_approvals(fixture: &Fixture, launch: TurnLaunch) -> String
 
 #[tokio::test]
 async fn configuration_cold_resume_retains_wire_model_and_read_only_after_defaults_change() {
-    let call = || {
+    let call = |call_id| {
         function_call(
-            "write-canary",
+            call_id,
             "write_file",
             json!({"path":"h04-canary.txt","content":"normal explicit write"}),
         )
@@ -247,9 +247,9 @@ async fn configuration_cold_resume_retains_wire_model_and_read_only_after_defaul
         bodies: Mutex::new(Vec::new()),
         script: ScriptedTransport {
             responses: vec![
-                call(),
+                call("write-canary-denied"),
                 completed_text("write denied"),
-                call(),
+                call("write-canary-accepted"),
                 completed_text("write accepted"),
             ],
             next_response: AtomicUsize::new(0),
@@ -341,6 +341,16 @@ async fn configuration_cold_resume_retains_wire_model_and_read_only_after_defaul
     );
     let bodies = transport.bodies.lock().unwrap();
     assert_eq!(bodies.len(), 4);
+    // Both turns belong to one request history. Provider call identities must
+    // stay distinct even though the canary tool and its arguments are equal.
+    let final_ids: Vec<_> = bodies[3]["input"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| item["type"] == "function_call")
+        .filter_map(|item| item["call_id"].as_str())
+        .collect();
+    assert_eq!(final_ids, ["write-canary-denied", "write-canary-accepted"]);
     assert!(bodies[2..]
         .iter()
         .all(|body| body["model"] == "deepseek-pro"));

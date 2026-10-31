@@ -907,7 +907,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: Responses call ids must be unique before transport"]
     async fn audit_responses_duplicate_call_ids_are_rejected_before_transport() {
         struct CountingTransport {
             calls: Arc<AtomicUsize>,

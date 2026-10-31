@@ -1,4 +1,4 @@
-//! Legacy native history must not send blank tool identities after reopening.
+//! Legacy native history must not send blank or ambiguous tool identities.
 
 use super::*;
 use deepagent_core::{clock::Timestamp, event::EventPayload, response_item::ResponseItem};
@@ -21,8 +21,47 @@ impl HttpTransport for HistoryModel {
     }
 }
 
-async fn observe(id: &str, custom: bool, reject: bool) {
-    const RUN: &str = "h148-reopened-history";
+fn history_pair(id: &str, custom: bool) -> Vec<ResponseItem> {
+    if custom {
+        vec![
+            ResponseItem::CustomToolCall {
+                call_id: id.into(),
+                name: "apply_patch".into(),
+                input: "PRIVATE_ARGUMENTS".into(),
+            },
+            ResponseItem::CustomToolCallOutput {
+                call_id: id.into(),
+                output: "PRIVATE_OUTPUT".into(),
+            },
+        ]
+    } else {
+        vec![
+            ResponseItem::FunctionCall {
+                call_id: id.into(),
+                name: "write_file".into(),
+                arguments: r#"{"path":"never.txt","content":"PRIVATE_ARGUMENTS"}"#.into(),
+            },
+            ResponseItem::FunctionCallOutput {
+                call_id: id.into(),
+                output: "PRIVATE_OUTPUT".into(),
+            },
+        ]
+    }
+}
+
+async fn observe(items: Vec<ResponseItem>, reject: bool) {
+    const RUN: &str = "input-identity-reopened-history";
+    let original_tool_items = items.len();
+    let expected_ids: Vec<_> = items
+        .iter()
+        .filter_map(|item| match item {
+            ResponseItem::FunctionCall { call_id, .. }
+            | ResponseItem::FunctionCallOutput { call_id, .. }
+            | ResponseItem::CustomToolCall { call_id, .. }
+            | ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id.clone()),
+            _ => None,
+        })
+        .collect();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -52,33 +91,8 @@ async fn observe(id: &str, custom: bool, reject: bool) {
             &workspace,
         );
         let session = chat.create_session(None).unwrap();
-        let pair = if custom {
-            vec![
-                ResponseItem::CustomToolCall {
-                    call_id: id.into(),
-                    name: "apply_patch".into(),
-                    input: "PRIVATE_ARGUMENTS".into(),
-                },
-                ResponseItem::CustomToolCallOutput {
-                    call_id: id.into(),
-                    output: "PRIVATE_OUTPUT".into(),
-                },
-            ]
-        } else {
-            vec![
-                ResponseItem::FunctionCall {
-                    call_id: id.into(),
-                    name: "write_file".into(),
-                    arguments: r#"{"path":"never.txt","content":"PRIVATE_ARGUMENTS"}"#.into(),
-                },
-                ResponseItem::FunctionCallOutput {
-                    call_id: id.into(),
-                    output: "PRIVATE_OUTPUT".into(),
-                },
-            ]
-        };
         let store = EventStore::new(&db);
-        for item in pair {
+        for item in items {
             store
                 .append(
                     session.parse().unwrap(),
@@ -120,7 +134,7 @@ async fn observe(id: &str, custom: bool, reject: bool) {
     .expect("bounded offline history run");
     if reject {
         let error =
-            result.expect_err("blank historical call_id must fail before provider transport");
+            result.expect_err("invalid historical call_id must fail before provider transport");
         assert!(error.to_string().contains("call_id"), "{error}");
         assert!(!error.to_string().contains("PRIVATE_"));
         assert!(
@@ -138,8 +152,7 @@ async fn observe(id: &str, custom: bool, reject: bool) {
             .filter_map(|item| item["call_id"].as_str())
             .collect();
         assert_eq!(
-            ids,
-            [id, id],
+            ids, expected_ids,
             "replay must preserve the existing valid identity"
         );
     }
@@ -180,7 +193,7 @@ async fn observe(id: &str, custom: bool, reject: bool) {
                 }
             ))
             .count(),
-        2,
+        original_tool_items,
         "no synthetic identity/pair may enter the durable history"
     );
     drop(chat);
@@ -207,7 +220,7 @@ async fn observe(id: &str, custom: bool, reject: bool) {
 async fn h148_reopened_blank_native_history_fails_without_sending_or_rewriting() {
     for custom in [false, true] {
         for id in ["", " \t"] {
-            observe(id, custom, true).await;
+            observe(history_pair(id, custom), true).await;
         }
     }
 }
@@ -215,6 +228,44 @@ async fn h148_reopened_blank_native_history_fails_without_sending_or_rewriting()
 #[tokio::test]
 async fn h148_reopened_valid_function_and_custom_history_remains_usable() {
     for custom in [false, true] {
-        observe("h148-valid-history", custom, false).await;
+        observe(history_pair("h148-valid-history", custom), false).await;
+    }
+}
+
+#[tokio::test]
+async fn h149_reopened_duplicate_history_fails_without_sending_or_rewriting() {
+    for first_custom in [false, true] {
+        for second_custom in [false, true] {
+            let mut history = history_pair("PRIVATE_DUPLICATE_ID", first_custom);
+            let mut second = history_pair("PRIVATE_DUPLICATE_ID", second_custom);
+            match &mut second[0] {
+                ResponseItem::FunctionCall { arguments, .. } => {
+                    *arguments =
+                        r#"{"path":"never.txt","content":"PRIVATE_SECOND_ARGUMENTS"}"#.into();
+                }
+                ResponseItem::CustomToolCall { input, .. } => {
+                    *input = "PRIVATE_SECOND_ARGUMENTS".into();
+                }
+                _ => unreachable!(),
+            }
+            history.extend(second);
+            observe(history, true).await;
+        }
+    }
+    for custom in [false, true] {
+        let mut history = history_pair("PRIVATE_DUPLICATE_ID", custom);
+        history.push(history[1].clone());
+        observe(history, true).await;
+    }
+}
+
+#[tokio::test]
+async fn h149_reopened_unique_multiple_pairs_remain_usable() {
+    for first_custom in [false, true] {
+        for second_custom in [false, true] {
+            let mut history = history_pair("h149-first", first_custom);
+            history.extend(history_pair("h149-second", second_custom));
+            observe(history, false).await;
+        }
     }
 }
