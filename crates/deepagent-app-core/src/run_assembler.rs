@@ -557,6 +557,13 @@ impl<'a> RunAssembler<'a> {
 
         let (sink, rx) = ChannelSink::new();
         let sink: Arc<dyn RuntimeEventSink> = Arc::new(sink);
+        let call_owner = crate::call_usage::RunCallUsageOwner {
+            db: self.db.clone(),
+            cost: self.cost.clone(),
+            session_id: session_id_str.clone(),
+            run_id: run_id.clone(),
+            events: Arc::downgrade(&sink),
+        };
         let subagent_hooks: Arc<std::sync::OnceLock<Arc<HookRegistry>>> =
             Arc::new(std::sync::OnceLock::new());
         let subagent_parent_checkpoint: Arc<
@@ -764,13 +771,7 @@ impl<'a> RunAssembler<'a> {
             plugin_projection: plugin_projection.as_ref(),
             root: &root,
             sink: sink.clone(),
-            usage_owner: Some(crate::call_usage::RunCallUsageOwner {
-                db: self.db.clone(),
-                cost: self.cost.clone(),
-                session_id: session_id_str.clone(),
-                run_id: run_id.clone(),
-                events: Arc::downgrade(&sink),
-            }),
+            usage_owner: Some(call_owner.clone()),
             client: client.clone(),
             model: model.clone(),
             reasoning_effort,
@@ -1176,7 +1177,8 @@ impl<'a> RunAssembler<'a> {
 
         if execution_features.stall_detector || crate::stall_classifier::stall_detector_enabled() {
             agent = agent.with_stall_classifier(Arc::new(
-                crate::stall_classifier::ModelStallClassifier::new(stall_client, stall_model),
+                crate::stall_classifier::ModelStallClassifier::new(stall_client, stall_model)
+                    .with_call_usage(call_owner.clone()),
             ));
         }
 
@@ -1248,6 +1250,7 @@ impl<'a> RunAssembler<'a> {
             if let Some((av_client, av_model, av_goal)) = adversarial_bits {
                 let spawner = Arc::new(
                     crate::verification_panel::ModelSkepticSpawner::new(av_client, av_model)
+                        .with_call_usage(call_owner.clone())
                         .with_system_prompt(
                             crate::verification_panel::GOAL_COVERAGE_SKEPTIC_PROMPT,
                         ),

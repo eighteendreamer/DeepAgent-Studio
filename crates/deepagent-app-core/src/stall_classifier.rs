@@ -48,6 +48,7 @@ pub fn stall_detector_enabled() -> bool {
 pub struct ModelStallClassifier {
     client: Arc<ModelClient>,
     model: String,
+    call_usage: Option<crate::call_usage::RunCallUsageOwner>,
 }
 
 impl ModelStallClassifier {
@@ -56,7 +57,13 @@ impl ModelStallClassifier {
         Self {
             client,
             model: model.into(),
+            call_usage: None,
         }
+    }
+
+    pub(crate) fn with_call_usage(mut self, owner: crate::call_usage::RunCallUsageOwner) -> Self {
+        self.call_usage = Some(owner);
+        self
     }
 
     fn request(&self, transcript: &str) -> ResponseRequest {
@@ -75,11 +82,19 @@ impl ModelStallClassifier {
         cancel: Option<Arc<AtomicBool>>,
     ) -> Option<StallVerdict> {
         let request = self.request(transcript);
-        let response = match tokio::time::timeout(CLASSIFY_TIMEOUT, async {
-            match cancel {
-                Some(cancel) => self.client.stream_response_cancelled(request, cancel).await,
-                None => self.client.stream_response(request).await,
+        let mut call = match crate::call_usage::SideModelCall::start(
+            self.call_usage.as_ref(),
+            "stall_classification",
+            &self.model,
+        ) {
+            Ok(call) => call,
+            Err(error) => {
+                tracing::warn!(%error, "stall classifier accounting setup failed; failing open");
+                return None;
             }
+        };
+        let response = match tokio::time::timeout(CLASSIFY_TIMEOUT, async {
+            call.stream_response(&self.client, request, cancel).await
         })
         .await
         {
@@ -89,10 +104,17 @@ impl ModelStallClassifier {
                 return None;
             }
             Err(_) => {
+                if let Err(error) = call.finish("timed_out") {
+                    tracing::error!(%error, "timed-out classifier accounting failed");
+                }
                 tracing::warn!("stall classifier timed out; failing open");
                 return None;
             }
         };
+        if let Err(error) = call.finish("completed") {
+            tracing::error!(%error, "stall classifier accounting failed; failing open");
+            return None;
+        }
         let output_text = response.output_text_projection();
         match parse_stall_verdict(&output_text) {
             Ok(verdict) => Some(verdict),

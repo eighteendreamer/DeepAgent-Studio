@@ -2,6 +2,7 @@
 //! physical-request observer, the host's pricing and the existing run ledger.
 //! Results/decisions are deliberately not a prerequisite for booking usage.
 
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, Weak};
 
 use deepagent_core::clock::{Clock, SystemClock};
@@ -12,7 +13,7 @@ use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 use deepagent_runtime::agent::RunUsage;
 use deepagent_runtime::events::{CostOrigin, RuntimeEvent};
-use deepagent_runtime::usage::{CallUsageReport, CallUsageSink};
+use deepagent_runtime::usage::{CallUsageObserver, CallUsageReport, CallUsageSink};
 use deepagent_runtime::RuntimeEventSink;
 
 use crate::cost_service::CostService;
@@ -73,6 +74,7 @@ impl CallUsageSink for OwnedCallUsage {
         let data = serde_json::json!({
             "version":1,
             "purpose":self.purpose,
+            "origin":"side_call",
             "invocation_id":self.invocation_id,
             "provider_id":report.provider_id,
             "model_id":report.model_id,
@@ -137,6 +139,132 @@ impl CallUsageSink for OwnedCallUsage {
                 }
             }
         }
+    }
+}
+
+/// Owns one auxiliary provider request from dispatch through accounting.
+/// The observer is dropped before the lifecycle is closed so a usage snapshot
+/// received before cancellation or timeout is persisted before the call ends.
+pub(crate) struct SideModelCall {
+    sink: Option<Arc<OwnedCallUsage>>,
+    observer: Option<CallUsageObserver>,
+    finished: bool,
+    model: String,
+}
+
+impl SideModelCall {
+    pub(crate) fn start(
+        owner: Option<&RunCallUsageOwner>,
+        purpose: &'static str,
+        model: &str,
+    ) -> Result<Self> {
+        let sink = owner.map(|owner| owner.invocation(EventId::new().to_string(), purpose));
+        if let Some(sink) = &sink {
+            sink.lifecycle("model_side_call_started", "started", model)?;
+        }
+        let mut call = Self {
+            sink,
+            observer: None,
+            finished: false,
+            model: model.to_string(),
+        };
+        if let Some(sink) = &call.sink {
+            call.observer = Some(CallUsageObserver::new(
+                sink.clone(),
+                model.to_string(),
+                false,
+            ));
+        }
+        Ok(call)
+    }
+
+    pub(crate) async fn stream_response(
+        &mut self,
+        client: &deepagent_models::ModelClient,
+        request: deepagent_models::chat::ResponseRequest,
+        cancellation: Option<Arc<AtomicBool>>,
+    ) -> Result<deepagent_models::chat::Response> {
+        let mut noop = deepagent_models::stream::NoopObserver;
+        let observer: &mut dyn deepagent_models::stream::DeltaObserver = match &mut self.observer {
+            Some(observer) => observer,
+            None => &mut noop,
+        };
+        let response = match cancellation {
+            Some(flag) => {
+                client
+                    .stream_response_observed_cancelled(request, observer, flag)
+                    .await
+            }
+            None => client.stream_response_observed(request, observer).await,
+        };
+        if let (Some(observer), Ok(response)) = (&mut self.observer, &response) {
+            observer.completed(response.usage, response.raw_usage.as_ref());
+        }
+        drop(self.observer.take());
+        if response.is_err()
+            || self
+                .sink
+                .as_ref()
+                .is_some_and(|sink| sink.checkpoint().is_err())
+        {
+            self.finish("failed")?;
+        }
+        response
+    }
+
+    pub(crate) fn finish(&mut self, outcome: &'static str) -> Result<()> {
+        if self.finished {
+            return Ok(());
+        }
+        drop(self.observer.take());
+        self.finished = true;
+        if let Some(sink) = &self.sink {
+            let accounting = sink.checkpoint();
+            sink.lifecycle(
+                "model_side_call_finished",
+                if accounting.is_err() {
+                    "accounting_failed"
+                } else {
+                    outcome
+                },
+                &self.model,
+            )?;
+            accounting?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for SideModelCall {
+    fn drop(&mut self) {
+        if let Err(error) = self.finish("cancelled") {
+            tracing::error!(%error, "auxiliary model invocation could not be finalized");
+        }
+    }
+}
+
+impl OwnedCallUsage {
+    fn lifecycle(&self, event_type: &str, outcome: &str, model: &str) -> Result<()> {
+        let store = RunStore::new(&self.owner.db);
+        let parent = store
+            .get(&self.owner.run_id)?
+            .ok_or_else(|| CoreError::not_found("auxiliary model parent run"))?;
+        if parent.session_id != self.owner.session_id {
+            return Err(CoreError::invalid(
+                "auxiliary model parent session mismatch",
+            ));
+        }
+        store.append_event(
+            &self.owner.run_id,
+            SystemClock.now().as_millis(),
+            &parent.state,
+            outcome,
+            event_type,
+            &serde_json::json!({"version":1,"session_id":self.owner.session_id,
+                "invocation_id":self.invocation_id,"purpose":self.purpose,
+                "model_id":model,"outcome":outcome}),
+        )?;
+        Ok(())
     }
 }
 

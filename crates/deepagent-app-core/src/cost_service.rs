@@ -481,9 +481,25 @@ impl CostService {
         &self,
         usage: &[deepagent_runtime::usage::ModelUsage],
     ) -> Result<()> {
+        match self.budget_denial(usage)? {
+            Some(reason) => Err(CoreError::invalid(reason)),
+            None => Ok(()),
+        }
+    }
+
+    /// Optional post-run work may skip an exhausted budget, but must not hide
+    /// policy corruption, calendar failures or database errors as a skip.
+    pub(crate) fn allows_optional_request(&self) -> Result<bool> {
+        Ok(self.budget_denial(&[])?.is_none())
+    }
+
+    fn budget_denial(
+        &self,
+        usage: &[deepagent_runtime::usage::ModelUsage],
+    ) -> Result<Option<String>> {
         let budget = self.budget()?;
         if budget.daily_limit.is_none() && budget.monthly_limit.is_none() {
-            return Ok(());
+            return Ok(None);
         }
         let summary = self.summary_with_budget("", budget)?;
         let measured_cost = usage.iter().try_fold(0.0, |total, route| {
@@ -515,7 +531,7 @@ impl CostService {
         let month_cost = summary.month_cost + measured_cost;
         if let Some(daily) = summary.budget.daily_limit {
             if today_cost >= daily {
-                return Err(CoreError::invalid(format!(
+                return Ok(Some(format!(
                     "daily budget exhausted (￥{:.2} / ￥{:.2})",
                     today_cost, daily
                 )));
@@ -523,13 +539,13 @@ impl CostService {
         }
         if let Some(monthly) = summary.budget.monthly_limit {
             if month_cost >= monthly {
-                return Err(CoreError::invalid(format!(
+                return Ok(Some(format!(
                     "monthly budget exhausted (￥{:.2} / ￥{:.2})",
                     month_cost, monthly
                 )));
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 

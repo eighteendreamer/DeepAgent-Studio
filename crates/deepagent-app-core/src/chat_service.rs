@@ -1153,10 +1153,30 @@ impl ChatService {
     /// auto title from overwriting the explicit one.
     pub async fn maybe_generate_session_title(&self, session_id: &str) -> Result<Option<String>> {
         crate::session_title::generate_session_title(
-            &self.db,
+            self.db.clone(),
             &self.settings,
             self.transport.clone(),
             session_id,
+            self.cost.clone(),
+            None,
+        )
+        .await
+    }
+
+    /// Post-run title refinement pinned to its actual originating run. Use
+    /// this entry point when the caller already knows the run ID.
+    pub async fn maybe_generate_session_title_for_run(
+        &self,
+        session_id: &str,
+        run_id: &str,
+    ) -> Result<Option<String>> {
+        crate::session_title::generate_session_title(
+            self.db.clone(),
+            &self.settings,
+            self.transport.clone(),
+            session_id,
+            self.cost.clone(),
+            Some(run_id),
         )
         .await
     }

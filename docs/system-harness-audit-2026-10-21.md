@@ -2617,6 +2617,8 @@ E-H61-20261027-03（默认回归验收）：`cargo test -p deepagent-app-core --
 
 ### H-63：对抗复核和停滞分类丢弃已返回的 usage，现有会话成本账本漏记附属请求
 
+**修复状态（2026-10-31）：按E-H63-01～06所列本机范围已修复并验收；下列原始审计失败事实保留，不代表全仓/完整分发构建全绿。**
+
 **级别：中（P2）；范围：开启上述可选复核/分类，附属模型请求成功并返回 usage。** 默认关闭开关不能代替开启后的成本正确性；不把这两条链路外推为所有后台模型请求都漏计。
 
 2026-10-25另以正式ChatService验证了主运行结束后的标题入口，作为本项补充证据登记于文末；该入口不依赖上述可选开关。原节的复核/分类覆盖范围保持不变，不将未测附属调用一概判为失败。
@@ -10857,6 +10859,8 @@ E-H288-11（独立提交与回填，2026-10-29）：本项代码、默认回归�
 
 ### H-63 补充证据：正式主运行结束后的会话标题请求同样脱离成本与预算 owner（2026-10-25）
 
+**2026-10-31 续接：本入口与主 H-63 按E-H63-01～06共同验收；下列“未修复”为2026-10-25原始证据状态，保留追溯，不另计问题。**
+
 **首次有效复现后即时记录；P2、未修复。不新增 H-298：这是 H-63/H-235 已识别的附属模型消费归属缺口的新生产入口，不是新的成本存储根因。** 原 H-63 的动态覆盖仅为复核与分类，本轮扩展到标题；没有重跑这些已登记探针，也没有处理 encrypted-content 报错。
 
 - 新增 `crates/deepagent-app-core/tests/kernel_v2_e2e/session_title_usage.rs`，复用已有完整 Responses fixture。调用正式 SettingsService、ChatService、ModelClient、主运行 finalizer、CostService 和文件 SQLite；仅使用临时目录、离线 HttpTransport 与合成 usage。明确配置每百万 token 1 CNY 的合成报价（所有输入/输出分类相同），不引用或伪造官方价格。
@@ -11454,3 +11458,20 @@ Tool Calls 的 strict Beta 文档使用 `/beta`、Chat 嵌套 `function.strict=t
 实际执行 `git diff --check` 退出 0，并完整阅读 `git diff -- docs/system-harness-audit-2026-10-21.md`，确认只增加当前状态/导航、矩阵 anchor 和本收尾章节，没有改写历史复现。提交前仅暂存本报告，既有五类未跟踪文件保持不动。本轮未执行 Rust 编译/测试/clippy、前端 build、真实 UI、默认 CLI、真实 provider 或旧 ignored 探针：本轮无行为、类型、依赖或协议改动，采用文档结构与 diff 验证，不用上轮测试结果冒充本轮运行。
 
 本阶段分析报告至此完成，可进入用户选择的修复阶段。没有新增配置、数据迁移、权限/沙箱改变或外部服务修改；原始缺陷、条件性风险和未验边界继续有效，完成状态不代表它们被修复。code-audit 的人工可达性/排误要求保留了撤销与影响限制，docs-generator 的分层交付要求促成了文首结论导航和本节关闭条件，而不是另造一份与原证据脱节的报告。
+
+
+## H-63 附属模型调用的统一用量归属（2026-10-31，已修复并验收）
+
+原报告：[H-63：对抗复核和停滞分类丢弃已返回的 usage，现有会话成本账本漏记附属请求](system-harness-audit-2026-10-21.md)。本轮包含该编号已有的标题补充证据，不另计问题；不扩修 H-133 的失败 Responses 终帧 parser、工作流用量、未知报价预算策略或并发预算预留。
+
+- **E-H63-01（原始失败与复核）**：`target/h63-original-probe-20261031.log` 中复核/分类实际仅 `11/3`，正确应为 `314/24`、`112/10`；已有修后 `target/h63-final-probe-20261031.log` 达到正确值。标题探针移除 ignore 并修正预算组的标题为空断言后，以 `cargo test -p deepagent-app-core --test kernel_v2_e2e session_title_usage:: --offline -j 1 -- --nocapture --test-threads=1` 再次真实复现 **1 passed / 1 failed / 0 ignored**：普通标题两次请求仍只一行账，预算耗尽仍保存标题。原始日志 `target/h63-title-red-20261031.log` 保留。
+- **E-H63-02（实现与边界）**：复用 H-235 的 `RunCallUsageOwner`、物理请求 `CallUsageObserver`、`CostService::record_run_call` 与现有 costs/run_events，新增单一 `SideModelCall` RAII 生命周期，接入 skeptic/classifier/title；不再依赖文本/判定是否采用，不并入主上下文 gauge，不在 finalizer 再结算。标题以原 run_id 归属，旧 ChatService 方法仍保留 latest-run 兼容入口；无父 run 不派发。CostService 将预算拒绝理由与基础设施错误分离，普通与可选调用共用同一判定，超限跳过标题而损坏策略/数据库错误传播。标题 20 秒时限是本地可选任务策略，复用 Tokio timeout，不冒称供应商能力。
+- **E-H63-03（首轮标题实测）**：相同正式测试 **8 passed / 0 failed / 0 ignored**（构建4m12s、测试24.58s，`target/h63-title-green-20261031.log`）。正常标题累计 `3000/107/cache2300/miss700`、合成价 `0.003107`；耗尽预算组只主请求 `1000/100`、一行账、标题 None。另覆盖空输出、已观测usage后transport失败、用户请求中重命名、外层future drop、真实20秒timeout、精确旧run/错误run归属、损坏预算、写账失败及主终态不改写；文件SQLite独立连接重开检查。追加手动重试与缺价 token 保留回归后仍待最终门禁，不以这8项代表最新9项全部通过。
+
+- **E-H63-04（共享门禁阶段结果，尚未验收）**：`cargo test -p deepagent-app-core --lib --offline -j 1 -- --nocapture --test-threads=2` 实际 exit101，**1385 passed / 1 failed / 49 ignored**，测试136.86秒；19条 call_usage（含H-235原hook边界与5条新增side消费者）、H-63原探针、可选预算准入单测均通过。唯一失败为未修改的 `verification_commands::lifecycle_tests::dropping_active_verification_future_stops_real_descendant`：真实冷编译 fixture 在4004ms未出现 compiler-started，不能把此次全库结果称全绿，也未放宽该项4秒窗口。`target/h63-appcore-lib-20261031.log` 原样保留。桌面依赖首次offline安装缺tarball，随后按锁文件正常安装成功；`pnpm build` exit1，前置测试已执行，但在未修改的wedecode资源哈希门禁退出（期望7a1c…，实际96a6…）；未修改许可/期望哈希，独立HEAD字节诊断也未匹配期望，不能直接认定仅CRLF或将诊断当门禁通过。后续独立执行 `pnpm prebundle-skills`、`pnpm exec tsc --noEmit`、`pnpm exec vite build` 实际全部exit0，Vite77秒，保留既有externalization/大chunk警告；这不是完整pnpm build通过。日志为h63-desktop-{install,install-online,build,remaining,license-baseline}-20261031*。13份受影响Rust源码/测试已冻结SHA256且复核零变化，306条唯一台账、除H-63外305行逐字未变；当前110验收/21跳过/7归并/2撤销/165待修/1修复中。唯一顺序门禁脚本 `target/h63-gates-20261031.ps1` 已启动CLI build→完整workspace→严格Clippy/fmt→独立Tauri check，使用隔离HOME/APPDATA与离线Cargo，结果持续写入h63-gates-results-20261031.json；当前尚未全部终态、最新9项标题回归尚未完成，未提交、未清理生成产物。
+
+- **E-H63-05（完整工作区与HEAD因果对照）**：完整 `cargo test --workspace --offline --no-fail-fast -j 1 -- --test-threads=2` 已终态exit101、1804.11秒（含冷编译/等待），133结果块合计 **3980 passed / 5 failed / 254 ignored**。AppCore lib **1386/0/58**，先前H-64 fixture就绪失败在本次所需全量门禁中未重现；Kernel集成 **210/4/46**，H-63最新标题 **9项全默认通过**，19条call_usage、原复核/分类探针及可选预算单测通过。失败为未修改的H-306空defaultUserPrompt，及fallback_cost两项、hook_usage两项的既有预算契约冲突，未以全仓全绿验收。为排除本轮共享成本改动，使用 `git archive HEAD` 导出d434f4f228757899fc8c1fba791720789f48acae，单独离线执行原fallback_cost::与hook_usage::：分别 **2 passed/2 failed/0 ignored**、**7 passed/2 failed/0 ignored**，同四项在相同unwrap处报daily budget exhausted；没有将断言改为接受失败。17份相关源码/入口/Cargo输入经CRLF归一化与HEAD逐份一致，新增H-63 side测试在导出中不存在；只证明代码内容对照，不宣称原始字节一致。Windows tar初次在三份非构建中文文档名上失败，随后明确重提取crates/apps与Cargo构建输入成功；准备检查误包含新增测试、未归一化CRLF的失败记录也保留，不作为产品失败或通过。基线原型/日志见h63-baseline-{commit,result,fallback,hooks,source-normalized-check}-20261031*，未覆盖工作树源码、未动真实数据。HEAD导出的wedecode以原哈希函数仍得96a6…，同当前工作树均不符记录值7a1c…，该资源校验未扩修。上述对照不能替代预算契约根因复核；下一轮应优先核对既有H-272门禁与这些场景的契约，不在H-63混修。CLI build exit0、213.22秒；全仓严格Clippy仍在未改models/client.rs:355 clone_on_copy退出，AppCore all-targets/all-features/no-deps严格Clippy为11项既有诊断；根fmt及独立Tauri fmt有未改段落差异，本轮Tauri标题调用段不在差异内。Tauri后端check仍在同一门禁会话执行，当前未验收或提交。
+
+- **E-H63-06（最终验收与范围，2026-10-31）**：独立Tauri首次check exit101、684.00秒，原因是配置要求的 `binaries/deepagent-x86_64-pc-windows-msvc.exe` 尚未准备，而非本轮Rust错误。按当前tauri.conf.json externalBin、CLI Cargo.toml bin名及rustc host，复制本轮已真实构建的79,369,728字节CLI为该忽略sidecar，源/目标SHA256一致且目标原先不存在；未用占位文件、未删除externalBin或跳过build.rs。仅补跑原Tauri check，**exit0、35.79秒**（h63-tauri-check-resumed/resumed-result/sidecar-preparation证据），原失败保留。13份冻结源码/测试再次零变化，改动Rust文件定向fmt及diff通过；Tauri标题调用段无格式差异，整文件旧差异仍保留。原复核/分类探针、19条真实计量/原hook回归、9条标题回归、1条可选预算单测共30条默认检查均实际通过，覆盖所列成功/不采用/解析失败、已观测usage后的错误/取消/drop/timeout、重复终帧、手动重试、缺价tokens、缺成本服务、归属/重开、写账失败与正常对照。复用原RunStore/CostService/costs/run_events，不混入上下文gauge或主finalizer重复结算，主run仍唯一终态。按Windows本机、临时SQLite/工作区、离线模型transport及所列CLI/桌面编译消费方范围，**H-63已修复并验收**；完整workspace五失败、完整pnpm build许可哈希失败及严格lint/fmt基线均按E-04～05原样保留，不称全仓或完整分发构建通过。未验真实供应商账单、其他OS、真实GUI/Stop按钮、并发预算预留、强杀/断电/全DB不可写；H-133未被parser暴露的failed usage和无价预算策略仍独立。标题主stream已关闭，只追加持久化receipt/可查询summary，不保证UI立即刷新这部分费用；外层future drop验收不是UI取消验收。仅提交本项13份Rust源码/测试及两份当时文档，取得fix hash后另做docs回填，不amend/推送/建PR。下一项优先复核既有H-272门禁与本次HEAD已复现的fallback/hook预算契约冲突，不在本项混修或贸然改其状态。新增验收1，累计111验收/21历史跳过/7归并/2撤销/165待修/0修复中，165有效未关闭；其余305台账主行不变。总剩余200–400有效修复与验收小时仍是历史未逐项校准粗估，依据剩余跨层执行/权限/事件/持久化/工作流范围；本次冷编译、锁与环境等待另计，不承诺精确日期。整体goal active，本项源码提交及编译缓存收尾尚待执行。
+
+本项按所列Windows本机范围已验收；修复提交尚待生成，取得真实hash后回填。Rust 公共底层 `session_title::generate_session_title` 参数改为显式 Arc 数据库、可选成本与父run；仓内唯一调用方已同步，仓外直接调用方需适配，ChatService 旧方法/Tauri command 和事件 DTO 不变。桌面改为使用已知 run_id，失败记录诊断而不修改主运行成功；没有 SQL 迁移、新依赖、权限/沙箱放宽。真实供应商收费、其他OS、GUI、进程强杀/断电及原子用户重命名未验；主run后的附属生命周期只追加审计事件，不制造第二个终态。本项所列本机验收剩余0，提交与缓存收尾另记；全部剩余200–400有效小时仍为历史未逐项校准粗估，构建、设备、依赖及环境等待另计，不能据此承诺日期。整体 goal active。

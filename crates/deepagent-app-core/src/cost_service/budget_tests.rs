@@ -352,3 +352,25 @@ fn measured_run_usage_counts_against_budget_before_finalization() {
         .to_string();
     assert!(error.contains("daily budget exhausted"), "{error}");
 }
+
+#[test]
+fn optional_request_admission_distinguishes_exhaustion_from_broken_policy_or_storage() {
+    let service = CostService::new(Arc::new(Database::open_in_memory().unwrap()));
+    assert!(service.allows_optional_request().unwrap());
+    for budget in [limits(0.0, 10.0), limits(10.0, 0.0)] {
+        service.set_budget(budget).unwrap();
+        assert!(service.check_budget().is_err());
+        assert!(!service.allows_optional_request().unwrap());
+    }
+    put_body(&service.db, "{");
+    assert!(service.allows_optional_request().is_err());
+    service
+        .db
+        .with_conn(|connection| {
+            connection
+                .execute_batch("ALTER TABLE documents RENAME TO unavailable_documents")
+                .map_err(|e| CoreError::Persistence(e.to_string()))
+        })
+        .unwrap();
+    assert!(service.allows_optional_request().is_err());
+}

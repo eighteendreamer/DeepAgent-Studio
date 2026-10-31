@@ -1,11 +1,12 @@
 //! Session title generation from conversation history.
 //!
 //! Extracted from `chat_service` so the title-generation concern lives in its
-//! own module. The public entry point mirrors the old `ChatService` method so
-//! callers do not change.
+//! own module. Requests share the run-owned auxiliary usage boundary, including
+//! when their text is empty or a concurrent user rename wins.
 
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
@@ -14,8 +15,11 @@ use deepagent_core::message::Role;
 use deepagent_models::transport::HttpTransport;
 use deepagent_models::{ModelClient, ModelConfig, ModelRole, ReasoningEffort};
 use deepagent_persistence::event_store::EventStore;
+use deepagent_persistence::run_store::RunStore;
 use deepagent_persistence::Database;
 
+use crate::call_usage::{RunCallUsageOwner, SideModelCall};
+use crate::cost_service::CostService;
 use crate::input_runtime::full_history_from_events;
 use crate::settings::{SettingsService, WebSearchProvider};
 
@@ -28,19 +32,27 @@ const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
     "Keep it short and specific."
 );
 
+// Local policy for optional post-run work, not a provider capability.
+const TITLE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Generate and persist an AI title for a session when it is still
 /// untitled. Intended for post-run refinement: if the user renames the
 /// session before generation finishes, the second title check prevents the
 /// auto title from overwriting the explicit one.
+/// `parent_run` pins attribution across concurrent continuations. Legacy
+/// callers without a run ID use the latest persisted run; no run means no
+/// dispatch rather than an unowned paid request.
 pub async fn generate_session_title(
-    db: &Database,
+    db: Arc<Database>,
     settings_svc: &SettingsService,
     transport: Arc<dyn HttpTransport>,
     session_id: &str,
+    cost: Option<Arc<CostService>>,
+    parent_run: Option<&str>,
 ) -> Result<Option<String>> {
     let id = SessionId::from_str(session_id)
         .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
-    let store = EventStore::new(db);
+    let store = EventStore::new(&db);
     let Some(record) = store.get_session(id)? else {
         return Err(CoreError::not_found(format!("session {session_id}")));
     };
@@ -83,6 +95,37 @@ pub async fn generate_session_title(
         return Ok(None);
     }
 
+    let runs = RunStore::new(&db);
+    let parent = match parent_run {
+        Some(run_id) => Some(
+            runs.get(run_id)?
+                .ok_or_else(|| CoreError::not_found("session title parent run"))?,
+        ),
+        None => runs.list_for_session(session_id)?.into_iter().next(),
+    };
+    let Some(parent) = parent else {
+        tracing::debug!(%session_id, "session title skipped: no parent run");
+        return Ok(None);
+    };
+    if parent.session_id != session_id {
+        return Err(CoreError::invalid("session title parent session mismatch"));
+    }
+    if let Some(cost) = &cost {
+        if !cost.allows_optional_request()? {
+            tracing::debug!(%session_id, run_id = %parent.id, "session title skipped: budget exhausted");
+            return Ok(None);
+        }
+    }
+    let owner = RunCallUsageOwner {
+        db: db.clone(),
+        cost,
+        session_id: session_id.to_string(),
+        run_id: parent.id,
+        // The main runtime channel is already closed. Durable receipts remain
+        // in the same run_events ledger; do not invent another live run.
+        events: std::sync::Weak::<deepagent_runtime::NullEventSink>::new(),
+    };
+
     let settings = settings_svc
         .load()?
         .ok_or_else(|| CoreError::invalid("project not initialized: set an API key first"))?;
@@ -109,7 +152,7 @@ pub async fn generate_session_title(
     let client = Arc::new(ModelClient::new(transport, config));
 
     let request = deepagent_models::chat::ResponseRequest::with_instructions_and_user_input(
-        model,
+        model.clone(),
         SESSION_TITLE_SYSTEM_PROMPT,
         format!(
             "Create a short conversation title from this transcript:\n\n{}",
@@ -119,7 +162,18 @@ pub async fn generate_session_title(
     .streaming()
     .with_max_output_tokens(48)
     .with_reasoning_effort(ReasoningEffort::None);
-    let response = client.stream_response(request).await?;
+    let mut call = SideModelCall::start(Some(&owner), "session_title", &model)?;
+    let response =
+        match tokio::time::timeout(TITLE_TIMEOUT, call.stream_response(&client, request, None))
+            .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                call.finish("timed_out")?;
+                return Err(CoreError::other("session title generation timed out"));
+            }
+        };
+    call.finish("completed")?;
     let Some(title) = normalize_generated_session_title(&response.output_text_projection()) else {
         return Ok(None);
     };
