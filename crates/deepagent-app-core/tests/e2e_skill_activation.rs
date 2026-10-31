@@ -314,10 +314,10 @@ fn snapshot_skill_tool(svc: &SkillsService) -> SkillTool {
 ///    visible registered id;
 /// 2. when the model responds with `tool_call: skill({id: "X"})` the
 ///    [`SkillTool`] returns the body + base_dir for that id;
-/// 3. turn-1 system message does NOT re-announce already-sent ids
-///    (send-once delta semantics);
+/// 3. turn-1 system message retains the complete catalog for a stateless
+///    continuation;
 /// 4. installing a new skill mid-session causes the next turn's reminder
-///    to carry just the new id as a delta;
+///    to carry the complete updated catalog;
 /// 5. a skill carrying `disable-model-invocation: true` is invisible to
 ///    both the catalog reminder AND the skill tool channel.
 ///
@@ -339,7 +339,7 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
     // emits content (terminates turn); turn-2 attempts to call the
     // user-only skill (must be rejected); turn-3 emits content after the
     // marketplace install; turn-4 emits content with a fresh state
-    // (re-announce path).
+    // (state-reset path).
     let mut llm = MockLlmClient::new(vec![
         CannedAssistant::SkillCall {
             args: serde_json::json!({ "id": "built-in-alpha", "args": "from-test" }),
@@ -462,14 +462,23 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
         base_path.join("SKILL.md").display()
     );
 
-    // ---- Turn 1: catalog reminder is NOT re-sent ------------------------
+    // ---- Turn 1: catalog reminder survives continuation -----------------
     //
-    // Validates R5.5 (send-once: the same set of ids must not re-appear in
-    // subsequent turns).
+    // A stateless model request must retain the full current catalog.
     let prompt1 = render_turn_system_prompt(&mut state, svc.manager().registry(), &settings);
     assert!(
-        !prompt1.contains("<available-skills>"),
-        "turn-1 prompt MUST NOT repeat the unchanged catalog reminder; got:\n{prompt1}"
+        prompt1.contains("<available-skills>"),
+        "turn-1 prompt MUST retain the catalog reminder; got:\n{prompt1}"
+    );
+    for expected in ["- built-in-alpha:", "- user-bravo:"] {
+        assert!(
+            prompt1.contains(expected),
+            "turn-1 prompt MUST retain '{expected}'; got:\n{prompt1}"
+        );
+    }
+    assert!(
+        !prompt1.contains("- user-secret:"),
+        "turn-1 prompt MUST still omit disable-model-invocation skill; got:\n{prompt1}"
     );
     let CannedAssistant::Content = llm.take_turn(&prompt1) else {
         panic!("script[1] must be Content (turn-1 finalizes)");
@@ -540,10 +549,10 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
         installed_dir.display()
     );
 
-    // ---- Turn 3: delta reminder carries ONLY the new id -----------------
+    // ---- Turn 3: updated reminder carries the complete current catalog ---
     //
-    // Validates R5.6: install → next turn's reminder is the delta (just
-    // marketplace-charlie), not a full re-announce.
+    // Installing a skill must update the complete current catalog presented to
+    // the next stateless request.
     let prompt3 = render_turn_system_prompt(&mut state, svc.manager().registry(), &settings);
     assert!(
         prompt3.contains("<available-skills>"),
@@ -554,12 +563,12 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
         "turn-3 reminder MUST announce the newly-installed marketplace-charlie; got:\n{prompt3}"
     );
     assert!(
-        !prompt3.contains("- built-in-alpha:"),
-        "turn-3 delta reminder MUST NOT repeat built-in-alpha; got:\n{prompt3}"
+        prompt3.contains("- built-in-alpha:"),
+        "turn-3 reminder MUST retain built-in-alpha; got:\n{prompt3}"
     );
     assert!(
-        !prompt3.contains("- user-bravo:"),
-        "turn-3 delta reminder MUST NOT repeat user-bravo; got:\n{prompt3}"
+        prompt3.contains("- user-bravo:"),
+        "turn-3 reminder MUST retain user-bravo; got:\n{prompt3}"
     );
     assert!(
         !prompt3.contains("- user-secret:"),
@@ -569,13 +578,12 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
         panic!("script[3] must be Content (post-install turn)");
     };
 
-    // ---- Bonus: explicit reset re-announces every visible id ------------
+    // ---- Bonus: explicit reset keeps the full visible catalog ------------
     //
     // The chat-service's [`ChatService::reset_sent_skills`] / `reset_all_
     // sent_skills` routes (called from `reload_skills`/`uninstall_skill`/
-    // `skill_market_install`) clear the per-session state so the next
-    // turn re-announces the full visible registry. We exercise that path
-    // explicitly to lock in the contract (Property 11 belt-and-braces).
+    // `skill_market_install`) clear the per-session state. We exercise that
+    // path explicitly to ensure the current registry remains complete.
     state.reset();
     let prompt4 = render_turn_system_prompt(&mut state, svc.manager().registry(), &settings);
     assert!(
@@ -589,7 +597,7 @@ async fn end_to_end_skill_activation_through_catalog_and_tool() {
     ] {
         assert!(
             prompt4.contains(expected),
-            "post-reset reminder MUST re-announce '{expected}'; got:\n{prompt4}"
+            "post-reset reminder MUST retain '{expected}'; got:\n{prompt4}"
         );
     }
     assert!(

@@ -2574,7 +2574,6 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: announced MCP instructions must remain in later stateless requests"]
 async fn audit_mcp_instructions_survive_continuation_on_wire() {
     use deepagent_app_core::{McpServerDto, McpService};
     use std::time::Duration;
@@ -2758,7 +2757,6 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: advertised skill catalog must remain visible in continued requests"]
 async fn audit_skill_catalog_survives_continuation_on_wire() {
     use deepagent_app_core::SkillsService;
     use deepagent_skills::{frontmatter, Skill, SkillManager, SkillOrigin};

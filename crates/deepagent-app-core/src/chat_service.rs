@@ -152,12 +152,10 @@ pub struct ChatService {
     /// When unset, behavior is identical to before this feature existed —
     /// preserving backward compatibility (Property 9).
     skills: Option<Arc<std::sync::Mutex<crate::skills_service::SkillsService>>>,
-    /// Per-session catalog send-once tracker. The chat service consults
-    /// (and mutates) this each turn to figure out the delta to inject into
-    /// the system prompt. Mutation of the registry (install / uninstall /
-    /// reload / marketplace install) clears entries via
-    /// [`ChatService::reset_sent_skills`] / [`reset_all_sent_skills`] so
-    /// the next turn re-announces the changed entries.
+    /// Per-session catalog render state. The chat service updates this each
+    /// turn for diagnostics/reset compatibility; the current full catalog is
+    /// injected on every request so stateless continuations do not depend on
+    /// this process-local marker.
     skill_catalog_state: Arc<
         std::sync::Mutex<
             std::collections::HashMap<String, crate::skill_catalog_reminder::SkillCatalogSendState>,
@@ -578,9 +576,8 @@ impl ChatService {
     /// - registers the `skill` built-in tool (channel B of the auto-activation
     ///   design) over a fresh [`SkillRegistry`][deepagent_skills::SkillRegistry]
     ///   snapshot, and
-    /// - injects the `<available-skills>` catalog reminder (channel A) into
-    ///   the system prompt whenever the per-session send-once tracker shows
-    ///   a non-empty delta.
+    /// - injects the current `<available-skills>` catalog reminder (channel A)
+    ///   into every system prompt.
     ///
     /// Without it, runs behave exactly as before this feature existed: no
     /// `skill` tool, no catalog reminder. This preserves the byte-equivalent
@@ -593,24 +590,21 @@ impl ChatService {
         self
     }
 
-    /// Forget the per-session catalog send-once state for `session_id` so
-    /// the next turn re-announces the full visible registry.
+    /// Forget the per-session catalog render state for `session_id`.
     ///
-    /// The Tauri command layer calls this after `reload_skills` /
+    /// The Tauri command layer may call this after `reload_skills` /
     /// `install_skill` / `uninstall_skill` / `skill_market_install` succeed
-    /// — anything that materially changes the skill set. Without the reset,
-    /// a freshly-installed skill would not appear in the next turn's
-    /// reminder until the session restarted.
+    /// — anything that materially changes the skill set — to clear diagnostic
+    /// state. The next request reads the live registry regardless.
     pub fn reset_sent_skills(&self, session_id: &str) {
         if let Ok(mut map) = self.skill_catalog_state.lock() {
             map.remove(session_id);
         }
     }
 
-    /// Forget every session's catalog send-once state. Used by the Tauri
-    /// command layer when a global change to the skill registry has
-    /// happened (e.g. `reload_skills`, marketplace install): the next turn
-    /// of every active session re-announces the full visible registry.
+    /// Forget every session's catalog render state. Used by the Tauri command
+    /// layer when a global change to the skill registry has happened; the next
+    /// turn still renders the current full visible registry.
     pub fn reset_all_sent_skills(&self) {
         if let Ok(mut map) = self.skill_catalog_state.lock() {
             map.clear();

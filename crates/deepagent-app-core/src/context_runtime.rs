@@ -1408,10 +1408,11 @@ pub(crate) struct RunContextRequest<'a> {
     /// This is the full-block fallback: when per-session delta mode is disabled
     /// (or no entries are available) the whole block is sent every turn.
     pub(crate) mcp_instructions_block: Option<&'a str>,
-    /// Unrendered `(server_name, instructions)` pairs for per-session delta
-    /// rendering. When present, only servers not yet announced this session
-    /// (reconstructed from `prior_events`) are rendered, mirroring Claude Code's
-    /// `mcpInstructionsDelta`. `None` keeps the `mcp_instructions_block` path.
+    /// Unrendered `(server_name, instructions)` pairs for the current ready
+    /// snapshot. When present, the complete current snapshot is rendered on
+    /// every request so a stateless provider never has to recover an earlier
+    /// system header from process-local or event-only state. `None` keeps the
+    /// `mcp_instructions_block` path.
     pub(crate) mcp_instructions_entries: Option<&'a [(String, String)]>,
     pub(crate) tool_manifest: &'a ToolManifest,
     pub(crate) skills: Option<&'a Arc<Mutex<SkillsService>>>,
@@ -1562,45 +1563,20 @@ pub(crate) async fn build_run_context(request: RunContextRequest<'_>) -> Result<
 
 /// Resolve the MCP-instructions block this turn should present.
 ///
-/// With the per-session delta mode enabled (the default) only servers not yet
-/// announced to the model are rendered, so a multi-server session no longer
-/// re-sends every server's `instructions` on each turn — the context-weight
-/// counterpart to Claude Code's `mcpInstructionsDelta` attachment. Either of
-/// two conditions falls back to the full-block path:
-/// - `DEEPAGENT_MCP_INSTR_DELTA=false` (explicit opt-out), or
-/// - no entries are supplied (the older, block-only plumbing).
+/// A model request is stateless with respect to the previous system header, so
+/// the current ready snapshot is the source of truth and is rendered in full
+/// on every request. The old event-backed delta calculation remains useful for
+/// lifecycle diagnostics, but it must not decide whether instruction content is
+/// present in the next wire request.
 fn mcp_instructions_block_for_run(
     full: Option<&str>,
     entries: Option<&[(String, String)]>,
-    prior_events: &[Event],
+    _prior_events: &[Event],
 ) -> Option<String> {
-    if !mcp_instructions_delta_enabled() {
-        return full.map(str::to_string);
+    if let Some(entries) = entries {
+        return crate::mcp_runtime::render_mcp_instruction_entries(entries);
     }
-    let Some(entries) = entries else {
-        return full.map(str::to_string);
-    };
-    if entries.is_empty() {
-        return None;
-    }
-    let announced = crate::input_runtime::collect_announced_mcp_servers_from_events(prior_events);
-    let added: Vec<(String, String)> = entries
-        .iter()
-        .filter(|(name, _)| !announced.contains(name))
-        .cloned()
-        .collect();
-    crate::mcp_runtime::render_mcp_instruction_entries(&added)
-}
-
-/// Opt-out switch for the per-session MCP-instructions delta. Defaults to on
-/// (delta is the context-reduction default); set `DEEPAGENT_MCP_INSTR_DELTA=false`
-/// to restore full-block re-sending per turn.
-fn mcp_instructions_delta_enabled() -> bool {
-    match std::env::var("DEEPAGENT_MCP_INSTR_DELTA") {
-        Ok(v) if v.eq_ignore_ascii_case("false") || v == "0" => false,
-        Ok(v) if v.eq_ignore_ascii_case("true") || v == "1" => true,
-        _ => true,
-    }
+    full.map(str::to_string)
 }
 
 fn build_skill_catalog_blocks(
@@ -3826,8 +3802,7 @@ mod tests {
         }
     }
 
-    /// First turn of a session: no server announced yet, so the whole block is
-    /// rendered for the first (and only first) time.
+    /// The current ready snapshot is rendered in full on the first turn.
     #[test]
     fn mcp_instructions_renders_full_block_before_any_announcement() {
         let entries: Vec<(String, String)> = vec![
@@ -3841,11 +3816,10 @@ mod tests {
         assert!(block.contains("do Y"));
     }
 
-    /// Second turn: `alpha` was announced last turn, so the rendered block only
-    /// carries `beta`. Rendered `added` must equal what `mcp_instructions_delta`
-    /// reports — the two paths can never disagree.
+    /// A continuation is stateless with respect to the previous system header,
+    /// so an earlier announcement must not suppress the current snapshot.
     #[test]
-    fn mcp_instructions_renders_only_unanounced_servers_after_first_turn() {
+    fn mcp_instructions_renders_current_snapshot_after_prior_announcement() {
         let sid = deepagent_core::id::SessionId::nil();
         let entries: Vec<(String, String)> = vec![
             ("alpha".into(), "do X".into()),
@@ -3860,8 +3834,8 @@ mod tests {
             },
         )];
         let block = mcp_instructions_block_for_run(None, Some(&entries), &prior).unwrap();
-        assert!(!block.contains("## alpha"), "alpha already announced");
-        assert!(!block.contains("do X"));
+        assert!(block.contains("## alpha"), "alpha must be retained");
+        assert!(block.contains("do X"));
         assert!(block.contains("## beta"));
         assert!(block.contains("do Y"));
 
@@ -3871,9 +3845,8 @@ mod tests {
         assert!(removed.is_empty(), "no server should be retracted here");
     }
 
-    /// A server that disconnected (dropped its instructions) is not rendered by
-    /// the delta path — there is nothing new to say — but the retraction is
-    /// reported so the persisted event can rebuild the announced set on resume.
+    /// A disconnected server is omitted from the current snapshot, while the
+    /// lifecycle delta still reports its retraction for persistence.
     #[test]
     fn mcp_instructions_retracts_disconnected_server() {
         let sid = deepagent_core::id::SessionId::nil();
@@ -3888,10 +3861,9 @@ mod tests {
         )];
         let entries: Vec<(String, String)> = vec![("alpha".into(), "do X".into())];
         let block = mcp_instructions_block_for_run(None, Some(&entries), &prior);
-        assert!(
-            block.is_none(),
-            "nothing new to render after both were announced"
-        );
+        let block = block.expect("the connected current snapshot remains visible");
+        assert!(block.contains("## alpha"));
+        assert!(block.contains("do X"));
 
         let announced = crate::input_runtime::collect_announced_mcp_servers_from_events(&prior);
         let (added, removed) = crate::input_runtime::mcp_instructions_delta(&entries, &announced);
@@ -3899,9 +3871,9 @@ mod tests {
         assert_eq!(removed, vec!["beta".to_string()]);
     }
 
-    /// Reconnecting a previously-announced server does not re-announce it (the
-    /// announced set is cumulative), and the full-block entry path is preserved
-    /// as a fallback for callers without entries.
+    /// Reconnecting a previously-announced server still renders its current
+    /// instructions, and the full-block entry path is preserved for callers
+    /// without entries.
     #[test]
     fn mcp_instructions_resume_reports_no_duplicate_announcement() {
         let sid = deepagent_core::id::SessionId::nil();
@@ -3913,22 +3885,22 @@ mod tests {
                 removed: vec![],
             },
         )];
-        // Same entries as turn one; nothing should be freshly announced.
+        // Same entries as turn one; the content must still be present.
         let entries: Vec<(String, String)> = vec![("alpha".into(), "do X".into())];
         let block = mcp_instructions_block_for_run(None, Some(&entries), &prior);
-        assert!(block.is_none());
+        assert!(block.unwrap().contains("do X"));
 
         // Full-block fallback: entries = None keeps the old behavior verbatim.
         let full = mcp_instructions_block_for_run(Some("full block"), None, &prior);
         assert_eq!(full.as_deref(), Some("full block"));
     }
 
-    /// Token-baseline measurement for the MCP delta (S1-3 / §5): once a few
-    /// servers have been announced, the per-turn block carries only the
-    /// not-yet-announced remainder, so per-turn MCP-instruction pressure drops
-    /// monotonically as the session progresses and converges to nothing.
+    /// The current ready snapshot is deliberately re-injected on every turn;
+    /// this is the chosen H-57 trade-off that keeps stateless continuations
+    /// correct instead of treating a prior event-only announcement as model
+    /// content.
     #[test]
-    fn mcp_instructions_delta_slashes_per_turn_token_pressure() {
+    fn mcp_instructions_reinjects_current_snapshot() {
         let counter = HeuristicTokenizer::new();
         let make_server = |n: usize| -> (String, String) {
             (
@@ -3946,7 +3918,7 @@ mod tests {
             "full block over 5 verbose servers is sizable (got {full_tokens})"
         );
 
-        // Turn 2: three already announced → only two remain in the prompt.
+        // Prior announcements do not remove content from the current request.
         let sid = deepagent_core::id::SessionId::nil();
         let announced = vec![mcp_event(
             sid,
@@ -3956,16 +3928,15 @@ mod tests {
                 removed: vec![],
             },
         )];
-        let delta_block = mcp_instructions_block_for_run(None, Some(&entries), &announced)
-            .expect("two servers remain");
-        let delta_tokens = counter.count(&delta_block);
+        let current_block = mcp_instructions_block_for_run(None, Some(&entries), &announced)
+            .expect("current snapshot renders");
+        let current_tokens = counter.count(&current_block);
         assert!(
-            delta_tokens <= full_tokens * 2 / 3,
-            "fewer servers announced must shrink the block (delta {delta_tokens} vs full {full_tokens})"
+            current_tokens >= full_tokens,
+            "current snapshot must retain all instruction content (current {current_tokens} vs full {full_tokens})"
         );
 
-        // Turn 3: the rest announced → zero new instructions (idempotent
-        // convergence, same inputs as before must yield nothing new).
+        // Fully-announced history still does not suppress the current block.
         let rest = [mcp_event(
             sid,
             1,
@@ -3976,9 +3947,8 @@ mod tests {
         )];
         let combined = [announced[0].clone(), rest[0].clone()];
         let converged = mcp_instructions_block_for_run(None, Some(&entries), &combined);
-        assert!(
-            converged.is_none(),
-            "fully-announced session adds no MCP block"
-        );
+        let converged = converged.expect("fully-announced history still needs content");
+        assert!(converged.contains("server-0"));
+        assert!(converged.contains("server-4"));
     }
 }
