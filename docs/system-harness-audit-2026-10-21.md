@@ -2520,7 +2520,7 @@ E-H58-20261027-15（独立提交与真实hash回填）：生产修复、默认�
 
 ### H-59：WASM 调用完成后遗留的 watchdog 中断共享引擎上的后续调用
 
-**级别：中（P2，启用可选功能时影响执行正确性；本机 Windows trap 路径另有宿主退出风险）。** `deepagent-tools` / `deepagent-app-core` 的 `wasm` feature 默认关闭，当前桌面与 CLI manifest 未启用它；不能据此解释默认桌面聊天卡顿或取消。触发需共享同一 WasmSandbox、后续 guest 跨过旧 watchdog 的期限，且尚未被自己的 fuel/timeout 限制结束。
+**级别：中（P2，启用可选功能时影响执行正确性；本机 Windows trap 路径另有宿主退出风险）；状态：已修复并验收（2026-10-31，仅限所列 Windows 本机与离线 feature 范围）。** `deepagent-tools` / `deepagent-app-core` 的 `wasm` feature 默认关闭，当前桌面与 CLI manifest 未启用它；不能据此解释默认桌面聊天卡顿或取消。触发需共享同一 WasmSandbox、后续 guest 跨过旧 watchdog 的期限，且尚未被自己的 fuel/timeout 限制结束。
 
 - 生产路径：`deepagent-app-core/src/wasm_tools.rs::register_wasm_tools` 为发现的工具共享一个 WasmSandbox；`SandboxedTool::invoke` 在 blocking 任务中调用正式 `run_json`。`deepagent-tools/src/wasm.rs` 每次创建新 Store，却都设置 `set_epoch_deadline(1)`，再启动独立线程 sleep 后 `engine.increment_epoch()`；成功返回仅 drop JoinHandle，使旧线程继续运行。后续 Store 的一跳期限会被前一个调用的线程满足；并发调用也有相同的共享时钟风险，但本轮只动态验证顺序调用。
 - 直接 API 依据为本地 Cargo.lock 锁定的 Wasmtime 27.0.0 源码：`runtime/store.rs::set_epoch_deadline` 的 tick 相对同 Engine 的当前 epoch，默认到期 trap；`engine.rs::increment_epoch` 增加 Engine 内的单一 AtomicU64。已联网核对上游同版本 [Store 源码](https://raw.githubusercontent.com/bytecodealliance/wasmtime/v27.0.0/crates/wasmtime/src/runtime/store.rs) 与 [Engine 源码](https://raw.githubusercontent.com/bytecodealliance/wasmtime/v27.0.0/crates/wasmtime/src/engine.rs)。最新在线 API 文档为 51 开发版，未拿它替代本仓库 27 版本证据。
@@ -2528,7 +2528,15 @@ E-H58-20261027-15（独立提交与真实hash回填）：生产修复、默认�
 - 执行 `cargo test -p deepagent-tools --features wasm --lib audit_completed_call_watchdog_does_not_interrupt_next_call --offline -- --ignored --nocapture` 明确失败。补充进程内存活标记后：独立引擎组打印 2 秒与 5.5 秒标记，退出观察耗时 8,952ms；共享组两个标记均未出现，退出观察耗时 3,905ms。两子进程均为 `0xc0000409`，没有正常返回 typed timeout；这是与既有 fuel trap 测试 ignore 说明一致的本机 Windows trap 退出行为。结合短 watchdog、共享 epoch 源码与引擎对照，确认后续调用被提前中断；退出观察耗时包含崩溃处理，存活标记也受线程调度影响，均不冒充 guest 精确 trap 时刻。此前未加标记的第一次探针同样失败（9,037ms 对 3,766ms），没有以默认忽略测试的绿结果宣称修复。
 - 后果：正常共享工具可能得到属于旧调用的提前超时；在本机 trap 异常环境还会提前终结承载进程。当前生产注册使用默认 policy，探针显式扩大 fuel 以隔离 epoch 原因，没有证明默认 fuel 下任意 guest 都能触发，亦未验证 Linux/macOS 或真实桌面启用该 feature。
 - 成熟实现对照：Claude Code `utils/combinedAbortSignal.ts::createCombinedAbortSignal` 把 timer 放在调用局部 controller 内，并在 cleanup 清除；`utils/hooks/execHttpHook.ts` 成功和失败均 cleanup。Codex `core/src/exec.rs::ExecExpiration::wait_with_outcome` 与执行 select 把 timeout future 绑定本次 child wait。它们不是同构 Wasmtime 实现；借鉴的是完成时回收局部定时工作、不同调用互不取消。WASM 的直接实现依据来自上游 API，不宣称成熟 Agent 已采用本仓库相同后端。
-- 修复方向（尚未实施）：在既有 WasmSandbox 内统一 epoch 时钟与每 Store 的真实截止时间，可参考上游 Store deadline callback 按该 Store 的 deadline 决定继续或 trap；共享 Engine 的 tick 不应由任意一个调用独占解释为“自身超时”。回收调用局部工作，不能只在成功路径加取消而遗漏并发 Store、错误返回或取消路径。另需独立验证 Windows trap 能正常返回错误，或使用有界隔离 worker 防止宿主被带走；不能仅增加超时或全局串行化掩盖。
+- 修复方向（修复前）：在既有 WasmSandbox 内统一 epoch 时钟与每 Store 的真实截止时间，可参考上游 Store deadline callback 按该 Store 的 deadline 决定继续或 trap；共享 Engine 的 tick 不应由任意一个调用独占解释为“自身超时”。回收调用局部工作，不能只在成功路径加取消而遗漏并发 Store、错误返回或取消路径。另需独立验证 Windows trap 能正常返回错误，或使用有界隔离 worker 防止宿主被带走；不能仅增加超时或全局串行化掩盖。
+
+#### 修复与验收证据（2026-10-31）
+
+- 根因修复：保留现有共享 `Engine` 和每调用新 `Store`，新增调用局部、可取消的 `EpochWatchdog`。watchdog 以 `Condvar` 等待 timeout，`Drop` 设置取消、唤醒并 `join`；它只在 guest ABI 调用前启动，因此正常返回、`?` 错误和 trap 路径都会回收线程，不会把迟到的 `increment_epoch()` 留给后续 Store。没有改 feature 默认值、权限、隔离、工具注册、协议或持久化边界。
+- 正式探针：移除 `audit_completed_call_watchdog_does_not_interrupt_next_call` 的 `ignore` 后，`cargo test -p deepagent-tools --features wasm --lib audit_completed_call_watchdog_does_not_interrupt_next_call --offline -j 1 -- --nocapture --test-threads=1` 为 **1 passed / 0 failed / 0 ignored**；独立 Engine 与共享 Engine 的第二次调用均打印 `alive_after_ms=5500`。修前失败保留在 `target/h59-original-probe-20261031.log`，修后结果在 `target/h59-final-probe-20261031.log`。
+- 相关回归：WASM feature 全量 `cargo test -p deepagent-tools --features wasm --lib --offline -j 1 -- --quiet --test-threads=1` 为 **34 passed / 0 failed / 1 ignored**；默认工具回归为 **30 passed / 0 failed / 0 ignored**；AppCore WASM 专项 `cargo test -p deepagent-app-core --features wasm --lib wasm_tools:: --offline -j 1 -- --nocapture --test-threads=1` 为 **3 passed / 0 failed / 0 ignored**；`cargo check -p deepagent-app-core --features wasm --offline -j 1` 退出 0。证据分别保留在 `target/h59-wasm-regression-20261031.log`、`target/h59-default-regression-20261031.log`、`target/h59-appcore-wasm-regression-20261031.log` 和 `target/h59-appcore-wasm-check-20261031.log`。
+- 门禁：`cargo clippy -p deepagent-tools --all-targets --features wasm --offline -j 1 --no-deps -- -D warnings` 退出 0；修改文件 `rustfmt --edition 2021 --check crates/deepagent-tools/src/wasm.rs` 与 `git diff --check` 均退出 0。代码/测试提交为 `ae1c4a515770c03e2b44d181cf4704b2f327b9ba`（`【fix】隔离WASM调用watchdog生命周期`），未推送、未创建 PR。
+- 范围与残余：本机 Windows trap 仍可能以 `0xc0000409` 结束测试子进程，未把它冒称为 typed timeout；未验 Linux/macOS、真实桌面启用 wasm、真实供应商、并发压力、断电/强杀或跨平台隔离 worker。未执行 `cargo clean`，未删除 `target`、日志、证据、用户文件或其他构建产物。
 
 ### H-60：命令输出管道的等待超时仅丢弃句柄，读取任务仍保留缓冲并继续收集迟到输出
 
