@@ -5406,7 +5406,6 @@ mod tests {
             attempt.events,
             vec![
                 "begin:1",
-                "prepare:stale:add",
                 "abort:1",
                 "begin:2",
                 "prepare:fresh:add",

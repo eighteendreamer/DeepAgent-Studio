@@ -89,6 +89,12 @@ impl ResponseAccumulator {
                     b.item_id.as_deref() == Some(item_id) || b.id.as_deref() == Some(item_id)
                 });
                 if let Some(builder) = builder {
+                    if builder.completed_arguments.is_some() {
+                        return Err(tool_identity_conflict(
+                            builder.index,
+                            "arguments after completion",
+                        ));
+                    }
                     builder.arguments.push_str(delta);
                     observer.on_event(ModelStreamEvent::ToolArgumentsDelta {
                         index: builder.index,
@@ -98,7 +104,13 @@ impl ResponseAccumulator {
             }
             "response.output_item.added" => {
                 if let Some(item) = value.get("item") {
-                    self.add_item(item, observer);
+                    self.add_item(
+                        item,
+                        value
+                            .get("output_index")
+                            .and_then(serde_json::Value::as_u64),
+                        observer,
+                    )?;
                 }
             }
             "response.web_search_call.in_progress"
@@ -124,26 +136,14 @@ impl ResponseAccumulator {
             }
             "response.output_item.done" => {
                 if let Some(item) = value.get("item") {
-                    self.add_item(item, observer);
+                    self.complete_item(
+                        item,
+                        value
+                            .get("output_index")
+                            .and_then(serde_json::Value::as_u64),
+                        observer,
+                    )?;
                     self.record_output_item(item);
-                    if let Some(call_id) = item.get("call_id").and_then(serde_json::Value::as_str) {
-                        if let Some(builder) = self
-                            .tool_calls
-                            .iter_mut()
-                            .find(|b| b.id.as_deref() == Some(call_id))
-                        {
-                            if let Some(args) = item
-                                .get("arguments")
-                                .or_else(|| item.get("input"))
-                                .and_then(serde_json::Value::as_str)
-                            {
-                                builder.arguments = args.to_string();
-                            }
-                            let index = builder.index;
-                            let _ = builder;
-                            self.emit_tool_completed(index, observer);
-                        }
-                    }
                 }
             }
             "response.function_call_arguments.done" | "response.custom_tool_call_input.done" => {
@@ -155,16 +155,18 @@ impl ResponseAccumulator {
                 if let Some(builder) = self.tool_calls.iter_mut().find(|b| {
                     b.item_id.as_deref() == Some(item_id) || b.id.as_deref() == Some(item_id)
                 }) {
+                    if builder.custom != (kind == "response.custom_tool_call_input.done") {
+                        return Err(tool_identity_conflict(builder.index, "call kind"));
+                    }
                     if let Some(args) = value
                         .get("arguments")
                         .or_else(|| value.get("input"))
                         .and_then(serde_json::Value::as_str)
                     {
-                        builder.arguments = args.to_string();
+                        builder.complete_arguments(args)?;
+                    } else {
+                        builder.complete_arguments(&builder.arguments.clone())?;
                     }
-                    let index = builder.index;
-                    let _ = builder;
-                    self.emit_tool_completed(index, observer);
                 }
             }
             "response.completed" => {
@@ -175,6 +177,10 @@ impl ResponseAccumulator {
                     self.raw_usage = raw_usage.cloned();
                     self.usage = Some(usage);
                     observer.on_event(ModelStreamEvent::Usage { usage });
+                }
+                self.complete_terminal_items(&value, observer)?;
+                for index in 0..self.tool_calls.len() {
+                    self.emit_tool_completed(index, observer);
                 }
                 observer.on_event(ModelStreamEvent::Finished {
                     reason: self.terminal,
@@ -189,6 +195,14 @@ impl ResponseAccumulator {
                     self.raw_usage = raw_usage.cloned();
                     self.usage = Some(usage);
                     observer.on_event(ModelStreamEvent::Usage { usage });
+                }
+                self.complete_terminal_items(&value, observer)?;
+                // A truncated builder is not executable. Only explicit done
+                // identities may survive the existing length recovery path.
+                for index in 0..self.tool_calls.len() {
+                    if self.tool_calls[index].completed_arguments.is_some() {
+                        self.emit_tool_completed(index, observer);
+                    }
                 }
                 observer.on_event(ModelStreamEvent::Finished {
                     reason: self.terminal,
@@ -214,11 +228,48 @@ impl ResponseAccumulator {
         Ok(false)
     }
 
-    fn add_item(&mut self, item: &serde_json::Value, observer: &mut dyn DeltaObserver) {
+    fn add_item(
+        &mut self,
+        item: &serde_json::Value,
+        output_index: Option<u64>,
+        observer: &mut dyn DeltaObserver,
+    ) -> Result<Option<usize>> {
         let kind = item
             .get("type")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("");
+        let item_id = item.get("id").and_then(serde_json::Value::as_str);
+        let call_id = item
+            .get("call_id")
+            .and_then(serde_json::Value::as_str)
+            .or(item_id);
+        let matches: Vec<_> = self
+            .tool_calls
+            .iter()
+            .filter(|builder| {
+                item_id.is_some_and(|id| builder.item_id.as_deref() == Some(id))
+                    || call_id.is_some_and(|id| builder.id.as_deref() == Some(id))
+                    || output_index.is_some_and(|index| builder.output_index == Some(index))
+            })
+            .map(|builder| builder.index)
+            .collect();
+        if let Some(&index) = matches.first() {
+            let builder = &mut self.tool_calls[index];
+            if matches.len() != 1
+                || builder.custom != (kind == "custom_tool_call")
+                || !matches!(kind, "function_call" | "custom_tool_call")
+                || builder.id.as_deref() != call_id
+                || builder.item_id.as_deref() != item_id
+                || builder.name.as_deref() != item.get("name").and_then(serde_json::Value::as_str)
+                || (builder.output_index.is_some()
+                    && output_index.is_some()
+                    && builder.output_index != output_index)
+            {
+                return Err(tool_identity_conflict(index, "item identity"));
+            }
+            builder.output_index = builder.output_index.or(output_index);
+            return Ok(Some(index));
+        }
         if kind == "web_search_call" {
             if let Some(id) = item
                 .get("id")
@@ -235,10 +286,10 @@ impl ResponseAccumulator {
                     action: item.get("action").cloned(),
                 });
             }
-            return;
+            return Ok(None);
         }
         if kind != "function_call" && kind != "custom_tool_call" {
-            return;
+            return Ok(None);
         }
         let index = self.tool_calls.len();
         let item_id = item
@@ -259,11 +310,9 @@ impl ResponseAccumulator {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("tool")
             .to_string();
-        if self.tool_calls.iter().any(|b| b.id == id) {
-            return;
-        }
         self.tool_calls.push(ToolCallBuilder {
             index,
+            output_index,
             item_id,
             id: id.clone(),
             name: Some(name.clone()),
@@ -274,9 +323,67 @@ impl ResponseAccumulator {
                 .unwrap_or("")
                 .to_string(),
             custom: kind == "custom_tool_call",
+            completed_arguments: None,
             completed_emitted: false,
         });
         observer.on_event(ModelStreamEvent::ToolCallStarted { index, id, name });
+        Ok(Some(index))
+    }
+
+    fn complete_item(
+        &mut self,
+        item: &serde_json::Value,
+        output_index: Option<u64>,
+        observer: &mut dyn DeltaObserver,
+    ) -> Result<Option<usize>> {
+        let index = self.add_item(item, output_index, observer)?;
+        if let Some(index) = index {
+            let builder = &mut self.tool_calls[index];
+            let arguments = item
+                .get(if builder.custom { "input" } else { "arguments" })
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(&builder.arguments)
+                .to_string();
+            builder.complete_arguments(&arguments)?;
+        }
+        Ok(index)
+    }
+
+    fn complete_terminal_items(
+        &mut self,
+        event: &serde_json::Value,
+        observer: &mut dyn DeltaObserver,
+    ) -> Result<()> {
+        let Some(items) = event
+            .get("response")
+            .and_then(|response| response.get("output"))
+            .and_then(serde_json::Value::as_array)
+        else {
+            return Ok(());
+        };
+        let mut seen = std::collections::HashSet::new();
+        for (output_index, item) in items.iter().enumerate() {
+            if let Some(index) = self.add_item(item, Some(output_index as u64), observer)? {
+                if !seen.insert(index) {
+                    return Err(tool_identity_conflict(index, "duplicate terminal call"));
+                }
+                if self.terminal == Some(FinishReason::Length)
+                    && self.tool_calls[index].completed_arguments.is_none()
+                {
+                    continue;
+                }
+                self.complete_item(item, Some(output_index as u64), observer)?;
+                self.record_output_item(item);
+            }
+        }
+        if let Some(builder) = self.tool_calls.iter().find(|builder| {
+            !seen.contains(&builder.index)
+                && (self.terminal != Some(FinishReason::Length)
+                    || builder.completed_arguments.is_some())
+        }) {
+            return Err(tool_identity_conflict(builder.index, "terminal output"));
+        }
+        Ok(())
     }
 
     fn emit_tool_completed(&mut self, index: usize, observer: &mut dyn DeltaObserver) {
@@ -289,7 +396,9 @@ impl ResponseAccumulator {
         let Some(name) = builder.name.clone() else {
             return;
         };
-        let args = if builder.arguments.trim().is_empty() {
+        let args = if builder.custom {
+            builder.arguments.as_str()
+        } else if builder.arguments.trim().is_empty() {
             "{}"
         } else {
             builder.arguments.trim()
@@ -387,6 +496,19 @@ impl ResponseAccumulator {
             _ => None,
         };
         if let Some(parsed) = parsed {
+            if let ResponseOutputItem::FunctionCall { call_id, .. }
+            | ResponseOutputItem::CustomToolCall { call_id, .. } = &parsed
+            {
+                if let Some(existing) = self.output_items.iter_mut().find(|existing| match existing
+                {
+                    ResponseOutputItem::FunctionCall { call_id: id, .. }
+                    | ResponseOutputItem::CustomToolCall { call_id: id, .. } => id == call_id,
+                    _ => false,
+                }) {
+                    *existing = parsed;
+                    return;
+                }
+            }
             self.output_items.push(parsed);
         }
     }
@@ -413,7 +535,9 @@ impl ResponseAccumulator {
             let id = builder
                 .id
                 .unwrap_or_else(|| format!("call_stream_{}", builder.index));
-            let args = if builder.arguments.trim().is_empty() {
+            let args = if builder.custom {
+                builder.arguments.as_str()
+            } else if builder.arguments.trim().is_empty() {
                 "{}"
             } else {
                 builder.arguments.trim()
@@ -752,13 +876,57 @@ impl DeltaObserver for NoopObserver {}
 #[derive(Debug, Default)]
 struct ToolCallBuilder {
     index: usize,
+    output_index: Option<u64>,
     item_id: Option<String>,
     id: Option<String>,
     name: Option<String>,
     arguments: String,
     custom: bool,
+    completed_arguments: Option<String>,
     completed_emitted: bool,
 }
+
+impl ToolCallBuilder {
+    fn complete_arguments(&mut self, arguments: &str) -> Result<()> {
+        if let Some(previous) = &self.completed_arguments {
+            let equivalent = if self.custom {
+                previous == arguments
+            } else {
+                let json = |text: &str| {
+                    serde_json::from_str::<serde_json::Value>(if text.trim().is_empty() {
+                        "{}"
+                    } else {
+                        text
+                    })
+                };
+                match (json(previous), json(arguments)) {
+                    (Ok(previous), Ok(arguments)) => previous == arguments,
+                    _ => previous.trim() == arguments.trim(),
+                }
+            };
+            if !equivalent {
+                return Err(tool_identity_conflict(self.index, "completed arguments"));
+            }
+        } else {
+            self.completed_arguments = Some(arguments.to_string());
+        }
+        self.arguments = arguments.to_string();
+        Ok(())
+    }
+}
+
+fn tool_identity_conflict(index: usize, field: &str) -> CoreError {
+    // Do not include untrusted tool names or argument contents in diagnostics.
+    CoreError::provider(
+        None,
+        Some("tool_call_identity_conflict".to_string()),
+        format!("Responses tool call {index} has conflicting {field}"),
+    )
+}
+
+#[cfg(test)]
+#[path = "stream_identity_tests.rs"]
+mod identity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -835,7 +1003,15 @@ mod tests {
             &mut rec,
         )
         .unwrap();
-        complete(&mut acc);
+        assert!(
+            rec.completed.is_empty(),
+            "completion identity is provisional until terminal"
+        );
+        acc.push_sse_data_observed(
+            r#"{"type":"response.completed","response":{"status":"completed"}}"#,
+            &mut rec,
+        )
+        .unwrap();
 
         assert_eq!(rec.content, "Hi");
         assert_eq!(rec.reasoning, "think ");
