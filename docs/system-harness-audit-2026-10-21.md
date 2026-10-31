@@ -2540,7 +2540,7 @@ E-H58-20261027-15（独立提交与真实hash回填）：生产修复、默认�
 
 ### H-60：命令输出管道的等待超时仅丢弃句柄，读取任务仍保留缓冲并继续收集迟到输出
 
-**级别：中（P2）；范围：SystemExecutor 的命令结束后仍有进程持有 stdout/stderr 写端，超过输出 drain 截止时间。** 正常 EOF 不触发；不将“允许命令正常留下后台服务”本身定为缺陷，也不据此解释 Codex 宿主的续接错误。
+**级别：中（P2）；状态：已修复并验收（2026-10-31，仅限所列 Windows 本机命令管道与离线 builtins 回归范围）；范围：SystemExecutor 的命令结束后仍有进程持有 stdout/stderr 写端，超过输出 drain 截止时间。** 正常 EOF 不触发；不将“允许命令正常留下后台服务”本身定为缺陷，也不据此解释 Codex 宿主的续接错误。
 
 #### 生产路径、对照与复现
 
@@ -2555,7 +2555,16 @@ E-H58-20261027-15（独立提交与真实hash回填）：生产修复、默认�
 - Codex `借鉴/codex/codex-rs/core/src/exec.rs::await_output` 通过 `&mut JoinHandle` 等待；drain 超时显式 `handle.abort()`。同文件 full-buffer 分支会 abort 未完成 reader 并等待其结束；不能把这两个 capture policy 的输出保留规则混成一个保证。本项直接借鉴的是“等待截止后处理所属读取任务”，不是要求无条件杀死合法后台服务。
 - Claude Code `借鉴/claudecode/restored-src/src/utils/ShellCommand.ts::cleanup` 清理两个 StreamWrapper 并释放 TaskOutput；后台 file mode 有文件大小 watchdog，pipe mode 会 spillToDisk。这里仅核对已有清理/输出所有权设计，未运行参考项目，也不声称与本系统 pipe helper 的策略完全一致。
 - 影响：后台服务持续输出时，已完成工具调用之后仍存在没有结果消费者的 reader 与无上限缓冲；重复调用可累积这种资源。持续时间取决于写端什么时候关闭、宿主 runtime 何时退出；有限输出可能只形成暂时占用，大量持续输出可能导致内存压力乃至宿主内存耗尽。动态只证明迟到 64 KiB 的保留与增长，没有把 OOM 或每次命令都泄漏当作实测事实。H-46 是 MCP 关闭后进程树残留；本项是命令工具已返回后的输出读取归属，触发、对象和修复边界不同。
-- 修复建议（尚未实施）：在现有 SystemExecutor 中统一两个 reader 的生命周期，drain 截止后 abort 并有界确认 reader 已结束，再读取/释放最终缓冲；取消/外层 Future 被丢弃也必须有 owner 清理。为仍需保留的后台输出使用已有受控文件/任务归属，而非孤立内存 Vec；有效输出设保留预算并保持截断提示，不要求持续后台服务随普通命令返回而退出。验收覆盖正常 EOF、单/双写端开放、迟到输出、取消、外层 drop 和重复执行；同时核实关闭 pipe 对合法后台服务的影响，不能仅让测试缓冲变小或提高等待时限。
+- 修复建议（修复前）：在现有 SystemExecutor 中统一两个 reader 的生命周期，drain 截止后 abort 并有界确认 reader 已结束，再读取/释放最终缓冲；取消/外层 Future 被丢弃也必须有 owner 清理。为仍需保留的后台输出使用已有受控文件/任务归属，而非孤立内存 Vec；有效输出设保留预算并保持截断提示，不要求持续后台服务随普通命令返回而退出。验收覆盖正常 EOF、单/双写端开放、迟到输出、取消、外层 drop 和重复执行；同时核实关闭 pipe 对合法后台服务的影响，不能仅让测试缓冲变小或提高等待时限。
+
+#### 修复与验收证据（2026-10-31）
+
+- 根因修复：`join_drain` 不再把 `JoinHandle` 按值交给 `timeout` 后在超时分支丢弃；改为借用 handle 等待，超时显式 `abort()` 并 `await` 取消结果，确保 `drain_pipe` 释放 stdout/stderr pipe 和共享 `Vec` 后调用方才继续。正常 EOF、超时、取消与后台命令保留边界未改，不杀死合法后台进程，不新增输出预算或任务中心。
+- 正式探针：修前命令 `cargo test -p deepagent-builtins --lib audit_drain_deadline_releases_reader_and_buffer --offline -j 1 -- --ignored --nocapture --test-threads=1` 为 **0 passed / 1 failed / 0 ignored**；开放管道在截止后 `retained=true`、`late_bytes=65536`，正常 EOF 对照通过。原始证据保留在 `target/h60-original-probe-20261031.log`。
+- 修后同一测试移除 `ignore`，`cargo test -p deepagent-builtins --lib audit_drain_deadline_releases_reader_and_buffer --offline -j 1 -- --nocapture --test-threads=1` 为 **1 passed / 0 failed / 0 ignored**；正常 EOF 与开放管道均 `retained=false`、`late_bytes=0`，两组 reader 均停止且子进程均回收。最终证据为 `target/h60-final-probe-20261031.log`。
+- 相关回归：`cargo test -p deepagent-builtins --offline -j 1 -- --quiet --test-threads=1` 为 **370 passed / 0 failed / 3 ignored**；`cargo clippy -p deepagent-builtins --all-targets --offline -j 1 --no-deps -- -D warnings` 退出 0；`cargo check -p deepagent-app-core --offline -j 1` 退出 0；修改文件定向 rustfmt 与 `git diff --check` 均退出 0。证据保留在 `target/h60-builtins-regression-20261031.log`、`target/h60-builtins-clippy-20261031.log` 和 `target/h60-appcore-check-20261031.log`。
+- 范围与残余：仅覆盖 Windows 本机真实 PowerShell 管道、离线 builtins 和 AppCore 构建消费方；未验 Linux/macOS、完整 workspace、真实桌面 UI、真实供应商、高内存/OOM、长时并发重复调用、外层 future drop 或断电/强杀。未执行 `cargo clean`，未删除 `target`、日志、证据、用户文件或其他构建产物。
+- 代码/测试已提交为 `84f12c579577013847c295db1b15c6fa47b56333`（`【fix】回收命令输出超时读取任务`），未推送、未创建 PR。
 
 ### H-61：对抗复核脱离主运行取消，取消后仍可落成功终态，总时限也不清理复核请求
 
