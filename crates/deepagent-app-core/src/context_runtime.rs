@@ -2586,7 +2586,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_summary_keeps_exact_tool_metadata_across_replay() {
+    async fn native_summary_keeps_exact_tool_metadata_and_image_refs_across_replay() {
         use crate::session_memory::testing::{scripted_client, ScriptedTransport};
         let db = Arc::new(Database::open_in_memory().unwrap());
         let clock = deepagent_core::clock::SystemClock;
@@ -2600,6 +2600,19 @@ mod tests {
                 })
                 .unwrap();
         }
+        let image_message = Message::user("retained image").with_attachments(vec![
+            deepagent_core::message::MessageAttachment {
+                id: "retained-image".into(),
+                kind: "image".into(),
+                path: Some("retained.png".into()),
+                media_type: Some("image/png".into()),
+            },
+        ]);
+        session
+            .append(EventPayload::MessageAppended {
+                message: image_message.clone(),
+            })
+            .unwrap();
         let call = ResponseInputItem::FunctionCall {
             call_id: "retained-c1".into(),
             name: "read_file".into(),
@@ -2635,6 +2648,9 @@ mod tests {
             .unwrap();
         assert!(compacted.tokens_after < compacted.tokens_before);
         let compacted_items = compacted.response_items.unwrap();
+        assert!(compacted_items.iter().any(|item| matches!(item,
+            ResponseInputItem::InputMessage { attachments, .. }
+                if attachments == &image_message.attachments)));
         assert!(
             compacted_items.contains(&call),
             "arguments must not be reserialized through Message"

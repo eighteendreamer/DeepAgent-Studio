@@ -3,6 +3,87 @@ use super::*;
 use deepagent_models::{MockTransport, ModelConfig};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+struct ImageResolver;
+
+impl AttachmentDataResolver for ImageResolver {
+    fn data_url(&self, _: &deepagent_core::message::MessageAttachment) -> Option<String> {
+        Some("data:image/png;base64,aW1hZ2U=".into())
+    }
+}
+
+#[test]
+fn admitted_images_survive_history_replacement_compaction_and_metering() {
+    use deepagent_core::message::MessageAttachment;
+    let client = Arc::new(ModelClient::new(
+        Arc::new(MockTransport::new(vec![])),
+        ModelConfig::deepseek("synthetic"),
+    ));
+    let per_image = client.image_token_reserve("deepseek-flash");
+    assert!(per_image > 0);
+    let refs: Vec<_> = ["left", "right"]
+        .iter()
+        .map(|id| MessageAttachment {
+            id: (*id).into(),
+            kind: "image".into(),
+            media_type: Some("image/png".into()),
+            path: Some(format!("{id}.png")),
+        })
+        .collect();
+    let mut agent = ModelAgent::new_with_attachments(
+        client,
+        "deepseek-flash",
+        "rules",
+        "decorated input [id:u2]",
+        refs.clone(),
+        vec![],
+    )
+    .with_history(vec![Message::user("old"), Message::assistant("old answer")])
+    .with_response_history(vec![ResponseInputItem::Message {
+        role: "assistant".into(),
+        content: "native old answer".into(),
+    }])
+    .with_attachment_resolver(Arc::new(ImageResolver));
+    let request = agent.request_for_current_history();
+    assert_eq!(request.attachment_data_urls.len(), 2);
+    let live = request.input.last().unwrap().clone();
+    assert!(
+        matches!(&live, ResponseInputItem::InputMessage { content, attachments, .. }
+        if content == "decorated input [id:u2]" && attachments == &refs)
+    );
+    assert_eq!(agent.context_measurement().1.attachments, per_image * 2);
+    for native in [false, true] {
+        let retained = Message::user("decorated input [id:u2]").with_attachments(refs.clone());
+        agent.adopt_compaction(
+            ReactiveCompaction {
+                messages: vec![Message::system("rules"), Message::user("summary"), retained],
+                response_items: native.then(|| {
+                    vec![
+                        ResponseInputItem::Message {
+                            role: "user".into(),
+                            content: "summary".into(),
+                        },
+                        live.clone(),
+                    ]
+                }),
+                tokens_before: 10000,
+                tokens_after: 100,
+                summary: "summary".into(),
+                usage: deepagent_models::Usage::default(),
+            },
+            "h67-retained-tail",
+        );
+        assert_eq!(
+            agent
+                .request_for_current_history()
+                .attachment_data_urls
+                .len(),
+            2
+        );
+        assert_eq!(agent.response_history.items.last(), Some(&live));
+        assert_eq!(agent.context_measurement().1.attachments, per_image * 2);
+    }
+}
+
 #[derive(Default)]
 struct SurfaceStore {
     reject: AtomicBool,

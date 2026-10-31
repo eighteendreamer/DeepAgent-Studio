@@ -2773,6 +2773,8 @@ E-H65-20261027-16（独立提交与真实hash回填）：生产修复、默认�
 
 ### H-67：当前轮图片未进入实时模型 Surface，原生镜像也丢附件，已有会话的图片在下一轮仍不出现
 
+**修复状态（2026-10-31）：已修复并完成E-H67-01～04所列本机验收；下文原始失败与当时修复建议保留，不代表全系统或真实供应商验收。当前fix提交待生成。**
+
 **级别：高（P1）；范围：ChatService 的结构化图片输入，尤其桌面关闭第三方系统视觉、直接把原图发送给主模型的路径。** 系统视觉开启时可能有额外的前置识图文字，该独立路径不能据此判为完全不可用；本项不涉及供应商不支持图片、图片过大或附件丢失。
 
 - 第一个错误边界：`run_assembler.rs` 将 `message_attachments(&self.attachments)` 写入 `session.append(MessageAppended)`，但 `ModelAgent::new(client, model, system_prompt, final_user_prompt, tools)` 只传纯文字 goal，没有把同一当前输入的附件交给实时 Surface。`ModelAgent::new` 以纯文字 Message::user 和 ResponseHistory::from_seed 创建当前目标；with_history/with_response_history 加的是接纳阶段读取的历史，不包含刚写入的当前事件。随后 FileAttachmentResolver 只遍历 Surface 已存在的 InputMessage，无法补回根本没有引用的本轮图片。
@@ -2786,6 +2788,14 @@ E-H65-20261027-16（独立提交与真实hash回填）：生产修复、默认�
 - 影响：用户在本轮问截图、图表或图片内容时，主模型实际只得到文字；运行仍可正常成功结束，难以仅从运行状态发现缺图。初始图片组延迟出现，已有会话的新图在后续请求中仍不可见，因此追问不能保证绕过。这里确认的是实际模型输入缺失，没有调用真实模型，不能声称已测到幻觉率、特定答案错误或费用损失。默认系统视觉为 System，本项不能扩大为所有默认图片请求都无图/无识图文本；前端原生视觉路径由 Off 开关明确提供。
 - 成熟实现对照：DeepSeek Harness `attachment/src/index.ts::admitPromptContent()` 将上传内容替换为有序 durable refs；`api/session-controller/src/commands.ts` 在 prompt 命令中完成该接纳再转给会话。`llm-deepseek/src/images.ts::prepareImages()` 针对将要请求的 messages 准备引用，serialize.ts 从这些同一 message 的 image blocks 构造 wire。本轮仅源码对照，它使用 Messages 适配，不能把其字段直接复制为本系统 Responses 字段。可借鉴的是“当前消息的文字、图片和持久化归属是同一份输入”，不是在下一轮回放才补充图片。
 - 修复方向（尚未实施）：在既有 RunAssembler/ModelAgent 原生 Surface 边界，用同一份已接纳当前消息创建实时输入和持久化事件；Session 的同一原生镜像必须保留附件，不能只修实时 goal。保留最终 prompt decorations、附件引用及 snip 标签，避免再次由纯文字重建。无需新增附件存储或重读整段事件来重复追加当前消息。回归需覆盖首轮、新图续轮、多图、工具循环、重启恢复、压缩后保留图像、系统视觉文字路径及 ContextMeter 与实际 wire 一致；单测手工写入 attachment_data_urls 不足以验收这条跨层链路。
+
+- **E-H67-01（修前复现与范围）**：在acab45dd、干净工作树上，隔离HOME/USERPROFILE/APPDATA，显式执行原探针 `cargo test -p deepagent-app-core --test kernel_v2_e2e image_preparation::audit_new_image_reaches_first_model_request --offline -j 2 -- --exact --nocapture --test-threads=1 --ignored`，exit101，实际 `([0,1],[0,0,0])`、期望 `([1,1],[0,1,1])`，原生图片引用数0；总320.48秒包含冷编译，测试1.16秒。原历史正常对照同入口 `retained_imported_image_reaches_continuation_request` exit0、1过，1.84秒。证据target/h67-original-{results,audit_new_image_reaches_first_model_request,retained_imported_image_reaches_continuation_request}-20261031.*保留。根因仍为实时goal和持久原生镜像分别丢附件；本轮仅H-67，不合并H-68文件丢失、H-69总预算等独立问题，不访问真实凭据或供应商。计划统一既有Message内容投影、将同组接纳引用传入实时输入并验证旧记录恢复、多图、工具续轮和重启；未完成跨层验收前不计新增修复，剩余有效未验收165项不变。
+
+- **E-H67-02（根因修复与兼容边界，本地设计）**：复用core已有Message/ResponseItem类型，新增共享from_message_content投影，models兼容转换、Runtime增量内容及Persistence接纳均使用同一规则；RunAssembler将同组admitted_attachments同时用于原始消息落盘和ModelAgent实时输入，保留最终prompt装饰与snip标签。新增带附件构造器，原ModelAgent::new文字接口保持兼容；没有新增DTO、事件类型、数据库表、依赖、附件存储或第二条运行链。旧source-first纯文字镜像仅在相邻用户源消息、role/content严格相等且源含引用时，于既有indexed_response_items模型视图补回引用，沿用原native sequence与ownership，不改写原始事件、不重复追加输入；同一兼容判定供投影分组/分叉使用，避免旧日志因新投影规则无法恢复。文本/角色不匹配、native-only及已经完整的InputMessage不套用该规则。H-68缺失文件及其他MIME/大小/供应商限制不在本轮修复范围。
+
+- **E-H67-03（实际验收与未通过门禁）**：原H-67探针取消ignore并进入默认回归，同一导入PNG/ChatService/Kernel/ModelAgent/正式序列化得到 `([1,1],[0,1,1])`，每组原生引用数1，唯一终态与请求数均正确。旧镜像新增TDD先失败（2个输入而非1个，h67-legacy-red），修后默认通过；原始失败均保留。8个本轮相关命名检查在全仓逐一通过，涵盖共享内容投影/不匹配对照、实时/原生历史替换、两图reserve与同一请求引用、旧源镜像恢复不重复、Session分组/冷重开/分叉、正式压缩保留引用及持久回放、真实导入两图+实际read_file工具循环+磁盘重启+旧镜像wire、系统视觉已识别文字入口。多图wire图片数 `[0,2,2,2,4]`，最后4含既有两图与补入旧源镜像两图；旧raw事件逐字保留，原生事件不含inline data URL，snip u2标签保留。系统视觉测试仅验证App.tsx已识别文字+空结构化图片列表的后端契约，不冒称实际调用第三方视觉。最终session/compactor定向各1过，kernel image_默认6过/0败/5忽略，runtimes特性6过/0败/7忽略；其他审计探针仍按原状态忽略，不靠忽略H-67通过。第一次workspace命令 `cargo test --workspace --no-fail-fast --offline -j 2 -- --test-threads=2` 原生101、1272.72秒，133 targets合计3990过/6败/253忽略，完整Kernel221/0/45；五败是CLI产物已清理而SDK要求预构建，另一败H-306。补 `cargo build -p deepagent-cli --offline -j 2` 原生0、92.08秒；SDK e2e_stdio 6/0，随后完整workspace再次原生101、542.07秒，3994过/2败/253忽略，Kernel220/1/45，剩H-306及H-236取消通知反例，后者另按E-H236-11退回待修复，不将全量宣称全绿。12个受测Rust文件定向rustfmt与diff检查过；根cargo fmt --all -- --check仍原生1、未改runtime/workflow/agent.rs:1043旧差异；严格共享/全局Clippy仍被未改models/client.rs:355 clone_on_copy阻断，AppCore严格11项旧诊断（修改仅在这些范围外），去除models根目标后的leaf严格检查仍有runtime/model_agent.rs:286及workflow/canvas.rs:32两项未改诊断；没有降低lint等级。初次Session补充测试曾E0609误读不存在的state.messages，已按真实SessionState修正测试而非生产，并由最终单项及全仓复测通过，原失败日志保留。证据h67-targeted-*、h67-final-*、h67-followup-*及source-hashes。未执行Tauri/前端构建、真实GUI/DeepSeek/第三方视觉/其他OS验收；无桥接DTO/UI改动，不把本机wire保真扩大为模型识图质量保证。
+
+- **E-H67-04（交付、清理与计数）**：本轮仅H-67生产根因修复，新增验收1；并发全仓及独立复测发现H-236反例，另撤回其当前验收1、回待修复，历史a0cc7c6实现/原验收不抹除、不作为本轮修复成果。306唯一主行/8列，除H-67/H-236外304行不变；累计111验收/21历史跳过/7归并/2撤销/165待修/0修复中。H-67本项剩余0，下一项优先独立复核H-236对端取消通知，而非顺手修H-306。全部验证进程终态后，核对绝对边界、无reparse/活动编译器/工作树程序，先dry-run，再原生 `cargo clean --profile dev --offline --target-dir C:\Users\32734\.codex\worktrees\h272-baseline\DeepAgent-Studio\target`：exit0，删除11825编译文件、Cargo报告21.3GiB，debug不存在；C盘可用106726903808→128842166272字节，观测增加约20.60GiB。152份顶层证据与12份冻结Rust输入SHA256一致，保留根target、原始失败、独立复测与用户文件，不清Cargo下载缓存；可变.rustc_info不计证据保护清单。证据h67-clean-{protected,result}-20261031.json及dry-run/native日志。仅提交H-67相关Rust改动与两份当时文档（含全仓发现的返修事实），提交hash待生成，取得真实hash后另做docs回填，不amend/推送/建PR。总剩余200–400有效修复与验收小时仍为历史未逐项校准粗估，依据165项剩余跨层权限、事件、持久化和工作流范围；构建、设备、依赖与环境等待另计，不承诺日期，整体目标active。
 
 ### H-68：历史图片文件丢失时静默退化为纯文字请求，续聊仍成功
 
@@ -7752,6 +7762,8 @@ E-H235-10（独立提交与真实hash回填，2026-10-30）：代码、默认回
 - 未运行全 workspace、Desktop build/UI、真实 DeepSeek 计费/缓存实验、参考工程测试、hook 取消/超时/无效 JSON/真实 provider failure、混合模型、多个并发 hook、数据库重开或其他平台。本轮不对取消树下结论，也不处理 encrypted-content 错误；全系统审计仍未结束。
 
 ### H-236：hook 缺少父运行取消上下文，工具流水线仍等待，MCP 对端未获取消
+
+- **E-H236-11（2026-10-31，H-67全仓门禁发现验收反例，回待修复）**：H-67源码冻结后第一次完整Kernel221/0/45；补CLI前置后的第二次完整workspace中本项原默认探针失败，SessionStart为本地唯一cancelled且stopped_before_release=true，但cancellation_received=false、server_completed_after_release=true。随后隔离HOME/USERPROFILE/APPDATA，原探针单独执行 `cargo test -p deepagent-app-core --test kernel_v2_e2e mcp_hook_cancellation::audit_mcp_hooks_propagate_cancellation_to_the_stdio_peer --offline -j 2 -- --exact --nocapture --test-threads=1` 再次exit101、0过/1败，测试2.82秒；这次PostToolUse对端未获取消并在测试释放后完成，其余三点获通知，本地仍只有cancelled终态。未改250ms观测窗、未忽略测试、未删除失败；证据h67-followup-workspace-20261031.log及h67-h236-recheck-20261031.log / h67-h236-recheck-result-20261031.json。该结果不能据首轮通过而消失，也尚未定位为H-67因果或单纯负载噪声；H-236当前验收暂撤回、回待修复，保留a0cc7c6历史实现及原06～10全部证据。下一轮先独立复现并追取消owner/通知发送边界，不在本轮给H-236加补丁、不将其与H-67合并或重计修复。
 
 **级别：中（P2，可选模型/MCP hook 的取消生命周期缺口）；当前状态：已修复并验收（2026-10-30，仅E-H236-06～08所列Windows本机范围；修复提交a0cc7c6adbed0aed57ace39f4199afa8e914124f）。以下原始失败、设置错误及增量证据按历史保留，不代表当前仍复现；完整workspace、旧lint/fmt及远端限制均不隐去。不是所有hooks均不响应取消，也没有复现取消后主运行误记成功。**
 

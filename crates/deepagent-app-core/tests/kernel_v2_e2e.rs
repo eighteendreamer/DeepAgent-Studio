@@ -22,6 +22,9 @@ mod verification_lifecycle;
 #[path = "kernel_v2_e2e/image_preparation.rs"]
 mod image_preparation;
 
+#[path = "kernel_v2_e2e/image_surface.rs"]
+mod image_surface;
+
 #[path = "kernel_v2_e2e/branch_boundary.rs"]
 mod branch_boundary;
 

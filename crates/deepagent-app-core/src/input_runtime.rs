@@ -380,7 +380,20 @@ fn indexed_response_items(
     let mut custom_calls = std::collections::HashSet::new();
     for (index, event) in events.iter().enumerate() {
         if let EventPayload::ResponseItemAppended { item } = &event.payload {
-            out.push((event.sequence, item.clone()));
+            // Repair only an adjacent, matching old source-first text mirror.
+            // Preserve the native event's sequence/ownership and leave the log
+            // untouched; do not append a second copy of the admitted input.
+            let source =
+                index
+                    .checked_sub(1)
+                    .and_then(|previous| match &events[previous].payload {
+                        EventPayload::MessageAppended { message } => {
+                            Some(ResponseInputItem::from_message_content(message))
+                        }
+                        _ => None,
+                    });
+            let restored = source.filter(|source| item.is_legacy_text_projection_of(source));
+            out.push((event.sequence, restored.unwrap_or_else(|| item.clone())));
             continue;
         }
         if index >= first_native {
@@ -431,6 +444,7 @@ fn indexed_response_items(
                 };
                 generated.first().is_some_and(|generated| {
                     generated == item
+                        || item.is_legacy_text_projection_of(generated)
                         || match (generated, item) {
                             (
                                 ResponseInputItem::FunctionCallOutput { call_id: a, .. },
@@ -986,6 +1000,50 @@ pub(crate) fn mcp_instructions_delta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_text_mirror_recovers_image_references_without_duplicate_turns() {
+        use deepagent_core::message::MessageAttachment;
+        let sid = SessionId::nil();
+        let image = Message::user("image turn").with_attachments(vec![MessageAttachment {
+            id: "legacy-image".into(),
+            kind: "image".into(),
+            media_type: Some("image/png".into()),
+            path: Some("legacy.png".into()),
+        }]);
+        for native_prefix in [false, true] {
+            let mut payloads = Vec::new();
+            if native_prefix {
+                payloads.push(EventPayload::ResponseItemAppended {
+                    item: ResponseInputItem::Message {
+                        role: "assistant".into(),
+                        content: "earlier native output".into(),
+                    },
+                });
+            }
+            payloads.extend([
+                EventPayload::MessageAppended {
+                    message: image.clone(),
+                },
+                EventPayload::ResponseItemAppended {
+                    item: ResponseInputItem::Message {
+                        role: "user".into(),
+                        content: image.content.clone(),
+                    },
+                },
+            ]);
+            let events: Vec<_> = payloads
+                .into_iter()
+                .enumerate()
+                .map(|(seq, payload)| event(sid, seq as u64, payload))
+                .collect();
+            let indexed = indexed_response_items(&events);
+            assert_eq!(indexed.len(), if native_prefix { 2 } else { 1 });
+            assert!(matches!(&indexed.last().unwrap().1,
+                ResponseInputItem::InputMessage { content, attachments, .. }
+                    if content.contains("[id:u1]") && attachments == &image.attachments));
+        }
+    }
 
     #[test]
     fn upgrading_a_legacy_session_keeps_its_prefix_without_duplicate_native_echo() {

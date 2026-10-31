@@ -67,18 +67,7 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
                     }
                 }
                 if !message.content.is_empty() || message.tool_calls.is_empty() {
-                    if message.attachments.is_empty() {
-                        items.push(ResponseItem::Message {
-                            role: message.role.as_str().to_string(),
-                            content: message.content.clone(),
-                        });
-                    } else {
-                        items.push(ResponseItem::InputMessage {
-                            role: message.role.as_str().to_string(),
-                            content: message.content.clone(),
-                            attachments: message.attachments.clone(),
-                        });
-                    }
+                    items.push(ResponseItem::from_message_content(message));
                 }
             }
         }
