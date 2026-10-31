@@ -511,11 +511,17 @@ where
 }
 
 /// True when the reader finished on its own; false when it was still holding the
-/// pipe open past the grace period and had to be abandoned.
-async fn join_drain(task: tokio::task::JoinHandle<()>, grace: Duration) -> bool {
-    match tokio::time::timeout(grace, task).await {
+/// pipe open past the grace period and had to be cancelled.
+async fn join_drain(mut task: tokio::task::JoinHandle<()>, grace: Duration) -> bool {
+    match tokio::time::timeout(grace, &mut task).await {
         Ok(_) => true,
-        Err(_elapsed) => false,
+        Err(_elapsed) => {
+            // Dropping a JoinHandle detaches the task. Abort and await it so the
+            // reader drops its pipe and shared buffer before the caller returns.
+            task.abort();
+            let _ = task.await;
+            false
+        }
     }
 }
 
@@ -1613,7 +1619,6 @@ mod tests {
 
     #[cfg(windows)]
     #[tokio::test]
-    #[ignore = "audit reproducer: timed-out pipe readers retain and grow an unowned buffer"]
     async fn audit_drain_deadline_releases_reader_and_buffer() {
         use std::os::windows::process::CommandExt;
         use tokio::io::AsyncWriteExt;
