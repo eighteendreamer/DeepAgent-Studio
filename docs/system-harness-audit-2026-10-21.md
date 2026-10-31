@@ -2432,7 +2432,7 @@ E-H51-11：稳定ID知识专项实跑33 passed/0 failed/1既有H-52 ignored，13
 - 已确认后果：仍向模型提供 MCP 工具时，后续请求不再含服务声明的使用约定、注意事项或资源操作说明；无状态模型不能从上一次请求的 header 自动找回它们。探针没有实际调用工具、发生账户误操作或产生费用，不能把这些潜在后果写成已发生。使用内存 SQLite 和临时工作区，断言前正式 close_all；未进行磁盘重启、压缩、Tauri 或公网供应商验证。本项不同于 H-53 的压缩后记忆预算未释放，也没有证据关联宿主 Codex 的 continuation/cipher 错误。
 - Claude Code `借鉴/claudecode/restored-src/src/utils/mcpInstructionsDelta.ts` 的 delta 同时包含 addedNames 和实际 addedBlocks，从当前 messages 的 attachment 重建 announced；`attachments.ts` 生成 mcp_instructions_delta 附件，`messages.ts` 的对应分支把 addedBlocks 渲染为带 MCP Server Instructions 的模型 user 内容。其设计是持久化正文后减少重复注入，不是只保存名字并删正文。该源码也按 server name 去重，本轮不声称它解决所有同名配置更新问题。
 - DeepSeek Harness `借鉴/deepseek-harness/packages/mcp/mcp-client/src/server-context.ts::registerServerContext` 将连接拥有的 instructions 注册为 systemPrompt.section 的 text 回调；说明有连接与提示词服务的明确内容来源。本轮仅核对这些参考源码，没有运行参考项目，也未单凭该注册函数断言其全部压缩/重启行为。
-- 修复应在既有原生 Surface/事件边界保留模型实际收到的说明正文，再基于当前保留内容去重；或者在每次请求按就绪快照重新注入。二者的选择及删除、压缩、重连和配置更新语义属于本地映射设计，需以完整 wire、回放与就绪身份一致性验收，不能另建说明历史存储。现有 `mcp_instructions_delta_slashes_per_turn_token_pressure` 只证明 block 变短或变为 None，未检查后续实际请求是否保留内容。本轮仅增加审计测试和报告，尚未修复生产行为。
+- 修复应在既有原生 Surface/事件边界保留模型实际收到的说明正文，再基于当前保留内容去重；或者在每次请求按就绪快照重新注入。二者的选择及删除、压缩、重连和配置更新语义属于本地映射设计，需以完整 wire、回放与就绪身份一致性验收，不能另建说明历史存储。现有 `mcp_instructions_delta_slashes_per_turn_token_pressure` 只证明 block 变短或变为 None，未检查后续实际请求是否保留内容。**原始审计阶段**仅增加审计测试和报告，尚未修复生产行为；修复结果见下方验收记录。
 
 #### 后续复现：技能目录同样只进入当轮系统提示，续聊后无法从请求发现技能
 
@@ -2448,7 +2448,7 @@ E-H51-11：稳定ID知识专项实跑33 passed/0 failed/1既有H-52 ignored，13
 
 - 首次显式运行约 0.57 秒，三个正对照将原因收敛到发送去重状态，而不是技能未加载或不可见。后续模型仍有 skill 工具，却没有当前目录中的 id/适用描述，普通请求无法按这份目录选择尚未调用过的技能。已调用技能的历史结果、用户直接点名、猜测 id 后的错误建议仍可能提供其他线索，故不能声称所有技能调用都失效。未测试真实模型选择质量、磁盘重开或压缩；不把该情况扩大为执行权限绕过，也不重复计为新 H 编号。
 - Claude Code `借鉴/claudecode/restored-src/src/utils/attachments.ts::getSkillListingAttachments` 同样维护 sentSkillNames，但实际返回带格式化 content 的 skill_listing 附件；`messages.ts` 的 skill_listing 分支把 content 变为模型 user message。其 resume suppression 注释明确以 transcript 已经有 listing 为前提。本系统仅复制 send-once 状态语义，却没有与之匹配的正文保留边界。参考项目只做源码对照，未运行。
-- 应将技能目录一并纳入 H-57 的内容保留修复：当前 Surface 的目录正文与已展示身份必须一致，失败接纳、压缩/snip、目录更新及重启都需有明确规则。仅在 UI 安装/重载时 reset 或延长发送间隔，不能修复普通第二轮丢目录；本轮仍只添加测试和文档。
+- 应将技能目录一并纳入 H-57 的内容保留修复：当前 Surface 的目录正文与已展示身份必须一致，失败接纳、压缩/snip、目录更新及重启都需有明确规则。仅在 UI 安装/重载时 reset 或延长发送间隔，不能修复普通第二轮丢目录；**原始审计阶段**仍只添加测试和文档，当前修复结果见上方验收记录。
 
 **修复与验收（2026-10-31，仅所列 Windows 本机/离线范围；修复提交 `6e3a93df`）。** 采用“每次请求按当前快照重新注入正文”的本地映射：`mcp_instructions_block_for_run` 不再用 prior event 中的 announced server 集合删掉当前说明，仍由 `run_assembler` 记录 `McpInstructionsDelta` 供生命周期/回放诊断；`SkillCatalogSendState` 保留 reset 与可观测 sent id，但 `next_delta` 每次对当前可见 registry 完整渲染。这样不新增说明历史存储，也不把事件中的名称误当成模型已经收到的正文。技能隐藏、预算、MCP 断连和既有工具注册边界保持不变。
 
