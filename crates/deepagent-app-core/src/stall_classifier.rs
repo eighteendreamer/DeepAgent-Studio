@@ -16,6 +16,7 @@
 //!   bounded timeout (Grok runs its classifier on a cheap sampler the same
 //!   way).
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -57,22 +58,29 @@ impl ModelStallClassifier {
             model: model.into(),
         }
     }
-}
 
-#[async_trait]
-impl StallClassifier for ModelStallClassifier {
-    async fn classify(&self, transcript: &str) -> Option<StallVerdict> {
-        let request = ResponseRequest::with_instructions_and_user_input(
+    fn request(&self, transcript: &str) -> ResponseRequest {
+        ResponseRequest::with_instructions_and_user_input(
             self.model.clone(),
             STALL_CLASSIFIER_PROMPT,
             transcript,
         )
         .with_temperature(0.0)
-        .with_max_output_tokens(300);
-        let response = match tokio::time::timeout(
-            CLASSIFY_TIMEOUT,
-            self.client.stream_response(request),
-        )
+        .with_max_output_tokens(300)
+    }
+
+    async fn classify_with_cancel(
+        &self,
+        transcript: &str,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Option<StallVerdict> {
+        let request = self.request(transcript);
+        let response = match tokio::time::timeout(CLASSIFY_TIMEOUT, async {
+            match cancel {
+                Some(cancel) => self.client.stream_response_cancelled(request, cancel).await,
+                None => self.client.stream_response(request).await,
+            }
+        })
         .await
         {
             Ok(Ok(response)) => response,
@@ -97,6 +105,21 @@ impl StallClassifier for ModelStallClassifier {
                 None
             }
         }
+    }
+}
+
+#[async_trait]
+impl StallClassifier for ModelStallClassifier {
+    async fn classify(&self, transcript: &str) -> Option<StallVerdict> {
+        self.classify_with_cancel(transcript, None).await
+    }
+
+    async fn classify_cancelled(
+        &self,
+        transcript: &str,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Option<StallVerdict> {
+        self.classify_with_cancel(transcript, cancel).await
     }
 }
 

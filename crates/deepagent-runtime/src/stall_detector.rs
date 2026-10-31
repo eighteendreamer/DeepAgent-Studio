@@ -40,6 +40,9 @@
 //! - **Fail-open**: a classifier error/timeout yields no verdict and the
 //!   final answer completes normally.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
 use serde::Deserialize;
 
 use async_trait::async_trait;
@@ -121,6 +124,27 @@ pub trait StallClassifier: Send + Sync {
     /// Classify `transcript` (already rendered via
     /// [`render_stall_transcript`]). `None` = classification unavailable.
     async fn classify(&self, transcript: &str) -> Option<StallVerdict>;
+
+    /// Cancellation-aware classification. Implementations with a cancellable
+    /// provider should override this and forward the flag to that provider.
+    /// The default keeps legacy classifiers compatible while dropping their
+    /// future when the owning run is cancelled.
+    async fn classify_cancelled(
+        &self,
+        transcript: &str,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Option<StallVerdict> {
+        let Some(flag) = cancel else {
+            return self.classify(transcript).await;
+        };
+        if flag.load(Ordering::Acquire) {
+            return None;
+        }
+        tokio::select! {
+            verdict = self.classify(transcript) => verdict,
+            _ = crate::cancellation::wait_for_legacy_flag(flag) => None,
+        }
+    }
 }
 
 /// The classifier system prompt. Condensed from Grok

@@ -2786,7 +2786,14 @@ impl ModelAgent {
             _ => {
                 // A final answer with an attached classifier gets one advisory
                 // audit; otherwise the turn completes normally.
-                if let Some(nudge) = self.maybe_stall_nudge(step).await {
+                let nudge = self.maybe_stall_nudge(step, cancel.clone()).await;
+                if cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+                {
+                    return Err(CoreError::other("request cancelled by user"));
+                }
+                if let Some(nudge) = nudge {
                     self.push_message(Message::user(nudge));
                     return Box::pin(self.think_inner(step, &[], cancel, tools)).await;
                 }
@@ -2805,7 +2812,11 @@ impl ModelAgent {
     /// when a confident stalled verdict is within the per-run budget; `None`
     /// on every other path (no classifier, fail-open error, not stalled, low
     /// confidence, cap exhausted).
-    async fn maybe_stall_nudge(&mut self, step: usize) -> Option<String> {
+    async fn maybe_stall_nudge(
+        &mut self,
+        step: usize,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Option<String> {
         let classifier = self.stall_classifier.clone()?;
         // Budget pre-check: once spent, skip the classifier call entirely so a
         // post-nudge final answer completes with zero added latency.
@@ -2817,7 +2828,7 @@ impl ModelAgent {
             self.tool_calls_made,
             Some(self.run_started_at.elapsed().as_secs()),
         );
-        let verdict = classifier.classify(&transcript).await?;
+        let verdict = classifier.classify_cancelled(&transcript, cancel).await?;
         match evaluate_stall(&verdict, self.stall_nudges_used) {
             StallDecision::Nudge {
                 category,

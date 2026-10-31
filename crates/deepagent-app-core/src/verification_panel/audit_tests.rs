@@ -375,7 +375,6 @@ async fn model_stall_check_completes_after_classifier_reply() {
 }
 
 #[tokio::test]
-#[ignore = "audit probe: cancellation must interrupt the production stall classifier"]
 async fn audit_cancel_during_stall_classifier_exits_before_reply() {
     audit_check_lifecycle(CheckKind::Stall, false, false).await;
     audit_check_lifecycle(CheckKind::Stall, true, false).await;
