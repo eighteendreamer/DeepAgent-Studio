@@ -50,18 +50,13 @@ fn history_pair(id: &str, custom: bool) -> Vec<ResponseItem> {
 }
 
 async fn observe(items: Vec<ResponseItem>, reject: bool) {
+    let expected = items.clone();
+    observe_projected(items, reject, expected).await;
+}
+
+async fn observe_projected(items: Vec<ResponseItem>, reject: bool, expected: Vec<ResponseItem>) {
     const RUN: &str = "input-identity-reopened-history";
     let original_tool_items = items.len();
-    let expected_ids: Vec<_> = items
-        .iter()
-        .filter_map(|item| match item {
-            ResponseItem::FunctionCall { call_id, .. }
-            | ResponseItem::FunctionCallOutput { call_id, .. }
-            | ResponseItem::CustomToolCall { call_id, .. }
-            | ResponseItem::CustomToolCallOutput { call_id, .. } => Some(call_id.clone()),
-            _ => None,
-        })
-        .collect();
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -145,15 +140,16 @@ async fn observe(items: Vec<ResponseItem>, reject: bool) {
         assert_eq!(result.unwrap(), session);
         let bodies = model.0.lock().unwrap();
         assert_eq!(bodies.len(), 1);
-        let ids: Vec<_> = bodies[0]["input"]
+        let projected: Vec<ResponseItem> = bodies[0]["input"]
             .as_array()
             .unwrap()
             .iter()
-            .filter_map(|item| item["call_id"].as_str())
+            .filter(|item| item["call_id"].is_string())
+            .map(|item| serde_json::from_value(item.clone()).unwrap())
             .collect();
         assert_eq!(
-            ids, expected_ids,
-            "replay must preserve the existing valid identity"
+            projected, expected,
+            "replay must preserve identity and payload with a matching native kind"
         );
     }
     assert!(!workspace.join("never.txt").exists());
@@ -266,6 +262,45 @@ async fn h149_reopened_unique_multiple_pairs_remain_usable() {
             let mut history = history_pair("h149-first", first_custom);
             history.extend(history_pair("h149-second", second_custom));
             observe(history, false).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn h80_reopened_mixed_kind_history_repairs_only_wire_without_execution_or_rewriting() {
+    for first_custom in [false, true] {
+        for parallel in [false, true] {
+            let first = history_pair("h80-first", first_custom);
+            let second = history_pair("h80-second", !first_custom);
+            let expected = if parallel {
+                vec![
+                    first[0].clone(),
+                    second[0].clone(),
+                    first[1].clone(),
+                    second[1].clone(),
+                ]
+            } else {
+                [first, second].concat()
+            };
+            let mut mixed = expected.clone();
+            for item in &mut mixed {
+                *item = match item {
+                    ResponseItem::FunctionCallOutput { call_id, output } => {
+                        ResponseItem::CustomToolCallOutput {
+                            call_id: call_id.clone(),
+                            output: output.clone(),
+                        }
+                    }
+                    ResponseItem::CustomToolCallOutput { call_id, output } => {
+                        ResponseItem::FunctionCallOutput {
+                            call_id: call_id.clone(),
+                            output: output.clone(),
+                        }
+                    }
+                    _ => continue,
+                };
+            }
+            observe_projected(mixed, false, expected).await;
         }
     }
 }

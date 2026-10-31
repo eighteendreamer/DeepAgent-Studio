@@ -1,4 +1,4 @@
-//! Request identities must be rejected before either provider wire projection.
+//! Request identities and native kinds must be safe on both wire projections.
 
 use super::*;
 use async_trait::async_trait;
@@ -448,5 +448,212 @@ async fn h149_unique_parallel_and_sequential_histories_remain_compatible() {
                 }
             }
         }
+    }
+}
+
+fn h80_histories(
+    first_custom: bool,
+    shape: usize,
+) -> (Vec<ResponseInputItem>, Vec<ResponseInputItem>) {
+    let mut valid = h149_history(
+        ["h80-first", "h80-second"],
+        first_custom,
+        !first_custom,
+        shape % 2,
+    );
+    if shape >= 2 {
+        valid.insert(
+            if shape % 2 == 0 { 3 } else { 2 },
+            ResponseInputItem::Message {
+                role: "assistant".into(),
+                content: "Tool narration.".into(),
+            },
+        );
+    }
+    let mut mixed = valid.clone();
+    for item in &mut mixed {
+        *item = match item {
+            ResponseInputItem::FunctionCallOutput { call_id, output } => {
+                ResponseInputItem::CustomToolCallOutput {
+                    call_id: call_id.clone(),
+                    output: output.clone(),
+                }
+            }
+            ResponseInputItem::CustomToolCallOutput { call_id, output } => {
+                ResponseInputItem::FunctionCallOutput {
+                    call_id: call_id.clone(),
+                    output: output.clone(),
+                }
+            }
+            _ => continue,
+        };
+    }
+    (valid, mixed)
+}
+
+#[test]
+fn h80_unique_mixed_output_kinds_are_repaired_losslessly_and_idempotently() {
+    for first_custom in [false, true] {
+        for shape in 0..4 {
+            let (mut valid, mut mixed) = h80_histories(first_custom, shape);
+            // Preserve bytes, including non-JSON text, Unicode, NUL and CRLF.
+            for history in [&mut valid, &mut mixed] {
+                for item in history {
+                    match item {
+                        ResponseInputItem::FunctionCallOutput { output, .. }
+                        | ResponseInputItem::CustomToolCallOutput { output, .. } => {
+                            output.push_str("\r\n\0中文\t{ raw: not JSON }");
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let original = mixed.clone();
+            let expected = crate::responses::repair_tool_call_pairs(&valid);
+            let repaired = crate::responses::repair_tool_call_pairs(&mixed);
+            assert_ne!(mixed, expected);
+            assert_eq!(repaired, expected);
+            assert_eq!(
+                crate::responses::repair_tool_call_pairs(&repaired),
+                repaired
+            );
+            assert_eq!(mixed, original, "repair must not mutate the source history");
+            let request = ResponseRequest::from_response_items("deepseek-flash", None, mixed);
+            request.validate().unwrap();
+            assert_eq!(request.input, expected);
+            assert_eq!(
+                serde_json::to_value(request).unwrap()["input"],
+                json!(expected)
+            );
+        }
+    }
+}
+
+fn h80_request(history: Vec<ResponseInputItem>, refresh: usize) -> ResponseRequest {
+    match refresh {
+        0 => ResponseRequest::from_response_items("deepseek-flash", None, history),
+        1 => {
+            let mut request = ResponseRequest::new("deepseek-flash", vec![Message::user("stale")]);
+            request.replace_history_from(&ResponseRequest::from_response_items(
+                "deepseek-flash",
+                None,
+                history,
+            ));
+            request
+        }
+        2 => ResponseRequest::new(
+            "deepseek-flash",
+            crate::responses::messages_from_response_items(None, &history),
+        ),
+        3 => {
+            let mut request = ResponseRequest::new("deepseek-flash", vec![Message::user("stale")]);
+            request.replace_messages(&crate::responses::messages_from_response_items(
+                None, &history,
+            ));
+            request
+        }
+        _ => unreachable!(),
+    }
+}
+
+#[tokio::test]
+async fn h80_constructor_and_history_refresh_send_corrected_pairs_on_both_wires() {
+    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+        for cancel_aware in [false, true] {
+            for first_custom in [false, true] {
+                for shape in 0..4 {
+                    for refresh in 0..4 {
+                        let (valid, mixed) = h80_histories(first_custom, shape);
+                        let transport = Arc::new(RecordingTransport::default());
+                        let client = ModelClient::new(
+                            transport.clone(),
+                            ModelConfig::deepseek("offline-placeholder").with_wire_mode(mode),
+                        );
+                        send(&client, h80_request(valid, refresh), cancel_aware)
+                            .await
+                            .unwrap();
+                        send(&client, h80_request(mixed, refresh), cancel_aware)
+                            .await
+                            .unwrap();
+                        let bodies = transport.0.lock().unwrap();
+                        assert_eq!(bodies.len(), 2);
+                        assert_eq!(
+                            bodies[1], bodies[0],
+                            "mixed input must match its valid control"
+                        );
+                        assert!(bodies[1].to_string().contains("PRIVATE_SECOND_OUTPUT"));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn h80_public_input_edits_are_rejected_before_both_transports_without_sticky_failure() {
+    for mode in [WireMode::Responses, WireMode::ChatCompletions] {
+        for cancel_aware in [false, true] {
+            for first_custom in [false, true] {
+                for reversed in [false, true] {
+                    let (valid, mut mixed) = h80_histories(first_custom, 0);
+                    if reversed {
+                        mixed.reverse();
+                    }
+                    let transport = Arc::new(RecordingTransport::default());
+                    let client = ModelClient::new(
+                        transport.clone(),
+                        ModelConfig::deepseek("offline-placeholder").with_wire_mode(mode),
+                    );
+                    let mut request = ResponseRequest::new("deepseek-flash", vec![]);
+                    request.input = mixed.clone();
+                    let error = request
+                        .validate()
+                        .expect_err("public input bypassed repair");
+                    let diagnostic = error.to_string();
+                    assert!(
+                        diagnostic.contains("item") && diagnostic.contains("kind"),
+                        "{diagnostic}"
+                    );
+                    assert!(
+                        !diagnostic.contains("h80-first") && !diagnostic.contains("h80-second")
+                    );
+                    assert_invalid(error);
+                    assert_invalid(
+                        send(&client, request.clone(), cancel_aware)
+                            .await
+                            .expect_err("no mixed wire"),
+                    );
+                    assert_eq!(request.input, mixed);
+                    assert!(transport.0.lock().unwrap().is_empty());
+                    request.input = valid;
+                    send(&client, request, cancel_aware).await.unwrap();
+                    assert_eq!(transport.0.lock().unwrap().len(), 1);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn h80_mixed_kind_repair_never_hides_blank_or_duplicate_identities() {
+    for id in ["", " \t", "PRIVATE_DUPLICATE_ID"] {
+        let (_, mut mixed) = h80_histories(true, 0);
+        for item in &mut mixed {
+            match item {
+                ResponseInputItem::FunctionCall { call_id, .. }
+                | ResponseInputItem::CustomToolCall { call_id, .. }
+                | ResponseInputItem::FunctionCallOutput { call_id, .. }
+                | ResponseInputItem::CustomToolCallOutput { call_id, .. } => *call_id = id.into(),
+                _ => {}
+            }
+        }
+        assert_eq!(crate::responses::repair_tool_call_pairs(&mixed), mixed);
+        let request = ResponseRequest::from_response_items("deepseek-flash", None, mixed.clone());
+        assert_eq!(request.input, mixed);
+        assert_invalid(
+            request
+                .validate()
+                .expect_err("kind repair must not choose an ambiguous call"),
+        );
     }
 }

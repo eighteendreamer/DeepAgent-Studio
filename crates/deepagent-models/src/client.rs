@@ -466,7 +466,7 @@ fn log_response_input_pairs(request: &ResponseRequest) {
 }
 
 fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletionRequest> {
-    crate::responses::validate_tool_call_ids(&request.input)?;
+    crate::responses::validate_tool_call_history(&request.input)?;
     if request.top_logprobs.is_some() {
         return Err(deepagent_core::error::CoreError::invalid(
             "top_logprobs is not supported by DeepSeek Chat Completions",
