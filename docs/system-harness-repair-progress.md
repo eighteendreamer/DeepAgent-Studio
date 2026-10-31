@@ -2,21 +2,21 @@
 
 ## 当前状态与计数口径（2026-10-31）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百零九项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百一十项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 109 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 110 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-64、H-65、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
 | 修复中 | 0 | 当前无进行中的独立项 |
-| 待修复 | 167 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 待修复 | 166 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **167（167待修复、0修复中）**；不提供完成率。一百零九项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **166（166待修复、0修复中）**；不提供完成率。一百一十项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
 
 ## H-275 MCP hook 参数 schema 执行边界（2026-10-31，已修复并验收）
 
@@ -113,6 +113,19 @@ E-H277-08（范围、门禁限制与提交）：完整 `kernel_v2_e2e` 为 **197
 - **E-H60-06（提交与状态）**：代码/测试提交为 `84f12c579577013847c295db1b15c6fa47b56333`（`【fix】回收命令输出超时读取任务`），未推送、未创建 PR。本项剩余 **0**；下一项按审计/风险顺序为 H-62。
 
 本轮新增修复 **1**；累计 **109 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、167 有效待修复、0 修复中**。全部剩余工作仍按历史粗估 **200–400 有效修复与验收小时**，有效工作时间与构建、设备、依赖及环境等待分开计算，不承诺精确完工日期；整体 goal 继续 active。
+
+## H-62 停滞分类等待响应运行取消（2026-10-31，已修复并验收）
+
+原报告：[H-62：停滞分类等待没有运行取消，停止要等分类结束，但最终取消映射正确](system-harness-audit-2026-10-21.md)。**优先级：P2。** 本轮只处理 stall classifier 附属模型请求与主运行取消树的连接，不合并 H-61 对抗复核、H-63 usage 归属或分类策略本身。
+
+- **E-H62-01（修前原始证据）**：`cargo test -p deepagent-app-core --lib audit_cancel_during_stall_classifier_exits_before_reply --offline -j 1 -- --ignored --nocapture --test-threads=1` 为 **0 passed / 1 failed / 0 ignored**；正常组成功，取消组在 100ms 窗口内仍 `exited_before_release=false`、`active=1`、无终态，释放后才落 cancelled。原始日志保留在 `target/h62-original-probe-20261031.log`。
+- **E-H62-02（根因与实现）**：`StallClassifier` 新增默认兼容的 `classify_cancelled`；`ModelAgent` 传递运行级 flag，并在分类返回后再次检查取消；`ModelStallClassifier` 使用既有 `ModelClient::stream_response_cancelled`。正常 `classify`、20秒 timeout、fail-open 和 nudge cap 保持不变，没有新增取消器或第二套模型链。
+- **E-H62-03（正式探针）**：取消 `ignore` 后，`cargo test -p deepagent-app-core --lib audit_cancel_during_stall_classifier_exits_before_reply --offline -j 1 -- --nocapture --test-threads=1` 为 **1 passed / 0 failed / 0 ignored**；正常组仍成功，取消组释放前已退出、活动请求为 0、唯一终态为 cancelled，cancellable_calls=1。最终日志为 `target/h62-final-probe-20261031.log`。
+- **E-H62-04（跨层回归）**：runtime stall **10/0/0**、runtime 全量 **349/0/9**、Models 取消流 **1/0/0**、AppCore verification panel **5/0/1**、AppCore lib **1379/0/50**；对应证据见 `target/h62-runtime-stall-regression-20261031.log`、`target/h62-runtime-regression-20261031.log`、`target/h62-models-cancellation-regression-20261031.log`、`target/h62-appcore-verification-regression-20261031.log`、`target/h62-appcore-regression-20261031.log`。
+- **E-H62-05（门禁与范围）**：四个改动文件定向 rustfmt 与 `git diff --check` 退出 0；runtime/AppCore 严格 Clippy 分别被未修改的 runtime 两项和 AppCore 11 项既有基线阻断，本轮改动位置无诊断。范围限 Windows 本机、临时 SQLite、离线受控 transport 和正式 Kernel/ModelAgent；未验真实供应商、Desktop/Tauri/UI、其他 OS、真实网络 timeout、流式解析后竞态、长时并发、断电/强杀或真实成本账单。未执行 `cargo clean`，未删除 `target`、日志、证据或用户文件。
+- **E-H62-06（提交与状态）**：代码/测试提交为 `b3366907399b4ce50dfa0c570babe0a5cf58acd3`（`【fix】让停滞分类响应运行取消`），未推送、未创建 PR。本项剩余 **0**；下一项按审计/风险顺序为 H-63。
+
+本轮新增修复 **1**；累计 **110 已修复并验收、21 历史已修复跳过、7 归并、2 撤销、166 有效待修复、0 修复中**。全部剩余工作仍按历史粗估 **200–400 有效修复与验收小时**，有效工作时间与构建、设备、依赖及环境等待分开计算，不承诺精确完工日期；整体 goal 继续 active。
 
 ## H-282 Git 状态整体 trim 与模型上下文事实投影（2026-10-31，已修复并验收）
 
@@ -3099,7 +3112,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-59：WASM 调用完成后遗留的 watchdog 中断共享引擎上的后续调用](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H59-01～06；保留共享 Engine 修前失败与 Windows trap 限制；不合并并发时钟或未启用 wasm 路径 | 调用局部可取消 watchdog 在 guest ABI 前启动，所有正常/错误/trap 返回由 Drop 取消、唤醒并 join，避免迟到 epoch 影响后续 Store | 正式探针1/0/0；WASM34/0/1、默认工具30/0/0、AppCore WASM3/0/0；check、Tools WASM严格Clippy、定向fmt/diff通过 | `ae1c4a515770c03e2b44d181cf4704b2f327b9ba` | 限 Windows 本机离线 wasm 与顺序调用；Windows trap仍可能0xc0000409，真实桌面/供应商/其他OS/并发/强杀未验；本项剩余0，下一项H-60 |
 | [H-60：命令输出管道的等待超时仅丢弃句柄，读取任务仍保留缓冲并继续收集迟到输出](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H60-01～06；保留开放管道修前迟到输出与正常 EOF 对照；不合并 H-46 进程树残留或输出预算 | `join_drain` 超时保留 JoinHandle，显式 abort 并 await，确保 reader 释放 pipe/Vec 后调用方返回；不杀合法后台进程 | 正式探针1/0/0；builtins370/0/3；AppCore check、builtins严格Clippy、定向fmt/diff通过 | `84f12c579577013847c295db1b15c6fa47b56333` | 限 Windows 本机 PowerShell 管道与离线消费方；未验完整workspace、其他OS、真实UI/供应商、高内存/OOM、长时并发、外层drop/强杀；本项剩余0，下一项H-62 |
 | [H-61：对抗复核脱离主运行取消，取消后仍可落成功终态，总时限也不清理复核请求](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，所列 Windows 本机、正式 Kernel/ModelAgent 与受控离线 transport；不合并 H-62/H-63 | 取消感知 verifier + 运行子 token；面板 JoinSet 统一 abort/join，每个 skeptic 使用子 token；ModelSkepticSpawner 使用取消感知模型流，取消结果在完成提交前落唯一取消终态 | E-H61-20261027-01～03：原取消/截止失败保留；默认 AppCore audit 4/0/2、Runtime lib 303/0/11；正常 PASS、主动取消、task deadline 均通过，真实供应商/UI/其他 OS/完整 workspace 与严格 lint 未验 | `e925c7e0`（生产修复） | 受控离线 transport 和所列 Windows 范围；H-62/H-63仍待修复；本项后续按优先级准备 H-62，预计 4–8 有效小时，环境等待另计 |
-| [H-62：停滞分类等待没有运行取消，停止要等分类结束，但最终取消映射正确](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-62：停滞分类等待没有运行取消，停止要等分类结束，但最终取消映射正确](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H62-01～06；保留分类等待修前失败与正式取消终态；不合并 H-61/H-63 | classifier 通过取消感知入口使用既有 `stream_response_cancelled`，ModelAgent 在分类返回后再次核对运行取消再提交最终答案 | 正式探针1/0/0；runtime stall10/0、runtime349/0/9、Models1/0、AppCore verification5/0/1、AppCore lib1379/0/50；定向fmt/diff通过，严格Clippy为既有基线 | `b3366907399b4ce50dfa0c570babe0a5cf58acd3` | 限 Windows 本机临时SQLite/离线transport/正式Kernel；未验真实供应商、桌面UI、其他OS、真实网络timeout、并发/强杀/成本账本；本项剩余0，下一项H-63 |
 | [H-63：对抗复核和停滞分类丢弃已返回的 usage，现有会话成本账本漏记附属请求](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-64：自动完成验证没有运行取消与进程归属，总时限终态后真实 build.rs 仍能写文件](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | H-65已将生产自动验证接回统一bash/ToolExecutionPipeline；本轮仅补独立生命周期与冷编译阶段证据，不把旧SystemCommandRunner失败伪装成当前生产失败 | E-H64-20261027-01～20：旧runner 0/2/0原始失败保留；正式ChatService 142/0/82；adapter/Kernel冷与正常生命周期8/0/0，真实取消/deadline/drop/timeout均在放行前回收后代、单终态且无迟到canary；E-19冷ChatServiceready窗口反证保留；2026-10-28仅补冷ready错误的阶段证据与同future收尾，不计新生产修复 | 严格/诊断clippy及完整workspace仍有既有H-306和lint失败；未验所有宿主冷编译阶段、其他OS、真实供应商/桌面；生产实现为H-65 commit；E-H64-20261028-01～04：默认专项10/0/0、正式Chat3/0/0，workspace3567/1/315（唯一H-306），严格lint旧失败；H-136首次冷ready失败未定位 | `1f5fbb084e2babe908fd6481f1a05e1231a5f5d0`（生产实现）；本轮独立验收提交 `f78a32ea`；冷ready诊断补强 `0596c899ff5fc591c71cd2e16fff32e1927672af`（非新生产修复） | 所列Windows本机自动验证路径已关闭；独立手工SystemCommandRunner仍不属于当前自动装配，其他平台与冷启动全部阶段另计；总200–400有效小时未校准、等待另计；新冷ready失败保留为未定位限制，本轮复跑通过不关闭该限制；下一独立项H-135 |
 | [H-65：两处自动验证绕过已配置命令后端，显式构建被拒绝后仍可在宿主执行项目脚本并写出工作区](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | 2026-10-27，Windows所列本机范围；不合并H-64/H-03 | 两处共用已注册bash/ToolExecutionPipeline与Kernel canonical事件入口、同一action allocator | E-01～15保留失败；单元3/boundary5默认通过；最终workspace3471/1/324，独立取消窗口与H-46重开保留 | `1f5fbb084e2babe908fd6481f1a05e1231a5f5d0` | 真实OS沙箱/SSH、其他OS、H-64未验；H-46按E-22恢复验收，H-136待复核；229有效未关闭，总体200–400有效小时未校准，等待另计 |

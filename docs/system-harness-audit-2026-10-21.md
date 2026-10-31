@@ -2596,14 +2596,24 @@ E-H61-20261027-03（默认回归验收）：`cargo test -p deepagent-app-core --
 
 ### H-62：停滞分类等待没有运行取消，停止要等分类结束，但最终取消映射正确
 
-**级别：中（P2）；范围：显式开启 execution_features.stall_detector 或 DEEPAGENT_STALL_DETECTOR，主模型已经给出无工具调用的最终答案、分类预算尚未用完，正在等待分类响应。** 默认不开启。与 H-61 的取消后错误成功不同，本项没有复现终态误记成功。
+**级别：中（P2）；状态：已修复并验收（2026-10-31，仅限所列 Windows 本机、离线 transport 与临时 SQLite 范围）；范围：显式开启 execution_features.stall_detector 或 DEEPAGENT_STALL_DETECTOR，主模型已经给出无工具调用的最终答案、分类预算尚未用完，正在等待分类响应。** 默认不开启。与 H-61 的取消后错误成功不同，本项没有复现终态误记成功。
 
 - 正式装配位于 `crates/deepagent-app-core/src/run_assembler.rs`：给 ModelAgent 设置 `ModelStallClassifier`。`model_agent.rs::think_inner` 在主模型返回最终答案之后同步 `maybe_stall_nudge(step).await`；后者直接 await trait 的 classify，未传递已经可用的运行 cancel。`stall_classifier.rs` 只给 `client.stream_response` 包 20 秒 timeout，没有使用取消版客户端入口。取消在 RuntimeEngine 收到 AgentDecision 后才再检查，因此分类等待没有被主运行取消树打断。
 - 复用并扩展正式链路探针 `crates/deepagent-app-core/src/verification_panel/audit_tests.rs`，通过明确 CheckKind 区分面板和停滞检测，避免复制第二套 Kernel 夹具。新默认忽略项 `audit_cancel_during_stall_classifier_exits_before_reply` 先执行正常组，再执行取消组；使用真实 Session/RunStore、ModelAgent、ModelStallClassifier 和序列化请求，只有 transport 受控。等分类请求确实进入 transport 后调用 RunHandle::cancel，验证 true 和 is_cancelled=true；transport 同时实现可取消接口，不是注入无视信号的自制 classifier。
 - 执行 `cargo test -p deepagent-app-core --lib audit_cancel_during_stall_classifier_exits_before_reply --offline -- --ignored --nocapture`：约 0.37 秒明确失败。正常组 100ms 窗口内等待一个分类请求，释放 not_stalled_complete 后 succeeded/Task Completed；取消组在相同窗口仍未退出，active=1、无数据库终态，释放后 cancelled/Task Failed。两组 plain_calls=1、cancellable_calls=0，最终各仅一个 run_terminal，active=0，缺陷断言前已收尾。
 - 这证明的是“已触发运行取消仍等待分类响应”的具体交错；没有真实等待 20 秒、没有计量网络取消延迟，也没有真实供应商或桌面验收。20 秒上限来自生产 CLASSIFY_TIMEOUT，不将 100ms 观察外推为已测最坏延迟。与 H-61 不同，分类位于主 think future 内，没有这里复现的额外 tokio::spawn 面板；不能据本测试声称 Kernel 超时后分类一定游离或最终误记成功。
 - 成熟参考：Grok `借鉴/grok-build/crates/codegen/xai-grok-shell/src/session/acp_session_impl/laziness.rs` 对 sampler future 同时 select 超时和 generation 轮询，用户新输入/模型变化使分类作废，注入前又核对当前 generation 和 idle/notifications_suppressed 状态。它是 idle classifier，不能把其用户新输入机制等同于本系统 turn token；可借鉴“等待及采纳均验证所属生命周期”。Codex `core/src/tasks/mod.rs::handle_task_abort` 的 turn token、有界 grace 和 task abort 给出运行级后备边界；Claude `query.ts` 给附属摘要传同一 abortController.signal，并在后续推进前检查 aborted。这里均为源码比对，未运行参考项目。
-- 后果与修复建议（未实施）：用户已看到主答案、点击停止仍可能等待额外分类请求完成或生产 timeout，延长输入租约占用与下一轮推进；不据此宣称所有对话都会慢。复用当前取消树和 ModelClient 取消版入口，分类返回取消应中止本次推进，不能把取消吞成 fail-open 无分类再继续补发模型。分类返回后、nudge 注入和递归采样前核对运行有效性。验收覆盖分类头等待/流式中/解析后取消、超时和 nudge 重入，检查无延迟新请求且最终状态仍是同一 Cancelled。
+- 后果与修复建议（修复前）：用户已看到主答案、点击停止仍可能等待额外分类请求完成或生产 timeout，延长输入租约占用与下一轮推进；不据此宣称所有对话都会慢。复用当前取消树和 ModelClient 取消版入口，分类返回取消应中止本次推进，不能把取消吞成 fail-open 无分类再继续补发模型。分类返回后、nudge 注入和递归采样前核对运行有效性。验收覆盖分类头等待/流式中/解析后取消、超时和 nudge 重入，检查无延迟新请求且最终状态仍是同一 Cancelled。
+
+#### 修复与验收证据（2026-10-31）
+
+- 根因修复：`StallClassifier` 增加带默认兼容实现的 `classify_cancelled`；`ModelAgent` 将运行级取消 flag 传入分类，并在分类返回后、注入 nudge 或提交最终答案前再次检查取消。`ModelStallClassifier` 复用既有 `ModelClient::stream_response_cancelled`，保留 20 秒 timeout、fail-open 解析和一次 nudge 上限；没有新增取消器、模型链、权限、协议或持久化边界。
+- 修前原始探针：`cargo test -p deepagent-app-core --lib audit_cancel_during_stall_classifier_exits_before_reply --offline -j 1 -- --ignored --nocapture --test-threads=1` 为 **0 passed / 1 failed / 0 ignored**；正常组成功，取消组在 100ms 窗口内 `exited_before_release=false`、`active=1`、终态为空，释放后才取消。原始证据保留在 `target/h62-original-probe-20261031.log`。
+- 正式探针：移除 `ignore` 后同一命令（去掉 `--ignored`）为 **1 passed / 0 failed / 0 ignored**；正常组仍成功，取消组释放前 `exited_before_release=true`、`active=0`、唯一终态为 `cancelled`，`cancellable_calls=1`。最终证据为 `target/h62-final-probe-20261031.log`。
+- 相关回归：runtime stall 专项 **10 passed / 0 failed / 0 ignored**，runtime 全量 **349 passed / 0 failed / 9 ignored**，Models 取消流 **1 passed / 0 failed / 0 ignored**，AppCore verification panel **5 passed / 0 failed / 1 ignored**，AppCore lib **1379 passed / 0 failed / 50 ignored**。证据分别保留在 `target/h62-runtime-stall-regression-20261031.log`、`target/h62-runtime-regression-20261031.log`、`target/h62-models-cancellation-regression-20261031.log`、`target/h62-appcore-verification-regression-20261031.log` 和 `target/h62-appcore-regression-20261031.log`。
+- 门禁：四个改动文件定向 rustfmt 与 `git diff --check` 均退出 0。runtime 严格 Clippy 退出 101，但仅为未修改的 `model_agent.rs:286`、`workflow/canvas.rs:32`；AppCore 严格 Clippy 退出 101，但仅为既有 `context_runtime/http_runtime/plugin_preparation/run_assembler` 11 项；本轮修改位置无诊断，未压制或顺手修复基线。
+- 范围与残余：仅覆盖 Windows 本机、临时 SQLite、离线受控 transport 和正式 Kernel/ModelAgent；未验真实供应商、Desktop/Tauri/UI、其他 OS、20 秒真实网络 timeout、流式解析后竞态、长时并发、断电/强杀或真实成本账单。未执行 `cargo clean`，未删除 `target`、日志、证据、用户文件或其他构建产物。
+- 代码/测试已提交为 `b3366907399b4ce50dfa0c570babe0a5cf58acd3`（`【fix】让停滞分类响应运行取消`），未推送、未创建 PR。
 
 ### H-63：对抗复核和停滞分类丢弃已返回的 usage，现有会话成本账本漏记附属请求
 
