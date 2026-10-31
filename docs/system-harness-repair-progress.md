@@ -9,14 +9,26 @@
 | 状态 | 数量 | 含义 |
 |---|---|---|
 | 本阶段已修复并验收 | 113 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-125、H-134、H-135、H-136、H-139、H-142、H-143、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
-| 历史已修复跳过 | 21 | 17项原审计历史修复，另H-77/H-238/H-246/H-301分别随H-78/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
+| 历史已修复跳过 | 22 | 17项原审计历史修复，另H-77/H-83/H-238/H-246/H-301分别随H-78/H-143/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-259已按E-H259-03～04完成本机范围验收；原阶段/夹具失败保留 |
-| 待修复 | 163 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
+| 修复中 | 0 | H-83已按E-H83-01～04完成既有修复复核；原始失败、单点反事实和全局格式/严格lint失败均保留 |
+| 待修复 | 162 | 执行前仍要核对当前代码、触发条件和原始测试；不是全部条目本轮重新验证未修 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **163（163待修复、0修复中）**；不提供完成率。一百一十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计21项历史跳过。
+有效未关闭条目当前为 **162（162待修复、0修复中）**；不提供完成率。一百一十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。
+
+## H-83 既有终态边界复核（2026-10-31）
+
+**当前状态：历史已修复跳过（2026-10-31，仅E-H83-01～04所列Windows本机离线范围）；生产修复归H-143的`7bf6bae11a97296953f1f61f092949cba2a8800d`，本轮新增生产修复0。**
+
+- **E-H83-01（原探针与旧断言，2026-10-31）**：基线HEAD `30a15985`，tracked干净。隔离合成HOME/USERPROFILE/APPDATA/LOCALAPPDATA、清除继承供应商凭据，使用MemorySecretStore占位key和临时SQLite，外层Cargo显式指定当前工作区target、不向子构建继承CARGO_TARGET_DIR。原命令 `cargo test -p deepagent-cli --bin deepagent final_hook --offline -j 2 -- --include-ignored --nocapture --test-threads=1` 原生101、397.62秒，1 passed/1 failed/0 ignored，失败在原探针对已不存在的run_completed位置unwrap；这是旧断言失效，不能当作当前仍重复通知的证据。仅测试去除ignore，把该断言改为唯一live turn.failed、唯一durable run_failed及run_terminal=failed、正式TaskCompleted错误和SQLite独立重开读一致，不改变hook触发条件或生产链路。`cargo test -p deepagent-cli --bin deepagent final_hook --offline -j 2 -- --nocapture --test-threads=1` 原生0、58.28秒，2/0/0，包含成功hook对照。证据target/h83-{original-red,current-canonical}-20261031*和从HEAD提取的原测试源码保留；本段命令均由runner仅在外层追加绝对--target-dir。
+
+- **E-H83-02（历史因果与定向反事实，2026-10-31）**：`git show`/`git log -S pending_terminal`及祖先检查确认 `7bf6bae11a97296953f1f61f092949cba2a8800d`（H-143）已在本轮基线中；PersistentEventSink暂存引擎终态意图，TaskCompleted hook等收尾结束后由既有规范事务写生命周期通知/run_terminal，再向CLI投影；spawn_turn避免对已发布终态再补失败。无活动构建器时，仅临时将该sink的terminal_intent判定设为false，取消H-143的暂存，保留其余当前实现，再运行同一final_hook命令：原生101，0 passed/2 failed/0 ignored，错误hook真实live=[turn.completed,turn.failed]，正常hook出现两次turn.completed。该实验是单点mutation反事实，不冒称完整历史checkout；未人工注入RuntimeEvent。finally逐字节恢复kernel.rs，恢复前后SHA256均C9C40B719CEAFD76501FF217899FDA8AE3BE36B23DEE575BBA78C067A6A70135，生产diff为0。证据target/h83-without-terminal-withholding-20261031*、h83-counterfactual-source-result-20261031.json及原源码备份保留。
+
+- **E-H83-03（冻结源码门禁，2026-10-31）**：最终测试源码、app_server.rs和kernel.rs三个文件在所有串行门禁前后SHA256一致，生产文件相对HEAD无diff。`cargo test -p deepagent-cli --all-targets --all-features --offline -j 2 -- --nocapture --test-threads=1` 原生0、93.62秒，122 passed/0 failed/20 ignored，H-83默认运行通过；未把其他ignored探针计作通过。`cargo test -p deepagent-runtime --lib terminal_commit_tests --offline -j 2 -- --nocapture --test-threads=1` 原生0、85.81秒，5/0/0，覆盖final hook failure、所有终态、提交失败、投影失败和deadline。`cargo test -p deepagent-app-core --test kernel_v2_e2e terminal_persistence --offline -j 2 -- --nocapture --test-threads=1` 原生0、251.36秒，4/0/1，涵盖正式chat/preflight/workflow回调、拒绝终态/通知事务、真实OS子进程退出重开与startup recovery；1 ignored是由父测试显式启动的子进程helper，不独立计为默认通过。`cargo fmt -p deepagent-cli -- --check` 原生0、1.27秒；`cargo fmt --all -- --check` 原生1，仅本轮未改的workflow/agent.rs:1043，与H-259同一既有格式差异。`cargo clippy -p deepagent-cli --all-targets --all-features --offline -j 2 --no-deps -- -D warnings` 原生101、242.84秒，停止于本轮未改app_server.rs:587的unnecessary_map_or，未新增allow或降级严格标准，不宣称严格lint通过。所有test/clippy命令由同runner只在外层追加绝对--target-dir。证据target/h83-{restored-default,kernel-terminal,appcore-terminal,fmt,cli-fmt,clippy}-20261031*、final-source-hashes及final-gates-result保留。
+
+- **E-H83-04（限定范围结论与计数，2026-10-31）**：原已复现的正式prompt TaskCompleted解析失败，现在仅发布一次turn.failed，durable仅一个run_failed和run_terminal=failed，SQLite独立重开一致；正常hook、provider error、独立游标和共享终态提交/恢复对照由上述默认测试覆盖。H-143既有统一Kernel提交边界已消除本项，无需另建终态链或只靠客户端忽略第二条通知，本轮只提交cfg(test)与双文档，不改公共API、协议、配置、权限或数据迁移。按历史已修复跳过登记，不归并删除、不新增生产修复成果。真实provider/用户凭据/内网均未访问；本次未跑完整workspace、SDK进程订阅、Tauri/GUI、其他OS、断电/强杀、真实stdio带该hook的背压组合、hook超时/取消及所有完成/停止竞态，不把有限离线验收外推为这些路径已通过；全局格式与严格lint失败单列，不能称全仓通过。本轮新增生产修复0、历史跳过+1；台账累计113已修复并验收/22历史跳过/7归并/2撤销/162待修复/0修复中，共306唯一编号、162有效未关闭。下一候选H-151为P1 malformed function call默认身份，沿H-259调用身份边界先复核原探针，尚未实施。测试及当时双文档待独立提交，取得真实hash后另回填，不amend/推送/创建PR。本项实施剩余0；总剩余200–400有效小时沿用历史未逐项校准粗估，依据是162项待复核及共享执行/工作流/跨宿主验收范围，不能因跳过一项精确缩减；设备/编译/依赖/环境等待另计，尚无可靠上界，不给精确完工承诺，整体goal保持active。
 
 ## H-259 流式调用身份一致性（2026-10-31，已修复并验收，仅本机范围）
 
@@ -3204,7 +3216,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-80：Responses repair 对外部混合工具类型缺少不变量校验（条件性）](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-81：Responses 完成文本 item 被错误补充全局 fallback（含空 assistant）](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-82：Responses 内容过滤被误判为输出到限，触发预算升级和长度续写](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-83：最终钩子报错前已发布完成，stdio 同一 turn 收到相互冲突的两个终态](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-83：最终钩子报错前已发布完成，stdio 同一 turn 收到相互冲突的两个终态](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | H-143的7bf6bae1已消除同根因；原旧断言失败与定向反事实保留，不重复计功 | 仅启用默认回归，验证唯一live失败、唯一durable生命周期/终态及SQLite独立重开 | E-H83-01～04；CLI122/0/20、Kernel5/0/0、AppCore4/0/1；CLI格式过，全局格式/严格lint既有失败明列 | 生产7bf6bae11a97296953f1f61f092949cba2a8800d；本轮测试/双文档待独立提交 | 新增生产修复0；仅所列本机范围，无API/迁移/权限变化；162有效未关闭，下一候选H-151；总200–400未校准有效小时，等待另计 |
 | [H-84：审批请求在 gate 决策前投影，造成重复发送或自动放行误报](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-85：模型目录与余额 GET 没有总时限，响应头或响应体停滞时请求可无限 pending（已修复）](system-harness-audit-2026-10-21.md) | P2 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
 | [H-86：模型发现 GET 的错误正文可把反射的 API Key 写入 `/doctor` 会话历史（已修复）](system-harness-audit-2026-10-21.md) | P3 | 历史已修复跳过 | 原报告明确记录修复实现与修复后验收 | 保留现有实现，不重复修复 | 历史命令与结果见原项；本轮未重跑，不声称重新验收 | 历史提交未在本轮重新定位，不猜填 hash | 保留原项未验限制；本阶段不另估修复工时 |
