@@ -2450,6 +2450,14 @@ E-H51-11：稳定ID知识专项实跑33 passed/0 failed/1既有H-52 ignored，13
 - Claude Code `借鉴/claudecode/restored-src/src/utils/attachments.ts::getSkillListingAttachments` 同样维护 sentSkillNames，但实际返回带格式化 content 的 skill_listing 附件；`messages.ts` 的 skill_listing 分支把 content 变为模型 user message。其 resume suppression 注释明确以 transcript 已经有 listing 为前提。本系统仅复制 send-once 状态语义，却没有与之匹配的正文保留边界。参考项目只做源码对照，未运行。
 - 应将技能目录一并纳入 H-57 的内容保留修复：当前 Surface 的目录正文与已展示身份必须一致，失败接纳、压缩/snip、目录更新及重启都需有明确规则。仅在 UI 安装/重载时 reset 或延长发送间隔，不能修复普通第二轮丢目录；本轮仍只添加测试和文档。
 
+**修复与验收（2026-10-31，仅所列 Windows 本机/离线范围；修复提交 `6e3a93df`）。** 采用“每次请求按当前快照重新注入正文”的本地映射：`mcp_instructions_block_for_run` 不再用 prior event 中的 announced server 集合删掉当前说明，仍由 `run_assembler` 记录 `McpInstructionsDelta` 供生命周期/回放诊断；`SkillCatalogSendState` 保留 reset 与可观测 sent id，但 `next_delta` 每次对当前可见 registry 完整渲染。这样不新增说明历史存储，也不把事件中的名称误当成模型已经收到的正文。技能隐藏、预算、MCP 断连和既有工具注册边界保持不变。
+
+- **E-H57-01（修前原始证据）**：保留 `target/h57-mcp-original-probe-20261031.log` 与 `target/h57-skill-original-probe-20261031.log`。正式 MCP/Skill wire 探针均完成正常请求，但同会话续轮正文标记为 `false`，故障断言分别失败；新会话/显式 reset 对照为 `true`。
+- **E-H57-02（MCP 正式回归）**：`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_mcp_instructions_survive_continuation_on_wire --offline -j 1 -- --nocapture --test-threads=1` 为 **1 passed / 0 failed / 252 filtered**，输出 `first=true continued=true fresh=true`；首轮、续轮和新会话完整 wire 均含说明正文标记。
+- **E-H57-03（Skill 正式回归）**：`cargo test -p deepagent-app-core --test kernel_v2_e2e audit_skill_catalog_survives_continuation_on_wire --offline -j 1 -- --nocapture --test-threads=1` 为 **1 passed / 0 failed / 252 filtered**，输出 `first=true continued=true reset=true fresh=true`；续轮保留技能 id 与独有描述，隐藏技能仍不进入目录。`cargo test -p deepagent-app-core --test e2e_skill_activation --offline -j 1 -- --nocapture --test-threads=1` 为 **2 passed / 0 failed**。
+- **E-H57-04（单测与构建）**：MCP context 单测 **6 passed / 0 failed**，技能目录单测 **10 passed / 0 failed**；AppCore lib **1378 passed / 0 failed / 51 ignored**；`cargo check -p deepagent-app-core --offline -j 1` 退出 0；本轮五个 Rust 文件定向 rustfmt 与 `git diff --check` 退出 0。根 `cargo fmt --all -- --check` 仍被未修改 `crates/deepagent-runtime/src/workflow/agent.rs:1043` 阻断；AppCore 严格 Clippy 仍为未修改的 11 项既有诊断，未压制或顺手修复。
+- **E-H57-05（范围、提交与残余）**：限 Windows 本机、临时 SQLite/工作区、真实 Node stdio fixture、SkillsService 和离线模型 transport；未验真实供应商、外部 MCP/HTTP、Desktop/Tauri/UI、其他 OS、压缩/snip 后的超长目录、进程强杀/断电或跨进程恢复。完整快照重复注入会增加每轮上下文成本，后续如需优化必须把正文持久化到可回放 Surface，不能恢复成仅名称 delta。代码、回归测试和默认探针已提交为 `6e3a93df`，未推送、未创建 PR；未执行 `cargo clean`，未删除 `target`、日志、证据或用户文件。
+
 ### H-58：附件清理把字符替换当作身份验证，空 ID/点目录可删除整桶，父目录 session 可删除附件 root 外数据
 
 **修复状态（2026-10-27）：已修复并验收（所列Windows本机范围，限制与未绿门禁见E-H58-20261027-10～14）。**
