@@ -202,14 +202,28 @@ fn graph_admission_rejects_orphan_iteration_start_instead_of_fabricating_empty_i
                 kind: "iteration-start".into(),
                 config: Map::new(),
             },
+            WorkflowNodeSpec {
+                id: "end".into(),
+                kind: "end".into(),
+                config: Map::new(),
+            },
         ],
-        edges: vec![super::super::graph::WorkflowEdgeSpec {
-            id: "entry-edge".into(),
-            source: "start".into(),
-            target: "entry".into(),
-            source_handle: None,
-            target_handle: None,
-        }],
+        edges: vec![
+            super::super::graph::WorkflowEdgeSpec {
+                id: "entry-edge".into(),
+                source: "start".into(),
+                target: "entry".into(),
+                source_handle: None,
+                target_handle: None,
+            },
+            super::super::graph::WorkflowEdgeSpec {
+                id: "exit-edge".into(),
+                source: "entry".into(),
+                target: "end".into(),
+                source_handle: None,
+                target_handle: None,
+            },
+        ],
     };
     let error = super::super::graph::compile(definition)
         .unwrap_err()

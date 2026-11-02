@@ -386,6 +386,7 @@ async fn creative_text_then_image_graph_runs_on_real_providers() {
                     "size": "1024x1024",
                 }),
             ),
+            node("end", "end", json!({})),
         ],
         edges: vec![
             WorkflowEdgeSpec {
@@ -399,6 +400,13 @@ async fn creative_text_then_image_graph_runs_on_real_providers() {
                 id: "e1".to_string(),
                 source: "script-1".to_string(),
                 target: "image-1".to_string(),
+                source_handle: None,
+                target_handle: None,
+            },
+            WorkflowEdgeSpec {
+                id: "exit".into(),
+                source: "image-1".into(),
+                target: "end".into(),
                 source_handle: None,
                 target_handle: None,
             },

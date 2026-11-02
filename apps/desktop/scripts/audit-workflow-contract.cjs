@@ -45,8 +45,23 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
         nodes.unshift(node("authored-entry", "start"));
         edges.unshift({ id: "authored-edge", source: "authored-entry", target: "camera" });
       }
+      if (name === "creative-exit-collision") {
+        nodes.push({ id: "__canvas_end", data: { kind: "aperture", aperture: "f2.8" } });
+        edges[0].id = "__canvas_exit_0";
+      }
+      if (["creative-explicit-exit", "creative-explicit-boundaries"].includes(name)) {
+        nodes.push(node("authored-exit", "end"));
+        edges.push({ id: "authored-exit-edge", source: "lens", target: "authored-exit" });
+      }
+      if (name === "creative-explicit-boundaries") {
+        nodes.unshift(node("authored-entry", "start"));
+        edges.unshift({ id: "authored-entry-edge", source: "authored-entry", target: "camera" });
+      }
+      if (name === "creative-empty") { nodes = []; edges = []; }
     } else if (name === "professional-missing-entry") {
       nodes = [node("end", "end")]; edges = [];
+    } else if (name === "professional-missing-exit") {
+      nodes = [node("start", "start")]; edges = [];
     } else if (name.startsWith("input-contract")) {
       nodes[0].data.inputVariables = [
         { name: "value", type: "object", required: true, default: { note: "{{#missing.value#}}", nested: [false, 0] } },
@@ -193,7 +208,9 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--emit-entry-fixtures") {
+  if (process.argv[2] === "--emit-exit-fixtures") {
+    emitFixtures(["creative-exit", "creative-exit-collision", "creative-explicit-exit", "creative-explicit-boundaries", "creative-empty", "professional-missing-exit"]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-entry-fixtures") {
     emitFixtures(["creative-entry", "creative-entry-collision", "creative-explicit-entry", "professional-missing-entry"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-input-contract-fixture") {
     emitFixtures(["input-contract", "input-contract-missing"]).catch((error) => { console.error(error); process.exitCode = 1; });

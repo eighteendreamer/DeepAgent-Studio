@@ -60,6 +60,30 @@ test("H-191 creative serialization projects one collision-free entry without rep
   }
 });
 
+test("H-192 creative serialization projects a shared exit but never repairs empty or invalid professional graphs", () => {
+  const { execFileSync } = require("node:child_process");
+  const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-exit-fixtures"], { encoding: "utf8" }));
+  assert.equal(fixtures.length, 6);
+  for (const { name, workflow } of fixtures) {
+    const { nodes, edges } = workflow.definition;
+    if (name === "creative-empty") { assert.deepEqual(nodes, []); assert.deepEqual(edges, []); continue; }
+    const ends = nodes.filter(node => node.kind === "end");
+    if (name === "professional-missing-exit") { assert.equal(ends.length, 0); continue; }
+    assert.equal(ends.length, 1, name);
+    const exit = ends[0];
+    assert.equal(nodes.filter(node => node.kind === "start").length, 1);
+    assert.equal(new Set([...nodes, ...edges].map(item => item.id)).size, nodes.length + edges.length);
+    assert.equal(edges.some(edge => edge.source === exit.id), false);
+    assert.ok(edges.some(edge => edge.source === "lens" && edge.target === exit.id));
+    if (name === "creative-exit-collision") {
+      assert.notEqual(exit.id, "__canvas_end");
+      assert.ok(edges.some(edge => edge.source === "__canvas_end" && edge.target === exit.id));
+    }
+    if (name.includes("explicit")) assert.equal(exit.id, "authored-exit");
+    assert.deepEqual(exit.config.outputVariables ?? [], []);
+  }
+});
+
 test("H-184..190 desktop serializer does not manufacture provided values from missing/null defaults", () => {
   const { execFileSync } = require("node:child_process");
   const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-input-contract-fixture"], { encoding: "utf8" }));

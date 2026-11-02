@@ -197,6 +197,13 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
     }
 
     let iteration_plans = super::iteration::compile_plans(&definition)?;
+    if !definition.nodes.iter().any(|node| {
+        node.kind == "end" && super::iteration::scope_of(&iteration_plans, &node.id).is_empty()
+    }) {
+        return Err(CoreError::invalid(
+            "InvalidWorkflowGraph: at least one top-level end node is required",
+        ));
+    }
     let aggregator_plans = definition
         .nodes
         .iter()
@@ -709,8 +716,12 @@ mod tests {
                 nodes: vec![
                     node("start", "start", json!({})),
                     node("gen-1", kind, json!({})),
+                    node("end", "end", json!({})),
                 ],
-                edges: vec![edge("entry", "start", "gen-1")],
+                edges: vec![
+                    edge("entry", "start", "gen-1"),
+                    edge("exit", "gen-1", "end"),
+                ],
             };
             let compiled = compile(definition)
                 .unwrap_or_else(|error| panic!("creative kind {kind} must be registered: {error}"));
@@ -718,7 +729,7 @@ mod tests {
                 output_contract(kind).is_ok(),
                 "creative kind {kind} has no output contract"
             );
-            assert_eq!(compiled.order.len(), 2);
+            assert_eq!(compiled.order.len(), 3);
         }
     }
 
@@ -747,8 +758,11 @@ mod tests {
             .is_err());
         }
         assert!(compile(graph(
-            vec![node(&"x".repeat(100), "start", json!({}))],
-            vec![]
+            vec![
+                node(&"x".repeat(100), "start", json!({})),
+                node("end", "end", json!({}))
+            ],
+            vec![edge("exit", &"x".repeat(100), "end")]
         ))
         .is_ok());
     }
@@ -781,6 +795,25 @@ mod tests {
     }
 
     #[test]
+    fn h192_requires_a_top_level_exit_instead_of_completing_an_exhausted_walk() {
+        assert_invalid(
+            graph(vec![node("entry", "start", json!({}))], vec![]),
+            "InvalidWorkflowGraph: at least one top-level end node is required",
+        );
+        let item_only_exit = serde_json::from_value(json!({"version":1,"nodes":[
+            {"id":"entry","kind":"start","config":{"inputVariables":[{"name":"items","type":"array","default":[]}]}},
+            {"id":"iter","kind":"iteration","config":{"inputVariable":"{{#entry.items#}}"}},
+            {"id":"item-end","kind":"end"}
+        ],"edges":[{"id":"a","source":"entry","target":"iter"},
+            {"id":"b","source":"iter","target":"item-end","source_handle":"item"}]})).unwrap();
+        assert_invalid(
+            item_only_exit,
+            "InvalidWorkflowGraph: at least one top-level end node is required",
+        );
+        assert!(compile(valid_graph()).is_ok());
+    }
+
+    #[test]
     fn h191_a_workflow_requires_one_explicit_start_not_an_implicit_root() {
         for kind in ["end", "trigger-webhook", "camera", "loop-start"] {
             assert_invalid(
@@ -810,9 +843,13 @@ mod tests {
         assert!(compile(graph(
             vec![
                 node("start", "start", json!({})),
-                node("trigger", "trigger-webhook", json!({}))
+                node("trigger", "trigger-webhook", json!({})),
+                node("end", "end", json!({}))
             ],
-            vec![edge("entry", "start", "trigger")]
+            vec![
+                edge("entry", "start", "trigger"),
+                edge("exit", "trigger", "end")
+            ]
         ))
         .is_ok());
     }
@@ -903,6 +940,12 @@ mod tests {
                 json!({"inputVariables":[{"name":"items","type":"array"}]}),
             ));
             definition.edges.push(edge("input-edge", "input", "source"));
+            if kind == "iteration" {
+                definition.nodes.push(node("finish", "end", json!({})));
+                let mut done = edge("finish-edge", "source", "finish");
+                done.source_handle = Some("done".into());
+                definition.edges.push(done);
+            }
             for handle in [None, Some(""), Some("unknown")] {
                 let mut invalid = definition.clone();
                 invalid.edges[0].source_handle = handle.map(str::to_owned);
@@ -1081,9 +1124,10 @@ mod tests {
                         "codeInputVariables": [{"name": "result", "value": 1}],
                         "codeOutputVariables": [{"name": "result", "type": "number"}]
                     })
-                )
+                ),
+                node("end", "end", json!({}))
             ],
-            vec![edge("entry", "start", "n")]
+            vec![edge("entry", "start", "n"), edge("exit", "n", "end")]
         ))
         .is_ok());
     }
@@ -1148,11 +1192,25 @@ mod tests {
                 "iteration" | "iteration-start" | "variable-aggregator"
             ) {
                 let definition = if kind == "start" {
-                    graph(vec![spec], vec![])
-                } else {
+                    graph(
+                        vec![spec, node("end", "end", json!({}))],
+                        vec![edge("exit", "n", "end")],
+                    )
+                } else if kind == "end" {
                     graph(
                         vec![node("start", "start", json!({})), spec],
                         vec![edge("entry", "start", "n")],
+                    )
+                } else {
+                    let mut exit = edge("exit", "n", "end");
+                    exit.source_handle = source_handles(&spec).unwrap().into_iter().next();
+                    graph(
+                        vec![
+                            node("start", "start", json!({})),
+                            spec,
+                            node("end", "end", json!({})),
+                        ],
+                        vec![edge("entry", "start", "n"), exit],
                     )
                 };
                 assert!(compile(definition).is_ok(), "{kind}");
@@ -1192,7 +1250,7 @@ mod tests {
             vec![
                 node("dependent", "llm", json!({})),
                 node("root", "start", json!({})),
-                node("later", "llm", json!({})),
+                node("later", "end", json!({})),
             ],
             vec![edge("e", "root", "dependent")],
         );
@@ -1257,7 +1315,13 @@ mod tests {
             .map(|index| {
                 node(
                     &format!("n{index}"),
-                    if index == 0 { "start" } else { "llm" },
+                    if index == 0 {
+                        "start"
+                    } else if index == MAX_NODES - 1 {
+                        "end"
+                    } else {
+                        "llm"
+                    },
                     json!({}),
                 )
             })
@@ -1267,7 +1331,7 @@ mod tests {
         oversized.push(node("extra", "llm", json!({})));
         assert_invalid(graph(oversized, vec![]), "1..=256");
         let mut definition = graph(
-            vec![node("a", "start", json!({})), node("b", "llm", json!({}))],
+            vec![node("a", "start", json!({})), node("b", "end", json!({}))],
             (0..MAX_EDGES)
                 .map(|index| edge(&format!("e{index}"), "a", "b"))
                 .collect(),
@@ -1275,7 +1339,13 @@ mod tests {
         assert!(compile(definition.clone()).is_ok());
         definition.edges.push(edge("extra", "a", "b"));
         assert_invalid(definition, "2048");
-        let mut definition = graph(vec![node("n", "start", json!({"description": ""}))], vec![]);
+        let mut definition = graph(
+            vec![
+                node("n", "start", json!({"description": ""})),
+                node("end", "end", json!({})),
+            ],
+            vec![edge("exit", "n", "end")],
+        );
         let overhead = serde_json::to_vec(&definition).unwrap().len();
         definition.nodes[0].config.insert(
             "description".into(),

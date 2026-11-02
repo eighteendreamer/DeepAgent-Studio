@@ -99,9 +99,9 @@ impl PendingMediaOutput {
 /// Executes a compiled workflow graph as an [`Agent`].
 ///
 /// The agent walks nodes in topological order. Each `think()` call executes one
-/// node, stores its outputs, and emits lifecycle events. When all nodes complete
-/// (or an `end` node is reached), the agent returns `Complete` with the final
-/// output summary.
+/// node, stores its outputs, and emits lifecycle events. Only a completed `end`
+/// settles the workflow. Private iteration item walks complete locally under
+/// their existing owner; they never publish an independent successful run.
 pub struct WorkflowAgent {
     compiled: Arc<CompiledWorkflow>,
     walk: Vec<usize>,
@@ -2104,12 +2104,12 @@ impl Agent for WorkflowAgent {
         }
 
         if self.step >= self.walk.len() {
-            let summary = self
-                .outputs
-                .get("end")
-                .map(|v| v.to_string())
-                .unwrap_or_else(|| "workflow completed".to_string());
-            return Ok(AgentDecision::Complete(summary));
+            if self.item.is_some() {
+                return Ok(AgentDecision::Complete("iteration item completed".into()));
+            }
+            return Err(CoreError::invalid(
+                "InvalidWorkflowGraph: workflow exhausted without completing an end node",
+            ));
         }
 
         let node_index = self.walk[self.step];
@@ -2820,6 +2820,7 @@ mod tests {
                     kind: "answer".to_string(),
                     config: config(&[("answerTemplate", json!("right"))]),
                 },
+                make_end("finish"),
             ],
             edges: vec![
                 make_edge("start-classifier", "start", "classifier"),
@@ -2837,6 +2838,8 @@ mod tests {
                     source_handle: Some("class-1".to_string()),
                     target_handle: None,
                 },
+                make_edge("left-finish", "left", "finish"),
+                make_edge("right-finish", "right", "finish"),
             ],
         };
         let compiled = compile(definition).expect("classifier graph compiles");

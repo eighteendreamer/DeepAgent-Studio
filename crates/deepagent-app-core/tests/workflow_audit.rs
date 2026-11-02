@@ -20,6 +20,8 @@ mod answer;
 mod code;
 #[path = "workflow_audit/entry.rs"]
 mod entry;
+#[path = "workflow_audit/exit.rs"]
+mod exit;
 #[path = "workflow_audit/http.rs"]
 mod http;
 #[path = "workflow_audit/inputs.rs"]
@@ -1378,7 +1380,6 @@ async fn audit_workflow_requires_a_start_node() {
 }
 
 #[tokio::test]
-#[ignore = "audit: workflows without an end node must fail admission"]
 async fn audit_workflow_requires_an_end_node() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
@@ -1420,10 +1421,8 @@ async fn audit_workflow_requires_an_end_node() {
         events.len(),
         run.terminal_kind
     );
-    assert!(
-        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
-        "a workflow without an end node must not be accepted as a successful run"
-    );
+    exit::assert_failed(&db, &result, &run.id, exit::MISSING_END);
+    assert!(events.is_empty(), "no end means no node execution");
 }
 
 #[tokio::test]

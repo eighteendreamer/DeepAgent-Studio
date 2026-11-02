@@ -210,10 +210,10 @@ function serializeDefinition(nodes: WorkflowNode[], edges: WorkflowEdge[], mode:
     nodes: serializeNodes(nodes, edges, mode),
     edges: serializeEdges(edges),
   };
-  // Creative canvas roots are authored without a visible entry node. Project
-  // that intent into the same explicit v1 contract; never repair a professional
-  // request or let the kernel infer an entry from arbitrary topology.
-  if (mode !== "creative" || definition.nodes.some(node => node.kind === "start")) return definition;
+  // Creative canvas roots/leaves have no visible boundary nodes. Project that
+  // intent into the same explicit v1 contract; never repair professional or
+  // empty requests or let the kernel infer boundaries from arbitrary topology.
+  if (mode !== "creative" || definition.nodes.length === 0) return definition;
   const occupied = new Set([...definition.nodes, ...definition.edges].map(item => item.id));
   const takeId = (base: string) => {
     let id = base;
@@ -221,14 +221,26 @@ function serializeDefinition(nodes: WorkflowNode[], edges: WorkflowEdge[], mode:
     occupied.add(id);
     return id;
   };
-  const incoming = new Set(definition.edges.map(edge => edge.target));
-  const roots = definition.nodes.filter(node => !incoming.has(node.id));
-  const entryId = takeId("__canvas_start");
-  definition.nodes.unshift({ id: entryId, kind: "start", config: {} });
-  roots.forEach((root, index) => definition.edges.push({
-    id: takeId(`__canvas_entry_${index}`), source: entryId, target: root.id,
-    source_handle: null, target_handle: null,
-  }));
+  if (!definition.nodes.some(node => node.kind === "start")) {
+    const incoming = new Set(definition.edges.map(edge => edge.target));
+    const roots = definition.nodes.filter(node => !incoming.has(node.id));
+    const entryId = takeId("__canvas_start");
+    definition.nodes.unshift({ id: entryId, kind: "start", config: {} });
+    roots.forEach((root, index) => definition.edges.push({
+      id: takeId(`__canvas_entry_${index}`), source: entryId, target: root.id,
+      source_handle: null, target_handle: null,
+    }));
+  }
+  if (!definition.nodes.some(node => node.kind === "end")) {
+    const outgoing = new Set(definition.edges.map(edge => edge.source));
+    const leaves = definition.nodes.filter(node => !outgoing.has(node.id));
+    const exitId = takeId("__canvas_end");
+    definition.nodes.push({ id: exitId, kind: "end", config: {} });
+    leaves.forEach((leaf, index) => definition.edges.push({
+      id: takeId(`__canvas_exit_${index}`), source: leaf.id, target: exitId,
+      source_handle: null, target_handle: null,
+    }));
+  }
   return definition;
 }
 
