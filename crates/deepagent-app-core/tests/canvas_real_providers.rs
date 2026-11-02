@@ -367,6 +367,7 @@ async fn creative_text_then_image_graph_runs_on_real_providers() {
     let definition = WorkflowDefinition {
         version: 1,
         nodes: vec![
+            node("start", "start", json!({})),
             node(
                 "script-1",
                 "script-gen",
@@ -386,13 +387,22 @@ async fn creative_text_then_image_graph_runs_on_real_providers() {
                 }),
             ),
         ],
-        edges: vec![WorkflowEdgeSpec {
-            id: "e1".to_string(),
-            source: "script-1".to_string(),
-            target: "image-1".to_string(),
-            source_handle: None,
-            target_handle: None,
-        }],
+        edges: vec![
+            WorkflowEdgeSpec {
+                id: "entry".into(),
+                source: "start".into(),
+                target: "script-1".into(),
+                source_handle: None,
+                target_handle: None,
+            },
+            WorkflowEdgeSpec {
+                id: "e1".to_string(),
+                source: "script-1".to_string(),
+                target: "image-1".to_string(),
+                source_handle: None,
+                target_handle: None,
+            },
+        ],
     };
 
     let sink = Arc::new(CapturingSink::default());

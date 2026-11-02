@@ -7,7 +7,9 @@
 
 use deepagent_core::error::{CoreError, Result};
 use deepagent_prompts::canvas_prompt::{canvas_skills, creative_profile, creative_profiles};
-use deepagent_runtime::workflow::{compile, WorkflowDefinition, WorkflowNodeSpec};
+use deepagent_runtime::workflow::{
+    compile, WorkflowDefinition, WorkflowEdgeSpec, WorkflowNodeSpec,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::canvas_model_gateway::CanvasOperation;
@@ -343,10 +345,38 @@ pub fn validate_canvas_node_contracts() -> Result<()> {
             kind: contract.node_kind.clone(),
             config: serde_json::Map::new(),
         };
+        // Registry visibility is checked through the same admitted graph as a
+        // real workflow, not a rootless singleton that bypasses its entry.
+        let entry = WorkflowNodeSpec {
+            id: "contract-entry".into(),
+            kind: "start".into(),
+            config: serde_json::Map::new(),
+        };
+        let exit = WorkflowNodeSpec {
+            id: "contract-exit".into(),
+            kind: "end".into(),
+            config: serde_json::Map::new(),
+        };
+        let edges = vec![
+            WorkflowEdgeSpec {
+                id: "contract-entry-edge".into(),
+                source: entry.id.clone(),
+                target: node.id.clone(),
+                source_handle: None,
+                target_handle: None,
+            },
+            WorkflowEdgeSpec {
+                id: "contract-exit-edge".into(),
+                source: node.id.clone(),
+                target: exit.id.clone(),
+                source_handle: None,
+                target_handle: None,
+            },
+        ];
         compile(WorkflowDefinition {
             version: 1,
-            nodes: vec![node],
-            edges: Vec::new(),
+            nodes: vec![entry, node, exit],
+            edges,
         })
         .map(|_| ())
         .map_err(|error| {

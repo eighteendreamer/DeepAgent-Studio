@@ -30,10 +30,24 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
   });
   const fixtures = [];
   for (const name of names) {
+    const creative = name.startsWith("creative-");
     const node = (id, kind, patch = {}) => ({ id, type: `professional-${kind}`, position: { x: 0, y: 0 }, data: { ...registry.createDefaultNodeData(kind), ...patch } });
     let nodes = [node("start", "start"), node("end", "end")];
     let edges = [{ id: "e1", source: "start", target: "end" }];
-    if (name.startsWith("input-contract")) {
+    if (creative) {
+      nodes = [
+        { id: "camera", data: { kind: "camera", cameraModel: "synthetic" } },
+        { id: "lens", data: { kind: "lens", lensModel: "synthetic" } },
+      ];
+      edges = [{ id: "__canvas_entry_0", source: "camera", target: "lens" }];
+      if (name === "creative-entry-collision") nodes.push({ id: "__canvas_start", data: { kind: "aperture", aperture: "f2.8" } });
+      if (name === "creative-explicit-entry") {
+        nodes.unshift(node("authored-entry", "start"));
+        edges.unshift({ id: "authored-edge", source: "authored-entry", target: "camera" });
+      }
+    } else if (name === "professional-missing-entry") {
+      nodes = [node("end", "end")]; edges = [];
+    } else if (name.startsWith("input-contract")) {
       nodes[0].data.inputVariables = [
         { name: "value", type: "object", required: true, default: { note: "{{#missing.value#}}", nested: [false, 0] } },
         { name: "optional", type: "string", required: false },
@@ -103,6 +117,7 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
       ];
     }
     for (const n of nodes) {
+      if (creative && n.data.kind !== "start") continue;
       const issues = configSchema.validateSchemaValue(schemas.NODE_CONFIG_SCHEMAS[n.data.kind], n.data);
       assert.deepEqual(issues, [], `invalid desktop fixture ${name}/${n.id}`);
     }
@@ -112,9 +127,9 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     const ready = new Promise((resolve) => { listenersReady = resolve; });
     const state = { nodes, edges, updateNodeData: () => {} };
     const executor = loadTypeScript("../src/canvas/workflow/utils/workflowExecutor.ts", {
-      "../store/canvasStore": { useCanvasStore: { getState: () => ({ mode: "professional" }) } },
+      "../store/canvasStore": { useCanvasStore: { getState: () => ({ mode: creative ? "creative" : "professional" }) } },
       "../store/professionalStore": { useProfessionalStore: { getState: () => state } },
-      "../store/creativeStore": { useCreativeStore: { getState: () => ({ nodes: [], edges: [] }) } },
+      "../store/creativeStore": { useCreativeStore: { getState: () => state } },
       "@tauri-apps/api/core": { invoke: async (command, args) => {
         assert.equal(command, "start_workflow");
         workflow = args.workflow;
@@ -126,11 +141,13 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
       } },
     });
     globalThis.window = { __TAURI_INTERNALS__: {} };
+    const before = JSON.stringify({ nodes, edges });
     const running = executor.runWorkflow();
     await ready;
     finish({ payload: { run_id: "audit-serialized-workflow" } });
     await running;
     assert.ok(workflow);
+    assert.equal(JSON.stringify({ nodes, edges }), before, "projection must not mutate persisted canvas data");
     const serializedNodes = workflow.definition.nodes;
     if (name.startsWith("input-contract")) {
       assert.deepEqual(workflow.inputs, {}, "the backend alone resolves defaults");
@@ -166,7 +183,7 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
       assert.equal(serializedNodes.find((node) => node.id === "inspect").config.conditions[0].items[0].value, "BLUE");
     } else if (name === "output") {
       assert.equal(serializedNodes.find((node) => node.id === "end").config.outputVariables[0].name, "report");
-    } else {
+    } else if (name === "template") {
       assert.equal(serializedNodes.find((node) => node.id === "inspect").config.templateScript, "EXPECTED_TEMPLATE");
     }
     fixtures.push({ name, workflow });
@@ -176,7 +193,9 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--emit-input-contract-fixture") {
+  if (process.argv[2] === "--emit-entry-fixtures") {
+    emitFixtures(["creative-entry", "creative-entry-collision", "creative-explicit-entry", "professional-missing-entry"]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-input-contract-fixture") {
     emitFixtures(["input-contract", "input-contract-missing"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-aggregator-fixtures") {
     emitFixtures(["aggregator-array", "aggregator-string", "aggregator-number", "aggregator-object"]).catch((error) => { console.error(error); process.exitCode = 1; });

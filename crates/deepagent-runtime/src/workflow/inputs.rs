@@ -35,12 +35,7 @@ fn config_error() -> CoreError {
 }
 
 impl InputPlan {
-    pub(super) fn compile(start: Option<&WorkflowNodeSpec>) -> Result<Self> {
-        let Some(start) = start else {
-            // Graph entry/exits are a separate contract. An absent declaration
-            // never grants an implicit raw-map pass-through.
-            return Ok(Self::default());
-        };
+    pub(super) fn compile(start: &WorkflowNodeSpec) -> Result<Self> {
         let declarations = match start.config.get("inputVariables") {
             None => return Ok(Self::default()),
             Some(Value::Array(items)) => items,

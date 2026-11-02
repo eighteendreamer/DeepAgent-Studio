@@ -18,6 +18,8 @@ mod aggregator;
 mod answer;
 #[path = "workflow_audit/code.rs"]
 mod code;
+#[path = "workflow_audit/entry.rs"]
+mod entry;
 #[path = "workflow_audit/http.rs"]
 mod http;
 #[path = "workflow_audit/inputs.rs"]
@@ -1333,7 +1335,6 @@ async fn audit_workflow_string_length_bounds_are_enforced() {
 }
 
 #[tokio::test]
-#[ignore = "audit: workflows without a start node must fail admission"]
 async fn audit_workflow_requires_a_start_node() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
@@ -1373,10 +1374,7 @@ async fn audit_workflow_requires_a_start_node() {
         events.len(),
         run.terminal_kind
     );
-    assert!(
-        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
-        "a workflow without a start node must not be accepted as a successful run"
-    );
+    entry::assert_rejected(&db, &result, &run.id, &events);
 }
 
 #[tokio::test]

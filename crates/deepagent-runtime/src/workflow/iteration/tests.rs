@@ -191,12 +191,25 @@ fn graph_admission_allows_own_aggregate_selector_but_never_exposes_last_item_out
 fn graph_admission_rejects_orphan_iteration_start_instead_of_fabricating_empty_item() {
     let definition = WorkflowDefinition {
         version: 1,
-        nodes: vec![WorkflowNodeSpec {
-            id: "entry".into(),
-            kind: "iteration-start".into(),
-            config: Map::new(),
+        nodes: vec![
+            WorkflowNodeSpec {
+                id: "start".into(),
+                kind: "start".into(),
+                config: Map::new(),
+            },
+            WorkflowNodeSpec {
+                id: "entry".into(),
+                kind: "iteration-start".into(),
+                config: Map::new(),
+            },
+        ],
+        edges: vec![super::super::graph::WorkflowEdgeSpec {
+            id: "entry-edge".into(),
+            source: "start".into(),
+            target: "entry".into(),
+            source_handle: None,
+            target_handle: None,
         }],
-        edges: vec![],
     };
     let error = super::super::graph::compile(definition)
         .unwrap_err()

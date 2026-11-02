@@ -32,6 +32,34 @@ const {
   normalizeProfessionalNode,
 } = registry;
 
+test("H-191 creative serialization projects one collision-free entry without repairing invalid professional graphs", () => {
+  const { execFileSync } = require("node:child_process");
+  const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-entry-fixtures"], { encoding: "utf8" }));
+  assert.equal(fixtures.length, 4);
+  for (const { name, workflow } of fixtures) {
+    const { nodes, edges } = workflow.definition;
+    const starts = nodes.filter(node => node.kind === "start");
+    if (name === "professional-missing-entry") {
+      assert.equal(starts.length, 0, "professional definitions are validated, never silently repaired");
+      assert.deepEqual(edges, []);
+      continue;
+    }
+    assert.equal(starts.length, 1, name);
+    const entry = starts[0];
+    assert.equal(new Set(nodes.map(node => node.id)).size, nodes.length);
+    assert.equal(new Set(edges.map(edge => edge.id)).size, edges.length);
+    assert.equal(edges.some(edge => edge.target === entry.id), false);
+    assert.ok(edges.some(edge => edge.source === entry.id && edge.target === "camera"));
+    assert.ok(edges.some(edge => edge.source === "camera" && edge.target === "lens"));
+    if (name === "creative-entry-collision") {
+      assert.notEqual(entry.id, "__canvas_start");
+      assert.ok(edges.some(edge => edge.source === entry.id && edge.target === "__canvas_start"));
+    }
+    if (name === "creative-explicit-entry") assert.equal(entry.id, "authored-entry");
+    assert.deepEqual(workflow.inputs, {});
+  }
+});
+
 test("H-184..190 desktop serializer does not manufacture provided values from missing/null defaults", () => {
   const { execFileSync } = require("node:child_process");
   const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-input-contract-fixture"], { encoding: "utf8" }));

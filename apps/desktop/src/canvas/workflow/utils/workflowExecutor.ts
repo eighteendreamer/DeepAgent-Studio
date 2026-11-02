@@ -204,6 +204,34 @@ function serializeEdges(edges: WorkflowEdge[]) {
     }));
 }
 
+function serializeDefinition(nodes: WorkflowNode[], edges: WorkflowEdge[], mode: "creative" | "professional") {
+  const definition = {
+    version: 1,
+    nodes: serializeNodes(nodes, edges, mode),
+    edges: serializeEdges(edges),
+  };
+  // Creative canvas roots are authored without a visible entry node. Project
+  // that intent into the same explicit v1 contract; never repair a professional
+  // request or let the kernel infer an entry from arbitrary topology.
+  if (mode !== "creative" || definition.nodes.some(node => node.kind === "start")) return definition;
+  const occupied = new Set([...definition.nodes, ...definition.edges].map(item => item.id));
+  const takeId = (base: string) => {
+    let id = base;
+    for (let suffix = 1; occupied.has(id); suffix += 1) id = `${base}_${suffix}`;
+    occupied.add(id);
+    return id;
+  };
+  const incoming = new Set(definition.edges.map(edge => edge.target));
+  const roots = definition.nodes.filter(node => !incoming.has(node.id));
+  const entryId = takeId("__canvas_start");
+  definition.nodes.unshift({ id: entryId, kind: "start", config: {} });
+  roots.forEach((root, index) => definition.edges.push({
+    id: takeId(`__canvas_entry_${index}`), source: entryId, target: root.id,
+    source_handle: null, target_handle: null,
+  }));
+  return definition;
+}
+
 function mapBackendStatus(backend: string): NodeStatus {
   switch (backend) {
     case "running":
@@ -314,11 +342,7 @@ async function runBackendWorkflow(
   const eventMod = await import("@tauri-apps/api/event");
 
   const workflow = {
-    definition: {
-      version: 1,
-      nodes: serializeNodes(nodes, edges, mode),
-      edges: serializeEdges(edges),
-    },
+    definition: serializeDefinition(nodes, edges, mode),
     // The canvas currently has no per-run input form. Defaults stay in the
     // declaration; the shared backend resolves them once and records their
     // source. Do not manufacture empty strings or turn defaults into provided.
