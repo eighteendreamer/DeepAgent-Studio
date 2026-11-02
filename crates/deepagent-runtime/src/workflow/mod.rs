@@ -2,6 +2,7 @@ mod agent;
 pub mod canvas;
 pub mod code;
 mod graph;
+mod iteration;
 pub mod knowledge;
 mod node_events;
 pub mod tools;

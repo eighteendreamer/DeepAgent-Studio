@@ -706,6 +706,70 @@ test("running video progress keeps the provider task id for a resumed request", 
   }
 });
 
+test("H-181 scoped items never promote one item's media identity or outputs into reusable node config", async () => {
+  const previousWindow = globalThis.window;
+  globalThis.window = { __TAURI_INTERNALS__: {} };
+  const handlers = new Map();
+  const state = {
+    nodes: [{ id: "video", data: { kind: "video-gen", status: "idle" }, position: { x: 0, y: 0 } }],
+    edges: [],
+    updateNodeData(id, patch) {
+      this.nodes = this.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
+    },
+  };
+  const starts = [];
+  const executor = loadTypeScript("../src/canvas/workflow/utils/workflowExecutor.ts", {
+    "../store/canvasStore": { useCanvasStore: { getState: () => ({ mode: "professional" }) } },
+    "../store/professionalStore": { useProfessionalStore: { getState: () => state } },
+    "../store/creativeStore": { useCreativeStore: { getState: () => ({ nodes: [], edges: [] }) } },
+    "@tauri-apps/api/core": { invoke: async (command, args) => {
+      if (command === "cancel_run") return { accepted: true };
+      starts.push(args.workflow);
+      return { run_id: `scope-${starts.length}`, session_id: null };
+    } },
+    "@tauri-apps/api/event": { listen: async (name, callback) => {
+      handlers.set(name, callback); return () => handlers.delete(name);
+    } },
+  });
+  const emit = (index, status, outputs) => handlers.get("chat://event")({ payload: {
+    run_id: "scope-1", payload: { type: "workflow_node", event: {
+      revision: "rev", node_id: "video", scope: ["iter", String(index)], status, attempt: 1,
+      job_id: `private-item-job-${index}`, resume_fingerprint: `private-item-binding-${index}`,
+      outputs,
+    } },
+  } });
+  let running;
+  try {
+    running = executor.runWorkflow();
+    await untilWorkflow(() => starts.length === 1);
+    emit(0, "running");
+    emit(1, "running");
+    emit(1, "completed", { videoUrl: "artifact://item-one", videoTaskId: "item-one-job" });
+    assert.equal(state.nodes[0].data.status, "running", "one completed item does not finish its still-running sibling");
+    emit(0, "completed", { videoUrl: "artifact://item-zero", videoTaskId: "item-zero-job" });
+    assert.equal(state.nodes[0].data.status, "completed");
+    assert.equal(state.nodes[0].data.videoTaskId, undefined);
+    assert.equal(state.nodes[0].data.videoTaskFingerprint, undefined);
+    assert.equal(state.nodes[0].data.videoUrl, undefined);
+    assert.deepEqual(state.nodes[0].data.result.scope, ["iter", "0"]);
+    handlers.get("session://completed")({ payload: { run_id: "scope-1" } });
+    await running;
+    running = executor.runWorkflow();
+    await untilWorkflow(() => starts.length === 2);
+    const config = starts[1].definition.nodes[0].config;
+    assert.equal(config.videoTaskId, undefined);
+    assert.equal(config.videoUrl, undefined);
+    assert.equal(config.result, undefined);
+    handlers.get("session://completed")({ payload: { run_id: "scope-2" } });
+    await running;
+    assert.equal(handlers.size, 0);
+  } finally {
+    await executor.cancelWorkflow(); await running;
+    if (previousWindow === undefined) delete globalThis.window;
+    else globalThis.window = previousWindow;
+  }
+});
+
 /** 框选批量接入：一次操作建多条连线，撤销一步回到接入前。 */
 function loadCreativeStore() {
   return loadTypeScript("../src/canvas/workflow/store/creativeStore.ts", {

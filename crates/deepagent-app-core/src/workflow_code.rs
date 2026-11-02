@@ -23,6 +23,10 @@ struct PendingCode {
     request: CodeRequest,
 }
 
+// Same hard ceiling as the workflow's item lanes. Each validated request is
+// at most 1 MiB; the run-local cache remains bounded even before dispatch.
+const MAX_PENDING_CODE_REQUESTS: usize = 50;
+
 pub(crate) struct WorkflowCodeGateway {
     pending: Mutex<BTreeMap<String, PendingCode>>,
     broker: Option<Arc<RuntimeBroker>>,
@@ -134,11 +138,12 @@ impl CodeBridge for WorkflowCodeGateway {
             .pending
             .lock()
             .map_err(|_| CoreError::other("code handle lock poisoned"))?;
-        // A WorkflowAgent serializes node execution. A second unconsumed
-        // request is a lifecycle error, never a reason to grow a global cache.
-        if !pending.is_empty() {
+        // Iteration items may prepare together; only the Kernel may consume
+        // their independent handles. Preparation still does not resolve SDKs
+        // or execute code, and the cache is neither global nor unbounded.
+        if pending.len() >= MAX_PENDING_CODE_REQUESTS {
             return Err(CoreError::invalid(
-                "CodeHandleInvalid: another code node is pending",
+                "CodeHandleInvalid: pending code request limit reached",
             ));
         }
         pending.insert(

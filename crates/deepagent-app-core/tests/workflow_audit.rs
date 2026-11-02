@@ -16,6 +16,8 @@ use tokio::net::TcpListener;
 mod code;
 #[path = "workflow_audit/http.rs"]
 mod http;
+#[path = "workflow_audit/iteration.rs"]
+mod iteration;
 #[path = "workflow_audit/usage.rs"]
 mod usage;
 

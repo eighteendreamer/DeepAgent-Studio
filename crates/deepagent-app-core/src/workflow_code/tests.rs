@@ -57,7 +57,9 @@ fn prepare_is_private_bounded_and_has_no_sdk_requirement() {
         first.script_sha256,
         format!("{:x}", Sha256::digest(request().script.as_bytes()))
     );
-    assert!(gateway.prepare(request()).is_err());
+    let parallel = gateway.prepare(request()).unwrap();
+    assert_ne!(parallel.request_id, first.request_id);
+    gateway.release(&parallel.request_id);
     gateway.release(&first.request_id);
     let next = gateway.prepare(request()).unwrap();
     assert_ne!(first.request_id, next.request_id);
@@ -86,6 +88,35 @@ fn altered_identity_and_cross_run_handles_are_rejected_without_consuming_the_rea
         .tool()
         .validate_input(serde_json::to_value(invocation).unwrap())
         .is_ok());
+}
+
+#[test]
+fn h181_parallel_preparation_is_run_local_bounded_and_individually_revocable() {
+    let gateway = gateway();
+    let invocations: Vec<_> = (0..50)
+        .map(|_| gateway.prepare(request()).unwrap())
+        .collect();
+    let ids: std::collections::BTreeSet<_> =
+        invocations.iter().map(|item| &item.request_id).collect();
+    assert_eq!(ids.len(), 50);
+    assert!(
+        gateway.prepare(request()).is_err(),
+        "no unbounded private handle cache"
+    );
+    for item in &invocations {
+        assert!(gateway.parse(serde_json::to_value(item).unwrap()).is_ok());
+    }
+    gateway.release(&invocations[3].request_id);
+    assert!(gateway
+        .parse(serde_json::to_value(&invocations[3]).unwrap())
+        .is_err());
+    let replacement = gateway.prepare(request()).unwrap();
+    assert!(!ids.contains(&replacement.request_id));
+    for item in &invocations {
+        gateway.release(&item.request_id);
+    }
+    gateway.release(&replacement.request_id);
+    assert!(gateway.pending.lock().unwrap().is_empty());
 }
 
 #[tokio::test]

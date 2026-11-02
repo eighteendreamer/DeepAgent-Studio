@@ -36,6 +36,11 @@ use super::values;
 use crate::agent::{Agent, AgentDecision, Observation, RunUsage};
 use deepagent_core::error::{CoreError, Result};
 
+mod item_scheduler;
+#[cfg(test)]
+mod iteration_tests;
+use item_scheduler::{IterationExecution, OutputLease};
+
 struct PendingNodeTool {
     node_id: String,
     call_id: String,
@@ -98,8 +103,16 @@ impl PendingMediaOutput {
 /// (or an `end` node is reached), the agent returns `Complete` with the final
 /// output summary.
 pub struct WorkflowAgent {
-    compiled: CompiledWorkflow,
-    inputs: Map<String, Value>,
+    compiled: Arc<CompiledWorkflow>,
+    walk: Vec<usize>,
+    item: Option<Value>,
+    item_roots: BTreeSet<String>,
+    /// A fixed lane quota is divided among nested schedulers, never multiplied.
+    item_lanes: usize,
+    pending_iteration: Option<IterationExecution>,
+    item_output_budget: Arc<std::sync::Mutex<usize>>,
+    item_output_lease: Option<OutputLease>,
+    inputs: Arc<Map<String, Value>>,
     target_node_id: Option<String>,
     publisher: NodeEventPublisher,
     outputs: BTreeMap<String, Value>,
@@ -120,6 +133,9 @@ pub struct WorkflowAgent {
     model_name: Option<String>,
     knowledge_retriever: Option<Arc<dyn KnowledgeRetriever>>,
     tool_executor: Option<Arc<dyn ToolExecutor>>,
+    // The legacy registry adapter has no Kernel batch classification. Keep
+    // its existing exclusive semantics when item contexts share it.
+    tool_executor_lock: Arc<tokio::sync::Mutex<()>>,
     canvas_bridge: Option<Arc<dyn CanvasModelBridge>>,
     artifact_validator: Option<Arc<dyn CanvasArtifactValidator>>,
     code_bridge: Option<Arc<dyn CodeBridge>>,
@@ -134,8 +150,41 @@ impl WorkflowAgent {
         target_node_id: Option<String>,
         publisher: NodeEventPublisher,
     ) -> Self {
+        Self::from_shared(
+            Arc::new(compiled),
+            Arc::new(inputs),
+            target_node_id,
+            publisher,
+        )
+    }
+
+    fn from_shared(
+        compiled: Arc<CompiledWorkflow>,
+        inputs: Arc<Map<String, Value>>,
+        target_node_id: Option<String>,
+        publisher: NodeEventPublisher,
+    ) -> Self {
+        let walk = compiled
+            .order
+            .iter()
+            .copied()
+            .filter(|index| {
+                super::iteration::scope_of(
+                    &compiled.iteration_plans,
+                    &compiled.definition.nodes[*index].id,
+                )
+                .is_empty()
+            })
+            .collect();
         Self {
             compiled,
+            walk,
+            item: None,
+            item_roots: BTreeSet::new(),
+            item_lanes: super::iteration::MAX_CONCURRENCY,
+            pending_iteration: None,
+            item_output_budget: Arc::new(std::sync::Mutex::new(0)),
+            item_output_lease: None,
             inputs,
             target_node_id,
             usage: Arc::new(WorkflowUsage::new(publisher.clone())),
@@ -152,6 +201,7 @@ impl WorkflowAgent {
             model_name: None,
             knowledge_retriever: None,
             tool_executor: None,
+            tool_executor_lock: Arc::new(tokio::sync::Mutex::new(())),
             canvas_bridge: None,
             artifact_validator: None,
             code_bridge: None,
@@ -268,6 +318,9 @@ impl WorkflowAgent {
     /// predecessor and, for an `if-else` or question-classifier predecessor,
     /// the matching source handle.
     fn has_active_predecessor(&self, node_id: &str) -> bool {
+        if self.item_roots.contains(node_id) {
+            return true;
+        }
         let incoming = self
             .compiled
             .definition
@@ -290,6 +343,9 @@ impl WorkflowAgent {
                 .iter()
                 .find(|node| node.id == edge.source)
                 .map(|node| node.kind.as_str());
+            if source_kind == Some("iteration") {
+                return edge.source_handle.as_deref() == Some("done");
+            }
             if !matches!(source_kind, Some("if-else") | Some("question-classifier")) {
                 return true;
             }
@@ -381,11 +437,13 @@ impl WorkflowAgent {
             )),
             "tool" => self.execute_tool(&resolved_config).await,
             "knowledge-retrieval" => self.execute_knowledge_retrieval(&resolved_config).await,
-            "iteration" | "loop" => self.execute_iteration(&resolved_config).await,
+            "loop" => self.execute_iteration(&resolved_config).await,
             // These nodes have nothing to compute: an input node's own config
             // *is* its output, the loop markers only carry their context, and
             // the ContractOnly constraint nodes exist to hold their settings.
-            "image-input" | "iteration-start" | "loop-start" | "loop-end" | "camera" | "lens"
+            "iteration-start" => self.item.as_ref().map(|item| json!({"item":item}))
+                .ok_or_else(|| CoreError::invalid("iteration-start has no active item scope")),
+            "image-input" | "loop-start" | "loop-end" | "camera" | "lens"
             | "focal-length" | "aperture" => Ok(Value::Object(resolved_config)),
             // Anything else must fail loudly. Forwarding its config would make
             // an unimplemented node look like it had produced real results.
@@ -526,7 +584,7 @@ impl WorkflowAgent {
                 }
             }
         }
-        for (key, value) in &self.inputs {
+        for (key, value) in self.inputs.iter() {
             result.entry(key.clone()).or_insert_with(|| value.clone());
         }
         Ok(Value::Object(result))
@@ -1663,6 +1721,7 @@ impl WorkflowAgent {
         Ok(Value::Object(arguments))
     }
     async fn execute_tool(&self, config: &Map<String, Value>) -> Result<Value> {
+        let _exclusive = self.tool_executor_lock.lock().await;
         let executor = match &self.tool_executor {
             Some(e) => e,
             None => {
@@ -1861,6 +1920,15 @@ impl WorkflowAgent {
                     return Err(error);
                 }
                 let output_value = Self::node_output_value_inline(&node_kind, &output);
+                if let Err(error) = self.admit_item_output(&node_id, &output_value) {
+                    return self.finish_node_with_updates(
+                        node_id,
+                        node_kind,
+                        Err(error),
+                        elapsed_ms,
+                        updates,
+                    );
+                }
                 self.outputs.insert(node_id.clone(), output_value.clone());
                 self.node_statuses
                     .insert(node_id.clone(), NodeExecutionStatus::Completed);
@@ -1961,13 +2029,16 @@ impl Agent for WorkflowAgent {
         };
         let result =
             crate::cancellation::await_cancelled(self.think(step, last), Some(cancel)).await;
-        if result.is_err() && self.is_cancelled() {
+        if result.is_err() && self.is_cancelled() && self.pending_iteration.is_none() {
             self.cancel_active_node();
         }
         result
     }
 
     async fn think(&mut self, _step: usize, last: &[Observation]) -> Result<AgentDecision> {
+        if self.pending_iteration.is_some() {
+            return self.advance_iteration(last).await;
+        }
         if let Some(pending) = self.pending_media.take() {
             let tool = pending.output.tool_name();
             let output = Self::correlated_tool_output(last, &pending.call_id, tool, tool);
@@ -2070,7 +2141,7 @@ impl Agent for WorkflowAgent {
             return Err(CoreError::other("workflow cancelled"));
         }
 
-        if self.step >= self.compiled.order.len() {
+        if self.step >= self.walk.len() {
             let summary = self
                 .outputs
                 .get("end")
@@ -2079,7 +2150,7 @@ impl Agent for WorkflowAgent {
             return Ok(AgentDecision::Complete(summary));
         }
 
-        let node_index = self.compiled.order[self.step];
+        let node_index = self.walk[self.step];
         let node = &self.compiled.definition.nodes[node_index];
         let node_id = node.id.clone();
         let node_kind = node.kind.clone();
@@ -2123,6 +2194,14 @@ impl Agent for WorkflowAgent {
             .insert(node_id.clone(), NodeExecutionStatus::Running);
         self.emit_status(&node_id, NodeExecutionStatus::Running, 1, 0, None, None);
         let node_start = Instant::now();
+
+        if node_kind == "iteration" {
+            let preparation = self.begin_iteration(&node_id);
+            if let Err(error) = preparation {
+                return self.finish_node(node_id, node_kind, Err(error), 0);
+            }
+            return self.advance_iteration(last).await;
+        }
 
         if node_kind == "http-request" {
             let arguments = match self.http_tool_arguments(&node_config) {
@@ -2314,6 +2393,7 @@ impl Agent for WorkflowAgent {
     }
 
     async fn finish_background_tasks(&mut self) {
+        self.stop_iteration().await;
         // The Kernel can stop before the next think (cancellation, persistence
         // error or deadline). Close the pending node without inventing success.
         if let Some(pending) = self.pending_tool.take() {
@@ -2338,6 +2418,7 @@ impl Agent for WorkflowAgent {
                 pending.started.elapsed().as_millis() as u64,
             );
         }
+        self.cancel_active_node();
     }
 
     fn cumulative_usage(&self) -> Option<RunUsage> {

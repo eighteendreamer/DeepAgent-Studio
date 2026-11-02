@@ -106,3 +106,51 @@ async fn measured_transient_failure_cannot_dispatch_another_paid_candidate_after
         );
     }
 }
+
+#[tokio::test]
+async fn h181_item_error_policy_cannot_convert_canonical_budget_stop_into_success() {
+    for policy in ["continue", "remove"] {
+        let provider = Provider::start(vec![(200, Some(completion(100, 20, 80, 12)))]).await;
+        let f = Fixture::new().await;
+        let model = f.register(&provider, "openai", "audit-a", 0);
+        f.cost
+            .set_budget(BudgetConfig {
+                daily_limit: Some(0.0001),
+                monthly_limit: None,
+            })
+            .unwrap();
+        let request: WorkflowRequest = serde_json::from_value(json!({
+            "definition":{"version":1,"nodes":[
+                {"id":"start","kind":"start","config":{"inputVariables":[{"name":"items","variable":"items","type":"array"}]}},
+                {"id":"iter","kind":"iteration","config":{"inputVariable":"{{#start.items#}}","outputVariable":"{{#body.text#}}","errorHandling":policy}},
+                {"id":"entry","kind":"iteration-start"},
+                {"id":"body","kind":"llm","config":{"llmModel":model,"llmPrompt":"{{#entry.item#}}"}},
+                {"id":"end","kind":"end"}
+            ],"edges":[
+                {"id":"a","source":"start","target":"iter"},
+                {"id":"b","source":"iter","source_handle":"item","target":"entry"},
+                {"id":"c","source":"entry","target":"body"},
+                {"id":"d","source":"iter","source_handle":"done","target":"end"}
+            ]},"inputs":{"items":["first","second","must-not-start"]}
+        })).unwrap();
+        let id = format!("h181-budget-{policy}");
+        let (ok, events) = f.run(&id, request).await;
+        assert!(
+            !ok,
+            "item error policy must not swallow a run-wide budget stop"
+        );
+        assert_terminal(&f.db, &id, "budget_exceeded");
+        assert_eq!(provider.calls.lock().unwrap().len(), 1);
+        assert!(!events.iter().any(|event| matches!(event, RuntimeEvent::WorkflowNode { event }
+            if event.scope == vec!["iter","2"] || (event.node_id == "end" && event.status == deepagent_runtime::workflow::NodeExecutionStatus::Completed))));
+        assert_eq!(
+            CostStore::new(&f.db)
+                .session_costs_detailed(&f.session)
+                .unwrap()
+                .len(),
+            1
+        );
+        let (_root, db, _) = f.reopen();
+        assert_terminal(&db, &id, "budget_exceeded");
+    }
+}

@@ -2,7 +2,7 @@
 //!
 //! Output declarations mirror desktop `nodeRegistry.ts` / `nodeSchemas.ts`;
 //! source ports mirror `WorkflowNodeShell.tsx`. Compilation never executes nodes
-//! or rewrites their configuration. Container scopes require a future contract.
+//! or rewrites their configuration. Iteration scopes derive from item/done ports.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -68,6 +68,7 @@ pub struct CompiledWorkflow {
     pub revision: String,
     /// Strict transitive ancestors, including an empty set for every root.
     pub ancestors: BTreeMap<String, BTreeSet<String>>,
+    pub(super) iteration_plans: BTreeMap<String, super::iteration::IterationPlan>,
 }
 
 /// Validate a version-1 DAG. A recognized kind is not a promise of execution support.
@@ -189,13 +190,25 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         return Err(CoreError::invalid("workflow contains a cycle"));
     }
 
+    let iteration_plans = super::iteration::compile_plans(&definition)?;
     for (index, node) in definition.nodes.iter().enumerate() {
+        let target_scope = super::iteration::scope_of(&iteration_plans, &node.id);
+        if node.kind == "iteration-start" && target_scope.is_empty() {
+            return Err(CoreError::invalid(
+                "IterationPlanInvalid: iteration-start requires an owning item scope",
+            ));
+        }
         // Filter only node-level metadata: keys such as `description` inside an
         // HTTP body or tool arguments are still executable bindings.
         let filtered_config = node
             .config
             .iter()
-            .filter(|(key, _)| !matches!(key.as_str(), "description" | "label" | "codeScript"))
+            .filter(|(key, _)| {
+                !(matches!(key.as_str(), "description" | "label" | "codeScript")
+                    // A typed iteration selector reads the completed body at
+                    // aggregation, not a not-yet-executed graph ancestor.
+                    || (node.kind == "iteration" && key.as_str() == "outputVariable"))
+            })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         let references = super::values::references(&Value::Object(filtered_config))?;
@@ -212,6 +225,17 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
                     node.id
                 ))
             })?;
+            let source_scope = super::iteration::scope_of(&iteration_plans, source_id);
+            if target_scope.contains(source_id) {
+                return Err(CoreError::invalid(
+                    "IterationPlanInvalid: an item cannot read its unfinished owner aggregate",
+                ));
+            }
+            if !target_scope.starts_with(&source_scope) {
+                return Err(CoreError::invalid(
+                    "IterationPlanInvalid: an item-local output cannot escape its scope; use the iteration aggregate",
+                ));
+            }
             if !ancestor_sets[index].contains(source_id) {
                 return Err(CoreError::invalid(format!(
                     "node {} references non-ancestor node {}",
@@ -240,6 +264,7 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         order,
         revision: format!("{:x}", Sha256::digest(&serialized)),
         ancestors,
+        iteration_plans,
     })
 }
 
@@ -802,12 +827,22 @@ mod tests {
                 json!({"classifierClasses": [{"name": "one"}]}),
             ),
             ("question-classifier", json!({})),
-            ("iteration", json!({})),
+            ("iteration", json!({"inputVariable":"{{#input.items#}}"})),
         ] {
-            let definition = graph(
+            let mut definition = graph(
                 vec![node("source", kind, config), node("sink", "end", json!({}))],
                 vec![edge("e", "source", "sink")],
             );
+            if kind == "iteration" {
+                definition.nodes.push(node(
+                    "input",
+                    "start",
+                    json!({
+                        "inputVariables":[{"name":"items","type":"array"}]
+                    }),
+                ));
+                definition.edges.push(edge("input-edge", "input", "source"));
+            }
             for handle in [None, Some(""), Some("unknown")] {
                 let mut invalid = definition.clone();
                 invalid.edges[0].source_handle = handle.map(str::to_owned);
@@ -1032,7 +1067,11 @@ mod tests {
         for (kind, expected) in cases {
             let spec = node("n", kind, json!({}));
             assert_eq!(output_names(&spec).unwrap(), string_set(expected), "{kind}");
-            assert!(compile(graph(vec![spec], vec![])).is_ok(), "{kind}");
+            // Registry recognition is independent of executable admission:
+            // iteration needs an input binding and its marker needs an owner.
+            if !matches!(kind, "iteration" | "iteration-start") {
+                assert!(compile(graph(vec![spec], vec![])).is_ok(), "{kind}");
+            }
         }
         let unknown = node("n", "professional-llm", json!({}));
         assert!(output_names(&unknown).is_err());

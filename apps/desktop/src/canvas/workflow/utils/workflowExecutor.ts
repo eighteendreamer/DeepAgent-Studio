@@ -341,6 +341,9 @@ async function runBackendWorkflow(
     payload: Record<string, unknown>;
   };
   const buffered: BufferedEvent[] = [];
+  // Display projection only. Item results remain scoped in durable events;
+  // a last item's provider job must never become every item's resume config.
+  const scopedNodes = new Map<string, { running: Set<string>; failed: boolean; error?: string }>();
   let resolveCompletion!: () => void;
   let rejectCompletion!: (reason: unknown) => void;
   const completion = new Promise<void>((resolve, reject) => {
@@ -381,6 +384,27 @@ async function runBackendWorkflow(
     if (!nodeId || !backendStatus) return;
 
     const mapped = mapBackendStatus(backendStatus);
+    if (Array.isArray(inner.scope) && inner.scope.length > 0) {
+      if (!inner.scope.every((part) => typeof part === "string")) return;
+      const key = JSON.stringify(inner.scope);
+      const state = scopedNodes.get(nodeId) ?? { running: new Set<string>(), failed: false };
+      if (mapped === "running") state.running.add(key);
+      else state.running.delete(key);
+      if (mapped === "error") {
+        state.failed = true;
+        if (typeof inner.error === "string") state.error = inner.error;
+      }
+      scopedNodes.set(nodeId, state);
+      const status = state.running.size > 0 ? "running" : state.failed ? "error" : mapped;
+      setNodeStatus(mode, nodeId, status, {
+        executionTime: typeof inner.elapsed_ms === "number" ? inner.elapsed_ms : undefined,
+        errorMessage: state.error,
+        result: inner.outputs !== undefined && inner.outputs !== null
+          ? { success: mapped === "completed", outputs: inner.outputs, scope: inner.scope }
+          : undefined,
+      });
+      return;
+    }
     setNodeStatus(mode, nodeId, mapped, {
       executionTime:
         typeof inner.elapsed_ms === "number" ? inner.elapsed_ms : undefined,

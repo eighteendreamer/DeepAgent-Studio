@@ -17,6 +17,9 @@ pub(super) struct WorkflowUsage {
     usage: RunUsageTracker,
     publisher: NodeEventPublisher,
     external: Mutex<Option<Arc<dyn CanvasUsageSink>>>,
+    /// Canonical host admission/accounting errors stop the run, not just one
+    /// item. Retain their source message without guessing from error text.
+    control_error: Mutex<Option<String>>,
 }
 
 impl WorkflowUsage {
@@ -25,6 +28,7 @@ impl WorkflowUsage {
             usage: RunUsageTracker::default(),
             publisher,
             external: Mutex::new(None),
+            control_error: Mutex::new(None),
         }
     }
 
@@ -50,15 +54,42 @@ impl WorkflowUsage {
     pub(super) fn take_raw(&self) -> Vec<Value> {
         self.usage.take_raw()
     }
+
+    pub(super) fn check_control(&self) -> deepagent_core::error::Result<()> {
+        match self
+            .control_error
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .as_ref()
+        {
+            Some(error) => Err(deepagent_core::error::CoreError::other(error)),
+            None => Ok(()),
+        }
+    }
+
+    fn control_result(
+        &self,
+        result: deepagent_core::error::Result<()>,
+    ) -> deepagent_core::error::Result<()> {
+        if let Err(error) = &result {
+            self.control_error
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get_or_insert_with(|| error.to_string());
+        }
+        result
+    }
 }
 
 impl CanvasUsageSink for WorkflowUsage {
     fn before_call(&self) -> deepagent_core::error::Result<()> {
-        self.external().map_or(Ok(()), |sink| sink.before_call())
+        self.check_control()?;
+        self.control_result(self.external().map_or(Ok(()), |sink| sink.before_call()))
     }
 
     fn checkpoint(&self) -> deepagent_core::error::Result<()> {
-        self.external().map_or(Ok(()), |sink| sink.checkpoint())
+        self.check_control()?;
+        self.control_result(self.external().map_or(Ok(()), |sink| sink.checkpoint()))
     }
 
     fn record(&self, mut report: CanvasUsageReport) {

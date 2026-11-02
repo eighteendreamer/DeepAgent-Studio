@@ -33,7 +33,20 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     const node = (id, kind, patch = {}) => ({ id, type: `professional-${kind}`, position: { x: 0, y: 0 }, data: { ...registry.createDefaultNodeData(kind), ...patch } });
     let nodes = [node("start", "start"), node("end", "end")];
     let edges = [{ id: "e1", source: "start", target: "end" }];
-    if (name === "embedding") {
+    if (name === "iteration") {
+      nodes[0].data.inputVariables = [{ name: "items", type: "array", default: ["ONE", "TWO"] }];
+      nodes.splice(1, 0,
+        node("iterate", "iteration", { inputVariable: "{{#start.items#}}", outputVariable: "{{#body.output#}}", parallel: true, maxConcurrency: 2 }),
+        node("entry", "iteration-start"),
+        node("body", "template-transform", { templateScript: "seen:{{#entry.item#}}", templateInputVariables: [] }),
+      );
+      edges = [
+        { id: "a", source: "start", target: "iterate" },
+        { id: "b", source: "iterate", sourceHandle: "item", target: "entry" },
+        { id: "c", source: "entry", target: "body" },
+        { id: "d", source: "iterate", sourceHandle: "done", target: "end" },
+      ];
+    } else if (name === "embedding") {
       nodes.splice(1, 0, node("embedding", "embeddings", {
         embeddingModel: `${providerId}::audit-embedding-model`, texts: ["audit embedding"],
       }));
@@ -87,7 +100,12 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     await running;
     assert.ok(workflow);
     const serializedNodes = workflow.definition.nodes;
-    if (name === "embedding") {
+    if (name === "iteration") {
+      const config = serializedNodes.find((node) => node.id === "iterate").config;
+      assert.equal(config.inputVariable, "{{#start.items#}}");
+      assert.equal(config.outputVariable, "{{#body.output#}}");
+      assert.equal(config.maxConcurrency, 2);
+    } else if (name === "embedding") {
       const config = serializedNodes.find((node) => node.id === "embedding").config;
       assert.equal(config.embeddingModel, `${providerId}::audit-embedding-model`);
       assert.deepEqual(config.texts, ["audit embedding"]);
@@ -107,7 +125,9 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--emit-embedding-fixture" && process.argv[3]) {
+  if (process.argv[2] === "--emit-iteration-fixture") {
+    emitFixtures(["iteration"]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-embedding-fixture" && process.argv[3]) {
     emitFixtures(["embedding"], process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-fixtures") {
     emitFixtures().catch((error) => { console.error(error); process.exitCode = 1; });

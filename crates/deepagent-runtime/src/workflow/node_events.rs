@@ -141,12 +141,14 @@ fn annotate_provenance(event: &mut NodeExecutionEvent) {
 #[derive(Clone)]
 pub struct NodeEventPublisher {
     sink: Arc<RwLock<Arc<dyn RuntimeEventSink>>>,
+    scope: Vec<String>,
 }
 
 impl Default for NodeEventPublisher {
     fn default() -> Self {
         Self {
             sink: Arc::new(RwLock::new(Arc::new(NullEventSink))),
+            scope: Vec::new(),
         }
     }
 }
@@ -155,7 +157,17 @@ impl NodeEventPublisher {
     pub fn new(sink: Arc<dyn RuntimeEventSink>) -> Self {
         Self {
             sink: Arc::new(RwLock::new(sink)),
+            scope: Vec::new(),
         }
+    }
+
+    /// Item publishers retain the same durable sink, not a second event stream.
+    pub(super) fn scoped(&self, owner: &str, index: usize) -> Self {
+        let mut publisher = self.clone();
+        publisher
+            .scope
+            .extend([owner.to_owned(), index.to_string()]);
+        publisher
     }
 
     /// Replace the publisher destination without invalidating clones already
@@ -169,6 +181,9 @@ impl NodeEventPublisher {
     }
 
     pub fn emit(&self, mut event: NodeExecutionEvent) {
+        let mut scope = self.scope.clone();
+        scope.append(&mut event.scope);
+        event.scope = scope;
         event.outputs = event.outputs.map(scrub_secrets_value);
         event.updates = event
             .updates
