@@ -69,6 +69,7 @@ pub struct CompiledWorkflow {
     /// Strict transitive ancestors, including an empty set for every root.
     pub ancestors: BTreeMap<String, BTreeSet<String>>,
     pub(super) iteration_plans: BTreeMap<String, super::iteration::IterationPlan>,
+    pub(super) aggregator_plans: BTreeMap<String, super::aggregator::AggregatorPlan>,
 }
 
 /// Validate a version-1 DAG. A recognized kind is not a promise of execution support.
@@ -194,6 +195,17 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
     }
 
     let iteration_plans = super::iteration::compile_plans(&definition)?;
+    let aggregator_plans = definition
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "variable-aggregator")
+        .map(|node| {
+            Ok((
+                node.id.clone(),
+                super::aggregator::AggregatorPlan::compile(&node.config, &definition)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     for (index, node) in definition.nodes.iter().enumerate() {
         let target_scope = super::iteration::scope_of(&iteration_plans, &node.id);
         if node.kind == "iteration-start" && target_scope.is_empty() {
@@ -268,6 +280,7 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         revision: format!("{:x}", Sha256::digest(&serialized)),
         ancestors,
         iteration_plans,
+        aggregator_plans,
     })
 }
 
@@ -289,7 +302,7 @@ pub fn output_names(node: &WorkflowNodeSpec) -> Result<BTreeSet<String>> {
     }
     if node.kind == "variable-aggregator" {
         if let Some(output_type) = node.config.get("aggregatorOutputType") {
-            validate_type(Some(output_type), "aggregatorOutputType")?;
+            super::aggregator::validate_output_type(output_type)?;
         }
     }
     Ok(names)
@@ -405,6 +418,28 @@ fn output_contract(kind: &str) -> Result<(&'static [&'static str], Option<&'stat
             ))
         }
     })
+}
+
+/// Types explicitly declared by the graph; absence is not an inferred string.
+pub(super) fn declared_output_type<'a>(
+    node: &'a WorkflowNodeSpec,
+    output: &str,
+) -> Result<Option<&'a str>> {
+    if node.kind == "variable-aggregator" && output == "output" {
+        return Ok(node
+            .config
+            .get("aggregatorOutputType")
+            .and_then(Value::as_str));
+    }
+    let (_, field) = output_contract(&node.kind)?;
+    if let Some(field) = field {
+        for declaration in config_array(node, field)? {
+            if declaration_name(declaration, field)? == output {
+                return Ok(declaration.get("type").and_then(Value::as_str));
+            }
+        }
+    }
+    Ok(None)
 }
 
 fn string_set(names: &[&str]) -> BTreeSet<String> {
@@ -1082,7 +1117,10 @@ mod tests {
             }
             // Registry recognition is independent of executable admission:
             // iteration needs an input binding and its marker needs an owner.
-            if !matches!(kind, "iteration" | "iteration-start") {
+            if !matches!(
+                kind,
+                "iteration" | "iteration-start" | "variable-aggregator"
+            ) {
                 assert!(compile(graph(vec![spec], vec![])).is_ok(), "{kind}");
             }
         }

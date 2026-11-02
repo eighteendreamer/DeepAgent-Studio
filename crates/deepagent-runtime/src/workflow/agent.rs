@@ -406,7 +406,6 @@ impl WorkflowAgent {
         match kind {
             "start" => self.execute_start(&resolved_config),
             "variable-assigner" => self.execute_variable_assigner(&resolved_config),
-            "variable-aggregator" => self.execute_variable_aggregator(&resolved_config),
             "if-else" => self.execute_if_else(&resolved_config),
             "template-transform" => self.execute_template_transform(&resolved_config),
             "list-operator" => self.execute_list_operator(&resolved_config),
@@ -646,20 +645,6 @@ impl WorkflowAgent {
             }
         }
         Ok(Value::Object(result))
-    }
-
-    fn execute_variable_aggregator(&self, config: &Map<String, Value>) -> Result<Value> {
-        let variables = config
-            .get("variables")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let mut aggregated = Vec::new();
-        for var in variables {
-            let resolved = values::resolve(&var, &self.outputs)?;
-            aggregated.push(resolved);
-        }
-        Ok(serde_json::json!({ "output": aggregated }))
     }
 
     fn execute_if_else(&self, config: &Map<String, Value>) -> Result<Value> {
@@ -2190,6 +2175,29 @@ impl Agent for WorkflowAgent {
             .insert(node_id.clone(), NodeExecutionStatus::Running);
         self.emit_status(&node_id, NodeExecutionStatus::Running, 1, 0, None, None);
         let node_start = Instant::now();
+
+        if node_kind == "variable-aggregator" {
+            let mut updates = BTreeMap::new();
+            let result = self
+                .compiled
+                .aggregator_plans
+                .get(&node_id)
+                .ok_or_else(|| {
+                    CoreError::invalid("AggregatorConfigInvalid: compiled plan is missing")
+                })
+                .and_then(|plan| plan.evaluate(&self.outputs, &self.node_statuses))
+                .map(|(output, metadata)| {
+                    updates = metadata;
+                    output
+                });
+            return self.finish_node_with_updates(
+                node_id,
+                node_kind,
+                result,
+                node_start.elapsed().as_millis() as u64,
+                updates,
+            );
+        }
 
         if node_kind == "iteration" {
             let preparation = self.begin_iteration(&node_id);

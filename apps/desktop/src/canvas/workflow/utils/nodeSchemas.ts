@@ -305,10 +305,16 @@ export const NODE_CONFIG_SCHEMAS: Record<ProfessionalNodeKind, NodeConfigSchema>
     templateInputVariables: list("输入变量", VARIABLE_BINDING),
     templateScript: { ...text("Jinja 模板"), "x-widget": "code" },
   }),
-  "variable-aggregator": nodeSchema("变量聚合", {
-    aggregatorOutputType: variableType(["string", "number", "array", "object"]),
-    aggregatorVariables: list("聚合变量", variable("变量引用")),
-  }),
+  "variable-aggregator": { ...nodeSchema("变量聚合", {
+    aggregatorOutputType: { ...variableType(["string", "number", "array", "object"]),
+      description: "array按绑定顺序收集原值（不展平）；其他类型选择首个已执行分支，不转换类型。",
+    },
+    aggregatorVariables: { ...list("聚合变量", {
+      ...variable("变量引用"), pattern: "^\\{\\{#[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_]+)+#\\}\\}$",
+    }), minItems: 1 },
+  }, "array按绑定顺序收集原值（不展平）；其他类型选首个已执行分支。空/重复绑定、缺值及类型不符会拒绝。"),
+    required: ["aggregatorOutputType", "aggregatorVariables"],
+  },
   tool: nodeSchema("工具调用", {
     toolId: { ...TOOL, title: "工具标识" },
     toolParams: {

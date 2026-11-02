@@ -1,4 +1,5 @@
 mod agent;
+mod aggregator;
 mod answer;
 pub mod canvas;
 pub mod code;

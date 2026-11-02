@@ -602,7 +602,9 @@ export function getNodeOutputs(kind: ProfessionalNodeKind, data: Record<string, 
     );
   };
   if (kind === "variable-aggregator") {
-    return [{ name: "output", type: String(data.aggregatorOutputType ?? "string"), description: "所选分支的输出" }];
+    return [{ name: "output", type: String(data.aggregatorOutputType ?? "string"),
+      description: data.aggregatorOutputType === "array" ? "按绑定顺序收集的原值（不展平）" : "首个已执行分支的原值",
+    }];
   }
   if (kind === "variable-assigner") {
     return [{ name: "output", type: "object", description: "赋值后的变量" }];

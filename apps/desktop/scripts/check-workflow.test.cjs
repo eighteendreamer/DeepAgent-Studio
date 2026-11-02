@@ -32,6 +32,25 @@ const {
   normalizeProfessionalNode,
 } = registry;
 
+test("H-183 aggregator schema requires bindings and production serializer preserves their order and output types", () => {
+  const schema = schemas.NODE_CONFIG_SCHEMAS["variable-aggregator"];
+  for (const data of [{}, { aggregatorOutputType: "array", aggregatorVariables: [] },
+    { aggregatorOutputType: "array", aggregatorVariables: ["literal"] }]) {
+    assert.ok(validateSchemaValue(schema, data).length > 0);
+  }
+  const { execFileSync } = require("node:child_process");
+  const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-aggregator-fixtures"], { encoding: "utf8" }));
+  assert.equal(fixtures.length, 4);
+  assert.match(registry.getNodeOutputs("variable-aggregator", { aggregatorOutputType: "array" })[0].description, /不展平/);
+  assert.match(registry.getNodeOutputs("variable-aggregator", { aggregatorOutputType: "string" })[0].description, /首个已执行/);
+  for (const fixture of fixtures) {
+    const config = fixture.workflow.definition.nodes[1].config;
+    assert.deepEqual(config.aggregatorVariables, ["{{#start.first#}}", "{{#start.second#}}"]);
+    assert.equal(Object.hasOwn(config, "variables"), false);
+    assert.equal(fixture.workflow.definition.nodes[2].config.outputVariables[0].type, config.aggregatorOutputType);
+  }
+});
+
 test("H-182 answer schema rejects blank templates and serializer preserves published fields", () => {
   const schema = schemas.NODE_CONFIG_SCHEMAS.answer;
   for (const data of [{}, { answerTemplate: "" }, { answerTemplate: " \n\t" }, { answerTemplate: 7 }]) {

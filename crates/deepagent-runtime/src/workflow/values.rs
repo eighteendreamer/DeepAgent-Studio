@@ -191,6 +191,22 @@ fn tokens(text: &str, aliases: bool) -> Result<Vec<Token>> {
     Ok(found)
 }
 
+/// A binding must be one complete canonical reference, not a text template.
+pub(super) fn reference_path(text: &str) -> Result<Vec<String>> {
+    let parsed = tokens(text, false)?;
+    match parsed.as_slice() {
+        [Token {
+            start: 0,
+            end,
+            kind: TokenKind::Reference(path),
+        }] if *end == text.len() => Ok(path.clone()),
+        _ => Err(invalid(
+            "binding",
+            "requires one complete canonical reference",
+        )),
+    }
+}
+
 pub fn references(value: &Value) -> Result<Vec<Vec<String>>> {
     fn visit(value: &Value, found: &mut Vec<Vec<String>>) -> Result<()> {
         match value {

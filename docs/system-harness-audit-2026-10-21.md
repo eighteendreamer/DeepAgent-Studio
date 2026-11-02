@@ -5489,6 +5489,8 @@ Cargo测试均另带`--offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Stu
 
 ### H-183：专业画布 `variable-aggregator` 忽略 `aggregatorVariables`，成功运行却输出空数组
 
+**修复状态（2026-11-03）**：已修复并验收，限E-H183-01～03所列本机范围；全仓唯一既有H-306失败及严格lint阻断均保留，待独立提交并回填hash。原始失败证据与审计结论保留如下。
+
 **级别：高（P1，工作流数据完整性）；触发条件：使用专业画布的变量聚合节点，绑定一个或多个上游变量。** 前端配置能够通过 schema 和图编译，但运行时读取另一套字段，合法输入不会进入结果，且没有错误终态。
 
 #### 生产调用链与正式复现
@@ -5514,6 +5516,50 @@ Cargo测试均另带`--offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Stu
 - 回归需覆盖字符串/数字/对象/数组、空绑定、重复绑定、上游失败/跳过、类型声明、顺序稳定性、下游引用、重启恢复以及 CLI/SDK/Tauri 入口，断言实际输出与事件/RunStore 一致。本轮只新增审计，不修改生产变换逻辑。
 
 本轮 H-183 只新增正式审计探针和文档，未修改生产变量聚合逻辑。
+
+**E-H183-01（2026-11-03，原探针与TDD，修复中/未验收）**：基线722069f9，tracked干净，五项原用户未跟踪内容不读/不改/不提交。原探针精确执行`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_variable_aggregator_consumes_frontend_bindings --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1`，0过1败、exit101、11.06秒：FIRST/SECOND丢失，output=[]且run=succeeded。新增默认正式Kernel TDD执行`cargo test -p deepagent-app-core --test workflow_audit aggregator:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1`，3过6败/1忽略；前端`node --test --test-name-pattern='H-183' apps/desktop/scripts/check-workflow.test.cjs`实际0过1败。失败证据保留在target/h183-repair-20261103/。
+
+连续H-178/181/182/183暴露配置跨层漂移，本项先明确架构边界：沿用version-1图compile生成不可变typed聚合计划，执行器只消费计划，不复制运行/事件/权限链；生产TS serializer→正式Kernel为跨语言门禁。以下是基于原array探针、UI“所选分支输出”以及values::missing_skipped_and_null_are_distinct_for_branch_aggregation的**本地v1设计**，非供应商协议：array按绑定顺序收集原值、不展平；string/number/object选择首个已完成来源且严格检查类型、不转字符串；只忽略明确Skipped来源，已完成来源缺路径/null与类型不符不得假装跳过；空/重复绑定、旧variables/未知字段拒绝。图编译复用祖先/输出/scope检查并验证可静态确定的声明类型，其余在执行时校验。元数据拟写入既有Completed.updates.aggregation（版本/来源/计数，不复制原值），保持原探针精确output对象契约。复用values联合1MiB预算、单次解析，补正式下游/分支/失败/SQLite重开和cursor对照，不扩到H-184/185等输入边界。
+
+当前尚未验收或提交，不计新增修复；306唯一台账123验收/22历史跳过/7归并/2撤销/151待修+1修复中，有效未关闭152含H-180授权跳过，实际排队151。本项粗估3–6有效小时；全余仍沿200–400有效小时未逐项校准历史粗估，构建/设备/依赖/环境等待另计、不承诺精确完工。
+
+**E-H183-02（2026-11-03，实现、跨scope反例与最终冻结，尚未完整验收）**：在现有CompiledWorkflow添加私有AggregatorPlan，复用原output_contract的声明类型、祖先/scope校验和values引用语法。执行只消费编译计划，绕过泛型配置预解析；输出仍严格为output对象，版本/配置计数/选中来源计数/选中及跳过路径投影到同一个Completed.updates.aggregation，不含额外原值。所选输入共享values::resolve联合1MiB限制，最终输出与来源元数据也复用check_value；这是序列化边界，不承诺进程RSS。旧variables、未知字段、空/重复或非整段canonical引用拒绝；array收集异构JSON原值不展平，其他三类型首个Completed候选严格类型校验、不因缺值/null/类型不合而回退到后项。
+
+嵌套item补测真实失败0/1（22.32秒）：原item上下文只继承父outputs、不继承node_statuses，无法区分父来源完成或跳过；在既有item构造处同步克隆状态快照，item本身仍独立更新其状态，未增加调度/重试/事件中心。修复后默认aggregator10/0/1忽略，Runtime工作流104/0；生产TS→Kernel显式1/0（内部四种类型）通过。前端schema增加必填/至少一项/canonical格式，并明确array收集和标量选择；生产编辑器、变量选择器与serializer/合成事件消费者已实操通过，初版及最终截图分别gui-*与gui-v2-*，最终输出FIRST/SECOND且unexpectedIPC=[]，控制台error/warn为空。GUI只是合成IPC，不冒充真实Tauri后端；真实Kernel由独立正式seam验证。GUI夹具独立tsc初次unknown结果类型报错保留，改用显式只读结果形状后通过。
+
+首轮最终验收中发现输出说明仍沿用“分支输出”，因此主动中止尚未结束的workspace，无该轮全仓终态、不计通过；first-source-hashes/acceptance-first-interrupted等证据保留。仅补齐本项前端类型/输出说明后重新冻结14份代码/测试/GUI输入，重新从原探针、默认测试、TS seam开始完整v2验收。源码不再变更；本轮不处理既有严格lint诊断或H-306。当前仍等待v2全仓/构建/lint最终结果，未标验收、未提交、未进入下一H；H-180授权跳过、不合入约定不变。
+
+**E-H183-03（2026-11-03，最终验收与兼容边界）**：14份最终代码/测试/GUI输入哈希在v2前后逐项一致，正式原探针显式1/0/0，原FIRST/SECOND精确输出断言未削弱；默认正式Kernel聚合10/0/1忽略，显式生产TS→Kernel seam 1/0/0（内部array/string/number/object四图），完整workflow_audit73/0/30忽略，Runtime全target/feature394/0/11忽略。未把ignored计为通过；正常对照包括原有非聚合工作流、标量首项、typed JSON下游、空值/false/0、未选分支、真实上游失败、缺路径/错误类型、单次解释、稳定顺序、联合预算、并行item父来源、SQLite正常关闭后重开与cursor重放，实时和持久事件/来源元数据逐项一致、终态一次且无新增action/redispatch。
+
+| 最终门禁 | 实际命令 | 实际结果 |
+|---|---|---|
+| v2-accept-original | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_variable_aggregator_consumes_frontend_bindings --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit 0；1.29 秒；1过/0败/0忽略（1块） |
+| v2-accept-aggregator | `cargo test -p deepagent-app-core --test workflow_audit aggregator:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | exit 0；2.65 秒；10过/0败/1忽略（1块） |
+| v2-accept-desktop-seam | `cargo test -p deepagent-app-core --test workflow_audit aggregator::h183_desktop_serialized_aggregators_execute_all_four_output_types --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit 0；1.51 秒；1过/0败/0忽略（1块） |
+| v2-accept-workflow | `cargo test -p deepagent-app-core --test workflow_audit --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | exit 0；14.89 秒；73过/0败/30忽略（1块） |
+| v2-accept-runtime | `cargo test -p deepagent-runtime --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | exit 0；83.19 秒；394过/0败/11忽略（4块） |
+| v2-accept-fmt | `cargo fmt --all -- --check` | exit 0；4.08 秒 |
+| v2-accept-runtime-clippy | `cargo clippy -p deepagent-runtime --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit 101；10.47 秒 |
+| v2-accept-appcore-clippy | `cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit 101；38.31 秒 |
+| v2-accept-cli | `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit 0；1.46 秒 |
+| v2-accept-workspace | `cargo test --workspace --no-fail-fast --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | exit 101；1041.96 秒；4187过/1败/256忽略（134块） |
+| v2-accept-root-clippy | `cargo clippy --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit 101；7.60 秒 |
+| v2-accept-tauri | `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit 0；37.17 秒 |
+| v2-republish-cli | `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit 0；0.92 秒 |
+| v2-sdk-final-entry | `cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | exit 0；25.84 秒；6过/0败/0忽略（1块） |
+| v2-accept-frontend | （`apps/desktop`）`pnpm build` | exit 0；117.58 秒；300项Node检查全部通过，tsc与Vite构建通过 |
+| v2-accept-ts-sdk | （`packages/sdk`）`pnpm test` | exit 0；2.75 秒；7过0败 |
+| gui-v2-typecheck | （`apps/desktop`）`pnpm exec tsc --noEmit --target ES2022 --module ESNext --moduleResolution bundler --jsx react-jsx --skipLibCheck --strict --allowSyntheticDefaultImports --resolveJsonModule --allowImportingTsExtensions scripts/h183-aggregator-verification.tsx` | exit 0 |
+
+完整workspace实际4187过/1败/256忽略、134块、1041.96秒，exit101；唯一失败仍为独立H-306 `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`（creative.video-edit.v1的defaultUserPrompt为空），deepagent-prompts全目录对父提交无diff，不夹带修复。严格lint仍未通过、未降低门槛：Runtime的model_agent.rs:285 clone_on_copy和workflow/canvas.rs:32 derivable_impls；AppCore的context_runtime/http_runtime/plugin_preparation/run_assembler/session_title/media原诊断（lib12/lib-test14）；根clippy在models/client.rs:355 clone_on_copy阻断。九份诊断源码逐一确认对修复父提交无改动，不据此宣称完整lint或全仓全绿；未能越过这些基线阻断保证所有下游target严格lint执行完毕。
+
+CLI先构建并核对debug/deepagent.exe与debug/deps/deepagent.exe SHA256一致，再跑全仓；Tauri check后重新发布CLI并复核相同哈希826F2ED97EF778AB38F01F44F71F53A5B1560DED3849931901D7D704BA8BE2DE，再执行SDK stdio6/0。前端完整build含300项Node检查且tsc/Vite通过，TS SDK7/0；GUI夹具独立严格tsc通过。最终生产编辑器实操空绑定提示、上游变量选择和serializer/合成事件消费者，结果FIRST/SECOND按序、status=completed、unexpectedIPC=[]，最终非差分状态树与全页截图gui-final-full-state.txt/gui-final-full-pass.png保存；早先viewport截图/差分状态文件保留，不把其无变化摘要冒充完整状态树；最终控制台error/warn为空。Vite与临时浏览器页、所有测试均终态。
+
+兼容性：保留version-1公开aggregatorOutputType/aggregatorVariables及严格output对象，下游无需新字段；来源/计数只添加至原Completed.updates.aggregation且仍经原publisher脱敏/原run_events持久化。array收集异构JSON原值、不展平；string/number/object只取首个已完成候选，不因该值不合格回退；精确重复路径拒绝。旧variables、未知字段、未配置/空绑定、非整段canonical引用和无可用来源由统一边界明确拒绝，需调用者显式修正配置，无静默迁移。静态类型只覆盖已有顶层显式声明和聚合输出；嵌套路径/无typed声明builtins运行时检查，不承诺任意JSON schema推导。没有新增依赖、公共命令、运行/事件/审批/工具链或数据库迁移；H-184/185输入admission等仍独立待修。
+
+未执行真实供应商/外部网络、其他OS、完整Tauri后端窗口、断电/中途自动恢复或长期压力：本项为本机纯数据节点验证，不访问用户会话、真实设置或第三方资源；持久重开不冒充透明恢复。CLI/SDK当前没有workflow启动方法，其通用构建/stdio不是workflow E2E，实际workflow入口验收为公开ChatService/Kernel与生产TS serializer seam。证据均在target/h183-repair-20261103/，包括红测、首次中止、最终acceptance-v2-results/completed、源码哈希和precommit-verification，不提交日志/构建产物。
+
+本项在所列Windows本机范围已修复并验收，待创建只含本项14份代码/测试/手动夹具及两份当时文档的独立fix提交，随后另做docs回填真实hash，不amend、不推送/建PR。306唯一台账已逐项核对：124验收/22历史跳过/7归并/2撤销/151待修/0修复中，有效未关闭151含H-180授权跳过，实际排队150。本轮新增修复1、历史跳过0、归并/撤销0；其他305主行不变，五项原用户未跟踪内容不读/不改/不提交，H-180原独立提交/跳过/不合入约定不变。本项修复验收剩余0；下一候选H-184尚未开始，动手前复核H-185是否同根因且必须共同处理，不预先归并。全部剩余仍沿200–400有效小时未逐项校准历史粗估，依据150个排队项的数据/权限/状态风险与跨层验收复杂度；构建/设备/依赖/环境等待另计、无可靠总上界，不承诺精确完工，整个goal未完成。
 
 ### H-184：工作流 `start` 的必填输入缺少 admission 校验，缺失值被静默填成 null
 

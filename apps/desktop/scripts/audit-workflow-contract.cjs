@@ -33,7 +33,20 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     const node = (id, kind, patch = {}) => ({ id, type: `professional-${kind}`, position: { x: 0, y: 0 }, data: { ...registry.createDefaultNodeData(kind), ...patch } });
     let nodes = [node("start", "start"), node("end", "end")];
     let edges = [{ id: "e1", source: "start", target: "end" }];
-    if (name === "answer") {
+    if (name.startsWith("aggregator-")) {
+      const kind = name.slice("aggregator-".length);
+      const values = kind === "number" ? [7, 8] : kind === "object" ? [{ k: 1 }, { k: 2 }] : ["FIRST", "SECOND"];
+      const inputType = kind === "array" ? "string" : kind;
+      nodes[0].data.inputVariables = [
+        { name: "first", type: inputType, default: values[0] },
+        { name: "second", type: inputType, default: values[1] },
+      ];
+      nodes.splice(1, 0, node("aggregate", "variable-aggregator", {
+        aggregatorOutputType: kind, aggregatorVariables: ["{{#start.first#}}", "{{#start.second#}}"],
+      }));
+      nodes[2].data.outputVariables = [{ name: "report", type: kind, value: "{{#aggregate.output#}}" }];
+      edges = [{ id: "a", source: "start", target: "aggregate" }, { id: "b", source: "aggregate", target: "end" }];
+    } else if (name === "answer") {
       nodes[0].data.inputVariables = [{ name: "customer", type: "string", default: "Eighteen" }];
       nodes.splice(1, 0, node("answer", "answer", {
         answerTemplate: "你好 {{customer}}，{{#start.customer#}}！",
@@ -108,7 +121,12 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     await running;
     assert.ok(workflow);
     const serializedNodes = workflow.definition.nodes;
-    if (name === "answer") {
+    if (name.startsWith("aggregator-")) {
+      const config = serializedNodes.find((node) => node.id === "aggregate").config;
+      assert.equal(config.aggregatorOutputType, name.slice("aggregator-".length));
+      assert.deepEqual(config.aggregatorVariables, ["{{#start.first#}}", "{{#start.second#}}"]);
+      assert.equal(Object.hasOwn(config, "variables"), false);
+    } else if (name === "answer") {
       const config = serializedNodes.find((node) => node.id === "answer").config;
       assert.equal(config.answerTemplate, "你好 {{customer}}，{{#start.customer#}}！");
       assert.deepEqual(config.answerVariables, [{ name: "customer", value: "{{#start.customer#}}" }]);
@@ -139,7 +157,9 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--emit-answer-fixture") {
+  if (process.argv[2] === "--emit-aggregator-fixtures") {
+    emitFixtures(["aggregator-array", "aggregator-string", "aggregator-number", "aggregator-object"]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-answer-fixture") {
     emitFixtures(["answer"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-iteration-fixture") {
     emitFixtures(["iteration"]).catch((error) => { console.error(error); process.exitCode = 1; });

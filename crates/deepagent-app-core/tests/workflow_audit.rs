@@ -12,6 +12,8 @@ use deepagent_runtime::RuntimeEvent;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+#[path = "workflow_audit/aggregator.rs"]
+mod aggregator;
 #[path = "workflow_audit/answer.rs"]
 mod answer;
 #[path = "workflow_audit/code.rs"]

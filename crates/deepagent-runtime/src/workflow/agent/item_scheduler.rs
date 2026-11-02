@@ -114,6 +114,10 @@ impl WorkflowAgent {
             })
             .collect();
         child.outputs = self.outputs.clone();
+        // A visible parent value keeps its scheduler provenance. Aggregation
+        // must distinguish a completed ancestor from a skipped or pending one;
+        // item-local statuses are still owned by this independent child walk.
+        child.node_statuses = self.node_statuses.clone();
         child.item_output_budget = self.item_output_budget.clone();
         child.item_output_lease = Some(lease);
         child.item = Some(item);
