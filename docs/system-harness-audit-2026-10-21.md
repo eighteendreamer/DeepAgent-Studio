@@ -5425,7 +5425,7 @@ Cargo测试均另带`--offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Stu
 
 ### H-182：专业画布 `answer` 节点忽略 `answerTemplate`，成功运行却输出空答案
 
-**修复状态（2026-11-03）**：已完成下列本机范围验收；实现及测试见E-H182-01～04，待独立提交回填hash。原始失败证据保留；不代表整个workspace/lint全过。
+**修复状态（2026-11-03）**：已完成下列本机范围验收；实现及测试见E-H182-01～05，修复提交`d3a00714989b0045360625668ea4ff8ceb62594e`。原始失败证据保留；不代表整个workspace/lint全过。
 
 **级别：高（P1，用户可见结果完整性）；触发条件：使用专业画布的“直接回答”节点，配置非空 `answerTemplate`，可选地绑定 `answerVariables`。** 节点会完成并让下游继续，但最终答案不是用户配置的模板，而是执行器对缺失字段的空字符串回退。
 
@@ -5484,6 +5484,8 @@ Cargo测试均另带`--offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Stu
 最终12份输入前后hash一致，全部门禁已有终态。workspace完整执行134结果块、4175过/1败/255忽略，唯一失败为原有H-306 creative.video-edit.v1空defaultUserPrompt，未掩盖或夹带修复；严格Runtime/AppCore/root lint仍有既有诊断，Runtime为model_agent.rs:285及workflow/canvas.rs:32的2条，AppCore为context_runtime/http_runtime/plugin_preparation/run_assembler/session_title/media的lib12/lib-test14条，root为models/client.rs:355的clone_on_copy；9份诊断源码对HEAD无diff（lint-final-baseline-source-check.json），不宣称全仓测试或lint全绿。原正式探针显式运行1/0、生产TS schema/default/serializer→公开ChatService/同一Kernel显式1/0，H-182默认9/0/1忽略（该1项已单独显式执行）、workflow_audit63/0/29忽略、Runtime392/0/11忽略；原审计失败、6红、联合预算红及两轮中止均保留。临时SQLite实际重开与cursor续读逐事件等值，live事件与RunStore wire payload一致，唯一run终态/无工具action。前端完整build与GUI夹具tsc及真实浏览器操作通过；GUI仅生产组件/serializer/合成事件消费者，不等于完整Tauri后端窗口。Tauri check之后重新发布Cargo当前CLI，和冻结CLI hash一致再执行Rust SDK stdio；未并发Tauri覆盖共享入口。
 
 未执行真实供应商/外部网络、其他OS、完整Tauri窗口、断电或长期压力；为遵守合成数据与隔离环境约束，不打开用户会话或真实设置。CLI/SDK目前无workflow启动方法，通用build/stdio结果不冒充workflow E2E；透明恢复/自动重跑不在本项新增。全部证据在target/h182-repair-20261103/，不提交构建/日志产物。仅H-182新增本机验收1，历史跳过新增0、归并/撤销新增0；核对306唯一台账为123验收/22历史跳过/7归并/2撤销/152待修/0修复中，有效未关闭152（含H-180授权跳过，实际排队151）。五项原用户未跟踪内容保持不读/不改/不提交；H-180原独立提交及不合入约定不变。本项验收剩余0，14份相关代码/测试/手动夹具/双文档独立提交后另做docs回填真实hash，不amend、不推送/建PR。下一项H-183尚未开始。全部剩余仍沿200–400有效小时未逐项校准历史粗估，依据151个排队项的数据/权限/状态及跨层验收复杂性；构建/设备/依赖/环境等待另计且无可靠上界，不承诺精确完工，整个goal未完成。
+
+**E-H182-05（2026-11-03，独立提交与hash回填）**：14份本项代码、测试、手动GUI夹具与当时双文档已提交`d3a00714989b0045360625668ea4ff8ceb62594e`（`【fix】统一工作流直接回答契约与单次渲染`）。提交后12份最终冻结输入SHA256逐项仍一致，tracked干净，五项原用户未跟踪内容只核对名称、保持不动；测试、Vite服务与本轮临时浏览器页均已终态。E01～04双文档逐项一致，306唯一台账完整，除H-182外其余305主行与修复父提交逐字相同。仅另做docs提交回填真实fix hash与交付状态，不amend、不推送/建PR、不为docs提交填写自身hash；不清理或改写原red、旧fixture失败、中止、既有lint失败及最终全仓唯一H-306失败。H-180原独立提交/跳过/不合入约定不变。累计123验收/22历史跳过/7归并/2撤销/152待修，含H-180授权跳过、实际排队151；本轮新增验收1、历史跳过0、归并/撤销0，下一项H-183未开始。E04测试结果、兼容影响与未验范围继续有效，整个goal未完成；全部剩余仍是200–400有效小时未逐项校准历史粗估，构建/设备/依赖/环境等待另计，不给精确完工承诺。
 
 ### H-183：专业画布 `variable-aggregator` 忽略 `aggregatorVariables`，成功运行却输出空数组
 
