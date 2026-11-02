@@ -242,7 +242,7 @@
 | 专业画布文档提取节点 | 前端 `document-extractor` 标记 `enabled`，但正式工作流执行到节点即返回 `UnsupportedNode` 并失败 | 已确认 H-179；这是公开能力目录与实际 executor 不一致，和 H-178 的静默成功不同 |
 | 专业画布人工输入节点 | 前端 `human-input` 标记 `enabled` 并提供表单/超时，正式工作流没有进入 `NeedsApproval`、输入租约或可恢复等待态，而是直接 `UnsupportedNode` 失败 | 已确认 H-180；人工输入 schema 与统一人机协作生命周期断裂 |
 | 专业画布迭代节点 | 前端 `iteration` 提供 `inputVariable/outputVariable/parallel/errorHandling/flatten`，合法数组输入进入后端后却得到空数组并成功；executor 只读取未公开的 `iterationCollection` 等字段，也不调度迭代体 | 已确认 H-181；控制流与数据契约断裂，属于静默丢数据/伪完成 |
-| 专业画布直接回答节点 | 前端 `answer` 公开 `answerTemplate`/`answerVariables`，正式运行时 `execute_answer()` 读取另一套 `text`/`variables`，配置的答案变成空字符串但 run 仍成功 | 已确认 H-182；用户可见输出契约断裂，属于静默空结果 |
+| 专业画布直接回答节点 | 前端 `answer` 公开 `answerTemplate`/`answerVariables`，正式运行时 `execute_answer()` 读取另一套 `text`/`variables`，配置的答案变成空字符串但 run 仍成功 | 原确认 H-182；2026-11-03已完成所列本机修复验收，保留静默空结果原证据；详见本项E01～04 |
 | 专业画布变量聚合节点 | 前端 `variable-aggregator` 公开 `aggregatorVariables`，正式运行时只读取 `variables`；合法绑定被静默丢弃，节点输出空数组但 run 仍成功 | 已确认 H-183；数据变换输出契约断裂，属于静默丢数据 |
 | 工作流必填输入 admission | `start.inputVariables` 中完整声明 `required=true`，调用者不提供该输入时，正式运行把它填成 `null` 并记录 `succeeded` | 已确认 H-184；输入校验缺失，必填约束只存在于前端 schema |
 | 工作流输入类型 admission | `start.inputVariables` 声明 `type=number`，调用者却提交字符串时，正式运行原样接受并记录 `succeeded` | 已确认 H-185；类型约束只存在于 schema，未贯通运行边界 |
@@ -5425,6 +5425,8 @@ Cargo测试均另带`--offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Stu
 
 ### H-182：专业画布 `answer` 节点忽略 `answerTemplate`，成功运行却输出空答案
 
+**修复状态（2026-11-03）**：已完成下列本机范围验收；实现及测试见E-H182-01～04，待独立提交回填hash。原始失败证据保留；不代表整个workspace/lint全过。
+
 **级别：高（P1，用户可见结果完整性）；触发条件：使用专业画布的“直接回答”节点，配置非空 `answerTemplate`，可选地绑定 `answerVariables`。** 节点会完成并让下游继续，但最终答案不是用户配置的模板，而是执行器对缺失字段的空字符串回退。
 
 #### 生产调用链与正式复现
@@ -5450,6 +5452,38 @@ Cargo测试均另带`--offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Stu
 - 回归需覆盖纯文本、变量引用、非字符串 JSON 值、空模板策略、模板语法错误、结束节点映射、重放/恢复和 CLI/SDK/Tauri 一致性，断言 wire/事件/RunStore 三者输出一致。本轮只新增审计，不修改生产执行器。
 
 本轮 H-182 只新增正式审计探针和文档，未修改生产回答逻辑。
+
+**E-H182-01（2026-11-03，原探针与TDD，修复中/未验收）**：基线`7c38d69d`，tracked干净，五项原用户未跟踪内容不读/不改/不提交。原探针精确执行`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_answer_node_renders_frontend_contract --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1`，exit101、0过1败，仍输出空answer却succeeded。新增正式Kernel TDD六项实际0过6败，覆盖纯文本/别名/JSON、admission、空渲染、单次解释和临时SQLite重开；初次fixture误用RunStore.list_actions导致编译失败已更正为现有RunControlStore，不冒充行为红测。Windows PowerShell 5重定向将cargo stderr提升为异常，未取得可核验测试终态，不计验收；改为现有pwsh重新执行，原探针red日志保留。证据`target/h182-repair-20261103/`。本轮仅H-182，拟在version-1图契约内共享typed answer校验与执行，拒绝缺失/空白/旧字段/未知字段/不合法绑定，复用values模板和引用；answer及end消费方各只解析原模板/引用一次，防止上游数据被二次解释，同一输出链必须一同处理，不扩大到其他节点。保留正常对照、事件/终态、持久重开和生产TS serializer验收；未验收、未提交，不计新增修复。累计122验收/22历史跳过/7归并/2撤销/152待修+1修复中，有效未关闭153含H-180授权跳过，实际152；H-182粗估4–8有效小时，全部仍沿200–400有效小时未逐项校准历史估计，构建/设备/依赖/环境等待另计。
+
+**E-H182-02（2026-11-03，阶段验证，未验收/未提交）**：首轮正式Kernel六项6过0败；补充正常end对照及原始/JSON转义体积门禁后8过0败1忽略。原探针显式1过0败、生产TS schema/default/serializer到Kernel显式门禁1过0败、workflow_audit 62过0败29忽略。首轮Runtime383过1败9忽略，唯一失败是旧registry测试把空answer配置直接当作可执行，保留输出声明断言并补有效模板与空配置拒绝；同时给旧绑定负例补有效模板，避免以缺模板掩盖绑定错误。未降生产门禁。完整workspace首轮在编译期因已知相关fixture失败主动中止，第二轮在Runtime进行时为补联合绑定预算验收主动中止，两次不是验收通过，原日志/终态保留。严格Runtime/AppCore lint分别受既有2条、lib12/lib-test14条阻挡；诊断8份源码对HEAD无diff，不夹带治理。前端完整pnpm build通过299检查及tsc/Vite，保留旧chunk提示；TS SDK pnpm test 7过0败。真实浏览器手动操作生产SchemaConfigForm：空模板有必填提示，填写后serializer与合成事件结果展示PASS、unexpectedIPC=[]、控制台warn/error=[]；仅UI投影而非完整Tauri后端。独立夹具tsc初次缺type/联合类型错误已修，重跑通过；截图/状态与完整记录保留本项target目录。最终source review补充所有answer绑定必须共享values的1MiB联合解析预算，避免unused绑定逐项复制放大；正在补TDD，尚未结束完整验收。未测真实供应商、其他OS、完整Tauri窗口、断电或长期压力；无DB迁移/新依赖/协议事件字段变动。旧text/variables须调用方显式改用已公开v1字段，不自动猜测迁移；空白答案从静默成功改为拒绝。整个goal未完成，本轮新增验收仍0。
+
+**E-H182-03（2026-11-03，最终输入冻结与联合预算TDD）**：unused绑定放大反例先实际0过1败（71.55秒含编译），再将全部原始绑定合成一个object交给同一个values::resolve，复用1MiB联合预算而非逐绑定独立额度；没有再建解析器。最终12份源码/测试/GUI夹具冻结至acceptance-source-hashes.json。v3原探针显式1/0，H-182默认9/0/1忽略，生产TS→Kernel显式1/0，完整workflow_audit 63/0/29忽略；联合预算反例已包含并通过；最终JSON转义反例带非空尾字并断言错误原因确为1MiB，避免空白检查替代预算验收。前端此前完整build的三份相关TS/夹具输入与最终冻结hash逐项一致，独立GUI夹具tsc通过；原失败、中止和旧fixture记录不删除。当前仍等待全仓、Runtime、严格lint、CLI及Tauri最终结算，未标已验收、未提交；不进入H-183。CLI/SDK当前不提供workflow启动方法，不能把它们的通用构建/stdio检查宣称为workflow端到端，实际workflow入口验收为公开ChatService/Kernel和TS serializer seam。
+
+**E-H182-04（2026-11-03，本机验收完成，待独立提交）**：H-182根因是公开v1 answer配置与执行器读写字段分裂，缺失模板又默认空成功。新增唯一私有typed AnswerConfig供compile与执行复用，读取answerTemplate/answerVariables；共享原declaration_name与values tokenizer/引用/模板/预算。compile拒绝缺失或纯空白模板、未知/旧text/variables字段、坏类型、重复/保留名/缺值/未知绑定属性、未声明alias及非法模板/引用。旧字段不做猜测转换，须调用方显式迁移到已公开v1字段；没有后台迁移或修改已存图。执行只解析原始模板一次，绑定作为一个object共享1MiB解析预算；数字/布尔/对象/数组/null按JSON渲染为文本，插入数据不再解释，渲染后空白或序列化输出超过1MiB失败且不发布answer/end Completed。end消费同一输出必须一并去除泛型预解析，保留自己唯一的values::resolve；正常typed JSON映射对照通过。不新增配置/依赖/事件DTO/数据库schema，不改权限、审批、沙箱或其他独立节点。模板只支持既有简单alias/规范引用语法，不新增Jinja控制/表达式求值；1MiB是序列化值限制，不是RSS保证。
+
+| 实际命令（工作目录为仓库根，除另注外） | 实际结果 |
+|---|---|
+| `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_answer_node_renders_frontend_contract --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | 1过/0败/0忽略，1结果块；78.22秒 |
+| `cargo test -p deepagent-app-core --test workflow_audit answer:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | 9过/0败/1忽略，1结果块；2.98秒 |
+| `cargo test -p deepagent-app-core --test workflow_audit answer::h182_desktop_serialized_answer_executes_and_maps_the_actual_payload --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | 1过/0败/0忽略，1结果块；1.3秒 |
+| `cargo test -p deepagent-app-core --test workflow_audit --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | 63过/0败/29忽略，1结果块；15.02秒 |
+| `cargo test -p deepagent-runtime --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | 392过/0败/11忽略，4结果块；119.27秒 |
+| `cargo fmt --all -- --check` | exit=0；3.97秒 |
+| `cargo clippy -p deepagent-runtime --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit=101；10.24秒 |
+| `cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit=101；41.61秒 |
+| `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit=0；56.31秒 |
+| `cargo test --workspace --no-fail-fast --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | 4175过/1败/255忽略，134结果块；1242.5秒 |
+| `cargo clippy --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit=101；11.48秒 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit=0；35.23秒 |
+| `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit=0；2.14秒 |
+| `cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | 6过/0败/0忽略，1结果块；49.92秒 |
+| `cd apps/desktop; pnpm build` | exit0；299项Node检查、tsc及Vite通过，旧chunk提示保留 |
+| `cd packages/sdk; pnpm test` | exit0；7过0败，含SDK build |
+| `cd apps/desktop; pnpm exec tsc --noEmit --target ES2022 --module ESNext --moduleResolution bundler --jsx react-jsx --skipLibCheck --strict --allowSyntheticDefaultImports --resolveJsonModule --allowImportingTsExtensions scripts/h182-answer-verification.tsx` | exit0；普通项目tsconfig不包含scripts，故显式检查夹具 |
+
+最终12份输入前后hash一致，全部门禁已有终态。workspace完整执行134结果块、4175过/1败/255忽略，唯一失败为原有H-306 creative.video-edit.v1空defaultUserPrompt，未掩盖或夹带修复；严格Runtime/AppCore/root lint仍有既有诊断，Runtime为model_agent.rs:285及workflow/canvas.rs:32的2条，AppCore为context_runtime/http_runtime/plugin_preparation/run_assembler/session_title/media的lib12/lib-test14条，root为models/client.rs:355的clone_on_copy；9份诊断源码对HEAD无diff（lint-final-baseline-source-check.json），不宣称全仓测试或lint全绿。原正式探针显式运行1/0、生产TS schema/default/serializer→公开ChatService/同一Kernel显式1/0，H-182默认9/0/1忽略（该1项已单独显式执行）、workflow_audit63/0/29忽略、Runtime392/0/11忽略；原审计失败、6红、联合预算红及两轮中止均保留。临时SQLite实际重开与cursor续读逐事件等值，live事件与RunStore wire payload一致，唯一run终态/无工具action。前端完整build与GUI夹具tsc及真实浏览器操作通过；GUI仅生产组件/serializer/合成事件消费者，不等于完整Tauri后端窗口。Tauri check之后重新发布Cargo当前CLI，和冻结CLI hash一致再执行Rust SDK stdio；未并发Tauri覆盖共享入口。
+
+未执行真实供应商/外部网络、其他OS、完整Tauri窗口、断电或长期压力；为遵守合成数据与隔离环境约束，不打开用户会话或真实设置。CLI/SDK目前无workflow启动方法，通用build/stdio结果不冒充workflow E2E；透明恢复/自动重跑不在本项新增。全部证据在target/h182-repair-20261103/，不提交构建/日志产物。仅H-182新增本机验收1，历史跳过新增0、归并/撤销新增0；核对306唯一台账为123验收/22历史跳过/7归并/2撤销/152待修/0修复中，有效未关闭152（含H-180授权跳过，实际排队151）。五项原用户未跟踪内容保持不读/不改/不提交；H-180原独立提交及不合入约定不变。本项验收剩余0，14份相关代码/测试/手动夹具/双文档独立提交后另做docs回填真实hash，不amend、不推送/建PR。下一项H-183尚未开始。全部剩余仍沿200–400有效小时未逐项校准历史粗估，依据151个排队项的数据/权限/状态及跨层验收复杂性；构建/设备/依赖/环境等待另计且无可靠上界，不承诺精确完工，整个goal未完成。
 
 ### H-183：专业画布 `variable-aggregator` 忽略 `aggregatorVariables`，成功运行却输出空数组
 

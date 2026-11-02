@@ -394,12 +394,17 @@ impl WorkflowAgent {
         kind: &str,
         config: &Map<String, Value>,
     ) -> Result<Value> {
+        // These executors own their single resolution/rendering pass. A generic
+        // pre-pass would reinterpret inserted upstream text as executable syntax.
+        match kind {
+            "answer" => return self.execute_answer(config),
+            "end" => return self.execute_end(config),
+            _ => {}
+        }
         let resolved_config = self.resolve_config(config)?;
 
         match kind {
             "start" => self.execute_start(&resolved_config),
-            "end" => self.execute_end(&resolved_config),
-            "answer" => self.execute_answer(&resolved_config),
             "variable-assigner" => self.execute_variable_assigner(&resolved_config),
             "variable-aggregator" => self.execute_variable_aggregator(&resolved_config),
             "if-else" => self.execute_if_else(&resolved_config),
@@ -610,16 +615,7 @@ impl WorkflowAgent {
     }
 
     fn execute_answer(&self, config: &Map<String, Value>) -> Result<Value> {
-        let text = config
-            .get("text")
-            .cloned()
-            .unwrap_or(Value::String(String::new()));
-        let resolved = values::resolve(&text, &self.outputs)?;
-        let answer = match resolved {
-            Value::String(s) => s,
-            other => other.to_string(),
-        };
-        Ok(serde_json::json!({ "answer": answer }))
+        super::answer::AnswerConfig::parse(config)?.render(&self.outputs)
     }
 
     fn execute_variable_assigner(&self, config: &Map<String, Value>) -> Result<Value> {

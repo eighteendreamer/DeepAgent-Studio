@@ -385,6 +385,22 @@ pub fn render_template(
     render_tokens(template, &parsed, Some(bindings), outputs)
 }
 
+/// Validate literal template syntax and aliases at compile time, without
+/// fabricating outputs or evaluating a template with placeholder data.
+pub(super) fn validate_template(
+    template: &str,
+    aliases: &std::collections::BTreeSet<&str>,
+) -> Result<()> {
+    for token in tokens(template, true)? {
+        if let TokenKind::Alias(name) = token.kind {
+            if !aliases.contains(name.as_str()) {
+                return Err(invalid("template", "required alias is undeclared"));
+            }
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 enum Numeric {
     Integer(i128),

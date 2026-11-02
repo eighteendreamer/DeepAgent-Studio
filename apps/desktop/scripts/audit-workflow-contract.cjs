@@ -33,7 +33,15 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     const node = (id, kind, patch = {}) => ({ id, type: `professional-${kind}`, position: { x: 0, y: 0 }, data: { ...registry.createDefaultNodeData(kind), ...patch } });
     let nodes = [node("start", "start"), node("end", "end")];
     let edges = [{ id: "e1", source: "start", target: "end" }];
-    if (name === "iteration") {
+    if (name === "answer") {
+      nodes[0].data.inputVariables = [{ name: "customer", type: "string", default: "Eighteen" }];
+      nodes.splice(1, 0, node("answer", "answer", {
+        answerTemplate: "你好 {{customer}}，{{#start.customer#}}！",
+        answerVariables: [{ name: "customer", value: "{{#start.customer#}}" }],
+      }));
+      nodes[2].data.outputVariables = [{ name: "report", type: "string", value: "{{#answer.answer#}}" }];
+      edges = [{ id: "a", source: "start", target: "answer" }, { id: "b", source: "answer", target: "end" }];
+    } else if (name === "iteration") {
       nodes[0].data.inputVariables = [{ name: "items", type: "array", default: ["ONE", "TWO"] }];
       nodes.splice(1, 0,
         node("iterate", "iteration", { inputVariable: "{{#start.items#}}", outputVariable: "{{#body.output#}}", parallel: true, maxConcurrency: 2 }),
@@ -100,7 +108,13 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     await running;
     assert.ok(workflow);
     const serializedNodes = workflow.definition.nodes;
-    if (name === "iteration") {
+    if (name === "answer") {
+      const config = serializedNodes.find((node) => node.id === "answer").config;
+      assert.equal(config.answerTemplate, "你好 {{customer}}，{{#start.customer#}}！");
+      assert.deepEqual(config.answerVariables, [{ name: "customer", value: "{{#start.customer#}}" }]);
+      assert.equal(Object.hasOwn(config, "text"), false);
+      assert.equal(Object.hasOwn(config, "variables"), false);
+    } else if (name === "iteration") {
       const config = serializedNodes.find((node) => node.id === "iterate").config;
       assert.equal(config.inputVariable, "{{#start.items#}}");
       assert.equal(config.outputVariable, "{{#body.output#}}");
@@ -125,7 +139,9 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--emit-iteration-fixture") {
+  if (process.argv[2] === "--emit-answer-fixture") {
+    emitFixtures(["answer"]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-iteration-fixture") {
     emitFixtures(["iteration"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-embedding-fixture" && process.argv[3]) {
     emitFixtures(["embedding"], process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });

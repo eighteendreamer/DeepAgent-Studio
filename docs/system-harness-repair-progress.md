@@ -2,21 +2,55 @@
 
 ## 当前状态与计数口径（2026-11-03）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百二十二项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；本次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计一百二十三项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；本次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 122 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-125、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 123 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-125、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 22 | 17项原审计历史修复，另H-77/H-83/H-238/H-246/H-301分别随H-78/H-143/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | 本轮H-181已验收并独立提交0855b1b2；下一项未开始 |
-| 待修复 | 153 | 含用户要求跳过的H-180；实际排队152，下一候选H-182尚未开始 |
+| 修复中 | 0 | H-182完成所列本机验收，待独立提交 |
+| 待修复 | 152 | 含用户要求跳过的H-180；实际排队151，下一候选H-183未开始 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **153（153待修复、0修复中；其中H-180按用户要求跳过，实际待处理152项）**；不提供完成率。一百二十二项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+有效未关闭条目当前为 **152（152待修复、0修复中；其中H-180按用户要求跳过，实际待处理151项）**；不提供完成率。一百二十三项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+
+## H-182 直接回答契约修复（2026-11-03，本机验收完成）
+
+**E-H182-01（2026-11-03，原探针与TDD，修复中/未验收）**：基线`7c38d69d`，tracked干净，五项原用户未跟踪内容不读/不改/不提交。原探针精确执行`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_answer_node_renders_frontend_contract --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1`，exit101、0过1败，仍输出空answer却succeeded。新增正式Kernel TDD六项实际0过6败，覆盖纯文本/别名/JSON、admission、空渲染、单次解释和临时SQLite重开；初次fixture误用RunStore.list_actions导致编译失败已更正为现有RunControlStore，不冒充行为红测。Windows PowerShell 5重定向将cargo stderr提升为异常，未取得可核验测试终态，不计验收；改为现有pwsh重新执行，原探针red日志保留。证据`target/h182-repair-20261103/`。本轮仅H-182，拟在version-1图契约内共享typed answer校验与执行，拒绝缺失/空白/旧字段/未知字段/不合法绑定，复用values模板和引用；answer及end消费方各只解析原模板/引用一次，防止上游数据被二次解释，同一输出链必须一同处理，不扩大到其他节点。保留正常对照、事件/终态、持久重开和生产TS serializer验收；未验收、未提交，不计新增修复。累计122验收/22历史跳过/7归并/2撤销/152待修+1修复中，有效未关闭153含H-180授权跳过，实际152；H-182粗估4–8有效小时，全部仍沿200–400有效小时未逐项校准历史估计，构建/设备/依赖/环境等待另计。
+
+**E-H182-02（2026-11-03，阶段验证，未验收/未提交）**：首轮正式Kernel六项6过0败；补充正常end对照及原始/JSON转义体积门禁后8过0败1忽略。原探针显式1过0败、生产TS schema/default/serializer到Kernel显式门禁1过0败、workflow_audit 62过0败29忽略。首轮Runtime383过1败9忽略，唯一失败是旧registry测试把空answer配置直接当作可执行，保留输出声明断言并补有效模板与空配置拒绝；同时给旧绑定负例补有效模板，避免以缺模板掩盖绑定错误。未降生产门禁。完整workspace首轮在编译期因已知相关fixture失败主动中止，第二轮在Runtime进行时为补联合绑定预算验收主动中止，两次不是验收通过，原日志/终态保留。严格Runtime/AppCore lint分别受既有2条、lib12/lib-test14条阻挡；诊断8份源码对HEAD无diff，不夹带治理。前端完整pnpm build通过299检查及tsc/Vite，保留旧chunk提示；TS SDK pnpm test 7过0败。真实浏览器手动操作生产SchemaConfigForm：空模板有必填提示，填写后serializer与合成事件结果展示PASS、unexpectedIPC=[]、控制台warn/error=[]；仅UI投影而非完整Tauri后端。独立夹具tsc初次缺type/联合类型错误已修，重跑通过；截图/状态与完整记录保留本项target目录。最终source review补充所有answer绑定必须共享values的1MiB联合解析预算，避免unused绑定逐项复制放大；正在补TDD，尚未结束完整验收。未测真实供应商、其他OS、完整Tauri窗口、断电或长期压力；无DB迁移/新依赖/协议事件字段变动。旧text/variables须调用方显式改用已公开v1字段，不自动猜测迁移；空白答案从静默成功改为拒绝。整个goal未完成，本轮新增验收仍0。
+
+**E-H182-03（2026-11-03，最终输入冻结与联合预算TDD）**：unused绑定放大反例先实际0过1败（71.55秒含编译），再将全部原始绑定合成一个object交给同一个values::resolve，复用1MiB联合预算而非逐绑定独立额度；没有再建解析器。最终12份源码/测试/GUI夹具冻结至acceptance-source-hashes.json。v3原探针显式1/0，H-182默认9/0/1忽略，生产TS→Kernel显式1/0，完整workflow_audit 63/0/29忽略；联合预算反例已包含并通过；最终JSON转义反例带非空尾字并断言错误原因确为1MiB，避免空白检查替代预算验收。前端此前完整build的三份相关TS/夹具输入与最终冻结hash逐项一致，独立GUI夹具tsc通过；原失败、中止和旧fixture记录不删除。当前仍等待全仓、Runtime、严格lint、CLI及Tauri最终结算，未标已验收、未提交；不进入H-183。CLI/SDK当前不提供workflow启动方法，不能把它们的通用构建/stdio检查宣称为workflow端到端，实际workflow入口验收为公开ChatService/Kernel和TS serializer seam。
+
+**E-H182-04（2026-11-03，本机验收完成，待独立提交）**：H-182根因是公开v1 answer配置与执行器读写字段分裂，缺失模板又默认空成功。新增唯一私有typed AnswerConfig供compile与执行复用，读取answerTemplate/answerVariables；共享原declaration_name与values tokenizer/引用/模板/预算。compile拒绝缺失或纯空白模板、未知/旧text/variables字段、坏类型、重复/保留名/缺值/未知绑定属性、未声明alias及非法模板/引用。旧字段不做猜测转换，须调用方显式迁移到已公开v1字段；没有后台迁移或修改已存图。执行只解析原始模板一次，绑定作为一个object共享1MiB解析预算；数字/布尔/对象/数组/null按JSON渲染为文本，插入数据不再解释，渲染后空白或序列化输出超过1MiB失败且不发布answer/end Completed。end消费同一输出必须一并去除泛型预解析，保留自己唯一的values::resolve；正常typed JSON映射对照通过。不新增配置/依赖/事件DTO/数据库schema，不改权限、审批、沙箱或其他独立节点。模板只支持既有简单alias/规范引用语法，不新增Jinja控制/表达式求值；1MiB是序列化值限制，不是RSS保证。
+
+| 实际命令（工作目录为仓库根，除另注外） | 实际结果 |
+|---|---|
+| `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_answer_node_renders_frontend_contract --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | 1过/0败/0忽略，1结果块；78.22秒 |
+| `cargo test -p deepagent-app-core --test workflow_audit answer:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | 9过/0败/1忽略，1结果块；2.98秒 |
+| `cargo test -p deepagent-app-core --test workflow_audit answer::h182_desktop_serialized_answer_executes_and_maps_the_actual_payload --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | 1过/0败/0忽略，1结果块；1.3秒 |
+| `cargo test -p deepagent-app-core --test workflow_audit --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | 63过/0败/29忽略，1结果块；15.02秒 |
+| `cargo test -p deepagent-runtime --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | 392过/0败/11忽略，4结果块；119.27秒 |
+| `cargo fmt --all -- --check` | exit=0；3.97秒 |
+| `cargo clippy -p deepagent-runtime --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit=101；10.24秒 |
+| `cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit=101；41.61秒 |
+| `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit=0；56.31秒 |
+| `cargo test --workspace --no-fail-fast --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | 4175过/1败/255忽略，134结果块；1242.5秒 |
+| `cargo clippy --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit=101；11.48秒 |
+| `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit=0；35.23秒 |
+| `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit=0；2.14秒 |
+| `cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | 6过/0败/0忽略，1结果块；49.92秒 |
+| `cd apps/desktop; pnpm build` | exit0；299项Node检查、tsc及Vite通过，旧chunk提示保留 |
+| `cd packages/sdk; pnpm test` | exit0；7过0败，含SDK build |
+| `cd apps/desktop; pnpm exec tsc --noEmit --target ES2022 --module ESNext --moduleResolution bundler --jsx react-jsx --skipLibCheck --strict --allowSyntheticDefaultImports --resolveJsonModule --allowImportingTsExtensions scripts/h182-answer-verification.tsx` | exit0；普通项目tsconfig不包含scripts，故显式检查夹具 |
+
+最终12份输入前后hash一致，全部门禁已有终态。workspace完整执行134结果块、4175过/1败/255忽略，唯一失败为原有H-306 creative.video-edit.v1空defaultUserPrompt，未掩盖或夹带修复；严格Runtime/AppCore/root lint仍有既有诊断，Runtime为model_agent.rs:285及workflow/canvas.rs:32的2条，AppCore为context_runtime/http_runtime/plugin_preparation/run_assembler/session_title/media的lib12/lib-test14条，root为models/client.rs:355的clone_on_copy；9份诊断源码对HEAD无diff（lint-final-baseline-source-check.json），不宣称全仓测试或lint全绿。原正式探针显式运行1/0、生产TS schema/default/serializer→公开ChatService/同一Kernel显式1/0，H-182默认9/0/1忽略（该1项已单独显式执行）、workflow_audit63/0/29忽略、Runtime392/0/11忽略；原审计失败、6红、联合预算红及两轮中止均保留。临时SQLite实际重开与cursor续读逐事件等值，live事件与RunStore wire payload一致，唯一run终态/无工具action。前端完整build与GUI夹具tsc及真实浏览器操作通过；GUI仅生产组件/serializer/合成事件消费者，不等于完整Tauri后端窗口。Tauri check之后重新发布Cargo当前CLI，和冻结CLI hash一致再执行Rust SDK stdio；未并发Tauri覆盖共享入口。
+
+未执行真实供应商/外部网络、其他OS、完整Tauri窗口、断电或长期压力；为遵守合成数据与隔离环境约束，不打开用户会话或真实设置。CLI/SDK目前无workflow启动方法，通用build/stdio结果不冒充workflow E2E；透明恢复/自动重跑不在本项新增。全部证据在target/h182-repair-20261103/，不提交构建/日志产物。仅H-182新增本机验收1，历史跳过新增0、归并/撤销新增0；核对306唯一台账为123验收/22历史跳过/7归并/2撤销/152待修/0修复中，有效未关闭152（含H-180授权跳过，实际排队151）。五项原用户未跟踪内容保持不读/不改/不提交；H-180原独立提交及不合入约定不变。本项验收剩余0，14份相关代码/测试/手动夹具/双文档独立提交后另做docs回填真实hash，不amend、不推送/建PR。下一项H-183尚未开始。全部剩余仍沿200–400有效小时未逐项校准历史粗估，依据151个排队项的数据/权限/状态及跨层验收复杂性；构建/设备/依赖/环境等待另计且无可靠上界，不承诺精确完工，整个goal未完成。
 
 ## H-181 迭代子图修复（2026-11-03，本机验收完成）
 
@@ -3533,7 +3567,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-179：专业画布 `document-extractor` 标记为 enabled，但正式运行没有 executor](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-180：专业画布 `human-input` 节点不进入统一人工输入/审批生命周期](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 2026-11-02 用户明确要求提交后跳过；不是历史已修复、归并或撤销 | C盘现有实现已提交；本次合并源止于85d858af，不包含该实现，不继续开发 | 未完整验收；本轮不追加H-180测试，不把提交当验收 | C盘既有实现 `53a03f9bdfa2ebf797de7e8e465d6c6e055bbc97`，不在本次main合并中 | 保留未关闭事实并退出当前修复队列；后续恢复或删除功能须另行明确范围；本轮安排0小时 |
 | [H-181：专业画布 `iteration` 不消费前端输入数组，也没有真正调度迭代体](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H181-01～07；原red/中止/sidecar旧产物失败保留，限所列Windows范围 | typed item/done scope经普通WorkflowAgent接同一Kernel；有序聚合/三策略/flatten/嵌套50lane；保留权限/审批/即时计费与scoped持久事件 | 原探针/真实TS门禁各1/0，workflow54/0/28、Runtime392/0/11、全仓4166/1/254仅既有H306；CLI/Tauri/前端/SDK/fmt/夹具tsc及UI四步过，严格lint旧失败见E06 | `0855b1b24cf93ca45a0c33e53ce01bd059ea5ce7` | 单store/aggregate1MiB、活跃item store序列化共享50MiB非RSS；无透明续跑；H177/H196/loop独立，无迁移；本项剩0，153未关闭含H180授权跳过/实际152，200–400有效小时未校准，等待另计 |
-| [H-182：专业画布 `answer` 节点忽略 `answerTemplate`，成功运行却输出空答案](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-182：专业画布 `answer` 节点忽略 `answerTemplate`，成功运行却输出空答案](system-harness-audit-2026-10-21.md#h-182专业画布-answer-节点忽略-answertemplate成功运行却输出空答案) | P1 | 已修复并验收 | E-H182-01～04；原正式探针红→绿；非历史跳过 | 共享v1 typed answer契约；单次模板/引用解释，联合绑定及输出预算、非空完成门禁 | E04完整命令；原探针1/0、H182默认9/0、TS→Kernel1/0、Runtime392/0、重开/GUI/构建通过；全仓唯一H306及既有严格lint失败保留 | 待独立提交后另做docs回填 | 旧字段需显式迁移；无DB迁移；未验其他OS/真实provider/完整Tauri；本项剩余0，整体200–400有效小时历史粗估 |
 | [H-183：专业画布 `variable-aggregator` 忽略 `aggregatorVariables`，成功运行却输出空数组](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-184：工作流 `start` 的必填输入缺少 admission 校验，缺失值被静默填成 null](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-185：工作流 `start` 不校验输入类型，声明 number 却接受任意字符串](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

@@ -32,6 +32,22 @@ const {
   normalizeProfessionalNode,
 } = registry;
 
+test("H-182 answer schema rejects blank templates and serializer preserves published fields", () => {
+  const schema = schemas.NODE_CONFIG_SCHEMAS.answer;
+  for (const data of [{}, { answerTemplate: "" }, { answerTemplate: " \n\t" }, { answerTemplate: 7 }]) {
+    assert.ok(validateSchemaValue(schema, data).length > 0);
+  }
+  assert.deepEqual(validateSchemaValue(schema, { answerTemplate: "你好 {{customer}}", answerVariables: [] }), []);
+  const { execFileSync } = require("node:child_process");
+  const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-answer-fixture"], { encoding: "utf8" }));
+  assert.equal(fixtures[0].workflow.definition.version, 1);
+  assert.equal(fixtures[0].workflow.inputs.customer, "Eighteen");
+  assert.deepEqual(fixtures[0].workflow.definition.nodes[1].config, {
+    answerTemplate: "你好 {{customer}}，{{#start.customer#}}！",
+    answerVariables: [{ name: "customer", value: "{{#start.customer#}}" }],
+  });
+});
+
 for (const definition of getAllNodeDefinitions()) {
   test(`new and legacy ${definition.kind} nodes have complete independent defaults`, () => {
     const fresh = createDefaultNodeData(definition.kind);

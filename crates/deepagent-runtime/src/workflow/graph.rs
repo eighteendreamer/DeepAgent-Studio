@@ -112,6 +112,9 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         outputs.push(output_names(node)?);
         handles.push(source_handles(node)?);
         validate_bindings(node)?;
+        if node.kind == "answer" {
+            super::answer::AnswerConfig::parse(&node.config)?;
+        }
     }
 
     let mut successors = vec![Vec::new(); definition.nodes.len()];
@@ -467,7 +470,6 @@ fn validate_bindings(node: &WorkflowNodeSpec) -> Result<()> {
     let field = match node.kind.as_str() {
         "code" => "codeInputVariables",
         "template-transform" => "templateInputVariables",
-        "answer" => "answerVariables",
         _ => return Ok(()),
     };
     let mut names = BTreeSet::new();
@@ -1003,6 +1005,10 @@ mod tests {
                 json!([{"name": "x"}]),
             ] {
                 let mut spec = node("n", kind, json!({}));
+                if kind == "answer" {
+                    spec.config
+                        .insert("answerTemplate".into(), json!("valid answer"));
+                }
                 spec.config.insert(field.into(), bindings);
                 assert!(compile(graph(vec![spec], vec![])).is_err());
             }
@@ -1065,8 +1071,15 @@ mod tests {
             ("knowledge-index", &["index_id", "chunk_count"]),
         ];
         for (kind, expected) in cases {
-            let spec = node("n", kind, json!({}));
+            let mut spec = node("n", kind, json!({}));
             assert_eq!(output_names(&spec).unwrap(), string_set(expected), "{kind}");
+            // Output introspection accepts an unconfigured editor node, but
+            // execution requires an actual answer, not a fabricated empty one.
+            if kind == "answer" {
+                assert!(compile(graph(vec![spec.clone()], vec![])).is_err());
+                spec.config
+                    .insert("answerTemplate".into(), json!("valid answer"));
+            }
             // Registry recognition is independent of executable admission:
             // iteration needs an input binding and its marker needs an owner.
             if !matches!(kind, "iteration" | "iteration-start") {

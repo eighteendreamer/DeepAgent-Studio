@@ -336,10 +336,13 @@ export const NODE_CONFIG_SCHEMAS: Record<ProfessionalNodeKind, NodeConfigSchema>
       minimum: 1,
     },
   }),
-  answer: nodeSchema("直接回答", {
-    answerTemplate: { ...text("回答模板"), "x-widget": "textarea" },
-    answerVariables: list("模板变量", VARIABLE_BINDING),
-  }),
+  answer: {
+    ...nodeSchema("直接回答", {
+      answerTemplate: { ...text("回答模板"), minLength: 1, pattern: "\\S", "x-widget": "textarea", description: "必填；支持 {{变量名}} 和 {{#节点.输出#}}。渲染后不能为空。" },
+      answerVariables: list("模板变量", VARIABLE_BINDING),
+    }),
+    required: ["answerTemplate"],
+  },
   "iteration-start": nodeSchema("迭代开始", {}, "迭代开始节点自动接收父迭代的当前项。"),
   loop: nodeSchema("循环", {
     loopVariable: variable("循环变量"),
