@@ -70,6 +70,7 @@ pub struct CompiledWorkflow {
     pub ancestors: BTreeMap<String, BTreeSet<String>>,
     pub(super) iteration_plans: BTreeMap<String, super::iteration::IterationPlan>,
     pub(super) aggregator_plans: BTreeMap<String, super::aggregator::AggregatorPlan>,
+    pub(super) input_plan: super::inputs::InputPlan,
 }
 
 /// Validate a version-1 DAG. A recognized kind is not a promise of execution support.
@@ -118,6 +119,9 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         }
     }
 
+    let input_plan = super::inputs::InputPlan::compile(
+        definition.nodes.iter().find(|node| node.kind == "start"),
+    )?;
     let mut successors = vec![Vec::new(); definition.nodes.len()];
     let mut indegrees = vec![0usize; definition.nodes.len()];
     let mut edge_ids = BTreeSet::new();
@@ -222,7 +226,9 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
                 !(matches!(key.as_str(), "description" | "label" | "codeScript")
                     // A typed iteration selector reads the completed body at
                     // aggregation, not a not-yet-executed graph ancestor.
-                    || (node.kind == "iteration" && key.as_str() == "outputVariable"))
+                    || (node.kind == "iteration" && key.as_str() == "outputVariable")
+                    // Input declarations/defaults are literal data, not graph bindings.
+                    || (node.kind == "start" && key.as_str() == "inputVariables"))
             })
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
@@ -281,6 +287,7 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         ancestors,
         iteration_plans,
         aggregator_plans,
+        input_plan,
     })
 }
 

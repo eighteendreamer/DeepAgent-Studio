@@ -4,6 +4,7 @@ mod answer;
 pub mod canvas;
 pub mod code;
 mod graph;
+mod inputs;
 mod iteration;
 pub mod knowledge;
 mod node_events;

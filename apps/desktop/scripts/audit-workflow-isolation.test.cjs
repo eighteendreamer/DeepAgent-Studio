@@ -20,7 +20,9 @@ function fixture({ mode = 'professional', listenGate, startGate, cancelGate, can
   const calls = [], registrations = [], runs = [];
   const state = {
     nodes: [{ id: 'inspect', data: { kind: mode === 'creative' ? 'video-gen' : 'template-transform', status: 'idle' } }], edges: [],
-    updateNodeData(id, patch) { Object.assign(this.nodes.find(node => node.id === id).data, patch); },
+    updateNodeData(id, patch) {
+      this.nodes = this.nodes.map(node => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
+    },
   };
   const canvas = { mode, workflowApproval: null, setWorkflowApproval(value) { this.workflowApproval = value; } };
   let sequence = 0;
@@ -53,7 +55,7 @@ function fixture({ mode = 'professional', listenGate, startGate, cancelGate, can
   return { state, canvas, calls, registrations, executor, emit,
     starts: () => calls.filter(call => call.command === 'start_workflow'),
     cancels: () => calls.filter(call => call.command === 'cancel_run').map(call => call.args.runId),
-    start() { const run = executor.runWorkflow(); runs.push(run); return run; },
+    start(nodeId) { const run = executor.runWorkflow(nodeId); runs.push(run); return run; },
     async ready(count = 1) { await until(() => sequence >= count); await new Promise(setImmediate); },
     async close() {
       listenGate?.resolve(); startGate?.resolve(); cancelGate?.resolve();
@@ -72,6 +74,25 @@ function nodeEvent(runId, status, tag = runId) {
     outputs: { videoUrl: `artifact://${tag}`, text: tag, modelId: tag },
     job_id: `job-${tag}`, resume_fingerprint: `fingerprint-${tag}`,
   } } };
+}
+for (const beforeAck of [false, true]) for (const nodeId of [undefined, 'inspect']) for (const priorStatus of ['idle', 'completed']) {
+  test(`H-184 input admission failure remains visible without any node events (before ACK=${beforeAck}, target=${nodeId}, prior=${priorStatus})`, async () => {
+    const gate = beforeAck ? deferred() : undefined;
+    const f = fixture({ startGate: gate });
+    const error = "MissingWorkflowInput: required field customer";
+    try {
+      f.state.nodes[0].data.status = priorStatus;
+      const run = f.start(nodeId); await f.ready();
+      f.emit('session://completed', { run_id: 'canvas-run-1', status: 'failed', error });
+      gate?.resolve();
+      await run;
+      assert.equal(f.state.nodes[0].data.status, 'error');
+      assert.equal(f.state.nodes[0].data.errorMessage, error);
+      assert.equal(f.executor.isWorkflowRunning(), false);
+      assert.deepEqual(f.cancels(), []);
+      assert.equal(f.registrations.filter(item => item.active).length, 0);
+    } finally { await f.close(); }
+  });
 }
 test('foreign completion cannot finish or detach the active canvas run', async () => {
   const f = fixture();

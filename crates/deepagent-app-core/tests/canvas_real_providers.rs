@@ -402,6 +402,7 @@ async fn creative_text_then_image_graph_runs_on_real_providers() {
         None,
         NodeEventPublisher::new(sink.clone()),
     )
+    .expect("valid workflow inputs")
     .with_canvas_bridge(gateway.clone());
 
     // Drive the agent exactly like a run does: think once per step until it

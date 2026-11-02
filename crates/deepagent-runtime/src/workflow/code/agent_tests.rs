@@ -57,6 +57,7 @@ fn fixture() -> (WorkflowAgent, Arc<Bridge>, Arc<Sink>) {
         None,
         NodeEventPublisher::new(sink.clone()),
     )
+    .expect("valid workflow inputs")
     .with_code_bridge(bridge.clone());
     (agent, bridge, sink)
 }

@@ -112,7 +112,7 @@ pub struct WorkflowAgent {
     pending_iteration: Option<IterationExecution>,
     item_output_budget: Arc<std::sync::Mutex<usize>>,
     item_output_lease: Option<OutputLease>,
-    inputs: Arc<Map<String, Value>>,
+    inputs: Arc<super::inputs::AdmittedInputs>,
     target_node_id: Option<String>,
     publisher: NodeEventPublisher,
     outputs: BTreeMap<String, Value>,
@@ -143,24 +143,26 @@ pub struct WorkflowAgent {
 }
 
 impl WorkflowAgent {
-    /// Create a new workflow agent from a compiled graph and user inputs.
+    /// Admit inputs against the compiled contract before creating any executor.
+    /// Invalid/missing inputs fail here, including for non-start graph roots.
     pub fn new(
         compiled: CompiledWorkflow,
         inputs: Map<String, Value>,
         target_node_id: Option<String>,
         publisher: NodeEventPublisher,
-    ) -> Self {
-        Self::from_shared(
+    ) -> Result<Self> {
+        let inputs = compiled.input_plan.admit(inputs, &compiled.revision)?;
+        Ok(Self::from_shared(
             Arc::new(compiled),
             Arc::new(inputs),
             target_node_id,
             publisher,
-        )
+        ))
     }
 
     fn from_shared(
         compiled: Arc<CompiledWorkflow>,
-        inputs: Arc<Map<String, Value>>,
+        inputs: Arc<super::inputs::AdmittedInputs>,
         target_node_id: Option<String>,
         publisher: NodeEventPublisher,
     ) -> Self {
@@ -397,6 +399,7 @@ impl WorkflowAgent {
         // These executors own their single resolution/rendering pass. A generic
         // pre-pass would reinterpret inserted upstream text as executable syntax.
         match kind {
+            "start" => return Ok(self.inputs.output.clone()),
             "answer" => return self.execute_answer(config),
             "end" => return self.execute_end(config),
             _ => {}
@@ -404,7 +407,6 @@ impl WorkflowAgent {
         let resolved_config = self.resolve_config(config)?;
 
         match kind {
-            "start" => self.execute_start(&resolved_config),
             "variable-assigner" => self.execute_variable_assigner(&resolved_config),
             "if-else" => self.execute_if_else(&resolved_config),
             "template-transform" => self.execute_template_transform(&resolved_config),
@@ -571,27 +573,6 @@ impl WorkflowAgent {
             upstream.join("\n---\n"),
             own_prompt
         )
-    }
-
-    fn execute_start(&mut self, config: &Map<String, Value>) -> Result<Value> {
-        let mut result = Map::new();
-        if let Some(variables) = config.get("inputVariables").and_then(Value::as_array) {
-            for var in variables {
-                let name = var
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .or_else(|| var.get("variable").and_then(Value::as_str))
-                    .unwrap_or_default();
-                if !name.is_empty() {
-                    let value = self.inputs.get(name).cloned().unwrap_or(Value::Null);
-                    result.insert(name.to_string(), value);
-                }
-            }
-        }
-        for (key, value) in self.inputs.iter() {
-            result.entry(key.clone()).or_insert_with(|| value.clone());
-        }
-        Ok(Value::Object(result))
     }
 
     fn execute_end(&mut self, config: &Map<String, Value>) -> Result<Value> {
@@ -2393,7 +2374,12 @@ impl Agent for WorkflowAgent {
         let result = self.execute_node_inline(&node_kind, &node_config).await;
         let elapsed_ms = node_start.elapsed().as_millis() as u64;
 
-        self.finish_node(node_id, node_kind, result, elapsed_ms)
+        let updates = if node_kind == "start" {
+            self.inputs.updates.clone()
+        } else {
+            BTreeMap::new()
+        };
+        self.finish_node_with_updates(node_id, node_kind, result, elapsed_ms, updates)
     }
 
     async fn finish_background_tasks(&mut self) {
@@ -2708,6 +2694,7 @@ mod tests {
         };
         let compiled = compile(definition).unwrap();
         WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default())
+            .expect("valid workflow inputs")
             .with_canvas_bridge(Arc::new(bridge))
     }
 
@@ -2854,7 +2841,8 @@ mod tests {
         };
         let compiled = compile(definition).expect("classifier graph compiles");
         let mut agent =
-            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default());
+            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default())
+                .expect("valid workflow inputs");
         agent
             .node_statuses
             .insert("classifier".to_string(), NodeExecutionStatus::Completed);
@@ -3172,6 +3160,7 @@ mod tests {
             None,
             NodeEventPublisher::new(Arc::new(sink)),
         )
+        .expect("valid workflow inputs")
         .with_canvas_bridge(Arc::new(bridge));
         match cancel {
             Some(flag) => agent.with_cancel(flag),
@@ -3548,7 +3537,8 @@ mod tests {
         };
         let compiled = compile(definition).unwrap();
         let mut agent =
-            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default());
+            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default())
+                .expect("valid workflow inputs");
 
         let decision = agent.think(0, &[]).await.unwrap();
         assert!(matches!(decision, AgentDecision::Continue));
@@ -3568,6 +3558,7 @@ mod tests {
         let cancel = Arc::new(AtomicBool::new(true));
         let mut agent =
             WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default())
+                .expect("valid workflow inputs")
                 .with_cancel(cancel);
 
         let result = agent.think(0, &[]).await;
@@ -3601,7 +3592,8 @@ mod tests {
         };
         let compiled = compile(definition).unwrap();
         let mut agent =
-            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default());
+            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default())
+                .expect("valid workflow inputs");
 
         // Execute start
         agent.think(0, &[]).await.unwrap();
@@ -3640,7 +3632,8 @@ mod tests {
         };
         let compiled = compile(definition).unwrap();
         let mut agent =
-            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default());
+            WorkflowAgent::new(compiled, Map::new(), None, NodeEventPublisher::default())
+                .expect("valid workflow inputs");
 
         // Execute start
         agent.think(0, &[]).await.unwrap();

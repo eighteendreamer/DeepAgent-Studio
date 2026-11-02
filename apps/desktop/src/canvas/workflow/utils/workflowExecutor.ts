@@ -204,19 +204,6 @@ function serializeEdges(edges: WorkflowEdge[]) {
     }));
 }
 
-function collectInputs(nodes: WorkflowNode[]): Record<string, unknown> {
-  const startNode = nodes.find(
-    (n) => (n.data as { kind?: string }).kind === "start",
-  );
-  if (!startNode) return {};
-  const data = startNode.data as ProfessionalNodeData;
-  const inputs: Record<string, unknown> = {};
-  for (const v of data.inputVariables ?? []) {
-    inputs[v.name] = v.default ?? "";
-  }
-  return inputs;
-}
-
 function mapBackendStatus(backend: string): NodeStatus {
   switch (backend) {
     case "running":
@@ -332,7 +319,10 @@ async function runBackendWorkflow(
       nodes: serializeNodes(nodes, edges, mode),
       edges: serializeEdges(edges),
     },
-    inputs: collectInputs(nodes),
+    // The canvas currently has no per-run input form. Defaults stay in the
+    // declaration; the shared backend resolves them once and records their
+    // source. Do not manufacture empty strings or turn defaults into provided.
+    inputs: {},
     target_node_id: targetNodeId ?? null,
   };
 
@@ -427,7 +417,11 @@ async function runBackendWorkflow(
     }
     if (payload.run_id !== owner.runId) return;
     cleanup();
-    resolveCompletion();
+    if (payload.status === "failed") {
+      rejectCompletion(new Error(typeof payload.error === "string" ? payload.error : "工作流执行失败"));
+    } else {
+      resolveCompletion();
+    }
   };
 
   const handleApprovalPayload = (raw: Record<string, unknown>) => {
@@ -541,12 +535,15 @@ export async function runWorkflow(nodeId?: string) {
         setNodeStatus(mode, id, "error", { errorMessage: msg });
       }
     }
-    if (nodeId === undefined) {
-      // 整图提交失败时（例如缺少 Tauri 运行时），把原因落到第一个节点，避免静默无反馈。
-      const first = nodes[0];
-      if (first && !(first.data as { status?: NodeStatus }).status) {
-        setNodeStatus(mode, first.id, "error", { errorMessage: msg });
-      }
+    // Admission can fail before any node event (whole graph or targeted run).
+    // Keep one visible diagnostic without overwriting already completed nodes.
+    const firstId = nodeId ?? nodes[0]?.id;
+    const currentNodes = mode === "professional"
+      ? useProfessionalStore.getState().nodes : useCreativeStore.getState().nodes;
+    const first = currentNodes.find((node) => node.id === firstId);
+    const status = (first?.data as { status?: NodeStatus } | undefined)?.status;
+    if (first && (!status || status === "idle")) {
+      setNodeStatus(mode, first.id, "error", { errorMessage: msg });
     }
   } finally {
     closeRunOwner(owner);

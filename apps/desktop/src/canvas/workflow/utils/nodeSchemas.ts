@@ -160,24 +160,27 @@ export const NODE_CONFIG_SCHEMAS: Record<ProfessionalNodeKind, NodeConfigSchema>
         type: variableType(["string", "number", "boolean", "object", "array", "file"]),
         default: {
           title: "默认值",
-          description: "任意 JSON 值，包括文本、数字、布尔、对象、数组和 null。",
+          description: "缺失输入时使用；必须满足声明类型与约束。可选输入允许 null，显式提供值优先。",
           "x-widget": "json",
         },
         options: {
           type: "array",
           title: "可选值",
+          description: "精确匹配，不做大小写或 Unicode 归一化；空列表表示不限制。",
           items: { type: "string", title: "选项" },
           "x-visible-when": { field: "type", value: "string" },
         },
         minLength: {
           type: "integer",
           title: "最小长度",
+          description: "按 Unicode 标量值计数，不是 UTF-8 字节数或视觉字符数。",
           minimum: 0,
           "x-visible-when": { field: "type", value: "string" },
         },
         maxLength: {
           type: "integer",
           title: "最大长度",
+          description: "按 Unicode 标量值计数；另受后端 JSON 大小预算约束。",
           minimum: 0,
           "x-visible-when": { field: "type", value: "string" },
         },

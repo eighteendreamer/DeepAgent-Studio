@@ -6810,6 +6810,7 @@ mod tests {
             None,
             NodeEventPublisher::default(),
         )
+        .expect("valid workflow inputs")
     }
 
     /// True once the headers plus the declared body length have been received.

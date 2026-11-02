@@ -115,6 +115,7 @@ fn fixture(
         None,
         NodeEventPublisher::new(capture.clone()),
     )
+    .expect("valid workflow inputs")
     .with_canvas_bridge(bridge.clone());
     (agent, bridge, capture)
 }

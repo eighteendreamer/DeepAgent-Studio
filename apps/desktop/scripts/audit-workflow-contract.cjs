@@ -33,7 +33,18 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     const node = (id, kind, patch = {}) => ({ id, type: `professional-${kind}`, position: { x: 0, y: 0 }, data: { ...registry.createDefaultNodeData(kind), ...patch } });
     let nodes = [node("start", "start"), node("end", "end")];
     let edges = [{ id: "e1", source: "start", target: "end" }];
-    if (name.startsWith("aggregator-")) {
+    if (name.startsWith("input-contract")) {
+      nodes[0].data.inputVariables = [
+        { name: "value", type: "object", required: true, default: { note: "{{#missing.value#}}", nested: [false, 0] } },
+        { name: "optional", type: "string", required: false },
+        { name: "nil", type: "array", required: false, default: null },
+        { name: "flag", type: "boolean", default: false },
+        { name: "count", type: "number", minimum: 0, maximum: 0, default: 0 },
+        { name: "mode", type: "string", options: ["", "safe"], minLength: 0, maxLength: 4, default: "" },
+      ];
+      if (name === "input-contract-missing") delete nodes[0].data.inputVariables[0].default;
+      nodes[1].data.outputVariables = [{ name: "report", type: "object", value: "{{#start.value#}}" }];
+    } else if (name.startsWith("aggregator-")) {
       const kind = name.slice("aggregator-".length);
       const values = kind === "number" ? [7, 8] : kind === "object" ? [{ k: 1 }, { k: 2 }] : ["FIRST", "SECOND"];
       const inputType = kind === "array" ? "string" : kind;
@@ -121,7 +132,15 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
     await running;
     assert.ok(workflow);
     const serializedNodes = workflow.definition.nodes;
-    if (name.startsWith("aggregator-")) {
+    if (name.startsWith("input-contract")) {
+      assert.deepEqual(workflow.inputs, {}, "the backend alone resolves defaults");
+      const declarations = serializedNodes.find((node) => node.id === "start").config.inputVariables;
+      assert.equal(Object.hasOwn(declarations[1], "default"), false);
+      assert.equal(declarations[2].default, null);
+      assert.equal(declarations[3].default, false);
+      assert.equal(declarations[4].default, 0);
+      assert.equal(declarations[5].default, "");
+    } else if (name.startsWith("aggregator-")) {
       const config = serializedNodes.find((node) => node.id === "aggregate").config;
       assert.equal(config.aggregatorOutputType, name.slice("aggregator-".length));
       assert.deepEqual(config.aggregatorVariables, ["{{#start.first#}}", "{{#start.second#}}"]);
@@ -157,7 +176,9 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--emit-aggregator-fixtures") {
+  if (process.argv[2] === "--emit-input-contract-fixture") {
+    emitFixtures(["input-contract", "input-contract-missing"]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-aggregator-fixtures") {
     emitFixtures(["aggregator-array", "aggregator-string", "aggregator-number", "aggregator-object"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-answer-fixture") {
     emitFixtures(["answer"]).catch((error) => { console.error(error); process.exitCode = 1; });

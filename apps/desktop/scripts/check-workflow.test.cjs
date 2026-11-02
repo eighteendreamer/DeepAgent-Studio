@@ -32,6 +32,19 @@ const {
   normalizeProfessionalNode,
 } = registry;
 
+test("H-184..190 desktop serializer does not manufacture provided values from missing/null defaults", () => {
+  const { execFileSync } = require("node:child_process");
+  const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-input-contract-fixture"], { encoding: "utf8" }));
+  assert.equal(fixtures.length, 2);
+  assert.deepEqual(fixtures[0].workflow.inputs, {});
+  const declarations = fixtures[0].workflow.definition.nodes[0].config.inputVariables;
+  assert.equal(Object.hasOwn(declarations[1], "default"), false);
+  assert.deepEqual(declarations.slice(2).map((declaration) => declaration.default), [null, false, 0, ""]);
+  const missing = fixtures[1].workflow.definition.nodes[0].config.inputVariables[0];
+  assert.equal(missing.required, true);
+  assert.equal(Object.hasOwn(missing, "default"), false);
+});
+
 test("H-183 aggregator schema requires bindings and production serializer preserves their order and output types", () => {
   const schema = schemas.NODE_CONFIG_SCHEMAS["variable-aggregator"];
   for (const data of [{}, { aggregatorOutputType: "array", aggregatorVariables: [] },
@@ -60,7 +73,8 @@ test("H-182 answer schema rejects blank templates and serializer preserves publi
   const { execFileSync } = require("node:child_process");
   const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-answer-fixture"], { encoding: "utf8" }));
   assert.equal(fixtures[0].workflow.definition.version, 1);
-  assert.equal(fixtures[0].workflow.inputs.customer, "Eighteen");
+  assert.deepEqual(fixtures[0].workflow.inputs, {});
+  assert.equal(fixtures[0].workflow.definition.nodes[0].config.inputVariables[0].default, "Eighteen");
   assert.deepEqual(fixtures[0].workflow.definition.nodes[1].config, {
     answerTemplate: "你好 {{customer}}，{{#start.customer#}}！",
     answerVariables: [{ name: "customer", value: "{{#start.customer#}}" }],

@@ -1534,6 +1534,16 @@ impl<'a> RunAssembler<'a> {
         };
         let main_usage = call_owner.main_loop();
         let publisher = deepagent_runtime::workflow::NodeEventPublisher::new(sink.clone());
+        // Resolve the compiled input contract before binding any physical node
+        // capabilities. The same fallible constructor protects direct callers.
+        let mut agent = deepagent_runtime::workflow::WorkflowAgent::new(
+            compiled,
+            workflow_request.inputs,
+            workflow_request.target_node_id,
+            publisher,
+        )?
+        .with_cancel(cancellation.flag())
+        .with_call_usage_sink(main_usage.clone());
 
         let run_model = select_run_model(
             self.settings,
@@ -1624,15 +1634,7 @@ impl<'a> RunAssembler<'a> {
             .with_data(serde_json::json!({"enabled":http_enabled,"sandbox_backend":sandbox_backend.map(|backend| backend.label()),"legacy_sandboxie":legacy_sandboxie_executor.is_some(),"local_execution_mode":format!("{local_execution_mode:?}"),"policy":"public_pinned_same_origin"})));
         let tool_registry = std::sync::Arc::new(tool_registry);
 
-        let mut agent = deepagent_runtime::workflow::WorkflowAgent::new(
-            compiled,
-            workflow_request.inputs,
-            workflow_request.target_node_id,
-            publisher,
-        )
-        .with_cancel(cancellation.flag())
-        .with_call_usage_sink(main_usage.clone())
-        .with_code_bridge(code_gateway);
+        agent = agent.with_code_bridge(code_gateway);
 
         if let (Some(client), Some(model_name)) = (wf_client, wf_model_name.clone()) {
             agent = agent.with_model(client, model_name);

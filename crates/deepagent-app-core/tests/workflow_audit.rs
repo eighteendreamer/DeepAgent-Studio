@@ -20,6 +20,8 @@ mod answer;
 mod code;
 #[path = "workflow_audit/http.rs"]
 mod http;
+#[path = "workflow_audit/inputs.rs"]
+mod inputs;
 #[path = "workflow_audit/iteration.rs"]
 mod iteration;
 #[path = "workflow_audit/usage.rs"]
@@ -953,6 +955,41 @@ async fn audit_workflow_variable_aggregator_consumes_frontend_bindings() {
     );
 }
 
+// The original probes assumed a Completed start existed even on rejection.
+// Admission now happens before every node: assert the stronger safety boundary,
+// rather than fabricating a success event to satisfy that historical unwrap.
+fn assert_workflow_input_admission_rejected(
+    db: &Database,
+    result: &deepagent_core::error::Result<String>,
+    run: &deepagent_persistence::run_store::RunRecord,
+    events: &[deepagent_runtime::workflow::NodeExecutionEvent],
+    code: &str,
+) {
+    eprintln!(
+        "api_ok={} node_events={} run_terminal={:?} reason={:?}",
+        result.is_ok(),
+        events.len(),
+        run.terminal_kind,
+        run.terminal_reason
+    );
+    assert!(result.as_ref().unwrap_err().to_string().contains(code));
+    assert_eq!(run.terminal_kind.as_deref(), Some("failed"));
+    assert!(run.terminal_reason.as_deref().unwrap().contains(code));
+    assert!(events.is_empty(), "no node may start for rejected inputs");
+    let ledger = RunStore::new(db).events_after(&run.id, None).unwrap();
+    assert_eq!(
+        ledger
+            .iter()
+            .filter(|event| event.event_type == "run_terminal")
+            .count(),
+        1
+    );
+    assert!(deepagent_persistence::run_control::RunControlStore::new(db)
+        .list_actions(&run.id)
+        .unwrap()
+        .is_empty());
+}
+
 #[tokio::test]
 #[ignore = "audit: missing required workflow input must fail admission instead of becoming null"]
 async fn audit_workflow_missing_required_input_is_rejected() {
@@ -996,20 +1033,7 @@ async fn audit_workflow_missing_required_input_is_rejected() {
         .unwrap()
         .unwrap();
     let events = events.lock().unwrap();
-    let start = events
-        .iter()
-        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
-        .unwrap();
-    eprintln!(
-        "api_ok={} start_outputs={:?} run_terminal={:?}",
-        result.is_ok(),
-        start.outputs,
-        run.terminal_kind
-    );
-    assert!(
-        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
-        "a missing required input must not become a successful null-valued workflow input"
-    );
+    assert_workflow_input_admission_rejected(&db, &result, &run, &events, "MissingWorkflowInput");
 }
 
 #[tokio::test]
@@ -1055,20 +1079,7 @@ async fn audit_workflow_input_type_mismatch_is_rejected() {
         .unwrap()
         .unwrap();
     let events = events.lock().unwrap();
-    let start = events
-        .iter()
-        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
-        .unwrap();
-    eprintln!(
-        "api_ok={} start_outputs={:?} run_terminal={:?}",
-        result.is_ok(),
-        start.outputs,
-        run.terminal_kind
-    );
-    assert!(
-        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
-        "a declared number input must not accept an arbitrary string and succeed"
-    );
+    assert_workflow_input_admission_rejected(&db, &result, &run, &events, "InvalidWorkflowInput");
 }
 
 #[tokio::test]
@@ -1114,26 +1125,7 @@ async fn audit_workflow_undeclared_input_is_rejected_or_ignored() {
         .unwrap()
         .unwrap();
     let events = events.lock().unwrap();
-    let start = events
-        .iter()
-        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
-        .unwrap();
-    let has_undeclared = start
-        .outputs
-        .as_ref()
-        .and_then(serde_json::Value::as_object)
-        .is_some_and(|outputs| outputs.contains_key("unexpected"));
-    eprintln!(
-        "api_ok={} has_undeclared={} start_outputs={:?} run_terminal={:?}",
-        result.is_ok(),
-        has_undeclared,
-        start.outputs,
-        run.terminal_kind
-    );
-    assert!(
-        result.is_err() || !has_undeclared,
-        "undeclared input must be rejected or excluded from the workflow output"
-    );
+    assert_workflow_input_admission_rejected(&db, &result, &run, &events, "UnknownWorkflowInput");
 }
 
 #[tokio::test]
@@ -1243,19 +1235,7 @@ async fn audit_workflow_string_options_are_enforced() {
         .unwrap()
         .unwrap();
     let events = events.lock().unwrap();
-    let start = events
-        .iter()
-        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
-        .and_then(|event| event.outputs.clone());
-    eprintln!(
-        "api_ok={} start_outputs={start:?} run_terminal={:?}",
-        result.is_ok(),
-        run.terminal_kind
-    );
-    assert!(
-        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
-        "a string input outside its declared options must not produce a successful run"
-    );
+    assert_workflow_input_admission_rejected(&db, &result, &run, &events, "InvalidWorkflowInput");
 }
 
 #[tokio::test]
@@ -1302,19 +1282,7 @@ async fn audit_workflow_numeric_bounds_are_enforced() {
         .unwrap()
         .unwrap();
     let events = events.lock().unwrap();
-    let start = events
-        .iter()
-        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
-        .and_then(|event| event.outputs.clone());
-    eprintln!(
-        "api_ok={} start_outputs={start:?} run_terminal={:?}",
-        result.is_ok(),
-        run.terminal_kind
-    );
-    assert!(
-        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
-        "a number below its declared minimum must not produce a successful run"
-    );
+    assert_workflow_input_admission_rejected(&db, &result, &run, &events, "InvalidWorkflowInput");
 }
 
 #[tokio::test]
@@ -1361,19 +1329,7 @@ async fn audit_workflow_string_length_bounds_are_enforced() {
         .unwrap()
         .unwrap();
     let events = events.lock().unwrap();
-    let start = events
-        .iter()
-        .find(|event| event.node_id == "start" && event.status == NodeExecutionStatus::Completed)
-        .and_then(|event| event.outputs.clone());
-    eprintln!(
-        "api_ok={} start_outputs={start:?} run_terminal={:?}",
-        result.is_ok(),
-        run.terminal_kind
-    );
-    assert!(
-        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
-        "a string shorter than its declared minimum must not produce a successful run"
-    );
+    assert_workflow_input_admission_rejected(&db, &result, &run, &events, "InvalidWorkflowInput");
 }
 
 #[tokio::test]

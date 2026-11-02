@@ -739,6 +739,7 @@ async fn run_level_budget_and_truncated_stream_preserve_usage_without_snapshot_d
             None,
             NodeEventPublisher::default(),
         )
+        .expect("valid workflow inputs")
         .with_model(client, "audit-a".into());
         let mut session = Session::create(&db, &SystemClock, Some("usage kernel")).unwrap();
         let task = session.create_task("usage").unwrap();
@@ -799,6 +800,7 @@ async fn canvas_usage_budget_stops_before_dispatching_the_next_node() {
         None,
         NodeEventPublisher::default(),
     )
+    .expect("valid workflow inputs")
     .with_canvas_bridge(Arc::new(CanvasModelGateway::new(f.providers.clone())));
     let mut session = Session::create(&f.db, &SystemClock, Some("canvas budget")).unwrap();
     let task = session.create_task("budget").unwrap();
@@ -871,6 +873,7 @@ async fn cancellation_after_stream_usage_settles_reported_snapshot_once() {
         None,
         NodeEventPublisher::default(),
     )
+    .expect("valid workflow inputs")
     .with_model(client, "audit-a".into())
     .with_cancel(flag.clone());
     let mut session = Session::create(&db, &SystemClock, Some("stream cancel")).unwrap();
