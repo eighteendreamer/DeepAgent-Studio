@@ -1581,6 +1581,30 @@ impl<'a> RunAssembler<'a> {
                 http_enabled,
             ),
         ))?;
+        // This binds a capability, not permission to execute. SDK probing and
+        // code dispatch stay inside the approved Kernel invocation. An
+        // explicitly selected isolated backend is never replaced by the host.
+        let code_backend = match (sandbox_backend, self.sandbox_backend_registry.as_ref()) {
+            (Some(kind), Some(registry)) => Some(registry.resolve(Some(kind))?.1),
+            (Some(SandboxBackendKind::Direct), None) => Some(Arc::new(DirectSandboxBackend::new())
+                as Arc<dyn crate::sandbox_backend::SandboxBackend>),
+            (None, _)
+                if legacy_sandboxie_executor.is_none()
+                    || matches!(
+                        local_execution_mode,
+                        crate::settings::LocalExecutionMode::Direct
+                    ) =>
+            {
+                Some(Arc::new(DirectSandboxBackend::new())
+                    as Arc<dyn crate::sandbox_backend::SandboxBackend>)
+            }
+            _ => None,
+        };
+        let code_gateway = Arc::new(crate::workflow_code::WorkflowCodeGateway::new(
+            self.runtime_broker.clone(),
+            code_backend,
+        ));
+        tool_registry.register(Arc::new(code_gateway.tool()))?;
         let canvas_run_gateway = self
             .canvas_model
             .as_ref()
@@ -1607,7 +1631,8 @@ impl<'a> RunAssembler<'a> {
             publisher,
         )
         .with_cancel(cancellation.flag())
-        .with_call_usage_sink(main_usage.clone());
+        .with_call_usage_sink(main_usage.clone())
+        .with_code_bridge(code_gateway);
 
         if let (Some(client), Some(model_name)) = (wf_client, wf_model_name.clone()) {
             agent = agent.with_model(client, model_name);
@@ -1665,7 +1690,10 @@ impl<'a> RunAssembler<'a> {
             todo_store,
             verification_policy: crate::settings::VerificationPolicy::default(),
             fire_session_start: true,
-            granted,
+            // Only the Agent's canonical deferred calls need the confined
+            // code capability. The legacy generic tool-node adapter above
+            // retains its original grant; do not broaden its WASM/tool access.
+            granted: granted.with(deepagent_tools::Permission::Sandbox),
             verification_context: crate::verification_commands::VerificationCommandContext {
                 registry: tool_registry.clone(),
                 session_id: session.id(),

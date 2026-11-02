@@ -92,6 +92,9 @@ portable-pty = "0.8"
 # a no-op that never persists. These are additive features on the same crate.
 [target.'cfg(windows)'.dependencies]
 keyring = { version = "3", optional = true, features = ["windows-native"] }
+# The confined SDK profile uses the already-locked Win32 bindings, not shell
+# launchers or machine-wide sandbox configuration.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security_Authorization", "Win32_Security_Isolation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_WindowsProgramming"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 keyring = { version = "3", optional = true, features = ["apple-native"] }

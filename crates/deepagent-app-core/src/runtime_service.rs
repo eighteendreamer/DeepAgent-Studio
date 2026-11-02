@@ -414,6 +414,25 @@ pub struct RuntimeService {
 }
 
 impl RuntimeService {
+    /// The registry owns managed SDK pins. Confined code execution must not
+    /// independently invent a version or probe project/PATH executables.
+    pub(crate) fn managed_requirement(&self, kind: RuntimeKind) -> Result<RuntimeRequirement> {
+        let entry = self
+            .registry
+            .iter()
+            .find(|entry| entry.id == kind.managed_id())
+            .ok_or_else(|| {
+                CoreError::invalid("CodeRuntimeUnavailable: managed SDK is not registered")
+            })?;
+        Ok(RuntimeRequirement {
+            kind,
+            // The resolver treats an unprefixed requirement as a numeric
+            // prefix. Confined execution requests the registry pin exactly.
+            version: Some(format!("={}", entry.version)),
+            preference: RuntimePreference::ManagedOnly,
+        })
+    }
+
     /// Build with the default registry. The first candidate is the preferred
     /// active root; later candidates are read-only fallback roots.
     pub fn new(candidates: &[PathBuf], downloader: Arc<dyn Downloader>) -> Self {

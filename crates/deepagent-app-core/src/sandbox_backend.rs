@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use crate::sandboxie_service::{
     sandbox_mode_code, sandbox_mode_from_code, SandboxieControlledRequest,
 };
+
+mod code;
 use crate::settings::SandboxMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -162,11 +164,31 @@ pub struct SandboxExecutionResult {
     pub artifacts: Vec<PathBuf>,
 }
 
+/// Strict code profile, separate from shell-command text. A backend must start
+/// the selected SDK without a host shell, with no ambient workspace/network
+/// grant, bounded process resources/output and the Kernel invocation controls.
+/// Unsupported profiles fail closed; approval never authorizes host fallback.
+#[derive(Clone)]
+pub struct SandboxCodeRequest {
+    pub code: deepagent_runtime::workflow::code::CodeRequest,
+    pub runtime: crate::runtime_service::RuntimeResolution,
+    pub context: ToolExecutionContext,
+}
+
 #[async_trait]
 pub trait SandboxBackend: Send + Sync {
     fn capabilities(&self) -> SandboxCapabilities;
 
     async fn execute(&self, request: SandboxExecutionRequest) -> Result<SandboxExecutionResult>;
+
+    async fn execute_code(
+        &self,
+        _request: SandboxCodeRequest,
+    ) -> Result<deepagent_runtime::workflow::code::CodeResponse> {
+        Err(CoreError::invalid(
+            "CodeIsolationUnavailable: selected backend has no strict SDK code profile; host fallback is forbidden",
+        ))
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -182,6 +204,13 @@ impl DirectSandboxBackend {
 
 #[async_trait]
 impl SandboxBackend for DirectSandboxBackend {
+    async fn execute_code(
+        &self,
+        request: SandboxCodeRequest,
+    ) -> Result<deepagent_runtime::workflow::code::CodeResponse> {
+        code::execute(request).await
+    }
+
     fn capabilities(&self) -> SandboxCapabilities {
         SandboxCapabilities {
             kind: SandboxBackendKind::Direct,

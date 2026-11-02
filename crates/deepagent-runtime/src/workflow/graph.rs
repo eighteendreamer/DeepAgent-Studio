@@ -408,7 +408,7 @@ fn validate_id(id: &str, location: &str) -> Result<()> {
     Ok(())
 }
 
-fn declaration_name<'a>(declaration: &'a Value, location: &str) -> Result<&'a str> {
+pub(super) fn declaration_name<'a>(declaration: &'a Value, location: &str) -> Result<&'a str> {
     let name = declaration
         .get("name")
         .and_then(Value::as_str)
@@ -426,7 +426,7 @@ fn declaration_name<'a>(declaration: &'a Value, location: &str) -> Result<&'a st
     Ok(name)
 }
 
-fn validate_type(value: Option<&Value>, location: &str) -> Result<()> {
+pub(super) fn validate_type(value: Option<&Value>, location: &str) -> Result<()> {
     if !matches!(
         value.and_then(Value::as_str),
         Some("string" | "number" | "boolean" | "object" | "array" | "file")

@@ -4,7 +4,7 @@ use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-const MAX_BYTES: usize = 1024 * 1024;
+pub(super) const MAX_BYTES: usize = 1024 * 1024;
 const MAX_DEPTH: usize = 64;
 
 fn invalid(context: &str, reason: &str) -> CoreError {
@@ -73,7 +73,7 @@ fn measure(value: &Value, depth: usize, budget: &mut Budget) -> Result<()> {
     Ok(())
 }
 
-fn check_value(value: &Value, context: &'static str) -> Result<()> {
+pub(super) fn check_value(value: &Value, context: &'static str) -> Result<()> {
     measure(value, 0, &mut Budget::new(context))
 }
 

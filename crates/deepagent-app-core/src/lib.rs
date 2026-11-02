@@ -119,6 +119,7 @@ pub mod vision_provider_service;
 pub mod vision_service;
 #[cfg(feature = "wasm")]
 pub(crate) mod wasm_tools;
+mod workflow_code;
 pub mod workspace_service;
 
 pub use approval_bridge::{

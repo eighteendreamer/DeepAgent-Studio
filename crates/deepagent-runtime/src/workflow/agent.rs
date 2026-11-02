@@ -24,6 +24,9 @@ use super::canvas::{
 use deepagent_models::client::ModelClient;
 use serde_json::{json, Map, Value};
 
+use super::code::{
+    CodeBridge, CodeInvocation, CodeOutput, CodeRequest, CodeResponse, CODE_EXECUTE_TOOL,
+};
 use super::graph::CompiledWorkflow;
 use super::knowledge::KnowledgeRetriever;
 use super::node_events::{NodeEventPublisher, NodeExecutionEvent, NodeExecutionStatus};
@@ -33,10 +36,35 @@ use super::values;
 use crate::agent::{Agent, AgentDecision, Observation, RunUsage};
 use deepagent_core::error::{CoreError, Result};
 
-struct PendingHttpNode {
+struct PendingNodeTool {
     node_id: String,
     call_id: String,
     started: Instant,
+    kind: PendingNodeToolKind,
+}
+
+enum PendingNodeToolKind {
+    Http,
+    Code {
+        invocation: CodeInvocation,
+        outputs: Vec<CodeOutput>,
+    },
+}
+
+impl PendingNodeToolKind {
+    fn node_kind(&self) -> &'static str {
+        match self {
+            Self::Http => "http-request",
+            Self::Code { .. } => "code",
+        }
+    }
+
+    fn tool_name(&self) -> &'static str {
+        match self {
+            Self::Http => "http_request",
+            Self::Code { .. } => CODE_EXECUTE_TOOL,
+        }
+    }
 }
 
 struct PendingMediaNode {
@@ -86,7 +114,7 @@ pub struct WorkflowAgent {
     /// Node `think` is executing right now. A media job reports progress from
     /// inside the provider poll loop, which cannot see the graph walk.
     active_node_id: Option<String>,
-    pending_http: Option<PendingHttpNode>,
+    pending_tool: Option<PendingNodeTool>,
     pending_media: Option<PendingMediaNode>,
     model: Option<Arc<ModelClient>>,
     model_name: Option<String>,
@@ -94,6 +122,7 @@ pub struct WorkflowAgent {
     tool_executor: Option<Arc<dyn ToolExecutor>>,
     canvas_bridge: Option<Arc<dyn CanvasModelBridge>>,
     artifact_validator: Option<Arc<dyn CanvasArtifactValidator>>,
+    code_bridge: Option<Arc<dyn CodeBridge>>,
     usage: Arc<WorkflowUsage>,
 }
 
@@ -117,7 +146,7 @@ impl WorkflowAgent {
             started_at: Instant::now(),
             cancel: None,
             active_node_id: None,
-            pending_http: None,
+            pending_tool: None,
             pending_media: None,
             model: None,
             model_name: None,
@@ -125,6 +154,7 @@ impl WorkflowAgent {
             tool_executor: None,
             canvas_bridge: None,
             artifact_validator: None,
+            code_bridge: None,
         }
     }
 
@@ -175,6 +205,11 @@ impl WorkflowAgent {
     /// Attach a tool executor so tool nodes can execute registered tools.
     pub fn with_tool_executor(mut self, executor: Arc<dyn ToolExecutor>) -> Self {
         self.tool_executor = Some(executor);
+        self
+    }
+
+    pub fn with_code_bridge(mut self, bridge: Arc<dyn CodeBridge>) -> Self {
+        self.code_bridge = Some(bridge);
         self
     }
 
@@ -312,7 +347,6 @@ impl WorkflowAgent {
             "variable-assigner" => self.execute_variable_assigner(&resolved_config),
             "variable-aggregator" => self.execute_variable_aggregator(&resolved_config),
             "if-else" => self.execute_if_else(&resolved_config),
-            "code" => self.execute_code(&resolved_config),
             "template-transform" => self.execute_template_transform(&resolved_config),
             "list-operator" => self.execute_list_operator(&resolved_config),
             "question-classifier" => self
@@ -630,53 +664,6 @@ impl WorkflowAgent {
 
         let _ = logical_operator;
         Ok(serde_json::json!({ "__branch": "false" }))
-    }
-
-    fn execute_code(&self, config: &Map<String, Value>) -> Result<Value> {
-        let _code = config.get("code").and_then(Value::as_str).unwrap_or("");
-        let _language = config
-            .get("codeLanguage")
-            .and_then(Value::as_str)
-            .unwrap_or("javascript");
-        let variables = config
-            .get("codeVariables")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let outputs = config
-            .get("codeOutputVariables")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-
-        let mut result = Map::new();
-        for var in variables {
-            let name = var
-                .get("variable")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let value = var.get("value").cloned().unwrap_or(Value::Null);
-            if !name.is_empty() {
-                let resolved = values::resolve(&value, &self.outputs)?;
-                result.insert(name.to_string(), resolved);
-            }
-        }
-        for out in outputs {
-            let name = out
-                .get("variable")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if !name.is_empty() && !result.contains_key(name) {
-                let default = match out.get("type").and_then(Value::as_str) {
-                    Some("number") => Value::Number(serde_json::Number::from(0)),
-                    Some("array") => Value::Array(Vec::new()),
-                    Some("object") => Value::Object(Map::new()),
-                    _ => Value::String(String::new()),
-                };
-                result.insert(name.to_string(), default);
-            }
-        }
-        Ok(Value::Object(result))
     }
 
     fn execute_template_transform(&self, config: &Map<String, Value>) -> Result<Value> {
@@ -1845,6 +1832,17 @@ impl WorkflowAgent {
         result: Result<Value>,
         elapsed_ms: u64,
     ) -> Result<AgentDecision> {
+        self.finish_node_with_updates(node_id, node_kind, result, elapsed_ms, BTreeMap::new())
+    }
+
+    fn finish_node_with_updates(
+        &mut self,
+        node_id: String,
+        node_kind: String,
+        result: Result<Value>,
+        elapsed_ms: u64,
+        updates: BTreeMap<String, Value>,
+    ) -> Result<AgentDecision> {
         match result {
             Ok(output) => {
                 if self.is_cancelled() {
@@ -1866,14 +1864,13 @@ impl WorkflowAgent {
                 self.outputs.insert(node_id.clone(), output_value.clone());
                 self.node_statuses
                     .insert(node_id.clone(), NodeExecutionStatus::Completed);
-                self.emit_status(
-                    &node_id,
-                    NodeExecutionStatus::Completed,
-                    1,
+                self.publisher.emit(NodeExecutionEvent {
+                    status: NodeExecutionStatus::Completed,
                     elapsed_ms,
-                    Some(output_value),
-                    None,
-                );
+                    outputs: Some(output_value),
+                    updates,
+                    ..self.base_event(&node_id)
+                });
                 self.active_node_id = None;
                 self.step += 1;
 
@@ -1911,13 +1908,20 @@ impl WorkflowAgent {
         }
     }
 
-    fn correlated_tool_output(last: &[Observation], call_id: &str, tool: &str) -> Result<Value> {
+    fn correlated_tool_output(
+        last: &[Observation],
+        call_id: &str,
+        tool: &str,
+        label: &str,
+    ) -> Result<Value> {
         let observation = last
             .iter()
-            .find(|observation| observation.call_id.as_deref() == Some(call_id))
-            .ok_or_else(|| CoreError::other(format!("{tool}: missing correlated tool result")))?;
+            .find(|observation| {
+                observation.call_id.as_deref() == Some(call_id) && observation.tool == tool
+            })
+            .ok_or_else(|| CoreError::other(format!("{label}: missing correlated tool result")))?;
         if !observation.ok {
-            return Err(CoreError::other(format!("{tool}: {}", observation.output)));
+            return Err(CoreError::other(format!("{label}: {}", observation.output)));
         }
         Ok(observation
             .raw_output
@@ -1966,7 +1970,7 @@ impl Agent for WorkflowAgent {
     async fn think(&mut self, _step: usize, last: &[Observation]) -> Result<AgentDecision> {
         if let Some(pending) = self.pending_media.take() {
             let tool = pending.output.tool_name();
-            let output = Self::correlated_tool_output(last, &pending.call_id, tool);
+            let output = Self::correlated_tool_output(last, &pending.call_id, tool, tool);
             let result = match pending.output {
                 PendingMediaOutput::Image => output.and_then(|value| {
                     serde_json::from_value::<CanvasImageResponse>(value)
@@ -2020,30 +2024,46 @@ impl Agent for WorkflowAgent {
                 pending.started.elapsed().as_millis() as u64,
             );
         }
-        if let Some(pending) = self.pending_http.take() {
-            let result = last
-                .iter()
-                .find(|observation| observation.call_id.as_deref() == Some(&pending.call_id))
-                .ok_or_else(|| CoreError::other("http-request: missing correlated tool result"))
-                .and_then(|observation| {
-                    if !observation.ok {
-                        Err(CoreError::other(format!(
-                            "http-request: {}",
-                            observation.output
-                        )))
-                    } else {
-                        Ok(observation
-                            .raw_output
-                            .as_ref()
-                            .unwrap_or(&observation.output)
-                            .clone())
+        if let Some(pending) = self.pending_tool.take() {
+            let node_kind = pending.kind.node_kind();
+            let result = Self::correlated_tool_output(
+                last,
+                &pending.call_id,
+                pending.kind.tool_name(),
+                node_kind,
+            );
+            let mut updates = BTreeMap::new();
+            let result = match pending.kind {
+                PendingNodeToolKind::Http => result,
+                PendingNodeToolKind::Code {
+                    invocation,
+                    outputs,
+                } => {
+                    if let Some(bridge) = self.code_bridge.as_ref() {
+                        bridge.release(&invocation.request_id);
                     }
-                });
-            return self.finish_node(
+                    result.and_then(|value| {
+                        let response: CodeResponse =
+                            serde_json::from_value(value).map_err(|_| {
+                                CoreError::invalid(
+                                    "CodeResultInvalid: malformed execution response",
+                                )
+                            })?;
+                        response.validate(&invocation, &outputs)?;
+                        updates.insert(
+                            "codeExecution".into(),
+                            serde_json::to_value(response.receipt)?,
+                        );
+                        Ok(Value::Object(response.outputs))
+                    })
+                }
+            };
+            return self.finish_node_with_updates(
                 pending.node_id,
-                "http-request".into(),
+                node_kind.into(),
                 result,
                 pending.started.elapsed().as_millis() as u64,
+                updates,
             );
         }
         if self.is_cancelled() {
@@ -2110,13 +2130,43 @@ impl Agent for WorkflowAgent {
                 Err(error) => return self.finish_node(node_id, node_kind, Err(error), 0),
             };
             let call_id = format!("workflow_http_{}", deepagent_core::id::EventId::new());
-            self.pending_http = Some(PendingHttpNode {
+            self.pending_tool = Some(PendingNodeTool {
                 node_id,
                 call_id: call_id.clone(),
                 started: node_start,
+                kind: PendingNodeToolKind::Http,
             });
             return Ok(AgentDecision::CallTool(
                 deepagent_tools::ToolInvocation::new("http_request", arguments).with_id(call_id),
+            ));
+        }
+
+        if node_kind == "code" {
+            let preparation = (|| -> Result<_> {
+                let request = CodeRequest::from_config(&node_config, &self.outputs)?;
+                let outputs = request.outputs.clone();
+                let bridge = self.code_bridge.as_ref().ok_or_else(|| {
+                    CoreError::invalid("CodeExecutorUnavailable: no host code bridge was attached")
+                })?;
+                Ok((bridge.prepare(request)?, outputs))
+            })();
+            let (invocation, outputs) = match preparation {
+                Ok(prepared) => prepared,
+                Err(error) => return self.finish_node(node_id, node_kind, Err(error), 0),
+            };
+            let arguments = serde_json::to_value(&invocation)?;
+            let call_id = format!("workflow_code_{}", deepagent_core::id::EventId::new());
+            self.pending_tool = Some(PendingNodeTool {
+                node_id,
+                call_id: call_id.clone(),
+                started: node_start,
+                kind: PendingNodeToolKind::Code {
+                    invocation,
+                    outputs,
+                },
+            });
+            return Ok(AgentDecision::CallTool(
+                deepagent_tools::ToolInvocation::new(CODE_EXECUTE_TOOL, arguments).with_id(call_id),
             ));
         }
 
@@ -2266,9 +2316,15 @@ impl Agent for WorkflowAgent {
     async fn finish_background_tasks(&mut self) {
         // The Kernel can stop before the next think (cancellation, persistence
         // error or deadline). Close the pending node without inventing success.
-        if let Some(pending) = self.pending_http.take() {
-            let _ = self.finish_node(pending.node_id, "http-request".into(),
-                Err(CoreError::other("http-request: run stopped before node result delivery; reconcile the durable action before retrying")),
+        if let Some(pending) = self.pending_tool.take() {
+            if let PendingNodeToolKind::Code { invocation, .. } = &pending.kind {
+                if let Some(bridge) = self.code_bridge.as_ref() {
+                    bridge.release(&invocation.request_id);
+                }
+            }
+            let _ = self.finish_node(
+                pending.node_id, pending.kind.node_kind().into(),
+                Err(CoreError::other(format!("{}: run stopped before node result delivery; reconcile the durable action before retrying", pending.kind.tool_name()))),
                 pending.started.elapsed().as_millis() as u64);
         }
         if let Some(pending) = self.pending_media.take() {

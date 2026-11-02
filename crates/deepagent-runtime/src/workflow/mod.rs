@@ -1,5 +1,6 @@
 mod agent;
 pub mod canvas;
+pub mod code;
 mod graph;
 pub mod knowledge;
 mod node_events;

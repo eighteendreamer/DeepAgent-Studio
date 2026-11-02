@@ -12,6 +12,8 @@ use deepagent_runtime::RuntimeEvent;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
+#[path = "workflow_audit/code.rs"]
+mod code;
 #[path = "workflow_audit/http.rs"]
 mod http;
 #[path = "workflow_audit/usage.rs"]
@@ -19,8 +21,15 @@ mod usage;
 
 async fn workflow_fixture() -> (tempfile::TempDir, Arc<Database>, ChatService, String) {
     let root = tempfile::tempdir().unwrap();
-    std::fs::write(root.path().join("input.txt"), "audit input").unwrap();
     let db = Arc::new(Database::open_in_memory().unwrap());
+    workflow_fixture_with_database(root, db).await
+}
+
+async fn workflow_fixture_with_database(
+    root: tempfile::TempDir,
+    db: Arc<Database>,
+) -> (tempfile::TempDir, Arc<Database>, ChatService, String) {
+    std::fs::write(root.path().join("input.txt"), "audit input").unwrap();
     let settings = Arc::new(SettingsService::new(
         db.clone(),
         Arc::new(MockTransport::with_get_json(
@@ -544,9 +553,11 @@ async fn audit_workflow_unknown_target_node_is_rejected() {
 }
 
 #[tokio::test]
-#[ignore = "audit: a code node must execute its declared script or fail loudly"]
 async fn audit_workflow_code_node_executes_script_or_fails_loudly() {
     let (_root, db, chat, session) = workflow_fixture().await;
+    let responder = chat.clone();
+    let approvals = Arc::new(AtomicUsize::new(0));
+    let count = approvals.clone();
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
         "definition": {
             "version": 1,
@@ -579,7 +590,13 @@ async fn audit_workflow_code_node_executes_script_or_fails_loudly() {
                     capture.lock().unwrap().push(event);
                 }
             },
-            |_| {},
+            move |approval| {
+                count.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(approval.tool, "canvas_code_execute");
+                assert!(responder
+                    .resolve_approval(&approval.call_id, true, "h178 isolated audit fixture")
+                    .unwrap());
+            },
         )
         .await;
     let run = RunStore::new(&db)
@@ -603,6 +620,15 @@ async fn audit_workflow_code_node_executes_script_or_fails_loudly() {
         result.is_err() || code_terminal.status == NodeExecutionStatus::Failed,
         "an invalid declared script must not be reported as a successful code node"
     );
+    assert_eq!(approvals.load(Ordering::SeqCst), 1);
+    code::assert_failed(&db, "audit-workflow-code-execution", &result, &events);
+    // The original invalid source is retained. This fixture has no Broker:
+    // rejection is not proof that JavaScript was parsed or executed.
+    assert!(code_terminal
+        .error
+        .as_deref()
+        .unwrap()
+        .contains("CodeRuntimeUnavailable"));
 }
 
 #[tokio::test]
