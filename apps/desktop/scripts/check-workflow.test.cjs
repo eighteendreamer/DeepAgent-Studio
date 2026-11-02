@@ -60,6 +60,21 @@ test("H-191 creative serialization projects one collision-free entry without rep
   }
 });
 
+test("H-193 production serialization preserves control ownership without repairing disconnected professional graphs", () => {
+  const { execFileSync } = require("node:child_process");
+  const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-reachability-fixtures"], { encoding: "utf8" }));
+  assert.equal(fixtures.length, 5);
+  for (const { name, workflow } of fixtures) {
+    const { nodes, edges } = workflow.definition;
+    const seen = new Set([nodes.find(node => node.kind === "start").id]);
+    for (let i = 0; i < nodes.length; i++) for (const edge of edges) if (seen.has(edge.source)) seen.add(edge.target);
+    if (name === "professional-unreachable-end") assert.equal(seen.has("end"), false);
+    else if (name === "professional-orphan") assert.equal(seen.has("orphan"), false);
+    else assert.equal(seen.size, nodes.length, name);
+    if (name === "creative-multiple-roots") assert.ok(edges.some(edge => edge.source === "__canvas_start" && edge.target === "independent-camera"));
+  }
+});
+
 test("H-192 creative serialization projects a shared exit but never repairs empty or invalid professional graphs", () => {
   const { execFileSync } = require("node:child_process");
   const fixtures = JSON.parse(execFileSync(process.execPath, [path.join(__dirname, "audit-workflow-contract.cjs"), "--emit-exit-fixtures"], { encoding: "utf8" }));

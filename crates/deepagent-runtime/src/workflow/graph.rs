@@ -62,7 +62,8 @@ pub struct WorkflowRequest {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledWorkflow {
     pub definition: WorkflowDefinition,
-    /// Node indices in topological order, breaking readiness ties by input order.
+    /// Start-owned node indices in topological order, breaking readiness ties
+    /// by input order. Admission rejects every unowned graph component.
     pub order: Vec<usize>,
     /// Lowercase SHA-256 hex of the serialized typed definition, without rewriting it.
     pub revision: String,
@@ -194,6 +195,23 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
     }
     if order.len() != definition.nodes.len() {
         return Err(CoreError::invalid("workflow contains a cycle"));
+    }
+
+    // The transitive ancestors already computed for binding/scope admission
+    // are the single control-ownership authority. Reject disconnected members
+    // rather than silently executing roots or maintaining a second walk.
+    if let Some(unreachable) = definition
+        .nodes
+        .iter()
+        .zip(&ancestor_sets)
+        .filter(|(node, ancestors)| node.id != start.id && !ancestors.contains(&start.id))
+        .map(|(node, _)| node.id.as_str())
+        .min()
+    {
+        return Err(CoreError::invalid(format!(
+            "InvalidWorkflowGraph: node {unreachable} is unreachable from start {}",
+            start.id
+        )));
     }
 
     let iteration_plans = super::iteration::compile_plans(&definition)?;
@@ -795,6 +813,64 @@ mod tests {
     }
 
     #[test]
+    fn h193_only_the_explicit_entry_owns_the_compiled_plan() {
+        for kind in ["end", "tool", "http-request", "llm", "camera"] {
+            let mut definition = valid_graph();
+            definition.nodes.push(node("orphan", kind, json!({})));
+            for rotation in 0..definition.nodes.len() {
+                let mut variant = definition.clone();
+                variant.nodes.rotate_left(rotation);
+                variant.edges.reverse();
+                assert_invalid(
+                    variant,
+                    "InvalidWorkflowGraph: node orphan is unreachable from start start",
+                );
+            }
+        }
+        let disconnected = graph(
+            vec![
+                node("entry", "start", json!({})),
+                node("finish", "end", json!({})),
+            ],
+            vec![],
+        );
+        assert_invalid(disconnected, "node finish is unreachable from start entry");
+        let mut components = valid_graph();
+        components
+            .nodes
+            .extend([node("z", "llm", json!({})), node("a", "end", json!({}))]);
+        components.edges.push(edge("za", "z", "a"));
+        for rotation in 0..components.nodes.len() {
+            let mut variant = components.clone();
+            variant.nodes.rotate_left(rotation);
+            assert_invalid(variant, "node a is unreachable from start start");
+        }
+        // Static control ownership includes both conditional arms. This does
+        // not decide the separate runtime contract for multiple reachable ends.
+        let branching = graph(
+            vec![
+                node("entry", "start", json!({})),
+                node("branch", "if-else", json!({})),
+                node("yes", "end", json!({})),
+                node("no", "end", json!({})),
+            ],
+            vec![
+                edge("eb", "entry", "branch"),
+                WorkflowEdgeSpec {
+                    source_handle: Some("true".into()),
+                    ..edge("by", "branch", "yes")
+                },
+                WorkflowEdgeSpec {
+                    source_handle: Some("false".into()),
+                    ..edge("bn", "branch", "no")
+                },
+            ],
+        );
+        assert!(compile(branching).is_ok());
+        assert!(compile(valid_graph()).is_ok());
+    }
+
+    #[test]
     fn h192_requires_a_top_level_exit_instead_of_completing_an_exhausted_walk() {
         assert_invalid(
             graph(vec![node("entry", "start", json!({}))], vec![]),
@@ -992,7 +1068,18 @@ mod tests {
             assert_invalid(definition, message);
         }
         let mut definition = valid_graph();
-        definition.edges.remove(0);
+        definition.nodes.push(node(
+            "sibling",
+            "template-transform",
+            json!({"templateScript":"independent"}),
+        ));
+        definition.edges.extend([
+            edge("branch", "start", "sibling"),
+            edge("join", "sibling", "end"),
+        ]);
+        definition.nodes[1]
+            .config
+            .insert("templateScript".into(), json!("{{#sibling.output#}}"));
         assert_invalid(definition, "non-ancestor");
     }
 
@@ -1232,12 +1319,13 @@ mod tests {
             ],
             vec![
                 edge("rz", "root", "z"),
+                edge("ra", "root", "a"),
                 edge("zs", "z", "sink"),
                 edge("as", "a", "sink"),
             ],
         );
         let compiled = compile(definition.clone()).unwrap();
-        assert_eq!(compiled.order, vec![1, 2, 0, 3]);
+        assert_eq!(compiled.order, vec![2, 0, 1, 3]);
         assert_eq!(compiled.ancestors["sink"], string_set(&["z", "a", "root"]));
         let mut reversed = definition;
         reversed.edges.reverse();
@@ -1252,7 +1340,10 @@ mod tests {
                 node("root", "start", json!({})),
                 node("later", "end", json!({})),
             ],
-            vec![edge("e", "root", "dependent")],
+            vec![
+                edge("e", "root", "dependent"),
+                edge("exit", "dependent", "later"),
+            ],
         );
         assert_eq!(compile(definition).unwrap().order, vec![1, 0, 2]);
     }
@@ -1326,7 +1417,16 @@ mod tests {
                 )
             })
             .collect();
-        assert!(compile(graph(nodes.clone(), vec![])).is_ok());
+        let edges = (1..MAX_NODES)
+            .map(|index| {
+                edge(
+                    &format!("e{index}"),
+                    &format!("n{}", index - 1),
+                    &format!("n{index}"),
+                )
+            })
+            .collect();
+        assert!(compile(graph(nodes.clone(), edges)).is_ok());
         let mut oversized = nodes;
         oversized.push(node("extra", "llm", json!({})));
         assert_invalid(graph(oversized, vec![]), "1..=256");

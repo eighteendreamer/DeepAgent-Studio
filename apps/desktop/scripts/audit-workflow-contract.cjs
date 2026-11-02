@@ -58,10 +58,17 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
         edges.unshift({ id: "authored-entry-edge", source: "authored-entry", target: "camera" });
       }
       if (name === "creative-empty") { nodes = []; edges = []; }
+      if (name === "creative-multiple-roots") nodes.push({ id: "independent-camera", data: { kind: "camera", cameraModel: "synthetic" } });
     } else if (name === "professional-missing-entry") {
       nodes = [node("end", "end")]; edges = [];
     } else if (name === "professional-missing-exit") {
       nodes = [node("start", "start")]; edges = [];
+    } else if (name === "professional-unreachable-end") {
+      edges = [];
+    } else if (name === "professional-orphan") {
+      nodes.unshift(node("orphan", "variable-assigner", { assignments: [] }));
+    } else if (name === "professional-rooted-reordered") {
+      nodes.reverse();
     } else if (name.startsWith("input-contract")) {
       nodes[0].data.inputVariables = [
         { name: "value", type: "object", required: true, default: { note: "{{#missing.value#}}", nested: [false, 0] } },
@@ -208,7 +215,9 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--emit-exit-fixtures") {
+  if (process.argv[2] === "--emit-reachability-fixtures") {
+    emitFixtures(["creative-multiple-roots", "professional-unreachable-end", "professional-orphan", "professional-rooted-reordered", "iteration"]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-exit-fixtures") {
     emitFixtures(["creative-exit", "creative-exit-collision", "creative-explicit-exit", "creative-explicit-boundaries", "creative-empty", "professional-missing-exit"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-entry-fixtures") {
     emitFixtures(["creative-entry", "creative-entry-collision", "creative-explicit-entry", "professional-missing-entry"]).catch((error) => { console.error(error); process.exitCode = 1; });

@@ -55,7 +55,7 @@ fn completed<'a>(events: &'a [NodeExecutionEvent], id: &str) -> &'a NodeExecutio
 }
 
 #[tokio::test]
-async fn h184_190_invalid_inputs_fail_before_even_an_independent_side_effect_root() {
+async fn h184_190_invalid_inputs_fail_before_even_an_independent_side_effect_branch() {
     for (index, (declaration, inputs, code)) in [
         (
             json!({"name":"value","type":"string","required":true}),
@@ -138,13 +138,19 @@ async fn h184_190_invalid_inputs_fail_before_even_an_independent_side_effect_roo
     {
         let (_root, db, chat, session) = workflow_fixture().await;
         let mut workflow = request(json!([declaration]), inputs);
-        // Deliberately sorted before start, with no start ancestor: validation
-        // inside execute_start would be too late. A real fs write tool must not run.
+        // Deliberately stored before start, but owned by it under H-193.
+        // Admission must still precede every node event and real file write.
         workflow.definition.nodes.insert(0, serde_json::from_value(json!({
             "id":"early","kind":"tool","config":{
                 "toolName":"write_file","toolArguments":{"path":"must-not-exist.txt","content":"canary"}
             }
         })).unwrap());
+        workflow.definition.edges.extend([
+            serde_json::from_value(json!({"id":"early-entry","source":"start","target":"early"}))
+                .unwrap(),
+            serde_json::from_value(json!({"id":"early-exit","source":"early","target":"end"}))
+                .unwrap(),
+        ]);
         let id = format!("h184-190-invalid-{index}");
         let (result, events) = run(&chat, session, workflow, &id).await;
         assert!(result.is_err(), "case {index} unexpectedly accepted");

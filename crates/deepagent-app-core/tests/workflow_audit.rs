@@ -28,6 +28,8 @@ mod http;
 mod inputs;
 #[path = "workflow_audit/iteration.rs"]
 mod iteration;
+#[path = "workflow_audit/reachability.rs"]
+mod reachability;
 #[path = "workflow_audit/usage.rs"]
 mod usage;
 
@@ -1426,7 +1428,6 @@ async fn audit_workflow_requires_an_end_node() {
 }
 
 #[tokio::test]
-#[ignore = "audit: workflow end nodes must be reachable from the start"]
 async fn audit_workflow_requires_a_reachable_end_node() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
@@ -1467,10 +1468,7 @@ async fn audit_workflow_requires_a_reachable_end_node() {
         events.len(),
         run.terminal_kind
     );
-    assert!(
-        result.is_err() || run.terminal_kind.as_deref() != Some("succeeded"),
-        "an end node unreachable from start must not produce a successful run"
-    );
+    reachability::assert_rejected(&db, &result, &run.id, &events);
 }
 
 #[tokio::test]
