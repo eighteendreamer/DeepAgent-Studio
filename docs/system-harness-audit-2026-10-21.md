@@ -5654,6 +5654,8 @@ CLI先构建并核对debug/deepagent.exe与debug/deps/deepagent.exe的SHA256一�
 H-184～H-190按以上本机范围各自已修复并验收，共同一个独立根因，不归并、不重复计数。306唯一台账核对：131验收/22历史跳过/7归并/2撤销/144待修/0修复中，有效未关闭144含H-180授权跳过，实际排队143；本轮新增修复7、历史跳过0、归并/撤销0，其余299主行与6dd114c3逐字相同。五项原用户未跟踪内容不读/不改/不提交，H-180原独立提交/跳过/不合入约定不变。待创建只含本根因19份代码/测试/夹具及当时双文档的fix提交，取得hash后另做docs回填，不amend、不推送/建PR。本根因修复验收剩余0；下一候选H-191，先复核依赖和根因，尚未开始实现。全部剩余仍沿200–400有效小时未逐项校准历史粗估，依据143排队项的数据/权限/状态风险与跨层验收复杂度，不是逐项工时总和或日期承诺；构建/设备/依赖/环境等待另计、无可靠总上界。整个goal未完成。
 
 
+**E-H184-190-04（2026-11-03，独立提交回填与交付核对）**：代码、测试和当时两份文档已独立提交为 `b0ed89c3e4fd05f5792d28cc3a581a493a1466aa`（【fix】统一工作流输入准入与默认值契约），父提交6dd114c3，只含本根因21个相关文件；未amend、推送或创建PR。本次仅回填真实fix hash，不改写E01～03阶段快照或原失败证据，文档另做正常提交，不递归填写自身hash。交付检查再次实际执行 `git diff --check` 和 `python target/h184-190-repair-20261103/verify-delivery.py`：19份冻结源码哈希一致、306唯一台账完整、其余299主行与父提交逐字一致；本轮七项保持各自验收，不标归并。累计131验收/22历史跳过/7归并/2撤销/144待修/0修复中，本轮新增验收7、历史跳过/归并/撤销新增0；H-180仍按授权跳过、未关闭且不合入main，实际排队143。全仓H-306唯一测试失败及既有严格lint诊断仍保留，不冒称全仓全绿；未验收范围与兼容性沿E03。下一候选H-191尚未开始修复，整个goal继续active。全部剩余200–400有效修复与验收小时仍是基于143项排队及跨层风险的历史未逐项校准粗估，构建、设备、依赖和环境等待另计且无可靠总上界，不承诺日期。
+
 ### H-185：工作流 `start` 不校验输入类型，声明 number 却接受任意字符串
 
 **级别：高（P1，类型安全与下游行为）；触发条件：工作流输入声明 `type=number`、`required=true`，调用者提交字符串或其他不兼容 JSON 类型。** 后端不会在工作流 admission 或 start executor 处拒绝，错误值继续进入条件、模板、模型和工具节点。
@@ -5690,6 +5692,8 @@ H-184～H-190按以上本机范围各自已修复并验收，共同一个独立�
 
 **E-H184-190-03（2026-11-03，本项验收）**：H-185已修复并验收（Windows本机范围），六类型严格匹配不强转，file只接受既有opaque引用形状。本项原探针实际命令`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_input_type_mismatch_is_rejected --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1`，exit0、1过0败0忽略；完整共享回归、兼容性与残余/未验收范围见[共同记录](#h184-190-repair)的E03。七项共享同一InputPlan根因提交但不归并，131验收/22历史跳过/7归并/2撤销/144待修；本轮新增7，本项剩余0。待独立fix提交和docs真实hash回填；H-180授权跳过与不合入不变，整个goal未完成。
 
+
+**E-H184-190-04（2026-11-03，本项提交回填）**：H-185随同一InputPlan根因独立提交 `b0ed89c3e4fd05f5792d28cc3a581a493a1466aa`（【fix】统一工作流输入准入与默认值契约）；七项各自验收、不归并。交付核对、306行计数、兼容性和残余/未验收范围见[共同记录](#h184-190-repair)的E03～04。E01～03为保留的阶段快照，本次仅回填真实hash，不重跑或改称旧验收；文档另做正常提交，不amend、不推送、不建PR，整个goal未完成。
 
 ### H-186：工作流 `start` 没有输入 allowlist，未声明字段进入执行上下文并成功传播
 
@@ -5728,6 +5732,8 @@ H-184～H-190按以上本机范围各自已修复并验收，共同一个独立�
 **E-H184-190-03（2026-11-03，本项验收）**：H-186已修复并验收（Windows本机范围），运行输入key按canonical声明严格allowlist，start不再复制raw Map。本项原探针实际命令`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_undeclared_input_is_rejected_or_ignored --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1`，exit0、1过0败0忽略；完整共享回归、兼容性与残余/未验收范围见[共同记录](#h184-190-repair)的E03。七项共享同一InputPlan根因提交但不归并，131验收/22历史跳过/7归并/2撤销/144待修；本轮新增7，本项剩余0。待独立fix提交和docs真实hash回填；H-180授权跳过与不合入不变，整个goal未完成。
 
 
+**E-H184-190-04（2026-11-03，本项提交回填）**：H-186随同一InputPlan根因独立提交 `b0ed89c3e4fd05f5792d28cc3a581a493a1466aa`（【fix】统一工作流输入准入与默认值契约）；七项各自验收、不归并。交付核对、306行计数、兼容性和残余/未验收范围见[共同记录](#h184-190-repair)的E03～04。E01～03为保留的阶段快照，本次仅回填真实hash，不重跑或改称旧验收；文档另做正常提交，不amend、不推送、不建PR，整个goal未完成。
+
 ### H-187：工作流声明的输入默认值被静默丢弃，缺失字段变成 `null` 仍成功
 
 **级别：中高（P1，输入语义与可复现性）；触发条件：`start.inputVariables` 声明某个非必填输入并设置 `default`，调用方不在 `WorkflowRequest.inputs` 中提供该字段。** 后端不采用声明的默认值，而是把输入写成 `null`，随后继续执行并记录成功终态。
@@ -5764,6 +5770,8 @@ H-184～H-190按以上本机范围各自已修复并验收，共同一个独立�
 
 **E-H184-190-03（2026-11-03，本项验收）**：H-187已修复并验收（Windows本机范围），provided/default/required/optional一次解析，default自身校验且来源持久化。本项原探针实际命令`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_declared_default_is_applied_when_input_is_missing --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1`，exit0、1过0败0忽略；完整共享回归、兼容性与残余/未验收范围见[共同记录](#h184-190-repair)的E03。七项共享同一InputPlan根因提交但不归并，131验收/22历史跳过/7归并/2撤销/144待修；本轮新增7，本项剩余0。待独立fix提交和docs真实hash回填；H-180授权跳过与不合入不变，整个goal未完成。
 
+
+**E-H184-190-04（2026-11-03，本项提交回填）**：H-187随同一InputPlan根因独立提交 `b0ed89c3e4fd05f5792d28cc3a581a493a1466aa`（【fix】统一工作流输入准入与默认值契约）；七项各自验收、不归并。交付核对、306行计数、兼容性和残余/未验收范围见[共同记录](#h184-190-repair)的E03～04。E01～03为保留的阶段快照，本次仅回填真实hash，不重跑或改称旧验收；文档另做正常提交，不amend、不推送、不建PR，整个goal未完成。
 
 ### H-188：工作流字符串 `options` 不参与 admission，非法枚举值成功进入执行上下文
 
@@ -5802,6 +5810,8 @@ H-184～H-190按以上本机范围各自已修复并验收，共同一个独立�
 **E-H184-190-03（2026-11-03，本项验收）**：H-188已修复并验收（Windows本机范围），provided与default统一exact options，空列表不限制、非法配置拒绝。本项原探针实际命令`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_options_are_enforced --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1`，exit0、1过0败0忽略；完整共享回归、兼容性与残余/未验收范围见[共同记录](#h184-190-repair)的E03。七项共享同一InputPlan根因提交但不归并，131验收/22历史跳过/7归并/2撤销/144待修；本轮新增7，本项剩余0。待独立fix提交和docs真实hash回填；H-180授权跳过与不合入不变，整个goal未完成。
 
 
+**E-H184-190-04（2026-11-03，本项提交回填）**：H-188随同一InputPlan根因独立提交 `b0ed89c3e4fd05f5792d28cc3a581a493a1466aa`（【fix】统一工作流输入准入与默认值契约）；七项各自验收、不归并。交付核对、306行计数、兼容性和残余/未验收范围见[共同记录](#h184-190-repair)的E03～04。E01～03为保留的阶段快照，本次仅回填真实hash，不重跑或改称旧验收；文档另做正常提交，不amend、不推送、不建PR，整个goal未完成。
+
 ### H-189：工作流 `minimum/maximum` 不参与 admission，越界数值成功进入执行上下文
 
 **级别：中高（P1，输入约束与资源/策略边界）；触发条件：`start.inputVariables` 声明 `type="number"` 且设置 `minimum`/`maximum`，调用方提交范围外的 number。** 后端不拒绝越界值，仍传播并记录成功。
@@ -5839,6 +5849,8 @@ H-184～H-190按以上本机范围各自已修复并验收，共同一个独立�
 **E-H184-190-03（2026-11-03，本项验收）**：H-189已修复并验收（Windows本机范围），统一inclusive数值边界，沿既有精确比较保留大整数精度。本项原探针实际命令`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_numeric_bounds_are_enforced --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1`，exit0、1过0败0忽略；完整共享回归、兼容性与残余/未验收范围见[共同记录](#h184-190-repair)的E03。七项共享同一InputPlan根因提交但不归并，131验收/22历史跳过/7归并/2撤销/144待修；本轮新增7，本项剩余0。待独立fix提交和docs真实hash回填；H-180授权跳过与不合入不变，整个goal未完成。
 
 
+**E-H184-190-04（2026-11-03，本项提交回填）**：H-189随同一InputPlan根因独立提交 `b0ed89c3e4fd05f5792d28cc3a581a493a1466aa`（【fix】统一工作流输入准入与默认值契约）；七项各自验收、不归并。交付核对、306行计数、兼容性和残余/未验收范围见[共同记录](#h184-190-repair)的E03～04。E01～03为保留的阶段快照，本次仅回填真实hash，不重跑或改称旧验收；文档另做正常提交，不amend、不推送、不建PR，整个goal未完成。
+
 ### H-190：工作流 `minLength/maxLength` 不参与 admission，越界字符串成功传播
 
 **级别：中高（P1，输入约束与资源/提示词边界）；触发条件：`start.inputVariables` 声明字符串长度范围，调用方提交范围外的字符串。** 后端不拒绝越界值，仍继续执行并记录成功。
@@ -5875,6 +5887,8 @@ H-184～H-190按以上本机范围各自已修复并验收，共同一个独立�
 
 **E-H184-190-03（2026-11-03，本项验收）**：H-190已修复并验收（Windows本机范围），Unicode scalar长度与JSON字节/深度预算，provided/default统一校验。本项原探针实际命令`cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_length_bounds_are_enforced --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1`，exit0、1过0败0忽略；完整共享回归、兼容性与残余/未验收范围见[共同记录](#h184-190-repair)的E03。七项共享同一InputPlan根因提交但不归并，131验收/22历史跳过/7归并/2撤销/144待修；本轮新增7，本项剩余0。待独立fix提交和docs真实hash回填；H-180授权跳过与不合入不变，整个goal未完成。
 
+
+**E-H184-190-04（2026-11-03，本项提交回填）**：H-190随同一InputPlan根因独立提交 `b0ed89c3e4fd05f5792d28cc3a581a493a1466aa`（【fix】统一工作流输入准入与默认值契约）；七项各自验收、不归并。交付核对、306行计数、兼容性和残余/未验收范围见[共同记录](#h184-190-repair)的E03～04。E01～03为保留的阶段快照，本次仅回填真实hash，不重跑或改称旧验收；文档另做正常提交，不amend、不推送、不建PR，整个goal未完成。
 
 ### H-191：工作流图没有入口节点仍可成功完成，结构 admission 缺少 start/end 不变量
 
