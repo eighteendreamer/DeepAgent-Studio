@@ -77,6 +77,15 @@ pub(super) fn check_value(value: &Value, context: &'static str) -> Result<()> {
     measure(value, 0, &mut Budget::new(context))
 }
 
+/// Check a borrowed aggregate before allocating its serialized representation.
+pub(super) fn check_serialized<T: serde::Serialize>(
+    value: &T,
+    context: &'static str,
+) -> Result<()> {
+    serde_json::to_writer(Budget::new(context), value)
+        .map_err(|_| invalid(context, "serialized value exceeds 1 MiB"))
+}
+
 fn check_text(text: &str, context: &str) -> Result<()> {
     if text.len() > MAX_BYTES {
         return Err(invalid(context, "text exceeds 1 MiB"));

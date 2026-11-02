@@ -306,7 +306,13 @@ async fn h183_missing_or_wrong_typed_completed_source_is_not_a_skipped_branch() 
         assert!(events
             .iter()
             .any(|e| e.node_id == "aggregate" && e.status == NodeExecutionStatus::Failed));
-        assert!(events.iter().all(|e| e.node_id != "end"));
+        let end: Vec<_> = events.iter().filter(|e| e.node_id == "end").collect();
+        assert_eq!(end.len(), 1, "failed aggregate must not dispatch the end");
+        assert_eq!(end[0].status, NodeExecutionStatus::Skipped);
+        assert_eq!(
+            end[0].error.as_deref(),
+            Some("workflow stopped before node execution")
+        );
         assert_eq!(
             RunStore::new(&db)
                 .get(&id)

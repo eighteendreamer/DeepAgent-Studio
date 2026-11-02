@@ -224,9 +224,8 @@ async fn terminate_drops_inflight_sibling_and_never_admits_later_item_or_done() 
     assert_eq!(bridge.live.load(Ordering::SeqCst), 0);
     assert!(bridge.finished.lock().unwrap().is_empty());
     let events = capture.0.lock().unwrap();
-    assert!(!events
-        .iter()
-        .any(|event| event.scope == vec!["iter", "2"] || event.node_id == "end"));
+    assert!(!events.iter().any(|event| event.scope == vec!["iter", "2"]));
+    assert_unvisited_end(&events, NodeExecutionStatus::Skipped);
     assert_eq!(
         events
             .iter()
@@ -297,9 +296,8 @@ async fn run_cancellation_drops_item_futures_and_closes_each_started_scope_once(
             .count(),
         1
     );
-    assert!(!events
-        .iter()
-        .any(|event| event.scope == vec!["iter", "2"] || event.node_id == "end"));
+    assert!(!events.iter().any(|event| event.scope == vec!["iter", "2"]));
+    assert_unvisited_end(&events, NodeExecutionStatus::Cancelled);
 }
 
 #[tokio::test]
@@ -382,10 +380,64 @@ async fn growing_aggregate_fails_boundedly_before_admitting_later_items_even_wit
     agent.finish_background_tasks().await;
     assert_eq!(*agent.item_output_budget.lock().unwrap(), 0);
     assert_eq!(bridge.finished.lock().unwrap().len(), 2);
-    assert!(!capture
-        .0
-        .lock()
-        .unwrap()
+    let events = capture.0.lock().unwrap();
+    assert!(!events.iter().any(|event| event.scope == vec!["iter", "2"]));
+    assert_unvisited_end(&events, NodeExecutionStatus::Skipped);
+}
+
+// H-194/H-195: owner cleanup now accounts for the unexecuted top-level end,
+// while the assertions above still prohibit dispatching queued item scopes.
+fn assert_unvisited_end(events: &[NodeExecutionEvent], status: NodeExecutionStatus) {
+    let end: Vec<_> = events
         .iter()
-        .any(|event| event.scope == vec!["iter", "2"] || event.node_id == "end"));
+        .filter(|event| event.node_id == "end")
+        .collect();
+    assert_eq!(end.len(), 1, "unvisited end must not run or settle twice");
+    assert_eq!(end[0].status, status);
+    assert!(end[0].error.is_some());
+    assert!(end[0].outputs.is_none());
+}
+
+#[tokio::test]
+async fn h194_195_item_local_end_waits_for_its_owned_sibling_before_selecting_output() {
+    let mut definition = definition(true, 2);
+    // The item end is ready before body in storage order. It is not the
+    // top-level exit, nor permission to drop the sibling output producer.
+    definition.nodes.insert(
+        3,
+        serde_json::from_value(json!({"id":"item-end","kind":"end"})).unwrap(),
+    );
+    definition.edges.push(
+        serde_json::from_value(json!({"id":"item-exit","source":"entry","target":"item-end"}))
+            .unwrap(),
+    );
+    let (mut agent, bridge, capture) = fixture(definition, json!(["slow", "fast", "third"]));
+    drive(&mut agent).await.unwrap();
+    agent.finish_background_tasks().await;
+    assert_eq!(
+        agent.outputs["iter"],
+        json!({"output":["slow","fast","third"]})
+    );
+    assert_eq!(bridge.finished.lock().unwrap().len(), 3);
+    let events = capture.0.lock().unwrap();
+    for index in 0..3 {
+        let scope = vec!["iter".to_owned(), index.to_string()];
+        for id in ["entry", "item-end", "body"] {
+            let terminal: Vec<_> = events
+                .iter()
+                .filter(|e| e.scope == scope && e.node_id == id && e.status.is_terminal())
+                .collect();
+            assert_eq!(terminal.len(), 1);
+            assert_eq!(terminal[0].status, NodeExecutionStatus::Completed);
+        }
+    }
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.node_id == "end"
+                && e.status == NodeExecutionStatus::Completed
+                && e.scope.is_empty())
+            .count(),
+        1
+    );
 }

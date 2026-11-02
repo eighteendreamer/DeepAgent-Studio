@@ -69,6 +69,29 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
       nodes.unshift(node("orphan", "variable-assigner", { assignments: [] }));
     } else if (name === "professional-rooted-reordered") {
       nodes.reverse();
+    } else if (name.startsWith("settlement-")) {
+      nodes = [node("start", "start"), node("left-end", "end", {
+        outputVariables: [{ name: "report", type: "string", value: "LEFT" }],
+      })];
+      edges = [{ id: "a", source: "start", target: "left-end" }];
+      if (name === "settlement-tail") {
+        nodes.push(node("tail", "variable-assigner", { assignments: [] }));
+        edges.push({ id: "b", source: "start", target: "tail" });
+      } else {
+        nodes.push(node("right-end", "end", {
+          outputVariables: [{ name: "report", type: "string", value: "RIGHT" }],
+        }));
+        edges.push({ id: "b", source: "start", target: "right-end" });
+        if (name.startsWith("settlement-choice")) {
+          nodes.push(node("choose", "if-else", { conditions: [{ id: "true", logic: "and", items: [
+            { variable: "yes", operator: "is", value: "yes" },
+          ] }] }));
+          const selected = name === "settlement-choice-left";
+          edges = [{ id: "a", source: "start", target: "choose" },
+            { id: "b", source: "choose", target: "left-end", sourceHandle: selected ? "true" : "false" },
+            { id: "c", source: "choose", target: "right-end", sourceHandle: selected ? "false" : "true" }];
+        }
+      }
     } else if (name.startsWith("input-contract")) {
       nodes[0].data.inputVariables = [
         { name: "value", type: "object", required: true, default: { note: "{{#missing.value#}}", nested: [false, 0] } },
@@ -215,7 +238,9 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--emit-reachability-fixtures") {
+  if (process.argv[2] === "--emit-settlement-fixtures") {
+    emitFixtures(["settlement-tail", "settlement-parallel", "settlement-choice-left", "settlement-choice-right"]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-reachability-fixtures") {
     emitFixtures(["creative-multiple-roots", "professional-unreachable-end", "professional-orphan", "professional-rooted-reordered", "iteration"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-exit-fixtures") {
     emitFixtures(["creative-exit", "creative-exit-collision", "creative-explicit-exit", "creative-explicit-boundaries", "creative-empty", "professional-missing-exit"]).catch((error) => { console.error(error); process.exitCode = 1; });

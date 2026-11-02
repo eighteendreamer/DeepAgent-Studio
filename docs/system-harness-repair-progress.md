@@ -2,21 +2,94 @@
 
 ## 当前状态与计数口径（2026-11-03）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计134项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；本次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计136项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；本次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 134 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-125、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 136 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-125、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 22 | 17项原审计历史修复，另H-77/H-83/H-238/H-246/H-301分别随H-78/H-143/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 2 | H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-193本机验收及独立fix提交356c4795已完成，交付见E04 |
-| 待修复 | 141 | 含H-180授权跳过，实际排队140；下一候选H-194 |
+| 修复中 | 0 | H-194/H-195本机验收完成，待本项独立fix及docs回填 |
+| 待修复 | 139 | 含H-180授权跳过，实际排队138；下一候选H-196 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **141（141待修复、0修复中；其中H-180按用户要求跳过，实际待处理140项）**；不提供完成率。134项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+有效未关闭条目当前为 **139（139待修复、0修复中；其中H-180按用户要求跳过，实际待处理138项）**；不提供完成率。136项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+
+## H-194/H-195 所属执行范围统一结算（2026-11-03，本机验收通过）
+
+**E-H194-195-01（2026-11-03，范围、重现与同根因合修）**：基线4c4fc2f4，tracked干净；五项原用户未跟踪内容只核对名称，不读/不改/不提交。H-194原ignored探针实际exit101、0过1败，但失败已变为H-193的不可达orphan校验，不能把unwrap提前报错当成执行集合差异或历史已修复。新增合法全可达start→end、start→tail反例，默认测试settlement::h194_owned_tail_executes_for_every_node_array_permutation真实0过1败；order=[0,1,2]仅start/end Completed、tail无终态，run成功。H-195原ignored探针仍0过1败，right/right-end无终态。两项均追到finish_node_with_updates中首个end直接Complete，已在实现前向用户说明同根因合修依据；两行台账独立计数，不将独立缺陷改为重复归并。
+
+实际复现命令均为 `cargo test -p deepagent-app-core --test workflow_audit <测试名> --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target -- --exact --nocapture --test-threads=1`，原两项附加`--ignored`。日志、result JSON、修前源码见target/h194-repair-20261103。候选第一版因子模块私有方法可见性编译失败（5处E0624），已依现有item_scheduler约定修为pub(super)，未把编译失败当行为证据；随后合法六排列及原H-195探针各1过0败。完整验收未完成。
+
+设计依据：复用CompiledWorkflow.order及iteration scope形成的现有walk、node_statuses、outputs和Kernel的finish_background_tasks边界；不建立第二套图遍历/调度/终态/store/审批链。参考本地DeepSeek Harness workflow-ptc/tests/guest.spec.ts并发上限1仍等待所有child的结算原则，不复制业务实现。采用本地v1 join/choice契约：每个walk成员Completed或带原因Skipped后才能成功，顶层至少一个Completed end；单个已完成end保留原summary格式，多个按end ID排序映射完整输出并在分配summary前复用1MiB序列化预算。条件未选分支Skipped，失败/取消在既有owner清理hook收敛未访问成员；私有iteration item无需全局end，保持局部完成，不发布独立run。无DTO/version/依赖/权限或数据库迁移。H-196祖先闭包、H-197输出类型不混修；settlement顺序不等于副作用事务/可交换性，强杀/掉电不保证调用清理hook。
+
+目前新增验收0；累计134验收/22历史跳过/7归并/2撤销/139待修/2修复中，有效未关闭141含H-180授权跳过、实际排队140。两项暂估合计4–10有效工作小时，全部剩余200–400有效小时仍是历史未逐项校准粗估，依据140排队项跨层数据/权限/状态/持久化风险；构建、设备、依赖和环境等待另计，无可靠总上界、不承诺日期。
+
+**E-H194-195-02（2026-11-03，实现、候选回归与失败追溯）**：移除节点完成处kind=end提前Complete；新增现有WorkflowAgent私有settlement模块，从原walk/node_statuses/outputs计算结算，完成或跳过最后成员时直接调用，不额外消耗Kernel step。顶层walk耗尽却无已完成end仍保留H-192稳定错误；缺失/Running/Failed/Cancelled成员或已完成end缺失output均拒绝成功。多end使用BTreeMap按节点ID汇总完整outputs，借用值并通过values既有Budget Writer检查真实转义序列化字节，超过1MiB拒绝，避免先克隆/分配大聚合；单end继续原summary格式。条件未选和target排除保留带原因Skipped；Kernel及item owner已存在的finish_background_tasks完成资源清理后，为未访问walk成员补Skipped/Cancelled，不改变已终结节点，不创建另一运行/事件中心。
+
+正式回归包含：合法owned-tail全6排列；双分支双end全120排列并交替逆序边；条件互斥两end左右各24排列，未选分支必须带原因Skipped；双分支单end全24排列保持LEFT:RIGHT；首end后另一路运行错误时不得伪成功、下游带原因Skipped；target=start/end的现有正常范围逐节点结算（不宣称H-196祖先闭包修复）；正常/失败/多end临时SQLite关闭重开/cursor逐事件一致；审批后的合成POST broker在首end后恰好调用1次，正常与取消分支都重开验证不重派；Kernel max_steps=2必须max_turns而非早退成功，3步恰好成功；多end结果预算测真实转义体积；私有iteration body的早end与同属兄弟均完成后再选输出，三个item scope各节点恰好一个Completed。四份桌面生产serializer→真实Kernel图（tail/parallel/左右choice）显式ignored门禁通过，不靠默认跳过。
+
+候选验收保留真实失败历史：v3 Kernel6过，但并发启动v4时Windows锁住仍运行的workflow_audit.exe导致LNK1104（不是行为失败），之后改为串行Rust门禁；v3 Runtime新增测试错误导入Metrics，查当前Kernel后改用deepagent_tracing；v4 Runtime388过4败，三项迭代旧断言把未执行end应完全无事件当契约，现改为仍禁止未创建item scope/禁止end运行，同时end恰好1个带原因Skipped/Cancelled，无放松零dispatch；另新Kernel事件测试漏绑with_events，已通过同一持久sink真实采集。旧H-183夹具同样改为下游end只有1个带原因Skipped，保留aggregate Failed/无fallback/唯一run failed等原断言。broker测试最初误查action_started，依既有Kernel夹具改查tool_started；随后取消测试误认orderly cancellation API必须Err，查KernelTerminal::into_completion_result发现现契约为Ok，改为严格验证持久cancelled、request/after均Cancelled且非succeeded，没有修改生产取消适配。
+
+最新候选Runtime401过0败11忽略（4块），workflow100过0败30忽略，四图生产seam1过0败；v5局部settlement先运行旧取消断言为6过1败1忽略，后续全workflow实际使用修正源码通过，保留两次结果而不覆盖。最终8份源码已冻结SHA256，整套验收正在串行运行；两项尚未标为验收，不以候选/脚本存在代替最终结果。前端验收脚本首次因复制双BOM未载入runner，未运行真实build，相关attempt日志保留，移除重复BOM后实际重跑；未修改生产源码规避环境错误。当前仍134验收/22历史跳过/7归并/2撤销/139待修/2修复中，整体goal active。
+
+**E-H194-195-03（2026-11-03，冻结源码最终验收）**：8份代码/测试/桌面fixture源码SHA256前后核对一致，Windows本机合成HOME/TEMP、离线依赖、合成provider/broker、临时SQLite；最终实际命令与结果如下。所有原失败日志、修前源码与候选失败均保留在target/h194-repair-20261103，修复日期2026-11-03。
+
+| 门禁 | 实际执行命令 | 实际结果 |
+|---|---|---|
+| v1-accept-catalog-contract | `cargo test -p deepagent-app-core --lib canvas_node_contract::tests::contracts_profiles_and_graph_registry_agree --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；109.10秒 |
+| v1-accept-catalog-control | `cargo test -p deepagent-app-core --test canvas_prompt_catalog_audit individual_canvas_contracts_and_prompt_resolution_remain_available --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；4.91秒 |
+| v1-accept-h194 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_execution_scope_is_not_node_order_dependent --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.91秒 |
+| v1-accept-h195 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.83秒 |
+| v1-accept-settlement | `cargo test -p deepagent-app-core --test workflow_audit settlement:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | exit0；7过/0败/1忽略（1块）；36.13秒 |
+| v1-accept-desktop-settlement | `cargo test -p deepagent-app-core --test workflow_audit settlement::h194_195_desktop_serialized_tail_parallel_and_choice_settle_through_the_kernel --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；1.52秒 |
+| v1-accept-h193 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_requires_a_reachable_end_node --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.68秒 |
+| v1-accept-reachability | `cargo test -p deepagent-app-core --test workflow_audit reachability:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | exit0；4过/0败/1忽略（1块）；1.39秒 |
+| v1-accept-desktop-reachability | `cargo test -p deepagent-app-core --test workflow_audit reachability::h193_desktop_control_ownership_reaches_the_real_kernel --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；1.68秒 |
+| v1-accept-h192 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_requires_an_end_node --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.69秒 |
+| v1-accept-exit | `cargo test -p deepagent-app-core --test workflow_audit exit:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | exit0；3过/0败/1忽略（1块）；1.46秒 |
+| v1-accept-desktop-exit | `cargo test -p deepagent-app-core --test workflow_audit exit::h192_desktop_exit_projection_executes_and_does_not_repair_invalid_requests --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；1.60秒 |
+| v1-accept-h191 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_requires_a_start_node --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.71秒 |
+| v1-accept-entry | `cargo test -p deepagent-app-core --test workflow_audit entry:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | exit0；2过/0败/1忽略（1块）；0.97秒 |
+| v1-accept-desktop-entry | `cargo test -p deepagent-app-core --test workflow_audit entry::h191_desktop_projects_creative_entries_but_does_not_repair_invalid_professional_graphs --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；1.42秒 |
+| v1-accept-h184 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_missing_required_input_is_rejected --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.69秒 |
+| v1-accept-h185 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_input_type_mismatch_is_rejected --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.68秒 |
+| v1-accept-h186 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_undeclared_input_is_rejected_or_ignored --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.67秒 |
+| v1-accept-h187 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_declared_default_is_applied_when_input_is_missing --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.77秒 |
+| v1-accept-h188 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_options_are_enforced --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.68秒 |
+| v1-accept-h189 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_numeric_bounds_are_enforced --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.69秒 |
+| v1-accept-h190 | `cargo test -p deepagent-app-core --test workflow_audit audit_workflow_string_length_bounds_are_enforced --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；0.68秒 |
+| v1-accept-inputs | `cargo test -p deepagent-app-core --test workflow_audit inputs:: --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | exit0；6过/0败/1忽略（1块）；3.01秒 |
+| v1-accept-desktop-inputs | `cargo test -p deepagent-app-core --test workflow_audit inputs::h184_190_desktop_input_declarations_reach_the_real_kernel --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；1.20秒 |
+| v1-accept-seam-aggregator | `cargo test -p deepagent-app-core --test workflow_audit aggregator::h183_desktop_serialized_aggregators_execute_all_four_output_types --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；1.43秒 |
+| v1-accept-seam-answer | `cargo test -p deepagent-app-core --test workflow_audit answer::h182_desktop_serialized_answer_executes_and_maps_the_actual_payload --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；1.14秒 |
+| v1-accept-seam-iteration | `cargo test -p deepagent-app-core --test workflow_audit iteration::h181_desktop_serialized_iteration_runs_its_body_through_the_real_kernel --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --ignored --exact --nocapture --test-threads=1` | exit0；1过/0败/0忽略（1块）；1.12秒 |
+| v1-accept-workflow | `cargo test -p deepagent-app-core --test workflow_audit --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --nocapture --test-threads=1` | exit0；100过/0败/30忽略（1块）；54.33秒 |
+| v1-accept-runtime | `cargo test -p deepagent-runtime --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | exit0；401过/0败/11忽略（4块）；81.40秒 |
+| v1-accept-fmt | `cargo fmt --all -- --check` | exit0；0过/0败/0忽略（0块）；4.10秒 |
+| v1-accept-runtime-clippy | `cargo clippy -p deepagent-runtime --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit101；0过/0败/0忽略（0块）；9.60秒 |
+| v1-accept-appcore-clippy | `cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit101；0过/0败/0忽略（0块）；38.79秒 |
+| v1-accept-cli | `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit0；0过/0败/0忽略（0块）；52.66秒 |
+| v1-accept-workspace | `cargo test --workspace --no-fail-fast --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | exit101；4221过/1败/256忽略（134块）；1196.40秒 |
+| v1-accept-root-clippy | `cargo clippy --all-targets --all-features --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- -D warnings` | exit101；0过/0败/0忽略（0块）；12.55秒 |
+| v1-accept-tauri | `cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit0；0过/0败/0忽略（0块）；13.69秒 |
+| v1-republish-cli | `cargo build -p deepagent-cli --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target` | exit0；0过/0败/0忽略（0块）；1.18秒 |
+| v1-accept-sdk-stdio | `cargo test -p deepagent-harness-sdk --test e2e_stdio --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio\target -- --test-threads=1` | exit0；6过/0败/0忽略（1块）；31.35秒 |
+| v1-accept-frontend | `pnpm build`，目录`G:\Code_Warehouse\DeepAgent-Studio\apps\desktop` | exit0；312过/0败；129.00秒 |
+| v1-accept-ts-sdk | `pnpm test`，目录`G:\Code_Warehouse\DeepAgent-Studio\packages\sdk` | exit0；7过/0败；2.74秒 |
+
+全仓实际4221过/1败/256忽略（134块）；唯一失败为既有H-306 `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`，creative.video-edit.v1的defaultUserPrompt为空；deepagent-prompts与基线4c4fc2f4无diff，不混修、不宣称全仓全绿。三组严格lint均exit101，诊断消息/次数与H-193最终日志一致，18处诊断源码五行上下文与基线一致；被旧错误阻断的下游target不宣称完成严格lint。前端312项Node检查及tsc/Vite、SDK TypeScript7/0和stdio6/0、CLI build、Tauri check、fmt通过；既有外部化和大chunk警告保留。
+
+CLI/全仓/严格lint/Tauri check串行，Tauri后重新build CLI核对debug/deepagent.exe及debug/deps/deepagent.exe一致，并恢复SHA256 `4A9F35D6FC9B6657B4BFFA500807B2D5C9A0443C665BC66E40321F4659E08440` 后才执行SDK stdio，避免共享sidecar被覆盖误验。acceptance-source-hashes、acceptance-v1-results/completed、frontend-v1-completed、逐门禁log/result及cli-v1-identity均在证据目录。verify-delivery.py实际核对真实命令/结果、哈希、旧诊断、双文档和306台账；不是用脚本存在代替执行。
+
+验收结论与兼容性：H-194合法可达owned-tail全6排列的执行成员一致；H-195双end全120排列均完成所有分支并确定性汇总完整outputs；左右互斥各24排列、单end汇聚24排列、错误/取消/target正常对照、步骤预算、迭代item局部end和正常关闭SQLite重开/cursor均覆盖，所有已创建scope内成员恰好1个terminal且先于唯一run_terminal。原H-194孤立样本已由H-193拒绝，保留为默认拒绝回归而非冒称原样本仍是settlement失败；原H-195强化为必须成功且五节点全Completed，两原探针均移出ignore。桌面四份真实生产serializer→Kernel显式门禁通过；生产TS未改，事件DTO/version/字段和单个已完成end摘要不变。多个已完成end的摘要现在是按ID排序的完整输出对象；原本早退未执行的独立可达分支现在实际执行，可能产生其已授权副作用、错误或取消，不再伪成功。静态顺序仍影响无依赖操作的先后，不承诺副作用可交换性/事务回滚。H-196祖先闭包与H-197输出类型仍未修；target只验证现有无缺祖先正常场景，不冒称完整target语义。无新增依赖、权限放行、外部服务或数据库迁移。
+
+未执行完整GUI手工/截图（无组件或视图改动，生产TS→Kernel不等于完整窗口验收）；CLI/SDK当前无workflow启动方法，通用构建/stdio不冒称workflow端到端。未执行真实供应商、外网、真实内网、真实凭据或用户数据、其他OS、强杀/掉电/透明中途恢复或长期压力；正常重开replay不等于运行恢复，清理hook不保证进程强杀时执行。默认未执行的30个workflow/全仓其余ignored测试不宣称通过，本轮新桌面seam已另行显式执行。
+
+本轮同一首end提前终止根因新增验收2，新增历史跳过/归并/撤销均0；306唯一编号/8列及其余304主行不变，累计136验收/22历史跳过/7归并/2撤销/139待修/0修复中，有效未关闭139含H-180授权跳过、实际排队138。本项本机修复验收剩余0，代码/测试和当时双文档待独立fix提交，取得hash后另做docs回填，不amend、不推送、不建PR；下一候选H-196先复核原target祖先探针。整个goal继续active。全部剩余200–400有效修复与验收小时仍是历史未逐项校准粗估，依据138排队项跨层数据/权限/状态/持久化风险；构建、设备、依赖和环境等待另计，无可靠总上界，不承诺日期。
 
 ## H-193 入口可达性修复（2026-11-03，已验收并交付）
 
@@ -3901,8 +3974,8 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-191：工作流图没有入口节点仍可成功完成，结构 admission 缺少 start/end 不变量](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H191-01～04；原探针/TDD真实红→绿，非历史跳过 | 原编译边界要求唯一显式start，InputPlan不再接受缺失入口；创作serializer投影入口、专业图不静默修复 | 原探针1/0、entry2/0、生产TS→Kernel四图1/0；workflow82/0、Runtime395/0；全仓4197/1仅H306；前端310及SDK/构建/fmt过；严格lint旧失败与完整命令见E04 | `c1e0997b272e3a95b53fe9b747a9787c42be72a0`；E05回填 | 本项本机范围剩余0；raw rootless请求需显式入口，预算/兼容/未验范围见E02/E03/E04；H192～196仍独立待修；总200–400有效小时历史粗估，等待另计 |
 | [H-192：工作流图没有 `end` 节点仍以成功终态结束](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H192-01～04；原探针/TDD真实红→绿，非历史跳过 | 统一compile要求顶层end，顶层walk耗尽失败；保留原item局部完成；创作serializer显式投影共享end，不修专业/空图 | 原探针1/0、exit3/0、生产TS→Kernel六图1/0；workflow86/0、Runtime396/0；全仓4202/1仅H306；前端311及SDK/构建/fmt过；严格lint旧失败和完整命令见E03 | 1a398388ac44e8a916cc4c469e973265d075cc93 | 本项本机范围剩余0；兼容/预算/未验范围见E02/E03；H193～196仍独立待修，动态失败不回滚既有副作用；总200–400有效小时历史粗估，等待另计 |
 | [H-193：start 与 end 彼此不可达时仍按全图拓扑执行并成功](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H193-01～04；原探针/TDD真实红→绿，非历史跳过 | 统一compile复用传递祖先集合要求每节点属于唯一start；拒绝孤立end/副作用根/独立组件，不另建计划或执行特判 | 原探针1/0、reachability4/0、生产TS→Kernel五图1/0；workflow91/0、Runtime397/0；全仓4208/1仅H306；前端312及SDK/构建/fmt过；严格lint旧失败及完整命令见E03 | `356c4795ebf0067a330a706c66c7c21078b8c3d6`；E04回填 | 本项本机范围剩余0；直接/专业孤立图现在拒绝；H194～196仍待核对，不保证动态执行/整体settlement/回滚；总历史粗估200–400有效小时，等待另计 |
-| [H-194：拓扑等价图仅改变节点数组顺序，执行范围便发生变化](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-195：多个可达 end 没有 reject/join/choice 语义，第一个 end 截断正常分支](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-194：拓扑等价图仅改变节点数组顺序，执行范围便发生变化](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H194-195-01～03；同根因合修，非归并/历史跳过 | 现有walk统一settlement；全部成员Completed/带原因Skipped且真实end后成功；多end确定性有界join；复用owner清理 | 原探针及合法TDD红→绿；settlement7/0+生产四图1/0；Runtime401/0、workflow100/0；全仓4221/1仅H306，严格lint旧失败；完整命令及未验见E03 | 待本项独立fix提交，后另做docs回填真实hash | 本项本机范围剩余0；单end兼容，多end不再截断；H196/H197未混修；无迁移/新增权限；全局历史粗估200–400有效小时，等待另计 |
+| [H-195：多个可达 end 没有 reject/join/choice 语义，第一个 end 截断正常分支](system-harness-audit-2026-10-21.md) | P1 | 已修复并验收 | E-H194-195-01～03；同根因合修，非归并/历史跳过 | 现有walk统一settlement；全部成员Completed/带原因Skipped且真实end后成功；多end确定性有界join；复用owner清理 | 原探针及合法TDD红→绿；settlement7/0+生产四图1/0；Runtime401/0、workflow100/0；全仓4221/1仅H306，严格lint旧失败；完整命令及未验见E03 | 待本项独立fix提交，后另做docs回填真实hash | 本项本机范围剩余0；单end兼容，多end不再截断；H196/H197未混修；无迁移/新增权限；全局历史粗估200–400有效小时，等待另计 |
 | [H-196：合法 target-node 运行跳过必需祖先，正常节点因缺少中间输出失败](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-197：end 的输出类型声明只校验类型名称，成功结果可违反公开契约](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-198：OR 条件组从 true 开始累加，所有子条件为 false 仍选择 true 分支](system-harness-audit-2026-10-21.md) | P1 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

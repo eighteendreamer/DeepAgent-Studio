@@ -39,6 +39,7 @@ use deepagent_core::error::{CoreError, Result};
 mod item_scheduler;
 #[cfg(test)]
 mod iteration_tests;
+mod settlement;
 use item_scheduler::{IterationExecution, OutputLease};
 
 struct PendingNodeTool {
@@ -99,9 +100,9 @@ impl PendingMediaOutput {
 /// Executes a compiled workflow graph as an [`Agent`].
 ///
 /// The agent walks nodes in topological order. Each `think()` call executes one
-/// node, stores its outputs, and emits lifecycle events. Only a completed `end`
-/// settles the workflow. Private iteration item walks complete locally under
-/// their existing owner; they never publish an independent successful run.
+/// node, stores its outputs, and emits lifecycle events. The owning walk must
+/// settle every member and complete an `end` before it can succeed. Private
+/// iteration items complete locally; they never publish a separate run.
 pub struct WorkflowAgent {
     compiled: Arc<CompiledWorkflow>,
     walk: Vec<usize>,
@@ -1904,16 +1905,7 @@ impl WorkflowAgent {
                 self.active_node_id = None;
                 self.step += 1;
 
-                if node_kind == "end" {
-                    let summary = output
-                        .get("output")
-                        .or_else(|| output.as_object().and_then(|m| m.values().next()))
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "workflow completed".to_string());
-                    return Ok(AgentDecision::Complete(summary));
-                }
-
-                Ok(AgentDecision::Continue)
+                self.settle_walk()
             }
             Err(error) => {
                 // 用户取消不是失败：视频这类长作业在轮询中途被打断时走到这里，
@@ -2104,12 +2096,7 @@ impl Agent for WorkflowAgent {
         }
 
         if self.step >= self.walk.len() {
-            if self.item.is_some() {
-                return Ok(AgentDecision::Complete("iteration item completed".into()));
-            }
-            return Err(CoreError::invalid(
-                "InvalidWorkflowGraph: workflow exhausted without completing an end node",
-            ));
+            return self.settle_walk();
         }
 
         let node_index = self.walk[self.step];
@@ -2130,7 +2117,7 @@ impl Agent for WorkflowAgent {
                 Some("conditional branch not selected".to_string()),
             );
             self.step += 1;
-            return Ok(AgentDecision::Continue);
+            return self.settle_walk();
         }
 
         if let Some(target) = &self.target_node_id {
@@ -2144,9 +2131,16 @@ impl Agent for WorkflowAgent {
                 if !ancestors.contains(target) {
                     self.node_statuses
                         .insert(node_id.clone(), NodeExecutionStatus::Skipped);
-                    self.emit_status(&node_id, NodeExecutionStatus::Skipped, 1, 0, None, None);
+                    self.emit_status(
+                        &node_id,
+                        NodeExecutionStatus::Skipped,
+                        1,
+                        0,
+                        None,
+                        Some("outside target execution scope".into()),
+                    );
                     self.step += 1;
-                    return Ok(AgentDecision::Continue);
+                    return self.settle_walk();
                 }
             }
         }
@@ -2409,6 +2403,7 @@ impl Agent for WorkflowAgent {
             );
         }
         self.cancel_active_node();
+        self.settle_unvisited_nodes();
     }
 
     fn cumulative_usage(&self) -> Option<RunUsage> {

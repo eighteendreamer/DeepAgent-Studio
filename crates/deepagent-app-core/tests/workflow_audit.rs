@@ -30,6 +30,8 @@ mod inputs;
 mod iteration;
 #[path = "workflow_audit/reachability.rs"]
 mod reachability;
+#[path = "workflow_audit/settlement.rs"]
+mod settlement;
 #[path = "workflow_audit/usage.rs"]
 mod usage;
 
@@ -1472,7 +1474,6 @@ async fn audit_workflow_requires_a_reachable_end_node() {
 }
 
 #[tokio::test]
-#[ignore = "audit: equivalent workflow graphs must not change scope with node declaration order"]
 async fn audit_workflow_execution_scope_is_not_node_order_dependent() {
     async fn run_variant(nodes: serde_json::Value, run_id: &str) -> (Vec<String>, Option<String>) {
         let (_root, db, chat, session) = workflow_fixture().await;
@@ -1489,21 +1490,28 @@ async fn audit_workflow_execution_scope_is_not_node_order_dependent() {
         .unwrap();
         let events = Arc::new(Mutex::new(Vec::new()));
         let capture = events.clone();
-        chat.run_workflow(
-            workflow,
-            run_id.into(),
-            session,
-            move |event| {
-                if let RuntimeEvent::WorkflowNode { event } = event {
-                    if event.status == NodeExecutionStatus::Completed {
-                        capture.lock().unwrap().push(event.node_id);
+        let result = chat
+            .run_workflow(
+                workflow,
+                run_id.into(),
+                session,
+                move |event| {
+                    if let RuntimeEvent::WorkflowNode { event } = event {
+                        if event.status == NodeExecutionStatus::Completed {
+                            capture.lock().unwrap().push(event.node_id);
+                        }
                     }
-                }
-            },
-            |_| {},
-        )
-        .await
-        .unwrap();
+                },
+                |_| {},
+            )
+            .await;
+        // H-193 now rejects both original orphan samples before dispatch.
+        // The legal owned-tail regression lives in settlement, not here.
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("node orphan is unreachable from start start"),
+            "{error}"
+        );
         let terminal = RunStore::new(&db)
             .get(run_id)
             .unwrap()
@@ -1539,10 +1547,12 @@ async fn audit_workflow_execution_scope_is_not_node_order_dependent() {
         end_first, orphan_first,
         "reordering the same logical graph must not change which nodes execute"
     );
+    assert!(end_first.is_empty());
+    assert_eq!(end_first_terminal.as_deref(), Some("failed"));
+    assert_eq!(orphan_first_terminal.as_deref(), Some("failed"));
 }
 
 #[tokio::test]
-#[ignore = "audit: multiple reachable end nodes need explicit branch settlement semantics"]
 async fn audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
@@ -1593,9 +1603,19 @@ async fn audit_workflow_does_not_succeed_with_a_reachable_branch_unsettled() {
         result.is_ok(),
         run.terminal_kind
     );
-    assert!(
-        result.is_err() || right_settled,
-        "a successful run cannot leave a statically reachable branch without a terminal event"
+    assert!(result.is_ok(), "{result:?}");
+    assert!(right_settled);
+    assert_eq!(run.terminal_kind.as_deref(), Some("succeeded"));
+    assert_eq!(events.len(), 5);
+    assert!(events
+        .iter()
+        .all(|(_, status)| *status == NodeExecutionStatus::Completed));
+    let ids: std::collections::BTreeSet<_> = events.iter().map(|(id, _)| id.as_str()).collect();
+    assert_eq!(
+        ids,
+        ["start", "left", "left-end", "right", "right-end"]
+            .into_iter()
+            .collect()
     );
 }
 
