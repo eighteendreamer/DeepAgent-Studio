@@ -23,7 +23,8 @@
 //! The host writes the JSON input via `alloc`, calls `run`, then reads the
 //! output bytes back out of guest memory.
 
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::JoinHandle;
 
 use wasmtime::{Config, Engine, Linker, Module, Store, StoreLimits, StoreLimitsBuilder};
 
@@ -34,6 +35,51 @@ use crate::sandbox::{unpack_ptr_len, Sandbox, SandboxPolicy, SandboxStats};
 /// Per-store state: resource limits enforced by Wasmtime.
 struct HostState {
     limits: StoreLimits,
+}
+
+/// A per-call epoch watchdog. The timer is cancellable so a completed call
+/// cannot leave a delayed increment targeting a later Store on the same
+/// Engine. Dropping the owner always wakes and joins the worker, including
+/// error paths that return before the guest call completes.
+struct EpochWatchdog {
+    state: Arc<(Mutex<bool>, Condvar)>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl EpochWatchdog {
+    fn start(engine: Arc<Engine>, timeout: std::time::Duration) -> Self {
+        let state = Arc::new((Mutex::new(false), Condvar::new()));
+        let worker_state = state.clone();
+        let handle = std::thread::spawn(move || {
+            let (cancelled, wake) = &*worker_state;
+            let guard = cancelled
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (guard, _) = wake
+                .wait_timeout_while(guard, timeout, |cancelled| !*cancelled)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if !*guard {
+                engine.increment_epoch();
+            }
+        });
+        Self {
+            state,
+            handle: Some(handle),
+        }
+    }
+}
+
+impl Drop for EpochWatchdog {
+    fn drop(&mut self) {
+        let (cancelled, wake) = &*self.state;
+        *cancelled
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        wake.notify_one();
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
 }
 
 /// A reusable Wasmtime-backed sandbox. The [`Engine`] (and thus compiled-code
@@ -86,14 +132,9 @@ impl Sandbox for WasmSandbox {
         }
 
         // Epoch watchdog: bump the engine epoch once after the timeout so a
-        // runaway guest traps. The deadline is one epoch tick.
+        // runaway guest traps. The deadline is one epoch tick. The watchdog is
+        // owned by this call and is cancelled/joined on every return path.
         store.set_epoch_deadline(1);
-        let engine = self.engine.clone();
-        let timeout = std::time::Duration::from_millis(policy.timeout_ms);
-        let watchdog = std::thread::spawn(move || {
-            std::thread::sleep(timeout);
-            engine.increment_epoch();
-        });
 
         // Empty linker => no host imports => no ambient authority.
         let linker: Linker<HostState> = Linker::new(&self.engine);
@@ -116,6 +157,10 @@ impl Sandbox for WasmSandbox {
         let input = input_json.as_bytes();
         let in_len = i32::try_from(input.len())
             .map_err(|_| CoreError::invalid("input too large for wasm sandbox"))?;
+        let _watchdog = EpochWatchdog::start(
+            self.engine.clone(),
+            std::time::Duration::from_millis(policy.timeout_ms),
+        );
         let in_ptr = alloc
             .call(&mut store, in_len)
             .map_err(|e| map_trap("alloc", e))?;
@@ -153,9 +198,6 @@ impl Sandbox for WasmSandbox {
                     .map(|left| budget.saturating_sub(left))
             })
             .unwrap_or(0);
-
-        // The watchdog may still be sleeping; detach it (engine is shared).
-        drop(watchdog);
 
         Ok((
             output,
@@ -267,7 +309,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: a completed WASM call must not interrupt a later shared-engine call"]
     fn audit_completed_call_watchdog_does_not_interrupt_next_call() {
         use std::io::Write;
         use std::process::{Command, Stdio};
@@ -334,7 +375,6 @@ mod tests {
                 .args([
                     "--exact",
                     "wasm::tests::audit_completed_call_watchdog_does_not_interrupt_next_call",
-                    "--ignored",
                     "--nocapture",
                 ])
                 .env(CHILD_MODE, mode)

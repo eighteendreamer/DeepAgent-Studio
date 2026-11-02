@@ -281,7 +281,6 @@ async fn explicit_mcp_initialize_error_is_contained_before_discovery() {
 }
 
 #[tokio::test]
-#[ignore = "audit: malformed or unsupported initialize results must not publish callable MCP tools"]
 async fn audit_invalid_mcp_initialize_results_are_contained_before_discovery() {
     let mut observations = Vec::new();
     for mode in [

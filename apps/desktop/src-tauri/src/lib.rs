@@ -2019,14 +2019,20 @@ async fn start_chat_v2(
         };
         let _ = completion_emitter.emit("session://completed", completed);
         if let Ok(session_id) = result {
-            if let Ok(Some(title)) = chat
+            match chat
                 .maybe_generate_session_title_for_run(&session_id, &run_id)
                 .await
             {
-                let _ = title_emitter.emit(
-                    "session://title-updated",
-                    SessionTitleUpdatedPayload { session_id, title },
-                );
+                Ok(Some(title)) => {
+                    let _ = title_emitter.emit(
+                        "session://title-updated",
+                        SessionTitleUpdatedPayload { session_id, title },
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => eprintln!(
+                    "session title generation failed: run={run_id}, session={session_id}: {error}"
+                ),
             }
         }
     });

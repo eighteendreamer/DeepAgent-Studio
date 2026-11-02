@@ -238,10 +238,12 @@ struct StreamingToolAttempt<'a> {
     speculation_enabled: bool,
     active_attempt: Option<usize>,
     committed_attempt: Option<usize>,
+    identity_conflict: bool,
     prepared: std::collections::HashMap<String, StreamPreparedCall>,
 }
 
 struct StreamPreparedCall {
+    source: deepagent_tools::ToolInvocation,
     invocation: deepagent_tools::ToolInvocation,
     speculative: Option<SpeculativeToolExecution>,
 }
@@ -272,41 +274,69 @@ impl<'a> StreamingToolAttempt<'a> {
             speculation_enabled,
             active_attempt: None,
             committed_attempt: None,
+            identity_conflict: false,
             prepared: std::collections::HashMap::new(),
         }
     }
 
-    fn normalize_decision(&self, decision: AgentDecision) -> AgentDecision {
+    fn normalize_decision(&self, decision: AgentDecision) -> Result<AgentDecision> {
         if self.committed_attempt != self.active_attempt {
-            return decision;
+            return Ok(decision);
+        }
+        if self.identity_conflict {
+            return Err(Self::conflict_error());
+        }
+        let calls = match &decision {
+            AgentDecision::CallTool(call) => std::slice::from_ref(call),
+            AgentDecision::CallTools(calls) => calls.as_slice(),
+            _ => &[],
+        };
+        if self
+            .prepared
+            .keys()
+            .any(|id| !calls.iter().any(|call| call.id.as_ref() == Some(id)))
+        {
+            return Err(Self::conflict_error());
         }
         match decision {
             AgentDecision::CallTool(invocation) => {
-                AgentDecision::CallTool(self.normalized(invocation))
+                Ok(AgentDecision::CallTool(self.normalized(invocation)?))
             }
-            AgentDecision::CallTools(invocations) => AgentDecision::CallTools(
+            AgentDecision::CallTools(invocations) => Ok(AgentDecision::CallTools(
                 invocations
                     .into_iter()
                     .map(|invocation| self.normalized(invocation))
-                    .collect(),
-            ),
-            other => other,
+                    .collect::<Result<Vec<_>>>()?,
+            )),
+            other => Ok(other),
         }
     }
 
     fn normalized(
         &self,
         invocation: deepagent_tools::ToolInvocation,
-    ) -> deepagent_tools::ToolInvocation {
+    ) -> Result<deepagent_tools::ToolInvocation> {
         let Some(call_id) = invocation.id.as_deref() else {
-            return invocation;
+            return Ok(invocation);
         };
-        self.prepared
-            .get(call_id)
-            .map(|prepared| &prepared.invocation)
-            .filter(|prepared| prepared.name == invocation.name)
-            .cloned()
-            .unwrap_or(invocation)
+        let Some(prepared) = self.prepared.get(call_id) else {
+            return Ok(invocation);
+        };
+        // Bind the original semantic input before applying tool-specific value
+        // normalization. Revalidating only the final input could conceal a
+        // changed call or replace an invalid final call with an earlier one.
+        if prepared.source != invocation {
+            return Err(Self::conflict_error());
+        }
+        Ok(prepared.invocation.clone())
+    }
+
+    fn conflict_error() -> deepagent_core::error::CoreError {
+        deepagent_core::error::CoreError::provider(
+            None,
+            Some("tool_call_identity_conflict".into()),
+            "Committed tool call conflicts with its prepared identity",
+        )
     }
 
     fn cancel_speculation(&mut self) {
@@ -332,7 +362,7 @@ impl<'a> StreamingToolAttempt<'a> {
         }
         let call_id = invocation.id.as_deref()?;
         let prepared = self.prepared.get_mut(call_id)?;
-        if prepared.invocation.name != invocation.name {
+        if prepared.invocation != *invocation {
             return None;
         }
         prepared.speculative.take()
@@ -364,6 +394,7 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
         self.cancel_speculation();
         self.active_attempt = Some(attempt);
         self.committed_attempt = None;
+        self.identity_conflict = false;
         self.prepared.clear();
     }
 
@@ -371,11 +402,21 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
         let Some(call_id) = invocation.id.clone() else {
             return;
         };
+        if let Some(previous) = self.prepared.get(&call_id) {
+            if previous.source != invocation {
+                self.identity_conflict = true;
+                self.cancel_speculation();
+            }
+            return;
+        }
+        if self.identity_conflict {
+            return;
+        }
         // Invalid calls intentionally remain uncached. The canonical pipeline
         // will turn them into a paired validation observation after commit.
         let Ok(validated) = self
             .registry
-            .validate_invocation(&invocation.name, invocation.arguments)
+            .validate_invocation(&invocation.name, invocation.arguments.clone())
         else {
             return;
         };
@@ -449,6 +490,7 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
         self.prepared.insert(
             call_id,
             StreamPreparedCall {
+                source: invocation,
                 invocation: normalized,
                 speculative,
             },
@@ -466,6 +508,7 @@ impl ToolAttemptController for StreamingToolAttempt<'_> {
             self.cancel_speculation();
             self.prepared.clear();
             self.committed_attempt = None;
+            self.identity_conflict = false;
         }
     }
 }
@@ -798,7 +841,7 @@ impl<'a, C: Clock> RuntimeEngine<'a, C> {
                 )
                 .await
             {
-                Ok(decision) => streaming_tools.normalize_decision(decision),
+                Ok(decision) => streaming_tools.normalize_decision(decision)?,
                 Err(_e) if self.is_cancelled() => {
                     session.transition_task(task, TaskState::Failed)?;
                     self.emit(RuntimeEvent::RunCancelled {
@@ -3221,7 +3264,7 @@ mod tests {
         struct SemanticTransport {
             requests: std::sync::Mutex<Vec<serde_json::Value>>,
             calls: Arc<std::sync::atomic::AtomicUsize>,
-            expect_early_read: bool,
+            conflict: bool,
         }
 
         #[async_trait]
@@ -3244,29 +3287,28 @@ mod tests {
                     });
                     let mut added = item.clone();
                     added["arguments"] = serde_json::json!("");
+                    let mut completed = item.clone();
+                    if self.conflict {
+                        completed["arguments"] = serde_json::json!(r#"{"path":"changed.txt"}"#);
+                    }
                     for event in [
                         serde_json::json!({"type":"response.output_item.added","item":added}),
                         serde_json::json!({"type":"response.function_call_arguments.delta",
                             "item_id":"stream-item","delta":arguments}),
                         serde_json::json!({"type":"response.function_call_arguments.done",
                             "item_id":"stream-item","arguments":arguments}),
-                        serde_json::json!({"type":"response.output_item.done","item":item}),
+                        serde_json::json!({"type":"response.output_item.done","item":completed}),
                     ] {
                         assert!(!sink.on_event(&event.to_string())?);
+                        tokio::task::yield_now().await;
+                        assert_eq!(self.calls.load(Ordering::Acquire), 0);
                     }
-                    if self.expect_early_read {
-                        // The model stream has not completed. Require an actual
-                        // speculative execution, not merely a scheduled task.
-                        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                            while self.calls.load(Ordering::Acquire) == 0 {
-                                tokio::task::yield_now().await;
-                            }
-                        })
-                        .await
-                        .expect("eligible read must start before response.completed");
-                    }
+                    // Responses completion identity is provisional until the
+                    // terminal output agrees with every complete item. Even a
+                    // Safe tool must not run against unvalidated arguments.
+                    tokio::task::yield_now().await;
                     let early = self.calls.load(Ordering::Acquire);
-                    assert_eq!(early, usize::from(self.expect_early_read));
+                    assert_eq!(early, 0);
                     eprintln!("dual-completion stream: early_calls={early}");
                 } else {
                     assert_eq!(index, 1, "only one tool round and one final response");
@@ -3282,10 +3324,24 @@ mod tests {
             }
         }
 
-        for (label, deny_hook, permissions, expected_calls) in [
-            ("eligible", false, PermissionSet::read_only(), 1),
-            ("hook-denied", true, PermissionSet::read_only(), 0),
-            ("permission-denied", false, PermissionSet::empty(), 0),
+        for (label, deny_hook, permissions, expected_calls, conflict) in [
+            ("eligible", false, PermissionSet::read_only(), 1, false),
+            ("hook-denied", true, PermissionSet::read_only(), 0, false),
+            ("permission-denied", false, PermissionSet::empty(), 0, false),
+            (
+                "conflict-no-hooks",
+                false,
+                PermissionSet::read_only(),
+                0,
+                true,
+            ),
+            (
+                "conflict-with-hooks",
+                true,
+                PermissionSet::read_only(),
+                0,
+                true,
+            ),
         ] {
             let db = Database::open_in_memory().unwrap();
             let clock = FixedClock::new(1);
@@ -3302,7 +3358,7 @@ mod tests {
             let transport = Arc::new(SemanticTransport {
                 requests: std::sync::Mutex::new(Vec::new()),
                 calls: calls.clone(),
-                expect_early_read: expected_calls == 1,
+                conflict,
             });
             let mut agent = ModelAgent::new(
                 Arc::new(ModelClient::new(
@@ -3340,7 +3396,25 @@ mod tests {
             if deny_hook {
                 engine = engine.with_hooks(&hooks);
             }
-            let outcome = engine.run(&mut session, task, &mut agent).await.unwrap();
+            let result = engine.run(&mut session, task, &mut agent).await;
+            if conflict {
+                assert!(
+                    matches!(result, Err(deepagent_core::error::CoreError::Provider {
+                    code: Some(ref code), ..
+                }) if code == "tool_call_identity_conflict")
+                );
+                assert_eq!(calls.load(Ordering::Acquire), 0, "{label}");
+                let history = EventStore::new(&db).load_session(session_id).unwrap();
+                assert!(!history.iter().any(|event| matches!(
+                    event.payload,
+                    EventPayload::ToolCallRequested { .. }
+                        | EventPayload::ToolCallCompleted { .. }
+                        | EventPayload::ResponseItemAppended { .. }
+                )));
+                assert_eq!(transport.requests.lock().unwrap().len(), 1);
+                continue;
+            }
+            let outcome = result.unwrap();
             assert_eq!(outcome, RunOutcome::Completed("done".into()));
             assert_eq!(calls.load(Ordering::Acquire), expected_calls, "{label}");
             let events = EventStore::new(&db).load_session(session_id).unwrap();
@@ -3567,6 +3641,163 @@ mod tests {
         assert_eq!(injected[0].3, "prefetch");
         // Draining left the agent clean: nothing to persist twice.
         assert!(agent.drain_memory_injections().is_empty());
+    }
+
+    #[tokio::test]
+    async fn h259_prepared_cache_cannot_replace_a_committed_call_or_batch() {
+        struct ConflictingAgent {
+            first: bool,
+            batch: bool,
+            conflict: bool,
+        }
+        struct IdentityGate(Arc<std::sync::Mutex<Vec<ApprovalRequest>>>);
+        #[async_trait]
+        impl ApprovalGate for IdentityGate {
+            async fn request(&self, request: ApprovalRequest) -> ApprovalDecision {
+                self.0.lock().unwrap().push(request);
+                ApprovalDecision::Allow
+            }
+        }
+        #[async_trait]
+        impl Agent for ConflictingAgent {
+            async fn think(
+                &mut self,
+                _step: usize,
+                _last: &[Observation],
+            ) -> Result<AgentDecision> {
+                Ok(AgentDecision::Complete("done".into()))
+            }
+            async fn think_streaming_cancelled(
+                &mut self,
+                step: usize,
+                last: &[Observation],
+                _cancel: Option<Arc<AtomicBool>>,
+                tools: Option<&mut dyn ToolAttemptController>,
+            ) -> Result<AgentDecision> {
+                if !self.first {
+                    return self.think(step, last).await;
+                }
+                self.first = false;
+                let tools = tools.unwrap();
+                tools.begin(1);
+                tools.prepare(
+                    ToolInvocation::new("add", serde_json::json!({"a":1})).with_id("call"),
+                );
+                tools.commit(1);
+                let final_call = ToolInvocation::new(
+                    "add",
+                    serde_json::json!({"a":if self.conflict {2} else {1}}),
+                )
+                .with_id("call");
+                Ok(if self.batch {
+                    AgentDecision::CallTools(vec![
+                        ToolInvocation::new("add", serde_json::json!({"a":3})).with_id("sibling"),
+                        final_call,
+                    ])
+                } else {
+                    AgentDecision::CallTool(final_call)
+                })
+            }
+        }
+        for (batch, conflict) in [(false, false), (false, true), (true, false), (true, true)] {
+            let db = Database::open_in_memory().unwrap();
+            let clock = FixedClock::new(1);
+            let mut session = Session::create(&db, &clock, Some("identity")).unwrap();
+            let task = session.create_task("do not replace call identity").unwrap();
+            let registry = registry();
+            let mut hooks = HookRegistry::new();
+            hooks.register(HookPoint::BeforeToolUse, Arc::new(AskHook));
+            let approvals = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let engine = RuntimeEngine::new(&registry, Metrics::new(), RuntimeConfig::default())
+                .with_hooks(&hooks)
+                .with_approvals(Arc::new(IdentityGate(approvals.clone())));
+            let mut agent = ConflictingAgent {
+                first: true,
+                batch,
+                conflict,
+            };
+            let result = engine.run(&mut session, task, &mut agent).await;
+            let events = EventStore::new(&db).load_session(session.id()).unwrap();
+            if conflict {
+                let error = result
+                    .expect_err("a stale prepared call must not overwrite the final decision");
+                assert!(
+                    matches!(error, deepagent_core::error::CoreError::Provider {code: Some(ref code), ..}
+                    if code == "tool_call_identity_conflict")
+                );
+                assert!(approvals.lock().unwrap().is_empty());
+                assert!(!events.iter().any(|event| matches!(
+                    event.payload,
+                    EventPayload::ToolCallRequested { .. } | EventPayload::ToolCallCompleted { .. }
+                )));
+            } else {
+                assert_eq!(result.unwrap(), RunOutcome::Completed("done".into()));
+                let approved = approvals.lock().unwrap();
+                let calls: Vec<_> = events
+                    .iter()
+                    .filter_map(|event| match &event.payload {
+                        EventPayload::ToolCallRequested { call, .. } => Some(call),
+                        _ => None,
+                    })
+                    .collect();
+                assert_eq!(calls.len(), if batch { 2 } else { 1 });
+                assert_eq!(approved.len(), calls.len());
+                for (request, call) in approved.iter().zip(calls) {
+                    assert_eq!(request.call_id, call.id);
+                    assert_eq!(request.tool, call.name);
+                    assert_eq!(request.arguments, call.arguments);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn h259_cache_binds_original_input_and_deduplicates_preparation() {
+        let registry = registry();
+        let mut attempt = StreamingToolAttempt::new(
+            &registry,
+            PermissionSet::read_only(),
+            Arc::new(AtomicBool::new(false)),
+            None,
+            ToolObservationScope::default(),
+            std::time::Duration::from_secs(1),
+            false,
+        );
+        let call = ToolInvocation::new("add", serde_json::json!({"a":1})).with_id("call");
+        attempt.begin(1);
+        attempt.prepare(call.clone());
+        attempt.prepare(call.clone());
+        attempt.commit(1);
+        assert_eq!(attempt.prepared.len(), 1);
+        assert_eq!(
+            attempt
+                .normalize_decision(AgentDecision::CallTool(call.clone()))
+                .unwrap(),
+            AgentDecision::CallTool(call.clone())
+        );
+        for changed in [
+            ToolInvocation::new("other", call.arguments.clone()).with_id("call"),
+            ToolInvocation::new("add", serde_json::json!({"a":"invalid"})).with_id("call"),
+            ToolInvocation::new("add", call.arguments.clone()).with_id("different-id"),
+        ] {
+            assert!(attempt
+                .normalize_decision(AgentDecision::CallTool(changed))
+                .is_err());
+        }
+        assert!(attempt
+            .normalize_decision(AgentDecision::Complete("done".into()))
+            .is_err());
+        attempt.prepare(ToolInvocation::new("add", serde_json::json!({"a":2})).with_id("call"));
+        assert!(attempt
+            .normalize_decision(AgentDecision::CallTool(call.clone()))
+            .is_err());
+        attempt.abort(1, "conflicting identity");
+        attempt.begin(2);
+        attempt.prepare(call.clone());
+        attempt.commit(2);
+        assert!(attempt
+            .normalize_decision(AgentDecision::CallTool(call))
+            .is_ok());
     }
 
     #[tokio::test]

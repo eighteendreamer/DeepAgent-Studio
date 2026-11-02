@@ -78,7 +78,6 @@ async fn audit_replace_messages_repairs_dangling_responses_calls_before_transpor
 }
 
 #[test]
-#[ignore = "audit reproducer: out-of-order Responses output must not be replaced by synthetic failure"]
 fn audit_late_tool_call_does_not_discard_real_earlier_output() {
     let items = vec![
         ResponseInputItem::FunctionCallOutput {

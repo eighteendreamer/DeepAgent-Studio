@@ -313,3 +313,80 @@ fn independent_connections_commit_whole_policies_without_stale_caches() {
     let peer = CostService::new(Arc::new(Database::open(&path).unwrap()));
     assert_eq!(peer.budget().unwrap(), final_policy);
 }
+
+#[test]
+fn measured_call_counts_against_budget_before_run_finalization() {
+    let db = Arc::new(Database::open_in_memory().unwrap());
+    db.with_conn(|c| {
+        c.execute("INSERT INTO sessions (id, mode, created_at, updated_at) VALUES ('ses_1', 'normal', 0, 0)", [])
+            .map_err(|e| CoreError::Persistence(e.to_string()))?;
+        Ok(())
+    }).unwrap();
+    let service = CostService::new(db);
+    service.set_pricing(HashMap::from([(
+        "model".to_string(),
+        ModelPricing {
+            input_cache_hit_per_million: 0.0,
+            input_cache_miss_per_million: 1000.0,
+            output_per_million: 0.0,
+        },
+    )]));
+    service.set_budget(limits(0.5, 10.0)).unwrap();
+    let runs = deepagent_persistence::run_store::RunStore::new(&service.db);
+    runs.create("budget-pending", "ses_1", None, 0).unwrap();
+    assert!(service.check_budget().is_ok());
+    service
+        .record_run_call(
+            &deepagent_persistence::cost_store::RunCallUsage {
+                session_id: "ses_1",
+                run_id: "budget-pending",
+                call_id: "physical-1",
+                timestamp: SystemClock.now().as_millis(),
+                report: &serde_json::json!({"origin":"run"}),
+            },
+            Some(CostRecordRequest {
+                session_id: "ses_1".into(),
+                model: "model".into(),
+                input_tokens: 1000,
+                output_tokens: 10,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 1000,
+                total_tokens: 1010,
+            }),
+        )
+        .unwrap();
+    assert!(runs
+        .get("budget-pending")
+        .unwrap()
+        .unwrap()
+        .finished_at
+        .is_none());
+    assert!(service
+        .check_budget()
+        .unwrap_err()
+        .to_string()
+        .contains("daily budget exhausted"));
+    assert_eq!(service.summary("ses_1").unwrap().session_cost, 1.0);
+}
+
+#[test]
+fn optional_request_admission_distinguishes_exhaustion_from_broken_policy_or_storage() {
+    let service = CostService::new(Arc::new(Database::open_in_memory().unwrap()));
+    assert!(service.allows_optional_request().unwrap());
+    for budget in [limits(0.0, 10.0), limits(10.0, 0.0)] {
+        service.set_budget(budget).unwrap();
+        assert!(service.check_budget().is_err());
+        assert!(!service.allows_optional_request().unwrap());
+    }
+    put_body(&service.db, "{");
+    assert!(service.allows_optional_request().is_err());
+    service
+        .db
+        .with_conn(|connection| {
+            connection
+                .execute_batch("ALTER TABLE documents RENAME TO unavailable_documents")
+                .map_err(|e| CoreError::Persistence(e.to_string()))
+        })
+        .unwrap();
+    assert!(service.allows_optional_request().is_err());
+}

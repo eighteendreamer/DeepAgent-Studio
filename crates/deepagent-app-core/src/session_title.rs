@@ -5,6 +5,7 @@
 
 use std::str::FromStr;
 use std::sync::Arc;
+use std::time::Duration;
 
 use deepagent_core::clock::{Clock, SystemClock};
 use deepagent_core::error::{CoreError, Result};
@@ -30,10 +31,16 @@ const SESSION_TITLE_SYSTEM_PROMPT: &str = concat!(
     "Keep it short and specific."
 );
 
+// Local policy for optional post-run work, not a provider capability.
+const TITLE_TIMEOUT: Duration = Duration::from_secs(20);
+
 /// Generate and persist an AI title for a session when it is still
 /// untitled. Intended for post-run refinement: if the user renames the
 /// session before generation finishes, the second title check prevents the
 /// auto title from overwriting the explicit one.
+/// `parent_run` pins attribution across concurrent continuations. Legacy
+/// callers without a run ID require a unique persisted run; no run means no
+/// dispatch rather than an unowned paid request.
 pub async fn generate_session_title(
     db: &Arc<Database>,
     settings_svc: &SettingsService,
@@ -44,7 +51,7 @@ pub async fn generate_session_title(
 ) -> Result<Option<String>> {
     let id = SessionId::from_str(session_id)
         .map_err(|e| CoreError::invalid(format!("bad session id: {e}")))?;
-    let store = EventStore::new(db);
+    let store = EventStore::new(&db);
     let Some(record) = store.get_session(id)? else {
         return Err(CoreError::not_found(format!("session {session_id}")));
     };
@@ -114,6 +121,12 @@ pub async fn generate_session_title(
     if parent.terminal_kind.as_deref() != Some("succeeded") || parent.finished_at.is_none() {
         return Ok(None);
     }
+    if let Some(cost) = &cost {
+        if !cost.allows_optional_request()? {
+            tracing::debug!(%session_id, run_id = %parent.id, "session title skipped: budget exhausted");
+            return Ok(None);
+        }
+    }
     let events: Arc<dyn deepagent_runtime::RuntimeEventSink> =
         Arc::new(deepagent_runtime::NullEventSink);
     let owner = RunCallUsageOwner {
@@ -161,7 +174,16 @@ pub async fn generate_session_title(
     .with_max_output_tokens(48)
     .with_reasoning_effort(ReasoningEffort::None);
     let mut call = SideModelCall::start(Some(&owner), "session_title", &model)?;
-    let response = call.stream_response(&client, request, None).await?;
+    let response =
+        match tokio::time::timeout(TITLE_TIMEOUT, call.stream_response(&client, request, None))
+            .await
+        {
+            Ok(response) => response?,
+            Err(_) => {
+                call.finish("timed_out")?;
+                return Err(CoreError::other("session title generation timed out"));
+            }
+        };
     let accepted: Result<_> = (|| {
         let Some(title) = normalize_generated_session_title(&response.output_text_projection())
         else {

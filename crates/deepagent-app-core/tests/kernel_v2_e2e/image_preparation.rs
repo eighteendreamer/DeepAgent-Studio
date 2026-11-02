@@ -165,7 +165,7 @@ impl HttpTransport for ImageAnswer {
     }
 }
 
-async fn image_settings(db: Arc<Database>) -> Arc<SettingsService> {
+pub(super) async fn image_settings(db: Arc<Database>) -> Arc<SettingsService> {
     let settings = Arc::new(SettingsService::new(
         db,
         Arc::new(MockTransport::with_get_json(
@@ -304,6 +304,10 @@ async fn observe_imported_image(
             item: deepagent_core::response_item::ResponseItem::InputMessage { attachments, .. }
         } if attachments.iter().any(|attachment| attachment.id == imported.id)
     )).count();
+    assert_eq!(
+        native_images, 1,
+        "admission must persist one reference-only native image item"
+    );
     match mutation {
         ImageMutation::Keep => {}
         ImageMutation::Remove => {
@@ -383,7 +387,6 @@ async fn retained_imported_image_reaches_continuation_request() {
 }
 
 #[tokio::test]
-#[ignore = "audit probe: current turn attachments must reach the first model request"]
 async fn audit_new_image_reaches_first_model_request() {
     let initial = imported_image_across_turns(false).await;
     let later = imported_image_across_turns(true).await;

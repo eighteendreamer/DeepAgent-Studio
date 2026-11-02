@@ -260,7 +260,6 @@ async fn mcp_hook_short_and_long_allow_decisions_allow_the_file_write() {
 }
 
 #[tokio::test]
-#[ignore = "audit: valid MCP hook denials must not become allow after presentation truncation"]
 async fn audit_mcp_hook_long_denials_still_block_the_file_write() {
     let mut observations = Vec::new();
     for (chars, letter) in [(8193, 'd'), (10000, 'd'), (8193, '拒')] {

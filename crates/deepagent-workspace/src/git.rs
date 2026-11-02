@@ -39,6 +39,26 @@ pub struct GitContext {
     pub recent_commits: Vec<CommitSummary>,
 }
 
+/// A single entry from `git status --porcelain=v1 -z`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStatusEntry {
+    /// The two-column porcelain status (for example, ` M` or `??`).
+    pub status: String,
+    /// The current path, relative to the repository root.
+    pub path: String,
+    /// The previous path for a rename or copy entry, when Git reports one.
+    pub old_path: Option<String>,
+}
+
+/// Parsed Git status facts shared by UI and model-context projections.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStatusSnapshot {
+    /// Whether Git reported any status record, independent of display limits.
+    pub has_uncommitted: bool,
+    /// The status records parsed from the NUL-delimited output.
+    pub entries: Vec<GitStatusEntry>,
+}
+
 /// Max changed files / recent commits surfaced (keeps the prompt block small).
 const MAX_CHANGED_FILES: usize = 10;
 const MAX_RECENT_COMMITS: usize = 3;
@@ -46,6 +66,15 @@ const MAX_RECENT_COMMITS: usize = 3;
 /// Run `git <args>` in `root`, returning trimmed stdout on a clean exit, else
 /// `None`. Best-effort: any spawn/exec failure is swallowed.
 fn git_output(root: &Path, args: &[&str]) -> Option<String> {
+    git_stdout(root, args).map(|stdout| stdout.trim().to_string())
+}
+
+/// Run `git <args>` in `root`, preserving stdout byte/record boundaries.
+///
+/// Porcelain status output is a machine-readable two-column format. It must
+/// not share the trimmed single-value helper above because the leading space
+/// in an unstaged record is meaningful.
+fn git_stdout(root: &Path, args: &[&str]) -> Option<String> {
     let mut cmd = Command::new("git");
     cmd.args(args).current_dir(root);
     configure_hidden_process(&mut cmd);
@@ -53,7 +82,7 @@ fn git_output(root: &Path, args: &[&str]) -> Option<String> {
     if !output.status.success() {
         return None;
     }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    Some(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// Whether `root` is inside a git work tree.
@@ -77,20 +106,19 @@ pub fn detect_git_context(root: &Path) -> Option<GitContext> {
             .unwrap_or_else(|| "(unknown)".to_string()),
     };
 
-    // Porcelain status → changed files (each line: "XY <path>").
-    let status = git_output(root, &["status", "--porcelain"]).unwrap_or_default();
-    let mut changed_files: Vec<String> = status
-        .lines()
-        .filter_map(|line| {
-            let path = line.get(3..).unwrap_or("").trim();
-            if path.is_empty() {
-                None
-            } else {
-                Some(path.to_string())
-            }
-        })
+    // Porcelain status → changed files. Keep the status column and NUL record
+    // boundaries intact; a failed status query is unknown, not clean.
+    let status = git_stdout(
+        root,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+    )?;
+    let status_snapshot = parse_git_status_porcelain_z(&status);
+    let mut changed_files: Vec<String> = status_snapshot
+        .entries
+        .iter()
+        .map(|entry| entry.path.clone())
         .collect();
-    let has_uncommitted = !changed_files.is_empty();
+    let has_uncommitted = status_snapshot.has_uncommitted;
     changed_files.truncate(MAX_CHANGED_FILES);
 
     // Recent commits: "<short-hash>\x1f<subject>" per line.
@@ -120,6 +148,40 @@ pub fn detect_git_context(root: &Path) -> Option<GitContext> {
         changed_files,
         recent_commits,
     })
+}
+
+/// Parse NUL-delimited porcelain v1 status without trimming the status column.
+pub fn parse_git_status_porcelain_z(output: &str) -> GitStatusSnapshot {
+    let has_uncommitted = !output.is_empty();
+    let mut entries = output
+        .split('\0')
+        .filter(|entry| !entry.is_empty())
+        .peekable();
+
+    let mut parsed = Vec::new();
+    while let Some(entry) = entries.next() {
+        if entry.len() < 4 || entry.as_bytes()[2] != b' ' {
+            continue;
+        }
+
+        let status = entry[..2].to_string();
+        let path = entry[3..].to_string();
+        let old_path = if status.contains('R') || status.contains('C') {
+            entries.next().map(str::to_string)
+        } else {
+            None
+        };
+        parsed.push(GitStatusEntry {
+            status,
+            path,
+            old_path,
+        });
+    }
+
+    GitStatusSnapshot {
+        has_uncommitted,
+        entries: parsed,
+    }
 }
 
 fn configure_hidden_process(cmd: &mut Command) {
@@ -254,5 +316,46 @@ mod tests {
         let ctx = detect_git_context(root).expect("repo");
         assert!(!ctx.has_uncommitted);
         assert!(ctx.changed_files.is_empty());
+    }
+
+    #[test]
+    fn parses_porcelain_status_without_losing_leading_state_or_paths() {
+        let snapshot = parse_git_status_porcelain_z(
+            " M a\0 D src/main.rs\0?? 中文 空格.txt\0R  new name.rs\0old name.rs\0",
+        );
+
+        assert!(snapshot.has_uncommitted);
+        assert_eq!(
+            snapshot.entries,
+            vec![
+                GitStatusEntry {
+                    status: " M".to_string(),
+                    path: "a".to_string(),
+                    old_path: None,
+                },
+                GitStatusEntry {
+                    status: " D".to_string(),
+                    path: "src/main.rs".to_string(),
+                    old_path: None,
+                },
+                GitStatusEntry {
+                    status: "??".to_string(),
+                    path: "中文 空格.txt".to_string(),
+                    old_path: None,
+                },
+                GitStatusEntry {
+                    status: "R ".to_string(),
+                    path: "new name.rs".to_string(),
+                    old_path: Some("old name.rs".to_string()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn porcelain_status_empty_is_clean() {
+        let snapshot = parse_git_status_porcelain_z("");
+        assert!(!snapshot.has_uncommitted);
+        assert!(snapshot.entries.is_empty());
     }
 }

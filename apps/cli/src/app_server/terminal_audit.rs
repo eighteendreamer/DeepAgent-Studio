@@ -1011,7 +1011,6 @@ async fn audit_auto_review_hook_ask_emits_before_auto_allow() {
 }
 
 #[tokio::test]
-#[ignore = "audit: a failing final hook must not follow a completed turn notification"]
 async fn audit_final_hook_error_has_one_matching_live_and_durable_terminal() {
     // This is valid assistant prose, but invalid JSON for a configured prompt hook.
     // The same offline transport serves both real model calls; no synthetic RuntimeEvent is emitted.
@@ -1020,6 +1019,9 @@ async fn audit_final_hook_error_has_one_matching_live_and_durable_terminal() {
     let turn_id = fixture.run_turn().await;
     let read = fixture.read();
     assert_durable_terminal(&read, &turn_id, "failed");
+    let terminals = fixture.terminals(&turn_id);
+    eprintln!("terminal audit: live={terminals:?}, durable=failed, durable_terminal_count=1");
+    assert_eq!(terminals, ["turn.failed"]);
     assert!(fixture.events.lock().unwrap().iter().any(|event| {
         event["item"]["eventType"] == "hook_completed"
             && event["item"]["data"]["event"] == "TaskCompleted"
@@ -1036,24 +1038,35 @@ async fn audit_final_hook_error_has_one_matching_live_and_durable_terminal() {
         .find(|run| run["runId"] == turn_id)
         .unwrap();
     let events = run["events"].as_array().unwrap();
-    let completed = events
+    // H-143 now withholds the engine's success intent until finalization.
+    // The original audit's run_completed-before-run_terminal assertion described
+    // the bug, not the desired replay contract. A failed final hook must leave
+    // only the canonical failure in both the live stream and durable replay.
+    let lifecycle: Vec<_> = events
         .iter()
-        .position(|event| event["event_type"] == "run_completed")
-        .unwrap();
+        .filter_map(|event| match event["event_type"].as_str() {
+            Some(
+                kind @ ("run_completed" | "run_failed" | "run_cancelled" | "run_awaiting_approval"),
+            ) => Some(kind),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(lifecycle, ["run_failed"]);
+    let failed = events
+        .iter()
+        .position(|event| event["event_type"] == "run_failed")
+        .expect("the canonical failure notification must be durable");
     let terminal = events
         .iter()
         .position(|event| event["event_type"] == "run_terminal")
         .unwrap();
-    assert!(completed < terminal);
+    assert!(failed < terminal);
     let reopened = dispatch(
         &mut fixture.reopened_state(),
         "thread/read",
         json!({"threadId":fixture.thread_id}),
     );
     assert_eq!(reopened, read);
-    let terminals = fixture.terminals(&turn_id);
-    eprintln!("terminal audit: live={terminals:?}, durable=failed, durable_terminal_count=1");
-    assert_eq!(terminals, ["turn.failed"]);
 }
 
 #[tokio::test]
@@ -1270,6 +1283,7 @@ struct ForkBoundaryObservation {
     requested: Option<u64>,
     tail: u64,
     success: bool,
+    error_code: Option<i32>,
     restored_paths: usize,
     content: String,
     source_history_unchanged: bool,
@@ -1349,6 +1363,7 @@ async fn observe_fork_boundary(boundary: ForkBoundary) -> ForkBoundaryObservatio
         requested,
         tail,
         success: response.is_success(),
+        error_code: response.error_code(),
         restored_paths: response
             .result
             .as_ref()
@@ -1389,7 +1404,6 @@ async fn fork_existing_boundaries_keep_history_and_file_horizon_aligned() {
 }
 
 #[tokio::test]
-#[ignore = "audit H-285: reject nonexistent fork boundaries before restoring workspace files"]
 async fn audit_fork_nonexistent_sequence_does_not_restore_completed_writes() {
     let mut observations = Vec::new();
     for boundary in [
@@ -1407,6 +1421,7 @@ async fn audit_fork_nonexistent_sequence_does_not_restore_completed_writes() {
     for observed in observations {
         assert!(
             !observed.success
+                && observed.error_code == Some(ERR_INVALID_PARAMS)
                 && observed.sessions_added == 0
                 && observed.restored_paths == 0
                 && observed.content == "after-fork-audit"

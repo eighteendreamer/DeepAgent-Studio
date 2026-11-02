@@ -457,10 +457,15 @@ impl ResponseRequest {
     /// otherwise fall back to the repaired sequence to avoid emitting a
     /// dangling call on the Chat wire.
     pub(crate) fn chat_projection_items(&self) -> Vec<ResponseInputItem> {
-        if crate::responses::chat_projection_history_is_safe(&self.chat_projection_input)
-            && crate::responses::repair_tool_call_pairs(&self.chat_projection_input) == self.input
+        let Ok(projection) =
+            crate::responses::normalize_tool_output_kinds(&self.chat_projection_input)
+        else {
+            return self.input.clone();
+        };
+        if crate::responses::chat_projection_history_is_safe(&projection)
+            && crate::responses::repair_tool_call_pairs(&projection) == self.input
         {
-            self.chat_projection_input.clone()
+            projection.into_owned()
         } else {
             self.input.clone()
         }
@@ -512,6 +517,7 @@ impl ResponseRequest {
             validate_responses_user_identifier(user)?;
         }
         validate_function_tool_schemas(&self.tools)?;
+        crate::responses::validate_tool_call_history(&self.input)?;
         Ok(())
     }
 }

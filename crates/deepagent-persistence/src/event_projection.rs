@@ -52,7 +52,8 @@ pub(crate) fn projection_spans(
             .iter()
             .zip(&events[index + 1..])
             .take_while(|(expected, event)| {
-                matches!(&event.payload, EventPayload::ResponseItemAppended { item } if item == *expected)
+                matches!(&event.payload, EventPayload::ResponseItemAppended { item }
+                    if item == *expected || item.is_legacy_text_projection_of(expected))
             })
             .count();
         if matched == expected.len() {
@@ -107,7 +108,7 @@ fn has_native_source(
 }
 
 fn native_matches(expected: &ResponseItem, actual: &ResponseItem) -> bool {
-    if expected == actual {
+    if expected == actual || actual.is_legacy_text_projection_of(expected) {
         return true;
     }
     match (expected, actual) {
@@ -185,10 +186,7 @@ pub(crate) fn response_items_for_payload(
                 }
             }
             if !message.content.is_empty() || message.tool_calls.is_empty() {
-                items.push(ResponseItem::Message {
-                    role: message.role.as_str().to_string(),
-                    content: message.content.clone(),
-                });
+                items.push(ResponseItem::from_message_content(message));
             }
         }
         EventPayload::ToolCallRequested { call } => {

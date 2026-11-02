@@ -9,7 +9,16 @@ use deepagent_runtime::events::RuntimeEvent;
 struct NativeTextModel {
     parts: Vec<&'static str>,
     include_deltas: bool,
+    completion: TextCompletion,
     requests: Mutex<Vec<serde_json::Value>>,
+}
+
+#[derive(Clone, Copy)]
+enum TextCompletion {
+    Full,
+    SnapshotOnly,
+    DeltaOnly,
+    FirstItemOnly,
 }
 
 fn text_item_events_with_deltas(parts: &[&str], include_deltas: bool) -> Vec<String> {
@@ -85,10 +94,34 @@ impl HttpTransport for NativeTextModel {
         } else {
             vec!["AUDIT_CONTINUED"]
         };
-        emit_responses_events(
-            sink,
-            &text_item_events_with_deltas(&parts, self.include_deltas),
-        )
+        let mut events = text_item_events_with_deltas(&parts, self.include_deltas);
+        if first {
+            events = events
+                .into_iter()
+                .filter_map(|event| {
+                    let mut value: serde_json::Value = serde_json::from_str(&event).unwrap();
+                    if value["type"] == "response.output_item.done"
+                        && match self.completion {
+                            TextCompletion::Full => false,
+                            TextCompletion::FirstItemOnly => value["output_index"] != 0,
+                            TextCompletion::SnapshotOnly | TextCompletion::DeltaOnly => true,
+                        }
+                    {
+                        return None;
+                    }
+                    if value["type"] == "response.completed"
+                        && matches!(
+                            self.completion,
+                            TextCompletion::DeltaOnly | TextCompletion::FirstItemOnly
+                        )
+                    {
+                        value["response"].as_object_mut().unwrap().remove("output");
+                    }
+                    Some(value.to_string())
+                })
+                .collect();
+        }
+        emit_responses_events(sink, &events)
     }
 }
 
@@ -114,11 +147,20 @@ async fn observe_native_text(
     parts: Vec<&'static str>,
     include_deltas: bool,
 ) -> (Vec<String>, Vec<String>, String, String) {
+    observe_native_text_completion(parts, include_deltas, TextCompletion::Full).await
+}
+
+async fn observe_native_text_completion(
+    parts: Vec<&'static str>,
+    include_deltas: bool,
+    completion: TextCompletion,
+) -> (Vec<String>, Vec<String>, String, String) {
     let workspace = tempfile::tempdir().unwrap();
     let db_path = workspace.path().join("state.sqlite");
     let model = Arc::new(NativeTextModel {
         parts,
         include_deltas,
+        completion,
         requests: Mutex::new(Vec::new()),
     });
     let streamed = Arc::new(Mutex::new(String::new()));
@@ -230,7 +272,6 @@ async fn native_text_control_single_item_retains_one_copy() {
 }
 
 #[tokio::test]
-#[ignore = "audit: multiple completed text items must not receive a joined fallback duplicate"]
 async fn audit_native_text_multiple_items_preserve_exact_provider_content() {
     let parts = vec!["AUDIT_FIRST|", "AUDIT_SECOND"];
     let (persisted, sent, streamed, final_answer) = observe_native_text(parts.clone(), true).await;
@@ -254,7 +295,6 @@ async fn audit_native_text_multiple_items_preserve_exact_provider_content() {
 }
 
 #[tokio::test]
-#[ignore = "audit: a completed message item without text deltas must not receive an empty fallback message"]
 async fn audit_native_text_done_only_does_not_append_empty_fallback() {
     let parts = vec!["AUDIT_DONE_ONLY"];
     let (persisted, sent, streamed, final_answer) = observe_native_text(parts.clone(), false).await;
@@ -268,6 +308,25 @@ async fn audit_native_text_done_only_does_not_append_empty_fallback() {
 }
 
 #[tokio::test]
+async fn h81_native_text_reopened_matrix_keeps_distinct_empty_and_fallback_items() {
+    for completion in [
+        TextCompletion::Full,
+        TextCompletion::SnapshotOnly,
+        TextCompletion::DeltaOnly,
+        TextCompletion::FirstItemOnly,
+    ] {
+        for parts in [vec!["SAME", "SAME"], vec!["", "MIDDLE", ""]] {
+            let (persisted, sent, streamed, final_answer) =
+                observe_native_text_completion(parts.clone(), true, completion).await;
+            assert_eq!(persisted, parts);
+            assert_eq!(sent, parts);
+            assert_eq!(streamed, parts.concat());
+            assert_eq!(final_answer, streamed);
+        }
+    }
+}
+
+#[tokio::test]
 #[ignore = "audit: durable Responses lifecycle events must retain provider response identity and sequence"]
 async fn audit_responses_lifecycle_retains_provider_identity_and_sequence() {
     let workspace = tempfile::tempdir().unwrap();
@@ -276,6 +335,7 @@ async fn audit_responses_lifecycle_retains_provider_identity_and_sequence() {
     let model = Arc::new(NativeTextModel {
         parts: vec!["AUDIT_IDENTITY"],
         include_deltas: true,
+        completion: TextCompletion::Full,
         requests: Mutex::new(Vec::new()),
     });
     let chat = ChatService::new(db, settings, model, workspace.path());

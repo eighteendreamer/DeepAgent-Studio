@@ -273,7 +273,7 @@ fn durable_totals(db: &Database, session: &str) -> (u64, usize) {
     (durable_input, raw_calls)
 }
 
-async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
+async fn observe_run(kind: HookKind, budget_calls: f64, budget_stopped: bool) -> Observation {
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -301,6 +301,7 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
     let captured = events.clone();
     let session = chat.create_session(None).unwrap();
     let stopped = (1 + kind.expected_calls()) as f64 >= budget_calls;
+    assert_eq!(stopped, budget_stopped);
     let parent_calls = if stopped { 1 } else { 2 };
     let result = tokio::time::timeout(
         Duration::from_secs(8),
@@ -426,6 +427,10 @@ async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
     observed
 }
 
+async fn observe(kind: HookKind, budget_calls: f64) -> Observation {
+    observe_run(kind, budget_calls, false).await
+}
+
 fn assert_all_answered_usage(observed: Observation) {
     let expected_input = observed.answered as u64 * 1000;
     let blocked = observed
@@ -484,7 +489,8 @@ async fn audit_prompt_hook_usage_reaches_ledger_and_budget() {
 
 #[tokio::test]
 async fn audit_agent_hook_usage_reaches_ledger_and_budget() {
-    assert_all_answered_usage(observe(HookKind::Agent, 2.5).await);
+    // One main call and two paid hook calls precede the final continuation.
+    assert_all_answered_usage(observe(HookKind::Agent, 3.5).await);
 }
 
 #[tokio::test]
@@ -494,7 +500,31 @@ async fn audit_prompt_hook_denial_still_accounts_usage() {
 
 #[tokio::test]
 async fn audit_agent_hook_denial_still_accounts_usage() {
-    assert_all_answered_usage(observe(HookKind::AgentDeny, 2.5).await);
+    assert_all_answered_usage(observe(HookKind::AgentDeny, 3.5).await);
+}
+
+#[tokio::test]
+async fn paid_hooks_exhaust_budget_before_parent_continuation() {
+    for (kind, limit) in [
+        (HookKind::Prompt, 1.5),
+        (HookKind::PromptDeny, 1.5),
+        (HookKind::Agent, 2.5),
+        (HookKind::AgentDeny, 2.5),
+    ] {
+        assert_all_answered_usage(observe_run(kind, limit, true).await);
+    }
+}
+
+#[tokio::test]
+async fn exact_hook_budget_boundary_stops_without_double_booking() {
+    for (kind, limit) in [
+        (HookKind::Prompt, 2.0),
+        (HookKind::PromptDeny, 2.0),
+        (HookKind::Agent, 3.0),
+        (HookKind::AgentDeny, 3.0),
+    ] {
+        assert_all_answered_usage(observe_run(kind, limit, true).await);
+    }
 }
 
 #[tokio::test]
@@ -506,5 +536,5 @@ async fn sufficient_budget_keeps_the_complete_two_step_agent_hook_and_parent_ans
 
 #[tokio::test]
 async fn measured_prompt_hook_spend_stops_the_next_parent_request() {
-    assert_all_answered_usage(observe(HookKind::Prompt, 1.5).await);
+    assert_all_answered_usage(observe_run(HookKind::Prompt, 1.5, true).await);
 }

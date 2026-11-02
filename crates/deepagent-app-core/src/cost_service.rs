@@ -473,9 +473,21 @@ impl CostService {
     }
 
     pub(crate) fn check_budget_accounting(&self, accounting_complete: bool) -> Result<()> {
+        match self.budget_denial(accounting_complete)? {
+            Some(reason) => Err(CoreError::invalid(reason)),
+            None => Ok(()),
+        }
+    }
+
+    /// Optional work may skip exhaustion, never broken policy or storage.
+    pub(crate) fn allows_optional_request(&self) -> Result<bool> {
+        Ok(self.budget_denial(true)?.is_none())
+    }
+
+    fn budget_denial(&self, accounting_complete: bool) -> Result<Option<String>> {
         let budget = self.budget()?;
         if budget.daily_limit.is_none() && budget.monthly_limit.is_none() {
-            return Ok(());
+            return Ok(None);
         }
         if !accounting_complete {
             return Err(CoreError::invalid(
@@ -485,7 +497,7 @@ impl CostService {
         let summary = self.summary_with_budget("", budget)?;
         if let Some(daily) = summary.budget.daily_limit {
             if summary.today_cost >= daily {
-                return Err(CoreError::invalid(format!(
+                return Ok(Some(format!(
                     "daily budget exhausted (￥{:.2} / ￥{:.2})",
                     summary.today_cost, daily
                 )));
@@ -493,13 +505,13 @@ impl CostService {
         }
         if let Some(monthly) = summary.budget.monthly_limit {
             if summary.month_cost >= monthly {
-                return Err(CoreError::invalid(format!(
+                return Ok(Some(format!(
                     "monthly budget exhausted (￥{:.2} / ￥{:.2})",
                     summary.month_cost, monthly
                 )));
             }
         }
-        Ok(())
+        Ok(None)
     }
 }
 

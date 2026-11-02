@@ -2,6 +2,77 @@ use super::*;
 use deepagent_core::clock::FixedClock;
 use deepagent_core::message::{Message, ToolCall};
 
+#[test]
+fn admitted_images_keep_native_refs_and_legacy_mirror_branch_boundaries() {
+    use deepagent_core::message::MessageAttachment;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("images.sqlite");
+    let clock = FixedClock::new(1000);
+    let message = Message::user("image turn").with_attachments(vec![MessageAttachment {
+        id: "image-ref".into(),
+        kind: "image".into(),
+        media_type: Some("image/png".into()),
+        path: Some("image.png".into()),
+    }]);
+    for legacy in [false, true] {
+        let source;
+        let anchor;
+        {
+            let db = Database::open(&path).unwrap();
+            let mut session = Session::create(&db, &clock, None).unwrap();
+            source = session.id();
+            let store = EventStore::new(&db);
+            let payload = EventPayload::MessageAppended {
+                message: message.clone(),
+            };
+            anchor = if legacy {
+                let anchor = store.append(source, payload, clock.now()).unwrap().sequence;
+                store
+                    .append(
+                        source,
+                        EventPayload::ResponseItemAppended {
+                            item: ResponseItem::Message {
+                                role: "user".into(),
+                                content: message.content.clone(),
+                            },
+                        },
+                        clock.now(),
+                    )
+                    .unwrap();
+                anchor
+            } else {
+                session.append(payload).unwrap().sequence
+            };
+        }
+        let db = Database::open(&path).unwrap();
+        let store = EventStore::new(&db);
+        let original = store.load_session(source).unwrap();
+        assert_eq!(
+            store.resolve_branch_sequence(source, anchor).unwrap(),
+            anchor + 1
+        );
+        if !legacy {
+            assert!(matches!(&original.last().unwrap().payload,
+                EventPayload::ResponseItemAppended { item: ResponseItem::InputMessage { attachments, .. } }
+                    if attachments == &message.attachments));
+        }
+        let child = SessionId::new();
+        store
+            .fork_session(source, child, anchor, clock.now())
+            .unwrap();
+        let copied = store.load_session(child).unwrap();
+        assert_eq!(
+            copied.iter().map(|e| &e.payload).collect::<Vec<_>>(),
+            original.iter().map(|e| &e.payload).collect::<Vec<_>>()
+        );
+        let recovered = Session::recover(&db, &clock, child).unwrap();
+        assert_eq!(recovered.state().message_count, 1);
+        assert!(copied.iter().any(|event| matches!(&event.payload,
+            EventPayload::MessageAppended { message: source }
+                if source.attachments == message.attachments)));
+    }
+}
+
 fn rich_message() -> Message {
     let mut message = Message::assistant("retained assistant text");
     message.reasoning_content = Some("retained reasoning".into());

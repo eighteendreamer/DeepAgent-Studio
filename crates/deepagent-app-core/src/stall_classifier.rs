@@ -16,6 +16,7 @@
 //!   bounded timeout (Grok runs its classifier on a cheap sampler the same
 //!   way).
 
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -64,18 +65,23 @@ impl ModelStallClassifier {
         self.call_usage = Some(owner);
         self
     }
-}
 
-#[async_trait]
-impl StallClassifier for ModelStallClassifier {
-    async fn classify(&self, transcript: &str) -> Option<StallVerdict> {
-        let request = ResponseRequest::with_instructions_and_user_input(
+    fn request(&self, transcript: &str) -> ResponseRequest {
+        ResponseRequest::with_instructions_and_user_input(
             self.model.clone(),
             STALL_CLASSIFIER_PROMPT,
             transcript,
         )
         .with_temperature(0.0)
-        .with_max_output_tokens(300);
+        .with_max_output_tokens(300)
+    }
+
+    async fn classify_with_cancel(
+        &self,
+        transcript: &str,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Option<StallVerdict> {
+        let request = self.request(transcript);
         let mut call = match crate::call_usage::SideModelCall::start(
             self.call_usage.as_ref(),
             "stall_classification",
@@ -83,14 +89,13 @@ impl StallClassifier for ModelStallClassifier {
         ) {
             Ok(call) => call,
             Err(error) => {
-                tracing::warn!(%error, "stall classifier admission failed; failing open");
+                tracing::warn!(%error, "stall classifier accounting setup failed; failing open");
                 return None;
             }
         };
-        let response = match tokio::time::timeout(
-            CLASSIFY_TIMEOUT,
-            call.stream_response(&self.client, request, None),
-        )
+        let response = match tokio::time::timeout(CLASSIFY_TIMEOUT, async {
+            call.stream_response(&self.client, request, cancel).await
+        })
         .await
         {
             Ok(Ok(response)) => response,
@@ -122,6 +127,21 @@ impl StallClassifier for ModelStallClassifier {
                 None
             }
         }
+    }
+}
+
+#[async_trait]
+impl StallClassifier for ModelStallClassifier {
+    async fn classify(&self, transcript: &str) -> Option<StallVerdict> {
+        self.classify_with_cancel(transcript, None).await
+    }
+
+    async fn classify_cancelled(
+        &self,
+        transcript: &str,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Option<StallVerdict> {
+        self.classify_with_cancel(transcript, cancel).await
     }
 }
 

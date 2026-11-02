@@ -7,7 +7,117 @@
 
 use deepagent_core::message::{Message, Role};
 pub use deepagent_core::response_item::{ResponseInputItem, ResponseItem, ResponseOutputItem};
-use std::collections::HashSet;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+
+/// Guard identities before pairing repair and again at dispatch/public edits.
+/// Calls and outputs each need globally unique ids across native tool kinds;
+/// one call and its output may share an id. Never erase an ambiguous execution
+/// history, invent replacement identities, or disclose its contents in errors.
+pub(crate) fn validate_tool_call_ids(
+    items: &[ResponseInputItem],
+) -> deepagent_core::error::Result<()> {
+    let mut call_ids = HashMap::new();
+    let mut output_ids = HashMap::new();
+    for (index, item) in items.iter().enumerate() {
+        let (call_id, kind, seen) = match item {
+            ResponseInputItem::FunctionCall { call_id, .. } => {
+                (call_id, "function_call", &mut call_ids)
+            }
+            ResponseInputItem::FunctionCallOutput { call_id, .. } => {
+                (call_id, "function_call_output", &mut output_ids)
+            }
+            ResponseInputItem::CustomToolCall { call_id, .. } => {
+                (call_id, "custom_tool_call", &mut call_ids)
+            }
+            ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
+                (call_id, "custom_tool_call_output", &mut output_ids)
+            }
+            _ => continue,
+        };
+        if call_id.trim().is_empty() {
+            return Err(deepagent_core::error::CoreError::invalid(format!(
+                "Responses input item {index} ({kind}) requires a non-empty call_id"
+            )));
+        }
+        if let Some(previous) = seen.insert(call_id.as_str(), index) {
+            return Err(deepagent_core::error::CoreError::invalid(format!(
+                "Responses input item {index} ({kind}) repeats call_id from item {previous}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Correct only output variants for unique, trustworthy call identities.
+/// Keep original order and payload bytes for the Chat projection; pairing
+/// repair may subsequently move items for the Responses wire. Ambiguous ids
+/// remain errors, never a reason to select one of several executions.
+pub(crate) fn normalize_tool_output_kinds(
+    items: &[ResponseInputItem],
+) -> deepagent_core::error::Result<Cow<'_, [ResponseInputItem]>> {
+    validate_tool_call_ids(items)?;
+    let calls: HashMap<_, _> = items
+        .iter()
+        .filter_map(|item| match item {
+            ResponseInputItem::FunctionCall { call_id, .. } => Some((call_id.as_str(), false)),
+            ResponseInputItem::CustomToolCall { call_id, .. } => Some((call_id.as_str(), true)),
+            _ => None,
+        })
+        .collect();
+    let mut normalized = Cow::Borrowed(items);
+    for (index, item) in items.iter().enumerate() {
+        let (call_id, output, custom) = match item {
+            ResponseInputItem::FunctionCallOutput { call_id, output } => (call_id, output, false),
+            ResponseInputItem::CustomToolCallOutput { call_id, output } => (call_id, output, true),
+            _ => continue,
+        };
+        let Some(&call_custom) = calls.get(call_id.as_str()) else {
+            continue;
+        };
+        if call_custom != custom {
+            normalized.to_mut()[index] = if call_custom {
+                ResponseInputItem::CustomToolCallOutput {
+                    call_id: call_id.clone(),
+                    output: output.clone(),
+                }
+            } else {
+                ResponseInputItem::FunctionCallOutput {
+                    call_id: call_id.clone(),
+                    output: output.clone(),
+                }
+            };
+            tracing::debug!(
+                item_index = index,
+                "Responses tool output kind differs from its call"
+            );
+        }
+    }
+    Ok(normalized)
+}
+
+/// A public edit after construction must not bypass native-kind repair.
+/// Use the same normalization rule without mutating authoritative input.
+pub(crate) fn validate_tool_call_history(
+    items: &[ResponseInputItem],
+) -> deepagent_core::error::Result<()> {
+    let normalized = normalize_tool_output_kinds(items)?;
+    if let Some(index) = items
+        .iter()
+        .zip(normalized.iter())
+        .position(|(a, b)| a != b)
+    {
+        let kind = match &items[index] {
+            ResponseInputItem::FunctionCallOutput { .. } => "function_call_output",
+            ResponseInputItem::CustomToolCallOutput { .. } => "custom_tool_call_output",
+            _ => unreachable!("normalization only changes output variants"),
+        };
+        return Err(deepagent_core::error::CoreError::invalid(format!(
+            "Responses input item {index} ({kind}) has a call_id kind that does not match its call"
+        )));
+    }
+    Ok(())
+}
 
 /// Convert the context projection into ordered Responses input items.
 pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Vec<ResponseItem>) {
@@ -67,18 +177,7 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
                     }
                 }
                 if !message.content.is_empty() || message.tool_calls.is_empty() {
-                    if message.attachments.is_empty() {
-                        items.push(ResponseItem::Message {
-                            role: message.role.as_str().to_string(),
-                            content: message.content.clone(),
-                        });
-                    } else {
-                        items.push(ResponseItem::InputMessage {
-                            role: message.role.as_str().to_string(),
-                            content: message.content.clone(),
-                            attachments: message.attachments.clone(),
-                        });
-                    }
+                    items.push(ResponseItem::from_message_content(message));
                 }
             }
         }
@@ -97,21 +196,30 @@ pub fn response_items_from_messages(messages: &[Message]) -> (Option<String>, Ve
 ///
 /// The repair is deliberately conservative:
 /// - preserve each contiguous group of provider calls before its outputs;
-/// - repair orphaned outputs with a neutral placeholder call and drop duplicates;
+/// - preserve invalid/ambiguous input unchanged for dispatch validation;
+/// - match each unique call's native output kind without changing its payload;
+/// - repair unique orphaned outputs with a neutral placeholder call;
 /// - synthesize one explicit failure output for each call that is still open.
 ///
 /// This is a request-boundary guard, not a replacement for durable tool
 /// completion events.  The runtime still records the real tool result whenever
 /// execution reaches the tool pipeline.
 pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputItem> {
+    // Constructors cannot return an error without changing their public API.
+    // Keep every conflicting item so the shared dispatch validator can reject
+    // it; silently retaining the first pair would hide executed work/results.
+    let Ok(normalized) = normalize_tool_output_kinds(items) else {
+        return items.to_vec();
+    };
+    let items = normalized.as_ref();
     let mut call_ids = HashSet::new();
     let mut custom_call_ids = HashSet::new();
     let mut outputs = std::collections::HashMap::<String, ResponseInputItem>::new();
     let mut orphan_outputs = Vec::new();
 
-    // Index calls and retain only the first output for each call.  Indexing
-    // first lets reconstruction below put outputs immediately after their
-    // contiguous provider call group, without splitting parallel calls.
+    // Classify against the whole history, not just calls seen so far. A real
+    // output can precede its call after import/replay and is not an orphan.
+    // Identity validation above makes each association unambiguous.
     for item in items {
         match item {
             ResponseInputItem::FunctionCall { call_id, .. } => {
@@ -121,11 +229,16 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
                 call_ids.insert(call_id.clone());
                 custom_call_ids.insert(call_id.clone());
             }
+            _ => {}
+        }
+    }
+    // Reconstruction below retains each contiguous provider call group and
+    // emits its real results after the group, regardless of input result order.
+    for item in items {
+        match item {
             ResponseInputItem::FunctionCallOutput { call_id, .. }
             | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
-                if outputs.contains_key(call_id) {
-                    tracing::warn!(call_id = %call_id, "dropping duplicate Responses tool output");
-                } else if call_ids.contains(call_id) {
+                if call_ids.contains(call_id) {
                     outputs.insert(call_id.clone(), item.clone());
                 } else {
                     orphan_outputs.push(item.clone());
@@ -136,21 +249,14 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
     }
 
     let mut repaired = Vec::with_capacity(items.len() + orphan_outputs.len());
-    let mut emitted_calls = HashSet::new();
     let mut emitted_outputs = HashSet::new();
     let mut pending_group = Vec::new();
     for (index, item) in items.iter().enumerate() {
         match item {
             ResponseInputItem::FunctionCall { call_id, .. }
             | ResponseInputItem::CustomToolCall { call_id, .. } => {
-                // A duplicate call id is invalid; preserve the first call and
-                // its output only.
-                if !emitted_calls.insert(call_id.clone()) {
-                    tracing::warn!(call_id = %call_id, "dropping duplicate Responses tool call");
-                } else {
-                    repaired.push(item.clone());
-                    pending_group.push(call_id.clone());
-                }
+                repaired.push(item.clone());
+                pending_group.push(call_id.clone());
             }
             ResponseInputItem::FunctionCallOutput { call_id, .. }
             | ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
@@ -230,44 +336,28 @@ pub fn repair_tool_call_pairs(items: &[ResponseInputItem]) -> Vec<ResponseInputI
 /// there are no orphan/duplicate ids; malformed histories fall back to the
 /// repaired sequence at the request boundary.
 pub(crate) fn chat_projection_history_is_safe(items: &[ResponseInputItem]) -> bool {
-    let mut calls = std::collections::HashMap::<&str, bool>::new();
-    let mut outputs = std::collections::HashSet::<&str>::new();
+    if validate_tool_call_history(items).is_err() {
+        return false;
+    }
+    let mut pending_calls = HashSet::new();
 
     for item in items {
         match item {
-            ResponseInputItem::FunctionCall { call_id, .. } => {
-                if calls.insert(call_id.as_str(), false).is_some() {
-                    return false;
-                }
+            ResponseInputItem::FunctionCall { call_id, .. }
+            | ResponseInputItem::CustomToolCall { call_id, .. } => {
+                pending_calls.insert(call_id.as_str());
             }
-            ResponseInputItem::CustomToolCall { call_id, .. } => {
-                if calls.insert(call_id.as_str(), true).is_some() {
-                    return false;
-                }
-            }
-            ResponseInputItem::FunctionCallOutput { call_id, .. } => {
-                let Some(kind) = calls.get_mut(call_id.as_str()) else {
-                    return false;
-                };
-                if *kind || !outputs.insert(call_id.as_str()) {
-                    return false;
-                }
-                *kind = false;
-            }
-            ResponseInputItem::CustomToolCallOutput { call_id, .. } => {
-                let Some(kind) = calls.get_mut(call_id.as_str()) else {
-                    return false;
-                };
-                if !*kind || !outputs.insert(call_id.as_str()) {
-                    return false;
-                }
-                *kind = false;
+            ResponseInputItem::FunctionCallOutput { call_id, .. }
+            | ResponseInputItem::CustomToolCallOutput { call_id, .. }
+                if !pending_calls.remove(call_id.as_str()) =>
+            {
+                return false;
             }
             _ => {}
         }
     }
 
-    calls.len() == outputs.len()
+    pending_calls.is_empty()
 }
 
 /// Project Responses items back to the legacy [`Message`] view used by UI DTOs
@@ -498,7 +588,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit: a custom tool call must not retain a function_call_output kind"]
     fn audit_repairs_mismatched_custom_output_kind_before_serialization() {
         let items = vec![
             ResponseItem::CustomToolCall {

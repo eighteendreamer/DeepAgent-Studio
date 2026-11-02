@@ -14,12 +14,20 @@ const RUN: &str = "audit-identity-run";
 struct IdentityModel {
     early: String,
     final_args: String,
+    malformed_call: Option<serde_json::Value>,
     workspace: PathBuf,
     requests: Mutex<Vec<serde_json::Value>>,
 }
 
 impl IdentityModel {
     fn call_events(&self) -> Vec<String> {
+        if let Some(item) = &self.malformed_call {
+            return vec![
+                serde_json::json!({"type":"response.output_item.done","item":item}).to_string(),
+                serde_json::json!({"type":"response.completed","response":{"status":"completed"}})
+                    .to_string(),
+            ];
+        }
         let item = serde_json::json!({
             "type":"function_call", "id":"audit-identity-item", "call_id":CALL,
             "name":"write_file", "arguments":self.final_args, "status":"completed"
@@ -82,7 +90,12 @@ struct Observation {
     early_exists: bool,
 }
 
-async fn observe(early: String, final_args: String) -> Observation {
+async fn observe(
+    early: String,
+    final_args: String,
+    reject: Option<&str>,
+    malformed_call: Option<serde_json::Value>,
+) -> Option<Observation> {
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -104,11 +117,12 @@ async fn observe(early: String, final_args: String) -> Observation {
     let model = Arc::new(IdentityModel {
         early,
         final_args: final_args.clone(),
+        malformed_call,
         workspace: workspace.clone(),
         requests: Mutex::new(Vec::new()),
     });
     let chat = ChatService::new(db.clone(), settings, model.clone(), &workspace);
-    let session_id = tokio::time::timeout(
+    let result = tokio::time::timeout(
         std::time::Duration::from_secs(8),
         chat.run_in_session(
             "Create the requested audit text file.",
@@ -120,18 +134,84 @@ async fn observe(early: String, final_args: String) -> Observation {
             false,
             Some(RUN),
             |_| {},
-            |_| {},
+            |_| panic!("low-risk write fixture must not request approval"),
         ),
     )
     .await
-    .expect("bounded audit run")
-    .unwrap();
+    .expect("bounded audit run");
     let events = chat.run_events(RUN, None).unwrap();
     let terminals: Vec<_> = events
         .iter()
         .filter(|e| e.event_type == "run_terminal")
         .collect();
     assert_eq!(terminals.len(), 1);
+    if let Some(code) = reject {
+        let error = result.expect_err("conflicting complete calls must fail before execution");
+        assert!(error.to_string().contains(code), "{error}");
+        assert!(!error.to_string().contains("EARLY"));
+        assert!(!error.to_string().contains("FINAL"));
+        assert!(!error.to_string().contains("PRIVATE_CONTENT"));
+        assert_eq!(terminals[0].data["kind"], "failed");
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event.event_type.as_str(), "tool_started" | "tool_completed")));
+        assert!(!workspace.join("early.txt").exists());
+        assert!(!workspace.join("final.txt").exists());
+        assert!(RunControlStore::new(&db)
+            .list_actions(RUN)
+            .unwrap()
+            .is_empty());
+        assert!(RunControlStore::new(&db)
+            .list_approvals(RUN)
+            .unwrap()
+            .is_empty());
+        let run = deepagent_persistence::run_store::RunStore::new(&db)
+            .get(RUN)
+            .unwrap()
+            .unwrap();
+        let history = EventStore::new(&db)
+            .load_session(run.session_id.parse().unwrap())
+            .unwrap();
+        assert!(!history.iter().any(|event| matches!(
+            &event.payload,
+            EventPayload::ResponseItemAppended {
+                item: ResponseItem::FunctionCall { .. }
+                    | ResponseItem::FunctionCallOutput { .. }
+                    | ResponseItem::CustomToolCall { .. }
+                    | ResponseItem::CustomToolCallOutput { .. }
+            } | EventPayload::ToolCallRequested { .. }
+                | EventPayload::ToolCallCompleted { .. }
+        )));
+        assert_eq!(
+            model.requests.lock().unwrap().len(),
+            1,
+            "identity conflicts must not retry"
+        );
+        eprintln!(
+            "identity rejection: no files/actions/calls/results, one failed terminal, one request"
+        );
+        drop(chat);
+        drop(db);
+        let reopened = Database::open(temporary.path().join("state.sqlite")).unwrap();
+        assert_eq!(
+            EventStore::new(&reopened)
+                .load_session(run.session_id.parse().unwrap())
+                .unwrap(),
+            history,
+            "reopening must not introduce a malformed call into native history"
+        );
+        assert_eq!(
+            deepagent_persistence::run_store::RunStore::new(&reopened)
+                .get(RUN)
+                .unwrap()
+                .unwrap()
+                .terminal_kind
+                .as_deref(),
+            Some("failed")
+        );
+        return None;
+    }
+    let session_id = result.unwrap();
     assert_eq!(terminals[0].data["kind"], "succeeded");
     let started: Vec<_> = events
         .iter()
@@ -208,11 +288,24 @@ async fn observe(early: String, final_args: String) -> Observation {
     assert_eq!(output["result"], completed[0].data["output"]);
     let early_exists = workspace.join("early.txt").exists();
     eprintln!("identity audit: executed={executed} native={expected_final} early_exists={early_exists} final_exists={} action={:?} wire_calls=1 wire_outputs=1 terminal=succeeded", workspace.join("final.txt").exists(), actions[0].state);
-    Observation {
+    drop(requests);
+    drop(chat);
+    drop(db);
+    let reopened = Database::open(temporary.path().join("state.sqlite")).unwrap();
+    let cold = EventStore::new(&reopened)
+        .load_session(session_id.parse().unwrap())
+        .unwrap();
+    assert_eq!(
+        cold, history,
+        "native history must survive a database reopen unchanged"
+    );
+    let cold_actions = RunControlStore::new(&reopened).list_actions(RUN).unwrap();
+    assert_eq!(cold_actions, actions);
+    Some(Observation {
         executed,
         final_args: expected_final,
         early_exists,
-    }
+    })
 }
 
 fn final_arguments() -> String {
@@ -222,7 +315,9 @@ fn final_arguments() -> String {
 #[tokio::test]
 async fn matching_tool_completions_keep_execution_and_history_consistent() {
     let final_args = final_arguments();
-    let observed = observe(final_args.clone(), final_args).await;
+    let observed = observe(final_args.clone(), final_args, None, None)
+        .await
+        .unwrap();
     assert_eq!(observed.executed, observed.final_args);
     assert!(!observed.early_exists);
 }
@@ -232,20 +327,56 @@ async fn equivalent_json_tool_completions_keep_execution_and_history_consistent(
     let observed = observe(
         "{ \"path\" : \"final.txt\", \"content\" : \"FINAL\" }".into(),
         final_arguments(),
+        None,
+        None,
     )
-    .await;
+    .await
+    .unwrap();
     assert_eq!(observed.executed, observed.final_args);
     assert!(!observed.early_exists);
 }
 
 #[tokio::test]
-#[ignore = "audit: contradictory completed arguments must not silently execute a cached old call"]
 async fn audit_conflicting_tool_completions_never_commit_a_different_call() {
-    let observed = observe(
+    assert!(observe(
         serde_json::json!({"path":"early.txt","content":"EARLY"}).to_string(),
         final_arguments(),
+        Some("tool_call_identity_conflict"),
+        None,
     )
-    .await;
-    assert_eq!(observed.executed, observed.final_args, "successful execution and native history must describe the same call; rejecting the conflict before any write is also a valid production fix");
-    assert!(!observed.early_exists);
+    .await
+    .is_none());
+}
+
+#[tokio::test]
+async fn h151_malformed_provider_identity_never_executes_or_enters_native_history() {
+    for custom in [false, true] {
+        for field in ["call_id", "name"] {
+            for replacement in [
+                None,
+                Some(serde_json::json!(" \t")),
+                Some(serde_json::json!(0)),
+            ] {
+                let mut item = serde_json::json!({
+                    "type":if custom {"custom_tool_call"} else {"function_call"},
+                    "id":"audit-malformed-item", "call_id":CALL,
+                    "name":if custom {"apply_patch"} else {"write_file"},
+                    "arguments":final_arguments(), "input":"PRIVATE_CONTENT"
+                });
+                if let Some(value) = replacement {
+                    item[field] = value;
+                } else {
+                    item.as_object_mut().unwrap().remove(field);
+                }
+                assert!(observe(
+                    final_arguments(),
+                    final_arguments(),
+                    Some("malformed_tool_call"),
+                    Some(item)
+                )
+                .await
+                .is_none());
+            }
+        }
+    }
 }

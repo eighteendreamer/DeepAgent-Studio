@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tracing::Instrument;
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_tools::{validate_tool_schema, ToolExecutionContext};
+use deepagent_tools::{validate_tool_arguments, validate_tool_schema, ToolExecutionContext};
 
 use crate::client::McpClient;
 use crate::liveness::{LivenessConfig, LivenessProbe};
@@ -169,6 +169,19 @@ impl McpRegistry {
                 return Err(CoreError::invalid(format!("duplicate MCP server: {name}")));
             }
         }
+        let mut tool_names = self
+            .all_tools()
+            .into_iter()
+            .map(|tool| tool.namespaced_name)
+            .collect::<std::collections::BTreeSet<_>>();
+        for tool in other.all_tools() {
+            if !tool_names.insert(tool.namespaced_name.clone()) {
+                return Err(CoreError::invalid(format!(
+                    "MCP tool '{}' is already registered",
+                    tool.namespaced_name
+                )));
+            }
+        }
         self.servers.extend(other.servers.clone());
         Ok(())
     }
@@ -229,6 +242,7 @@ impl McpRegistry {
         let tool = self
             .find_tool(namespaced)
             .ok_or_else(|| CoreError::not_found(format!("MCP tool '{namespaced}'")))?;
+        validate_tool_arguments(namespaced, &tool.input_schema, &arguments)?;
         let connected = self
             .servers
             .get(&tool.server)
@@ -254,6 +268,7 @@ impl McpRegistry {
         let tool = self
             .find_tool(namespaced)
             .ok_or_else(|| CoreError::not_found(format!("MCP tool '{namespaced}'")))?;
+        validate_tool_arguments(namespaced, &tool.input_schema, &arguments)?;
         let connected = self
             .servers
             .get(&tool.server)
@@ -294,6 +309,49 @@ mod tests {
             .with_result(
                 "tools/call",
                 serde_json::json!({"content":[{"type":"text","text":"ok"}],"isError":false}),
+            )
+    }
+
+    fn single_tool_transport(name: &str) -> MockTransport {
+        MockTransport::new()
+            .with_result(
+                "tools/list",
+                serde_json::json!({"tools":[
+                    {"name":name,"description":"collision fixture","inputSchema":{"type":"object"}}
+                ]}),
+            )
+            .with_result(
+                "tools/call",
+                serde_json::json!({"content":[{"type":"text","text":"ok"}],"isError":false}),
+            )
+    }
+
+    fn strict_tools_transport() -> MockTransport {
+        MockTransport::new()
+            .with_result(
+                "tools/list",
+                serde_json::json!({
+                    "tools": [{
+                        "name": "check",
+                        "description": "check policy",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {
+                                "decision": {"type": "string", "enum": ["allow", "deny"]},
+                                "hook_input": {"type": "object"}
+                            },
+                            "required": ["decision"],
+                            "additionalProperties": false
+                        }
+                    }]
+                }),
+            )
+            .with_result(
+                "tools/call",
+                serde_json::json!({
+                    "content": [{"type": "text", "text": "ok"}],
+                    "isError": false
+                }),
             )
     }
 
@@ -407,6 +465,25 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         assert_eq!(n, "mcp__asana__create_task");
         assert_eq!(split_namespaced(&n), Some(("asana", "create_task")));
         assert_eq!(split_namespaced("read_file"), None);
+    }
+
+    #[tokio::test]
+    async fn extend_ready_rejects_colliding_namespaced_tools_transactionally() {
+        let mut first = McpRegistry::new();
+        first
+            .register("a", client(single_tool_transport("b__echo")))
+            .await
+            .unwrap();
+        let mut second = McpRegistry::new();
+        second
+            .register("a__b", client(single_tool_transport("echo")))
+            .await
+            .unwrap();
+
+        let error = first.extend_ready(&second).unwrap_err().to_string();
+        assert!(error.contains("mcp__a__b__echo"), "{error}");
+        assert_eq!(first.server_names(), vec!["a"]);
+        assert_eq!(first.all_tools().len(), 1);
     }
 
     #[tokio::test]
@@ -525,6 +602,46 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             .await
             .unwrap();
         assert_eq!(res.text(), "ok");
+    }
+
+    #[tokio::test]
+    async fn invocation_validates_discovered_arguments_before_wire() {
+        let transport = Arc::new(strict_tools_transport());
+        let mut reg = McpRegistry::new();
+        reg.register("policy", Arc::new(McpClient::new(transport.clone())))
+            .await
+            .unwrap();
+
+        let error = reg
+            .invoke(
+                "mcp__policy__check",
+                serde_json::json!({"decision": "unknown"}),
+            )
+            .await
+            .expect_err("invalid arguments must be rejected before tools/call");
+        assert!(error.to_string().contains("input validation failed"));
+        assert_eq!(transport.sent_methods(), vec!["tools/list"]);
+
+        let error = reg
+            .invoke_with_context(
+                "mcp__policy__check",
+                serde_json::json!({"decision": "allow", "extra": true}),
+                ToolExecutionContext::default(),
+            )
+            .await
+            .expect_err("context-aware invocation must share the schema gate");
+        assert!(error.to_string().contains("input validation failed"));
+        assert_eq!(transport.sent_methods(), vec!["tools/list"]);
+
+        let result = reg
+            .invoke(
+                "mcp__policy__check",
+                serde_json::json!({"decision": "allow"}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.text(), "ok");
+        assert_eq!(transport.sent_methods(), vec!["tools/list", "tools/call"]);
     }
 
     #[tokio::test]

@@ -16,6 +16,9 @@ pub mod git;
 pub mod scanner;
 pub mod snapshot;
 
-pub use git::{detect_git_context, CommitSummary, GitContext};
+pub use git::{
+    detect_git_context, parse_git_status_porcelain_z, CommitSummary, GitContext, GitStatusEntry,
+    GitStatusSnapshot,
+};
 pub use scanner::{ScanLimits, WorkspaceScanner};
 pub use snapshot::{ManifestInfo, ProjectKind, WorkspaceSnapshot};

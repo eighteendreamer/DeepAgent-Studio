@@ -443,6 +443,10 @@ impl<'a> RunAssembler<'a> {
                 .map(|registry| registry.default_kind()),
             &run_id,
         )?;
+        // Resolve the same effective permission snapshot used by the tool
+        // hooks before any automatic workspace context is assembled.
+        let effective_permission_rules =
+            run_config.merged_permission_rules(self.settings.permission_rules()?)?;
 
         // Resolve the backend once for this run.  The returned executor is
         // immutable and is shared by the parent and its sub-agent registries;
@@ -560,7 +564,6 @@ impl<'a> RunAssembler<'a> {
             run_id: run_id.clone(),
             events: Arc::downgrade(&sink),
         };
-        let main_usage = call_owner.main_loop();
         let subagent_hooks: Arc<std::sync::OnceLock<Arc<HookRegistry>>> =
             Arc::new(std::sync::OnceLock::new());
         let subagent_parent_checkpoint: Arc<
@@ -764,6 +767,7 @@ impl<'a> RunAssembler<'a> {
         let hooks = assemble_run_hooks(HookAssemblyRequest {
             settings: self.settings,
             run_config: &run_config,
+            permission_rules: effective_permission_rules.clone(),
             project_hooks,
             plugin_projection: plugin_projection.as_ref(),
             root: &root,
@@ -918,9 +922,10 @@ impl<'a> RunAssembler<'a> {
         if cancellation.cancellation().is_cancelled() {
             return Err(CoreError::other("cancelled before persisting user input"));
         }
+        let admitted_attachments = message_attachments(&self.attachments);
         session.append(EventPayload::MessageAppended {
             message: Message::user(&prompt_to_record)
-                .with_attachments(message_attachments(&self.attachments)),
+                .with_attachments(admitted_attachments.clone()),
         })?;
         let task = session.create_task(&prompt_to_record)?;
         deepagent_persistence::run_store::RunStore::new(self.db).bind_task(
@@ -1010,6 +1015,7 @@ impl<'a> RunAssembler<'a> {
         let run_context_request = RunContextRequest {
             root: &root,
             sandbox_mode,
+            permission_rules: &effective_permission_rules,
             plugin_projection: plugin_projection.as_ref(),
             mcp_instructions_block: mcp_instructions_block.as_deref(),
             mcp_instructions_entries: Some(&mcp_instructions_entries),
@@ -1123,34 +1129,42 @@ impl<'a> RunAssembler<'a> {
         let adversarial_bits = (execution_features.adversarial_verify
             || crate::verification_panel::adversarial_verify_enabled())
         .then(|| (client.clone(), model.clone(), prompt_for_model.to_string()));
-        let mut agent = ModelAgent::new(client, model, system_prompt, final_user_prompt, tools)
-            .with_call_usage_sink(main_usage.clone())
-            .with_tool_schema_source(crate::tool_manifest::live_tool_schema_source(
-                registry.clone(),
-                granted.clone(),
-                tool_search_mode,
-                tool_search_discovered.clone(),
-                tool_search_threshold,
-            ))
-            .with_reasoning_effort(effective_reasoning_effort)
-            .with_fallback_model(fallback_model)
-            .with_reactive_compactor(reactive_compactor)
-            .with_history(history)
-            .with_response_history(response_history)
-            .with_surface_persistence(Arc::new(crate::context_runtime::SessionSurfaceStore {
-                db: self.db.clone(),
-                session_id: session.id(),
-            }))
-            .with_proactive_compaction(proactive_threshold)
-            .with_context_snapshot(context_usage)
-            .with_context_policy(
-                context_policy.clone(),
-                autocompact_reserve,
-                autocompact_pct_override,
-            )
-            .with_prefire(prefire_start)
-            .with_attachment_resolver(Arc::new(crate::attachment_service::FileAttachmentResolver))
-            .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);
+        let main_usage = call_owner.main_loop();
+        let mut agent = ModelAgent::new_with_attachments(
+            client,
+            model,
+            system_prompt,
+            final_user_prompt,
+            admitted_attachments,
+            tools,
+        )
+        .with_call_usage_sink(main_usage.clone())
+        .with_tool_schema_source(crate::tool_manifest::live_tool_schema_source(
+            registry.clone(),
+            granted.clone(),
+            tool_search_mode,
+            tool_search_discovered.clone(),
+            tool_search_threshold,
+        ))
+        .with_reasoning_effort(effective_reasoning_effort)
+        .with_fallback_model(fallback_model)
+        .with_reactive_compactor(reactive_compactor)
+        .with_history(history)
+        .with_response_history(response_history)
+        .with_surface_persistence(Arc::new(crate::context_runtime::SessionSurfaceStore {
+            db: self.db.clone(),
+            session_id: session.id(),
+        }))
+        .with_proactive_compaction(proactive_threshold)
+        .with_context_snapshot(context_usage)
+        .with_context_policy(
+            context_policy.clone(),
+            autocompact_reserve,
+            autocompact_pct_override,
+        )
+        .with_prefire(prefire_start)
+        .with_attachment_resolver(Arc::new(crate::attachment_service::FileAttachmentResolver))
+        .with_snip_tool(deepagent_builtins::SNIP_HISTORY_TOOL_NAME);
 
         if let Some(knowledge) = &self.knowledge {
             agent = agent.with_relevant_memory_provider(Arc::new(

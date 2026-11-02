@@ -5,6 +5,7 @@ use deepagent_app_core::{BudgetConfig, ModelPricing};
 use deepagent_core::{clock::Timestamp, id::SessionId};
 use deepagent_persistence::{cost_store::CostStore, event_store::EventStore};
 use serde_json::{json, Value};
+use tokio::sync::Notify;
 
 const TITLE: &str = "离线标题计量验收";
 
@@ -26,7 +27,8 @@ enum TitleBehavior {
 struct TitleModel {
     requests: Mutex<Vec<Value>>,
     behavior: Mutex<TitleBehavior>,
-    observed: tokio::sync::Notify,
+    observed: Notify,
+    release: Notify,
 }
 
 #[async_trait]
@@ -83,7 +85,7 @@ impl HttpTransport for TitleModel {
                 TitleBehavior::FailedMeasured => {
                     return Err(CoreError::other("controlled title provider failure"))
                 }
-                TitleBehavior::WaitMeasured => return std::future::pending().await,
+                TitleBehavior::WaitMeasured => self.release.notified().await,
                 TitleBehavior::Rename(db, id) => {
                     EventStore::new(&db).rename_session(
                         id,
@@ -242,10 +244,9 @@ async fn observe(case: Case) -> Observation {
             .await
     };
     let generated = if matches!(case, Case::ExhaustedBudget) {
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("daily budget exhausted"));
+        // Optional title work skips an exhausted budget without dispatching;
+        // malformed policy/storage errors still propagate from admission.
+        assert!(result.unwrap().is_none());
         None
     } else {
         result.unwrap()
@@ -302,5 +303,327 @@ async fn audit_title_requests_obey_budget_and_book_returned_usage() {
             && ordinary.generated.as_deref() == Some(TITLE)
             && exhausted.calls == 1 && exhausted.rows == 1 && exhausted.generated.is_none(),
         "title model calls must retain usage and share budget admission: {ordinary:?}; {exhausted:?}"
+    );
+}
+
+struct TitleFixture {
+    root: tempfile::TempDir,
+    db: Arc<Database>,
+    chat: ChatService,
+    cost: Arc<CostService>,
+    transport: Arc<TitleModel>,
+    session: String,
+}
+
+impl TitleFixture {
+    async fn new(reply: TitleBehavior) -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let db = Arc::new(Database::open(root.path().join("state.sqlite")).unwrap());
+        let (chat, cost, transport) = services(db.clone(), root.path()).await;
+        let session = chat.create_session(None).unwrap();
+        run(&chat, &session, "Acknowledge offline.", "audit-title-main")
+            .await
+            .unwrap();
+        *transport.behavior.lock().unwrap() = reply;
+        Self {
+            root,
+            db,
+            chat,
+            cost,
+            transport,
+            session,
+        }
+    }
+
+    fn assert_settled(&self, outcome: &str, booked: bool) {
+        let reopened = Database::open(self.root.path().join("state.sqlite")).unwrap();
+        let events = deepagent_persistence::run_store::RunStore::new(&reopened)
+            .events_after("audit-title-main", None)
+            .unwrap();
+        let started: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == "model_side_call_started")
+            .collect();
+        let finished: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == "model_side_call_finished")
+            .collect();
+        assert_eq!(started.len(), 1);
+        assert_eq!(finished.len(), 1);
+        assert_eq!(started[0].data["purpose"], "session_title");
+        assert_eq!(
+            started[0].data["invocation_id"],
+            finished[0].data["invocation_id"]
+        );
+        assert_eq!(finished[0].data["outcome"], outcome);
+        let receipts: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.event_type == "model_call_usage" && e.data["report"]["purpose"] == "session_title"
+            })
+            .collect();
+        assert_eq!(receipts.len(), usize::from(booked));
+        if booked {
+            assert_eq!(receipts[0].data["report"]["purpose"], "session_title");
+            assert_eq!(receipts[0].data["report"]["model_id"], "deepseek-flash");
+            assert_eq!(
+                receipts[0].data["report"]["usage"]["prompt_cache_hit_tokens"],
+                1500
+            );
+            assert_eq!(
+                receipts[0].data["report"]["invocation_id"],
+                started[0].data["invocation_id"]
+            );
+        }
+        let terminal: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == "run_terminal")
+            .collect();
+        assert_eq!(terminal.len(), 1);
+        assert_eq!(terminal[0].data["kind"], "succeeded");
+        let usage = CostStore::new(&reopened)
+            .session_usage(&self.session)
+            .unwrap();
+        assert_eq!(
+            (usage.input_tokens, usage.output_tokens),
+            if booked { (3000, 107) } else { (1000, 100) }
+        );
+        assert_eq!(
+            CostStore::new(&reopened)
+                .session_costs_detailed(&self.session)
+                .unwrap()
+                .len(),
+            if booked { 2 } else { 1 }
+        );
+    }
+
+    fn title(&self) -> Option<String> {
+        EventStore::new(&self.db)
+            .get_session(self.session.parse().unwrap())
+            .unwrap()
+            .unwrap()
+            .title
+    }
+}
+
+#[tokio::test]
+async fn discarded_title_and_measured_transport_failure_still_book_usage() {
+    for reply in [TitleBehavior::Empty, TitleBehavior::FailedMeasured] {
+        let fixture = TitleFixture::new(reply.clone()).await;
+        let result = fixture
+            .chat
+            .maybe_generate_session_title_for_run(&fixture.session, "audit-title-main")
+            .await;
+        let outcome = if matches!(reply, TitleBehavior::Empty) {
+            assert!(result.unwrap().is_none());
+            "empty"
+        } else {
+            assert!(result
+                .unwrap_err()
+                .to_string()
+                .contains("controlled title provider failure"));
+            "failed"
+        };
+        assert!(fixture.title().is_none());
+        fixture.assert_settled(outcome, true);
+    }
+}
+
+#[tokio::test]
+async fn user_rename_during_title_request_wins_without_discarding_usage() {
+    let fixture = TitleFixture::new(TitleBehavior::WaitMeasured).await;
+    let title = fixture
+        .chat
+        .maybe_generate_session_title_for_run(&fixture.session, "audit-title-main");
+    let rename = async {
+        fixture.transport.observed.notified().await;
+        EventStore::new(&fixture.db)
+            .rename_session(
+                fixture.session.parse().unwrap(),
+                Some("用户新标题"),
+                Timestamp::from_millis(2),
+            )
+            .unwrap();
+        fixture.transport.release.notify_one();
+    };
+    let (result, ()) = tokio::join!(title, rename);
+    assert!(result.unwrap().is_none());
+    assert_eq!(fixture.title().as_deref(), Some("用户新标题"));
+    fixture.assert_settled("superseded", true);
+}
+
+#[tokio::test]
+async fn dropped_title_future_and_actual_timeout_keep_observed_usage() {
+    // Exercise actual future ownership, not a synthetic Usage report.
+    let fixture = TitleFixture::new(TitleBehavior::WaitMeasured).await;
+    {
+        let title = fixture
+            .chat
+            .maybe_generate_session_title_for_run(&fixture.session, "audit-title-main");
+        tokio::pin!(title);
+        tokio::select! {
+            result = &mut title => panic!("waiting request completed early: {result:?}"),
+            _ = fixture.transport.observed.notified() => {}
+        }
+    }
+    fixture.assert_settled("cancelled", true);
+    assert!(fixture.title().is_none());
+
+    let fixture = TitleFixture::new(TitleBehavior::WaitMeasured).await;
+    let error = fixture
+        .chat
+        .maybe_generate_session_title_for_run(&fixture.session, "audit-title-main")
+        .await
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("session title generation timed out"));
+    fixture.assert_settled("timed_out", true);
+    assert!(fixture.title().is_none());
+}
+
+#[tokio::test]
+async fn explicit_title_owner_does_not_follow_a_newer_run_or_another_session() {
+    let fixture = TitleFixture::new(TitleBehavior::Normal).await;
+    let other = fixture.chat.create_session(None).unwrap();
+    run(
+        &fixture.chat,
+        &other,
+        "Other offline session.",
+        "audit-title-other",
+    )
+    .await
+    .unwrap();
+    for invalid in ["missing-run", "audit-title-other"] {
+        assert!(fixture
+            .chat
+            .maybe_generate_session_title_for_run(&fixture.session, invalid)
+            .await
+            .is_err());
+    }
+    assert_eq!(fixture.transport.requests.lock().unwrap().len(), 2);
+    run(
+        &fixture.chat,
+        &fixture.session,
+        "Continue offline.",
+        "audit-title-newer",
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        fixture
+            .chat
+            .maybe_generate_session_title_for_run(&fixture.session, "audit-title-main")
+            .await
+            .unwrap()
+            .as_deref(),
+        Some(TITLE)
+    );
+    let old = fixture.chat.run_events("audit-title-main", None).unwrap();
+    assert_eq!(
+        old.iter()
+            .filter(|e| e.event_type == "model_call_usage"
+                && e.data["report"]["purpose"] == "session_title")
+            .count(),
+        1
+    );
+    for run_id in ["audit-title-other", "audit-title-newer"] {
+        let events = fixture.chat.run_events(run_id, None).unwrap();
+        assert!(!events
+            .iter()
+            .any(|e| e.event_type.starts_with("model_side_call")
+                || (e.event_type == "model_call_usage"
+                    && e.data["report"]["purpose"] == "session_title")));
+    }
+}
+
+#[tokio::test]
+async fn corrupt_budget_is_an_error_not_an_optional_title_skip() {
+    let fixture = TitleFixture::new(TitleBehavior::Normal).await;
+    deepagent_persistence::document_store::DocumentStore::new(&fixture.db)
+        .put(
+            "settings",
+            "cost-budget",
+            "{",
+            None,
+            Timestamp::from_millis(1),
+        )
+        .unwrap();
+    assert!(fixture.cost.check_budget().is_err());
+    assert!(fixture
+        .chat
+        .maybe_generate_session_title_for_run(&fixture.session, "audit-title-main")
+        .await
+        .is_err());
+    assert_eq!(fixture.transport.requests.lock().unwrap().len(), 1);
+    assert!(fixture.title().is_none());
+}
+
+#[tokio::test]
+async fn failed_title_ledger_write_is_explicit_without_rewriting_main_terminal() {
+    let fixture = TitleFixture::new(TitleBehavior::Normal).await;
+    fixture.db.with_conn(|connection| connection.execute_batch("CREATE TEMP TRIGGER fail_title_cost BEFORE INSERT ON costs BEGIN SELECT RAISE(FAIL,'controlled title cost failure'); END;").map_err(|e| CoreError::Persistence(e.to_string()))).unwrap();
+    let error = fixture
+        .chat
+        .maybe_generate_session_title_for_run(&fixture.session, "audit-title-main")
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("controlled title cost failure"));
+    let events = fixture.chat.run_events("audit-title-main", None).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e.event_type == "model_call_usage_failed")
+            .count(),
+        1
+    );
+    fixture.assert_settled("accounting_failed", false);
+    assert!(fixture.title().is_none());
+}
+
+#[tokio::test]
+async fn retry_is_a_distinct_paid_call_and_missing_pricing_does_not_erase_tokens() {
+    let fixture = TitleFixture::new(TitleBehavior::FailedMeasured).await;
+    assert!(fixture
+        .chat
+        .maybe_generate_session_title_for_run(&fixture.session, "audit-title-main")
+        .await
+        .is_err());
+    fixture.assert_settled("failed", true);
+    *fixture.transport.behavior.lock().unwrap() = TitleBehavior::Normal;
+    fixture.cost.set_pricing(std::collections::HashMap::new());
+    assert!(fixture
+        .chat
+        .maybe_generate_session_title_for_run(&fixture.session, "audit-title-main")
+        .await
+        .unwrap()
+        .is_some());
+    let reopened = Database::open(fixture.root.path().join("state.sqlite")).unwrap();
+    let store = CostStore::new(&reopened);
+    let usage = store.session_usage(&fixture.session).unwrap();
+    assert_eq!(
+        (
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cache_hit_tokens
+        ),
+        (5000, 114, 3800)
+    );
+    let rows = store.session_costs_detailed(&fixture.session).unwrap();
+    assert_eq!(rows.len(), 3);
+    assert!(rows[0].cost_yuan.is_some() && rows[1].cost_yuan.is_some());
+    assert!(rows[2].cost_yuan.is_none());
+    let events = fixture.chat.run_events("audit-title-main", None).unwrap();
+    let receipts: Vec<_> = events
+        .iter()
+        .filter(|e| {
+            e.event_type == "model_call_usage" && e.data["report"]["purpose"] == "session_title"
+        })
+        .collect();
+    assert_eq!(receipts.len(), 2);
+    assert_ne!(receipts[0].data["call_id"], receipts[1].data["call_id"]);
+    assert_ne!(
+        receipts[0].data["report"]["invocation_id"],
+        receipts[1].data["report"]["invocation_id"]
     );
 }

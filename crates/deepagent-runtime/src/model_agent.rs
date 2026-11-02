@@ -432,16 +432,6 @@ struct ResponseHistory {
 }
 
 impl ResponseHistory {
-    fn from_seed(system: String, goal: String) -> Self {
-        Self {
-            instructions: Some(system),
-            items: vec![ResponseInputItem::Message {
-                role: "user".to_string(),
-                content: goal,
-            }],
-        }
-    }
-
     fn from_messages(messages: &[Message]) -> Self {
         let (instructions, items) = deepagent_models::response_items_from_messages(messages);
         Self {
@@ -506,18 +496,8 @@ impl ResponseHistory {
                     }
                 }
                 if !message.content.is_empty() || message.tool_calls.is_empty() {
-                    if message.attachments.is_empty() {
-                        self.items.push(ResponseInputItem::Message {
-                            role: message.role.as_str().to_string(),
-                            content: message.content.clone(),
-                        });
-                    } else {
-                        self.items.push(ResponseInputItem::InputMessage {
-                            role: message.role.as_str().to_string(),
-                            content: message.content.clone(),
-                            attachments: message.attachments.clone(),
-                        });
-                    }
+                    self.items
+                        .push(ResponseInputItem::from_message_content(message));
                 }
             }
         }
@@ -694,13 +674,29 @@ impl ModelAgent {
         goal: impl Into<String>,
         tools: Vec<ToolSchema>,
     ) -> Self {
-        let system = system.into();
-        let goal = goal.into();
+        Self::new_with_attachments(client, model, system, goal, Vec::new(), tools)
+    }
+
+    /// Build a live turn with the same admitted references as the session log.
+    /// The text-only constructor remains source-compatible.
+    pub fn new_with_attachments(
+        client: Arc<ModelClient>,
+        model: impl Into<String>,
+        system: impl Into<String>,
+        goal: impl Into<String>,
+        attachments: Vec<deepagent_core::message::MessageAttachment>,
+        tools: Vec<ToolSchema>,
+    ) -> Self {
+        let messages = vec![
+            Message::system(system),
+            Message::user(goal).with_attachments(attachments),
+        ];
+        let response_history = ResponseHistory::from_messages(&messages);
         Self {
             client,
             model: model.into(),
-            messages: vec![Message::system(system.clone()), Message::user(goal.clone())],
-            response_history: ResponseHistory::from_seed(system, goal),
+            messages,
+            response_history,
             tools,
             tool_schema_source: None,
             pending_tool_call_id: None,
@@ -2778,7 +2774,14 @@ impl ModelAgent {
             _ => {
                 // A final answer with an attached classifier gets one advisory
                 // audit; otherwise the turn completes normally.
-                if let Some(nudge) = self.maybe_stall_nudge(step).await {
+                let nudge = self.maybe_stall_nudge(step, cancel.clone()).await;
+                if cancel
+                    .as_ref()
+                    .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+                {
+                    return Err(CoreError::other("request cancelled by user"));
+                }
+                if let Some(nudge) = nudge {
                     self.push_message(Message::user(nudge));
                     return Box::pin(self.think_inner(step, &[], cancel, tools)).await;
                 }
@@ -2797,7 +2800,11 @@ impl ModelAgent {
     /// when a confident stalled verdict is within the per-run budget; `None`
     /// on every other path (no classifier, fail-open error, not stalled, low
     /// confidence, cap exhausted).
-    async fn maybe_stall_nudge(&mut self, step: usize) -> Option<String> {
+    async fn maybe_stall_nudge(
+        &mut self,
+        step: usize,
+        cancel: Option<Arc<AtomicBool>>,
+    ) -> Option<String> {
         let classifier = self.stall_classifier.clone()?;
         // Budget pre-check: once spent, skip the classifier call entirely so a
         // post-nudge final answer completes with zero added latency.
@@ -2809,7 +2816,7 @@ impl ModelAgent {
             self.tool_calls_made,
             Some(self.run_started_at.elapsed().as_secs()),
         );
-        let verdict = classifier.classify(&transcript).await?;
+        let verdict = classifier.classify_cancelled(&transcript, cancel).await?;
         match evaluate_stall(&verdict, self.stall_nudges_used) {
             StallDecision::Nudge {
                 category,
@@ -2950,7 +2957,10 @@ mod tests {
 
     #[test]
     fn repeated_responses_requests_keep_the_same_prefix_and_old_tool_outputs() {
-        let mut history = ResponseHistory::from_seed("stable system".into(), "first turn".into());
+        let mut history = ResponseHistory::from_messages(&[
+            Message::system("stable system"),
+            Message::user("first turn"),
+        ]);
         for index in 0..14 {
             history.items.push(ResponseInputItem::FunctionCall {
                 call_id: format!("call-{index}"),
@@ -5480,7 +5490,6 @@ mod tests {
             attempt.events,
             vec![
                 "begin:1",
-                "prepare:stale:add",
                 "abort:1",
                 "begin:2",
                 "prepare:fresh:add",

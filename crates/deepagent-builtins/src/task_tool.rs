@@ -42,7 +42,7 @@ impl TaskAgentType {
 }
 
 /// A request to run a sub-agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SubagentRequest {
     /// A short (3-5 word) description of the task, for display.
     pub description: String,
@@ -54,28 +54,35 @@ pub struct SubagentRequest {
     pub subagent_type: Option<String>,
     /// Optional per-child tool allowlist. Empty inherits the selected agent
     /// profile (or the parent registry when the profile is unrestricted).
+    #[serde(default)]
     pub allowed_tools: Vec<String>,
     /// Optional provider model override for this child.
     pub model: Option<String>,
     /// Optional canonical reasoning effort (`none`, `low`, `high`, or `max`).
     pub effort: Option<String>,
     /// Skill ids whose full instructions must be loaded before the first turn.
+    #[serde(default)]
     pub skills: Vec<String>,
     /// Execution isolation (`shared` or `worktree`).
+    #[serde(default)]
     pub isolation: String,
     /// Fork mode (Claude Code full-context fork): inherit the parent's complete
     /// conversation and full tool pool, run in the background, and keep the
     /// child's output out of the parent context. Overrides `subagent_type` tool
     /// restrictions.
+    #[serde(default)]
     pub fork: bool,
     /// Optional phase label for DAG orchestration (e.g. "Review", "Implementation").
     /// Used to group agents in UI and track workflow progress.
+    #[serde(default)]
     pub phase: Option<String>,
     /// Optional short label for UI display (e.g. "review:correctness", "backend:api").
     /// Shown in agent cards and logs for quick identification.
+    #[serde(default)]
     pub label: Option<String>,
     /// Optional JSON schema for structured output validation.
     /// When present, the agent's response must conform to this schema.
+    #[serde(default)]
     pub schema: Option<serde_json::Value>,
 }
 

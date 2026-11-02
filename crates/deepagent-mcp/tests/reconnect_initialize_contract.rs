@@ -64,7 +64,6 @@ async fn valid_reconnect_initialize_is_accepted() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: reconnect must reject malformed or unsupported initialize results"]
 async fn audit_reconnect_rejects_invalid_initialize_results() {
     if !node_available() {
         eprintln!("skipping: node not on PATH");

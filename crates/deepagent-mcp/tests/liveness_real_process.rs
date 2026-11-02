@@ -35,7 +35,7 @@ rl.on('line', (line) => {
   try { msg = JSON.parse(line); } catch { return; }
   if (msg.method === 'initialize') {
     reply(msg.id, {
-      protocolVersion: '2025-06-18',
+      protocolVersion: '2024-11-05',
       capabilities: { tools: {} },
       serverInfo: { name: 'crash-fixture', version: '0.0.1' },
     });

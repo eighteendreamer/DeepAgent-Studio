@@ -25,6 +25,9 @@ mod verification_lifecycle;
 #[path = "kernel_v2_e2e/image_preparation.rs"]
 mod image_preparation;
 
+#[path = "kernel_v2_e2e/image_surface.rs"]
+mod image_surface;
+
 #[path = "kernel_v2_e2e/branch_boundary.rs"]
 mod branch_boundary;
 
@@ -121,6 +124,9 @@ mod subagent_resume_context;
 
 #[path = "kernel_v2_e2e/responses_fixture.rs"]
 mod responses_fixture;
+
+#[path = "kernel_v2_e2e/input_call_identity.rs"]
+mod input_call_identity;
 
 #[cfg(windows)]
 #[path = "kernel_v2_e2e/prompt_hook_context.rs"]
@@ -2446,7 +2452,6 @@ async fn a_later_pass_folds_only_the_uncovered_turn_and_a_flat_context_pays_noth
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: merged ready MCP tools must not collide and block ordinary chat"]
 async fn audit_ready_mcp_name_collision_does_not_block_chat() {
     use deepagent_app_core::{McpServerDto, McpService};
     use std::time::Duration;
@@ -2503,8 +2508,9 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             mcp.upsert(dto).unwrap();
         }
         mcp.start_preparation();
+        let expected_ready_servers = if colliding { 1 } else { 2 };
         let prepared = tokio::time::timeout(Duration::from_secs(5), async {
-            while mcp.ready_registry().server_count() < 2 {
+            while mcp.ready_registry().server_count() < expected_ready_servers {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -2512,8 +2518,24 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         let ready = mcp.ready_registry();
         if prepared.is_err() {
             ready.close_all().await.unwrap();
-            panic!("both local fixture servers must publish before chat");
+            panic!("expected ready MCP snapshot was not published before chat");
         }
+        let statuses = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let statuses = mcp.connection_status().await.unwrap();
+                let settled = if colliding {
+                    statuses.iter().any(|status| status.status == "failed")
+                } else {
+                    statuses.iter().all(|status| status.status == "connected")
+                };
+                if settled {
+                    break statuses;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("MCP preparation statuses must settle");
         let tools = ready.all_tools();
         let model = Arc::new(ObservedModel(AtomicUsize::new(0)));
         let chat = ChatService::new(db, settings, model.clone(), root.path()).with_mcp(mcp);
@@ -2536,6 +2558,9 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             "colliding": colliding,
             "ready_servers": ready.server_count(),
             "tools": tools.iter().map(|tool| tool.namespaced_name.clone()).collect::<Vec<_>>(),
+            "statuses": statuses.iter().map(|status| {
+                serde_json::json!({"name": status.name, "status": status.status, "error": status.error})
+            }).collect::<Vec<_>>(),
             "completed": outcome.is_ok(),
             "model_requests": model.0.load(Ordering::SeqCst),
             "error": outcome.err().map(|error| error.to_string()),
@@ -2550,10 +2575,17 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         observations.iter().all(|case| case["completed"] == true),
         "an MCP naming conflict must be resolved or isolated before publishing, not fail every ordinary chat"
     );
+    assert_eq!(observations[1]["ready_servers"], 1);
+    assert_eq!(observations[1]["model_requests"], 1);
+    assert_eq!(observations[1]["tools"].as_array().unwrap().len(), 1);
+    assert!(observations[1]["statuses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|status| status["status"] == "failed"));
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: announced MCP instructions must remain in later stateless requests"]
 async fn audit_mcp_instructions_survive_continuation_on_wire() {
     use deepagent_app_core::{McpServerDto, McpService};
     use std::time::Duration;
@@ -2737,7 +2769,6 @@ async fn audit_harness_reasoning_override_reaches_provider_request() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: advertised skill catalog must remain visible in continued requests"]
 async fn audit_skill_catalog_survives_continuation_on_wire() {
     use deepagent_app_core::SkillsService;
     use deepagent_skills::{frontmatter, Skill, SkillManager, SkillOrigin};
