@@ -15,7 +15,8 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm build && node --test tests/sdk.test.mjs",
+    "test": "pnpm build && node --test tests/sdk.test.mjs tests/early-events-audit.test.mjs tests/owned-stream.test.mjs",
+    "test:stdio": "pnpm build && node --test tests/real-cli-stream.test.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {

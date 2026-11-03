@@ -27,6 +27,23 @@ pub enum SdkError {
     /// A request was sent before the server was ready (e.g. before `initialize`).
     #[error("request rejected before initialize")]
     NotInitialized,
+    /// A successful response cannot identify the operation's event scope.
+    #[error("{method} result has an invalid or conflicting {field}")]
+    InvalidStreamIdentity {
+        /// The request whose result could not be associated.
+        method: &'static str,
+        /// The missing, invalid or conflicting identifier (never its received value).
+        field: &'static str,
+    },
+    /// The bounded live receiver lost events; durable reconciliation is required.
+    #[error("event stream lagged by {skipped} records; reconcile thread/read before retrying")]
+    EventLagged {
+        /// Number of overwritten live records, not a durable run cursor.
+        skipped: u64,
+    },
+    /// The connection closed before this owned stream reached its terminal.
+    #[error("event stream closed before terminal; reconcile thread/read before retrying")]
+    EventStreamClosed,
     /// The server responded with a JSON-RPC error.
     #[error("rpc error {code}: {message}")]
     Rpc {

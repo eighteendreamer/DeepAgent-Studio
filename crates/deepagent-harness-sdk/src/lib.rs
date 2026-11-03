@@ -18,11 +18,11 @@
 //! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
 //! let bin = std::path::Path::new("target/debug/deepagent");
 //! let ws = std::path::Path::new(".");
-//! let mut process = HarnessProcess::spawn(bin, ws).await.unwrap();
+//! let process = HarnessProcess::spawn(bin, ws).await.unwrap();
 //! let client = process.client();
 //! client.initialize("my-app", "0.1.0").await.unwrap();
-//! let thread = client
-//!     .thread_start(ThreadStartRequest {
+//! let mut thread = client
+//!     .thread_start_streamed(ThreadStartRequest {
 //!         cwd: None,
 //!         provider: Some("deepseek-official".into()),
 //!         model: None,
@@ -31,9 +31,13 @@
 //!     })
 //!     .await
 //!     .unwrap();
-//! let turn = client
-//!     .turn_start(TurnStartRequest {
-//!         thread_id: thread.result()["threadId"].as_str().unwrap().into(),
+//! let thread_id = thread.thread_id().to_owned();
+//! while let Some(event) = thread.recv().await.unwrap() {
+//!     println!("{event:?}");
+//! }
+//! let mut turn = client
+//!     .turn_start_streamed(TurnStartRequest {
+//!         thread_id,
 //!         input: "list the workspace".into(),
 //!         provider: None,
 //!         model: None,
@@ -41,7 +45,12 @@
 //!         permission_profile: None,
 //!         sandbox_backend: None,
 //!     })
-//!     .await;
+//!     .await
+//!     .unwrap();
+//! while let Some(event) = turn.recv().await.unwrap() {
+//!     println!("{event:?}");
+//! }
+//! process.wait().await.unwrap();
 //! # })
 //! # }
 //! ```
@@ -50,8 +59,10 @@
 
 pub mod client;
 mod error;
+mod stream;
 mod transport;
 
 pub use client::{HarnessClient, HarnessProcess};
 pub use error::SdkError;
+pub use stream::RequestEvents;
 pub use transport::{decode_line, request_line, WireMessage};

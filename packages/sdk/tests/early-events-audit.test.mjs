@@ -5,7 +5,6 @@ import { fileURLToPath } from "node:url";
 import { DeepAgent, HarnessTransportError } from "../dist/index.js";
 
 const fixture = fileURLToPath(new URL("./early-events-fixture.mjs", import.meta.url));
-const auditOnly = { skip: process.env.RUN_HARNESS_AUDIT !== "1", timeout: 10000 };
 
 async function observe(mode) {
   const raw = [];
@@ -59,7 +58,7 @@ test("runStreamed preserves events delivered after the start continuation", {
 });
 
 for (const mode of ["event-first", "response-first"]) {
-  test(`runStreamed preserves a single-write ${mode} event burst`, auditOnly, async () => {
+  test(`runStreamed preserves a single-write ${mode} event burst`, { timeout: 10000 }, async () => {
     const value = await observe(mode);
     assert.deepEqual(value.beforeRelease.raw, ["item.updated", "turn.completed"],
       "the public transport observer must receive both original events");

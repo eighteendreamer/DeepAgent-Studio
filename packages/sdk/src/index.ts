@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface, type Interface } from "node:readline";
+import { TurnEventStream } from "./turnStream.js";
 
 export const PROTOCOL_VERSION = 1;
 
@@ -143,6 +144,11 @@ export interface TurnStartOptions {
   sandboxBackend?: string;
 }
 
+/** Local stream consumption options; signal is never serialized onto the wire. */
+export interface RunStreamOptions extends TurnStartOptions {
+  signal?: AbortSignal;
+}
+
 export interface ApprovalRequest {
   approvalId: string;
   threadId?: string;
@@ -228,69 +234,6 @@ export class HarnessTransportError extends Error {
   }
 }
 
-class AsyncEventQueue<T> implements AsyncIterable<T> {
-  private readonly pending: Array<{
-    resolve: (result: IteratorResult<T>) => void;
-    reject: (error: unknown) => void;
-  }> = [];
-  private readonly values: T[] = [];
-  private finished = false;
-  private failure: unknown;
-
-  push(value: T): void {
-    if (this.finished) {
-      return;
-    }
-    const waiter = this.pending.shift();
-    if (waiter) {
-      waiter.resolve({ done: false, value });
-    } else {
-      this.values.push(value);
-    }
-  }
-
-  end(): void {
-    if (this.finished) {
-      return;
-    }
-    this.finished = true;
-    while (this.pending.length > 0) {
-      this.pending.shift()?.resolve({ done: true, value: undefined });
-    }
-  }
-
-  fail(error: unknown): void {
-    if (this.finished) {
-      return;
-    }
-    this.failure = error;
-    this.finished = true;
-    while (this.pending.length > 0) {
-      this.pending.shift()?.reject(error);
-    }
-  }
-
-  async next(): Promise<IteratorResult<T>> {
-    const value = this.values.shift();
-    if (value !== undefined) {
-      return { done: false, value };
-    }
-    if (this.failure !== undefined) {
-      throw this.failure;
-    }
-    if (this.finished) {
-      return { done: true, value: undefined };
-    }
-    return new Promise((resolve, reject) => {
-      this.pending.push({ resolve, reject });
-    });
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<T> {
-    return this;
-  }
-}
-
 interface RpcResponse {
   jsonrpc: string;
   id?: number | string | null;
@@ -305,7 +248,7 @@ interface RpcNotification {
 }
 
 interface RpcTransport {
-  request(method: string, params: unknown): Promise<unknown>;
+  request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown>;
   onNotification(handler: (notification: RpcNotification) => void): () => void;
   close(): Promise<void>;
 }
@@ -328,6 +271,8 @@ class StdioTransport implements RpcTransport {
     (notification: RpcNotification) => void
   >();
   private closed = false;
+  private failure?: unknown;
+  private readonly failureHandlers = new Set<(error: unknown) => void>();
 
   constructor(options: DeepAgentOptions) {
     this.command = options.command ?? "deepagent";
@@ -351,6 +296,7 @@ class StdioTransport implements RpcTransport {
     this.child = child;
     this.lines = createInterface({ input: child.stdout });
     this.lines.on("line", (line) => this.handleLine(line));
+    this.lines.once("close", () => this.failPending(new HarnessTransportError("app-server stdout closed")));
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       if (this.onStderr) {
@@ -423,9 +369,12 @@ class StdioTransport implements RpcTransport {
       request.reject(error);
     }
     this.pending.clear();
+    this.failure = error;
+    for (const handler of this.failureHandlers) handler(error);
   }
 
-  async request(method: string, params: unknown): Promise<unknown> {
+  async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) throw new HarnessTransportError("request cancelled locally before send");
     const child = this.ensureStarted();
     const id = this.nextId++;
     const line = `${JSON.stringify({
@@ -435,14 +384,31 @@ class StdioTransport implements RpcTransport {
       params
     })}\n`;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      const cleanup = () => signal?.removeEventListener("abort", aborted);
+      const aborted = () => {
+        this.pending.delete(id);
+        cleanup();
+        reject(new HarnessTransportError("request cancelled locally; reconcile thread/read before retrying"));
+      };
+      this.pending.set(id, {
+        resolve: (value) => { cleanup(); resolve(value); },
+        reject: (error) => { cleanup(); reject(error); }
+      });
+      signal?.addEventListener("abort", aborted, { once: true });
+      if (signal?.aborted) { aborted(); return; }
       child.stdin.write(line, (error) => {
         if (error) {
+          this.pending.get(id)?.reject(new HarnessTransportError("failed to write to app-server", { cause: error }));
           this.pending.delete(id);
-          reject(new HarnessTransportError("failed to write to app-server", { cause: error }));
         }
       });
     });
+  }
+
+  onFailure(handler: (error: unknown) => void): () => void {
+    this.failureHandlers.add(handler);
+    if (this.failure !== undefined) handler(this.failure);
+    return () => this.failureHandlers.delete(handler);
   }
 
   onNotification(handler: (notification: RpcNotification) => void): () => void {
@@ -604,9 +570,10 @@ export class DeepAgent {
     this.initialized = true;
   }
 
-  private async request(method: string, params: unknown): Promise<unknown> {
+  private async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
+    if (signal?.aborted) throw new HarnessTransportError("request cancelled locally before send");
     await this.initialize();
-    return this.ensureStdio().request(method, params);
+    return this.ensureStdio().request(method, params, signal);
   }
 
   /** @internal Used by the SDK contract tests and transport adapters. */
@@ -650,9 +617,18 @@ export class DeepAgent {
     return this.cliTransport.run(prompt);
   }
 
+  /** Only future live events; for a turn use Thread.runStreamed before admission. */
   subscribe(handler: (event: HarnessEvent) => void): () => void {
     this.eventHandlers.add(handler);
     return () => this.eventHandlers.delete(handler);
+  }
+
+  /** @internal One event subscription tied to the current transport generation. */
+  subscribeStream(handler: (event: HarnessEvent) => void, failure: (error: unknown) => void): () => void {
+    const transport = this.ensureStdio();
+    const offEvents = this.subscribe(handler);
+    const offFailure = transport.onFailure(failure);
+    return () => { offEvents(); offFailure(); };
   }
 
   async reconnect(): Promise<void> {
@@ -676,13 +652,15 @@ export class DeepAgent {
   async startTurn(
     threadId: string,
     input: string,
-    options: TurnStartOptions = {}
+    options: TurnStartOptions = {},
+    signal?: AbortSignal
   ): Promise<Turn> {
     const result = (await this.request("turn/start", {
       threadId,
       input,
       ...options
-    })) as TurnStartResult;
+    }, signal)) as TurnStartResult;
+    if (!result || result.threadId !== threadId) throw new HarnessTransportError("turn/start returned an invalid or conflicting threadId");
     return new Turn(this, threadId, result.turnId);
   }
 
@@ -725,37 +703,20 @@ export class Thread {
     return this.agent.startTurn(this.id, input, options);
   }
 
-  async *runStreamed(
-    input: string,
-    options: TurnStartOptions = {}
-  ): AsyncIterable<HarnessEvent> {
-    const queue = new AsyncEventQueue<HarnessEvent>();
-    let turnId: string | undefined;
-    const unsubscribe = this.agent.subscribe((event) => {
-      const eventTurnId = "turnId" in event ? event.turnId : undefined;
-      if (turnId && eventTurnId === turnId) {
-        queue.push(event);
-      }
+  /**
+   * Subscribe before admission and retain a bounded pre-response event window.
+   * return()/signal stop local consumption only; an admitted turn may still run.
+   */
+  runStreamed(input: string, options: RunStreamOptions = {}): AsyncIterableIterator<HarnessEvent> {
+    const { signal, ...turnOptions } = options;
+    return new TurnEventStream({
+      threadId: this.id,
+      signal,
+      start: async (localSignal) => (await this.agent.startTurn(this.id, input, turnOptions, localSignal)).id,
+      subscribe: (event, failure) => this.agent.subscribeStream(event, failure),
+      afterTerminal: () => this.agent.waitForPendingApprovals(),
+      error: (message) => new HarnessTransportError(message)
     });
-    try {
-      const turn = await this.run(input, options);
-      turnId = turn.id;
-      for await (const event of queue) {
-        yield event;
-        if (
-          (event.type === "turn.completed" ||
-            event.type === "turn.failed" ||
-            event.type === "turn.interrupted") &&
-          event.turnId === turnId
-        ) {
-          await this.agent.waitForPendingApprovals();
-          queue.end();
-        }
-      }
-    } finally {
-      unsubscribe();
-      queue.end();
-    }
   }
 }
 

@@ -25,12 +25,13 @@ use deepagent_harness_protocol::{
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStderr, ChildStdin, ChildStdout},
-    sync::{broadcast, oneshot},
+    sync::{broadcast, oneshot, watch},
 };
 use tracing::debug;
 
 use crate::error::SdkError;
 use crate::transport::{decode_line, request_line, WireMessage};
+use crate::RequestEvents;
 
 /// Shared pending-reply table keyed by request id.
 type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<RpcResponse>>>>;
@@ -61,6 +62,7 @@ pub struct HarnessClient {
     pending: Pending,
     events: broadcast::Sender<HarnessEvent>,
     initialized: Arc<Mutex<bool>>,
+    lifecycle: watch::Sender<bool>,
 }
 
 impl HarnessProcess {
@@ -88,22 +90,7 @@ impl HarnessProcess {
             SdkError::Read(std::io::Error::from(std::io::ErrorKind::UnexpectedEof))
         })?;
 
-        let (events, _) = broadcast::channel(256);
-        let stdin = Arc::new(tokio::sync::Mutex::new(Some(stdin)));
-        let client = HarnessClient {
-            stdin: stdin.clone(),
-            next_id: Arc::new(AtomicI64::new(1)),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            events,
-            initialized: Arc::new(Mutex::new(false)),
-        };
-
-        spawn_reader(
-            stdout,
-            stderr,
-            client.pending.clone(),
-            client.events.clone(),
-        );
+        let client = HarnessClient::from_stdio(stdin, stdout, stderr, 256);
 
         Ok(Self { child, client })
     }
@@ -127,6 +114,25 @@ impl HarnessProcess {
 }
 
 impl HarnessClient {
+    fn from_stdio(
+        stdin: ChildStdin,
+        stdout: ChildStdout,
+        stderr: ChildStderr,
+        capacity: usize,
+    ) -> Self {
+        let (events, _) = broadcast::channel(capacity);
+        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let lifecycle = spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        Self {
+            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
+            next_id: Arc::new(AtomicI64::new(1)),
+            pending,
+            events,
+            initialized: Arc::new(Mutex::new(false)),
+            lifecycle,
+        }
+    }
+
     /// Handshake: announce the client and validate the protocol version.
     pub async fn initialize(
         &self,
@@ -149,8 +155,22 @@ impl HarnessClient {
     }
 
     /// Create a new thread (session) in a workspace.
+    /// This low-level method owns no event subscription; prefer
+    /// [`Self::thread_start_streamed`] when consuming its live events.
     pub async fn thread_start(&self, request: ThreadStartRequest) -> Result<RpcResponse, SdkError> {
         self.call(HarnessRequest::ThreadStart(request)).await
+    }
+
+    /// Create a thread while owning its subscription before admission.
+    /// Consume `thread.started` with [`RequestEvents::recv`] after this returns.
+    pub async fn thread_start_streamed(
+        &self,
+        request: ThreadStartRequest,
+    ) -> Result<RequestEvents, SdkError> {
+        let receiver = self.subscribe();
+        let closed = self.lifecycle.subscribe();
+        let response = self.thread_start(request).await?;
+        RequestEvents::thread(response, receiver, closed)
     }
 
     /// Resume an existing thread.
@@ -186,8 +206,23 @@ impl HarnessClient {
     }
 
     /// Start a turn (may invoke the model).
+    /// This is admission only, not an event stream or completion receipt.
+    /// Use [`Self::turn_start_streamed`] to retain early live events.
     pub async fn turn_start(&self, request: TurnStartRequest) -> Result<RpcResponse, SdkError> {
         self.call(HarnessRequest::TurnStart(request)).await
+    }
+
+    /// Start a turn with a bounded live subscription installed before the request.
+    /// Errors/drop release the local receiver, never repeat or interrupt a turn.
+    pub async fn turn_start_streamed(
+        &self,
+        request: TurnStartRequest,
+    ) -> Result<RequestEvents, SdkError> {
+        let receiver = self.subscribe();
+        let closed = self.lifecycle.subscribe();
+        let thread = request.thread_id.clone();
+        let response = self.turn_start(request).await?;
+        RequestEvents::turn(response, receiver, closed, &thread)
     }
 
     /// Interrupt a running turn.
@@ -237,7 +272,9 @@ impl HarnessClient {
         .await
     }
 
-    /// Subscribe to the broadcast stream of harness events.
+    /// Subscribe only to future live events; this does not replay history.
+    /// Subscribe before any event-producing request, or prefer the request-owned
+    /// [`Self::thread_start_streamed`] / [`Self::turn_start_streamed`] methods.
     pub fn subscribe(&self) -> broadcast::Receiver<HarnessEvent> {
         self.events.subscribe()
     }
@@ -250,6 +287,7 @@ impl HarnessClient {
     /// no-op for stdio on that platform). Idempotent: calling it twice, or after
     /// [`HarnessProcess::wait`], is a no-op.
     pub async fn close(&self) {
+        self.lifecycle.send_replace(true);
         let mut guard = self.stdin.lock().await;
         drop(guard.take());
     }
@@ -345,7 +383,9 @@ fn spawn_reader(
     stderr: ChildStderr,
     pending: Pending,
     events: broadcast::Sender<HarnessEvent>,
-) {
+) -> watch::Sender<bool> {
+    let (lifecycle, _) = watch::channel(false);
+    let closed = lifecycle.clone();
     // Drain stderr so a verbose server cannot block on a full pipe.
     tokio::spawn(async move {
         let mut reader = BufReader::new(stderr);
@@ -385,6 +425,7 @@ fn spawn_reader(
                 }
             }
         }
+        closed.send_replace(true);
         // Server closed stdout: fail every in-flight request.
         {
             let mut table = pending
@@ -393,6 +434,7 @@ fn spawn_reader(
             table.clear();
         }
     });
+    lifecycle
 }
 
 #[cfg(all(test, windows))]
@@ -416,12 +458,14 @@ mod audit_tests {
             .expect("spawn a live pipe owner");
         let stdin = child.stdin.take().expect("piped stdin");
         let (events, _) = broadcast::channel(1);
+        let lifecycle = watch::channel(true).0;
         let client = HarnessClient {
             stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
             next_id: Arc::new(AtomicI64::new(1)),
             pending: Arc::new(Mutex::new(HashMap::new())),
             events,
             initialized: Arc::new(Mutex::new(true)),
+            lifecycle,
         };
 
         client.close().await;
@@ -455,13 +499,14 @@ mod audit_tests {
         let stderr = child.stderr.take().expect("piped stderr");
         let (events, _) = broadcast::channel(1);
         let pending = Arc::new(Mutex::new(HashMap::new()));
-        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let lifecycle = spawn_reader(stdout, stderr, pending.clone(), events.clone());
         let client = HarnessClient {
             stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
             next_id: Arc::new(AtomicI64::new(1)),
             pending,
             events,
             initialized: Arc::new(Mutex::new(false)),
+            lifecycle,
         };
 
         let result = client.initialize("audit-fixture", "0.1.0").await;
@@ -493,13 +538,14 @@ mod audit_tests {
         let stderr = child.stderr.take().expect("piped stderr");
         let (events, _) = broadcast::channel(1);
         let pending = Arc::new(Mutex::new(HashMap::new()));
-        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let lifecycle = spawn_reader(stdout, stderr, pending.clone(), events.clone());
         let client = HarnessClient {
             stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
             next_id: Arc::new(AtomicI64::new(1)),
             pending,
             events,
             initialized: Arc::new(Mutex::new(false)),
+            lifecycle,
         };
 
         let result = client.initialize("audit-fixture", "0.1.0").await;
@@ -538,13 +584,14 @@ mod audit_tests {
         let stderr = child.stderr.take().expect("piped stderr");
         let (events, _) = broadcast::channel(1);
         let pending = Arc::new(Mutex::new(HashMap::new()));
-        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let lifecycle = spawn_reader(stdout, stderr, pending.clone(), events.clone());
         let client = HarnessClient {
             stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
             next_id: Arc::new(AtomicI64::new(1)),
             pending,
             events,
             initialized: Arc::new(Mutex::new(false)),
+            lifecycle,
         };
 
         let request_client = client.clone();
@@ -602,13 +649,14 @@ mod audit_tests {
         let stderr = child.stderr.take().expect("piped stderr");
         let (events, _) = broadcast::channel(1);
         let pending = Arc::new(Mutex::new(HashMap::new()));
-        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let lifecycle = spawn_reader(stdout, stderr, pending.clone(), events.clone());
         let client = HarnessClient {
             stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
             next_id: Arc::new(AtomicI64::new(1)),
             pending: pending.clone(),
             events,
             initialized: Arc::new(Mutex::new(true)),
+            lifecycle,
         };
 
         let request_client = client.clone();
@@ -688,13 +736,14 @@ mod audit_tests {
         let stderr = child.stderr.take().expect("piped stderr");
         let (events, _) = broadcast::channel(1);
         let pending = Arc::new(Mutex::new(HashMap::new()));
-        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let lifecycle = spawn_reader(stdout, stderr, pending.clone(), events.clone());
         let client = HarnessClient {
             stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
             next_id: Arc::new(AtomicI64::new(1)),
             pending: pending.clone(),
             events,
             initialized: Arc::new(Mutex::new(true)),
+            lifecycle,
         };
 
         let request_client = client.clone();
@@ -758,13 +807,14 @@ mod audit_tests {
         let stderr = child.stderr.take().expect("piped stderr");
         let (events, _) = broadcast::channel(1);
         let pending = Arc::new(Mutex::new(HashMap::new()));
-        spawn_reader(stdout, stderr, pending.clone(), events.clone());
+        let lifecycle = spawn_reader(stdout, stderr, pending.clone(), events.clone());
         let client = HarnessClient {
             stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
             next_id: Arc::new(AtomicI64::new(1)),
             pending: pending.clone(),
             events,
             initialized: Arc::new(Mutex::new(true)),
+            lifecycle,
         };
 
         let request_client = client.clone();
@@ -833,7 +883,6 @@ mod audit_tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit H-214: subscribing after a request must not lose notifications emitted before its response"]
     async fn audit_subscribe_after_request_preserves_pre_response_event() {
         let script = r#"$index = 0
 while (($line = [Console]::In.ReadLine()) -ne $null) {
@@ -859,28 +908,15 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-        let (events, _) = broadcast::channel(8);
-        let client = HarnessClient {
-            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
-            next_id: Arc::new(AtomicI64::new(1)),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            events,
-            initialized: Arc::new(Mutex::new(false)),
-        };
-        spawn_reader(
-            stdout,
-            stderr,
-            client.pending.clone(),
-            client.events.clone(),
-        );
+        let client = HarnessClient::from_stdio(stdin, stdout, stderr, 8);
 
         client
             .initialize("audit-fixture", "0.1.0")
             .await
             .expect("fixture initialize response should be accepted");
 
-        let late_response = client
-            .thread_start(deepagent_harness_protocol::ThreadStartRequest {
+        let mut late_stream = client
+            .thread_start_streamed(deepagent_harness_protocol::ThreadStartRequest {
                 cwd: None,
                 provider: None,
                 model: None,
@@ -889,10 +925,10 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
             })
             .await
             .expect("late-subscription request should receive its response");
-        let mut late_receiver = client.subscribe();
+        // The caller starts consuming after admission; the operation owned
+        // its receiver before sending. Raw subscribe remains only-from-now.
         let late_event =
-            tokio::time::timeout(std::time::Duration::from_millis(300), late_receiver.recv()).await;
-        drop(late_receiver);
+            tokio::time::timeout(std::time::Duration::from_millis(300), late_stream.recv()).await;
 
         let mut early_receiver = client.subscribe();
         let early_response = client
@@ -917,6 +953,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         let late_thread_id = late_event
             .ok()
             .and_then(Result::ok)
+            .flatten()
             .and_then(|event| match event {
                 HarnessEvent::ThreadStarted { thread_id, .. } => Some(thread_id),
                 _ => None,
@@ -927,7 +964,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         };
         eprintln!(
             "SDK subscription ordering audit: late_result={} late_event={late_thread_id:?} early_result={} early_event={early_thread_id:?}",
-            late_response.result(),
+            late_stream.response().result(),
             early_response.result(),
         );
         assert_eq!(early_thread_id.as_deref(), Some("t-early"));
@@ -1016,20 +1053,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         let stdin = child.stdin.take().expect("piped stdin");
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-        let (events, _) = broadcast::channel(8);
-        let client = HarnessClient {
-            stdin: Arc::new(tokio::sync::Mutex::new(Some(stdin))),
-            next_id: Arc::new(AtomicI64::new(1)),
-            pending: Arc::new(Mutex::new(HashMap::new())),
-            events,
-            initialized: Arc::new(Mutex::new(false)),
-        };
-        spawn_reader(
-            stdout,
-            stderr,
-            client.pending.clone(),
-            client.events.clone(),
-        );
+        let client = HarnessClient::from_stdio(stdin, stdout, stderr, 8);
 
         client
             .initialize("audit-fixture", "0.1.0")
@@ -1054,3 +1078,7 @@ while (($line = [Console]::In.ReadLine()) -ne $null) {
         );
     }
 }
+
+#[cfg(all(test, windows))]
+#[path = "client_stream_tests.rs"]
+mod stream_tests;

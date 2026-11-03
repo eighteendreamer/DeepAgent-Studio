@@ -3,14 +3,15 @@
 //!
 //! The exercised surface intentionally avoids model calls (no API key in CI):
 //! initialize, thread lifecycle, tool/config/sandbox introspection, event
-//! streaming, and the RPC-error path for an interrupt on an unknown turn.
-//! Model-backed `turn/start` stays under real-machine verification.
+//! streaming, local pre-provider failure/reopen, and the RPC-error path for an
+//! interrupt on an unknown turn. Configured-model success is not exercised.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use deepagent_harness_protocol::{
-    HarnessEvent, ThreadReadRequest, ThreadStartRequest, TurnInterruptRequest,
+    HarnessEvent, ThreadReadRequest, ThreadResumeRequest, ThreadStartRequest, TurnInterruptRequest,
+    TurnStartRequest,
 };
 use deepagent_harness_sdk::{HarnessProcess, SdkError};
 
@@ -87,6 +88,256 @@ async fn initialize_then_thread_start_streams_thread_started_event() {
         is_match,
         "expected thread.started for {thread_id}, got {event:?}"
     );
+}
+
+#[tokio::test]
+async fn h214_owned_thread_start_and_reconnected_durable_read_use_the_real_cli() {
+    let Some(bin) = isolated_cli(
+        "h214_owned_thread_start_and_reconnected_durable_read_use_the_real_cli",
+        "h214-thread",
+    )
+    .await
+    else {
+        return;
+    };
+    let workspace = temp_workspace("h214-owned-reopen");
+    let process = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let client = process.client();
+    client.initialize("h214-owned-e2e", "1").await.unwrap();
+    let mut events = client
+        .thread_start_streamed(ThreadStartRequest {
+            cwd: None,
+            provider: None,
+            model: None,
+            permission_profile: None,
+            sandbox_backend: None,
+        })
+        .await
+        .unwrap();
+    let thread = events.thread_id().to_owned();
+    // Consumption deliberately begins only after the admission response exists.
+    assert_eq!(events.response().result()["threadId"], thread);
+    assert!(
+        matches!(tokio::time::timeout(Duration::from_secs(5),events.recv()).await.unwrap().unwrap(),
+        Some(HarnessEvent::ThreadStarted { thread_id, .. }) if thread_id==thread)
+    );
+    assert!(events.recv().await.unwrap().is_none());
+    let read = || ThreadReadRequest {
+        thread_id: thread.clone(),
+        after_sequence: None,
+        session_after_sequence: None,
+        run_after_sequence: None,
+        run_after_sequences: None,
+    };
+    let before = client.thread_read(read()).await.unwrap();
+    assert_eq!(before.result()["threadId"], thread);
+    assert!(process.wait().await.unwrap().success());
+
+    let reopened = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let current = reopened.client();
+    current
+        .initialize("h214-owned-reconnected", "1")
+        .await
+        .unwrap();
+    current
+        .thread_resume(ThreadResumeRequest {
+            thread_id: thread.clone(),
+        })
+        .await
+        .unwrap();
+    let after = current.thread_read(read()).await.unwrap();
+    assert_eq!(
+        after.result(),
+        before.result(),
+        "reconnect reads the existing durable thread; no replay or new turn is invented"
+    );
+    assert!(reopened.wait().await.unwrap().success());
+}
+
+async fn isolated_cli(test_name: &str, tag: &str) -> Option<PathBuf> {
+    const CHILD: &str = "DEEPAGENT_H214_TEST_CHILD";
+    const CLI: &str = "DEEPAGENT_H214_FIXTURE_CLI";
+    if std::env::var_os(CHILD).is_none() {
+        // Isolate the whole test process, not global env shared by parallel
+        // Rust tests. A regular cargo test must never use a user's provider.
+        let root = temp_workspace(tag);
+        // Exercise the identical CLI bytes in an empty installation, not all
+        // bundled plugin discovery/preparation and its unrelated shutdown work.
+        let bin = root.join(cli_binary().file_name().unwrap());
+        std::fs::copy(cli_binary(), &bin).unwrap();
+        assert!(std::fs::read(cli_binary()).unwrap() == std::fs::read(&bin).unwrap());
+        let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", test_name, "--nocapture"]);
+        for (name, _) in std::env::vars_os() {
+            let key = name.to_string_lossy().to_ascii_uppercase();
+            if [
+                "KEY",
+                "TOKEN",
+                "SECRET",
+                "PASSWORD",
+                "CREDENTIAL",
+                "DEEPAGENT",
+                "DEEPSEEK",
+                "OPENAI",
+                "ANTHROPIC",
+            ]
+            .iter()
+            .any(|part| key.contains(part))
+            {
+                command.env_remove(name);
+            }
+        }
+        for name in [
+            "HOME",
+            "USERPROFILE",
+            "APPDATA",
+            "LOCALAPPDATA",
+            "XDG_CONFIG_HOME",
+            "DEEPAGENT_DATA_ROOT",
+        ] {
+            let path = root.join(name.to_ascii_lowercase());
+            std::fs::create_dir_all(&path).unwrap();
+            command.env(name, path);
+        }
+        let log_path = root.join("isolated-test.log");
+        let log = std::fs::File::create(&log_path).unwrap();
+        let errors = log.try_clone().unwrap();
+        let status = tokio::time::timeout(
+            Duration::from_secs(30),
+            command
+                .env(CHILD, "1")
+                .env(CLI, &bin)
+                .kill_on_drop(true)
+                .stdout(log)
+                .stderr(errors)
+                .status(),
+        )
+        .await;
+        assert!(
+            matches!(status, Ok(Ok(status)) if status.success()),
+            "isolated CLI test {status:?}; log {}:\n{}",
+            log_path.display(),
+            std::fs::read_to_string(&log_path).unwrap()
+        );
+        return None;
+    }
+    Some(PathBuf::from(
+        std::env::var_os(CLI).expect("isolated test CLI"),
+    ))
+}
+
+#[tokio::test]
+async fn h214_owned_real_cli_failure_is_unique_and_durable_after_reopen() {
+    let Some(bin) = isolated_cli(
+        "h214_owned_real_cli_failure_is_unique_and_durable_after_reopen",
+        "h214-failure",
+    )
+    .await
+    else {
+        return;
+    };
+    let workspace = temp_workspace("h214-owned-failure");
+    let process = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let client = process.client();
+    client.initialize("h214-owned-failure", "1").await.unwrap();
+    let thread = client
+        .thread_start_streamed(ThreadStartRequest {
+            cwd: None,
+            provider: None,
+            model: None,
+            permission_profile: Some("read_only".into()),
+            sandbox_backend: Some("direct".into()),
+        })
+        .await
+        .unwrap()
+        .thread_id()
+        .to_owned();
+    // The isolated test child has an empty synthetic data root: model
+    // selection fails before reading a credential or contacting a provider.
+    let mut stream = client
+        .turn_start_streamed(TurnStartRequest {
+            thread_id: thread.clone(),
+            input: "Synthetic local failure without provider settings".into(),
+            provider: None,
+            model: None,
+            reasoning_effort: None,
+            permission_profile: None,
+            sandbox_backend: None,
+        })
+        .await
+        .unwrap();
+    let turn = stream.turn_id().unwrap().to_owned();
+    let mut terminals = 0;
+    while let Some(event) = tokio::time::timeout(Duration::from_secs(5), stream.recv())
+        .await
+        .unwrap()
+        .unwrap()
+    {
+        match event {
+            HarnessEvent::TurnFailed {
+                turn_id, reason, ..
+            } => {
+                assert_eq!(turn_id.as_deref(), Some(turn.as_str()));
+                assert!(reason.contains("not initialized"), "{reason}");
+                terminals += 1;
+            }
+            HarnessEvent::TurnCompleted { .. } | HarnessEvent::TurnInterrupted { .. } => {
+                panic!("synthetic settings failure must not become success/cancellation")
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(terminals, 1);
+    let request = || ThreadReadRequest {
+        thread_id: thread.clone(),
+        after_sequence: None,
+        session_after_sequence: None,
+        run_after_sequence: None,
+        run_after_sequences: None,
+    };
+    let before = client.thread_read(request()).await.unwrap();
+    let runs = before.result()["runEvents"].as_array().unwrap();
+    assert_eq!(runs.len(), 1, "no automatic redispatch");
+    assert_eq!(runs[0]["runId"], turn);
+    assert_eq!(runs[0]["terminalKind"], "failed");
+    let records = runs[0]["events"].as_array().unwrap();
+    assert_eq!(
+        records
+            .iter()
+            .filter(|e| e["event_type"] == "run_terminal")
+            .count(),
+        1
+    );
+    assert!(runs[0]["actions"].as_array().unwrap().is_empty());
+    assert!(runs[0]["approvals"].as_array().unwrap().is_empty());
+    let cursor = records.last().unwrap()["sequence"].as_u64().unwrap();
+    assert!(process.wait().await.unwrap().success());
+    let reopened = HarnessProcess::spawn(&bin, &workspace).await.unwrap();
+    let current = reopened.client();
+    current
+        .initialize("h214-owned-failure-reopen", "1")
+        .await
+        .unwrap();
+    current
+        .thread_resume(ThreadResumeRequest {
+            thread_id: thread.clone(),
+        })
+        .await
+        .unwrap();
+    let after = current.thread_read(request()).await.unwrap();
+    assert_eq!(after.result(), before.result());
+    let incremental = current
+        .thread_read(ThreadReadRequest {
+            run_after_sequences: Some([(turn, cursor)].into()),
+            ..request()
+        })
+        .await
+        .unwrap();
+    assert!(incremental.result()["runEvents"][0]["events"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(reopened.wait().await.unwrap().success());
 }
 
 #[tokio::test]

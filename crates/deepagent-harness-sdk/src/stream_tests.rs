@@ -1,0 +1,239 @@
+use super::*;
+use serde_json::{json, Value};
+use std::time::Duration;
+
+fn response(value: Value) -> RpcResponse {
+    RpcResponse::success(json!(1), value)
+}
+fn event(value: Value) -> HarnessEvent {
+    serde_json::from_value(value).unwrap()
+}
+fn complete(kind: &str, thread: Option<&str>, turn: &str) -> HarnessEvent {
+    let mut value = json!({"type":kind,"turnId":turn,"message":"synthetic","reason":"synthetic"});
+    if let Some(thread) = thread {
+        value["threadId"] = json!(thread);
+    }
+    event(value)
+}
+
+#[tokio::test]
+async fn h214_thread_scope_ignores_other_threads_and_ends_after_its_started() {
+    let (events, _) = broadcast::channel(8);
+    let (_, closed) = watch::channel(false);
+    let mut stream = RequestEvents::thread(
+        response(json!({"threadId":"A"})),
+        events.subscribe(),
+        closed,
+    )
+    .unwrap();
+    for id in ["B", "A", "A"] {
+        events
+            .send(event(
+                json!({"type":"thread.started","threadId":id,"protocolVersion":1}),
+            ))
+            .unwrap();
+    }
+    assert_eq!(stream.thread_id(), "A");
+    assert_eq!(stream.turn_id(), None);
+    assert!(
+        matches!(stream.recv().await.unwrap(), Some(HarnessEvent::ThreadStarted { thread_id, .. }) if thread_id=="A")
+    );
+    assert!(stream.recv().await.unwrap().is_none());
+    assert_eq!(events.receiver_count(), 0);
+}
+
+#[tokio::test]
+async fn h214_turn_scope_filters_conflicting_ids_and_retains_v1_optional_thread_context() {
+    let (events, _) = broadcast::channel(16);
+    let (_closed, closed) = watch::channel(false);
+    let mut stream = RequestEvents::turn(
+        response(json!({"threadId":"A","turnId":"run"})),
+        events.subscribe(),
+        closed,
+        "A",
+    )
+    .unwrap();
+    events
+        .send(complete("turn.completed", Some("B"), "run"))
+        .unwrap();
+    events
+        .send(complete("turn.completed", Some("A"), "other"))
+        .unwrap();
+    for kind in [
+        "turn.started",
+        "item.started",
+        "item.updated",
+        "item.completed",
+        "approval.requested",
+    ] {
+        events
+            .send(event(
+                json!({"type":kind,"turnId":"run","threadId":"A","reason":"fixture",
+            "item":{"kind":"content_delta","text":"synthetic"}}),
+            ))
+            .unwrap();
+    }
+    events
+        .send(complete("turn.completed", None, "run"))
+        .unwrap();
+    let mut kinds = Vec::new();
+    while let Some(value) = stream.recv().await.unwrap() {
+        kinds.push(serde_json::to_value(value).unwrap()["type"].clone());
+    }
+    assert_eq!(
+        kinds,
+        vec![
+            json!("turn.started"),
+            json!("item.started"),
+            json!("item.updated"),
+            json!("item.completed"),
+            json!("approval.requested"),
+            json!("turn.completed")
+        ]
+    );
+    assert_eq!(events.receiver_count(), 0);
+}
+
+#[tokio::test]
+async fn h214_each_terminal_wins_over_later_duplicates_and_eof() {
+    for kind in ["turn.completed", "turn.failed", "turn.interrupted"] {
+        let (events, _) = broadcast::channel(4);
+        let (closed, receiver) = watch::channel(false);
+        let mut stream = RequestEvents::turn(
+            response(json!({"threadId":"A","turnId":"run"})),
+            events.subscribe(),
+            receiver,
+            "A",
+        )
+        .unwrap();
+        let terminal = complete(kind, Some("A"), "run");
+        events.send(terminal.clone()).unwrap();
+        events.send(terminal.clone()).unwrap();
+        closed.send_replace(true);
+        assert_eq!(stream.recv().await.unwrap(), Some(terminal));
+        assert!(stream.recv().await.unwrap().is_none());
+        assert_eq!(events.receiver_count(), 0);
+    }
+}
+
+#[tokio::test]
+async fn h214_eof_and_lag_are_explicit_failures_and_release_the_receiver() {
+    for lagged in [false, true] {
+        let (events, _) = broadcast::channel(2);
+        let (closed, receiver) = watch::channel(false);
+        let mut stream = RequestEvents::turn(
+            response(json!({"threadId":"A","turnId":"run"})),
+            events.subscribe(),
+            receiver,
+            "A",
+        )
+        .unwrap();
+        if lagged {
+            for _ in 0..5 {
+                events
+                    .send(complete("turn.completed", Some("A"), "run"))
+                    .unwrap();
+            }
+        }
+        closed.send_replace(true);
+        let error = stream.recv().await.unwrap_err();
+        assert!(if lagged {
+            matches!(error, SdkError::EventLagged { skipped } if skipped>0)
+        } else {
+            matches!(error, SdkError::EventStreamClosed)
+        });
+        assert_eq!(events.receiver_count(), 0);
+        assert!(stream.recv().await.unwrap().is_none());
+    }
+    // A dropped watch producer must not create a busy loop either.
+    let (events, _) = broadcast::channel(2);
+    let (_, receiver) = watch::channel(false);
+    let mut stream = RequestEvents::thread(
+        response(json!({"threadId":"A"})),
+        events.subscribe(),
+        receiver,
+    )
+    .unwrap();
+    assert!(matches!(
+        tokio::time::timeout(Duration::from_secs(1), stream.recv())
+            .await
+            .unwrap(),
+        Err(SdkError::EventStreamClosed)
+    ));
+}
+
+#[tokio::test]
+async fn h214_receive_cancellation_is_safe_and_explicit_close_and_drop_only_unsubscribe() {
+    let (events, _) = broadcast::channel(4);
+    let (_closed, receiver) = watch::channel(false);
+    let mut stream = RequestEvents::turn(
+        response(json!({"threadId":"A","turnId":"run"})),
+        events.subscribe(),
+        receiver.clone(),
+        "A",
+    )
+    .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(5), stream.recv())
+            .await
+            .is_err()
+    );
+    events
+        .send(complete("turn.completed", Some("A"), "run"))
+        .unwrap();
+    assert!(matches!(
+        stream.recv().await.unwrap(),
+        Some(HarnessEvent::TurnCompleted { .. })
+    ));
+    let mut stream = RequestEvents::thread(
+        response(json!({"threadId":"A"})),
+        events.subscribe(),
+        receiver.clone(),
+    )
+    .unwrap();
+    stream.close();
+    assert!(stream.recv().await.unwrap().is_none());
+    assert_eq!(events.receiver_count(), 0);
+    let stream = RequestEvents::thread(
+        response(json!({"threadId":"A"})),
+        events.subscribe(),
+        receiver,
+    )
+    .unwrap();
+    assert_eq!(events.receiver_count(), 1);
+    drop(stream);
+    assert_eq!(events.receiver_count(), 0);
+}
+
+#[test]
+fn h214_invalid_response_identity_never_panics_leaks_values_or_retains_a_subscription() {
+    let (events, _) = broadcast::channel(4);
+    let (_closed, receiver) = watch::channel(false);
+    for value in [
+        json!({}),
+        json!({"threadId":null}),
+        json!({"threadId":" \t"}),
+        json!({"threadId":123}),
+    ] {
+        let error = RequestEvents::thread(response(value), events.subscribe(), receiver.clone())
+            .err()
+            .unwrap();
+        assert!(matches!(error, SdkError::InvalidStreamIdentity { .. }));
+        assert_eq!(events.receiver_count(), 0);
+    }
+    for value in [
+        json!({"threadId":"A"}),
+        json!({"threadId":"A","turnId":""}),
+        json!({"threadId":"PRIVATE_BAD_ID","turnId":"run"}),
+    ] {
+        let error = RequestEvents::turn(response(value), events.subscribe(), receiver.clone(), "A")
+            .err()
+            .unwrap();
+        assert!(!error.to_string().contains("PRIVATE_BAD_ID"));
+        assert_eq!(events.receiver_count(), 0);
+    }
+    let mut malformed = response(json!({"threadId":"A"}));
+    malformed.result = None;
+    assert!(RequestEvents::thread(malformed, events.subscribe(), receiver).is_err());
+    assert_eq!(events.receiver_count(), 0);
+}

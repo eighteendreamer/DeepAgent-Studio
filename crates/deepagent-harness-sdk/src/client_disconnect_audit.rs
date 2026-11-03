@@ -31,19 +31,11 @@ exit 7"#,
         .kill_on_drop(true)
         .spawn()
         .expect("spawn finite local protocol producer");
-    let (events, _) = broadcast::channel(8);
-    let client = HarnessClient {
-        stdin: Arc::new(tokio::sync::Mutex::new(child.stdin.take())),
-        next_id: Arc::new(AtomicI64::new(1)),
-        pending: Arc::new(Mutex::new(HashMap::new())),
-        events,
-        initialized: Arc::new(Mutex::new(false)),
-    };
-    spawn_reader(
+    let client = HarnessClient::from_stdio(
+        child.stdin.take().unwrap(),
         child.stdout.take().unwrap(),
         child.stderr.take().unwrap(),
-        client.pending.clone(),
-        client.events.clone(),
+        8,
     );
     let mut existing = client.subscribe();
     tokio::time::timeout(Duration::from_secs(5), client.initialize("audit", "1"))

@@ -19,6 +19,46 @@ await agent.close();
 `cli-jsonl` is available for one-shot automation through `runJsonl(prompt)`.
 Thread lifecycle and turn control require the stdio app-server transport.
 
+`Thread.runStreamed` owns a subscription **before** sending `turn/start` and
+retains candidate events while the response identity is not yet known. It then
+delivers only the returned turn, rejects conflicting explicit thread IDs, and
+stops at its first completed/failed/interrupted event. Existing v1 events may
+omit `threadId`; their `turnId` must still match. The per-operation queue is
+bounded to 256 events and 4 MiB of serialized UTF-8 event data, including the
+pre-response window. Overflow and transport loss reject the stream explicitly;
+they do not mean the remote turn failed, completed, or never executed.
+
+The returned iterator is lazy. `return()` releases parked local consumers,
+including while admission is unanswered, and does not start an unused iterator.
+An optional `{ signal: AbortSignal }` in `runStreamed` cancels local consumption;
+the signal is not a protocol field. Neither cancellation nor `return()` silently
+interrupts or resubmits a remote turn. If admission might have succeeded but its
+reply was abandoned, reconcile `thread/read` before another start. Use
+`Turn.interrupt()` when explicitly requesting remote cancellation of a known turn.
+Reconnect ends old owned streams; it does not attach them to the new process or
+automatically replay provisional live deltas. The lower-level `subscribe` is
+only-from-now, not a late-subscription replay API.
+
+Rust callers can use `thread_start_streamed` / `turn_start_streamed`, then consume
+the returned `RequestEvents::recv()` **after** awaiting admission. These reuse
+the existing 256-record broadcast channel; they fail explicitly on lag or EOF,
+release their receiver on drop/close, and expose the original response and IDs.
+Rust's record bound is not a byte/frame-size limit. Existing low-level request
+methods and `subscribe()` remain available, but callers composing them must
+subscribe first. These helpers do not add another event store, automatic ACK,
+durable replay, or a timeout to the low-level pending-RPC table.
+
+`pnpm -C packages/sdk test` runs the local stdio ordering/lifetime regressions
+without a CLI build. For the explicit real-CLI stream/reopen/cursor gate, first
+run `cargo build -p deepagent-cli --offline`, then
+`pnpm -C packages/sdk test:stdio`. This gate requires the real binary (no skip),
+verifies an identical executable copy in an empty installation, and uses fresh
+synthetic data/home/workspace roots with no model configuration. It tests the
+early-failure and durable-reconciliation path, not a configured provider or
+packaged plugin/MCP startup. Rust's matching owned thread/failure tests also
+isolate their test processes and executable copies; local cancellation never
+implies rollback.
+
 Within one app-server, `turn/start` starts only an idle thread. An admitted,
 running, queued replacement or cancelling turn keeps the thread busy until its
 worker finishes cleanup. A second ordinary start fails with JSON-RPC `-32005`
