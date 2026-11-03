@@ -69,6 +69,11 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
       nodes.unshift(node("orphan", "variable-assigner", { assignments: [] }));
     } else if (name === "professional-rooted-reordered") {
       nodes.reverse();
+    } else if (name.startsWith("end-contract-")) {
+      const type = name.slice("end-contract-".length);
+      const value = { string: "DESKTOP_TYPED", number: 0, object: { nested: [false, null] }, array: [0, false, {}], invalid: "DESKTOP_WRONG" }[type];
+      nodes[0].data.inputVariables = [{ name: "value", type: type === "invalid" ? "string" : type, default: value }];
+      nodes[1].data.outputVariables = [{ name: "report", type: type === "invalid" ? "number" : type, value: "{{#start.value#}}" }];
     } else if (name.startsWith("target-")) {
       nodes = [node("start", "start", { inputVariables: [{ name: "value", type: "string", default: "DESKTOP_FRESH" }] }),
         node("source", "template-transform", { templateScript: "{{#start.value#}}", templateInputVariables: [] }),
@@ -246,11 +251,12 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 }
 
 // Replay actual Kernel events through the production consumer, not a shadow mapper.
-async function consumeTargetEvents(filename) {
-  const { name, events } = JSON.parse(readFileSync(filename, "utf8"));
-  const target = name.slice("target-".length);
+async function consumeKernelEvents(filename) {
+  const { name, events, terminal } = JSON.parse(readFileSync(filename, "utf8"));
+  const outputContract = name.startsWith("end-contract-");
+  const target = outputContract ? undefined : name.slice("target-".length);
   const handlers = new Map();
-  const state = { nodes: ["start", "source", "answer", "end", "unrelated"].map((id) => ({
+  const state = { nodes: (outputContract ? ["start", "end"] : ["start", "source", "answer", "end", "unrelated"]).map((id) => ({
     id, data: { kind: id === "start" || id === "end" ? id : "answer", status: "idle" }, position: { x: 0, y: 0 },
   })), edges: [], updateNodeData(id, patch) {
     this.nodes = this.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
@@ -272,22 +278,40 @@ async function consumeTargetEvents(filename) {
   for (const event of events) handlers.get("chat://event")({ payload: {
     run_id: "target-replay", payload: { type: "workflow_node", event },
   } });
-  const completed = target === "start" ? ["start"] : target === "answer" ? ["start", "source", "answer"] : ["start", "source", "answer", "end"];
-  for (const node of state.nodes) {
-    // Existing UI contract maps backend Skipped to idle, retaining its reason.
-    assert.equal(node.data.status, completed.includes(node.id) ? "completed" : "idle", node.id);
-    if (!completed.includes(node.id)) assert.equal(node.data.errorMessage, "outside target recompute scope");
+  if (outputContract) {
+    const end = state.nodes.find((node) => node.id === "end").data;
+    assert.equal(state.nodes[0].data.status, "completed");
+    const invalid = name.endsWith("invalid");
+    assert.equal(end.status, invalid ? "error" : "completed");
+    if (invalid) {
+      assert.equal(end.result, undefined);
+      assert.match(end.errorMessage, /InvalidWorkflowOutput: node end field report expected number actual string/);
+      assert.equal(end.errorMessage.includes("DESKTOP_WRONG"), false);
+    } else {
+      assert.equal(end.result.success, true);
+      assert.deepEqual(end.result.outputs, events.find((event) => event.node_id === "end" && event.status === "completed").outputs);
+    }
+    handlers.get("session://completed")({ payload: { run_id: "target-replay", status: invalid ? "failed" : "succeeded", error: terminal.message } });
+  } else {
+    const completed = target === "start" ? ["start"] : target === "answer" ? ["start", "source", "answer"] : ["start", "source", "answer", "end"];
+    for (const node of state.nodes) {
+      // Existing UI contract maps backend Skipped to idle, retaining its reason.
+      assert.equal(node.data.status, completed.includes(node.id) ? "completed" : "idle", node.id);
+      if (!completed.includes(node.id)) assert.equal(node.data.errorMessage, "outside target recompute scope");
+    }
+    if (target !== "start") assert.equal(state.nodes.find((node) => node.id === "answer").data.result, "DESKTOP_FRESH");
+    handlers.get("session://completed")({ payload: { run_id: "target-replay", status: "succeeded" } });
   }
-  if (target !== "start") assert.equal(state.nodes.find((node) => node.id === "answer").data.result, "DESKTOP_FRESH");
-  handlers.get("session://completed")({ payload: { run_id: "target-replay", status: "succeeded" } });
   await running;
   assert.equal(handlers.size, 0);
 }
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (process.argv[2] === "--consume-target-events" && process.argv[3]) {
-    consumeTargetEvents(process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
+  if (["--consume-target-events", "--consume-output-events"].includes(process.argv[2]) && process.argv[3]) {
+    consumeKernelEvents(process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-output-contract-fixtures") {
+    emitFixtures(["end-contract-string", "end-contract-number", "end-contract-object", "end-contract-array", "end-contract-invalid"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-target-fixtures") {
     emitFixtures(["target-start", "target-answer", "target-end"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-settlement-fixtures") {

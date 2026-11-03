@@ -75,6 +75,7 @@ pub struct CompiledWorkflow {
     pub(super) iteration_plans: BTreeMap<String, super::iteration::IterationPlan>,
     pub(super) aggregator_plans: BTreeMap<String, super::aggregator::AggregatorPlan>,
     pub(super) input_plan: super::inputs::InputPlan,
+    pub(super) end_plans: BTreeMap<String, super::output::EndPlan>,
 }
 
 /// Validate a version-1 DAG. A recognized kind is not a promise of execution support.
@@ -124,6 +125,12 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         CoreError::invalid("InvalidWorkflowGraph: exactly one start node is required")
     })?;
     let input_plan = super::inputs::InputPlan::compile(start)?;
+    let end_plans = definition
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "end")
+        .map(|node| Ok((node.id.clone(), super::output::EndPlan::compile(node)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let mut successors = vec![Vec::new(); definition.nodes.len()];
     let mut indegrees = vec![0usize; definition.nodes.len()];
     let mut edge_ids = BTreeSet::new();
@@ -314,6 +321,7 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         iteration_plans,
         aggregator_plans,
         input_plan,
+        end_plans,
     })
 }
 
@@ -523,10 +531,11 @@ pub(super) fn declaration_name<'a>(declaration: &'a Value, location: &str) -> Re
 }
 
 pub(super) fn validate_type(value: Option<&Value>, location: &str) -> Result<()> {
-    if !matches!(
-        value.and_then(Value::as_str),
-        Some("string" | "number" | "boolean" | "object" | "array" | "file")
-    ) {
+    if value
+        .and_then(Value::as_str)
+        .and_then(super::value_type::ValueType::parse)
+        .is_none()
+    {
         return Err(CoreError::invalid(format!(
             "{location} type must be string, number, boolean, object, array or file"
         )));

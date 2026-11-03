@@ -404,7 +404,7 @@ impl WorkflowAgent {
         match kind {
             "start" => return Ok(self.inputs.output.clone()),
             "answer" => return self.execute_answer(config),
-            "end" => return self.execute_end(config),
+            "end" => return self.execute_end(),
             _ => {}
         }
         let resolved_config = self.resolve_config(config)?;
@@ -578,23 +578,14 @@ impl WorkflowAgent {
         )
     }
 
-    fn execute_end(&mut self, config: &Map<String, Value>) -> Result<Value> {
-        let mut result = Map::new();
-        if let Some(variables) = config.get("outputVariables").and_then(Value::as_array) {
-            for var in variables {
-                let name = var
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .or_else(|| var.get("variable").and_then(Value::as_str))
-                    .unwrap_or_default();
-                let value = var.get("value").cloned().unwrap_or(Value::Null);
-                if !name.is_empty() {
-                    let resolved = values::resolve(&value, &self.outputs)?;
-                    result.insert(name.to_string(), resolved);
-                }
-            }
-        }
-        Ok(Value::Object(result))
+    fn execute_end(&self) -> Result<Value> {
+        self.active_node_id
+            .as_ref()
+            .and_then(|id| self.compiled.end_plans.get(id))
+            .ok_or_else(|| {
+                CoreError::invalid("InvalidWorkflowOutput: compiled end plan is missing")
+            })?
+            .evaluate(&self.outputs)
     }
 
     fn execute_answer(&self, config: &Map<String, Value>) -> Result<Value> {

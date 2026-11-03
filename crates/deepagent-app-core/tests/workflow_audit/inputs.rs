@@ -437,10 +437,14 @@ async fn h188_190_exact_options_unicode_scalars_and_lossless_numeric_limits() {
     .enumerate()
     {
         let (_root, _db, chat, session) = workflow_fixture().await;
+        // Exercise the input constraint, not an unrelated mismatched end type.
+        let mut workflow = request(json!([declaration.clone()]), json!({"value":value}));
+        workflow.definition.nodes[1].config["outputVariables"][0]["type"] =
+            declaration["type"].clone();
         let (result, events) = run(
             &chat,
             session,
-            request(json!([declaration]), json!({"value":value})),
+            workflow,
             &format!("h188-190-bounds-{index}"),
         )
         .await;
@@ -449,6 +453,10 @@ async fn h188_190_exact_options_unicode_scalars_and_lossless_numeric_limits() {
             assert_eq!(
                 completed(&events, "start").outputs,
                 Some(json!({"value":value}))
+            );
+            assert_eq!(
+                completed(&events, "end").outputs,
+                Some(json!({"report":value}))
             );
         } else {
             assert!(events.is_empty());

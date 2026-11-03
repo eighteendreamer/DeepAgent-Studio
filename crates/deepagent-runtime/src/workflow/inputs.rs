@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use deepagent_core::error::{CoreError, Result};
 use serde_json::{json, Map, Value};
 
-use super::{graph, values, WorkflowNodeSpec};
+use super::{graph, value_type::ValueType, values, WorkflowNodeSpec};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(super) struct InputPlan {
@@ -15,7 +15,7 @@ pub(super) struct InputPlan {
 #[derive(Debug, Clone, PartialEq)]
 struct InputField {
     name: String,
-    kind: String,
+    kind: ValueType,
     required: bool,
     default: Option<Value>,
     options: Vec<String>,
@@ -114,7 +114,10 @@ impl InputField {
         };
         let mut field = InputField {
             name,
-            kind: object["type"].as_str().ok_or_else(config_error)?.to_owned(),
+            kind: object["type"]
+                .as_str()
+                .and_then(ValueType::parse)
+                .ok_or_else(config_error)?,
             required,
             default: object.get("default").cloned(),
             options: Vec::new(),
@@ -134,8 +137,8 @@ impl InputField {
         // The desktop retains hidden fields when switching input type.
         // Only the constraints of the active type apply, just as in its
         // x-visible-when schema; they are never coerced into another type.
-        match self.kind.as_str() {
-            "string" => {
+        match self.kind {
+            ValueType::String => {
                 if let Some(options) = object.get("options") {
                     let mut unique = BTreeSet::new();
                     for option in options.as_array().ok_or_else(config_error)? {
@@ -159,7 +162,7 @@ impl InputField {
                     return Err(config_error());
                 }
             }
-            "number" => {
+            ValueType::Number => {
                 let bound = |key| {
                     object
                         .get(key)
@@ -200,14 +203,17 @@ impl InputField {
                 Ok(())
             };
         }
-        let valid = match (self.kind.as_str(), value) {
-            ("string", Value::String(text)) => {
+        if !self.kind.accepts(value) {
+            return Err(self.invalid());
+        }
+        let valid = match (self.kind, value) {
+            (ValueType::String, Value::String(text)) => {
                 let length = text.chars().count() as u64;
                 (self.options.is_empty() || self.options.contains(text))
                     && self.min_length.map_or(true, |min| length >= min)
                     && self.max_length.map_or(true, |max| length <= max)
             }
-            ("number", Value::Number(_)) => {
+            (ValueType::Number, Value::Number(_)) => {
                 let min = self
                     .minimum
                     .as_ref()
@@ -220,16 +226,7 @@ impl InputField {
                     .transpose()?;
                 min.unwrap_or(true) && max.unwrap_or(true)
             }
-            ("boolean", Value::Bool(_))
-            | ("object", Value::Object(_))
-            | ("array", Value::Array(_)) => true,
-            // Same opaque-reference contract as CodeResponse. This grants no
-            // file access: the consuming artifact service still owns scope,
-            // existence and media validation, not the workflow declaration.
-            ("file", Value::String(reference)) => {
-                reference.starts_with("artifact://") && reference.len() > "artifact://".len()
-            }
-            _ => false,
+            _ => true,
         };
         if valid {
             Ok(())

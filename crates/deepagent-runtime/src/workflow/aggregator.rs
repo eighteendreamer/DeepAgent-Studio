@@ -7,7 +7,7 @@ use deepagent_core::error::{CoreError, Result};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 
-use super::{graph, values, NodeExecutionStatus};
+use super::{graph, value_type::ValueType, values, NodeExecutionStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -19,22 +19,21 @@ enum OutputType {
 }
 
 impl OutputType {
-    fn name(self) -> &'static str {
+    fn value_type(self) -> ValueType {
         match self {
-            Self::String => "string",
-            Self::Number => "number",
-            Self::Object => "object",
-            Self::Array => "array",
+            Self::String => ValueType::String,
+            Self::Number => ValueType::Number,
+            Self::Object => ValueType::Object,
+            Self::Array => ValueType::Array,
         }
     }
 
+    fn name(self) -> &'static str {
+        self.value_type().name()
+    }
+
     fn accepts(self, value: &Value) -> bool {
-        match self {
-            Self::String => value.is_string(),
-            Self::Number => value.is_number(),
-            Self::Object => value.is_object(),
-            Self::Array => value.is_array(),
-        }
+        self.value_type().accepts(value)
     }
 }
 

@@ -12,7 +12,7 @@ use deepagent_core::error::{CoreError, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 
-use super::{graph, values};
+use super::{graph, value_type::ValueType, values};
 
 pub const CODE_EXECUTE_TOOL: &str = "canvas_code_execute";
 pub const CODE_VERSION: u32 = 1;
@@ -183,19 +183,9 @@ impl CodeResponse {
         }
         for declaration in declared {
             let value = self.outputs.get(&declaration.name);
-            let valid = match (declaration.value_type.as_str(), value) {
-                ("string", Some(Value::String(_)))
-                | ("number", Some(Value::Number(_)))
-                | ("boolean", Some(Value::Bool(_)))
-                | ("object", Some(Value::Object(_)))
-                | ("array", Some(Value::Array(_))) => true,
-                // A code node can pass an existing opaque artifact reference,
-                // never a host path or inline file bytes. It gets no file grant.
-                ("file", Some(Value::String(reference))) => {
-                    reference.starts_with("artifact://") && reference.len() > "artifact://".len()
-                }
-                _ => false,
-            };
+            let valid = value.is_some_and(|value| {
+                ValueType::parse(&declaration.value_type).is_some_and(|kind| kind.accepts(value))
+            });
             if !valid {
                 return Err(CoreError::invalid(
                     "CodeResultInvalid: missing or wrongly typed declared output",

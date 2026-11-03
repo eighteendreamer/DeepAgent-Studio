@@ -28,6 +28,8 @@ mod http;
 mod inputs;
 #[path = "workflow_audit/iteration.rs"]
 mod iteration;
+#[path = "workflow_audit/output.rs"]
+mod output;
 #[path = "workflow_audit/reachability.rs"]
 mod reachability;
 #[path = "workflow_audit/settlement.rs"]
@@ -1728,7 +1730,6 @@ async fn audit_workflow_target_node_keeps_required_ancestor_outputs() {
 }
 
 #[tokio::test]
-#[ignore = "audit: successful workflow outputs must match their declared types"]
 async fn audit_workflow_end_output_matches_declared_type() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
