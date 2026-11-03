@@ -112,6 +112,10 @@ impl PluginService {
                     }
                     let revision = service.preparation.revision.load(Ordering::Acquire);
                     let cancel = deepagent_runtime::CancellationTree::new();
+                    // This observer owns the generation's blocking payload jobs.
+                    // Runtime shutdown/abort drops the observer, not those jobs:
+                    // wake their existing cooperative cancellation boundary too.
+                    let cancel_on_drop = cancel.token().drop_guard();
                     *service
                         .preparation
                         .cancel
@@ -322,6 +326,9 @@ impl PluginService {
                         Ok(Err(error)) => tracing::error!(%error, "plugin host discovery failed"),
                         Err(error) => tracing::error!(%error, "plugin host discovery task failed"),
                     }
+                    // Normal readiness is not a host shutdown. Keep the live
+                    // generation usable until invalidation or a later shutdown.
+                    cancel_on_drop.disarm();
                 }
                 drop(service);
                 tokio::time::sleep(Duration::from_secs(2)).await;
@@ -500,6 +507,50 @@ mod tests {
     use super::*;
     use std::fs::{FileTimes, OpenOptions};
     use std::time::SystemTime;
+
+    #[tokio::test]
+    async fn h92_normal_preparation_keeps_its_ready_generation_uncancelled() {
+        let temp = tempfile::tempdir().unwrap();
+        let plugin = temp.path().join("builtin/h92-ready");
+        std::fs::create_dir_all(plugin.join(".codex-plugin")).unwrap();
+        std::fs::create_dir_all(plugin.join("skills/ready")).unwrap();
+        std::fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"h92-ready","version":"0.1.0","skills":"skills"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            plugin.join("skills/ready/SKILL.md"),
+            "---\nname: h92-ready\ndescription: Synthetic readiness control\n---\nReady.",
+        )
+        .unwrap();
+        let service = Arc::new(PluginService::new(
+            PluginRoots {
+                session: Vec::new(),
+                builtin: temp.path().join("builtin"),
+                workspace: None,
+                personal: temp.path().join("personal"),
+            },
+            temp.path().join("data"),
+        ));
+        let mcp = Arc::new(crate::McpService::new(Arc::new(
+            deepagent_persistence::Database::open_in_memory().unwrap(),
+        )));
+        service.start_preparation(mcp, Arc::new(|| {}));
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while service.ready_snapshot().0.skill_roots.is_empty()
+                || Arc::strong_count(&service) != 1
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the normal generation must publish and release its work owner");
+        assert!(
+            !service.preparation.cancel.lock().unwrap().is_cancelled(),
+            "publishing readiness must disarm the shutdown guard, not cancel healthy work"
+        );
+    }
 
     #[test]
     #[ignore = "audit probe for plugin watcher cache invalidation"]

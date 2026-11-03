@@ -79,7 +79,9 @@ pub async fn run(transport: String) -> Result<(), String> {
     if !capabilities.available {
         return Err(format!("sandbox unavailable: {}", capabilities.message));
     }
-    run_stdio(chat, workspace, capabilities).await
+    let result = run_stdio(chat, workspace, capabilities).await;
+    tracing::debug!(success = result.is_ok(), "app-server host command returned");
+    result
 }
 
 #[derive(Clone)]

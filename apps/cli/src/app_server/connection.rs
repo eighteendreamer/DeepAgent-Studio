@@ -1,4 +1,4 @@
-//! Stdio connection IO and fault draining over the existing executor.
+//! Stdio connection IO and bounded shutdown over the existing executor.
 use super::*;
 
 type ConnectionWorkers = FuturesUnordered<tokio::task::JoinHandle<()>>;
@@ -15,7 +15,7 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
 {
     let stdout = Arc::new(tokio::sync::Mutex::new(stdout));
-    let outbox = EventOutbox::new(stdout.clone());
+    let (outbox, mut writer) = EventOutbox::new(stdout.clone());
     let output = outbox.output.clone();
     let mut connection = ServerState::new(chat, workspace, capabilities);
     connection.output = output.clone();
@@ -29,14 +29,52 @@ where
 
     let mut workers = ConnectionWorkers::new();
     let result = serve_requests(&state, &emitter, &output, &stdout, stdin, &mut workers).await;
-    if let Err(error) = result {
+    tracing::debug!(
+        pending_workers = workers.len(),
+        "app-server input ended; shutting down connection"
+    );
+    let mut errors: Vec<_> = result.err().into_iter().collect();
+    if let Some(error) = errors.first() {
         output.fail(error.clone());
-        return match cancel_connection_turns(&state, &mut workers).await {
-            Ok(()) => Err(error),
-            Err(cleanup) => Err(format!("{error}; connection cleanup: {cleanup}")),
-        };
     }
-    result
+    // EOF and IO failure share the same owner and cancellation tree. Keep the
+    // existing ten-second budget for the whole shutdown, including outbox flush.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    if let Err(cleanup) = cancel_connection_turns(&state, &mut workers, deadline).await {
+        let reason = format!("connection cleanup: {cleanup}");
+        output.fail(reason.clone());
+        errors.push(reason);
+    }
+    tracing::debug!(
+        pending_workers = workers.len(),
+        "app-server finished waiting for turn workers"
+    );
+    // Workers have finished (or shutdown is explicitly unresolved). Release
+    // the connection's senders so the sole writer can drain then close naturally.
+    drop(emitter);
+    drop(outbox);
+    match tokio::time::timeout_at(deadline, &mut writer).await {
+        Ok(Ok(())) => {}
+        Ok(Err(error)) => output.fail(format!("app-server event writer failed: {error}")),
+        Err(_) => {
+            output.fail("event outbox did not drain within the 10s shutdown budget".into());
+            writer.abort();
+        }
+    }
+    if let Some(reason) = output.failure_reason() {
+        if !errors.contains(&reason) {
+            errors.push(reason);
+        }
+    }
+    tracing::debug!(
+        failed = !errors.is_empty(),
+        "app-server connection shutdown finished"
+    );
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 async fn serve_requests<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
@@ -110,10 +148,11 @@ async fn serve_requests<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 async fn cancel_connection_turns(
     state: &Arc<Mutex<ServerState>>,
     workers: &mut ConnectionWorkers,
+    deadline: tokio::time::Instant,
 ) -> Result<(), String> {
-    // Faulted connections must not keep approval waits or queued turns
+    // Closed connections must not keep approval waits or queued turns
     // alive. Use their existing cancellation aliases and executor, not a
-    // fabricated terminal or another run store. Normal EOF is still H-92.
+    // fabricated terminal or another run store.
     let cancellations: Vec<_> = state
         .lock()
         .unwrap_or_else(|p| p.into_inner())
@@ -128,9 +167,9 @@ async fn cancel_connection_turns(
             cleanup_errors.push(format!("cancel {id}: {reason}"));
         }
     }
-    // Local bounded fault-drain policy. A timeout is reported as unresolved,
+    // Local bounded shutdown policy. A timeout is reported as unresolved,
     // never converted into success or a synthetic durable terminal.
-    let drained = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    let drained = tokio::time::timeout_at(deadline, async {
         while let Some(done) = workers.next().await {
             if let Err(reason) = done {
                 cleanup_errors.push(format!("finalize turn: {reason}"));

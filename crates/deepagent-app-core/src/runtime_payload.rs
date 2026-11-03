@@ -39,6 +39,7 @@ pub(crate) fn prepare_runtime_payload_with_cancel(
     if !archive_path.is_file() {
         return Ok(());
     }
+    tracing::debug!("plugin runtime preparation started");
     let _disk = loop {
         check_cancel(cancel)?;
         match DISK_PREPARATION.try_lock() {
@@ -298,6 +299,120 @@ mod tests {
             .unwrap();
         zip.write_all(b"keep").unwrap();
         zip.finish().unwrap();
+    }
+
+    #[test]
+    #[ignore = "H-92 isolated host-shutdown child; invoked by the default parent"]
+    fn h92_blocked_host_preparation_child() {
+        use crate::{McpService, PluginRoots, PluginService};
+        use deepagent_persistence::Database;
+        use std::sync::Arc;
+
+        if std::env::var_os("DEEPAGENT_H92_PREPARATION_CHILD").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let plugin = tmp.path().join("builtin/h92-payload");
+        std::fs::create_dir_all(plugin.join(".codex-plugin")).unwrap();
+        std::fs::write(
+            plugin.join(".codex-plugin/plugin.json"),
+            r#"{"name":"h92-payload","version":"0.1.0"}"#,
+        )
+        .unwrap();
+        archive(&plugin, b"synthetic host payload");
+        let install = tmp.path().join("data");
+        let data = install.join("plugins/data/h92-payload-builtin");
+        std::fs::create_dir_all(&data).unwrap();
+        let held_lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(data.join(".runtime.lock"))
+            .unwrap();
+        FileExt::lock_exclusive(&held_lock).unwrap();
+        let plugins = Arc::new(PluginService::new(
+            PluginRoots {
+                session: Vec::new(),
+                builtin: tmp.path().join("builtin"),
+                workspace: None,
+                personal: tmp.path().join("personal"),
+            },
+            &install,
+        ));
+        let mcp = Arc::new(McpService::new(Arc::new(
+            Database::open_in_memory().unwrap(),
+        )));
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            plugins.start_preparation(mcp, Arc::new(|| {}));
+            tokio::time::timeout(Duration::from_secs(5), async {
+                // This child runs only this helper: no other test can own the
+                // process-local production disk gate. The real payload worker
+                // holds it while blocked on our OS file lock.
+                loop {
+                    if matches!(
+                        DISK_PREPARATION.try_lock(),
+                        Err(std::sync::TryLockError::WouldBlock)
+                    ) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("real startup payload worker must enter before host shutdown");
+        });
+        drop(plugins);
+        // Like the production Tokio host shutdown: abort async observers and
+        // wait for blocking jobs. The test timeout bounds failure/cleanup only;
+        // it must NOT be used as the production exit strategy.
+        let clock = Instant::now();
+        runtime.shutdown_timeout(Duration::from_secs(1));
+        let worker_finished_before_unlock = DISK_PREPARATION.try_lock().is_ok();
+        let unextracted = !data.join("runtime/value.txt").exists();
+        FileExt::unlock(&held_lock).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while DISK_PREPARATION.try_lock().is_err() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        eprintln!("H-92 host drop: worker_finished_before_unlock={worker_finished_before_unlock}, unextracted={unextracted}, elapsed_ms={}", clock.elapsed().as_millis());
+        assert!(worker_finished_before_unlock && unextracted,
+            "aborting the host observer must cancel its actual blocking payload job before releasing the fixture lock");
+    }
+
+    #[test]
+    fn h92_runtime_shutdown_cancels_the_actual_blocked_host_payload_worker() {
+        use std::process::{Command, Stdio};
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "runtime_payload::tests::h92_blocked_host_preparation_child",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("DEEPAGENT_H92_PREPARATION_CHILD", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("isolated host-shutdown probe exceeded its cleanup deadline");
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(
+            status.success(),
+            "isolated host-shutdown regression failed: {status}"
+        );
     }
 
     #[test]

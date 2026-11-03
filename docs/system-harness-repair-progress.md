@@ -2,21 +2,88 @@
 
 ## 当前状态与计数口径（2026-11-03）
 
-本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计143项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；本次只纠正汇总，不计为新增修复。
+本任务是已授权的本地项目修改和测试，不对第三方开展测试，不访问真实内网资源、真实凭据或用户数据。依据 [原审计报告](system-harness-audit-2026-10-21.md) 逐项修复，每轮只处理一个独立根因；累计144项均限各自所列本机验收，H-46保留新反例并完成根因补强后恢复验收，提交hash见各项明细。审计时已修复有验收的条目跳过；归并、撤销和补充证据不重复计数。2026-11-02 合并核对发现顶部汇总遗漏 main 已有的 H-133；该次只纠正汇总，不计为新增修复。
 
 本台账按 **H-01～H-306 的 306 个历史编号槽位一一对应**，不是 306 个有效缺陷。原文有 299 个不同编号的主/归档标题；7 个没有独立主标题的旧编号从原报告归并说明及 Git 撤回记录补齐，仍各占一个追溯行，不新增有效任务。同一 H 的补充证据、真实进程补强或复核章节共用一行。表中标题直接来自当前原报告；无独立标题的旧编号用带“重复/撤销/归并”说明的追溯标题。原文链接指向同一报告，按 H 编号定位对应章节；旧编号按“归并目标/跳过依据”定位。
 
 | 状态 | 数量 | 含义 |
 |---|---|---|
-| 本阶段已修复并验收 | 143 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-125、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
+| 本阶段已修复并验收 | 144 | H-01、H-02、H-03、H-04、H-05、H-06、H-07、H-08、H-09、H-10、H-11、H-12、H-13、H-14、H-15、H-16、H-17、H-18、H-19、H-20、H-21、H-22、H-23、H-26、H-27、H-28、H-32、H-33、H-34、H-35、H-36、H-37、H-38、H-39、H-40、H-41、H-42、H-43、H-44、H-45、H-46、H-50、H-51、H-52、H-56、H-57、H-58、H-59、H-60、H-61、H-62、H-63、H-64、H-65、H-67、H-72、H-73、H-74、H-75、H-76、H-78、H-79、H-80、H-81、H-92、H-125、H-133、H-134、H-135、H-136、H-139、H-142、H-143、H-147、H-148、H-149、H-151、H-159、H-160、H-161、H-162、H-163、H-164、H-165、H-175、H-178、H-181、H-182、H-183、H-184、H-185、H-186、H-187、H-188、H-189、H-190、H-191、H-192、H-193、H-194、H-195、H-196、H-197、H-198、H-199、H-208、H-214、H-224、H-225、H-226、H-227、H-235、H-236、H-237、H-244、H-245、H-247、H-249、H-250、H-251、H-252、H-253、H-254、H-255、H-259、H-260、H-261、H-272、H-273、H-274、H-275、H-276、H-277、H-282、H-283、H-284、H-285、H-286、H-287、H-288、H-300、H-302、H-303、H-304，均限所列本机验收；hash见各项明细 |
 | 历史已修复跳过 | 22 | 17项原审计历史修复，另H-77/H-83/H-238/H-246/H-301分别随H-78/H-143/H-260/H-245/H-164共享边界消除；历史因果对照与默认回归另列，不重复记新生产修复 |
 | 归并 | 7 | 只在唯一有效项修复，不增加完成数 |
 | 撤销 | 3 | H-211/H-263/H-305，不作为缺陷或修复成果 |
-| 修复中 | 0 | H-211契约复核后撤销，见E-H211-01～03；下一轮先复核H-92/空闲EOF |
-| 待修复 | 131 | 含H-180授权跳过，实际待处理130；下一复核H-92及空闲EOF超时 |
+| 修复中 | 0 | H-92正常EOF及宿主派生payload取消已完成所列冻结验收，见E-H92-05 |
+| 待修复 | 130 | 含H-180授权跳过，实际待处理129项 |
 | 阻塞待处理 | 0 | 整套验证的环境/基线失败另列，不能据此假称通过 |
 
-有效未关闭条目当前为 **131（131待修复、0修复中；其中H-180按用户要求跳过，实际待处理130项）**；不提供完成率。143项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+有效未关闭条目当前为 **130（130待修复、0修复中；其中H-180按用户要求跳过，实际待处理129项）**；不提供完成率。144项的本机范围验收不表示整个系统、全部平台或完整 workspace 已通过。17项原审计历史修复依原报告跳过，尚未逐项重新定位的hash留为“未重新定位”；另H-77/H-83/H-238/H-246/H-301在各自复核前已随共享边界修复，生产实现c6947508/7bf6bae1/0ba0f611/8c8e1af4/63cfffa4及真实复核单独列明，合计22项历史跳过。H-180 的跳过不是历史已修复、归并或撤销，不计入这些成果。
+
+## H-92 正常EOF有界收尾（已修复并验收，2026-11-03，仅E05所列本机范围）
+
+**E-H92-01（2026-11-03，原生产入口探针复现）**：基线 `9bbd4f846cf6cfefe1a60737ef2e084b430609de`，tracked干净，五项既有用户未跟踪内容保持不读/不改/不提交。隔离HOME/USERPROFILE/APPDATA/LOCALAPPDATA、仓外随机TEMP/TMP并清除继承的供应商/凭据环境变量，只用合成SQLite和离线transport。`cargo test -p deepagent-cli app_server::terminal_audit::audit_stdio_eof_drops_active_turn_in_child_process --offline -j 2 -- --ignored --exact --nocapture --test-threads=1` 实际0过1败、exit101；父进程经真实管道完成三次RPC并等transport入场后关闭stdin，子进程exit0，但重开SQLite仍`running_turn`、`finished_at=None`、`run_terminal=0`。原日志 `target/h92-repair-20261103/original-eof-probe.log` 保留，不以已修H-01拥有worker handles为由跳过剩余正常EOF缺陷。新增正式EOF回归在生产修改前也0过1败，连接返回后活动worker仍持有通知发送端，15秒测试上界内无法收尾，见`regression-red.log`。
+
+**E-H92-02（候选实现与未关闭门禁）**：沿用H-01已保存的worker owner和`ChatService::request_cancel`，正常EOF与IO故障进入同一取消/等待边界；同一10秒本地shutdown预算覆盖worker和唯一outbox writer，保存并join该writer，释放发送端后等待真实write+flush。超时/写入/flush失败明确返回错误，不造durable终态、不新增取消或存储链路。原子进程探针转默认，并增强15秒父进程等待/异常清理及真实尾终态断言；强制直接drop runtime的低层原探针仍保留ignored，不经过连接shutdown，不将其当成已修复。候选前4项及后10项EOF专项分别通过，覆盖模型取消、显式steer排队、审批无副作用、实际临时PowerShell工具及退出、完成竞争16轮、延迟flush、write/flush错误与实际10秒超时；尚须冻结最终源码并完成全组验收，当前仍修复中，新增验收0。
+
+空闲EOF另行复核：原SDK `process_exits_when_stdin_closes` 保持10秒上限仍0过1败；独立.NET原生管道同样未在10秒退出。门禁前后旧主CLI哈希均 `B4050BE84EAFF5EBCB24F841F81746A9E7250315EB24D2BA9C64E15F346E21BA`，未被旁车覆盖，见`idle-sdk-before.log`。最初.NET诊断的原始结果文件误被第二次诊断复用，其原工具输出另存为明确标注的`native-idle-before-transcript.json`（转录，不是新测试），候选后二次原生结果保留`native-idle-after-result.json`，不伪称原始文件未复用。这是独立空闲退出证据，尚未确立与活动turn缺陷同根因，不提前合并或宣称消除。不得放宽等待上限、移除H-178门禁或以默认忽略代替验收。H-180授权跳过约定不变。
+
+**E-H92-03（2026-11-03，最终冻结候选验收：活动turn闭环通过，宿主退出门禁未闭环，不关闭本项）**：最终5份修改源码在全部门禁前后SHA256零差异，Cargo `compiler-artifact.executable`确认正式CLI路径，门禁前后字节哈希均 `0F11661A3C189EFEB31BC45BF570D217582DE9D185EFEBEA2A7CE9966E861D98`；没有Tauri构建覆盖。本轮在上一候选后仅修正新增测试的MutexGuard词法作用域，首次严格Clippy对该新增测试的`await_holding_lock`诊断与后续仅余旧基线的结果均保留，未加allow或放宽级别。证据根 `target/h92-repair-20261103/`，汇总为 `final-completed.json`、`ts-sdk-results.json`，完整原生命令/退出码/耗时均在其中。
+
+| 实际命令（从仓库根执行） | 结果与范围 |
+|---|---|
+| `cargo test -p deepagent-cli --all-targets --all-features --offline -j 2 -- --test-threads=1` | 135过0败19忽略；含11项新增EOF默认回归和转默认的原真实OS管道探针，旧H-01故障/ACK/审批/非协作对照也通过。新增覆盖多个活动thread均取消、steer队列取消后重连游标读、审批canary不变、真实临时PowerShell PID已退出、正常完成及16轮完成/EOF竞争、真实flush门闩、write/flush错误、实际10秒非协作及阻塞flush超时。忽略项不视作验收。 |
+| `cargo test -p deepagent-cli app_server::terminal_audit::audit_stdio_eof_drops_active_turn_in_child_process --offline -j 2 -- --exact --nocapture --test-threads=1` | 1过0败；子进程exit0，重开SQLite为terminal/finished_at已写/唯一run_terminal且cancelled，真实stdout尾部恰有1条turn.interrupted；原修前0/1保留。 |
+| `cargo test -p deepagent-cli app_server::terminal_audit::audit_runtime_shutdown_finalizes_in_flight_stdio_turn --offline -j 2 -- --ignored --exact --nocapture --test-threads=1` | 0过1败、exit101；直接spawn_turn后强制drop runtime，明确绕过连接shutdown，仍running_turn/finished_at=None/0终态。不更改其oracle，不把直接runtime drop、强杀或掉电保证冒充本轮实现。 |
+| `cargo build -p deepagent-cli --offline -j 2 --message-format=json` | 通过；由artifact而非猜路径确认执行产物，哈希门禁见上。 |
+| `cargo test -p deepagent-harness-protocol --offline -j 2` | 12过0败（含doc结果块）；未修改协议DTO、schema或版本。 |
+| `cargo test -p deepagent-harness-sdk --all-targets --all-features --offline -j 2 -- --nocapture --test-threads=1` | 独立组28过0败11忽略（lib20/0/11、真实stdio8/0/0）；本次空闲EOF门禁在原10秒内通过，但下行workspace同门禁再次失败，不据此声称已消除。 |
+| `pnpm --dir packages/sdk typecheck`、`pnpm --dir packages/sdk test`、`pnpm --dir packages/sdk test:stdio` | 均exit0；默认30过0败0跳过、真实CLI1过0败0跳过，类型/build通过。首个stdio日志名含冒号，落为NTFS ADS；原内容已原样另存正常文件`ts-sdk-stdio.log`，不影响测试执行或结果。 |
+| `cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1` | exit101，135结果块共4307过2败252忽略，实际1197.83秒；失败为SDK `process_exits_when_stdin_closes`原10秒退出超时，及未修改prompts `canvas_prompt::tests::every_node_kind_owns_exactly_one_profile`的既有H-306空defaultUserPrompt。不是全仓绿。 |
+| `cargo clippy -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings` | exit101；最终仅未修改`app_server.rs:587 unnecessary_map_or`，新增测试锁作用域诊断已消除；未修改该旧告警或抑制lint。 |
+| `cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings` | exit101；止于未修改`deepagent-models/src/client.rs:355 clone_on_copy`。 |
+| `cargo fmt --all -- --check`、`git diff --check` | 通过。 |
+
+空闲退出反例不得被局部绿测覆盖：候选正式CLI的独立.NET原生管道在原资源布局也未在10秒退出（`native-idle-after-result.json`）；将**相同字节**CLI复制到全新无旁置资源目录后，同类原生管道exit0、关闭stdin后约0.008秒退出（`native-isolated-after-result.json`）。当前`install_resource_dir()`明确按exe父目录定位资源，`target/debug/resources`确有MCP/插件等旁置目录；生产启动调用插件/MCP预备且存在spawn_blocking，但本轮仅证明布局对照，**尚未追到第一个导致退出等待的任务/资源，不能断言具体预备任务就是根因**。既有失败、候选失败、隔离对照和独立绿组分别保留；不再通过反复重跑、移走原资源、复制bin后只跑绿组或提高10秒上限来宣布正式布局通过，也不将其无依据归并到H-143/H-214等已关问题。
+
+本轮仅改变stdio连接关闭时的取消/等待与唯一outbox writer归属；无公共API/DTO/协议/权限/沙箱策略变化、无数据库迁移，无新增取消/store/运行链。正常EOF从直接drop活动turn改为请求既有取消并等待durable终态及可交付尾通知；非协作/输出故障只能明确失败，不能承诺全部通知送达或强制伪造终态。未执行完整Tauri后端/桌面pnpm build/GUI截图，因为未改桥接或前端；其他OS、真实供应商/内网/凭据/用户数据、打包插件/MCP生命周期、强杀掉电、长期压力未验，不外推本轮范围。H-178既有八门禁不重跑或降级，H-180授权跳过不变。
+
+**状态与下一步**：H-92仍修复中，不计新增已验收，不创建已修复commit；本轮代码、测试与双文档保留在工作区，待宿主退出门禁查明并完成相应验收后一起独立提交，再回填真实hash。未开始下一独立问题，下一步仍是H-92退出验收的任务/资源归属取证，若证明独立根因，先说明关联及是否应独立追踪，不静默合并。306行逐一核对后143验收/22历史跳过/7归并/3撤销/130待修/1修复中；本轮新增验收、历史跳过、归并、撤销均0，有效未关闭131含H-180，实际待处理130。H-92暂估余3–8有效分析/修复/验收小时，依据现有退出路径的布局差异和未定位任务，可能需跨AppCore宿主生命周期核对；不是完工承诺。全部剩余200–400有效小时仍为未逐项校准历史粗估，设备/依赖/环境等待另计（本次全仓纯门禁运行约20分钟，不当成编码工时），无可靠等待总上界；整体goal仍active、未完成。
+
+**E-H92-04（2026-11-03，宿主退出等待根因与TDD补强，候选跨层门禁进行中）**：续接E03，原工作区及8份修改输入重新核对，未动五项用户未跟踪内容。新增不含请求/事件内容的debug生命周期日志：真实正式布局的新合成HOME下，`native-lifecycle-stderr.log`明确记录pending_workers=0、连接shutdown finished/failed=false和host command returned/success=true均发生在同一毫秒，但原10秒进程退出门禁仍失败（hash `66E4AB9E5D654C4DC38C29AA507812C693423B38FA2FC7B5593E52EF033CF709`）。进一步原生取证 `native-payload-trace-stderr.log`在host返回约0.66秒后仍记录wedecode-builtin进入正式runtime payload解包，合成数据根的`.runtime-stage-*`文件持续存在；不是stdin/turn/outbox仍未收尾。当前CLI启动`PluginService::start_preparation`派生异步观察者，观察者再spawn_blocking执行可取消的正式payload准备；runtime丢弃观察者并不自动取消该blocking任务，现有generation CancellationTree此前只有配置失效会取消，宿主退出没有触发。这个遗漏使同一H-92的正常EOF无法完整退出，故补齐宿主派生工作所有权；不合并任何其他H编号，不新增第二套取消树、store或host配置。
+
+新增默认AppCore父回归通过同一测试二进制运行独立子探针，避免并发测试争用全局DISK_PREPARATION。子进程使用全新合成插件/两文件ZIP/临时SQLite，正式PluginService及McpService启动，父线程独占该插件`.runtime.lock`并等实际payload worker取得生产disk gate，随后终止Tokio宿主。修前`host-payload-red.log`父/子各0过1败（2个结果块，不是两个缺陷），worker_finished_before_unlock=false，只有释放夹具锁后worker才退出。候选沿用已有generation token的Tokio-util 0.7.18 `drop_guard()`：观察者被abort/runtime drop时唤醒其blocking准备的已有协作取消边界；generation正常完成时`disarm()`，不取消健康ready generation。API依据为本机锁定依赖源码`sync/cancellation_token.rs`及`guard.rs`，未凭记忆引入签名。修后子探针在仍持夹具锁时约21ms退出，worker_finished_before_unlock=true且未解包；新增默认正常generation对照通过并确认取消token仍有效。`host-payload-green.log`是父2过/0败/1 helper忽略，外加父显式启动的子1过/0败；helper未被当作“默认跳过即可验收”。生产不使用测试的runtime.shutdown_timeout、不强行exit0、不将取消失败伪造成功。
+
+一次`native-fixed-host`诊断被错误地与CLI重建重叠启动，Windows阻止移除仍运行的旧deepagent.exe，构建exit101/access denied。该诊断hash `24C5231BFD85D02B11D8064BA639F4971224C680D1E206B458F91B40FB94DDFA`不是新guard产物，已在`rejected-overlapping-diagnostic.json`明确作废，不作为候选红/绿验收；原结果和构建错误均保留。核对无存活仓库CLI后串行构建实际exit0，由Cargo artifact获取新hash `7D3851BFF1E8D6D71B1574074B038E3848DB90500C00F01FBE29BD171F84B726`；随后才启动正式原资源布局、新合成HOME的`native-fixed-serialized.ps1`，保持原10秒门禁，实际exit0、约0.041秒，前后哈希一致。未移走/删除旁置资源，不把文件布局简化当产品修复。
+
+新增生产范围仅PluginPreparation观察者对已有generation取消token的drop ownership，以及无payload的生命周期debug记录；无新公共API、依赖、DTO、协议、权限或数据迁移，MCP实现未改。最终8份源码已冻结在`target/h92-final-20261103/frozen-before.json`，正在执行原探针/11项EOF回归、AppCore正常/取消/对话对照、生产CLI与双SDK、workspace、隔离target Tauri check和严格lint。此前E03结果仍为历史证据，不替代新源码最终门禁。本项暂仍修复中、无提交、不计新增验收；其余305主台账行不变，累计143验收/22历史跳过/7归并/3撤销/130待修/1修复中，有效未关闭131含H-180、实际待处理130。下一步先完成本项冻结验收和提交再进入下一编号；本项暂余1–4有效验收/交付小时，等待门禁和设备另计，全部剩余200–400有效小时仍为历史未逐项校准粗估，无可靠等待总上界，不承诺日期，整体goal保持active。
+
+**E-H92-05（2026-11-03，最终冻结验收及本机正常EOF范围结论）**：E04候选的8份源码在开始、续接、全部门禁完成及补充生命周期对照后SHA256均一致，正式CLI由Cargo compiler-artifact获取，前后SHA256均为 7D3851BFF1E8D6D71B1574074B038E3848DB90500C00F01FBE29BD171F84B726。正式原资源布局未删除或移走；全新合成HOME下原10秒空闲退出门禁实际exit0、约0.030秒，真实活动turn的原OS管道入口也默认通过并验证SQLite重开和唯一尾部通知。证据目录 target/h92-final-20261103/，completed.json、postflight-completed.json及每项独立log/result保留完整命令/退出码/耗时；上轮E03失败未覆盖或改写。
+
+本次编排中止也如实保留：native-frozen.ps1再次加载runner时USERPROFILE已为合成目录，误将后续CARGO_HOME/RUSTUP_HOME指向该目录，protocol命令的Cargo shim触发工具链下载，测试本身尚未开始。核对PID、父进程及命令后只停止本次runner与该shim；原日志移存 protocol-bootstrap-interrupted.log，原因见 orchestration-interruption.json。没有据此改生产源码、换工具链或重跑已通过组；continuation.ps1恢复真实安装目录并明确使用已安装stable，实际cargo/rustc均1.96.0，先核对同一冻结源码和CLI，再从protocol继续。原部分结果与续接结果共同汇总，不把runner最终exit0说成所有门禁通过，也不把工具链启动中止算作产品测试红/绿。
+
+| 实际执行命令（仓库根，离线Cargo依赖、仓外TEMP、隔离应用HOME、清除继承供应商凭据变量） | 实际结果及边界 |
+|---|---|
+| cargo test -p deepagent-app-core h92_ --offline -j 2 -- --nocapture --test-threads=1 | exit0；默认父测试2过0败1 helper忽略，父显式启动的独立子探针另1过0败，不能当成3个唯一默认用例；真实blocking payload仍持夹具锁时21ms完成取消，正常ready generation的token保持未取消。 |
+| cargo test -p deepagent-app-core --lib runtime_payload::tests:: --offline -j 2 -- --nocapture --test-threads=1 | exit0；父4过0败4忽略、显式子1过0败；原解包/并发/失败回滚/旧缓存恢复正常。 |
+| cargo test -p deepagent-app-core --lib runtime_payload::tests::blocked_host_payload_preparation_does_not_block_conversations --offline -j 2 -- --ignored --exact --nocapture --test-threads=1 | exit0，1过0败；正式payload阻塞时两轮对话仍正常，未在锁持有时发布或解包。 |
+| cargo test -p deepagent-app-core --lib runtime_payload::tests::cancelling_blocked_payload_preparation_exits_without_extracting --offline -j 2 -- --ignored --exact --nocapture --test-threads=1 | exit0，1过0败；原取消边界对照实际执行，不把默认忽略当验收。 |
+| cargo test -p deepagent-app-core --lib runtime_payload::tests::workspace_switch_does_not_publish_stale_plugin_preparation --offline -j 2 -- --ignored --exact --nocapture --test-threads=1 | 补充postflight实际exit0，1过0败，6.74秒；工作区切换不发布旧代准备结果。 |
+| cargo test -p deepagent-cli --all-targets --all-features --offline -j 2 -- --test-threads=1 | exit0，135过0败19忽略；原OS管道探针及11项新增EOF默认回归实际执行，含多个活动thread、排队steer/持久游标重连、审批canary、真实临时PowerShell及PID退出、正常完成/16轮EOF竞争、真实flush门闩、写入/flush失败和实际10秒非协作/flush超时。 |
+| cargo test -p deepagent-cli app_server::terminal_audit::audit_stdio_eof_drops_active_turn_in_child_process --offline -j 2 -- --exact --nocapture --test-threads=1 | exit0，1过0败；子exit0，重开run_state=terminal、finished_at已写、唯一run_terminal及唯一turn.interrupted；保留E01原0/1失败。 |
+| cargo test -p deepagent-cli app_server::terminal_audit::audit_runtime_shutdown_finalizes_in_flight_stdio_turn --offline -j 2 -- --ignored --exact --nocapture --test-threads=1 | 明确exit101、0过1败；直接spawn_turn后强制销毁runtime绕过连接shutdown，仍无durable terminal。原oracle未改，此负面对照不作为通过，不宣称任意runtime Drop或强杀保证。 |
+| cargo build -p deepagent-cli --offline -j 2 --message-format=json；native-frozen.ps1 | build exit0，先取得正式artifact后才串行启动；原布局、新合成HOME、原10秒退出门禁exit0，约0.030秒。后续Tauri使用独立target，未覆盖该CLI。 |
+| cargo test -p deepagent-harness-protocol --offline -j 2 | exit0，12过0败，含doc结果块。 |
+| cargo test -p deepagent-harness-sdk --all-targets --all-features --offline -j 2 -- --nocapture --test-threads=1 | exit0，28过0败11忽略（lib20、真实stdio8）；原10秒空闲EOF门禁通过，且下行workspace再次实际通过。 |
+| cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1 | exit101，1584.17秒，136个结果块汇总4311过1败253忽略（含父显式启动的子结果块，不是4311个唯一用例）。AppCore、CLI和SDK消费者均执行；唯一失败为未修改的H-306 canvas_prompt::tests::every_node_kind_owns_exactly_one_profile，creative.video-edit.v1 defaultUserPrompt为空。H-92宿主子探针在该全组22ms取消，SDK process_exits_when_stdin_closes通过；不是全仓全绿。 |
+| cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2 --target-dir G:/Code_Warehouse/DeepAgent-Studio/target/h272-tauri-build | exit0，382.29秒；共享AppCore桌面生产消费者检查通过，独立构建目录避免旁车污染root CLI。 |
+| cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 -- -D warnings | exit101；lib12项/含lib test共14项既有诊断：context_runtime八处clone_on_copy、http_runtime needless_return、plugin_preparation:14旧states类型复杂度、run_assembler参数数目、session_title needless_borrow，以及workflow_audit/media.rs两个旧测试诊断。已与HEAD核对相关文件/原字段，证据 lint-baseline-proof.json；未加allow或降低级别，不声称lint全绿或其他未到达target已完成。 |
+| cargo clippy -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings；cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings | 均exit101；CLI仅app_server.rs:589原有unnecessary_map_or，root止于models/client.rs:355原有clone_on_copy，已与HEAD比对；原错误保留，不顺手修改其他问题。 |
+| cargo fmt --all -- --check；pnpm --dir packages/sdk typecheck；pnpm --dir packages/sdk test；pnpm --dir packages/sdk test:stdio | 均exit0；TS类型及build通过，默认30过0败0跳过，真实CLI1过0败0跳过；正常文件日志名已清除冒号，不再使用ADS。提交前另核对git diff --check及双文档/306行台账。 |
+
+本项在所列Windows本机正常EOF/协作取消范围已修复并验收。根因修复是为既有连接/宿主派生工作补齐关闭所有权：EOF停止接收，通过原ChatService取消别名和原executor提交终态；同一10秒预算等待workers及唯一outbox writer真实flush；宿主观察者Drop唤醒已有generation token，正常准备结束disarm。EOF与完成竞争允许原executor决定cancelled或succeeded，但只能有一个终态；超时及输出故障显式返回错误，非协作任务不伪造完成，已发生副作用不回滚。私有outbox构造返回writer owner；无公共API、协议DTO/schema/version、权限/沙箱、依赖、数据库schema或迁移变更，MCP实现未改。
+
+未执行其他OS、真实供应商/内网/凭据/用户数据、完整GUI/桌面pnpm build、所有可选feature组合、长期压力、强杀/掉电和任意直接runtime Drop的持久化保证；本次无前端/桥接契约变化，Tauri共享消费者已check，但不把它当作GUI验收。原低层runtime Drop仍失败；H-178八门禁无需重跑或降级，H-180授权跳过不变。E03“宿主退出未闭环”是当时候选失败记录，不再是E05最终源码结论。
+
+本轮新增修复并验收1，历史跳过/归并/撤销均新增0；306唯一主行核对后累计144验收、22历史跳过、7归并、3撤销、130待修、0修复中，有效未关闭130含授权跳过H-180，实际待处理129。其余305主行保持HEAD原样。仅本项8份源码/测试与双文档准备独立提交，取得真实commit后另做文档回填，不amend、不推送/PR。下一项准备复核H-130：同一已替代turn重复派生可能造成重复执行/副作用，优先于剩余描述/配置完整性问题；尚未开始该项复现或修改。H-92所列本机修复剩余0；全部剩余200–400有效修复/验收小时仍是历史未逐项校准粗估，依据129项跨层/权限/持久化等任务而非简单按本项墙钟扣减；本次全仓26.40分钟及桌面6.37分钟等编译/测试等待另计，环境/设备等待无可靠总上界，不承诺精确日期。整体goal继续active，远未完成。
 
 ## H-211 请求/响应ID契约复核（撤销误报，2026-11-03）
 
@@ -4450,7 +4517,7 @@ E-H23-before：`cargo test -p deepagent-app-core --lib service::tests::audit_rew
 | [H-89：Harness 显式选择未知模型时静默回退到默认模型](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-90：Harness SDK 关闭 writer 后的失败请求残留 pending reply](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-91：Harness 并发事件生产可使实时 eventSequence 倒退](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
-| [H-92：stdio EOF 直接退出运行时，活动 turn 没有有界收尾](system-harness-audit-2026-10-21.md) | P2 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
+| [H-92：stdio EOF 直接退出运行时，活动 turn 没有有界收尾](system-harness-audit-2026-10-21.md) | P2 | 已修复并验收 | E-H92-01～05保留原失败、E03宿主反例及作废编排，不抹除直接runtime Drop限制 | 原取消/worker与唯一writer同10秒收尾；观察者Drop取消既有payload generation，正常就绪disarm | CLI135/0/19，SDK28/0/11及workspace同门禁通过，TS30+1；完整结果块4311/1/253仅旧H-306，Tauri/build/fmt过，严格lint旧阻断见E05 | 独立修复提交待生成，随后另做文档hash回填 | 仅Windows正常EOF及所列协作边界；强制runtime Drop、强杀、其他OS/UI未保证；本项剩0，下一H-130；总200–400有效小时历史粗估，等待另计 |
 | [H-93：Chat Completions 路由未转换 Responses 命名工具选择的字段形状](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-94：Chat 兼容投影覆盖相邻 reasoning item，只保留最后一段](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |
 | [H-95：启动恢复把同一 session 的最新中断原因套用到所有未完成 run](system-harness-audit-2026-10-21.md) | P3 | 待修复 | 无跳过依据；动手前复核当前代码 | 根因见原项；本阶段尚未实施 | 本轮未执行该项验收；原探针/限制见原文 | 无本阶段修复提交 | 按风险/依赖排队；逐项工时待评估，计入总区间 |

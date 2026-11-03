@@ -36,7 +36,8 @@ impl AsyncWrite for FailedWriter {
 #[tokio::test]
 async fn backpressure_writer_and_flush_errors_poison_connection_without_ack_progress() {
     for flush_only in [false, true] {
-        let outbox = EventOutbox::new(Arc::new(tokio::sync::Mutex::new(FailedWriter(flush_only))));
+        let (outbox, _writer) =
+            EventOutbox::new(Arc::new(tokio::sync::Mutex::new(FailedWriter(flush_only))));
         outbox.emit(terminal());
         let error = tokio::time::timeout(Duration::from_secs(2), outbox.output.failed())
             .await
@@ -63,7 +64,7 @@ async fn backpressure_ack_requires_flush_and_resets_on_new_connection() {
     let (writer, reader) = tokio::io::duplex(1024);
     let writer = Arc::new(tokio::sync::Mutex::new(writer));
     let gate = writer.lock().await;
-    let outbox = EventOutbox::new(writer.clone());
+    let (outbox, _writer) = EventOutbox::new(writer.clone());
     let mut state = ServerState::new_for_test();
     initialize(&mut state);
     state.output = outbox.output.clone();
@@ -151,12 +152,12 @@ impl HttpTransport for BurstTransport {
     }
 }
 
-struct PipeClient {
-    input: DuplexStream,
-    lines: tokio::io::Lines<tokio::io::BufReader<DuplexStream>>,
+pub(super) struct PipeClient {
+    pub(super) input: DuplexStream,
+    pub(super) lines: tokio::io::Lines<tokio::io::BufReader<DuplexStream>>,
 }
 impl PipeClient {
-    async fn call(&mut self, id: u64, method: &str, params: Value) -> Value {
+    pub(super) async fn call(&mut self, id: u64, method: &str, params: Value) -> Value {
         self.input
             .write_all(
                 format!(
@@ -187,7 +188,9 @@ impl PipeClient {
     }
 }
 
-fn pipe_server(fixture: &Fixture) -> (PipeClient, tokio::task::JoinHandle<Result<(), String>>) {
+pub(super) fn pipe_server(
+    fixture: &Fixture,
+) -> (PipeClient, tokio::task::JoinHandle<Result<(), String>>) {
     let (input, stdin) = tokio::io::duplex(65536);
     let (stdout, output) = tokio::io::duplex(1024);
     let (chat, capabilities) = {

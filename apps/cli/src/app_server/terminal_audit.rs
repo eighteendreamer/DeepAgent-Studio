@@ -12,6 +12,9 @@ mod start_exclusivity_tests;
 #[path = "backpressure_tests.rs"]
 mod backpressure_tests;
 
+#[path = "eof_tests.rs"]
+mod eof_tests;
+
 use super::*;
 use deepagent_app_core::{ApprovalPolicy, MemorySecretStore, SettingsService};
 use deepagent_core::error::{CoreError, Result as CoreResult};
@@ -451,10 +454,9 @@ fn audit_stdio_eof_child_entrypoint() {
 }
 
 #[test]
-#[ignore = "audit H-92: stdio EOF must finalize an active turn before process exit"]
 fn audit_stdio_eof_drops_active_turn_in_child_process() {
     use std::io::{BufRead, BufReader, Write};
-    use std::process::{Command, Stdio};
+    use std::process::{Child, Command, Stdio};
     use std::sync::mpsc;
     use std::time::Instant;
 
@@ -463,21 +465,30 @@ fn audit_stdio_eof_drops_active_turn_in_child_process() {
     let database_path = root.join("state.sqlite");
     let marker_path = root.join("model-request-entered");
     let executable = std::env::current_exe().unwrap();
-    let mut child = Command::new(executable)
-        .args([
-            "--exact",
-            "app_server::terminal_audit::audit_stdio_eof_child_entrypoint",
-            "--ignored",
-            "--nocapture",
-        ])
-        .env(STDIO_CHILD_ROOT_ENV, &root)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
+    struct ChildGuard(Child);
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let mut child = ChildGuard(
+        Command::new(executable)
+            .args([
+                "--exact",
+                "app_server::terminal_audit::audit_stdio_eof_child_entrypoint",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env(STDIO_CHILD_ROOT_ENV, &root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let mut stdin = child.0.stdin.take().unwrap();
+    let stdout = child.0.stdout.take().unwrap();
     let (line_tx, line_rx) = mpsc::channel();
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stdout);
@@ -549,14 +560,24 @@ fn audit_stdio_eof_drops_active_turn_in_child_process() {
             "model transport was never entered"
         );
         assert!(
-            child.try_wait().unwrap().is_none(),
+            child.0.try_wait().unwrap().is_none(),
             "stdio child exited before transport entry"
         );
         std::thread::sleep(Duration::from_millis(10));
     }
 
     drop(stdin);
-    let status = child.wait().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let status = loop {
+        if let Some(status) = child.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "stdio EOF must finish bounded shutdown"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
     assert!(status.success(), "child stdio server exited with {status}");
 
     let database = Arc::new(Database::open(&database_path).unwrap());
@@ -579,6 +600,28 @@ fn audit_stdio_eof_drops_active_turn_in_child_process() {
         run.finished_at.is_some() && terminal_events == 1,
         "stdio EOF exited the child with an active turn lacking one durable terminal"
     );
+    let mut terminals = Vec::new();
+    loop {
+        match line_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(line) => {
+                if let Ok(value) = serde_json::from_str::<Value>(&line) {
+                    if value["params"]["turnId"] == turn_id
+                        && value["params"]["type"] == "turn.interrupted"
+                    {
+                        terminals.push(value);
+                    }
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(error) => panic!("child exited but stdout did not finish: {error}"),
+        }
+    }
+    assert_eq!(run.terminal_kind.as_deref(), Some("cancelled"));
+    assert_eq!(
+        terminals.len(),
+        1,
+        "flush one live terminal before actual process exit"
+    );
 }
 
 const STDIO_SLOW_OUTPUT_MARKER_ENV: &str = "DEEPAGENT_AUDIT_STDIO_SLOW_OUTPUT_MARKER";
@@ -592,7 +635,7 @@ fn audit_stdio_slow_pipe_child_entrypoint() {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     runtime.block_on(async {
         let stdout = Arc::new(tokio::sync::Mutex::new(tokio::io::stdout()));
-        let outbox = EventOutbox::new(stdout);
+        let (outbox, _writer) = EventOutbox::new(stdout);
         let payload = "x".repeat(4096);
         for index in 0..1023 {
             outbox.emit(HarnessEvent::TurnCompleted {

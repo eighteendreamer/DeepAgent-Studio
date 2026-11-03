@@ -85,10 +85,12 @@ impl EventOutbox {
         )
     }
 
-    pub(super) fn new<W: AsyncWrite + Unpin + Send + 'static>(stdout: Arc<Mutex<W>>) -> Arc<Self> {
+    pub(super) fn new<W: AsyncWrite + Unpin + Send + 'static>(
+        stdout: Arc<Mutex<W>>,
+    ) -> (Arc<Self>, tokio::task::JoinHandle<()>) {
         let (outbox, rx) = Self::channel(256);
         let output = outbox.output.clone();
-        tokio::spawn(async move {
+        let writer = tokio::spawn(async move {
             // The writer owns no queue Sender, so dropping all emitters closes
             // it naturally. A fault also interrupts a stalled lock/write/flush.
             if let Err(error) = output
@@ -98,7 +100,7 @@ impl EventOutbox {
                 output.fail(error);
             }
         });
-        outbox
+        (outbox, writer)
     }
 
     async fn write_events<W: AsyncWrite + Unpin>(
