@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize, Serializer};
 use deepagent_core::error::{CoreError, Result};
 use deepagent_core::message::Message;
 use deepagent_core::response_item::{ResponseInputItem, ResponseOutputItem};
-use deepagent_tools::validate_tool_schema;
+use deepagent_tools::{validate_tool_name, validate_tool_schema};
 
 /// Validate DeepSeek Responses' optional end-user identifier.
 ///
@@ -109,7 +109,19 @@ impl ToolSchema {
 /// Keeping this final guard on the provider-neutral request type prevents an
 /// invalid schema from reaching either Responses or Chat serialization.
 pub(crate) fn validate_function_tool_schemas(tools: &[ToolSchema]) -> Result<()> {
-    for tool in tools.iter().filter(|tool| tool.kind == "function") {
+    let mut names = std::collections::BTreeSet::new();
+    for (index, tool) in tools
+        .iter()
+        .enumerate()
+        .filter(|(_, tool)| tool.kind == "function")
+    {
+        validate_tool_name(&tool.function.name)
+            .map_err(|error| CoreError::invalid(format!("tools[{index}]: {error}")))?;
+        if !names.insert(&tool.function.name) {
+            return Err(CoreError::invalid(format!(
+                "tools[{index}]: duplicate function tool name"
+            )));
+        }
         validate_tool_schema(&tool.function.name, &tool.function.parameters)?;
     }
     Ok(())

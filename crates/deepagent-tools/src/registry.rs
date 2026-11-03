@@ -18,6 +18,24 @@ use deepagent_core::error::{CoreError, Result};
 use crate::permission::PermissionSet;
 use crate::{Tool, ToolDescriptor, ToolExecutionContext, ToolOutput};
 
+/// Shared function-name wire contract used by registered capabilities and both
+/// DeepSeek adapters. Raw external identities must be projected before calling
+/// this boundary. Never include the rejected value in diagnostics.
+pub const MAX_TOOL_NAME_BYTES: usize = 128;
+
+pub fn validate_tool_name(name: &str) -> Result<()> {
+    if !(1..=MAX_TOOL_NAME_BYTES).contains(&name.len())
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        return Err(CoreError::invalid(
+            "function tool name must be 1-128 ASCII letters, digits, underscores or hyphens",
+        ));
+    }
+    Ok(())
+}
+
 /// Compile and validate a tool's model-facing parameter schema.
 ///
 /// Provider function parameters are required to be a JSON Schema object.  A
@@ -142,6 +160,7 @@ impl ToolRegistry {
     pub fn register(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
         let descriptor = tool.descriptor();
         let name = descriptor.name.clone();
+        validate_tool_name(&name)?;
         if self.tools.contains_key(&name) {
             return Err(CoreError::invalid(format!(
                 "tool '{name}' is already registered"
@@ -169,6 +188,7 @@ impl ToolRegistry {
     pub fn try_replace(&mut self, tool: Arc<dyn Tool>) -> Result<()> {
         let descriptor = tool.descriptor();
         let name = descriptor.name.clone();
+        validate_tool_name(&name)?;
         validate_tool_schema(&name, &descriptor.parameters)?;
         self.tools.insert(name, ToolSpec { tool, descriptor });
         Ok(())
@@ -338,6 +358,36 @@ mod tests {
         let mut r = ToolRegistry::new();
         r.register(Arc::new(EchoTool { risk, perms })).unwrap();
         r
+    }
+
+    #[test]
+    fn h147_registration_and_replacement_reject_invalid_model_names_transactionally() {
+        for name in [
+            "".into(),
+            "read.file".into(),
+            "读文件".into(),
+            "x".repeat(129),
+        ] {
+            let mut registry = registry_with(RiskLevel::Safe, PermissionSet::empty());
+            let tool = Arc::new(DescriptorTool {
+                name: name.clone(),
+                parameters: serde_json::json!({"type":"object"}),
+            });
+            assert!(registry.register(tool.clone()).is_err(), "{name:?}");
+            assert!(registry.try_replace(tool).is_err(), "{name:?}");
+            assert_eq!(registry.len(), 1);
+            assert!(registry.get("echo").is_some());
+        }
+        let mut registry = ToolRegistry::new();
+        for name in ["A-b_09".into(), "a-b_09".into(), "x".repeat(128)] {
+            registry
+                .register(Arc::new(DescriptorTool {
+                    name,
+                    parameters: serde_json::json!({"type":"object"}),
+                }))
+                .unwrap();
+        }
+        assert_eq!(registry.len(), 3, "names remain case-sensitive");
     }
 
     #[tokio::test]

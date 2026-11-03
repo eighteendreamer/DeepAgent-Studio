@@ -162,6 +162,7 @@ impl McpClient {
     /// Discover the tools the server provides (`tools/list`).
     pub async fn list_tools(&self) -> Result<Vec<McpToolDef>> {
         let mut tools = Vec::new();
+        let mut raw_names = HashSet::new();
         let mut cursor = None;
         let mut seen_cursors = HashSet::new();
         let mut item_count = 0;
@@ -180,6 +181,15 @@ impl McpClient {
             }
             item_count += parsed.tools.len();
             for definition in parsed.tools {
+                // Identity must be unambiguous across the entire paginated
+                // response, even when a definition will be schema-filtered.
+                if let Some(name) = definition.get("name").and_then(|name| name.as_str()) {
+                    if !raw_names.insert(name.to_owned()) {
+                        return Err(CoreError::invalid(
+                            "MCP tools/list contains duplicate raw tool identity",
+                        ));
+                    }
+                }
                 if definition.is_object() && definition.get("inputSchema").is_none() {
                     tracing::warn!(
                         tool = definition.get("name").and_then(|name| name.as_str()),
@@ -257,6 +267,35 @@ impl McpClient {
 mod tests {
     use super::*;
     use crate::transport::MockTransport;
+
+    #[tokio::test]
+    async fn h147_duplicate_raw_identity_on_later_page_rejects_the_entire_catalog() {
+        use crate::protocol::JsonRpcResponse;
+        use async_trait::async_trait;
+
+        struct DuplicateServer;
+        #[async_trait]
+        impl McpTransport for DuplicateServer {
+            async fn send(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse> {
+                let result = if req.params.is_none() {
+                    serde_json::json!({"tools":[{"name":"same","inputSchema":{"type":"object"}}],"nextCursor":"next"})
+                } else {
+                    serde_json::json!({"tools":[{"name":"same","inputSchema":{"type":"object"}}]})
+                };
+                Ok(JsonRpcResponse {
+                    jsonrpc: "2.0".into(),
+                    id: req.id,
+                    result: Some(result),
+                    error: None,
+                })
+            }
+        }
+        let error = McpClient::new(Arc::new(DuplicateServer))
+            .list_tools()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("duplicate raw tool identity"));
+    }
 
     fn client_with(transport: MockTransport) -> McpClient {
         McpClient::new(Arc::new(transport))

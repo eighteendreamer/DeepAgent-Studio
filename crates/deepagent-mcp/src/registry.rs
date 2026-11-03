@@ -2,16 +2,19 @@
 //!
 //! For each configured server the registry holds an [`McpClient`] and the tools
 //! it discovered. Tools are exposed under a namespaced name —
-//! `mcp__<server>__<tool>` — mirroring Claude Code's `mcp__plugin_<plugin>_<server>__<tool>`
-//! convention, so remote tools never collide with built-in ones and the source
-//! server is always recoverable from the name.
+//! `mcp__<server>__<tool>` for unambiguous short names, otherwise a stable bounded
+//! alias. Raw ownership lives in [`RemoteTool`], never in parsed alias text.
 
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 use tracing::Instrument;
 
 use deepagent_core::error::{CoreError, Result};
-use deepagent_tools::{validate_tool_arguments, validate_tool_schema, ToolExecutionContext};
+use deepagent_tools::{
+    validate_tool_arguments, validate_tool_name, validate_tool_schema, ToolExecutionContext,
+    MAX_TOOL_NAME_BYTES,
+};
 
 use crate::client::McpClient;
 use crate::liveness::{LivenessConfig, LivenessProbe};
@@ -20,7 +23,7 @@ use crate::protocol::{McpToolDef, ToolCallResult};
 /// A discovered remote tool, namespaced and tagged with its server.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RemoteTool {
-    /// Namespaced name: `mcp__<server>__<tool>`.
+    /// Stable model-visible name; not an encoding that callers may reverse.
     pub namespaced_name: String,
     /// The server this tool belongs to.
     pub server: String,
@@ -32,17 +35,56 @@ pub struct RemoteTool {
     pub input_schema: serde_json::Value,
 }
 
-/// Build the namespaced tool name for a server + local tool.
+/// Project a raw identity to the shared function-name wire contract.
+///
+/// Version 1 is independent of catalog membership/order, so adding a server or
+/// rebuilding a snapshot cannot invalidate approvals, discoveries or history.
+/// The reserved alias namespace cannot be produced by the legacy path. Full
+/// SHA-256 of length-delimited UTF-8 identities prevents delimiter/sanitization
+/// ambiguity; registration still rejects any actual collision, without retrying
+/// or choosing an arbitrary owner. Ordinary legacy names remain unchanged.
 pub fn namespaced_name(server: &str, tool: &str) -> String {
-    format!("mcp__{server}__{tool}")
+    const ALIAS_SERVER: &str = "alias_v1";
+    const PREFIX: &str = "mcp__alias_v1__";
+    let legacy = format!("mcp__{server}__{tool}");
+    let unambiguous = |part: &str| {
+        !part.is_empty() && !part.contains("__") && !part.starts_with('_') && !part.ends_with('_')
+    };
+    if server != ALIAS_SERVER
+        && unambiguous(server)
+        && unambiguous(tool)
+        && validate_tool_name(&legacy).is_ok()
+    {
+        return legacy;
+    }
+    let mut hash = Sha256::new();
+    hash.update(b"deepagent-mcp-tool-name-v1");
+    for part in [server, tool] {
+        hash.update((part.len() as u64).to_le_bytes());
+        hash.update(part.as_bytes());
+    }
+    let digest = format!("{:x}", hash.finalize());
+    let hint: String = legacy[5..]
+        .chars()
+        .take(MAX_TOOL_NAME_BYTES - PREFIX.len() - 2 - digest.len())
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '-') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{PREFIX}{hint}__{digest}")
 }
 
-/// Split at the first delimiter for simple server names. Server names may also
-/// contain `__`; routing must use registered [`RemoteTool`] ownership instead.
+/// Historical convenience for legacy names only, not a routing API. Hashed
+/// aliases are deliberately not reversible. Always look up [`RemoteTool`].
 pub fn split_namespaced(name: &str) -> Option<(&str, &str)> {
     let rest = name.strip_prefix("mcp__")?;
     let sep = rest.find("__")?;
-    Some((&rest[..sep], &rest[sep + 2..]))
+    let server = &rest[..sep];
+    (server != "alias_v1").then_some((server, &rest[sep + 2..]))
 }
 
 #[derive(Clone)]
@@ -234,7 +276,7 @@ impl McpRegistry {
         namespaced: &str,
         arguments: serde_json::Value,
     ) -> Result<ToolCallResult> {
-        if split_namespaced(namespaced).is_none() {
+        if !namespaced.starts_with("mcp__") {
             return Err(CoreError::invalid(format!(
                 "not an MCP tool name: {namespaced}"
             )));
@@ -260,7 +302,7 @@ impl McpRegistry {
         arguments: serde_json::Value,
         context: ToolExecutionContext,
     ) -> Result<ToolCallResult> {
-        if split_namespaced(namespaced).is_none() {
+        if !namespaced.starts_with("mcp__") {
             return Err(CoreError::invalid(format!(
                 "not an MCP tool name: {namespaced}"
             )));
@@ -467,6 +509,78 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         assert_eq!(split_namespaced("read_file"), None);
     }
 
+    #[test]
+    fn h147_names_are_valid_stable_and_preserve_distinct_raw_identities() {
+        let long = "x".repeat(200);
+        let pairs = [
+            ("simple", "read"),
+            ("simple", "Read"),
+            ("a", "b__echo"),
+            ("a__b", "echo"),
+            ("a.b", "read.file"),
+            ("a_b", "read_file"),
+            ("", ""),
+            ("服务", "读取"),
+            ("s", long.as_str()),
+            ("alias_v1", "echo"),
+            ("s", "a\0b"),
+            ("s\0a", "b"),
+            ("a_", "b"),
+            ("a", "_b"),
+        ];
+        let mut names = std::collections::BTreeSet::new();
+        for (server, tool) in pairs {
+            let name = namespaced_name(server, tool);
+            assert!(!name.is_empty() && name.len() <= 128, "{name}");
+            assert!(
+                name.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+                "{name}"
+            );
+            assert!(
+                names.insert(name.clone()),
+                "raw identities must not collapse: {name}"
+            );
+            assert_eq!(name, namespaced_name(server, tool));
+        }
+        assert_eq!(namespaced_name("simple", "read"), "mcp__simple__read");
+        assert_eq!(namespaced_name("a.b", "read.file"), "mcp__alias_v1__a_b__read_file__9afc3be941908bce5ded982f0dab85bafa79ee135a82038a550d33d00b1b1b25");
+        assert!(split_namespaced(&namespaced_name("a.b", "read.file")).is_none());
+        let projected = namespaced_name("a.b", "read.file");
+        let forged_raw = projected.strip_prefix("mcp__alias_v1__").unwrap();
+        assert_ne!(namespaced_name("alias_v1", forged_raw), projected);
+    }
+
+    #[tokio::test]
+    async fn h147_registration_order_and_snapshot_merge_do_not_rename_tools() {
+        let mut first = McpRegistry::new();
+        first
+            .register("a", client(single_tool_transport("b__echo")))
+            .await
+            .unwrap();
+        let before = first.all_tools()[0].namespaced_name.clone();
+        let mut second = McpRegistry::new();
+        second
+            .register("a__b", client(single_tool_transport("echo")))
+            .await
+            .unwrap();
+        let other = second.all_tools()[0].namespaced_name.clone();
+        first.extend_ready(&second).unwrap();
+        assert_ne!(before, other);
+        assert!(first.find_tool(&before).is_some());
+        assert!(first.find_tool(&other).is_some());
+        let mut reversed = McpRegistry::new();
+        reversed
+            .register("a__b", client(single_tool_transport("echo")))
+            .await
+            .unwrap();
+        reversed
+            .register("a", client(single_tool_transport("b__echo")))
+            .await
+            .unwrap();
+        assert_eq!(first.all_tools(), reversed.all_tools());
+    }
+
     #[tokio::test]
     async fn extend_ready_rejects_colliding_namespaced_tools_transactionally() {
         let mut first = McpRegistry::new();
@@ -480,8 +594,12 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             .await
             .unwrap();
 
+        // Force a genuine projected-name collision, independently of the now
+        // disambiguated delimiter fixture, to exercise hash-collision safety.
+        let collision = first.all_tools()[0].namespaced_name.clone();
+        second.servers.get_mut("a__b").unwrap().tools[0].namespaced_name = collision.clone();
         let error = first.extend_ready(&second).unwrap_err().to_string();
-        assert!(error.contains("mcp__a__b__echo"), "{error}");
+        assert!(error.contains(&collision), "{error}");
         assert_eq!(first.server_names(), vec!["a"]);
         assert_eq!(first.all_tools().len(), 1);
     }
@@ -657,11 +775,11 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         )
         .await
         .unwrap();
-        let name = "mcp__plugin__rea__rea__search";
-        let tool = reg.find_tool(name).expect("plugin tool lookup");
+        let name = namespaced_name("plugin__rea__rea", "search");
+        let tool = reg.find_tool(&name).expect("plugin tool lookup");
         assert_eq!(tool.server, "plugin__rea__rea");
         assert_eq!(
-            reg.invoke(name, serde_json::json!({"q":"x"}))
+            reg.invoke(&name, serde_json::json!({"q":"x"}))
                 .await
                 .unwrap()
                 .text(),
@@ -671,7 +789,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
     }
 
     #[tokio::test]
-    async fn ambiguous_namespaced_tool_registration_is_rejected() {
+    async fn ambiguous_raw_names_are_disambiguated_without_changing_ownership() {
         let mut reg = McpRegistry::new();
         reg.register("plugin__rea", client(tools_transport()))
             .await
@@ -682,8 +800,48 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
                 "tools":[{"name":"rea__search", "inputSchema":{}}]
             }),
         );
-        assert!(reg.register("plugin", client(ambiguous)).await.is_err());
-        assert_eq!(reg.server_count(), 1);
+        reg.register("plugin", client(ambiguous)).await.unwrap();
+        assert_eq!(reg.server_count(), 2);
+        for (server, raw) in [("plugin", "rea__search"), ("plugin__rea", "search")] {
+            let tool = reg.find_tool(&namespaced_name(server, raw)).unwrap();
+            assert_eq!(tool.server, server);
+            assert_eq!(tool.local_name, raw);
+        }
+    }
+
+    #[tokio::test]
+    async fn h147_duplicate_raw_identity_cannot_be_hidden_by_schema_filtering() {
+        for invalid in [
+            serde_json::json!({"name":"same"}),
+            serde_json::json!({"name":"same","inputSchema":false}),
+        ] {
+            let transport = MockTransport::new().with_result(
+                "tools/list",
+                serde_json::json!({"tools":[
+                    invalid, {"name":"same","inputSchema":{"type":"object"}}
+                ]}),
+            );
+            let mut registry = McpRegistry::new();
+            registry
+                .register("healthy", client(tools_transport()))
+                .await
+                .unwrap();
+            let before = registry.all_tools();
+            let error = registry
+                .register_with_instructions(
+                    "ambiguous",
+                    client(transport),
+                    Some("must not publish".into()),
+                )
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("duplicate raw tool identity"),
+                "{error}"
+            );
+            assert_eq!(registry.all_tools(), before);
+            assert!(registry.server_instructions().is_empty());
+        }
     }
 
     #[tokio::test]

@@ -508,6 +508,10 @@ fn response_to_chat_completion(request: ResponseRequest) -> Result<ChatCompletio
 mod input_identity_tests;
 
 #[cfg(test)]
+#[path = "client_tool_name_tests.rs"]
+mod tool_name_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::chat_completions::ChatCompletionRequest;
@@ -730,7 +734,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "audit reproducer: DeepSeek tool names must be validated before transport"]
     async fn audit_deepseek_tool_schema_names_are_validated_before_transport() {
         struct CountingTransport {
             calls: Arc<AtomicUsize>,

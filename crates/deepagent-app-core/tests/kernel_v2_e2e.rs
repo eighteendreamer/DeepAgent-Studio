@@ -80,6 +80,9 @@ mod mcp_initialize_contract;
 #[path = "kernel_v2_e2e/mcp_discovery_restore.rs"]
 mod mcp_discovery_restore;
 
+#[path = "kernel_v2_e2e/mcp_tool_names.rs"]
+mod mcp_tool_names;
+
 #[path = "kernel_v2_e2e/post_tool_hook_commit.rs"]
 mod post_tool_hook_commit;
 
@@ -2460,12 +2463,24 @@ async fn audit_ready_mcp_name_collision_does_not_block_chat() {
     use deepagent_app_core::{McpServerDto, McpService};
     use std::time::Duration;
 
-    struct ObservedModel(AtomicUsize);
+    struct ObservedModel {
+        calls: AtomicUsize,
+        tools: Mutex<Vec<String>>,
+    }
 
     #[async_trait]
     impl HttpTransport for ObservedModel {
-        async fn stream(&self, _request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
-            self.0.fetch_add(1, Ordering::SeqCst);
+        async fn stream(&self, request: TransportRequest, sink: &mut dyn EventSink) -> Result<()> {
+            let body: serde_json::Value = serde_json::from_str(&request.body)?;
+            *self.tools.lock().unwrap() = body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|tool| tool["name"].as_str())
+                .filter(|name| name.starts_with("mcp__"))
+                .map(str::to_owned)
+                .collect();
+            self.calls.fetch_add(1, Ordering::SeqCst);
             emit_responses_events(sink, &response_text("ordinary chat completed"))
         }
     }
@@ -2478,6 +2493,7 @@ async fn audit_ready_mcp_name_collision_does_not_block_chat() {
             &script,
             r#"
 const tool = process.argv[2];
+const owner = process.argv[3];
 require('node:readline').createInterface({ input: process.stdin }).on('line', line => {
   const msg = JSON.parse(line);
   const reply = result => process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }) + '\n');
@@ -2485,6 +2501,8 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
     capabilities: { tools: {} }, serverInfo: { name: 'namespacing-audit', version: '1' } });
   else if (msg.method === 'tools/list') reply({ tools: [{ name: tool,
     description: 'audit tool', inputSchema: { type: 'object' } }] });
+  else if (msg.method === 'tools/call') reply({content:[{type:'text',text:owner+'/'+msg.params.name}],
+    isError:msg.params.name !== tool});
   else if (msg.id !== undefined) reply({});
 });
 "#,
@@ -2499,6 +2517,9 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             Arc::new(MemorySecretStore::new()),
         ));
         settings.initialize("sk-audit-placeholder").await.unwrap();
+        settings
+            .set_tool_search_mode(deepagent_builtins::ToolSearchMode::Disabled)
+            .unwrap();
         let mcp = Arc::new(McpService::new(db.clone()));
         for (name, tool) in [
             ("a", "b__echo"),
@@ -2506,13 +2527,15 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         ] {
             let dto: McpServerDto = serde_json::from_value(serde_json::json!({
                 "name":name, "transport":"stdio", "enabled":true,
-                "command":"node", "args":[script,tool]
+                "command":"node", "args":[script,tool,name]
             }))
             .unwrap();
             mcp.upsert(dto).unwrap();
         }
         mcp.start_preparation();
-        let expected_ready_servers = if colliding { 1 } else { 2 };
+        // H-147 projects the two distinct raw identities to stable, distinct
+        // legal names. They must both remain available, not just avoid blocking.
+        let expected_ready_servers = 2;
         let prepared = tokio::time::timeout(Duration::from_secs(5), async {
             while mcp.ready_registry().server_count() < expected_ready_servers {
                 tokio::time::sleep(Duration::from_millis(10)).await;
@@ -2527,11 +2550,8 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         let statuses = tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let statuses = mcp.connection_status().await.unwrap();
-                let settled = if colliding {
-                    statuses.iter().any(|status| status.status == "failed")
-                } else {
-                    statuses.iter().all(|status| status.status == "connected")
-                };
+                let settled = statuses.len() == 2
+                    && statuses.iter().all(|status| status.status == "connected");
                 if settled {
                     break statuses;
                 }
@@ -2541,7 +2561,19 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         .await
         .expect("MCP preparation statuses must settle");
         let tools = ready.all_tools();
-        let model = Arc::new(ObservedModel(AtomicUsize::new(0)));
+        let mut routed = Vec::new();
+        for tool in &tools {
+            routed.push((
+                format!("{}/{}", tool.server, tool.local_name),
+                ready
+                    .invoke(&tool.namespaced_name, serde_json::json!({}))
+                    .await,
+            ));
+        }
+        let model = Arc::new(ObservedModel {
+            calls: AtomicUsize::new(0),
+            tools: Mutex::new(Vec::new()),
+        });
         let chat = ChatService::new(db, settings, model.clone(), root.path()).with_mcp(mcp);
         let outcome = chat
             .run_in_session(
@@ -2558,6 +2590,28 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
             )
             .await;
         ready.close_all().await.unwrap();
+        for (expected, result) in routed {
+            let result = result.unwrap();
+            assert!(!result.is_error);
+            assert_eq!(
+                result.text(),
+                expected,
+                "each alias must reach its original server and raw tool"
+            );
+        }
+        let wire = model.tools.lock().unwrap();
+        let expected: std::collections::BTreeSet<_> =
+            tools.iter().map(|t| t.namespaced_name.clone()).collect();
+        assert_eq!(expected.len(), 2);
+        assert_eq!(
+            wire.iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>(),
+            expected
+        );
+        assert!(wire
+            .iter()
+            .all(|name| deepagent_tools::validate_tool_name(name).is_ok()));
         observations.push(serde_json::json!({
             "colliding": colliding,
             "ready_servers": ready.server_count(),
@@ -2566,7 +2620,7 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
                 serde_json::json!({"name": status.name, "status": status.status, "error": status.error})
             }).collect::<Vec<_>>(),
             "completed": outcome.is_ok(),
-            "model_requests": model.0.load(Ordering::SeqCst),
+            "model_requests": model.calls.load(Ordering::SeqCst),
             "error": outcome.err().map(|error| error.to_string()),
         }));
     }
@@ -2579,14 +2633,14 @@ require('node:readline').createInterface({ input: process.stdin }).on('line', li
         observations.iter().all(|case| case["completed"] == true),
         "an MCP naming conflict must be resolved or isolated before publishing, not fail every ordinary chat"
     );
-    assert_eq!(observations[1]["ready_servers"], 1);
+    assert_eq!(observations[1]["ready_servers"], 2);
     assert_eq!(observations[1]["model_requests"], 1);
-    assert_eq!(observations[1]["tools"].as_array().unwrap().len(), 1);
+    assert_eq!(observations[1]["tools"].as_array().unwrap().len(), 2);
     assert!(observations[1]["statuses"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|status| status["status"] == "failed"));
+        .all(|status| status["status"] == "connected"));
 }
 
 #[tokio::test]
