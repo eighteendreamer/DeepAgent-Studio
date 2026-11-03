@@ -486,7 +486,7 @@ impl Numeric {
     }
 }
 
-fn validate_operator(operator: &str) -> Result<()> {
+pub(super) fn validate_operator(operator: &str) -> Result<()> {
     match operator {
         "is" | "is-not" | "contains" | "not-contains" | "starts-with" | "ends-with" | "empty"
         | "not-empty" | "gt" | "gte" | "lt" | "lte" => Ok(()),

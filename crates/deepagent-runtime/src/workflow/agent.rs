@@ -405,13 +405,13 @@ impl WorkflowAgent {
             "start" => return Ok(self.inputs.output.clone()),
             "answer" => return self.execute_answer(config),
             "end" => return self.execute_end(),
+            "if-else" => return self.execute_if_else(),
             _ => {}
         }
         let resolved_config = self.resolve_config(config)?;
 
         match kind {
             "variable-assigner" => self.execute_variable_assigner(&resolved_config),
-            "if-else" => self.execute_if_else(&resolved_config),
             "template-transform" => self.execute_template_transform(&resolved_config),
             "list-operator" => self.execute_list_operator(&resolved_config),
             "question-classifier" => self
@@ -622,62 +622,12 @@ impl WorkflowAgent {
         Ok(Value::Object(result))
     }
 
-    fn execute_if_else(&self, config: &Map<String, Value>) -> Result<Value> {
-        let conditions = config
-            .get("conditions")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let logical_operator = config
-            .get("logicalOperator")
-            .and_then(Value::as_str)
-            .unwrap_or("and");
-
-        for group in conditions {
-            let group_id = group.get("id").and_then(Value::as_str).unwrap_or("default");
-            let items = group
-                .get("conditions")
-                .and_then(Value::as_array)
-                .or_else(|| group.get("items").and_then(Value::as_array))
-                .cloned()
-                .unwrap_or_default();
-            let group_op = group
-                .get("logicalOperator")
-                .and_then(Value::as_str)
-                .or_else(|| group.get("logic").and_then(Value::as_str))
-                .unwrap_or("and");
-
-            let mut group_result = true;
-            for item in items {
-                let left = item
-                    .get("left")
-                    .cloned()
-                    .or_else(|| item.get("variable").cloned())
-                    .unwrap_or(Value::Null);
-                let operator = item.get("operator").and_then(Value::as_str).unwrap_or("is");
-                let right = item
-                    .get("right")
-                    .cloned()
-                    .or_else(|| item.get("value").cloned())
-                    .unwrap_or(Value::Null);
-
-                let left_resolved = values::resolve(&left, &self.outputs)?;
-                let right_resolved = values::resolve(&right, &self.outputs)?;
-                let cmp = values::compare(&left_resolved, operator, &right_resolved)?;
-
-                group_result = match group_op {
-                    "or" => group_result || cmp,
-                    _ => group_result && cmp,
-                };
-            }
-
-            if group_result {
-                return Ok(serde_json::json!({ "__branch": group_id }));
-            }
-        }
-
-        let _ = logical_operator;
-        Ok(serde_json::json!({ "__branch": "false" }))
+    fn execute_if_else(&self) -> Result<Value> {
+        self.active_node_id
+            .as_ref()
+            .and_then(|id| self.compiled.condition_plans.get(id))
+            .ok_or_else(|| CoreError::invalid("ConditionConfigInvalid: compiled plan is missing"))?
+            .evaluate(&self.outputs)
     }
 
     fn execute_template_transform(&self, config: &Map<String, Value>) -> Result<Value> {

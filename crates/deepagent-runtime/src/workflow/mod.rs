@@ -3,6 +3,7 @@ mod aggregator;
 mod answer;
 pub mod canvas;
 pub mod code;
+mod conditions;
 mod graph;
 mod inputs;
 mod iteration;

@@ -69,6 +69,19 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
       nodes.unshift(node("orphan", "variable-assigner", { assignments: [] }));
     } else if (name === "professional-rooted-reordered") {
       nodes.reverse();
+    } else if (name.startsWith("condition-truth-")) {
+      const [, , logic, left, right] = name.split("-");
+      nodes = [node("start", "start", { inputVariables: [{ name: "payload", type: "object", default: { a: left === "true" ? "ON" : "OFF", b: right === "true" ? "ON" : "OFF" } }] }),
+        node("decide", "if-else", { conditions: [{ id: "true", logic, items: [
+          { variable: "{{#start.payload.a#}}", operator: "is", value: "ON" },
+          { variable: "{{#start.payload.b#}}", operator: "is", value: "ON" },
+        ] }] }), node("yes", "template-transform", { templateScript: "YES", templateInputVariables: [] }),
+        node("no", "template-transform", { templateScript: "NO", templateInputVariables: [] }),
+        node("end", "end", { outputVariables: [{ name: "report", type: "string", value: "DESKTOP_SETTLED" }] })];
+      edges = [{ id: "a", source: "start", target: "decide" },
+        { id: "y", source: "decide", sourceHandle: "true", target: "yes" },
+        { id: "n", source: "decide", sourceHandle: "false", target: "no" },
+        { id: "ye", source: "yes", target: "end" }, { id: "ne", source: "no", target: "end" }];
     } else if (name.startsWith("end-contract-")) {
       const type = name.slice("end-contract-".length);
       const value = { string: "DESKTOP_TYPED", number: 0, object: { nested: [false, null] }, array: [0, false, {}], invalid: "DESKTOP_WRONG" }[type];
@@ -252,11 +265,12 @@ async function emitFixtures(names = ["input", "condition", "output", "template"]
 
 // Replay actual Kernel events through the production consumer, not a shadow mapper.
 async function consumeKernelEvents(filename) {
-  const { name, events, terminal } = JSON.parse(readFileSync(filename, "utf8"));
+  const { name, events, terminal, expected } = JSON.parse(readFileSync(filename, "utf8"));
   const outputContract = name.startsWith("end-contract-");
-  const target = outputContract ? undefined : name.slice("target-".length);
+  const conditionTruth = name.startsWith("condition-truth-");
+  const target = outputContract || conditionTruth ? undefined : name.slice("target-".length);
   const handlers = new Map();
-  const state = { nodes: (outputContract ? ["start", "end"] : ["start", "source", "answer", "end", "unrelated"]).map((id) => ({
+  const state = { nodes: (outputContract ? ["start", "end"] : conditionTruth ? ["start", "decide", "yes", "no", "end"] : ["start", "source", "answer", "end", "unrelated"]).map((id) => ({
     id, data: { kind: id === "start" || id === "end" ? id : "answer", status: "idle" }, position: { x: 0, y: 0 },
   })), edges: [], updateNodeData(id, patch) {
     this.nodes = this.nodes.map((node) => node.id === id ? { ...node, data: { ...node.data, ...patch } } : node);
@@ -278,7 +292,16 @@ async function consumeKernelEvents(filename) {
   for (const event of events) handlers.get("chat://event")({ payload: {
     run_id: "target-replay", payload: { type: "workflow_node", event },
   } });
-  if (outputContract) {
+  if (conditionTruth) {
+    const data = (id) => state.nodes.find((node) => node.id === id).data;
+    assert.equal(data("decide").status, "completed");
+    assert.deepEqual(data("decide").result, { success: true, outputs: { branch: String(expected) } });
+    assert.equal(data("yes").status, expected ? "completed" : "idle");
+    assert.equal(data("no").status, expected ? "idle" : "completed");
+    assert.equal(data("end").status, "completed");
+    assert.deepEqual(data("end").result.outputs, { report: "DESKTOP_SETTLED" });
+    handlers.get("session://completed")({ payload: { run_id: "target-replay", status: "succeeded" } });
+  } else if (outputContract) {
     const end = state.nodes.find((node) => node.id === "end").data;
     assert.equal(state.nodes[0].data.status, "completed");
     const invalid = name.endsWith("invalid");
@@ -308,8 +331,10 @@ async function consumeKernelEvents(filename) {
 
 module.exports = { loadTypeScript };
 if (require.main === module) {
-  if (["--consume-target-events", "--consume-output-events"].includes(process.argv[2]) && process.argv[3]) {
+  if (["--consume-target-events", "--consume-output-events", "--consume-condition-events"].includes(process.argv[2]) && process.argv[3]) {
     consumeKernelEvents(process.argv[3]).catch((error) => { console.error(error); process.exitCode = 1; });
+  } else if (process.argv[2] === "--emit-condition-truth-fixtures") {
+    emitFixtures(["and", "or"].flatMap((logic) => [false, true].flatMap((a) => [false, true].map((b) => `condition-truth-${logic}-${a}-${b}`)))).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-output-contract-fixtures") {
     emitFixtures(["end-contract-string", "end-contract-number", "end-contract-object", "end-contract-array", "end-contract-invalid"]).catch((error) => { console.error(error); process.exitCode = 1; });
   } else if (process.argv[2] === "--emit-target-fixtures") {

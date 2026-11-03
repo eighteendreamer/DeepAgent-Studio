@@ -76,6 +76,7 @@ pub struct CompiledWorkflow {
     pub(super) aggregator_plans: BTreeMap<String, super::aggregator::AggregatorPlan>,
     pub(super) input_plan: super::inputs::InputPlan,
     pub(super) end_plans: BTreeMap<String, super::output::EndPlan>,
+    pub(super) condition_plans: BTreeMap<String, super::conditions::ConditionPlan>,
 }
 
 /// Validate a version-1 DAG. A recognized kind is not a promise of execution support.
@@ -125,6 +126,17 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         CoreError::invalid("InvalidWorkflowGraph: exactly one start node is required")
     })?;
     let input_plan = super::inputs::InputPlan::compile(start)?;
+    let condition_plans = definition
+        .nodes
+        .iter()
+        .filter(|node| node.kind == "if-else")
+        .map(|node| {
+            Ok((
+                node.id.clone(),
+                super::conditions::ConditionPlan::compile(&node.config)?,
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>>>()?;
     let end_plans = definition
         .nodes
         .iter()
@@ -322,6 +334,7 @@ pub fn compile(definition: WorkflowDefinition) -> Result<CompiledWorkflow> {
         aggregator_plans,
         input_plan,
         end_plans,
+        condition_plans,
     })
 }
 
@@ -641,6 +654,12 @@ mod tests {
         assert!(error.to_string().contains(message), "{error}");
     }
 
+    fn condition_config(ids: &[&str]) -> Value {
+        json!({"conditions":ids.iter().map(|id|json!({"id":id,"logic":"and","items":[
+            {"variable":true,"operator":"is","value":true}
+        ]})).collect::<Vec<_>>()})
+    }
+
     #[test]
     fn compiles_start_template_end_without_mutation() {
         let definition = valid_graph();
@@ -862,7 +881,7 @@ mod tests {
         let branching = graph(
             vec![
                 node("entry", "start", json!({})),
-                node("branch", "if-else", json!({})),
+                node("branch", "if-else", condition_config(&["true"])),
                 node("yes", "end", json!({})),
                 node("no", "end", json!({})),
             ],
@@ -1001,11 +1020,8 @@ mod tests {
     #[test]
     fn named_ports_require_explicit_valid_handles_even_when_only_one_exists() {
         for (kind, config) in [
-            ("if-else", json!({})),
-            (
-                "if-else",
-                json!({"conditions": [{"id": "default"}, {"id": "else"}]}),
-            ),
+            ("if-else", condition_config(&["true"])),
+            ("if-else", condition_config(&["default", "else"])),
             (
                 "human-input",
                 json!({"humanInputFields": [{"name": "approved", "type": "boolean"}]}),
@@ -1283,6 +1299,9 @@ mod tests {
                 assert!(compile(graph(vec![spec.clone()], vec![])).is_err());
                 spec.config
                     .insert("answerTemplate".into(), json!("valid answer"));
+            }
+            if kind == "if-else" {
+                spec.config = condition_config(&["true"]).as_object().unwrap().clone();
             }
             // Registry recognition is independent of executable admission:
             // iteration needs an input binding and its marker needs an owner.

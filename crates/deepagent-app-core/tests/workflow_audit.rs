@@ -18,6 +18,8 @@ mod aggregator;
 mod answer;
 #[path = "workflow_audit/code.rs"]
 mod code;
+#[path = "workflow_audit/conditions.rs"]
+mod conditions;
 #[path = "workflow_audit/entry.rs"]
 mod entry;
 #[path = "workflow_audit/exit.rs"]
@@ -1797,7 +1799,6 @@ async fn audit_workflow_end_output_matches_declared_type() {
 }
 
 #[tokio::test]
-#[ignore = "audit: an OR condition group must be false when every operand is false"]
 async fn audit_workflow_or_condition_does_not_start_from_true() {
     let (_root, db, chat, session) = workflow_fixture().await;
     let workflow: WorkflowRequest = serde_json::from_value(serde_json::json!({
