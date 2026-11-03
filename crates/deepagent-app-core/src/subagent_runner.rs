@@ -34,6 +34,10 @@ use crate::tool_manifest::{
 #[path = "subagent_deadline_tests.rs"]
 mod deadline_tests;
 
+#[cfg(test)]
+#[path = "subagent_control_scope_tests.rs"]
+mod control_scope_tests;
+
 /// Runs a sub-agent for the `task` tool: a nested agent loop over a sub-registry
 /// (the built-ins minus `task`, so no recursion), on an ephemeral in-memory
 /// session, returning only the sub-agent's final message.
@@ -940,7 +944,9 @@ impl ChatSubagentRunner {
         Ok(request)
     }
 
-    fn ensure_resume_lineage(
+    /// All model-side controls use the persisted origin conversation, not the
+    /// shared host handle table or an ID supplied by the model, as authority.
+    fn ensure_control_lineage(
         &self,
         record: &deepagent_persistence::subagent_store::SubagentRunRecord,
     ) -> Result<()> {
@@ -953,7 +959,7 @@ impl ChatSubagentRunner {
             .ok_or_else(|| CoreError::not_found("sub-agent origin run is not persisted"))?;
         if current.session_id != origin.session_id {
             return Err(CoreError::invalid(
-                "cannot resume a sub-agent from another conversation",
+                "cannot control a sub-agent from another conversation",
             ));
         }
         Ok(())
@@ -1069,7 +1075,7 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
         let record = deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db)
             .get(id)?
             .ok_or_else(|| CoreError::not_found(format!("sub-agent not found: {id}")))?;
-        self.ensure_resume_lineage(&record)?;
+        self.ensure_control_lineage(&record)?;
         Ok(deepagent_builtins::SubagentStatus {
             id: record.id,
             state: record.state,
@@ -1079,6 +1085,15 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
     }
 
     async fn cancel(&self, id: &str) -> Result<bool> {
+        let Some(record) =
+            deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db).get(id)?
+        else {
+            return Ok(false);
+        };
+        self.ensure_control_lineage(&record)?;
+        if record.finished_at.is_some() {
+            return Ok(false);
+        }
         let flag = self
             .background
             .lock()
@@ -1103,7 +1118,7 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
         let record = store
             .get(id)?
             .ok_or_else(|| CoreError::not_found(format!("sub-agent not found: {id}")))?;
-        self.ensure_resume_lineage(&record)?;
+        self.ensure_control_lineage(&record)?;
         let request = self.resume_request(&record, prompt)?;
         store.resume(id, &self.parent_run_id, subagent_now_ms())?;
         self.emit_subagent_event(RuntimeEvent::SubagentStarted {
@@ -1129,7 +1144,7 @@ impl deepagent_builtins::SubagentRunner for ChatSubagentRunner {
         let record = deepagent_persistence::subagent_store::SubagentRunStore::new(&self.db)
             .get(id)?
             .ok_or_else(|| CoreError::not_found(format!("sub-agent not found: {id}")))?;
-        self.ensure_resume_lineage(&record)?;
+        self.ensure_control_lineage(&record)?;
         if record.state == "running" {
             return Err(CoreError::invalid(
                 "cannot remove a worktree while its sub-agent is running",

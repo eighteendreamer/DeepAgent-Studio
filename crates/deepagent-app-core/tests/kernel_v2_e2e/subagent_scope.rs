@@ -210,6 +210,22 @@ struct Observation {
 }
 
 async fn observe(same_session: bool, cancel: bool, unknown: bool) -> Observation {
+    observe_case(same_session, cancel, unknown, Scenario::Standard).await
+}
+
+#[derive(Clone, Copy)]
+enum Scenario {
+    Standard,
+    ForeignWorkspace,
+    HostUserStop,
+}
+
+async fn observe_case(
+    same_session: bool,
+    cancel: bool,
+    unknown: bool,
+    scenario: Scenario,
+) -> Observation {
     let temporary = tempfile::tempdir().unwrap();
     let workspace = temporary.path().join("workspace");
     std::fs::create_dir(&workspace).unwrap();
@@ -232,19 +248,42 @@ async fn observe(same_session: bool, cancel: bool, unknown: bool) -> Observation
     let child = chat.subagent_runs(OWNER_RUN).unwrap().remove(0);
     assert_eq!(child.state, "running");
     *model.child_id.lock().unwrap() = child.id.clone();
+    let controller = if matches!(scenario, Scenario::ForeignWorkspace) {
+        let other = temporary.path().join("other-project");
+        std::fs::create_dir(&other).unwrap();
+        chat.for_workspace(other)
+    } else {
+        chat.clone()
+    };
     let control_session = run(
-        &chat,
+        &controller,
         CONTROL,
         same_session.then_some(owner_session.as_str()),
         CONTROL_RUN,
     )
     .await;
     assert_eq!(owner_session == control_session, same_session);
+    let host_acks = if matches!(scenario, Scenario::HostUserStop) {
+        // Model authority is session-scoped; an explicit host-user request is
+        // still allowed to stop work in another conversation of this host.
+        let first = controller.cancel_subagent(&child.id);
+        let repeated = controller.cancel_subagent(&child.id);
+        if first {
+            terminal(&db, &child.id).await;
+        }
+        Some((first, repeated))
+    } else {
+        None
+    };
     let before = SubagentRunStore::new(&db).get(&child.id).unwrap().unwrap();
     let waiting_before_release = model.waiting.load(Ordering::Acquire);
     // Always finish the real child, including the future-fixed/normal path.
     model.release.notify_one();
     let final_record = terminal(&db, &child.id).await;
+    if let Some((first, repeated)) = host_acks {
+        assert!(first);
+        assert!(!repeated);
+    }
     let requests = model.controller.lock().unwrap();
     assert_eq!(requests.len(), 6);
     for index in 0..3 {
@@ -269,6 +308,10 @@ async fn observe(same_session: bool, cancel: bool, unknown: bool) -> Observation
     if cancel && (same_session || unknown) {
         assert_eq!(cancel_output["status"], "ok");
         assert_eq!(cancel_output["result"]["cancel_accepted"], !unknown);
+    } else if cancel {
+        assert_eq!(cancel_output["status"], "error");
+        assert!(cancel_output.to_string().contains("another conversation"));
+        assert!(cancel_output["result"].is_null());
     }
     let last_status = output(&requests[5], 4);
     if !same_session || unknown {
@@ -363,14 +406,34 @@ async fn subagent_scope_unknown_cancel_does_not_stop_existing_child() {
 }
 
 #[tokio::test]
-#[ignore = "audit reproducer: task cancellation must enforce the same conversation lineage as status"]
 async fn subagent_scope_foreign_conversation_must_not_stop_child() {
     let observed = observe(false, true, false).await;
     assert!(
         !observed.accepted
             && observed.state_before_release == "running"
+            && observed.waiting_before_release == 1
             && observed.answered == 1
             && observed.final_state == "succeeded",
         "foreign model-visible handle must not grant cancellation authority: {observed:?}"
     );
+}
+
+#[tokio::test]
+async fn subagent_scope_another_workspace_sharing_the_host_cannot_cancel_child() {
+    let observed = observe_case(false, true, false, Scenario::ForeignWorkspace).await;
+    assert!(!observed.accepted);
+    assert_eq!(observed.state_before_release, "running");
+    assert_eq!(observed.waiting_before_release, 1);
+    assert_eq!(observed.answered, 1);
+    assert_eq!(observed.final_state, "succeeded");
+}
+
+#[tokio::test]
+async fn subagent_scope_host_user_can_still_stop_child_after_foreign_model_rejection() {
+    let observed = observe_case(false, true, false, Scenario::HostUserStop).await;
+    assert!(!observed.accepted);
+    assert_eq!(observed.state_before_release, "cancelled");
+    assert_eq!(observed.waiting_before_release, 0);
+    assert_eq!(observed.answered, 0);
+    assert_eq!(observed.final_state, "cancelled");
 }

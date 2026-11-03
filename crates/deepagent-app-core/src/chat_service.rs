@@ -367,8 +367,10 @@ impl ChatService {
             .record_continuation(run_id, replaces_turn_id, new_turn_id)
     }
 
-    /// Request cancellation of one background child without stopping its
-    /// parent run. Returns false when the child is already terminal or unknown.
+    /// Explicit host-user cancellation of one background child, across this
+    /// host's conversations, without stopping its parent. Model-side controls
+    /// must instead use the runner's durable conversation-lineage admission.
+    /// Returns false when no live handle accepts this request.
     pub fn cancel_subagent(&self, subagent_id: &str) -> bool {
         self.subagent_controls
             .lock()
