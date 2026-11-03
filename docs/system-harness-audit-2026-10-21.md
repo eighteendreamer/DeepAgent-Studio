@@ -4,7 +4,7 @@
 
 用户已授权按本报告逐项进行本地代码修复与测试；已修复、撤销和归并条目跳过，不重新计数。分析阶段完成不再是当前总体任务的完成状态。每项完成后更新原项状态、保留失败证据、独立提交并汇报验收与剩余工时。本轮不操作真实用户文件或外部服务。
 
-**最新修复台账（2026-11-03，H-92 E05验收后）**：306个唯一编号中144项已修复并验收、22项历史已修复跳过、7项归并、3项撤销、130项待修复、0项修复中。有效未关闭130项，其中H-180按用户授权跳过，实际待处理129项；不提供完成率。H-92本轮新增1项所列Windows正常EOF范围验收：CLI135过、Rust SDK28过、TS30+1过、正式布局原10秒空闲退出及原活动turn OS管道通过；完整workspace结果块汇总4311过/1败/253忽略，仅未改H-306失败，严格lint既有阻断保留，非全仓全绿。实现、全部命令/限制和独立修复提交见H-92 E05及E06真实hash回填；两份文档的当前口径一致。整体任务仍未完成。
+**最新修复台账（2026-11-03，H-130验收收尾）**：306个唯一编号中145项已修复并验收、22项历史已修复跳过、7项归并、3项撤销、129项待修复、0项修复中。有效未关闭129项，其中H-180按用户授权跳过，实际待处理128项；不提供完成率。H-130本轮新增1项所列Windows一次性替代接纳验收：persistence135过、协调器11过、CLI145过、协议12过、Rust SDK28过、TS30+1过；真实shell追加一次，重复旧turn无launch；完整workspace结果块汇总4327过/1败/252忽略，仅未改H-306失败，严格lint既有阻断保留，非全仓全绿。实现、全部命令/限制见H-130 E03，独立修复提交完成后另做文档提交回填真实hash；两份文档当前口径一致。整体任务仍未完成。
 
 **历史合并基线（2026-11-02）**：按唯一306行台账复核：120项已修复并验收、22项历史已修复跳过、7项归并、2项撤销、155项未关闭。顶部旧汇总漏计 main 已有 H-133，本次纠正不新增修复成果。H-180 按用户要求提交后跳过，仍属未关闭，实际修复队列154项；其 C 盘既有提交 `53a03f9bdfa2ebf797de7e8e465d6c6e055bbc97` 不在本次 main 合并源 `85d858af` 中，不将提交等同验收。已按用户授权验证并完成已有合并 `b3fb4d8b396dd9c598566769b4811998d8ff6f53`；历轮测试结果不自动证明合并后的源码，本次结果如下。
 
@@ -4024,6 +4024,49 @@ E-H125-07（独立提交与完整性）：本项实现、默认回归与当时�
 - 影响及限制：修复后协议握手超时不会无限占用管理界面请求。尚未覆盖 HTTP 半截响应下的实际桌面 spinner、重复点击的子进程数量，以及 UI 是否展示完整 `failed` 详情；同步 spawn 阶段也未单独限制。未访问公网、真实插件或用户数据。
 
 ### H-130：Harness `turn/steer` 可从同一个已替代 turn 重复派生多个运行
+
+**当前状态：已修复并验收（2026-11-03，仅E-H130-03所列本机范围）。原RunStore/coordinator原子接纳后才取消旧token；修复提交待独立提交后回填。以下原失败与候选阶段记录保留。**
+
+**E-H130-01（2026-11-03，原探针与真实副作用TDD）**：基线 d60f4e3c，tracked干净，五项既有用户未跟踪内容不读/不改/不提交。先核对原报告、ServerState/connection/executor、RunCoordinator、RunStore/RunControl、InputLease及双SDK消费者；沿用已有replacement语义，不把它改为另一套inbox。隔离应用HOME、仓外随机TEMP、清除继承供应商/凭据变量，使用已安装cargo/rustc 1.96.0、离线依赖、合成SQLite和自建临时文件；不访问真实供应商/内网/凭据或用户数据。原 cargo test -p deepagent-cli app_server::tests::audit_repeated_steer_does_not_launch_multiple_replacements --offline -j 2 -- --ignored --exact --nocapture --test-threads=1 实际exit101，0过1败：两次success、两个不同replacement ID且两次launch。日志 target/h130-repair-20261103/original-repeated-steer.log保留。
+
+生产未改前补5项默认回归，regression-red.log为0过5败。真实模型等待/正式输入租约队列/临时PowerShell AppendAllText路径实际先执行第一个replacement，再执行错误接纳的重复replacement，观察model_requests=5、effects="effect;effect;"，不是只从dispatch token推断副作用。另覆盖lost ACK/16个并发旧ID重试、排队replacement链、ACK写失败后旧ID重试、写入失败；拆分后的 admission-rollback-red.log单独0过1败，实际run_accepted插入失败后仍留phantom continuation。continuation写失败则旧run已被先行cancel、正常执行却终态cancelled，也有红证据。原/新增失败均保留，不把编译错误当行为红测。
+
+**E-H130-02（候选根因实现与初轮结果，尚未完成最终验收）**：根因是把worker仍在收尾的active状态当作可替代身份，并将取消、continuation.created和新run接纳分开提交。request_cancel的重复accepted是已有UI取消契约，不为steer修改它；active继续表示worker尚未收尾，保留H-92退出/取消及H-284线程忙态含义，不用置false隐藏仍执行的旧run。本地设计在原RunStore内新增BEGIN IMMEDIATE的单事务claim：核对旧run同session、非terminal且无既有continuation.created；新run/原run_accepted与旧run同形状continuation.created全部提交或回滚。复用原插入逻辑与RunControl事件helper，无新store、表、迁移或自建序列。旧链接即为持久claim，重开也拒绝同一祖先再次替代；旧代码留下的既有链接保守拒绝，不自动重跑或修写历史。
+
+ChatService经同一RunCoordinator调用原admission/会话dispatch owner获取路径；事务成功后才安装原取消注册并取消旧token，失败不取消旧run、不留新registration或phantom链接。terminal先提交则拒绝；claim先提交则replacement合法，原executor仍独占写各run终态。CLI转用该统一接纳边界，过期请求沿用ERR_INVALID_TURN=-32004，不变更DTO/协议版本或正常一次steer的返回形状；重复取消仍合法，替代最新的排队replacement也仍合法。新增Rust服务方法为向后兼容扩展，原record_continuation公开API保留兼容，但生产steer不再分段调用。
+
+初轮候选6项默认回归通过，真实shell变为3次模型请求/仅"effect;"。原探针第一次候选复跑在原诊断代码对error response强取result处panic（original-first-green.log），不是新run多次接纳；仅把诊断读取改为可选并补明确-32004断言，原“第二次不得launch”oracle未放宽，转默认。扩展后的9项CLI回归与4项持久化对照已分别通过；后续又补协调器失败重试/owner释放及16轮terminal/claim竞争，仍需冻结最终源码再全组验证，前面的候选绿组不替代最终验收。当前H-130修复中，无提交、不计新增验收；累计144验收/22历史跳过/7归并/3撤销/129待修/1修复中，有效未关闭130含H-180，实际待处理129。其余305主台账行不变。H-180继续授权跳过，H-178门禁不改。下一步仍完成H-130持久化/协调器/CLI/双SDK/workspace/桌面消费者及严格lint验收，暂估余2–5有效验收交付小时，编译和设备等待另计；总剩余200–400有效小时仍是未逐项校准历史粗估，不承诺日期，整体goal保持active。
+
+**E-H130-03（2026-11-03，最终冻结跨层验收，本机范围通过）**：最终8份源码/测试在全部命令执行前后SHA256一致，续接提交前再次逐一核对一致。证据目录 target/h130-final-20261103/，包含acceptance.ps1、runner.ps1、frozen-before/after.json、completed.json、逐门禁日志/原生退出码及lint-baseline-proof.json；保留E01行为红测及E02诊断夹具失败，不以早期候选绿替代本次验收。Cargo/rustc 1.96.0、已安装stable、离线依赖，真实CARGO_HOME/RUSTUP_HOME与隔离的应用HOME明确分离；临时文件位于仓外随机目录，清除继承供应商/凭据变量。正式CLI由cargo compiler-artifact记录定位为 target/debug/deepagent.exe，SHA256为612BE8EBE7C5D9DCDB954B7CDDAAA1C8E8A0AA87DA01EE7274B765233BFBDC62；SDK/正式管道验收前后及本次提交前均一致，Tauri使用独立target避免旁车覆盖。
+
+| 实际命令 | 最终结果 |
+|---|---|
+| cargo fmt --all -- --check | 初/末两次exit0 |
+| cargo test -p deepagent-persistence --all-targets --all-features --offline -j 2 -- --nocapture --test-threads=1 | exit0，135过/0败/0忽略（lib126、session_control9），26.38秒含编译 |
+| cargo test -p deepagent-app-core --lib run_coordinator::tests:: --offline -j 2 -- --nocapture --test-threads=1 | exit0，11过/0败/0忽略，111.22秒含编译 |
+| cargo test -p deepagent-cli --all-targets --all-features --offline -j 2 -- --nocapture --test-threads=1 | exit0，145过/0败/18忽略，59.60秒含编译；H-130原/新增回归均默认执行，真实shell为3次模型请求、effects="effect;" |
+| cargo test -p deepagent-cli app_server::tests::audit_repeated_steer_does_not_launch_multiple_replacements --offline -j 2 -- --exact --nocapture --test-threads=1 | exit0，1过/0败/0忽略；不再带--ignored，重复旧turn明确-32004、无第二次launch |
+| cargo build -p deepagent-cli --offline -j 2 --message-format=json | exit0，62.85秒，正式产物身份如上 |
+| cargo test -p deepagent-harness-protocol --offline -j 2 | exit0，12过/0败/0忽略 |
+| cargo test -p deepagent-harness-sdk --all-targets --all-features --offline -j 2 -- --nocapture --test-threads=1 | exit0，28过/0败/11忽略；真实CLI stdio在内 |
+| cargo test --workspace --offline --no-fail-fast -j 2 -- --test-threads=1 | exit101，136个结果块汇总4327过/1败/252忽略，1376.65秒（22.94分钟）；包含父进程启动的子结果块，不是4327个唯一测试 |
+| cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml --offline -j 2 --target-dir G:\Code_Warehouse\DeepAgent-Studio/target/h272-tauri-build | exit0，36.61秒，共享AppCore桌面消费者通过 |
+| cargo clippy -p deepagent-persistence --all-targets --all-features --no-deps --offline -j 2 -- -D warnings | exit0 |
+| cargo clippy -p deepagent-app-core --all-targets --all-features --no-deps --offline -j 2 -- -D warnings | exit101，仅既有lib12/含lib-test14项，逐条与上轮H-92日志及HEAD源码对照一致 |
+| cargo clippy -p deepagent-cli --all-targets --all-features --no-deps --offline -j 2 -- -D warnings | exit101，仅既有app_server.rs:589 unnecessary_map_or；该语句已在HEAD |
+| cargo clippy --all-targets --all-features --offline -j 2 -- -D warnings | exit101，未改models/client.rs:355 clone_on_copy阻断 |
+| pnpm --dir packages/sdk typecheck | exit0 |
+| pnpm --dir packages/sdk test | exit0，build通过，30过/0败/0跳过 |
+| pnpm --dir packages/sdk test:stdio | exit0，build通过，1过/0败/0跳过，使用上述最终CLI |
+| git diff --check | exit0，提交前文档内容/台账一致性另行核对 |
+
+workspace唯一失败仍为未修改H-306的 canvas_prompt::tests::every_node_kind_owns_exactly_one_profile：creative.video-edit.v1 的defaultUserPrompt为空；SDK process_exits_when_stdin_closes本次全组也通过，不据此重开H-92。AppCore既有lint为context_runtime八处clone_on_copy、http_runtime needless_return、plugin_preparation:14 type_complexity、run_assembler too_many_arguments、session_title needless_borrow及workflow_audit/media.rs两处旧测试诊断。首次lint比对脚本未trim CR报Unexpected，修正比对消息.Trim()后与上轮H-92逐条一致；未改生产源码或降低lint级别。完整workspace/完整严格lint并未全绿，忽略项也未被当作验收通过。
+
+最终新增默认回归为CLI9项、持久化5项、coordinator1项：覆盖lost ACK/16个重复并发dispatch、ACK写失败、真实InputLease排队与一次临时shell动作、排队replacement连续steer、foreign/独立thread、terminal已提交但worker仍active、正式duplex同RPC ID重试与EOF、SQLite重开；持久层覆盖run行/run_accepted/continuation三类trigger失败原子回滚、8个独立连接并发claim仅一个成功，以及16轮terminal/claim并发竞争、唯一终态与连续序列；协调器覆盖失败不取消/不注册、恢复后可重试及dispatch owner释放。原取消审计失败、终态重试幂等对照也实际执行。根因修复局限于原RunStore/RunCoordinator/ChatService/CLI及对应回归；正常一次steer返回形状和配置继承不变，重复旧ID现返回既有-32004；重复取消、worker active的收尾责任与最新排队replacement的再次steer不变，无schema迁移、新依赖或新执行链。
+
+残余限制：历史phantom continuation保守拒绝，不自动改写历史或重新派发；本修复保证同一旧turn仅一次替代接纳，不是供应商/外部工具副作用全局exactly-once，也不承诺强杀、断电或多宿主运行恢复。其他OS、真实供应商/内网/凭据/用户数据、长期压力和所有feature组合未验；未修改前端、Tauri command/DTO或UI，未执行desktop pnpm build与GUI验收，共享消费者已执行上述Tauri check。H-178既有八项外部门禁证据保留、不改门禁、不重跑；H-180继续按授权跳过。
+
+本轮H-130已修复并完成上述范围验收，修复commit待本次独立提交后另做文档提交回填，不amend。唯一306行台账核对后为145验收/22历史跳过/7归并/3撤销/129待修/0修复中；本轮新增修复1、历史跳过/归并/撤销新增均0，有效未关闭129含授权跳过H-180，实际待处理128。其余305主行不变，整体goal仍active。下一准备复核H-241（跨会话取消后台子Agent），尚未复现或修改。总剩余暂沿用200–400有效小时历史粗估，尚未逐项校准；剩余128项的根因定位、TDD、跨层与完整验收、双文档和独立提交量仍大，不因本轮关闭1项推算精确日期。编译/设备/依赖的等待另计、未形成可靠总区间；不作精确完工承诺。
 
 **级别：中（P2）；触发条件：客户端在第一次 `turn/steer` 已返回、旧 turn 的 `spawn_turn` 尚未结束前，再次使用同一个旧 `turnId` 发送 steer。** 这是 stdio app-server 入口的运行身份问题；本项没有证明桌面 `start_chat_v2` 存在同样行为。
 

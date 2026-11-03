@@ -164,6 +164,40 @@ impl RunCoordinator {
     /// Reserve both durable identity and cancellation before transport ACK.
     /// Session aliases are attached only after the input lease is acquired.
     pub fn admit(&self, run_id: &str, session_id: &str) -> Result<()> {
+        self.admit_with_continuation(run_id, session_id, None)
+            .map(|_| ())
+    }
+
+    /// One replacement claim commits with admission before cancelling its
+    /// predecessor. Duplicate/stale requests neither cancel nor admit again.
+    pub fn admit_continuation(
+        &self,
+        old_run_id: &str,
+        new_run_id: &str,
+        session_id: &str,
+    ) -> Result<bool> {
+        let cancellation = self
+            .cancellations
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .get(old_run_id)
+            .cloned();
+        let Some(cancellation) = cancellation else {
+            return Ok(false);
+        };
+        let admitted = self.admit_with_continuation(new_run_id, session_id, Some(old_run_id))?;
+        if admitted {
+            cancellation.request_cancel(old_run_id);
+        }
+        Ok(admitted)
+    }
+
+    fn admit_with_continuation(
+        &self,
+        run_id: &str,
+        session_id: &str,
+        replaces: Option<&str>,
+    ) -> Result<bool> {
         let id = session_id
             .parse()
             .map_err(|error| CoreError::invalid(format!("bad session id: {error}")))?;
@@ -189,7 +223,14 @@ impl RunCoordinator {
             }
         };
         let mut admissions = self.admissions.lock().unwrap_or_else(|p| p.into_inner());
-        RunStore::new(&self.db).create(run_id, session_id, None, now_millis())?;
+        let store = RunStore::new(&self.db);
+        match replaces {
+            Some(old) if !store.create_continuation(old, run_id, session_id, now_millis())? => {
+                return Ok(false);
+            }
+            Some(_) => {}
+            None => store.create(run_id, session_id, None, now_millis())?,
+        }
         let mut registration = ActiveRunRegistration::new(
             self.cancellations.clone(),
             self.run_ids.clone(),
@@ -199,7 +240,7 @@ impl RunCoordinator {
         registration._session_activity = Some(activity);
         registration._session_dispatch = Some(owner);
         admissions.insert(run_id.to_owned(), registration);
-        Ok(())
+        Ok(true)
     }
 
     /// Publish cancellation without waiting for storage. The run lifecycle
@@ -407,6 +448,57 @@ mod tests {
     use deepagent_persistence::event_store::EventStore;
     use deepagent_persistence::run_control::{NewRunAction, NewRunApproval, RunActionState};
     use deepagent_persistence::run_store::RunStore;
+
+    #[test]
+    fn h130_failed_claim_preserves_cancellation_and_dispatch_ownership_for_retry() {
+        let db = Arc::new(Database::open_in_memory().unwrap());
+        let session = deepagent_session::Session::create(
+            &db,
+            &deepagent_core::clock::FixedClock::new(1_000),
+            None,
+        )
+        .unwrap()
+        .id()
+        .to_string();
+        let coordinator = RunCoordinator::new(db.clone());
+        let competitor = RunCoordinator::new(db.clone());
+        coordinator.admit("old", &session).unwrap();
+        db.with_conn(|conn| {
+            conn.execute_batch("CREATE TRIGGER h130_fail BEFORE INSERT ON run_events WHEN NEW.event_type='continuation.created' BEGIN SELECT RAISE(ABORT, 'h130 claim failure'); END;").unwrap();
+            Ok(())
+        }).unwrap();
+        assert!(coordinator
+            .admit_continuation("old", "new", &session)
+            .is_err());
+        assert!(!coordinator.cancellations.lock().unwrap()["old"].is_cancelled());
+        assert!(!coordinator.request_cancel("new").unwrap().accepted);
+        assert_eq!(coordinator.readiness().unwrap().active_runs, 1);
+        assert!(competitor.admit("foreign", &session).is_err());
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER h130_fail").unwrap();
+            Ok(())
+        })
+        .unwrap();
+        assert!(coordinator
+            .admit_continuation("old", "new", &session)
+            .unwrap());
+        assert!(coordinator.cancellations.lock().unwrap()["old"].is_cancelled());
+        assert!(!coordinator
+            .admit_continuation("old", "duplicate", &session)
+            .unwrap());
+        assert!(!coordinator.request_cancel("duplicate").unwrap().accepted);
+        assert!(!coordinator
+            .admit_continuation("missing", "absent", &session)
+            .unwrap());
+        assert_eq!(
+            RunStore::new(&db).list_for_session(&session).unwrap().len(),
+            2
+        );
+        drop(coordinator.take_admission("old").unwrap());
+        assert!(competitor.admit("foreign", &session).is_err());
+        drop(coordinator.take_admission("new").unwrap());
+        competitor.admit("foreign", &session).unwrap();
+    }
 
     #[test]
     fn admission_owns_history_through_cancel_and_outer_terminal_projection() {

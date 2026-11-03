@@ -339,6 +339,18 @@ impl ChatService {
         self.coordinator.admit(run_id, session_id)
     }
 
+    /// Atomically claim the expected run's sole continuation and admit its
+    /// replacement, then signal the existing cancellation tree on success.
+    pub fn admit_continuation(
+        &self,
+        old_run_id: &str,
+        new_run_id: &str,
+        session_id: &str,
+    ) -> Result<bool> {
+        self.coordinator
+            .admit_continuation(old_run_id, new_run_id, session_id)
+    }
+
     /// Read the shared coordinator's durable readiness projection.
     pub fn coordinator_readiness(&self) -> Result<crate::run_coordinator::CoordinatorReadiness> {
         self.coordinator.readiness()

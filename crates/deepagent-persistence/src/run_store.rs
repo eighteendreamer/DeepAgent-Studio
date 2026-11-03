@@ -1,10 +1,14 @@
 //! Durable Agent Kernel v2 run state and ordered event ledger.
 
 use deepagent_core::error::{CoreError, Result};
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 
 use crate::{map_sqlite, Database};
+
+#[cfg(test)]
+#[path = "run_store/continuation_tests.rs"]
+mod continuation_tests;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunRecord {
@@ -55,6 +59,24 @@ const PENDING_TERMINAL_PROJECTION: &str = "r.finished_at IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM run_events e WHERE e.run_id=r.id
                     AND e.event_type='session_terminal_projected')";
 
+fn insert_run(
+    conn: &rusqlite::Connection,
+    run_id: &str,
+    session_id: &str,
+    task_id: Option<&str>,
+    now: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO runs (id, session_id, task_id, state, created_at, updated_at) VALUES (?1, ?2, ?3, 'accepted', ?4, ?4)",
+        params![run_id, session_id, task_id, now],
+    ).map_err(map_sqlite)?;
+    conn.execute(
+        "INSERT INTO run_events (run_id, sequence, timestamp, phase, status, event_type, data) VALUES (?1, 0, ?2, 'accepted', 'completed', 'run_accepted', ?3)",
+        params![run_id, now, serde_json::json!({"session_id":session_id,"task_id":task_id}).to_string()],
+    ).map_err(map_sqlite)?;
+    Ok(())
+}
+
 pub(crate) fn insert_run_event(
     conn: &rusqlite::Connection,
     run_id: &str,
@@ -87,17 +109,40 @@ impl<'db> RunStore<'db> {
     ) -> Result<()> {
         self.db.with_conn(|conn| {
             let tx = conn.unchecked_transaction().map_err(map_sqlite)?;
-            tx.execute(
-                "INSERT INTO runs (id, session_id, task_id, state, created_at, updated_at) VALUES (?1, ?2, ?3, 'accepted', ?4, ?4)",
-                params![run_id, session_id, task_id, now],
-            )
-            .map_err(map_sqlite)?;
-            tx.execute(
-                "INSERT INTO run_events (run_id, sequence, timestamp, phase, status, event_type, data) VALUES (?1, 0, ?2, 'accepted', 'completed', 'run_accepted', ?3)",
-                params![run_id, now, serde_json::json!({"session_id":session_id,"task_id":task_id}).to_string()],
-            ).map_err(map_sqlite)?;
+            insert_run(&tx, run_id, session_id, task_id, now)?;
             tx.commit().map_err(map_sqlite)?;
             Ok(())
+        })
+    }
+
+    /// Claim one replacement and admit it in the existing ledger transaction.
+    /// False means the expected run is missing, terminal, foreign or already
+    /// replaced. No cancellation, admission or new continuation is then written.
+    pub fn create_continuation(
+        &self,
+        replaces_run_id: &str,
+        new_run_id: &str,
+        session_id: &str,
+        now: i64,
+    ) -> Result<bool> {
+        self.db.with_conn(|conn| {
+            let tx = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)
+                .map_err(map_sqlite)?;
+            let eligible: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM runs r WHERE r.id=?1 AND r.session_id=?2 AND r.finished_at IS NULL
+                 AND NOT EXISTS(SELECT 1 FROM run_events e WHERE e.run_id=r.id AND e.event_type='continuation.created'))",
+                params![replaces_run_id, session_id], |row| row.get(0),
+            ).map_err(map_sqlite)?;
+            if !eligible {
+                return Ok(false);
+            }
+            insert_run(&tx, new_run_id, session_id, None, now)?;
+            crate::run_control::append_control_event(
+                &tx, replaces_run_id, now, "continuation.created",
+                &serde_json::json!({"replacesTurnId":replaces_run_id,"newTurnId":new_run_id,"disposition":"new_turn"}),
+            )?;
+            tx.commit().map_err(map_sqlite)?;
+            Ok(true)
         })
     }
 

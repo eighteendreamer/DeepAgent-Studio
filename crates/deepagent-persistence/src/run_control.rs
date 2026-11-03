@@ -1182,7 +1182,7 @@ fn expire_approval(connection: &Connection, approval: &RunApprovalRecord, now: i
     Ok(())
 }
 
-fn append_control_event(
+pub(crate) fn append_control_event(
     connection: &Connection,
     run_id: &str,
     timestamp: i64,

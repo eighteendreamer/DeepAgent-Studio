@@ -15,6 +15,9 @@ mod backpressure_tests;
 #[path = "eof_tests.rs"]
 mod eof_tests;
 
+#[path = "steering_tests.rs"]
+mod steering_tests;
+
 use super::*;
 use deepagent_app_core::{ApprovalPolicy, MemorySecretStore, SettingsService};
 use deepagent_core::error::{CoreError, Result as CoreResult};

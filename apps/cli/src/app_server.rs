@@ -963,37 +963,31 @@ impl ServerState {
                 None,
             );
         }
-        let cancellation = match current.chat.request_cancel(&params.turn_id) {
-            Ok(request) => request,
+        let next_turn = format!("turn_{}", deepagent_core::id::EventId::new());
+        // Worker activity is not steering eligibility: a replaced worker still
+        // owns cleanup and must remain busy/cancellable until finish_turn. The
+        // canonical ledger atomically claims its sole replacement instead.
+        match current
+            .chat
+            .admit_continuation(&params.turn_id, &next_turn, &params.thread_id)
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    RpcResponse::error(
+                        id,
+                        ERR_INVALID_TURN,
+                        "turn is terminal, replaced or no longer cancellable",
+                    ),
+                    None,
+                );
+            }
             Err(error) => {
                 return (
                     RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
                     None,
                 )
             }
-        };
-        if !cancellation.accepted {
-            return (
-                RpcResponse::error(id, ERR_INVALID_TURN, "turn is no longer cancellable"),
-                None,
-            );
-        }
-        let next_turn = format!("turn_{}", deepagent_core::id::EventId::new());
-        if let Err(error) =
-            current
-                .chat
-                .record_continuation(&params.turn_id, &params.turn_id, &next_turn)
-        {
-            return (
-                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                None,
-            );
-        }
-        if let Err(error) = current.chat.admit_run(&next_turn, &params.thread_id) {
-            return (
-                RpcResponse::error(id, ERR_INTERNAL, error.to_string()),
-                None,
-            );
         }
         self.turns.insert(
             next_turn.clone(),
@@ -1447,7 +1441,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "audit reproducer: a replaced turn must not admit multiple steering replacements"]
     fn audit_repeated_steer_does_not_launch_multiple_replacements() {
         let mut state = ServerState::new_for_test();
         initialize(&mut state);
@@ -1482,7 +1475,10 @@ mod tests {
             None,
         );
         let first_id = first_response.result()["turnId"].as_str();
-        let second_id = second_response.result()["turnId"].as_str();
+        let second_id = second_response
+            .result
+            .as_ref()
+            .and_then(|result| result["turnId"].as_str());
         eprintln!(
             "audit repeated steer: first_status={}, second_status={}, first_launch={}, second_launch={}, first_id={first_id:?}, second_id={second_id:?}",
             if first_response.is_success() { "success" } else { "error" },
@@ -1498,6 +1494,7 @@ mod tests {
             second_replacement.is_none(),
             "a stale replaced turn must not create a second replacement"
         );
+        assert_eq!(second_response.error_code(), Some(ERR_INVALID_TURN));
     }
 
     #[test]
